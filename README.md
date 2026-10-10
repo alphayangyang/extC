@@ -31,7 +31,7 @@ fn main() -> i32 {
 }
 ```
 
-完整巡礼见 [`examples/tour.extc`](examples/tour.extc)，语言手册见 [`docs/MANUAL.md`](docs/MANUAL.md)。
+完整巡礼见 [`examples/tour.extc`](examples/tour.extc)，语言用法见 [`docs/usage/`](docs/usage/)。
 
 ## 性能
 
@@ -64,8 +64,7 @@ make -j"$(nproc)"                        # 只依赖 C11 标准库，产出 buil
 make status                              # 重取上面两条的通过/失败数
 ```
 
-**通过/失败数不写在这里** —— 手抄的副本一定会漂，本仓库以前每一份过期的状态都是在别处手抄的一份。
-当前实测数只有一处：[`docs/STATUS.md`](docs/STATUS.md)。
+**通过/失败数不写在这里** —— 手抄的副本一定会漂。跑 `make status` 取当前数。
 
 | 目标 | 依赖 |
 |---|---|
@@ -85,19 +84,16 @@ make status                              # 重取上面两条的通过/失败数
 
 ## 文档
 
+文档只有三类内容：
+
 | 文档 | 内容 |
 |---|---|
-| [`docs/STATUS.md`](docs/STATUS.md) | **当前状态（唯一入口）**：实测数、未决、下一步 |
-| [`docs/DESIGN-OPEN.md`](docs/DESIGN-OPEN.md) | 未决设计（两个母题 + 纯增量） |
-| [`docs/MANUAL.md`](docs/MANUAL.md) | 语言手册（只描述已实现的部分） |
-| [`docs/SPEC.md`](docs/SPEC.md) | 设计文档：定位、原则、内存模型、代价与损失 |
-| [`docs/DECISIONS.md`](docs/DECISIONS.md) | 决策登记册（档案：已定案 / 尚欠） |
-| [`docs/DEVLOG.md`](docs/DEVLOG.md) | 开发记录（档案，倒序） |
-| [`docs/PLAN.md`](docs/PLAN.md) | 缺陷编号权威（`PLAN #NN`）与里程碑（档案） |
-| [`docs/topics/`](docs/topics/) | 专题：内存安全、arena、引用、数组、IO、模块、库、并发设想 |
+| [`docs/usage/`](docs/usage/) | **现在有什么 / 怎么用** |
+| [`docs/TODO.md`](docs/TODO.md) | **有什么待做**（唯一清单） |
+| [`docs/CHANGELOG.md`](docs/CHANGELOG.md) | **开发历史**（全仓库唯一） |
+| [`docs/archive/`](docs/archive/README.md) | 历史快照（只作考古，**不要当现状读**） |
 
-文档口径与维护规矩见 [`docs/PLAN.md`](docs/PLAN.md) 第 8 节；`src/` 与 `stdlib/` 的注释标准见
-[`docs/COMMENT-STYLE.md`](docs/COMMENT-STYLE.md)。
+维护规矩见 [`docs/README.md`](docs/README.md)；注释规范见 [`docs/COMMENT-STYLE.md`](docs/COMMENT-STYLE.md)。
 
 ## 仓库结构
 

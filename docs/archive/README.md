@@ -1,0 +1,29 @@
+# 归档（archive）
+
+**本目录下的一切都是历史快照，已过时。** 它们只作考古与对照，**不是任何东西的真源**。
+
+| 想看什么 | 去哪 |
+|---|---|
+| 现在有什么 / 怎么用 | [`../usage/`](../usage/) |
+| 有什么待做 | [`../TODO.md`](../TODO.md) |
+| 开发历史（全仓库唯一） | [`../CHANGELOG.md`](../CHANGELOG.md) |
+
+## 规则
+
+- 本目录**只读**：不再编辑、不再更新、**不从这里抄内容**。
+- 归档**不是可引用的来源**：新文档里引用它，等于引用一份已被声明过时的东西。
+- 全仓库只有 [`../CHANGELOG.md`](../CHANGELOG.md) 记录历史；本目录是**冻结的那份快照**，
+  不承担"记录历史"的职责——所以它不会跟着维护，旧就是它的正常状态。
+- 目录里的非 `.md` 文件（`.json` / `.tsv` / `.txt` 等审计原始材料）同样过时，不单独加横幅。
+
+## 里面是什么
+
+| 目录 / 文件 | 曾经是什么 |
+|---|---|
+| `PLAN.md` · `DECISIONS.md` · `DESIGN-RESOLUTIONS.md` · `STALE-AUDIT.md` | 路线图 / 决策登记册 / 审计期裁定 / 文档过时清单 |
+| `SPEC.md` · `DESIGN.md` · `WHY-EXTC.md` · `SYNTAX.md` · `WARNINGS.md` | 定位、原则、语法与警告策略的设计文档 |
+| `STATUS.md` · `DESIGN-OPEN.md` | 2026-10-08/09 的现状页与未决设计页 |
+| `COMMENT-STYLE.md` | 旧注释规范（已被新的 Doxygen 规范取代） |
+| `topics/` | 各机制的专题论证（arena / pool / dyn / 并发 / C-ABI / codegen…） |
+| `history/` · `reviews/` · `audit/` | 历次审阅报告与原始证据（`.audit/` 原样搬入） |
+| `manual/`（后续搬入） | 旧语言手册与其 HTML 生成物 |

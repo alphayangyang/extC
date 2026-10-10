@@ -1,115 +1,48 @@
-# COMMENT-STYLE.md — comment standard for the compiler source (`src/`)
+# 注释规范（Doxygen）
 
-> Applies to every `.c` / `.h` file under `src/`. It is a **rule**, not a taste:
-> a comment that does not follow it will be rewritten in review.
-> Design documents (`*.md`) stay in Chinese: they exist so the author can read them.
->
-> **`stdlib/` is in scope** (changed 2026-09-24). It was listed as "corpus, stays in
-> Chinese", but it is not corpus: it is the library users' programs link against, and
-> its comments ship with it. Chinese comments there were the one place where "code is
-> English" had been quietly carved out. `tools/scan_cjk.py stdlib/**/*.extc` now
-> reports 0, and `tools/comment_neutral.py` was used to prove every one of those
-> commits was comment-only.
->
-> `examples/`, `tests/`, `bench/`, `tools/` and the root scripts are **still Chinese**
-> (~3700 lines). That is an open decision, not an oversight: those files double as
-> reference material the author reads. If they are converted, the reason to keep them
-> Chinese has to be answered first -- otherwise the same carve-out grows back.
+适用：`src/`（C）· `stdlib/`（extC）· `tools/`（Python docstring）· `tests/`。
 
-## 1. Language
+## 一条铁律：注释只写"现在是什么"
 
-**English only, ASCII only.** No Chinese, no full-width punctuation, no emoji-like
-symbols (``, ``, ``, ``, ``, `⇒`, `·`). Use plain ASCII: `*`, `!`, `->`, `=>`.
+注释里**不许**出现：
 
-The rule covers **everything that belongs to the code**: source comments, user-visible
-diagnostics, the generated C (its comments and its runtime preamble), and debug traces
-behind the `EXTC_DBG_*` switches. Code and diagnostics should read as one artifact.
+- **历史与变更**：「以前 / 原来 / 改成 / 曾经 / 回退过 / 一开始」
+- **决策编号**：`定案 NN` · `PLAN #NN`
+- **实测史与调参过程**：「实测过 / 那次 / 一度 / 量过」
+- **对旧实现的评价**：「旧版是错的 / 这样更干净」
 
-> Correction (2026-09-23): an earlier version of this file claimed the compiler's output
-> "was always English". That was wrong -- a number of emitted-C banners, the emitted
-> runtime preamble, and several `EXTC_DBG_*` traces were still Chinese. Converting those
-> string literals is tracked as its own change; see `PLAN.md` section 0.4.1.
->
-> Update (2026-09-24): that entry used to end with "it moves the generated C and the golden
-> manifest, so the manifest has to be regenerated". The golden manifest is retired as a gate
-> (see the `PLAN.md` header), so nothing is regenerated for it any more. A pure comment
-> change still moves the generated C; what shows that it changed *only* there is a per-case
-> diff of the emitted C, not a blessed snapshot.
+**历史只进 [`CHANGELOG.md`](CHANGELOG.md)。** 闸门待建（见 [`TODO.md`](TODO.md) 第七节）。
 
-## 2. No project-private vocabulary
+## 格式：说明 · 参数 · 返回值 · 使用例
 
-Comments must be understandable to a C programmer who has never read this project's
-documentation. Do not write internal codenames, ruling numbers, plan-item numbers,
-or arena-memory appendix references. Describe the mechanism, not the project's
-nickname for it.
-
-| Do not write | Write instead |
-|---|---|
-| "ruling 63", "PLAN #38", "decision 68" | a sentence saying what the rule is |
-| "A3 promotion", "layer 2", "step B2" | "escape promotion", "the level solver", "allocator symmetry" |
-| "the home arena" alone | "the home arena (the arena chosen by the caller)" |
-| "arena pockets", "soak", "sink" | "block arenas", "escape", "promote" |
-| "the sentinel state", "pre-null" | "not yet decided", "the provisional pass" |
-
-Names that are real identifiers in the code (`ARENA_HOME`, `minAt`, `arenaLevel`,
-`refDepth`, `homeDepth`, `arenaArg`) are fine — they are the subject matter.
-
-## 3. Function comment block
-
-Every function definition carries a comment block directly above it, in this shape:
+写在**声明处**（头文件里的原型，或函数定义前）。**函数体内只留不显然的不变量**，不做叙事。
 
 ```c
-/* <One-line summary: what it does, in the imperative.>
+/**
+ * @brief 一句话说清它做什么（动词开头，一个句子）。
  *
- * <Why it exists / what invariant it maintains. Include this only when the reason
- *  is not obvious from the summary; it is usually the most valuable part.>
+ * 需要时补一段：前置条件、不变量、复杂度。**不写为什么当初这么改。**
  *
- * Params:
- *   c     - <meaning, or "unused" >
- *   val   - <meaning>
- *   at    - <meaning and units: "arena level the value must reach; 0 = beyond this frame">
+ * @param rid  参数名 + 它是什么、合法范围。
+ * @param n    每个参数一行，跟声明顺序一致。
+ * @return     返回值是什么、什么时候失败。**`void` 不写 `@return`。**
  *
- * Returns:
- *   <what the return value means. Omit for void.>
- *
- * Notes:
- *   - <A non-obvious constraint, a caller obligation, or a trap that already caused a bug.>
+ * @code
+ *   // 使用例：能跑的最小片段
+ * @endcode
  */
 ```
 
-Rules for the block:
+extC 用**同一形状**（`/** ... */` + `@brief` / `@param` / `@return` / `@code`），两种语言的注释可以互相照抄。
 
-- Any of `Params:` / `Returns:` / `Notes:` may be omitted **when empty**. A one-line
-  summary is enough for a trivial helper; a subtle analysis function normally needs
-  `Params:` + `Returns:` + `Notes:`.
-- Document **semantics and units**, not types that the signature already shows.
-- State the direction of any approximation: "over-approximates, so it can only cause
-  a false rejection" is worth more than restating the code.
-- If the function has a precondition the compiler does not enforce, put it in `Notes:`.
-- Keep lines within 100 columns.
+## 使用例是**判据**，不是散文
 
-## 4. Inline comments
+- extC 的 `@code` 块必须**能编译并运行**；C 的至少过一遍 `cc -fsyntax-only`。
+- 闸门：`tools/check_doc_examples.py`（待建，见 [`TODO.md`](TODO.md)）。
+- **宁可不写例子，也不要写一个没被检查过的例子**——没闸门的例子会先烂。
 
-- Explain *why*, not *what*. If the code needs a comment to say what it does, rename
-  things instead.
-- One concern per comment. Do not stack five historical notes on one line.
-- Record a past bug as a constraint, not as a story:
-  `/* Must run before the escape check: the check reads the depth this call updates. */`
+## 不该有的注释
 
-## 5. File header
-
-Each file starts with a short block (2-6 lines) stating the file's responsibility and
-where it sits in the pipeline. No changelog, no history.
-
-## 6. Checking a change
-
-`tools/comment_neutral.py <base-revision> [file ...]` extracts the code from both
-revisions (comments removed, literals preserved) and compares it byte for byte. Use it
-to prove a comment rewrite changed nothing:
-
-```sh
-python3 tools/comment_neutral.py HEAD src/check/check_escape.c
-```
-
-It must print `ok ... (comments only)` for every file. A comment rewrite is only
-acceptable together with the normal test gates (`./tests/run.sh`, arena corpora).
+- 复述代码表面的注释（`i = i + 1  /* 自增 i */`）。
+- 变更日志式注释（`/* 2026-10-09: 修了 X */`）——那属于 [`CHANGELOG.md`](CHANGELOG.md)。
+- 被注释掉的代码。删掉——git 里有。

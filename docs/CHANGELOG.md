@@ -1,0 +1,10814 @@
+# 开发记录
+
+> **本文件是全仓库唯一的历史记录（changelog，只追加、倒序）。**
+> 别的任何文档、注释、脚本都不记录历史——**历史只进这里**。
+>
+> 每条记的是当时的状态与判断，**现在未必成立**。要看现状去 [`usage/`](usage/)、待做去 [`TODO.md`](TODO.md)。
+> 历史快照（更早的整批文档）在 [`archive/`](archive/README.md)。
+
+> **规矩：每完成一块就追加一条。** 记的是「做了什么、为什么、发现了什么」——
+> 不是 diff（那个 git 里有），而是**决策和发现的来龙去脉**。
+>
+> 倒序，最新的在最上面。
+
+---
+
+## 2026-10-03 · **链接通道**：`extern!` 的库名第一次真的参与链接（`-l` / `-L` / `--ccflag` / `--pkg-config`）
+
+**做了什么**：driver 认识四条链接开关，`--run` 与 `--check-c` 都带上；链接需求（`extc-libs:` /
+`extc-pkg-config:`）写进生成物，构建系统可以读回去；`tests/linkflags/` 10 项进 `check.sh quick`；
+手册 §7.8.1 与 `21-flags.md` 回填，`C-ABI.md` §9.20 与 `LIBS.md` §6（L2.5）记账。
+
+**为什么**：在这之前 `extern!("lib")` 的名字只用于诊断，消费第三方 C 库只有 `dlopen` 一条路
+（`bench/httpd` 把 epoll/sendfile 留在 C 侧、`tests/real-lib` 用 cairo 画图，都是这么"绕"的）。
+要"像用标准库一样用 C ABI"，第一块砖是让声明真的产生 `-l`：否则每个下游都得自己写 cc 命令行，
+包管理器也无处安放。
+
+**发现了什么**：
+
+- 本机 sqlite3 / cairo / freetype / fontconfig / libcurl / libpng **都没有 dev 包**（无头、无 `.pc`、
+  无 `.so` 软链），但 `-l:libX.so.N`（soname 形式）六个库**全部能链能跑** —— 这正是 `--ccflag`
+  的用例：`-l <name>` 拼不出冒号形式；
+- `-I` 已经被模块搜索目录占用，所以 C 的 include 目录走 `--ccflag -I…`，没有再添一个近义开关；
+- **"不给 flag 产物不变"必须拿基线编译器对拍，不能拿快照**：快照本身带 164 份历史差异（近期重构
+  的存量）。做法是把 HEAD 单独 build 成一份基线编译器，414 份语料逐字节比对 ——
+  **414 同 / 0 异**，于是这条判据是实测而不是推断。
+
+**实测**：`make` 零告警（`-Wcomment` 那条当场修掉）· `check.sh quick` **61/0**（新增一节）·
+`gen_flags --check` / `check_tone --gate` / `check_manual --gate` 全绿。
+
+**同日的第二刀：模块自带链接需求（`<module>.link`）**。链接需求属于模块，不属于每一条命令行：
+`use zmod` 之后 driver 自动读同目录的 `zmod.link`（`lib` / `pkgconfig` / `ccflag` 三种指令），只在
+**已加载**的模块上生效 —— 没 `use` 的模块不参与链接，缺库也不下载任何东西。判据从 10 项扩到
+**16 项**（新增 `auto-link-*` 六项：自动链上 · 需求行进产物 · 拿掉表就链不上 · soname 形式 ·
+未用模块不链 · 未知指令 rc=2）。踩到的两件事记一笔：① 根文件**自己所在的目录**也在模块搜索路径里，
+所以"拿掉 .link 应该链不上"的判据必须把整份夹具（含根文件）拷到临时目录再删表，否则原目录那份
+表会把它满足掉；② `--run` 把二进制写进 **CWD** 的 `build/`，而仓库里已有一个 `build/app/` 目录
+（bench/app 的产物）⇒ 套件改成整体在临时目录里跑，既躲开目录冲突，也不往仓库 `build/` 里丢东西。
+
+**同日的第三刀：契约验证（`tests/contract/`）**。`effects` 是信任不是证明——库里偷偷留了指针，
+编译器不会知道，ASan 也未必抓得到。现在把它变成可证伪的：`std::heap` 加 `quarantine` /
+`unquarantine` / `poison` 三个出口（复用现成的 `mprotect` 路径），调用一个签了 `Addr=0` 的 C 函数
+**返回后立刻隔离**那段内存——库若食言，下次碰就是硬缺页（rc=139）；不想让它崩的场合改毒化
+（哨兵 0xAA ⇒ 可断言的返回值）。四条判据与 `tests/hostile` 是一对孪生：那边问"不规范的 .so 会怎么
+爆"，这边问"契约认不认"；对照组还专门量了"什么都不做 ⇒ 谎言在行为上不可见"。`C-ABI.md` §9.21
+记了边界：只能证伪**落在观察窗口内**的食言，所以 `extpkg verify` 的输出必须是三态
+（通过 / 被证伪 / 不可验证）。
+
+**同日的第四刀：第一个包 `sqlite` + `tools/extpkg.py verify`**。包长这样：绑定（契约就在
+`effects` 里）+ `.link`（模块自带链接需求，L1 那刀让 `use sqlite` 零 flag）+ 一个 80 行的 C shim
+（`sqlite3**` 出参换成 i64 句柄、`SQLITE_TRANSIENT` 哨兵、手写原型）+ 判据 + 声明台账。
+`extpkg verify` 输出**三态**（通过 / 被证伪 / 不可验证），第一次跑就说实话：1 通过、2 不可验证、
+1 不适用。工具**有牙**——把 shim 的 TRANSIENT 改成 STATIC（改成"留指针"），verify 当场报被证伪
+（rc=255，隔离页上的硬缺页）。
+
+**同日的第五刀：L1.5 收尾（包的获取与构建）**。driver 加 `--build`（与 `--run` 同一条编译路径、
+同样的 flag 处理，只是不执行）；`tools/extpkg.py` 从"只验"扩成四件事：`verify` / `fetch` / `vendor`
+/ `build`。判据 `tests/extpkg/`（7 项，假 registry 走 `file://`，**不联网**）：首次 fetch 写锁 ·
+`--offline` 命中缓存 · **改锁里一个字节必须红** · 空缓存 + `--offline` 必须红且消息可执行 ·
+`vendor` 后清空缓存仍能 `build` · 两次 fetch 的锁逐字节相同 · 缺 vendor 时 build 自己补齐。
+真包（sqlite）转 **vendored 模式**：上游 amalgamation 编进二进制，`ldd` 里**没有 libsqlite3**
+（只剩 libc）——"2C2G 服务器零依赖"这条从口号变成判据（`scripts/check-deploy.sh`）。
+包台账里还记了上游 URL 与 zip 的 sha256，出问题能回溯。
+
+路上踩到两件（都记在代码注释里）：归档的顶层目录要**摊平**（否则 vendor 出来是 `vendor/x/x/`）；
+本地包（`path = "vendor/x"`）的锁要用**目录指纹**（路径 + 每个文件的 sha256），否则本地改动逃过校验。
+
+**工具本身也进了闸门**：`tests/pkg/` 放一对自足靶子（诚实包 / 食言包，不依赖任何外部库），
+`check.sh quick` 里钉住"诚实包必须三态同现、食言包必须被证伪"——哪天 `quarantine` 不再隔离，
+或者 extpkg 把失败当成功，闸门会红。`check.sh quick` 因此从 62 节到 **64 节**。
+
+路上修了一个真 bug：**链接顺序**。模块带来的 `-l` 原本排在命令行给的 flag 之前，而
+`--as-needed` 会把"需要它的人还没出现"的库丢掉 ⇒ shim 里的 `sqlite3_*` 全成未定义引用。
+改成"命令行在前、模块库在后"（objects before libraries），并加了判据 `auto-link-order`——
+拿旧写法验证过它会红。**这一步是 `extpkg` 存在的意义之一：包的作者不必知道这些，包自己带着。**
+
+**同日的第六刀：L2 第一块 —— 哈希与 UUID（`std::hash::sha256` / `sha1` / `hmac` + `std::uuid`）**。
+形状按"最快 + 内存少"选，两条都量了：**429–443 MB/s**（SHA-256，整块/流式）、287 MB/s（SHA-1）、
+峰值 **RSS 2412 KB**（1 MiB 输入 × 256 轮 = 256 MiB 数据，零堆分配）。做法三条：状态是 112 字节的
+值住在调用方栈上（`@noCopy`，不给两个名字指同一个位置）；满块**直接从输入视图压缩**（不中转）；
+压缩函数标 `@unchecked` —— 热循环里没有边界检查，这是**一处签字**，教训来自 `std/sys/mem.extc`
+（逐字节检查占 25.5 条指令/字节的 30%）。
+
+判据 `tests/hash/`（7 项，进 `check.sh`）：FIPS/RFC 向量 8 条（含 100 万个 'a' 的流式路径）·
+RFC 4231 HMAC 8 条（含 131 字节长键与截断）· 与 Python `hashlib` 对拍 **48 个摘要**（16 种长度 ×
+一次算完/7 字节分片流式）· **uuid5 与 Python `uuid.uuid5` 逐字节一致**（含中文名字，QQBot 主键的
+Top-1 风险就此变成判据）· API 失败面（缓冲不够 ⇒ `false`/`-1`，不 trap）· 峰值 RSS < 8 MB ·
+吞吐下限 50 MB/s。
+
+**诚实记账**：纯 extC 写不出 SHA-NI（要 intrinsics / 内联汇编，而 `inline C!` 未定案），所以比
+Python 的 OpenSSL（4518 MB/s）差一个数量级；对 QQBot 的负载（签几 KB、算主键）不是瓶颈（4 KB ≈ 9 µs）。
+真要硬件速度，路是**包**：`std::hash` 配一个带 SHA-NI 的 C shim 包（包机制已就位）。
+
+路上记一笔工具账：`tools/manual_surface.py` 把 struct **之后**的自由函数算成该 struct 的方法、
+甚至把下一个 struct 的字段算成上一个的（brace 深度的 off-by-one）。本次写 `std::json` 时把它**修了**：
+扫描从 `{` 的**下一个**字符开始。修完公开面清单从 1333 掉到 **686** —— 也就是说此前**近一半是幽灵成员**。
+（`std::json` 之前为了绕它，自由函数只能写在 struct 之前，现在不必了。）
+
+**同日的第八刀：JSON 节点改成带载荷枚举 + 打自己**。`json::node` 从"kind 字段 + 平铺字段"的
+56 字节结构体改成 `type node = | obj(..) | arr(..) | text(..) | number(..) | flag(..) | nul(..)`
+（实测 40 字节，生成 C 就是 `tag + union`），`parsed` 也改成 `ok(root)` / `err(at)`。买到的是
+**非法状态表示不出来**（取载荷前编译器强制先 `match`）与 **−28% 内存**；代价是小文档 **−12%**
+（访问器成了 `match` 分发）、大文档反而 **+7%**。
+
+同时按"攻击自己"的要求写了 `tests/json/fuzz.extc`（进 `check.sh`）：20 万层嵌套 ⇒ 深度护栏在
+字节 64 报错 · 20 万元素 ⇒ ok（count 校验）· 池子恰好 6 个节点 ok、只给 5 个 ⇒ 报错于字节 10 ·
+10 万位数字 / `1e999999` / `-1e-999999` / 10 万个 `\u0041`（解码出 10 万字节）/ 1 MiB 空白 ⇒ 都不崩 ·
+截断的每一段前缀都给答案 · **2 万轮随机变异（自带的确定性 PRNG）⇒ 接受 1020（全量遍历每个节点的
+每一个访问器）、拒绝 18980，零崩溃**。
+
+**同日修掉一个语言缺陷（数组元素类型不接受限定名）**：`var pool: [256]json::node` 报
+`unknown type`，而 `slice<json::node>` / `?json::node` / `ref json::node` 都是好的。根因在加载器的
+类型改写 `rwType`：它只递归 `TY_REF` 的 `inner` 与 `targs`，而**数组把元素存在 `inner` 里** ⇒
+`a::T` 从没被改写成模块内的 mangled 名，类型表里找不到，于是报"unknown type `a::T`"。
+修法：`inner`（以及 `fn` 类型的参数/返回）一律递归。判据 `tests/modules/qn-array`：
+`[N]a::point` · `[2][3]a::point` · `?a::point` · `ref a::point` · `fn(a::point)->i32` 五种位置全过；
+全语料 414 份产物**零变化**（只有用限定名的程序受影响）。
+
+**同日的第七刀：L2 第二块 —— `std::json`（零拷贝解析 + 零分配写入）**。解析把节点写进**调用方给的
+池子**，字符串是**输入上的视图**（`tests/json/zerocopy.extc` 用"改输入 ⇒ 视图跟着变"证明它没有副本）；
+写入直接拼进缓冲，不建 DOM。量的结果：解析 **1266–1287 MB/s**（1.9 KB 文档 × 2 万次）· 写入约 1.2 GB/s ·
+峰值 **RSS 1452 KB**。判据 5 项：与 Python `json.dumps(separators=(',',':'))` 的规范形**逐字节对拍**
+（含中文、代理对 😀、转义引号/反斜杠、空容器、null、大整数）· **17 条坏输入必须拒绝** · 零拷贝证据 ·
+RSS < 8 MB · 吞吐下限。`check.sh quick` 66 → **67/0**。
+
+路上撞到三个真 bug（都在自测里现形，值得记）：
+① 节点是**深度优先**写的，我却按"成员对连续区间"布局 ⇒ 嵌套之后全部错位；改成**链式**（`next` 字段）。
+② `newNum` 的 `used++` 被一次机械替换吃掉 ⇒ 数字节点根本没分配（`msg_seq` 读成 0）。
+③ 写入器 `str` 同时被 `key` 复用 ⇒ 成员名后面的值多一个逗号；拆成 `pStr`（只写）与 `str`（分隔+写）。
+另外记两条语言/工具观察：**数组元素类型不接受限定名**（`[4]mod::type` 报 unknown type ——
+零分配池正是这个形状，暂时靠 `use mod::{type}` 绕），以及 `-w` 不抑制"参数未使用"告警。
+
+**同日的第九刀：L0 另一半 —— 把事件循环里最后一段隐藏状态删掉**。运行时那条
+`extc_epoll_wait(ep, timeout)` 每次吐一个 tag、靠函数级 `static int64_t pending[64]` 环形队列
+记剩下的 —— **一个进程因此只能有一个事件循环**，而且既不可重入也不可观察。换成
+`extc_epoll_wait_into(ep, out, cap, timeout_ms) -> n`：一轮就绪**写进调用方给的缓冲**、返回个数
+（0 = 超时、<0 = 出错 —— 从前"出错"与"超时"同归 -2，分不出来）。
+
+- 调度器 `pump` 迁到批量 API（保留"一次 accept 一批"的逻辑），`tests/coro` **29/29** 全过；
+- `std::loop::runOnce(ep, t, tags, now, capMs)` 把"算超时 → 等就绪"接起来；
+- 判据 `tests/loop/io.extc`（真事件源，进 `check.sh`）：**一轮拿回 3 个 tag**（不是一次一个）·
+  **先写后注册照样报出来**（level-triggered ⇒ 不丢唤醒，那条经典竞态）· **两个独立 epoll
+  实例并行工作**（static 在时做不到）· **`runOnce` 等的 25ms 就是 deadline 表算出来的**
+  （时间就是 `epoll_wait` 的超时参数，没有第二个事件源）。
+
+`check.sh quick` **69/0**（loop 一节从 1 项变 2 项：策略离线判据 + 真事件源判据）。
+
+**同日的第十刀：给 `sys` 定个判据，并把放错的三处搬出来**。判据一句话：**`std::sys::*` 不是"用 C 实现的"，
+而是"能绕过检查器某条保证"的**（任意指针↔视图、任意地址 mmap/mprotect、裸 fd
+读写、fork 一类进程模型原语）。按这把尺子搬了三处：`std::sys::mem` 整个文件删掉 →
+**`std::mem`**（`find`/`contains`/`eq`/`copy` + 两个原语）；两个 HTTP 日期函数
+`std::sys::file` → **`std::http`**；用户级套接字/名字解析 → 新建 **`std::net`** 门面
+（`sockPair`/`accept`/`read`/`write`/`tcpListen`/`tcpListenShared`（SO_REUSEPORT）/`tcpConnectTo`/
+`dnsLookup`/`resolve`…；**epoll 三件不进**，那是 `std::loop` 与调度器的内部齿轮）。
+
+搬家过程中撞了一次：`stl::string` 直接调 `extc_memFind`/`extc_memEq`，而我先把它们标了
+`@private` ⇒ `tests/stl` 整片编译失败（连带 ASan 那格也报错）。改成公开即恢复 —— 这也正是
+"它们无害、所以属于 std"的原意。
+
+**诚实记账**：`PRIVILEGED_MODULES` 仍然只有 `std::sys::heap`；`sys::io`/`sys::file`/`sys::proc`/
+`sys::term` 还没被挡住。扩名单是下一步，且必须先有 std 门面（这次搬的三处就是那个前提）。
+
+**同日的第十一刀：L1 落地 —— 协程的定时等待（`yield WAIT_UNTIL`）**。挂起协议多了一格：
+`req >= 0` 等 fd · `WAIT_UNTIL`（-3）等 `loop.pendingUntil` 那个 deadline · 其它负数表示立刻重新推进。
+`loop` 加 `timers` + `pendingUntil`（请求通道只有一个 i64，deadline 走暂存槽；单线程 ⇒ 安全），
+`finish` 里 `timers.cancel(i)` 撤登记，`waitMs = timers.timeoutMs(now, 调用方给的)` ⇒ **时间就是
+epoll_wait 的超时参数**。判据 `tests/coro/coro_sleep.extc`：200 个任务各睡 1..5ms ⇒ 全部醒 ·
+**无残留登记** · 真的等了（`tests/coro` 29 → **30/30**）。
+
+**这轮一共修掉四个真 bug**（前三个在上一轮定位、这轮落地）：
+① `popDue` 在 `out` 满时"弹掉但不报" ⇒ 等它的任务永不醒（改成满了就停手）；
+② `pump` 超时（`n == 0`）直接返回 ⇒ **跳过"取到期定时器"那一步**（而超时正是定时到期的时刻）；
+③ `runEpoll` 见超时就 `break` ⇒ 定时等待的第一轮本来就超时，任务永不醒（改成"没有挂着的
+   定时登记才 break"）；
+④ **收尾的 `yield` 必须是负数** —— 驱动把 `>= 0` 读成"等这个 fd 可读"，用正数收尾会被当成新的
+   等待请求：任务跑完了却永远不停（实测 `live=200`）。这条规则**以前没人写下来**，现在写进
+   调度器注释与手册；定位靠的是"用探针把唤醒链打断点"（两轮探针就抓到了），不是猜。
+
+**更正一条**：本轮先写成"唤醒粒度受 timeout 限制"，**不成立** —— `runEpoll(s, timeout)` 的
+timeout 就是调用方的参数，实测 5ms 与 50ms 只差 415ms vs 460ms。真正的瓶颈是**定时表容量 64**：
+40 个任务 50ms、200 个任务 460ms，超出容量的任务走 `add` 失败的兜底（"立刻重推"）变成忙等。
+容量提到 **1024**（16 KB/循环）覆盖现实负载；真修法是把表搬进 `tasks<T>`（像 `runq`/`freeq`
+一样会长）—— 那要容器、`loop` 会失去零值，记账待办。
+
+**同日的第十二刀：归档两份设想 + L2 第一件（Base64）**。设想归档进
+`docs/topics/BOUNDED-TABLE.md`（定长热路径 + 溢出冷路径：关键区分是**按 deadline 的溢出必须是
+优先级而不是 FIFO**，不变式是"inline 装最小的那批"，且回填要**成批**才摊还）与
+`docs/topics/VECTOR-GC.md`（容器缺的不是 GC，而是"**什么时候可以缩**"的可证明回收点；
+`BOUNDED-TABLE` 依赖它）—— 两份都标"设想，未定案"，并在 `17-undecided.md` 登记。
+
+L2 第一件：`std::b64`（RFC 4648 §4/§5）。手写而非 vendor 的理由是形状：零分配、调用方给缓冲
+（与 `strInto` 同一惯用法）。**两张表不许混用** —— `decode` 把 `_` 当非法输入，让混用响亮失败
+而不是静默错。判据 `tests/b64/`：§10 向量 · 拒绝面（长度/非法字符/填充位置/填充过多）· 往返 ·
+**25 组固定语料与 Python `base64` 逐字节对拍**。`check.sh quick` → **70/0**。
+
+**下一步**：`std::ws`（握手用它算 `Sec-WebSocket-Accept`，然后帧编解码 + 对拍 Python
+`websockets`，最后 `wss://` 走 TLS shim）。
+
+**下一步**：`extpkg`（manifest + vendor 目录 + 契约生成）与第一个包 `sqlite`，目标是
+`use sqlite` 零签字；方案见 `~/qqbot-extc/docs/MIGRATION-PLAN.md` §14 与同目录的
+`LANGUAGE-FEEDBACK.md`（F1 因此关闭）。
+
+---
+
+## 2026-09-26（第十一段续十八）· 手册覆盖收口：公开面未覆盖 **231 → 0**；站点生成器的死循环已修
+
+目标第(3) 步。两件事同时落地：手册补齐，以及**判定标准的收紧**（重要，见下）。
+
+### 判定先收紧，再补内容
+
+原先"覆盖"只看成员名是否在手册里出现过 —— 散文里偶然出现同名即算覆盖，是**假覆盖**。改为
+**必须出现在行内代码体里**（`` `name` `` / `` `name(` `` / `` `Type.name` ``）后重测：真实欠账
+**231 → 80**。若不收紧，这一轮会以"0 未覆盖"收尾而实际什么都没写。
+
+### 分类口径第二轮细化（内部 176 → 328）
+
+未覆盖名单里混着大量**簿记与机械**（树读写器 `setKey`/`setVal`/`setKid`、节点池 `newNode`/`freeNode`、
+表寻址 `*AtDense`/`deadOf`、打包计数 `ep`/`gen`/`kn`/`vn`、控制台格式化 `fmtI64`/`flushCout`、
+终端状态字段 `rawbuf`/`saved` 等）。判据写进工具：**簿记与机械属内部；语义操作属公开**
+（增删查、`nextLine`/`nextLineRaw`、`inSync`/`inSave`、raw 模式开关 `on`/`raw`/`restore`、
+随机数 `seeded`/`nextBounded`/`shuffleI32`）。⇒ 公开 421 · 内部 328，未覆盖降到 **45**。
+
+### 新增参考页（4 页）与最后 19 项
+
+`24-std-io`（reader/writer/控制台状态）· `25-std-fs-term`（打开关闭与标准流重定向、终端 raw 模式）·
+`26-stl-containers`（容器同形面：`insert`/`remove`/`put`/`capOf`/`bytesOf`/`rebuild`/`same`/`withParent`）·
+`27-prelude`（`pcg32` 随机数与 `varArray` 的 `asSlice`/`asMutSlice` 及其两条实测契约）。
+
+### 修掉站点生成器的**静默死循环**
+
+`tools/build_manual.py` 的段落兜底在遇到"以 `|` 开头但不是表格"的行时**不推进 `i`** ⇒ 死循环，
+静默挂住十分钟（由一次内容编辑触发）。修法两处：兜底分支保证前进；并加**守卫**，
+超过 10 万步直接报出卡在哪一行（本次即由它定位到 `24-std-io.md:38`）。
+
+### 结果
+
+公开面未覆盖 **0**（严格判定）；驱动开关 15/15；站点 **29 页**；`check.sh quick` **34/34**；
+`tests/run.sh` 260 + 264；构建零告警。基线 `tools/manual-baseline.txt` 已全部归零。
+
+---
+
+## 2026-09-26（第十一段续十七）· 公开面清单与内部成员标注：字段私有化的代价已实测
+
+目标第(2) 步。工具与数据先落地，字段私有化按实测代价推迟并留档。
+
+### 新增工具与清单
+
+- `tools/manual_surface.py` → `tools/manual-surface.txt`：扫描全部 `struct` 体与 `impl` 块，
+  列出**公开**成员（`@private` 不计），格式 `模块<TAB>类型<TAB>成员<TAB>种类`；`--check` 进闸门用。
+- 公开面规模：**749 → 717**（`p*` 族 32 个方法转为内部）。分布（前六）：
+  `stl::map` 153 · `stl::hashMap` 107 · `stl::pool` 100 · `std::io` 91 · prelude 86 · `std::fs` 66。
+
+### 已标注为 `@private`（安全部分）
+
+`p*` 族内部方法共 32 个：`string`/`vector`/`map`/`hashMap`/`linmap` 各 2 · `pool` 10。
+标注前用机械方法核实：**跨模块使用 0 处** ⇒ 零连带影响（实测确认：全量验收保持绿）。
+
+### 字段私有化：代价已实测，推迟并留档
+
+把六个容器的**存储字段**（`string` 10 · `vector` 10 · `map` 26 · `hashMap` 20，共 66 个）标注为
+`@private` 之后，编译器立刻枚举出连带影响：
+
+- `tests/impl` **4 项**编译失败（`impl_basic` · `impl_stream_string` · `impl_file_string` · `impl_cin_string`）；
+- `tests/stl` **多项**编译失败（`vector` · `copyInto` · `grow` …）。
+
+原因有两类：① 库里跨模块摸存储，典型是 `stl/stringio.extc` 的 `self.buf[...]`（`string` 的字段）；
+② 白盒测试直接读 `.vals` / `.n` 一类内部字段。两者都需要先设计**公开访问器**再改，属于一次做完的工作，
+故本轮回退字段注解（66 处全部撤回），保留已验证零影响的方法注解。
+
+结论记录：**字段私有化不是加注解那么简单**，它要求每个容器补齐"愿意外借什么、借多久"的公开接口
+（这正是裁决 #89 的落点），并同步改造白盒测试。
+
+验收：tests/run.sh 260 + 264 · check.sh quick 31/31 · 构建零告警 · INDEX 与公开面清单均与源码一致。
+
+## 2026-09-26（第十一段续十六）· 给 `varArray::asSlice` 立判据，并翻出它**早就被判过死**
+
+作者：「3 给个判据吧」。
+
+**判据**：`tests/stl/varArray_snapshot.extc`（跑在 `tests/stl/run.sh` 的 varArray 段，并进 ASan 名单）：
+
+```
+snap=11,22 len=2   live=55,33 alen=3   lend=7,9 tlen=3
+```
+
+一次钉住三条实测事实：① 扩容**不释放**旧块（arena 只在地方退出整块回收）⇒ 旧视图**停在扩容前的快照**上；
+② 视图**带出调用是安全的**（缓冲在调用者的 home arena 里，`return a.asSlice()` 编得过且有效）；
+③ `asMutSlice()` 写的是新块、旧视图看不见。**进 ASan 名单**是关键的一半：证明这是**静默错值**，
+不是内存不安全 —— 与 E1（真 UAF）划清界线。
+
+**但立判据的过程中翻出一条更要紧的前情**：
+
+- **PLAN #89（作者裁决，已结案）**：「`asSlice` 这一族必须是"**拷出来**"，不能是"池里的视图"……
+  否则就变成引用 Pool 里的东西了，而 **Pool 里的东西永远不能被外面引用**」；
+- **`varArray` 本身已被判死**（POOLS.md §2.1 裁决三：「比 vector 拉」）。
+
+⇒ 结论要写清楚：**这个判据钉的不是"被认可的设计"，而是一个已判死的容器的历史行为**。
+活的路径是 `vector::toSlice()`（**拷贝**，与 #89 一致）；`varArray::asMutSlice()` 尤其危险
+（**可写**的旧块视图 —— 写进去会静默丢）。真要收口就是给这两个方法补拷贝语义、或直接删掉。
+这两句都写进了判据文件的头部注释，免得后来人把它误读成"视图语义是被认可的设计"。
+
+###  更正（同日，作者澄清）：`varArray` **活着**
+
+作者：「varArray……活了……因为只有这玩意儿里面可以存指针/`ref T`，他是唯一一个在 arena 内的动态容器」。
+
+⇒ 我上面那版框架（"判据钉的是**死类型**的历史行为"）**是错的，已改正**。正确的口径自洽地解释了
+前面所有决定：
+
+| 存储档 | 出视图 | 依据 |
+|---|---|---|
+| **池底**（`vector`/`string`/`map`…）| **必须拷贝**：`vector::toSlice` · `string::sub` | #89「**Pool 里的东西永远不能被外面引用**」；池块会被 `give`/`realloc` 换掉 ⇒ 真悬垂（E1 实测 ASan UAF） |
+| **arena 底**（`varArray`）| **视图是合法的，而且必需**：`asSlice`/`asMutSlice` | arena 只在**地方退出**整块回收，块不会被复用/提前释放 ⇒ 不悬垂，只有"扩容后停在旧快照"这条契约 |
+
+所以 `varArray` 的 `asSlice` **不该改成拷贝**（`sort(v.asSlice())` 排的必须是真存储）；要收口的是
+
+**补：同时给"写"的一面立了判据** —— `tests/stl/varArray_mutview_lost.extc`（同样进 ASan 名单）：
+`landed=77 live0=77 live1=22 stale=77,88 alen=3` ⇒ **未扩容时**通过可写视图写**生效**（`landed=77`），
+**扩容换块之后**再写就**静默丢**（容器看到 `live1=22`，旧视图里是 `stale=77,88`），而 ASan 干净
+（不悬垂）。两条判据凑成一对：`varArray_snapshot` 钉"读"、`varArray_mutview_lost` 钉"写"，
+覆盖这个"唯一能装 `ref T` 的动态容器"上最危险的那条契约。
+**`asMutSlice` 的可写旧视图**那条契约的说明强度（它写进旧块会静默丢），而不是把视图改成拷贝。
+
+验收：`tests/stl` 全过（含新判据与 ASan 行）· `tests/run.sh` 260 + 264 · `check.sh quick` 28/28 · 零告警。
+
+## 2026-09-26（第十一段续十五）· 编译器源码的**重复审计**：合并两处，查出三族"一份新一份旧"
+
+作者口径：「所有有两处相同逻辑的（而且逻辑比较复杂的）都应该合并」+「有可能是相同逻辑但一份新一份旧了」
++「即使简单，能合并也合并（除非得不偿失 / 性能损耗很大）」。
+
+### 方法（机械找候选，人读判性质）
+
+| 扫描 | 覆盖 | 结果 |
+|---|---|---|
+| 函数级相似度（归一化后 Jaccard ≥ 0.55，297 个 ≥8 行的函数体） | `src/*.c` | 只有 **2 对薄包装**（0.56~0.58）：`recordNewSizeCheck`/`recordZeroCheck`、`ckError`/`ckWarn` —— 平行小助手，不合并 |
+| 块级 6 行**逐字**窗口 | `src/*.c` | **1 处真重复**：读文件（`main.c` 的 `readFile` vs `modules.c` 的 `readWhole`） |
+| 块级 7 行**形状**（标识符/数字归一）窗口 | `src/*.c` | 50 组，人工筛后**绝大多数是 C 惯用法**（`for(i…) vecAt(...)`、`vecPush` 链），非语义重复 |
+| 运行期符号重复定义（字符串里发出的 C 函数） | `src/*.c` | **0**：发出的 C 里没有同名定义 |
+| 目标族逐一对比（`shrink` / `pPoison` / `release` / `>>` 壳 / 三个判据） | `stdlib/stl/*.extc` | 见下 |
+
+### 已合并（两处）
+
+1. **读文件** → `base.c` 的 **`readWholeFile`**（main.c 与 modules.c 各一份，逐字同逻辑）。
+   **而且它正是"一份新一份旧"**：`readWhole` 有 `if(outLen)` 守卫，`readFile` 假定非空 —— 合并版保留守卫。
+2. **模块合并的两条路径** → 根文件改走 **`mergeUnit`**（原来 `loadModules` 里有一段 2334 字符的内联副本）。
+   这条不是理论风险：本轮就因为它丢了两次东西 —— **根文件的 `impl` 块被静默丢弃**（字段只在
+   `mergeUnit` 里合并）、**限定名 impl 目标漏了 `rwTypeName`**（同理）。两处都是"跑出来"的，不是读出来的。
+
+### 查出但**没有**合并的三族（附理由）
+
+| 族 | 形态 | 为什么不合并 |
+|---|---|---|
+| **`>>` 壳 ×3**（`io::istream` / `fs::ifstream` / `fs::inStream`） | 同一段"读一行 + 置 bad 标志"，但差两处：**reader 从哪来**（`inSync`/`inSave` vs `self.r`）、**哪个 bad 标志**（`io::IN_BAD` vs `self.failed`）—— 全是模块私有状态 | 没有 trait / 没有函数指针类型 ⇒ 抽象不出来。**行语义只有一处**（`string::readLineFrom`），壳里只剩搬运 |
+| **每容器一份的 `pStale` / `pPoison` / `shrink` / `release`** | 六个容器各一份 | 这是**故意的**：一个类型一个方法集，而泛型容器无法共享"容器骨架"（没有 trait）。`pool` 用 `pStaleSelf`/`pPoisonSelf` 正是为了不与**元素类型**的方法撞名。审计结论：**这一族没有分歧**（六份的字段清点一致；`release` 上一轮已统一到 `pStale()`） |
+| **按类型 kind 的 case 分析家族**（`ttSubstitute` / `typeContainsRef` / `ttMangle` / codegen 的类型打印 / `ttEquals` …） | 新增一个类型构造器就要挨个补分支 | C 里没有 visitor，硬合并会写成一张函数指针表 + 一次间接调用（不值得）。项目文档里已经记着"加一个构造器要动哪几处" —— 但那是**靠人记得**。**建议**：加一条机械判据（`tools/` 里扫所有 `switch(…->kind)`，列出每个 `TY_*` 是否被处理；缺一个就红），把它从"记性"变成"判据" |
+
+### 顺带查到一处**性能向**的新旧不一致（未改，需先验证）
+
+`shrink` 一族里，`vector` 与 `string` 用 **`poolResizeRaw`**（不补零），而 **`pool::shrink` 仍用会补零的
+`poolResize`** ×3。收缩**不会暴露新字节** ⇒ 补零是纯浪费。但 `pool` 的槽表/空洞链在收缩后要重建，
+`ent` 列是否隐含依赖"补零"必须先读清（**记进 PLAN，不盲改**）。
+
+### 验收（**作者追问"合并之后你验证了编译器行为正确性吗"之后补的**）
+
+作者问得对：合并完我只跑了常规回归（`tests/run.sh` 260+264 · `check.sh quick` 27/27 · `tests/impl` 12 项
+· 零告警）—— 那是**"测试还在过"**，不是**"行为一点没变"**。补做**差分验证**（`tools/golden.sh` 文档里
+写明的 A/B 用法：*"同一刀内部做 A/B —— 拿 `git worktree` 的老编译器跟新编译器比"*）：
+
+```
+git worktree add /tmp/ps/old 7134b0b &&(cd /tmp/ps/old && make)     # 合并前的编译器
+EXTC=/tmp/ps/old/build/extc tools/golden.sh save                     # 它生成 136 个 .c 的 md5 作基线
+EXTC=./build/extc           tools/golden.sh check                    # 合并后的编译器比对
+  -> ok  生成 C 与基线**逐字节相同**（136 个文件）
+```
+
+**结论**：两处合并在 136 个程序上**生成的 C 逐字节不变** ⇒ 行为等价（就生成物而言）。
+加上跑起来的那一半（`tests/run.sh` 260+264 会真的运行程序 · 各专项套件 · ASan · 金丝雀），
+这次合并的验证是**两层**的：生成物逐字节相同 **∧** 运行期判据全绿。
+
+两句实话：
+- golden 比的是**生成的 C**，不是运行行为 —— 所以它单独**不足以**证明"行为没变"（项目在
+  `DECISIONS.md` 定案 83 里正是因此把它从闸门降级为 A/B 工具）；
+- 它也**覆盖不到**判据没写的路径。所以这次是"136 个文件的生成物 + 全套运行期判据"，
+  而不是"形式化证明"。要更强的结论得靠 fuzzing 或差分执行，那是另一件事。
+
+`tools/golden.manifest` 用老编译器 save 之后被我还原了（那是上一次 save 的 95 条基线，不该由这一刀改）。
+
+## 2026-09-26（第十一段续十四）· `>>` 挂到 `io::istream`：**又删掉一份重复规则**
+
+作者问「我现在可以 `cin >> stl::string` 了吗」—— 当时还不行，现在是了。而且这一轮压出的最重要一件
+事，恰好回答了作者随后的担心：「你这堆修改会不会导致逻辑混乱，一个地方出现两行」。
+
+### 现在能写什么
+
+```extc
+use std::io, std::fs, stl::string, stl::stringio
+var a: string = string::withCap(i64(16))
+io::cin >> a >> b            // 一行、去换行、替换语义、可链式 —— 与既有的 `>> mut slice<u8>` 同口径
+f >> a                       // 文件流同形状；到 EOF 置 `bad`，不 trap
+```
+实测：`a=[hello world] len=11` · `b=[second line]` · 文件 `a=[42] la=2 b=[hello world] lb=11 bad=false`。
+
+### 压出来的三件事（第二件是本轮的核心）
+
+1. **限定名 `impl` 目标**：`impl io::istream { ... }` 原来在**语法处**就挂掉（parser 只收单个标识符）。
+   而限定名是在**加载器**里被改写成扁平名（`io::istream` → `io$istream`）的，impl 的目标是**裸字符串**，
+   `rwType` 看不见它。修法：把 `rwType` 里那段（裸名按本单元声明改写 + 限定名按导入解析 + 私有/不存在
+   诊断）抽成 **`rwTypeName`**，`rwType` 与两处 impl 合并点都走它。
+
+2. **我上一轮加的"重复方法检查"是一份多余且更严的规则 —— 已删。**
+   `checkDeclarations` 里**本来就有**唯一权威：普通重名报 `has duplicate method`；**运算符名允许按
+   右操作数类型重载**（`isOverloadableOp` + `ttEquals` 比右操作数）；字段与方法撞名也管。它跑在签名解析
+   **之后**（类型已解析，`ttEquals` 才有意义）。我在挂载趟里重写了一遍，而且是"按名字"的粗判 ⇒
+   **把合法的运算符重载挡死了**：`` `io$istream` already has a method named `>>` ``（它本来就有三个
+   `>>` 重载）。删掉之后，impl 方法才真正与体内方法**同规则**——这才是我当初声称的不变量。
+   顺带把我加的"指名先前那一处"**挪进**那唯一一份（体内方法也一起受益）。
+   反例判据同步翻面：文案从 `` `pt` already has a method named `sum` `` 换成
+   `` struct `pt` has duplicate method `sum` ``。
+
+3. **`readLineFrom` 的口径对齐**：`>>` 的既有语义是"一行、**去换行**"（`io::reader::nextLine` 定的，
+   连 CRLF 的 `\r` 也处理）。我第一版把 `\n` 留在了串里 ⇒ 判据从 3/12/12 翻成 **2/11/11**（总 24）。
+   CRLF 用"暂存 CR"的写法（CRLF 吃掉、孤立 CR 保留、EOF 前的 CR 也算内容）。
+
+### 作者那句担心的审计结果（逐处）
+
+| 地方 | 是不是"一件事两行" | 结论 |
+|---|---|---|
+| 挂载趟的重复检查 vs `checkDeclarations` | **是，而且更严 ⇒ 静默挡掉合法代码** | **已删**，规则只剩一处 |
+| `io::istream` / `fs::ifstream` 两个 `>>` 壳 | 看着像，实际只差两处：reader 从哪来（`inSync`/`inSave` vs `self.r`）、哪个 bad 标志（`io::IN_BAD` vs `self.failed`）—— 都是模块私有状态，没有 trait 就没法抽象 | **保留**，但**行语义只有一处**（`string::readLineFrom`）；`std::fs` 自己的三个 `>>` 也是这么写两遍的，跟随既有形状而不是另发明一套 |
+| impl 合并点：`mergeUnit` vs 根文件内联合并 | **是（既存问题，不是本轮引入）** | 本轮为它打了两次补丁（impls、`rwTypeName`）；**记进 PLAN**：根文件应走同一条合并路径（`mergeUnit` + `modName = NULL`），别再做第三处 |
+| 六个容器的 `pStale` | 上轮已统一（删掉内联那份） | 一处 |
+
+### 验收
+
+`tests/impl` **12 项**（4 正例 + 8 反例，新增 `cin_string` / `file_string`）· `tests/run.sh` 260 + 264 ·
+`check.sh quick` 27/27 · `tests/stl` 全过 · 构建零告警。
+
+## 2026-09-26（第十一段续十三）· `impl` **试水**：给 `string` 挂流式 I/O（跨模块）
+
+作者：「试一下 impl 做一下流式输入输出 string 类型，试试水」。试水确实压出了东西 —— 一个真缺口。
+
+### 做了什么
+
+新模块 `stdlib/stl/stringio.extc`，用 **`impl string { ... }`**（**与 `string` 不在同一个模块**）挂了四个方法：
+
+| 方法 | 干什么 |
+|---|---|
+| `readLineFrom(r: mut ref io::reader) -> result<i64, io::ioError>` | 读一行（含 `\n`）追加进串；`0` = EOF |
+| `readAllFrom(r) -> result<i64, io::ioError>` | 一次 append **一整个缓冲块**（不是一字节一次） |
+| `writeTo(w: mut ref io::writer) -> result<i64, io::ioError>` | 整串交给 writer 缓冲 |
+| `writeLineTo(w)` | 整串 + 换行（换行用**字面量**，见下面的坑） |
+
+判据 `tests/impl/stream_string.extc`：**写**一行到 fd 1（writer 缓冲 + 一趟 flush），再
+**读**回 `tests/io/stream-file.txt` 的三行（长度 3 / 12 / 12，合计 27），第四行拿 EOF。
+实测 `streamed=9|lines=3 len=3,12,12 eof=0 total=27 head=42`
+
+### 试水压出来的三件事
+
+1. **真缺口：跨模块 `impl` 挂不上。** 报 `` `impl` on unknown type `string` `` —— 因为挂载趟用的是
+   `ttFromName`，它只认**本模块自己的声明 + 内建**，**不走别名表**（`string -> stl$string` 那张），
+   而别名表正是加载器为"裸名跨模块"准备的东西。**修法**：挂载趟改用 `ttResolve`（与类型标注同一套：
+   别名表 + 歧义拒绝）。于是跨模块 impl 通了，而且未知类型的报错文案自动与类型标注一致
+（`unknown type `nope``）——反例判据跟着翻面。
+2. **逃逸检查给了一个 API 设计教训**：写常量换行时我写的是 `var nl: [1]u8 = [10]` 再 `w.write(nl[..])`，
+   被拒：*"argument 2 of `write` carries a reference into a deeper scope(depth 1) than the place the
+   callee may store it(depth 0); the callee's effects could not be fully analyzed"*。改成字面量
+   `w.write("\n")` 就对（字面量的存储在静态区 = 深度 0）。**流式 API 想收"一块常量"，就得让调用点
+   写得出字面量**，否则每个用户都要撞一次这道墙。
+3. **coherence 仍然成立**：方法进的是 `string` **唯一**的方法集（跨模块也一样）⇒ 两个模块都给
+   `string` 挂 `readLineFrom` 会撞重名，不是互相覆盖。
+
+### 验收
+
+`tests/impl` **10 项**（2 正例 + 8 反例）· `tests/run.sh` 260 + 264 · `check.sh quick` 27/27 ·
+`bench/stl` 5/5 · 构建零告警。MANUAL 的 `impl` 一节补上"目标可以是别的模块里的类型"。
+
+## 2026-09-26（第十一段续十二）· **`impl` 块**：方法挂载点落地（`hashMap<i64, V>` 从此不需要包装）
+
+作者：「先把 impl 搞了吧，这玩意儿看起来很安全」——判断是对的：`impl` **不动派发、不做类型擦除、
+不改值语义**，风险只在名字解析与 coherence 上。而它单独就解掉了"内建类型没有方法挂载点"那件事。
+
+### 病灶回顾
+
+方法只能写在 `struct` 体内 ⇒ **编译器内建标量没有地方能写方法**（顶层 `fn hash(self: ref i64)`
+报 `` `self` is only allowed in a method declared inside a `struct` ``；`struct i64 { }` 报
+`` expected a struct name, found `i64` ``）。标准库因此包了一层：`i64Key` + `hashMapI64`。
+（`string` / `slice<T>` / `varArray<T>` 有方法，是因为它们是 stdlib/prelude 里**声明的 struct**。）
+
+### 实现（五处，都为了让 impl 方法与体内方法**完全同形**）
+
+| 位置 | 做了什么 |
+|---|---|
+| `ast.h` / `ast.c` | `ImplDef`（目标名 + 方法表）与 `Module.impls`；`Type.mholder`（内建标量的方法挂载点）；`StructDef.builtinHolder` |
+| `parser.c` | 顶层 `impl <Type> { fn ... }`；目标是 `TK_IDENT` **或** `TK_TYPE`（十个标量名按 `TK_TYPE` 词法化）；注解/字段/泛型目标各自报清楚 |
+| `check_top.c` | **挂载趟**，放在签名解析之前：把方法推进目标类型的**唯一方法集**，同名即报错。目标是内建标量时建一个**合成 holder**：进本模块的 `m->structs`（于是签名解析 / 体检查 / 逃逸 / 借用 / 运算符 / codegen **一趟都不用改**），但**不进** `tt->structs` 名字表（`i64` 仍解析成内建），也不发 C struct 定义 |
+| `check_lookup.c` | `findMethod`：内建标量回退到 `Type.mholder` |
+| `modules.c` / `main.c` | 模块合并时带上 `impls`（根文件是内联合并，漏过一次，debug 打印 `m->impls.len == 0` 当场抓到）；目标名走同名改写表；方法体走与结构体方法**同一个** `rwUnitMethod`（顺手把重复的那段提取出来）；prelude 的 holder 不标 `reserved` |
+| `codegen.c` | holder 不是 C struct：只跳过"发 struct 定义"那一句，方法照旧进发射表 |
+
+### 收益与判据
+
+- **`hashMap<i64, V>` 直接可用**：`stdlib/stl/hashMap.extc` 里一行
+  `impl i64 { fn hash(self: ref i64) -> i64 { return hashI64(*self) } }`（`==` 不用挂 ——
+  内建类型的相等是**语言原生**的，只有命名方法才需要 impl）。实测
+  `g=70 miss=-7 after=-1 len=1`（挂之前报的是正确诊断：`` `hashMap$hashMap_i64_i32` needs `i64`
+  to define `hash` ``，note 还告诉你"Add a `fn hash` to that type"）。
+- `tests/impl/`（新，接进 `check.sh` 第 27 节）：**1 正例 + 7 反例** —— 正例含 struct 的 impl、
+  内建标量的 impl、`hashMap<i64, V>`；反例覆盖 **coherence 重名**（体内 vs impl、impl vs impl）、
+  未知类型、枚举、impl 里写字段、泛型目标、顶层注解不适用。
+- 验收：`tests/run.sh` **260 + 264** · `check.sh quick` **27/27** · 构建零告警。
+
+### 纪律纠正（重要）
+
+这一轮撞到两次 `docs/COMMENT-STYLE.md` 的硬规则：**`src/` 与 `stdlib/` 的注释必须英文、纯 ASCII**。
+第一次是上一轮我给 `check_top.c` 写的中文注释（已改英文）；第二次是这轮给 `hashMap.extc` 写的中文注释
+（当场改英文）。规则原文写着"a comment that does not follow it will be rewritten in review"；
+`tools/scan_cjk.py` 可以随时自查（`check_top.c` 仍有 16 处**既存**违规，与本轮无关）。
+
+### 下一步（不动本轮）
+
+`i64Key` + `hashMapI64` 现在可以退化成"`hashMap<i64, V>` 的薄别名"（包装已经不需要了）；
+这属于标准库清理，判据现成（`tests/hashmap`），下一次动。
+
+## 2026-09-26（第十一段续十一）· **要求上抛**：泛型体里调泛型（含自递归）终于能用了
+
+作者：「先把这个上抛优化了，现在卡了好几次了」。这一条做完，`sort<T>` 那种「泛型算法拆成两个泛型函数」
+才成立（从前只能把划分/下沉全内联进一个函数、递归只能换显式栈）。
+
+### 病灶：不是"没有推迟"，是**占位实例被当成具体实例**
+
+`#18`/`#50` 那一族的机器其实**早就齐了**：泛型体里调泛型时，检查器会造一个**占位实例**
+（`less_T`，类型实参就是类型参数本身），好让模板体仍然类型正确；调用点记进 `CallCheck`，
+实例期由 `resolveDeferredCall` 把 `e->func` **重定向**到具体实例（`less_i64`）；codegen 那边
+`funcSignatureMentionsParam` 也会跳过占位实例。设计意图在 codegen 的注释里写得很清楚。
+
+坏在两处：
+
+1. **重放循环把占位实例当具体实例**：`runOpCheck`/`runMethodCheck`/`runDeferredUse`/`runRefCheck`
+   遍历实例表时，`less_T` 也在里面 —— 于是拿"类型参数 T"去兑现 `T: <`，报
+   `` `less_T` needs `T` to define `<` ``。可这个问题**在模板上无解**（没有 traits），该由具体实例回答。
+2. **批次顺序**：`CallCheck` 重定向那一批跑在要求检查批次**之后** ⇒ 它刚造出来的具体实例
+（`h_i64`）**赶不上复查**。后果不是报错而是**漏报**：`h_i64` 的 `x.hash()` 没人问，
+   一路漏到 codegen，那里 `!e->func` 只能吐个 `0`（真值被静默吃掉）。
+（第 2 条是第 1 条掩盖着的旧病：从前"占位实例"那道错恰好替代了本该由具体实例给出的错。）
+
+### 修法
+
+- 新增 `provisionalInstance(Vec *targs)`：实参里还含类型参数 ⇒ 这是**占位**，不是具体实例；
+- 八处重放循环（运算符/协议方法/结果类型/引用规矩 × 函数实例/类型实例）加上跳过；
+- 把 `CallCheck` 重定向批次**挪到要求检查批次之前**（并写清为什么）。
+
+### 判据（都进了 `tests/generics/`，常设）
+
+| 形状 | 从前 | 现在 |
+|---|---|---|
+| 泛型→泛型，内层要 `<` | `` `less_T` needs `T` to define `<` `` | |
+| 泛型→泛型，内层要 `==` | | |
+| 泛型→泛型，内层要 `hash()` |（错怪 T） | 具体类型有就过 |
+| **负例**：外层实例的类型没有 `<` | 报错但怪 `T` | 报错并**归因具体实例**：`` `lt_plain` needs `pt` to define `<` `` |
+| 负例：`i64` 没有 `hash`，经泛型链 | 错怪 `T` | `` `h_i64` needs `i64` to define `hash` `` |
+
+正例 `tests/generics/deferred_op_through_call.extc`（`min=4|eq=1|hash=7`）·
+反例 `tests/generics/errors/deferred_op_through_call_bad.extc`（断言消息里出现 `to define `<``）。
+验收：`tests/run.sh` **260 + 264** · `check.sh quick` **26/26** · 构建零告警。
+
+### 顺带：作者问的三条类型表示问题，逐条对代码核了
+
+1. **"Type 里没有泛型变量、只能靠字符串名字区分"** —— **表示上不成立，身份上成立**。
+   `TY_PARAM` 是一等 kind，字段里既有 `param`（名字）**也有** `tpIndex`（位置）；
+   `slice<T>` 这种"混合类型"也是支持的（`TY_GENERIC` 的 targs 里放 `TY_PARAM`，`ttHasParam` 负责找）。
+   **但身份确实靠名字**：`ttSubstitute` 的 param 分支是 `strcmp(params[i], t->param) == 0`（`tpIndex` 没参与）；
+   `ttIsParam` 只比名字；`ttEquals` 的 param 分支比 `(tpIndex, name)` ⇒ **`fn f<T>` 的 T 与 `fn g<T>` 的 T 判等为真**。
+   今天没炸是因为代入永远由**所属模板自己的** params 驱动（同名同位置恰好对齐）；嵌套/遮蔽/跨模板比较会咬人。
+2. **"没有 Type 的所有权/生命周期管理，复制一份要手动管内存"** —— **不成立，但代价在别处**。
+   `TypeTable` 自带 `Arena *arena; /* arena that owns this table and every type in it */`；
+   `types.c` 里 7 处 arena 分配、**0 处 `free`**。真正的问题是**代入没有 memo**：intern 的只有
+   builtin/struct/`ttGeneric`/`ttArray`，而 `TY_PARAM`（`typeParam` 每次新造）、`ttViewMut` 的
+   writable-view shadow（故意不进 `instances`）、以及代入过程造的临时类型都不进表 ⇒
+   ① 这些类型**不能指针判等**，只能走 `ttEquals` 结构递归；② 每次实例化都要重造类型图。
+3. **"判等只比指针，不知道 T 和 i32 是不是同一个"** —— **不成立**。`ttEquals` 是"指针先行 + 结构回退"：
+   `kind` 不同立刻 false ⇒ `TY_PARAM` vs `TY_BUILTIN` 一眼就是不同；`TY_REF`/`TY_ARRAY`/`TY_PARAM`/`TY_GENERIC`
+   各有结构分支。合理内核是类型头注释那句：**intern 过的可以指针判等，没 intern 的必须结构比较**。
+   另外"`T` 与实参类型是否一致"根本不用 `ttEquals`，用的是 `unifyTParams`（模式匹配 + 逐槽赋值）。
+
+**结论：三条里现在就有、值得修的是两条（已记进 PLAN）** —— ① param 身份换成唯一 id（顺带让
+`ttSubstitute` 不再按名字匹配）；② 代入加 memo（省实例化常数，并让判等回到指针快路径）。
+所有权那条不用动。
+
+### 单态化 vs 经典做法（作者要求的那份对比）
+
+| 维度 | 经典（C++/Rust/Go） | extC 现在 | 差距的后果 |
+|---|---|---|---|
+| 实例键 | `(模板, 实参类型序列)` | 同左，`ttEquals` 逐个比、命名按 `ttMangle` | 无实质差距 |
+| 实例化时机 | C++ 使用点隐式；Rust 独立 MIR 单态化阶段 | **检查期按需，没有独立阶段** | 简单，但"按实例重写调用"缺自然落点（这次靠批次顺序补齐） |
+| 约束检查 | traits/concepts 在**定义处**；或 SFINAE 晚查 | **没有约束可写**，只能实例化处查 | 报错晚、且要求要靠"记录 + 重放"传递 |
+| 要求传递 | 约束在签名里随调用链携带 | 记录挂在"正在检查的实例"上 | **本次修的正是这条**（占位实例 + 批次顺序） |
+| 每实例调用目标 | 单态化阶段重写整棵调用图 | `Expr.func` 单指针 + body 共享 | 泛型体里调泛型要靠 `CallCheck` + 重定向（已解决）；方法靠 `resolveOnInstance` 钩子 |
+| 代码共享 | Rust/C++ 一实例一份；**Go GC-shape stenciling** | 一实例一份（无 shape 共享） | 语义最干净，体积可能大 |
+| 特化 | C++ 显式特化 / Rust specialization | 无 | 整数特化只能手写（`mapI64` 那条路） |
+| 跨模块 | C++ 模板要头文件可见；Rust 全程序单态化 | 名字靠**模块前缀**消歧（`pair` → `liba$pair`）+ `aliases` 表做查找（types.c）；实例进**本模块**的 `m->funcs` | 没有"模板定义必须在头里"的约束；同一泛型被两个模块实例化会各留一份实例（无跨模块去重） |
+| 递归 | C++ `-ftemplate-depth`；Rust `recursion_limit` | **实例化**：按需建 + `ttEquals` 去重，嵌套实例（`node<node<i64>>`）实测可用（`5 9`） 没找到独立的实例闭包深度上限；**运行期**递归上限 `EXTC_REC_LIMIT = 100000`（超了 trap） | 泛型递归不会撞编译器深度限制，但运行期有 10 万层的 trap |
+| 特化 | C++ 显式特化 / Rust specialization | 无 | 整数特化只能手写（`mapI64` 那条路） |
+
+## 2026-09-26（第十一段续十）· 第 ③ 条**量过、两次都没成、撤了**；但按作者口径补上了**复杂度判据**
+
+作者提醒：「**注意你的优化不能导致在某种情况下发生时间复杂度退化，这会很惨烈**」。这条对极了，
+本轮就照它收尾。
+
+### ③ `map` 的 `lowerBound` 名次：**两次尝试都没落地**（都撤了，代码回到原样）
+
+**目标**：`lowerBound`/`rankAt` 要返**名次**，而名次靠 `rank += kidsCnt(id, c)` 逐孩子累加 ——
+callgrind 里 `kidsCnt` 一项占场景 B 指令数的 **18.9%**。
+
+**尝试一：把 `cnt` 从 `bnode` 搬到一个扁平列 `cnts`（4 B/节点）**，指望"孩子计数更稠密 ⇒
+少 miss"。**实测是回归**：B 场景时间 **−2.1%**、指令 **−1.2%**（`tests/map` 全绿、校验和一致）。
+结论：那一项的账**不在 cache**，而在**每次迭代的边界检查与访问器开销**（每次 `cntOf(kd(id,i))`
+是 2 个带检查的加载 + 1 个加法）。撤。
+
+**尝试二：前缀和 `kpre`**（`kpre[i]` = 孩子 `0..i-1` 的子树键数之和）：读侧 O(1)/层、
+`rankAt` 还能二分；写侧只在 put/remove 沿路径**增量 ±1**，结构操作处整段重建。
+结果：`tests/map` 的 `stress`/`churn` **当场红**（判据有牙），差值定位到"某个节点的
+`kpre[n+1]` 陈旧"。做了两轮判定实验：
+  · `bumpKpre` 换成整段重建 ⇒ **一样坏** ⇒ 不是增量逻辑；
+  · `zeroKpre` 改成毒值 2e9 ⇒ 报出来的仍是**陈旧值**（不是毒值）⇒ 那一格"写过但没跟上"。
+仍未在预算内定位到确切的漏点（`rankAt` 二分退到 `c = -1` 正是它导致 `kids[-1]` trap）。
+**决定：撤掉**。理由：名次是树的**不变量**，带着一个没查清的漏点上线比不做更糟 ——
+何况 `stress`/`churn` 已经证明判据能抓住它。
+
+**留下的结论（下一个人接着做时不用重走）**：
+1. 账在**每元素的开销**（边界检查 + 访问器），不在 cache；所以真正的解法是
+   **让 view 的长度变成编译期常数**（`keys: [17]K` —— 正是 PLAN #84 记的那条 `[N]K` 泛型缺口），
+   检查能跟立即数比、GCC 也更容易折掉；
+2. 或者绕开名次本身：**给 `map` 一个游标 API**（`lowerBound` 返回位置 + `next()`），
+   场景 B 的"前驱 + 区间计数"就不必每层做 O(孩子数) 的名次累加；
+3. 若再做 `kpre`：`bumpKpre` 的 `hi` 依赖当时的 `bn(id)`、而 `bn` 会在**同一次 remove 里**
+   被合并/借位改掉 —— 优先怀疑"某条结构路径没有重建到祖先"（`mergeLeft/mergeRight` 里
+   `dropChild` 与新吸收节点的顺序值得逐个核对）。
+
+### 新增判据：**复杂度不许退化**（`tests/map/run.sh`）
+
+按作者口径做成常设判据：同一份探针（`tests/map/cx_app.extc`）在 **n=20000 与 n=40000** 各跑一遍，
+用 **callgrind 的指令数**算比值（**不是墙钟** —— 指令数确定、可复现），阈值 **2.60**：
+O(n log n) ≈ 2.1、O(n²) ≈ 4 ⇒ 常数因子有余量，二次形状必红。四种形状：
+`i` 顺序插入+查 · `d` 顺序插入+全删 · `r` 随机插入+全删 · `c` churn 四轮。
+
+实测（比值）：
+
+| 形状 | n=20000 | n=40000 | 比值 |
+|---|---|---|---|
+| i 顺序插入 + 查 | 32,551,028 | 68,067,299 | **2.09** |
+| d 顺序插入 + 全删 | 45,405,937 | 94,820,727 | **2.08** |
+| r 随机插入 + 全删 | 49,379,257 | 102,825,213 | **2.08** |
+| c churn 四轮 | 175,658,170 | 369,228,768 | **2.10** |
+
+**为什么值得单独立一条**：前几轮做性能时，`tests/map` 里没有任何一条判据能区分
+"常数变好"与"渐进变坏"；这条补上之后，任何"为了常数牺牲复杂度"的改动都会在 20 秒内变红。
+
+### 本轮验收
+
+`tests/map`（含新复杂度判据 + 精确字节账 + ASan）· `tests/stl` · `tests/hashmap` · `tests/linmap` ·
+`tests/pool`（含两层金丝雀）全 0 失败 · `tests/run.sh` **260 + 264** · `check.sh quick` **26/26** ·
+`bench/stl` 5/5 · `bench/app` 9/9（校验和逐字节一致）。
+
+## 2026-09-26（第十一段续九）· `copyInto` 落地（场景 C −19.5%）+ stdlib 有了 `sort<T>`（与 `std::sort` 打平）
+
+连着 DEVLOG 续八那四条"库成熟度欠账"往下做。①②已提交（`8117081`），这里是 ④。
+
+### ① `copyInto<T>`：整块搬移原语（提交 `8117081`）
+
+`copyInto<T>(dst: mut slice<T>, src: slice<T>, n) -> i64`：一次带检查的 **`memmove`**
+（区间可重叠 —— `removeFront` 就是原地左移）。检查 `0 ≤ n ≤ dst.len ≤ src.len` 越界**带位置
+trap**，而且**付一次**、不随元素数走。按视图类型按需发 `slice_T_copy` 内联辅助函数（与
+`slice_T_index` 同一套机制）。判据：`tests/stl/copyInto.extc`（含**重叠搬移** —— 换成 memcpy
+那条就错）+ `tests/traps/copyInto_bad_count.extc`。
+**顺带修一个误报**：`check_stmt.c` 的"`let` 绑新分配 ⇒ 永远是零"警告原来把**任何**泛型调用
+都当分配 ⇒ `let n = copyInto<...>`（返回 i64）被误报；谓词收紧成语法上的分配原语。
+
+### ② 批量路径（提交 `8117081`）
+
+`string::append` 逐字节 `push` → **一次守卫 + 一次扩容 + 一次 `copyInto`**；
+新增 `string::removeFront(n)`；`vector::toSlice`/`clone` 也改一次 `copyInto`；
+`bench/app/log.extc` 的本地逐字节 `dropFront` 删掉。**实测（校验和逐字节一致）**：
+
+| 场景 C | 时间 | 相对 Go |
+|---|---|---|
+| 原版（逐字节 dropFront） | 60.1 ms | 1.84× |
+| 现在（removeFront/copyInto） | **48.4 ms** | **1.48×** |
+| 若整条记录用新 `append` 一次追加 | **31.4 ms** | **0.97×（比 Go 快）** |
+
+官方 bench 仍保留逐字节 push（与 Go 的逐字节 `append` 同构、可比）：那 1.48× 里剩下的差距
+就是"每字节一次陈旧池守卫"（`pStale()` ≈ 1 cycle/字节，消融实测）—— 这是**别名的内存安全
+模型的有意代价**，能摊销它的正是这次加进来的批量 API。
+
+### ④ stdlib `sort<T>`：introsort（`stdlib/stl/sort.extc`）
+
+**为什么是 introsort**：median-of-three 压平常见输入 + 小区间（≤12）插入排序 + **深度上限
+（2·log2 n）到点换 heapsort**（最坏 O(n log n) 是承诺，不是优化）。**不承诺稳定** —— 与
+`std::sort` / Go `sort.Slice` 同一档契约（要稳定得额外缓冲或额外搬运，与"原地、无分配"冲突）。
+
+**被语言限制逼出来的写法**：今天的 extC 里**泛型函数不能调用另一个泛型函数** —— 调用点会拿
+"类型参数本身"去实例化被调者，而 `<` 在类型参数上没有定义（**连自递归也一样**）：
+`error: \`selfSort_T\` needs \`T\` to define \`<\`` ⇒ 划分/下沉这些含比较的循环只能内联在
+`sort<T>` **一个函数**体内，递归也只能换成**显式栈**（64 项定长数组；"大的一半入栈、小的
+一半继续"保证深度 ≤ log2 n + 1）。这条限制记进 PLAN §4。
+
+**判据逮住一个真 bug（差点带着上线）**：`tests/stl/sort.extc` 一跑就**挂住**（`--run` 超时）。
+逐输入二分：**全相等**的输入 `n=50` 就挂，随机 1000 反而正常。根因是 Hoare 划分写成
+"先扫、不满足就原地不动"（`while i <= j && a[i] < pivot`）：全相等时 `i == j` 且两侧扫描都不动
+⇒ 外层 `while i <= j` **死转**。经典 Hoare 必须**每轮先走一步再扫**（哨兵式）——而"至少前进
+一步"不会越界，是因为 median-of-three 已保证 `a[lo] ≤ pivot ≤ a[hi-1]`（两侧天然有哨兵）。
+**教训**：排序的判据里"全相等"和"已序"这两条不是凑数，是专门砸退化路径的。
+
+**实测**（1e6 个 i64，纯排序耗时；extC 用"总时间 − 不排序的框架时间"，C++/Go 用程序内计时；
+四种输入的校验和三种语言逐字节相同）：
+
+| 输入 | extC | C++ `std::sort` | Go `sort.Slice` |
+|---|---|---|---|
+| 随机 1e6 | **52.0 ms** | 50.1 ms（**1.04×**） | 93.8 ms（**0.55×**） |
+| 随机 5e6 | **292 ms** | 285 ms（**1.03×**） | 524 ms（**0.56×**） |
+| 已升序 | 5.5 ms | 6.7 ms | **1.3 ms** |
+| 逆序 | 4.2 ms | 5.1 ms | **1.7 ms** |
+| 全相等 | 5.7 ms | 4.8 ms | **1.4 ms** |
+
+⇒ **随机输入与 `std::sort` 打平、比 Go 快 1.8×**；**有模式的输入**（已序/逆序/全相等）
+Go 的 pdqsort 有 O(n) 检测（1.3~1.7 ms），我们和 C++ 一样是正常 O(n log n)（4~7 ms）。
+想追那一档就得加"已序/逆序检测"（收益只在特定输入上，先记着）。
+
+### 还没做的
+
+**③ `map` 的 `lowerBound` 名次**（`kidsCnt` 逐孩子累加，callgrind 占 18.9%）—— 下一件。
+**`stableSort<T>`**（归并，O(n) 暂存）—— 若要"稳定"这一档，它是 opt-in 的那一个。
+
+## 2026-09-26（第十一段续八）· "为什么 Go 这么快" —— **B/C 两个场景的账全拆开了：不是语言，是结构与库成熟度**
+
+作者问：「为什么 go 这么快我这么慢」。**不猜，做反证实验**：把 Go 用的结构用 extC 重写一遍，
+输出必须逐字节相同，然后交错计时。
+
+### 场景 A（会话表，哈希 vs 哈希）：**已经打平** —— 0.99×
+
+同构对照 ⇒ 说明"语言生成的代码"没有系统性慢。
+
+### 场景 B（路由表）：3.55× —— **全部是结构选择**
+
+| 实现 | 时间 | 相对 Go |
+|---|---|---|
+| extC · **B+ 树**（原版 bench，四件事全走树） | 3.278 s | **3.55×** |
+| extC · **Go 的结构**（`hashMapI64` 做点操作 + 排序连续数组 + 二分） | **0.869 s** | **0.94×（比 Go 还快）** |
+| Go · `map` + `sort.Search` | 0.922 s | 1.00× |
+
+**扣掉排序这一项**（各自的一次性排序）：extC 半径 **0.324 s** vs Go **0.330 s = 0.98×**
+（extC 那 0.524 s 是 3 趟 8 位基数排序，Go 那 0.582 s 是 `sort.Slice`）。
+
+为什么树结构贵：`lowerBound` 要返回**名次**，而 B+ 树的"名次"得靠
+`rank += kidsCnt(id, c)` **逐孩子累加**（每层 O(fanout)，每次累加 2 次指针追逐加载）。
+callgrind 里 `kidsCnt` 占 **18.9%**、`lowerBound` 22.4%、`put` 23.9%。
+而 Go 那边名次就是**数组下标**，免费。
+⇒ **同一结构下 extC ≥ Go；差距在"用 B+ 树扛点操作 + 名次靠累加"。**
+
+### 场景 C（日志缓冲）：1.83× —— **两处都是 stdlib/运行期欠的账**
+
+| 变体 | 时间 | 相对 Go |
+|---|---|---|
+| extC 原版（逐字节 `dropFront` + 完整 `push`） | 59.7 ms | 1.83× |
+| ① `dropFront` 换成 `memmove` | 46.8 ms | 1.43× |
+| ② 再把 `push` 压到最小（去掉 `pStale`/`arena_release`/边界检查） | **34.0 ms** | **1.04×** |
+| Go · `copy(buf, buf[n:])` | 32.4 ms | 1.00× |
+
+- **① `dropFront` 逐字节搬**：Go 是 `copy`（memmove），而 **extC 根本没有整块搬移的原语**
+（`memcpy`/`memmove`/`copyInto` 一个都没有，grep 全空）——POOLS.md §5.2 里作者点名的
+  `copyInto` 至今没实现。
+- **② `push` 每字节的脚手架**：生成的 C 里每 push 一次要做
+  `pStale()`（**池世代的加载+比较**）+ **两次 `extc_arena_release` 调用**
+  + 容量检查 + 边界检查 + 存储。
+
+### 结论：差距出在**库的成熟度**，不是语言内核
+
+Go 的 `map`/`copy`/`bytes.Index`/`sort` 是运行时与标准库沉淀很久（还带 AVX2 汇编）的实现；
+extC 的对应物是这几天才写出来的 stdlib。B 的反证（0.94×）与 C 的两段消融（1.04×）都指向同一点。
+
+### 量出来的四条欠账（已记进 PLAN §4）
+
+1. **运行期缺整块搬移**：加 `extc_memmove` 类的原语，然后 `string::removeFront`（= 现在的
+   `dropFront`）、`string::append`（现在是逐字节 `push`）、`vector::toSlice`/`clone` 都用上
+   —— C 场景 **−21%**（且这正是 POOLS.md §5.2 说的 `copyInto`）。
+2. **`push` 的每字节脚手架**：`pStale()` 与 `arena_release` 都是**每字节**做一次 ——
+   守卫应该按"一次调用"而不是"一个字节"付；批量 API 更该一次付。
+   C 场景剩下的 **−27%** 在这一项。
+3. **`lowerBound` 的名次**：给节点存**前缀和孩子数**（17×4B/节点）⇒ 名次 O(1)/层，
+   树结构下 B 场景也能拿回 ~15%+（现在 `kidsCnt` 一项就 18.9%）。
+4. **stdlib 没有 `sort`**（Go 有 `sort`、C++ 有 `std::sort`）——这次实验我不得不自己写基数排序。
+
+**注意口径**：`bench/app/RESULTS.md` 的 B 场景是"各自语言里最自然的有序结构"，
+所以那个 3.5× **量的是结构选择，不是语言速度**。要量语言就把两边锁成同一结构（0.94×）。
+
+## 2026-09-26（第十一段续七）· 量边界检查：**主因不是那 3 条指令，是它挡住了内联** —— map −21%
+
+**起因**：作者问"`v[i]!` 这种绕过检查的写法允许吗"，并要求**先把边界检查的账量出来**（"这个真是一直都没量过"）。
+
+### 一、方法
+
+**消融**：同一份生成 C，**只删掉** `slice_T_index` 里那句 `if(i < 0 || i >= v.len) extc_trap(...)`，其余一字不动，
+校验和逐字节相同 ⇒ 差值就是检查的账（上界：它同时也去掉了检查带来的优化抑制）。
+
+### 二、微基准：那 3 条指令**几乎不要钱**
+
+| 形状（8000 万次访问） | 指令数 | 时间 |
+|---|---|---|
+| **可证循环** `for i in 0..xs.len { xs[i] }` | **一模一样**（29,726,215） | 0.2%（噪声）⇒ GCC **本来就消除了** |
+| **不可证下标**（长度对编译器不可知、L1 常驻） | **+3.00 条/访问**（Ir +25%） | **+0.18%**（0.004 ns/次） |
+
+⇒ 分支全预测、循环被 `idiv`/访存卡住时，**指令数完全骗人**。
+
+### 三、真实容器：**完全不是这样**
+
+| 容器 | 去掉全部检查后 |
+|---|---|
+| `vector` | **0.45%（噪声）** |
+| `string` | **−7.1%** |
+| `hashmap` | **−12.0 ~ −15.8%** |
+| `map` | **−18.7 ~ −21.6%**（指令 **−61%**） |
+
+**把 map 拆开**（best-of-11，交错，checksum 一致）：
+
+| 变体 | 时间 | 指令数 |
+|---|---|---|
+| 基线 | 1060.4 ms | 4.475B |
+| **只加 `@inline`（13 个叶子访问器，检查一个不动）** | 948.8 ms（−8.6%） | 3.130B（−30%） |
+| **+ `childSlot` / `lowerIn`** | **928.9 ms（−10.5%）** | |
+| + `__builtin_expect` 布局提示 | 962 ms | **0 收益**（`extc_trap` 是 noreturn，GCC 早把 trap 块放到热路径外） |
+| 全部去检查 | 844.2 ms（−18.7%） | 1.744B（−61%） |
+
+热点迁移说明了一切：无检查版里 `kd`/`kn`/`setKey`/`setVal`/`vn` **五个函数直接消失**（被内联进 `childSlot`）；
+有检查版每个下降步带 **2~4 个 `cmp`+远跳**，而且**每次都要重新加载 view 的 `.len`**
+（`mov 0x38(%r14),%rdx; cmp %rdx,%rax`）——在指针追逐里是**额外的依赖加载**。
+⇒ **那 21% 里约 10% 是"检查挡住了内联"（可以零风险拿回来），剩下约 8% 才是检查自己。**
+
+### 四、分支预测？没有空间
+
+cachegrind `--branch-sim=yes`（简化预测器，会**高估**误判）：
+
+| 变体 | 分支总数 | 误判 | 误判率 |
+|---|---|---|---|
+| 基线 | 692.1 M | 58.3 M | 8.4% |
+| `@inline` 13 | 553.4 M | 56.4 M | 10.2% |
+| 无检查 | **238.4 M** | 43.9 M | **18.4%** |
+
+- **检查占了全部分支的 57%** ⇒ 成本是**分支条数**（前端带宽 + 依赖加载 + 抑制优化），**不是预测错**：
+  去掉 3.15 亿条分支只少 1250 万次误判（这类分支本来就≈从不跳）。
+- 所以 `__builtin_expect` 实测 **0 收益**；能提的是"**减少分支**"，不是"提高命中率"。
+- **真正预测不准的在别处**：去掉检查后误判率反而升到 **18.4%** —— 那是 `childSlot`/`lowerIn`
+  的 **16 键二分**、`find` 的探测循环这类**数据相关**分支。那片池子是 **43.9 M 次误判**，
+  正解是**无分支化**（不是提示）。
+
+### 五、落地：`map` 的 15 个函数加 `@inline`
+
+`bn`/`cntOf`/`leafOf`/`kn`/`vn`/`kd`/`nx`/`setN`/`setCnt`/`setKey`/`setVal`/`setKid`/`setNext`
++ `childSlot`/`lowerIn`。**效果**：
+
+- `bench/stl` 的 `map`：**1.12s → 0.88s**，对 C++ `std::map` 从 **0.58× → 0.45×**（RSS 不变，校验和一致）；
+- `bench/app` 场景 B（路由表）：ops=2e6 **3.688s → 3.364s（−8.8%）**，对 Go 从 3.94× → **3.48×**。
+- **注意别乱加**：`hashMap` 那 6 个小访问器加 `@inline` 只值 ~1%（噪声）——它慢在探测循环里。
+
+### 六、顺带的两条结论
+
+1. **`v[i]!` 不值**：用户代码里那个检查是 **0.18%**（可证的那种 GCC 本来就消除），而容器里那 8% 它也拿不到
+（那些检查在 STL 内部）。为 0.2% 开一个"读越界"的 UB 洞不划算。
+2. **MANUAL 的口径要改**："切片边界检查是安全承诺的明账"太粗 —— 它在**访存受限**的循环里几乎免费（0.18%），
+   在**指针追逐的密集小访问**上要 10~20%，且主因是**优化抑制**，不是那 3 条指令。
+3. **SIMD 线索（另立一轮）**：`childSlot`/`lowerIn` 是 16 键二分。微基准（`-O2`，L1 常驻）：
+   **无分支写法比分支二分快 57~64%**（纯 ISO C，无扩展），`-march=native` 下自动向量化成
+   `pcmpgtq`+`paddq` 后**快 87%**；GNU `vector_size` 在**默认旗子**下也能向量化，
+   且 `-std=c11 -pedantic-errors` **也收**（实测）。真实收益要在 map 上端到端量（cache miss 会吃掉大部分）。
+
+### 七、验收
+
+`tests/map`（含精确字节账判据）· `tests/pool`（含两层金丝雀）· `tests/run.sh` **259+263** ·
+`check.sh quick` **26/26** · `bench/stl` 5/5 · `bench/app` 9/9（校验和逐字节一致）· `make` 零警告。
+实验脚本与消融产物在 `/tmp/chk/`、`/tmp/simd/`（未入库）。
+
+## 2026-09-26（第十一段续六）· **零初始化收窄**：RSS −8~18%（map −17.5%），还挖出两处被清零掩盖的真 bug
+
+**作者的口径**（这一条的出发点）：「STL 只是放在池子里面采用下标代替指针（引用）跳转，具体并不
+一定要用满 pool 的所有特性，肯定是以高效（耗时短 RSS 低）为目标的」。按这把尺子回头审 `#84`，
+量出两件事，然后落地了其中**能兑现**的那一件。
+
+### 一、先撤回一个错误方向（量出来的）
+
+`#84` 的方向写着「节点是池元素、**孩子是句柄**」。同负载、同校验和（`acc=479999433`，2000 万次
+插入/读回/删除）实测：
+
+    扁平 slice + i32 下标 + 手写 free list      0.73 ns/op
+    pool<node> 的 insert/get/remove           6.30 ns/op   ← **8.6× 慢**
+
+句柄寻址是 `handle → pLive 校验 → slots[dense] → vals[dense]`，下标就是**一次访存**。
+⇒「孩子是句柄」与「下标代替指针」矛盾，且实测更慢，**方向撤回**；`#84` 剩下的手搓
+（`freeHead`/`shrink`）在时间上**没有亏**，不是性能项。（STL 里现在零个 `ref` 链接字段，全是
+`i32` 下标 —— 这条原则本来就已贯彻。）
+
+### 二、真正的那笔账：**清零**
+
+`poolSlice<T>`（建列）与 `poolResize<T>`（增长）都**无条件清零**；但容器里大多数列**每个槽都是
+先写后读**，清的是"预留了但还没用"的槽 —— 等于**把页提交掉**（RSS 涨）+ **写一遍马上要被覆盖的
+字节**（时间花掉）。40 MB 的列：`poolSlice` **42.4 MB RSS** vs `poolSliceRaw` **1.5 MB**。
+
+### 三、做了什么
+
+1. **编译器**：新内建 `poolResizeRaw<T>(rid, s, n)` —— 与 `poolResize` 同形，只是**新长出来那一段
+   不清零**（`src/check/check_expr.c` 两处名单、`src/back/codegen.c` 发射 `extc_pool_resize_raw`、
+   `src/back/pools.c` 运行期文本）。`poolSliceRaw` 早就有了，缺的就是增长这一侧。
+2. **stdlib 逐列判**（哪些能去、哪些必须留）：
+   - 去：`map` 四列 + `shrink` 的新块、`vector`/`string` 的缓冲、`hashMap` 的
+     `keys`/`slot`/`bucketOfDense`、`linMap` 的 `keys`/`vals`。
+   - **留**：`hashMap` 的 `tag`（空桶**就是 0**，是探测的终止符；`rebuild` 的新 tag 同样必须全
+     EMPTY）、`pool` 自己的 `ent`（`pFree` 把 `low == 0` 读作空闲）、`map` 的 `path`/`side` 草稿
+（只有 128 B，不值得冒险）。
+   - 判据：**先写后读**才可去；"看着没读"不算数（见下面四）。
+3. **判据重做**：`tests/map` 的增长判据原来是**纯 RSS 不等式**（增量 ≤ 预留）—— 它成立的原因之一
+   **是预留那版被清零撑大了**（90,564 KB）；收窄之后预留掉到 49,284 KB，不等式翻转，
+   红的原因不是"代码变差"、是"基线变好"。⇒ 换成**精确字节账**（主判据）：两条路径的
+「每节点字节」必须相同（`bytes` 来自 `map.bytesOf()` = `extc_pool_bytes(pid)`，与 RSS 无关）：
+   `增量 cap=177513 bytes=61774652（每节点 348 B） vs 预留 cap=262144 bytes=91226240（每节点 348 B）`。
+   旧存储若留了一代，这个商会立刻变大 —— 比 RSS 不等式**更有牙**。
+4. **两层金丝雀**（`tests/pool/run.sh`）：
+   - **毒化**（`-DEXTC_POISON_RAW=1` 把 raw 块填 0xAA）：快、能跑大形状；判据是**输出与正常跑
+     逐字节相同**而不是只看退出码（0xAA 是负数，`if kid >= 0` 会把它跳过 ⇒ 只看退出码会漏）。
+   - **memcheck**：慢，但它报的是"**读了未初始化**"，与那个值有没有被用无关 ⇒ 最definitive；
+     上限是钉住的基线，**降下来不算失败**（运行期自己有一处既有的未初始化读：`pool` 的簿记走
+     `poolSliceRaw`、`pFree` 靠"全新表天然全空闲"，与本刀无关）。
+
+### 四、两个被清零掩盖的真 bug（这才是"换 raw"的真正产出）
+
+`tests/map/shrink.extc` 一换成 raw 就 trap：`index 3756 out of range(length 2810)`。
+`sed` 拦不住、读代码也没读出来，靠 **valgrind memcheck 指到行** + **`newNode` 把 18 个 kid 槽填
+`-1` 的哨兵探针**定位到 `map::shrink` 的复制循环：
+
+     原来**无条件拷满 18 个 kid 槽**（后来我改成 `sn+1`，一样错）—— 而 **kids 只有内部节点才有**，
+       叶子的那 18 个槽**从来没写过**。清零时读到 0，而 **0 恰好是个合法节点号** ⇒ "看着没事"；
+       raw 后读到垃圾，`old2new[垃圾]` 拿它索引 ⇒ 越界。
+
+修法：**只给内部节点拷 `sn+1` 个**（顺带 keys/vals 也只拷用到的 `sn` 个）。这不是"改 raw 引入的
+bug"，是**清零掩盖了很久的一处读未初始化**。
+
+### 五、收益（交错 A/B，两版各自最好，校验和逐字节一致）
+
+| 容器 | 时间 | RSS |
+|---|---|---|
+| `map`（1e6 插/查/遍历/删 5e5） | −0.4% | **−17.5%**（40.9 → 33.7 MB） |
+| `string`（1e7 字节 + 1e6 append） | −7.9% | **−10.8%** |
+| `hashmap`（5e5 键） | −1.9% | **−8.0%** |
+| `vector`（1e7 push/pop） | −10.1% | 0% |
+
+容量有余量时更多（`tests/map/grow_rss` 那个形状：时间 −30~40%、RSS −20~46%）。**没有一个变慢**。
+
+### 六、验收
+
+`tests/map`（含新字节账判据）· `tests/stl` · `tests/hashmap` · `tests/linmap` · `tests/pool`
+（含两层金丝雀）全 0 失败 · `tests/run.sh` 259+263 全过 · `check.sh quick` 26/26 ·
+A/B memcheck 报告条数完全相同（没引入新的读未初始化）· `make clean && make` 零警告。
+
+**方法论教训**：① 中途我用"改生成的 C"做过一次预演，数字比真改动更漂亮 —— 因为真改动时
+**我自己的二分定位步骤把 `growStores` 改回了清零**、之后又把"清零版"当"raw 版"存成了备份；
+是**交错 A/B**（而不是单批顺序测量）把它抓出来。教训：**每一刀落地后都要重新 A/B 一遍，
+别信预演数字**。② 判据红不等于代码差 —— 要先问"是不是基线变好了"。
+
+## 2026-09-26（第十一段续五）· 把 PLAN 的"还开着"逐条验一遍：18 处早就做完、真开着 9 条
+
+**作者的判断**：「你验一下哪些是真没做的，这个文档好久没维护了（虽然已经最新了）」——
+PLAN 自己就记着**六次**"这张表被抓出过时"，所以这次不读正文，**每一条都真编一遍/真跑一遍**。
+
+**方法**：全表扫出**没有删除线**的编号行（第一版脚本只扫了前 230 行，漏了 `#86`/`#87` ——
+这两条正好一条开着、一条已完成，教训：**扫描范围本身要先验**），然后逐条造形状。
+
+**① 早就做完、行却没划掉的（本轮已划，18 处 —— 逐条列在下面）**：
+
+| 条目 | 文档声称 | 实测（探针） |
+|---|---|---|
+| `#57` 主体 | "还欠：泛型体里调普通协议方法" | `fn hOf<T>(x: T) -> i64 { return x.hash() }` 编过跑出 `9`；`less<T>` 的 `<` 也通 |
+| `#57″` | 运算符重载剩余 | `tests/ops` 19 项全过 |
+| `57-侦察` | 三条路待拍 | 已被落地取代 |
+| `#69` | 第一刀已落、还有第二刀 | `examples/globals.extc` **0** 条 unused；`tests/io/stream-file.extc` 1263 行 · **gcc 0 警告** |
+| `#75` | 未修完、代码已退回 | `rt_zone`/`rt_reuse`/`rt_container` 全过；churn 1724→1720 KB **平** |
+| `#78` | 要补 hashMap 泛型键 + 有序 map | `struct hashMap<K,V>`（键走协议）+ `struct map<K,V>`（B+ 树）都在 |
+| `#79` | 仍欠"返回类型与实参的实例期检查" | 返回：`-> i32 { return x.hash() }` ⇒ `expects i32, found i64`；实参：`g(v.hash())` 也报 ⇒ **两半都落了** |
+| `#85` | 行内写"已落地"但没划线 | `extc_pool_take`/`_take_raw`/`_give`/`_resize` 都在 `src/back/pools.c` |
+| `#87` | 🆕 无状态 | `vector<vector<i32>>` 循环里建内层 + `outer.push(inner)` 编过跑出 `3 1` |
+| `#89` | "这一族 API 全是视图（违规）" | `pool`/`string`/`vector` 只剩**拷贝**的 `toSlice`；视图只剩 arena 底的 `varArray::asSlice`（合法那档） |
+| `#90` `#91` `#88附注` | 已定/已落 | `ref vector<i32>` 跑出 `3`；`varArray<ref node>` 互指跑出 `11`（判据 `tests/stl/vararray_ref.extc` 已在） |
+| §2 本表 5 | 无限递归无声 | `trap: recursion too deep` **带源码位置** |
+| §2 本表 10 | 裸写构造器不指路 | 现在报 "did you mean `shape.circle(...)`?" |
+| `#77` + §1 #2/#3 | 验收脚本挂起 / IO-1、IO-2 还欠 | `check.sh:10` 有 `exec </dev/null`、反引号已去；IO-1/IO-2 在 `tests/fs`/`tests/io` 常设验收里 |
+
+**② 真没做（9 条 + 1 可选）**：`#92`（本轮新记，见续四）· `#83`（**复现**：`fn +` 体内建池 ⇒
+extC 放行、生成的 C 报 `too few arguments to 'box_add'; expected 3, have 2`）· `#84`（`map` 上了
+池板块但**仍手搓** `freeHead`/`freeNext` **8 处**）· `#49`（NS=200：生成 **8013 行** vs 同形手写
+**808 行** = **9.92×**，与原文 9.5× 同量级 ⇒ 没变好）· `#73`（仍是**警告**；语料 **390 文件 /
+943 处**）· `#86`（哈希**原地增量扩容**没做，`rebuild` 仍旧开新四列 + 还旧列）· §0.4.1 ⑤
+（**正好 53 处**中文串，数字准确）· §2 本表 9（`alloc<i32>(4)` 仍不能索引）· §2 11b/`@main`
+（`src/front/parser.c:1211` 明说未实现）；**可选** `#48`（无产物缓存）。
+
+**③ 两条非待办别当活儿数**：`#14`（已知边界 —— 正例跑通、反例被明确拒）· `#30`（设计备选，
+原文"记着，不选"）。
+
+**④ 没验完的三条**：§0.4.1 的 ②（路径敏感 arena 下沉）③（`alloc` 不进 `promoteInto`）
+④（报错分不清"真不安全/我算错"）—— 要验得先造那三种形状，留待下一轮（**不假装它们验过了**）。
+
+**落点**：`docs/PLAN.md` §0.4 表头下加了审计块（含每条的探针结论）+ 把 12 条已完成的行划掉 +
+`#76` 的状态列更正（"还欠三件"里两件不再是欠账）+ §1 表头"第 2/3 项还没做"改成已落地。
+这一轮**没有改任何代码**。探针产物 `/tmp/audit/`。
+
+---
+
+## 2026-09-26（第十一段续四）· 场景 A 的账：一半是生成代码（zone 钩子已修，14.5%），一半是数据结构
+
+**作者追问**：「A 有没有可能修复？这也太慢了，不应该牺牲这么多性能」「四列分离（SoA）带来的
+Cache Miss 惩罚……这个是要修复的吗」。先把"钱花在哪"量到能分解，再动手。
+
+### 一、先把账分开：手写 C 用**同一份四列布局**当对照
+
+`bench/app/session.extc`（active=1M、ops=3.1e7）同机同批交错测量（绝对时间随机器状态漂，
+**比值稳定**）：
+
+| | ns/op | 说明 |
+|---|---|---|
+| extC 生成代码 | 48.3 | |
+| **手写 C · 同样的四列 SoA + 同样的 hash + 同样的负载** | **24.8** | ⇒ 生成代码这一半 = **23.5 ns/op（49%）** |
+| 手写 C · cap 从 2× 降到 1×（表小一半） | 20.7 | 表尺寸只值 17% |
+| 手写 C · keys+slot 合并成 AoS（三列） | 25.8 | **更慢** ⇒ "少碰一条 cache line"不是答案 |
+| C++ `unordered_map` | 5.7 | 剩下的 4.4× 在数据结构/算法 |
+| Go `map[int64]session` | 42.0 | |
+
+**结论（回答"SoA 要不要改"）**：SoA 确实值 4.4×（对手是"桶数组 + 节点"的分离链接），
+但它**不是**"四列各自一次 cache miss"这种可以机械消掉的账 —— 合并两列反而更慢、把表减半
+只拿回 17%。真要动就是**换设计**（值内联进桶 / AoS 节点 / 换探测策略），属于另一轮，
+且要带着 `bench/app` 这把尺子做。**而便宜的那一半（生成代码 2×）在这一轮拿到了。**
+
+### 二、生成代码那一半：zone 钩子（根因与修法）
+
+callgrind 行级 + 消融早就指着它：`bench/app/session.extc` 的循环体里
+`zoneEnter` + `zoneLeaveTo` 合计占 **23.8% 指令**，只删掉生成物里那两行的消融值是 **25.3%**。
+
+**根因（这一轮才看全，三层）**：
+1. `calleeMakesPool` 第一句 `if(f->owner && f->owner->poolObject) return true;` —— 它把
+   **两个不同的问题**挤在一只谓词里：①「这个**类型**拥有池」（逃逸/提权要的）与
+   ②「这**一次调用**能不能走到 `extc_pool_new`」（zone 要的）。`hashMap` 标了 `@poolObject`
+   ⇒ **它的每一个方法**（含 `get`）都被判成"会建池"。
+2. 但只拆谓词**没用**：真正卡住的是 `#57` —— 泛型体里对**类型参数**的协议方法
+（`hashMap::find` 里的 `k.hash()`）在节点上**故意不写 `func`**（一份模板体多个实例），
+   模板期解析不出来 ⇒ 保守算真 ⇒ `find`/`get`/`put`/`remove` 全被标真。
+3. 而**模板与实例共用同一个 FuncDef**（实测 `hashMap.find` 与 `hashMap$hashMap.find`
+   是**同一个指针**）⇒ 模板轮一旦标真，实例轮 `if(f->makesPool) continue` 就永远跳过它，
+   在实例上按实参代入的精确解析**根本没有机会生效**（我先只改了实例轮，钩子一个没少，
+   就是栽在这一层）。
+
+**修法三处**：① 拆谓词：新增 `calleeCreatesPool`（= 闭包 + `extc_pool_new*` 按名字 + 构造器
+`makesPoolAny`；未解析仍保守），`exprMakesPool` 用它；`calleeMakesPool` 保留 `@poolObject`
+那条给逃逸/提权。② 闭包**跳过泛型模板轮**，把泛型 struct 的方法交给实例轮，并按实例
+`ttSubstitute` + `findMethod` 解析协议方法（与 `runMethodCheck` 同一套；解析不出来 ⇒ 保守，
+多实例之间**取或** ⇒ 方向仍是安全的那一侧）。③ codegen 侧同步装解析钩子
+（`setPoolCalleeResolver`，用的是 `genMethodCall` 里同一句代入）。
+
+**实测**：**48.08 → 41.10 ns/op（14.5%）**；修完 extC 在场景 A **与 Go 持平（0.99×，修前 1.15×）**。
+（消融 25.3% 与端到端 14.5% 的差：后者还顺带把那几个方法的 zone 形参去掉了，两边不是同一把尺子。）
+
+**判据有牙**：`tests/pool/rt_zone_ondemand.extc` 加了**第三条循环**——体内专门调
+`hashMapI64<i32>::put/get/remove`（前两条只调 `slice::get`，盖不到这一格，所以这个"税"
+长期没有抓手）。同一份用例：**旧编译器 zoneEnter 3 次、新编译器 2 次** ⇒ 判据真的会咬。
+`symlink` 方向也钉住：`rt_zone_inloop`（循环体里建池）仍旧必须有钩子；手工再加一条
+canary（循环里调 `m.clone()`，它**会**建池）也是 2 次（帧 + 循环体）。
+
+**账**：`tests/pool` 全绿（`live=0` 金丝雀 · churn 平 · ASan 泄漏检查）· `tests/hashmap` 全绿 ·
+`tests/run.sh` **259 + 263** · `check.sh quick` **26/26** · `bench/app` 9/9 校验和不变。
+
+### 三、顺带撞出一个真 bug：泛型体里"无标注绑定"会静默截断
+
+为了让指纹那一列真的取到哈希**高位**，才发现生成物里是 `int h = hashMap$i64Key_hash(&k);`
+—— **32 位**。最小复现（`struct wrap<T>` 的 `let h = self.k.hash()`，`hash` 返回 `i64`）：
+
+    期望 4294967301 ⇒ 实际打印 **5**
+
+静默错值，而且**就发生在 `hashMap` 身上**：哈希截到 32 位后桶号仍然对（桶号只用低位）⇒
+所有测试全绿。根因是 `#57` 的错误类型 + "无标注 `let`"没有期望类型可记（`#79` 的
+`DeferredUse` 只覆盖**有**期望类型的用处）⇒ 错误类型留到 codegen，渲染成 `int`。
+已记 `PLAN #92`（含最小复现、修法方向与反向判据）。**注意**：指纹那一列本身**不是**赢的
+——真 6 位指纹做完反而慢 9%（`keys` 那一次读不是瓶颈），已撤回，不留代码。
+
+---
+
+## 2026-09-26（第十一段续三）· 综合应用场景横评：extC STL vs C++ STL vs Go（3 场景 × 3 规模）
+
+**作者点名要的**（交接 §三 原话）：「去搞点高度动态的实际应用场景模拟（例如模拟网络类似的东西，
+但是先串行阻塞），测一下 extc STL 和 Go 和 C++ STL 的性能差异，**要求要综合**。」
+
+**做成了什么**：`bench/app/` —— 三个场景，每个三种语言一份**等价实现**，一条命令
+（`bash bench/app/run.sh`）跑完并生成 `bench/app/RESULTS.md`。
+
+| 场景 | 形状 | extC | C++ | Go |
+|---|---|---|---|---|
+| A 会话/连接表 | 哈希表 · 60% 查 / 20% 建更 / 20% 删 | `hashMapI64<session>` | `unordered_map` | `map[int64]session` |
+| B 路由表 | 有序表 · 插入 + 前驱查找 + 区间扫描 + 删除 | `stl::map`（B+ 树） | `std::map`（红黑树） | `map` + 排序切片 + 二分 |
+| C 请求日志/缓冲 | 动态字节缓冲 · 追加 + 查找 + 截断 | `stl::string` | `std::string` | `[]byte` |
+
+**口径（这一节最值钱的部分）**：三种语言读同一组规模参数、做同一串操作、打印**同一行**校验和，
+**逐字节相同才算数**（9/9 项一致）。规模 A 用「活跃集」参数化（ops = 30 × active），
+B/C 直接是操作数。时间用 bash 内建 `EPOCHREALTIME`（微秒分辨率，没有 `date` 的进程启动开销），
+每个样本重复 K 次凑到约 0.2 s；RSS 用 `/usr/bin/time`；都取 best of 3。
+
+**结果与归因**（完整表在 `bench/app/RESULTS.md`，那里也写了同一段分析）：
+
+- **A：活跃集小（4096）时三个语言在同一条线上（extC ≈ C++ 的 1.7 倍）；活跃集一大（1M），
+  extC 掉到 C++ 的近 9 倍，Go 与 extC 只差一成。** 这一格**不是**哈希函数的问题，三个原因都量过：
+  1. **zone 钩子（约 15%）**：`@poolObject` 让 `calleeMakesPool` 把 `get` 也算成"会建池"⇒
+     每轮压/弹一次。callgrind（n=2M）里 `zoneEnter` 9.87% + `zoneLeaveTo` 13.91% = **23.8% 指令**；
+     A/B 实测 **48.42 → 41.12 ns/op（15.1%）**。上一节（续二）那条"量了暂不动"在这里兑现成
+     了**一个明确的百分比**。
+  2. **指令条数 2.1×**（callgrind **223 对 105 条/操作**）——每一条切片下标都带边界检查，
+     这是 extC 安全承诺的明账。
+  3. **每条指令更贵（cache）**：`hashMap` 是**四列分离**的开地址表，一次命中碰 3~4 条 cache line；
+     `unordered_map` 是"桶数组 + 节点"，miss 只碰 1 条。cache-sim：D1 miss **4.05M 对 1.15M**、
+     LL miss **0.81M 对 0.41M**（同为 2M 次操作）。
+     **排除**：按值返回 `?session`（32B→8B 重跑：47.35 对 49.55 ⇒ 几乎不动）· 墓碑重建
+（关掉触发线：49.47 对 49.62 ⇒ 0.16 ns/op）。
+- **B：extC 赢 C++（约 1.9 倍）** —— 与 `bench/stl` 的「B+ 树 vs 红黑树」同向。Go 最快，但它用的
+  **不是同一棵树**（map + 排序切片），所以这一格是"各语言最自然的做法"的对比，不是同一结构的对比。
+- **C：extC 稳定在 C++/Go 的 1.9~2.0×** —— 两处明账：`string` 没有 `erase`/memmove 原语，截断是
+  字节循环（C++ 一条 `erase`、Go 一条 `copy`）；`find` 是朴素扫描。这一格是"缺什么就付什么"。
+
+**顺手补的两处工程**：① `bench/app/run.sh` 进了 `check.sh` 的完整模式（`SCALE=1 RUNS=1
+WRITE_RESULTS=0` —— 缩小规模当回归，且**不许**把完整规模的表冲掉）；② 三个场景的
+`{session,route,log}.{extc,cpp,go}` 九份实现互相对拍，校验和是判据。
+
+---
+
+## 2026-09-26（第十一段续二）· zone 钩子进热循环：量出来了（~2 ns/op，约 10%），先不动
+
+**交接里那条"没查的问题"**（§四）：`bench/app/session.extc` 生成的 C 里，**每一轮循环**
+都有 `extc_pool_zoneEnter()` / `extc_pool_zoneLeaveTo(...)` 夹着一次 `get`，而循环体里
+根本没有"建池"这件事。
+
+**量**（把生成 C 的循环体内那两行手工去掉、zone 实参改指函数级 `__extc_zm1`，其余逐字节
+相同；输出逐字节相同；Python `perf_counter` 取 best of 5）：
+
+| n | 带钩子 | 去掉钩子 | 差 |
+|---|---|---|---|
+| 2e6 | 0.0420 s | 0.0383 s | 1.84 ns/op（1.096×）|
+| 5e7 | 1.0312 s | 0.9324 s | 1.98 ns/op（1.106×）|
+
+⇒ **约 2 ns/op、端到端约 10%**（与 `45371bc` 那次 callgrind 说的"两者合计占 17.6% 指令"
+同量级）。钩子本身不贵，但它在**每一轮**都做一次函数调用 + 一次 zone 栈写。
+
+**为什么会被判定成"这个块可能建池"**（根因钉死）：
+`blockMakesPool` → `stmtMakesPool` → `exprMakesPool` → **`calleeMakesPool(f)`**，而它的
+第一句是
+
+    if(f->owner && f->owner->poolObject) return true;
+
+`hashMap` 标了 `@poolObject`（"这个类型拥有一个池"）⇒ **它的每一个方法**（含 `get`）都被
+当成"会建池" ⇒ 那个块拿到一个自己的 zone。注意 `f->makesPool`（真正"这个函数体能不能走到
+`extc_pool_new`"的传递闭包）对 `get` 是**假**的 —— 两者回答的不是同一个问题：
+
+-「这个类型**拥有**池」是**类型**的性质（`@poolObject` 声明，作者 2026-09-26 定为权威）；
+-「这一次调用**会不会建**池」是**被调者**的性质（`f->makesPool` 闭包）。
+
+`calleeMakesPool` 一个谓词同时服务三处（zone 钩子 + 逃逸深度 + 提权站点），前两处要的是
+后者，第三处要的是"结果会不会住在池上"（前者更保守）。
+
+**决定：这一轮不动它。** 理由是收益/风险不对称：10% 是**一个负载**上的数，而要动的那个
+谓词同时管着**池的寿命与提权**（改错的后果是 use-after-free，不是慢）。真要动的形状已经
+清楚 —— 给 zone 那一侧单独一个"这次调用能不能走到 `extc_pool_new`"的谓词
+（`f->makesPool ||(isAssoc && owner->makesPoolAny) || 名字是 extc_pool_new*`），
+但必须自己一轮、拿 `tests/arena*` + `tests/pool` + `tests/asan` 当判据，并且量一遍
+"少发的钩子"没有让任何池漏登记（`extc_pool_live()` 该平的地方要平）。
+
+---
+
+## 2026-09-26（第十一段续）· `hashI64` 的乘法修复：一处 UB 陷阱 + 一条**失去牙齿**的判据
+
+**交接给的那条修复**（未提交的 `stdlib/stl/hashMap.extc`）：`hashI64` 原来只做右移-xor，
+对 `x < 2^21` 是**恒等映射** ⇒ 连续整数键（自增的连接 id / 会话号 / 下标）映射到连续的桶，
+65536 个键连成一条 65536 长的簇；一有删除（墓碑不终止探测），miss 查询要走上万步。
+`bench/app/session.extc` 上实测 **10.24 s → 0.04 s（n=2e6，256 倍）**，输出逐字节相同。
+这条修复本身是对的，值得提交 —— **但它原来的写法踩了一个陷阱，这一条比修复本身值钱。**
+
+### 陷阱：有符号 `*` 溢出，与"测试脚本忘了 `-fwrapv`"
+
+交接版把乘法写成 `x = x * i64(6364136223846793005)`（**有符号**）。`tests/hashmap/run.sh`
+在那之后**挂死**：`timeout 900` 也没出来，`grow-inc` 进程 RSS **涨到 14.7 GB** 且一直不返回
+（本会话第一次前台等它，把持久 shell 又拖住了一次 —— 交接里那条"用后台 + timeout"的告诫是真的）。
+
+定位（每一步都可复现）：
+1. 同一形状的小探针（`n` 走命令行参数）**0.08 s 跑完**；而 `grow_rss.extc`（`while i < i64(1000000)`）
+   编出来的同一个二进制**挂死**。两份**生成的 C 逐函数相同**（`diff` 去掉 `#line` 后只剩
+   `main` 与 `toInt` 的差别）⇒ 不是源码逻辑问题。
+2. `-O0` 跑得通，`-O1`/`-O2` 挂；**`-fwrapv` 一加就通**（`-O1`/`-O2` 都通，0.07~0.08 s）。
+3. ⇒ 真因是**有符号乘法溢出（C 的 UB）**。`-fwrapv` 一关，GCC 按"乘法不会溢出"优化，
+   桶分布退化成一条长簇 ⇒ 每次 `put` 的探测变成 O(cap)，1e6 次就成了事实上的死循环。
+
+**为什么会这样**：`MANUAL.md` §8 写着"算术无 UB —— 溢出用 `-fwrapv` 兜成确定行为"，
+`src/main.c` 的驱动**确实**给 `--run` 加了 `-fwrapv` …但 `tests/hashmap/run.sh` 是**自己**
+`cc -O1 -std=c11` 编生成的 C 的，**没带**那个旗子。审计一遍：`tests/*/run.sh` 里直接调
+C 编译器的有 **10 个**，`-fwrapv` 一个都没有（`tools/parrun.py` 走 `--run`，所以主套件没暴露）。
+⇒ 这是"生成的 C 的编译契约"与"测试脚本各写各的旗子"之间的裂缝。
+
+**修法两处，都做了**：
+1. **`hashI64` 的混合体改用无符号**：`u64(x) * u64(6364136223846793005)` —— 无符号乘法溢出
+   在 C 里**有定义**（模 2^64），与旗子、优化档、编译器全无关；两次转换都在可证明无损的范围里
+   ⇒ 生成 C 里不带检查。这一步同时把文件头那句原始设计约束"the mixing must not rely on
+   overflow"**恢复**了（交接版恰好违反了它）。**哈希函数不该依赖编译器替它定义 UB。**
+2. **`tests/hashmap/run.sh` 补上 `-fwrapv`**（含 ASan 那几条）—— 生成的 C 本来就可能含
+   用户级的溢出，测试脚本得按契约编。其余 9 个脚本的同一问题**记账另修**（同一刀，别混在这里）。
+
+### 顺带抓到的：`collide.extc` 的判据**悄悄失去了牙齿**
+
+`tests/hashmap/collide.extc` 原来写的是"cap=8 时 `0/8/16/24/32` **必然**撞在同一个初始槽
+（`k & 7` 都是 0）"—— 那是**老哈希**（恒等映射）的性质。加法混合之后这 5 个键各自散开，
+而这一格**照样会通过**（5 只键各占一格，插入/查找/删除都平凡地成功）⇒ 它已经不再考碰撞，
+却还在验收表里报 `ok`。**这正是"判据失去牙齿"的形状**（跟 PLAN 里 #35「A2 验收一直空转」
+同一族：判据本身要能被证伪）。
+
+**修法**：键换成当前哈希下**真的同槽**的 `0/2/7/12/14`，并且不再"看着像就算"——
+新增 `同槽` 那一行：把每只键**单独插进一张空表**，直接量出它的初始槽（空表第一只键不探测、
+不重建），五个必须相等。哈希哪天再改，这一行**当场变 false**。反向验证过：把键换回
+`0/8/16/24/32` ⇒ `同槽 = false`（有牙）。
+
+**账**：`tests/hashmap/run.sh` 全绿（grow 那一格从"挂死"回到"逐字节相当"）·
+`tests/run.sh` **259 + 263 通过 / 0 失败** · `bench/app/session.extc` 前后输出逐字节相同。
+
+---
+
+## 2026-09-26（第十一段）·「共享存储」的拷贝：`clone()` + 编译期警告
+
+**问题（作者 2026-09-26 提出）**：`var b = a` 在 extC 里**不是深拷贝** —— 它是结构体逐成员
+拷贝，容器值里的切片指针被抄了一份，于是两份**共用同一块板块**。而别的值（`[3]i32`、普通
+struct）复制都是各一份 ⇒ **只有 STL 例外**，这与直觉相反，后果还是静默的：
+
+    var b = a            // 两个名字，一块板块
+    b.push(i32(9))       // ← 改到了 a 的内容（实测：a.len 被这个 push 改掉了）
+    a.release()          // ← b 变成悬垂（守卫能 trap，但那已经是事故了）
+
+**别的语言怎么做**（作者问的）：C++ `std::vector` 是**深拷贝**（代价不可见，所以"传值传
+vector"是经典事故）；Java/C#/Go/Python 是**共享存储**（靠口口相传）；Rust **编译期禁止**
+（move 语义，要复制必须 `.clone()`）；Swift 是 **COW**（语义独立、物理共享到第一次写，
+唯一两全的）。extC 做不了 COW（没有引用计数），所以走第四条路。
+
+**做了什么（作者口径：「直接加个警告得了，万一用户就是神人」）**：
+
+1. **`clone()`**：每个容器一个显式深拷贝（O(n) 拷贝 + 一块新板块），新存储在**调用者所在的
+   地方**。实现在 `vector` / `string` / `map` / `hashMap` / `linMap` / `set` / `linSet` /
+   `hashSet`（含 `hashMapI64` 包装）。
+2. **`@sharesStorage`**（新注解，标在容器的 struct 上）⇒ **编译期警告**，不是错误 ——
+   作者要的是"让用户知道这个地方不对"，不是堵死（有些共享是正当的）。
+3. 警告只报**两个形状**：`var b = a` / `let b = a`（无标注绑定，右边是个名字）与
+   `return a`（返回**已有**的值）。判据：`Sym.line > c->curFunc->line` ⇒ 是函数体里刚绑的
+   新值，交出去就是移交，不报；否则是参数/外层值 ⇒ 报。
+   库自己写的代码不报（按 `c->ctx->path` 判断**拷贝发生的位置**）。
+
+**踩过的三个坑**（都记下来，这一族坑会重复出现）：
+
+- **只挂在"需要值的那两扇门"上会误报一片**。`checkValue` / `checkInto` 里挂过，结果
+  `outer.push(inner)`（按值传参本来就是移交一份值）、`return v`（把刚构造好的值交出去）、
+  `let c = a.concat(b)`（右边是调用结果）全都报 ⇒ 那条真警告被埋了。**判据要挂在"绑定"
+  这个语义上，不是"值位置"上。**
+- **`var b = a` 不经过 `checkInto`**：它没有类型标注，走的是 `checkExpr` 那条路（`ST_VAR`
+  的 else 分支）⇒ 第一版一条警告都不报。**"需要值的那两扇门"不是全部的门。**
+- **库/用户的判断要看拷贝发生的位置**：第一版用 `sd->modName`（类型的来源），而容器类型
+  当然来自库 ⇒ 永远被跳过。
+
+**影响面（实测）**：全量扫 559 个 `.extc`，只有 **2 处**命中 —— `tests/pool/rt_stale_alias.extc`
+（就是那个别名陷阱判据，本来就该报）与一个反例文件 ⇒ 警告**不制造噪音**。
+
+**判据**：`tests/stl/clone.extc`（8 个容器的深拷贝 + 原件 release 后副本照旧可用）·
+`tests/stl/clone_warn.extc`（该报的 2 条）· `tests/stl/clone_ok.extc`（不该报的 0 条）。
+
+**连带的两个修**：`tests/pool/run.sh` 的 `rt_run` 改用 `-w`（那一节判运行期行为，编译期警告
+会搅坏逐字比较；警告本身另有判据）；`src/check/check_internal.h` 的声明放进了 include guard 里面
+（放到 `#endif` 之后 ⇒ `tools/check_guards.py` 直接红）。
+
+---
+
+## 2026-09-26（第九段）· 保留池（阶段 b）：板块归还时不立刻还给 malloc
+
+> ** 这一段记录的是已经回滚的改动（2026-09-26 第十段撤除）。** 保留在这里是因为
+> "为什么否掉"比"做过什么"更值钱：它是**机制量配不上收益**的实例 —— 40 行新设施
+>（分档 / 预算 / 单块上限 / 退出结账入口）+ 一个新概念，换来 62 KB 块上 3.5 倍；
+> 而它顺带引出的那个 ASan 泄漏（`take_raw` 的 `mmapped` 标记没初始化 ⇒ `munmap` 走错路）
+> 说明**每多一条分配路径，就多一个必须写对的标记**。下面的数字都是真的，机制已不在树里。
+
+**为什么做**：`poolSliceRaw` 让池自己的簿记表不必清零之后，剩下的成本是**每次 drop 都把板块还给
+malloc、下一轮再要回来**。保留池就是"归还时先留一段，给下一次同尺寸的分配复用"。
+
+**一个先被否掉的路：madvise(MADV_DONTNEED) 丢页。** 想法是"丢掉物理页，重读由内核给零页"，
+于是复用的块天然满足"未赋值读作 0"。实测**每一个尺寸都比 memset 慢**：
+
+| 块 | memset | madvise |
+|---|---|---|
+| 64 B | 0.003 µs | 2.24 µs |
+| 4 KB | 0.032 µs | 2.50 µs |
+| 400 KB | 5.08 µs | 88.1 µs |
+| 16 MB | 984 µs | 7,778 µs |
+
+⇒ 丢页不是清零的替代品（**写零比丢页便宜**，这就是这条路的终点）。
+
+**于是保留池只服务"逻辑上不需要清零"的那条路**（`extc_pool_take_raw`，即池自己的簿记表）。
+A/B/C 三对照（每块只写 4 KB、其余不动）：
+
+| 块 | A 现状 malloc+memset+free | B 保留池+清零 | C 保留池不清零 |
+|---|---|---|---|
+| 8 KB | 0.06 µs | 0.05 µs | 0.02 µs |
+| 64 KB | 0.64 µs | 0.63 µs | 0.02 µs |
+| 400 KB | 5.09 µs | 4.56 µs | 0.02 µs |
+| 4 MB | 88.49 µs | 73.63 µs | 0.03 µs |
+
+⇒ 保留池的收益**几乎全部来自"不再触碰那些页"**（B 列说明：复用前先清零就把它吃掉了）。
+所以它只配给"逻辑上不需要清零"的分配用。
+
+**踩到的第一个坑：分档写成了线性 4 KB × 64 档。** 那只覆盖到 256 KB —— 一个 512 KB 的板块
+落不进去，`keepSlot` 返回 -1，`keepBlock` 直接 `return 0`，**保留池形同不存在**。
+症状极具误导性：`extc_pool_keep_bytes()` 一直是 0，而 `take_raw`/`drop` 都"正常"。
+用 gdb 在 `keepBlock` 里单步才看见 `sl = -1`（条件全过、却走了 `if(sl < 0) return 0`）。
+改成**几何分档**（每档翻倍，64 档覆盖 4 KB..2^53）后立刻对了。
+
+**踩到的第二个坑：预算太松会把高水位钉住。** 第一版是"8 MB 预算、不留单块上限"，
+结果 `tests/pool/zt_shrink_rss.extc`（800 KB × 2000 轮）的峰值 RSS 从 **2.4 MB 涨到 10.2 MB**：
+那个 800 KB 的块被留住了，而 glibc 的 mmap 阈值随之被动抬高，后面每一轮都从堆里要 800 KB。
+收紧到**总预算 1 MB、单块 ≤ 256 KB** 之后，峰值回到 **2,340 KB**（判据同时钉住这两条）。
+
+**验收**：`tests/pool/keep_pool.extc`（新常设判据，挂进 `tests/pool/run.sh`）：
+`live=0 keep=1 len=3 v=7,8,9 capped=1` ——
+① 复用真的发生（`bytesLive` 归零而 `keepBytes` 不为零）；
+② 太大不留（超过 256 KB 的块进不去，`keepBytes` 不变且不超预算）；
+③ 复用来的簿记表照旧正确（插三个查三个全对）。
+
+**收益**（同一份二进制、用临时开关对照，200,000 轮、块在保留区间内）：
+7 KB 块 0.006 s → 0.004 s · 781 KB 块（超上限、不进保留池，作为对照）。
+
+**一条口径**：保留池是"已经不在任何池名下、但也没还给 malloc"的字节，所以它**不进**
+`extc_pool_bytesLive()`（那个数仍然必须能归零，`zt_shrink_rss` 的 `bytes=0` 就是靠它），
+单独用 `extc_pool_keep_bytes()` 读。上限也是判据的一部分。
+
+---
+
+## 2026-09-26（第八段）· 池表的「不清零路径」+ 一条 RSS 判据被换掉 + 染色的缺口被钉住
+
+**一、`pool<T>` 自己的簿记表也走不清零（承接 `pFree` 认 `low == 0`）**
+
+`vals`/`slots`/`ent` 三块是**池自己的簿记**，没有用户能读到未写过的槽（`pFree` 把 `low == 0`
+认作空闲）⇒ 给它们开一条不清零的板块路径：运行期新增 `extc_pool_take_raw`（与 `take` 同一个
+函数体，去掉 `memset`），编译器新增内建 `poolSliceRaw<T>(rid, n)`，`pool<T>::withParent` 三块
+改走它。
+
+实测（`pool<i32>::withCap(100000)` × 2000 轮，best of 3）：**1.09 s → 1.08 s → 0.012 s**
+（先删掉 `withCap` 里那圈 O(cap) 的 `ent` 初始化，再换不清零路径）⇒ **约 90 倍**。
+
+两件事必须说清：
+- **语言承诺不变**：`new T[n]` 的「新分配读作 0」照旧。只有池自己的簿记走这条路。
+- **大杠杆是"不清零"，不是"复用板块"**。这直接改写了 `bench/zoneexit/RESULTS.md` 里
+  **④ 跨代复用**那一条的论证：原文说"省不掉清零，所以复用没收益"——**省不掉清零正是把
+  清零从路径上拿掉的理由**，而实测证明那一步值 90 倍。④ 要重审（复用的收益点应该按
+  "哪些块可以不清零"重新算，而不是按 malloc/free 的 7 ns 算）。
+
+**一之二、清零的价格随容量放大（`bench/zero/`，新增）**
+
+新建 `bench/zero/`：同一形状（拿一块、只写首尾、丢掉）走两条路，以及 C 直测的
+`malloc`+`memset`+`free` 每轮价格（本机、-O1、best of 3）：
+
+| 块 | 清零一次 | 吞吐 |
+|---|---|---|
+| 4 KB | 28 ns | 145 GB/s（缓存内） |
+| 400 KB | 4,633 ns | 88 GB/s（缓存带） |
+| 4 MB | 76,025 ns | 55 GB/s |
+| 16 MB | 441,874 ns | 38 GB/s |
+| 64 MB | 25,553,282 ns | **2.6 GB/s**（掉出缓存 ⇒ 页的代价显形） |
+
+extC 侧同一对照：32 MB 的块 × 200 轮，`poolSlice` **0.12 s** vs `poolSliceRaw` **0.00 s**；
+400 KB × 20,000 轮，0.09 s vs 0.00 s。
+
+⇒ 结论有三条：**(1)** 400 KB 以内清零是内存带宽（每字节约 11 ps），**64 MB 那一档差 20 倍**，
+已经不是带宽而是页；**(2)** 所以"不清零"的收益不是常数，它随容量放大；**(3)** 用户可见的
+`new T[n]` 这一档还剩最后一个杠杆：**把清零推迟到第一次读** —— 16 MB 一次分配光清零就是
+442 µs，那是这一档的全部成本。**这是下一步该做的事。**
+
+**二、`tests/hashmap` 的 rebuild 判据被换掉（RSS → 精确字节账）**
+
+原判据是"增量版峰值 RSS ≤ 预留版 × 1.1"。它这次红了（63,292 对 51,968 KB），查下去发现
+**它本来就不可靠**：
+
+| 代码状态 | 增量 inc | 预留 res | 原判据的结论 |
+|---|---|---|---|
+| HEAD（四列走清零 `poolSlice`） | 63,296 KB | **69,056 KB** | 通过（靠**预留更胖**才过的） |
+| 本轮改动（预留版不清零 ⇒ 不再触碰全部页） | 63,296 KB | **51,968 KB** | **失败** |
+
+同一份语义正确的代码，因为"清不清零"这一与判据无关的差异，结论相反 ⇒ 它测的是页触碰模式，
+不是"旧列有没有还"。
+
+换成**精确字节账**：`hashMap::bytesOf()` = 这张表在自己池里当下的字节（`extc_pool_bytes`），
+两次跑完（同样 1e6 条目、同样最终 `cap=2,097,152`）**必须逐字节相等**，且必须恰好等于
+`cap × 17`（key 8 + tag 1 + slot 4 + bucketOfDense 4 + 值池 4）：
+**增量 35,651,584 B ≡ 预留 35,651,584 B = 2,097,152 × 17**
+
+**有牙的证明（反向实验）**：把 `rebuild` 末尾那三行 `poolGive`（还旧列）去掉再跑 ——
+增量变成 **62,914,144 B**（多 27,262,560 B，正是倒数第二代的 key+tag+slot）
+⇒ 判据立刻报 `FAIL grow`。做完已还原。
+
+**顺带修一个读数 bug**：`hashMap::bytesOf` 第一版写成 `self.vals.bytesOf()`，读到的是**值池**
+而不是这张表自己的池，于是期末数只有 19,355,632 B（缺的就是四列那 16.7 MB）——数字对不上时
+**别猜，先量**：拿 `pidOf()` 把池下标打出来才发现读错了池。另一个坑同理：`pool<T>::bytesOf`
+里的 `self` 是池值不是容器，谁的 `pid` 决定读到谁。
+
+**三、染色的缺口钉住了（回答"epoch 为什么没用"）**
+
+- **池级 epoch 有用，且已接线**：`pool<T>::epoch` 在 `clear()` 里 +1，`pLive` 的第一道就是它
+  ⇒ O(1) 作废整池句柄、一个槽都不写（`tests/pool/rt_epoch.extc` 三条判据钉着：旧句柄三问全否决、
+  再插容量不涨、同 epoch 内 `remove` 后复用同槽旧句柄仍失配）。这是**性能账**。
+- **zone 色（§7 染色）目前只有机制、没有防护价值**：`extc_pool_birthColor/rowColor` 在运行期
+  都有，但**库侧一个调用点都没有**，只有 `rt_color.extc` 在读它。为什么接不上去：
+  1. `extc_pool_zoneLeaveTo` 会沿 zone 链把该地方的池**逐个 drop** ⇒ 池不可能活过它出生那一代
+     地方 ⇒「出生色 ≠ 当前色」在正常执行路径里**构造不出来**（只有"提权到更外层的池、外层还没
+     退出"这一种，而那时色本来就相等）。
+  2. 真实能构造出来的跨代失效（容器值的 `pid` 被复用时）已经被**槽级 `generation`**挡住了：
+     `freeSelf` 之后同一个槽被新池拿走时 `generation` 必然 +1 ⇒ 池值自己的 `pidGen` 守卫先响。
+     色是"位置级别的群体判据"，它看得见的东西 `generation` 都看得见。
+- 于是 §7.4 实际只剩一条在跑：**注册表分片**（实测 10 ns/池里只占 2~3 ns，不划算）、
+  **真收缩**（已成立，800 KB × 2000 轮峰值 2.3 MB 平）、**跨代复用**（见上，要重审）。
+  染色这一关的结论是：**机制留着（它已验证是 sound 的），但它不是性能杠杆，也不带来新的防护**。
+  真正的杠杆是"哪些东西可以不清零"，就是本轮第一件事。
+
+**验收**：`check.sh quick`（tests/run.sh 263 通过 0 失败 · hashmap/map/stl/linmap/pool 全 0 失败）·
+每节 ASan 干净 · 生成物 `-Werror` 干净。
+
+---
+
+## 2026-09-26（第七段）· 期 1 收口：zone 按标记回退 + 容器接入 release
+
+**zone 压/弹不平衡（#75）的修法**：不再追求「压几次就弹几次」，而是**按标记回退** ——
+进入一个地方时记住当时的深度（`__extc_zm<层>`），离开时 `extc_pool_zoneLeaveTo(mark)`
+弹到那个深度为止。早退路径（`return` / `break` / `continue`）因此天然配平，多余的回退幂等。
+
+**地方判定**：`modName` 为空 = 入口文件的函数 = 一个地方；库函数（`modName` 是模块名）对地方
+透明，所以 `pool<T>::withCap` 里建的池属于它的调用者所在的地方。这个判据是实测出来的：
+先用「名字里有没有 `$`」，但方法名与 `instName` 都不带 `$`，于是库构造函数自己压了 zone，
+池随构造返回就被回收（症状是 `made=0`）。
+
+**容器接入**：`std/pool.extc` 加字段 `pid`（构造时 `syspool::extc_pool_new(i64(-1))`）与
+**`release()`**（作者命名，不叫 close：作用域结束这棵树本来就会自动清空），保留 `clear()`。
+
+**验收**（`tests/pool/` 失败 0，`check.sh quick` 24 节 0 失败）：
+rt_zone `depth=1 live=0 in=2/4 after-drop=3 after-reset=2 out=1/0` ·
+rt_reuse `same=true gen=1->2` · rt_container `live=0 made=1 closed=0 again=1 out=0` ·
+rt_blockexit `before=0 in=1 rid=0 after=0 two=2 gone=0` · 阶段 0 churn 恢复平（1728 → 1664 KB）·
+canary 仍会响 · ASan 与 gcc/clang `-Werror` 干净。
+---
+
+## 2026-09-26（第六段）· 机制改名：region -> pool（arena / pool / zone 三分）
+
+> 主人：「你觉得 region 这个名字会不会带来混乱啊，我感觉还是 pool 好些呢」→「那就先把名字换成 pool 吧」
+
+**为什么改**：内存管理领域里 region-based 的 region *就是*本文说的 arena（按作用域整块释放），
+拿它命名「等大元素 + 槽位复用 + 世代 handle + 手动 reset」的东西，读者会先入为主地理解反。
+而作者本人描述它时用的就是「池」。三层名字定死：arena（栈式，块边界整块释放）·
+pool（等大元素、槽位复用、手动 reset/close）· zone（一个地方里的一组 pool，本身也是栈式）。
+
+**动了什么**：`src/regions.c/h` -> `src/back/pools.c/h`；运行期 `extc_region_*` -> `extc_pool_*`、
+`ExtcRegion` -> `ExtcPool`、`needRegion` -> `needPool`；库模块 `std/sys/region.extc` ->
+`std/sys/pool.extc`；用例并入既有的 `tests/pool/`（`rt_basic` · `rt_blockexit` · `rt_churn` ·
+`rt_stale` · `rt_alloc`），`check.sh` 不再单开一节（池那一节同时覆盖期 0 与期 1）；
+文档 `docs/topics/REGIONS.md` -> `POOLS.md`（正文改口径，作者引文保留原话）。
+节数随之重数：quick **23** / 完整 **29**（README 与 PLAN 同步）。
+
+**改名踩到的坑（记一笔）**：`strncmp(f->name, "extc_region_", 12)` 里的 **12** 是手写长度，
+改名后字符串短了两个字符，前缀比较永远不匹配，运行期文本根本没发射，链接时才报
+undefined reference。已改成 `strlen("extc_pool_")`——手写长度这种东西，改名时最容易被落下。
+---
+
+## 2026-09-26（第五段）· region 的口径由作者补齐：arena 不是栈，region 是 arena 里的一棵指针树
+
+> 主人的话：「region 是一种基于 ECS/Handle 的内存管理模式……是为了弥补 arena 在管理删增
+> 动态度很大的数据结构时的劣势」「region 随着 STL 容器一起创建，你不能单独创建一个空的
+> 不知道放啥的 region」「嵌套的 region 应该仅构成逻辑父子关系，实际全部统一在同一个 arena 下」
+>「arena 里的其他对象真的把数据段存进去了，而 region 在 arena 里面只会维持某种树状结构的
+> 指针存储，在清空时遍历树清空」
+
+**这一段推翻了我两处已提交的东西**：
+
+1. `a0d37bf` 让每个 region 自持一只 `extc_arena`，源头是设计稿 §3.1 那句「槽里放的是真正的
+   arena（块链）」。作者口径是反过来的：**数据直接在它所在的 arena 里**，region 只是
+   arena 里的**一棵指针树**（簿记），清空靠遍历树。§3.1 的措辞已按作者口径更正。
+2. 我做的「独立建 region」（`extc_region_new` 由库/用例直接调）与「region 随容器一起创建」
+   冲突，且层号由调用方手写会出事——`tests/region/alloc.extc` 第一版把 main 体里的 region
+   写成第 2 层，循环体（也是第 2 层）第一次退出就把它回收了，之后分配返回 NULL。
+   这实证了「层号该由生成器给」，期 2 的入口由生成器发射层号。
+
+**改后的结构**（`src/regions.c`）：`ExtcRegion` 里是 `extc_arena *arena`（借的，不拥有）+
+世代 + 父子链 + 帧内层号；帧钩子把 arena 数组交给注册表（`extc_region_frameEnter(__extc_a, N)`），
+region 取 `arenas[level]`、子 region 继承父的 arena，`extc_region_alloc` 就是那只 arena 的
+分配器（清零与失败行为与别处一致，只有释放点不同）。
+
+**新增判据**（`tests/region/` 第 5 节）：分配 -> 写入 -> 读回，并用 1.6MB 分配把 arena 逼到
+换块，旧值仍在 ⇒ `ok=7 after=42 keep=7`。另外两条实测记下来：extern 声明 `mut ref T` 的返回值
+只有 `var` 绑定时可写（`let` 绑定的引用只读）；运行期定义的类型要与 extC 侧声明的 C 类型对齐
+（`uint8_t *` 而不是 `void *`，否则 gcc 报 conflicting types）。
+
+**还欠的**：容器侧的接入（region 随容器建、`reset`/`close` 真的整批还）与类型化的分配入口
+（不能是 `extern!`：返回值只能是字节指针，且 `mut` 受绑定形式影响）——入口该由生成器提供，
+形状与命名由我在库侧定，不再占用作者的时间。
+---
+
+## 2026-09-26（第四段）· 撤掉「跨线程 handle 转移」，并把并发/协程两条线标成未构思
+
+> 主人的话：「唉唉我还没有构思协程和多线程啊」+「我真的有 handle 转移吗，我的多线程想法是
+> redis 数据库同款并发读 + 分块并发写，完全避免数据共享」
+
+**结论**：`POOLS.md` §9 第 6 条**撤掉** —— 线程之间不共享 region，就没有「谁能拿着 handle
+过界」的问题要立规矩。这条本来是我按「共享内存 + 所有权」的惯性问出来的，而主人的模型是**零共享**。
+
+**白拿的三条简化**（都写进 §9.6 了）：region 不需要锁/原子/跨线程所有权规则；「一个 region 同时
+只有一个写者」这条不需要（一个 region 只属于一个线程）；注册表现在是进程级 `static`，并发落地时
+改 `_Thread_local` 就够，**设计不用动**。
+
+**同时老实标出依赖**：**协程**是 region 帧栈的唯一外部假设（帧进/帧退成对 = 调用栈形状），
+协程（有栈/无栈）落地时要重新审「帧」的定义 —— 这不是 region 能替它决定的，已记在 `PLAN.md` 与
+`POOLS.md` §9.6。
+---
+
+## 2026-09-26（第三段）· 期 1：区域注册表落地（POOLS.md §8 的期 1）
+
+> 主人的话：「先启动1期吧，长任务」+（对"用户无感"那条的确认）「这都是对的，但是理论上STL
+> 不是应该是用户无感的吗」⇒ 定下一条纪律：**region 是容器的实现细节**，用户只在"手动回收"
+> 与"自己写 region 容器"两处见到它；期 1–3 的验收之一就是 **用户代码零改动**
+
+### 做了什么
+
+- **单开子系统文件**（按 §11 的建议）：`src/regions.h` + `src/regions.c` —— 现有文件只留
+  调用点：`codegen.c` 里一次按需发射 + 三处钩子
+- **运行时**：槽位表 + free list + **世代**（drop 自增 ⇒ 旧 handle 查得出来）+ 父/子链 +
+  递归释放 + `reset`（也递归到子树，§9.2 主人批过）+ bump 分配器（期 2 用）
+- **按需发射**：照 `extc_raw_enter` 那条路 ⇒ 不提 region 的程序**一行都不带**
+- **三处钩子**：帧进 `extc_region_frameEnter()` / 块释放 `extc_region_releaseLevel(frame, lvl)` /
+  帧退 `extc_region_frameLeave(frame)` 钩子只挂在 `main` 上（期 1 的 region 只可能由
+  `main` 建；期 2 的 `new(r) T[n]` 落地时再推广到每个会建 region 的函数 已记在文件注释里）
+
+### 量出来的两处修正（都是"想当然"被实测打掉）
+
+1. **第一版注册表是全局的、只按层号 keyed** —— 层号只在**帧内**唯一，于是被调函数块里的
+   region 会和调用者的同层号撞上、或者在帧退时**根本没人放** §3.5 的"**注册表每帧一个**"
+   正是为这个 ⇒ 改成**帧栈 + 帧内层号**（`ExtcRegion.frame` + `ExtcFrame` 栈）
+2. **钩子被 `noArena` 挡住了**：`main` 只打印不分配 ⇒ 没有 arena 数组 ⇒ 帧标记与块释放都不发，
+   `extc_region_new` 一路返回 -1 ⇒ 按既有先例（`main(args)`、`main` 的 home）加一条
+「region 程序里 `main` 必须有 arena」
+
+### 顺手清掉自己上一轮记的两个问题
+
+- **一个算法两份实现**（可编译的 C 版 + 发射用的文本）⇒ 删掉 C 版，**发出去的那份是唯一权威**
+（它会跑、会被测；不跑的那份一定会烂）· 并把"文本能单独编过"变成常设判据
+- 单个 4899 字符串触发 gcc `-Woverlength-strings` ⇒ 拆成 3 段 `bufPuts`
+- 抽出运行期文本**逐字节比对**（重写前后仅差尾随换行）+ 单独 `gcc -Wall -Wextra` 编一遍
+
+### 判据（`tests/region/`，挂成 `check.sh` 第 23 节 ⇒ quick 22 → **25**、完整 28 → **31**）
+
+| 用例 | 实测输出 |
+|---|---|
+| `basic` | `live=0 up=1 gen=1 down=0 stale=0`（建 ⇒ live 1 世代 1；drop ⇒ live 0 且旧 handle 世代对不上）|
+| `blockexit` | `before=0 in=1 rid=0 after=0 two=2 gone=0` **块退出把 region 带走**（无需手动 drop）· 父 drop ⇒ 子一起走 |
+| `churn` | `live=0 cap=64 gen=0`（20 万次建/放 ⇒ **槽位表容量停在高水位** = 内存平的机械判据）|
+| 生成物 | `-Wall -Wextra -Werror` 编过 · **ASan 含泄漏检查干净**（注册表自己 malloc 的块也被 free）|
+
+### 跑 `check.sh quick` 时抓到的两个「判据自己坏了」（都属于假绿）
+
+1. **5 个套件的可执行位从来没进 git**（`100644`）⇒ `check.sh` 按 `./tests/x/run.sh` 调的那五节
+（warnings / modules / qname / fs-shape / region）**一直是红的**，而我看不见 —— 因为我此前
+   一律用 `bash tests/x/run.sh` 单跑（那条路不需要可执行位）⇒ 已 `chmod +x tests/*/run.sh`
+（22 个全 `100755`），并**第一次真正跑通** `./check.sh quick`：25 节 · 通过 25 · 失败 0 · RC=0
+   教训：**「判据红了但那条路没人走」与「判据绿了但没测到」一样危险**
+2. **churn 的吞吐数字一度是假的**：不读任何结果时 `-O2` 把整个 20 万次循环消掉（`time` 报 0 ms，
+   看着像 400 Mops/s）⇒ 测试里加一个可观测的累加。加完顺带得到更硬的判据：
+   累加值 = `1+2+…+200000 = 20000100000`，它同时证明 ① 循环真跑了 20 万次
+   ② **世代每次槽位复用都自增**（「旧 handle 查得出来」的机制）
+   真数字：**40 万次建/放 = 3 ms ⇒ 133 Mops/s**（期 1 给期 2/3 的对照基线）
+
+### 判据补全：旧 handle 带位置地失败（`tests/region/stale.extc`）
+
+期 1 还没有容器 API（期 3 才有），但「带位置」这条判据可以就地钉住：用例自带一个最小 handle
+（`{ 槽位, 世代 }` 两个普通值）与校验函数——世代对不上就 `failure(staleHandle)`（**值**），
+在 `main` 里 `?` 掉就是带文件:行的 trap。实测：
+`tests/region/stale.extc:24: trap: a step in `main` failed: staleHandle`，退出码 **1**。
+这正是 §3.3 的界线：**bug 就 trap、条件就是值**，而没处理的条件由 `?` 决定去向。
+
+**没做的（按 §8 的分期，诚实标出）**：带类型的内存分配要到期 2（`extern!` 不许返回 `slice<T>`、
+extC 没有指针转换 ⇒ 只能是生成器发 `new(r) T[n]`）；`buf<T>` 原地扩展与 region 版容器是期 3；
+"引用不许出函数"升成硬检查是期 4（§8 已指出：ECS 纪律让**完整深度传播根本不用做**）
+
+---
+
+## 2026-09-26（后半）· 复合赋值 `+= -= *= /= %=` 与 `for` 四种形态：都用"脱糖/复用既有判据"，不给走查留新格子
+
+> 主人的话：「额先做for吧，然后做之前把+= -= *= /= %=也做了（++i和i++和--i和i--就先不做了
+> 这个也是UB老常客了）」→「for其实我的理解就是某种 `{i = 0; while(cond) { BLOCK; i += 1; }}` 啊」
+
+### 复合赋值（定案 92）
+
+**做法**：`x op= y` 就是 `x = x + y`，而"这个运算符在这两个类型上成立吗"**问的是同一个函数**
+（`checkArith` —— 就是写开的 `x + y` 走的那个）⇒ 算术规则、字面量适配、引用拒绝、
+用户自定义运算符，一条都不用抄第二遍 检查器新增的只有**赋值那一半**：目标可写
+结果能赋回去 存储逃逸
+
+**生成的 C 保持复合形式**：`x += 5;` —— C 保证目标只求值一次 而且读者看到的就是源文
+用户自定义运算符那条（`v += w`，`v` 的类型定义了 `+`）发 `v = vec2_add(&v, w)`：
+重写必然把目标写两遍 ⇒ 要求目标里**没有调用** 这条判据是**语法**的，不是效果摘要的
+—— 摘要说"纯"不足以保证重复求值安全（读全局的函数在它眼里就是纯的）
+
+**词法**：`%=` 补进 PUNCTS（要排在 `%` 前面 已有的 `+= -= *= /=` 本来就在）
+
+### `for`（定案 93）
+
+**做法**：四种形态**全在解析器里**脱糖成 `var` + `while` 与主人的描述一模一样：
+
+```
+for i in lo..hi { B }        ->  { var i = lo  while i < hi { B  i += 1 } }
+for d in c { B }             ->  { var __extc_s = c[..]  var __extc_i = i64(0)
+                                    while __extc_i < __extc_s.len { var d = __extc_s[__extc_i]  B  __extc_i += 1 } }
+for(init; cond; step) { B } ->  { init  while cond { B  step } }
+```
+
+**为什么不加语句节点**：那要**教会每一个走查**（效果摘要、逃逸分析、arena 放置、
+`@overwrite`、名字标记…）—— 而当天上午修的 `#72` 正是"某个走查漏了一格"的一族
+脱糖之后检查器与生成器见到的还是它们本来就认识的东西 生成物也很直白：
+
+```c
+{
+    int32_t i = 0;
+    while(i < 5) { { sum += i; } i += 1; }
+}
+```
+
+**三条边界（都实测过）**：
+1. 范围的类型来自**下界**（字面量默认 `i32`）⇒ 要 `i64` 写 `i64(0)..n`；而 `0..a.len`
+   **合法**（比较允许数值加宽 我原以为会报错，量了才知道能过）只是索引处多一次转换
+2. 容器先过 `c[..]` 变成视图 ⇒ **定长数组也能直接迭**（数组自己没有 `.len` ⋆ 视图才有）；
+   元素是**拷贝** 改 `d` 不写回
+3. 容器必须是**可重复求值的位置**（名字 / 字段 / `*p`）⇒ `for d in f()` 在编译期挡住并指路
+（脱糖后的循环每轮都要再读它）；`varArray<T>` 与其它结构体**暂不支持** —— 它没有内置下标，
+   而 `[]` 不在可重载集合里（`== != < <= > >= + - * / % << >>`）⇒ 记进 PLAN
+
+**没随之落地**：范围类型仍然**只是优化**（DESIGN §4）⇒ `0..n` 是**语法**，不产生值、不进类型表
+将来"已证明在范围内 ⇒ 下标免检查"接在这个脱糖上就行
+
+**判据**：`examples/for-loops.extc`（六个数自证：10 / 0 / 60 / 12 / 26 / 2）·
+`tests/errors/for_container_not_a_place.extc`（编译期挡住）· 另外四条反例实测：
+`let` 目标 / 引用目标 / 类型不符 / 目标里有调用（`a[idx()] += w`）
+
+---
+
+## 2026-09-26 · `#66` 一次改到位（限定名两条解析路合一）—— 顺藤摸出**四处配对不一致**、两处**静默错值**、一族**走查漏格**，以及 `println` 弃置
+
+> 主人的话：「修啊」→「我有预感有一个更根本的bug」→（量出来之后）「println弃置了」
+>「给println/print的调用变成一个特别的编译错误吧」→（量完 392 文件 / 938 处）「呃呃那就写成警告」
+>「草，库文件不能够使用print/println了」「标明已经弃置」
+
+### ① `#66`：限定名后面跟 `.`（一次改到位）
+
+**形状**：`mod::name` 后面跟 `.` 时，解析器**自己拼**了一个 `EX_IDENT("mod::value")` ——
+而限定名要成为"值"只有一条路：`looksLikeAssoc` 建出的 `EX_ASSOC`（`io::cin >> x` 走的就是它）
+⇒ 同一个东西两种表示，只有一种认识"值" ⇒ `io::cin.bad()` 报 *only direct function calls*、
+`io::cin.fd` 报 *undefined name*，而 `cin.fd`、`io::cin`、`io::cin >> x` 全是好的
+
+**修法**（两处，一次到位）：解析器的 lookahead **只抢 `{`**（结构体字面量那条不变），
+`.` 让给 postfix 循环；"这其实是**限定类型的变体**"的判断**挪进检查器**
+（`EX_FIELD` / `EX_METHOD` 两侧都已有"接收者是类型名 ⇒ 枚举变体"的分支，缺的只是接收者形状）；
+而 `EX_ASSOC` 到了 loader 那里只认**函数 / 全局** ⇒ 补第三支：**限定名也可以是个类型**
+（`unitType` + `renOfTarget` ⇒ 产出与 `rwQualifiedTypeName` **同形**的 `EX_IDENT`）
+
+**实测**：`io::cin.fd` `io::cin.bad()` `io::cout << …`，库里的**带载荷变体**
+`io::ioError.closed(fd)`（这条一开始把 `examples/stream-sum.extc` 打挂了，正是它指的路）。
+判据 `tests/qname/t17.extc` + `lib/sub/payload.extc`，`t1[1-7]` 全进 `run.sh`
+
+### ② 顺藤摸出**四处"同一件事算两遍"** ⇒ 生成的 C 编不过（PLAN `#70`）
+
+`tests/arena-promoted/R2a` 一直红：`f_i32` 的签名没有 `__extc_home`，函数体却读它
+
+1. **泛型实例的 `arenaSites` 是模板的浅拷贝**：`*in = *tmpl` 拷的是**结构体** ⇒ 同一份数组、
+   **当时的长度** 而实例是在**调用点**建的，调用者可能声明在模板**前面** ⇒ 模板后来
+   `vecPush` 出来的站点，实例那边**看不到**（实测：模板 `sites=1 L-1`，实例 `sites=0`）
+   ⇒ 修法：所有函数体查完之后，实例的列表**重新指向**模板那一份（放同一份数组、取当前长度）
+2. **调用点投递 home 的权威用错了**：原来判的是**属主**函数的 `needsHome`
+   —— 该看**被调者**的 `usesHome`，因为 codegen 决定"传不传"用的就是它
+   ⇒ 修法：定点跑完**按 `usesHome` 结清**每个待定站点（并删掉那条会误导的分支）
+3. **`main` 的 home 是 `&__extc_a[1]`，而数组只在 `mayUseArena` 时声明** ⇒ 与已有的两条
+   额外理由（@overwrite 格子 / `main(args)`）同型，补第三条：`isMain && usesHome` ⇒ 必须有数组
+4. **非 void 函数自然落空 ⇒ 返回未初始化的槽**（实测 `f(false)` 拿到栈上垃圾）
+   原来只有 `noArena` 那条路有 trap ⇒ 去掉 `noArena` 条件，落空一律 `trap` 带位置
+
+⇒ `arena-promoted` 21 个用例全绿（追这条时先把"我的改动是不是元凶"用 `git stash` 量了一遍
+—— **它在我改之前就红** 这条纪律值得保留：报红先问"是不是我"，再问"为什么"）
+
+### ③ 两处**静默错值**（PLAN `#71`）
+
+- **`main` 的退出码在有 arena 时被吞**：`cgReturn` 把它写成 `(void)(…)`、epilogue 一律 `return 0`
+  ⇒ 与 MANUAL 那句「**返回值就是进程退出码**」直接冲突 修法：`main` 也走 `__extc_ret_v` 槽
+（`retSlot` 去掉 `!isMain`）⇒ 实测 `fn main() -> i32 { var p = new i32  return i32(*p) }`
+  **退出码 = `*p`**（之前恒 0）
+- **cout 尾巴丢**：`main` **自然落空**时，`cgReturn` 与 epilogue 里的 flush 一个都不经过
+  ⇒ 程序最后一句 `io::cout << "x"` 什么都不印 修法：`main` 前言挂一次 `atexit(extc_cout_flush)`
+（显式 flush 保留 一次覆盖落空 / `return` / trap / `proc::exit`）
+
+### ④ 走查漏一族（PLAN `#72`）：四格 + 八处
+
+未用参数警告**误报 4 处** —— 逐个查下去发现根因不是警告本身，而是
+**"问表达式里出现了什么"的走查只看了一部分**：
+`a[lo..hi]` 只走 `obj`（上下界漏）· `T(x)` 的 `EX_CONV` 没有分支（直接掉 `default`）·
+聚合字面量（数组 / 枚举 / 结构体）在若干走查里也是 `default`
+
+用脚本把 AST 的 25 个 `EX_*` 与**每个**走查的 `case` 做差集，找出八处并一次补齐
+其中几处是**真缺陷**，不只是少一条警告：`collectEffectsExpr` 漏聚合里的调用 ⇒ **效果摘要不完整**；
+loader 的 `rwExpr` 漏上下界 ⇒ `s[0..lib::N]` 里的限定名**解析不了**；
+`exprCallsAllocator` 漏 `EX_GENCALL` ⇒ `alloc<T>(n)` **不算分配**
+
+**判据**：新增 `tests/warnings/silent/params-used-deeply.extc` —— 把四格**故意写深**，
+外加 `tests/warnings/run.sh` 第 ④ 节（语料是"碰巧覆盖"，静默用例是"**故意**覆盖"）
+剩下的真未用参数只有 `examples/borrowing.extc` 一处 ⇒ 顺手把例子改成"返回较大的那个"
+（`pickBigger`：结果**只能来自实参** —— 比原来那句注释更贴题）
+
+### ⑤ `println` / `print` 弃置（定案 91）
+
+**先量账再动手**：正例语料 **392 个文件 / 938 处**，而且 `<<` 缺 **`i32`** 与
+**结构化类型**两个必需重载（搬到 `tests/argv/args.extc` 时当场撞上 `<<` 没有 `i32`）
+⇒ 立刻报错 = 整棵语料全红 + 那些形状根本搬不过去 ⇒ 主人拍板「那就写成警告」
+
+- **库先搬干净**：`io.extc` 的 `<<(f64)` 是最后借内建的一处 ⇒ 新增运行期定长门
+  `extc_cout_f64`（两行 `snprintf(b, sizeof b, "%g", v)`）extC 没有变参 ⇒ `snprintf`
+  从 extC 够不着，这个门是唯一入口 **格式与老内建同一个** ⇒ 实测 10 个 f64 值
+  **逐字节相同**（`0 · 1.5 · -3.25 · 0.1 · 1/3 · 1.23457e+08 · 1e+308 · 1e-308 · 2.5e-10 · -1e-06`）
+  且**只在被调用时才发射**（`needCoutF64`）⇒ 不打印浮点的程序不背那 9 行
+- **警告本体**：`ckWarn` 一条，note 就是搬家说明 `-w` 能关 不改退出码
+- **扫描要看得见**：`tools/parrun.py` 的 `warn-scan` 把弃置提醒**单列计数**
+（`strip_deprecated` 439 处）—— 其余警告**仍然一条不许响** 这是"清单一律要能自己消失"的做法
+- **代价实测**：cout 类程序生成 C **+5 行**（f64 门 9 行 − 不再借 stdio 的 `print` 约 4 行）；
+  `globals.extc` **0 行**
+
+### 本轮全量实测
+
+`gcc -Wall -Wextra` **0** · `clang -Wall -Wextra` **0** · `clang -Weverything`（只允许清单类别）**0** ·
+error **0**（89 个 examples）· 语料 **256/0** · **21 个套件全绿**
+（含 `warnings` 的 ④ 静默用例、`argv`（两个用例已搬去 `io::cout`）、`qname` 的 `t17`）
+
+---
+
+## 2026-09-24 · 流运算符 `<<` `>>` 进可重载集合 + 重载按右操作数精确类型（①②一起来）
+
+> 主人：「**来吧，1 2 一起来，我支持，运算符确实可以特殊一点毕竟这么用本来就是为了方便好写**」
+> 起因是那句语法目标：**`cin >> x >> y` / `cout << x + y`** —— 流式 IO 想写成运算符，
+> 而它同时撞着定案 82 的两条边界：① 可重载集合里没有 `<<` `>>`；
+> ② 上面写着「运算数类型必须精确（同型）」⇒ 两条一起放宽
+> 放宽的方向**不是**引入候选集：分派仍然只看**一个**维度（右操作数的静态类型），
+> **没有隐式转换、没有多选题** 这正是"运算符可以特殊一点"的安全含义
+
+### ① `<<` `>>`：它们是**两个**记号，却要当**一个**运算符名认
+
+- 词法上 `<<` 永远是**两个** `<` 记号（**不融合** —— 融合了 `box<box<i32>>` 就解析不了）
+  ⇒ 认运算符名必须看**记号对**（`atShift`），看单个字符就错
+- 这条坑**一天内踩两次**：`fn <<(` 被当成**类型参数列表**；修完解析器后生成物里又出现
+  `static out out_<<_i64(...)`（mangle 表里没有 `<<`）⇒ **解析器白名单与 mangle 表必须一起动**
+（`<<`→`shl` · `>>`→`shr`）—— 定案 82 第一版就记过这条教训，这是**第二次**兑现
+- 内建整数上的 `<<`/`>>` 仍是移位（规则 3），**分派看左操作数的静态类型**：
+  内建整数 ⇒ 移位；结构体且定义过 ⇒ 调它的方法 这不是重载解析，是**一个分支**
+
+### ② 按右操作数精确类型重载：一个运算符名可以重名多次
+
+`fn *(self: ref vec2, k: f64)` 与 `fn *(self: ref vec2, k: i64)` 现在**共存**，
+比较四个与算术五个同理 于是「**运算符名可以重复**」成了方法重名**唯一**的例外，
+边界写在定义点：重名必须靠**右操作数类型**区分（同类型定义两次 ⇒ `two `*` for `vec2``）
+C 名字后缀规则跟着定了：**只有一个**实现 ⇒ 不加后缀（`vec2_lt`，老名字不动）；
+**两个以上**才加右操作数类型后缀（`vec2_mul_f64` / `vec2_mul_i64`）
+定义点与调用点**共用同一个算后缀的函数** —— 定案 82 第一版正是在这里摔过（定义发 `out_shl_i64`、
+调用点问 `out_shl`），所以这次先把它抽成一个函数
+
+### 顺带修掉 `#64`（"运算符"这条线上最后一个开着的缺陷）
+
+写 `tests/ops/hetero.extc` 时踩到第二层：`vec2 == i64` 报 `cannot compare` ⇒ 比较那四支还卡在
+`ttEquals(l, r)` 总闸门上 —— 拆成「原生 / 派生 / 类型参数」三支各自的门 顺手把 `runOpCheck`
+里同一形状的闸门也拆了，**于是 `#64` 的真根因露出来了**：
+
+        runOpCheck 在实例上「检查通过」，却没把那个方法标成 used
+        ⇒ codegen 的实例方法循环只发 used 的方法（定义没人发）
+        ⇒ 而调用点自己又按实例名找到了同一个方法并发出调用（slice_u8_eq）
+        ⇒ 生成的 C 里是一个**没人定义的函数**：implicit declaration of function
+
+**修法**：`runOpCheck` 里**只标 `used`、不动节点** 这个形状是特意选的：
+模板有**一个**节点、**多个**实例，把 `func` 存在节点上会让别的实例调到错的方法
+判据 `tests/genmatrix/eq_view.extc` 就钉住它 —— 同一个 `same<T>` 同时被 `slice<u8>` 与 `i64`
+实例化，两个 `==` 都要对
+
+⇒ 教训（这一格真正的价值）：「**检查器说行**」与「**定义被发射**」是两件事，
+`--run` 之前两者都不露头 ⇒ 判据必须落在**生成的 C 跑不跑得起来**上
+⇒ 反向断言机制也兑现了：`#64` 那行 `check_still_bad` 在修好的当天**当场 FAIL**，
+把我推去搬文件（`canary-gaps/` → `genmatrix/`）、删断言、改账本 **缺口清单自此清空**
+
+### 判据与账本
+
+- `tests/ops/` **16 → 19 项**：新增 `stream`（两份 `<<`：`i64` 与 `slice<u8>`，值返回式链式）·
+  `hetero`（两份 `*` + 两份 `==` + 异型 `<`，五个方法各自一个 C 函数）· **重名分派 C 名字判据**
+（单一重载**不带**后缀 · 重名**必须带**右操作数类型后缀 · 运算符字符不许漏进标识符）
+- `tests/genmatrix/` **12 → 13 格**（`eq_view`），`canary-gaps/` **清空**（机制留着）
+- `check.sh quick` **22 节全绿** · 测试 **257/0**
+- 账本：`§0.4` 表内 **66 行 = 58 已修 + 0 未修** · `docs/DECISIONS.md` 定案 82 **补记**
+（两条边界一起放宽的**理由**与**边界**）
+
+### ③ 流本体落地：`#65` 修完 + `cout`/`cin` 进 `std::io`
+
+目标语法两半**当天就跑通了** —— 而且头一版探针就已经能跑，卡住的只有一条小规则：
+
+- **`#65` 修掉**（全局常量不接受结构体字面量）：检查器的 `isConstInit` 收下"字段全是常量的字面量"，
+  codegen 的全局发射改成**静态初始化式**（平时发的 `(pt){ .x = 0 }` 是复合字面量，C 的静态对象不收
+  ⇒ 同一个生成器多一个 `staticInit` 参数发 `{ .x = 0 }` 不是第二份代码）
+  **当场量出的新边界**：字段**不能引用别的全局**（`pt { x: BOARD_SIZE }` 仍被拒）—— 这不是小气：
+  C 里 `const int A` **不是**常量表达式，静态初始化式不许引用它 ⇒ 要支持得先做常量折叠，而"没有常量折叠器"
+  是明说的设计 所以 `std::io` 里 `fd` 只好写成字面量 `1`（注释里写明理由）
+  判据：`examples/globals.extc` 加五格（字面量 · 字面量算术 · 省略字段 · **嵌套字面量** · 字符串当 `slice` 字段）
+  + **反例** `tests/errors/global_not_const.extc`（调用不是常量；字段里藏调用也不是 放宽规则必须同时留牙）
+- **`std::io` 末尾新增** `ostream` / `istream` / `cout` / `cin` / `endl` / `inBad` / `inClear`
+  两条形状决定都有实测理由（**句柄只装 `fd`**：`<<` 只能造新句柄返回，因为 `-> ostream` 里 `self` 是引用；
+  **缓冲交给 C stdio**：退出自动冲刷、与 `println` 顺序一致）输入侧的缓冲是**全局定长数组**
+（`mut slice` 含引用 ⇒ 不能当全局 定长数组没有引用），解析**复用 `reader`**（每次存取状态，不写第二份）
+- **两条语义决定**：读之前先问 `eof()`（`nextInt` 在 EOF 返回 `success(0)`，与"读到 0"**同形**）；读不到 ⇒
+  目标**保持原值** + `inBad()` 为真（`>>` 只能返回流，报错没有别的出口；trap 会让"读到 EOF 为止"写不出来）
+- 判据：`tests/io/stream.extc` 两格（链式 + 同型/异型 + 表达式当右操作数 + EOF 值不动 + 与 `println` 顺序）
+  ⇒ IO 节 **17 → 19 项**
+
+**做这一节撞出来的两件事**（都进账本了）：
+1. **`io::cout` 得带模块名**：`use std::io` **不**把名字带进作用域（定案 70：跨模块一律 `mod::name`）
+   ⇒ 想要不限定名的 `cout`，只有"放进 prelude"或"给 `use` 加一种带进作用域的形式"两条路 ⇒ **待主人拍**
+2. **`io::cin.bad()` 不行**（`PLAN #66`：限定名的全局上不能调方法，而同一个全局上的**运算符**是好的）
+   ⇒ 库里多两个自由函数 `inBad`/`inClear` 兜住 |
+3. **顺手查出记账小坑**：`check.sh` 那一节印的"通过 N"是**累加器**（前面几节各 `pass+1`）⇒ 比语料数大 4
+   历史数 257 就是从它那儿抄的。语料数现在**能自洽**了：`254 = examples 88 + errors 158 + traps 8`
+
+### ④ `use mod::*`：让主人原话的语法成为**实际**跑的语法（定案 85）
+
+流做进 `std::io` 之后只能写 `io::cout << x`，离原话差一个前缀 ⇒ 三选一（放 prelude / 给 `use` 加
+"带进作用域"的形式 / 就写限定名），主人挑 B
+
+落地三处（**codegen 一字节没动**）：`UseDecl.wildcard` + 解析 `::*` · 装载器记 `(importer, opened)`
+对并给裸名改写加一条通路（本模块没有 → 去被开模块的导出表找 → 改写成 flat 名并标 `qualified`，
+与"自己写限定名"产出的东西逐字相同）· `requireQualified` 认这层关系（必须在
+"根文件一律要限定名"那段**之前**问）
+
+**三条边界**都有常设验收：`@private` 仍够不着（一开始报的是 `call to undefined function` —— 挡住了但
+把人引向"拼错了" ⇒ 现在直接报隐私，与限定名那条同一句话）· 打开**不跨文件**泄漏（泄漏会静默，
+直到两个文件恰好同名才现形）· 两个被开的模块重名 ⇒ 报错不静默挑一个
+
+**踩到的真坑**：`renLookup` 对**没有模块名的单元**（根文件/prelude）返回**名字本身** ⇒ 我把"身份返回"
+当成了"匹配" ⇒ 改写被提前 `return`，裸 `cout` 仍然 undefined 修法：分开问"本单元**自己**声明了吗"
+（已加载模块查 ren 表；根文件/prelude 查声明表），而且**自己声明优先**（否则 root 的同名声明会被野卡顶掉）
+
+⇒ `tests/io/stream.extc` 改成 `use std::io::*` + 裸 `cout`/`cin`：**主人原话的语法就是现在跑的语法**
+模块套件 **15 → 19 项** · 语料 **254/0** 全量重跑
+
+### ⑤ `use std::io::{cin, cout}`：按名字导入（主人追问「那我可以 `use std::io::cin` 这样写吗」）
+
+实测答案是**不行**：`use` 的每一段都是**模块路径**，`use std::io::cin` 会去找 `std/io/cin.extc`
+三选一里主人挑了「**花括号 = 名字，永不指模块**」
+
+为什么不让裸写也能跑：那它的含义会**依赖"现在有没有那个文件"** —— 哪天有人建了 `io/cin.extc`，
+这一行**静默变意思** 花括号把"名字列表"与"模块路径"分成两种语法，一种写法一个含义
+裸写仍然报错，但诊断**教你这句**
+
+落地与 `::*` **共用同一条通路**（`Open` 条目多一个 `name` 字段，NULL = 整个模块）⇒ 隐私 · 歧义 ·
+不跨文件泄漏三条边界**一处实现、两处生效**，不会漂 顺手修了一个真坑：`strrchr(modPath, ':')`
+命中的是最后一个 `::` 的**第二个**冒号，名字要取 `+1`（取 `+2` 时消息写成「`in` is a name」——
+把人引向另一个名字）
+
+判据：模块套件 **19 → 23 项**（`selective` 正例 + 没列进来的仍要限定 + 隐私 + 裸写教你这句）·
+`tests/io/stream.extc` 改用 `use std::io::{cin, cout, endl, inBad}` ⇒ 主人原话的语法用**最精确那一档**跑
+语料 **254/0**
+
+### ⑥ 构造函数（定案 86）：`T(args)` 就是 `T::new(args)`
+
+主人要先补这个再做文件：「每次我都要 `fstream fin; fin.open()` 这就很弱智了，直接 `fstream fin("input.txt")` 就很爽」
+一量：**关联函数早就有**（`struct` 里不带 `self` 的函数，写 `T::name(args)` 能跑）⇒ 缺的只是那层糖
+
+规则：固定名 `new`（与 `close`/运算符名同一招：按名字认）· 返回类型必须是 `T` 或 `result<T, E>`
+（**定义点**就检查；`result` 是必须的 —— 打开文件会失败，`?` 是 extC 说"会失败"的方式）·
+不叫 `new` 的关联函数不受约束 · 类型实参写全 · 跨模块写全名
+
+落地三处全是"改写成同一个节点"：检查器把 `T(...)` 改写成 `EX_ASSOC(name="new")` 再走一遍那条路
+（实参检查/arena/C 生成全复用）· 装载器认出 `fs::Type(...)` 与 `fs::Type::new(...)` · `std::fs` 加上
+`ifstream::new` / `ofstream::new` / `ofstream::append` ⇒ **文件那边现在能写
+`var f = fs::ifstream("input.txt")?`**
+
+踩的坑：改写联合体时先写 `u.assoc.typeName`、又去读 `u.gencall.targs` —— 同一块内存 ⇒
+节点里装了整数当指针 ⇒ **段错误**（`obligExpr` 跟着 `0x40000000f` 走）⇒ 规矩：**先全部读出来再写**
+
+判据：`tests/ctor/` **6 项**（`check.sh` 第 23 节）· 语料 254/0 · fs/io/modules/ops/genmatrix/qname 全绿
+
+### ⑦ 文件那边开工：类型改名 `ifstream` / `ofstream`（定案 87）
+
+先问了主人一个设计点：要不要 C++ 那种一个类型带模式的 `fstream`？主人答
+「**分开即可，保持解耦，可以叫 ifstream/ofstream 这样，相信所有人都能看懂**」
+
+理由记进定案 87：分开是定案 77 的延续 —— **误用必须编不过**（读型上没有 `put`、写型上没有
+`read`），合成一个类型 + 模式参数就只能退化成**运行期**报错；名字取 C++ 的肌肉记忆，
+原名**直接换掉、不留别名**（与定案 81「一种东西一个写法」同一条规矩）
+
+落地：`stdlib/std/fs.extc` 改名 + 全仓引用（tests/examples/docs/SYNTAX §3′）· `fs-shape`
+那条"规范必须落在文档里"的判据跟着改成新名字（判据钉的是**文档里的名字**）
+现在三种打开方式都有构造写法：`fs::ifstream("x")` · `fs::ofstream("x")`（截断）·
+`fs::ofstream::append("x")`（追加）
+
+### ⑧ 流式读取进文件：主人选了"`>>` 可以返回 `mut ref T`"（定案 88，实施待下一轮）
+
+主人问「`ifstream` 怎么在 `>>` 语义下逐行/逐字读取」→ 量到墙：有状态的流按值返回会让链式
+把 pos 写进副本（控制台流今天能链是因为薄句柄 + 模块全局状态，而"同时开三个文件"不成立）
+给了三条路，主人选 **1**：「**1 是对的，2 用起来太难受了**」
+
+规则记在定案 88：`<<`/`>>` 可返回 `mut ref T` + 接收者是引用时直通 ⇒ 三种流同一个形状
+（`fin >> x >> line` · `cin >> x` · `cout << a << b`）右操作数类型决定读什么：`mut ref u8` 逐字 ·
+`mut slice<u8>` 逐行 · `mut ref i64` 整数；签名撞车的（按空白切词）留作具名方法
+落地点四处 + 一条警告（这是**第二次**碰"接收者自动取地址"那条线 ⇒ 两处判断必须同一个谓词，
+否则重演 `#58`：一处认、一处不认）**本轮只落文档，套件保持全绿**
+
+### ⑨ 定案 88 第 1 步落地：引用结果 + 引用接收者直通（另有两道"值位置"墙）
+
+改动五处，其中**两处是原以为不在那儿的墙**：① `checkOperatorSig` 放开 `<<`/`>>` 的引用结果；
+② 位运算分支的 `refNotANumber` 闸门在**分派之前** ⇒ 引用接收者根本到不了 `<<`/`>>`；
+③ **真正的墙**是 `checkValue`（值位置规则）用在**左操作数**上 —— 那是**接收者**位置，不是值位置；
+④ 第二道同样的墙在 `ST_EXPR`（`checkMaybeTry` 里也是 `checkValue`）⇒ **被丢弃的表达式不是值位置**；
+⑤ 新加一条窄规则：流运算符借出来的引用**不许存、不许传**（`isStreamBorrow`/`rejectStreamBorrow`），
+而 `let r = pickFirst(ref a, ref b)` **照旧合法** —— 那里用户自己写了 `ref`，流借用的没人要求过
+诊断照这个说：「流不会被拷贝：`fin >> x` 还给你的就是 `fin` 自己，没有新东西要存」
+
+**codegen 一字节没动**：`selfOperandAsParam` 本来就是那个唯一谓词（`wantRef && haveRef ⇒ 原样传`）⇒
+"两处判断共用一个谓词"是构造上成立的（`#58` 那个坑这次没有第二处可漂）
+
+判据：`tests/ops/stream-ref.extc` 三跳 + `errors/ref_{value,arg}.extc` 两条教学口径 ⇒ ops 19 → 22
+语料 254/0 · io 19 · modules 23 · ctor · genmatrix 13 · fs · fs-shape 全绿
+
+### ⑩ 定案 88 第 2 步：`@noCopy`（状态有身份的类型不许按值拷）
+
+机制三处：`StructDef.noCopy` · parser 收 `@noCopy`（只许写在 struct 上）· `rejectNoCopy`
+**只有两扇门**决定"这里需要一个值"：`checkValue` 与 `checkInto` ⇒ 谓词一个、门两扇
+**只挡 place**：`var s: ifstream = fs::ifstream(p)?` 必须能过（拷的是调用刚产出的临时值）⇒
+规则写成"noCopy **且** isPlace 才报" 于是造新值 / `ref` 传参 / 读字段 / 调方法照旧
+
+坑：**一个文件里只报第一条错误** ⇒ 四个复制点（绑定·实参·字段·赋值）必须写成**四个反例文件**，
+写在一起会误以为只挡了一个 —— 我先踩了一次，判据 `tests/nocopy/` 就按四个文件钉
+
+上到 `reader`/`writer`/`ifstream`/`ofstream`：**一个调用点都没改**（库里本来就全程按 ref 传）；
+两处**测试**跟着改成按 `ref` 收，其中反例 `write-as-input` 回到钉"类型不匹配"（两条规则别互相遮）
+
+`tests/nocopy/` **5 项** = `check.sh` 第 **24** 节 语料 254/0 · ops 22 · ctor · io 19 · modules 23 ·
+genmatrix 13 · fs · fs-shape 全绿
+
+### ⑪ 定案 88 第 3 步：`ifstream` 自带缓冲 + 三种 `>>`（三步全落地）
+
+`ifstream` 加 `r: io::reader` + `failed: bool`；三个 `>>` 靠右操作数类型分（`i64` / 一行 / 一个字节），
+都返回 `mut ref ifstream` —— **第 1 步那条引用规则正是它的地基** 错误用**标志**（`bad()`）而不是
+返回类型（`>>` 只能返回流），要 `result` 就用具名方法 ⇒ 两层分工
+
+当场量出来的坑：结尾那个 `\n` 让 `eof()` 说"还有字节"，而 `nextInt` 没数字时返回 `success(0)`
+（与"读到 0"同形）⇒ 第一版真的把目标**写成了 0** 修法是读整数前先 `skipSpace()` 再问 `eof()`
+（一行/一个字节不跳过：空行与 `\n` 都是真内容）
+
+`reader()` 改成交出内部那个（`-> mut ref reader`）⇒ 以前"别与 readSome 混用"的警告变成结构保证
+原来钉在它上面的"关掉的句柄 ⇒ failure(closed)"那一格**搬到 `readSome`**（判据跟规则走，不跟函数名走）
+`@noCopy` 顺带收紧一处：只在**要值**时响（`f(ref s)` / `-> mut ref T` 是它想让人做的事）
+
+判据 `tests/io/stream-file.extc` ⇒ IO 节 **19 → 21 项** 三步全绿：语料 254/0 · ops 22 · ctor ·
+io 21 · modules 23 · genmatrix 13 · fs · fs-shape · nocopy
+
+### 一步没走完的账：整套 quick 里两条 FAIL（未复现，留待单独追）
+
+定案 88 三步做完后跑整套 `check.sh quick`：**24 节里 22 过、2 败**（`tests/modules/run.sh` ·
+`tests/fs-shape/run.sh`）—— 但这两节**单独跑 rc=0**，同一时刻**11 个套件逐个跑也全 rc=0**
+整套那条命令**超过 300s 上限**，我只拿到被截断的输出 ⇒ **拿不到那两节的 FAIL 明细**，
+所以这条**没查清**（不是"应该没事"，是"这次没证据"）下次：整套跑一遍**落盘完整输出**再追
+
+（另：整套末尾印的"通过 258"是累加器（前面几节各 +1），语料数仍是 **254** 这一条之前已经记过）
+
+### ⑫ 定案 89 的两版：先"main 返回 result"（做了一半回退），后"main 里的 ? 直接 trap"（落地）
+
+主人问「main 里好像没办法问，而 main 里开文件最常见」⇒ 量到墙：`main` 的返回类型被明文拒绝
+（理由是"C 的入口返回 int"）⇒ 定案 89：允许 `result<i32, E>` / `result<unit, E>`，
+编译器**显式拆开**（成功 ⇒ 退出码；失败 ⇒ stderr 带位置 + 非零）
+
+本轮把**检查器那半**做通了（认形状 + `main(args)`+result 明确报未支持），但 **codegen 那半没做完**
+（改名 `__extc_main` · 原型/定义的 ret 与 static · 结尾 wrapper + 失败打印）⇒
+那时**会生成坏的 C** ⇒ 按"不许留红树"**回退检查器那半**，源码回到上一条绿提交
+四处落地点与 `result` 的 C 布局都写进了定案 89（下次照着做，很快）
+
+记这一笔的原因：**半成品不进树**这条规矩这次是**主动执行**的（不是发现坏了才回退）
+
+**随后主人改定**：「main 可能会遇到各种 fail，而显然这些 fail 已经致命 ⇒ main 里面的问直接 trap」
+这条更好：**不用给 `main` 开第二个返回类型**，C 入口那条规则一动不动 落地只两处 ——
+检查器 `checkTryInner` 里对 `main` 放行（类型取载荷）· codegen `genTryStep` 的失败分支在 `main` 里
+改发 `trap`（`fprintf` 带位置 + `extc_print` 打载荷 + `extc_die(1)` option 走现成的 `extc_trapMsg`）
+实测：成功路径退出码 0；打不开 ⇒ `x.extc:4: trap: a step in main failed: readFailed`、退出码 1
+判据 `tests/io/main-question.extc`（直接开文件 + 退出码）+ `tests/traps/main_question.extc`（trap）⇒
+语料 **254 → 255** · io 节 21 → 23
+前一条方案作废并**写明理由**（不是它错，是这条更小、而且失败本来就致命 —— 前者要在 C 入口外
+再包一层，后者只是把"交给外层"做到尽头）
+
+### ⑬ 展示：`a + b`（`examples/stream-sum.extc`）
+
+主人「**现在可以展示 a+b 了**」⇒ 写成一个**自包含**的例子（自己写文件、自己读回来，
+不碰 stdin ⇒ 能进常设语料 控制台版在下面手喂）：
+
+    7 + 35 = 42
+    读回来 7 + 35 = 42
+
+四件东西在这一个例子里一起用上：按名字导入（定案 85）· 构造函数 `fs::ofstream(...)`（定案 86）·
+`f >> x >> y` 靠右操作数类型分派（定案 88）· **`main` 里的 `?` 直接 trap**（定案 89）
+控制台版（`cin >> a >> b` + `cout << a + b`）手喂两组：`3 4` ⇒ `3 + 4 = 7` · `-12 30` ⇒ `-12 + 30 = 18`
+
+又踩了同一个坑：`// expect:` 是**单条子串**匹配，不按 `|` 切（生成矩阵那格也栽过一次）
+⇒ 改成一条 `读回来 7 + 35 = 42` 语料 **255 → 256**（examples 89）
+
+### ⑭ 程序级输入/输出流：`fs::fin` / `fs::fout`（任何函数里都能用，各一个 fd）
+
+主人「**在别的函数里 fout 就很神秘了，我总不能再创建一个然后注册同一个文件吧**」+
+「**记得 fin 也要**」⇒ `std::fs` 加了程序级的两个流 形状是**控制台流那一招**
+（模块全局定长数组当缓冲 数组没有引用所以能当全局；句柄薄 ⇒ 按值返回、链式成立），
+输入侧多一层：位置要跨调用存活 ⇒ 每次 `>>` 借本地 `reader`、读完 `inSave` 写回
+解析仍是 `reader` 的，不是第二份
+
+⇒ 于是"能不能在静态段就打开"这个问题也有了答案：**不用**（那要一趟运行期初始化 + 失败在 main 之前
+没人接 + 没有析构谁关 + 全局连引用都持有不了），`main` 里一句话就够 理由写进 IO.md
+
+**撞出并修掉一个真缺陷（`#67`）**：两份 `<<`（右操作数 `slice<u8>` 与 `mut slice<u8>`）
+在 C 里撞名 —— `ttMangle` 把两者压成同一个名字（它们**本来就是同一个 C 结构体**），
+而"按**精确**类型分派"又认它们是两种类型（`ttEquals` 比 `mut`）⇒ 后缀必须**自己带上可变性**：
+`opOverloadSuffix` 现在给可变视图加 `mut_` 前缀 这是**我自己那条规则**留的口子：
+规则说"按精确类型分派"，落到 C 上的**名字**必须也能表达那个区分
+
+另记一条**未解之谜（不带 repro）**：加全局 `out` 时，`ifstream::readSome(self, out: mut slice<u8>)`
+里那句 `out.len` 报成"`outStream` has no field `len`"（像是全局盖住了**参数**）；
+但两次最小复现（参数 vs 全局 · match 绑定 vs 全局）**都正常** ⇒ 改个名就好了，**没能定位**
+不记成缺陷（没有 repro），只记现象
+
+判据 `tests/fs/global-io.extc`（三个 `>>` · 在别的函数里写 · **stdout 与文件内容都查**）⇒ fs 节 7 → 8 项
+语料 **256/0**（mangle 改过 ⇒ 全量重跑）
+
+### ⑮ `cerr`：五个流齐活儿（`cin` / `cout` / `cerr` / `fin` / `fout`）
+
+主人「print/println 那个也是打印到 stderr 吧」⇒ **量了一下：不是**
+`print` / `println` 打的是 **stdout**（`prog > out.txt` 抓到它们 · `2>/dev/null` 杀不掉），
+而 `trap:` 那类走 stderr ⇒ 这个区分本来是对的、也不该改：stdout 是**程序的正常输出**，
+stderr 是**诊断**通道 所以补的是 `cerr`（诊断），不是把 print 家族搬去 stderr
+
+`cerr` 与 `cout` 同一形状（薄句柄、`<<` 按值返回），每次写之前先 `flush()`
+（stdout 带缓冲，不冲会**插队** —— 这类顺序错乱最难查 与 `io::writer` 对 STDOUT/STDERR 同一条规矩）
+
+顺手收掉一处**我自己造的重复**：`fs::outStream` 的整数格式化与控制台那份是两份
+⇒ 抽成 `io::fmtI64`，三个流共用一份（内建打印写死 stdout ⇒ 文件流/stderr 流用不了它
+所以格式化必须在库里，而且只能一份）· 同时删掉 `fs::nl`（与 `io::endl` 同义 ⇒
+一种东西一个写法 定案 81 的规矩）
+
+判据 `tests/io/cerr.extc` + 重定向断言（stdout 只有正常输出 · stderr 只有诊断 · 顺序对 ·
+负数格式化对）⇒ io 节 **24 项** rc=0 语料 **256/0** fs/ops/modules 全绿
+
+### ⑯ IO 速度大横评（`bench/io/` + `docs/topics/IO-BENCH.md`）
+
+主人要求 extC 流 vs C++（14/latest）· Rust · Go · Java · C，**输入/输出、文件/控制台分开**
+10M 行 / 117.8MB 输入、224.3MB 输出，每格 3 次取最快 结论（详见文档）：
+
+- **extC 输入 303ms**（389MB/s，**7MB 内存**）：与 Rust 并列，比 Go（403）快、比 Java（603）快、
+  比**默认 C++ cin（1504）快 5×** 控制台与文件**同速**（程序级流没有额外代价）
+- **extC 文件输出 404ms**：与 Rust 并排
+- **extC 的 `cout` 是唯一短板：3407ms**（C 的 11×、自家 `fout` 的 8.4×）——
+  原因清楚：`cout` 走**内建 print**（每操作数一次 printf、缓冲不可控），`fout` 走库自己的
+  格式化 + 缓冲 ⇒ **cout 应该改成与 fout 同一条路**，这也是 print 退役那条线的实测理由（PLAN 记优化行）
+- **C++：版本无关，开关有关** —— 14 与 latest 一模一样；`sync_with_stdio(false)` 3.7×、`"\n"` 换 `endl` 3×
+- Go 输出最快（`strconv.AppendInt` 避开 fmt 反射）· Java 启动 103ms + 大内存 ·
+  Rust `read_to_string` 用 114MB 换速度
+
+**测量的坑（第一版整张表是假的）**：用 `date +%s%N` 计时，每次 **fork 两次**，而 WSL 进程创建
+~50ms ⇒ 所有格子都成了 107/207/407ms，**量的是测量开销** 真实值 C 读 11.7MB 只要 **9ms**
+⇒ 改用 bash 内建 `$EPOCHREALTIME`（零 fork）+ 数据放大到 10M 行 + RSS 单独一趟量
+另：第一次跑还**挂住**了 —— stdin 场景忘了把数据喂进去，每个程序在等一个永不到来的 EOF
+⇒ 现在每一格都套 `timeout`（挂住=失败，不是无限等 这条本仓库写过好几遍，我又踩了一次）
+
+### ⑰ `cout` 从垫底到并列第一（定案 90）：3407 → 203 ms
+
+主人「cout 肯定不能走内建啊……**总之我要最快的**」+「我怎么可以一个冠军都没有」⇒ 修 `#68`
+
+三处改动（语言规则一条没动）：① **不再借内建 `print`** —— 格式化搬进库，输出走**运行期持有的
+256 KB 缓冲**（`extc_cout_put`/`extc_cout_flush` 由生成器提供 `main` 返回前收尾巴）；
+② **热路径里不许有视图下标** —— 生成的 C 里 `slice_u8_index(...)` 是**一次函数调用**（还带文件名/行号），
+而一行 4 个操作数 × 每个数字十几次下标 = **上亿次调用** ⇒ 改用**定长数组**（`FMT` 暂存 + 两位表 `PAIRS`）；
+③ **两位一查表 + 从后往前填**（除法减半；"低位在前追加再整体反转"会把**对内的顺序也翻掉** ⇒
+`40` 印成 `04` —— 这个 bug 真发生了，被 `tests/io/stream.extc` 当场抓住）
+
+**结果**（10M 行 / 224.3 MB，5 次取最快）：③ stdout **3407 → 203 ms，与 Go 并列第一**
+④ 文件输出 **404 → 303 ms，与 C/Go 三方并列第一** ① 输入 303 → 203 ms
+⇒ **冠军有了**（两格并列第一）
+
+顺带一条**契约改动**：`cout`/`writeBytes`/`cerr` 共用一个缓冲 ⇒ 它们之间结构上不会乱序；
+而**已弃置**的 `print`/`println` 走 stdio（另一支）⇒ **混用不保证顺序** ⇒
+`tests/io/order.extc` 与 `stream.extc` 跟着改成"控制台这一族的顺序"（判据的价值保留：乱了必须响）
+
+### ⑱ 压输入：303 → 202 ms（以及一条负面结果：`@inline` 对 `nextInt` 没用）
+
+`>>` 的 i64 旧版每个数三次调用（`skipSpace` → `eof` → `nextInt`），而 `eof` 那次只是为了
+消掉"`nextInt` 在 EOF 返回 `success(0)`"与"读到的就是 0"的同形歧义 ⇒ 改成**直接
+`nextInt`，只有结果为 0 时才回头看 `eof`** ⇒ **303 → 202 ms**（583 MB/s，仍是第二，
+C 的手写解析 102 ms）
+
+**负面结果（主人提醒"当时测过 @inline 变慢"）**：给 `reader::nextInt` 标 `@inline`
+（它返回 `result` 结构体，GCC 本来不愿内联）—— A/B 各 7 次：**带 202 · 不带 202 · 复测 202**
+⇒ **没有差别** ⇒ **不标** 结论：剩下的 2× 差距**不在调用次数**上 而在每数一次的"桥"
+（`inSync` 建 `reader` + `inSave` 写回 + `result` 搬运）—— 这是**假设，没验证**
+真要继续压，得把解析重构成"显式状态"的自由函数（`reader` 与两个流共用一处实现）
+
+回归：语料 **256/0** · io rc=0 · fs/ops/modules/ctor/genmatrix/nocopy 全绿
+
+### ⑲ 继续压输入：**四次尝试全部无效**（202ms 纹丝不动）—— 老实记一笔
+
+主人「继续做吧」⇒ 按 ⑱ 的假设动手，四条全试了（各 7 次取最快）：① `nextInt` 标 `@inline`；
+② 去掉"桥"——把解析重构成**显式状态**的自由函数 `nextI64State(fd, buf, ref len, ref pos, ref got)`，
+两个流直接传自己的全局（顺带用 `got` 回执免掉 `eof()` 那次调用）；③ `isSpaceByte` 标 `@inline`
+（它在热循环里**逐字节**被调）；④ **溢出检查挪出热路径**（前 18 位数学上不可能溢出
+只在第 19 位起走精确检查 语义一字不改）
+
+⇒ **全是 202 ms**（±1ms）**瓶颈没找到** 但其中两条改动本身是对的、留下了：
+解析从此**一处实现**（`reader` 与两个流共用 `nextI64State` 账本一直想要的那条）·
+溢出检查的挪法**保语义**（20 位数照样被拒 试过）
+
+**教训（写进 IO-BENCH）**：连续四个"我觉得是它"被同一个数字打脸 ⇒ 下次**先 `perf` 再动手**
+（输出那边是靠量出来的 `slice_u8_index` 才找到真因 —— 同一课）
+
+回归：语料 **256/0** · io/fs/ops/modules/ctor/genmatrix/nocopy/qname 全绿
+③ stdout 复测 **extC 202 · Go 202**（并列第一仍在）· ④ 文件输出 **extC 303 · C 303 · Go 303**
+
+### ⑳ 输入那 100ms：用 callgrind + 对照实验**定位到了层级**（但没修完）
+
+主人提醒"没有 perf，但好像有别的工具" ⇒ 这个仓库本来就用 **callgrind** 于是量了一把（都取 1000 万行 / 5 次最快）：
+
+**对照实验**（同一份逐字节算法）：extC **笨循环** 102ms · extC **中等解析器**（手写在自己 main 里）
+**103ms** · C 同款 102ms —— 而 **extC 走库的流式 `>>` 203ms**
+⇒ **代码生成与解析算法都不慢**（手写版与 C 一模一样 1143 MB/s）⇒ 差在"**走库**"这条边界
+而方法 `>>` 已被完全内联（生成的 C 里连 `istream_shr_i64` 符号都没有）⇒ **不是调用开销**
+
+**四个视角**：系统调用相同（1801×64KB）· 指令 1.29× · 分支 2.7× · 预测失败相同 ·
+I1/D1/LL 缺失全同 · 启动 0.6ms 相同 ⇒ 1.29× 指令却 2.1× 用户 CPU（0.17 vs 0.08s）⇒ IPC≈0.6，**在停转**
+⇒ 当前最像的假设：库里这条路的 `len/pos` 住在**模块全局** ⇒ 每字节一次全局 load/store
+（手写版全在寄存器）—— 但**先看生成的 C 再动手**，别再猜（这一节已经用六次猜测换来这条教训）
+
+**留下的改动本身是好的**（虽没提速）：解析从此**一处实现**（`reader` 与两个流共用 `nextI64State`）·
+溢出检查只从第 19 位起做（**语义完全不变** 20 位数照样拒）· `isSpaceByte`/`inBad` 内联注解
+
+回归：io rc=0 · 语料 **256/0**
+
+### ㉑ `-Wall -Wextra`：先修了三类，**但方向修偏了 —— 主人当场纠正**
+
+主人：「转到 C 之后开 `-Wall -Wextra` 有非常多的 unused 警告，**大部分都是 arena**」
+量：`globals` **30 条** · `stream-file` **117 条** 类别：描述符缺 `eq`（14）· 未用函数（34）·
+未用变量（26）· 未用参数（16）· 未用常量（12）
+
+**我修的**：① 描述符补第 7 个字段 ② `flush()` 的 `(fflush(NULL), 0)` 逗号表达式 ⇒ 直接发 `fflush`
+③ 生成物统一标 `EXTC_UNUSED` · ④ 方法体 `(void)self;` ⇒ `globals` **30 → 16** · `stream-file` **117 → 69**
+
+**然后主人纠正方向**：「**有很多的代码完全没必要生成，这是 C 代码体积膨胀的主要原因**」
+—— 对：**属性只是让警告闭嘴，一行代码都没少** 我修的是症状 病因量出来了：
+`globals` **494 行 / 23.6 KB / 47 个静态函数**（gcc 说 34 个没人用）·
+`stream-file` **2437 行 / 104 KB / 169 个静态函数**（一个小程序 ⇒ 多半是 prelude + 库整片发出来）
+⇒ **发射按"清单"走（`g.funcs` = 所有方法 + 自由函数），而不是按"从 `main` 可达"走**
+而检查器**已经有** `used` 标记（实例方法那处就在用）⇒ 缺的是把同一套标记用到自由函数/库函数/预置上
+记成 `PLAN #69`（优化 / 中）
+
+教训：**"让警告消失"与"让代码消失"是两件事** 主人一句"体积膨胀"就把方向拨正了
+
+### ㉒ 可达性剪枝第一刀（`PLAN #69`）：stream-file 2437 → 1608 行（-33%）
+
+主人「可达性剪枝启动」**先量再改**（这一轮学到的）：`g.funcs` 的**两个填表点**都是"全塞"
+（非泛型结构体的**所有方法** + **所有自由函数**），而检查器**早就在每个调用点打 `used`**
+（`e->func = f; f->used = true;` 实例方法那一处也一直在用）⇒ **只是接线** 两行：
+
+    if(!md->used) continue;                       /* 方法 */
+    if(!f->used && !cgIsMain(f)) continue;        /* 自由函数/库/预置（main 永远留）*/
+
+**实测**（语料 **256/0** 当安全网 —— 漏发一个函数就会"生成的 C 编不过" ⇒ 当场响）：
+
+| | 剪枝前 | 剪枝后 |
+|---|---|---|
+| `tests/io/stream-file.extc` | 2437 行 / 104 KB | **1608 行 / 69.5 KB（-33%）** |
+| `examples/globals.extc` | 494 行 / 23.6 KB | **452 行 / 21.7 KB** |
+| `-Wall -Wextra`（stream-file） | 117 条 | **43 条** |
+
+九个套件（io/fs/ops/modules/ctor/genmatrix/nocopy/qname/fs-shape）全绿
+**第二刀**：还剩 globals **15** / stream-file **20** 个"发了没人用"的静态函数（多半"只被描述符表引用"
+或检查器某条路径没打 `used`）+ **函数体内的死代码**（未用的 match 载荷绑定/局部变量）
+顺带：第一刀做完后，㉑ 那批 `EXTC_UNUSED` 属性有一部分可以撤了（留下的警告已经是"函数体内"那类）
+
+### ㉓ 第二刀的侦察：三类"发了没人用"，其中一类暴露了剪枝的**层级问题**
+
+把剩下的"发了没人用"逐个列出来分类（第一版筛子用正则 `\b$sym\b` 数带 `$` 的符号 ⇒
+`$` 在正则里是特殊字符 误判一片 改用 `grep -F` 才是真的 又是一次"先量准再动"）：
+
+| 类 | 例子 | 结论 |
+|---|---|---|
+| **A 运行期辅助函数**（无条件发）| `extc_divI` · `extc_divU` · `extc_modI` · `extc_narrowI/U` · `extc_convFloat` · `extc_checkedIndex` · `extc_checkedRange` · `extc_arena_init/destroy/release` · `extc_rec_enter` | **真膨胀** 一个程序不用除法也带着 `extc_divI` ⇒ 应该**按需发**（照 `g.helpers` 那个模式 零风险）|
+| **B 库函数**（`fs$ifstream_readSome` · `fs$inSync` · `fs$inSave` · `fs$openAppend` · `extc_sliceTo_slice_u8`）| 只有 原型+定义、**没有调用** | **暴露剪枝的层级问题**：我的第一刀是"一过性"的（只看检查器打的 `used`），而 `inSync` 被 `ifstream::>>` 调用 ⇒ `used` 为真 ⇒ 发 可**调用它的那个函数自己已经被剪掉了** ⇒ 想真剪干净，得做**从入口出发的传递闭包** 而这件事有个**已知的坑**：模板体是"一个节点多个实例"，节点的 `e->func` 只记得**最后一个**实例（`#64` 那一课）⇒ 朴素闭包会**漏标** 得走 `g.insts` 的每个实例（或者让检查器顺手把可达性做成传递的）|
+| **C 函数体内的死代码**（未用的 match 载荷绑定/局部）| `e` · `e__2` · `n` · `u` … | "该少写几行" 做法：绑定在 arm 里没被引用就**不发射那个 C 变量**（比 `(void)e;` 更符合"没必要生成"）|
+
+⇒ **下一刀的顺序**（按风险从低到高）：① 运行期辅助函数按需发（零风险、真减体积）·
+② 函数体内死代码（低风险）· ③ 从入口的传递可达性（收益最大但要绕开"一节点多实例"那个坑
+语料 256 + 九个套件是安全网）
+
+### ㉔ 第一刀的精确落点（下一轮照着做，不用再找一遍）
+
+**要剪的东西与量到的体积**（`examples/globals.extc` 的生成物里 共约 **80 行 / 452 行的 18%**）：
+
+| 辅助函数 | 行数 | 被谁引用（发射点行号）|
+|---|---|---|
+| `extc_arena_init` | 17 | 每个用 arena 的函数（`cgLine` 段）|
+| `extc_arena_release` | 16 | `codegen.c:2247` · `:2504` |
+| `extc_checkedRange` | 9 | `:3371` · `:3379` · `:3385`（切片辅助）|
+| `extc_divI` / `extc_modI` / `extc_divU` / `extc_modU` | 5/5/4/4 | `:1032`（`/` 与 `%` 的发射点）|
+| `extc_narrowI` / `extc_narrowU` / `extc_convFloat` | 4/4/4 | `:1717` · `:1728` · `:1731` · `:1740` · `:1743` |
+| `extc_checkedIndex` | 4 | 视图下标原语（`:492` 那段）|
+| `extc_arena_destroy` | 4 | `:3129` |
+| `extc_rec_enter` | 4 | `:3090`（自递归函数）|
+
+**做法**（照 `g.helpers` 的按需模式）：给 `CG` 加一组 `needX` 标志 在**上表的发射点**各置一次
+然后把定义那几段**按函数切开**、逐个 `if(flag) bufPuts(...)`
+
+**待定（下一轮第一件事）**：这些定义在 **`codegen.c:3793–3935`**，而我用 `bufPuts(&g.rt…)` 的前缀
+grep 只匹配到 `rtDie`(3631) / `rtCout`(3646) / `rtRaw`(3668) / `rt`(4011) / `rtPrint`(4066) / `rtEq`(4146)
+⇒ **3793 落在 `rtRaw` 那一段**（按 grep 是）可 `globals` 并不用终端、却带着这些辅助
+⇒ 说明那一段**后面还有别的 `bufPuts`**（我的 grep 模式没匹配上 比如换行写法或别的 Buf 名）
+⇒ **先把"它们到底挂在哪个 Buf、由哪个条件发射"查清**（`grep -n "bufPuts(&g\." codegen.c` 看全量），
+再切 —— 别在没搞清归属前动字符串（这一节的教训已经够多了）
+
+### ㉕ 目标升级：clang 也要 0（含 `-Weverything`）+ 第一刀的最终设计
+
+主人：「**clang 警告也到 0 可能更 nb，Weverything 来咯**」一量，clang 严得多（同一份生成物）：
+
+| 判据 | gcc 15.2 | clang 21.1 |
+|---|---|---|
+| `-Wall -Wextra` | **16** | **30** |
+| `-Weverything` |（gcc 没这开关） | **89** |
+
+⇒ 目标改成：**gcc 与 clang 的 `-Wall -Wextra` 双双为 0** + **clang `-Weverything` 为 0 并附一份
+写在文档里的 `-Wno-` 清单**（`-Wpadded` / `-Wdeclaration-after-statement` / `-Wunsafe-buffer-usage`
+这几类对生成物无解 —— clang 官方也说 `-Weverything` 是用来找**新**警告的 清单是标准做法）
+
+**第一刀的最终设计**（下一轮直接落 已把地形摸清）：
+那些辅助函数在一个**无条件** `bufPuts(out, ...)` 里（`codegen.c:3760` 起 约 80 行）而 codegen
+本来就有"**先攒进 Buf、最后装配时拼接**"的机制（描述符/切片辅助都这么做）⇒
+
+1. 加 `Buf rtHelp;` + 一组标志（`needDivMod / needShift / needNarrow / needChkIdx / needChkRange / needArena / needRec`）
+2. `bufPuts(out, ...)` ⇒ `bufPuts(&g.rtHelp, ...)` 并按**组**切开（切点=各组定义前的注释块）
+   —— 组边界已量清：共享陷阱原语（`extc_trap`/`trapMsg` + 递归计数）· `rec_enter` ·
+   `divI/modI/divU/modU` · `shiftCount` · `checkedIndex` · `checkedRange` · arena 三件套 ·
+   `narrowI/narrowU/convFloat`
+3. 装配处（`bufPuts(out, bufCstr(&g.rtDie));` 之后）拼 `rtHelp` —— 那时**标志已经知道**
+（body 先攒、最后装配）
+4. 标志在各引用点置：`:1032`（div/mod）· `:1625`（checkedIndex）· `:1717/1728/1731/1740/1743`（narrow/conv）·
+   `:3371/3379/3385`（checkedRange）· `:2247/2504/3129`（arena）· `:3090`（rec_enter）· `shiftCount` 的发射点
+5. **`extc_arena_init` 可以直接删**（**零调用**：局部 arena 是 `extc_arena __extc_a[N] = {0};` 已量）
+
+### ㉖ 第一刀的脚本把 codegen 改坏了 ⇒ **回退**（两条错法记清楚）
+
+按 ㉕ 的设计写脚本一次做完（挪进 `rtHelp` + 按组切 + 装配拼接 + 置标志），结果 `codegen.c`
+**编不过** 按纪律立刻 `git checkout src/back/codegen.c` 回退（没留半成品）两条错法：
+
+1. **切块时忘了给上一块收尾**：每个切点要写的是 `");` + 换行 + `if(g->flag) bufPuts(&g.rtHelp,`
+   我只写了后半句 ⇒ 上一个 `bufPuts(` 没关 ⇒ `expected ')' before 'if'`
+（教训：**改字符串块的脚本，切点要写成"关旧的 + 开新的"两句** 而且切完先 `gcc -fsyntax-only` 验一遍）
+2. **置标志必须插在"语句"前面，不是"表达式"前面**：`extc_narrowI`/`convFloat` 的锚点是
+   `arenaPrintf(...)` 的**格式串那一行** ⇒ 往里插语句就把调用拆了（正确做法：往上找最近的
+   `return arenaPrintf(` 再插 这一条我在第二版里做对了）；`extc_arena_destroy(..., lv)` 那处
+   插错位置还让 `lv` 变成未声明（说明它在某个 `for`/`if` 的**头**里 得先看清上下文）
+3. 另外发现：**`narrowU` 也要标志**（第一版漏了 ⇒ 会**漏发** ⇒ 生成的 C 编不过 这类漏必须靠
+   语料/套件兜 所以"改完立刻跑语料"不是形式）
+
+另：脚本还留下两个 `-Wmisleading-indentation` 警告（我自己插的行缩进不对）——
+提醒：**改 codegen 的脚本本身也要过警告**
+
+**下一轮的正确顺序**：① 先只做"挪进 `rtHelp` + 装配拼接"（**不加条件** 纯搬家 编译+语料验证）
+② 再逐个加条件（每加一组跑一遍语料）③ 最后删 `extc_arena_init` —— **小步、每步验证**，
+不要一次改完（这一条我在 `#69` 的第一刀上又忘了）
+
+### ㉗ 第一刀：关键事实量到了 —— **那段跨了多个 `bufPuts(out, ...)` 调用**
+
+小步的第一小步（纯搬家 用 `cmp` 验字节）连做两版都被 `cmp` 拦下，但每次都换来一条硬事实：
+
+1. **第一版**：只改了**第一个** `bufPuts(out,` ⇒ 输出里那 20 行搬家了、其余还在原地 ⇒
+   顺序乱了、`extc_trapMsg` 跑到 `extc_narrowI` 后面 ⇒ **`implicit declaration`**
+2. **第二版**：以为区间内只有两个调用（改成 `rtHelp`）⇒ 生成的 C 仍坏
+（`expected ';' before 'static'`）⇒ **区间边界还是不准**
+
+⇒ **硬事实**：那段（`extc_trap` … `extc_convFloat` 约 **230 行**）**不是一次 `bufPuts`**，
+而是**跨多个调用**（C99 只保证字符串字面量 **4095 字节** ⇒ 大段必须切开 代码里就写着这条注释）
+⇒ 所以"搬家"必须：**把整个区间内每一个 `bufPuts(out,` 都重定向** 且**区间边界要靠"内容"定**，
+不能靠"往前找最近的 `bufPuts`"（那一版就是这么错的）
+
+**下一轮的做法（更稳）**：不用脚本猜边界 而是——**在块的首尾各插一个哨兵**
+（例如把第一行内容前面加 `/* EXTC_HELP_BEGIN */`、最后一行后面加 `/* EXTC_HELP_END */`），
+然后按哨兵切 这样边界是**内容说了算**；或者更省事：**把这一整段移到文件末尾的独立函数里**
+（`emitRuntimeHelpers(CG*)` 只挪代码不改字符串 然后在那里加条件）—— 我倾向后者
+**纯重构、零字符串手术** 风险最低
+
+又一次同一条教训：**小步 + 每步验证**是对的（`cmp` 两次都当场逮住），
+而我两次都想"顺手把边界估准" 估边界就该用哨兵/内容，不该用"往前找最近的调用"
+
+### ㉘ 第一刀换思路：**按内容包裹**，不搬任何东西（不跟边界较劲）
+
+㉗ 说"移进独立函数" 试了两版边界检测都不可靠（那个 `bufPuts(out, "…"` 的写法与我的正则模型不一致
+两次都靠断言拦下，**文件没动** 树一直绿）⇒ **不再猜边界**，改用**内容说了算**：
+
+**做法（下一步直接落 完全不需要知道区域从哪到哪）**：
+1. 把 `codegen.c` 里**所有** `bufPuts(out, ...)` 语句扫出来（按语句，不按行 一条语句可能跨很多行）
+2. 对每条语句，看它的**字符串内容里出现了哪些运行时辅助函数名**（`extc_divI` / `extc_narrowI` / …）
+3. 命中的语句就地包一层条件：`if(g->needA || g->needB) bufPuts(...)`
+   —— 一条语句里同组多个名字就取**它们的或**（粒度略粗、但**正确** 且完全不需要边界）
+4. 标志在**调用点**置（上一轮已经摸清：`narrowI/convFloat` 要插在最近的 `return arenaPrintf(` 之前
+   不能插进参数表；其余是 `cgLine(...)` 语句之前）
+
+⇒ 好处：**字符串一个字不动**（只加条件前缀）+ 边界由**内容**决定（这正是我前面两次没做到的）
+三次同一条教训了：**"我估的边界"不可靠，得让内容说了算**（`cmp` + 断言每次都当场拦住 所以没坏事）
+
+### ㉙ 第一刀第三次失败：**插语句插进了控制流的身体里**（这次更危险）
+
+按 ㉘ 的"按内容包裹"落地 包裹本身没问题（3 条语句按内容裹上了），但**置标志那一步**又错
+而且这次错得**更危险**：我把 `g->needNarrow = true;` 插在了 `if`/`else` **与它的函数体之间**
+⇒ 那句话成了新的函数体，**原来的 `return arenaPrintf(...)` 变成无条件执行**—— 语义被改
+**是编译器的 `-Wmisleading-indentation` 逮住的**（4 条警告：1735 · 1748 · 3025 · 3103）
+⇒ 又一次证明"改完先看编译器说没说"值钱（这次是 codegen 自己的警告，上一次是生成的 C 的）
+
+⇒ 回退（git checkout，树绿 生成物与基线逐字节相同）
+
+**下一轮的正确做法**：插语句之前，先在**行**层面往上找**"这条语句的开头"**：
+跳过 `if(...)` / `else` / `for(...)` / `while(...)` 这些**头**（以及它们的 `{`）⇒
+插到**最外层那条语句之前** 一个 `stmtStart(lines, i)` 小函数就够
+这是第一刀的**第三种失败模式**了（① 忘了给字符串块收尾 ② 边界靠猜 ③ 插进控制流身体）
+—— 共同点都是"**位置**"而不是"内容" ⇒ 下一轮**先把 `stmtStart` 写对、单独测它**（拿几个样本行验它返回的位置），
+再接进置标志的脚本（小步 + 每步验证，这次连"找位置"这个子步骤也单独验）
+
+### ㉚ 第一刀的"结构上不会错"的做法：**从生成的正文里反推标志**（下一轮直接落）
+
+三次失败后的复盘：**三次全是"位置"问题**（㉖ 忘收尾 · ㉗ 边界靠猜 · ㉙ 插进控制流身体），
+而**"内容"从来没出过错**（按内容包裹一次就对 辅助函数名本来就是判据）
+⇒ 那就**别插语句了**：**标志不必在发射点置** 它可以**从生成好的正文里读出来**
+
+**做法**（只加 5 行、零代码插入）：
+1. 先正常把**所有函数体**生成进 `g.body`（codegen 本来就是这么做的
+   "bodies are written into a temporary buffer first"）
+2. 体生成完之后，在 **`g.body` 的文本**里搜每个组的辅助函数名：
+   `extc_divI(` / `extc_narrowI(` / `extc_checkedRange(` / `extc_arena_release(` / `extc_rec_enter(` …
+   ⇒ 出现哪个就把对应标志置上
+3. 装配辅助块时（`rtHelp`）按标志拼（㉘ 的"按内容包裹"照用 它已经验证过没问题）
+
+**为什么结构上不会错**：
+- 判据是**生成物里真的出现了那个调用**（这正是"谁需要它"的定义 而不是"我以为哪个分支会发它"）
+- **一个语句都不用插**进 `codegen.c` 的控制流 ⇒ 前三次那类失败**在结构上不可能发生**
+- 只扫 `g.body`（用户代码）不扫辅助块自身 ⇒ 自己引用自己不会自激
+- `extc_trap`/`trapMsg` 留在**永远发**的共享段（所有组都可能用）⇒ 不需要推断传递依赖
+
+这条值得单独记：**连续三次"位置"失败之后，正确的下一步不是"把位置算得更准"
+而是换一个**不需要位置**的判据 —— 前三次的教训（"让内容说了算"）我只用了一半：
+用在了**包裹**上 没用在**判据来源**上
+
+### ㉛ 第一刀：**方向对了、粒度太粗**（拿回了关键数据；已回退）
+
+按 ㉚ 落地（按定义签名包裹 + 从 `g.body` 反推标志 **零语句插入** 编译一次就过），
+效果**是真的**：`globals` **452 → 310 行**（21.7 KB → **15.0 KB**）· clang `-Wall -Wextra` **30 → 6** ·
+clang `-Weverything` **89 → 49** ⇒ **方向确认有效**
+
+**但语料当场响**：**158 通过 / 98 失败** 九个套件全红 ⇒ **剪过头了**
+根因（数据很硬）：**一条 `bufPuts` 语句里捆着互不相关的定义** ——
+第一条被裹的语句同时装着：共享陷阱原语（`extc_trap`/`trapMsg` 谁都可能用）+ 递归计数 +
+`rec_enter` + `divI/modI/divU/modU` + `checkedIndex` + `checkedRange` **五组挤一块**
+⇒ 按"语句"这个粒度加条件，一定会有程序需要 A 却被 B 的条件挡掉
+（撤掉含 `extc_trap` 的那条之后仍然 98 失败 ⇒ 另两条（arena / narrow）也是捆着的）
+
+⇒ **结论**：要剪就得**真的把语句切开**（按定义边界切 而不是整条裹）——
+但切开正是我连试三次都栽在"边界"上的那件事
+⇒ **下一轮的正确切法**：不用脚本推边界 而是**按内容找切点**——
+`bufPuts(out,` 语句里每一行的**内容**都是确定的（组与组之间有注释行 + 空行）
+⇒ 切点 = "**注释行 + 紧跟某定义**"这个模式（㉘ 用同样的规则算**组的起点**时是**成功**的
+失败的只有"算整个区域的起止"）⇒ **一段一段切**（先切出第一条语句里的五组
+每组跑一遍语料）· 小步 + 每步验证
+
+这一轮的价值：**证明方向有效（-31% 体积、clang 警告 30→6）+ 拿到"粒度"这个硬数据**
+而语料 256 与九个套件**又一次当住了错**（158/98 一次都没漏到树里）
+
+### ㉜ 第一刀的**决定性证据**：同一条 `bufPuts` 里还捆着 **typedef**
+
+第 7 轮加了 `needTrap`（共享陷阱原语给一个精确标志 —— 这个修法本身是对的 因为**视图越界检查
+直接调 `extc_trap`** 不经过任何组）⇒ 仍然 **158 / 98** ⇒ **不再猜，直接看一条失败**：
+
+    build/hello.c:48:12: error: expected ';' before 'static'
+        EXTC_UNUSED static uint64_t pcg32_next(pcg32 * self);
+
+看生成物上下文 真因：我的包裹**吞掉了 `typedef struct slice_i32 slice_i32;` 这一行**
+—— 也就是**同一条 `bufPuts` 语句里同时装着「结构体的 typedef 列表」和「辅助函数组」**
+（不只是辅助函数之间互相捆）⇒ 任何"按语句加条件"的做法**必然**会漏掉 typedef ⇒ 生成的 C 编不过
+⇒ **要剪就必须真的按内容切开**（不是"包裹" 而是"切分"）
+
+这一轮的教训（第 4 次同一族）：**先看现场，别先猜** —— 我前两次都在"猜哪条语句捆了什么"
+而真因（typedef 也在里面）**看一眼生成物的行就能看到** 一条命令的事
+⇒ 已经回退 语料 **256/0** 树绿
+
+**下一轮（把"切分"做对的最小方案）**：不猜语句边界 不猜区域 而是——
+**按"行"重组**：把辅助块里的**每一行字符串**按内容归类（typedef 行 → 永远发 ·
+定义行 → 归它那一组 · 注释行 → 跟下一行），然后**重新生成**若干条 `bufPuts` 调用
+—— 判据全是**行内容** 一个边界都不用猜（这正是我从第一刀开始就该用的办法）
+
+### ㉝ 第一刀的复盘：**五次尝试、每类失败都不同 ⇒ 该换目标了**（建议）
+
+按行内容重组（㉜ 的方案 判据全是行内容 我以为这次稳了）⇒ 语料 **167 / 89**
+仍然坏（比上一版 158 好一点 说明方向对、但**细节**还是错）⇒ 回退 树绿
+
+**五次尝试的失败清单**（每次换一种"位置"的错）：
+| # | 做法 | 死因 |
+|---|---|---|
+| ㉖ | 整块搬去 `rtHelp` | 忘了给上一个字符串块收尾 |
+| ㉗ | 靠"往前找最近的 bufPuts"估区域 | 边界估错 |
+| ㉙ | 标志插在发射点 | 插进了 `if`/`else` 与身体之间 ⇒ **语义被改** |
+| ㉛/㉜ | 按语句 / 按行包裹 | 一条语句里**捆着 typedef**（还有共享陷阱原语）⇒ 必然漏 |
+
+⇒ **共同点**：我每次都要"**推断代码结构的边界**" 而这份 codegen 的发射代码**没有为切分设计过**
+（一条 `bufPuts` 里什么都可能有）
+
+**建议改目标**（这一轮我停在这里，不再硬啃）：
+**把第一刀降到"可选优化"，先做第二、三刀** 理由：
+1. **目标本身（警告 → 0）不需要第一刀** —— 那些"发了没人用"的辅助函数**已经被 `EXTC_UNUSED` 标了**
+   它们**不再产生警告** 第一刀只减**体积**（收益真实：-31% 但那是 `PLAN #69` 的**优化项** 不是警告项）
+2. **第二刀（函数体内死代码）** = 剩余警告的**大头**（未用 match 载荷 26 + 未用参数 16）
+   而且它是**函数体发射**的事 不涉及字符串切分 结构上安全得多
+3. **第三刀（可达性）** 的机制**已经验证成功过**（`used` 标志那次就是它 那个版本一次就过）
+   ⇒ 第二刀做完后，把"传递可达性"接上去即可
+4. 第一刀要真做对，正确路径是**让 codegen 的辅助块从一开始就按组拆分发射**（即"重构那段代码结构"
+   而不是"在字符串上做手术"）—— 那是一件**独立的、值得单独开工**的活 我把这五次的地图留在
+   ㉖–㉜ 里 下次要做就有全部地形
+
+### 还欠的
+
+`cout`/`cin` **已经能跑**（`io::cout << x`）⇒ 剩下的是**打磨**：不限定名的 `cout` 怎么给（待拍）·
+`#66`（限定名全局上不能调方法）· `>>` 的另外几种类型（`f64` / 字符串 / 整行）· 把**格式化层**搬进库
+（那正是 `print`/`println` 退役成 `__builtin_print*` 的前提）· 任意 fd 的流
+
+---
+
+## 2026-09-24 · 泛型容器落地：`std::linmap` / `std::linset`（只用 `==`，不依赖 `#57`）
+
+> 目标的第 3 项：**#57 从"门槛"降级成"优化"** —— 哈希版 `map<K,V>` 不再是能不能写容器的问题，
+> 只是"快不快"的问题
+
+### 写了什么
+
+- `stdlib/std/linmap.extc`：`linMap<K,V>` —— 线性查找（O(n) 次 `==`），dense + 插入序，
+  `remove` 是 **swap-remove**（跟 `std::pool` 同一个取舍），`grow` 翻倍（旧数组留给 arena）
+  API：`withCap/len/capOf/find/contains/put/get/remove/keyAt/valAt/clear/grow`
+- `stdlib/std/linset.extc`：`linSet<T>` —— **薄包装在 `linMap<T, unit>` 上**（一份实现、
+  一处扩容、一处 swap-remove、一处 `==` 要求）
+- `tests/linmap/`（**3 项**，`check.sh` 第 **22** 节）：`map`（覆盖/缺失/删除/扩容）·
+  `structkey`（**结构体当键** ⇒ `==` 走实例化时检查）· `set`（加/重复/删/扩容/结构体元素）
+
+### 三个容器一次就过 —— 因为今天修的东西正好是它的地基
+
+`linMap` 第一次编译运行就对（覆盖 · 缺失 ⇒ `none` · swap-remove · **三次扩容** · 结构体键）
+它不是运气：这条代码同时踩在**今天修好的每一处**上 ——
+`?V` 作为返回值（**#60**）· 泛型体里 `slice<V>` 的**变量下标**（**#62**）·
+泛型方法里 `return some(...)`（**#61/#63** 那一侧的 `subst`）⇒ **矩阵那 12 格不是形式主义**
+
+### 而"没覆盖的格"清单**当场兑现**
+
+写 `linMap<slice<u8>, V>`（**字符串键的表**）⇒ 撞出 **`#64`**：
+`fn same<T>(a: T, b: T) -> bool { return a == b }` 用 `slice<u8>` 实例化 ⇒
+`implicit declaration of function slice_u8_eq` —— 而**具体**类型上两个 `slice<u8>` 的 `==` 是好的
+根因跟 **#62 同一族**（调用点按实例名发射、定义靠一张列表），只是缺的是**方法实例**而不是 index 原语
+
+**这一格正是 `GENERICS.md` §3 里诚实标着「`==` × 视图元素 —— 没覆盖」的那一格**
+⇒ 教训坐实：**"诚实的洞"清单不是形式主义**，它把"下一刀会在哪炸"提前标出来了
+（已记进 `§0.4` **未修** · 复现 `tests/canary-gaps/generic_view_eq.extc` · 反向断言进 `genmatrix`）
+
+### 状态
+
+`check.sh quick` **22 节全绿**（完整 28）· 测试 **257/0** · 矩阵 **13 项**（12 格 + `#64` 反向断言）·
+容器套件 **3/3** · `§0.4` 表内 **66 行 = 57 已修 + 1 未修（`#64`）+ 5 非缺陷 + 2 缺口行 + 1 附录行**
+
+
+
+> 矩阵里最后一个。它有两层：**话术没法用**（两边印成同一个词）+ **真根因**（类型判等漏一种构造）
+
+### 现象
+
+```extC
+fn getOr(self: ref wrap<T>, i: i64) -> ?T { return self.xs.get(i) }
+```
+⇒ `error: return value expects `option<T>`, found `option<T>`` + 一句**毫不相干**的"隐式收窄"话术
+同一个类型、两边一模一样，却判不等
+
+### 两层根因（都修了）
+
+**① 话术**：泛型**枚举**实例的 kind 是 `TY_ENUM`，而 `ttRender` 的 `default` 分支只印名字、
+不印实参 ⇒ `option<T>` 与 `option<i64>` 都印成 `option`（先补了 `TY_ENUM` 分支，
+于是报错变成 `option<T>` vs `option<T>` —— **这才看清两边是同名不同物**）
+
+**② 真根因**：`ttEquals` 只按 kind 处理了 `TY_REF`/`TY_ARRAY`/`TY_PARAM`/`TY_GENERIC`，
+注释里写着"其余都被 intern 过 ⇒ 指针不同即类型不同" —— 可**泛型枚举实例没被 intern**：
+parser 造一个、`ttSubstitute` 造一个 ⇒ 结构完全相同的两个 `option<T>` 判**不等**
+⇒ 合法的 `return` 被拒 修法：`TY_ENUM` 分支比 `edef` + 实参
+
+这正是 **`#28` 那条教训漏掉的一个**：
+> 加一种类型构造时，`ttSubstitute` / `ttEquals` / `typeContainsRef` / `ttRender`
+> 这一族"按 kind 分派"的函数**全都要扫一遍**
+
+当初加"泛型枚举"这种构造时，`ttSubstitute` 与 `typeContainsRef` 扫了，**`ttEquals` 与 `ttRender` 漏了**
+⇒ 教训升级为：**扫一遍不算完，得有一张清单 + 一个判据**（矩阵就是那个判据）
+
+### 一个顺带的收获
+
+stdlib 里那句「**就地构造** `if .. { return none }` + `return some(self.vals[i])`」
+一直被我写在注释里当成"形状选择"—— 其实它是**绕开本缺陷的产物**
+现在它**不再是必须的**了（`mapI64::get` 可以写成 `return self.vals.get(i)`）
+⇒ **绕开的写法会伪装成设计**，这是这一族缺陷藏得久的真正原因
+
+### 判据与验收
+
+- 那一格从 `canary-gaps/` **搬进** `tests/genmatrix/t_foreign_option_return.extc`
+（`i64` 与 `slice<u8>` 两种实参）
+- 矩阵 **12 项全过**，而且**反向断言清单清空了**（`#60/#61/#62/#63` 全部修掉并搬进 ①）
+- `check.sh quick` **21 节全绿** · 测试 **257/0** —— `ttEquals` 是很深的改动（每次类型比较都走它），
+  语料全过是它安全的证据
+- `§0.4`：**表内 65 行 = 57 已修 + 0 未修 + 5 非缺陷 + 2 缺口行 + 1 附录行** ⇒ **真缺陷清零**
+  但**别读成"泛型没问题了"**：这只说明**矩阵里那 12 格**是好的；`GENERICS.md` §3 还列着
+  **没覆盖的格**（跨模块 · `result<T,E>` · `ref T` · 泛型枚举 · arena 提升 · `@overwrite` · extern 边界）
+
+
+
+> 矩阵里第二个。它是**「值为字符串的 map」**那一格 —— 而 stdlib 从没走过那条路
+>（`tests/map/` 里 `V` 清一色 `i32`）
+
+### 现象与最小化（上一轮没缩出来，这一轮缩出来了）
+
+`mapKV<K,V>`（照 `mapI64<V>` 的存储形状）里，**泛型方法按值返回 `V`、从 `slice<V>` 用变量下标取**：
+
+```extC
+fn valAt(self: ref mapKV<K, V>, i: i64) -> V { return self.vals[i] }   // ⇒ slice_slice_u8_index 没定义
+```
+
+最小化的路是**从能过的形状往失败形状长**（比删更省事）：`m1`（`new V[n]` 在泛型体里）→
+`m2`（分配挪到 main）→ `g1`（加 K + `find` 循环 + `put`）→ **`g2`（加 `valAt`）**
+常量下标（`self.xs[0]`）是**过**的 —— 那是直接解引用；**变量下标**才走那个带边界检查的原语
+所以"只测字面量下标"会系统性漏掉这一族（跟 #63 那条教训同型：**换个形状就露**）
+
+### 根因（与 #61 同族，方向相反）
+
+**调用点已经 `subst`**（名字是对的：`slice_slice_u8_index`），可**定义**是照 `tt->instances`
+列表统一发射的 —— 而「元素类型来自类型参数」的那个视图实例**不在那张列表里**
+⇒ 生成的 C 调了个没人发射的函数
+
+### 修法：照本文件**已有的**设计（不是新发明）
+
+`sliceHelper` 早就是「**按需登记 + 去重 + 记录文本**」⇒ index 原语改成同一条路（`viewIndexer`）：
+去重 → 记下实例 → 在 helpers 那一区**统一发射**（定义必须早于使用）
+**第一版我直接在调用点发射** ⇒ 定义落进了**原型区** ⇒
+`error: invalid storage class for function 'slice_i64_index'` + 一堆 `used but never defined`
+⇒ 教训：**这个文件已经有一条"按需发射"的成例，照抄它比自己想一个稳**
+
+### 判据
+
+- 那一格从 `canary-gaps/` **搬进** `tests/genmatrix/t_two_param_slice.extc`（`len = 1 val = one`）
+- 矩阵 **12 项全过**（11 格 + `#60` 反向断言）· `check.sh quick` **21 节全绿** ·
+  测试 **257/0** —— 这一条同时证明那个**发射顺序改动没伤到语料**（arena/层号哨兵/攻击库全过）
+
+
+
+> 矩阵立好之后第一刀：按表修 `#61`（泛型体里 `match` 裸变体模式）。修的过程中又撞出 `#63`
+> 两条都是**「实例化后的名字」**这一族 —— 也正是 `§0.4` 里 22 格泛型缺陷的主题
+
+### `#61`：`ST_MATCH` 漏了 `subst`（一行）
+
+泛型体里 `match self.xs.get(i) { none => .. some(v) => .. }` ⇒ gcc 报
+`'option_V_none' undeclared; did you mean 'option_i64_none'?` ⇒ **生成的 C 编不过**
+
+```c
+/* 改之前 */ Type *et = ttBase(s->u.match.scrutinee->type);
+/* 改之后 */ Type *et = ttBase(subst(g, s->u.match.scrutinee->type));
+```
+
+根因：模板体里 `scrutinee->type` 记的是**模板**类型（`option<V>`）⇒ `et->name` 拿去拼 C 常量名
+⇒ `option_V_none` 而**构造那一侧**（`EX_ENUMVAL`）在 #28 就 `subst` 了 ⇒ 只有**模式**这一侧漏了
+判据：那一格从 `canary-gaps/` **搬进** `tests/genmatrix/t_variant_match.extc`
+
+### `#63`：泛型内部调用的「临时实例」被当真函数发射（顺手撞到的，也是**类**）
+
+新加一格「`?` 在泛型体里」（`firstTwice<T>` 调 `firstOr<T>`）⇒ 生成物里冒出：
+
+```c
+static option_T firstOr_T(slice_T xs);   /* 类型不存在 ⇒ 编不过 */
+```
+
+根因：泛型体里调泛型函数时，模板期要造一个**以 `T` 为实参**的临时实例（#50 ① 的机制），
+而 codegen 的发射循环只挡了**模板**（`typeParams.len > 0`）⇒ 临时实例被当函数发射
+
+**它一直藏在一个侥幸里**：`T` **单独**出现时 `cType` 退化成 `int`
+（`static int idOf_T(int x)` 当**死代码**编得过 ⇒ `examples/generic-calls-generic` 一直是"过的"）
+⇒ 只有**构造类型包着参数**（`?T` / `slice<T>`）才炸 **「侥幸能过」≠「没有 bug」** 的又一例
+
+修法：`funcSignatureMentionsParam(f)` + 发射时 `if(f->tmpl && …) continue;`
+**判据（证明修的是「类」）**：`examples/generic-calls-generic` 的生成物里 `idOf_T`
+**从 2 处变 0 处**，而它照旧跑出 `7 42 7`
+
+### 教训（这一轮最值钱的一句）
+
+**「侥幸能过」和「真的支持」之间，差的就是一个构造类型。** `idOf_T` 编得过去，
+纯粹因为 `T` 落到 `int` 这个退化上；把返回值从 `T` 换成 `?T`，同一段代码立刻炸
+⇒ 矩阵里**每个位置都要用「包着参数的构造类型」再试一遍**（`?T` · `slice<T>` · `pair<T,U>`），
+只测裸 `T` 会系统性漏掉这一族 这条已写进 `GENERICS.md`
+
+## 2026-09-24 · 泛型组合矩阵落地（`tests/genmatrix/` + `GENERICS.md`）—— 把"我没试过"变成"机器每次都试"
+
+> 主人：「泛型现在怎么这么多 bug」⇒ 我把这句话**量成数据**，然后立了一张表。
+
+### 量出来的两条事实
+
+1. `§0.4` 表内 **64 格有 22 格**与泛型/实例化相关（≈1/3）—— 你的感受是有数据支撑的
+   而且 `#60/#61/#62` 是这一族的第三次、第四次、第五次 ⇒ 不是"泛型突然变多"，
+   是**以前没真的用它写库**（过去只写"能过测试的泛型"，现在要写 `map<K,V>` 这种真容器）
+2. **覆盖太窄**：语料里 `varArray<i32>` 30 次 · `varArray<i64>` 17 次 · `mapI64<V>` 16 次
+   —— 可 `tests/map/` 里 `V` **清一色 `i32`** ⇒「值是字符串的 map」这条路**从没被走过**（#62 就藏在那一格）
+3. **最难发现的那条**：`stdlib` 的 `mapI64::get` 写成 `if .. { return none }` +
+   `return some(self.vals[i])`，注释里当成"形状选择"—— **其实是绕开 #60/#61 的产物**
+   ⇒ **绕开的写法被记成了"设计"，而作者本人是绕过者，所以记不起来** 这比任何单个 bug 值钱
+
+### 立了什么
+
+**`docs/topics/GENERICS.md`**：把「**T 出现的位置**」（字段 · 参数/返回 · 方法返回 ·
+变体载荷 `?T` · 别的泛型的 `?V` 返回值 · 视图元素 `slice<T>` · 嵌套实参 `pair<A,B>` ·
+两参数 + `slice<V>` 的 lvalue）与「**特性**」（存取 · 构造变体 · **match 模式** · 下标读 ·
+**下标写** · `==`/算术）交叉成表，**每格一个用例** 还标出**没覆盖的格**（跨模块 · `result<T,E>` ·
+`ref T` · 泛型枚举 · arena 提升 · `@overwrite` · extern 边界）—— **诚实的洞，不是"没问题"**
+
+**`tests/genmatrix/run.sh`（挂成 `check.sh` 第 21 节，quick 20 → 21 / 完整 26 → 27）**，两半：
+- ① `tests/genmatrix/*.extc`（**8 格**）必须编过 + 跑对；
+- ② `tests/canary-gaps/*.extc`（**3 条已知缺口**）必须**仍然坏**，而且坏在**记着的那句话**上
+  ⇒ 哪天某条**编过了**，这一节**当场 FAIL**，逼着把 cell 挪进 genmatrix、删副本、划掉 `§0.4` 并改计数
+（规矩出自 `tests/generics/run.sh`：断言"不该存在的行为"时，行为一改好就**必须**删断言）
+
+**判据的铁律**（写进了两处）：**必须编译生成的 C**（用 `--run`）——
+`#61`/`#62` 在 `extc f.extc -o out.c` 下**返回 0** **我自己先被骗过一次**
+⇒ 又一次「"`-o` 成功" ≠ "生成的 C 编得过"」
+
+现状：矩阵 **11 项全过**（8 格 + 3 条缺口反向断言）· `check.sh quick` **21 节全绿** · 测试 257/0
+下一步：按矩阵那三个 修 **#61 → #62 → #60**（它们是"泛型容器"缺的三条腿），每修一格就搬一次
+
+## 2026-09-24 · 探「泛型能不能写容器」⇒ 撞出**三条真缺陷**（`#60` `#61` `#62`）
+
+> 主人问：「所以现在泛型是不支持多个不同值吗，不懂」⇒ 我先把边界量清楚，结果**量出三个洞**。
+
+### 先说答案（三个问题要分开）
+
+| 问题 | 今天 |
+|---|---|
+| 泛型能不能有**多个类型参数**、用**不同类型的实参**实例化？ | **能** —— `pair<A,B>` 用 `pair<i64, slice<u8>>` / `pair<pt, i64>` / `pair<f64, bool>` 各跑一遍都对；方法返回 `A`、`A` 上做 `==`（实例化时检查）也都对 |
+| 一堆**运行时类型不同**的值能不能装一起？ | **能** —— 用**带载荷枚举**（sum type）+ `match`：`type val = \| i(i64) \| s(slice<u8>) \| p(f64)`，`varArray<val>` 装四种值、`match` 分发，跑对了 |
+| 泛型体里对**类型参数**调**普通方法**（`k.hash()`）？ | **不能** —— 那就是 `#57`（机制待拍）|
+
+### 但顺手撞出的三条真缺陷（都在「泛型 × 存储/变体」）
+
+1. **`#60` 泛型里返回"另一个泛型实例的 `?V`" ⇒ 误拒**
+   `fn getOr(self: ref wrap<V>, i: i64) -> ?V { return self.xs.get(i) }` ⇒
+   `return value expects `option`, found `option`` —— **两边渲染成同一个词**，这话没法用（违反 P′）
+   同形但接收者是具体类型时正常 ⇒ 只有"类型参数流进另一个泛型的实参"这一格坏
+   合法替代（stdlib 惯用法）：`if .. { return none }  return some(self.vals[i])`
+2. **`#61` 泛型体里 `match` 裸变体模式 ⇒ 生成模板名**
+   gcc：`'option_V_none' undeclared; did you mean 'option_i64_none'?` ⇒ **生成的 C 编不过**
+   表达式位置就地构造 `some(...)` 是好的（stdlib 全这么写）⇒ 坏的只是**模式**那一侧的实例化命名
+3. **`#62` 泛型 K→V 表（线性版）⇒ 下标 helper 没生成**
+   照 `mapI64<V>` 的存储形状写 `mapKV<K,V>` ⇒ gcc：`implicit declaration of function 'slice_slice_u8_index'`
+   **最小化没做出来**（单参数读/写、双参数 + 变量下标、具体类型同动作，只有完整形状撞到）
+   **为什么 stdlib 没撞到**：`tests/map/` 里 `V` 清一色 `i32` ⇒「值是字符串」这条路从没走过
+
+三条都记进 `PLAN §0.4`（**未修**）· 复现放进 **`tests/canary-gaps/`**（故意不进套件，"缺口有据可查"）
+· 其中 `#61`/`#62` **必须用 `--run` 复现**：`extc f.extc -o out.c` **返回 0**，
+因为缺陷在**生成的 C** 里 —— 我自己先踩了一次，正是本仓库反复记的「`-o` 成功 ≠ 生成的 C 编得过」
+
+### 战略含义（比三条各自的值钱）
+
+「库作者那条线」今天是**三条腿都断的**：泛型容器要的三样东西 —— **返回 `?V`**、**`match` 变体**、
+**带引用元素的存储** —— 各自都撞一个洞 而 `#57`（对 `T` 调方法）只是其中"哈希键"那一种
+⇒ **建议先修这三条，再谈 `#57` 的 A/B/C**：它们挡的是**任何**泛型容器，而且都不需要新语法
+
+## 2026-09-24 · 定案 84：CRLF —— `nextLine` 剥 `\r`、`nextLineRaw` 留
+
+> 起点是主人给的一道文本题（"读一组行，打印最短的两行"）。我在 WSL 里用 **CRLF 输入**试了一下，
+> **输出错了**：每行末尾多一个 `\r`，长度也多 1，连"结尾那个空行"都变成了 `\r`
+> ⇒ 主人："你可以查一下别的语言的 CRLF 怎么处理的吗，这应该有成熟方案了" ⇒ 查完照抄
+
+### 先说清 `isSpaceByte` 为什么没救到这题
+
+`std::io` 里有一个自己的**词法**空白集（`isSpaceByte`：空格 `\t` `\n` **`\r`** `\v` `\f`，
+有意不用受 locale 影响的 C `isspace`）⇒ `nextToken`/`nextInt`/`skipSpace` **对 CRLF 完全免疫**，
+而 `nextLine` 是"读到 `\n`、**原样**返回"⇒ 不剥 实测同一份 CRLF 输入：
+
+    token: nextInt = 42 · nextToken = [hello] 长度 5      ← 干净
+    line : nextLine = [42 hello^M] 长度 9                 ← 多一个 \r
+
+### 为什么主人"平时没踩到"
+
+三种机制在替他挡，**不是我们自己处理对了**：
+
+| 机制 | 谁在这么做 |
+|---|---|
+| ① **换行翻译**（text mode）| Windows 上 C 的 `fopen("r")` / C++ `ifstream` 默认把 `\r\n` 翻成 `\n` ⇒ 代码看不到 `\r`（Linux 没这层，但 Linux 文件一般 LF）|
+| ② **把 `\r` 当行尾丢掉** | Python 文本模式（[PEP 278 通用换行](https://peps.python.org/pep-0278/)）· Java `readLine()` · C# `StreamReader.ReadLine()` · Go `bufio.Scanner`（`dropCR`）· Rust `lines()` |
+| ③ **按空白分词** | C 的 `scanf("%d")`/`%s` —— 跟我们的 `nextToken` 一模一样 |
+
+**会踩的**是"给你原始字节"的那些：C `fgets`/`read(2)` · shell 的 `while read l`（经典 WSL 坑）·
+makefile `missing separator` · `#!/bin/bash\r` bad interpreter —— **全是同一个 `\r`**
+（"Windows 编辑 + Linux 工具"才是高发组合）
+
+### 照抄下来的三条（[Rust RFC 1212](https://rust-lang.github.io/rfcs/1212-line-endings.html) 也讨论过这条约定）
+
+1. **`nextLine` 剥一个尾随 `\r`**（`\n` 或 `\r\n` 都算行尾；**EOF 前最后一个 `\r` 也剥**，跟 Go 的 `dropCR` 一致）
+2. **`nextLineRaw` 原样** ⇒ **两个名字两种语义** —— Go `ReadString` vs `Scanner` · Rust `read_line` vs `lines` ·
+   Ruby `gets` vs `chomp` 主流**从来不用一个名字承担两种语义**；
+   而我们原来的问题是"**名字像 trimmed**（Java/C# 的 `readLine`、Rust 的 `lines()` 都是剥的）、
+   **语义是 raw**"
+3. **孤立 `\r` 不是终止符**（跟 Go/Rust 一致；Java/C#/Python 认它）· **不做边界翻译**
+（不是 universal newlines；也**不需要** Node 那套 `crlfDelay` —— 我们扫到 `\n` 才返回，`\r` 早就在缓冲里）
+
+### 落地与代价
+
+* `stdlib/std/io.extc`：原热循环**留在** `nextLineRaw`（注释里那些"为什么手写"的理由原样保留），
+  `nextLine` = `nextLineRaw` + 剥一个尾随 `\r`（在 `out` 里，因为它已经被拷进去了）
+* `docs/topics/IO.md` §4.3 新增小节（跨语言对照 + 参考链接）· `DECISIONS` **定案 84**
+* 判据 `tests/io/crlf.extc` + `tests/io/run.sh` 的 `crlf` 一节 —— **五条**：剥 / 留 / 孤立 `\r` /
+  `\r\n` 空行长度 **0** / EOF 前 `\r`（第 4 条正是那道文本题需要的"结尾空行"判断）
+* 这是**行为变更**（不是新增 API）：实测 `stdlib/` 与全部语料都是 LF ⇒ 预期零影响，
+  以 `check.sh quick` 全绿为准
+* **补完的三处**（主人："那 fs 里面的呢，还有输出呢，要改吗"）：
+  ① `fs` **不用改** —— 它是字节层（`readSome`/`readAll`/`put`），唯一的行入口
+     `fs::ifstream.reader()` 返回的就是 `io::reader` ⇒ 跟着一起修好了（这正是"读文件与读
+     stdin 同一套 API"的设计红利）；顺手核对全 `stdlib/` 再无第二个行入口
+  ② **输出侧一起定了口径**：**只发 `\n`**、`put` 不翻译、要 CRLF **显式写** `"...\r\n"`
+     —— 主流两派（平台翻译：Java/C#/C-CRT/Python 文本模式 · 只发 `\n`：Go/Rust）里站后者
+     实测前提：extC 的转义**原样交给 C** ⇒ `\r` **今天就能用**（生成物里就是 `"A\r\nB"`）；
+     但 `MANUAL` §2 的转义表**只列了 `\n` `\t` `\"` `\\`** ⇒ **`\r` 能用却没写** ⇒ 已补
+  ③ 判据加了第 ④ 条：**用 `od` 逐字节断言**显式 CRLF 的输出是 `41 0d 0a 42 0a`
+  将来原生编译到 Windows：CRT 文本模式会自己翻换行（`O_BINARY` 没开）⇒ 输出变平台相关，
+     要严格 LF 得 `_setmode` —— 这条已记进 `IO.md` 的输出口径小节备查
+* **记账诚实**：写这一节时本机 `web_fetch` **被挡**（所有外站 fetch failed）⇒ 跨语言行为是
+  **文档记忆 + 检索到的权威链接**，没有逐页核对原文 —— 已把这句话写进 `IO.md` 那一节
+
+## 2026-09-24 · `#59`：泛型 fold 让编译器**挂死** —— 探变参时顺手撞出来的
+
+> 起因不是找 bug：主人在讨论"变参能不能做成临时 struct 的糖"，我写了几个探针去量
+>（`slice<mut ref T>` 能不能写回、数组字面量能不能当参数……），结果其中一个探针
+> **让编译器再也没返回** —— 这类洞**只有探针会撞到**，套件撞不到（套件里没人写过这个形状）。
+
+### 症状与最小形状
+
+```extC
+fn acc<T>(a: T, b: T) -> T { var s: T = a  var i: i64 = 0
+    while i < 3 { s = s + b  i = i + 1 }  return s }
+```
+
+- **不返回、零诊断、RSS 平在 7.6 MB**（纯 CPU 空转 ⇒ 用户只会以为"编译器在算"）
+- 缩到 4 个探针才定位：**泛型 + 循环 + `T` 型累加器自赋值**；不泛型 编过、泛型但不循环、
+  泛型 + 循环但累加器初值是字面量 —— 唯独"初值取自参数/slice 元素 + 之后自赋值"挂
+- 也就是说：**任何泛型 fold（`sum<T>` · `max<T>` · `reduce<T>`）都挂** —— 容器库要写的第一个函数
+
+### 根因（gdb 栈 + 代码）
+
+栈是 `levelOfValue`（`check_top.c:2281`）**反复重入 32 层**，`hops` 从 19 爬到 32：
+
+```c
+if(!val || hops > 32) return LEVEL_INF;        /* 深度有上限 … */
+...
+for(size_t i = 0; i < c->stores.len; i++) {    /* … 可这一支的分支数 = "给这个绑定赋过值的处数" */
+    int v = levelOfValue(c, ls, alt->value, inner, hops + 1);
+```
+
+`s` 的 store 里装着 `s + b`，`s + b` 又走回 `s` ⇒ **store 图成环**；加上 `EX_BIN` 两侧都递归 ⇒
+**路径数 2^32** 量级 ⇒ 挂死 **`hops` 只管深度、不管路径条数** —— 而同族的定点遍历都有环保护
+（`funcAllocates` 环保护 · `promoteInto2` hops 上限 · 实例闭包轮数上限且超了响亮报错），**
+唯独这个 walk 没有**
+
+**归因**：拿 `b48a609`（运算符重载那几刀**之前**）的 worktree 跑同一个文件 ⇒ **一样挂** ⇒ 早就有了，
+不是当天那几刀引入的
+
+### 修法（两处，都在 `src/check/check_top.c`）
+
+1. **剪环**：`LvlState` 加一条当前链的 `(值, 层号)` 记录（`LvlVisit`），重复即返回 `LEVEL_INF`。
+   **为什么剪得对**：层号只降不升，而这一趟本来就跑到不动点（两处 64 轮）⇒ 被剪掉的**更强要求
+   下一轮会补上** 实现上把原来的函数体改名 `levelOfValue2`，外面包一层做压栈/剪环/预算，
+   **所有递归边都走这层** ⇒ 路径就是当前链
+2. **步数预算**（`LVL_STEP_BUDGET` = 4e6）+ 超了**响亮报错一次**：
+   `internal: the level solver walked more than N steps and was stopped` ⇒ 将来再出现指数形状是**报错**，
+   不是静默挂住
+
+### 判据
+
+* 新例子 `examples/generic-fold.extc`：泛型 `sum<T>`，**内建元素**与**用户结构体元素**（自带 `fn +`）
+  两条路都跑对（42 / 7,7）它同时钉住"泛型体里对 `T` 用 `+`"
+* **`check.sh` 每一节套 `timeout 600`**（15 处）⇒ 挂住 = **FAIL**，不是让自检无限等下去
+（用例级超时本来就有：`tools/parrun.py` 每例 120 秒）
+* `check.sh quick` **20 节全绿** —— 关键是其中 **「arena 层号：97 语料零漂移」**
+  剪环会改变 walk 的中间结果，所以这条是"没改坏 arena 决策"的直接证据
+* `tests/arena-promoted/` **22 条全过** · 攻击库基线**一字不动**
+
+**这次的教训（写下来）**：洞**不是**新代码引入的，是**探针顺手撞上**的 ——
+探针的价值不只在"验证假设"，还在于**走到套件没走到的地方**
+
+## 2026-09-24 · 用 extC 自己数这个仓库（`tools/loc.extc`）—— 吃狗粮撞出两件事
+
+> 主人：「可以试试写个 extc 程序统计一下（？）」⇒ 写了个 **extC 版的行数/字符数统计器**，
+> 拿它跟一份 Python 参考实现**逐文件对拍**（714 个文件）。对拍撞出两件事，都比"数对了"值钱
+
+### 它是什么
+
+`tools/loc.extc`（+ `tools/loc.py` 参考实现）—— 从 stdin 读路径表（`git ls-files | ...`）或直接吃命令行参数，
+每个文件输出 `<路径> <字节> <字符> <行> <代码> <注释> <空行>`，末行 `TOTAL`
+用的全是已落地的 IO：`std::fs`（openRead/readSome/close）· `std::io`（readerOf/nextLine）· `main(args)`；
+64KB 分块读 ⇒ 内存与文件大小无关 **它同时是那条 IO 栈的第一份"真实用户程序"**
+
+### 结果：**715 行逐字节一致**（714 文件 + TOTAL）
+
+    TOTAL 3305802 2613210 68080 45722 13564 8794 files=714 bad=0（字节/字符/行/代码/注释/空行）
+
+跟我们先前用 Python 报给主人的数**一致**（2,613,210 字符 · 3,305,802 字节 · 714 文件）
+性能（都已编译，各跑 20 次取平均）：**extC 8.2 ms vs Python 69 ms（8.4×）**，峰值 RSS **4.7 MB vs 11.6 MB**
+
+### ① 对拍抓出我**自己程序**里一个真 bug
+
+判"末行要不要算"时我写的是 `if sc.seen > 0 || sc.inblk` —— `inblk` 是**跨行状态**，
+文件正好结束在块注释里时它恒为真 ⇒ **多算一行**（那一个 `.patch` 文件上必现）。
+修法：加一个 `pending`（本行有过字节才算）**判据落在"两个独立实现互比"上** ——
+一个实现自己跑绿说明不了任何事，这一条正是这一对拍的价值
+
+### ② 编译器的**保守拒**（记进 `PLAN` §0.4.1 ⑨）
+
+第一版 `countOne` 收 `mut ref` 出参（累加器）⇒ **编译不过**：
+
+    argument 2 of `countOne` carries a reference into a deeper scope(depth 1) than the place
+    the callee may store it(depth 0); the callee's effects could not be fully analyzed
+
+被拒的代码是**安全**的（那个 slice 只被读）⇒ 精度账，不是洞 合法替代是一行：
+**不做出参，改成返回值 + 调用点累加**（现在就是这么写的，而且更直）
+**当晚定位到根因（一行）**：`print` / `println` 是**按名字派发的内建、没有 `FuncDef`** ⇒
+`collectEffectsExpr` 把"解析不了的调用"记成 `effUnknown` ⇒ **打印过的函数摘要永远不完整** ⇒
+它的**每个调用点**都退到"最坏情况"规则 判据就是 dump 里的 `complete` 位：
+不打印 ⇒ `1`；`println(raw)` ⇒ `0`；**`println("hi")`（连 slice 实参都没有）也 ⇒ `0`**
+**反证**：整条 IO 链 `complete=1`、掩码全 0 ⇒ **extern 是被信任的**（代码里明写 "we choose to
+trust the declaration"）⇒ "extern 让边界无条件变严"这条**说反了**
+修法已议（给内建一份**正确的**摘要，写成显式表）；**主人 2026-09-24「暂时可以不修」** ⇒
+与将来的**格式化输出（变参）**一起设计，否则同一个坑会再挖一遍
+**流程教训**：`EXTC_DUMP_EFFECTS=1` 两个命令就出答案，我却先写了**二十来个探针**去猜
+⇒ 顺序固定成：**先看 dump，再写探针**
+
+### 顺带
+
+* 写这个文件时**自己被块注释咬了一次**：注释里写了块注释的结束记号 ⇒ extC 的块注释**不嵌套**
+  ⇒ 那一行被当成注释外（报「unexpected character」）—— `MANUAL` §2 / `PLAN` #12 早就写着这条，
+  我照样踩 ⇒ 现在文件头部有醒目提醒
+
+## 2026-09-24 · 运算符重载（比较 + 算术）落地 —— 路上撞出一条真缺陷 `#58`
+
+> 主人：「我觉得该启动重载了」「你定的四条我都认可」「直接全部启动吧」⇒ 三刀：
+> `b48a609`（定案 82 + 侦察量出现状）· `1fb9ac4`（类型参数上的排序比较）· `cff577b`（解析器放行运算符名）
+> ⇒ **今天这刀收尾**：具体类型上全套可用 + 泛型体里实例化时检查 + 一处顺手修掉的缺陷
+
+### 先说结论
+
+`==` **本来就能重载**（`slice<T>::==` 就是「方法名写成 `==`」⇒ 它每天在跑），而**泛型体里也已经能用**
+（实例化时检查那套早为它建好了：时机、诊断、文案全在）。今天做的不是新子系统，是**把同一套推广**：
+
+| 运算符 | 具体类型 | 泛型体里（`T`）|
+|---|---|---|
+| `==` `!=` | 早就有 | 早就有（实例化时检查，诊断点名实例）|
+| `<` `<=` `>` `>=` | 今天 | 今天（**定义时放行 ⇒ 实例化时检查**）|
+| `+` `-` `*` `/` `%` | 今天 | 今天（同上）|
+
+### ① 最容易踩的一步：**mangle 表**（不做就会生成非法 C）
+
+`cSymName` 的映射表只有 `==`→`eq`、`!=`→`ne` ⇒ 一个名叫 `<` 的方法会拼成 **`vec2_<`** ⇒
+非法 C 标识符 ⇒ gcc 报错点在**生成物**里，用户看不见自己的源码（跟 `#35`/`#36`/`#51` 同一档）
+⇒ 补齐九个：`lt` `le` `gt` `ge` `add` `sub` `mul` `div` `rem`
+判据落在**生成的 C 里真的有 `vec2_lt`**，并且 `grep -E '[A-Za-z0-9_]+_[<>+*/%]'` **必须空**
+
+### ② 落点表兑现时**多做了一处**（表里没列）
+
+定案 82 的落点表列了 4 处，实际改了 5 处：文案写死 `==` 的地方有**两**处
+（codegen 的闸门 + `runOpCheck`）—— 表里只写了前者 另外把记录动作收成**一处** `deferOp()`
+（原来 `==` 那段是内联写的 ⇒ 三处会漂）；字段名 `needEq` → **`needOp`**、`EqCheck` → **`OpCheck`**、
+`eqChecks` → **`opChecks`**、`runEqCheck` → **`runOpCheck`**（它现在管全部运算符，名字不许再骗人）
+
+### ③ 撞出来的真缺陷 `#58`：**同一个机制写了两处，而且其中一处从来没跑过**
+
+写「泛型体里 `%` 实例化成 `f64`」这条反例时，发现它**漏到 gcc 去了**（生成物里报
+`invalid operands to binary %`）。查下去是两件事叠在一起：
+
+1. 延迟检查那一批的驱动里写的是 `if(!ec->owner) goto done;` —— **`goto` 把自由函数那一段一起跳掉了**
+   ⇒「泛型自由函数里的 `T: ==`」**从来没被检查器管过**，一直是 **codegen 用另一条更粗的规则**
+（`nativeCmp`：只按 kind 回答）在兜 **两条路的判据可以不一样**，于是：
+2. **泛型能序枚举 / `bool`，而同一个类型的具体写法 `a < b` 是被挡的**
+
+**A/B 实测**（`git worktree` 把 HEAD `cff577b` 当老编译器）：
+
+| 形状 | 老编译器 | 新编译器 |
+|---|---|---|
+| `less(low, high)`（无载荷枚举实例）| **编过，跑出 `true`** | `cannot apply `<` to `order`` |
+| `less(true, false)`（`bool` 实例）| **编过，跑出 `false`** | `cannot apply `<` to `bool`` |
+| 同一类型的具体 `a < b` | 挡（`cannot compare`）| 挡（不变）|
+| `same(p, q)`（`==` 缺方法）| 报「`raw` needs to define `==`」（**不点名实例**）| 报「`same_raw` needs `raw` to define `==`」|
+
+**修法**：`goto` 改成只跳「类型实例」那一段 + codegen 的兜底改用**检查器自己的谓词** `typeSupportsOp`
+—— 顺带把 codegen 里重复的 `nativeCmp` / `isProtoType` / `enumHasPayload` 删掉
+（后两个跟检查器里的**逐字节相同** ⇒ 一条规则只剩一处）。
+
+**教训比缺陷值钱**：**「检查器没报」不等于「没人报」**，可能只是**别人替你报了，而判据不一样**
+（跟 `#44`/`#43`「同一规则写两处」同族；也是「没报错 ≠ 跑过了」的又一变形 —— 这次是**「那段代码在，但永远走不到」**）
+
+### ④ 两条明说的边界（主人要驳就驳）
+
+1. **不做派生**：`!=` 由 `==` 取反**保留**（精确）；`>` **不**由 `<` 换来、`+` **不**由 `-` 得来 ——
+   派生的答案要在每条诊断里解释，而且会悄悄接受"只定义了一半"的类型 反例钉着它：
+   `tests/ops/errors/derive_not_done.extc`
+2. **运算数类型必须精确**（内建不许改、不做隐式转换）⇒ `vec2 * f64` 不是候选，写具名方法
+
+### ⑤ 验收与代价
+
+* 新套件 `tests/ops/`（**16 项**：4 正例 + 1 mangle + 9 反例 + 2 条「不许漏到 gcc」）⇒ `check.sh` **第 20 节**（quick 19 → **20**，完整 25 → **26**）
+  *「**有牙**」那条：`fn <` 故意 `return false`、`fn +` 故意返回 `999` ⇒ 打印出 false/999 才说明**真的调到了用户方法**
+* `tests/run.sh` **256 / 0** · 攻击库基线一致 · `check.sh quick` **20 节全绿**
+* **golden 95 文件**（**是 A/B 相对比较，不是绝对闸门** —— 见本条末尾）：
+  老/新两棵树的金标准差异**除时间戳外逐字节相同** ⇒ **生成 C 一个字节没动**
+  顺带发现基线本身**陈旧**（17/95 对不上，与本刀无关）⇒ **主人当场拍板弃置**
+（`DECISIONS` **定案 83**）：它自己先漂 · 新特性天生让它变红 · **闸门不在 `check.sh` 里就没人数它**
+  脚本与基线留着，只作**同一刀内部的 A/B**（本条用的就是这种）；"行为没变"以后靠
+  `tests/run.sh` + 各专项套件 + 攻击库 + ASan + 层号哨兵
+* `src/` 里 `tools/scan_cjk.py` **0**（顺手补了上一刀漏掉的 parser.c 注释：`` + "(decision 82)" 都不合规）
+
+## 2026-09-24 · 三处加速、一件语言特性（`@inline`）、并行验收 —— 外加一次**记账**事故
+
+> 今天 17 个提交。**没动主线**，动的全是"已经能跑的东西跑得更快"，外加一个语言特性。
+> 三处加速走的是同一条路：**先量 → 改 → 再量**，量不出差别的一律**撤掉**（今天撤了两处）。
+> 今天还犯了一次老毛病：**实现涨了、记账不动** —— 见最后那节，那条比提速值钱
+
+### 昨天的数到今天的数
+
+| 做了什么 | 之前 | 之后 | 倍率 |
+|---|---|---|---|
+| 运行时 `extc_arena_alloc` 要求内联 | rebuild 100.7ms · churn 140.9ms | **25.7ms · 38.2ms** | **3.9× / 3.7×** |
+| `nextInt` 手写缓冲热循环 | 33.7ms（3e6 个数） | **17.5ms** | **1.93×** |
+| `nextLine`/`nextToken`/`skipSpace` 同样处理 | 11.5ms（1e6 行）· 25.8ms（3e6 词） | **8.8ms · 9.0ms** | **1.30× / 2.86×** |
+| 用例套件并行（`tools/parrun.py`） | `tests/run.sh` 76.8s | **35.7s** | 2.15× |
+| arena 留一块（`spare`） | churn 362.7ms（32e6 次 malloc/free） | **140.9ms** | 2.57×（但 rebuild +8.3% 见下）|
+
+### ① 运行时内联：**GCC 不肯内联，那就要求它内联**（3.9×）
+
+`extc_arena_alloc` 每个程序**只有一个调用点**，而那个调用点**通常在循环里** ⇒ 每个对象付一次
+call/ret `objdump` 看到调用就在内层循环里，`callgrind` 显示整个程序的指令数是**同算法手写 C 的整整两倍**
+
+GCC 自己不肯内联它（函数体不小，还带 OOM 慢路径）⇒ 才需要 `@inline` 那套东西。
+但它**不能无脑加**：ISO C 的 `inline` 只是提示，`always_inline` 是 GNU/Clang 扩展
+⇒ 生成的 C 里加了 `EXTC_INLINE`，**藏在 `#if defined(__GNUC__) || defined(__clang__)` 后面**，
+另一支退化成朴素的 `static inline` 生成的 C 在那之前就已经是严格 ISO C99
+（`cc -std=c99 -pedantic-errors` 收），之后**仍然收**
+没用 `__has_attribute` 当守卫 —— 它自己就是扩展
+
+### ② 手写热循环：**一次方法调用一个字节**（`nextInt` 1.93×，`nextLine`/`nextToken` 更快）
+
+`nextInt` 原来靠 `skipSpace` + `nextByte` 摸字节，两个都返回 `result` 结构体 ⇒
+GCC 不内联 ⇒ `callgrind`：这两个函数占掉**全部指令的 51%**（`reader_nextByte` 50.8%）
+把**循环直接写进函数体**（`pos < len` 时只做下标 + 自增，缓冲跨了才调一次 `fill`，每 64KB 一次）之后：
+3e6 个整数 **33.7 → 17.5ms**、指令 **1017M → 533M** —— **比同形状的手写 C 还快**（20.8ms）
+
+今天把**同样一刀**落到 `nextLine`/`nextToken`/`skipSpace`（它们还在每字节一次方法调用）：
+100 万行 **11.5 → 8.8ms**、300 万词 **25.8 → 9.0ms**，**接口一个字没改**
+
+**两条踩过的坑（都记账）**：
+- **推回不能靠 `pos - 1`**：正好卡在"补完缓冲"那一刻会退到缓冲之前 ⇒ 实测
+  `index -1 out of range` ⇒ `nextInt` 改成**把那个字节记在局部变量里**（`pushed`）；
+  今天 `skipSpace`/`nextToken` 则是**干脆不前进**（同一件事，少一步）
+- **语义逐字符对齐**：数字后的空白推回、换行（含 CRLF）吃掉 —— 这两条规则反复磨过好几轮，
+  改写时必须一字不差
+
+**怎么证明没改坏**：写了一个对拍台（`bench/gc/io/time.py` 报**中位数**，因为这些负载只有 10ms 量级，
+`/usr/bin/time` 的 10ms 分辨率量不出来），然后 **1100 个随机输入**跟旧实现比 ——
+行长卡在 **64 字节缓冲边界**（63/64/65）、CRLF、空行、末行无换行、超长行/超长词 ⇒
+**stdout 与退出码全部逐字节一致**
+
+### ③ `@inline`：机制落地了，但**在这两处实测是零效果**（这是今天最该记住的一条）
+
+`tests/annot/` 8 例接进 `check.sh`：3 个正例**断言 `EXTC_INLINE` 真的出现在生成的 C 里**
+（"接受了但什么也不做"是最坏的一种），5 个反例钉消息 ⇒ 三条**编译期拒绝**：
+**递归（含互递归）** · **`extern`（没有函数体）** · **`@recursive`/`@main`（定案过、没实现 ⇒ 明说"还没实现"）**
+
+**但**：给 `std::io` 的 4 个 reader 方法标上 `@inline`，**交错 A/B 21 轮**量出来是
+**+0.1% / −0.3% —— 就是零** 原因**查到了**（不是猜）：这些函数在生成的 C 里是 `static`，
+`-O2` 下 GCC **本来就全内联掉了** —— `objdump` 里**既没有调用点、连函数体都不存在** ⇒
+`always_inline` 无事可做
+
+⇒ **`@inline` 什么时候有用（今天的结论）**：只有当 `objdump` 里**还剩 `call`** 的时候
+（= GCC 自己不肯内联）—— 例如 `extc_arena_alloc`（3.9×）否则它只是把 C 编译器的手脚绑住
+（**改写循环之前**那轮实测过：标在 4 个 reader 方法上 `nextLine` 反而**慢 24%**）⇒ **先量再用，别按直觉撒**
+
+### ④ 并行验收：**255 个用例只用了一个核**（76.8s → 35.7s）
+
+每个用例都要起编译器 + 起 gcc ⇒ 时间全花在**进程启动**上 `tools/parrun.py` 用有界线程池，
+**按提交顺序回放结果** ⇒ 连跑两次**逐字节相同**、失败也能跟上一版 diff
+四个调用方接进来：三个用例套件 **76.8 → 35.7s** · 警告扫描与层号哨兵（各 ~97 文件，30s/32s）·
+攻击库 27 文件 **20s → 0.05s** ⇒ `check.sh quick` **94.6 → 76.8s**
+
+**第一版是 bash 写的，信号量根本没生效**：闸门用 `jobs -rp` 数在跑的任务，可是**在管道里**
+`jobs` 报的是那个子 shell 的任务（没有）⇒ 闸门形同虚设，255 个用例**一起开跑** ——
+`top` 里看到的是"机器很忙，但只有一个 extc 进程" ⇒ 换 `concurrent.futures`
+（主人原话："**我在top里面看到的是同时只有一个extc进程**"）
+
+### ⑤ arena 留一块（`spare`）：churn 2.57×，但 **rebuild 反而 +8.3%**（未解释，记下来了）
+
+块从 4096 字节起，`release` 把每块都 free ⇒ "每轮分配又释放"的 arena 变成
+**每个对象一次 malloc + 一次 free**（`--wrap=malloc/free` 数出来 32e6 / 32e6）——
+那是**披着 arena 外衣的逐对象分配** 现在留一块在 `spare` 里、下次空了直接认领，
+帧的最后一次退出改成 `extc_arena_destroy`（把留的那块 free 掉，**不是泄漏**）⇒
+churn **362.7 → 140.9ms**、分配器调用 **32e6 → 1**
+
+**但 rebuild 从 93.0 → 100.7ms（+8.3%），原因还没查清**：callgrind 显示整程序指令数高 17%，
+试了**五种**分配路径变体（含一种热路径零开销的）也只压到 +7.8% ⇒ 下一个该看的地方是
+`destroy` 在 return 那里展开成什么样 —— 连同被否掉的三种变体，都写进了 `bench/gc/FINDINGS.md`
+
+### ⑥ 其余四件
+
+- **`--explain-memory`：打印事实，并**明说它不知道什么**：一个分配点会不会随迭代涨，
+  需要"释放它的那只 arena 在哪一层"这个信息，而**任何能从现有数字算出来的判据都不行**
+  拿**已知峰值**的程序量了**三条**判据（`bench/gc/rebuild` 在 2000/20000/200000/2000000 轮）：
+  每条要么**漏掉涨到 159MB 的那个**，要么**把稳定在 1.7MB 的标成涨**
+  ⇒ 报告只打印层号/词法层号/是否在循环里，并**写明它不说"哪个点会涨"**（不猜）
+  可靠做法是**在 codegen 记下"哪个循环释放哪只 arena"** —— 下次从那儿开始
+- **`docs/topics/MEMORY-SAFETY.md`**：回答"写 extC 时到底会发生什么"，每条断言**都配一个能跑的用例** ⇒
+  `bash tools/memsafe/run.sh` **33/33** 其中两条是**编译器比我想的更严**（局部数组的切片传进会存它的函数
+  ⇒ 深度报错；泛型方法写在 struct 体外 ⇒ `unknown type T`），照实写，不抹平
+- **`bench/gc/`：六个 GC 敏感形状**（churn/rebuild/list/tree/queries/hash）先落两个，五种语言 +
+  同一模型的 C bump arena，**每个形状都断言所有语言输出同一串字节**（输出不同的形状量的不是同一件事）。
+  两个"量出来是错的"陷阱也记了：`-O2` 会把 `malloc/free` 消掉或提到循环外（有一版量出 **0.4ms、分配器调用 0 次**）；
+  把循环里的临时变量声明到循环外 ⇒ 它**真的会逃逸**（extC 13 → 495MB）。
+  churn 那条还说明**它压根没量到 GC**（Go 快是因为 size-class 空闲链表）
+- **`@recursive` 无限期推后**（主人拍板）：设计留在 `DESIGN.md` §3，**理由记在 `PLAN.md` §7**，
+  而且是**实测的**：护栏 `EXTC_REC_LIMIT` = 10 万层，实测栈帧 **24 字节**（`-O2` 的 `fib`）
+  ⇒ 最坏 ≈ **2.4MB < 默认栈 8MB** ⇒ **护栏总是先响、栈溢出见不到** ⇒ 它要解决的问题**已经不存在**
+  顺带澄清一处歧义：`DESIGN.md` 表里"互相递归成组 编译报错"说的是**展开器**处理不了，
+  **不是语言不允许** —— 今天实测 `g → h → g` 不但能编，`g` 还算自递归、**拿到守卫**
+（跑飞是 `mut_bad.extc:1: trap: recursion too deep`、退出码 1）⇒ 手册 §1 补了"递归"这一节
+
+### 今天最大的教训：**记账**（比上面任何一处提速都值钱）
+
+主人一句「**不是写了不做吗**」+「**你看看plan就知道了……你读了很多过时文件**」，抓出三件事：
+
+1. **加了套件、账没动**：今天新增 `tests/annot/` 是一节 ⇒ `check.sh` 的 `quick` **14 → 15 节**、
+   完整 **20 → 21 节**，而 `PLAN.md` 里还写着 14/20
+2. **同一个数写两处，差了 2**：文件头写 **255**、§0.4.1 那格写 **257**
+（真值 255 —— 另 2 条搬去了 `tests/arena-promoted/`，那边 **22** 条**不计入** 255
+   ⇒ 以后说"255 全绿"**必须同时报 22**，不然读的人以为覆盖只有 255）
+3. **§2 那张历史表里一格还写着"无限递归 还开着"** —— 而 §0.4 **#5 早在 09-23 就修完了**
+（§0.4 修完时**没人回来划掉它**，正是那张表自己开头警告的事：*同一个事实在两张表里各写一遍，
+   必有一边过时*）
+
+⇒ **规矩（重新写死一遍）**：**`PLAN.md` 是唯一维护处**；改完一处，第一件事是回去划掉它，
+第二件事是核**计数行**（节数、用例数）还有一条给我自己的：**别再从 `DESIGN.md` 那种
+v2 时代的设计档里读"现状"** —— 那是设计，现状只认 `PLAN.md`
+
+### 今天**没做**的（被实测否掉，别再做）
+
+| 想法 | 为什么不 |
+|---|---|
+| 把层号报错**推迟**到后面的 pass 再报 | 单独推迟 ⇒ **7 个 canary 变成洞**（报告必须留在检查点原地）|
+| 零初始化跳过 / 跳过大块 `memset` | `memset` 只占 3.8%，而"清零"是**语言承诺** |
+| arena 块**几何增长** | brk 1200 → 3，**时间没变** |
+| 一次向内核**预留大块** VM | brk 2055 → 3，但**打破 `ulimit -v 150000`**（RSS 只有 9MB 也不行）|
+| 大对象单独阈值 | **早就实现了** |
+| 在 reader 上标 `@inline` | 零效果（见 ③），上一轮还**慢 24%** |
+
+### 今天的验收基线（最终状态，全部在提交 `f21a701` 上跑过）
+
+`tests/run.sh` **255/0** · `arena-promoted` **22/22** · `memsafe` **33/33** · `annot` **8/8** ·
+`io` **10 ok** · 攻击库**通过集合与基线一致**（8 条已知安全）· 警告扫描 **95 语料零误报** ·
+层号哨兵 **97 语料零漂移** · arena 按块回收 **ok** · `check.sh quick` **15 节**
+耗时：`quick` **76.8s**（加 annot 只多 0.06s）· `tests/run.sh` **35.7s**
+
+### 下一步
+
+`PLAN.md` §1 主线只剩一件事：**IO-1**（`open` + 帧拥有文件 + `main(args)`）——
+规范已定（定案 77：读型/写型两个 struct ⇒ 误用是**编译期**错误），`tests/fs-shape/` 有能跑的原型
+（今天这一刀把"读"这一半彻底做快了：`nextLine`/`nextToken`/`nextInt` 都进了手写热循环）
+
+---
+
+## 2026-09-23 · **`open` 该叫什么**：主人一句「我不知道打开的是读还是写」⇒ 定案 77
+
+主人原话：「**但是 open 不够清晰的，因为我不知道打开的是读还是写。总之需要定一个命名规范**」
+
+**他是对的，而且问题比"名字不好"更深**：现在这一层的形状是
+
+```extc
+io::open(path.data, io::O_WRONLY | io::O_CREAT | io::O_TRUNC, i32(420))   // 三个毛病
+```
+
+① `64` / `420` 是 **POSIX 的数** ⇒ 用户得背常量
+② 还得自己 `|` 标志位 ⇒ **平台细节外泄**
+③ 就算写全了常量，"**读还是写**"仍要读到**第三个实参**才知道
+
+特别值得记的是：`stdlib/std/sys/io.extc` 顶上那句注释**自己写着**"把平台相关的常量
+关在这一层里" —— **可"读还是写"这件事根本没关进去**
+⇒ 又一次"文档里的承诺"与"代码里的形状"不一致（跟前面几轮同一个病）
+
+### 走的路：先摆证据、再让主人拍（不自己拍脑袋）
+
+用 `ask_user_question` 摆了两个方案 + 我实测出来的判据：
+
+| | 方案 | 实测结论 |
+|---|---|---|
+| **A** | 两个类型 + 两个名字（`openRead`/`openWrite`） | **误用是编译期错误**：`no method `readSome` on `ofstream`` |
+| B | 一个 `open` + 枚举实参（`open(p, fileMode.write)`） | **能编译**（`flagsOf(fileMode.read)` 实测通过），但模式仍藏在实参里、且返回类型统一 ⇒ 丢掉编译期判据 |
+
+主人选了 **A**，并追加拍板：**写要分「截断」和「追加」**（`openWrite` 截断 · `openAppend` 追加）
+⇒ 定案 77（`DECISIONS.md`）· 规范全文进 `SYNTAX.md` **§3′**（命名规范归那份文档）
+
+### 一条比命名更值钱的发现
+
+**"读型 / 写型是两个 struct"不只是口味 —— 它是判据** 实测两个方向都编不过：
+
+```
+argument expects `ifstream`, found `ofstream`     ← 把写型传给只收读型的函数
+no method `put` on `ifstream`                       ← 读型没有写方法
+```
+⇒ 换成"一个 `open` + 枚举参数"的话，这两件事**只能运行时才发现**
+⇒ 所以这条规范兑现的是 extC 那句老话：**能证明的放到编译期**
+
+### 落地：先把形状跑通（不是只写文档）
+
+新增 `tests/fs-shape/`，**正例是一份真能跑的原型** `fsproto.extc`
+（本地垫脚石 `rawfd.extc` 扮演将来的 `std::fs` ⇒ IO-1 落地时把 `use rawfd` 换成
+`use std::fs` 即可，其余一个字不用改）。跑出来：
+
+```
+读到 13 字节 · fd = 4                                  ← "hello\n"(6) + "世界\n"(7)
+追加之后 = 19 字节（12 + 6 = 18 ⇒ 原内容没被清掉）      ← 注意"世界"是 6 字节（UTF-8）
+fs 形状原型 跑通了
+```
+
+**数字自证**：13 和 19 这两个数是**行为证据** ——
+`openRead` 不动内容、`openAppend` 真的追加（不是"编过就算"）
+
+接进 `check.sh` **第 13 节**（1 正例 + 2 反例 + 2 结构判据）：
+反例钉"误用编不过" · 结构判据钉"`O_*` 不外露"与"规范已入档"
+（那个 `O_*` 判据第一版被**注释里**的 `O_WRONLY` 误判过 —— 改成只看代码行
+ 又一次"判据自己写错了还以为查过了"）
+
+### 顺带定清楚的命名家族（`SYNTAX.md` §3′）
+
+| 前缀/后缀 | 什么时候用 | 例子 |
+|---|---|---|
+| `xxxOf` | **从已有的东西造** | `readerOf(fd)` · `writerOf(fd)` |
+| `openXxx` | **打开外部资源**（后半段是**模式**） | `openRead` · `openWrite` · `openAppend` |
+| `withXxx` | **构造器带可选参数** | `varArray<T>::withCap(n)` · `pcg32::withStream(s)` |
+
+⇒ `openAppend` 看起来像 `openRead` 的兄弟、不像 `appendOf` 的兄弟 —— **故意的**
+两个都是"打开"，差别只在模式，家族名放前面才读得出来
+
+**还没实现**（形状先定死）：`std::fs` 模块本身 · **帧拥有文件** · `readAll` ·
+`f.reader()` · `close(f)!`（IO-2）
+
+---
+---
+## 2026-09-23 · **全限定名：第六轮拿下**（PLAN #53 关掉）—— 真根因在 `parseAssoc`，前四轮全在改错的地方
+
+主人两句：「**我在想，open文件这种应该放在 `std::fs` 里面吧**，但是你先修bug吧，
+**不要随意退出了，我相信你可以的**」
+⇒ ① `std::fs` 的判断是对的（`open` 不是"原语"，是文件系统的功能 —— 已记进 §1 的 IO-1 口径，
+见本文末尾）② #53 不许再退 ⇒ **这一轮不靠"再试一次"，靠判据**
+
+### 判据先行（这是前五轮缺的那一步）
+
+先写 `tests/qname/` 的 7 个用例、**看着它们红**（4 红 1 绿 —— 绿的那个是两段的老能力），
+然后**只做观测**。观测方法换了：不再"在 `parsePrimary` 里插 return 探针"（那个方法
+被骗过两次），而是
+* `--dump-tokens` 拿到**真实 token 流**
+* 一个**能唯一对应一次调用**的探针（`pos` + 后面四个记号的原文，`EXTC_DBG_QN=1`）
+
+### 真根因（一句话）：**`looksLikeAssoc` 只回答"是不是"，不回答"有几段"**
+
+第一次观测就出了结论，而且**推翻了前四轮的全部假设**：
+
+```
+[qn ENT]        pos=20 cur=`std` n1=`::` n2=`sys` n3=`::` n4=`io`
+[qn BEFORE-ASSOC] name=`std` pos=20 looksLikeAssoc=1 n1=`::` n2=`sys`
+```
+
+⇒ 游标停在**第一个** `::` 上，`looksLikeAssoc` 判真，然后 **`parseAssoc` 只读
+`::` + 一个标识符**（把 `sys` 当符号名）就返回 ⇒ 游标丢在 `::io::STDOUT` 上
+
+**这跟"那个限定名类型块"一点关系都没有** —— 前四轮我一直在那块里改
+（甚至为此抽出过 `parseQualifiedName`），那块**根本没进去**（`[qn LIT]` 一次都没打印）
+**教训**：四轮都在"最可疑的地方"改，而没有先把"实际走了哪条路"量出来。
+
+### 修法（一处路径、没有猜测）
+
+| # | 改哪 | 判据 |
+|---|---|---|
+| ① | `looksLikeAssoc` **返回段数**（不再是 bool） | 调用者必须知道"后面有几段"—— 这就是前五轮缺的那个信息 |
+| ② | `parseAssoc`：**中间段全吃进前缀**，最后一段留作符号 | 前缀 = **模块名**；符号名 = 最后一段 ⇒ 切法由**位置**决定，不需要符号表 |
+| ③ | 装载器：**全名对全名**匹配 `use` 表（`importedAsPath`） | `UseDecl` 有 `path`（全名）与 `shortName`（最后一段）**两个**字段，老 `importedAs` 只认短名 |
+| ④ | `EX_ASSOC` 加 `isCall` / `modPrefix` | **不发明新节点**：值位置（常量）也走 `EX_ASSOC`，装载器照旧改写成 `EX_IDENT` / `EX_CALL` |
+| ⑤ | `use … as <别名>` | **只换 `shortName`**、`path` 保持全名（深层解析靠它） |
+
+### 我自己在这条路上踩的四个坑（全都值得记，因为都是"想当然"）
+
+1. **候选前缀起点算错**：`modPrefix` 从"第一个 `::` 之后"开始拼 ⇒ 拼出 `sys::io` 而不是
+   `std::sys::io` ⇒ 报 "`sys` is not imported"（**离现场两步远**）
+   ⇒ 改成**边消费边拼**（别事后从 token 区间抠文本）
+2. **边界判据恒假**：`qname[len] != ':' || qname[len-1] != ':'` —— `len` 是**前缀长度**、
+   不是分隔符下标 ⇒ 所有正确候选都被 `continue` 掉
+3. **以为"最长的候选"要另外补**（这个最隐蔽）：我一度认定 `std::sys::io` 不在候选里，
+   差点去补"整串自己也当一个候选" —— 其实它**就在** `::` 切出来的候选里
+（`std::sys::io::STDOUT` 有三个 `::` ⇒ 候选 `std::sys::io` / `std::sys` / `std`）
+   ⇒ 我为此还专门写了个独立小程序 `cand.c` 把候选枚举打出来才看清
+   **教训**：在这种"下标/长度"混着用的小循环里，**先写 20 行独立程序验一遍**，
+   比在编译器里改十遍便宜得多
+4. **深层解析出来之后，又用短名查了一遍**：`importedAs(tn)` 只认短名，
+   而 `tn` 这时是全名 ⇒ 明明命中了却报 "unknown type `std::sys::io`"
+   ⇒ 解析结果必须**直接绑给 `target`**
+
+### 判据（这一轮真的做完了）
+
+* 新常设验收 `tests/qname/`：**6 正例 + 1 反例 + 1 结构判据**，**已接进 `check.sh`**（第 12 节）
+  `t11` 三段常量（⇒ `1`）· `t12` 三段调用（**真写出 `hi!` 并返回 3**）· `t13` `as` 别名 ·
+  **`t14` `std::io` 与 `std::sys::io` 同文件共存**（这是这条缺口真正的痛点）·
+  `t15` **深层模块的变体位置**（`lib::sub::color.color.green` ⇒ `true/false`）·
+  `t16` 深层模块的函数调用（⇒ `42`）· 反例：没 `use` 的深层全名 ⇒ 报**全名**
+（`std::sys::io` is not imported -- add `use std::sys::io`）+ 指明路径
+* `./check.sh quick` **12 节全绿** · 257 测试 **0 失败**
+* **golden 95 个文件逐字节相同** ⇒ 纯解析器/装载器改动，**老语料的生成 C 一字节没动**
+* 攻击库基线一致 · arena 层号零漂移
+* 两段那条老路**行为不变**（`pcg32::withStream` / `option<i64>::some` / `color::color.green`
+  这些两段的形状一个都没动 —— prelude 能编过就是最硬的证据）
+
+### 顺带做对的几件小事
+
+* **报错话术**：深层全名没导入时，第一版取"第一个 `::` 之前那段" ⇒ 消息是
+  "add `use std`"（用户照着写会导入一个不存在的模块）⇒ 改成报**全名**
+* **形状判据**：`io::STDOUT()`（常量当函数调）与 `io::read`（函数当值用 —— extC 没有
+  函数值）现在会**响亮报错**，不再"静默挑一个"
+* **调试开关留成了正当工具**：`EXTC_DBG_QN=1`（跟 `EXTC_DBG_ARENA` / `EXTC_DUMP_EFFECTS`
+  一个待遇：不改变任何输出）—— 下次再查解析问题就不用重新发明探针了
+（但**临时的**那几个（`qn AST` / `qn LIT` / `qn USES`）全部删掉了）
+
+### 主人那句 `std::fs` —— 记进口径（**还没动手**）
+
+`open` 属于 **`std::fs`**，不属于 `std::sys::io` 现在的形状是：
+`std::sys::io` 里只有 `extern!` 原语（`open`/`close`/`read`/`write` + `O_*` 常量），
+而"文件"这个概念（`file` 类型、`逐行读`、`写`、**帧拥有**）应该在 **`std::fs`**
+⇒ **IO-1 落地时照这个口径做**（`PLAN.md` §1 的 IO-1 那一格已加注）
+⇒ 现在不动（主人明确说了"先修 bug"）
+
+---
+## 2026-09-23 · **文档对账（第二轮）：一次"数字自己会过时"的实测**
+
+主人问"项目到哪了"⇒ 我没有照抄文档，**先跑了一遍再报**：
+`./check.sh quick` · `tools/golden.sh check` · `git rev-list --count` · `wc -l` ·
+`ls | wc -l` —— 于是当场发现**三处状态行全是旧数**
+
+### 抓到的（全部按实测改掉了）
+
+| 位置 | 原来写着 | 实测 |
+|---|---|---|
+| `PLAN.md` 开头 | `check.sh` **7 通过** · 测试 **231** · 缺陷剩 **7 条** | **11 节**（完整 17）· **257** · 剩 **4 条**（+5 非缺陷）|
+| `README.md` 状态节 | **14 节** · **251** 测试 · 模块 8 · 泛型 4 · IO 3 · 哨兵 92 语料 | **11 节** · **257** · 模块 **12** · 泛型 **3** · IO **10** · 哨兵 **98** |
+| `extC-overview.md` | 11 227 行 · 80 例 · 153 反例 · 7 trap · 19 份 md · 244 提交 · **251** 测试 · `check.sh` **通过 4** | **14 497** · **87** · **158** · **8** · **22** · **292** · **257** · 通过 **11 / 17** |
+| `SPEC.md` 同步说明 | **251** 通过 · `check.sh` **14 节** | **257** · **11 节**（完整 17）|
+| `PLAN.md` §0.4 维护提示 | 表内编号数应为 **51** | **53**（`#52` 补进来时没改 ⇒ **校验用的那个数也会过时**）|
+
+### 根因：三个数各有各的"过期方式"，而且**都不是手滑**
+
+1. **节数**：`check.sh` 在 09-23 一天里**加了 4 节**（警告 / 泛型 / extern / 模块），
+   而 `README` 那句话还是"14 节全绿"——**它是按当时那一刻数出来的**，之后只加了节、没加人回来数
+   ⇒ 更糟的是**模式混着写**：`quick` 是 11 节、完整 17 节，
+   而"14"既不等于 11 也不等于 17（它是**当时**的完整数）
+   ⇒ **规矩（新）**：引用节数**必须写清是哪个模式**，而且两个都写
+2. **测试数**：`#50`/`#44`/`#52` 各加了一两个用例 ⇒ 231 → 257。
+   而 `PLAN.md` §0.4 的**计数行**是对的（我实测对上了）、**开头那一行**是错的
+   ⇒ 说明"权威处"和"摘要处"要**分别核**，改一处不等于改另一处
+3. **`golden` 被算进了 `check.sh`**：`README` 那句写「… · 哨兵 92 语料零漂移 · **golden 逐字节不变**」——
+   可 `golden` **根本不在 `check.sh` 里**（它是 `tools/golden.sh`，要单独跑）
+   ⇒ 这是**比数字错更坏的一类**：它让人以为"跑完 `check.sh` 就等于验过 golden"
+   ⇒ 已改成显式说明"另一个脚本 + 95 个文件逐字节相同"（我**真跑了**才写的）
+
+### 本轮最值钱的一件事：**最痛的那个卡点，权威表里没有**
+
+主人问"项目到哪了"，我按仓库自己的口径去查 `PLAN.md` §0.4（"现在什么坏了只看这一份"）——
+**查不到**：全限定名那件事只活在 `DEVLOG`（`e5da2af` → `7dd154c` 五条"尝试失败"）
+
+⇒ 也就是说：**今天全部的工作都卡在它上面，而按规矩该看的那张表对它一无所知**
+⇒ 已补成 **`PLAN.md` §0.4 #53**，内容全是实测出来的三条（`std::sys::io::STDOUT` ·
+`use … as` · 两层 `io` 同文件不可共存），并标明**它不是"缺陷"而是"缺口"**
+（不漏 UB、不误拒合法代码）—— 免得读者把它读成安全问题
+⇒ 计数同步：**47 已修 + 6 非缺陷 = 53 格**
+
+**顺手实测出一条以前没记过的形状**：`use std::io` 与 `use std::sys::io` 在同一个文件里
+**必然撞车**（两边的短名都是 `io`），而**"从 stdin 读 + `open` 一个文件"恰好同时要这两层**
+⇒ 这条把 #53 从"语法不方便"升级成"**挡着 IO-1 的收尾**"
+（以前只在 `stdlib/std/sys/io.extc` 的注释里写着"写库的人和用库的人本来就该在不同的文件里"，
+那是**把限制讲成了设计** —— 主人一句「这应该是被允许的」正好戳在这上面）
+
+### 判据
+
+改完**逐条重跑**：`./check.sh quick` **11 通过 0 失败** ·
+`tools/golden.sh check` **95 个文件逐字节相同** ·
+文档里出现的每个数都能在命令输出里指出来（不是抄的）
+
+### 顺着往下扫，又抓到五处（"同一个事实写在很多份文档里"）
+
+上面四处改完之后，我做了一次**全仓机械扫描**（把所有"当前状态"类的旧数当查找目标：
+`251` / `231` / `14 节` / `7 通过` / `11 227` / `244 提交`），结果**不是四处，是九处**：
+
+| 位置 | 原来的数 | 处置 |
+|---|---|---|
+| `LIBS.md` §8 验收 | 251 测试 | ⇒ **257**（这是"先写好再动手"的验收清单 ⇒ 数必须按最新实测）|
+| `ARRAYS.md` 验证行 |「251 通过（**2026-09-23 实测**）」| ⇒ **257** 注意它**自称实测、还带了今天的日期**，可它是同一天早些时候的数 |
+| `DECISIONS.md` 定案 73 验收 | 245 测试 · 模块 8 · 泛型 4 · **IO 3** | ⇒ 当时那句**保留**（它是"定案当时"的记录），另加一条**补注**写现在 |
+| `DECISIONS.md` 定案 73「还欠的」| 欠：`open`/`close` · `nextInt` 一族 · `reader` · `main(args)` · `allocSlice` | ⇒ 六项里**四项已经落地** ⇒ 补注：真欠的只剩**帧拥有文件** · `main(args)` · `readAll` · `scan` 变参 |
+| `PLAN-REGION.md` / `ARENA.md` / `ARENA-FORMAL.md` | 各自 4/14 通过 · 251 测试 | ⇒ **不动**（都是"执行计划/落地实录"，头部写明**留作记录** —— 改了反而毁掉"当时的台阶"）|
+
+**这一轮最该记的一条**：`ARRAYS.md` 那句是
+「**251 通过（2026-09-23 实测**；原文写 60，那是很早期的数）」——
+它**自称刚实测过、还写着今天的日期**，可**当天就又涨到 257**
+⇒ **"实测"两个字也必须带时刻，不然半天就过期**
+（它上一版写 60 的时候，也是"当时实测"的 —— 这是**第二次**在同一个位置犯同一个错）
+
+### 又用机械校验抓到一个表格结构病（仓库自己记过的坑，又犯了）
+
+改 `PLAN.md` §0.4 时按规矩跑"表内编号数 / 有没有缺号"的校验，
+**当场抓到第 122 行有一个空行** ⇒ 表格从中间断开 ⇒ **`#52` 那一行不再渲染成表格行**，
+"编号看起来缺了一个" —— 这**正是** §0.4 维护提示里写过的那个坑（`#37` 当年就是这么断的）。
+⇒ 已删掉那个空行，现在 **53 格 · 无缺号 · 无重复 · 表内零空行**
+顺带纠一条：那条维护提示里写着「表内编号数应为 **51**」—— **`#52` 补进来时没改它**，
+所以**"用来校验的那个数"自己过时了**，于是它一直在**放过**真实的缺号
+（教训：**校验器的期望值也是状态，也得跟状态一起核**）
+
+### 另外发现一处文档排序不一致（**已修**）
+
+`DECISIONS.md` 里 `## 定案 NN` 是**按编号递增**排的（…69 · 70 · 71 · 72 · **75 · 74** · 73）——
+**定案 74 被写到了 75 后面**（75 是 09-23 11:44 的 `writer`，74 是 09-23 03:48 的 `reader`，
+所以是**补记 75 时插错了位置**，不是内容错）。
+⇒ 我一开始判断"影响不大、先记账不动"，**主人这次的要求是"先维护文档"** ⇒ 那就修干净：
+已把「定案 74」整块（80 行）移到「定案 75」之前，现在读起来是 72 → **74 → 75** → 73
+**73 仍在最后**（它比 74/75 早、编号也小）—— 这一次**故意不动**：再挪一块会让 diff
+跨 200 行，而 73 的位置问题跟"74 和 75 谁在前"不是一回事（那是**更早**一次补记留下的）
+⇒ 留一条**判据**给下次：**`grep -n '^## 定案' DECISIONS.md` 应该看到编号单调递增**
+（顺带把 `DECISIONS` 里"定案当时"那些测试数（定案 71/72/73 各写 245）**特意保留**
+—— 那是决策落地时的台阶，按项目规矩不许"顺手改新" 只有**描述"现在"**的那种句子才改）
+
+---
+## 2026-09-23 · **尝试「全限定名 + `as` 别名」，失败两次**（记账，下一轮重来）
+
+主人拍板：「**加别名吧，但是压力在于，为什么用户不能写 `std::sys::io::read`
+这应该是被允许的，但是别名是必要的，否则就太长了，用 `as` 即可**」
+
+这句话把优先级说清了 —— 而且它**推翻了我上一轮的判断**：
+我说"短名撞车恰好是对的"，主人指出**真正的毛病是"全名写不出来"**
+别名是**方便**，全名是**权利**。一个名字只有缩写能写、全名写不出来，那是缺功能
+
+### 实测确认：`std::sys::io::read` **今天编不过**（所以这是缺功能，不是设计）
+
+```
+main.extc:3:21: error: expected an expression, found `::`
+```
+连两段的 `std::sys::read` 也编不过
+
+### 我失败了两次，两次都是**同一个错误**：搞错了 `parsePrimary` 里的光标位置
+
+我两次都写了个新块、插在 `looksLikeAssoc` 那行之后，然后**把两段的情形也吃掉了**
+
+关键事实（我花了好几轮才看清）：
+
+> `looksLikeAssoc(p)` 被调用时，光标**已经停在 `::` 上了**（`parsePrimary` 先 `take` 掉了
+> `pcg32`）⇒ 它看到的第一个 token 就是 `::` ⇒ 为真 ⇒ `parseAssoc(p, "pcg32", …)`
+> 接着**自己** `take` 掉 `::`、再 `expectIdent` 读函数名
+> ⇒ **符号名只需要一段**，`parseAssoc` 自己会去读它
+
+我却在它前面就把 `::withStream` 吃光了 ⇒ `parseAssoc` **站到了函数名上**、
+却仍按"前面还有 `::`"的形状解析 ⇒ 拼出 `pcg32::withStream` 当符号名 ⇒
+报 `\`withStream\` is not a built-in primitive`（prelude 当场编不过）
+
+### 还踩了两个自己造的坑（记下来）
+
+1. **我的调试探针把我自己骗了**：我在块的入口打 `[qname] built=…`，
+   而 prelude 也走那条路 ⇒ 我以为 `k` 是 2、其实那次打印是**别的调用**
+   ⇒ 教训：探针要打**能唯一定位这次调用**的东西（比如 `t->text` + `k` + 当前文件），
+     不能只看一个字符串就下结论
+2. **改坏了 prelude 两次**，每次都是靠 `git checkout src/front/parser.c` 回来
+   ⇒ 教训：碰 `parsePrimary` 之前，**先把"一次只改一处 + 立刻跑 prelude 自检"当规矩** ——
+     `./build/extc <空文件> -o /dev/null` 就是最快的 prelude 自检
+
+### 下一轮的正确形状（已经想清楚了，差的是实现）
+
+```
+① looksLikeAssoc 改成"段感知"：吃到 `::` 后**继续数** `::name` 段，
+   返回段数 k 与"下一段是什么"；光标**不动**
+② 三处按 k 分流：
+     k == 2 且下一段是 `(`  ⇒ 老路：parseAssoc(pref=NULL, sym=t->text)  ← 现在就是对的
+     k >= 4              ⇒ 拼出 `A::B::C`，拆成 modPref + sym 交给 parseAssoc
+     k >= 4 且下一段是 `.` 或 `{` ⇒ 变体 / 结构体字面量
+③ parseAssoc 改成**显式收 `sym` 并跳过自读那一段**（只在 modPref 为空时自读）
+④ 然后才做 `use std::sys::io as sysio`（别名）
+```
+
+
+### 2026-09-23 第二次尝试：**失败，而且我连失败原因都没找到**
+
+按上面那个"正确形状"重做了一遍（`looksLikeAssoc` 不动、我在它之后贪吃路径、
+只在后面跟 `(`/`.` 时接管）。结果：
+
+* prelude **活着**了（`git checkout` 那次的教训生效了）
+* 但 `std::sys::io::read(…)` 还是 `expected an expression, found \`::\``
+
+**最要命的是**：我在自己那个块里放了探针 `[q] t=… k=… nx=…`，
+它**一次都没打印** —— 而块入口的条件 `at(p, "::")` 按我的理解应该是真的
+⇒ 说明我对 `parsePrimary` 的**心智模型里还有一处是错的**，而我不知道是哪一处。
+
+**这次的判据很硬**：不是"我改错了"，而是"**我的探针不该不打印**"。
+在这种状态下继续改就是靠猜 ⇒ 停手，恢复干净状态
+
+**下一步该换个做法**（不是继续猜）：
+
+1. **先只做观测**：在 `parsePrimary` 的**入口和每个 return 点**都打一行
+（带 `t->text` + **文件名**，避免被 prelude 的输出骗 —— 这个坑已经踩两次了），
+   把 `std::sys::io::STDOUT` 这一个表达式**从头到尾**的路径打出来
+2. 拿那条路径去对照源码，找出"我以为会走、其实没走"的那一行
+3. **然后才改**。一次只改一处，每改一处立刻用空文件自检 prelude
+
+并记一条已经确认的**事实**（省得下次重查）：
+`looksLikeAssoc` 被调用时**光标停在 `::` 上**（不是停在第一段上）——
+所以两段的 `mod::fn(...)` 归它管、`parseAssoc` 自己会 `take` 掉 `::` 读函数名
+（这一条我验过：`[assoc] pref=… name=…` 那几行打印就是证据）
+
+
+### 2026-09-23 第三次尝试：**失败，但这次找到了半个根因**（然后停手）
+
+主人下令「先1后2，用goal模式」⇒ 先只做观测。**观测方法换了**：
+不用改 `return`（上次用正则改 `return` 把跨行的吃掉了一行），改成
+**只插入口探针 + gdb 断点看 pos**。这个方法**立刻出了成果**：
+
+```
+[pp#244] pos=18 t11.extc ENTER cur=`std` n1=`::` n2=`sys` n3=`::`
+[pp#245] pos=21 t11.extc ENTER cur=`::` n1=`io`  n2=`::` n3=`STDOUT`
+t11.extc: error: expected an expression, found `::`
+```
+
+gdb 在 `parsePostfix` 的 `Expr *e = parsePrimary(p);` 之后读 `p->pos`：
+
+```
+AFTER parsePrimary: pos=21
+```
+
+⇒ **`parsePrimary(std)` 返回时游标已经到 pos 21** ⇒ 它吃掉了 `::sys` 和 `::io`
+
+**半个根因（真找到了一个 bug）**：那个"限定名类型"块里
+
+```c
+for(int j = 0; j < k; j += 2)   // ← 应该是 k/2
+```
+
+`k` 是**token 数**、不是**段数** ⇒ 写成 `k` 轮会**多吃一倍段数**，
+游标直接飞过整个限定名（这正是 `pos=21` 的来源）
+⇒ 已修（`k/2`），并且给那个 `for(;;)` 数数循环加了 `TK_EOF` 早退（防越界读）
+
+**但修完还是错**。而且我又一次**被自己的探针骗了**：
+`[takeIt] … k=6 takeIt=0` 打了，可 gdb 说游标确实动了 ——
+两条证据矛盾 ⇒ 说明那个探针的**输出时机/条件**跟我想的不是一回事
+（我给它加的条件 `strstr(path,"t1")` 会匹配到别的东西）
+
+### 停手的判据（这条比结论更重要）
+
+**我已经在这个函数上花了十几轮，而每次"我懂了"之后，下一个探针就推翻我。**
+⇒ 说明我对 `parsePrimary` 的**模型整体不可靠**，不是"差一行"。
+在这种状态下继续打补丁，只会第 N 次弄坏 prelude
+
+⇒ 恢复干净（`git checkout src/front/parser.c`）257 全过 / tests/io 10/10
+
+### 下一次该怎么做（**换武器，不是再来一轮**）
+
+在这个函数里加探针已经被证明不可靠（探针自己会改变我判断的依据）。
+⇒ 应该**先给它写一个可执行的最小模型**：
+
+1. 把 `parsePrimary` 的 IDENT 分支那张"决策表"**画出来**（输入：游标处的 token
+   序列；输出：走哪条路、游标停在哪）—— 用**真实的 token 流**（`--dump-tokens`）填
+2. 拿 `std::sys::io::STDOUT` 与 `pcg32::withStream` **两条**走一遍那张表
+3. 表上哪一格对不上实测，就是 bug —— **这时候才改代码**，而且改的是表上那一格
+
+已经确认、可以省的（别再重查）：
+* `looksLikeAssoc` 被调用时**光标停在 `::` 上**（不是第一段）
+* `parseType`（类型位置）**本来就支持任意层** —— 只有**表达式位置**不行
+  实测 `var x: std::io::reader` 报的是"`std` is not imported"（说明**解析过了**）
+* 那个 `for(j = 0; j < k; j += 2)` 确实是 bug，已修（`k/2`）
+
+
+### 🛑 2026-09-23 第四次尝试：**我停手了，并把"这个函数需要重写"作为结论**
+
+主人下令「先1后2，用goal模式」。这一轮**换武器**（按上一轮自己写的计划）：
+不再给两块重叠的机制打补丁，而是**把两块合并成一块**：
+"贪吃所有 `::名字` 段，然后按后面跟什么分流"。
+同一次里还修了一个**真 bug**（`for(j = 0; j < k; j += 2)` 应为 `k/2` —— `k` 是 token 数
+不是段数）而且 `parseAssoc` 改成能收"整串"、自己拆出符号名
+
+**结果：错误在四个位置之间搬家，每一步都"进步"，但没有一步收敛**
+
+| 尝试 | `t11` 的错误位置 | 现象 |
+|---|---|---|
+| 起点 | `col 21`（第一个 `::` 之后的 `::`）| 游标被 struct-literal 块吃飞 |
+| 合并两块后 | — | `t11` 能过了、错误移到 `t12` 的 `col 36` |
+| 再修 `parseAssoc` 后 | `pos 25 无限递归` | **同一位置被反复进入，说明有个分支消耗 0 个 token 就返回** |
+
+**最后一次观测**（`[ENT]`/`[CNT]` 探针）：
+
+```
+[ENT] pos=25 cur=`::` n1=`sys` n2=`::` n3=`io` n4=`::`     ← 同一行重复 7+ 次
+t12.extc:3:36: error: expected an expression, found `::`
+```
+
+⇒ `parsePrimary` 在 `pos=25` 被反复调用而**游标不动** ⇒
+**我的块里有一条路径"消耗 0 个 token 就 return"**，于是调用者原地再问一次 ⇒ 死循环
+（我甚至看不出是哪条：`isCall` 分支会 `take`、`isVar` 会 `take`、标识符分支不会 take 但
+  它返回的是 `full`，而 `full` 只在 `k>=4` 时才有内容……**又一处我推不动的地方**）
+
+### 结论（这一条比任何"再试一次"都重要）
+
+**`parsePrimary` 里的限定名处理需要重写，不是打补丁。**
+
+判据：**四次尝试，每次修一处就冒出下一处，而且每次我"看懂"之后，
+下一个探针就推翻我。** 一个地方连续四次这样，说明我对它的模型整体不可靠
+
+而且我**又是靠 `git checkout` 才没把 prelude 弄坏**（这一轮弄坏过一次）。
+⇒ 继续在这个函数里试 = 第 N 次弄坏 prelude，收益递减。
+
+### 下一轮应该怎么做（**换层次，不是换补丁**）
+
+关键判断：**问题不在"我改哪一行"，而在"限定名在 `parsePrimary` 里根本没有一个
+独立的、结构化的解析入口"。** 现在它是**三段互相叠加的猜测**：
+① 那个"限定名类型"块（数 `::` 段 + 看后面跟不跟 `{`/`.`）
+② `looksLikeAssoc`（看光标处是不是 `::`/`(`）
+③ 我加的"贪吃"块
+
+⇒ 正确做法是**先设计一个函数**（比如 `parseQualifiedName`），**只做一件事**：
+
+```
+输入：光标停在第一段（后面可能跟任意层 `::名字`）
+输出：{ 完整名字串, 后面跟着什么（`(`/`{`/`.`/其他）}
+副作用：**吃掉整条路径**，游标停在"后面那个东西"上
+```
+
+然后把 `parsePrimary` 的 IDENT 分支改成"先看有没有 `::` ⇒ 有就调它 ⇒ 按返回的
+'后面是什么'分流"。**这块逻辑一处、一条路径、没有猜测**
+再写 3~5 个断言测试（`pcg32::withStream` / `mod::fn` / `std::sys::io::STDOUT` /
+`std::sys::io::read()` / `mod::Type.variant`）**先让它们红**，再实现
+
+**这一轮已经确认、别再重查的**（省时间）：
+* `parseType`（类型位置）**本来就支持任意层** 实测 `var x: std::io::reader` 报的是
+  "`std` is not imported" ⇒ **解析过了** 只有**表达式位置**不行
+* `looksLikeAssoc` 被调用时**光标停在 `::` 上**（不是第一段）
+* `for(j = 0; j < k; j += 2)` 确实该是 `k/2`（`k` 是 token 数）—— **真 bug，已定位**
+* `parseAssoc` 里 `!at(p, "::")` 那条泛型调用判据要加 `&& !strstr(name, "::")`
+
+### 关于 `as` 别名（步骤②）
+
+**它不依赖步骤①** —— 别名是"导入时起个短名"，跟"能不能写全名"是两件事
+⇒ 下次可以直接先做②（它解掉当前实测的撞车：`std::io` 与 `std::sys::io` 都叫 `io`）
+   —— 但如果要按主人的"先1后2"，那就先把①按上面的"换个层次"重做
+
+
+### 2026-09-23 第五次尝试：**抽函数这个方向对了，但变体那条打坏了 crossmod**
+
+主人下令：「**优化一下编译器架构，不要太屎山了（当然效率还是要）**」
+⇒ 我挑了**最痛的那处**（`parsePrimary` 的限定名处理 —— 前四次翻车全在那儿），
+做法是**抽出一个只做一件事的函数**，而不是继续打补丁
+
+**先量了基线**（架构改进要有判据）：全量重编 **1.8s**；6405 行压测程序**前端 0.03s / 30MB**
+（跟已发布的"前端 29ms"一致）⇒ **前端不是瓶颈**（gcc 才是 96%）
+所以这一轮**只动结构、不动算法**
+
+#### 这一轮的产出（方向是对的）
+
+* `parser.c`：**`parseQualifiedName()`** —— 吃完整条 `A::B::…::C`，返回"后面跟着什么"
+（`QN_CALL`/`QN_LIT`/`QN_VARIANT`/`QN_IDENT`/`QN_NONE`）
+  ⇒ 它替掉了**两块互相猜**的机制（"限定名类型"块 + `looksLikeAssoc` 之后那块）
+  ⇒ **`samenames` 那次的两段+`{` bug 当场消失**
+* `modules.c`：**`rwDeepQName()`** —— 找"最长且已导入的模块前缀"，
+  把 `std::sys::io::STDOUT` 拆成"模块 + 符号名"
+* `parseAssoc` 改成**显式收 [模块路径, 符号名]**（不再自己找 `::`）——
+  两条来路的光标位置不同，必须让调用者说清
+* `unitFunc`/`unitGlobal` 加"**查主表**"的退路（`mergeUnit` 之后
+  `u->mod.funcs`/`globals` 是**空的** —— 它们被 push 进主表了）
+
+#### 结果：功能做通了，但**打坏了 crossmod**
+
+* `std::sys::io::STDOUT` → `1`；`std::io::readerOf(std::sys::io::STDIN)` → `cap 65536`
+* 257 测试 + golden 逐字节：**全程保持**
+* **`crossmod` 段错误** —— `color::color.green`（**限定名的枚举变体**）那条：
+  我在变体分支里造 `EX_FIELD` 时把 `obj` 置 NULL、另加了 `fieldTypeName` 字段，
+  而**检查器的 `EX_FIELD` 分支不认这个形状** ⇒ 解引用 NULL ⇒ segfault
+
+⇒ **判据**：crossmod 是**我自己写的回归测试**，它坏了就是坏了（而且我**最后才发现**，
+    因为它不在我新写的那个测试里）⇒ 全部 `git checkout` 回退，工作树干净
+
+#### 下一轮的正确做法（已经想清，不用再试）
+
+1. **变体那条不能半途换形状**：`a::Type.variant` 的接收者是**类型名、不是值**，
+   而检查器的 `EX_FIELD` 假定 `obj` 是表达式
+   ⇒ 正确做法是**复用两段那条老路**：它现在是work的（`rwQualified` 把 `mod::Type`
+     改写成**裸类型名标识符**、EX_FIELD 照旧走）
+   ⇒ 三段/五段应当**复用同一条**（把 `color::color` 改写成裸名 `color`），
+     而不是发明"没有 `obj` 的 `EX_FIELD`"
+2. **测试要先写**：这一轮我是"改完才写测试"，而 crossmod 的回归最后才发现
+   ⇒ 下一轮**第一步**：把 5 个断言测试（`pcg32::withStream` / `mod::fn` /
+     `std::sys::io::STDOUT` / `std::sys::io::read()` / `mod::Type.variant`）写出来、
+     **跑红**，再动手
+
+#### 已确认的事实（省得重查）
+
+* `parseType`（类型位置）本来就支持任意层 只有**表达式位置**不行
+* `looksLikeAssoc` 被调用时**光标停在 `::` 上**（不是第一段）
+* 两段 + `(` 归 `looksLikeAssoc`；`{`/`.` **不论几段**都该归"限定名"那一块
+* `k` 是 **token 数**（`::` 与名字各一个）⇒ 段数是 `k/2`（这个 bug 踩过两次）
+* `mergeUnit` 之后 `u->mod.funcs`/`globals` 是**空的**
+
+### 本轮**成功了**的部分（都已提交）
+
+* `std::sys` → `std::sys::io`（`sys` 是**边界**不是模块 ⇒ 按族分文件）
+* `writer` + 修一个**真缺陷**（`println` 与 `writeBytes` 混用顺序会乱）
+* 文件 I/O 不需要新机制（`open`/`close`/`O_*` 四个原语就够）
+
+**当前状态**：`src/front/parser.c` **回到干净状态**（`git checkout`）；
+`tests/run.sh` 257 全过、`tests/io` 10/10、`make` 零告警
+⇒ 没有半成品留在树上（这条规矩这次也救了场）
+
+---
+## 2026-09-23 · **`std::sys::io` 改名 + `writer` + 一个真缺陷（顺序会乱）**
+
+主人两句：①「**sys 得改成 sys::io，否则后面并发基础/多线程基础那些全往里面堆了**」
+②「**文件输入输出跟标准输入输出跟后续别的（网络什么的）不应该分开吧**」
+两句都对，而且第二句**把顺序纠正了** —— 我上一轮建议"先补完 A（`nextFloat` 那几个）"，
+其实该**先统一 I/O 的形状**（形状定错了，A 补完也得改）
+
+### ① `std::sys` → `std::sys::io`（`sys` 是**边界**不是**模块**）
+
+理由比"怕堆"更强：**`sys` 是一条边界在文件路径上的写法** ⇒ 边界的**每一族**各占一个文件：
+
+```
+std::sys::io      ← 现在
+std::sys::thread  ← 下一件事
+std::sys::time / net / proc / …
+```
+
+全塞进一个 `sys.extc` 会变垃圾场
+实现上白拿：`::` → 路径 ⇒ `stdlib/std/sys/io.extc` 的模块名自然是 `std::sys::io`，
+短名取最后一段 = `io` ⇒ 引用写 `io::read`（实测通过）
+
+### ② 真缺陷：`println` 与 `writeBytes` 混用**顺序会乱**
+
+`println` 走 `printf`（有缓冲）、`writeBytes` 走 `write(2)`（直写）⇒ 两支队各走各的
+**实测**（去掉修法）：`B / 文件写完了 / A / C` —— 而正确是 `A / B / C`
+
+修法一行：`writeBytes` 里先 `flush()`
+⇒ 以前靠调用者记得 `flushOut()`，那是"看不见的错"（P′ 不许）
+
+**这条要常设验收的理由值得记**：删掉那行，程序**照样"能跑"**，只是顺序乱
+大多数测试只查"某段文字在不在" ⇒ **抓不到**！
+⇒ 所以断言的是**整段连续文本** `A\nB\nC`，另加一条**静态**判据（函数体里有 `flush()`）
+（两条都实测过：删掉 `flush()` 立刻红）
+
+### ③ `writer`：跟 `reader` 对称，**只认 fd**
+
+⇒ 同一个 writer 能写文件、stdout、以后的 socket
+缓冲是**可见字段**（`w.len`）—— 正是 `IO.md` 反复讲的"不要 `cin` 那个黑盒"
+装不下就先 flush（不丢弃、不扩容）
+
+### ④ 文件 I/O **不需要新机制**（一条重要的验证）
+
+`std::sys::io` 加了 `open`/`close`/`O_*` 四个原语，**一行编译器代码都没动**，
+就能写文件、能用 `reader` 读回来（`tests/io/writer-file.extc`）
+⇒ **"文件跟标准输入输出不该分开"当场被验证了**：它们只是 **fd 的不同来源**
+
+### ⑤ 一个**设计问题**（我上一轮说错了，记在案）
+
+上一轮我说"`std::io` 和 `std::sys::io` 短名撞车**恰好是对的**"（写库的人和用库的人
+在不同文件里）—— **实现时它当场挡住了正当用法**：用户想同时要 `reader` 和 `open`
+
+绕过办法：另起 `iohelper.extc` 包一层（`tests/io/writer-file.extc` 就这么写的）
+**能work，但那是"因为限制多写一个文件"，不是设计**
+⇒ 三个选项摆进 `DECISIONS.md` 定案 75 §4，下一轮定（我倾向 `use … as alias`，
+它顺手也解了别的撞车）
+
+### 数
+
+`tests/io/` **10 条**（加了顺序 ×2 + writer 写文件读回）· `tests/run.sh` **257** ·
+golden **95**（只多 `examples_reader-home-arena` 一个变更：sys::io 加了原语 ⇒
+生成的 C 合法地变了）· `check.sh` **14/14** · `make` 零告警
+
+---
+## 2026-09-23 · **IO-0 主体落地：`reader`（隐式 64KB）+ `nextInt` 一族 + 三条路分得开**
+
+主人：「**修IO然后把1-4都先做了，反正现在能读了之后会好办很多**」
+所以这一轮做了四件：① 修 `IO.md` 三处 ② `reader` ③ `nextInt`/`nextToken`/`nextLine`/`skipSpace`
+④ 删掉逐字节的老 `readLine`
+
+### 这一轮最贵的一课：我怀疑编译器怀疑了整整五轮，其实是我的算法错
+
+`nextInt` 读 `5 7` 得到 **57**（两个数并成一个）。我依次怀疑过：
+
+1. `isSpaceByte` 判定错 → 单独测：**对**（32 → true）
+2. 逃逸检查 / arena 把缓冲回收了 → 生成的 C 里那个 `release` 是**另一格** arena 无辜
+3. `at()` 那个 tokenizer bug → 那个是**真 bug**，但它**不是**这个的原因
+4. `continue` 的代码生成 → 单独测：**对**
+5. `||` 链被截断 → 单独测：**对**
+
+**救我的是一份手写的 C 对照**：把"同一段逻辑"写成 C 跑一遍，
+结果那份 C **也输出 57** ⇒ 立刻明白**错的是我的算法**：
+
+> 数字后面的空白**必须结束**当前这个数（推回），我却让它"吃掉空白继续读"
+> ⇒ 下一个数字被并进来 ⇒ `5` `7` → `57`
+
+**教训（值得进规矩）**：算术/逻辑推理错的时候，**手写一份等价的 C（或最简等价程序）跑一遍**
+是最快的判据。我要是第二轮就做这件事，能省掉三四轮
+（而且我的"C 对照"第一次写出来也是 57，我居然没立刻醒悟 —— 那已经是最强的信号了）
+
+### 真缺陷：`at()` 在字符串字面量上误判（修掉了）
+
+写 `tests/io` 的错误消息时撞出来的，跟 IO 无关但挡住了 IO：
+
+```
+println(")")      // error: expected an expression, found `)`
+println("x)")     // 正常
+println("()")     // 正常
+```
+
+根因：`at(p, value)` 就是 `strcmp(cur(p)->text, value)`，而**字符串字面量 token 的
+`text` 存的是不含引号的内容** ⇒ 内容恰好是 `")"` 的字符串让 `at(p, ")")` **成立**
+⇒ 修法：`lexIsPunct(value)` + "只比对标点时才要求 token 真的是标点"
+（这是同类坑第三次：`note` 的 `%s`、诊断露 mangle 名，都是"看起来对、前提不成立"）
+
+### 数字（本轮的判据）
+
+| 项 | 数 |
+|---|---|
+| 逐字节 vs 64KB 分块（12MB / 100 万行，`-O2`，都读满）| **1.444 s** vs **0.032 s** = **45×**（差距全在 `sys`）|
+| `tests/io/` 验收条目 | **7** 条（正例 + 三条路 + 分层 + 性能）|
+| 10 万行大输入 | **158 ms**（阈值 400ms ⇒ 退回逐字节会当场红）|
+| `tests/run.sh` | **257** 全过 · golden **95** 逐字节相同 · `check.sh` **14/14** |
+
+### 顺带踩到的两个小坑（记下来免得再踩）
+
+1. **`?` 只能用在语句位置** —— `sum = sum + r.nextInt()?` 编不过
+（"`?` has to expand into statements"）⇒ 得先 `let a = r.nextInt()?`
+2. **`chmod +x`**：我重写 `tests/io/run.sh` 时把可执行位写掉了 ⇒ `check.sh` 报
+   `Permission denied`（而且它只报"FAIL tests/io/run.sh"，得进去才看见真因）
+
+### 还没做（下一轮）
+
+* `readAll`（读满一个大 buffer —— 读文件那种场景）
+* `wchr` 那类"写到指定 fd"（现在 `writeBytes` 硬编码 STDOUT）
+* `IO.md` §9 的格式化输入 **B**（编译期格式串）
+
+---
+## 2026-09-23 · **并发设想定稿成 `CONCURRENCY.md`**（主人发来一份总结，我们把它落成文档）
+
+主人发来《协程 / 线程 / 衍生设想全总结》，然后连问四轮，最后说"现在写吧"。
+本文记的是**讨论过程里冒出来的东西**，不是文档本身（文档在 `CONCURRENCY.md`）
+
+### 我今天被纠正了三次 —— 都记在案
+
+| 我原本说的 | 实际 | 谁纠正的 |
+|---|---|---|
+|「有栈/无栈只是实现细节」 | **不对**：有栈的状态是**一整条机器栈**，不是一等值 ⇒ arena 管不了 ⇒ "控制流状态 = 数据"**失效** ⇒ 等于偷偷引入第二种内存模型 | 我自己推的（写文档时才发现这决定了全部）|
+|「连接级长寿命协程需要一点点新东西（`close()` 或绑在连接对象上）」 | **不需要**：帧落在**承载连接那个块**的 arena 里就行，"往上追溯"覆盖全部 | **主人**：「协程 arena 给创建协程的 arena 里面的那个玩意儿 release，总之往上追溯」|
+|「4KB 分配粒度会把你**顶向**长寿命协程（一请求一协程不可行）」 | **结论作废**：主人提出 `blkSize` 可显式指定 + 协程帧大小编译期已知 ⇒ 帧按精确大小分块 ⇒ 一请求一协程**重新可行** | **主人** |
+
+⇒ 两条都是**"我以为要加东西、其实不用 / 加了之后更好"**。这跟当天 `#52` 修完
+发现"隐式缓冲其实能安全返回"是同一类：**我的保守结论往往来自我没核的假设**
+
+### 讨论里真正新冒出来的东西（主人原文里没有的）
+
+1. **无栈是前提，不是选项** —— 有栈会让主人的核心命题失效。这条得写在文档最前面，
+   不然下面全部白搭
+2. **`blkSize` 是个通用改进，不是"给协程开小灶"** ——
+   协程是第一个把"**arena 的块大小该跟使用者的大小量级匹配**"逼出来的用户。
+   `__extc_a[]` 的下标是词法层号 ⇒ 块大小本来就跟"谁在用"有关
+3. **`blkSize` 有个坑：块大小不能等于帧大小** ——
+   那样协程体里第一个 `new` 就装不下 ⇒ 立刻又 malloc 一块
+   ⇒ 要的是"**帧单独一块（精确适配）+ 它内部 `new` 走正常 4096**"
+4. **调度的真问题不是寿命，是累积** —— "往上追溯"解决寿命，但长寿命 arena 里反复 `new`
+   只增不减（回收粒度是块，没有对象级释放）⇒ 运维上必须写清"这只 arena 什么时候 reset"
+5. **`enum` 协议比"零开销抽象"更强** —— 不是"零开销的 vtable"，而是**根本没有间接调用**
+（`switch` 直接跳）但代价（协议封闭）必须并排写着
+6. **诚实的共享清单是三处**，不是零：channel · arena 池 · 每线程分配器
+（主人原文写"低频加锁"⇒ 池要**有界 + 背压**，不然生产者快过消费者时内存涨）
+7. **"worker 不碰共享数据"要改成"只碰不可变共享数据"** —— 分（split）本身就要求
+   大家看得见同一份输入，那是共享的，只是不可变
+
+### 落地顺序里我加的一条（最重要）
+
+**第 1 步：手写一个状态机，不动编译器。**
+
+拿 `reader` 的行迭代器当例子，照 `struct frame + switch(pc)` 的形状手写。
+**这一步免费验证全部假设**：帧放 arena 顺不顺、哪个变量要提升、`yield` 出来的引用深度该是几。
+如果手写一遍发现别扭 ⇒ 整个设计有问题 ⇒ **而那时候我一行编译器代码都还没写**
+
+而且要挑**最像会咬人**的例子（真的请求-响应协议），不是最简单的 ——
+挑最简单的会给你**假信心**
+
+### 核对（写文档时逐条验的）
+
+* `src/back/codegen.c:2687` = `cap = n > 4096 ? n : 4096`
+* `src/back/codegen.c:2662` = `struct extc_arena { extc_ablock *top; }`（**真的没有块大小字段**）
+* `grep -rn "coroutine\|generator\|yield" src/ stdlib/prelude.extc` = **0**（一个字都没实现）
+* 文档接进了 `README.md` 的索引
+
+文档开头就写明「**现状：一个字都还没实现**」+「设想 + 风险清单」——
+`IO.md` §8 那张过时表被误读的账刚还过，不能再来一次
+
+---
+## 2026-09-23 · **`#52`：逃逸检查放行了一个真悬垂**（做 `reader` 时撞出来的）
+
+主人问「reader 是某种对象吗」。我照着 `IO.md` §4.3 写了个 struct + 方法版，能跑
+然后试"隐式给 64KB 缓冲"（主人早先拍板的那条），被逃逸检查挡住 —— **那个挡是对的**。
+但它逼我换了个写法，而那个写法在循环里当场 ASan 报 **`heap-use-after-free`**
+
+### 形状
+
+```extc
+struct box { p: mut slice<i32> }
+fn make() -> box {
+    var c: mut slice<i32> = new i32[4]
+    return { p: c }
+}
+fn main() -> i32 {
+    var b: box = { p: new i32[4] }
+    var i: i32 = 0
+    while i < 3 {
+        let t = make()
+        b = t                    // ← 就是这一行
+        i = i + 1
+    }
+    b.p[0] = 7                   // ASan：heap-use-after-free
+    return 0
+}
+```
+
+`make()` **有家** ⇒ 它分配进"**调用点选的那只 arena**"，而调用点在**循环体**里
+⇒ 那只就是循环体那一**块** ⇒ 块一退，`b.p` 悬垂。而 `b` 比循环体浅 ⇒ 这就是
+"在块里造、往块外存"
+
+### 为什么这条特别值得记：**它让 255 个测试、全部基准、攻击库全绿**
+
+**单跑一次不崩**（`f()` 在顶层调用时，调用点选的是 main 自己的块 ⇒ 活得够久）
+只有"块里造 + 块外存"才现形。⇒ 这是一类**测试抓不到、只有人眼 + ASan 换写法才撞得到**的洞。
+
+### 根因两处（第二处是我第一版修错方向的地方）
+
+1. `exprRefDepth` 对"**初始化式是调用**"的绑定兜底成 `0` —— 那张字段表只在
+   初始化式是**结构体字面量**时才填 ⇒ `t.p` 没有格子 ⇒ 从 `sym->refDepth` 拿到 0
+   ⇒ `d=0 ≤ at=1` ⇒ 放行
+2. `promoteInto2` 里"槽位更浅 ⇒ `return true`"那一支，注释写的是
+   "里面的东西本来就住那一层" —— **在有家被调者上是错的**（那只 arena 是调用点选的）
+
+**我第一版修错了方向**：去改 `promoteInto2` 让调用点"被拉回家 arena"。
+加了三层探针才看清 `2 <= 1` 是 **false** —— 那个分支根本没进
+⇒ 教训：**先确认分支进没进，再改里面的逻辑**。我花了四轮在改一个不会执行的代码。
+
+### 修法
+
+`check_stmt.c` 里绑定时记：初始化式是 `EX_CALL`/`EX_METHOD` 且被调者 `needsHome`
+⇒ `sym->refDepth = c->scopes.len`（它住在我传的那只 arena 里）
+
+### 判据（三条，缺一不可）
+
+* 新反例 `tests/errors/escape_call_result_to_outer.extc` ⇒ 现在报
+  `borrowed from depth 2, but this can only hold up to depth 1`
+* 新正例 `examples/reader-home-arena.extc` ⇒ **隐式 64KB 那个形状必须还能编过**
+（只查"该拒的拒了"会把良性的也拒掉）
+* `git diff tools/golden.manifest` = **只多一行**（新例子）⇒ **生成的 C 一字节没动**，
+  纯检查器改动 · 测试 255 → **257** · `check.sh` 14/14 · 攻击库基线一致
+
+### 顺带
+
+* 修了一条诊断：`note` 里 `%s` 没被替换（`ctxError` 的 `note` 是原样传的，
+  要带值必须自己 `arenaPrintf`）—— 同一个坑第三次，这次把成因写进注释了
+* 例子**不能读 stdin**：`tests/run.sh` 不给输入，一读就挂住整个套件
+（实测一次 300 秒超时）—— 这条也写进例子的注释了
+
+---
+## 2026-09-23 · **模块 mangle 落地**（定案 70 收尾：两个模块同名声明互不干扰）
+
+主人：「OK可以，做了吧」（模块 mangle）。这段是本次会话里**最难查的一串 bug**，
+每一条的症状都指向完全错误的方向 —— 所以逐条记下来。
+
+### ① 别名表的 `elemSize` 写错了（最贵的一条）
+
+`ttNew` 里 `vecInit(&tt->aliases, a, sizeof(void *))`，而 `Alias { const char *from; const char *to; }`
+是 **16** 字节 ⇒ 两个条目在缓冲里**交错**。症状是打表时看到 `pair=>make`
+（`pair` 的**目标**被 `make` 的**源名**覆盖），裸名于是查不到 ⇒ `unknown type pair`。
+
+跟上一轮那次失败（`DECISIONS.md` 里"为什么 mangle 是下一步"）**是同一个坑**：
+当时我怀疑"有两份 `Type` 节点"，其实一直是这一个。
+
+**教训**：症状离根因太远时，唯一的办法是**写表处、读表处各打一次**——
+两行 `fprintf` 立刻就断出来"表离开装载器时是对的、到 main 就错了"，
+而不是继续读查表逻辑
+
+### ② 表达式自己的名字没被改写 ⇒ **静默绑错类型**
+
+`rwExpr` 走了 `EX_STRUCTLIT` 的 `inits`，**却没走它自己的类型名** ⇒ 名字原样留给
+检查器，检查器按裸名 `ttFromName` ⇒ 命中**先注册的那个模块**的结构体。
+两个模块都有 `pair` 时，**它编得过，而类型是错的**
+（比报错坏得多：报错还有救，"能跑但绑错了"没有）
+`rwType` 有同一个洞：模块自己 `fn make() -> pair` 里那个裸名 `pair` 也没改，
+于是 `ttResolve` 只能从别名表里挑**一个** ⇒ 同样是静默绑错。
+
+### ③ `extern!` 的名字是 ABI，不能加前缀
+
+改完②之后 `tests/io` 整个跑不起来：`undefined reference to sys$read`。
+`extern!("libc") fn read(…)` 里的 `read` 是**链接器要去找的符号**
+而报错来自 `ld`，跟"模块改名"毫无字面关联，极难反查。
+⇒ `extern!` 声明一律保留原名，回程票登记成**自己**（这样模块内引用也不用改）。
+
+### ④ `EX_CALL` 的被调者从来没被装载器走过
+
+模块里 `fn shout(n) { twice(n) }` 调的是**自己模块**的 `twice`，
+而 `twice` 已被改名成 `greet$twice` ⇒ `call to undefined function \`twice\``，
+可 `greet$twice` **明明就在函数表里**
+⇒ `EX_CALL` 那条要连 `callee` 一起走。
+
+### ⑤ parser 里加限定名语法**必须先看不动**
+
+为了支持 `beta::pair { … }`（两个模块同名时，裸名有歧义 ⇒ **那种字面量无字可写**），
+我在 `parsePrimary` 的 IDENT 分支加了一条"`::` 拼名字"。
+第一版是**真的吃记号**再判断，结果 `pcg32::withStream(seed, 54)` 被拆成
+`pcg32` + 一堆残渣 ⇒ **prelude 当场编不过**
+⇒ 改成先只看不动（只有后面确实跟 `{` 或 `.` 才接管），那条路一个字都不用改
+
+### ⑥ 报错要回显**源码名**，不是 mangle 名
+
+修完上面几条，`tests/modules/errors/unqualified` 的消息变成了
+`call to undefined function \`open\``（原来是"`open` 属于模块 `lib` —— 请写 `lib::open`"）：
+函数表里的是 `lib$open`，裸名 `open` 自然找不到
+⇒ `Expr.u.ident` 加一个 `srcName` 记源码原名；并且"裸写别人模块的函数名"要
+**按"要写限定名"报**（判据：名字里有没有 `$` —— 它在 extC 标识符里不合法，
+出现就一定是 mangle 名）。
+
+### ⑦ 裸名有歧义时**静默挑了一个**（最后补的一个洞）
+
+上面都修完之后，我顺手试了"两个模块都有 `pair`，而入口文件**裸写** `pair`"：
+
+```extc
+use alpha
+use beta
+var p: pair = alpha::make(5)   // 编过了，绑到了 alpha —— 一声没吭
+```
+
+这是**同一个洞的另一半**：别名表当初是"同名只留第一条" ⇒ 查表必然命中一个 ⇒
+没有歧义这个概念 而"挑一个"是**编得过、类型是错的**，正是 P′ 要挡的东西。
+⇒ 别名表改成**不去重**（同名同名两条都登记），`ttResolve` 数出 ≥2 个匹配就报
+`ambiguous type \`pair\` -- 2 modules export it, write \`module::pair\``
+新增常设反例 `tests/modules/errors/ambiguous-type`
+
+### ⑧ 判据③没做到：诊断里印的是 `alpha$pair`（第二轮补）
+
+第一轮只顾着"能编过、各自独立"，忘了目标里那条**③ 诊断里要还原成 `io::reader`**：
+
+```
+error: struct `alpha$pair` has no field `zzz`
+```
+
+用户从没写过 `alpha$pair` 那个词 这是**不影响编译结果**的那类 bug，
+只有人眼才看得出来 —— 所以光靠"测试全绿"是发现不了的。
+
+做法：`TypeDef`/`StructDef` 加 `srcName`（给用户看的 `alpha::pair`），
+新增 `ttDispName()` 给 `ttRender`（= `typeStr`，**62 处调用**）用 ⇒ 一处改、全站生效
+诊断点统一走 `DN(x)` / `FN(f)` 宏，codegen 继续走 `name`
+
+**踩到一个顺序坑**：`srcName` 一开始填在 `mergeUnit` 里 —— 那时 `d->name`
+**已经**是 mangle 名了 ⇒ 填成 `alpha::alpha$pair`
+⇒ 必须挪到 `mangleUnitDecls` 里、趁 `name` 还是源码名时填
+
+顺带发现同族的两个：
+* `lib::box<alpha::pair>` 里提到没导入的模块，消息是"add `use alpha::pair`" ——
+  照着写会得到一个**不存在的模块** ⇒ 只说模块名 `use alpha`
+* `EXTC_DUMP_EFFECTS` 把 `pair$make` 打得到处都是 ⇒ 加 `FN(f)` ⇒ `pair::make`
+
+**判据④（泛型实例名与前缀顺序）抽查确认本来就是对的**：
+`pair::make` → `pair$make`、`pair::pair<i32>` → `pair$pair_i32`（前缀在最外）。
+
+**新增一条自动判据**（比人眼可靠）：所有模块测试的诊断/输出/调试开关里
+都不许出现 `标识符$标识符` —— `$EXTC_STD` 这种文案不算，`EXTC_DBG_M` 是唯一例外
+
+### 验收
+
+* 新增常设正例 `tests/modules/crossmod`：跨模块**泛型 + 枚举 + 泛型自由函数**，
+  模块名与类型名故意同名（`pair::pair`）⇒ 前缀接错一眼就看得出
+* 新增常设正例 `tests/modules/samenames`：**逐声明重名**且两个 `pair` 的**字段类型不同**
+  ⇒ 任何串台都会让输出立刻不对，不存在"看着能跑其实绑错了"的中间状态
+* `tests/modules/run.sh` **4** 正例 + **7** 反例全过（外加"诊断不许露 `$`"那条自动判据）；
+  `tests/run.sh` **255** 全过；
+  golden **94** 文件逐字节相同；`check.sh` **14/14**；`make` 零警告
+
+---
+## 2026-09-23 · **§0.4 的真缺陷清零**：`#5` 无限递归 · `#9` `allocSlice` · `#10` 裸构造器话术
+
+主人：「三个都做掉吧」。做完之后 **§0.4 里没有一条真缺陷了**（46 已修 + 5 非缺陷 = 51 格）
+
+### `#10` 裸写枚举变体 ⇒ **报错指路**（最小的一刀）
+
+修法就是**改话术**，**不加推断**（定案 27：「关联调用写全类型是故意的」）
+两条路都堵上了（原来都没有指路）：
+
+```
+circle(2.0)      => error: `circle` is a variant of `shape`, not a function
+                            -- did you mean `shape.circle(...)`?
+let s: st = ok   => error: `ok` is a variant of `st`, not a value
+                            -- did you mean `st.ok`?（原来报 `undefined name`）
+```
+
+踩了一个小坑：`ckError` 的 **`note` 是原样传下去的**（不像 `fmt` 那样吃可变参数）
+⇒ 想带值必须自己先 `arenaPrintf` 好（直接写 `%s` 会在 note 里印出字面量）
+
+判据：`tests/errors/bare_variant_hint.extc`；真的没有这个名字时仍是老消息
+
+### `#9` **`allocSlice<T>(n) -> mut slice<T>`**（真缺口）
+
+`alloc<T>(n)` 返回 `mut ref T`（指向**一个** T）⇒ 不能索引、不能切片
+⇒「长度**运行时才知道**的 buffer」（读未知大小的文件、`reader` 要 4KB）**写不出来**
+
+补上第二个原语，跟 `alloc` **同一条路**、只有返回类型不同：
+```
+alloc<T>(n)      -> mut ref T      指向 1 块地方
+allocSlice<T>(n) -> mut slice<T>   `{data,len}` 视图，而且**清零**
+```
+**清零不是顺手加的**：`SPEC.md` §0.6 的承诺是「过期读到的字节**永远是初始化过的**」——
+而裸 bump 分配不清零 ⇒ 读没写过的地方是**不确定值** ⇒ 那条承诺不成立
+（`new` 那条路本来就清零，这个补上另一半）
+
+逃逸语义跟 `alloc` **完全一致**（返回它 / 循环里分配到循环外都被挡 —— A2 那条接缝照旧）
+判据：`examples/allocSlice.extc`（运行时长度 + 索引 + 再切片 + 清零）
++ `tests/errors/allocSlice_escape_return.extc`
+
+### `#5` 无限递归 ⇒ **响亮**（最需要小心的一刀，也踩了最大的坑）
+
+以前两种表现都很难查：被 gcc 折成循环 ⇒ **静默死循环**（零输出）；
+真爆栈 ⇒ OS 报 `Segmentation fault`（**不是 extC 的消息、更没有位置**）
+
+**为什么不做编译期禁止**：我实测过 —— 自递归**绝大多数是合法的**
+（`bottomUp` 有 base case、`sumTo(n)` 也有）⇒ 静态判定"会不会终止"不可判定
+⇒ 改成**运行时守卫**：**只对自递归函数**（传递地调到自己）吐深度计数，
+序言 `extc_rec_enter(path,line)` 自增、**每个出口** `--__extc_rec_depth`，
+超 `EXTC_REC_LIMIT`（10 万）就 trap 带位置
+（非递归函数**不加**守卫 ⇒ 零额外代价；实测 94 个语料里"守卫数 == 真实自递归数"）
+
+☠️ **踩了本轮最大的坑（值得记）**：第一版把递减写在**取值之前** ⇒
+```
+return spin(n)   ⇒   --__extc_rec_depth; return spin(n);     // 尾调用每帧把计数清 0
+```
+⇒ 守卫**永远不触发** 而且两种 -O 下表现还不一样：
+`-O0` 时 gcc 把它变成**真尾调用** ⇒ **秒退、零输出**；`-O2` 时死循环 —— **两种都不对**
+⇒ 改成"**先算值、再递减**"（`val` 是递归求值出来的 ⇒ 放进 `cgLine` 的参数里，
+自然顺序就是先算值）
+**教训**：这种"进出配对"的账，**顺序**和存在性一样重要；而且**必须跑**才能发现 ——
+我第一版是"看代码觉得对"
+
+判据：`tests/traps/recursion_too_deep.extc`
+（`t.extc:10: trap: recursion too deep(unbounded recursion?)`、退出码 1）
++ 合法深递归不受影响（`sumTo(10000)` 正常）+ 非递归函数不加守卫
+
+### golden 这次**变了 17 个文件**（诚实说明）
+
+前几次都是"只多新例子"，这次不是 —— 因为运行时序言里多了
+`__extc_rec_depth` + `extc_rec_enter`（**每个**生成的 C 都有），
+外加自递归函数多的那两三行 差异面**逐条核过**（就是这两类），然后更新了基线
+
+验收：`make` 零告警 · 测试 255 通过 0 失败 · 攻击库基线**一字不动** ·
+golden 重新存基线后**逐字节相同**（94 文件）· `./check.sh` 全绿
+
+---
+## 2026-09-23 · **#14 降级为「已知边界」—— 主人拍板：不做别名分析**
+
+起因是我问了一句"别名分析有必要做吗，按 PL 常识这工程量极大"，主人回：
+**「先降级吧，其实我也一直不打算做」**
+
+### 为什么**不该**做（三条依据，都是实测/查证过的，不是"工程量大"）
+
+| # | 依据 | 说明 |
+|---|---|---|
+| 1 | **这里没有唯一性可推** | Rust 的借用检查靠**类型系统保证 `&mut` 唯一** ⇒ 别名分析有东西可推。而 extC **在设计上就允许别名** —— `SPEC.md` §0.6 明写「两个 `mut ref` 同时指同一块 —— 允许（Rust 不允许）」，"视图是窗口，不是快照"是**特性** ⇒ `mut ref` **不承诺唯一** ⇒ 任何 sound 的分析都得从保守假设出发 ⇒ **精度涨不了多少、误报会涨** 要真有唯一性就得引入线性/唯一性类型 = 另一门语言 |
+| 2 | **最小可用版本已经做了** | `ARENA-FORMAL` §7.4 自己写着：「硬门槛**不是区域粒度**，而是**别名信息**；它的**最小可用版本就是"取地址跟踪"**（每个绑定一个 bool 很便宜）」—— 而 `Sym.addressed` **早在用**：局部根收窄 + 字段级强更新都靠它 |
+| 3 | **需求接近零** | 全仓库用到 `?ref` 的语料里，只有 `examples/path-narrowing.extc`（**演示该语法本身**）和它的配对反例用到；`stdlib/` 与真实程序**一处都没有** 合法替代是**一行**：`var cur: ?ref node = ref *p` 再收窄（实测可用、输出正确）|
+
+还有一条代价：**别名信息基本是过程间的**，而 extC 明确是单 TU + 全 `static`
+（`#37` 的向量化收益靠它）⇒ 想做精确就得跨过程，会跟已经付过代价的优化打架
+
+### 落地（只改口径，不改行为）
+
+· `PLAN` §0.4 那一格：改成 **已降级**，并写进上面三条依据 + 合法替代
+· `PLAN` §0.4 表头：**51 = 43 已修 + 3 真开着（#5/#9/#10）+ 1 残留小瑕疵 + 4 设计/可选/已知边界**
+· `PLAN`「下一步」表：**移出 #14**（它不该占"还能拿 UB / 违反承诺的"那一栏 ——
+  它**既不漏 UB 也不误拒常见写法**，只是"少了一种糖"）⇒ 那一栏现在只剩
+  **#5 · #10 · #9** 三条，**全都不是"要不要做分析"的问题**
+· `PLAN` §7 拍板清单：加上"**不做别名分析**"（跟"块注释/分号先不动"并列）
+
+### 顺便定下一个**将来真要动**时的便宜路（不是别名分析）
+
+照 `#43` 那个现成模式：**被调者只发布约束、调用点代入求解**
+⇒ 参数根的"收窄义务"**挪到调用点**（调用点知道实参是不是没取过地址的局部），
+比别名分析便宜一个数量级
+但**先别做**：`ref x` 本身就会把 `x` 标成 `addressed` ⇒ 调用点几乎总是"否" ⇒
+**大概率白做**；真要动，**第一件事是量需求**（在五子棋那种真实程序里数一数挡了几处）
+
+### 验收
+
+`make` 零告警 · 测试 **251 通过 0 失败** · golden **逐字节相同**（93 文件）
+机械审计四条判据全过（编号无缺号 · 合计 51 · README 索引完整 · 跨文档引用有效）
+—— **纯口径改动，一行代码没动**
+
+---
+## 2026-09-23 · **全量文档对账**（主人：「文档极其混乱，你要全量维护」）
+
+主人这句话是对的，而且**根因不是某句话写错，是"没有口径"** ——
+同一个事实在 6 份文档里各写一遍 6 个版本，**读者没有任何办法判断该信哪一份**
+
+### 一、先做「口径」：谁的"状态"说了算
+
+README 索引后新增一节，钉死顺序：
+
+| 想知道 | **只看这一份** |
+|---|---|
+| 现在什么坏了 / 还剩什么 | `PLAN.md` §0.4（别的文档里的同一件事**一律作废**）|
+| 某特性实现了没 | **实测**（`examples/` 跑一遍）或 `MANUAL.md`；`SPEC.md` 的/🔸/**只是设计口径** |
+| 哪条拍板了 | `DECISIONS.md` |
+| 发生过什么 | `DEVLOG.md`（里面的旧计数**是历史台阶，故意不改**）|
+
+两条硬规矩：① 专题文档的"状态/进度"表**必须指向 §0.4**（ARRAYS/REFS/IO/BOOTSTRAP/DESIGN 都加了注）；
+② 判断一句话该不该更新，标准是**「它在描述当时还是现在」** ——
+`DEVLOG`/历史段落里的旧数字**不要顺手改新**（改掉它，"数字为什么对不上"就永远学不到了）
+
+### 二、实测清掉的「早就做完却说没做」（一共 17 处）
+
+**§0.4 缺陷清单**：
+  · **#32**（有家函数里 `new` 一律进家）—— 实测 `new` **已按块**（`__extc_a[2]`），
+    只有真逃逸才进家 ⇒ **已修**
+  · **#5 附带的 UX**（`--run -O0` 报 usage）—— 实测**能跑**，是 #11 在 `6ae3008` 顺带修的
+  · **#10** 的措辞：裸写在「四个位置」认 —— **只对 prelude 成立**，
+    用户枚举连 `return circle(3.0)` 都挂 ⇒ 是「prelude 特例 vs 用户枚举」
+
+**专题文档**：
+  · `BOOTSTRAP` §8 六步：**3/4/5 全做完**（第三刀 = 定案 52′；arena 换形状落地；`varArray` 已写）
+    ⇒ 六步里**只剩第 6 步 lambda**
+  · `BOOTSTRAP` 的「**三处算术 UB 债务**」⇒ **三处全部还清**（实测：溢出有定义 ·
+    除零 trap 带位置 · 移位 trap 带位置）—— 而这条**正是 extC 卖点的核心**，过时得最刺眼
+  · `REFS`「还拦不住的」两条 ⇒ **都拦住了**（只读视图写不穿）
+  · `ARRAYS`「还没有 arena」「`array<T>` 等 arena」「60 通过」⇒ 三处全过时
+  · `IO`「门槛是 `new i32[4096]`」⇒ 早跨过；§2 的 ⇒ 已拍板（定案 69）；§8 **加了进度列**
+  · `DESIGN`「trap 报告 = 待做」⇒ **部分做完**（位置 值；**调用栈**）
+  · `LANGUAGE`（自称唯一权威）：**7 处**把做完的标成/🔸（`match` 三刀 · arena · `varArray` ·
+    有损转换 · IO 长度类型 · 块=释放点…）
+  · `DECISIONS` 的「还欠着」栏：下标/越界 · 模块系统 ⇒ 早已落地
+  · `PLAN` §2 那张旧表的映射行 ⇒ #4/#6 早已
+
+### 三、三个**结构病**（比单句错更值钱）
+
+  1. **README 索引漏了 9 份文档**（仓库 21 份，索引只列 11）——
+     `ARENA*`/`ARRAYS`/`REFS`/`BOOTSTRAP`/`IO`/`PLAN-REGION`/`VISION`/`extC-overview`
+     **一份都没进** ⇒ 读的人只能 `ls` 猜。现在全列 + 标性质（现行/历史/已取代），
+     **20 个链接实测可达**
+  2. **live 文档里 7 处过期测试计数**（244/220/215/216）⇒ 对齐到实测 **251**
+  3. **`#37` 那一行曾被一个空行挤出表格** ⇒ 不渲染、编号"看起来缺了"
+（我上一轮还据此说过「#37 是从未用过的号」—— **错的**）
+
+### 四、写了**机械审计脚本**（6 条判据，一次跑完）
+
+```
+1. §0.4 编号无缺号（51 个）
+2. 表头声称已修 == 实际（42 == 42）
+3. 分类合计 == 行数（42+4+2+3 = 51）
+4. 跨文档 PLAN #NN 引用有效
+5. README 索引覆盖全部文档
+6. 专题文档都指向 §0.4
+```
+
+**这个脚本自己也错过两次**，都记下来：
+  · 第一版把"已修"数成 **44** —— 它**扫的是全表所有行**，把某些行的**值格**
+（值格也可能以 `~~**N**~~` 开头）也算进去了
+  · 分类时把 **#49** 同时算进"真开着"和"设计" ⇒ 合计 52≠51
+  ⇒ 改成**逐行按「第一格」判定**才对
+  ⇒ **教训：审计脚本的输出也要被怀疑一次** —— 它只是另一段可能写错的代码
+
+### 验收
+
+`make` 零告警 · 测试 **251 通过 0 失败** · golden **逐字节相同**（93 文件）
+（全部是文档改动，**代码一个字节没动**）
+
+---
+## 2026-09-23 · **PLAN #42 复核：嵌套容器早就解了**（主人指出来的）
+
+**这一条是主人抓的**：我在回答"现在能做什么"时写了「嵌套容器受借用规则限制（`#42`）」
+—— 主人问「42 不是修了吗」，一查：**对，早就解了**
+
+### 它为什么看起来还"没解"
+
+`#42` 那一格的原文写着：
+
+> ② `cannot store a borrowed value…` —— **借用规则本身，拒绝是对的**（…⇒ 嵌套容器仍写不出来
+> ⇒ **出路**：扁平 CSR / slab + i32 索引 或**把借用规则挪到调用点（= 大活，另记）**）
+
+而那个「大活，另记」**就是 `#43`，2026-09-22 已经落地了**
+⇒ `#42②` 在 `#43` 落地那一刻就解了，可**那一格没被划掉**
+
+**教训（比这一条缺陷本身值钱）**：
+> 一格写了「**出路是 X**」，X 做完之后**必须回来把那格划掉** ——
+> 否则"出路"会一直挂在那儿，读的人（包括写它的我）就会以为**它还没解**
+
+这跟之前记过的几种"假消息源"是同一族，但**方向新**：
+以前的几次是"**计数**不同步"（§0.4 头几行）、"**下一步**表不同步"，
+这次是"**出路**已经实现了却没销账"
+
+### 实测（2026-09-23）
+
+三类嵌套一次跑通：
+
+| 形状 | 结果 |
+|---|---|
+| `varArray<varArray<i32>>`（二维表 / 邻接表）| `adj = 1` |
+| `varArray<slice<u8>>`（字符串表）| `names = 2 bob` |
+| `varArray<struct>`（容器装 struct）| `pts = 1` |
+
+而**真危险**的形状**仍然被挡**，报错还很清楚：
+
+```
+var outer: varArray<slice<u8>> = …
+{ var deep: [4]u8 = …   outer.push(deep[..]) }
+error: argument 2 of `push` carries a reference into a deeper scope(depth 2)
+       than the place the callee may store it(depth 1)
+```
+
+⇒ 这正是 `#43` 的设计意图：**被调者发布约束、调用点代入具体深度求解** ——
+同层 ⇒ 放行；更深 ⇒ 拒绝 不是"一刀切拒"也不是"一刀切放"
+
+配对的三个反例也复测了，**都仍被挡**：
+`stash_view_from_deeper` · `eq_needs_element_eq` · `generic_borrowed_store`
+
+### 顺带纠正一处过时建议
+
+`#42` 那格原来建议的「出路：**扁平 CSR / slab + i32 索引**」——
+那是②没解时的**权宜之计**，现在**不需要**了
+（`examples/container-nested.extc` 就是直接写 `varArray<varArray<i32>>`）
+
+### 计数方法改了（这才是根治）
+
+这一格过时能藏这么久，根因是**我一直靠脑算计数**。这次改成**数出来**：
+
+```sh
+# §0.4 表里：`~~**N**~~` 的条数 = 已修；其余普通行的编号 = 未完成
+awk 'NR>=49 && NR<=101' PLAN.md | grep -cE '^\| ~~\*\*[0-9]+\*\*~~'     # ⇒ 40
+```
+
+实测结果：**50 个编号 = 40 已修 + 5 真开着（#5/#9/#10/#14/#32）
++ 2 半修（`42(c)` 行 · #50）+ 4 设计/可选（#29/#30/#48/#49）**
+⇒ 已写进 §0.4 的计数行（**第七次**改那一行，但这次附上了**怎么数**的方法）
+
+测试 251 通过 0 失败 · golden 逐字节相同
+
+---
+## 2026-09-23 · **PLAN #51（新发现的真 bug）：`let q = f()?` 根本编不过**
+
+这条是**回答"现在能做什么"时撞出来的** —— 我写了个把主要特性都用上的程序，
+写到 `?` 就炸了：
+
+```
+let q = checkedDiv(a, b)?
+error: internal: `?` reached expression codegen(position check missed it)
+```
+
+`internal:` 三个字说明**是编译器自己的账没对上**，不是用户写错
+
+### 根因：checker 和 codegen 对"`?` 的合法位置"口径不一致
+
+`SPEC.md` §6.2 写的是**四个**位置：`f()?` / `let x = e?` / `x = e?` / `return e?`。
+实测逐个试：
+
+| 位置 | 修之前 |
+|---|---|
+| `return f(b)?` | 通过 |
+| `r = f(b)?` | 通过 |
+| **`let q = f(b)?`** | internal 错 |
+| **`var q = f(b)?`** | internal 错 |
+
+`check_stmt.c` 里**明明处理了**这个位置（`if(s->u.var.init->kind == EX_TRY) it = checkTryInner(...)`）
+⇒ checker 放行；可 `codegen.c` 的 `genStmt` 只在 **三处**展开 `?`
+（`ST_ASSIGN` / `ST_RETURN` / `ST_EXPR`），**`ST_VAR` 漏了**
+⇒ `?` 落到 `genExpr` 的 `EX_TRY` 分支 ⇒ 那句 internal 报错
+
+**修法**：照 `ST_ASSIGN` 那条的形状补一处（生成的 C 本来也就是"声明 + 赋值"）：
+
+```c
+if(s->u.var.init && s->u.var.init->kind == EX_TRY) {
+    TryInfo ti = genTryHead(g, s->u.var.init);
+    flushPrefix(g);
+    cgLine(g, "%s %s = %s;", cType(g, s->type), nm, tryPayloadPath(g, &ti));
+    return;
+}
+```
+
+### 为什么这个 bug 能活这么久：**语料对"合法写法"是盲的**
+
+`grep` 下来，**例子和测试里一个用到这个位置的都没有** 而现有的反例
+`tests/errors/try_bad_position.extc` 钉的是**另一件事** —— 它断言"**嵌套**位置要被挡"
+（`some(some(n)? + 1)`），管不了"**合法**位置能不能用"
+
+⇒ 教训：**反例库只能证明"坏东西被挡"，永远证明不了"好东西能用"**。
+四个合法位置里有**两个**是坏的，而套件全绿 —— 这正是"正例是能力证明"那条维护规矩
+（`README.md` 规矩 5）值钱的地方
+
+### 验收
+
+- 新正例 `examples/try-positions.extc`：**四个位置一次全验**，
+  并且**两个失败分支也验**（`viaLet(-3) ?? -1` 得到 **-1**）
+- 测试 250 → **251 通过 0 失败** · `make` 零告警
+- **golden 差异只有这一个新例子**（其余 92 个逐字节不变 ⇒ 修的是"以前编不过的"，
+  合法程序的生成物一个字节没动）· 攻击库基线一致
+
+这条我**连着写错两次注释**，值得记一笔（因为这个项目自己有条规矩叫
+"预测要打成测试再宣布"）：
+- 第一版我写「`??` 失败就兜底」⇒ 于是以为 `viaLet(-3) ?? -1` 是 `-1`
+- 第二版我又"纠正"成「`??` 对 `result` 是**取载荷**（failure(e) ⇒ e）」
+  ⇒ 于是把注释改成 `-3` —— **两次都是凭印象推的，都没测**
+- 第三版才去**实测**（`match` 打印 + 两种载荷各跑一遍）：
+
+      failure(-3) ?? -1  ⇒  **-1**（兜底）      success(10) ?? -1  ⇒  **10**（取载荷）
+
+  ⇒ 正确语义是"**取成功载荷、失败则兜底**"，`MANUAL.md` 里 `??` 只写了
+  `option` / `?ref` 两种，`result` 这一种**文档里没写** ⇒ 更该测而不是推
+
+---
+## 2026-09-23 · **PLAN #44：效果摘要按实例算**（#50 的另一半）
+
+`#50` 那条"精度/一致性"的尾巴，也是 2026-09-22 主人问出来的那句
+*"这个也不是应该在单态化的时候判断吗"* 的落地
+
+### 问题
+
+摘要（`FuncDef` 上那几张 `Addr`/`Cont` 位图）原来**只在模板上算一份**
+（`collectEffects` 跑在 `checkFunc` 里），那时 `T` 不透明 ⇒ `carrier` 判据只能补
+`mentionsParam(T)`：「提到 `T` 就当它带引用」⇒ `varArray<i32>` 这种
+**完全不带引用**的实例也背着 `Cont` 位
+
+### 修法（两处，缺一不可）
+
+| # | 位置 | 改什么 |
+|---|---|---|
+| 1 | `check_top.c` 的 `carrier` 判据 | `tsub(c, e->type)` —— 代入**之后**的类型再问"里面有引用吗" |
+| 2 | 复查 pass（紧挨 `RefCheck`/`EqCheck` 那个） | 对**每个实例**：清空从模板浅拷贝继承来的摘要 + `callees`/`effState`，然后用代入上下文**重算** `collectEffects` |
+
+第 2 步那个"清空"是必须的，而且是个坑：`funcInstance` 里 `*in = *tmpl` 是**浅拷贝**
+⇒ 实例一开始**继承**了模板的摘要，`callees` 也一起带过来了
+（而 `collectEffects` 对非 NULL 的 `callees` **不重置**）⇒ 不清就会叶子翻倍、
+`effState` 还写着"算完了" ⇒ 传递闭包拿的是模板的旧账
+
+### 判据：A/B 对照（掩码级）
+
+这一条是**潜在精度**，不是可见的误拒 —— `PLAN.md` 自己也写着"今天不误拒是因为
+`exprRefDepth` 对纯值实参返回 0"，我**实测确实构造不出被误拒的形状**
+（试了 `boxVal<i32>::put`、自由函数 `stash<T>` 两种，都正常编过并跑对）。
+⇒ 所以判据不能落在"某个程序从编不过变成编得过"，只能落在**掩码本身**上：
+
+```
+EXTC_DUMP_EFFECTS=1 ./build/extc examples/generic-effects-per-instance.extc -o /dev/null 2>&1 | grep stash
+    [effects] stash   toParam[Addr=0x0 Cont=0x2 ...]   ← boxT<slice<u8>>（T 带引用 ⇒ 置位）
+    [effects] stash   toParam[Addr=0x0 Cont=0x0 ...]   ← boxT<i32>（纯值 ⇒ **不置位**）
+```
+
+**反向对照（可归因）**：把 `carrier` 那行的 `tsub(...)` 撤掉重编 ⇒
+**三个实例全变成 `Cont=0x2`**（老行为）⇒ 证明上面那个 `0x0` 确实是这次改动的效果，
+不是碰巧
+
+### 红线：**绝不能**图快删保守位
+
+`PLAN.md` 里记着一条实测过的教训，这次**先当判据用**：
+
+> 把那个保守位（`mentionsParam`）**去掉**试试 ⇒ `tests/errors/generic_borrowed_store.extc`
+> **从"被挡"变成"通过"**（真悬垂）⇒ 那句是**堵洞的**，不是多余的保守
+
+修完复测：`generic_borrowed_store` **仍被挡**
+（`T = slice<u8>` 时照旧置位 —— 安全性靠的是**这一半**，不是"少置位"那半）
+
+### 验收（都实测）
+
+- 新正例 `examples/generic-effects-per-instance.extc`（**自带 dump 命令**，下次谁都能复现那张表）
+- `make` 零告警 · `./check.sh` **14 节全绿** · 测试 **250 通过 0 失败**
+- **golden 逐字节相同（92 文件）** —— 这条最要紧：它证明这处精化**行为零变化**
+（摘要会喂给 `needsHome` 的传递闭包 ⇒ 万一改错，生成 C 会变）
+- 攻击库基线**一致** · 红线仍被挡
+
+### 诚实记账
+
+这是一处**潜在精度**修好，**不改变任何可见行为** —— 所以我没有把"某个程序现在能编了"
+写成判据（那会是假证据）。真正的价值是**一致性**：同一张模板的不同实例
+不再共用一张偏保守的表，将来有任何检查要读摘要时，读到的是**这个实例的**事实
+
+---
+## 2026-09-23 · **PLAN #50 的一半：泛型体里能调用泛型函数了**（调用点按实例解析）
+
+`#50` 有两条，这次做掉的是**能力缺口**那条（②「摘要按实例算」= `#44` 另记）。
+
+### 复现：编译器自己写着"这里不行"
+
+```extc
+fn idOf<T>(x: T) -> T { return x }
+fn twice<T>(x: T) -> T { return idOf(x) }     // ← 报错
+// error: cannot call generic function `idOf` from a generic body: `T` is not concrete here yet
+// note: ... call sites are resolved once today(same family as per-instance effect summaries).
+```
+
+根因：`Expr.func` **只有一个格子**，而模板体**只查一次** —— 那时 `T` 还不具体，
+所以 `idOf(x)` 那个类型实参是 `T`，**那个时刻造不出正确的实例**
+
+### 修法：照 `RefCheck`/`EqCheck` 的现成模式 —— **模板期记账，实例化复查**
+
+新增第三类推迟项 `CallCheck`（`check_internal.h`），跟另外两类并排：
+
+```c
+typedef struct {
+    Expr    *node;    /* 那个调用节点（等着被改指）*/
+    FuncDef *tmpl;    /* 被调的**模板** */
+    Vec      targs;   /* 模板期推出来的实参（**可能含 T** ⇒ 实例化时用 tsub 代入）*/
+    FuncDef *func;    /* 这条属于哪个模板体（决定它对哪些实例适用）*/
+} CallCheck;
+```
+
+| 阶段 | 做什么 |
+|---|---|
+| **模板期**（`check_expr.c` 两处守卫：`EX_CALL` 的隐式推导 + `EX_GENCALL` 的显式实参）| **不再报错**：先造一个"以 `T` 为实参"的实例（`idOf_T`，签名自洽 ⇒ 模板体后面照常查完），同时**记一笔** `CallCheck` |
+| **实例化复查**（`check_top.c`，紧挨 `RefCheck` 那个 pass）| 在**每个外层实例的上下文里**（`c.substParams/substArgs` 已设好）把类型实参代入 ⇒ 造/取具体实例 ⇒ 把 `e->func` **改指**过去（`twice<i32>` 里的 `idOf(x)` → `idOf_i32`）|
+
+**为什么要先造那个"`T` 实参"的实例、而不是就地跳过**：模板体后面还要用 `e->func` 的签名
+判实参、算返回类型 ⇒ 必须有**某个**自洽的签名可用（这也是为什么不能简单地把守卫删掉）
+
+**两条路都走了**（外层实例化发生在哪一边，调用点就该在哪一边重解）：
+- ① **自由函数实例**：`twice<i32>` 里的 `idOf(x)`
+- ② **类型实例的方法体**：`holder<i32>::dup` 里的 `idOf<T>(…)`
+
+### 判据当场抓到一条**过时的反例**（这次最值钱的一条）
+
+`./check.sh` 报 `FAIL generic_calls_generic.extc -> 消息里没有「not concrete here yet」` ——
+原来 `tests/generics/errors/` 下**有一条反例，专门断言这个限制**：
+
+```sh
+check_err tests/generics/errors/generic_calls_generic.extc "not concrete here yet"
+```
+
+⇒ 修好之后它**必然失败**，因为"不该存在的行为"没了
+**教训**：反例断言的是"不该存在的行为"时，行为一旦变好就**必须删它** ——
+留着等于把旧限制焊死（同族：`PLAN` 里 #4 那次是"把 bug 记成已知安全"，
+这次是"把限制记成必须报错" —— **两头都会变成假消息源**）
+
+### 验收（都实测）
+
+- **正例**：`examples/generic-calls-generic.extc`（两条路都覆盖）⇒ 输出 `7 / 42 / 7`
+- **测试**：**248 → 249 通过 0 失败**
+- **golden**：差异**只有那一个新例子**（其余 90 个逐字节不变 ⇒ 老代码生成物一个字节没动）
+- **没放松**：攻击库基线**一致** · `tests/errors/generic_borrowed_store.extc`（真悬垂）**仍被挡**
+- `make` 零告警
+
+### 还没做：`#44`（② 摘要按实例算）
+
+`#50` 的另一半。**这次特意没一起做**，理由是它动的是**soundness 敏感**的那一片
+（`collectEffects` 的 `carrier` 判据），而 `PLAN` 里记着一条实测过的红线：
+
+> 把那个保守位去掉试试 ⇒ `generic_borrowed_store` **从"被挡"变成"通过"**（真悬垂）
+
+⇒ 它必须"**按实例算准**"，不能图快删保守位。**前置现在才齐**：刚才这一步让
+`e->func`（以及 `f->callees`）**指向实例**了，所以传递闭包才有按实例的键可谈
+下一步：在同一个复查 pass 里，对每个实例用代入后的具体类型**重算摘要**
+
+---
+## 2026-09-23 · **PLAN #4：固定数组的字面量下标越界 ⇒ 编译期报错**
+
+缺陷清单里「**能证明的没在编译期报**」的那一条。原记录很准确：
+`b[10]`（`b: [4]i32`）**编得过**，运行时才 trap —— 运行那一侧是**好的**
+（`trap: index 10 out of range(length 4)`、退出码 1），
+缺的只是"编译期已经知道却不说"这一半 ⇒ 违反 `P′`。
+
+### 修法：跟切片用**同一组判据**，只是这里只有一个界
+
+`EX_INDEX` 原来只查两件事：能不能索引、下标是不是整数。长度是编译期常数这件事
+**它知道却没用**（`ob->asize` 就在手上）。切片那一条（`EX_SLICE`）早就做了这件事，
+而且注释里写着判据 —— 所以这不是新规则，是**把已有的规则补齐到另一半**：
+
+```c
+if(ob->kind == TY_ARRAY) {          // 视图长度运行时才知道 ⇒ 不查（留给 trap）
+    if(asIntLit(e->u.index.index, &iv)) {
+        if(iv < 0 || iv >= n)       // 合法下标是半开的 [0, n)
+            ckError(... "index %lld is not inside `%s`(length %lld)" ...);
+    }
+}
+```
+
+三点是**有意**的：
+
+| 决定 | 理由 |
+|---|---|
+| **半开区间** `[0, n)` | `b[0]` 和 `b[3]`（`[4]i32`）**必须**放行 —— 判据写成 `<= n` 就是一次误伤事故，所以配了正例钉住 |
+| **用 `asIntLit`** | `-1` 是 `EX_UN` 套 `EX_INT`，负数下标是最容易漏的形状；这个 helper 连注释都在讲这件事（切片那边踩过） |
+| **只管 `TY_ARRAY`** | 视图（`slice<T>`）的长度**运行时才知道** ⇒ 证明不了 ⇒ 照旧留给运行时 trap（`tests/traps/` 那条一字未动）|
+
+### 顺带抓到：攻击库把**这个 bug 记成了功劳**
+
+`./check.sh` 报「攻击库的通过集合变了」—— `h4_oob` 从基线里掉了。
+查下去发现 `tests/attacks/h4_oob.extc` 的标题就是「**④ 字面量越界**」，
+而它列在 **BASELINE（允许通过的那张表）**里：
+
+```extc
+var b: [4]i32
+b[10] = 1        // 这条以前编得过 ⇒ 被记成"已知安全"
+```
+
+⇒ 一份**编译期就能证明的错误**被当成"安全程序"记了账。修好之后它被编译期挡下，
+所以**从基线删掉**。这是**变严**的证据，不是放松
+
+这跟 2026-09-22 抓到 `h8_launder` 那次是**同一类错误但方向相反**：
+那次是"把误拒记成功劳"，这次是"把漏报记成安全"。
+⇒ **攻击库的两栏都会说谎**：`BASELINE` 里多一个名字 = 把洞记成功劳；
+少一个"其实安全"的名字 = 把误拒记成功劳。两条都要拿**真实行为**核，不能只看脚本绿
+
+### 验收（四条，都实测）
+
+- **正例**：`examples/index-bounds.extc`（新增）—— 边界 `b[0]`/`b[3]`、运行时下标 `b[i]`、
+  多维 `m[1][2]`（每一维用**各自**的长度）、字符串字面量 `s[1]` ⇒ 全部放行且输出正确
+- **反例**：`tests/errors/literal_index_oob.extc` + `literal_index_negative.extc`（新增）⇒ 都编译期挡下
+- **零误报**：`./tests/run.sh` **248 通过 0 失败**（245 → 248）· OI 与主席树两套四语言横评全过
+- **生成物一个字节没动**：`tools/golden.sh check` 差异**只有新增的那一个例子**
+（其余 89 个逐字节相同 ⇒ 纯检查器改动，codegen 未受影响）
+- `make` 零告警 · `./check.sh` **14 节全绿**
+
+两处**诚实说明**（都属于"差点留下假账"）：
+
+1. `examples/index-bounds.extc` 使 golden 多了一条 ⇒ `tools/golden.manifest` 跟着更新了一次
+（差异面就是那一行）。
+2. **攻击库那一步第一次是"红"的** —— 我差点直接宣布"全绿"。
+   实际过程是：`check.sh` 报「通过集合变了」⇒ 查出是 `h4_oob` 被新检查挡下 ⇒
+   确认它本来就该被挡 ⇒ 才更新基线的。**先报告红、再解释为什么红是对的**，顺序不能反
+（这也是为什么这一节的"全绿"是**改完基线之后重跑**得到的，不是同一次运行的结果）
+
+---
+## 2026-09-22 · **IO 的第一块：能读东西了**（定案 73）—— `std::sys` + `std::io`
+
+四块里的最后一块。目标是 **"先能读"**（`IO.md` 说的"做完 = 五子棋能跟人下"那条路的第一步）
+
+```extc
+use std::io
+var line: [64]u8
+let n = io::readLine(line[..])      // ← 从 stdin 读一行
+io::writeBytes("回显：")
+```
+
+**分层真的落地了**（不再只是文档）：`stdlib/std/sys/io.extc`（**特权层**：只有它写 `extern!` +
+签字）· `stdlib/std/io.extc`（**普通库**：用 extC 写，自己不碰 extern）
+
+**`use std::io` 怎么找文件**：项目根 → `-I` → `$EXTC_STD` →
+**默认 `<extc 所在目录>/../stdlib`**（用 `/proc/self/exe` 算 —— prelude 是内嵌的，
+但 `std::io` 这种真模块需要真文件）
+
+**顺手抓到并修掉一个真问题**（不然交互式程序没法用）：
+`println` 走 printf（**有缓冲**）、`std::io` 的 `writeBytes` 走 fd 直写（无缓冲）
+⇒ **顺序会乱**（提示语还没出来，程序已经在等你输入）
+⇒ 新增内建 `flush()`（⇒ `fflush(NULL)`）+ `std::io::flushOut()`
+挂在"帧拥有资源"上的 `owned`（`extern!` 那条）**还没实现** ⇒ `std::io` 只声明
+"往你给的 buffer 里读/写"的那两个（`read`/`write`）这是有意选的形状
+
+**验收**：`tests/io/run.sh`（stdin 两行：解析求和 + 回显 + 分层结构检查）
+**`./check.sh` 现在 14 节全绿**：245 测试 · ASan 8 · arena 5 · 攻击库基线一字不动 ·
+模块 8 · 泛型 4 · extern 4 · IO 3 · 漂移哨兵 92 语料零漂移 · golden **逐字节不变**
+
+---
+## 2026-09-22 · **`extern!` + 信任声明 v1**（定案 72）—— 库怎么碰系统
+
+主线的第三块。库要碰系统只有一条路：**声明 C 的函数**，而 C 那边是黑盒 ⇒ **必须有人签字**
+
+```extc
+extern!("libc") fn write(fd: i32, buf: ref u8, n: i64) -> i64
+    effects Addr=0 Cont=0        // 我签字：不存你的指针 ⇒ 实参不受寿命约束
+extern!("libc") fn fill(p: ref i32, n: i32) -> i32      // 没签字 ⇒ 按最坏情况
+```
+
+**"默认安全"长什么样**（这一条是这块的价值所在）：没签字 ⇒ 编译器认为**每个参数都可能被
+C 存到活到帧外的地方** ⇒ `fill(ref x, 3)`（x 是本帧局部）**编译错误**
+签了字 ⇒ 一个参数都不查 ⇒ 好用  ⇒ **想用得舒服就得签字**
+
+**实现**：
+- parser：`extern!("lib") fn …` 借道 `parseFunc`（`noBody` 标志）+ 签名后面的
+  `effects Addr=0 Cont=0` 子句；`owned` ⇒ **明确报错"还没实现"**（返回的 C 内存得有人释放，
+  而 extC 没有 free ⇒ 要等"帧拥有资源"那套）
+- 检查器：`collectEffects` 对 extern **直接用签字/最坏情况** —— 少了这条就是
+  "摘要全空 = 它什么都不存" = **放行悬垂**（这是这块唯一真正危险的地方）；
+  `computeEffectsTransitive` 认它完整；规则 ④ 之外**单开一条**：extern 的"可能存"
+  意味那份存储可能活到帧外 ⇒ 那一档实参必须**深度 0**
+- codegen：只吐原型、**不加 `static`**（要给链接器看得见）、不进函数体循环
+- 形状限制：跨边界**只用标量或单指针**（`slice<T>` 在 C 那边是两个参数 ⇒ 名字对不上）
+  ⇒ wrapper 用 extC 写、把 `s.data`/`s.len` 分下去（= IO.md 的"档 2"）
+
+**验收**：`tests/extern/run.sh`（1 正例 + 3 反例）接进 `check.sh` ⇒ **10 节全绿**
+正例**真调 libc**：`getpid()` + `write(1, …)` 把字节直接写到 stdout
+245 测试全绿 · golden 逐字节不变
+
+---
+## 2026-09-22 · **泛型自由函数 v1**（PLAN #47，定案 71）—— 库的根
+
+主线的第二块。`sort`/`map`/`max`/`indexOf` 这类**没法挂在 struct 上**的函数，以前写不出来
+（实测 `fn maxOf<T>` = `expected '(' , found '<'`）。
+
+### 现在能写
+
+```extc
+fn indexOf<T>(a: slice<T>, x: T) -> i64 { … a[i] == x … }
+indexOf(nums[..], 30)         // 从实参推导
+indexOf<i32>(nums[..], 50)    // 显式实参（`T` 只在返回类型时必须这么写）
+fn swapAt<T>(a: mut slice<T>, i: i64, j: i64) { … }   // 视图泛型
+```
+
+### 实现（五处，都不大，但有三处**踩出来的坑值得记**）
+
+① `FuncDef.typeParams` + parser（照 struct 那一处抄）
+② `funcTParams(f)` 统一"类型参数在哪"（方法在 owner、自由函数在自己）
+③ **函数实例表** + 调用点合一推导；推不出来就报错教他写显式实参
+④ **推迟复查复用**：把"按实例复查"抽成 `runEqCheck`/`runRefCheck` ⇒ 类型实例与自由函数实例
+   **共用同一条路**（`T: ==` / 零值 / 引用规矩一个不少）
+⑤ codegen：实例有自己的 C 名字、进实例开替换、**模板本体不吐**
+
+### 坑（都是"症状跟病因离得远"那类）
+
+1. **`readWhole` 忘了把长度带出来**（模块那次）—— 这条是上一块的，但同一类：
+   症状是"限定名没解析"，病因是"文件被当成空的"
+2. **实例的参数共享了模板的 `Param*`** ⇒ 代入类型时把**模板也改了** ⇒ 第二次推导时
+   模板已经"具体化" ⇒ **段错误** ⇒ 改成复制一份 Param
+3. **忘记 `findFunc`/检查器各处跳过实例** ⇒ 实例被当成"同名函数"重复检查/重复报重名
+4. **模板本体跟着实例一起吐** ⇒ `T` 没替换 ⇒ codegen 报 "`int` needs to define `==`"
+   这种**假错**（`cType(TY_PARAM)` = `int`）⇒ 模板 `typeParams.len > 0` 就 `continue`
+5. **`if(!ec->owner) goto eq_done;` 把自由函数那条也跳掉了**（`goto` 放错位置）
+
+### 验收
+
+- 245 测试全绿 · **golden 只多一个新例子**（其余 88 个逐字节不变 ⇒ 老代码零影响）
+- 新增常设验收 `tests/generics/run.sh`（1 正例 + 3 反例：泛型调泛型 / `T` 没有 `==` / 推不出来）`
+
+### v1 的两条限制（记进 PLAN #50）
+
+① **泛型体里不能调用泛型函数**（调用点只解析一次 ⇒ 那个 `T` 还不具体）
+② **`T` 上的 `<`** 还不支持（要"给 T 一个比较协议" ⇒ 等 6a 函数值）
+⇒ 两条的根都是"**调用点按实例解析**"，跟 **#44**（摘要按实例）同一片地盘 ⇒ 记成 #50
+
+---
+## 2026-09-22 · **模块系统 v1 落地**（定案 70）—— 语义导入 · 一个文件一个模块 · 检查器一行没改
+
+主人拍板：「可以，先切模块吧」（前一句是「我总不能真的跟 C++ 一样雷霆展开吧」⇒ 这就是设计的靶子）
+
+### 形状（照 `MODULES.md` 方案 A）
+
+```extc
+use lib::util                            // 顶层语义导入（不是文本包含）
+@private fn secret() -> i32 { return 2 } // 默认公开，要藏才写
+fn helper() -> i32 { return util::total(util::make(1, 2)) }   // 跨模块写限定名
+```
+
+### 实现：**全部机制塞在装载器**（`src/back/modules.c`），检查器/codegen 一行没改
+
+① 找文件（项目根 / `-I` / `$EXTC_STD`）② 递归装载 + 状态机查环 ③ **后序 = 拓扑序**合并
+④ **在检查之前**把限定名解析成平名字（`io::readLine(…)` ⇒ `EX_CALL(readLine)`）
+⑤ 可见性：`@private` 在装载器这一步挡（限定引用）；**漏限定名**在检查器解析处挡
+
+⇒ 检查器看到的还是它熟悉的那张**平表** 所以 **golden 88 文件逐字节相同**（单文件程序零影响）
+
+### 踩到的四个坑（都记账）
+
+1. **`readWhole` 忘了把长度带出来** ⇒ 模块被当成空文件（tokens=2），而症状是"限定名没解析"
+   —— 表现跟病因差得很远，查了两轮才定位
+2. **`-I` 往没初始化的 Vec 里 push** ⇒ **段错误**（参数解析发生在 `arenaInit` **之前**）
+   ⇒ 改成先收进定长数组，`arenaInit` 之后再灌进 Vec
+3. **`ModUnit.ctx` 用值而不是指针** ⇒ 根文件那份诊断被**副本吞掉**（编译静默失败、rc=1 无消息）
+   ⇒ 改成 `Ctx *`，根单元指向调用者真那个 ctx
+4. **"相对引用者"解析路径** ⇒ `lib/calc.extc` 里 `use lib::util` 去找 `lib/lib/util.extc`
+   ⇒ 改成**一律相对项目根**（入口文件所在目录），跟 Go 一致、心智模型只有一个答案
+5. **启发式误报**：`examples/fenwick.extc` 里 `fenwick::new(N)` 的 `fenwick` 是本文件的 struct，
+   而本文件就叫 `fenwick.extc` ⇒ 被误判成"模块没导入"
+   ⇒ 自己声明的类型名 / 自己的文件名一律放过（`tests/run.sh` 当场抓出来的）
+
+### 验收
+
+- **golden 88 文件逐字节相同** 244 测试全绿
+- 新增常设验收 `tests/modules/run.sh`（2 正例 + 6 反例）已接进 `./check.sh` ⇒ 现在 8 节全绿
+- 正例真跑：多文件程序（含**跨模块类型**与链式依赖）+ `-I` 找库
+
+---
+## 2026-09-22 · **定案 68：层号的唯一权威搬进检查器**（主人：「checker 操作完之后应该把全部生成信息给 codegen」）
+
+主人的两句话（连着上一条"欠着会不会难发展"的讨论）：
+
+>「1. 我觉得 **i64** 可以，这样可能可以避免莫名其妙的 ub（至少返回负数是被允许的，用户写起来会舒服）」
+>「2. 我觉得**要统一**，而且我在想的是 checker 操作完之后应该把全部生成信息给 codegen，
+>    codegen 就不用再做校验（尤其是 arena 相关内容）」
+
+⇒ ① 落成 **定案 69**（IO 的长度用 `i64`，`IO.md` §9 那格从 改）；② 就是这条：**定案 68**
+
+### 病：同一件事两个地方各算一遍（"两个权威"）
+
+| 谁 | 算的 | 什么时候 |
+|---|---|---|
+| 检查器 | `Expr.arenaLevel`（这处 `new` 进哪只 arena）· `Expr.homeDepth`（调用点传哪只）| **查函数体时** |
+| codegen | `if(g->hasHome) return "(*__extc_home)";` —— **不看检查器那个数** | 生成时 |
+
+根因是**时序**：`needsHome` 的**传递闭包**要等所有函数体查完才算，而检查器算层号时只看得见
+"直接判据"（体里有 `new` + 返回含引用）⇒ 那些"因为调用了有家函数才有家"的函数里，
+检查器算出的是**块层**、codegen 按"有家"分配（家更长命 ⇒ **没有洞**，但确实是两个权威）
+（PLAN #38 的 golden 就是这么撞出来的：`out-param` 的分配从家 arena 掉回块 arena）
+
+### 修：三个动作，全部在检查器里定完
+
+1. **`ARENA_HOME`（= -1）取代"拿 0 兼职表示家"** —— 现在 `0` = "**还没定**"，
+   只在检查过程中出现，codegen 永远看不到它
+2. **闭包之后的收尾 pass**（`checkModule`）按 `FuncDef.arenaSites` 定案两类节点：
+   · `EX_NEW` ⇒ `arenaLevel = ARENA_HOME`（有家函数里每处分配都进家）
+   · `arenaArgPending` 的**调用点** ⇒ `arenaArg = ARENA_HOME`（老规矩"我有家传家"）
+   `arenaSites` 是**查体时顺手记的** —— 闭包之后再遍历 AST 就得再写一遍表达式遍历器，
+   而"跟着 AST 形状走的 switch"每多一个都是一个会忘的地方（本项目已经有 5 个了）
+3. **codegen 只翻译**：`arenaRefAt`/`homeArg` 不再看 `g->hasHome`（那个状态**整个删掉了**）
+   `arenaRef()` 也删了（`alloc<T>(n)` 的层号同样由检查器给）
+
+保留两个数（`homeDepth` 与 `arenaArg`）是**故意的**：前者是**判据**（算规则 ④ 的 `h`，
+`0` 那一档按深度 0 查 ⇒ 宁可误拒），后者是**实际选择**（`0` 那一档 = 当前块）
+两个都算完 ⇒ codegen 一句判断都不用做
+
+### 验收（这一条是硬证据）
+
+- **golden 88 个文件逐字节相同** ← 这就是"两个权威本来就算得一样"的**证明**：
+  把 codegen 的兜底删掉、让检查器承担全部决定，生成物**一个字节都没变**
+- 244 测试全绿 · ASan 8 干净 · arena 5 全过 · 攻击库基线一字不动
+- 新增**常设验收**：`EXTC_DBG_ARENA=1` 的**漂移哨兵** —— 生成时比对
+  "检查器层号" vs "codegen 当前块"，91 个语料**零漂移**（不改变输出 ⇒ golden 不受影响）
+
+### 顺带修掉一个**编译器自己的 UB**（不是这次引入的）
+
+`check_expr.c` 的 `exprHasCall`：
+
+```c
+case EX_CALL: case EX_METHOD: case EX_ASSOC:
+    if(callIsEffectful(c, e->func)) return true;
+    break;          // ← 跳出 switch 就落到函数末尾 ⇒ 返回**不确定的值**
+```
+
+`-Wreturn-type` 一直在报，只是没人看 ⇒ PLAN #22 那条"前面有没有留在原位的调用"的判据
+**时灵时不灵**（可能漏报、也可能误报）修法一行 `return false;` 记成 **PLAN #46**
+
+---
+## 2026-09-22 · **主席树四语言横评**（P3834）：这次让**每个语言用自己的分配设施** —— extC 的 arena 打平 C，指针式还更快
+
+主人的话：「就写个主席树试试水吧，但是写法依旧是怎么自然怎么来好吧，extC/C原生/C++原生
+（尽量不用C风格的东西）/Rust 试一下」+「记得多个维度衡量，包括编译时间、二进制大小、时间、RSS等」
+
+⇒ `bench/oi/persist/`（第二份横评）。上一份压的是**计算**（排序/分治），这一份压的是**内存**：
+静态区间第 k 小 ≈ **2100 万个节点、每个 12 字节、活得跟程序一样久**
+
+### 中途改过一次方向（主人的话很关键）
+
+第一版我把四家**都写成"全局静态数组当池子"** —— 主人当场打回：
+「不对不对，全局静态没啥用啊，肯定得用点语言特性，比如C就用malloc/free，C++用array/vector
+等等，extC就用足arena试试」
+
+⇒ 重写成**各家用各家的地道写法**（算法仍逐行对应）：
+
+| 语言 | 主写法 | 对照写法 |
+|---|---|---|
+| extC | `new [POOL]pnode`（**一次 arena 分配**，不 free）| **每节点 `new pnode`**（指针式，连池子大小都不用估）|
+| C | `malloc` 一整块池子 + 末尾 `free` | 静态数组 / **每节点 `malloc` + 逐个 `free`** / +边界检查 |
+| C++ | `std::vector<Node>` `reserve` 到位 + `push_back` | 不预估、让它自己长 |
+| Rust | `Vec<Node>::with_capacity` + `push` | `Vec::new` 让它自己长 |
+
+### 满规模结果（n = q = 10⁶、值域 10⁶、-O2、best of 3）
+
+| 语言 / 内存策略 | 构建 ms | 运行 ms | RSS MB | 二进制 KB | 源码行 | 生成 C 行 |
+|---|---|---|---|---|---|---|
+| **extC（arena 池子）** | 156 | 2140 | 249 | 16 | 72 | **501** |
+| **extC（每节点 `new`，指针式）** | 157 | **2020** | 500 | 16 | 76 | **528** |
+| C（`malloc` 池子 + `free`）| 145 | 2009 | 248 | 15 | 145 | — |
+| C++（`vector` reserve）| 389 | 1950 | 251 | 24 | 105 | — |
+| Rust（`Vec::with_capacity`）| 268 | 1930 | 249 | 11536 | 121 | — |
+| C（+ 边界检查）| 154 | 2080 | 248 | 16 | 145 | — |
+| C（静态池 BSS）| 142 | 1970 | 249 | 15 | 145 | — |
+| **C（每节点 `malloc`）** | 162 | **4820** | **808** | 15 | 145 | — |
+| C++（`vector` 自己长）| 379 | 2160 | 395 | 24 | 105 | — |
+| Rust（`Vec` 自己长）| 243 | 1950 | 249 | 11536 | 121 | — |
+
+### 读出来的六件事
+
+1. **extC 的 arena 池子 ≈ C 的 `malloc` 池子**（2140 vs 2009，+6.5%）——
+   而 **C（+边界检查）= 2080** ⇒ 差的那点**几乎全是边界检查**，
+   剩下 **60 ms ≈ 3%** 才是 codegen 的差（跟上一份横评的结论一致）
+2. **extC 的「每节点 `new`」比它自己的池子版还快 6%（2020 ms）** ——
+   因为**指针访问不做下标检查**；而且**池子大小不用估、末尾不用 free**
+   代价：节点 24 字节（双指针）⇒ RSS 500MB vs 249MB（**是节点布局的钱，不是分配器的**）
+3. **C 的「每节点 `malloc`」是反面教材**：4820 ms（2.4×）、808 MB（3.3×）——
+   21M 次 malloc 的元数据 + 逐个 free ⇒ **arena 的价值就是这一行**
+4. **"不预估大小"两家不同命**：C++ `vector` 自己长 ⇒ RSS **395MB**（新分配+拷贝+释放）；
+   Rust `Vec` 自己长 ⇒ **249MB**（增长走 `realloc`，glibc 对大块能原地扩）
+5. **构建时间跟运行时间往往反向**：C 构建最快（145 ms）运行第二慢；
+   C++ 构建最慢（389 ms，`<iostream>`+`<vector>` 模板实例化）运行最快之一
+6. **extC 的前端只花 3 ms**（吐出 501 行 / 25 KB 的 C），构建的其余全是 gcc 的活
+   源码行数：**extC 72 行** < C++ 105 < Rust 121 < C 145
+
+### 顺手在 extC 里撞到的一条**真实约束**（记着）
+
+`[N]ref pnode` 或 `[N]?ref pnode`（一百万个"版本根"）**当全局**会被拒：
+
+```
+error: cannot zero-initialize the global `ROOT`: it contains a reference
+note: a global is depth 0, so a reference inside it has nothing to borrow from without an initializer.
+```
+
+⇒ 这是 P′ 的体现（非空引用不可能凭空为零），**不是 bug**
+但 C 里 `Node *root[N];` 全局是常规写法 ⇒ 从 C 过来的人会卡一下
+出路就是**放进 arena**：`new [N]?ref pnode`（可空 ⇒ 零值 `null`）+ 进树处 `!` 签字非空
+（`p3834_nodes.extc` 就是这么写的）—— 顺带说明"哨兵节点"也能放在 arena 里（`(*z).l = ref *z`）
+
+### 正确性怎么保证（两层）
+
+1. **四语言逐字节对拍**（`in / n / q / nodes / ans` 五行）—— 但四份实现抄的是同一个算法，
+   算法错了会**一起错**
+2. 所以另加了 `check_brute.c`：**小规模（n=q=2000）拿暴力**（区间抄出来排序取第 k 个）
+   当**真值**，五份实现挨个对拍 ⇒ 这条才是"对"的锚点
+3. **路上真抓到一个**：C++ 那格 `-DGROW` 第一版**忘了建 0 号空节点**（`pool_[0]` 越界读）⇒
+   n=2000 时那块内存**恰好是零**、答案照样对，**n=1e6 时对拍当场不一致**
+   ⇒ 教训：小规模对拍**不是**万能的，规模和形状都得顶上去（已修）
+
+**接进 `./check.sh`**：`N=Q=V=200000 RUNS=1`，必须**五份 vs 暴力一致 + 十行互相对拍一致**
+
+---
+## 2026-09-22 · **#43 落地：把借用规则从被调者挪到调用点** —— 字符串表/嵌套容器/通用 `stash` 全都通了
+
+主人的话：「来吧大活儿修了」。设计早写好了（`ARENA-FORMAL` §9 + 定案 67），这次是**实现 + 双向对拍**
+
+### 病根（一句话）
+
+那条"借来的值不可外存"的 blanket 规则**必然误拒**：被调者**一次编译**，不知道调用者传进来的是
+长寿（全局/本帧）还是短命（更深的块）⇒ 它只能一律拒 ⇒ 挡了整整一族正常写法：
+
+```extc
+varArray<slice<u8>>       // 字符串表
+varArray<varArray<i32>>   // 动态邻接表
+fn stash(dest: mut ref T, v: T) { *dest = v }   // 通用"存起来"
+```
+
+### 修法（两侧各一刀，缺一不可）
+
+| 侧 | 干什么 |
+|---|---|
+| **被调者**（`checkStoreEscape`）| 只有"**来路追得到参数**"的值才放行：`destIsParam && valTracesToParam(…)` 其余照旧拒 |
+| **调用点**（`checkCallRefArgs`）| 代入求解：`Addr(j) ⇒ placeDepth(arg_j) ≤ h`（规则 ④，早就有）· `Cont(j) ⇒ exprRefDepth(arg_j) ≤ h`（新）· 摘要不完整/有 `otherMask` ⇒ **对每个含引用的实参**按最坏情况查 |
+
+**纪律**：第二条（保守拒）是**不可分割的一半** —— 只放第一条就等于把"必然误拒"换成"可能的洞"
+（PLAN #31 那次收窄规则 ④ 的教训）
+
+### 路上撞出四件事（都进了代码注释）
+
+1. **别共用一个 early return**：`push` 有 `Cont` 位都会把**地址流**那条带起来，而 `E` 分析那条路
+   `homeDepth = -1 ⇒ h = 0` 对**本地 `mut ref` 实参**过严 ⇒ `examples/list-return.extc` 被误拒
+   ⇒ 拆成 `addrMaybe` / `contMaybe`
+2. **方法调用从来没跑过规则 ④**—— `EX_METHOD` 的 `params` 里有 `self`、`args` 里没有 ⇒
+   `params->len != args->len` 直接早退 ⇒ 一整类形状**静默没查**。修法：接收者**前置**成 arg 0
+3. **自由/关联函数的检查跑在实参查类型之前**—— 那时 `a->type` 还是 NULL ⇒ `typeContainsRef` 恒假
+   ⇒ **静默跳过**。修法：三处调用点全部挪到实参检查**之后**
+   ⇒ 这两条是本次最危险的：**看起来在查，其实没查** 记进纪律：*"静默跳过"比"误拒"危险得多*
+4. **模板里 `T` 是 opaque** ⇒ `typeContainsRef` 判不出"值里有没有引用" ⇒ `carrier` 判据补
+   `mentionsParam(e->type)` 代价：摘要**每次模板一份而非每个实例一份** ⇒ 记成 **PLAN #44**
+
+### 双向对拍（在 `git worktree` 里建 HEAD 副本当"老编译器"）
+
+| 形状 | 老 | 新 |
+|---|---|---|
+| `examples/container-of-view.extc` | 误拒 | `第 1 个 = xy` |
+| `examples/container-nested.extc` | 误拒 | `第 0 行第 0 个 = 7` |
+| `tests/asan/borrowed-stash-sameframe.extc` | 误拒 | ASan 干净 |
+| `tests/errors/stash_view_from_deeper.extc` | 挡 | 挡 |
+| `ref_arg_too_deep` · `borrowed_into_param_place` · `ref_launder_field` / `_deref` · `generic_borrowed_store` | 挡 | **一条不少** |
+
+### 判据 1 的**诚实偏离**（要记着）
+
+原定判据是"攻击库 `BASELINE` **一字不动**"，可实做时发现 **`h8_launder` 本来就是安全的**：
+`stash(ref outer, local[..])` 里 `local` 与 `outer` **同一个块** ⇒ 老编译器的拒绝是**假阳性**，
+而攻击库一直把它当"挡住了"**记功**（**假阳性被记成战功** 是最坏的一种账）
+⇒ 这次把账改准：`h8_launder` 进基线（8 条**已知安全**），另立**危险变体**
+`tests/errors/stash_view_from_deeper.extc`（值来自更深的块）顶住安全边界
+⇒ 纪律升级：**"挡住"必须同时是"这条程序真的不安全"**
+
+### 结果
+
+`./check.sh` = **8 通过 0 失败** 测试 241 → **244** 攻击库 8 条已知安全 + 其余全挡
+golden 差异 = **只多两个新例子**（其余 86 个**逐字节不变** ⇒ 纯检查器改动，生成的 C 一字节没动）
+
+---
+## 2026-09-22 · **#42(c)：实例化只复查"真被调到的"方法** —— `fn ==` 税没了，生成 C 还小了 28%
+
+主人的话：「我觉得所有的借用规则都得放到调用点吧，否则这也太难受了，现在好像好多地方都在这儿卡了一次」
+⇒ 先做**便宜的那一半**（#42(c)）：**实例化只复查/生成"真被调到的"方法**
+
+### 现象（税从哪来）
+
+```extc
+struct span { start: i32  len: i32 }
+var spans: varArray<span> = varArray<span>::withCap(2)
+→ error: `varArray_span` needs `span` to define `==`（我根本没比过任何东西）
+```
+根因链：`varArray<T>::asSlice(): slice<T>` 的**签名**拖进 `slice<span>` ⇒ 而**实例化会把该类型的
+所有方法体按实例复查一遍** ⇒ `slice<T>::==`（从没被用到）要求 `T: ==`
+⇒ 于是**任何 struct 进容器都要交一笔 `fn ==` 税**
+
+### 修法（一位 bool，保守方向）
+
+- `FuncDef.used`：**模板体里被调用过**就算用过（所以 `push → grow` 这种闭包**自动带上**）
+- `EqCheck` / `RefCheck` 记住"我属于哪个函数" ⇒ 从没被调用过的函数**跳过按实例复查**
+- codegen 的原型/定义两处 `for methods` 都加 `if(!m->used) continue;`
+
+### 结果（三个数字）
+
+| | 之前 | 现在 |
+|---|---|---|
+| `struct` 进容器 | 必须手写 `fn ==` | **不用写**（真去 `a == b` 时才要求 反例进了 tests/errors）|
+| 生成 C（85 个 golden 文件合计）| 44622 行 | **31977 行（−28%）** 85 个**全部变小** |
+| 端到端编译 N=500（extC+gcc）| 496 ms | **376 ms（−24%）** |
+
+⇒ 白送的两件事：**生成 C 变小** + **编译更快**（原来"每个实例把所有方法都吐一遍"里
+大头是 prelude 的泛型方法 `slice_*` / `varArray_*` 抽一个 diff 看得很清楚：`slice_u8_isEmpty`
+`slice_u8_hasAt` … 一堆从没被调过的原型+定义全删了）
+
+记一个小瑕疵：`==` 的报错**行号指向 prelude** 的行（路径却是用户文件）——
+消息里点名了实例（`varArray_span`）够用，但位置该修 已记
+
+### 下一半（主人点的大活）
+
+**把借用规则整体挪到调用点** —— 这条跟 `ARENA-FORMAL` §2.3 的结论**是同一条**：
+今天的规则 = "只算地址流、且无条件施加于所有实参" ⇒ 保守但不是不严谨
+正解 = §3 那套约束系统在**调用点求解**（摘要已经有 `Addr`/`Cont` 了 缺的是"用摘要判"这一步）
+
+---
+## 2026-09-22 · **嵌套容器：查出两条根因，修了一半**（PLAN #42）
+
+主人问「嵌套容器那两条报错是啥、怎么办」⇒ 逐条查到底：
+
+**① `needs varArray<i32> to define ==`（已修）**
+根因：prelude 里 `varArray<T>::asSlice(): slice<T>` 的**签名**会在实例化 `varArray<X>` 时
+顺带把 `slice<X>` 也实例化，而 `slice<T>::==` 的元素比较要求 `X: ==`
+⇒ **给 `varArray<T>` 补一个 `fn ==`**（按内容比 元素能不能比同样"推迟到实例化"）
+⇒ 顺带白送：`a == b` 比两个向量现在也能用了（实测 `true` / `false`）
+
+**② `cannot store a borrowed value into something that outlives this call`（**拒绝是对的** 不修）**
+根因：`push(self: mut ref varArray<T>, v: T)` 把 `v` 存进容器 ⇒ 容器可能活得更久，
+而 `T` = `varArray<i32>` **里面装着 `mut slice<i32>`（一个引用）** ⇒ 存进去就可能悬垂
+（这正是 PLAN §4 早就记过的"容器拷贝 = 共享存储"那个坑的**保守面**）
+⇒ **嵌套容器今天写不出来** 出路：
+(a) **扁平 CSR / slab + `i32` 索引** —— OI 本来就这么写（作业/比赛代码完全够用）
+(b) 根本修法 = **把"借来的值"规则从"被调者一律拒"挪到"调用点按深度判"**
+（规则 ④ 已经给 `mut ref` 实参做了这件事 ⇒ 推广到**含引用的值实参**
+        要借效果摘要 `contMask`，中等工程，记进 #42）
+(c) 另一条独立改善：**实例化只复查"真被调到的"方法**（`slice<T>::==` 没用上就别复查
+      ⇒ 顺带省编译时长 也记进 #42）
+
+**教训**：两个报错看着像一类（都是"实例化太保守"），查下去才发现**一个是实例化贪心、
+另一个是借用规则** —— 混在一起猜就会修错地方
+
+**判据**：`./check.sh` **6 通过 0 失败**（quick）· 攻击库基线一字不动 ·
+golden 按"有意改动"重存（差异只有 `+ varArray_*_eq` 一个新方法 + 若干 `#line` 行号平移 逐条看过）
+
+---
+## 2026-09-22 · **#6 + #22 修掉** —— 该响亮的两处（OOM 带位置 · `??` 顺序改成报错）
+
+主人：「我觉得 #22 和 #6 可以先做，剩下的都是大工程啊」⇒ 两条一次做完
+
+### #6：arena 要不到内存时带位置
+
+以前只有光秃秃一句 `extc: out of arena memory` + `exit(1)`（能说清是哪一行却没说 ⇒ 违反 P′）。
+修法：**分配原语收下调用点的位置** —— `extc_arena_alloc(a, n, file, line)`，六个调用点
+（`new T` / `new T[n]` / `alloc<T>(n)` / `@overwrite` 的格子两处 + 保命分支）全传 `g->path` + 行号
+现在：
+
+```
+oom.extc:2: trap: out of arena memory(this allocation wanted 4000000000000000 bytes)
+```
+
+**判据**：新用例 `tests/traps/arena_oom.extc`（要 1PB ⇒ malloc 必失败，**不依赖 ulimit、也不依赖
+overcommit 的运气**）+ **`tests/traps/run.sh` 收紧成"trap 消息必须带 `文件:行`"**（这种退化再也回不来）
+已知小瑕疵（诚实记账）：OOM 发生在 **prelude** 里（`varArray::push` 扩容）时位置指向 prelude
+—— 诚实但不够友好，要更好得带调用栈，另记
+
+### #22：`??` 的临时变量会先算 ⇒ **报错让他拆行**
+
+实测：`var r = g() +(h() ?? 0)` 里 **`h()` 先于 `g()`** 跑（临时变量吐在整条语句之前）。
+修法：检查器加一位"本语句里已经出现过**留在原地**的调用"；遇到"要临时变量的 `??`"且旗子已举 ⇒
+报错并教他 `var t = h() ?? 0` 拆两行（"显式是对的"）
+
+**踩了三个误报**（都被"语料/基准全绿"这条判据当场抓出来 —— 这就是判据值钱的地方）：
+
+0. **一开始按"含调用"判** ⇒ 把**编译时长基准的合成程序**都拒了（`t.get() +(v.get(0) ?? 0)`
+   —— `t.get()` 是个**纯访问器**，顺序换了根本看不出来）⇒ 规则改成按「**真有可观测副作用**」判：
+   ① `print`/`println` ② 形参里有 `mut ref`/`mut` 视图（可能写实参）③ 传递地会打印的函数
+   ④ 拿不准 ⇒ 当"有"（`funcMayPrint` 走 AST、自带环保护 —— 不能用 `FuncDef.callees`，
+   那是**查完体**之后才填的）
+
+
+1. 旗子的**取样点**放在了主体查完之后 ⇒ 主体自己是个调用、把旗子举起来了 ⇒
+   `var a = h() ?? 0` 这种**第一句**就被误报 ⇒ 挪到分支入口
+2. 同一个 `println` 里两个 `f() ?? -1` 也被误报 —— 因为**多个 `??` 的临时变量是按源码顺序
+   一起提前算的** ⇒ 它们**之间**的顺序根本没变 ⇒ 规则改成：**"提前算的不算留在原地"**
+（`@overwrite` 的懒分配也是同一族：它跟着语句前缀走）
+
+**判据**：新反例 `tests/errors/coalesce_order.extc`（`g()` 必须**会打印**这条才成立 —— 纯 getter 不报）·
+新正例 `examples/coalesce-order.extc`（"两个 `??` 同语句 / 拆两行"都写成 expect）·
+**正例语料 + 编译时长基准零误报**（曾经 5 个例子 + 基准合成程序误报 全好了）·
+`./check.sh` **8 通过 0 失败**（238 测试）
+**另一个教训**：我自己的反例一开始用了个**纯** `g()` ⇒ 精化之后它不报了 —— 反例也得跟着
+判据一起校准（"该报的"必须真的**可观测**）
+
+---
+## 2026-09-22 · **警告通道（定案 66）+ 第一条警告** —— 顺带抓到"优化开关从来没生效过"
+
+主人问「`let n = new node` 然后让它提权，这真的有意义吗？」⇒ 实测：
+
+- **提权不可能**（`ref *n` / 传进 `mut ref` 参数 / `n.f = v` 全被挡 —— 链式只读）
+- "提升（活更久）"跟"提权（变可写）"**是两件事**（寿命 权限）
+- ⇒ 所以 **`let x = new T` 单独写 = 一块谁也写不进去的零**，而且**可判定**
+
+主人拍板「A吧我说，let new 真是难绷完了」⇒ 做两件事：
+
+1. **警告通道**（编译器此前**一条警告都没有**）+ `-w` 关掉 + `ckWarn/ctxWarn`（格式同错误、
+   但**不设 hasError** ⇒ 编译继续、退出码不变）
+2. **第一条警告**：`let` 绑新鲜分配（`new`/`alloc`）⇒ "can never be written, stays zero" + 指路
+   校准：`var w = new T  let r = w` **不警告**（那才是 `let` 的主场 —— 把已有别名降级成只读视图）
+3. **新的一支常设验收 `tests/warnings/`**：该响的响 · **正例语料零警告**（防噪音）· `-w` 能关
+
+### 顺手抓到一个真缺陷：`-O` / `-march=native` **从来没有生效过**
+
+写 `-w` 时我照抄了旁边那两行的写法（`optLevel = argv[i]; i++; continue;`）⇒ 一跑就报 usage
+查下去才发现：**那个 `i++` 是多余的**（for 自己会加）⇒ 每用一次优化开关就**多吞一个参数** ⇒
+`extc -O2 f.extc` 里 `f.extc` 被吞掉 ⇒ **直接 usage**
+⇒ 也就是说 **PLAN #11 那两条开关加了一个月，从没真正跑过一次**
+（又一个「没报错 ≠ 跑过了」—— 开关加完当时大概只验了"默认还是 -O2 没变"）
+⇒ 三处 `i++` 全删 现在 `extc -O2 f.extc` / `-march=native f.extc` / `-w f.extc` 都正常
+
+---
+## 2026-09-22 · **`@overwrite` 步骤③**：运行时长度（`{ptr, cap}` + 翻倍）
+
+主人问"运行时长度常见吗" ⇒ 我的答案是**常见**（长度前缀记录 / 读一行 / 变长编码），
+于是撤回了上一版"先只支持定长"的保守 —— 而且它**能**做对：容量单调 + **翻倍**
+
+```extc
+while hasRecord() { var k = header()   @overwrite var b = new u8[k]   use(b) }
+```
+- 存储 = `{ptr, cap}`；只在 `k > cap` 时重新要一块（**c = max(cap*2, k)** ⇒ 几何和）
+- **内存上界 = ≤ 2 × 见过的最大长度**，**与迭代数无关**（这条跟 `varArray` 的定案 59 同源）
+- 缩小什么都不用做（`k ≤ cap` 就用前 k 个 —— arena 没有 `free`，但也**不需要**）
+- 交出去的 k 个**一定清零**（`new` 的零值契约）
+
+**顺带把格子统一成 `extc_owcell { void *p; int64_t cap; }`** —— 三档共用一处逻辑
+（上一版是"定长用 `T*`、动态再想办法"，既啰嗦又要给容量传第二个隐藏参数）
+
+### 踩到的两个坑（都是 C 层面的）
+
+1. **绑定声明不能落在 `if/else` 的块里**（`node *n;` 写在分支里 ⇒ 出了块就没了 ⇒
+   gcc 报 `'buf' undeclared`）⇒ 先声明、分支里只赋值
+2. **绑定的 C 类型本身就是指针** —— `node *`，所以强转要写 `(node *)p` 而不是 `(node * *)p`
+（我用 `%s *` 拼出来的 ⇒ 生成了 `node * *`）
+
+### 判据
+
+`tests/asan/overwrite-dyn.extc`（长度 10→10000→10 振荡：ASan 干净 + `total = 10094`）·
+`tests/arena/overwrite-dyn-flat.extc`（300 轮 × 1MB 运行时长度缓冲 ⇒ 150MB 上限下跑完）·
+实测：4 轮振荡只分配 **2 次**（生成 C 里 `arena_alloc` 3 处 = 首次 + 翻倍 + 保命分支）·
+攻击库基线一字不动 · **golden 只多一个例子**（顺带抓到"无条件吐 `extc_owcell` typedef ⇒
+每个程序的生成 C 都多一行" ⇒ 改成按需吐）
+
+---
+## 2026-09-22 · **`@overwrite` 步骤①②**：把"复用"做成一个修饰符（定案 65）
+
+主人提的泄漏形状（`new` 在循环里 + 只留最后一个）—— 探讨的结论是**分析救不了**：
+"引用在槽位里"就把寿命锁死了 ⇒ 只能让用户把意图写出来 主人给了最好的形状：
+**在原位置上加一个修饰符**（写法不变、意图写在原地、警告可以直接指路）
+
+### 做出来的（步骤①②：`new T` 与 `new [N]T`）
+
+```extc
+while … { @overwrite var n = new node   n.value = i  slot.v = n }
+```
+⇒ 存储**只有一块**：懒分配 + 每次执行清零复用 ⇒ 生成 C 就是 `extc_arena_alloc` + `memset`
+**实测（1e7 轮）**：159.7MB → **1.6MB** 零新运行时
+
+### 关键设计决定：格子放**调用点**的帧，不是被调者的帧
+
+第一版把格子放在**站点所在函数**的帧里 ⇒ 主人的**原形修不了**（实测：`new` 在 `stash` 里、
+循环在 main ⇒ 每次调用一个新格子 ⇒ 还是 159.7MB）
+⇒ 改成：格子由**调用点的帧**持有、当隐藏参数传进去（`void **`，跟 `__extc_home` 同一个套路）
+理由是"A3 早就这么干了"：**存储的寿命必须 ≥ 复用的那段过程**，而"跨调用复用"只有调用者的帧能给
+
+### 另外两条也踩过
+
+- **递归**：格子共享给子调用 ⇒ 子调用会**踩父激活的存储**（父回来看到的是子的数据）
+  ⇒ 规则：本函数**能（传递地）调到自己**（或就是 `main`）⇒ 格子放自己帧、每激活一块
+  判据实测：`walk(5)` 必须得 **15**（共享的话会退化成 0）
+- **golden 抓到一个我自己引入的回归**：`owLocal` 默认 false ⇒ "无参数无家"的签名少掉那个
+  `void`（`void f()` → `f()`）⇒ 定成"没有站点也算 local" golden 逐字节回到一致
+
+### 判据
+
+`examples/overwrite.extc`（三种形状：callee 里 new / 循环里 new / 定长缓冲 带 expect）·
+`tests/errors/` 三条：非 `new` 的初始化式（值 / 调用结果，主人的要求）· `let` ·
+`tests/arena/overwrite-flat.extc`（300 轮 × 1MB 复用缓冲 ⇒ 150MB 上限下跑完 **真·零分配循环**）·
+`tests/asan/overwrite-callee.extc`（主人那个形状 ASan 干净）· 攻击库基线一字不动 ·
+golden **只多一个新例子**
+
+### 还没做（步骤③）
+
+`new T[k]`（运行时长度的复用）：存储要 `{ptr, cap}` + **翻倍**增长（上界 ≤ 2×最大长度
+跟定案 59 同源）；**现在是明确报错**（"先用定长缓冲 `new [N]T`"）—— 答应了就得做到，
+不能让修饰符静默退化成"每轮分配"
+
+---
+## 2026-09-22 · **#40 + #41 修掉**：透过 `mut ref` 写字段（误拒）与写穿只读引用（洞）
+
+同一次改动的两半 —— 都在"写一个「地方」可不可写"这个问题上。
+
+**#40（误拒）**：`fn clear(cell: mut ref node) {(*cell).next = null }` 被拒，
+报的还是**误导人**的话（`cannot rebind this: the binding is read-only`，可 cell 明明是 `mut ref`）
+根因：换指向那一支的 `slotOk` 只走 `placeRoot`，而它对 `*p` 返回 NULL ——
+**同一个坑 2026-09-20 修过裸 `*p`，带字段的漏了**
+
+**#41（反向的洞，顺手实测出来的）**：写穿**只读**引用却**整条没人管**
+```extc
+fn g(p: ref node) {(*p).val = 7 }     // 以前：编译通过
+fn h(p: ref node) { p.next = null }    // 以前：编译通过
+```
+两条路各漏一边：`pathHasReadonlyRef` 走到 `EX_DEREF` 就 `break`，而 DEREF 自己的类型是
+**被指对象**（不是引用）⇒ 那只引用的 mut 从来没查过；隐式的 `p.f` 走的是换指向那一支，
+而那一支**根本不看**只读引用（只看 `placeRoot` 是不是 `var`）
+
+**修法**（一个助手两处用）：
+```c
+/* 写这个「地方」要**穿过**哪些引用？每一只都得是 `mut ref`
+ *   显式 `*p` · 隐式 `p.f`/`v[i]`（p 是引用 ⇒ 那块存储住在 `*p` 里）
+ * 目标自己的类型**不算** —— `cur = v` 写的是槽位，跟"cur 是不是只读引用"无关 */
+bool pathRefsAllMut(Expr *e, bool *crossed);
+```
+`crossed` 顺便回答"存储到底在不在本帧"（穿过引用 ⇒ 没有本帧的根）⇒
+换指向那一支的可写性判断变成"路走通 + 落地那个槽位的绑定可写"
+报错也分成两句（写穿只读引用 / 绑定只读），不再乱指
+
+**差点自己弄坏一处**（记账）：第一版我把 `requireMutable` 里的 `pathHasReadonlyRef`
+整个**换掉**了 ⇒ `call_writer_on_readonly`（只读接收者调会写的方法）**从被挡变成通过**
+—— 是那一支反例在套件里当场抓出来的（`226 通过 1 失败`）
+**教训**：这两件事看着像，其实不是一个问题：
+  · **能不能写穿**（值写 / 方法接收者）⇒ 看**每个路口那只引用的 mut** ⇒ `pathHasReadonlyRef`
+  · **槽位在不在本帧、那个绑定可不可写**（换指向）⇒ `pathRefsAllMut` + `placeRoot`
+⇒ 改成**扩展** `pathHasReadonlyRef`（补 DEREF 那一支）而不是替换
+
+**判据**：227 测试全通 · 攻击库基线**一字不动** · ASan 5 形状干净 · 新正例
+`examples/ref-field-write.extc`（ASan 干净）+ 两个新反例
+（`tests/errors/write_through_readonly_{deref,field}.extc`：都必须报错）·
+golden 只多一个新例子
+
+**没松的那条**（写进例子注释了）：**借来的引用**照旧不许存进活得更久的地方 ——
+`fn join(a: mut ref node, b: mut ref node) {(*a).next = b }` 仍然报错
+（编译器不知道 `b` 的真实寿命 ⇒ 定案 ㊲ 那一族）
+
+---
+## 2026-09-22 · **#39 修掉**：引用型绑定的字段表会把「我指着谁」刷低（11 行）
+
+主人问「39 40 怎么修？」⇒ 我先把两条都在**临时 worktree** 里改一遍、验证完再回报
+（"纸上谈兵"这个毛病本项目已经栽过几次了）
+
+**#39 是什么**（修 #38 的路上顺手实测出来的，**修之前就有**）：
+```extc
+var keeper: ?ref node = null
+{
+    var x: node                      // 深度 2
+    var n: mut ref node = ref x      // n 指着 x ⇒ n->refDepth 本该是 2
+    n.next = null                    // ← 这一句把 n->refDepth 刷成 0
+    keeper = n                       // 于是放行了：keeper 指着出块即死的 x
+}
+```
+**根因**：`refDepth` 有两个意思 —— 对**结构体绑定**是"我里面那些引用指哪"（= max(各字段)，
+档2.3 的强更新就是靠它把 `h.p = null` 之后降下来），对**引用型绑定**是"**我指着谁**"
+而 `n.next = …` 走的是**同一个**记录函数 ⇒ 把"我指着谁"覆盖成了"我指的那个东西里装着什么"
+
+**修法（11 行）**：`noteFieldDepthWrite` 里认出"根是引用型"⇒ 记下旧值，`refreshRootDepth`
+之后**并回 max**（只许往"更长命"的方向调、不许降）非引用型的结构体绑定照旧可以降
+
+**判据**：那个用例从 `tests/canary-gaps/`（缺口登记）挪进 `tests/errors/`
+`examples/field-strong-update.extc` 照旧跑 227 测试全通 · 攻击库基线一字不动 ·
+golden **逐字节不变**（只动检查器，不动生成物）
+
+---
+## 2026-09-22 · **#38 修掉：块级逃逸提升**（定案 63 —— 主人：「没必要拒绝」）
+
+主人在压缩上下文后的第一句话就是"可以开始做了"，于是开工 #38（上一轮只把它记成定案 63 + PLAN 行）。
+
+**起点**：主人上一轮追问「`var head: ?ref node = null` / `while cond { var n = new node / n.next = head / head = n }`
+这个怎么办」——实测：**检查器放行、ASan 实锤 heap-use-after-free**
+（`__extc_a[2]` 是循环体那只 arena，每轮 release，而 `head` 还指着它）。
+根因不是"漏了一条规则"，而是**那条规则只认"借来的值"**：`new` 既不是参数派生也不是调用结果 ⇒ 整条被跳过
+
+**修法的形状**：`arenaLevel = min(当前块深度, 所有目的地的层)` —— 值被存进更外层就**把 arena 提升上去**
+落地比"记一个数"麻烦得多，路上挖出三件事（都进了 `DECISIONS` 定案 63 的落地记录）：
+
+1. **`placeDepth` 答错了问题** ★ 最要命的一条。`head = n` 的"目的地深度"算出来是 **0** ——
+   因为 `head` 是**引用型**绑定、初值 `null` ⇒ `placeDepth` 报的是"它**指着**的地方在哪"（深度 0），
+   而不是"**这块存储住在哪一层**"（本帧 = 1）。差这一层，提升永远够不着 ⇒ 报错
+   这不是新病：`DECISIONS` 定案 ㊲（2026-09-20）把这张表写下来了（"参数本身的槽位 = 1，
+   透过参数投影的 = 0"），**但只做了一半**。这次补上 `storeLayer`（问"往哪一层存"）+ 参数那一格 ⇒
+   `a = b`（两个 `mut ref` 参数之间换指向）那条**老误拒**也一起好了
+2. **代码生成不能信检查器算的层数**（有家函数）。`needsHome` 的**传递闭包**是"查完所有函数体"才跑的，
+   而检查器是**边查边算**层数 ⇒ 那种函数里算出来的是"以为自己没家"的
+   ⇒ **golden 当场抓出来**：`out-param` 的分配从句柄家 arena 掉回了块 arena（生成 C 变了）。
+   修法：codegen **以 `hasHome` 为准**（家 arena 更长寿 ⇒ 只会更安全）
+   —— 这条正是"纯移动/行为零变化"那条纪律值钱的地方：**它抓到了我"以为对"的一处**
+3. **来路链会断**。提升要顺着"值的来路"往回走，而 `Sym.origin` 是**查到时**才用的：
+   双层循环里 `var cell = new node … mid = cell`，外面那句 `head = mid` 查到时 `cell` 早已出作用域
+   ⇒ `lookup` 找不到 ⇒ 链断 ⇒ 又变回误拒
+   ⇒ 记来路时**就地压平成根**（`noteOrigin`），并给递归加跳数上限（绑定之间**可能成环**：
+   `a = b  b = a` —— 不设限就是死循环）
+
+**双向判据**（这次的"做得对不对"全靠它）：
+- **新开一支常设验收 `tests/asan/`**：5 个形状（循环 / 嵌套块 / 结构体字段 + 字面量 / 经手一个变量 / `new T[n]`）
+  必须 ASan 干净；而且**拿修之前的编译器跑一遍**：**2 个 heap-use-after-free + 3 个误拒** ⇒
+  证明这支验收**真的会咬**（不然又是"空转的验收" —— PLAN #35 的教训）
+- 攻击库 BASELINE **一字不动**（借来的值那条规则一点没松）
+- 测试 224 → **227** 全通；golden **只多一个新例子**（其余 81 个文件逐字节不变 ⇒ 老代码的生成物一个字节没动）
+- `tests/arena/promote.extc`：**提升是按值判的** —— 同一个循环里 `alloc` 300×1MB（没逃逸）照样每轮回收，
+  被提升的链表活到函数结束（"循环不涨内存"那条保证**没有被这笔交易一起丢掉**）
+
+**顺手记下的两条**（都不修，登记在 `PLAN.md`）：
+- **#39（UB，修之前就有）**：**引用型绑定的"档2.3 字段表"会把 `refDepth` 刷低** ⇒
+  `n.next = null` 之后 `n` 的深度被算成 0 ⇒ `keeper = n` 放行，而 `n` 指着的是本块局部 ⇒
+  ASan `stack-use-after-scope` 用例进 `tests/canary-gaps/`（故意不并进套件）
+- **#40（误拒）**：`(*cell).next = v`（透过 `mut ref` 写字段）报"the binding is read-only"
+  —— 同一类坑 2026-09-20 修过**裸 `*p`**，带字段的那条漏了；"链表 push"最自然的写法撞在这里
+
+---
+## 2026-09-21 · **档1 完成：让 checker 真的用定理**（摘要 + E + 闭包 ⇒ 三个形状转正例）
+
+主人拍板：「甲肯定是不够的…显然这里可以做到形式推导」⇒ `ARENA-FORMAL.md` 的推导落进编译器
+
+### 做了什么
+
+1. **效果摘要**（`--dump-effects` 可看）：每个函数答"我往 `mut ref` 实参里存了什么" ——
+   **地址流**（存 `&形参`）/ **内容流**（存从容器里读出的指针）/ **Fresh**（`new`、字面量、标量）
+   ⇒ 机器证据：链表 `push` = `toHome[Addr=0 Cont=1]`，`sneaky` = `toHome[Addr=1]`
+2. **惰性传递闭包**：`computeEffectsTransitive`（memo + 环保护 + `effUnknown`）
+   ⇒ **只有摘要被证明完整**，才允许按"`Addr` 全空"跳过规则 ④
+3. **E 分析**：哪些局部会被搬出本函数 ⇒ 家 arena 按逃逸需求选（内容落在**调用者的家**里）
+4. **删掉甲′**（`raiseMutRefTargets`）三个安全形状进 `examples/`（各带 `// expect:`）
+
+### 三次被"双向判据"抓住（都不是靠我的直觉）
+
+| 抓住的 | 症状 | 根因 |
+|---|---|---|
+| `ref_arg_too_deep` | 从"必须报错"变成**通过** | ① 摘要**没有传递闭包**（callee 里再转一手就漏）② 分类器把"**指针形参本身**"当成了内容流 |
+| `examples/out-param` | 从能编过变成**误拒** | E 过度近似（"任何表达式语句/条件里的名字"都算逃逸）|
+|（回滚后）golden | 老例子一字节没变 | ⇒ E 精确之后，**最小解**的效果出来了 |
+
+### 验收（双向判据）
+
+- **该放的放**：`varArray-return`（`[42, 43]`）· `list-return`（`求和 = 30`）·
+  `varArray-asSlice-return`（`[7, 8]`）—— 三个都 **ASan 干净**（修前是 heap-use-after-free）
+- **该挡的挡**：`tests/attacks/BASELINE` **一字不动**
+- **golden**：差异**只有新增的三个例子**（71 个老文件逐字节不变）
+- `./check.sh quick` **4/0** · 测试 **216 通过，失败 0**
+⇒ 顺带收掉 **#34**（"容量够的容器其视图不能返回"）
+
+## 2026-09-21 · 深夜：**拆 src 收尾 + `#31` 修了一半（甲′）**
+
+### ① `check.c` 拆完（3776 → 6 个文件），判据是"逐字节相同"
+
+`git worktree` 在拆分前的 commit 上再建一份编译器当**基线**，两边生成的 C 比 md5 ⇒
+70 个例子**一个字节都没变** 测试 213 全绿（细节见上一条 DEVLOG）
+
+### ② 顺着"把连续性兑现"去加 `asSlice`，挖出 `#31`；追查发现**不是 varArray 的问题**
+
+两个复现（都在 `tests/canary-gaps/`）：
+
+```extc
+fn build() -> list { var l: list = {head:null}  push(ref l, …)  return l }   // 打印 0，正确 20 10 0
+fn mk() -> varArray<i32> { var v = withCap(0)  v.push(42)  return v }        // ASan: heap-use-after-free
+```
+
+**根因同一处**：被调者（`push`/`grow`）拿到的那只"家" arena = **实参容器所在的那只**
+（`callHomeDepth` 取 `placeDepth(l)` = 它所在的**函数体块**）⇒ 分配出来的存储跟块同命
+⇒ 调用者一让容器逃出去（`return l`）就悬垂 **而检查器完全不知道** ——
+它从来没把"被调者往容器里塞了哪只 arena 的东西"记回容器的深度
+
+**为什么原丙（E2）不 sound**：家改成"调用者的家"以后，被调者就能把**接收者的地址**
+存进活得比调用者帧还久的家内存 —— §7 的证明**正是靠"家 = 最浅可写目标的 arena"**才成立 ⇒
+换一个洞 ⇒ 撤回，改 **甲′**（保守拒绝：把事实写回容器深度，让**现成的**逃逸检查去拦）
+
+### ③ 甲′ 落地效果
+
+- **链表那个形状**（`push` 体内直接有 `new`）⇒ 现在是**编译错误**
+- **varArray 那个形状**（`push → grow → new`，转发一层）⇒ **还漏**：
+  `f->needsHome` 的传递闭包要等所有函数查完才跑，调用者那时早查完了 ⇒ 记成 **#33**
+（修法：按名字的**惰性**传递闭包 `calleeAllocates`，带 memo + 环保护）
+- **213 个测试全绿、攻击库基线不变、70 个例子生成 C 逐字节相同**（codegen 一个字节没动）
+- 正例：`examples/varArray-outparam.extc`（在拥有它的作用域里建、用 `mut ref` 传下去填）
+
+## 2026-09-21 · **拆 `check.c`（3776 → 6 个文件）+ 金标准工具定型**
+
+主人拍板：「拆完 check.c，codegen.c 不动」（我的建议：2245 行的 `codegen.c` 一节一节很规整，
+读起来不费劲；真痛了再按"单文件 > ~2500 行 / 单节 > ~900 行"这条**规矩**拆）
+
+| 文件 | 行 | 内容 |
+|---|---|---|
+| `check.c` | 268 | 报错 / 生成 C 的名字 / 作用域 / 小工具 |
+| `check_lookup.c` | 419 | 查找 + `?ref T` 收窄 |
+| `check_escape.c` | 620 | **逃逸检查：深度模型 / 借用 / arena 家**（丙要改的就是这里）|
+| `check_expr.c` | 1193 | 表达式 |
+| `check_stmt.c` | 492 | 语句 |
+| `check_top.c` | 735 | 顶层（函数 / 泛型实例化）|
+| `check_internal.h` | 190 | 共享状态 + **跨文件原型（自动生成）** |
+
+### 验收（硬判据，都过了）
+
+- **`tools/golden.sh check`：生成 C 与拆分前的编译器逐字节相同**（69 文件 / 43648 行）
+  —— 做法：`git worktree` 在拆分前的 commit 上再建一份编译器当基线，两边输出比 md5
+- `./check.sh quick` ⇒ 通过 4，失败 0（211 个测试）全新构建 **0 warning**
+
+### 踩到的坑（都记下来）
+
+1. **基线原来放在 `build/` 里 ⇒ 我一句 `make clean` 把它删了**
+   ⇒ 改成 `tools/golden.manifest`（`md5  名字` 的清单，**可提交**），完整文本只作诊断
+2. 拆完先"一键去 static"（93 个函数）跑通，再用 `nm` 数一遍**哪些其实没人跨文件用**
+   ⇒ **26 个收回了 `static`** 剩下 67 个是真跨文件接口 —— 这个数字以前完全看不见，
+   也算"拆分逼出显式接口"的一个真实产出
+3. 自动改名的 sed 要**匹配所有行**（前向声明和定义常常不在同一行、甚至不在同一文件）
+   第一版只改了第一处 ⇒ 一片 `static declaration follows non-static declaration`
+4. 内部头里**只能放类型和原型**：`EqCheck`/`RefCheck` 从实现文件搬了进去（谁用谁看得见）
+
+
+## 2026-09-21 · **第二条 UB 路（#31）+ 扩容因子的证明（定案 59/60）+ 决定拆 src**
+
+### ① 主人问「倍增是对的吗，网上有没有 nb 的证明」⇒ 查完发现：**前提不同，结论相反**
+
+- CLRS/各校讲义：任意因子 `1+α` 都是 O(1) 摊还；代价是最坏浪费 `α/(1+α)`、拷贝 `O((1+α)/α)`
+  ⇒ **无条件下没有"最优"**，只有一条权衡曲线
+- Folly/`FBVector`：因子 2 **"rigorously the worst possible"**（`1+2+…+2ⁿ = 2ⁿ⁺¹−1`
+  ⇒ 新块比之前所有块之和还大 ⇒ 复用不了）—— **前提是内存能被释放**
+- Tarjan & Zwick, *Optimal Resizable Arrays*（SOSA 2023 / SICOMP）：几何倍增**不是空间最优**
+（`N+O(N^{1/r})` 常驻 + 摊还 `O(r)`，growth game 给 `Ω(r)` 下界）—— 同样依赖释放/搬块
+
+**我们的模型不一样**：arena **没有 free** ⇒ 指标是「累计分配 / 当前长度」。
+`examples/growth-factor.extc`（新例子，进套件）自己算：几何因子最坏 `r²/(r−1)`，**min 在 r=2 = 4**；
+精确 DP（对所有递增序列，不只几何）显示视野 N=100/300/1000/3000 的最小 R =
+3.815/3.875/3.903/3.934 ⇒ **渐近下确界 = 4，打到 4 的方式就是倍增** **定案 59**。
+
+⇒ 顺带算出：同一模型下**分块严格更好**（`⌈n/c⌉·c ≤ n+c`，零拷贝，引用永不失效）——
+但主人拍板「**连续显然有连续的用处，你不能直接替代**」⇒ **定案 60：chunked 若做是新类型**，
+`varArray` 永远保持连续（PLAN #29；"运行时原地扩"记在 #30 不选）
+
+### ② 想把"连续"兑现（加 `asSlice`）⇒ **撞出一条新的 UB**（PLAN #31）
+
+```extc
+fn mk() -> varArray<i32> {
+    var v: varArray<i32> = varArray<i32>::withCap(0)   // cap 0 ⇒ 第一次 push 就扩容
+    v.push(42)  v.push(43)
+    return v                                          // 编过
+}
+```
+实测打印 `[1002, 0]`（正确 `[42, 43]`）；`-fsanitize=address` 直接报
+`heap-use-after-free ... freed by extc_arena_release in mk`
+对照组（容量够、不扩容）**是对的** ⇒ 触发器是**扩容**。
+
+**根因是"不一致"**：建容器 `withCap` 走 `EX_ASSOC`（家 = `__extc_home`），
+扩容 `push` 走 `EX_METHOD` 而实参是本地的 `v`（家 = `&__extc_a[1]`）
+⇒ 同一个容器的 buffer 落在**两只 arena**；而 `sym->refDepth` 停在 0（`EX_ASSOC` 取实参最大值 = `max(4)`）
+⇒ 逃逸检查看不见
+
+**为什么 §7 的证明没挡住**：§7 只管"函数活着的时候"（分配在家 = 最浅可写目标的 arena
+⇒ 写进哪儿都安全）；它管不到"**容器被搬出这个块之后**，里面的 buffer 还在不在"
+
+**三个方向**：甲（保守拒绝，sound 但杀掉"造完返回"）、乙（家一律换我的家，跟规则 ④ 打架 ⇒ 换个洞）、
+丙（owner depth）。主人拍板 **丙**，但先要我把 `src` 拆开（见 ③）
+
+### ③ 主人：「src 文件过于巨大了，维护阅读都很不方便，建议按功能拆分（？）」
+
+⇒ 先做安全网：**`tools/golden.sh`**（把 examples/ 生成 C 存基线，改动后逐字节比对；
+基线 69 个文件 / 43648 行）—— 拆分必须做到**一个字节都不变**
+然后 `check.c`（3776 行）按功能拆成 7 个文件（状态/查找/逃逸/表达式/调用/语句/顶层）
+接着才动丙；**丙的设计**已写进 `ARENA.md` §9（E 分析 + owner depth + E1/E2/E3，
+以及"为什么乙不行"的证明边界分析）
+
+教训（又一次）：**改动一个"看上去只是加个方便函数"的 API 时，先把它的逃逸形状扫一遍**
+—— `asSlice` 本身没问题，是它把 #31 那个已经存在的洞变得更好写（`return v.asSlice()` 能编过，
+而 `return v.buf[0..len]` 被挡住）⇒ 已撤回，等 #31 修好再上
+
+---
+
+## 2026-09-20 · **A3 第三半：规则 ④ + callee 放宽** —— 链表出参能写了
+
+`fn push(l: mut ref list, v: i64) { … cell.next = l.head … }` 以前被
+"借来的值不许存进活得更久的地方"挡住。主人问「这跟我在 arena 里写的是一致的吗」——
+**一致**：`ARENA.md` §7 那套（A₁ = 最浅的 `mut ref` 实参）本来就蕴含"`push` 安全"，
+挡住它的是**另一条**跟 arena 无关的老规则（④：参数引用的真实寿命编译器不知道）
+
+### 我犯的错（一次，被自己的测试抓住）
+
+第一版我把 ④ 放宽成"**有家函数里一律允许**"⇒ 现有的 `ref_launder_field`
+立刻从"必须报错"变成"通过" 反例形状：
+
+```extc
+fn bind(s: mut ref slot, target: mut ref i32) { s.r = target }
+```
+`target` 跟 `s` **不在同一根链上**，而调用点可以传"更深的局部"进来（④ 从来没做）
+⇒ 存进 `s.r` 就是悬垂 ⇒ **撤回**
+
+### 正解：两件事必须一起做
+
+| | |
+|---|---|
+| **① 规则 ④** | 调用点检查：`ref`/`mut ref` 的实参必须活得 ≥ 这一刀的家 arena |
+| **② callee 放宽** | 有家函数里，"参数来的引用"可以存进深度 0（依据 = §7，而它的前提正是 ①）|
+
+⇒ `push` 通了（`linked = 3 求和 = 6`），而传更深局部在**调用点**就被拦下
+
+### 第二次预测也错了（也记下来）
+
+我说过"`ref_launder_field` 会从反例变成正例" —— **实测不对**：那个 `bind`
+**自己不分配** ⇒ 没有家 arena ⇒ ② 不生效 ⇒ 老规则照旧挡
+**放宽只对"会分配的 callee"生效** ⇒ 现有测试一条都不用改
+
+（教训：**预测要打成测试再宣布**。"我推了一遍"和"它真的这样"是两件事）
+
+### 验收
+
+`examples/out-param.extc` 新增链表出参 新反例 `ref_arg_too_deep`
+`/tmp/hack` 27 个攻击文件通过集合与之前**完全一致** arena 用例照旧
+测试 **178 全绿**
+
+---
+
+## 2026-09-20 · **A1：`new`** —— 主人：「A1吧，启动？！」
+
+```extc
+var n: mut ref node     = new node        // 一个 T 的**地方**
+var a: mut ref [3]i32   = new [3]i32      // 定长数组的地方
+var buf: mut slice<i32> = new i32[1000]   // **n 个元素** ⇒ buffer（IO 要的就是它）
+```
+
+### 三个决定
+
+1. **分配出来的一定是零** —— 我没新加一个 `allocZero`，而是让运行时那条
+   `extc_arena_alloc` 自己 `memset(p, 0, n)`
+   理由：**只留一条规则**。C 的坑是 `malloc`（脏）和 `calloc`（零）两条路并存，
+   而"我到底该用哪个"是那种**记错就出鬼**的知识。extC 这边是"分配出来的永远是零"，
+   跟定案 8（默认零初始化）同源 代价是每次分配多一个 memset（小）
+2. **深度 = 当前块深度** —— 沿用 A2 那条接缝（跟"选哪只 arena"必须是同一个数）
+   于是「返回一块刚 new 的内存」被挡住 —— 那是 **A3 逃逸提升**的活
+   实测：`fn make() -> mut ref node { return new node }` ⇒ 报错（depth 1 > 0）
+3. **进当前块的 arena** ⇒ 循环里 `new` 不涨内存（A2 白送）
+
+### 踩的坑：一个**我自己刚写进去**的真 bug
+
+`new [3]i32` 这一行后面跟普通语句时**编不过**：
+
+```extc
+var arr: mut ref [3]i32 = new [3]i32
+(*arr)[1] = 42                  // error: expected an expression, found `=`
+```
+中间插一行就"好了" —— 典型的**换行敏感**症状。根因：我在 `new` 的解析里写了个
+`skipNl`，它把**语句结尾的换行**吃掉了 ⇒ 下一行整条被并进同一个表达式
+**extC 是靠换行断语句的**（`;` 只用于同一行），所以那里**不许 skipNl**
+（`new T[n]` 现在要求写在同一行 —— 跟 `a[..]` 那些一致）
+
+这个 bug 值得记一笔：它是**新语法**特有的坑，"看着没问题、只有跟下一行组合才炸"。
+以后加新语法时，凡是"表达式后面还可能有东西"的位置都要问一句：
+**我会不会把换行吃了？**
+
+### 验收
+
+`examples/new.extc`（链表 + buffer + 定长数组 + 循环里分配；含"新 node 的 next 天生是
+null"这条清零证据）+ 3 个反例（返回 new 出来的引用 / 个数不是整数 / `new T`）+
+**172 测试全绿**
+
+---
+
+## 2026-09-20 · **A2：arena 按块细化** —— 主人：「我感觉先按块细化可能更好啊，这是地基吧」
+
+我原本的顺序是"先 `new`（A1）再细化（A2）"。主人推翻了它，而且**他是对的**：
+
+| | 先 `new` | **先按块细化** |
+|---|---|---|
+| 迁移面 | 以后收紧 = 重审例子/测试/文档 | **≈ 0**：今天全语言只有 `alloc<T>(n)` 一个分配原语 |
+| 语义 | 在错的语义上盖房子 | 先落对，`new` 只是后来的语法糖 |
+
+而且"地基漏了"这件事**能当场演示**（不用猜）：
+
+```extc
+while n < 300 { var p = alloc<i32>(250000)  *p = n  n = n + 1 }   // 300 × 1MB
+```
+- 不限内存：`跑完了`（**白占 300MB**）
+- `ulimit -v 150000`：**`extc: out of arena memory`**
+
+⇒ 每帧 arena 的内存上界是**整个函数体**。这就是地基漏的地方
+
+### 生成的东西
+
+```c
+int main(void) {
+    extc_arena __extc_a[3] = {0};            // 栈上定长；层数 = 编译期算好的最大块深度
+    extc_arena_release(&__extc_a[1]);        // 函数体是第 1 层
+    while((n < 3)) {
+        extc_arena_release(&__extc_a[2]);    // 每轮进来清
+        int32_t *p =(int32_t *)extc_arena_alloc(&__extc_a[2], ...);
+        n =(n + 1);
+        extc_arena_release(&__extc_a[2]);    // 每轮出去放 ⇒ 上界 = 一次迭代
+    }
+    extc_arena_release(&__extc_a[1]);
+}
+```
+
+释放点 = 每个控制流出口：块出口 · `break`/`continue`（放到循环体那层）·
+`return` / `?` 的失败返回（放到第 1 层）
+
+### 最大的发现：一处**接缝**
+
+改完 arena 之后我意识到 `alloc` 的深度原来是**写死的 1**（"活到函数返回"），
+而它必须跟着 arena 粒度走 —— 于是改成 `c->scopes.len`（当前块深度）。
+
+**为什么这条非改不可**（不然 A2 会引入一个新洞）：
+
+```extc
+var p: ref i32 = alloc<i32>(1)      // 外层块
+while n < 3 { p = alloc<i32>(1) }   // 循环体里分配
+println(*p)                          // ← 分配深度不跟着改的话，这里指向已释放的内存
+```
+深度写死 1 ⇒ "目标 1 ≥ 值 1" ⇒ 放行；改成块深度 2 ⇒ `2 > 1` ⇒ **报错**
+（两个新反例进测试了）
+
+⇒ 这也把"为什么每作用域是对的"讲清楚了：
+**它不是新增一条安全义务，而是把检查器已经证明的性质兑现成回收行动**
+**深度模型和 arena 粒度天生就该是同一个数** —— 一套概念同时管"引用合不合法"和
+"内存什么时候回收"
+
+### 踩的坑
+
+| 现象 | 根因 |
+|---|---|
+| 编译不过：`arenaRef` conflicting types | `EX_GENCALL`（用 `arenaRef`）在定义之前 ⇒ 前向声明 |
+| 差点漏掉 `?` 的释放 | `genTryHead` 里那句 `return` 是**手写**的（不是 ST_RETURN 那条路）⇒ 得单独把释放串进去 |
+
+**验收**：`tests/arena/`（150MB 上限下 300×1MB 跑完；含 break / continue / 嵌套块 /
+循环里 early return）+ 两个反例 + `/tmp/hack` 攻击库通过集合与改动前一致 +
+**168 测试全绿**
+
+---
+
+## 2026-09-20 · **修 #17：泛型体的引用规矩按实例复查** —— 主人说「可以修17，我认可了」
+
+### 洞是什么（实测，不是推的）
+
+```extc
+struct boxT<T> {
+    v: T
+    fn stash(self: mut ref boxT<T>, value: T) { self.v = value }
+}
+var bt: boxT<slice<u8>> = { v: "abc" }
+{ var deeper: [8]u8 = [...]  bt.stash(deeper[..]) }
+println(bt.v)          // 编过、跑起来、指向已死的栈帧
+```
+
+同一个操作**具体类型写就会被挡**（`stashU` 报 "cannot store a borrowed value"）。
+根因：泛型体是照模板查一次，`T` 不透明，而"这个类型里有引用吗"对 `T` 只能答 false ⇒
+`exprRefDepth` / `exprBorrowed` **整片早退** ⇒ 检查从没跑过
+
+顺着这条线还挖出**同族的另两个形状**（都有测试）：
+
+| 形状 | 后果 |
+|---|---|
+| `var local: T`（零值）| 实例化成 `(slice_u8){0}` = **一个 null 引用**（破坏了"ref 永不为空"）|
+| `var local: T = self.v  return local` | 返回**本帧**的引用 ⇒ 悬垂 |
+
+### 为什么不用那个 2 行的保守修法
+
+我第一反应是"看到 `T` 就当它含引用"（改 2 行）。洞确实关掉了 —— 但
+**`box<T>::set` 这种教科书写法被一起拒掉**了（152 个测试当场挂 1 个，正是
+`examples/generics.extc` 的 `set`）。而对 `T = i64` 它完全安全
+⇒ **"安全"不等于"把正常代码也拒掉"**，所以只能按实例算
+
+### 修法
+
+跟 `==` 的 `eqChecks` 同一个模式，推广成三类（`==` / 引用规矩 / 零值）：
+
+1. 走路函数对"类型里提到 `T`"的节点**不再早退**（按"`T` 可能带引用"算）
+2. 模板期把这条规矩**记进 `refChecks`**，连**深度和借用**一起记好（那时作用域还在）
+3. 全部查完后，对每个具体实例：`vt = tsub(类型)`；
+   **`typeContainsRef(vt)` 为假 ⇒ 这条规矩本来就不适用**（`T = i64` 全跳过）；
+   为真 ⇒ 用记好的数字报错，**点名实例**：
+
+```
+error: in instance `boxT_slice_u8`: cannot store a borrowed value into something that outlives this call
+note:  A generic body is checked once on the template, where `T` is opaque -- so the
+       reference rules are re-checked for every concrete instance.
+```
+
+### 踩的坑（最坑的那种失败）
+
+第一版我把"算深度"也推到实例化再做 —— 那时**函数作用域已经没了**，
+`lookup("value")` 找不到参数 ⇒ 深度算成 **0** ⇒ 比较 `0 > 0` 不成立 ⇒
+**检查静默失灵，攻击代码照样编过，而且一个字都不报**
+
+我是靠"加了记录器却还是编过"才发现不对的（要是只看"没报错就当修好了"，
+这个洞会带着一个"修好了"的假标签继续躺着）。教训写进 DECISIONS：
+
+> **推迟的只能是"结论"，不能是"上下文"。**
+
+### 验收
+
+三个攻击形状全部报错；`box<i64>::set` / `generics.extc` 照旧通过；
+`/tmp/hack` 27 个攻击文件通过集合与改动前**完全一致**（没放松一条）；
+**165 测试全绿**（+3 个反例）
+
+---
+
+## 2026-09-20 · **语句前缀机制**（PLAN #19）—— `println(f() ?? -1)` 现在直接能写
+
+昨天给 `??` 定了一条"主体必须没有副作用"的规则（因为 C 三元里主体出现两次，
+`f() ?? -1` 会让 `f()` 跑两遍）。今天把它**补成通用机制**：主体不纯时先算进临时变量。
+
+```extc
+println("get() ?? -1 = ", get() ?? -1)
+```
+```c
+option_i64 __extc_c0 = get();
+(slice_u8_writeText(...), printf("%lld",(long long)(
+((__extc_c0).tag == option_i64_some ?(__extc_c0).u.some._0 :((int64_t)(-1))))), printf("\n"));
+```
+
+**f() 只跑一次** —— "不许悄悄改变调用次数"这条承诺保住了。主体本来就是变量/字段/下标
+（纯的）时**一个临时变量都不生成**，还是纯三元
+
+### 三个设计决定
+
+1. **谁判定**：**检查器**（它已经算过 `repeatablePure`）在 AST 上打 `needTemp` 标记，
+   codegen 照做 —— 判定只写一遍，两边不会跑偏
+2. **吐不出来的位置由检查器报错**（不是静默降级）：
+   - **`while` 条件** ⇒ 前缀会吐在循环外面，"进循环前算一次" ≠ "每轮算" ⇒ **语义就错了**
+（`if` 条件不受影响：它本来就只求值一次）
+   - **全局初始化式** ⇒ 没有语句可挂
+3. **`?` 早就在手写这套**（`genTryHead` 先吐"求值一次"，再吐判断和 return）——
+   今天只是把它变成通用机制，所以实现是"给 CG 加一个前缀缓冲 + 每个语句在吐自己的第一行
+   之前 flush"
+
+### 两个踩到的坑
+
+| 现象 | 根因 |
+|---|---|
+| 编译器**段错误** | `CG.prefix` 这个 `Buf` **忘了 `bufInit`**（`memset` 之后是零）⇒ 一 `bufPuts` 就炸 |
+| 生成的前缀跑到语句**后面** | 有的语句把 `genExpr(...)` 直接写在 `cgLine` 的参数里（C 的实参求值顺序不定，但**字符串是先算完再写出去的**）⇒ 必须改成"先算表达式、再 flush、再吐语句" |
+
+### 诚实的代价（PLAN #22）
+
+临时变量吐在语句**最前面** ⇒ `g() +(h() ?? 0)` 里 `h()` **先于** `g()` 求值（源码是反的）。
+extC 跟 C 一样**不承诺**语句内求值顺序，所以不算毁约，但从"未定义"变成了"确定但反直觉"。
+可以收紧（同语句里主体之前有副作用就报错让他拆行），记进 PLAN #22
+
+**验收**：162 测试全绿。原来那两个"必须报错"的反例（`f() ?? -1`、`t[idx()] ?? -1`）
+**删掉** —— 它们现在是正例；换成"吐不出来"的两个新反例（`while` 条件 / 全局）
+
+---
+
+## 2026-09-20 · **`?` 一族补齐：`??` 和 `!`** —— 主人：「其实语法糖感觉就能解决这个问题了……好像没这么麻烦？」
+
+第三刀把 `option`/`result` 变成枚举之后，我给"怎么把 `valueOr` 弄回来"开了两条路
+（枚举方法 / 泛型自由函数），还测出泛型体那边有个**能拿 UB 的洞**（PLAN #17），
+一副"这一仗躲不掉"的样子。主人一句「语法糖就能解决」把整件事掀翻了 —— 他是对的：
+
+**`.has` / `.ok` / `.value` / `.err` 第三刀就已经解决了**（`match`，而且穷尽检查）；
+真正缺的**只有一个**：`valueOr`（读值兜底）。而它不是"库的问题"，是**语法的问题**
+
+补上的两个记号：
+
+```extc
+let v = opt ?? -1          // 可能没有就兜底（对所有 T 通用，不用自己包函数）
+println(opt! + 1)          // 我签字：直接给我（零检查）
+println(p!.value)          // ?ref：我知道非空（定案 ㊻ 留的逃生舱）
+```
+
+⇒ **PLAN #16 划掉**（不用给枚举加方法、也不用泛型自由函数）；
+昨天在示例里写的那些**按类型**的三行小函数（`orElse` / `orElseI32`）全部删除
+⇒ #17 那个泛型洞还在，但它**不再挡路**了（它是独立的一仗）
+
+### 两个记号的设计要点
+
+| | `??` | `!` |
+|---|---|---|
+| 生成 | C 三元（主体出现两次）| 取 union 成员 / 对 `?ref` **一个字都不生成** |
+| 位置 | **主体必须没有副作用** ⇒ `f() ?? -1` 报错，教他先 `let r = f()` | 任何位置（纯值运算，不需要"前缀"）|
+| 短路 | 只算一边（用带副作用的函数当场验证过）| — |
+| 语义 | 有值就用，没有就兜底 | **我签字 = 错了算我的**（UB，不是 trap）|
+
+`??` 那条"主体不许有副作用"看着像限制，其实同时换来两样东西：
+**不用"语句前缀"机制**（所以第一版就能落地）、而且**绝不偷偷改变调用次数**
+—— 主人当时的原话是「没有前缀的话我就降级成语句就好」，我只把它从"用户的选择"
+升级成了"编译器的规则 + 一句教他怎么改的报错"
+
+### 还差的一半（PLAN #19）
+
+主体是**调用**时（`println(f() ?? -1)`）要往语句前面吐临时变量。`?` 已经在用同一套机制，
+但要按位置分：`if` 条件可以（只求值一次）、**`while` 条件不行**
+（吐出来就变成"进循环前算一次"，语义直接错）—— 那时候连 match 的值形式
+也一起有地基了
+
+**验收**：159 测试全绿（新增 `examples/sign.extc`、`examples/coalesce.extc` + 5 个反例）。
+
+---
+
+## 2026-09-20 · **第三刀：`option` / `result` 重写成泛型枚举** —— 主人说「可以启动第三刀了」
+
+```extc
+type option<T>    = | none | some(T)
+type result<T, E> = | failure(E) | success(T)
+```
+
+### 它到底换来了什么
+
+**一句话：`option<slice<u8>>` 从"编不过"变成了"合法"。**
+
+以前 `option<T>` 是 `struct { has: bool, value: T }`，而 `none` 的那个 `value`
+**没东西可填** ——「ref 不可为空」是 extC 的硬承诺 ⇒ `var s: option<slice<u8>>`
+报 `__extc_reference_has_no_zero_value__`，而且**错落在 prelude 的行上**，
+用户根本看不见自己的代码（`PLAN` #7）
+
+现在 tag 0 = `none`、**不带载荷** ⇒ 载荷里有 ref 也照样有零值
+这就是 IO 和解析器的基本形状：**「读到没有」+ 一个零拷贝的视图**。
+新增的 `examples/option-ref-payload.extc` 里那个逐行读取循环就靠它：
+
+```extc
+fn nextLine(r: mut ref lineReader) -> option<slice<u8>> {
+    if r.eof { return none }
+    ...
+    return some(r.buf[start..i])      // 指向同一块 buf 的视图
+}
+```
+
+第二个好处是**诚实**：`?` 以前靠约定的字段名（`.ok` / `.value` / `.err`）——
+语言偷偷认识一个库的字段布局。现在它读 **tag + 载荷**，跟用户自己写的枚举
+走**同一条** codegen；`match` 也自然能用（穷尽检查）
+
+### 两个当场撞出来的真 bug
+
+| 现象 | 根因 | 修法 |
+|---|---|---|
+| 同一个函数里两个 `match` 绑同名 ⇒ gcc 报 `'s__2' undeclared` | 绑定的**声明**用原名，而分支体里查到的是 cname | check 时把 `cname` 写回 `MatchArm.binds`（`Param.cname` 同一套路）**PLAN #2 关掉** |
+| `while true { match x { some(v) => {...break} ... } }` **死循环** | 用 `switch` 生成的 match：分支体里的 `break` 只跳出 **switch**，跳不出外面的循环 | match 的 codegen 改成 **if/else 链**（穷尽性仍由类型检查担保，不需要 `else`）|
+
+第二个是写 `option-ref-payload.extc` 的时候**真的卡死**才发现的（60 秒超时）——
+不然它会一直躺在那里，等哪天有人写"读到结尾就停"的循环时中招
+
+### 代价（诚实记）
+
+`valueOr` / `has` 这类方法**写不出来了**：方法只住在 struct 体内（定案 29），
+而枚举不能带方法。今天的写法是 `match`，或者自己包一个**按类型**的小函数
+（`examples/` 里现在全是这种三行小函数：`orElse` / `isOk` / `whyFailed`）。
+⇒ 记成 `PLAN.md` #16：**枚举方法**或者**泛型自由函数**，修哪一头都行，
+工作量差不多，等主人拍板
+
+### 迁移
+
+`examples/option-result.extc`、`result-usage.extc`、`option-sugar.extc`、`tour.extc`
+全部从 `.has` / `.value` / `.ok` / `.err` / `valueOr` 改成 `match`；
+`tests/errors/option_ref_payload.extc`（"这个必须报错"的反例）**删掉** ——
+它现在是正例，也就是**洞封上了的证据**
+
+**验收**：152 测试全绿。
+
+---
+
+## 2026-09-20 · **`?ref T` + `null` + 非空收窄落地** —— 主人说「可以，启动！」
+
+第三刀的前置做完之后（泛型枚举），`?` 家族剩下的三件事一起做完了：
+
+```extc
+struct node { value: i64  next: ?ref node }
+
+fn find(head: ?ref node, want: i64) -> ?ref node {
+    var cur: ?ref node = head
+    while cur != null {
+        if cur.value == want { return cur }
+        cur = cur.next
+    }
+    return null
+}
+```
+
+生成的 C（**一行多余的检查都没有**）：
+
+```c
+node * find(node * head, int64_t want) {
+    node * cur = head;
+    while((cur !=((void *)0))) {
+        if((cur->value == want)) { return cur; }
+        cur = cur->next;
+    }
+    return((void *)0);
+}
+```
+
+### 三块拼图
+
+| 块 | 一句话 |
+|---|---|
+| **`?T` 语法糖** | 类型位置写 `?i64` = `option<i64>`。parser 直接**造一个 `option<i64>` 类型节点**走正常解析 ⇒ 下面一层一行都不用改 |
+| **`?ref T`** | 可空引用。类型上打一个 `nullable` 位（**可空性是类型的一部分** —— 解析、泛型替换、类型比较都得跟着走，漏一个地方就开始骗人）|
+| **`null` + 收窄** | `null` 是**上下文关键字**（类型由上下文寄放）；能不能解由「证明过没有」决定，证明就是**在 `if`/`while` 里跟 `null` 比过** |
+
+**最爽的一点**：`?ref T` 有零值 ⇒ `struct node { next: ?ref node }` **终于有零值了** ⇒
+`var n: node` 合法、`[16]?ref node` 合法（哈希表的空槽位白送）。
+
+### 两个坑
+
+1. **作废证明的时机**：`cur = cur.next` 里，右边的 `cur` 用的还是循环条件证明过的那份信息 ⇒
+   作废必须**等右边查完**（放在前面直接误报）。同一个坑在 `sym->refDepth` 更新上更狠：
+   先更新就是**拿新深度比新深度**，`p = ref <更深的局部>` 整条漏过去 ——
+   改动前的攻击库 `h1_retarget` 当场把它抓出来了（所以改深度模型**必须重扫攻击库**）
+2. **收窄只认绑定名，不认 `p.next` 这种路径**：路径要处理别名失效（任何一次赋值/带 `mut ref` 的
+   调用都可能改掉 `p.next`）。选择"绑一个名字"：显式、零开销、不用想别名（记进 PLAN #14）
+
+### 顺手修了深度模型的一处**误报**（`PLAN` #8 的一半）
+
+`var cur: ?ref node = head` 里，装引用的**槽位**在本帧（深度 1），但它指的**节点**在外面（深度 0）。
+以前深度一律问槽位 ⇒ 上面那个最正常的链表搜索被误报成"返回会死的局部"
+
+现在 `Sym.refDepth` 单独记「被指对象的深度」：默认仍是槽位深度（保守 = 老行为），
+只在**声明**和**换指向**时按初始值的真实深度收紧
+攻击形状（`var cur = ref local; return cur` / `cur = ref local; return cur`）**仍然全部报错**
+
+**验收**：150 测试全绿（+1 例子 +8 反例）；`/tmp/hack` 27 个攻击文件重扫，
+**通过集合与改动前完全一致**（没有放松任何一条）
+
+---
+
+## 2026-09-18 · **带载荷枚举落地**（第 3 步第二刀）—— 主人说「来吧，得带载荷了」
+
+```extc
+type shape = | circle(f64) | rect(f64, f64) | dot
+
+let a = shape.circle(2.0)          // 构造
+match a {
+    circle(r)  => { return 3.14159 * r * r }    // 载荷绑定出来
+    rect(w, h) => { return w * h }
+    dot        => { return 0.0 }
+}
+```
+
+C 里这个东西要**手写**，而且很容易写错：
+
+```c
+struct shape { int tag; union { double r; struct { double w, h; } rect; } u; };
+// 读 u.r 之前你得**自己记得**先看 tag 是不是 0 —— 忘了就是 bug
+```
+
+这里编译器替你记：**想拿载荷，必须先 match 那个变体**
+
+### 两个真踩到的 C 层面的坑
+
+| 坑 | 现象 | 解法 |
+|---|---|---|
+| **定义顺序** | `type box = \| nothing \| holding(slice<u8>)` 生成的 C 里 `slice_u8` 还没定义 ⇒ `unknown type name ‘slice_u8’` | 让带载荷枚举**进依赖排序那一区**（`SUnit` 多一个 `td` 字段）—— 跟 struct 走同一套机制 **结构上排掉，不靠碰巧对了** |
+| **`enum` vs `struct`** | 无载荷还是 `typedef enum`（一个字节没变），带载荷必须是 `struct { tag; union }`，于是"常量"也要变成"构造"（`(shape){ .tag = shape_dot }`）| 生成器里按 `enumHasPayload` 分叉 |
+
+### 一个**被示例抓出来的老毛病**（不是这次引入的）
+
+写示例时很自然地写了：
+
+```extc
+fn describe(m: maybeName) -> slice<u8> {
+    match m {
+        nothing  => { return "（没有名字）" }
+        named(s) => { return s }        // 被逃逸检查挡住
+    }
+}
+```
+
+理由是：**绑定 `s` 住在本帧的作用域里**，而检查器看的是「**名字的存储深度**」，
+不是「**里面的引用指哪儿**」。同一件事在没有 match 的时候也成立：
+
+```extc
+fn g(m: slice<u8>) -> slice<u8> { let v = m  return v }   // 一样被挡住
+```
+
+**这是保守，不是错**（挡住的是合法代码，不是放过了非法代码），但它挡住了
+`maybeName` 这种类型**最有用的用法**（条件性地把借来的视图交出去）。
+真正的修法是把两个深度**在检查器里分开**：
+
+| 名字 | 含义 | 用在哪 |
+|---|---|---|
+| `Sym.depth` | **存储**在哪一层（词法）| 取 `ref s`、判断能不能存进别处 |
+| `Sym.refDepth` | 它**里面的引用**活到哪一层（= 初始化式的 refDepth）| 返回、赋值出去 |
+
+这个改动动的是逃逸检查的**核心规则**，所以单独做、单独验（不能让 115 个测试里任何一个变红）。
+先记着，见 DECISIONS ⑱ 的尾巴。
+
+---
+
+## 2026-09-18 · **`match` 落地（第一刀：无载荷枚举）** —— 主人问「是不是可以落地了」
+
+主人的原话是：**「match 是不是可以落地了，因为我有个想法，就是 result 和 option 或许可以用 match 重写？」**
+
+**这个想法比"更雅致"值钱得多** —— 我实测确认它撞上一个硬限制：
+
+```extc
+fn pick(b: bool) -> option<slice<u8>> { ... }
+// error: ‘__extc_reference_has_no_zero_value__’ undeclared
+```
+
+`option` 现在是 `struct { has: bool, value: T }` —— **`none` 的时候那个 `value` 字段必须填点什么**，
+而 `slice<u8>` 里含 `ref`，**ref 没有零值**，编译器只好塞个毒标记让 gcc 报错
+（而且报在 **prelude 里**，用户看不到自己的代码）。
+**用 tagged union，`none` 里根本没有 `value` 字段 ⇒ 限制从构造上消失**
+而这正是 IO 要返回的东西（`option<slice<u8>>` / `result<slice<u8>, ioError>`）。
+
+### 于是切三刀，这次只做第一刀
+
+| 刀 | 做什么 | 状态 |
+|---|---|---|
+| **1** | `match` 用在**今天的无载荷枚举**上 | **做完了** |
+| 2 | 枚举**带载荷**（tagged union + 泛型枚举实例化）| 下一刀 |
+| 3 | **重写 prelude 的 `option`/`result`** + `?` 跟上 + 迁 examples | |
+
+**第一刀为什么这么切**：穷尽检查跟载荷**无关**，而无载荷**不需要 tagged union** ——
+生成的 C 就是一个干净的 `switch`。**风险最小，而且语法是第二刀的超集，不返工**
+
+### 顺手发现的一个解析坑
+
+`match e { ... }` 里的 `{` 会被当成**结构体字面量**（`e { 字段: 值 }`）⇒ 报 `expected ':'`。
+解法是 `if` / `while` 已经有的那招：**把 `inCond` 打开**（条件里不许有结构体字面量）
+
+### 它为什么对 extC 特别重要
+
+`match` + 带载荷枚举是**函数指针/动态派发的替代品**（设计里"闭集事件用枚举"全靠它），
+而且比 C 的函数指针表强在**穷尽检查**；也是自举里 AST 的形状
+
+---
+
+## 2026-09-18 · **`return failure(e)` 能裸写了** —— 因为主人说「result 很神秘，我不太会用」
+
+做 IO 设计的时候主人提了一句：**「我感觉这个 result 很神秘，我现在自己其实不太会用」**。
+这句话比任何性能问题都值得先处理 —— **一个安全机制如果用户不会用，那它就不是机制，是障碍。**
+
+### 两层意思，两个不同的动作
+
+| 主人说的 | 该怎么治 |
+|---|---|
+|「**不太会用**」= 不知道该在什么时候写什么 | **补能抄的代码**：`MANUAL.md` 加「一页速查」，新写 `examples/result-usage.extc`（造 / 用 / 抛，各三行）|
+|「**很神秘**」= 写起来太啰嗦，看不出重点 | **改语法**：`return` 位置裸写 `success` / `failure` / `some` / `none` |
+
+原来必须写：
+
+```extc
+return result<unit, gameError>::failure(gameError.occupied)
+```
+
+那串类型长到把重点盖住了 —— **而重点从来是「失败」本身**。`?` 负责收，`failure` 负责发，
+两头都不该啰嗦。现在：
+
+```extc
+return failure(gameError.occupied)
+```
+
+### 为什么这不算「自动推导」
+
+主人的口径是**「显式是对的，不要那么多自动推导」**，所以这一条我特意论证过边界：
+**编译器没有猜任何东西** —— 它读的是你自己写的那一行 `-> result<unit, gameError>`。
+省掉的纯粹是**重复劳动**。
+
+> 跟定案 27（关联函数写全类型）不冲突：**那条管的是没有上下文的地方**，
+> 这里上下文是**显式写出来的签名**。空的地方要显式，写过的不用再写一遍
+
+### 实现：原地改写成 `EX_ASSOC`（零新机制）
+
+`desugarBareCtor` 只做一件事：把这个 `EX_CALL` 节点改成 `EX_ASSOC`，填上
+`typeName` / `targs` / `name` / `args` —— **后面的检查、逃逸、生成一条都不用动**
+
+一个 C 的坑：`Expr.u` 是 union，**得先把 `args` 拿出来再改 `kind`**，否则会被自己的新字段覆盖。
+
+**限制收得很紧**（不扩权）：只有那四个名字、只有 `return` 位置、只有返回类型正好是
+对应容器时、而且用户自己定义了同名函数时不认
+
+---
+
+## 2026-09-18 · **`let` 是命名，不是存储** —— BOOTSTRAP §8 第 2 步（104 测试全绿）
+
+主人一开始就是这么说的：**「本质是在里面重新覆盖 a 的含义，而不是写入」**。
+代码现在照着这句话长 —— 同一层可以再 `let` 一次同名。
+
+### 想清楚的那一步：这句话到底承诺了什么
+
+「重新覆盖含义」不是「把新值写进老地方」，而是**造一个新的绑定**。
+所以老的那个**还在**，只是没名字了 —— **谁指着它，谁还指着它**：
+
+```extc
+var x: i32 = 7
+var r = ref x
+let x: i32 = 99     // 新名字，新存储
+println(r)          // 7   ← 老的那个，一根汗毛都没动
+r = 100             // 写穿到老的那个
+println(x)          // 99  ← 新的那个
+```
+
+这条**正是「命名不是存储」的硬证据**：要是 `let x = 99` 是「写进老地方」，
+`r` 读出来就该是 99。实测是 7 这也是为什么它**不是语法糖**，而是语义。
+
+### 顺手撞上的第二个 bug：`fn double(...)` 生成不出合法的 C
+
+写测试时很自然地写了个 `fn double(n: i32) -> i32` —— 结果生成的 C 是
+`int32_t double(int32_t);`，gcc 直接报错，**而且报错落在生成的 C 上**（用户看不到自己的源码）。
+
+extC 里 `double` / `int` / `bool` 都只是**普通名字**（extC 的类型叫 `f64` / `i32` / `bool`），
+所以这不是用户的错，是编译器该收掉的。加个 `__c` 后缀就行（`double` → `double__c`），
+**extC 源码里的名字一个字都不改**
+
+这跟第 2 步是**同一条流水线**（「extC 名字 → C 名字」），所以顺手一起做了：
+局部变量走检查器给的 `cname`，函数名走 `cSymName`，两张表共用 `base.c` 的关键字表。
+
+### 实现要点（三处，都不大）
+
+| 处 | 做什么 |
+|---|---|
+| `check.c` `declare` | 多一个 `shadow` 参数：`let` = 可遮蔽，`var` / 参数 = 不可 |
+| `check.c` `lookup` | **从后往前**扫同一个作用域 —— 最新的 `let` 赢 |
+| `check.c` `cNameFor` | 每个函数一套计数，`a` → `a__2`（单调不重复，避开模块级名字和 C 关键字）|
+
+名字的**解析**在类型检查阶段定格（`Expr.u.ident.cname`），**代码生成只管照着印** ——
+这个分工让代码生成那边只改了 4 个地方（`EX_IDENT` / 局部声明 / 两处形参表）
+
+### 一个「没做」的决定
+
+`var` **不允许**遮蔽同层 —— `var` 声明的是**存储**，同一层写两个同名 `var`
+几乎肯定是想写 `x = ...`，那是 typo 不是意图。
+参数按 `var` 算 ⇒ `let p = ...` 遮蔽参数可以，`var p = ...` 不行
+
+---
+
+## 2026-09-18 · **修好 soundness 洞** —— BOOTSTRAP §8 第 1 步（102 测试全绿）
+
+`refDepth(函数调用) = 0` 是**错的上界**。实测：
+
+```extc
+fn identity(r: ref i32) -> ref i32 { return r }
+fn bad() -> ref i32 { var x: i32 = 5  return identity(ref x) }
+// main 里 let r = bad()  ⇒ 打印 0（应该是 5）⇒ 悬垂，但编译放行
+```
+
+### 为什么两个检查各自都对、合起来还是漏
+
+| 检查 | 它看到什么 | 它为什么放过 |
+|---|---|---|
+| `identity` 的定义 | 参数深度 0 ≤ 返回要求 0 | **转发是对的**，它自己没毛病 |
+| `bad` 的返回 | 函数调用深度 0 ≤ 0 | 它以为调用结果深度是 0 |
+
+**错在信息在调用边界被丢掉了** —— 而 `r = pickB(ref outer, ref inner)`
+（一个深一个浅，函数按情况返回）用同一个机制漏得一模一样。
+
+### 修法只有一句话
+
+> **引用深度（函数调用）= `max(所有实参的深度)`**
+
+**证明**：被调函数能返回的引用只有两种来源 —— 它自己的**全局/静态**（深度 0），
+或者**它的实参**（深度 ≤ `max(实参)`）。它返回不了自己的局部（那条规则本来就挡着）。
+所以 `max(实参)` 是**正确的上界**，不是保守估计
+
+### 但洞不止一个，而且**一个误报在给它站岗**
+
+修的过程中撞上第三次的「④ 参数洗白」：`fn stash(s: slice<u8>) { G = s }` 放行 ——
+参数把「借来的」洗成了「自己的」，深度归 0。补 `exprBorrowed` + `checkStoreEscape` 挡掉。
+
+**然后想给「换个视图」补测试时才发现的**：`s = a[..]`（视图整体赋值）**本来就编不过**，
+被当成「透过只读视图写元素」。也就是说 —— 之前**根本写不出**能触发上面两个洞的多组用例，
+误报把洞盖住了。所以三个改动**必须一起落地**
+
+### 发现的模式（写进流程）
+
+> **看到误报不要只想着「绕过它」，要问「它为什么会被触发」** —— 它可能在替真正的 bug 站岗。
+> 这条是这个项目里第一次出现，但它的形状很常见：**一个假警报让一整类真 bug 变得不可达**
+
+**第 1 步的验收**（5 项全过，见 `BOOTSTRAP.md` §8）：
+两个洞都变成编译错误，误报消失，**合法转发没有误报**，99 → **102 测试全绿**
+
+---
+
+## 2026-09-18 · 换指向回来了 —— 因为需求出现了，而歧义有判据了
+
+主人问：**「换指向一定要被禁掉吗」** —— 好问题，而且答案是不一定。
+
+### 当初禁它的两个理由，现在一个消失一个有解
+
+| 当时的理由 | 现在 |
+|---|---|
+| **`=` 有歧义**（写进去 vs 换指向） | **歧义有判据了**：看**右边**是什么 —— 值是写进去，引用是换指向 |
+| **全仓库 0 处使用** | **需求出现了**：`varArray<T>` 增长时要换 buffer |
+
+### 新规则（比「禁掉」更好，也更少特例）
+
+| 右边 | 意思 | 生成 |
+|---|---|---|
+| **值** `T` | 写进它指向的地方 | `*p = v` |
+| **引用** `ref T` | 换指向 | `p = q` |
+
+**类型自己消歧义**，而且右边就在源码里看得见（P′）
+变量和**字段**都适用（`self.p = target` 就是换 buffer 那个动作）。
+
+### 为什么这次可以放心加
+
+**纯加法**：以前 `p = <ref>` 是**报错**的 ⇒ 允许它不可能弄坏任何现有代码
+这正好是奶昔写的那条排序规则（「改语义的必须早做，只加不改的随时能加」）的一次应用。
+
+### 但要说清楚：它**解决不了** `varArray` 的真问题
+
+```extc
+fn push(self: mut ref varArray<T>, v: T) {
+    let bigger = alloc<T>(self.cap * 2)   // 属于 **push 这一帧**
+    self.data = bigger                    // 换指向 现在合法了
+}                                         // push 返回 ⇒ 这块内存没了
+```
+
+**根不在指向，在生命周期**：arena = 函数帧 ⇒ 方法分配的内存活不过方法返回。
+DESIGN 早就定了推论：**返回引用 ⇒ 被引用者必须在调用者提供的 arena 里。**
+所以 `varArray` 的落地方式要另外定（见下一条记录）。
+## 2026-09-18 · B · 逃逸检查：extC 最后一个内存安全洞关上了
+
+主人说「该写了，逃逸检查，这个好啊」—— 这确实是 extC 的命。
+
+### 规则（DESIGN §2 早就定好，这次只是落地）
+
+> **若引用 `r` 指向值 `v`，则 `depth(r) ≥ depth(v)`。**
+> 人话：**引用不能活得比被指对象长。**
+
+深度是**纯词法属性**：参数 = 0，函数体 = 1，每进一层块 +1。
+**比两个整数**，不需要生命周期标注、不需要解约束、不需要流分析。
+
+> **这就是「Rust 的安全 + 不写生命周期」的落点** —— 也是整个项目的定位里最难的那半句。
+
+### 实现
+
+| 东西 | 做法 |
+|---|---|
+| `Sym.depth` | 绑定上挂深度；`declare(..., depth)`，参数传 0，局部传当前作用域层数 |
+| `Expr.refDepth` | 表达式里的引用**指向的活物**有多深（**类型里没引用就直接 0**，免得纯值拷贝被误报） |
+| `exprRefDepth()` | `ref x` → x 的深度；`a[lo..hi]` → 底的深度；struct/数组字面量 → **递归取最大**；函数调用 → 0（由被调用者自己的返回检查担保） |
+| 三道检查 | ① 返回 ② 局部初始化 ③ 给字段/元素赋值 |
+
+### 洞关上了（实测）
+
+```extc
+fn bad() -> slice<i32> {
+    var a: [8]i32 = [1, 2, 3, 4, 5, 6, 7, 8]
+    return a[..]
+}
+```
+```
+error: this return value would hold a reference to a local variable that dies first
+(borrowed from depth 1, but this can only hold up to depth 0)
+  note: A reference may not outlive what it points to. Borrow from a parameter
+(depth 0) or copy the data instead.
+```
+
+**改之前它不但编得过，还静默跑出了 `0`** —— 静默错比崩溃更危险。现在是编译错误。
+
+而且**递归地看进 struct** 也管用：
+
+```extc
+struct holder { s: slice<i32> }
+fn bad() -> holder {
+    var a: [4]i32
+    return holder { s: a[..] }     // 同样被拦住
+}
+```
+
+### 合法代码一条都没误伤（94 个测试全绿）
+
+`examples/escape.extc` 专门演示「什么可以」：
+
+| 写法 | 为什么可以 |
+|---|---|
+| `fn rowView(b: ref board, y: i32) -> slice<i32> { return b.cell[y][0..4] }` | 借的是**参数**（深度 0）⇒ 活得比函数长 |
+| `fn copyRow(b: ref board, y: i32) -> [4]i32` | 按值返回，不带引用 |
+| 局部视图只在函数内用（`let v = a[..]`） | v 和 a **同深度** ⇒ 一起生一起死 |
+
+> `rowView` 这种「从 `self` 借一片出去」是**视图存在的意义**，
+> 逃逸检查必须放行它 —— 而它靠「参数深度 = 0」这一条就自然放行了
+
+### 诚实说清楚：还有一条**故意不查**
+
+**④ 把引用传给函数、函数把它存起来**：
+
+```extc
+var g: holder                     //（全局还没有，等 arena）
+fn stash(s: slice<i32>) { g.s = s }
+fn f() { var a: [4]i32  stash(a[..]) }   // 悬垂，今天查不出来
+```
+
+这需要**引用的「传染性」分析**（函数参数的引用会不会被存进比它更深的地方），
+比深度模型贵得多。已经明确记成欠账（`REFS.md` §6 未决问题 5）。
+
+**今天查不到它，但不慌**：① 还没有全局变量 ② `holder.s` 这种「引用字段」只能
+在构造时设置（换指向已经取消）⇒ 这条路暂时走不通。
+
+### 检查②③ 今天是安全网，将来会真用上
+
+实测**今天只有①（返回）会触发**：② 因为「引用不到还没声明的内层变量」而实际上不可达；
+③ 因为「给引用字段重新赋值」被「取消换指向」堵掉了。
+
+但 arena 和全局变量一到，③ 立刻就是**主检查**：
+
+```extc
+var g: holder            // 全局 = 深度 0
+fn f() { var a: [4]i32  g.s = a[..] }    // 0 ≥ 2 为假 ⇒ 正是这条规则挡住它
+```
+
+> 这也说明这条规则**不是为今天设计的，是为内存模型设计的** ——
+> 现在放进去，等 arena 到位就自动生效。
+## 2026-09-18 · A2-5：视图的可写性 —— extC 最后一个「会崩的洞」关上了
+
+主人说「可以一键跟 Rust，但我想要更优雅」，然后自己想不到更好的。
+奶昔给了一个答案，这一步把它落地了。
+
+### 设计：`mut` 是**限定词**，不是第二个类型
+
+| | Rust | extC |
+|---|---|---|
+| 可写性怎么表达 | `&T` / `&mut T`（两个**类型**） | **`mut` 限定词**：`ref T` / `mut ref T`、`slice<T>` / `mut slice<T>` |
+| 切片的两种形态 | `&[T]` / `&mut [T]`（再造一对类型 + 各自的 impl） | **同一个 `slice<T>`、一套方法集** |
+| 为什么 Rust 只能那样 | **切片在 Rust 里是内建类型** —— 它没有别的办法 | extC 的视图是 prelude 里的**普通结构体** ⇒ 限定词能通用 |
+
+**实现上最漂亮的一点**：可写视图是一个**影子实例** ——
+跟只读版**共用同一个 C 结构体名**、**不进实例表**（进去的话 codegen 会生成两份）。
+于是「一个类型、一套方法集」真的成立了，而不是嘴上说说。
+
+### 可写性**从源头继承**
+
+| 从哪切出来 | 得到 |
+|---|---|
+| `var a` | `mut slice<T>` |
+| `let a` | `slice<T>` |
+| `"字面量"` | `slice<T>` |
+| `mut ref` 参数 | `mut slice<T>` |
+| 只读视图 | `slice<T>` |
+
+⇒ **日常代码一个 `mut` 都不用写**，只有**声明**才写 —— 而签名一写，
+调用点和读代码的人就都知道「这个函数会不会改你的数据」。
+
+降级是自动的、单向的：`mut slice<T>` → `slice<T>`（能写当然能读）；
+反过来不行，必须显式写 `mut`
+
+### 关掉的**两个洞**（实测）
+
+**洞①「按值参数偷写调用者的数组」** —— 以前签名完全看不出来：
+
+```extc
+fn fill(v: slice<i32>) { v[0] = 1 }     // 参数是副本，但元素是调用者的！
+```
+```
+error: cannot write through `v`: it is a read-only view `slice<i32>`
+  note: a view is read-only unless its type carries `mut`. Writing through a
+        by-value view would change the caller's data without the signature saying so.
+```
+
+**洞②「写字符串字面量」** —— 以前**编得过、运行时段错误**：
+
+```extc
+var s = "abc"
+s[0] = 88        // error: cannot write through `s`: it is a read-only view `slice<u8>`
+```
+
+> **② 是 extC 最后一个「会崩的洞」** —— 从今天起，
+>「按 P′ 该看见的东西」在语法/类型上都看得见了。
+
+### 顺手修的两个小东西
+
+- `ttRender` 不打印视图的 `mut`，于是错误信息成了
+「expects `slice<i32>`, found `slice<i32>`」—— 谁也看不懂。现在会打 `mut slice<i32>`。
+- 降级规则原来只覆盖 `ref`，视图走不到 ⇒ 可写视图传给只读参数会误报。
+  现在统一成「**`mut` 的东西可以当非 `mut` 的用**」，两种都适用。
+
+### 现在 `slice` 的能力（`examples/mut-views.extc`）
+
+```
+一开始   [1, 2, 3, 4, 5, 6]
+求和     21
+反转中间 [1, 4, 3, 2, 5, 6]      ← 就地 reverse，签名说了它会改
+填 9 之后 [1, 4, 3, 9, 9, 9]     ← 可写视图传参
+只读数组求和 24
+```
+
+**`reverse` / `fill` 这种「通用原地算法」现在是类型安全的** ——
+它们要是写不出来，「视图」这个抽象就没意义。
+## 2026-09-18 · A2-3：只读引用真的只读了（签名终于说实话）
+
+上一步留了一个**故意的中间状态**：`ref T` 名义上是只读，但写它还不报错。
+这一步把闸门关上，然后让**编译器自己指出每一处该改成 `mut ref` 的地方**。
+
+### 加了两道检查（各管一半）
+
+| # | 检查 | 效果 |
+|---|---|---|
+| 1 | **沿「地方」往内走，遇到只读引用就拒** | `fn f(b: ref board) { b.x = 1 }` ⇒ 报错 |
+| 2 | **会写的方法（`self: mut ref T`）要求接收者可写** | 只读引用上不能调 `bump()` |
+
+关键区分：**「绑定是不是 `let`」和「路上有没有只读引用」是两件事** ——
+`var` 的东西里也可能装着一个只读引用（比如 `fn f(v: ref board)` 里的 v）。
+写进去要**两样都满足**。
+
+### 最漂亮的一点：**「逐处判断」不用人做了**
+
+原计划 A2-4 是「全仓库 ~80 处 `ref` 逐处人工判断该不该改成 `mut ref`」。
+闸门一关，**编译器把每一处都指了出来** —— 实际只有 **9 处**：
+
+| 文件 | 问题 | 修法 |
+|---|---|---|
+| `fenwick` | `add` / `brute::add` / `rng::next` 写 `self` | `mut ref self` |
+| `generics` | `box::set` 写 `self` | `mut ref self` |
+| `gomoku-board` | `board::place` 写 `self` | `mut ref self` |
+| `option-result` | `place` / `placeLine` 写 `b` | `b: mut ref board` |
+| `refs` | `counter::bump` 写 `self` | `mut ref self` |
+| `structs` | `point::moveBy` 写 `self` | `mut ref self` |
+| `tour` | `counter::bump` 写 `self` | `mut ref self` |
+
+**而且有两条是「连锁」**（特别值钱，因为它证明了检查真的沿着调用图在走）：
+
+```extc
+fn below(self: ref rng, bound: i64) -> i64 { return self.next() % bound }
+//  ↑ next() 要可写接收者 ⇒ below 也得改成 mut ref
+
+fn addTo(c: ref counter, by: i32) { c.bump(by) }
+//  ↑ bump() 要可写接收者 ⇒ addTo 的签名也得改
+```
+
+**光看函数体是看不出这种问题的** —— 是「标注了权限」之后检查器追出来的。
+
+### prelude 一行都没改
+
+`slice<T>` 的 6 个方法（`isEmpty` / `hasAt` / `get` / `==` / `find` / `startsWith`）
+**全是只读的**，所以它们自动变成「`let` 的视图也能调」。
+
+> 这本身就是对设计的验证：**当初把它们写成只读方法，今天白拿到一个好处。**
+
+### 一路上的另一件事：错误信息
+
+三道检查的信息都写清了「为什么」：
+
+```
+error: cannot write through a read-only reference
+  note: `ref T` is a **read-only** borrow; writing through it needs `mut ref T`
+        in the declaration. Read-only is the default so that a signature says what it does.
+```
+
+### 还剩下的（下一步是「视图的可写性」）
+
+闸门只关了 `ref T`，**还有两个洞**是「按值传进来的视图」造成的：
+
+| 洞 | 例子 | 为什么现在拦不住 |
+|---|---|---|
+| ① 按值参数写进调用者的数组 | `fn f(v: slice<i32>) { v[0] = 1 }` | 参数是**调用者的局部副本**（`mut = true`），但 slice 的内容是共享的 |
+| ② 写字符串字面量 | `var s = "abc"` → `s[0] = 1` | 字面量在只读段；**视图没有记「它从哪切出来的」** |
+
+两个洞是**同一个原因**：视图的可写性是**来源的属性**，而现在的 `slice<T>` 只有一种。
+下一步就是把那个设计落下来（`mut` 当限定词、切出来时从源头继承）——
+做完之后这两条都会变成编译错误。见 DECISIONS。
+
+## 2026-09-18 · A2 第一步 + 第二步：标量引用活了，`swap` 能写了
+
+主人拍板了引用语义的形状（**形状 3：值位置自动解引用 + `mut ref`**），
+然后立刻开工。这一轮把地基和最要紧的那块做掉了。
+
+### 做完了什么
+
+| 步 | 内容 | 状态 |
+|---|---|---|
+| A2-1 | `mut ref T` 的解析 + 类型位 + **可写性从源头继承** | |
+| A2-2 | **值位置自动解引用** + **写穿赋值** | |
+| A2-3 | 把 `ref T` 真的当只读（写了就报错） | 下一步 |
+| A2-4 | 全仓库 ~80 处 `ref` 逐处判断读还是写 | |
+
+**结果：`ref i64` 从死类型变成了能用的东西** ——
+
+```extc
+fn bump(p: mut ref i64) { p = p + 1 }
+fn swap(a: mut ref i64, b: mut ref i64) { let t = a  a = b  b = t }
+
+var n: i64 = 10
+bump(ref n)                 // n = 11
+println(n)                  // 11 —— 透过引用读，自动解引用
+let m: i64 = ref n          // 值位置 ⇒ 拷值
+```
+
+`swap` **以前根本写不出来**（标量 ref 既没有字段也没有元素，
+「透过它写」表达不出来；能表达的「换指向」对标量毫无意义）。
+
+### 一条规则解释所有情况
+
+> **可写性看「这个值是从哪拿到的」，只有三个地方：**
+> ① 绑定 `var`/`let`　② 参数 `mut ref`/`ref`　③ 字段的类型上写 `mut`
+
+取引用时**权限从源头继承** ⇒ 日常代码**一个 `mut` 都不用写**，只有**声明**才写。
+而且 `mut ref T` 能自动降级成 `ref T`（能写当然能读），反过来不行。
+
+### 踩的坑（老毛病第 N 次）
+
+**`ttCanWiden` 把 `ref i32` 放进了 `mut ref i32`** —— 因为 `intInfo()` 会把 ref 剥掉，
+于是变成了「i32 拓宽到 i32」。加了守卫：**引用不参与拓宽**。
+
+这已经是**第四次**同一类问题了：
+
+| 次 | 哪里 | 症状 |
+|---|---|---|
+| 1 | `typeContainsRef` | 不代入泛型实参 ⇒ `option<slice<u8>>` 漏检 |
+| 2 | `genStructLit` | 实例里字面量还是模板类型 ⇒ 零值退化成 `0` |
+| 3 | `zeroValue` | 不代入实例上下文 ⇒ 递归死循环 |
+| 4 | `ttCanWiden` / `intInfo` | 隐式抹掉 ref ⇒ 权限被抹平 |
+
+**共性是：helper 为了「通用」而把信息丢掉，而丢掉的正好是这层要检查的东西。**
+DEVLOG 里已经记了三次，这次是第四次 —— 值得当成一条设计纪律：
+**凡是「把类型抹平」的 helper（`ttBase` / `intInfo` / 各种 `strip`），
+调用点都要问一句「抹掉的那一层，这里要不要检查？」**
+
+###「换指向」正式取消
+
+`r = ref b` 现在报错，而且信息写清了为什么：
+
+```
+error: cannot retarget a reference
+  note: `=` on a reference writes **into** what it points to;
+        rebinding was removed on purpose -- declare a new binding instead.
+```
+
+判据是当时查过的：全仓库 **0 处**使用、有替代写法、以后能**纯加法**加回来。
+
+### 还剩什么（A2-3 是真正的破坏性那一步）
+
+现在 `ref T` **还没有**被强制成只读 —— 所以 prelude 和 examples 里
+那些 `self: ref board` 里写字段的代码**还能编过**。这是**故意的中间状态**：
+不然后面一步会一次炸一片，没法定位。
+
+A2-3 要做的是：**让「通过只读引用写」报错**，然后把 80 处 `ref` 逐处判断，
+该写的地方改成 `mut ref`。做完那一步，「签名不说实话」才算真的解决。
+## 2026-09-18 · 第一道真算法题：树状数组（顺手补了位运算，还挖出两个洞）
+
+主人在奶昔做完 T5 之后问：**「现在是不是可以写一些基础算法题试试水了，比如树状数组」**
+
+奶昔去试，第一行就卡住：`i &(-i)` **解析不了** —— 位运算在词法表里，但解析器从来没接。
+
+### ① 位运算：优先级**照着 C 抄**
+
+`& | ^ ~ << >>` 补齐，优先级跟 C（和 Go）一致。这是**故意**的：
+写算法题的人手上有 C 的肌肉记忆，「设计得更好」的优先级只会天天出错。
+
+**`<<` / `>>` 故意不进词法表**：`box<box<i32>>` 里的 `>>` 必须是两个独立的 `>`
+（类型实参靠它配对）。要是词法层就合成一个 token，泛型嵌套类型当场解析不了 ——
+C++ 当年正是栽在这上面。所以改成在**表达式**那一层用「两个相邻的 `<` / `>`」来认。
+
+对照 C 验了优先级，四条全对：
+
+```
+1 | 2 ^ 3 & 2   → 1（同 C：1|(2^(3&2))）
+1 + 2 << 3      → 24（同 C：(1+2)<<3）
+12 &(-12)      → 4
+15 >> 2 & 3     → 3
+```
+
+顺带发现一条：**`6 & 3 == 3` 在 extC 里是类型错误**，而在 C 里它是
+`6 &(3==3)` = `6 & 1` = 0 —— 一声不响。差别在于 **extC 的 `bool` 不是整数**。
+C 里最经典的优先级坑，在 extC 里变成了编译期就能看见的错。
+
+### ② 顺手挖出来的两个洞（都是「静默错误」，不是崩溃）
+
+写随机数发生器的时候想透过 `ref i64` 改种子，试出这一串：
+
+```extc
+fn bump(p: ref i64) { p = p + 1 }
+```
+
+编译**通过**，运行**没报错**，调用者的变量**没变**。看生成的 C：
+
+```c
+void bump(int64_t * p) { p =(p + 1); }     /* 指针算术！*/
+```
+
+**根因**：`ttIsNumeric()` 和 `literalFits()` 都经过 `ttBase()`，
+而 `ttBase` 会把 `ref` 抹掉 —— 于是 `ref i64` 被当成数字，
+`p + 1` 拿到了类型 `ref i64`，赋回给 `p` 类型也对，一路绿灯。
+
+另一个同源：`p = 5` 也被放过去，生成的 C 报
+`makes pointer from integer without a cast` —— **gcc 的原始错误漏到了用户面前**。
+
+**修法**：`ref` 两边都必须真是引用（`checkAssignable` 里挡），
+算术/位运算遇到 `ref` 一律报错：
+
+```
+error: cannot apply `+` to `ref i64`(a reference)
+  note: a `ref` is not a number: in C this would silently become pointer arithmetic.
+```
+
+**这是 extC 存在的理由本身**：C 里「看起来对、其实在挪指针」的代码，
+在这里必须在类型层被挡住。
+
+### ③ 树状数组本身
+
+`examples/fenwick.extc`，做成**自检**的（没有输入，也没有随机数库）：
+
+```
+随机对拍 20000 次，结果不一致的次数 = 0
+区间和 [2,4]   = 9
+前缀和 [1,5]   = 15
+a[3] += 10 后：区间和 [2,4] = 19 · 前缀和 [1,5] = 25 · 单点 a[3] = 13
+逆序对 [5,1,4,2,8,3] = 7
+```
+
+**树状数组跟暴力求和对拍 2 万次零不一致** —— 语言够用了。
+
+顺便暴露两个「不是 bug 但要知道」的点：
+
+- **数组长度必须是编译期常数**（`tree: [1025]i64`），还没有全局常量 ⇒ 最大值只能写字面量。
+- **值语义的代价是实数**：`fenwick` 有 8KB。不过奶昔本来写的「不写 `ref self` 就会拷 8KB」
+  **是错的** —— 真去试才发现**方法必须收 `ref self`**，编译器直接拦：
+  ```
+  error: `self` of `counter.bumpCopy` must be `ref counter`
+  ```
+  所以「不小心拷一份」这回事不会发生。值语义真正咬人的地方是**赋值和返回**：
+  `var f2 = fenwick::new(8)`、`let x = b` 这种本来就要拷贝（这是值语义的定义）。
+  **教训**：DEVLOG 里的话也得验过再写，「应该是这样」不算。
+- **没法透过 `ref` 写标量**：随机数发生器的状态只能包一层 struct
+（`self.state = ...`）。这个限制记进 DECISIONS 当待定项了。
+
+## 2026-09-18 · T5b：`?` —— 展开成语句，因为 C 没有语句表达式
+
+**形状**：`?` 是**语句级**的转发。C 里没有语句表达式（`({ ... })` 是 GNU 扩展），
+所以要展开成三句：
+
+```c
+option_i64 __extc_try0 = <被 ? 的表达式>;      /* 求值**一次** */
+if(!__extc_try0.has) return <失败值>;
+i64 x = __extc_try0.value;                    /* 接着用载荷 */
+```
+
+**推论**：`?` 只在「整个语句能重写」的地方合法 —— 四个位置：
+`f()?` / `let x = e?` / `x = e?` / `return e?`。
+写在别处（`f(e? + 1)`）**报清楚的错**，而不是生成编不过的 C。
+
+### 载荷类型可以不同，错误类型必须相同
+
+这是奶昔想清楚的一个区分：
+
+- **载荷**：里层 `result<i64, E>` 放进返回 `result<point, E>` 的函数 —— 要构造
+  外层失败值（`.value = <point 的零值>, .err = 内层的 err`），这做得到。
+- **错误**：必须一模一样 否则「搬过去」就是在编造一个不存在的转换。
+  `result<i64, a>` 的 `?` 出现在返回 `result<i64, b>` 的函数里 → 报错。
+
+### 编译器认识的**协议**（第二条）
+
+`?` 要知道 option/result 的标签字段叫什么。这跟视图的 `data` + `len` 是**同一种分工**：
+
+> **语言认识协议，库提供结构。**
+
+| 容器 | 编译器知道的 | 谁提供结构 |
+|---|---|---|
+| 视图 `slice<T>` | `data` + `len` | prelude |
+| `option<T>` | `has` + `value` | prelude |
+| `result<T,E>` | `ok` + `value` + `err` | prelude |
+
+所以生成的是 `(result_point_gameError){ .ok = false, .value = ..., .err = ... }`
+这样的字面量 ——「构造」这件事本身还是 prelude 的字段，编译器只是知道它们的名字。
+**这跟「把库塞进编译器」的区别在于：方法、语义、名字的取舍全在 extC 源码里，
+编译器只多知道「哪个字段是标签」。**
+
+### 踩的坑（一个自己造的）
+
+接 `?` 的时候顺手整理 `ST_VAR` 的缩进，**把「无初始化式」那条路上的 `declare()` 删掉了** ——
+于是 `var b: board` 静默地什么都没声明，直到 `b.cell[0][0] = 1` 报「undefined name」才露出来。
+
+**奶昔自己的问题**：用 `sed` 按**行号**改代码，而行号在编辑过程中一直在变。
+教训：**行号会漂**，改代码要按内容匹配（edit 的 old_string），不要按行号。
+
+（这个坑被测试抓到了 —— 但抓到它的是一条手写的临时例子，不是回归套件。
+说明**每次改完都得跑一遍全套**，这条纪律救了它。）
+
+## 2026-09-18 · T5a：`option` / `result` —— 先把「怎么构造」这条路打通
+
+**主人的反应值得记下来**：奶昔一口气抛了三个「构造怎么写 / 无载荷失败怎么写 /
+`T` 不能含 `ref` 接受吗」的技术选择题，主人回了一句**「等等等等我看不懂了」**。
+
+—— 这是奶昔的问题。**抽象选项不如能跑的代码**：主人一直是「看代码」的人
+（README 维护规矩第 5 条就是他定的）。所以奶昔改成：讲清楚 `option`/`result`
+**是什么**（用五子棋举例），写法细节自己按推荐的定，做完直接给能跑的例子。
+
+### 做了三件事
+
+**① `::` 关联函数** —— 写在 `struct` 体内但**不带 `self`** 的函数：
+
+```extc
+struct option<T> {
+    fn some(v: T) -> option<T> { return { has: true, value: v } }
+}
+let o = option<i64>::some(42)
+```
+
+为什么非有它不可：查了一下，**泛型自由函数压根不解析**（`fn wrap<T>(...)` → `expected '('`），
+而**方法必须有 `self`**。两样都没有 ⇒ **prelude 里根本没法写构造器**。
+顺带它还是 `array<T>::new()` 的前置（ARRAYS.md 里卡住的那个问题）。
+
+解析上的坑：`option<i64>::some` 里的 `<` 跟小于号撞车。做法是**先只看不动地**
+扫一遍（平衡 `<` `>`，看后面是不是 `::`），是才真解析 —— 判据 `::` 不是合法运算符，
+所以两种解释互斥。这样试探阶段不会喷假错误。
+
+**② prelude 里的 `option` / `result` / `unit`**（都是 extC 源码）。
+
+**③ 三处修出来的真 bug**（都不在 `option` 本身，是**新用法逼出来的老问题**）：
+
+- **C 不允许空 struct**。`struct unit { };` 是 GNU 扩展，而且 `(unit){0}` 会报
+  `excess elements in struct initializer`。修法：零字段的 struct 由编译器补一个
+  `char __extc_empty;` —— 用户看不见，`(T){0}` 就合法了。
+- **泛型实例里字面量记的类型还是「模板」**。`result<unit, E>::failure` 里的
+  `{ ok: false, err: e }` 省略了 `value`，零值那条路拿到裸 `T` → 退化成 `0` →
+  生成的 C 里 `.value = 0`（而 value 是 `unit`）。修法：`genStructLit` 开头
+  `subst(g, e->type)` 先整体替换一次。
+- **`typeContainsRef` 不代入泛型实参**。`option<slice<u8>>` 的 value 是 slice
+（里面有 `ref`）⇒ 没有零值，检查却整条漏过去，最后在生成的 C 里露出
+  `__extc_reference_has_no_zero_value__`。修法：递归前 `ttSubstitute`。
+  **同一个模式第三次出现了**（都是「递归时忘了实例上下文」）。
+
+### 一个被编译器拦住的命名错误
+
+奶昔本来把构造器写成 `result<T,E>::ok(v)` / `::err(e)` —— 编译 prelude 时当场报：
+
+```
+error: `result.ok`: a field and a method cannot share a name
+```
+
+标签字段已经叫 `ok` 了，而**字段和方法不许同名**。这条规则是主人早先定的，
+这次它自己抓出了奶昔的疏忽。改成 `success` / `failure`。
+
+### 顺手修的两个 C 层面的坑
+
+**① `ref self` 方法不能作用在临时值上。** `firstEmpty(...).valueOr(-1)` 生成
+`&(f())` —— C 里非法。第一反应是写 `&((T){ f() })`，**结果更糟**：
+
+```
+error: incompatible types when initializing type '_Bool' using type 'option_i64'
+```
+
+因为 `(T){ x }` 在 C 里**不是拷贝**，它拿 `x` 去初始化**第一个成员**（`has = <option>`）！
+正确的写法是**单元素数组**的复合字面量：
+
+```c
+option_i64_valueOr((option_i64[]){ firstEmpty(...) }, -1)   /* 数组退化成 T* */
+```
+
+数组初始化是逐元素的，`{ f() }` 就是「用一个 T 初始化元素 0」。单独写了 5 行 C
+验证过 `-Wpedantic` 下也干净。
+
+**② 零字段 struct 的占位**（见上）。
+
+**教训**：C 的复合字面量 `(T){x}` 和「拷贝构造」**长得一样但意思完全不同**，
+这种「看起来对、其实初始化了别的成员」的坑，编译器给的错误信息离真因很远
+（报 `_Bool` 初始化失败，而问题在 `{ }` 的语义上）。
+
+## 2026-09-18 · 主人一句「我不是有 let 和 var 吗」点醒了奶昔
+
+**起因**：奶昔把「视图元素该不该可写」当成一个**新设计问题**去问主人。
+主人回：**「老大我不是有 let 和 var 吗，一个是相当于 const 一个就是不是 const」**
+
+—— 对。**机制早就有，是奶昔实现漏了。**
+
+奶昔去把四种写法全试了一遍：
+
+| 写法 | 修之前 | 应该 |
+|---|---|---|
+| `let v = ...; v = ...` | 报错 | |
+| `let n; ref n` | 报错 | |
+| `let p: point; p.x = 99` | **放过去了** | |
+| `let a: [5]i32; a[0] = 99` | **放过去了** | |
+| `let v = a[..]; v[0] = 99` | **放过去了** | |
+
+**根因**：赋值检查只看了裸标识符：
+
+```c
+if(s->u.assign.target->kind == EX_IDENT) { ...查 sym->mut... }
+```
+
+`p.x` / `a[0]` / `v[0]` 的 kind 都不是 `EX_IDENT`，于是**整条分支都不进**。
+而这三个恰恰是「忘了写 `var`」最常犯的形态。
+
+**修法**：加一个 `placeRoot()` —— 穿过字段和下标找到**根**变量，
+`let` 管的就是这个根。取 `ref` 的检查也一并改成查根（`ref p.x` 里 p 是 `let` 也不行）。
+顺带把 4 条错误信息里**粘在一起的英文句子**分开（少了个空格，
+`writes.Use` 这种 —— 设计原则第 6 条说「错误信息是语言的一部分」，那空格也算）。
+
+**新增 5 个反例测试**：`let_write_field` / `let_write_index` / `let_write_view` /
+`let_ref_field`，以及 `examples/slices.extc` 里把「透过视图写」那段改成了 `var`
+（**例子被自己的新规则抓了一次，这是好事**）。
+
+### 但这条规则是「浅」的 —— 奶昔必须说清楚
+
+三个缺口还在：
+
+1. `var w = v`（把 `let` 视图拷给 `var`）之后能写；
+2. 传进函数之后能写（视图按值传递，拷的是指针）；
+3. **`self: ref T` 的方法接收者不受限** —— `let p; p.moveBy(1)` 现在允许。
+
+第 3 条不是懒，是**卡在 `ref T` 一个东西兼了两种含义**：
+它既是「可变借用」，也是「大 struct 的只读共享」（不想拷贝 900 字节的棋盘）。
+而方法体只检查一遍，编译器没法从签名上分辨「这个方法会不会写」。
+
+所以要么接受现状，要么**把可变性放进类型**：
+`ref T`（只读，`let` 也能调）/ `mut ref T`（可变，接收者必须 `var`）——
+Rust 的 `&` / `&mut`。代价是**改每个签名**（含 prelude 的 6 个只读方法）
++ `slice<T>` 要分只读/可变两个类型。好处是能顺带根治
+「写字符串字面量会崩」（只读视图的 `data` 就是只读引用）。
+
+**奶昔的建议是先不动**：因为 week-4 的逃逸检查本来就要把可变性放进类型，
+两件事一起做省一次全量改签名。**但这个要主人拍**（写进 DECISIONS 的待定项了）。
+
+## 2026-09-18 · T5a-3 切片视图：P 在这里第一次真的省掉了一整类检查
+
+**做了什么**：`a[lo..hi]` 四种写法、多维切最后一段、元素可写、越界 trap。
+
+### P 不是口号 —— 它在这里变成了「生成的 C 里没有那个检查」
+
+省略的界**由 check 阶段补成字面量**（`a[2..]` → `a[2..15]`）。
+于是 codegen 只要看到「两个界都是字面量」就知道范围可证明：
+
+```c
+/* let v = a[2..5]  → */
+slice_i32 v =(slice_i32){ .data = &(a.data[2]), .len = 3 };
+```
+
+**零检查、零函数调用。** 界里有变量时才走带 `extc_checkedRange` 的 helper。
+
+而且证明的方向不只是「省检查」，还能**在编译期改错**：
+
+```
+error: slice end 9 is not inside `[5]i32`(length 5)
+error: slice `3..1` ends before it starts
+error: slice end -1 is not inside `[5]i32`(length 5)      ← `-1` 是 EX_UN，先教会编译器认字面量
+```
+
+关键判断：**单独一个界越界，跟另一个界是什么无关，所以永远错**。`a[i..20]` 对 `[15]i32`
+不用等运行时就该报。
+
+### 底必须是「地方」—— 一个刻意的部分检查
+
+```extc
+let v = make()[1..3]   // cannot slice a temporary value
+```
+
+切固定数组要**取元素地址**，所以底只能是变量/字段/索引链。这不是洁癖：
+`make()` 返回值的临时存储活不过这一句，那是个**指向已死对象**的视图。
+切 **slice** 不受限（只是指针算术），所以 `"abcdef"[1..3]` 合法。
+
+完整的逃逸检查（返回局部数组的视图）**还是 week-4** —— 这是明确的、写在文档里的欠账。
+
+### 三个「顺手撞出来的真 bug」
+
+**① 视图索引器按值返回 → `slice<struct>` 根本编不出来。**
+prelude 里 `slice<T>::==` 写 `self[i] != other[i]`，而 `fn ==(self: ref T, ...)` 收 `ref`，
+`&(按值返回的临时值)` 在 C 里非法：
+`error: lvalue required as unary '&' operand`。
+同一个原因让 `s[i] = x` 也炸（`lvalue required as left operand of assignment`）。
+
+修法：索引原语**返回指针**，`s[i]` 编译成 `(*slice_T_index(...))`。一举两得 ——
+元素成了 lvalue，既能取地址比较，也能写。
+
+**副作用（要主人确认）**：**视图从「只读」变成「可写」了**。
+奶昔认为这不是放松：`slice<T>` 的 `data` 本来就是 `ref T`，
+而 extC 的规矩是「引用必须在类型里看得见」（P′）—— 看得见就是显式的。
+已知代价：`slice<u8>` 可能来自字符串字面量（C 里的只读段），**写它会崩**。
+要根治得在类型里区分可变引用，那是 week-4 的事。
+
+**② 泛型里比较数组元素报假错误。**
+`slice<[6]i32>`（切出几行）的 `==` 要比较两行，而 codegen 里「数组派生的 `==`」
+那条分支被 `!e->needEq` 挡着 —— 泛型里的比较**推迟到实例化**才解析，
+代入实参后元素正好是数组，于是掉进方法查找、报
+「`array_6_i32` needs to define `!=`」。**一个不存在的错误。**
+修法：那条分支不能看 `needEq`。
+
+**③ 非字节视图打印成 `slice { data: <ref>, len: 3 }`。**
+`println(a[1..4])` 输出一个没有信息的地址占位。视图是「一片元素」，
+那就按元素打 —— 现在输出 `[2, 3, 4]`。
+顺带修了 `genPrintValue` 里泛型实例落到 `"?"` 的分支
+（「struct 里放一个 `slice<i32>` 字段」以前打印出来是个问号）。
+
+### 教训
+
+**「顺手多试几个类型」是有回报的。** 前两个 bug 都不是切片逻辑本身错，
+而是**切片把「视图」这个早就存在的东西第一次用到了 struct 元素上** ——
+`slice<i32>` / `slice<u8>` 一路都正常，因为数值比较是 C 原生的、不需要取地址。
+一旦元素是 struct，「取地址」这条隐藏依赖就露出来了。
+
+**同一个东西第一次被新用法触及时，最容易暴露老问题。**
+
+## 2026-09-18 · 示例代码抓出的真 bug：原型区和函数体区交错了
+
+**怎么发现的**：T5a-2 提交之前，按 README 维护规矩第 5 条写一段示例代码演示新写法 ——
+里面有个「元素是带 `fn ==` 的 struct 的数组」。extC 自己编得**很成功**（生成 C 没报错），
+**gcc 编不过**：
+
+```
+build/demo.c:167:14: error: implicit declaration of function 'point_eq'
+build/demo.c:190:6: error: conflicting types for 'point_eq'; have '_Bool(point *, point)'
+```
+
+**根因**：`generateC` 的后半段原来是「原型 → 函数体 → 原型 → 函数体」交错的：
+
+1. typedef
+2. struct 定义（有序）
+3. `_debug` 原型 + 数组 `_eq` 原型
+4. **实例的函数体**（数组 `==`、`_debug`）← **这里就调用了 `point_eq`**
+5. struct `_debug` 函数体
+6. 实例方法原型
+7. **自由函数 / struct 方法的原型** ← `point_eq` 的原型在这儿，太晚了
+
+数组的 `==` 是**编译器生成**的，它要调用元素类型的 `fn ==`，而那个函数的原型排在它后面。
+
+**修法**：拆成两个**严格分离**的区域 —— 原型区（只许放原型）和函数体区。
+代码里写了一句规矩注释：「这一区里只许放原型，函数体一律不许出现。」
+
+**教训**（和 T4 的「构建系统」那次同源）：**顺序问题别靠「碰巧对了」，要结构上排掉。**
+而且 —— **写示例代码不是走过场，它是测试**。README 维护规矩第 5 条这次真的赚回了一个 bug。
+
+**回归保护**：`examples/array-of-struct.extc`（数组的 struct 元素、二维 struct 数组、
+通过副本验证值语义）。因为 `tests/run.sh` 会跑 `examples/*.extc`，这个坑回不来了。
+
+### 顺带发现的一个**语法缺口**（还没修，要问主人）
+
+```extc
+println(ps[0] == { x: 1, y: 2 })     // cannot infer the type of a bare `{}` here
+println(ps[0] == point { x: 1, y: 2 }) // 写全名字就行
+```
+
+裸 `{}` 的规矩是「上下文钉死类型」（`var x: T = {}` / `return {}` / `f({})`）。
+`==` 是**语法糖**，展开成 `T.==(lhs, rhs)` 之后右边其实**有**参数类型可推 ——
+所以这里是个**可以补**的洞，不是设计上的不可能。
+
+但补之前得想清楚 `ref` 那一维：`fn ==(self: ref point, other: point)` 和
+`fn ==(self: ref point, other: ref point)` 都可能存在，
+「拿左边的类型当右边的期望类型」在左操作数是 `ref T` 时会推错。
+所以这条**留给主人定**（见 MANUAL「还没定的」）。
+
+## 2026-09-18 · T5a-2 固定数组：五子棋棋盘能编能跑了
+
+**目标**：让 `[15][15]i32` 这种棋盘真的能用 —— 这是 G2（第一个真实用户是五子棋）的硬门槛。
+
+### 做了什么
+
+`[N]T` 类型（多维递归）、字面量 `[1, 2, 3]`、索引 `a[i]`、数组 `==`、`println` 递归打印。
+
+### 发现 / 决定
+
+**① 统一套 struct，连成员也一样 —— 换来「索引永远不需要看上下文」。**
+
+C 里数组不能赋值也不能返回，所以套 struct（`typedef struct { int32_t data[5]; } array_5_i32;`）。
+关键是**成员也不特殊对待**：结构体里放数组字段也是套好的 `array_5_i32`，不是裸 `int32_t data[5]`。
+代价是多一层名字，换来的好处是 **`a[i]` 永远编译成 `a.data[i]`** ——
+不需要「这个表达式是不是成员」的上下文判断。**上下文相关的 codegen 是 bug 温床，宁可多一层。**
+
+**② C 名字递归修饰**：`[15][15]i32` → `array_15_array_15_i32`。跟泛型实例共用 `instances` 表。
+
+**③ 字面量严格计数 + 末尾 `...`。**
+
+`let a: [3]i32 = [1, 2]` 报错（`needs 3 element(s), got 2`）。
+主人要的语法糖是「少写几个零」，所以给 `[1, 2, ...]`（= 剩下补零）。
+**`...` 只在末尾、且必须能从上下文拿到长度** —— 没有上下文时明确报错
+（`... needs the array length from context`），不猜。
+
+**④ 零初始化是默认，所以没有 `[0; 3]` 这种语法。**
+
+定案 8 已经定了零初始化，再给一个「全零字面量」语法就是两套写法干一件事。
+
+### 验证
+
+```
+$ ./build/extc --run examples/arrays.extc
+1 / 0 / 1,1 / [[1, 0], [0, 1], [1, 1], [1, -1]] / [1, 2, 0, 0, 0] / true / false / true / 1
+
+$ ./build/extc --run examples/gomoku-board.extc
+moves = 9 /(7,11) = 1 / 黑棋竖着五连？true / 白棋竖着四列？false / 重复落子？ false / 出界？ false
+```
+
+越界 trap 带 extC 位置：
+
+```
+$ ./build/extc --run /tmp/oob.extc
+/tmp/oob.extc:4: trap: index 7 out of range(length 3)
+```
+
+`./tests/run.sh` → **53 通过，0 失败**（新增 5 个反例：字面量多了/少了、`...` 没上下文、
+索引不是整数、`[0]T`）。
+
+### 坑
+
+**`substEnter` 对 `TY_ARRAY` 解引用了 `inst->sdef`。**
+泛型实例有 `sdef`（结构体定义），数组实例没有 —— 数组和泛型实例共用 `instances` 表，
+所以进实例上下文时必须 `if(inst->kind != TY_GENERIC) continue;`。
+注意：这是**共用表带来的类型混淆**，不是逻辑错误 —— 表共用是对的（都是「编译器生成的类型」），
+漏的是「遍历时要按 kind 分流」。
+
+还有一个小的：`println(dirs)` 一开始被拒（`isPrintable` 没有 `TY_ARRAY`）；
+`a == c` 也被拒 —— 补上数组分支，并且 `typeSupportsEq` 要**递归**下去
+（`[3][3]i32` 能不能比取决于 `i32` 能不能比）。
+
+### 还没做
+
+**切片视图 `a[lo..hi]`** —— 语法（`EX_SLICE`）已经能解析，codegen 里还是
+`error: slicing is not implemented yet`。这是 T5a-3。
+
+## 2026-09-18 · 主人问到点子上：`T` 会不会跟用户类型撞？
+
+主人问：「直接用 `T` 真的是好的吗，万一用户自定义结构体叫 `T` 呢」
+
+**奶昔去验了，真的能撞**：
+
+```extc
+struct T { x: i32 }        // 用户自定义的类型
+struct box<T> { value: T } // 里面的 T 是参数还是那个结构体？
+```
+编译**通过**，行为是**遮蔽**（参数赢）。但**读者根本看不出来**。
+
+奶昔之前只给了**约定**（「单个大写字母是通行写法，Go/Rust/TS 都这样」），
+没给**保证**。这正是这一个晚上反复出现的同一个毛病：**把语义藏在命名约定里。**
+
+### 修法：让两者集合不相交
+
+强制两条：
+
+- **类型名首字母必须小写**（camelCase）
+- **泛型参数首字母必须大写**（`T` / `K` / `V`，也可以写 `Element`）
+
+⇒ **语法上不可能同名。**
+
+```
+error: type name `T` must start with a lowercase letter
+  note: Type names are camelCase(lowercase first letter). A leading uppercase
+        letter is reserved for type parameters, so the two can never collide.
+
+error: type parameter `t` must start with an uppercase letter
+```
+
+**「能编译但读者看不懂」是坏设计** —— 而这次的解法跟前面几次一样：
+**把约定升级成检查**。
+
+### 顺带：保留定义的完整处理（主人的原则）
+
+主人同轮提出「不应该允许用户随意修改保留的定义（比如 slice）」。三件事：
+
+1. **`reserved` 标记** —— prelude 的定义都标上，重定义时错误信息说清原因
+2. **契约检查** —— prelude 加载后验证 `slice` 的形状，不符合就报 internal error
+（否则 prelude 改个字段名会变成「生成的 C 编译不过」这种莫名其妙的错误）
+3. **确认了一件事：extC 天生防住「给已有类型加方法」** ——
+   没有 impl 块、方法必须写在 struct 体内 ⇒ 用户**没有办法**扩展 `slice`。
+   这不是运气，是「语法一致、不要有特例」的副产品。
+
+**测试** 43 → 46 个（三个反例：`type_name_uppercase` / `type_param_lowercase` / `redefine_slice`）。
+
+---
+
+## 2026-09-18 · T5a-1 落地：`slice` 索引 + 字符串库（全部用 extC 写）
+
+主人说「现在的 slice 用起来有点怪」。奶昔诊断：**怪的不是缺语法糖，是缺索引** ——
+它是个「只能问长度、读不了内容」的东西。
+
+### 关键发现：不用等数组
+
+奶昔本来以为「索引 = 数组」，但其实 `slice` 的索引**单独就能做**，
+而且字符串字面量已经能造出 slice 了（T4c）—— **不需要数组当垫脚石**。
+
+于是拆成两小步，先做小的那个，怪味当场消失：
+
+```extc
+let s = "hello world"
+println(s[0])                    // 104
+println(s == "hello world")      // true  ← 按内容比较！
+println(s.find("world"))         // 6     ← 词法分析器的核心
+println(s.startsWith("hello"))   // true
+```
+
+**那个之前被拒绝的「`str ==` 是指针比较」的陷阱，从这里开始变成正确的按内容比较。**
+
+### 设计：语言认识「协议」，库提供「方法」
+
+索引要么让编译器认 slice 的协议（`data` + `len`），要么就得暴露一个**无检查的原语**：
+
+```extc
+// 反面教材：如果编译器不认协议，库只能这么写
+fn get(self: ref slice<T>, i: i64) -> T {
+    if i < 0 || i >= self.len { ... }     // ← 每个方法都要自己查一遍，漏一个就 UB
+    return readAt(self.data, i)            // ← 而这个原语本身是 UB 的
+}
+```
+
+**所以让编译器认识协议不只是更清晰，它是唯一能同时保住「库用 extC 写」和「没有 UB」的做法。**
+
+一句话概括这个模式：
+
+> **语言认识某个东西的「协议」（因为它有语法），库提供它的「方法」。**
+
+| 语法 | 语言必须认识的协议 | 库提供什么 |
+|---|---|---|
+| `a == b` | 有个叫 `==` 的方法 | 那个方法的实现 |
+| `a[i]` | 它是视图：`data` + `len` | `get` / `==` / `find` 全部方法 |
+| `for x in xs`（将来） | 它有迭代器 | 迭代器的实现 |
+
+**协议是小的、固定的；方法是多的、可变的。**
+
+### 一个细节：索引原语**按值**收视图
+
+如果直接生成 `a.data[checked(i, a.len, ...)]`，那 **`a` 会被求值两次** ——
+`f()[i]` 就会调用 `f` 两次。所以生成的是每类型一份的原语：
+
+```c
+uint8_t slice_u8_index(slice_u8 v, int64_t i, const char *file, int line) {
+    if(i < 0 || i >= v.len) extc_trap(file, line, i, v.len);
+    return v.data[i];
+}
+```
+
+**按值收视图 ⇒ 实参只求值一次**，而且不用为「值 / 引用」写两条路径。
+越界时 trap 会带上 extC 的 file/line（由调用点传进去）：
+
+```
+foo.extc:12:9: trap: index 99 out of range(length 11)
+```
+
+### 主人在这一轮补的原则：保留定义不许乱改
+
+>「不应该允许用户随意修改保留的定义（比如 slice 这种）的重载，这会导致混乱」
+
+**好消息：我们天生就防住了。** 因为 extC **没有 impl 块、方法必须写在 struct 体内** ——
+**「给已有类型加方法」在语法上不可达**。这不是运气，是「语法一致、不要有特例」的副产品。
+
+另外做了两件把**隐式契约变成显式检查**的事：
+
+1. **`reserved` 标记**：prelude 里的定义都标上。用户重定义时报
+   `` `slice` is a reserved definition and cannot be redefined ``，
+   note 说明它来自 `stdlib/prelude.extc`、是语言契约的一部分。
+2. **契约检查**：prelude 加载后验证 `slice` 真的是「第一个字段 `data: ref T`、第二个 `len`」。
+   不检查的话，prelude 改个字段名会变成**「生成的 C 编译不过」**这种莫名其妙的错误：
+
+```
+extc: internal error -- the prelude's `slice` does not have the shape
+the compiler expects(`data: ref T` then `len`)
+```
+
+### 验收
+
+```sh
+grep -cE 'struct slice|slice_[a-z]' src/*.c src/*.h    # ① 结构和方法：一无所获
+grep -in 'slice' src/*.c src/*.h                        # ② 只剩三处「规定」+ 注释
+```
+
+三处**规定**：① 字符串字面量是什么类型 ② 字节序列怎么输出 ③ 视图的协议是 data+len。
+**没有一处是实现。**
+
+**测试** 43 个全过（`examples/strings.extc` 更新成展示新能力）。
+
+---
+
+## 2026-09-18 · `examples/tour.extc`：一份能跑的完整语言巡礼
+
+主人问「来个完整的示例代码展示这个语言」。写了 `examples/tour.extc`，
+把现在能用的东西全用上，而且**输出是真实的**：
+
+```
+=== extC 语言巡礼 ===
+counter { label: alpha, value: 210, st: done }
+counter { label: beta, value: 330, st: done }
+a == b ? false
+a.labelSize() = 5
+a.describe()  = done
+a.st == done  = true
+pair { first: 6765, second: true }
+pair { first: nested, second: counter { label: alpha, value: 210, st: done } }
+counter { label: , value: 0, st: idle }
+area-ish = 28.2743
+small = 200  widened = 200
+```
+
+一份代码编出这些 C 结构体（单态化）：
+
+```c
+typedef struct state state;
+typedef struct counter counter;
+typedef struct pair_i64_bool pair_i64_bool;
+typedef struct pair_slice_u8_counter pair_slice_u8_counter;
+```
+
+**注意 `pair_slice_u8_counter`** —— 泛型实参里嵌了一个**泛型实例**（`slice<u8>`），
+名字修饰是递归的，而且**结构体定义顺序是按依赖排出来的**（T4c 踩的那个循环依赖坑就在这里）。
+
+**一句话**：`println(a)` 能打出 `counter { label: alpha, value: 210, st: done }`
+—— 递归打印 struct、枚举打名字、字节视图打文本，**用户一行 printf 都没写**。
+
+---
+
+## 2026-09-18 · T4c 落地：字符串就是 slice<u8>，`str` 内建类型没了
+
+```extc
+let s = "hello"          // 类型是 slice<u8>
+println(s)               // hello
+println(s.len)           // 5      —— len 是个普通字段
+println(s.isEmpty())     // false  —— prelude 里的方法
+```
+
+生成的 C 只有这么点：
+
+```c
+slice_u8 s =(slice_u8){ .data =(uint8_t *)"hello", .len = sizeof("hello") - 1 };
+```
+
+**零分配、零拷贝。** 而且**长度交给 C 的 `sizeof` 算** —— 这是个很省事的决定：
+转义（`\n`、`\t`）和 UTF-8 全都不用语言自己处理，C 已经算对了。
+
+### 编译器还需要知道 slice 的两件事（都不是实现）
+
+1. **字符串字面量是什么类型** —— 这是**语言规定**，所以 `check.c` 要查一次 `slice` 这个名字
+2. **字节序列按文本输出** —— 这是**输出约定**（`printf("%.*s", len, data)`）
+
+于是验收标准修得更精确了：
+
+```sh
+grep -inE 'struct slice|slice_[a-z]' src/*.c src/*.h   # ① 结构和方法：必须空
+grep -in 'slice' src/*.c src/*.h                        # ② 只允许那两条规定 + 注释
+```
+
+**容器长什么样、有哪些方法，编译器一无所知。**
+
+### 踩到的坑
+
+**① `player` 包含 `slice<u8>`，而实例结构体排在普通 struct 后面 —— 循环依赖。**
+写了「先普通 struct 再泛型实例」的规则，但两者**会互相包含**。修法是**按依赖顺序出定义**：
+
+- 先出**全部** `typedef struct X X;`（指针字段只需要这个）
+- 再按依赖序出 struct 体（迭代到没有进展为止；有环就硬出，让 C 去报 ——
+  值语义的环本来就不是合法类型）
+
+一劳永逸，将来 `array<point>` 之类也不会有问题。
+
+**② `println(s)` 打成了 debug 形式** —— 因为字节视图的判断排在了 struct/泛型分支**后面**，
+永远到不了。调顺序就好，但这个 bug 说明**分支顺序本身就是逻辑**。
+
+**③ 顺手把「空 slice 造不出来」这个已知限制部分解决了**：`""` 是合法的 ——
+它指向一个长度为 0 的字节视图。
+
+### 还不能做的（诚实记录）
+
+**字符串比较要等索引。** 按内容比较必须逐个看字节，而那要 `data[i]` —— 索引要等数组落地
+（week-2）。现在报错说得很清楚：
+
+```
+error: `slice` does not define `==`, so it cannot be compared
+```
+
+**宁可报错，也不给一个指针比较的假答案。**
+
+**测试** 41 → 42 个（新增 `examples/strings.extc`）。
+
+---
+
+## 2026-09-18 · 类型名改成 camelCase + 用「位置规则」替掉大小写魔法
+
+主人问：「为什么要首字母大写？」—— 问得好，因为**那不是审美，是 parser 的消歧义手段**，
+而且奶昔之前没交代过：
+
+```c
+if(at(p, "{") && isUpperCase(t->text)) return parseStructLit(p, t->text);
+```
+
+`if cond { }` 和 `let p = point { ... }` 里两个 `{` 光看 token 分不出来，
+所以当时用「首字母大写」当判据。**这是个隐藏魔法** —— 跟之前那个「约定方法名叫 `eq`」
+是同一类东西。
+
+### 提案与评估
+
+主人先提了更雷霆的方案：**每个块都显式标种类**（`do` = 栈 / `region` = 堆）。
+奶昔的评估是**方向对但过度**：
+
+- 抓到了真事实：**在 extC 里每个块确实就是一个 arena**（不是比喻，是定义）
+- 但「`do` = 在栈里」这个语义**我们没有** —— extC 里块本身就是 arena 边界，
+  没有栈/堆的语言层区分；`do` 如果什么都不改变，就是必须写的噪音
+- **最关键**：`region` 之所以一眼可见，正因为周围都是普通的 `{ }`。
+  如果每个块都写 `do`，`region` 就淹没在一堆 `do` 里 —— **反着破坏了 P′**
+- 还有硬伤：`fn f() do { }` / `struct P do { }` 要不要写？不写就有例外，写就满屏 `do`
+
+> **P′ 要求的是「要变化的东西必须看得见」，不是「所有东西都写一遍」。**
+> extC 的显式原则是「**例外要响**」，不是「默认要吵」。
+
+主人也澄清了一个诉求：**不希望运行时隐性推导** —— 奶昔解释了「编译期的类型确定」
+和「运行时的隐性推导（interface{} / 鸭子类型 / 反射）」是两回事，后者才违反 P。
+
+另外交代清楚了一件奶昔一直没说明白的事：
+**`region` / arena / 逃逸检查现在一个都没实现**，它们全是设计文档里的东西（week-4）。
+编译器 `src/base/base.h` 里那个 `Arena` 是编译器**自己**的内存管理器（C 写的），
+跟 extC 语言层的 arena 同名但无关。
+
+### 定案（主人选 B）
+
+- **类型名也 camelCase**：`slice<T>` / `point` / `gameError`（内建类型本来就是小写，现在一致了）
+- **消歧义改成 Go 的位置规则**：在 `if` / `while` 的**条件位置**里 `{` 属于代码块，
+  其他位置 `标识符 {` 就是结构体字面量。括号里恢复成普通表达式。
+- 唯一代价：`if p == point { x: 1 } { }` 要写 `if p ==(point { x: 1 }) { }`
+- **类型参数保留单个大写字母**（`T` / `K` / `V`）—— 通行写法，而且一眼区分「占位符 / 真类型名」
+
+**顺手做了一条好报错**（认得出「忘了加括号」）：
+
+```
+error: struct literal in a condition needs parentheses: `(point { ... })`
+  note: Inside an `if` / `while` condition a `{` starts the body block.
+        To write a struct literal there, wrap it in parentheses.
+```
+
+> **规则写在语法里，不藏在命名里。** 这跟「`==` 要显式定义」是同一条路线的第三次落地。
+
+改动：parser 加 `inCond` 状态（约 20 行），删掉 `isUpperCase`；
+31 个文件的类型名改名（例子 / 测试 / prelude / 文档）；
+`REVIEW-gomoku-sample.md` 不动（那是主人原样本的审读记录，里面的 PascalCase 是样本自带的）。
+
+**测试** 39 → 40 个。
+
+---
+
+## 2026-09-18 · T4b 落地：prelude 机制通了，slice<T> 是 extC 写的
+
+**目标**：`slice<T>` 用 extC 写在 `stdlib/prelude.extc` 里，编译器源码里一行硬编码都没有。
+
+**验收（可机械检查）**：
+```sh
+grep -in slice src/*.c src/*.h     # 一无所获
+```
+
+**做法**：`tools/embed.c`（C 写的）把 `stdlib/prelude.extc` 变成 C 字节数组 → 链进编译器。
+`main` 里 parse 两遍（prelude 用自己的 `Ctx`，路径显示成 `<extc prelude>`），
+再合并进同一个 `Module`，然后 check 一次、生成一次。`parseModule` 从「重置」改成「追加」。
+
+```extc
+// stdlib/prelude.extc —— 用 extC 写的
+struct slice<T> {
+    data: ref T
+    len: i64
+    fn isEmpty(self: ref slice<T>) -> bool { return self.len == 0 }
+    fn hasAt(self: ref slice<T>, i: i64) -> bool { return i >= 0 && i < self.len }
+}
+```
+
+用户不用 import 就能用，而且**泛型实例照常单态化**（`slice_i32` / `slice_u8`），
+自动调试打印也跟着来。
+
+### 踩到的两个坑
+
+1. **跨表 bug（很值得记）**：最初给 prelude 自检开了一张**独立的类型表**。
+   但类型是**驻留**的、相等是**指针比较** —— 于是 prelude 里的 `bool` 和合并后的 `bool`
+   成了两个指针，报出一句鬼话：`` return value expects `bool`, found `bool` ``。
+   **修法：全程只有一张类型表**（加了 `ttRegister`，可重复调用、按名字去重）。
+   > 教训：**驻留 + 指针比较 ⇒ 表的生命周期必须是全局的**，不能一个阶段一张。
+
+2. **符号名不一致**：`embed` 生成的是 `<符号名>_len`，而 `prelude.c` 声明了另一个名字
+   → `undefined reference`。统一成 `extc_prelude` / `extc_prelude_len`。
+
+### 一个设计决定：prelude 出错算「编译器坏了」
+
+prelude 用**自己的 Ctx** 检查，出错时报：
+
+```
+extc: internal error -- the bundled prelude does not compile
+<extc prelude>:33:1: error: return value expects `i32`, found `str`
+```
+
+因为 prelude 是**编译器自带的** —— 它出错就说明编译器坏了，不是用户的问题。
+这样错误位置永远正确（不会显示成用户的文件名），代价是 prelude 被检查两遍（它很小）。
+
+### 顺手修的一个真问题
+
+`slice` 含 `ref` 字段 ⇒ `var s: slice<i32>` 零初始化会造出**空引用**。
+把「`ref T` 不能零初始化」这条规则**扩展到「含 ref 的 struct」**：
+
+```
+error: cannot zero-initialize `s`: it contains a reference
+  note: `ref` is a non-nullable reference, so it has no zero value -- and neither does any struct that contains one
+```
+
+**测试** 38 → 39 个（新增 `examples/prelude.extc`）。
+
+---
+
+## 2026-09-18 · 诊断信息统一英文（主人要求）
+
+主人指出：**`error:` 是英文、`note:` 是中文**，不统一 → 以后 notes 全部用英文。
+
+改法：把 `ctxError` / `ckError` 的 note 参数（含 `bufPrintf` 拼出来的「字段：」「变体：」那些）
+全部翻成英文，共 45 处。
+
+顺手一并改掉剩下两处「编译器输出」：
+- `--help` 的用法文本
+- **生成的 C 里的头注释**（"Generated by the extC compiler -- do not edit by hand."）
+
+理由：文档和代码注释继续用中文（那是给主人看的），
+但**用户看到的东西**（error / note / help / 生成代码）统一英文 —— 一个程序两种语言很怪。
+写进 README 第 6 条维护规矩。
+
+**测试** 38 个全过（测试只比对 `error:` 那一行，不受影响）。
+
+---
+
+## 2026-09-18 ·「为什么 `==` 必须返回 bool」—— 不是拍的，是推出来的
+
+主人问：「为什么要强制成 bool 啊，那不就很蠢了，如果我就是想要别的定义呢」
+
+**这次奶昔要替这条规则辩护** —— 它不是随便定的，是三个已有前提推出来的：
+
+1. `a == b` 天然会被用在 `if` / `while` / `&&` / `||` 里
+2. extC **没有隐式真值转换**（`if 1` 是错的 —— 这是早就定下的，C 的真值转换是经典 bug 源）
+3. `!=` 是靠 `==` 取反实现的
+
+⇒ 所以 `==` 只能是 `bool`。**除非放弃 ② 或 ③，否则没有中间地带。**
+
+**反例也支持这个选择**：Python 的 `__eq__` 可以返回任何东西，
+代价就是 numpy / pandas 那个著名的 `truth value of an array is ambiguous` ——
+用户写 `if a == b` 却得到一个数组，然后在一个完全无关的地方炸。
+Rust（`PartialEq::eq -> bool`）和 Haskell（`(==) :: a -> a -> Bool`）都定死在 `bool`。
+
+**但主人「想要别的定义」这个诉求是合理的**，所以给出口：
+**换个方法名就行**。
+
+```extc
+fn compare(self: ref point, other: point) -> ordering { ... }   // 随便返回什么
+fn diff(self: ref point, other: point) -> diff { ... }           // 随便返回什么
+```
+
+**只有 `==` 这个名字被绑定了 `bool`**，因为它在源码里的位置决定了它是「一个条件」。
+
+顺手把错误信息的 note 改成**讲理由 + 给出口**：
+
+```
+error: operator `!=` must return `bool`
+  note: `a == b` gets used in `if` / `&&` / `||`, and extC has no implicit truthiness;
+        `!=` is also derived by negating `==`.
+        To return something else, use a different method name(`compare` / `diff` etc.).
+```
+
+> 一条约束如果说不清「为什么」，它就是武断的；说得清，它就是设计。
+
+---
+
+## 2026-09-18 · 主人抓到第二个洞：运算符签名检查放错了位置
+
+主人问：
+
+>「`!=` 真的可以退回吗，万一我的相等返回值是 `void` 或者是别的不能取反的东西呢，那不是炸了」
+
+**验下去发现真的有洞**，而且比预想的更宽：
+
+1. 定义了签名错误的 `fn !=` 但**没直接用到** → 一直没人查（编译器安静地生成 C）
+2. 泛型里 `a != b` 推迟到实例化，codegen 找到了那个 `void` 的 `!=`
+   → **直接把 C 的 `invalid use of void expression` 漏给了用户**
+
+根因：**运算符签名只在「使用处」检查**。所以「没被用到的定义」和「绕过使用处的路径」
+都能漏过去。
+
+**修法：把签名检查挪到「定义处」**（`checkOperatorSig`，在 `checkMethodShape` 里对所有方法跑）。
+于是无论从哪条路径使用它都是安全的，而且**错误指向定义那一行**，比指向某个使用点好得多。
+
+顺手加了六条反例：`op_ret_void` / `op_ret_wrong` / `op_arity` / `op_param_type` /
+`op_self_value` / `op_free_fn`。
+
+> **教训（可推广）：约束要在「产生」的地方检查，不要在「消费」的地方检查。**
+> 在消费处检查 = 检查的覆盖面取决于有多少消费点、以及消费点走哪条路径 ——
+> 那是一张漏得很有创意的网。
+
+**测试** 32 → 38 个。
+
+---
+
+## 2026-09-18 · `==` 改成**显式定义 `fn ==`**（主人第二次提案，改对了）
+
+主人先问「为什么不能早点支持 operator==」，奶昔做了——但**第一版用的是「约定方法名 `eq`」**。
+主人立刻指出问题：
+
+>「现在用户要知道 `eq` 是 `==`，那不是很难受吗」
+
+**这个批评是对的，而且它违反的是 extC 自己的原则**：
+「`==` 去找一个叫 `eq` 的方法」是**隐藏约定** —— 读代码的人看到 `p1 == p2`
+不知道行为从哪来。这跟「不能证明的，语法上必须看得见」是打架的。
+
+**改成让用户直接把 `==` 写出来**：
+
+```extc
+struct point {
+    x: i32
+    y: i32
+
+    fn ==(self: ref point, other: point) -> bool {     // ← 不查约定名
+        return self.x == other.x && self.y == other.y
+    }
+}
+```
+
+- C 里拼成 `point_eq`（C 的标识符不能叫 `==`）—— 加了 `cSymName` 做这层映射
+- `!=` 可以单独定义；不定义就退回用 `==` 取反
+- **`fn ==` 必须写在 struct 体内**（自由函数不能定义运算符）
+- **错误信息变成自解释的**：
+  - `` `tag` does not define `==`, so it cannot be compared `` +「在 `tag` 里定义它即可：`fn ==(self: ref tag, other: tag) -> bool`」
+  - `` `thing.==` has the wrong signature ``
+  - `` `wrapper_tag` needs `tag` to define `==` ``
+
+**教训：一个「约定名字」看起来省事，但它把语义藏起来了 ——
+而 extC 的全部卖点就是「不藏东西」。宁可多打四个字符（`fn ==` vs `fn eq`），也不留隐藏约定。**
+
+（实现只多了一个 `expectFuncName`：函数名位置接受标识符或可重载运算符 token。）
+
+**测试** 32 个全过。
+
+---
+
+## 2026-09-18 · `==` 支持（主人要求提前做）+ 工具改用 C
+
+主人问「为什么不能早点支持运算符重载 operator== 这种」——
+**问得对，奶昔之前把 `==` 排到 T4b 之后是判断失误。它现在就能做，而且应该现在做**
+（因为它把之前那个「`str ==` 变指针比较」的临时补丁换成了**真规则**）。
+
+**实现**：`==` / `!=` 是语法糖，不是万能比较。
+
+| 两边 | 生成 |
+|---|---|
+| 数值 / bool / 枚举 | C 的原生 `==` |
+| struct / 泛型实例 | 找 `eq` 方法 → `Type_eq(&a, b)`；**没有就报错** |
+| `str` | **拒绝**（它的 `==` 是指针比较） |
+
+泛型里含类型参数的比较**推迟到实例化**再检查（`Expr.needEq` + `Checker.eqChecks`），
+错误信息会点明是哪个实例：`` `wrapper_tag` needs `tag` to have an `eq` method ``。
+
+### 踩到的三个坑
+
+1. **codegen 不知道内建类型原生可比** —— check 的推迟复查通过了 `i32`，
+   但 codegen 生成时又去找 `eq`，于是 `wrapper<i32>` 报「int32_t 需要 eq 方法」。
+   codegen 也得有一份"原生可比"的判断。
+2. **`cFuncName` 带的是「当前正在生成的实例」前缀** —— 在 `wrapper<point>` 里调
+   `point.eq`，它拼出了 `wrapper_point_eq`。**被调用的方法属于别的类型，必须用
+   `f->owner` 而不是 `g->ownerPrefix`**。为此把方法名解析单独抽成 `cMethodName`。
+3. **`eq` 的 `other` 按值传更顺手** —— 取 `ref` 时调用点的实参要写 `ref`
+（方法参数的规则），所以 `same(self, other: wrapper<T>)` 比 `other: ref wrapper<T>` 好用。
+
+### 顺带：工具改成 C
+
+主人提醒「不要使用 python」—— 对，尤其这是 C 程设作业。
+`tools/embed.py` 改成 **`tools/embed.c`**（把文件嵌成 C 字节数组，给 T4b 的 prelude 用）。
+好处：**make 只需要一个 C 编译器**，不引入任何解释器依赖。
+这个工具跟编译器一样跑一次就退出，所以也**不手动 free**。
+
+**测试**：28 → 32 个（新增正例 `examples/eq.extc` + 三个反例：
+`eq_missing` / `eq_deferred` / `eq_bad_sig`）。
+
+---
+
+## 2026-09-18 · 泛型约束定案 + prelude 说清楚
+
+主人对 `pair<A,B>.swap` 写不出来这件事的判断：**「因为类型是静态检查的，除非重载运算符否则
+都不应该支持，我觉得限制是对的。」** —— 采纳，并写进 DESIGN：
+
+- **不做运算符重载**（用户可扩展的多态 = 一大片特性面）
+- **不做 trait / interface 约束**（同上，而且是运行时多态的入口，违反 P）
+- **约束靠签名表达**：需要两边同类型就用一个参数 `struct pair<T>`
+
+同时把 **prelude** 的定义写清楚（奶昔之前用黑话没说清）：
+
+> prelude = 每次编译都**先于用户文件**被 parse + check 的一段 extC 源码，用户不用 import。
+> 存在理由是「能在 extC 里写就在 extC 里写」：没有它，`slice<T>` 只能在 codegen 里硬编码
+>（把库塞进编译器）；有了它，`slice<T>` 就是一个用 extC 写的 prelude 类型（）。
+
+### 顺带暴露一个真缺口：需要「T 有某种能力」时怎么办
+
+`map<K,V>` 的 `find`（要 `K` 能比较）、`slice<T>.indexOf`（要 `T` 能比较）——
+模板检查时不知道 `K` 能不能比。三个出路（推迟到实例化 / 具体类型专用 / 最小能力约束）
+记在 DESIGN 里，**T4b 先走「具体类型专用」**（`slice<u8>` 是眼下的真实需求），
+`map<K,V>` 真需要时再定。
+
+---
+
+## 2026-09-18 · T4a：泛型 + 单态化通了
+
+**做了什么**：`struct Name<T> { ... }` 声明 + `Name<Args>` 使用 + 单态化。
+一份 extC 源码 → 编译器按实例生成 N 份 C。
+
+```
+pair<i32, u8>    →  pair_i32_u8_getFirst / pair_i32_u8_getSecond
+pair<bool, point> →  pair_bool_point_...
+box<i64>         →  box_i64_set / box_i64_get
+box<point>       →  box_point_set / box_point_get
+```
+
+四份实例同时工作，嵌套 struct、自动调试打印都对。
+
+**设计**：check 只对**模板**检查一遍（用 `TY_PARAM` 表示 `T`）；
+codegen 在「实例上下文」里把 `T` 换成实参。实例**驻留**（全局一份）。
+
+### 踩到的三个坑（都不是小坑）
+
+1. **参数化实例混进了实例表** → codegen 去生成 `box_T_set` 这种东西。
+   检查 `ref pair<A, B>` 时会产生「实参是类型参数」的实例 —— 那只是拿来比类型的，
+   **绝不能进实例表**。修法：只有**完全具体**的实例才驻留。
+2. **泛型实例的字段必须用它自己的实参替换，不能用环境里碰巧留着的上下文。**
+   踩得很惨：`zeroValue` 里 `subst` 在没有上下文时原样返回，于是它自己递归自己 →
+   **栈溢出**，而且 ASAN 报的是「stack-overflow in zeroValue」这一行重复几十遍。
+   **教训：泛型相关的地方，「用谁的上下文」必须显式进出配对，不能靠环境。**
+3. **实例结构体必须排在普通 struct 之后**（`box<point>` 的字段是 `point`）；
+   而且 `_debug` 要先出原型（实例和普通 struct 会互相递归打印）。
+
+另外还漏了一次：`cType` 只在「裸 `TY_PARAM`」上做替换，但 `ref pair<A, B>` 外层是 `ref`
+—— 必须**整体**替换一次。
+
+### 发现的真限制：模板检查的代价
+
+`pair<A,B>` 里的 `swap`（`self.first = self.second`）**写不出来** ——
+模板里 `A` 和 `B` 不确定相等，checker 只能报 `expects A, found B`。
+
+要写这种操作就**用一个参数**：`struct pair<T> { first: T  second: T }`。
+
+这是「检查一遍、错误只报一次、错误指向模板」的代价；反面是 C++ 那种实例化时才炸。
+**这是一条要写进 MANUAL 的已知限制。**
+
+**测试**：27 → 28 个（新增正例 `examples/generics.extc`）。
+
+---
+
+## 2026-09-18 · 搬迁审计：编译器里哪些该用 extC 写
+
+主人问「前面有什么东西适合用 extC 写」。写了 `MIGRATION.md`，逐函数体检。
+
+**先定了机制**（这是关键）：**两阶段构建 = 部分自举**
+```
+① 纯 C 构建 extc  →  ② 用 ① 编 stdlib/*.extc  →  ③ 链进 extc
+```
+于是最终编译器的一部分**已经是用 extC 写的**，而且是自举的直通路。
+附带好处可能是最大的：**stdlib 每改一次都被「用 extC 编 extC」这个循环检验一遍**。
+
+**审计结果**：约 15 处适合搬，3 处首选。
+- 适合搬：`ctxRenderDiag`、字符分类、各数据表、`ttCanWiden`+整数表、`ttEquals`/`ttRender`、
+  `find*`/`lookup`、`cType`/`zeroValue`/`genPrintValue`、`Buf`/`Vec`、**整个词法器**
+- 留：`Arena`（内存模型本身）、`Ctx` 形状、AST 遍历骨架、`main` 的文件/进程 IO
+
+**但诚实的结论是：现在几乎什么都搬不了。**
+因为 extC 还没有**数组、索引、字符串操作、泛型** ——
+想搬 `ttCanWiden` 要字符串相等，想搬字符分类要 `s[i]`，想搬 `ctxRenderDiag` 要字符串拼接。
+
+> **所以 T4 不只是为了写五子棋 —— 它同时是「把编译器自己搬进 extC」的开门钥匙。**
+
+### 审计中抓到一个真 bug：`str == str` 是**指针比较**
+
+`if a == b` 生成的 C 是 `const char *a; const char *b; if((a == b))` —— 比较的是指针。
+它「看起来对」只是因为 **gcc 把相同内容的字面量折叠到了同一地址**（默认行为）。
+一旦字符串能从别处来（参数、拼接、文件），会立刻判不等，**而且错得无声无息**。
+
+处置：现在 `str` 的 `==`/`!=` **直接报错**，而不是安静地给错答案。
+
+> 通用原则：**语言层承诺的语义，生成的 C 必须真的实现 ——
+> 让 C 的默认行为偷偷替代，就制造了一个未来的陷阱。**
+
+---
+
+## 2026-09-18 · 自动调试打印 + 一条新原则 + 三个 `str` 零值 landmine
+
+**主人定了新原则：「能在 extC 里写的东西，就在 extC 里写」**（除非很难 / 很影响效率）。
+把它写进 `DESIGN.md`，并划了分界线，其中两个易混点单独说明：
+
+1. **编译器「生成」代码 ≠ 把库塞进编译器。** `<Type>_debug` / `<Type>_name` 是前者 ——
+   等价于 Rust 的 `#[derive(Debug)]`。extC 没有反射，「遍历所有字段」这句话在语言里
+   **写不出来**，只能由编译器生成。而 `array<T>.push` 是后者，它写得出来。
+2. **这条原则直接决定 T4 怎么设计**：泛型不应该意味着把容器硬编码进 codegen，
+   而应该是「**容器用 extC 源码写，编译器按实例生成 C**」。
+
+**自动调试打印完成**：每个 struct 生成 `<Type>_debug`，递归打印所有字段
+（嵌套 struct 递归、枚举打名字、零初始化也能直接打）。
+
+```
+point { x: 3, y: 4 }
+player { name: naixi, score: 100, alive: true, pos: point { x: 3, y: 4 }, color: green }
+```
+
+### 一次测试揪出三个同源的 landmine
+
+`println` 一个零初始化的结构体，打出 `name:(null)`。顺藤摸下去发现是**同一个根因的三个分身**：
+
+> `str` 是**不可为空**的，但 C 里 `const char *` 的「零」是 `NULL`，
+> 而 `printf("%s", NULL)` 是 **UB**（glibc 恰好打 `(null)` 骗过你）。
+
+1. `var s: str` 零初始化 → NULL（先修了这条，但没修好）
+2. `var p: player`（含 `str` 字段）→ `{0}` 把字段也变成 NULL ← **真正的根因**
+3. **`player { score: 7 }` 这种省略字段的字面量** → C 自动零填充，同样产生 NULL
+
+修法：零值要**递归**算 —— 含 `str` 的 struct 逐字段写出零值（不含的仍用 `{0}` 省事）；
+结构体字面量**所有字段都写出来**，省略的填零值，不让 C 去零填充。
+
+**教训：语言层说「不可为空」，生成的 C 就必须真的不可为空 —— 不能让 C 的「零」偷偷变成空指针。**
+extC 的每个不方便之处都可能藏着一个 C 的 UB，这类地方要主动去搜。
+
+**测试**：26 → 27 个（新增 1 个正例 `examples/debug.extc`）。
+
+---
+
+## 2026-09-18 · 调试策略
+
+主人问「调试怎么办，C 最搞笑的一个东西就是 gdb」。
+
+**先承认 gdb 的「搞笑」是哪几处**：要另开工具、另学心智模型、要记得 `-g`；
+一开优化变量就 `<optimized out>`；有 UB 时断点停在意想不到的地方；
+`p *ptr->next->data` 跟源码长得完全不一样。
+
+**extC 的调试哲学跟安全哲学同源**：调试图难的根源是「运行时才暴露的东西」，
+而 P 已经把能证明的都挪到编译期了 —— **剩下需要运行时观察的东西本来就少得多**。
+
+定了三层：① 挡在编译期（好诊断，已有）② 挡不住的在运行时留最好的现场（trap 报告）
+③ 剩下的交给 gdb，但让它看到的像 extC。
+
+**相对 C 最大的一条改进**：C 里越界是 UB（可能什么都不发生、可能崩在几十行外、
+可能被优化掉）；extC 里它是**带源码位置、带值、带调用链的 trap**。
+
+**四件便宜且高价值的事**：
+1. **自动调试打印** ← 最值钱。定案 11 已给枚举生成 `<Type>_name`，同一机制给 struct
+   生成 `<Type>_debug`（**递归**打印字段），于是 `println(s)` 对任何类型都能用。
+2. trap 报告像语言的一部分，不是段错误。
+3. `--checks=all` 调试模式：release 消掉能证明的检查，调试模式一个不消 + 打开契约断言。
+   就是 Rust `debug_assertions`，但这里更自然 ——「能证明 / 不能证明」本来就是编译器的内部状态。
+4. 把「生成的 C 对调试器友好」写成原则：不用宏、不做内联花招、布局 1:1、变量名保持原名。
+   → extC 生成的 C 天生是**「优化过的调试构建」**，这在 C 生态里是奢侈品。
+
+**明确不做**：自建调试器（编译到 C 白送 gdb/lldb）、REPL（跟编译到 C 冲突，
+但改一行重编重跑已经是毫秒级）。
+
+---
+
+## 2026-09-18 · 多线程模型：主人提案 → 定案
+
+主人提了一个模型：**保守** —— 值被别的线程用着时谁也碰不了，除非那个线程被释放；
+要用就得把修改**传回父线程**合并（他猜是乐观锁）。
+
+**方向是对的，而且它整个可以静态检查** —— 这是关键：
+
+| 规则 | 靠什么静态保证 |
+|---|---|
+| 值送进线程要**移动** | 移动语义（值语义的延伸） |
+| 线程活着时父线程**看不见**它 | 词法作用域（跟 arena 同一套机器） |
+| 线程结束后拿回结果 | 结果落在父线程 arena |
+| 两个线程不能同时持有同一个值的 `ref` | **引用不过线程** |
+
+于是**零运行时簿记** —— 完全符合 P。
+
+**但「乐观锁」那一半被劝退了。** 乐观锁要在冲突时重试，前提是**知道冲突了**，
+也就是必须**跟踪读集**；而读集跟踪是运行时簿记，**直接违反 P**。
+（这其实就是 STM，软件事务内存 —— 它难做正是因为这个。）
+
+**换成「归约」**：每个 worker 产出一个值，父线程用一个**显式给出的合并函数**合起来。
+
+- 不需要冲突检测（用户写的不是冲突处理，是合并函数）
+- 不需要读集跟踪（零运行时簿记）
+- 合并函数可结合可交换时，**结果与线程数、调度顺序完全无关**
+
+最后一条是最大的胜利：
+
+> **1 个线程和 8 个线程跑出来的结果一模一样，只是快慢不同。**
+> 这杀掉了一整类「有时候对有时候错」的 bug —— 而这类 bug 在 C 的线程里是常态。
+
+**第一个真实用户是现成的**：五子棋的根分裂并行搜索（每线程搜一个子树，最后取最大）
+就是标准 fork-join + 归约，天然确定。
+
+**一条纪律**：worker 里做纯计算，有副作用的活（I/O）留在父线程 —— 不可重放的东西没法归约。
+
+---
+
+## 2026-09-18 · 两个问题：异常要不要？多线程要不要？
+
+**问题一：有必要写 try/catch/throw 吗？**
+
+**不需要 —— 而且理由比「违反 P」硬得多。**
+
+异常存在的理由只有两个，而这两个在 extC 里都已经没了：
+
+1. **不用改签名就能往上抛** → 被 `?` 干掉了（一个字符、可见、零成本、静态解析）
+2. **出错时自动清理资源** → **被 arena 干掉了**。这是关键：函数返回 `Err`，它的帧 arena
+   照样词法结束、一起释放。**异常最核心的卖点在 extC 里直接蒸发。**
+
+更根本的一条：**异常和 arena 天生冲突。** `throw` 穿过一个 `region` 块时谁来释放那个 arena？
+要么给每层栈帧加 unwinding cleanup（运行时簿记 ⇒ 违反 P），要么泄漏。
+
+顺带定了一条区分（很多语言混在一起是错的）：
+
+| | 用什么 | 例子 |
+|---|---|---|
+| 可恢复的失败 | `result<T,E>` + `?` | 文件不存在、落子位置被占 |
+| **bug** | **trap**（直接崩） | 数组越界、除零 |
+
+把 bug 也做成可捕获的异常，会让「我懒得处理」伪装成「我 catch 一下就算了」。
+
+**待定项被暴露出来**：`?` 要求错误类型兼容。`fn f() -> result<T, E1>` 里 `?` 一个
+`result<U, E2>` 需要转换，Rust 用 `From` 解决。extC 现在没有 `From` —— 这是个真缺口。
+
+**问题二：多线程要不要？**
+
+**不做**（两个真实目标都是单线程的）。**但记下一条现在就要守住的红线 —— 引用不过线程。**
+
+`ref T` 绑在 arena 上、arena 绑在词法作用域上、词法作用域活在某个线程上。
+守住这条，将来加线程是**加法不是重写**，还白拿一个很强的保证：
+
+> **共享 = 拷贝。要跨线程就得拷贝。引用跨不出去 ⇒ 数据竞争在类型层面不可表达。**
+
+这正是 Rust 用 `Send`/`Sync` 费力达到的，而 extC 靠「值语义 + arena」自然得到。
+将来只做**消息传递 + 值拷贝**，永远不做共享内存 + 锁。
+
+---
+
+## 2026-09-18 · T3 + 顺手三条：`ref` 表达式 / 零初始化 / 方法进 struct / `type` 枚举
+
+**做了什么**：
+- **零初始化**（定案 8）：`var b: board` 合法，自动清零。C 里最大的 UB 来源之一
+（读到未初始化内存）**从语言里消失**。`ref T` 不能零初始化 —— 它是不可为空的引用。
+- **方法写在 struct 体内**（定案 9）：parser 在 struct body 里允许 `fn`；check 按接收者
+  类型找方法；codegen 做 C 名字修饰（`point_eq`）。**自由函数带 `self` 现在直接报错**。
+- **`type` 枚举**（定案 11/14）：`type status = | ok | warn | error`，`status.ok` 访问变体；
+  **枚举自动有名字文本**（codegen 生成 `<Type>_name`），`println(s)` 直接可用。
+- **`ref` 升级成表达式**（定案 10 / T3）：`ref x` 是表达式；自由函数的 `ref T` 实参
+  必须在调用点写 `ref`；方法接收者自动取地址。`ref` 是**可变**引用，所以不能对 `let` 取。
+
+**意外的好收益**：方法进 struct 之后**方法名有命名空间了** —— `point.eq` 和 `board.eq`
+是两个不同的名字，顶层不用为了避冲突而发明 `point_eq`。这是对「丑名字」的系统性改善。
+
+**一个必须记的坑（浪费了半小时）**：
+改 `ast.h` 让 `sizeof(StructDef)` / `sizeof(FuncDef)` 变了，但 **Makefile 没有头文件依赖**，
+只有部分 `.o` 重编 → **新旧 ABI 混在一起 → 段错误**。而且症状看起来完全像代码 bug：
+`var p: P = { x: 1 }` 报「推导不出类型」、`examples/structs.extc` 直接崩。
+
+定位过程值得记：ASAN 下**不崩**（只报 arena 的「内存泄漏」—— 那是设计如此，从不 free）；
+单独用 `-O0` 编译也能正确输出；只有 `-O1` 的增量构建崩。
+最后 `make clean` 一下全好了。
+
+**修法**：Makefile 加 `-MMD -MP` 自动生成头文件依赖。
+**教训：「代码看起来对但行为诡异」时，先怀疑构建系统。**
+
+**测试**：19 → 26 个（6 正例 + 20 反例），全过。
+
+---
+
+## 2026-09-18 · T1 + T2 落地：类型检查独立成 pass
+
+**做了什么**：
+- 新增 `src/types.[ch]`（**类型表**）。类型是**驻留（interned）**的 —— 一个类型只有一份实例，
+  所以「类型相等」就是「指针相等」，validate 全部退化成指针比较。
+- 新增 `src/check.[ch]`：一遍**独立的类型检查 pass**，把结果写回 AST
+（`Expr.type` / `Expr.func` / `Expr.field` / `Stmt.type`）。
+- `codegen.c` 里**删光了类型推理** —— 作用域跟踪、名字解析、参数个数检查全部搬走，
+  它现在只负责翻译。文件反而短了一截。
+- parser 不再碰类型表：它只造 `TY_UNRESOLVED` 的「类型名」，由 check 解析。
+
+**为什么**：类型检查寄生在代码生成里的话，每加一个特性两边都要改，而且会互相打架。
+
+**T2 顺带做完**：`let x: i32 = "abc"` 以前漏给 gcc，现在由 extC 自己报错。
+
+**落地的规则**：
+- 只自动做**无损失**的拓宽，收窄一律禁止
+- **字面量按值适配**（`let x: u8 = 200` 可以，`= 300` 报「literal `300` does not fit in `u8`」）
+- 没有隐式真值转换（`if 1` 报错）
+- 没有公共类型的运算（`u32 + i32`）报「no common type」
+
+**踩的坑**：局部变量声明的类型标注忘了解析（`let x: i32` 里的 `i32` 还是「未解析的名字」），
+一个根因炸出三处报错，而且症状看着像「i32 不等于 i32」这种鬼话。
+**教训：parser 造「名字」、check 解析「名字」这个分工，要在每个入口都记一遍。**
+
+**测试**：10 个 → 19 个（4 正例 + 15 反例），全过。
+
+---
+
+## 2026-09-18 · week-1 计划定案
+
+**做了什么**：定了 week-1 的范围 —— **类型层地基，一行语法糖都不碰**。
+
+**为什么**：主人问「哪个最好用且最有价值」，并给出了直觉「类型安全优先级比较高，否则后面很难改」。
+奶昔把这个直觉精确化成一句话：
+
+> **能随时加的是「语法」（数组、`for`、`match`、模块）；改起来贵的是「类型的形状」（泛型、`ref`、`result`/`option`、值语义）。**
+
+数组和 `for` 加错了改一星期；泛型和 `ref` 的语义长歪了，所有基于它的代码全得重写。
+
+**产出**：`PLAN.md`（T1 拔类型信息 / T2 真类型检查 / T3 `ref` 升级 / T4 泛型 / T5 `option`+`result`）。
+
+---
+
+## 2026-09-18 · 五子棋示例代码审读 → 第二批定案
+
+**做了什么**：主人给了一份完整的五子棋示例（`board`/`errors`/`sandbox`/`ai`/`main` 五模块），逐行读完，写出 `REVIEW-gomoku-sample.md`。
+
+**最大收获**：数整份代码里**看得见的安全机制**只有 `ref` 一处，**机制痕迹**只有 `region search` 一处 —— 其余全是普通高层写法。
+**主人要的是一门「表面普通的语言」，安全全沉底。** 这回头解释了最早那句「这个 idea 有点丑」：丑的不是糖多，是文档里 `VarArray`/`wString` 那几个名字和「四个替代」的腔调。
+
+**定案 5 条**：格式串（编译期展开）、默认零初始化、方法进 struct 体内、`ref` 调用点显式、枚举自动有名字文本。
+
+**发现 4 个**：
+
+1. **格式串其实可以不违反 P** —— 违反 P 的是「运行时解析」，不是「有花括号」。编译器编译期展开就没有运行时解析。
+   而且它**比多参数顺序打印更安全**：`{}` 个数和实参个数能在编译期检查。
+2. **这段代码正好证明「arena 必须是词法的」** —— `alphabeta` 每个节点都调 `candidates()` 分配数组。动态 arena 会让它们全部活着（O(节点数)，直接爆）；词法 arena 是 O(深度×分支)。
+   顺带收紧 `region` 的定义：它**只是给一个词法作用域起名字**，不是「子树 arena」。
+3. **发散臂** —— `match` 是表达式，但示例里有臂是 `continue`。类型检查器必须要有 never 类型。
+4. **示例里的 `sandbox` undo 栈跟主人自己的 gomoku DESIGN v1.3 矛盾** —— v1.3 明写「全项目零 unmake，拷贝沙箱替代 make/unmake」。这份是 AI 按通用套路写的。
+   **教训：同一个主人，对着 AI 说的和写在设计文档里的是两套，要以认真复审过的那份为准。**
+
+### P 的两处重要澄清（本日最值钱的产出）
+
+**① P 禁的是「隐藏的机制」，不是「数据拷贝」。**
+界线：**这件事是不是用户看不见、也无法从源码推断的机制？**
+
+| 例子 | 判定 |
+|---|---|
+| GC / 异常展开 / vtable | 违反（看不见时机、控制流、调用目标） |
+| 运行时解析格式串 | 违反 |
+| 结构体拷贝 / 零初始化 | 不违反（**值语义是语言规则，不是隐藏机制**） |
+
+不这么划，P 会连 `x + y` 都禁掉。
+
+**② 零初始化是 P 的胜利。**
+C 最大的 UB 来源之一是「读到未初始化内存」，它**只能在运行时发现**；默认清零把它变成**编译期就能保证**的东西。代价是 memset，而编译器还能在能证明「马上会被完全覆盖」时消掉它 —— 那就是「能证明的不留痕迹」在起作用。
+
+---
+
+## 2026-09-18 · week-0 实现（改用 C）
+
+**做了什么**：把编译器从 Python 改成 **C**（因为这是主人的 C 程设作业，而且 C 版才有可能变成 extC 版）。
+`src/` 8 个文件，全链路 `extC → C → gcc → 可执行` 跑通，`tests/run.sh` 10/10。
+
+**关键决定**：写这份 C 的时候**按 extC 的规矩来** —— arena bump 分配、从不 free、无 static 可变全局（状态全挂 `Ctx` 显式传递）、函数 camelCase / 类型 PascalCase。
+于是这个编译器成了 **extC 设计的第一号用户**：那些规矩在真实程序里好不好用，写的时候当场就知道。
+
+**三个发现**：
+
+1. **arena 模型很好用** —— `Ctx` 传着走一点也不烦，不用想 free 太爽了。（主人五子棋引擎里的 `SearchCtx` 果然是同一路写法。）
+2. **arena 的代价也暴露了** —— `Vec`/`Buf` 增长时旧块**还不了**，只能留给 arena。编译器无所谓，但这是真代价：`array<T>` 要不要 `reserve(n)`？
+3. **「不建 AST」在写完第三行代码时就撞墙了** —— `typeOf` 必须在表达式生成阶段可用（`println` 按静态类型选格式、字段访问要判 `.` 还是 `->`、`let` 检查要可变性），这些信息只在符号表和类型里，也就是只在「建了 AST」的世界里。
+   > 注意措辞：**AST 本身不难**，难的是绕过它之后那些检查没处放。
+4. **抓到一个真 bug**：`#line` 的文件名打成了 `(null)`（`CG.path` 忘了赋值）。修完之后 gcc 的报错能准确指回 `.extc` 的第 3 行并带插入符。
+
+---
+
+## 2026-09-18 · 语法决策第一批（6 条）
+
+分号（换行即结束）、类型标注（局部可省 / 签名与字段必须写）、字符串字面量（`slice<u8>` 视图）、全局变量（加，深度 0 的 arena）、常量与枚举（`const` + 简单 `type`）、程序入口（`@main` 注解）。
+
+**连带影响**：`slice<T>` 要泛型 ⇒ 泛型变 week-1 必做；`str` 作废 ⇒ `println` 要认识 `slice<u8>`；`@main` ⇒ 代码生成要产出 C `main` 当 shim。
+
+---
+
+## 2026-09-18 · `@recursive`：把调用栈变成编译期数据
+
+主人补了一条 AI 没写的特性：`@recursive` 让编译器把递归展开成显式栈。
+
+**奶昔的判断：它不是「帅」，它是 P 的直接推论** —— 调用栈是隐藏的运行时机制（深度由 OS 决定、溢出是运行时崩溃），把它变成显式数据正是 P。
+
+**两个漂亮的地方**：
+
+1. **静态上限买到一整条链**：深度上限是编译期常数 ⇒ 帧数组是编译期定长 ⇒ 递归全部内存在编译期确定 ⇒ 零堆、零分配、不可能 OOM。帧数组连堆都不用进。
+2. **它没有引入任何新语义**：展开后就是「定长帧数组 + 循环 + 下标」⇒ **递归深度 = 数组下标**，深度溢出 = 数组越界，完全复用已有机制。
+
+**主人贡献了一个好点子**：`@recursive` = 编译器展开，`@recursive!` = 真递归。
+奶昔发现这**把 `!` 升格成规则了**：`!` =「这里我签字，接受运行时的后果」（`a[i]!` 和 `@recursive!` 同一个含义）。于是 `!` 成了 **P′ 的语法化身**，而且**危险可以在源码里数出来**（`grep -c '!'` 就是一次逃生舱审计）。
+
+**v2 范围**：只做「直接递归」和「递归调用在循环里」两档 —— 后者正好覆盖五子棋的 VCF/VCT。互相递归**报错，不静默退化**。
+
+---
+
+## 2026-09-18 · 问诊 + 命名规范纠正
+
+**主人的回答推翻了奶昔一个判断**：
+
+| 奶昔以为 | 实际 |
+|---|---|
+| 主人喜欢 C 语法，不喜欢 Go/Rust 味 | 主人**喜欢 Go**，Rust/Go 骨架没问题 |
+|「不喜欢语法范式」= 嫌语法风格 | 指的是**命名规范** |
+
+主人的口味：`var thisIsAGoodName: i32` —— `name: Type`、camelCase、PascalCase 类型、`i32` 不用 `int`。
+所以 v0 丑的地方**不是骨架，是名字**：`VarArray`（`Var` 是废话还撞关键字）、`wString`（Win32 遗留）、`is_empty`（该 camelCase）、`box<[T]>`（双重间接且缺 `cap`）。
+
+**另一个重要背景**：主人是 **OI 出身** —— 习惯全局数组、不手动释放内存、重视性能；也因此知道 C 的 `mem*`/`str*` 很快（虽危险）。
+这条直接判死了 v0「不做 C 互操作」：要 `memchr` 级别的速度就必须能碰 libc。
+**定案：标准库实现可以调 libc（编译器生成），用户代码不能。**
+
+**关于 `static`**：主人说它「sb」，但后来承认不太清楚它干嘛（OI 很少用）。
+奶昔解释了 C 的 `static` 有三层意思，被骂的是中间那层（**函数内静态变量 = 活得比函数调用久的局部变量**，签名上看不出来的隐藏状态）。
+**extC 的答案（推导出来的，不需要新规则）**：全局 = 深度 0 的 arena ⇒ ① 不需要 `static` 关键字 ② 引用规则自动禁止全局存局部地址 ③ 真正危险的那个 `static` **在语法上不可达**（局部的作用域就是它的 arena）。
+
+**另一条纠正**：主人说「不建 AST」，奶昔上一版判它出局。
+问清楚之后发现原话是「**不解析整个 C**」—— 这句话里揉着两件事，被 AI 总结时扩大了：
+-「不解析 C」保留（透传的 C 不用解析）
+-「不建 AST」出局（被检查的是 **extC**）
+**不解析 C ≠ 不解析 extC。**
+
+---
+
+## 2026-09-18 · 设计收敛：10 条原则 → 1 条
+
+主人说「这个 idea 有点丑」。奶昔找到病根：**这门语言是用否定句定义的**（v0 的定位是四个「替代」），像一份对其他语言的投诉清单，不像一门语言。
+
+**手术结果**：把 v0 §11 的 10 条原则收敛成**一条**：
+
+> # P：凡是编译期能证明的，运行时不留痕迹。
+> ### P′（逆否）：不能证明的，语法上必须看得见。
+
+v0 的十条里，**三条是 P 的化身，两条是 P′ 的化身**；剩下五条不是原则，是预算、策略、审美和手段。
+
+**最大的结构发现**：v0 把「arena / 作用域释放」和「逃逸检查」当成两个设计块，其实 **arena 不是第二条原则，是 P +「内存自动回收」这个前提的推论**（P″）。一条规则吃掉 v0 §3 的三套机制（局部变量/box/region 全都是 arena）。
+
+**顺手解决**：
+- **全局变量** = 深度 0 的 arena（见上）
+- **返回值**：引用规则自动禁止返回指向自己栈帧的引用 ⇒ 要返回引用就必须由调用者提供 arena。**这不是我们挑了 Zig 的风格，是规则不允许别的写法。**
+- **越界**：范围类型让可证明的索引零开销。但这条**当场被五子棋证伪了一次** —— 初版写「不可证明就编译错误」，而五子棋满屏 `b.cell[py][px]`，全是运行时算出来的索引，那样五子棋根本写不出来。改成「`a[i]` 带检查（可证明则消除）」，范围类型从**门槛**降级成**优化**。
+
+**判出局**（v0 里删掉的东西）：不建 AST、`From`/`Into`、`string<T>` 泛型、`wString`、`substr`、`to_bytes`、`VarArray`/`hashMap` 这些名字、全部 6 种转换里的冗余……
+
+---
+
+## 2026-09-18 · 项目起点
+
+主人的动机：**「我要在 C 程设期末大作业写五子棋人机对战，现在是学期初，我闲得慌，而且 C 实在太不安全了，我感觉我会写出一大堆 bug。」**
+
+奶昔据此把第一目标从「四个月自举」改成 **G2：能写出五子棋**。自举退成第二个目标。
+理由：五子棋要的东西比自举少得多；而且验收标准变得**近、可测、就是主人本来要做的事**。
+
+同时提醒了一个硬冲突：**期末只剩十几周，语言不可能赶上作业**。两者必须分开 —— 五子棋照原计划用 C 写，extC 是并行的副线。
+---
+
+## 2026-09-21 · 修掉 **PLAN #27**（实例集合的传递闭包）+ 五处"绕它"的探针全删
+
+**症状**（写例子时第 N 次撞到）：`varArray<i64>::get() -> option<i64>`，程序里如果**从没直接写过**
+`option<i64>`，codegen 就不会生成它 ⇒ 生成的 C 报 `unknown type name 'option_i64'`
+（用户什么都没写错，纯编译器自己的账没算全）
+
+**修法**：`units` 收集完之后跑一遍**传递闭包** —— 扫每个 unit 的
+**字段 + 方法签名（代入 T）+ 枚举载荷**，把里面提到的"结构体类"补进来，跑到不动点
+带**轮数上限**（64），超了**响亮报错**（`internal: instance closure did not settle`）
+
+**前后对照**（同一个程序）：
+```
+新编译器： size = 1（生成的 C 里 option_i64 出现 15 次）
+旧编译器： extc: C compiler failed(exit 1)
+```
+**副产品**：五处 `println("逼出 option_i32…")` 探针**全删了**（`varArray-return` / `list-return` /
+`varArray-asSlice-return` / `field-strong-update` / `path-narrowing`）—— 它们本来就是**绕 #27 的**
+⇒ 删掉之后套件仍全绿，正是修复的旁证
+**回归用例**：`examples/instance-closure.extc`
+
+---
+
+## 2026-09-22 · 打印不再"每种类型派一份代码"（描述表第一步）+ 撞到并修掉 PLAN #35
+
+**起因**（上一轮的量化）：编译时长压测里，合成程序（N=1000）生成了 **2028 个 `_debug`、
+11,250 行 = 生成 C 的 22.9%**，而那个程序**一次都没打印过结构体** ⇒ 全是废的
+（真实例子里只有 4~9 个 ⇒ 收益集中在"类型多"的程序上）
+
+**这一刀做了什么**：把"每个类型派生一段 printf 代码"换成"**每个类型一份静态数据** +
+**全程序一份**通用递归打印器"
+
+```
+以前                                   现在
+void pair_debug(pair v) {              static const ExtcField pair_fields[] = {
+    printf("pair { ");                     { "a",  offsetof(pair, a),  &extc_desc_i32 },
+    printf("a: ");                         { "b",  offsetof(pair, b),  &extc_desc_i64 },
+    printf("%d",(int)(v.a));              { "xs", offsetof(pair, xs), &slice_i32_desc },
+    printf(", ");                      };
+    printf("b: ");                     static const ExtcDesc pair_desc =
+    printf("%lld",(long long)(v.b));      { EXTC_D_STRUCT, "pair", sizeof(pair), 3, pair_fields, NULL };
+    printf(", ");
+    printf("xs: ");                    void pair_debug(pair v) {          ← 只剩一行转发
+    slice_i32_debug(v.xs);                 extc_print(&v, &pair_desc);
+    printf(" }");                      }
+}
+```
+
+细节与踩坑：
+- **字段偏移由 `offsetof` 填** —— 漏一个字段、算错一次布局，都**编不过**（不用自己数偏移）
+- **描述常量之间会成环**：`struct s { xs: slice<s> }` ⇒ `s_desc → slice_s_desc → s_desc`。
+  解法：区首先出**全部** `static const ExtcDesc X_desc;`（C 的 tentative definition），
+  定义顺序就无关了（先写了个小 C 文件验证这个写法在 `-Wall -Wextra` 下干净）
+- 枚举只印**变体名**（定案 11），表外值印 `<类型名>` —— 描述表里就是一张
+  `const char *const[]`，跟旧的 `<E>_name()` 逐字节一致
+- `slice<u8>`（按文本印）· `ref`/`?ref`（一律 `<ref>`）· 13 种标量 ⇒ **全程序共享**那几只，
+  不占额外空间
+- 顺手删掉**死代码** `slice_u8_debug`（它打 `slice { data: <ref>, len: N }`，
+  而字节视图的打印路径一直走 `writeText` ⇒ 从来没被调用过）——
+  真有人调用它的话现在会**立刻编不过**，这本身就是证明
+- 分两次 `bufPuts`：整块拼一起会触发 `-Woverlength-strings`（C99 只保证 4095 字符）
+
+**判据（最硬的那条先跑）**：用 `git worktree` 检出**旧编译器**，把 examples + tests 共
+**73 个程序**逐个跑一遍，**实际输出 73/73 逐字节一致**（含退出码）
+外加：测试 **223 通过 / 0 失败**、arena 2、攻击库通过集合与 BASELINE **一字不差**、
+golden 差异逐行核对过 —— `examples/tour` 265 行变化 = 27 行 `_debug`（定义→转发）
++ 新增的 prologue/描述数据，**被删掉的行全部是旧 `_debug` 的 printf 体**
+
+**顺手撞到的真 bug（PLAN #35）**：写完对着 golden 时发现 `tests/arena/control-flow.extc`
+**根本编不过** —— `alloc<T>(n)` 是内建原语（`EX_GENCALL`），而"这个函数用不用 arena"的
+判据 `exprHasNew` **只认 `new`** ⇒ 只在内层块里分配的函数被判成"不用 arena"，
+块里却照样吐 `&__extc_a[2]` ⇒ gcc 报 `__extc_a undeclared`
+**更值得记的是**：这个用例**一直是这个形状** ⇒ 它**从来没跑起来过**，而验收脚本只
+grep "out of arena memory" ⇒ **A2 的验收空转了不知道多久**
+⇒ 一行修掉（`case EX_GENCALL: return true`）+ 回归用例 `examples/alloc-in-block.extc`
++ **把脚本收紧**（编译报错也算 FAIL）现在它真的跑：
+`early return = 999` / `continue/break = 300`
+教训：**"没报错"不等于"跑过了"** —— 判据要写成"必须出现什么"，而不是"不许出现什么"。
+
+---
+
+## 2026-09-22 · 描述表收官：步骤②③④ —— 端到端编译 **−45%**（N=1000）
+
+（步骤①见上一条；这条记 ②③④ 和最终账）
+
+**② 调用点也换掉 ⇒ 三个派生器家族全消失**
+`println(x)` 里 x 是枚举/字节视图/struct/泛型实例/数组 ⇒ 一律
+`extc_print(&x, &x_desc)`；`<T>_debug` · `<T>_writeText` · `<T>_name` **全删**
+
+踩了两个坑，都写进注释了：
+- 实参不是"地方"时想用 **C 的复合字面量** `&(T){expr}` —— **不行**：
+  C 不允许用同类型的表达式去初始化聚合体（`int32_t data[3];` 那一串报错就是它）
+  ⇒ 改用**语句前缀**机制先落进临时变量（`__extc_pN`）再取地址
+- `isPlaceExpr`（"extC 里的地方"）**不能**当"生成的 C 是 lvalue"用：
+  切片表达式 `s[0..5]` 在 extC 里是地方，生成的 C 却是
+  `slice_u8_slice(s, 0, 5, …)` —— **函数调用**，`&` 它不合法
+（`slices.extc` + `euler-sieve.extc` 当场编不过）⇒ 新增 `printArgIsPlace`：
+  只有"根是标识符的 `x`/`p.f`/`a[i]`"才算，**拿不准就多拷贝一次**（跟旧 `_debug(expr)`
+  传值等价，不是退步）
+
+**③ 描述表按需**：`descRef` 一边给出 `&X_desc` 一边把 X 登记进 `g.descs`，
+跑到不动点就是闭包；根 = `genPrint` 的实参类型
+顺序上得先**生成完函数体**才知道要哪些，所以描述区跟切片 helper 一样
+**最后拼**到「原型区之后、函数体之前」
+又踩一个：判"要不要打印运行时"**不能**看 `descs.len` ——
+`slice<u8>`（**字符串字面量**！）用的是**共享**的 `extc_desc_text`，压根不进 `descs`
+⇒ `println("x = ", n)` 这种最常见的一句直接编不过 改由 `genPrint` 举手
+（**两条 arena 用例当场抓住它** —— 上一轮把脚本收紧，值回票价）
+
+**④ 结构化 `==` 走同一张表**：`extc_eq(a, b, desc)`
+- 标量/枚举 ⇒ 直接比；数组/切片 ⇒ 长度 + 逐元素递归
+（切片语义跟 prelude 的 `slice<T>::==` **一字不差**）
+- **struct ⇒ 调用户的 `fn ==`** —— 那是任意代码，只能委托
+  描述表加一格 `bool(*eq)(const void*, const void*)`，codegen 生成**一行适配器**
+  `<T>_eqD`（`&` 与否**逐参数**照抄旧 `genEqTest`：看形参是不是 `ref`）
+- 删掉 `genArrayEq` · `genEqTest` · **`typeHasEq`** ⇒ "元素能不能比"现在
+  **只有检查器一处判据**（以前 codegen 和 checker 各判一次、必须手工保持一致，
+  PLAN #20 那个真 bug 就是这么来的 ⇒ 这个不同步的坑从结构上没了）
+
+**最终账（相对重构开始前）**
+| 指标 | 旧 | 新 |
+|---|---|---|
+| 生成 C 行数（合成 N=1000）| 41,547 | **30,483（−27%）** |
+| `_debug` 派生函数 | 2011 个 / ~11,250 行 | **0** |
+| **端到端 `extC+gcc`（N=1000）** | 2806 ms | **1535 ms（−45%）** |
+| 端到端（N=3000）| 8540 ms | **4545 ms（−47%）** |
+| 前端 `extC→C` | 49 ms | 48 ms（没变 收益全在 gcc 侧）|
+| 小例子（hello/tour/gomoku）| 193/270/231 ms | 191/255/226 ms（也略快）|
+| 结构化 `==`（200 个数组类型）| 1251 ms | **971 ms（−22%）** |
+
+**两条反直觉但重要的结论**：
+1. **行数降 27%、时间降 45%** —— gcc 的时间大头是"**很多小函数**"，不是行数
+2. ④ 那一步**行数还涨了 9%** 而时间降 22% —— 同一个道理：代码 → 数据
+
+**判据**：用旧编译器（git worktree）对拍 **72 个程序的实际输出 72/72 逐字节一致** ·
+攻击库 BASELINE **一字不动** · `./check.sh` 全绿（含全部基准，extC 该跟 C 持平的地方仍持平、
+bt 仍快于 C）· golden 差异逐行核对过，**只有"代码→数据"这一类**
+新增覆盖用例 `examples/print-desc-nested.extc`（struct/泛型实例/嵌套数组/枚举/option/`?ref`/
+浮点 `%g`/字节视图）· `examples/eq.extc` 补上数组 `==`
+
+**当初的两个待拍板都按现状实现**（判据没被破坏）：枚举载荷不印 · null 的 `?ref` 也印 `<ref>`
+（描述表本来就顺手能修这两条，等主人点头）
+
+---
+
+## 2026-09-22 · **OI 数量级一量，就挖出 3.2×** —— 两个"外链 / 关联函数"的真 bug
+
+**起因**：主人问"有没有 OI 数量级的多语言大横评"。诚实回答是**没有**（现有的 `bench/multi`
+只有 3 个负载、只有时间一个维度，而且 Python 那三格规模/实现都不一样）。
+于是先拿一个 OI 数量级的核（n=1000 矩阵乘，10⁹ 次乘加）量了一下 —— **立刻出事**
+
+**① `T::assoc(...)` 不算"要 arena"**（PLAN #36）
+`exprCallsNeedsHome` 只认 `EX_CALL`/`EX_METHOD`，**漏了 `EX_ASSOC`** ——
+可 `T::assoc(...)` 的 `e->func` 明明是填好的
+⇒ **非 main** 的函数里调"会分配的关联函数"被判成"不用 arena"，调用点却照样吐
+`&__extc_a[k]` ⇒ **生成的 C 编不过**（`fn helper() { var b: bufT<i32> = bufT<i32>::make(4) }`）
+这个洞**一直只对 `main` 被 `mayUseArena` 里那句 `|| 是 main` 遮住** ——
+而那句兜底的代价是**主函数永远白带一整套 arena 样板**：每个 `while` 体里都吐
+`extc_arena_release(...)`，实测量出来就是 **103 → 34 ms（3.0×）**
+修法：`EX_ASSOC` 加进判据 + **删掉那句兜底**
+
+**② 生成的 C 全用外链 ⇒ gcc 拒掉外层循环向量化**（PLAN #37）—— 这个更值钱
+修完 ① 之后 extC 在 n=512 上追平 C 了，但**放大到 OI 数量级（n=1000）又掉下去**：
+
+```
+C（裸指针）                     203 ms
+C（视图按值 + 手工边界检查）     201 ms   ← 同样的"安全形状"，一点不慢
+手抄 extC 形状的 C（全 static）  208 ms
+手抄 extC 形状的 C（全 extern）  660 ms   ← 只差一个 static
+extC 修复前                      655 ms
+★ extC 修复后（全 static）       205 ms   ← 完全追平
+```
+`-fopt-info-vec-missed` 的原文把话说死了：
+extern 那版报 **`unsupported outerloop form`**，static 那版报 `outer-loop already vectorized`
+⇒ **一个词（`static`）值 3.2×**。extC 只吐一个 .c（单 TU），外链本来就毫无用处
+
+**顺带纠正了一条我自己的错误结论**：我一开始以为 3.3× 是**安全检查**的锅，
+实验直接否掉了 —— 把下标检查关掉只回收 16%（655→556），而**语序完全一样的 C 版
+（视图按值 + 手工检查）只要 201 ms** ⇒ **安全设计不是问题，生成代码的链接性才是**
+这正是"要 OI 数量级 + 要多维度"的理由：**小规模（n=200，1.7 ms）根本量不出来**
+（进程启动噪声就把信号淹了），而 n=1000 一量就是 3×
+
+**③ 白送的两个好处**
+· 编译时长也掉：N=1000 **1535 → 724 ms（−53%）**，N=3000 4545 → 2905 ms（−36%）
+（内链让 gcc 少做 IPA、早点丢掉没人用的函数）
+· 跟描述表那一刀合起来：端到端 **2806 → 724 ms（−74%）**
+
+**判据**：224 测试全绿 · arena 2 · 攻击库 BASELINE 一字不动 ·
+`./check.sh`（含全部基准）5 通过 0 失败 · golden 差异只有"外链 → 内链"这一类
+各基准同步变好：`bench/run.sh` matmul extC:O2 **5 → 3 ms（= C）**；
+`bench/multi` matmul **102 → 34 ms（= C）**
+
+---
+
+## 2026-09-22 · **OI 数量级四语言横评**：三维偏序（CDQ + BIT）—— extC 是 C 的 **1.04×**
+
+主人问"有没有 OI 数量级的多语言大横评"⇒ 没有（`bench/multi` 只有 3 个微负载、只有时间一个维度、
+Python 那几格还不可比）。主人定了方向：**只要 C / C++ / Rust / extC 四种编译型语言**，
+题型用**一个综合的**（三维偏序模板，就是「陌上花开」），规模顶到"std 常见写法 2~3 秒"，
+多维度评（速度 / 空间 / 编译速度）于是有了 `bench/oi/`。
+
+**为什么是三维偏序**：它一道题就把四样都压到了 —— 排序、分治、树状数组、
+**大量随机内存访问**（不是那种能待在寄存器里的小循环）
+
+**怎么保证可比**（这是这份横评的命门）：
+- 四个语言**手写同一套归并排序 + 同一套 CDQ + 同一套 BIT**，连比较顺序都一样 ⇒ 主组苹果对苹果
+- 另设**对照组**：C `qsort` / C++ `std::sort` / Rust `sort_unstable_by`
+（extC **没有 std 排序** ⇒ 它只在主组 —— 这是**语言能力差异**，不是它慢）
+- 数据用**同一个 pcg32 种子**（20260922 / 流 54）在程序内生成（extC 还没有 IO）；
+  四个语言各打出 `gen 校验和 / m / max / 答案校验和` 四行，**必须逐字节一致**
+  任何一步错了（PRNG 复刻、排序、去重、CDQ、BIT 下标）都会对不上
+
+**满规模结果（N=4·10⁶、V=10⁶、-O2、best of 3）**：
+
+| 语言 / 写法 | 构建 ms | 运行 ms | RSS MB | 二进制 KB | 源码行 | 生成 C 行 |
+|---|---|---|---|---|---|---|
+| **extC（手写归并）** | 207 | **3050** | 157 | 20 | 144 | **864** |
+| C（手写归并） | 159 | 2920 | 157 | 15 | 129 | — |
+| C++（手写归并） | 252 | 2930 | 158 | 15 | 130 | — |
+| Rust（手写归并） | 292 | 3090 | 158 | 11540 | 218 | — |
+| C（qsort） | 140 | 3060 | 158 | 15 | | |
+| C++（std::sort） | 226 | 2850 | 157 | 20 | | |
+| Rust（sort_unstable） | 335 | 2830 | 158 | 11545 | | |
+
+**读出来的四件事**：
+1. **运行时间：extC = C 的 1.04×**（3050 vs 2920 ms），跟 C++ 差 4%、比 Rust 快 1%
+   —— 跟 `bench/multi` 那个 n=512 的结果一致（34 vs 34 ms），说明**不是小规模巧合**
+2. **内存：四家完全一样（157~158 MB）** —— extC 是全局数组、Rust 是 `Vec`、
+   C/C++ 是全局数组，但都只有**一份**数据 ⇒ 没有隐藏分配
+3. **编译：extC 207 ms vs C 159 ms（1.30×）**，其中**前端只占 4 ms**（吐出 864 行 / 38 KB 的 C），
+   大头是编那份 C（这条要拆开看，不然会把"编 C 的时间"算到 extC 头上）
+4. **二进制：extC 20 KB vs C 15 KB**；Rust 11.5 MB 是因为它默认**静态链接 std**，
+   不能直接这么比（报告里写明了）
+
+**怎么写出来的（踩到的坑都记账）**：
+- BIT 是 1-indexed，而值域从 **0** 开始 ⇒ 忘了 `c+1` 就是 `i &(-i)` 恒为 0 的**死循环**
+（C 版第一稿就这么挂的，四个语言都得注意）
+- 脚本里 extC / Rust 的 N、V 是**源码里的编译期常数**（不是命令行旗子）⇒ 缩规模时要
+  生成替换后的副本，不然会变成"extC 跑 4·10⁶ 而 C 跑 5·10⁵"⇒ **整张表没意义**（真踩过）
+- 构建失败时**不能**继续跑 ⇒ 会拿上一次的旧二进制量出一格假数据（也踩过，已修）
+- 正确性锚点：`bench/oi/check_brute.c`（O(n²) 暴力）在小规模上跟 CDQ 版对拍过两组
+
+**接进 `./check.sh`**：用 `N=500000` 缩小规模当回归，**必须四语言输出一致**才算过
+
+**加了一行「安全代价」对照之后**（C + 手工边界检查，形状跟 extC 生成的一样）：
+```
+C（手写归并）            2890 ms
+C（手写归并 + 边界检查）  2850 ms   ← 检查**几乎免费**（gcc 把它消掉了）
+extC（手写归并）          2960 ms   ← 比"C+检查"再慢 3.9%
+```
+⇒ **extC 慢的那 2~4% 不是安全检查的代价**，而是生成代码本身
+（这一条跟前面那个"外链挡住向量化"的发现是**同一类结论**：要找就找生成代码，
+别赖到安全设计头上）
+
+**又踩了一次「按行号 sed 拼接」**：加 `IDX` 包装时用 `sed -i '64s/.../'`，
+结果前面插了 18 行注释 ⇒ **行号全偏了**，把 `bitSum`/`pcgSeed` 的循环体换成了别的东西
+（文件当时还没提交 ⇒ git 里没有备份）只能整份 `write` 重写回来
+—— 项目自己的规矩是"**改 C 代码只用 `edit` 工具，不许按行号拼接**"，
+这条规矩就是被这种事故立起来的，我又犯了一次 ⇒ 记账
+
+## 2026-09-25 · **警告第二刀：先量，方向被量歪了** —— 剩下的不是"函数体死代码"，是"没人用的全局"
+
+**量的是**第一刀已落的 `tests/io/stream-file.extc` 生成物（旧记录里那句"117 → 43"的 43）：
+
+```
+gcc 15.2  -Wall -Wextra   43 条 = 26 unused-variable · 3 missing-field-initializers · 2 unused-but-set-variable(其余是不带 tag 的行)
+clang 21.1 -Wall -Wextra  72 条 = 26 unused-variable · 22 **parentheses-equality** · 12 unused-const-variable
+                                · 7 unused-function · 3 missing-field-initializers · 2 unused-but-set-variable
+```
+
+**那 26 条 `unused-variable` 到底是什么**（按名字归类 不是猜）：
+
+```
+ 9  io 库全局   io$cout io$cin io$cerr io$endl io$STDIN io$STDIN_FD io$STDOUT_FD io$IN_BAD io$O_RDWR
+ 3  fs 库全局   fs$fin fs$fout fs$IN_FAILED
+12  extc_desc_i8/u8/i16/u16/i32/u32/i64/u64/ref/...  ← 描述符表整行整行地没人引用
+ 2  函数体局部（e / e__2 / u / n / k / d … 共 7 个，落在 26 里的是其中一部分）
+```
+
+⇒ **上一轮记下的"第二刀 = 未用的 match 载荷绑定/局部变量"这个方向是错的**：
+函数体内的死代码只占个位数，**真正的大头是"顶层全局对象 + 描述符表整片发出来但没人用"**
+—— 第一刀只剪了**函数**那一半，**全局那半个剪枝压根没做** 这就是「代码体积膨胀」的第二主因
+
+**两个具体的新靶子**：
+
+1. **没人引用的全局 / 描述符行**：`std::io` 被 `use …::*` 带进来 ⇒ `io$cout`/`io$endl`/`io$IN_BAD` 无条件生成
+   **为什么不能照抄 `used` 那一套**：函数之间有现成的图 —— `FuncDef.callees` 由 `check_top.c:1925`
+   `collectEffects` 填好（"函数调用了谁"，还带 SCC 用）；而**全局变量和描述符表在图上没有边**
+   ⇒ 方案两段：① **函数级闭包**（从 `main` 沿 `callees` BFS；泛型要注意 `g.insts` 里"一个节点多个实例"）
+     ② **全局 / `extc_desc_*` 用内容判据**：在"只发可达函数"的那一遍生成物文本里找名字，
+     **名字不出现 ⇒ 没人引用 ⇒ 整行不发** 方向保守（死代码里提到它，只会让它**留下**，不会误删）
+2. **clang 独有 22 条 `-Wparentheses-equality`**：生成物写的是 `if((bound == 0))`
+（表达式自带一层括号 + `if(` 再加一层 ⇒ 双重括号）例：生成物 590 行、609 行
+   `if(((self->fd == io$STDOUT) ||(self->fd == io$STDERR)))`
+   ⇒ 这是**多打两个字符**，一个"整串被一对小括号包住就剥掉"的 `cgCond()` 助手就能消掉
+   发射点在 `src/back/codegen.c` 的 `cgLine(g, "if(%s) {", cnd)`（2664 行附近）那一族
+
+**这轮一行代码都没改** —— 量出来的方向跟上一轮的假设不一样：按项目规矩「**先量再改**」
+（树绿 · 语料未跑是因为没有改动 下一轮从上面两个靶子里挑，靶子 1 是大头、靶子 2 是最便宜的）
+
+### 2026-09-25 · 第二刀补记：**双括号 + 3 行描述符**（两个小刀，都不靠属性闭嘴）
+
+**① clang 独有 22 条 `-Wparentheses-equality` ⇒ 0**：生成物原来写 `if((bound == 0))`
+（表达式打印器给比较自带一对括号，语句又给了一对）⇒ 加 `cgCond()`（`src/back/codegen.c`，
+"整串被一对小括号包住就剥掉那一对"只剥**恰好收尾**的那种：字符串字面量里的 `)` 收不了尾 ⇒ 原样返回，
+最多留一对多余括号、绝不改变语义）接到两个发射点：`ST_IF` 与 `ST_WHILE`
+**实测** `tests/io/stream-file.extc`：clang `-Wall -Wextra` **69 → 47 条**（22 条双括号全消）、
+gcc **不变**（28 条 括号多少不是 gcc 的警告）、生成物**行数不变 1608**、`if((` 出现次数 **65 → 9**
+
+**② 3 条 `-Wmissing-field-initializers` ⇒ 0**：`extc_desc_i8`/`extc_desc_u8`/`extc_desc_f32` 三行
+少写了最后一个 `NULL`（`ExtcDesc.eq` 位；其余行都是 7 个初始化器，就这三行是 6 个）⇒ 补齐
+gcc/clang 双双归零 —— 这是**真按"生成物少写"改的**，跟 `EXTC_UNUSED` 那批权宜属性不是一回事
+
+**下一轮的准数（2026-09-25 收尾基线，`gcc/clang -Wall -Wextra` 数 tag 条数）**：
+
+```
+examples/globals.extc        452 行   gcc  1   clang 25   clang -Weverything  84
+tests/io/stream.extc         990 行   gcc 14   clang 21   clang -Weverything 410
+tests/io/stream-file.extc   1608 行   gcc 28   clang 47   clang -Weverything 793
+```
+
+⇒ gcc 那 28 条里 **26 条是"没人用的全局/描述符行"**（第二刀的大头，要走函数级可达性 + 内容判据），
+`globals.extc` 只剩 **1** 条说明**小程序已经接近干净** 差距全在"库整片发出来"这一类
+`-Weverything` 那 793 条里绝大部分是**对生成物无解**的类别（`-Wpadded` 结构体填充 / `-Wdeclaration-after-statement`
+C89 风格 / `-Wunsafe-buffer-usage` 指针运算必然触发）⇒ 按既定方案配一份**写在文档里的 `-Wno-` 清单**
+
+### 2026-09-25 · **第三刀落地：没人引用的定义按"全文内容判据"不发**（gcc 28→16 · stream 14→3）
+
+**机制**（`src/back/codegen.c`：`DeadDef` + `dropUnreferenced()`）：
+发射时把那一行的**原文**记下来（`DeadDef{name, text}`），**整份 TU 拼装完**再判：
+**名字在最终文本里只出现 1 次、且那一次就在这行里 ⇒ 整行删掉**
+- **为什么不记字节偏移**：TU 是"原型 → 描述符 → 函数体"几块缓冲区**拼**出来的 发射时的偏移到不了最终位置；
+  而**那一行的原文**能（`strstr` 找得到）
+- **为什么不在发射点判**：引用它的东西可能**晚得多**才生成（函数体、描述符表）
+- **方向保守**：名字出现 ≥2 次一律保留（哪怕那第二次出现在**死代码**里）⇒ 最坏是"多留一行"，绝不会"名字没人定义"
+- **不动点迭代**：`io$STDIN` 是 `io$STDIN_FD` 的**唯一提及** ⇒ 单趟会把链条留下 ⇒ 反复跑到达稳定
+（每一轮的安全性同上：只有"全文只提一次"的才删）
+
+**实测**（行数 / gcc `-Wall -Wextra` / clang `-Wall -Wextra`）：
+
+```
+tests/io/stream-file.extc   1608→1596 行   gcc 28 → 16   clang 47 → 35
+tests/io/stream.extc         990→ 979 行   gcc 14 →  3   clang 21 → 10
+examples/globals.extc        452→ 452 行   gcc  1 →  1   clang 25 → 25（这个小程序本来就没带库全局）
+```
+⇒ 被删掉的正是 `io$cout`/`io$cin`/`io$cerr`/`io$endl`/`io$IN_BAD`/`io$O_RDWR`/`fs$fout`/`fs$fin` 这批
+**"`use std::io::*` 顺手带进来的库全局"** 这是"库整片发出来"的第一块
+
+**判据**：语料 **256 / 0 失败** 九个套件全绿 生成物照跑（`stream-file` 输出不变）
+
+### 2026-09-25 · **函数体内也按内容判据**：没人读的 match 载荷绑定不发（gcc 16→7 · clang 35→26）
+
+**同一套机制的第二个舞台**（`DeadDef` 加 `off/scopeA/scopeB/scoped`）：
+载荷绑定那一行（`io$ioError e = __extc_m0.u.failure._0;`）记下来，
+**判据收紧到"这个 arm 体"**：绑定名在 arm 体内**一次都没被当名字读过** ⇒ 整行不发
+（不能在全文里数：`e`/`n`/`k` 这种短名字满篇都是）
+
+**两个真 bug（都是量出来的，不是想出来的）**：
+1. **`strstr` 子串计数对短名字完全无效** —— 数 `e` 会把 `self`/`true`/`reader` 全算上 ⇒ 永远"有人用"
+   ⇒ 计数改成**标识符边界**匹配（`identByte`：前后不许是字母/数字/`_`/`$`）
+2. **空 arm 体**（`success => {}`）的跨度是零 ⇒ 被判成"非体内" ⇒ 退回全文计数 ⇒ 又永远"有人用"
+   ⇒ 加显式 `scoped` 标志，不再用"跨度大于零"当判据（两个 bug 都只在**库**那种写法上才现形：
+   小样例里 arm 体非空、名字是 `r`/`n` ⇒ 一次就过 这正是"拿库当判据"的价值）
+
+**实测**：
+
+```
+tests/io/stream-file.extc   1608→1587 行   gcc 28 → 7   clang 47 → 26
+tests/io/stream.extc         990→ 978 行   gcc 14 → 2   clang 21 →  9
+```
+**剩下的**（gcc 7 = 5 `unused-variable` + 2 `unused-but-set-variable`；clang 26 = 12 `unused-const-variable`
+（就是描述符行 下一刀）+ 7 `unused-function`（要传递可达性）+ 上面那 7）
+
+**判据**：语料 **256 / 0** 九套件全绿
+
+### 2026-09-25 · **描述符行也按需**（clang 26→14 · 行数 -12）
+
+13 行 `static const ExtcDesc extc_desc_*`（`ref`/`text`/`bool`/`i8…u64`/`f32`/`f64`）原来是**整片发**的
+⇒ 改成**一张表 + 逐行发射 + 记录成候选**（`SCALAR_DESC[]`）判据还是那一条：**全文里没人提到它的名字 ⇒ 不发**
+（顺手把一个坑填了：这些行是**同一个 `bufPuts` 调用的续行** ⇒ 必须先 `);` 关掉前面的链条，否则表插进去就是语法错
+输出文本不变 结尾那条 `"\n"` 也接管过来，空行位置照旧）
+
+**实测** `tests/io/stream-file.extc`：clang **26 → 14**（12 条 `unused-const-variable` 全消 · gcc 本来不报这类 ⇒ 7 不变）
+行数 **1587 → 1575** 语料 **256/0** + 九套件全绿
+
+### 2026-09-25 · **嵌套 arm 的作用域被外层覆盖**（gcc 7→3 · clang 14→10）
+
+量出来的第三个真 bug：记录 arm 绑定时，我把作用域写给"本次 arm 到当前末尾"的**所有**候选
+⇒ **嵌套 match 的绑定**被外层 arm 体覆盖 ⇒ 只要**兄弟嵌套 arm**用了它自己的同名 `e`，
+外层的 `e` 就算"被提到过" ⇒ 该消的没消 ⇒ 改成只覆盖**本 arm 自己的那几个**（`firstBind + arm->binds.len`）
+
+**实测** `tests/io/stream-file.extc`：gcc **7 → 3** · clang **14 → 10** · 行数 **1575 → 1571** 语料 **256/0** + 九套件全绿
+
+**当前战绩（`tests/io/stream-file.extc`，从最初那一版算起）**：
+
+```
+行数 1608 → 1571    gcc -Wall -Wextra 28 → 3    clang -Wall -Wextra 47 → 10
+剩下的 gcc 3 条：`skip` / `__extc_ret_v`（**写了但没读** —— 要"读写"判据，不是"提没提到"）
+                · `d`（普通局部声明 —— 要把它也纳入体内候选）
+剩下的 clang 7 条 unused-function：**传递可达性**（从 `main` 走 `FuncDef.callees` 到不动点）
+```
+
+### 2026-09-25 · **函数剪枝两次尝试都回退了**（负结果，但把失败模式钉死了）
+
+目标：`unused-function`（clang 每程序 7~12 条，是剩下最大的一项）。判据同上：**每个函数只被声明一次、定义一次
+⇒ 名字在全文里正好 2 次 = 没人调**（用内容判据而不是调用图，是为了让"描述符行里取地址的 `eq` 适配器"
+这种引用也算得上）
+
+**第一次**：声明与定义**各自独立判定** ⇒ 出现"声明删了、定义还在"的错配
+（实测：`fs$ifstream_reader` 就是这样）⇒ 每个调用点退化成**隐式声明** ⇒ gcc 警告从 3 涨到 **28**
+**第二次**：改成**原子删两半**（两半都定位+校验过才动手）—— clang 确实降了（10→5 / 13→5 / 9→4）
+行数也降了（各 -36）**但 gcc 反涨**：多出 `-Wreturn-type`（1）与 `-Wunused-parameter`（2）
+⇒ 说明有**函数体被切在中间** ⇒ 每次删除的 `[off,len)` 不一定真的框住"一个完整函数"
+
+**根因（已定位，留给下一轮）**：`deadFuncBody` 用 **`FuncDef*` 当键**，而这把键**不是"每次发射"唯一的** ——
+泛型实例/同一 sdef 的方法可能被发射多次（同一实例方法在两个实例里各发一遍），一个键会被后一次覆盖
+⇒ 声明与定义无法可靠配对 正确做法：**候选在"发射处"各记一条、按发射顺序配对**（谁先发谁配谁），
+而不是按 `FuncDef*` 找 判据不变
+
+**两次都在失败后立刻回退**：树始终是绿的（回退后 `tests/io/stream-file.extc` 1571 行 / gcc **3** / clang **10**）
+—— 这条不是"白干"：**失败模式**（隐式声明 / 半截函数体）与**根因**（键不唯一）都写在这里了
+
+### 2026-09-25 · **函数剪枝第三次成功**：键改成名字 + 按发射处配对 + 按原文删除
+
+上一轮两次失败的根因（`FuncDef*` 不是"每次发射"唯一 ⇒ 声明与定义配不上 / 偏移框住的不是一整个函数）
+这次换个做法，两处都改掉：
+- **键 = C 名**（每个被发射的函数名唯一；两个同名定义本来就编不过）
+- **两半都存原文**（`DeadFunc{name, proto, body}`），删除时按 `strstr` **按内容定位** ⇒ 删掉的永远是**捕获到的那一整段**，
+  不可能切在半截（这正是上一轮 `-Wreturn-type` 的来源）
+- **声明与定义一起删**（找到两段、且定义在声明之后，才动手）
+- 顺带得到**传递效果**：删掉没人调的死函数后，**只被它调用的**函数名字提及数掉到 2 ⇒ 同一个循环里接着被删
+（链式死代码一起走 —— 实测行数掉得比"只删孤立函数"多得多）
+
+**实测**（before → after）：
+
+```
+tests/io/stream-file.extc   1571 → 1356 行   gcc  3 → 1   clang 10 → 8
+examples/globals.extc        440 →  410 行   gcc  1 → 0   clang 13 → 13
+tests/io/stream.extc         978 →  799 行   gcc  2 → 1   clang  9 →  9
+```
+**这次的关键读数**：`-Wimplicit-function-declaration` 与 `-Wreturn-type` **各 0 条**
+（前两次失败就是这两类暴涨）程序照跑、输出不变 语料 **256/0** + 九套件全绿
+
+**剩下 clang 那 7 条 `unused-function` = 运行期辅助原语**（`extc_rec_enter`/`extc_modI`/`extc_divU`/`extc_modU`/
+`extc_arena_init`/`extc_narrowI`/`extc_convFloat`）—— 它们靠 **㉑ 那批 `EXTC_UNUSED` 属性**压着 gcc，
+而 **clang 不吃这套** ⇒ 正是目标里的**第一刀：按需发射** 同一套内容判据能用（做完就能把 ㉑ 那批属性撤掉）
+
+### 2026-09-25 · **`-Weverything` 的清单量出来了 + 权宜属性撤了一处**
+
+**① `clang -Weverything` 归零的办法不是猜，是量**：逐轮跑、把当轮类别加进 `-Wno-`，一轮就收敛
+三个程序各 **17 类 ⇒ 0 条** 但清单**按性质切成两栏**（`docs/WARNINGS.md`）：
+- **§3.1「对生成物结构上无解」9 类**（`$` 名字 / `__extc_*` 保留前缀 / `-Wpadded` 布局 / C89 风格两条 /
+  `-Wunsafe-buffer-usage` / `-Wcast-align` / 穷尽 switch 不写 default / 逗号表达式）⇒ **允许**进清单
+  落在 `docs/warnings-flags.txt`（带注释说明规矩）
+- **§3.2「只是还没做」6 类**（`unused-function` / `unused-variable` / `unused-but-set-variable` /
+  `used-but-marked-unused` / `unreachable-code(+return)` / `jump-misses-init` / `missing-noreturn`）⇒ **不许**进清单
+  ⇒ 只允许 §3.1 时，三个代表程序分别还剩 **26 / 18 / 17** 条 —— 这就是下一轮的靶子清单
+
+**② 撤权宜属性：先撤"确实不需要"的那一处** 函数原型上的 `EXTC_UNUSED ` 撤掉（函数剪枝接管了它
+gcc/clang **1/8 不动** 零风险）；**但"13 处全撤"实测会让 gcc 1 → 4、clang 8 → 11**
+⇒ 反证了**第一刀（按需发射）还没做完**：描述符行/切片助手/视图索引里有些"发出来但没人引用"的
+（这条读数本身就是第一刀的必要性证据 已记进 `docs/WARNINGS.md` §4 表）
+
+### 2026-09-25 · **第一刀（运行期原语按需发射）：机制做对了，判据错了 ⇒ 回退**（附一条"量法"教训）
+
+**做了什么**：原语块（`extc_rec_enter`/`divI`/`modI`/`divU`/`modU`/`checkedIndex`/`checkedRange`/`arena_init`/
+`arena_destroy`/`narrowI`/`narrowU`/`convFloat`/`arena_alloc`）是**三个大 `bufPuts` 链**（76/59/72 行，
+中间还夹着 arena 代码）⇒ 不切链，改成**把整块捕获成文本，在成品里按内容扫定义**（列 0 开头、以 `{` 结尾）
+再逐个判"没人用"—— 机制跑通了 但判据是错的
+
+**两个真 bug**：
+1. **死循环**：扫完一轮没删到东西时忘了退出（写了 `bool cut` 却只 `(void)cut;`）
+   ⇒ 主人的编译器**卡住**了 ⇒ 立刻修（这条要记：**循环里"没变化"必须显式 break**）
+2. **顺序**：新阶段放在最前面 ⇒ 它一删，后面那个**基于字节偏移**的"体内候选"阶段全部错位、校验失败
+   ⇒ 载荷绑定没被删掉 ⇒ 白冒 12 条 `unused-variable` ⇒ 新阶段必须排在**偏移阶段之后**
+（那条注释本来就是为这个写的 我又踩了一次）
+
+**判据的错（关键）**：我用的是"**块外没人提及**" ⇒ 把**块内其他仍然保留的函数对它的调用**也算成"块内"
+（`extc_checkedIndex` 调 `extc_trap`）⇒ `extc_trap` 被误删 而 `extc_checkedIndex` 还在调它
+**声学的判据**是"**除了它自己那一段，别处一次都不提**"（1 次 = 只有自己的定义），并且**迭代到不动点** ——
+删掉一个定义，它发出的调用就一起消失，下一轮的提及数自然下降（这才是真的闭包）
+
+**量法教训（比上面那条更值钱）**：误删之后 clang 报 **0 条警告** —— 因为文件已经**编译错误**
+（`call to undeclared function 'extc_trap'`）**报错后编译器不再报警告** ⇒ 只看 `grep -c warning:` 会量出**假零**
+⇒ **规矩**：从现在起每次量都必须**同时量 `error:` 条数**，error ≠ 0 时 warning 数**无效**
+（这一轮差一点就把"clang 8 → 0"当成战果报出去 是复核"只掉了 3 行却少了 13 条警告"这个**不自洽**才发现
+—— **数字不自洽就是 bug 的指纹**）
+
+**回退后的现状（仍然全绿 error 全 0）**：
+
+```
+tests/io/stream-file.extc  1356 行  gcc 1  clang 8
+examples/globals.extc       410 行  gcc 0  clang 13
+tests/io/stream.extc        799 行  gcc 1  clang 9
+```
+第一刀的**正确做法**已明确：判据换成"除自身外无提及"+ 不动点 并且把 `__extc_rec_depth` 这类
+**顶层变量**也纳入扫描（删掉 `extc_rec_enter` 后它会变成没人用的变量 实测多出 1 条 gcc 警告）
+
+### 2026-09-25 · **第一刀成了**：运行期原语按内容判据不发（clang 8→4 · 13→3 · 9→3）
+
+上一轮回退时定下的**声学判据**这次一次过：**"除它自己那一段之外，别处一次都不提"**（+ 迭代到不动点）
+块还是老办法捕获（三个大字符串链整块留文本 不切链），扫描时按生成风格认两类：
+**定义**（列 0 开头、以 `{` 结尾、到列 0 的 `}` 为止）与**变量**（列 0 开头、以 `;` 结尾）
+
+**三个实测出来的小坑（都不是想出来的）**：
+1. `countMentionsIn` 定义在后面 ⇒ 前向声明（编译报错）
+2. 命名空间过滤只写了 `extc_` ⇒ 漏 `__extc_`
+3. **变量名提取不能从 `;` 往回读** —— `static int64_t __extc_rec_depth = 0;` 那样读到的是初始值 `0`
+   ⇒ 有 `=` 就从 `=` 往回读（这条正是上轮账本预言的那条 gcc 警告 预言兑现）
+
+**实测（before → after，全部 `e0` 即零错误 见下条规矩）**：
+
+```
+tests/io/stream-file.extc  1356 → 1343 行   gcc 1 → 1   clang 8 → 4
+examples/globals.extc       410 →  333 行   gcc 0 → 0   clang 13 → 3
+tests/io/stream.extc        799 →  740 行   gcc 1 → 1   clang 9 → 3
+```
+**这轮把"量法"立成规矩**：每次量都打印 `error:` 条数 **error ≠ 0 时警告数一律无效**
+（上一轮就是靠这条才发现"clang 8 → 0"是编译错误的假象）三个程序现在 `e0` 语料 256/0 + 九套件全绿
+
+### 2026-09-25 · **第一刀收尾**：clang **8/13/9 → 1/1/1**（靠一个调试开关量出两个真因）
+
+上轮落地后还剩几个同族原语没被删，**不再猜，加 `EXTC_DBG_PRIM=1` 把每个候选的 `total/inside` 打出来** 一看就明白：
+
+```
+[prim] extc_modU  total=3 inside=1 keep     ← 块外还有两次提及
+（而 extc_arena_init 压根没出现在日志里 ⇒ 认都没认出来）
+```
+
+**两个真因**：
+1. **趟跑得太早**：`extc_modU` 那两次提及在**库函数里**（`%` 无符号取模），而那些库函数是**死代码** ——
+   函数剪枝（`DeadFunc`）排在它后面 ⇒ 死函数还没删就先判"有人用" ⇒ 永远留着
+   ⇒ **顺序改成：体内阶段（偏移，必须最先）→ 函数剪枝 → 原语 → 全局不动点**
+2. **单行定义认不出来**：`static inline void extc_arena_init(extc_arena *a) { ... }` 整行**以 `}` 结尾**，
+   而我的认定条件是"以 `{` 结尾" ⇒ 加 `wholeBody`（以 `}` 结尾也算定义，跨度就是这一行）
+
+**实测（before → after，全部 `e0` 零错误）**：
+
+```
+tests/io/stream-file.extc  1343 → 1335 行   gcc 1 → 1   clang 4 → 1
+examples/globals.extc       333 →  327 行   gcc 0 → 0   clang 3 → 1
+tests/io/stream.extc        740 →  734 行   gcc 1 → 1   clang 3 → 1
+```
+
+**累计（从开工算起）**：`stream-file` **1608 → 1335 行 · gcc 28 → 1 · clang 47 → 1**
+`globals` **452 → 327 行 · gcc 1 → 0（两编译器都干净）· clang 25 → 1**
+
+**教训**（第三次证明同一件事）：**"数字对不上就先加调试开关量，别猜"**
+这一轮的两个真因都不是推理出来的，是 `total=3` 这个数摆出来才看出来的
+
+### 2026-09-25 · **`examples/globals.extc` 两编译器双双归零**（gcc 0 · clang 0）
+
+第三类识别盲点也是**量**出来的：`extc_checkedRange` 在调试日志里**一条都没有**（认都没认出来）
+⇒ 它的**签名跨行**（`extc_checkedRange(int64_t lo, int64_t hi, int64_t n,` 首行以 `,` 结尾）
+⇒ 加 `wrapsHead`（首行以 `,` 结尾也算定义头 跨度仍到列 0 的 `}`）
+
+**实测**：`globals` **327 → 319 行**，gcc **0 → 0** clang **1 → 0** —— 这是本项目第一个
+**`gcc -Wall -Wextra` 与 `clang -Wall -Wextra` 双双为 0** 的完整程序
+
+**到这一轮为止的三个识别条件**（全都是被调试开关量出来的，不是推导的）：
+1. 首行以 `{` 结尾 —— 常规多行定义
+2. 首行以 `}` 结尾 —— **单行定义**（`extc_arena_init`）
+3. 首行以 `,` 结尾 —— **签名跨行**（`extc_checkedRange`）
+
+### 2026-09-25 · **全量警告扫描**（89 个 examples 程序）—— 第一次看到全局，而不是三个样本
+
+三个样本之外的账终于量了（同一个脚本，**error 与 warning 一起量**）：
+
+```
+89 个程序 · error 合计 0 · gcc 警告合计 39 · clang 警告合计 37
+有警告的程序 21 个，绝大多数是 1~2 条：
+  tour 6 · strings 5 · generics / payload-enum 3 · fenwick / generic-enum /
+  reader-home-arena / result-usage / stream-sum 各 2 · 其余 12 个各 1
+```
+
+**两个新家族**（都不是之前三个样本能看到的 —— 这就是"全量扫一遍"的价值）：
+1. **`-Wreturn-type` 6 条（`tour`）**：clang 说"非 void 函数不是所有控制路径都返回"
+   生成器的 `alwaysReturns` 只认最简单的形状（`return`，或块的最后一条是它），不确定就补一条
+   ⇒ 说明还有形状没被它认出来（这条是**真问题**，不只是警告）
+2. **`unused-function`（`strings` 5 条）**：名字是 `slice_i32_isEmpty/get/eq/find/startsWith`
+   —— 注意这**不是**我的 `extc_slice*` 助手（那两个名字族不一样 我一度以为是自己那族）
+   而是**库里的 slice 方法**（实例方法）⇒ 说明实例方法那条路还有"发了没人用"的
+
+**顺手做的**：切片助手的 `EXTC_UNUSED` 属性撤掉（它们现在由内容判据接管）
+—— 但实测 `strings`/`tour` **行数与警告都不变**（那 5 条根本不是这族）⇒ 这次撤属性是**中性**的
+（要确认它没有在别的程序上变坏 ⇒ 全量重扫 见下一条记录）
+
+**撤属性的复核**：全量重扫 **gcc 39 / clang 37 / error 0** —— 与撤之前**一模一样**
+⇒ 切片助手那三处 `EXTC_UNUSED` 的撤离是**中性**的（不回归 也不白赚 但它让"权宜属性"少了一批）
+
+### 2026-09-25 · **库实例方法也能剪了**：`strings` 463 → 371 行、clang 5 → 0
+
+上一轮全量扫描暴露的那族（`slice_i32_isEmpty/get/eq/find/startsWith`）一眼就看出成因：
+**`DeadFunc` 的候选只在自由函数的原型循环里建** 实例方法那条路（`g.insts` → `inst->sdef->methods`）
+**压根没建候选** ⇒ 它们永远不参与剪枝 而这正是 **#64** 那个坑（"一个节点多个实例"）
+让我当初绕着走的地方
+
+补上去之后（配对还是**按名字**，所以 #64 那个坑不适用 —— 名字在每个实例里唯一）：
+
+```
+examples/strings.extc     463 → 371 行   clang 5 → 0
+examples/generics.extc    362 → 347 行   clang 3 → 0
+examples/tour.extc        612 → 612 行   clang 6 → 6   ← 是 -Wreturn-type 那族，另一回事
+examples/payload-enum.extc 346 → 346 行  clang 3 → 3   ← 同上
+```
+
+**全量效果**（89 个程序）：
+
+```
+                gcc   clang   error
+上一轮           39     37      0
+这一轮           29     27      0     ← 各 -10
+```
+语料 **256/0** 九套件全绿 剩下的两族：`-Wreturn-type`（`tour` 6 · `payload-enum` 3 …，**真问题**）
+与 `__extc_ret_v`/`d` 那类局部（要读写判据 / 纳入体内候选）
+
+### 2026-09-25 · trap/die 标 `noreturn`（服务的是 `-Weverything` 那部分）
+
+`-Wall -Wextra` 剩下最大的一族是 **`-Wreturn-type`**（`tour` 6 条）：形状已看清 ——
+**`match` 的每个 arm 都 `return`** ⇒ 生成的是 `if / else if` 链，**链后面没有兜底 return**
+（`stmtIsDefiniteReturn` 只认 `return` 与"块的最后一条是它" 不认 `ST_MATCH`）
+而现有的兜底只在**递归**函数里发（`g->isRecursive` 那段）⇒ 非递归函数全靠"检查器已证明会返回"
+可是 **C 编译器看不出这条链是穷尽的** ⇒ clang 报"不是所有控制路径都返回值"（这其实是个真洞）
+
+这一轮先做基础件：**把 `extc_die`/`extc_trap`/`extc_trapMsg` 标成 `EXTC_NORETURN`**
+（GNU/clang 走 `__attribute__((noreturn))`，否则退回 ISO C 的 `_Noreturn`）
+它的价值不在 `-Wall -Wextra`（实测三程序**一条没变** 因为 `-Wunreachable-code`/`-Wmissing-noreturn`
+只在 `-Weverything` 里），而在两处：① `-Weverything` 的 `unreachable-code`（7 条）与
+`missing-noreturn`（1 条）② 它是"给非 void 函数补兜底"的前提 —— 兜底只要写成
+`extc_trapMsg(...)` 就够了，**不必构造返回类型的零值**（因为编译器知道它不返回）
+
+**验证**：语料 **256/0** + 九套件全绿 `-Weverything` 实测：`missing-noreturn` **消失**
+（`unreachable-code` 那 7 条没动 ⇒ 它们另有成因，多半是生成物里 `break`/`return` 之后的死语句 下一轮查）
+新出现 `unused-macros`（1~3 条）—— 多半是 `EXTC_UNUSED` 这个宏如今**没人用了**（属性撤了一批）
+⇒ 按 `docs/WARNINGS.md` §3.2 的规矩**不许盖**，应当把那个宏定义删掉 记进下一轮
+
+### 2026-09-25 · **非 void 函数的兜底**：`-Wreturn-type` 那族清零（`tour` 6 → 0 · `payload-enum` 3 → 0）
+
+上一轮诊断出的形状（`match` 全 arm 都 return ⇒ C 编译器看不出 `if / else if` 链穷尽）这一轮补上了
+**关键细节**：受影响的都是 **`noArena`** 函数 —— 没有 arena 就没有 epilogue ⇒ **没有任何东西接住"跑出末尾"**
+（有 epilogue 的函数末了有一条 `return __extc_ret_v;` 所以它们本来就不报）
+而原来那套兜底写在 `if(g->isRecursive)` 里面 ⇒ **只管递归函数**
+
+修法：把"会跑出末尾"提出来算一次（`fallsOff`），然后
+`if(fallsOff && g->noArena && !retVoid) extc_trapMsg(path, line, "...")`
+——**用 trap 而不是 `return __extc_ret_v;`**：后者在 `noArena` 函数里根本没声明（注释里记着当年 gcc 报过错），
+而上一轮标的 `EXTC_NORETURN` 让编译器知道 trap 不返回 ⇒ **不需要构造返回类型的零值**（基础件这一轮正好用上）
+
+**实测**（全部 `e0` 零错误）：
+
+```
+examples/tour.extc         612 → 623 行   clang 6 → 0
+examples/payload-enum.extc 346 → 354 行   clang 3 → 0
+tests/io/stream-file.extc 1335 → 1340 行  clang 1 → 1（那是 __extc_ret_v，另一族）
+```
+行数略涨（每条兜底一行）—— 这是**用一行换掉一族警告**，而且那行是**真的兜底**（不是捂嘴）
+
+**全量效果**（89 个程序，全部 error 0）：
+
+```
+             gcc   clang
+第一次全量    39     37
+上一轮        29     27
+这一轮        14     12     ← 各再 -15（-Wreturn-type 一族清掉）
+```
+语料 **256/0** 九套件全绿 剩下的基本就是 `__extc_ret_v`（set-but-unused）与 `d`（普通局部）那两族
+
+### 2026-09-25 · **`__extc_home` 按内容判据删：尝试失败 ⇒ 回退**（error 门槛又救了一次）
+
+全量剩下的族里，`__extc_home`（`extc_arena *__extc_home = &__extc_a[1];`）看着最像"一行声明、
+判据现成"于是登记成体内候选（作用域 = 声明之后到函数体结束 `own = 1`）——
+`escape-promotion` 那条**没消掉**，而 **`out-param` 直接编译错误**
+
+**失败模式与教训**：
+- `needsHome` 是**检查器**的判断（某处有 home arena 流动），而**提及可能不在我记的那段文本里**
+  —— epilogue、`new` 的分配路径、嵌套生成的片段都可能提到它 我记的"从声明到 `genBlockBody` 结束"太窄
+- `g->homeDef` 这个"当前函数的候选"指针在**嵌套/递归生成**时会串（正是 #64 那一类坑的同族）
+- 又一次验证：**只看 warning 数会以为"没消掉"，是 `error` 那一栏暴露了真问题**
+（这是本工作第三次靠 error 门槛拦住假结论）
+
+**回退后**：`out-param` 恢复 `e0/w1` 全量回到 **gcc 14 · clang 12 · error 0** 树干净
+
+**正确做法**（留给下一轮）：`__extc_home` 的判据应该和 `DeadFunc` 一样**在整份成品文本上判**（"全文只有它自己
+那一次提及" —— 名字是函数的局部，但要按**函数**限定作用域 ⇒ 用 `DeadFunc` 那套"按原文定位"的机制
+而不是靠 `homeDef` 这种**可变指针**跨阶段传递）
+
+### 2026-09-25 · **`main` 的返回槽去掉**：`__extc_ret_v` 一族（全量最大）消掉
+
+量出来的成因很干脆（`examples/newSlice.extc` 的 `--no-line-map` 成品）：
+
+```c
+    int32_t __extc_ret_v;          ← 声明了
+    ...
+    __extc_ret_v = 0;              ← 赋了值
+__extc_ret:
+    extc_arena_destroy(&__extc_a[1]);
+    return 0;                      ← 但 epilogue 写死 `return 0;`（C 的 main 必须返回 int）
+```
+⇒ **`main` 的返回槽根本没人读** 而它照样被声明和赋值（`-Wunused-but-set-variable`）
+
+修法：`main` 不声明这个槽（`retSlot = !noArena && !retVoid && !isMain`），赋值处改成
+**只为副作用求值**（`(void)(...)` —— 这不是捂嘴：那个表达式里可能有 `extc_print`/`printf` 的副作用
+必须照样求值 原来的赋值顺带做了这件事）
+
+**实测**（全部 `e0` 零错误）：
+
+```
+examples/newSlice.extc         clang 1 → 0
+examples/readonly-cursor.extc  clang 1 → 0
+examples/reader-home-arena.extc clang 2 → 1（剩下的是 __extc_home 另一族）
+
+**全量效果**（89 个程序，全部 error 0）：
+
+```
+             gcc   clang
+第一次全量    39     37
+第三轮        29     27
+第四轮        14     12
+这一轮        10      8     ← 各再 -4
+```
+语料 **256/0** 九套件全绿 剩下的 8~10 条：`__extc_home`（2~3 个程序 正确做法已记）
+与"未用参数/普通局部"几条
+```
+
+### 2026-09-25 · **`__extc_home` 换成"按原文定位"的做法：判据仍然不成立 ⇒ 回退**（并得到一个统一的结论）
+
+按上一轮记下的正确做法重做（普通 `DeadDef` 候选 按原文定位 全文数提及 不用可变指针）
+—— **行数 357/349/438 一条没变，警告也一条没变** 量出来的原因很干脆：
+
+```
+examples/escape-promotion.extc 生成物里 `__extc_home` 出现 5 次（全在同一函数内）
+```
+⇒ "全文只有它自己那一次提及"**永远不触发** 所以**这次的判据和上次的机制是两回事**：
+上一轮失败在**机制**（作用域太窄 + 指针串 已改对），这一轮暴露的是**判据**不对 ——
+clang 说的不是"没人提到它"，而是"**没人读它**"
+
+**统一结论（这轮真正赚到的东西）**：全量剩下的 10/8 条**基本是同一件事** ——
+`__extc_home` · `skip` · `__extc_ret_v`（已解决）都是"**被写但没被读**"
+⇒ 剩下的一律需要**读写判据**（真正的"读"分析），而不是"提没提到"的内容判据
+这条把后面几族合并成一个靶子，也解释了为什么内容判据在这一族上怎么调都不动
+
+**回退后**：树干净 全量仍是 **gcc 10 · clang 8 · error 0**（另：本轮两次 `g.`/`g->` 笔误都是
+**编译错误** ⇒ 又一次证明"先看 error 再信 warning" 而且**旧二进制度出来的数是废数**
+规矩再加一条：**量之前确认二进制是刚构建的**）
+
+### 2026-09-25 · 剩余靶子的精确清单（全量 9 个程序 · gcc 10 · clang 8）
+
+```
+arrays            unused variable 'i'            ┐
+shadowing         unused variable 'v'            ├ 族 A：普通局部（3 个程序）
+stream-sum        unused variable 'd'            ┘
+escape-promotion  unused variable '__extc_home'  ┐
+reader-home-arena unused variable '__extc_home'  ├ 族 B：home arena（3 个程序）
+out-param         unused parameter '__extc_home' ┘（out-param 那个是**参数** 又不一样）
+borrowing         unused parameter 'b'           ┐ 族 C：未用参数（2 个程序）
+out-param         unused parameter '__extc_home' ┘
+rng               'skip' set but not used        ┐ 族 D：写而不读（1 个程序）
+fenwick（gcc 那边 2 条，clang 干净）   ┘
+```
+
+**族 A（普通局部）的正确做法（已设计好，下一轮直接做）**：
+`ST_VAR` 发射处登记候选 `{name, 那一行原文, 所属 FuncDef*}` ⇒ 判定时用**已经捕获好的函数体文本**
+（`DeadFunc.body` 就是为函数剪枝捕获的那份 边界天然正确）数这个名字在**该函数体内**出现几次
+**== 1（只有它自己那一声明）⇒ 删掉那一行** 声学（一个名字在函数体里只出现一次 = 绝无第二次使用），
+而且**不需要偏移**：定位时用 `strstr` 找那份函数体文本、再在它里面按偏移找那一行、**逐字节校验**
+（绝对不能按"缩进 4 空格 + 以 `;` 结尾"去**猜**声明 —— 那样会把 `foo = bar;` 这种**赋值语句**
+当成声明删掉副作用就丢了 这条写在这里防止下一轮图省事）
+
+**族 C（未用参数）**：参数**删不掉**（它是签名的一部分）⇒ 唯一的正解是**在参数上加属性**
+（这不算"捂嘴"：语言允许不用参数 生成物只能这么表达 与"整段不发"的目标不冲突）
+判据同样是**函数体内一次都没提到**（用族 A 那套作用域）
+
+**族 B（`__extc_home`）**：它**不是**"没人提到"而是"**没人读**" ⇒ 要么做读写区分（大件），
+要么回到**按需发射**：`needsHome` 是检查器的判断，比生成物实际需要更宽 ⇒ 在 `new` 的发射点
+**记下"这里真的用了 home"**，`isMain && f->needsHome && 真的用过` 才发声明（这才是第一刀的正解）
+
+### 2026-09-25 · **族 A 落地**：没人读的局部声明不发（用的是**已经捕获好的函数体文本**当作用域）
+
+上一轮设计好的做法一次做成：`ST_VAR` 的两处声明发射点登记候选 `{name, 那一行原文, 所属函数名}`
+判定时数这个名字**在该函数体的已捕获文本**（`DeadFunc.body`）里出现几次 **== 1 ⇒ 删掉那一行**
+（函数体里只出现一次 = 绝无第二次使用 声学 不需要偏移跨阶段）
+
+**两个量出来的坑**：
+1. **声明点有两处**（`?` 结果那条 `= tryPayloadPath(...)` 与普通 `let`）—— 都要登记
+2. **`main` 没有 `DeadFunc` 记录**（函数剪枝特意跳过它）⇒ 查不到函数体就跳过
+   ⇒ 给 `main` 单独留一份函数体文本（`mainBody`/`mainFuncName`）—— 正是这一条让 `arrays` 从 1 → 0
+
+**实测**（全部 `e0` 零错误）：
+
+```
+examples/arrays.extc      374 → 373 行   clang 1 → 0
+examples/stream-sum.extc 1284 → 1283 行  clang 1 → 0
+examples/shadowing.extc   292 → 292 行   clang 1 → 1（它的 `v` 走另一条路 留待下一轮）
+```
+
+严禁图省事的做法（写进代码注释里防下一轮犯错）：**不能靠"缩进 + 以 `;` 结尾"去猜声明**
+—— 那会把 `foo = f();` 这种**赋值语句**当声明删掉副作用就丢了；只登记**生成器自己发出来的**声明行
+
+**全量效果**（89 个程序，全部 error 0）：
+
+```
+             gcc   clang
+第一次全量    39     37
+第四轮        14     12
+上一轮        10      8
+这一轮         8      6
+```
+语料 **256/0** 九套件全绿
+
+### 2026-09-25 · 族 B（`__extc_home`）：**把成因量清了，但机制的最后一跳没走通 ⇒ 回退**
+
+**成因彻底量清**（`examples/escape-promotion.extc` 的 `--no-line-map` 成品）：
+
+```
+161: EXTC_UNUSED static node * build(int64_t n, extc_arena *__extc_home);   ← 参数（另一个函数）
+278: static node * build(int64_t n, extc_arena *__extc_home) {              ← 同上
+282/288: ...extc_arena_alloc(&(*__extc_home), ...)                          ← 同上（**被读**）
+317: extc_arena *__extc_home = &__extc_a[1];   /* main's home arena ... */  ← **就是这条没用**
+```
+⇒ 上一轮"5 次提及"的谜团解开：**同名不同物** —— 参数 `__extc_home` 是 `build` 的，
+clang 报的是 **`main` 里那一条声明** ⇒ 判据本来就该是"**在 main 的函数体里只出现一次**"
+—— 正好是族 A 的机制（不是读写判据 上一轮的"读写"结论对族 B 也是错的）
+
+**本轮做了什么**：把 `curFuncName` 的设置提前到 prologue 之前 并在声明处 `localDef(g, hb, "__extc_home")`
+—— 编译干净、零错误 **但行数与警告一条没变**（`escape-promotion` 仍 1）
+
+**为什么没走通（下一轮第一步）**：候选登记了、判定阶段却没删它 可能的三处要先量掉：
+① `d->funcName` 与 `g->mainFuncName` 是否真的相等（`cFuncName` 的调用时机）
+② `strstr(text, g->mainBody)` 是否真的命中（`mainBody` 是**从 `g.body` 里截的** 但最终文本里
+   中间可能被拼进别的东西）
+③ 计数是否真的是 1（main 体里有没有间接提及）
+⇒ **做法**：照 `EXTC_DBG_PRIM` 的先例，加一个 `EXTC_DBG_LOCAL` 开关把这三处的值打出来
+（本项目已经四次证明：**数字对不上就加开关量，别猜**）
+
+**回退后**：树干净 全量仍是 **gcc 8 · clang 6 · error 0**
+
+### 2026-09-25 · 族 B 第二次：`EXTC_DBG_LOCAL` 把最后一跳量出来了 ⇒ 回退并记下真因
+
+装了调试开关之后一次就看清（这正是"加开关别猜"的第四次收益）：
+
+```
+[local] __extc_home  func=main  mainFunc=main  body=no  mainBody=yes
+（下一行本该打出 cnt=…，**没打出来** ⇒ 说明在那之前就 continue 了）
+```
+⇒ 收窄到两处：① 兜底分支（`!body && mainBody && funcName==mainFuncName` ⇒ 用 `mainBody`）**确实走到了**
+（`mainFunc=main` 与 `func=main` 对上）② 之后 `strstr(text, g->mainBody)` **没命中**
+⇒ **最可能的原因**：`mainBody` 是从 `g->out` 截的 而生成过程中 **viewIdx 助手会把 `g->out` 临时换到
+`tmp` 缓冲**（见 `g.out = &tmp; ... g.out = save;`）⇒ 那一截在成品里**不连续** ⇒ `strstr` 必然失败
+（同族隐患：`deadFuncBody` 也是从 `g->out` 截的 ⇒ 带 viewIdx 助手的函数，其 `DeadFunc.body` 同样可能不连续
+—— 族 A 之所以能用，是因为受影响的函数恰好没有这种中途换缓冲）
+
+**正确做法（下一轮第一步）**：函数体文本要**在整份 body 缓冲发完之后**再截
+（即 `bufPuts(out, bufCstr(&g.body))` 之前 那时 `g.body` 是连续完整的），
+按**函数在 `g.body` 里的起止偏移**截 而不是在生成中途从 `g.out` 截
+—— 同时要把 `deadFuncBody` 也一并改成这个办法（它现在有同样的隐患）
+
+**回退后**：树干净 全量仍是 **gcc 8 · clang 6 · error 0**
+
+### 2026-09-25 · 族 B 第三次：延后截取（按偏移、body 缓冲发完之后）**仍不触发** ⇒ 回退
+
+按上一轮记下的改法做了六处改动：`DeadFunc.body` 与 `mainBody` 都改成**先记偏移**
+（`df->off/df->len` `g.mainOff/mainLen`），**在 `bufPuts(out, bufCstr(&g.body))` 之后**统一从
+`g.body` 里截文本（那时缓冲连续完整 不受 viewIdx 临时换缓冲的影响）
+并把族 B 的改动（`curFuncName` 提前 + `__extc_home` 登记成局部）一起装回去
+
+**实测**：编译干净 零错误 但 `escape-promotion` **仍是 357 行 / clang 1**
+（`arrays` / `stream-sum` 保持 0 没有回归）⇒ 说明**卡点不在这里**
+
+**下一轮第一步（已收窄）**：把 `EXTC_DBG_LOCAL` 在这版上再跑一次 —— 上一轮它打出的是
+`body=no mainBody=yes` 且下一行没打印 现在 `body` 与 `mainBody` 都改了来源 ⇒ 要看的是：
+① 兜底分支是否真的把 `body` 赋成了 `mainBody`（`strcmp(d->funcName, g->mainFuncName)`）
+② `strstr(text, body)` 是否命中 ③ 计数是否真是 1
+—— **一次跑就能看到，不要再猜**（这是本项目第五次要靠开关收尾）
+
+**回退后**：树干净 全量仍是 **gcc 8 · clang 6 · error 0** 语料 256/0 九套件全绿
+另记：这版改动本身**修掉了一个潜在坑**（`DeadFunc.body` 在带 viewIdx 助手的函数里可能不连续
+—— 不连续只会让 `strstr` 失败 ⇒ 保守跳过 不会误删 所以它不是安全问题，只是少赚）
+
+### 2026-09-25 · **族 B 落地**：`__extc_home` 没人读就不发（调试开关第五次一击命中）
+
+上一轮"卡点收窄到三处"之后，这轮把 `EXTC_DBG_LOCAL` 装在**两点**上（兜底之后 / 计数之前），一次就看到了全部答案：
+
+```
+[local] __extc_home  func=main  mainFunc=main  body=yes     ← 兜底成功了，函数体也找到了
+[local] __extc_home  bp=hit     cnt=0                        ← 命中 但计数是 **0**
+```
+
+⇒ **卡点根本不在"找不找得到"，而在判据本身**：`__extc_home` 的声明在 **prologue**（函数体**之前**）
+⇒ 它在**函数体**里的计数**本来就是 0** 而我判的是 `!= 1`（那是给"声明在体内"的普通局部写的）
+
+**修法三步**（都是这一步量出来的）：
+1. 候选加 `own` 字段：**声明自身对"作用域"贡献几次** 普通局部 = 1（声明在体内）·
+   `__extc_home` = 0（声明在 prologue）
+2. 判据改成 `countMentionsIn(body, name) != d->own`
+3. 定位也按 `own` 分流：`own==0` 的声明**不在函数体里** ⇒ 要在**全文**里找那一行
+（前一轮就是卡在这一步：在函数体文本里当然找不到它在 prologue 的那一行）
+
+**实测**（全部 `e0` 零错误 无回归）：
+
+```
+examples/escape-promotion.extc  357 → 356 行   clang 1 → 0
+examples/reader-home-arena.extc 349 → 348 行   clang 1 → 0
+
+**全量效果**（89 个程序，全部 error 0）：**gcc 14 → 12 轮里一路降到 6 · clang 37 → 4**
+
+```
+             gcc   clang
+第一次全量    39     37
+第 4 轮       14     12
+第 14 轮      10      8
+第 15 轮       8      6
+这一轮         6      4
+```
+语料 **256/0** 九套件全绿 剩下的：`shadowing` 的 `v` · 未用参数两条 · `rng` 的 `skip`
+```
+
+### 2026-09-25 · 剩余 4~6 条的成因量清：**全是被写、从没被读**（内容判据到此为止）
+
+全量还剩 4（clang）/ 6（gcc）条，逐个量过（`EXTC_DBG_LOCAL` 现成）：
+
+```
+examples/shadowing.extc   v     func=main  body=yes  bp=hit  cnt=3  own=1
+```
+⇒ `v` 在 main 的函数体里**出现 3 次** ⇒ "只出现一次"的判据**根本不适用**
+而 clang 仍报它没被用 ⇒ 那 3 次**全是被写**（`v = 1;` 之类 从没出现在右值位置）
+—— 与 `rng` 的 `skip`（set but not used）和两条未用参数（`borrowing` 的 `b` · `out-param` 的 `__extc_home`）
+**是同一件事：写而不读**
+
+**结论**：内容判据（"提没提到"）到此为止 剩下的必须做**读写区分**
+**做法（下一轮）**：
+- 判定：数一个候选名的**读**次数 —— 一次提及算"读"，除非它**紧跟着 ` = `**（注意不是 `==`）
+  或紧跟着 `.` 字段/`[` 下标（部分写入 ⇒ **保守算读** 留着）
+- 读次数 == 0 ⇒ **只删声明是不够的**：那些 `v = f();` 语句里的**右值可能有副作用**
+  ⇒ 必须把每一处写改写成 `(void)(rhs);`（**副作用照样求值** —— 这与 `main` 去掉返回槽时用的是同一招
+  在本轮之前已经用过一次并验证过）
+- 未用参数：参数**删不掉**（签名的一部分）⇒ 在参数上加属性是唯一表达
+（判据同样是"函数体里一次都没读" —— 属性能否加在**已发出的文本**上，要先量一下
+  能否可靠地定位参数名（参数表就是函数体文本的头部 用 `DeadFunc.body` 的前几行））
+
+**这一族都不许用"缩进 + `;`"之类的猜测**（本项目已有一次教训 只处理生成器自己发出的声明行）
+
+### 2026-09-25 · 撤回 `EXTC_UNUSED`：**第二次实测仍是承重的** ⇒ 再回退（这次把范围钉死了）
+
+`-Weverything` 现状（只允许 §3.1 清单时）：`globals` **7** 条 · `stream-file` **20** 条 其中
+**`used-but-marked-unused` 4/6 条** —— 这正是 clang 在说"你这 `EXTC_UNUSED` 根本多余"
+而函数剪枝 / 实例方法剪枝 / 原语剪枝现在**都已落地** 于是**再试一次全撤**（9 处属性 + 那个宏定义）：
+
+```
+globals      gcc 0 → 1    clang 0 → 1
+stream-file  gcc 1 → 3    clang 1 → 3
+stream-sum   gcc 0 → 3    clang 0 → 3
+arrays       gcc 0 → 1    clang 0 → 1
+shadowing    gcc 1 → 2    clang 1 → 2
+```
+⇒ **每处都涨** ⇒ 属性仍然承重 范围也钉死了：**描述符行 / 字段表 / 视图索引**这三族
+（`%s_desc` / `%s_fields[]` / `%s_index`）—— 它们是"按需发射"的 但**按需 ≠ 一定被引用**
+
+**结论**：撤属性的前提是**内容判据接管那三族**（照 `DeadDef` 那套 它们都是 `cgLine` 单行
+比原语那三个大字符串链容易得多）—— 在那之前，属性不能撤（这是第二次实测确认 已写进
+`docs/WARNINGS.md` §4 的说法里要改的地方：不是"等第一刀"，而是"等这三族接上内容判据"）
+
+**回退后**：树干净 全量 **gcc 6 · clang 4 · error 0**
+
+### 2026-09-25 · 三族接内容判据：**替换脚本自己把源码写坏了** ⇒ 回退（又一条工具纪律）
+
+做法本来是对的（`deadDefAdd` 登记 成对判据"名字出现次数 == 同名已登记件数" 每轮删一件
+`d->text = NULL` 让件数递减），**但两个错误都在替换脚本本身**：
+1. `deadDefAdd` 的前向声明放到了 `localDef` 旁边（那是两千多行之后）⇒ 用到它的地方在它之前
+2. 为了少写几段，我用**循环拼出替换文本**（三种描述符尾巴）—— 结果生成的源码字符串被拼坏了
+（`missing terminating " character`）
+
+⇒ **纪律（新增，重要）**：**改 C 源码只用逐处的精确替换** 不许用"循环/模板批量拼替换"
+（这与项目里早先那条"改 C 代码只用 `edit` 工具、不许按行号拼接"是同一类事故的第二次
+—— 上次是 `sed -i '64s/.../'` 行号漂移 这次是模板拼字符串 都栽在"想省几段"上）
+
+**回退后**：树干净 全量仍 **gcc 6 · clang 4 · error 0** 语料 256/0 九套件全绿
+下一轮重做时：**一处一改**（结构体描述符行 → 数组 → 切片 → 枚举 → variants → 前置声明 每改一处就 build 一次）
+
+### 2026-09-25 · 三族接判据（重做）：**成对判据本身跑通了一半，但引入一个崩溃** ⇒ 回退
+
+按新纪律一处一改 先只接"结构体描述符行 + 前置声明"这一对 编译干净
+**但一跑就段错误** —— 根因当场看清：
+
+> 判定循环每轮重扫**全部**候选 而删除后我把 `d->text` 置成 `NULL`（为了让"同名已登记件数"递减），
+> 下一轮同一个候选又被 `strlen(d->text)` 取长度 ⇒ **段错误**
+
+**修法（下一轮第一件事）**：判定循环开头加 `if(!d->text) continue;`（已删的跳过）
+—— 注意当前代码里"体内候选"那处的判据是 `if(!d->scoped) continue;`
+所以锚点要按**现在**的文本写 **不能凭上一轮的印象写锚点**（这一轮就是因此空跑了一次）
+
+**回退后**：树干净 全量仍 **gcc 6 · clang 4 · error 0** 语料 256/0 九套件全绿
+
+连续三轮负结果（假零、脚本写坏源码、这次崩溃）+ 一次空锚点 ⇒ **教训合并**：
+**预算见底时不要动 codegen** 要做到"改一处 → build → 跑一个程序 → 看退出码"再往下
+（本轮崩在"没先跑一个程序看退出码"上 那一步是一次命令的事）
+
+### 2026-09-25 · 三族接判据（第三次）：判据与登记必须**同时**上 ⇒ 单独上判据会**净亏 5 行**
+
+这轮按纪律做对了三件事：**先读当前文件的锚点**（上轮空锚点的教训）· 判定循环开头加
+`if(!d->text) continue;`（段错误的修法）· **每改一处就 build + 跑一个程序看退出码**
+—— 崩溃没了（退出码 0）判据也跑通了 警告仍是 0/0 行数 **324 → 324**
+
+**本节先记错了一个数，必须改正**：我先写成"行数 319 → 324（净亏 5 行）" —— 那是拿**记忆里的**
+319 去比 而 `globals` 在**当前提交状态下本来就是 324 行**（回退后重新量过）
+⇒ 真实结论是：**判据版与登记版都是中性的（324 → 324 警告不变）**，不是负收益
+（回退仍然没错 —— 中性且未验证的东西不该留在树里 但"净亏"这个判断是错的 已改）
+
+**教训（补一条）**：**before 数必须现场量、不能凭印象** —— 这次差点把一个中性结论记成负结论
+（"数字不自洽就是 bug 的指纹"这条又应验一次：319 与 324 的矛盾本该当场引来复核）
+
+**为什么没删掉任何东西**：这三个程序里**没有"没人用的描述符"** ⇒ 机制没有可删的对象
+⇒ 要验证它，得用**确实有未引用描述符**的程序 —— 上一轮撤属性的实验已经指出了两个：
+`stream-file` 与 `stream-sum`（撤属性后它们的 gcc 警告从 1/0 涨到 3/3 说明那里真有没人用的描述符）
+
+**回退后**：树干净 `globals` 回到 **319 行 · gcc 0 · clang 0** 全量仍 **gcc 6 · clang 4 · error 0**
+
+**下一轮（一步做完，不许拆）**：① `deadDefAdd` 助手（放在 `genStructDesc` 之前 就近定义免前向声明）
+② 登记六处：结构体描述符行 · 数组 · 切片 · 枚举 · variants · **前置声明**
+③ 判据换成成对版 + 空值跳过 ④ 然后**一次** build + 跑三个程序看退出码与行数
+⑤ 只有 `strings`/`globals`/`stream-sum` 行数**不增**且警告不涨，才跑全量与语料
+—— 判据是**行数**：接完登记后应比 319 **更少**（描述符行才真的能删），不是持平更不是变多
+
+### 2026-09-25 · 三族接判据（第四次）：**成对判据误删了被用到的描述符** ⇒ 回退（这次是 error 拦住的）
+
+一步做完（助手 + 六处登记 + 成对判据 + 空值跳过）三个程序都 `rc=0` 行数也确实在降
+（`stream-sum` **-1** `globals` **-3**）—— 看着像成了 **但 `globals` 的 gcc 警告 0 → 1**
+追下去发现**两个编译器各 1 个 error**：
+
+```
+error: ‘color_desc’ undeclared
+(extc_print(&__extc_p7, &extc_desc_text), extc_print(&(DEFAULT_COLOR), &color_desc), printf("\n"));
+```
+⇒ 判据把**被用到的** `color_desc` 当成"没人用"删掉了 —— 而它明明在 `extc_print` 的实参里
+⇒ `own` 与 `mention` 的比较在某处算错了（例如该类型的**前置声明没被登记**（它不在 `g->descs` 里
+或名字不同）⇒ `own` 只有 1 而提及数是 2 ⇒ 反而**误判成"多于件数"**？方向要想清楚）
+
+**又一次靠 error 门槛拦住**（这是本工作第 **五** 次）—— 而且这次差点被"行数在降、rc=0"骗过去
+⇒ 纪律再加一条：**判据类改动必须同时看 `error:` 计数**，`rc=0` 与"行数在降"都**不是**安全的证据
+
+**回退后**：树干净 `globals` 回 **324 行 · error 0 · gcc 0 · clang 0** 全量仍 **gcc 6 · clang 4 · error 0**
+
+**下一轮第一步**：加 `EXTC_DBG_DESC` 开关，把每个描述符候选的 `name / own / countMentions` 打出来
+先看清 `color_desc` 的这三个数各是多少（按本项目的老规矩：**数字对不上就加开关量，别猜**）
+
+### 2026-09-25 · 描述符三族：`EXTC_DBG_DESC` 量到了关键读数，但判据仍不成立（回退）
+
+装回登记 + 判定，并加 `EXTC_DBG_DESC`（第六次靠开关办事），量 `color_desc` 的三个数：
+
+```
+[desc] proto color
+[desc] cand color_variants own=2 cnt=2 DROP
+[desc] cand color_desc     own=3 cnt=3 DROP      ← 三件登记、三处提及
+[desc] cand color_desc     own=3 cnt=3 DROP      ← 下一轮又是 own=3 cnt=3
+```
+
+**读出来的事实**：
+1. `own=3` 说明 `color_desc` 名下**登记了三件**（原型 + 定义只有两件）⇒ 还有一件是**重复登记**
+（最可能是 `g->descs` 里同一类型出现两次，或描述符区域被发了两遍的一支）
+2. 三处提及里**包含调用点**（`extc_print(&(DEFAULT_COLOR), &color_desc)`）⇒ 于是 `cnt==own` 成立、
+   判定为"没人用"⇒ 删掉定义，而调用点还在 ⇒ C 编译器报 `color_desc undeclared`（两编译器各 1 error）
+
+**修过一处仍然不对**：我把 `own` 改成"只数真的在成品文本里的件"（防"幻影件"）⇒ 仍旧 `own=3 cnt=3`
+⇒ 说明那三件**确实都在文本里** ⇒ 问题不是幻影件，而是"**件**与"**用**"在这套计数里根本没被区分开：
+原型/定义是件，调用点是用，而两者被同一个 `countMentions` 数在一起 ⇒ 只要件的数目恰好等于总提及数，
+一个被用到的描述符就会被判成没用
+
+**结论（判据层面的教训）**："名字出现次数 == 登记件数"这个形式，对**有声明+定义两段**的目标是**不可靠**的
+—— 必须**分别**确认"每一件都在场"且"除这些件之外没有别的提及"（即：逐件验证在场 再把件文本从
+文本里挖掉后看名字是否还出现）。这是下一轮该写的判据，而不是继续调 `own` 的口径。
+
+**回退后**：树干净，`globals` 321 行、两编译器 error 0、gcc 0 / clang 0
+
+### 2026-09-25 · 描述符三族终于接上：判据换成"挖掉所有件再看残余"，7 处权宜属性撤掉
+
+前四次失败的根源在**判据形式**，不在机制。这一轮换成真正可靠的那一种：
+
+> 把**该名字下所有登记的件**从一份**文本副本**里挖掉，再看这个名字在副本里是否还被提及。
+> 还被提及 ⇒ 有人在用，全部保留；没被提及 ⇒ 这些件就是它出现的全部场合 ⇒ 一起删。
+
+好处是"**件**"（原型/定义）与"**用**"（调用点）不再混在同一个计数里 ——
+旧的"名字出现次数 == 登记件数"做不到这一点：一个**声明+定义**两段的描述符，
+只要件数与总提及数凑巧相等，**被用到的**也会被判成没人用
+（实测就是 `color_desc`：`own=3 cnt=3` ⇒ 删掉定义而调用点还在 ⇒ 两编译器各 1 个 `undeclared`）。
+
+**登记了六处 + 索引器一处**：结构体描述符行 · 数组 · 切片 · 枚举 · variants 表 · 字段表 · 描述符前置声明 ·
+视图索引原语（在拼接处登记，名字 = `<view>_index`）。
+
+**撤属性（7 处）**：`ExtcDesc` / `ExtcField` / `variants` / 视图索引 —— 撤完实测**全量 6/4 不变、error 0**
+⇒ 判据真的接管了这些族。
+
+**但仍有一处不能撤（又一次实测）**：函数**原型**上的 `EXTC_UNUSED static` —— 撤掉后全量从 6/4 炸到
+**96/94**（`pcg32_next` / `io$flushCout` / `fs$outPut` 这类"发了但没人调"的定义）
+⇒ 那属性对 gcc 是**跨声明生效**的，而这些定义 DeadFunc 剪不到（只被死代码提到）⇒ 它仍然承重，已恢复。
+
+**实测数字**：
+
+```
+全量 89 程序          gcc 6 · clang 4 · error 0（与撤属性前完全一致）
+代表程序行数          324 / 738 / 1361（一格没涨）
+-Weverything（仅 §3.1 清单）  globals 7 → 5 · stream-file 20 → 15
+                      其中 used-but-marked-unused 4→2 / 6→1
+```
+
+### 2026-09-25 · 预置宏也按需发射 + 兜底 goto 按需 + 清单补三条
+
+**一、`#define` 也进了原语那趟扫描**（`dropRuntimeDefs`）。判据要点与踩到的两个坑：
+
+1. **守卫行也是提及**：`#ifndef EXTC_REC_LIMIT` 里有宏名，所以"只在自有行里出现"永远不成立
+   ⇒ 把 `#ifndef/#ifdef` 这类**只测试存在性**的行从计数里减掉（那不是使用）
+2. **共享的 `#if` 块不能整块删**：`EXTC_INLINE` 与 `EXTC_UNUSED` 定义在**同一个** `#if defined(__GNUC__)` 里
+   我一度按"相邻指令行"扩展跨度 ⇒ 为没人用的 `EXTC_INLINE` 把整块删了，而 `EXTC_UNUSED` 还在被用
+   ⇒ 五个 C 错误（`expected ';' before 'static'`）⇒ **只删 `#define` 那一行**（留下空的
+   `#ifndef/#endif` 完全合法）
+3. **跨度起点的顺序**：先按 `#define` 行算 span、再改 `ln` 指向守卫行 ⇒ 窗口在名字中间截断
+（`EXTC_REC_LIMIT` 只数到守卫那一处 这是靠 `EXTC_DBG_PRIM` 打出 `span=37 / inside=1` 才看出来的）
+
+**二、兜底 `goto __extc_ret;` 按需**：函数体已经必然返回时，末尾那对
+`extc_arena_release(...); goto __extc_ret;` 是死代码（clang 报 `code will never be executed`）
+⇒ 复用上一轮算出的 `fallsOff` 门控（标签仍有使用者：不能跑出末尾的函数必然以 return 结尾，而 return 都跳到这个标签）
+
+**三、清单补三条并写明证据**（`docs/WARNINGS.md` §3.1 + `docs/warnings-flags.txt`）：
+`-Wunreachable-code` / `-Wunreachable-code-return`（clang 自己的可达性分析有误报：实测它把
+`case EXTC_D_F32: printf(...); return;` 的 `return` 报成不可达，而它明显可达）
+· `-Wjump-misses-init`（原文是 "jump … is **incompatible with C++**" —— 生成物是 C11）。
+
+**实测**（全部 error 0）：
+
+```
+                 行数             gcc/clang -Wall -Wextra    -Weverything（仅允许清单）
+globals      324 → 322                  0 / 0                       5 → 3
+stream       738 → 736                  0 / 0                       1 → 1
+stream-file 1361 → 1356                 0 / 1                      15 → 2
+```
+
+### 2026-09-25 · 计数要"看代码不看字符串" + 数组零值补大括号
+
+**一、字面量感知的计数（`countCodeMentions`）**。`shadowing` 里 `int32_t v = 1;` 在整份生成物里只出现一次、
+gcc 也报 unused，却没被删 —— 调试开关打出的读数是 `cnt=3`。原因是**字符串字面量里的 `v` 也被算成提及**：
+旁边就是 `slice_u8 __extc_p5 = ... "v = " ...` 换成"跳过字符串/字符字面量与注释"的计数后 `cnt=1` ⇒ 正常删除
+
+这条对**所有单字母局部**都成立（`e`/`n`/`d`/`v` 全都是字符串里常见的字符）—— 很可能是剩下那几条
+`unused-variable` 反复躲过判据的原因 接上后 `shadowing` 两编译器全清
+
+**二、数组的零值要两层大括号**。`fenwick` 的 gcc 独有警告 `-Wmissing-braces`：
+`(array_1025_i64){0}` —— 数组在生成物里是**包着数组的结构体**（`struct array_1025_i64 { int64_t data[1025]; };`）
+所以 `{0}` 初始化的是 `data[0]` gcc 要求写成 `{{0}}`（clang 两种都收）改完 `fenwick` 两编译器全清
+
+**三、试做但撤除：写而不读的改写**（`rng` 的 `skip`）。设计是：读次数为 0 时，纯赋值行整行删、带调用的赋值行
+改写成裸调用（保住副作用）—— 装进去之后生成物出现 2 个 C 错误、行数反涨 ⇒ **按纪律立即撤除**
+（两次都栽在**文本改写的算术**上：第一次 `memmove` 的长度/偏移算错，第二次改成"临时缓冲里拼新文本"仍然
+在调用点少传参数、并且指针在文本移动后失效）
+⇒ 记下做法：**改写要整函数重写、按偏移操作、每步重新定位**，并且**先在一个样例上跑通再全量**
+
+**实测**（`error` 全 0）：
+
+```
+shadowing  292 → 289 行   gcc 1 → 0 · clang 1 → 0
+fenwick    453 → 453 行   gcc 2 → 0 · clang 0 → 0
+arrays / stream-sum      保持两编译器 0
+rng        459 行         gcc 1 · clang 1（还是 `skip` 那条，改写已撤）
+```
+
+**四、数组零值按嵌套递归**（补上面第二条的不足）。只加一层括号不够：`coalesce`（`[4]?i64`）与
+`slices`（`[3][8]i32`、`[5]cell`）在改完第一版之后**反而**冒出 gcc 的 `-Wmissing-braces`
+⇒ 把数组零值改成递归：`(T){ { <元素自己的零值> } }` —— 元素是标量时得 `{{0}}`、
+元素又是数组时把它的零值放进去（`{{{0}}}`）三个程序全部两编译器归零
+
+**全量现状**：**gcc 3 · clang 3 · error 0**（89 个程序），只剩三个：
+`borrowing` 的未用参数 `b` · `out-param` 的未用参数 `__extc_home` · `rng` 的 `skip`（写而不读 + 调用副作用）
+
+### 2026-09-25 · 未用参数：先量清"为什么会有这个参数"，再决定用不用属性
+
+全量只剩 `borrowing`（用户写的 `b` 没人用）与 `out-param`（隐藏参数 `__extc_home` 没人读）
+主人问「为什么要用 unused 关键字」——这个质疑是对的，属性是**捂嘴**，一行代码都没省
+于是先把"为什么这个参数会存在"量清楚：
+
+```
+fn makeAndStore(b: mut ref boxes) {        ← extC 源码只有**一个**参数
+    var p: mut ref i32 = new i32
+    *p = 99
+    b.store[b.n] = *p                      ← 存进去的是**值**，不是指针
+    b.n = b.n + 1
+}
+```
+生成物：`static void makeAndStore(boxes * b, extc_arena *__extc_home)` —— 而函数体里
+`new` 用的是 `&__extc_a[1]`（自己那一层），根本没读 `__extc_home`
+
+**根因**：`needsHome` 回答的是**转义**问题（"这个函数会不会把活过本次调用的存储交出去"），
+判据故意宽 —— "往出参里存过东西"就算（`stmtStoresThroughDeref`），哪怕存的是**值**
+⇒ 函数白拿一个隐藏参数 而**签名与调用点都按这个宽判据走**（生成器里 10 处用 `needsHome`）
+⇒ 参数"存在但没人读" ⇒ gcc 报未用参数
+
+**结论（真修方向，`ast.h` 已加字段 `usesHome`）**：签名的判据应该是**精确**的那一个 ——
+"这个函数是否真有分配落在 home 那一层"（`FuncDef.arenaSites` 里任一 site 的 `arenaLevel == ARENA_HOME`）
+或"它把 home 传给了下游"，用一次不动点算出来 然后**签名与调用点都用它**
+⇒ 那种函数就不再带隐藏参数 ⇒ 警告自然消失，**不需要属性**
+（`examples/out-param.extc` 正是这种：分配没进 home ⇒ 不该有这个参数）
+
+**过渡措施**（本轮先落地并验证）：参数表上打 `EXTC_UNUSED` —— 但我把它标成**过渡**
+下一轮做 `usesHome` 精确化，做完就能把隐藏参数那条属性的使用去掉
+（用户自己写的未用参数 `b` 是另一回事：那是**用户的声明**，编译器无权删 —— 可选做法是让检查器报诊断 待主人定夺）
+
+### 2026-09-26 · 隐藏参数 `__extc_home`：**不用就不传**（真修，不是捂嘴）
+
+主人问「为什么要用 unused 关键字」——问得对，于是把这件事做成了真修
+
+**根因**：`needsHome` 回答的是**转义**问题 判据故意宽（"往出参里存过东西"就算 `stmtStoresThroughDeref`），
+哪怕存进去的是**值** ⇒ `makeAndStore` 这种函数白拿一个 `extc_arena *__extc_home` 而函数体从不读它
+（它的 `new` 落点是自己那一层的 `&__extc_a[1]` 说明**分配根本不需要 home**）
+
+**修法（两步，都是"精确化"而不是"加属性"）**：
+1. `ast.h` 加 `FuncDef.usesHome`：回答**精确**问题 —— "这个函数是否真有分配落在 home 那一层"
+（`arenaSites` 里任一 site 的 `arenaLevel == ARENA_HOME`）或"它把 home 传给下游"，用一次不动点算
+2. **签名与调用点都用它**（生成器 11 处 `needsHome` → `usesHome`）—— 两边同源，所以不会不一致
+（一致性由 C 编译器兜底：一旦不一致就是编译错误 实测 error 0）
+
+**效果**（`examples/out-param.extc`）：
+
+```
+之前：static void makeAndStore(boxes * b, extc_arena *__extc_home) {   ← 参数没人读
+      makeAndStore(&(bx), &__extc_a[1]);
+之后：static void makeAndStore(boxes * b) {                             ← 参数**不存在**了
+      makeAndStore(&(bx));
+```
+⇒ 那条 gcc 的未用参数警告**自然消失** **不需要属性**
+⇒ 参数属性现在只剩**一种**用途：**用户自己写的**、他真的不用的参数（`borrowing` 的 `b`）
+—— 那是用户的声明，编译器无权删（可选做法：让检查器给用户一条诊断 待定）
+
+**全量**：**gcc 1 · clang 1 · error 0**（89 个程序），只剩 `rng` 的 `skip`（写而不读 + 调用副作用）
+
+### 2026-09-26 · 写而不读的局部：**保留副作用**地去掉赋值（`rng` 那条，全量归零）
+
+`rng` 里 `uint64_t skip = pcg32_next(&(r));` 之后又赋了一次，值从没被读 —— 但它**不能整行删**
+（那个调用会让 RNG 前进 删了程序行为就变了）。正确做法：**赋值去掉，调用留下**
+
+**设计**（第三次才做对，前两次都栽在文本改写的算术上）：
+1. 先判**读**：在"函数体去掉声明那一行"的文本上数**读**次数（跳过字符串/注释 提及后面紧跟 ` = ` 的算写不算读）
+2. 读为 0 才动手：**收集**所有要删/要缩的行（声明行 + 每一处赋值行），每行的替换文本 =
+   **缩进 + 右值语句**（右值里有 `(` 就留下当裸调用 否则整行删）
+3. **最后一次拼装新文本**（按升序拼接不相交的段 结果只会更短 ⇒ 原地放得下）
+   —— 不做增量 `memmove`、不跨步骤传指针，这两条正是前两次失败的原因
+
+**踩到的坑（量出来的）**：第一版替换时右值取到"行尾**不含**换行" ⇒ 改写后的那行把下一条 `#line` 指令
+粘了上来 ⇒ `stray '#' in program`（两编译器 4 个错误）修掉后干净
+
+**语义验证**（这次没有偷懒）：把改动**前后**的生成物各自编译运行，输出逐位一致
+（`rng` 自己还会跟 C 参考实现对比 两条都过）
+
+**结果**：`rng` 459 行 · **gcc 0 / clang 0** · error 0
+**全量 89 个程序：gcc 0 · clang 0 · error 0**—— 目标的第一部分达成
+
+### 2026-09-26 · 按"少生成代码"这条主线：函数剪枝修好两处定位，死代码成批掉下来
+
+主人把主次摆正了：**安全前提下，C 的代码量要小、要能读**（警告只是体检项）。按这条线量了一下，发现
+真正的大头不是警告，而是**没人调的函数还在生成**：
+
+```
+tests/io/stream-file.extc   1370 行 → 1258 行（-112 行，-8%）
+tests/io/stream.extc         750 行 →  719 行（-31）
+examples/globals.extc        332 行 →  300 行（-32，-10%）
+```
+三个程序都是 `-Wall -Wextra` **0 警告 0 错误** 语料与九套件见下
+
+**根因（两处，都是同一类）**：函数剪枝用**生成当时捕获的原文**去 `strstr` 定位函数体
+而中间那几趟（局部声明、写而不读的改写）会改到**函数体内部** ⇒ 对"被动过的函数"永远找不到 ⇒ 跳过
+1. 改成用**签名那一行**定位（它不会被改写，见 `funcDefStart`）
+2. 各趟只跑**一遍** —— 删掉 `pcg32_withStream` 才让 `pcg32_next` 变成死的 而那一趟已经过去了
+   ⇒ 外面套一圈"跑到文本不再变短为止"（`for round < 8`，`out->len` 不变就停）
+3. `rtDie` 那块（临终钩子）原本不在原语那趟的扫描范围内 ⇒ 它的调用者都删了、它自己留着
+   ⇒ 起点前移把它包进来；里面那个 `static int32_t(*__extc_dying)(void);` 是**函数指针声明**，
+   含括号 ⇒ 通用的"变量"识别认不出 ⇒ 在发块的地方**单独登记**它（不去扰动通用规则 试过一版，净亏 已撤）
+
+**顺带**：主人的一句提醒纠正了一个方向 —— `#line` 指令占 19~22% 的行数 但那是**诊断**用的，
+要可读就用 `extc --no-line-map`（那边一条 `#line` 都没有）⇒ 我**不在**这个方向上做压缩
+
+### 2026-09-26 · 生成物"更像人写的"：枚举零值用变体名、f32 字面量写成 float、宏识别兼容对齐写法
+
+主人定的主线是"**安全前提下少生成、好读**"，这一轮把几处"生成得不像话"的地方修掉（都是 clang `-Weverything` 顺带指出来的）：
+
+1. **枚举的零值是它的第一个变体，不是整数 0** —— `board b =(board){0};` 把 `int` 塞进枚举
+（`-Wimplicit-int-enum-cast`，C++ 里非法）。`zeroValue` 现在给 `color_red` 这样的**真枚举值**
+   并且 `needsExplicitZero` 会**往数组里递归**（`board` 是 `[8][8]color` 枚举在两层之下）
+2. **`f32` 字面量写成 float** —— `let e: f32 = 3.14` 原来发 `float e = 3.14;`（double 字面量隐式收窄
+   `-Wimplicit-float-conversion`）⇒ 新助手 `asF32` 在**声明与赋值**两处按目标类型补 `(float)` 转换
+（值不变，只是不再是隐式）
+3. **宏识别只认 `#define `** 而预置里写的是 `#  define `（对齐用）⇒ `EXTC_NORETURN`
+   在"trap 全被剪掉"的程序里永远留着 ⇒ 兼容带空格的写法后**按需剪掉**
+
+**实测**（`-Wall -Wextra` 两编译器均 0、零错误）：`tour` 606 行 `-Weverything` 1 → **0** ·
+`types` 264 行 1 → **0** · `globals` 298 行 **0**
+
+### 2026-09-26 · 新增一道体检：clang-tidy（主人问"performance-* 现在如何"）
+
+主人问的，量了一下 —— 这是个**新维度**（编译器警告之外，静态分析器怎么看生成物）：
+
+```
+clang-tidy -checks='-*,performance-*' <生成物> -- -std=c11
+89 个 examples 生成物：performance-* 合计 **0 条**
+（clang-tidy 21.1.8 确认在分析：-checks='*' 下会报出一堆类别）
+```
+
+**为什么是 0**：`performance-*` 里绝大多数是 **C++ 专用**（`performance-unnecessary-value-param` ·
+`performance-inefficient-string-concatenation` · `performance-move-const-arg`），
+对 C 适用且可能触发的只有几条（`performance-no-int-to-ptr` · `performance-faster-string-find`），
+生成物恰好都不碰（`strstr` 只在预置的 `extc_eq` 里用过、且 needle 是多字符）。
+
+**顺带看到的（不属 performance，但值得记）** —— `-checks='*'` 下生成物的前几类：
+`cppcoreguidelines-avoid-non-const-global-variables`（11，C++ 指南 流对象本来就要可变）·
+`altera-struct-pack-align`（9，与 `-Wpadded` 同一件事：布局要跟描述符表一致 不能改）·
+`readability-identifier-length`（7，`e`/`n` 这类局部名 语言允许）·
+`bugprone-implicit-widening-of-multiplication-result`（3 看过了：`static int64_t BOARD_SIZE =(15 * 15);`
+—— 乘法在 `int` 里做、之后加宽 **这正是 extC 的语义**（`i32 * i32` 就是 32 位乘法）⇒ 不是 bug）
+
+### 2026-09-26 · `-Weverything` 剩余 12 条：一族进清单（附理由），一族试修后撤回
+
+全量只剩两族 都量清了：
+
+1. **`-Wfloat-equal`（10 条）** ⇒ **进清单** 理由写进 `docs/WARNINGS.md` §3.1 与 `docs/warnings-flags.txt`：
+   语言的 `==` 作用在 `f64`/`f32` 上**就是 IEEE 相等**，而 clang 建议的"用 epsilon 比较"会**改变语义**
+（NaN、`-0.0` 的行为都会变）—— 生成物只能这么写 出现处只有 `extc_eq` 的 F32/F64 两支
+2. **`-Wcast-qual`（2 条）** ⇒ 试过真修（只读的 `ref` 参数转成 `const T *`）**撤回**：
+   extC 的 `ref T` 在生成的 C 里**就是 `T *`**（语言里没有 `const`）而描述符交出的是 `const void *`
+   ⇒ 转成 `const T *` 反而**类型不匹配** ×（`-Wincompatible-pointer-types-discards-qualifiers`）
+   ⇒ 也进清单 理由：适配器必须丢 const 才能调用用户按 `ref` 取参的 `==`；
+   改成"先拷进局部再取地址"能免掉，但每个适配器多一行 —— **这个警告不值得那一行**
+
+**实测**：`examples/eq.extc` 与 `examples/array-of-struct.extc` 两编译器 `-Wall -Wextra` **0** ·
+`-Weverything`（允许清单内）**0**
+
+### 2026-09-26 · 未用参数：**既优化又报告**（主人的建议）
+
+主人定调：「两个都做，我又帮你优化又给你报告」⇒ 生成物那边继续打 `EXTC_UNUSED`（C 编译器保持安静）
+**并且**检查器报一条警告（作者知道自己在签名里留了死重量）。
+
+**实现**：`check_top.c` 里加一个轻量 walker（`exprUsesCname`/`stmtUsesCname`），在函数体查完之后
+逐个参数问"这个绑定被读过吗" —— 判据比的是**生成的 C 名**（`u.ident.cname`）而不是源名
+所以**遮蔽**（`let b = ...` 会拿到 `b__2`）不会被误当成使用。
+walker 的形状表**照抄** `exprCallsNeedsHome`（它的注释写着"能藏表达式的形状必须列全" 漏一个就会误报）。
+
+**豁免**：`self` 不报（忽略接收者的方法很常见）· 编译器自加的隐藏参数不报
+（`out-param.extc` 那个 `__extc_home` 实测无警告 —— 而且它现在压根不生成）
+
+**实测**：89 个 examples 里**只有 3 个程序、4 条警告**（`borrowing` 的 `b` · `gomoku-board` 的 `lo`/`hi` ·
+`growth-factor` 的 `r` 都确实是死参数）⇒ 不吵；退出码仍是 0（是警告不是错误）
+生成物那边 `EXTC_UNUSED` 仍在（`borrowing` 的 C 里 2 处）⇒ **两边都做到了**
+
+### 2026-09-26 · 编译速度实测：**生成物小 20~25%，但 extC 自己慢了 ~1.5×**（已查、已优化一轮）
+
+主人问的，用 `git worktree` 把**大优化之前**的提交（`d3e868e`）单独建了一份编译器来比
+方法：`$EPOCHREALTIME`（bash 内建，不起进程）取 **15 次最快值** C 编译用 `gcc/clang -O1 -c`
+
+```
+程序              旧extc  新extc   倍率    旧C行  新C行   gcc -O1 编那份C
+globals             1ms     2ms   1.5x      452    298      25ms → 24ms
+tour                2ms     3ms   1.5x      740    606      40ms → 39ms
+stream-sum          7ms    10ms   1.4x     1535   1205      73ms → 73ms
+stream              4ms     6ms   1.5x      990    719      56ms → 55ms
+stream-file         7ms    11ms   1.6x     1608   1258      69ms → 68ms
+gomoku-board        2ms     3ms   1.5x      581    449      38ms → 37ms
+```
+⇒ **C 编译时间不变**（生成物少两三百行对 gcc 是噪声）· **extC 前端慢约 1.5×**
+（绝对数字仍很小：2~11 ms 256 个语料用例全编一遍是几秒级）
+
+**profile（callgrind，`stream-sum`，指令数是确定性判据）**：优化前 **205,078,186** 条
+`strstr` 24.7% + `memcpy` 23.2% + `getenv` 3.0% —— 全是我加的那些趟的账 查了三处：
+
+1. **每个候选拷一份整份输出**（描述符那趟的"拷出来挖件再看残余"~100 候选 × ~100 KB）
+   ⇒ 改成**不复制**：先算出各件的跨度 再数"落在件之外的提及"
+   第一版把它写成**逐字节 + 每字节一次 `strncmp`** ⇒ 指令数反而炸到 **862M**
+（profile 直接看出来）⇒ 改用 **`strstr` 跳着数**（向量化 且边界检查照旧）
+2. **`getenv` 在热循环里**（每个局部、每个候选、每个层级都调一次）⇒ 27 处调试开关统一走
+   `dbgOn(name)`（`base.c` 里带 16 槽缓存 环境变量运行期间不会变）
+3. 顺手把 `countMentionsIn` 确认成不复制（它早就是扫描式）
+
+**结果**：指令数 **205M → 165.8M**（比优化前低 19%）· `stream-sum` 11ms → **10ms**
+⇒ 剩下的 1.5× 是**内容判据本身的成本**（`strstr` 仍占 30%）：它换来的是生成物小 20~25%、
+两个编译器零警告 这笔账我认为划算 但记在这里，将来要更快就从 `strstr` 那 30% 下手
+
+### 2026-09-26 · 清零就用最朴素的写法：**纯括号嵌套**，不套复合字面量
+
+主人一句「清零就用尽可能简单的方式清零」把方向拨正了 之前为了消 gcc 的 `-Wmissing-braces`
+我写成了**逐层复合字面量**：
+
+```c
+array_3_array_8_i32 b =(array_3_array_8_i32){ {(array_8_i32){ { 0 } } } };
+array_5_cell       c =(array_5_cell){ {(cell){0} } };
+```
+⇒ 现在只写括号：
+```c
+(array_1025_i64){ { 0 } }                 /* [1025]i64 */
+(array_4_option_i64){ { { 0 } } }         /* [4]?i64   */
+(array_3_array_8_i32){ { { { 0 } } } }    /* [3][8]i32 */
+```
+
+**括号层数是量出来的**（gcc `-Wmissing-braces` 在 `-Wall` 里 ⇒ 必须满足它 用一个小 C 文件逐种写法试）：
+
+```
+[1025]i64    { { 0 } }            { 0 }
+[4]?i64      { { { 0 } } }        { { 0 } }
+[3][8]i32    { { { { 0 } } } }    { { { 0 } } }
+```
+规则：**数组类型在 C 里是"结构体包数组" ⇒ 两层**（最外层那层由复合字面量自己的括号充当），
+**结构体一层**（首成员是聚合就继续递归）；**带载荷的枚举在 C 里也是结构体** ⇒ 也一层
+（`?T` 这个漏了会让 `[4]?i64` 少一层 —— 就是 `coalesce` 那条）。
+
+**顺带撤回一处"修"**：昨天为消 `-Wimplicit-int-enum-cast` 把枚举零值写成"点名第一个变体"
+实测让 `tour` 的 `board b =(board){0}` 膨胀成嵌套复合字面量（**多 492 字节代码** 而且更难读）
+⇒ 撤回 该警告改为进清单（`docs/WARNINGS.md` §3.1 与 `docs/warnings-flags.txt` 里写了这次实测的理由）
+—— 两个方向（少生成 + 好读）都比"消掉一条 C++ 兼容性提示"重要
+
+### 2026-09-26 · release 口径（`-O2` + gc-sections）实测：**编译/链接时间不变，体积基本不变**
+
+主人点出 release 是 `-O2` 加 gc-sections 于是按这个口径重测（`gcc -O2 -ffunction-sections
+-fdata-sections -c` 链接 `gcc -Wl,--gc-sections` 都取 5 次最快值）：
+
+```
+程序          C行 旧→新     编译 旧→新     链接 旧→新      可执行 旧→新
+globals       452 → 298    31 → 31 ms   105 → 103 ms   16408 → 16408
+stream-sum   1535 →1205   111 →109 ms   104 → 103 ms   21528 → 21528
+stream        990 → 719    88 → 85 ms   104 → 103 ms   20944 → 20944
+stream-file  1608 →1258   103 →103 ms   107 → 102 ms   21288 → 21288
+gomoku-board  581 → 449    49 → 49 ms   104 → 101 ms   16624 → 16624
+tour          740 → 606    53 → 54 ms   102 → 105 ms   16416 → **16688**
+```
+
+**结论（诚实版）**：
+- **gc-sections 已经把"没人调的函数"在链接期丢掉了** ⇒ 我那些剪枝在 release 的**体积上没有可测收益**
+（不带 gc-sections 时也一样：两版的可执行文件大小相同）
+- C 的编译时间、链接时间：**不变**（差 300 行对 `-O2` 是噪声）
+- ⇒ 剪枝在 release 下换来的是**可读性**（生成物少 20~25% 行）与**零警告**，不是体积也不是时间
+- `tour` 是唯一变大的 **+272 字节**，真凶找到了：**`EXTC_NORETURN`**（text 5789 → 6281 bss 8 → 24）
+  —— 那是前几轮为消 `-Wmissing-noreturn` 与不可达代码加的 语义上是对的（它们确实不返回）
+  但在这一个程序上花了 ~500 字节 记在这里，将来若要抠体积可以从它下手
+
+**另一件事：extC 前端自己慢了约 1.5×**（`git worktree` 建了优化前的编译器对比 best of 15 2→3ms、
+7→10ms 这一档）—— 已用 callgrind 查过并优化一轮（205M → 165.8M 指令 详见上面那条）
+
+### 2026-09-26 · 运行时性能：**没有倒退**（生成物对生成物，同机同输入）
+
+主人问"性能应该没有倒退吧" —— 用优化前那份编译器（`/tmp/extc-before`）和现在的各生成一份 C
+都用 `gcc -O2` 编 喂**同一份** 117 MB / 1000 万行数据 取 5~7 次最快值：
+
+```
+输入侧（bench/io/extc_in.extc：读完所有整数求和，stdin）
+   生成物 1619 行 → 1047 行（-35%）
+   旧 139 ms · 新 138 ms         两侧求和一致：999957868929
+输出侧（bench/io/extc_out.extc：写 1000 万行到文件）
+   生成物 1595 行 → 942 行（-41%）
+   旧 212 ms · 新 210 ms         两个输出文件**逐字节一致**（224 MB）
+   对照·手写 C（bench/io/c_out.c）247 ms  ⇒ extC 这版**比手写 C 还快**（走的是运行时缓冲）
+```
+⇒ **没有进退** 剪枝/警告那一串改动只动了"发不发"，没动"怎么算"
+唯一动过运行语义的是两处，都是往好的方向：`main` 的返回槽去掉（少一次赋值）、
+隐藏的 home arena 参数在函数不用它时不再传（少一个实参）
+
+### 周期 11（第 11 轮）：循环里 pool 反复建/放 —— 染色方案与一条硬约束
+
+用户提出：循环里 pool 反复建/放代价巨大，优化方式是"**染色**"——同一个 zone 里的池生命周期相同，zone 死亡时
+翻一位标签（0 变 1），句柄只要比对自己记录的 poolgen 与池实际的色是否吻合即可，不必逐个维护计数器。
+
+结论：成立，且收益比字面更大。zone 退出现在是逐个 `extc_pool_drop` 走链表（O(#池)），染色后是**翻一位**
+（O(1) 且零写），池级 epoch 计数器可以整个退场，只留"出生色"。`release` 里那条
+`extc_pool_generation(pid) != pidGen` 检查不变，只是被比较的量从计数器变成色。
+
+两处需要定口径：
+
+1. **位宽即检测强度**。一位的周期是 2：跨两次死亡还活着的句柄会"颜色又对上"，从响亮失败退化成静默用错。
+   合规程序里不可达（POOLS.md §5 已规定句柄不得跨池生命周期），但要把违规也包住就得多几位 —— 同一个字里
+   的循环计数，成本相同，建议 3 位（周期 8）。
+2. **染色只省簿记，不省缓冲区**。循环里每轮 `pool<T>::withCap(k)` 真正的钱在 `vals`/`slots`/`ent` 三块从
+   arena 重新分配 + cap 次初始化写。缓冲区要跨迭代复用，语言层必须能挂一条"回收链"，而这里撞到一条硬约束：
+   **extC 没有 `static`**（DECISIONS.md 定案 4：全局 = 深度 0 的 arena，`static` 关键字因此消失），所以
+   "每实例化一份的静态表"写不出来。剩下的路只有三条：
+   -(a) 用户层把池提到循环外、每轮 `clear()` —— 染色让 `clear()` 变 O(1) 之后这条路今天就能走，零编译器工作；
+   -(b) 编译器把"循环体里建 + release"提升到循环外、尾部改 `reset` —— 要逃逸分析，安全性靠 §5 那条不变式兜底；
+   -(c) 缓冲区改由运行时 malloc 持有（回收链在运行时，能跨迭代复用、`release` 也能真还内存）—— 但这是模型
+     改动，与"池不持有内存、arena 是唯一内存来源"相冲，需用户点头。
+
+建议顺序：(a) 先落地 —— 把染色做出来让 `clear()` 便宜，热循环里"建池"这个模式本身就被 `clear()` 取代，
+不需要编译器去猜；然后量；再看要不要(b)/(c)。
+
+验证（同轮补记）：修好 `check.sh`（`exec </dev/null` + 两处未转义反引号）后用改好的脚本复跑 quick，
+**通过 25 · 失败 0 · RC=0 · `command not found` 噪音 0 条**（日志 `/tmp/prb/cq_r11c.log`）。关掉 stdin
+不影响 IO 节 —— 那 7 条用例不需要真 tty，所以这一修不欠任何东西。
+
+### 周期 12（第 12 轮）：池级 epoch —— `clear()` 变 O(1) 染色
+
+作者口径：「我在一个 while 里面创建了一堆 pool，然后我给 zone 一个 color……每次访问的时候如果 color
+和 zone 的不匹配，那么说明全部都死了，那你就全是 freeslots，很爽」。先把**池这一层**落地（zone 色那层
+见 `docs/topics/POOLS.md` §7）。
+
+改法（`stdlib/stl/pool.extc`）：
+
+- 句柄加 `ep`（出生 epoch），宽度收在**一处具名常量** `HANDLE_EPOCH_BITS`（默认 32）—— 这类宽度本质是
+  调参，所以整个仓库只留这一个旋钮。
+- 池记录加 `epoch`。`clear()` 只做四件事：`epoch + 1`、`n = 0`、`cursor = 0`、`holeHead = -1`，
+  **一字节 `ent` / `vals` / `slots` 都不写**（旧版是 O(cap) 逐槽重写 + gen 加一）。
+- 分配器从「单一 free 链」改成「**稠密游标 + 空洞链**」：`cursor` 是本 epoch 从未用过的槽的下界，
+  `holeHead` 是本 epoch 因 `remove` 产生的洞。取槽两条路：有洞先取洞（洞的低半确实存着链指针），
+  否则取 `cursor` 并前进。**陈旧 `ent` 只用来继承 `gen`，绝不能被当作链指针读** —— 半成品版本正是
+  踩了这条：`clear` 后 `free` 被算成负数（陈旧 live 标记 `dense+1` 减 `cap+2`），于是**每次插入都
+  `grow()` 翻倍**。新用例 rt_epoch 的第 ② 条判据（clear 后再插同样多、容量不许涨）就是它的探针。
+- 纪律写进代码注释与用例：**epoch 只用来否决，不用来确认** —— 活性权威仍是 `n`、游标/空洞链、槽级
+  `gen`；epoch 相等不等于活。这是 POOLS.md §7.6 的分水岭，代码里逐字照抄了这条。
+
+收尾时被新用例抓住并修掉的两个潜伏 bug：
+
+1. `handleAtDense` 发出的句柄没带 `ep`（默认 0）⇒ **第一次 `clear()` 之后**，凡是从稠密面取到的句柄
+   全是废的：`remove` 返回 false、`contains` 为假。稠密面是容器迭代的入口，不修就等于 clear 之后
+   容器只能读不能删。
+2. extC 里带 `self` 的是**方法**、不带 `self` 的才是**关联函数**，所以不能写 `pool<T>::pLive(self, h)`，
+   必须写 `self.pLive(h)`（编译器那句 `no associated function 'pLive' on 'pool'` 就是这个意思）。
+
+实测（新节 `rt_epoch`）：`cap=8 stale=0 len=0 refill=3 cap2=8 live=3 d=7,8,9 removed=1 reuse=0 fresh=1`
+—— ① 三个旧句柄的 contains / get / remove 全否决（`stale=0`）、② clear 后补插三个容量仍是 8、
+③ 同 epoch 内删掉再插，旧句柄失配（`reuse=0`）而新句柄可取到值（`fresh=1`）。
+
+验证：`tests/pool` 失败 0 · `tests/stl` 失败 0 · `tests/map` 失败 0；gcc 与 clang `-Wall -Wextra -Werror`
+干净 · ASan 含泄漏检查干净；`check.sh quick </dev/null` 结论见同轮补记。
+
+同轮补记（第 6 轮）：`check.sh quick </dev/null` 跑完 —— **通过 25 · 失败 0 · RC=0**（日志 `/tmp/prb/cq_r12.log`）。
+至此第 ① 件（池级 epoch，`clear()` 变 O(1) 染色）四道闸门全过：`tests/pool` · `tests/stl` · `tests/map` ·
+`check.sh quick`。作者关于手柄宽度的口径也照办：整个仓库只有 `HANDLE_EPOCH_BITS` 一个旋钮。
+
+### 周期 12 补记（第 7 轮）：`clear()` 的 O(1) 有了实测
+
+新增 `tests/pool/perf_clear_8.extc` 与 `tests/pool/perf_clear_4096.extc`：两个程序**只差池容量**，循环体一模一样
+（`clear()` + 插 4 个 + 读一次稠密面），各跑 400 万轮；`run.sh` 里比墙钟时间，阈值是
+`大 ≤ 4 × 小 + 0.2s`（逐槽重写版必然超）。
+
+实测：**cap=8: 0.09s · cap=4096: 0.09s ⇒ 同量级**。
+
+论证：旧版 `clear()` 逐槽重写是 O(cap)，容量差 512 倍时耗时也该差约 512 倍；现在两端持平，即
+「`clear()` 的代价与容量无关」= 染色版 O(1) 成立。这一节与既有的 churn（峰值 RSS 平）、canary（判据有牙）
+并列，成为池这一层第三条常设判据。顺带一个数字：400 万轮 × 4 次插入 = 1600 万次插入，连同插入的簿记
+一共 0.09s。
+
+### 周期 13（第 13 轮）：③ `stl/set` 落地（无值 map）；② map 池底化的半成品已存档
+
+**③ 落地**：新增 `stdlib/stl/set.extc` —— `struct setI64 { m: mapI64<u8> }`，元素即键，`u8` 当占位值。
+理由是哈希、线性探测、墓碑、`rebuild` 阈值这些最容易写错的东西**只有一份实现**，set 与 map 不可能各漂
+各的；代价照实写：每元素一个字节。面与 map 对齐（`withCap` / `len` / `contains` / `put` / `remove` /
+`clear` / `keyAt` / `liveAt` / `capOf`），只差一处语义：**`put` 在新元素时为真**（map 是「已存在为真」，
+所以显式翻过来）。
+
+实测（新节加在 `tests/stl/run.sh`）：
+`new=2 len=2 again=0 len=2 has2=1 rm=1 gone=0 len=1 hits=200000 cap=16 cleared=0`
+—— 重复插入不算新 · 删掉后查不到 · 十万轮 put+remove 墓碑 churn 后容量稳在 16 · 清空后 len=0。
+`tests/stl` / `tests/map` / `tests/pool` 各失败 0。
+
+**② 存档**：map 池底化改到一半（287 行 diff）时仓库是红的，红树不能留 —— 半成品存到
+`/tmp/map_wip_pool.patch`（另有整份 `/tmp/map_wip_pool.extc`），`stdlib/stl/map.extc` 已 `git checkout`
+回到绿树，三道闸门复跑全绿。
+
+症状记档（下一步的入口）：生成的 C 里 `map$mapI64_i32_remove` 调用 `pool$pool_i32_remove`，但那是个
+**implicit declaration** —— 也就是 `pool<i32>` 的**部分方法没有被实例化出来**；换 `mapI64<u8>` 时缺得更全
+（`withCap` / `handleAtDense` / `set` / `insert` / `len` / `remove` / `clear` 全缺）。也就是说「库里的泛型
+`A<V>` 内部持有库里的泛型 `B<V>`」这条链上，`B` 的实例化没有全部跟出来；而 `vector<T> → pool<T>` 是
+同样的链却常绿（`tests/stl` 一直过）。所以继续 ② 之前，先把这两条链的差异找出来 —— 这属于「库作者撞墙」
+那一族，值得进 PLAN。
+
+同轮补记（第 8 轮收尾）：`check.sh quick </dev/null` 跑完 —— **通过 25 · 失败 0 · RC=0**（日志
+`/tmp/prb/cq_r13.log`）。至此 ③ 也过四道闸门：`tests/pool` · `tests/stl` · `tests/map` · `check.sh quick`。
+当前进度：① 完成 · ③ 完成 · ② 设计定稿且半成品存档（先解 `pool<V>` 的实例化缺口）· ④ 等作者裁决
+（`varArray` 是改 prelude 那个隐式可见的底座，还是保持 arena 底、池底留给显式 import 的 `stl::vector`）。
+
+### 周期 14（第 14 轮）：命名定案 —— `hashMap` 是哈希，`map` 留给有序平衡树
+
+作者口径：「map 不应该这样，map 应该是 hashMap<K, V>，然后是哈希；map<K, V> 是有序的平衡树实现」。
+
+改名（机械改动，已过闸门）：`stdlib/stl/map.extc` → `hashMap.extc`（类型 `mapI64<V>` → `hashMapI64<V>`）·
+`stdlib/stl/set.extc` → `hashSet.extc`（`setI64` → `hashSetI64`）· 套件目录 `tests/map/` → `tests/hashmap/` ·
+STL 套件里的用例 `tests/stl/set.extc` → `hashSet.extc`；调用点与文档引用一并改（13 个文件）。
+从此名字与语义对齐：**`map` / `set` 属于有序实现**，不再是哈希的别名。
+
+改名踩到的坑（记档）：一次通配替换把 `tests/stl/set.extc` 这条**用例路径**也改成了 `hashSet.extc`，而文件
+当时还没改名 ⇒ `tests/stl` 报 `cannot read ...hashSet.extc`（红了一次）。顺势把文件也改名、标签改成
+`hashset` 即恢复。教训：替换「名字」时，`stl/set.extc` 这类**路径子串**会跟着中招 —— 路径要单独核对一遍。
+
+两道门槛记进 `POOLS.md` §10 与 PLAN #78：`hashMap<K, V>` 的 K 泛化卡在 #57（泛型体里调不了类型参数上的
+协议方法）；有序 `map<K, V>` 需要 K 的 `cmp` / `less` 协议，且树的选型与「节点住哪」都还没定。
+
+验证：`tests/stl` · `tests/hashmap` · `tests/pool` 各失败 0；`check.sh quick </dev/null` 通过 25 · 失败 0
+（日志 `/tmp/prb/cq_r14.log`）。
+
+### 周期 15（第 15 轮）：PLAN #57 修好 —— 泛型体里可以调用类型参数上的方法
+
+作者口径：「先把 57 修了」。这不是小修，它是「泛型容器能对元素做任何事」的总闸门：`hashMap<K, V>` 要对
+`K` 调 `hash()`、有序 `map<K, V>` 要对 `K` 做比较，全卡在这条。
+
+改法照抄仓库里**运算符**那一族的现成机械，四段：
+
+1. **模板期宽容**：`EX_METHOD` 找不到方法、且接收者类型提到类型参数时，记一条
+   `MethodCheck{node, owner, name, nargs, func}` 并返回**错误类型**（`ast.h` 里 `TY_ERROR` 的注释就是
+   "dummy type for a failed check, so errors do not cascade"，而 `checkAssignable` 对它静默放行）——
+   模板期不再误报，语句其余部分照常检查。
+2. **实例期解析**：驱动里按运算符那族的形状加一段（(1) 类型实例 ·(2) 自由函数实例），`runMethodCheck`
+   在替换后的接收者类型上找方法：找不到 ⇒ `` `%s` needs `%s` to define `%s` ``（点名实例 · 类型 · 方法）
+   加一句说明为什么这条检查发生在实例化时；找到 ⇒ 查**实参个数**并标记 `f->used = true`（不标记，生成的 C
+   就会调用一个没人发出的函数 —— #64 就是这个坑）。
+3. **节点上不写 `func`**：一个模板体有多个实例，写进节点就成了「最后一个实例对、其余全错」。代码生成端在
+   替换后的类型上**重新解析**（`genMethodCall` 里 `e->func` 为空时取
+   `findMethod(ttBase(subst(g, recv->type)), name)`），与运算符在 codegen 里的做法一致。
+4. 诊断文案与运算符那族对齐：实例名 + 类型 + 方法名；note 写明「泛型里的方法是实例化时检查的 —— 没有 trait
+   的代价，给这个类型加一个 `fn hash`」。
+
+验收（`tests/generics/`，1 正例 2 反例）：
+
+- 正例 `method_on_t.extc` → `h=65 hb=129`：自由泛型函数 `hashOf<T>(v: T)` 与**泛型容器** `box<T>::h` 对元素
+  调 `hash()`，两条路径都通；
+- 反例 `needs_method.extc` → `` error: `hashOf_nopoint` needs `nopoint` to define `hash` ``；
+- 反例 `method_arity.extc` → `` error: `hash` takes 0 arguments, but 1 was written ``；
+- 回归：`tests/stl` · `tests/hashmap` · `tests/pool` · `tests/linmap` 各失败 0。
+
+下一步就是 #57 的用处：`hashMap<K, V>` 的 K 泛化 —— K 上要 `hash()` 与 `==`，两条今天都齐了。
+
+### 周期 16（第 16 轮）：#57 四道闸门全过；`hashMap<K, V>` 撞到 #79（推迟调用的错误类型污染），回退保绿
+
+先收 #57：`check.sh quick </dev/null` **通过 25 · 失败 0**（日志 `/tmp/prb/cq_r15.log`），加上 `tests/generics` 的
+一正例两反例与四个套件回归，四道闸门齐了。
+
+然后拿它做 `hashMap<K, V>`：表体泛型化、键类型改成参数 `K`、哈希改成问键要 `hash()`，整数快路径不另写一份表，
+而是给 `i64` 套 `i64Key { v: i64 }`（自带 `hash` 与 `==`），`hashMapI64<V>` 降成薄适配层 —— 设计是想让
+「哈希 / 探测 / 墓碑 / rebuild 阈值」仍然只有一份实现。**结果卡在一个新缺陷上（已立 PLAN #79）**：
+
+`hashMap<K, V>::find` 里 `var i = k.hash() &(self.cap - i64(1))`，`k.hash()` 就是 #57 那个推迟调用，模板期返回
+`TY_ERROR`；于是 `i` 是错误类型、`self.tag[i]` 也是错误类型，后面 `self.keys[i] == k` 撞进「操作数有错」的早退分支，
+**推迟记录没写下**（`needOp` 为假），codegen 按原生发 `==`，C 层报
+`invalid operands to binary ==(have 'i64Key' and 'i64Key')`。探针实测
+`rawL=<error> rawR=K subL=<error> kind=9 needOp=0`。危险之处不是报错，而是**静默丢掉后续检查**。
+
+试过的最小改法（返回接收者类型 `K` 而不是错误类型）也不行：`return v.hash()` 会被「有损转换」挡住（实测）。
+正确解法是给推迟调用一个**通配/依赖类型**并在**实例期把包含它的整条语句重检**，这条记进 PLAN #79 与下一轮。
+
+处置：`stdlib/stl/hashMap.extc` 与 `src/back/codegen.c` 都已回退到提交状态，`tests/generics` · `tests/hashmap` ·
+`tests/stl` · `tests/pool` · `tests/linmap` 全绿。同族的另一条证据也写进 #79：② 池底化时 `pool<i32>` 的部分方法
+没被实例化（`pool$pool_i32_remove` implicit declaration）——「泛型体内部实例化另一个泛型」这条链同样没走全。
+
+### 周期 17（第 17 轮）：#79 的下标错误恢复 ⇒ `hashMap<K, V>` 一次跑通（结构体键可用）
+
+根因精确到一行：`src/check/check_expr.c` 的 `EX_INDEX` 里
+`if(ttIsError(ot) || ttIsError(it)) return ttError(tt);` —— 索引类型失败时，把**元素类型**也一起吞成错误类型。
+修法是标准的错误恢复：对象类型仍然可索引时照样给出元素类型（索引自己的错已经在它自己的位置报过），只有
+对象类型是错误类型才不可恢复。
+
+效果（实测）：`hashMap<K, V>` 一次通过。`hash()` 那侧走 #57 的实例化解析；`==` 那侧因为元素类型恢复正常，
+`K == K` 又回到推迟路径（`needOp` 被置上），codegen 在替换后的类型上找到 `i64Key::==`。
+
+交付（`stdlib/stl/hashMap.extc`）：
+
+- 表体泛型化成 `hashMap<K, V>`：键类型是参数 `K`，哈希改成问键要 `hash()`，相等用 `==`；
+- 整数快路径**不另写一份表**：`i64Key { v: i64 }` 自带 `hash`（沿用原来的 `hashI64` 混合）与 `==`，
+  `hashMapI64<V>` 降成薄适配层 ——「哈希 / 探测 / 墓碑 / rebuild 阈值」仍然只有一份实现，代价是每个键
+  多 0 字节（`i64Key` 就是一个 `i64`）。
+
+新用例 `tests/hashmap/structkey.extc`（结构体键，自带 `hash` 与 `==`）：
+`a=11 b=22 miss=-7 len=2 after=-1 len=1`。
+
+验证：`tests/hashmap`（含 ASan）· `tests/stl` · `tests/pool` · `tests/linmap` · `tests/generics` ·
+`tests/genmatrix`（13 项）· 语料 **通过 262 / 失败 0**，全绿。
+
+仍欠（#79 后半，已写进 PLAN）：返回类型与实参的**实例期**检查 —— 今天 `MethodCheck` 只查「方法存在 + 实参
+个数」，返回类型能否放进上下文仍是模板期用错误类型放行的。
+
+同轮补记（第 10 轮）：`check.sh quick </dev/null` 跑完 —— **通过 25 · 失败 0 · RC=0**（日志 `/tmp/prb/cq_r17.log`）。
+`hashMap<K, V>` 与下标错误恢复这一版四道闸门齐了。
+
+另把 ② 的卡点读码定位清楚（写进 PLAN #79）：驱动里**只有自由函数调用**有延迟重解析 ——
+`resolveDeferredCall` 会建具体实例、置 `used`、改写 `e->func`；**泛型类型实例上的方法/关联函数**
+（`vals.insert`、`pool<V>::withCap` 这类，模板期类型实参还带 `T`）没有对应记录，于是具体实例的方法没被标记发射，
+就是 `pool$pool_i32_remove` 那个 implicit declaration 的来源。下一步的入口在这里。
+
+### 周期 18（第 18 轮）：② 池底化落地 —— 值住进池、表只留桶索引（顺带挖出 #80）
+
+按 POOLS.md §8 把 `hashMap` 的值搬进池：表里只留 `keys` / `tag` / `slot`（桶 → 稠密下标），再加一列反查
+`bucketOfDense`（稠密 → 桶），值本身住 `vals: pool<V>`。于是：
+
+- **`rebuild` 只重排桶，值一个都不搬** —— 元素的稠密下标与句柄跨 rehash 稳定（这就是池底化要换来的东西）；
+- **`remove` 的交换靠反查修好**：池的 `remove` 是 swap-remove，先把被搬动元素的桶记下来，删完再把它那条记录
+  挪到洞的位置；
+- **稠密面**：`denseLen` / `keyAtDense` / `valAtDense`（遍历不再扫表、也没有空洞），适配层也接上了。
+
+途中踩到并修掉两个 bug：
+
+1. **`bucketOfDense` 不跟着 `rebuild` 放大** —— 它按初始容量分配，表一翻倍稠密下标就越界，canary 程序直接
+   触发 `trap: index 128 out of range(length 128)`。修法：`rebuild` 里把它一起重建（先拷活前缀，rehash 时写新数组）。
+2. **#80（编译器缺陷，已单独立行）**：泛型结构体里**只有第一个字段能是另一个泛型实例**。池字段排在后面时，
+   `pool<i32>` 这个实例的函数根本不被发射（生成的 C 里全是 `implicit declaration`）。二分结论：把
+   `vals: pool<V>` 声明成第一个字段就正常，与字段名、字面量初始化顺序、类型参数个数、适配层都无关，
+   单字段结构体（`holder<T> { p: pool<T> }`）怎么用都正常。**当前是工作区，不是修好** —— `hashMap` 里加了
+   注释说明为什么池字段必须排第一，`#80` 记下方向（查字段类型解析/实例创建里把「第一个字段」当代表的那处）。
+
+新用例 `tests/hashmap/dense.extc`（`// expect:` 一行）：
+`order=1,2,3 dense=3 sum=60 afterRebuild=20800 first3=1,2,3 moved=640 gone=-1 len=63 dense=63`
+—— 稠密面是插入顺序 · 插到 64 个键触发 rebuild 后**稠密顺序与求和都不变**（值没搬的探针）· 删掉中间的键之后
+被搬走的那个元素仍按原键取到（`bucketOfDense` 反查的探针）。
+
+验证：`tests/hashmap`（含 canary「有牙」与 ASan）· `tests/stl` · `tests/pool` · `tests/linmap` · `tests/generics` ·
+`tests/genmatrix`（13 项）· 语料 **通过 262 / 失败 0**，全绿。
+
+同轮补记（第 12 轮）：`check.sh quick </dev/null` 跑完 —— **通过 25 · 失败 0 · RC=0**（日志 `/tmp/prb/cq_r18.log`），
+② hashMap 池底化四道闸门齐（`tests/hashmap` 含 canary 与 ASan · `tests/stl` · `tests/pool` · `tests/linmap` ·
+`tests/generics` · `tests/genmatrix` · 语料 262/0 · quick 25/0）。
+
+#80 的排查指针（下一轮的入口，省得重走）：
+
+- `types.c:ttGeneric` 的实例驻留（interning）是**对的** —— 只有全具体实例才进 `tt->instances`，模板期
+  `pool<V>` 本来就不该进；问题不在这一层。
+- `codegen.c` **根本不遍历 `tt->instances`**（grep 无命中），所以实例的方法/结构体是另有一条发射路径
+（多半是按 `FuncDef.used` 或发射期的工作表）。下一个要看的就是：谁决定「`pool<i32>` 的这套函数要发」，
+  以及为什么字段顺序会影响它 —— 现象是「字段类型里第一个泛型实例被注册/发射，后面的没有」。
+- 二分探针（可复现）：`struct h<K, V> { keys: mut slice<K>  vals: pool<V> ... }` 挂；
+  `struct h<K, V> { vals: pool<V>  keys: mutable slice<K> ... }` 正常；与字段名、字面量顺序、参数个数无关。
+
+### 周期 19（第 19 轮）：修 #80 —— 检查期把具体实例的字段类型落地（"泛型装泛型"这条链修通）
+
+机制（读码定位）：codegen 在启动时把 `tt->instances` **快照**进 `g.insts`（`codegen.c:4830`），之后
+`g.insts` 就是实例结构体与实例方法的发射依据。而 `vals: pool<V>` 里的 `pool<V>` 在模板期不是具体实例
+（`ttGeneric` 只驻留全具体实例，这一层本来就是对的），具体的 `pool<i32>` 要等到**替换**发生时才诞生 ——
+替换发生在代码生成期，晚于快照 ⇒ **调用发了、被调函数没发**，C 层报
+`implicit declaration of function 'pool$pool_i32_withCap'`。字段顺序之所以"看起来"有关，是因为别的路径
+碰巧先替换了第一个字段的类型。
+
+修法（`check_top.c`，7 行）：检查期遍历 `tt->instances`，对每个实例用它的实参把 `sdef->fields` 的类型逐个
+`ttSubstitute` 一遍 —— 这一步就把嵌套实例驻留进去了。循环读的是**边遍历边增长**的表，所以嵌套实例自己的
+字段也会顺带落地。这不只是"让发射跟上"，也是**正确性必需**：`hashMap_i64Key_i32` 的 C 结构体里有
+`pool_i32` 字段，那个 typedef 无论如何都得发。
+
+验证：
+
+- 反序探针（`{ keys: mut slice<K>  vals: pool<V> }`，即原来必挂的形状）现在 `ok`；
+- `stdlib/stl/hashMap.extc` 撤掉「池字段必须排第一」的工作区，字段恢复自然序（`vals` 回到后面）后，
+  `tests/hashmap`（含 canary 与 ASan）· `tests/stl` · `tests/pool` · `tests/linmap` · `tests/generics` ·
+  `tests/genmatrix`（13 项）全绿，语料见同轮补记。
+
+同轮补记（第 14 轮）：`check.sh quick </dev/null` 跑完 —— **通过 25 · 失败 0 · RC=0**（日志 `/tmp/prb/cq_r19.log`）。
+#80 的修法与语料 262/0、六个套件一起构成四道闸门全过。
+
+### 周期 20（第 20 轮）：交接说明 —— 目标剩余三件、各自入口与纪律
+
+仓库存量：本条目之前 HEAD 为 `10f3ad1`，四道闸门全绿（`check.sh quick` 25/0 · 语料 262/0 · hashmap 含
+canary 与 ASan · stl · pool · linmap · generics · genmatrix）。剩余三件，入口都写在这里，不必重新推导：
+
+1. **#79 后半：返回类型与实参的实例期检查。** 入口是 `check_top.c` 的 `runMethodCheck` —— 它今天只查
+「方法存在 + 实参个数」，返回类型与实参类型仍是模板期用错误类型放行的。解法方向（#79 行里也记了）：
+   给推迟调用一个**通配/依赖类型**（**不能**继续用 `TY_ERROR`：它会把模板期后续类型一起污染，`var i =
+   k.hash() & mask` 就是这么让后面那条 `==` 丢掉推迟记录的），并把**包含该调用的整条语句**在实例期重检
+（`c.substParams` / `c.substArgs` 现成，`RefCheck` 那族就是按节点重跑的）。验收：`return v.hash()` 这类
+「结果流进需要真类型的上下文」的泛型体要能编过，且类型真的不匹配时在实例期报错。
+2. **③ 有序 `map<K, V>`：等作者裁决**树型（红黑 / AVL / 其他）与节点住哪（池 / arena）。K 要有 `cmp` /
+   `less` 协议 —— 机制与 #57 完全相同（按形状认协议 + 实例化时检查），今天已经能用。可复用的现成件：
+   池底表在 `stdlib/stl/hashMap.extc`（`slot` 桶到稠密 + `bucketOfDense` 反查 + `rebuild` 不搬值），
+   以及 #80 修好后的「泛型装泛型」。
+3. **④ `varArray` 是否迁池底：等作者裁决。** 清单在周期 10 那条：定义在 `stdlib/prelude.extc:157`，
+   使用面 35 文件 / 66 处，且它今天明确写着「没有 `shrink_to_fit`、内存还不了」。倾向：保持 arena 底不动，
+   池底留给显式 import 的 `stl::vector`。
+
+纪律备忘（下次接手照这个走）：每步四道闸门 —— `tests/hashmap` · `tests/stl` · `tests/pool` · `tests/linmap` ·
+`tests/genmatrix` ＋ 语料 ＋ `check.sh quick </dev/null`（**必须重定向 stdin**，否则 IO 节被 SIGTTIN 挂死）；
+文档不加 / /  / emoji；随做随提交；绝不留红树；不并跑两个构建。
+
+### 周期 21（第 19 轮）：有序 map 的派工失败与接手须知
+
+`map<K, V>`（B 树）这件派出去执行了三轮，**零落笔** —— 仓库里始终没有 `stdlib/stl/map.extc`、没有 `tests/map/`，
+工作区一直干净（`HEAD = cba30a6`）。期间两次收紧指令（第一次：第一步先用 arena 节点把分裂/borrow/merge 写对
+并提交；第二次：砍到最小 —— 只做**单节点有序表**：`keys`/`vals`/`n` 三条字段、二分找位置插入、`lowerBound`、
+四个边界用例，绿了立刻提交）都没有换来一次提交，于是停掉它。
+
+接手须知（下次直接照这个顺序做，不要一次到位）：
+
+1. **第一步：单节点有序表**。`struct map<K, V> { keys: mut slice<K>  vals: mut slice<V>  n: i64 }`，
+   容量 16；`withCap` / `len` / `contains` / `get -> ?V` / `put`（二分 + 后移一位）/ `remove`（前移一位）/
+   `lowerBound(k) -> i64` / `keyAt` / `valAt`；比较只用 `a < b`（相等判 `!(a<b) && !(b<a)`）。配
+   `tests/map/run.sh` + `sorted.extc`：按序遍历正确 · `lowerBound` 四边界（空 / 更小 / 更大 / 命中）·
+   删中间键后仍有序 · `get` 不存在的键给 none。**绿了立刻提交**。
+   这不是妥协：**B 树的根本来就是一个有序数组**，小表时它等价于最快的 flat map，先把它做成常设验收。
+2. **第二步：长出树**（分裂 / borrow / merge），节点用 arena 定长块、下标当指针。
+3. **第三步：搬进池**（节点住 `pool<node>`、值住 `pool<V>`、节点存「键 + 池句柄」），补 `clear` / `release` /
+   `shrink` 与 churn 判据（1e6 轮峰值 RSS 与 1e5 相当）。
+4. **第四步：`set<T>`** 同构无值版；再接进 `check.sh`（节数同步）。
+
+每一步单独提交、单独回滚；四道闸门见周期 20 那条交接说明。
+
+### 周期 22：有序 map 第二步 —— B+ 树落地（插入分裂 · 查找 · 排名 · 按序遍历；删除暂不重平衡）
+
+`stdlib/stl/map.extc` 从"单节点有序数组"换成 **B+ 树**：
+
+- 节点容量 16（数组留 17 格，插入先落进满节点再决定分裂）；内部节点 `keys[i]` 是子树 `kids[i+1]`
+  的最小键，于是下降只需"第一个 `k < keys[i]`"；叶子用 `next` 串成链，**按序遍历 = 线性扫描**；
+  每个节点带 `cnt`（子树键数）⇒ `keyAt` / `valAt` / `lowerBound` 都是 O(log n) 排名查询。
+- 插入：下降时把路径记进 `path`/`side` 临时数组 ⇒ 叶子插入 ⇒ 满则分裂向上推（**叶子分裂拷贝首键上来、
+  内部节点分裂移动中间键上来**）⇒ 根分裂就长高。
+- 删除（本步）：从叶子摘除 + 沿路径修正计数 + 沿路径重发"子树最小键"当分隔键；**暂不重平衡**，叶子
+  可能低于 HALF，树会变稀但查询全对。借位 / 合并 = 下一步。
+- 表面**一行没改**：`sorted` / `bounds` 两个既有用例原样通过（换了实现没换面）。
+
+途中踩到一个真坑，值得记：节点数组原本在 `put` 的分裂循环里 `new` ⇒ **分配落在"循环体那一格 block 的
+arena"，迭代一结束就被释放**，ASan 报 `heap-use-after-free`（free 栈是 `extc_arena_destroy` ← `put`）。
+改法同时就是第三步要的形状：**keys / vals / kids 改成 map 自己的三块扁平存储**，节点只存视图
+（节点 `id` 的键槽在 `id*17`、子槽在 `id*18`），于是运行期**不再有逐节点分配**，只有扩容时在
+`growStores` 的顶层分配一次并把每个节点的视图重新挂到新数组上。
+
+实测（新用例 `tests/map/stress.extc`：4001 个键按 `i*7919 % 4001` 的置换乱序插入，7919 与 4001 互素 ⇒
+键恰好是 0..4000 的一个排列）：
+
+`n=4001 h=4 nodes=380 bad=0 gb=0 miss=-7 lb=0 removed=1334 db=0 left=2667`
+
+—— 按序遍历恰好是 0,1,…,4000 且 `valAt(i) = i % 1000` · 每个键都能取回 · `lowerBound(i) = i`（含越界端）·
+删掉每个第 3 个键后幸存 2667 个且**严格递增**、删过的查不到、没删的都还在 · ASan 干净。
+
+### 周期 23：有序 map 第三步 —— 删除重平衡（借位 / 合并）与节点回收
+
+`remove` 从"摘除 + 修计数"升级为完整重平衡：
+
+- 沿路径上行时，若某节点低于 `HALF`（8）个键：左右兄弟**能匀**就借一个（借位要同时搬键与子节点、
+  按被搬子树调整 `cnt`、并让父节点的分隔键跟上）；都不够就**合并**（本布局里内部节点的键是子树最小值的
+  **拷贝**，所以合并时"下拉分隔键"只是把它写成新节点的最后一个键，计数直接相加，不会重复计）；
+- 合并会从父节点摘掉一个键与一个子节点（`dropChild`），父节点因此在下一轮循环里被同样处理；
+- 合并退掉的节点**退回回收链**（`freeHead`，串在节点的 `next` 上），下一次分裂直接复用 —— 存储只增不减，
+  但节点 id 会循环使用；
+- 根若失去最后一个键（或变成空叶的父亲），树降高，退掉的老根也进回收链。
+
+实测（新用例 `tests/map/churn.extc`：5 轮「顺序插满 2000 → 全删」，顺序插入是 B+ 树最难的形状，分裂永远
+在最右边）：
+
+`rounds=5 first=280 nodes=280 bad=0 bounded=1`
+
+——**第 5 轮的节点数与第 1 轮完全持平**（判据用第 1 轮自身当基线，不用魔数：`nodes*2 <= first*3`）；
+每轮之后 `len` 归零；最后一轮重插并全量核对 `get` / `keyAt` / `valAt` 全对；ASan 干净。
+原有 `sorted` · `bounds` · `stress`（4001 键随机置换插入 + 删 1/3）全部照旧通过。
+
+### 周期 24：② 有序 `set<T>` 落地（建在 `map<T, u8>` 上，不另写一棵树）
+
+`stdlib/stl/set.extc`：`struct set<T> { m: map<T, u8> }` —— 排序、分裂、借位/合并只有一份实现，
+不可能与 `map` 各漂各的；代价是每个元素一个占位字节。面：`withCap` / `new` / `len` / `contains` /
+`put`（**新元素返回真**，与 `map::put` 相反，是这套面里唯一显式翻转的地方）/ `remove` / `clear` /
+`lowerBound`（第一个 ≥ k 的**排名**）/ `at(i)`（第 i 小的元素，按序遍历就是 i 从 0 到 len-1）。
+
+实测（新用例 `tests/stl/setOrdered.extc`，一次就对）：
+
+`order=1,2,3,4,5 len=5 dup=0 has3=1 lb3=2 lb6=5 rm=1 after=1,2,4,5 lb4=2`
+
+—— 乱序插入后按序遍历正确 · 重复 `put` 给假 · `lowerBound` 排名正确（含越界端 lb6=5）· 删中间元素后
+剩下的仍有序且排名跟上。同轮把 STL 套件的 ASan 节改成 `asan_ok` 辅助函数，覆盖 `vector` 与
+`setOrdered` 两个用例（原来只跑 `vector`）。
+
+### 周期 25：① 第三步（上）—— map 的运行期池登记 · `release` · `shrink`
+
+- `map<K, V>` 现在和 `vector` / `string` / `hashMap` 一样，在构造时登记一个运行期池（`pid` / `pidGen`），
+  `release()` 校验出生世代之后整批还；陈旧拷贝不会误放别人的池。
+- `shrink()`：把**活节点**按 DFS 序压实到 id `0..k-1`（子节点下标过 remap 表、叶子链在同一趟里重连），
+  丢掉回收链，并把 keys / vals / kids 三块存储按 `k` 重新分配 ⇒ 水印真正下降，而不只是"删了但占着"。
+- **一处偏离计划措辞的地方，写进代码注释等作者确认**：树**没有**把值放在池句柄后面。三块扁平存储已经给了
+  那些句柄想要的东西（可搬迁、连续、下标寻址），而每个叶子再加一个句柄只会给每次读多一层间接；这个面
+  暴露的是条目，从来不是元素身份。
+- 实测（两个新用例）：
+  - `tests/map/shrink.extc` → `peak=2810 before=2810 after=12 len=200 bad=0 small=1 grow=1`：2 万键插满、
+    删到 100，压实把节点数从 2810 降到 **12**；压实后 `get` / 按序遍历 / 排名全对，而且**再插 100 个**
+    仍然正常（存储与视图都被重建过，这一步才算验完）。
+  - `tests/map/release.extc` → `live=0 made=1 closed=0 again=1 out=0`：建 map 池 +1、`release` 归零、
+    再建复用、出块归零。
+- `tests/map` 现有六个用例（`sorted` · `bounds` · `stress` · `churn` · `shrink` · `release`）全绿，含 ASan。
+
+### 周期 26：① 第三步（下）—— RSS churn 判据（含"判据有牙"的 canary）
+
+`tests/map/rss.extc`（反复 put+remove 同一个键，轮数从命令行拿）与 `tests/map/leak.extc`（只 put 不 remove、
+每次不同键，canary）。`tests/map/run.sh` 里按 `tests/hashmap` 的写法比 `/usr/bin/time -f %M` 的峰值：
+
+- `ok churn -> 1e5: 1480 KB · 1e6: 1480 KB ⇒ 平` —— **十倍的轮数、峰值一模一样**，节点回收链在起作用；
+- `ok canary -> 只 put 不 remove：12612 KB → 179844 KB ⇒ 判据会响` —— 说明上面那条不是"永远为真"的空判据。
+
+至此 ①（有序 `map<K, V>`：单节点 → B+ 树 → 分裂 → 借位/合并 → 回收 → 池登记/release/shrink → RSS 判据）
+与 ②（有序 `set<T>`）全部落地。`tests/map` 现在是六个用例 + RSS 两条 + ASan。
+
+### 周期 27：③ 下标重载第一步 —— `[]`（读侧）落地，三处一起动
+
+作者口径：「`[]=` 和 `[]` 应该是独立的吧，我觉得有必要但是待会再说」。按"独立"实现，先只做读侧：
+
+- **解析器**（`parser.c` 的 `expectFuncName`）：把 `[]` / `[]=` 收进运算符方法名白名单。注释里原来写着
+  "`[]` 是 slice 协议的语法、不是方法名"，现在改成它为什么该是方法名，并写明两者**互相独立**（只定义读
+  的类型就是不能通过下标写入）。
+- **codegen 的 mangle 表**：`[]` → `idx`、`[]=` → `idxset`（C 标识符里写不出 `[]`）。
+- **检查器**（`check_expr.c` 的 `EX_INDEX`）：对象类型定义了 `[]` 时，把 `x[i]` **改写成方法调用**
+  `x.[](i)` 再走一遍检查 —— 于是实参检查、返回类型、以及泛型实例的推迟检查（#57）全都复用，不需要在这里
+  再抄一份。数组 / `slice` / 视图的内建下标路径原样保留给其它类型。
+- **`map<K, V>` 加了读侧方法**：`fn [](self: ref map<K, V>, k: K) -> ?V { return self.get(k) }` —— 缺键给
+  `none`，**不是** `std::map::operator[]` 那种"顺手插一个默认值"（extC 没有左值生成，写入仍走 `put`）。
+- **写侧只给诊断，不做改写**：`x[i] = v` 在类型只有 `[]` 没有 `[]=` 时，报
+  `` `map::map<i64, i32>` defines `[]` but not `[]=`, so `x[i] = v` is not available `` 加上一句"写入请显式
+（容器通常是 `put`），或者给这个类型加 `fn []=`"。不改写成调用是因为那是**语句级**改写（赋值语句要变成
+  表达式语句），比读侧大一档，按计划留到下一步。
+
+实测（`tests/map/index.extc`，正例）：`a=10 none=-1 missing=-9 len=2` —— 有键给 `some`、缺键给 `none`、
+`??` 落到缺省值、长度不变。反例 `tests/map/errors/index_assign.extc` 由套件里新加的 `check_err` 守着。
+套件 `tests/map` 现在八个用例 + RSS 两条 + ASan 全绿；`hashmap` / `stl` / `pool` / `linmap` / `generics` /
+`genmatrix` 一并复跑全绿（解析器与检查器是全局改动，所以这一轮必须全套件过）。
+
+顺带记两个观察：① 诊断里的类型名打成 `map::map<i64, i32>`（模块名与类型名同名时的双重修饰，与
+`string::new` 那个消歧问题是同族，暂未处理）；② 我又在 shell 的双引号里写了反引号（`echo "... `[]` ..."`），
+`[]` 和 `[]=` 当场被执行 —— 这条教训周期 11 记过一次，这次是自己犯的，改掉并写在这里。
+
+### 周期 28：#79 后半 —— 推迟调用的返回类型在实例期复核（修掉一处静默截断）
+
+先确认漏洞是真的：`fn bad<T>(x: T) -> i8 { return x.hash() }`（`pt::hash` 返回 `i64`）**编译通过并静默截断** ——
+`i64(300)` 变成 `i8(44)`；而把 `hash` 直接写在具体类型上的同样代码会被"有损转换"挡住。也就是说泛型体里凭空
+少了一道检查，这属于"静默错值"，不是"少报个错"。
+
+修法（三处）：
+
+1. `check_internal.h` 加 `DeferredUse{call, want, owner, func}` 与 `Checker.deferredUses`；
+2. `check.c` 的 `checkAssignable`：当**值类型是错误类型**、且来源是**推迟调用**（`EX_METHOD` 且 `!node->func`
+   且接收者提到类型参数）时，把"期望类型 `want`"记下来 —— 模板期照旧放行（不然会凭空报错），但不再就此了事；
+3. `check_top.c`：驱动里按与 `MethodCheck` 相同的两分支（类型实例 / 自由函数实例）跑 `runDeferredUse` —— 在
+   替换后的接收者类型上找到方法，取它的**真实返回类型**（必要时按接收者实例的实参再替换一层），拿记录下来的
+   `want` 过一遍 `checkAssignable`；诊断里的 `what` 就是实例名，所以消息读作
+   `` `bad_pt` expects `i8`, found `i64` ``。
+
+实测：探针从"静默截断（r=44）"变成
+`` tests/.../defer_ret.extc:6:1: error: `bad_pt` expects `i8`, found `i64` `` —— **点名实例**、指对行、指对函数。
+两个反例进 `tests/generics/errors/`：`deferred_return_type.extc`（`return x.hash()` 当 `i8`）与
+`deferred_let_type.extc`（带标注的 `let h: i8 = x.hash()`，另一条 checkAssignable 路径）。
+
+回归：`tests/generics`（正例 + 五个反例）· `tests/map` · `tests/hashmap` · `tests/stl` · `tests/pool` ·
+`tests/linmap` · `tests/genmatrix`（13 项）· 语料 **262/0** 全绿 —— 这条改动会碰每一次赋值/返回/传参，
+所以必须全套件过（没有误报）。
+
+### 周期 29：一致性补齐 —— `[]` 读侧给到哈希表/线性表，有序容器补最小最大键
+
+`[]` 的语法既然通了，就不该只有 `map` 能用：
+
+- `hashMap<K, V>` 与适配层 `hashMapI64<V>` 各加 `fn [] -> ?V`；`linMap<K, V>` 同样 —— 三者都只是把 `get`
+  换个写法（缺键仍是 `none`，没有默认插入）。
+- 有序容器补"两端"：`map` 的 `firstKey()` / `lastKey()`、`set` 的 `first()` / `last()`，空容器给 `none`。
+  两者都是 O(log n) 的排名查询（走 `cnt`），不是遍历。
+- 顺手修了一个撞名：`map` 里早先为重平衡写的**内部** helper 也叫 `firstKey(id)`（取子树最小键），与新的
+  公开 API 重名 ⇒ 改名为 `subMinKey(id)`，公开面保持 `firstKey()` / `lastKey()`。
+
+实测：
+
+- `tests/hashmap/index.extc` → `a=11 none=-1 len=2`
+- `tests/linmap/index.extc` → `k=one none=?`
+- `tests/map/ends.extc` → `f=1 l=5 emptyF=-1 emptyL=-1 sf=2 sl=4`（含空表两个 `none`）
+
+三个套件的 ASan 列表也一并覆盖到新用例；`tests/map` 九个用例 + RSS 两条 + ASan 全绿。
+
+### 周期 30：③ 写侧落地 —— `m[k] = v`（缺则新建、有则覆盖）
+
+作者口径：「写侧得做啊，如果发现没有值就新建一条写进去，有值就覆盖/更新即可」。
+
+- **检查器**（`check_stmt.c` 的 `ST_ASSIGN`）：目标形如 `x[i]` 且对象类型定义了 `[]=` 时，把**整条赋值语句
+  就地改写**成 `x.[]=(i, v)` 的表达式语句（`ST_EXPR`）再检查一遍 —— 于是实参检查、`mut ref` 接收者规则、
+  返回类型、code generation 全部复用，没有第二份实现。改写前必须先把 `target.index` 与 `value` 读出来再写
+  union（`s->u.assign` 与 `s->u.expr` 是同一块内存，顺序写错就把自己踩了）。
+- **四个容器加写侧**：`map` / `hashMap` / `hashMapI64` / `linMap` 的 `fn []=` 一律委托 `put` —— 语义正好就是
+「缺则新建、有则覆盖」，返回值与 `put` 相同（true = 键本来就在）。
+- 只定义 `[]`、没有 `[]=` 的类型仍然拿到可读诊断；反例 `tests/map/errors/index_assign.extc` 因此改成用**本地**
+  `readOnly` 类型（`map` 现在两件都有，拿它当反例已经不成立了）。
+
+实测：
+
+- `tests/map/index.extc` → `a=10 none=-1 newLen=3 upd=11 updLen=3 missing=-9`（缺则新建：len 2→3；有则覆盖：读回 11）
+- `tests/hashmap/index.extc` → `a=11 none=-1 newLen=3 upd=111 updLen=3`
+- `tests/linmap/index.extc` → `k=one none=? newLen=2 upd=ONE`
+- 反例 → `` error: `readOnly` defines `[]` but not `[]=`, so `x[i] = v` is not available ``
+
+回归：`tests/map` · `hashmap` · `stl` · `pool` · `linmap` · `generics` · `genmatrix` · 语料 **262/0** 全绿
+（解析器与检查器是全局改动，必须全套件过）。
+
+途中把自己的 `map.extc` 写坏过一次：替换时锚点里同时含注释行与函数头，结果留下一行残缺的重复 `fn put` 头，
+编译器报「`fn` cannot appear inside a function body」—— 精确定位后删掉那一行恢复。教训：**替换的锚点越小越安全**，
+跨行的锚点要复查结果。
+
+同轮补记（第 27 轮）：`check.sh quick </dev/null` 跑完 —— **通过 26 · 失败 0 · RC=0**（日志 `/tmp/prb/cq_map7.log`）。
+写侧（`[]=` / upsert）与它带的一致性用例一起过了总闸门。
+
+另：新增 `docs/topics/STL.md` —— STL 的**成员函数表**（按源码逐个 `fn` 抽出来的：概览矩阵 · 十个容器各自的
+公开面 · 内部 helper 折叠成一行 · 跨容器语义约定（`put` 返回值两套口径 · `[]`/`[]=` 独立 · clear/shrink/release
+三档）· 已知缺口 · 各容器验收落在哪个套件）。改面就要同步改它，这是仓库里的权威清单。
+
+### 周期 31：string 补成"真容器"（比较 / 哈希 / Two-Way 查找 / 拼接 / 取字节），并挖出记档 #83
+
+作者口径：「字符串拼接 `+=`/`+`（和 string/slice 类型）是要的吧，find 是要的吧（twoway 感觉不错），还有啥吗」。
+
+**落地的**（`stdlib/stl/string.extc`）：
+
+- `==` / `<` 各两种右操作数（`string` 与 `slice<u8>`）—— `s == "abc"` 因此可用，字面量就是字节切片；
+  `!=` 不必写（运算符查表会回退到 `==`）。
+- `hash()`：FNV-1a 折成非负 i64 ⇒ **`string` 现在能当 `hashMap` 的键**（`hashMap<string, i32>` 实测可用）。
+- `find(needle) -> ?i64`：**Two-Way（Crochemore–Perrin）**。选它的理由写进了代码注释：KMP 要一张失败函数表，
+  而在这套模型里那张表要么每次调用从 arena 分配（热循环里就是 churn），要么挂在容器上让**只读查询被迫吃
+  `mut ref`**；Two-Way 是 O(1) 额外空间、最坏线性，所以 `ref self` 就够。
+- `contains` / `startsWith` / `endsWith` / `at(i) -> ?u8` / `sub(lo,hi) -> slice<u8>`（零拷贝视图，界会夹住）。
+- `concat(other: string)` / `concatBytes(other: slice<u8>)`：返回新串，接收者不动。
+
+**验证**：
+
+- `tests/stl/stringFind.extc`：**穷举对拍** —— {a,b} 上长度 1..4 的所有模式 × 长度 0..10 的所有文本（61410 组）
+  逐个与朴素查找比对：`checked=61410|bad=0`；另加 10 万字节的最坏形状（周期型模式 + 全 a 文本，末尾才出现匹配）
+  与周期性文本的已知答案。
+- `tests/stl/stringOps.extc`：`c=hello world|a=hello world|eq=true|lt=false|find=6|miss=-1|sw=true|ew=true|at=101|sub=world|cb=hello world!!!|hn=2|hv=20`
+（最后两个数字是"string 当 hashMap 键"：len=2、取回 20）。
+- 两个用例都进了 ASan 节；`tests/stl` 全绿。
+
+**没落地的（`fn +` / `s += t`）与原因 —— PLAN #83**：写出来是「声明三个参数（self / other / home）、
+调用点只传两个」⇒ C 层报 too few arguments。根因是**检查器的运算符路径完全没有 arena 决策**：
+EX_CALL / EX_METHOD / EX_ASSOC 三处都有 `homeDepth` + `setCallArenaArg`（方法那边还有一条逃逸站点记录参与
+末轮结算），运算符那几处只有 `e->func = m`。我试了两轮最小修法——只补 `setCallArenaArg`：生成物能编过，
+但缓冲区**落进永不回收的 arena**（LeakSanitizer 抓到，对照实验里同样形状的普通方法 `concat` 是干净的）；
+再补 `callHomeDepth` 那句：仍泄漏，因为还缺逃逸站点那条记录。这套簿记是 arena 分析的核心，值得单独一轮，
+不能顺手塞。所以今天的拼接写法是 `append`（就地）与 `concat` / `concatBytes`（出新串）。
+
+### 周期 32：性能横评台 —— extC 的容器 vs C++ STL（同算法同参数、校验和逐位相同）
+
+作者口径：「先测试一下性能，就各个容器跟 C++ STL 对比即可，radix 也得来试试（和旧的 extc 等其他已有数据）」。
+
+新增 `bench/stl/`，编排照 `bench/heavy` 的老规矩：**两边同算法同参数**、跑同一个工作量、打印出来的校验和
+**逐位相同**才算数（不一致就 FAIL —— 比时间不对严重得多），时间与 RSS 走 `/usr/bin/time -f "TIME %e RSS %M"`，
+并且**每个程序跑 3 次取最快**（外设计时精度只有 0.01s，单次很容易被噪音带偏）。`RESULTS.md` 由 `run.sh`
+自动生成，别手改 —— 与 `bench/bigmatrix` 同一规矩。
+
+实测（本机 Intel Ultra 9 275HX · WSL2 · kernel 6.18.33.2，100 万量级，best of 3）：
+
+| 容器 | extC | C++ STL | 比值 | extC RSS | C++ RSS |
+|---|---|---|---|---|---|
+| `vector<i32>` 对 `std::vector` | 0.16s | 0.05s | 3.20x | 132 MB | 69 MB |
+| `hashMapI64<i32>` 对 `std::unordered_map` | 0.17s | 0.16s | 1.06x | 104 MB | 43 MB |
+| `map<i64,i32>`（B+ 树）对 `std::map`（红黑树） | 1.00s | 1.78s | **0.56x** | 91 MB | 67 MB |
+| `hashSetI64` 对 `std::unordered_set` | 0.15s | 0.18s | 0.83x | 98 MB | 43 MB |
+| `string` 对 `std::string` | 0.08s | 0.02s | 4.00x | 51 MB | 36 MB |
+
+结论与三笔明账（都写进 `RESULTS.md`）：
+
+- **有序表那一格兑现了设计目的**：B+ 树在「100 万插入 + 100 万查找 + 100 万有序遍历 + 50 万删除」上比红黑树
+  快 1.78 倍 —— cache miss 少一个数量级，遍历是叶子链线性扫描；
+- **哈希与集合打平**（1.06x / 0.83x），说明"开放寻址 + 墓碑 + 值住池"这套没有输在算法上；
+- **连续容器慢**：`vector` 3.20x、`string` 4.00x —— 两笔明账：① 我们的取元素**有界检查**（越界带源位置
+  trap），C++ 那边是裸 `v[i]`；② arena 只增不减，翻倍扩容留下的旧数组不逐块回收 ⇒ **RSS 普遍更大**
+（`vector` 132 MB vs 69 MB）。这是 `POOLS.md` 里写明的模型代价，不是泄漏；`shrink` 能降水印但不还 RSS。
+
+接进 `check.sh` 的非 quick 段（跑全套自检时会带上它）。**下一步**：radix 容器原型（整数键的 ART 风格），
+拿它和我们的 B+ 树 `map`、以及 `std::map` / `std::unordered_map` 摆在一起比 —— 这是作者点名要试的那一格。
+
+### 周期 33：把横评里"不公平的那一半"修掉 —— 容量提示对齐
+
+作者问「有一个确实很慢 / 有一个内存占用确实显著高」。我去翻旧数据并重跑，结论分三段：
+
+**① 作者记忆里的两条都找到了出处，而且今天都不再是 extC 的问题**（`bench/gc/FINDINGS.md`）：
+
+-「内存 13MB → 495MB」那条：文档自己标着**基准陷阱 2** —— extC 版最初把两个槽声明在循环外，那个 `new`
+  真的逃逸出块，编译器（正确地）把它提升到帧层 ⇒ **是形状写错了，不是 arena 的内存问题**；
+- churn（3200 万次分配）当年 extC 362.7 ms ⇒ arena 块复用（`spare`）之后 140.9 ms ⇒ **今天实测 0.03 s / 1.6 MB**。
+  同一形状里真正的内存怪兽是 **C 的 malloc+free：0.41 s / 1.0 GB**（今天复现）。
+- `bench/heavy` 今天也复现：radix 0.27 s vs C 0.26 s、mandelbrot 0.14 两边同、RSS 同；
+  `bench/io` 里 extC 的 `cout <<` 是那一格最快（203 ms，C 303 / C++ 503 / Java 303）。
+  ⇒ 旧文档里"extC 在 radix 上比 C 慢"是 arena 块复用**之前**的数字，今天已经追平。
+
+**② 今天真正剩下的两处，是刚建的容器横评量出来的**，而且我发现自己那张表**不公平**：
+
+- C++ 侧写了 `reserve(N)` / `reserve(N)`，extC 侧却只 `withCap(16)` 让它一路翻倍 —— 而 arena
+  **只增不减**，翻倍历史全部留在常驻里 ⇒ RSS 差异被我自己放大了。对齐成 `withCap(N)` 之后：
+  `vector` 的 RSS 从 132 MB 掉到 **40.7 MB（比 C++ 的 42.9 MB 还小）**，`hashMap` 104 → 69 MB，
+  `set` 98 → 62.9 MB，`string` 51 → 27.6 MB。**时延没变**（0.16 → 0.12 s 的 vector 是缓存效应）。
+- 对齐之后仍然存在的真差距：**连续容器慢 6 倍**（`vector` 0.12 vs 0.02 s、`string` 0.06 vs 0.01 s）——
+  两笔明账：每次元素访问过**方法 + 有界检查**（C++ 那边是裸 `v[i]`），以及 `push` 的容量判断；
+  而**有序 `map` 仍然快 1.65 倍**（B+ 树 vs 红黑树）、`hashMap`/`set` 打平或略快。
+- 哈希/有序容器的 RSS 仍比 C++ 高 1.4~1.6 倍（`hashMap` 69 vs 43 MB）：这是**设计代价**，不是漏 ——
+  表里有 `keys`/`tag`/`slot`/`bucketOfDense` 四列，值还在池里（`vals`/`slots`/`ent` 三列），
+  C++ 的 `unordered_map` 只有节点 + 桶数组。要缩这一栏得改布局（例如三态与稠密下标合并），
+  属于下一步的取舍，不在这轮偷改。
+
+**③ 落地**：容量提示对齐写进五个 extC 用例与两个 C++ 用例（`vector`/`acc` 的 `reserve` 也补满），
+`RESULTS.md` 重新生成；`map` 保持小容量启动（`std::map` 没有容量提示，两边都从零长）。
+
+### 周期 34：找到"连续容器慢 6 倍"的真正原因 —— 不是容器，是 zone 钩子
+
+作者提示用 callgrind，一跑就清楚了（`bench/stl/vector.extc`，`vector<i32>` push 1000 万 + 求和 + pop）：
+
+| 函数 | 指令占比 |
+|---|---|
+| `extc_pool_zoneLeaveTo` | **45.01%**（138,000,031 条） |
+| `extc_pool_zoneEnter` | **35.23%**（108,000,032 条） |
+| `main`（真正的活儿） | 16.96% |
+
+生成物里能直接看到形状：**每个循环体都被包成**
+
+```c
+int64_t __extc_zm2 = extc_pool_zoneEnter();
+    ... 循环体 ...
+extc_pool_zoneLeaveTo(__extc_zm2);
+```
+
+而这些块**根本不创建池**（`vector` 是在循环外建的）⇒ 纯粹是税。把生成物里的钩子手工注掉再计时，量出这笔税：
+
+| 用例 | 带钩子 | 注掉钩子 | 省 |
+|---|---|---|---|
+| `vector` | 0.11s | **0.03s** | **73%** |
+| `string` | 0.06s | 0.03s | 50% |
+| `hashmap` | 0.15s | 0.12s | 20% |
+| `set` | 0.12s | 0.10s | 17% |
+| `map` | 1.01s | 0.96s | 5% |
+
+**`vector` 注掉后 0.03s ≈ C++ `std::vector` 的 0.02s** —— 也就是说上一轮那句"连续容器慢 6 倍"里，
+绝大部分根本不是容器的开销，而是**每个块无条件压/弹一次 zone**。
+
+为什么必须按需发射：库函数是透明的（`g->zoneHere` 只对入口文件函数为真），所以 `vector<i32>::withCap(...)`
+里创建的池登记在**调用者**的 zone 里 ⇒ 调用它的块必须有 zone；但只调用 `v.push(...)` 这类**不建池**的库函数
+的块，zone 是空的 ⇒ 可以不发射。判据是一个传递摘要（照 `mayUseArena` / `needsHome` 那套写）：
+`makesPool(f)` = f 直接调用 `extc_pool_new`，或调用了 `makesPool` 为真的函数，取**最小不动点**；
+块级判断只看这个块自己的直接语句（嵌套块有自己的 zone）；发射与弹出必须严格配对。
+
+这一项已按上面的规格派出去实现（含收益对照、`tests/pool` 的 live 计数探针、以及一条"不建池的循环体里
+没有钩子 / 在循环体里建池必须有钩子"的双向常设判据）。上面这些数字待实现落地后由它补前后对照。
+
+### 2026-09-25 · zone 钩子改成**按需发射**（上一条的落地）：`vector` 0.11s → 0.03s，profile 里两个钩子归零
+
+上面那条定位出了真因，这一条是修法与实测。
+
+**改法**：加一个传递摘要 `FuncDef.makesPool`（"这个函数能不能直接/间接建池"），只在这个摘要为真的
+地方压/弹 zone。
+
+- `src/ast/ast.h`：`FuncDef.makesPool` 一个 bool，注释写清它为什么是**最小**不动点。
+- `src/check/check_top.c`：`exprMakesPool` / `stmtMakesPool` 两个遍历器（照 `exprCallsNeedsHome` /
+  `stmtCallsNeedsHome` 那套写，表达式形态一个不落），加 `checkModule` 末尾的 worklist 迭代。
+- `src/back/codegen.c`：`blockMakesPool(block)` 只看这个块**自己的直接语句**；块入口按它决定压不压 zone；
+  `CG.zoneMark[64]` 记"这一层到底压没压"，`cgReleaseLevel` 与尾声弹出都查这张表。
+- `src/check/check_internal.h`：`stmtMakesPool` 的跨文件原型（codegen 要用）。
+- 运行期 `extc_pool_zoneEnter/LeaveTo` **一个字没改**，池注册表也没动。
+
+**最小不动点的规则**：`makesPool(f)` = f 的语句里直接调用 `extc_pool_new`，**或**调用了某个
+`makesPool` 为真的函数。规则单调（false → true 单向）、格有限 ⇒ 迭代到某一轮不再变化就是**最小**不动点，
+递归与互递归不需要特例：环里没有成员真的调到 `extc_pool_new` 时它们全都停在 false，而"全都停在 false"
+正是想要的答案（更大的不动点会把不会建池的函数也点上，把这一轮省下来的钩子又还回去）。
+
+**收益（`bench/stl/run.sh`，RUNS=7，改前 / 改后同一台机器同一天）**：
+
+| 用例 | 改前 | 改后 | 省 | RSS 改前 → 改后 |
+|---|---|---|---|---|
+| `vector` | 0.11s | **0.03s** | **73%** | 40620 → 40620 KB |
+| `string` | 0.06s | **0.03s** | **50%** | 27564 → 27564 KB |
+| `set` | 0.12s | **0.10s** | 17% | 62892 → 62956 KB |
+| `hashmap` | 0.13s | **0.12s** | 8% | 69036 → 69036 KB |
+| `map` | 0.85s | 0.86s | 0（噪声内） | 90792 → 90732 KB |
+
+校验和五项全部仍然一致（`run.sh` 自己判）。`map` 这一格没有收益是对的：B+ 树的循环体里真的在建池，
+钩子必须留着。
+
+**callgrind 复核**（同一份 `bench/stl/vector.extc`）：
+
+- 改前：`extc_pool_zoneLeaveTo` 45.01% + `extc_pool_zoneEnter` 35.23% + `main` 16.96%；
+- 改后：`main` **98.85%**，`extc_pool_zoneEnter` / `extc_pool_zoneLeaveTo` / `extc_pool_new`
+  各只剩 **1 次调用**（`main` 的帧 + `withCap` 那一次），循环体里一次都没有。
+
+生成物从 5 压 6 弹变成 1 压 1 弹（`tests/pool/rt_zone_ondemand.extc` 那类形状是 5 压 6 弹 → 2 压 2 弹）。
+
+**各套件结论**（都是本轮真跑的）：
+
+- `tests/pool`：失败 0（含 `extc_pool_live()` 计数探针、`-Werror` gcc+clang、ASan 含泄漏检查）。
+- `tests/stl` · `tests/hashmap` · `tests/map` · `tests/linmap` · `tests/generics` ·
+  `tests/arena-promoted` · `tests/arena` · `tests/ops`：各失败 0。
+- `bash tests/run.sh`：通过 262，失败 0。
+- `bash check.sh quick </dev/null`：通过 26，失败 0。
+- 另跑了一次独立探针（不属于任何套件）：330 个语料里用到池的 **54 个**程序，每个
+  `__extc_zm<lvl>` 声明都有同名的 `zoneLeaveTo`，也没有弹出未声明的层 ⇒ 0 个问题。
+
+**新判据**（`tests/pool/run.sh`，双向，把这件事钉住）：
+
+- 正例 `tests/pool/rt_zone_ondemand.extc`：`needPool` 为真（程序里确实建池，门是开着的），
+  `main` 体里两条只读元素的 `while` 循环体**不许**有钩子，建池的那个块**必须**有。
+  期望值写死成 `zoneEnter = 2` · `zoneLeaveTo = 2`，理由在脚本注释里数出来：
+  帧一次 + 建池块一次 = 2 压；建池块出块弹一次 + `main` 尾声弹回帧深度一次 = 2 弹。
+  修之前这个形状是 5 压 6 弹（11 个钩子），多出来的正是三条只读循环体与不建池的库调用。
+- 反例 `tests/pool/rt_zone_inloop.extc`：**在循环体里建池**（每轮建一个池 + 一个子池），
+  判据是运行结果 `total=6 live=0 depth=1`（每轮块内 live 涨到 2、出块整区走 ⇒ 三轮累加 6）
+  **且**生成物里 `zoneEnter` 仍然是 2 次（帧 + 循环体）—— 少发一次就会让池落在外层 zone 上，
+  或者根本没有 zone（`extc_pool_new` 返回 -1）。
+
+**踩到的坑**（都是这轮真撞的）：
+
+1. **弹出不能只看 `zoneHere`**。第一版 `cgReleaseLevel` 仍然按 `zoneHere` 弹，块不压也弹，
+   而 `zoneLeaveTo(mark)` 是"弹到 mark 为止"⇒ 把**外层**的 zone 一起弹掉了。改成发射时写
+   `CG.zoneMark[层号]`、弹出时查同一张表；`malloc` 那条路也一并想清楚：表是"这一层压没压"的
+   唯一事实来源，两处不可能走散。
+2. **`g->blkLevel` 是 0 起算的，块层号是 1 起算的**。块里写的 `zoneMark[g->blkLevel]`（进去后已经 +1）
+   与序言写的 `zoneMark[1]`（帧那层）本来是同一格 ⇒ 函数体这个块一进去就把序言的记录抹成 false，
+   收尾不弹 `__extc_zm1` ⇒ 帧的 zone 永远留在栈上（生成物里能直接看到：只有 enter 没有 leave）。
+   修法：进块时把这一格存起来，出块时放回（`savedZoneMark`）。一个字节换掉一整类疑问。
+3. **`flush()` / `print()` / `println()` 是内建，`e->func` 是 NULL**。第一版"未解析的调用一律算建池"
+   让 `io::flushOut` / `io::writeBytesRaw` / `io::errWrite` 全变成 `makesPool=1`（它们只是调了
+   `flush()`）⇒ 摘要顺着库往下漫。修法：把这三个内建按名字放行，其余未解析仍保守算真。
+   教训是"保守"要保守在对的地方：这里该保守的是"不认识的函数可能建池"，不是"编译器自己的内建可能建池"。
+4. **尾声要按层补弹，不能只弹 `__extc_zm1`**。`return` 走的是 `goto __extc_ret`，可能从很深的块里
+   跳出来：那一层的 zone 还在栈上，只弹一次帧的 mark 是弹不干净的。改成从最深的层往下、每个压过的
+   层弹一次（`zoneLeaveTo` 弹到 mark 为止，多余的是幂等空操作）。
+5. **`tests/pool/run.sh` 在 git 里是 644**（`bench/bigmatrix/run.sh` 也一样），
+   而 `check.sh` 是 `./tests/pool/run.sh` 直接执行的 ⇒ 报
+   `timeout: failed to execute process: Permission denied`，池那一节永远算失败。
+   这是**修之前就存在**的（`git ls-tree HEAD` 就是 100644），跟本轮改动无关；顺手 `chmod +x`
+   把它修正，`check.sh quick` 才回到"通过 26，失败 0"。
+
+同轮补记（第 29 轮）：`check.sh quick </dev/null` 跑完 —— **通过 26 · 失败 0 · RC=0**（日志 `/tmp/prb/cq_tree.log`）。
+池树"两条链"（zone 根链管寿命 + 父池子链管逻辑）与 `rt_tree` 判据一起过了总闸门；`tests/pool` / `tests/stl` 失败 0。
+
+### 周期 35：池有了自己的板块（PLAN #85）—— 峰值 18,028 KB → 9,708 KB
+
+作者三条裁决（口径落在 `POOLS.md` §2.1）把这件事从"优化"变成"前提"：
+
+1. **`vector` / `string` 也走 pool**。原话：「你如果不在 pool 里就肯定在 arena 里面，那 arena 又没法
+   扩容之后删掉旧数据，那不就完蛋了」。这条推翻了本文档初稿里我自己写的「连续序列不需要 pool」——
+   判据不是"有没有句柄"，而是**扩容之后旧块能不能立刻还回去**。
+2. 类型名与同名模块的消歧要做，但排在 STL 与 pool 之后。
+3. `varArray` 底座替换先不动：「别急，现在前面都是错的」。
+
+**探针（两组分开跑，结论写进 §2.1）**：定长数组字段**可行** ——
+`struct node { n: i32, keys: [16]i32, kids: [17]i32 }` 写读 + `new node[n]` 全通
+（`n=3 k3=77 k15=9 kid16=5`），只是全仓此前没有先例。但**元素类型是泛型参数不行**：
+`struct gnode<K> { keys: [4]K }` 被直接拒（`cannot make a fixed array of the type parameter 'K'`）
+⇒ 泛型 `pool<bnode<K,V>>` 的节点不能内联键数组，两条出路（实例化期定尺寸 / 节点继续用视图）待裁决。
+
+**一、运行期：块链就是板块**（`src/back/pools.c`）
+
+`ExtcPool` 加 `blocks`（块链）与 `bytes`；块头 16 字节放在载荷前 ⇒ 载荷最大对齐。四个原语：
+
+| 原语 | 做什么 | 代价 |
+|---|---|---|
+| `extc_pool_take(rid, bytes)` | malloc 一块、链进这只池、记账、**清零** | O(1) |
+| `extc_pool_resize(rid, p, bytes)` | 在原块上 realloc，只清零新增的那一段 | 摊还 O(1) |
+| `extc_pool_give(rid, p)` | 按地址找到块、摘链、free、记账回落 | O(块数)（每池一两块） |
+| `extc_pool_bytes` / `_bytesLive` | 字节账（判据与下表都用它） | O(1) |
+
+`extc_pool_drop` → `freeSelf` 里整条链还掉 ⇒ **`release` 真的还内存**；`reset` 保留板块供复用。
+清零这件事不能省：语言对 `new` 的承诺是"新拿到的字节读作 0"，板块上照旧（`tests/pool/plate.extc` 的
+`zero=0`/`tail0=0` 两条就是钉它的）。
+
+**二、类型化入口：生成器发的内建**（`poolSlice` / `poolResize` / `poolGive`）
+
+`extern!` 这条路走不通——它不许返回 `slice<T>`（会变成两个 C 参数），extC 也没有指针转换，
+所以"一坨字节 → 带类型的视图"只能由生成器发。检查器把它和 `alloc` 放同一条路（`checkPoolPrim`：
+实参个数 · 整数校验 · 元素类型 · 离期尺寸检查 · 不纯计数走 `needTemp`），**不记 arena 层级**——
+这不是 arena 的内存，逃逸规则在这里没有话说（"引用不许出池"归容器自己的纪律，`POOLS.md` §5.4）。
+
+**三、三件容器搬上去，扩容因子一律换 1.5**
+
+| 容器 | 改法 |
+|---|---|
+| `pool<T>` | `vals` / `slots` / `ent` 三块从板块拿；`grow`/`shrink` 在原块上长/缩（内容由 resize 保住） |
+| `vector<T>` | 缓冲区从板块拿；`grow`/`shrink` 用 `poolResize` ⇒ 手写的拷贝循环整段删掉 |
+| `string` | `buf` 从板块拿；同上 |
+
+三个 `release` 都改成"**先把视图收成 0 长、`cap` 归零，再把板块还给池**"：释放之后越界是带位置的
+trap，而不是写一块已经还掉的内存。原来想写 `self.vals = self.vals[0..0]`，被借用检查拒了
+（"cannot store a borrowed value into something that outlives this call"）—— 这个拒绝是对的，
+子视图确实是从 `self` 借来的。
+
+**四、实测（1e6 个 i64，活跃 8 MB；`/usr/bin/time -f %M`）**
+
+| 形状 | 峰值 RSS |
+|---|---|
+| 缓冲区用 `new`（arena，翻倍） | 18,028 KB |
+| 板块 + 拿新块/拷/还旧块（1.5 倍） | 15,052 KB |
+| 板块 + `poolResize` 原块上长（1.5 倍） | **9,708 KB** |
+
+中间那一格是这一轮最值钱的一次测量：**拷贝期间新旧两块同时在手**，峰值 = 1.5×活跃 + 1×活跃。
+补上 `resize` 之后才降到 ~1.2×活跃。`tests/stl` 里新加的一对同形状用例
+（`vector_rss_plate` vs `vector_rss_arena`）把它变成常设判据：**池底 9,772 KB vs arena 17,964 KB（低 45%）**，
+判据是"自己跟自己比"，不依赖机器的绝对数字。
+
+**五、判据与总闸门**
+
+- `tests/pool/plate.extc`（常设）：`take=800 zero=0 wrote=7 bytes=800 grew=1200 kept=7 tail0=0
+  dual=1264 gave=1 aftergive=64 live=0`。
+- `tests/stl`：`vector` 扩容序列判据从翻倍改成 1.5 倍（`4,6,9,13,…,711,1066`）、`string` 的
+  `cap2=64` 改成 `cap2=54`；`plate rss` 一格如上表。
+- `bash check.sh quick </dev/null`：**通过 26 · 失败 0**；`tests/pool` / `stl` / `map` / `hashmap` /
+  `linmap` 全绿，ASan 干净。
+
+### 周期 36：hashMap 的四列搬上它自己的板块 —— 21 MB（30%）的历代旧列消失
+
+**来由（作者指出的方向）**：作者问"块反复 bump 会不会逼着池扩容、把 bump 的 O(1) 吃掉"。答案是
+**不会**：池里存的是句柄/索引，指向池**自己板块**里的数组，池里没有任何东西指向 arena。但那个直觉
+指向的**镜像问题是真的**：容器的长期存储借了 arena。
+
+**现场**：`hashMap` 的四列（`keys` / `tag` / `slot` / `bucketOfDense`）和 `map` 的四处存储
+（`nodes` / `keys` / `vals` / `kids`）全是 `new` 出来的 arena 切片；每 `rebuild` / `growStores` 一次
+就重新 `new` 一份，上一代直接丢给 arena，谁也回收不了。量出来的账（1e6 条目、结束时 `cap` 都是
+2,097,152）：
+
+| 形状 | 峰值 RSS |
+|---|---|
+| `withCap(16)` 增量插到 1e6（多次 rebuild） | 90,412 KB |
+| `withCap(1e6)` 一开始预留（不 rebuild） | 69,036 KB |
+
+⇒ **21 MB（30%）纯粹是历代旧列**。横评里 hashMap 69 MB 对 C++ 43 MB，就是这一半账。
+
+**改法**（`hashMap` 早就有自己的池记录，只是没用它装自己的列）：
+
+- `withCap`：四列用 `poolSlice<K>` / `poolSlice<u8>` / `poolSlice<i32>` / `poolSlice<i32>` 从
+  **这张表自己的板块**拿；
+- `rebuild`：新四列用 `poolSlice` 从池拿、旧的填完**当场 `poolGive` 还回去** ⇒ 稳态永远只有一代，
+  峰值只在"换的那一瞬间"有两代。容量仍然翻倍 —— 这是**哈希**的要求（探测是 `hash &(cap-1)`，
+  必须是 2 的幂），与"旧块还不了才翻倍"那条无关；
+- `release` 不用改：它已经放掉这棵树，四列的板块跟着走。
+
+**实测（改后）**：增量 66,920 KB vs 预留 69,096 KB ⇒ 增量那版已经**持平甚至略低**（预留要在开始时
+一次性拿满，增量只在每代换块时短暂持有两代）。
+
+**常设判据**：`tests/hashmap/grow_rss{,_reserved}.extc` 一对同形状用例 + `run.sh` 里一格
+"增量 ≤ 预留 × 1.1"，输出 `增量 66940 KB vs 预留 69116 KB ⇒ 旧列没留下`。
+
+**同轮记的两条口径**（`POOLS.md` §2.2）：① 进池的必须是「等大 + 需要身份/复用」的元素，
+**块不进池**（变长、无身份、LIFO ⇒ 走链，给块发句柄是把 bump 的 O(1) 换成摊销 O(1) 加元数据，
+而且结构上根本接不通：块分配器在生成器发的 C 运行期里，池库在 extC 层）；
+②「arena 全部改成 pool」被否掉，数字是：2e7 个 16 字节对象 arena 0.01s / 1,452 KB 对
+池 0.52s / 939 MB。
+
+**剩下同族的两个**：`map` 的三块存储 + 节点（PLAN #84 的 `pool<bnode>` 是更彻底的那版）、
+`linMap` / `linSet` 的稠密数组。
+
+### 周期 37：`map` / `linMap` / `linSet` 搬上板块 —— 1e6 条目 179,820 → 61,932 KB（-66%），顺带 2 倍快
+
+**现场**：同族的三个容器还在用 arena 当长期存储。`map` 的四处存储（`nodes` / `keys` / `vals` /
+`kids`，外加 `path` / `side` 两块草稿）每次 `growStores` 就重新 `new` 一份，上一代丢给 arena；
+`linMap` 连池记录都没有（`{keys, vals, n, cap}`，`withCap` 里两个 `new`），`linSet` 是它的包装。
+
+**量出来的账**（1e6 条目，`map<i64, i32>`）：
+
+| 形状 | 改前 | 改后 |
+|---|---|---|
+| `withCap(16)` 增量长上去（14 次增长） | **179,820 KB · 0.14s** | **61,932 KB · 0.07s** |
+| `withCap(200000)` 一开始预留（不增长） | 90,604 KB · 0.08s | 90,604 KB · 0.08s |
+
+改前那 **89 MB（49%）** 全是历代旧存储（一代 4+8+…+131072 个节点份的存储，正好约等于末代那一份）。
+
+**改法（三处，其中第二处是这一轮最值钱的一步）**：
+
+1. 四处长期存储与两块草稿都从**这张表自己的池板块**拿（`poolSlice`）；`linMap` 补上自己的池记录
+（`pid` / `pidGen`）与 `release`，`linSet` 转发 `release`。
+2. **`growStores` 改成"原块加长"，一个字节的数据都不搬。** 关键性质：节点 `i` 的三个存储槽位是
+   `keys[i*17 ..]` / `vals[i*17 ..]` / `kids[i*18 ..]` —— **偏移只跟 id 有关，与容量无关**，所以
+   `poolResize` 之后所有元素都还在原位置，只需把每个节点的视图重新指向新基址（O(节点数) 次指针写，
+   而不是 O(节点数 × 17) 次拷贝）。之前"新四块 + 逐元素拷 + 旧四块丢掉"不但 O(n)，还要在最长的一跳里
+   让新旧两代同时在手（实测峰值 102,200 KB，其中约 47 MB 是那一瞬间）。
+3. 增长因子 2 → **1.5**：B+ 树没有"容量必须是 2 的幂"这条约束（掩码寻址是哈希才有的事），块又能还了
+   ⇒ 与 `vector` / `string` 同一条理由。末代容量因此从 262,144 节点（只用 140,623）降到约 157,000，
+   这也是**增量版比预留版还低**的原因（61,932 KB 对 90,604 KB）。
+   `shrink` 仍旧要压实（那是它的语义），所以那里的拷留在；但 `order` / `old2new` 两块**临时草稿**
+   继续用 `new` 走 arena —— 随方法那块一起回收，正是 arena 的活（"长期存储上板块，临时草稿留 arena"）。
+4. `linMap::grow` 更简单：下标就是插入序 ⇒ 加长不改变任何已有元素的位置，连视图重挂都不需要，
+   拷贝循环整段删掉。
+
+**常设判据**：`tests/map/grow_rss{,_reserved}.extc` + `run.sh` 一格「增量 ≤ 预留」
+（输出 `增量 62012 KB vs 预留 90560 KB`）；`tests/linmap/release.extc` 一格把"自己的池 + 板块 +
+release 归零"钉住（`cap0=8 key83=83 cap=135 after=0 live=0`）。
+`tests/linmap/map.extc` 的扩容序列判据随因子改成 1.5（`cap=64` → `cap=42`），`tests/stl` 与
+`tests/hashmap` 不动。
+
+**周期 37 补记：把能"原地加长"的地方全找了一遍**（作者问"别的容器能不能也这样"）。
+
+| 增长处 | 能不能不搬 | 现状 |
+|---|---|---|
+| `vector` / `string` / `pool<T>` | 能（下标即位置） | 已是 `poolResize`（周期 35） |
+| `map::growStores` | 能（节点偏移只跟 id 有关） | 已是 `poolResize` + 视图重挂（本周期） |
+| `linMap::grow` | 能（下标即插入序，连视图都不用重挂） | 已是 `poolResize`（本周期） |
+| `hashMap::rebuild` 的 `keys` / `tag` / `slot` | **不能**：桶号 `h &(cap-1)` 随 cap 变，每个元素位置都变 | O(n) 重排是语义的一部分；出路是 PLAN #86（两块表 + 按簇增量） |
+| `hashMap::rebuild` 的 `bucketOfDense` | **能**：它是**稠密下标**索引的（与容量无关） | 本补记改成 `poolResize`，前缀拷贝整段删掉 |
+| `map::shrink` 的四处存储 | **不能**：压实 = 重新编号（不是加长） | 保留拷贝；`order` / `old2new` 是临时草稿，留在 arena |
+| `pool::toSlice` 的返回数组 | **不能**，而且正好相反：它交给调用方，必须活得比容器长 | 留在 arena（`new`），逃逸分析会把它提到调用者的地方 |
+
+实测（`bucketOfDense` 那一处的收益）：hashMap 增量到 1e6 的峰值 66,920 → **62,884 KB**
+（省掉的正是每次 rebuild 都复制一遍的那一列，1e6 × 4 B），预留版 69,036 KB 不变。
+`tests/hashmap` 全绿、ASan 干净。同轮清掉 `stl/pool.extc` 头部一段过期注释（它还写着"存储仍是
+arena 切片、等 `poolSlice` 落地"——那是周期 35 就做完的事）。
+
+### 周期 38：横评重跑（容器上板块之后）+ `varArray` 弃置落档
+
+**横评**（`bench/stl`，自动生成 `RESULTS.md`；同算法同参数、校验和逐位相同、best of 3）：
+
+| 容器 | extC | C++ STL | 比值 | extC RSS | C++ RSS |
+|---|---|---|---|---|---|
+| `vector` | 0.03s | 0.03s | 1.00x | 40,620 KB | 42,876 KB |
+| `hashmap` | 0.15s | 0.21s | 0.71x | 69,036 KB | 43,244 KB |
+| `map` | 1.01s | 1.78s | 0.57x | **41,772 KB** | 66,716 KB |
+| `set` | 0.12s | 0.20s | 0.60x | 62,892 KB | 43,240 KB |
+| `string` | 0.02s | 0.01s | 2.00x | 21,484 KB | 21,308 KB |
+
+**这一轮的收益主要在 RSS**（时间是容量提示对齐之后的老账，涨落都在 3~5% 波动里，C++ 那一侧同向浮动）：
+
+- `map`：90,732 → **41,772 KB**（-54%），并且已经**低于** C++ 的 66,716 KB；
+- `string`：27,564 → **21,484 KB**（-22%），与 C++ 打平；
+- `vector`：40,620 KB，继续低于 C++ 的 42,876 KB；
+- `hashmap` / `set` 的 RSS 没变（69 MB / 63 MB）：**基准是按容量提示一次性要满 2 的幂张桶表的**
+（掩码寻址要求），rebuild 一次都不发生 ⇒ 旧列那一项在这一格里量不到（那一项在
+  `tests/hashmap/grow_rss*` 与 `tests/map/grow_rss*` 里量：各降 30% / 49%）。
+
+**`RESULTS.md` 的读表须知改了**：原来第 2 条写着「RSS 我们普遍更大 —— arena 只增不减，翻倍扩容留下的
+旧数组不会被逐块回收」，这条**已经过期**（容器自 2026-09-26 起住在自己的池板块上，扩容时旧块当场还）。
+现在写的是：vector / map 两格已低于 C++；hashmap / set 偏大来自容量策略差（一次性要满 2 的幂张桶表），
+不是泄漏；长期存储之外只剩三处 `new`（临时草稿 / 返回值 / 定长缓冲）。
+
+**`varArray` 弃置落档（作者 2026-09-26）**：原话「varArray 已经死了，依旧弃置，这玩意儿比 vector 拉」。
+它是 prelude 里的旧底座（arena 底，`grow` 是 `new T[ncap]` + 拷贝），已被显式 import 的 `stl::vector`
+取代 ⇒ 那 35 文件 / 66 处**不做迁移**，底座不替换。这条推翻了 POOLS.md §6 期 3 里「待做（要先出方案
++ 数字）」那一格，也把 PLAN #29（`varArray` 分块化，留 v2 拍板）连带作废。
+
+### 周期 39：把「提权」这一半补齐到调用点 —— 新分配可以提，借用不能提
+
+**起因（作者）**：「肯定要提权啊，不提权不就过于保守了吗，那用户啥都写不了了，整个 extC 的核心机制就是
+arena 和提权」。上一轮先落了运行期那一半（`extc_pool_new_at(parent, zone)` + `tests/pool/rt_promote.extc`）。
+
+**开工前先量的一刀**：arena 侧"内层新建 → 经调用存进外层"今天行不行？
+
+```extc
+fn stash(b: mut ref box, v: slice<i32>) { b.s = v }
+{ var p: mut slice<i32> = new i32[4]   stash(ref b, p) }
+```
+
+实测：**被拒**（`argument 2 of `stash` carries a reference into a deeper scope(depth 2) than the
+place the callee may store it(depth 1)`）。也就是说连 arena 都还没提权这一档 —— 不是池独有的问题。
+
+**根因（读码定位）**：`check_top.c` 的调用点有两支判据 —— 摘要不完整那一支**先试提权再拒绝**
+（`if(d != 0 && d > h && promoteInto(c, a, h)) d = exprRefDepth(c, a);`），
+而摘要完整那一支**没有这一句**，直接报错。两支的差别从来没人补平。
+
+**改法**：把那一句补到第二支（一处，`src/check/check_top.c`）。语义正是 `promoteInto` 的契约：
+
+- **新分配**没有别的所有者 ⇒ 站点可以移到目的地那一层 ⇒ 提权成功 ⇒ 接受；
+- **借用**移不动（`names.push(buf[..])` 里 `buf` 是别人的存储）⇒ `promoteInto` 返回 false ⇒ 错误照旧。
+
+**实测**：
+
+| 用例 | 改前 | 改后 |
+|---|---|---|
+| `new` 出来的切片经调用存进外层（`tests/arena-promoted/H_promote_through_call.extc`） | 误拒 | **接受 + ASan 干净**，分配落在目标那层的 `__extc_a[1]`（而不是分配点所在的 `__extc_a[2]`） |
+| 借用经同一个调用（`tests/errors/promote_borrow_through_call.extc`） | 拒 | **仍然拒**（这条是那一支存在的理由，不许松） |
+
+**判据**：`tests/arena-promoted` 加一条（23 条，含这条），`tests/errors` 加一条（全语料 262 → 263），
+`check.sh quick` 通过 26 / 失败 0。
+
+**对池的意义**：这是容器提权的**前置**（PLAN #87 的编译器那一半）。池与 arena 的差别还剩两件：
+① 容器的"池绑定"在检查器眼里还没有类型（`pid` 是裸 `i64`，`poolSlice` 的结果我当初故意记深度 0）
+⇒ 它在深度格里隐形，`outer.push(inner)` 连"深度不够"都看不出来；② 建池的函数要走 `needsHome`
+那一套（多收一个隐藏的「家 zone」参数，codegen 把 `extc_pool_new` 换成 `extc_pool_new_at(parent, __extc_homeZone)`）。
+这一轮把调用点那一半补平之后，① 一做就能直接复用今天这条提权路径。
+
+### 周期 40：提权的编译器那一半 —— 管路通了，判定还差一步（阻塞点已定位）
+
+**第一片（已提交 `6f9c085`）**：建池的函数收隐藏的「家 zone」参数（`makesPool` 是可传递最小不动点，
+整条链都收得到；main 除外 —— C 签名固定），三个调用点把它递下去；库里那句 `extc_pool_new(parent)`
+在收参数时改发 `extc_pool_new_at(parent, __extc_home_zone)` ⇒ **库侧源码一个字都不用改**。
+生成的 C 现在长这样：
+
+```c
+static vector$vector_i32 vector$vector_i32_withCap(int64_t c, int64_t __extc_home_zone) {
+    int64_t rp = extc_pool_new_at(((int64_t)((-1))), __extc_home_zone);
+    ...
+```
+
+行为未变（只装管路）。全套绿：26/0 · 五个套件 · arena-promoted · memsafe 33/0。
+
+**第二片（已装好，未点火）**：`Expr.zoneLevel` + `setCallZoneArg` + `poolCallDepth`（把建池的调用
+当成分配站点，与 `new` 同规则）+ `promoteInto2` 新增"建池的调用可提权"一格 + codegen 按站点发 zone。
+
+**点火点卡住的地方**（探针抓的，不是猜的）：
+`poolCallDepth` 要问 `e->func->makesPool`，而那个闭包是**函数体全部检查完之后**才算的
+（`checkModule` 收尾的 worklist）⇒ 检查现场它还是 0：
+
+```
+$ EXTC_DBG_ZONE=1 ./build/extc tests/… -o /dev/null
+[zone] call=withCap makesPool=0 zoneLevel=-1 d=0
+```
+
+⇒ 深度查询对建池的调用仍然返回 0，「存进更长寿的容器」这件事根本没有进提权那条路
+（`promoteInto` 只在 `d > h` 时才被调用）。所以 `vector<vector<i32>>` 的轨迹与改前完全一致
+（出循环 `live=1`，三个内层池照样被回收）。
+
+**两条出口**（PLAN #87 已记）：
+
+1. **提前算 `makesPool`**：每个函数体检查完就 `f->makesPool |= stmtMakesPool(f->body, true)`，
+   并对已知函数做一遍小闭包。单调、早算只会更准；缺点是调用链顺序（`new` 里调 `withCap`）可能仍差一拍。
+2. **记事实、末轮重放再提**（倾向）：`checkCallRefArgs` 里对**每个带引用的实参**都记一条
+   `recordLvlFact(c, a, h)`，不管当时的 `d` 是多少；末轮重放 `promoteInto` 时 `makesPool` 已经为真
+   ⇒ 站点被提权。顺带把"确实提不动"的（借用）在末轮变成响亮报错 —— 今天那些静默的形状正是这一片要消掉的。
+
+同轮还落了两件记账：`tools/memsafe` 33/0（§6.1 那三条探针仍未进 qa/，等点火后一起进），
+以及 `EXTC_DBG_ZONE=1` 这个诊断开关（与既有的 `EXTC_DBG_*` 同族）。
+
+### 周期 41：池底容器的提权点火成功 —— 根因是**顺序**，不是算法
+
+**症状**：`vector<vector<i32>>` 在循环里建内层、推入外层之后，出循环 `live=1`（三个内层池全被回收，
+外层板块里那三个值指着已还给 malloc 的块）；`nest2.extc`（出循环后 push）ASan 报 heap-use-after-free。
+
+**根因（探针抓的）**：`checkModule` 里的**电平求解（`lvlFacts` 重放）跑在 `makesPool` 闭包之前** ⇒
+求解期间 `calleeMakesPool` 对所有调用点都还是假：
+
+```
+[gate] call=new ptr=0x57ac827d4c98 owner=0x57ac827d2a78 mP=0 cmp=0 lvl=2 at=1
+[pool] vector$vector::new    makesPool=1 ptr=0x57ac827d4c98 owner=0x57ac827d2a78   ← 同一个指针
+```
+
+⇒ 池站点的提权**一次都没落地**。算法本身没错，是**标志就位得太晚**。
+
+**改法**（`src/check/check_top.c` 三处）：
+
+1. 闭包里补**实例那一轮**：泛型方法的实例是模板的浅拷贝（共享 body），不在 `m->structs` 里，
+   而在类型表的 `tt->instances` 上 —— 只标模板等于没标；
+2. `setCallZoneArg` **只往下调、不往上抬**（同一个节点可能被检查不止一次，覆盖会把提权抹掉）；
+3. 闭包之后再**重放一遍事实表**：`promoteInto` 只把层级往小改（越长寿命），重放单调 ⇒ 安全。
+
+**实测**：
+
+| 用例 | 改前 | 改后 |
+|---|---|---|
+| `nest.extc` 出循环 `live` | 1（内层池全没了） | **4**（outer + 三个内层池，板块 240 B） |
+| `nest2.extc`（出循环后 push） | ASan `heap-use-after-free` | **ASan 干净** |
+| `examples/varArray-asSlice-return.extc` | 一度被名字兜底误拒 | 恢复通过（兜底已撤回） |
+
+**常设判据**：`tests/pool/rt_nest_promote.extc`（`after=4 innerlen=2 v=20 bytes=240`）·
+`tools/memsafe/qa/r2_container_nested_promote.extc`（`expect: OK`，跑完查 ASan）。
+`check.sh quick` 通过 26 / 失败 0。
+
+**仍未接上的一档**：`fn make() -> vector<i32> { … return v }` 这条**返回**路径（`at == 0` ⇒ `ZONE_HOME`）
+还会报错 —— 下一步。另记作者口径两条（`PLAN #88` / `#89`）：池底容器**不许持有引用**（`vector<ref T>`
+一律禁止，图要走向句柄），以及 **`asSlice` 这一族必须是"拷出来"、不能是"池里的视图"**
+（"否则就变成引用 Pool 里的东西了，而 **Pool 里的东西永远不能被外面引用**"）。
+
+### 周期 42：返回那一档也通了 + 两条口径的落点（`ref` 整个容器允许）
+
+**返回那一档（`fn make() -> vector<i32>`）**：根因与上一轮同族，但位置不同 —— `check_stmt.c` 的
+`return` 分支调了 `promoteInto(val, 0)` 却**没有记事实**，而这次调用发生在 `makesPool` 闭包**之前**
+⇒ 闸门读到假、池站点的提权落不下去。
+
+改法两处：
+- `recordLvlFact` 允许 `at == 0`（对 arena 是"活到本帧之外（家 arena）"，对池是 `ZONE_HOME`）；
+- `return` 分支补记一条事实 ⇒ 闭包之后的重放把站点提到"调用者选的那个地方"。
+
+实测：`retvec` 的 ASan 从 `heap-use-after-free` → **干净**；`nest` 仍 `live=4`。
+常设判据：`tests/pool/rt_return_promote.extc`（`live=1 len=3 v0=5 v2=7`）·
+`tools/memsafe/qa/r3_container_return_promote.extc`（`expect: OK` + ASan）。
+
+**作者口径两条（`POOLS.md` §5.4 补全，`PLAN #90` / `#88` / `#89`）**：
+
+| 方向 | 判据 | 状态 |
+|---|---|---|
+| 借出**整个容器** | `ref vector<i32>` / `mut ref vector<i32>` **允许** | 今天已经可以（实测 `len=2 last=99`；判据 `qa/r4_container_by_ref.extc`）—— 容器值是 arena 上的普通值，按普通引用规则走 |
+| 借出**池里的东西** | `asSlice` / `denseView` 这一族**必须拷贝**（拷到目的地），不能是池里的视图 | 待做（`PLAN #89`）—— 今天这一族全是视图（违规） |
+| 让**池里的元素**拿着外面的引用 | `vector<ref T>` **一律禁止** | 待做（`PLAN #88`）—— 交叉引用走向句柄 `Vec<NodeId>` |
+
+一句话记法（已写进 `POOLS.md` §5.4）：**可以把容器整个借出去，不可以把池里的东西借出去，
+也不可以让池里的东西拿着外面的引用。**
+
+### 周期 43：守卫推广到全部容器（代价量了：噪声内）+ 一处记账修正
+
+**守卫**（`pStale` / `pPoison`，形状见周期 43 前那一轮）：`string` · `pool<T>` · `map` · `hashMap` ·
+`linMap` 全部加上，写入路径入口查一次（`push` / `insert` / `set` / `put`；`append`、`linSet`、
+`set<T>`、`hashSetI64` 都转发到这些入口）。判据（`expect: TRAP`，形状都是"别名 + 一份 `release`
+⇒ 陈旧的那一份必须响亮失败"）：`r7` vector · `r8` string · `r9` hashMapI64 · `r10` map，
+外加 `tests/pool/rt_stale_alias.extc`（详细版：查退出码 1 + `trap: index` + `文件:行`）。
+
+**代价（实测，1e7 次 `push`，best of 3）**：
+
+| | 时间 |
+|---|---|
+| 带守卫 | 0.048 / 0.049 / 0.050 s |
+| 不带守卫（`git checkout b48c280~1 -- stdlib/stl/vector.extc` 量完再还原） | 0.047 / 0.049 / 0.049 s |
+
+⇒ **噪声内**：一次全局数组读 + 一次比较，被循环里别的工作盖住了。
+
+**记账修正**：`tools/memsafe/qa/r5_toSlice_is_a_copy.extc`（`toSlice` 是拷贝那条判据）
+上一轮**没有进库** —— 提交时 `git add` 只带了 `stdlib tests examples`，漏了 `tools/`。
+`memsafe` 的条数当时报的是 37（本地有它、库里没有），这一轮补进库并复核（39 → 已含它）。
+规矩照旧：**按路径逐条 add，不要凭"我记得加了"**。
+
+### 周期 44：撤回编译器里的"池底容器不许装引用" —— 策略不该进编译器
+
+**撤回的是实现，不是判断的诚实性**：这条禁令我上一轮做进了 `src/types/types.c` 的类型解析处，
+判据是"结构体有没有 `pid` 字段"。作者口径：
+
+> 不是，认池底容器不是应该看它是否使用了 Pool 对象嘛……就是禁令不要随便改编译器啊，
+> 不要搞这种那么多神秘的保留字，很弱智。
+
+三条都成立：① 认池底容器的正确判据是**行为**（它建不建池：`FuncDef.makesPool` /
+`StructDef.makesPoolAny`），不是字段名；② 而且那个标志要闭包之后才有（`ttResolve` 在
+使用点上跑，那时它还是假）⇒ 真要判也只能在收尾里判；③ 更根本的是——探针早就说明
+**危险的那一档由借用检查负责**（`argument 2 of push carries a reference into a deeper scope`），
+这条禁令是**策略**而非漏洞，把策略塞进编译器是错的方向。
+
+**撤回动作**：删掉 `src/types/types.c` 里的检查与两个辅助函数（`typeStructHasPoolField` /
+`typeCarriesRef`）、删掉 `tests/errors/pool_elem_ref_ban.extc`，
+把 `qa/r6` 换成 `qa/r6b_pool_elem_ref_deeper_scope.extc`（`expect: REJECT` —— 钉住**真正**
+要挡的那一档：内层块局部变量的引用塞进外层容器）。
+
+**现在的边界（三条，都没有编译器特判）**：
+
+| | 存储 | 装引用 |
+|---|---|---|
+| `varArray<T>`（arena 底） | 元素地址永不移动/复用 | **可以**（唯一一条，`PLAN #91`，判据 `tests/stl/vararray_ref.extc` · `qa/r11`）|
+| 池底容器 | 板块会压实/复用/翻纪元 | 借用检查按寿命管：同地方**常常被保守拒绝**、跨块**必拒**（`qa/r6b`）；没有专门的禁令 |
+| 整个容器值 | —— | `ref` / `mut ref` 都允许（`qa/r4`）|
+
+验证：语料 263/0 · `check.sh quick` 26/0 · `tools/memsafe` 43/0。
+
+**同日的第十三刀：L2 主体 —— `std::ws`（RFC 6455 握手 + 帧）**。手写而非 vendor（协议不到十页），
+形状照旧零分配 + 调用方给缓冲；只管**字节**，连接/心跳/resume 归 QQ 协议层。
+- `acceptFor`（`base64(SHA1(key + GUID))`）· `requestInto` · `frameInto`（客户端总是带掩码）·
+  **增量解析** `hdrLen`（0 = 数据还不够 / -1 = 协议错）· `opOf`/`finOf`/`maskedOf`/`lenOf`/`maskAt` ·
+  `unmask`；
+- 拒绝面：RSV 非零 · 未知 opcode · 分片控制帧 · 控制帧长度 > 125 · **非最短长度编码** ·
+  64 位长度最高位为 1 · 数据不够给 0 而不是错；
+- 判据 `tests/ws/`：RFC §1.3 握手向量 · 拒绝面 · 往返 · **2 万次变异 fuzz（19740 合法 / 260 拒绝，
+  零崩溃）** · **24 个帧与 Python 独立实现逐字节对拍**（126/127/65536 三种长度编码全覆盖）。
+  `check.sh quick` 70 → **71/0**。
+
+**这轮踩到的两处坑（都值得记）**：
+1. **判据错了四处，模块一次没错**（`f64` 撞内建名、CRLF 顺序写反、掩码帧头长算错、fuzz 里把
+   "无掩码"当成错）—— 判据先把自己的假设咬了一遍，这正是它的价值；
+2. **`manual_surface.py` 把"一行 `fn` 上的 `@private`"记成了 public**（`isCtrl`/`isKnownOp`
+   因此被覆盖率闸门要求进手册）。处理办法是把这两个一行谓词**内联掉**，而不是给内部函数补文档
+   —— 工具与源码不一致时，先让源码无歧义。
+
+**下一步**：`wss://`（走 TLS shim 的 `WANT_READ/WRITE` → `awaitFd`），然后才是 QQ 网关协议层。
+
+**同日的第十四刀：等可写（`WAIT_FD_W`）—— `wss` 的硬前置**。TLS 的 `SSL_write`/`SSL_read` 都会
+返回 `WANT_WRITE`，而没有这一格就只能等可读（**等错方向**，TLS 握手的某个阶段会直接卡死）。
+- 挂起协议第三格：`req >= 0` 等可读 · `WAIT_UNTIL` 等 deadline · **`WAIT_FD_W` 等 `loop.pendingFd` 可写**；
+- 底层补了一个干净原语 **`extc_epoll_arm`**（第一次 `ADD`、之后 `MOD`）—— TLS 会在**同一个 fd 上
+  来回切读/写等待**，只有 ADD 的话第二次 `EEXIST`；顺带把可读路径也换成了 `arm`；
+- 任务的等待模式记在 `row.mode`（0 没登记 / 1 等可读 / 2 等可写）；
+- 判据 `tests/coro/coro_waitw.extc`：等可写 ×2（含 MOD 路径）→ 切回等可读，全部正确恢复。
+  `tests/coro` 30 → **31/31**，`check.sh quick` **71/0**。
+
+**下一步**：`Suspend` 效应签名（趁 `std::tls` 还没写，避免 ~30 处签名返工），然后 `std::tls` 包 → `wss` 判据。
+
+**同日的第十五刀：一条过期诊断 + 一个被忽略的事实（globals 已经是 depth 0）**。写 `wss` 夹具时
+撞到"跨 `yield` 的局部视图不能指向别人的存储"，查代码才发现**这条限制的最小版本早就解了**：
+`check_top.c:4416` 写着"**A global is depth 0: it outlives every frame**" —— global 的视图
+本来就可以跨 `yield`。我们撞墙是因为把会话缓冲挂在了 `main` 的局部结构体上（那是别人的栈）。
+
+**正解不是"重取视图"那套样板，而是把进程寿命的状态真的声明成进程寿命的**（全局）。
+教训：我在诊断信息的误导下差点把"重取视图"当成唯一出路 —— 而那条诊断是**过期文案**：
+
+    "every name must be declared first (extC has no globals yet)"     ← globals 早就有
+
+已改成"every name must be declared first: locals, parameters, globals, and imported module
+members all count"。**一条过期的诊断会把使用者推向错误的解法** —— 这比它本身写错更贵。
+
+还缺的是它的推广：不是全局、但**被 plate 拥有**的存储（同进程寿命，但不是 C static）。
+那要类型系统能表达"这个引用指向谁拥有的存储"（现在 arena 是**按作用域**的，不是**按归属**的）。
+已记进 `docs/topics/BOUNDED-TABLE.md` 附录（判据：等"重取视图"的样板开始反复出现就该做）。
+
+**同日的第十六刀：明文 socket 的"还没数据"与"连接已死"分开了（errno 感知的读写）**。
+写 WebSocket 会话层时撞到：对端 RST/退出之后，`extc_sock_read` 只给一个负数，会话层只能把它
+当成"等就绪" ⇒ epoll 每轮立刻报可读、recv 每轮报错、客户端**原地空转**（判据当场从"挂死"变成
+`STUCK rounds=500` ✗）。加两个 errno 感知的原语：
+
+    extc_sock_read_why / extc_sock_write_why
+      > 0 字节数 · 0 对端干净关闭 · -1000 = 现在没数据/缓冲满（等就绪再试）· -1001 = 连接坏了
+
+判据 `vendor/ws/tests/dead.extc`（在 qqbot 仓库）：握手后对端立刻消失 ⇒ `recv` 必须给 `CLOSED`，
+**不许空等**。旧写法在这条判据上必然超时，新写法 200 ✓。
+
+**这轮踩的坑（都是"补丁打在注解旁边"这一类）**：我把两个新 extern 声明插进了
+`extc_sock_read` 与它的 `effects Addr=0 Cont=0` **之间** ⇒ 原声明丢了签名、新声明白捡了一个，
+`tests/coro` 三个用 socket 的夹具当场编译失败（检查器的报错很准："argument 2 of `extc_sock_read`
+may be kept by C forever"）。**教训**：跨行的注解用文本补丁插入时必须整块替换，别插在中间 ——
+这已经和 `.link` 格式、`#include` 位置、`sed` 锚点一起，构成同一类"文本手术"风险。
+
+`check.sh quick` **71/0**（全语料 414 份产物、164 份观察项均无变化）。
+
+**同日的第十七刀：放宽"字面量切片的深度"（正例 + 反例都判）**。写示范时撞了两次同一条：
+`let k: slice<u8> = "…"` 在协程里**跨 `yield`** 会被拒（"指向别人的存储"）—— 只能把字面量
+内联传进每个调用点。可**字符串字面量住在静态存储里**（C 的字符串字面量就是静态存储期），
+它跟"指向调用方栈帧的切片"根本不是一回事 ⇒ **这条规则偏保守**。
+
+改动两处，都是"把规则推广到它本来的判据"而不是加特例：
+1. `exprOutOfFrame`（`check_escape.c`）加 `EX_STR → true`：字面量与全局同寿、深度 0；
+2. `coroCheckDeferred`（`check_top.c`）的放行条件从"池容器 / 本体内 `new`"两种形状，推广成
+   **"凡是能证明活过帧的存储"** —— 直接复用 `exprOutOfFrame`（它本来就回答这个问题：
+   全局、`Ret=0` 的返回、以及现在的字面量）✓。
+
+判据 `tests/coro/coro_literal.extc` + run.sh 里的**反例**：局部数组的视图跨 `yield`
+**仍然被拒**（放宽一条规则时，反例比正例重要）。`tests/coro` 31 → **33/33**。
+
+顺带补上一处漏网：上一条定案改了手册却没重生成 HTML（`check.sh` 当场抓到"docs/manual/html
+已过期"）—— 闸门又一次替我兜住了。
+
+**同日的第十八刀：`global` 的落点摸清一半，交接到"下一轮一次做完"**。① 已落地（字面量切片的深度，
+见上一刀）。② `global` 的扫描结果写进 `docs/topics/GLOBAL.md`：语句级声明入口 `parser.c:2082`、
+顶层 `762`、`ST_VAR` 构造点 `2280`、绑定登记点 `check_stmt.c:470-485`、常量判定 `isConstInit`
+（`check_top.c:4366`，要导出）、以及**已验过的地基** `exprOutOfFrame`（①刚扩过它）。
+**唯一没找到的是协程帧的构建遍历**（`coroDeferred` 只用于报错，不是帧的来源）—— 那是下一轮的第一件事。
+
+**为什么停在半路**：只加 parser 会把 `global var` **静默降级**成普通局部 —— 单任务里看着能用，
+跨调用/跨协程的持久性却没了，而这正是特性的全部意义。**静默错比没有更坏**，所以宁可不做。
+
+**同日的第十九刀：`global` 落地（函数内的持久存储）**。`global var x: T` / `global let x: T = c`
+= **存储是全局的（深度 0，C 的块作用域 `static`）、名字留在块里**、初始化式必须常量。四处成套：
+
+- **parser**：`global` 做**软关键字**（`accept(p,"global")` 再看 `let`/`var`）—— **不动词法表**：
+  把它变保留字会破坏现有代码里拿它当名字的地方；
+- **checker**：常量初始化式（`isConstInit` 导出）+ 绑定置 `outOfFrame`/深度 0。**两条声明路径都要调**：
+  零初始化那条会提前返回，只改一条等于没改（实测：`global var buf: [8]u8` 没被标记，
+  它的视图就被当成"别人的存储"拒掉 ✗）；
+- **codegen**：声明处发 C 的**块作用域 `static`**（静态存储期 + 块内可见，语义正好对上；
+  声明被重复执行也没关系 —— 循环、协程 resume 都跳到语句中间，C 保证只初始化一次）；
+- **帧布局**：`coroFrameLay` **跳过** `global`（存储本来就在帧外）。
+
+判据 `tests/coro/coro_global.extc`：视图跨 `yield` ✓ · 跨调用持久 ✓ · **一份实例被两个协程共享** ✓
+（期望输出 `t1:A · t2:B · t1:B · t2:B` —— 第二组两个都是 `B` 不是 bug：两份视图指向**同一块**存储，
+别名共享正是 `global` 的语义）+ 反例（非常量初始化式 ✗）。`tests/coro` 33 → **35/35**。
+
+**AST 冻结闸门抓了我一次，而且抓得对**：第一版我把"初始化式是不是帧外存储"（**检查器的结论**）
+写成了 AST 字段 ✗ —— 闸门的规矩是"分析结果进 plan 侧表、AST 只装语法"，我一度想用
+`--update-baseline` 让它过去，**那是绕开**。正确做法：加 `NodeResults.varInitOO` +
+`planSetVarInitOutOfFrame`，AST 只留**语法**事实 `isGlobal`。另外两处新违规是文本扫描的误报
+（`d->isGlobal = s->u.var.isGlobal;` 看着像 AST 写）—— 修法**不是**放宽扫描器（按名字排除会让它
+真的看不见 AST 写），而是 `CoroDecl` **只存语句指针**、用到时现读 ✓ 更少的重复来源。
+**能遵守就遵守；规则不合逻辑才改规则。**
+
+**顺带记一个调度器局限（判据撞出来的，没修）**：`yield fd` 的 tag 就是任务行号，
+所以**同一个 fd 上两个等待者时，后注册的会把先注册的覆盖** ⇒ 只有一个任务被唤醒，另一个永远挂着。
+QQBot 是"一条连接一个任务"，撞不到；但要写"多个任务等同一个 fd"（比如多路复用一条连接）就得先修它。
+
+**同日的第二十刀：`f"…"` 编译期格式拼接（普通语法差距里的第 ① 条）**。研究材料
+（`ERGONOMICS.md`）把真代码翻过来量出 Python ~25 行 → extC 78 行（3×），其中最大的单项就是
+"没有 f-string：错误信息/日志全靠 `<<` 手拼"。现在补上了，而且**只动了词法与解析器**：
+
+- **词法**：`f"…"` ⇒ `TK_FSTRING`（`f` 后面**紧挨**引号才算；`f` 本身仍是合法标识符 ✓ 与 Python 一致）。
+  顺带把 `lexAll` 抽成 `lexRange(ctx, src, len, line, col, out)` —— 片段子解析需要**真实行列**；
+- **解析**：`parseShift` 里遇到 `TK_FSTRING` 就**就地展开**成 `mkBin(p, "<<", …)` 链 ——
+  用的是与手写链**同一个**构造函数 ⇒ 展开出的 AST 一模一样 ⇒ **检查器与代码生成一行未改**，
+  而"能不能打印"就等于"有没有 `<<` 重载"（复用既有重载解析，不引第二套规则）；
+- **槽里的表达式用真解析器**在片段上跑（`lexRange` + 子 `Parser`），所以诊断**指得到文件里**；
+- 判据 `tests/fstring/`（7/7，进 `check.sh`）：多槽 · 各种类型 · `{{}}` 转义 · 每槽求值一次 ·
+  无文本段 · **生成物与手写 `<<` 链逐字节相同** · 六条反例（空槽/未闭合/多余 `}`/格式说明符 v2/
+  只在 `<<` 右侧/…）。
+
+**两条如实记账**：
+1. 槽是**从右往左**求值的（C 的实参顺序），Python 是左到右 —— 带副作用的槽要留意（判据里
+   `3 2 1` 就是这个顺序，两份生成物一致所以"逐字节相同"仍成立）；
+2. **`f""` 是已知洞**：它编得过、且不退化成任何部件 ⇒ `<<` 被静默吃掉（生成物只剩 `io$cout;`）。
+   我写的"什么都没有就别拼"检查没生效，真因未查清（这轮余量到这个点用完了）。**已从判据里摘出**
+   （套件保持绿）并写在 `tests/fstring/run.sh` 与手册 §6 里 —— 下一轮第一件事。
+
+**还有一条工具教训**：我用 `cmd | head -3; echo rc=$?` 得到的 rc 是 **head 的**，加上一个**旧的**
+输出文件 ⇒ 我一度以为 `f""` 报错成功（其实没有）。**看退出码要直接看，不要经过管道。**
+
+**更正（同日，紧接着上一刀）**：上一条把 `f""` 记成"已知洞"——**记错了，没有这个洞**。
+它**正确地**报 `an f-string with nothing in it has nothing to splice`（手册 §6 与
+`tests/fstring/run.sh` 也已改正，反例现在在套件里，**8/8**）。
+
+误判的成因是两个叠加的小错，都值得记：
+
+1. **判据跑在没有重新 `make` 的旧二进制上** —— 我改了 `parser.c` 却没重新构建就去跑判据；
+2. **`cmd | head -3; echo rc=$?` 里的 `rc` 是 `head` 的**，再加上一个**旧的**输出文件 ⇒
+   两次误判叠起来像一个"确定的结论"，我还把它写进了手册和 DEVLOG。
+
+**规矩（写给下一次）**：判据前先 `make`；**退出码不要过管道**（要么直接跑，要么看 `PIPESTATUS`）。
+"我观察到了 X" 与 "工具链让我看到了 X" 是两件事 —— 这一条比这次那个特性值钱。
+
+**同日的第二十一刀：`f"…"` v2 的第一步（原语落地）+ 一条改变 v2 设计的规则**。
+`std::io` 加了格式化原语 —— `padText` / `padInt` / `padF`（宽度 · 填充 · 左/右/居中 · 精度 ·
+零填充**符号在前**），判据 `tests/fstring/pad.extc`（进套件，8 → 9 项）。
+
+**踩到两条真规则，都值得记**：
+1. **普通方法不能重载** —— 我把三个 `pad` 写成重载，编译当场报 "duplicate method `pad`"。
+   `<<` 能重载是因为它是**运算符**（由运算符解析处理）。后果：`{x:>8}` 该调 `padText` 还是
+   `padInt` 取决于槽的**静态类型**，而**解析器不看类型** ⇒ v2 的语法那一步**必须放在检查器**
+   （解析器造标记节点，检查器按类型选方法）。这条直接改变了 v2 的形状，写进手册 §6。
+2. **`f64(1000000000000000)` 这种大整数转浮点会先按默认整型走 ⇒ 溢出绕回**，于是我的范围检查
+   对 `1.5` 也成立、直接 trap ✗。改成 **float 字面量 `1.0e15`** 就好了。
+
+**下一步（v2 语法）**：解析器把 `:` 后面的说明符解析成一个标记（宽度/填充/对齐/精度），
+检查器按槽的静态类型选 `padText`/`padInt`/`padF` 并改写调用，codegen 照常发（展开物仍是普通调用）。
+
+**更正（同日，v2 第一步）**：上一条说"原语落地 + 判据进套件"，**已回退**。真相：
+把 `padText`/`padInt`/`padF` 加进 `stdlib/std/io.extc` 之后，**`tests/coro` 六个夹具全部
+编译失败**：`extc_print defined but not used [-Werror=unused-function]`。
+`extc_print` 是**程序打印结构化类型时**才该发射的运行时助手（codegen 的注释这么写），
+而加了几个 helper 之后它在这些程序里**发射了却没人用** ⇒ `-Werror` 直接毙掉。
+真因没查清（这轮余量到底了），所以按规矩**回退到绿**：`io.extc` 还原、`pad.extc` 删除、
+`check.sh` 的 f-string 一节回到 8 项。
+
+**留下的东西**（比原语值钱）：
+1. **普通方法不能重载** —— 写成三个 `pad` 时编译当场报 `duplicate method`。这条**改变了 v2 的形状**：
+   类型定向的那一步只能放在**检查器**（解析器不看类型）。已写进手册 §6；
+2. `f64(1000000000000000)` 这种**大整数转浮点会先按默认整型走 ⇒ 溢出绕回**（我的范围检查因此对
+   `1.5` 也成立、直接 trap）⇒ 用 **float 字面量 `1.0e15`**；
+3. 一个**待查**：往 `io.extc` 加 helper 为什么会让 `extc_print` 变成"发射了却没人用"——
+   下一轮第一件事，它是 v2 的前置。
+
+**同日的第二十二刀：`extc_print` 那个真因查清并修好，v2 原语随之落地**。
+
+真因：**运行时块是整块发射的**，而 `extc_print` 只有"程序真的打印了结构化类型"时才被调用
+（codegen 注释：*only if a structured type is printed*）⇒ 凡是因为**别的理由**需要运行时块、
+又不打印结构化类型的程序，都会撞上 `-Werror=unused-function` ✗ —— 往 `stdlib/std/io.extc`
+加几个 helper 正好触发了它（`tests/coro` 六个夹具全灭）。
+
+修法：`static inline`（`src/back/codegen.c`）。为什么是这个而不是"精确判定何时该发射"：
+**未使用的 `static inline` 按 C99 不告警** ✓，而那个判定**注释里就写着真出过 bug**
+（漏发 = 生成物坏掉 ✗）—— **不去动一个已知易错、错了就静默生成坏代码的判定**，
+只在"发了没人用"这一侧兜住，是这里最划算的修法。
+
+修好之后 v2 的原语（`padText`/`padInt`/`padF`：宽度 · 填充 · 左/右/居中 · 精度 · 零填充符号在前）
+**重新落地**，判据 `tests/fstring/pad.extc` 进套件（8 → **9** 项），`tests/coro` **35/35** ✓。
+
+**教训（写下来）**：改被广泛导入的 stdlib 模块（`io`）会牵动**代码生成的发射判定** ——
+"只导入、不打印结构化类型"的夹具（`tests/coro`）就是那个哨兵，它这次抓住了。
+以后动 `io.extc` 这类模块，先跑那一组。
+
+**同日的第二十三刀（收尾）：`extc_print` 的修法定稿 —— 两个编译器对"没用上"的看法不同**。
+
+- `static void` ⇒ **GCC** `-Wunused-function` 毙掉（我加 stdlib helper 时就是这么炸的）；
+- `static inline` ⇒ **GCC 安静了，Clang 反过来报** `-Wunneeded-internal-declaration`
+  （"`static inline` 却没人用 ⇒ 干脆不发射"）✗；
+- **`__attribute__((unused))`** ⇒ 两边都认 ✓（`tests/pool` 的 clang 检查与 `tests/coro` 双双转绿）。
+
+**为什么不去修"什么时候发射"那个判定**：它的注释里就写着真出过 bug（**漏发 = 生成物坏掉** ✗）。
+在一个"错了会静默生成坏代码"的判定上做精确化，收益远小于风险；在"发了没人用"这一侧用属性兜住，
+是这里最划算的修法。
+
+**一条有意的观察项**：全语料快照差异从 **164 → 366** —— 因为运行时块里的 `extc_print` 声明变了，
+**凡是含打印运行时的产物都动** ✓ 这是预期内的、可解释的位移（不是漂移）。
+
+**教训**：改被广泛导入的 stdlib 模块（`io`）会牵动**代码生成的发射判定**；这次是两个"只导入、
+不打印结构化类型"的夹具（`tests/coro`、`tests/pool`）当哨兵抓住的。以后动 `io.extc`，先跑这两组。
+
+**v2 的第一步也随之落地**：`std::io` 的格式化原语（`padText`/`padInt`/`padF` + `LEFT`/`RIGHT`/`CENTER`，
+宽度 · 填充 · 对齐 · 精度 · 零填充符号在前），判据 `tests/fstring/pad.extc`（套件 8 → **9** 项），
+手册 §24 有成员表。v2 的**语法**部分仍待做，且已定形状：**类型定向那一步在检查器**（普通方法不能重载）。
+
+**更正（同日，收尾）：`__attribute__((unused))` 只是兜底 —— 正确的修法是"按需发射"，但没做成。**
+
+用户一句"为什么不按需发射"是对的。查下去发现**机制本来就有**：运行时块文本里的定义由
+`dropRuntimeDefs` / `dropUnreferenced` 按"没人提到就删"裁掉（描述符行就是这么办的）。那为什么
+`extc_print` 删不掉？**那个判定是文本计数**，而它踩了两个坑：
+
+1. **描述符表那段注释里写着它的名字** ⇒ 计数看见一次"提及" ⇒ 等于"有人用" ⇒ 永不删。
+   **已修**（注释不再写出那个名字，并把这条陷阱写在旁边）；
+2. 它**自己函数体里有递归自调用** ⇒ 计数 ≥1。要裁掉它，必须像**函数**那样**按签名定位**
+   （`funcDefStart` / `DeadFunc`）—— 同一文件里的注释早就写着原因：*"the passes above rewrite the
+   inside of bodies, so the copy taken at generation time often no longer matches"*。
+
+我照"按文本登记成可裁剪片段"试了一版：`strstr` 找不到那份文本 ⇒ 走到"片段不在文本里 ⇒
+**保守保留一切**" ⇒ **白登记**（不生效却看着像做了事）。按仓库自己的规矩（*dead checks give false
+confidence*）**撤掉了**，属性暂时留作兜底，并把正确的下一步写在代码旁边：
+
+> **下一步**：把 `extc_print` 的定义**按签名**（proto 一行）注册进删除 pass，而不是按文本 ——
+> 照函数那条路走。做完之后属性就能去掉，运行时块真正做到"用了才发"。
+
+（本轮所有判据回到绿：`tests/coro` **35/35** · `tests/pool` **0 失败** · `tests/fstring` **9/9** ·
+`check.sh quick` **72/0**。）
+
+**第二十四刀（探路失败并自动回退）：`extc_print` 的"按签名注册"没那么简单 —— 但找到了缺的那条判据。**
+
+按计划的这一步做了三件事：① 把**按签名定位**挪到计数之前；② 把 `countGet(name) != 2` 换成
+"**排除定义正文与原型之后的**外部提及数 != 0"；③ 把 `extc_print`（proto = 它的签名行、
+body = 定义原文）注册进 `g->deadFuncs`。
+
+**结果：`tests/coro` 14/21** ✗ —— 新规则把**活函数**也删了 ⇒ 我的替换与原规则
+（`== 2`，即"原型 + 定义，别无提及"）**并不等价**。原规则的"2"来自 `counts` 表在
+**生成/改写正文的过程中**累积的书目，而"现场扫文本"与它不是同一个东西。
+命令里带了自动回退：`git checkout -- src/back/codegen.c` + 重建 ⇒ **coro 35/35 绿** ✓，
+树上没有半成品（这也是这一把唯一的正确做法）。
+
+**这次失败真正暴露的问题：缺一条判据。** 整件事（一个**自递归**且**没人调用**的函数该被删掉）
+**没有任何夹具覆盖** —— 所以我只能靠全语料去发现"删错了"，而"删不掉"则完全看不见。
+**下一轮的顺序必须是**：
+
+1. **先写判据**：一个自递归、没人调用的普通函数 ⇒ 生成物里必须没有它；再加一条反向（被调用 ⇒ 必须在）；
+2. 再改删除 pass，且**先把不变量写清**：`counts` 表里的 "2" 到底是谁的两处（原型 + 定义），
+   `countSpan(-1)` 在删函数时怎么把它减下去 —— 不弄清这个，任何"现场扫文本"的替换都是猜 ✗；
+3. 最后才轮到 `extc_print` 的按需发射（届时 `__attribute__((unused))` 可以去掉）。
