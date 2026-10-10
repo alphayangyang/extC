@@ -6,8 +6,7 @@
  *
  *   1. the user cannot reclaim what a container throws away  -> `remove` returns the
  *      slot to a free list, so the next `insert` reuses it: memory is O(live), not
- *      O(total inserts) -- the shape that used to grow without bound (measurement C
- *      in the plan) is flat here;
+ *      O(total inserts) -- the footprint follows the number of live values;
  *   2. the user cannot reuse memory                          -> same free list;
  *   3. pointer chasing kills SIMD                            -> values live in ONE
  *      contiguous array (`vals`, dense: the first `len` entries are the live ones),
@@ -83,8 +82,8 @@ struct pool<T> {
      *     live slot:  (gen << 32) | (dense + 1)          low half in [1, cap]
      *     free slot:  (gen << 32) | (next + cap + 2)     low half in [cap+1, 2cap+1]
      *   Live/free is one compare against `cap`; the generation survives a slot going free.
-     *   A handle access used to be **three dependent random loads** (sparse, gens, value);
-     *   it is two now, and the metadata per slot went 12 -> 8 bytes. */
+     *   A handle access is **two dependent random loads** (`ent`, then the value), and
+     *   the metadata is one 8-byte word per slot. */
     ent:    mut slice<i64>
     /* 运行期池（POOLS.md）：数据住它所在的 arena，池是 arena 旁边的那条旁链；
      * 随本容器一起创建，所在的地方退出时整条链一起走。release 之后为 -1。 */
@@ -384,9 +383,7 @@ struct pool<T> {
 
     /* ⭐ **Hot loops should not go through the container.** This hands out the dense prefix
      * as a `slice` **without copying**, so a loop over it compiles to exactly the same
-     * thing as a loop over a bare array (measured: 1.6 ns/element versus 4.0 through
-     * `atDense` -- 2.5x, which is the price of a method call and a bounds check per
-     * access, not of the data structure).
+     * thing as a loop over a bare array.
      *
      * It is the ECS shape: a system iterates a **column**, not the container.
      *
@@ -398,8 +395,8 @@ struct pool<T> {
      * growth, or after `clear`. */
     
     /* ⭐ **gather**: resolve a batch of handles into dense indices once, so the hot loop
-     * after it is plain index access through `atDense(i)` (measured 1.09x of a bare slice,
-     * against 9.1x for using handles as indices).
+     * after it is plain index access through `atDense(i)`, not a handle lookup per
+     * element.
      *
      * `out[i]` gets the dense index of `hs[i]`, or -1 when that handle is stale; the
      * return value is how many were valid (so a caller can compact or skip).
@@ -412,8 +409,8 @@ struct pool<T> {
     }
 
     /* ⭐ **gather**: resolve a batch of handles into dense indices once, so the hot loop
-     * after it is plain index access through `atDense(i)` (measured 1.09x of a bare slice,
-     * against 9.1x for using handles as indices).
+     * after it is plain index access through `atDense(i)`, not a handle lookup per
+     * element.
      *
      * `out[i]` gets the dense index of `hs[i]`, or -1 when that handle is stale; the
      * return value is how many were valid (so a caller can compact or skip).
@@ -450,8 +447,7 @@ struct pool<T> {
     }
 
     /* Grow by 1.5x, in place when the allocator can: the three blocks are OURS (the pool's
-     * plate), so the old ones do not linger -- that is what used to make this O(log n)
-     * bounded-waste instead of free. */
+     * plate), so growing returns the old blocks instead of leaving them behind. */
     fn grow(self: mut ref pool<T>) {
         if self.pid < i64(0) { return }
         let ncap = self.cap + self.cap / i64(2)

@@ -20,10 +20,8 @@
  *
  * ================================================================ why `reader` exists
  *
- * NOTE: **reading a byte at a time is a trap** (the old `readLine` did exactly
- * that). Measured on 19MB / 500,000 lines it took **2.30 s**, against
- * **0.012 s** for block reads, a factor of **190x**. The reason is not that
- * reading is slow: it is that **every single byte enters the kernel**.
+ * NOTE: **reading a byte at a time is a trap**: every single byte enters the kernel,
+ * which is why block reads are the shape used here.
  *
  * So `reader` is where the work happens. One `read(2)` brings back 64KB, and the
  * splitting then happens in memory. That is the sentence from
@@ -53,10 +51,9 @@
  * that cannot be seen is exactly what these three results are there to prevent.
  */
 /* ⚠️ The privileged layer is imported under a name that **cannot collide**: this file's
- * own module is `std::io`, whose short name is `io` too. Spelling a call `sysio::exit(..)`
- * inside `std::io` made the qualifier resolve to *this* file, and the generated C had
- * `io$exit` calling `io$exit` -- unbounded recursion with no diagnostic (measured: a
- * runtime trap, not a compile error). `sysio` is what `std::fs` uses for the same
+ * own module is `std::io`, whose short name is `io` too. A qualified call through that
+ * name resolves to *this* file, and the generated C calls `io$exit` from `io$exit` --
+ * unbounded recursion with no diagnostic. `sysio` is what `std::fs` uses for the same
  * reason. */
 use std::sys::io as sysio
 
@@ -68,12 +65,9 @@ type ioError = | readFailed(i32) | lineTooLong(i64) | writeFailed(i32) | notATer
                | closed(i32)        /* 用了一个已经关掉的句柄 —— 那是程序 bug，但**看得见** ✓ */
                | destFull(i64)      /* `readAll`：目标缓冲满了，而文件还有数据 ⇒ 不静默截断 ✗ */
 
-/* Block size: **64KB**, one of the sizes that measured fastest.
- * Measured on a 291MB file: 64B 0.62s/469MB/s (4.7 million syscalls) - 4KB
- * 0.05s/5820MB/s - **16KB and 64KB both 0.04s/7275MB/s** - 1MB 0.05s.
- * -> everything from 16KB up is flat, so 64KB it is, which also saves syscalls
- *    in protocol code that reads a few lines at a time.
- * -> this is why the 4KB in `docs/topics/IO.md` section 9 became 64KB. */
+/* Block size: **64KB**, the buffer `readerOf` and `writerOf` allocate. A buffered read or
+ * write moves at most this many bytes per syscall, which keeps the syscall count low in
+ * protocol code that reads a few lines at a time. */
 let BLK: i64 = 65536
 
 /* The largest `i64`, used by the overflow check in `nextInt`.
@@ -375,9 +369,9 @@ struct reader {
      * translating `\r\n` to `\n` while reading (PEP 278 universal newlines, the
      * `:crlf` PerlIO layer); nothing is translated here, the byte is simply dropped.
      *
-     * This used to keep the `\r`, so every reader of a CRLF file -- a file edited on
-     * Windows, which is the normal case under WSL -- saw a stray byte at the end of
-     * every line and a length one too high. Use `nextLineRaw` for the exact bytes.
+     * This drops the trailing `\r`, so a reader of a CRLF file -- a file edited on
+     * Windows, which is the normal case under WSL -- gets the line content without that
+     * byte counted in the returned length. Use `nextLineRaw` for the exact bytes.
      *
      * NOTE: a **lone** `\r` is not a line ending; every `\r` here is followed by a
      * `\n` or is the last byte of the file. A file whose lines end with `\r` alone

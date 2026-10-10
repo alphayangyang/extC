@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """Mechanical check: a hand-written `switch` that *walks* an AST node must handle every kind.
 
-Why this exists (measured, not theoretical):
+Why this exists:
   The walkers that ask "what is inside this expression / statement" are hand-written
   `switch` statements that end in `default:`. Because of that `default:`, `-Wswitch` stays
   silent when a new `ExprKind` is added, so the new kind is skipped by **all** of them.
-  That is exactly what happened twice:
-    * `EX_SLICE`'s two bounds were skipped by eight walkers at once (check_top.c documents it);
-    * `EX_DYN` (added with `dyn Trait`) was skipped by ten of them -- a parameter used only
-      inside a payload was reported as never used, and calls inside a payload were invisible
-      to the needsHome / allocator / effects / rewrite analyses.
+  That is the failure mode this gate watches for, and it catches whole classes at once:
+    * `EX_SLICE`'s two bounds must be handled by eight walkers at once (check_top.c documents it);
+    * `EX_DYN` (added with `dyn Trait`) must be handled by ten of them -- otherwise a
+      parameter used only inside a payload is reported as never used, and calls inside a
+      payload are invisible to the needsHome / allocator / effects / rewrite analyses.
 
 How a walker is recognised:
   Structurally: a `switch (<x>->kind)` whose body calls the function it sits in again
@@ -46,8 +46,7 @@ ALLOW = {
                          "without descending into expressions (its `ST_EXPR` case is a leaf too)",
 }
 # Count of recursive, untagged kind-walkers. Bump this down as they are migrated, never up.
-RATCHET = 23       # measured 2026-09-26 after migrating the `needsHome` pair as well.
-                   # Every migration lowers this; the gate refuses to let it grow.   # 2026-09-26: the four depth walkers were closed; nothing is allowed any more 
+RATCHET = 23       # Every migration lowers this; the gate refuses to let it grow.
 
 
 def enum_kinds(header: str, name: str) -> list:
@@ -91,8 +90,8 @@ def strip_comments_and_strings(text: str) -> str:
     """Blank out comments and string/char literals, keeping every offset intact.
 
     Brace counting over raw text is wrong the moment a comment or a format string contains a
-    brace, and the resulting block then swallowed the next switch (measured: a statement walker
-    was reported as missing every expression kind)."""
+    brace, and the resulting block then swallows the next switch (a statement walker
+    is reported as missing every expression kind)."""
     out = list(text)
     i, n = 0, len(text)
     while i < n:

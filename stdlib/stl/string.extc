@@ -206,14 +206,11 @@ struct string {
      * than reading past the buffer. */
     /* A substring: **a copy**.
      *
-     * This used to return `self.buf[a..b]` -- a zero-copy view into the pool plate. That cannot
-     * be defended: `push` / `append` grow the string by replacing the block (the old one goes
-     * back to the pool), so the view dangles the moment the string changes, and the checker
-     * cannot see it. It is the same shape `toSlice` above already documents, and POOLS.md 5.4
-     * states the rule: a view into a pool plate has nothing to lean on. Measured (that is what
-     * turned this from a suspicion into a bug): take `sub(0, 5)`, push 400 bytes, and the view
-     * reads freed memory -- printing looks fine without ASan, and it is `heap-use-after-free`
-     * with it (`tests/pool-soundness` case E1 was exactly this).
+     * A zero-copy view into the pool plate cannot be defended: `push` / `append` grow the
+     * string by replacing the block (the old one goes back to the pool), so the view dangles
+     * the moment the string changes, and the checker cannot see it. It is the same shape
+     * `toSlice` above already documents, and POOLS.md 5.4 states the rule: a view into a pool
+     * plate has nothing to lean on.
      *
      * The copy lands where the **caller** chose (`new` plus the escape analysis's home arena),
      * so the result may be stored and returned like any other value.
@@ -292,9 +289,9 @@ struct string {
     }
 
     /* `startsWith` / `endsWith` are one `memcmp` (through the runtime's integer door --
-     * `memcmp` itself cannot be declared in extC: `<string.h>` is included by the generated C
-     * and the C library's prototype (`const void *`, `size_t`) would collide with ours;
-     * measured: gcc answers `conflicting types for 'memcmp'`).
+     * `memcmp` itself cannot be declared in extC: its `const void *` / `size_t` parameters
+     * cannot be spelled here, so a hand-written declaration cannot agree with `<string.h>`,
+     * which the generated C includes).
      *
      * Both take a prefix/suffix view first, so the lengths on the two sides of the compare are
      * equal by construction: `subView(0, p.len)` clamps to `self.n`, and the `p.len > self.n`
@@ -447,8 +444,8 @@ struct string {
     fn release(self: mut ref string) {
         /* 内联：没有池可还（`pid` 可能是 0 —— 第一个池的 rid —— 所以这里**不能**看 pid）。 */
         if self.cap == i64(0) { return }
-        /* One staleness question, one place to ask it (`pStale`): the inline copy of this
-         * compare used to live here too, and two copies of a load-bearing check drift. */
+        /* One staleness question, one place to ask it (`pStale`): the comparison lives in
+         * exactly one place, and two copies of a load-bearing check would drift. */
         if self.pStale() {
             self.pPoison()      /* 陈旧拷贝：槽位已被别的池复用，什么都不许做 */
             return

@@ -27,12 +27,12 @@
 
 /* id -> node, and id -> result slot, as **tables of pointers to fixed blocks**.
  *
- * These used to be two arrays that grew with `realloc`, which is a latent bug with teeth:
+ * Growing these with `realloc` would be a latent bug with teeth:
  * `realloc` can move the array, so every `NodeResults *` handed out before the growth
  * dangles -- and the accessors do exactly the thing that walks into it ("read the old value,
  * then write the new one": `r->an.arenaSites = v`, where `v` was read out of `r`).
  *
- * Fixing it in the accessors was not an option: every one of them would have to re-look-up
+ * Fixing it in the accessors is not an option: every one of them would have to re-look-up
  * its slot after any operation that might grow the table, and "remember to re-look-up" is a
  * rule nobody keeps. A stable table makes the pointer valid for the life of the process,
  * which is what the rest of this file already assumes. */

@@ -2,14 +2,14 @@
 """C-aware scanning helpers for the repository's own checkers.
 
 Several checker scripts need the same three things: read C without being fooled by
-comments or string literals, find struct members, and tell a write from a read. They used
-to each carry their own copy; this module is the single one.
+comments or string literals, find struct members, and tell a write from a read. This module
+is their single copy.
 
 The stripping rule is the important part: comments and literals are replaced by spaces
-(keeping newlines), so byte offsets and line numbers stay valid. Every earlier version of
-these scanners that skipped this step produced false positives -- `e->func` inside a
+(keeping newlines), so byte offsets and line numbers stay valid. Skipping this step
+produces false positives -- `e->func` inside a
 comment, `a->top->used` inside a generated-C string literal, `d->name` where `d` was
-codegen's own descriptor -- and those false positives were reported as real findings.
+codegen's own descriptor -- and those false positives are reported as real findings.
 
 Note the deliberate difference from `tools/comment_neutral.py`, which answers a different
 question ("did this commit change code?"): that one **keeps** literals, because two
@@ -111,7 +111,7 @@ def span_of_struct(code: str, start: int):
 
 class Ratchet:
     """A baseline that may only shrink: every violation must be listed, and every listed
-    entry that no longer violates is reported as stale and makes the run fail.
+    entry whose violation is fixed is reported as stale and makes the run fail.
 
     The file format is `<key>\\t<reason>\\t<tracking>`, one per line, `#` for comments --
     the same shape the gate baselines use.
@@ -162,11 +162,10 @@ class Ratchet:
 def src_files(root, exts=(".c", ".h"), subdir="src"):
     """Every source file under `<root>/<subdir>`, **recursively**, sorted by path.
 
-    Why this exists: every tool here used to spell the discovery out itself
-    (a flat `glob` over `src/`), which was correct only while `src/` was flat.
-    When the tree grows subdirectories, a flat glob does not fail -- it finds **nothing**,
-    and a checker that scans nothing prints "ok". That is the failure mode this batch's
-    P3.0 preparation is about, so the discovery lives in one place and refuses to return an
+    Why this exists: a flat `glob` over `src/` reaches only the files at the top level.
+    Once the tree grows subdirectories it does not fail -- it finds **nothing**,
+    and a checker that scans nothing prints "ok". The discovery therefore lives in one place
+    and refuses to return an
     empty list: a tool that finds no sources must fail loudly, not report success.
     """
     base = os.path.join(root, subdir)
@@ -192,8 +191,8 @@ def rel(root, path):
 def src_file(root, name, subdir="src"):
     """The one source file called `name` anywhere under `<root>/<subdir>`.
 
-    Tools that need *a particular* file (`ast.h`, `plan.c`, `codegen.c`) used to spell the
-    path out. That breaks the moment the tree grows a level, and it breaks **loudly** -- but
+    Spelling the path out for *a particular* file (`ast.h`, `plan.c`, `codegen.c`) breaks
+    the moment the tree grows a level, and it breaks **loudly** -- but
     the point of this helper is that the path is a name, not a layout: the caller asks for
     `ast.h` and does not care which subdirectory it sits in. Two matches is an error (the
     caller wanted one file, and silently picking the first is how a checker ends up reading

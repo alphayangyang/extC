@@ -109,7 +109,7 @@ void ttRegister(TypeTable *tt, Module *m) {
 /* Return the single `void` type. */
 Type *ttVoid(TypeTable *tt)  { return tt->tVoid; }
 
-/* Return the error type used to suppress cascading diagnostics after a bad type. */
+/* Return the error type that suppresses cascading diagnostics after a bad type. */
 Type *ttError(TypeTable *tt) { return tt->tError; }
 
 /* Create (or reuse) the fixed-array type `[n]elem`.
@@ -251,7 +251,7 @@ Type *ttFromName(TypeTable *tt, const char *name) {
  * Notes:
  *   - A bare name exported by two imported modules is an error, never a pick: all
  *     matches are counted and the diagnostic asks for `module::Name`. Choosing the
- *     first match used to bind the wrong type silently - the program compiled and had
+ *     first match would bind the wrong type silently - the program compiles with
  *     the wrong type, which is worse than a rejection.
  */
 

@@ -539,8 +539,7 @@ static Type *refNotANumber(Checker *c, Expr *e, Type *lt, Type *rt, const char *
  * they hand out, for a column whose every slot is written before it is read (`map`'s four
  * stores, `vector`/`string`'s buffer, `hashMap`'s `keys`/`slot`/`bucketOfDense`). Zeroing
  * such a column is pure extra work: it writes bytes that are about to be overwritten and
- * commits pages that may never be used -- measured on `bench/stl` as -17.5% RSS for `map`,
- * -10.8% for `string`, -8.0% for `hashMap`, with byte-identical output. What must keep the
+ * commits pages that may never be used. What must keep the
  * zeroing: `hashMap`'s `tag` (an empty bucket IS zero), and `pool`'s own `ent` (its `pFree`
  * reads `low == 0` as free). `tests/pool/run.sh` pins the whole question with two canaries
  * (poisoned blocks must not change a program's output; memcheck must not report more
@@ -552,8 +551,7 @@ static Type *refNotANumber(Checker *c, Expr *e, Type *lt, Type *rt, const char *
  * reason `alloc` is a primitive rather than a library function.
  *
  * `poolResize` is the one `grow` uses, and the reason is the peak: take + copy + give holds
- * the old and the new block at the same time (measured 1.9x the live size), while resizing
- * in place stays near it.
+ * the old and the new block at the same time, while resizing in place stays near it.
  *
  * No arena level is recorded on purpose. This memory is not the arena's: the pool owns it,
  * and it goes back when the block is returned (`poolGive`) or when the pool is released. The
@@ -567,7 +565,7 @@ static Type *checkPoolPrim(Checker *c, Expr *e, Type *elem) {
      * It shares this door because the generator has to name the element type, exactly like the
      * pool primitives -- and there is no other way to write a bulk move in the language (a
      * loop pays the bounds check per element; the containers would also pay their stale-pool
-     * guard per element, which measured 1 cycle per byte in bench/app scenario C). */
+     * guard per element). */
     if (strcmp(nm, "copyInto") == 0) {
         if (e->u.gencall.args.len != 3) {
             ckError(c, e->line, NULL, "`copyInto` takes 3 arguments (the destination, the source,"
@@ -910,9 +908,9 @@ static Type *checkLambda(Checker *c, Expr *e) {
     }
     for (size_t i = 0; i < e->u.lambda.params.len; i++)
         *(Param **)vecPush(&cf->params) = *(Param **)vecAt(&e->u.lambda.params, i);
-    /* A declared function's signature is resolved before its body is checked; a synthesized one has
-     * to go through the same step or its parameter types stay the parser's raw nodes -- measured as
-     * "cannot apply `+` to `i64` and `i64`". */
+    /* A declared function's signature is resolved before its body is checked; a synthesized one
+     * goes through the same step, so its parameter types are resolved rather than left as the
+     * parser's raw nodes. */
     resolveSignature(c, cf);
     {   /* the signature the user wrote, for diagnostics: `fn(i64) -> i64` */
         Buf sig;
@@ -1269,10 +1267,9 @@ static Type *checkExprInner(Checker *c, Expr *e) {
 
     switch (e->kind) {
         case EX_INT:
-            /* The literal's own type is the smallest integer that holds it. It used to be i32
-             * unconditionally, so a value that does not fit was truncated silently wherever no
-             * context supplied a type -- an unannotated `let n = 5000000000` inside a generic body
-             * became 32-bit. SPEC §3.4 says only lossless widening is implicit and
+            /* The literal's own type is the smallest integer that holds it: `i32` when the value
+             * fits, `i64` otherwise, so an unannotated `let n = 5000000000` inside a generic body
+             * stays 64-bit. SPEC §3.4 says only lossless widening is implicit and
              * there is no implicit truncation; contexts that want another integer type still type
              * the literal themselves through `literalFits` / `adoptContextType`. */
             if (e->u.ival < -2147483648LL || e->u.ival > 2147483647LL) return c->tI64;
@@ -1954,10 +1951,10 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             Expr *op = e->u.ref.operand;
             Type *ot = checkExpr(c, op);
             /* Taking an address records that this binding's address has gone out. An alias
-             * may exist now, so a write through the binding can no longer be treated as the
-             * only write to that storage.
+             * may exist, so a write through the binding is not necessarily the only write to
+             * that storage.
              * The narrowing facts recorded for paths through it are dropped at the same
-             * time: `h.p` being non-null is no longer reliable. */
+             * time: with an alias possible, `h.p` being non-null cannot be relied on. */
             { Sym *rs = placeRoot(c, op); if (rs) { unNarrow(c, rs->cname); rs->addressed = true; } }
             if (ttIsError(ot)) return ttError(tt);
 
@@ -2443,10 +2440,8 @@ static Type *checkExprInner(Checker *c, Expr *e) {
              *
              * A buffer whose length is known only at run time -- reading a file of unknown
              * size, or the 64 KB the `reader` asks for -- is spelled `new T[n]`, which gives a
-             * `mut slice<T>`. There used to be a second primitive for exactly that,
-             * `allocSlice<T>(n)`, removed on 2026-09-24: it meant the same thing as `new T[n]`
-             * (same view, same level rules, same zeroed memory, plus a second `memset` the
-             * arena had already done), so it was a synonym with a weaker story (decision 81). */
+             * `mut slice<T>`. That is the only spelling: `allocSlice<T>(n)` is not a primitive,
+             * and using it reports the migration below. */
             bool isAlloc  = strcmp(e->u.gencall.name, "alloc") == 0;
             /* The pool primitives share this path for the same reason `alloc` does: the
              * library needs memory the compiler has to name the type of. */
@@ -2470,9 +2465,9 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     FuncDef *inst = funcInstance(c, tf, &targs, e->line);
                     /* `funcInstance` reports the limit it hit and returns NULL (type nesting past
                      * `TYPE_DEPTH_LIMIT`, or more than `FUNC_INST_LIMIT` instances). Dereferencing
-                     * that NULL is how the compiler used to crash *while reporting its own limit*
-                     * (`z<box<...65 deep...<i64>>>()` was a SIGSEGV, depths <= 64 were
-                     * a clean diagnostic). The error is already recorded; stop here. */
+                     * that NULL would crash the compiler *while reporting its own limit*
+                     * (`z<box<...65 deep...<i64>>>()`). The error is already recorded, so
+                     * stop here. */
                     if (!inst) return ttError(tt);
                     planSetUsed(inst, true);
                     planSetUsed(tf, true);
@@ -2593,21 +2588,18 @@ static Type *checkExprInner(Checker *c, Expr *e) {
              * sides have to use the same number: the checker compares block depths to decide
              * whether a reference may be stored here, and the generated C uses the block depth
              * to pick `__extc_a[k]`, which is released when the block ends.
-             * Hard-coding 1, as an earlier version did, makes `p` in
-             * `while { p = alloc<i32>(1) }` point at freed memory on the next iteration --
-             * measured, and exactly the dangling case this has to prevent.
+             * This has to be `c->scopes.len`, not a hard-coded 1: `p` in
+             * `while { p = alloc<i32>(1) }` would otherwise point at freed memory on the next
+             * iteration -- exactly the dangling case this has to prevent.
              * As a result, returning freshly allocated memory and storing loop-local allocations
              * outside the loop are both stopped by the escape check. To hand the memory out, the
              * caller has to supply the buffer or the arena. */
             /* The checker decides the level of an `alloc` site, and it has to use exactly the
              * rule `new` uses. The EX_NEW case above reads: a function with a home arena gives
              * `ARENA_HOME`, so the object goes into the arena the caller chose and outlives this
-             * frame; otherwise the level is the block level. An earlier version always used the
-             * block level, so an `alloc` in a function with a home arena counted as frame-local
-             * and returning it was rejected as `1 > 0`, while the same program written with `new`
-             * passed -- and the error text told the user to write `new`.
-             * Being symmetric with `new` removes that whole family of false rejections: a home
-             * arena gives `ARENA_HOME` and depth 0, "the level outside this frame". */
+             * frame; otherwise the level is the block level. Both sites therefore agree: a home
+             * arena gives `ARENA_HOME` and depth 0, "the level outside this frame", so returning
+             * an `alloc` from such a function is accepted exactly as returning a `new` is. */
             if (c->curFunc && anNeedsHome(c->curFunc)) {
                 planSetArenaLevel(e, ARENA_HOME);
                 anSetRefDepth(e, 0);
@@ -2731,11 +2723,10 @@ static Type *checkExprInner(Checker *c, Expr *e) {
              *   `r!` (`result<T,E>`)  -> the payload T
              *   `p!` (`?ref T`)       -> `ref T`, the "I know it is not null" form
              * Anything else is an error: a signature has to be written where it means something. */
-            /* No `priorFx` bookkeeping any more: it existed because the operand used to be
-             * computed into a **statement-prefix temporary**, which could run before an
-             * earlier call on the same line and could not live in a `while` condition. The
-             * codegen now passes the operand as the argument of a per-instance unwrap
-             * helper, so it is evaluated once, in place, in any expression position. */
+            /* This case needs no `priorFx` bookkeeping: codegen emits a helper call around the
+             * operand (`unwrapHelper` for `option`/`result`, `extc_refAssert` for `?ref T`), so
+             * it is evaluated once, in place, in any expression position -- including a `while`
+             * condition, where a statement-prefix temporary cannot live. */
             Type *ot = checkExpr(c, e->u.sign.operand);
             if (ttIsError(ot)) return ttError(tt);
             if (isProtoType(ot, "option", 1) || isProtoType(ot, "result", 2)) {
@@ -2915,18 +2906,15 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 return ttVoid(tt);
             }
 
-            /* `ownFd`/`closeFd` used to live here: the block owned the descriptor and
-             * closed it at the exit. Files are the program's business now (decision 79), so
-             * the compiler keeps no table of them -- `std::fs` closes with `close(2)`, which
-             * it declares as an `extern!`, and the handle's `open` flag makes a second close
-             * a no-op. What the compiler still does is *prove* a leak when it can: see the
-             * "opened and never closed" check in `check_top.c`. */
+            /* Files are the program's business (decision 79), so the compiler keeps no table
+             * of descriptors -- `std::fs` closes with `close(2)`, which it declares as an
+             * `extern!`, and the handle's `open` flag makes a second close a no-op. What the
+             * compiler does is *prove* a leak when it can: see the "opened and never closed"
+             * check in `check_top.c`. */
             if (strcmp(name, "print") == 0 || strcmp(name, "println") == 0) {
                 /* `print` / `println` are **deprecated** (2026-09-26). They are builtins
                  * dispatched by name, and they write through C's stdio - a second buffer
-                 * that `io::cout`'s cannot be ordered against. Measured: a program whose
-                 * last statement was `io::cout << "x"` printed nothing at all, and one that
-                 * mixed the two printed the `println` side first. `io::cout` is the one
+                 * that `io::cout`'s cannot be ordered against. `io::cout` is the one
                  * console path, and it is a stream over an `fd`, so it can grow a file, a
                  * pipe or a buffer later; a builtin name cannot.
                  *
@@ -2981,10 +2969,9 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 /* A bare enum constructor. The error has to point the way instead of saying
                  * only "no such function".
                  *
-                 * After `type shape = | circle(f64) | ...`, writing `circle(2.0)` used to report
-                 * `call to undefined function `circle`` plus "built-ins available:
-                 * print/println", from which nobody could tell that this is a variant and has to
-                 * be written with its type name.
+                 * After `type shape = | circle(f64) | ...`, writing `circle(2.0)` reports that
+                 * `circle` is a variant of `shape` and points to `shape.circle(...)`, rather than
+                 * the bare "built-ins available: print/println" that leaves the spelling unstated.
                  *
                  * No type inference happens here: writing the type out in full for an associated
                  * call is deliberate, because extC does not guess a type from context. The
@@ -3512,13 +3499,13 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                         FuncDef *cand = *(FuncDef **)vecAt(&tr->methods, i);
                         if (strcmp(cand->name, e->u.method.name) == 0) want = cand;
                     }
-                    /* Object safety, the half that was missing: a `dyn` call goes through the trait's
-                     * uniform table and hands the receiver to the thunk, so a method **without a
-                     * receiver** has no slot to sit in. `want->params.len == 0` used to reach code
-                     * generation, which indexed `params[0]` and crashed the compiler
-                     * (tools/attack.py dyn D2: `trait Bad { fn nope() -> i64 }` + `d.nope()` --
-                     * SIGSEGV in genMethodCall, codegen.c:1803). The `Self`-returning case was
-                     * already refused; this is the same rule. */
+                    /* Object safety: a `dyn` call goes through the trait's uniform table and hands
+                     * the receiver to the thunk, so a method **without a receiver** has no slot to
+                     * sit in. `want->params.len == 0` is refused here, the same rule the
+                     * `Self`-returning case follows, so the diagnostic can name the trait method
+                     * instead of leaving the call to code generation, which is written around a
+                     * `params[0]` receiver (tools/attack.py dyn D2:
+                     * `trait Bad { fn nope() -> i64 }` + `d.nope()`). */
                     if (want && want->params.len == 0) {
                         ckError(c, e->line,
                                 "A `dyn` value dispatches through the trait's uniform table, and that"
@@ -3725,11 +3712,9 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     FuncDef *cand = *(FuncDef **)vecAt(&tr->methods, ti);
                     if (strcmp(cand->name, e->u.method.name) == 0) want = cand;
                 }
-                /* Object safety. These three are FATAL on purpose: a trait method with no
-                 * receiver makes `f->params` empty, and the receiver checks below read
-                 * `params[0]`. Reporting and carrying on used to segfault the compiler
-                 * (`dyn Tag(b).zero()` with a `fn zero()` in the trait: exit 139, no
-                 * diagnostic at all). */
+                /* Object safety. These three are FATAL on purpose: a `dyn` call dispatches
+                 * through a uniform table whose every entry receives a `self`, so a trait method
+                 * with no receiver (an empty `f->params`) has no slot to sit in. */
                 bool objSafeBad = false;
                 if (want && !funcIsMethod(want)) {
                     ckError(c, e->line,
@@ -3936,11 +3921,9 @@ static Type *checkExprInner(Checker *c, Expr *e) {
              *
              * A written name goes through `ttResolve` with the current context, exactly the way a
              * type annotation does, so a name the module system mangles (`box` -> `box$box`)
-             * resolves as written. The context-free `ttFromName` used to be called here, which
-             * sees only the entry file's structs: a **named** literal inside a module was
-             * `unknown struct` while the very same literal written as an annotated `var` worked
-             * . The message for a name that really is unknown comes from `ttResolve`,
-             * which also reports the ambiguous case (`pair` exported by two modules). */
+             * resolves as written. The message for a name that really is unknown comes from
+             * `ttResolve`, which also reports the ambiguous case (`pair` exported by two
+             * modules). */
             Type *st = e->type;
             if (e->u.lit.name) {
                 st = ttResolve(tt, c->ctx, typeNamed(c->arena, e->u.lit.name), e->line, c->curParams);
@@ -4217,11 +4200,10 @@ static bool callIsEffectful(Checker *c, FuncDef *f) {
  *   True when an effectful call appears anywhere inside, at any depth.
  *
  * Notes:
- *   - This used to `break` out of the switch instead of returning, which dropped control to the
- *     end of the function and returned an indeterminate value: undefined behaviour in the
- *     compiler itself, and `-Wreturn-type` had been reporting it. The consequence was that a
- *     call known to be free of side effects, `pure(x)`, made the answer garbage, so the "an
- *     earlier call is still in place" test fired only sometimes.
+ *   - Every arm of the switch returns a value and `default:` answers `false`, so the walk
+ *     always yields a definite answer: a call known to be free of side effects, `pure(x)`,
+ *     is reported as having none, so the "an earlier call is still in place" test is decided
+ *     by the expression rather than by an indeterminate result.
  */
 /* Does this expression contain a **call**, whatever the effect summary says?
  *

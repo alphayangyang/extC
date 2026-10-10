@@ -3,12 +3,12 @@
 
 Why a module and not four copies: every gate needs the same three things -- the corpus
 definition, "generate C for this file", and "compile that C and tell me what went wrong".
-When the four gates each carried their own copy, the notion of "which warnings count"
-drifted between them, and a gate that counts the wrong warnings is worse than no gate.
+Four separate copies drift on the notion of "which warnings count", and a gate that counts
+the wrong warnings is worse than no gate.
 
 The allowlists exist for one reason: the gates must be **green by baseline** so that any
-*new* failure is red. Each allowlist entry is `key<TAB>reason<TAB>tracking`; an entry that
-no longer fails is reported as STALE and must be deleted (the ratchet only turns one way).
+*new* failure is red. Each allowlist entry is `key<TAB>reason<TAB>tracking`; an entry whose
+failure is fixed is reported as STALE and must be deleted (the ratchet only turns one way).
 """
 import json
 import os
@@ -95,8 +95,8 @@ def run(cmd, timeout=120, cwd=None, env=None, mem_mb=0):
     """
     # The command runs in its own process group, and a timeout kills that group. A gate
     # that times out must not leave anything running: `extc --run` forks the compiled
-    # program, so killing only the compiler left one orphan per timed-out case spinning at
-    # 100% CPU (measured 2026-10-02: two of them ran for over half an hour).
+    # program, so killing only the compiler leaves one orphan per timed-out case spinning at
+    # 100% CPU.
     try:
         p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                              text=True, cwd=cwd or ROOT, env=env,

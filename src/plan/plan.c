@@ -208,9 +208,9 @@ const char *planInstName(const FuncDef *f) {
  * A call site inside a generic body is **one node shared by every instance** of that
  * body: `wrap<T>` with two type arguments has one `pick(x)` node, and the instance that
  * callee resolves to depends on which `wrap` is being emitted. Keeping a single pointer
- * on the node means the last resolution wins -- measured: with `wrap<i32>` and
- * `wrap<meter>` both emitted functions called the same `pick_*`, the other instance was
- * never emitted at all, and the generated C did not compile.
+ * on the node means the last resolution wins: with `wrap<i32>` and
+ * `wrap<meter>`, both emitted functions call the same `pick_*`, the other instance is
+ * never emitted at all, and the generated C does not compile.
  *
  * So the deferred-call fixpoint records one entry per (call site, enclosing instance),
  * and code generation asks for the entry of the body it is emitting: `planEnterFunc` for
@@ -257,17 +257,16 @@ void planSetCallee(Expr *e, FuncDef *callee) {
     }
 }
 
-/* Was this function called? Storage is the plan side table (it used to be `FuncDef.used`).
+/* Was this function called? Storage is the plan side table.
  * The default is false: a function nothing recorded a call for is not emitted, which is the
  * safe direction -- a missing call site would otherwise emit a body nothing references. */
 /* The C name a binding is emitted under. The checker decides it while binding a name to
- * its declaration (a `Sym`); code generation prints it. Storage is the plan side table; it
- * used to be `Expr.u.ident.cname` and `Stmt.u.var.cname`.
+ * its declaration (a `Sym`); code generation prints it. Storage is the plan side table.
  *
  * **Not for `Param`**: a parameter keeps its own field, because a `Param` is stored by
  * value (the coroutine frame copies them) and a table addressed by node pointer cannot
- * follow a copy. Measured: putting it here made every coroutine entry function lose its
- * parameter identifier and the generated C stopped compiling. */
+ * follow a copy. Putting it here makes every coroutine entry function lose its
+ * parameter identifier and the generated C stop compiling. */
 const char *planCName(const void *node) {
     NodeResults *r = resultsOf(node, false);
     if (!r || !resultsBit(r, PLAN_CNAME)) return NULL;
@@ -665,8 +664,8 @@ PLAN_SET(planSetCallViaFn, bool, callViaFn, PLAN_CALL_VIA_FN)
 
 /* `storedAt` is the one field of this group whose **unset value is not the type's zero**:
  * "has this value been seen being published?" is answered `-1` (not yet) or a level `>= 0`
- * (the level it was published at), and `0` is a real answer. It used to be seeded by
- * `exprNew` -- which made the AST constructor reach into the plan's storage, an upward edge
+ * (the level it was published at), and `0` is a real answer. Seeding it from `exprNew`
+ * would make the AST constructor reach into the plan's storage, an upward edge
  * from `ast.c` (layer 1) to `plan.c` (layer 3). The default belongs to the reader, not to
  * the constructor: a node nothing has published is "not yet published", always. */
 #define AN_STORED_AT_GET(fn)                                               \
@@ -711,9 +710,9 @@ AN_D_SET(anSetLexicalLevel, lexicalLevel, AN_LEXICAL_LEVEL)
 
 /* ---- call-site markers (T4, third family) -------------------------------------------
  *
- * Three builtin forms have no `Expr.func` to recognise them by -- measured: an assoc
- * builtin call and a body-less declaration both reached code generation with a NULL
- * callee, so keying on the callee could never fire. Each gets its own marker, written by
+ * Three builtin forms have no `Expr.func` to recognise them by: an assoc
+ * builtin call and a body-less declaration reach code generation with a NULL
+ * callee, so keying on the callee can never fire. Each gets its own marker, written by
  * the checker at the call site and read by code generation. */
 
 FuncDef *planParWorker(const Expr *e) {

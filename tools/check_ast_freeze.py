@@ -22,7 +22,7 @@ side table is for), and counting them would make the number grow as the code get
 
 Known limitation (stated, not hidden): the scan is textual, so a write through a base the
 scanner cannot type (`s->name` where `s` is a local descriptor) can still appear. The
-baseline is therefore a **direction indicator with a measured phase**: P2 of the plan is
+baseline is therefore a **direction indicator that only shrinks**: P2 of the plan is
 where the field set is reduced to zero, and each removal is verified by the compiler (a
 deleted field makes every remaining direct use a compile error).
 

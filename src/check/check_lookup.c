@@ -283,8 +283,8 @@ Sym *lookup(Checker *c, const char *name) {
 /* Turn a mangled function name into the name the user wrote: `pair$make` becomes
  * `pair::make`, while a name from the root module is returned unchanged.
  *
- * The effect dump used to print `f->name` directly, so debug output was full of internal
- * encodings. Keeping mangled names out of diagnostics is the same rule.
+ * `FN(f)` routes every printed function name through this, so diagnostics and debug
+ * dumps never show the internal encoding.
  *
  * Params:
  *   name    - the mangled name, or NULL
@@ -462,7 +462,7 @@ Type *payloadType(TypeTable *tt, Type *et, Variant *v, size_t k) {
  * into a dangling reference.
  *
  * Params:
- *   tt - type table, used to substitute the arguments of a generic instance
+ *   tt - type table that substitutes the arguments of a generic instance
  *   t  - the type to inspect; NULL carries no reference
  *
  * Returns:
@@ -584,7 +584,7 @@ static bool typeContainsFnAt(TypeTable *tt, Type *t, int depth) {
  * `| holding(slice<u8>) | nothing` cannot.
  *
  * Params:
- *   tt - type table, used to substitute the arguments of a generic instance
+ *   tt - type table that substitutes the arguments of a generic instance
  *   t  - the type to inspect
  *
  * Returns:

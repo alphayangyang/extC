@@ -5,8 +5,8 @@ What it catches
 ---------------
 A call site inside a generic body is **one AST node shared by every instance** of that
 body, and the checker resolves it once per instance while walking the instantiation
-fixpoint. With one pointer per node, only the last resolution survives (measured
-2026-10-02): for two instances, both emitted functions call the *same* callee and the
+fixpoint. With one pointer per node, only the last resolution survives: for two instances,
+both emitted functions call the *same* callee and the
 other instance is never emitted at all. The generated C stays legal C when the two
 instances happen to be interchangeable, so neither "does it compile" (gate 1) nor "does
 it run clean" (gate 2) nor "same answer as C" (gate 3) can see it. This gate asks the

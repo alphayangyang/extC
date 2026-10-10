@@ -327,7 +327,7 @@ int valDepthStructural(Checker *c, Expr *e) {
  *   - Do not reduce this to inspecting the type node the user wrote: for an aggregate
  *     whose field type is itself a reference, the shallow check answers false, so the
  *     whole type must be examined (it recurses into fields and payloads).
- *   - The answer is only ever used to *drop* a requirement, so it can turn a false
+ *   - The answer only ever *drops* a requirement, so it can turn a false
  *     rejection into an acceptance, never the other way round.
  */
 static bool typeCannotCarryRef(Checker *c, Expr *e) {
@@ -353,9 +353,8 @@ static bool typeCannotCarryRef(Checker *c, Expr *e) {
  *
  * Taking the structural bound here would require the `new` site to live as long as
  * the caller's frame, so every iteration would allocate into the caller's home arena
- * and nothing would be reclaimed until the frame ended (measured: a 200k-iteration
- * loop grows to 98 MB instead of 1 MB). The container holds a copy of the bytes, so
- * where `it` points and how long it lives are irrelevant.
+ * and nothing would be reclaimed until the frame ended. The container holds a copy of
+ * the bytes, so where `it` points and how long it lives are irrelevant.
  *
  * Params:
  *    c - checker
@@ -552,11 +551,12 @@ int targetDepth(Checker *c, Expr *e) {
          * return a reference to one of its own locals -- its own return check rejects that --
          * so there is no third source.
          *
-         * Answering 0 here used to be wrong:
+         * The maximum is what makes a callee that returns a reference argument unsafe to
+         * ignore:
          *     fn identity(r: ref i32) -> ref i32 { return r }
          *     fn bad() -> ref i32 { var x: i32 = 5  return identity(ref x) }
-         * which compiled and printed 0, a dangling reference. Now max(argument) = 1 > 0, so it
-         * is a compile error.
+         * Answering 0 would accept this and print 0, a dangling reference; max(argument) = 1 > 0
+         * makes it a compile error.
          */
         for (size_t i = 0; i < e->u.call.args.len; i++)
             d = maxInt(d, targetDepth(c, *(Expr **)vecAt(&e->u.call.args, i)));
@@ -1047,7 +1047,7 @@ void recordLvlRejection(Checker *c, Expr *val, int at, int depth, int line) {
  *
  * The report stays where the check put it -- this only measures whether the settled
  * numbers agree. Keeping the two apart is what makes the question answerable: reporting
- * from here alone was measured to lose rejections, because the check's reader and this
+ * from here alone would lose rejections, because the check's reader and this
  * one do not always see the same number.
  *
  * Params:
@@ -1177,9 +1177,7 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
 
     /* `EX_GENCALL` is `alloc<T>(n)`. It is exactly symmetric with `new`:
      * the same level rules apply and it is registered in the same site table, so the
-     * promotion rules have to be symmetric as well. It used to fall into the default case as
-     * "cannot be promoted", which left the whole family of "return a block of `alloc`ed
-     * memory" unpromotable and therefore falsely rejected. */
+     * promotion rules are symmetric as well: this case handles both. */
     case EX_NEW:
     case EX_GENCALL: {
         /* A destination depth of 0 means "the caller's level", the home arena. Only a function
@@ -1249,19 +1247,17 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
          * depth is recorded into `Sym.refDepth` when the binding is initialized (see
          * the handling of a call as an initializer in `check_stmt.c`), and that
          * record is the authority here. */
-        /* This case must no longer return early.
+        /* This case must not return early.
          *
-         * The old predicate said "the slot lives long enough, so no promotion is needed". That is
-         * true for promotion, but `promoteInto` is also the only entry point for level facts, so
-         * an early return leaves the site with no constraint at all, and the final pass puts it
-         * back at its lexical level as if nothing had ever touched it.
-         *
-         * Measured on `fn build` in `examples/escape-promotion`: the site of
-         * `var head = new node` kept `minAt = -1`, was put back at level 1, and was released as
-         * soon as `build` returned, so the caller held a freed list (the generated C changed from
-         * `&(*__extc_home)` to `&__extc_a[1]`). Now the walk always descends, purely to record the
-         * facts, while the return value still answers "nothing to change" under the old
-         * predicate. */
+         * "The slot lives long enough, so no promotion is needed" is true for promotion, but
+         * `promoteInto` is also the only entry point for level facts, so an early return would
+         * leave the site with no constraint at all, and the final pass would put it back at its
+         * lexical level as if nothing had ever touched it -- the site of `var head = new node` in
+         * `fn build` (`examples/escape-promotion`) would keep `minAt = -1`, be put back at level
+         * 1, and be released as soon as `build` returned, leaving the caller a freed list. The
+         * walk therefore always descends, purely to record the facts, while the return value
+         * still answers "nothing to change" when the slot is deep enough
+         * (`slotDeepEnough` below). */
         bool slotDeepEnough = (sy->depth <= at);
         /* The origin is already the flattened root (see `noteOrigin`), so the chain
          * here is at most one step long and no binding is looked up twice. */
@@ -1535,8 +1531,8 @@ bool checkStoreEscape(Checker *c, Expr *val, Expr *target, int line) {
      * of "which container the callee will store into" cannot express, so the store stays
      * rejected. `tests/errors/escape_stash_borrowed.extc` caught exactly this hole.
      *
-     * Conversely, a call at the same level is now legal. It was always safe -- the two die
-     * together -- but a blanket rule used to reject it along with everything else. */
+     * Conversely, a call at the same level is legal: the call and the destination die
+     * together, so the store is safe. */
     bool destIsParam = false;
     if (target) {
         const char *droot = placeRootName(target);
@@ -1704,11 +1700,12 @@ bool checkEscape(Checker *c, Expr *val, int at, int line, const char *what) {
          *
          * `promoteInto` is the only entry point for level facts, and this branch returns early,
          * so every place that returns or passes a value whose type mentions `T` would get no
-         * constraint at all. Measured on `varArray<T>::withCap`: `return v` takes this branch,
-         * so the `new T[cap]` inside it gets no fact (`minAt = -1`), the final pass puts it back
-         * at the block level as if nothing had touched it, and the return value requires it to
-         * live beyond the frame. The instance check then reports "depth 1, but this can only
-         * hold up to 0", a whole family of false rejections.
+         * constraint at all. Without the promote below, `varArray<T>::withCap`'s `return v`
+         * (which takes this branch) would leave the `new T[cap]` inside it with no fact
+         * (`minAt = -1`); the final pass would put it back at the block level as if nothing had
+         * touched it, while the return value requires it to live beyond the frame. The instance
+         * check then reports "depth 1, but this can only hold up to 0", a whole family of false
+         * rejections.
          *
          * Promoting now is sound because the level does not depend on what `T` is: "this
          * storage has to live until level k" is the same statement for `T = i64` and for
@@ -1726,10 +1723,11 @@ bool checkEscape(Checker *c, Expr *val, int at, int line, const char *what) {
      * level facts, and the `d <= at` test below returns early, so as soon as the depth looks
      * shallow enough the site ends up with no constraint at all.
      *
-     * Measured on `examples/escape-promotion`: on `return head`, `targetDepth(head)`
-     * answers 0 first because the `refDepth` on that `EX_IDENT` node has not been filled
-     * in yet, so the check returns early, the `new node` site keeps `minAt = -1`, the final
-     * pass puts it back at its lexical level, and the caller receives a freed list.
+     * Without that order, on `return head` in `examples/escape-promotion`,
+     * `targetDepth(head)` answers 0 first because the `refDepth` on that `EX_IDENT` node has
+     * not been filled in yet, so the check returns early, the `new node` site keeps
+     * `minAt = -1`, the final pass puts it back at its lexical level, and the caller receives
+     * a freed list.
      *
      * The order is therefore record the facts first and compare depths second; the
      * predicate itself is unchanged. */
@@ -1830,10 +1828,9 @@ bool pathHasReadonlyRef(Expr *e) {
         if (x->type && x->type->kind == TY_REF && !x->type->mut) return true;
         /* An explicit crossing, as in `(*p).f` or `(*p).f.g`.
          *
-         * The older implementation stopped at `EX_DEREF`, but a dereference has the type of the
-         * pointed-at object rather than a reference type, so the mutability of that reference
-         * was never tested and a write through a read-only reference was let through entirely.
-         * Measured: `fn g(p: ref node) { (*p).val = 7 }` compiled. */
+         * A dereference has the type of the pointed-at object rather than a reference type,
+         * so the mutability of that reference has to be tested on the operand: without that
+         * test, `fn g(p: ref node) { (*p).val = 7 }` compiles. */
         if (x->kind == EX_DEREF) {
             Type *ot = x->u.deref.operand->type;
             if (ot && ot->kind == TY_REF && !ot->mut) return true;
@@ -1947,11 +1944,10 @@ Type *viewElemOf(Type *t) {
 
 /* Check the signature of an operator method at its definition site.
  *
- * The signature used to be checked only at the use site, and that caused two problems:
- * a `fn !=` with a wrong signature that happened to be unused was never checked at all,
- * and a generic `a != b` deferred to instantiation let codegen find a `void`-returning
- * `!=` and hand the user C's own "invalid use of void expression". Checking at the
- * definition makes every path of use safe.
+ * Checking at the definition makes every path of use safe: a `fn !=` with a wrong
+ * signature is reported even when it is unused, and a generic `a != b` is settled before
+ * instantiation, where codegen could otherwise find a `void`-returning `!=` and hand the
+ * user C's own "invalid use of void expression".
  *
  * Params:
  *   c - checker
@@ -2397,10 +2393,10 @@ Type *checkTryInner(Checker *c, Expr *e) {
      * declare a `result` to use `?`, because there the failure has somewhere to go. */
     if (c->curFunc && !c->curFunc->owner && c->curFunc->name &&
         strcmp(c->curFunc->name, "main") == 0 &&
-        /* ...and only when the operand really carries a payload. `5?` inside `main` used to
-         * reach `vecAt(&ob->targs, 0)` with an empty list and take the compiler down with a
-         * SIGSEGV (found by tools/fuzz.py in five lines: `fn main() -> i32 { let x = 5?`).
-         * Without the guard the ordinary path below reports the honest
+        /* ...and only when the operand really carries a payload. `5?` inside `main` has no
+         * payload, so without this guard `vecAt(&ob->targs, 0)` would read an empty list and
+         * take the compiler down with a SIGSEGV (`fn main() -> i32 { let x = 5? }`). The guard
+         * lets the ordinary path below report the honest
          * "`?` needs an `option<...>` or `result<...>`" instead. */
         ob && ob->targs.len > 0) {
         Type *payloadM = *(Type **)vecAt(&ob->targs, 0);
@@ -2482,10 +2478,11 @@ mismatch:
  */
 static int targetDepthPure(Checker *c, Expr *e, int hops, Expr **seen) {
     if (!e) return 0;                 /* nothing to ask about: 0 is the honest answer */
-    /* The budget and the cycle guard are **fallbacks**, and both used to answer `0` -- the value
-     * whose meaning is "lives the longest" -- so exhausting either of them pointed the
-     * conservative direction backwards (is the same family). They are supposed never
-     * to be reached in a real program; a debug build must find out if that is true. */
+    /* The budget and the cycle guard are **fallbacks**, and both answer `DEPTH_UNKNOWN`, not
+     * `0`: `0` means "lives the longest" and would point the conservative direction backwards,
+     * while `DEPTH_UNKNOWN` means "cannot prove this lives long enough", which the comparison
+     * side treats as a rejection. They are supposed never to be reached in a real program; a
+     * debug build must find out if that is true. */
     if (hops >= 40) { EXTC_DBG_FALLBACK("targetDepthPure: recursion budget (40) exhausted"); return DEPTH_UNKNOWN; }
     for (int i = 0; i < hops; i++)
         if (seen[i] == e) { EXTC_DBG_FALLBACK("targetDepthPure: origin cycle"); return DEPTH_UNKNOWN; }

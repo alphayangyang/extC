@@ -434,8 +434,8 @@ struct Expr {
      * than a type of its own. The parser sets it and refuses to let it be stored; codegen reads
      * it to dispatch through the table instead of calling the implementation directly. */
     const char *dynTrait;
-    /* `r.tag()` where `r: ref dyn Tag`: the checker unwraps the reference to find the trait, so
-     * codegen can no longer see it from the node's type. The C expression is then a **pointer** to
+    /* `r.tag()` where `r: ref dyn Tag`: the checker unwraps the reference to find the trait, which
+     * the node's type does not show. The C expression is then a **pointer** to
      * the handle while `extc_dyn_slot` takes the handle by value, so codegen has to dereference --
      * this flag is what tells it. */
     /* `f(x)` where `f` is a **value** of function type and not a declaration: the call goes through

@@ -51,10 +51,9 @@ struct map<K, V> {
      * `id * 17`, the 17 value slots at the same offset, and the 18 child slots at `id * 18`.
      * Nodes therefore never allocate -- a node is carved out of storage that already exists.
      * That is not only faster (one allocation per doubling instead of one per node): an
-     * allocation inside `put`'s split loop lands in the ARENA OF THAT LOOP BODY and is freed the
-     * moment the iteration ends, so a freshly split node used to dangle (the stress case caught
-     * it as a heap-use-after-free under ASan). Storage that is allocated once, at the top level of
-     * `withCap` / `growStores`, has the map's own lifetime. */
+     * allocation inside `put`'s split loop would land in the ARENA OF THAT LOOP BODY and be freed
+     * the moment the iteration ends, so a freshly split node would dangle. Storage that is
+     * allocated once, at the top level of `withCap` / `growStores`, has the map's own lifetime. */
     keys:   mut slice<K>
     vals:   mut slice<V>
     kids:   mut slice<i32>
@@ -734,8 +733,8 @@ struct map<K, V> {
 
     fn release(self: mut ref map<K, V>) {
         if self.pid < i64(0) { return }
-        /* One staleness question, one place to ask it (`pStale`): the inline copy of this
-         * compare used to live here too, and two copies of a load-bearing check drift. */
+        /* One staleness question, one place to ask it (`pStale`): the comparison lives in
+         * exactly one place, and two copies of a load-bearing check would drift. */
         if self.pStale() {
             self.pid = i64(-1)
             return

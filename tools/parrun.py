@@ -41,9 +41,8 @@ def sh(cmd, timeout=120):
     """Run one command, merge stderr into stdout, and never raise.
 
     The command runs in its **own process group**, and a timeout kills the whole group.
-    `extc --run` forks the compiled program, so killing only `extc` used to leave that
-    program behind: two of them spun at 100% CPU for over half an hour after a `--run`
-    case timed out (measured 2026-10-02), one orphan per timed-out case. A hanging case
+    `extc --run` forks the compiled program, so killing only `extc` leaves that
+    program behind as one orphan per timed-out case, spinning at 100% CPU. A hanging case
     must not outlive the test run.
     """
     try:
@@ -67,8 +66,8 @@ def reap_orphans():
     """Report and kill compiled test programs still running from this directory.
 
     A case that hangs must not outlive the run: `extc --run` forks the compiled program,
-    and before the process-group kill was added, a timed-out case left that program
-    spinning forever (measured 2026-10-02: two orphans, 31 and 34 minutes of 100% CPU).
+    so a timed-out case leaves that program spinning forever when only the compiler is
+    killed, one orphan per case.
     Anything matched here is by definition a leak, so it is killed and named.
     """
     import signal

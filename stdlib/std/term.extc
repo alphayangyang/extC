@@ -21,10 +21,8 @@ use std::sys::term as sys
  * ⭐ **A trap in raw mode gives the terminal back** (decision 80): `raw()` hands the
  * settings it found to the runtime as well (`extc_raw_enter`), and the runtime's trap
  * path calls them back through a dying hook before `exit`. That is the only code still
- * running at that point -- this type, this frame, are already gone. Measured with
- * `strace`: a program that traps in raw mode issues a second `TCSETS` carrying the
- * original (cooked) flags, and the program never called `close()`.
- * `tests/io/raw-trap.extc` is that measurement. */
+ * running at that point -- this type, this frame, are already gone.
+ * `tests/io/raw-trap.extc` covers that path. */
 struct terminal {
     fd:     i32
     saved:  [128]u8         /* opaque: `struct termios` **as it was**, untouched by extC */
@@ -35,10 +33,8 @@ struct terminal {
      *
      * ⚠️ Two buffers, and that is not tidiness: `cfmakeraw` modifies the buffer **in
      * place**, so deriving raw settings in `saved` would leave nothing to restore --
-     * `restore()` would put *raw* back, and the terminal would stay broken. Measured on a
-     * PTY: with one buffer the settings after `close()` were byte-for-byte the raw ones.
-     * (`tests/io/raw-mode.extc` compares the bytes now, instead of trusting the return
-     * value -- it used to pass while this was wrong.)
+     * `restore()` would put *raw* back, and the terminal would stay broken.
+     * (`tests/io/raw-mode.extc` compares the bytes instead of trusting the return value.)
      *
      * A `failure` is the normal answer when the descriptor is not a terminal (a pipe, a
      * file, a CI runner with no tty): `tcgetattr` returns -1 there, and that is a

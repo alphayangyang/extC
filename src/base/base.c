@@ -277,7 +277,7 @@ void bufPuts(Buf *b, const char *s) {
  *   ... - arguments for fmt
  *
  * Notes:
- *   - The length is measured first and the text written by a second vsnprintf from
+ *   - The length is computed first and the text written by a second vsnprintf from
  *     a va_copy, because a va_list cannot be walked twice.
  *   - vsnprintf is handed n + 1 bytes: it writes the terminator into the spare byte
  *     that bufReserve keeps past the capacity. That byte is outside `len`, so the

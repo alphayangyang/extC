@@ -43,9 +43,9 @@ typedef struct {
 /* The compiler's nesting budget for blocks and expressions.
  *
  * The parser, the checker, the dataflow helper and the emitter all recurse once per nesting level,
- * and C's stack is finite: 16000 nested parentheses and 1000 nested blocks used to take the whole
- * process down with SIGSEGV () -- no diagnostic, and the driver could not tell "too
- * deep" from "crashed". Measured thresholds for **block** nesting, where the frames are fattest:
+ * and C's stack is finite: 16000 nested parentheses and 1000 nested blocks take the whole
+ * process down with SIGSEGV -- no diagnostic, and the driver cannot tell "too
+ * deep" from "crashed". Crash thresholds for **block** nesting, where the frames are fattest:
  *
  *     release build (`-O1`)          crashes at ~250 levels
  *     sanitizer build (ASan+UBSan)   crashes at ~96 levels
@@ -1396,9 +1396,9 @@ static bool startsUpper(const char *s) { return s[0] >= 'A' && s[0] <= 'Z'; }
  * Notes:
  *   - Type names are camelCase and type parameters start uppercase, so the two
  *     sets are disjoint and a type parameter can never collide with a type name.
- *     That used to be a convention only, and `struct T` beside `struct box<T>`
- *     compiled happily -- the inner T shadowed the outer one.  Code that
- *     compiles but cannot be read is a design bug, so the rule is enforced here.
+ *     Enforcing the rule here is what rules out `struct T` beside `struct box<T>`:
+ *     there the inner T shadows the outer one, and code that compiles but cannot
+ *     be read is a design bug.
  */
 static Token *expectTypeName(Parser *p, const char *what) {
     Token *t = expectIdent(p, what);
@@ -1672,8 +1672,8 @@ static FuncDef *parseFunc(Parser *p) {
      * clause such as `owned`; here it must follow the signature directly.) */
     if (p->noBody) {
         /* The helper starts at the `effects` keyword and takes it, so the guard has to be here:
-         * an unconditional call ate whatever token came next (measured: `stdlib/std/sys/io.extc`
-         * came apart at `expected '='`, and 224 golden products changed). */
+         * an unconditional call eats whatever token comes next (`stdlib/std/sys/io.extc`
+         * then comes apart at `expected '='`). */
         skipJunk(p);
         if (at(p, "effects") && !parseEffectsClause(p, fd, NULL)) return NULL;
         return fd;
@@ -2528,7 +2528,7 @@ static Stmt *parseFor(Parser *p) {
     viewDecl->u.var.mut  = false;               /* the view itself is never rebound */
     viewDecl->u.var.overwrite = false;
 
-    /* `i64(0)`, not `0`: this index is compared with `.len` and used to subscript, both of
+    /* `i64(0)`, not `0`: this index is compared with `.len` and subscripts a view, both of
      * which are `i64`. A bare literal would default to `i32` and *work* - comparisons widen
      * - but the generated C would then index an `i64` view with an `int32_t`, and the
      * conversions would be there for no reason. The user's own range form keeps the type of
@@ -2934,8 +2934,8 @@ static Expr *parseFactor(Parser *p) {
  * Needed for exactly one decision: `ext` is a **prefix operator** (`ext f(x)`, the domain feature)
  * whose spelling is also a perfectly good variable name. Recognising it by shape alone meant that
  * `ref ext`, `f(ext)` and `-ext` were parsed as the operator and then died with "expected an
- * expression, found `)`" -- a bad way to learn that a name is also an operator (measured: the first
- * use of `ext` as an identifier in the corpus was mine, in `tests/real-lib/cairo-logo.extc`).
+ * expression, found `)`" -- a bad way to learn that a name is also an operator (`ext` is a
+ * legal variable name, so the operator spelling and an identifier are the same token).
  *
  * So the operator is recognised only when something that can *be* an operand follows. `ext` with
  * nothing after it stays an error (tests/ext/bare.extc), it just says "no variable named `ext`". */
@@ -2971,7 +2971,7 @@ static Expr *parseUnaryInner(Parser *p) {
      * reads naturally. Whether the operand really is a call, and whether there is a domain around
      * it, is the checker's business -- the parser only locks the shape in.
      *
-     * `ext` is not reserved anywhere else: measured 0 uses as an identifier in the corpus, and a
+     * `ext` is not reserved anywhere else: `ext` on its own is a legal identifier, and a
      * name starting with `ext` (such as `extern!`) is a different token. */
     if (at(p, "ext") && tokenStartsExpr(pk(p, 1))) {
         Token *kw = take(p);
@@ -3578,15 +3578,15 @@ static Expr *parsePrimary(Parser *p) {
                 k += 2;
                 /* A `{` is a struct literal of a qualified type: that is this path's job.
                  *
-                 * A `.` used to be taken over as well, and it built `EX_IDENT("mod::value")` by
-                 * hand - a node the checker cannot resolve, because a qualified name only becomes an
-                 * expression through the `EX_ASSOC` shape `looksLikeAssoc` builds. Every "qualified
-                 * value followed by a dot" broke: `io::cin.bad()` said "only direct function calls
-                 * are supported" and `io::cin.fd` said "undefined name", while `cin.fd`,
-                 * `io::cin >> x` and `io::cin` alone were all fine - two representations of one
-                 * thing, and only one of them knows about values.
+                 * A `.` is not taken over here: building `EX_IDENT("mod::value")` by hand yields
+                 * a node the checker cannot resolve, because a qualified name only becomes an
+                 * expression through the `EX_ASSOC` shape `looksLikeAssoc` builds. Every
+                 * "qualified value followed by a dot" needs that shape: `io::cin.bad()` otherwise
+                 * says "only direct function calls are supported" and `io::cin.fd` says "undefined
+                 * name", while `cin.fd`, `io::cin >> x` and `io::cin` alone are all fine - two
+                 * representations of one thing, and only one of them knows about values.
                  *
-                 * The dot now goes to the postfix loop, and whether it is a field, a method or a
+                 * The dot therefore goes to the postfix loop, and whether it is a field, a method or a
                  * variant of a qualified *type* is decided in the checker, where the symbol table
                  * is. */
                 if (strcmp(pk(p, k)->text, "{") == 0 && !p->inCond) { takeIt = true; break; }

@@ -30,10 +30,11 @@ struct unit {
 //   - the zero value is tag 0 = `none` (no payload) => `var o: option<i64>` means "nothing" -- OK.
 //     No coincidence: zero-initialization. Variant order matters, so `| some(T) | none` would
 //     make `var o: option<i64>` mean "present, but zero" -- WRONG.
-//   - `T` may now be a ref or a view, so `option<slice<u8>>` is legal -- OK. It used to be a
-//     struct: `none`'s `value` field had nothing to fill it with, and "a ref is never null" is
-//     a promise extC makes, so that shape could report only `__extc_reference_has_no_zero_value__`
-//     -- WRONG. Tag 0 = none means no payload, so the hole is closed -- OK. See docs/topics/IO.md.
+//   - `T` may be a ref or a view, so `option<slice<u8>>` is legal -- OK. A struct cannot be
+//     the representation: `none`'s `value` field has nothing to fill it with, and "a ref is never
+//     null" is a promise extC makes, so a struct shape could report only
+//     `__extc_reference_has_no_zero_value__` -- WRONG. Tag 0 = none means no payload, so the hole
+//     is closed -- OK. See docs/topics/IO.md.
 //   - there are only two ways to get the value out: `match` (exhaustive), or `?` to pass the
 //     failure up. There is deliberately no `unwrap()`: that needs a trap primitive, and a
 //     library that traps does not fit extC's character -- if you want a trap, write it at the

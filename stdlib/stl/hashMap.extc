@@ -65,11 +65,10 @@ fn hashI64(k: i64) -> i64 {
 
 /* The `hash` of an `i64` key: the step that makes `hashMap<i64, V>` work directly.
  *
- * This used to need an `i64Key` wrapper (`struct i64Key { v: i64  fn hash  fn == }`) plus the
- * `hashMapI64<V>` adapter, because methods may only be declared inside a `struct` body and `i64`
- * is a compiler builtin with no body to write one in. An `impl` block supplies that attachment
- * point: its methods are indistinguishable from methods written in the body (same one method
- * set, same per-instance checks), so `hashMap<i64, V>` needs no wrapper at all.
+ * The attachment point is an `impl` block, which is needed because methods may only be declared
+ * inside a `struct` body and `i64` is a compiler builtin with no body to write one in. Methods
+ * added by an `impl` block are indistinguishable from methods written in the body (same one
+ * method set, same per-instance checks), so `hashMap<i64, V>` needs no wrapper at all.
  *
  * `==` is not attached: equality on a builtin is native to the language (the compiler emits it
  * directly). Only named methods need an impl. */
@@ -256,9 +255,8 @@ struct hashMap<K, V> {
         var ns: mut slice<i32> = poolSliceRaw<i32>(self.pid, ncap)
         /* `bucketOfDense` is indexed by DENSE index, so it has to hold as many entries as there
          * are values -- and the pool's dense side grows past the old table capacity as soon as
-         * the table doubles. It used to keep its original length and the first rebuild after a
-         * growth wrote past its end (trapped: "index 128 out of range (length 128)"). Copy the
-         * live prefix into the larger array first; the rehash below fills the rest. */
+         * the table doubles. `poolResizeRaw` extends it in place, keeping the live prefix; the
+         * rehash below fills the rest. */
         /* `bucketOfDense` 是**稠密下标**索引的（位置与容量无关）⇒ 直接加长：内容原地保留，
          * 那趟前缀拷贝整段删掉。另外三列做不到这件事 —— 桶号 `h & (cap-1)` 随 cap 变，
          * 每个元素的位置都变，O(n) 重排是哈希扩容语义的一部分。
@@ -319,8 +317,8 @@ struct hashMap<K, V> {
     fn release(self: mut ref hashMap<K, V>) {
         self.vals.release()
         if self.pid < i64(0) { return }
-        /* One staleness question, one place to ask it (`pStale`): the inline copy of this
-         * compare used to live here too, and two copies of a load-bearing check drift. */
+        /* One staleness question, one place to ask it (`pStale`): the comparison lives in
+         * exactly one place, and two copies of a load-bearing check would drift. */
         if self.pStale() {
             self.pid = i64(-1)  /* 陈旧拷贝：槽位已被别的池复用 */
             return

@@ -160,8 +160,8 @@ struct linMap<K, V> {
 
     fn release(self: mut ref linMap<K, V>) {
         if self.pid < i64(0) { return }
-        /* One staleness question, one place to ask it (`pStale`): the inline copy of this
-         * compare used to live here too, and two copies of a load-bearing check drift. */
+        /* One staleness question, one place to ask it (`pStale`): the comparison lives in
+         * exactly one place, and two copies of a load-bearing check would drift. */
         if self.pStale() {
             self.pid = i64(-1)  /* 陈旧拷贝：槽位已被别的池复用 */
             return

@@ -176,7 +176,7 @@ typedef struct {
 
 /* The name a module is **called by** is not the path it is imported with: `use std::sys::domain`
  * brings that module in as `domain`, so suggesting "add `use sys::domain`" tells the reader to
- * import something that does not exist (measured: the standard library lives under `std/`).
+ * import something that does not exist -- the standard library lives under `std/`.
  * Look the file up quietly and suggest the path that would really work; if nothing matches, say
  * nothing about a path and state the rule instead of inventing one. */
 static const char *suggestImportPath(Loader *L, const char *spelled) {
@@ -1195,9 +1195,9 @@ static void rwExpr(Loader *L, ModUnit *self, Expr *e) {
         break;
     /* A lambda is the one node where a **rewriting** pass must go further than an analysis pass:
      * its body is emitted as the generated `call` method's source, so every name and type in it has
-     * to be rewritten by the module it was written in. Leaving the body out kept the unmangled name
-     * of a module-local function, and the `call` method came out as an empty body that silently
-     * returned 0 (measured: `make=0`, no diagnostic, in a module file). The field values are walked
+     * to be rewritten by the module it was written in. Skipping the body leaves the unmangled name
+     * of a module-local function and makes the `call` method an empty body that silently
+     * returns 0 (a module file then reports `make=0` with no diagnostic). The field values are walked
      * as well -- they are the reads that happen where the lambda is written. */
     case EX_LAMBDA:
         for (size_t i = 0; i < e->u.lambda.params.len; i++)
@@ -1291,15 +1291,11 @@ static void mangleUnitDecls(Loader *L, ModUnit *u) {
     Module *src = &u->mod;
     /* One pass per list: compute a declaration's new name and record the rename **right away**.
      *
-     * This used to allocate a `names[64]` array, compute at most 64 names into it, and then walk the
-     * lists a second time to store them -- so a module with 65 declarations indexed past the end and
-     * crashed (measured: 63/64 fine, 65/70 SIGSEGV; the largest bundled module, `stdlib/std/io.extc`,
-     * renames 41, i.e. 23 away). The array existed because a comment claimed `arenaPrintf` may reuse
-     * the buffer it returned earlier: it cannot. `arenaAlloc` is a pure bump allocator (nothing is
-     * ever recycled) and `arenaPrintf` allocates `n + 1` fresh bytes per call, so every name stays
-     * valid for the life of the process. With the array and the second pass gone, compute and store
-     * cannot disagree -- that is the property the cap was hiding, and the reason no limit has to be
-     * kept in step here. */
+     * There is no cap on the number of declarations here: `arenaAlloc` is a pure bump allocator
+     * (nothing is ever recycled) and `arenaPrintf` allocates `n + 1` fresh bytes per call, so every
+     * name stays valid for the life of the process. Computing a name and storing it in the same pass
+     * is what keeps the two from disagreeing, so no limit has to be kept in step with the number of
+     * declarations a module renames. */
     for (size_t i = 0; i < src->structs.len; i++) {
         StructDef *d = *(StructDef **)vecAt(&src->structs, i);
         d->srcName = arenaPrintf(L->a, "%s::%s", u->modName, d->name);
@@ -1353,7 +1349,7 @@ static void mangleUnitDecls(Loader *L, ModUnit *u) {
  *
  * A bare name is what a module writes for its own declarations: `color` in
  * `color.green`, `twice` in a call from `shout`. Once the declarations are renamed,
- * those bare names no longer name anything: the error is
+ * a bare name points at nothing: the error is
  * `call to undefined function \`twice\`` while `greet$twice` is right there in the
  * table.
  *
@@ -1696,7 +1692,7 @@ static void mergeUnit(Loader *L, ModUnit *u) {
  * Params:
  *   L            - loader
  *   modPath      - the module path as written in the `use`
- *   importerFile - file containing that `use`, used to resolve and to blame
+ *   importerFile - file containing that `use`, which resolves the path and is blamed
  *   line         - line of the `use`, blamed by the cycle diagnostic
  *
  * Returns:
@@ -1720,9 +1716,9 @@ static void mergeUnit(Loader *L, ModUnit *u) {
  * Every entry is a hole. `std::sys::heap` can turn any (pointer, length) into a view
  * (`extc_viewOf`), unmap any range (`munmap`) and map anywhere (`mmap`) -- the rest of the
  * language is built so that a program can neither forge a pointer nor grow a length, and one
- * import would step around all of it (measured before this gate existed: a fabricated length of
- * 1,000,000 over an 8-byte global, indexed at 999,999, ran and died with SIGSEGV -- and would
- * have read silently wrong bytes had the address happened to be mapped).
+ * import would step around all of it (a fabricated length of 1,000,000 over an 8-byte global,
+ * indexed at 999,999, dies with SIGSEGV -- and reads silently wrong bytes when the address
+ * happens to be mapped).
  *
  * The list is deliberately short ("特殊权限不能给太多") and every entry gets a negative test
  * (`tests/errors/privileged_import.extc`). What a program normally needs is `std::heap`: the plate's
@@ -2076,12 +2072,10 @@ bool loadModules(Arena *a, Module *out, Module *rootm, Ctx *rootCtx,
 
     /* The root file's declarations are merged last, and through the **same path** every other
      * unit takes. Its names are never renamed (`modName == NULL` makes `mangleUnitDecls` return
-     * immediately and `renLookup` answer NULL), so `mergeUnit` does exactly what the inline copy
-     * here used to do -- and it is the only way to keep the next declaration kind from being
-     * added in one place and forgotten in the other. That is not hypothetical: `impl` blocks
-     * were silently dropped from the root file (the field was merged only in `mergeUnit`), and
-     * a qualified `impl` target missed `rwTypeName` for the same reason. Both were found by
-     * running the thing, not by reading it. */
+     * immediately and `renLookup` answer NULL). Routing the root through `mergeUnit` is what keeps
+     * every declaration kind merged in one place: a kind handled only outside `mergeUnit` is
+     * silently dropped for the root file, and a qualified `impl` target then misses `rwTypeName`.
+     * `impl` blocks and their targets go through this walk like every other declaration. */
     double t_root = ldNow();
     {
         ModUnit root;

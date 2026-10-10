@@ -243,8 +243,8 @@ static bool visitExprList(const AstVisit *v, Vec *xs) {
         /* The callee is a child **unless it is a declaration name**. A call through a value
          * (`f(x)` where `f` holds a `fn`) reads the binding, so it is a child like any other;
          * a direct call (`g(x)`) names a declaration, and walking into the name would report
-         * the function as "used as a value". This used to be asked as `planCallViaFn(e)` --
-         * an upward read from `ast.c` (layer 1) into the plan's storage (layer 3) for a fact
+         * the function as "used as a value". Asking `planCallViaFn(e)` would be an upward read
+         * from `ast.c` (layer 1) into the plan's storage (layer 3) for a fact
          * that the node's own shape already carries: the checker records which of the two
          * this is, but the distinction is grammar at this point (`EX_IDENT` callee plus
          * "resolved to a function value"), not a plan answer. */

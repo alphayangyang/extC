@@ -393,7 +393,7 @@ typedef struct {
     Expr       *init;
     int         line;
     /* Did the initializer name storage that outlives every frame? Recorded while the scopes were
-     * live (`ST_VAR.initOutOfFrame`): by the time `coroCheckDeferred` runs, `lookup` can no longer
+     * live (`ST_VAR.initOutOfFrame`): by the time `coroCheckDeferred` runs, `lookup` cannot
      * find a function-local name, so asking `exprOutOfFrame` again would answer "no" for a view of
      * a `global` declaration. */
     bool        outOfFrame;
@@ -465,20 +465,16 @@ static bool stmtHasNew(Stmt *s) {
  *
  * The walk is `astWalkExprChildren` / `astWalkStmtChildren` (`ast.c`), the one place that lists
  * the AST kinds. That matters here more than anywhere else, because the answer decides where
- * storage lives -- two bugs of exactly this shape are on record:
+ * storage lives -- bugs of exactly this shape are on record:
  *
  *   - `EX_STRUCTLIT` was missing from this predicate, so `var b: box = { r: mknode() }` looked
  *     like a body that reaches no callee with a home arena. The function was not given one, the
  *     callee allocated into the caller's *block* arena (released when the block ends) while the
  *     depth recorded for the value said 0, and the pointer dangled. Every shape a call can hide
  *     in therefore has to be listed -- which is now the job of `ast.c`, not of this file.
- *   - The hole used to be papered over for `main` alone by an `|| is main` fallback in
- *     `mayUseArena`, and that fallback had a measurable cost: every `main` carried the whole
- *     arena prologue, so every `while` body emitted `extc_arena_release(...)`, and a matrix
- *     multiply ran 103 ms instead of 34 ms (3.0x slower). Covering the root cause here let the
- *     fallback go.
- * The same two mistakes were also made once for `EX_DYN`'s payload and once for `EX_SLICE`'s
- * bounds (docs/topics/AST-WALKERS.md); migrating this predicate ends that class of bug for it.
+ * The same missing-kind mistake was also made once for `EX_DYN`'s payload and once for
+ * `EX_SLICE`'s bounds (docs/topics/AST-WALKERS.md); migrating this predicate ends that class
+ * of bug for it.
  *
  * Notes:
  *   - Only valid after the calls have been resolved: the walk reads `planCallee(e)`, which the checker
@@ -486,12 +482,12 @@ static bool stmtHasNew(Stmt *s) {
  *     into like any other.
  *   - An associated call (`EX_ASSOC`) counts as well: an associated function such as
  *     `T::make` is declared without `self` but takes a home arena like any other. */
-/* **One question, one name.** This used to be `bool precise` -- a switch that changed what the
- * predicate below *meant* ("does the callee reach a home arena?" versus "does it take one itself?"),
- * which is precisely the shape that lets the two sides of a convention drift apart: the definition
- * asks one, the call site the other, and nothing in the code says which is which. The question now
- * travels as a predicate with a name, and the two entry points below (`callsNeedsHome` /
- * `callsUsesHome`) are the only places that pick one. */
+/* **One question, one name.** The question travels as a predicate with a name, never as a bare
+ * `bool` switch that changes what the predicate below *meant* ("does the callee reach a home arena?"
+ * versus "does it take one itself?"). A bare switch is precisely the shape that lets the two sides
+ * of a convention drift apart: the definition asks one, the call site the other, and nothing in the
+ * code says which is which. The two entry points below (`callsNeedsHome` / `callsUsesHome`) are the
+ * only places that pick one. */
 typedef struct { bool (*takesHomeArena)(const FuncDef *); } HomeQ;
 
 /* "does the callee **reach** a function that takes one?" -- the conservative, transitive question,
@@ -572,10 +568,8 @@ static bool callsUsesHome(Stmt *body)  { return stmtCallsNeedsHome(body, funcTak
  * cycle stays false until one of its members is reached from a body that really does have it, and
  * if none of them ever is, none of them can have it at all.
  *
- * This rule used to be written twice in this file (the `needsHome` closure, and "Same shape as the
- * `needsHome` closure above" for `makesPool`), and a third time as the lazy walk behind
- * `funcAllocates`. It lives here now, with the per-node criterion in `bodyReaches`, so changing
- * either is a change in one place. What legitimately differs between callers is only **which**
+ * This rule lives here, with the per-node criterion in `bodyReaches`, so changing it is a
+ * change in one place. What legitimately differs between callers is only **which**
  * functions a round visits -- `makesPool` has an extra round over the generic instances -- and
  * that stays at the call site, where its reason is visible.
  *
@@ -626,8 +620,9 @@ static bool bodyReaches(FuncDef *f, ReachKind k) {
          * deliberately wide (a `new` whose value is copied into an out-parameter marks the
          * function even though nothing escapes), while the hidden parameter is only needed when
          * the body really reads it. The placement pass decides that per site, so a site sitting
-         * in the home arena counts, as does handing this function's home on to a callee. Measured:
-         * `examples/out-param.extc` used to carry a parameter nobody read, and gcc said so. */
+         * in the home arena counts, as does handing this function's home on to a callee. A
+         * function whose home arena is never read is not marked, so it gets no unused hidden
+         * parameter. */
         if (callsUsesHome(f->body)) return true;
         Vec as_ = anArenaSites(f);
         for (size_t i = 0; i < as_.len; i++)
@@ -972,8 +967,8 @@ static bool stmtStoresThroughDeref(Checker *c, Stmt *s, FuncDef *f) {
  *     a cycle, so it is marked "incomplete" (conservative);
  *   - uncertainty marks it incomplete as well: `effUnknown` (a call that cannot be
  *     resolved) means never complete.
- * => A summary may be used to skip any check only when `computeEffectsTransitive`
- *    returns true.
+ * => Skipping a check on the strength of the summary is allowed only when
+ *    `computeEffectsTransitive` returns true.
  *
  * Params:
  *   c - checker
@@ -1096,11 +1091,10 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
                 callee ? (unsigned long long)anHomeAddrMask(callee) : 0,
                 callee ? (unsigned long long)anHomeContMask(callee) : 0, homeDepth);
     /* The two checks decide independently whether to run; do not give them one shared
-     * early return. Sharing that return already cost a bug: a `Cont` bit on `push` made
-     * the address-flow check run as well, and `examples/list-return` was wrongly rejected
-     * by an over-strict combination that the early return used to block. On the
-     * escape-analysis path, `homeDepth = -1 => h = 0` is too strict for a local `mut ref`
-     * argument.
+     * early return. One shared return makes an over-strict combination possible: a `Cont`
+     * bit on `push` made the address-flow check run as well, and `examples/list-return`
+     * was wrongly rejected. On the escape-analysis path, `homeDepth = -1 => h = 0` is too
+     * strict for a local `mut ref` argument.
      */
     bool addrMaybe = !complete || !callee
                    || anAddrMask(callee) != 0 || anHomeAddrMask(callee) != 0
@@ -1110,12 +1104,12 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
                    || anAddrMask(callee) != 0 || anHomeAddrMask(callee) != 0
                    || anOtherMask(callee) != 0;
     if (!addrMaybe && !contMaybe) return;
-    /* The bound is the DESTINATION's own measured depth (below), falling back to the
-     * caller's body depth. The old `needsHome => 0` and `homeDepth < 0 => 0` guesses are
-     * gone on purpose: both collapsed to "must live in the home arena" for any argument
-     * living in any block, which rejected safe programs (this function's own comment used
-     * to call the second one "too strict for a local `mut ref` argument"). A destination
-     * that is really home-promoted reports depth 0, so h = 0 still happens when it must. */
+    /* The bound is the DESTINATION's own depth (below), falling back to the
+     * caller's body depth. A `needsHome => 0` or `homeDepth < 0 => 0` guess collapses to
+     * "must live in the home arena" for any argument living in any block, which rejects
+     * safe programs: `homeDepth < 0 => 0` is too strict for a local `mut ref` argument. A
+     * destination that is really home-promoted reports depth 0, so h = 0 still happens when
+     * it must. */
     int h = (homeDepth > 0) ? homeDepth : (int)c->scopes.len;
     /* PRECISION: the destination is one of the `ref`-typed arguments. The callee may store a
      * value it received into any of them, so that value has to outlive every one of them:
@@ -1139,10 +1133,8 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
             if (!p2->type || p2->type->kind != TY_REF) continue;
             /* Only a reference to something that can **hold** references can be the destination a
              * callee stores into (a container, a plate, a record with ref fields). A `ref u8` is
-             * not one: counting it let a depth-0 argument (a view of a global) collapse the
-             * destination to "lives forever", which then rejected the *callee's own table*
-             * (measured: `pl.viewAt(globalView.data, 4)` reported "argument 1 of `viewAt` points
-             * into a deeper scope (depth 1) than the arena this call may store it in (depth 0)").
+             * not one: counting it lets a depth-0 argument (a view of a global) collapse the
+             * destination to "lives forever", which rejects the *callee's own table*.
              * The predicate is the framework's own "this type can carry a reference". */
             if (!typeContainsRef(c->tt, tsub(c, p2->type->inner))) continue;
             Expr *a2 = *(Expr **)vecAt(args, i2);
@@ -1239,9 +1231,8 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
          * expression itself is a pointer or a view. For a by-value argument the two cases
          * reduce to one statement: the data it carries must live at least h.
          *
-         * Checking only the content-flow bits used to accept `names.push(buf[..])` with
-         * `buf` declared in a deeper block. That is a real dangling pointer, and the
-         * tests caught it at once. */
+         * Checking only the content-flow bits would accept `names.push(buf[..])` with
+         * `buf` declared in a deeper block, which is a real dangling pointer. */
         uint64_t cont = anContMask(callee) | anHomeContMask(callee)
                       | anAddrMask(callee) | anHomeAddrMask(callee);
         for (size_t j = 0; j < args->len && j < EFF_MAX_PARAMS; j++) {
@@ -1357,13 +1348,11 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
 /* Choose the arena for a call result by asking whether the result escapes this block.
  *
  * The callee allocates into the arena it is handed. Passing my home arena (the arena
- * the caller of this function passes) for every call meant that a call inside a loop
- * accumulated one round of data per iteration, with nothing reclaimed until the frame
- * ended. A stress run on 2026-09-20 measured a 300-round loop building a 2001-node
- * list: peak 15.3 MB against 5.9 MB for the same program in C (about 14.4 MB, which
- * the round count accounts for).
+ * the caller of this function passes) for every call makes a call inside a loop
+ * accumulate one round of data per iteration, with nothing reclaimed until the frame
+ * ends.
  *
- * The fix looks at how deep the result is stored:
+ * The rule looks at how deep the result is stored:
  *   - stored in the current block (`var l = build(...)` in the loop body): pass the
  *     current block's arena, so each round is reclaimed when the block ends and the
  *     peak stays constant;
@@ -1409,8 +1398,8 @@ void markCallHomeIfEscaping(Checker *c, Expr *v, int at) {
  *
  * Notes:
  *   - Both fields are written here so they cannot drift apart. Codegen must not fall
- *     back to `g->hasHome`: that would be a second authority for one decision, which is
- *     why the choice used to be made on both sides.
+ *     back to a per-function home flag: that would be a second authority for one
+ *     decision, so the choice is made here only.
  *   - The 0 case has no `mut ref` argument to reason from, so the site is recorded with
  *     `arenaArgPending` set and resolved by the final pass.
  */
@@ -1495,7 +1484,7 @@ void setCallArenaArg(Checker *c, Expr *e) {
         planSetArenaArg(e, anHomeDepth(e));
         e->arenaArgPending = false;
     } else {
-        /* No `mut ref` argument gave a reason, so the old rule applies: pass my home
+        /* No `mut ref` argument gave a reason, so the fallback applies: pass my home
          * arena if I have one, otherwise the current block.
          *
          * Whether I have a home arena is decided by the transitive closure of
@@ -1503,9 +1492,8 @@ void setCallArenaArg(Checker *c, Expr *e) {
          * The site is therefore recorded as the current block with `arenaArgPending`
          * set, and the final pass settles it (see `curArenaSites`).
          *
-         * This is the job the `if (g->hasHome) return "__extc_home";` line used to do in
-         * codegen. It moved into the checker so the decision is made in exactly one
-         * place instead of once on each side. */
+         * The decision lives here so it is made in exactly one place: codegen reads
+         * `arenaArg` and decides nothing on its own. */
         planSetArenaArg(e, (int)c->scopes.len);
         e->arenaArgPending = true;
         *(Expr **)vecPush(&c->curArenaSites) = e;   /* the final pass comes back to this site */
@@ -1600,8 +1588,7 @@ static bool vecHasName(Vec *v, const char *n) {
  * exemption `new` gets. SSO `string` is what needs it: `grow` stores the block into
  * `self.big`, and without this the whole `push`/`append` chain acquires `otherMask`
  * ("stores something unattributable"), after which **every** call site of a function that
- * appends to a string is required to pass arguments that live outside the frame
- * (measured: `tests/coro/statemachine.extc` was rejected at `step(ref f, ref st, …)`).
+ * appends to a string is required to pass arguments that live outside the frame.
  *
  * Params:
  *   e - expression; may be NULL
@@ -1752,12 +1739,9 @@ static void collectLoopSites(Stmt *s, int loopId, int *nextLoop, Vec *sites) {
  *
  * `minAt == 0` means the site was stored into something that outlives the frame. That is
  * the one verdict the numbers support on their own, and it is what `@overwrite` is for, so
- * those lines are called out; the rest are printed as data. An earlier version of the
- * report also claimed "memory grows with the iteration count" for any site in a loop whose
- * level was shallower than the loop body, which was wrong: `bench/gc/src/rebuild.extc` was
- * reported as growing while measuring it at 2000, 20000 and 200000 rounds gives 1.7 MB
- * every time. The level a site lands at and the point where its block is released are
- * decided by different rules, so the report no longer guesses at the second one. */
+ * those lines are called out; the rest are printed as data. The level a site lands at and
+ * the point where its block is released are decided by different rules, so the report
+ * claims nothing about growth. */
 /* The loop that holds this line, or 0 when no loop does.
  *
  * The site table is (line, loopId, lexicalLevel) triples. */
@@ -1806,10 +1790,8 @@ static void reportMemory(Checker *c, Vec *all) {
      *
      * Whether a site's memory actually grows with the iteration count needs the level of
      * the block that releases the site's arena, and that is not derivable from the numbers
-     * printed here by a predicate over them: three attempts were measured against programs
-     * whose peak is known (four /tmp/mem_*.extc shapes, and bench/gc/rebuild measured at
-     * 2000 through 2000000 rounds) and every one of them either missed the shape that grows
-     * to 159 MB or flagged one that stays at 1.7 MB. The reliable form is to record, at code
+     * printed here by a predicate over them: such a predicate either misses a shape that
+     * really grows or flags one that stays constant. The reliable form is to record, at code
      * generation time, which loop releases which arena; until then this report prints the
      * facts and claims nothing. */
     fprintf(stderr, "  (this report prints facts only: it does not yet say which sites grow)\n");
@@ -1836,7 +1818,8 @@ static void collectFreshLocals(Arena *a, Vec *fresh, Stmt *s) {
         return;
     case ST_ASSIGN: {
         /* A name stops being fresh the moment an assignment gives it a value that is not itself
-         * fresh: `n = id(target)` no longer points at the `new i32` its declaration made. Keeping
+         * fresh: after `n = id(target)`, `n` points at whatever `id` returned, not at the `new
+         * i32` its declaration made. Keeping
          * the name made `classifyStoredValue` answer "freshly allocated, so trivially safe" for a
          * value that now points into the caller's frame, so `stash`'s summary recorded nothing,
          * `effComplete` stayed true, and the whole call-site lifetime check was skipped -- a real
@@ -1960,12 +1943,12 @@ static bool markNamesInStmt(Checker *c, FuncDef *f, Stmt *s) {
         grew |= markNamesInStmt(c, f, s->u.whiles.body);
         return grew;
     case ST_EXPR:
-        /* A local published through a call. This used to return an unconditional false,
-         * which cost two real use-after-free bugs of this shape: a local published
-         * through a call never entered E, so `callHomeDepth` took the receiver for depth
-         * 1, the caller's frame, and the arena argument became the current frame's arena,
+        /* A local published through a call. An unconditional false here costs real
+         * use-after-free bugs of this shape: a local published
+         * through a call never enters E, so `callHomeDepth` takes the receiver for depth
+         * 1, the caller's frame, and the arena argument becomes the current frame's arena,
          * the callee's own frame, instead of the home arena. Whatever the callee stored
-         * into that container was then released when this call returned.
+         * into that container is then released when this call returns.
          *
          * Marking every call is not an option either: a plain read such as `println(x)`
          * was marked too, which produced six false rejections (including `borrowing`,
@@ -2305,10 +2288,10 @@ void noteFieldDepthWrite(Checker *c, Sym *root, const char *field, int d2) {
         if (d2 > *slot) *slot = d2;
     } else if (root->fieldsComplete) {
         /* First step of the data-flow part: with a complete field table, the new value
-         * replaces the old one in this slot, so the old value is no longer a property of
+         * replaces the old one in this slot, so the old value is not a property of
          * any slot of the container, and the root is recomputed skipping it. That is the
          * strong update. It is sound because the root record is an upper bound over all
-         * slots: with a complete table, removing an edge that no longer holds leaves an
+         * slots: with a complete table, removing an edge that does not hold leaves an
          * upper bound over the rest. The depth is not shrunk out of thin air. */
         *slot = d2;
         int m = root->otherDepth;
@@ -2493,9 +2476,7 @@ static void classifyStoredValue(Checker *c, FuncDef *f, Expr *e, int i, bool int
      * Without this, `self.big = none` -- how an SSO string clears its pool view -- marks the
      * whole container as "stores something unknown", every caller of `push` inherits
      * `otherMask`, and the call-site rule turns into the strictest one there is: an argument
-     * of a caller may not live in any block at all (measured: `tests/coro/statemachine.extc`
-     * was rejected -- "argument 1 of `step` points into a deeper scope (depth 1) than the
-     * arena this call may store it in (depth 0)"). `failure(e)` and `some(v)` carry a value
+     * of a caller may not live in any block at all. `failure(e)` and `some(v)` carry a value
      * and are classified as before. */
     if (e->kind == EX_ENUMVAL && e->u.enumval.args.len == 0) return;
     { const char *vr = placeRootName(e);          /* `l.head = n`: the source is a fresh local */
@@ -2605,10 +2586,10 @@ static void collectEffectsExpr(Checker *c, FuncDef *f, Expr *e) {
          * said "I store nothing":
          *
          *     fn rgb(api: ref cairoApi, cr: ref void, …) { api.setSourceRgb(cr, …) }
-         *     // `setSourceRgb` is signed `Addr=0 Cont=0`, yet `rgb`'s summary came out
-         *     // incomplete ⇒ its callers could no longer pass a frame-local pointer
+         *     // `setSourceRgb` is signed `Addr=0 Cont=0`, yet `rgb`'s summary would come out
+         *     // incomplete ⇒ its callers could not pass a frame-local pointer
          *     // ("points into a deeper scope (depth 1) than the arena this call may store it
-         *     // it in"), measured while writing the cairo bindings (C-ABI.md §9.11 ④).
+         *     // it in") (C-ABI.md §9.11 ④).
          *
          * A `fn` value that did **not** come from a signed slot (a local copy, a parameter, an
          * unsigned slot) still has nothing to go on: the summary stays incomplete, conservatively.
@@ -2683,7 +2664,7 @@ static void collectEffectsExpr(Checker *c, FuncDef *f, Expr *e) {
         return;
     /* The aggregate shapes hold expressions too, and a call inside one belongs in the
      * summary exactly like a call anywhere else: `[f(), g()]`, `some(f())`,
-     * `point { x: f() }`. They used to fall to `default` and be dropped, which made the
+     * `point { x: f() }`. Letting them fall to `default` drops the call and makes the
      * summary of the enclosing function incomplete - the one direction the doc above
      * says must not happen (`effUnknown` exists so incompleteness is conservative). */
     case EX_ARRAYLIT:
@@ -3082,7 +3063,7 @@ static int  valueLevel(Checker *c, LvlState *ls, Expr *val, int hops);
  * Notes:
  *   - Only the forms that carry a value are followed. `*e` (the thing `e` points at),
  *     `&e` (the address of `e`) and `e[a:b]` (a view) are deliberately absent: following
- *     one was measured to be a false rejection rather than a missed promotion, because it
+ *     one is a false rejection rather than a missed promotion, because it
  *     pulls in the level of a value that has nothing to do with this one.
  *   - A binding is followed in both directions. Outwards, along what it holds, which is
  *     what reaches the allocation sites inside the value; inwards, to the binding's own
@@ -3143,12 +3124,11 @@ static int levelOfValue2(Checker *c, LvlState *ls, Expr *val, int target, int ho
          * preserve that. The three forms deliberately absent from this switch -- `*e`,
          * `&e` and `e[a:b]` -- do not: `*e` is the thing `e` points at, and `&e` is the
          * address of `e`, so neither is the value the sub-expression holds.
-         *
-         * Following one anyway was measured to be a false rejection, not a missed
-         * promotion: in `examples/alloc-in-block`, `return total` was followed through
+         * Following one anyway is a false rejection, not a missed
+         * promotion: in `examples/alloc-in-block`, `return total` is followed through
          * `total = *q` into `q`, and from there into the allocation, so the `alloc` inside
-         * the block was told "must outlive this frame" although nothing outlives the
-         * block; the function has no home arena to give it, and the generated C referenced
+         * the block is told "must outlive this frame" although nothing outlives the
+         * block; the function has no home arena to give it, and the generated C references
          * `__extc_home`, which does not exist there. */
 
         if (dbgOn("EXTC_DBG_LV"))
@@ -3182,10 +3162,10 @@ static int levelOfValue2(Checker *c, LvlState *ls, Expr *val, int target, int ho
          * live longer than this walk demands tightens the walk.
          *
          * Without it the walk keeps carrying the level of the store it started from. `out`
-         * is at level 0 because it is returned, while the store `out = h` was recorded at
-         * level 1, and entering `out` at 1 left everything `out` holds one level too deep:
-         * measured on `C3_if_join_wholevalue`, the `alloc` behind `h` stayed at the block
-         * level while the struct carrying it was returned to the caller. */
+         * is at level 0 because it is returned, while the store `out = h` is recorded at
+         * level 1, and entering `out` at 1 leaves everything `out` holds one level too deep:
+         * the `alloc` behind `h` stays at the block level while the struct carrying it is
+         * returned to the caller. */
         if (sy) {
             int cur = symLevel(ls, sy);
             if (cur < target) target = cur;
@@ -3238,8 +3218,8 @@ static int levelOfValue2(Checker *c, LvlState *ls, Expr *val, int target, int ho
         /* A binding with no publication of its own -- only ever initialized, or written
          * through a projection -- is still described by the expression it was given. */
         if (!viaRecords) {
-            /* An identifier that never resolved has no binding to walk, and this used to reach
-             * `sy->heldSrc` with a NULL `sy` -- a SIGSEGV, found by tools/fuzz.py from a
+            /* An identifier that never resolved has no binding to walk, and reaching
+             * `sy->heldSrc` with a NULL `sy` is a SIGSEGV, found by tools/fuzz.py from a
              * three-line program (`fn make<T>(x: T) -> pair<T> { return { a: make, b: x } impl }`).
              * `best` is the answer for a binding with no publication to follow, and this cannot
              * hide an escape: an unresolved name is reported as an error, so no accepted program
@@ -3256,11 +3236,11 @@ static int levelOfValue2(Checker *c, LvlState *ls, Expr *val, int target, int ho
      * the destination ends up holding. Both are walked at the same level, and the answer is
      * the smaller of the two.
      *
-     * Leaving this form out was the last thing keeping the whole-value if-join unsound.
-     * `out = h` stores a join node, so a walk without this case returned "no requirement"
-     * at the store itself and never reached the allocation behind either arm -- measured on
-     * `tests/arena-promoted/C3_if_join_wholevalue`, where the site stayed at the block
-     * level and the struct holding it was returned. */
+     * Leaving this form out is the last thing keeping the whole-value if-join unsound.
+     * `out = h` stores a join node, so a walk without this case returns "no requirement"
+     * at the store itself and never reaches the allocation behind either arm -- on
+     * `tests/arena-promoted/C3_if_join_wholevalue`, the site would stay at the block
+     * level while the struct holding it was returned. */
     case EX_BIN: {
         int a = levelOfValue(c, ls, val->u.bin.left, target, hops + 1);
         int b = levelOfValue(c, ls, val->u.bin.right, target, hops + 1);
@@ -3452,10 +3432,9 @@ static int valueLevel(Checker *c, LvlState *ls, Expr *val, int hops) {
  *
  * It does **not** take the data-flow fixed point: the level solve reads its own table, seeded from
  * the publications recorded while the body was walked, and it runs *before* the DFA's numbers are
- * copied into `Sym.refDepth`. The parameter used to be passed in and ignored (`(void)dfr;`) while
- * this comment claimed the opposite -- that is the "decision sees the final depths" claim the
- * review called out. Making it *true* means moving the write-back above this call, which changes
- * arena placement and is a change of its own, not a comment fix.
+ * copied into `Sym.refDepth`. So the "decision sees the final depths" claim does not hold for this
+ * pass; making it hold means moving the write-back above this call, which changes arena placement
+ * and is a change of its own, not a comment fix.
  *
  * Returns:
  *   Nothing. The result is written to each allocation site's `minAt`.
@@ -3527,9 +3506,9 @@ static void levelPass(Checker *c, FuncDef *f) {
      *
      * When the destination is tighter, the requirement reaches everything the value was
      * built from, which is what the walk below does. That extra step is deliberately
-     * narrow: a store into a place that lives no longer than the store itself says nothing
-     * new about the value, and walking it anyway was measured to move the `new` inside a
-     * loop from the loop arena to the frame arena, where it is no longer reclaimed each
+     * narrow: a store into a place that does not outlive the store itself says nothing
+     * new about the value, and walking it anyway moves the `new` inside a
+     * loop from the loop arena to the frame arena, where it is not reclaimed each
      * round -- the per-block refinement the arena tests exist to protect. */
     for (int round = 0; round < 64; round++) {
         bool moved = false;
@@ -3554,9 +3533,9 @@ static void levelPass(Checker *c, FuncDef *f) {
             /* A binding can be assigned more than once, and it then holds one of those
              * values. `Sy`->origin` remembers only the last assignment, so a walk that
              * followed it would stop at whichever arm happened to be written last --
-             * measured on `C3_if_join_wholevalue`, where `h = g` is followed by
-             * `h = zero` and the origin ended up naming the empty box, leaving the
-             * allocation behind `g` unreachable from every later store of `h`.
+             * on `C3_if_join_wholevalue`, `h = g` is followed by
+             * `h = zero`, so the origin names the empty box and the
+             * allocation behind `g` is unreachable from every later store of `h`.
              *
              * Every assigned value is in the record table, so walking them all is what
              * covers "one of these". Each is walked at the destination's level, which is
@@ -3905,8 +3884,8 @@ static void symIdxSync(Checker *c) {
  *
  * Extracted from `checkFunc` so it can also be run for an **instance created late**: a call inside a
  * generic body is deferred (`fn run<T>() { gen(v) }`), so `funcInstance` for `gen<i64>` runs after
- * the body-checking pass, which used to be the only place this setup happened. The instance then
- * drove `<name>$frame` while nothing defined it, and `value()` kept the unsubstituted `T`
+ * the body-checking pass, which is not the only place this setup is needed. Running it for that
+ * instance is what keeps `<name>$frame` defined and `value()` on the substituted `T`
  * (tools/attack.py F4 + B7). */
 static void coroSetup(Checker *c, FuncDef *f) {
 
@@ -4074,9 +4053,8 @@ static void checkFunc(Checker *c, FuncDef *f) {
         * explicitly.
         *
         * The predicate itself lives in `ttCrossesC`: one spelling, shared with the `fn` type
-        * (`ttResolve`), which is the other way a C function is reached. It used to be spelled out
-        * here twice, with a branch that could never be taken -- the test asked
-        * `t->kind == TY_REF` about a type `ttBase` had already stripped every reference from. */
+        * (`ttResolve`), which is the other way a C function is reached. Spelling it out here
+        * as well would be a second copy that can fall out of step with `ttCrossesC`. */
         for (size_t i = 0; i < f->params.len; i++) {
             Param *p = *(Param **)vecAt(&f->params, i);
             if (!ttCrossesC(p->type, false))
@@ -4094,10 +4072,9 @@ static void checkFunc(Checker *c, FuncDef *f) {
              * `cfmakeraw` all have it, and refusing it left the privileged layer unable to
              * declare them. What has no C-level representation is a struct, a slice (two
              * arguments), or a view. */
-            /* A missing return type is a different mistake from a type that cannot cross, and the
-             * message used to be the same for both -- it printed `void` for a NULL return type, so
-             * `fn f(x: i32)` looked like "`void` cannot cross the C boundary" (measured while
-             * writing the cairo bindings: 16 declarations in a row said exactly that). */
+            /* A missing return type is a different mistake from a type that cannot cross, so the
+             * two have separate messages: a NULL return type is reported as missing rather than
+             * printed as `void`. */
             if (!f->ret)
                 ckError(c, f->line,
                         "A declaration has to say what it returns; `-> void` if it returns nothing.",
@@ -4142,7 +4119,7 @@ static void checkFunc(Checker *c, FuncDef *f) {
         else if (f->params.len == 1) {
             Param *p = *(Param **)vecAt(&f->params, 0);
             /* The shape is judged by shape and not through `ttBase`: resolving a view
-             * lands on the struct behind it, which no longer says `slice`. */
+             * lands on the struct behind it, which does not say `slice`. */
             Type *eo = ttIsViewType(p->type) ? *(Type **)vecAt(&p->type->targs, 0) : NULL;
             Type *ei = eo && ttIsViewType(eo) ? ttBase(*(Type **)vecAt(&eo->targs, 0)) : NULL;
             bool ok = ei && ei->kind == TY_BUILTIN && ei->name && strcmp(ei->name, "u8") == 0;
@@ -4186,12 +4163,8 @@ static void checkFunc(Checker *c, FuncDef *f) {
     planSetYieldType(f, planIsCoro(f)
         ? *(Type **)vecAt(&f->ret->targs, f->ret->targs.len - 1) : NULL);
     if (planIsCoro(f)) coroSetup(c, f);
-    /* **Retired**: this used to reject a parameter typed `coroutine<T>`, on the grounds that the
-     * representation was a marker rather than a value. The unified handle (CONCURRENCY.md §4.4) made
-     * those parameters legal, the check was switched off (`if (1 || …) continue;` -- which also made
-     * everything below it unreachable, error message and all), and the wrapper outlived the rule by
-     * long enough to be worth deleting rather than explaining. Git has the history if the old
-     * diagnostic is ever needed again. */
+    /* A parameter typed `coroutine<T>` is legal: the unified handle (CONCURRENCY.md §4.4), not a
+     * marker, is what the type stands for, so no check rejects such a parameter here. */
 
     c->curFunc = f;
     /* Instances share their template's body, so the scope of a body's results is the
@@ -4273,7 +4246,7 @@ static void checkFunc(Checker *c, FuncDef *f) {
      * below derives the same numbers from the whole control-flow structure instead:
      * stores raise a depth, merges take the maximum, and loops are iterated to a fixed
      * point. It reads the tree and writes only the depths, so every later reader sees a
-     * value that no longer depends on the order branches were visited.
+     * value that does not depend on the order branches were visited.
      *
      * See `docs/topics/ARENA-SOUNDNESS.md` section 9.3, item 3-a, and `src/check_dataflow.c`. */
     {
@@ -4407,7 +4380,7 @@ bool isConstInit(Expr *e) {
     /* A **lossless** conversion of a constant is one: `i64(3)` is `(int64_t)3` in C, which folds,
      * and a table's `size: i64(3)` field is written exactly that way. A conversion the checker marked
      * as needing a runtime check is **not** a constant -- it comes out as a call to a helper
-     * (`((uint64_t)extc_narrowU((uint64_t)(4096), ...))`, measured with `let PAGE: u64 = u64(4096)`),
+     * (`((uint64_t)extc_narrowU((uint64_t)(4096), ...))`, as for `let PAGE: u64 = u64(4096)`),
      * and gcc refuses that in a static initializer. Saying so here means the user gets "must be
      * initialized with a constant" instead of a gcc error in the product. */
     case EX_CONV: return !planConvCheck(e) && isConstInit(e->u.conv.operand);
@@ -4716,9 +4689,9 @@ static void runOpCheck(Checker *c, OpCheck *ec, Vec *params, Vec *targs, const c
      * **not** this function's business: `typeSupportsOp` below is the authority on "can this
      * type be compared with that one" -- it accepts native numerics, judges an array by its
      * element type **and the same array type on the other side**, and finds an operator method
-     * for structs. An early `return` here used to skip all of that whenever the left operand was
-     * not a struct, so a `[1]i32 == i32` slipped through and the emitted descriptor comparison
-     * read 8 bytes out of a 4-byte operand (ASan: stack-buffer-overflow in `extc_eq`, found by
+     * for structs. Asking "is the left operand a struct?" first skips all of that for
+     * every other type, so a `[1]i32 == i32` slips through and the emitted descriptor comparison
+     * reads 8 bytes out of a 4-byte operand (ASan: stack-buffer-overflow in `extc_eq`, found by
      * tools/fuzz.py in a mutation of examples/generic-free-fn.extc). Let the authority decide. */
     if (!typeSupportsOp(tt, lt, ec->op, rt2)) {
         const char *op = ec->op;
@@ -5162,9 +5135,9 @@ static void roundMakesPool(CloseCtx *cx, ReachKind k, bool *changed) {
  *
  * The home/zone passes (the transitive closure, the settle pass) all need "every function of this
  * module": its free functions, every struct's methods, and the methods attached by `impl` blocks.
- * The last group used to be missing: an `impl` block normally lives in a *different* module from
- * the type it extends (`impl ostream` in `stl::stringio`, the type in `std::io`), and the module
- * carrying the block is the entry module (measured: `impls=1 structs=12 funcs=51`).
+ * The `impl` group belongs here even though an `impl` block normally lives in a *different* module
+ * from the type it extends (`impl ostream` in `stl::stringio`, the type in `std::io`): the module
+ * carrying the block is the entry module.
  *
  * Spelling it out in one place is the point: it was written out four times (twice as `all`, twice
  * as `allF`), which is how one copy quietly falls out of step with the others. Sites are moved over
@@ -5302,12 +5275,11 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     vecInit(&c.stores, arena, sizeof(StoreSite *));    /* long-running: "stored at level k" facts */
     /* Must be initialized here, before any pass.
      *
-     * `curArenaSites` used to be `vecInit`ed inside `checkFunc` only, while
-     * `checkGlobals` runs before the first `checkFunc`. A top-level initializer with a
-     * `new` (`var G = new i32`) or a call to a function that needs a home arena
-     * (`let G = helper()`) then pushed onto an uninitialized Vec, so `vecGrow` reached
-     * `arenaAlloc(NULL)` and the compiler died with SIGSEGV instead of reporting "a
-     * global can only be initialized with a constant". */
+     * `checkGlobals` runs before the first `checkFunc`, so initializing `curArenaSites` inside
+     * `checkFunc` alone is too late: a top-level initializer with a `new` (`var G = new i32`) or a
+     * call to a function that needs a home arena (`let G = helper()`) pushes onto an uninitialized
+     * Vec, so `vecGrow` reaches `arenaAlloc(NULL)` and the compiler dies with SIGSEGV instead of
+     * reporting "a global can only be initialized with a constant". */
     vecInit(&c.curArenaSites, arena, sizeof(Expr *));
 
     c.tI32  = ttFromName(tt, "i32");
@@ -5732,11 +5704,10 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         /* (1) Type instances (an operator used on a method's `T`). A free function has no
          * owner, so it has no type instances; it is covered by (2).
          *
-         * This used to be `if (!ec->owner) goto done;`, which skipped (2) as well: every
-         * `T: ==` inside a free generic function was left to code generation, whose
-         * message happens to be word for word the same, so the half never ran and nobody
-         * noticed. Code generation is the wrong place for it - it cannot see the `%`-on-
-         * float case at all - so the loop boundary is written out here. */
+         * The two branches are separate on purpose: a `goto done` when `ec->owner` is NULL
+         * would skip (2) as well, leaving every `T: ==` inside a free generic function to
+         * code generation, whose message happens to be word for word the same -- and which
+         * cannot see the `%`-on-float case at all. So the loop boundary is written out here. */
         if (ec->owner) {
             for (size_t j = 0; j < tt->instances.len; j++) {
                 Type *inst = *(Type **)vecAt(&tt->instances, j);
@@ -5808,8 +5779,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
      * types. The loop above is coroutine-only (it skips instances that already have a frame), and the
      * substitution that would normally intern such a type happens during **body emission** -- after
      * code generation built its unit list and emitted the struct definitions, so the struct never
-     * appeared (`unknown type name 'pair_i64'`, tools/attack.py W9; measured: the hook inside the
-     * coroutine loop never ran for `mk<i64>`). */
+     * appeared (`unknown type name 'pair_i64'`, tools/attack.py W9). */
     for (size_t j = 0; j < c.funcInsts.len; j++) {
         FuncDef *fi = *(FuncDef **)vecAt(&c.funcInsts, j);
         if (fi && planTemplate(fi)) internLocalTypes(&c, fi);
@@ -5841,9 +5811,9 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
      * A generic struct that holds another generic instance (`vals: pool<V>`) declares that field
      * with a parameter, so checking the template interns nothing: `pool<V>` is not concrete, and
      * correctly so. The concrete `pool<i32>` only comes into being when the field type is
-     * substituted with the instance's arguments -- which used to happen during code generation,
-     * long after code generation had snapshotted the instance table. The mangled call was
-     * emitted, the callee's functions never were, and the C compiler reported
+     * substituted with the instance's arguments. Leaving that to code generation is too late: it
+     * snapshots the instance table first, so the mangled call is emitted while the callee's
+     * functions are not, and the C compiler reports
      * `implicit declaration of function 'pool$pool_i32_withCap'`.
      *
      * Substituting here is what interns it in time. It is also required for plain correctness:
@@ -5904,19 +5874,18 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
 
     /* ----------------------------- effect summaries, recomputed per instance
      *
-     * The summary used to be computed once, on the template (the call in `checkFunc`),
-     * where `T` is opaque, so the `carrier` test had to be patched with `mentionsParam`:
-     * "anything mentioning `T` counts as carrying a reference". That charged the `Cont`
+     * On the template `T` is opaque, so the `carrier` test needs `mentionsParam`:
+     * "anything mentioning `T` counts as carrying a reference". That charges the `Cont`
      * bit to instances such as `varArray<i32>` that carry no reference at all -- a loss
      * of precision, not a wrong answer.
      *
      * Here the summary is recomputed inside each instance's substitution context
-     * (`c.substParams` / `c.substArgs` set). The `carrier` line now goes through
+     * (`c.substParams` / `c.substArgs` set). The `carrier` line goes through
      * `tsub(c, e->type)`, so `carrier` is false when `T = i32` and that bit stays clear,
      * while `T = slice<u8>` still sets it. Safety rests on the latter case.
      *
-     * The `mentionsParam` clause cannot be deleted in place of this recompute: measured
-     * without it, `tests/errors/generic_borrowed_store.extc` went from rejected to
+     * The `mentionsParam` clause cannot be deleted in place of this recompute: without it,
+     * `tests/errors/generic_borrowed_store.extc` goes from rejected to
      * accepted, with a real dangling reference. That clause plugs a hole; it is not
      * redundant conservatism.
      *
@@ -6020,9 +5989,9 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
      * authorities: an out-parameter allocation fell from the home arena back to a block
      * arena, which is what a golden test caught.
      *
-     * Now, once the closure has run, every `new` in a function that needs a home arena is
-     * rewritten to `ARENA_HOME`, so codegen's `arenaRefAt` no longer consults `g->hasHome`
-     * and only translates the number the checker produced. */
+     * Once the closure has run, every `new` in a function that needs a home arena is
+     * rewritten to `ARENA_HOME`, so codegen's `arenaRefAt` consults only the number the
+     * checker produced, never a per-function home flag. */
     {
         Vec all; allFunctions(arena, m, &all);
         /* An instance's arena sites are the template's arena sites.
@@ -6064,7 +6033,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
          *
          * So, after the closure above (all bodies checked, `arenaSites` final), recompute
          * it once for every function -- instances and methods included -- using the
-         * substituted return type. Declaration order no longer matters.
+         * substituted return type. Declaration order does not matter.
          *
          * Only the direct criterion is recomputed here; the "needs a home arena because it
          * calls one that does" half stays with the closure above. The recompute is
@@ -6094,10 +6063,9 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
          * `callsNeedsHome` and the summaries) and update `arenaArg` at those sites. */
         /* Run a few rounds (at most four). `computeEscapes` decides its own fixed point against the
          * `isEscapeeName` set as it stands at that moment, and the names it marks need other
-         * call sites to propagate them, so one round is not enough (measured: after the first
-         * round the escape set was still empty). A few rounds push it to the fixed point;
-         * there are few functions, so the cost is negligible, and `computeEscapes` itself is
-         * capped at 32 rounds. */
+         * call sites to propagate them, so one round is not enough. A few rounds push it to the
+         * fixed point; there are few functions, so the cost is negligible, and `computeEscapes`
+         * itself is capped at 32 rounds. */
         for (int round = 0; round < 4; round++) {
             bool changed = false;
             for (size_t i = 0; i < all.len; i++) {
@@ -6134,12 +6102,12 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             /* The minimum depth over the recorded destinations, with `seen` to say whether a
              * value has been seen at all (INV-S).
              *
-             * `nd == 0` used to double as "nothing seen yet" and as "this destination lives
-             * outside the frame" -- and depth 0 is the *shallowest* there is, so the loop
-             * computed the **maximum** instead of the minimum: `argDepth = {0, 1}` came out as
-             * 1, and the call handed over the caller's own block arena where it had to hand over
-             * the home arena. The generated program then read a block that had already been
-             * released (heap-use-after-free). Two separate representations remove
+             * `nd == 0` must not double as "nothing seen yet" and as "this destination lives
+             * outside the frame": depth 0 is the *shallowest* there is, so a loop keyed on
+             * `nd` alone computes the **maximum** instead of the minimum -- `argDepth = {0, 1}`
+             * comes out as 1, and the call hands over the caller's own block arena where it has to
+             * hand over the home arena. The generated program then reads a block that has already
+             * been released (heap-use-after-free). Two separate representations remove
              * the ambiguity -- no argument recorded leaves `nd` at 0, which still means "home
              * arena", the conservative answer. */
             /* 目的地有多浅：与 zone 通道**共用一份**实现（U4； 的哨兵 bug 曾在这里
@@ -6196,11 +6164,9 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
                      *   - otherwise => the block level the solver produced, which inside a
                      *     loop means reclaimed every iteration.
                      *
-                     * This used to be an unconditional fallback: every `new` in a function
-                     * that needs a home arena went to the home arena, so per-iteration
-                     * temporaries that never escaped were pinned there until the frame ended.
-                     * Measured on the 50/25/25 shape over 2e6 iterations: 98 MB, while the
-                     * same shape with an inlined container needed only 50 MB. */
+                     * An unconditional "needs a home arena => home arena" fallback would pin
+                     * per-iteration temporaries that never escape there until the frame
+                     * ended. */
                     if (dbgOn("EXTC_DBG_MINAT"))
                         fprintf(stderr, "[minAt] %-8s line=%-4d minAt=%-3d arena=%d\n",
                                 f->name ? f->name : "?", site->line, anMinAt(site), planArenaLevel(site));
@@ -6233,12 +6199,12 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
                     /* A call site that hands an arena down is settled **after** the fixed
                      * point below, from the callee's `usesHome`, and deliberately not here:
                      * codegen appends the extra argument exactly when the callee's
-                     * `usesHome` is set, so the value has to come from that same flag. This
-                     * branch used to answer from the *owning* function's `needsHome`, which
-                     * is a different question (does this body have a home, not does the
-                     * callee take one) and left the sites it did not settle with a block
-                     * level - the caller then passed `&__extc_a[1]` while no such array was
-                     * declared, and `tests/arena-promoted/R2a` stopped compiling. */
+                     * `usesHome` is set, so the value has to come from that same flag.
+                     * Answering from the *owning* function's `needsHome` answers a
+                     * different question (does this body have a home, not does the
+                     * callee take one) and leaves the site with a block
+                     * level: the caller then passes `&__extc_a[1]` while no such array is
+                     * declared, and `tests/arena-promoted/R2a` stops compiling. */
                     (void)0;
                 }
             }
@@ -6278,7 +6244,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         /* Recompute every site's `refDepth` from its final level, whether or not the level
          * changed.
          *
-         * Why (measured with gdb on `tests/arena-promoted/C2_if_join_refbinding`): the
+         * Why: the
          * `anSetRefDepth(site, ...` in the placement loop above sits inside
          * `if (planArenaLevel(site) != want)`. For a site that the provisional pass had already
          * set to `ARENA_HOME` and the solver also placed in `ARENA_HOME`, the level did not
@@ -6338,8 +6304,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             if (!depthComesFromAlloc2(&c, rc->val, 0)) continue;
             /* Recompute unconditionally, not only downwards: the value frozen before the
              * solver ran can be too low as well. In the template round the `refDepth` of
-             * `new T[cap]` is still the not-yet-decided 0, and after solving it may be 1
-             * (measured on `container-of-view`: `[post] ... frozen=0 ... now=1`).
+             * `new T[cap]` is still the not-yet-decided 0, and after solving it may be 1.
              * Only shapes where `depthComesFromAlloc` holds are touched, so bindings (derived
              * from a parameter or from a call result) are never relaxed. */
             rc->depth = solvedDepth(rc->val);
@@ -6690,9 +6655,9 @@ static void coroCheckDeferred(Checker *c, Module *m) {
         /* A boxed coroutine always has a task: its frame lives in that task's place. */
         planSetCoroNeedsZone(cf, planMakesPool(cf) || planCoroBoxed(cf));
     }
-    /* **Instances** need the same answer, and this loop used to skip them, so a
-     * generic coroutine never got its place: allocations made inside it landed in the *caller's*
-     * zone, and nothing ever released the task (`live=20000` after 20000 finished
+    /* **Instances** need the same answer, so the loop below repeats the computation for them:
+     * skipping them leaves a generic coroutine without a place, so allocations made inside it land
+     * in the *caller's* zone, and nothing ever releases the task (`live=20000` after 20000 finished
      * tasks; the same omission as `coroNeedsZone` not being computed for an instance).
      * An instance shares its template's body, so the template's freshly computed answer is the
      * right one -- and a coercion records `coroBoxed` on whichever function owns the frame. */
@@ -6730,7 +6695,7 @@ static void coroCheckDeferred(Checker *c, Module *m) {
 
 bool stmtNeedsPlaceBoundary(Stmt *s, bool inCoro) {
     if (!s) return false;
-    /* A coroutine body has no place boundary any more, and that is measured, not assumed:
+    /* A coroutine body has no place boundary, for two reasons:
      *   - block arenas live **in the frame** (`arenaRefAt`), so an allocating block survives a
      *     suspension and its own exit still reclaims it;
      *   - a pool's storage is the **task's place**, not the block's -- `tests/coro/coro_pool.extc`

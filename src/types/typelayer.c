@@ -21,7 +21,7 @@ bool isLogicOp(const char *op) {
  *
  * The pair shares everything that is special about it: one native rule, the `!=` -> `==`
  * fallback, and the diagnostics that talk about comparability rather than ordering. The
- * test used to be spelled out at each of those places. */
+ * one test lives here, and every one of those places asks it. */
 bool isEqualityOp(const char *op) {
     return strcmp(op, "==") == 0 || strcmp(op, "!=") == 0;
 }
@@ -108,10 +108,10 @@ bool typeSupportsOp(TypeTable *tt, Type *t, const char *op, Type *rhs) {
         if (strcmp(op, "%") != 0 || ttIsInteger(t)) return true;
     }
     /* The compiler derives `==` for arrays, provided the elements can be compared -- and only
-     * against the **same** array type. This used to recurse into the element and ask whether the
-     * element compares with `rhs`, so `[1]i64 == i32` was approved at instantiation time (the
+     * against the **same** array type. Recursing into the element and asking whether the
+     * element compares with `rhs` approves `[1]i64 == i32` at instantiation time (the
      * deferred re-check runs once `T` is known and the element `i64` does compare with `i32`);
-     * the emitted descriptor comparison then read 8 bytes out of a 4-byte operand.
+     * the emitted descriptor comparison then reads 8 bytes out of a 4-byte operand.
      * ASan: stack-buffer-overflow in `extc_eq`, found by tools/fuzz.py in a mutation of
      * examples/generic-free-fn.extc (docs/topics/HARDENING.md 三点七). */
     if (isEq && t->kind == TY_ARRAY)

@@ -101,10 +101,9 @@ static int cmpNamePtr(const void *a, const void *b) {
  *   True when a function, struct, type, or global of the module already uses this name.
  *
  * Notes:
- *   - This is a compile-time optimisation. Asking the module-level vectors in turn made
- *     naming quadratic in their total length: a front end with N functions and N structs
- *     measured 35 ms at N = 500 and 1029 ms at N = 4000. One sorted table searched by
- *     binary search replaces it.
+ *   - This is a compile-time optimisation. Asking the module-level vectors in turn would
+ *     make naming quadratic in their total length; one sorted table searched by binary
+ *     search avoids that.
  *   - Module-level names are stable while checking (generic instances live in
  *     tt->enumInstances and in codegen's g.insts, never in m->*), so the table is rebuilt
  *     only when the combined length of those vectors changes.
@@ -150,7 +149,7 @@ static bool moduleNameTaken(Checker *c, const char *name) {
  *     reads deterministically and does not depend on C's own block-scope rules.
  *   - Module-level names (functions, structs, globals) have to be avoided as well,
  *     otherwise a local would shadow a function name in the generated C and `foo()`
- *     would no longer be callable.
+ *     would not be callable.
  *
  * Params:
  *   c    - checker holding the per-function name-use counters

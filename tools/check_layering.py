@@ -20,9 +20,8 @@ Deliberate exceptions, each with a reason (and a baseline entry):
     remove** (P2 of the plan: `forStep` becomes parser-owned syntax).
   - `check_dataflow.c` includes `check_internal.h`: it **is** a checker-side helper (its
     header `dataflow.h` sits at phase 4, next to `check_internal.h`), so this is an
-    in-layer include, not a cross-phase one. It was called `dataflow.c`, and the name put
-    it in the wrong layer, which is why the tool used to report it -- the file was renamed
-    rather than the rule bent.
+    in-layer include, not a cross-phase one. The file name and its header name agree on
+    that layer, so the tool accepts the include; the rule is not bent for it.
 
 Usage
 -----
@@ -56,7 +55,7 @@ PRIVATE = {"check_internal.h"}
 # The checker's own headers, in-layer for `check_*.c` by construction.
 CHECKER_OWN_HEADERS = frozenset({"check.h", "check_internal.h", "dataflow.h"})
 
-# The include order, measured from the headers' own DAG (`ast.h -> base.h`,
+# The include order, read off the headers' own DAG (`ast.h -> base.h`,
 # `plan.h -> ast.h results.h`, `check_internal.h -> check.h typelayer.h`, ...). A `.c` sits
 # at its own header's layer; the checker's files have no header and sit with the checker.
 LAYER_OF_H = {

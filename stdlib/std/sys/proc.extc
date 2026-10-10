@@ -6,14 +6,12 @@
  * the last path segment, so a reference reads `sysproc::exit`.
  *
  * ⚠️ This file is `proc` and the user-facing one is `std::proc`: the stdlib's layering
- * pattern is `std::X` over `std::sys::X`, so the two share a last segment -- which is
- * exactly the shape that used to resolve a qualified reference to **itself** (unbounded
- * recursion, no diagnostic: PLAN.md section 0.4, `#56`). That defect is fixed, and this
- * pair is now the standard library's own regression test for it: `std::proc::exit`
- * wraps `std::sys::proc::exit` and declares the same name, so if the loader ever binds
- * the qualified call back to this module, `proc::exit(7)` recurses instead of exiting
- * and `tests/io/exit-code.extc` fails loudly ✓
- * (It was briefly named `process` while the defect was open.)
+ * pattern is `std::X` over `std::sys::X`, so the two share a last segment -- a shape in
+ * which a qualified reference can resolve to **itself** (unbounded recursion, no
+ * diagnostic: PLAN.md section 0.4, `#56`). This pair is the standard library's own
+ * regression test for it: `std::proc::exit` wraps `std::sys::proc::exit` and declares the
+ * same name, so if the loader ever binds the qualified call back to this module,
+ * `proc::exit(7)` recurses instead of exiting and `tests/io/exit-code.extc` fails loudly ✓
  */
 extern!("libc") fn exit(code: i32) -> void
     effects Addr=0 Cont=0
@@ -25,11 +23,7 @@ extern!("libc") fn exit(code: i32) -> void
  * This is the primitive behind "one command, N workers": every child calls
  * `net::extc_tcp_listen_shared` (SO_REUSEPORT) and serves on its own core, so nothing is
  * shared between them and no sendability rule is involved -- which is why the multi-process
- * shape needs no compiler work at all (`docs/topics/CONCURRENCY.md` section 5.1).
- *
- * Measured 2026-09-28 on 8 P-cores, loopback, 256 connections, ping-pong: 1 process
- * 327,556 req/s => 8 processes 1,320,297 req/s (4.03x) at 15 MB RSS, against Go 1.26 with
- * 8 OS threads at 304,764 (0.93x) and nginx 1.28.3 with 8 workers at 1,064,775. */
+ * shape needs no compiler work at all (`docs/topics/CONCURRENCY.md` section 5.1). */
 extern!("libc") fn fork() -> i32
     effects Addr=0 Cont=0
 

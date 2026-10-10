@@ -5,9 +5,9 @@ Why this exists
 ---------------
 A grep for `->tmpl` finds uses, not owners.  A member with that name is declared by
 two structs today (`FuncDef` and `CallCheck`), so a rename or a move by field name
-alone catches the wrong one -- measured twice in this repository (a rename pass
-rewrote a `CallCheck` site into a `FuncDef` one and broke the build; a hand-written
-table first named `Type.tmpl`, which does not exist at all).
+alone catches the wrong one: a rename pass that rewrites a `CallCheck` site into a `FuncDef`
+one breaks the build, and a hand-written table can name `Type.tmpl`, which does not exist at
+all.
 
 What it does
 ------------
@@ -94,7 +94,7 @@ def struct_members(text: str):
 
 
 def all_structs(text: str):
-    """Same walk as `struct_members`, but over every struct: used to learn type names."""
+    """Same walk as `struct_members`, but over every struct, which is what learns type names."""
     code = strip_comments(text)
     for m in re.finditer(r"\bstruct\s+([A-Za-z_]\w*)\s*\{|\btypedef\s+struct\s*(?:\w+\s*)?\{", code):
         open_brace = code.index("{", m.start())
@@ -294,7 +294,7 @@ def collect(files, structs, type_names):
         seen = set()
         # One pattern, one token: the identifier the field is read from.  It also covers
         # `x->tmpl->y` (one site for `x`, one for the field used as a base) without a
-        # second pattern, which is what made an earlier version report phantom sites.
+        # second pattern; a second pattern reports phantom sites.
         pattern = r"([A-Za-z_]\w*)\s*(?:->|\.)\s*%s\b" % FIELD
         for m in re.finditer(pattern, code):
             pos = m.start(1)

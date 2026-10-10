@@ -55,10 +55,9 @@ static Sym *dfRootOf(Checker *c, Expr *e);
  *
  * Not every binding has a C name: a module-level constant imported from another
  * module binds to a symbol whose name is not mangled yet, so `cname` is NULL there.
- * Comparing such a binding against the fact table used to call strcmp on the NULL and
- * crash the compiler -- measured on a program that prints a struct and then reads from
- * stdin (the reader's `io::STDIN_FD` is exactly that kind of binding). A binding with no
- * C name is not a local this analysis tracks, so it matches nothing.
+ * The guard below returns before strcmp when either name is NULL, so strcmp is never
+ * called on a NULL (the reader's `io::STDIN_FD` is exactly that kind of binding), and
+ * a binding with no C name is not a local this analysis tracks, so it matches nothing.
  */
 static bool cnameEq(const char *a, const char *b) {
     if (!a || !b) return a == b;
@@ -177,11 +176,11 @@ static int dfExprDepth(Checker *c, const Facts *f, Expr *e, int hops) {
          * while the body was being checked; the block it was born in is the answer only
          * while nothing has moved it.
          *
-         * Reading `lexicalLevel` alone was a second answer to a question the level pass had
-         * already answered: measured on `examples/store-promotion`, `head = mid` promoted
-         * the `new node` behind `mid` to level 1, while this reported depth 2 for `head`,
-         * `mid` and `cell` alike -- and the data flow may only raise a depth, so the wrong
-         * answer survived the write-back. */
+         * `anMinAt` reports the level the promotion decided the site must live to. The
+         * lexical level is only the block the expression was born in, so reading it
+         * alone would be a second answer to a question the level pass has already
+         * answered; and the data flow may only raise a depth, so a wrong answer would
+         * survive the write-back. */
         if (anMinAt(e) >= 0) return anMinAt(e);
         return anLexicalLevel(e) > 0 ? anLexicalLevel(e) : 0;
     case EX_FIELD: {
@@ -453,12 +452,11 @@ void dfAnalyze(Checker *c, FuncDef *f, DfResult *out) {
     Facts facts;
     memset(&facts, 0, sizeof facts);
 
-    /* Nothing to do here. This used to be a "discovery" pass that was supposed to give the
-     * fact table a row for every binding; it called `raiseTo(&facts, p->cname, 0)`, and
-     * `raiseTo` returns immediately for a depth <= 0, so it created no rows at all --
-     * while the comment claimed otherwise. Readers tolerate an absent row (`dataflow.c`
-     * guards with `if (v)`), so the honest fix is to delete the loop rather than pretend
-     * an invariant that never held. */
+    /* The walk below is the whole analysis. Rows appear as it reaches each binding:
+     * `dfStmt` calls `raiseTo`/`raiseField`, which insert one through `factOf` --
+     * `raiseTo` only for a depth > 0, `raiseField` for any depth. Readers tolerate an
+     * absent row (`check_dataflow.c` guards with `if (v)`), and a binding not present
+     * has depth 0. */
     dfReg(); g_dfCalls++;
     dfBlock(c, f->body, &facts, 1);
 

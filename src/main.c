@@ -49,7 +49,7 @@ static void phase(const char *name, double t0) { if (timeOn()) fprintf(stderr, "
  *   outLen - receives the number of bytes read, excluding the terminator
  *
  * Returns:
- *   A NUL-terminated buffer, or NULL when the file cannot be opened or measured, or
+ *   A NUL-terminated buffer, or NULL when the file cannot be opened or sized, or
  *   is not seekable.
  *
  * Notes:
@@ -355,11 +355,12 @@ static void usage(const char *argv0) {
         "  --dump-effects   print each function's effect summary (Addr/Cont, arena rule)\n"
         "  --no-line-map    do not emit `#line` directives (default: emit them)\n"
         "\n"
-        /* This text used to say "debug switches (they never change the output)". Measured, that
-         * was false: `EXTC_NO_LEVELPASS` moves arena placement in 2 of the 414 golden programs, and
-         * `EXTC_SELFCHECK` turns a good build red. A documentation claim the code contradicts is
-         * worse than no claim -- so the two exceptions are named, and `tools/check_switches.py`
-         * keeps "every switch is either documented here or listed there with a reason" true. */
+        /* Two switches below change the output, so this header cannot claim they are all
+         * diagnostics-only: `EXTC_NO_LEVELPASS` moves arena placement in 2 of the 414 golden
+         * programs, and `EXTC_SELFCHECK` turns a good build red. A documentation claim the code
+         * contradicts is worse than no claim -- so the two exceptions are named, and
+         * `tools/check_switches.py` keeps "every switch is either documented here or listed there
+         * with a reason" true. */
         "debug switches -- diagnostics only, **except the two marked below**:\n"
         "  EXTC_DBG_ARENA=1     check the arena level the checker computed vs codegen\n"
         "  EXTC_DBG_QN=1        trace how a qualified name (a::b::c) is parsed/resolved\n"

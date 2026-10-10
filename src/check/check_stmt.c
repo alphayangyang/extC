@@ -231,9 +231,9 @@ static void checkBlockBody(Checker *c, Stmt *block) {
  */
 /* `global var x: T` / `global let x: T = c`: mark the binding as living outside every frame
  * (docs/topics/GLOBAL.md). Called from **both** declaration paths -- with and without an
- * initializer -- because the zero-init path returns early: marking only the with-init path left
- * `global var buf: [8]u8` unmarked, and a view of it was then rejected as "someone else's
- * storage" (measured). Codegen emits these as C block-scope `static`. */
+ * initializer -- because the zero-init path returns early: marking only the with-init path
+ * would leave `global var buf: [8]u8` unmarked, and a view of it would be rejected as
+ * "someone else's storage". Codegen emits these as C block-scope `static`. */
 static void pMarkGlobal(Checker *c, Stmt *s, Sym *sym) {
     if (!sym || !s->u.var.isGlobal) return;
     (void)c;
@@ -266,7 +266,7 @@ static void pMarkGlobal(Checker *c, Stmt *s, Sym *sym) {
  *
  * The error this produces is extC's own, with a source position. Leaving the case to C
  * would surface as gcc's "lvalue required as left operand of assignment" inside generated
- * code the user never wrote (measured on `mk().x = v`, 2026-10-09).
+ * code the user never wrote.
  */
 static bool assignTargetWritable(const Expr *e) {
     if (!e) return false;
@@ -886,13 +886,11 @@ void checkStmt(Checker *c, Stmt *s) {
              * `originOf` flattens a chain of bindings to the expression at its root, so
              * `h = g` makes the origin of `h` the root of `g` -- which is the struct
              * literal that put the allocation into `g`, and that is the expression a walk
-             * has to reach in order to find it. Without this the origin kept naming the
-             * initializer from the declaration, and a value binding declared empty and
-             * filled in later was unreachable: measured on
-             * `tests/arena-promoted/C3_if_join_wholevalue`, where `h` is declared as an
-             * empty box and then assigned a box holding the allocation, so every walk
-             * stopped at the empty declaration and the allocation stayed in the block arena
-             * that was released before the struct carrying it was returned.
+             * has to reach in order to find it. Without this the origin would keep naming
+             * the initializer from the declaration, so a value binding declared empty and
+             * filled in later stays unreachable: every walk stops at the empty declaration
+             * and the allocation stays in the block arena released before the struct
+             * carrying it is returned.
              *
              * Only a plain assignment to the binding itself updates it. `*q = v` and
              * `s.f = v` write into something the binding already refers to, so they leave
@@ -955,9 +953,10 @@ void checkStmt(Checker *c, Stmt *s) {
              * evaluated once before the loop, not once per round. */
             c->noHoist++;
             /* The condition is its own **place**: pushed as a scope so the allocation
-             * sites inside it get one level deeper, and measured so codegen knows whether to give
-             * it an arena of its own and release it every round. Without this, `while (new i64[N])[0]
-             * == 0` allocated at the enclosing block's level and grew with the rounds. */
+             * sites inside it get one level deeper, and whether the condition added an
+             * allocation site is recorded so codegen knows whether to give it an arena of
+             * its own and release it every round. Without this, `while (new i64[N])[0] == 0`
+             * would allocate at the enclosing block's level and grow with the rounds. */
             pushScope(c);
             const int sitesBefore = c->allocSites;
             expectBool(c, checkValue(c, s->u.whiles.cond), s->u.whiles.cond);
@@ -1163,11 +1162,11 @@ void checkStmt(Checker *c, Stmt *s) {
                  * 会拿这条事实再提一次，那时标志已经为真。 */
                 recordLvlFact(c, s->u.ret.value, 0);
                 /* `option<T>` and `result<T, E>` are **enum instances**: `TY_ENUM` carrying their
-                 * type arguments. This test used to ask for `TY_GENERIC` only, which is never true
-                 * for them, so the payload was never compared -- `return o?` from an
-                 * `option<i64>` into an `option<u8>` turned 1000 into 232 with no diagnostic at
-                 * all, while writing `option<u8>::some(1000)` directly was correctly rejected
-                 * (the same value, two answers). Compare against the payload of the
+                 * type arguments. `TY_GENERIC` is never true for them, so the test below accepts
+                 * `TY_ENUM` as well; otherwise the payload is not compared at all -- `return o?`
+                 * from an `option<i64>` into an `option<u8>` would silently turn 1000 into 232,
+                 * while writing `option<u8>::some(1000)` directly is rejected (the same value,
+                 * two answers). Compare against the payload of the
                  * enum instance -- `targs[0]` is the success type for both families. */
                 if (wb && wb->targs.len >= 1 && (wb->kind == TY_GENERIC || wb->kind == TY_ENUM))
                     checkAssignable(c, *(Type **)vecAt(&wb->targs, 0), vt,

@@ -135,20 +135,15 @@ typedef struct {
 
 /* ---- The runtime primitive block is emitted piece by piece ----
  *
- * It used to be four string literals that one text pass later took apart again, deciding
- * what was a definition by the *shape* of each line (ends with `{`, has a `(`, starts at
- * column zero, ...). Two places knew what a definition looks like, and nothing made them
- * agree: a change on the emitting side could silently make the pass stop recognizing a
- * definition (it simply stayed in the product) or recognize something that was not one.
- *
- * Now the block is a table of pieces. Every definition is registered with its name, its
+ * The block is a table of pieces. Every definition is registered with its name, its
  * kind and its exact span as it is emitted, and the dead-code decision reads that registry
- * instead of guessing. What is left in a product is decided from facts recorded at
- * emission time, and a line whose shape changes cannot silently change the answer. */
+ * instead of guessing by the *shape* of a line (ends with `{`, has a `(`, starts at column
+ * zero, ...). What is left in a product is decided from facts recorded at emission time,
+ * and a line whose shape changes cannot silently change the answer. */
 typedef enum {
     PRIM_SCAFFOLD = 0,  /* a comment, a blank line, or a `#if/#else/#endif` skeleton:
-                         * always emitted, so a dropped definition leaves exactly what the
-                         * text pass used to leave behind */
+                         * always emitted, so dropping a definition leaves the scaffolding
+                         * around it */
     PRIM_FUNC,          /* a function definition */
     PRIM_VAR,           /* a variable or typedef: one line */
     PRIM_MACRO          /* a `#define` line (one piece per line: the same macro may be
@@ -259,9 +254,9 @@ typedef struct {
                             * calls are emitted. The checker decides this
                             * (`planMayUseArena(f)`); it saves compile time. */
     /* Level-indexed tables, one slot per block level of the function being emitted (the same
-     * count `__extc_a` gets). They used to be fixed `[64]` arrays, which both aborted on a legal
-     * program (200 nested blocks tripped the assertion in `genBlockBody`) and had nothing to do
-     * with the array they index (). Sized and allocated per function in `genFunc`. */
+     * count `__extc_a` gets). They are sized and allocated per function in `genFunc` (`levelCap`
+     * slots); a fixed `[64]` array would abort on a legal program (200 nested blocks trip the
+     * assertion in `genBlockBody`) and has nothing to do with the array they index (). */
     int        *loopLevel;
     int        *loopStep;
     int         loopLen;
@@ -322,7 +317,7 @@ typedef struct {
     Buf         rtCout;
     /* `extc_cout_f64` - only appended when a call site actually reaches it. The library's
      * `<<(f64)` is its one user, so a program that never prints a float does not carry the
-     * formatter (measured: 9 lines of every `io::cout` program's generated C). */
+     * formatter. */
     Buf         rtCoutF64;
     bool        needCoutF64;
     bool        needCout;
@@ -440,12 +435,12 @@ typedef struct {
 /* One `!` unwrap helper: the runtime variant check plus the payload read, collected into a
  * function so the operand is an **argument** and is therefore evaluated exactly once.
  *
- * Why a function and not the comma expression this used to be: `(extc_tagAssert((x).tag,
+ * Why a function and not the comma expression: `(extc_tagAssert((x).tag,
  * …), (x).u.some._0)` names `x` twice, so an impure operand (`f()!`) would call `f` twice.
- * The old codegen answered that with a temporary in the **statement prefix**, which has no
- * place to live in a `while` condition (the checker rejected it: "cannot be evaluated ahead
- * of time"). Passing the option as a function argument evaluates it once and works in any
- * expression position, which is what `!` is: a postfix operator on a value.
+ * A temporary in the **statement prefix** has no place to live in a `while` condition (the
+ * checker rejects it: "cannot be evaluated ahead of time"). Passing the option as a function
+ * argument evaluates it once and works in any expression position, which is what `!` is: a
+ * postfix operator on a value.
  *
  * The helper is per `option`/`result` instance, so the C type of the tag constant is known
  * when its text is built (inside the substitution context) and no template survives. */
@@ -456,12 +451,11 @@ typedef struct {
 
 /* Format one line into a freshly allocated arena string -- **with no length limit**.
  *
- * There used to be a `char tmp[4096]` here whose comment claimed "every caller stays far below
- * that". It did not truncate loudly: a 5000-byte string literal produced a 4099-byte line, the
- * compiler exited **0 with no diagnostic**, and gcc then reported `missing terminating " character`
- * -- invalid C behind a successful exit. The corpus never emitted a line near 4096, so the gate
- * could not see it. Measuring first and allocating is the same shape `arenaPrintf` already uses,
- * and it makes the limit disappear rather than moving it. */
+ * The line is sized first (`vsnprintf(NULL, 0, ...)`) and then allocated, the same shape
+ * `arenaPrintf` uses, so no length limit exists to move or raise. A fixed-size buffer would
+ * not truncate loudly: a 5000-byte string literal would produce a 4099-byte line, the
+ * compiler would exit **0 with no diagnostic**, and gcc would then report `missing terminating
+ * " character` -- invalid C behind a successful exit, which no corpus program exercised. */
 static char *cgFormat(CG *g, const char *fmt, va_list ap) {
     va_list ap2;
     va_copy(ap2, ap);
@@ -585,8 +579,8 @@ static const char *cType(CG *g, Type *t) {
             /* Printing the handle's name **is** a use of it: whoever renders this type needs the
              * typedef. Registering the demand here (rather than only at the sites that create or
              * drive a coroutine) is what makes a data-position-only mention work: `struct holder
-             * { h: coroutine<i64> }` used to emit `extc_coro h;` with no typedef anywhere, and
-             * `stdlib/std/coro/scheduler.extc` did not compile because of it（缺 typedef 这一类问题）。*/
+             * { h: coroutine<i64> }` emits `extc_coro h;` and the typedef with it, so
+             * `stdlib/std/coro/scheduler.extc` compiles（缺 typedef 这一类问题）。*/
             if (t->sdef && isProtoType(t, "coroutine", 1)) { g->needCoroHandle = true; return "extc_coro"; }
             /* A synthesized coroutine frame: `struct <cname>$frame`, with the function's C name (so
              * methods and generic instances mangle the same way everywhere). */
@@ -603,8 +597,8 @@ static const char *cType(CG *g, Type *t) {
             /* Printing the handle's name **is** a use of it: whoever renders this type needs the
              * typedef. Registering the demand here (rather than only at the sites that create or
              * drive a coroutine) is what makes a data-position-only mention work: `struct holder
-             * { h: coroutine<i64> }` used to emit `extc_coro h;` with no typedef anywhere, and
-             * `stdlib/std/coro/scheduler.extc` did not compile because of it（缺 typedef 这一类问题）。*/
+             * { h: coroutine<i64> }` emits `extc_coro h;` and the typedef with it, so
+             * `stdlib/std/coro/scheduler.extc` compiles（缺 typedef 这一类问题）。*/
             if (t->sdef && isProtoType(t, "coroutine", 1)) { g->needCoroHandle = true; return "extc_coro"; }
             return t->name;                 /* already a decorated name */
         case TY_ARRAY:  return t->name;     /* likewise: array_15_i32 */
@@ -879,9 +873,10 @@ static void genViewIndexer(CG *g, Type *inst) {
     cgLine(g, "static inline %s *%s_index(%s v, int64_t i, const char *file, int line) {",
            cType(g, elem), inst->name, inst->name);
     g->indent++;
-    /* A view whose storage is gone has no `i` that could be in range: `data == NULL` with a
-     * non-zero `len` used to pass the bounds check and store straight through the null pointer
-     * (UBSan: "store to null pointer of type 'int32_t'", found by tools/fuzz.py in a mutation of
+    /* A view whose storage is gone has no `i` that could be in range: the `!v.data` test below
+     * traps before the index test, since `data == NULL` with a non-zero `len` would otherwise pass
+     * the bounds check and store straight through the null pointer (UBSan: "store to null pointer of
+     * type 'int32_t'", found by tools/fuzz.py in a mutation of
      * tests/pool/rt_promote.extc: a pool take returned nothing while the slice still claimed
      * length 4). The message says what actually happened instead of blaming the index. */
     cgLine(g, "if (!v.data) extc_trapMsg(file, line, \"the view has no storage\");");
@@ -934,12 +929,11 @@ static void genViewCopier(CG *g, Type *inst, bool unchecked) {
 
 /* Emit the index primitive of a view type on demand and return its name.
  *
- * The primitive used to be emitted from the list of type instances alone, and a call site
- * simply assumed it was there. That holds only while the instance is in the list: an index
- * inside a generic body is lowered with the *instance's* name (`slice_slice_u8_index`),
- * while the list is what decided whether the definition existed -- and a view whose element
- * type came from a type parameter was not in the list, so the generated C called a function
- * nobody had emitted and did not compile at all.
+ * This primitive is emitted on demand: the list of type instances alone is not enough, because an
+ * index inside a generic body is lowered with the *instance's* name (`slice_slice_u8_index`),
+ * while the list may not carry that instance -- a view whose element type came from a type
+ * parameter is not in it, so the generated C would call a function nobody had emitted and would
+ * not compile at all.
  *
  * Emitting on demand is what this file already does for slice helpers (`sliceHelper`), and it
  * keeps the dependency in one place: whoever needs the primitive emits it, and the name is
@@ -1275,19 +1269,17 @@ static void emitDescRegion(CG *g) {
     g->out = saved;
 }
 
-/* Per-type print functions are gone: `_debug`, `_writeText` and `_name` used to
- * be derived here, one printf sequence per type, which a synthetic stress
- * program turned into 2028 functions and 22.9% of its generated C without ever
- * printing anything. What remains is descriptor data plus one `extc_print`.
+/* Per-type print functions are gone: printing is descriptor data plus one
+ * `extc_print`, shared by the whole program. No `_debug`, `_writeText` or
+ * `_name` is derived per type.
  */
 
-/* `nativeCmp` used to live here: a second, coarser copy of "can C compare this type
- * natively with `==`?" that answered by kind alone. It said yes for every builtin and
- * every enum, so an instance of a generic that applied `%` to an `f64` - which the
- * checker rejects, because `%` is for integers - was emitted as C `%` and failed inside
- * gcc, in a file the user cannot read. The operator rule now comes from `typeSupportsOp`,
- * the same predicate the checker applies to concrete types, so there is one rule instead
- * of two that can disagree.
+/* The operator rule comes from `typeSupportsOp`, the same predicate the checker applies to
+ * concrete types, so there is one rule instead of two that can disagree. Answering "can C
+ * compare this type natively with `==`?" by kind alone says yes for every builtin and every
+ * enum, so an instance of a generic that applied `%` to an `f64` - which the checker rejects,
+ * because `%` is for integers - would be emitted as C `%` and fail inside gcc, in a file the
+ * user cannot read.
  */
 
 /* Find the user-defined operator method of a type.
@@ -1304,31 +1296,28 @@ static void emitDescRegion(CG *g) {
 static FuncDef *findOpMethod(TypeTable *tt, Type *t, const char *sym, Type *rhs, const char *fallback) {
     Type *b = ttBase(t);
     if (!b || (b->kind != TY_STRUCT && b->kind != TY_GENERIC) || !b->sdef) return NULL;
-    /* The checker's lookup, not a second copy of it. This file used to scan the method
-     * list itself and compare the operand type without substituting a generic receiver's
-     * arguments, while the checker did substitute them -- so for `slice<u8> == slice<u8>`
-     * the checker saw the method and code generation did not, took the "native" branch and
-     * emitted a bare C `==` on two structs. One lookup, one answer. */
+    /* The checker's lookup, not a second copy of it. Scanning the method list here and
+     * comparing the operand type without substituting a generic receiver's arguments would
+     * disagree with the checker's own lookup, which does substitute them: for `slice<u8> ==
+     * slice<u8>` this path misses the method, takes the "native" branch and emits a bare C
+     * `==` on two structs. One lookup, one answer. */
     FuncDef *m = findOperator(tt, b, sym, rhs);
     if (!m && fallback) m = findOperator(tt, b, fallback, rhs);
     return m;
 }
 
 /* `typeHasEq`, which recursively decided whether an element type could be
- * compared, is gone: code generation derives no `_eq` for arrays any more, so
+ * compared, is gone: code generation derives no `_eq` for arrays, so
  * nothing on this side asks the question. Comparability is decided by the
  * checker, which reports ``[2]p` cannot be compared: its element type `p` does
- * not define `==` `` when it is violated. The rule used to exist in two places
- * that had to be kept in sync by hand - a real bug came from exactly that - and
- * with one copy left, that class of bug is gone by construction.
+ * not define `==` `` when it is violated. One copy of the rule cannot drift out
+ * of sync with itself, so that class of bug is gone by construction.
  */
 
 /* ------------------------------------------------------------- structural `==`
  *
- * Structural comparison used to derive one `<T>_eq` function per array type -
- * 200 array types meant 2450 lines, 32% of the generated C in one stress
- * program. Now every type goes through the generic `extc_eq` plus its
- * descriptor.
+ * Every type goes through the generic `extc_eq` plus its descriptor; no
+ * `<T>_eq` function is derived per array type.
  *
  * `extc_eq(a, b, desc)` takes addresses, so each operand must be a place; an
  * operand that is not one is first stored in a temporary through the statement
@@ -1406,10 +1395,9 @@ static void genEqAdapter(CG *g, Type *t, FuncDef *m) {
     cgLine(g, "}");
 }
 
-/* The recursive element-comparison expression used to be built here; it has no
- * callers any more. Array equality goes through genEqCall and the generic
- * `extc_eq`, and struct or slice equality is emitted where the user's method is
- * called, in genBin below.
+/* Array equality goes through genEqCall and the generic `extc_eq`, and struct
+ * or slice equality is emitted where the user's method is called, in genBin
+ * below.
  */
 
 /* Emit a binary operation.
@@ -1467,9 +1455,9 @@ static const char *genBin(CG *g, Expr *e) {
      * The condition must not also require `!planNeedOp(e)`: a comparison inside a
      * generic is resolved at instantiation, and after substitution the element
      * type can well turn out to be an array - comparing two rows of a
-     * `slice<[6]i32>` is that case. That guard used to be here, so such a
-     * comparison fell through to the method lookup below and reported
-     * "`array_6_i32` needs to define `!=`". It was a false error. */
+     * `slice<[6]i32>` is that case. Adding `!planNeedOp(e)` to the condition would make such
+     * a comparison fall through to the method lookup below and report
+     * "`array_6_i32` needs to define `!=`" -- a false error. */
     if (!planCallee(e)) {
         Type *lt = ttBase(subst(g, e->u.bin.left->type));
         if (lt && lt->kind == TY_ARRAY &&
@@ -1596,11 +1584,10 @@ static bool needsExplicitZero(Type *t) {
      * enum has to be initialized field by field (`board b = (board){0};` is an `int`-to-enum
      * conversion, which clang reports as `-Wimplicit-int-enum-cast`). */
     /* Naming the enum's first variant instead of writing 0 removes clang's
-     * `-Wimplicit-int-enum-cast`, and it was measured: `examples/tour.extc` grew a nested initializer
-     * -
+     * `-Wimplicit-int-enum-cast`. The initializer is nested deeper in exchange -
      *     board b = (board){ .cell = (array_4_array_4_color){ { (array_4_color){ { color_red } } } }, ... };
-     * against `(board){0}` - which cost 492 bytes of generated code and is much harder to read. The
-     * warning is in the documented list instead (docs/WARNINGS.md section 3.1). */
+     * against `(board){0}`, which is harder to read. The warning is in the documented
+     * list instead (docs/WARNINGS.md section 3.1). */
     if (t->kind == TY_ENUM || t->kind == TY_ARRAY) return false;
     if (t->kind != TY_STRUCT || !t->sdef) return false;
     for (size_t i = 0; i < t->sdef->fields.len; i++) {
@@ -1688,7 +1675,7 @@ static const char *nullValue(CG *g, Type *t) {
  * the member array's); a struct brings one. The outermost level costs nothing: it is the compound
  * literal's own brace, which is why `zeroValue` writes `(T){ { ... } }` for an array.
  *
- * The counts were measured against gcc's `-Wmissing-braces`, which is enabled by `-Wall` and asks
+ * The brace counts answer gcc's `-Wmissing-braces`, which is enabled by `-Wall` and asks
  * for a brace per aggregate:
  *     [1025]i64      -> (T){ { 0 } }
  *     [4]?i64        -> (T){ { { 0 } } }
@@ -1793,10 +1780,10 @@ static const char *zeroValue(CG *g, Type *t) {
      * compiler reports it, rather than a null reference being inserted quietly.
      */
     /* The zero value of a `?ref T` is `null`, because a nullable reference does
-     * have one. Treating every reference as valueless used to make the
-     * zero-initialization of a struct with a `?ref` field emit that
-     * non-existent identifier; a real bug, found when `var l: list` failed to
-     * compile. */
+     * have one. Treating every reference as valueless would make the
+     * zero-initialization of a struct with a `?ref` field emit the
+     * non-existent identifier above (a real bug, found when `var l: list` failed
+     * to compile). */
     if (t->kind == TY_REF) return t->nullable ? nullValue(g, t)
                                               : "__extc_reference_has_no_zero_value__";
 
@@ -1818,8 +1805,8 @@ static const char *zeroInit(CG *g, Type *t) {
 /* Is the generated C expression of a `println` argument an lvalue, that is, can
  * its address be taken?
  *
- * This is the **one** owner of that question (`selfOperandAsParam` asks it too; the ambiguous
- * `isPlaceExpr` it used to share the job with is gone). Confusing the two breaks code:
+ * This is the **one** owner of that question (`selfOperandAsParam` asks it too).
+ * Confusing the two breaks code:
  *   - the slice expression `s[0..5]` is a place in extC, but its C form is
  *     `slice_u8_slice(s, 0, 5, "...", 54)`, a function call, and `&` on a call
  *     is illegal. That really happened: examples/slices.extc and
@@ -1830,8 +1817,7 @@ static const char *zeroInit(CG *g, Type *t) {
  *
  * Returns:
  *   false whenever the answer is uncertain. A wrong false merely costs one
- *   extra copy - what passing the argument by value to the old `_debug` did -
- *   while a wrong true produces C that does not compile.
+ *   extra copy, while a wrong true produces C that does not compile.
  */
 static bool printArgIsPlace(const Expr *e) {
     switch (e->kind) {
@@ -1932,11 +1918,11 @@ static void owPassCells(CG *g, Buf *b, Expr *e, size_t nargs, bool hasHome);
  * Two kinds exist -- the home arena (`usesHome`, `extc_arena *__extc_home`) and the zone
  * (`makesPool`, `int64_t __extc_home_zone`) -- and **both sides have to agree**: a call site must
  * pass what the definition's signature declares, or the generated C does not even compile
- * (`too few arguments to function ...`). That agreement used to be spelled out at nine places
- * (three call emitters, the assoc path, the coroutine path, the signature emitter), and a
- * definition with `__extc_home` while its call site passed nothing is exactly how they drifted.
+ * (`too few arguments to function ...`). Splitting that agreement across the call emitters, the
+ * assoc path, the coroutine path and the signature emitter is what lets a definition with
+ * `__extc_home` and a call site that passes nothing drift apart.
  *
- * Every site now asks these two functions instead. The compiler's own speed is irrelevant at this
+ * Every site asks these two functions instead. The compiler's own speed is irrelevant at this
  * scale; the emitted C is what runs, and decoupling the convention from its consumers is what keeps
  * this file maintainable.
  *
@@ -2791,14 +2777,12 @@ static const char *exGencall(CG *g, Expr *e) {
     /* `alloc<T>(n)`: ask the arena of the level the checker chose for the place of
      * n values of T, and hand back a pointer to it.
      *
-     * Zeroing is not this path's job and never was: `extc_arena_alloc` zeroes every
+     * Zeroing is not this path's job: `extc_arena_alloc` zeroes every
      * allocation, and that is what makes the language's promise hold -- a byte read
      * after its lifetime ends is always an initialized byte (SPEC section 0.6). It
      * does so for the cheapest sufficient set of bytes: a block obtained from
      * `calloc` is zero throughout, so only blocks that came back from the spare
-     * (where a previous life wrote) need the `memset`.
-     * `allocSlice<T>(n)` used to sit here and gave the zeroing as its reason for
-     * existing; it only spelled `new T[n]`, so it was removed (decision 81). */
+     * (where a previous life wrote) need the `memset`. */
     /* `poolSlice<T>(rid, n)` / `poolGive<T>(rid, s)`: the same shape, but the memory
      * belongs to the pool's own plate rather than to an arena (POOLS.md 2.1, PLAN
      * #85). `poolGive` is how `grow` hands the replaced buffer back, so a doubling
@@ -2899,8 +2883,7 @@ static const char *exCoalesce(CG *g, Expr *e) {
      * intended type visible in the generated C.
      *
      * Only a builtin scalar is cast this way: C cannot cast to an array
-     * type, so `option<[3]i32> ?? arr` would stop compiling, as was
-     * measured.
+     * type, so `option<[3]i32> ?? arr` would stop compiling.
      *
      * The cast goes to the result type, the payload T, not to
      * `option<T>` itself. Casting by the option's type is wrong and was
@@ -3011,9 +2994,9 @@ static const char *genExprInner(CG *g, Expr *e) {
                 if (special)
                     return isF32 ? arenaPrintf(g->arena, "(float)%s", special) : (char *)special;
                 /* **Round-trippable**, not `%g`: `%g` keeps six significant digits, which silently
-                 * changes the value of any literal that needs more (`4294967295.0` came out as
-                 * `4.29497e+09` -- measured: `x - 4294967296.0` gave 0 instead of -1, and a
-                 * conversion of that literal then trapped on a range it was inside). 17 digits
+                 * changes the value of any literal that needs more (`4294967295.0` would print as
+                 * `4.29497e+09`, so `x - 4294967296.0` gives 0 instead of -1, and a conversion of
+                 * that literal then traps on a range it is inside). 17 digits
                  * round-trip a `double` and 9 a `float` (the cast below is what makes the f32
                  * literal a float, so its digits only need to survive that). `%g` still drops
                  * trailing zeros, so ordinary literals (`2.5`, `0.5`) are unchanged. */
@@ -3287,9 +3270,9 @@ static const char *cgCond(CG *g, const char *e) {
  * payload at `u.<variant>._0`. main.c verifies that those names exist where they
  * are needed.
  *
- * `option` and `result` used to be structs with `has` and `ok` fields, which
- * this code read and rebuilt field by field. They are ordinary enums now, so
- * everything below goes through a tag comparison and a payload path.
+ * `option` and `result` are ordinary enums here, so everything below goes
+ * through a tag comparison and a payload path; there are no `has`/`ok` fields
+ * to read and rebuild.
  */
 typedef struct {
     const char *tmp;      /* holds the operand, evaluated exactly once */
@@ -3370,9 +3353,8 @@ static void cgRecLeave(CG *g) {
  * Every exit goes through one shared epilogue rather than repeating the release
  * sequence of the arenas at each return. The value is stored in `__extc_ret_v`,
  * the recursion depth is decremented, and control jumps to `__extc_ret`, where
- * that sequence appears once. Repeating it at every exit used to be one of the
- * largest single costs of gcc time on the stress programs, because each copy had
- * to be analysed on its own.
+ * that sequence appears once. Repeating it at every exit costs gcc time on the
+ * stress programs, because each copy has to be analysed on its own.
  *
  * Params:
  *   val - C expression of the value to return, or NULL to return nothing
@@ -3469,7 +3451,7 @@ static void lineMark(CG *g, Stmt *s) {
  * `Expr.arenaArg`: `ARENA_HOME` means this function's own home arena, and a
  * value of 1 or more means the block arena at that level. Code generation only
  * translates that decision and never makes one; a fallback that second-guessed
- * the checker here used to be a second authority on the same question.
+ * the checker here would be a second authority on the same question.
  *
  * Returns:
  *   A C expression denoting the arena, usable as a function argument.
@@ -3560,14 +3542,11 @@ static const char *homeArg(CG *g, int arenaArg) {
  *   `__extc_a[level]`, which is released when block `level` ends.
  *
  * Notes:
- *   - A fallback that returned `(*__extc_home)` whenever the function had a home
- *     arena was removed here. It was a second authority on the level, with the
- *     checker computing one and code generation deciding another; it existed
- *     only because the checker used to compute levels before the call graph was
- *     known. Now the checker rewrites every site from `FuncDef.arenaSites` once
- *     the closure is built, so the fallback is unnecessary, and removing it left
- *     the generated output byte-for-byte identical, which shows the two
- *     authorities agreed all along.
+ *   - No fallback second-guesses the level: a fallback that returned
+ *     `(*__extc_home)` whenever the function had a home arena would be a second
+ *     authority on the level, with the checker computing one and code generation
+ *     deciding another. The checker rewrites every site from `FuncDef.arenaSites`
+ *     once the closure is built, so nothing here has to decide.
  */
 static const char *arenaRefAt(CG *g, int level) {
     /* parallel::run 的调用链上（worker 与它调用的每个函数）⇒ 用**线程本地** arena：
@@ -3628,7 +3607,7 @@ static void arenaDriftCheck(CG *g, Expr *e, const char *what) {
  *   - Only the block's *own* statements are asked about, and a nested block is not walked
  *     into: a nested block is a place of its own with its own zone, and it answers for
  *     itself. A loop body is such a block, which is where the win is - a body that only
- *     calls `v.push` used to push and pop a zone per iteration.
+ *     calls `v.push` needs no zone of its own per iteration.
  *   - The summary is transitive through the callee (`FuncDef.makesPool`, computed by the
  *     checker as a least fixed point), because a library function is transparent to
  *     `place`: `vector<i32>::withCap` is what calls `extc_pool_new`, and it registers its
@@ -3657,9 +3636,8 @@ static void cgReleaseLevel(CG *g, int lvl) {
     /* A step keeps `noArena` (its prologue has no `__extc_a` and its returns take the direct path),
      * but it still releases block levels -- out of the frame's per-level arenas. */
     if (g->noArena && !g->coroFunc) return;   /* never allocates, so nothing to release */
-    /* Memory only. A block used to close the descriptors it owned first, which is why
-     * this is the one place a block release is emitted -- but files are the program's
-     * business now (decision 79), so there is nothing to close here. */
+    /* Memory only: files are the program's business (decision 79), so the one place a
+     * block release is emitted has nothing to close. */
     /* Regions first, then the arena: a pool's memory is its own malloc block, so the two are
      * independent, but releasing the pools that belong to this block is what the block's
      * release point is for (POOLS.md section 3.4 - leaving a block takes its subtree). */
@@ -4625,8 +4603,8 @@ static void genStmtInner(CG *g, Stmt *s) {
              * exactly that. The parser builds `x!` as an `EX_SIGN` node, the same node the prefix
              * `!x` uses, distinguished only by position (parser.c:2400-2412); here the **type** tells
              * them apart: a negation always yields `bool`, an unwrap never does. Wrapping every
-             * discarded value instead rewrote 194 generated files (measured) for nothing, and
-             * narrowing to "not a call" still rewrote 178 (`io::cout << x` is a binary expression). */
+             * discarded value instead would rewrite most generated files for nothing, and
+             * narrowing to "not a call" would still touch `io::cout << x`, a binary expression. */
             Type *xt = s->u.expr.expr->type;
             bool isBool = xt && xt->kind == TY_BUILTIN && xt->name && strcmp(xt->name, "bool") == 0;
             bool unwrap = s->u.expr.expr->kind == EX_SIGN && xt && xt->kind != TY_VOID && !isBool;
@@ -4720,17 +4698,18 @@ static bool stmtIsDefiniteReturn(Stmt *s) {
 
 /* Does this function reach itself, directly or through other calls?
  *
- * The answer decides whether a recursion guard is emitted. Runaway recursion
- * used to be silent: gcc either folded it into an endless loop that printed
- * nothing, or the stack overflowed and the OS reported a segmentation fault,
+ * The answer decides whether a recursion guard is emitted. Unguarded runaway
+ * recursion is silent: gcc either folds it into an endless loop that prints
+ * nothing, or the stack overflows and the OS reports a segmentation fault,
  * which is neither an extC message nor a position in the source. Only a
  * self-recursive function pays for the guard, so an ordinary call costs one
  * increment and nothing else.
  *
  * The reachability uses the call graph the checker already recorded in
  * `planCallee(e)`, so no second AST walker is needed, and it is transitive: in the
- * mutual recursion `g -> h -> g`, `g` counts as self-recursive. That shape is
- * the one that used to run for 60 seconds without printing anything.
+ * mutual recursion `g -> h -> g`, `g` counts as self-recursive. That shape is the
+ * one the guard is for: unguarded, it would run for 60 seconds without printing
+ * anything.
  *
  * Returns:
  *   true when some path through the call graph leads back to f.
@@ -4739,11 +4718,10 @@ static bool stmtIsDefiniteReturn(Stmt *s) {
  *   - The graph is small and the answer is computed once per generated function,
  *     so the plainest fixed-point iteration is good enough.
  */
-/* Is `f` reachable from itself? The walk itself is fine; what made it cubic was the *dedup*:
- * `seen` was a Vec scanned linearly for every edge, so the walk from a function that reaches k
- * others cost O(k^2), and the whole build paid that once per emitted function (measured:
- * cg-emit x7.7 per doubling, all of it inside this function's vecAt calls). A pointer-keyed set
- * answers the same question with the same result -- only the lookup changes, never the verdict. */
+/* Is `f` reachable from itself? The walk itself is fine; the *dedup* is what a linear scan
+ * would make cubic: scanning `seen` for every edge makes the walk from a function that reaches
+ * k others cost O(k^2), paid once per emitted function. A pointer-keyed set answers the same
+ * question with the same result -- only the lookup changes, never the verdict. */
 typedef struct { FuncDef **slot; size_t cap, len; } FuncSet;
 
 static void funcSetInit(FuncSet *s, Arena *a) {
@@ -4777,15 +4755,12 @@ static void funcSetAdd(FuncSet *s, Arena *a, FuncDef *p) {
         else if (s->slot[i] == p) return;
 }
 
-/* "Does f reach itself?" = "is f on a cycle of the call graph" -- a static property, but the walk
- * below used to answer it per emitted function over that function's whole reachable set: a
- * push-site histogram of vecPush (ASLR off, addr2line) put 5,124,827 of 5,619,689 pushes at
- * N=3200 on this one function, i.e. O(N^2). One DFS over the graph marks every function that
- * lies on a cycle -- a back edge to a still-grey node marks exactly the stack slice from that
- * node up -- and each query is then a lookup. Colours persist across roots, which is sound for
- * cycle detection: a cycle either was found from an earlier root or is still all white.
- * `fallback` counts the queries the analysis could not answer (it answers all of them; the old
- * walk stays as the exact answer for anything unexpected). */
+/* "Does f reach itself?" = "is f on a cycle of the call graph" -- a static property, but asking
+ * it per emitted function over that function's whole reachable set is O(N^2). One DFS over the
+ * graph marks every function that lies on a cycle -- a back edge to a still-grey node marks
+ * exactly the stack slice from that node up -- and each query is then a lookup. Colours persist
+ * across roots, which is sound for cycle detection: a cycle either was found from an earlier
+ * root or is still all white. */
 static FuncSet g_cycSeen, g_cycOn, g_cycGrey, g_cycBlack;
 static int    g_cycReady;
 static Vec    g_cycStack;
@@ -4812,7 +4787,7 @@ static void cycDfs(CG *g, FuncDef *f) {
         }
     }
     g_cycStack.len--;                                        /* pop */
-    funcSetAdd(&g_cycBlack, g->arena, f);                     /* black now: no longer a back edge */
+    funcSetAdd(&g_cycBlack, g->arena, f);                     /* black: finished, never a back edge */
 }
 
 static bool cycleSaysRecursive(CG *g, FuncDef *f) {
@@ -4831,10 +4806,7 @@ static bool cycleSaysRecursive(CG *g, FuncDef *f) {
 static bool funcCallsItself(CG *g, FuncDef *f) {
     if (!f || !f->body) return false;
     /* Exact: the DFS sees the whole reachable subgraph of f, so a cycle through f is found in f's
-     * own run. This used to sit behind `if (g_cycReady || 1)` with a 22-line fallback walk below it:
-     * the guard is always true, so the walk was unreachable, and `g_cycFellBack` existed only to keep
-     * `-Wunused` quiet (it was `(void)`-ed and never written). Both are gone -- git has the walk if a
-     * fallback is ever wanted again. */
+     * own run, and no fallback walk is needed. */
     return cycleSaysRecursive(g, f);
 }
 
@@ -4865,8 +4837,8 @@ static bool coroProvisional(Vec *targs) {
 }
 
 /* The coroutines that are actually emitted: instances of a coroutine, never a generic template and
- * never a provisional instance (`gen_T`). Every loop below that used to `continue` on `planTemplate(cf)` was
- * skipping exactly the wrong set -- the instance is what `genFunc` emits, and a template never is
+ * never a provisional instance (`gen_T`). A loop that `continue`s on `planTemplate(cf)` skips
+ * exactly the wrong set -- the instance is what `genFunc` emits, and a template never is
  * (tools/attack.py F4 + B7). */
 static bool coroEmitted(FuncDef *f) {
     if (!f || !planIsCoro(f)) return false;
@@ -4991,8 +4963,8 @@ static void genCoroDecls(CG *g, Module *m) {
     genCoroHandleDecls(g, m);
     for (size_t i = 0; i < m->funcs.len; i++) {
         FuncDef *f = *(FuncDef **)vecAt(&m->funcs, i);
-        /* Instances emit too: `planTemplate(f)` used to be skipped here, so a generic coroutine got no
-         * `$next` at all -- the handle dispatcher then called `$step` directly, which neither makes
+        /* Instances emit too: skipping `planTemplate(f)` here would leave a generic coroutine with no
+         * `$next` at all -- the handle dispatcher would then call `$step` directly, which neither makes
          * the task's place current nor ends the task (). A *template* still has type
          * parameters left, which is what the second test excludes. */
         if (!f || !planIsCoro(f) || f->typeParams.len > 0) continue;
@@ -5965,9 +5937,9 @@ static void scanTypeForUnits(Arena *arena, Vec *units, Type *t, int depth) {
 /* Scan everything one unit mentions and add the instances found.
  *
  * Three places are walked: the fields, the signatures of the methods - both the
- * parameters and the return type, which is where the closure used to miss an
- * instance - and the payloads of an enum's variants. A generic instance
- * substitutes its own type arguments first.
+ * parameters and the return type, which is where an instance can hide - and the
+ * payloads of an enum's variants. A generic instance substitutes its own type
+ * arguments first.
  */
 static void scanUnitForUnits(Arena *arena, TypeTable *tt, Vec *units, SUnit *u) {
     Vec *tps = NULL; Vec *tas = NULL;
@@ -6494,10 +6466,9 @@ static size_t countMentionsIn(CG *g, const char *hay, size_t n, const char *need
 
 /* How many times does `name` appear in this text *outside* the given spans?
  *
- * This is the question the descriptor phase asks, and it used to be answered by copying the whole
- * unit, cutting the pieces out of the copy and counting what was left: one full copy per candidate
- * (a hundred candidates against a hundred kilobytes) showed up as a quarter of the compile time in
- * a callgrind profile. Walking the text once and skipping the spans says the same thing.
+ * This is the question the descriptor phase asks. Walking the text once and skipping the spans
+ * answers it; copying the whole unit, cutting the pieces out of the copy and counting what is
+ * left would cost one full copy per candidate (a hundred candidates against a hundred kilobytes).
  *
  * Literals and comments are skipped, as everywhere else: a name inside a string is not a use. */
 static size_t countMentionsOutside(const char *hay, const char *name,
@@ -6644,9 +6615,9 @@ static void dropUnreferenced(CG *g, Buf *out) {
         if (total < 2) continue;                                   /* no declaration + definition */
         char  *pt = strstr(text, df->proto);
         /* The definition is located by its signature line: the passes above rewrite the inside of
-         * bodies, so the copy taken at generation time often no longer matches - and every function
-         * that was touched that way survived this phase, which is where the remaining dead code
-         * (`fs$outPut`, `pcg32_withStream`, `io$reader_fill`) came from. */
+         * bodies, so the copy taken at generation time can stop matching the text. Without this
+         * second lookup, a function whose body was rewritten would survive this phase -- exactly
+         * the shape of the remaining dead code (`fs$outPut`, `pcg32_withStream`, `io$reader_fill`). */
         size_t blen = 0;
         char  *bd = funcDefStart(text, df, &blen);
         if (!pt || !bd || bd < pt || !blen) continue;               /* not both, in order */
@@ -6834,10 +6805,10 @@ static void markUncalledFunctions(CG *g, Buf *out) {
         if (pt && pt < bd) own++;
         if (bd) (void)blen;
         if (((size_t)countGet(&counts, df->name, strlen(df->name))) != own) continue;   /* something calls it: leave it alone */
-        /* The attribute goes at the start of the declaration. It used to be looked up by the
-         * literal `static `, which missed every `@inline` function: those are declared through the
-         * `EXTC_INLINE` macro, so no `static` is spelled out (`io$pairsReady` in
-         * `tests/io/stream-file.extc` kept its warning that way). */
+        /* The attribute goes at the start of the declaration. Looking for the literal `static `
+         * would miss every `@inline` function: those are declared through the `EXTC_INLINE` macro,
+         * so no `static` is spelled out (`io$pairsReady` in `tests/io/stream-file.extc` kept its
+         * warning that way). */
         char *decl = pt ? pt : bd;
         while (*decl == ' ') decl++;
         if (decl >= text + len) continue;
@@ -7041,7 +7012,7 @@ static const PrimPiece PRIM_BLOCK[] = {
     { PRIM_MACRO, NULL, "#define EXTC_ARENA_SPARE_MAX (1 << 20)\n" },
     { PRIM_SCAFFOLD, NULL, "#endif\n" },
     { PRIM_FUNC, "extc_arena_init", "static inline void extc_arena_init(extc_arena *a) { a->top = NULL; a->spare = NULL; }\n" },
-    { PRIM_FUNC, "extc_arena_release", "static inline void extc_arena_release(extc_arena *a) {\n    while (a->top) {\n        extc_ablock *p = a->top->prev;\n        /* Always keep one block back. Guarding this with \"the arena had more\n         * than one block\" looked like a saving and was the opposite: the\n         * block that pays off is precisely the single-block arena of a tight\n         * loop, and skipping it put the churn shape back to its old time\n         * (measured: 139.9ms -> 389.9ms). */\n        if (!a->spare && a->top->cap <= EXTC_ARENA_SPARE_MAX) {\n            a->spare = a->top; a->spare->prev = NULL; a->spare->fresh = 0;\n        } else {\n            free(a->top);\n        }\n        a->top = p;\n    }\n}" },
+    { PRIM_FUNC, "extc_arena_release", "static inline void extc_arena_release(extc_arena *a) {\n    while (a->top) {\n        extc_ablock *p = a->top->prev;\n        /* Always keep one block back. Guarding this with \"the arena had more\n         * than one block\" would look like a saving and be the opposite: the\n         * block that pays off is precisely the single-block arena of a tight\n         * loop, where reusing one block avoids a malloc and a free per\n         * iteration. */\n        if (!a->spare && a->top->cap <= EXTC_ARENA_SPARE_MAX) {\n            a->spare = a->top; a->spare->prev = NULL; a->spare->fresh = 0;\n        } else {\n            free(a->top);\n        }\n        a->top = p;\n    }\n}" },
     { PRIM_SCAFFOLD, NULL, "\n" },
     { PRIM_FUNC, "extc_arena_destroy", "static inline void extc_arena_destroy(extc_arena *a) {\n    extc_arena_release(a);\n    if (a->spare) { free(a->spare); a->spare = NULL; }\n}" },
     { PRIM_SCAFFOLD, NULL, "\n/* Explicit conversions: narrowing, sign change, or float-to-integer. A value that\n * does not fit traps, reporting the source position. */\n" },
@@ -7062,7 +7033,7 @@ static const PrimPiece PRIM_BLOCK[] = {
     { PRIM_MACRO, NULL, "#define EXTC_MALLOC\n" },
     { PRIM_MACRO, NULL, "#define EXTC_NOINLINE\n" },
     { PRIM_SCAFFOLD, NULL, "#endif\n" },
-    { PRIM_FUNC, "extc_arena_alloc", "static EXTC_MALLOC EXTC_NOINLINE void *extc_arena_alloc(extc_arena *a, int64_t n, const char *f, int l) {\n    if (n <= 0) n = 1;\n    n = (n + 7) & ~(int64_t)7;\n    /* Adopt the spare only when the arena is empty.\n     *\n     * This is one test on a pointer that is NULL in the common case, which\n     * matters: an allocation in a loop runs this code millions of times, and\n     * asking 'is the spare big enough for n' on every call costs extra work for\n     * no benefit -- the spare\n     * is a whole block, so `cap >= n` is already true whenever the arena is\n     * empty enough to want it. */\n    if (!a->top && a->spare) { a->top = a->spare; a->spare = NULL; a->top->used = 0; }\n    if (!a->top || a->top->cap - a->top->used < n) {\n        /* Block size: the request, grown by doubling, with a small floor.\n         *\n         * A flat floor costs that much per **task**: a coroutine's frame is ~100 bytes, so a\n         * flat 4096 floor costs 4 KB per task. Doubling keeps the malloc count of an allocation loop the same\n         * after a few blocks while a one-shot allocation (the common case in a coroutine)\n         * pays only for what it asks. */\n        int64_t cap = n > 64 ? n : 64;\n        if (a->top && a->top->cap < (INT64_C(1) << 20) && cap < a->top->cap * 2)\n            cap = a->top->cap * 2;\n        extc_ablock *b = (extc_ablock *)calloc(1, sizeof(extc_ablock) + (size_t)cap);\n        if (!b) { fprintf(stderr, \"%s:%d: trap: out of arena memory\"\n                        \" (this allocation wanted %lld bytes)\\n\",\n                        f, l, (long long)n); extc_die(1); }\n        b->prev = a->top; b->cap = cap; b->used = 0; b->fresh = 1;\n        /* `fresh` goes before `cap`/`used`: right before `data` it pushed the payload to\n         * offset 28, every allocation became 4-byte aligned, and storing an int64_t there\n         * is a misaligned store. */\n        a->top = b;\n    }\n    {\n        void *p = a->top->data + a->top->used;\n        a->top->used += n;\n        /* A block straight from `calloc` is zero **throughout**, and only the bytes not yet\n         * handed out are ever looked at again, so those need no clearing; a block that came\n         * back from the spare was written to in its previous life and does. The promise is\n         * unchanged either way: a byte read after its lifetime ends is an initialized byte\n         * (SPEC section 0.6). Skipping it matters for the one-shot large buffer: a 32 MiB\n         * `new` used to touch all 32 MiB even when the program wrote a few pages, and now\n         * it only pays for what it touches. */\n        if (!a->top->fresh) memset(p, 0, (size_t)n);\n        return p;\n    }\n}" },
+    { PRIM_FUNC, "extc_arena_alloc", "static EXTC_MALLOC EXTC_NOINLINE void *extc_arena_alloc(extc_arena *a, int64_t n, const char *f, int l) {\n    if (n <= 0) n = 1;\n    n = (n + 7) & ~(int64_t)7;\n    /* Adopt the spare only when the arena is empty.\n     *\n     * This is one test on a pointer that is NULL in the common case, which\n     * matters: an allocation in a loop runs this code millions of times, and\n     * asking 'is the spare big enough for n' on every call costs extra work for\n     * no benefit -- the spare\n     * is a whole block, so `cap >= n` is already true whenever the arena is\n     * empty enough to want it. */\n    if (!a->top && a->spare) { a->top = a->spare; a->spare = NULL; a->top->used = 0; }\n    if (!a->top || a->top->cap - a->top->used < n) {\n        /* Block size: the request, grown by doubling, with a small floor.\n         *\n         * A flat floor costs that much per **task**: a coroutine's frame is ~100 bytes, so a\n         * flat 4096 floor costs 4 KB per task. Doubling keeps the malloc count of an allocation loop the same\n         * after a few blocks while a one-shot allocation (the common case in a coroutine)\n         * pays only for what it asks. */\n        int64_t cap = n > 64 ? n : 64;\n        if (a->top && a->top->cap < (INT64_C(1) << 20) && cap < a->top->cap * 2)\n            cap = a->top->cap * 2;\n        extc_ablock *b = (extc_ablock *)calloc(1, sizeof(extc_ablock) + (size_t)cap);\n        if (!b) { fprintf(stderr, \"%s:%d: trap: out of arena memory\"\n                        \" (this allocation wanted %lld bytes)\\n\",\n                        f, l, (long long)n); extc_die(1); }\n        b->prev = a->top; b->cap = cap; b->used = 0; b->fresh = 1;\n        /* `fresh` goes before `cap`/`used`: right before `data` it pushed the payload to\n         * offset 28, every allocation became 4-byte aligned, and storing an int64_t there\n         * is a misaligned store. */\n        a->top = b;\n    }\n    {\n        void *p = a->top->data + a->top->used;\n        a->top->used += n;\n        /* A block straight from `calloc` is zero **throughout**, and only the bytes not yet\n         * handed out are ever looked at again, so those need no clearing; a block that came\n         * back from the spare was written to in its previous life and does. The promise is\n         * unchanged either way: a byte read after its lifetime ends is an initialized byte\n         * (SPEC section 0.6). Skipping it matters for the one-shot large buffer: a 32 MiB\n         * `new` pays only for what it touches, since a fresh block is\n         * already zero and needs no `memset`. */\n        if (!a->top->fresh) memset(p, 0, (size_t)n);\n        return p;\n    }\n}" },
     { PRIM_SCAFFOLD, NULL, "\n\n" },
 };
 
@@ -7210,8 +7181,8 @@ static void primSplice(CG *g, Buf *out) {
  * A row with `name` is a definition the worklist may leave out; a row without
  * one is scaffolding (comments, `#if/#else/#endif` skeletons) that is always
  * emitted, so a product whose primitive is unused looks exactly as it did when
- * the text-level pass removed the definition afterwards. Generated once from the
- * block that used to be four string literals; verified byte-for-byte. */
+ * the text-level pass removed the definition afterwards. Generated from the
+ * primitive text; verified byte-for-byte. */
 
 /* Extracted from `generateC` (no behaviour change: the body is moved verbatim). */
 static void emitPreamble(CG *g, Buf *out, Module *m) {
@@ -7483,8 +7454,8 @@ static void buildRuntimeText(CG *g) {
      *   - a struct delegates to the `fn ==` written by the user or the library,
      *     which is the `eq` slot of its descriptor, filled in by a one-line
      *     adapter that code generation emits
-     * So "one `_eq` function per array type" became "one unit of data per type":
-     * 200 distinct array types used to cost 2450 lines of derived code.
+     * So one `_eq` function per array type became one unit of data per type,
+     * rather than derived code per array type.
      */
     bufPuts(&g->rtEq,
         "static bool extc_eq(const void *a, const void *b, const ExtcDesc *d) {\n"
@@ -7813,10 +7784,9 @@ static void emitTypes(CG *g, Module *m, TypeTable *tt, Arena *arena) {
         if (!u->done) { unitBody(g, u); u->done = true; }
     }
 
-    /* A `<Type>_name` function used to be emitted here for an enum with
-     * payloads, reading `v.tag`, which is why it had to come after the
-     * definitions. The variant names now live in the `table` of the descriptor,
-     * so that section is gone. The tag constants of an enum are emitted where
+    /* The variant names live in the `table` of the descriptor, so no `<Type>_name`
+     * function is emitted for an enum with payloads and nothing here has to come
+     * after the definitions. The tag constants of an enum are emitted where
      * the enum itself is emitted and are unaffected. */
 
     for (size_t i = 0; i < tt->enumInstances.len; i++) {
@@ -7911,12 +7881,12 @@ static void emitProtos(CG *g, Module *m, Arena *arena) {
              * emitting too much is the safe direction. */
             if (planCoroProto(md)) continue;   /* emitted inline at the call site */
             if (!planUsed(md)) continue;
-            /* Instance methods are candidates too. They used to be left out, and that is
-             * exactly where the remaining `unused function` warnings lived: a library
-             * method of a generic instance (`slice<i32>::isEmpty`) is marked used by the
-             * checker even when the only thing that mentions it is dead code, and without
-             * a candidate here nothing ever took it back out. The pairing is by name, so
-             * the trap of #64 - one node, many instances - does not apply. */
+            /* Instance methods are candidates too. Leaving them out is exactly where
+             * `unused function` warnings come from: a library method of a generic instance
+             * (`slice<i32>::isEmpty`) is marked used by the checker even when the only thing
+             * that mentions it is dead code, and without a candidate here nothing takes it
+             * back out. The pairing is by name, so the trap of #64 - one node, many
+             * instances - does not apply. */
             size_t pb = g->out->len;
             genFuncProto(g, md);
             {
@@ -8114,12 +8084,12 @@ static void initRuntimeText(CG *g, Arena *arena) {
         "void extc_cout_put(uint8_t *p, int64_t n) {\n"
         "    if (n <= 0) return;\n"
         "    /* A single write **larger than the whole buffer** goes straight out, after the buffer\n"
-        "     * is drained so the order is kept. Without this the memcpy below ran past the end of\n"
-        "     * `extc_cout_buf`: measured, `io::cout << <300 KB slice>` aborted with glibc's\n"
+        "     * is drained so the order is kept. Without this the memcpy below runs past the end of\n"
+        "     * `extc_cout_buf`: `io::cout << <300 KB slice>` aborts with glibc's\n"
         "     * \"buffer overflow detected\" (ASan reports a global-buffer-overflow WRITE of the\n"
-        "     * whole length). The old guard only flushed when the buffer was *nearly* full, which\n"
-        "     * does nothing for a write bigger than the buffer itself; no test wrote more than\n"
-        "     * 256 KiB at once, which is why it survived. */\n"
+        "     * whole length). Flushing only when the buffer is *nearly* full does nothing for a\n"
+        "     * write bigger than the buffer itself; this branch takes a single write of a whole\n"
+        "     * buffer (256 KiB) or more. */\n"
         "    if (n >= (int64_t)sizeof extc_cout_buf) {\n"
         "        extc_cout_flush();\n"
         "        fwrite(p, 1, (size_t)n, stdout);\n"
@@ -8151,7 +8121,7 @@ static void initRuntimeText(CG *g, Arena *arena) {
         "/* ---- raw terminal: give it back even when the program dies ----\n"
         " * The library turns raw mode on through `extc_raw_enter`, handing over a copy of\n"
         " * the settings it found. The trap path then restores them through the dying hook\n"
-        " * above -- measured with `strace`: a program that traps in raw mode still issues\n"
+        " * above: a program that traps in raw mode still issues\n"
         " * the `TCSETS` that puts the terminal back before it exits.\n"
         " * The buffer is opaque bytes; the layout of `struct termios` is never named, and\n"
         " * `cfmakeraw` on the library side is what decides what raw means. */\n"
@@ -8259,11 +8229,9 @@ static void emitInstanceBodies(CG *g) {
              * Everything else keeps the previous treatment -- exempting all instance methods rewrote
              * 73 corpus files for nothing. */
             /* Always register the body: the prototype loop above already created this entry (with
-             * `proto`), and `deadFuncBody` only fills `off`/`len` on it. Skipping that call -- which is
-             * what the first `dyn` exemption did -- left the entry without a body, so
-             * `markUnusedParams` never saw it and a method that ignores `self` made the generated C
-             * fail `-Werror=unused-parameter` (tools/attack.py F1b + D9; measured: `body=NULL off=0
-             * len=0 proto=yes`). */
+             * `proto`), and `deadFuncBody` only fills `off`/`len` on it. An entry left without a
+             * body makes `markUnusedParams` skip it, so a method that ignores `self` makes the
+             * generated C fail `-Werror=unused-parameter` (tools/attack.py F1b + D9). */
             deadFuncBody(g, md, fb, g->out->len - fb);
             cgLine(g, "");
         }
@@ -8645,8 +8613,8 @@ static void emitLateRuntime(CG *g, Buf *out, Module *m, Arena *arena) {
          * whose only user is itself unused is still emitted. It is a definition like any
          * other, so it is registered here and dropUnreferenced takes it back out when the
          * finished unit does not name it (which is what gcc and clang report as an unused
-         * function). The attribute that used to silence that warning is gone: with this
-         * in place it was not only unnecessary, clang reports a warning *about* using it. */
+         * function). No `unused` attribute is needed for that, and clang reports a warning
+         * *about* using one. */
         SliceHelper *h = (SliceHelper *)vecAt(&g->helpers, i);
         DeadDef *d = arenaAllocZero(arena, sizeof *d);
         d->name = h->name;
@@ -8922,8 +8890,8 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
      *
      * What the caller and this runtime keep between them:
      *   - ranges are disjoint by construction: one atomic chunk counter hands out [lo,hi)
-     *     and a worker only writes what it was handed. Dynamic chunking also measured
-     *     better than a static split, because the scheduler is not fair;
+     *     and a worker only writes what it was handed. Dynamic chunking is also better
+     *     than a static split, because the scheduler is not fair;
      *   - every worker gets its **own arena** (`extc_tls_arena`), so "one region, one
      *     owner" stays true and two threads never touch the same block; the arena is
      *     released whole when the worker ends;
@@ -8932,8 +8900,8 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
      * POSIX only, and deliberately without `pthread.h`: generated C carries only the few
      * headers it wants (see the note near codegen.c:6432), and these two prototypes match
      * the glibc ABI (`pthread_t` is `unsigned long` there, and the attribute may be NULL).
-     * Threads were measured to pay only for compute-bound work: 8 P-cores gave 7.3x on a
-     * matrix multiply, while an echo server *lost* 45% going from 1 to 8 threads.
+     * Threads pay only for compute-bound work: 8 P-cores give 7.3x on a
+     * matrix multiply, while an echo server *loses* 45% going from 1 to 8 threads.
      *
      * This block on its own, self-tested 2026-09-28 (a chain of 80M integer mixes handed out
      * in 500 chunks, pinned to the 8 P-cores, best of 3): 1 thread 69 ms, 2 36 ms, 4 20 ms,
