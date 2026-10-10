@@ -23,7 +23,7 @@
  *     remaining entries is not preserved (the same trade `std::pool` makes, and the reason
  *     `atDense` is a valid name for the accessor);
  *   - growth doubles, and the old arrays are left to the arena (`stl/linmap` cannot free;
- *     a pool will reclaim them, see `docs/topics/POOLS.md`);
+ *     a pool will reclaim them, see);
  *   - indices returned by `find` are **positions**, valid only until the next `put` or
  *     `remove`; `keyAt` / `valAt` are what they are for.
  */

@@ -875,7 +875,7 @@ void checkStmt(Checker *c, Stmt *s) {
                 ckError(c, s->line,
                         "`yield` only works inside a coroutine: declare the function as"
                         " `fn %s(...) -> coroutine<T>` (that return type is what makes its body a"
-                        " coroutine; docs/topics/CONCURRENCY.md 4.4)",
+                        " coroutine)",
                         "`yield` outside a coroutine", cf ? cf->name : "f");
                 checkExpr(c, s->u.yield_.value);
                 return;
@@ -886,7 +886,7 @@ void checkStmt(Checker *c, Stmt *s) {
                         "A suspension may not sit inside a block that creates a pool: the pool's"
                         " place is released when the block exits, before the coroutine resumes."
                         " Move the pool out of that block, or move the `yield` out of it"
-                        " (rule 3, docs/topics/CONCURRENCY.md 12)",
+                        "",
                         "`yield` inside a reclaimed block");
             }
             Type *got = checkExpr(c, s->u.yield_.value);
@@ -941,7 +941,7 @@ void checkStmt(Checker *c, Stmt *s) {
                 checkExpr(c, s->u.ret.value);
                 ckError(c, s->line,
                         "A coroutine hands values out with `yield`; to finish early use a bare"
-                        " `return` (docs/topics/CONCURRENCY.md 4.4)",
+                        " `return`",
                         "`return e` is not how a coroutine ends");
                 return;
             }

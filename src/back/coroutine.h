@@ -1,6 +1,6 @@
 /**
  * @file coroutine.h
- * @brief 协程任务表：`coroutine<T>` 的运行期那一半（docs/topics/CONCURRENCY.md 4.4）。
+ * @brief 协程任务表：`coroutine<T>` 的运行期那一半。
  *
  * 与池注册表（pools.h）单独成文件同理：协程牵动好几遍，把它的运行期摊进 `codegen.c` 会重演
  * "每个文件里都有一点，哪个文件里都不完整"。属于编译器的工作留在编译器的文件里（`yield`

@@ -1,4 +1,4 @@
-/* The coroutine task table (docs/topics/CONCURRENCY.md 4.4, slice C).
+/* The coroutine task table.
  *
  * What a task is: the **place** a coroutine's storage hangs off. `spawn` enters that place
  * lazily and records it here; every step makes it current; the task's end releases the whole
@@ -38,7 +38,7 @@ void coroutineEmitRuntime(Arena *a, Buf *out) {
         "void    extc_pool_zoneLeaveTo(int64_t mark);\n"
         "int64_t extc_pool_zoneNewRoot(void);\n"
         "void    extc_pool_zoneFreeRoot(int64_t zi);\n"
-        "/* ---- coroutine task table (docs/topics/CONCURRENCY.md 4.4) ----\n"
+        "/* ---- coroutine task table ----\n"
         " * A task is the place its coroutine's storage hangs off: entered at the spawn, made\n"
         " * current for every step, and released in one go when the task ends. The table is what\n"
         " * makes the task owned rather than scoped -- running to completion and an explicit drop\n"

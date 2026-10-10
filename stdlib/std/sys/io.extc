@@ -1,5 +1,5 @@
-/* std/sys/io.extc -- the privileged layer for the io family (`docs/topics/IO.md`,
- * "tier 1 primitives"; `docs/topics/LIBS.md` section 5).
+/* std/sys/io.extc -- the privileged layer for the io family
+ * ("tier 1 primitives").
  *
  * Only the part that genuinely needs compiler or system privilege lives here: the C
  * function declarations plus their trust declarations. Other modules stand on this
@@ -23,7 +23,7 @@
  * NOTE -- why the trust declaration is required: `extern!` is a black box, so without
  *   a declaration the compiler has to assume the worst ("it may store your pointer
  *   beyond this frame"), which turns passing the address of a local into a compile
- *   error. See `docs/DECISIONS.md`.
+ *   error.
  */
 
 extern!("libc") fn read(fd: i32, buf: ref u8, n: i64) -> i64

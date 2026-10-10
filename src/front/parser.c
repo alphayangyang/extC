@@ -292,7 +292,7 @@ static Expr *parseFactor(Parser *p);
 static Expr *parseUnary(Parser *p);
 static Expr *parsePostfix(Parser *p);
 static Expr *parsePrimary(Parser *p);
-static Expr *parseLambda(Parser *p);   /* `fn(x: i64) -> i64 { ... }`, LAMBDA.md section 2 */
+static Expr *parseLambda(Parser *p);   /* `fn(x: i64) -> i64 { ... }`, */
 
 /**
  * @brief 判断 `n` 是不是十种标量内建类型名之一。
@@ -661,7 +661,7 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
             }
             /* `@frozen`：这个 struct 的布局**就是 C 的布局**（字段顺序、对齐、没有隐藏字段）。
              * 它是"按值过 C 边界"的门票，也是一句签字：编译器不审里面放了什么，代价由作者担
-             * —— 与 `effects` 同一类（C-ABI.md §9.8）。 */
+             * —— 与 `effects` 同一类。 */
             if (strcmp(nm->text, "frozen") == 0) {
                 if (frozen) {
                     ctxError(ctx, a->line, a->col, NULL, "`@frozen` appears twice");
@@ -1024,7 +1024,7 @@ static StructDef *parseStruct(Parser *p) {
         fd->isPrivate = priv;
 
         /* `effects Addr=… Cont=…` on a field: the signature of the function pointer this slot will
-         * hold (HEAP.md section 2 -- the callee is not a declaration, the host fills the slot at run
+         * hold ( -- the callee is not a declaration, the host fills the slot at run
          * time). The clause is read by the **same** routine a declaration uses, into a throw-away
          * `FuncDef`, and only the masks are kept: one parser for one syntax. It goes on the field's
          * own line, like every other part of a declaration here. */
@@ -1104,7 +1104,7 @@ static bool parseDottedName(Parser *p, Buf *out, const char *what) {
  * `extern!` 声明无函数体的做法，所以 trait 方法不需要第二条解析路径。
  *
  * 这里什么都不解析类型。签名里的 `Self` 按写出来的样子存；等到某个 `impl` 给出实现类型，
- * 它才有意义（见 ast.h 里的 `TraitDef`）。
+ * 它才有意义（`TraitDef`）。
  *
  * @param p  解析器。
  * @return   新的 TraitDef；出错时返回 `NULL`（已报告诊断）。
@@ -1167,7 +1167,7 @@ static TraitDef *parseTrait(Parser *p) {
         FuncDef *m = parseFunc(p);
         p->noBody = saved;
         if (!m) return NULL;
-        /* `Self` **is** a type parameter of the trait (see TraitDef in ast.h): giving every
+        /* `Self` **is** a type parameter of the trait (`TraitDef`): giving every
          * signature its own parameter list is what lets the existing `resolveSignature` resolve
          * `ref Self` with no knowledge of traits at all. */
         vecInit(&m->typeParams, p->arena, sizeof(void *));
@@ -1760,7 +1760,7 @@ static Type *parseType(Parser *p) {
  * @return   新的 Type 节点；出错时返回 `NULL`（已报告诊断）。
  */
 static Type *parseTypeInner(Parser *p) {
-    /* `dyn Trait` —— 动态分发值的类型（DYN.md 第 3 阶段）。与表达式形式一样，靠**形状**
+    /* `dyn Trait` —— 动态分发值的类型。与表达式形式一样，靠**形状**
      * 判断（`dyn` 后跟标识符），因为 `dyn` 在语言里不是保留字。 */
     if (at(p, "dyn") && pk(p, 1) && pk(p, 1)->kind == TK_IDENT) {
         take(p);
@@ -1848,7 +1848,7 @@ static Type *parseTypeInner(Parser *p) {
         return typeArray(p->arena, n->ival, elem);
     }
 
-    /* **类型**位置上的 `fn(A, B) -> R`：裸代码指针（`docs/topics/C-ABI.md`）。
+    /* **类型**位置上的 `fn(A, B) -> R`：裸代码指针。
      *
      * 拼写故意与 lambda literal's signature 相同，语言因此不必新增符号；差别在于这里的参数是
      * **类型**而不是 `name: Type`。这里只解析形状 —— 解析并驻留签名是 `ttResolve`'s job，
@@ -2115,7 +2115,7 @@ static Stmt *parseStmt(Parser *p) {
     }
     /* `global var x: T` / `global let x: T = c` —— **软关键字**（`global` 仍是合法标识符，
      * 不动词法表：把它变成保留字会破坏现有代码里拿它当名字的地方）。语义见
-     * docs/topics/GLOBAL.md：存储是全局的（深度 0），名字留在这个块里。 */
+     *：存储是全局的（深度 0），名字留在这个块里。 */
     if (at(p, "global")) {
         if (!accept(p, "global")) return NULL;
         p->sawGlobal = true;
@@ -2124,7 +2124,7 @@ static Stmt *parseStmt(Parser *p) {
     if (at(p, "if"))                   return parseIf(p);
     if (at(p, "while"))                return parseWhile(p);
     if (at(p, "for"))                  return parseFor(p);
-    /* `trap(msg)`：程序无法继续（见 ast.h 的 `ST_TRAP`）。靠**形状**识别（这个词后面跟
+    /* `trap(msg)`：程序无法继续（`ST_TRAP`）。靠**形状**识别（这个词后面跟
      * `(`），与 `ext` 运算符同一招：叫 `trap` 的变量、字段或参数照常可用，只有语句位置的
      * 调用才是这个内建。 */
     if (at(p, "trap") && pk(p, 1) && strcmp(pk(p, 1)->text, "(") == 0) {
@@ -2170,7 +2170,7 @@ static Stmt *parseStmt(Parser *p) {
     Expr *e = parseExpr(p);
     if (!e) return NULL;
 
-    /* `d.run { … }`: a **trailing block**, i.e. a domain's body (CONCURRENCY.md「`ext` 与调度域」).
+    /* `d.run { … }`: a **trailing block**, i.e. a domain's body.
      * It becomes a `ST_DOMAIN` statement: the block is not a value (so it must not be an expression)
      * and the shape is `receiver.field { … }`.
      *
@@ -2284,7 +2284,7 @@ static Stmt *parseVarDecl(Parser *p) {
         skipNl(p);
         /* `var got: T = yield e` -- the declaration **is** the yield statement, and `got` is a
          * coroutine-frame local: the frame holds it, and a resume re-runs the assignment from the
-         * frame's `in` slot (stage 2 of docs/topics/CONCURRENCY.md 4.4). */
+         * frame's `in` slot. */
         if (at(p, "yield")) {
             Token *yk = take(p);
             Stmt *ys = stmtNew(p->arena, ST_YIELD, yk->line);
@@ -3429,7 +3429,7 @@ static Expr *parseLambda(Parser *p) {
         e->u.lambda.ret = parseType(p);
         if (!e->u.lambda.ret) return NULL;
     }
-    /* 这是**转换**而不是字面量：`fn(i64) -> i64(p)`（`C-ABI.md` 9.9 节 ③）。两种形状只有在
+    /* 这是**转换**而不是字面量：`fn(i64) -> i64(p)`。两种形状只有在
      * 这里才能判定：a literal's body 是 `{`（或上面读过的捕获表 `[`），而转换继续跟 `(`。
      * 拼写与别的转换一致 —— `type(expr)` —— 它无歧义，是因为函数类型总会写出返回类型。 */
     if (at(p, "(")) {
@@ -3467,11 +3467,11 @@ static Expr *parseLambda(Parser *p) {
 static Expr *parsePrimary(Parser *p) {
     Token *t = cur(p);
 
-    /* `fn(x: i64) -> i64 { ... }`：闭包字面量（docs/topics/LAMBDA.md 的语法 B）。`fn` 只在
+    /* `fn(x: i64) -> i64 { ... }`：闭包字面量。`fn` 只在
      * **表达式**位置、且后面跟着 `(` 时进到这里，这正是它与声明的区别；顶层与 struct 体内
      * 各自的循环早就处理过它们的 `fn` 分支。复用 `fn` 让语言新增符号数为零，这正是语法 B
      * 的要点。 */
-    /* `fn(i64) -> i64(p)`: a **conversion**, not a literal (`C-ABI.md` section 9.9 piece ③).
+    /* `fn(i64) -> i64(p)`: a **conversion**, not a literal.
      *
      * The two shapes are told apart by the **parameter list**: a literal's parameters are
      * `name: Type` and a type's are bare types, so the token after the first parameter decides
@@ -3485,7 +3485,7 @@ static Expr *parsePrimary(Parser *p) {
     if (at(p, "fn") && pk(p, 1) && pk(p, 1)->text && strcmp(pk(p, 1)->text, "(") == 0)
         return parseLambda(p);
 
-    /* `dyn Trait(expr)` -- the construction for dynamic dispatch (DYN.md stage 1).
+    /* `dyn Trait(expr)` -- the construction for dynamic dispatch.
      *
      * Stage 1 keeps construction and the call in **one expression**: the mark set below travels
      * to the `EX_METHOD` node the postfix loop builds, and anything that is not a method call on
@@ -3508,7 +3508,7 @@ static Expr *parsePrimary(Parser *p) {
         Expr *payload = parseExpr(p);
         if (!payload) return NULL;
         if (!expect(p, ")", NULL)) return NULL;
-        /* `dyn Trait(x)` 作为**值**（DYN.md 第 3 阶段）。紧贴的方法调用
+        /* `dyn Trait(x)` 作为**值**。紧贴的方法调用
          * `dyn Trait(x).m(...)` 由后缀循环建出来，它把 **payload** 当作 call's receiver
          * —— 那条路径没有改动，stage-1/2 的判据跑的仍是同一段代码。 */
         Expr *dv = exprNew(p->arena, EX_DYN, tn->line);

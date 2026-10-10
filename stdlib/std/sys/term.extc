@@ -1,5 +1,4 @@
-/* std/sys/term.extc -- the privileged layer for the terminal (one file per family;
- * `docs/topics/LIBS.md` section 5, `docs/topics/BOOTSTRAP.md` section 4.3).
+/* std/sys/term.extc -- the privileged layer for the terminal (one file per family).
  *
  * The whole TUI story is two primitives: **read one byte** (that is plain `read(2)`,
  * already in `std::sys::io`) and **turn raw mode on and off**. No ncurses, no escape

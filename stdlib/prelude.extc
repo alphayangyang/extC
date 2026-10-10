@@ -10,7 +10,7 @@
 //    way to add a method to an existing type -- which is exactly what prevents confusion.
 //
 // NOTE: the compiler only knows the protocol of this type -- `data` + `len` -- because `s[i]`
-//    is syntax. Field names cannot change; methods are free. See docs/topics/ARRAYS.md.
+//    is syntax. Field names cannot change; methods are free.
 
 // ---------------------------------------------------------------------------
 // The empty payload: the "succeeded, but there is no value for you" case of `result<unit, E>`
@@ -34,7 +34,7 @@ struct unit {
 //     the representation: `none`'s `value` field has nothing to fill it with, and "a ref is never
 //     null" is a promise extC makes, so a struct shape could report only
 //     `__extc_reference_has_no_zero_value__` -- WRONG. Tag 0 = none means no payload, so the hole
-//     is closed -- OK. See docs/topics/IO.md.
+//     is closed -- OK.
 //   - there are only two ways to get the value out: `match` (exhaustive), or `?` to pass the
 //     failure up. There is deliberately no `unwrap()`: that needs a trap primitive, and a
 //     library that traps does not fit extC's character -- if you want a trap, write it at the
@@ -42,7 +42,7 @@ struct unit {
 // ---------------------------------------------------------------------------
 
 /* 协程的**接口标记**：函数返回类型写 `coroutine<T>` 就表示"这是个协程、会 yield T"。
- * 真实表示由编译器按**每个协程函数**合成的帧结构体（帧是普通值，见 CONCURRENCY.md 4.4）——
+ * 真实表示由编译器按**每个协程函数**合成的帧结构体——
  * 所以这个声明本身不承载数据，只是让名字可解析 ✓ 用户不要直接拿它当变量类型用。 */
 struct coroutine<A, B> { unit: bool }   /* A = `send` 进去的（请求），B = `yield` 出来的（应答）；`coroutine<T>` 是同型两遍的简写 */
 

@@ -1,4 +1,4 @@
-/* The domain runtime (docs/topics/CONCURRENCY.md「`ext` 与调度域」).
+/* The domain runtime.
  *
  * A **domain** is the thing a task is handed to: it owns the tasks started inside its block and it
  * is what makes the block *structured* -- the block cannot end while a task it started is still
@@ -28,7 +28,7 @@
 void domainEmitRuntime(Arena *a, Buf *out) {
     (void)a;
     bufPuts(out,
-        "/* ---- domain: the tasks started in one block, driven to completion (CONCURRENCY.md) ----\n"
+        "/* ---- domain: the tasks started in one block, driven to completion ----\n"
         " * A task is a frame plus the step function that advances it; the domain owns the list, and\n"
         " * `run` steps every task until it is done. That is what makes the block structured: it\n"
         " * cannot end while a task it started is still unfinished. */\n"

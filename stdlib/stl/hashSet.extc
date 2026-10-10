@@ -1,4 +1,4 @@
-/* stl/hashSet.extc -- `hashSetI64`: a value-less map, built on top of `stl/map` (POOLS.md section 9).
+/* stl/hashSet.extc -- `hashSetI64`: a value-less map, built on top of `stl/map`.
  *
  * WHY NOT ITS OWN TABLE: hashing, linear probing, tombstones and the rebuild threshold are the
  * parts of a hash container that are easy to get wrong, and a second copy of them means `map`

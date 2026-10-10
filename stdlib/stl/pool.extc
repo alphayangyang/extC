@@ -1,6 +1,6 @@
 /* std/pool.extc -- a slot map: stable handles, dense storage, slots get reused.
  *
- * This is phase 0 of the pool/ECS plan (`docs/topics/POOLS.md`): the piece that
+ * This is phase 0 of the pool/ECS plan: the piece that
  * makes churn cheap **without any compiler change**. It answers the first two of the
  * three problems the plan starts from:
  *
@@ -14,7 +14,7 @@
  *      `while i < p.len() { p.atDense(i) }` over contiguous memory.
  *
  * Storage: `vals` / `slots` / `ent` are all on this pool's OWN plate (`poolSlice`,
- * POOLS.md 2.1 "a pool has two faces"), not arena slices -- so `grow` extends them in
+ * "a pool has two faces"), not arena slices -- so `grow` extends them in
  * place (`poolResize`, not one byte copied: every column is indexed by position) and
  * `release` really returns the memory. Only the result of `toSlice` comes from the
  * arena, and that is deliberate: it is handed to the caller, so it has to outlive this
@@ -28,7 +28,7 @@
  *     `@trackCaller` exists (plan section 3.3, option (b)).
  *
  * Handle = (slot, generation) + the pool epoch it was born in. Two layers of
- * invalidation, each in charge of one span (`docs/topics/POOLS.md` sections 7.1, 7.6):
+ * invalidation, each in charge of one span:
  *
  *   - slot level (`gen`): `remove` bumps the generation, so every old handle for that
  *     slot stops matching -- `contains(h)` is false and `get(h)` is `none`, which is how
@@ -85,7 +85,7 @@ struct pool<T> {
      *   A handle access is **two dependent random loads** (`ent`, then the value), and
      *   the metadata is one 8-byte word per slot. */
     ent:    mut slice<i64>
-    /* 运行期池（POOLS.md）：数据住它所在的 arena，池是 arena 旁边的那条旁链；
+    /* 运行期池：数据住它所在的 arena，池是 arena 旁边的那条旁链；
      * 随本容器一起创建，所在的地方退出时整条链一起走。release 之后为 -1。 */
     pid:    i64                /* 运行期池的下标 */
     pidGen: u64                /* 建池时的世代：拷贝 + 槽位复用之后，防止误放别人的池 */
@@ -95,7 +95,7 @@ struct pool<T> {
     epoch:  i64
     /* The slots of the CURRENT epoch are allocated by a bump cursor plus an explicit hole
      * chain -- not by one free list threaded through `ent`. That is what lets `clear` walk
-     * away without touching a single slot (`docs/topics/POOLS.md` 7.3):
+     * away without touching a single slot:
      *   INVARIANT  live slots of this epoch = [0, cursor) minus the slots on the hole chain.
      * So a slot >= cursor has never been handed out this epoch and reads as free.
      *    - `cursor`  : one past the highest slot ever used this epoch (the bump frontier).
@@ -140,7 +140,7 @@ struct pool<T> {
     fn withCap(n: i64) -> pool<T> { return pool<T>::withParent(i64(-1), n) }
 
     /* The same, nested: `parent` is the pool of the container that owns this one, so the two
-     * records form the LOGICAL pool tree (POOLS.md 7.7) -- dropping the outer pool takes this
+     * records form the LOGICAL pool tree -- dropping the outer pool takes this
      * one with it. Lifetime is unaffected either way: both are on their zone's root chain, so
      * the place they were created in releases them on its own. */
     fn withParent(parent: i64, n: i64) -> pool<T> {
@@ -262,7 +262,7 @@ struct pool<T> {
     }
 
     /* O(1) clear: flip the pool epoch, reset the cursors, write NO slot, NO value, NO
-     * reverse map -- cost is independent of `cap` (POOLS.md 7.3/7.5). Three stores:
+     * reverse map -- cost is independent of `cap`. Three stores:
      *   - `epoch + 1`: every handle born before this call is vetoed by one compare;
      *   - `n = 0`, `cursor = 0`, `holeHead = -1`: the allocation state of the new epoch is
      *     exactly the state of a fresh pool, so the whole `ent` table reads as free --
@@ -271,7 +271,7 @@ struct pool<T> {
      * the next `insert` into such a slot inherits only its `gen` and overwrites the rest.
      * Do NOT weaken this into "reuse the slot table as is without flipping the epoch" --
      * then old handles would read the new elements. */
-    /* 把整批还给这一层（POOLS.md）：容器自己的簿记重置 + 运行期池重置。
+    /* 把整批还给这一层：容器自己的簿记重置 + 运行期池重置。
      * 不叫 close —— 所在的地方退出时这棵树本来就会被自动清空，close 会被读成"你负责关"。 */
     /* **守卫**：这一份池值还指着它的运行期记录吗？陈旧 ⇒ 收成空池（三块视图归零），
      * 下一次访问带位置地 trap。 */

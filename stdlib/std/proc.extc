@@ -1,7 +1,7 @@
 /* std/proc.extc -- the process, as the user sees it.
  *
  * A thin layer over `std::sys::proc` so user code never writes `std::sys::*` itself
- * (`docs/topics/LIBS.md` section 5: the privileged layer is for the library author).
+ *.
  */
 use std::sys::proc as sysproc
 

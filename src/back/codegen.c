@@ -12,7 +12,7 @@
 #include "plan.h"          /* 计划/分析产物的唯一读口（X1）*/
 #include "pools.h"
 #include "coroutine.h"
-#include "domain.h"      /* the pool registry runtime (POOLS.md, now POOLS.md) */
+#include "domain.h"      /* the pool registry runtime */
 #include "memfind.h"        /* the byte-search runtime (std::sys::mem), emitted on demand */
 #include "plate.h"          /* the plate runtime (std::sys::heap), emitted on demand */
 /* The checker owns the rules this pass has to agree with, so it includes the checker's
@@ -227,7 +227,7 @@ typedef struct {
      * `break` and `continue` know down to which level to release. */
     int         blkLevel;
 
-    /* Coroutine lowering (docs/topics/CONCURRENCY.md 4.4). Set while the body of a coroutine is
+    /* Coroutine lowering. Set while the body of a coroutine is
      * being emitted: the frame is a plain C struct, `yield` stores the pc and returns, and every
      * reference to a frame field is redirected by `coroFieldRef` below. */
     const FuncDef *coroFunc;
@@ -305,7 +305,7 @@ typedef struct {
     Buf         rt;             /* table types + shared scalars; needed by print or eq */
     Buf         rtPrint;        /* `extc_print` - only if a structured type is printed */
     /* Are we generating `main`? A `?` there traps instead of returning a failure
-     * (docs/DECISIONS.md 89), which is a decision code generation has to make per
+     * which is a decision code generation has to make per
      * function. */
     bool        inMain;
     Buf         rtEq;           /* `extc_eq` - only if an array or slice is compared */
@@ -2574,7 +2574,7 @@ static const char *exCall(CG *g, Expr *e) {
          * harness defines so it can drive the generated `$step` itself. */
         cgLine(g, "#ifndef EXTC_CORO_B1_HARNESS");
         cgLine(g, "#error \"calling a coroutine lands in slice B2"
-                   " (docs/topics/CONCURRENCY.md 4.4)\"");
+                   "\"");
         cgLine(g, "#endif");
         return "0";
     }
@@ -3555,7 +3555,7 @@ static TryInfo genTryHead(CG *g, Expr *e) {
     g->indent++;
     if (g->inMain) {
         /* `?` in `main`: the failure is fatal, so it is reported and the program stops
-         * (docs/DECISIONS.md 89). The payload is printed through its descriptor, which is
+         *. The payload is printed through its descriptor, which is
          * the same machinery `println(e)` uses -- so `ioError.readFailed(5)` still says
          * which fd failed rather than "something failed" ✓ A `none` has no payload. */
         if (!ti.isOpt) {
@@ -3638,7 +3638,7 @@ static const char *zoneArgRef(CG *g, Expr *e) {
                 (int)g->zoneMark[1], (int)g->zoneMark[2], g->blkLevel);
     /* Inside a coroutine's step the place is **read from the frame**: rule 1 of the design says a
      * resume must not re-derive it from the environment, and a step has nothing to re-derive it from
-     * anyway -- no hidden parameters, no zone mark of its own (docs/topics/CONCURRENCY.md 4.4). */
+     * anyway -- no hidden parameters, no zone mark of its own. */
     if (g->coroFunc) return "f->zone";
     if (e && planZoneLevel(e) != 0) {
         if (planZoneLevel(e) == ZONE_HOME) {
@@ -3648,7 +3648,7 @@ static const char *zoneArgRef(CG *g, Expr *e) {
              *
              * 这里直接落到下面那条"最近一层压过的 zone"是**错的地方**：
              * 一个在内层块里升级出来的池会登记到内层块的 zone 上，出块就被回收，
-             * 而接收者还活着。实测（SSO 的 `push` 是第一个"为接收者建池"的方法）：
+             * 而接收者还活着。SSO 的 `push` 就是第一个"为接收者建池"的方法：
              * 循环里 push 到第 17 个字节升级 ⇒ 每轮出块收掉池 ⇒ 下一次 `pStale` 把串毒成空，
              * `len=3` 而不是 20；串声明在循环外面时更糟 —— 池已还给 malloc，读到的是复用的内存。
              * 家 zone 更长寿，代价只是内存（与逃逸分析"宁可多算"的方向一致）。 */
@@ -3801,7 +3801,7 @@ static void cgReleaseLevel(CG *g, int lvl) {
      * block release is emitted has nothing to close. */
     /* Regions first, then the arena: a pool's memory is its own malloc block, so the two are
      * independent, but releasing the pools that belong to this block is what the block's
-     * release point is for (POOLS.md section 3.4 - leaving a block takes its subtree). */
+     * release point is for. */
     /* 离开一个地方：弹回它开始时的深度（mark），而不是盲目弹一个 —— 早退路径
      * （return/break/continue）因此不会把 zone 栈弄歪。
      *
@@ -5081,7 +5081,7 @@ static bool funcCallsItself(CG *g, FuncDef *f) {
 /* Every coroutine in the module declares its step **before** the bodies: a body may drive one, and
  * `main` is emitted before the other bodies. The frame itself comes from the type channel (it is a
  * unit), and the step's definition comes from `genFunc` like any other function -- which is what
- * registers the generic instances its body calls (docs/topics/CONCURRENCY.md 4.4, slice C). */
+ * registers the generic instances its body calls. */
 /* The handle type and its two helpers. Emitted only when a handle exists somewhere; the helpers are
  * EXTC_UNUSED so that a `value` helper for an unused yield type stays quiet under -Werror. */
 /**
@@ -5358,7 +5358,7 @@ static void genFunc(CG *g, FuncDef *f) {
     /* The coroutine protocols (`next`/`value`) have no body: they are emitted inline at their call
      * sites (see genMethodCall). Never emit one as a function, whichever path got here. */
     if (planCoroProto(f)) return;
-    /* A coroutine's step is generated **through this flow** (docs/topics/CONCURRENCY.md 4.4, slice C):
+    /* A coroutine's step is generated **through this flow**:
      * emitting a body is what registers the generic instances it calls, and a definition produced
      * outside this flow called helpers nothing ever emitted. Only two places differ -- the signature
      * below and the ending at the epilogue. */
@@ -5446,7 +5446,7 @@ static void genFunc(CG *g, FuncDef *f) {
      * there is any cell, even in a function that allocates nothing. */
     g->noArena = !planMayUseArena(f) && !(owNow.len > 0 || owcNow.len > 0);
     /* A step owns no arena array: it is not a place, and what it allocates belongs to the task's own
-     * place (docs/topics/CONCURRENCY.md 4.4, slice C). Emitting one also made it unused, which
+     * place. Emitting one also made it unused, which
      * `-Wall -Werror` rejects. */
     if (g->coroFunc) g->noArena = true;
     /* `main(args)` builds the view of `argv` in `&__extc_a[1]`, so the arena
@@ -5466,7 +5466,7 @@ static void genFunc(CG *g, FuncDef *f) {
     if (!g->noArena)
         cgLine(g, "extc_arena __extc_a[%d] = {0};", maxLv + 1);
     /* The frame mark: pools created while this frame runs are linked to it, so leaving
-     * the frame drops them whatever their block did (POOLS.md section 3.5). Emitted where
+     * the frame drops them whatever their block did. Emitted where
      * the arena exists, because hanging pools off an arena level is what this frame does. */
     /* 这个函数是不是「一个地方」：只有入口文件的函数是，库函数对地方透明
      * （`pool<T>::withCap` 建的池属于它的调用者所在的地方）。判据是两个名字里都没有 `$` ——
@@ -7816,7 +7816,7 @@ static void buildRuntimeText(CG *g) {
     * ================================================================== */
     bufPuts(&g->rt,
         "/* ---- Type descriptor table ----\n"
-        /* 这一段注释里**不要写出那个打印函数的名字**：它在运行时块文本里是按"没人提到就删"裁的，而那个判定是**文本**计数 —— 注释里提一次就等于"有人用"（实测踩过）。 */
+        /* 这一段注释里**不要写出那个打印函数的名字**：它在运行时块文本里是按"没人提到就删"裁的，而那个判定是**文本**计数 —— 注释里提一次就等于"有人用"。 */
         " * One static entry per type; the printer exists once per program.\n"
         " * Meaning of `size`: for a scalar or struct it is sizeof(T); for an array or\n"
         " * view it is the element stride. A view always has the C layout\n"
@@ -8758,7 +8758,7 @@ static void emitInstanceBodies(CG *g) {
             /* Always register the body: the prototype loop above already created this entry (with
              * `proto`), and `deadFuncBody` only fills `off`/`len` on it. An entry left without a
              * body makes `markUnusedParams` skip it, so a method that ignores `self` makes the
-             * generated C fail `-Werror=unused-parameter` (tools/attack.py F1b + D9). */
+             * generated C fail `-Werror=unused-parameter`. */
             deadFuncBody(g, md, fb, g->out->len - fb);
             cgLine(g, "");
         }
@@ -9026,7 +9026,7 @@ static void emitParallelRuntime(CG *g, Buf *out) {
             "_Thread_local extc_arena *extc_tls_arena = NULL;\n"
             "\n"
             "#ifdef EXTC_PAR_REGION\n"
-            "/* Region-shared arena for one parallel run (docs/topics/HEAP.md): one arena per worker,\n"
+            "/* Region-shared arena for one parallel run: one arena per worker,\n"
             " * owned by the region -- the parent reads worker allocations after the join. */\n"
             "typedef struct extc_par_region {\n"
             "    int64_t     workers;\n"

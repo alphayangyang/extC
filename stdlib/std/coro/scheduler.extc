@@ -1,4 +1,4 @@
-/* std/coro/scheduler.extc —— 协程调度器（CONCURRENCY.md §4.4 阶段三）
+/* std/coro/scheduler.extc —— 协程调度器
  *
  * 一个 `while` 循环 + 一个事件源。挂起约定：协程 `yield` 一个等待请求（这里是它想等的 fd；
  * **负数 = 别等，立刻再推我**），恢复后**重试**它自己的操作；要把结果送回去就用 `send`。

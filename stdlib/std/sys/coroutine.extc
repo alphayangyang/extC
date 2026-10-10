@@ -1,4 +1,4 @@
-/* std/sys/coroutine.extc —— 协程任务表的**特权层**（CONCURRENCY.md §4.4，切片 C）
+/* std/sys/coroutine.extc —— 协程任务表的**特权层**
  *
  * 与 `std::sys::pool` 同一形状：这一层只把生成器提供的运行期原语声明成 extC 能调的东西。
  * 实现是 `src/coroutine.c`，按需发射 —— 不 spawn 带任务 place 的协程、也不碰这些名字的程序，

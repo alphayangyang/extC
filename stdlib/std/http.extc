@@ -8,7 +8,7 @@
  *     作用域 ✓；keep-alive 由"滑窗"实现（上次没消费完的字节挪到前面再读 ✓）。
  *
  * 还没做（明确记账，不假装有）：chunked 编码、header 折叠、HTTP/2、TLS（QQBot 是 HTTPS ⇒ 见
- * `docs/topics/C-ABI.md` 的 OpenSSL 绑定那条线 ✓）、代理、cookie 罐。
+ *的 OpenSSL 绑定那条线 ✓）、代理、cookie 罐。
  *
  * 用法（客户端 GET）：
  *     var buf: mut slice<u8> = new u8[65536]

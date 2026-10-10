@@ -510,7 +510,7 @@ static bool stmtHasNew(Stmt *s) {
  *     depth recorded for the value said 0, and the pointer dangled. Every shape a call can hide
  *     in therefore has to be listed -- which is now the job of `ast.c`, not of this file.
  * The same missing-kind mistake was also made once for `EX_DYN`'s payload and once for
- * `EX_SLICE`'s bounds (docs/topics/AST-WALKERS.md); migrating this predicate ends that class
+ * `EX_SLICE`'s bounds; migrating this predicate ends that class
  * of bug for it.
  *
  * Notes:
@@ -595,7 +595,7 @@ static bool stmtCallsNeedsHome(Stmt *s, bool (*takesHomeArena)(const FuncDef *))
  * 2026-09-26: the AST kinds are listed **once** there, so a new kind cannot be forgotten here.
  * That is not hypothetical -- this question and seven siblings each carried their own copy of
  * the kind list, each ending in `default:`, so `-Wswitch` stayed silent while `EX_SLICE`'s two
- * bounds and `EX_DYN`'s payload went missing from all of them (docs/topics/AST-WALKERS.md).
+ * bounds and `EX_DYN`'s payload went missing from all of them.
  *
  * The comparison is on the *generated* name, so a local that shadows the parameter (which gets
  * `__2` appended) cannot be mistaken for it.
@@ -830,7 +830,7 @@ static void roundUsesHome(CloseCtx *cx, ReachKind k, bool *changed) {
 
 static void roundMakesPool(CloseCtx *cx, ReachKind k, bool *changed);   /* defined below */
 
-/* ---- Does this code create a pool? (`FuncDef.makesPool`; see ast.h for why) ----
+/* ---- Does this code create a pool? (`FuncDef.makesPool`) ----
  *
  * The runtime primitive that creates one is `extc_pool_new`, and it is the *only* one:
  * `drop`/`reset`/`generation`/`live`/`capacity`/`zoneDepth` neither create a record nor
@@ -1192,8 +1192,7 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
      * value it received into any of them, so that value has to outlive every one of them:
      * take the shallowest (longest-lived) destination, never a deeper one than the caller's
      * own body. This replaces the old "the caller owns a home arena => h = 0" fallback,
-     * which rejected every argument that lived in any block at all (see
-     * docs/topics/CONCURRENCY.md, debt 15).
+     * which rejected every argument that lived in any block at all.
      *
      * min() can only make the requirement STRICTER than the destination really demands, so
      * nothing that was rejected for a real lifetime reason becomes accepted; the guards stay
@@ -1334,7 +1333,7 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
              *
              * Sharing this half matters for pools as much as for arenas: a container built
              * inside a loop body and pushed into a container that outlives the loop needs its
-             * pool born at the destination's place (POOLS.md 3.1). */
+             * pool born at the destination's place. */
             if (d != 0 && d > h && promoteInto(c, a, h)) d = targetDepth(c, a);
             if (d == 0 || d <= h) continue;
             ckError(c, line,
@@ -1349,7 +1348,7 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
      * The callee may rewrite what the place holds, so every non-null proof about that binding --
      * and about a path through it -- stops holding: `if s.top != null { s.pop() ... s.top.value }`
      * dereferenced a NULL `s.top`, because `pop` had set it and the proof was still in effect
-     * (, ASan SEGV). This is the write-point invalidation of the proof stack, the same
+     * (ASan SEGV). This is the write-point invalidation of the proof stack, the same
      * one an assignment performs (`unNarrow`); the stack drops a path fact when its root is
      * dropped, so un-narrowing the root is enough.
      *
@@ -1370,7 +1369,7 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
      * something was written into it, or the caller's binding goes on looking like a record with no
      * live references. `fn stash(out: mut ref box, v: ?ref node) { out.p = v }` called as
      * `stash(ref b, ref n)` and then `return b` was accepted, and the generated program read a
-     * local of the returning frame after it died (, ASan heap-use-after-free).
+     * local of the returning frame after it died (ASan heap-use-after-free).
      *
      * The summary says *which argument* was stored, never into which field, so the write goes to
      * the binding's whole-object slot (`field == NULL`). The destination is normally **addressed**
@@ -1453,14 +1452,14 @@ void markCallHomeIfEscaping(Checker *c, Expr *v, int at) {
  */
 bool calleeMakesPool(FuncDef *f) {
     if (!f) return false;
-    /* **声明优先**（作者口径 2026-09-26）：`@poolObject` 标在 struct 上，说"这个类型拥有一个池"。
-     * 它比推断可靠 —— 早先试过"看有没有 `pid` 字段"（魔数）与"看方法建不建池"（要等闭包）。 */
+    /* **声明优先**：`@poolObject` 标在 struct 上，说"这个类型拥有一个池"。它比推断可靠：
+     * 看有没有 `pid` 字段是魔数，看方法建不建池要等闭包。 */
     if (f->owner && f->owner->poolObject) return true;
     if (planMakesPool(f)) return true;
     /* 运行期那一句**本身**就是池站点：`extc_pool_new`（extern，没有函数体 ⇒ 闭包标不到它，
      * 所以它按名字认，与 codegen 里把 `extc_pool_new` 改写成 `_at` 的那处同一个名字）。
      *
-     * 少了这一条的后果（实测）：用户**在自己文件里**写一个池底容器时，构造器里的这一次
+     * 少了这一条的后果：用户**在自己文件里**写一个池底容器时，构造器里的这一次
      * `extc_pool_new` 提不了权 ⇒ 池生进构造器自己的帧 ⇒ 返回时被回收 ⇒ 段错误。
      * 库里的容器没这个毛病，只因为库函数"对地方透明"；用户的文件不是库，
      * 于是那条隐藏的差别就露出来了。 */
@@ -2555,7 +2554,7 @@ static void collectEffectsExpr(Checker *c, FuncDef *f, Expr *e) {
          *     // `setSourceRgb` is signed `Addr=0 Cont=0`, yet `rgb`'s summary would come out
          *     // incomplete ⇒ its callers could not pass a frame-local pointer
          *     // ("points into a deeper scope (depth 1) than the arena this call may store it
-         *     // it in") (C-ABI.md §9.11 ④).
+         *     // it in").
          *
          * A `fn` value that did **not** come from a signed slot (a local copy, a parameter, an
          * unsigned slot) still has nothing to go on: the summary stays incomplete, conservatively.
@@ -2832,11 +2831,9 @@ static int solvedDepth(Expr *e) {
         return d;
     }
     default:
-        /* **实测（U5，`EXTC_DBG_NOTEF` 打出 kind 数值）：走到这里的只有两种形状** ——
-         *   `EX_INT`（151 次）与 `EX_CONV`（18 次）。
-         * 两种都**不可能携带引用**：字面量没有引用；`EX_CONV` 的源类型被刻意收窄
-         * （只有 `ref void` 这一种指针来源，不做一般指针转换，见 `check_expr.c` 里 `EX_CONV`
-         * 那一段的注释）⇒ **答 0 是语义，不是兜底**。
+        /* 走到这里的只有两种形状：`EX_INT` 与 `EX_CONV`。两种都**不可能携带引用**：
+         * 字面量没有引用；`EX_CONV` 的源类型被刻意收窄（只有 `ref void` 这一种指针来源，
+         * 不做一般指针转换）⇒ **答 0 是语义，不是兜底**。
          *
          * 那为什么还留着这个 NOTE：它是**计数哨兵** —— 将来若有新的 `ExprKind` 走到这里，
          * 计数会变，那才是要查的信号（与 walker 预算的关系：本仓库限制 23 个手写遍历
@@ -3898,7 +3895,7 @@ static void coroSetup(Checker *c, FuncDef *f) {
         /* A call to a coroutine produces **that coroutine's own frame**, a concrete value type the
          * compiler synthesizes here -- before the body is checked, so call sites and the callee
          * agree. `coroutine<T>` stays what it always was: how a body declares "I am a coroutine and
-         * I yield T". See docs/topics/CONCURRENCY.md 4.4. */
+         * I yield T".4. */
         StructDef *cfd = arenaAllocZero(c->arena, sizeof *cfd);
         /* A C name of its own: the frame is emitted through the type channel now, so it must not
          * collide with the function's own name. */
@@ -3917,7 +3914,7 @@ static void coroSetup(Checker *c, FuncDef *f) {
         /* The protocol, as **real methods** on that type: `next(self: mut ref F) -> bool` and
          * `value(self: ref F) -> T`. Driving a coroutine is then ordinary method resolution -- no
          * special case in the checker -- and `fn drive<C>(c: mut ref C)` works at instantiation
-         * through the existing deferred-method machinery (#57). Codegen emits the two inline. */
+         * through the existing deferred-method machinery. Codegen emits the two inline. */
         for (int which = 1; which <= 3; which++) {
             FuncDef *pm = arenaAllocZero(c->arena, sizeof *pm);
             pm->name     = which == 1 ? "next" : which == 2 ? "value" : "send";
@@ -3968,7 +3965,7 @@ static void coroSetup(Checker *c, FuncDef *f) {
  */
 static void checkFunc(Checker *c, FuncDef *f) {
     /* `@builtin` 声明只有签名、没有函数体（与 `extern!` 同款），而这条路后面会直接遍历
-     * `f->body` ⇒ 无体声明一进来就段错误（2026-09-28 实测：exit 139，bt 落在下面那行 for）。
+     * `f->body` ⇒ 无体声明一进来就段错误。
      * 内建的实现由编译器在**调用点**给出，所以这里什么都不用查；对它的调用由 check_expr 里的
      * "尚未实现" 守卫负责拒绝。只挡内建，不动 extern 的既有行为。 */
     if (f->isBuiltin && !f->body) return;
@@ -4047,7 +4044,7 @@ static void checkFunc(Checker *c, FuncDef *f) {
         return;
     }
     /* `main(args)`: the entry point may take the command line, and the shape is fixed
-     * (docs/topics/IO.md section 7): one parameter, `slice<slice<u8>>`. C hands the entry
+     *: one parameter, `slice<slice<u8>>`. C hands the entry
      * point `argc` and `argv`, and codegen wraps those two into the view; any other
      * parameter has no C-level meaning, because C's `main` takes integers and pointers and
      * nothing else. Saying so here keeps the diagnostic in extC instead of letting the C
@@ -4108,7 +4105,7 @@ static void checkFunc(Checker *c, FuncDef *f) {
 
     /* A coroutine: the declared return type is `coroutine<T>` (a prototype in the prelude). The
      * declaration is the marker -- `yield` is legal only here, and the frame the checker lays out
-     * for this function is a value (docs/topics/CONCURRENCY.md 4.4). */
+     * for this function is a value. */
     /* `coroutine<T>`（简写：请求与应答同型）与 `coroutine<A, B>` 都算协程：前者一个类型参数，
      * 后者两个。协议方法各自取哪个参数见下面合成那段。 */
     planSetIsCoro(f, f->ret && (isProtoType(f->ret, "coroutine", 1)
@@ -4119,7 +4116,7 @@ static void checkFunc(Checker *c, FuncDef *f) {
     planSetYieldType(f, planIsCoro(f)
         ? *(Type **)vecAt(&f->ret->targs, f->ret->targs.len - 1) : NULL);
     if (planIsCoro(f)) coroSetup(c, f);
-    /* A parameter typed `coroutine<T>` is legal: the unified handle (CONCURRENCY.md §4.4), not a
+    /* A parameter typed `coroutine<T>` is legal: the unified handle, not a
      * marker, is what the type stands for, so no check rejects such a parameter here. */
 
     c->curFunc = f;
@@ -4170,7 +4167,7 @@ static void checkFunc(Checker *c, FuncDef *f) {
         checkStmt(c, *(Stmt **)vecAt(&f->body->u.block.stmts, i));
 
     /* The types of the declarations are final by now, so this is where a coroutine's frame can be
-     * laid out -- and where rule 2 is enforced on it (docs/topics/CONCURRENCY.md 4.4). */
+     * laid out -- and where rule 2 is enforced on it. */
     coroFrameLay(c, f);
 
     /* The types of the declarations are final by now, so this is the place to ask
@@ -4204,7 +4201,7 @@ static void checkFunc(Checker *c, FuncDef *f) {
      * point. It reads the tree and writes only the depths, so every later reader sees a
      * value that does not depend on the order branches were visited.
      *
-     * See `docs/topics/ARENA-SOUNDNESS.md` section 9.3, item 3-a, and `src/check_dataflow.c`. */
+     *3, item 3-a, and `src/check_dataflow.c`. */
     {
         DfResult dfr;
         dfAnalyze(c, f, &dfr);
@@ -4319,7 +4316,7 @@ bool isConstInit(Expr *e) {
     }
     /* A function's **address** is a constant: the linker knows it before the program runs, and C
      * spells it `&f` in a static initializer without any code running. It has to be here for the
-     * C-ABI line's table (`C-ABI.md` section 9.9): a table of `fn` fields cannot be zero-initialized
+     * C-ABI line's table: a table of `fn` fields cannot be zero-initialized
      * (a `fn` has no zero value, which is the whole point), so it must be initialized where it is
      * declared -- and a table belongs at the top level, because the host hands it to a module that
      * may keep it. Without this the only way to build a table was to assign the slots in a function,
@@ -4446,9 +4443,8 @@ static void checkGlobals(Checker *c) {
 /* How many concrete instances of free generic functions one compilation may build.
  *
  * A template can be instantiated inside its own body with a bigger type -- `grow<T>(x)` calling
- * `grow(box<T>)` -- and nothing stopped it: the compiler kept creating instances until it was
- * killed (tools/attack.py E3: extC did not return within 25 seconds on a three-line program).
- * This is a limit of the compiler, not of the language, so the message says so. */
+ * `grow(box<T>)` -- and nothing stopped it: the compiler kept creating instances without
+ * bound. This is a limit of the compiler, not of the language, so the message says so. */
 #define FUNC_INST_LIMIT 4096
 
 /* How deeply a **created** type may nest. The runaway in E3 does not just add instances: each
@@ -4672,9 +4668,9 @@ static void runOpCheck(Checker *c, OpCheck *ec, Vec *params, Vec *targs, const c
      * generation resolves the operator again on the substituted type and finds the same
      * method without recording anything.
      *
-     * Not marking it is what `#64` was: `T == T` instantiated at a slice called the
-     * prelude's `slice<T>::==` and nobody emitted it, so the generated C held a call to a
-     * function that did not exist. The node itself is not touched on purpose: the template
+     * Not marking it would let `T == T` instantiated at a slice call the prelude's
+     * `slice<T>::==` without anybody emitting it, so the generated C would hold a call to a
+     * function that does not exist. The node itself is not touched on purpose: the template
      * has one node and many instances, so a `func` stored here would be the wrong method
      * for every other instance. */
     FuncDef *m = findOp(tt, ttBase(lt), ec->op, rt2,
@@ -4892,8 +4888,7 @@ static void internLocalTypes(Checker *c, FuncDef *f) {
          * statement's own type is often where an instance hides -- `let sl = arr[..]` has type
          * `slice<box<T>>` and nothing else in the body mentions that slice. Substituting it here
          * interns it (`ttGeneric`), early enough for the unit list: without this the generated C
-         * named an instance nobody emitted (`'slice_box_i64' undeclared`, tools/attack.py X9; the
-         * container case X3 has the same shape). */
+         * named an instance nobody emitted (`'slice_box_i64' undeclared`). */
         if (st->type) (void)ttSubstitute(c->tt, st->type, params, targs);
         switch (st->kind) {
         case ST_VAR:
@@ -5001,7 +4996,7 @@ static void roundMakesPool(CloseCtx *cx, ReachKind k, bool *changed) {
             if (bodyReaches(f, k)) { setReach(f, k, true); *changed = true; }
         }
         /* **泛型 struct 的模板轮要跳过**：模板与实例**共用同一批 FuncDef**
-         * （实测 `template find` 与 `hashMap$hashMap.find` 是同一个指针），而模板轮的
+         * （`template find` 与 `hashMap$hashMap.find` 就是同一个指针），而模板轮的
          * `k.hash()` 解析不出来 ⇒ 只能保守标真，一旦标上，实例轮 `if (getReach(f, k)) continue`
          * 就永远跳过它，精确解析**没机会生效**。泛型结构体的方法体本来就只在实例上跑，
          * 所以交给下面那一轮按实例解析：解析不出来时那一轮仍旧保守（`resolveOnInstance`
@@ -5017,7 +5012,7 @@ static void roundMakesPool(CloseCtx *cx, ReachKind k, bool *changed) {
             }
         }
         /* 实例那一轮：泛型方法的实例是模板的浅拷贝（共享 body），不在 `m->structs` 里，
-         * 而在类型表的 `tt->instances` 上。这一轮**按实例解析**协议方法（`#57`），
+         * 而在类型表的 `tt->instances` 上。这一轮**按实例解析**协议方法，
          * 代入方式与 `runMethodCheck` 完全一致。 */
         for (size_t i = 0; i < tt->instances.len; i++) {
             Type *inst = *(Type **)vecAt(&tt->instances, i);
@@ -5108,7 +5103,7 @@ static int callSiteMinDestDepth(Checker *c, EArenaSite *rec) {
  * @return      模块没有错误时 true。
  */
 bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
-    /* 阶段 = 显式状态（见 check_internal.h 的阶段契约）。*/
+    /* 阶段 = 显式状态（阶段契约）。*/
 
     double tB0=0,tB1=0,tB2=0,tB3=0,tB4=0,tB5=0,tB6=0,tB7=0,tB8=0;
     Checker c;    memset(&c, 0, sizeof c);
@@ -5532,7 +5527,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     }
 
     /* Second pass: check function bodies. */
-    c.phase = PHASE_BODIES;   /* 从这一刻起有作用域（见 check_internal.h 的阶段契约）*/
+    c.phase = PHASE_BODIES;   /* 从这一刻起有作用域（阶段契约）*/
     ctPhase("ckB6", tB6); tB7 = ctNow();
     for (size_t i = 0; i < m->structs.len; i++) {
         StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
@@ -5648,7 +5643,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         }
     }
 
-    /* Deferred method calls on a type parameter (`#57`): the same shape as the operator batch
+    /* Deferred method calls on a type parameter: the same shape as the operator batch
      * above -- replayed once per concrete instance, with the instance named in the message.
      *
      * This is what makes a generic container able to do anything with its elements at all:
@@ -5692,7 +5687,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
          * **emitted** -- which happens after code generation has built its unit list and emitted the
          * struct definitions. A type instance that appears **only** as a local's type was therefore
          * never interned in time and its C struct was never emitted: `unknown type name 'pair_i64'`
-         * on a local inside `mk<i64>` (tools/attack.py W9). Substituting the annotation here interns
+         * on a local inside `mk<i64>`. Substituting the annotation here interns
          * it (`ttGeneric`), early enough for the unit list to see it. It is the same kind of fix as
          * the `coroSetup` re-run above: the instance existed, it just appeared too late. */
         coroFrameLay(&c, fi);
@@ -5702,13 +5697,13 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
      * types. The loop above is coroutine-only (it skips instances that already have a frame), and the
      * substitution that would normally intern such a type happens during **body emission** -- after
      * code generation built its unit list and emitted the struct definitions, so the struct never
-     * appeared (`unknown type name 'pair_i64'`, tools/attack.py W9). */
+     * appeared (`unknown type name 'pair_i64'`). */
     for (size_t j = 0; j < c.funcInsts.len; j++) {
         FuncDef *fi = *(FuncDef **)vecAt(&c.funcInsts, j);
         if (fi && planTemplate(fi)) internLocalTypes(&c, fi);
     }
 
-    /* Deferred uses of such a call's result (`#79`): same two branches, but the question is now
+    /* Deferred uses of such a call's result: same two branches, but the question is now
      * whether the instance's real return type fits the type the use site expected. */
     for (size_t i = 0; i < c.deferredUses.len; i++) {
         DeferredUse *du = *(DeferredUse **)vecAt(&c.deferredUses, i);
@@ -5729,7 +5724,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         }
     }
 
-    /* Materialise every concrete instance's field types (`#80`).
+    /* Materialise every concrete instance's field types.
      *
      * A generic struct that holds another generic instance (`vals: pool<V>`) declares that field
      * with a parameter, so checking the template interns nothing: `pool<V>` is not concrete, and
@@ -6351,8 +6346,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     /* ---- 电平求解要再跑一遍 ----
      *
      * 第一遍跑在 `makesPool` 闭包**之前**（见上面那段求解），那时 `calleeMakesPool` 对所有
-     * 调用点都还是假 ⇒ **池站点的提权一次都没落地**（实测 `[gate] call=new mP=0 cmp=0`，
-     * 而同一个指针在 `EXTC_DUMP_POOL` 里是 `makesPool=1`）。
+     * 调用点都还是假 ⇒ **池站点的提权一次都没落地**。
      * 闭包之后重放一次事实表，这次闸门读到的标志是真的；`promoteInto` 只把层级往小改，
      * 重放是单调的，所以多跑一遍不会引入新东西，只是把该落的提权落下去。 */
     c.lvlSolving = true;
@@ -6620,7 +6614,7 @@ static void coroCheckDeferred(Checker *c, Module *m) {
                 " stack of this call is gone when the coroutine yields. Two fixes: allocate it"
                 " yourself in this body (`new` lands in the frame's own arena, a pooled container in"
                 " the pool's place), or keep the offset and take the view again after the resume"
-                " (docs/topics/CONCURRENCY.md 4.4)",
+                "",
                 "`%s` lives across a `yield` and carries a reference", d->cname);
     }
     c->coroDeferred.len = 0;
@@ -6653,7 +6647,7 @@ bool stmtNeedsPlaceBoundary(Stmt *s, bool inCoro) {
     return stmtHasNew(s) || stmtMakesPool(s, true);
 }
 
-/* ---- the frame of a coroutine (docs/topics/CONCURRENCY.md 4.4) -------------------------------
+/* ---- the frame of a coroutine -------------------------------
  *
  * Which locals live in the frame? The ones **live across a `yield`**: declared before it and used
  * after it. One walk answers both questions the design needs:
@@ -6863,7 +6857,7 @@ static void coroFrameLay(Checker *c, FuncDef *f) {
     if (s.yields.len == 0) return;                  /* nothing to lay out */
 
     /* The frame holds the **parameters** too: a resume has no arguments to pass them again, so they
-     * are captured at spawn and read back on every step (docs/topics/CONCURRENCY.md 4.4). */
+     * are captured at spawn and read back on every step. */
     vecInit(&f->coroFrame, c->arena, sizeof(Param));   /* by value, like the scan above */
     for (size_t i = 0; i < f->params.len; i++) {
         Param *src = *(Param **)vecAt(&f->params, i);
@@ -6897,7 +6891,7 @@ static void coroFrameLay(Checker *c, FuncDef *f) {
                     " gone when the coroutine resumes (the C stack of this call is, and a block's"
                     " arena is). Two fixes: allocate it yourself with `new` so it lands in the"
                     " task's own place, or keep the offset and take the view again after the"
-                    " resume (docs/topics/CONCURRENCY.md 4.4)",
+                    " resume",
                     "`%s` lives across a `yield` and carries a reference", d->cname);
             continue;
         }
@@ -6907,8 +6901,7 @@ static void coroFrameLay(Checker *c, FuncDef *f) {
         /* The frame is laid out from the **body's** recorded declarations, and for an instance that
          * body is still the template's -- so a local declared `var b: box<T>` kept the parameter
          * spelling in the frame: the instance's frame had `box_i64 ret` next to `box_T b` and the C
-         * said "incompatible types when assigning to type 'box_i64' from type 'box_T'"
-         * (tools/attack.py X8). Substitute with the instance's arguments here; the template keeps its
+         * said "incompatible types when assigning to type 'box_i64' from type 'box_T'"). Substitute with the instance's arguments here; the template keeps its
          * own spelling, which is what `ttSubstitute` returns unchanged when there is no template. */
         p->type = (planTemplate(f) && f->targs.len)
                     ? ttSubstitute(c->tt, d->type, &planTemplate(f)->typeParams, &f->targs)
@@ -6999,7 +6992,7 @@ static void coroFrameLay(Checker *c, FuncDef *f) {
     }
 }
 
-/* The pool questions, shared with code generation (R3).
+/* The pool questions, shared with code generation.
  *
  * `stmtMakesPool` / `exprMakesPool` walk a tree asking "can this reach `extc_pool_new`?" --
  * codegen asks the block-local form to decide whether a block needs a zone bracket, the
@@ -7121,9 +7114,9 @@ static bool exprMakesPool(Expr *e, bool descendBlocks) {
         }
         /* 这里问的是"**这一次调用能不能走到 `extc_pool_new`**"（zone 的决定，以及
          * `makesPool` 闭包本身），不是"结果会不会住在池上" —— 后者是 `calleeMakesPool`
-         * 的问题（逃逸与提权那两处用它）。两者的差别与实测代价见 `calleeCreatesPool`。
+         * 的问题（逃逸与提权那两处用它）。两者的差别见 `calleeCreatesPool`。
          *
-         * `#57`：泛型体里对**类型参数**的协议方法（`k.hash()`）在节点上**故意没有 func**，
+         * 泛型体里对**类型参数**的协议方法（`k.hash()`）在节点上**故意没有 func**，
          * 所以这一侧还要问解析钩子（由 codegen / 闭包的实例那一轮装上）。 */
         FuncDef *cf = planCallee(e);
         if (!cf && e->kind == EX_METHOD && poolCalleeResolve) cf = poolCalleeResolve(e);

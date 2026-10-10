@@ -4,7 +4,7 @@
  * byte.
  *
  * Compare `stl/hashSet.extc`: the same "no second implementation" trade, for hash-ordered
- * membership. The naming rule (POOLS.md §10) is that the bare names belong to the ORDERED
+ * membership. The naming rule is that the bare names belong to the ORDERED
  * implementations: `map` / `set` are ordered, `hashMap` / `hashSet` are hashed.
  *
  * Ordered iteration is `at(i)` for i in [0, len) -- the i-th smallest element. `lowerBound(k)` is

@@ -1,4 +1,4 @@
-/* std/dl.extc —— `dlopen` / `dlsym` / `dlclose` 的 extC 面（C-ABI.md §9.9 第 ③ 块）
+/* std/dl.extc —— `dlopen` / `dlsym` / `dlclose` 的 extC 面
  *
  * 这一层薄得很，因为它该薄：三个 libc 符号 + 一件 extC 侧必须自己做的事 ——
  *
@@ -9,7 +9,7 @@
  * 第三个理由在**调用方**那边，不在这个文件里：`dlsym` 回来的是 `ref void`，要当成 `fn` 用得写一次
  * **显式转换**（`fn(i64) -> i64(raw)`）—— 那句话就是作者的签字，与 `effects` 同一类。
  *
- * 谁能声明这些原语：与 `std::sys::*` 同一档（`LIBS.md` §5；v1 尚未强制只有特权模块能声明）。 */
+ * 谁能声明这些原语：与 `std::sys::*` 同一档。 */
 use std::sys::heap as sysheap    /* 只要那一格：`extc_viewOf`（C 字符串 → 视图） */
 
 /* `void *dlopen(const char *file, int flags)`；`void *dlsym(void *h, const char *name)`；

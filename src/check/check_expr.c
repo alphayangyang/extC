@@ -1755,7 +1755,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             /* `@private` storage belongs to the module that declares it. This is the rule that
              * keeps a container's raw storage out of reach: `s.buf[0..n]` from another module
              * would be a view into pool storage, and a view that can be stored is the hole the
-             * pool tier closes by never handing one out (T4 / ruling #89). */
+             * pool tier closes by never handing one out. */
             {
                 const char *home = c->curFunc ? c->curFunc->modName : NULL;
                 if (fd->isPrivate && sd->modName != home) {
@@ -1870,7 +1870,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             if (ttIsError(ot)) return ttError(tt);
 
             /* Same rule as the subscript above: slicing a `?ref` view/array takes its address
-             * without asking whether it is null (, the second half). */
+             * without asking whether it is null (the second half). */
             if (rejectNullableDeref(c, ot, e->u.slice.obj, "a slice")) return ttError(tt);
 
             Type *ob = ttBase(ot);

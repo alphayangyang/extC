@@ -1,6 +1,6 @@
 /* stl/map.extc -- `map<K, V>`: an ORDERED map, implemented as a B+tree.
  *
- * WHY THIS SHAPE (POOLS.md §11, the author's ruling): an in-memory ordered map is bound by cache
+ * WHY THIS SHAPE: an in-memory ordered map is bound by cache
  * misses, not by comparisons. A binary tree over 10^6 keys is ~20 pointer chases per lookup; a
  * B+tree with 16 keys per node is ~5, and every step is a binary search inside ONE contiguous
  * array. Ordered iteration is the leaf chain, so it is a linear scan of contiguous memory. Small

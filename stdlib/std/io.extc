@@ -1,7 +1,6 @@
 /* std/io.extc -- a plain library, written in extC, with no privileged access.
  *
- * This is the thin wrapper over the bare primitives that `docs/topics/IO.md`
- * describes, turning them into shapes that are pleasant to use: `slice<u8>` is
+ * This is the thin wrapper over the bare primitives that* describes, turning them into shapes that are pleasant to use: `slice<u8>` is
  * two arguments on the C side, so `s.data` and `s.len` are passed down
  * separately here.
  *
@@ -25,7 +24,7 @@
  *
  * So `reader` is where the work happens. One `read(2)` brings back 64KB, and the
  * splitting then happens in memory. That is the sentence from
- * `docs/topics/IO.md` section 0: **reading = read whole blocks + split in memory**.
+ *: **reading = read whole blocks + split in memory**.
  *
  * The buffer is **not** supplied by the caller (`readerOf(fd)` is enough): that
  * 64KB comes from `new`, so it lives in the arena of the block that contains the
@@ -120,7 +119,7 @@ fn writeBytesRaw(buf: slice<u8>) -> i64 {
  * piece of text.
  *
  * The buffer has to be a **visible field** (`buf` / `len` / `cap`), which is the
- * point `docs/topics/IO.md` keeps making about the `cin` black box: `FILE*` hides
+ * pointkeeps making about the `cin` black box: `FILE*` hides
  * its buffer inside, so you cannot see it when something goes wrong. Here you can
  * read `w.len` whenever you like, flush on your own, and decide when bytes leave.
  *
@@ -483,7 +482,7 @@ struct reader {
 
     /* ---------------------------------------------------------------- integers */
 
-    /* Read one integer, the type-driven shape of `docs/topics/IO.md` section 4.4.
+    /* Read one integer, the type-driven shape of
      *   - leading whitespace is skipped, so back-to-back calls read the stream
      *     of numbers that contest input consists of
      *   - `-` is accepted; `+` is **not**, because contest data does not use it
@@ -554,7 +553,7 @@ fn isSpaceByte(b: i64) -> bool {
  * Why not variadic: `print(a, b, c)` takes an unbounded argument list, and extC has
  * neither variadics nor an overload set wide enough to express one. `<<` looks at **one**
  * operand at a time, so it needs neither -- one overload per type is all it takes, which
- * is what overloading by the right operand's exact type buys (docs/DECISIONS.md 82).
+ * is what overloading by the right operand's exact type buys.
  *
  * The shape of a stream handle:
  *   - It carries an `fd` and nothing else, so an `<<` can return a **new** handle

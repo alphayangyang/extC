@@ -1,4 +1,4 @@
-/* std/sys/pool.extc —— 区域注册表的**特权层**（POOLS.md 期 1）
+/* std/sys/pool.extc —— 区域注册表的**特权层**
  *
  * 这一层只做一件事：把生成器提供的运行期原语声明成 extC 能调的东西（与 `std::sys::io`
  * 声明 `extc_cout_put` 同一形状）。**用户不写这个模块**：`std::stl` 那一类容器用它，
@@ -6,16 +6,16 @@
  *
  * 管理面：建 / 释放 / 重置 / 世代 / 存活数。**带类型的内存分配**不走 `extern!`：
  * `extern!` 不许返回 `slice<T>`（会变成两个 C 参数），extC 也没有指针转换 ⇒
- * 那一扇门由生成器发的内建提供（`poolSlice<T>(rid, n)`，POOLS.md §2.1「池有两副面」）
+ * 那一扇门由生成器发的内建提供
  *
  * 池的寿命挂在"地方"上：zone 是一条独立旁链，地方退出时按标记回退、整批回收
- * （`extc_pool_zoneLeaveTo`）；池树的两条链（寿命链 / 父池子链）见 POOLS.md §7.7 */
+ * （`extc_pool_zoneLeaveTo`）；池树的两条链（寿命链 / 父池子链）见 */
 extern!("extc-runtime") fn extc_pool_new(parent: i64) -> i64
 /* 对象表模式（dyn 用的那种池）：同源、更严的契约 —— 只追加，块不可替换/归还。 */
 extern!("extc-runtime") fn extc_pool_new_table(parent: i64) -> i64
 extern!("extc-runtime") fn extc_pool_kind(rid: i64) -> i64
     effects Addr=0 Cont=0
-/* **提权的落点**（POOLS.md §3.1 / MEMORY-SAFETY §3.1）：`zone` 指定这个池**出生在哪个地方**，
+/* **提权的落点**：`zone` 指定这个池**出生在哪个地方**，
  * 不放宽就传当前顶（`extc_pool_new` 就是 `extc_pool_new_at(parent, extc_zoneTop)`）。
  * arena 那边有同一扇门：会把手里的分配交给调用者选的地方的函数，多收一个隐藏的
  * `__extc_home`；容器在循环体里建、之后存进活得更久的容器，需要的就是这一手 ——
@@ -38,7 +38,7 @@ extern!("extc-runtime") fn extc_pool_capacity() -> i64
 extern!("extc-runtime") fn extc_pool_zoneDepth() -> i64
     effects Addr=0 Cont=0
 
-/* 容器数据用的内存：**池自己的板块**，不是 arena 里的切片（POOLS.md §2 作者口径
+/* 容器数据用的内存：**池自己的板块**，不是 arena 里的切片（ 作者口径
  * 「pool 的内存是独立的一个板块，只是生命周期给 arena 一起管理」）。容量不够时由池再要一块，
  * 旧块能当场还回去 —— 这正是 `vector` / `string` 扩容之后不留旧副本的依据（§2.1 裁决一）。
  * 库侧不直接调它：类型化的那扇门是生成器发的内建 `poolSlice<T>(rid, n)` / `poolSliceRaw<T>`
@@ -48,7 +48,7 @@ extern!("extc-runtime") fn extc_pool_zoneDepth() -> i64
 
 /* 板块的字节账：`extc_pool_bytes` 是这一只池当下持有的字节数，`extc_pool_bytesLive` 是所有池
  * 的合计。判据用它证明「扩容之后旧块真的还回去了」与「release 之后一个字节都不剩」。 */
-/* 染色（POOLS.md §7）：`extc_pool_birthColor` 是这个池出生时它那个地方的色，
+/* 染色：`extc_pool_birthColor` 是这个池出生时它那个地方的色，
  * `extc_pool_rowColor` 是那个地方**现在**的色。不等 ⇒ 一定死过（只做否决）。 */
 extern!("extc-runtime") fn extc_pool_birthColor(rid: i64) -> i64
     effects Addr=0 Cont=0

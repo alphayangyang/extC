@@ -43,7 +43,7 @@ typedef enum {
     TY_GENERIC,     /* an instance, such as `Pair<i32, u8>` */
     TY_ARRAY,       /* a fixed array `[15]i32`: the length is part of the type */
     TY_FN,          /* `fn(A, B) -> R`: a **bare code pointer** with no environment. This is the
-                     * type that crosses a C ABI boundary (`docs/topics/C-ABI.md`), not a closure:
+                     * type that crosses a C ABI boundary, not a closure:
                      * a lambda with captures is a different type (a capture struct + a `call`
                      * method), and only a capture-free lambda could ever be one of these. It has
                      * **no null value**, exactly like a non-nullable `ref` -- see
@@ -71,7 +71,7 @@ struct Type {
     const char *param;   /* TY_PARAM: the parameter name, such as "T" */
     int         tpIndex; /* TY_PARAM: which parameter it is, by position */
     int64_t     asize;   /* TY_ARRAY: the length, a compile-time constant */
-    /* TY_FN: `fn(A, B) -> R`, a bare code pointer (`docs/topics/C-ABI.md`).
+    /* TY_FN: `fn(A, B) -> R`, a bare code pointer.
      *
      * `params` holds the parameter types (`Type *`) in order and `ret` is the return type, which
      * is never NULL: `fn() -> void` is a real type and `void` is a real type in extC.
@@ -228,17 +228,16 @@ typedef enum {
                    * the type is supplied by adoptContextType, the same way an empty
                    * array literal picks up its element type. */
     EX_DYN,         /* `dyn Trait(x)`: the value form (a pool-backed handle) */
-    EX_EXT,         /* `ext f(x)`: start one concurrent task (the `ext` sugar, CONCURRENCY.md
-                     * "`ext` 与调度域"). It is an **expression**: it evaluates to a handle, so
+    EX_EXT,         /* `ext f(x)`: start one concurrent task (the `ext` sugar,* "`ext` 与调度域"). It is an **expression**: it evaluates to a handle, so
                      * `let h = ext f(x)` is the normal spelling. Legal only inside a domain --
                      * that rule and the spawn itself are the checker's job; the parser only
                      * builds the node. */
     EX_LAMBDA,      /* `fn(x: i64) -> i64 { ... }`: a closure literal. The checker gives it a
                      * generated unique type (a capture struct + a `call` method), so a lambda is
-                     * an ordinary value of an ordinary type; see docs/topics/LAMBDA.md. */
+                     * an ordinary value of an ordinary type; */
 } ExprKind;
 
-/* One entry of a lambda's capture list, `[mut ref hits]` (LAMBDA.md section 2).
+/* One entry of a lambda's capture list, `[mut ref hits]`.
  *
  * The list only ever names the captures the body **writes**: a read is captured by value and is
  * not written in the source. That is the author's decision, and it has a second payoff -- every
@@ -384,7 +383,7 @@ struct Expr {
          * **written** entries only (the writable ones); the checker records what it actually
          * captured in `fields`, in declaration order, and builds `sdef` (the capture struct)
          * plus a `call` method on it. `tname` is that struct's generated name, which diagnostics
-         * show as `fn(A) -> R`. See docs/topics/LAMBDA.md sections 3 and 4. */
+         * show as `fn(A) -> R`. */
         struct {
             Vec         params;    /* Param* */
             Type       *ret;       /* NULL: inferred from the body, like a named function */
@@ -413,7 +412,7 @@ struct Expr {
          * `fn(i64) -> i64(p)`, which turns C's `void *` into a callable code pointer (or back). For
          * the numeric form `typeName` is the scalar's name and `type` is filled in by the checker;
          * for the function-type form `type` is the **parsed** type (resolved by the checker) and
-         * `typeName` is NULL, because a function type is not a name. See `C-ABI.md` section 9.9. */
+         * `typeName` is NULL, because a function type is not a name.9. */
         struct { const char *typeName; Type *type; Expr *operand; } conv;
         /* An associated function call: `typeName<targs>::name(args)`.
          * Writing the whole type is deliberate: nothing is guessed from context. */
@@ -429,7 +428,7 @@ struct Expr {
         /*   Empty args = a variant without payload (`status.ok`); non-empty = a
          *   payload construction (`shape.circle(2.0)`). */
     } u;
-    /* `dyn Trait(x).m(...)`: stage 1 of DYN.md keeps construction and the call in one
+    /* `dyn Trait(x).m(...)`: stage 1 ofkeeps construction and the call in one
      * expression, so the trait being dispatched through is a property of the call node rather
      * than a type of its own. The parser sets it and refuses to let it be stored; codegen reads
      * it to dispatch through the table instead of calling the implementation directly. */
@@ -442,7 +441,7 @@ struct Expr {
      * the code pointer, so there is no `FuncDef` for codegen to name.
      *
      * The checker sets this once it has matched every argument against the signature the **type**
-     * carries (`docs/topics/C-ABI.md` section 9 step 1). Without the flag, codegen's call path would
+     * carries. Without the flag, codegen's call path would
      * look for `e->func`, find NULL, and drop the call on the floor -- `if (!e->func) return "0"`
      * turns a missing call into a valid-looking product, which is worse than invalid C. */
 };
@@ -484,7 +483,7 @@ typedef enum {
                              * is no handler and no unwinding -- the process writes
                              * `file:line: trap: msg` to stderr and stops with code 1, down the same
                              * road the compiler's own checks take (bounds, division by zero), dying
-                             * hook included (docs/DECISIONS.md 80). For what cannot be handled;
+                             * hook included. For what cannot be handled;
                              * expected failures are `result`/`option` values. */
     ST_DOMAIN               /* `d.run { … }`: a **domain block**. A statement on purpose: the block
                              * is not a value and cannot be used as an expression, the expression
@@ -537,7 +536,7 @@ struct Stmt {
                  bool overwrite;
                  /* `global var x: T` / `global let x: T = c`: the **storage** lives outside every
                   * frame (a C block-scope `static`), while the **name** stays in this block.
-                  * Depth 0 ⇒ a view of it may cross a `yield`; see docs/topics/GLOBAL.md. */
+                  * Depth 0 ⇒ a view of it may cross a `yield`; */
                  bool isGlobal; } var;
         /* `op` is NULL for a plain `=` and the operator text (`"+="` ...) for a compound
          * assignment; `opExpr` is the `EX_BIN` the checker resolved for it, which codegen
@@ -593,12 +592,12 @@ struct FieldDef {
     int         line;
     /* `@private`: reachable only from the module that declares it. Storage is the reason this
      * exists as much as behaviour is -- a public `buf`/`vals` hands the reader a view into pool
-     * storage, which is exactly what the pool tier forbids (POOLS.md 5.4, ruling #89). */
+     * storage, which is exactly what the pool tier forbids. */
     bool        isPrivate;
     /* `effects Addr=… Cont=…` on a **field of function-pointer type**: the signature of the function
      * that slot will hold.
      *
-     * It exists for the table (`HEAP.md` section 2): the callee is not a declaration -- the host fills
+     * It exists for the table: the callee is not a declaration -- the host fills
      * the slot at run time -- so "I do not keep the pointers you hand me" has nowhere to live except
      * the slot itself. Without it a call through the slot gets the conservative answer every
      * unsigned `extern!` gets ("it may keep everything"), which is safe and makes the table unusable.
@@ -660,7 +659,7 @@ struct StructDef {
     /* Non-NULL when this struct is a **coroutine frame** the compiler synthesized: a call to that
      * coroutine evaluates to this type, and codegen derives `$frame` / `$step` from the
  * coroutine function it belongs to (`planCoroOf` in plan.h)
-     * (docs/topics/CONCURRENCY.md 4.4). */
+     *. */
     /* Synthetic holder for a **builtin scalar** that an `impl` block attached methods to.
      * It is pushed into the module's struct list so that every "struct x method" pass
      * (signature resolution, body checks, escape/borrow rules, operator collection, code
@@ -687,7 +686,7 @@ struct StructDef {
      *     只能放到别处去；
      *   · 在产物里用两条**平台无关**的静态断言把这件事钉住（相邻字段 `offsetof` 递增；
      *     `sizeof` 不超过"最后一个字段 + 它的对齐"），于是任何一次静默漂移都变成产物**编不过**，
-     *     而不是某个调用点读出错的值。见 `C-ABI.md` §9.8。 */
+     *     而不是某个调用点读出错的值。。 */
     bool        frozen;
     /* `@sharesStorage`：这个类型按值拷贝时**两份共用同一块存储**（容器就是这一族）。
      *
@@ -724,7 +723,7 @@ struct StructDef {
     const char *srcName;
     /* A lambda's environment struct: the signature it was written as, `fn(i64) -> i64`, so a
      * diagnostic shows what the user wrote instead of the generated `$lam$f$3`. NULL otherwise
-     * (docs/topics/LAMBDA.md). */
+     *. */
 };
 
 struct FuncDef {
@@ -763,7 +762,7 @@ struct FuncDef {
      * spawned) is a plan fact: see `planCoroBoxed` in plan.h. */
     /* The locals that live across a `yield`, laid out by the checker for codegen (slice B):
      * `pc`, the return slot and (when `makesPool`) the zone id come first, then these by value.
-     * See docs/topics/CONCURRENCY.md 4.4. */
+     *4. */
     Vec         coroFrame;
     Vec         callees;      /* TEMP 二分 */       /* Param* */
     Stmt       *body;            /* ST_BLOCK */
@@ -792,7 +791,7 @@ struct FuncDef {
      * never undefined behaviour -- is deliberately given up here, and only here, by writing
      * it out. That puts the annotation in the same category as `extern!` and `!`: the
      * programmer signs for a fact the compiler cannot check, and the manual says what the
-     * signature costs (`docs/manual/18-modules.md` 12.5, `docs/manual/01-safety.md`).
+     * signature costs.
      *
      * The granularity is the whole function, on purpose: an `unchecked { ... }` block would
      * make the guarantee depend on a statement's position, and a reader has to see, before
@@ -1095,7 +1094,7 @@ struct TraitDef {
     const char *modName;    /* the module that declares it; NULL for the root file */
     int         line;
     Vec         typeParams; /* const char*: `trait Codec<T>`. `Self` is the trait's **implicit**
-                             * type parameter (TRAITS.md decision 2); these are the explicit ones,
+                             * type parameter; these are the explicit ones,
                              * and every method's own list carries `Self` followed by these. */
     Vec         methods;    /* FuncDef*: signatures only (`body == NULL`) */
 };
@@ -1154,7 +1153,7 @@ bool funcIsMethod(const FuncDef *f);
  * hand-written copy of that walk has to be kept in step with the AST. The copies end in
  * `default:`, so `-Wswitch` says nothing when a new kind gains children -- which is how
  * `EX_SLICE`'s two bounds were skipped by eight walkers at once, and `EX_DYN`'s payload by
- * sixteen (docs/topics/AST-WALKERS.md). Questions call the functions below instead of
+ * sixteen. Questions call the functions below instead of
  * writing their own switch; `tools/check_walkers.py` enforces that this switch covers every
  * kind, and it is the only switch it has to.
  *

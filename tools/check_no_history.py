@@ -61,8 +61,29 @@ def strip_code(text):
     return re.sub(r"```.*?```", "", text, flags=re.S)
 
 
-def findings():
+DOC_REF = re.compile(r"[A-Za-z0-9_./-]+\.md")
+
+
+def doc_ref_findings():
+    """`src/` 与 `stdlib/` 里不许引用 `.md` 路径。
+
+    注释引用文档有两个问题：文档会改名（链接变死），以及"引文档"本身不利于维护
+    —— 该说的是那个事实，不是去哪本书里翻。`tools/` 不在此列：闸门确实要读写
+    `docs/usage/*.md`，那是它的职责。
+    """
     out = []
+    for pattern in ("src/**/*.c", "src/**/*.h", "stdlib/**/*.extc"):
+        for p in sorted(ROOT.glob(pattern)):
+            for i, line in enumerate(p.read_text(encoding="utf-8", errors="replace").split("\n"), 1):
+                m = DOC_REF.search(line)
+                if m:
+                    out.append((p.relative_to(ROOT).as_posix(), "doc-reference", line.strip()))
+    return out
+
+
+def findings():
+    out = list(doc_ref_findings())
+    
     for p in files():
         rel = p.relative_to(ROOT).as_posix()
         text = strip_code(p.read_text(encoding="utf-8", errors="replace"))

@@ -1,4 +1,4 @@
-/* std/sys/net.extc —— 事件与 socket 的**特权层**（CONCURRENCY.md §4.4 阶段三）
+/* std/sys/net.extc —— 事件与 socket 的**特权层**
  *
  * 与 `std::sys::pool`、`std::sys::coroutine` 同一形状：这一层只把生成器提供的运行期原语声明成
  * extC 能调的东西，实现是 `src/coroutine.c` 的事件块，**按需发射**。

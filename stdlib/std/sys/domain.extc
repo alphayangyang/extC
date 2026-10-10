@@ -1,4 +1,4 @@
-/* std/sys/domain.extc —— **域**（调度器）这一层的特权层（CONCURRENCY.md「`ext` 与调度域」）
+/* std/sys/domain.extc —— **域**（调度器）这一层的特权层
  *
  * 域是一个**语言级特殊对象**：与 `slice`、`coroutine<A, B>` 同级 —— 用户不需要 `use`
  * 任何东西就能用它，它的**形状**声明在 `prelude.extc`（文件末尾），它的**方法**由编译器

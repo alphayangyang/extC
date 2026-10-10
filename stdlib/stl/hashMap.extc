@@ -1,7 +1,7 @@
 /* std/map.extc -- an **open-addressing hash map** from `i64` keys to any `V`.
  *
  * Why this exists (and why it is not a slot map): the measurements in
- * `docs/topics/REGIONS.md` section 10.2 say that a handle costs **three dependent random
+ * say that a handle costs **three dependent random
  * loads** (handle array -> metadata -> value) while a hash lookup costs **one** after the
  * probe. Random access is the common case, so key -> value wants a hash table and stable
  * identity wants `std::pool`; neither replaces the other.
@@ -24,7 +24,7 @@
  *     many of them pile up;
  *   - the arrays are arena memory like everything else: rehashing leaves the old arrays
  *     behind (bounded, O(log n) rebuilds over a map's life) and a pool will reclaim them
- *     in phase 1+ (`docs/topics/REGIONS.md` section 8).
+ *     in phase 1+.
  */
 
 use stl::pool
@@ -79,7 +79,7 @@ impl i64 {
 @sharesStorage        /* 按值拷贝时**两份共用同一块板块** ⇒ 编译器在这里报警告，要独立副本用 `clone()` */
 @poolObject            /* 这个类型**拥有一个池**：存储住在池自己的板块上，寿命随它所在的地方 */
 struct hashMap<K, V> {
-    /* This container's OWN pool record. One non-nested container = one pool (POOLS.md 7.7);
+    /* This container's OWN pool record. One non-nested container = one pool;
      * `vals` is created with this as its parent, so the two records really form a tree and
      * dropping this one takes the value pool with it. */
     pid:    i64
@@ -90,7 +90,7 @@ struct hashMap<K, V> {
     /* The reverse of `slot`, one entry per dense index. The pool's `remove` is a swap-remove:
      * the last live value moves into the hole, so the map has to fix the moved element's bucket,
      * and this column is what says which bucket that is. Without it the table would keep pointing
-     * at values that moved (POOLS.md section 8). */
+     * at values that moved. */
     bucketOfDense: mut slice<i32>
     vals: pool<V>               /* the values themselves: dense, reusable, handle-addressed */
     n:    i64                   /* live entries */
@@ -286,7 +286,7 @@ struct hashMap<K, V> {
     }
 
     /* Drop every entry, keeping the capacity. `clear` on the pool is O(1) (it flips the pool
-     * epoch, see POOLS.md section 7), so the values cost nothing here. */
+     * epoch, */
     fn clear(self: mut ref hashMap<K, V>) {
         var i: i64 = 0
         while i < self.cap { self.tag[i] = EMPTY  i = i + i64(1) }
