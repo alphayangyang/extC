@@ -29,10 +29,6 @@ src/check/check_expr.c	plan-number	* (PLAN #54). The message for a name that rea
 src/check/check_expr.c	plan-number	* (POOLS.md 2.1 "a pool has two faces", PLAN #85).
 src/check/check_expr.c	plan-number	* became 32-bit (PLAN #92). SPEC §3.4 says only lossless widening is implicit and
 src/check/check_expr.c	plan-number	* compiler was the first to notice, on two structs (PLAN #79). */
-src/check/check_internal.h	decision-number	* shape (定案 101②). */
-src/check/check_internal.h	history-word	* 这个检查器里"这个值活多深 / 它是谁"被问了一百多次，曾经由**三套各写一遍的根遍历**回答，
-src/check/check_internal.h	history-word	/* 这一格是**池的提权**专用的：绑定由一次"建池的调用"初始化时，把那次调用的
-src/check/check_internal.h	plan-number	* 表达式记在这里（PLAN #87）。
 src/check/check_stmt.c	decision-number	/* The condition is its own **place** (定案 101②): pushed as a scope so the allocation
 src/check/check_stmt.c	decision-number	/* `x += y` is `x = x + y` (定案 92). Which operator that is, and whether it
 src/check/check_top.c	history-word	* 为什么要共享：这两条通道曾经**各写一遍**，而 P0-2 的哨兵 bug（`nd == 0` 既表示"还没见过"

@@ -11,11 +11,11 @@ src/base/base.h	0
 src/base/dbg.h	0
 src/base/extctime.h	0
 src/check/check.h	2
-src/check/check_internal.h	114
+src/check/check_internal.h	0
 src/check/dataflow.h	3
 src/front/lexer.h	7
 src/front/parser.h	1
-src/plan/plan.h	73
+src/plan/plan.h	0
 src/plan/results.h	11
-src/types/typelayer.h	15
+src/types/typelayer.h	0
 src/types/types.h	33
