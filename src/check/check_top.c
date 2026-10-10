@@ -1251,7 +1251,7 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
             Expr *a = *(Expr **)vecAt(args, j);
             if (mentionsParam(a->type)) continue;
             if (!typeContainsRef(c->tt, tsub(c, a->type))) continue;
-            recordLvlFact(c, a, h);         /* 同上：先记事实，末轮重放时再提（PLAN #87） */
+            recordLvlFact(c, a, h);         /* 同上：先记事实，末轮重放时再提 */
             int d = targetDepth(c, a);
             /* PROMOTE BEFORE REJECTING -- the same half the incomplete-summary branch above
              * has always had, and the reason a container can be handed to something that
@@ -1266,7 +1266,7 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
              *
              * Sharing this half matters for pools as much as for arenas: a container built
              * inside a loop body and pushed into a container that outlives the loop needs its
-             * pool born at the destination's place (POOLS.md 3.1, PLAN #87). */
+             * pool born at the destination's place (POOLS.md 3.1). */
             if (d != 0 && d > h && promoteInto(c, a, h)) d = targetDepth(c, a);
             if (d == 0 || d <= h) continue;
             ckError(c, line,
@@ -1456,10 +1456,8 @@ bool calleeMakesPool(FuncDef *f) {
  * `calleeMakesPool` 要回答①（"结果会不会住在池上" ⇒ 逃逸深度与提权站点），所以它对
  * `@poolObject` 类型**一律**放宽 —— 在那里这是对的（保守方向）。
  * 但**块级的 zone 钩子**只需要②：一个池只在建它的那个块的 zone 上登记。拿①回答②的代价
- * 实测过（`bench/app/session.extc`，active=1M）：`hashMap::get` 被当成"会建池" ⇒ 循环体
- * **每轮压/弹一次 zone**。只把生成物里那两行删掉的消融实验值是 **25.3%**（42.34 → 31.63
- * ns/op）；**编译器这一刀端到端是 14.5%**（48.08 → 41.10 ns/op）—— 后者还顺带把那几个
- * 方法的 zone 形参去掉了。修完 extC 在该场景**与 Go 持平**（0.99×，之前 1.15×）。
+ * 很大（`bench/app/session.extc`，active=1M）：`hashMap::get` 被当成"会建池" ⇒ 循环体
+ * **每轮压/弹一次 zone**，端到端慢约 14.5%。
  *
  * 剩下三条覆盖"建池"的全部入口：闭包（`makesPool`）覆盖一切能走到 `extc_pool_new` 的函数体；
  * `extc_pool_new*` 自己按名字认（extern 没有函数体）；构造器那一族按 `makesPoolAny` 认
@@ -2771,8 +2769,8 @@ static void collectEffects(Checker *c, FuncDef *f) {
     /* The escape set decides which arena the calls in this body pass, so it has to be
      * known before the body is walked. */
     computeEscapes(c, f);
-    /* 这里曾经写 `c->escapeesFor = (int)(size_t)f;` —— 把指针截断成 `int` 当"已算过"的键，
-     * 而那个字段**只写不读**（V 批次：死字段 + 指针截断，一并删掉）。将来若真需要记忆化，
+    /* 这里不写 `c->escapeesFor = (int)(size_t)f;` —— 把指针截断成 `int` 当"已算过"的键，
+     * 而那个字段**只写不读**（死字段 + 指针截断，一并删掉）。将来若真需要记忆化，
      * 用 `FuncDef *` 或 `Sym *` 字段，而不是把地址塞进整数。*/
     if (getenv("EXTC_DUMP_EFFECTS")) fprintf(stderr, "[escapes-for] %s\n", FN(f));
     Vec fresh; vecInit(&fresh, c->arena, sizeof(const char *));
@@ -4161,7 +4159,7 @@ static void checkFunc(Checker *c, FuncDef *f) {
      * loader records that context on each declaration (`FuncDef.ctx`), and this pass runs
      * every unit's functions in one go, so the context is switched here: without it, a
      * mistake inside a module came back pointing at a line of the **entry** file -- the
-     * line was the module's, the file was not (PLAN #54). */
+     * line was the module's, the file was not. */
     Ctx *savedCtx = c->ctx;
     if (f->ctx) c->ctx = f->ctx;
 

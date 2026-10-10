@@ -2157,7 +2157,7 @@ static Stmt *parseStmt(Parser *p) {
         return s;
     }
 
-    /* `=` and the five compound forms. `+=` and friends mean `x = x + y` (定案 92), so
+    /* `=` and the five compound forms. `+=` and friends mean `x = x + y`, so
      * they are the same statement with one extra field: the checker resolves the operator
      * and codegen keeps the compound form in the C output, which evaluates the target
      * **once** for free. `++` / `--` are deliberately absent: an expression that both
@@ -2336,7 +2336,7 @@ static Stmt *parseIf(Parser *p) {
  */
 /* ------------------------------------------------------------------- `for`
  *
- * Four forms, one implementation (定案 12 / 93): every one of them is turned into
+ * Four forms, one implementation: every one of them is turned into
  * `var` + `while` right here, so the checker and codegen never see a loop they did not
  * already know. That is the whole reason for desugaring instead of adding a node: a new
  * statement kind has to be taught to every walker in the compiler (the effect summary, the
@@ -2477,8 +2477,8 @@ static Stmt *parseFor(Parser *p) {
         decl->u.var.mut  = true;                 /* the loop itself writes it */
         decl->u.var.overwrite = false;
 
-        /* The **upper bound is evaluated once**, when the loop is entered (定案 101).
-         * It used to sit in the condition as written, so the loop re-read it every round and
+        /* The **upper bound is evaluated once**, when the loop is entered.
+         * Putting it in the condition as written would make the loop re-read it every round and
          * `for i in 0..n { n = 0 ... }` followed `n` as the body changed it. A range is a bounded
          * interval -- `for i in 0..xs.len` must mean the length at entry -- and a hidden `let`
          * gives the bound exactly the lifetime the desugar promises. The name is the same

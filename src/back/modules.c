@@ -908,7 +908,7 @@ static void rwQualified(Loader *L, ModUnit *self, Expr *e) {
     }
 
     /* `fs::ofstream("out.txt")`: `mod::name(args)` where `name` is a **type** of that
-     * module is that type's constructor -- `T(...)` is `T::new(...)` (定案 86), and from
+     * module is that type's constructor -- `T(...)` is `T::new(...)`, and from
      * outside the module the type has to be named in full, so the sugar has to be
      * recognized here as well.
      *
@@ -1509,7 +1509,7 @@ static bool unitOwns(ModUnit *u, const char *name) {
  *
  * Notes:
  *   - Only `use mod::*` is consulted. A plain `use mod` deliberately does not put
- *     anything in scope (定案 70), and that rule is not weakened here.
+ *     anything in scope, and that rule is not weakened here.
  *   - The first match wins among the opened modules only when the flat names are
  *     equal, which cannot happen for two different modules.
  */
@@ -1842,8 +1842,8 @@ static ModUnit *loadUnit(Loader *L, const char *modPath, const char *importerFil
     if (u->ctx->hasError) { L->errors++; u->state = 2; return u; }
 
     /* `@builtin` = "the runtime has a function with this signature" -- that is, **naming a
-     * primitive**. Only the standard library may (定案 96): one such declaration hands a program a
-     * pointer or a length the rest of the language cannot forge (measured before this check
+     * primitive**. Only the standard library may: one such declaration hands a program a
+     * pointer or a length the rest of the language cannot forge (before this check
      * existed: `@builtin fn extc_viewOf(p: ref u8, n: i64) -> mut slice<u8>` plus a length of
      * 1,000,000 over an 8-byte global compiled and ran, rc=139). */
     for (size_t i = 0; i < u->mod.funcs.len; i++) {

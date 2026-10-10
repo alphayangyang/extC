@@ -393,7 +393,7 @@ int valDepthForStore(Checker *c, Expr *e) {
  *   - The result is cached on the node, never for a node whose type mentions a type
  *     parameter: that answer is computed under the assumption that the parameter may
  *     carry a reference, and it holds only for the generic body, not for an instance. */
-/* 「建池的调用」这个值活到多深（池的提权，PLAN #87）。
+/* 「建池的调用」这个值活到多深（池的提权）。
  *
  * 与 `new` 同一条规则：新分配的东西活到它的站点那一层。容器构造就是一个站点 ——
  * 它建出来的池生在哪一层地方，容器就活到哪一层。

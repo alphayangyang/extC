@@ -1,22 +1,20 @@
 /* memfind.c —— `extc_memFind` 与 `extc_memEq`：字节搜索/整块比较的运行期。
  *
- * 为什么要有这一层（量出来的理由，见 `bench/string_vs_cpp/`）：extC 的 `string::find` 原来是
- * 纯 extC 的 Two-Way，逐字节走 `hay[i]` —— 而每一次下标都要过一次边界检查。缩样探针上
- * callgrind 给出的是 **25.5 条指令/字节**，其中 30% 集中在 `if (i < 0 || i >= v.len) extc_trap(...)`
- * 那一行；libstdc++ 那边 `memchr`/`memcmp` 是向量化的、且没有逐字节检查。
- * 算法没错，输在"每个字节一次检查"。
+ * 为什么要有这一层：纯 extC 的 `string::find` 是逐字节走 `hay[i]` 的 Two-Way，
+ * 而每一次下标都要过一次边界检查 —— 算法没错，输在"每个字节一次检查"；
+ * libc 的 `memchr`/`memcmp` 是向量化的、且没有逐字节检查。
  *
  * `memmem` 是 libc 里的 Two-Way（glibc 走 `__memmem`，短模式先 `memchr` 找首字节、
- * 长模式用周期位移），语义与原来的实现一致：返回**最左**匹配。
+ * 长模式用周期位移），语义与纯 extC 的实现一致：返回**最左**匹配。
  *
  * 两条纪律：
  *   ① 判据不变 —— 偏移、`-1`、空模式 `0`，一条不少；自重叠模式（`aa` 在 `aaaa` 里）必须是 0。
  *   ② 可移植 —— `memmem` 是 GNU/BSD 扩展，非 GNU 平台走下面 `#else` 的 `memchr` + `memcmp`
- *      朴素回退（慢，但语义相同）。
+ *      朴素兜底（慢，但语义相同）。
  *
  * `extc_memEq` 是同一扇门的第二个出口：C 的 `memcmp` 签名里 `const void *` 与 `size_t`
  * extC 都写不出来，而**手写声明会与 `<string.h>` 撞车**（生成文件里 include 了它，
- * gcc 报 `conflicting types for 'memcmp'` —— 实测过）。所以它被封在这个整数出口后面。 */
+ * gcc 报 `conflicting types for 'memcmp'`）。所以它被封在这个整数出口后面。 */
 
 #include "memfind.h"
 

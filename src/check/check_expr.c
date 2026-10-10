@@ -533,7 +533,7 @@ static Type *refNotANumber(Checker *c, Expr *e, Type *lt, Type *rt, const char *
  */
 /* `poolSlice<T>(rid, n) -> mut slice<T>` . `poolResize<T>(rid, s, n) -> mut slice<T>` .
  * `poolGive<T>(rid, s) -> bool`: the typed door into a **pool's own plate**
- * (POOLS.md 2.1 "a pool has two faces", PLAN #85).
+ * (POOLS.md 2.1 "a pool has two faces").
  *
  * The `...Raw` spellings of the first two are the same call minus the zeroing of the bytes
  * they hand out, for a column whose every slot is written before it is read (`map`'s four
@@ -1272,7 +1272,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             /* The literal's own type is the smallest integer that holds it. It used to be i32
              * unconditionally, so a value that does not fit was truncated silently wherever no
              * context supplied a type -- an unannotated `let n = 5000000000` inside a generic body
-             * became 32-bit (PLAN #92). SPEC §3.4 says only lossless widening is implicit and
+             * became 32-bit. SPEC §3.4 says only lossless widening is implicit and
              * there is no implicit truncation; contexts that want another integer type still type
              * the literal themselves through `literalFits` / `adoptContextType`. */
             if (e->u.ival < -2147483648LL || e->u.ival > 2147483647LL) return c->tI64;
@@ -1775,7 +1775,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
              * generation emitted the wrong operator. That is how a deferred method call (#57)
              * cost the comparison below it its `==` method: `var i = k.hash() & mask` made `i`
              * an error type, `self.keys[i] == k` was waved through as "native", and the C
-             * compiler was the first to notice, on two structs (PLAN #79). */
+             * compiler was the first to notice, on two structs. */
             if (ttIsError(it)) return elem;
             if (!ttIsInteger(it)) {
                 ckError(c, e->line, "An index must be an integer.",
@@ -3939,7 +3939,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
              * resolves as written. The context-free `ttFromName` used to be called here, which
              * sees only the entry file's structs: a **named** literal inside a module was
              * `unknown struct` while the very same literal written as an annotated `var` worked
-             * (PLAN #54). The message for a name that really is unknown comes from `ttResolve`,
+             * . The message for a name that really is unknown comes from `ttResolve`,
              * which also reports the ambiguous case (`pair` exported by two modules). */
             Type *st = e->type;
             if (e->u.lit.name) {

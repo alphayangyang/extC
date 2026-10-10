@@ -623,7 +623,7 @@ void checkStmt(Checker *c, Stmt *s) {
                     return;
                 }
             }
-            /* `x += y` is `x = x + y` (定案 92). Which operator that is, and whether it
+            /* `x += y` is `x = x + y`. Which operator that is, and whether it
              * applies to these two types at all, is decided by the same function a written
              * `x + y` goes through, so the rules cannot drift; what stays here is the
              * assignment half: the target has to be writable, and the result has to fit. */
@@ -954,7 +954,7 @@ void checkStmt(Checker *c, Stmt *s) {
             /* The condition of a `while` may not be hoisted: a hoisted prefix is
              * evaluated once before the loop, not once per round. */
             c->noHoist++;
-            /* The condition is its own **place** (定案 101②): pushed as a scope so the allocation
+            /* The condition is its own **place**: pushed as a scope so the allocation
              * sites inside it get one level deeper, and measured so codegen knows whether to give
              * it an arena of its own and release it every round. Without this, `while (new i64[N])[0]
              * == 0` allocated at the enclosing block's level and grew with the rounds. */

@@ -1519,7 +1519,7 @@ static const char *genBin(CG *g, Expr *e) {
 
         /* The hidden arguments: an operator **is** a method call, so it asks the same single owner
          * everything else asks (`cgImplicitArgs`) -- the checker already decided the level for it
-         * (`setOpCallArgs`). This used to emit only the zone half; the arena half was PLAN #83, and
+         * (`setOpCallArgs`). It emits both halves: without the arena half,
          * an operator that allocated and returned the value failed loudly in the C compiler
          * (`too few arguments to function ...`) instead of silently leaking. Emitting both is what
          * closed #83 -- and it is what makes the operator path stop being "the one exception". */
@@ -2387,8 +2387,8 @@ static const char *exIdent(CG *g, Expr *e) {
 /* `EX_CALL`: one arm of the dispatch below, moved out so the switch reads as a table.
  * The body is the case body verbatim. */
 static const char *exCall(CG *g, Expr *e) {
-    /* `parallel::run` 的 codegen 还没落地（③a 进行中）。**必须报错**：实测过一次"调用被
-     * 悄悄丢掉、产物仍然合法" ⇒ 那比非法 C 更坏（静默错编译）。这里用 ctxError 直接拦下。 */
+    /* `parallel::run` 的 codegen 还没落地。**必须报错**：否则会出现"调用被悄悄丢掉、
+     * 产物仍然合法"的情形 ⇒ 那比非法 C 更坏（静默错编译）。这里用 ctxError 直接拦下。 */
     /* `domain::single()`：造一个域（不透明指针）。按 checker 盖的**节点标记**认 —— 见 ast.h。 */
     if (planDomNew(e)) { g->needDomain = true; return "extc_dom_new()"; }
     /* The plate layer's one primitive: a call to the helper the declaration triggers
@@ -2562,7 +2562,7 @@ static const char *exCall(CG *g, Expr *e) {
     name = (planCallee(e) && planInstName(planCallee(e))) ? planInstName(planCallee(e)) : cSymName(g, name);
     /* 运行期那一层：库里的 `extc_pool_new(parent)` 在收「家 zone」的函数里换成
      * `extc_pool_new_at(parent, __extc_home_zone)` —— 池因此生到**调用者选的
-     * 那个地方**去（POOLS.md §3.1 的提权落点，PLAN #87）。库侧一个字都不用改。 */
+     * 那个地方**去。库侧一个字都不用改。 */
     bool poolNewAt = (planCallee(e) && planCallee(e)->body == NULL
                       && poolCtorNeedsZone(name));
     if (poolNewAt && g->funcHasZoneParam) name = "extc_pool_new_at";
@@ -3505,7 +3505,7 @@ static const char *zoneArgRef(CG *g, Expr *e) {
             /* `main` 的 C 签名是固定的，收不到家 zone 参数 ⇒ 它的"家"就是**它自己那个体**
              * （与家 arena 的 `__extc_home = &__extc_a[1]` 同一条口径）。
              *
-             * 这里以前直接落到下面那条"最近一层压过的 zone"，而那是个**错的地方**：
+             * 这里直接落到下面那条"最近一层压过的 zone"是**错的地方**：
              * 一个在内层块里升级出来的池会登记到内层块的 zone 上，出块就被回收，
              * 而接收者还活着。实测（SSO 的 `push` 是第一个"为接收者建池"的方法）：
              * 循环里 push 到第 17 个字节升级 ⇒ 每轮出块收掉池 ⇒ 下一次 `pStale` 把串毒成空，
@@ -4294,7 +4294,7 @@ if (wbody && planForStep(wbody)) {
         if (*(Stmt **)vecAt(&wbody->u.block.stmts, i) == planForStep(wbody)) { stepLabel = ++g->forStepSeq; break; }
 }
 /* A condition that **allocates** gets its own arena level, released at the top of every
- * round: the checker put its sites one scope deeper for exactly this (定案 101②). Without
+ * round: the checker put its sites one scope deeper for exactly this. Without
  * it the condition's allocations lived until the enclosing block ended, so the loop grew
  * with the number of rounds. `g->blkLevel` is raised for the whole loop so the condition
  * and the body agree with what the checker assigned; the body block then sits one level
@@ -4420,7 +4420,7 @@ static void genStmtInner(CG *g, Stmt *s) {
         case ST_TRAP: {
             /* `trap(msg)`: **同一个出口**，编译器自己插的那些 trap 走的就是它 ——
              * `extc_trapMsg` 印 `文件:行号: trap: 消息` 到 stderr，然后 `extc_die(1)`
-             * （临终钩子照跑 ⇒ 缓冲输出不丢，定案 80）。也就是说"程序坏了"在这门语言里
+             * （临终钩子照跑 ⇒ 缓冲输出不丢）。也就是说"程序坏了"在这门语言里
              * 只有一种说法，不管那句话是编译器说的还是写代码的人说的。 */
             Expr *m = s->u.trap_.msg;
             /* Nothing from `rt`/`rtPrint` here: `extc_trapMsg` and `extc_die` are primitives of
@@ -7405,7 +7405,7 @@ static void buildRuntimeText(CG *g) {
         " * the `_debug` helpers it replaces; the truth table lives in\n"
         " * tools/print-formats.txt (floats use %g, [N]u8 prints numerically, and\n"
         " * slice<u8> prints as text). */\n"
-        /* 这里曾经挂着 `__attribute__((unused))`：这一段是**整块发射**的，而 `extc_print`
+        /* 这里不挂 `__attribute__((unused))`：这一段是**整块发射**的，而 `extc_print`
          * 只有"程序真的打印了结构化类型"时才被调用 ⇒ 凡是因为别的理由需要运行时块、又不打印
          * 结构化类型的程序都会撞 `-Werror=unused-function`（实测：往 `stdlib/std/io.extc` 加几个
          * helper 就让 `tests/coro` 六个夹具全灭）；而 `static inline` 不是解（GCC 认、Clang 反手报
@@ -8196,7 +8196,7 @@ static void collectEmitted(CG *g, Module *m) {
         for (size_t j = 0; j < sd->methods.len; j++) {
             FuncDef *md = *(FuncDef **)vecAt(&sd->methods, j);
             if (planCoroProto(md)) continue;      /* emitted inline at the call site, not here */
-            /* ⚡ 可达性剪枝（PLAN #69）：**没人调用的方法不发射** ✓
+            /* ⚡ 可达性剪枝：**没人调用的方法不发射** ✓
              * 检查器早就在每个调用点打 `used`（`e->func = f; planUsed(f) = true;` ✓
              * 实例方法那一处也一直在用 ✓）——这里只是把**同一套标记**接到发射表上 ✓
              * 为什么重要：一个小程序会带出 prelude + 库的**整片**代码 ✗
@@ -8398,9 +8398,9 @@ static void emitVtTables(CG *g, Buf *out, Module *m, Arena *arena) {
 static void emitParTramps(CG *g) {
     /* `parallel::run` 的 trampoline 必须落在**任何函数体之前**：调用点要看到它的声明，它自己要看到
      * worker 的原型。产物的顺序是 includes → 原型 → 运行期 → 函数体，所以函数体循环的开头就是唯一
-     * 正确的位置（2026-09-28 实测过一次错误的挂钩：挂在"按函数发原型"的循环里，而那个循环只走模板与
+     * 正确的位置（挂钩挂在"按函数发原型"的循环里是错的：那个循环只走模板与
      * 实例方法，普通函数根本不到 ⇒ 产物里少了 __extc_par_* ⇒ gcc 报 undeclared）。worker 的原型用
-     * 同一个 genFuncProto 补一份：重复声明合法，而且文本与后面那次完全一致。 */
+     * 同一个 genFuncProto 补一份：重复声明合法，而且文本与后一份完全一致。 */
     {
         bool parAny = false;
         for (size_t i = 0; i < g->funcs.len; i++) {
