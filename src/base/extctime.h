@@ -1,17 +1,22 @@
-/* The time runtime: a clock and a sleep, both in **nanoseconds as i64**.
+/**
+ * @file extctime.h
+ * @brief 时间运行期：一只钟与一个睡眠，都是 **i64 纳秒**。
  *
- * Why a runtime at all: `clock_gettime` takes a `struct timespec`, and this project's boundary rule
- * is that platform struct layouts never become extC's business (`stdlib/std/sys/net.extc` says the
- * same about `epoll_event`). So the layout stays here, in emitted C, and extC sees one scalar.
+ * `clock_gettime` 要 `struct timespec`，而平台结构体的布局不进 extC 这一侧：
+ * 布局留在这里（生成的 C 里），extC 只看见一个标量。
  *
- * Emitted on demand (`CG.needTime`, set by a declaration from `extern!("extc-time")`), so a program
- * that never asks for the time carries none of it -- the same shape as `memfind.h` / `coroutine.h`.
+ * 按需发射：程序不问时间就不会带上它。
  */
 #ifndef EXTC_TIME_H
 #define EXTC_TIME_H
 
 #include "base.h"
 
+/**
+ * @brief 发射时间运行期（钟与睡眠）。
+ * @param a    arena。
+ * @param out  接收生成文本的缓冲。
+ */
 void timeEmitRuntime(Arena *a, Buf *out);
 
 #endif

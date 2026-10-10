@@ -106,6 +106,9 @@ if out=$(python3 tools/manual_surface.py --check 2>&1); then ok "$out"; else bad
 echo "== 活文档不写历史（棘轮：决策编号 / 以前·回退·一度 / 实测史）=="
 if out=$(python3 tools/check_no_history.py --gate 2>&1); then ok "$out"; else bad "活文档出现新的历史词"; echo "$out" | head -8; fi
 
+echo "== 头文件 Doxygen 覆盖（棘轮：只许变好）=="
+if out=$(python3 tools/check_doxygen.py --gate 2>&1); then ok "$out"; else bad "头文件出现没写 Doxygen 的新声明"; echo "$out" | head -8; fi
+
 echo "== 活文档里的示例是判据（完整程序必须编过；片段与负例要标注）=="
 if out=$(python3 tools/check_doc_examples.py --gate 2>&1); then ok "$out"; else bad "文档示例编不过或没标注"; echo "$out" | head -8; fi
 

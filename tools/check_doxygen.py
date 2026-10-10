@@ -1,0 +1,106 @@
+#!/usr/bin/env python3
+"""头文件里的函数声明必须有 Doxygen 说明 —— 棘轮，只许变好。
+
+规范见 `docs/COMMENT-STYLE.md`：说明 · 参数 · 返回值 · 使用例。
+
+    tools/check_doxygen.py             报告
+    tools/check_doxygen.py --gate      未覆盖计数比基线涨了就失败（check.sh 调用）
+    tools/check_doxygen.py --write-baseline
+
+判据：`src/**/*.h` 里的函数声明，其**紧邻上方的注释块**里要有 `@brief`。
+基线 `tools/doxygen-baseline.txt` 按文件记未覆盖数，**只许变少**。
+"""
+import re
+import sys
+import pathlib
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+BASE = ROOT / "tools" / "doxygen-baseline.txt"
+
+DECL = re.compile(r"^\s*(?:static\s+|extern\s+|inline\s+)*[A-Za-z_][\w \t*]*\s+\**\w+\s*\([^;{]*\)\s*;\s*$")
+
+
+def blocks_and_decls(path):
+    """返回 (声明总数, 有 @brief 的声明数)。看每条声明上方最近的注释块。"""
+    lines = path.read_text(encoding="utf-8", errors="replace").split("\n")
+    total = covered = 0
+    for i, l in enumerate(lines):
+        if not DECL.match(l):
+            continue
+        total += 1
+        # 往上找最近的 /** ... */ 或 /* ... */ 块
+        j = i - 1
+        while j >= 0 and lines[j].strip() == "":
+            j -= 1
+        if j < 0:
+            continue
+        # 若这一行是块的结尾，往回找到块的开始
+        if lines[j].strip().endswith("*/"):
+            k = j
+            while k >= 0 and "/**" not in lines[k] and "/*" not in lines[k]:
+                k -= 1
+            chunk = "\n".join(lines[k:j + 1]) if k >= 0 else ""
+        else:
+            # 单行注释
+            chunk = lines[j]
+        if "@brief" in chunk:
+            covered += 1
+    return total, covered
+
+
+def scan():
+    out = {}
+    for h in sorted(ROOT.glob("src/**/*.h")):
+        t, c = blocks_and_decls(h)
+        if t:
+            out[h.relative_to(ROOT).as_posix()] = (t, c)
+    return out
+
+
+def main():
+    data = scan()
+    miss = {f: t - c for f, (t, c) in data.items()}
+    total = sum(t for t, _ in data.values())
+    covered = sum(c for _, c in data.values())
+
+    base = {}
+    if BASE.exists():
+        for l in BASE.read_text(encoding="utf-8").splitlines():
+            if l.strip() and not l.startswith("#"):
+                k, v = l.rstrip("\n").split("\t")
+                base[k] = int(v)
+
+    grown = sorted((f, m, base.get(f, 0)) for f, m in miss.items() if m > base.get(f, 0))
+    fixed = sorted((f, base[f], miss.get(f, 0)) for f in base if base[f] > miss.get(f, 0))
+
+    if "--write-baseline" in sys.argv:
+        BASE.write_text(
+            "# 未写 Doxygen 的声明数（棘轮：只许变少）\n"
+            + "\n".join(f"{f}\t{miss[f]}" for f in sorted(miss)) + "\n", encoding="utf-8")
+        print(f"基线已写：{sum(miss.values())} 条待补")
+        return 0
+
+    if "--gate" in sys.argv:
+        bad = False
+        if grown:
+            for f, m, b in grown:
+                print(f"  {f}: 未覆盖从 {b} 涨到 {m}")
+            bad = True
+        if fixed:
+            print(f"有 {len(fixed)} 个文件的欠账已减少 ⇒ 请从 tools/doxygen-baseline.txt 下调：")
+            for f, b, m in fixed[:10]:
+                print(f"  {f}: {b} → {m}")
+            bad = True
+        if bad:
+            sys.exit(1)
+        print(f"ok  Doxygen 覆盖未退步（{covered}/{total} 个声明有 @brief，欠账 {sum(miss.values())}）")
+        return 0
+
+    print(f"声明 {total} 个 · 有 @brief {covered} 个 · 欠账 {sum(miss.values())} 个")
+    for f, (t, c) in sorted(data.items(), key=lambda kv: -(kv[1][0] - kv[1][1]))[:10]:
+        print(f"  {t - c:4d} 欠 / {t:4d}   {f}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
