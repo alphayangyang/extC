@@ -27,6 +27,24 @@
  *
  * NOTE: paths have to be NUL-terminated for the C call underneath. A string literal
  * already is one; a slice assembled at run time has to guarantee the terminator.
+ *
+ * @code
+ * use std::io
+ * use std::fs
+ *
+ * fn main() -> i32 {
+ *     var w = fs::openWrite("example-out.txt")!     // 截断写；`openAppend` 则保留原内容
+ *     w.put("hello")!                               // 直接 write(2)，不缓冲
+ *     w.close()!
+ *
+ *     var r = fs::openRead("example-out.txt")!
+ *     var buf: [16]u8
+ *     let n = r.readAll(buf[..])!
+ *     r.close()!
+ *     io::cout << "n=" << n << " " << buf[0..n] << "\n"
+ *     return 0
+ * }
+ * @endcode
  */
 use std::io
 use std::sys::io as sysio

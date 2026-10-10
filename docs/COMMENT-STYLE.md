@@ -68,3 +68,10 @@ extC 用**同一形状**（`/** ... */` + `@brief` / `@param` / `@return` / `@co
   `@code{.extc}` / `@code{.c}` 明确指定。
 
 闸门：`tools/check_code_examples.py`（已接进 `check.sh`）。
+
+写 `@code` 例子时的两个真实坑（都踩过）：
+
+- **`<<` 链不能换行续写**：`io::cout << a` 的下一行再写 `<< b` 编不过（`expected an expression`）。
+  链条要写在一行里，或者拆成多条语句。
+- **片段包一层 `fn main` 也要能编**：`var x: [8]u8` 这类声明可以，但引用未定义的变量不行 ——
+  那就得写成完整程序，或者标 `!skip` 并说明它只是签名示意。

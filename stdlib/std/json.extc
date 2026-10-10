@@ -19,6 +19,25 @@
  *     let c: i64 = find(body, pool[..], root, "d.content")
  *     var scratch: [64]u8
  *     io::cout << strOf(body, pool[..], c, scratch[..])
+ *
+ * @code
+ * use std::io
+ * use std::json
+ *
+ * fn main() -> i32 {
+ *     var pool: [16]json::node                 // 节点池由调用方给：解析不分配
+ *     let text: slice<u8> = "{\"a\": 42, \"b\": [7, 8]}"
+ *     var p: json::parsed = json::parse(text, pool[..])
+ *     if !json::isOk(p) { io::cout << "parse failed\n"  return 1 }
+ *
+ *     let root: i64 = json::rootOf(p)
+ *     let a: i64 = json::member(text, pool[..], root, "a")
+ *     let b: i64 = json::member(text, pool[..], root, "b")
+ *     let b0: i64 = json::intOf(text, pool[..], json::elem(pool[..], b, i64(0)))
+ *     io::cout << "a=" << json::intOf(text, pool[..], a) << " b[0]=" << b0 << " b.len=" << json::countOf(pool[..], b) << "\n"
+ *     return 0
+ * }
+ * @endcode
  */
 
 let OBJ: u8 = 1
