@@ -1755,8 +1755,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             /* The built-in subscript path dereferences the object, so a nullable reference has to
              * carry a non-null proof first -- exactly like field access, `*` and method receivers
              * (which all call this). Without it, `var p: ?ref [4]i32 = null` followed by `p[1]`
-             * compiled with no diagnostic and the generated C read `(*p).data[1]` (audit P0-13:
-             * ASan SEGV at address 0x4). The `[]`-method path above has its own check at the
+             * compiled with no diagnostic and the generated C read `(*p).data[1]` (* ASan SEGV at address 0x4). The `[]`-method path above has its own check at the
              * receiver, so this sits after it on purpose. */
             if (rejectNullableDeref(c, ot, e->u.index.obj, "a subscript")) return ttError(tt);
 
@@ -1812,7 +1811,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             if (ttIsError(ot)) return ttError(tt);
 
             /* Same rule as the subscript above: slicing a `?ref` view/array takes its address
-             * without asking whether it is null (audit P0-13, the second half). */
+             * without asking whether it is null (, the second half). */
             if (rejectNullableDeref(c, ot, e->u.slice.obj, "a slice")) return ttError(tt);
 
             Type *ob = ttBase(ot);
@@ -2472,7 +2471,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     /* `funcInstance` reports the limit it hit and returns NULL (type nesting past
                      * `TYPE_DEPTH_LIMIT`, or more than `FUNC_INST_LIMIT` instances). Dereferencing
                      * that NULL is how the compiler used to crash *while reporting its own limit*
-                     * (audit P0-4: `z<box<...65 deep...<i64>>>()` was a SIGSEGV, depths <= 64 were
+                     * (`z<box<...65 deep...<i64>>>()` was a SIGSEGV, depths <= 64 were
                      * a clean diagnostic). The error is already recorded; stop here. */
                     if (!inst) return ttError(tt);
                     planSetUsed(inst, true);
@@ -3107,7 +3106,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 /* `args[0]` comes before the arity check further down (which compares against the
                  * builtin's declared parameter list), and `vecAt` does not bounds-check: a
                  * zero-argument `parallel::run()` dereferenced the empty vector's NULL base and
-                 * took the compiler down with it -- SIGSEGV, no diagnostic (audit P0-14). Report
+                 * took the compiler down with it -- SIGSEGV, no diagnostic (). Report
                  * the shape instead; one argument already took the diagnostic path, zero did not. */
                 if (e->u.call.args.len == 0) {
                     ckError(c, e->line,
@@ -3269,7 +3268,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                  * instance is checked again, the callee is redirected to the concrete instance
                  * (`idOf_i32`). */
                 FuncDef *inst = funcInstance(c, f, &targs, e->line);
-                /* Same NULL contract as the `EX_GENCALL` site above (audit P0-4). */
+                /* Same NULL contract as the `EX_GENCALL` site above (). */
                 if (!inst) return ttError(tt);
                 planSetUsed(inst, true);
                 planSetCallee(e, inst);

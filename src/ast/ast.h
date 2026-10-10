@@ -19,7 +19,7 @@
 typedef struct Type Type;
 typedef struct TypeDef TypeDef;
 typedef struct StructDef StructDef;
-/* 效果摘要的计算状态（V 批次：把 0/1/3 的魔数编码换成命名枚举 —— 原来的 2 空着，是历史留下的）。*/
+/* 效果摘要的计算状态：懒算且记忆化，`EFF_IN_PROGRESS` 是环的判据。 */
 typedef enum {
     EFF_NONE = 0,        /* 还没算（`arenaAllocZero` 出来就是这个值）*/
     EFF_DONE,            /* 算完了，`effComplete` 说它可不可信 */
@@ -917,8 +917,8 @@ struct FuncDef {
      * arise. Widening to an array is the escape hatch if a real program ever needs more. */
 #define EFF_MAX_PARAMS 64
     /* State of the transitive closure of the effect summary:
-     *   0 = not computed, 1 = computed (`effComplete` says whether it can be trusted),
-     *   3 = being computed, which breaks cycles.
+     *   `EFF_NONE` = not computed, `EFF_DONE` = computed (`effComplete` says whether it can
+     *   be trusted), `EFF_IN_PROGRESS` = being computed, which breaks cycles.
      * `effUnknown` records whether any call could not be resolved; such a summary is
      * never complete, so it is treated conservatively. */
 

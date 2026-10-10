@@ -262,7 +262,7 @@ typedef struct {
     /* Level-indexed tables, one slot per block level of the function being emitted (the same
      * count `__extc_a` gets). They used to be fixed `[64]` arrays, which both aborted on a legal
      * program (200 nested blocks tripped the assertion in `genBlockBody`) and had nothing to do
-     * with the array they index (audit P0-10). Sized and allocated per function in `genFunc`. */
+     * with the array they index (). Sized and allocated per function in `genFunc`. */
     int        *loopLevel;
     int        *loopStep;
     int         loopLen;
@@ -270,7 +270,7 @@ typedef struct {
     /* Per enclosing loop: the label id of the `for` step at the end of that loop's body, or 0
      * when the loop is a plain `while` (`continue` is then emitted as C's `continue`). A `for`
      * desugars to `while (cond) { BODY; step }`, and C's `continue` would skip the step -- an
-     * infinite loop (audit P0-15) -- so for those the emitter puts `__extc_forstep_<id>: ;` in
+     * infinite loop () -- so for those the emitter puts `__extc_forstep_<id>: ;` in
      * front of the step and `continue` becomes `goto` that label. */
     int         forStepSeq;
     /* Is this function self-recursive, that is, does it reach itself, possibly
@@ -587,8 +587,7 @@ static const char *cType(CG *g, Type *t) {
              * typedef. Registering the demand here (rather than only at the sites that create or
              * drive a coroutine) is what makes a data-position-only mention work: `struct holder
              * { h: coroutine<i64> }` used to emit `extc_coro h;` with no typedef anywhere, and
-             * `stdlib/std/coro/scheduler.extc` did not compile because of it (audit gate ①'s first
-             * catch; same family as the P0-9/P1-8 emission findings). */
+             * `stdlib/std/coro/scheduler.extc` did not compile because of it（缺 typedef 这一类问题）。*/
             if (t->sdef && isProtoType(t, "coroutine", 1)) { g->needCoroHandle = true; return "extc_coro"; }
             /* A synthesized coroutine frame: `struct <cname>$frame`, with the function's C name (so
              * methods and generic instances mangle the same way everywhere). */
@@ -606,8 +605,7 @@ static const char *cType(CG *g, Type *t) {
              * typedef. Registering the demand here (rather than only at the sites that create or
              * drive a coroutine) is what makes a data-position-only mention work: `struct holder
              * { h: coroutine<i64> }` used to emit `extc_coro h;` with no typedef anywhere, and
-             * `stdlib/std/coro/scheduler.extc` did not compile because of it (audit gate ①'s first
-             * catch; same family as the P0-9/P1-8 emission findings). */
+             * `stdlib/std/coro/scheduler.extc` did not compile because of it（缺 typedef 这一类问题）。*/
             if (t->sdef && isProtoType(t, "coroutine", 1)) { g->needCoroHandle = true; return "extc_coro"; }
             return t->name;                 /* already a decorated name */
         case TY_ARRAY:  return t->name;     /* likewise: array_15_i32 */
@@ -746,7 +744,7 @@ static const char *exportName(const FuncDef *f) {
  *     caller's. `subst` reads whatever context is ambient, and at a call site inside a
  *     non-generic function there is none: `T` stayed `T`, so the call was emitted as
  *     `w_i32_eq_T` while the definition (emitted inside the instance's context) was
- *     `w_i32_eq_i32` -- the generated C did not compile at all (audit P0-9). Call sites
+ *     `w_i32_eq_i32` -- the generated C did not compile at all (). Call sites
  *     therefore pass the callee's own context: the method instance's type arguments, or
  *     the receiver instance's. */
 static const char *opOverloadSuffixIn(CG *g, FuncDef *f, Vec *params, Vec *args) {
@@ -809,7 +807,7 @@ static const char *cFuncName(CG *g, FuncDef *f) {
 static const char *cMethodName(CG *g, Type *recvType, FuncDef *f) {
     Type *rb = ttBase(subst(g, recvType));
     /* The overload suffix comes from the **callee's** context, not from whatever happens to be
-     * ambient here (audit P0-9: fixing the suffix with the caller's context emitted
+     * ambient here (fixing the suffix with the caller's context emitted
      * `w_i32_eq_T` at the call and `w_i32_eq_i32` at the definition, and the generated C did not
      * compile). A method instance carries its own type arguments; otherwise the receiver
      * instance does -- `cMethodName` is exactly the place that knows the receiver. */
@@ -919,7 +917,7 @@ static void genViewCopier(CG *g, Type *inst, bool unchecked) {
         /* A view whose storage is gone has no byte to copy. The index primitive above has had this
          * guard for a while; the copier did not, so `copyInto(d, deadView, 1)` moved from a NULL base
          * -- a SIGSEGV at -O0, and at -O2 gcc deleted the UB call so the program looked like it
-         * worked (audit P0-8). Conditional on `n > 0`: copying zero elements from an empty view is
+         * worked (). Conditional on `n > 0`: copying zero elements from an empty view is
          * legal and must stay legal. */
         cgLine(g, "if (n > 0 && (!d.data || !s.data))");
         cgLine(g, "    extc_trapMsg(file, line, \"the view has no storage\");");
@@ -1438,7 +1436,7 @@ static void cgImplicitArgs(CG *g, Buf *b, const FuncDef *callee, const Expr *sit
  *
  * The checker types `a + a` for `a: i8` as **`i8`** (`var x: u16 = a + a` reports "found `i8`"),
  * but C promotes both operands to `int`, so the value was 200 while storing it gave -56 and
- * `a + a == x` was **false** -- the type system and the value disagreed (audit P0-18). Narrow
+ * `a + a == x` was **false** -- the type system and the value disagreed (). Narrow
  * arithmetic therefore wraps at its own width, the same rule the 32/64-bit widths already get
  * from `-fwrapv`.
  *
@@ -3025,7 +3023,7 @@ static const char *genExprInner(CG *g, Expr *e) {
                  * (`1.0` -> `1`, `-0.0` -> `-0`), and in C that is an *integer* constant: the
                  * literal changes type, so `1.0 / 2.0` became the integer division `(1 / 2)` = 0,
                  * `1e9 * 1e9` overflowed `int`, and `-0.0` lost its sign (`1.0 / z` printed `inf`
-                 * instead of `-inf`) -- all with no diagnostic anywhere (audit P0-12). Force the
+                 * instead of `-inf`) -- all with no diagnostic anywhere (). Force the
                  * constant to be a floating one whenever the text would not be. The f32 branch
                  * above is immune because its `(float)` cast already fixes the type. */
                 {
@@ -3054,7 +3052,7 @@ static const char *genExprInner(CG *g, Expr *e) {
 
         case EX_UN:
             /* `-a` / `~a` on a narrow type promotes to `int` in C; the result must come back to the
-             * operand's declared width, same rule as the binary operators (audit P0-18). `!` has
+             * operand's declared width, same rule as the binary operators (). `!` has
              * type `bool`, which `narrowWrap` leaves alone. */
             return narrowWrap(g, e->type,
                               arenaPrintf(g->arena, "(%s%s)", e->u.un.op, genExpr(g, e->u.un.operand)));
@@ -3924,8 +3922,8 @@ int blkMaxOfBlock(Stmt *block) {
     for (size_t i = 0; i < block->u.block.stmts.len; i++) {
         /* One call per statement, into a local. Calling `blkMaxLevel` twice in the same
          * condition (once to compare, once to assign) doubles the work at **every** level, so
-         * a chain of n nested blocks cost 2^n: measured 0.10 s at n=20, 5.5 s at n=30, and
-         * never returning at n=40 (audit §6.1). One call makes it linear in the statement count. */
+         * a chain of n nested blocks costs 2^n -- n=30 already takes seconds and n=40 never returns.
+         * One call makes it linear in the statement count. */
         int d = blkMaxLevel(*(Stmt **)vecAt(&block->u.block.stmts, i));
         if (d > m) m = d;
     }
@@ -3959,7 +3957,7 @@ int blkMaxLevel(Stmt *s) {
      * was missing, so the level count came out one short and the emitted
      * `extc_arena __extc_a[maxLv + 1]` was too small: the body used `&__extc_a[k+1]` while the
      * array stopped at `k` -- ASan stack-buffer-overflow in `extc_arena_release`, and a frame
-     * field (`f->arenaN`) that did not exist in the coroutine variant (audit P0-11). */
+     * field (`f->arenaN`) that did not exist in the coroutine variant (). */
     case ST_DOMAIN: return 1 + blkMaxOfBlock(s->u.domain_.body);
     case ST_MATCH: {
         int m = 0;
@@ -4281,7 +4279,7 @@ const char *cnd = cgCond(g, genExpr(g, s->u.whiles.cond));
  * `??` subject can do the same. Flushing that prefix **in front of** `while (...)` runs it
  * once, while the condition reads the temporary on every round -- so `while a == mk()`
  * compared against the first call's value forever and ran 101 rounds instead of 1
- * (audit P0-7). When there is a prefix, put the condition inside the loop instead: the
+ * (). When there is a prefix, put the condition inside the loop instead: the
  * same number of evaluations as the source, and the body is untouched. No prefix (the
  * overwhelmingly common case) keeps the plain `while (cond) {` shape, so the generated
  * bytes of everything else stay where they were. */
@@ -4466,7 +4464,7 @@ static void genStmtInner(CG *g, Stmt *s) {
              * **inside** the block: each `ext` declares its frame as a local of this block
              * (`EX_EXT`), so running after the closing brace handed the domain pointers to stack
              * slots that had already gone out of scope (ASan `stack-use-after-scope` in
-             * `tests/ext/domain_runs.extc`, found by the audit's ASan gate). */
+             * `tests/ext/domain_runs.extc`, found by the ASan gate). */
             Stmt *body = s->u.domain_.body;
             if (body && body->kind == ST_BLOCK) {
                 cgLine(g, "{");
@@ -4605,7 +4603,7 @@ static void genStmtInner(CG *g, Stmt *s) {
             for (int lv = g->blkLevel; lv >= to; lv--) cgReleaseLevel(g, lv);
             if (s->kind == ST_BREAK) { cgLine(g, "break;"); return; }
             /* `continue` in a `for` must still run the step (C's `for` does); the desugared
-             * `while` has it at the end of the body, behind a label (audit P0-15). */
+             * `while` has it at the end of the body, behind a label (). */
             int step = g->loopLen ? g->loopStep[g->loopLen - 1] : 0;
             if (step) cgLine(g, "goto __extc_forstep_%d;", step);
             else      cgLine(g, "continue;");
@@ -4996,7 +4994,7 @@ static void genCoroDecls(CG *g, Module *m) {
         FuncDef *f = *(FuncDef **)vecAt(&m->funcs, i);
         /* Instances emit too: `planTemplate(f)` used to be skipped here, so a generic coroutine got no
          * `$next` at all -- the handle dispatcher then called `$step` directly, which neither makes
-         * the task's place current nor ends the task (audit P1-13). A *template* still has type
+         * the task's place current nor ends the task (). A *template* still has type
          * parameters left, which is what the second test excludes. */
         if (!f || !planIsCoro(f) || f->typeParams.len > 0) continue;
         cgLine(g, "EXTC_UNUSED static bool %s$step(struct %s$frame *f);",
@@ -5116,7 +5114,7 @@ static void genFunc(CG *g, FuncDef *f) {
     int maxLv = 1 + blkMaxOfBlock(f->body);
     /* One table slot per block level, exactly like `__extc_a[maxLv + 1]` below. Arena-allocated
      * rather than `[64]` on the CG struct: the count is a property of this function, and a fixed
-     * 64 was wrong for both a deeply nested legal program and a shallow one (audit P0-10). */
+     * 64 was wrong for both a deeply nested legal program and a shallow one (). */
     g->levelCap = maxLv + 2;
     g->zoneMark  = (bool *)arenaAllocZero(g->arena, (size_t)g->levelCap * sizeof(bool));
     g->loopLevel = (int *)arenaAllocZero(g->arena, (size_t)g->levelCap * sizeof(int));

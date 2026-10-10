@@ -11,7 +11,7 @@
 #include "check_internal.h"
 #include "typelayer.h"   /* the pool questions below are shared with codegen */
 #include "plan.h"          /* 计划/分析产物：写入经 setter，读取经访问器（X2）*/
-/* Defined further down; the call-site publication needs it (INV-K / audit P0-16). */
+/* Defined further down; the call-site publication needs it (INV-K / ). */
 static void noteFieldSrc(Sym *root, const char *field, int d2, Expr *src);
 #include "dataflow.h"
 #include <stdlib.h>
@@ -1277,11 +1277,11 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
         }
     }
 
-    /* ---- P0-17: a `mut ref` argument is write access, so the proofs about it are stale --------
+    /* ---- : a `mut ref` argument is write access, so the proofs about it are stale --------
      * The callee may rewrite what the place holds, so every non-null proof about that binding --
      * and about a path through it -- stops holding: `if s.top != null { s.pop() ... s.top.value }`
      * dereferenced a NULL `s.top`, because `pop` had set it and the proof was still in effect
-     * (audit P0-17, ASan SEGV). This is the write-point invalidation of the proof stack, the same
+     * (, ASan SEGV). This is the write-point invalidation of the proof stack, the same
      * one an assignment performs (`unNarrow`); the stack drops a path fact when its root is
      * dropped, so un-narrowing the root is enough.
      *
@@ -1302,7 +1302,7 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
      * something was written into it, or the caller's binding goes on looking like a record with no
      * live references. `fn stash(out: mut ref box, v: ?ref node) { out.p = v }` called as
      * `stash(ref b, ref n)` and then `return b` was accepted, and the generated program read a
-     * local of the returning frame after it died (audit P0-16, ASan heap-use-after-free).
+     * local of the returning frame after it died (, ASan heap-use-after-free).
      *
      * The summary says *which argument* was stored, never into which field, so the write goes to
      * the binding's whole-object slot (`field == NULL`). The destination is normally **addressed**
@@ -1333,12 +1333,12 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
                     noteFieldSrc(dsym, NULL, dj, splace);
                     noteFieldDepthWrite(c, dsym, NULL, dj);
                 }
-                /* The dedicated slot (audit P0-16d). No `recordLvlFact` here: constraining the level
+                /* The dedicated slot (). No `recordLvlFact` here: constraining the level
                  * for *every* `mut ref` call was the first suspect for the three false rejections the
                  * full version produced (`tests/pool` rt_nest/rt_rett, `tests/stl` custom). */
                 /* Publish the dedicated slot when the level is known, **or** when the source is a
                  * promotable fresh allocation -- those are the shapes whose site can really be moved,
-                 * which is what `return b` needs (audit P0-16d: `var n: mut ref node = new node`).
+                 * which is what `return b` needs (`var n: mut ref node = new node`).
                  * An unknown level whose source cannot be promoted gets no slot: publishing it added
                  * promotion pressure and nothing else, and that is what rejected `tests/pool`'s
                  * rt_nest/rt_rett and `tests/stl`'s custom when the publication was unconditional. */
@@ -1842,13 +1842,13 @@ static void collectFreshLocals(Arena *a, Vec *fresh, Stmt *s) {
          * the name made `classifyStoredValue` answer "freshly allocated, so trivially safe" for a
          * value that now points into the caller's frame, so `stash`'s summary recorded nothing,
          * `effComplete` stayed true, and the whole call-site lifetime check was skipped -- a real
-         * stack-use-after-scope (audit P1-5). This is the write-point invalidation of the fresh
+         * stack-use-after-scope (). This is the write-point invalidation of the fresh
          * set; the fresh-value case keeps the name, so `p = new i32` does not lose it. */
         /* Only a binding that is **retargeted** stops being fresh. A field write such as
          * `n.value = v` writes *through* the binding: `n` still points at the object its
          * declaration made. Dropping it there removed the fresh answer for a value that really is
          * fresh, and the call-site check then rejected `stash(dest, ref deep, v)` -- the accepted
-         * and ASan-clean program of audit P0-2 -- which is how this narrowing was found. */
+         * and ASan-clean program of -- which is how this narrowing was found. */
         if (s->u.assign.target && s->u.assign.target->kind == EX_IDENT) {
             const char *rn = placeRootName(s->u.assign.target);
             if (rn && !exprIsFresh(s->u.assign.value)) freshDrop(fresh, rn);
@@ -1986,7 +1986,7 @@ static bool markNamesInStmt(Checker *c, FuncDef *f, Stmt *s) {
          * therefore neither `EX_CALL` nor `EX_METHOD`, so it fell into the `default` below and the
          * call's arguments never entered E. `callHomeDepth` then took the receiver for depth 1,
          * the arena argument became this frame's arena instead of the home arena, and whatever the
-         * callee stored was released when the call returned -- audit P0-1, heap-use-after-free,
+         * callee stored was released when the call returned -- , heap-use-after-free,
          * with a one-character difference from the accepted twin (`out.put(x)` without the `?`).
          * The `?` decides what happens *after* the call, not what the call can publish, so unwrap
          * it and ask the same question. */
@@ -2372,7 +2372,7 @@ void noteWholeValueDepthWrite(Checker *c, Sym *dst, Expr *value, int d2) {
  *   Zero-based index of the parameter, or -1 when it is not a parameter.
  */
 /* **按名字**找参数：只在调用点手上只有名字时才用（`paramIndexOfExpr` 才是身份版）。
- * 参数遮蔽是合法语言特性，按名字匹配会认错人（P0-6d）—— 所以有了表达式就不要再走这个。*/
+ * 参数遮蔽是合法语言特性，按名字匹配会认错人（）—— 所以有了表达式就不要再走这个。*/
 static int paramIndexByName(FuncDef *f, const char *name) {
     if (!name) return -1;
     for (size_t i = 0; i < f->params.len; i++)
@@ -2387,7 +2387,7 @@ static int paramIndexByName(FuncDef *f, const char *name) {
  * `EX_IDENT` node, put there by resolution, so this needs no scope. */
 static Sym *rootSymNoScope(Expr *e) {
     /* 问题③的**无作用域**版本（摘要 pass 在所有函数体检查完之后才跑，那时没有作用域可查，
-     * 这是 P0-6d 的根因）。掩码含 `SIGN`、保留 16 跳上限 —— 差异来自历史，现在写在掩码里。*/
+     * 这是  的根因）。掩码含 `SIGN`、保留 16 跳上限 —— 差异来自历史，现在写在掩码里。*/
     Expr *leaf = extcRootLeaf(e, EXTC_ROOT_FIELD | EXTC_ROOT_INDEX | EXTC_ROOT_DEREF | EXTC_ROOT_SIGN, 16);
     return leaf ? identBindOf(leaf) : NULL;
 }
@@ -4048,7 +4048,7 @@ static void checkFunc(Checker *c, FuncDef *f) {
      * their call sites. Checking one here walked a null body. */
     if (planCoroProto(f)) return;
     /* More parameters than the effect summary has bits would silently lose the high ones. That is
-     * exactly the audit's P1-4: the same store shape with 4 parameters was rejected while its
+     * exactly the failure mode seen before: the same store shape with 4 parameters was rejected while its
      * 40-parameter twin was accepted, because parameter 40's `addrMask` bit fell off the end of a
      * 32-bit mask. The mask is 64 bits now, and this is the contract on top of it: refusing loudly
      * beats ignoring a parameter. A function that needs more has to be split (an array-backed
@@ -4057,7 +4057,7 @@ static void checkFunc(Checker *c, FuncDef *f) {
         ckError(c, f->line,
                 "The effect summary indexes parameters by position in a 64-bit mask, so the"
                 " compiler refuses more than 64 of them instead of silently ignoring the rest"
-                " (audit P1-4). Split the function.",
+                " (). Split the function.",
                 "`%s` has %zu parameters; the compiler's limit is %d",
                 f->name ? f->name : "this function", f->params.len, (int)EFF_MAX_PARAMS);
         return;
@@ -5195,9 +5195,9 @@ static void allFunctions(Arena *arena, Module *m, Vec *out) {
  *   · 深度 0 的实参（参数/全局）本身就让结果是 0；
  *   · 逃逸集合命中的实参按 -1 算（它活过本帧）。
  *
- * 为什么要共享：这两条通道曾经**各写一遍**，而 P0-2 的哨兵 bug（`nd == 0` 既表示"还没见过"
- * 又表示"活得最久"⇒ 循环求成了最大值）**在两条里各有一份** —— 修一条不会修另一条。
- * `seen` 把两义分开，`EXTC_DBG_ASSERT` 让这个分离在调试构建里被看守（U1）。*/
+ * 为什么要共享：两条通道各写一遍就会漂——某个哨兵 bug（`nd == 0` 既表示"还没见过"
+ * 又表示"活得最久"⇒ 循环求成了最大值）会**在两条里各有一份**，修一条不会修另一条。
+ * `seen` 把两义分开，`EXTC_DBG_ASSERT` 让这个分离在调试构建里被看守。*/
 static int callSiteMinDestDepth(Checker *c, EArenaSite *rec) {
     if (rec->overflow) return -1;
     bool seen = false;
@@ -5687,7 +5687,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
      * `fn m<T> { g(x) }` **declared in that order** generated a call to `f_T` that was never
      * emitted, so the C did not compile -- while the same program with the declarations reversed
      * compiled, which is what made this look like a declaration-order oddity instead of a missing
-     * round (audit P0-5). `resolveDeferredCall` is idempotent (interning the same argument
+     * round (). `resolveDeferredCall` is idempotent (interning the same argument
      * combination gives the same instance), so repeating the pass is free; the loop stops as soon
      * as a round creates no new instance. The bound mirrors the other fixpoints here and is high
      * enough that a real program never reaches it (each round strictly grows one of the two
@@ -6141,10 +6141,10 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
              * computed the **maximum** instead of the minimum: `argDepth = {0, 1}` came out as
              * 1, and the call handed over the caller's own block arena where it had to hand over
              * the home arena. The generated program then read a block that had already been
-             * released (audit P0-2: heap-use-after-free). Two separate representations remove
+             * released (heap-use-after-free). Two separate representations remove
              * the ambiguity -- no argument recorded leaves `nd` at 0, which still means "home
              * arena", the conservative answer. */
-            /* 目的地有多浅：与 zone 通道**共用一份**实现（U4；P0-2 的哨兵 bug 曾在这里
+            /* 目的地有多浅：与 zone 通道**共用一份**实现（U4； 的哨兵 bug 曾在这里
              * 与 zone 通道各有一份）。`overflow` 已在上面的分支里 `continue` 处理掉了。*/
             int nd = callSiteMinDestDepth(&c, rec);
             /* Write the new homeDepth onto `arenaArg`, by the same rules as `setCallArenaArg`. */
@@ -6694,8 +6694,8 @@ static void coroCheckDeferred(Checker *c, Module *m) {
     }
     /* **Instances** need the same answer, and this loop used to skip them, so a
      * generic coroutine never got its place: allocations made inside it landed in the *caller's*
-     * zone, and nothing ever released the task (audit P1-13: `live=20000` after 20000 finished
-     * tasks; the same omission is what the audit's "`coroNeedsZone` 未对实例计算" names).
+     * zone, and nothing ever released the task (`live=20000` after 20000 finished
+     * tasks; the same omission as `coroNeedsZone` not being computed for an instance).
      * An instance shares its template's body, so the template's freshly computed answer is the
      * right one -- and a coercion records `coroBoxed` on whichever function owns the frame. */
     for (size_t i = 0; i < m->funcs.len; i++) {

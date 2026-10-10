@@ -197,7 +197,7 @@ static bool forRetargetToIterator(Checker *c, Stmt *block) {
     inner->u.block.stmts.len = 2;                /* `[ var x = …value(); BODY ]`, step dropped */
     /* The step is gone, so there is no label for `continue` to jump to any more: the iterator's
      * `next()` in the condition does the advancing, which is a plain `while` shape again
-     * (audit P0-15). Leaving this set would emit a `goto` to a label nobody writes. The tree
+     * (). Leaving this set would emit a `goto` to a label nobody writes. The tree
      * is not edited for this: the decision is recorded as a result. */
     planSetForStepDropped(inner);
     return true;
@@ -1167,7 +1167,7 @@ void checkStmt(Checker *c, Stmt *s) {
                  * for them, so the payload was never compared -- `return o?` from an
                  * `option<i64>` into an `option<u8>` turned 1000 into 232 with no diagnostic at
                  * all, while writing `option<u8>::some(1000)` directly was correctly rejected
-                 * (audit P0-19: the same value, two answers). Compare against the payload of the
+                 * (the same value, two answers). Compare against the payload of the
                  * enum instance -- `targs[0]` is the success type for both families. */
                 if (wb && wb->targs.len >= 1 && (wb->kind == TY_GENERIC || wb->kind == TY_ENUM))
                     checkAssignable(c, *(Type **)vecAt(&wb->targs, 0), vt,

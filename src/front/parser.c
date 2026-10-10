@@ -44,7 +44,7 @@ typedef struct {
  *
  * The parser, the checker, the dataflow helper and the emitter all recurse once per nesting level,
  * and C's stack is finite: 16000 nested parentheses and 1000 nested blocks used to take the whole
- * process down with SIGSEGV (audit P0-10) -- no diagnostic, and the driver could not tell "too
+ * process down with SIGSEGV () -- no diagnostic, and the driver could not tell "too
  * deep" from "crashed". Measured thresholds for **block** nesting, where the frames are fattest:
  *
  *     release build (`-O1`)          crashes at ~250 levels
@@ -2429,7 +2429,7 @@ static Stmt *parseFor(Parser *p) {
 
         /* The step runs after the body: both go in a block inside the `while`. The block also
          * records **which** statement is the step, so codegen can put a label in front of it and
-         * `continue` can jump there (C's `for` semantics; audit P0-15). */
+         * `continue` can jump there (C's `for` semantics; ). */
         Stmt *inner[2] = { body, step };
         Stmt *loopBody = forBlock(p, inner, 2, line);
         loopBody->forStep = step;
@@ -2499,7 +2499,7 @@ static Stmt *parseFor(Parser *p) {
         Stmt *stepStmt = forStep(p, vn->text, "+=", forInt(p, 1, line), line);
         Stmt *inner[2] = { body, stepStmt };
         Stmt *loopBody = forBlock(p, inner, 2, line);
-        loopBody->forStep = stepStmt;         /* label target for `continue` (audit P0-15) */
+        loopBody->forStep = stepStmt;         /* label target for `continue` () */
         Stmt *w = stmtNew(p->arena, ST_WHILE, line);
         w->u.whiles.cond = cond;
         w->u.whiles.body = loopBody;
@@ -2565,7 +2565,7 @@ static Stmt *parseFor(Parser *p) {
     Stmt *stepStmt = forStep(p, "__extc_i", "+=", forInt(p, 1, line), line);
     Stmt *inner[3] = { elemDecl, body, stepStmt };
     Stmt *loopBody = forBlock(p, inner, 3, line);
-    loopBody->forStep = stepStmt;             /* label target for `continue` (audit P0-15) */
+    loopBody->forStep = stepStmt;             /* label target for `continue` () */
     Stmt *w = stmtNew(p->arena, ST_WHILE, line);
     w->u.whiles.cond = cond;
     w->u.whiles.body = loopBody;

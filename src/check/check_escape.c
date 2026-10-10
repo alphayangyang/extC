@@ -156,7 +156,7 @@ int slotDepth(Checker *c, Expr *e) {
      * a value was accepted although the storage it names dies with this frame:
      *
      *     G = v              // rejected: a local of this frame
-     *     G = [v, v][0]      // accepted, and read a dead array (audit P0-6c)
+     *     G = [v, v][0]      // accepted, and read a dead array ()
      *
      * The right question for an unnamed shape is the one the rest of the checker asks about values:
      * how deep is what it *points at* (`targetDepth`). For `[v, v][0]` that is the depth of `v`;
@@ -292,17 +292,11 @@ int valDepthStructural(Checker *c, Expr *e) {
     case EX_DYN: return valDepthStructural(c, e->u.dynv.payload);
     default:
         /* 认不出的形状答"结构里没有引用"是**不安全的那一侧**（它可能真的带着引用）⇒
-         * 这是兜底，不是语义。实测它会不会被走到：见 .audit/U-LOG.md 的 U5 一节。*/
-        /* **实测（U5）：整个套件零命中** ⇒ 这条兜底按设计走不到，因此它可以响亮：
-         * 认不出的形状答"结构里没有引用"是**不安全的那一侧**，被走到就是分类漏了。
-         * （对照：`solvedDepth` 的同类兜底**是活路径**，所以那边只能是 NOTE —— 见 V-LOG。）*/
-        /* **实测（V2）**：这条兜底**是活路径**（我先前"整套零命中"的读数不准，已纠正）——
-         * `tests/asan/promote-field-lit.extc`（正例）就会走到它，而打出来的 kind = `0` = **`EX_INT`**：
-         * 整数字面量，**不带引用 ⇒ 答 0 是语义，不是兜底**（与 `solvedDepth` 的 INT/CONV 同结论）。
+         * 这是兜底，不是语义：被走到就说明分类漏了形状。
          *
-         * 为什么留 NOTE 而不是断言：将来若有**别的** kind 走到这里，计数会变 —— 那才是要查的信号
-         * （能不能带引用、要不要改成"取自操作数/载荷"）。逐个列 kind 会撞 walker 预算
-         * （`tools/check_walkers.py` 限 23 个手写遍历），而"列全"在这里买不到正确性。*/
+         * `EX_INT`（整数字面量）本来就不带引用，答 0 是语义；除此之外的 kind 走到这里，
+         * 计数就会变 —— 那才是要查的信号。做成断言会把"该查的信号"变成崩溃，
+         * 而逐个列 kind 会撞手写遍历的预算，"列全"在这里买不到正确性。 */
         EXTC_DBG_NOTEF("valDepthStructural: kind=%d answered 0", (int)e->kind);
         return 0;
     }
@@ -691,8 +685,7 @@ static bool exprBorrowed(Checker *c, Expr *e) {
         /* A local that was **initialized from** a borrowed value carries that borrow with it:
          * `var q: slice<u8> = p` gives `q` the parameter's lifetime, so `G = q` stores a borrow
          * into a global although `q` itself is a local of this frame. Asking only about the
-         * binding's own lexical depth answered `false` and let the write through (audit P0-6a:
-         * `G` then read a sibling block's dead stack slot).
+         * binding's own lexical depth answered `false` and let the write through (* `G` then read a sibling block's dead stack slot).
          *
          * Only a **name-like** origin is followed. A call result is deliberately excluded: `var x =
          * f(p)` may well be a fresh allocation that merely took `p` as an argument, and treating
@@ -706,7 +699,7 @@ static bool exprBorrowed(Checker *c, Expr *e) {
          * `self` points at, write it back into that same object) report "cannot store a borrowed
          * value into something that outlives this call". Both sides live behind the same `mut ref`,
          * so nothing is extended -- a false rejection, and it made the *other* corpus entry
-         * (P0-17) look fixed while its real hole was still open. A rule that turns one hole into a
+         * () look fixed while its real hole was still open. A rule that turns one hole into a
          * rejection of ordinary code is worse than the hole. */
         return false;
     }
@@ -891,7 +884,7 @@ bool promoteFieldsAt(Checker *c, Sym *sy, int at, int hops) {
      * recorded depth is unsound when an alias may write (it can put a deeper value in), while
      * promoting the site behind a recorded source is always safe -- it only moves the allocation
      * to a longer-lived arena. Refusing the promotion left `stash(ref b, n)` with `n = new node`
-     * accepted while reading a freed block (audit P0-16): `ref b` marks `b` addressed, this
+     * accepted while reading a freed block (): `ref b` marks `b` addressed, this
      * function bailed out, and the site kept its block level. */
     bool lower = !sy->addressed;
     bool ok = true;
@@ -923,7 +916,7 @@ bool promoteFieldsAt(Checker *c, Sym *sy, int at, int hops) {
         if (!promoteInto2(c, sy->otherSrc, want, hops + 1)) ok = false;
         else if (lower && sy->otherDepth > want) sy->otherDepth = want;
     }
-    /* The same for a store a callee made through a `mut ref` argument (audit P0-16d). Nothing is
+    /* The same for a store a callee made through a `mut ref` argument (). Nothing is
      * lowered here; the site behind the source is what has to move, because `return b` needs the
      * home arena. */
     if (sy->callSrc) {
@@ -1013,7 +1006,7 @@ void noteStore(Checker *c, Expr *value, Expr *target, int at, int line) {
     if (target->kind == EX_IDENT) {
         /* 写点失效的**检查期**那一半（见 check_internal.h 的"写点失效"一节）：一个整值写发生时，
          * 关于这个绑定的非空证明必须已经作废。断言把它变成被看守的不变量 —— 一旦某个写路径漏了
-         * `unNarrow`，调试构建当场响（P0-17 就是这一类，只不过那次漏的是"被调方改写"）。*/
+         * `unNarrow`，调试构建当场响（同一类问题：漏的是"被调方改写"）。*/
         EXTC_DBG_ASSERT_MSGF(!isNarrowed(c, vs->cname),
                              "write without invalidating the non-null proof of `%s`", vs->name);
         noteWholeValueDepthWrite(c, vs, value, d2);
@@ -1568,7 +1561,7 @@ bool checkStoreEscape(Checker *c, Expr *val, Expr *target, int line) {
          * hold when the destination is a **global**: static storage outlives every arena, so no
          * home arena makes the borrow safe. `fn stash(p: slice<u8>) -> hbox { G = p  var b = new
          * u8[4]  return {p: b} }` was accepted and read `G = AAAAA...`, while the same function
-         * returning `i32` (no home arena at all) was correctly rejected (audit P0-6b). Ask where the
+         * returning `i32` (no home arena at all) was correctly rejected (). Ask where the
          * destination lives instead of assuming: a global target falls through to the error. */
         Sym *destRoot = target ? placeRoot(c, target) : NULL;
         if (c->curFunc && anNeedsHome(c->curFunc) && !(destRoot && isGlobalSym(c, destRoot)))
@@ -1628,7 +1621,7 @@ void recordZeroCheck(Checker *c, Type *t, int line, const char *name) {
      * instances were replayed, so `fn mk<T>() -> T { var local: T  return local }` never recorded
      * anything and `mk<slice<u8>>()` produced C that did not even compile
      * (`__extc_reference_has_no_zero_value__`), while the method twin was correctly rejected
-     * (audit P0-3). */
+     * (). */
     if (!c->curFunc) return;
     if (!funcTParams(c->curFunc) || funcTParams(c->curFunc)->len == 0) return;
     RefCheck *rc = (RefCheck *)arenaAllocZero(c->arena, sizeof(RefCheck));
@@ -2491,7 +2484,7 @@ static int targetDepthPure(Checker *c, Expr *e, int hops, Expr **seen) {
     if (!e) return 0;                 /* nothing to ask about: 0 is the honest answer */
     /* The budget and the cycle guard are **fallbacks**, and both used to answer `0` -- the value
      * whose meaning is "lives the longest" -- so exhausting either of them pointed the
-     * conservative direction backwards (audit P0-6c is the same family). They are supposed never
+     * conservative direction backwards (is the same family). They are supposed never
      * to be reached in a real program; a debug build must find out if that is true. */
     if (hops >= 40) { EXTC_DBG_FALLBACK("targetDepthPure: recursion budget (40) exhausted"); return DEPTH_UNKNOWN; }
     for (int i = 0; i < hops; i++)

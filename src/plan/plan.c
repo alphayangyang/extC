@@ -880,7 +880,7 @@ bool planVarInitOutOfFrame(const Stmt *st) {
 }
 /* The step statement of a desugared `for` -- **syntax**, written by the parser on the loop
  * body, because `continue` has to reach it (C's `for` runs the step on the way out of a
- * `continue`; without this the desugared form looped forever, audit P0-15).
+ * `continue`; without this the desugared form looped forever, ).
  *
  * The one thing analysis decides about it is that it disappeared: when the loop is
  * retargeted onto an iterator, the iterator's `next()` advances instead, so a plain
