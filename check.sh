@@ -112,6 +112,9 @@ if out=$(python3 tools/check_doxygen.py --gate 2>&1); then ok "$out"; else bad "
 echo "== 注释里的 @code 使用例（extC 要能编译并跑过；C 至少 -fsyntax-only）=="
 if out=$(timeout 600 python3 tools/check_code_examples.py --gate 2>&1); then ok "$(printf '%s' "$out" | head -1)"; else bad "注释里有 @code 例子烂掉"; printf '%s\n' "$out" | head -8; fi
 
+echo "== 文档里写的 API 名真的存在（免得文档先烂）=="
+if out=$(python3 tools/check_doc_facts.py --gate 2>&1); then ok "$out"; else bad "文档里有源码里找不到的 API 名"; echo "$out" | head -8; fi
+
 echo "== 活文档里的示例是判据（完整程序必须编过；片段与负例要标注）=="
 if out=$(python3 tools/check_doc_examples.py --gate 2>&1); then ok "$out"; else bad "文档示例编不过或没标注"; echo "$out" | head -8; fi
 
