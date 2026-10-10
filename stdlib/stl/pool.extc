@@ -45,6 +45,22 @@
  * the slot `gen`. So the epoch check comes first and returns false on mismatch; on a
  * match the old slot check still runs unchanged. Taking the epoch as proof of life would
  * turn both garbage slots and epoch wraparound into false positives (not sound).
+ *
+ * @code
+ * use std::io
+ * use stl::pool
+ *
+ * fn main() -> i32 {
+ *     var p = pool<i32>::withCap(4)
+ *     let a = p.insert(1)
+ *     let b = p.insert(2)
+ *     p.set(b, 99)
+ *     io::cout << "a=" << (p.get(a) ?? i32(-1)) << " b=" << (p.get(b) ?? i32(-1)) << " len=" << p.len() << "\n"
+ *     p.remove(a)                                  // 句柄作废，槽位进空闲链
+ *     io::cout << "after remove: a=" << (p.get(a) ?? i32(-1)) << " len=" << p.len() << "\n"
+ *     return 0
+ * }
+ * @endcode
  */
 
 /* Detection strength only, never correctness: how many low bits of the pool epoch a

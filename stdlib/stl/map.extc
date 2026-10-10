@@ -27,7 +27,21 @@
  * ordered walk are complete, and `remove` rebalances -- a node under `HALF` entries borrows from a
  * sibling that can spare one, otherwise it merges, and every node a merge retires goes back on a
  * free list for the next split to reuse. Stage 3 moves the stores and the node records into pools,
- * which adds `release` / `shrink` and turns the free list into pool slots. */
+ * which adds `release` / `shrink` and turns the free list into pool slots. *
+ * @code
+ * use std::io
+ * use stl::map
+ *
+ * fn main() -> i32 {
+ *     var m: map<i64, i32> = map<i64, i32>::withCap(i64(4))
+ *     m.put(i64(30), i32(300))
+ *     m.put(i64(10), i32(100))
+ *     let v: i32 = m.get(i64(10)) ?? i32(-1)
+ *     io::cout << "v=" << v << " len=" << m.len() << " rank10=" << m.lowerBound(i64(10)) << "\n"
+ *     return 0
+ * }
+ * @endcode
+ */
 use std::sys::pool as syspool    /* 运行期池：容器诞生时登记，release 时整批还 */
 
 let ORDER: i64 = 16        /* max keys per node (the array sizes in `newNode` are these numbers) */
