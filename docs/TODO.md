@@ -74,7 +74,10 @@
 
 - `usage/` 剩下的页面：语言现状、标准库现状、模块与 C 互操作、编译器内部结构。
 - 归档旧手册，并把与手册相关的闸门重指到新文档。
-- `docs/usage/` 的**公开面欠账 101 个**（覆盖率棘轮基线，已按有意的重置重取）：逐个补进 `stdlib.md`。
+- `docs/usage/` 的**公开面欠账 45 个**（覆盖率棘轮基线）：其中大半是**内部助手与状态字段**——
+  标准库的约定是"成员缺省公开，`@private` 才是内部"，所以 `inSync` / `depth` / `isSpace` 这类
+  也算进了公开面。两条路：真对外的补进 `stdlib.md`（`hashMap::rebuild` / `hashI64` /
+  `string::bytesEq` / `bytesLt` 已补）；其余**标 `@private`** 收口，让清单反映真实 API。
 - 按模块把注释清理成 Doxygen：编译器源码按子系统、标准库按包、工具脚本的说明。
 - 语言页还缺最小例子：协程（`coroutine<A,B>` / `yield`）与域（`ext`），以及 `--dump-effects` / `--dump-tokens`
   的输出格式说明。

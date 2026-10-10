@@ -9,6 +9,10 @@
 
 判据：`src/**/*.h` 里的函数声明，其**紧邻上方的注释块**里要有 `@brief`。
 基线 `tools/doxygen-baseline.txt` 按文件记未覆盖数，**只许变少**。
+
+已知的计数口径（不是精确度量，是进度棘轮）：
+* 只算**原型**（以 `;` 结尾、带行尾注释的先剥掉注释）；带头文件的 `static inline` 函数体不算。
+* **跨多行**的声明算在它的最后一行上，因此其上方注释块可能找不到 —— 会偏保守（多算欠账）。
 """
 import re
 import sys
@@ -25,7 +29,8 @@ def blocks_and_decls(path):
     lines = path.read_text(encoding="utf-8", errors="replace").split("\n")
     total = covered = 0
     for i, l in enumerate(lines):
-        if not DECL.match(l):
+        # 行尾注释不算声明的一部分（`bool f(int x);  /* 说明 */`）
+        if not DECL.match(re.sub(r"/\*.*?\*/\s*$", "", l).rstrip()):
             continue
         total += 1
         # 往上找最近的 /** ... */ 或 /* ... */ 块

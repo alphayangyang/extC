@@ -31,32 +31,32 @@ note:  `use a::b` looks for a file `a/b.extc`. Searched:
 prelude 是编译器在每个编译单元前先过一遍的一段 extC 源码。
 下面这些名字**不写任何 `use`** 就能用：
 
-| 名字 | 是什么 | 位置 |
-|---|---|---|
-| `unit` | 空载荷：`result<unit, E>` 的"成功但没有值"那一格 |  |
-| `option<T>` | `\| none \| some(T)`；零值 = `none`；取值的路只有 `match` 与 `?` |  |
-| `result<T, E>` | `\| failure(E) \| success(T)`；零值 = `failure(E 的零值)` |  |
-| `slice<T>` | `{ data: ref T, len: i64 }`；`s[i]` 是语言语法，越界带位置 trap |  |
-| `varArray<T>` | arena 底的动态数组（见下） |  |
-| `pcg32` | 显式状态的随机数引擎：`pcg32::seeded(42)` |  |
+| 名字 | 是什么 |
+|---|---|
+| `unit` | 空载荷：`result<unit, E>` 的"成功但没有值"那一格 |
+| `option<T>` | `\| none \| some(T)`；零值 = `none`；取值的路只有 `match` 与 `?` |
+| `result<T, E>` | `\| failure(E) \| success(T)`；零值 = `failure(E 的零值)` |
+| `slice<T>` | `{ data: ref T, len: i64 }`；`s[i]` 是语言语法，越界带位置 trap |
+| `varArray<T>` | arena 底的动态数组（见下） |
+| `pcg32` | 显式状态的随机数引擎：`pcg32::seeded(42)` |
 | `nextFloat` / `shuffleI32` | 0.0–1.0 的浮点、i32 视图洗牌 | 、|
-| `coroutine<A, B>` | 协程的**接口标记**（帧由编译器按协程函数合成，不要拿它当变量类型） |  |
-| `domain` | 域的**接口标记**，方法由编译器合成，库侧在 `std::sys::domain` |  |
+| `coroutine<A, B>` | 协程的**接口标记**（帧由编译器按协程函数合成，不要拿它当变量类型） |
+| `domain` | 域的**接口标记**，方法由编译器合成，库侧在 `std::sys::domain` |
 
 `print(x)` / `println(x)` 是内建，但**已经弃用**：编译器每次都会说
 ``warning: `println` is deprecated``，并提示 `io::cout` 是唯一的控制台出口（见下面 `std::io` 一节）。
 
 ### `varArray<T>`：arena 底的动态数组
 
-| 方法 | 签名 | 位置 |
-|---|---|---|
-| `withCap` | `fn withCap(cap: i64) -> varArray<T>` |  |
+| 方法 | 签名 |
+|---|---|
+| `withCap` | `fn withCap(cap: i64) -> varArray<T>` |
 | `size` / `isEmpty` | `fn size(self: ref varArray<T>) -> i64` / `-> bool` | 、|
-| `push` / `pop` | `fn push(self: mut ref varArray<T>, v: T)` / `fn pop(...) -> ?T` | |
-| `get` / `set` | `fn get(self: ref varArray<T>, i: i64) -> ?T` / `fn set(self: mut ref varArray<T>, i: i64, v: T)` | |
-| `clear` | `fn clear(self: mut ref varArray<T>)` | |
-| `asSlice` / `asMutSlice` | `fn asSlice(...) -> slice<T>` / `-> mut slice<T>` | |
-| `==` | 按内容比较 | |
+| `push` / `pop` | `fn push(self: mut ref varArray<T>, v: T)` / `fn pop(...) -> ?T` |
+| `get` / `set` | `fn get(self: ref varArray<T>, i: i64) -> ?T` / `fn set(self: mut ref varArray<T>, i: i64, v: T)` |
+| `clear` | `fn clear(self: mut ref varArray<T>)` |
+| `asSlice` / `asMutSlice` | `fn asSlice(...) -> slice<T>` / `-> mut slice<T>` |
+| `==` | 按内容比较 |
 
 关键语义（都在  的注释里，逐条有位置）：
 
@@ -90,7 +90,7 @@ fn main() -> i32 {
 ### `varArray` / `vector`：两个动态数组
 
 | | `varArray<T>`（prelude） | `vector<T>`（`stl::vector`） |
-|---|---|---|
+|---|---|
 | 存储来源 | arena 切片 | **自己的池**（`@poolObject`，） |
 | 寻址 | 下标 | 下标（`len` / `capacity` / `get` / `set`） |
 | 容量怎么涨 | 翻倍（下限 4） | **1.5 倍、原地长** |
@@ -103,7 +103,7 @@ fn main() -> i32 {
 `vector` 的方法：`withCap` · `new` · `len` · `capacity` ·
 `isEmpty` · `get`（给 `option<T>`） · `set`（越界返回 `false`，不 trap） · `toSlice` ·
 `clone` · `push` · `pop` · `shrink` · `clear` · `release`。
-`vector::from(xs)`从一段视图拷出一个容器。
+`vector::from(xs)` 从一段视图拷出一个容器。
 
 ```extc
 use std::io
@@ -120,32 +120,33 @@ fn main() -> i32 {
 
 ### `string` + `stringio`：连续字节串与流式读写
 
-`string`是 **SSO 字节串**：内联 16 字节，写满第 17 个字节才升级到池
+`string` 是 **SSO 字节串**：内联 16 字节，写满第 17 个字节才升级到池
 ；`cap == 0` 就是"还在内联"。零值合法且零分配。
 
-| 方法 | 签名 | 位置 |
-|---|---|---|
-| 构造 | `string::create(c)` · 模块级 `string::withCap(c)` / `new()` / `empty()` / `from(b)` / `fromI64(n)` | |
-| 读数 | `len` · `capacity` · `isEmpty` · `at(i) -> ?u8` | |
-| 取内容 | `toSlice() -> slice<u8>`（**拷一份**）、`subView(lo, hi) -> slice<u8>`、`sub(lo, hi)` | |
-| 拷贝 | `clone()`（内联态出来的仍是内联串） | |
-| 比较 | `==` / `<`，右边可以是 `string` 也可以是 `slice<u8>`（所以 `s == "abc"` 成立） | |
-| 拼接 | `concat(other) -> string`、`concatBytes(slice<u8>)`、就地 `append(slice<u8>)`、`push(u8)`、`appendByte` | |
-| 查找 | `find(needle) -> ?i64`（无匹配 `none`）、`contains`、`startsWith`、`endsWith`、`hash()` | |
-| 容量 | `grow()`（1.5 倍）、`shrink()`、`clear()`、`release()`、`removeFront(n)` | |
-| 解析 | `string::toI64(b) -> ?i64` | |
+| 方法 | 签名 |
+|---|---|
+| 构造 | `string::create(c)` · 模块级 `string::withCap(c)` / `new()` / `empty()` / `from(b)` / `fromI64(n)` |
+| 读数 | `len` · `capacity` · `isEmpty` · `at(i) -> ?u8` |
+| 取内容 | `toSlice() -> slice<u8>`（**拷一份**）、`subView(lo, hi) -> slice<u8>`、`sub(lo, hi)` |
+| 拷贝 | `clone()`（内联态出来的仍是内联串） |
+| 比较 | `==` / `<`，右边可以是 `string` 也可以是 `slice<u8>`（所以 `s == "abc"` 成立） |
+| 拼接 | `concat(other) -> string`、`concatBytes(slice<u8>)`、就地 `append(slice<u8>)`、`push(u8)`、`appendByte` |
+| 查找 | `find(needle) -> ?i64`（无匹配 `none`）、`contains`、`startsWith`、`endsWith`、`hash()` |
+| 容量 | `grow()`（1.5 倍）、`shrink()`、`clear()`、`release()`、`removeFront(n)` |
+| 解析 | `string::toI64(b) -> ?i64` |
+| 比两段字节 | `bytesEq(a, b)` / `bytesLt(a, b)`（模块级关联函数，直接比两段 `slice<u8>`）|
 
 **拿到内容只有 `toSlice()` 一条路（拷贝）**：池里不放视图出去。
 `string` 的 `hash()` + `==` 齐了，所以它能直接当 `hashMap` 的键。
 
 `stl::stringio` 用 `impl` 块把流式读写挂到 `string` 与 `io::istream` / `fs::ifstream` 上：
 
-| 名字 | 签名 | 位置 |
-|---|---|---|
-| `string::readLineFrom` | `fn readLineFrom(self: mut ref string, r: mut ref io::reader) -> result<i64, io::ioError>` |  |
-| `string::readAllFrom` | `fn readAllFrom(self: mut ref string, r: mut ref io::reader) -> result<i64, io::ioError>` | |
-| `string::writeTo` / `writeLineTo` | `fn writeTo(self: ref string, w: mut ref io::writer) -> result<i64, io::ioError>` | |
-| `io::istream >> string` / `fs::ifstream >> string` | 读一行（`\n` 与 CRLF 的 `\r` 都不算内容），**目标被替换** | |
+| 名字 | 签名 |
+|---|---|
+| `string::readLineFrom` | `fn readLineFrom(self: mut ref string, r: mut ref io::reader) -> result<i64, io::ioError>` |
+| `string::readAllFrom` | `fn readAllFrom(self: mut ref string, r: mut ref io::reader) -> result<i64, io::ioError>` |
+| `string::writeTo` / `writeLineTo` | `fn writeTo(self: ref string, w: mut ref io::writer) -> result<i64, io::ioError>` |
+| `io::istream >> string` / `fs::ifstream >> string` | 读一行（`\n` 与 CRLF 的 `\r` 都不算内容），**目标被替换** |
 
 ```extc
 use std::io
@@ -173,24 +174,21 @@ fn main() -> i32 {
 
 裸名给**有序**实现：`map` / `set` 有序，`hashMap` / `hashSet` 哈希。
 
-`map<K, V>`是 ORDER（16 键/节点）的 B+ 树，叶子按 `next` 串成链，所以
-**按序遍历就是扫连续内存**；`cnt` 让 `keyAt` / `valAt` / `lowerBound` 变成 O(log n) 的排名查询
-。**有序性来自键类型的 `<`**，`==` 由 `!(a<b) && !(b<a)` 派生
-。
+`map<K, V>` 是 ORDER（16 键/节点）的 B+ 树，叶子按 `next` 串成链，所以
+**按序遍历就是扫连续内存**；`cnt` 让 `keyAt` / `valAt` / `lowerBound` 变成 O(log n) 的排名查询。**有序性来自键类型的 `<`**，`==` 由 `!(a<b) && !(b<a)` 派生。
 
-| 方法 | 签名 | 位置 |
-|---|---|---|
-| `withCap` / `new` | `fn withCap(want: i64) -> map<K, V>` / `fn new() -> map<K, V>` | |
-| `len` / `capacity` 之类 | `len` · `nodeCount` · `capOf` · `height` | |
-| `contains` / `get` / `[]` | `fn get(...) -> ?V`；缺键给 `none`（**不插入默认值**） | |
-| `put` / `[]=` | `fn put(self: mut ref map<K, V>, k: K, v: V) -> bool`；**true = 键本来就在**（覆盖） | |
-| `remove` | 返回是否删掉了；会借/并再平衡 | |
-| 排名 | `lowerBound(k)`（严格小于 k 的个数）· `keyAt(i)` / `valAt(i)`（第 i 小） · `rankAt(i)` | |
-| 两端 | `firstKey()` / `lastKey() -> ?K` | |
-| `clone` / `clear` / `shrink` / `release` | 深拷贝、清空、缩高水位、整批还池 | |
+| 方法 | 签名 |
+|---|---|
+| `withCap` / `new` | `fn withCap(want: i64) -> map<K, V>` / `fn new() -> map<K, V>` |
+| `len` / `capacity` 之类 | `len` · `nodeCount` · `capOf` · `height` |
+| `contains` / `get` / `[]` | `fn get(...) -> ?V`；缺键给 `none`（**不插入默认值**） |
+| `put` / `[]=` | `fn put(self: mut ref map<K, V>, k: K, v: V) -> bool`；**true = 键本来就在**（覆盖） |
+| `remove` | 返回是否删掉了；会借/并再平衡 |
+| 排名 | `lowerBound(k)`（严格小于 k 的个数）· `keyAt(i)` / `valAt(i)`（第 i 小） · `rankAt(i)` |
+| 两端 | `firstKey()` / `lastKey() -> ?K` |
+| `clone` / `clear` / `shrink` / `release` | 深拷贝、清空、缩高水位、整批还池 |
 
-`set<T>`就是"值丢掉"的 `map<T, u8>`：**一个实现，不会漂**
-。`withCap` · `new` · `len` · `contains` · `put`（**true = 新元素**） ·
+`set<T>` 就是"值丢掉"的 `map<T, u8>`：**一个实现，不会漂**。`withCap` · `new` · `len` · `contains` · `put`（**true = 新元素**） ·
 `remove` · `lowerBound` · `first` / `last` · `at(i)`（第 i 小） · `clone` · `clear`。
 
 ```extc
@@ -224,24 +222,26 @@ fn main() -> i32 {
 `i64`，值才是泛型参数 `V`。键里可以打包两个 `i32`、一个 `pool` 句柄、
 一个字符串表偏移。
 
-`hashMapI64<V>`建在泛型 `hashMap<i64Key, V>`上；实现是
+模块级还有一个 `hashI64(k)`：`i64` 的哈希函数，`hashMapI64` 的键就用它。
+
+`hashMapI64<V>` 建在泛型 `hashMap<i64Key, V>` 上；实现是
 **线性探测 + 墓碑**，`cap` 是 2 的幂，探测下标是 `hash & (cap-1)`。
 
-| 方法 | 签名 | 位置 |
-|---|---|---|
-| `withCap` | `fn withCap(want: i64) -> hashMapI64<V>` | |
-| `len` / `capOf` / `deadOf` | `fn len(...) -> i64` 等 | |
-| `contains` / `get` / `[]` | `fn get(...) -> ?V` | |
-| `put` / `[]=` | `fn put(self: mut ref hashMapI64<V>, k: i64, v: V) -> bool`；**true = 键本来就在** | |
-| `remove` / `clear` / `release` | 删、清、整批还池 | |
-| 按桶扫 | `keyAt(i)` / `valAt(i)` / `liveAt(i)`（表位置；**不是插入序**） | |
-| 按 dense 扫 | `denseLen()` / `keyAtDense(d)` / `valAtDense(d)` | |
-| `clone` | 深拷贝 | |
+| 方法 | 签名 |
+|---|---|
+| `withCap` | `fn withCap(want: i64) -> hashMapI64<V>` |
+| `len` / `capOf` / `deadOf` | `fn len(...) -> i64` 等 |
+| `contains` / `get` / `[]` | `fn get(...) -> ?V` |
+| `put` / `[]=` | `fn put(self: mut ref hashMapI64<V>, k: i64, v: V) -> bool`；**true = 键本来就在** |
+| `remove` / `clear` / `release` | 删、清、整批还池 |
+| 按桶扫 | `keyAt(i)` / `valAt(i)` / `liveAt(i)`（表位置；**不是插入序**） |
+| 按 dense 扫 | `denseLen()` / `keyAtDense(d)` / `valAtDense(d)` |
+| `clone` | 深拷贝 |
+| `rebuild(ncap)` | 换一张 `ncap` 容量（2 的幂）的表，旧块当场还池 |
 
-重建有**两条触发线**：装载（`n + dead` 到 70% 容量）与墓碑密度（`dead` 到 25% 容量）
-。
+重建有**两条触发线**：装载（`n + dead` 到 70% 容量）与墓碑密度（`dead` 到 25% 容量）。
 
-`hashSetI64`是"没有值的 map"（值是一格 `u8`），面与 `hashMap` 对齐，
+`hashSetI64` 是"没有值的 map"（值是一格 `u8`），面与 `hashMap` 对齐，
 **唯一差别**：`put` 返回 true 表示**新元素**。`withCap` · `len` ·
 `contains` · `put` · `remove` · `clear` · `release` · `keyAt` · `liveAt` · `capOf` · `clone`。
 
@@ -278,18 +278,18 @@ fn main() -> i32 {
 `hash` 不支持）。存储 **dense 且是插入序**；`remove` 是
 **swap-remove**（最后一个填洞）⇒ 删过之后顺序不再保持。
 
-| `linMap<K, V>` | 签名 | 位置 |
-|---|---|---|
-| `withCap` | `fn withCap(want: i64) -> linMap<K, V>` | |
-| `len` / `capOf` | `fn len(...) -> i64` / `-> i64` | |
-| `find` / `contains` | `fn find(...) -> i64`（位置，`<0` = 没有） / `-> bool` | |
-| `get` / `[]` | `fn get(...) -> ?V` | |
-| `put` / `[]=` | 插入或覆盖；返回 true = 键本来就在 | |
-| `remove` | swap-remove；返回是否删掉 | |
-| `keyAt(i)` / `valAt(i)` | 第 i 个 entry（插入序） | |
-| `clone` / `clear` / `grow` / `release` | | |
+| 方法 | 签名 |
+|---|---|
+| `withCap` | `fn withCap(want: i64) -> linMap<K, V>` |
+| `len` / `capOf` | `fn len(...) -> i64` / `-> i64` |
+| `find` / `contains` | `fn find(...) -> i64`（位置，`<0` = 没有） / `-> bool` |
+| `get` / `[]` | `fn get(...) -> ?V` |
+| `put` / `[]=` | 插入或覆盖；返回 true = 键本来就在 |
+| `remove` | swap-remove；返回是否删掉 |
+| `keyAt(i)` / `valAt(i)` | 第 i 个 entry（插入序） |
+| `clone` / `clear` / `grow` / `release` | |
 
-`linSet<T>`是 `linMap<T, unit>` 的薄包装：`withCap` · `add`（返回是否**新加**） ·
+`linSet<T>` 是 `linMap<T, unit>` 的薄包装：`withCap` · `add`（返回是否**新加**） ·
 `contains` · `remove` · `len` · `clone` · `clear` · `release` · `at(i)`。
 
 ```extc
@@ -319,21 +319,20 @@ fn main() -> i32 {
 
 ### `pool<T>`：句柄寻址的槽表
 
-值住在一个 **dense 连续**数组里，调用方拿的是**句柄**（`slot + generation + epoch`），不是指针
-。**陈旧句柄不 trap**：查询式 API 给 `?T` / `bool`
+值住在一个 **dense 连续**数组里，调用方拿的是**句柄**（`slot + generation + epoch`），不是指针。**陈旧句柄不 trap**：查询式 API 给 `?T` / `bool`
 （，`at(h)` 那种 trap 版要等 `@trackCaller`）。
 
-| 名字 | 签名 | 位置 |
-|---|---|---|
-| `handle` | `struct handle { slot: i32, gen: i32, ep: i64 }`（普通值，拷贝无害） | |
-| `same(a, b)` | `fn same(a: handle, b: handle) -> bool` | |
-| `withCap` / `withParent` | `fn withCap(n: i64) -> pool<T>` / `fn withParent(parent: i64, n: i64)` | |
-| `len` / `capacity` / `bytesOf` | | |
-| `contains` / `get` / `set` | `fn get(...) -> ?T`；陈旧给 `none`；`set` 返回是否写成功 | |
-| `insert` | `fn insert(self: mut ref pool<T>, v: T) -> handle`（优先复用洞链） | |
-| `remove` | 返回是否删掉；**swap-remove**（dense 前缀保持连续）+ 该槽世代 +1 | |
-| 迭代 | `atDense(i)` / `handleAtDense(i)` / `toSlice()`（拷一份） / `gather(hs, out)` | |
-| `shrink` / `clear` / `release` | `clear` 翻 epoch（旧句柄一次比较全废），`release` 整批还 | |
+| 名字 | 签名 |
+|---|---|
+| `handle` | `struct handle { slot: i32, gen: i32, ep: i64 }`（普通值，拷贝无害） |
+| `same(a, b)` | `fn same(a: handle, b: handle) -> bool` |
+| `withCap` / `withParent` | `fn withCap(n: i64) -> pool<T>` / `fn withParent(parent: i64, n: i64)` |
+| `len` / `capacity` / `bytesOf` | |
+| `contains` / `get` / `set` | `fn get(...) -> ?T`；陈旧给 `none`；`set` 返回是否写成功 |
+| `insert` | `fn insert(self: mut ref pool<T>, v: T) -> handle`（优先复用洞链） |
+| `remove` | 返回是否删掉；**swap-remove**（dense 前缀保持连续）+ 该槽世代 +1 |
+| 迭代 | `atDense(i)` / `handleAtDense(i)` / `toSlice()`（拷一份） / `gather(hs, out)` |
+| `shrink` / `clear` / `release` | `clear` 翻 epoch（旧句柄一次比较全废），`release` 整批还 |
 
 ```extc
 use std::io
@@ -352,10 +351,10 @@ fn main() -> i32 {
 
 ### `sort`：原地比较排序
 
-| 名字 | 签名 | 位置 |
-|---|---|---|
-| `sort<T>` | `fn sort<T>(a: mut slice<T>)` |  |
-| `isSorted<T>` | `fn isSorted<T>(a: slice<T>) -> bool` | |
+| 名字 | 签名 |
+|---|---|
+| `sort<T>` | `fn sort<T>(a: mut slice<T>)` |
+| `isSorted<T>` | `fn isSorted<T>(a: slice<T>) -> bool` |
 
 语义：introsort（median-of-three + 深度上限后退到 heapsort），**原地、零分配**，栈是 64 项定长数组；
 小区间（≤ 12）走插入排序；**不承诺稳定**；比较用键上的 `<`。
@@ -379,19 +378,19 @@ fn main() -> i32 {
 
 ### `std::io`：控制台与缓冲的读写
 
-| 名字 | 签名（节选） | 位置 |
-|---|---|---|
-| `ioError` | `\| readFailed(i32) \| lineTooLong(i64) \| writeFailed(i32) \| notATerminal(i32) \| closed(i32) \| destFull(i64)` |  |
-| `cout` / `cerr` / `cin` | `ostream { fd: 1 }` / `errStream { }` / `istream { fd: 0 }` | |
-| `endl` | `let endl: slice<u8> = "\n"` | |
-| `ostream <<` | `i64` / `i32` / `f64` / `bool` / `slice<u8>` / `mut slice<u8>` | |
+| 名字 | 签名（节选） |
+|---|---|
+| `ioError` | `\| readFailed(i32) \| lineTooLong(i64) \| writeFailed(i32) \| notATerminal(i32) \| closed(i32) \| destFull(i64)` |
+| `cout` / `cerr` / `cin` | `ostream { fd: 1 }` / `errStream { }` / `istream { fd: 0 }` |
+| `endl` | `let endl: slice<u8> = "\n"` |
+| `ostream <<` | `i64` / `i32` / `f64` / `bool` / `slice<u8>` / `mut slice<u8>` |
 | `padText` / `padInt` / `padF` | 宽度 + 填充字节 + `LEFT`/`RIGHT`/`CENTER` | ；常量 |
-| `writer` | `struct writer { fd, buf, len }`（`@noCopy`）；`write` / `flush` / `cap` | |
-| `writerOf(fd)` | 造一个带 64 KiB 缓冲的 writer | |
-| `reader` | `avail` / `buffered` / `fill` / `nextByte` / `eof` / `nextLine` / `nextLineRaw` / `skipSpace` / `nextToken` / `nextInt` | |
-| `readerOf(fd)` | 造一个带 64 KiB 缓冲的 reader | |
-| `istream >>` | `mut ref i64` / `mut slice<u8>` / `mut ref u8`；`bad()` / `clear()` | |
-| `flushOut` / `writeBytes` / `writeBytesRaw` | 冲 stdio 侧 / 进 cout 缓冲 / 直写 fd 1 | |
+| `writer` | `struct writer { fd, buf, len }`（`@noCopy`）；`write` / `flush` / `cap` |
+| `writerOf(fd)` | 造一个带 64 KiB 缓冲的 writer |
+| `reader` | `avail` / `buffered` / `fill` / `nextByte` / `eof` / `nextLine` / `nextLineRaw` / `skipSpace` / `nextToken` / `nextInt` |
+| `readerOf(fd)` | 造一个带 64 KiB 缓冲的 reader |
+| `istream >>` | `mut ref i64` / `mut slice<u8>` / `mut ref u8`；`bad()` / `clear()` |
+| `flushOut` / `writeBytes` / `writeBytesRaw` | 冲 stdio 侧 / 进 cout 缓冲 / 直写 fd 1 |
 
 关键语义：
 
@@ -438,11 +437,11 @@ fn main() -> i32 {
 
 补充现状（源码位置都在 ）：
 
-| 名字 | 位置 | 一句话 |
-|---|---|---|
-| `ifstream::new` / `readSome` / `readAll` / `reader` / `bad` / `clear` / `close` | | 读句柄；`close` 幂等；用到已关句柄是 `closed(fd)` 值，不是 trap |
-| `ifstream >> i64 / slice<u8> / u8` | | 与 `cin >>` 同一套语义；失败置 `bad()`，目标保持原值 |
-| `ofstream::new` / `append` / `put` / `close` | | `put` 直接 `write(2)`（**不缓冲**）；`close` 是提交点 |
+| 名字 | 一句话 |
+|---|---|
+| `ifstream::new` / `readSome` / `readAll` / `reader` / `bad` / `clear` / `close` | 读句柄；`close` 幂等；用到已关句柄是 `closed(fd)` 值，不是 trap |
+| `ifstream >> i64 / slice<u8> / u8` | 与 `cin >>` 同一套语义；失败置 `bad()`，目标保持原值 |
+| `ofstream::new` / `append` / `put` / `close` | `put` 直接 `write(2)`（**不缓冲**）；`close` 是提交点 |
 | `openRead` / `openWrite` / `openAppend` | | `openWrite` 带 `O_TRUNC`，`openAppend` 带 `O_APPEND` |
 | `fs::fout` / `openOut` / `flushOut` / `closeOut` | | **程序级**输出流，带缓冲（`<<` 接受 `slice<u8>` / `mut slice<u8>` / `i64` / `bool`） |
 | `fs::fin` / `openIn` / `closeIn` | | 程序级输入流 |
@@ -472,11 +471,11 @@ fn main() -> i32 {
 
 ### `std::term`：终端 raw 模式
 
-| 名字 | 签名 | 位置 |
-|---|---|---|
-| `terminal` | `struct terminal { fd, saved[128], rawbuf[128], on }`（两个缓冲是不透明的 `struct termios`） |  |
-| `terminal::raw` / `restore` / `close` | 都返回 `result<unit, io::ioError>`；`close` 就是 `restore`，幂等 | |
-| `rawTerminal(fd)` | `fn rawTerminal(fd: i32) -> result<terminal, io::ioError>` | |
+| 名字 | 签名 |
+|---|---|
+| `terminal` | `struct terminal { fd, saved[128], rawbuf[128], on }`（两个缓冲是不透明的 `struct termios`） |
+| `terminal::raw` / `restore` / `close` | 都返回 `result<unit, io::ioError>`；`close` 就是 `restore`，幂等 |
+| `rawTerminal(fd)` | `fn rawTerminal(fd: i32) -> result<terminal, io::ioError>` |
 
 语义：声明了 `close` ⇒ 它是**资源**，"开了没关"编译器会提醒；
 不是终端时给 `failure(notATerminal(fd))`（不是 trap）；trap 路径会经运行期钩子把终端还原
@@ -505,12 +504,12 @@ fn main() -> i32 {
 
 ### `std::time`：两个钟 + 秒表
 
-| 名字 | 签名 | 位置 |
-|---|---|---|
-| `now()` | 单调钟，纳秒；**不会倒退**，测时长用它 |  |
-| `real()` | 墙钟，纳秒（Unix epoch 起算）；会跳（NTP/时区/改表） | |
-| `sleepNs` / `sleepUs` / `sleepMs` | 阻塞当前线程 | |
-| `timer` + `start()` | `elapsedNs` / `elapsedUs` / `elapsedMs` / `elapsedSecs`；`t0` 是 `@private` | |
+| 名字 | 签名 |
+|---|---|
+| `now()` | 单调钟，纳秒；**不会倒退**，测时长用它 |
+| `real()` | 墙钟，纳秒（Unix epoch 起算）；会跳（NTP/时区/改表） |
+| `sleepNs` / `sleepUs` / `sleepMs` | 阻塞当前线程 |
+| `timer` + `start()` | `elapsedNs` / `elapsedUs` / `elapsedMs` / `elapsedSecs`；`t0` 是 `@private` |
 
 没有 `perf(fn)`：闭包不能当参数。
 
@@ -530,16 +529,16 @@ fn main() -> i32 {
 
 ### `std::json`：零拷贝解析 + 零分配写入
 
-| 名字 | 签名 | 位置 |
-|---|---|---|
-| 节点种类 | `OBJ=1` `ARR=2` `STR=3` `NUM=4` `BOOL=5` `NUL=6`；`MAXDEPTH=64` |  |
-| `node` / `parsed` | 带载荷枚举 `\| obj \| arr \| text \| number \| flag \| nul` / `\| ok(i64) \| err(i64)` | |
-| `parse(text, nodes)` | 节点池**由调用方给**；池满报错，不静默截断 | |
-| `isOk` / `rootOf` / `errAt` | 投影（也可以直接 `match`） | |
-| 访问器 | `kindOf` · `countOf` · `rawOf`（原文视图） · `escOf` · `unescape(text, nodes, idx, out)` · `strOf(..., scratch)` | |
-| 结构访问 | `member` · `keyAt` · `valueAt` · `elem` · `find(text, nodes, root, "a.b.0")` | |
-| 取值 | `numOf -> f64` · `intOf -> i64`（只在 ≤18 位十进制时给值，否则 0） · `boolOf` | |
-| `builder` | `builder::open(buf) -> ?builder`（含引用，**没有零值**）；`ok` `len` `beginObj` `endObj` `beginArr` `endArr` `key` `str` `int` `boolean` `nul` `raw` `flt` | |
+| 名字 | 签名 |
+|---|---|
+| 节点种类 | `OBJ=1` `ARR=2` `STR=3` `NUM=4` `BOOL=5` `NUL=6`；`MAXDEPTH=64` |
+| `node` / `parsed` | 带载荷枚举 `\| obj \| arr \| text \| number \| flag \| nul` / `\| ok(i64) \| err(i64)` |
+| `parse(text, nodes)` | 节点池**由调用方给**；池满报错，不静默截断 |
+| `isOk` / `rootOf` / `errAt` | 投影（也可以直接 `match`） |
+| 访问器 | `kindOf` · `countOf` · `rawOf`（原文视图） · `escOf` · `unescape(text, nodes, idx, out)` · `strOf(..., scratch)` |
+| 结构访问 | `member` · `keyAt` · `valueAt` · `elem` · `find(text, nodes, root, "a.b.0")` |
+| 取值 | `numOf -> f64` · `intOf -> i64`（只在 ≤18 位十进制时给值，否则 0） · `boolOf` |
+| `builder` | `builder::open(buf) -> ?builder`（含引用，**没有零值**）；`ok` `len` `beginObj` `endObj` `beginArr` `endArr` `key` `str` `int` `boolean` `nul` `raw` `flt` |
 
 语义：**解析不分配**（节点池是调用方的）、**字符串零拷贝**（`str` 是指向输入的视图，`esc` 标志说
 要不要先解码）、**写入不分配**（直接拼进调用方缓冲）、**递归深度上限 64**。
@@ -605,14 +604,14 @@ fn main() -> i32 {
 
 ### `std::hash`：sha1 / sha256 / hmac
 
-| 名字 | 签名 | 位置 |
-|---|---|---|
-| `sha256::sum(data, out) -> bool` | `out.len < 32` 给 `false` |  |
-| `sha256::hex(digest, out) -> i64` | 十六进制，返回长度 | |
-| `sha256::state` + `init` / `update` / `final` | 分块哈希 | |
+| 名字 | 签名 |
+|---|---|
+| `sha256::sum(data, out) -> bool` | `out.len < 32` 给 `false` |
+| `sha256::hex(digest, out) -> i64` | 十六进制，返回长度 |
+| `sha256::state` + `init` / `update` / `final` | 分块哈希 |
 | `sha1::sum` / `hex` / `state`（20 字节摘要） | | 、|
-| `hmac::sha256(key, msg, out) -> bool` | `out.len < 32` 给 `false`；键长 > 64 先散列一次（RFC 2104） |  |
-| `hmac::sha1(key, msg, out) -> bool` | | |
+| `hmac::sha256(key, msg, out) -> bool` | `out.len < 32` 给 `false`；键长 > 64 先散列一次（RFC 2104） |
+| `hmac::sha1(key, msg, out) -> bool` | |
 
 零分配（state + 64 字节块都在栈上）。
 
@@ -645,16 +644,15 @@ fn main() -> i32 {
 
 ### `std::net`：套接字与名字解析
 
-`use std::net` 是公开门面；epoll 三件**不在这里**（属于 `std::loop` 与协程调度器）
-。约定与内核一致：失败给**负数**，`>= 0` 是 fd / 字节数。
+`use std::net` 是公开门面；epoll 三件**不在这里**（属于 `std::loop` 与协程调度器）。约定与内核一致：失败给**负数**，`>= 0` 是 fd / 字节数。
 
-| 名字 | 签名 | 位置 |
-|---|---|---|
-| `sockPair(out)` | 一对已连接的 AF_UNIX fd |  |
-| `accept` / `read` / `write` | `fn read(fd: i64, buf: mut slice<u8>) -> i64` 等 | |
-| `nonblock` / `nodelay` / `shutdownWr` / `timeout` / `localPort` | | |
-| `tcpListen` / `tcpListenShared` / `tcpConnectTo` | `SO_REUSEPORT` 版给多进程分片 | |
-| `dnsLookup(host, out)` / `resolve(addr, out)` | 主机名 → IPv4；`resolve` 也接受字面量 | |
+| 名字 | 签名 |
+|---|---|
+| `sockPair(out)` | 一对已连接的 AF_UNIX fd |
+| `accept` / `read` / `write` | `fn read(fd: i64, buf: mut slice<u8>) -> i64` 等 |
+| `nonblock` / `nodelay` / `shutdownWr` / `timeout` / `localPort` | |
+| `tcpListen` / `tcpListenShared` / `tcpConnectTo` | `SO_REUSEPORT` 版给多进程分片 |
+| `dnsLookup(host, out)` / `resolve(addr, out)` | 主机名 → IPv4；`resolve` 也接受字面量 |
 
 **没有 `close(fd)`**：`grep` 整个 `net.extc` / `std/sys/net.extc` 只有 `shutdownWr`，关闭 fd 的原语只在
 `std::sys::io::close`（特权层，见本页末）。
@@ -676,17 +674,17 @@ fn main() -> i32 {
 
 ### `std::http`：请求/响应解析与连接
 
-| 名字 | 签名 | 位置 |
-|---|---|---|
-| `parseRequest(raw) -> request` | 拆请求行 + 头 |  |
-| `request::path` / `query(name)` / `header(name)` / `length` / `isGet` / `isPost` | | |
-| `parseResponse(raw) -> response` | 拆状态行 + 头 | |
-| `response::header` / `length` / `isOk` / `is(status)` | | |
-| `reasonOf` / `headerOf` / `contentLength` / `pathOf` / `queryOf` | 自由函数版本 | |
-| `beginResponse` / `putHeader` / `putHeaderI64` / `endHeaders` / `simpleResponse` / `beginRequest` | 拼字节 | |
-| `decode(src, dst)` | 百分号解码 | |
-| `conn::open` / `send` / `readResponse` / `exchange` / `get` / `post` / `close` | 一条连接上的往返 | |
-| `session::make` / `ok` / `exchange` / `get` / `post` / `close` | 会自己重连的那种 | |
+| 名字 | 签名 |
+|---|---|
+| `parseRequest(raw) -> request` | 拆请求行 + 头 |
+| `request::path` / `query(name)` / `header(name)` / `length` / `isGet` / `isPost` | |
+| `parseResponse(raw) -> response` | 拆状态行 + 头 |
+| `response::header` / `length` / `isOk` / `is(status)` | |
+| `reasonOf` / `headerOf` / `contentLength` / `pathOf` / `queryOf` | 自由函数版本 |
+| `beginResponse` / `putHeader` / `putHeaderI64` / `endHeaders` / `simpleResponse` / `beginRequest` | 拼字节 |
+| `decode(src, dst)` | 百分号解码 |
+| `conn::open` / `send` / `readResponse` / `exchange` / `get` / `post` / `close` | 一条连接上的往返 |
+| `session::make` / `ok` / `exchange` / `get` / `post` / `close` | 会自己重连的那种 |
 
 解析与拼字节都**离线可跑**（判据 ）：
 
@@ -707,13 +705,13 @@ fn main() -> i32 {
 
 ### `std::ws`：WebSocket 帧
 
-| 名字 | 签名 | 位置 |
-|---|---|---|
-| 操作码 | `OP_CONT=0` `OP_TEXT=1` `OP_BIN=2` `OP_CLOSE=8` `OP_PING=9` `OP_PONG=10`；`GUID` |  |
-| `acceptFor(key, out)` | `Sec-WebSocket-Accept`（base64(SHA1(key + GUID))） | |
-| `requestInto(host, path, key, out)` | 拼握手请求 | |
-| `frameInto(op, fin, payload, mask, out)` | 拼一帧 | |
-| `hdrLen` / `opOf` / `finOf` / `maskedOf` / `lenOf` / `maskAt` / `unmask` | 拆帧 | |
+| 名字 | 签名 |
+|---|---|
+| 操作码 | `OP_CONT=0` `OP_TEXT=1` `OP_BIN=2` `OP_CLOSE=8` `OP_PING=9` `OP_PONG=10`；`GUID` |
+| `acceptFor(key, out)` | `Sec-WebSocket-Accept`（base64(SHA1(key + GUID))） |
+| `requestInto(host, path, key, out)` | 拼握手请求 |
+| `frameInto(op, fin, payload, mask, out)` | 拼一帧 |
+| `hdrLen` / `opOf` / `finOf` / `maskedOf` / `lenOf` / `maskAt` / `unmask` | 拆帧 |
 
 判据 。`acceptFor` 与 RFC 6455 的例子逐字节一致：
 
@@ -735,13 +733,13 @@ fn main() -> i32 {
 
 ### `std::proc`：进程
 
-| 名字 | 签名 | 位置 |
-|---|---|---|
-| `exit(code)` | 立即结束进程；**不 flush 你自己的 `writer`** |  |
-| `spawn()` | POSIX `fork`：父得子 id，子得 0，失败 -1；**子从这一句继续** | |
-| `wait(pid)` | 回收并给退出状态（被信号杀死的报 0） | |
-| `self()` | 本进程 id | |
-| `pin(cpu)` | 绑核（`cpu < 0` 解除），返回 0 成功 | |
+| 名字 | 签名 |
+|---|---|
+| `exit(code)` | 立即结束进程；**不 flush 你自己的 `writer`** |
+| `spawn()` | POSIX `fork`：父得子 id，子得 0，失败 -1；**子从这一句继续** |
+| `wait(pid)` | 回收并给退出状态（被信号杀死的报 0） |
+| `self()` | 本进程 id |
+| `pin(cpu)` | 绑核（`cpu < 0` 解除），返回 0 成功 |
 
 ```extc
 use std::io
@@ -757,7 +755,7 @@ fn main() -> i32 {
 
 ### `std::parallel`：线程（可切块的计算）
 
-`parallel::run(worker, <视图实参>…, n, threads) -> i32`是 `@builtin`：
+`parallel::run(worker, <视图实参>…, n, threads) -> i32` 是 `@builtin`：
 语言没有一等函数值，"把 worker 放到线程上跑"必须由编译器生成 trampoline。
 
 - worker 形状：`fn worker(id: i64, lo: i64, hi: i64, <只读视图>…, out: mut slice<T>) -> i32`。
@@ -790,14 +788,14 @@ fn main() -> i32 {
 一个 `while` 循环 + 一个事件源。协程返回类型写 `coroutine<T>`；`yield e` 挂起（**负数请求 = 别等，立刻再推我**），
 `send(v)` 把值送回去，驱动侧就是 `next()` / `value()` / `send(v)`。
 
-| 名字 | 签名 | 位置 |
-|---|---|---|
-| `loop` | 调度器状态，**只有标量**（含引用的结构体没有零值） |  |
-| `tasks<T>` | 任务表（调用者自己的容器）：`rows` / `runq` / `rqHead` / `freeq` / `acceptq` | |
-| `tasks::add` | `fn add(self: mut ref tasks<T>, s: mut ref loop, h: coroutine<i64>) -> bool` | |
-| `tasks::step` / `resumeRow` / `finish` / `runScripted` | 推进一行 / 一路推到挂起 / 收尾 / 按顺序推进 | |
-| `tasks::pump` / `runEpoll` | 真事件循环：`>=0` 新 accept 的 fd，`-1` 处理了事件，`-2` 超时 | |
-| `newRows()` / `newQ()` / `init(s, listener)` / `pendingTimers(s)` | 造表 / 造队列 / 初始化 / 定时器计数 | |
+| 名字 | 签名 |
+|---|---|
+| `loop` | 调度器状态，**只有标量**（含引用的结构体没有零值） |
+| `tasks<T>` | 任务表（调用者自己的容器）：`rows` / `runq` / `rqHead` / `freeq` / `acceptq` |
+| `tasks::add` | `fn add(self: mut ref tasks<T>, s: mut ref loop, h: coroutine<i64>) -> bool` |
+| `tasks::step` / `resumeRow` / `finish` / `runScripted` | 推进一行 / 一路推到挂起 / 收尾 / 按顺序推进 |
+| `tasks::pump` / `runEpoll` | 真事件循环：`>=0` 新 accept 的 fd，`-1` 处理了事件，`-2` 超时 |
+| `newRows()` / `newQ()` / `init(s, listener)` / `pendingTimers(s)` | 造表 / 造队列 / 初始化 / 定时器计数 |
 
 判据在 （脚本化驱动的 `coro_sched.extc` 用退出码自证，`coro_tasks.extc` 也是）：
 
@@ -811,20 +809,19 @@ $ ./build/extc --run tests/coro/coro_tasks.extc ; echo $?
 ### `std::heap`：板（一块连续内存 + 一道门）
 
 一次 `mmap` 保留地址空间（`PROT_NONE` + `MAP_NORESERVE`），`alloc` 按需 `mprotect` 成 RW；**地址一给出就不变**；
-每个出口验一次"在板内"（`holds`）；`close` 是 `munmap`，之后再用板内指针是硬缺页。`@noCopy`
-。
+每个出口验一次"在板内"（`holds`）；`close` 是 `munmap`，之后再用板内指针是硬缺页。`@noCopy`。
 
-| 名字 | 签名 | 位置 |
-|---|---|---|
+| 名字 | 签名 |
+|---|---|
 | `PAGE` / `CHUNK` / `DEFAULT_RESERVE` | `4096` / `1 MiB` / `4 GiB` | 、|
-| `plate::open(reserve) -> ?plate` | 保留一片地址空间 | |
-| `reservedBytes` / `committedBytes` / `usedBytes` / `remaining` / `isClosed` | | |
-| `alloc(n) -> ?mut slice<u8>` · `allocPtr(n) -> ?ref u8` | 申请（`effects Ret=0`：返回的视图不指向调用方帧） | |
-| `view(off, n)` · `viewAt(p, n)` · `holds(p)` · `holdsRange` · `holdsView` | 板内视图 / 从裸指针过门造视图 / 区间检查 | |
-| `copyIn` / `copyOut` / `store` | 进/出板 | |
-| `loanRO` / `loanRW` | 改页权限（临时只读 / 可写） | |
-| `quarantine` / `unquarantine` / `poison` | 隔离 / 解除 / 填毒 | |
-| `close()` | `munmap`，双关安全 | |
+| `plate::open(reserve) -> ?plate` | 保留一片地址空间 |
+| `reservedBytes` / `committedBytes` / `usedBytes` / `remaining` / `isClosed` | |
+| `alloc(n) -> ?mut slice<u8>` · `allocPtr(n) -> ?ref u8` | 申请（`effects Ret=0`：返回的视图不指向调用方帧） |
+| `view(off, n)` · `viewAt(p, n)` · `holds(p)` · `holdsRange` · `holdsView` | 板内视图 / 从裸指针过门造视图 / 区间检查 |
+| `copyIn` / `copyOut` / `store` | 进/出板 |
+| `loanRO` / `loanRW` | 改页权限（临时只读 / 可写） |
+| `quarantine` / `unquarantine` / `poison` | 隔离 / 解除 / 填毒 |
+| `close()` | `munmap`，双关安全 |
 
 ```extc
 use std::io
@@ -844,12 +841,12 @@ fn main() -> i32 {
 
 ### `std::dl`：动态加载
 
-| 名字 | 签名 | 位置 |
-|---|---|---|
-| `open(path) -> option<ref void>` | `path` **必须 NUL 结尾**：字面量直接传，运行期拼的先 `cstr` |  |
-| `sym(h, name) -> option<ref void>` | `dlsym`；给的是**地址，不是类型** | |
-| `symOrNull(h, name) -> ?ref void` | 要自己判空时用它 | |
-| `close(h)` / `cstr(s)` / `cstrLen(p)` / `viewCStr(p)` | 关 / 补终止符 / C 字符串长度 / C 字符串 → 视图 | |
+| 名字 | 签名 |
+|---|---|
+| `open(path) -> option<ref void>` | `path` **必须 NUL 结尾**：字面量直接传，运行期拼的先 `cstr` |
+| `sym(h, name) -> option<ref void>` | `dlsym`；给的是**地址，不是类型** |
+| `symOrNull(h, name) -> ?ref void` | 要自己判空时用它 |
+| `close(h)` / `cstr(s)` / `cstrLen(p)` / `viewCStr(p)` | 关 / 补终止符 / C 字符串长度 / C 字符串 → 视图 |
 
 把 `dlsym` 回来的地址变成可调用的值，要调用方写一次**显式转换**（`fn(i64) -> i64(raw)`）——
 那句话就是签字。
@@ -871,12 +868,12 @@ fn main() -> i32 {
 
 ### `std::mem`：字节块的查找与比较
 
-| 名字 | 签名 | 位置 |
-|---|---|---|
-| `find(hay, needle) -> i64` | 最左匹配偏移；没有 `-1`；空模式 `0` |  |
-| `contains(hay, needle) -> bool` | | |
-| `eq(a, b) -> bool` | 整块比较（`n <= 0` 算相同） | |
-| `copy(dst, src) -> i64` | 原地整块拷贝；装不下 `-1` | |
+| 名字 | 签名 |
+|---|---|
+| `find(hay, needle) -> i64` | 最左匹配偏移；没有 `-1`；空模式 `0` |
+| `contains(hay, needle) -> bool` | |
+| `eq(a, b) -> bool` | 整块比较（`n <= 0` 算相同） |
+| `copy(dst, src) -> i64` | 原地整块拷贝；装不下 `-1` |
 
 `stl::string` 的 `find` / `contains` 建在它上面。
 
@@ -941,7 +938,7 @@ note:  what a program normally needs is `std::heap`: `plate::open` / `alloc` / `
 ```
 
 | 特权层文件 | 装的是 | 用户面对应的公开层 |
-|---|---|---|
+|---|---|
 |  | `read` / `write` / `open` / `close`、`O_*`、`STDIN/STDOUT/STDERR`、cout 运行期 | `std::io`、`std::fs` |
 |  | `tcgetattr` / `tcsetattr` / `cfmakeraw` / `TCSANOW` / raw 钩子 | `std::term` |
 |  | `extc_time_mono_ns` / `extc_time_real_ns` / `extc_time_sleep_ns` | `std::time` |
