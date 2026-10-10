@@ -1,14 +1,13 @@
-/* The extC abstract syntax tree: the data shapes the parser produces and the type
- * checker annotates in place.
+/**
+ * @file ast.h
+ * @brief extC 抽象语法树：解析器产出的数据形状，类型检查器在原地标注它。
  *
- * The tree carries the results of name and type resolution. The checker writes
- * them back onto the nodes:
- *   Expr.type   the type of the expression
- *   Expr.func   the function a call resolved to
- *   Expr.field  the field a field access resolved to
- *   Stmt.type   the final type of a variable declaration
- * Code generation can therefore perform no type inference at all: it translates
- * decisions that have already been made.
+ * 树带着名字与类型解析的结果，检查器把它们写回节点：
+ *   Expr.type   表达式的类型
+ *   Expr.func   调用解析到的函数
+ *   Expr.field  字段访问解析到的字段
+ *   Stmt.type   变量声明的最终类型
+ * 代码生成因此完全不做类型推导：它翻译的是已经做好的决定。
  */
 #ifndef EXTC_AST_H
 #define EXTC_AST_H
@@ -92,14 +91,59 @@ struct Type {
     StructDef  *mholder;
 };
 
-Type *typeNamed(Arena *a, const char *name);   /* TY_UNRESOLVED; targs may be filled in after */
-Type *typeRef(Arena *a, Type *inner);
-Type *typeParam(Arena *a, const char *name, int idx);
-Type *typeArray(Arena *a, int64_t n, Type *elem);   /* TY_ARRAY */
-/* Build a function type from the parser's pieces: `fn(params...) -> ret` (TY_FN).
+/**
+ * @brief 造一个未解析的类型名（TY_UNRESOLVED）。
  *
- * The parser hands over parameter and return types that may still be `TY_UNRESOLVED` names, so
- * this only builds the shape; interning happens in `ttResolve`. `ret` must not be NULL. */
+ * @param a     拥有节点的 arena。
+ * @param name  源码里写的类型名；指针原样保留，文本不拷贝。
+ * @return      一个 TY_UNRESOLVED 类型。把它连同解析器随后挂上的类型实参一起解析成驻留类型
+ *              是检查器的事。
+ */
+Type *typeNamed(Arena *a, const char *name);
+
+/**
+ * @brief 造 `ref inner`，普通的引用类型。
+ *
+ * @param a      拥有节点的 arena。
+ * @param inner  被引用的类型。
+ * @return       既不 writable 也不 nullable 的 TY_REF；源码写 `mut ref` / `?ref` 时由解析器
+ *               设置 `mut` / `nullable`。
+ */
+Type *typeRef(Arena *a, Type *inner);
+
+/**
+ * @brief 造一个类型参数（TY_PARAM）。
+ *
+ * @param a     拥有节点的 arena。
+ * @param name  参数名，例如 `"T"`。
+ * @param idx   它在所在参数表里的位置。
+ * @return      一个 TY_PARAM 类型。
+ */
+Type *typeParam(Arena *a, const char *name, int idx);
+
+/**
+ * @brief 造定长数组类型 `[n]elem`（TY_ARRAY）。
+ *
+ * 长度是编译期常量，也是类型的一部分，所以 `[3]i32` 与 `[4]i32` 是两个不同的类型。
+ *
+ * @param a     拥有节点的 arena。
+ * @param n     元素个数。
+ * @param elem  元素类型。
+ * @return      一个 TY_ARRAY 类型。
+ */
+Type *typeArray(Arena *a, int64_t n, Type *elem);
+
+/**
+ * @brief 按解析器给的碎片造函数类型 `fn(params...) -> ret`（TY_FN）。
+ *
+ * 解析器交过来的参数与返回类型可能还是 `TY_UNRESOLVED` 名字，所以这里只搭形状；驻留发生在
+ * `ttResolve` / `ttFn` 里。`ret` 不能是 NULL。
+ *
+ * @param a       拥有节点与参数向量的 arena。
+ * @param params  参数类型，按顺序（`Type *` 元素）；向量会被复制。
+ * @param ret     返回类型。
+ * @return        一个 TY_FN 类型，它的各部分可能仍是未解析的名字。
+ */
 Type *typeFn(Arena *a, Vec *params, Type *ret);
 
 /* ------------------------------------------------------------ expressions */
@@ -112,11 +156,26 @@ Type *typeFn(Arena *a, Vec *params, Type *ret);
  * for a decision that is already made. */
 #define ARENA_HOME (-1)
 
-/* Deepest block level inside a statement / block (defined in codegen.c, used by the checker to size
- * a coroutine frame's per-level block arenas). A block counts as one level. */
+/**
+ * @brief 一条语句内部能达到的最深块层级。
+ *
+ * 块算一层，里面的循环、条件与 match 再各加自己的层，所以答案就是所在函数需要的 arena 槽数；
+ * 它是栈上定长数组 `__extc_a` 的长度，搭起块 arena 因此不需要分配（块由代码生成定义，检查器
+ * 用它给协程帧的每层块 arena 定大小）。
+ *
+ * @param s  要看的语句。
+ * @return   最深层级；没有块时 0。
+ */
 int blkMaxLevel(Stmt *s);
+
+/**
+ * @brief 一个块语句内部能达到的最深块层级。
+ *
+ * @param block  块语句；不是块时退化成对它的单语句问法。
+ * @return       块内部达到的最深层级，**不**算这个块自己加的那一层；没有块时 0。
+ */
 int blkMaxOfBlock(Stmt *block);
-/* 「家 zone」的哨兵（池的提权，见 PLAN #87）。与 ARENA_HOME 平行：
+/* 「家 zone」的哨兵。与 ARENA_HOME 平行：
  *   0        = 这个调用点不建池（`zoneLevel` 的默认值）
  *   ZONE_HOME= 把它交给**调用者**选的那个地方（隐藏参数 `__extc_home_zone` 往下传）
  *   k >= 1   = 生在第 k 层那个地方 */
@@ -223,8 +282,8 @@ struct Expr {
      *   >0 = the block depth of some local
      * Only meaningful when the type contains a reference. */
     /* 这个节点的**编译计划**（arena/zone 层、实参 arena、是否需要临时量）不在这棵 AST 上：
-     * 它的存储与读写口都在 `src/plan.c` / `src/plan.h`（X2：按节点寻址的侧表）。
-     * 这样 AST 只剩语法事实与身份，而"计划何时有效、谁写谁读"由 plan.h 逐字段写明。*/
+     * 它的存储与读写口都在按节点寻址的计划侧表里。
+     * 这样 AST 只剩语法事实与身份，而"计划何时有效、谁写谁读"由计划的头文件逐字段写明。*/
 
     /* The lexical block level of this site, for long-running programs.
      * The final pass overwrites `arenaLevel` with ARENA_HOME for every allocation in
@@ -378,8 +437,7 @@ struct Expr {
     /* `r.tag()` where `r: ref dyn Tag`: the checker unwraps the reference to find the trait, so
      * codegen can no longer see it from the node's type. The C expression is then a **pointer** to
      * the handle while `extc_dyn_slot` takes the handle by value, so codegen has to dereference --
-     * this flag is what tells it. (Without it the compiler accepted `ref dyn Tag` and emitted C
-     * that did not build.) */
+     * this flag is what tells it. */
     /* `f(x)` where `f` is a **value** of function type and not a declaration: the call goes through
      * the code pointer, so there is no `FuncDef` for codegen to name.
      *
@@ -391,8 +449,30 @@ struct Expr {
 
 typedef struct { const char *name; Expr *value; } FieldInit;
 
+/**
+ * @brief 造一个表达式节点。
+ *
+ * 节点取自 arena 且已清零，只设 `kind` 与行号，所以解析器没填的字段是零而不是未定值。解析的
+ * 结果（`type`、`func`、`field`，以及逃逸分析的深度）随后由检查器填。
+ *
+ * @param a     拥有节点的 arena。
+ * @param kind  表达式种类；联合体只有对应那个成员可用。
+ * @param line  源码行号（1 起），留给诊断。
+ * @return      清零的 Expr。
+ */
 Expr *exprNew(Arena *a, ExprKind kind, int line);
-Expr *exprIdent(Arena *a, const char *name, int line);   /* the one way an `EX_IDENT` is built */
+
+/**
+ * @brief 造一个 `EX_IDENT`，这是这条路径唯一的一处构造。
+ *
+ * `name` 与 `srcName` 一起设：标识符写出来是什么就记什么，改名发生在解析器之后。
+ *
+ * @param a     拥有节点的 arena。
+ * @param name  写出来的名字。
+ * @param line  源码行号（1 起）。
+ * @return      清零并填好两个名字的标识符节点。
+ */
+Expr *exprIdent(Arena *a, const char *name, int line);
 
 /* ------------------------------------------------------------ statements */
 
@@ -440,7 +520,7 @@ struct Stmt {
      * This points at that step from the **body block**, and codegen emits a label right before
      * it so `continue` can jump there: C's `for` runs the step on the way out of a `continue`,
      * and without this the desugared form skipped it -- an infinite loop for any `for` that
-     * contains a `continue` (audit P0-15). It is cleared when `forRetargetToIterator` drops the
+     * contains a `continue`. It is cleared when `forRetargetToIterator` drops the
      * step (the iterator's own `next()` in the condition advances instead, so a plain
      * `continue` is right again). */
     Stmt    *forStep;
@@ -482,6 +562,16 @@ struct Stmt {
     } u;
 };
 
+/**
+ * @brief 造一个语句节点。
+ *
+ * 节点取自 arena 且已清零，只设 `kind` 与行号。
+ *
+ * @param a     拥有节点的 arena。
+ * @param kind  语句种类；联合体只有对应那个成员可用。
+ * @param line  源码行号（1 起），留给诊断。
+ * @return      清零的 Stmt。
+ */
 Stmt *stmtNew(Arena *a, StmtKind kind, int line);
 
 /* -------------------------------------------------------------- top level */
@@ -490,8 +580,8 @@ typedef struct {
     const char *name;
     /* The name this parameter is emitted under. **A plain field on purpose**: a `Param`
      * is stored by value (the coroutine frame copies them), and the plan side table is
-     * addressed by node pointer -- a copy would have no slot. Measured: putting this in
-     * the side table made every coroutine entry function lose its parameter name. */
+     * addressed by node pointer -- a copy would have no slot, so a name kept there is
+     * lost for every coroutine entry function. */
     const char *cname;
     Type       *type;
     int         line;
@@ -552,9 +642,8 @@ struct TypeDef {                 /* type status = | ok | warn | error */
     int          line;
     /* The name shown to the user (`io::reader`), while `name` is the internal mangled
      * form (`io$reader`). The two must stay apart: printing `io$reader` in a diagnostic
-     * leaks the compiler's internal encoding for a word the user never wrote. It was
-     * observed once as `struct \`alpha$pair\` has no field \`zzz\``. For a single-file
-     * program the two are the same string. */
+     * leaks the compiler's internal encoding for a word the user never wrote. For a
+     * single-file program the two are the same string. */
     const char *srcName;
 };
 
@@ -602,19 +691,18 @@ struct StructDef {
     bool        frozen;
     /* `@sharesStorage`：这个类型按值拷贝时**两份共用同一块存储**（容器就是这一族）。
      *
-     * 作者口径（2026-09-26）：不禁止，**报警告**。理由是"万一用户就是神人"——
-     * 有些用途（把句柄交出去、短暂共享）是正当的，禁掉就把路堵死了；但用户必须
-     * **知道**这一行在做什么，因为它与"别的值复制都是各一份"这条直觉相反。
-     *   实测的坑（tests/stl/clone.extc 的起因）：`var b = a` 之后 `b.push(..)` 会改到 `a`，
-     *   而 `a.release()` 会让 `b` 悬垂（守卫能把它变成带位置的 trap，但那已经是事故了）。
+     * 不禁止，**报警告**：有些用途（把句柄交出去、短暂共享）是正当的，禁掉就把路堵死了；但
+     * 用户必须**知道**这一行在做什么，因为它与"别的值复制都是各一份"这条直觉相反 ——
+     * `var b = a` 之后 `b.push(..)` 会改到 `a`，而 `a.release()` 会让 `b` 悬垂（守卫能把它
+     * 变成带位置的 trap，但那已经是事故了）。
      * 与 `@noCopy` 的分工：`noCopy` 是"有身份的状态，复制一定错"（读者/流）；
      * `sharesStorage` 是"复制的语义与直觉不同，但你可能是有意的"。 */
     bool        sharesStorage;
     /* `@poolObject`：这个类型**拥有一个池**（存储住在池自己的板块上，寿命随它所在的地方）。
      *
-     * 作者口径（2026-09-26）：声明比推断好 —— 编译器不必去猜（早先试过"看有没有 `pid` 字段"
-     * 和"看它的方法建不建池"，前者是魔数、后者要等闭包），一个修饰符就把这件事说清楚，
-     * 而且**用户自己写的容器用同一个修饰符**声明，走完全一样的路。
+     * 声明比推断好：编译器不必去猜（"看有没有 `pid` 字段"是魔数，"看它的方法建不建池"要等
+     * 闭包），一个修饰符就把这件事说清楚，而且**用户自己写的容器用同一个修饰符**声明，走完全
+     * 一样的路。
      *
      * 有了它，编译器能确定地做三件：① 该类型的构造调用是**池站点**（可提权）；
      * ② 建池的函数收隐藏的「家 zone」参数；③ 将来若要按类型判"元素不许带引用"，
@@ -622,9 +710,8 @@ struct StructDef {
     bool        poolObject;
     /* 这个结构体的**某个方法**会建池（闭包里顺手算出来的，见 `FuncDef.makesPool`）。
      * 为什么需要它：泛型方法的**模板**与**实例**是两份 FuncDef，闭包只标到模板那一份，
-     * 而调用点上 `e->func` 可能是模板 ⇒ 读取处光看 `f->makesPool` 会看到假
-     *（实测：`[promote] call new owner=vector$vector makesPool=0`，而 codegen 那一侧为真）。
-     * 只给**关联函数**（构造函数那一族）放宽，免得波及其它方法。 */
+     * 而调用点上 `e->func` 可能是模板 ⇒ 读取处光看 `f->makesPool` 会看到假：实例那一份没被
+     * 标上，而生成物那一侧为真。只给**关联函数**（构造函数那一族）放宽，免得波及其它方法。 */
     /* Which file it came from, which module, and whether it is `@private`. */
     Ctx        *ctx;
     const char *modName;
@@ -632,9 +719,8 @@ struct StructDef {
     int         line;
     /* The name shown to the user (`io::reader`), while `name` is the internal mangled
      * form (`io$reader`). The two must stay apart: printing `io$reader` in a diagnostic
-     * leaks the compiler's internal encoding for a word the user never wrote. It was
-     * observed once as `struct \`alpha$pair\` has no field \`zzz\``. For a single-file
-     * program the two are the same string. */
+     * leaks the compiler's internal encoding for a word the user never wrote. For a
+     * single-file program the two are the same string. */
     const char *srcName;
     /* A lambda's environment struct: the signature it was written as, `fn(i64) -> i64`, so a
      * diagnostic shows what the user wrote instead of the generated `$lam$f$3`. NULL otherwise
@@ -655,11 +741,10 @@ struct FuncDef {
      * defined in the checker's own header, which ast.h does not see; only the checker reads this.
      *
      * The effect summary is computed after every body has been checked, when **no scope exists**,
-     * so "which parameter does this value come from" cannot be answered by a lookup and was
-     * answered by comparing names instead. Matching by name is wrong the moment a local shadows a
-     * parameter (legal, documented): audit P0-6(d) declared `var s: slice<u8> = q`, the store was
-     * attributed to parameter `s`, and the call site checked the wrong argument. Identity has to be
-     * recorded while the scope is still there (INV-I). */
+     * so "which parameter does this value come from" cannot be answered by a lookup. Matching by
+     * name is wrong the moment a local shadows a parameter (legal, documented): the store is
+     * attributed to the parameter of that name, and the call site then checks the wrong argument.
+     * Identity has to be recorded while the scope is still there (INV-I). */
     Type       *ret;             /* NULL when the function returns nothing */
     /* Some `ext f(x)` starts this coroutine as a task. The stable adapter that the domain's task
      * table needs -- `bool (*)(void *)` while `$next` takes a concrete frame pointer, and calling one
@@ -698,12 +783,7 @@ struct FuncDef {
      * `inline`, but nothing that *requires* inlining -- so the generated C asks for it with
      * a compiler attribute, behind a `__GNUC__` guard. The attribute reports an error when
      * it cannot be honoured, which is the behaviour wanted here: a request that cannot be
-     * met must not quietly do nothing.
-     *
-     * Measured on the reader's byte-at-a-time path: the call and return per byte cost 32%
-     * even with the attribute, and rewriting the loop to work on the buffer instead cost
-     * 48%; the attribute is what a library reaches for first, and it is what makes the
-     * difference between 33.7ms and 22.9ms over 3e6 integers. */
+     * met must not quietly do nothing. */
     bool        isInline;
     /* `@unchecked fn f(...)`: **the bounds checks on the index expressions inside this body
      * are not emitted.**
@@ -811,9 +891,8 @@ struct FuncDef {
     /* Has this method or function ever been called?
      *
      * Generic instantiation rechecks and emits only the methods that are actually
-     * called. Instantiation used to recheck every method body of the type, so an unused
-     * `slice<T>::==` demanded `T: ==`, and every struct used in a container had to
-     * declare `fn ==` whether or not anything ever compared two of them.
+     * called, so an unused `slice<T>::==` demands nothing of `T`, and a struct used in a
+     * container need not declare `fn ==` unless something compares two of them.
      *
      * This is a conservative approximation: a call inside a template body counts as a
      * use, so a function may be checked and emitted more often than necessary, never
@@ -831,13 +910,11 @@ struct FuncDef {
      *               conservative.
      * addrFromLocal records that the address of a local of this frame was stored, which
      * is a call a caller must never make. */
-    /* 64 bits, and that is a **contract**, not a convenience (INV-P, 定案见 R1/R3 批次):
+    /* 64 bits, and that is a **contract**, not a convenience (INV-P):
      * the mask is indexed by parameter position, so a function with more parameters than bits
-     * would silently lose the high ones -- `P1-4` in the audit: the same shape with 4 parameters
-     * was rejected while its 40-parameter twin was accepted, because parameter 40's `addrMask`
-     * bit fell off the end. `EFF_MAX_PARAMS` is checked when a function is declared, so the
-     * silent-loss case cannot arise. Widening to an array is the escape hatch if a real program
-     * ever needs more. */
+     * would silently lose the high ones (parameter 40's `addrMask` bit would fall off the end).
+     * `EFF_MAX_PARAMS` is checked when a function is declared, so the silent-loss case cannot
+     * arise. Widening to an array is the escape hatch if a real program ever needs more. */
 #define EFF_MAX_PARAMS 64
     /* State of the transitive closure of the effect summary:
      *   0 = not computed, 1 = computed (`effComplete` says whether it can be trusted),
@@ -847,9 +924,8 @@ struct FuncDef {
 
     /* FuncDef*: the call graph the effect closure walks. **Deliberately not in the plan side
      * table**: it is a vector grown in place, and `vecPush`'s contract (base.c) forbids holding
-     * a `Vec *` across a push -- an accessor that hands one back invites exactly that, and the
-     * first attempt segfaulted on `examples/arrays.extc`. A mutable builder output is not "a
-     * result attached to a node". */
+     * a `Vec *` across a push -- an accessor that hands one back invites exactly that. A mutable
+     * builder output is not "a result attached to a node". */
     /* Which file does this declaration come from, and which module?
      *   ctx       - the Ctx of that file; a diagnostic has to go through it so that it
      *               names the right file and quotes the right source line
@@ -910,9 +986,9 @@ typedef struct {
      * well. Qualified names keep working (they always do), and a `@private` name is
      * still out of reach: opening a module is not a way around privacy.
      *
-     * The default is what 定案 70 settled on -- a name from another module is written
-     * `mod::name` -- and this is the opt-in that a user asks for by writing the star,
-     * which is why the form is explicit rather than implied. */
+     * The default is that a name from another module is written `mod::name`; this is the
+     * opt-in a user asks for by writing the star, which is why the form is explicit
+     * rather than implied. */
     bool        wildcard;
     /* `use std::io::{cin, cout}`: **these** names come into scope, and nothing else.
      * The braces make the meaning unambiguous -- a name list is never a module path,
@@ -924,22 +1000,32 @@ typedef struct {
                             * table without threading the loader through every pass */
 } UseDecl;
 
-/* Does this function **take** a home arena -- i.e. does a call to it hand one down?
+/* 下面两个问题是**计划**问题（"对这个函数的一次调用会不会把隐藏的家 arena / zone 往下
+ * 传？"），答案与计划其余部分一样住在 `plan.c` / `plan.h`。ast.h 不能 include plan.h ——
+ * plan.h 依赖 ast.h —— 所以这两个访问器声明在这里，只给这两个问的人用。 */
+
+/**
+ * @brief 判断这个函数是否**接收**家 arena —— 也就是调用它要不要往下交一个。
  *
- * One spelling, two askers: the checker's precise question (which decides whether a call site hands
- * an arena down) and codegen's implicit-argument owner (`cgImplicitArgs`, which both emits the
- * parameter in a signature and passes the argument at a call site). They must never disagree: a
- * definition declaring `extc_arena *__extc_home` while its call site passes nothing is exactly the
- * bug this closes (gcc: `too few arguments to function ...`).
+ * 一个拼写给两个问的人：检查器的精确问题（它决定调用点是否往下交 arena）与代码生成的隐式
+ * 参数所有者（`cgImplicitArgs`，它既在签名里发这个参数，也在调用点传它）。两者绝不能不一
+ * 致：定义声明了 `extc_arena *__extc_home` 而调用点什么都没传，正是这里要关掉的那种形状。
  *
- * `needsHome` is the **other** question -- "does it reach one?" -- and deliberately not this one: it
- * decides whether a body needs an arena of its own, not whether a call passes one. */
-/* The two questions below are **plan** questions ("does a call to this function hand down
- * the hidden home arena / zone?"), so their answers live in `src/plan.c` like the rest of the
- * plan (see plan.h). `ast.h` cannot include `plan.h` -- plan.h depends on ast.h -- so the two
- * accessors are declared here, for these two callers only. If a third one is ever needed,
- * move these helpers into plan.h instead of growing this list. */
+ * @param f  要查询的函数。
+ * @return   调用它要往下交家 arena 则 `true`。
+ */
 bool planUsesHome(const FuncDef *f);
+
+/**
+ * @brief 判断这个函数是否**接收**隐藏的家 zone —— 也就是调用它要不要往下交一个。
+ *
+ * 与 `funcTakesHomeArena` 同形：一个拼写给检查器的提权决定与代码生成的隐式参数所有者
+ * （`cgImplicitArgs`）两个人用。这是**另一个**问题：它决定一次调用要不要交一个，而不是函数
+ * 体自己要不要一块 arena。
+ *
+ * @param f  要查询的函数。
+ * @return   调用它要往下交家 zone 则 `true`。
+ */
 bool planMakesPool(const FuncDef *f);
 
 static inline bool funcTakesHomeArena(const FuncDef *f) { return f && planUsesHome(f); }
@@ -950,14 +1036,13 @@ static inline bool funcTakesHomeArena(const FuncDef *f) { return f && planUsesHo
  * and codegen's implicit-argument owner (`cgImplicitArgs`, which emits both the parameter in a
  * signature and the argument at a call site).
  *
- * **Known divergence, not yet fixed** (review F9): the checker promotes on the richer
- * `calleeMakesPool` (`check_top.c`), which is also true for `@poolObject` methods, extern
- * constructor names and `isAssoc` on an owner whose body builds a pool anywhere
- * (`anMakesPoolAny`); this accessor reads the raw flag, which
- * those three do not set. So a site can be promoted to the zone level and still have no argument
- * emitted -- the same shape as the home-arena bug that was fixed. Closing it means teaching both
- * sides the same question, which needs the pool-constructor name list to be shared instead of
- * spelled twice (`check_top.c` / `codegen.c`, review F11): do the two together. */
+ * **Known divergence, not yet fixed**: the checker promotes on the richer `calleeMakesPool`,
+ * which is also true for `@poolObject` methods, extern constructor names and `isAssoc` on an
+ * owner whose body builds a pool anywhere (`anMakesPoolAny`); this accessor reads the raw
+ * flag, which those three do not set. So a site can be promoted to the zone level and still
+ * have no argument emitted. Closing it means teaching both sides the same question, which
+ * needs the pool-constructor name list to be shared instead of spelled twice: do the two
+ * together. */
 static inline bool funcTakesHomeZone(const FuncDef *f) { return f && planMakesPool(f); }
 
 /* An `impl Type { fn ... }` block: methods attached to a type that is declared elsewhere
@@ -1040,9 +1125,25 @@ typedef struct {
     Vec opens;                   /* Open* */
 } Module;
 
+/**
+ * @brief 准备一个空模块。
+ *
+ * 声明随着解析器与加载器发现它们而追加，所以一个 Module 最终可以按序装着 prelude、用户的
+ * 文件、然后是该文件导入的每个模块。
+ *
+ * @param m  要初始化的模块；存储由调用方拥有。
+ * @param a  向量分配所用的 arena。
+ */
 void moduleInit(Module *m, Arena *a);
 
-/* A function whose first parameter is named `self` is a method. */
+/**
+ * @brief 判断一个函数是不是方法。
+ *
+ * 规则就是名字：第一个参数名为 `self` 就是方法，声明里没有别的东西区分方法与自由函数。
+ *
+ * @param f  要看的函数。
+ * @return   第一个参数名为 `self` 则 `true`；`f` 为 NULL 或没有参数时 `false`。
+ */
 bool funcIsMethod(const FuncDef *f);
 
 /* ------------------------------------------------------- walking the tree
@@ -1065,7 +1166,28 @@ typedef struct {
     void *ctx;
 } AstVisit;
 
+/**
+ * @brief 访问表达式 `e` 的直接子节点。
+ *
+ * 回调访问的是**子**节点，从不访问被调用它的那个节点；回调返回 false 表示停下整趟走。没有
+ * 设表达式回调时直接返回 `true`（跳过）。
+ *
+ * @param e  要走的表达式；NULL 直接返回 `true`。
+ * @param v  回调与它的上下文。
+ * @return   走完了返回 `true`；某个回调返回 false 时返回 `false`。
+ */
 bool astWalkExprChildren(Expr *e, const AstVisit *v);
+
+/**
+ * @brief 访问语句 `s` 的直接子节点。
+ *
+ * 与 `astWalkExprChildren` 同一条约定：回调访问子节点，返回 false 停下整趟走。没有设语句
+ * 回调时继续往下走（递归到 `astWalkStmtChildren`）。
+ *
+ * @param s  要走的语句；NULL 直接返回 `true`。
+ * @param v  回调与它的上下文。
+ * @return   走完了返回 `true`；某个回调返回 false 时返回 `false`。
+ */
 bool astWalkStmtChildren(Stmt *s, const AstVisit *v);
 
 #endif /* EXTC_AST_H */

@@ -1,38 +1,24 @@
-/* The results side: analysis results live here, addressed by a dense node id.
+/**
+ * @file results.h
+ * @brief 结果侧：分析结果住在这里，按稠密的节点 id 寻址。
  *
- * Why a separate layer (docs/topics/AST-DECOUPLING.md): the syntax tree must be frozen
- * once the parser has built it, so everything the later phases work out about it has to
- * live beside the tree rather than on it. What the mainstream compilers do, and what
- * this file follows:
+ * 单独一层的原因（docs/topics/AST-DECOUPLING.md）：语法树在解析器建完之后必须冻结，所以
+ * 后续阶段关于它算出的一切都住在树**旁边**，而不是树上。形状：
  *
- *   - one result slot per owner, not N fields per node (rustc `TypeckResults`,
- *     Clang `AnalysisDeclContext`);
- *   - addressed by a **dense integer id** assigned once per node, so lookup is an array
- *     index and not a pointer hash (rustc `ItemLocalId`: "a dense range of integers
- *     starting at zero ... can be implemented by a `Vec` instead of a tree or hash map");
- *     Cranelift's `PrimaryMap`/`SecondaryMap` is the same idea;
- *   - no pointer may be used as a cache key once nodes can disappear (LLVM's pass-manager
- *     docs warn about exactly that), which is why the id -- not the pointer -- is what a
- *     result is stored against.
+ *   - 每个主人一个结果槽，而不是每个节点 N 个字段；
+ *   - 按**稠密整数 id** 寻址，每个节点分配一次，于是查找是数组下标而不是指针哈希；
+ *   - 节点可能消失之后，指针不能再当缓存键 —— 所以结果存的名字是 id，不是指针。
  *
- * An id is assigned the first time a node needs results and never moves. `NodeId` is a
- * plain integer on purpose: it can be stored, compared, logged, and later exported
- * without dragging a pointer along.
+ * id 在节点第一次需要结果时分配，之后永不移动。`NodeId` 故意是普通整数：它能被存下、
+ * 比较、记日志，不用拖着一个指针。
  *
- * The API has three entry points:
+ * 三个入口：
  *
- *   nodeIdOf(node, create)   - the id of a node (create = assign one if new)
- *   resultsOf(node, create)  - the result slot of a node, by pointer
- *   resultsById(id)          - the result slot of a node, by id
+ *   nodeIdOf(node, create)   - 节点的 id（create = 新节点就分配一个）
+ *   resultsOf(node, create)  - 节点的结果槽，按指针
+ *   resultsById(id)          - 节点的结果槽，按 id
  *
- * A lookup that does not create returns NULL for a node with no results yet, and every
- * accessor in `plan.c` treats NULL as "default value" -- the same semantics the old
- * pointer table had.
- *
- * What is deliberately *not* here yet (P2/P3 of the plan): owner-guarded accessors
- * (rustc's `validate_hir_id_for_typeck_results`) and per-owner result scopes. Both need
- * the checker's node kinds, which move with the freeze; the storage shape below is what
- * they will be built on.
+ * 不创建时，还没有结果的节点查到 NULL，而 `plan.c` 里每个访问器都把 NULL 读作"默认值"。
  */
 #ifndef EXTC_RESULTS_H
 #define EXTC_RESULTS_H
@@ -99,7 +85,7 @@ typedef struct {
     Type       *coroRetProto;  /* the declared return type of a coroutine, before substitution */
     bool        boxedCoro;     /* a coroutine call stored as a handle: codegen boxes it */
     uint64_t    addrMask;
-    /* ---- call / receiver facts (T4, fifth family) ---- */
+    /* ---- call / receiver facts ---- */
     Expr       *extDom;        /* `EX_EXT`: the domain this task is handed to */
     FieldDef   *field;         /* the field an `EX_FIELD` resolved to */
     Type       *assocOwner;    /* `EX_ASSOC`: the instance type it resolved to */
@@ -123,18 +109,18 @@ typedef struct {
         int  homeDepth;
         int  lexicalLevel;
         int  storedAt;
-        /* operator / comparison facts (T4, sixth family) */
+        /* operator / comparison facts */
         int  minAt;            /* the block level a borrow must outlive */
         bool reuse;            /* the value may be reused at the same site */
         bool borrowed;         /* the value is borrowed (mirrors `Sym.borrowed`) */
         bool qualified;        /* the user wrote a qualified name (`a::b`) */
         bool convCheck;        /* a narrowing conversion whose runtime check is emitted */
         bool needOp;           /* a comparison over a type parameter, resolved at instantiation */
-        /* per-function facts (T4, seventh family; staged: call sites still use the fields) */
+        /* per-function facts (staged: call sites still use the fields) */
         bool isAssoc; bool lamChecked; bool lamInferRet; bool needsHome;
         int  allocState; int mayPrintState; int freshCount;
         Vec  arenaSites; int nParamSyms; void *paramSyms[64];
-        /* The effect summary itself (T4, eighth family): one bit per parameter, "a call to
+        /* The effect summary itself: one bit per parameter, "a call to
          * this function may store that parameter's address / contents into the caller's
          * frames (`…Addr` / `…Cont`), into this function's home arena (`home…`), or
          * somewhere else (`otherMask`)". `addrFromLocal` is the same question for a value
@@ -144,7 +130,7 @@ typedef struct {
         bool     addrFromLocal;
         int  owSites;          /* sites the write-once pass recorded */
         bool owLocal;          /* the write-once local pass applies to this function */
-        /* The effect closure's state (T4, tenth family). `effState` is **work state**: it is
+        /* The effect closure's state. `effState` is **work state**: it is
          * written and read only while the closure runs (`EFF_IN_PROGRESS` marks a cycle on the
          * way down), and nothing outside `computeEffectsTransitive` reads it. It lives here
          * rather than in a local table because the closure is a memoised recursion over a
@@ -167,64 +153,112 @@ typedef struct {
     int line;                  /* where the first write happened, for the guard's message */
 } NodeResults;
 
-/* The id of `node`, assigning one when `create` is set. Returns 0 for a NULL node. */
+/**
+ * @brief 取 `node` 的 id，`create` 为 true 时给它分配一个。
+ *
+ * @param node    节点；NULL 没有 id。
+ * @param create  为 true 时，没有 id 就分配一个（稠密、从 1 开始）。
+ * @return        节点的 id；`node` 为 NULL 或没有 id 且不创建时返回 0。
+ */
 NodeId nodeIdOf(const void *node, bool create);
 
-/* ---- owners: the partition of the result space ------------------------------------
+/* ---- 主人：结果空间的分区 ----------------------------------------------------------
  *
- * An id is dense, and a dense id is only useful if its scope is structural: rustc makes an
- * `HirId` a pair of (owner, local index) and guards every access with
- * `validate_hir_id_for_typeck_results`, so a table from one body can never be indexed by a
- * node of another. The same idea, minimally:
+ * id 是稠密的，而稠密 id 只有在作用域是结构化的时候才有用：一个 id 属于一具函数体
+ * （"主人"），跨体访问是编译器 bug，不是程序错误。
+ */
+
+/**
+ * @brief 进入一具函数体；之后新建的结果槽都盖它的主人戳。
  *
- *   - a **pool** is a region of the id space with one owner;
- *   - the owner of a slot is stamped when the slot is first created, from the *current*
- *     owner (see `resultsEnterOwner`);
- *   - `resultsAs` compares the two whenever both are known. A mismatch is a compiler bug
- *     (a result written while checking one body and read while checking another), so it is
- *     reported under `EXTC_DBG_OWNER=1` and ignored otherwise. It is **observation, not a
- *     verdict**: a node inside a generic body is reached by every instance of that body,
- *     and the analysis currently writes per-instance results onto it -- the coupling T4
- *     removes. The count is T4's worklist.
- *
- * **Sharing is a first-class outcome, not a failure.** A node inside a generic body is
- * reached by every instance of that body (the deferred-call fixpoint resolves the same
- * call site once per instance) -- and that is by design: the tree is shared, which is why
- * the answers live beside it. The first time a slot stamped for one body is reached from
- * another, the slot is marked `shared` and the check stops for it. That is deterministic:
- * the same sources produce the same set of shared slots. What the check still catches is
- * the dangerous case -- a slot that only *one* body ever reaches being touched from a
- * second one.
- *
- * `resultsEnterOwner(NULL)` means "not inside a body" -- module-level work. A slot created
- * there has no owner, and no access to it can mismatch.
+ * @param owner  当前正在检查的函数体；NULL 表示"不在任何函数体里"（模块级工作），
+ *               那里建的槽没有主人，对它的任何访问都不会不匹配。
  */
 void resultsEnterOwner(const FuncDef *owner);
+
+/**
+ * @brief 离开当前函数体，回到模块级工作。
+ */
 void resultsLeaveOwner(void);
+
+/**
+ * @brief 取当前的主人。
+ * @return  正在检查的函数体；模块级工作时返回 `NULL`。
+ */
 const FuncDef *resultsCurrentOwner(void);
 
-/* How many accesses were made from a body other than the one that created the slot.
- * Always counted (one branch per access); the compiler may use it as a signal. */
+/**
+ * @brief 有多少次访问来自建立该槽的函数体之外。
+ *
+ * 每次都计（一次分支），编译期可以拿它当信号。第一次跨界就把槽标成 `shared` 并计数，
+ * 之后不再报：泛型体里的一个节点会被该体的每个实例够到，那是设计如此 —— 树是共享的，
+ * 所以答案住在树旁边。检查仍然抓得住危险的那一种：只有一个体会够到的槽被第二个碰了。
+ *
+ * @return  首次跨界访问的累计次数。
+ */
 size_t resultsOwnerMismatches(void);
 
-/* The result slot of `node`: NULL when it has none and `create` is false. */
+/**
+ * @brief 取 `node` 的结果槽。
+ *
+ * @param node    节点。
+ * @param create  为 true 时没有槽就建一个。
+ * @return        结果槽；没有槽且不创建时返回 `NULL`。
+ */
 NodeResults *resultsOf(const void *node, bool create);
 
-/* The result slot of `node` for a writer/reader that says which kind of node it is.
- * `kind` may be RKIND_NONE to skip the check. A slot first used under one kind and then
- * touched under another is a compiler bug: it aborts under `EXTC_DBG=1` and is ignored
- * in a release build (the value is still returned, so behaviour does not change). */
+/**
+ * @brief 取 `node` 的结果槽，并声明调用方认为它是哪种节点。
+ *
+ * 首次写入把 `kind` 与当时的 `owner` 盖在槽上，之后每次访问都检查：一个槽装成另一种
+ * 节点，或槽的主人与当前函数体不同，都是编译器 bug 而不是程序错误 —— `EXTC_DBG=1` 下
+ * 中止，发布构建里忽略（值照旧返回，行为不变）。
+ *
+ * 跨界是**一等结果而非失败**：泛型体里的节点会被该体的每个实例够到，第一次跨界把槽标成
+ * `shared` 并计数，此后不再报 —— 同一份源码产生同一组共享槽，是确定性的。
+ *
+ * @param node    节点。
+ * @param create  为 true 时没有槽就建一个。
+ * @param kind    调用方认为的节点种类；`RKIND_NONE` 跳过检查。
+ * @param line    首次写入的位置，用于守卫的消息。
+ * @return        结果槽；没有槽且不创建时返回 `NULL`。
+ */
 NodeResults *resultsAs(const void *node, bool create, ResultKind kind, int line);
 
-/* The mask's two words, behind one question. `bit` is the same constant the setters use. */
+/**
+ * @brief 读掩码里的第 `bit` 位。
+ *
+ * 位是 `(hi << 6) | lo`：`bit < 64` 落在 `loMask`，其余落在 `hiMask`，调用方不必知道
+ * 自己落在哪个字里。
+ *
+ * @param r    结果槽。
+ * @param bit  位号，与 setter 用的是同一批常量。
+ * @return     该位为 1 则 `true`。
+ */
 bool resultsBit(const NodeResults *r, uint64_t bit);
+
+/**
+ * @brief 置掩码里的第 `bit` 位。
+ *
+ * @param r    结果槽。
+ * @param bit  位号。
+ */
 void resultsSetBit(NodeResults *r, uint64_t bit);
 
-/* The result slot of an id, or NULL for id 0 / an id out of range. */
+/**
+ * @brief 按 id 取结果槽。
+ * @param id  节点 id。
+ * @return    结果槽；id 为 0 或超出已发放范围时返回 `NULL`。
+ */
 NodeResults *resultsById(NodeId id);
 
-/* How many ids have been handed out (the size of the dense range). Diagnostics and the
- * per-owner work in P2/P3 use it; nothing in the compiler depends on the number. */
+/**
+ * @brief 已经发出去多少个 id（稠密区间的长度）。
+ *
+ * 诊断与按主人划分的工作读它；编译器里没有东西依赖这个数。
+ *
+ * @return  已发放的 id 个数。
+ */
 size_t resultsCount(void);
 
 #endif /* EXTC_RESULTS_H */

@@ -1,20 +1,27 @@
-/* The bundled extC prelude.
+/**
+ * @file prelude.h
+ * @brief 内置的 extC prelude。
  *
- * Its source lives in stdlib/prelude.extc and is turned into build/prelude_data.c, a
- * plain byte array, by tools/embed.c at build time; that array is linked into the
- * compiler. The compiler therefore stays a single executable and needs no external
- * path at run time.
+ * 它的源码住在 stdlib/prelude.extc，构建时由 tools/embed.c 变成 build/prelude_data.c 里的
+ * 普通字节数组，链进编译器。编译器因此保持单个可执行文件，运行期不需要外部路径。
  */
 #ifndef EXTC_PRELUDE_H
 #define EXTC_PRELUDE_H
 
 #include <stddef.h>
 
-/* Return the prelude source text. It is not NUL-terminated: the length comes back
- * through *len, which is why the text is handed over as bytes rather than a string. */
+/**
+ * @brief 取 prelude 源文本。
+ *
+ * 文本**不以 NUL 结尾**：长度经 `*len` 返回，所以它是以字节而不是字符串交出去的。它住在
+ * 静态存储里，整个运行期都在，调用方既不释放也不该指望终止符。
+ *
+ * @param len  接收字节长度。
+ * @return     链进编译器的那个字节数组。
+ */
 const char *preludeSource(size_t *len);
 
-/* The file name shown in diagnostics that point into the prelude. */
+/* 诊断指向 prelude 时显示的文件名。 */
 #define PRELUDE_PATH "<extc prelude>"
 
 #endif /* EXTC_PRELUDE_H */

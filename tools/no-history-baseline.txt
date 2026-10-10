@@ -1,6 +1,4 @@
 # 存量的历史词（棘轮：只许变短）。键 = 文件<TAB>规则<TAB>整行文字
-src/ast/ast.h	decision-number	* The default is what 定案 70 settled on -- a name from another module is written
-src/ast/ast.h	plan-number	/* 「家 zone」的哨兵（池的提权，见 PLAN #87）。与 ARENA_HOME 平行：
 src/back/codegen.c	decision-number	* round: the checker put its sites one scope deeper for exactly this (定案 101②). Without
 src/back/codegen.c	decision-number	* （临终钩子照跑 ⇒ 缓冲输出不丢，定案 80）。也就是说"程序坏了"在这门语言里
 src/back/codegen.c	history-word	* 同一个 genFuncProto 补一份：重复声明合法，而且文本与后面那次完全一致。 */

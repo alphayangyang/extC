@@ -1,9 +1,10 @@
-/* extC syntax, part two of the pipeline: recursive-descent parsing.
+/**
+ * @file parser.h
+ * @brief extC 语法流水线的第二段：递归下降解析。
  *
- * Consumes the token vector from lexAll and builds an ast.h Module.  It resolves
- * nothing: names, module paths, and generic arguments travel through as written,
- * for the loader and the type checker to interpret.  Statements end at a
- * newline, and the semicolon that may follow one is optional and ignored.
+ * 消费 `lexAll` 的 token 向量，建出 ast.h 的 `Module`。它什么都不解析：名字、模块路径与
+ * 泛型实参都按写出来的样子传下去，交给加载器与类型检查器解释。语句在换行处结束，换行后可能
+ * 跟的分号是可选的、会被忽略。
  */
 #ifndef EXTC_PARSER_H
 #define EXTC_PARSER_H
@@ -11,29 +12,26 @@
 #include "ast.h"
 #include "base.h"
 
-/* Parse one file's tokens into `out`.
+/**
+ * @brief 把一个文件的 token 解析进 `out`。
  *
- * Params:
- *   ctx   - reports the first syntax error; parsing stops once it is set
- *   arena - owns every AST node and every copied name
- *   toks  - token vector from lexAll, ending in TK_EOF
- *   out   - Module to APPEND to; the caller initializes it once, which is how
- *           the prelude and the user file end up in the same module
+ * `out` 是**追加**到的 Module：调用方初始化一次，prelude 与用户文件因此落在同一个模块里。
+ * 接受的语法：
  *
- * Returns:
- *   true when the whole token vector was consumed; false when ctx->hasError is
- *   set, in which case `out` holds the declarations parsed so far.
+ *     fn name(p: T, q: T2) -> T { ... }   // 没有 `->` 就是 void
+ *     struct Name { field: T <newline> field: T }
+ *     let x: T = e / var x: T = e         // 类型可以省略
+ *     if / else if / else / while / return / break / continue / match
+ *     a.f(x)  就是  f(a, x)               // 方法的第一个参数是 self
  *
- * Notes:
- *   - The accepted grammar:
- *       fn name(p: T, q: T2) -> T { ... }   // no `->` means void
- *       struct Name { field: T <newline> field: T }
- *       let x: T = e / var x: T = e         // the type may be omitted
- *       if / else if / else / while / return / break / continue / match
- *       a.f(x)  is  f(a, x)                 // a method takes self as its first
- *                                           // argument
- *   - A token vector without its trailing TK_EOF is malformed; lexAll always
- *     appends one.
+ * token 向量必须以 TK_EOF 收尾（`lexAll` 总会补一个）。
+ *
+ * @param ctx    报告第一个语法错误；一旦置位就停止解析。
+ * @param arena  拥有每个 AST 节点与每个拷贝的名字。
+ * @param toks   `lexAll` 产出的 token 向量。
+ * @param out    追加到的 Module。
+ * @return       整个 token 向量被消费完则 `true`；`ctx->hasError` 置位则 `false`，此时
+ *               `out` 里留的是已经解析出来的声明。
  */
 bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out);
 

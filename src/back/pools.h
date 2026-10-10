@@ -1,14 +1,12 @@
-/* Pool registry - the runtime half of the ECS-style pools (docs/topics/POOLS.md).
+/**
+ * @file pools.h
+ * @brief 池注册表：ECS 风格池的运行期那一半（docs/topics/POOLS.md）。
  *
- * This subsystem lives in its own file on purpose (POOLS.md section 11): pools are
- * new, they touch several passes, and scattering them over `codegen.c` / `check_expr.c`
- * would repeat a mistake this project has already paid for - "a little bit in every file,
- * complete in none" (the escape pass was exactly that). Everything pool-shaped starts
- * here; the passes keep a call site or two.
+ * 这个子系统单独成文件：池牵动好几遍，把它们摊到 `codegen.c` / `check_expr.c` 里会重演
+ * "每个文件里都有一点，哪个文件里都不完整"（逃逸那一遍正是这样）。所有池形状的东西从这里
+ * 开始，各遍只留一两个调用点。
  *
- * Phase 1 is the runtime only: the registry, the parent chain, and the release hook. The
- * text is emitted on demand - a program that never mentions a pool carries none of it -
- * through the same path `extc_raw_enter` uses.
+ * 运行期按需发射 —— 从不提到池的程序一个字节都不带 —— 走的是 `extc_raw_enter` 同一条路。
  */
 
 #ifndef EXTC_POOLS_H
@@ -16,21 +14,25 @@
 
 #include "base.h"
 
-/* Append the registry's C text to `out`.
+/**
+ * @brief 把注册表的 C 文本追加到 `out`。
  *
- * Params:
- *   a   - arena for the temporary buffer
- *   out - buffer the generated C is being written into
+ * 只在程序声明了池的 extern 时调用，所以不用池的程序不付这份文本。
+ * 名字全是 `extc_pool_*`：库经由 `extern!` 够到它们，因此它们不能是 `static`。
  *
- * Notes:
- *   - Called only when the program declares the pool externs, so the text is free for
- *     every program that does not use pools.
- *   - The names are all `extc_pool_*`: the library reaches them through `extern!`, which
- *     is why they cannot be `static`.
+ * @param a    arena，给临时缓冲区用。
+ * @param out  正在写的生成 C。
  */
 void poolsEmitRuntime(Arena *a, Buf *out);
 
-/* The `dyn` half (see pools.c): emitted on its own so a pool-only program stays unchanged. */
+/**
+ * @brief 追加 `dyn` 那一半运行期。
+ *
+ * 单独发射，使只用池的程序产物不变。
+ *
+ * @param a    arena，给临时缓冲区用。
+ * @param out  正在写的生成 C。
+ */
 void poolsEmitDynRuntime(Arena *a, Buf *out);
 
 #endif /* EXTC_POOLS_H */
