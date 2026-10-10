@@ -141,9 +141,17 @@ fn shuffleI32(r: mut ref pcg32, a: mut slice<i32>) {
 // ---------------------------------------------------------------------------
 // varArray<T> -- a growable array (the basic part of what `std::vector` does -- OK)
 //
+// @code
+// use std::io
+//
+// fn main() -> i32 {
 //     var v: varArray<i32> = varArray<i32>::withCap(4)
-//     v.push(7)                       // grows itself when full (by doubling)
-//     println(v.size(), " ", v.get(0) ?? -1)
+//     v.push(7)                        // 满了会自己长（翻倍）
+//     let first: i32 = v.get(0) ?? i32(-1)
+//     io::cout << "size=" << v.size() << " v[0]=" << first << "\n"
+//     return 0
+// }
+// @endcode
 //
 // Three design decisions, stitched into extC's memory model:
 //   - no arena of its own: on growth, `new T[cap*2]` allocates in the arena that owns `self`

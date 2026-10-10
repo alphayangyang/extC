@@ -39,7 +39,11 @@ def blocks(text):
         body = m.group(2)
         clean = []
         for l in body.split("\n"):
-            l = re.sub(r"^\s*\*?\s?", "", l)          # 去掉注释前缀 ` * `
+            l = re.sub(r"^\s*//\s?", "", l)            # `// ` 行注释
+            if re.match(r"^\s*\*\s*$", l):
+                l = ""                                   # 块注释里的空行
+            else:
+                l = re.sub(r"^\s*\*\s", "", l)        # 块注释的 ` * `（不碰 `*p`）
             clean.append(l)
         while clean and not clean[0].strip():
             clean.pop(0)
