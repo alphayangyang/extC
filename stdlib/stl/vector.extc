@@ -9,6 +9,20 @@
  * 内存：`vals` 是**池的板块**，
  * 不是 arena 切片 —— 扩容时旧块当场还给池，历代旧副本不会留在 arena 里；`shrink` 也据此真缩。
  * dense 永远连续 ⇒ `atDense` / SIMD 一直成立。
+ *
+ * @code
+ * use std::io
+ * use stl::vector
+ *
+ * fn main() -> i32 {
+ *     var v = vector<i32>::new()
+ *     v.push(i32(7))
+ *     v.push(i32(9))
+ *     let first: i32 = v.get(0) ?? i32(-1)
+ *     io::cout << "len=" << v.len() << " cap=" << v.capacity() << " v[0]=" << first << "\n"
+ *     return 0
+ * }
+ * @endcode
  */
 use std::sys::pool as syspool
 

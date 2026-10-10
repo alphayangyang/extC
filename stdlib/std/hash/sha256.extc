@@ -24,6 +24,20 @@
  *     if !c.final(out[..]) { ... }                   // 缓冲不够返回 false，不 trap
  *
  *     sha256::hex(out[..], hexbuf[..])               // 十六进制（uuid5 / 签名都用得上）
+ *
+ * @code
+ * use std::io
+ * use std::hash::sha256
+ *
+ * fn main() -> i32 {
+ *     var digest: [32]u8
+ *     var hex: [64]u8
+ *     if !sha256::sum("abc", digest[..]) { return 1 }       // 缓冲不足 32 字节时返回 false
+ *     let n: i64 = sha256::hex(digest[..], hex[..])         // 缓冲不足 64 字节时返回 -1
+ *     io::cout << "n=" << n << " " << hex[..n] << "\n"
+ *     return 0
+ * }
+ * @endcode
  */
 
 @private
