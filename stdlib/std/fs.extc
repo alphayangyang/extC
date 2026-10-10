@@ -45,7 +45,7 @@ struct ifstream {
     failed: bool
 
     /* **构造函数**：`ifstream("input.txt")` 与 `ifstream::new("input.txt")` 是同一件事
-     * （`T(...)` 就是 `T::new(...)` 的写法，见定案 86）✓
+     * （`T(...)` 就是 `T::new(...)` 的写法）✓
      *
      * 打开**会失败**（文件不在、没权限、fd 用光），所以返回 `result`，调用点写 `?`：
      *     var f = ifstream("input.txt")?
@@ -99,13 +99,13 @@ struct ifstream {
      *     kernel may already have given to somebody else. Close after the reading is done. */
     fn reader(self: mut ref ifstream) -> mut ref io::reader {
         /* ⚠️ 交出的是**内部那个** reader，不是新造一个：新造的那个看不见已经缓冲进来的
-         * 字节，两套位置会互相跳过 ✗（这条以前写在注释里求人别混用，现在结构上就一个 ✓）*/
+         * 字节，两套位置会互相跳过 ✗（结构上只有一个位置 ✓）*/
         return ref self.r
     }
 
     /* ---------------------------------------------------------------- 流式读取
      *
-     * `fin >> n >> line >> b` —— 链式读，与 `cin >> x` 同一个形状（定案 88）✓
+     * `fin >> n >> line >> b` —— 链式读，与 `cin >> x` 同一个形状 ✓
      * 三种靠**右操作数的类型**分：`mut ref i64` 读一个整数 · `mut slice<u8>` 读一行 ·
      * `mut ref u8` 读一个字节 ✓ 签名撞车的（按空白切词）留具名方法 `nextToken` ✓
      *
@@ -243,7 +243,7 @@ fn openRead(path: slice<u8>) -> result<ifstream, io::ioError> {
     let fd = sysio::open(path.data, sysio::O_RDONLY, i32(0))
     if fd < i32(0) { return failure(io::ioError.readFailed(fd)) }
     /* A named literal, resolved through the module context exactly the way a type
-     * annotation is (PLAN #54 fixed this: it used to need `var f: ifstream = { .. }`). */
+     * annotation is (no `var f: ifstream = { .. }` needed). */
     return success(ifstream { fd: fd, open: true, r: io::readerOf(fd), failed: false })
 }
 
@@ -272,7 +272,7 @@ fn openAppend(path: slice<u8>) -> result<ofstream, io::ioError> {
  *     链式成立、拷贝无害 ✓
  *   - 于是 `fs::fout << ...` 在**任何函数**里都能写，而 fd 只有**一个** ✓
  *
- * 打开一次（在 `main` 里，失败当场 trap —— 定案 89 ✓）：
+ * 打开一次（在 `main` 里，失败当场 trap）：
  *     fs::openOut("/tmp/app.log")?
  * 之后到处：
  *     fs::fout << "x = " << x << " · 对 = " << true << fs::nl
@@ -287,7 +287,7 @@ var OUT_FAILED: bool = false
 struct outStream {
     @inline
     fn <<(self: ref outStream, v: slice<u8>) -> outStream { outPut(v)  return { } }
-    /* ⚠️ `mut slice<u8>` 与 `slice<u8>` 在"按右操作数**精确**类型分派"（定案 82）眼里
+    /* ⚠️ `mut slice<u8>` 与 `slice<u8>` 在"按右操作数**精确**类型分派"眼里
      * 是**两种类型** ⇒ 两份都要写 ✗（读出来的东西通常正是 `mut slice<u8>` ✓ 所以这份是
      * 常用那份）—— 将来若允许"可变视图用在只读视图的位置"（安全的子类型化），这两份能合一，
      * 但那是语言决定，不是库能糊过去的 ✓ */
@@ -309,7 +309,7 @@ struct outStream {
     fn failed(self: ref outStream) -> bool { return OUT_FAILED }
 }
 
-/* 空结构体当句柄：常量初始化 ✓（定案 65 才让这条成立 —— `outStream { }` 每个字段都是常量 ✓）*/
+/* 空结构体当句柄：常量初始化 ✓（`outStream { }` 每个字段都是常量 ✓）*/
 let fout: outStream = outStream { }
 /* 换行符用 `std::io` 的 `endl` —— **不在这里再定义一个**（一种东西一个写法 ✓）*/
 

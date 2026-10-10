@@ -232,7 +232,7 @@ fn nextI64State(fd: i32, buf: mut slice<u8>, len: mut ref i64, pos: mut ref i64,
                 got: mut ref bool) -> result<i64, ioError> {
     var neg: bool = false
     var v: i64 = 0
-    var nd: i64 = 0                 /* 已收的位数（前 18 位不可能溢出 ⇒ 那次检查可以省 ✓）*/
+    var nd: i64 = 0                 /* 已收的位数（前 18 位不可能溢出 ⇒ 这一步检查可以省 ✓）*/
     var saw: bool = false           /* 见过数字 */
     var seen: bool = false          /* 见过非空白字节 */
     var pushed: i64 = i64(0)
@@ -277,8 +277,7 @@ fn nextI64State(fd: i32, buf: mut slice<u8>, len: mut ref i64, pos: mut ref i64,
             /* ⚡ **紧内层：只认数字**（每字节 1 个分支 ✓ 而不是绕一圈状态机的 ~7 个 ✗）
              * 为什么能这么改而不动语义：内层**只看不取**（`pos` 只在确认是数字时才前进 ✓）
              * ⇒ 一旦不是数字就退回外层，**终止符仍走原来那套**（换行吃掉 / CRLF / 推回 ✓）
-             * 全部一字不改 ✓ 这就是 cachegrind 量出来的真因：分支 2.7× ✗（指令只 1.29× ✓
-             * 预测失败还一样 ✓ ⇒ 差值在**每字节的分支数**上 ✓）*/
+             * 全部一字不改 ✓ 真因在**每字节的分支数**上：分支数差别大，指令数几乎不变 ✓ */
             while *pos < *len {
                 let nb = i64(buf[*pos])
                 if nb < i64(48) || nb > i64(57) { break }
@@ -588,8 +587,8 @@ struct ostream { fd: i32
     /* 全都走**同一个缓冲**（`extc_cout_put` 是 `static inline` ⇒ 没有调用开销 ✓）
      * 不再借内建 `print`：那是一条操作数一次 `printf`，实测比这条路慢 **11 倍** ✗ */
     @inline
-    /* 打印 `i64` 的最小值曾经会 trap（2026-09-28 修）：`fmtI64Fast` 里的 `i64(0) - v` 在
-     * `2^63` 上溢出，而带检查的算术当场抓住它（换 C 会安静地打出错的数）。现在那个函数从
+    /* `i64` 的最小值要单独照顾：`fmtI64Fast` 里的 `i64(0) - v` 在 `2^63` 上溢出，
+     * 而带检查的算术会当场抓住它（换 C 会安静地打出错的数）。那个函数从
      * **负数一侧**取位，永不取绝对值 —— 与 `stl::string::fromI64` 同一招。 */
     fn <<(self: ref ostream, v: i64) -> ostream {
         pairsReady()
@@ -607,8 +606,8 @@ struct ostream { fd: i32
     fn <<(self: ref ostream, v: f64) -> ostream {
         /* 走**同一个缓冲**，和 i64 那条路一样：格式化由运行期的 `extc_cout_f64` 做
          * （两行 `snprintf("%g")`，与内建 `print` 同一个格式 ⇒ 输出逐字节不变 ✓）。
-         * 以前这里借内建 `print`（它写 stdio ✗），得先 `flushCout()` 才不会两边打架 ——
-         * 现在只有一个缓冲，那个顺序陷阱连同这次搬家一起没了 ✓ */
+         * 这里不走内建 `print`（它写 stdio ✗），否则两边缓冲会打架 ——
+         * 现在只有一个缓冲，顺序陷阱不存在 ✓ */
         extc_cout_f64(v)
         return { fd: self.fd }
     }
@@ -702,7 +701,7 @@ fn inSync() -> reader { return { fd: 0, chunk: IN_BUF[..], len: IN_LEN, pos: IN_
 fn inSave(r: ref reader) { IN_LEN = r.len  IN_POS = r.pos }
 
 struct istream { fd: i32
-    /* 热路径：**每个数只调一次 `nextInt`** ✓（旧版还先 `skipSpace` 再 `eof` ⇒ 三次调用 ✗）
+    /* 热路径：**每个数只调一次 `nextInt`** ✓（先 `skipSpace` 再 `eof` 会变成三次调用 ✗）
      * `0` 与"啥也没读到"在 `nextInt` 的返回里**同形**（EOF 用 `success(0)` 说 ✓）⇒
      * **只有结果为 0 时**才回头看 `eof()` 把歧义消掉 ✓ 常见数据里永远不走那一支 ✓ */
     @inline
@@ -758,7 +757,7 @@ struct istream { fd: i32
     fn clear(self: ref istream) { IN_BAD = false }
 }
 
-/* 失败标志的**自由函数**形式：限定名的全局上调方法还不支持（PLAN #66）⇒
+/* 失败标志的**自由函数**形式：限定名的全局上调方法还不支持 ⇒
  * `io::cin.bad()` 今天不行，这两个能 ✓ 它们是同一个标志 ✓ */
 /* 每读一行都会问一次 ⇒ 内联（不标就是每行一次函数调用 ✗）*/
 @inline
@@ -961,7 +960,7 @@ fn flushCout() { extc_cout_flush() }
 /* ================================================================ stderr 流
  *
  * `cerr << ...` —— 诊断走 stderr，而 `print`/`println` 走 **stdout** ✓
- * （量过：`println` 的输出在 `>/dev/null` 时消失、在 `2>/dev/null` 时还在 ✓）
+ * （`println` 写 stdout：`>/dev/null` 挡得住它，`2>/dev/null` 挡不住 ✓）
  * 这个区分是必要的：`prog > out.txt` 要能拿到**程序的正常输出**，而错误/日志不该混进去 ✓
  *
  * 与 `cout` 同一形状（薄句柄、`<<` 按值返回）⇒ 拷贝无害、链式成立 ✓

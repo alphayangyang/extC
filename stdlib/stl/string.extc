@@ -174,7 +174,7 @@ struct string {
      * operator method that ALLOCATES and hands the value back is not plumbed through yet: the
      * call site never passes the arena the callee's allocation belongs to (the declaration has
      * three parameters -- self, other, home -- and the call two), and the first repair attempt
-     * leaked the buffer into an arena nothing reclaims (PLAN #83). The operator path has to pick
+     * leaked the buffer into an arena nothing reclaims. The operator path has to pick
      * up the whole `homeDepth` + `setCallArenaArg` + escape-site bookkeeping the method-call path
      * does; until then concatenation is spelled as a method.
      *
@@ -552,7 +552,7 @@ fn toI64(b: slice<u8>) -> ?i64 {
      * 当场 trap（实测：`trap: value does not fit in the target type`）—— 而 `2^63` 正是
      * `i64` 最小值，是**必须**能解析的那一个。绕开它：先把 `acc-1` 落进 `i64`（≤ 2^63-1 ✓），
      * 再取负减一。 */
-    /* `acc` 到 `2^63` 时直接给常量：那个值正是 `i64` 的最小值。这里不需要绕开什么（单测过
+    /* `acc` 到 `2^63` 时直接给常量：那个值正是 `i64` 的最小值。这里不需要绕开什么（有单测覆盖
      * `i64(u64(2^63))` 不 trap）—— 只是"不碰边界"比"赌边界行为"省事，而且 `2^63` 这个值在
      * **打印**路径上确实有个 bug（见 `std::io` 里那段注释：`io::cout << i64 最小值` 会 trap）。 */
     if acc == u64(9223372036854775807) + u64(1) { return some(i64(-9223372036854775807 - 1)) }

@@ -261,7 +261,7 @@ struct hashMap<K, V> {
          * live prefix into the larger array first; the rehash below fills the rest. */
         /* `bucketOfDense` 是**稠密下标**索引的（位置与容量无关）⇒ 直接加长：内容原地保留，
          * 那趟前缀拷贝整段删掉。另外三列做不到这件事 —— 桶号 `h & (cap-1)` 随 cap 变，
-         * 每个元素的位置都变，O(n) 重排是哈希扩容语义的一部分（出路见 PLAN #86：两块表 + 按簇增量）。
+         * 每个元素的位置都变，O(n) 重排是哈希扩容语义的一部分。
          * `bucketOfDense` 的长度仍要是 ncap：池的稠密侧会随表一起长过旧容量，
          * 早先留着旧长度的那版在第一次长表后写越界过（`index 128 out of range (length 128)`）。 */
         self.bucketOfDense = poolResizeRaw<i32>(self.pid, self.bucketOfDense, ncap)

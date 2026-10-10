@@ -133,14 +133,13 @@ impl fs::ifstream {
     }
 }
 
-/* 注意：这里**曾经**试过用 `impl ostream { fn <<(self: ref ostream, v: string) }` 补一个 `string`
- * 重载（分层上最干净的做法：让 string 这侧依赖 std，而不是反过来）。它暴露了一个**编译器 bug** ——
- * 生成的 C 函数被少传了实参（`too few arguments to function 'io$ostream_shl_string$string'`），
- * 也就是"方法收一个按值结构体参数"这条路在调用点漏了参数（大概是 home/arena 那一个）。
- * 撤掉，等 bug 修好再回来：今天要打 `string` 就先 `io::cout << s.toSlice()`（明确、能用）。
+/* 打 `string` 走 `io::cout << s.toSlice()`：`impl ostream { fn <<(self: ref ostream, v: string) }`
+ * 这条路今天走不通 —— 生成的 C 里那个函数被少传了实参
+ * （`too few arguments to function 'io$ostream_shl_string$string'`），也就是"方法收一个
+ * 按值结构体参数"在调用点漏了参数。已知缺陷，复现要点见下。
  */
 
-/* bug 2 复现要点（2026-09-28 定位，未修）：把这个形状装回来就会炸 ——
+/* 已知缺陷（未修）：把这个形状装回来就会炸 ——
  *   impl ostream { fn <<(self: ref ostream, v: string) -> ostream { return self << v.toSlice() } }
  * 症状：生成的 C 里**定义**是三参（`..., string$string v, extc_arena *__extc_home`），
  * 而**调用点只传两个** ⇒ `too few arguments to function 'io$ostream_shl_string$string'`。
@@ -186,8 +185,8 @@ impl fs::ifstream {
  *   · 但**只**把 `m->impls` 补进那三处**不够**（试过：补了 5 处、其中 2 处是无关联表，而且 `main`
  *     的调用点仍然少传 —— 说明那些列表是按**模块**建的，而块在另一个模块里）。
  * 下一步：找出 `usesHome` 真正的**种子**在哪（body 检查时置位？还是 closeReach 传播？），确认
- * `impl` 方法的那次 body 检查有没有走到种子那一步；结算遍在 `check_top.c:5948`（`site->func->usesHome`
- * 那 9 行），它只是**消费者**。
+ * `impl` 方法的 body 检查有没有走到种子那一步；结算遍只看 `site->func->usesHome`
+ * 那几行，它是**消费者**。
  * 2026-09-28 第二轮实测（都不改代码，只量）：
  *   · **用户级复现成立**（不用碰库！）：一个用户模块 `addstr.extc` 里写
  *       use std::io / use stl::string

@@ -74,7 +74,7 @@ struct request {
     body: slice<u8>            /* 头之后的部分（有多少给多少 ✓）*/
     complete: bool             /* 请求行 + 头齐了 ✓ */
 
-    /* 方法从**自己的字段**派生视图 ✓（探针量过合法 ✓；自由函数用 `self` 会被拒 ✗）*/
+    /* 方法从**自己的字段**派生视图 ✓（自由函数用 `self` 会被拒 ✗）*/
     fn path(self: ref request) -> slice<u8> { return pathOf(self.target) }
     fn query(self: ref request, name: slice<u8>) -> option<slice<u8>> {
         return queryOf(self.target, name)
@@ -396,7 +396,7 @@ fn resolve(host: slice<u8>, out: mut slice<u8>) -> i64 {
  *
  * `conn` 的方法是这一层唯一的"对象"：`conn::open(...)` 拿连接 ✓，`c.get(...)` 发请求 ✓。
  * 为什么用方法而不是自由的 `open`/`get`/`post`：**导入会占用调用方的顶层名字** ✗
- * （实测过 `use std::io` + 自定义 `fn open` ⇒ "duplicate function `open`" ✓）⇒ 方法有名字空间 ✓。
+ * （同名自由函数会 `duplicate function` ✓）⇒ 方法有名字空间 ✓。
  *
  * 所有缓冲都由调用者给：`out` 放请求头、`buf` 收响应 ✓（响应里的切片都指向 `buf` ✓）。
  */
@@ -514,7 +514,7 @@ struct conn {
  * 用户要的形状：`var a: http::session = http::session::make(host, port); a.get("/x")` ——
  * **方法动的是 a 自己**，不再把缓冲一格格传进去 ✓。
  *
- * 为什么这次能行（探针量过 ✓）：`new` 出来的**容器**装进结构体、结构体整体从函数返回是
+ * 为什么这样能行：`new` 出来的**容器**装进结构体、结构体整体从函数返回是
  * **合法**的 ✓（编译器原话："build it here with `new` … so it may escape"）；被拒的是把
  * **指向局部的子视图**带出去 ✗。所以缓冲用 `new`，视图一律**从 `self` 的字段现取** ✓。
  *

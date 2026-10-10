@@ -36,45 +36,8 @@ src/check/check_top.c	plan-number	recordLvlFact(c, a, h);         /* 同上：�
 src/front/parser.c	decision-number	* Four forms, one implementation (定案 12 / 93): every one of them is turned into
 src/front/parser.c	decision-number	/* The **upper bound is evaluated once**, when the loop is entered (定案 101).
 src/front/parser.c	decision-number	/* `=` and the five compound forms. `+=` and friends mean `x = x + y` (定案 92), so
-stdlib/std/coro/scheduler.extc	history-word	* 上下文）才不受参数生命周期规则的限制。这条限制以前更凶（连库函数 `stash(ref v, h)` 都拒），
-stdlib/std/fs.extc	decision-number	* `fin >> n >> line >> b` —— 链式读，与 `cin >> x` 同一个形状（定案 88）✓
-stdlib/std/fs.extc	decision-number	* 打开一次（在 `main` 里，失败当场 trap —— 定案 89 ✓）：
-stdlib/std/fs.extc	decision-number	* （`T(...)` 就是 `T::new(...)` 的写法，见定案 86）✓
-stdlib/std/fs.extc	decision-number	/* ⚠️ `mut slice<u8>` 与 `slice<u8>` 在"按右操作数**精确**类型分派"（定案 82）眼里
-stdlib/std/fs.extc	decision-number	/* 空结构体当句柄：常量初始化 ✓（定案 65 才让这条成立 —— `outStream { }` 每个字段都是常量 ✓）*/
-stdlib/std/fs.extc	history-word	* 字节，两套位置会互相跳过 ✗（这条以前写在注释里求人别混用，现在结构上就一个 ✓）*/
-stdlib/std/fs.extc	plan-number	* annotation is (PLAN #54 fixed this: it used to need `var f: ifstream = { .. }`). */
-stdlib/std/heap.extc	decision-number	* `extc_viewOf` 本身关在 `std::sys::heap` 里（用户导不进来，见定案 96），所以门外那句话
-stdlib/std/heap.extc	measure-narrative	* 大输入用它替代拷贝：原型量过（`prototype-heap/README.md` 4b）只读借出读 21.6 GB/s 零拷贝，
-stdlib/std/heap.extc	measure-narrative	/* commit 的粒度。原型量过：一次 commit 1 MiB 最省（`prototype-heap/README.md`）。 */
-stdlib/std/http.extc	measure-narrative	* 为什么这次能行（探针量过 ✓）：`new` 出来的**容器**装进结构体、结构体整体从函数返回是
-stdlib/std/http.extc	measure-narrative	* （实测过 `use std::io` + 自定义 `fn open` ⇒ "duplicate function `open`" ✓）⇒ 方法有名字空间 ✓。
-stdlib/std/http.extc	measure-narrative	/* 方法从**自己的字段**派生视图 ✓（探针量过合法 ✓；自由函数用 `self` 会被拒 ✗）*/
-stdlib/std/io.extc	history-word	* 以前这里借内建 `print`（它写 stdio ✗），得先 `flushCout()` 才不会两边打架 ——
-stdlib/std/io.extc	history-word	/* 打印 `i64` 的最小值曾经会 trap（2026-09-28 修）：`fmtI64Fast` 里的 `i64(0) - v` 在
-stdlib/std/io.extc	history-word	/* 热路径：**每个数只调一次 `nextInt`** ✓（旧版还先 `skipSpace` 再 `eof` ⇒ 三次调用 ✗）
-stdlib/std/io.extc	history-word	var nd: i64 = 0                 /* 已收的位数（前 18 位不可能溢出 ⇒ 那次检查可以省 ✓）*/
-stdlib/std/io.extc	measure-narrative	* 全部一字不改 ✓ 这就是 cachegrind 量出来的真因：分支 2.7× ✗（指令只 1.29× ✓
-stdlib/std/io.extc	measure-narrative	* （量过：`println` 的输出在 `>/dev/null` 时消失、在 `2>/dev/null` 时还在 ✓）
-stdlib/std/io.extc	plan-number	/* 失败标志的**自由函数**形式：限定名的全局上调方法还不支持（PLAN #66）⇒
-stdlib/std/loop.extc	measure-narrative	/* 表的容量。**实测过一次悬崖**：64 项时，200 个同时在睡的任务里超出部分走 `add` 失败
-stdlib/std/sys/io.extc	decision-number	/* 控制台**缓冲**输出（定案 90）：格式化在库里、缓冲在运行期。
-stdlib/std/sys/pool.extc	history-word	* 池的寿命挂在"地方"上：zone 是一条独立旁链，地方退出时按标记回退、整批回收
-stdlib/std/sys/pool.extc	history-word	* 这里曾经有一句 `extc_pool_alloc(rid, bytes) -> mut ref u8` 的悬空声明（没有实现、也没有谁
-stdlib/std/sys/pool.extc	plan-number	* 调的动它 —— `extern!` 不许返回 `slice<T>`）—— 2026-09-26 删掉，正是 PLAN #85 里写着
-stdlib/stl/hashMap.extc	plan-number	* 每个元素的位置都变，O(n) 重排是哈希扩容语义的一部分（出路见 PLAN #86：两块表 + 按簇增量）。
-stdlib/stl/map.extc	history-word	* 曾经无条件拷满 17/17/18 —— 多出来的那些槽**从没被写过**，清零时读作 0 无害，
-stdlib/stl/map.extc	history-word	* 曾经无条件拷满 18（后来改成 `sn+1`，一样错）—— 清零时读到 0 无害（0 恰好是个
-stdlib/stl/map.extc	history-word	* 这里曾经走"新四块 + 逐元素拷 + 旧四块丢掉"：那份拷贝不但 O(n)，还要在最长的一跳里
-stdlib/stl/pool.extc	history-word	* 天然全空闲。（这里曾经写一整圈 `ent[i] = pPack(0, low)`：容量 10 万时每次构造写
-stdlib/stl/pool.extc	measure-narrative	/* ⚠️ `@inline` 的取舍是**量出来的**，别一刀切（2026-09-24，`-O2`，3 次取最好）：
-stdlib/stl/string.extc	history-word	* 与内联缓冲等大 —— 池态缩到 16 之后仍是池态，不往回退（退回内联会让 `capacity()`
-stdlib/stl/string.extc	measure-narrative	/* `acc` 到 `2^63` 时直接给常量：那个值正是 `i64` 的最小值。这里不需要绕开什么（单测过
-stdlib/stl/string.extc	plan-number	* leaked the buffer into an arena nothing reclaims (PLAN #83). The operator path has to pick
-stdlib/stl/stringio.extc	history-word	* `impl` 方法的那次 body 检查有没有走到种子那一步；结算遍在 `check_top.c:5948`（`site->func->usesHome`
-stdlib/stl/stringio.extc	history-word	/* 注意：这里**曾经**试过用 `impl ostream { fn <<(self: ref ostream, v: string) }` 补一个 `string`
 tools/check_no_history.py	decision-number	行内代码**不剥**：C 注释里的反引号不是代码跨度，剥了会把 ``定案 88`` 这类真违规藏起来。
-tools/check_no_history.py	history-word	("history-word", r"以前|曾经|回退|一开始|那次|一度|原先是|本来是|旧版|旧的实现"),
+tools/check_no_history.py	history-word	("history-word", r"以前|曾经|(?<!往)(?<!标记)回退|一开始|那次|一度|原先是|本来是|旧版|旧的实现"),
 tools/check_no_history.py	measure-narrative	("measure-narrative", r"实测(过|出)|量过|测过|量出来"),
 tools/check_switches.py	history-word	`--help` 曾经写着"这些开关从不改变输出"，而实测有两个会改（`EXTC_NO_LEVELPASS` 动竞技场放置、
 tools/fuzz.py	history-word	# 正常现象），曾经把 tests/traps/arena_oom.extc 又误报了一次。

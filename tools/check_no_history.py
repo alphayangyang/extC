@@ -25,7 +25,7 @@ BASE = ROOT / "tools" / "no-history-baseline.txt"
 RULES = [
     ("decision-number", r"定案\s*\d+"),
     ("plan-number", r"PLAN\s*#\s*\d+"),
-    ("history-word", r"以前|曾经|回退|一开始|那次|一度|原先是|本来是|旧版|旧的实现"),
+    ("history-word", r"以前|曾经|(?<!往)(?<!标记)回退|一开始|那次|一度|原先是|本来是|旧版|旧的实现"),
     ("measure-narrative", r"实测(过|出)|量过|测过|量出来"),
 ]
 

@@ -69,7 +69,7 @@ fn same(a: handle, b: handle) -> bool {
     return a.slot == b.slot && a.gen == b.gen && a.ep == b.ep
 }
 
-/* ⚠️ `@inline` 的取舍是**量出来的**，别一刀切（2026-09-24，`-O2`，3 次取最好）：
+/* ⚠️ `@inline` 的取舍要逐个看，别一刀切：
  *   · `len` / `atDense` / `handleAtDense`（极小访问器）内联：无害 ✓
  *   · `get` / `contains` 内联：**随机访问快 1.6×**（0.836s → 0.523s / 1e7 次）
  *     而 **churn 慢 1.7×**（0.87s → 1.49s / 2e8 次）✗ ⇒ 保持不内联（churn 是这套的主场）✓
@@ -165,8 +165,7 @@ struct pool<T> {
             cap:    c,
         }
         /* **不再逐槽初始化**：板块是清零的，而 `pFree` 把 `low == 0` 也认作空闲 ⇒ 全新的表
-         * 天然全空闲。（这里曾经写一整圈 `ent[i] = pPack(0, low)`：容量 10 万时每次构造写
-         * 10 万次；实测 2000 轮 1.09 s。） */
+         * 天然全空闲。（写一整圈 `ent[i] = pPack(0, low)` 会在容量 10 万时每次构造写 10 万次。） */
         return p
     }
 
