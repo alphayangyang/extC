@@ -5,7 +5,7 @@
  *   - Every slot carries a generation. Dropping a pool bumps its generation, so a handle
  *     that outlived its pool fails the check instead of reading freed memory; the library
  *     turns that into `failure(staleHandle)` with a source position (ruling: a bug traps, a
- *     condition is a value -).
+ *     condition is a value).
  *   - Regions and arena blocks are **one tree**: a pool's parent is either another pool
  *     or the arena level that created it. Dropping a pool drops its whole subtree, and
  *     leaving a block drops every pool still hanging off that level. That is the hook the

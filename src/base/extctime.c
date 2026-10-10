@@ -1,4 +1,4 @@
-/* The time runtime (see time.h for why this is here rather than in extC).
+/* The time runtime: `clock_gettime` needs a platform struct whose layout the extC side never sees.
  *
  * Two clocks, because they answer different questions and mixing them up is a classic bug:
  *   - `extc_time_mono_ns`  == CLOCK_MONOTONIC : never goes backwards, immune to wall-clock jumps.

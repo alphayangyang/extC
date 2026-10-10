@@ -1,7 +1,6 @@
 /* extC syntax, part two of the pipeline: the recursive-descent parser.
  *
- * Turns the token vector from lexAll into ast.h nodes (see parser.h for the
- * accepted grammar).  It resolves no names: identifiers, module paths, and
+ * Turns the token vector produced by the lexer into AST nodes.  It resolves no names: identifiers, module paths, and
  * generic arguments are kept exactly as written, so the loader and the type
  * checker can decide what they mean.  `{` after a name is a struct literal by
  * position, not by capitalization, and p->inCond records where a `{` must be
@@ -444,7 +443,6 @@ static bool parseEffectsClause(Parser *p, FuncDef *f, bool *outSawThread) {
                 unsigned bits = (unsigned)val->ival;
                 if (strcmp(nm->text, "Addr") == 0)        f->extAddrMask = bits;
                 else if (strcmp(nm->text, "Cont") == 0)   f->extContMask = bits;
-                /** @brief 记录 `Ret=` 这位效应。 */
                 else if (strcmp(nm->text, "Ret") == 0) {
                     /* `Ret=0`: "the reference/view I return does not point into the caller's
                      * frames" —— 返回侧的 `Addr`；`Ret=1` 是保守缺省，等于什么都没多说，
@@ -458,7 +456,6 @@ static bool parseEffectsClause(Parser *p, FuncDef *f, bool *outSawThread) {
                     }
                     f->extRetFresh = (bits == 0);
                 }
-                /** @brief 记录 `Thread=`：0 = 不碰跨线程共享状态，1 = 碰。 */
                 else if (strcmp(nm->text, "Thread") == 0) {
                     if (outSawThread) *outSawThread = true;
                     if (bits > 1u) {
@@ -2949,7 +2946,6 @@ static bool fmtSplice(Parser *p, Expr **lhs, Token *ft) {
                 if (d == '"') { st = true; continue; }
                 if (d == '(' || d == '[' || d == '{') d2 += 1;
                 else if (d == ')' || d == ']' || d == '}') d2 -= 1;
-                /** @brief 顶层的 `:` 是 v2 的格式说明符，v1 在这里明确拒绝。 */
                 else if (d == ':' && d2 == 0) {
                     ctxError(p->ctx, ft->line, col,
                              "format specs (`{x:>8}`) are v2; v1 prints the value as `<<` would",

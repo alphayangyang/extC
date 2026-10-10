@@ -1,7 +1,6 @@
 /* std/map.extc -- an **open-addressing hash map** from `i64` keys to any `V`.
  *
- * Why this exists (and why it is not a slot map): the measurements in
- * say that a handle costs **three dependent random
+ * Why this exists (and why it is not a slot map): a handle costs **three dependent random
  * loads** (handle array -> metadata -> value) while a hash lookup costs **one** after the
  * probe. Random access is the common case, so key -> value wants a hash table and stable
  * identity wants `std::pool`; neither replaces the other.

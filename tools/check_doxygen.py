@@ -31,6 +31,8 @@ def blocks_and_decls(path):
     lines = path.read_text(encoding="utf-8", errors="replace").split("\n")
     total = covered = 0
     for i, l in enumerate(lines):
+        if CTRL.match(l.strip()):
+            continue
         # 行尾注释不算声明的一部分（`bool f(int x);  /* 说明 */`）
         if not DECL.match(re.sub(r"/\*.*?\*/\s*$", "", l).rstrip()):
             continue
@@ -55,6 +57,9 @@ def blocks_and_decls(path):
     return total, covered
 
 
+CTRL = re.compile(r"^(?:static\s+|extern\s+|inline\s+)*(?:if|else|for|while|switch|do|return|case|default)\b")
+
+
 DEF = re.compile(r"^\s*(?:static\s+|extern\s+|inline\s+)*[A-Za-z_][\w \t*]*\s+\**\w+\s*\([^;{]*\)\s*\{?\s*$")
 
 
@@ -63,7 +68,7 @@ def defs_in_c(path):
     lines = path.read_text(encoding="utf-8", errors="replace").split("\n")
     total = covered = 0
     for i, l in enumerate(lines):
-        if l.strip().endswith(";") or not DEF.match(l):
+        if l.strip().endswith(";") or CTRL.match(l.strip()) or not DEF.match(l):
             continue
         nxt = lines[i + 1].strip() if i + 1 < len(lines) else ""
         if not (l.rstrip().endswith("{") or nxt.startswith("{")):

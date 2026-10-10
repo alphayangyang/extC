@@ -3,9 +3,21 @@
  * 手写而不是 vendor：它没有 ABI 面、没有"库"可言，而且我们要的是**零分配**的
  * "调用方给缓冲"形状 —— 与 `std::json` 的 `strInto` 同一惯用法（跨界只传值 + 缓冲）。
  *
- *     var out: [64]u8
- *     let n: i64 = b64::encode(key, out[..])       // 返回写入长度；缓冲不够 -1
- *     let m: i64 = b64::decode(accept, buf[..])    // 非法字符 / 长度不对 -1
+ * @code
+ * use std::io
+ * use std::b64
+ *
+ * fn main() -> i32 {
+ *     var src: [8]u8
+ *     src[0] = u8(102)                 // f
+ *     src[1] = u8(111)                 // o
+ *     src[2] = u8(111)                 // o
+ *     var out: [16]u8
+ *     let n: i64 = b64::encode(src[0..3], out[..])   // 返回写入长度；缓冲不够 -1
+ *     io::cout << "n=" << n << " " << out[0..n] << "\n"
+ *     return 0
+ * }
+ * @endcode
  *
  * 用在哪：WebSocket 握手的 `Sec-WebSocket-Accept = base64(SHA1(key + GUID))`、HTTP Basic、
  * 以后 QQ 富媒体的分片上传。**不做流式**：这些负载都是几十字节，缓冲直接给够最省事。

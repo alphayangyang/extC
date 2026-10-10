@@ -3895,7 +3895,7 @@ static void coroSetup(Checker *c, FuncDef *f) {
         /* A call to a coroutine produces **that coroutine's own frame**, a concrete value type the
          * compiler synthesizes here -- before the body is checked, so call sites and the callee
          * agree. `coroutine<T>` stays what it always was: how a body declares "I am a coroutine and
-         * I yield T".4. */
+         * I yield T". */
         StructDef *cfd = arenaAllocZero(c->arena, sizeof *cfd);
         /* A C name of its own: the frame is emitted through the type channel now, so it must not
          * collide with the function's own name. */
@@ -4068,7 +4068,6 @@ static void checkFunc(Checker *c, FuncDef *f) {
                     " information in a struct if the entry point needs more.",
                     "`main` takes at most one parameter, `slice<slice<u8>>`; %zu were declared",
                     f->params.len);
-        /* @brief 入口点带一个参数时，参数形状必须是 slice<slice<u8>>。 */
         else if (f->params.len == 1) {
             Param *p = *(Param **)vecAt(&f->params, 0);
             /* The shape is judged by shape and not through `ttBase`: resolving a view

@@ -228,13 +228,13 @@ typedef enum {
                    * the type is supplied by adoptContextType, the same way an empty
                    * array literal picks up its element type. */
     EX_DYN,         /* `dyn Trait(x)`: the value form (a pool-backed handle) */
-    EX_EXT,         /* `ext f(x)`: start one concurrent task (the `ext` sugar,* "`ext` 与调度域"). It is an **expression**: it evaluates to a handle, so
+    EX_EXT,         /* `ext f(x)`: start one concurrent task (the `ext` sugar, i.e. “`ext` 与调度域”). It is an **expression**: it evaluates to a handle, so
                      * `let h = ext f(x)` is the normal spelling. Legal only inside a domain --
                      * that rule and the spawn itself are the checker's job; the parser only
                      * builds the node. */
     EX_LAMBDA,      /* `fn(x: i64) -> i64 { ... }`: a closure literal. The checker gives it a
                      * generated unique type (a capture struct + a `call` method), so a lambda is
-                     * an ordinary value of an ordinary type; */
+                     * an ordinary value of an ordinary type. */
 } ExprKind;
 
 /* One entry of a lambda's capture list, `[mut ref hits]`.
@@ -412,7 +412,7 @@ struct Expr {
          * `fn(i64) -> i64(p)`, which turns C's `void *` into a callable code pointer (or back). For
          * the numeric form `typeName` is the scalar's name and `type` is filled in by the checker;
          * for the function-type form `type` is the **parsed** type (resolved by the checker) and
-         * `typeName` is NULL, because a function type is not a name.9. */
+         * `typeName` is NULL, because a function type is not a name. */
         struct { const char *typeName; Type *type; Expr *operand; } conv;
         /* An associated function call: `typeName<targs>::name(args)`.
          * Writing the whole type is deliberate: nothing is guessed from context. */
@@ -428,7 +428,7 @@ struct Expr {
         /*   Empty args = a variant without payload (`status.ok`); non-empty = a
          *   payload construction (`shape.circle(2.0)`). */
     } u;
-    /* `dyn Trait(x).m(...)`: stage 1 ofkeeps construction and the call in one
+    /* `dyn Trait(x).m(...)`: construction and the call stay in one
      * expression, so the trait being dispatched through is a property of the call node rather
      * than a type of its own. The parser sets it and refuses to let it be stored; codegen reads
      * it to dispatch through the table instead of calling the implementation directly. */
@@ -483,8 +483,7 @@ typedef enum {
                              * is no handler and no unwinding -- the process writes
                              * `file:line: trap: msg` to stderr and stops with code 1, down the same
                              * road the compiler's own checks take (bounds, division by zero), dying
-                             * hook included. For what cannot be handled;
-                             * expected failures are `result`/`option` values. */
+                             * hook included. Expected failures are `result`/`option` values. */
     ST_DOMAIN               /* `d.run { … }`: a **domain block**. A statement on purpose: the block
                              * is not a value and cannot be used as an expression, the expression
                              * walkers never have to see it, and the statement walkers handle its
