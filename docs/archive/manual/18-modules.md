@@ -1,0 +1,1025 @@
+<!-- 过时（2026-10-10 归档 · 只作考古）：本文是历史快照，不要当现状读。现状 → `docs/usage/`；待做 → `docs/TODO.md`；历史 → `docs/CHANGELOG.md`。 -->
+
+<!-- 本页原来是 docs/MANUAL.md 的「12. 库与模块（2026-09-22 新增）」一节（原 §12.）；所有编辑都改这里，不要把 MANUAL.md 当第二份真源。 -->
+
+**[索引](README.md)** · [← 11. 还没定的](17-undecided.md) · [13. 完整示例 →](19-examples.md)
+
+---
+
+# 12. 库与模块（2026-09-22 新增）
+
+> 这一节是**已经能跑的**：模块（定案 70）· 泛型自由函数（定案 71）· `extern!`（定案 72）·
+> `std::io`（定案 73）没实现的一律不写在这里（见 `PLAN.md`）
+
+### 12.1 模块：一个文件就是一个模块
+
+```extc
+// lib/util.extc
+struct pair { a: i32  b: i32 }               // 类型名 camelCase（大写开头留给类型参数 T）
+
+fn make(a: i32, b: i32) -> pair { var p: pair = { a: a, b: b }  return p }
+fn total(p: pair) -> i32 { return p.a + p.b }
+
+@private fn helper() -> i32 { return 1 }     // 藏起来：**别的模块引用不到**
+```
+
+<!-- manual-example: skip —— 这段是**多文件**示例（另一个文件不在这里） -->
+```extc
+// main.extc
+use lib::util                                // **语义导入**（不是 C 的文本包含）
+
+fn main() -> i32 {
+    var p: util::pair = util::make(1, 2)     // 跨模块引用写**限定名**
+    println("和 = ", util::total(p))
+    return 0
+}
+```
+
+| 规则 | 说明 |
+|---|---|
+| 模块路径 | `use lib::util` ⇒ `<项目根>/lib/util.extc`（项目根 = 入口文件所在目录；也可用 `-I <dir>`）|
+| 短名 | 路径最后一段（`use lib::util` ⇒ 引用时写 `util::name`）|
+| **全名** | **任意层都能写全名**（2026-09-23 起）：`std::sys::io::STDOUT` · `std::sys::io::write(…)` · `lib::sub::color.color.green` 不需要先 `use` 到"正好那一段" |
+| **别名** | `use std::sys::io as sysio` ⇒ 之后写 `sysio::STDOUT` 别名只换**短名**，全名照样能用 |
+| 可见性 | **默认公开**；要藏写 `@private`（别的模块引用它 ⇒ 编译错误）|
+| 必须限定 | 其他模块的名字**必须**写作 `mod::name`（遗漏时报错并指出应写的内容）|
+| 环 | **禁止** import 环（报错会说清是哪两个模块）|
+| `main` | 只能写在**入口文件**里（模块是库）|
+| 编译 | 仍然**只吐一个 .c**（`extc --run main.extc` 一条命令，`use` 的文件自动跟着编）|
+
+**两层同名怎么办**（`std::io` 与 `std::sys::io` 的短名都是 `io`）—— 给其中一个起别名
+这也是别名真正必要的场合（"从 stdin 读 + `open` 一个文件"恰好要这两层）：
+
+```extc
+use std::io                     // 短名 io（普通库那层）
+use std::sys::io as sysio       // 短名 sysio（特权原语那层）
+var r = io::readerOf(sysio::STDIN)          // 各用各的短名
+let f = std::sys::io::STDOUT                // 全名也照样能写
+```
+
+没起别名时两条 `io` **必然撞车**，报的是 `both \`std::io\` and \`std::sys::io\` are used as \`io\``
+（常设验收 `tests/qname/`，6 正例 + 1 反例）
+
+```extc
+use lib::sub::color             // 深层模块（lib/sub/color.extc）
+let c: color::color = color::color.green     // 变体位置：限定名 + `.变体`
+```
+
+### 12.1.1 `use mod::*`：把名字**带进作用域**（2026-09-24 定案 85）
+
+默认写法是限定名（`io::cout`），想让一个模块的**公开名字不限定可用**，就在 `use` 末尾写 `*`：
+
+```extc
+use std::io::*                 // io 的公开名字进入本文件的作用域
+cout << "x = " << x + y << endl      // 不限定（这才是流式 IO 想写成的那句话）
+cin >> a >> b
+```
+
+三条边界（都有常设验收，`tests/modules/`）：
+
+- **`@private` 仍然够不着** —— 打开模块**不是**绕过隐私的路子
+  （`error: \`lib::secret\` is private to module \`lib\``）
+- **打开是每个文件各自的**：`a.extc` 里 `use b::*` **不会**让入口文件也能写裸 `bSecret`
+- **两个被打开的模块重名 ⇒ 报错，不许静默挑一个**
+  （`error: \`who\` is exported by both \`x1\` and \`x2\`, which are opened here`）
+
+**只想要一两个名字**时用花括号（2026-09-24 同日补，同一张定案）：
+
+```extc
+use std::io::{cin, cout, endl}     // 只有这三个名字进来，别的仍要写 io::xxx
+```
+
+三种写法范围从小到大、都并存：`io::cout`（限定）· `use std::io::{cin, cout}`（**推荐**：
+范围小到可自行写出）· `use std::io::*`（整个模块）
+
+**`use std::io::cin` 裸写不行**（`use` 的每一段都是**模块路径**，它去找 `std/io/cin.extc`）——
+报错会指出应写作 `use std::io::{cin}`（不允许裸写的原因：其含义将取决于"当前是否存在该文件"，
+哪天有人建了 `io/cin.extc` 就**静默变意思**）
+
+限定名**照旧**能用（两条路并存）—— 定案 70 的"全名是权利"没有被削弱，
+`*` / `{...}` 都是**用户显式写出来**的选择
+
+v1 限制：**类型名**"必须限定"那条还没挡严（函数/全局已经挡严）；
+`use` 不重新导出（没有 per-module 的可见性传递 —— 所以 `*` 也**不传递**）
+
+### 12.2 泛型自由函数 `fn f<T>(…)`
+
+```extc
+fn indexOf<T>(a: slice<T>, x: T) -> i64 {
+    var i: i64 = 0
+    while i < a.len { if a[i] == x { return i }  i = i + 1 }
+    return 0 - 1
+}
+
+indexOf(nums[..], 30)          // 从实参**推导**
+indexOf<i32>(nums[..], 50)     // **显式实参**（`T` 只出现在返回类型时必须这么写）
+```
+
+- `T` 上的 `==` / `!=`（**推迟到实例化**再查"这个 `T` 有没有 `fn ==`"）
+- `T` 上的 `<` / `>`（与上一行同款：模板放行，**推迟到实例化**再查这个 `T` 有没有 `fn <`）
+- 泛型体能调用泛型函数了（`PLAN #50` 已解）
+
+### 12.3 跟 C 打交道：`extern!` + 信任声明
+
+**两条路：`extern!` 与 `std::dl`。** 都是"调 C"，区别只在**谁在什么时候把符号定下来**：
+
+| | `extern!`（本节） | `std::dl`（§12.3.4） |
+|---|---|---|
+| 绑定 | **链接期**：符号在构建时就定了（库不在 ⇒ **链接失败**） | **运行期**：`dlopen` + `dlsym`，库跑起来才知道 |
+| 用在哪 | libc / 系统库 / 本来就要链接的库；也是编译器发的运行期块（`extern!("extc-mem")` 那类）的声明口 | **插件**：可选的、按配置或用户选的、构建时不该依赖的库 |
+| 签名 | `effects` 写在**声明**上，每个调用点按它检查 | 地址经显式转换拿到的 `fn` 值**没有签名** ⇒ 要放进**表槽**（槽上写 `effects`）才管用 |
+| 代价 | 构建要能看见那个库 | 每个函数：名字 → `dlsym` → 判空 → 显式转换；`close` 要自己管 |
+
+两条路走的是**同一套尺子**（一个机器字 / `@frozen` 按值）和**同一套 `effects` 语法**，所以从一条换到
+另一条时只有"绑定方式"这一件事在变。判据一句话：**构建时就知道、也愿意依赖它 ⇒ `extern!`；跑起来才知道、或者不该依赖 ⇒ `std::dl`。**
+
+（实测过的两个方向：`extern!("libcairo")` 会去**链接** —— 库只有 `libcairo.so.2`、没有 `.so` 和头文件
+时，`gcc` 报 `undefined reference`；反过来，`dlopen` 进来的库一个符号也不能用 `extern!` 声明。
+cairo 那次画图的绑定 20 个函数全是 `dlsym` + 表槽，见 [`C-ABI.md`](../topics/C-ABI.md) §9.11。）
+
+```extc
+extern!("libc") fn write(fd: i32, buf: ref u8, n: i64) -> i64
+    effects Addr=0 Cont=0        // 我签字：**我不存你的指针** ⇒ 实参不受寿命约束
+
+extern!("libc") fn fill(p: ref i32, n: i32) -> i32     // 没签字
+// fill(ref x, 3)  ⇒ **编译错误**：C 可能把 `&x` 存到帧外（默认最保守）
+```
+
+四个键，都按**实参下标**（第 0 个是位 0）：`Addr=` 它存了 `&实参 i`；`Cont=` 它存了一个从实参里读出来
+的指针；`Ret=0` **它返回的引用/视图不指向调用方的任何帧**；`Thread=0/1` 它碰不碰跨线程共享状态。
+`Ret=0` 是"返回那一侧"的事实，也是**用户永远不用自己签**的那一条：谁能证明它，谁签一次 ——
+板的四个出口在库里签了它（板是 `mmap` 来的，活到 `close`），于是
+
+```extc
+var v: mut slice<u8> = pl.alloc(n)!     // 板内视图，存进局部
+c.func(v.data)                          // 交给任何没签字的 C 函数，都接受
+```
+
+而**帧内**的缓冲区（栈数组、`new`、arena）不在这个事实里：它们交给未签字的 C 仍然是编译错误 ✓
+（这正是 `effects` 唯一必须存在的理由：把帧内地址**就地**交给 C 需要一句"我不留"）。带身体的
+函数只能写 `Ret` 与 `Thread`（`Addr`/`Cont` 由身体自己算，写了会报错而不是静默失效）。
+
+- 参数/返回只用**一个机器字**的东西：**标量**、**指向任何东西的指针**（`ref T` / `mut ref T` / `?ref T`，
+  含 `ref void` —— C 的 `void *`），以及**函数指针** `fn(A) -> R`。指向什么不影响跨界：`ref point`、
+  `ref Pair<i64, u8>`、**`ref slice<u8>`**（指向视图的**指针**，不是切片本身）都是那一个字。
+  `slice<T>` **本身**在 C 那边是**两个**参数，所以它不跨界；想调"往 buffer 里写"的那种
+  （`read`/`write`），传 `s.data` 和 `s.len`
+- `ref void` 是**看不进去**的句柄（`mmap` 那种）：`*p` / `p[0]` 编译期挡住 —— 没有元素类型就没有大小。
+  要读就得在声明里写出真正的指向类型（`ref point`）
+- 结构体**按值**传/返回：要**门票** —— 声明上写 `@frozen`（下一节）。它的意思是"布局就是 C 的布局"，
+  因为布局不一致是**静默错**（C 按错的偏移读写，不 trap 不报错）。指针不需要门票：一个指针就是一个
+  机器字（2026-09-29 放开，见 [`C-ABI.md`](../topics/C-ABI.md) §9.6/§9.7/§9.8）
+- **借出去的内存，C 能改**：`mut ref T` 交出去之后，C 可以往 `T` 的字段里写任何值 —— 包括往
+  `?ref` 字段里写一个**指针**，之后 extC 会当真去解引用它。这不是类型规则变松（extC 自己的代码照旧守规则），
+  而是"**可写内存借给了外来代码**"这件事的固有含义。要挡就得**只读借出**（`ref T`，或大块输入用
+  只读映射），或者在签字里说清 C 不写回指针
+- `owned`（来自 C 的内存由本模块负责）**尚未实现** ⇒ 会明确报错（原计划等"块拥有资源"那套；定案 79 之后口径是**显式释放**，编译器只证明能证明的泄漏）
+
+`Thread=` 是同一套签字里的**第三项**，为并行准备（2026-09-28 新增）：
+
+```extc
+extern!("extc-runtime") fn extc_sock_read(fd: i64, buf: ref u8, n: i64) -> i64
+    effects Addr=0 Cont=0 Thread=0   // 只碰实参（fd 与缓冲区）⇒ worker 里可以调用
+
+extern!("extc-runtime") fn extc_epoll_wait(ep: i64, timeout_ms: i64) -> i64
+    effects Addr=0 Cont=0 Thread=1   // 碰实例里那个待处理队列 ⇒ 不该跨线程共享
+```
+
+- `Thread=0`：这次调用**不碰任何跨线程共享的状态**（模块级 `var`、运行期缓冲、输出流）⇒ 它允许出现在 worker 里；
+- `Thread=1`（**缺省**）：它碰 ⇒ 保守处理。**没有 `effects` 子句时同样按 1 处理**，与 `Addr` 那条"默认最保守"是同一条规矩；
+- 取值只允许 0 或 1（`Thread=2` 会报错）：这是关于**整次调用**的一个事实，不像 `Addr`/`Cont` 那样是按实参逐位的掩码；
+- 它服务的是并行那一步：worker 体内只允许调用 `Thread=0` 的东西，于是诊断能说清原因（"`fs` 用了模块级缓冲"），而不是笼统地拒绝一切。
+
+### 12.4 让编译器内联：`@inline`（2026-09-24 新增）
+
+写在**函数声明前**，要求这个调用点必须被内联：
+
+```extc
+@inline fn sq(x: i64) -> i64 { return x * x }        // 普通函数
+struct pt {
+    x: i64
+    @inline fn get(self: ref pt) -> i64 { return self.x }   // 方法（写在 struct 体内）
+}
+@private @inline fn twice(x: i64) -> i64 { return x + x }    // 与 @private 连用，顺序随意
+```
+
+**这是要求，而非建议。** ISO C 的 `inline` 只是提示，编译器可以不予采纳（而且**不会告知**）；
+`@inline` 生成的 C 用 `always_inline`，它**必须**被满足
+
+**为什么需要它**：库的热循环里，每字节一次方法调用的代价很大 ——
+实测 `nextInt` 那条路，`nextByte` + `skipSpace` 两个方法占掉**全部指令的 51%**
+（同一处改写循环结构又拿掉 48%，所以**两者是互补的**，见下面的"什么时候不该用"）
+
+**三条会被编译期拒绝的写法**（都带位置，不是"生成的文件第几行"）：
+
+| 写法 | 为什么拒 |
+|---|---|
+| `@inline` 标在**递归**函数上（含**互递归**）| `always_inline` 是要求，递归函数满足不了 ⇒ C 编译器会报 `inlining failed in call to 'always_inline'`，而那是生成文件里的位置 ⇒ 挪到源码这一行报 |
+| `@inline` 标在 `extern` 声明上 | 没有函数体，没什么可内联的 |
+| 写错的注解名（`@fast` / `@recursive` / `@main`）| 注解是**给编译器的指令**，写错必须报错；`@recursive` / `@main` **设计过但没实现**，所以明说"还没实现"而不是静默接受 |
+
+> **什么时候不该用**（实测教训，2026-09-24 交错 A/B 重测）：
+> 给 `std::io` 的 4 个 reader 方法标 `@inline`，**读 100 万行 8.88ms vs 8.85ms —— 差 ±0.3%，就是零**
+> 原因**查到了**（不是猜）：这些函数在生成 C 里是 `static`，`-O2` 下 GCC **本来就全部内联掉了** ——
+> `objdump` 里**既没有调用点、连函数体都不存在** ⇒ `always_inline` 无事可做
+> **那 @inline 什么时候有用**：GCC **不肯**内联的时候 —— 运行时原语 `extc_arena_alloc`
+> （分配快路径 + `malloc` 慢路径 + 调用点多 ⇒ 被 size 启发式挡掉）标上之后
+> rebuild **100.7 → 25.7ms**、churn **140.9 → 38.2ms**（3.9×）
+> ⇒ **先量再用**：`objdump` 里还有 `call` 才谈得上"内联能不能帮上忙"
+
+### 12.5 跳过**全部**检查：`@unchecked`（2026-09-27 新增；2026-10-08 扩到全部检查）
+
+写在**函数声明前**（与 `@inline` 同族，普通函数与 struct 体内的方法都可以），表示
+**这个函数体里的检查一条都不生成**：
+
+```extc
+@unchecked
+fn sumBytes(v: slice<u8>) -> i64 {          // 范围由紧邻的循环条件那一行保证
+    var acc: i64 = 0
+    var i: i64 = 0
+    while i < v.len { acc = acc + i64(v[i])  i = i + i64(1) }
+    return acc
+}
+```
+
+**粒度是整个函数体**，没有 `unchecked { ... }` 块：读到一个函数体之前就能看见它不在承诺之内。
+覆盖这个函数体里**所有**会插检查的地方：
+
+| 覆盖 | 平时（生成物里的检查）| 标了 `@unchecked` |
+|---|---|---|
+| 元素下标 `x[i]`（数组与视图）| `extc_checkedIndex` / `<view>_index` | 裸 `data[i]` / `*(data + i)` |
+| 除零 / 整除溢出 `a / b`、`a % b` | `extc_divI` / `extc_modI` / `extc_divU` / `extc_modU` | 裸 C 的 `/`、`%` |
+| 移位计数 `a << n` | `extc_shiftCount` | 裸 C 的 `<<` |
+| 窄化 / 浮点转整数 | `extc_narrowI` / `extc_narrowU` / `extc_convFloat` | 裸 C 强制转换 |
+| 可空引用 / `option` / `result` 的 `!` | `extc_refAssert` / `extc_tagAssert` | 裸解引用 / 直读载荷 |
+| 范围 `x[a..b]` | `extc_checkedRange` | `lo` 原样用 |
+| `copyInto` 的计数与空视图 | `<view>_copy` 里的两个判断 | `<view>_copyU`，只有 `memmove` |
+
+**代价：以上任何一条失败从此是未定义行为。** 语言在别处承诺的「越界 = 带位置的 trap」
+（[0.5 内存安全](01-safety.md) 的第 5 条）在这一处被显式放弃：不再有
+`trap: index 7 out of range (length 3)` 那样的消息，越界、除零、放不下的值、`null!`
+读到什么、写到什么由生成的 C 决定。**`@unchecked` 是纯 extC 代码唯一的 UB 入口**：
+后缀 `!` 不是（它带位置 trap），`?` 不是（失败早退）。这条注解与 `extern!` 同类 ——
+编译器证明不了的，由写的人签字。**不能指着某一行说"这里一定在范围内"，就不该标。**
+
+**什么时候可以用**：范围就在紧邻的一行上。标准库里的每个用点都把那一行写在注释里
+（`stdlib/stl/string.extc`）：
+
+| 用点 | 范围由哪一行保证 |
+|---|---|
+| `bytesEq` | `if a.len != b.len { return false }` ⇒ 两侧同长，接着 `while i < a.len` |
+| `bytesLt` | 循环条件本身：`i < a.len && i < b.len` |
+| `hash` | 循环条件 `i < v.len`（`v` 是函数自己取的视图，中途不变）|
+
+**什么时候不能用**：范围靠"跨函数的不变式"或"两个字段一致"维持的时候。反例就在同一个文件里：
+`string::push` 的 `self.big![self.n] = b` 依赖"载荷长度等于 `cap`"这条**跨函数**不变式 ——
+若手工拼出一个 `{ cap: 8 }` 而载荷为零值切片的 `string`，带检查的下标给的是带位置的 trap，
+标注之后就是写空指针。所以它**没有**标注，这是有意的。
+
+**判据**（`tests/annot/run.sh` 的 G1–G4 与 `tests/traps/`）：
+
+1. `!` 签错必须**带位置 trap 且 rc=1**（G1 `p!` / G2 `o!` / `r!`）；
+2. 同一个程序标注与不标注，输出**逐字节相同** —— 注解不许改变结果（`sed` 现生成孪生文件，
+   保证只差那一行）；
+3. 生成物：`build/extc --no-line-map -o f.c f.extc` 之后，标注过的产物里
+   `extc_trap` / `extc_narrow*` / `extc_checkedIndex` / `extc_checkedRange` / `extc_div*` /
+   `extc_shiftCount` / `extc_refAssert` / `extc_tagAssert` / `<view>_index` / `<view>_copy`
+   出现 **0 次**，而孪生（只少那一行注解）里**都在**（否则"本来就没发"也能骗过这条）；
+4. 四类危险（越界下标 / 除零 / 可空解引用 / 窄化）的孪生必须**都** trap 且 rc=1；
+5. 反例全部编译期报错：`extern!` 上没有身体、字段上、`struct` 上、同一函数上写两遍；
+6. 写错的注解名照旧报错（注解是给编译器的指令，不接受静默忽略）。
+
+### 12.3.1 `main` 里的 `?`：失败即 trap（2026-09-24，定案 89）
+
+<!-- manual-example: skip —— 这段用 `...` 省略了中间部分 -->
+```extc
+fn main() -> i32 {
+    var f = fs::ifstream("input.txt")?     // 打不开 ⇒ trap（带位置 + 退出码 1）
+    ...
+    return 0
+}
+```
+`?` 的语义是"把失败交给外层"，而 `main` 的外层是**进程边界** ⇒ 交出去 = **说清楚然后死**
+别的函数仍必须声明 `result` 才能用 `?`（`main` 返回类型不许改：C 入口返回 `int`）
+
+### 12.3.2 五个流：`cin` / `cout` / `cerr` / `fin` / `fout`（2026-09-24）
+
+```extc
+use std::io::{cin, cout, cerr, endl}
+use std::fs
+
+fn log(n: i64) { cerr << "log: " << n << endl }        // 任何函数里都能写诊断
+
+fn main() -> i32 {
+    fs::openIn("input.txt")?
+    fs::openOut("app.log")?
+    var a: i64 = 0
+    var b: i64 = 0
+    cin >> a >> b                                       // 控制台读
+    fs::fin >> a >> b                                   // 文件读（同一个形状）
+    cout << a + b << endl                               // 正常输出 → stdout
+    fs::fout << "结果 = " << a + b << endl              // 文件写（任何函数里都能写）
+    cerr << "仅诊断" << endl                            // 诊断 → stderr
+    fs::closeIn()?
+    fs::closeOut()?
+    return 0
+}
+```
+
+- **`print` / `println` 打 stdout**（量过），**`cerr` 才打 stderr** 两条通道分开，
+  所以 `prog > out.txt` 只收正常输出
+- 文件的 `fin`/`fout` 是**程序级的那一个**（各一个 fd）⇒ 不用把流当参数一路传
+  它们**不是**在静态段打开的（理由见 `docs/topics/IO.md`）：`main` 里一句话 + 定案 89 的 `?`
+
+### 12.3.1 `@frozen`：布局**就是** C 的布局（2026-09-29，见 [`C-ABI.md`](../topics/C-ABI.md) §9.8）
+
+```extc
+@frozen struct mixed {          // ← 一句签字，换一张"按值过 C 边界"的门票
+    a: i8
+    b: i64
+    ok: bool
+    p: mut ref i64
+    arr: [4]u8
+}
+
+@frozen struct idx { quot: i64  rem: i64 }
+extern!("libc") fn imaxdiv(num: i64, den: i64) -> idx    // 结构体**按值**返回，可以了
+```
+
+- **它是一句签字**：这个类型的字节布局 = C 为这份字段表排出来的布局（字段按声明顺序、按 C 的对齐与
+  填充、里面**没有别的东西**）。门票是**按值过界**：参数、返回值、`fn` 签名的参数都行。没标记的结构体
+  照旧过不去 —— 指针不受影响，一个指针就是一个机器字，不需要承诺布局。
+- **编译器不审里面放了什么**：`slice<T>`、枚举、泛型参数都可以放，那是作者的自由，代价是 C 那边得
+  照抄我们发射的形状（与 `effects` 同一类：签了字，出事算作者的）。**想传切片仍旧写 `s.data` / `s.len`**：
+  视图在 C 那边是两个参数，`@frozen` 不会替它变成一个。
+- **编译器欠的另一半是硬的**：它**永不重排字段、永不加隐藏字段**，并且在产物里给每个 `@frozen` 类型
+  发两条**平台无关**的断言（相邻字段的 `offsetof` 递增 · `sizeof` 不超过"最后一个字段 + 它的对齐"）。
+  于是将来任何一次静默漂移都变成产物**编不过**，而不是某个调用点读出错的值。
+- **它管不住的那件事**：C 那边手写的结构体是不是真对得上 —— 编译器看不见对面。这一格用**镜像测试**
+  验收（`tests/frozen/`）：产物与一份手写的等价 C 结构体放进同一个翻译单元，`sizeof` 与**每个字段**的
+  `offsetof` 编译期相等；而且两条断言各自**有牙**（把字段顺序调换必须编不过，否则断言就是摆设）。
+
+### 12.3.2 `@export`：把 C 符号交出去（2026-09-29，见 [`C-ABI.md`](../topics/C-ABI.md) §9.9）
+
+`extern!` 是"我调 C"，`@export` 是**另一面**："C 调我"。
+
+```extc
+@frozen struct pair2 { lo: i64  hi: i64 }
+
+@export fn triple(x: i64) -> i64 { return x * 3 }
+@export fn makePair(lo: i64, hi: i64) -> pair2 { return pair2 { lo: lo, hi: hi } }
+```
+
+产物里这两行是**外部链接**的 C 符号，名字就是这里写的那个（模块前缀 `plugin$` 会被去掉），
+所以 C 那边既可以**直接链接**，也可以 `dlsym(h, "triple")`：
+
+```c
+int64_t triple(int64_t);                       /* C 侧手写声明 */
+struct pair2 { int64_t lo, hi; };              /* @frozen 让两边布局是同一个约定 */
+```
+
+- **签名要是 C 能写的**：每个参数/返回值一个机器字（标量 · 指针 · 函数指针），或者一个 `@frozen`
+  结构体（按值也行）。`slice<T>` 在 C 那边是两个参数，所以不能当一个 —— 尺子与 `extern!` 是
+  **同一把**（`ttCrossesC`）。
+- **不能有隐藏参数**：函数体里分配且返回引用的函数会多一个 home arena 参数，C 的调用对不上 ⇒
+  拒绝（要导出就让它只在自己块里分配，或者导出一个不做分配的包装）。
+- **名字是契约**：C 关键字这种必须改名的名字会被拒（编译器不会悄悄改一个 C 那边猜不到的名字）；
+  两个导出重名也拒（模块前缀去掉之后就是同一个符号）。
+- **泛型 / 方法 / 协程 / `extern!` 不能导出**：它们没有"那一个 C 符号"（泛型每个实例一个函数体 ·
+  方法的名字带接收者 · 协程的值是帧句柄 · `extern!` 已经是别人家的符号）。
+- 没有 `main` 的文件也能编（模块/插件就是这样）—— `@export` 自己就是根，不会被可达性剪枝剪掉。
+
+### 12.3.3 表槽的签名：`fn` 字段上的 `effects`（2026-09-29）
+
+宿主在运行期把函数地址填进表里，所以"这个函数不留我的指针"这句话**没有声明可写** —— 写在**槽**上：
+
+```extc
+struct extc_heap_api {
+    size:  u64
+    ctx:   ?ref void
+    alloc: fn(i64, ?ref void) -> ref u8 effects Addr=0 Cont=0
+    free:  fn(ref u8, ?ref void) -> i32 effects Addr=0 Cont=0
+}
+```
+
+- 语义与 `extern!` 上那条**完全一样**（同一把尺子）：签了字的槽，`ref` 实参可以指向**帧内**；
+  没签字的槽按"它可能留住一切"算 —— 与"没签字的 `extern!`"同一档，于是帧内指针被拒。
+- **签名在槽上，不在类型上**：`fn(A) -> R` 这个类型没有地方写 `effects`。所以**从槽里直接调**
+  带着签名，`var g = api.alloc` 拷到局部之后就没有了（按最保守算）。要传帧内指针就从槽里调。
+- `Thread=` 在字段上暂时**报错**：读它的那条检查是冲着已解析的调用去的，运行期填的槽不是。
+
+### 12.3.4 `std::dl`：加载一个 C 模块（2026-09-29，见 [`C-ABI.md`](../topics/C-ABI.md) §9.9）
+
+```extc
+use std::dl
+
+var h: ?ref void = dl::open("build/plugin.so")   // 字面量在 C 那边本来就是 NUL 结尾的
+if h == null { /* 打不开：dlerror() 能问为什么 */ }
+var raw: ?ref void = dl::sym(h, "init")
+if raw == null { /* 没有这个符号 */ }
+var init: fn(mut ref table) -> i32 = fn(mut ref table) -> i32(raw)   // ← 这一句是作者的签字
+init(ref t)
+dl::close(h)
+```
+
+- `open` / `sym` 返回 **`option`**（不是可空引用）⇒ 失败怎么处理由调用方选：
+  `dl::open("x.so")?` 是**失败早退**（编译器强制所在函数返回 `option`/`result`），
+  `dl::open("x.so")!` 是**短写法**：签错了就是带 `file:行号` 的 trap、退出码 1（2026-10-08 起；
+  此前会拿到一个空值）。另有 `symOrNull` 给"自己判空、顺便打一句缺哪个
+  符号"那种包装用 —— `?` 只认 `option`/`result`，判空那条路才写得出人话。
+  名字参数必须是 **NUL 结尾**的
+  缓冲区：字符串字面量本来就满足，运行期拼出来的名字先用 `cstr` 补一个终止符 —— 规矩与
+  `std::fs` 的文件名**完全一样**，理由也一样（C 的长度在终止符里，切片的长度在值里）。
+- **反方向**（C 返回一个字符串）：`cstrLen(p)` 数到终止符为止（上限 `CSTR_MAX = 1024`，超了返回
+  `-1`），`viewCStr(p)` 直接给一个不含终止符的视图 —— `cairo_version_string`、`dlerror` 这类
+  都靠它。数长度的写法本身说明了一件事：语言里没有指针算术，所以每往前一格都要重新要一个更长的
+  视图（`extc_viewOf`），代价 O(n²)，对几十字节的字符串完全够。
+- `close` 收掉句柄。
+- **信任模型（一句话）**：`dlopen` 进来的模块与主程序**同进程同权限** —— 这套东西**防错不防敌**。
+  它换来的是"库干错事时大多变成编译错误、一次区间检查拒绝、或一次硬缺页"，而不是"库不会干坏事"。
+  十种攻击的实测（越界写、食言、伪造指针、`munmap` 重映射、改表……）见
+  [`C-ABI.md`](../topics/C-ABI.md) §9.17。
+- **`fn(A) -> R(ptr)` 这条转换只为 C 的 `void *` 存在，而且要求非空**：`dlsym` 回来的是
+  `?ref void`，先判空（语言本来就有的空值规则），判完收窄成 `ref void`，转换才合法。
+  它只有**一个方向** —— 代码指针再也变不回数据指针，要把它交给 C 就放进 `fn` 字段或
+  `fn` 参数里。
+
+### 12.3.5 一张表交给 C 模块：`@export` + `fn` 槽 + `std::dl`（2026-09-29）
+
+三样东西合起来就是"C 模块 + 宿主"这条线（完整例子见 `tests/cabi/heapmain.extc` 与
+`tests/cabi/heapmod.c`）：
+
+<!-- manual-example: skip -->
+```extc
+@frozen struct heapapi {                  // 表：给 C 模块看的接口
+    size: i64
+    ctx: ?ref void
+    alloc: fn(i64, ?ref void) -> ref u8 effects Addr=0 Cont=0   // 槽上签字
+}
+
+var plate: [256]u8                        // 板（全局 ⇒ 深度 0，借给 C 合法）
+var api: heapapi = heapapi { size: i64(3), ctx: null, alloc: hostAlloc }
+//          ↑ 全局的初始化器里可以写函数名：函数地址是常量
+
+fn hostAlloc(n: i64, ctx: ?ref void) -> ref u8 {
+    var off: i64 = used
+    used = used + n
+    return plate[off..].data               // 板内地址：视图的 data（`ref plate[i]` 不行）
+}
+
+fn main() -> i32 {
+    var h: ?ref void = dl::open("plugin.so")
+    var raw: ?ref void = dl::sym(h, "init")
+    var init: fn(mut ref heapapi) -> ref u8 = fn(mut ref heapapi) -> ref u8(raw)
+    var p: ref u8 = init(ref api)          // 模块经表回调宿主，再把板内指针还回来
+    var addr: u64 = u64(p)                 // 指针 → 整数：**一次**区间检查
+    if addr >= base && addr < base + u64(256) { io::cout << i64(*p) }
+    return 0
+}
+```
+
+> 这一块是**梗概**（省略了 `used`/`base` 的记账与函数的其余部分），所以显式跳过"手册示例必须编得过"
+> 那道闸门；能编能跑的那份在 `tests/cabi/heapmain.extc`（每次 `check.sh` 都会真编真跑）。
+
+几条边界，都是这几格新定的：
+
+- **函数地址是常量**：全局初始化器里可以写函数名（表必须在声明处初始化，因为 `fn` 没有零值）。
+- **板内的地址**用 `plate[i..].data` 取（`ref plate[i]` 不行），而且这个视图**不能先存进局部**
+  （逃逸分析只看到局部，看不到它指向全局）。
+- **`u64(p)` / `i64(p)` 只有一个方向**：数字变不回引用 ⇒ 指针能被验证、不能被伪造；
+  `u32(p)`（会截断）仍被拒。
+- **模块返回的指针必须自己检查**再解引用 —— 它不是语言担保的东西，是 C 给的。
+
+### 12.3.6 `std::heap`：板（Heap）—— 一块连续内存 + 一道门（2026-09-29，见 [`HEAP.md`](../topics/HEAP.md)）
+
+给外来 C 库用的一片连续内存。设计的三句话：**一次保留、按需 commit、永不搬家**；每个出口都
+验一次"这个指针在板内"；寿命显式（`close` 就是 `munmap`）。
+
+```extc
+use std::heap
+
+var pl: heap::plate = heap::plate::open(heap::DEFAULT_RESERVE)!   // 4 GiB 地址空间，不占物理页
+var s: mut slice<u8> = pl.store("hello plate")!                   // 申请 + 拷进去，拿回板内视图
+io::cout << pl.holds(s.data)                                      // true：一次区间比较
+io::cout << pl.holds(other[..].data)                              // false：板外的不是板内的
+pl.close()                                                        // munmap；之后再用板内指针就崩
+```
+
+| 名字 | 作用 |
+|---|---|
+| `plate` / `plate::open(n)` | 板本身 / 保留 `n` 字节地址空间（失败返回 `none`） |
+| `alloc(n)` | 申请 `n` 字节，返回 `?mut slice<u8>`（板满 = `none`），commit 按 `CHUNK` 粒度 |
+| `allocPtr(n)` | 同一个申请的**裸指针**出口（交给 C 的门时用这个：视图落进局部会丢掉逃逸深度） |
+| `view(off, n)` | 板内 `[off, off+n)` 的视图（区间要在已 commit 的板内） |
+| `loanRO(off, n)` / `loanRW(off, n)` | 只读借出 / 还回写权限（`off` 页对齐；借出期间写 ⇒ **SIGSEGV**） |
+| `quarantine(p, n)` / `unquarantine(p, n)` | **契约验证**：把 `[p, p+n)` 所在页隔离成不可读写 / 解除隔离（`p` 页对齐；隔离期间读或写 ⇒ **SIGSEGV**）。用法：调用一个签了 `Addr=0` 的 C 函数**之后立刻隔离**它拿过的那段内存 —— 库若食言（留了指针），下次再碰就是硬缺页，而不是静默读到换了主人的数据 |
+| `poison(p, n, byte)` | 同上但**不崩**：把 `[p, p+n)` 填成哨兵字节，食言时读到的是可判定的毒值 |
+| `store(src)` | 申请 + `copyIn`，一步拿到板内视图 |
+| `copyIn(dst, src)` / `copyOut(src, dst)` | 整块拷进 / 拷回；**两边都要过那道门**（不在板内返回 `-1`） |
+| `view(off, n)` | 板内 `[off, off+n)` 的视图（也要过门：区间在保留区内**且已 commit**）。**把板内内存交给会留着它的 C 函数时，内联写 `pl.view(off, n)!.data`** —— 先存进局部的视图在逃逸分析眼里只有本帧寿命 |
+| `holds(p)` / `holdsRange(p, n)` / `holdsView(v)` | 那道门：一次（或两次）区间比较（门函数用 `holdsRange`：`extc_viewOf` 会给调用者带上隐藏 arena，地址就不是 `fn` 值了） |
+| `reservedBytes()` / `committedBytes()` / `usedBytes()` / `remaining()` / `isClosed()` | 账（读法） |
+| `reserved` / `committed` / `used` / `closed` | 同上的字段（也直接读得到） |
+| `close()` | `munmap`（双关安全）。**关完之后板内指针再用 = SIGSEGV**，这是设计 |
+| `PAGE` / `CHUNK` / `DEFAULT_RESERVE` | 页、commit 粒度（1 MiB）、默认保留（4 GiB） |
+
+三条要知道的边界：
+
+- **不搬家**：`alloc` 只会往前推 `used`，地址一给出就不变 ⇒ 模块手里的板内指针一直有效（到
+  `close` 为止）。这也是"老视图在新分配之后仍然可写"的原因。
+- **不做世代、不做 use-after-free 检查**：那是外来库自己的事。少检验换来的是关板之后再用
+  **硬缺页**（SIGSEGV），而不是悄悄读到别人的数据。
+- **忘了 `close` 今天只是漏到进程结束**（`close` 方法的存在让"开了没关"有编译期提醒）；Arena
+  兜底（`HEAP.md` §3）还没做。
+
+### 12.3.7 绑一个库：`tools/cbindgen.py`（2026-09-29）
+
+一个动态库不需要为它单独建 stdlib 模块，也不需要手写声明：读头文件，产出用到的那部分。
+
+```sh
+tools/cbindgen.py --include cairo.h -I /usr/include/cairo \
+    --only cairo_paint,cairo_create,cairo_arc -o myproj/cairoapi.extc
+```
+
+产出两样东西（`tests/real-lib/cairoapi.extc` 是 cairo 的实例）：
+
+```extc
+struct api {
+    handle: ?ref void
+    paint: fn(?ref void) -> void              /* C: cairo_paint */
+    image_surface_create_for_data: fn(?ref u8, i32, i32, i32, i32) -> ?ref void
+    ...
+}
+let CAIRO_FORMAT_ARGB32: i32 = 0
+fn open(lib: slice<u8>) -> ?api { … }         /* dlopen + 每个符号一句 dlsym + 显式转换 */
+```
+
+用法就是 `use myproj::cairoapi` 之后 `var c = cairoapi::open("libcairo.so.2")!`，然后 `c.paint(cr)`。
+
+**工具不做的三件事**，都是刻意的：
+
+- **不生成 `effects`**：槽不签 = 最坏情况 = **安全的那一侧**（帧内地址会被拒）。只有"把帧内地址
+  **就地**交给 C"那几个函数要人签一句 `Addr=0 Cont=0`（§12.3：那是 `effects` 唯一存在的理由）。
+- **不假装布局**：不认识的指针一律 `?ref void`。要读结构体字段就自己写 `@frozen` 镜像（§12.3.1），
+  按类型撒谎没有任何检查会拦得住。
+- **不猜**：不支持的东西（按值传的结构体、变参……）会**列出来并以非 0 退出**；枚举常量由 clang
+  真求值（隐式值也不猜）。宁可不生成，也不要一个签名错的绑定。
+
+头文件从哪来：`-dev` 包，或者不要 root 的 `apt-get download libcairo2-dev && dpkg-deb -x …`。
+生成物入库，`--check` 进闸门（头文件不在的机器上显式跳过）。
+
+### 12.5b 协程调度器（`std::coro::scheduler`）的派发是 O(1)
+
+这一层的公开成员：`init` `newQ` `newRows` `acceptq` `add` `count` `finish` `freeq` `listener` `live` `pump` `resumeRow` `rows` `rqHead` `runEpoll` `runScripted` `runq` `step` `done` `fd` `h` `started`。
+
+`tasks<T>` 里除了 `rows` 还有两个队列：`runq`（要**立刻推进**的行号：新任务、`yield 负数`）与
+`freeq`（跑完的行号 ⇒ `add` 复用座位不找空行）。
+
+```extc
+var s: sched::loop
+if !sched::init(ref s, listener) { … }
+var tasks: sched::tasks<i64> = { rows: sched::newRows(), runq: sched::newQ(),
+                                 rqHead: i64(0), freeq: sched::newQ() }
+…
+var fd: i64 = tasks.pump(ref s, i64(50))
+```
+
+要点（`CONCURRENCY.md` §4.4 的口径不变：`yield fd` = 等可读、`yield 负数` = 不等，立刻再推一次）：
+
+- **跨 `yield` 的视图一律拒**：不只是"指向局部"，**指向全局的视图**同样拒 ✗（实测
+  `var req: mut slice<u8> = gBuf[..]` 挂在第一个 `yield` 上）。两条正解：视图**在挂起之后再取**
+  （放在 `yield` 之后声明 ✓），或者把数据 `new` 进任务 arena ✓。
+- **长命协程里按迭代 `new` 会一路累积** ✗：任务 arena 只在任务结束时回收，keep-alive 连接里
+  每请求 `new` 两个 4 KB ⇒ 每连接 **9,110 B**（实测）；改成"每次迭代复用"或"全局瞬时缓冲"后
+  是 **1,623 B/连接** ✓（`CONCURRENCY.md` §3.2）。
+
+
+- **epoll 事件的 user-data 里放的是任务行号**（listener 用 -1 这个哨兵）⇒ 一个事件一次数组定位，
+  **不扫任务表** ✓；`extc_epoll_wait` 因此返回**标签**，队列空时返回 `-100`。
+- `resumeRow(self, s, i, ready)` 是**唯一**推进任务的地方：`ready` 区分"某 fd 刚就绪"与
+  "立刻推进"，负请求只在那里处理一次（两条路各写一遍时，就绪那条漏掉负请求 ⇒ 任务卡死 ✗，
+  两个判据当场抓到 ✓）。
+- `loop` **只有标量**，这是语言规则不是风格：含引用的结构体没有零值，`var s: sched::loop` 会写不出来 ✗
+  ⇒ 队列住在调用者的容器 `tasks<T>` 里。
+
+**实测**（`bench/httpd/`）：挂着 **10,000** 条空闲 keep-alive 连接时，吞吐
+**99,442 → 198,026 req/s**（改前砍半 ✗，改后与空闲 0 条的 197,516 持平 ✓）。
+
+### 12.5b-2 协程的挂起协议（含**定时等待**，2026-10-04）
+
+协程 `yield` 出去的**一个 i64** 就是它的等待请求：
+
+| `req` | 含义 |
+|---|---|
+| `>= 0` | 等这个 fd 可读（驱动把它登记进 epoll，tag = 任务行号） |
+| `WAIT_UNTIL`（= `-3`） | 等 `loop.pendingUntil` 那个 deadline（驱动登记进 `loop.timers`，tag 同样是行号） |
+| 其它负数 | 不等，立刻重新推进（`send` 返回 false 即收尾） |
+| `WAIT_FD_W`（= `-4`） | 等 `loop.pendingFd` **可写**（TLS 的 `SSL_write`/`SSL_read` 都会返回 `WANT_WRITE`） |
+
+**两条容易踩的规则**（都有实测来源）：
+1. **收尾的 `yield` 必须是负数**：驱动把 `>= 0` 读成"等这个 fd 可读"，拿正数收尾会被当成新的
+   等待请求 —— 任务是"跑完了"却永远不停、`live` 不降（实测 200 个任务 `live=200`）；
+2. **时间就是 `epoll_wait` 的超时参数**：`waitMs = timers.timeoutMs(now, 调用方给的)`，
+   所以**超时那一轮正是定时到期的时刻**，`pump` 在超时路径上也必须取 `popDue` ——
+   从前它超时就直接返回，等定时的任务永远不醒。
+
+`loop` 的自有状态：`pendingFd`（`yield WAIT_FD_W` 之前协程把 fd 放这里）· `timers`（定时等待表）· `pendingUntil`（暂存槽 —— 请求通道只有一个 i64，
+deadline 走这里；单线程、一行一次只跑一个协程 ⇒ 安全）。`pendingTimers(s)` 返回还挂着的登记数：
+**判据用它收尾时必须为 0**（否则座位复用会撞上幽灵定时器）。 任务的等待模式记在 `row` 的 `mode` 字段（0 = 没登记 / 1 = 等可读 / 2 = 等可写），同一个 fd 来回切读/写时靠运行时的 `extc_epoll_arm`（**第一次 ADD、之后 MOD**）。
+
+判据 `tests/coro/coro_sleep.extc`：200 个任务各睡 1..5ms ⇒ 全部醒 · 无残留登记 · 真的等了。
+
+### 12.5c HTTP（`std::http`）：解析请求 / 拼响应 / 客户端
+
+三件事各自独立、**都不分配**：缓冲由调用者给，返回的切片都指向入参 ✓。
+
+```extc
+use std::http
+/* 服务端：解析 + 拼响应 */
+var r: http::request = http::parseRequest(raw)          /* complete = 头齐了 ✓ */
+if r.complete && r.method == "GET" { … }
+var host: slice<u8> = http::headerOf(r.headers, "Host")!
+var out: mut slice<u8> = new u8[4096]
+var at: i64 = http::simpleResponse(out, i64(200), "text/plain", i64(2))
+at = http::putBytes(out, at, "ok")
+
+/* 客户端：显式连接 + keep-alive（`conn` 只有标量 ⇒ 可零初始化 ✓）*/
+var c: http::conn
+match http::conn::open("api.example.com", i64(80), i64(5000)) {
+    none => { return 1 }
+    some(v) => { c = v }
+}
+var buf: mut slice<u8> = new u8[65536]
+var resp: http::response = c.get("api.example.com", "/v1/me", "Authorization: Bot x\r\n", out, buf)
+c.close()
+```
+
+- **自带缓冲的 `session`**（用户要的形状 ✓）：`new` 出来的**容器**可以装进结构体、跟着对象逃逸 ✓
+  （编译器原话："build it here with `new` … so it may escape"）⇒ 调用点不必再传缓冲 ✓：
+  ```extc
+  var a: http::session = http::session::make("api.example.com", i64(80), i64(5000))
+  var r: http::response = a.get("api.example.com", "/v1/me", "Authorization: Bot x\r\n")
+  if r.isOk() { … r.body … r.header("Content-Type") … }
+  a.close()
+  ```
+  含引用的结构体**没有零值** ⇒ 必须 `var a: … = make(...)`（这正是"对象自己管缓冲"的代价 ✓）。
+  被拒的是另一件事：把**指向局部的子视图**带出函数 ✗（探针量过 ✓）。
+- 公开成员：`beginRequest` `beginResponse` `contentLength` `decode` `endHeaders` `eqCI` `findSub` `headerBlockEnd` `headerEnd` `headerOf` `hexVal` `isSpace` `lower` `parseRequest` `parseResponse` `pathOf` `putBytes` `putHeader` `putHeaderI64` `putI64` `queryOf` `reasonOf` `resolve` `shiftToFront` `simpleResponse` `body` `c` `close` `exchange` `exchangeClose` `extraHeaders` `fd` `get` `make` `ok` `open` `out` `post` `readResponse` `rest` `send` `complete` `header` `headers` `is` `isGet` `isOk` `isPost` `length` `method` `path` `query` `reason` `status` `target` `version`。
+- **没有做**（明确记账）：chunked、header 折叠、TLS、代理、cookie。QQBot 那类 HTTPS API 要
+  `TLS` ⇒ 见 `docs/topics/C-ABI.md` 的 OpenSSL 绑定那条线 ✓。
+- 三条语言规则值得记：**跨 `yield` 的视图一律拒**（指向全局的也算）；**逃逸检查要求"全用下标、
+  最后从参数取视图"**（把子视图赋给局部再返回会被拒）；`match` 是**语句**，不能当表达式用。
+
+### 12.5d 哈希与 UUID：`std::hash::*` / `std::uuid`（2026-10-04）
+
+**为"最快 + 内存少"选的形状**（两条都能量，判据在 `tests/hash/`）：
+
+```extc
+use std::hash::sha256
+var out: [32]u8
+sha256::sum(data, out[..])              // 一次算完（state 在栈上，零分配）
+
+var c: sha256::state                    // 流式：喂任意多次、任意长度
+c.init()
+c.update(chunk1)
+c.update(chunk2)
+if !c.final(out[..]) { ... }            // 缓冲不够返回 false，不 trap
+```
+
+| 模块 | 公开面 | 说明 |
+|---|---|---|
+| `std::hash::sha256` | `state` · `init` · `update` · `final` · `sum` · `hex` | SHA-256（FIPS 180-4）；`hex(digest, out)` 返回写入字符数，缓冲不够 `-1`。`state` 的字段：`h`（8 个中间字）· `used`（缓冲里攒了多少字节）· `total`（累计喂入字节数）—— 都是可读的，正常用法不必碰 |
+| `std::hash::sha1` | `state` · `init` · `update` · `final` · `sum` · `hex` | SHA-1 —— **不是给签名用的**，是 `uuid5`（RFC 4122）要它；`state` 的字段同 sha256（`h` · `used` · `total`） |
+| `std::hash::hmac` | `sha256(key, msg, out)` · `sha1(key, msg, out)` | HMAC（RFC 2104）；键长 > 64 按 RFC 先散列；要截断就传更长的缓冲取前 n 字节 |
+| `std::uuid` | `v5(ns, name, out)` · `v5dns` · `v5url` · `v5oid` · `v5x500` · `format(id, out)` | UUID v5；`format` 写 36 字符小写规范形，缓冲不够 `-1` |
+
+**为什么快**：热循环里没有边界检查 —— 压缩函数的 `@unchecked` 是一处**签字**（下标全由构造保证在
+界内），其教训来自 `std/sys/mem.extc` 的实测（逐字节边界检查占 25.5 条指令/字节里的 30%）。
+满块**直接从输入视图压缩**，不先拷进 64 字节缓冲；流式与一次算完走同一条路。
+
+**量的结果**（本机，`tests/hash/bench.extc`，进 `check.sh`）：
+
+| 项 | 数 |
+|---|---|
+| SHA-256 | **429 MB/s** 整块 · **438 MB/s** 流式（1 KiB 片） |
+| SHA-1 | 287 MB/s |
+| 峰值 RSS | **2412 KB**（1 MiB 输入 × 256 轮 = 256 MiB 数据；零堆分配 ⇒ 只有二进制本身） |
+| 对照 | Python `hashlib` 走 OpenSSL **SHA-NI**：sha256 4518 MB/s · sha1 2464 MB/s |
+
+**诚实记账**：纯 extC 写不出 SHA-NI（那要 intrinsics / 内联汇编，而 `inline C!` 是未定案），
+所以差一个数量级。对 QQBot 的负载（签几 KB、给主键算 uuid5）这不是瓶颈：4 KB 载荷约 9 µs。
+真要硬件速度，路是**包**：`std::hash` 可以配一个带 SHA-NI 的 C shim 包（包机制已经就位）。
+
+**判据**（`tests/hash/run.sh`，6 项，进 `check.sh quick`）：FIPS/RFC 官方向量 8 条 ·
+RFC 4231 HMAC 8 条 · 与 Python `hashlib` 对拍 48 个摘要（含 7 字节分片流式 == 一次算完）·
+API 失败面（缓冲不够 ⇒ `false` / `-1`，不 trap）· 峰值 RSS < 8 MB · 吞吐下限 50 MB/s。
+**uuid5 与 Python `uuid.uuid5` 逐字节对拍**（含中文名字）—— 主键对不上 = 历史数据全对不上，
+这条判据就是钉它的。
+
+### 12.5e JSON：`std::json`（2026-10-04）
+
+**零拷贝解析 + 零分配写入 + 带载荷枚举的节点**（三条都量了，判据在 `tests/json/`）：
+
+```extc
+use std::json
+
+var pool: [256]json::node                    // 节点池由调用方给：解析器一次堆分配都没有
+var scratch: [64]u8
+match parse(body, pool[..]) {
+    ok(root) => {
+        let c: i64 = find(body, pool[..], root, "d.content")   // 点分路径；数字段走数组
+        io::cout << strOf(body, pool[..], c, scratch[..]) << "\n"   // 无转义 ⇒ 零拷贝视图
+    }
+    err(at)  => { io::cout << "bad json at " << at << "\n" }
+}
+
+var buf: [512]u8                             // 写入同样不分配
+var w: json::builder = json::builder::open(buf[..])!
+w.beginObj()
+w.key("content"); w.str("你好")
+w.key("msg_seq"); w.int(i64(3))
+w.endObj()
+if !w.ok() { /* 缓冲不够：w.len() 是已写字节数 */ }
+```
+
+| 名字 | 作用 |
+|---|---|
+| `parse(text, nodes)` → `parsed` | 解析。`parsed` 是 `ok(root)` / `err(at)`；**池子不够 / 嵌套超过 `MAXDEPTH`（64）都是 `err`**，不截断、不炸栈 |
+| `isOk` · `rootOf` · `errAt` | 三个投影（想按类型分支就用 `match`；这三个只是省几行） |
+| `node` | **带载荷枚举**（载荷位置式）：`obj(first, count, next)` · `arr(first, count, next)` · `text(off, len, esc, next)` · `number(val, off, len, next)` · `flag(val, next)` · `nul(next)`。取载荷前**必须先 `match` 该变体**（编译器强制）—— 这形状**表示不出非法状态**，而"kind 字段 + 平铺字段"能（数字节点上也有 `esc`/`first`） |
+| `next` | 同层链（key 链 / 元素链）。节点按**深度优先**写入池子，嵌套容器的子节点夹在成员之间 ⇒ "连续区间"这种布局不成立 |
+| `OBJ` `ARR` `STR` `NUM` `BOOL` `NUL` | `kindOf` 的取值（`MAXDEPTH` · `WTAGSZ` 也在这里） |
+| `kindOf` `countOf` `rawOf` `escOf` | 读一个节点：种类 / 长度 / 原文视图 / 是否含转义 |
+| `strOf(text, nodes, idx, scratch)` | 字符串的**真值**：无转义 ⇒ 零拷贝视图；有转义 ⇒ 解码进 `scratch` |
+| `unescape(text, nodes, idx, out)` | 显式解码（`\n` `\t` `\uXXXX` 与代理对）；缓冲不够或非法返回 `-1` |
+| `member(text, nodes, idx, key)` · `keyAt` · `valueAt` · `elem(nodes, idx, i)` | 对象按名字取成员 / 第 i 个成员名 / 第 i 个成员值 / 数组第 i 个元素（都在链上走） |
+| `find(text, nodes, root, path)` | 点分路径（`"d.author.member_openid"`、`"items.0.id"`）；没有返回 `-1` |
+| `numOf` · `intOf` · `boolOf` | 数字（`f64`）/ 整数（**只在能精确表示时**给值，≤ 18 位十进制）/ 布尔 |
+| `builder` | 写入器：`open(buf)` → `?builder`（含引用的结构体没有零值，所以用工厂）；`ok()` · `len()` · `beginObj` · `endObj` · `beginArr` · `endArr` · `key` · `str` · `int` · `boolean` · `nul` · `raw`（原样写一段合法 JSON）· `flt`（6 位小数，要精确就自己 `raw`） |
+
+**为什么快**：解析是**单遍**、节点写进调用方给的池子、字符串是输入上的视图；写入直接拼进缓冲。
+改输入缓冲，`strOf` 的视图跟着变 —— 判据 `tests/json/zerocopy.extc` 就是钉这个的。
+**内部状态**（正常用法不必碰）：`parser` 只存标量（`pos` · `used` · `errAt` · `depth`），入口是 `run`；
+`builder` 的字段是 `failed` · `afterKey` · `commaMask` · `depth`。
+
+**量的结果**（枚举版，本机）：小文档 1888 B **1093–1145 MB/s** · 大文档 552 KB **796–823 MB/s** ·
+峰值 RSS **1516 KB / 5868 KB**。同一台机器同一份字节的第三方对照：cJSON 297/142 MB/s ·
+yyjson 3384/2183 MB/s。**枚举重构的账**：大文档 **+7%**、内存 **−28%**（节点 56 → 40 字节，
+实测 `sizeof`）、小文档 **−12%**（访问器变成 `match` 分发、链的写入要整值重写）。
+
+**判据**（`tests/json/run.sh`，6 项，进 `check.sh`）：与 Python `json.dumps(..., separators=(',',':'))`
+的规范形**逐字节对拍** · **17 条坏输入必须拒绝** · **攻击自己（fuzz）**：20 万层嵌套 ⇒ 报错 ·
+20 万元素 ⇒ ok · 池子差一个 ⇒ 响亮报错 · 10 万位数字 / `1e999999` / 10 万个 `\u0041` / 1 MiB 空白
+⇒ 不崩 · 截断的每一段前缀都给答案 · **2 万轮随机变异（种子固定）⇒ 接受的全量遍历、拒绝的报错，
+零崩溃** · 零拷贝证据 · RSS 与吞吐下限。
+
+**边界**：孤立代理在**语法**上合法（RFC 8259 只要求 4 位十六进制），解码时才失败（`unescape` 返回 `-1`）；
+`intOf` 对超过 18 位十进制的数字返回 0（QQ 的大 ID 本来就是字符串，不该当数字处理）。
+
+### 12.5f 事件循环的定时层：`std::loop`（2026-10-04）
+
+**策略层，零系统调用、零 C**：一张按 deadline 排好序的表 + 三个纯函数。抽出来的理由很具体 ——
+循环里唯一非确定的东西就是**时钟**，把它隔离在这儿以后，"定时语义"可以**离线判据**
+（喂假时钟，不碰 epoll、不睡觉）。
+
+```extc
+var t: loop::timers
+t.init()
+_ = t.add(std::time::now() + i64(30000000000), tag)   // 30 秒后到期；表满返回 -1（响亮）
+let w: i64 = t.timeoutMs(std::time::now(), i64(1000)) // 下一次 epoll_wait 该等多久（毫秒）
+n = epoll_wait(ep, buf, w)                            // **唯一一个阻塞点**
+let fired: i64 = t.popDue(std::time::now(), out[..])  // 到期的 tag，每个恰好一次
+```
+
+| 名字 | 作用 |
+|---|---|
+| `timers` | deadline 表（`at` 纳秒 · `tag` 调用方标识 · `n` 个数；容量 `CAPACITY`=64） |
+| `init` | 只清计数（数组里的旧值不会被读到）。含引用的结构体没有零值，所以别的类型用工厂，这个不用 |
+| `add(deadline, tag)` | 按序插入（**等值稳定**：同一 deadline 按登记顺序）；表满返回 **-1**，不静默丢 |
+| `next` · `count` | 最近的 deadline（空表 -1）· 个数 |
+| `timeoutMs(now, cap)` | `epoll_wait` 的超时：空表给 `cap`；已到期给 `0`；其余**向上取整**（绝不早于 deadline 醒）并封顶 |
+| `popDue(now, out)` | 把 `now` 之前（含）到期的 tag 写进 `out`，返回个数；**每个 deadline 恰好取出一次** |
+| `cancel(tag)` | 取消一个未到期的登记（命中 true） |
+| `runOnce(ep, t, tags, now, capMs)` | 一轮：算超时（`timeoutMs`）→ 等就绪，**写进调用方给的 `tags`**；返回事件数（0 = 超时，<0 = 出错）。到期的定时器另用 `popDue` 取 |
+
+**多实例**：就绪缓冲由调用方拥有（`runOnce` 的 `tags`），运行时里不留任何 static ——
+从前那条 `static pending[64]` 的环形队列让**一个进程只能有一个事件循环**，而且既不可重入
+也不可观察。现在两个独立的 epoll + 各自的缓冲可以同时工作（判据 `tests/loop/io.extc` 里有一条）。
+
+**设计要点**：**时间不引入第二个事件源** —— `epoll_wait` 的超时参数本身就是定时器，
+所以不需要 `timerfd`（毫秒分辨率对心跳 30s、每天 21:00 播报这种负载绰绰有余；真要高频高精度
+再加，那时它是有理由的，而不是默认）。
+
+**判据**（`tests/loop/`，进 `check.sh quick`，全部离线）：超时计算的五个边界（空表/恰好到期/
+向上取整/上限封顶/上限为 0）· 到期**恰好一次** · 等值**稳定** · 表满**响亮失败** · 取消命中与
+未命中 · **500 个乱序 deadline 交错登记/取出，全部恰好取出一次**。
+
+### 12.5g `std::net` 与 `std::mem`：把"有用但不危险"的从 `sys` 里提出来（2026-10-04）
+
+**判据（新增）**：`std::sys::*` 的定义**不是**"用 C 实现的"，而是**"能让调用方绕过检查器的某条
+保证"** —— 任意指针↔视图（`extc_viewOf`）、任意地址 `mmap`/`mprotect`、裸 fd 读写、`fork` 一类
+改变进程模型的东西。一句话判据：**能不能绕过一条保证**。能 ⇒ `sys`（并应进
+`PRIVILEGED_MODULES`）；不能 ⇒ 普通公开面，**哪怕实现是 C**。
+
+按这条尺子搬了三处（从前是"实现是 C 就放 sys"的误置）：
+
+| 从 | 到 | 内容 |
+|---|---|---|
+| `std::sys::mem`（整个文件删掉） | **`std::mem`** | `extc_memFind` · `extc_memEq`（原语）· `find` · `contains` · `eq` · `copy` |
+| `std::sys::file` | **`std::http`** | `extc_http_date` · `extc_http_parse_date`（RFC 7231 日期，纯函数） |
+| `std::sys::net`（原语仍留 sys） | **`std::net`**（新门面） | 见下表 |
+
+**`std::net` 门面**（`epoll` 三件**不进**这里 —— 那是 `std::loop` 与协程调度器的内部齿轮）：
+
+| 名字 | 作用 |
+|---|---|
+| `sockPair(out)` | 一对已连接的 `AF_UNIX` 套接字（写进 `out[0]`/`out[1]`） |
+| `accept` · `read` · `write` | 接受 / 收 / 发（`read(fd, mut slice)` · `write(fd, slice)`） |
+| `nonblock` · `nodelay` · `timeout` · `shutdownWr` · `localPort` | 套接字属性与半关闭 |
+| `tcpListen(port, backlog)` | 监听 |
+| `tcpListenShared(port, backlog)` | **`SO_REUSEPORT`**：每个进程各听一条、内核按连接分发 —— 2C2G 上用多进程吃满两核靠它（每进程一条 epoll、一个线程 ⇒ 循环里一个锁都不用） |
+| `tcpConnectTo(ip, port)` · `dnsLookup(host, out)` · `resolve(addr, out)` | 连接与名字解析 |
+
+**诚实记账**：`PRIVILEGED_MODULES` 目前**仍然只有 `std::sys::heap`**（编译器名单）—— 也就是说
+`std::sys::io`（裸 fd 读写）、`std::sys::file`（`sendfile`）、`std::sys::proc`（`fork`/亲和性）、
+`std::sys::term` 这些**还没被挡住**。把它们加进名单是下一步，而且必须**先**把用户真正需要的
+东西提到 `std`（否则一扩名单就把测试与用户挡住 —— 这次搬的三处正是那个前提）。
+
+### 12.5h Base64：`std::b64`（2026-10-04）
+
+手写而不是 vendor：这东西没有 ABI 面、也没有"库"可言，而我们要的形状是**零分配 + 调用方给缓冲**
+（与 `std::json` 的 `strInto` 同一惯用法）。
+
+| 名字 | 作用 |
+|---|---|
+| `encode(src, out)` · `decode(src, out)` | RFC 4648 §4 标准表（`+` `/`），带 `=` 填充；返回写入长度，**缓冲不够 -1** |
+| `encodeUrl(src, out)` · `decodeUrl(src, out)` | §5 URL 安全表（`-` `_`），同样带 `=` 填充（"无填充"是 JWT 自己的约定，要它就在调用方裁 `=`） |
+| `encodedLen(n)` · `decodedMax(n)` | 算缓冲大小（调用方自己开数组时用） |
+
+**两张表不许混用**：`decode` 把 `_` 当**非法输入**（-1）—— 混用会静默错，这里让它响亮失败。
+拒绝面还包括：长度不是 4 的倍数 · 非法字符 · 填充出现在非末组 · 填充超过两个。
+
+**判据** `tests/b64/`：RFC 4648 §10 向量（覆盖三种余数）· URL 表 · 上面的拒绝面 · 往返 ·
+**25 组固定语料与 Python `base64` 逐字节对拍**（外部预言机）。
+
+用在哪：WebSocket 握手的 `Sec-WebSocket-Accept = base64(SHA1(key + GUID))`、HTTP Basic、
+以后 QQ 富媒体的分片上传。
+
+### 12.5i WebSocket：`std::ws`（RFC 6455 握手 + 帧，2026-10-04）
+
+手写而非 vendor（协议不到十页，没有"库"可言），形状照旧**零分配 + 调用方给缓冲**。
+这一层只管**字节**：连接、心跳、resume 归 QQ 协议层。
+
+| 名字 | 作用 |
+|---|---|
+| `acceptFor` | 握手应答 `base64(SHA1(key + GUID))`（`GUID` = §1.3 的魔术串），返回长度 |
+| `requestInto` | 客户端升级请求（已含结尾空行）；缓冲不够 -1 |
+| `frameInto` | 编码一个帧；**客户端总是带掩码**（RFC §5.1），`mask` 必须 4 字节 |
+| `hdrLen` | **增量解析**的头长度：`0` = 数据还不够、`-1` = 协议错、否则头字节数 |
+| `opOf` | 头的操作码（低 4 位） |
+| `finOf` | 是否 FIN（最后一个分片） |
+| `maskedOf` | 掩码位是否置位（服务端发来的帧必须不置位） |
+| `lenOf` | 负载长度（不含掩码键） |
+| `maskAt` | 掩码键在头里的偏移；无掩码 -1 |
+| `unmask` | 就地解掩码 |
+
+操作码常量：`OP_CONT`(0) · `OP_TEXT`(1) · `OP_BIN`(2) · `OP_CLOSE`(8) · `OP_PING`(9) · `OP_PONG`(10)。
+
+**拒绝面**（全部实测）：RSV 非零 · 未知 opcode · 分片控制帧 · 控制帧长度 > 125 ·
+**非最短长度编码** · 64 位长度最高位为 1 · 数据不够（给 0 而不是错）。
+
+**判据** `tests/ws/`：RFC §1.3 握手向量 · 拒绝面 · 往返 · **2 万次变异 fuzz（零崩溃）** ·
+**24 个帧与 Python 独立实现逐字节对拍**（126/127/65536 三种长度编码全覆盖）。
+
+### 12.6 特权层：`@builtin` 与 `std::sys::*` 只有标准库能用（定案 96）
+
+`@builtin` 的意思是"运行期里有这么一个函数，照这个签名调它" —— 也就是**给原语起名字**。它和
+`std::sys::heap`（板的特权层：`mmap`/`mprotect`/`munmap` + `extc_viewOf`）都**只有标准库能碰**：
+
+```extc
+@builtin fn extc_viewOf(p: ref u8, n: i64) -> mut slice<u8>   // ✗ 程序里不许写
+use std::sys::heap as sysheap                                 // ✗ 程序里不许导入
+```
+
+理由很直白：语言里其它地方都造不出指针、也改不了长度（没有指针运算、没有跨类型转换、下标有检查），
+而这两句任意一句就能把整张网拆掉 —— 实测（门加之前）8 字节的全局配 1,000,000 的长度，读第 999,999
+个字节，编得过、跑起来、rc=139。
+
+程序正常要用的是 **`std::heap` 的板**，它的门都是**有检查**的：
+
+```extc
+var pl = heap::plate::open(heap::DEFAULT_RESERVE)!
+var v  = pl.view(off, n)!        /* 板的偏移 + 长度（在册区间内） */
+var w  = pl.viewAt(p, n)!        /* 从 C 拿回的指针：先 holdsRange，再变视图 */
+var ok = pl.holds(p)             /* 一个指针对不对得上这块板 */
+```
+
+判据：`tests/errors/builtin_outside_std.extc`、`tests/errors/privileged_import.extc`（两条都必须被
+编译期挡掉），以及 `tests/cabi/platetable.extc` 里的 `viewat=rejected`（板外指针在 `viewAt` 也过不去 ✓）。
+
+### 12.4.1 `@noCopy`：状态有**身份**的类型不许按值拷贝（2026-09-24，定案 88）
+
+```extc
+@noCopy
+struct reader {
+    fd:  i32
+    len: i64
+    pos: i64        // ← "读到哪了"就是它的**身份**
+}
+```
+
+标了 `@noCopy` 的类型**只能按 `ref` / `mut ref` 传递**，按值拷贝**编译期报错**并给出修改方式：
+
+    error: `reader` is `@noCopy`: it may not be copied by value
+    note:  Pass it as `ref` / `mut ref` instead: `f(ref s)`, or declare the parameter `mut ref T`.
+           The state it carries has an identity, so a copy would give two names to one position.
+
+**四个复制点全挡**：绑定（`var b = a`）· 实参（`f(a)`）· 字段初始化（`{ c: a }`）· 赋值（`b = a`）
+**而这四件事照旧成立**：造新值（`reader { fd: 0, len: 0, pos: 0 }` / 构造函数）· `ref` 传参 ·
+读**字段**（`r.pos` 是 `i64`）· 在它上面**调方法**（接收者不是值位置）
+
+**为什么需要它**（四个语言一致的规矩）：拷贝一个 `reader` ⇒ 两份对象、同一个缓冲、**两个位置**，
+读起来互相穿插而两个名字都看不出来 —— C++ 删拷贝构造 · Rust 移动+借用 · Go 传指针 ·
+Python 无隐式对象拷贝，说的都是这一件事 而它同时是**流式链式**（`fin >> x >> line`）的地基：
+链式靠"返回的是同一个对象"，那就必须保证没人能悄悄拷它
+
+**在库里已经用上**：`std::io` 的 `reader` / `writer` · `std::fs` 的 `ifstream` / `ofstream`
+（它们本来就全程按 `ref` / `mut ref` 传 —— 加上注解后**一个调用点都没改**，这也验证了这个取舍）
+
+
+### 12.5 输入输出：`std::io`（2026-09-24 更新）
+
+**两种输入风格并存**（都在同一个 `reader` 上，可以混着用）：
+
+```extc
+use std::io
+
+fn run() -> result<unit, io::ioError> {
+    var line: [64]u8
+    var r = io::readerOf(io::STDIN_FD)   // 缓冲**不用你给**：64KB 是 new 出来的
+
+    let a = r.nextInt()?                 // OI 式：跳过空白，不用先读成行
+    let b = r.nextInt()?
+    println("求和 = ", a + b)
+
+    let n = r.nextLine(line[..])?        // 协议式：行是单位，读到换行为止（不含换行）
+    io::flushOut()                       // 跟 writeBytes 混用**必须**刷，不然顺序会乱
+    io::writeBytes("你说的是：")
+    io::writeBytes(line[0..n])
+    io::writeBytes("\n")
+    return success(unit {})
+}
+
+fn main() -> i32 {
+    match run() {
+        success(u) => { return 0 }
+        failure(er) => {
+            match er {
+                readFailed(fd)  => println("io: 读失败 (fd = ", fd, ")")
+                lineTooLong(n)  => println("io: 一行太长了（", n, " 字节）")
+                writeFailed(fd) => println("io: 写失败 (fd = ", fd, ")")
+                /* 枚举是穷尽的：ioError 一共有六个变体（readFailed / lineTooLong /
+                 * writeFailed / notATerminal / closed / destFull），少一个就编不过。 */
+                notATerminal(fd) => println("io: 不是终端 (fd = ", fd, ")")
+                closed(fd)       => println("io: 句柄已关 (fd = ", fd, ")")
+                destFull(n)      => println("io: 目标缓冲满（", n, " 字节）")
+            }
+            return 1
+        }
+    }
+}
+```
+
+**为什么读一行要包成一个 `reader`**：逐字节读是个坑 —— 老实现读 19MB / 50 万行要
+**2.30s**，而整块读 **0.012s**（**190×**）。原因不是"读得慢"，是**每读一个字节都进一次内核**
+⇒ 读 = **整块读（64KB）+ 内存里切**
+> 还有第二半（2026-09-24）：**切的那一段也得手写** —— 逐字节调 `nextByte()` 是
+> **一次方法调用一个字节**（它返回 `result` 结构体 ⇒ GCC 不肯内联）⇒
+> `nextLine`/`nextToken`/`skipSpace` 的**缓冲热循环直接写进函数体**之后：
+> 100 万行 **11.5 → 8.8ms** · 300 万词 **25.8 → 9.0ms**（同一个 `reader`，接口一个字没改）
+
+| 名字 | 干什么 |
+|---|---|
+| `io::readerOf(fd)` | 建一个 `reader`（**隐式 64KB 缓冲**，住在创建点的块里 ⇒ 跟创建它的块同寿）|
+| `r.nextInt()` | 读一个整数，**自己跳空白**（OI 式：不用先读成行再切）|
+| `r.nextToken(buf)` | 读一个词（连续非空白字符）到指定 buffer |
+| `r.nextLine(buf)` | 读一行到指定 buffer，**不含换行**（`\n` 被消费 ⇒ 续读位置正确）|
+| `r.nextByte()` / `r.skipSpace()` / `r.eof()` | 逐字节 / 跳空白 / 结束了吗 —— **接口**，热路径不这么写 |
+| `io::readSome(fd, buf)` | 从 fd 读一次，返回读到的字节数 |
+| `io::writeBytes(buf)` | 把一整块字节写出去（fd 直写，**无缓冲**）|
+| `io::flushOut()` / `flush()` | 把 `println` 那边的缓冲刷出去 |
+
+**三条失败路径分得开**（P′：不能证明的，语法上必须看得见）：读到 EOF = `success(0)`
+（**这不是错误**）· 行比 `out` 长 = `failure(lineTooLong)`（数据**没读全**）·
+`read(2)` 出错 = `failure(readFailed)`（上次读的结果可能已经坏了）
+> 老 `readLine` 把后两条**都当成 EOF** ⇒ 读错误看起来就是"文件结束了"，
+> 而超长行会被**静默切成两"行"**所以它被删掉了，不是改名
+
+分层：`std::sys::io`（**特权层 · io 族**：只有它写 `extern!` + 签字）· `std::io`（**普通库**：用 extC 写）
+> `sys` 不是"一个模块"，是**一条边界**在路径上的写法 ⇒ **按族分文件** ——
+> 后面还有 `std::sys::thread` / `std::sys::time` / `std::sys::net` / `std::sys::proc`
+已落地：`open`/`close`（`std::fs`，定案 77）+ 归属（定案 79）+ `main(args)`
+
+---
+
+**[索引](README.md)** · [← 11. 还没定的](17-undecided.md) · [13. 完整示例 →](19-examples.md)

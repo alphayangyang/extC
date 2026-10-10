@@ -384,7 +384,7 @@ fn main() -> i32 {
   被遮蔽的旧名字连同它的存储留在原地，之前取到的引用仍然指向它。
 - `var` 是存储：同一层重复声明同名报 `` `v` is already declared in this scope ``。
 - 参数可以被同层的 `let` 遮蔽。
-- `mut` **不是变量的修饰符**，而是类型里的一部分：`mut ref T`、`mut slice<T>`（见第 7 节）。
+- `mut` **不是变量的修饰符**，而是类型里的一部分：`mut ref T`、`mut slice<T>`（见「引用与视图」一节）。
   `let r: mut ref T = …` 是自相矛盾的，报 `` `let r` cannot be declared with a `mut` type ``。
 
 ```extc
@@ -423,7 +423,7 @@ fn main() -> i32 {
   拿只读引用的地方要可写的会报 `initializer expects 'mut ref i32', found 'ref i32'`。
 - 调用自由函数时引用实参要**写出来**：`addTo(ref c, 7)`；
   方法接收者**自动取地址**：`c.bump(5)`。
-- 可空引用取值：`!`（先检查再 trap，见第 9 节）或 `??` 兜底。
+- 可空引用取值：`!`（先检查再 trap，见「错误与逃生舱」一节）或 `??` 兜底。
 
 ### 7.2 解引用与自动解引用
 

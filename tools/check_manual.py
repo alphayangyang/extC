@@ -12,8 +12,8 @@
 import re, sys, glob, os, subprocess
 
 BASE = 'tools/manual-baseline.txt'
-man = '\n'.join(open(f, encoding='utf-8').read() for f in glob.glob('docs/manual/*.md')
-                if os.path.basename(f) != '20-internals.md')
+man = '\n'.join(open(f, encoding='utf-8').read() for f in sorted(glob.glob('docs/usage/*.md'))
+                if os.path.basename(f) != 'surface.md')
 
 def flags():
     exe = os.environ.get('EXTC', 'build/extc')

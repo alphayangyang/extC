@@ -45,89 +45,19 @@ C 编译器不是只给测试用：`--run` / `--build` / `--check-c` 都调用�
 
 用法：`./build/extc [options] <file.extc>`。
 
-### 4.1 生成 C / 输出到哪
+**全部开关见 [`flags.md`](flags.md)** —— 那一页由编译器自己的 `--help` 生成，不一致时验收会红。
+下面是几条最常用的：
 
 | 选项 | 作用 |
 |---|---|
 | `-o <file>` | 生成的 C 写到这个文件（默认写到 stdout） |
-| `--run` | 把生成的 C 写到 `build/<name>.c`，编译它，然后运行；用 `$CC`（默认 `cc`），在当前目录建 `./build/` |
-| `--build` | 与 `--run` 同一条编译路径，但停在运行之前；给了 `-o <file>` 时二进制写到那里，否则写 `build/<name>`（包的构建步骤要的形状：读 `<module>.link` 的链接开关，不执行） |
-| `--check-c` | 用 `$CC -fsyntax-only` 对生成的 C 做语法检查 |
+| `--run` / `--build` | 生成 → 编译；`--run` 再运行它 |
+| `--check-c` | 生成后做一次 `-fsyntax-only` |
+| `-O0` … `-O3` · `-march=native` | 传给 C 编译器的优化与移植开关 |
+| `-I` · `-L` · `-l` · `--ccflag` · `--pkg-config` | 模块搜索与链接 |
+| `-w` · `--dump-tokens` · `--dump-effects` · `--no-line-map` | 警告与中间产物 |
 
-补充：
-
-- `--run` / `--build` 下，生成物固定写到 `build/<name>.c`（`<name>` = 输入文件的下层文件名去掉 `.extc`）。此模式下 `-o` 不改变生成物的位置；`--build -o <file>` 里的 `<file>` 是**二进制**的路径。
-- `--check-c` 不带 `-o` 时不打印 C，只在检查失败时报错；`--check-c -o f.c` 既检查又写文件。
-- `--build` 与 `--run` 都会读取被加载模块自带的 `<module>.link` 链接开关。
-
-### 4.2 优化与移植
-
-| 选项 | 作用 |
-|---|---|
-| `-O0 .. -O3` | 生成 C 的优化级别（默认 `-O2`） |
-| `-march=native` | 允许本机专用指令（更快、可移植性更差） |
-
-这两项只影响调用 C 编译器的那条命令，不改变生成的 C 文本：同一个程序在 `-O0`、`-O3`、`-march=native` 下生成的 C 逐字节相同。
-
-### 4.3 模块与链接
-
-| 选项 | 作用 |
-|---|---|
-| `-I <dir>` | 加一个模块搜索目录（给 `use a::b` 用） |
-| `-l <name>` | 链接 `-l<name>`（可重复，例如 `-l z`） |
-| `-L <dir>` | 加一个库搜索目录（可重复） |
-| `--ccflag <flag>` | 往 C 编译器命令行追加一个原始 flag（可重复）；逃生舱，例如 `--ccflag -l:libsqlite3.so.0`（soname，`-l` 拼不出来）或 `--ccflag -I/usr/include/cairo` |
-| `--pkg-config <name>` | 追加 `pkg-config --cflags --libs <name>` 的输出（可重复） |
-
-- `use a::b` 在入口文件所在目录、`-I` 给出的目录、标准库目录里找文件 `a/b.extc`（按这个顺序）。找不到时错误信息会把搜过的路径逐条列出。
-- 缺参数的开关、`pkg-config` 找不到的包都是退出码 2 的硬错误。
-- 给了 `-l` / `--pkg-config` 时，链接需求会写进生成物的头注释（`/* extc-libs: … */`、`/* extc-pkg-config: … */`），构建系统能读回去。
-
-### 4.4 警告与诊断
-
-| 选项 | 作用 |
-|---|---|
-| `-w` | 不打印警告 |
-| `--dump-tokens` | 只做词法；打印 token 表 |
-| `--dump-effects` | 打印每个函数的 effect 摘要（Addr/Cont、arena 规则） |
-| `--no-line-map` | 不生成 `#line` 指令（默认生成） |
-
-### 4.5 调试环境开关
-
-默认只诊断、不改变输出；**两个标出的例外**：
-
-| 开关 | 作用 |
-|---|---|
-| `EXTC_DBG_ARENA=1` | 核对检查器算出的 arena 层号与代码生成是否一致 |
-| `EXTC_DBG_QN=1` | 跟踪限定名（`a::b::c`）怎么被解析 |
-| `EXTC_DBG_M=1` | 打印每模块的重命名声明计数 |
-| `EXTC_DBG_IMPL=1` | 打印每个 `impl` 块和它挂到的类型 |
-| `EXTC_DBG_HOME=1` | 打印每个函数的 home/zone 标志和它的 arena 点 |
-| `EXTC_DBG_OWNER=1` | 报告每个被别的函数体先够到的 result 槽 |
-| `EXTC_DUMP_EFFECTS=1` | 打印每个函数的 effect 摘要（与 `--dump-effects` 等价） |
-| `EXTC_NO_LEVELPASS=1` | 跳过 arena 层号这一趟；**改变输出**：会移动 414 份 golden 程序里 2 份的 arena 放置 |
-| `EXTC_SELFCHECK=1` | 跑检查器的自检；**能让构建失败**（退出码 1） |
-
-### 4.6 其它
-
-| 选项 | 作用 |
-|---|---|
-| `-h, --help` | 显示帮助（写到 stderr，退出码 0） |
-
-`--help` 没有列出、但驱动接受的开关：
-
-| 选项 | 作用 |
-|---|---|
-| `--explain-memory` | 打印每个分配点的放置：`level`（0 = 本帧，-1 = 调用者）、`lexical`（所在块）、是否在循环里；等价环境变量 `EXTC_EXPLAIN_MEMORY=1` |
-
-### 4.7 退出码
-
-| 退出码 | 含义 |
-|---|---|
-| 0 | 成功 |
-| 1 | 程序编不过（或 `--check-c` 的语法检查失败） |
-| 2 | 命令行本身错：未知选项、缺参数、没有输入文件、给了多个输入文件 |
-| `--run` | 被运行程序的退出码 |
+退出码：成功 `0` · 程序编不过 `1` · 命令行本身错 `2` · `--run` 返回被运行程序的退出码。
 
 ## 5. 三条最小用法
 

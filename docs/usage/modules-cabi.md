@@ -243,10 +243,8 @@ std-d-nocopy1.extc:4:1: error: `tok` is `@noCopy`: it may not be copied by value
 note: Pass it as `ref` / `mut ref` instead: `f(ref s)`, or declare the parameter `mut ref T`. The state it carries has an identity, so a copy would give two names to one position.
 ```
 
-标准库里的 `@noCopy`：`std::io` 的 `writer`、`std::fs` 的
-`ifstream` / `ofstream`（、）、`std::heap` 的 `plate`
-、`std::json` 的 `builder`、
-`std::loop` 的 `timers`。
+标准库里的 `@noCopy`：`std::io` 的 `writer`、`std::fs` 的 `ifstream` / `ofstream`、
+`std::heap` 的 `plate`、`std::json` 的 `builder`、`std::loop` 的 `timers`。
 
 ### 2.6 `std::dl`：动态加载
 
@@ -280,7 +278,7 @@ fn main() -> i32 {
 
 > **求值顺序的坑**：`io::cout` 的 `<<` 链实参是**从右往左**求值的（实测 `io::cout << "x=" << a() << b()`
 > 里 `b()` 先跑）。所以 `io::cout << triple(14) << dl::close(h)` 会先 `dlclose` 再调用 ⇒ 段错误。
-> `close` 永远另起一句、先把值取出来。完整对照见 [`stdlib.md`](stdlib.md) 第 4 节。
+> `close` 永远另起一句、先把值取出来。完整对照见 [`stdlib.md`](stdlib.md) 的「今天会咬人的组合」一节。
 
 ### 2.7 今天接不通的（清单）
 
@@ -296,6 +294,6 @@ fn main() -> i32 {
 | 用户文件里声明 `@builtin` | `` `@builtin` declarations are standard-library only `` | 、实测 |
 | 用户文件 import `std::sys::heap` | 被挡（特权层） | 、 |
 | 用户文件 import 其余 `std::sys::*` | **能**（`io` / `net` / `pool` / `domain` 实测都编过、也能调）——这条边界目前是约定 | 实测 |
-| `@private` struct 用裸类型名 | **能**（限定名反被挡） | 实测（见 1.3） |
+| `@private` struct 用裸类型名 | **能**（限定名反被挡） | 实测 |
 | 模块按目录 import（`use alpha2` 找 `alpha2/…`） | 不行：模块 = 一个文件 | 、实测 |
 | 两个模块共享一个"模块"（两个文件一个模块） | 不支持：一个文件一个模块 |  |

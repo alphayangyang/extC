@@ -44,7 +44,7 @@ prelude 是编译器在每个编译单元前先过一遍的一段 extC 源码。
 | `domain` | 域的**接口标记**，方法由编译器合成，库侧在 `std::sys::domain` |  |
 
 `print(x)` / `println(x)` 是内建，但**已经弃用**：编译器每次都会说
-``warning: `println` is deprecated``，并提示 `io::cout` 是唯一的控制台出口（见第 3 节 `std::io`）。
+``warning: `println` is deprecated``，并提示 `io::cout` 是唯一的控制台出口（见下面 `std::io` 一节）。
 
 ### `varArray<T>`：arena 底的动态数组
 

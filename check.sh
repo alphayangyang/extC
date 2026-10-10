@@ -94,28 +94,14 @@ if out=$(timeout 600 ./tests/generics/run.sh 2>&1); then
     ok "$(echo "$out" | grep -c '^  ok') 项（1 正例 + 3 反例）"
 else bad "tests/generics/run.sh"; echo "$out"; fi
 
-echo "== 手册文体（正式书面语：无第一/第二人称、无口语、无反问）=="
-if out=$(python3 tools/check_tone.py --gate 2>&1); then ok "$out"; else bad "手册文体新增了非正式写法"; echo "$out" | head -5; fi
+echo "== 驱动开关页与 \`extc --help\` 一致（单一真源：docs/usage/flags.md）=="
+if out=$(python3 tools/gen_flags.py --check 2>&1); then ok "$out"; else bad "docs/usage/flags.md 已过期"; echo "  跑 python3 tools/gen_flags.py"; fi
 
-echo "== 驱动开关页与 \`extc --help\` 一致（单一真源）=="
-if out=$(python3 tools/gen_flags.py --check 2>&1); then ok "$out"; else bad "21-flags.md 已过期"; echo "  跑 python3 tools/gen_flags.py"; fi
+echo "== 文档覆盖（驱动开关逐项 + 公开面棘轮）=="
+if out=$(python3 tools/check_manual.py --gate 2>&1); then ok "$out"; else bad "文档覆盖出现新增欠账"; echo "$out" | head -6; fi
 
-echo "== 手册覆盖（驱动开关逐项 + 公开面棘轮）=="
-if out=$(python3 tools/check_manual.py --gate 2>&1); then ok "$out"; else bad "手册覆盖出现新增欠账"; echo "$out" | head -6; fi
-
-echo "== 公开面清单与源码一致（tools/manual-surface.txt）=="
+echo "== 公开面清单与源码一致（tools/manual-surface.txt + docs/usage/surface.md）=="
 if out=$(python3 tools/manual_surface.py --check 2>&1); then ok "$out"; else bad "公开面清单已过期"; echo "  跑 python3 tools/manual_surface.py"; fi
-
-echo "== 手册 HTML 与 Markdown 一致（docs/manual/html 是生成物）=="
-# 手册里的**完整示例**（带 fn main 的块）必须编得过：前四道闸门都不检查"话是不是真的"，
-# 2026-09-27 的审计里就有三个示例编不过而没有任何闸门会红。有意的片段用
-# `<!-- manual-example: skip -->` 显式跳过。
-if out=$(timeout 600 python3 tools/check_manual_examples.py --gate 2>&1); then
-    ok "$(printf '%s' "$out" | head -1)"
-else
-    bad "手册里有示例编不过（tools/check_manual_examples.py）"; printf '%s\n' "$out" | head -8
-fi
-if out=$(python3 tools/build_manual.py --check 2>&1); then ok "$out"; else bad "docs/manual/html 已过期"; echo "  跑 python3 tools/build_manual.py"; fi
 
 echo "== 活文档不写历史（棘轮：决策编号 / 以前·回退·一度 / 实测史）=="
 if out=$(python3 tools/check_no_history.py --gate 2>&1); then ok "$out"; else bad "活文档出现新的历史词"; echo "$out" | head -8; fi

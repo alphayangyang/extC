@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """由编译器自身的 `--help` 生成手册的驱动开关页（单一真源）。
 
-    tools/gen_flags.py           重新生成 docs/manual/21-flags.md
+    tools/gen_flags.py           重新生成 docs/usage/flags.md
     tools/gen_flags.py --check   与生成物不一致则失败（check.sh 调用）
 """
 import subprocess, sys, os, re
 
 EXE = os.environ.get('EXTC', 'build/extc')
-PAGE = 'docs/manual/21-flags.md'
+PAGE = 'docs/usage/flags.md'
 
 def help_text():
     out = subprocess.run([EXE, '--help'], capture_output=True, text=True)
@@ -40,7 +40,7 @@ if __name__ == '__main__':
     if '--check' in sys.argv:
         cur = open(PAGE, encoding='utf-8').read() if os.path.exists(PAGE) else ''
         if cur != out:
-            print('docs/manual/21-flags.md 与 `extc --help` 不一致 -- 跑 tools/gen_flags.py'); sys.exit(1)
+            print('docs/usage/flags.md 与 `extc --help` 不一致 -- 跑 tools/gen_flags.py'); sys.exit(1)
         print('ok  驱动开关页与 `extc --help` 一致（%d 个开关）' %
               len(set(re.findall(r'(?<![\w-])(--?[a-zA-Z][\w-]*)', text)))); sys.exit(0)
     open(PAGE, 'w', encoding='utf-8').write(out)
