@@ -72,6 +72,49 @@ if [ -x tests/annot/run.sh ]; then
     fi
 fi
 
+echo "== 回收运行期：发射出的文本 + 驱动断言（owns 守卫 / 描述符随槽）=="
+# 被测的是 `src/back/reclaim.c` **发射出来的**那份文本：run.sh 先用仓库的发射口导成
+# extc_reclaim_runtime.inc，再和断言程序一起编译（另有 ASan/UBSan 一遍）⇒ 断言的是生成文件里
+# 真正跑的那份代码。这是门禁：编译不过或断言不过就是红。
+if [ -x tests/reclaim/run.sh ]; then
+    if out=$(tests/reclaim/run.sh 2>&1); then
+        printf '%s\n' "$out" | sed 's/\x1b\[[0-9;]*m//g' | grep -E "ok |FAIL"
+        pass=$((pass + 1))
+    else
+        echo "$out"
+        bad "回收运行期用例"
+    fi
+fi
+
+echo "== 回收行为基线：只记录现状（exit 0），红条目在表里标出 =="
+# 与 tests/arena-soundness 同口径：这是证据，不是回归判据 ⇒ 永远 exit 0，不计入失败。
+# 只在开关下成立的判据在下面的 reclaim-shapes/run-switch.sh 里，那一条才是门禁。
+# ⚠️ 这里 `env -u EXTC_DBG`：基线记录的是**普通构建**下的形状；assert 版下 cyclic_shape 会撞到
+# 一个与回收无关的已知逃逸分析兜底（check_escape.c:730），那张表不该被它污染（断言版另有那一节）。
+if [ -x tests/reclaim-shapes/run.sh ]; then
+    if out=$(env -u EXTC_DBG tests/reclaim-shapes/run.sh 2>&1); then
+        printf '%s\n' "$out" | sed 's/\x1b\[[0-9;]*m//g' \
+            | grep -E '^(cond-save|reject_|cyclic-shape|promote-place|scale-growth)' | sed 's/^/  /'
+        pass=$((pass + 1))
+    else
+        echo "$out"
+        bad "回收行为基线"
+    fi
+fi
+
+echo "== 回收开关（EXTC_RECLAIM=1）：界与轮数解耦 + 曾经的 SEGV 用例不崩 =="
+# 这一节是**门禁**：`scale_growth` N vs 4N 的峰值比 < 1.5；关掉开关这条必须红
+# （`EXTC_RECLAIM=0 tests/reclaim-shapes/run-switch.sh` ⇒ 2.99× ⇒ exit 1，判据有牙）。
+if [ -x tests/reclaim-shapes/run-switch.sh ]; then
+    if out=$(tests/reclaim-shapes/run-switch.sh 2>&1); then
+        printf '%s\n' "$out" | sed 's/\x1b\[[0-9;]*m//g' | grep -E "ok |FAIL"
+        pass=$((pass + 1))
+    else
+        echo "$out"
+        bad "回收开关断言"
+    fi
+fi
+
 echo
 echo "通过 $pass，失败 $fail"
 [ "$fail" -eq 0 ]

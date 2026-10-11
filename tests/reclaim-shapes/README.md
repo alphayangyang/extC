@@ -12,6 +12,9 @@
   这是证据，不是回归判据）⇒ **不接进 `check.sh` 的门禁计数**。
 * 每个形状 = 一次 `extc` + 一次 `gcc` + 一次运行，整体 < 1s；峰值内存取
   `/usr/bin/time -v` 的 `Maximum resident set size`。
+* **开关下的判据单独一组**：`./run-switch.sh`（`EXTC_RECLAIM=1`）是**门禁** —— 只在开关
+  打开时成立的断言放那里；关掉开关（`EXTC_RECLAIM=0 ./run-switch.sh`）它必须红。
+  两个脚本的分工见下面「开关」一节。
 
 ## 现在的表（`./run.sh` 输出）
 
@@ -22,9 +25,41 @@
 | `reject_deep_store_call` | rej | — | — | **绿** 编译期挡住：`points into a deeper scope (depth 2) > arena (depth 1)` |
 | `cyclic-shape` | ok | ok | 1.42 MB | **绿** 有环：next/prev 与 child/parent 互指；fwd=back、tree、cache 全对 |
 | `promote-place` | ok | ok | 1.42 MB | **绿** 生成物：`kept→__extc_a[1]`（循环外），`doomed→__extc_a[2]`（循环体，每轮 release）|
-| `scale-growth N→4N` | ok | ok | ≈4.6 MB → ≈13.8 MB | **红** 峰值随轮数增长（≈3× @ ×4 轮）；回收未实现 ⇒ 界与轮数有关 |
+| `scale-growth N→4N` | ok | ok | ≈4.6 MB → ≈13.8 MB | **红** 峰值随轮数增长（≈3× @ ×4 轮）；开关**关**时回收未生效 ⇒ 界与轮数有关 |
 
 数字是量级参考（机器噪声 ±10~20%）。
+
+## 开关（`EXTC_RECLAIM=1`）：哪些条目与开关无关，哪些只在开关下成立
+
+`EXTC_RECLAIM=1` 只换**运行期**（codegen 发射 `src/back/reclaim.c` 的那段文本：位图 slab 分配、
+指针赋值计数、`owns` 守卫、区域清扫），不改语义。所以：
+
+| 条目 | 开关关 | 开关开 | 判据归属 |
+|---|---|---|---|
+| `cond_save`（`saved=7`）| 绿 | 绿 | **与开关无关**：语义钉在两处都成立 |
+| `cyclic_shape`（fwd=back / tree / cache）| 绿 | 绿 | **与开关无关**：有环语义一样对 |
+| `reject_deep_store*`（编译期拒）| 绿 | 绿 | **与开关无关**：这是前端判据 |
+| `promote_place`（生成物归属）| 绿 | 绿 | **与开关无关**：提权归属由 codegen 的 arena 站点定 |
+| 曾经的 SEGV 用例（见下）| — | **必须绿** | **只在开关下成立**：开关才引入 `owns` 守卫 |
+| `scale_growth` N→4N（峰值比）| **红**（≈3.0×）| **绿**（≈1.0×）| **只在开关下成立**：界与轮数解耦 |
+
+曾经的 SEGV 用例 = `tests/heap/loan`、`tests/heap/plate`、`tests/cabi/heapmain`、
+`tests/coro/iterator_protocol`：板/池/栈/C 返回的指针不是 rc 槽，开关把计数挂在指针赋值上后这些
+形状都会经过 `inc`/`dec`/`register`；`owns` 守卫必须一个字节都不碰（否则 `slabOf` 的按位与会
+找到一段无关内存，板的 4 GiB 保留区甚至没 commit ⇒ SEGV）。
+
+### `./run-switch.sh`（门禁，`EXTC_RECLAIM=1`）
+
+判据：`scale_growth` N vs 4N 峰值比 **< 1.5**；`cond_save` / `cyclic_shape` 语义不变；
+上表四个曾经的 SEGV 用例 **rc=0** 且输出逐字不变。实测：
+
+| 场景 | N=200000 | N=800000 | 比值 | 判定 |
+|---|---|---|---|---|
+| 开关关 | 4.61 MB | 13.79 MB | **2.99×** | 红（`run-switch.sh` exit 1）|
+| 开关开 | 4.79 MB | 4.79 MB | **1.00×** | 绿（`run-switch.sh` exit 0）|
+
+这就是「判据有牙」的证据：把开关关掉这条断言必须失败。
+
 
 ## 逐条
 
@@ -71,7 +106,9 @@
 区域，函数返回前整片不回收 ⇒ 峰值 RSS 随轮数线性增长。
 
 这正是 `RECLAMATION.md` 要解决的问题：「不可达但仍占存储的对象，其总量有界，且这个界与循环
-轮数无关」。今日**界与轮数有关** ⇒ 红。将来回收/提权搬移落地、内存变平，这一条会转绿。
+轮数无关」。**开关关**时界与轮数有关 ⇒ 红；**开关打开**（`EXTC_RECLAIM=1`）后计数归零当场回收
++ 区域清扫兜环 ⇒ 峰值与轮数无关（实测 2.99× → 1.00×），这一条在
+[`run-switch.sh`](run-switch.sh) 里被固化成门禁断言。
 
 ## 复现一条（手工）
 
@@ -82,7 +119,19 @@ gcc -fwrapv -O1 /tmp/cond.c -o /tmp/cond && /tmp/cond
 # 峰值 RSS 要**对生成物二进制**取（`extc --run` 时被计的是 extc 自己，不是程序）
 ./build/extc tests/reclaim-shapes/scale_growth.extc -o /tmp/scale.c
 gcc -fwrapv -O1 /tmp/scale.c -o /tmp/scale
-/usr/bin/time -v /tmp/scale 800000     # Maximum resident set size
+/usr/bin/time -v /tmp/scale 800000     # Maximum resident set size（开关关：≈13.8 MB）
+
+# 开关打开：同一份形状 ⇒ 峰值不随轮数涨（≈4.8 MB）
+EXTC_RECLAIM=1 ./build/extc tests/reclaim-shapes/scale_growth.extc -o /tmp/scale-r.c
+gcc -fwrapv -O1 /tmp/scale-r.c -o /tmp/scale-r
+/usr/bin/time -v /tmp/scale-r 800000
+```
+
+门禁那组一次跑完（绿；`EXTC_RECLAIM=0` 前置则 ① 红 ⇒ exit 1）：
+
+```bash
+tests/reclaim-shapes/run-switch.sh
+EXTC_RECLAIM=0 tests/reclaim-shapes/run-switch.sh   # 复现"关掉即红"
 ```
 
 `EXTC_DBG_HOME=1 ./build/extc ...` 也会打每个函数的 home/zone 与 arena 站点（输出含整个
