@@ -1,0 +1,39 @@
+/* 形状 ④：**提权发生的位置** —— 「分配在循环体、但真的逃逸到外层」的那一份存储，
+ * 在生成物里应当归到外层区域。
+ *
+ * 同一个循环体里放两个节点，只有逃逸与否不同：
+ *   · `doomed` —— 不逃逸 ⇒ 存储留在**循环体区域**（生成物里是 __extc_a[2]，
+ *                 循环每轮结束时 release）；
+ *   · `kept`   —— 存进函数层的 `saved` ⇒ 存储归到**函数体区域**
+ *                 （生成物里是 __extc_a[1]，循环体里不 release）。
+ *
+ * 判据（绿）在 `run.sh` 里是**生成物结构**：两个 alloc 的 arena 下标不同，
+ * `doomed` 的 arena 在循环里被 release、`kept` 的没有。
+ *
+ * ⚠️ 诚实的边界：生成物里看得见的是**归属（placement）**—— 逃逸的那一份从一开始就
+ *    分配进外层 arena；机制说的「先落当前区、真实逃逸时把那一份转移过去，地址不变」
+ *    在今日 codegen 里**没有对应的运行期搬移动作**（没有 promote/transfer 调用）。
+ *    所以这里断言的是「存储确实归到了外层区域」，不是「发生了一次搬移」。
+ */
+use std::io
+
+struct node { val: i64  next: ?ref node }
+
+fn main() -> i32 {
+    var saved: ?ref node = null
+    var i: i64 = 0
+    while i < 8 {
+        var doomed = new node           // 不逃逸 ⇒ 循环体区域
+        doomed.val = i
+        doomed.next = null
+        var kept = new node             // 存进 saved ⇒ 逃逸到函数体区域
+        kept.val = i
+        kept.next = saved
+        if i == 3 { saved = kept }
+        i = i + 1
+    }
+    var v: i64 = -1
+    if saved != null { v = (*saved).val }
+    io::cout << "saved=" << v << "\n"
+    return 0
+}
