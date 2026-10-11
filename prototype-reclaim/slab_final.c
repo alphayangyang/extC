@@ -123,11 +123,14 @@ static void r2_free_slot(Slab *s, size_t i) {
     s->hold[i] = 0;
     s->used--;
 }
+#define HOLD_SAT 65535u
 static inline void upd_hold(Obj *o, int delta) {
     Slab *s = slab_of(o); size_t i = slot_of(s, o);
-    if (delta > 0) { s->hold[i]++; }
-    else if (s->hold[i]) { s->hold[i]--;
-        if (s->hold[i] == 0 && RC_FREE) { r2_free_slot(s, i); g_rcfreed++; } }
+    if (delta > 0) { if (s->hold[i] != HOLD_SAT) s->hold[i]++; }        /* 到 65535 粘住 */
+    else if (s->hold[i] && s->hold[i] != HOLD_SAT) {                     /* 饱和值不再减 ⇒ 永不误判归零 */
+        s->hold[i]--;
+        if (s->hold[i] == 0 && RC_FREE) { r2_free_slot(s, i); g_rcfreed++; }
+    }
 }
 static inline void r2_mark(void *p) { Slab *s = slab_of(p); size_t i = slot_of(s, p); s->mark[i >> 6] |= (uint64_t)1 << (i & 63); }
 static inline int  r2_marked(void *p) { Slab *s = slab_of(p); size_t i = slot_of(s, p); return (s->mark[i >> 6] >> (i & 63)) & 1; }
