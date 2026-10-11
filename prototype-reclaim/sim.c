@@ -28,7 +28,10 @@ static long rss_kib(void) {
     fclose(f); return res * (long)(sysconf(_SC_PAGESIZE) / 1024);
 }
 static long sink, g_peak_rss;
-static int64_t g_t_mark, g_t_verify, g_t_free, g_t_recount;
+static int64_t g_t_push, g_t_mark, g_t_verify, g_t_free, g_t_recount, g_t_root;
+static size_t g_nfreed;
+static int64_t g_t_alloc; static size_t g_nalloc;
+#include <sys/resource.h>
 
 /* ==================== 第 1 段：真实生成的运行时（逐字） ==================== */
 #define EXTC_MALLOC __attribute__((malloc))
@@ -83,13 +86,54 @@ typedef struct extc_pblock { struct extc_pblock *prev; struct extc_pblock **self
                              int fresh; int64_t cap, used; uint32_t mark; uint32_t rid; uint32_t rsmark; uint32_t vmark; const extc_typedesc *td; char data[1]; } extc_pblock;
 #define PB(p) ((extc_pblock *)((char *)(p) - offsetof(extc_pblock, data)))
 #define NREG 4
+#define SLAB_BYTES (1u << 20)
+typedef struct Slab { char *mem; size_t cap, used; struct Slab *next; } Slab;
+typedef struct { Slab *cur, *all; extc_pblock *freel; int64_t bytes; size_t nblocks, nslabs; } PR;
+static PR g_pr[NREG];
+static int g_slab = 0;
+static void *slab_alloc_raw(extc_arena *a, uint32_t rid, int64_t n, const char *f, int l, const extc_typedesc *td) {
+    PR *r = &g_pr[rid];
+    size_t need = sizeof(extc_pblock) + (size_t)n;
+    extc_pblock *b = NULL;
+    if (r->freel && r->freel->cap >= n) { b = r->freel; r->freel = b->prev; }      /* 空闲链复用 */
+    else {
+        if (!r->cur || r->cur->cap - r->cur->used < need) {                        /* 换新 slab */
+            Slab *sl = calloc(1, sizeof(Slab));
+            sl->cap = SLAB_BYTES > need ? SLAB_BYTES : need * 2;
+            sl->mem = malloc(sl->cap); sl->next = r->all; r->all = sl; r->cur = sl; r->nslabs++;
+        }
+        b = (extc_pblock *)(r->cur->mem + r->cur->used); r->cur->used += need;
+        b->cap = n; b->fresh = 1;
+    }
+    memset(b, 0, sizeof(extc_pblock));
+    b->cap = n; b->used = n; b->td = td; b->rid = rid; b->fresh = 0;
+    /* 挂进区域链：清扫与整片释放都靠它（漏了这步 = 什么都没释放） */
+    b->prev = (extc_pblock *)a->top; b->self = (extc_pblock **)&a->top;
+    if (a->top) ((extc_pblock *)a->top)->self = &b->prev;
+    a->top = (extc_ablock *)b;
+    r->bytes += n; r->nblocks++;
+    return (void *)((char *)b + offsetof(extc_pblock, data));
+}
+static void slab_free_raw(uint32_t rid, extc_pblock *b) {
+    PR *r = &g_pr[rid];
+    r->bytes -= b->cap; r->nblocks--;
+    b->prev = r->freel; r->freel = b;
+}
+static void slab_release_chain(extc_arena *a) {          /* slab 模式：整片"释放"= 逐块还给空闲链 */
+    while (a->top) { extc_pblock *b = (extc_pblock *)a->top; a->top = (extc_ablock *)b->prev; slab_free_raw(b->rid, b); }
+}
+static void slab_destroy(void) {
+    for (int i = 0; i < NREG; i++) { Slab *s = g_pr[i].all; while (s) { Slab *n = s->next; free(s->mem); free(s); s = n; } g_pr[i].all = NULL; }
+}
 static extc_pblock *FREEL[NREG];   /* 每区域的空闲块链：空闲块的 prev 当链 */
 static int g_reuse = 0;
 
 static uint32_t g_alloc_rid;
 static void *extc_alloc_solo(extc_arena *a, int64_t n, const char *f, int l, const extc_typedesc *td) {
+    g_nalloc++;
     if (n <= 0) n = 1;
     n = (n + 7) & ~(int64_t)7;
+    if (g_slab) return slab_alloc_raw(a, g_alloc_rid, n, f, l, td);
     extc_pblock *b = NULL;
     if (g_reuse && FREEL[g_alloc_rid] && FREEL[g_alloc_rid]->cap >= n) {   /* 先从空闲链取 */
         b = FREEL[g_alloc_rid]; FREEL[g_alloc_rid] = b->prev; b->prev = NULL;
@@ -105,6 +149,7 @@ static void *extc_alloc_solo(extc_arena *a, int64_t n, const char *f, int l, con
     return (void *)((char *)b + offsetof(extc_pblock, data));
 }
 static void blk_free_or_reuse(extc_pblock *b) {                             /* 复用：还给区域，不还给系统 */
+    if (g_slab) { slab_free_raw(b->rid, b); return; }
     if (g_reuse) { b->prev = FREEL[b->rid]; FREEL[b->rid] = b; }
     else free(b);
 }
@@ -197,16 +242,16 @@ static size_t sweep_rs(uint32_t rid, extc_arena *a, void **own_roots, int nroot,
     MKN = 0;
     for (int i = 0; i < nroot; i++) if (own_roots[i]) mk_push(own_roots[i]);
     for (size_t i = 0; i < RSN[rid]; i++) mk_push(RS[rid][i]);
+    int64_t t1 = now_ns();
     size_t marked = 0;
     while (MKN) { void *o = MK[--MKN]; extc_pblock *b = PB(o);
         if (b->mark == e) continue;
         b->mark = e; marked++;
-        if (b->rid != rid) continue;                  /* 区域外的对象都当活的：不往下走 */
+        if (b->rid != rid) continue;
         int np = b->td ? b->td->nptr : 0;
         for (int i = 0; i < np; i++) { void *c = *(void **)((char *)o + b->td->off[i]); if (c) mk_push(c); } }
-    g_t_mark += now_ns() - t0; int64_t t1 = now_ns();
-    if (verify) {                                   /* 全根独立走一遍：本区域可达却没被标记 ⇒ 入边集不完备 */
-        uint32_t ve = ++g_epoch; MKN = 0;
+    int64_t t2 = now_ns();
+    if (verify) { uint32_t ve = ++g_epoch; MKN = 0;
         for (int i = 0; i < nall; i++) if (all_roots[i]) mk_push(all_roots[i]);
         while (MKN) { void *o = MK[--MKN]; extc_pblock *b = PB(o);
             if (b->vmark == ve) continue;
@@ -214,10 +259,19 @@ static size_t sweep_rs(uint32_t rid, extc_arena *a, void **own_roots, int nroot,
             if (b->rid == rid && b->mark != e) g_rs_bad++;
             int np = b->td ? b->td->nptr : 0;
             for (int i = 0; i < np; i++) { void *c = *(void **)((char *)o + b->td->off[i]); if (c) mk_push(c); } } }
+    int64_t t3 = now_ns();
+    size_t nf = 0;
     extc_pblock **l = (extc_pblock **)&a->top;
     while (*l) { extc_pblock *b = *l; if (b->mark == e) { b->self = l; l = &b->prev; }
-        else { *l = b->prev; if (b->prev) b->prev->self = l; free(b); } }
-    if (out_bytes) { int64_t tot = 0; for (extc_pblock *b = (extc_pblock *)a->top; b; b = b->prev) tot += b->cap; *out_bytes = tot; }
+        else { *l = b->prev; if (b->prev) b->prev->self = l; blk_free_or_reuse(b); nf++; } }
+    int64_t t4 = now_ns();
+    int64_t tot = 0;
+    if (out_bytes && !g_slab) for (extc_pblock *b = (extc_pblock *)a->top; b; b = b->prev) tot += b->cap;
+    if (out_bytes && g_slab) tot = g_pr[rid].bytes;
+    int64_t t5 = now_ns();
+    g_t_push += t1-t0; g_t_mark += t2-t1; g_t_verify += t3-t2; g_t_free += t4-t3; g_t_recount += t5-t4;
+    g_nfreed += nf;
+    if (out_bytes) *out_bytes = tot;
     if (out_marked) *out_marked = marked;
     return marked;
 }
@@ -258,11 +312,12 @@ int main(int argc, char **argv) {
 
     g_mode = !strcmp(mode,"solo") ? 1 : !strcmp(mode,"sweep") ? 2
            : !strcmp(mode,"sweepc") ? 3 : !strcmp(mode,"ev") ? 4
-           : !strcmp(mode,"gc") ? 5 : !strcmp(mode,"rs") ? 6 : !strcmp(mode,"rsev") ? 7 : !strcmp(mode,"rsr") ? 8 : 0;
+           : !strcmp(mode,"gc") ? 5 : !strcmp(mode,"rs") ? 6 : !strcmp(mode,"rsev") ? 7 : !strcmp(mode,"rsr") ? 8 : !strcmp(mode,"rsl") ? 9 : 0;
     const int gl = (g_mode == 5);            /* 真全局 GC：一个堆，全部东西都在里面 */
     g_count = (g_mode == 3 || g_mode == 4 || g_mode == 7);
     RS_VERIFY = getenv("VERIFY") != NULL;
     g_reuse = (g_mode == 8) || getenv("REUSE") != NULL;
+    g_slab  = (g_mode == 9) || getenv("SLAB") != NULL;
     const int solo = g_mode >= 1, dolive = (g_mode >= 2);
 
     extc_arena __extc_a[4] = {0};
@@ -278,7 +333,7 @@ int main(int argc, char **argv) {
     for (long i = 0; i < N; i++) {
         int b = (int)(i % BUCKETS);
         g_alloc_rid = 2;                                  /* 解析区 */
-        if (!gl) extc_arena_release(&__extc_a[2]);   /* 全局 GC：没有每轮整片释放这回事 */
+        if (!gl) { if (g_slab) slab_release_chain(&__extc_a[2]); else extc_arena_release(&__extc_a[2]); }   /* 全局 GC：没有每轮整片释放这回事 */
         node *t1,*t2,*t3;
         if (gl) { t1=extc_alloc_solo(&__extc_a[1],sizeof(node),"sim.extc",7,&TD_NODE);
                   t2=extc_alloc_solo(&__extc_a[1],sizeof(node),"sim.extc",8,&TD_NODE);
@@ -326,6 +381,7 @@ int main(int argc, char **argv) {
         }
         /* 触发量 = **垃圾量** vs **要走的可达集**：标记成本 ∝ 可达集，所以垃圾攒到与可达集
          * 同量级才值得扫。拿占用去比就会每轮都触发。 */
+        if (g_slab) arena1 = g_pr[1].bytes;                 /* O(1) 计数器，不再走链 */
         int64_t occ = arena1 + (gl ? arena3 : 0), garbage = occ - live1;
         int64_t reach = gl ? live1 : (live1 + arena3);
         int64_t thr = reach > TRIGGER ? reach : TRIGGER;
@@ -335,10 +391,12 @@ int main(int argc, char **argv) {
             for (int j=0;j<BUCKETS;j++) roots[nr++]=head[j];
             for (int j=0;j<(ncache<8000?ncache:8000);j++) roots[nr++]=cache[j];
             roots[nr++] = ihead;                        /* 索引链的根：不加它就不健全 */
-            if (g_mode == 6 || g_mode == 7 || g_mode == 8) {
+            if (g_mode == 6 || g_mode == 7 || g_mode == 8 || g_mode == 9) {
+                int64_t tr0 = now_ns();
                 void *own[BUCKETS + 8192]; int no = 0;
                 for (int j=0;j<BUCKETS;j++) own[no++]=head[j];
                 for (int j=0;j<(ncache<8000?ncache:8000);j++) own[no++]=cache[j];
+                g_t_root += now_ns() - tr0;
                 sweep_rs(1, &__extc_a[1], own, no, roots, nr, &after, &mk, RS_VERIFY);
                         } else if (gl) { extc_sweep_global(&__extc_a[1], &__extc_a[3], roots, nr, &TD_NODE, &after, &mk);
                 int64_t t3 = 0; for (extc_pblock *pb=(extc_pblock*)__extc_a[3].top; pb; pb=pb->prev) t3 += pb->cap;
@@ -354,11 +412,19 @@ int main(int argc, char **argv) {
         if (arena3 > peak3) peak3 = arena3;
     }
     int64_t dt = now_ns() - t0;
-    extc_arena_destroy(&__extc_a[0]); extc_arena_destroy(&__extc_a[1]);
-    extc_arena_release(&__extc_a[2]); extc_arena_destroy(&__extc_a[2]);
-    extc_arena_destroy(&__extc_a[3]);
-    printf("%-6s N=%-7ld 共享=%-5d 索引=%-7ld 对象=%-5d 耗时=%8.1fms 峰值总计=%8zuKiB 峰值RSS=%8ldKiB 清扫=%-4zu 标记总量=%-10zu 入边集异常=%-4zu 最大停顿=%9.1fus 停顿总=%7.2fms 命中=%5.1f%%  阶段ms[标记%.1f 复核%.1f 释放%.1f 重算%.1f]\n",
+    if (g_slab) {                                  /* slab 模式：链上的块归 slab 所有，不能 free */
+        for (int j = 0; j < 4; j++) slab_release_chain(&__extc_a[j]);
+        slab_destroy();
+    } else {
+        extc_arena_destroy(&__extc_a[0]); extc_arena_destroy(&__extc_a[1]);
+        extc_arena_release(&__extc_a[2]); extc_arena_destroy(&__extc_a[2]);
+        extc_arena_destroy(&__extc_a[3]);
+    }
+    printf("%-6s N=%-7ld 共享=%-5d 索引=%-7ld 对象=%-5d 耗时=%8.1fms 峰值总计=%8zuKiB 峰值RSS=%8ldKiB 清扫=%-4zu 标记总量=%-10zu 入边集异常=%-4zu 最大停顿=%9.1fus 停顿总=%7.2fms 命中=%5.1f%%  阶段ms[压根%.2f 标记%.2f 释放%.2f 重算%.2f] 释放块=%zu 分配次数=%zu\n"
+        "        slab: 区0=%zu/%zuKB 区1=%zu/%zuKB 区2=%zu/%zuKB 区3=%zu/%zuKB\n",
         mode, N, ncache, indexmax, objsz, dt/1e6, (size_t)(peak1+peak3)/1024, g_peak_rss,
-        g_sweeps, g_marked, g_rs_bad, P.max_ns/1000.0, P.total_ns/1e6, g_kills?100.0*g_evfired/g_kills:0.0, g_t_mark/1e6, g_t_verify/1e6, g_t_free/1e6, g_t_recount/1e6);
+        g_sweeps, g_marked, g_rs_bad, P.max_ns/1000.0, P.total_ns/1e6, g_kills?100.0*g_evfired/g_kills:0.0, g_t_push/1e6, g_t_mark/1e6, g_t_free/1e6, g_t_recount/1e6, g_nfreed, g_nalloc,
+        g_pr[0].nslabs, (size_t)(g_pr[0].bytes/1024), g_pr[1].nslabs, (size_t)(g_pr[1].bytes/1024),
+        g_pr[2].nslabs, (size_t)(g_pr[2].bytes/1024), g_pr[3].nslabs, (size_t)(g_pr[3].bytes/1024));
     return 0;
 }
