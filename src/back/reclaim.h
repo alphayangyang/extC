@@ -13,6 +13,12 @@
  * 机制：区域是一串按 `EXTC_RC_SLAB_BITS` 对齐的 slab；由对象指针找 slab 一次按位与、找槽号一次
  * 右移；持有者计数只挂在**指针赋值**上，归零当场把槽还给空闲链；环、以及计数还被已死对象的出边
  * 拖着的那部分，由区域清扫兜底 —— 清扫从根 + 跨区登记位图出发标记，再顺序扫 64 位字释放未标记者。
+ * 标记按**每个槽自带的类型描述符**走指针字段；描述符由分配点（codegen）随槽交给运行期，
+ * 所以这里没有区域级类型表。
+ *
+ * 板/池/栈/C 返回的指针不是本运行期的槽：每个 slab 创建时登记进一张按基址排序的表，
+ * `inc`/`dec`/`register`/标记**先问一次 owns**，表外或空闲槽一律跳过。没有这条守卫，那些指针
+ * 会被当成 slab 地址按位与后读到无关内存（板的 4 GiB 保留区甚至没 commit）⇒ 段错误。
  */
 #ifndef EXTC_RECLAIM_H
 #define EXTC_RECLAIM_H
@@ -27,10 +33,11 @@
  * 只追加一次 —— 重复追加会让同一批 `static` 函数重复定义。
  *
  * 追加的文本提供这些入口：区域 `extc_rc_regionNew` / `extc_rc_regionFloor` / `extc_rc_regionFree`，
- * 槽分配 `extc_rc_alloc`，解析区 `extc_rc_bump` / `extc_rc_bumpReset`，计数
- * `extc_rc_inc` / `extc_rc_dec` / `extc_rc_initRef` / `extc_rc_storeRef`，跨区登记
+ * 槽分配 `extc_rc_alloc(区域, 字节, 类型描述符)`，解析区 `extc_rc_bump` / `extc_rc_bumpReset`，
+ * 计数 `extc_rc_inc` / `extc_rc_dec` / `extc_rc_initRef` / `extc_rc_storeRef`，跨区登记
  * `extc_rc_register`，清扫 `extc_rc_mark` / `extc_rc_sweep` / `extc_rc_collect` /
- * `extc_rc_maybeCollect`，以及只读的记账查询。
+ * `extc_rc_maybeCollect(区域, 根表, 根数)`，以及只读的记账查询。类型描述符 `ExtcRcType`
+ * 与兜底描述符 `EXTC_RC_CONSERVATIVE`（标记扫整个槽）也由这里定义。
  *
  * @param a    arena（本函数不用，为与其他发射口同形保留）。
  * @param out  正在写的生成 C。
