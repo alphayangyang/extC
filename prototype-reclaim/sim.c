@@ -112,11 +112,13 @@ static size_t extc_sweep(extc_arena *a, void **roots, int nroots, const extc_typ
     return marked;
 }
 
+typedef struct node_hdr { int64_t key, val; struct node_hdr *next; uint32_t nf; } node_hdr;
+typedef node_hdr node;
+
 /* ==================== 第 3 段：按 codegen 的样子手写的工作负载 ==================== */
-/* 符号表：BUCKETS 个桶，每桶最多 BUCKET_MAX 条，满了淘汰尾节点。 */
 #define BUCKETS 64
 #define BUCKET_MAX 8
-typedef struct node { int64_t key, val; struct node *next; } node;
+#define TRIGGER (262144)
 static const extc_typedesc TD_NODE = { 1, { offsetof(node, next), 0 } };
 
 typedef struct { int64_t max_ns, total_ns; size_t n; } pauses;
@@ -124,72 +126,88 @@ static void padd(pauses *p, int64_t d) { if (d > p->max_ns) p->max_ns = d; p->to
 static int64_t now_ns(void){ struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (int64_t)t.tv_sec*1000000000LL + t.tv_nsec; }
 
 static long sink;
-static int g_mode;                      /* 0=base 1=solo 2=sweep 3=ev */
-static size_t g_peak_block, g_live_bytes, g_sweeps, g_evicted, g_kills, g_evfired;
-#define TRIGGER (262144)
+static int g_mode, g_count;   /* 0=base 1=solo 2=sweep 3=sweepc 4=ev */
+static size_t g_sweeps, g_kills, g_evfired, g_fall;
+static int64_t g_peak;
 
-static void note_alloc(void) { g_live_bytes += sizeof(node); if (g_live_bytes > g_peak_block) g_peak_block = g_live_bytes; }
+/* 存活持有者计数（饱和三点式：只对 <=2 精确；饱和值当"不确定"，永不减回去 ⇒ 健全） */
+static void storep(void **slot, void *v) {
+    void *old = *slot; *slot = v;
+    node_hdr *nv = (node_hdr *)v, *ov = (node_hdr *)old;
+    if (nv && nv->nf < 3) nv->nf++;
+    if (g_count && ov && ov->nf && ov->nf < 3) ov->nf--;
+}
 
 int main(int argc, char **argv) {
     const char *mode = argc > 1 ? argv[1] : "base";
     long N = argc > 2 ? atol(argv[2]) : 400000;
-    g_mode = !strcmp(mode, "sweep") ? 2 : !strcmp(mode, "ev") ? 3 : !strcmp(mode, "solo") ? 1 : 0;
-    const int solo = g_mode >= 1;
+    int cacheslots = argc > 3 ? atoi(argv[3]) : 0;      /* 缓存槽数：>0 就制造第二持有者 + 跨区边 */
+    int cacheevery = argc > 4 ? atoi(argv[4]) : 64;
+    g_mode = !strcmp(mode,"solo") ? 1 : !strcmp(mode,"sweep") ? 2
+           : !strcmp(mode,"sweepc") ? 3 : !strcmp(mode,"ev") ? 4 : 0;
+    g_count = (g_mode == 3 || g_mode == 4);
+    const int solo = g_mode >= 1, dolive = (g_mode == 2 || g_mode == 3 || g_mode == 4);
 
-    extc_arena __extc_a[4] = {0};                 /* 生成物里就是这个形状 */
+    extc_arena __extc_a[4] = {0};
     node *head[BUCKETS]; memset(head, 0, sizeof head);
+    node **cache = cacheslots ? calloc((size_t)cacheslots, sizeof(node *)) : NULL;
+    int ncache = cacheslots;
     pauses P = {0};
+    int64_t live1 = 0, arena1 = 0, trig = TRIGGER;
 
-    int64_t live1 = 0, g_peak_long = 0, arena1 = 0, trig = TRIGGER;
     int64_t t0 = now_ns();
     for (long i = 0; i < N; i++) {
         int b = (int)(i % BUCKETS);
-        /* 解析阶段：3 个临时节点，活在本轮的作用域里 */
-        extc_arena_release(&__extc_a[2]);
-        node *t1, *t2, *t3;
-        if (solo) { t1 = extc_alloc_solo(&__extc_a[2], sizeof(node), "sim.extc", 7);
-                    t2 = extc_alloc_solo(&__extc_a[2], sizeof(node), "sim.extc", 8);
-                    t3 = extc_alloc_solo(&__extc_a[2], sizeof(node), "sim.extc", 9); }
-        else      { t1 = extc_arena_alloc(&__extc_a[2], sizeof(node), "sim.extc", 7);
-                    t2 = extc_arena_alloc(&__extc_a[2], sizeof(node), "sim.extc", 8);
-                    t3 = extc_arena_alloc(&__extc_a[2], sizeof(node), "sim.extc", 9); }
-        t1->next = t2; t2->next = t3; t3->next = NULL; t3->val = i; note_alloc(); note_alloc(); note_alloc();
-        for (node *q = t1; q; q = q->next) sink += q->val;      /* 指针追逐 */
-        /* 插入：分配在桶自己的区域里（自包含） */
-        node *nd = solo ? extc_alloc_solo(&__extc_a[1], sizeof(node), "sim.extc", 14)
-                        : extc_arena_alloc(&__extc_a[1], sizeof(node), "sim.extc", 14);
-        nd->key = i; nd->val = i * 3; nd->next = head[b]; head[b] = nd;
-        live1 += (int64_t)sizeof(node); arena1 += (int64_t)sizeof(node); note_alloc();
-        /* 查询：沿链找 key，命中改值 */
-        for (node *q = head[b]; q; q = q->next) if (q->key == i - 7) { q->val++; break; }
-        /* 淘汰尾节点（链表手术：前驱的 next 跳过它） */
-        node *prev = NULL, *cur = head[b]; int cnt = 0;
-        while (cur && cur->next) { prev = cur; cur = cur->next; if (++cnt > BUCKET_MAX) break; }
+        extc_arena_release(&__extc_a[2]);                     /* 解析区：每轮整片释放 */
+        node *t1,*t2,*t3;
+        if (solo) { t1=extc_alloc_solo(&__extc_a[2],sizeof(node),"sim.extc",7);
+                    t2=extc_alloc_solo(&__extc_a[2],sizeof(node),"sim.extc",8);
+                    t3=extc_alloc_solo(&__extc_a[2],sizeof(node),"sim.extc",9); }
+        else      { t1=extc_arena_alloc(&__extc_a[2],sizeof(node),"sim.extc",7);
+                    t2=extc_arena_alloc(&__extc_a[2],sizeof(node),"sim.extc",8);
+                    t3=extc_arena_alloc(&__extc_a[2],sizeof(node),"sim.extc",9); }
+        t1->next=t2; t2->next=t3; t3->next=NULL; t3->val=i;
+        for (node *q=t1;q;q=q->next) sink += q->val;
+
+        node *nd = solo ? extc_alloc_solo(&__extc_a[1],sizeof(node),"sim.extc",14)
+                        : extc_arena_alloc(&__extc_a[1],sizeof(node),"sim.extc",14);
+        nd->key=i; nd->val=i*3;
+        storep((void**)&nd->next, head[b]); storep((void**)&head[b], nd);
+        live1 += (int64_t)sizeof(node); arena1 += (int64_t)sizeof(node);
+
+        /* 最恶心的一步：刚插入的节点**同时**被另一个区域里的缓存槽持有 */
+        if (cache && cacheevery && (i % cacheevery) == 0) {
+            int j = (int)((i / cacheevery) % ncache);
+            storep((void**)&cache[j], nd);
+        }
+        for (node *q=head[b];q;q=q->next) if (q->key == i-7) { q->val++; break; }
+
+        /* 淘汰尾节点（链表手术） */
+        node *prev=NULL,*cur=head[b]; int cnt=0;
+        while (cur && cur->next) { prev=cur; cur=cur->next; if (++cnt > BUCKET_MAX) break; }
         if (cur && cnt >= BUCKET_MAX) {
-            if (prev) prev->next = NULL; else head[b] = NULL;
-            g_kills++; g_evicted++;
-            if (g_mode == 3) { extc_free_solo(&__extc_a[1], cur); live1 -= (int64_t)sizeof(node); arena1 -= (int64_t)sizeof(node); g_evfired++; }
-            else { live1 -= (int64_t)sizeof(node); }   /* 留作垃圾：占用不减 */
+            uint32_t was = cur->nf;                       /* 摘掉持有者**之前**看一眼 */
+            if (prev) storep((void**)&prev->next, NULL); else storep((void**)&head[b], NULL);
+            g_kills++; live1 -= (int64_t)sizeof(node);
+            if (g_mode == 4 && was == 1) { extc_free_solo(&__extc_a[1], cur); arena1 -= (int64_t)sizeof(node); g_evfired++; }
+            else g_fall++;
         }
-        /* 回收：触发量是 O(1) 读的计数器，不是走链 */
-        if (g_mode >= 2) {
-            if (arena1 >= trig) {                    /* 触发量 = max(上次清扫后的存活, 下限) */
-                int64_t a = now_ns(), after = 0;
-                void *roots[BUCKETS]; for (int j = 0; j < BUCKETS; j++) roots[j] = head[j];
-                extc_sweep(&__extc_a[1], roots, BUCKETS, &TD_NODE, &after);
-                arena1 = after; live1 = after > 0 ? live1 : live1;
-                trig = after > TRIGGER ? after : TRIGGER;
-                g_sweeps++; padd(&P, now_ns() - a);
-            }
+        if (dolive && arena1 >= trig) {
+            int64_t a = now_ns(), after = 0;
+            void *roots[BUCKETS + 4096]; int nr = 0;
+            for (int j=0;j<BUCKETS;j++) roots[nr++]=head[j];
+            for (int j=0;j<ncache;j++) roots[nr++]=cache[j];     /* 跨区根：不这么做就不健全 */
+            extc_sweep(&__extc_a[1], roots, nr, &TD_NODE, &after);
+            arena1 = after; trig = after > TRIGGER ? after : TRIGGER;
+            g_sweeps++; padd(&P, now_ns()-a);
         }
-        if (arena1 > g_peak_long) g_peak_long = arena1;
+        if (arena1 > g_peak) g_peak = arena1;
     }
     int64_t dt = now_ns() - t0;
     extc_arena_destroy(&__extc_a[0]); extc_arena_destroy(&__extc_a[1]);
     extc_arena_release(&__extc_a[2]); extc_arena_destroy(&__extc_a[2]);
-
-    printf("%-6s N=%-8ld 耗时=%7.1fms 峰值=%6zuKiB 清扫=%-5zu 淘汰=%-7zu 事件回收=%-7zu 最大停顿=%8.1fus 停顿总=%7.2fms\n",
-           mode, N, dt / 1e6, (size_t)g_peak_long / 1024, g_sweeps, g_evicted, g_evfired,
-           P.max_ns / 1000.0, P.total_ns / 1e6);
+    printf("%-7s N=%-8ld 缓存=%-6d 每%-5d 耗时=%8.1fms 峰值=%7zuKiB 清扫=%-5zu 删除=%-7zu 事件回收=%-7zu 落空=%-7zu 命中率=%5.1f%% 最大停顿=%8.1fus 停顿总=%7.2fms\n",
+        mode, N, ncache, cacheevery, dt/1e6, (size_t)g_peak/1024, g_sweeps, g_kills,
+        g_evfired, g_fall, g_kills? 100.0*g_evfired/g_kills : 0.0, P.max_ns/1000.0, P.total_ns/1e6);
     return 0;
 }
