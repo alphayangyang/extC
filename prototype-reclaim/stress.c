@@ -22,6 +22,7 @@ static int64_t now_ns(void){ struct timespec t; clock_gettime(CLOCK_MONOTONIC,&t
 static long rss_kib(void){ FILE*f=fopen("/proc/self/statm","r"); if(!f) return 0; long a=0,b=0;
     if(fscanf(f,"%ld %ld",&a,&b)!=2) b=0; fclose(f); return b*(long)(sysconf(_SC_PAGESIZE)/1024); }
 static long sink, g_peak_rss;
+static double g_pauses[1 << 20]; static size_t g_np;
 static int64_t g_t_alloc, g_t_mark, g_t_sweep_slots, g_t_push, g_t_free;
 static int64_t g_t_seed, g_t_trav, g_t_scan;
 static size_t g_nalloc, g_nfreed, g_marked, g_kills, g_evfired, g_sweepfreed;
@@ -343,6 +344,7 @@ int main(int argc, char **argv) {
                 int64_t p1 = now_ns();
                 if (p1 - p0 > max_pause) max_pause = p1 - p0;
                 total_pause += p1 - p0; sweeps++;
+                if (g_np < (1 << 20)) g_pauses[g_np++] = (double)(p1 - p0) / 1000.0;
             }
         }
         if ((i & 8191) == 0) { long r_ = rss_kib(); if (r_ > peak_rss) peak_rss = r_; }
@@ -351,6 +353,9 @@ int main(int argc, char **argv) {
     int64_t dt = now_ns() - t0;
     size_t nslab = 0; for (int j = 0; j < NSHARD; j++) for (Slab *s = g_shard[j].slabs; s; s = s->next) nslab++;
     size_t nslab_i = 0; for (Slab *s = g_idx.slabs; s; s = s->next) nslab_i++;
+    if (g_np) { int cmp(const void *a, const void *b){ double x=*(const double*)a, y=*(const double*)b; return x<y?-1:(x>y?1:0); }
+        qsort(g_pauses, g_np, sizeof(double), cmp);
+        printf("  停顿分布us[p50=%.1f p90=%.1f p99=%.1f max=%.1f n=%zu]\n", g_pauses[g_np/2], g_pauses[g_np*9/10], g_pauses[g_np*99/100], g_pauses[g_np-1], g_np); }
     printf("%-6s 分片=%-3d N=%-7ld 缓存=%-5d 索引=%-7ld 对象=%-4zu 耗时=%8.1fms 峰值载荷=%7zuKiB 峰值RSS=%8ldKiB 清扫=%-4zu 标记=%zu 最大停顿=%8.1fus 停顿总=%7.2fms 阶段ms[分配%.0f 入边入栈%.2f 走可达%.2f 扫位图%.2f] slab=%zu/%zu RC释放=%zu 清扫释放=%zu 命中=%.1f%%\n",
         "stress", NSHARD, N, g_ncache, indexmax, objsz, dt/1e6, (size_t)peak_buck/1024, peak_rss,
         sweeps, g_marked, max_pause/1000.0, total_pause/1e6, g_t_alloc/1e6, g_t_seed/1e6, g_t_trav/1e6, g_t_scan/1e6,
