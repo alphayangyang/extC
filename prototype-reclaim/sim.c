@@ -18,6 +18,17 @@
 #include <stddef.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
+
+/* ---- 全局：计时 / RSS / 计数器（所有段共用，放最前面避免声明顺序问题）---- */
+static int64_t now_ns(void){ struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (int64_t)t.tv_sec*1000000000LL + t.tv_nsec; }
+static long rss_kib(void) {
+    FILE *f = fopen("/proc/self/statm", "r"); if (!f) return 0;
+    long tot = 0, res = 0; if (fscanf(f, "%ld %ld", &tot, &res) != 2) res = 0;
+    fclose(f); return res * (long)(sysconf(_SC_PAGESIZE) / 1024);
+}
+static long sink, g_peak_rss;
+static int64_t g_t_mark, g_t_verify, g_t_free, g_t_recount;
 
 /* ==================== 第 1 段：真实生成的运行时（逐字） ==================== */
 #define EXTC_MALLOC __attribute__((malloc))
@@ -71,18 +82,31 @@ typedef struct { int nptr; size_t off[2]; } extc_typedesc;
 typedef struct extc_pblock { struct extc_pblock *prev; struct extc_pblock **self;
                              int fresh; int64_t cap, used; uint32_t mark; uint32_t rid; uint32_t rsmark; uint32_t vmark; const extc_typedesc *td; char data[1]; } extc_pblock;
 #define PB(p) ((extc_pblock *)((char *)(p) - offsetof(extc_pblock, data)))
+#define NREG 4
+static extc_pblock *FREEL[NREG];   /* 每区域的空闲块链：空闲块的 prev 当链 */
+static int g_reuse = 0;
 
 static uint32_t g_alloc_rid;
 static void *extc_alloc_solo(extc_arena *a, int64_t n, const char *f, int l, const extc_typedesc *td) {
     if (n <= 0) n = 1;
     n = (n + 7) & ~(int64_t)7;
-    extc_pblock *b = (extc_pblock *)calloc(1, sizeof(extc_pblock) + (size_t)n);
-    if (!b) { fprintf(stderr, "%s:%d: trap: out of arena memory\n", f, l); exit(1); }
+    extc_pblock *b = NULL;
+    if (g_reuse && FREEL[g_alloc_rid] && FREEL[g_alloc_rid]->cap >= n) {   /* 先从空闲链取 */
+        b = FREEL[g_alloc_rid]; FREEL[g_alloc_rid] = b->prev; b->prev = NULL;
+    } else {
+        b = (extc_pblock *)calloc(1, sizeof(extc_pblock) + (size_t)n);
+        if (!b) { fprintf(stderr, "%s:%d: trap: out of arena memory\n", f, l); exit(1); }
+    }
     b->prev = (extc_pblock *)a->top; b->self = (extc_pblock **)&a->top;
     if (a->top) ((extc_pblock *)a->top)->self = &b->prev;
-    b->cap = n; b->used = n; b->fresh = 1; b->mark = 0; b->td = td; b->rid = g_alloc_rid; b->rsmark = 0; b->vmark = 0;
+    b->cap = n; b->used = n; b->fresh = 0; b->mark = 0; b->td = td; b->rid = g_alloc_rid; b->rsmark = 0; b->vmark = 0;
+    memset((char *)b + offsetof(extc_pblock, data), 0, (size_t)n);          /* 复用来的要清零 */
     a->top = (extc_ablock *)b;
     return (void *)((char *)b + offsetof(extc_pblock, data));
+}
+static void blk_free_or_reuse(extc_pblock *b) {                             /* 复用：还给区域，不还给系统 */
+    if (g_reuse) { b->prev = FREEL[b->rid]; FREEL[b->rid] = b; }
+    else free(b);
 }
 static void extc_free_solo(extc_arena *a, void *p) {          /* O(1) 摘链 */
     extc_pblock *b = PB(p);
@@ -117,7 +141,7 @@ static size_t extc_sweep(extc_arena *a, void **roots, int nroots, const extc_typ
     extc_pblock **l = (extc_pblock **)&a->top;
     while (*l) { extc_pblock *b = *l;
         if (b->mark == e) { b->self = l; l = &b->prev; }
-        else { *l = b->prev; if (b->prev) b->prev->self = l; free(b); } }
+        else { *l = b->prev; if (b->prev) b->prev->self = l; blk_free_or_reuse(b); } }
     if (out_bytes) { int64_t tot = 0; for (extc_pblock *b = (extc_pblock *)a->top; b; b = b->prev) tot += b->cap; *out_bytes = tot; }
     if (out_marked) *out_marked = marked;
     return marked;
@@ -141,7 +165,7 @@ static void extc_sweep_global(extc_arena *a, extc_arena *b, void **roots, int nr
         extc_arena *ar = which ? b : a;
         extc_pblock **l = (extc_pblock **)&ar->top;
         while (*l) { extc_pblock *pb = *l; if (pb->mark == e) { pb->self = l; l = &pb->prev; }
-            else { *l = pb->prev; if (pb->prev) pb->prev->self = l; free(pb); } }
+            else { *l = pb->prev; if (pb->prev) pb->prev->self = l; blk_free_or_reuse(pb); } }
         for (extc_pblock *pb = (extc_pblock *)ar->top; pb; pb = pb->prev) tot += pb->cap;
     }
     if (out_bytes) *out_bytes = tot;
@@ -149,7 +173,6 @@ static void extc_sweep_global(extc_arena *a, extc_arena *b, void **roots, int nr
 }
 
 /* ---- 记忆集（G1 的做法）：每个区域一张"谁指进我"的集 ---- */
-#define NREG 4
 static void **RS[NREG]; static size_t RSN[NREG], RSCAP[NREG];
 static uint32_t g_rs_epoch = 1;   /* 初值必须非 0：rsmark 初值是 0，否则第一次就去重掉 */
 static void rs_add(uint32_t rid, void *v) {
@@ -169,6 +192,7 @@ static void store_rs(void **slot, void *v, uint32_t slot_rid) {
 static size_t g_rs_bad;   /* 自检异常：可达、属本区域、却没被本区域标记覆盖 */
 static size_t sweep_rs(uint32_t rid, extc_arena *a, void **own_roots, int nroot,
                        void **all_roots, int nall, int64_t *out_bytes, size_t *out_marked, int verify) {
+    int64_t t0 = now_ns();
     uint32_t e = ++g_epoch;
     MKN = 0;
     for (int i = 0; i < nroot; i++) if (own_roots[i]) mk_push(own_roots[i]);
@@ -180,6 +204,7 @@ static size_t sweep_rs(uint32_t rid, extc_arena *a, void **own_roots, int nroot,
         if (b->rid != rid) continue;                  /* 区域外的对象都当活的：不往下走 */
         int np = b->td ? b->td->nptr : 0;
         for (int i = 0; i < np; i++) { void *c = *(void **)((char *)o + b->td->off[i]); if (c) mk_push(c); } }
+    g_t_mark += now_ns() - t0; int64_t t1 = now_ns();
     if (verify) {                                   /* 全根独立走一遍：本区域可达却没被标记 ⇒ 入边集不完备 */
         uint32_t ve = ++g_epoch; MKN = 0;
         for (int i = 0; i < nall; i++) if (all_roots[i]) mk_push(all_roots[i]);
@@ -212,9 +237,7 @@ static const extc_typedesc TD_INODE = { 2, { offsetof(inode, next), offsetof(ino
 
 typedef struct { int64_t max_ns, total_ns; size_t n; } pauses;
 static void padd(pauses *p, int64_t d) { if (d > p->max_ns) p->max_ns = d; p->total_ns += d; p->n++; }
-static int64_t now_ns(void){ struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (int64_t)t.tv_sec*1000000000LL + t.tv_nsec; }
 
-static long sink;
 static int g_mode, g_count;
 static size_t g_sweeps, g_kills, g_evfired, g_fall, g_marked;
 
@@ -235,10 +258,11 @@ int main(int argc, char **argv) {
 
     g_mode = !strcmp(mode,"solo") ? 1 : !strcmp(mode,"sweep") ? 2
            : !strcmp(mode,"sweepc") ? 3 : !strcmp(mode,"ev") ? 4
-           : !strcmp(mode,"gc") ? 5 : !strcmp(mode,"rs") ? 6 : !strcmp(mode,"rsev") ? 7 : 0;
+           : !strcmp(mode,"gc") ? 5 : !strcmp(mode,"rs") ? 6 : !strcmp(mode,"rsev") ? 7 : !strcmp(mode,"rsr") ? 8 : 0;
     const int gl = (g_mode == 5);            /* 真全局 GC：一个堆，全部东西都在里面 */
     g_count = (g_mode == 3 || g_mode == 4 || g_mode == 7);
     RS_VERIFY = getenv("VERIFY") != NULL;
+    g_reuse = (g_mode == 8) || getenv("REUSE") != NULL;
     const int solo = g_mode >= 1, dolive = (g_mode >= 2);
 
     extc_arena __extc_a[4] = {0};
@@ -311,7 +335,7 @@ int main(int argc, char **argv) {
             for (int j=0;j<BUCKETS;j++) roots[nr++]=head[j];
             for (int j=0;j<(ncache<8000?ncache:8000);j++) roots[nr++]=cache[j];
             roots[nr++] = ihead;                        /* 索引链的根：不加它就不健全 */
-            if (g_mode == 6 || g_mode == 7) {
+            if (g_mode == 6 || g_mode == 7 || g_mode == 8) {
                 void *own[BUCKETS + 8192]; int no = 0;
                 for (int j=0;j<BUCKETS;j++) own[no++]=head[j];
                 for (int j=0;j<(ncache<8000?ncache:8000);j++) own[no++]=cache[j];
@@ -325,6 +349,7 @@ int main(int argc, char **argv) {
             else    { arena1 = after; live1 = after; }
             g_sweeps++; padd(&P, now_ns()-a);
         }
+        if ((i & 4095) == 0) { long r_ = rss_kib(); if (r_ > g_peak_rss) g_peak_rss = r_; }
         if (arena1 > peak1) peak1 = arena1;   /* gc 模式下 a1 就是整个堆 */
         if (arena3 > peak3) peak3 = arena3;
     }
@@ -332,8 +357,8 @@ int main(int argc, char **argv) {
     extc_arena_destroy(&__extc_a[0]); extc_arena_destroy(&__extc_a[1]);
     extc_arena_release(&__extc_a[2]); extc_arena_destroy(&__extc_a[2]);
     extc_arena_destroy(&__extc_a[3]);
-    printf("%-6s N=%-7ld 共享=%-5d 索引=%-7ld 对象=%-5d 耗时=%8.1fms 峰值总计=%8zuKiB 清扫=%-4zu 标记总量=%-10zu 入边集异常=%-4zu 最大停顿=%9.1fus 停顿总=%7.2fms 命中=%5.1f%%\n",
-        mode, N, ncache, indexmax, objsz, dt/1e6, (size_t)(peak1+peak3)/1024,
-        g_sweeps, g_marked, g_rs_bad, P.max_ns/1000.0, P.total_ns/1e6, g_kills?100.0*g_evfired/g_kills:0.0);
+    printf("%-6s N=%-7ld 共享=%-5d 索引=%-7ld 对象=%-5d 耗时=%8.1fms 峰值总计=%8zuKiB 峰值RSS=%8ldKiB 清扫=%-4zu 标记总量=%-10zu 入边集异常=%-4zu 最大停顿=%9.1fus 停顿总=%7.2fms 命中=%5.1f%%  阶段ms[标记%.1f 复核%.1f 释放%.1f 重算%.1f]\n",
+        mode, N, ncache, indexmax, objsz, dt/1e6, (size_t)(peak1+peak3)/1024, g_peak_rss,
+        g_sweeps, g_marked, g_rs_bad, P.max_ns/1000.0, P.total_ns/1e6, g_kills?100.0*g_evfired/g_kills:0.0, g_t_mark/1e6, g_t_verify/1e6, g_t_free/1e6, g_t_recount/1e6);
     return 0;
 }
