@@ -15,6 +15,7 @@
 #include "domain.h"      /* the pool registry runtime */
 #include "memfind.h"        /* the byte-search runtime (std::sys::mem), emitted on demand */
 #include "plate.h"          /* the plate runtime (std::sys::heap), emitted on demand */
+#include "reclaim.h"        /* the reclamation runtime (slab + holder counts + region sweep) */
 /* The checker owns the rules this pass has to agree with, so it includes the checker's
  * header rather than restating them: `typeSupportsOp` decides whether an operator applied
  * to an instantiated type is native, and `isEqualityOp` answers the `==` / `!=` pair.
@@ -7757,6 +7758,12 @@ static void emitPreamble(CG *g, Buf *out, Module *m) {
  * @param m    模块。
  */
 static void emitRuntimePrologue(CG *g, Buf *out, Module *m) {
+    /* The reclamation runtime: the slab allocator, the holder counts and the region sweep.
+     * It is emitted **before** any code that could name it -- its functions are `static` -- and
+     * on demand only. The switch is an environment variable because nothing generates a call
+     * into it yet; it becomes a real trigger (`g->needReclaim`, set by whichever construct
+     * needs the storage managed) once the counting is emitted at the reference assignments. */
+    if (getenv("EXTC_RECLAIM")) reclaimEmitRuntime(g->arena, out);
     /* The dying hook goes between the includes and the trap paths that call it: `int32_t`
      * has to be known, and the definition has to precede every use. It is its own block
      * because the prologue around it is already at the 4095-byte limit C99 guarantees for
