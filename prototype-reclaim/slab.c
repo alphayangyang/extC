@@ -23,6 +23,7 @@ static long rss_kib(void){ FILE*f=fopen("/proc/self/statm","r"); if(!f) return 0
     if(fscanf(f,"%ld %ld",&a,&b)!=2) b=0; fclose(f); return b*(long)(sysconf(_SC_PAGESIZE)/1024); }
 static long sink, g_peak_rss;
 static int64_t g_t_alloc, g_t_mark, g_t_sweep_slots, g_t_push, g_t_free;
+static int64_t g_t_seed, g_t_trav, g_t_scan;
 static size_t g_nalloc, g_nfreed, g_marked, g_kills, g_evfired;
 
 /* ---------- 类型表（编译器按类型发射） ---------- */
@@ -36,7 +37,7 @@ typedef struct { int64_t next; } Inode;                          /* 占位，见
 typedef struct Slab {
     struct Slab *next;                     /* 本区域的 slab 链 */
     uint64_t *occ, *mark, *rsbit;          /* 位图：占用 / 标记 / 已登记入边 */
-    uint8_t  *hold;                        /* 每槽：饱和持有者计数（0..3） */
+    uint16_t *hold;                        /* 每槽：精确持有者计数（事件回收用；环由清扫兜底） */
     int64_t   freelist;                    /* 空闲槽链：存**槽号**，-1 = 空；槽头 8 字节存下一槽号 */
     uint32_t  nslots, nwords, shift, rid, used;
     /* 载荷从对齐边界的固定偏移开始 */
@@ -59,7 +60,7 @@ typedef struct Region2 {
 static Region2 *g_reg[4];
 static size_t slot_size_of(size_t n);
 static Slab *slab_new(uint32_t rid, size_t slot_size);
-static void *r2_bump_alloc(Region2 *r, size_t n) {
+__attribute__((noinline)) static void *r2_bump_alloc(Region2 *r, size_t n) {
     size_t ss = slot_size_of(n);
     if (!r->bump || (size_t)(r->bump_end - r->bump) < ss) {
         Slab *s = slab_new(r->rid, ss); s->next = r->slabs; r->slabs = s;
@@ -74,7 +75,7 @@ static void r2_bump_reset(Region2 *r) {          /* 整片回收 = O(1)：只把
 static size_t slot_size_of(size_t n) {     /* 向上取到 2 的幂，且至少放得下槽头 */
     size_t s = 16; while (s < n) s <<= 1; return s;
 }
-static Slab *slab_new(uint32_t rid, size_t slot_size) {
+__attribute__((noinline)) static Slab *slab_new(uint32_t rid, size_t slot_size) {
     Slab *s = aligned_alloc(SLAB_SIZE, SLAB_SIZE);
     if (!s) { fprintf(stderr, "slab: 分配失败\n"); exit(1); }
     memset(s, 0, SLAB_HDR);
@@ -85,14 +86,16 @@ static Slab *slab_new(uint32_t rid, size_t slot_size) {
     s->occ  = calloc(s->nwords, sizeof(uint64_t));
     s->mark = calloc(s->nwords, sizeof(uint64_t));
     s->rsbit = calloc(s->nwords, sizeof(uint64_t));
-    s->hold = calloc(nslots, 1);
+    s->hold = calloc(nslots, sizeof(uint16_t));
     char *d = SLAB_DATA(s);
     for (size_t i = 0; i < nslots; i++) { *(int64_t *)(d + (i << s->shift)) = (int64_t)(i + 1 < nslots ? i + 1 : -1); }
     s->freelist = nslots ? 0 : -1;         /* 整块串成空闲链（槽号 0 起） */
     return s;
 }
-static void *r2_alloc(Region2 *r, size_t n) {
+__attribute__((noinline)) static void *r2_alloc(Region2 *r, size_t n) {
+#ifdef PHASES
     int64_t t0 = now_ns();
+#endif
     g_nalloc++;
     Slab *s = r->slabs;
     while (s && (s->freelist < 0 || ((size_t)1 << s->shift) < n)) s = s->next;   /* 找有合适槽的 slab */
@@ -103,7 +106,9 @@ static void *r2_alloc(Region2 *r, size_t n) {
     s->occ[i >> 6] |= (uint64_t)1 << (i & 63);
     s->used++;
     r->bytes += (int64_t)n;
+#ifdef PHASES
     g_t_alloc += now_ns() - t0;
+#endif
     return p;
 }
 static void r2_free_slot(Slab *s, size_t i) {
@@ -120,7 +125,7 @@ static inline void r2_mark(void *p) { Slab *s = slab_of(p); size_t i = slot_of(s
 static inline int  r2_marked(void *p) { Slab *s = slab_of(p); size_t i = slot_of(s, p); return (s->mark[i >> 6] >> (i & 63)) & 1; }
 
 /* 顺序扫位图：死槽 = 占用 & ~标记。按 64 位字走，不追指针。 */
-static size_t r2_sweep(Region2 *r) {
+__attribute__((noinline)) static size_t r2_sweep(Region2 *r) {
     int64_t t0 = now_ns(); size_t nf = 0;
     for (Slab *s = r->slabs; s; s = s->next) {
         for (uint32_t w = 0; w < s->nwords; w++) {
@@ -159,16 +164,19 @@ static inline void rs_add(uint32_t rid, void *p) {
 
 /* 引用赋值：目标 +1、旧值 −1（饱和三点式，饱和值当"不确定"，永不从饱和值减回去 ⇒ 健全） */
 /* 新对象的槽：里面没有旧值（是空闲链的下一槽号），只能"写 + 目标 +1"，不能读旧值 */
-static inline void init_ref(Obj **slot, Obj *v) {
+static void init_ref(Obj **slot, Obj *v) {
     *slot = v;
-    if (v) { Slab *s = slab_of(v); size_t i = slot_of(s, v); if (s->hold[i] < 3) s->hold[i]++; }
+#ifdef NOHOLD
+    (void)slot; (void)v; return;
+#endif
+    if (v) { Slab *s = slab_of(v); size_t i = slot_of(s, v); s->hold[i]++; }
 }
-static inline void store_hold(Obj **slot, Obj *v) {
+__attribute__((noinline)) static inline void store_hold(Obj **slot, Obj *v) {
     Obj *old = *slot; *slot = v;
-    if (v) { Slab *s = slab_of(v); size_t i = slot_of(s, v); if (s->hold[i] < 3) s->hold[i]++; }
-    if (old) { Slab *s = slab_of(old); size_t i = slot_of(s, old); if (s->hold[i] && s->hold[i] < 3) s->hold[i]--; }
+    if (v) { Slab *s = slab_of(v); size_t i = slot_of(s, v); s->hold[i]++; }
+    if (old) { Slab *s = slab_of(old); size_t i = slot_of(s, old); if (s->hold[i]) s->hold[i]--; }
 }
-static inline uint8_t hold_of(Obj *o) { Slab *s = slab_of(o); return s->hold[slot_of(s, o)]; }
+static uint16_t hold_of(Obj *o) { Slab *s = slab_of(o); return s->hold[slot_of(s, o)]; }
 
 /* ---------- 负载：有界符号表 + 缓存（第二持有者）+ 索引（跨区边） ---------- */
 #define BUCKETS 64
@@ -182,22 +190,32 @@ static Obj **g_cache; static int g_ncache, g_cache_every;
 static void *g_ihead;
 
 static void **g_stk; static size_t g_sp, g_stkcap;
-static inline void mpush(void *o) {
+static void mpush(void *o) {
     if (g_sp == g_stkcap) { g_stkcap = g_stkcap ? g_stkcap * 2 : (1 << 16); g_stk = realloc(g_stk, g_stkcap * sizeof(void *)); }
     g_stk[g_sp++] = o;
 }
 static size_t g_mark_nstop;
 /* 从根 + 入边集出发标记；只在 rid 区域内继续走（区域外都当活的） */
-static void mark_all(uint32_t rid, void **roots, int nr, void **rsv, size_t nrs) {
+__attribute__((noinline)) static void mark_all(uint32_t rid, void **roots, int nr, void **rsv, size_t nrs) {
     g_sp = 0;
+#ifdef PHASES
+    int64_t s0 = now_ns();
+#endif
     for (int i = 0; i < nr; i++) if (roots[i]) mpush(roots[i]);
     for (size_t i = 0; i < nrs; i++) if (rsv[i]) mpush(rsv[i]);
+#ifdef PHASES
+    int64_t s1 = now_ns();
+    g_t_seed += s1 - s0;
+#endif
     g_mark_nstop = 0;
     while (g_sp) { void *o = g_stk[--g_sp];
         if (r2_marked(o)) continue;
         r2_mark(o); g_marked++;
         if (rid && slab_of(o)->rid != rid) { g_mark_nstop++; continue; }
         Obj *ob = (Obj *)o; if (ob->next) mpush(ob->next); }
+#ifdef PHASES
+    g_t_trav += now_ns() - s1;
+#endif
 }
 
 static int EVENT = 0;
@@ -238,7 +256,7 @@ int main(int argc, char **argv) {
         Obj *prev = NULL, *cur = g_head[b]; int cnt = 0;
         while (cur && cur->next) { prev = cur; cur = cur->next; if (++cnt > BUCKET_MAX) break; }
         if (cur && cnt >= BUCKET_MAX) {
-            uint8_t was = hold_of(cur);
+            uint16_t was = hold_of(cur);
             if (prev) store_hold(&prev->next, NULL); else store_hold(&g_head[b], NULL);
             g_kills++;
             if (EVENT && was == 1) { g_evfired++;                                /* 事件回收：唯一持有者就当场还给空闲链 */
@@ -256,15 +274,12 @@ int main(int argc, char **argv) {
             int nr = 0;
             for (int j = 0; j < BUCKETS; j++) if (g_head[j]) roots[nr++] = g_head[j];
             for (int j = 0; j < g_ncache; j++) if (g_cache[j]) roots[nr++] = g_cache[j];
-            int64_t tm = now_ns();
             mark_all(1, roots, nr, g_rs[1], g_rsn[1]);
-            g_t_mark += now_ns() - tm;
             r2_sweep(&g_buck);                          /* 顺序扫位图 */
             live_buck = g_buck.bytes;
             int64_t p1 = now_ns();
             if (p1 - p0 > max_pause) max_pause = p1 - p0;
             total_pause += p1 - p0; sweeps++;
-            g_t_push += tm - p0;
         }
         if ((i & 8191) == 0) { long r_ = rss_kib(); if (r_ > peak_rss) peak_rss = r_; }
         if (g_buck.bytes > peak_buck) peak_buck = g_buck.bytes;
@@ -272,9 +287,9 @@ int main(int argc, char **argv) {
     int64_t dt = now_ns() - t0;
     size_t nslab = 0; for (Slab *s = g_buck.slabs; s; s = s->next) nslab++;
     size_t nslab_i = 0; for (Slab *s = g_idx.slabs; s; s = s->next) nslab_i++;
-    printf("%-6s N=%-8ld 缓存=%-5d 索引=%-7ld 对象=%-4zu 耗时=%8.1fms 峰值载荷=%7zuKiB 峰值RSS=%8ldKiB 清扫=%-4zu 标记=%zu 最大停顿=%8.1fus 停顿总=%7.2fms 阶段ms[分配%.0f 标记%.1f 扫位图%.1f] slab=%zu/%zu 命中=%.1f%%\n",
+    printf("%-6s N=%-8ld 缓存=%-5d 索引=%-7ld 对象=%-4zu 耗时=%8.1fms 峰值载荷=%7zuKiB 峰值RSS=%8ldKiB 清扫=%-4zu 标记=%zu 最大停顿=%8.1fus 停顿总=%7.2fms 阶段ms[分配%.0f 入边入栈%.2f 走可达%.2f 扫位图%.2f] slab=%zu/%zu 命中=%.1f%%\n",
         EVENT ? "bmev" : "bm", N, g_ncache, indexmax, objsz, dt/1e6, (size_t)peak_buck/1024, peak_rss,
-        sweeps, g_marked, max_pause/1000.0, total_pause/1e6, g_t_alloc/1e6, g_t_mark/1e6, g_t_sweep_slots/1e6,
+        sweeps, g_marked, max_pause/1000.0, total_pause/1e6, g_t_alloc/1e6, g_t_seed/1e6, g_t_trav/1e6, g_t_scan/1e6,
         nslab, nslab_i, g_kills ? 100.0*g_evfired/g_kills : 0.0);
     return 0;
 }
