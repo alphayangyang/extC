@@ -22,7 +22,7 @@ static int64_t now_ns(void){ struct timespec t; clock_gettime(CLOCK_MONOTONIC,&t
 static long rss_kib(void){ FILE*f=fopen("/proc/self/statm","r"); if(!f) return 0; long a=0,b=0;
     if(fscanf(f,"%ld %ld",&a,&b)!=2) b=0; fclose(f); return b*(long)(sysconf(_SC_PAGESIZE)/1024); }
 static long sink, g_peak_rss;
-static double g_pauses[1 << 20]; static size_t g_np;
+static double g_pauses[1 << 20]; static int64_t g_plive[1 << 20]; static size_t g_np;
 static int64_t g_t_alloc, g_t_mark, g_t_sweep_slots, g_t_push, g_t_free;
 static int64_t g_t_seed, g_t_trav, g_t_scan;
 static size_t g_nalloc, g_nfreed, g_marked, g_kills, g_evfired, g_sweepfreed;
@@ -164,13 +164,14 @@ static size_t r2_destroy(Region2 *r) {
 }
 
 static void **g_rs[4]; static size_t g_rsn[4], g_rscap[4]; static uint32_t g_rsmark_epoch = 1;
-static int NSHARD = 1;
+static int NSHARD = 1, BALANCE = 0; static int64_t FACTOR_CAP = 1000000;
 static int64_t live_shard[64];
 static int64_t sweep_factor[64];   /* 自学习：一次清扫一无所获就把阈值乘 4 */
 static Region2 g_shard[64];                                   /* 分片：每片一个区域 */
 
 /* 入边只登记**一个 bit**（在目标对象所在 slab 的 rsbit 位图里）。
    释放槽时会清掉 ⇒ 没有陈旧入边；播种时顺序扫位图 ⇒ 没有指针数组的增长与入栈成本。 */
+static inline int shard_of(void *o) { return (int)(slab_of(o)->rid - 1); }
 static void rs_add_shard(int k, void *p) {
     (void)k;
     Slab *s = slab_of(p); size_t i = slot_of(s, p);
@@ -251,7 +252,8 @@ int main(int argc, char **argv) {
     g_ncache = argc > 2 ? atoi(argv[2]) : 0;
     g_cache_every = argc > 3 ? atoi(argv[3]) : 64;
     long indexmax = argc > 4 ? atol(argv[4]) : 0;
-    NSHARD = argc > 6 ? atoi(argv[6]) : 1; if (NSHARD < 1) NSHARD = 1; if (NSHARD > 64) NSHARD = 64;
+    NSHARD = argc > 6 ? atoi(argv[6]) : 1;
+    BALANCE = getenv("BALANCE") != NULL; if (getenv("CAP")) FACTOR_CAP = atol(getenv("CAP")); if (NSHARD < 1) NSHARD = 1; if (NSHARD > 64) NSHARD = 64;
     size_t objsz = argc > 5 ? (size_t)atol(argv[5]) : sizeof(Obj);
 
     g_churn.rid = (uint32_t)(NSHARD + 1); g_idx.rid = (uint32_t)(NSHARD + 2);
@@ -271,13 +273,22 @@ int main(int argc, char **argv) {
         t1->next = t2; t2->next = t3; t3->next = NULL; t3->val = i;
         for (Obj *q = t1; q; q = q->next) sink += q->val;
 
-        Region2 *sh = &g_shard[b % NSHARD];
+        int sh_i_alloc = b % NSHARD;
+        if (BALANCE) {                       /* A：挑存活量最小的分片 */
+            int64_t best = g_shard[0].bytes; sh_i_alloc = 0;
+            for (int j = 1; j < NSHARD; j++) if (g_shard[j].bytes < best) { best = g_shard[j].bytes; sh_i_alloc = j; }
+        }
+        Region2 *sh = &g_shard[sh_i_alloc];
         Obj *nd = r2_alloc(sh, objsz);
         nd->key = i; nd->val = i * 3;
 
         /* ① 双向链表（LRU 形状）：next/prev 互指 ⇒ 天然两元环 */
         init_ref(&nd->next, g_head[b]);
         if (g_head[b]) init_ref(&g_head[b]->prev, nd);
+        if (g_head[b] && shard_of(g_head[b]) != shard_of(nd)) {   /* 链的跨分片引用也要登记 */
+            rs_add_shard(shard_of(g_head[b]), g_head[b]);
+            rs_add_shard(shard_of(nd), nd);
+        }
         store_hold(&g_head[b], nd);
         if (g_tail[b] == NULL) g_tail[b] = nd;
         g_size[b]++;
@@ -291,7 +302,7 @@ int main(int argc, char **argv) {
             void **ix = r2_bump_alloc(&g_idx, sizeof(void *) * 2);
             ix[0] = g_ihead; init_ref((Obj **)&ix[1], nd); g_ihead = ix;
             g_idx.bytes += (int64_t)sizeof(void *) * 2;
-            rs_add_shard((int)(b % NSHARD), nd);
+            rs_add_shard(sh_i_alloc, nd);
         }
 
         /* ④ 带父指针的树：child/parent 互指 ⇒ 天然环；节点长命 */
@@ -299,7 +310,13 @@ int main(int argc, char **argv) {
             g_nodes[g_nnodes & 8191] = nd;
             if (g_nnodes > 0) {
                 Obj *par = g_nodes[(g_nnodes - 1) & 8191];
-                if (par) { init_ref(&par->child, nd); init_ref(&nd->parent, par); }
+                if (par) {
+                    init_ref(&par->child, nd); init_ref(&nd->parent, par);
+                    if (shard_of(par) != shard_of(nd)) {           /* 跨分片引用：两侧都要登记 */
+                        rs_add_shard(shard_of(nd), nd);
+                        rs_add_shard(shard_of(par), par);
+                    }
+                }
             }
             g_nnodes++;
         }
@@ -331,20 +348,22 @@ int main(int argc, char **argv) {
             if (best) {
                 int64_t p0 = now_ns();
                 int sh_i = (int)(best - g_shard), nr = 0;
-                size_t need = (size_t)BUCKETS + (size_t)g_ncache + 8;
+                size_t need = (size_t)BUCKETS + (size_t)g_ncache + 8192 + 8;
                 if (need > roots_cap) { roots_cap = need; roots = realloc(roots, roots_cap * sizeof(void *)); }
                 for (int j = 0; j < BUCKETS; j++)
                     if ((j % NSHARD) == sh_i && g_head[j]) roots[nr++] = g_head[j];
                 for (int j = 0; j < g_ncache; j++) if (g_cache[j]) roots[nr++] = g_cache[j];
+                for (int j = 0; j < 8192; j++) if (g_nodes[j]) roots[nr++] = g_nodes[j];   /* C 层数组也是根 */
                 mark_all(best, best->rid, roots, nr);
                 size_t swf_before = g_sweepfreed;
                 { size_t b0 = g_nfreed; r2_sweep(best); g_sweepfreed += g_nfreed - b0; }
                 live_shard[sh_i] = best->bytes;
-                sweep_factor[sh_i] = (g_sweepfreed == swf_before) ? (sweep_factor[sh_i] ? sweep_factor[sh_i] * 4 : 4) : 1;
+                sweep_factor[sh_i] = (g_sweepfreed == swf_before) ? (sweep_factor[sh_i] ? sweep_factor[sh_i] * 2 : 2) : 1;
+                if (sweep_factor[sh_i] > FACTOR_CAP) sweep_factor[sh_i] = FACTOR_CAP;
                 int64_t p1 = now_ns();
                 if (p1 - p0 > max_pause) max_pause = p1 - p0;
                 total_pause += p1 - p0; sweeps++;
-                if (g_np < (1 << 20)) g_pauses[g_np++] = (double)(p1 - p0) / 1000.0;
+                if (g_np < (1 << 20)) { g_pauses[g_np] = (double)(p1 - p0) / 1000.0; g_plive[g_np] = best->bytes; g_np++; }
             }
         }
         if ((i & 8191) == 0) { long r_ = rss_kib(); if (r_ > peak_rss) peak_rss = r_; }
@@ -356,6 +375,12 @@ int main(int argc, char **argv) {
     if (g_np) { int cmp(const void *a, const void *b){ double x=*(const double*)a, y=*(const double*)b; return x<y?-1:(x>y?1:0); }
         qsort(g_pauses, g_np, sizeof(double), cmp);
         printf("  停顿分布us[p50=%.1f p90=%.1f p99=%.1f max=%.1f n=%zu]\n", g_pauses[g_np/2], g_pauses[g_np*9/10], g_pauses[g_np*99/100], g_pauses[g_np-1], g_np); }
+    if (g_np) {
+        int64_t lo = g_plive[0], hi = g_plive[0]; size_t ilo = 0, ihi = 0;
+        for (size_t q = 0; q < g_np; q++) { if (g_plive[q] < lo) { lo = g_plive[q]; ilo = q; } if (g_plive[q] > hi) { hi = g_plive[q]; ihi = q; } }
+        printf("  存活字节[p10=%.0fKiB p50=%.0fKiB p90=%.0fKiB max=%.0fKiB]  最小存活那次的停顿=%.1fus  最大存活那次的停顿=%.1fus\n",
+               g_plive[0]/1024.0, g_plive[g_np/2]/1024.0, g_plive[g_np*9/10]/1024.0, hi/1024.0, g_pauses[ilo], g_pauses[ihi]);
+    }
     printf("%-6s 分片=%-3d N=%-7ld 缓存=%-5d 索引=%-7ld 对象=%-4zu 耗时=%8.1fms 峰值载荷=%7zuKiB 峰值RSS=%8ldKiB 清扫=%-4zu 标记=%zu 最大停顿=%8.1fus 停顿总=%7.2fms 阶段ms[分配%.0f 入边入栈%.2f 走可达%.2f 扫位图%.2f] slab=%zu/%zu RC释放=%zu 清扫释放=%zu 命中=%.1f%%\n",
         "stress", NSHARD, N, g_ncache, indexmax, objsz, dt/1e6, (size_t)peak_buck/1024, peak_rss,
         sweeps, g_marked, max_pause/1000.0, total_pause/1e6, g_t_alloc/1e6, g_t_seed/1e6, g_t_trav/1e6, g_t_scan/1e6,
