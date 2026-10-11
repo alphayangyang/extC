@@ -69,9 +69,10 @@ static inline void mk_push(void *o) {
 /* 块需要 O(1) 摘链 ⇒ 加一个 `self` 回指针（8 字节/块）。`mark` 供清扫用。 */
 typedef struct { int nptr; size_t off[2]; } extc_typedesc;
 typedef struct extc_pblock { struct extc_pblock *prev; struct extc_pblock **self;
-                             int fresh; int64_t cap, used; uint32_t mark; const extc_typedesc *td; char data[1]; } extc_pblock;
+                             int fresh; int64_t cap, used; uint32_t mark; uint32_t rid; uint32_t rsmark; uint32_t vmark; const extc_typedesc *td; char data[1]; } extc_pblock;
 #define PB(p) ((extc_pblock *)((char *)(p) - offsetof(extc_pblock, data)))
 
+static uint32_t g_alloc_rid;
 static void *extc_alloc_solo(extc_arena *a, int64_t n, const char *f, int l, const extc_typedesc *td) {
     if (n <= 0) n = 1;
     n = (n + 7) & ~(int64_t)7;
@@ -79,7 +80,7 @@ static void *extc_alloc_solo(extc_arena *a, int64_t n, const char *f, int l, con
     if (!b) { fprintf(stderr, "%s:%d: trap: out of arena memory\n", f, l); exit(1); }
     b->prev = (extc_pblock *)a->top; b->self = (extc_pblock **)&a->top;
     if (a->top) ((extc_pblock *)a->top)->self = &b->prev;
-    b->cap = n; b->used = n; b->fresh = 1; b->mark = 0; b->td = td;
+    b->cap = n; b->used = n; b->fresh = 1; b->mark = 0; b->td = td; b->rid = g_alloc_rid; b->rsmark = 0; b->vmark = 0;
     a->top = (extc_ablock *)b;
     return (void *)((char *)b + offsetof(extc_pblock, data));
 }
@@ -147,10 +148,60 @@ static void extc_sweep_global(extc_arena *a, extc_arena *b, void **roots, int nr
     if (out_marked) *out_marked = marked;
 }
 
+/* ---- 记忆集（G1 的做法）：每个区域一张"谁指进我"的集 ---- */
+#define NREG 4
+static void **RS[NREG]; static size_t RSN[NREG], RSCAP[NREG];
+static uint32_t g_rs_epoch = 1;   /* 初值必须非 0：rsmark 初值是 0，否则第一次就去重掉 */
+static void rs_add(uint32_t rid, void *v) {
+    extc_pblock *b = PB(v);
+    if (b->rsmark == g_rs_epoch) return;              /* 本轮已记过 ⇒ 天然去重 */
+    b->rsmark = g_rs_epoch;
+    if (RSN[rid] == RSCAP[rid]) { RSCAP[rid] = RSCAP[rid] ? RSCAP[rid]*2 : 256;
+        RS[rid] = realloc(RS[rid], RSCAP[rid]*sizeof(void*)); }
+    RS[rid][RSN[rid]++] = v;
+}
+/* 跨区写：目标区域 != 槽所在区域 ⇒ 登记到目标区域的入边集 */
+static void store_rs(void **slot, void *v, uint32_t slot_rid) {
+    *slot = v;
+    if (v && PB(v)->rid != slot_rid) rs_add(PB(v)->rid, v);
+}
+/* 扫一个区域：只从"本区域自己的根 + 本区域的入边集"标记；碰到区域外的对象就停。 */
+static size_t g_rs_bad;   /* 自检异常：可达、属本区域、却没被本区域标记覆盖 */
+static size_t sweep_rs(uint32_t rid, extc_arena *a, void **own_roots, int nroot,
+                       void **all_roots, int nall, int64_t *out_bytes, size_t *out_marked, int verify) {
+    uint32_t e = ++g_epoch;
+    MKN = 0;
+    for (int i = 0; i < nroot; i++) if (own_roots[i]) mk_push(own_roots[i]);
+    for (size_t i = 0; i < RSN[rid]; i++) mk_push(RS[rid][i]);
+    size_t marked = 0;
+    while (MKN) { void *o = MK[--MKN]; extc_pblock *b = PB(o);
+        if (b->mark == e) continue;
+        b->mark = e; marked++;
+        if (b->rid != rid) continue;                  /* 区域外的对象都当活的：不往下走 */
+        int np = b->td ? b->td->nptr : 0;
+        for (int i = 0; i < np; i++) { void *c = *(void **)((char *)o + b->td->off[i]); if (c) mk_push(c); } }
+    if (verify) {                                   /* 全根独立走一遍：本区域可达却没被标记 ⇒ 入边集不完备 */
+        uint32_t ve = ++g_epoch; MKN = 0;
+        for (int i = 0; i < nall; i++) if (all_roots[i]) mk_push(all_roots[i]);
+        while (MKN) { void *o = MK[--MKN]; extc_pblock *b = PB(o);
+            if (b->vmark == ve) continue;
+            b->vmark = ve;
+            if (b->rid == rid && b->mark != e) g_rs_bad++;
+            int np = b->td ? b->td->nptr : 0;
+            for (int i = 0; i < np; i++) { void *c = *(void **)((char *)o + b->td->off[i]); if (c) mk_push(c); } } }
+    extc_pblock **l = (extc_pblock **)&a->top;
+    while (*l) { extc_pblock *b = *l; if (b->mark == e) { b->self = l; l = &b->prev; }
+        else { *l = b->prev; if (b->prev) b->prev->self = l; free(b); } }
+    if (out_bytes) { int64_t tot = 0; for (extc_pblock *b = (extc_pblock *)a->top; b; b = b->prev) tot += b->cap; *out_bytes = tot; }
+    if (out_marked) *out_marked = marked;
+    return marked;
+}
+
 /* ==================== 第 3 段：按 codegen 的样子手写的工作负载 ==================== */
 #define BUCKETS 64
 #define BUCKET_MAX 8
 #define TRIGGER (262144)
+static int RS_VERIFY = 0;   /* 自检开关：从全根独立复核一遍，看入边集是否完备 */
 typedef struct node_hdr { int64_t key, val; struct node_hdr *next; uint32_t nf; } node_hdr;
 typedef node_hdr node;
 /* 索引项住在**另一个区域**，指向被扫区域里的节点 ⇒ 真正的跨区边：
@@ -184,9 +235,10 @@ int main(int argc, char **argv) {
 
     g_mode = !strcmp(mode,"solo") ? 1 : !strcmp(mode,"sweep") ? 2
            : !strcmp(mode,"sweepc") ? 3 : !strcmp(mode,"ev") ? 4
-           : !strcmp(mode,"gc") ? 5 : 0;
+           : !strcmp(mode,"gc") ? 5 : !strcmp(mode,"rs") ? 6 : !strcmp(mode,"rsev") ? 7 : 0;
     const int gl = (g_mode == 5);            /* 真全局 GC：一个堆，全部东西都在里面 */
-    g_count = (g_mode == 3 || g_mode == 4);
+    g_count = (g_mode == 3 || g_mode == 4 || g_mode == 7);
+    RS_VERIFY = getenv("VERIFY") != NULL;
     const int solo = g_mode >= 1, dolive = (g_mode >= 2);
 
     extc_arena __extc_a[4] = {0};
@@ -201,6 +253,7 @@ int main(int argc, char **argv) {
     int64_t t0 = now_ns();
     for (long i = 0; i < N; i++) {
         int b = (int)(i % BUCKETS);
+        g_alloc_rid = 2;                                  /* 解析区 */
         if (!gl) extc_arena_release(&__extc_a[2]);   /* 全局 GC：没有每轮整片释放这回事 */
         node *t1,*t2,*t3;
         if (gl) { t1=extc_alloc_solo(&__extc_a[1],sizeof(node),"sim.extc",7,&TD_NODE);
@@ -216,6 +269,7 @@ int main(int argc, char **argv) {
         t1->next=t2; t2->next=t3; t3->next=NULL; t3->val=i;
         for (node *q=t1;q;q=q->next) sink += q->val;
 
+        g_alloc_rid = 1;                                  /* 桶区 */
         node *nd = solo ? extc_alloc_solo(&__extc_a[1], objsz, "sim.extc", 14, &TD_NODE)
                         : extc_arena_alloc(&__extc_a[1], objsz, "sim.extc", 14);
         nd->key=i; nd->val=i*3;
@@ -227,9 +281,12 @@ int main(int argc, char **argv) {
 
         /* 索引：慢慢长起来，长满 indexmax 为止；每一项指向本轮的节点 ⇒ 跨区边 */
         if ((long)ni < indexmax) {
+            g_alloc_rid = 3;                              /* 索引区 */
             inode *ix = solo ? extc_alloc_solo(&__extc_a[3], sizeof(inode), "sim.extc", 20, &TD_INODE)
                              : extc_arena_alloc(&__extc_a[3], sizeof(inode), "sim.extc", 20);
-            ix->target = nd; ix->next = ihead; ihead = ix; ni++;
+            ix->next = ihead; ihead = ix;
+            store_rs((void**)&ix->target, nd, 3);   /* 跨区写 3→1：登记到桶区的入边集 */
+            ni++;
             arena3 += (int64_t)sizeof(inode);
         }
         for (node *q=head[b];q;q=q->next) if (q->key == i-7) { q->val++; break; }
@@ -240,7 +297,7 @@ int main(int argc, char **argv) {
             uint32_t was = cur->nf;
             if (prev) storep((void**)&prev->next, NULL); else storep((void**)&head[b], NULL);
             g_kills++;
-            if (g_mode == 4 && was == 1) { extc_free_solo(&__extc_a[1], cur); arena1 -= objsz; g_evfired++; }
+            if ((g_mode == 4 || g_mode == 7) && was == 1) { extc_free_solo(&__extc_a[1], cur); arena1 -= objsz; g_evfired++; }
             else g_fall++;
         }
         /* 触发量 = **垃圾量** vs **要走的可达集**：标记成本 ∝ 可达集，所以垃圾攒到与可达集
@@ -254,7 +311,12 @@ int main(int argc, char **argv) {
             for (int j=0;j<BUCKETS;j++) roots[nr++]=head[j];
             for (int j=0;j<(ncache<8000?ncache:8000);j++) roots[nr++]=cache[j];
             roots[nr++] = ihead;                        /* 索引链的根：不加它就不健全 */
-            if (gl) { extc_sweep_global(&__extc_a[1], &__extc_a[3], roots, nr, &TD_NODE, &after, &mk);
+            if (g_mode == 6 || g_mode == 7) {
+                void *own[BUCKETS + 8192]; int no = 0;
+                for (int j=0;j<BUCKETS;j++) own[no++]=head[j];
+                for (int j=0;j<(ncache<8000?ncache:8000);j++) own[no++]=cache[j];
+                sweep_rs(1, &__extc_a[1], own, no, roots, nr, &after, &mk, RS_VERIFY);
+                        } else if (gl) { extc_sweep_global(&__extc_a[1], &__extc_a[3], roots, nr, &TD_NODE, &after, &mk);
                 int64_t t3 = 0; for (extc_pblock *pb=(extc_pblock*)__extc_a[3].top; pb; pb=pb->prev) t3 += pb->cap;
                 arena3 = t3; }
             else extc_sweep(&__extc_a[1], roots, nr, &TD_NODE, &after, &mk);
@@ -270,8 +332,8 @@ int main(int argc, char **argv) {
     extc_arena_destroy(&__extc_a[0]); extc_arena_destroy(&__extc_a[1]);
     extc_arena_release(&__extc_a[2]); extc_arena_destroy(&__extc_a[2]);
     extc_arena_destroy(&__extc_a[3]);
-    printf("%-6s N=%-7ld 共享=%-5d 索引=%-7ld 对象=%-5d 耗时=%8.1fms 峰值总计=%8zuKiB 清扫=%-4zu 标记总量=%-10zu 最大停顿=%9.1fus 停顿总=%7.2fms 命中=%5.1f%%\n",
+    printf("%-6s N=%-7ld 共享=%-5d 索引=%-7ld 对象=%-5d 耗时=%8.1fms 峰值总计=%8zuKiB 清扫=%-4zu 标记总量=%-10zu 入边集异常=%-4zu 最大停顿=%9.1fus 停顿总=%7.2fms 命中=%5.1f%%\n",
         mode, N, ncache, indexmax, objsz, dt/1e6, (size_t)(peak1+peak3)/1024,
-        g_sweeps, g_marked, P.max_ns/1000.0, P.total_ns/1e6, g_kills?100.0*g_evfired/g_kills:0.0);
+        g_sweeps, g_marked, g_rs_bad, P.max_ns/1000.0, P.total_ns/1e6, g_kills?100.0*g_evfired/g_kills:0.0);
     return 0;
 }
