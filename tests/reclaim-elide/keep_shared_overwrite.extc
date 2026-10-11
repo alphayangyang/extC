@@ -1,0 +1,28 @@
+/* 形状 K2（**不该省** · 反面②）：覆盖一个**已持有旧值**的槽 —— 旧值不是全新对象。
+ *
+ * 判据来源：`docs/RECLAMATION.md` 第五节最后一条（引文见 `elide_swept_region.extc`）。
+ * 情形② 省的是"新对象一侧"（计数从零起，没有归零路径）。**覆盖**还带另一次操作：
+ * 读旧值 + 把旧值的计数减一（`extc_rc_storeRef` 的 dec 那一半）。旧值 `a` 是先分配、
+ * 已经躺在槽里的对象，不是"全新" ⇒ 那次 dec 可能正是它最后一个持有者的消失，
+ * **不该省**。
+ *
+ * 对照：`elide_fresh_alloc.extc`（槽此前为空，只写进一个全新对象）。
+ *
+ * 语义面（绿的要求）：编译通过 + 输出 `a=1 slot=2`。
+ */
+use std::io
+
+struct node { val: i64  next: ?ref node }
+
+fn main() -> i32 {
+    var a = new node
+    a.val = 1
+    var b = new node
+    b.val = 2
+    var slot: ?ref node = a          // 槽已持有旧值 a
+    slot = b                         // ← 覆盖：inc b + **dec a**；a 不是全新对象 ⇒ 不该省
+    var v: i64 = -1
+    if slot != null { v = (*slot).val }
+    io::cout << "a=" << a.val << " slot=" << v << "\n"
+    return 0
+}

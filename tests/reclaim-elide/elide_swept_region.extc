@@ -1,0 +1,44 @@
+/* 形状 E1（**该省** · 情形①）：**对象所在区域反正要被清扫**。
+ *
+ * 判据来源：`docs/RECLAMATION.md` 第五节最后一条 ——
+ *   「计数按编译期收窄：计数加不加由编译期决定，而不是一律加。能省的情形：对象所在区域
+ *     反正要被清扫、赋的是全新分配的对象（计数从零起、不可能归零）、编译器能证明该对象
+ *     还有别的持有者。」
+ *
+ * 形状：一条链**只在一个块里**建起来、只在块里走完。块退出时那一整片区被 release
+ * （参看 `tests/reclaim-shapes/promote_place.extc`：不逃逸的存储留在块区域，块退出整片释放）。
+ * 于是链上每个对象的死期**不取决于自己的计数**，而取决于整片的释放时刻 ⇒
+ * `prev.next = n` 这条边的计数（inc n + dec 旧值）是多余的：清扫/整片释放本来就兜底。
+ *
+ * ⚠️ 这条判据现在**是红的**：编译器还没做任何"按编译期收窄"的分析，
+ *    生成 C 里这条指针赋值照样会带计数（接线见 task-3）。
+ * 语义面（绿的要求）：编译通过 + 输出 `swept=28`。
+ */
+use std::io
+
+struct node { val: i64  next: ?ref node }
+
+fn main() -> i32 {
+    var total: i64 = 0
+    {
+        // 整条链是本块的局部：head / prev / cur 都出不了这个块。
+        var head = new node
+        head.val = 0
+        var prev: mut ref node = head
+        var i: i64 = 1
+        while i < 8 {
+            var n = new node
+            n.val = i
+            prev.next = n            // ← 指针赋值：链只在块内，块退出整片区释放
+            prev = n
+            i = i + 1
+        }
+        var cur: ?ref node = head
+        while cur != null {
+            total = total + (*cur).val   // 数据字段赋值：本来就不记
+            cur = (*cur).next
+        }
+    }                                // 块退出：__extc_a[k] 整片 release
+    io::cout << "swept=" << total << "\n"
+    return 0
+}

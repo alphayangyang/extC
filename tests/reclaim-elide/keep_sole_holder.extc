@@ -1,0 +1,27 @@
+/* 形状 K3（**不该省** · 反面③）：槽是**唯一**持有者，清空它就是最后一次 dec。
+ *
+ * 判据来源：`docs/RECLAMATION.md` 第五节最后一条（引文见 `elide_swept_region.extc`）。
+ * 情形③ 省的前提是"编译器能证明该对象还有别的持有者"。这里没有任何别的持有者：
+ * `cur` 是唯一指着对象的槽，`cur = null` 把计数减到零、当场把槽还回去 ——
+ * 这正是「计数归零」机制存在的意义（早回收，而不是等清扫）。省掉它 = 对象只能等区域清扫 ⇒
+ * **不该省**。
+ *
+ * 对照：`elide_other_holder.extc`（外层 `keep` 绑定活得更久）。
+ *
+ * 语义面（绿的要求）：编译通过 + 输出 `sole=9 cleared=true`。
+ */
+use std::io
+
+struct node { val: i64  next: ?ref node }
+
+fn main() -> i32 {
+    var cur: ?mut ref node = new node   // 唯一持有者就是这个槽（mut：下面要写字段）
+    var v: i64 = -1
+    if cur != null {
+        (*cur).val = 9               // 数据字段赋值：不记
+        v = (*cur).val
+    }
+    cur = null                       // ← 摘除最后一个持有者：dec 必须记（归零当场释放）
+    io::cout << "sole=" << v << " cleared=" << (cur == null) << "\n"
+    return 0
+}
