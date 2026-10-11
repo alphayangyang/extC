@@ -241,14 +241,14 @@ int main(int argc, char **argv) {
     NSHARD = argc > 6 ? atoi(argv[6]) : 1; if (NSHARD < 1) NSHARD = 1; if (NSHARD > 64) NSHARD = 64;
     size_t objsz = argc > 5 ? (size_t)atol(argv[5]) : sizeof(Obj);
 
-    g_churn.rid = 2; g_idx.rid = 3;
+    g_churn.rid = (uint32_t)(NSHARD + 1); g_idx.rid = (uint32_t)(NSHARD + 2);
     memset(g_head, 0, sizeof g_head);
     if (g_ncache) g_cache = calloc((size_t)g_ncache, sizeof(Obj *));
     int64_t peak_buck = 0, peak_rss = 0, max_pause = 0, total_pause = 0, live_buck = 0;
     size_t sweeps = 0;
 
-    for (int j = 0; j < NSHARD; j++) { g_shard[j].rid = 1; g_reg[1] = &g_shard[j]; }
-    g_reg[2] = &g_churn; g_reg[3] = &g_idx;
+    for (int j = 0; j < NSHARD; j++) { g_shard[j].rid = (uint32_t)(j + 1); g_reg[j + 1] = &g_shard[j]; }
+    g_reg[NSHARD + 1] = &g_churn; g_reg[NSHARD + 2] = &g_idx;
     static void *roots[8192];
     int64_t t0 = now_ns();
     for (long i = 0; i < N; i++) {
@@ -296,7 +296,7 @@ int main(int argc, char **argv) {
                 for (int j = 0; j < BUCKETS; j++) if ((j % NSHARD) == (int)(best - g_shard) && g_head[j]) roots[nr++] = g_head[j];
                 for (int j = 0; j < g_ncache; j++) if (g_cache[j]) roots[nr++] = g_cache[j];
                 int sh_i = (int)(best - g_shard);
-                mark_all(1, roots, nr, SRS[sh_i], SRSN[sh_i]);
+                mark_all(best->rid, roots, nr, SRS[sh_i], SRSN[sh_i]);
                 r2_sweep(best);
                 live_shard[sh_i] = best->bytes;
                 int64_t p1 = now_ns();
