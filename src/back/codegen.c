@@ -378,6 +378,11 @@ typedef struct {
     /* Does the program declare a pool extern? Then the registry runtime is emitted, and
      * every place that can create one carries the two hooks that key its pools to it. */
     bool        needPool;
+    /* `EXTC_RECLAIM`：区域回收运行期（位图 slab + 持有者计数 + 区域清扫）打开。
+     * **默认关闭** —— 关着时生成 C 要与接线前逐字节相同（414 个 golden 靠这条）。打开时：
+     * 运行期文本进序言、`new` 的存储从由 arena 地址认领的 rc 区域里取、引用赋值点发射计数。
+     * 开关是环境变量而不是构造上的判据，直到有构造需要它（见 `emitRuntimePrologue`）。 */
+    bool        needReclaim;
     /* 正在发射的函数是不是「一个地方」（入口文件的函数才是；库函数透明）。 */
     bool        zoneHere;
     /* 这个函数收不收隐藏的「家 zone」参数（= `FuncDef.makesPool`）。
@@ -675,6 +680,7 @@ static const char *descRef(CG *g, Type *t);
 static bool printArgIsPlace(const Expr *e);
 static bool cgIsMain(const FuncDef *f);
 static const char *zoneArgRef(CG *g, Expr *e);   /* the zone argument of a pool-creating callee */
+static void cgReclaimDropArena(CG *g, int lvl);  /* 区域与 arena 同处释放（定义在 stVar 之前） */
 
 
     
@@ -2849,6 +2855,19 @@ static const char *exNew(CG *g, Expr *e) {
     const char *ar = arenaRefAt(g, planArenaLevel(e));
     if (!e->u.new_.count) {
         /* The place of one T (or one [N]T) is simply its address. */
+        /* 回收打开时，这份存储从 **rc 区域**取：`ref T` / `ref [N]T` 是引用槽，会被计数
+         * 函数（`extc_rc_initRef` / `storeRef` / `register`）摸到，而计数只认 slab 槽 ——
+         * 落在 arena 里的指针进 `extc_rc_slabOf` 会读到垃圾。区域按 arena 的地址认领
+         * （见 `emitRuntimePrologue` 那张表），所以寿命与 arena 完全一致。
+         *
+         * `new T[n]`（下面那条：一个 `slice<T>` 视图）不走这里：视图**不是引用槽**，
+         * 计数永远摸不到它的 data 指针，留在 arena 里即可 —— 也正好避开 slab 的尺寸上限
+         * 对数组长度的那条限制。 */
+        if (g->needReclaim)
+            return arenaPrintf(g->arena,
+                "((%s *)extc_rc_alloc(extc_rc_regionOf((void *)&(%s), %d),"
+                " (int64_t)sizeof(%s), 0u))",
+                cType(g, w), ar, planArenaLevel(e), cType(g, w));
         return arenaPrintf(g->arena,
             "((%s *)extc_arena_alloc(&%s, (int64_t)sizeof(%s), \"%s\", %d))",
             cType(g, w), ar, cType(g, w), g->path, e->line);
@@ -2959,6 +2978,14 @@ static const char *exGencall(CG *g, Expr *e) {
     /* The level comes from the checker as well, with `alloc` meaning
      * the current block, so `g->blkLevel` is not counted here. */
     const char *ar = arenaRefAt(g, planArenaLevel(e));
+    /* `alloc<T>(n)` 返回的 `T *` 是引用类型，会被引用槽接住 ⇒ 回收打开时它也得是 slab 槽，
+     * 理由与 `exNew` 那条完全相同（区域按 arena 地址认领）。池/板那几条要的是池自己的板，
+     * 不是这里的事。 */
+    if (g->needReclaim)
+        return arenaPrintf(g->arena,
+            "(%s *)extc_rc_alloc(extc_rc_regionOf((void *)&(%s), %d),"
+            " (int64_t)(%s) * (int64_t)sizeof(%s), 0u)",
+            tn, ar, planArenaLevel(e), n, tn);
     return arenaPrintf(g->arena,
         "(%s *)extc_arena_alloc(&%s, (int64_t)(%s) * (int64_t)sizeof(%s), \"%s\", %d)",
         tn, ar, n, tn, g->path, e->line);
@@ -3815,6 +3842,7 @@ static void cgReleaseLevel(CG *g, int lvl) {
     /* A coroutine body owns no place of its own, so it must not release the **caller's** arena levels
      * -- that release would free, at every resume, exactly what the next resume still needs. Its own
      * block arenas live in the frame (see `arenaRefAt`), and a block's exit still reclaims its level. */
+    cgReclaimDropArena(g, lvl);        /* 回收区域与 arena 同一处释放：寿命必须一致 */
     if (g->coroFunc)
         cgLine(g, "extc_arena_release(&%s->arena%d);", g->coroFrame, lvl);
     else
@@ -3831,8 +3859,11 @@ static void cgReleaseLevel(CG *g, int lvl) {
 static void cgCoroArenaDestroy(CG *g) {
     if (!g->coroFunc) return;
     int n = 1 + blkMaxOfBlock(((FuncDef *)g->coroFunc)->body);
-    for (int lv = 1; lv <= n; lv++)
+    for (int lv = 1; lv <= n; lv++) {
+        if (g->needReclaim)
+            cgLine(g, "extc_rc_regionDrop((void *)&%s->arena%d);", g->coroFrame, lv);
         cgLine(g, "extc_arena_destroy(&%s->arena%d);", g->coroFrame, lv);
+    }
 }
 
 /* Collect every `@overwrite` site of one function body, in source order.
@@ -4149,8 +4180,10 @@ static void genBlockBody(CG *g, Stmt *block) {
      * left, but the save costs a byte and removes the question. */
     bool savedZoneMark = g->zoneMark[g->blkLevel];
     if (!g->noArena) {
-        if (!g->coroFunc)   /* a coroutine's storage is the task's, not this block's */
+        if (!g->coroFunc) {  /* a coroutine's storage is the task's, not this block's */
+            cgReclaimDropArena(g, g->blkLevel);   /* 与 arena 的清空同一处 */
             cgLine(g, "extc_arena_release(&__extc_a[%d]);", g->blkLevel);   /* clear */
+        }
         /* 进入一个地方：压一个 zone，标记按层号命名（同级块不嵌套，名字不冲突）。
          * 只在这个块**可能建池**时才压（`blockMakesPool`）：只调用 `v.push` 这类不建池的
          * 库函数的循环体不需要自己的 zone，省下每轮一次的压/弹。
@@ -4192,6 +4225,39 @@ static void genStmt(CG *g, Stmt *s) {
     g->prefixBlk++;
     genStmtInner(g, s);
     g->prefixBlk--;
+}
+
+/**
+ * @brief 这个槽是不是引用类型（`ref T` / `?ref T`）？
+ *
+ * 计数的判据只有这一条：**只挂在"指向关系改变"上**。数据字段赋值（`p.val = x`）一律
+ * 不动计数，所以先问类型再谈发射。实例化上下文里的 `T` 先替换掉，否则泛型实例会拿
+ * 参数类型去比 `TY_REF`。
+ *
+ * @param g  生成器状态，提供实例化上下文。
+ * @param t  槽的声明类型；可以为 NULL。
+ * @return   是引用类型为 true。
+ */
+static bool cgIsRefType(CG *g, Type *t) {
+    Type *s = subst(g, t);
+    return s && s->kind == TY_REF;
+}
+
+/**
+ * @brief 与 arena 的释放**同一处**发射区域释放：区域的寿命就是 arena 的寿命。
+ *
+ * 认领键是 arena 的地址（见 `emitRuntimePrologue` 里那张表），所以这里只发地址，不需要
+ * 知道区域本身。协程的 step 用的是帧里的 `arena<k>`，拼法与 arena 的释放保持一致。
+ *
+ * @param g    生成器状态；`needReclaim` 关着时什么都不发。
+ * @param lvl  块层级（1 = 函数体）。
+ */
+static void cgReclaimDropArena(CG *g, int lvl) {
+    if (!g->needReclaim) return;
+    if (g->coroFunc)
+        cgLine(g, "extc_rc_regionDrop((void *)&%s->arena%d);", g->coroFrame, lvl);
+    else
+        cgLine(g, "extc_rc_regionDrop((void *)&__extc_a[%d]);", lvl);
 }
 
 /**
@@ -4295,7 +4361,13 @@ if (g->coroFunc && planCName(s)) {
         if (s->u.var.init) {
             const char *v = genExpr(g, s->u.var.init);
             flushPrefix(g);
-            cgLine(g, "%s->%s = %s;", g->coroFrame, planCName(s), v);
+            /* 帧字段是**既有槽**（帧是复合字面量，指针字段先读作 0），resume 会重跑这条
+             * 初始化 ⇒ 覆盖语义，走 storeRef：旧值减一、新值加一。 */
+            if (g->needReclaim && cgIsRefType(g, s->type))
+                cgLine(g, "extc_rc_storeRef((void **)&%s->%s, (void *)(%s));",
+                       g->coroFrame, planCName(s), v);
+            else
+                cgLine(g, "%s->%s = %s;", g->coroFrame, planCName(s), v);
         }
         return;
     }
@@ -4357,11 +4429,22 @@ if (s->u.var.overwrite) {
              * outer `array_T *p`, turning `p = (array_T *)p` into a
              * self-assignment and leaving the binding null. */
             const char *owtp = arenaPrintf(g->arena, "__owp%d", k);
-            cgLine(g, "if (!%s || !%s->p) { void *%s = extc_arena_alloc(&%s,"
-                      " (int64_t)sizeof(%s), \"%s\", %d);  if (%s) %s->p = %s;"
-                      "  %s = (%s)%s; }",     /* the C type is already a pointer */
-                    owcv, owcv, owtp, ar, ct, g->path, nx->line,
-                    owcv, owcv, owtp, nm, cType(g, s->type), owtp);
+            /* 回收打开时这一份存储也从 rc 区域取：`@overwrite` 的绑定同样可以是引用类型，
+             * 落在 arena 里的指针进计数函数会读到垃圾。区域按 cell 的家 arena 认领，
+             * 与 arena 同寿。 */
+            if (g->needReclaim)
+                cgLine(g, "if (!%s || !%s->p) { void *%s = extc_rc_alloc("
+                          "extc_rc_regionOf((void *)%s->home, %d),"
+                          " (int64_t)sizeof(%s), 0u);  if (%s) %s->p = %s;"
+                          "  %s = (%s)%s; }",     /* the C type is already a pointer */
+                        owcv, owcv, owtp, owcv, planArenaLevel(nx), ct,
+                        owcv, owcv, owtp, nm, cType(g, s->type), owtp);
+            else
+                cgLine(g, "if (!%s || !%s->p) { void *%s = extc_arena_alloc(&%s,"
+                          " (int64_t)sizeof(%s), \"%s\", %d);  if (%s) %s->p = %s;"
+                          "  %s = (%s)%s; }",     /* the C type is already a pointer */
+                        owcv, owcv, owtp, ar, ct, g->path, nx->line,
+                        owcv, owcv, owtp, nm, cType(g, s->type), owtp);
             cgLine(g, "else { memset(%s->p, 0, (size_t)sizeof(%s));"
                       "  %s = (%s)%s->p; }",
                     owcv, ct, nm, cType(g, s->type), owcv);
@@ -4413,6 +4496,21 @@ flushPrefix(g);
 size_t lb = g->out->len;
 cgLine(g, "%s%s %s = %s;", stg, cType(g, s->type), nm, asF32(g, s->type, s->u.var.init, init));
 localDef(g, lb, nm, 1);
+/* 引用槽的计数。**新槽**走 initRef：它只写 + 目标加一，**绝不读旧值** —— 一个刚声明的
+ * 槽里躺着的"旧值"是空闲链的槽号（slab 分配器的空闲链就存在槽头），当指针解引用会崩。
+ * 值从刚写好的变量里再读一次，所以求值只有一次。
+ *
+ * 全局声明跳过：它是 `static`，语句每次执行到这个位置都会**再跑一遍**，计数会被重复加；
+ * 而且全局引用是进程级根，归根表那一批（留待下一步）。
+ *
+ * 跨区存储（对象在更外层的区域、槽在这个块里）再登记一位：目标对象所在位置置一位，
+ * 清扫播种时按位图顺序扫。多登记是安全方向（只让对象多活一会儿），少登记才是漏根。 */
+if (g->needReclaim && !s->u.var.isGlobal && cgIsRefType(g, s->type)) {
+    cgLine(g, "extc_rc_initRef((void **)&%s, (void *)%s);", nm, nm);
+    if (s->u.var.init && s->u.var.init->kind == EX_NEW
+        && planArenaLevel(s->u.var.init) != g->blkLevel)
+        cgLine(g, "extc_rc_register((void *)%s);", nm);
+}
 return;
 }
 
@@ -4459,6 +4557,7 @@ if (condTemps || ownLevel) {
     cgLine(g, "while (1) {");
     g->indent++;
     if (ownLevel) g->blkLevel++;
+    if (ownLevel) cgReclaimDropArena(g, g->blkLevel);
     if (ownLevel) cgLine(g, "extc_arena_release(&__extc_a[%d]);", g->blkLevel);
     flushPrefix(g);               /* the temporaries, now once per round */
     cgLine(g, "if (!(%s)) break;", cnd);
@@ -4670,6 +4769,23 @@ static void genStmtInner(CG *g, Stmt *s) {
             const char *tgt = genExpr(g, s->u.assign.target);
             g->inAssignTarget = false;
             const char *val = genExpr(g, s->u.assign.value);
+            /* 引用槽的赋值是**覆盖**语义（槽里已经有旧值），所以走 storeRef：读旧值减一、
+             * 新值加一。数据字段（`p.val = x`）不是引用类型 ⇒ 一个字都不发。
+             *
+             * 跨区存储（对象在更外层的区域、这个赋值发生在更内层的块里）再登记一位。
+             * 值要在 `register` 里出现第二次，所以先落进语句前缀的临时量：`new` 求值两次
+             * 就是分配两次。前缀必须在本语句第一行**之前**写出来，所以这一手放在
+             * `flushPrefix` 之前。 */
+            const bool refStore = g->needReclaim && !s->u.assign.op
+                                  && cgIsRefType(g, s->u.assign.target->type);
+            const bool refRegister = refStore && s->u.assign.value->kind == EX_NEW
+                                     && planArenaLevel(s->u.assign.value) != g->blkLevel;
+            const char *regv = NULL;
+            if (refRegister) {
+                regv = arenaPrintf(g->arena, "__extc_rr%d", g->tmpSeq++);
+                pfLine(g, "void *%s = (void *)(%s);", regv, val);
+                val = regv;
+            }
             flushPrefix(g);
             /* `x += y` is emitted as `x += y`: C evaluates the target **once**, which is
              * exactly the meaning the statement has, and it is what a reader expects to
@@ -4681,6 +4797,11 @@ static void genStmtInner(CG *g, Stmt *s) {
                     cgLine(g, "%s = %s;", tgt, genBin(g, s->u.assign.opExpr));
                 else
                     cgLine(g, "%s %s %s;", tgt, s->u.assign.op, val);
+                return;
+            }
+            if (refStore) {
+                cgLine(g, "extc_rc_storeRef((void **)&(%s), (void *)(%s));", tgt, val);
+                if (regv) cgLine(g, "extc_rc_register(%s);", regv);
                 return;
             }
             cgLine(g, "%s = %s;", tgt, asF32(g, s->u.assign.target ? s->u.assign.target->type : NULL,
@@ -5689,8 +5810,10 @@ static void genFunc(CG *g, FuncDef *f) {
         /* `destroy`, not `release`: this is the frame's last exit, so the block the
          * arena kept for the next round has to go too. Emitting `release` here would
          * leak one block per arena at every return -- bounded, but a leak. */
-        for (int lv = 1; lv <= maxLv; lv++)
+        for (int lv = 1; lv <= maxLv; lv++) {
+            cgReclaimDropArena(g, lv);   /* 回收区域与 arena 同寿，早退也从这里出去 */
             cgLine(g, "extc_arena_destroy(&__extc_a[%d]);", lv);
+        }
         /* 弹回到最外层那个压过的 zone：早退（`goto __extc_ret`）和走到函数末尾都从这里出去，
          * 而跳出去的路径可能把若干个块 zone 留在栈上，所以从最深的开始每层补一次。
          * 多弹是幂等的（`zoneLeaveTo` 弹到某个 mark 为止），少弹会让池留在一个已经被压掉的
@@ -7760,10 +7883,51 @@ static void emitPreamble(CG *g, Buf *out, Module *m) {
 static void emitRuntimePrologue(CG *g, Buf *out, Module *m) {
     /* The reclamation runtime: the slab allocator, the holder counts and the region sweep.
      * It is emitted **before** any code that could name it -- its functions are `static` -- and
-     * on demand only. The switch is an environment variable because nothing generates a call
-     * into it yet; it becomes a real trigger (`g->needReclaim`, set by whichever construct
-     * needs the storage managed) once the counting is emitted at the reference assignments. */
-    if (getenv("EXTC_RECLAIM")) reclaimEmitRuntime(g->arena, out);
+     * on demand only (`g->needReclaim`, set from `EXTC_RECLAIM` in `scanUnitNeeds`). Until the
+     * sweep trigger and the root table land, the switch is an environment variable rather than
+     * a construct in the program. */
+    if (g->needReclaim) {
+        reclaimEmitRuntime(g->arena, out);
+        /* 区域由 **arena 的地址**认领。分配点本来就知道自己落在哪只 arena 上
+         * （`arenaRefAt`），于是区域的寿命与那只 arena 完全一致 —— 包括被调者用调用者的
+         * 家 arena 分配的那种情形（家 arena 是**同一个地址**一路传下来的），也包括递归里
+         * 同一层不同帧的 arena。释放点与 arena 的 `release`/`destroy` 在同一处发射
+         * （`cgReclaimDropArena`），所以这里没有自己的生命周期。
+         *
+         * 表满时新区域**不入表**：宁可泄漏一个区域，也不提前释放 —— 与计数"到顶粘性"
+         * 同一条守则（`reclaim.c` 的义务 3）。
+         *
+         * 放在运行期文本之后、原语块之前：它只引用 `ExtcRcRegion` 与 `extc_rc_regionNew`
+         * /`extc_rc_regionFree`，三个都由上面那段文本提供了。`unused` 属性是因为
+         * "打开了开关但程序里没有分配点"是合法输入：那时两个函数没人调用，而生成 C 在
+         * `-Wall -Werror` 下仍要编得过。 */
+        bufPuts(out,
+            "#define EXTC_RC_REG_MAX 512\n"
+            "static void *extc_rc_regKey[EXTC_RC_REG_MAX];\n"
+            "static ExtcRcRegion *extc_rc_regVal[EXTC_RC_REG_MAX];\n"
+            "static size_t extc_rc_regN;\n"
+            "__attribute__((unused)) static ExtcRcRegion *extc_rc_regionOf(void *key, int32_t rid) {\n"
+            "    for (size_t i = 0; i < extc_rc_regN; i++)\n"
+            "        if (extc_rc_regKey[i] == key) return extc_rc_regVal[i];\n"
+            "    ExtcRcRegion *r = extc_rc_regionNew(rid, (const ExtcRcType *)0, 0);\n"
+            "    if (extc_rc_regN < EXTC_RC_REG_MAX) {\n"
+            "        extc_rc_regKey[extc_rc_regN] = key;\n"
+            "        extc_rc_regVal[extc_rc_regN] = r;\n"
+            "        extc_rc_regN++;\n"
+            "    }\n"
+            "    return r;\n"
+            "}\n"
+            "__attribute__((unused)) static void extc_rc_regionDrop(void *key) {\n"
+            "    for (size_t i = 0; i < extc_rc_regN; i++) {\n"
+            "        if (extc_rc_regKey[i] != key) continue;\n"
+            "        extc_rc_regionFree(extc_rc_regVal[i]);\n"
+            "        extc_rc_regN--;\n"
+            "        extc_rc_regKey[i] = extc_rc_regKey[extc_rc_regN];\n"
+            "        extc_rc_regVal[i] = extc_rc_regVal[extc_rc_regN];\n"
+            "        return;\n"
+            "    }\n"
+            "}\n");
+    }
     /* The dying hook goes between the includes and the trap paths that call it: `int32_t`
      * has to be known, and the definition has to precede every use. It is its own block
      * because the prologue around it is already at the 4095-byte limit C99 guarantees for
@@ -8516,6 +8680,10 @@ static void initCGState(CG *g, Module *m, TypeTable *tt, Arena *arena) {
  * @param m 当前模块，`funcs` 与 `structs` 的声明是全部来源。
  */
 static void scanUnitNeeds(CG *g, Module *m) {
+    /* 回收的开关。它不是"程序里出现了什么构造"那条判据，而是接线期的环境变量：
+     * 计数的发射点已就位（引用赋值点），但清扫触发与根表还没接，所以由人来开。
+     * **默认必须关闭**：关着时下面每一处发射都不发生，生成 C 与接线前逐字节相同。 */
+    g->needReclaim = getenv("EXTC_RECLAIM") != NULL;
     /* Does the program use the raw-terminal primitives? They arrive as an `extern!` the
      * library declares (`extc_raw_enter` in `std::sys::term`), which is the one thing
      * codegen can see from here. */
