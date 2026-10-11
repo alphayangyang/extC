@@ -24,7 +24,7 @@ static long rss_kib(void){ FILE*f=fopen("/proc/self/statm","r"); if(!f) return 0
 static long sink, g_peak_rss;
 static int64_t g_t_alloc, g_t_mark, g_t_sweep_slots, g_t_push, g_t_free;
 static int64_t g_t_seed, g_t_trav, g_t_scan;
-static size_t g_nalloc, g_nfreed, g_marked, g_kills, g_evfired;
+static size_t g_nalloc, g_nfreed, g_marked, g_kills, g_evfired, g_sweepfreed;
 
 /* ---------- 类型表（编译器按类型发射） ---------- */
 typedef struct { int nptr; size_t off[2]; } TypeDesc;
@@ -165,17 +165,18 @@ static size_t r2_destroy(Region2 *r) {
 static void **g_rs[4]; static size_t g_rsn[4], g_rscap[4]; static uint32_t g_rsmark_epoch = 1;
 static int NSHARD = 1;
 static int64_t live_shard[64];
-static void **SRS[64]; static size_t SRSN[64], SRSCAP[64];   /* 每分片自己的入边集 */
+static int64_t sweep_factor[64];   /* 自学习：一次清扫一无所获就把阈值乘 4 */
 static Region2 g_shard[64];                                   /* 分片：每片一个区域 */
 
+/* 入边只登记**一个 bit**（在目标对象所在 slab 的 rsbit 位图里）。
+   释放槽时会清掉 ⇒ 没有陈旧入边；播种时顺序扫位图 ⇒ 没有指针数组的增长与入栈成本。 */
 static void rs_add_shard(int k, void *p) {
+    (void)k;
     Slab *s = slab_of(p); size_t i = slot_of(s, p);
     if (!s->rsbit) return;
     if ((s->rsbit[i >> 6] >> (i & 63)) & 1) return;         /* 已登记 ⇒ 去重（入边集**持久**，不清空） */
     s->rsbit[i >> 6] |= (uint64_t)1 << (i & 63);
-    if (SRSN[k] == SRSCAP[k]) { SRSCAP[k] = SRSCAP[k] ? SRSCAP[k]*2 : 256;
-        SRS[k] = realloc(SRS[k], SRSCAP[k]*sizeof(void*)); }
-    SRS[k][SRSN[k]++] = p; (void)g_rsmark_epoch;
+    (void)g_rsmark_epoch;
 }
 
 /* 引用赋值：目标 +1、旧值 −1（饱和三点式，饱和值当"不确定"，永不从饱和值减回去 ⇒ 健全） */
@@ -198,6 +199,7 @@ static uint16_t hold_of(Obj *o) { Slab *s = slab_of(o); return s->hold[slot_of(s
 #define BUCKETS 64
 #define BUCKET_MAX 8
 #define TRIGGER (1 << 18)
+#define MEM_FLOOR (1 << 20)   /* 每区域内存压力阈值下限（1MiB）*/
 static Region2 g_shard[64];   /* 分片：每片一个区域，各自回收 */
 static Region2 g_churn;   /* 解析区（每轮清空） */
 static Region2 g_idx;     /* 索引区（跨区冷结构） */
@@ -212,13 +214,19 @@ static void mpush(void *o) {
 }
 static size_t g_mark_nstop;
 /* 从根 + 入边集出发标记；只在 rid 区域内继续走（区域外都当活的） */
-__attribute__((noinline)) static void mark_all(uint32_t rid, void **roots, int nr, void **rsv, size_t nrs) {
+__attribute__((noinline)) static void mark_all(Region2 *reg, uint32_t rid, void **roots, int nr) {
     g_sp = 0;
 #ifdef PHASES
     int64_t s0 = now_ns();
 #endif
     for (int i = 0; i < nr; i++) if (roots[i]) mpush(roots[i]);
-    for (size_t i = 0; i < nrs; i++) if (rsv[i]) mpush(rsv[i]);
+    /* 跨区入边：顺序扫本区域每个 slab 的登记位图，把仍占用的槽作为种子 */
+    for (Slab *sl = reg->slabs; sl; sl = sl->next)
+        for (uint32_t w = 0; w < sl->nwords; w++) {
+            uint64_t bits = sl->rsbit[w] & sl->occ[w];
+            while (bits) { int b = __builtin_ctzll(bits); bits &= bits - 1;
+                mpush(SLAB_DATA(sl) + (((size_t)w * 64 + (size_t)b) << sl->shift)); }
+        }
 #ifdef PHASES
     int64_t s1 = now_ns();
     g_t_seed += s1 - s0;
@@ -252,7 +260,7 @@ int main(int argc, char **argv) {
 
     for (int j = 0; j < NSHARD; j++) { g_shard[j].rid = (uint32_t)(j + 1); g_reg[j + 1] = &g_shard[j]; }
     g_reg[NSHARD + 1] = &g_churn; g_reg[NSHARD + 2] = &g_idx;
-    static void *roots[8192];
+    static void **roots = NULL; size_t roots_cap = 0;
     int64_t t0 = now_ns();
     for (long i = 0; i < N; i++) {
         int b = (int)(i % BUCKETS);
@@ -283,25 +291,31 @@ int main(int argc, char **argv) {
                 r2_free_slot(s, idx); g_nfreed++;
             }
         }
-        /* 触发：逐分片算"垃圾 ≥ 可达集"，本轮只收一个分片（停顿可控） */
+        /* 触发：**内存压力**驱动。rc 已收掉一切非环垃圾 ⇒ 区域占用 ≈ 存活，
+           于是"占用 > max(2×上次清扫后存活, 阈值)"只在**环真的攒起来**时才成立。
+           无环程序永不进入清扫 ⇒ 停顿 0。 */
         {
             Region2 *best = NULL; int64_t bestg = 0;
             for (int j = 0; j < NSHARD; j++) {
                 Region2 *r = &g_shard[j];
-                int64_t garbage = r->bytes - live_shard[j];
-                int64_t reach = live_shard[j] + g_idx.bytes / NSHARD;
-                int64_t thr = reach > TRIGGER / NSHARD ? reach : TRIGGER / NSHARD;
-                if (garbage >= thr && garbage > bestg) { best = r; bestg = garbage; }
+                int64_t thr = live_shard[j] * 2;
+                if (thr < (int64_t)MEM_FLOOR / NSHARD) thr = (int64_t)MEM_FLOOR / NSHARD;
+                thr *= (sweep_factor[j] ? sweep_factor[j] : 1);
+                if (r->bytes > thr && r->bytes - live_shard[j] > bestg) { best = r; bestg = r->bytes - live_shard[j]; }
             }
             if (best) {
                 int64_t p0 = now_ns();
                 int sh_i = (int)(best - g_shard), nr = 0;
+                size_t need = (size_t)BUCKETS + (size_t)g_ncache + 8;
+                if (need > roots_cap) { roots_cap = need; roots = realloc(roots, roots_cap * sizeof(void *)); }
                 for (int j = 0; j < BUCKETS; j++)
                     if ((j % NSHARD) == sh_i && g_head[j]) roots[nr++] = g_head[j];
                 for (int j = 0; j < g_ncache; j++) if (g_cache[j]) roots[nr++] = g_cache[j];
-                mark_all(best->rid, roots, nr, SRS[sh_i], SRSN[sh_i]);
-                r2_sweep(best);
+                mark_all(best, best->rid, roots, nr);
+                size_t swf_before = g_sweepfreed;
+                { size_t b0 = g_nfreed; r2_sweep(best); g_sweepfreed += g_nfreed - b0; }
                 live_shard[sh_i] = best->bytes;
+                sweep_factor[sh_i] = (g_sweepfreed == swf_before) ? (sweep_factor[sh_i] ? sweep_factor[sh_i] * 4 : 4) : 1;
                 int64_t p1 = now_ns();
                 if (p1 - p0 > max_pause) max_pause = p1 - p0;
                 total_pause += p1 - p0; sweeps++;
@@ -313,9 +327,9 @@ int main(int argc, char **argv) {
     int64_t dt = now_ns() - t0;
     size_t nslab = 0; for (int j = 0; j < NSHARD; j++) for (Slab *s = g_shard[j].slabs; s; s = s->next) nslab++;
     size_t nslab_i = 0; for (Slab *s = g_idx.slabs; s; s = s->next) nslab_i++;
-    printf("%-6s 分片=%-3d N=%-7ld 缓存=%-5d 索引=%-7ld 对象=%-4zu 耗时=%8.1fms 峰值载荷=%7zuKiB 峰值RSS=%8ldKiB 清扫=%-4zu 标记=%zu 最大停顿=%8.1fus 停顿总=%7.2fms 阶段ms[分配%.0f 入边入栈%.2f 走可达%.2f 扫位图%.2f] slab=%zu/%zu RC释放=%zu 命中=%.1f%%\n",
+    printf("%-6s 分片=%-3d N=%-7ld 缓存=%-5d 索引=%-7ld 对象=%-4zu 耗时=%8.1fms 峰值载荷=%7zuKiB 峰值RSS=%8ldKiB 清扫=%-4zu 标记=%zu 最大停顿=%8.1fus 停顿总=%7.2fms 阶段ms[分配%.0f 入边入栈%.2f 走可达%.2f 扫位图%.2f] slab=%zu/%zu RC释放=%zu 清扫释放=%zu 命中=%.1f%%\n",
         "final", NSHARD, N, g_ncache, indexmax, objsz, dt/1e6, (size_t)peak_buck/1024, peak_rss,
         sweeps, g_marked, max_pause/1000.0, total_pause/1e6, g_t_alloc/1e6, g_t_seed/1e6, g_t_trav/1e6, g_t_scan/1e6,
-        nslab, nslab_i, g_rcfreed, g_kills ? 100.0*g_evfired/g_kills : 0.0);
+        nslab, nslab_i, g_rcfreed, g_sweepfreed, g_kills ? 100.0*g_evfired/g_kills : 0.0);
     return 0;
 }
