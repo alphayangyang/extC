@@ -1,0 +1,7 @@
+== 回收入口守卫：性能判据（EXTC_RECLAIM=1，N=200000）==
+  形状   /home/alphayang/extC_Compiler/tests/reclaim-shapes/cyclic_pressure.extc
+  编译   EXTC_RECLAIM=1 extc -I <repo>/stdlib → cc -std=c11 -fwrapv -O1
+  判据   总指令数 ≤ 701633044（= 改动前 1169388408 × 0.6）
+  实测   总指令数 510475244 Ir（43.7% of 改动前）
+  ok   入口守卫成立：510475244 ≤ 701633044（相对改动前 −56.3%）
+exit=0

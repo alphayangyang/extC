@@ -1,0 +1,10 @@
+$ EXTC_RECLAIM=1 /tmp/rs-prefix/build/extc -I stdlib bench/stress/stress.extc -o /tmp/stress-pre.c
+$ EXTC_RECLAIM=1 ./build/extc -I stdlib bench/stress/stress.extc -o /tmp/stress-post.c
+$ gcc -std=c11 -fwrapv -O1 ... -o /tmp/stress-{pre,post}
+$ /usr/bin/time -v /tmp/stress-{pre,post}  # Maximum resident set size
+pre: 	Maximum resident set size (kbytes): 10924
+pre: 	Maximum resident set size (kbytes): 10924
+pre: 	Maximum resident set size (kbytes): 10860
+post: 	Maximum resident set size (kbytes): 23532
+post: 	Maximum resident set size (kbytes): 23532
+post: 	Maximum resident set size (kbytes): 23532

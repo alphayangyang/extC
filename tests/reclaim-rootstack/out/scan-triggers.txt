@@ -1,0 +1,15 @@
+== 触发点普查（EXTC_RECLAIM=1）==
+语料目录       tests,bench,examples,stdlib
+文件数         1221
+两版都编过     802
+修前有触发的程序 208
+触发全被移除的程序 110（含触发点 154 个）
+部分移除的程序  18
+触发点总数     修前 329 → 修后 175
+-- 被移除的触发点分类（修前形状 × 所在函数）--
+   home         main       6
+   home         nonmain    126
+   home         recursive  3
+   owcell       nonmain    1
+逐程序 CSV → /tmp/rs-triggers.csv
+逐触发点 CSV → /tmp/rs-trigger-sites.csv

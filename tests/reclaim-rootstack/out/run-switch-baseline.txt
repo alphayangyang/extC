@@ -1,0 +1,45 @@
+== 回收开关断言（EXTC_RECLAIM=on）==
+-- ① scale-growth N→4N：峰值必须与轮数解耦 --
+  ok   scale-growth N→4N：5.04 MB → 4.98 MB（0.99× < 1.5×）—— 界与轮数无关
+-- ①b cyclic-pressure N→4N：有环形状的峰值必须与轮数解耦（清扫上台）--
+  ok   cyclic-pressure：默认与开关下输出逐字一致（N=200000：桶链两向一致 / 索引 / 缓存 / 父指针全对）
+  ok   cyclic-pressure N→4N（开关开）：7.86 MB → 7.61 MB（0.97× < 1.5×）—— 环垃圾被清扫收住
+-- ①c cross-region：跨区堆→堆边登记 + 撤销（登记量必须与轮数解耦）--
+  ok   cross-region：默认与开关下输出逐字一致（N=200000 与开关关相同）
+  ok   cross-region：登记在发（rs_inc 200000→800000）而高水位不随轮数涨（rs_hwm 65537→65537）—— 来源侧撤销及时
+  ok   cross-region N→4N（开关开）：11.92 MB → 14.54 MB（1.22× < 1.5×）—— 跨区边不把旧对象钉住
+-- ①d cross-region 下标槽：a[i] 里的跨区堆→堆边必须登记（种子完整）--
+  ok   cross-region-elem：默认与开关下输出逐字一致（N=200000：sink=Σi 全对）
+  ok   cross-region-elem：下标槽的跨区边种子完整（生成物：登记（owner = 容器对象 s））
+  ok   cross-region-elem N→4N（开关开）：12.48 MB → 12.48 MB（1.00× < 1.5×）—— 下标槽的跨区边也是种子
+-- ①d′ 宿主证不出来：带调用的基表达式必须退出清扫，不许照常扫 --
+  ok   unknown-host：带调用的基表达式槽种子完整（生成物：保守路径（目标区域退出清扫））
+  ok   unknown-host：开关开/关输出逐字一致（got=7）
+-- ①e 分片（EXTC_RC_SHARDS=8）：语义与 =1 逐字一致，峰值仍在界内 --
+  ok   shards=8：语义与 shards=1 逐字一致（N=200000，有环形状全对）
+  ok   shards=8 N→4N（开关开 + 分片=8）：10.23 MB → 10.23 MB（1.00× < 1.5×）—— 分片没把内存界弄丢
+-- ①f 整值存储（结构体值拷贝）里的引用叶子必须 inc + 登记 --
+  ok   struct-copy：默认与开关下输出逐字一致（N=200000：sink=Σi 全对）
+  ok   struct-copy：整值存储里的引用叶子逐叶记账（生成物：逐叶记账（owner = 容器对象 s））
+  ok   struct-copy N→4N（开关开）：8.54 MB → 8.54 MB（1.00× < 1.5×）—— 整值存储的跨区边也是种子
+-- ①g 超大块（槽 > 512 KiB）：不 trap，语义与开关关逐字一致 --
+  ok   big-slot：槽 > 512 KiB 不 trap 且语义正确（alloc<i32>(250000) / 4 MiB / 600 KB 引用槽；开关开=关）
+  ok   big-slot-reclaim：有压力时超大块照样被登记/标记/清扫（跨轮的局部根大槽活下来）
+-- ①h 泛型实例方法体：替换上下文还原（B：不许 `slice_T` / `varArray_T`）--
+  ok   generic-instance-desc：泛型实例方法体编得过、跑得对（生成物无 slice_T/varArray_T；开关开=关）
+-- ①i C 洞（真实语料最小化）：内层帧不得扫外层帧的家区域（开档=关档）--
+  ok   persist-nodes：开档/关档都 rc=0 且输出逐字一致（N=50000 / Q=1000；修之前开档 rc=139）
+-- ①j C 洞（最小递归 + 非递归）：外层帧的活引用不得被放掉 --
+  ok   hole_c：开档/关档都 rc=0，输出逐字 n = 131071（修之前开档 rc=139）
+  ok   caller_frame：开档/关档都 rc=0，输出逐字 n = 70000（修之前开档 rc=124 挂住）
+-- ② 开关下语义不变 --
+  ok   cond-save：saved=7（与开关关时一致）
+  ok   cyclic-shape：fwd=back / tree / cache 全对（与开关关时一致）
+-- ③ 曾经的 SEGV 用例（开关下 rc=0 且输出不变）--
+  ok   tests/heap/loan：rc=0，alloc=ok write=ok ro=true read=after-ro rw=true write2=ok closed=0
+  ok   tests/heap/plate：rc=0，保留 4 GiB 只涨 4 KB · commit 1024 KB
+  ok   tests/cabi/heapmain：rc=0，plate=ok byte=42 logged=2 outside=rejected
+  ok   tests/coro/iterator_protocol：rc=0，8 行输出逐字一致
+
+通过 28，失败 0
+exit=0
