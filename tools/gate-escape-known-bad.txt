@@ -2,3 +2,8 @@
 # 规矩：语料必须被拒绝；这里记着的是已知还在的洞。修好一条就从本文件删掉那一行（棘轮只往一个方向转）。
 # 对照组（control_*）永远不许出现在这里 —— 否则闸门会退化成「一律拒绝就算过」。
 P0-6e_coro_ref_payload.extc	`yield ref <帧内局部>`（引用型协程载荷）被前端接受；且生成物是畸形 C（`node * extc_coro_value_node *`）	指称/逃逸：载荷跨挂起点
+# P2 批次（2026-10-12，escape-fuzz task-8 的 5 例 E_ACCEPT_UAF + task-9 勘察的新洞）。
+# 它们曾被接受且 ASan heap-use-after-free；task-11 的修法选择**安全接受**（提权到 home）而不是拒绝，
+# 所以 7 份语料已改成 `gate-expect: run`（闸门⑤ 要求「接受 + ASan 干净」），基线行随即删掉 ——
+# 棘轮走了一个完整循环：语料加入 ⇒ 红（NEW）⇒ 记基线 ⇒ 修好 ⇒ 红（STALE）⇒ 删行 ⇒ 绿。
+# 若将来修法回退成接受后悬垂，`gate-expect: run` 那条会以 ASan 报告变红。

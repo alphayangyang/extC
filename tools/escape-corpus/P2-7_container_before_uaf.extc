@@ -1,0 +1,49 @@
+/* 闸门⑤ 语料 · P2-7_container_before_uaf（2026-10-12，escape-fuzz task-8 E_ACCEPT_UAF）
+ * 期望：**接受 + ASan 干净**（gate-expect: run —— 这个洞 2026-10-12 的修法是「安全接受」，不是拒绝）。
+ * 为什么在这里：与 P2-6 同一个洞（容器里的引用随返回值逃逸而站点只到层 1），
+ *   只差 `cur` 的赋值**在语句之前**（before 变体）—— 两个词序都被接受、都在 ASan 下悬垂，
+ *   合起来证明「词序」不是这个洞的判据。
+ * 原探针：tests/escape-fuzz/cases/m_home_cont_before.extc
+ * 规矩：本文件被拒、或被接受但 ASan 脏 ⇒ 闸门红；修好之后**不许**把本文件改宽松。
+ */
+use std::io
+struct node { value: i64  next: ?mut ref node }
+
+fn build() -> ?mut ref node {
+    var v: varArray<mut ref node> = varArray<mut ref node>::withCap(8)
+    var i: i64 = 0
+    while i < 4 {
+        var p: mut ref node = new node
+        p.value = i + 1
+        p.next = null
+        v.push(p)
+        i = i + 1
+    }
+    var head: ?mut ref node = null
+    var cur: ?mut ref node = null
+    var k: i64 = 0
+    while k < v.size() {
+        var q: mut ref node = v.get(k)!
+        if head == null {
+            head = q
+            cur = q
+        } else {
+            if cur != null { (*cur).next = q }
+            cur = q
+        }
+        k = k + 1
+    }
+    return head
+}
+
+fn main() -> i32 {
+    var h: ?mut ref node = build()
+    var c: ?mut ref node = h
+    var t: i64 = 0
+    while c != null {
+        t = t + (*c).value
+        c = (*c).next
+    }
+    io::cout << t << "\n"
+    return 0
+}

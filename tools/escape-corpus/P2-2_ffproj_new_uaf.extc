@@ -1,0 +1,34 @@
+/* 闸门⑤ 语料 · P2-2_ffproj_new_uaf（2026-10-12，escape-fuzz task-8 E_ACCEPT_UAF + task-9 §Q3 真值表 B）
+ * 期望：**接受 + ASan 干净**（gate-expect: run —— 这个洞 2026-10-12 的修法是「安全接受」，不是拒绝）。
+ * 为什么在这里：`return bx.mid.next`（两层字段投影）。`noteFieldSrc` 只写**已存在**的字段槽，
+ *   且槽名只取最后一段（`next`）；声明 `{ mid: { next: null } }` 只建了 `mid` 槽 ⇒ 分配站点
+ *   没被字段表记住、返回值检查看不到 `new` ⇒ 站点 `minAt` 停在 1、`usesHome=0`、生成
+ *   `build(void)`，`new` 落在函数**自己的帧 arena**，返回即释放（ASan heap-use-after-free）。
+ * 原探针：tests/escape-fuzz/cases/m_home_ff_direct.extc（= recon/probes/B_ff2_new.extc）
+ * 规矩：本文件被拒、或被接受但 ASan 脏 ⇒ 闸门红；修好之后**不许**把本文件改宽松。
+ */
+use std::io
+struct node { value: i64  next: ?mut ref node }
+struct inner { next: ?mut ref node }
+struct outer { mid: inner }
+
+fn build() -> ?mut ref node {
+    var bx: outer = { mid: { next: null } }
+    var p: mut ref node = new node
+    p.value = 7
+    p.next = null
+    bx.mid.next = p
+    return bx.mid.next
+}
+
+fn main() -> i32 {
+    var h: ?mut ref node = build()
+    var c: ?mut ref node = h
+    var t: i64 = 0
+    while c != null {
+        t = t + (*c).value
+        c = (*c).next
+    }
+    io::cout << t << "\n"
+    return 0
+}

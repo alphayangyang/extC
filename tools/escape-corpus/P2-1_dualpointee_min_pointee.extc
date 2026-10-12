@@ -1,0 +1,38 @@
+/* 闸门⑤ 语料 · P2-1_dualpointee_min_pointee（2026-10-12，escape-fuzz 勘察 task-9）
+ * 期望：**编译错误**（带源位置）—— 2026-10-12 的修法选择拒绝：目的地深度取「可能被指物的最浅层」
+ *   （min）之后，`cur` 可能指向调用者的存储，帧内 `q` 不能存进去 ⇒ 这是真悬垂，不是误拒。
+ * 为什么在这里：`cur` 可能指向**参数**（调用者的存储，深度 0）也可能指向帧内 `new`（深度 1）。
+ *   目的地 `(*cur).next` 的深度取了可能的**最大**（1），而不是「可能活得最久的被指物」（min = 0）
+ *   ⇒ 帧内 `q` 被存进调用者的对象，`f` 返回后即悬垂（ASan heap-use-after-free）。
+ * 原探针：tests/escape-fuzz/recon/probes/q2_dualpointee.extc
+ * 规矩：本文件被接受 ⇒ 闸门红；修好之后**不许**把本文件改宽松，只许把基线里对应那行删掉。
+ */
+use std::io
+struct node { value: i64  next: ?mut ref node }
+
+fn f(h: mut ref node, c: bool) -> i32 {
+    var cur: ?mut ref node = h
+    if c {
+        var p: mut ref node = new node
+        p.value = 1
+        p.next = null
+        cur = p
+    }
+    var q: mut ref node = new node
+    q.value = 2
+    q.next = null
+    if cur != null { (*cur).next = q }
+    return 0
+}
+
+fn main() -> i32 {
+    var h: mut ref node = new node
+    h.value = 9
+    h.next = null
+    f(ref *h, false)
+    var c: ?mut ref node = h.next
+    var t: i64 = 0
+    if c != null { t = (*c).value }
+    io::cout << t << "\n"
+    return 0
+}

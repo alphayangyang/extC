@@ -55,6 +55,18 @@ def positive_corpus(scope):
     return files
 
 
+def escape_corpus():
+    """反例语料：闸门⑤（`gate_escape.py`）要求它们**必须被拒绝**。
+
+    ASan 闸门（`gate_asan_corpus.py`）也扫这一份，理由是同一个洞的两面：在编译器还接受它们的
+    时候，生成物恰好就是 ASan 该抓到的东西；等编译器改成拒绝，`gate_asan_corpus.check_one` 的
+    `gen_c` 会失败并直接跳过（「extC 自己拒绝：不是本闸门的事」），基线里那一条随之变成 STALE，
+    照棘轮删掉即可。两个闸门共用一份文件，不复制语料。
+    """
+    import glob
+    return sorted(glob.glob(os.path.join(ROOT, "tools", "escape-corpus", "*.extc")))
+
+
 def rel(path):
     return os.path.relpath(path, ROOT)
 
