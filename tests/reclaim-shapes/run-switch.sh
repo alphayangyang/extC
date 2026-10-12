@@ -16,6 +16,10 @@
 #      ⇒ 清扫种子不完整 ⇒ UAF（ASan SEGV / 非 ASan rc=139）；开关关时峰值随轮数涨（有牙）。
 #   ①d′ `unknown_host`：宿主**证不出来**的槽（`(*id(a)).next = a`，基表达式带调用）必须走保守
 #      路径（目标区域退出清扫），绝不许 `storeRefOwned(..., owner=0)` —— 生成物判据。
+#   ①e **分片旋钮**（`EXTC_RC_SHARDS=8`）：语义与 `=1` **逐字一致**（分片只换存储/登记/清扫的
+#      切分，不改语义），且峰值内存**仍在界内**（N vs 4N 比 < 1.5 —— 每片守的是均分后的压力
+#      下限，总量上界不因片数改变）。开关关掉时这一条同样必须红（那一档峰值随轮数涨）。
+#      分片的停顿/内存/吞吐对照实验在 `run-shard.sh`。
 #   ② `cond_save` / `cyclic_shape` 在开关下**语义不变**（开关只换运行期，不改语义）。
 #   ③ 四个曾经的 SEGV 用例在开关下不崩、输出不变（板/池/栈/C 指针不是 rc 槽：
 #      `owns` 守卫必须一个字节都不碰）：
@@ -367,6 +371,64 @@ if [ "$uh_off_c" = ok ] && [ "$uhr_rc" = 0 ] && [ "$uho_rc" = 0 ] \
     ok "unknown-host：开关开/关输出逐字一致（$UH_WANT）"
 else
     bad "unknown-host：开关开/关语义不一致（on[c=$uh_on_c rc=$uhr_rc out=$uhr_out] off[c=$uh_off_c rc=$uho_rc out=$uho_out]）"
+fi
+
+# ── ①e 分片旋钮：语义与单片逐字一致，峰值界不随片数丢 ──────────────────────────
+# 分片（`EXTC_RC_SHARDS=N`）把一个逻辑区域切成 N 个**运行期区域**：每片自己的 slab 链、
+# 自己的跨区登记位图（`rsbit`，即原型每片的入边集）、自己的标记栈，可以单独清扫 —— 就是
+# 停顿旋钮。两条判据：
+#   · 语义：`=8` 与 `=1` 的生成物跑出来逐字一致（片号只决定存储落在哪一片，不改语义）；
+#   · 界：`=8` 下 N vs 4N 的峰值比仍 < 1.5（每片的压力下限 = 总下限 / 片数 ⇒ 总量上界不因
+#     片数改变）。开关关掉时这一条跟 ① / ①b 一样必须红（那一档峰值随轮数涨）。
+# 停顿/内存/吞吐的三组数字在 `run-shard.sh`（证据脚本，不是门禁）。
+echo "-- ①e 分片（EXTC_RC_SHARDS=8）：语义与 =1 逐字一致，峰值仍在界内 --"
+
+sh_build() { # <片数> <tag> [off] → SH_C=ok/fail；off = 不发射回收运行期
+    SH_C=fail
+    if [ "${3-}" = off ]; then
+        env -u EXTC_RECLAIM "$EXTC" -w --no-line-map tests/reclaim-shapes/cyclic_pressure.extc \
+            -o "$TMP/sh-$2.c" >"$TMP/sh-$2.log" 2>&1
+    else
+        EXTC_RECLAIM=1 EXTC_RC_SHARDS="$1" "$EXTC" -w --no-line-map tests/reclaim-shapes/cyclic_pressure.extc \
+            -o "$TMP/sh-$2.c" >"$TMP/sh-$2.log" 2>&1
+    fi
+    if [ $? -eq 0 ] && "$CC" -std=c11 -fwrapv -O1 -o "$TMP/sh-$2" "$TMP/sh-$2.c" \
+            >>"$TMP/sh-$2.log" 2>&1; then SH_C=ok; fi
+}
+sh_run() { # <tag> <N> → SH_RC / SH_RSS / SH_OUT
+    SH_RC=-; SH_RSS=""; SH_OUT=""
+    "$TIME" -v -o "$TMP/sh-$1.time" "$TMP/sh-$1" "$2" >"$TMP/sh-$1.out" 2>"$TMP/sh-$1.err"
+    SH_RC=$?
+    SH_RSS=$(awk -F': ' '/Maximum resident set size \(kbytes\)/{print $2}' "$TMP/sh-$1.time")
+    SH_OUT=$(cat "$TMP/sh-$1.out")
+}
+
+sh_build 1 one;   sh1_c=$SH_C
+sh_build 8 eight; sh8_c=$SH_C
+sh_build 8 o off
+sh_run one 200000;   s1_rc=$SH_RC; s1_out=$SH_OUT
+sh_run eight 200000; s8_rc=$SH_RC; s8_out=$SH_OUT
+if [ "$sh1_c" = ok ] && [ "$sh8_c" = ok ] && [ "$s1_rc" = 0 ] && [ "$s8_rc" = 0 ] \
+   && [ "$s1_out" = "$CYC_WANT_N" ] && [ "$s8_out" = "$CYC_WANT_N" ] && [ "$s1_out" = "$s8_out" ]; then
+    ok "shards=8：语义与 shards=1 逐字一致（N=200000，有环形状全对）"
+else
+    bad "shards=8：语义与 shards=1 不一致或没跑对（=1[c=$sh1_c rc=$s1_rc out=$s1_out] =8[c=$sh8_c rc=$s8_rc out=$s8_out]）"
+fi
+
+# 峰值判据跟本次调用的开关状态走：`EXTC_RECLAIM=0 ./run-switch.sh` 时用无回收那一档比 ⇒ 必红。
+if [ "$sw" = on ]; then sh_tag=eight; sh_name="开关开 + 分片=8"; else sh_tag=o; sh_name="开关关"; fi
+sh_run "$sh_tag" 200000; psn_rc=$SH_RC; psn_rss=$SH_RSS; psn_out=$SH_OUT
+sh_run "$sh_tag" 800000; psf_rc=$SH_RC; psf_rss=$SH_RSS; psf_out=$SH_OUT
+if [ "$psn_rc" = 0 ] && [ "$psf_rc" = 0 ] && [ "$psn_out" = "$CYC_WANT_N" ] && [ "$psf_out" = "$CYC_WANT_F" ] \
+   && [ -n "$psn_rss" ] && [ -n "$psf_rss" ]; then
+    ratio=$(ratio_of "$psn_rss" "$psf_rss")
+    if awk -v a="$psn_rss" -v b="$psf_rss" 'BEGIN { exit !(b < a * 1.5) }'; then
+        ok "shards=8 N→4N（$sh_name）：$(rss_mb "$psn_rss") → $(rss_mb "$psf_rss")（${ratio}× < 1.5×）—— 分片没把内存界弄丢"
+    else
+        bad "shards=8 N→4N（$sh_name）：$(rss_mb "$psn_rss") → $(rss_mb "$psf_rss")（${ratio}× ≥ 1.5×）—— 分片把峰值界弄丢了"
+    fi
+else
+    bad "shards=8 N→4N：两次运行没同时跑对（N: rc=$psn_rc out=$psn_out / 4N: rc=$psf_rc out=$psf_out）"
 fi
 
 # ── ② 开关只换运行期，不改语义 ────────────────────────────────────────────────

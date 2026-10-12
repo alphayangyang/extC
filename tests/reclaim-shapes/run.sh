@@ -182,6 +182,26 @@ else
     row "cyclic-shape-pressure N→4N" "$y_c/$z_c" "$y_r/$z_r" "$(rss_mb "$y_rss") → $(rss_mb "$z_rss")" "$R" "红" "两次运行没同时跑对（N: $y_out / 4N: $z_out）"
 fi
 
+# ── ⑩ 分片旋钮的有利形状：8 条独立链 = 8 个分配点（开关关 ⇒ 环垃圾攒着，红）────────
+# 每条链满 9 个结点就整条退役 ⇒ 环垃圾。8 个分配点各占一片 ⇒ `EXTC_RC_SHARDS=8` 切得开：
+# 停顿/内存/吞吐的三组数字与「切不开」的反面对照见 run-shard.sh；这里只做与 ⑥ 同档的
+# 基线观察（开关关 ⇒ 没有回收层 ⇒ 峰值随轮数涨）。
+build_run shard_bands 200000
+sbn_c=$BR_C; sbn_r=$BR_R; sbn_rss=$BR_RSS; sbn_out=$BR_OUT
+build_run shard_bands 800000
+sbf_c=$BR_C; sbf_r=$BR_R; sbf_rss=$BR_RSS; sbf_out=$BR_OUT
+if [ "$sbn_c" = ok ] && [ "$sbn_r" = ok ] && [ "$sbf_c" = ok ] && [ "$sbf_r" = ok ] \
+   && [ -n "$sbn_rss" ] && [ -n "$sbf_rss" ]; then
+    sb_ratio=$(awk -v a="$sbn_rss" -v b="$sbf_rss" 'BEGIN { printf "%.2f", b/a }')
+    if awk -v a="$sbn_rss" -v b="$sbf_rss" 'BEGIN { exit !(b > a * 1.5) }'; then
+        row "shard-bands N→4N" "ok" "ok" "$(rss_mb "$sbn_rss") → $(rss_mb "$sbf_rss")" "$R" "红" "8 条独立链：开关关 ⇒ 峰值随轮数增长（${sb_ratio}×）；开关开 + 分片=8 见 run-shard.sh"
+    else
+        row "shard-bands N→4N" "ok" "ok" "$(rss_mb "$sbn_rss") → $(rss_mb "$sbf_rss")" "$G" "绿" "峰值不随轮数增长（${sb_ratio}× @ ×4 轮）"
+    fi
+else
+    row "shard-bands N→4N" "$sbn_c/$sbf_c" "$sbn_r/$sbf_r" "$(rss_mb "$sbn_rss") → $(rss_mb "$sbf_rss")" "$R" "红" "两次运行没同时跑对（N: $sbn_out / 4N: $sbf_out）"
+fi
+
 # ── 表 ────────────────────────────────────────────────────────────────────────
 print_table
 echo

@@ -45,6 +45,11 @@ UNDOCUMENTED = {
     "EXTC_DUMP_POOL",
     "EXTC_EXPLAIN_MEMORY",
     "EXTC_EXPLAIN_ROOT",
+    # 回收的分片数（停顿旋钮，`src/back/codegen.c`）：与 EXTC_RECLAIM 同一档"接线期开关"，
+    # 默认 1 = 不切片、生成物与接线前逐字节相同。它改产物，本该写进 `--help`；但 `--help`
+    # 的单一真源页 `docs/usage/flags.md` 由 `tools/gen_flags.py` 整页生成，本轮改动范围不含
+    # `docs/`，所以先挂在这里；文档那一轮再把它点进 `--help`。
+    "EXTC_RC_SHARDS",
     "EXTC_SELFCHECK_VERBOSE",
     "EXTC_STD",
 }

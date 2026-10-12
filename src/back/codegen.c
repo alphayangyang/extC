@@ -383,6 +383,23 @@ typedef struct {
      * 运行期文本进序言、`new` 的存储从由 arena 地址认领的 rc 区域里取、引用赋值点发射计数。
      * 开关是环境变量而不是构造上的判据，直到有构造需要它（见 `emitRuntimePrologue`）。 */
     bool        needReclaim;
+    /* `EXTC_RC_SHARDS=N`：区域回收的**分片数**（停顿旋钮），默认 1。
+     *
+     * 分片 = 把一个逻辑区域（认领键是 arena 的地址）切成 N 个**运行期区域**：每片一支
+     * slab 链、一张跨区登记位图（`rsbit`，即原型里每片的入边集 `SRS`）、一个标记栈，因此
+     * 可以**单独清扫** —— 停顿 ∝ 被收那一片的可达集，与逻辑区域总量无关。
+     *
+     * 片号按**分配点**定（`rcSite++ % rcNShard`），不按存活集/对象数：同一处 `new` 造出来的
+     * 东西（链、环、一代树节点）始终落在同一片，片内链条与环保持完整。按存活集均分会把
+     * 链和环拆到两片，跨片登记位一置，环垃圾就永远当种子 ⇒ 界随轮数涨（原型实测吞吐也变差）。
+     *
+     * N == 1 时一个逻辑区域仍然只有一个运行期区域：下面每一处发射都走原来的那条分支，
+     * 生成的 C 与接线前**逐字节相同**。N > 1 只是多认领几个区域，运行期文本一个字都不用改
+     * —— 跨区登记、来源侧撤销、按区域清扫都是已经有的机制，片就是区域。 */
+    int         rcNShard;
+    /* 分配点序号：片号 = `rcSite++ % rcNShard`。每发射一个 rc 分配表达式加一，所以同一处
+     * `new` 在整份生成物里始终是同一个片号（编译两次结果相同）。 */
+    int         rcSite;
     /* 区域回收的编译期状态（只在 `needReclaim` 打开时有意义）。
      *
      * `rcRoots` 是**静态根表**：当前作用域里活着的引用槽的 C 表达式（`saved`、`c.a`、
@@ -3065,10 +3082,12 @@ static const char *rcEmitTypeDesc(CG *g, Type *t) {
  * 判据只有 `extc_rc_shouldSweep` 这一份（`maybeCollect` 内部用的就是同一个函数），不另抄。
  *
  * @param g         生成器。
- * @param keyExpr   区域认领键，形如 `(void *)&(__extc_a[1])` 或 `(void *)cell->home`。
- * @param rid       区域号（日志/调试用）。
+ * @param basePtr   该分配要落进去的那只区域的**基址表达式**（已经是 `(void *)` 形态），
+ *                  形如 `(void *)&(__extc_a[1])`、`(void *)__owc0->home`；第 k 片的认领键是
+ *                  `(char *)basePtr + k`（只比不读，见 `rcAllocCore`）。
+ * @param lvl       块层级（1 = 函数体，-1 = 家区域）；分片时区域号取 `lvl * 片数 + k`。
  */
-static void rcEmitTrigger(CG *g, const char *keyExpr, int rid) {
+static void rcEmitTrigger(CG *g, const char *basePtr, int lvl) {
     if (!g->needReclaim || g->rcRootsUnreliable || g->prefixBlk == 0) return;
     size_t n = g->rcGlobalRoots.len + g->rcRoots.len;
     if (n > 4096) { g->rcRootsUnreliable = true; return; }
@@ -3090,9 +3109,68 @@ static void rcEmitTrigger(CG *g, const char *keyExpr, int rid) {
         bufPuts(&b, " }");
     }
     const char *rg = arenaPrintf(g->arena, "__extc_rcg%d", g->rcGuardSeq++);
-    pfLine(g, "{ ExtcRcRegion *%s = extc_rc_regionOf(%s, %d);"
-              " if (extc_rc_shouldSweep(%s)) extc_rc_maybeCollect(%s, %s, %zu); }",
-           rg, keyExpr, rid, rg, rg, bufCstr(&b), n);
+    if (g->rcNShard <= 1) {
+        /* 单片：与接线前逐字节相同（认领键就是区域基址）。 */
+        pfLine(g, "{ ExtcRcRegion *%s = extc_rc_regionOf(%s, %d);"
+                  " if (extc_rc_shouldSweep(%s)) extc_rc_maybeCollect(%s, %s, %zu); }",
+               rg, basePtr, lvl, rg, rg, bufCstr(&b), n);
+        return;
+    }
+    /* 分片：区域键是"基址 + k"（只比不读）。一次触发**只收一片**，挑的是**垃圾最多**的那片
+     * （`bytes - live`，与原型同一办法）：收完它的 `bytes` 掉下来，下一次自然轮到别的片 ——
+     * 不需要额外的轮转状态，也不会让某一片永远轮不上（先到先收会让第一片独占）。
+     *
+     * 内存压力下限**按片均分**（`EXTC_RC_FLOOR / N`，与原型 `TRIGGER / NSHARD` 同一口径）：
+     * 不除的话 N 片各自守着一个全长下限，总量上界变成 N 倍，停顿旋钮就顺带改了内存界；
+     * 除完总量仍是 `EXTC_RC_FLOOR`，片多只让每片收得更勤、每次更小。下限由运行期的
+     * `extc_rc_regionFloor` 设（判据仍在运行期，这里只是给同一个下限除以片数）。
+     * 根表仍是调用实参、仍只在真的要扫时才物化 —— 与单片的入口守卫同一条口径。 */
+    const char *ck = "__extc_rck";
+    const char *rb = arenaPrintf(g->arena, "__extc_rcb%d", g->rcGuardSeq);
+    const char *rbg = arenaPrintf(g->arena, "__extc_rcbg%d", g->rcGuardSeq);
+    pfLine(g, "{ ExtcRcRegion *%s = (ExtcRcRegion *)0; int64_t %s = 0;"
+              " for (int32_t %s = 0; %s < %d; %s++) {"
+              " ExtcRcRegion *%s = extc_rc_regionOf((void *)((char *)(%s) + %s), (int32_t)(%d + %s));"
+              " extc_rc_regionFloor(%s, (EXTC_RC_FLOOR) / %d);"
+              " if (!extc_rc_shouldSweep(%s)) continue;"
+              " int64_t %s = extc_rc_bytes(%s) - extc_rc_live(%s);"
+              " if (!%s || %s > %s) { %s = %s; %s = %s; } }"
+              " if (%s) extc_rc_maybeCollect(%s, %s, %zu); }",
+           rb, rbg, ck, ck, g->rcNShard, ck, rg, basePtr, ck, lvl * g->rcNShard, ck,
+           rg, g->rcNShard, rg,
+           rbg, rg, rg, rb, rbg, rbg, rb, rg, rbg, rbg,
+           rb, rb, bufCstr(&b), n);
+}
+
+/**
+ * @brief 发射一个 rc 分配：片号按**分配点**轮转，返回 `extc_rc_alloc(...)` 调用的文本。
+ *
+ * 片号 = `rcSite++ % rcNShard`：同一处 `new` 永远进同一片，所以片内链条与环完整；片与片之间
+ * 的引用由已有的跨区登记（`storeRefOwned` 的 `rsInc`/`rsDec`）负责，登记位就落在**目标所在
+ * 那一片**的 `rsbit` 上 —— 播种与清扫都不跨片。
+ *
+ * 触发与分配用**同一个**片键：先按这一片的键问一次压力（触发落在语句前缀），真正的分配再从
+ * 同一片取槽。N == 1 时返回的文本与接线前逐字节相同。
+ *
+ * @param g          生成器。
+ * @param basePtr    区域基址表达式（同 `rcEmitTrigger`）。
+ * @param lvl        块层级（可 -1，只用于区域号）。
+ * @param bytesExpr  字节数的 C 文本（原样拼进调用，不再加括号）。
+ * @param td         类型描述符的 C 文本。
+ * @return           `extc_rc_alloc(...)` 的 C 文本。
+ */
+static const char *rcAllocCore(CG *g, const char *basePtr, int lvl,
+                               const char *bytesExpr, const char *td) {
+    int nsh = g->rcNShard > 0 ? g->rcNShard : 1;
+    int k = g->rcSite++ % nsh;
+    rcEmitTrigger(g, basePtr, lvl);
+    if (nsh == 1)
+        return arenaPrintf(g->arena,
+            "extc_rc_alloc(extc_rc_regionOf(%s, %d), %s, %s)",
+            basePtr, lvl, bytesExpr, td);
+    return arenaPrintf(g->arena,
+        "extc_rc_alloc(extc_rc_regionOf((void *)((char *)(%s) + %d), %d), %s, %s)",
+        basePtr, k, lvl * nsh + k, bytesExpr, td);
 }
 
 /**
@@ -3194,13 +3272,13 @@ static const char *exNew(CG *g, Expr *e) {    Type *w = subst(g, e->u.new_.type)
          * 对数组长度的那条限制。 */
         if (g->needReclaim) {
             int lvl = planArenaLevel(e);
-            /* 顺序：先类型描述符（它必须在这一条语句里可见），再触发（落在语句之前）。 */
+            /* 顺序：先类型描述符（它必须在这一条语句里可见），再触发（落在语句之前），
+             * 最后是分配表达式 —— 三者都按**同一个片号**（见 `rcAllocCore`）。 */
             const char *td = rcEmitTypeDesc(g, w);
-            rcEmitTrigger(g, arenaPrintf(g->arena, "(void *)&(%s)", ar), lvl);
-            return arenaPrintf(g->arena,
-                "((%s *)extc_rc_alloc(extc_rc_regionOf((void *)&(%s), %d),"
-                " (int64_t)sizeof(%s), %s))",
-                cType(g, w), ar, lvl, cType(g, w), td);
+            const char *base = arenaPrintf(g->arena, "(void *)&(%s)", ar);
+            const char *core = rcAllocCore(g, base, lvl,
+                arenaPrintf(g->arena, "(int64_t)sizeof(%s)", cType(g, w)), td);
+            return arenaPrintf(g->arena, "((%s *)%s)", cType(g, w), core);
         }
         return arenaPrintf(g->arena,
             "((%s *)extc_arena_alloc(&%s, (int64_t)sizeof(%s), \"%s\", %d))",
@@ -3322,11 +3400,9 @@ static const char *exGencall(CG *g, Expr *e) {
          * 表达不了 ⇒ 元素类型里有引用时用保守标记（扫整块的字），否则不需要描述符。 */
         const char *td = "(const ExtcRcType *)0";
         if (rcScanType(g, et, 0) != RC_NO_REFS) td = "((const ExtcRcType *)-1)";
-        rcEmitTrigger(g, arenaPrintf(g->arena, "(void *)&(%s)", ar), lvl);
-        return arenaPrintf(g->arena,
-            "(%s *)extc_rc_alloc(extc_rc_regionOf((void *)&(%s), %d),"
-            " (int64_t)(%s) * (int64_t)sizeof(%s), %s)",
-            tn, ar, lvl, n, tn, td);
+        const char *core = rcAllocCore(g, arenaPrintf(g->arena, "(void *)&(%s)", ar), lvl,
+            arenaPrintf(g->arena, "(int64_t)(%s) * (int64_t)sizeof(%s)", n, tn), td);
+        return arenaPrintf(g->arena, "(%s *)%s", tn, core);
     }
     return arenaPrintf(g->arena,
         "(%s *)extc_arena_alloc(&%s, (int64_t)(%s) * (int64_t)sizeof(%s), \"%s\", %d)",
@@ -4691,6 +4767,8 @@ static RcHost cgSlotHost(CG *g, Expr *t, Expr **obj) {
  *
  * 认领键是 arena 的地址（见 `emitRuntimePrologue` 里那张表），所以这里只发地址，不需要
  * 知道区域本身。协程的 step 用的是帧里的 `arena<k>`，拼法与 arena 的释放保持一致。
+ * 分片时一个逻辑区域认领了 N 只运行期区域（键 = 地址 + k），所以这里要**逐片丢弃** ——
+ * 漏掉一片就等于那一片的 slab 与登记位永不释放。
  *
  * 只在帧销毁处调用：块释放（`cgReleaseLevel`）不丢区域，否则循环体每轮都会新建一个 1 MiB
  * 的 slab。区域比块活得久是安全的 —— 块里的对象全部不可达，清扫按压力收回它们。
@@ -4700,10 +4778,18 @@ static RcHost cgSlotHost(CG *g, Expr *t, Expr **obj) {
  */
 static void cgReclaimDropArena(CG *g, int lvl) {
     if (!g->needReclaim) return;
-    if (g->coroFunc)
-        cgLine(g, "extc_rc_regionDrop((void *)&%s->arena%d);", g->coroFrame, lvl);
-    else
-        cgLine(g, "extc_rc_regionDrop((void *)&__extc_a[%d]);", lvl);
+    if (g->rcNShard <= 1) {
+        /* 单片：与接线前逐字节相同。 */
+        if (g->coroFunc)
+            cgLine(g, "extc_rc_regionDrop((void *)&%s->arena%d);", g->coroFrame, lvl);
+        else
+            cgLine(g, "extc_rc_regionDrop((void *)&__extc_a[%d]);", lvl);
+        return;
+    }
+    const char *ar = g->coroFunc ? arenaPrintf(g->arena, "%s->arena%d", g->coroFrame, lvl)
+                                 : arenaPrintf(g->arena, "__extc_a[%d]", lvl);
+    for (int k = 0; k < g->rcNShard; k++)
+        cgLine(g, "extc_rc_regionDrop((void *)((char *)&%s + %d));", ar, k);
 }
 
 /**
@@ -4884,16 +4970,16 @@ if (s->u.var.overwrite) {
              * 与 arena 同寿。 */
             if (g->needReclaim) {
                 /* 类型描述符 + 清扫触发，落在分配那条语句之前：这份存储也从 rc 区域取，
-                 * 描述符随槽存下，触发用的区域认领键与下面的 `extc_rc_alloc` 一致。 */
+                 * 描述符随槽存下，触发用的区域认领键与下面的 `extc_rc_alloc` 一致（同一片号，
+                 * 见 `rcAllocCore`）。 */
                 const char *td = rcEmitTypeDesc(g, st_t);
-                rcEmitTrigger(g, arenaPrintf(g->arena, "(void *)%s->home", owcv),
-                              planArenaLevel(nx));
+                const char *core = rcAllocCore(g, arenaPrintf(g->arena, "(void *)%s->home", owcv),
+                                               planArenaLevel(nx),
+                                               arenaPrintf(g->arena, "(int64_t)sizeof(%s)", ct), td);
                 flushPrefix(g);
-                cgLine(g, "if (!%s || !%s->p) { void *%s = extc_rc_alloc("
-                          "extc_rc_regionOf((void *)%s->home, %d),"
-                          " (int64_t)sizeof(%s), %s);  if (%s) %s->p = %s;"
+                cgLine(g, "if (!%s || !%s->p) { void *%s = %s;  if (%s) %s->p = %s;"
                           "  %s = (%s)%s; }",     /* the C type is already a pointer */
-                        owcv, owcv, owtp, owcv, planArenaLevel(nx), ct, td,
+                        owcv, owcv, owtp, core,
                         owcv, owcv, owtp, nm, cType(g, s->type), owtp);
             } else
                 cgLine(g, "if (!%s || !%s->p) { void *%s = extc_arena_alloc(&%s,"
@@ -9188,6 +9274,18 @@ static void scanUnitNeeds(CG *g, Module *m) {
      * 计数的发射点已就位（引用赋值点），但清扫触发与根表还没接，所以由人来开。
      * **默认必须关闭**：关着时下面每一处发射都不发生，生成 C 与接线前逐字节相同。 */
     g->needReclaim = getenv("EXTC_RECLAIM") != NULL;
+    /* `EXTC_RC_SHARDS=N`：回收的**分片数**（停顿旋钮），默认 1。
+     * 只有 > 1 才会把每个逻辑区域切成 N 只运行期区域，生成 C 才与接线前不同；1、未设、空串、
+     * 非数、越界一律当 1（现有行为）。上限 64：再往上每片至少一只 1 MiB slab 的底噪会盖过
+     * 停顿收益。 */
+    g->rcNShard = 1;
+    if (g->needReclaim) {
+        const char *sh = getenv("EXTC_RC_SHARDS");
+        if (sh && *sh) {
+            long v = strtol(sh, NULL, 10);
+            if (v > 1) g->rcNShard = (int)(v > 64 ? 64 : v);
+        }
+    }
     /* Does the program use the raw-terminal primitives? They arrive as an `extern!` the
      * library declares (`extc_raw_enter` in `std::sys::term`), which is the one thing
      * codegen can see from here. */
