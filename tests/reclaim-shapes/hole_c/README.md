@@ -1,11 +1,17 @@
-# `hole_c` —— `bench/heavy/bt.extc` 提前释放（UAF）的最小形状 + 计数路径定位
+# `hole_c` —— 清扫在种子不完整时提前释放（UAF）的最小形状 + **修法**
 
 **一句话结论**：这不是"计数某处把还有持有者的对象降到 0 释放了"，而是**清扫（region sweep）**在
-**根表为空**的触发点上，把 `hold = 1~2`（还有持有者）的槽整片放掉了。错的那条路径是
+**根表为空 / 不完整**的触发点上，把 `hold = 1~2`（还有持有者）的槽整片放掉了。错的那条路径是
 **清扫的种子（根表）**，不是 inc/dec 的算术；`bt.extc` 的 `check` 读到空闲槽链号是后果。
 
-> 本轮**一行 `src/` 都没动**（`git status` 见文末）。`src/` 下 codegen 的行号会漂（另一位 agent
-> 正在改），所以本文引用**函数名 + 生成物里的字面串**，行号只作参考。
+**状态：已修（本轮）。** 修法是编译期判据 —— **触发点只在「本帧拥有」的区域上下手**：家 arena
+（`(*__extc_home)`，调用者一路传下来的同一只）与线程本地 arena 上一个触发都不发；本帧自己的块
+arena（`&__extc_a[lvl]`，`lvl>=1`）仍照常扫。见 `src/back/codegen.c` 的 `rcFrameOwnsArena` /
+`rcEmitTrigger` 的 `frameOwned` 与文件头的「第三个安全方向」。**代价**见 §4.4：只往家 arena
+分配的函数从此不触发，那类区域要等拥有它的帧自己分配时才扫、或等帧销毁；要同时保住健全与清扫
+能力需要**运行期根栈**，那是下一步。
+
+> 下面的 §2–§3 是**修之前**的实测与最小化过程（保留为证据）；§2.4 与 §4 是修后的状态。
 
 ---
 
@@ -14,13 +20,14 @@
 | 文件 | 作用 |
 | --- | --- |
 | `hole_c.extc` | 最小形状：递归建一棵满二叉树，再递归走一遍数节点。24 行（非注释非空 17 行） |
-| `run.sh` | 复现判据：开档必须红、关档必须绿。**exit 0 = 复现成功** |
-| `evidence.sh` | 硬证据：往**生成物**（/tmp 里）插探针，量出"被放掉的槽都还有持有者、种子为空" |
-| `caller_frame.extc` | 同一洞的**非递归**形态（定位辅助；症状是挂住，不做断言） |
+| `run.sh` | **绿判据（门禁）**：开档/关档都必须 rc=0 且输出逐字正确；ASan 不许有 SEGV/UAF。**exit 0 = 绿（洞不在了）** |
+| `evidence.sh` | 硬证据：往**生成物**（/tmp 里）插探针，量出"被放掉的槽都还有持有者、种子为空"（修前用；修后触发点被挡住，它报"证据不成立"是对的） |
+| `caller_frame.extc` | 同一洞的**非递归**形态（修前症状是挂住 rc=124；现在也是 `run.sh` 的判据之一） |
+| （真实语料档）| `tests/reclaim-shapes/persist_nodes.extc`（`bench/oi/persist/p3834_nodes.extc` 最小化版）+ `run-switch.sh` ①i |
 
 ```sh
-bash tests/reclaim-shapes/hole_c/run.sh        # exit 0 = 复现成功（洞还在）
-bash tests/reclaim-shapes/hole_c/evidence.sh   # exit 0 = 证据成立
+bash tests/reclaim-shapes/hole_c/run.sh        # exit 0 = 绿（修之前：exit 1 且前两条 FAIL=复现成功）
+bash tests/reclaim-shapes/hole_c/evidence.sh   # 修前 exit 0 = 证据成立；修后报"证据不成立"（不再有那次清扫）
 ```
 
 开关口径：本分支（`reclaim-default`）回收**默认打开**；`EXTC_RECLAIM=0` 关掉，`EXTC_RECLAIM=1`
@@ -30,7 +37,7 @@ bash tests/reclaim-shapes/hole_c/evidence.sh   # exit 0 = 证据成立
 
 ## 2. 实测输出
 
-### 2.1 `run.sh`（`exit 0`，洞还在）
+### 2.1 `run.sh`（**修之前**：`exit 0` = 复现成功，洞还在）
 
 ```
 == hole_c：回收档下 bt.extc 的提前释放（UAF）最小形状 ==
@@ -97,6 +104,24 @@ EXTC_RECLAIM=0 …              → n = 70000，rc=0
 它的触发点同样是 `extc_rc_maybeCollect(区域, (void *const *)0, 0)`：`main` 手里的链头是活引用，
 但它在**主调帧**里。洞**不是"递归"特有的**。
 
+### 2.4 修复后的 `run.sh`（**绿**，`exit 0` = 洞不在了）
+
+```
+== hole_c：清扫不得在种子不完整时下手（本帧拥有的区域才触发）==
+  ok   开档（EXTC_RECLAIM=1）：rc=0 out='n = 131071' —— 外层帧的活引用没被放掉
+  ok   开档（ASan）：rc=0，无 SEGV / UAF 报告
+  ok   关档（EXTC_RECLAIM=0）：rc=0 out='n = 131071' —— 对照组绿（判据不空转）
+  ok   caller_frame 开档：rc=0 out='n = 70000' —— 主调帧的活引用没被放掉（修之前 rc=124 挂住）
+  ok   caller_frame 关档：rc=0 out='n = 70000' —— 对照组绿（判据不空转）
+  ok   生成物：开档的 hole_c 不发射清扫触发（分配点全在家 arena 上 ⇒ 不扫外层区域）
+  ok   开档 + 深度 15（65535 节点 = 1.0 MiB - 16 B）：rc=0 —— 触发点由 1 MiB 下限把关
+
+判据：通过 7，失败 0
+```
+
+`bench/heavy/bt.extc` 与真实语料那一档（`persist_nodes`，N=50000）同样转绿：
+`bt.extc` 开档/关档都 rc=0、`trees = 262405599`；`persist_nodes` 开档/关档 5 行输出逐字一致。
+
 ---
 
 ## 3. 最小化过程（怎么缩到 17 行代码的）
@@ -149,36 +174,75 @@ EXTC_RECLAIM=0 …              → n = 70000，rc=0
   （`rcRootsUnreliable`：枚举负载、泛型枚举、协程帧）。**"本函数的根表完整，但调用帧里还有活引用"
   这一档没有被判成不完整** —— 这是缺的那条判据。
 
-### 4.3 给修的人的假设（**未验证**，按可信度排序）
+### 4.3 修法（**已落地**：本帧拥有的区域才触发）
 
-1. **触发点的根表要能表达动态栈帧**：要么让分配点所在的函数在"有调用者可能持有本区活引用"时
-   也判 `rcRootsUnreliable`（保守：不触发），要么把活引用放进一个运行期可枚举的根栈
-   （调用方在调用前登记、返回后撤销），让 `extc_rc_mark` 能看见外层帧。
-2. **清扫不吃 `hold>0` 的槽**：`extc_rc_sweep` 加一条 `hold != 0 ⇒ 当活的`（种子不全时最坏是晚收，
-   符合运行期注释里"宁可晚收，不可早放"的方向）。代价是：真有环、且环上对象还被计数钉着时，
-   清扫也收不了它 —— 但环的计数本来就永不归零，这一档本来就得靠清扫，两者需要一起想。
-3. 只按"递归函数关触发"打补丁是**不够**的：`caller_frame.extc` 证明非递归的主调帧同样漏。
+Lead 裁定的方向是「**种子不完整时宁可少收，不可照常扫**」—— 与 ⑨「跨区宿主证不出来 ⇒ 目标区域
+退出清扫」同一精神。这一档不完整的是**调用栈上其他帧的活引用**，而根表按词法作用域拼，结构性
+地看不见它们。
 
-### 4.4 没把握处 / 局限
+**修法（a）：触发点只在「本帧拥有」的区域上下手**（`src/back/codegen.c`）：
 
+- 新判据 `rcFrameOwnsArena(g, lvl)`：`lvl == ARENA_HOME`（分配落在 `(*__extc_home)` —— 调用者
+  一路传下来的家 arena）⇒ **假**；`g->parTls`（`extc_tls_arena`，整条 worker 调用链共用的那只）
+  ⇒ **假**；协程帧本来就 `rcRootsUnreliable`，一并挡。只有本帧自己的块 arena
+  （`&__extc_a[lvl]`，`lvl >= 1`）⇒ 真。
+- `rcEmitTrigger` / `rcAllocCore` 多收一个 `frameOwned`：假就**一个触发都不发**。三个分配点
+  各自给判据：`exNew` / `exGencall` 用 `rcFrameOwnsArena`；`@overwrite` 用
+  `loc && !g->rcFuncUsesHome` —— 格子在本帧（`loc`）且本函数**不收** home 时，格子的 `home`
+  才是本帧的 `&__extc_a[1]`；本函数收 home（`g->rcFuncUsesHome`，格子的 `home` = 调用者的家）
+  或 `loc` 为假（codegen 期才生成的泛型实例，`owLocal` 仍是 false）时，格子的 `home` 落在
+  **外层帧**上，同样不触发。
+- 为什么"本帧自己的块 arena"是安全的：外层帧拿不到指向它的引用 —— 跨帧存储的坏方向
+  （更深的局部 → 更浅的容器）被 checker 拒（②），会逃逸的值一开始就分配进**家 arena**
+  （④ 提权）。所以在块 arena 上，本帧的静态根表就是完整的种子。
+- 这**不是**把清扫废掉：环垃圾只要在拥有区域的帧自己的分配点旁边（`main` / 无 home 形参的
+  函数），清扫照常上场 —— 护栏数字见 `tests/reclaim-shapes/README.md` 的「C 洞」一节。
+
+❌ **绝对没做**：让 `extc_rc_sweep` 遇 `hold != 0` 就当活的。环垃圾的 `hold` 永远 ≥1，那等于
+废掉清扫（环再也收不掉），是换一个更大的洞。
+
+### 4.4 代价 / 后续（如实记）
+
+- **清扫机会的损失（有实测数字）**：只往家 arena 分配的函数（递归构造、被调者用调用者的家、
+  `@overwrite` 用 home 形参的格子）从此**不触发清扫**。那个区域只由**拥有它的那一帧**在自己也有
+  分配点时清扫；拥有者一个分配点都没有时（`hole_c` / `caller_frame` / `persist_nodes` 都是这一档），
+  整片要等帧销毁才还 —— 这是**上界放松**，不是悬垂。全量语料（1221 个 `.extc`）里修前有触发的
+  208 个程序中，**110 个触发被全部移除**；逐个体检其中可运行的 109 个，**只有
+  `bench/stress/stress.extc` 出现可测的峰值回归：10.92 MB → 23.60 MB**（rc=0、输出逐字一致），
+  其余 Δ ≤ 0.06 MB；`bench/heavy/bt.extc` 的对照无效（修前 rc=-11，没跑完）。详见
+  `tests/reclaim-shapes/README.md` 的「C 洞」一节。
+- **后续 (b)：运行期根栈**（本轮不做）。调用前登记、返回后撤销外层帧在本区的活引用，让
+  `extc_rc_mark` 看得见整个调用栈 ⇒ 既健全**又**保住清扫能力（`stress.extc` 那 12 MB 也就回来了）。
+  代价是每次调用 O(1) 的压栈/弹栈（以及根表的运行期物化），入口守卫的 −56.3% 会付回去一部分；
+  设计要点是把根栈与现有的 `rcRoots` 静态表接进同一个 `roots[]` 入口。
+- **`main` 的家 arena 也一并收紧**（`ARENA_HOME` 一律不触发，不特例 `main`）：`main` 是唯一
+  「家 arena 就是自己帧的 arena」的函数，认它要多一条判据；收紧只损失清扫机会、不损失健全。
+- **`evidence.sh` 修后报"证据不成立"**：`hole_c` 的开档生成物里已经没有触发点，探针观察不到
+  那次清扫 —— 这**正是修好的表现**，不是探针坏了。
+- **没有验证到的地方**：`parTls`（worker 调用链）那一档只按"和家 arena 同构"推理收紧，
+  语料里只有一个 `tests/errors/parallel_run_noargs.extc`（反例，不生成），**没有正向语料实测**。
+  另外，`rcFrameOwnsArena` 的依据是"跨帧存储的坏方向被 checker 拒 + 逃逸值提权进家 arena"，
+  这是对 checker 现有保证的信任，不是本轮新证的定理。
 - **深度 16 卡在压力线边上**：触发需要 `bytes > EXTC_RC_FLOOR = 1 MiB`，深度 15 恰好是
   1.0 MiB − 16 B。若 `src/` 那边改了 `EXTC_RC_FLOOR` 或槽大小，最小深度会变；形状本身不受影响，
-  把 `build(16)` 调大即可（`run.sh` 的第 ④ 条会因此失败，提示这个前提变了）。
-- **崩溃点不唯一**：`hole_c` 稳定崩在走树的 `count`（139×8 次）；`caller_frame` 是挂住。
-  两者都是"种子不全"的下游症状，但"第一种症状"依分配/复用的交错而变（我也见过崩在
-  `extc_rc_alloc` 里读被写坏的空闲链的那种交错）。判据因此写成"rc≠0 **或** 输出不是 131071"。
-- **没有验证修复**：`src/` 一行没动，4.3 全是假设；`evidence.sh` 只是测量，不是修复验证。
-- 我只跑了本目录的形状与 `bt.extc` 的对照，**没跑完整测试套件**（按任务要求）。
-- `src/back/codegen.c` 正被另一位 agent 修改：本文的生成物观察基于**当前工作树 + 当前
-  `build/extc`**（HEAD `cb95a8c` + 未提交的 `codegen.c`/`main.c` 改动）。行号会漂。
+  把 `build(16)` 调大即可（`run.sh` ⑦ 会因此失败，提示这个前提变了）。
+- **修前的崩溃点不唯一**：`hole_c` 稳定崩在走树的 `count`（139×8 次）；`caller_frame` 是挂住。
+  两者都是"种子不全"的下游症状，但"第一种症状"依分配/复用的交错而变 —— 所以修后判据钉的是
+  "开档 rc=0 且输出逐字正确"，不是"崩在某个具体函数"。
 
 ---
 
-## 5. 工作树自证
+## 5. 工作树自证（修后）
 
 ```
 $ git status --short
- M src/back/codegen.c     ← 另一位 agent 的改动，不是我
- M src/main.c             ← 另一位 agent 的改动，不是我
-?? tests/reclaim-shapes/hole_c/
+ M src/back/codegen.c                     ← 本轮 C 洞修复（rcFrameOwnsArena / frameOwned）
+ M tests/reclaim-shapes/run-switch.sh     ← ①i / ①j 两条新判据
+ M tests/reclaim-shapes/README.md         ← 「C 洞」一节
+ M tests/reclaim-shapes/hole_c/run.sh     ← 由"复现判据"改成"绿判据"
+ M tests/reclaim-shapes/hole_c/README.md  ← 本文
+?? tests/reclaim-shapes/persist_nodes.extc ← 真实语料最小化版（N=50000）
 ```
+
+修前的生成物观察基于当时的 `build/extc`（HEAD `9305b17`）；行号会随 `src/` 改动漂，本文引用的是
+**函数名 + 生成物里的字面串**。

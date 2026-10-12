@@ -25,6 +25,16 @@
 #      同一类"槽写了但没记账"，走另一个机制）。判据：开关开 N/4N rc=0、`ok=true`、峰值比
 #      < 1.5，且生成物里那条边是**逐叶记账**（`storeRefOwned`，owner = 容器对象 `s`）或保守
 #      路径，不许是 `s->w = (wrap){.n = keeper};`；开关关时峰值随轮数涨（有牙）。
+#   ①i **C 洞（真实语料）** `persist_nodes`（`bench/oi/persist/p3834_nodes.extc` 最小化版，
+#      N=50000 ⇒ 根数组槽 512 KiB、全程无超大块）：`update` 递归，内层帧 `new` 的对象由**父帧
+#      的局部量**持有，而触发点的静态根表按词法作用域拼（`{ z, prev }`）看不见它 ⇒ 内层帧用
+#      不完整的种子扫**外层帧的家 arena** ⇒ 父帧还建着的子树被放掉 ⇒ 修之前开档 rc=139。
+#      判据：开档（=1）与关档（=0）都 rc=0，5 行输出逐字一致。
+#   ①j **C 洞（最小递归 + 非递归）** `hole_c` / `caller_frame`：`hole_c` 的触发根表**直接为空**
+#      （`maybeCollect(区域, (void *const *)0, 0)`），`caller_frame` 证明与递归无关（修之前
+#      挂住 rc=124）。判据：开档/关档都 rc=0，输出逐字 `n = 131071` / `n = 70000`。
+#      这三条只钉**健全性**；它们的清扫损失（只往家 arena 分配的函数从此不触发）在
+#      README 的「C 洞」一节如实写明，清扫能力的护栏仍是 ①/①b/①c/①e/①f 那几条。
 #   ② `cond_save` / `cyclic_shape` 在开关下**语义不变**（开关只换运行期，不改语义）。
 #   ③ 四个曾经的 SEGV 用例在开关下不崩、输出不变（板/池/栈/C 指针不是 rc 槽：
 #      `owns` 守卫必须一个字节都不碰）：
@@ -637,6 +647,75 @@ if [ "$gid_on_c" = ok ] && [ "$gid_off_c" = ok ]; then
     fi
 else
     bad "generic-instance-desc：生成/编译失败（on=$gid_on_c off=$gid_off_c）—— 见 $TMP/gid-on.log"
+fi
+
+# ── ①i C 洞（真实语料）：persist_nodes —— 内层帧不得扫外层帧的家区域 ────────────
+# 形状见 `persist_nodes.extc`（`bench/oi/persist/p3834_nodes.extc` 的最小化版，N=50000，
+# 根数组 400008 B ⇒ 槽 512 KiB，**全程无超大块**）：`update` 递归建可持久化线段树，每个内层帧
+# `new pnode` 拿到的 `n` 是活引用，但它在**父帧的局部量**里，而触发点的静态根表按词法作用域
+# 拼（`update` 的生成物是 `{ z, prev }`）⇒ 看不见调用帧的 `n`。内层帧一触发就用这张不完整的
+# 种子扫**外层帧的家 arena**（家 arena 一路传下来，是同一个区域）⇒ 把父帧还建着的子树放掉
+# ⇒ 返回后 `prev` 悬垂 ⇒ rc=139。修法：触发只在**本帧拥有**的区域上下手（家 arena 不发触发）。
+# 判据：开档（=1）与关档（=0）都 rc=0，且 5 行输出**逐字一致**（回收只换运行期，不改语义）。
+PN_WANT="in    = 15541333246929082085
+n     = 50000
+q     = 1000
+nodes = 834490
+ans   = 13048423833364183566"
+
+hole_build_run() { # <开关 1|0> <tag> <源文件> [程序参数...] → HB_C / HB_RC / HB_OUT
+    local mode=$1 tag=$2 src=$3; shift 3
+    HB_C=fail; HB_RC=-; HB_OUT=""
+    if EXTC_RECLAIM=$mode "$EXTC" -w --no-line-map "$src" -o "$TMP/hole-$tag.c" \
+            >"$TMP/hole-$tag.log" 2>&1 \
+       && "$CC" -std=c11 -fwrapv -O1 -o "$TMP/hole-$tag" "$TMP/hole-$tag.c" \
+            >>"$TMP/hole-$tag.log" 2>&1; then
+        HB_C=ok
+        timeout 60 "$TMP/hole-$tag" "$@" >"$TMP/hole-$tag.out" 2>"$TMP/hole-$tag.err"
+        HB_RC=$?
+        HB_OUT=$(cat "$TMP/hole-$tag.out")
+    fi
+}
+
+echo "-- ①i C 洞（真实语料最小化）：内层帧不得扫外层帧的家区域（开档=关档）--"
+hole_build_run 1 pn_on  tests/reclaim-shapes/persist_nodes.extc
+pn_on_c=$HB_C; pn_on_rc=$HB_RC; pn_on_out=$HB_OUT
+hole_build_run 0 pn_off tests/reclaim-shapes/persist_nodes.extc
+pn_off_c=$HB_C; pn_off_rc=$HB_RC; pn_off_out=$HB_OUT
+if [ "$pn_on_c" = ok ] && [ "$pn_on_rc" = 0 ] && [ "$pn_on_out" = "$PN_WANT" ] \
+   && [ "$pn_off_c" = ok ] && [ "$pn_off_rc" = 0 ] && [ "$pn_off_out" = "$PN_WANT" ]; then
+    ok "persist-nodes：开档/关档都 rc=0 且输出逐字一致（N=50000 / Q=1000；修之前开档 rc=139）"
+else
+    bad "persist-nodes：开档/关档没同时跑对（on[c=$pn_on_c rc=$pn_on_rc out=$(printf '%s' "$pn_on_out" | tr '\n' '|')] off[c=$pn_off_c rc=$pn_off_rc out=$(printf '%s' "$pn_off_out" | tr '\n' '|')]）"
+fi
+
+# ── ①j C 洞（最小递归 / 非递归）：`hole_c.extc` 与 `caller_frame.extc` ─────────
+# `hole_c`：外层调用帧的 `t` 连着已建好的子树，内层帧的触发根表是空的
+# （`maybeCollect(区域, (void *const *)0, 0)`）⇒ 修之前整棵放掉、rc=139。
+# `caller_frame`：同一个洞的**非递归**形态 —— `main` 手里的链头是活引用，被调 `fresh()` 只
+# 负责 `new`；修之前是挂住（rc=124）。只对递归打补丁会漏掉这一半。
+# 判据：开档与关档都 rc=0，输出分别逐字 `n = 131071` / `n = 70000`（两档都真跑、不空转）。
+echo "-- ①j C 洞（最小递归 + 非递归）：外层帧的活引用不得被放掉 --"
+hole_build_run 1 hc_on  tests/reclaim-shapes/hole_c/hole_c.extc
+hc_on_c=$HB_C; hc_on_rc=$HB_RC; hc_on_out=$HB_OUT
+hole_build_run 0 hc_off tests/reclaim-shapes/hole_c/hole_c.extc
+hc_off_c=$HB_C; hc_off_rc=$HB_RC; hc_off_out=$HB_OUT
+if [ "$hc_on_c" = ok ] && [ "$hc_on_rc" = 0 ] && [ "$hc_on_out" = "n = 131071" ] \
+   && [ "$hc_off_c" = ok ] && [ "$hc_off_rc" = 0 ] && [ "$hc_off_out" = "n = 131071" ]; then
+    ok "hole_c：开档/关档都 rc=0，输出逐字 n = 131071（修之前开档 rc=139）"
+else
+    bad "hole_c：开档/关档没同时跑对（on[c=$hc_on_c rc=$hc_on_rc out=$hc_on_out] off[c=$hc_off_c rc=$hc_off_rc out=$hc_off_out]）"
+fi
+
+hole_build_run 1 cf_on  tests/reclaim-shapes/hole_c/caller_frame.extc
+cf_on_c=$HB_C; cf_on_rc=$HB_RC; cf_on_out=$HB_OUT
+hole_build_run 0 cf_off tests/reclaim-shapes/hole_c/caller_frame.extc
+cf_off_c=$HB_C; cf_off_rc=$HB_RC; cf_off_out=$HB_OUT
+if [ "$cf_on_c" = ok ] && [ "$cf_on_rc" = 0 ] && [ "$cf_on_out" = "n = 70000" ] \
+   && [ "$cf_off_c" = ok ] && [ "$cf_off_rc" = 0 ] && [ "$cf_off_out" = "n = 70000" ]; then
+    ok "caller_frame：开档/关档都 rc=0，输出逐字 n = 70000（修之前开档 rc=124 挂住）"
+else
+    bad "caller_frame：开档/关档没同时跑对（on[c=$cf_on_c rc=$cf_on_rc out=$cf_on_out] off[c=$cf_off_c rc=$cf_off_rc out=$cf_off_out]）"
 fi
 
 # ── ② 开关只换运行期，不改语义 ────────────────────────────────────────────────

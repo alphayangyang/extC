@@ -422,6 +422,14 @@ typedef struct {
     Vec         rcGlobalRoots;   /* const char *：全局引用槽 */
     bool        rcGlobalsUnreliable; /* 全局量里有枚举不出来的引用存储 ⇒ 所有函数关掉触发 */
     bool        rcRootsUnreliable;
+    /* 正在生成的这个函数收不收隐藏的「家 arena」形参（= `planUsesHome(f)`）。
+     *
+     * 触发点只在**本帧拥有的区域**上下手（见 `rcFrameOwnsArena`），而 `@overwrite` 的格子
+     * 住的区域由格子自己的 `home` 决定：格子在本帧（`f_owLocal`）且本函数**不收** home 时，
+     * `home` 才是本帧的 `&__extc_a[1]`（`main` 的家 arena 也是它自己的 `&__extc_a[1]`）；
+     * 收了 home（`home` = 调用者的家），或 `f_owLocal` 为假（codegen 期才生成的泛型实例），
+     * `home` 就落在外层帧。 */
+    bool        rcFuncUsesHome;
     int         rcSeq;           /* 描述符与触发的唯一编号 */
     int         rcGuardSeq;      /* 入口守卫临时变量的唯一编号 */
     /* 正在发射的函数是不是「一个地方」（入口文件的函数才是；库函数透明）。 */
@@ -2881,6 +2889,21 @@ static const char *exConv(CG *g, Expr *e) {
  *    还活着的对象释放掉。枚举负载、泛型枚举、协程帧这类静态展开不出来的存储一律按不完整处理。
  *  · 偏移条目超过 4096 时同样按不完整处理，避免产物无谓地膨胀。
  *
+ * 第三个安全方向（**C 洞**：根表完整、但调用帧里还有活引用）：
+ *
+ *  · **只清扫本帧拥有的区域**（`rcFrameOwnsArena` / `rcAllocCore` 的 `frameOwned`）。静态根表
+ *    是**词法作用域**的：它覆盖本帧的局部量与全局量，**结构性地看不见调用栈上其他帧的活引用**。
+ *    家 arena（`(*__extc_home)`）是调用者一路传下来的、线程本地 arena（`extc_tls_arena`）是整条
+ *    worker 调用链共用的 —— 内层帧往这两种区域里分配时，区域里的对象可能同时被**外层帧**的
+ *    局部量指着；内层帧一触发，那张只按自己词法作用域拼出来的根表就是**不完整**的种子，清扫会
+ *    把还活着的整棵子树当垃圾放掉（实测：`nroots=0`、放掉的 65537 个槽**每一个** `hold>0`）。
+ *    所以**不是本帧拥有的区域一个触发都不发**。本帧自己的块 arena（`&__extc_a[lvl]`，lvl≥1）
+ *    仍然照常触发：外层帧拿不到指向它的引用（跨帧存储的方向被 checker 挡着，会逃逸的值在分配
+ *    时就落在**家 arena**），所以本帧根表对它是完整的 —— 这也是清扫能力**没有被整体废掉**的原因。
+ *    代价（如实记）：只往家 arena 分配的函数（递归构造、被调者用调用者的家）从此不触发，
+ *    那些区域只由**拥有它的那一帧**在自己也分配时清扫；拥有者一个分配点都没有时，整片要等到
+ *    帧销毁才还。要同时保住健全与清扫能力，得走运行期根栈（登记/撤销外层帧在本区的活引用）。
+ *
  * 视图（`slice<T>` / `mut slice<T>`）不算根：它的 `data` 指向 arena / 板 / C 的存储，
  * 而 rc 槽只由 `new T` / `new [N]T` / `alloc<T>(n)` / `@overwrite` 产生，都不给视图。
  */
@@ -3065,6 +3088,26 @@ static const char *rcEmitTypeDesc(CG *g, Type *t) {
 }
 
 /**
+ * @brief 这次分配要落进去的区域，是不是**本帧拥有**的（静态根表对它是完整的种子）。
+ *
+ * 判据（见上面「第三个安全方向」）：本帧自己的块 arena（`&__extc_a[lvl]`，`lvl >= 1`）算；
+ * 家 arena（`ARENA_HOME`：调用者一路传下来的 `(*__extc_home)`）不算；线程本地 arena
+ * （`parTls`）也不算 —— 后者同样是整条 worker 调用链共用的，与家 arena 一个道理。
+ * 协程帧本来就 `rcRootsUnreliable`，这里一并挡住。
+ *
+ * 不把 `main` 的家 arena 特例放进来：`main` 是唯一一个「家 arena 就是自己帧的 arena」的函数，
+ * 认它要多一条判据，而收紧一侧只损失清扫机会、不损失健全。
+ *
+ * @param g    生成器。
+ * @param lvl  `ARENA_HOME`（-1）或 1 以上的块层级。
+ * @return     真 = 本帧拥有，可以在这个区域上触发清扫。
+ */
+static bool rcFrameOwnsArena(CG *g, int lvl) {
+    if (g->parTls || g->coroFunc) return false;
+    return lvl != ARENA_HOME;
+}
+
+/**
  * @brief 在一个分配点发射清扫触发：`extc_rc_maybeCollect(区域, 根表, 根数)`。
  *
  * 压力判据与自学习退场在运行期（reclaim.c），这里只负责**按正确参数与时机调用**：
@@ -3078,14 +3121,19 @@ static const char *rcEmitTypeDesc(CG *g, Type *t) {
  * 这是纯粹的求值顺序改动，改变的是"什么时候物化根表"，不是"什么时候收集"：
  * 判据只有 `extc_rc_shouldSweep` 这一份（`maybeCollect` 内部用的就是同一个函数），不另抄。
  *
- * @param g         生成器。
- * @param basePtr   该分配要落进去的那只区域的**基址表达式**（已经是 `(void *)` 形态），
- *                  形如 `(void *)&(__extc_a[1])`、`(void *)__owc0->home`；第 k 片的认领键是
- *                  `(char *)basePtr + k`（只比不读，见 `rcAllocCore`）。
- * @param lvl       块层级（1 = 函数体，-1 = 家区域）；分片时区域号取 `lvl * 片数 + k`。
+ * **本帧拥有的区域**：`frameOwned` 为假时一个触发都不发（理由见 `rcFrameOwnsArena` 与文件头的
+ * 「第三个安全方向」）—— 根表看不见调用帧的活引用，在那种区域上照常扫就是把活对象当垃圾放。
+ *
+ * @param g          生成器。
+ * @param basePtr    该分配要落进去的那只区域的**基址表达式**（已经是 `(void *)` 形态），
+ *                   形如 `(void *)&(__extc_a[1])`、`(void *)__owc0->home`；第 k 片的认领键是
+ *                   `(char *)basePtr + k`（只比不读，见 `rcAllocCore`）。
+ * @param lvl        块层级（1 = 函数体，-1 = 家区域）；分片时区域号取 `lvl * 片数 + k`。
+ * @param frameOwned 这只区域是不是本帧拥有的（假 ⇒ 不发射触发）。
  */
-static void rcEmitTrigger(CG *g, const char *basePtr, int lvl) {
+static void rcEmitTrigger(CG *g, const char *basePtr, int lvl, bool frameOwned) {
     if (!g->needReclaim || g->rcRootsUnreliable || g->prefixBlk == 0) return;
+    if (!frameOwned) return;
     size_t n = g->rcGlobalRoots.len + g->rcRoots.len;
     if (n > 4096) { g->rcRootsUnreliable = true; return; }
     Buf b;
@@ -3152,15 +3200,16 @@ static void rcEmitTrigger(CG *g, const char *basePtr, int lvl) {
  * @param g          生成器。
  * @param basePtr    区域基址表达式（同 `rcEmitTrigger`）。
  * @param lvl        块层级（可 -1，只用于区域号）。
+ * @param frameOwned 这只区域是不是本帧拥有的（同 `rcEmitTrigger`；假 ⇒ 不发射触发）。
  * @param bytesExpr  字节数的 C 文本（原样拼进调用，不再加括号）。
  * @param td         类型描述符的 C 文本。
  * @return           `extc_rc_alloc(...)` 的 C 文本。
  */
-static const char *rcAllocCore(CG *g, const char *basePtr, int lvl,
+static const char *rcAllocCore(CG *g, const char *basePtr, int lvl, bool frameOwned,
                                const char *bytesExpr, const char *td) {
     int nsh = g->rcNShard > 0 ? g->rcNShard : 1;
     int k = g->rcSite++ % nsh;
-    rcEmitTrigger(g, basePtr, lvl);
+    rcEmitTrigger(g, basePtr, lvl, frameOwned);
     if (nsh == 1)
         return arenaPrintf(g->arena,
             "extc_rc_alloc(extc_rc_regionOf(%s, %d), %s, %s)",
@@ -3329,10 +3378,11 @@ static const char *exNew(CG *g, Expr *e) {    Type *w = subst(g, e->u.new_.type)
         if (g->needReclaim) {
             int lvl = planArenaLevel(e);
             /* 顺序：先类型描述符（它必须在这一条语句里可见），再触发（落在语句之前），
-             * 最后是分配表达式 —— 三者都按**同一个片号**（见 `rcAllocCore`）。 */
+             * 最后是分配表达式 —— 三者都按**同一个片号**（见 `rcAllocCore`）。
+             * `frameOwned`：家 arena / 线程本地 arena 上的触发不发（根表看不见调用帧）。 */
             const char *td = rcEmitTypeDesc(g, w);
             const char *base = arenaPrintf(g->arena, "(void *)&(%s)", ar);
-            const char *core = rcAllocCore(g, base, lvl,
+            const char *core = rcAllocCore(g, base, lvl, rcFrameOwnsArena(g, lvl),
                 arenaPrintf(g->arena, "(int64_t)sizeof(%s)", cType(g, w)), td);
             return arenaPrintf(g->arena, "((%s *)%s)", cType(g, w), core);
         }
@@ -3457,6 +3507,7 @@ static const char *exGencall(CG *g, Expr *e) {
         const char *td = "(const ExtcRcType *)0";
         if (rcScanType(g, et, 0) != RC_NO_REFS) td = "((const ExtcRcType *)-1)";
         const char *core = rcAllocCore(g, arenaPrintf(g->arena, "(void *)&(%s)", ar), lvl,
+            rcFrameOwnsArena(g, lvl),
             arenaPrintf(g->arena, "(int64_t)(%s) * (int64_t)sizeof(%s)", n, tn), td);
         return arenaPrintf(g->arena, "(%s *)%s", tn, core);
     }
@@ -5074,8 +5125,14 @@ if (s->u.var.overwrite) {
                  * 描述符随槽存下，触发用的区域认领键与下面的 `extc_rc_alloc` 一致（同一片号，
                  * 见 `rcAllocCore`）。 */
                 const char *td = rcEmitTypeDesc(g, st_t);
+                /* 这只区域（格子的 `home`）是不是**本帧拥有**的：格子在本帧
+                 * （`f_owLocal`）且本函数不收 home 时，`home` 才是本帧的 `&__extc_a[1]`。
+                 * 本函数收 home（`planUsesHome`，格子的 `home` 因此是调用者的 arena），或
+                 * `owLocal` 为假（codegen 期才生成的泛型实例），两种都落在**外层帧**上 ——
+                 * 本帧的静态根表看不见外层帧的活引用，这一档不触发（见 `rcFrameOwnsArena`）。 */
+                bool own = loc && !g->rcFuncUsesHome;
                 const char *core = rcAllocCore(g, arenaPrintf(g->arena, "(void *)%s->home", owcv),
-                                               planArenaLevel(nx),
+                                               planArenaLevel(nx), own,
                                                arenaPrintf(g->arena, "(int64_t)sizeof(%s)", ct), td);
                 flushPrefix(g);
                 cgLine(g, "if (!%s || !%s->p) { void *%s = %s;  if (%s) %s->p = %s;"
@@ -6245,6 +6302,9 @@ static void genFunc(CG *g, FuncDef *f) {
     int   savedSeq = g->tmpSeq;
     g->retType = subst(g, f->ret);
     g->inMain  = isMain;
+    /* 回收触发只在本帧拥有的区域上下手；`@overwrite` 的格子住的 arena 归谁，要看本函数收不收
+     * 隐藏的「家 arena」形参（见 `rcFuncUsesHome` 字段的注释）。 */
+    g->rcFuncUsesHome = planUsesHome(f);
     g->tmpSeq = 0;
     /* `@unchecked` is a property of **this body**, so it is set on entry and restored on the way
      * out. A coroutine's step function is generated from its own `FuncDef` (the one the
@@ -6466,6 +6526,7 @@ static void genFunc(CG *g, FuncDef *f) {
         g->parTls = savedParTls;
         g->retType = savedRet;
         g->inMain  = false;
+        g->rcFuncUsesHome = false;
         g->tmpSeq = savedSeq;
         g->noArena = savedNoArena;
         g->owSitesOwn = savedOw;
@@ -6563,6 +6624,7 @@ static void genFunc(CG *g, FuncDef *f) {
     }
     g->retType = savedRet;
     g->inMain  = false;
+    g->rcFuncUsesHome = false;
     g->tmpSeq = savedSeq;
     g->uncheckedBody = savedUnchecked;
     g->noArena = savedNoArena;
