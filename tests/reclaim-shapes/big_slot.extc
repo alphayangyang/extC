@@ -1,0 +1,66 @@
+/* 形状 ⑫：**超过一个 slab 的槽** —— 运行期必须容纳，而不是 trap。
+ *
+ * 背景：位图 slab 的载荷是固定 1 MiB，槽按 2 的幂向上取整后放进 slab。槽 > 512 KiB 时
+ * 取整到 1 MiB，`(1 MiB - 头) >> 20 == 0` ⇒ 旧运行期在 `extc_rc_slabNew` 里
+ * `extc_rc_oops("slot is larger than a slab")`，进程 rc=1。这一类分配在真实语料里就有：
+ * `tests/arena/control-flow` 的 `alloc<i32>(250000)`（1,000,000 B）与
+ * `bench/oi/persist/p3834` 的 `new [N]pnode`（252 MB）。
+ *
+ * 判据（开关开与开关关**逐字相同**，且 rc=0）：
+ *   ① `alloc<i32>(250000)`：1,000,000 B ⇒ 进位到 1 MiB，正好是"一个 slab 装不下"的边界；
+ *   ② `new blob`（载荷 1,000,000 B 的 i32 数组）：超大块里的每个元素都要真的可读写；
+ *   ③ `alloc<u8>(4 MiB)`：明显超过一个 slab；
+ *   ④ `new big`（sizeof ≈ 600 KB，带 `next: ?ref big`）：**引用类型**的超大槽也得参与同一套
+ *      计数/登记/标记/清扫 —— 链里的 `next` 要按类型描述符被认出来（描述符得能表达 600 KB
+ *      结构体里那个引用字段的偏移），大槽不能因为不在 slab 的槽表里就被清扫当成垃圾或漏掉。
+ *      链上 tag 之和 0+1+2=3；走链时也不能读到空闲链的槽号（那正是被提前释放的症状）。
+ */
+use std::io
+
+struct blob {
+    data: [250000]i32
+}
+
+struct big {
+    tag: i64
+    pad: [600000]u8
+    next: ?ref big
+}
+
+fn main() {
+    /* ① 精确落在边界上的 `alloc<T>(n)`：250000 * 4 = 1,000,000 B */
+    var a = alloc<i32>(250000)
+    *a = 41
+    println("alloc1m=", *a)
+
+    /* ② 超大块里的每个元素可读写：首、中、尾各写一个值再读回来 */
+    var z = new blob
+    z.data[0] = 5
+    z.data[125000] = 7
+    z.data[249999] = 11
+    println("blob=", i32(z.data[0]) + i32(z.data[125000]) + i32(z.data[249999]))
+
+    /* ③ 4 MiB，明显超过一个 slab */
+    var b = alloc<u8>(4 * 1024 * 1024)
+    *b = u8(9)
+    println("huge=", i32(*b))
+
+    /* ④ 引用类型的超大槽（~600 KB）：链起来、走一遍、求和 */
+    var head: ?ref big = null
+    var k: i64 = 0
+    while k < 3 {
+        var p = new big
+        p.tag = k
+        p.pad[0] = u8(1)
+        p.next = head
+        head = p
+        k = k + 1
+    }
+    var n: i64 = 0
+    var q = head
+    while q != null {
+        n = n + q.tag
+        q = q.next
+    }
+    println("chain=", n)
+}

@@ -35,7 +35,8 @@
  * 追加的文本提供这些入口：区域 `extc_rc_regionNew` / `extc_rc_regionFloor` / `extc_rc_regionFree`，
  * 槽分配 `extc_rc_alloc(区域, 字节, 类型描述符)`，解析区 `extc_rc_bump` / `extc_rc_bumpReset`，
  * 计数 `extc_rc_inc` / `extc_rc_dec` / `extc_rc_initRef` / `extc_rc_storeRef`，跨区登记
- * `extc_rc_register`，清扫 `extc_rc_mark` / `extc_rc_sweep` / `extc_rc_collect` /
+ * `extc_rc_storeRefOwned(slot, v, owner)`（来源可证）与 `extc_rc_storeRefUnknown(slot, v)`
+ * （来源不可证 ⇒ 目标区域整个退出清扫），清扫 `extc_rc_mark` / `extc_rc_sweep` / `extc_rc_collect` /
  * `extc_rc_maybeCollect(区域, 根表, 根数)`，以及只读的记账查询。类型描述符 `ExtcRcType`
  * 与兜底描述符 `EXTC_RC_CONSERVATIVE`（标记扫整个槽）也由这里定义。
  *

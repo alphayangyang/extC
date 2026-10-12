@@ -378,11 +378,36 @@ typedef struct {
     /* Does the program declare a pool extern? Then the registry runtime is emitted, and
      * every place that can create one carries the two hooks that key its pools to it. */
     bool        needPool;
-    /* `EXTC_RECLAIM`：区域回收运行期（位图 slab + 持有者计数 + 区域清扫）打开。
-     * **默认关闭** —— 关着时生成 C 要与接线前逐字节相同（414 个 golden 靠这条）。打开时：
-     * 运行期文本进序言、`new` 的存储从由 arena 地址认领的 rc 区域里取、引用赋值点发射计数。
-     * 开关是环境变量而不是构造上的判据，直到有构造需要它（见 `emitRuntimePrologue`）。 */
+    /* 区域回收运行期（位图 slab + 持有者计数 + 区域清扫）打开：运行期文本进序言、`new` 的
+     * 存储从由 arena 地址认领的 rc 区域里取、引用赋值点发射计数。
+     *
+     * **默认打开**，但只在程序里真有回收管辖的分配点时才发（`scanUnitReclaim`：`new T` /
+     * `alloc<T>(n)` / `@overwrite` 的单值格子）。这样没有这类分配点的程序（400 多份 golden）
+     * 生成 C 一个字节都不变，而有的那些拿到全部四层。
+     *
+     * `EXTC_RECLAIM=0` 关掉（对照与排障）；`EXTC_RECLAIM=1` **强制**发射，不看分配点
+     * —— 那些按开关口径写的门禁（`tests/reclaim-shapes/run-switch.sh`、`tests/reclaim-perf/`）
+     * 要的就是"开关打开"这一档，与分配点在不在无关。 */
     bool        needReclaim;
+    /* `EXTC_RECLAIM` 给了非零值时置位：跳过 `scanUnitReclaim` 的分配点判据，无条件发射。 */
+    bool        rcForced;
+    /* `EXTC_RC_SHARDS=N`：区域回收的**分片数**（停顿旋钮），默认 1。
+     *
+     * 分片 = 把一个逻辑区域（认领键是 arena 的地址）切成 N 个**运行期区域**：每片一支
+     * slab 链、一张跨区登记位图（`rsbit`，即原型里每片的入边集 `SRS`）、一个标记栈，因此
+     * 可以**单独清扫** —— 停顿 ∝ 被收那一片的可达集，与逻辑区域总量无关。
+     *
+     * 片号按**分配点**定（`rcSite++ % rcNShard`），不按存活集/对象数：同一处 `new` 造出来的
+     * 东西（链、环、一代树节点）始终落在同一片，片内链条与环保持完整。按存活集均分会把
+     * 链和环拆到两片，跨片登记位一置，环垃圾就永远当种子 ⇒ 界随轮数涨（原型实测吞吐也变差）。
+     *
+     * N == 1 时一个逻辑区域仍然只有一个运行期区域：下面每一处发射都走原来的那条分支，
+     * 生成的 C 与接线前**逐字节相同**。N > 1 只是多认领几个区域，运行期文本一个字都不用改
+     * —— 跨区登记、来源侧撤销、按区域清扫都是已经有的机制，片就是区域。 */
+    int         rcNShard;
+    /* 分配点序号：片号 = `rcSite++ % rcNShard`。每发射一个 rc 分配表达式加一，所以同一处
+     * `new` 在整份生成物里始终是同一个片号（编译两次结果相同）。 */
+    int         rcSite;
     /* 区域回收的编译期状态（只在 `needReclaim` 打开时有意义）。
      *
      * `rcRoots` 是**静态根表**：当前作用域里活着的引用槽的 C 表达式（`saved`、`c.a`、
@@ -397,7 +422,16 @@ typedef struct {
     Vec         rcGlobalRoots;   /* const char *：全局引用槽 */
     bool        rcGlobalsUnreliable; /* 全局量里有枚举不出来的引用存储 ⇒ 所有函数关掉触发 */
     bool        rcRootsUnreliable;
+    /* 正在生成的这个函数收不收隐藏的「家 arena」形参（= `planUsesHome(f)`）。
+     *
+     * 触发点只在**本帧拥有的区域**上下手（见 `rcFrameOwnsArena`），而 `@overwrite` 的格子
+     * 住的区域由格子自己的 `home` 决定：格子在本帧（`f_owLocal`）且本函数**不收** home 时，
+     * `home` 才是本帧的 `&__extc_a[1]`（`main` 的家 arena 也是它自己的 `&__extc_a[1]`）；
+     * 收了 home（`home` = 调用者的家），或 `f_owLocal` 为假（codegen 期才生成的泛型实例），
+     * `home` 就落在外层帧。 */
+    bool        rcFuncUsesHome;
     int         rcSeq;           /* 描述符与触发的唯一编号 */
+    int         rcGuardSeq;      /* 入口守卫临时变量的唯一编号 */
     /* 正在发射的函数是不是「一个地方」（入口文件的函数才是；库函数透明）。 */
     bool        zoneHere;
     /* 这个函数收不收隐藏的「家 zone」参数（= `FuncDef.makesPool`）。
@@ -556,29 +590,49 @@ static Type *subst(CG *g, Type *t) {
 }
 
 /**
+ * @brief 替换上下文的全部三个字段：类型形参、类型实参、方法名的属主前缀。
+ *
+ * `substEnter` 把进入之前的这份上下文交出来，`substLeave` 原样收回去。**进出必须成对且
+ * 带上归还的那一份**：早期版本里 `substLeave` 无条件把三个字段清空，于是"探测一个类型"
+ * 的嵌套进入（发射 `ExtcRcType` 描述符、收集根表叶子……都在泛型方法体里跑）会顺手抹掉
+ * 外层实例的上下文，同一具方法体余下的部分就以 `T` 未替换的形态发出（`slice_T`、
+ * `varArray_T`），生成的 C 根本编不过。
+ */
+typedef struct {
+    Vec        *params;
+    Vec        *args;
+    const char *owner;
+} SubCtx;
+
+/**
  * @brief 进入一个泛型实例的单态化替换上下文。
  *
- * 泛型 enum 实例没有 `sdef`，其属主是 `edef`，两种情形都在这里处理。
+ * 泛型 enum 实例没有 `sdef`，其属主是 `edef`，两种情形都在这里处理。可以嵌套：把返回的
+ * 上下文原样交给 `substLeave` 即可，不会有哪一层把别的层覆盖掉。
  *
  * @param g    generator 状态；上下文写入 g->substParams、g->substArgs 与 g->ownerPrefix
  * @param inst 实例类型
+ * @return     进入之前的上下文，交给 `substLeave` 归还
  */
-static void substEnter(CG *g, Type *inst) {
+static SubCtx substEnter(CG *g, Type *inst) {
+    SubCtx sv = { g->substParams, g->substArgs, g->ownerPrefix };
 
     g->substParams = inst->sdef ? &inst->sdef->typeParams : &inst->edef->typeParams;
     g->substArgs   = &inst->targs;
     g->ownerPrefix = inst->name;
+    return sv;
 }
 
 /**
- * @brief 退出 substEnter 进入的替换上下文：清空类型形参、类型实参与 ownerPrefix。
+ * @brief 退出 substEnter 进入的替换上下文，把归还的那一份原样装回去。
  *
- * @param g generator 状态
+ * @param g  generator 状态
+ * @param sv `substEnter` / `substEnterInst` / `substEnterFunc` 交出来的上下文
  */
-static void substLeave(CG *g) {
-    g->substParams = NULL;
-    g->substArgs   = NULL;
-    g->ownerPrefix = NULL;
+static void substLeave(CG *g, SubCtx sv) {
+    g->substParams = sv.params;
+    g->substArgs   = sv.args;
+    g->ownerPrefix = sv.owner;
 }
 
 
@@ -888,7 +942,7 @@ static bool isByteView(Type *t) {
  */
 static void genViewIndexer(CG *g, Type *inst) {
     Type *elem = *(Type **)vecAt(&inst->targs, 0);
-    substEnter(g, inst);
+    SubCtx sv = substEnter(g, inst);
     cgLine(g, "static inline %s *%s_index(%s v, int64_t i, const char *file, int line) {",
            cType(g, elem), inst->name, inst->name);
     g->indent++;
@@ -902,7 +956,7 @@ static void genViewIndexer(CG *g, Type *inst) {
     g->indent--;
     cgLine(g, "}");
     cgLine(g, "");
-    substLeave(g);
+    substLeave(g, sv);
 }
 
 /**
@@ -921,7 +975,7 @@ static void genViewIndexer(CG *g, Type *inst) {
  */
 static void genViewCopier(CG *g, Type *inst, bool unchecked) {
     Type *elem = *(Type **)vecAt(&inst->targs, 0);
-    substEnter(g, inst);
+    SubCtx sv = substEnter(g, inst);
     cgLine(g, "static inline int64_t %s_copy%s(%s d, %s s, int64_t n, const char *file, int line) {",
            inst->name, unchecked ? "U" : "", inst->name, inst->name);
     g->indent++;
@@ -941,7 +995,7 @@ static void genViewCopier(CG *g, Type *inst, bool unchecked) {
     g->indent--;
     cgLine(g, "}");
     cgLine(g, "");
-    substLeave(g);
+    substLeave(g, sv);
 }
 
 /**
@@ -1225,10 +1279,10 @@ static void emitDescDefs(CG *g) {
         } else if (t->kind == TY_ARRAY) {
             genArrayDesc(g, t);
         } else if (t->kind == TY_GENERIC && t->sdef) {
-            substEnter(g, t);              /* T in the fields stands for the type arguments */
+            SubCtx sv = substEnter(g, t);  /* T in the fields stands for the type arguments */
             if (isView(t)) genViewDesc(g, t);
             else           genStructDesc(g, t->name, t->sdef->name, t->sdef, eqFn);
-            substLeave(g);
+            substLeave(g, sv);
         } else {
             /* A missing case must fail loudly: silently emitting no descriptor
              * would leave the generated C referring to a symbol that does not
@@ -1655,16 +1709,13 @@ static bool needsExplicitZero(Type *t) {
  * @param g      The generator; the previous context is saved into the out parameters.
  * @param sd     The generic struct definition.
  * @param targs  Its type arguments in this instance.
- * @param saveP  Out: the previous `substParams`.
- * @param saveA  Out: the previous `substArgs`.
- * @param saveN  Out: the previous `ownerPrefix`.
+ * @return       The previous context, for `substLeave`.
  */
-static void substEnterInst(CG *g, StructDef *sd, Vec *targs, Vec **saveP, Vec **saveA, const char **saveN) {
-    *saveP = g->substParams;
-    *saveA = g->substArgs;
-    *saveN = g->ownerPrefix;
+static SubCtx substEnterInst(CG *g, StructDef *sd, Vec *targs) {
+    SubCtx sv = { g->substParams, g->substArgs, g->ownerPrefix };
     g->substParams = &sd->typeParams;
     g->substArgs   = targs;
+    return sv;
 }
 
 /**
@@ -1673,43 +1724,17 @@ static void substEnterInst(CG *g, StructDef *sd, Vec *targs, Vec **saveP, Vec **
  * Without it a `T` in the body of the instance - the `T` of `a == b`, say - stays `TY_PARAM`,
  * which either reports a false error or generates wrong C.
  *
- * @param g      The generator; the previous context is saved into the out parameters.
+ * @param g      The generator; the previous context is saved into the returned value.
  * @param f      The instance; without a template this changes nothing.
- * @param saveP  Out: the previous `substParams`.
- * @param saveA  Out: the previous `substArgs`.
+ * @return       The previous context, for `substLeave`.
  */
-static void substEnterFunc(CG *g, FuncDef *f, Vec **saveP, Vec **saveA) {
-    *saveP = g->substParams;
-    *saveA = g->substArgs;
+static SubCtx substEnterFunc(CG *g, FuncDef *f) {
+    SubCtx sv = { g->substParams, g->substArgs, g->ownerPrefix };
     if (f && planTemplate(f)) {
         g->substParams = &planTemplate(f)->typeParams;
         g->substArgs   = &f->targs;
     }
-}
-/**
- * @brief Restore the substitution context saved by `substEnterFunc`.
- *
- * @param g      The generator.
- * @param saveP  The previous `substParams`.
- * @param saveA  The previous `substArgs`.
- */
-static void substLeaveFunc(CG *g, Vec *saveP, Vec *saveA) {
-    g->substParams = saveP;
-    g->substArgs   = saveA;
-}
-
-/**
- * @brief Restore the substitution context saved by `substEnterInst`.
- *
- * @param g      The generator.
- * @param saveP  The previous `substParams`.
- * @param saveA  The previous `substArgs`.
- * @param saveN  The previous `ownerPrefix`.
- */
-static void substLeaveInst(CG *g, Vec *saveP, Vec *saveA, const char *saveN) {
-    g->substParams = saveP;
-    g->substArgs   = saveA;
-    g->ownerPrefix = saveN;
+    return sv;
 }
 
 /* Emit the zero value of a type.
@@ -1809,9 +1834,7 @@ static const char *zeroValue(CG *g, Type *t) {
         StructDef *sd = t->sdef;
         if (sd->fields.len == 0) return arenaPrintf(g->arena, "(%s){0}", cType(g, t));
 
-        Vec *sp, *sa;
-        const char *sn;
-        substEnterInst(g, sd, &t->targs, &sp, &sa, &sn);
+        SubCtx sv = substEnterInst(g, sd, &t->targs);
 
         Buf b;
         bufInit(&b, g->arena);
@@ -1823,7 +1846,7 @@ static const char *zeroValue(CG *g, Type *t) {
         }
         bufPuts(&b, " }");
 
-        substLeaveInst(g, sp, sa, sn);
+        substLeave(g, sv);
         return bufCstr(&b);
     }
 
@@ -2866,6 +2889,21 @@ static const char *exConv(CG *g, Expr *e) {
  *    还活着的对象释放掉。枚举负载、泛型枚举、协程帧这类静态展开不出来的存储一律按不完整处理。
  *  · 偏移条目超过 4096 时同样按不完整处理，避免产物无谓地膨胀。
  *
+ * 第三个安全方向（**C 洞**：根表完整、但调用帧里还有活引用）：
+ *
+ *  · **只清扫本帧拥有的区域**（`rcFrameOwnsArena` / `rcAllocCore` 的 `frameOwned`）。静态根表
+ *    是**词法作用域**的：它覆盖本帧的局部量与全局量，**结构性地看不见调用栈上其他帧的活引用**。
+ *    家 arena（`(*__extc_home)`）是调用者一路传下来的、线程本地 arena（`extc_tls_arena`）是整条
+ *    worker 调用链共用的 —— 内层帧往这两种区域里分配时，区域里的对象可能同时被**外层帧**的
+ *    局部量指着；内层帧一触发，那张只按自己词法作用域拼出来的根表就是**不完整**的种子，清扫会
+ *    把还活着的整棵子树当垃圾放掉（实测：`nroots=0`、放掉的 65537 个槽**每一个** `hold>0`）。
+ *    所以**不是本帧拥有的区域一个触发都不发**。本帧自己的块 arena（`&__extc_a[lvl]`，lvl≥1）
+ *    仍然照常触发：外层帧拿不到指向它的引用（跨帧存储的方向被 checker 挡着，会逃逸的值在分配
+ *    时就落在**家 arena**），所以本帧根表对它是完整的 —— 这也是清扫能力**没有被整体废掉**的原因。
+ *    代价（如实记）：只往家 arena 分配的函数（递归构造、被调者用调用者的家）从此不触发，
+ *    那些区域只由**拥有它的那一帧**在自己也分配时清扫；拥有者一个分配点都没有时，整片要等到
+ *    帧销毁才还。要同时保住健全与清扫能力，得走运行期根栈（登记/撤销外层帧在本区的活引用）。
+ *
  * 视图（`slice<T>` / `mut slice<T>`）不算根：它的 `data` 指向 arena / 板 / C 的存储，
  * 而 rc 槽只由 `new T` / `new [N]T` / `alloc<T>(n)` / `@overwrite` 产生，都不给视图。
  */
@@ -2935,9 +2973,9 @@ static RcScan rcScanType(CG *g, Type *t, int depth) {
             if (rcScanType(g, *(Type **)vecAt(&t->targs, i), depth + 1) != RC_NO_REFS)
                 return RC_CONSERVATIVE;
         }
-        substEnter(g, t);
+        SubCtx sv = substEnter(g, t);
         RcScan s = rcScanFields(g, &t->sdef->fields, depth);
-        substLeave(g);
+        substLeave(g, sv);
         return s;
     }
     /* kind-default: 只有上面列出的 kind 参与"有没有引用槽"的判断；任何新 kind 都可能
@@ -2994,7 +3032,7 @@ static void rcCollectOffsets(CG *g, Type *t, const char *base, Vec *out, int dep
     }
     case TY_GENERIC:
         if (isView(t) || !t->sdef) return;
-        substEnter(g, t);
+        SubCtx sv = substEnter(g, t);
         {
             const char *cn = cType(g, t);
             for (size_t i = 0; i < t->sdef->fields.len && out->len <= 4096; i++) {
@@ -3005,7 +3043,7 @@ static void rcCollectOffsets(CG *g, Type *t, const char *base, Vec *out, int dep
                 rcCollectOffsets(g, fd->type, off, out, depth + 1);
             }
         }
-        substLeave(g);
+        substLeave(g, sv);
         return;
     /* kind-default: 偏移只在 REF / ARRAY / STRUCT / GENERIC 四种形状里递归；其余 kind
      * 没有引用槽可收集。新 kind 若含引用槽，必须在这里加 case，不能靠 default 混过去。 */
@@ -3050,6 +3088,26 @@ static const char *rcEmitTypeDesc(CG *g, Type *t) {
 }
 
 /**
+ * @brief 这次分配要落进去的区域，是不是**本帧拥有**的（静态根表对它是完整的种子）。
+ *
+ * 判据（见上面「第三个安全方向」）：本帧自己的块 arena（`&__extc_a[lvl]`，`lvl >= 1`）算；
+ * 家 arena（`ARENA_HOME`：调用者一路传下来的 `(*__extc_home)`）不算；线程本地 arena
+ * （`parTls`）也不算 —— 后者同样是整条 worker 调用链共用的，与家 arena 一个道理。
+ * 协程帧本来就 `rcRootsUnreliable`，这里一并挡住。
+ *
+ * 不把 `main` 的家 arena 特例放进来：`main` 是唯一一个「家 arena 就是自己帧的 arena」的函数，
+ * 认它要多一条判据，而收紧一侧只损失清扫机会、不损失健全。
+ *
+ * @param g    生成器。
+ * @param lvl  `ARENA_HOME`（-1）或 1 以上的块层级。
+ * @return     真 = 本帧拥有，可以在这个区域上触发清扫。
+ */
+static bool rcFrameOwnsArena(CG *g, int lvl) {
+    if (g->parTls || g->coroFunc) return false;
+    return lvl != ARENA_HOME;
+}
+
+/**
  * @brief 在一个分配点发射清扫触发：`extc_rc_maybeCollect(区域, 根表, 根数)`。
  *
  * 压力判据与自学习退场在运行期（reclaim.c），这里只负责**按正确参数与时机调用**：
@@ -3057,12 +3115,25 @@ static const char *rcEmitTypeDesc(CG *g, Type *t) {
  * 引用槽。触发写在**语句前缀**里，所以它落在包含这次分配的那条语句之前——新对象还没生出来，
  * 不需要为它置根。
  *
- * @param g         生成器。
- * @param keyExpr   区域认领键，形如 `(void *)&(__extc_a[1])` 或 `(void *)cell->home`。
- * @param rid       区域号（日志/调试用）。
+ * **入口守卫**：根表是调用实参，C 语义要求在调用前把整张表（本形状 ~1412 项）物化出来；
+ * 而 `maybeCollect` 的第一句就是 `if (!extc_rc_shouldSweep(r)) return -1;` —— 绝大多数分配点
+ * 根本到不了压力线。于是这里先把判据提到调用点前面：**只有该扫时**才物化根表并调用。
+ * 这是纯粹的求值顺序改动，改变的是"什么时候物化根表"，不是"什么时候收集"：
+ * 判据只有 `extc_rc_shouldSweep` 这一份（`maybeCollect` 内部用的就是同一个函数），不另抄。
+ *
+ * **本帧拥有的区域**：`frameOwned` 为假时一个触发都不发（理由见 `rcFrameOwnsArena` 与文件头的
+ * 「第三个安全方向」）—— 根表看不见调用帧的活引用，在那种区域上照常扫就是把活对象当垃圾放。
+ *
+ * @param g          生成器。
+ * @param basePtr    该分配要落进去的那只区域的**基址表达式**（已经是 `(void *)` 形态），
+ *                   形如 `(void *)&(__extc_a[1])`、`(void *)__owc0->home`；第 k 片的认领键是
+ *                   `(char *)basePtr + k`（只比不读，见 `rcAllocCore`）。
+ * @param lvl        块层级（1 = 函数体，-1 = 家区域）；分片时区域号取 `lvl * 片数 + k`。
+ * @param frameOwned 这只区域是不是本帧拥有的（假 ⇒ 不发射触发）。
  */
-static void rcEmitTrigger(CG *g, const char *keyExpr, int rid) {
+static void rcEmitTrigger(CG *g, const char *basePtr, int lvl, bool frameOwned) {
     if (!g->needReclaim || g->rcRootsUnreliable || g->prefixBlk == 0) return;
+    if (!frameOwned) return;
     size_t n = g->rcGlobalRoots.len + g->rcRoots.len;
     if (n > 4096) { g->rcRootsUnreliable = true; return; }
     Buf b;
@@ -3082,8 +3153,70 @@ static void rcEmitTrigger(CG *g, const char *keyExpr, int rid) {
         }
         bufPuts(&b, " }");
     }
-    pfLine(g, "extc_rc_maybeCollect(extc_rc_regionOf(%s, %d), %s, %zu);",
-           keyExpr, rid, bufCstr(&b), n);
+    const char *rg = arenaPrintf(g->arena, "__extc_rcg%d", g->rcGuardSeq++);
+    if (g->rcNShard <= 1) {
+        /* 单片：与接线前逐字节相同（认领键就是区域基址）。 */
+        pfLine(g, "{ ExtcRcRegion *%s = extc_rc_regionOf(%s, %d);"
+                  " if (extc_rc_shouldSweep(%s)) extc_rc_maybeCollect(%s, %s, %zu); }",
+               rg, basePtr, lvl, rg, rg, bufCstr(&b), n);
+        return;
+    }
+    /* 分片：区域键是"基址 + k"（只比不读）。一次触发**只收一片**，挑的是**垃圾最多**的那片
+     * （`bytes - live`，与原型同一办法）：收完它的 `bytes` 掉下来，下一次自然轮到别的片 ——
+     * 不需要额外的轮转状态，也不会让某一片永远轮不上（先到先收会让第一片独占）。
+     *
+     * 内存压力下限**按片均分**（`EXTC_RC_FLOOR / N`，与原型 `TRIGGER / NSHARD` 同一口径）：
+     * 不除的话 N 片各自守着一个全长下限，总量上界变成 N 倍，停顿旋钮就顺带改了内存界；
+     * 除完总量仍是 `EXTC_RC_FLOOR`，片多只让每片收得更勤、每次更小。下限由运行期的
+     * `extc_rc_regionFloor` 设（判据仍在运行期，这里只是给同一个下限除以片数）。
+     * 根表仍是调用实参、仍只在真的要扫时才物化 —— 与单片的入口守卫同一条口径。 */
+    const char *ck = "__extc_rck";
+    const char *rb = arenaPrintf(g->arena, "__extc_rcb%d", g->rcGuardSeq);
+    const char *rbg = arenaPrintf(g->arena, "__extc_rcbg%d", g->rcGuardSeq);
+    pfLine(g, "{ ExtcRcRegion *%s = (ExtcRcRegion *)0; int64_t %s = 0;"
+              " for (int32_t %s = 0; %s < %d; %s++) {"
+              " ExtcRcRegion *%s = extc_rc_regionOf((void *)((char *)(%s) + %s), (int32_t)(%d + %s));"
+              " extc_rc_regionFloor(%s, (EXTC_RC_FLOOR) / %d);"
+              " if (!extc_rc_shouldSweep(%s)) continue;"
+              " int64_t %s = extc_rc_bytes(%s) - extc_rc_live(%s);"
+              " if (!%s || %s > %s) { %s = %s; %s = %s; } }"
+              " if (%s) extc_rc_maybeCollect(%s, %s, %zu); }",
+           rb, rbg, ck, ck, g->rcNShard, ck, rg, basePtr, ck, lvl * g->rcNShard, ck,
+           rg, g->rcNShard, rg,
+           rbg, rg, rg, rb, rbg, rbg, rb, rg, rbg, rbg,
+           rb, rb, bufCstr(&b), n);
+}
+
+/**
+ * @brief 发射一个 rc 分配：片号按**分配点**轮转，返回 `extc_rc_alloc(...)` 调用的文本。
+ *
+ * 片号 = `rcSite++ % rcNShard`：同一处 `new` 永远进同一片，所以片内链条与环完整；片与片之间
+ * 的引用由已有的跨区登记（`storeRefOwned` 的 `rsInc`/`rsDec`）负责，登记位就落在**目标所在
+ * 那一片**的 `rsbit` 上 —— 播种与清扫都不跨片。
+ *
+ * 触发与分配用**同一个**片键：先按这一片的键问一次压力（触发落在语句前缀），真正的分配再从
+ * 同一片取槽。N == 1 时返回的文本与接线前逐字节相同。
+ *
+ * @param g          生成器。
+ * @param basePtr    区域基址表达式（同 `rcEmitTrigger`）。
+ * @param lvl        块层级（可 -1，只用于区域号）。
+ * @param frameOwned 这只区域是不是本帧拥有的（同 `rcEmitTrigger`；假 ⇒ 不发射触发）。
+ * @param bytesExpr  字节数的 C 文本（原样拼进调用，不再加括号）。
+ * @param td         类型描述符的 C 文本。
+ * @return           `extc_rc_alloc(...)` 的 C 文本。
+ */
+static const char *rcAllocCore(CG *g, const char *basePtr, int lvl, bool frameOwned,
+                               const char *bytesExpr, const char *td) {
+    int nsh = g->rcNShard > 0 ? g->rcNShard : 1;
+    int k = g->rcSite++ % nsh;
+    rcEmitTrigger(g, basePtr, lvl, frameOwned);
+    if (nsh == 1)
+        return arenaPrintf(g->arena,
+            "extc_rc_alloc(extc_rc_regionOf(%s, %d), %s, %s)",
+            basePtr, lvl, bytesExpr, td);
+    return arenaPrintf(g->arena,
+        "extc_rc_alloc(extc_rc_regionOf((void *)((char *)(%s) + %d), %d), %s, %s)",
+        basePtr, k, lvl * nsh + k, bytesExpr, td);
 }
 
 /**
@@ -3124,16 +3257,75 @@ static void rcRootLeaves(CG *g, Type *t, const char *base, int depth) {
         return;
     case TY_GENERIC:
         if (isView(t) || !t->sdef) return;
-        substEnter(g, t);
+        SubCtx sv = substEnter(g, t);
         for (size_t i = 0; i < t->sdef->fields.len; i++) {
             FieldDef *fd = *(FieldDef **)vecAt(&t->sdef->fields, i);
             rcRootLeaves(g, fd->type,
                          arenaPrintf(g->arena, "%s.%s", base, fd->name), depth + 1);
         }
-        substLeave(g);
+        substLeave(g, sv);
         return;
     /* kind-default: 根只在 REF / ARRAY / STRUCT / GENERIC 四种形状里递归；其余 kind 没有
      * 引用槽可登记。新 kind 若含引用槽，必须在这里加 case，不能靠 default 混过去。 */
+    default:
+        return;
+    }
+}
+
+/**
+ * @brief 收集一个类型里引用叶子槽的 **C 左值路径**（沿值投影：字段 / 内联数组元素）。
+ *
+ * 与 `rcRootLeaves` 是同一个递归形状，区别只在出口：那里把叶子登记成**根**，这里把叶子的
+ * 路径交给调用方 —— **整值存储**（`s.w = wrap { n: keeper }`、`var b: wrap = ...`）要按叶子
+ * 逐条走引用槽的记账（`initRef` / `storeRefOwned` / `storeRefUnknown`）。整块裸拷既不 `inc`
+ * 也不登记跨区边：槽被写进去了却没记账，对象会在计数归零或区域清扫时被放掉，而槽还指着它。
+ *
+ * `base` 必须是**可重复求值**的左值（调用方先用临时量 / `(*p)` 把目标与值各求值一次）：
+ * 路径会把它拼进每一条记账调用里。
+ *
+ * @param g     生成器。
+ * @param t     类型。
+ * @param base  该值在 C 里的左值表达式（如 `(*__extc_svd0)`、`b`）；传空串则产出**相对路径**
+ *              （`.f`、`.kids.data[0]`），调用方自己拼两个基 —— 这样同一份叶子集合能同时
+ *              用在目标与值上，不会两边各收一次、也不会有一条只在一侧出现。
+ * @param out   `const char *` 向量，依次接收每个引用叶子的路径。
+ * @param depth 递归深度，防类型环。
+ */
+static void rcLeafPaths(CG *g, Type *t, const char *base, Vec *out, int depth) {
+    if (!t || depth > 16 || out->len > 4096) return;
+    t = subst(g, t);
+    if (!t) return;
+    switch (t->kind) {
+    case TY_REF:
+        *(const char **)vecPush(out) = base;
+        return;
+    case TY_ARRAY: {
+        Type *e = subst(g, t->inner);
+        /* 定长数组在 C 里是包一层的结构体：元素写 `arr.data[i]`（与 `rcRootLeaves` 一致）。 */
+        for (int64_t i = 0; i < t->asize && out->len <= 4096; i++)
+            rcLeafPaths(g, e, arenaPrintf(g->arena, "%s.data[%lld]", base, (long long)i),
+                        out, depth + 1);
+        return;
+    }
+    case TY_STRUCT:
+        for (size_t i = 0; i < t->sdef->fields.len && out->len <= 4096; i++) {
+            FieldDef *fd = *(FieldDef **)vecAt(&t->sdef->fields, i);
+            rcLeafPaths(g, fd->type, arenaPrintf(g->arena, "%s.%s", base, fd->name),
+                        out, depth + 1);
+        }
+        return;
+    case TY_GENERIC:
+        if (isView(t) || !t->sdef) return;
+        SubCtx sv = substEnter(g, t);
+        for (size_t i = 0; i < t->sdef->fields.len && out->len <= 4096; i++) {
+            FieldDef *fd = *(FieldDef **)vecAt(&t->sdef->fields, i);
+            rcLeafPaths(g, fd->type, arenaPrintf(g->arena, "%s.%s", base, fd->name),
+                        out, depth + 1);
+        }
+        substLeave(g, sv);
+        return;
+    /* kind-default: 只有上面列出的 kind 参与引用叶子的展开；其余 kind 由 `rcScanType`
+     * 归到"没有引用"或"枚举不出来"，走不到这里。 */
     default:
         return;
     }
@@ -3185,13 +3377,14 @@ static const char *exNew(CG *g, Expr *e) {    Type *w = subst(g, e->u.new_.type)
          * 对数组长度的那条限制。 */
         if (g->needReclaim) {
             int lvl = planArenaLevel(e);
-            /* 顺序：先类型描述符（它必须在这一条语句里可见），再触发（落在语句之前）。 */
+            /* 顺序：先类型描述符（它必须在这一条语句里可见），再触发（落在语句之前），
+             * 最后是分配表达式 —— 三者都按**同一个片号**（见 `rcAllocCore`）。
+             * `frameOwned`：家 arena / 线程本地 arena 上的触发不发（根表看不见调用帧）。 */
             const char *td = rcEmitTypeDesc(g, w);
-            rcEmitTrigger(g, arenaPrintf(g->arena, "(void *)&(%s)", ar), lvl);
-            return arenaPrintf(g->arena,
-                "((%s *)extc_rc_alloc(extc_rc_regionOf((void *)&(%s), %d),"
-                " (int64_t)sizeof(%s), %s))",
-                cType(g, w), ar, lvl, cType(g, w), td);
+            const char *base = arenaPrintf(g->arena, "(void *)&(%s)", ar);
+            const char *core = rcAllocCore(g, base, lvl, rcFrameOwnsArena(g, lvl),
+                arenaPrintf(g->arena, "(int64_t)sizeof(%s)", cType(g, w)), td);
+            return arenaPrintf(g->arena, "((%s *)%s)", cType(g, w), core);
         }
         return arenaPrintf(g->arena,
             "((%s *)extc_arena_alloc(&%s, (int64_t)sizeof(%s), \"%s\", %d))",
@@ -3313,11 +3506,10 @@ static const char *exGencall(CG *g, Expr *e) {
          * 表达不了 ⇒ 元素类型里有引用时用保守标记（扫整块的字），否则不需要描述符。 */
         const char *td = "(const ExtcRcType *)0";
         if (rcScanType(g, et, 0) != RC_NO_REFS) td = "((const ExtcRcType *)-1)";
-        rcEmitTrigger(g, arenaPrintf(g->arena, "(void *)&(%s)", ar), lvl);
-        return arenaPrintf(g->arena,
-            "(%s *)extc_rc_alloc(extc_rc_regionOf((void *)&(%s), %d),"
-            " (int64_t)(%s) * (int64_t)sizeof(%s), %s)",
-            tn, ar, lvl, n, tn, td);
+        const char *core = rcAllocCore(g, arenaPrintf(g->arena, "(void *)&(%s)", ar), lvl,
+            rcFrameOwnsArena(g, lvl),
+            arenaPrintf(g->arena, "(int64_t)(%s) * (int64_t)sizeof(%s)", n, tn), td);
+        return arenaPrintf(g->arena, "(%s *)%s", tn, core);
     }
     return arenaPrintf(g->arena,
         "(%s *)extc_arena_alloc(&%s, (int64_t)(%s) * (int64_t)sizeof(%s), \"%s\", %d)",
@@ -4589,10 +4781,146 @@ static bool cgIsRefType(CG *g, Type *t) {
 }
 
 /**
+ * @brief 一个**纯地方**表达式：重复求值安全（没有调用、没有下标求值）。
+ *
+ * 跨区登记要在同一处再求值一次"装着这条槽的对象"（`a->f = v` 要多传一个 `a`），所以只认
+ * 绑定、字段链与解引用：它们的求值没有副作用，重复读同一个值。带下标的投影（`a[i]`）要把
+ * 下标也重复求值才安全，代价大于收益，直接不登记 —— 那些位置由触发点的根表覆盖。
+ *
+ * @param g  生成器状态。
+ * @param e  候选表达式。
+ * @return   是纯地方时为 true。
+ */
+static bool cgPurePlace(CG *g, Expr *e) {
+    (void)g;
+    for (; e; ) {
+        if (e->kind == EX_IDENT) return true;
+        if (e->kind == EX_FIELD) { e = e->u.field.obj; continue; }
+        if (e->kind == EX_DEREF) { e = e->u.deref.operand; continue; }
+        return false;
+    }
+    return false;
+}
+
+/* 一条引用槽的宿主：装着这条槽的那个**本运行期对象**。 */
+typedef enum {
+    RC_HOST_OBJ,      /* 找到了宿主对象表达式（还要过 cgPurePlace 才能重复求值） */
+    RC_HOST_LOCAL,    /* 槽在静态声明的存储里（局部/全局/形参）：触发点的根表已覆盖 */
+    RC_HOST_UNKNOWN   /* 宿主追不到（视图元素、调用结果……）：必须走保守路径 */
+} RcHost;
+
+/**
+ * @brief 沿**值投影**找一条引用槽的宿主对象。
+ *
+ * 跨区登记位要置在**目标**对象上，而"来源"是装着这条槽的对象：`a->f` 是 `a`、`*p` 是 `p`、
+ * 内联数组元素 `w.arr[i]` 是 `w`（元素存储就在对象载荷里，与下标无关）、`ref [N]T` 的
+ * `p[i]` 是 `p`。所以这里只沿**值字段**（`EX_FIELD` 里基类型不是引用的那一层）、内联数组与
+ * `ref [N]T` 的元素往外走，走到一个 `ref` 基或解引用为止。
+ *
+ * 三态的理由：追不到宿主时**绝不能照常清扫**（种子不完整会提前释放）。调用方按返回值选路：
+ * `RC_HOST_OBJ` 登记、`RC_HOST_LOCAL` 什么都不做（根表覆盖）、`RC_HOST_UNKNOWN` 走保守路径。
+ *
+ * @param g    生成器状态（要 `subst` 泛型实参）。
+ * @param t    赋值的目标表达式。
+ * @param obj  出口：`RC_HOST_OBJ` 时的宿主对象表达式。
+ * @return     见 `RcHost`。
+ */
+static RcHost cgSlotHost(CG *g, Expr *t, Expr **obj) {
+    *obj = NULL;
+    for (;;) {
+        if (!t) return RC_HOST_UNKNOWN;
+        switch (t->kind) {
+        case EX_DEREF:
+            /* `*p = v`：槽就是 p 指着的那个对象的载荷。 */
+            *obj = t->u.deref.operand;
+            return RC_HOST_OBJ;
+        case EX_FIELD: {
+            Expr *b = t->u.field.obj;
+            Type *bt = b ? subst(g, b->type) : NULL;
+            /* `p.f = v`（p 是引用，字段访问自动解引用）：槽在 *p 的载荷里。 */
+            if (bt && bt->kind == TY_REF) { *obj = b; return RC_HOST_OBJ; }
+            /* 值字段：槽的存储仍属于 b 的宿主，继续往外走。 */
+            t = b;
+            continue;
+        }
+        case EX_INDEX: {
+            Expr *b = t->u.index.obj;
+            Type *bt = b ? subst(g, b->type) : NULL;
+            if (bt && bt->kind == TY_REF) {
+                Type *bi = bt->inner ? ttBase(subst(g, bt->inner)) : NULL;
+                /* `p[i] = v` 且 p 是 `ref [N]T`：元素内联在 *p 里。 */
+                if (bi && bi->kind == TY_ARRAY) { *obj = b; return RC_HOST_OBJ; }
+                /* ref 到视图：元素在视图 data 指向的存储里，追不到。 */
+                return RC_HOST_UNKNOWN;
+            }
+            /* 内联数组（值）：元素存储属于数组的宿主。 */
+            if (bt && bt->kind == TY_ARRAY) { t = b; continue; }
+            /* 视图元素：data 可能指到板/池/栈/C 存储，追不到宿主。 */
+            return RC_HOST_UNKNOWN;
+        }
+        case EX_IDENT:
+            /* 变量自己的存储：静态根表把它（连同值字段/内联数组）登记成根。 */
+            return RC_HOST_LOCAL;
+        /* kind-default: 追不到宿主的投影一律按 UNKNOWN（安全方向）。新 kind 若可能成为
+         * 引用槽的宿主，必须在这里加 case，不能靠 default 混过去。 */
+        default:
+            return RC_HOST_UNKNOWN;
+        }
+    }
+}
+
+/**
+ * @brief 整值存储携带引用叶子时，**逐叶**发引用槽的记账。
+ *
+ * `s.w = wrap { n: keeper }`、`var b: wrap = wrap { n: keeper }` 这类**按值**的整块拷贝
+ * （结构体 / 定长数组）里可能藏着引用叶子，而 C 的整块赋值是一条裸复合字面量拷贝
+ * （`s->w = (wrap){.n = keeper};`）：它**既不 `inc`、也不登记跨区边**。于是槽被写进去了却
+ * 没记账 —— 一条路是计数根本不知道这个持有者（唯一可见持有者一放手就归零回收，槽成悬垂），
+ * 另一条路是清扫的种子不全（跨区入边没登记 ⇒ 目标区域的清扫把还被指着的对象当垃圾放掉，
+ * 与 `cross_region_elem` 同一个洞的另一半）。这里把一整块拆回**逐条引用槽赋值**：新槽走
+ * `initRef`（只写 + 加一，绝不读旧值），覆盖槽走 `storeRefOwned` / `storeRefUnknown`
+ * （读旧减一、新值加一；宿主证不出来时让目标区域退出清扫）—— 与直接引用槽赋值同一条路。
+ *
+ * 调用方负责：目标与值**各求值一次**（引用进临时量），因为每条记账都会把路径再拼一次。
+ *
+ * @param g          生成器。
+ * @param t          整值存储的类型（已 `subst` 过的调用方上下文里取）。
+ * @param dstBase    目标存储的 C 左值表达式（如 `(*__extc_svd3)`、`b`）。
+ * @param srcBase    值的 C 左值表达式（如 `__extc_svv3`）；`init` 为真时不读。
+ * @param init       true = 新槽（`var ...` 的初始化）：只加一；false = 覆盖：读旧减一。
+ * @param owner      "装着这条槽的对象"（同 `storeRefOwned` 第三个实参）；局部/静态槽传 `0`。
+ * @param hostUnknown 宿主证不出来 ⇒ 每条叶子走保守路径（目标区域退出清扫）。
+ */
+static void cgValueRefStore(CG *g, Type *t, const char *dstBase, const char *srcBase,
+                            bool init, const char *owner, bool hostUnknown) {
+    /* 只收一次**相对**路径（`.n`、`.kids.data[0]`、顶层引用是空串），两个基各拼一次 ——
+     * 目标与值的叶子集合按构造必然同形，不会有一条只在一边出现。 */
+    Vec rel;
+    vecInit(&rel, g->arena, sizeof(const char *));
+    rcLeafPaths(g, t, "", &rel, 0);
+    for (size_t i = 0; i < rel.len; i++) {
+        const char *p = *(const char **)vecAt(&rel, i);
+        const char *d = arenaPrintf(g->arena, "%s%s", dstBase, p);
+        if (init) {
+            /* 值已经在目标里（声明就是初始化），自读自写一次：只写 + 目标加一。 */
+            cgLine(g, "extc_rc_initRef((void **)&(%s), (void *)(%s));", d, d);
+        } else if (hostUnknown) {
+            cgLine(g, "extc_rc_storeRefUnknown((void **)&(%s), (void *)(%s));",
+                   d, arenaPrintf(g->arena, "%s%s", srcBase, p));
+        } else {
+            cgLine(g, "extc_rc_storeRefOwned((void **)&(%s), (void *)(%s), (void *)(%s));",
+                   d, arenaPrintf(g->arena, "%s%s", srcBase, p), owner);
+        }
+    }
+}
+
+/**
  * @brief 在**帧销毁**处发射区域释放（`extc_arena_destroy` 旁边）。
  *
  * 认领键是 arena 的地址（见 `emitRuntimePrologue` 里那张表），所以这里只发地址，不需要
  * 知道区域本身。协程的 step 用的是帧里的 `arena<k>`，拼法与 arena 的释放保持一致。
+ * 分片时一个逻辑区域认领了 N 只运行期区域（键 = 地址 + k），所以这里要**逐片丢弃** ——
+ * 漏掉一片就等于那一片的 slab 与登记位永不释放。
  *
  * 只在帧销毁处调用：块释放（`cgReleaseLevel`）不丢区域，否则循环体每轮都会新建一个 1 MiB
  * 的 slab。区域比块活得久是安全的 —— 块里的对象全部不可达，清扫按压力收回它们。
@@ -4602,10 +4930,18 @@ static bool cgIsRefType(CG *g, Type *t) {
  */
 static void cgReclaimDropArena(CG *g, int lvl) {
     if (!g->needReclaim) return;
-    if (g->coroFunc)
-        cgLine(g, "extc_rc_regionDrop((void *)&%s->arena%d);", g->coroFrame, lvl);
-    else
-        cgLine(g, "extc_rc_regionDrop((void *)&__extc_a[%d]);", lvl);
+    if (g->rcNShard <= 1) {
+        /* 单片：与接线前逐字节相同。 */
+        if (g->coroFunc)
+            cgLine(g, "extc_rc_regionDrop((void *)&%s->arena%d);", g->coroFrame, lvl);
+        else
+            cgLine(g, "extc_rc_regionDrop((void *)&__extc_a[%d]);", lvl);
+        return;
+    }
+    const char *ar = g->coroFunc ? arenaPrintf(g->arena, "%s->arena%d", g->coroFrame, lvl)
+                                 : arenaPrintf(g->arena, "__extc_a[%d]", lvl);
+    for (int k = 0; k < g->rcNShard; k++)
+        cgLine(g, "extc_rc_regionDrop((void *)((char *)&%s + %d));", ar, k);
 }
 
 /**
@@ -4786,16 +5122,22 @@ if (s->u.var.overwrite) {
              * 与 arena 同寿。 */
             if (g->needReclaim) {
                 /* 类型描述符 + 清扫触发，落在分配那条语句之前：这份存储也从 rc 区域取，
-                 * 描述符随槽存下，触发用的区域认领键与下面的 `extc_rc_alloc` 一致。 */
+                 * 描述符随槽存下，触发用的区域认领键与下面的 `extc_rc_alloc` 一致（同一片号，
+                 * 见 `rcAllocCore`）。 */
                 const char *td = rcEmitTypeDesc(g, st_t);
-                rcEmitTrigger(g, arenaPrintf(g->arena, "(void *)%s->home", owcv),
-                              planArenaLevel(nx));
+                /* 这只区域（格子的 `home`）是不是**本帧拥有**的：格子在本帧
+                 * （`f_owLocal`）且本函数不收 home 时，`home` 才是本帧的 `&__extc_a[1]`。
+                 * 本函数收 home（`planUsesHome`，格子的 `home` 因此是调用者的 arena），或
+                 * `owLocal` 为假（codegen 期才生成的泛型实例），两种都落在**外层帧**上 ——
+                 * 本帧的静态根表看不见外层帧的活引用，这一档不触发（见 `rcFrameOwnsArena`）。 */
+                bool own = loc && !g->rcFuncUsesHome;
+                const char *core = rcAllocCore(g, arenaPrintf(g->arena, "(void *)%s->home", owcv),
+                                               planArenaLevel(nx), own,
+                                               arenaPrintf(g->arena, "(int64_t)sizeof(%s)", ct), td);
                 flushPrefix(g);
-                cgLine(g, "if (!%s || !%s->p) { void *%s = extc_rc_alloc("
-                          "extc_rc_regionOf((void *)%s->home, %d),"
-                          " (int64_t)sizeof(%s), %s);  if (%s) %s->p = %s;"
+                cgLine(g, "if (!%s || !%s->p) { void *%s = %s;  if (%s) %s->p = %s;"
                           "  %s = (%s)%s; }",     /* the C type is already a pointer */
-                        owcv, owcv, owtp, owcv, planArenaLevel(nx), ct, td,
+                        owcv, owcv, owtp, core,
                         owcv, owcv, owtp, nm, cType(g, s->type), owtp);
             } else
                 cgLine(g, "if (!%s || !%s->p) { void *%s = extc_arena_alloc(&%s,"
@@ -4868,6 +5210,20 @@ localDef(g, lb, nm, 1);
  * 清扫播种时按位图顺序扫。多登记是安全方向（只让对象多活一会儿），少登记才是漏根。 */
 if (g->needReclaim && !s->u.var.isGlobal && cgIsRefType(g, s->type)) {
     cgLine(g, "extc_rc_initRef((void **)&%s, (void *)%s);", nm, nm);
+} else if (g->needReclaim && !s->u.var.isGlobal && s->u.var.init) {
+    /* **整值**声明的引用叶子（`var b: wrap = wrap { n: keeper }`）同样要记账：裸的 C 初始化
+     * 一条 `inc` 都不发，`b.n` 就是"槽写了但没记账"的又一个出口（与赋值那条同一个洞）。
+     * 没有初始化式时值是**零**（`zeroInit`）⇒ 每个引用叶子都是 null，`inc` 无事可做，
+     * 整片 `initRef` 只会在生成物里白占几百行（`world` 那种 64+1024 槽的局部量）。 */
+    RcScan vsc = rcScanType(g, s->type, 0);
+    if (vsc == RC_LEAF_REFS) {
+        cgValueRefStore(g, s->type, nm, nm, true, "0", false);
+    } else if (vsc == RC_CONSERVATIVE) {
+        /* 叶子枚举不出来（枚举负载 / 泛型实参带引用）：逐字当候选引用，只加不减。局部量这一档
+         * 没有可撤销的来源、根表也枚举不出这些叶子 ⇒ `hostKnown = 0`，目标区域退出清扫。 */
+        cgLine(g, "extc_rc_storeStructCons((void *)&(%s), sizeof(%s), (void *)0, 0);",
+               nm, cType(g, s->type));
+    }
 }
 /* 这个声明从此刻起是**根**：触发点的根表要列出它（结构与定长数组按叶子引用槽展开）。
  * 全局声明也登记：它是块作用域 `static`，在这一块里看得见，多留一会儿是安全方向。 */
@@ -5138,13 +5494,44 @@ static void genStmtInner(CG *g, Stmt *s) {
             /* 引用槽的赋值是**覆盖**语义（槽里已经有旧值），所以走 storeRef：读旧值减一、
              * 新值加一。数据字段（`p.val = x`）不是引用类型 ⇒ 一个字都不发。
              *
-             * **不发跨区登记位**：登记位是**粘性**的 —— 置在目标槽上，只有目标槽释放才清。
-             * 于是一个循环里每轮把新对象存进别区的引用槽，就会给每个对象永久置位，清扫时
-             * 它们全成了种子 ⇒ 内存又回到"随轮数线性增长"。跨区边的正确清理要有"登记来源随
-             * 来源区域释放而撤销"的记忆集（写屏障或按来源区记账），那是另一件事；在那之前，
-             * 触发点的根表（栈上引用槽 + 全局）就是根的来源。 */
+             * 跨区边（`a->f = v` 且 `a` 与 `v` 不在同一区域）**要登记**：目标区域的清扫从
+             * 根 + 登记位播种，堆→堆的跨区入边没有别的地方能到。登记位的清理由来源侧记账
+             * 负责（`rscnt` 计数 + 来源对象/来源区域死亡时撤销），所以它**不是粘性的** ——
+             * 只置不清会让循环里每轮新建的对象永远当种子（内存随轮数线性涨）。
+             *
+             * 第三个实参是"装着这条槽的对象"：`a->f` 传 `a`，`*p` 传 `p`，局部变量/全局的槽
+             * 传空（那些是根，触发点的根表覆盖）。对象表达式必须是**纯地方**，否则会在同一处
+             * 求值两次（`f()->f = v` 会把 `f()` 调两次）。 */
             const bool refStore = g->needReclaim && !s->u.assign.op
                                   && cgIsRefType(g, s->u.assign.target->type);
+            /* **整值**存储（结构体 / 定长数组按值拷贝）：目标槽本身不是引用类型，可它的载荷里
+             * 可能藏着引用叶子（`s.w = wrap { n: keeper }`）。这种赋值不能再走裸的 C 整块拷贝
+             * —— 那样槽被写进去却没有 `inc`、也没有跨区登记（`a7e2642` 是同一类"槽写了但没
+             * 记账"，只是走另一个机制）。三态与引用槽一致：枚举得出来 ⇒ 逐叶走
+             * `storeRefOwned`/`storeRefUnknown`；枚举不出来（枚举负载、泛型实参带引用）⇒
+             * 逐字保守路径（只加不减 + 登记/退出清扫）。 */
+            Type *rawTT = s->u.assign.target ? s->u.assign.target->type : NULL;
+            const RcScan valScan = (g->needReclaim && !s->u.assign.op && !refStore && rawTT)
+                                       ? rcScanType(g, rawTT, 0) : RC_NO_REFS;
+            const bool valueStore = valScan != RC_NO_REFS;
+            const char *owner = "0";
+            bool hostUnknown = false;
+            bool hostProven = false;   /* 宿主是**追到区域**的对象（不是局部/静态槽） */
+            if ((refStore || valueStore) && s->u.assign.target) {
+                Expr *t = s->u.assign.target;
+                /* 宿主的三种结局（见 `cgSlotHost`）：纯地方基 ⇒ 登记跨区边；静态声明的
+                 * 存储 ⇒ 根表覆盖；追不到 ⇒ 保守路径。`c.a = v`（`c` 是结构体**值**）里的
+                 * 槽属于局部/arena，不是本运行期的槽；`a[i]` 的容器若在内联数组里（`w.arr[i]`）
+                 * 宿主就是 `w`，若在视图里则追不到。 */
+                Expr *base = NULL;
+                RcHost h = cgSlotHost(g, t, &base);
+                if (h == RC_HOST_OBJ && base && cgPurePlace(g, base)) {
+                    owner = genExpr(g, base);
+                    hostProven = true;
+                } else if (h != RC_HOST_LOCAL) {
+                    hostUnknown = true;
+                }
+            }
             flushPrefix(g);
             /* `x += y` is emitted as `x += y`: C evaluates the target **once**, which is
              * exactly the meaning the statement has, and it is what a reader expects to
@@ -5159,7 +5546,39 @@ static void genStmtInner(CG *g, Stmt *s) {
                 return;
             }
             if (refStore) {
-                cgLine(g, "extc_rc_storeRef((void **)&(%s), (void *)(%s));", tgt, val);
+                if (hostUnknown) {
+                    /* 宿主证不出来：这条槽必须仍然是种子，但静态根表里没有它、来源侧也无从
+                     * 撤销。于是把**目标所在的区域**标成"不清扫"（安全方向：宁可少收）——
+                     * 区域从此只靠计数归零回收，绝不在种子不完整时照常扫。 */
+                    cgLine(g, "extc_rc_storeRefUnknown((void **)&(%s), (void *)(%s));", tgt, val);
+                    return;
+                }
+                cgLine(g, "extc_rc_storeRefOwned((void **)&(%s), (void *)(%s), (void *)(%s));",
+                       tgt, val, owner);
+                return;
+            }
+            if (valueStore) {
+                Type *tt = subst(g, rawTT);
+                const char *ct = cType(g, tt);
+                const int id = g->tmpSeq++;
+                const char *dv = arenaPrintf(g->arena, "__extc_svd%d", id);
+                const char *sv = arenaPrintf(g->arena, "__extc_svv%d", id);
+                if (valScan == RC_CONSERVATIVE) {
+                    /* 叶子枚举不出来：整块先拷（语义），再把每个"是活槽"的字加一次计数，
+                     * 并登记到目标区域或让它退出清扫（见 `extc_rc_storeStructCons`）。
+                     * 只有**证出区域**的宿主才走登记；局部/静态槽这一档没有可撤销的来源，
+                     * 而保守类型的局部量连根表都枚举不出来 ⇒ 走保守侧（目标区域退出清扫）。 */
+                    cgLine(g, "{ %s *%s = &(%s); %s %s = %s; *%s = %s;"
+                              " extc_rc_storeStructCons((void *)%s, sizeof *%s, (void *)(%s), %d); }",
+                           ct, dv, tgt, ct, sv, val, dv, sv, dv, dv, owner, hostProven ? 1 : 0);
+                    return;
+                }
+                /* 枚举得出来：目标与值各求值一次（`genExpr` 有副作用也只跑一次），然后逐叶
+                 * 走引用槽的覆盖语义，最后整块拷贝补齐非引用字段。 */
+                cgLine(g, "{ %s *%s = &(%s); %s %s = %s;", ct, dv, tgt, ct, sv, val);
+                cgValueRefStore(g, tt, arenaPrintf(g->arena, "(*%s)", dv), sv,
+                                false, owner, hostUnknown);
+                cgLine(g, "*%s = %s; }", dv, sv);
                 return;
             }
             cgLine(g, "%s = %s;", tgt, asF32(g, s->u.assign.target ? s->u.assign.target->type : NULL,
@@ -5883,6 +6302,9 @@ static void genFunc(CG *g, FuncDef *f) {
     int   savedSeq = g->tmpSeq;
     g->retType = subst(g, f->ret);
     g->inMain  = isMain;
+    /* 回收触发只在本帧拥有的区域上下手；`@overwrite` 的格子住的 arena 归谁，要看本函数收不收
+     * 隐藏的「家 arena」形参（见 `rcFuncUsesHome` 字段的注释）。 */
+    g->rcFuncUsesHome = planUsesHome(f);
     g->tmpSeq = 0;
     /* `@unchecked` is a property of **this body**, so it is set on entry and restored on the way
      * out. A coroutine's step function is generated from its own `FuncDef` (the one the
@@ -6104,6 +6526,7 @@ static void genFunc(CG *g, FuncDef *f) {
         g->parTls = savedParTls;
         g->retType = savedRet;
         g->inMain  = false;
+        g->rcFuncUsesHome = false;
         g->tmpSeq = savedSeq;
         g->noArena = savedNoArena;
         g->owSitesOwn = savedOw;
@@ -6201,6 +6624,7 @@ static void genFunc(CG *g, FuncDef *f) {
     }
     g->retType = savedRet;
     g->inMain  = false;
+    g->rcFuncUsesHome = false;
     g->tmpSeq = savedSeq;
     g->uncheckedBody = savedUnchecked;
     g->noArena = savedNoArena;
@@ -6414,7 +6838,8 @@ static void unitBody(CG *g, SUnit *u) {
         /* A generic enum instance such as `option<i64>` enters the
          * substitution context, so that `cType` substitutes the payload
          * types. */
-        if (u->inst) substEnter(g, u->inst);
+        SubCtx sv = {0};
+        if (u->inst) sv = substEnter(g, u->inst);
         cgLine(g, "struct %s {", unitName(u));
         g->indent++;
         cgLine(g, "int tag;");
@@ -6438,12 +6863,13 @@ static void unitBody(CG *g, SUnit *u) {
         g->indent--;
         cgLine(g, "};");
         cgLine(g, "");
-        if (u->inst) substLeave(g);
+        if (u->inst) substLeave(g, sv);
         return;
     }
 
     bool generic = u->inst && u->inst->kind == TY_GENERIC;
-    if (generic) substEnter(g, u->inst);
+    SubCtx gsv = {0};
+    if (generic) gsv = substEnter(g, u->inst);
 
     cgLine(g, "struct %s {", unitName(u));
     g->indent++;
@@ -6491,7 +6917,7 @@ static void unitBody(CG *g, SUnit *u) {
         cgLine(g, "               \"extC @frozen: nothing may be added to a frozen struct\");");
     }
     cgLine(g, "");
-    if (generic) substLeave(g);
+    if (generic) substLeave(g, gsv);
 }
 
 /* The derived `_eq` for arrays is gone: array equality now goes through
@@ -8251,9 +8677,8 @@ static void emitPreamble(CG *g, Buf *out, Module *m) {
 static void emitRuntimePrologue(CG *g, Buf *out, Module *m) {
     /* The reclamation runtime: the slab allocator, the holder counts and the region sweep.
      * It is emitted **before** any code that could name it -- its functions are `static` -- and
-     * on demand only (`g->needReclaim`, set from `EXTC_RECLAIM` in `scanUnitNeeds`). Until the
-     * sweep trigger and the root table land, the switch is an environment variable rather than
-     * a construct in the program. */
+     * only when the program has a governed allocation point (`g->needReclaim`, narrowed by
+     * `scanUnitReclaim` from that criterion; `EXTC_RECLAIM=1` forces it on, `=0` off). */
     if (g->needReclaim) {
         reclaimEmitRuntime(g->arena, out);
         /* 区域由 **arena 的地址**认领。分配点本来就知道自己落在哪只 arena 上
@@ -8922,7 +9347,7 @@ static void emitProtos(CG *g, Module *m, Arena *arena) {
     for (size_t i = 0; i < g->insts.len; i++) {
         Type *inst = *(Type **)vecAt(&g->insts, i);
         if (inst->kind != TY_GENERIC) continue;
-        substEnter(g, inst);
+        SubCtx sv = substEnter(g, inst);
         for (size_t j = 0; j < inst->sdef->methods.len; j++) {
             FuncDef *md = *(FuncDef **)vecAt(&inst->sdef->methods, j);
             /* Only a method that is really called is emitted, which keeps the
@@ -8948,14 +9373,13 @@ static void emitProtos(CG *g, Module *m, Arena *arena) {
                 *(DeadFunc **)vecPush(&g->deadFuncs) = df;
             }
         }
-        substLeave(g);
+        substLeave(g, sv);
     }
     /* Methods of ordinary structs and free functions: their order does not
      * matter, and mutual calls are covered by the prototypes above. */
     for (size_t i = 0; i < g->funcs.len; i++) {
         FuncDef *f = *(FuncDef **)vecAt(&g->funcs, i);
-        Vec *svP, *svA;
-        substEnterFunc(g, f, &svP, &svA);
+        SubCtx sv = substEnterFunc(g, f);
         const char *ret = cgIsMain(f) ? "int" : cType(g, f->ret);
         Buf sig;
         bufInit(&sig, arena);
@@ -8982,7 +9406,7 @@ static void emitProtos(CG *g, Module *m, Arena *arena) {
             df->proto = bufCstr(&sig);
             *(DeadFunc **)vecPush(&g->deadFuncs) = df;
         }
-        substLeaveFunc(g, svP, svA);
+        substLeave(g, sv);
     }
     if (g->structs.len || g->insts.len || g->funcs.len) cgLine(g, "");
 }
@@ -9060,10 +9484,23 @@ static void initCGState(CG *g, Module *m, TypeTable *tt, Arena *arena) {
  * @param m 当前模块，`funcs` 与 `structs` 的声明是全部来源。
  */
 static void scanUnitNeeds(CG *g, Module *m) {
-    /* 回收的开关。它不是"程序里出现了什么构造"那条判据，而是接线期的环境变量：
-     * 计数的发射点已就位（引用赋值点），但清扫触发与根表还没接，所以由人来开。
-     * **默认必须关闭**：关着时下面每一处发射都不发生，生成 C 与接线前逐字节相同。 */
-    g->needReclaim = getenv("EXTC_RECLAIM") != NULL;
+    /* 回收的开关：默认打开，`EXTC_RECLAIM=0` 关掉；给了非零值则**强制**打开（跳过下面的
+     * 分配点判据）。判据本身不在这里 —— 这一趟只按环境变量置意图，等 `collectEmitted` 把
+     * 真正要发射的函数挑出来之后，`scanUnitReclaim` 再按"有没有回收管辖的分配点"收窄。 */
+    const char *rcEnv = getenv("EXTC_RECLAIM");
+    g->rcForced = rcEnv && *rcEnv && strcmp(rcEnv, "0") != 0;
+    g->needReclaim = !(rcEnv && *rcEnv && strcmp(rcEnv, "0") == 0);
+    /* `EXTC_RC_SHARDS=N`：回收的**分片数**（停顿旋钮），默认 1。
+     * 只有 > 1 才会把每个逻辑区域切成 N 只运行期区域；1、未设、空串、非数、越界一律当 1
+     * （单片行为）。上限 64：再往上每片至少一只 1 MiB slab 的底噪会盖过停顿收益。 */
+    g->rcNShard = 1;
+    {
+        const char *sh = getenv("EXTC_RC_SHARDS");
+        if (sh && *sh) {
+            long v = strtol(sh, NULL, 10);
+            if (v > 1) g->rcNShard = (int)(v > 64 ? 64 : v);
+        }
+    }
     /* Does the program use the raw-terminal primitives? They arrive as an `extern!` the
      * library declares (`extc_raw_enter` in `std::sys::term`), which is the one thing
      * codegen can see from here. */
@@ -9114,6 +9551,89 @@ static void scanUnitNeeds(CG *g, Module *m) {
             if (planMakesPool(f)) g->needPool = true;
         }
     }
+}
+
+/* ==================== 区域回收：这一趟要不要发 ====================
+ *
+ * 回收管辖的堆存储只有三处产生点，都在 codegen 里：
+ *
+ *   · `new T`（单值或定长 `new [N]T`）—— `exNew` 的不带长度那一支；
+ *   · `alloc<T>(n)` —— `exGencall` 的 arena 那一支；
+ *   · `@overwrite` 的**单值**格子 —— 那一支也走 `new T`，所以初始化式本身就是上面第一条。
+ *
+ * 不带长度的 `new T[n]` 留在 arena 里（视图不是引用槽），`@overwrite` 的变长格子同理，所以
+ * 两者都不算。`@overwrite` 不需要单独的判据：它的初始化式就是 `new T`，走一遍表达式就看得见。
+ *
+ * 这一趟扫的是**将要发射**的那些函数体（`g->funcs` 已由 `collectEmitted` 剪过）加泛型实例的
+ * 方法体加全局量的初始化式，于是"程序里出现"指的是**产物里出现**：一个只有死函数里才有 `new`
+ * 的程序不带运行期。反过来多认一两个也不出错（只是多带一块没人调的运行期）—— 判据宁可宽一点。
+ */
+
+/** @brief 语句回调：转发给表达式/语句的通用遍历（先声明，`rcAllocInExpr` 的访问器要引它）。 */
+static bool rcAllocInStmtProbe(void *ctx, Stmt *s);
+
+/** @brief 表达式回调：命中"回收管辖的分配点"就返回 false 停下整趟走。 */
+static bool rcAllocInExpr(void *ctx, Expr *e) {
+    (void)ctx;
+    if (!e) return true;
+    if (e->kind == EX_NEW) return e->u.new_.count != NULL;      /* 带长度 ⇒ 视图，不归回收管 */
+    if (e->kind == EX_GENCALL)
+        return !(e->u.gencall.name && strcmp(e->u.gencall.name, "alloc") == 0);
+    AstVisit v = { rcAllocInExpr, rcAllocInStmtProbe, NULL };
+    return astWalkExprChildren(e, &v);
+}
+
+/**
+ * @brief 判断一个函数体里有没有回收管辖的分配点。
+ *
+ * @param body 函数体；NULL（extern 之类）返回 false。
+ * @return     有则 true。
+ */
+static bool rcBodyHasGovernedAlloc(Stmt *body) {
+    if (!body) return false;
+    AstVisit v = { rcAllocInExpr, rcAllocInStmtProbe, NULL };
+    return !astWalkStmtChildren(body, &v);
+}
+
+/** @brief 语句回调：把语句的每个子节点都走一遍（`rcBodyHasGovernedAlloc` 的访问器）。 */
+static bool rcAllocInStmtProbe(void *ctx, Stmt *s) {
+    (void)ctx;
+    AstVisit v = { rcAllocInExpr, rcAllocInStmtProbe, NULL };
+    return astWalkStmtChildren(s, &v);
+}
+
+/**
+ * @brief 收窄 `needReclaim`：没有回收管辖的分配点就不发运行期。
+ *
+ * `EXTC_RECLAIM=1`（`rcForced`）时整趟跳过 —— 门禁按"开关打开"这一档写，与分配点在不在无关。
+ *
+ * 必须在 `collectEmitted` 之后、`emitPreamble`/`emitRuntimePrologue` 之前跑：判据要用
+ * `g->funcs`（剪枝后的函数表），而运行期文本按这个标志进序言。
+ *
+ * @param g 生成器；`funcs`、`insts` 已填好。
+ * @param m 模块，全局量的初始化式从这里看。
+ */
+static void scanUnitReclaim(CG *g, Module *m) {
+    if (!g->needReclaim || g->rcForced) return;
+    for (size_t i = 0; i < g->funcs.len; i++) {
+        FuncDef *f = *(FuncDef **)vecAt(&g->funcs, i);
+        if (f && rcBodyHasGovernedAlloc(f->body)) return;
+    }
+    /* 泛型实例的方法体：模板本身不进 `g->funcs`（类型参数还在），实例体由 `emitInstanceBodies`
+     * 发，所以这里按实例的 `sdef` 补一遍。 */
+    for (size_t i = 0; i < g->insts.len; i++) {
+        Type *it = *(Type **)vecAt(&g->insts, i);
+        if (!it || it->kind != TY_GENERIC || !it->sdef) continue;
+        for (size_t j = 0; j < it->sdef->methods.len; j++) {
+            FuncDef *md = *(FuncDef **)vecAt(&it->sdef->methods, j);
+            if (md && planUsed(md) && rcBodyHasGovernedAlloc(md->body)) return;
+        }
+    }
+    for (size_t i = 0; i < m->globals.len; i++) {
+        GlobalDef *gd = *(GlobalDef **)vecAt(&m->globals, i);
+        if (gd && gd->init && !rcAllocInExpr(NULL, gd->init)) return;
+    }
+    g->needReclaim = false;
 }
 
 /**
@@ -9298,7 +9818,7 @@ static void emitInstanceBodies(CG *g) {
     for (size_t i = 0; i < g->insts.len; i++) {
         Type *inst = *(Type **)vecAt(&g->insts, i);
         if (inst->kind != TY_GENERIC) continue;
-        substEnter(g, inst);
+        SubCtx sv = substEnter(g, inst);
         for (size_t j = 0; j < inst->sdef->methods.len; j++) {
             FuncDef *md = *(FuncDef **)vecAt(&inst->sdef->methods, j);
             if (planCoroProto(md)) continue;   /* emitted inline at the call site */
@@ -9317,7 +9837,7 @@ static void emitInstanceBodies(CG *g) {
             deadFuncBody(g, md, fb, g->out->len - fb);
             cgLine(g, "");
         }
-        substLeave(g);
+        substLeave(g, sv);
     }
 }
 
@@ -9398,7 +9918,8 @@ static void emitVtTables(CG *g, Buf *out, Module *m, Arena *arena) {
             Type *vb = *(Type **)vecAt(&spellings, vi);
             StructDef *vsd = (vb == bt) ? tsd : (vb->mholder ? vb->mholder : vb->sdef);
             if (!vsd) continue;
-            if (vb != bt) substEnter(g, vb);
+            SubCtx vsv = {0};
+            if (vb != bt) vsv = substEnter(g, vb);
             const char *vtKey = cType(g, vb);
             bufPrintf(&g->vtDecls, "static const struct extc_vt$%s_t extc_vt$%s$%s;\n",
                       tr->name, tr->name, vtKey);
@@ -9440,7 +9961,7 @@ static void emitVtTables(CG *g, Buf *out, Module *m, Arena *arena) {
                                                           tr->name, vtKey, want->name));
             }
             bufPuts(&g->vtDefs, " };\n");
-            if (vb != bt) substLeave(g);
+            if (vb != bt) substLeave(g, vsv);
             }   /* one table per concrete spelling */
         }
     }
@@ -9490,8 +10011,7 @@ static void emitFuncBodies(CG *g) {
     for (size_t i = 0; i < g->funcs.len; i++) {
         FuncDef *f = *(FuncDef **)vecAt(&g->funcs, i);
         if (f->isExtern) continue;              /* an external declaration has no body */
-        Vec *svP, *svA;
-        substEnterFunc(g, f, &svP, &svA);      /* instances need substitution */
+        SubCtx sv = substEnterFunc(g, f);      /* instances need substitution */
         /* Tell the plan which instance is being emitted: a call site inside a generic
          * body is shared by every instance, and what it calls depends on this. */
         planEnterFunc(f);
@@ -9499,7 +10019,7 @@ static void emitFuncBodies(CG *g) {
         CGACC("cg-emit", genFunc(g, f));
         deadFuncBody(g, f, fb, g->out->len - fb);
         planLeaveFunc();
-        substLeaveFunc(g, svP, svA);
+        substLeave(g, sv);
         cgLine(g, "");
     }
 }
@@ -9775,9 +10295,9 @@ static void emitLateRuntime(CG *g, Buf *out, Module *m, Arena *arena) {
         bufInit(&tmp, arena);
         Buf *save = g->out;
         g->out = &tmp;
-        substEnter(g, inst);
+        SubCtx sv = substEnter(g, inst);
         genViewIndexer(g, inst);
-        substLeave(g);
+        substLeave(g, sv);
         g->out = save;
         /* Registered like a descriptor: an index primitive is emitted on demand, and the
          * demand is conservative - a view whose subscripts all sit in dead code still gets one.
@@ -9798,9 +10318,9 @@ static void emitLateRuntime(CG *g, Buf *out, Module *m, Arena *arena) {
         bufInit(&tmp, arena);
         Buf *save = g->out;
         g->out = &tmp;
-        substEnter(g, inst);
+        SubCtx sv = substEnter(g, inst);
         genViewCopier(g, inst, false);
-        substLeave(g);
+        substLeave(g, sv);
         g->out = save;
         size_t bio = out->len;
         bufPuts(out, bufCstr(&tmp));
@@ -9820,9 +10340,9 @@ static void emitLateRuntime(CG *g, Buf *out, Module *m, Arena *arena) {
         bufInit(&tmp, arena);
         Buf *save = g->out;
         g->out = &tmp;
-        substEnter(g, inst);
+        SubCtx sv = substEnter(g, inst);
         genViewCopier(g, inst, true);
-        substLeave(g);
+        substLeave(g, sv);
         g->out = save;
         size_t bio = out->len;
         bufPuts(out, bufCstr(&tmp));
@@ -9987,6 +10507,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     scanUnitNeeds(&g, m);
     initRuntimeText(&g, arena);
     collectEmitted(&g, m);
+    scanUnitReclaim(&g, m);
     emitPreamble(&g, out, m);
     emitRuntimePrologue(&g, out, m);
     buildRuntimeText(&g);

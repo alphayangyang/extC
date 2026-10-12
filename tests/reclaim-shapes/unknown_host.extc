@@ -1,0 +1,36 @@
+/* 形状 ⑨：宿主**证不出来**的引用槽（`(*id(a)).next = a`：基表达式带调用）。
+ *
+ * ⑧ 的下标槽（`s.kids[0]`）宿主还能静态追到（就是容器对象 `s`）；这一条把基表达式换成**调用
+ * 结果**，宿主就追不到了 —— codegen 不能把 `id(a)` 求值两次（会重复副作用），于是既登记不上
+ * 跨区边，静态根表里也没有这条槽。这就是"证不出 owner"的那一档。
+ *
+ * 安全方向（硬要求）：**证不出 owner 时，这条槽绝不能"照常扫"**。生成物里该条赋值必须是
+ * `extc_rc_storeRefUnknown(slot, v)` —— 运行期把**目标对象所在区域**整个标成 `noSweep`
+ * （此后只靠计数归零回收，宁可少收）；绝不能是 `storeRefOwned(slot, v, (void *)(0))`
+ * ——owner=0 表示"既没登记、也没退出清扫"，seed 缺一条还照常扫 ⇒ 迟早过早收。
+ *
+ * 视图元素（`v[i].f = x`，⑨ 的另一个出口）走同一档：视图 `data` 可能指向板/池/栈/C 存储，
+ * 宿主同样追不到。判据（`run-switch.sh` ①d′）：开关开的生成物里该条是 `storeRefUnknown`；
+ * 程序开关开/关输出逐字一致（`got=7`）。
+ */
+use std::io
+
+struct node {
+    next: ?mut ref node
+    val: i64
+}
+
+/* 返回形参本身：调用结果与实参是同一个对象，但 codegen 只看得见"这是一个调用"。 */
+fn id(p: mut ref node) -> mut ref node { return p }
+
+fn main() -> i32 {
+    var a: mut ref node = new node
+    a.next = null
+    a.val = 7
+    (*id(a)).next = a              /* ← 宿主带调用：证不出来 ⇒ 必须走保守路径 */
+    var r: ?mut ref node = (*a).next
+    var got: i64 = 0
+    if r != null { got = (*r).val }
+    io::cout << "got=" << got << "\n"
+    return 0
+}

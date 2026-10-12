@@ -1,0 +1,61 @@
+/* 形状 ⑦：**跨区堆→堆边** —— 清扫的种子必须包含"从别的区域的堆对象指过来的入边"。
+ *
+ *   region 1（函数体 arena）：keeper / t —— 每轮新建一个"长命"节点，只有最后一个被 keeper 持有；
+ *   region 2（循环体 arena）：s —— 每轮新建、每轮随块丢弃，它的 `next` 指向 region 1 的对象。
+ *
+ * 为什么这条是跨区的正确性/有界性判据：
+ *  · `s.next = keeper` 是一条**堆→堆、跨区**的入边。region 1 的清扫从"根 + 登记位"播种，
+ *    而根表只有栈上/全局的引用槽；没有登记，region 1 的清扫就看不到这条边（标记碰到区域外
+ *    的对象会停），于是 keeper 可能被当成垃圾收掉。所以登记是**健全性**的一半。
+ *  · 另一半是**撤销**：登记位若只置不清，循环里每轮的 keeper 都会永久当种子，region 1 的
+ *    清扫再也收不掉那些已经没人指的旧 keeper ⇒ 峰值随轮数线性涨（task-3 撤掉登记的原因）。
+ *    这里靠来源侧记账撤销：`s` 每轮随循环体区域丢弃，它登记过的那条边在 `regionFree` 里
+ *    成批撤掉（见 src/back/reclaim.c 的 `rscnt` / `extc_rc_unlinkChildren`）。
+ *
+ * 判据（run-switch.sh）：开关下 N vs 4N 峰值比 < 1.5，且 `EXTC_RC_STATS=1` 的
+ * `rs_live`（当前活着的跨区边数）不随轮数增长；输出与开关关时逐字一致。
+ */
+use std::io
+
+struct node { val: i64  next: ?mut ref node }
+
+/* argv[1] 是十进制轮数（没给就是 8）：与 scale_growth 同一套手写解析。 */
+fn parseRounds(args: slice<slice<u8>>) -> i64 {
+    if args.len < 2 { return 8 }
+    var s: slice<u8> = args[1]
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    return v
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var n: i64 = parseRounds(args)
+    var keeper: ?mut ref node = null
+    var sink: i64 = 0
+    var i: i64 = 0
+    while i < n {
+        /* 这一只进 region 1：`keeper = t` 把它提到函数体那一层（逃逸提升）。 */
+        var t: mut ref node = new node
+        t.val = i + 1
+        t.next = null
+        keeper = t
+        /* 这一只留在 region 2：只在循环体内被引用，块退出整片归还。
+         * 它的 `next` 是那条**跨区入边**（region 2 → region 1）。 */
+        var s: mut ref node = new node
+        s.val = i + 2
+        s.next = keeper
+        sink = sink + s.val + t.val
+        i = i + 1
+    }
+    var last: i64 = 0
+    if keeper != null { last = (*keeper).val }
+    io::cout << "rounds=" << n << " sink=" << sink << " last=" << last << "\n"
+    return 0
+}

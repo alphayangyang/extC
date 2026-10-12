@@ -1,0 +1,107 @@
+/* 形状 ⑪：**整值存储携带引用叶子**（`s.w = wrap { n: keeper }`）—— 槽被写进去却没记账。
+ *
+ * 与 ⑦（纯地方基 `s.next`）、⑧（下标槽 `s.kids[0]`）、⑨（宿主证不出来）相邻的一档：
+ * 这一次基表达式与宿主都**证得出来**，出问题的是**赋值的形状**。目标 `s.w` 的类型是结构体
+ * `wrap`（不是 `ref T`），于是 codegen 只当它是"数据字段赋值"，发一条裸的复合字面量拷贝：
+ *
+ *     s->w = (wrap){.n = keeper};
+ *
+ * 它**不经过引用槽赋值路径**：那个新槽既没有 `inc`、也没有登记跨区边 —— 与 `a7e2642`（owner
+ * 判不出 ⇒ `storeRefUnknown` + 该区域 `noSweep`）是同一类"槽被写进但没记账"，只是走另一个机制。
+ *
+ * 为什么这是健全性洞（偏向过早收，危险的那一侧）：
+ *   · `s`（box）在 region 2（循环体，每轮新建）；
+ *   · `keeper = t` 把 `t` 提到 region 1（函数体）；`keeper` 随后清空，`t` 在根表里没有入口；
+ *   · `s.w.n` 是唯一还指着 `t` 的边，而它是**跨区堆→堆入边**：region 1 的清扫从"根 + 登记位"
+ *     播种，标记碰到区域外的 `s` 会停 ⇒ 没有登记就永远走不到 `t`；
+ *   · `t` 挂自环（`t.next = t`）⇒ 持有者计数永不归零，计数那一层一个也放不掉，唯一的回收者
+ *     是 region 1 的区域清扫。
+ *
+ * 怎么让过早释放一定露面（而不是"释放后又被复用、恰好看不出来"）：
+ *   · 垃圾在 region 1 攒到清扫阈值（默认 1 MiB 下限）：每轮一个 16 B 的 `t` ⇒ 约 6.5 万轮；
+ *   · `pad = new big` 是 region 1 的分配点（触发清扫），而 `big`（64 B）与 `node`（16 B）**不同
+ *     尺寸档** ⇒ 清扫放掉 `t` 之后这次分配不会复用它的槽；
+ *   · 于是 `(*q).next` 读到的是空闲链里的槽号（小整数，实测地址 0xf）而不是节点指针，
+ *     解引用它 ⇒ ASan 报 SEGV（非 ASan 直接 rc=139）。
+ *
+ * 判据（`run-switch.sh` ①f）：开关打开 + ASan/UBSan 下 rc=0、`ok=true`（sink = Σi），且 N vs 4N
+ * 峰值比 < 1.5；修之前这条是红的。与开关关时的输出逐字一致。
+ */
+use std::io
+
+struct node {
+    next: ?mut ref node
+    val: i64
+}
+
+struct wrap {
+    n: ?mut ref node
+}
+
+struct box {
+    w: wrap
+    /* 让 region 2 的垃圾**比 region 1 长得快**（64 B/轮 vs 16 B/轮）：region 2 先到清扫阈值、
+     * 先把"来源对象死亡"的跨区登记撤销掉，region 1 的第一次清扫就真能收到东西。否则两边同速
+     * 增长时 region 1 会先触发一次空扫（自学习把阈值翻倍），峰值多出一段与轮数无关、但与
+     * "谁先到阈值"有关的瞬态。这一格只影响清扫节奏，不参与判据。 */
+    pad: [6]i64
+}
+
+/* 与 `node`（槽 16 B）**不同尺寸档**的一坨：只用来在 region 1 里当**清扫触发点**，且避开释放槽
+ * 的复用（slab 按尺寸档分，64 B 与 16 B 不同档 ⇒ 不会从 t 释放的槽里切出来）。64 B 是门禁的
+ * 取舍：开关关时它每轮漏一份 ⇒ 峰值 ≈ 轮数 × (64 B + 16 B)，N=200k/800k 两跑只要 ~16/64 MB；
+ * 与同目录 `cross_region_elem`（512 B ⇒ ~105/417 MB）相比小一个量级。 */
+struct big {
+    pad: [8]i64
+}
+
+/* argv[1] 是十进制轮数（没给就是 8）：与 scale_growth / cross_region 同一套手写解析。 */
+fn parseRounds(args: slice<slice<u8>>) -> i64 {
+    if args.len < 2 { return 8 }
+    var s: slice<u8> = args[1]
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    return v
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var n: i64 = parseRounds(args)
+    var keeper: ?mut ref node = null
+    var pad: ?mut ref big = null
+    var sink: i64 = 0
+    var i: i64 = 0
+    while i < n {
+        /* region 2：每轮新建、只在循环体内被引用（随块丢弃）。它的 `w` 就是那条跨区入边的
+         * 宿主槽 —— 目标类型是结构体 `wrap`，赋值走的是"整值存储"。 */
+        var s: mut ref box = new box
+        s.w = wrap { n: null }
+        /* region 1：`keeper = t` 把 `t` 提到函数体那一层（逃逸提升）。 */
+        {
+            var t: mut ref node = new node
+            t.val = i
+            t.next = t
+            keeper = t
+            s.w = wrap { n: keeper }      /* ← 整值存储里的跨区堆→堆边（引用叶子在 `wrap.n`） */
+        }
+        keeper = null                     /* t 从此只有 s->w.n 指着（+ 自环） */
+        pad = new big                     /* region 1 的分配点：清扫在这里触发 */
+        var q: ?mut ref node = (*s).w.n
+        if q != null {
+            var r: ?mut ref node = (*q).next
+            if r != null { sink = sink + (*r).val }
+        }
+        pad = null
+        i = i + 1
+    }
+    var want: i64 = n * (n - 1) / 2
+    var ok: bool = sink == want
+    io::cout << "rounds=" << n << " sink=" << sink << " want=" << want << " ok=" << ok << "\n"
+    return 0
+}

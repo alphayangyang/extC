@@ -1,0 +1,127 @@
+/* 形状 ⑩：**分片旋钮的有利形状** —— 8 条互相独立的有界双向链，每条链一个分配点。
+ *
+ * 与形状 ⑥（`cyclic_pressure.extc`）的关系：
+ *   · ⑥ 是**不利**形状：200000 个结点全部来自同一个 `new node` 分配点，分片切不开那条
+ *     主结构 —— 片内链条完整这一条没法满足，最大停顿就压不下来（见 `run-shard.sh`）。
+ *   · 本形状把「一起生一起死的东西」放到 8 个各自独立的分配点上：每条链满 9 个结点就
+ *     **整条退役**（链头挂到 retire、桶清空，链内 next/prev 不动）⇒ 上一代链失去唯一外部
+ *     引用、成为**不可达的环**（相邻结点 next/prev 互指，计数永不归零）。
+ *
+ * 于是「结构边界 = 分配点 = 片边界」：`EXTC_RC_SHARDS=8` 时 8 个分配点按片号落在 8 片里，
+ * 每条链连同它的环垃圾都在**同一片**内 —— 片内链条完整、跨片只剩少数登记边。这正是
+ * `docs/RECLAMATION.md` 第四节说的那两条：跨区登记跟着片走、分片切在结构边界上。
+ *
+ * 判据（`run-shard.sh` 的对照实验）：N=1 vs N=8 的最大单次清扫耗时应当随片数下降；峰值
+ * RSS 反而上升（每片至少一只 1 MiB slab 的底噪 + 每片独立的内存压力下限）—— 这就是
+ * 「停顿 ↔ 内存」那个取舍。输出在两种片数下**逐字一致**（分片不改语义）。
+ *
+ * 规模取 n 轮（argv[1]，默认 200000），8 条链每轮各来一个结点；这一形状不引入索引/缓存，
+ * 只为把「每个结构一片」这件事从生成物与数字上钉住。
+ */
+use std::io
+
+struct node {
+    key: i64
+    next: ?mut ref node
+    prev: ?mut ref node
+}
+
+struct world {
+    head: [8]?mut ref node
+    tail: [8]?mut ref node
+    size: [8]i64
+    retire: [8]?mut ref node
+    retired: i64
+}
+
+/* 双向连接：a.next = b、b.prev = a。两个操作数都是形参 ⇒ 目的地深度本帧已知。 */
+fn link(a: ?mut ref node, b: ?mut ref node) {
+    if a != null { (*a).next = b }
+    if b != null { (*b).prev = a }
+}
+
+/* 头插；满 9 个就整条退役。`p` 是循环体里 `new` 出来的结点，**只在这里**完成逃逸。 */
+fn pushOne(w: mut ref world, k: i64, p: mut ref node, i: i64) {
+    p.key = i
+    if w.size[k] == 0 { w.tail[k] = p }
+    link(p, w.head[k])
+    w.head[k] = p
+    w.size[k] = w.size[k] + 1
+    if w.size[k] > 8 {
+        w.retire[k] = w.head[k]
+        w.head[k] = null
+        w.tail[k] = null
+        w.size[k] = 0
+        w.retired = w.retired + 1
+    }
+}
+
+/* argv[1] 是十进制轮数（没给就是 200000）：手写解析，与其他形状一致。 */
+fn parseRounds(args: slice<slice<u8>>) -> i64 {
+    if args.len < 2 { return 200000 }
+    var s: slice<u8> = args[1]
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    return v
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var n: i64 = parseRounds(args)
+    var w: world
+    var i: i64 = 0
+    while i < n {
+        /* 8 个**各自的**分配点：每一处的 `new` 是一个结构边界（见文件头）。 */
+        var p0 = new node
+        pushOne(ref w, 0, p0, i)
+        var p1 = new node
+        pushOne(ref w, 1, p1, i)
+        var p2 = new node
+        pushOne(ref w, 2, p2, i)
+        var p3 = new node
+        pushOne(ref w, 3, p3, i)
+        var p4 = new node
+        pushOne(ref w, 4, p4, i)
+        var p5 = new node
+        pushOne(ref w, 5, p5, i)
+        var p6 = new node
+        pushOne(ref w, 6, p6, i)
+        var p7 = new node
+        pushOne(ref w, 7, p7, i)
+        i = i + 1
+    }
+
+    /* 结局自检：每条链两个方向必须一致、长度必须等于记录值；退役代数要等于预期。 */
+    var live: i64 = 0
+    var fwd: i64 = 0
+    var back: i64 = 0
+    var k: i64 = 0
+    while k < 8 {
+        var cnt: i64 = 0
+        var cur: ?mut ref node = w.head[k]
+        while cur != null {
+            fwd = fwd + (*cur).key
+            cnt = cnt + 1
+            cur = (*cur).next
+        }
+        var bcnt: i64 = 0
+        var bcur: ?mut ref node = w.tail[k]
+        while bcur != null {
+            back = back + (*bcur).key
+            bcur = (*bcur).prev
+            bcnt = bcnt + 1
+        }
+        if cnt == bcnt { if cnt == w.size[k] { live = live + cnt } }
+        k = k + 1
+    }
+
+    io::cout << "rounds=" << n << " retired=" << w.retired << " live=" << live
+    io::cout << " fwd=" << fwd << " back=" << back << "\n"
+    return 0
+}

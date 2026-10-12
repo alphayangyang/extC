@@ -1,0 +1,46 @@
+/* 形状 ⑭：**泛型实例方法体里的替换上下文必须还原**（B：发射未替换的泛型类型 ⇒ 非法 C）。
+ *
+ * 背景：`ExtcRcType` 描述符与静态根表要"探测一个类型"（`rcScanType` / `rcCollectOffsets` /
+ * `rcRootLeaves` / `rcLeafPaths`），它们的形状是
+ *
+ *     substEnter(g, t);  …递归看 t 的字段…  substLeave(g);
+ *
+ * 而 `substLeave` 早期版本**无条件**把 `substParams`/`substArgs`/`ownerPrefix` 清空，不是
+ * 还原进入前的上下文。泛型实例的方法体（`emitInstanceBodies` 里 `substEnter(实例)` 只做一次，
+ * 覆盖整批方法）里只要走到一次这种嵌套探测，外层实例的上下文就被抹掉，同一具方法体余下的
+ * 部分以 `T` 未替换的形态发出：
+ *
+ *     static inline int *slice_T_index(slice_T v, …)   // slice_T / varArray_T 没有定义
+ *     static void varArray_grow(varArray_T * self, …)
+ *
+ * ⇒ gcc `unknown type name 'slice_T'`。判据：这个程序在回收打开时也**必须编得过、跑得对**，
+ * 且生成物里不许出现未替换的模板名。
+ *
+ * 触发条件（本形状按最小集拼出来）：程序里要有**回收管辖的分配点**（这里是自由函数 `make`
+ * 里的 `new node`）⇒ 运行期被发射 ⇒ 泛型实例方法在替换上下文里生成；随后用到
+ * `varArray<i64>`（prelude 的泛型容器，它的 `push`/`grow` 就是会被抹掉上下文的那批方法）。
+ *
+ * 判据（开关开与开关关**逐字相同**，rc=0）：`n=8 head=7`。
+ */
+use std::io
+
+struct node {
+    value: i64
+    next: ?ref node
+}
+
+fn make(v: i64) -> ref node {
+    var n = new node
+    n.value = v
+    return n
+}
+
+fn main() {
+    var w: varArray<i64> = varArray<i64>::withCap(4)
+    var i: i64 = 0
+    while i < 8 {
+        w.push(i * 10)
+        i = i + 1
+    }
+    println("n=", w.len, " head=", make(7).value)
+}

@@ -12,6 +12,7 @@
 #   ④ promote-place            提权发生的位置            → 生成物结构断言（绿）
 #   ⑤ scale-growth(N→4N)       同形状轮数 ×4              → 峰值 RSS 是否随轮数涨（预期红）
 #   ⑥ cyclic-pressure(N→4N)    有环 + 大压力、轮数 ×4      → 峰值 RSS 是否随轮数涨（预期红）
+#   ⑪ struct-copy(N→4N)        整值存储携带引用叶子        → 峰值 RSS 是否随轮数涨（预期红；开关开的那条门禁在 run-switch.sh ①f）
 #                              （垃圾是环 ⇒ 计数永不归零；开关开的那条门禁在 run-switch.sh）
 #
 # ⚠️ 本脚本是**基线**：不设开关（`EXTC_RECLAIM` 不设 ⇒ 回收运行期不发射），红条目照旧 exit 0。
@@ -180,6 +181,48 @@ if [ "$y_c" = ok ] && [ "$y_r" = ok ] && [ "$z_c" = ok ] && [ "$z_r" = ok ] \
     fi
 else
     row "cyclic-shape-pressure N→4N" "$y_c/$z_c" "$y_r/$z_r" "$(rss_mb "$y_rss") → $(rss_mb "$z_rss")" "$R" "红" "两次运行没同时跑对（N: $y_out / 4N: $z_out）"
+fi
+
+# ── ⑩ 分片旋钮的有利形状：8 条独立链 = 8 个分配点（开关关 ⇒ 环垃圾攒着，红）────────
+# 每条链满 9 个结点就整条退役 ⇒ 环垃圾。8 个分配点各占一片 ⇒ `EXTC_RC_SHARDS=8` 切得开：
+# 停顿/内存/吞吐的三组数字与「切不开」的反面对照见 run-shard.sh；这里只做与 ⑥ 同档的
+# 基线观察（开关关 ⇒ 没有回收层 ⇒ 峰值随轮数涨）。
+build_run shard_bands 200000
+sbn_c=$BR_C; sbn_r=$BR_R; sbn_rss=$BR_RSS; sbn_out=$BR_OUT
+build_run shard_bands 800000
+sbf_c=$BR_C; sbf_r=$BR_R; sbf_rss=$BR_RSS; sbf_out=$BR_OUT
+if [ "$sbn_c" = ok ] && [ "$sbn_r" = ok ] && [ "$sbf_c" = ok ] && [ "$sbf_r" = ok ] \
+   && [ -n "$sbn_rss" ] && [ -n "$sbf_rss" ]; then
+    sb_ratio=$(awk -v a="$sbn_rss" -v b="$sbf_rss" 'BEGIN { printf "%.2f", b/a }')
+    if awk -v a="$sbn_rss" -v b="$sbf_rss" 'BEGIN { exit !(b > a * 1.5) }'; then
+        row "shard-bands N→4N" "ok" "ok" "$(rss_mb "$sbn_rss") → $(rss_mb "$sbf_rss")" "$R" "红" "8 条独立链：开关关 ⇒ 峰值随轮数增长（${sb_ratio}×）；开关开 + 分片=8 见 run-shard.sh"
+    else
+        row "shard-bands N→4N" "ok" "ok" "$(rss_mb "$sbn_rss") → $(rss_mb "$sbf_rss")" "$G" "绿" "峰值不随轮数增长（${sb_ratio}× @ ×4 轮）"
+    fi
+else
+    row "shard-bands N→4N" "$sbn_c/$sbf_c" "$sbn_r/$sbf_r" "$(rss_mb "$sbn_rss") → $(rss_mb "$sbf_rss")" "$R" "红" "两次运行没同时跑对（N: $sbn_out / 4N: $sbf_out）"
+fi
+
+# ── ⑪ 整值存储携带引用叶子：`s.w = wrap { n: keeper }`（开关关 ⇒ 跨区入边不登记，红）──────
+# 目标 `s.w` 是结构体（不是 `ref T`）⇒ 旧 codegen 发裸复合字面量拷贝：槽写了却没 `inc`、
+# 没登记跨区边。开关**关**时没有清扫/计数层，程序跑得对（存储不回收），峰值随轮数涨 ⇒
+# 基线里这条红；开关打开后由一个 `inc` + 一条登记兜住，判据在 run-switch.sh ①f（≈1.0×）。
+build_run struct_copy 200000
+scn_c=$BR_C; scn_r=$BR_R; scn_rss=$BR_RSS; scn_out=$BR_OUT
+build_run struct_copy 800000
+scf_c=$BR_C; scf_r=$BR_R; scf_rss=$BR_RSS; scf_out=$BR_OUT
+if [ "$scn_c" = ok ] && [ "$scn_r" = ok ] && [ "$scf_c" = ok ] && [ "$scf_r" = ok ] \
+   && [ "$scn_out" = "rounds=200000 sink=19999900000 want=19999900000 ok=true|" ] \
+   && [ "$scf_out" = "rounds=800000 sink=319999600000 want=319999600000 ok=true|" ] \
+   && [ -n "$scn_rss" ] && [ -n "$scf_rss" ]; then
+    sc_ratio=$(awk -v a="$scn_rss" -v b="$scf_rss" 'BEGIN { printf "%.2f", b/a }')
+    if awk -v a="$scn_rss" -v b="$scf_rss" 'BEGIN { exit !(b > a * 1.5) }'; then
+        row "struct-copy N→4N" "ok" "ok" "$(rss_mb "$scn_rss") → $(rss_mb "$scf_rss")" "$R" "红" "整值存储的跨区入边：开关关 ⇒ 峰值随轮数增长（${sc_ratio}×）；开关开由 run-switch.sh ①f 断言 < 1.5×"
+    else
+        row "struct-copy N→4N" "ok" "ok" "$(rss_mb "$scn_rss") → $(rss_mb "$scf_rss")" "$G" "绿" "峰值不随轮数增长（${sc_ratio}× @ ×4 轮）"
+    fi
+else
+    row "struct-copy N→4N" "$scn_c/$scf_c" "$scn_r/$scf_r" "$(rss_mb "$scn_rss") → $(rss_mb "$scf_rss")" "$R" "红" "两次运行没同时跑对（N: $scn_out / 4N: $scf_out）"
 fi
 
 # ── 表 ────────────────────────────────────────────────────────────────────────
