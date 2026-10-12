@@ -1,0 +1,47 @@
+/* tests/reclaim-gaps/shapes/closure_chain.extc —— **嵌套闭包**的持有链里装着引用。
+ *
+ * `fn(...) [cap] {...}` 的捕获环境是闭包函数的形参（`rcRootDecl` 的普通形参路径）。这里让
+ * 外层闭包捕获一个自环节点、内层闭包再捕获外层闭包 ⇒ 引用藏在一层环境里的环境里。
+ * 形状：每轮造一个自环节点、被闭包环境捕获、闭包随轮丢弃 ⇒ 量这条持有链会不会让垃圾收不掉。
+ */
+use std::io
+
+struct node {
+    v: i64
+    next: ?mut ref node
+}
+
+fn parseI64(s: slice<u8>) -> i64 {
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    return v
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var n: i64 = parseI64(args[1])
+    var sink: i64 = 0
+    var i: i64 = 0
+    while i < n {
+        var nd: mut ref node = new node
+        nd.v = i
+        nd.next = nd
+        var cap: ?mut ref node = nd
+        var inner = fn(x: i64) -> i64 {
+            var q: ?mut ref node = cap
+            if q != null { return (*q).v + x }
+            return x
+        }
+        var outer = fn(x: i64) -> i64 { return inner(x) }
+        sink = sink + outer(i64(1))
+        i = i + 1
+    }
+    io::cout << "n=" << n << " sink=" << sink << "\n"
+    return 0
+}

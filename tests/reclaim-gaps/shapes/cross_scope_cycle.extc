@@ -1,0 +1,46 @@
+/* tests/reclaim-gaps/shapes/cross_scope_cycle.extc —— 圈**跨两个词法作用域**：
+ * `a` 在循环体（外块），`b` 在内层块；`a.next = b`、`b.next = a` 互指 ⇒ 计数永不归零。
+ * `keep = a` 把这一对提到函数体那一层（逃逸提升）⇒ 每轮的上一对成了该区域里的环垃圾。
+ * 期望（阳性对照）：垃圾落在 main 自己的区域上 ⇒ main 的触发点收得掉。
+ */
+use std::io
+
+struct node {
+    next: ?mut ref node
+    v: i64
+}
+
+fn parseI64(s: slice<u8>) -> i64 {
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    return v
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var n: i64 = parseI64(args[1])
+    var keep: ?mut ref node = null
+    var sink: i64 = 0
+    var i: i64 = 0
+    while i < n {
+        var a: mut ref node = new node        /* 外块 */
+        a.v = i
+        {
+            var b: mut ref node = new node    /* 内层块：被 a 指到 ⇒ 提权到 a 的房间 */
+            b.v = i + i64(1)
+            a.next = b
+            b.next = a                        /* ← 跨作用域的圈 */
+        }
+        keep = a
+        if keep != null { sink = sink + (*keep).v }
+        i = i + 1
+    }
+    io::cout << "n=" << n << " sink=" << sink << "\n"
+    return 0
+}

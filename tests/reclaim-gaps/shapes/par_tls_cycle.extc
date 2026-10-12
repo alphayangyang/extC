@@ -1,0 +1,55 @@
+/* tests/reclaim-gaps/shapes/par_tls_cycle.extc —— **TLS / parallel worker 房间**里的环垃圾。
+ *
+ * `parallel::run(w, out, n, threads)` 的每个 worker 有自己的线程本地 arena（`extc_tls_arena`）。
+ * 对 `parTls` 帧，`rcFrameOwnsArena` 与 `rcEmitOwe` 都直接返回 ⇒ **既不发触发、也不记欠收**
+ * （见 codegen.c 的 `rcFrameOwnsArena` / `rcEmitOwe` 第一行）。垃圾只能等线程结束整块回收。
+ * 形状：worker 的 `keep = p` 把自环节点提到 worker 帧的函数级区域 ⇒ 随 work 量线性攒。
+ * 注：目录 `tests/reclaim-rootstack/RECON.md` 说语料里没有正向并行程序；本文件是**新写的**
+ * 最小正向程序（`extc_tls_arena` 在生成物里出现）。
+ */
+use std::parallel
+use std::io
+
+struct node {
+    v: i64
+    next: ?mut ref node
+}
+
+fn parseI64(s: slice<u8>) -> i64 {
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    return v
+}
+
+fn w(id: i64, lo: i64, hi: i64, out: mut slice<i64>) -> i32 {
+    var keep: mut ref node = new node
+    keep.v = i64(0)
+    keep.next = keep
+    var i: i64 = lo
+    while i < hi {
+        var p: mut ref node = new node
+        p.v = i
+        p.next = p
+        keep = p
+        i = i + 1
+    }
+    out[0] = keep.v
+    return 0
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var n: i64 = parseI64(args[1])
+    var out: mut slice<i64> = new i64[n]
+    var k: i64 = 0
+    while k < n { out[k] = i64(0)  k = k + 1 }
+    let rc: i32 = parallel::run(w, out, n, i64(2))
+    io::cout << "n=" << n << " rc=" << rc << " out0=" << out[0] << "\n"
+    return 0
+}

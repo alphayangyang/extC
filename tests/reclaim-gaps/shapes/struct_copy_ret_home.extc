@@ -1,0 +1,48 @@
+/* tests/reclaim-gaps/shapes/struct_copy_ret_home.extc —— **按值返回**的结构体携带引用叶子。
+ * `mk` 返回 `wrap { n: t }`（t 逃逸 ⇒ 提权进调用者的家房间），main 每轮覆盖一个具名结构体槽
+ * `b`。这一条同时压两处嫌疑：按值返回的临时量（嫌疑 4）＋ 家房间的欠收（嫌疑 1/2）。
+ */
+use std::io
+
+struct node {
+    next: ?mut ref node
+    val: i64
+}
+
+struct wrap {
+    n: ?mut ref node
+}
+
+fn parseI64(s: slice<u8>) -> i64 {
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    return v
+}
+
+fn mk(k: i64) -> wrap {
+    var t: mut ref node = new node
+    t.val = k
+    t.next = t                 /* 自环：计数永不归零 */
+    return wrap { n: t }
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var n: i64 = parseI64(args[1])
+    var sink: i64 = 0
+    var i: i64 = 0
+    while i < n {
+        var b: wrap = mk(i)    /* 按值返回 ⇒ 落进具名结构体槽 */
+        var q: ?mut ref node = b.n
+        if q != null { sink = sink + (*q).val }
+        i = i + 1
+    }
+    io::cout << "n=" << n << " sink=" << sink << "\n"
+    return 0
+}

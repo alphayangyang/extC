@@ -1,0 +1,48 @@
+/* tests/reclaim-gaps/shapes/global_slot.extc —— G9「全局量里的引用」：**编译期被拒**。
+ *
+ * 想写「对象只被全局量持有」，但全局是 depth 0，含引用的全局无法零初始化：
+ *   `var g: ?mut ref node`                     → cannot zero-initialize the global `g`: it contains a reference
+ *   `var g: ?ref node = null`                  → `null` here does not know which `?ref T` it is
+ *   `struct holder { f: ?mut ref node }` + `var h: holder`（含引用）→ 同上（contains a reference）
+ *   `var arr: [4]?mut ref node`（含引用）       → 同上（contains a reference）
+ * 所以这一档**没有运行期形状可测**：它不是"回收不掉"的洞，而是一条编译期规则。
+ * 本文件保留为**反例**（harness 里标 reject），报 `extc` 的第一条 error 作为凭据。
+ */
+use std::io
+
+struct node {
+    next: ?mut ref node
+    v: i64
+}
+
+var g: ?mut ref node
+
+fn parseI64(s: slice<u8>) -> i64 {
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    return v
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var n: i64 = parseI64(args[1])
+    var i: i64 = 0
+    while i < n {
+        var p: mut ref node = new node
+        p.v = i
+        p.next = p
+        g = p
+        i = i + 1
+    }
+    var q: ?mut ref node = g
+    var last: i64 = i64(-1)
+    if q != null { last = (*q).v }
+    io::cout << "n=" << n << " last=" << last << "\n"
+    return 0
+}

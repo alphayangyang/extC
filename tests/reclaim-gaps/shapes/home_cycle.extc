@@ -1,0 +1,63 @@
+/* tests/reclaim-gaps/shapes/home_cycle.extc —— 拥有者（main）的家房间里攒下**环垃圾**。
+ *
+ * 对应嫌疑 1 + 2 + 8-D 维：
+ *   · 被调者 `build` 在**调用者的家房间**（`__extc_home`）里建链 —— 它自己不是那只房间的拥有者，
+ *     所以一个真实触发都不发，只记一笔欠收（`extc_rc_owe`）。
+ *   · 每轮的 `p` 是**自环**（`p.next = p`）＋被 `keep` 覆盖 ⇒ 引用计数永不归零，能收它的只有
+ *     区域清扫（第 4 层）。
+ *   · `build` 自己就是长循环 ⇒ 调用期间没人收（嫌疑 2）。
+ *
+ * argv[1] = main 调用 `build` 的次数（1 = 拥有者只调一次，嫌疑 1）；argv[2] = 每次的节点数。
+ * 期望的对照：
+ *   rounds=1   ：`build` 返回后 main 再不发起调用 ⇒ 欠收标志一辈子没被销 ⇒ 峰值随 n 涨；
+ *   rounds=64/256：main 在**下一次调用之前**销账（子集 B）⇒ 上一轮的环垃圾当场被收，峰值有界。
+ */
+use std::io
+
+struct node {
+    next: ?mut ref node
+    v: i64
+}
+
+/* 内层帧：本帧的静态根表对自己的块 arena 完整，但**对调用者的家 arena 不完整**
+ * （调用栈上其他帧的活引用不在表里）⇒ 不触发、只记欠收。 */
+fn build(n: i64) -> mut ref node {
+    var keep: mut ref node = new node
+    keep.v = i64(0)
+    keep.next = keep
+    var i: i64 = 0
+    while i < n {
+        var p: mut ref node = new node
+        p.v = i
+        p.next = p             /* 自环：计数永不归零 */
+        keep = p               /* 覆盖上一轮 ⇒ 上一轮的 p 不可达（但 hold >= 1）*/
+        i = i + 1
+    }
+    return keep
+}
+
+fn parseI64(s: slice<u8>) -> i64 {
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    return v
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var rounds: i64 = parseI64(args[1])
+    var per: i64 = parseI64(args[2])
+    var keep: mut ref node = build(per)
+    var r: i64 = 1
+    while r < rounds {
+        keep = build(per)
+        r = r + 1
+    }
+    io::cout << "rounds=" << rounds << " per=" << per << " last=" << keep.v << "\n"
+    return 0
+}

@@ -1,0 +1,46 @@
+/* tests/reclaim-gaps/shapes/carray_slot.extc —— C 层**定长数组**槽：`arr[i % 8] = p`。
+ * `arr` 是 main 的函数级局部定长数组，静态根表会把它（连同内联数组元素）登记成根；
+ * 槽的宿主是本帧的静态存储 ⇒ 不需要跨区登记。每轮覆盖一格 ⇒ 旧的 p（自环）成了不可达环垃圾，
+ * 落在 p 被提权到的房间（`arr` 的元素是 depth 1 ⇒ p 提权进 main 的家/函数级房间）。
+ */
+use std::io
+
+struct node {
+    next: ?mut ref node
+    v: i64
+}
+
+fn parseI64(s: slice<u8>) -> i64 {
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    return v
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var n: i64 = parseI64(args[1])
+    var arr: [8]?mut ref node
+    var sink: i64 = 0
+    var i: i64 = 0
+    while i < n {
+        var p: mut ref node = new node
+        p.v = i
+        p.next = p
+        arr[i % 8] = p
+        i = i + 1
+    }
+    var k: i64 = 0
+    while k < 8 {
+        var q: ?mut ref node = arr[k]
+        if q != null { sink = sink + (*q).v }
+        k = k + 1
+    }
+    io::cout << "n=" << n << " sink=" << sink << "\n"
+    return 0
+}

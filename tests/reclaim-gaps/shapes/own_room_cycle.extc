@@ -1,0 +1,43 @@
+/* tests/reclaim-gaps/shapes/own_room_cycle.extc —— 对照：环垃圾落在 **main 自己的房间**里。
+ *
+ * 与 `home_cycle` 的唯一区别：垃圾由 main 自己 `new`（`keep` 是 main 的局部量 ⇒ 分配落进 main
+ * 自己的块 arena `&__extc_a[1]`），而 `rcFrameOwnsArena` 对 main 的自家 arena 返回真 ⇒ 触发点
+ * 照常发射、静态根表对它是完整的。自环让计数永不归零 ⇒ 只有清扫能收。
+ * 期望：开档峰值有界（清扫真的上场），是下面各条「收不掉」形状的**阳性对照**。
+ */
+use std::io
+
+struct node {
+    next: ?mut ref node
+    v: i64
+}
+
+fn parseI64(s: slice<u8>) -> i64 {
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    return v
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var n: i64 = parseI64(args[1])
+    var keep: mut ref node = new node
+    keep.v = i64(0)
+    keep.next = keep
+    var i: i64 = 0
+    while i < n {
+        var p: mut ref node = new node
+        p.v = i
+        p.next = p
+        keep = p
+        i = i + 1
+    }
+    io::cout << "n=" << n << " last=" << keep.v << "\n"
+    return 0
+}

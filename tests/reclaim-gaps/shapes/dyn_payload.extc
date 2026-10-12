@@ -1,0 +1,54 @@
+/* tests/reclaim-gaps/shapes/dyn_payload.extc —— **dyn 载荷**里装着引用。
+ *
+ * `dyn Tag` 的载荷按值拷进 dyn 池（属于当前 place）。载荷结构体里带一个引用叶子 `n`：
+ * codegen 对 dyn 载荷的记账是"当不可信/无引用"。形状：每轮造一个自环节点、塞进 dyn 载荷、
+ * 立刻丢掉 dyn 值 ⇒ 量这个引用叶子会不会让节点活下来 / 会不会被漏收。
+ */
+use std::io
+
+struct node {
+    v: i64
+    next: ?mut ref node
+}
+
+trait Tag {
+    fn tag(self: ref Self) -> i64
+}
+
+struct box {
+    v: i64
+    n: ?mut ref node
+}
+
+impl Tag for box {
+    fn tag(self: ref box) -> i64 { return self.v }
+}
+
+fn parseI64(s: slice<u8>) -> i64 {
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    return v
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var n: i64 = parseI64(args[1])
+    var sink: i64 = 0
+    var i: i64 = 0
+    while i < n {
+        var nd: mut ref node = new node
+        nd.v = i
+        nd.next = nd
+        let d: dyn Tag = dyn Tag(box { v: i, n: nd })
+        sink = sink + d.tag()
+        i = i + 1
+    }
+    io::cout << "n=" << n << " sink=" << sink << "\n"
+    return 0
+}

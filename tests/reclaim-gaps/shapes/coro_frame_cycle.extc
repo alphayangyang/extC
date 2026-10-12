@@ -1,0 +1,50 @@
+/* tests/reclaim-gaps/shapes/coro_frame_cycle.extc —— **协程帧**里的环垃圾。
+ *
+ * 协程帧挂起后不在 C 栈上 ⇒ `rcRootsUnreliable` ⇒ 这个函数一个触发都不发。垃圾靠块级整片释放
+ * （`extc_arena_release`）收；但 `keep = p` 把 p 提权到协程帧的函数级区域 ⇒ 那一层只有帧销毁
+ * 才还。量：开档（回收运行期在，但从不触发） vs 关档的峰值。
+ */
+use std::io
+
+struct node {
+    v: i64
+    next: ?mut ref node
+}
+
+fn parseI64(s: slice<u8>) -> i64 {
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    return v
+}
+
+fn churn(n: i64) -> coroutine<i64> {
+    var keep: mut ref node = new node
+    keep.v = i64(0)
+    keep.next = keep
+    var i: i64 = 0
+    while i < n {
+        var p: mut ref node = new node
+        p.v = i
+        p.next = p
+        keep = p
+        yield i
+        i = i + 1
+    }
+    yield n
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var n: i64 = parseI64(args[1])
+    var c = churn(n)
+    var last: i64 = i64(-1)
+    while c.next() { last = c.value() }
+    io::cout << "n=" << n << " last=" << last << "\n"
+    return 0
+}

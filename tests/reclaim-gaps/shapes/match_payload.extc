@@ -1,0 +1,50 @@
+/* tests/reclaim-gaps/shapes/match_payload.extc —— `match` 绑定**引用载荷**。
+ *
+ * 枚举载荷绑定走的是"枚举不出来的存储"那一档（`rcRootsUnreliable`）⇒ 该函数整体不触发清扫。
+ * 形状把环垃圾放在**同一个函数**里（main）：如果 `match` 真的把 main 的触发关掉，环就没有
+ * 回收者，峰值随 N 涨。
+ */
+use std::io
+
+struct node {
+    v: i64
+    next: ?mut ref node
+}
+
+type maybe = | none | some(?mut ref node)
+
+fn parseI64(s: slice<u8>) -> i64 {
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    return v
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var n: i64 = parseI64(args[1])
+    var keep: mut ref node = new node
+    keep.v = i64(0)
+    keep.next = keep
+    var sink: i64 = 0
+    var i: i64 = 0
+    while i < n {
+        var p: mut ref node = new node
+        p.v = i
+        p.next = p
+        keep = p
+        var m: maybe = maybe.some(keep)
+        match m {
+            some(q) => { if q != null { sink = sink + (*q).v } }
+            none    => { sink = sink }
+        }
+        i = i + 1
+    }
+    io::cout << "n=" << n << " sink=" << sink << "\n"
+    return 0
+}

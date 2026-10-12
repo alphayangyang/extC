@@ -1,0 +1,58 @@
+/* tests/reclaim-gaps/shapes/base_call_unknown.extc —— 基表达式**带调用**的槽
+ * （`(*id(s)).kids[0] = keeper`）：`cgPurePlace` 为假 ⇒ 宿主 UNKNOWN ⇒
+ * `extc_rc_storeRefUnknown` ⇒ 目标（keeper 所在 region 1）`noSweep`。
+ * 同 `slot_elem_unknown`，只是换一个出口。
+ */
+use std::io
+
+struct node {
+    next: ?mut ref node
+    val: i64
+    kids: [2]?mut ref node
+}
+
+struct big {
+    pad: [8]i64
+}
+
+fn parseI64(s: slice<u8>) -> i64 {
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    return v
+}
+
+fn id(p: mut ref node) -> mut ref node { return p }
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var n: i64 = parseI64(args[1])
+    var keeper: ?mut ref node = null
+    var pad: ?mut ref big = null
+    var i: i64 = 0
+    while i < n {
+        var s: mut ref node = new node
+        s.val = i64(-1)
+        s.next = null
+        s.kids[0] = null
+        s.kids[1] = null
+        {
+            var t: mut ref node = new node
+            t.val = i
+            t.next = t
+            keeper = t
+            (*id(s)).kids[0] = keeper    /* ← 基表达式带调用 */
+        }
+        keeper = null
+        pad = new big
+        pad = null
+        i = i + 1
+    }
+    io::cout << "n=" << n << "\n"
+    return 0
+}

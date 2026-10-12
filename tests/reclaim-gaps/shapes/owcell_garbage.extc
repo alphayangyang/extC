@@ -1,0 +1,52 @@
+/* tests/reclaim-gaps/shapes/owcell_garbage.extc —— `@overwrite` 格子持有的环垃圾。
+ *
+ * `stash` 的 `@overwrite var n` 是**格子**（存储每调用复用一次），格子被 `dest.v = n` 发布到
+ * 调用者的 `cell` 里。每轮覆盖 `c.v` ⇒ 上一轮的格子内容成了不可达的环垃圾（`n.next = n`）。
+ * 格子归谁：`own = loc && !rcFuncUsesHome(f)`（codegen.c）⇒ 这条形状用来量 @overwrite 的回收。
+ */
+use std::io
+
+struct node {
+    v: i64
+    next: ?mut ref node
+}
+
+struct cell {
+    v: ?mut ref node
+}
+
+fn parseI64(s: slice<u8>) -> i64 {
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    return v
+}
+
+fn stash(dest: mut ref cell, i: i64) {
+    @overwrite var n: mut ref node = new node
+    n.v = i
+    n.next = n
+    dest.v = n
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var n: i64 = parseI64(args[1])
+    var c: cell
+    c.v = null
+    var i: i64 = 0
+    while i < n {
+        stash(ref c, i)
+        i = i + 1
+    }
+    var q: ?mut ref node = c.v
+    var last: i64 = i64(-1)
+    if q != null { last = (*q).v }
+    io::cout << "n=" << n << " last=" << last << "\n"
+    return 0
+}

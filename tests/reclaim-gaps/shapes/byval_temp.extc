@@ -1,0 +1,52 @@
+/* tests/reclaim-gaps/shapes/byval_temp.extc —— **按值返回**的结构体携带引用叶子，且结果只当
+ * 临时量用（纯临时量：不落具名槽、不 inc/dec）。`mk` 里 `t` 自环、逃逸 ⇒ 提权进调用者的家房间。
+ * 量：这些环垃圾在开档下能不能被收（欠收销账点有没有被发到）。嫌疑 4。
+ */
+use std::io
+
+struct node {
+    v: i64
+    next: ?mut ref node
+}
+
+struct wrap {
+    n: ?mut ref node
+}
+
+fn parseI64(s: slice<u8>) -> i64 {
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    return v
+}
+
+fn mk(k: i64) -> wrap {
+    var t: mut ref node = new node
+    t.v = k
+    t.next = t
+    return wrap { n: t }
+}
+
+fn take(w: wrap) -> i64 {
+    var q: ?mut ref node = w.n
+    if q != null { return (*q).v }
+    return i64(-1)
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var n: i64 = parseI64(args[1])
+    var sink: i64 = 0
+    var i: i64 = 0
+    while i < n {
+        sink = sink + take(mk(i))
+        i = i + 1
+    }
+    io::cout << "n=" << n << " sink=" << sink << "\n"
+    return 0
+}

@@ -1,0 +1,60 @@
+/* tests/reclaim-gaps/shapes/slot_elem_unknown.extc —— **视图元素**槽（宿主追不到）。
+ *
+ * 与 `slot_elem_known` 唯一的区别：那条跨区入边写在 `v[0].kids[0]` 上，`v` 是 `mut slice<node>`。
+ * `cgSlotHost` 走到视图下标时 `TY_SLICE` 既不是 `TY_REF` 也不是 `TY_ARRAY` ⇒ 宿主 `UNKNOWN`
+ * ⇒ `extc_rc_storeRefUnknown` ⇒ **目标对象所在区域**（这里就是 region 1）整体 `noSweep`。
+ * 期望的观察：region 1 从此一个触发都不发（或发了也没用），环垃圾 `t` 攒到进程结束。
+ */
+use std::io
+
+struct node {
+    next: ?mut ref node
+    val: i64
+    kids: [2]?mut ref node
+}
+
+struct big {
+    pad: [8]i64
+}
+
+fn parseI64(s: slice<u8>) -> i64 {
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    return v
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var n: i64 = parseI64(args[1])
+    var keeper: ?mut ref node = null
+    var pad: ?mut ref big = null
+    var v: mut slice<node> = new node[4]
+    v[0].val = i64(0)
+    var i: i64 = 0
+    while i < n {
+        var s: mut ref node = new node
+        s.val = i64(-1)
+        s.next = null
+        s.kids[0] = null
+        s.kids[1] = null
+        {
+            var t: mut ref node = new node
+            t.val = i
+            t.next = t
+            keeper = t
+            v[0].kids[0] = keeper     /* ← 视图元素：宿主追不到 ⇒ 目标区域 noSweep */
+        }
+        keeper = null
+        pad = new big
+        pad = null
+        i = i + 1
+    }
+    io::cout << "n=" << n << "\n"
+    return 0
+}

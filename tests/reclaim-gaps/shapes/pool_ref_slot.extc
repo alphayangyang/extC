@@ -1,0 +1,43 @@
+/* tests/reclaim-gaps/shapes/pool_ref_slot.extc —— **池容器里装的引用**（`pool<mut ref node>`）。
+ *
+ * `stl::pool<T>` 的 dense 存储里放的是 `T = mut ref node`：池的缓冲区是一条引用槽数组。
+ * 问题：池的缓冲区不是本运行期的 rc 槽（板/池守卫），codegen 对它里面的引用是当"无引用/不可信"
+ * 处理。形状：每轮 `insert` 一个自环节点、再 `remove` ⇒ 池只持有旧值一小会儿；量池持有的引用
+ * 有没有让对象活下来、以及峰值随轮数涨不涨。
+ */
+use std::io
+use stl::pool
+
+struct node {
+    v: i64
+    next: ?mut ref node
+}
+
+fn parseI64(s: slice<u8>) -> i64 {
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    return v
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var n: i64 = parseI64(args[1])
+    var p = pool<mut ref node>::withCap(8)
+    var i: i64 = 0
+    while i < n {
+        var nd: mut ref node = new node
+        nd.v = i
+        nd.next = nd
+        let h = p.insert(nd)
+        p.remove(h)
+        i = i + 1
+    }
+    io::cout << "n=" << n << " len=" << p.len() << "\n"
+    return 0
+}
