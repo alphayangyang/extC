@@ -11,6 +11,8 @@
 #   ③ cyclic-shape             双向链表 + 父指针树 + 缓存 + 索引 → 编译 + 运行（绿）
 #   ④ promote-place            提权发生的位置            → 生成物结构断言（绿）
 #   ⑤ scale-growth(N→4N)       同形状轮数 ×4              → 峰值 RSS 是否随轮数涨（预期红）
+#   ⑥ cyclic-pressure(N→4N)    有环 + 大压力、轮数 ×4      → 峰值 RSS 是否随轮数涨（预期红）
+#                              （垃圾是环 ⇒ 计数永不归零；开关开的那条门禁在 run-switch.sh）
 #
 # ⚠️ 本脚本是**基线**：不设开关（`EXTC_RECLAIM` 不设 ⇒ 回收运行期不发射），红条目照旧 exit 0。
 # 开关（`EXTC_RECLAIM=1`）下**必须成立**的那组判据在 run-switch.sh（门禁，关掉开关必须红）。
@@ -155,6 +157,29 @@ if [ "$sem_ok" = yes ] && [ -n "$n_rss" ] && [ -n "$f_rss" ]; then
     fi
 else
     row "scale-growth N→4N" "$n_c/$f_c" "$n_r/$f_r" "$(rss_mb "$n_rss") → $(rss_mb "$f_rss")" "$R" "红" "两次运行没同时跑对（N: $n_out / 4N: $f_out）"
+fi
+
+# ── ⑥ 有环 + 大压力：同一个有环形状轮数 ×4（开关关 ⇒ 环垃圾攒着，红）──────────────
+# 形状与 ⑤ 的区别是**垃圾是环**：桶满时整条双向链退役，链内 next/prev 互指 ⇒ 持有者计数
+# 永不归零 ⇒ 计数归零（开关的第三层）一个也放不掉；开关**关**时区域也不回收（函数返回才归还），
+# 所以峰值随轮数线性涨。开关打开后的界由 run-switch.sh 的 ①b 断言（≈1.0×）。
+build_run cyclic_pressure 200000
+y_c=$BR_C; y_r=$BR_R; y_rss=$BR_RSS; y_out=$BR_OUT
+build_run cyclic_pressure 800000
+z_c=$BR_C; z_r=$BR_R; z_rss=$BR_RSS; z_out=$BR_OUT
+cyc_n_want="rounds=200000 retired=22208 live=128 fwd=25591744 back=25591744 idx=20000 cache=1024 hits=155520 depth=212 tree=true|"
+cyc_f_want="rounds=800000 retired=88832 live=512 fwd=409468672 back=409468672 idx=20000 cache=1024 hits=622272 depth=80 tree=true|"
+if [ "$y_c" = ok ] && [ "$y_r" = ok ] && [ "$z_c" = ok ] && [ "$z_r" = ok ] \
+   && [ "$y_out" = "$cyc_n_want" ] && [ "$z_out" = "$cyc_f_want" ] \
+   && [ -n "$y_rss" ] && [ -n "$z_rss" ]; then
+    y_ratio=$(awk -v a="$y_rss" -v b="$z_rss" 'BEGIN { printf "%.2f", b/a }')
+    if awk -v a="$y_rss" -v b="$z_rss" 'BEGIN { exit !(b > a * 1.5) }'; then
+        row "cyclic-shape-pressure N→4N" "ok" "ok" "$(rss_mb "$y_rss") → $(rss_mb "$z_rss")" "$R" "红" "有环（桶满整链退役 ⇒ 计数永不归零）：开关关 ⇒ 峰值随轮数增长（${y_ratio}×）；开关开由 run-switch.sh 断言 < 1.5×"
+    else
+        row "cyclic-shape-pressure N→4N" "ok" "ok" "$(rss_mb "$y_rss") → $(rss_mb "$z_rss")" "$G" "绿" "同形状峰值不随轮数增长（${y_ratio}× @ ×4 轮）"
+    fi
+else
+    row "cyclic-shape-pressure N→4N" "$y_c/$z_c" "$y_r/$z_r" "$(rss_mb "$y_rss") → $(rss_mb "$z_rss")" "$R" "红" "两次运行没同时跑对（N: $y_out / 4N: $z_out）"
 fi
 
 # ── 表 ────────────────────────────────────────────────────────────────────────

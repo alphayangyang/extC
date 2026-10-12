@@ -8,6 +8,9 @@
 # 判据：
 #   ① `scale_growth` N vs 4N：峰值比 < 1.5（开关关 ≈3.0× 红；开关开 ≈1.0× 绿）。
 #      机制见 docs/RECLAMATION.md：计数归零当场回收 + 区域清扫兜环 ⇒ 界与轮数解耦。
+#   ①b `cyclic_pressure` N vs 4N：峰值比 < 1.5（开关关 ≈3.4× 红；开关开 ≈1.0× 绿），
+#      且默认与开关下输出逐字一致。与 ① 的区别是**垃圾是环**：持有者计数永不归零，
+#      计数归零一个也放不掉 ⇒ 这条达到有界，只可能是清扫上了场（对照实验见 run-evidence.sh）。
 #   ② `cond_save` / `cyclic_shape` 在开关下**语义不变**（开关只换运行期，不改语义）。
 #   ③ 四个曾经的 SEGV 用例在开关下不崩、输出不变（板/池/栈/C 指针不是 rc 槽：
 #      `owns` 守卫必须一个字节都不碰）：
@@ -46,6 +49,7 @@ pass=0; fail=0
 ok()  { printf '  ok   %s\n' "$1"; pass=$((pass+1)); }
 bad() { printf '  FAIL %s\n' "$1"; fail=$((fail+1)); }
 rss_mb() { awk -v k="$1" 'BEGIN { if (k == "") printf "—"; else printf "%.2f MB", k/1024 }'; }
+ratio_of() { awk -v a="$1" -v b="$2" 'BEGIN { if (a == "" || b == "") printf "—"; else printf "%.2f", b/a }'; }
 
 echo "== 回收开关断言（EXTC_RECLAIM=$sw）=="
 
@@ -80,6 +84,73 @@ if [ "$n_c" = ok ] && [ "$f_c" = ok ] && [ "$n_rc" = 0 ] && [ "$f_rc" = 0 ] \
     fi
 else
     bad "scale-growth N→4N：编译/运行/语义没同时成立（N: c=$n_c rc=$n_rc out=$n_out / 4N: c=$f_c rc=$f_rc out=$f_out）"
+fi
+
+# ── ①b cyclic_pressure：**有环**形状，峰值必须与轮数解耦（清扫上场的证据）────────────
+# 形状见 tests/reclaim-shapes/cyclic_pressure.extc 的文件头：桶满时整条双向链退役 ⇒ 链内
+# next/prev 互指、每个节点都还有入边 ⇒ 持有者计数**永不归零** ⇒ 计数归零一个也放不掉，
+# 只有区域清扫能收。判据：
+#   · 默认（开关关）与开关开：输出**逐字一致**（回收只换运行期，不改语义）；
+#   · 开关开 N vs 4N：峰值比 < 1.5（界与轮数解耦）。
+# 同一形状开关关掉时 ≈3.4×（run.sh 基线里那条红）；「清扫真的上场」的对照实验（把清扫触发
+# 阈值抬到 1 TB ⇒ 一次清扫都不发 ⇒ 峰值重新随轮数涨 ≈3.5×）在 run-evidence.sh。
+echo "-- ①b cyclic-pressure N→4N：有环形状的峰值必须与轮数解耦（清扫上台）--"
+CYC_WANT_N="rounds=200000 retired=22208 live=128 fwd=25591744 back=25591744 idx=20000 cache=1024 hits=155520 depth=212 tree=true"
+CYC_WANT_F="rounds=800000 retired=88832 live=512 fwd=409468672 back=409468672 idx=20000 cache=1024 hits=622272 depth=80 tree=true"
+
+# 编译 cyclic_pressure：on 带开关，off 显式不带（`env -u`，因为本脚本已 export 了开关）。
+cyc_build() { # <on|off> <tag> → CY_C=ok/fail
+    local mode=$1 tag=$2
+    CY_C=fail
+    if [ "$mode" = on ]; then
+        EXTC_RECLAIM=1 "$EXTC" -w --no-line-map tests/reclaim-shapes/cyclic_pressure.extc \
+            -o "$TMP/cyc-$tag.c" >"$TMP/cyc-$tag.build.log" 2>&1
+    else
+        env -u EXTC_RECLAIM "$EXTC" -w --no-line-map tests/reclaim-shapes/cyclic_pressure.extc \
+            -o "$TMP/cyc-$tag.c" >"$TMP/cyc-$tag.build.log" 2>&1
+    fi
+    if [ $? -eq 0 ] && "$CC" -std=c11 -fwrapv -O1 -o "$TMP/cyc-$tag" "$TMP/cyc-$tag.c" \
+            >>"$TMP/cyc-$tag.build.log" 2>&1; then CY_C=ok; fi
+}
+cyc_run() { # <tag> <N> → CY_RC / CY_RSS / CY_OUT
+    local tag=$1 n=$2
+    CY_RC=-; CY_RSS=""; CY_OUT=""
+    "$TIME" -v -o "$TMP/cyc-$tag.time" "$TMP/cyc-$tag" "$n" >"$TMP/cyc-$tag.out" 2>"$TMP/cyc-$tag.err"
+    CY_RC=$?
+    CY_RSS=$(awk -F': ' '/Maximum resident set size \(kbytes\)/{print $2}' "$TMP/cyc-$tag.time")
+    CY_OUT=$(cat "$TMP/cyc-$tag.out")
+}
+
+cyc_build on  r; cyc_on_build=$CY_C
+cyc_build off o; cyc_off_build=$CY_C
+cyc_run r 200000; rn_rc=$CY_RC; rn_rss=$CY_RSS; rn_out=$CY_OUT
+cyc_run o 200000; on_rc=$CY_RC; on_rss=$CY_RSS; on_out=$CY_OUT
+cyc_run r 800000; rf_rc=$CY_RC; rf_rss=$CY_RSS; rf_out=$CY_OUT
+cyc_run o 800000; of_rc=$CY_RC; of_rss=$CY_RSS; of_out=$CY_OUT
+
+# 语义：开关开/关的输出必须逐字一致（回收只换运行期）。
+if [ "$cyc_on_build" = ok ] && [ "$cyc_off_build" = ok ] && [ "$rn_rc" = 0 ] && [ "$on_rc" = 0 ] \
+   && [ "$rn_out" = "$CYC_WANT_N" ] && [ "$on_out" = "$CYC_WANT_N" ]; then
+    ok "cyclic-pressure：默认与开关下输出逐字一致（N=200000：桶链两向一致 / 索引 / 缓存 / 父指针全对）"
+else
+    bad "cyclic-pressure：默认/开关语义不一致或没跑对（on[c=$cyc_on_build rc=$rn_rc out=$rn_out] off[c=$cyc_off_build rc=$on_rc out=$on_out]）"
+fi
+
+# 峰值判据跟**本次调用的开关状态**走：`EXTC_RECLAIM=0 ./run-switch.sh` 时这条必须红
+# （和 ① 一样是“有牙”的一部分），不能自己硬把开关打开。
+if [ "$sw" = on ]; then amb_tag=r; amb_name="开关开"; other_ratio=$(ratio_of "$on_rss" "$of_rss"); else amb_tag=o; amb_name="开关关"; other_ratio=$(ratio_of "$rn_rss" "$rf_rss"); fi
+cyc_run "$amb_tag" 200000; mn_rc=$CY_RC; mn_rss=$CY_RSS; mn_out=$CY_OUT
+cyc_run "$amb_tag" 800000; mf_rc=$CY_RC; mf_rss=$CY_RSS; mf_out=$CY_OUT
+if [ "$mn_rc" = 0 ] && [ "$mf_rc" = 0 ] && [ "$mn_out" = "$CYC_WANT_N" ] && [ "$mf_out" = "$CYC_WANT_F" ] \
+   && [ -n "$mn_rss" ] && [ -n "$mf_rss" ]; then
+    ratio=$(ratio_of "$mn_rss" "$mf_rss")
+    if awk -v a="$mn_rss" -v b="$mf_rss" 'BEGIN { exit !(b < a * 1.5) }'; then
+        ok "cyclic-pressure N→4N（$amb_name）：$(rss_mb "$mn_rss") → $(rss_mb "$mf_rss")（${ratio}× < 1.5×）—— 环垃圾被清扫收住"
+    else
+        bad "cyclic-pressure N→4N（$amb_name）：$(rss_mb "$mn_rss") → $(rss_mb "$mf_rss")（${ratio}× ≥ 1.5×）—— 有环形状的界仍随轮数涨（另一档 ${other_ratio}×）"
+    fi
+else
+    bad "cyclic-pressure N→4N：两次运行没同时跑对（N: rc=$mn_rc out=$mn_out / 4N: rc=$mf_rc out=$mf_out）"
 fi
 
 # ── ② 开关只换运行期，不改语义 ────────────────────────────────────────────────
