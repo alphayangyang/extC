@@ -153,6 +153,83 @@ else
     bad "cyclic-pressure N→4N：两次运行没同时跑对（N: rc=$mn_rc out=$mn_out / 4N: rc=$mf_rc out=$mf_out）"
 fi
 
+# ── ①c cross-region：跨区堆→堆边的登记 + 来源侧撤销 ────────────────────────────
+# 形状见 tests/reclaim-shapes/cross_region.extc：region 1 的对象被 region 2 的堆对象指着，
+# 而 region 2 每轮随块丢弃。两条判据：
+#   · **登记**：`s.next = keeper` 是堆→堆跨区入边，没有它 region 1 的清扫看不见这条边；
+#   · **撤销**：来源侧记账（rscnt + 来源对象/区域死亡时成批撤销）让登记位不粘 —— 只置不清
+#     的话每轮的 keeper 都永久当种子，峰值随轮数涨（task-3 撤掉登记的原因）。
+# 观测：开关下 N vs 4N 峰值比 < 1.5；`EXTC_RC_STATS=1` 的 **rs_hwm**（跨区登记高水位）不随
+# 轮数增长，而 `rs_inc` 随轮数增长（证明登记真的在发）。开关关：同形状峰值随轮数涨（有牙）。
+echo "-- ①c cross-region：跨区堆→堆边登记 + 撤销（登记量必须与轮数解耦）--"
+XREG_WANT_N="rounds=200000 sink=40000400000 last=200000"
+XREG_WANT_F="rounds=800000 sink=640001600000 last=200000"
+
+xr_build() { # <on|off> <tag> → XR_C=ok/fail
+    XR_C=fail
+    if [ "$1" = on ]; then
+        EXTC_RECLAIM=1 "$EXTC" -w --no-line-map tests/reclaim-shapes/cross_region.extc \
+            -o "$TMP/xr-$2.c" >"$TMP/xr-$2.build.log" 2>&1
+    else
+        env -u EXTC_RECLAIM "$EXTC" -w --no-line-map tests/reclaim-shapes/cross_region.extc \
+            -o "$TMP/xr-$2.c" >"$TMP/xr-$2.build.log" 2>&1
+    fi
+    if [ $? -eq 0 ] && "$CC" -std=c11 -fwrapv -O1 -o "$TMP/xr-$2" "$TMP/xr-$2.c" \
+            >>"$TMP/xr-$2.build.log" 2>&1; then XR_C=ok; fi
+}
+xr_run() { # <tag> <N> [stats] → XR_RC / XR_RSS / XR_OUT / XR_HWM / XR_INC
+    local tag=$1 n=$2
+    XR_RC=-; XR_RSS=""; XR_OUT=""; XR_HWM=""; XR_INC=""
+    if [ "${3-}" = stats ]; then
+        EXTC_RC_STATS=1 "$TIME" -v -o "$TMP/xr-$tag.time" "$TMP/xr-$tag" "$n" \
+            >"$TMP/xr-$tag.out" 2>"$TMP/xr-$tag.err"
+    else
+        "$TIME" -v -o "$TMP/xr-$tag.time" "$TMP/xr-$tag" "$n" >"$TMP/xr-$tag.out" 2>"$TMP/xr-$tag.err"
+    fi
+    XR_RC=$?
+    XR_RSS=$(awk -F': ' '/Maximum resident set size \(kbytes\)/{print $2}' "$TMP/xr-$tag.time")
+    XR_OUT=$(cat "$TMP/xr-$tag.out")
+    XR_HWM=$(grep -o 'rs_hwm=[0-9]*' "$TMP/xr-$tag.err" | head -1 | cut -d= -f2)
+    XR_INC=$(grep -o 'rs_inc=[0-9]*' "$TMP/xr-$tag.err" | head -1 | cut -d= -f2)
+}
+
+xr_build on  r; xr_on_c=$XR_C
+xr_build off o; xr_off_c=$XR_C
+xr_run r 200000 stats; rn_rc=$XR_RC; rn_rss=$XR_RSS; rn_out=$XR_OUT; rn_hwm=$XR_HWM; rn_inc=$XR_INC
+xr_run o 200000;       on_rc=$XR_RC; on_out=$XR_OUT
+xr_run r 800000 stats; rf_rc=$XR_RC; rf_rss=$XR_RSS; rf_out=$XR_OUT; rf_hwm=$XR_HWM; rf_inc=$XR_INC
+xr_run o 800000;       of_rc=$XR_RC; of_out=$XR_OUT
+
+if [ "$xr_on_c" = ok ] && [ "$xr_off_c" = ok ] && [ "$rn_rc" = 0 ] && [ "$on_rc" = 0 ] \
+   && [ "$rn_out" = "$XREG_WANT_N" ] && [ "$on_out" = "$XREG_WANT_N" ]; then
+    ok "cross-region：默认与开关下输出逐字一致（N=200000 与开关关相同）"
+else
+    bad "cross-region：默认/开关语义不一致（on[c=$xr_on_c rc=$rn_rc out=$rn_out] off[c=$xr_off_c rc=$on_rc out=$on_out]）"
+fi
+
+# 登记量与轮数解耦：rs_inc 随轮数涨（登记在发），rs_hwm 不许涨（撤销及时）。
+if [ -n "$rn_hwm" ] && [ -n "$rf_hwm" ] && [ -n "$rn_inc" ] && [ -n "$rf_inc" ] \
+   && [ "$rf_inc" -gt "$rn_inc" ] && [ "$rf_hwm" -le $((rn_hwm * 2)) ] && [ "$rf_hwm" -lt 200000 ]; then
+    ok "cross-region：登记在发（rs_inc ${rn_inc}→${rf_inc}）而高水位不随轮数涨（rs_hwm ${rn_hwm}→${rf_hwm}）—— 来源侧撤销及时"
+else
+    bad "cross-region：登记量判据破了（N: rs_inc=$rn_inc rs_hwm=$rn_hwm / 4N: rs_inc=$rf_inc rs_hwm=$rf_hwm）"
+fi
+
+# 峰值判据跟本次调用的开关状态走（`EXTC_RECLAIM=0 ./run-switch.sh` 时这条必须红）。
+if [ "$sw" = on ]; then xr_tag=r; xr_name="开关开"; xr_off_ratio=$(ratio_of "$on_rss" "$of_rss"); else xr_tag=o; xr_name="开关关"; xr_off_ratio=$(ratio_of "$rn_rss" "$rf_rss"); fi
+xr_run "$xr_tag" 200000; xn_rc=$XR_RC; xn_rss=$XR_RSS
+xr_run "$xr_tag" 800000; xf_rc=$XR_RC; xf_rss=$XR_RSS
+if [ "$xn_rc" = 0 ] && [ "$xf_rc" = 0 ] && [ -n "$xn_rss" ] && [ -n "$xf_rss" ]; then
+    ratio=$(ratio_of "$xn_rss" "$xf_rss")
+    if awk -v a="$xn_rss" -v b="$xf_rss" 'BEGIN { exit !(b < a * 1.5) }'; then
+        ok "cross-region N→4N（$xr_name）：$(rss_mb "$xn_rss") → $(rss_mb "$xf_rss")（${ratio}× < 1.5×）—— 跨区边不把旧对象钉住"
+    else
+        bad "cross-region N→4N（$xr_name）：$(rss_mb "$xn_rss") → $(rss_mb "$xf_rss")（${ratio}× ≥ 1.5×）—— 峰值仍随轮数涨（另一档 ${xr_off_ratio}×）"
+    fi
+else
+    bad "cross-region N→4N：两次运行没同时跑对（N: rc=$xn_rc / 4N: rc=$xf_rc）"
+fi
+
 # ── ② 开关只换运行期，不改语义 ────────────────────────────────────────────────
 echo "-- ② 开关下语义不变 --"
 build_run tests/reclaim-shapes/cond_save.extc

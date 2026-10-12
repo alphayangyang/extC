@@ -4589,6 +4589,28 @@ static bool cgIsRefType(CG *g, Type *t) {
 }
 
 /**
+ * @brief 一个**纯地方**表达式：重复求值安全（没有调用、没有下标求值）。
+ *
+ * 跨区登记要在同一处再求值一次"装着这条槽的对象"（`a->f = v` 要多传一个 `a`），所以只认
+ * 绑定、字段链与解引用：它们的求值没有副作用，重复读同一个值。带下标的投影（`a[i]`）要把
+ * 下标也重复求值才安全，代价大于收益，直接不登记 —— 那些位置由触发点的根表覆盖。
+ *
+ * @param g  生成器状态。
+ * @param e  候选表达式。
+ * @return   是纯地方时为 true。
+ */
+static bool cgPurePlace(CG *g, Expr *e) {
+    (void)g;
+    for (; e; ) {
+        if (e->kind == EX_IDENT) return true;
+        if (e->kind == EX_FIELD) { e = e->u.field.obj; continue; }
+        if (e->kind == EX_DEREF) { e = e->u.deref.operand; continue; }
+        return false;
+    }
+    return false;
+}
+
+/**
  * @brief 在**帧销毁**处发射区域释放（`extc_arena_destroy` 旁边）。
  *
  * 认领键是 arena 的地址（见 `emitRuntimePrologue` 里那张表），所以这里只发地址，不需要
@@ -5138,13 +5160,32 @@ static void genStmtInner(CG *g, Stmt *s) {
             /* 引用槽的赋值是**覆盖**语义（槽里已经有旧值），所以走 storeRef：读旧值减一、
              * 新值加一。数据字段（`p.val = x`）不是引用类型 ⇒ 一个字都不发。
              *
-             * **不发跨区登记位**：登记位是**粘性**的 —— 置在目标槽上，只有目标槽释放才清。
-             * 于是一个循环里每轮把新对象存进别区的引用槽，就会给每个对象永久置位，清扫时
-             * 它们全成了种子 ⇒ 内存又回到"随轮数线性增长"。跨区边的正确清理要有"登记来源随
-             * 来源区域释放而撤销"的记忆集（写屏障或按来源区记账），那是另一件事；在那之前，
-             * 触发点的根表（栈上引用槽 + 全局）就是根的来源。 */
+             * 跨区边（`a->f = v` 且 `a` 与 `v` 不在同一区域）**要登记**：目标区域的清扫从
+             * 根 + 登记位播种，堆→堆的跨区入边没有别的地方能到。登记位的清理由来源侧记账
+             * 负责（`rscnt` 计数 + 来源对象/来源区域死亡时撤销），所以它**不是粘性的** ——
+             * 只置不清会让循环里每轮新建的对象永远当种子（内存随轮数线性涨）。
+             *
+             * 第三个实参是"装着这条槽的对象"：`a->f` 传 `a`，`*p` 传 `p`，局部变量/全局的槽
+             * 传空（那些是根，触发点的根表覆盖）。对象表达式必须是**纯地方**，否则会在同一处
+             * 求值两次（`f()->f = v` 会把 `f()` 调两次）。 */
             const bool refStore = g->needReclaim && !s->u.assign.op
                                   && cgIsRefType(g, s->u.assign.target->type);
+            const char *owner = "0";
+            if (refStore && s->u.assign.target) {
+                Expr *t = s->u.assign.target;
+                /* 只有当槽真的在**指针指向的对象**里时那个对象才是 slab：`p->f = v` 的
+                 * `p`、`*p = v` 的 `p`。`c.a = v`（`c` 是结构体**值**）里的槽属于局部/arena，
+                 * 不是本运行期的槽，传空；`a[i]` 的容器是值，也传空。 */
+                Expr *base = NULL;
+                if (t->kind == EX_FIELD) {
+                    Expr *b = t->u.field.obj;
+                    Type *bt = b ? subst(g, b->type) : NULL;
+                    if (bt && bt->kind == TY_REF) base = b;
+                } else if (t->kind == EX_DEREF) {
+                    base = t->u.deref.operand;
+                }
+                if (base && cgPurePlace(g, base)) owner = genExpr(g, base);
+            }
             flushPrefix(g);
             /* `x += y` is emitted as `x += y`: C evaluates the target **once**, which is
              * exactly the meaning the statement has, and it is what a reader expects to
@@ -5159,7 +5200,8 @@ static void genStmtInner(CG *g, Stmt *s) {
                 return;
             }
             if (refStore) {
-                cgLine(g, "extc_rc_storeRef((void **)&(%s), (void *)(%s));", tgt, val);
+                cgLine(g, "extc_rc_storeRefOwned((void **)&(%s), (void *)(%s), (void *)(%s));",
+                       tgt, val, owner);
                 return;
             }
             cgLine(g, "%s = %s;", tgt, asF32(g, s->u.assign.target ? s->u.assign.target->type : NULL,
