@@ -11,6 +11,11 @@
 #   ①b `cyclic_pressure` N vs 4N：峰值比 < 1.5（开关关 ≈3.4× 红；开关开 ≈1.0× 绿），
 #      且默认与开关下输出逐字一致。与 ① 的区别是**垃圾是环**：持有者计数永不归零，
 #      计数归零一个也放不掉 ⇒ 这条达到有界，只可能是清扫上了场（对照实验见 run-evidence.sh）。
+#   ①c `cross_region` N vs 4N：跨区堆→堆边的登记 + 来源侧撤销（登记量必须与轮数解耦）。
+#   ①d `cross_region_elem` N vs 4N：同一条洞落在**下标槽** `a[i]` 里 —— 修之前 `a[i]` 不登记
+#      ⇒ 清扫种子不完整 ⇒ UAF（ASan SEGV / 非 ASan rc=139）；开关关时峰值随轮数涨（有牙）。
+#   ①d′ `unknown_host`：宿主**证不出来**的槽（`(*id(a)).next = a`，基表达式带调用）必须走保守
+#      路径（目标区域退出清扫），绝不许 `storeRefOwned(..., owner=0)` —— 生成物判据。
 #   ② `cond_save` / `cyclic_shape` 在开关下**语义不变**（开关只换运行期，不改语义）。
 #   ③ 四个曾经的 SEGV 用例在开关下不崩、输出不变（板/池/栈/C 指针不是 rc 槽：
 #      `owns` 守卫必须一个字节都不碰）：
@@ -228,6 +233,140 @@ if [ "$xn_rc" = 0 ] && [ "$xf_rc" = 0 ] && [ -n "$xn_rss" ] && [ -n "$xf_rss" ];
     fi
 else
     bad "cross-region N→4N：两次运行没同时跑对（N: rc=$xn_rc / 4N: rc=$xf_rc）"
+fi
+
+# ── ①d cross-region 下标槽：`a[i]` 里的跨区入边也必须是种子 ─────────────────────
+# 形状见 tests/reclaim-shapes/cross_region_elem.extc：与 ①c 同一个洞的另一半 —— 跨区堆→堆边
+# 落在**下标槽** `s.kids[0]` 里（槽的存储仍在 `s` 的载荷里，宿主就是 `s`，但基表达式是 `a[i]`）。
+# 修之前 codegen 只认纯地方基（`p->f` / `*p`），`a[i]` 落进"owner=0、不登记"那一档 ⇒ region 1
+# 的清扫种子不完整 ⇒ 还被 `s->kids[0]` 指着的对象被放掉 ⇒ UAF：ASan 下 SEGV（地址是空闲链
+# 槽号 0xb），非 ASan 直接 rc=139。修法见 codegen 的 `cgSlotHost` / 运行期
+# `extc_rc_storeRefUnknown`：宿主证得出来（下标槽的宿主 = 容器对象）就登记跨区边；证不出来
+# （视图元素、带调用的基表达式……）就让**目标所在区域整个退出清扫**，绝不在种子不完整时照常扫。
+# 判据：
+#   · 开关开：N 与 4N 都 rc=0、`ok=true`（sink = Σi），且峰值比 < 1.5（跨区边不把旧对象钉住）；
+#   · 开关关：同形状峰值随轮数涨（≈4×）⇒ 这条红（有牙）。
+echo "-- ①d cross-region 下标槽：a[i] 里的跨区堆→堆边必须登记（种子完整）--"
+ELEM_WANT_N="rounds=200000 sink=19999900000 want=19999900000 ok=true"
+ELEM_WANT_F="rounds=800000 sink=319999600000 want=319999600000 ok=true"
+
+el_build() { # <on|off> <tag> → EL_C=ok/fail；开关开时另给 EL_SEED（生成物里槽的种子形态）
+    EL_C=fail; EL_SEED=-
+    if [ "$1" = on ]; then
+        EXTC_RECLAIM=1 "$EXTC" -w --no-line-map tests/reclaim-shapes/cross_region_elem.extc \
+            -o "$TMP/el-$2.c" >"$TMP/el-$2.build.log" 2>&1
+    else
+        env -u EXTC_RECLAIM "$EXTC" -w --no-line-map tests/reclaim-shapes/cross_region_elem.extc \
+            -o "$TMP/el-$2.c" >"$TMP/el-$2.build.log" 2>&1
+    fi
+    if [ $? -eq 0 ] && "$CC" -std=c11 -fwrapv -O1 -o "$TMP/el-$2" "$TMP/el-$2.c" \
+            >>"$TMP/el-$2.build.log" 2>&1; then EL_C=ok; fi
+    # 生成物层面的判据（比"跑得恰好没崩"更直接）：往下标槽 `s.kids[...]` 里存 `keeper` 那一条，
+    # 要么登记（owner = 容器对象 `s`），要么走保守路径（`storeRefUnknown`：目标区域退出清扫）。
+    # 落到 `storeRefOwned(..., (void *)(0))`（旧写法）就是"seed 缺一条还照常扫"——必红。
+    if [ "$1" = on ] && [ "$EL_C" = ok ]; then
+        el_kids=$(grep -E 'storeRef(Owned|Unknown)' "$TMP/el-$2.c" | grep -F 'kids' | grep -F 'keeper')
+        case "$el_kids" in
+            *storeRefUnknown*) EL_SEED="保守路径（目标区域退出清扫）" ;;
+            *'(void *)(s));'*) EL_SEED="登记（owner = 容器对象 s）" ;;
+            *)                 EL_SEED="bad" ;;
+        esac
+    fi
+}
+el_run() { # <tag> <N> → EL_RC / EL_RSS / EL_OUT
+    local tag=$1 n=$2
+    EL_RC=-; EL_RSS=""; EL_OUT=""
+    "$TIME" -v -o "$TMP/el-$tag.time" "$TMP/el-$tag" "$n" >"$TMP/el-$tag.out" 2>"$TMP/el-$tag.err"
+    EL_RC=$?
+    EL_RSS=$(awk -F': ' '/Maximum resident set size \(kbytes\)/{print $2}' "$TMP/el-$tag.time")
+    EL_OUT=$(cat "$TMP/el-$tag.out")
+}
+
+el_build on  r; el_on_c=$EL_C; el_seed=$EL_SEED
+el_build off o; el_off_c=$EL_C
+el_run r 200000; ern_rc=$EL_RC; ern_out=$EL_OUT
+el_run o 200000; eon_rc=$EL_RC; eon_out=$EL_OUT
+
+# 语义：开关开/关的输出必须逐字一致（回收只换运行期）。
+if [ "$el_on_c" = ok ] && [ "$el_off_c" = ok ] && [ "$ern_rc" = 0 ] && [ "$eon_rc" = 0 ] \
+   && [ "$ern_out" = "$ELEM_WANT_N" ] && [ "$eon_out" = "$ELEM_WANT_N" ]; then
+    ok "cross-region-elem：默认与开关下输出逐字一致（N=200000：sink=Σi 全对）"
+else
+    bad "cross-region-elem：默认/开关语义不一致或没跑对（on[c=$el_on_c rc=$ern_rc out=$ern_out] off[c=$el_off_c rc=$eon_rc out=$eon_out]）"
+fi
+
+# 生成物判据：下标槽那条跨区边的种子形态必须是**登记**或**保守路径**之一（旧写法是
+# `storeRefOwned(..., owner=0)`：既没登记，也没让目标区域退出清扫 ⇒ seed 缺一条还照常扫）。
+if [ "$el_on_c" = ok ] && [ "$el_seed" != bad ] && [ "$el_seed" != - ]; then
+    ok "cross-region-elem：下标槽的跨区边种子完整（生成物：$el_seed）"
+else
+    bad "cross-region-elem：下标槽的跨区边既没登记也没走保守路径（生成物种子形态：$el_seed）—— seed 不完整还照常扫"
+fi
+
+# 峰值判据跟本次调用的开关状态走（`EXTC_RECLAIM=0 ./run-switch.sh` 时这条必须红）。
+if [ "$sw" = on ]; then el_tag=r; el_name="开关开"; else el_tag=o; el_name="开关关"; fi
+el_run "$el_tag" 200000; en_rc=$EL_RC; en_rss=$EL_RSS; en_out=$EL_OUT
+el_run "$el_tag" 800000; ef_rc=$EL_RC; ef_rss=$EL_RSS; ef_out=$EL_OUT
+if [ "$en_rc" = 0 ] && [ "$ef_rc" = 0 ] && [ "$en_out" = "$ELEM_WANT_N" ] && [ "$ef_out" = "$ELEM_WANT_F" ] \
+   && [ -n "$en_rss" ] && [ -n "$ef_rss" ]; then
+    ratio=$(ratio_of "$en_rss" "$ef_rss")
+    if awk -v a="$en_rss" -v b="$ef_rss" 'BEGIN { exit !(b < a * 1.5) }'; then
+        ok "cross-region-elem N→4N（$el_name）：$(rss_mb "$en_rss") → $(rss_mb "$ef_rss")（${ratio}× < 1.5×）—— 下标槽的跨区边也是种子"
+    else
+        bad "cross-region-elem N→4N（$el_name）：$(rss_mb "$en_rss") → $(rss_mb "$ef_rss")（${ratio}× ≥ 1.5×）—— 峰值随轮数涨（门禁的'有牙'那一半）"
+    fi
+else
+    bad "cross-region-elem N→4N：两次运行没同时跑对（N: rc=$en_rc out=$en_out / 4N: rc=$ef_rc out=$ef_out）"
+fi
+
+# ①d′ 宿主**证不出来**那一档（`(*id(a)).next = a`：基表达式带调用；视图元素 `v[i].f = x` 同档）。
+# 硬要求是"证不出 owner 时那条槽绝不能照常扫"：生成物里该条赋值要么是 `storeRefUnknown`
+# （把目标所在区域整个标成 noSweep），要么是登记了一个**真** owner；绝不许落回
+# `storeRefOwned(..., (void *)(0))`（owner=0 = 既没登记、也没退出清扫 ⇒ seed 缺一条还照扫）。
+echo "-- ①d′ 宿主证不出来：带调用的基表达式必须退出清扫，不许照常扫 --"
+UH_WANT="got=7"
+uh_build() { # <on|off> <tag> → UH_C=ok/fail；开关开时另给 UH_FORM（生成物里该条的形态）
+    UH_C=fail; UH_FORM=-
+    if [ "$1" = on ]; then
+        EXTC_RECLAIM=1 "$EXTC" -w --no-line-map tests/reclaim-shapes/unknown_host.extc \
+            -o "$TMP/uh-$2.c" >"$TMP/uh-$2.build.log" 2>&1
+    else
+        env -u EXTC_RECLAIM "$EXTC" -w --no-line-map tests/reclaim-shapes/unknown_host.extc \
+            -o "$TMP/uh-$2.c" >"$TMP/uh-$2.build.log" 2>&1
+    fi
+    if [ $? -eq 0 ] && "$CC" -std=c11 -fwrapv -O1 -o "$TMP/uh-$2" "$TMP/uh-$2.c" \
+            >>"$TMP/uh-$2.build.log" 2>&1; then UH_C=ok; fi
+    if [ "$1" = on ] && [ "$UH_C" = ok ]; then
+        uh_line=$(grep -E 'storeRef(Owned|Unknown)' "$TMP/uh-$2.c" | grep -F 'id(a)' | grep -F '.next')
+        case "$uh_line" in
+            *storeRefUnknown*)                 UH_FORM="保守路径（目标区域退出清扫）" ;;
+            *storeRefOwned*', (void *)(0));'*) UH_FORM="bad" ;;
+            *storeRefOwned*)                   UH_FORM="登记（宿主已证出）" ;;
+            *)                                 UH_FORM="bad" ;;
+        esac
+    fi
+}
+uh_run() { # <tag> → UH_RC / UH_OUT
+    UH_RC=-; UH_OUT=""
+    "$TMP/uh-$1" >"$TMP/uh-$1.out" 2>"$TMP/uh-$1.err"; UH_RC=$?
+    UH_OUT=$(cat "$TMP/uh-$1.out")
+}
+
+uh_build on r; uh_on_c=$UH_C; uh_form=$UH_FORM
+uh_build off o; uh_off_c=$UH_C
+uh_run r; uhr_rc=$UH_RC; uhr_out=$UH_OUT
+uh_run o; uho_rc=$UH_RC; uho_out=$UH_OUT
+
+if [ "$uh_on_c" = ok ] && [ "$uh_form" != bad ] && [ "$uh_form" != - ]; then
+    ok "unknown-host：带调用的基表达式槽种子完整（生成物：$uh_form）"
+else
+    bad "unknown-host：宿主证不出来却既没登记也没退出清扫（生成物形态：$uh_form）—— seed 不完整还照常扫"
+fi
+if [ "$uh_off_c" = ok ] && [ "$uhr_rc" = 0 ] && [ "$uho_rc" = 0 ] \
+   && [ "$uhr_out" = "$UH_WANT" ] && [ "$uho_out" = "$UH_WANT" ]; then
+    ok "unknown-host：开关开/关输出逐字一致（$UH_WANT）"
+else
+    bad "unknown-host：开关开/关语义不一致（on[c=$uh_on_c rc=$uhr_rc out=$uhr_out] off[c=$uh_off_c rc=$uho_rc out=$uho_out]）"
 fi
 
 # ── ② 开关只换运行期，不改语义 ────────────────────────────────────────────────

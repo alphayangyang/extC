@@ -53,18 +53,27 @@
 ### `./run-switch.sh`（门禁，`EXTC_RECLAIM=1`）
 
 判据：`scale_growth` N vs 4N 峰值比 **< 1.5**；`cyclic_pressure` N vs 4N 峰值比 **< 1.5**
-且默认/开关下输出逐字一致；`cond_save` / `cyclic_shape` 语义不变；上表四个曾经的 SEGV
-用例 **rc=0** 且输出逐字不变。实测（`通过 9，失败 0`）：
+且默认/开关下输出逐字一致；`cross_region` N vs 4N 峰值比 **< 1.5**、跨区登记量（`rs_hwm`）
+不随轮数增长；`cross_region_elem` N vs 4N 峰值比 **< 1.5**、且生成物里**下标槽**
+（`s.kids[...]`）的跨区边要么登记、要么走保守路径（`storeRefUnknown`）；`unknown_host` 的
+生成物里**宿主证不出来**的那条槽必须是 `storeRefUnknown`（或登记了真 owner），不许是
+`storeRefOwned(..., owner=0)`；`cond_save` /
+`cyclic_shape` 语义不变；上表四个曾经的 SEGV 用例 **rc=0** 且输出逐字不变。
+实测（`通过 17，失败 0`）：
 
 | 场景 | N=200000 | N=800000 | 比值 | 判定 |
 |---|---|---|---|---|
-| `scale_growth` 开关关 | 4.61 MB | 13.79 MB | **2.99×** | 红（`run-switch.sh` exit 1）|
-| `scale_growth` 开关开 | 4.79 MB | 4.79 MB | **1.00×** | 绿（`run-switch.sh` exit 0）|
+| `scale_growth` 开关关 | 4.66 MB | 13.86 MB | **2.97×** | 红（`run-switch.sh` exit 1）|
+| `scale_growth` 开关开 | 4.98 MB | 4.98 MB | **1.00×** | 绿（`run-switch.sh` exit 0）|
 | `cyclic_pressure` 开关关 | 10.04 MB | 34.61 MB | **3.45×** | 红 |
-| `cyclic_pressure` 开关开 | 7.61 MB | 7.61 MB | **1.00×** | 绿 |
+| `cyclic_pressure` 开关开 | 7.86 MB | 7.79 MB | **0.99×** | 绿 |
+| `cross_region` 开关关 | 4.61 MB | 13.79 MB | **2.99×** | 红 |
+| `cross_region` 开关开 | 11.98 MB | 14.61 MB | **1.22×** | 绿 |
+| `cross_region_elem` 开关关 | 105.36 MB | 417.11 MB | **3.96×** | 红 |
+| `cross_region_elem` 开关开 | 12.54 MB | 12.48 MB | **1.00×** | 绿 |
 
 这就是「判据有牙」的证据：把开关关掉（`EXTC_RECLAIM=0 tests/reclaim-shapes/run-switch.sh`），
-两条峰值判据都必须失败（实测 exit 1，`通过 7，失败 2`）。
+四条峰值判据都必须失败（实测 exit 1，`通过 13，失败 4`）。
 
 
 ## 逐条
@@ -78,6 +87,26 @@
 | `promote_place.extc` | ④ 提权发生的位置 | 生成物结构：逃逸的那份在循环体区域**之外** |
 | `scale_growth.extc` | ⑤ 同一形状轮数 ×4 | 峰值 RSS 是否随轮数增长（阈值 1.5×）|
 | `cyclic_pressure.extc` | ⑥ 有环 + 大压力（64 桶双向链 + 1024 槽缓存 + 2 万项索引 + 父指针树），轮数 ×4 | 峰值 RSS 是否随轮数增长；默认/开关语义一致；**清扫上场**（`run-evidence.sh`）|
+| `cross_region.extc` | ⑦ 跨区堆→堆边登记 + 来源侧撤销（边落在纯地方基 `s.next` 上）| 开关开 N vs 4N 峰值比 < 1.5；`rs_hwm` 不随轮数涨（`rs_inc` 涨）；开关关时两者都红 |
+| `cross_region_elem.extc` | ⑧ 同一洞落在**下标槽** `s.kids[0]` 上（`a[i]`）| 开关开 N vs 4N 峰值比 < 1.5、`ok=true`；生成物里该槽的种子完整（登记 / 保守路径）；开关关时峰值随轮数涨 |
+| `unknown_host.extc` | ⑨ 宿主**证不出来**的槽（`(*id(a)).next = a`：基表达式带调用）| 生成物里该条必须是 `storeRefUnknown`（目标区域退出清扫）或登记了真 owner，不许 `owner=0`；开关开/关输出一致（`got=7`）|
+
+### 下标槽里的跨区边（⑧）
+
+⑦ 的洞在**纯地方基**（`s.next`）上，codegen 能静态认出宿主 `s`；⑧ 把同一条边放进**下标槽**
+（`s.kids[0]`）——槽的存储仍在 `s` 的载荷里（内联数组元素），宿主还是 `s`，但基表达式是 `a[i]`，
+上一轮只认 `p->f` / `*p` ⇒ 不登记 ⇒ 清扫的种子少一条 ⇒ 只经这条边可达的对象被过早收 ⇒ UAF
+（ASan 下 `SEGV`，地址落在空闲链槽号上；非 ASan 直接 `rc=139`）。
+
+修法（安全优先，无写屏障）：codegen 用 `cgSlotHost` 沿**值投影**（字段 / 内联数组 / `ref [N]T`
+元素）找宿主，三态出口 —— 找得到且基表达式可重复求值 ⇒ 登记跨区边（`storeRefOwned`）；
+槽在静态声明的存储里 ⇒ 不用管（根表覆盖）；**追不到**（视图元素、带调用的基表达式……）⇒
+那条槽不再"照常扫"： `extc_rc_storeRefUnknown` 把**目标对象所在区域**整个标成 `noSweep`
+（此后只靠计数归零回收，宁可少收，也不在种子不完整时释放）。
+
+⑨ `unknown_host.extc` 专钉第三态：`(*id(a)).next = a` 的宿主是一个**调用结果**，既登记不上、
+根表里也没有 —— 生成物里这一条必须是 `storeRefUnknown`，绝不许落回 `storeRefOwned(..., owner=0)`
+（那是"既没登记、也没退出清扫"，seed 缺一条还照常扫）。视图元素 `v[i].f = x` 走同一档。
 
 ### 跨帧存储的方向（②）
 
@@ -254,8 +283,8 @@ gcc -fwrapv -O1 /tmp/scale-r.c -o /tmp/scale-r
 门禁那组一次跑完（绿；`EXTC_RECLAIM=0` 前置则 ① 与 ①b 都红 ⇒ exit 1）：
 
 ```bash
-tests/reclaim-shapes/run-switch.sh                        # 通过 9，失败 0
-EXTC_RECLAIM=0 tests/reclaim-shapes/run-switch.sh         # 通过 7，失败 2（复现"关掉即红"）
+tests/reclaim-shapes/run-switch.sh                        # 通过 17，失败 0
+EXTC_RECLAIM=0 tests/reclaim-shapes/run-switch.sh         # 通过 13，失败 4（复现"关掉即红"）
 ```
 
 有环大压力这一条的**全套证据**（阈值对照 + gdb 清扫计数 + 三方对照）：

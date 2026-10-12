@@ -4610,6 +4610,73 @@ static bool cgPurePlace(CG *g, Expr *e) {
     return false;
 }
 
+/* 一条引用槽的宿主：装着这条槽的那个**本运行期对象**。 */
+typedef enum {
+    RC_HOST_OBJ,      /* 找到了宿主对象表达式（还要过 cgPurePlace 才能重复求值） */
+    RC_HOST_LOCAL,    /* 槽在静态声明的存储里（局部/全局/形参）：触发点的根表已覆盖 */
+    RC_HOST_UNKNOWN   /* 宿主追不到（视图元素、调用结果……）：必须走保守路径 */
+} RcHost;
+
+/**
+ * @brief 沿**值投影**找一条引用槽的宿主对象。
+ *
+ * 跨区登记位要置在**目标**对象上，而"来源"是装着这条槽的对象：`a->f` 是 `a`、`*p` 是 `p`、
+ * 内联数组元素 `w.arr[i]` 是 `w`（元素存储就在对象载荷里，与下标无关）、`ref [N]T` 的
+ * `p[i]` 是 `p`。所以这里只沿**值字段**（`EX_FIELD` 里基类型不是引用的那一层）、内联数组与
+ * `ref [N]T` 的元素往外走，走到一个 `ref` 基或解引用为止。
+ *
+ * 三态的理由：追不到宿主时**绝不能照常清扫**（种子不完整会提前释放）。调用方按返回值选路：
+ * `RC_HOST_OBJ` 登记、`RC_HOST_LOCAL` 什么都不做（根表覆盖）、`RC_HOST_UNKNOWN` 走保守路径。
+ *
+ * @param g    生成器状态（要 `subst` 泛型实参）。
+ * @param t    赋值的目标表达式。
+ * @param obj  出口：`RC_HOST_OBJ` 时的宿主对象表达式。
+ * @return     见 `RcHost`。
+ */
+static RcHost cgSlotHost(CG *g, Expr *t, Expr **obj) {
+    *obj = NULL;
+    for (;;) {
+        if (!t) return RC_HOST_UNKNOWN;
+        switch (t->kind) {
+        case EX_DEREF:
+            /* `*p = v`：槽就是 p 指着的那个对象的载荷。 */
+            *obj = t->u.deref.operand;
+            return RC_HOST_OBJ;
+        case EX_FIELD: {
+            Expr *b = t->u.field.obj;
+            Type *bt = b ? subst(g, b->type) : NULL;
+            /* `p.f = v`（p 是引用，字段访问自动解引用）：槽在 *p 的载荷里。 */
+            if (bt && bt->kind == TY_REF) { *obj = b; return RC_HOST_OBJ; }
+            /* 值字段：槽的存储仍属于 b 的宿主，继续往外走。 */
+            t = b;
+            continue;
+        }
+        case EX_INDEX: {
+            Expr *b = t->u.index.obj;
+            Type *bt = b ? subst(g, b->type) : NULL;
+            if (bt && bt->kind == TY_REF) {
+                Type *bi = bt->inner ? ttBase(subst(g, bt->inner)) : NULL;
+                /* `p[i] = v` 且 p 是 `ref [N]T`：元素内联在 *p 里。 */
+                if (bi && bi->kind == TY_ARRAY) { *obj = b; return RC_HOST_OBJ; }
+                /* ref 到视图：元素在视图 data 指向的存储里，追不到。 */
+                return RC_HOST_UNKNOWN;
+            }
+            /* 内联数组（值）：元素存储属于数组的宿主。 */
+            if (bt && bt->kind == TY_ARRAY) { t = b; continue; }
+            /* 视图元素：data 可能指到板/池/栈/C 存储，追不到宿主。 */
+            return RC_HOST_UNKNOWN;
+        }
+        case EX_IDENT:
+            /* 变量自己的存储：静态根表把它（连同值字段/内联数组）登记成根。 */
+            return RC_HOST_LOCAL;
+        /* kind-default: 追不到宿主的投影一律按 UNKNOWN（安全方向）。新 kind 若可能成为
+         * 引用槽的宿主，必须在这里加 case，不能靠 default 混过去。 */
+        default:
+            return RC_HOST_UNKNOWN;
+        }
+    }
+}
+
 /**
  * @brief 在**帧销毁**处发射区域释放（`extc_arena_destroy` 旁边）。
  *
@@ -5171,20 +5238,19 @@ static void genStmtInner(CG *g, Stmt *s) {
             const bool refStore = g->needReclaim && !s->u.assign.op
                                   && cgIsRefType(g, s->u.assign.target->type);
             const char *owner = "0";
+            bool hostUnknown = false;
             if (refStore && s->u.assign.target) {
                 Expr *t = s->u.assign.target;
-                /* 只有当槽真的在**指针指向的对象**里时那个对象才是 slab：`p->f = v` 的
-                 * `p`、`*p = v` 的 `p`。`c.a = v`（`c` 是结构体**值**）里的槽属于局部/arena，
-                 * 不是本运行期的槽，传空；`a[i]` 的容器是值，也传空。 */
+                /* 宿主的三种结局（见 `cgSlotHost`）：纯地方基 ⇒ 登记跨区边；静态声明的
+                 * 存储 ⇒ 根表覆盖；追不到 ⇒ 保守路径。`c.a = v`（`c` 是结构体**值**）里的
+                 * 槽属于局部/arena，不是本运行期的槽；`a[i]` 的容器若在内联数组里（`w.arr[i]`）
+                 * 宿主就是 `w`，若在视图里则追不到。 */
                 Expr *base = NULL;
-                if (t->kind == EX_FIELD) {
-                    Expr *b = t->u.field.obj;
-                    Type *bt = b ? subst(g, b->type) : NULL;
-                    if (bt && bt->kind == TY_REF) base = b;
-                } else if (t->kind == EX_DEREF) {
-                    base = t->u.deref.operand;
-                }
-                if (base && cgPurePlace(g, base)) owner = genExpr(g, base);
+                RcHost h = cgSlotHost(g, t, &base);
+                if (h == RC_HOST_OBJ && base && cgPurePlace(g, base))
+                    owner = genExpr(g, base);
+                else if (h != RC_HOST_LOCAL)
+                    hostUnknown = true;
             }
             flushPrefix(g);
             /* `x += y` is emitted as `x += y`: C evaluates the target **once**, which is
@@ -5200,6 +5266,13 @@ static void genStmtInner(CG *g, Stmt *s) {
                 return;
             }
             if (refStore) {
+                if (hostUnknown) {
+                    /* 宿主证不出来：这条槽必须仍然是种子，但静态根表里没有它、来源侧也无从
+                     * 撤销。于是把**目标所在的区域**标成"不清扫"（安全方向：宁可少收）——
+                     * 区域从此只靠计数归零回收，绝不在种子不完整时照常扫。 */
+                    cgLine(g, "extc_rc_storeRefUnknown((void **)&(%s), (void *)(%s));", tgt, val);
+                    return;
+                }
                 cgLine(g, "extc_rc_storeRefOwned((void **)&(%s), (void *)(%s), (void *)(%s));",
                        tgt, val, owner);
                 return;

@@ -1,0 +1,93 @@
+/* 形状 ⑧：**跨区堆→堆边落在下标槽里**（`a[i]`）—— 清扫的种子必须包含它。
+ *
+ * 与形状 ⑦（`cross_region.extc`）同一个洞的另一半：⑦ 的跨区入边写在**纯地方基**上
+ * （`s.next = keeper`，宿主对象就是 `s`），codegen 能登记；这一条把它换成**下标槽**
+ * （`s.kids[0] = keeper`）。槽的存储仍然在 `s` 的载荷里（内联数组元素），宿主就是 `s`，
+ * 但基表达式是 `a[i]` —— 上一轮只认"纯地方"基，于是**不登记**。
+ *
+ * 为什么这是健全性洞（偏向过早收，危险的那一侧）：
+ *   清扫的种子 = 静态根表 + 登记的跨区入边。`s` 在 region 2（循环体）、`keeper/t` 在
+ *   region 1（函数体，被 `keeper = t` 提升）。region 1 的清扫从根表（只有栈上/全局的引用槽）
+ *   播种 —— 标记碰到区域外的对象会停，`s` 是区域外的，于是**走不到 `t`**。t 的绑定在
+ *   `{ }` 里、`keeper` 也被清空 ⇒ t 在根表里没有入口。唯一能救它的就是 `s->kids[0]` 这条
+ *   跨区入边的登记位；漏登记 ⇒ region 1 的清扫把 t 当垃圾放掉，而 `s` 还指着它 ⇒ UAF。
+ *
+ * 怎么让 UAF 一定露面（而不是"释放后又被复用、恰好看不出来"）：
+ *   · 每轮把 t 的**本地绑定**藏进内层块（块一结束 t 就不再是根）；
+ *   · t 挂一个自环（`t.next = t`）⇒ 计数永远不归零，垃圾在 region 1 里攒到清扫阈值；
+ *   · `pad = new big` 是 region 1 的分配点（触发清扫），而且 `big` 与 `node` 不是同一尺寸档
+ *     ⇒ 清扫释放 t 之后，这次分配**不会复用** t 的槽；
+ *   · 于是 `(*q).next` 读到的是空闲链里的槽号（小整数）而不是节点指针，解引用它 ⇒ ASan 报。
+ *
+ * 判据（`run-switch.sh`）：开关打开 + ASan/UBSan 下 rc=0、`ok=true`（sink = Σi）；
+ * 修之前这条是红的（ASan `SEGV`，地址落在空闲链槽号上）。与开关关时的输出逐字一致。
+ */
+use std::io
+
+struct node {
+    next: ?mut ref node
+    val: i64
+    kids: [2]?mut ref node
+}
+
+/* 与 `node`（槽 32 B）不同尺寸档的一坨：只用来在 region 1 里当**清扫触发点**，且避开释放槽
+ * 的复用（slab 按尺寸档分，512 B 与 32 B 不同档 ⇒ 不会从 t 释放的槽里切出来）。512 B 是
+ * 门禁的取舍：开关关时它每轮漏一份 ⇒ 峰值 = 轮数 × 512 B，200k/800k 两跑只要 ~100/400 MB；
+ * 换成 4 KiB 会把那条红判据推到 3 GB 量级，与本目录其余门禁（10~35 MB）不成比例。 */
+struct big {
+    pad: [64]i64
+}
+
+/* argv[1] 是十进制轮数（没给就是 8）：与 scale_growth / cross_region 同一套手写解析。 */
+fn parseRounds(args: slice<slice<u8>>) -> i64 {
+    if args.len < 2 { return 8 }
+    var s: slice<u8> = args[1]
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    return v
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var n: i64 = parseRounds(args)
+    var keeper: ?mut ref node = null
+    var pad: ?mut ref big = null
+    var sink: i64 = 0
+    var i: i64 = 0
+    while i < n {
+        /* region 2：每轮新建，只在循环体内被引用（随块丢弃）。它的 `kids[0]` 就是那条
+         * 跨区入边的**下标槽**。 */
+        var s: mut ref node = new node
+        s.val = -1
+        s.next = null
+        s.kids[0] = null
+        s.kids[1] = null
+        /* region 1：`keeper = t` 把它提到函数体那一层（逃逸提升）。 */
+        {
+            var t: mut ref node = new node
+            t.val = i
+            t.next = t
+            keeper = t
+            s.kids[0] = keeper        /* ← 跨区堆→堆边，落在下标槽里 */
+        }
+        keeper = null                  /* t 从此只有 s->kids[0] 指着（+ 自环） */
+        pad = new big                  /* region 1 的分配点：清扫在这里触发 */
+        var q: ?mut ref node = (*s).kids[0]
+        if q != null {
+            var r: ?mut ref node = (*q).next
+            if r != null { sink = sink + (*r).val }
+        }
+        pad = null
+        i = i + 1
+    }
+    var want: i64 = n * (n - 1) / 2
+    var ok: bool = sink == want
+    io::cout << "rounds=" << n << " sink=" << sink << " want=" << want << " ok=" << ok << "\n"
+    return 0
+}
