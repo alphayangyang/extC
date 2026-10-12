@@ -138,9 +138,23 @@ typedef struct {
     Expr       *otherSrc;
     int         otherSrcDepth;
     int         otherMinReq;
+    /* 声明处初始化式留下的**别名来源**（`var head = a`）：与 `otherSrc` 分开一格，因为
+     * `otherSrc`/`otherDepth` 同时被 `targetDepth` 当成绑定深度的上界读走，把声明式记进去
+     * 会让普通形状多算一层（`head = p` 于是被误拒）。这里只服务提权：`promoteFieldsAt`
+     * 沿它把要求传给来源背后的分配站点。**不展平**：`head` 与 `a` 共享所指对象，a 之后被
+     * 改指（`a = p`）时才知道该提哪个站点；展平过的 `origin` 是拷贝当时的来源。 */
+    Expr       *initSrc;
+    int         initSrcDepth;
+    int         initMinReq;
     int         depth;      /* lexical depth: a parameter is 0, a local in the function
                              * body is 1, and every nested block adds 1. The escape
                              * checks compare this number. */
+    /* 引用型绑定**可能**指向的最浅深度（越小活得越久）；-1 = 还没记过。
+     *
+     * 目的地的深度要的是"可能活得最久的被指物"：`cur` 可能指向参数（0）也可能指向帧内 `new`
+     * （1），把 `(*cur).f = v` 的目的地读成 max（DFA 给的那个）会把帧内的 `v` 放进调用者的
+     * 对象，调用一返回就悬垂。这里按每次改指取 min，只往更长寿的一侧偏（安全方向）。 */
+    int         minPointee;
     /* For a binding that holds a reference: how deep is the thing it points at?
      *
      * This differs from `depth`. In `var cur: ?ref node = head` the slot holding the
@@ -340,6 +354,14 @@ typedef struct Checker {
      * The self-check mode walks this list to verify that the `refDepth` of a binding
      * agrees with the allocation site it came from. */
     Vec        allSyms;
+    /* 一次 `promoteFieldsAt` 走查正踩着的绑定栈（环守卫）。
+     *
+     * 来源表可以成环（`a = b  b = a`，或两个结构体的字段表互指）——按来源链走会无限递归。
+     * 原来只靠跳数上限兜底，撞上限会走 `EXTC_DBG_FALLBACK`（断言版直接判红），而且把 32 步
+     * 白白烧在一个环上。同一个绑定在一次走查里只走一次就够了：要求已经正沿那条路施加。
+     * 存储只有 64 项、按栈式 push/pop，不需要清零。 */
+    Sym       *fsChain[64];
+    int        fsDepth;
     /* The value currently being stored somewhere.
      *
      * `noteFieldDepthWrite` records which value wrote a field, and its callers already
@@ -1446,6 +1468,17 @@ Expr *extcRootLeaf(Expr *e, unsigned steps, int maxHops);
  */
  int *fieldDepthEntry (Checker *, Sym *, const char *, bool);
 /**
+ * @brief 写/读字段槽用的路径键（根绑定到这次投影的整条字段链）。
+ *
+ * 键字符串建在检查器的 arena 里：`bx.mid.next` 记成 `mid.next`，元素下标是常量时写进名字
+ * （`arr[0]` 记 `[0]`）。字段表的读与写必须用同一个键，否则两层投影的来源记不下、提不动。
+ *
+ * @param c  检查器。
+ * @param e  投影表达式（`EX_FIELD` / `EX_INDEX` 链）。
+ * @return   路径键；命不了名（含解引用/切片步进）时返回 NULL。
+ */
+ const char *fieldSlotKey (Checker *, Expr *);
+/**
  * @brief 记录一次写到绑定的字段或元素上的深度。
  *
  * 字段名非空时更新对应槽，地址被取过的绑定只能取最大值，字段表完整时可以强更新；字段表
@@ -1599,6 +1632,18 @@ int valDepthForStore (Checker *, Expr *);
  * @param val 要记来源的表达式。
  */
  void noteOrigin (Checker *c, Sym *sy, Expr *val);
+/**
+ * @brief 求一个值的根来源（把绑定链压平到根表达式）。
+ *
+ * 写进字段表的来源用它压平：中间绑定到提权那一刻可能已经出了作用域，到时 `lookup` 查不到，
+ * 来源链就断了、站点也就提不动。根的表达式（`new` 之类）没有作用域问题。
+ *
+ * @param c    检查器。
+ * @param val  要求来源的表达式。
+ * @param hops 已走过的绑定步数；超过上限停止。
+ * @return     根表达式；没有可追的来源时就是 `val` 本身。
+ */
+ Expr *originOf (Checker *c, Expr *val, int hops);
 /**
  * @brief 给说不出自己类型的表达式套上上下文期望的类型。
  *

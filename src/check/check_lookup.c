@@ -212,6 +212,9 @@ Sym *declare(Checker *c, const char *name, Type *t, bool mut,
      * depth afterwards, so `var cur: ?ref node = head` ends up at 0, since the cursor
      * points at something on the caller's side. */
     anSetRefDepth(s, (t && typeContainsRef(c->tt, t)) ? depth : 0);
+    /* `minPointee` 的缺省是"还没记过"（-1），不是 0：0 是一句很强的断言（可能指向调用者的
+     * 存储），把它当缺省会让每一次 `(*x).f = v` 都被要求提到 home。声明处与每次改指都会记。 */
+    s->minPointee = -1;
     s->line = line;
     *(Sym **)vecPush(&top->syms) = s;
     *(Sym **)vecPush(&c->allSyms) = s;      /* also recorded for the self-check mode */

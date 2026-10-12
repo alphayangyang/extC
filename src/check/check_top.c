@@ -12,7 +12,7 @@
 #include "typelayer.h"   /* the pool questions below are shared with codegen */
 #include "plan.h"          /* 计划/分析产物：写入经 setter，读取经访问器（X2）*/
 /* Defined further down; the call-site publication needs it (INV-K / ). */
-static void noteFieldSrc(Sym *root, const char *field, int d2, Expr *src);
+static void noteFieldSrc(Checker *c, Sym *root, const char *field, int d2, Expr *src);
 #include "dataflow.h"
 #include <stdlib.h>
 #include <stdio.h>
@@ -1397,8 +1397,14 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
                 Sym *dsym = placeRoot(c, place);
                 if (!dsym) continue;
                 if (dj != 0) {
-                    noteFieldSrc(dsym, NULL, dj, splace);
+                    /* 不给 `dsym` 记 `otherSrc`：这里只知道"哪个实参被存了"，不知道存进哪个
+                     * 字段；记下的来源没有对应的目的地要求（`otherMinReq` 会停在 0 = 必须活过
+                     * 本帧），于是 `promoteInto` 在 `at > 0` 时反而失败、把正常形状误拒。
+                     * 这里只发布 `callSrc`（它有自己的深度），要提权时沿它走。 */
+                    Expr *saveCsv = c->curStoreVal;
+                    c->curStoreVal = NULL;   /* 只更新深度，不要顺带记来源 */
                     noteFieldDepthWrite(c, dsym, NULL, dj);
+                    c->curStoreVal = saveCsv;
                 }
                 /* The dedicated slot (). No `recordLvlFact` here: constraining the level
                  * for *every* `mut ref` call was the first suspect for the three false rejections the
@@ -1411,8 +1417,22 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
                  * rt_nest/rt_rett and `tests/stl`'s custom when the publication was unconditional. */
                 Sym *ss = placeRoot(c, splace);
                 bool promotable = ss && ss->origin && exprIsFresh(ss->origin);
+                /* `callSrc` 也存**压平后的根**：容器元素在别的作用域里被取出、提权时那个
+                 * 中间绑定（`p`）早就出了作用域，`lookup` 查不到，站点就提不动。 */
+                Expr *csrc = splace;
+                if (splace && splace->kind == EX_IDENT) {
+                    Expr *r = originOf(c, splace, 0);
+                    if (r) csrc = r;
+                }
                 if (dj != 0 || promotable) {
-                    if (!dsym->callSrc) dsym->callSrc = splace;
+                    if (!dsym->callSrc) {
+                        dsym->callSrc = csrc;
+                        /* 门槛从来源现在的深度起步，不是 0（"必须活过本帧"）：来源现在至少
+                         * 活到 `dj`，之后 `promoteFieldsAt` 只会收得更紧。从 0 起步会让
+                         * `link(prev, n)` 之后的 `prev = n` 去提一个不需要提到 home 的站点、
+                         * 答 false，把正常形状误拒。 */
+                        dsym->callMinReq = dj;
+                    }
                     if (dj > dsym->callSrcDepth) dsym->callSrcDepth = dj;
                 }
             }
@@ -2197,20 +2217,77 @@ static void refreshRootDepth(Sym *s) {
  * @param d2     本次写入的深度。
  * @param src    存下的表达式；可为 NULL。
  */
-static void noteFieldSrc(Sym *root, const char *field, int d2, Expr *src) {
-    if (!root || !field || !src) return;
+static void noteFieldSrc(Checker *c, Sym *root, const char *field, int d2, Expr *src) {
+    if (!root || !src) return;
     if (src->kind != EX_IDENT && src->kind != EX_FIELD && src->kind != EX_INDEX &&
         src->kind != EX_NEW   && src->kind != EX_GENCALL) return;
-    for (int i = 0; i < root->nfields; i++) {
-        if (!root->fields[i].name || strcmp(root->fields[i].name, field) != 0) continue;
-        if (dbgOn("EXTC_DBG_FS"))
-            fprintf(stderr, "[fs] %s.%s d2=%d oldSrcDepth=%d srckind=%d\n", root->name,
-                    field, d2, root->fields[i].srcDepth, (int)src->kind);
-        if (d2 >= root->fields[i].srcDepth) {
-            root->fields[i].src = src;
-            root->fields[i].srcDepth = d2;
+    /* 只有**能携带引用**的值才值得记。`n.val = m`（i64）也会走到这里（根类型的字段里可能有
+     * 引用），把它记成来源只会在提权时去提一个提不动的表达式，把正常形状误拒。 */
+    if (!src->type || !typeContainsRef(c->tt, tsub(c, src->type))) return;
+    /* 来源压平到根表达式再存：中间绑定（`p`、`pt`、`q`）到提权那一刻可能已经出了作用域，
+     * 那时 `lookup` 查不到它，`promoteInto2` 就在"没有来源"处停下 —— 站点于是停在词法层，
+     * 而返回出去的链已经指向它。根表达式（`new` 之类）没有这个问题。
+     *
+     * 根是零值/字面量或一个没有来源的绑定（`p.next = saved`，saved 的根是 `null`）时**不记**：
+     * 那样的来源提不动，记下来只会让 `promoteFieldsAt` 答 false，把 `saved = p` 这种正常形状
+     * 误拒。来源的唯一用途是提权，提不动的来源没有价值。 */
+    {
+        Expr *r = originOf(c, src, 0);
+        if (!r) return;
+        if (r->kind == EX_NULL || r->kind == EX_INT || r->kind == EX_FLOAT ||
+            r->kind == EX_BOOL || r->kind == EX_STR) return;
+        if (r->kind == EX_IDENT) return;      /* 追不到站点（参数、无来源的绑定） */
+        src = r;
+    }
+    if (!field) {
+        /* 没有单一字段的写 —— 整值拷贝、元素写、经 `mut ref` 的调用 —— 进 `otherSrc` 那一格。
+         * 更新规则与字段槽相同：比较本次写入的 `d2` 而不是弱更新的 `depth`，否则晚来的 `null`
+         * 会显得更深并把真来源顶掉。 */
+        if (d2 >= root->otherSrcDepth) {
+            /* 第一次记来源时把 `otherMinReq` 定在这次写入的深度：0 是"必须活过本帧"这句很强的
+             * 断言，当缺省用会让每次提权都去提一个不需要提的站点并失败。之后
+             * `promoteFieldsAt` 只会把它收得更紧。 */
+            if (!root->otherSrc) root->otherMinReq = d2;
+            root->otherSrc = src;
+            root->otherSrcDepth = d2;
         }
         return;
+    }
+    int n = -1;
+    for (int i = 0; i < root->nfields; i++)
+        if (root->fields[i].name && strcmp(root->fields[i].name, field) == 0) { n = i; break; }
+    if (n < 0) {
+        /* 槽不存在就**建**。只写已存在的槽会让 `bx.mid.next = p` 这类两层投影永远没有槽：
+         * 声明 `{ mid: { next: null } }` 只建了 `mid`，来源于是没人记，返回值的检查也就够不着
+         * 那个分配站点。表满时退化到 `otherSrc`：来源仍在，只是粒度更粗（保守方向）。 */
+        EXTC_DBG_ASSERT(root->nfields <= 4);          /* the table's declared capacity */
+        if (root->nfields >= 4) {
+            if (d2 >= root->otherSrcDepth) {
+                if (!root->otherSrc) root->otherMinReq = d2;
+                root->otherSrc = src;
+                root->otherSrcDepth = d2;
+            }
+            return;
+        }
+        n = root->nfields++;
+        root->fields[n].name     = field;   /* interned in the checker's arena, so it cannot dangle */
+        root->fields[n].depth    = 0;
+        root->fields[n].src      = NULL;
+        root->fields[n].srcDepth = 0;
+        /* 门槛从这次写入的深度起步，不是 0（0 是"必须活过本帧"这句很强的断言）：新槽的来源
+         * 现在至少活到 `d2`，之后 `promoteFieldsAt` 只会把它收得更紧。从 0 起步会让
+         * `head = b`（b 的 `next` 里存着上一层的 head）这种正常提权去提一个不需要提到 home
+         * 的站点、答 false 而误拒。 */
+        root->fields[n].minReq   = d2;
+    } else if (!root->fields[n].src) {
+        root->fields[n].minReq = d2;        /* 第一次给这个已存在的槽记来源 */
+    }
+    if (dbgOn("EXTC_DBG_FS"))
+        fprintf(stderr, "[fs] %s.%s d2=%d oldSrcDepth=%d srckind=%d\n", root->name,
+                field, d2, root->fields[n].srcDepth, (int)src->kind);
+    if (d2 >= root->fields[n].srcDepth) {
+        root->fields[n].src = src;
+        root->fields[n].srcDepth = d2;
     }
 }
 
@@ -2227,7 +2304,7 @@ static void noteFieldSrc(Sym *root, const char *field, int d2, Expr *src) {
  */
 void noteFieldDepthWrite(Checker *c, Sym *root, const char *field, int d2) {
     if (!root) return;
-    noteFieldSrc(root, field, d2, c->curStoreVal);   /* the depth record is left untouched */
+    noteFieldSrc(c, root, field, d2, c->curStoreVal);   /* the depth record is left untouched */
     /* A field write through a reference-typed binding (`n: mut ref node`) writes a
      * field of the pointee, and `refreshRootDepth` recomputes the root as the max over
      * the field slots, which replaces what I point at (depth 2) with what is stored
@@ -4150,6 +4227,9 @@ static void checkFunc(Checker *c, FuncDef *f) {
          * so `ref real` is allowed inside `fn f(real: Board)`. */
         Sym *sym = declare(c, p->name, p->type, true, false, p->line, 0);
         p->cname = sym->cname;
+        /* 引用型形参指向的存储是**调用方的**（借用）：`(*p).f = v` 的目的地要按可能被指物的
+         * 最浅深度算，参数就是 0（活过本帧）。 */
+        if (p->type && tsub(c, p->type)->kind == TY_REF) sym->minPointee = 0;
         /* Record the binding now, while the scope exists: the effect summary runs later, with no
          * scope at all, and needs the identity to attribute a store to the right parameter. */
         if (anParamSymCount(f) < EFF_MAX_PARAMS) {
