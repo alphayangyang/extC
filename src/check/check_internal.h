@@ -403,6 +403,9 @@ typedef struct Checker {
      * the data flow and the level pass have settled the numbers. Reporting stays where it
      * was; the record is what makes the two answers comparable. */
     Vec        lvlRejects;  /* LvlRejection* */
+    /* 推迟的存储判定（`(*cur).f = v` 那类目的地深度未定的写）：DFA 落定后按 min 复判。
+     * 见 `PendingRefStore`。 */
+    Vec        pendingRefStores;  /* PendingRefStore* */
     Vec        callChecks;  /* CallCheck*: call sites resolved at instantiation */
     Vec       *substParams; /* type arguments substituted while an instance is being
                              * re-checked, NULL when not re-checking */
@@ -605,6 +608,22 @@ typedef struct {
     int         line;   /* source line */
     int         late;   /* depth the settled numbers gave */
 } LvlRejection;
+
+/* 一条**推迟**的存储判定：`(*cur).f = v` 的目的地深度读的是 `anRefDepth(cur)`，它在 body walk
+ * 里按词法顺序写、没有 join，而 `dfAnalyze` 要等 walk 之后才跑。这里把判定记下、诊断不发，
+ * 等 DFA 落定后用「可能被指物的**最浅**层」（`Sym.minPointee`）复判 —— 词序因此不再影响答案。
+ *
+ * 记录里同时留着当时的 `at`/`depth`：DFA 溢出（结果整份被丢弃）时照原样报，保持旧的保守行为。 */
+typedef struct {
+    Expr          *val;
+    Expr          *target;
+    Sym           *destSym;  /* 目的地经 `*` 到达的那个引用绑定（当时解析好的） */
+    int            line;
+    int            at;      /* 当时用的目的地深度 */
+    int            depth;   /* 当时看到的值的深度 */
+    const char    *what;    /* 诊断里的操作名（"this reference" / "this assignment"） */
+    const FuncDef *fn;      /* 所属函数：只复判当前这一趟的记录 */
+} PendingRefStore;
 
 /* An operator use on a type parameter, deferred to instantiation: recorded while an
  * expression is checked and consumed by the pass that runs afterwards.
@@ -1125,6 +1144,30 @@ Expr *extcRootLeaf(Expr *e, unsigned steps, int maxHops);
  * @param line   源码行号。
  */
  void recordLvlRejection (Checker *c, Expr *val, int at, int depth, int line);
+
+/**
+ * @brief 带目的地的深度判定：目的地经具名引用到达时把拒绝推迟到 DFA 之后复判。
+ *
+ * @param c       检查器。
+ * @param val     被存入的值。
+ * @param at      目的地深度。
+ * @param line    源码行号。
+ * @param what    诊断里的操作名。
+ * @param target  被存入的地方；NULL 时等同 `checkEscape`。
+ * @return        判定为拒绝时返回 true。
+ */
+bool checkEscapeDefer(Checker *c, Expr *val, int at, int line, const char *what, Expr *target);
+
+/**
+ * @brief DFA 落定后复判推迟的存储判定；仍然不够深才报诊断。
+ *
+ * 目的地深度这时取「可能被指物的**最浅**层」（`Sym.minPointee`），不是 DFA 的 max —— 后者会把
+ * `q2_dualpointee` 那类"可能指向参数(0)或帧内 new(1)"的悬垂放过去。
+ *
+ * @param c           检查器；作用域必须还开着。
+ * @param dfaSettled  DFA 是否给出了可用结果（溢出时照记录里的旧数报）。
+ */
+void recheckPendingRefStores(Checker *c, bool dfaSettled);
 
 /**
  * @brief 用各趟求解后的数字重新核对记录下来的拒绝。

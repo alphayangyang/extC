@@ -515,8 +515,20 @@ void checkStmt(Checker *c, Stmt *s) {
                     bool isLit = (ik == EX_NULL || ik == EX_INT || ik == EX_FLOAT ||
                                   ik == EX_BOOL || ik == EX_STR);
                     if (!isLit) {
-                        int dd = targetDepth(c, ini);
-                        sym->minPointee = dd;
+                        /* 用 482-499 刚刚定下的 `refDepth`，不要重算 `targetDepth(ini)`：调用结果
+                         * 是例外（带 home 的被调方分配进哪个 arena 由调用点定，见 484-486），
+                         * `targetDepth(EX_CALL)` 会答 0，而那份记录（`refDepth`）才作准。 */
+                        int dd = anRefDepth(sym);
+                        /* 初始化式是**另一个引用绑定**时这是一次别名拷贝（`var ocur = cur`）：
+                         * 二者共享所指对象，深度要随来源走（见 `symMinPointee` 的别名链），
+                         * 不在这里快照 —— 快照取的是拷贝那一刻的词法值，第一个迭代里
+                         * `cur = null` 会让它记成 0，把一个健全形状误拒。 */
+                        bool alias = false;
+                        if (ini->kind == EX_IDENT) {
+                            Sym *src = lookup(c, ini->u.ident.name);
+                            alias = src && src->type && src->type->kind == TY_REF;
+                        }
+                        if (!alias) sym->minPointee = dd;
                         /* 只记**来源**，不碰 `otherDepth`/深度记账：那两格是深度上界，
                          * `targetDepth` 会读走；把声明也当成一次字段写，普通形状的深度就会
                          * 多算一层（`head = p` 于是被误拒）。来源**不展平**：`var head = a`
@@ -710,7 +722,11 @@ void checkStmt(Checker *c, Stmt *s) {
                      * 检查。必须在 `checkEscape` 之前跑，因为它要读这个值的深度。 */
                     promoteInto(c, v, at0);
                     checkAssignable(c, tt_, vt0, v, "assignment");
-                    checkEscape(c, v, at0, s->line, "this reference");
+                    /* 目的地经具名引用到达（`(*cur).next = v`）时，这个 `at0` 读的是 body walk
+                     * 里按词法顺序写的 `anRefDepth` —— 后面的 `cur = p` 还没走到，词序会改变
+                     * 答案。判定因此推迟到 DFA 之后按「可能被指物的最浅层」复判（见
+                     * `recheckPendingRefStores`）；其余形状照旧当场报。 */
+                    checkEscapeDefer(c, v, at0, s->line, "this reference", s->u.assign.target);
                     /* 改指时所指深度一起搬（`cur = cur.next`）。 */
                     if (s->u.assign.target->kind == EX_IDENT) {
                         Sym *slot0 = lookup(c, s->u.assign.target->u.ident.name);

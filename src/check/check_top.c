@@ -4349,6 +4349,9 @@ static void checkFunc(Checker *c, FuncDef *f) {
                 }
             }
         }
+        /* 目的地深度现在定了：DFA 已写回，`Sym.minPointee` 也在 walk 里收全了所有改指。
+         * 复判 walk 里推迟的 `(*cur).f = v` —— 词序不再影响答案（作用域还开着，`lookup` 能用）。 */
+        recheckPendingRefStores(c, !dfr.overflow);
     }
     popScope(c);
     c->curFunc = savedFunc;
@@ -5207,6 +5210,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     vecInit(&c.narrow, arena, sizeof(void *));
     vecInit(&c.refChecks, arena, sizeof(void *));
     vecInit(&c.lvlRejects, arena, sizeof(void *));
+    vecInit(&c.pendingRefStores, arena, sizeof(void *));   /* 推迟的 `(*cur).f = v` 判定 */
     vecInit(&c.callChecks, arena, sizeof(void *));   /* deferred call sites */
     vecInit(&c.narrowMarks, arena, sizeof(size_t));
     vecInit(&c.eSites, arena, sizeof(EArenaSite *));   /* arena decisions that depend on escapes */

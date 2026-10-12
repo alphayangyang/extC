@@ -178,21 +178,67 @@ int slotDepth(Checker *c, Expr *e) {
  * @param e  写目标表达式。
  * @return   可能被指物的最浅深度；链上没有命名的引用步进时返回 -1（调用方沿用旧答案）。
  */
-static int destDerefDepth(Checker *c, Expr *e) {
+/**
+ * @brief 写目标是否**经具名引用**到达（`(*cur).f` / `*cur`），是则返回那个绑定。
+ *
+ * 与 `destDerefDepth` 分开：形状判据（要不要推迟判定）与深度值（`minPointee`，可能还没记）是
+ * 两件事 —— 词序问题恰恰出在"形状已经在、深度还没记"的那一刻。
+ *
+ * @param c  检查器。
+ * @param e  写目标的位置表达式。
+ * @return    路径尽头 `*` 后面是具名引用绑定时返回它；否则返回 NULL。
+ */
+static Sym *destDerefSym(Checker *c, Expr *e) {
     for (; e; ) {
         if (e->kind == EX_FIELD) { e = e->u.field.obj; continue; }
         if (e->kind == EX_INDEX) { e = e->u.index.obj; continue; }
         if (e->kind == EX_SLICE) { e = e->u.slice.obj; continue; }
         if (e->kind == EX_DEREF) {
             Expr *o = e->u.deref.operand;
-            if (!o || o->kind != EX_IDENT) return -1;
+            if (!o || o->kind != EX_IDENT) return NULL;
             Sym *sy = lookup(c, o->u.ident.name);
-            if (!sy || sy->minPointee < 0) return -1;
-            return sy->minPointee;
+            return (sy && sy->type && sy->type->kind == TY_REF) ? sy : NULL;
         }
-        return -1;
+        return NULL;
     }
-    return -1;
+    return NULL;
+}
+
+/**
+ * @brief 一个引用绑定「可能被指物的最浅层」：本绑定记的，外加声明处是拷贝时的别名链。
+ *
+ * `var ocur: ?mut ref node = cur` 里 `ocur` 与 `cur` **共享所指对象**，但 `ocur` 的深度快照
+ * 取的是拷贝那一刻的词法值（第一个迭代里 `cur` 还是 `null` ⇒ 0），而 `cur` 的 `minPointee`
+ * 要等 walk 走完才收全。所以走别名链取 min：只往更浅取，方向安全。
+ *
+ * @param c     检查器。
+ * @param sy    引用绑定。
+ * @param hops  别名链的跳数（防环）。
+ * @return      最浅深度；一次都没记过时返回 -1。
+ */
+static int symMinPointee(Checker *c, Sym *sy, int hops) {
+    if (!sy || hops > 16) return -1;
+    int m = sy->minPointee;
+    if (sy->initSrc && sy->initSrc->kind == EX_IDENT) {
+        Sym *src = lookup(c, sy->initSrc->u.ident.name);
+        if (src && src != sy) {
+            int m2 = symMinPointee(c, src, hops + 1);
+            if (m2 >= 0 && (m < 0 || m2 < m)) m = m2;
+        }
+    }
+    return m;
+}
+
+/**
+ * @brief 写目标经 `*` 到达时「可能被指物的最浅层」；不是这种形状时返回 -1（调用方退回 `slotDepth`）。
+ *
+ * @param c  检查器。
+ * @param e  写目标的位置表达式。
+ * @return    最浅深度；路径不经具名引用或一次都没记过时返回 -1。
+ */
+static int destDerefDepth(Checker *c, Expr *e) {
+    Sym *sy = destDerefSym(c, e);
+    return sy ? symMinPointee(c, sy, 0) : -1;
 }
 
 /**
@@ -1426,7 +1472,7 @@ bool checkStoreEscape(Checker *c, Expr *val, Expr *target, int line) {
     /* 先试提权。提不动时下面的调用仍会报错，所以这是安全网，且幂等。 */
     recordStore(c, val, target, atStore, line);
     promoteInto(c, val, atStore);
-    bool bad = checkEscape(c, val, at, line, "this assignment");
+    bool bad = checkEscapeDefer(c, val, at, line, "this assignment", target);
     /* 值的来源能追到参数时接受这次存储，把寿命交给调用点判。
      *
      * 被调方只编译一次，不知道调用者的池，所以它只能发布约束“第 j 个实参背后的数据至少活到被调方把
@@ -1560,26 +1606,34 @@ static void recordRefCheck(Checker *c, Expr *val, Expr *target, int at,
     *(RefCheck **)vecPush(&c->refChecks) = rc;
 }
 
+/* 一次深度拒绝的说明文字。当场报与推迟到 DFA 之后复判（`recheckPendingRefStores`）时共用，
+ * 两条路的诊断必须一字不差。 */
+#define ESCAPE_OUTLIVE_NOTE \
+    "A reference may not outlive what it points to. Borrow from a parameter " \
+    "(depth 0) or copy the data instead. " \
+    "If this value is a container (varArray and friends), the storage inside it " \
+    "was allocated in this frame's arena: build the container in the caller's " \
+    "scope and fill it through a `mut ref` argument, or build it here with `new` " \
+    "(that allocates in this function's home arena, so it may escape)."
+
 /**
- * @brief 检查值里的引用不会活得比它被放入的存储更久。
+ * @brief `checkEscape` 的实现：`defer` 为真时把一次拒绝记进 `pendingRefStores`（不发诊断）。
  *
- * 先提权值里所有分配点，再用深度比较判定，因为浅到看不出问题时早退会让分配点失去约束。值类型提及
- * 类型参数时记下延迟检查并返回 false，留到实例化时判定。
+ * 推迟的只有"目的地经具名引用到达"（`(*cur).f` / `*cur`）那一类：它的 `at` 读的是
+ * `anRefDepth(cur)`，而那个数在 body walk 里按词法顺序写、没有 join，DFA 要等 walk 之后才跑。
+ * 记录留着当时的 `at`/`depth`，DFA 溢出时照原样报。
  *
- * @param c     检查器。
- * @param val   被存储或返回的值。
- * @param at    目标深度；0 表示必须活过本帧。
- * @param line  源码行号，用于诊断。
- * @param what  被检查的操作，出现在诊断里。
- * @return      值会留下悬垂引用时已报错并返回 true；否则返回 false。
- *
- * The compiler does not know its real lifetime, and it may point at a local of the caller's
- * frame that is nested more deeply than this function.
- * This is one half of the same rule as "the depth of a call result is the maximum depth of its
- * arguments".
- * what - the operation being checked, named in the diagnostic ("this assignment")
+ * @param c       检查器。
+ * @param val     被存入/返回的值。
+ * @param at      目的地深度。
+ * @param line    源码行号。
+ * @param what    诊断里的操作名。
+ * @param target  被存入的地方；无目的地（返回、初始化）时为 NULL。
+ * @param defer   为真且判定失败时，记录而不报。
+ * @return        判定为拒绝时返回 true。
  */
-bool checkEscape(Checker *c, Expr *val, int at, int line, const char *what) {
+static bool checkEscapeImpl(Checker *c, Expr *val, int at, int line, const char *what,
+                            Expr *target, bool defer) {
     if (!val) return false;
     /* 类型提及类型参数的值现在判不了（`T` 可能是 `i64` 或 `slice<u8>`）。记下来，实例化时再判。 */
     if (mentionsParam(val->type)) {
@@ -1611,19 +1665,112 @@ bool checkEscape(Checker *c, Expr *val, int at, int line, const char *what) {
     promoteInto(c, val, at);
     int d = targetDepth(c, val);
     if (d <= at) return false;
-    /* 下面照旧报错；这里只是把问题留给数字定下之后的那一趟。 */
+    /* 下面照旧报错（或按 `defer` 记下来）；这里只是把问题留给数字定下之后的那一趟。 */
     recordLvlRejection(c, val, at, d, line);
-    ckError(c, line,
-            "A reference may not outlive what it points to. Borrow from a parameter "
-            "(depth 0) or copy the data instead. "
-            "If this value is a container (varArray and friends), the storage inside it "
-            "was allocated in this frame's arena: build the container in the caller's "
-            "scope and fill it through a `mut ref` argument, or build it here with `new` "
-            "(that allocates in this function's home arena, so it may escape).",
+    if (defer) {
+        PendingRefStore *p = arenaAllocZero(c->arena, sizeof *p);
+        p->val = val;
+        p->target = target;
+        p->destSym = destDerefSym(c, target);
+        p->line = line;
+        p->at = at;
+        p->depth = d;
+        p->what = what;
+        p->fn = c->curFunc;
+        *(PendingRefStore **)vecPush(&c->pendingRefStores) = p;
+        return true;
+    }
+    ckError(c, line, ESCAPE_OUTLIVE_NOTE,
             "%s would hold a reference to a local variable that dies first "
             "(borrowed from depth %d, but this can only hold up to depth %d)",
             what, d, at);
     return true;
+}
+
+/**
+ * @brief 检查值里的引用不会活得比它被放入的存储更久。
+ *
+ * 先提权值里所有分配点，再用深度比较判定，因为浅到看不出问题时早退会让分配点失去约束。值类型提及
+ * 类型参数时记下延迟检查并返回 false，留到实例化时判定。
+ *
+ * @param c     检查器。
+ * @param val   被存储或返回的值。
+ * @param at    目标深度；0 表示必须活过本帧。
+ * @param line  源码行号，用于诊断。
+ * @param what  被检查的操作，出现在诊断里。
+ * @return      值会留下悬垂引用时已报错并返回 true；否则返回 false。
+ *
+ * The compiler does not know its real lifetime, and it may point at a local of the caller's
+ * frame that is nested more deeply than this function.
+ * This is one half of the same rule as "the depth of a call result is the maximum depth of its
+ * arguments".
+ * what - the operation being checked, named in the diagnostic ("this assignment")
+ */
+bool checkEscape(Checker *c, Expr *val, int at, int line, const char *what) {
+    return checkEscapeImpl(c, val, at, line, what, NULL, false);
+}
+
+/**
+ * @brief 带目的地的判定：目的地经具名引用到达时把拒绝推迟到 DFA 之后复判。
+ *
+ * 只有那条路（`(*cur).f` / `*cur`）的 `at` 读的是按词法顺序写的 `anRefDepth`，词序会改变答案；
+ * 其余形状当场报，行为不变。
+ *
+ * @param c       检查器。
+ * @param val     被存入的值。
+ * @param at      目的地深度（walk 里按当时的 `anRefDepth` 算出的）。
+ * @param line    源码行号。
+ * @param what    诊断里的操作名。
+ * @param target  被存入的地方；NULL 等同 `checkEscape`。
+ * @return        判定为拒绝时返回 true（推迟的那些不报诊断）。
+ */
+bool checkEscapeDefer(Checker *c, Expr *val, int at, int line, const char *what, Expr *target) {
+    /* 只有"目的地经具名引用到达"才推迟：那条路的 `at` 读的是按词法顺序写的 `anRefDepth`，
+     * 词序会改变答案。其余形状当场报，行为不变。 */
+    bool defer = target && destDerefSym(c, target) != NULL;
+    return checkEscapeImpl(c, val, at, line, what, target, defer);
+}
+
+/**
+ * @brief DFA 落定后复判推迟的存储判定；仍然不够深才报诊断。
+ *
+ * 目的地深度这时才取到「可能被指物的**最浅**层」（`Sym.minPointee` 收全了全部改指），而不是
+ * walk 里那个按词法顺序的值。这条 min 极性是必须的：`q2_dualpointee` 里 `cur` 可能指向参数（0）
+ * 或帧内 `new`（1），取 min=0 才挡得住悬垂；取 DFA 的 max=1 会把洞放过去。
+ *
+ * `dfaSettled` 为假（DFA 溢出、结果整份被丢弃）时照记录里的旧数报，保持原来的保守行为。
+ *
+ * @param c           检查器；作用域必须还开着（`lookup` 要用）。
+ * @param dfaSettled  DFA 是否给出了可用结果。
+ */
+void recheckPendingRefStores(Checker *c, bool dfaSettled) {
+    if (c->pendingRefStores.len == 0) return;
+    for (size_t i = 0; i < c->pendingRefStores.len; i++) {
+        PendingRefStore *p = *(PendingRefStore **)vecAt(&c->pendingRefStores, i);
+        if (!p || p->fn != c->curFunc) continue;
+        int at = p->at, d = p->depth;
+        if (dfaSettled) {
+            /* 目的地绑定在 walk 里就解析好了：块作用域此时已经关掉，`lookup` 再查 `ocur` 这类
+             * 块内绑定会查不到。深度取别名链上的 min（`ocur` 随 `cur` 走）。 */
+            int dd = p->destSym ? symMinPointee(c, p->destSym, 0) : -1;
+            at = (dd >= 0) ? dd : storeLayer(c, p->target);
+            promoteInto(c, p->val, at);         /* 用定下来的目的地再提一次（幂等） */
+            d = targetDepth(c, p->val);
+            if (d <= at) continue;              /* 词序造成的误拒：撤销 */
+        }
+        ckError(c, p->line, ESCAPE_OUTLIVE_NOTE,
+                "%s would hold a reference to a local variable that dies first "
+                "(borrowed from depth %d, but this can only hold up to depth %d)",
+                p->what, d, at);
+    }
+    /* 本函数的记录已经消费掉；记录表按模块存，别的函数下一趟自己会清。 */
+    size_t w = 0;
+    for (size_t i = 0; i < c->pendingRefStores.len; i++) {
+        PendingRefStore *p = *(PendingRefStore **)vecAt(&c->pendingRefStores, i);
+        if (p && p->fn == c->curFunc) continue;
+        *(PendingRefStore **)vecAt(&c->pendingRefStores, w++) = p;
+    }
+    c->pendingRefStores.len = w;
 }
 
 /* "let 绑定"与"路径跨过只读引用"是两个问题：`var` 也能持有只读引用，如 `fn f(v: ref slice<i32>)`；
