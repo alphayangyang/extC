@@ -51,8 +51,12 @@ fn main() -> i32 {
 - `mandel`（浮点）与 `cdq`（随机访问）与 C 相差 5% 以内。
 - `radix`（10⁷ 个 u32 排序）比 C 慢 1.64 倍。原因可量化：切片索引的边界检查，以及 `new` 的零初始化保证。
 
-**表格里的数字是快照**，以 [`bench/bigmatrix/RESULTS.md`](bench/bigmatrix/RESULTS.md) 为准 ——
-与"通过/失败数不写在这里"是同一条规矩：会漂的副本不进本文件。
+**表格里的数字是快照**（取自 [`bench/bigmatrix/RESULTS.md`](bench/bigmatrix/RESULTS.md)，生成于 2026-09-24），
+重跑会得到新数 —— 与"通过/失败数不写在这里"是同一条规矩：会漂的副本不进本文件。
+
+**另需注意**：那张快照早于回收接进默认路径。五个形状里有**两个**（`bt`、`rebuild` —— 逐结点分配）
+会走回收档，运行开销明显上升；其余三个以数组/切片为主，不进回收档。倍率、剖析与归因见
+[`tests/reclaim-perf/`](tests/reclaim-perf/README.md)。
 
 另有三种**应用形状**上的 STL 横评（extC STL vs C++ STL vs Go）：会话/连接表（高频读写删的
 哈希表）、路由表（有序表的前驱查找与区间扫描）、请求日志缓冲（动态字节缓冲）。测量脚本见

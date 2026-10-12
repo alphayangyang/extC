@@ -553,3 +553,39 @@ diff <(sed 's/[0-9]\+//g' /tmp/pristine.c) <(sed 's/[0-9]\+//g' /tmp/on.c) | hea
   落地后的 508 581 405 与原型 `guardfirst` 的 508 581 342 相差 63 条（测量噪声）；清扫次数 / `EXTC_RC_STATS`
   / N vs 4N 峰值比 / 全部 `owns` 探针计数**逐位不变**，默认（开关关）产物对 693 份可编译
   `.extc` **逐字节 diff=0**。
+
+## 9. 真实形状上的外推：`bt` / `rebuild` 走回收档之后
+
+§8 的两条未查清在这里补上：`ownSlab` 的大小，以及"别的形状上会怎样"。用横评自己的量法
+（`cc -O3 -march=native -fwrapv` + `bench/bigmatrix/in/<形状>.txt`，best of 3，`/usr/bin/time -v` 取峰值）：
+
+| 形状 | 回收档 | 关闭档（`EXTC_RECLAIM=0`）| 倍率 |
+|---|---|---|---|
+| `bt`（二叉树，逐结点 `new`）| 1129 ms / 21228 KB | 240 ms / 9880 KB | **4.7×** |
+| `rebuild`（分配与回收）| 427 ms / 5292 KB | 45 ms / 1900 KB | **9.5×** |
+
+关闭档的 `bt` 240 ms 与 `RESULTS.md` 里"bt 231 ms"对得上 ⇒ 那张横评表量的是**回收默认开之前**的编译器。
+
+**先排掉清扫**：`tools/rc-pause-probe.py` 插桩后 `bt` 报
+`sweeps=1 max_pause_us=910.2 max_mark_us=1.8 max_sweep_us=908.3 total_pause_us=910.2`
+⇒ 清扫总共 **0.9 ms / 1129 ms = 0.08 %**，不是它。
+
+**再定位**：`callgrind` 跑 `in-small/bt.txt`（`--callgrind-out-file`），指令占比
+
+| 函数 | 占比 |
+|---|---|
+| **`extc_rc_ownSlab`**（判断"这个指针是不是回收槽"的守卫）| **45.46 %** |
+| `check'2`（程序自己的逻辑）| 36.96 % |
+| `bottomUp` / `bottomUp'2`（程序逻辑）| 6.33 % / 2.99 % |
+| `extc_rc_regionDrop` / `storeRefOwned` / `regionOf` / `unlinkChildren` | 2.26 / 1.49 / 1.32 / 1.00 % |
+
+⇒ **开销在 `owns` 守卫上**，不在计数（`storeRefOwned` 1.5 %）也不在清扫（0.08 %）。
+指令比只有约 2.2×，而**墙钟**是 4.7× —— 差在守卫的数据结构（登记表有序 + 二分）**cache 不友好**。
+
+**下一步的两条路**（都需要再量）：
+1. **静态化**：编译期能证明"这个指针是回收槽"的赋值直接发计数，只在证不出时走运行期守卫
+   （§5 建议里的第 ③ 条，此前按"上界 23 %"排序 —— 本形状说明它在分配密集的形状上被低估了）；
+2. **加速守卫本身**：热 slab 先比一次 / 按页做位图哈希，替掉每次二分。
+
+**复现**：本节的命令都是 `build/extc` + `cc -O3 -march=native -fwrapv` + 上表输入，
+`EXTC_RECLAIM=0` 取关闭档；`callgrind` 与探针用法见本文件第 1 节与 `tools/rc-pause-probe.py` 的文件头。
