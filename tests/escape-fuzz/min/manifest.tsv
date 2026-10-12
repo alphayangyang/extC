@@ -1,0 +1,10 @@
+# name	expected_class	flow	note
+main_dfield_after	E_DEPTH_A0_STORE	direct	决定性：同一双向链写法放进无 home 的 main
+nohome_dfield_after	E_DEPTH_A0_STORE	direct	不逃逸的普通函数（无 home）也一样
+home_ff_return	E_DEPTH_A0_RET	direct	返回值经"字段的字段"投影，函数没被认定成逃逸函数
+home_ret_binding	E_DEPTH_A0_RET	direct	返回一个只经调用结果绑定的引用（函数自己没有 new ⇒ 没有 home）
+callres_ret_store	E_DEPTH_CALLRES	ret	调用结果经中间绑定再存进更浅的槽（深度记成块深度）
+deep_store	E_DEPTH_AN	direct	真的悬垂：块内局部对象借给外层容器（该拒）
+param_ret_arg	E_ARG_DEPTH	direct	调用结果当实参传进会存下它的被调者（该拒，安全侧）
+global_ref	E_GLOBAL	direct	含引用的全局声明不出来（语言规则，先于逃逸分析）
+home_pfield_uaf	E_ACCEPT_UAF	direct	反向：收下了，ASan heap-use-after-free

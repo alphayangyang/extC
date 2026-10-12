@@ -1,0 +1,35 @@
+use std::io
+struct node { value: i64  next: ?mut ref node }
+fn main() -> i32 {
+    var v: varArray<mut ref node> = varArray<mut ref node>::withCap(8)
+    var i: i64 = 0
+    while i < 4 {
+        var p: mut ref node = new node
+        p.value = i + 1
+        p.next = null
+        v.push(p)
+        i = i + 1
+    }
+    var head: ?mut ref node = null
+    var cur: ?mut ref node = null
+    var k: i64 = 0
+    while k < v.size() {
+        var q: mut ref node = v.get(k)!
+        if head == null {
+            head = q
+            cur = q
+        } else {
+            if cur != null { (*cur).next = q }
+            cur = q
+        }
+        k = k + 1
+    }
+    var c: ?mut ref node = head
+    var t: i64 = 0
+    while c != null {
+        t = t + (*c).value
+        c = (*c).next
+    }
+    io::cout << t << "\n"
+    return 0
+}

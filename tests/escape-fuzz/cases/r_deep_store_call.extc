@@ -1,0 +1,14 @@
+use std::io
+struct node { val: i64  next: ?mut ref node }
+struct list { head: ?mut ref node }
+fn stash(l: mut ref list, cell: ?mut ref node) {
+    l.head = cell
+}
+fn main() -> i32 {
+    var l: list = { head: null }
+    {
+        var x: node = { val: 1, next: null }
+        stash(ref l, ref x)
+    }
+    return 0
+}

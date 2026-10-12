@@ -1,0 +1,32 @@
+use std::io
+struct node { value: i64  next: ?mut ref node }
+fn build() -> ?mut ref node {
+    var a: mut ref node = new node
+    a.value = 1
+    a.next = null
+    var b: mut ref node = new node
+    b.value = 2
+    b.next = null
+    var ca: mut ref node = new node
+    ca.value = 3
+    ca.next = null
+    a.next = b
+    b.next = ca
+    ca.next = a
+    return a
+}
+fn main() -> i32 {
+    var h: ?mut ref node = build()
+    var c: ?mut ref node = h
+    var t: i64 = 0
+    var s: i64 = 0
+    while s < 6 {
+        if c != null {
+            t = t + (*c).value
+            c = (*c).next
+        }
+        s = s + 1
+    }
+    io::cout << t << "\n"
+    return 0
+}

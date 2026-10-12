@@ -1,0 +1,9 @@
+use std::io
+struct node { value: i64  next: ?mut ref node }
+var g: ?mut ref node
+fn main() -> i32 {
+    var p: mut ref node = new node
+    p.value = 7
+    g = p
+    return 0
+}

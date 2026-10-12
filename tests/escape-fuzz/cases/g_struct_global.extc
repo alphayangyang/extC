@@ -1,0 +1,11 @@
+use std::io
+struct node { value: i64  next: ?mut ref node }
+struct slot { r: ?mut ref node }
+var g: slot = { r: null }
+fn main() -> i32 {
+    var p: mut ref node = new node
+    p.value = 7
+    g.r = p
+    if g.r != null { io::cout << (*g.r!).value << "\n" }
+    return 0
+}
