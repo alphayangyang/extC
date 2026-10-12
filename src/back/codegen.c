@@ -750,6 +750,10 @@ static bool printArgIsPlace(const Expr *e);
 static bool cgIsMain(const FuncDef *f);
 static const char *zoneArgRef(CG *g, Expr *e);   /* the zone argument of a pool-creating callee */
 static void cgReclaimDropArena(CG *g, int lvl);  /* 帧销毁处释放区域（定义在 cgIsRefType 之后） */
+/* 回收的触发闸门与欠收销账（定义在后面）：`cgImplicitArgs` 在调用点上要用它们决定
+ * 「这一帧有没有资格／需不需要在自己身上收一次」。 */
+static bool rcFrameOwnsArena(CG *g, int lvl);
+static void rcEmitOwedCheck(CG *g, const char *basePtr, int lvl);
 
 
     
@@ -2035,8 +2039,20 @@ static void cgImplicitArgs(CG *g, Buf *b, const FuncDef *callee, const Expr *sit
     size_t n = nargs;
     if (funcTakesHomeArena(callee)) {
         if (n) bufPuts(b, ", ");
-        bufPuts(b, forSignature ? "extc_arena *__extc_home"
-                                : homeArg(g, site ? planArenaArg(site) : ARENA_HOME));
+        if (forSignature) {
+            bufPuts(b, "extc_arena *__extc_home");
+        } else {
+            int hlvl = site ? planArenaArg(site) : ARENA_HOME;
+            const char *harg = homeArg(g, hlvl);
+            bufPuts(b, harg);
+            /* 子集 B 的销账点：把**本帧拥有**的 arena 当被调者的家 arena 传出去时，被调者
+             * 只能在那只区域上记「欠一次收集」（它的静态根表对那只区域不完整）。这里趁
+             * 「上一批被调者已返回、这一批还没进入」把欠账收掉 —— 此刻本帧没有活跃的被调者
+             * 子树，本帧的静态根表就是完整的种子（见 `rcEmitOwedCheck` 的不变量）。
+             * `main` 的家 arena 就是 `&__extc_a[1]`（子集 A），所以 `main` 也在这一档。 */
+            if (rcFrameOwnsArena(g, hlvl))
+                rcEmitOwedCheck(g, arenaPrintf(g->arena, "(void *)(%s)", harg), hlvl);
+        }
         n++;
     }
     if (funcTakesHomeZone(callee)) {
@@ -2900,9 +2916,25 @@ static const char *exConv(CG *g, Expr *e) {
  *    所以**不是本帧拥有的区域一个触发都不发**。本帧自己的块 arena（`&__extc_a[lvl]`，lvl≥1）
  *    仍然照常触发：外层帧拿不到指向它的引用（跨帧存储的方向被 checker 挡着，会逃逸的值在分配
  *    时就落在**家 arena**），所以本帧根表对它是完整的 —— 这也是清扫能力**没有被整体废掉**的原因。
- *    代价（如实记）：只往家 arena 分配的函数（递归构造、被调者用调用者的家）从此不触发，
- *    那些区域只由**拥有它的那一帧**在自己也分配时清扫；拥有者一个分配点都没有时，整片要等到
- *    帧销毁才还。要同时保住健全与清扫能力，得走运行期根栈（登记/撤销外层帧在本区的活引用）。
+ *
+ *    **把这份能力拿回一部分（子集 A+B）**：
+ *    · **A——`main` 是家 arena 的例外**：`main` 没有调用者，它的家 arena 就是它自己的
+ *      `&__extc_a[1]`（`genFunc` 里那行 `__extc_home = &__extc_a[1]`）⇒ 根表对它完整，
+ *      `rcFrameOwnsArena` 对 `main` 的 `ARENA_HOME` 返回真。
+ *    · **B——欠收标志 + 拥有者销账**：其余函数的家 arena 归**拥有它的那一帧**。内层帧不在
+ *      那只区域上扫，只记一笔「欠一次收集」（`rcEmitOwe` ⇒ 运行期 `extc_rc_owe`，记账本身就
+ *      带 `shouldSweep` 压力判据）；拥有它的那一帧在**自己下一次调用之前**用自己的静态根表
+ *      销账（`rcEmitOwedCheck` ⇒ `extc_rc_checkOwed`）。
+ *
+ *    **B 的健全性不变量（这是它成立的全部理由）**：收集发生时，收集者不能有活跃的被调者子树
+ *    —— 那一刻它的静态根表（本帧局部 + 形参 + 全局）就是**完整**的种子。所以销账点只能落在
+ *    「上一批被调者已返回、这一批还没进入」的调用之前；也正因如此，**不需要**帧级「根不可靠」
+ *    标记（那是整条运行期根栈才需要的）。欠收标志一辈子没被销掉（拥有者此后再不调用）时，
+ *    那只区域等到帧销毁才还 —— 上界放松，不是悬垂。
+ *
+ *    代价（如实记）：只往家 arena 分配、且拥有者此后再不发起调用的形状（`hole_c`、
+ *    `persist_nodes` 的单次入口）仍旧整片等到帧销毁；`bench/stress/stress.extc` 那种
+ *    「拥有者在循环里反复调被调者」的形状能回到修前的峰值（10.86–10.92 MB）。
  *
  * 视图（`slice<T>` / `mut slice<T>`）不算根：它的 `data` 指向 arena / 板 / C 的存储，
  * 而 rc 槽只由 `new T` / `new [N]T` / `alloc<T>(n)` / `@overwrite` 产生，都不给视图。
@@ -3091,12 +3123,14 @@ static const char *rcEmitTypeDesc(CG *g, Type *t) {
  * @brief 这次分配要落进去的区域，是不是**本帧拥有**的（静态根表对它是完整的种子）。
  *
  * 判据（见上面「第三个安全方向」）：本帧自己的块 arena（`&__extc_a[lvl]`，`lvl >= 1`）算；
- * 家 arena（`ARENA_HOME`：调用者一路传下来的 `(*__extc_home)`）不算；线程本地 arena
+ * 家 arena（`ARENA_HOME`：调用者一路传下来的 `(*__extc_home)`）一般不算；线程本地 arena
  * （`parTls`）也不算 —— 后者同样是整条 worker 调用链共用的，与家 arena 一个道理。
  * 协程帧本来就 `rcRootsUnreliable`，这里一并挡住。
  *
- * 不把 `main` 的家 arena 特例放进来：`main` 是唯一一个「家 arena 就是自己帧的 arena」的函数，
- * 认它要多一条判据，而收紧一侧只损失清扫机会、不损失健全。
+ * **`main` 是家 arena 的例外（子集 A）**：`main` 没有调用者，它的家 arena 就是它自己的
+ * `&__extc_a[1]`（`genFunc` 里 `__extc_home = &__extc_a[1]`）⇒ 静态根表对它完整，认它。
+ * 其余函数的家 arena 归**拥有它的那一帧**：内层帧不扫，只记一笔欠收（`rcEmitOwe`），
+ * 拥有者在它自己没有活跃被调者子树时用自己的静态根表销账（`rcEmitOwedCheck`）。
  *
  * @param g    生成器。
  * @param lvl  `ARENA_HOME`（-1）或 1 以上的块层级。
@@ -3104,7 +3138,106 @@ static const char *rcEmitTypeDesc(CG *g, Type *t) {
  */
 static bool rcFrameOwnsArena(CG *g, int lvl) {
     if (g->parTls || g->coroFunc) return false;
-    return lvl != ARENA_HOME;
+    if (lvl == ARENA_HOME) return g->inMain;
+    return true;
+}
+
+/**
+ * @brief 把此刻的静态根表（全局引用槽 + 本帧局部/形参的引用槽）拼成一张复合字面量。
+ *
+ * 表就是**此刻活着的引用槽表达式**（值语义，当场物化）：`(void *[]){ … }`。`n == 0` 时给
+ * 一个空指针常量 —— 运行期的播种循环只见 `nroots`，不需要一张空表。
+ *
+ * @param g  生成器。
+ * @param b  追加文本的目标缓冲。
+ * @return   根数（表里槽的个数）。
+ */
+static size_t rcRootTableText(CG *g, Buf *b) {
+    size_t n = g->rcGlobalRoots.len + g->rcRoots.len;
+    if (n == 0) {
+        bufPuts(b, "(void *const *)0");
+        return 0;
+    }
+    bufPuts(b, "(void *[]){ ");
+    size_t k = 0;
+    for (size_t i = 0; i < g->rcGlobalRoots.len; i++)
+        bufPrintf(b, "%s(void *)(%s)", k++ ? ", " : "",
+                  *(const char **)vecAt(&g->rcGlobalRoots, i));
+    for (size_t i = 0; i < g->rcRoots.len; i++)
+        bufPrintf(b, "%s(void *)(%s)", k++ ? ", " : "",
+                  *(const char **)vecAt(&g->rcRoots, i));
+    bufPuts(b, " }");
+    return n;
+}
+
+/**
+ * @brief 本帧**不拥有**这只区域时的记账：在区域上记一笔「欠一次收集」（子集 B）。
+ *
+ * 理由（见 `rcFrameOwnsArena` 与文件头的「第三个安全方向」）：家 arena 是调用者一路传下来的
+ * 同一只，本帧的静态根表看不见调用栈上其他帧的活引用 ⇒ 在这只区域上照常扫就是把活对象当
+ * 垃圾放（C 洞）。所以内层帧不扫，只记一笔账；**拥有这只区域的那一帧**在自己没有活跃被调
+ * 者子树时用自己的静态根表销账（`rcEmitOwedCheck`）。
+ *
+ * 记账本身就带压力判据（`extc_rc_shouldSweep`）：没过压力线的分配连账都不记，于是拥有者
+ * 侧的检查是一次「读一个 bit」，不是每个调用点都物化根表。
+ *
+ * 线程本地 arena（`parTls`）不在此列：整条 worker 调用链共用 `extc_tls_arena`，「拥有者帧」
+ * 的归属说不清（全语料没有正向语料），维持一个触发都不发（宁可少收）。
+ *
+ * @param g        生成器。
+ * @param basePtr  区域基址表达式（`(void *)` 形态）。
+ * @param lvl      块层级（`ARENA_HOME` 或 1 以上）；分片时区域号取 `lvl * 片数 + k`。
+ */
+static void rcEmitOwe(CG *g, const char *basePtr, int lvl) {
+    if (g->parTls) return;
+    if (g->rcNShard <= 1) {
+        pfLine(g, "{ ExtcRcRegion *__extc_rcw = extc_rc_regionOf(%s, %d);"
+                  " if (extc_rc_shouldSweep(__extc_rcw)) extc_rc_owe(__extc_rcw); }",
+               basePtr, lvl);
+        return;
+    }
+    /* 分片：区域键是「基址 + k」。这一次分配只会落进其中一片，但这里把每片都问一次
+     * （多标无害，拥有者侧逐片销账）—— 不引入任何新的分片状态。 */
+    pfLine(g, "{ for (int32_t __extc_rcwk = 0; __extc_rcwk < %d; __extc_rcwk++) {"
+              " ExtcRcRegion *__extc_rcw = extc_rc_regionOf((void *)((char *)(%s) + __extc_rcwk),"
+              " (int32_t)(%d + __extc_rcwk));"
+              " if (extc_rc_shouldSweep(__extc_rcw)) extc_rc_owe(__extc_rcw); } }",
+           g->rcNShard, basePtr, lvl * g->rcNShard);
+}
+
+/**
+ * @brief 拥有者帧的销账点：用**此刻自己的静态根表**收掉外层区域欠下的清扫（子集 B）。
+ *
+ * 健全性不变量（这是 B 的全部理由）：**收集发生时，收集者不能有活跃的被调者子树** —— 那一刻
+ * 它的静态根表（本帧局部 + 形参 + 全局）就是完整的种子。因此这个检查只发在
+ * 「本帧拥有这只 arena，并且真的把它当被调者的家 arena 传出去」的**调用之前**：上一批被调者
+ * 已经返回、这一批还没进入，深帧一个都不在。⇒ **不需要**帧级「根不可靠」标记（那是整条
+ * 运行期根栈才需要的）。
+ *
+ * 欠收标志假的绝大多数调用点上，这里只多一次 `regionOf`（表命中）+ 一次读 bit；根表是
+ * `extc_rc_checkOwed` 的实参，只在 `extc_rc_owed` 为真时才物化（与触发点的入口守卫同一口径）。
+ *
+ * @param g        生成器。
+ * @param basePtr  本帧拥有的那只区域的基址表达式（`(void *)` 形态）。
+ * @param lvl      块层级（`main` 的家 arena 是 `ARENA_HOME`，否则 1 以上）。
+ */
+static void rcEmitOwedCheck(CG *g, const char *basePtr, int lvl) {
+    if (!g->needReclaim || g->rcRootsUnreliable || g->prefixBlk == 0) return;
+    if (g->rcGlobalRoots.len + g->rcRoots.len > 4096) { g->rcRootsUnreliable = true; return; }
+    Buf b;
+    bufInit(&b, g->arena);
+    size_t n = rcRootTableText(g, &b);
+    if (g->rcNShard <= 1) {
+        pfLine(g, "{ ExtcRcRegion *__extc_rcc = extc_rc_regionOf(%s, %d);"
+                  " if (extc_rc_owed(__extc_rcc)) extc_rc_checkOwed(__extc_rcc, %s, %zu); }",
+               basePtr, lvl, bufCstr(&b), n);
+        return;
+    }
+    pfLine(g, "{ for (int32_t __extc_rcck = 0; __extc_rcck < %d; __extc_rcck++) {"
+              " ExtcRcRegion *__extc_rcc = extc_rc_regionOf((void *)((char *)(%s) + __extc_rcck),"
+              " (int32_t)(%d + __extc_rcck));"
+              " if (extc_rc_owed(__extc_rcc)) extc_rc_checkOwed(__extc_rcc, %s, %zu); } }",
+           g->rcNShard, basePtr, lvl * g->rcNShard, bufCstr(&b), n);
 }
 
 /**
@@ -3121,38 +3254,24 @@ static bool rcFrameOwnsArena(CG *g, int lvl) {
  * 这是纯粹的求值顺序改动，改变的是"什么时候物化根表"，不是"什么时候收集"：
  * 判据只有 `extc_rc_shouldSweep` 这一份（`maybeCollect` 内部用的就是同一个函数），不另抄。
  *
- * **本帧拥有的区域**：`frameOwned` 为假时一个触发都不发（理由见 `rcFrameOwnsArena` 与文件头的
- * 「第三个安全方向」）—— 根表看不见调用帧的活引用，在那种区域上照常扫就是把活对象当垃圾放。
+ * **本帧拥有的区域**：`frameOwned` 为真才在这里扫；为假时改走欠收记账（`rcEmitOwe`）——
+ * 根表看不见调用帧的活引用，在那种区域上照常扫就是把活对象当垃圾放。
  *
  * @param g          生成器。
  * @param basePtr    该分配要落进去的那只区域的**基址表达式**（已经是 `(void *)` 形态），
  *                   形如 `(void *)&(__extc_a[1])`、`(void *)__owc0->home`；第 k 片的认领键是
  *                   `(char *)basePtr + k`（只比不读，见 `rcAllocCore`）。
  * @param lvl        块层级（1 = 函数体，-1 = 家区域）；分片时区域号取 `lvl * 片数 + k`。
- * @param frameOwned 这只区域是不是本帧拥有的（假 ⇒ 不发射触发）。
+ * @param frameOwned 这只区域是不是本帧拥有的（假 ⇒ 只记欠收，不扫）。
  */
 static void rcEmitTrigger(CG *g, const char *basePtr, int lvl, bool frameOwned) {
     if (!g->needReclaim || g->rcRootsUnreliable || g->prefixBlk == 0) return;
-    if (!frameOwned) return;
+    if (!frameOwned) { rcEmitOwe(g, basePtr, lvl); return; }
     size_t n = g->rcGlobalRoots.len + g->rcRoots.len;
     if (n > 4096) { g->rcRootsUnreliable = true; return; }
     Buf b;
     bufInit(&b, g->arena);
-    if (n == 0) {
-        bufPuts(&b, "(void *const *)0");
-    } else {
-        bufPuts(&b, "(void *[]){ ");
-        size_t k = 0;
-        for (size_t i = 0; i < g->rcGlobalRoots.len; i++) {
-            bufPrintf(&b, "%s(void *)(%s)", k++ ? ", " : "",
-                      *(const char **)vecAt(&g->rcGlobalRoots, i));
-        }
-        for (size_t i = 0; i < g->rcRoots.len; i++) {
-            bufPrintf(&b, "%s(void *)(%s)", k++ ? ", " : "",
-                      *(const char **)vecAt(&g->rcRoots, i));
-        }
-        bufPuts(&b, " }");
-    }
+    n = rcRootTableText(g, &b);
     const char *rg = arenaPrintf(g->arena, "__extc_rcg%d", g->rcGuardSeq++);
     if (g->rcNShard <= 1) {
         /* 单片：与接线前逐字节相同（认领键就是区域基址）。 */
@@ -5129,8 +5248,10 @@ if (s->u.var.overwrite) {
                  * （`f_owLocal`）且本函数不收 home 时，`home` 才是本帧的 `&__extc_a[1]`。
                  * 本函数收 home（`planUsesHome`，格子的 `home` 因此是调用者的 arena），或
                  * `owLocal` 为假（codegen 期才生成的泛型实例），两种都落在**外层帧**上 ——
-                 * 本帧的静态根表看不见外层帧的活引用，这一档不触发（见 `rcFrameOwnsArena`）。 */
-                bool own = loc && !g->rcFuncUsesHome;
+                 * 本帧的静态根表看不见外层帧的活引用，这一档只记欠收（见 `rcEmitOwe`）。
+                 * **`main` 例外（子集 A）**：`main` 收到的 home 就是它自己的 `&__extc_a[1]`，
+                 * 认它（与 `rcFrameOwnsArena` 同一条判据）。 */
+                bool own = loc && (!g->rcFuncUsesHome || g->inMain);
                 const char *core = rcAllocCore(g, arenaPrintf(g->arena, "(void *)%s->home", owcv),
                                                planArenaLevel(nx), own,
                                                arenaPrintf(g->arena, "(int64_t)sizeof(%s)", ct), td);

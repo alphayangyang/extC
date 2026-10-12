@@ -27,8 +27,10 @@
 #   ③ 关档（`EXTC_RECLAIM=0`）：rc=0 且输出逐字 `n = 131071`（对照组，不空转）；
 #   ④ `caller_frame` 开档：rc=0（不挂住）且输出逐字 `n = 70000`；
 #   ⑤ `caller_frame` 关档：rc=0 且输出逐字 `n = 70000`；
-#   ⑥ 生效位置（生成物层面）：开档的 `hole_c` 生成物里**不发射** `extc_rc_maybeCollect`
-#      —— 那两处分配都在家 arena 上，一个触发都不该发。
+#   ⑥ 生效位置（生成物层面）：开档的 `hole_c` **分配点**里不发射 `extc_rc_maybeCollect`
+#      —— 那两处分配都在家 arena 上，内层帧一个触发都不该发。子集 B 之后它们改成在区域上
+#      记一笔「欠一次收集」（`extc_rc_owe`），由**拥有那只区域**的一帧在自己的调用点上用
+#      **自己完整的静态根表**销账（`extc_rc_checkOwed`）⇒ 本条判据仍成立（分配点上没有触发）。
 #   ⑦ 前提健全性：深度 15（65535 节点 = 1.0 MiB − 16 B）没过 `EXTC_RC_FLOOR`(1 MiB) ⇒ 开档
 #      也不该崩、输出 `n = 65535`。这条钉住"① 的复现需要越过压力线"这个前提。
 #
@@ -149,7 +151,7 @@ fi
 if [ -f "$TMP/on.c" ]; then
     ntrig=$(grep -c 'extc_rc_maybeCollect(__extc_rcg' "$TMP/on.c" 2>/dev/null || true)
     if [ "${ntrig:-1}" = 0 ]; then
-        ok "生成物：开档的 hole_c 不发射清扫触发（分配点全在家 arena 上 ⇒ 不扫外层区域）"
+        ok "生成物：开档的 hole_c 分配点不发射清扫触发（家 arena 上的分配只记欠收，销账在拥有者帧）"
     else
         bad "生成物：开档的 hole_c 仍发射了 $ntrig 处清扫触发 —— 家 arena 上的触发没被挡住"
         grep -o 'extc_rc_regionOf([^,]*, [-0-9]*)' "$TMP/on.c" | sort -u | sed 's/^/       /' | head -4

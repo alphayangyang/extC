@@ -35,6 +35,12 @@
 #      挂住 rc=124）。判据：开档/关档都 rc=0，输出逐字 `n = 131071` / `n = 70000`。
 #      这三条只钉**健全性**；它们的清扫损失（只往家 arena 分配的函数从此不触发）在
 #      README 的「C 洞」一节如实写明，清扫能力的护栏仍是 ①/①b/①c/①e/①f 那几条。
+#   ①k **先决判据（清扫能力）** `owed_home`：内层帧给外层（家）区域分配 ⇒ 那只区域必须
+#      **真的被收**。`19fd567` 之后这一档一个触发都不发（全语料 130/136 个被移除触发点就是它），
+#      家区域的垃圾一根也收不掉。判据用 `tools/rc-pause-probe.py` 观察到的**清扫次数 > 0**
+#      （唯一凭据，不用「生成物里有触发」代替），另加开档/关档语义逐字一致。
+#      子集 B（欠收标志 + 拥有者返回后用自己的静态根表收一次）落地后转绿；
+#      `EXTC_RECLAIM=0` 时仍红（运行期不发射，探针插不进去 ⇒ 清扫次数 0）。
 #   ② `cond_save` / `cyclic_shape` 在开关下**语义不变**（开关只换运行期，不改语义）。
 #   ③ 四个曾经的 SEGV 用例在开关下不崩、输出不变（板/池/栈/C 指针不是 rc 槽：
 #      `owns` 守卫必须一个字节都不碰）：
@@ -721,6 +727,67 @@ if [ "$cf_on_c" = ok ] && [ "$cf_on_rc" = 0 ] && [ "$cf_on_out" = "n = 70000" ] 
     ok "caller_frame：开档/关档都 rc=0，输出逐字 n = 70000（修之前开档 rc=124 挂住）"
 else
     bad "caller_frame：开档/关档没同时跑对（on[c=$cf_on_c rc=$cf_on_rc out=$cf_on_out] off[c=$cf_off_c rc=$cf_off_rc out=$cf_off_out]）"
+fi
+
+# ── ①k 先决判据：内层帧给外层（家）区域分配 ⇒ 那只区域必须**真的被收** ──────────
+# 背景：`19fd567` 的修法是「触发点只在本帧拥有的区域上下手」，家 arena 一律不触发 —— 于是
+# 「内层帧给外层（家）区域分配」这一档（全语料 130/136 个被移除触发点）**一个触发都不发**，
+# 那只区域的垃圾一根也收不掉。补救的方向是子集 B（欠收标志 + 拥有者在调用返回后用自己的
+# 静态根表收一次），本判据是它的**唯一凭据**。
+#
+# 形状见 `owed_home.extc`：`build` 只往调用者的家 arena 分配（自己的块 arena 零 rc 分配点），
+# `main` 每轮覆盖上一轮的链 ⇒ 家区域里攒下不可达的链（计数归零放不掉，只有清扫能收）。
+#
+# 判据两条：
+#   · 语义：开档（=1）与关档（=0）都 rc=0，输出逐字 `n = 20000`；
+#   · 能力：`tools/rc-pause-probe.py` 插桩后 `PROBE sweeps=` 的**清扫次数 > 0** ——
+#     这是「那只区域真的被收了」的凭据；不用「生成物里有触发」这种弱判据代替。
+# 开关关掉时这一条必须红（`EXTC_RECLAIM=0` 连运行期都不发射，探针插不进去 ⇒ 清扫次数 0）。
+echo "-- ①k 内层帧给外层（家）区域分配：那只区域必须真的被扫过（清扫次数 > 0）--"
+OH_WANT="n = 20000"
+
+oh_build() { # <1|0> <tag> → OH_C=ok/fail；另尝试插桩版 $TMP/oh-<tag>-p
+    OH_C=fail
+    EXTC_RECLAIM="$1" "$EXTC" -w --no-line-map tests/reclaim-shapes/owed_home.extc \
+        -o "$TMP/oh-$2.c" >"$TMP/oh-$2.log" 2>&1 || return
+    if python3 tools/rc-pause-probe.py "$TMP/oh-$2.c" >"$TMP/oh-$2-p.c" 2>>"$TMP/oh-$2.log"; then
+        if "$CC" -std=c11 -D_POSIX_C_SOURCE=200809L -fwrapv -O1 -o "$TMP/oh-$2-p" "$TMP/oh-$2-p.c" \
+                >>"$TMP/oh-$2.log" 2>&1; then :; else rm -f "$TMP/oh-$2-p"; fi
+    fi
+    if "$CC" -std=c11 -fwrapv -O1 -o "$TMP/oh-$2" "$TMP/oh-$2.c" >>"$TMP/oh-$2.log" 2>&1; then
+        OH_C=ok
+    fi
+}
+oh_run() { # <tag> → OH_RC / OH_OUT
+    OH_RC=-; OH_OUT=""
+    "$TMP/oh-$1" >"$TMP/oh-$1.out" 2>"$TMP/oh-$1.err"; OH_RC=$?
+    OH_OUT=$(cat "$TMP/oh-$1.out")
+}
+oh_probe_sweeps() { # <tag> → OH_SWEEPS（没插桩版/没那行 ⇒ 空）
+    OH_SWEEPS=""
+    [ -x "$TMP/oh-$1-p" ] || return
+    "$TMP/oh-$1-p" >"$TMP/oh-$1-p.out" 2>"$TMP/oh-$1-p.err"
+    OH_SWEEPS=$(grep -o 'PROBE sweeps=[0-9]*' "$TMP/oh-$1-p.out" | head -1 | cut -d= -f2)
+}
+
+oh_build 1 r; oh_on_c=$OH_C
+oh_build 0 o; oh_off_c=$OH_C
+oh_run r; ohr_rc=$OH_RC; ohr_out=$OH_OUT
+oh_run o; oho_rc=$OH_RC; oho_out=$OH_OUT
+if [ "$oh_on_c" = ok ] && [ "$oh_off_c" = ok ] && [ "$ohr_rc" = 0 ] && [ "$oho_rc" = 0 ] \
+   && [ "$ohr_out" = "$OH_WANT" ] && [ "$oho_out" = "$OH_WANT" ]; then
+    ok "owed-home：开档/关档都 rc=0 且输出逐字一致（$OH_WANT）"
+else
+    bad "owed-home：开档/关档没同时跑对（on[c=$oh_on_c rc=$ohr_rc out=$ohr_out] off[c=$oh_off_c rc=$oho_rc out=$oho_out]）"
+fi
+
+# 清扫次数判据跟本次调用的开关状态走（`EXTC_RECLAIM=0 ./run-switch.sh` 时必须红）。
+if [ "$sw" = on ]; then oh_tag=r; oh_name="开档"; else oh_tag=o; oh_name="关档"; fi
+oh_probe_sweeps "$oh_tag"
+if [ -n "$OH_SWEEPS" ] && [ "$OH_SWEEPS" -gt 0 ] 2>/dev/null; then
+    ok "owed-home：$oh_name下家区域真的被扫过（探针：清扫次数 = $OH_SWEEPS）—— 内层帧的分配不再白攒"
+else
+    bad "owed-home：$oh_name下家区域一次都没被扫过（探针：清扫次数 = ${OH_SWEEPS:-无}）—— 内层帧给外层区域分配，那只区域整片没人收"
 fi
 
 # ── ② 开关只换运行期，不改语义 ────────────────────────────────────────────────

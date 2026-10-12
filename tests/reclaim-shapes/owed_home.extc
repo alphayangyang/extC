@@ -1,0 +1,58 @@
+/* tests/reclaim-shapes/owed_home.extc —— 先决判据 ①k 的形状：**内层帧给外层（家）区域分配**，
+ * 那只区域必须**真的被收**（清扫次数 > 0），否则这个形状的垃圾一根也收不掉。
+ *
+ * 形状：`build` 只往**调用者的家 arena** 分配（返回值逃逸 ⇒ checker 把它提权进 home），
+ * 自己的块 arena 一个 rc 分配点都没有。`main` 每轮把上一轮的链覆盖掉 ⇒ 上一轮的 20000 个节点
+ * 成了家区域里不可达的垃圾（每个节点的 `hold` 都被前驱的 `next` 顶着 ⇒ 计数归零一个也放不掉，
+ * 只有区域清扫能收）。
+ *
+ * 为什么这是「先决判据」：`19fd567` 之后 `rcFrameOwnsArena` 对家 arena 一律返回假 ⇒ `build`
+ * 的分配点**一个触发都不发** ⇒ 清扫次数 = 0 ⇒ 家区域的垃圾只增不减。一旦重新打开 home 触发 /
+ * 欠收机制，清扫必须重新上场。判据（`run-switch.sh` ①k）：
+ *   · `EXTC_RECLAIM=1` 生成 + `tools/rc-pause-probe.py` 插桩 ⇒ `PROBE sweeps=N` 的 **N > 0**；
+ *   · 开档与关档输出逐字一致（回收只换运行期，不改语义）⇒ `n = 20000`。
+ * 修之前 N = 0（红）；欠收机制（B）落地后 N > 0（绿）。
+ *
+ * 注意：判据用**探针观察到的清扫次数**，不用「生成物里有触发」这种弱判据 —— 后者只证明发了
+ * 触发，不证明那只区域真被收了。
+ *
+ * 规模：64 轮 × 20000 节点 × 16 B = 20.5 MB 的总分配量，远超 `EXTC_RC_FLOOR`=1 MiB，
+ * 所以「过不过压力线」不靠运气；单轮 320 KB，清扫一次就能把上一轮整条链收掉。
+ */
+struct node {
+    next: ?ref node
+    v: i64
+}
+
+/* 内层帧：本帧的静态根表对自己的块 arena 完整，但对**调用者的家 arena** 不完整
+ * （调用栈上其他帧的活引用不在表里）⇒ 它不许扫那只区域，只许记「欠一次收集」。 */
+fn build(n: i64) -> mut ref node {
+    var cur: mut ref node = new node
+    cur.v = 0
+    var i: i64 = 1
+    while i < n {
+        var p: mut ref node = new node
+        p.v = i
+        p.next = cur
+        cur = p
+        i = i + 1
+    }
+    return cur
+}
+
+fn count(head: ?ref node) -> i64 {
+    var c: i64 = 0
+    var p: ?ref node = head
+    while p != null { c = c + 1  p = p.next }
+    return c
+}
+
+fn main() {
+    var keep: ?ref node = null
+    var k: i64 = 0
+    while k < 64 {
+        keep = build(20000)
+        k = k + 1
+    }
+    println("n = ", count(keep))
+}
