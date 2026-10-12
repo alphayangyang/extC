@@ -52,3 +52,10 @@ prototype-reclaim/probe_real
 # 基准数据与编译产物：**生成的**，不该进版本库（2026-10-07 从历史里剔除，224MB 的文件曾挡住 push）
 bench/io/data/
 bench/io/bin/
+
+# 编译产物：Lean 目标文件、Java class、跨语言对照的二进制（都能从源码重建）
+*.olean
+*.class
+prototype-reclaim/crosslang/bench_*
+prototype-reclaim/crosslang/stress_*
+prototype-reclaim/crosslang/writes_*
