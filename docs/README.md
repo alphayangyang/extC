@@ -5,7 +5,7 @@
 | 类别 | 位置 |
 |---|---|
 | **现在有什么 / 怎么用** | [`usage/`](usage/) |
-| **有什么待做** | [`TODO.md`](TODO.md) |
+| **有什么待做** | [`TODO.md`](TODO.md)（清单）· [`RECLAMATION.md`](RECLAMATION.md)（回收机制）|
 | **开发历史（全仓库唯一）** | [`CHANGELOG.md`](CHANGELOG.md) |
 
 历史快照（只作考古，**不要当现状读**）：[`archive/`](archive/README.md)

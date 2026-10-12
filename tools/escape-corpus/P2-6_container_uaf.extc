@@ -1,0 +1,49 @@
+/* 闸门⑤ 语料 · P2-6_container_uaf（2026-10-12，escape-fuzz task-8 E_ACCEPT_UAF）
+ * 期望：**接受 + ASan 干净**（gate-expect: run —— 这个洞 2026-10-12 的修法是「安全接受」，不是拒绝）。
+ * 为什么在这里：节点先 push 进 `varArray`，再从容器取出来接链，最后 `build` 返回链头。
+ *   逃逸分析看不到「容器里的引用最终会随返回值走」⇒ 循环里的 `new` 站点只到层 1，
+ *   放置那一趟把它放进**函数自己的帧 arena**（`__extc_a[1]`），返回即释放
+ *   （ASan heap-use-after-free）。`cur` 的赋值在语句后（after 变体）。
+ * 原探针：tests/escape-fuzz/cases/m_home_cont_after.extc
+ * 规矩：本文件被拒、或被接受但 ASan 脏 ⇒ 闸门红；修好之后**不许**把本文件改宽松。
+ */
+use std::io
+struct node { value: i64  next: ?mut ref node }
+
+fn build() -> ?mut ref node {
+    var v: varArray<mut ref node> = varArray<mut ref node>::withCap(8)
+    var i: i64 = 0
+    while i < 4 {
+        var p: mut ref node = new node
+        p.value = i + 1
+        p.next = null
+        v.push(p)
+        i = i + 1
+    }
+    var head: ?mut ref node = null
+    var cur: ?mut ref node = null
+    var k: i64 = 0
+    while k < v.size() {
+        var q: mut ref node = v.get(k)!
+        if head == null {
+            head = q
+        } else {
+            if cur != null { (*cur).next = q }
+        }
+        cur = q
+        k = k + 1
+    }
+    return head
+}
+
+fn main() -> i32 {
+    var h: ?mut ref node = build()
+    var c: ?mut ref node = h
+    var t: i64 = 0
+    while c != null {
+        t = t + (*c).value
+        c = (*c).next
+    }
+    io::cout << t << "\n"
+    return 0
+}

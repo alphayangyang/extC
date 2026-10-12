@@ -1,0 +1,47 @@
+/* 形状 ⑤：**规模行为** —— 与 `cond_save.extc` 同一个「条件保存在循环里」的形状，
+ * 轮数由 argv 给（`run.sh` 跑 N 与 4N 两次，比峰值 RSS）。
+ *
+ * 每一轮 `new node` 都可能进 saved ⇒ 存储被提权到函数层区域，函数返回前整片不回收
+ * ⇒ 峰值 RSS 随轮数增长。这就是 RECLAMATION.md 要解决的问题本身：
+ * 「不可达但仍占存储的对象，其总量有界，且这个界与循环轮数无关」—— 今日**界与轮数有关**，
+ * 所以这一条在基线里是**红的**。
+ *
+ * 判据（预期红）：4N 的峰值 RSS 明显大于 N（脚本用 1.5× 当阈值；若将来回收落地、
+ * 内存变平，这一条会转绿 —— 那正是棘轮要的方向）。
+ */
+use std::io
+
+struct node { val: i64  next: ?ref node }
+
+/* argv[1] 是十进制轮数（没给就是 8）：手写解析，避免为本基线引入别的依赖。 */
+fn parseRounds(args: slice<slice<u8>>) -> i64 {
+    if args.len < 2 { return 8 }
+    var s: slice<u8> = args[1]
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    return v
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var n: i64 = parseRounds(args)
+    var saved: ?ref node = null
+    var i: i64 = 0
+    while i < n {
+        var p = new node
+        p.val = i
+        p.next = saved
+        if i == n - 1 { saved = p }
+        i = i + 1
+    }
+    var v: i64 = -1
+    if saved != null { v = (*saved).val }
+    io::cout << "rounds=" << n << " saved=" << v << "\n"
+    return 0
+}

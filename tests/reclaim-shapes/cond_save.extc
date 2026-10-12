@@ -1,0 +1,29 @@
+/* 形状 ①：`docs/RECLAMATION.md`「要解决的问题」那一节里的 motivating shape ——
+ * **条件保存在循环里**。
+ *
+ * `var saved: ?ref node = null` + 循环里 `if keep { saved = p }`：
+ * 每一轮 new 出来的 p 都可能进 saved，而运行期真正被 saved 持有的永远只有一份。
+ * 编译器只能按「可能逃逸」把**每一份**存储留在函数那一层（提权）⇒ 峰值随轮数涨
+ * （红的那一条在 `scale_growth.extc`）。
+ *
+ * 本条判据（绿）：编译通过 + 语义正确 —— keep 落在最后一轮 ⇒ saved = 7。
+ */
+use std::io
+
+struct node { val: i64  next: ?ref node }
+
+fn main() -> i32 {
+    var saved: ?ref node = null
+    var i: i64 = 0
+    while i < 8 {
+        var p = new node
+        p.val = i
+        p.next = saved
+        if i == 7 { saved = p }     // ← 条件保存：只有这一轮的 p 真的进 saved
+        i = i + 1
+    }
+    var v: i64 = -1
+    if saved != null { v = (*saved).val }
+    io::cout << "saved=" << v << "\n"
+    return 0
+}

@@ -72,7 +72,7 @@ const char *checkFnDisplay(const char *name, const char *modName);
 /* ------------------------------------------ shared state and shared types
  * Whatever more than one file needs, so that whoever uses it can see it. */
 
-typedef struct {
+typedef struct Sym {
     const char *name;    /* name as written in the source */
     const char *cname;   /* name used in generated C; a shadowed `a` becomes `a__2` */
     Type       *type;    /* declared type, or the inferred one for an unannotated `let` */
@@ -101,6 +101,11 @@ typedef struct {
               * made of nulls which never mentions the `x` that a later `h.q = x` stored,
               * so walking origins would never reach that site. */
              Expr *src;
+             /* 与 `src` 同一份来源的**绑定**（来源是绑定时有值）。`src` 展平到站点是为了让
+              * 末轮重放不依赖 `lookup`；但展平会丢掉中间绑定的**字段表**（`b.next = ca` 记在
+              * `b` 上），环/链的提权必须能走到那里。Sym 指针活在 checker 的 arena 里，出了作用域
+              * 也能用，所以另存一格，`promoteFieldsAt` 靠它继续往里走。 */
+             struct Sym *srcSym;
              /* Depth of the write that produced `src`. Compare against this number, not
               * against `depth`: `depth` is merged with the maximum on a weak update, so
               * after `h.q = x  h.q = null` it is still deep, and comparing with it would
@@ -136,11 +141,27 @@ typedef struct {
  * expression there is nothing to promote, and a `new` handed to a callee that stores it would be
  * rejected where the same program written as a direct `b.p = n` is accepted. */
     Expr       *otherSrc;
+    /* 与 `srcSym` 同理：`otherSrc` 展平后仍然要知道它原来那个绑定的字段表。 */
+    struct Sym *otherSrcSym;
     int         otherSrcDepth;
     int         otherMinReq;
+    /* 声明处初始化式留下的**别名来源**（`var head = a`）：与 `otherSrc` 分开一格，因为
+     * `otherSrc`/`otherDepth` 同时被 `targetDepth` 当成绑定深度的上界读走，把声明式记进去
+     * 会让普通形状多算一层（`head = p` 于是被误拒）。这里只服务提权：`promoteFieldsAt`
+     * 沿它把要求传给来源背后的分配站点。**不展平**：`head` 与 `a` 共享所指对象，a 之后被
+     * 改指（`a = p`）时才知道该提哪个站点；展平过的 `origin` 是拷贝当时的来源。 */
+    Expr       *initSrc;
+    int         initSrcDepth;
+    int         initMinReq;
     int         depth;      /* lexical depth: a parameter is 0, a local in the function
                              * body is 1, and every nested block adds 1. The escape
                              * checks compare this number. */
+    /* 引用型绑定**可能**指向的最浅深度（越小活得越久）；-1 = 还没记过。
+     *
+     * 目的地的深度要的是"可能活得最久的被指物"：`cur` 可能指向参数（0）也可能指向帧内 `new`
+     * （1），把 `(*cur).f = v` 的目的地读成 max（DFA 给的那个）会把帧内的 `v` 放进调用者的
+     * 对象，调用一返回就悬垂。这里按每次改指取 min，只往更长寿的一侧偏（安全方向）。 */
+    int         minPointee;
     /* For a binding that holds a reference: how deep is the thing it points at?
      *
      * This differs from `depth`. In `var cur: ?ref node = head` the slot holding the
@@ -340,6 +361,14 @@ typedef struct Checker {
      * The self-check mode walks this list to verify that the `refDepth` of a binding
      * agrees with the allocation site it came from. */
     Vec        allSyms;
+    /* 一次 `promoteFieldsAt` 走查正踩着的绑定栈（环守卫）。
+     *
+     * 来源表可以成环（`a = b  b = a`，或两个结构体的字段表互指）——按来源链走会无限递归。
+     * 原来只靠跳数上限兜底，撞上限会走 `EXTC_DBG_FALLBACK`（断言版直接判红），而且把 32 步
+     * 白白烧在一个环上。同一个绑定在一次走查里只走一次就够了：要求已经正沿那条路施加。
+     * 存储只有 64 项、按栈式 push/pop，不需要清零。 */
+    Sym       *fsChain[64];
+    int        fsDepth;
     /* The value currently being stored somewhere.
      *
      * `noteFieldDepthWrite` records which value wrote a field, and its callers already
@@ -381,6 +410,9 @@ typedef struct Checker {
      * the data flow and the level pass have settled the numbers. Reporting stays where it
      * was; the record is what makes the two answers comparable. */
     Vec        lvlRejects;  /* LvlRejection* */
+    /* 推迟的存储判定（`(*cur).f = v` 那类目的地深度未定的写）：DFA 落定后按 min 复判。
+     * 见 `PendingRefStore`。 */
+    Vec        pendingRefStores;  /* PendingRefStore* */
     Vec        callChecks;  /* CallCheck*: call sites resolved at instantiation */
     Vec       *substParams; /* type arguments substituted while an instance is being
                              * re-checked, NULL when not re-checking */
@@ -583,6 +615,22 @@ typedef struct {
     int         line;   /* source line */
     int         late;   /* depth the settled numbers gave */
 } LvlRejection;
+
+/* 一条**推迟**的存储判定：`(*cur).f = v` 的目的地深度读的是 `anRefDepth(cur)`，它在 body walk
+ * 里按词法顺序写、没有 join，而 `dfAnalyze` 要等 walk 之后才跑。这里把判定记下、诊断不发，
+ * 等 DFA 落定后用「可能被指物的**最浅**层」（`Sym.minPointee`）复判 —— 词序因此不再影响答案。
+ *
+ * 记录里同时留着当时的 `at`/`depth`：DFA 溢出（结果整份被丢弃）时照原样报，保持旧的保守行为。 */
+typedef struct {
+    Expr          *val;
+    Expr          *target;
+    Sym           *destSym;  /* 目的地经 `*` 到达的那个引用绑定（当时解析好的） */
+    int            line;
+    int            at;      /* 当时用的目的地深度 */
+    int            depth;   /* 当时看到的值的深度 */
+    const char    *what;    /* 诊断里的操作名（"this reference" / "this assignment"） */
+    const FuncDef *fn;      /* 所属函数：只复判当前这一趟的记录 */
+} PendingRefStore;
 
 /* An operator use on a type parameter, deferred to instantiation: recorded while an
  * expression is checked and consumed by the pass that runs afterwards.
@@ -1105,6 +1153,42 @@ Expr *extcRootLeaf(Expr *e, unsigned steps, int maxHops);
  void recordLvlRejection (Checker *c, Expr *val, int at, int depth, int line);
 
 /**
+ * @brief 带目的地的深度判定：目的地经具名引用到达时把拒绝推迟到 DFA 之后复判。
+ *
+ * @param c       检查器。
+ * @param val     被存入的值。
+ * @param at      目的地深度。
+ * @param line    源码行号。
+ * @param what    诊断里的操作名。
+ * @param target  被存入的地方；NULL 时等同 `checkEscape`。
+ * @return        判定为拒绝时返回 true。
+ */
+bool checkEscapeDefer(Checker *c, Expr *val, int at, int line, const char *what, Expr *target);
+
+/**
+ * @brief 写目标是否**经具名引用**到达（`(*a).f` / `*a`），是则返回那个绑定。
+ *
+ * `(*a).f = v` 的字段槽挂在 `a` 上（`placeRoot` 走不过解引用），环/链的提权要从那里走到被
+ * 存进去的对象自己的字段表。
+ *
+ * @param c  检查器。
+ * @param e  写目标的位置表达式。
+ * @return    路径尽头 `*` 后面是具名引用绑定时返回它；否则返回 NULL。
+ */
+Sym *destDerefSym(Checker *c, Expr *e);
+
+/**
+ * @brief DFA 落定后复判推迟的存储判定；仍然不够深才报诊断。
+ *
+ * 目的地深度这时取「可能被指物的**最浅**层」（`Sym.minPointee`），不是 DFA 的 max —— 后者会把
+ * `q2_dualpointee` 那类"可能指向参数(0)或帧内 new(1)"的悬垂放过去。
+ *
+ * @param c           检查器；作用域必须还开着。
+ * @param dfaSettled  DFA 是否给出了可用结果（溢出时照记录里的旧数报）。
+ */
+void recheckPendingRefStores(Checker *c, bool dfaSettled);
+
+/**
  * @brief 用各趟求解后的数字重新核对记录下来的拒绝。
  *
  * 只更新记录里的后算深度并可选打印一行，不改变已经报出的诊断。
@@ -1446,6 +1530,17 @@ Expr *extcRootLeaf(Expr *e, unsigned steps, int maxHops);
  */
  int *fieldDepthEntry (Checker *, Sym *, const char *, bool);
 /**
+ * @brief 写/读字段槽用的路径键（根绑定到这次投影的整条字段链）。
+ *
+ * 键字符串建在检查器的 arena 里：`bx.mid.next` 记成 `mid.next`，元素下标是常量时写进名字
+ * （`arr[0]` 记 `[0]`）。字段表的读与写必须用同一个键，否则两层投影的来源记不下、提不动。
+ *
+ * @param c  检查器。
+ * @param e  投影表达式（`EX_FIELD` / `EX_INDEX` 链）。
+ * @return   路径键；命不了名（含解引用/切片步进）时返回 NULL。
+ */
+ const char *fieldSlotKey (Checker *, Expr *);
+/**
  * @brief 记录一次写到绑定的字段或元素上的深度。
  *
  * 字段名非空时更新对应槽，地址被取过的绑定只能取最大值，字段表完整时可以强更新；字段表
@@ -1599,6 +1694,18 @@ int valDepthForStore (Checker *, Expr *);
  * @param val 要记来源的表达式。
  */
  void noteOrigin (Checker *c, Sym *sy, Expr *val);
+/**
+ * @brief 求一个值的根来源（把绑定链压平到根表达式）。
+ *
+ * 写进字段表的来源用它压平：中间绑定到提权那一刻可能已经出了作用域，到时 `lookup` 查不到，
+ * 来源链就断了、站点也就提不动。根的表达式（`new` 之类）没有作用域问题。
+ *
+ * @param c    检查器。
+ * @param val  要求来源的表达式。
+ * @param hops 已走过的绑定步数；超过上限停止。
+ * @return     根表达式；没有可追的来源时就是 `val` 本身。
+ */
+ Expr *originOf (Checker *c, Expr *val, int hops);
 /**
  * @brief 给说不出自己类型的表达式套上上下文期望的类型。
  *

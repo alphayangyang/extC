@@ -1,0 +1,35 @@
+use std::io
+struct node { value: i64  next: ?mut ref node  prev: ?mut ref node }
+fn burn() -> i64 {
+    var head: ?mut ref node = null
+    var cur: ?mut ref node = null
+    var i: i64 = 0
+    while i < 4 {
+        var p: mut ref node = new node
+        p.value = i + 1
+        p.next = null
+        p.prev = null
+        if head == null {
+            head = p
+            cur = p
+        } else {
+    if cur != null {
+            (*cur).next = p
+            (*p).prev = cur
+        }
+            cur = p
+        }
+        i = i + 1
+    }
+    var c: ?mut ref node = head
+    var t: i64 = 0
+    while c != null {
+        t = t + (*c).value
+        c = (*c).next
+    }
+    return t
+}
+fn main() -> i32 {
+    io::cout << burn() << "\n"
+    return 0
+}

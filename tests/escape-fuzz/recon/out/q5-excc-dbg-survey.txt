@@ -1,0 +1,14 @@
+-- EXTC_DBG=1 下逐例 rc（只列 rc=134 的）
+   rc=134  s_ring_home_lfield_direct          
+   rc=134  s_ring_main_lfield_direct          
+   rc=134  s_ring_nohome_lfield_direct        
+   rc=134  s_selfref_home_lfield_direct       
+   rc=134  s_selfref_home_lfield_ret          
+   rc=134  s_selfref_main_lfield_direct       
+   rc=134  s_selfref_main_lfield_ret          
+   rc=134  s_selfref_nohome_lfield_direct     
+   rc=134  s_selfref_nohome_lfield_ret        
+   rc=134  s_tree_home_lfield_direct          
+   rc=134  s_tree_main_lfield_direct          
+   rc=134  s_tree_nohome_lfield_direct        
+   （这些是既存兜底，不属于本任务的 7 类；修 promoteFieldsAt 时要重新核对这张表）

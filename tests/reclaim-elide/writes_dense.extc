@@ -1,0 +1,62 @@
+/* 形状 W（**该省** · 写密集）：`prototype-reclaim/README.md`「写密集形状」那一节。
+ *
+ * 那一节的结论：预分配一批节点、之后每轮大量**改链**（指针赋值），极少数分配 ——
+ * 这是计数最吃亏的形状；反过来也是"按编译期收窄"收益**最大**的形状。数据（2 亿次改链）：
+ *   · 纯指针改写：+24%（2.80 → 3.47 ns）
+ *   · 数据写 : 指针写 = 100 : 1 时仍有 +6.9%
+ *   单价 ≈ 0.11 ns / 指针赋值（≈1/3 周期），且**常开**（不像写屏障只在标记期开）。
+ *
+ * 形状：8 个节点串成双向链，之后每轮 4 次指针改链 + 2 次数据写；每 1024 轮才 `new` 1 个节点
+ * （与探针同形）。所有节点都在本函数这一层，函数退出整片释放 ⇒ 这些边属于情形①：
+ * **该省**。省下的是成千次计数，而只省下 4 次分配 ⇒ 收益集中在这里。
+ *
+ * ⚠️ 红判据：今日无分析 ⇒ 每轮 4 次指针赋值照样各带计数（接线后这一行会出现大量调用）。
+ * 语义面（绿的要求）：编译通过 + 输出 `dense=4096 allocs=4`。
+ */
+use std::io
+
+struct node { val: i64  next: ?ref node  prev: ?ref node }
+
+fn main() -> i32 {
+    var head = new node
+    head.val = 0
+    head.next = null
+    head.prev = null
+    var prev: mut ref node = head
+    var i: i64 = 1
+    while i < 8 {
+        var n = new node
+        n.val = i
+        n.next = null
+        n.prev = prev
+        prev.next = n
+        prev = n
+        i = i + 1
+    }
+
+    var x: mut ref node = head
+    var y: mut ref node = prev
+    var it: i64 = 0
+    var since: i64 = 0
+    var allocs: i64 = 0
+    while it < 4096 {
+        x.next = y                   // 指针写 1（该省：同层区整片释放）
+        y.prev = x                   // 指针写 2
+        y.next = x                   // 指针写 3
+        x.prev = y                   // 指针写 4
+        x.val = x.val + 1            // 数据写：不记
+        y.val = y.val + 1            // 数据写：不记
+        since = since + 1
+        if since == 1024 {           // 每 1024 轮才分配 1 个新节点
+            since = 0
+            var n2 = new node
+            n2.val = it
+            n2.next = null
+            n2.prev = null
+            allocs = allocs + 1
+        }
+        it = it + 1
+    }
+    io::cout << "dense=" << it << " allocs=" << allocs << "\n"
+    return 0
+}

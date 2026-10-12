@@ -1,0 +1,30 @@
+/* 形状 E3（**该省** · 情形③）：**编译器能证明该对象还有别的持有者**。
+ *
+ * 判据来源：`docs/RECLAMATION.md` 第五节最后一条（引文见 `elide_swept_region.extc`）。
+ *
+ * 形状：`keep` 这个函数层绑定持有对象，而且**在下面那条边之后仍然被读**（最后一行打印
+ * `keep.val`）⇒ 有一条活得更久的持有者。新写进 `b.head` 的那条边不改变对象的存活：
+ * 就算这条边不记，对象也不会因为没有别的东西指着它而被判死 ⇒ 这条边的计数可省。
+ *
+ * 反面对照：`keep_sole_holder.extc`（槽是唯一持有者，清空它就是最后一次 dec）。
+ *
+ * ⚠️ 红判据：今日无分析 ⇒ `b.head = keep` 照样进计数；"还有别的持有者"这类证明也不存在。
+ * 语义面（绿的要求）：编译通过 + 输出 `keep=7 alias=7`。
+ */
+use std::io
+
+struct node { val: i64  next: ?ref node }
+struct box { head: ?ref node }
+
+fn main() -> i32 {
+    var keep = new node              // 外层持有者：活得比下面那条边长
+    keep.val = 7
+    var b: box = { head: null }
+    {
+        b.head = keep                // ← 该对象还有 keep 这个持有者 ⇒ 这条边的计数可省
+    }
+    var v: i64 = -1
+    if b.head != null { v = (*b.head).val }
+    io::cout << "keep=" << keep.val << " alias=" << v << "\n"
+    return 0
+}

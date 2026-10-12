@@ -1,0 +1,13 @@
+use std::io
+struct node { value: i64  next: ?mut ref node }
+fn mk(v: i64) -> mut ref node {
+    var n: mut ref node = new node
+    n.value = v
+    n.next = null
+    return n
+}
+fn main() -> i32 {
+    var p: mut ref node = mk(5)
+    io::cout << p.value << "\n"
+    return 0
+}

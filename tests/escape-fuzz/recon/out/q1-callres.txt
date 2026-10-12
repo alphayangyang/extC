@@ -1,0 +1,50 @@
+== q1_direct  (tests/escape-fuzz/recon/probes/q1_direct.extc)  extc_rc=0
+   run_rc=0  sanitizer=CLEAN  stdout=1|
+== q1_binding  (tests/escape-fuzz/recon/probes/q1_binding.extc)  extc_rc=1
+   tests/escape-fuzz/recon/probes/q1_binding.extc:13:1: error: this return value would hold a reference to a local variable that dies first (borrowed from depth 1, but this can only hold up to depth 0)
+== q1_loop  (tests/escape-fuzz/recon/probes/q1_loop.extc)  extc_rc=1
+   tests/escape-fuzz/recon/probes/q1_loop.extc:16:1: error: this reference would hold a reference to a local variable that dies first (borrowed from depth 2, but this can only hold up to depth 1)
+== q1_frame_nonescape  (tests/escape-fuzz/recon/probes/q1_frame_nonescape.extc)  extc_rc=0
+   run_rc=0  sanitizer=CLEAN  stdout=5|
+== q1_inloop_nonescape  (tests/escape-fuzz/recon/probes/q1_inloop_nonescape.extc)  extc_rc=0
+   run_rc=0  sanitizer=CLEAN  stdout=3|
+== q1_assign_noescape  (tests/escape-fuzz/recon/probes/q1_assign_noescape.extc)  extc_rc=0
+   run_rc=0  sanitizer=CLEAN  stdout=7|
+== q1_homefn_loop  (tests/escape-fuzz/recon/probes/q1_homefn_loop.extc)  extc_rc=0
+   run_rc=0  sanitizer=CLEAN  stdout=3|
+
+-- q1_direct / q1_frame_nonescape / q1_inloop_nonescape / q1_homefn_loop 的生成物：调用传了哪只 arena
+q1_direct                mk(1, __extc_home)
+                         static node * mk(int64_t v, extc_arena *__extc_home)
+q1_frame_nonescape       mk(5, &__extc_a[1])
+                         static node * mk(int64_t v, extc_arena *__extc_home)
+q1_inloop_nonescape      mk(i, &__extc_a[2])
+                         static node * mk(int64_t v, extc_arena *__extc_home)
+q1_homefn_loop           mk(i, &__extc_a[2])
+                         static node * mk(int64_t v, extc_arena *__extc_home)
+
+-- promoteInto2 对调用结果的 gate（EXTC_DBG_ZONE，只看 mk 那一行）
+[gate] call=mk ptr=0x5ce18e24b4f8 owner=(nil) mP=0 cmp=0 lvl=2 at=2
+[gate] call=mk ptr=0x5ce18e24b4f8 owner=(nil) mP=0 cmp=0 lvl=2 at=1
+[gate] call=mk ptr=0x5ce18e24b4f8 owner=(nil) mP=0 cmp=0 lvl=2 at=1
+
+-- 记录绑定深度的代码位置：check_stmt.c:481-499（见 RECON.md 引用）
+            if (s->type && typeContainsRef(c->tt, s->type)) {
+                int d = targetDepth(c, s->u.var.init);
+                Expr *ini = s->u.var.init;
+                if ((ini->kind == EX_CALL || ini->kind == EX_METHOD)
+                    && planCallee(ini) && anNeedsHome(planCallee(ini)) && (int)c->scopes.len > d)
+                    d = (int)c->scopes.len;      /* 被调方有 home arena 时用我的 */
+                /* 初始化式签为帧外（`effects Ret=0`，或根源是 `global` 的链）的存储根本不在
+                 * 帧里，上面的 home arena 启发式不适用，深度**确定**是 0，而不是“还没定”。视图
+                 * 绑定的 `.data` 交给无签名的 C 函数后还能继续用，靠的就是这一点。 */
+                /* 结论写进 plan 侧表：此刻作用域还活着，而 `coroCheckDeferred` 在函数体检查完
+                 * 之后才跑。 */
+                bool oo = exprOutOfFrame(c, ini);
+                planSetVarInitOutOfFrame(s, oo);
+                if (oo) {
+                    sym->outOfFrame = true;
+                    anSetRefDepth(sym, 0);
+                } else {
+                    anSetRefDepth(sym, d);
+                }

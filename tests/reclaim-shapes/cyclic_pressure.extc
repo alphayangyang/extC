@@ -1,0 +1,241 @@
+/* 形状 ⑥：**有环 + 大压力** —— 清扫（区域清扫，RECLAMATION.md 第四层）真正上场的证据。
+ *
+ * 与形状 ⑤（`scale_growth.extc`，无环、靠计数归零）的差别只有一条，但是关键的一条：
+ * 这里的垃圾是**环**，持有者计数**永远不归零**，所以计数归零一个人也收不掉 —— 只有清扫能收。
+ *
+ * 形状来源：`prototype-reclaim/stress.c`（真实业务里最常见的形状）——
+ *   · 64 个桶，每桶 ≤8 个节点，**双向链表**（next/prev 互指 ⇒ 每对相邻节点就是一个两元环）
+ *   · 1024 槽缓存（第二持有者，跨结构引用）
+ *   · 2 万项索引（跨结构引用；见下面「与原型的三处偏差」）
+ *   · 带父指针的树（child/parent 互指 ⇒ 环），每 16 轮挂一个；根槽是一个定长环（见下）
+ *
+ * **环垃圾是怎么产生的**：桶满（>8）时整条链**退役**——把链头从桶里摘掉、桶清空，链内部
+ * 的 next/prev 一个都不动。于是这条链的**每一个节点都还有入边**（邻居互指），计数永远不为 0，
+ * 计数归零一个也放不掉；同时它已经不在任何根（桶/缓存/索引/树的根槽）之下 ⇒ 是**不可达的环**，
+ * 只有区域清扫能收。`w.retire` 只保留最近一条退役链——下一次退役覆盖它，上一条就彻底失去
+ * 唯一的外部引用 ⇒ 整条链变成环垃圾。
+ *
+ * **树的根槽是定长的**（`tree[256]`，每 16 轮占一格）：如果让每个树节点都从上一个取 parent、
+ * 根槽无界增长，那么只要最后一个节点还活着，就能沿 parent 一路走回全部历史节点（标记按对象的
+ * **全部**指针字段走）⇒ 整条祖先链永远是活的，内存随轮数涨。所以树按「一代 256 个节点」成组，
+ * 组满就把 `last` 清空另起一代；根槽环覆盖上一代时，那一代的 child/parent 互指仍在 ⇒ 又是一批
+ * 不可达的环垃圾。
+ *
+ * 判据（`run-switch.sh` 的门禁）：
+ *   · 默认（开关关）与 `EXTC_RECLAIM=1` 下都能编译运行，且**输出逐字一致**；
+ *   · 开关打开时 N vs 4N 的峰值 RSS 比 < 1.5（清扫把环垃圾按内存压力收掉）；
+ *   开关关掉时同一形状的比 ≈3.4×（红）——那是「有牙」的证据。
+ *
+ * ── 语言约束与写法取舍（Lead 已定位根因，见 `docs/RECLAMATION.md` / 本目录 README）──────
+ *  · **经过解引用写**（`(*head).prev = p`）的目的地槽深度按保守读法取 0（`slotDepth(EX_DEREF)
+ *    = targetDepth(head)`，而本地 `?mut ref` 的被指物寿命未知）⇒ 循环体里的 `p`（深度 2）
+ *    存不进去。本形状把所有跨对象写都放进 helper，**让目的地是形参**（形参深度 0，本帧已知）：
+ *    `linkOpt(a, b)` / `attachOpt(child, parent)` 与 `cyclic_shape.extc` 同一办法。
+ *  · **每个新对象只经由一个 helper 的一次调用完成逃逸**：同一个循环体局部 `p` 连续传给两个
+ *    都会「存进外层」的 helper 时，第二处仍报 `points into a deeper scope (depth 2) ... (depth 1)`。
+ *    所以 `cachePut` / `idxPut` 不接收 `p`，而是从**帧内字段** `w.bkHead[b]` 里取那份引用。
+ *  · `ref arr[i]`（数组元素取引用）不允许（只有变量与字段能取引用）⇒ 传 `ref w`，在 helper 里下标。
+ *  · 索引用自己的类型 `idx`：`?mut ref node` 与 `?mut ref idx` 不能隐式互转。
+ *
+ * ── 与原型的三处偏差（都在 README「与 C 原型对照」一节记）──────────────────────────────
+ *  ① 索引取 2 万项（原型 20 万）：让存活集保持小（~2 MB），清扫才是压住峰值的那个机制；
+ *     20 万项会把存活集本身顶到 ~19 MB，反而看不清清扫的作用。
+ *  ② 退役的是**整条桶链**（原型只摘链尾）。链尾单独摘掉时它的入边随摘除一起消失、计数归零
+ *     当场就被收了——那不是环垃圾；整条链退役才是「环留下」。原型能靠摘链尾攒垃圾，是因为
+ *     它的标记只走 `next` 一条边（精简版）；extC 的标记走对象的**全部**指针字段，两者不同。
+ *  ③ 树的根槽定长 256（原型 8192），理由同上：extC 的静态根表上限 4096 个引用槽，且标记走全部
+ *     指针字段——无界的 parent 链会把整部历史都算成活的。
+ */
+use std::io
+
+struct node {
+    key: i64
+    next: ?mut ref node
+    prev: ?mut ref node
+    child: ?mut ref node
+    parent: ?mut ref node
+}
+
+/* 索引项：跨结构引用（指向某个 node）+ 单向链表。 */
+struct idx {
+    key: i64
+    p: ?mut ref node
+    nxt: ?mut ref idx
+}
+
+/* 全部长命状态都挂在这一个帧内对象上：它同时是清扫的**根表**来源（位图数组、缓存、树根槽）。 */
+struct world {
+    bkHead: [64]?mut ref node
+    bkTail: [64]?mut ref node
+    bkSize: [64]i64
+    cache: [1024]?mut ref node
+    cacheCnt: i64
+    tree: [256]?mut ref node
+    treeCnt: i64
+    last: ?mut ref node
+    idxHead: ?mut ref idx
+    idxCnt: i64
+    retire: ?mut ref node
+    retired: i64
+    hits: i64
+}
+
+/* 双向连接：a.next = b、b.prev = a。两个操作数都是形参 ⇒ 目的地深度本帧已知。 */
+fn linkOpt(a: ?mut ref node, b: ?mut ref node) {
+    if a != null { (*a).next = b }
+    if b != null { (*b).prev = a }
+}
+
+/* 头插。p 是循环体里 `new` 出来的新节点，**只在这里**完成逃逸。 */
+fn pushFront(w: mut ref world, b: i64, p: mut ref node) {
+    linkOpt(p, w.bkHead[b])
+    w.bkHead[b] = p
+    if w.bkTail[b] == null { w.bkTail[b] = p }
+    w.bkSize[b] = w.bkSize[b] + 1
+}
+
+/* 整条链退役：链头挂到 retire（唯一外部引用），桶清空，链内部的 next/prev 不动
+ * ⇒ 上一条退役链在这一刻失去唯一外部引用，成为不可达的环。 */
+fn retireChain(w: mut ref world, b: i64) {
+    w.retire = w.bkHead[b]
+    w.bkHead[b] = null
+    w.bkTail[b] = null
+    w.bkSize[b] = 0
+    w.retired = w.retired + 1
+}
+
+/* 缓存（第二持有者）：存的是**帧内字段**里的引用，不接收循环体局部（见文件头约束）。 */
+fn cachePut(w: mut ref world, c: i64, b: i64) {
+    w.cache[c] = w.bkHead[b]
+    w.cacheCnt = w.cacheCnt + 1
+}
+
+/* 索引项（跨结构引用）：同样只接收新分配的 `e`，节点引用从 w.bkHead[b] 取。 */
+fn idxPut(w: mut ref world, e: mut ref idx, b: i64, k: i64) {
+    e.key = k
+    e.p = w.bkHead[b]
+    e.nxt = w.idxHead
+    w.idxHead = e
+    w.idxCnt = w.idxCnt + 1
+}
+
+/* child.parent = parent、parent.child = child：parent/child 互指 ⇒ 环。 */
+fn attachOpt(child: mut ref node, parent: ?mut ref node) {
+    child.parent = parent
+    if parent != null { (*parent).child = child }
+}
+
+/* 每 16 轮挂一个树节点；根槽是定长环 `tree[256]`。 */
+fn treePut(w: mut ref world, t: mut ref node, k: i64) {
+    t.key = k
+    attachOpt(t, w.last)
+    w.tree[w.treeCnt % 256] = t
+    w.treeCnt = w.treeCnt + 1
+    w.last = t
+}
+
+/* argv[1] 是十进制轮数（没给就是 8）：手写解析，与其他形状一致，不引入别的依赖。 */
+fn parseRounds(args: slice<slice<u8>>) -> i64 {
+    if args.len < 2 { return 8 }
+    var s: slice<u8> = args[1]
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    return v
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var n: i64 = parseRounds(args)
+    var w: world
+    var i: i64 = 0
+    while i < n {
+        var b: i64 = i % 64
+        var p = new node
+        p.key = i
+        pushFront(ref w, b, p)
+        if i % 64 == 0 { cachePut(ref w, (i / 64) % 1024, b) }
+        if w.bkSize[b] > 8 { retireChain(ref w, b) }
+        if w.idxCnt < 20000 {
+            var e = new idx
+            idxPut(ref w, e, b, i)
+        }
+        if i % 16 == 0 {
+            var t = new node
+            treePut(ref w, t, -i - 1)
+            if w.treeCnt % 256 == 0 { w.last = null }    /* 另起一代，别让 parent 链无界 */
+        }
+        /* 查询：走一遍本桶的链（同原型的 LRU 查询读路径）。 */
+        var q: ?mut ref node = w.bkHead[b]
+        while q != null {
+            if (*q).key == i - 64 { w.hits = w.hits + 1  break }
+            q = (*q).next
+        }
+        i = i + 1
+    }
+
+    /* 结局自检：活着的桶链两个方向必须一致、长度必须等于记录值。 */
+    var fwd: i64 = 0
+    var back: i64 = 0
+    var live: i64 = 0
+    var j: i64 = 0
+    while j < 64 {
+        var cnt: i64 = 0
+        var cur: ?mut ref node = w.bkHead[j]
+        while cur != null {
+            fwd = fwd + (*cur).key
+            cnt = cnt + 1
+            cur = (*cur).next
+        }
+        var bcnt: i64 = 0
+        var bcur: ?mut ref node = w.bkTail[j]
+        while bcur != null {
+            back = back + (*bcur).key
+            bcnt = bcnt + 1
+            bcur = (*bcur).prev
+        }
+        if cnt == bcnt { if cnt == w.bkSize[j] { live = live + cnt } }
+        j = j + 1
+    }
+
+    /* 缓存槽：第二持有者，开关打开时它们必须是活的（清一把扫错就会在这里露出来）。 */
+    var cacheN: i64 = 0
+    var c: i64 = 0
+    while c < 1024 {
+        if w.cache[c] != null { cacheN = cacheN + 1 }
+        c = c + 1
+    }
+
+    /* 索引链：跨结构引用，节点必须活着才能走完。 */
+    var idxN: i64 = 0
+    var ecur: ?mut ref idx = w.idxHead
+    while ecur != null {
+        idxN = idxN + 1
+        ecur = (*ecur).nxt
+    }
+
+    /* 当前这一代树：沿 parent 走到底，逐级校验 parent.child 指回来（互指 ⇒ 环）。 */
+    var treeOk: bool = true
+    var depth: i64 = 0
+    var tcur: ?mut ref node = w.last
+    while tcur != null {
+        depth = depth + 1
+        var par: ?mut ref node = (*tcur).parent
+        if par != null {
+            var ch: ?mut ref node = (*par).child
+            if ch == null { treeOk = false } else { if (*ch).key != (*tcur).key { treeOk = false } }
+        }
+        tcur = par
+    }
+
+    io::cout << "rounds=" << n << " retired=" << w.retired << " live=" << live
+    io::cout << " fwd=" << fwd << " back=" << back << " idx=" << idxN
+    io::cout << " cache=" << cacheN << " hits=" << w.hits
+    io::cout << " depth=" << depth << " tree=" << treeOk << "\n"
+    return 0
+}

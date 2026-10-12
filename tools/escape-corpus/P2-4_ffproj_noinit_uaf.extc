@@ -1,0 +1,35 @@
+/* 闸门⑤ 语料 · P2-4_ffproj_noinit_uaf（2026-10-12，escape-fuzz 勘察 task-9 §Q3 真值表 C1）
+ * 期望：**接受 + ASan 干净**（gate-expect: run —— 这个洞 2026-10-12 的修法是「安全接受」，不是拒绝）。
+ * 为什么在这里：与 P2-2 同一个 `return bx.mid.next`，但容器**没有初始化式**（`var bx: outer`）。
+ *   `check_escape.c` 的 `EX_IDENT` 分支在 `!sy->origin` 处提前返回，**跳过** `promoteFieldsAt`
+ *   ⇒ 字段表里即便记了来源也没有人去提权，站点停在 `minAt=1`、落在函数自己的帧 arena，
+ *   返回即释放（ASan heap-use-after-free）。
+ * 原探针：tests/escape-fuzz/recon/probes/C1_two_stage.extc
+ * 规矩：本文件被拒、或被接受但 ASan 脏 ⇒ 闸门红；修好之后**不许**把本文件改宽松。
+ */
+use std::io
+struct node { value: i64  next: ?mut ref node }
+struct inner { next: ?mut ref node }
+struct outer { mid: inner }
+
+fn build() -> ?mut ref node {
+    var bx: outer
+    bx.mid.next = null
+    var p: mut ref node = new node
+    p.value = 7
+    p.next = null
+    bx.mid.next = p
+    return bx.mid.next
+}
+
+fn main() -> i32 {
+    var h: ?mut ref node = build()
+    var c: ?mut ref node = h
+    var t: i64 = 0
+    while c != null {
+        t = t + (*c).value
+        c = (*c).next
+    }
+    io::cout << t << "\n"
+    return 0
+}

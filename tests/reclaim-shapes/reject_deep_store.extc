@@ -1,0 +1,21 @@
+/* 形状 ②a：**跨帧存储被拒**（直接形式）—— 本条判据（绿）= 编译期报错。
+ *
+ * 块里的局部对象 x（深度 2，出块即死）把 `ref x` 存进外层容器 l.head（深度 1）
+ * ⇒ 引用会活得比它指的东西长。期望诊断：
+ *   error: this reference would hold a reference to a local variable that dies first
+ *          (borrowed from depth 2, but this can only hold up to depth 1)
+ *
+ * 注意方向：被拒的是「**更深的局部 → 更浅的容器**」；反方向（外层局部存进更深的
+ * 块容器）编译器是放行的，那条不会悬垂。`run.sh` 同时钉住了错误文本。
+ */
+struct node { val: i64  next: ?ref node }
+struct list { head: ?ref node }
+
+fn main() -> i32 {
+    var l: list = { head: null }
+    {
+        var x: node = { val: 1, next: null }   // 深度 2：出块即死，而且不是 new ⇒ 提升救不了
+        l.head = ref x
+    }
+    return 0
+}

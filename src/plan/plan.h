@@ -1328,6 +1328,14 @@ void planSetZoneLevel(Expr *e, int v);
 void planSetArenaArg(Expr *e, int v);
 
 /**
+ * @brief 记录一个调用点的 arena 参数是否还等末轮落定。
+ *
+ * @param e  调用点表达式；NULL 时忽略。
+ * @param v  还等末轮落定时为 true。
+ */
+void planSetArenaArgPending(Expr *e, bool v);
+
+/**
  * @brief 记录一个表达式需要临时变量。
  *
  * @param e  表达式。

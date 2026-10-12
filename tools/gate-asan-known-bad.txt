@@ -9,3 +9,11 @@
 #
 # 注：闸门用 `ASAN_OPTIONS=detect_leaks=0`（extC 的内存模型是 arena、进程退出才归还，
 # "退出时仍持有"是设计而不是缺陷；域自己的任务表不释放属审计已记的 P3）。
+#
+# 2026-10-12：语料扩到也扫 `tools/escape-corpus/`（反例：编译器还接受、生成物悬垂）。
+# P0-6e 本来就在闸门⑤ 的基线里，本轮一并进入本闸门（它的生成物是畸形 C，编不过）。
+#
+# P2-*（escape-fuzz task-8 的 5 例 E_ACCEPT_UAF + task-9 勘察的新洞）曾经以 heap-use-after-free 进基线；
+# task-11 的修法选择**安全接受**（提权到 home），7 份语料随之改成 `gate-expect: run`，基线行删掉。
+# 若将来回退成接受后悬垂，本闸门会以新的 sanitizer 报告变红。
+tools/escape-corpus/P0-6e_coro_ref_payload.extc	生成物是畸形 C（cc 编不过）：`yield ref <帧内局部>` 被接受	闸门⑤ 基线同名条目：指称/逃逸：载荷跨挂起点

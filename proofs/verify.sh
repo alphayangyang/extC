@@ -25,7 +25,7 @@ fail=0
 OUT="$(mktemp)"
 trap 'rm -f "$OUT"' EXIT
 
-echo "== 1/7 编译 Lean =="
+echo "== 1/8 编译 Lean =="
 if ! "$LEAN" -o ExtCRegion.olean ExtCRegion.lean >>"$OUT" 2>&1; then
   echo "  FAIL ExtCRegion.lean"; sed 's/^/       /' "$OUT"; exit 1
 fi
@@ -38,7 +38,7 @@ for f in ExtCPool.lean ExtCModel.lean ExtCPrecision.lean ExtCPath.lean ExtCGap.l
   fi
 done
 
-for f in ExtCMechanism.lean ExtCArenaPool.lean; do
+for f in ExtCMechanism.lean ExtCArenaPool.lean ExtCReclaim.lean ExtCBlock.lean ExtCRuntime.lean; do
   if LEAN_PATH=. "$LEAN" "$f" >>"$OUT" 2>&1; then
     echo "  OK   $f"
   else
@@ -46,14 +46,14 @@ for f in ExtCMechanism.lean ExtCArenaPool.lean; do
   fi
 done
 
-echo "== 2/7 扫描未完成的证明 =="
+echo "== 2/8 扫描未完成的证明 =="
 if python3 sorry_scan.py; then
   echo "  OK   没有 sorry / admit / 自定义 axiom"
 else
   echo "  FAIL 存在未完成的证明"; fail=1
 fi
 
-echo "== 3/7 公理依赖 =="
+echo "== 3/8 公理依赖 =="
 if grep -q "sorryAx" "$OUT"; then
   echo "  FAIL 有定理依赖 sorryAx"; fail=1
 else
@@ -61,7 +61,7 @@ else
 fi
 grep "depends on axioms" "$OUT" | sed "s/^'/       /" || echo "       （全部定理不依赖任何公理）"
 
-echo "== 4/7 Z3 交叉复核 =="
+echo "== 4/8 Z3 交叉复核 =="
 Z3PATH=""
 [ -d /tmp/z3lib ] && Z3PATH=/tmp/z3lib
 if PYTHONPATH="$Z3PATH" python3 crosscheck_z3.py; then
@@ -70,25 +70,32 @@ else
   echo "  FAIL SMT 交叉复核不一致（或缺 z3：pip install z3-solver）"; fail=1
 fi
 
-echo "== 5/7 路径敏感：接受集是否改变 =="
+echo "== 5/8 路径敏感：接受集是否改变 =="
 if python3 pathsensitivity.py >/dev/null 2>&1; then
   echo "  OK   路径敏感与合流判定完全一致（检查侧无增益）"
 else
   echo "  FAIL 两者判定不一致"; fail=1
 fi
 
-echo "== 6/7 到类上限的精度距离 =="
+echo "== 6/8 到类上限的精度距离 =="
 if python3 precision_gap.py >/dev/null 2>&1; then
   echo "  OK   三层嵌套成立（Inferred ⊆ Best ⊆ Opt），距离已算出"
 else
   echo "  FAIL 嵌套性被破坏"; fail=1
 fi
 
-echo "== 7/7 内存精度差距分类 =="
+echo "== 7/8 内存精度差距分类 =="
 if python3 memory_gap.py >/dev/null 2>&1; then
   echo "  OK   内存差距类别已算出（阈值定律：超常数 ⟺ 逃逸轮数 o(n)）"
 else
   echo "  FAIL 分类脚本出错"; fail=1
+fi
+
+echo "== 8/8 到逐对象理想的残余差距 =="
+if python3 gap_to_ideal.py >/dev/null 2>&1; then
+  echo "  OK   无 rc：运行期事件关掉 ①②④′；残差只剩多持有者（环是它的极端，非独立类别）"
+else
+  echo "  FAIL 残余差距的断言被破坏"; fail=1
 fi
 
 echo

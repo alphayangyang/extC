@@ -8,7 +8,7 @@
 import re
 import sys
 
-FILES = ["ExtCRegion.lean", "ExtCPool.lean", "ExtCModel.lean", "ExtCPrecision.lean", "ExtCPath.lean", "ExtCGap.lean", "ExtCMemGap.lean", "ExtCMechanism.lean", "ExtCArenaPool.lean"]
+FILES = ["ExtCRegion.lean", "ExtCPool.lean", "ExtCModel.lean", "ExtCPrecision.lean", "ExtCPath.lean", "ExtCGap.lean", "ExtCMemGap.lean", "ExtCMechanism.lean", "ExtCArenaPool.lean", "ExtCReclaim.lean", "ExtCBlock.lean", "ExtCRuntime.lean"]
 
 
 def strip_comments(src: str) -> str:

@@ -1,0 +1,31 @@
+/* 形状 K1（**不该省** · 反面①）：对象所在区域**并非**"反正要被清扫"。
+ *
+ * 判据来源：`docs/RECLAMATION.md` 第五节最后一条（引文见 `elide_swept_region.extc`）。
+ * 情形① 省的前提是"区域整片释放"能兜住对象的死期。这里相反：对象是**被调者返回的**，
+ * 存储已经被提到调用者这一层（不是"随某个块整片死"），`saved` 槽也不知道何时会被覆盖或
+ * 随作用域离开 ⇒ 逐边计数是它唯一的早回收手段，**不该省**。
+ *
+ * 对照：`elide_swept_region.extc`（链只活在块里，块退出整片释放）。
+ *
+ * 语义面（绿的要求）：编译通过 + 输出 `unknown=3`。
+ */
+use std::io
+
+struct node { val: i64  next: ?ref node }
+
+/* 返回一个堆对象：存储不在被调者能整片释放的区里（返回 ⇒ 提到调用者）。 */
+fn mknode() -> mut ref node {
+    var n = new node
+    n.val = 3
+    n.next = null
+    return n
+}
+
+fn main() -> i32 {
+    var saved: ?ref node = null
+    saved = mknode()                 // ← 边：对象来自调用，区域不"反正要被清扫"，也无别的持有者证明
+    var v: i64 = -1
+    if saved != null { v = (*saved).val }
+    io::cout << "unknown=" << v << "\n"
+    return 0
+}

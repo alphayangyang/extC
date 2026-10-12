@@ -1,0 +1,25 @@
+/* 形状 ②b：**跨帧存储被拒**（经被调者 / 定案 67 的「发布约束」形式）——
+ * 本条判据（绿）= 调用点编译期报错。
+ *
+ * `stash` 会把 cell 存进 l 指的地方（被调者只**发布**约束，调用点拿具体深度判）：
+ * x 在块的深度 2，而这次调用能存进的家 arena 是深度 1 ⇒ 期望诊断：
+ *   error: argument 2 of `stash` points into a deeper scope (depth 2)
+ *          than the arena this call may store it in (depth 1)
+ *
+ * 与 `reject_deep_store.extc` 是一对：同一个洞的两个出口（直接写 / 经调用发布）。
+ */
+struct node { val: i64  next: ?ref node }
+struct list { head: ?ref node }
+
+fn stash(l: mut ref list, cell: ?ref node) {
+    l.head = cell
+}
+
+fn main() -> i32 {
+    var l: list = { head: null }
+    {
+        var x: node = { val: 1, next: null }   // 深度 2
+        stash(ref l, ref x)
+    }
+    return 0
+}

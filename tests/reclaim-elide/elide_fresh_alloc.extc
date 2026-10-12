@@ -1,0 +1,32 @@
+/* 形状 E2（**该省** · 情形②）：**赋的是全新分配的对象（计数从零起、不可能归零）**。
+ *
+ * 判据来源：`docs/RECLAMATION.md` 第五节最后一条（引文见 `elide_swept_region.extc`）。
+ *
+ * 形状：`head = fresh` 里的 `fresh` 是紧邻上一行 `new` 出来的，而且是这个对象的**第一条
+ * 也是唯一一条**入边：没有任何路径会覆盖这个槽、也没有别处会把它减回去。
+ * 计数从零起（对象刚分配），这条入边之后再无 dec ⇒「归零即释放」的触发点永远不会落在这里，
+ * 这条边的计数（inc fresh）是多余的。
+ *
+ * 反面对照：`keep_shared_overwrite.extc`（覆盖一个已持有旧值的槽 —— 旧值不是全新对象，
+ * 那次 dec 必须记）。
+ *
+ * ⚠️ 红判据：今日无分析 ⇒ `head = fresh` 照样进计数。
+ * 语义面（绿的要求）：编译通过 + 输出 `fresh=42`。
+ */
+use std::io
+
+struct node { val: i64  next: ?ref node }
+
+fn main() -> i32 {
+    var head: ?ref node = null
+    {
+        var fresh = new node         // 全新分配：计数从零起
+        fresh.val = 42
+        fresh.next = null
+        head = fresh                 // ← 赋的是全新分配的对象，且 head 只写这一次
+    }
+    var v: i64 = -1
+    if head != null { v = (*head).val }
+    io::cout << "fresh=" << v << "\n"
+    return 0
+}

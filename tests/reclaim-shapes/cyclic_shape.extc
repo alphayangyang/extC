@@ -1,0 +1,83 @@
+/* 形状 ③：**有环形状** —— `prototype-reclaim/README.md`「压力版」那一节的样子。
+ *
+ * 双向链表（next/prev 互指）+ 带父指针的树（left/right/parent 互指），
+ * 再加一个缓存（lru）与一个索引（xref）—— 后两者是**跨结构的引用**。
+ * 每对相邻节点就是一个环 ⇒ 引用计数永远不归零，回收只能靠区域清扫（今日未实现，
+ * 所以峰值只记数，不在本目录设上界）。
+ *
+ * 本条判据（绿）：能编译、能跑，且语义对 ——
+ *   fwd == back（双向一致）、tree == true（父指针指回根）、cache == true（缓存/索引命中）。
+ * 规模取小（8 节点），秒级完成；规模行为由 `scale_growth.extc` 那条管。
+ */
+use std::io
+
+struct dnode { val: i64  next: ?mut ref dnode  prev: ?mut ref dnode }
+struct tnode { val: i64  left: ?mut ref tnode  right: ?mut ref tnode  parent: ?mut ref tnode }
+struct lru { a: ?mut ref dnode  b: ?mut ref dnode }
+struct xref { probe: ?mut ref dnode }
+
+/* 摘链用「互指」写出来：p.next = q 与 q.prev = p 是同一次连接的两半。 */
+fn link(p: mut ref dnode, q: mut ref dnode) {
+    p.next = q
+    q.prev = p
+}
+
+fn attach(child: mut ref tnode, parent: mut ref tnode, first: bool) {
+    child.parent = parent
+    if first { parent.left = child } else { parent.right = child }
+}
+
+fn main() -> i32 {
+    // 双向链表：head ←…→ tail，next/prev 互指
+    var head = new dnode
+    head.val = 0
+    var prev: mut ref dnode = head
+    var m: i64 = 1
+    while m < 8 {
+        var n = new dnode
+        n.val = m
+        link(prev, n)
+        prev = n
+        m = m + 1
+    }
+
+    // 缓存与索引：跨区域指着链表节点（跨区边）
+    var c: lru = { a: null, b: null }
+    c.a = head
+    c.b = prev
+    var idx: xref = { probe: prev }
+
+    // 带父指针的树：child/parent 互指
+    var root = new tnode
+    root.val = 100
+    var l = new tnode
+    l.val = 200
+    var r = new tnode
+    r.val = 300
+    attach(l, root, true)
+    attach(r, root, false)
+
+    // 双向走一遍：两个方向的和必须一样
+    var fwd: i64 = 0
+    var cur: ?mut ref dnode = head
+    while cur != null { fwd = fwd + (*cur).val  cur = (*cur).next }
+
+    var back: i64 = 0
+    var bcur: ?mut ref dnode = prev
+    while bcur != null { back = back + (*bcur).val  bcur = (*bcur).prev }
+
+    // 父指针指回根 + 缓存/索引命中尾节点
+    var lp: ?mut ref tnode = (*l).parent
+    var rp: ?mut ref tnode = (*r).parent
+    var treeOk: bool = false
+    if lp != null { if rp != null { treeOk = (*lp).val == root.val && (*rp).val == root.val } }
+
+    var cacheOk: bool = false
+    var cb: ?mut ref dnode = c.b
+    var ip: ?mut ref dnode = idx.probe
+    if cb != null { if ip != null { cacheOk = (*cb).val == 7 && (*ip).val == 7 } }
+
+    io::cout << "fwd=" << fwd << " back=" << back
+    io::cout << " tree=" << treeOk << " cache=" << cacheOk << "\n"
+    return 0
+}

@@ -1,0 +1,12 @@
+== q2_dualpointee  (tests/escape-fuzz/recon/probes/q2_dualpointee.extc)  extc_rc=0
+   run_rc=1  sanitizer=ERROR: AddressSanitizer: heap-use-after-free  stdout=
+
+-- DFA 对 f 的答案（max join）：cur depth=1
+   [dfa] f: 3 vars
+          p      depth=1
+          cur    depth=1
+          q      depth=1
+   [dfa] main: 2 vars
+
+   cur 可能指向参数（调用者的存储，深度 0），也可能指向帧内 new（深度 1）。
+   目的地要的是「可能活得最久的被指物」= min=0；记录的是 max=1 ⇒ 放到调用者存储里的 q 出帧即死。

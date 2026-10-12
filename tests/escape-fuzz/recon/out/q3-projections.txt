@@ -1,0 +1,91 @@
+== A_ff1_new  (tests/escape-fuzz/recon/probes/A_ff1_new.extc)  extc_rc=0
+   run_rc=0  sanitizer=CLEAN  stdout=7|
+== B_ff2_new  (tests/escape-fuzz/recon/probes/B_ff2_new.extc)  extc_rc=0
+   run_rc=1  sanitizer=ERROR: AddressSanitizer: heap-use-after-free  stdout=
+== B2_preexisting  (tests/escape-fuzz/recon/probes/B2_preexisting.extc)  extc_rc=0
+   run_rc=0  sanitizer=CLEAN  stdout=7|
+== C1_two_stage  (tests/escape-fuzz/recon/probes/C1_two_stage.extc)  extc_rc=0
+   run_rc=1  sanitizer=ERROR: AddressSanitizer: heap-use-after-free  stdout=
+== C_ff2_mk  (tests/escape-fuzz/recon/probes/C_ff2_mk.extc)  extc_rc=1
+   tests/escape-fuzz/recon/probes/C_ff2_mk.extc:16:1: error: this return value would hold a reference to a local variable that dies first (borrowed from depth 1, but this can only hold up to depth 0)
+== D_arr_new  (tests/escape-fuzz/recon/probes/D_arr_new.extc)  extc_rc=1
+   tests/escape-fuzz/recon/probes/D_arr_new.extc:20:1: error: this return value would hold a reference to a local variable that dies first (borrowed from depth 1, but this can only hold up to depth 0)
+== E_arr_mk  (tests/escape-fuzz/recon/probes/E_arr_mk.extc)  extc_rc=1
+   tests/escape-fuzz/recon/probes/E_arr_mk.extc:18:1: error: this return value would hold a reference to a local variable that dies first (borrowed from depth 1, but this can only hold up to depth 0)
+== F_direct  (tests/escape-fuzz/recon/probes/F_direct.extc)  extc_rc=0
+   run_rc=0  sanitizer=CLEAN  stdout=7|
+== G_bind  (tests/escape-fuzz/recon/probes/G_bind.extc)  extc_rc=0
+   run_rc=0  sanitizer=CLEAN  stdout=7|
+== H_ff1_mk  (tests/escape-fuzz/recon/probes/H_ff1_mk.extc)  extc_rc=1
+   tests/escape-fuzz/recon/probes/H_ff1_mk.extc:16:1: error: this return value would hold a reference to a local variable that dies first (borrowed from depth 1, but this can only hold up to depth 0)
+
+-- minAt / 自己所在函数有没有 home（EXTC_DBG_MINAT + EXTC_DBG_HOME）
+   [A_ff1_new]
+     [minAt] build    line=14   minAt=0   arena=-1
+     [home] build                    uses=1 needs=1 tmpl=-            sites=1 L-1
+   [B_ff2_new]
+     [minAt] build    line=14   minAt=1   arena=-1
+     [home] build                    uses=0 needs=1 tmpl=-            sites=1 L1
+   [B2_preexisting]
+     [minAt] build    line=7    minAt=0   arena=-1
+     [home] build                    uses=1 needs=1 tmpl=-            sites=1 L-1
+   [C1_two_stage]
+     [minAt] build    line=8    minAt=1   arena=-1
+     [home] build                    uses=0 needs=1 tmpl=-            sites=1 L1
+
+-- 字段来源记录：noteFieldSrc 只写**已存在**的槽（EXTC_DBG_FS）
+   A_ff1_new        fs-lines=1 [fs] bx.next d2=0 oldSrcDepth=0 srckind=4
+   B_ff2_new        fs-lines=0 
+   B2_preexisting   fs-lines=1 [fs] bx.next d2=0 oldSrcDepth=0 srckind=4
+   C1_two_stage     fs-lines=1 [fs] bx.next d2=0 oldSrcDepth=0 srckind=4
+
+-- 5 例 UAF：所在函数 / minAt / arena / 生成物里 new 落在哪只 arena
+   [m_home_pfield_direct]
+     [minAt] build    line=7    minAt=0   arena=-1
+     [minAt] build    line=13   minAt=1   arena=-1
+     [home] build                    uses=1 needs=1 tmpl=-            sites=2 L-1 L1
+     [home] main                     uses=1 needs=1 tmpl=-            sites=1 L0
+     sig: static node * build(extc_arena *__extc_home)
+     537:    node * a = ((node *)extc_arena_alloc(&(*__extc_home), (int64_t)sizeof(node), "tests/escape-fuzz/cases/m_home_pfield_direct.extc", 7));
+     550:        node * p = ((node *)extc_arena_alloc(&__extc_a[1], (int64_t)sizeof(node), "tests/escape-fuzz/cases/m_home_pfield_direct.extc", 13));
+   [m_home_cont_after]
+     [minAt] build    line=7    minAt=1   arena=-1
+     [home] build                    uses=1 needs=1 tmpl=-            sites=4 L0 L1 L0 L0
+     [home] main                     uses=1 needs=1 tmpl=-            sites=1 L0
+     sig: static node * build(extc_arena *__extc_home)
+     443:    varArray_Ref_node v = (varArray_Ref_node){.buf = (slice_Ref_node){ .data = (node * *)extc_arena_alloc(&(*__extc_home), (int64_t)(cap) * (int64_t)sizeof(node *), "tests/escape-fuzz/cases/m_home_cont_after.extc", 178), .len = (int64_t)(cap) }, .len = 0, .cap = cap};
+     472:    slice_Ref_node nb = (slice_Ref_node){ .data = (node * *)extc_arena_alloc(&(*__extc_home), (int64_t)(ncap) * (int64_t)sizeof(node *), "tests/escape-fuzz/cases/m_home_cont_after.extc", 189), .len = (int64_t)(ncap) };
+     678:        node * p = ((node *)extc_arena_alloc(&__extc_a[1], (int64_t)sizeof(node), "tests/escape-fuzz/cases/m_home_cont_after.extc", 7));
+   [m_home_ff_direct]
+     [minAt] build    line=7    minAt=1   arena=-1
+     [home] build                    uses=0 needs=1 tmpl=-            sites=1 L1
+     [home] main                     uses=0 needs=1 tmpl=-            sites=1 L0
+     sig: static node * build(void)
+     543:    node * p = ((node *)extc_arena_alloc(&__extc_a[1], (int64_t)sizeof(node), "tests/escape-fuzz/cases/m_home_ff_direct.extc", 7));
+
+-- promoteInto2 对 EX_FIELD / EX_INDEX 的走法：check_escape.c:1095-1100
+    case EX_SLICE:
+        return promoteInto2(c, val->u.slice.obj, at, hops + 1);
+    case EX_FIELD:
+        return promoteInto2(c, val->u.field.obj, at, hops + 1);
+    case EX_INDEX:
+        return promoteInto2(c, val->u.index.obj, at, hops + 1);
+
+-- 放置那一趟：check_top.c:6071-6128（minAt==0→HOME / minAt>=1→块层）
+                    int want;                            /* the arena it finally belongs to */
+                    if (anMinAt(site) == 0) {
+                        want = ARENA_HOME;              /* must outlive this frame => home arena */
+                    } else if (anMinAt(site) >= 1) {
+                        want = anMinAt(site);             /* must live to level k => block arena k */
+                    } else {
+                        /* No constraint touched it, so use its own level.
+                         * `arenaLevel` cannot be consulted here: the provisional pass already
+                         * rewrote every site in a function that needs a home arena to the
+                         * not-yet-decided value. */
+                        want = anLexicalLevel(site) >= 1 ? anLexicalLevel(site) : 1;
+                    }
+                    if (planArenaLevel(site) != want) {
+                        planSetArenaLevel(site, want);
+                        anSetRefDepth(site, arenaDepthOf(want));   /* the single conversion point */
+                        if (want == ARENA_HOME) fixed++; else keptBlock++;
+                    }

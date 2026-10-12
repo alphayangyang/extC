@@ -329,7 +329,7 @@ static void usage(const char *argv0) {
         /* 下面两个开关会改变输出，所以这段文字不能声称它们都只是诊断：`EXTC_SELFCHECK`
          * 能让一次好构建变红，`EXTC_NO_LEVELPASS` 会改动生成物。声称与代码矛盾比不声称更糟，
          * 所以两个例外在这里点名。 */
-        "debug switches -- diagnostics only, **except the two marked below**:\n"
+        "debug switches -- diagnostics only, **except the marked below**:\n"
         "  EXTC_DBG_ARENA=1     check the arena level the checker computed vs codegen\n"
         "  EXTC_DBG_QN=1        trace how a qualified name (a::b::c) is parsed/resolved\n"
         "  EXTC_DBG_M=1         print the per-module renamed-declaration counts\n"
@@ -340,6 +340,8 @@ static void usage(const char *argv0) {
         "  EXTC_NO_LEVELPASS=1  skip the arena level pass -- **CHANGES THE OUTPUT**: it moves arena\n"
         "                       placement in 2 of the 414 golden programs\n"
         "  EXTC_SELFCHECK=1     run the checker's self-check -- **CAN FAIL THE BUILD** (exit 1)\n"
+        "  EXTC_RECLAIM=1       emit the reclamation runtime -- **CHANGES THE OUTPUT**: the generated C\n"
+        "                       carries the slab allocator / holder-count / region-sweep block\n"
 
         "\n"
         "  -h, --help       show this help\n",

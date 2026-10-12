@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
-"""Gate 2 · 正例生成物在 ASan+UBSan 下真的跑干净。
+"""Gate 2 · 程序生成物在 ASan+UBSan 下真的跑干净。
 
 为什么需要它：`--run` 默认 `-O2`，会把"从 NULL memmove"这类 UB
 直接优化掉，测试反而变绿。本闸门用 `-O1 -fno-sanitize-recover=all`
 把 UB 变成**必须报**。
+
+语料 = 正例语料（examples + 生命周期/sanitizer 套件）**加上**反例语料
+`tools/escape-corpus/`（`gatecommon.escape_corpus()`）：反例是"编译器还接受、生成物悬垂"的形状，
+正是本闸门要抓的东西；等闸门⑤ 的修复让编译器改成拒绝，`check_one` 会在 `gen_c` 那步跳过它们，
+基线条目随之变 STALE（照棘轮删掉）。两个闸门共用一份文件，不复制语料。
 
 用法：
     python3 tools/gate_asan_corpus.py [--scope quick|full] [--update-allowlist] [--jobs N]
@@ -81,12 +86,17 @@ def main():
     G.ensure_gatedir()
     os.makedirs(os.path.join(G.GATEDIR, "asan"), exist_ok=True)
     files = G.positive_corpus(a.scope)
+    # 反例语料（tools/escape-corpus）也扫：编译器**还接受**它们的时候，生成物正是 ASan 要抓的
+    # 悬垂；等闸门⑤ 那边改成拒绝，`check_one` 的 `gen_c` 会失败并跳过，基线条目随之 STALE。
+    counter = G.escape_corpus()
+    files = sorted(set(files) | set(counter))
     fails = {}
     with G.ProcessPoolExecutor(max_workers=a.jobs or G.jobs()) as ex:
         for r in ex.map(check_one, files, chunksize=3):
             if r:
                 fails[r[0]] = r[1]
-    print(f"[asan] 跑了 {len(files)} 个正例（ASan+UBSan，-fno-sanitize-recover）")
+    print(f"[asan] 跑了 {len(files)} 个程序（{len(counter)} 个反例语料；"
+          f"ASan+UBSan，-fno-sanitize-recover）")
     if a.update_allowlist:
         G.write_allow(ALLOW, fails)
         return 0

@@ -497,6 +497,47 @@ void checkStmt(Checker *c, Stmt *s) {
                 } else {
                     anSetRefDepth(sym, d);
                 }
+                /* 引用绑定：**可能指向的最浅处** + 别名来源。
+                 *
+                 * 目的地 `(*cur).f` 的深度要的是"可能活得最久的被指物"（参数给 0、帧内 `new`
+                 * 给 1，取 min = 0），不是 DFA 的 max。`var head = a` 这种**拷贝**还要留下 a
+                 * 这个别名（字段表里的来源）：head 与 a 共享所指对象，而 a 之后会被改指
+                 * （`a = p`），展平进 `origin` 的那份是拷贝当时的来源，追不到后来的站点。
+                 * `promoteFieldsAt` 在 `return head` 时沿这条来源问 a 当前指向什么，于是循环里
+                 * 那个 `new` 也被提到 home。
+                 *
+                 * 零值/字面量与**新分配**不算：`var cur = null` 没有指向调用者的存储，拿它把
+                 * min 拉到 0 会让 `(*cur).f = v` 的目的地整个冤枉地要求到 home；`var p = new node`
+                 * 的来源已经由 `origin` 覆盖，再记一条只会给 `cur = p` 这类改指添一条无谓要求。 */
+                if (sym && tsub(c, s->type)->kind == TY_REF) {
+                    Expr *ini = s->u.var.init;
+                    ExprKind ik = ini->kind;
+                    bool isLit = (ik == EX_NULL || ik == EX_INT || ik == EX_FLOAT ||
+                                  ik == EX_BOOL || ik == EX_STR);
+                    if (!isLit) {
+                        /* 用 482-499 刚刚定下的 `refDepth`，不要重算 `targetDepth(ini)`：调用结果
+                         * 是例外（带 home 的被调方分配进哪个 arena 由调用点定，见 484-486），
+                         * `targetDepth(EX_CALL)` 会答 0，而那份记录（`refDepth`）才作准。 */
+                        int dd = anRefDepth(sym);
+                        /* 初始化式是**另一个引用绑定**时这是一次别名拷贝（`var ocur = cur`）：
+                         * 二者共享所指对象，深度要随来源走（见 `symMinPointee` 的别名链），
+                         * 不在这里快照 —— 快照取的是拷贝那一刻的词法值，第一个迭代里
+                         * `cur = null` 会让它记成 0，把一个健全形状误拒。 */
+                        bool alias = false;
+                        if (ini->kind == EX_IDENT) {
+                            Sym *src = lookup(c, ini->u.ident.name);
+                            alias = src && src->type && src->type->kind == TY_REF;
+                        }
+                        if (!alias) sym->minPointee = dd;
+                        /* 只记**来源**，不碰 `otherDepth`/深度记账：那两格是深度上界，
+                         * `targetDepth` 会读走；把声明也当成一次字段写，普通形状的深度就会
+                         * 多算一层（`head = p` 于是被误拒）。来源**不展平**：`var head = a`
+                         * 要留 a 这个别名，a 之后被改指（`a = p`）时提权才追得到新站点。 */
+                        sym->initSrc = ini;
+                        sym->initSrcDepth = dd;
+                        if (sym->initMinReq == 0 && dd > 0) sym->initMinReq = dd;
+                    }
+                }
             }
             /* 结构体字面量为每个写到的字段记一个深度。省略的字段零初始化，只可能装空引用、
              * 深度 0：不给它建条目，读时回落到保守答案——代价是可能误拒，不会漏。 */
@@ -681,12 +722,23 @@ void checkStmt(Checker *c, Stmt *s) {
                      * 检查。必须在 `checkEscape` 之前跑，因为它要读这个值的深度。 */
                     promoteInto(c, v, at0);
                     checkAssignable(c, tt_, vt0, v, "assignment");
-                    checkEscape(c, v, at0, s->line, "this reference");
+                    /* 目的地经具名引用到达（`(*cur).next = v`）时，这个 `at0` 读的是 body walk
+                     * 里按词法顺序写的 `anRefDepth` —— 后面的 `cur = p` 还没走到，词序会改变
+                     * 答案。判定因此推迟到 DFA 之后按「可能被指物的最浅层」复判（见
+                     * `recheckPendingRefStores`）；其余形状照旧当场报。 */
+                    checkEscapeDefer(c, v, at0, s->line, "this reference", s->u.assign.target);
                     /* 改指时所指深度一起搬（`cur = cur.next`）。 */
                     if (s->u.assign.target->kind == EX_IDENT) {
                         Sym *slot0 = lookup(c, s->u.assign.target->u.ident.name);
-                        if (slot0 && slot0->type && slot0->type->kind == TY_REF)
-                            anSetRefDepth(slot0, targetDepth(c, v));
+                        if (slot0 && slot0->type && slot0->type->kind == TY_REF) {
+                            int nd = targetDepth(c, v);
+                            /* 目的地 `(*cur).f` 要的可能被指物深度取 **min**：参数（0）与帧内
+                             * `new`（1）都赋过 ⇒ 0。`null` 不算来源（它没有存储，值本身不是
+                             * 调用者的东西），拿它把 min 拉到 0 只会白白多要一层。 */
+                            if (v->kind != EX_NULL && (slot0->minPointee < 0 || nd < slot0->minPointee))
+                                slot0->minPointee = nd;
+                            anSetRefDepth(slot0, nd);
+                        }
                         /* 来源一起搬：`mid = n` 之后 `mid` 的来源是 `n`，提权遍历中的中间绑定
                          * 才不会断链。
                          *
@@ -701,12 +753,20 @@ void checkStmt(Checker *c, Stmt *s) {
                      * 是内部引用落点的上界。 */
                     {
                         Sym *rootA = placeRoot(c, s->u.assign.target);
+                        /* `(*a).next = b`：`placeRoot` 走不过解引用，槽要挂在 `a` 上，否则
+                         * `return a` 的提权走不到 `b` 指向的对象（环留在块层 ⇒ 返回即悬垂）。 */
+                        if (!rootA) rootA = destDerefSym(c, s->u.assign.target);
                         if (rootA && rootA->type && typeContainsRef(c->tt, rootA->type)) {
                             int dA = targetDepth(c, v);
                             /* 按字段记录。没取过地址时条目是覆盖而不是合并，所以 `h.p = null`
-                             * 之后根的有效深度确实会降下来；一律取最大值会造成误拒。 */
-                            const char *fn_ = (s->u.assign.target->kind == EX_FIELD)
-                                              ? s->u.assign.target->u.field.name : NULL;
+                             * 之后根的有效深度确实会降下来；一律取最大值会造成误拒。
+                             * 键是**整条路径**（`bx.mid.next` 记成 `mid.next`，元素记 `[0]`）：
+                             * 只取最后一段会让两层投影的来源对不上槽，`return bx.mid.next`
+                             * 的那个 `new` 就没人提权。 */
+                            const char *fn_ =
+                                (s->u.assign.target->kind == EX_FIELD ||
+                                 s->u.assign.target->kind == EX_INDEX)
+                                  ? fieldSlotKey(c, s->u.assign.target) : NULL;
                             c->curStoreVal = v;
                             noteFieldDepthWrite(c, rootA, fn_, dA);
                             c->curStoreVal = NULL;

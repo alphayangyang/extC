@@ -15,6 +15,12 @@
 static bool rejectNoCopy(Checker *c, Expr *e, Type *t);
 void warnSharedCopy(Checker *c, Expr *e, Type *t);
 
+/* 一次提权走查的跳数上限。它只是**环的后备**：真正的环由 `Checker.fsChain` 按绑定精确挡住
+ * （同一个绑定在一次走查里只走一次）。所以这个数要容得下合法的长链 —— 一个绑定要走
+ * `EX_IDENT` + `promoteFieldsAt` + 它来源表达式的载体几步，32 对几十个绑定的程序就不够了；
+ * 撞上限会走 `EXTC_DBG_FALLBACK`，断言版直接判红。 */
+#define EXTC_PROMOTE_MAX_HOPS 512
+
 /* --------------------------------------------------------------- escape checks
  *
  * The one reference rule: if a reference `r` points at a value `v`, then
@@ -161,6 +167,81 @@ int slotDepth(Checker *c, Expr *e) {
 }
 
 /**
+ * @brief 写目标经由**引用**到达时，可能被指物的最浅深度（min）；没有这条信息时返回 -1。
+ *
+ * `(*cur).f = v` 的目的地不是 `cur` 这个槽，而是 `cur` 可能指向的对象。`cur` 可能指向参数
+ * （0）也可能指向帧内 `new`（1）—— 目的地要按**可能活得最久**的那一个算（min），因为存进去
+ * 的值必须活到最坏的那个目的地那么久。DFA 给的是 max，拿它当目的地会漏收：帧内值被存进了
+ * 调用者的对象，被调方一返回就悬垂。
+ *
+ * @param c  检查器。
+ * @param e  写目标表达式。
+ * @return   可能被指物的最浅深度；链上没有命名的引用步进时返回 -1（调用方沿用旧答案）。
+ */
+/**
+ * @brief 写目标是否**经具名引用**到达（`(*cur).f` / `*cur`），是则返回那个绑定。
+ *
+ * 与 `destDerefDepth` 分开：形状判据（要不要推迟判定）与深度值（`minPointee`，可能还没记）是
+ * 两件事 —— 词序问题恰恰出在"形状已经在、深度还没记"的那一刻。
+ *
+ * @param c  检查器。
+ * @param e  写目标的位置表达式。
+ * @return    路径尽头 `*` 后面是具名引用绑定时返回它；否则返回 NULL。
+ */
+Sym *destDerefSym(Checker *c, Expr *e) {
+    for (; e; ) {
+        if (e->kind == EX_FIELD) { e = e->u.field.obj; continue; }
+        if (e->kind == EX_INDEX) { e = e->u.index.obj; continue; }
+        if (e->kind == EX_SLICE) { e = e->u.slice.obj; continue; }
+        if (e->kind == EX_DEREF) {
+            Expr *o = e->u.deref.operand;
+            if (!o || o->kind != EX_IDENT) return NULL;
+            Sym *sy = lookup(c, o->u.ident.name);
+            return (sy && sy->type && sy->type->kind == TY_REF) ? sy : NULL;
+        }
+        return NULL;
+    }
+    return NULL;
+}
+
+/**
+ * @brief 一个引用绑定「可能被指物的最浅层」：本绑定记的，外加声明处是拷贝时的别名链。
+ *
+ * `var ocur: ?mut ref node = cur` 里 `ocur` 与 `cur` **共享所指对象**，但 `ocur` 的深度快照
+ * 取的是拷贝那一刻的词法值（第一个迭代里 `cur` 还是 `null` ⇒ 0），而 `cur` 的 `minPointee`
+ * 要等 walk 走完才收全。所以走别名链取 min：只往更浅取，方向安全。
+ *
+ * @param c     检查器。
+ * @param sy    引用绑定。
+ * @param hops  别名链的跳数（防环）。
+ * @return      最浅深度；一次都没记过时返回 -1。
+ */
+static int symMinPointee(Checker *c, Sym *sy, int hops) {
+    if (!sy || hops > 16) return -1;
+    int m = sy->minPointee;
+    if (sy->initSrc && sy->initSrc->kind == EX_IDENT) {
+        Sym *src = lookup(c, sy->initSrc->u.ident.name);
+        if (src && src != sy) {
+            int m2 = symMinPointee(c, src, hops + 1);
+            if (m2 >= 0 && (m < 0 || m2 < m)) m = m2;
+        }
+    }
+    return m;
+}
+
+/**
+ * @brief 写目标经 `*` 到达时「可能被指物的最浅层」；不是这种形状时返回 -1（调用方退回 `slotDepth`）。
+ *
+ * @param c  检查器。
+ * @param e  写目标的位置表达式。
+ * @return    最浅深度；路径不经具名引用或一次都没记过时返回 -1。
+ */
+static int destDerefDepth(Checker *c, Expr *e) {
+    Sym *sy = destDerefSym(c, e);
+    return sy ? symMinPointee(c, sy, 0) : -1;
+}
+
+/**
  * @brief 求一个写目标所在存储的 arena 层。
  *
  * 它与 `slotDepth` 回答的不是同一个问题：这里问的是存储本身活多久，而不是引用指向的对象活多久。
@@ -176,6 +257,11 @@ int slotDepth(Checker *c, Expr *e) {
  * depth (0), so storing into a caller's object is still treated conservatively.
  */
 int storeLayer(Checker *c, Expr *e) {
+    /* 经由引用写的那条路（`(*cur).f = v`）问的是"被指物可能活多久"，按可能最浅的算：
+     * `cur` 可能指向参数（0）也可能指向帧内 `new`（1）⇒ 目的地是 0，帧内值存进去就是悬垂
+     * —— 判据的方向是**拒绝**，不是把那个值提进 home。 */
+    int dd = destDerefDepth(c, e);
+    if (dd >= 0) return dd;
     if (e && e->kind == EX_IDENT) {
         Sym *sy = lookup(c, e->u.ident.name);
         if (sy) {
@@ -356,6 +442,41 @@ static int poolCallDepth(Checker *c, Expr *e, int d) {
 }
 
 /**
+ * @brief 写/读字段槽用的**路径键**：从根绑定到这次投影的整条字段链。
+ *
+ * 只取最后一段字段名（`next`）会让 `bx.mid.next` 与 `bx.next` 撞进同一格，而两层投影的 `next`
+ * 根本找不到槽（声明只建了 `mid`）⇒ 来源记不下、`promoteFieldsAt` 提不动那个站点、返回值检查
+ * 看不到它，分配于是留在函数自己的帧 arena，返回即悬垂。用整条路径当键，读与写才对得上同一格。
+ *
+ * 元素下标是编译期常量时写进名字（`[0]`），否则记 `[*]`：同一根上的不同常量下标各占一格，
+ * 动态下标共享一格 —— 后者粒度粗，只影响提权精度，不漏来源。
+ *
+ * @param c  检查器；键字符串建在它的 arena 里，活得比字段表久。
+ * @param e  投影表达式（`EX_FIELD` / `EX_INDEX` 链）。
+ * @return   路径键；走不到根、或路径里有解引用/切片等命不了名的步进时返回 NULL。
+ */
+const char *fieldSlotKey(Checker *c, Expr *e) {
+    if (!e) return NULL;
+    if (e->kind == EX_IDENT) return "";
+    /* `(*a).next = v` 的槽挂在**绑定 a** 上（根由 `destDerefSym` 给出），键只记解引用之后的
+     * 路径：环/链的提权要从这里走到被存进去的那个对象自己的字段表。 */
+    if (e->kind == EX_DEREF) return "";
+    if (e->kind == EX_FIELD) {
+        const char *p = fieldSlotKey(c, e->u.field.obj);
+        if (!p) return NULL;
+        return arenaPrintf(c->arena, "%s%s%s", p, *p ? "." : "", e->u.field.name);
+    }
+    if (e->kind == EX_INDEX) {
+        const char *p = fieldSlotKey(c, e->u.index.obj);
+        if (!p) return NULL;
+        long long k = 0;
+        const char *idx = asIntLit(e->u.index.index, &k) ? arenaPrintf(c->arena, "%lld", k) : "*";
+        return arenaPrintf(c->arena, "%s[%s]", p, idx);
+    }
+    return NULL;
+}
+
+/**
  * @brief 算出值所携带的引用指向的存储有多深。
  *
  * 数字越小活得越久，0 表示参数或全局，也就是本帧之外。这个数是引用规则拿来与目标存储深度比较
@@ -459,10 +580,18 @@ int targetDepth(Checker *c, Expr *e) {
     }
     case EX_FIELD: case EX_INDEX:
         /* 读字段自己记录的深度。改报外层槽的深度会误拒 `h.p`，而之后 `h.p = null` 也补不回来，
-         * 因为两个答案说的是不同的东西。字段没有条目时（刚声明、或名字对不上）退回保守的地方深度。 */
-        if (e->kind == EX_FIELD) {
+         * 因为两个答案说的是不同的东西。字段没有条目时（刚声明、或名字对不上）退回保守的地方深度。
+         *
+         * 元素（`arr[0]`）与字段同一格：`arr[0] = p` 记在 `arr` 的 `[0]` 槽里，`return arr[0]`
+         * 要读的正是那一格（提权会把它降到要求的那层）。只在 `EX_FIELD` 上查会让元素退回
+         * `slotDepth`（数组槽深度 1），帧内 `new` 的返回因此被误拒。 */
+        {
             Sym *rf = placeRoot(c, e);
-            int *slot = rf ? fieldDepthEntry(c, rf, e->u.field.name, false) : NULL;
+            /* `(*a).next` 命不了名（`placeRoot` 走不过解引用），但槽就挂在 `a` 上：环/链
+             * （`(*a).next = b`）要靠它把要求传给 `b` 指向的对象。 */
+            if (!rf) rf = destDerefSym(c, e);
+            const char *key = fieldSlotKey(c, e);
+            int *slot = (rf && key) ? fieldDepthEntry(c, rf, key, false) : NULL;
             if (slot) { d = *slot; break; }
         }
         d = slotDepth(c, e);
@@ -727,7 +856,18 @@ bool promoteInto(Checker *c, Expr *val, int at) { return promoteInto2(c, val, at
  */
 bool promoteFieldsAt(Checker *c, Sym *sy, int at, int hops) {
     if (!sy) return true;
-    if (hops > 32) { EXTC_DBG_FALLBACK("promoteFieldsAt: recursion budget (32) exhausted"); return true; }
+    if (hops > EXTC_PROMOTE_MAX_HOPS) { EXTC_DBG_FALLBACK("promoteFieldsAt: recursion budget exhausted"); return true; }
+    /* 环守卫：同一个绑定在一次走查里只走一次。来源表可以成环（`a = b  b = a`，或两张字段表
+     * 互指），按来源链走会无限递归；原来只靠 32 步上限兜底，撞上限就触发
+     * `EXTC_DBG_FALLBACK`（断言版判红），还把预算白白烧在一个环上。要求已经正沿那条路施加，
+     * 重复走没有新信息。 */
+    for (int i = 0; i < c->fsDepth; i++)
+        if (c->fsChain[i] == sy) return true;
+    if (c->fsDepth >= (int)(sizeof c->fsChain / sizeof c->fsChain[0])) {
+        EXTC_DBG_FALLBACK("promoteFieldsAt: field-source chain too deep");
+        return true;
+    }
+    c->fsChain[c->fsDepth++] = sy;
     /* 取过地址的根有两个方向相反的问题：降记账在别名可能写入时不安全（别名能放进更深的值），而提升
      * 站点背后的来源总是安全的（只把分配挪到更长命的 arena）。所以提升照做，只跳过记账下降。 */
     bool lower = !sy->addressed;
@@ -742,6 +882,10 @@ bool promoteFieldsAt(Checker *c, Sym *sy, int at, int hops) {
         int want = sy->fields[i].depth;
         if (sy->fields[i].minReq < want) want = sy->fields[i].minReq;
         if (!promoteInto2(c, src, want, hops + 1)) { ok = false; continue; }
+        /* 来源那个绑定自己的字段表也要走：`a.next = b  b.next = ca` 的环/链要一路提到 `want`。
+         * 展平后的 `src` 是站点表达式，没有字段表；`srcSym` 是同一个对象的绑定，出作用域也能用。 */
+        if (sy->fields[i].srcSym && sy->fields[i].srcSym != sy
+            && !promoteFieldsAt(c, sy->fields[i].srcSym, want, hops + 1)) ok = false;
         if (lower && sy->fields[i].depth > want) sy->fields[i].depth = want;   /* promoted -> lower it too */
     }
     /* Same for a store that belongs to no single field: element writes, and stores a callee made
@@ -755,6 +899,16 @@ bool promoteFieldsAt(Checker *c, Sym *sy, int at, int hops) {
         if (sy->otherMinReq < want) want = sy->otherMinReq;
         if (!promoteInto2(c, sy->otherSrc, want, hops + 1)) ok = false;
         else if (lower && sy->otherDepth > want) sy->otherDepth = want;
+        if (sy->otherSrcSym && sy->otherSrcSym != sy
+            && !promoteFieldsAt(c, sy->otherSrcSym, want, hops + 1)) ok = false;
+    }
+    /* 声明处的**别名来源**（`var head = a`）：head 与 a 共享所指对象，a 后来被改指
+     * （`a = p`）时，要求要沿着 a **当前**的来源传下去。这一格只服务提权，不参与深度记账。 */
+    if (sy->initSrc) {
+        if (at < sy->initMinReq) sy->initMinReq = at;
+        int want = sy->initSrcDepth;
+        if (sy->initMinReq < want) want = sy->initMinReq;
+        if (!promoteInto2(c, sy->initSrc, want, hops + 1)) ok = false;
     }
     /* 被调方经 `mut ref` 实参做的写同理：这里不降任何记账，要挪的是来源背后的站点，因为
      * `return b` 需要 home arena。 */
@@ -764,6 +918,7 @@ bool promoteFieldsAt(Checker *c, Sym *sy, int at, int hops) {
         if (sy->callMinReq < want) want = sy->callMinReq;
         if (!promoteInto2(c, sy->callSrc, want, hops + 1)) ok = false;
     }
+    c->fsDepth--;
     return ok;
 }
 
@@ -834,6 +989,9 @@ void noteStore(Checker *c, Expr *value, Expr *target, int at, int line) {
     markCallHomeIfEscaping(c, value, at);             /* ③ 逃逸集合那一半 */
     /* ④ 字段表 / 整值表 */
     Sym *vs = target ? placeRoot(c, target) : NULL;
+    /* `(*a).next = b` 命不了名（`placeRoot` 走不过解引用），但槽挂在 `a` 上：不记的话，
+     * `return a` 提权时就走不到 `b` 指向的对象，环/链留在块层 ⇒ 返回即悬垂。 */
+    if (!vs && target) vs = destDerefSym(c, target);
     if (!vs) return;
     int d2 = valDepthForStore(c, value);
     if (!(d2 > 0 || (vs->type && typeContainsRef(c->tt, vs->type)))) return;
@@ -844,7 +1002,8 @@ void noteStore(Checker *c, Expr *value, Expr *target, int at, int line) {
                              "write without invalidating the non-null proof of `%s`", vs->name);
         noteWholeValueDepthWrite(c, vs, value, d2);
     } else {
-        const char *fn2 = (target->kind == EX_FIELD) ? target->u.field.name : NULL;
+        const char *fn2 = (target->kind == EX_FIELD || target->kind == EX_INDEX)
+                          ? fieldSlotKey(c, target) : NULL;
         c->curStoreVal = value;
         noteFieldDepthWrite(c, vs, fn2, d2);
         c->curStoreVal = NULL;
@@ -972,7 +1131,7 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
     if (at < 0) return false;
     /* 步数上限是必需的：绑定可以成环（`a = b  b = a`，因为赋值会更新来源），没有上限会死循环。
      * 撞上限即值提不动，调用方退回报错 —— 安全方向。 */
-    if (hops > 32) { EXTC_DBG_NOTE("promoteInto2: recursion budget (32) exhausted"); return false; }
+    if (hops > EXTC_PROMOTE_MAX_HOPS) { EXTC_DBG_NOTE("promoteInto2: recursion budget exhausted"); return false; }
     /*
      * `dyn Trait(x)`：负载被拷进池、由句柄保活，所以负载里的分配站点要到达本值要到达的层。
      *
@@ -1059,7 +1218,19 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
                         sy->poolSite->kind == EX_METHOD ? "EX_METHOD" : "EX_ASSOC");
             return promoteInto2(c, sy->poolSite, at, hops + 1);
         }
-        if (!sy || !sy->origin) return false;
+        if (!sy) return false;
+        if (!sy->origin) {
+            /* 没有初始化式的绑定（`var bx: outer`、`var arr: [2]?mut ref node`）：来源只可能在
+             * 字段表里 —— `bx.mid.next = p` 这类写下的站点没有别的地方能到（`origin` 是 NULL）。
+             * 在这里提前返回会把整张字段表跳过，站点于是停在词法层、随函数返回释放。所以仍然走
+             * 一遍 `promoteFieldsAt`：它的任务就是把要求传给真正的分配站点。判定本身不改（返回
+             * false，交由调用方的深度比较），只是事实已经记下了。
+             *
+             * 一个没有初始化式的绑定，其写入已经按字段记进表里；表里没有的来源（解引用等命不了名
+             * 的写）本来就走不到这里，判据不会因此放宽。 */
+            promoteFieldsAt(c, sy, at, hops + 1);
+            return false;
+        }
         /* 槽已经活过 `at`，说明它在更浅的层，里面的东西也已经活到那一层：初始化式在同一条语句里
          * 求值，层号就是槽的深度（the slot's 深度）。
          *
@@ -1069,8 +1240,20 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
          * 电平事实的唯一入口，提前返回会让站点一条约束都没有，末轮会把它放回词法层，仿佛没人碰过它。
          * 所以走查总要往下走，只为记事实；槽够深时返回值仍答"没什么要改"（下面的 `slotDeepEnough`）。 */
         bool slotDeepEnough = (sy->depth <= at);
-        /* 来源已经在记录时展平（见 `noteOrigin`），所以这里至多一步，不会重复查同一个绑定。 */
-        bool ok = promoteInto2(c, sy->origin, at, hops + 1);
+        /* 来源可以**自指**（`c = c.next` 的 `origin` 就是 `c.next`，它的对象又是 `c`）：再沿它
+         * 走会无限打转。跳数上限只把转圈截断，而截断后 `promoteFieldsAt(hops + 1)` 会带着超过
+         * 上限的跳数进来、触发 `EXTC_DBG_FALLBACK`（断言版判红）。按绑定去重：同一个绑定在一次
+         * 走查里只走一次来源；要求正沿那条路施加，重复走没有新信息。 */
+        bool onStack = false;
+        for (int i = 0; i < c->fsDepth; i++)
+            if (c->fsChain[i] == sy) { onStack = true; break; }
+        bool ok = true;
+        if (!onStack) {
+            c->fsChain[c->fsDepth++] = sy;
+            /* 来源已经在记录时展平（见 `noteOrigin`），所以这里至多一步，不会重复查同一个绑定。 */
+            ok = promoteInto2(c, sy->origin, at, hops + 1);
+            c->fsDepth--;
+        }
         /*
          * 来源只覆盖声明处写下的字段，所以还要读字段表的来源：之后的 `h.q = x` 只存在于字段表。
          *
@@ -1157,6 +1340,48 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
             }
             if (anRefDepth(val) > at) anSetRefDepth(val, at);
             return true;
+        }
+        /* 被调方**需要 home arena**（`needsHome`）时，把新分配放进的是**调用点传进去的**那个
+         * arena：那个数由调用点选，所以可以像 `new` 一样提权（越小越长寿）。这条一直是
+         * `return mk(1)` 能通过的原因（`markCallHomeIfEscaping(..., 0)` ⇒ `__extc_home`）；
+         * `var p = mk(1)` 只把 arena 记成块层、提权要求回不到调用点，于是 `return p` 被误拒。
+         * `arenaArg` 与 `homeDepth` 必须一起搬：前者是 codegen 读的，后者是 `checkCallRefArgs`
+         * 读的目的地深度。只往更长寿的一侧挪（单调），已更长寿时不抬回来。 */
+        /* 只对**引用**结果做这件事：它直接命名被调方新分配的那个对象，把调用点的 arena 层
+         * 改掉就把它挪到了正确的地方。按值返回的聚合（`box { p: mut slice<i32> }`）里的视图
+         * 另有既存的保守规则（`tests/errors/escape_call_result_to_outer.extc` 常设反例），
+         * 不在这一步的范围内。 */
+        if (planCallee(val) && anNeedsHome(planCallee(val)) && val->type &&
+            tsub(c, val->type)->kind == TY_REF) {
+            int want = (at == 0) ? ARENA_HOME : at;
+            int cur = planArenaArg(val);
+            bool longEnough = (cur == ARENA_HOME) || (cur >= 1 && cur <= want);
+            if (!longEnough) {
+                if (getenv("EXTC_DBG_ZONE"))
+                    fprintf(stderr, "[promoted-call] %s arenaArg %d -> %d (at=%d)\n",
+                            planCallee(val)->name ? planCallee(val)->name : "-", cur, want, at);
+                planSetArenaArg(val, want);
+                anSetHomeDepth(val, want);
+                planSetArenaArgPending(val, false);
+            }
+            if (anRefDepth(val) > at) anSetRefDepth(val, at);
+            return true;
+        }
+        /* 从容器里取出来的值（`v.get(k)`）可能**正是当初存进去的那个引用**：取一次容器元素
+         * 并不产生新存储，它交回的寿命就是容器里那份的寿命。容器自己的字段表记着那些来源
+         * （`callSrc` / `otherSrc` / 字段槽），这里也把它们提到 `at` —— 只把寿命拉长，是安全
+         * 方向。不这样做时，`v.push(p)` 存进去的 `p` 只被要求活到块层，而 `return head` 交出
+         * 去的链已经指向它，函数返回即悬垂。
+         *
+         * 判定不变（仍然返回 false，交给调用方的深度比较）：这里只是把事实记足。
+         *
+         * 接收者只认 `EX_IDENT`，并且用 `lookup` 而不是 `placeRoot`：这一段在**末轮重放**里也会
+         * 跑到（那时作用域已经关了），`placeRoot` 有"必须有作用域"的断言；`lookup` 在没有作用域时
+         * 查不到局部绑定 ⇒ 安静跳过（检查那一趟已经把该提的提过了）。 */
+        if (val->kind == EX_METHOD && val->u.method.recv &&
+            val->u.method.recv->kind == EX_IDENT) {
+            Sym *rv = lookup(c, val->u.method.recv->u.ident.name);
+            if (rv) promoteFieldsAt(c, rv, at, hops + 1);
         }
         return false;
 
@@ -1292,7 +1517,7 @@ bool checkStoreEscape(Checker *c, Expr *val, Expr *target, int line) {
     /* 先试提权。提不动时下面的调用仍会报错，所以这是安全网，且幂等。 */
     recordStore(c, val, target, atStore, line);
     promoteInto(c, val, atStore);
-    bool bad = checkEscape(c, val, at, line, "this assignment");
+    bool bad = checkEscapeDefer(c, val, at, line, "this assignment", target);
     /* 值的来源能追到参数时接受这次存储，把寿命交给调用点判。
      *
      * 被调方只编译一次，不知道调用者的池，所以它只能发布约束“第 j 个实参背后的数据至少活到被调方把
@@ -1426,26 +1651,34 @@ static void recordRefCheck(Checker *c, Expr *val, Expr *target, int at,
     *(RefCheck **)vecPush(&c->refChecks) = rc;
 }
 
+/* 一次深度拒绝的说明文字。当场报与推迟到 DFA 之后复判（`recheckPendingRefStores`）时共用，
+ * 两条路的诊断必须一字不差。 */
+#define ESCAPE_OUTLIVE_NOTE \
+    "A reference may not outlive what it points to. Borrow from a parameter " \
+    "(depth 0) or copy the data instead. " \
+    "If this value is a container (varArray and friends), the storage inside it " \
+    "was allocated in this frame's arena: build the container in the caller's " \
+    "scope and fill it through a `mut ref` argument, or build it here with `new` " \
+    "(that allocates in this function's home arena, so it may escape)."
+
 /**
- * @brief 检查值里的引用不会活得比它被放入的存储更久。
+ * @brief `checkEscape` 的实现：`defer` 为真时把一次拒绝记进 `pendingRefStores`（不发诊断）。
  *
- * 先提权值里所有分配点，再用深度比较判定，因为浅到看不出问题时早退会让分配点失去约束。值类型提及
- * 类型参数时记下延迟检查并返回 false，留到实例化时判定。
+ * 推迟的只有"目的地经具名引用到达"（`(*cur).f` / `*cur`）那一类：它的 `at` 读的是
+ * `anRefDepth(cur)`，而那个数在 body walk 里按词法顺序写、没有 join，DFA 要等 walk 之后才跑。
+ * 记录留着当时的 `at`/`depth`，DFA 溢出时照原样报。
  *
- * @param c     检查器。
- * @param val   被存储或返回的值。
- * @param at    目标深度；0 表示必须活过本帧。
- * @param line  源码行号，用于诊断。
- * @param what  被检查的操作，出现在诊断里。
- * @return      值会留下悬垂引用时已报错并返回 true；否则返回 false。
- *
- * The compiler does not know its real lifetime, and it may point at a local of the caller's
- * frame that is nested more deeply than this function.
- * This is one half of the same rule as "the depth of a call result is the maximum depth of its
- * arguments".
- * what - the operation being checked, named in the diagnostic ("this assignment")
+ * @param c       检查器。
+ * @param val     被存入/返回的值。
+ * @param at      目的地深度。
+ * @param line    源码行号。
+ * @param what    诊断里的操作名。
+ * @param target  被存入的地方；无目的地（返回、初始化）时为 NULL。
+ * @param defer   为真且判定失败时，记录而不报。
+ * @return        判定为拒绝时返回 true。
  */
-bool checkEscape(Checker *c, Expr *val, int at, int line, const char *what) {
+static bool checkEscapeImpl(Checker *c, Expr *val, int at, int line, const char *what,
+                            Expr *target, bool defer) {
     if (!val) return false;
     /* 类型提及类型参数的值现在判不了（`T` 可能是 `i64` 或 `slice<u8>`）。记下来，实例化时再判。 */
     if (mentionsParam(val->type)) {
@@ -1477,19 +1710,112 @@ bool checkEscape(Checker *c, Expr *val, int at, int line, const char *what) {
     promoteInto(c, val, at);
     int d = targetDepth(c, val);
     if (d <= at) return false;
-    /* 下面照旧报错；这里只是把问题留给数字定下之后的那一趟。 */
+    /* 下面照旧报错（或按 `defer` 记下来）；这里只是把问题留给定下之后的那一趟。 */
     recordLvlRejection(c, val, at, d, line);
-    ckError(c, line,
-            "A reference may not outlive what it points to. Borrow from a parameter "
-            "(depth 0) or copy the data instead. "
-            "If this value is a container (varArray and friends), the storage inside it "
-            "was allocated in this frame's arena: build the container in the caller's "
-            "scope and fill it through a `mut ref` argument, or build it here with `new` "
-            "(that allocates in this function's home arena, so it may escape).",
+    if (defer) {
+        PendingRefStore *p = arenaAllocZero(c->arena, sizeof *p);
+        p->val = val;
+        p->target = target;
+        p->destSym = destDerefSym(c, target);
+        p->line = line;
+        p->at = at;
+        p->depth = d;
+        p->what = what;
+        p->fn = c->curFunc;
+        *(PendingRefStore **)vecPush(&c->pendingRefStores) = p;
+        return true;
+    }
+    ckError(c, line, ESCAPE_OUTLIVE_NOTE,
             "%s would hold a reference to a local variable that dies first "
             "(borrowed from depth %d, but this can only hold up to depth %d)",
             what, d, at);
     return true;
+}
+
+/**
+ * @brief 检查值里的引用不会活得比它被放入的存储更久。
+ *
+ * 先提权值里所有分配点，再用深度比较判定，因为浅到看不出问题时早退会让分配点失去约束。值类型提及
+ * 类型参数时记下延迟检查并返回 false，留到实例化时判定。
+ *
+ * @param c     检查器。
+ * @param val   被存储或返回的值。
+ * @param at    目标深度；0 表示必须活过本帧。
+ * @param line  源码行号，用于诊断。
+ * @param what  被检查的操作，出现在诊断里。
+ * @return      值会留下悬垂引用时已报错并返回 true；否则返回 false。
+ *
+ * The compiler does not know its real lifetime, and it may point at a local of the caller's
+ * frame that is nested more deeply than this function.
+ * This is one half of the same rule as "the depth of a call result is the maximum depth of its
+ * arguments".
+ * what - the operation being checked, named in the diagnostic ("this assignment")
+ */
+bool checkEscape(Checker *c, Expr *val, int at, int line, const char *what) {
+    return checkEscapeImpl(c, val, at, line, what, NULL, false);
+}
+
+/**
+ * @brief 带目的地的判定：目的地经具名引用到达时把拒绝推迟到 DFA 之后复判。
+ *
+ * 只有那条路（`(*cur).f` / `*cur`）的 `at` 读的是按词法顺序写的 `anRefDepth`，词序会改变答案；
+ * 其余形状当场报，行为不变。
+ *
+ * @param c       检查器。
+ * @param val     被存入的值。
+ * @param at      目的地深度（walk 里按当时的 `anRefDepth` 算出的）。
+ * @param line    源码行号。
+ * @param what    诊断里的操作名。
+ * @param target  被存入的地方；NULL 等同 `checkEscape`。
+ * @return        判定为拒绝时返回 true（推迟的那些不报诊断）。
+ */
+bool checkEscapeDefer(Checker *c, Expr *val, int at, int line, const char *what, Expr *target) {
+    /* 只有"目的地经具名引用到达"才推迟：那条路的 `at` 读的是按词法顺序写的 `anRefDepth`，
+     * 词序会改变答案。其余形状当场报，行为不变。 */
+    bool defer = target && destDerefSym(c, target) != NULL;
+    return checkEscapeImpl(c, val, at, line, what, target, defer);
+}
+
+/**
+ * @brief DFA 落定后复判推迟的存储判定；仍然不够深才报诊断。
+ *
+ * 目的地深度这时才取到「可能被指物的**最浅**层」（`Sym.minPointee` 收全了全部改指），而不是
+ * walk 里那个按词法顺序的值。这条 min 极性是必须的：`q2_dualpointee` 里 `cur` 可能指向参数（0）
+ * 或帧内 `new`（1），取 min=0 才挡得住悬垂；取 DFA 的 max=1 会把洞放过去。
+ *
+ * `dfaSettled` 为假（DFA 溢出、结果整份被丢弃）时照记录里的旧数报，保持原来的保守行为。
+ *
+ * @param c           检查器；作用域必须还开着（`lookup` 要用）。
+ * @param dfaSettled  DFA 是否给出了可用结果。
+ */
+void recheckPendingRefStores(Checker *c, bool dfaSettled) {
+    if (c->pendingRefStores.len == 0) return;
+    for (size_t i = 0; i < c->pendingRefStores.len; i++) {
+        PendingRefStore *p = *(PendingRefStore **)vecAt(&c->pendingRefStores, i);
+        if (!p || p->fn != c->curFunc) continue;
+        int at = p->at, d = p->depth;
+        if (dfaSettled) {
+            /* 目的地绑定在 walk 里就解析好了：块作用域此时已经关掉，`lookup` 再查 `ocur` 这类
+             * 块内绑定会查不到。深度取别名链上的 min（`ocur` 随 `cur` 走）。 */
+            int dd = p->destSym ? symMinPointee(c, p->destSym, 0) : -1;
+            at = (dd >= 0) ? dd : storeLayer(c, p->target);
+            promoteInto(c, p->val, at);         /* 用定下来的目的地再提一次（幂等） */
+            d = targetDepth(c, p->val);
+            if (d <= at) continue;              /* 词序造成的误拒：撤销 */
+        }
+        ckError(c, p->line, ESCAPE_OUTLIVE_NOTE,
+                "%s would hold a reference to a local variable that dies first "
+                "(borrowed from depth %d, but this can only hold up to depth %d)",
+                p->what, d, at);
+    }
+    /* 本函数的记录已经消费掉；记录表按模块存，别的函数下一趟自己会清。 */
+    size_t w = 0;
+    for (size_t i = 0; i < c->pendingRefStores.len; i++) {
+        PendingRefStore *p = *(PendingRefStore **)vecAt(&c->pendingRefStores, i);
+        if (p && p->fn == c->curFunc) continue;
+        *(PendingRefStore **)vecAt(&c->pendingRefStores, w++) = p;
+    }
+    c->pendingRefStores.len = w;
 }
 
 /* "let 绑定"与"路径跨过只读引用"是两个问题：`var` 也能持有只读引用，如 `fn f(v: ref slice<i32>)`；
