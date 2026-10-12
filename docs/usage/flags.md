@@ -42,8 +42,13 @@ debug switches -- diagnostics only, **except the marked below**:
   EXTC_NO_LEVELPASS=1  skip the arena level pass -- **CHANGES THE OUTPUT**: it moves arena
                        placement in 2 of the 414 golden programs
   EXTC_SELFCHECK=1     run the checker's self-check -- **CAN FAIL THE BUILD** (exit 1)
-  EXTC_RECLAIM=1       emit the reclamation runtime -- **CHANGES THE OUTPUT**: the generated C
-                       carries the slab allocator / holder-count / region-sweep block
+  EXTC_RECLAIM=0       turn reclamation off; it is **on by default** -- **CHANGES THE OUTPUT**.
+                       A program with a governed allocation point (`new T` / `alloc<T>(n)` /
+                       `@overwrite`) gets the slab allocator / holder-count / region-sweep
+                       block; `=1` forces that block on for every program (side-by-side runs)
+  EXTC_RC_SHARDS=N     reclamation's shard count, the pause knob -- **CHANGES THE OUTPUT**.
+                       Default 1 = one runtime region per logical one; N > 1 splits each
+                       logical region into N runtime regions that sweep one at a time
 
   -h, --help       show this help
 ```
