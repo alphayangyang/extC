@@ -72,8 +72,10 @@ assert "collectSlots" in mc_slots
 s = s[:mcj] + "\n" + mc_slots + "\n" + s[mcj:]
 
 # ---- 3. 调用点：值数组 → 建一次槽地址表 -------------------------------------
+# 入口守卫落地后，调用点是 `maybeCollect(__extc_rcgN, …)`（第一实参为块内临时量）；
+# 交替项认它，替换后仍落在原来那个 `if (extc_rc_shouldSweep(__extc_rcgN))` 之下。
 pat = re.compile(
-    r"extc_rc_maybeCollect\((extc_rc_regionOf\([^;]*?\)), "
+    r"extc_rc_maybeCollect\(((?:extc_rc_regionOf\([^;]*?\))|(?:__extc_rcg\d+)), "
     r"\(void \*\[\]\)\{ ([^}]*?) \}, (\d+)\);")
 
 state = {"i": 0}

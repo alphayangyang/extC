@@ -152,8 +152,12 @@ sub_once(re.escape("    if (!s) return 0;\n    size_t k = extc_rc_slotOf(s, p);\
          "owns false counter")
 
 # ---- 3. 调用点：maybeCollect(...) → extc_probe_call(__LINE__, ...) -----------
+# 两种发射形态都认：入口守卫**落地前**是 `maybeCollect(extc_rc_regionOf(...), …)`；
+# 落地后是 `{ ExtcRcRegion *__extc_rcgN = extc_rc_regionOf(...);
+#             if (extc_rc_shouldSweep(__extc_rcgN)) maybeCollect(__extc_rcgN, …); }`
+# —— 后者里根表本来就只有真要扫时才物化，探针挂在同一个 `if` 之下，读数含义一致。
 pat = re.compile(
-    r"extc_rc_maybeCollect\((extc_rc_regionOf\([^;]*?\)), "
+    r"extc_rc_maybeCollect\(((?:extc_rc_regionOf\([^;]*?\))|(?:__extc_rcg\d+)), "
     r"\(void \*\[\]\)\{ ([^}]*?) \}, (\d+)\);")
 _site = [0]
 def _rep(m):

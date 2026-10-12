@@ -398,6 +398,7 @@ typedef struct {
     bool        rcGlobalsUnreliable; /* 全局量里有枚举不出来的引用存储 ⇒ 所有函数关掉触发 */
     bool        rcRootsUnreliable;
     int         rcSeq;           /* 描述符与触发的唯一编号 */
+    int         rcGuardSeq;      /* 入口守卫临时变量的唯一编号 */
     /* 正在发射的函数是不是「一个地方」（入口文件的函数才是；库函数透明）。 */
     bool        zoneHere;
     /* 这个函数收不收隐藏的「家 zone」参数（= `FuncDef.makesPool`）。
@@ -3057,6 +3058,12 @@ static const char *rcEmitTypeDesc(CG *g, Type *t) {
  * 引用槽。触发写在**语句前缀**里，所以它落在包含这次分配的那条语句之前——新对象还没生出来，
  * 不需要为它置根。
  *
+ * **入口守卫**：根表是调用实参，C 语义要求在调用前把整张表（本形状 ~1412 项）物化出来；
+ * 而 `maybeCollect` 的第一句就是 `if (!extc_rc_shouldSweep(r)) return -1;` —— 绝大多数分配点
+ * 根本到不了压力线。于是这里先把判据提到调用点前面：**只有该扫时**才物化根表并调用。
+ * 这是纯粹的求值顺序改动，改变的是"什么时候物化根表"，不是"什么时候收集"：
+ * 判据只有 `extc_rc_shouldSweep` 这一份（`maybeCollect` 内部用的就是同一个函数），不另抄。
+ *
  * @param g         生成器。
  * @param keyExpr   区域认领键，形如 `(void *)&(__extc_a[1])` 或 `(void *)cell->home`。
  * @param rid       区域号（日志/调试用）。
@@ -3082,8 +3089,10 @@ static void rcEmitTrigger(CG *g, const char *keyExpr, int rid) {
         }
         bufPuts(&b, " }");
     }
-    pfLine(g, "extc_rc_maybeCollect(extc_rc_regionOf(%s, %d), %s, %zu);",
-           keyExpr, rid, bufCstr(&b), n);
+    const char *rg = arenaPrintf(g->arena, "__extc_rcg%d", g->rcGuardSeq++);
+    pfLine(g, "{ ExtcRcRegion *%s = extc_rc_regionOf(%s, %d);"
+              " if (extc_rc_shouldSweep(%s)) extc_rc_maybeCollect(%s, %s, %zu); }",
+           rg, keyExpr, rid, rg, rg, bufCstr(&b), n);
 }
 
 /**

@@ -47,7 +47,9 @@ def take_func(src, header):
 
 # 调用点：区域表达式里含内层括号，所以靠后面那个 `, (void *[]){` 字面量收口；
 # 根项里不会出现 `}`（都是 `(void *)(表达式)`），所以用 `[^}]*?` 取项表最稳。
-CALL = re.compile(r"extc_rc_maybeCollect\((extc_rc_regionOf\(.*?\)), \(void \*\[\]\)\{ ([^}]*?) \}, (\d+)\);", re.S)
+# 入口守卫**落地后**，调用点长成 `maybeCollect(__extc_rcgN, …)`（第一实参是块内临时量）
+# ⇒ 交替项里也认它，本目录的消融/原型对两种发射形态都能跑。
+CALL = re.compile(r"extc_rc_maybeCollect\(((?:extc_rc_regionOf\(.*?\))|(?:__extc_rcg\d+)), \(void \*\[\]\)\{ ([^}]*?) \}, (\d+)\);", re.S)
 
 if mode == "guardfast":
     # 1) 表与哈希函数，插在登记表变量之后。
@@ -96,8 +98,14 @@ if mode == "guardfast":
 elif mode == "guardfirst":
     # 根表只在真的要扫时才物化：判据与 maybeCollect 的第一句相同 ⇒ 语义不变。
     i = [0]
+    noop = [0]
 
     def rep(m):
+        if m.group(1).startswith("__extc_rcg"):
+            # 入口守卫已在 codegen 里落地 ⇒ 这一档没有"未守卫的调用点"可消：
+            # 原样保留，该变体 == on（`on-guardfirst` 的差值为 0，正是现状）。
+            noop[0] += 1
+            return m.group(0)
         n = i[0]
         i[0] += 1
         return ("{ ExtcRcRegion *__extc_pf%d = %s;\n"
@@ -107,7 +115,8 @@ elif mode == "guardfirst":
 
     s, cnt = CALL.subn(rep, s)
     assert cnt > 0, "no call sites patched"
-    print("guardfirst: patched", cnt, "sites", file=sys.stderr)
+    print("guardfirst: patched", i[0], "sites;", noop[0], "already guarded (no-op)",
+          file=sys.stderr)
 
 elif mode == "nohold":
     h = "extc_rc_holdUpd(void *p, int delta) {"

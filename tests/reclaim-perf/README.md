@@ -32,6 +32,10 @@
 根表**（56 %）和**每次指针赋值都要问一句"这指针是 rc 槽吗"**（23 %）。前者可以近乎零成本地
 拿掉（把物化推迟到真要扫的那一刻），后者要靠登记表查法与静态化分两步吃。
 
+> **落地状态**：第 1 条（入口守卫）**已经落进 `src/back/codegen.c`**，判据 `gate.sh` 先红后绿，
+> N=2e5 开关开实测 **−56.5 %**。本文 §1–§4 的所有数字都是**落地前**的归因（绑在 `build/extc`
+> md5 `5e51d77f…` 上）；落地后的数字与复跑见 §0 第 1 条、§5.1 第 1 行、§7.4 的 `gate.sh` 与 §8 末条。
+
 **1412 项根表**从哪来：`world` 这个帧内结构体的**全部 `ref` 槽**——`cache[1024]` + `tree[256]`
 + `bkHead[64]` + `bkTail[64]` + `last`/`idxHead`/`retire` = **1411**，两个站点再加当轮新分配的
 局部 `p` ⇒ **1412**。编译器是**保守**发的：不管那个槽此刻有没有值，整条数组都进根表。
@@ -42,7 +46,10 @@
 
 **下一步动作（按 收益/成本 排）**：
 
-1. **分配点入口守卫**（`if (shouldSweep(r))` 再建表）—— 收益 **56 %**，改动约 10 行 codegen，风险≈0。
+1. ~~**分配点入口守卫**（`if (shouldSweep(r))` 再建表）~~ —— **已落地**（`src/back/codegen.c`
+   `rcEmitTrigger`），收益 **56.5 %**（N=2e5 实测 1 169 388 408 → 508 581 405 Ir），
+   判据 [`gate.sh`](gate.sh)（改动前红、改动后绿）。§5.1 及 §8 的对应条目已按落地后的状态更新。
+
 2. **`owns` 登记表查询 O(1) 化**（直接映射 + 校验，碰撞回落二分）—— 收益 **~10 %**，改动在运行时，风险低。
 3. **`owns` 守卫静态化**（能证明是 rc 槽的赋值直接发计数）—— 收益上界 **23 %**，前端要传"来源是 rc 槽"的信息，风险中（判错即 SEGV）。
 4. **计数按编译期收窄** —— 收益 ≤ **10.7 %**，成本中高，红判据在 [`tests/reclaim-elide/`](../reclaim-elide/)。
@@ -326,7 +333,7 @@ Program received signal SIGSEGV
 
 | 序 | 动作 | 实测收益 | 实现成本 | 风险 | 判据/回归 |
 |---|---|---|---|---|---|
-| **1** | **分配点入口守卫** | **56.1 %**（N=8e5 实测） | **极低**：codegen 把 `extc_rc_maybeCollect(r, (void*[]){…}, n)` 包成 `{ ExtcRcRegion *t = r; if (extc_rc_shouldSweep(t)) extc_rc_maybeCollect(t, (void*[]){…}, n); }` | **≈0**：`maybeCollect` 第一句就是同一判据 ⇒ 语义逐字等价 | `tests/reclaim-shapes/run-switch.sh`（9 条全绿）+ `run-evidence.sh`（清扫确实上场） |
+| **1** | **分配点入口守卫**（**已落地**） | **56.1 %**（N=8e5 实测）；落地后 N=2e5 **−56.5 %** | **极低**：codegen 把 `extc_rc_maybeCollect(r, (void*[]){…}, n)` 包成 `{ ExtcRcRegion *t = extc_rc_regionOf(…); if (extc_rc_shouldSweep(t)) extc_rc_maybeCollect(t, (void*[]){…}, n); }` | **≈0**：`maybeCollect` 第一句就是同一判据（同一份 `extc_rc_shouldSweep`）⇒ 语义逐字等价 | [`gate.sh`](gate.sh)（先红后绿）+ `tests/reclaim-shapes/run-switch.sh`（17 条全绿，关掉仍红）+ `run-evidence.sh`（清扫确实上场） |
 | **2** | **登记表查询 O(1) 化** | **10.3 %**（N=2e5）；`ownLower` 自身 11.9 % 是上界 | 低：运行时加一张直接映射表，`ownAdd`/`ownDel` 维护，命中即用、未命中回落二分 | **低**：回落路径保证语义不变（`guardfast` 原型已验证输出逐字一致） | `tests/reclaim-shapes/run-switch.sh` + 4 个 SEGV 用例 |
 | **3** | **`owns` 守卫静态化** | 上界 **23.0 %**（守卫总量）；实际取决于能证明多少赋值 | 中高：前端把"这个引用值来自 rc 槽"的来源信息传到 codegen，能证明的直接发 `inc`/`dec`，不发 `ownSlab` | **中**：判错就是 SEGV/漏收 —— 正是 `tests/heap/loan`、`tests/heap/plate`、`tests/cabi/heapmain`、`tests/coro/iterator_protocol` 钉的那条 | 同上 4 个用例 + `tests/reclaim-shapes/run-switch.sh` |
 | **4** | **计数按编译期收窄**（`RECLAMATION.md` 五节末条） | ≤ **10.7 %**（计数自身）；`nohold` 上界 17 % | 中高：编译期唯一性/新鲜度证明 | 中：`tests/reclaim-elide/` 既有绿判据与**红判据**都必须不动 | `tests/reclaim-elide/run.sh` |
@@ -521,7 +528,8 @@ diff <(sed 's/[0-9]\+//g' /tmp/pristine.c) <(sed 's/[0-9]\+//g' /tmp/on.c) | hea
 |---|---|---|
 | `rootprobe.py` | 只读插桩：每个站点的根表**槽数 / 曾非空数 / 永久死槽数 / 平均非空数**，站点调用次数；`ownSlab` 的五类互斥分类、`ownLower` 次数、登记表最大条目数 | 只加计数，不改任何判据；结果走 stderr，前缀 `extc_probe` |
 | `latemark.py` | **槽地址延迟绑定**原型：把"每分配点物化值表"换成"每站点建一次槽地址表、清扫时解引用" | 只改 `/tmp` 生成物副本 |
-| `ablate.py` | 单项消融/原型：`guardfast`（登记表 O(1)）/ `guardfirst`（入口守卫）/ `nohold`（拆计数，上界）/ `noreg`、`noreg0`（拆跨区登记）/ `padN`（根表补空到 N 项） | `nohold`/`noreg` 会改健全性或内存行为，**只能当上界**；`guardfast`/`guardfirst`/`noreg0`/`padN` 语义不变（可验证输出逐字一致） |
+| `ablate.py` | 单项消融/原型：`guardfast`（登记表 O(1)）/ `guardfirst`（入口守卫）/ `nohold`（拆计数，上界）/ `noreg`、`noreg0`（拆跨区登记）/ `padN`（根表补空到 N 项） | `nohold`/`noreg` 会改健全性或内存行为，**只能当上界**；`guardfast`/`guardfirst`/`noreg0`/`padN` 语义不变（可验证输出逐字一致）。入口守卫**已在 codegen 落地** ⇒ `guardfirst` 对新生成物是 **no-op**（`already guarded`，该变体 == `on`） |
+| `gate.sh` | **性能判据**（本目录唯一有牙的脚本）：开关开的 `cyclic_pressure` 固定 N=200000，callgrind 总指令数 ≤ 701 633 044（= 改动前实测 × 0.6）；口径与 `run.sh` 一致 | 入口守卫**落地前红**（1.169 G > 0.702 G）、落地后绿（0.509 G）。用法：`tests/reclaim-perf/gate.sh` |
 | `run.sh` | 一键复跑上面全部：固定编译器 → 生成/编译 → 语义校验 → callgrind → 打印总表与差值 | `N=`、`SMALL=`、`SKIP_PROTO=1` 可调 |
 
 ---
@@ -540,6 +548,8 @@ diff <(sed 's/[0-9]\+//g' /tmp/pristine.c) <(sed 's/[0-9]\+//g' /tmp/on.c) | hea
   根项少或清扫频繁的形状上，56 % 会显著缩水。**没有**在别的形状上复测。
 * **`guardfirst` 在"清扫频繁"形状上的收益**：本形状 87 万次分配对 28 次清扫（比 ≈31000:1）。
   若某个形状清扫很频繁，入口守卫的收益会下降——**没有**构造这样的对照。
-* **`guardfirst` 没有在真实 codegen 里落地过**：本目录全是"改 `/tmp` 生成物副本"的原型
-  （`src/` 一个字节没动）。把它落进 `src/back/codegen.c` 之后的实际数字（尤其
-  `tests/reclaim-shapes/run-switch.sh` 的 9 条门禁）**未验证**。
+* ~~**`guardfirst` 没有在真实 codegen 里落地过**~~ —— **已落地并验证**（`src/back/codegen.c`
+  `rcEmitTrigger`，判据 `gate.sh`）：N=200000 上 1 169 388 408 → **508 581 405 Ir（−56.5%）**，
+  落地后的 508 581 405 与原型 `guardfirst` 的 508 581 342 相差 63 条（测量噪声）；清扫次数 / `EXTC_RC_STATS`
+  / N vs 4N 峰值比 / 全部 `owns` 探针计数**逐位不变**，默认（开关关）产物对 693 份可编译
+  `.extc` **逐字节 diff=0**。
