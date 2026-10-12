@@ -633,8 +633,13 @@ gid_build on  tests/reclaim-shapes/generic_instance_desc.extc gid_on;  gid_on_c=
 gid_build off tests/reclaim-shapes/generic_instance_desc.extc gid_off; gid_off_c=$GID_C
 if [ "$gid_on_c" = ok ] && [ "$gid_off_c" = ok ]; then
     # 生成物判据：模板名没被替换就说明嵌套探测抹掉了上下文（旧写法）。
-    if grep -qE '\bslice_T\b|\bvarArray_T\b' "$TMP/gid-on.c"; then
-        bad "generic-instance-desc：生成 C 里有未替换的模板名（$(grep -oE '\b(slice_T|varArray_T)\b' "$TMP/gid-on.c" | sort -u | tr '\n' ' ')）—— 替换上下文被嵌套探测抹掉"
+    # 生成物路径跟 gid_build 的命名走：$TMP/gid-<tag>.c，这里的 tag 是 gid_on。
+    # 路径写错会让 grep 因"文件不存在"而静默跳过这条结构检查 ✗，等于判据没牙；
+    # 所以先断言文件在，再 grep。
+    if [ ! -f "$TMP/gid-gid_on.c" ]; then
+        bad "generic-instance-desc：生成物 $TMP/gid-gid_on.c 不存在 —— 判据路径与 gid_build 命名不一致"
+    elif grep -qE '\bslice_T\b|\bvarArray_T\b' "$TMP/gid-gid_on.c"; then
+        bad "generic-instance-desc：生成 C 里有未替换的模板名（$(grep -oE '\b(slice_T|varArray_T)\b' "$TMP/gid-gid_on.c" | sort -u | tr '\n' ' ')）—— 替换上下文被嵌套探测抹掉"
     else
         gid_run gid_on;  gid_on_rc=$GID_RC;  gid_on_out=$GID_OUT
         gid_run gid_off; gid_off_rc=$GID_RC; gid_off_out=$GID_OUT
@@ -646,7 +651,7 @@ if [ "$gid_on_c" = ok ] && [ "$gid_off_c" = ok ]; then
         fi
     fi
 else
-    bad "generic-instance-desc：生成/编译失败（on=$gid_on_c off=$gid_off_c）—— 见 $TMP/gid-on.log"
+    bad "generic-instance-desc：生成/编译失败（on=$gid_on_c off=$gid_off_c）—— 见 $TMP/gid-gid_on.log"
 fi
 
 # ── ①i C 洞（真实语料）：persist_nodes —— 内层帧不得扫外层帧的家区域 ────────────
