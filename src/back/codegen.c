@@ -3227,6 +3227,65 @@ static void rcRootLeaves(CG *g, Type *t, const char *base, int depth) {
 }
 
 /**
+ * @brief 收集一个类型里引用叶子槽的 **C 左值路径**（沿值投影：字段 / 内联数组元素）。
+ *
+ * 与 `rcRootLeaves` 是同一个递归形状，区别只在出口：那里把叶子登记成**根**，这里把叶子的
+ * 路径交给调用方 —— **整值存储**（`s.w = wrap { n: keeper }`、`var b: wrap = ...`）要按叶子
+ * 逐条走引用槽的记账（`initRef` / `storeRefOwned` / `storeRefUnknown`）。整块裸拷既不 `inc`
+ * 也不登记跨区边：槽被写进去了却没记账，对象会在计数归零或区域清扫时被放掉，而槽还指着它。
+ *
+ * `base` 必须是**可重复求值**的左值（调用方先用临时量 / `(*p)` 把目标与值各求值一次）：
+ * 路径会把它拼进每一条记账调用里。
+ *
+ * @param g     生成器。
+ * @param t     类型。
+ * @param base  该值在 C 里的左值表达式（如 `(*__extc_svd0)`、`b`）；传空串则产出**相对路径**
+ *              （`.f`、`.kids.data[0]`），调用方自己拼两个基 —— 这样同一份叶子集合能同时
+ *              用在目标与值上，不会两边各收一次、也不会有一条只在一侧出现。
+ * @param out   `const char *` 向量，依次接收每个引用叶子的路径。
+ * @param depth 递归深度，防类型环。
+ */
+static void rcLeafPaths(CG *g, Type *t, const char *base, Vec *out, int depth) {
+    if (!t || depth > 16 || out->len > 4096) return;
+    t = subst(g, t);
+    if (!t) return;
+    switch (t->kind) {
+    case TY_REF:
+        *(const char **)vecPush(out) = base;
+        return;
+    case TY_ARRAY: {
+        Type *e = subst(g, t->inner);
+        /* 定长数组在 C 里是包一层的结构体：元素写 `arr.data[i]`（与 `rcRootLeaves` 一致）。 */
+        for (int64_t i = 0; i < t->asize && out->len <= 4096; i++)
+            rcLeafPaths(g, e, arenaPrintf(g->arena, "%s.data[%lld]", base, (long long)i),
+                        out, depth + 1);
+        return;
+    }
+    case TY_STRUCT:
+        for (size_t i = 0; i < t->sdef->fields.len && out->len <= 4096; i++) {
+            FieldDef *fd = *(FieldDef **)vecAt(&t->sdef->fields, i);
+            rcLeafPaths(g, fd->type, arenaPrintf(g->arena, "%s.%s", base, fd->name),
+                        out, depth + 1);
+        }
+        return;
+    case TY_GENERIC:
+        if (isView(t) || !t->sdef) return;
+        substEnter(g, t);
+        for (size_t i = 0; i < t->sdef->fields.len && out->len <= 4096; i++) {
+            FieldDef *fd = *(FieldDef **)vecAt(&t->sdef->fields, i);
+            rcLeafPaths(g, fd->type, arenaPrintf(g->arena, "%s.%s", base, fd->name),
+                        out, depth + 1);
+        }
+        substLeave(g);
+        return;
+    /* kind-default: 只有上面列出的 kind 参与引用叶子的展开；其余 kind 由 `rcScanType`
+     * 归到"没有引用"或"枚举不出来"，走不到这里。 */
+    default:
+        return;
+    }
+}
+
+/**
  * @brief 声明一个存储时登记它的引用根；枚举不出来就把本函数的触发整个关掉。
  *
  * @param g     生成器。
@@ -4763,6 +4822,51 @@ static RcHost cgSlotHost(CG *g, Expr *t, Expr **obj) {
 }
 
 /**
+ * @brief 整值存储携带引用叶子时，**逐叶**发引用槽的记账。
+ *
+ * `s.w = wrap { n: keeper }`、`var b: wrap = wrap { n: keeper }` 这类**按值**的整块拷贝
+ * （结构体 / 定长数组）里可能藏着引用叶子，而 C 的整块赋值是一条裸复合字面量拷贝
+ * （`s->w = (wrap){.n = keeper};`）：它**既不 `inc`、也不登记跨区边**。于是槽被写进去了却
+ * 没记账 —— 一条路是计数根本不知道这个持有者（唯一可见持有者一放手就归零回收，槽成悬垂），
+ * 另一条路是清扫的种子不全（跨区入边没登记 ⇒ 目标区域的清扫把还被指着的对象当垃圾放掉，
+ * 与 `cross_region_elem` 同一个洞的另一半）。这里把一整块拆回**逐条引用槽赋值**：新槽走
+ * `initRef`（只写 + 加一，绝不读旧值），覆盖槽走 `storeRefOwned` / `storeRefUnknown`
+ * （读旧减一、新值加一；宿主证不出来时让目标区域退出清扫）—— 与直接引用槽赋值同一条路。
+ *
+ * 调用方负责：目标与值**各求值一次**（引用进临时量），因为每条记账都会把路径再拼一次。
+ *
+ * @param g          生成器。
+ * @param t          整值存储的类型（已 `subst` 过的调用方上下文里取）。
+ * @param dstBase    目标存储的 C 左值表达式（如 `(*__extc_svd3)`、`b`）。
+ * @param srcBase    值的 C 左值表达式（如 `__extc_svv3`）；`init` 为真时不读。
+ * @param init       true = 新槽（`var ...` 的初始化）：只加一；false = 覆盖：读旧减一。
+ * @param owner      "装着这条槽的对象"（同 `storeRefOwned` 第三个实参）；局部/静态槽传 `0`。
+ * @param hostUnknown 宿主证不出来 ⇒ 每条叶子走保守路径（目标区域退出清扫）。
+ */
+static void cgValueRefStore(CG *g, Type *t, const char *dstBase, const char *srcBase,
+                            bool init, const char *owner, bool hostUnknown) {
+    /* 只收一次**相对**路径（`.n`、`.kids.data[0]`、顶层引用是空串），两个基各拼一次 ——
+     * 目标与值的叶子集合按构造必然同形，不会有一条只在一边出现。 */
+    Vec rel;
+    vecInit(&rel, g->arena, sizeof(const char *));
+    rcLeafPaths(g, t, "", &rel, 0);
+    for (size_t i = 0; i < rel.len; i++) {
+        const char *p = *(const char **)vecAt(&rel, i);
+        const char *d = arenaPrintf(g->arena, "%s%s", dstBase, p);
+        if (init) {
+            /* 值已经在目标里（声明就是初始化），自读自写一次：只写 + 目标加一。 */
+            cgLine(g, "extc_rc_initRef((void **)&(%s), (void *)(%s));", d, d);
+        } else if (hostUnknown) {
+            cgLine(g, "extc_rc_storeRefUnknown((void **)&(%s), (void *)(%s));",
+                   d, arenaPrintf(g->arena, "%s%s", srcBase, p));
+        } else {
+            cgLine(g, "extc_rc_storeRefOwned((void **)&(%s), (void *)(%s), (void *)(%s));",
+                   d, arenaPrintf(g->arena, "%s%s", srcBase, p), owner);
+        }
+    }
+}
+
+/**
  * @brief 在**帧销毁**处发射区域释放（`extc_arena_destroy` 旁边）。
  *
  * 认领键是 arena 的地址（见 `emitRuntimePrologue` 里那张表），所以这里只发地址，不需要
@@ -5052,6 +5156,20 @@ localDef(g, lb, nm, 1);
  * 清扫播种时按位图顺序扫。多登记是安全方向（只让对象多活一会儿），少登记才是漏根。 */
 if (g->needReclaim && !s->u.var.isGlobal && cgIsRefType(g, s->type)) {
     cgLine(g, "extc_rc_initRef((void **)&%s, (void *)%s);", nm, nm);
+} else if (g->needReclaim && !s->u.var.isGlobal && s->u.var.init) {
+    /* **整值**声明的引用叶子（`var b: wrap = wrap { n: keeper }`）同样要记账：裸的 C 初始化
+     * 一条 `inc` 都不发，`b.n` 就是"槽写了但没记账"的又一个出口（与赋值那条同一个洞）。
+     * 没有初始化式时值是**零**（`zeroInit`）⇒ 每个引用叶子都是 null，`inc` 无事可做，
+     * 整片 `initRef` 只会在生成物里白占几百行（`world` 那种 64+1024 槽的局部量）。 */
+    RcScan vsc = rcScanType(g, s->type, 0);
+    if (vsc == RC_LEAF_REFS) {
+        cgValueRefStore(g, s->type, nm, nm, true, "0", false);
+    } else if (vsc == RC_CONSERVATIVE) {
+        /* 叶子枚举不出来（枚举负载 / 泛型实参带引用）：逐字当候选引用，只加不减。局部量这一档
+         * 没有可撤销的来源、根表也枚举不出这些叶子 ⇒ `hostKnown = 0`，目标区域退出清扫。 */
+        cgLine(g, "extc_rc_storeStructCons((void *)&(%s), sizeof(%s), (void *)0, 0);",
+               nm, cType(g, s->type));
+    }
 }
 /* 这个声明从此刻起是**根**：触发点的根表要列出它（结构与定长数组按叶子引用槽展开）。
  * 全局声明也登记：它是块作用域 `static`，在这一块里看得见，多留一会儿是安全方向。 */
@@ -5332,9 +5450,20 @@ static void genStmtInner(CG *g, Stmt *s) {
              * 求值两次（`f()->f = v` 会把 `f()` 调两次）。 */
             const bool refStore = g->needReclaim && !s->u.assign.op
                                   && cgIsRefType(g, s->u.assign.target->type);
+            /* **整值**存储（结构体 / 定长数组按值拷贝）：目标槽本身不是引用类型，可它的载荷里
+             * 可能藏着引用叶子（`s.w = wrap { n: keeper }`）。这种赋值不能再走裸的 C 整块拷贝
+             * —— 那样槽被写进去却没有 `inc`、也没有跨区登记（`a7e2642` 是同一类"槽写了但没
+             * 记账"，只是走另一个机制）。三态与引用槽一致：枚举得出来 ⇒ 逐叶走
+             * `storeRefOwned`/`storeRefUnknown`；枚举不出来（枚举负载、泛型实参带引用）⇒
+             * 逐字保守路径（只加不减 + 登记/退出清扫）。 */
+            Type *rawTT = s->u.assign.target ? s->u.assign.target->type : NULL;
+            const RcScan valScan = (g->needReclaim && !s->u.assign.op && !refStore && rawTT)
+                                       ? rcScanType(g, rawTT, 0) : RC_NO_REFS;
+            const bool valueStore = valScan != RC_NO_REFS;
             const char *owner = "0";
             bool hostUnknown = false;
-            if (refStore && s->u.assign.target) {
+            bool hostProven = false;   /* 宿主是**追到区域**的对象（不是局部/静态槽） */
+            if ((refStore || valueStore) && s->u.assign.target) {
                 Expr *t = s->u.assign.target;
                 /* 宿主的三种结局（见 `cgSlotHost`）：纯地方基 ⇒ 登记跨区边；静态声明的
                  * 存储 ⇒ 根表覆盖；追不到 ⇒ 保守路径。`c.a = v`（`c` 是结构体**值**）里的
@@ -5342,10 +5471,12 @@ static void genStmtInner(CG *g, Stmt *s) {
                  * 宿主就是 `w`，若在视图里则追不到。 */
                 Expr *base = NULL;
                 RcHost h = cgSlotHost(g, t, &base);
-                if (h == RC_HOST_OBJ && base && cgPurePlace(g, base))
+                if (h == RC_HOST_OBJ && base && cgPurePlace(g, base)) {
                     owner = genExpr(g, base);
-                else if (h != RC_HOST_LOCAL)
+                    hostProven = true;
+                } else if (h != RC_HOST_LOCAL) {
                     hostUnknown = true;
+                }
             }
             flushPrefix(g);
             /* `x += y` is emitted as `x += y`: C evaluates the target **once**, which is
@@ -5370,6 +5501,30 @@ static void genStmtInner(CG *g, Stmt *s) {
                 }
                 cgLine(g, "extc_rc_storeRefOwned((void **)&(%s), (void *)(%s), (void *)(%s));",
                        tgt, val, owner);
+                return;
+            }
+            if (valueStore) {
+                Type *tt = subst(g, rawTT);
+                const char *ct = cType(g, tt);
+                const int id = g->tmpSeq++;
+                const char *dv = arenaPrintf(g->arena, "__extc_svd%d", id);
+                const char *sv = arenaPrintf(g->arena, "__extc_svv%d", id);
+                if (valScan == RC_CONSERVATIVE) {
+                    /* 叶子枚举不出来：整块先拷（语义），再把每个"是活槽"的字加一次计数，
+                     * 并登记到目标区域或让它退出清扫（见 `extc_rc_storeStructCons`）。
+                     * 只有**证出区域**的宿主才走登记；局部/静态槽这一档没有可撤销的来源，
+                     * 而保守类型的局部量连根表都枚举不出来 ⇒ 走保守侧（目标区域退出清扫）。 */
+                    cgLine(g, "{ %s *%s = &(%s); %s %s = %s; *%s = %s;"
+                              " extc_rc_storeStructCons((void *)%s, sizeof *%s, (void *)(%s), %d); }",
+                           ct, dv, tgt, ct, sv, val, dv, sv, dv, dv, owner, hostProven ? 1 : 0);
+                    return;
+                }
+                /* 枚举得出来：目标与值各求值一次（`genExpr` 有副作用也只跑一次），然后逐叶
+                 * 走引用槽的覆盖语义，最后整块拷贝补齐非引用字段。 */
+                cgLine(g, "{ %s *%s = &(%s); %s %s = %s;", ct, dv, tgt, ct, sv, val);
+                cgValueRefStore(g, tt, arenaPrintf(g->arena, "(*%s)", dv), sv,
+                                false, owner, hostUnknown);
+                cgLine(g, "*%s = %s; }", dv, sv);
                 return;
             }
             cgLine(g, "%s = %s;", tgt, asF32(g, s->u.assign.target ? s->u.assign.target->type : NULL,

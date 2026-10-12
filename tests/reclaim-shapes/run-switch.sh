@@ -20,6 +20,11 @@
 #      切分，不改语义），且峰值内存**仍在界内**（N vs 4N 比 < 1.5 —— 每片守的是均分后的压力
 #      下限，总量上界不因片数改变）。开关关掉时这一条同样必须红（那一档峰值随轮数涨）。
 #      分片的停顿/内存/吞吐对照实验在 `run-shard.sh`。
+#   ①f `struct_copy`：**整值存储**携带引用叶子（`s.w = wrap { n: keeper }`）—— 目标槽不是
+#      `ref T`，于是赋值走的是裸复合字面量拷贝，既没 `inc`、也没登记跨区边（与 `a7e2642`
+#      同一类"槽写了但没记账"，走另一个机制）。判据：开关开 N/4N rc=0、`ok=true`、峰值比
+#      < 1.5，且生成物里那条边是**逐叶记账**（`storeRefOwned`，owner = 容器对象 `s`）或保守
+#      路径，不许是 `s->w = (wrap){.n = keeper};`；开关关时峰值随轮数涨（有牙）。
 #   ② `cond_save` / `cyclic_shape` 在开关下**语义不变**（开关只换运行期，不改语义）。
 #   ③ 四个曾经的 SEGV 用例在开关下不崩、输出不变（板/池/栈/C 指针不是 rc 槽：
 #      `owns` 守卫必须一个字节都不碰）：
@@ -429,6 +434,94 @@ if [ "$psn_rc" = 0 ] && [ "$psf_rc" = 0 ] && [ "$psn_out" = "$CYC_WANT_N" ] && [
     fi
 else
     bad "shards=8 N→4N：两次运行没同时跑对（N: rc=$psn_rc out=$psn_out / 4N: rc=$psf_rc out=$psf_out）"
+fi
+
+# ── ①f 整值存储携带引用叶子：`s.w = wrap { n: keeper }` 也必须记账 ──────────────
+# 形状见 tests/reclaim-shapes/struct_copy.extc：目标 `s.w` 的类型是**结构体** `wrap`（不是
+# `ref T`），旧 codegen 只当它是数据字段赋值，发一条裸的复合字面量拷贝
+# `s->w = (wrap){.n = keeper};` —— 那个新槽既没 `inc`、也没登记跨区边。`t` 被 `keeper = t`
+# 提到 region 1，`keeper` 随后清空、`t` 还挂自环（计数永不归零）⇒ 唯一的回收者是 region 1 的
+# 区域清扫；种子只剩"根 + 登记位"，而 `s.w.n` 这条跨区入边没登记 ⇒ `t` 被当垃圾放掉，
+# `(*q).next` 读到空闲链槽号 ⇒ ASan SEGV（非 ASan rc=139）。
+# 判据：
+#   · 开关开：N 与 4N 都 rc=0、`ok=true`（sink = Σi），且峰值比 < 1.5；
+#   · 生成物：往**结构体槽** `s.w.n` 存 `keeper` 的那一条必须是逐叶记账（`storeRefOwned`，
+#     owner = 容器对象 `s`）或保守路径，不许是裸的 `s->w = (wrap){.n = keeper};`；
+#   · 开关关：同形状峰值随轮数涨（≈3.7×）⇒ 这条红（有牙）。
+echo "-- ①f 整值存储（结构体值拷贝）里的引用叶子必须 inc + 登记 --"
+SC_WANT_N="rounds=200000 sink=19999900000 want=19999900000 ok=true"
+SC_WANT_F="rounds=800000 sink=319999600000 want=319999600000 ok=true"
+
+sc_build() { # <on|off> <tag> → SC_C=ok/fail；开关开时另给 SC_FORM（生成物里那条赋值的形态）
+    SC_C=fail; SC_FORM=-
+    if [ "$1" = on ]; then
+        EXTC_RECLAIM=1 "$EXTC" -w --no-line-map tests/reclaim-shapes/struct_copy.extc \
+            -o "$TMP/sc-$2.c" >"$TMP/sc-$2.build.log" 2>&1
+    else
+        env -u EXTC_RECLAIM "$EXTC" -w --no-line-map tests/reclaim-shapes/struct_copy.extc \
+            -o "$TMP/sc-$2.c" >"$TMP/sc-$2.build.log" 2>&1
+    fi
+    if [ $? -eq 0 ] && "$CC" -std=c11 -fwrapv -O1 -o "$TMP/sc-$2" "$TMP/sc-$2.c" \
+            >>"$TMP/sc-$2.build.log" 2>&1; then SC_C=ok; fi
+    # 生成物层面的判据（比"跑得恰好没崩"更直接）：往结构体槽 `s->w.n` 存 `keeper` 的那一条，
+    # 要么逐叶记账（`storeRefOwned` 的 owner = 容器对象 `s`），要么走保守路径。裸的
+    # `s->w = (wrap){.n = keeper}` 就是"槽写了但没记账"——必红。
+    if [ "$1" = on ] && [ "$SC_C" = ok ]; then
+        if grep -qF 's->w = (wrap){.n = keeper}' "$TMP/sc-$2.c"; then
+            SC_FORM="bad"
+        elif grep -E 'storeRef(Owned|Unknown)' "$TMP/sc-$2.c" | grep -F '(__extc_svv' \
+             | grep -qF ', (void *)(s));'; then
+            SC_FORM="逐叶记账（owner = 容器对象 s）"
+        elif grep -E 'storeRef(Owned|Unknown)' "$TMP/sc-$2.c" | grep -qF '(__extc_svv'; then
+            SC_FORM="记账（宿主没证出容器对象）"
+        else
+            SC_FORM="bad"
+        fi
+    fi
+}
+sc_run() { # <tag> <N> → SC_RC / SC_RSS / SC_OUT
+    local tag=$1 n=$2
+    SC_RC=-; SC_RSS=""; SC_OUT=""
+    "$TIME" -v -o "$TMP/sc-$tag.time" "$TMP/sc-$tag" "$n" >"$TMP/sc-$tag.out" 2>"$TMP/sc-$tag.err"
+    SC_RC=$?
+    SC_RSS=$(awk -F': ' '/Maximum resident set size \(kbytes\)/{print $2}' "$TMP/sc-$tag.time")
+    SC_OUT=$(cat "$TMP/sc-$tag.out")
+}
+
+sc_build on  r; sc_on_c=$SC_C; sc_form=$SC_FORM
+sc_build off o; sc_off_c=$SC_C
+sc_run r 200000; scr_rc=$SC_RC; scr_out=$SC_OUT
+sc_run o 200000; sco_rc=$SC_RC; sco_out=$SC_OUT
+
+# 语义：开关开/关的输出必须逐字一致（回收只换运行期）。
+if [ "$sc_on_c" = ok ] && [ "$sc_off_c" = ok ] && [ "$scr_rc" = 0 ] && [ "$sco_rc" = 0 ] \
+   && [ "$scr_out" = "$SC_WANT_N" ] && [ "$sco_out" = "$SC_WANT_N" ]; then
+    ok "struct-copy：默认与开关下输出逐字一致（N=200000：sink=Σi 全对）"
+else
+    bad "struct-copy：默认/开关语义不一致或没跑对（on[c=$sc_on_c rc=$scr_rc out=$scr_out] off[c=$sc_off_c rc=$sco_rc out=$sco_out]）"
+fi
+
+# 生成物判据：整值存储里那条引用叶子必须是**记账**过的（不是裸拷贝）。
+if [ "$sc_on_c" = ok ] && [ "$sc_form" != bad ] && [ "$sc_form" != - ]; then
+    ok "struct-copy：整值存储里的引用叶子逐叶记账（生成物：$sc_form）"
+else
+    bad "struct-copy：整值存储里的引用叶子没记账（生成物形态：$sc_form）—— 槽写了但没 inc / 没登记"
+fi
+
+# 峰值判据跟本次调用的开关状态走（`EXTC_RECLAIM=0 ./run-switch.sh` 时这条必须红）。
+if [ "$sw" = on ]; then sc_tag=r; sc_name="开关开"; else sc_tag=o; sc_name="开关关"; fi
+sc_run "$sc_tag" 200000; scn_rc=$SC_RC; scn_rss=$SC_RSS; scn_out=$SC_OUT
+sc_run "$sc_tag" 800000; scf_rc=$SC_RC; scf_rss=$SC_RSS; scf_out=$SC_OUT
+if [ "$scn_rc" = 0 ] && [ "$scf_rc" = 0 ] && [ "$scn_out" = "$SC_WANT_N" ] && [ "$scf_out" = "$SC_WANT_F" ] \
+   && [ -n "$scn_rss" ] && [ -n "$scf_rss" ]; then
+    ratio=$(ratio_of "$scn_rss" "$scf_rss")
+    if awk -v a="$scn_rss" -v b="$scf_rss" 'BEGIN { exit !(b < a * 1.5) }'; then
+        ok "struct-copy N→4N（$sc_name）：$(rss_mb "$scn_rss") → $(rss_mb "$scf_rss")（${ratio}× < 1.5×）—— 整值存储的跨区边也是种子"
+    else
+        bad "struct-copy N→4N（$sc_name）：$(rss_mb "$scn_rss") → $(rss_mb "$scf_rss")（${ratio}× ≥ 1.5×）—— 峰值随轮数涨（门禁的'有牙'那一半）"
+    fi
+else
+    bad "struct-copy N→4N：两次运行没同时跑对（N: rc=$scn_rc out=$scn_out / 4N: rc=$scf_rc out=$scf_out）"
 fi
 
 # ── ② 开关只换运行期，不改语义 ────────────────────────────────────────────────
