@@ -43,12 +43,16 @@ CC=${CC:-cc}
 TIME=${TIME:-/usr/bin/time}
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 
-# 开关：默认打开。`EXTC_RECLAIM=0` 显式关掉。
-# ⚠️ extc 判的是 `getenv("EXTC_RECLAIM") != NULL` ⇒ 空串也算**打开**，关掉必须 unset。
+# 开关：**默认打开**（`reclaim-default` 接线之后；带回收管辖分配点的程序自动带运行期）。
+# 本脚本的两档一律**显式**给值，不看默认：
+#   开档 = `EXTC_RECLAIM=1`（强制发射，与默认档在这些形状上等价）；
+#   关档 = `EXTC_RECLAIM=0`（明确关掉）。⚠️ 不能再用 `env -u EXTC_RECLAIM` 表示"关"：
+#   接线之后 unset 就是**默认打开**，那样两档是同一档，"关掉必须红"的证据就没了。
 case "${EXTC_RECLAIM-1}" in
-    0) unset EXTC_RECLAIM; sw=off ;;
-    *) export EXTC_RECLAIM=1; sw=on ;;
+    0) sw=off ;;
+    *) sw=on ;;
 esac
+export EXTC_RECLAIM=1     # `build_run` 那条路径走开档；关档的调用点各自显式覆盖成 0
 
 # 本脚本的跑法固定：不继承 `EXTC_DBG`（assert 版是另一条**正交**判据，由 check.sh 的断言版那一节管）。
 # 理由：`cyclic_shape.extc` 在 assert 版下会撞到一个与回收无关的**已知**逃逸分析兜底 ——
@@ -120,7 +124,7 @@ cyc_build() { # <on|off> <tag> → CY_C=ok/fail
         EXTC_RECLAIM=1 "$EXTC" -w --no-line-map tests/reclaim-shapes/cyclic_pressure.extc \
             -o "$TMP/cyc-$tag.c" >"$TMP/cyc-$tag.build.log" 2>&1
     else
-        env -u EXTC_RECLAIM "$EXTC" -w --no-line-map tests/reclaim-shapes/cyclic_pressure.extc \
+        EXTC_RECLAIM=0 "$EXTC" -w --no-line-map tests/reclaim-shapes/cyclic_pressure.extc \
             -o "$TMP/cyc-$tag.c" >"$TMP/cyc-$tag.build.log" 2>&1
     fi
     if [ $? -eq 0 ] && "$CC" -std=c11 -fwrapv -O1 -o "$TMP/cyc-$tag" "$TMP/cyc-$tag.c" \
@@ -185,7 +189,7 @@ xr_build() { # <on|off> <tag> → XR_C=ok/fail
         EXTC_RECLAIM=1 "$EXTC" -w --no-line-map tests/reclaim-shapes/cross_region.extc \
             -o "$TMP/xr-$2.c" >"$TMP/xr-$2.build.log" 2>&1
     else
-        env -u EXTC_RECLAIM "$EXTC" -w --no-line-map tests/reclaim-shapes/cross_region.extc \
+        EXTC_RECLAIM=0 "$EXTC" -w --no-line-map tests/reclaim-shapes/cross_region.extc \
             -o "$TMP/xr-$2.c" >"$TMP/xr-$2.build.log" 2>&1
     fi
     if [ $? -eq 0 ] && "$CC" -std=c11 -fwrapv -O1 -o "$TMP/xr-$2" "$TMP/xr-$2.c" \
@@ -265,7 +269,7 @@ el_build() { # <on|off> <tag> → EL_C=ok/fail；开关开时另给 EL_SEED（�
         EXTC_RECLAIM=1 "$EXTC" -w --no-line-map tests/reclaim-shapes/cross_region_elem.extc \
             -o "$TMP/el-$2.c" >"$TMP/el-$2.build.log" 2>&1
     else
-        env -u EXTC_RECLAIM "$EXTC" -w --no-line-map tests/reclaim-shapes/cross_region_elem.extc \
+        EXTC_RECLAIM=0 "$EXTC" -w --no-line-map tests/reclaim-shapes/cross_region_elem.extc \
             -o "$TMP/el-$2.c" >"$TMP/el-$2.build.log" 2>&1
     fi
     if [ $? -eq 0 ] && "$CC" -std=c11 -fwrapv -O1 -o "$TMP/el-$2" "$TMP/el-$2.c" \
@@ -340,7 +344,7 @@ uh_build() { # <on|off> <tag> → UH_C=ok/fail；开关开时另给 UH_FORM（�
         EXTC_RECLAIM=1 "$EXTC" -w --no-line-map tests/reclaim-shapes/unknown_host.extc \
             -o "$TMP/uh-$2.c" >"$TMP/uh-$2.build.log" 2>&1
     else
-        env -u EXTC_RECLAIM "$EXTC" -w --no-line-map tests/reclaim-shapes/unknown_host.extc \
+        EXTC_RECLAIM=0 "$EXTC" -w --no-line-map tests/reclaim-shapes/unknown_host.extc \
             -o "$TMP/uh-$2.c" >"$TMP/uh-$2.build.log" 2>&1
     fi
     if [ $? -eq 0 ] && "$CC" -std=c11 -fwrapv -O1 -o "$TMP/uh-$2" "$TMP/uh-$2.c" \
@@ -391,7 +395,7 @@ echo "-- ①e 分片（EXTC_RC_SHARDS=8）：语义与 =1 逐字一致，峰值�
 sh_build() { # <片数> <tag> [off] → SH_C=ok/fail；off = 不发射回收运行期
     SH_C=fail
     if [ "${3-}" = off ]; then
-        env -u EXTC_RECLAIM "$EXTC" -w --no-line-map tests/reclaim-shapes/cyclic_pressure.extc \
+        EXTC_RECLAIM=0 "$EXTC" -w --no-line-map tests/reclaim-shapes/cyclic_pressure.extc \
             -o "$TMP/sh-$2.c" >"$TMP/sh-$2.log" 2>&1
     else
         EXTC_RECLAIM=1 EXTC_RC_SHARDS="$1" "$EXTC" -w --no-line-map tests/reclaim-shapes/cyclic_pressure.extc \
@@ -458,7 +462,7 @@ sc_build() { # <on|off> <tag> → SC_C=ok/fail；开关开时另给 SC_FORM（�
         EXTC_RECLAIM=1 "$EXTC" -w --no-line-map tests/reclaim-shapes/struct_copy.extc \
             -o "$TMP/sc-$2.c" >"$TMP/sc-$2.build.log" 2>&1
     else
-        env -u EXTC_RECLAIM "$EXTC" -w --no-line-map tests/reclaim-shapes/struct_copy.extc \
+        EXTC_RECLAIM=0 "$EXTC" -w --no-line-map tests/reclaim-shapes/struct_copy.extc \
             -o "$TMP/sc-$2.c" >"$TMP/sc-$2.build.log" 2>&1
     fi
     if [ $? -eq 0 ] && "$CC" -std=c11 -fwrapv -O1 -o "$TMP/sc-$2" "$TMP/sc-$2.c" \
@@ -522,6 +526,117 @@ if [ "$scn_rc" = 0 ] && [ "$scf_rc" = 0 ] && [ "$scn_out" = "$SC_WANT_N" ] && [ 
     fi
 else
     bad "struct-copy N→4N：两次运行没同时跑对（N: rc=$scn_rc out=$scn_out / 4N: rc=$scf_rc out=$scf_out）"
+fi
+
+# ── ①g 超大块（槽 > 512 KiB）：不 trap，且语义与开关关逐字一致 ──────────────────
+# 背景：slab 载荷固定 1 MiB，槽按 2 的幂取整；槽 > 512 KiB 时取整到 1 MiB，
+# `(1 MiB - 头) >> 20 == 0` ⇒ 旧运行期在 `extc_rc_slabNew` 里
+# `extc_rc_oops("slot is larger than a slab")`，rc=1。真实语料里有这一类分配：
+# `tests/arena/control-flow` 的 `alloc<i32>(250000)`（1,000,000 B）、
+# `bench/oi/persist/p3834` 的 `new [N]pnode`（252 MB）、`p3834_nodes` 的
+# `new [1000001]?ref pnode`（8 MB）。修法：超大块的**载荷单独 malloc**，slab 头与
+# 位图/每槽描述符/计数/登记/标记/清扫全部照旧 —— 它不是第二条回收路径，只是"载荷在哪"
+# 不同（`EXTC_RC_SLAB_DATA`）。
+# 判据：
+#   · `big_slot`：①`alloc<i32>(250000)` ②600 KB 大槽里的元素读写 ③4 MiB 的 `alloc<u8>`
+#     ④600 KB **引用类型**大槽链起来走一遍。开关开/关都 rc=0 且输出逐字一致。
+#   · `big_slot_reclaim`：24 轮 × 4 个 1 MiB 大槽的丢弃压力，跨轮只由**局部根**指着的大槽
+#     必须活下来（登记/标记/清扫对超大块一视同仁），输出仍与开关关逐字一致。
+#   两档都要求 rc=0：这是修掉的 trap，不是"开关才有的行为"。
+echo "-- ①g 超大块（槽 > 512 KiB）：不 trap，语义与开关关逐字一致 --"
+BIG_WANT="alloc1m=41
+blob=23
+huge=9
+chain=3"
+BIGR_WANT="keeper=7 rounds=24 bad=0 z=0"
+
+big_build() { # <on|off> <形状> <tag> → BIG_C=ok/fail
+    BIG_C=fail
+    if [ "$1" = on ]; then
+        EXTC_RECLAIM=1 "$EXTC" -w --no-line-map "tests/reclaim-shapes/$2.extc" \
+            -o "$TMP/big-$3.c" >"$TMP/big-$3.log" 2>&1
+    else
+        EXTC_RECLAIM=0 "$EXTC" -w --no-line-map "tests/reclaim-shapes/$2.extc" \
+            -o "$TMP/big-$3.c" >"$TMP/big-$3.log" 2>&1
+    fi
+    if [ $? -eq 0 ] && "$CC" -std=c11 -fwrapv -O1 -o "$TMP/big-$3" "$TMP/big-$3.c" \
+            >>"$TMP/big-$3.log" 2>&1; then BIG_C=ok; fi
+}
+big_run() { # <tag> → BIG_RC / BIG_OUT
+    BIG_RC=-; BIG_OUT=""
+    "$TMP/big-$1" >"$TMP/big-$1.out" 2>"$TMP/big-$1.err"; BIG_RC=$?
+    BIG_OUT=$(cat "$TMP/big-$1.out")
+}
+
+big_build on  big_slot         bs_on;  bs_on_c=$BIG_C
+big_build off big_slot         bs_off; bs_off_c=$BIG_C
+big_run bs_on;  bs_on_rc=$BIG_RC;  bs_on_out=$BIG_OUT
+big_run bs_off; bs_off_rc=$BIG_RC; bs_off_out=$BIG_OUT
+if [ "$bs_on_c" = ok ] && [ "$bs_off_c" = ok ] && [ "$bs_on_rc" = 0 ] && [ "$bs_off_rc" = 0 ] \
+   && [ "$bs_on_out" = "$BIG_WANT" ] && [ "$bs_off_out" = "$BIG_WANT" ]; then
+    ok "big-slot：槽 > 512 KiB 不 trap 且语义正确（alloc<i32>(250000) / 4 MiB / 600 KB 引用槽；开关开=关）"
+else
+    bad "big-slot：trap 或语义不一致（on[c=$bs_on_c rc=$bs_on_rc out=$(printf '%s' "$bs_on_out" | tr '\n' '|')] off[c=$bs_off_c rc=$bs_off_rc out=$(printf '%s' "$bs_off_out" | tr '\n' '|')]）"
+fi
+
+big_build on  big_slot_reclaim bsr_on;  bsr_on_c=$BIG_C
+big_build off big_slot_reclaim bsr_off; bsr_off_c=$BIG_C
+big_run bsr_on;  bsr_on_rc=$BIG_RC;  bsr_on_out=$BIG_OUT
+big_run bsr_off; bsr_off_rc=$BIG_RC; bsr_off_out=$BIG_OUT
+if [ "$bsr_on_c" = ok ] && [ "$bsr_off_c" = ok ] && [ "$bsr_on_rc" = 0 ] && [ "$bsr_off_rc" = 0 ] \
+   && [ "$bsr_on_out" = "$BIGR_WANT" ] && [ "$bsr_off_out" = "$BIGR_WANT" ]; then
+    ok "big-slot-reclaim：有压力时超大块照样被登记/标记/清扫（跨轮的局部根大槽活下来）"
+else
+    bad "big-slot-reclaim：语义不一致（on[c=$bsr_on_c rc=$bsr_on_rc out=$(printf '%s' "$bsr_on_out" | tr '\n' '|')] off[c=$bsr_off_c rc=$bsr_off_rc out=$(printf '%s' "$bsr_off_out" | tr '\n' '|')]）"
+fi
+
+# ── ①h 泛型实例方法体：替换上下文必须还原（B：不许发未替换的模板类型）────────────
+# 背景：`rcScanType` / `rcCollectOffsets` / `rcRootLeaves` / `rcLeafPaths` 探测类型时用
+# `substEnter` 进一层实例上下文；早期 `substLeave` 把它**清空**而不是还原，于是
+# `emitInstanceBodies` 的 `substEnter(实例)` 被嵌套探测抹掉，同一具方法体余下的部分以
+# `T` 未替换的形态发出：`static inline int *slice_T_index(slice_T v, …)`、
+# `static void varArray_grow(varArray_T * self, …)` ⇒ gcc `unknown type name 'slice_T'`。
+# `examples/list-return.extc`（正例语料）就是这么红的。
+# 判据（生成物 + 语义两条）：
+#   · 开关开：生成 C **编得过**，且不含未替换的模板名（`slice_T` / `varArray_T` 词边界）；
+#   · 开关开与关输出逐字一致。
+echo "-- ①h 泛型实例方法体：替换上下文还原（B：不许 \`slice_T\` / \`varArray_T\`）--"
+GID_WANT="n=8 head=7"
+
+gid_build() { # <on|off> <源文件> <tag> → GID_C=ok/fail
+    GID_C=fail
+    if [ "$1" = on ]; then
+        EXTC_RECLAIM=1 "$EXTC" -w --no-line-map "$2" -o "$TMP/gid-$3.c" >"$TMP/gid-$3.log" 2>&1
+    else
+        EXTC_RECLAIM=0 "$EXTC" -w --no-line-map "$2" -o "$TMP/gid-$3.c" >"$TMP/gid-$3.log" 2>&1
+    fi
+    if [ $? -eq 0 ] && "$CC" -std=c11 -fwrapv -O1 -o "$TMP/gid-$3" "$TMP/gid-$3.c" \
+            >>"$TMP/gid-$3.log" 2>&1; then GID_C=ok; fi
+}
+gid_run() { # <tag> → GID_RC / GID_OUT
+    GID_RC=-; GID_OUT=""
+    "$TMP/gid-$1" >"$TMP/gid-$1.out" 2>"$TMP/gid-$1.err"; GID_RC=$?
+    GID_OUT=$(cat "$TMP/gid-$1.out")
+}
+
+gid_build on  tests/reclaim-shapes/generic_instance_desc.extc gid_on;  gid_on_c=$GID_C
+gid_build off tests/reclaim-shapes/generic_instance_desc.extc gid_off; gid_off_c=$GID_C
+if [ "$gid_on_c" = ok ] && [ "$gid_off_c" = ok ]; then
+    # 生成物判据：模板名没被替换就说明嵌套探测抹掉了上下文（旧写法）。
+    if grep -qE '\bslice_T\b|\bvarArray_T\b' "$TMP/gid-on.c"; then
+        bad "generic-instance-desc：生成 C 里有未替换的模板名（$(grep -oE '\b(slice_T|varArray_T)\b' "$TMP/gid-on.c" | sort -u | tr '\n' ' ')）—— 替换上下文被嵌套探测抹掉"
+    else
+        gid_run gid_on;  gid_on_rc=$GID_RC;  gid_on_out=$GID_OUT
+        gid_run gid_off; gid_off_rc=$GID_RC; gid_off_out=$GID_OUT
+        if [ "$gid_on_rc" = 0 ] && [ "$gid_off_rc" = 0 ] \
+           && [ "$gid_on_out" = "$GID_WANT" ] && [ "$gid_off_out" = "$GID_WANT" ]; then
+            ok "generic-instance-desc：泛型实例方法体编得过、跑得对（生成物无 slice_T/varArray_T；开关开=关）"
+        else
+            bad "generic-instance-desc：语义不一致（on[rc=$gid_on_rc out=$(printf '%s' "$gid_on_out" | tr '\n' '|')] off[rc=$gid_off_rc out=$(printf '%s' "$gid_off_out" | tr '\n' '|')]）"
+        fi
+    fi
+else
+    bad "generic-instance-desc：生成/编译失败（on=$gid_on_c off=$gid_off_c）—— 见 $TMP/gid-on.log"
 fi
 
 # ── ② 开关只换运行期，不改语义 ────────────────────────────────────────────────

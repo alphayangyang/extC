@@ -378,11 +378,19 @@ typedef struct {
     /* Does the program declare a pool extern? Then the registry runtime is emitted, and
      * every place that can create one carries the two hooks that key its pools to it. */
     bool        needPool;
-    /* `EXTC_RECLAIM`：区域回收运行期（位图 slab + 持有者计数 + 区域清扫）打开。
-     * **默认关闭** —— 关着时生成 C 要与接线前逐字节相同（414 个 golden 靠这条）。打开时：
-     * 运行期文本进序言、`new` 的存储从由 arena 地址认领的 rc 区域里取、引用赋值点发射计数。
-     * 开关是环境变量而不是构造上的判据，直到有构造需要它（见 `emitRuntimePrologue`）。 */
+    /* 区域回收运行期（位图 slab + 持有者计数 + 区域清扫）打开：运行期文本进序言、`new` 的
+     * 存储从由 arena 地址认领的 rc 区域里取、引用赋值点发射计数。
+     *
+     * **默认打开**，但只在程序里真有回收管辖的分配点时才发（`scanUnitReclaim`：`new T` /
+     * `alloc<T>(n)` / `@overwrite` 的单值格子）。这样没有这类分配点的程序（400 多份 golden）
+     * 生成 C 一个字节都不变，而有的那些拿到全部四层。
+     *
+     * `EXTC_RECLAIM=0` 关掉（对照与排障）；`EXTC_RECLAIM=1` **强制**发射，不看分配点
+     * —— 那些按开关口径写的门禁（`tests/reclaim-shapes/run-switch.sh`、`tests/reclaim-perf/`）
+     * 要的就是"开关打开"这一档，与分配点在不在无关。 */
     bool        needReclaim;
+    /* `EXTC_RECLAIM` 给了非零值时置位：跳过 `scanUnitReclaim` 的分配点判据，无条件发射。 */
+    bool        rcForced;
     /* `EXTC_RC_SHARDS=N`：区域回收的**分片数**（停顿旋钮），默认 1。
      *
      * 分片 = 把一个逻辑区域（认领键是 arena 的地址）切成 N 个**运行期区域**：每片一支
@@ -574,29 +582,49 @@ static Type *subst(CG *g, Type *t) {
 }
 
 /**
+ * @brief 替换上下文的全部三个字段：类型形参、类型实参、方法名的属主前缀。
+ *
+ * `substEnter` 把进入之前的这份上下文交出来，`substLeave` 原样收回去。**进出必须成对且
+ * 带上归还的那一份**：早期版本里 `substLeave` 无条件把三个字段清空，于是"探测一个类型"
+ * 的嵌套进入（发射 `ExtcRcType` 描述符、收集根表叶子……都在泛型方法体里跑）会顺手抹掉
+ * 外层实例的上下文，同一具方法体余下的部分就以 `T` 未替换的形态发出（`slice_T`、
+ * `varArray_T`），生成的 C 根本编不过。
+ */
+typedef struct {
+    Vec        *params;
+    Vec        *args;
+    const char *owner;
+} SubCtx;
+
+/**
  * @brief 进入一个泛型实例的单态化替换上下文。
  *
- * 泛型 enum 实例没有 `sdef`，其属主是 `edef`，两种情形都在这里处理。
+ * 泛型 enum 实例没有 `sdef`，其属主是 `edef`，两种情形都在这里处理。可以嵌套：把返回的
+ * 上下文原样交给 `substLeave` 即可，不会有哪一层把别的层覆盖掉。
  *
  * @param g    generator 状态；上下文写入 g->substParams、g->substArgs 与 g->ownerPrefix
  * @param inst 实例类型
+ * @return     进入之前的上下文，交给 `substLeave` 归还
  */
-static void substEnter(CG *g, Type *inst) {
+static SubCtx substEnter(CG *g, Type *inst) {
+    SubCtx sv = { g->substParams, g->substArgs, g->ownerPrefix };
 
     g->substParams = inst->sdef ? &inst->sdef->typeParams : &inst->edef->typeParams;
     g->substArgs   = &inst->targs;
     g->ownerPrefix = inst->name;
+    return sv;
 }
 
 /**
- * @brief 退出 substEnter 进入的替换上下文：清空类型形参、类型实参与 ownerPrefix。
+ * @brief 退出 substEnter 进入的替换上下文，把归还的那一份原样装回去。
  *
- * @param g generator 状态
+ * @param g  generator 状态
+ * @param sv `substEnter` / `substEnterInst` / `substEnterFunc` 交出来的上下文
  */
-static void substLeave(CG *g) {
-    g->substParams = NULL;
-    g->substArgs   = NULL;
-    g->ownerPrefix = NULL;
+static void substLeave(CG *g, SubCtx sv) {
+    g->substParams = sv.params;
+    g->substArgs   = sv.args;
+    g->ownerPrefix = sv.owner;
 }
 
 
@@ -906,7 +934,7 @@ static bool isByteView(Type *t) {
  */
 static void genViewIndexer(CG *g, Type *inst) {
     Type *elem = *(Type **)vecAt(&inst->targs, 0);
-    substEnter(g, inst);
+    SubCtx sv = substEnter(g, inst);
     cgLine(g, "static inline %s *%s_index(%s v, int64_t i, const char *file, int line) {",
            cType(g, elem), inst->name, inst->name);
     g->indent++;
@@ -920,7 +948,7 @@ static void genViewIndexer(CG *g, Type *inst) {
     g->indent--;
     cgLine(g, "}");
     cgLine(g, "");
-    substLeave(g);
+    substLeave(g, sv);
 }
 
 /**
@@ -939,7 +967,7 @@ static void genViewIndexer(CG *g, Type *inst) {
  */
 static void genViewCopier(CG *g, Type *inst, bool unchecked) {
     Type *elem = *(Type **)vecAt(&inst->targs, 0);
-    substEnter(g, inst);
+    SubCtx sv = substEnter(g, inst);
     cgLine(g, "static inline int64_t %s_copy%s(%s d, %s s, int64_t n, const char *file, int line) {",
            inst->name, unchecked ? "U" : "", inst->name, inst->name);
     g->indent++;
@@ -959,7 +987,7 @@ static void genViewCopier(CG *g, Type *inst, bool unchecked) {
     g->indent--;
     cgLine(g, "}");
     cgLine(g, "");
-    substLeave(g);
+    substLeave(g, sv);
 }
 
 /**
@@ -1243,10 +1271,10 @@ static void emitDescDefs(CG *g) {
         } else if (t->kind == TY_ARRAY) {
             genArrayDesc(g, t);
         } else if (t->kind == TY_GENERIC && t->sdef) {
-            substEnter(g, t);              /* T in the fields stands for the type arguments */
+            SubCtx sv = substEnter(g, t);  /* T in the fields stands for the type arguments */
             if (isView(t)) genViewDesc(g, t);
             else           genStructDesc(g, t->name, t->sdef->name, t->sdef, eqFn);
-            substLeave(g);
+            substLeave(g, sv);
         } else {
             /* A missing case must fail loudly: silently emitting no descriptor
              * would leave the generated C referring to a symbol that does not
@@ -1673,16 +1701,13 @@ static bool needsExplicitZero(Type *t) {
  * @param g      The generator; the previous context is saved into the out parameters.
  * @param sd     The generic struct definition.
  * @param targs  Its type arguments in this instance.
- * @param saveP  Out: the previous `substParams`.
- * @param saveA  Out: the previous `substArgs`.
- * @param saveN  Out: the previous `ownerPrefix`.
+ * @return       The previous context, for `substLeave`.
  */
-static void substEnterInst(CG *g, StructDef *sd, Vec *targs, Vec **saveP, Vec **saveA, const char **saveN) {
-    *saveP = g->substParams;
-    *saveA = g->substArgs;
-    *saveN = g->ownerPrefix;
+static SubCtx substEnterInst(CG *g, StructDef *sd, Vec *targs) {
+    SubCtx sv = { g->substParams, g->substArgs, g->ownerPrefix };
     g->substParams = &sd->typeParams;
     g->substArgs   = targs;
+    return sv;
 }
 
 /**
@@ -1691,43 +1716,17 @@ static void substEnterInst(CG *g, StructDef *sd, Vec *targs, Vec **saveP, Vec **
  * Without it a `T` in the body of the instance - the `T` of `a == b`, say - stays `TY_PARAM`,
  * which either reports a false error or generates wrong C.
  *
- * @param g      The generator; the previous context is saved into the out parameters.
+ * @param g      The generator; the previous context is saved into the returned value.
  * @param f      The instance; without a template this changes nothing.
- * @param saveP  Out: the previous `substParams`.
- * @param saveA  Out: the previous `substArgs`.
+ * @return       The previous context, for `substLeave`.
  */
-static void substEnterFunc(CG *g, FuncDef *f, Vec **saveP, Vec **saveA) {
-    *saveP = g->substParams;
-    *saveA = g->substArgs;
+static SubCtx substEnterFunc(CG *g, FuncDef *f) {
+    SubCtx sv = { g->substParams, g->substArgs, g->ownerPrefix };
     if (f && planTemplate(f)) {
         g->substParams = &planTemplate(f)->typeParams;
         g->substArgs   = &f->targs;
     }
-}
-/**
- * @brief Restore the substitution context saved by `substEnterFunc`.
- *
- * @param g      The generator.
- * @param saveP  The previous `substParams`.
- * @param saveA  The previous `substArgs`.
- */
-static void substLeaveFunc(CG *g, Vec *saveP, Vec *saveA) {
-    g->substParams = saveP;
-    g->substArgs   = saveA;
-}
-
-/**
- * @brief Restore the substitution context saved by `substEnterInst`.
- *
- * @param g      The generator.
- * @param saveP  The previous `substParams`.
- * @param saveA  The previous `substArgs`.
- * @param saveN  The previous `ownerPrefix`.
- */
-static void substLeaveInst(CG *g, Vec *saveP, Vec *saveA, const char *saveN) {
-    g->substParams = saveP;
-    g->substArgs   = saveA;
-    g->ownerPrefix = saveN;
+    return sv;
 }
 
 /* Emit the zero value of a type.
@@ -1827,9 +1826,7 @@ static const char *zeroValue(CG *g, Type *t) {
         StructDef *sd = t->sdef;
         if (sd->fields.len == 0) return arenaPrintf(g->arena, "(%s){0}", cType(g, t));
 
-        Vec *sp, *sa;
-        const char *sn;
-        substEnterInst(g, sd, &t->targs, &sp, &sa, &sn);
+        SubCtx sv = substEnterInst(g, sd, &t->targs);
 
         Buf b;
         bufInit(&b, g->arena);
@@ -1841,7 +1838,7 @@ static const char *zeroValue(CG *g, Type *t) {
         }
         bufPuts(&b, " }");
 
-        substLeaveInst(g, sp, sa, sn);
+        substLeave(g, sv);
         return bufCstr(&b);
     }
 
@@ -2953,9 +2950,9 @@ static RcScan rcScanType(CG *g, Type *t, int depth) {
             if (rcScanType(g, *(Type **)vecAt(&t->targs, i), depth + 1) != RC_NO_REFS)
                 return RC_CONSERVATIVE;
         }
-        substEnter(g, t);
+        SubCtx sv = substEnter(g, t);
         RcScan s = rcScanFields(g, &t->sdef->fields, depth);
-        substLeave(g);
+        substLeave(g, sv);
         return s;
     }
     /* kind-default: 只有上面列出的 kind 参与"有没有引用槽"的判断；任何新 kind 都可能
@@ -3012,7 +3009,7 @@ static void rcCollectOffsets(CG *g, Type *t, const char *base, Vec *out, int dep
     }
     case TY_GENERIC:
         if (isView(t) || !t->sdef) return;
-        substEnter(g, t);
+        SubCtx sv = substEnter(g, t);
         {
             const char *cn = cType(g, t);
             for (size_t i = 0; i < t->sdef->fields.len && out->len <= 4096; i++) {
@@ -3023,7 +3020,7 @@ static void rcCollectOffsets(CG *g, Type *t, const char *base, Vec *out, int dep
                 rcCollectOffsets(g, fd->type, off, out, depth + 1);
             }
         }
-        substLeave(g);
+        substLeave(g, sv);
         return;
     /* kind-default: 偏移只在 REF / ARRAY / STRUCT / GENERIC 四种形状里递归；其余 kind
      * 没有引用槽可收集。新 kind 若含引用槽，必须在这里加 case，不能靠 default 混过去。 */
@@ -3211,13 +3208,13 @@ static void rcRootLeaves(CG *g, Type *t, const char *base, int depth) {
         return;
     case TY_GENERIC:
         if (isView(t) || !t->sdef) return;
-        substEnter(g, t);
+        SubCtx sv = substEnter(g, t);
         for (size_t i = 0; i < t->sdef->fields.len; i++) {
             FieldDef *fd = *(FieldDef **)vecAt(&t->sdef->fields, i);
             rcRootLeaves(g, fd->type,
                          arenaPrintf(g->arena, "%s.%s", base, fd->name), depth + 1);
         }
-        substLeave(g);
+        substLeave(g, sv);
         return;
     /* kind-default: 根只在 REF / ARRAY / STRUCT / GENERIC 四种形状里递归；其余 kind 没有
      * 引用槽可登记。新 kind 若含引用槽，必须在这里加 case，不能靠 default 混过去。 */
@@ -3270,13 +3267,13 @@ static void rcLeafPaths(CG *g, Type *t, const char *base, Vec *out, int depth) {
         return;
     case TY_GENERIC:
         if (isView(t) || !t->sdef) return;
-        substEnter(g, t);
+        SubCtx sv = substEnter(g, t);
         for (size_t i = 0; i < t->sdef->fields.len && out->len <= 4096; i++) {
             FieldDef *fd = *(FieldDef **)vecAt(&t->sdef->fields, i);
             rcLeafPaths(g, fd->type, arenaPrintf(g->arena, "%s.%s", base, fd->name),
                         out, depth + 1);
         }
-        substLeave(g);
+        substLeave(g, sv);
         return;
     /* kind-default: 只有上面列出的 kind 参与引用叶子的展开；其余 kind 由 `rcScanType`
      * 归到"没有引用"或"枚举不出来"，走不到这里。 */
@@ -6779,7 +6776,8 @@ static void unitBody(CG *g, SUnit *u) {
         /* A generic enum instance such as `option<i64>` enters the
          * substitution context, so that `cType` substitutes the payload
          * types. */
-        if (u->inst) substEnter(g, u->inst);
+        SubCtx sv = {0};
+        if (u->inst) sv = substEnter(g, u->inst);
         cgLine(g, "struct %s {", unitName(u));
         g->indent++;
         cgLine(g, "int tag;");
@@ -6803,12 +6801,13 @@ static void unitBody(CG *g, SUnit *u) {
         g->indent--;
         cgLine(g, "};");
         cgLine(g, "");
-        if (u->inst) substLeave(g);
+        if (u->inst) substLeave(g, sv);
         return;
     }
 
     bool generic = u->inst && u->inst->kind == TY_GENERIC;
-    if (generic) substEnter(g, u->inst);
+    SubCtx gsv = {0};
+    if (generic) gsv = substEnter(g, u->inst);
 
     cgLine(g, "struct %s {", unitName(u));
     g->indent++;
@@ -6856,7 +6855,7 @@ static void unitBody(CG *g, SUnit *u) {
         cgLine(g, "               \"extC @frozen: nothing may be added to a frozen struct\");");
     }
     cgLine(g, "");
-    if (generic) substLeave(g);
+    if (generic) substLeave(g, gsv);
 }
 
 /* The derived `_eq` for arrays is gone: array equality now goes through
@@ -8616,9 +8615,8 @@ static void emitPreamble(CG *g, Buf *out, Module *m) {
 static void emitRuntimePrologue(CG *g, Buf *out, Module *m) {
     /* The reclamation runtime: the slab allocator, the holder counts and the region sweep.
      * It is emitted **before** any code that could name it -- its functions are `static` -- and
-     * on demand only (`g->needReclaim`, set from `EXTC_RECLAIM` in `scanUnitNeeds`). Until the
-     * sweep trigger and the root table land, the switch is an environment variable rather than
-     * a construct in the program. */
+     * only when the program has a governed allocation point (`g->needReclaim`, narrowed by
+     * `scanUnitReclaim` from that criterion; `EXTC_RECLAIM=1` forces it on, `=0` off). */
     if (g->needReclaim) {
         reclaimEmitRuntime(g->arena, out);
         /* 区域由 **arena 的地址**认领。分配点本来就知道自己落在哪只 arena 上
@@ -9287,7 +9285,7 @@ static void emitProtos(CG *g, Module *m, Arena *arena) {
     for (size_t i = 0; i < g->insts.len; i++) {
         Type *inst = *(Type **)vecAt(&g->insts, i);
         if (inst->kind != TY_GENERIC) continue;
-        substEnter(g, inst);
+        SubCtx sv = substEnter(g, inst);
         for (size_t j = 0; j < inst->sdef->methods.len; j++) {
             FuncDef *md = *(FuncDef **)vecAt(&inst->sdef->methods, j);
             /* Only a method that is really called is emitted, which keeps the
@@ -9313,14 +9311,13 @@ static void emitProtos(CG *g, Module *m, Arena *arena) {
                 *(DeadFunc **)vecPush(&g->deadFuncs) = df;
             }
         }
-        substLeave(g);
+        substLeave(g, sv);
     }
     /* Methods of ordinary structs and free functions: their order does not
      * matter, and mutual calls are covered by the prototypes above. */
     for (size_t i = 0; i < g->funcs.len; i++) {
         FuncDef *f = *(FuncDef **)vecAt(&g->funcs, i);
-        Vec *svP, *svA;
-        substEnterFunc(g, f, &svP, &svA);
+        SubCtx sv = substEnterFunc(g, f);
         const char *ret = cgIsMain(f) ? "int" : cType(g, f->ret);
         Buf sig;
         bufInit(&sig, arena);
@@ -9347,7 +9344,7 @@ static void emitProtos(CG *g, Module *m, Arena *arena) {
             df->proto = bufCstr(&sig);
             *(DeadFunc **)vecPush(&g->deadFuncs) = df;
         }
-        substLeaveFunc(g, svP, svA);
+        substLeave(g, sv);
     }
     if (g->structs.len || g->insts.len || g->funcs.len) cgLine(g, "");
 }
@@ -9425,16 +9422,17 @@ static void initCGState(CG *g, Module *m, TypeTable *tt, Arena *arena) {
  * @param m 当前模块，`funcs` 与 `structs` 的声明是全部来源。
  */
 static void scanUnitNeeds(CG *g, Module *m) {
-    /* 回收的开关。它不是"程序里出现了什么构造"那条判据，而是接线期的环境变量：
-     * 计数的发射点已就位（引用赋值点），但清扫触发与根表还没接，所以由人来开。
-     * **默认必须关闭**：关着时下面每一处发射都不发生，生成 C 与接线前逐字节相同。 */
-    g->needReclaim = getenv("EXTC_RECLAIM") != NULL;
+    /* 回收的开关：默认打开，`EXTC_RECLAIM=0` 关掉；给了非零值则**强制**打开（跳过下面的
+     * 分配点判据）。判据本身不在这里 —— 这一趟只按环境变量置意图，等 `collectEmitted` 把
+     * 真正要发射的函数挑出来之后，`scanUnitReclaim` 再按"有没有回收管辖的分配点"收窄。 */
+    const char *rcEnv = getenv("EXTC_RECLAIM");
+    g->rcForced = rcEnv && *rcEnv && strcmp(rcEnv, "0") != 0;
+    g->needReclaim = !(rcEnv && *rcEnv && strcmp(rcEnv, "0") == 0);
     /* `EXTC_RC_SHARDS=N`：回收的**分片数**（停顿旋钮），默认 1。
-     * 只有 > 1 才会把每个逻辑区域切成 N 只运行期区域，生成 C 才与接线前不同；1、未设、空串、
-     * 非数、越界一律当 1（现有行为）。上限 64：再往上每片至少一只 1 MiB slab 的底噪会盖过
-     * 停顿收益。 */
+     * 只有 > 1 才会把每个逻辑区域切成 N 只运行期区域；1、未设、空串、非数、越界一律当 1
+     * （单片行为）。上限 64：再往上每片至少一只 1 MiB slab 的底噪会盖过停顿收益。 */
     g->rcNShard = 1;
-    if (g->needReclaim) {
+    {
         const char *sh = getenv("EXTC_RC_SHARDS");
         if (sh && *sh) {
             long v = strtol(sh, NULL, 10);
@@ -9491,6 +9489,89 @@ static void scanUnitNeeds(CG *g, Module *m) {
             if (planMakesPool(f)) g->needPool = true;
         }
     }
+}
+
+/* ==================== 区域回收：这一趟要不要发 ====================
+ *
+ * 回收管辖的堆存储只有三处产生点，都在 codegen 里：
+ *
+ *   · `new T`（单值或定长 `new [N]T`）—— `exNew` 的不带长度那一支；
+ *   · `alloc<T>(n)` —— `exGencall` 的 arena 那一支；
+ *   · `@overwrite` 的**单值**格子 —— 那一支也走 `new T`，所以初始化式本身就是上面第一条。
+ *
+ * 不带长度的 `new T[n]` 留在 arena 里（视图不是引用槽），`@overwrite` 的变长格子同理，所以
+ * 两者都不算。`@overwrite` 不需要单独的判据：它的初始化式就是 `new T`，走一遍表达式就看得见。
+ *
+ * 这一趟扫的是**将要发射**的那些函数体（`g->funcs` 已由 `collectEmitted` 剪过）加泛型实例的
+ * 方法体加全局量的初始化式，于是"程序里出现"指的是**产物里出现**：一个只有死函数里才有 `new`
+ * 的程序不带运行期。反过来多认一两个也不出错（只是多带一块没人调的运行期）—— 判据宁可宽一点。
+ */
+
+/** @brief 语句回调：转发给表达式/语句的通用遍历（先声明，`rcAllocInExpr` 的访问器要引它）。 */
+static bool rcAllocInStmtProbe(void *ctx, Stmt *s);
+
+/** @brief 表达式回调：命中"回收管辖的分配点"就返回 false 停下整趟走。 */
+static bool rcAllocInExpr(void *ctx, Expr *e) {
+    (void)ctx;
+    if (!e) return true;
+    if (e->kind == EX_NEW) return e->u.new_.count != NULL;      /* 带长度 ⇒ 视图，不归回收管 */
+    if (e->kind == EX_GENCALL)
+        return !(e->u.gencall.name && strcmp(e->u.gencall.name, "alloc") == 0);
+    AstVisit v = { rcAllocInExpr, rcAllocInStmtProbe, NULL };
+    return astWalkExprChildren(e, &v);
+}
+
+/**
+ * @brief 判断一个函数体里有没有回收管辖的分配点。
+ *
+ * @param body 函数体；NULL（extern 之类）返回 false。
+ * @return     有则 true。
+ */
+static bool rcBodyHasGovernedAlloc(Stmt *body) {
+    if (!body) return false;
+    AstVisit v = { rcAllocInExpr, rcAllocInStmtProbe, NULL };
+    return !astWalkStmtChildren(body, &v);
+}
+
+/** @brief 语句回调：把语句的每个子节点都走一遍（`rcBodyHasGovernedAlloc` 的访问器）。 */
+static bool rcAllocInStmtProbe(void *ctx, Stmt *s) {
+    (void)ctx;
+    AstVisit v = { rcAllocInExpr, rcAllocInStmtProbe, NULL };
+    return astWalkStmtChildren(s, &v);
+}
+
+/**
+ * @brief 收窄 `needReclaim`：没有回收管辖的分配点就不发运行期。
+ *
+ * `EXTC_RECLAIM=1`（`rcForced`）时整趟跳过 —— 门禁按"开关打开"这一档写，与分配点在不在无关。
+ *
+ * 必须在 `collectEmitted` 之后、`emitPreamble`/`emitRuntimePrologue` 之前跑：判据要用
+ * `g->funcs`（剪枝后的函数表），而运行期文本按这个标志进序言。
+ *
+ * @param g 生成器；`funcs`、`insts` 已填好。
+ * @param m 模块，全局量的初始化式从这里看。
+ */
+static void scanUnitReclaim(CG *g, Module *m) {
+    if (!g->needReclaim || g->rcForced) return;
+    for (size_t i = 0; i < g->funcs.len; i++) {
+        FuncDef *f = *(FuncDef **)vecAt(&g->funcs, i);
+        if (f && rcBodyHasGovernedAlloc(f->body)) return;
+    }
+    /* 泛型实例的方法体：模板本身不进 `g->funcs`（类型参数还在），实例体由 `emitInstanceBodies`
+     * 发，所以这里按实例的 `sdef` 补一遍。 */
+    for (size_t i = 0; i < g->insts.len; i++) {
+        Type *it = *(Type **)vecAt(&g->insts, i);
+        if (!it || it->kind != TY_GENERIC || !it->sdef) continue;
+        for (size_t j = 0; j < it->sdef->methods.len; j++) {
+            FuncDef *md = *(FuncDef **)vecAt(&it->sdef->methods, j);
+            if (md && planUsed(md) && rcBodyHasGovernedAlloc(md->body)) return;
+        }
+    }
+    for (size_t i = 0; i < m->globals.len; i++) {
+        GlobalDef *gd = *(GlobalDef **)vecAt(&m->globals, i);
+        if (gd && gd->init && !rcAllocInExpr(NULL, gd->init)) return;
+    }
+    g->needReclaim = false;
 }
 
 /**
@@ -9675,7 +9756,7 @@ static void emitInstanceBodies(CG *g) {
     for (size_t i = 0; i < g->insts.len; i++) {
         Type *inst = *(Type **)vecAt(&g->insts, i);
         if (inst->kind != TY_GENERIC) continue;
-        substEnter(g, inst);
+        SubCtx sv = substEnter(g, inst);
         for (size_t j = 0; j < inst->sdef->methods.len; j++) {
             FuncDef *md = *(FuncDef **)vecAt(&inst->sdef->methods, j);
             if (planCoroProto(md)) continue;   /* emitted inline at the call site */
@@ -9694,7 +9775,7 @@ static void emitInstanceBodies(CG *g) {
             deadFuncBody(g, md, fb, g->out->len - fb);
             cgLine(g, "");
         }
-        substLeave(g);
+        substLeave(g, sv);
     }
 }
 
@@ -9775,7 +9856,8 @@ static void emitVtTables(CG *g, Buf *out, Module *m, Arena *arena) {
             Type *vb = *(Type **)vecAt(&spellings, vi);
             StructDef *vsd = (vb == bt) ? tsd : (vb->mholder ? vb->mholder : vb->sdef);
             if (!vsd) continue;
-            if (vb != bt) substEnter(g, vb);
+            SubCtx vsv = {0};
+            if (vb != bt) vsv = substEnter(g, vb);
             const char *vtKey = cType(g, vb);
             bufPrintf(&g->vtDecls, "static const struct extc_vt$%s_t extc_vt$%s$%s;\n",
                       tr->name, tr->name, vtKey);
@@ -9817,7 +9899,7 @@ static void emitVtTables(CG *g, Buf *out, Module *m, Arena *arena) {
                                                           tr->name, vtKey, want->name));
             }
             bufPuts(&g->vtDefs, " };\n");
-            if (vb != bt) substLeave(g);
+            if (vb != bt) substLeave(g, vsv);
             }   /* one table per concrete spelling */
         }
     }
@@ -9867,8 +9949,7 @@ static void emitFuncBodies(CG *g) {
     for (size_t i = 0; i < g->funcs.len; i++) {
         FuncDef *f = *(FuncDef **)vecAt(&g->funcs, i);
         if (f->isExtern) continue;              /* an external declaration has no body */
-        Vec *svP, *svA;
-        substEnterFunc(g, f, &svP, &svA);      /* instances need substitution */
+        SubCtx sv = substEnterFunc(g, f);      /* instances need substitution */
         /* Tell the plan which instance is being emitted: a call site inside a generic
          * body is shared by every instance, and what it calls depends on this. */
         planEnterFunc(f);
@@ -9876,7 +9957,7 @@ static void emitFuncBodies(CG *g) {
         CGACC("cg-emit", genFunc(g, f));
         deadFuncBody(g, f, fb, g->out->len - fb);
         planLeaveFunc();
-        substLeaveFunc(g, svP, svA);
+        substLeave(g, sv);
         cgLine(g, "");
     }
 }
@@ -10152,9 +10233,9 @@ static void emitLateRuntime(CG *g, Buf *out, Module *m, Arena *arena) {
         bufInit(&tmp, arena);
         Buf *save = g->out;
         g->out = &tmp;
-        substEnter(g, inst);
+        SubCtx sv = substEnter(g, inst);
         genViewIndexer(g, inst);
-        substLeave(g);
+        substLeave(g, sv);
         g->out = save;
         /* Registered like a descriptor: an index primitive is emitted on demand, and the
          * demand is conservative - a view whose subscripts all sit in dead code still gets one.
@@ -10175,9 +10256,9 @@ static void emitLateRuntime(CG *g, Buf *out, Module *m, Arena *arena) {
         bufInit(&tmp, arena);
         Buf *save = g->out;
         g->out = &tmp;
-        substEnter(g, inst);
+        SubCtx sv = substEnter(g, inst);
         genViewCopier(g, inst, false);
-        substLeave(g);
+        substLeave(g, sv);
         g->out = save;
         size_t bio = out->len;
         bufPuts(out, bufCstr(&tmp));
@@ -10197,9 +10278,9 @@ static void emitLateRuntime(CG *g, Buf *out, Module *m, Arena *arena) {
         bufInit(&tmp, arena);
         Buf *save = g->out;
         g->out = &tmp;
-        substEnter(g, inst);
+        SubCtx sv = substEnter(g, inst);
         genViewCopier(g, inst, true);
-        substLeave(g);
+        substLeave(g, sv);
         g->out = save;
         size_t bio = out->len;
         bufPuts(out, bufCstr(&tmp));
@@ -10364,6 +10445,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     scanUnitNeeds(&g, m);
     initRuntimeText(&g, arena);
     collectEmitted(&g, m);
+    scanUnitReclaim(&g, m);
     emitPreamble(&g, out, m);
     emitRuntimePrologue(&g, out, m);
     buildRuntimeText(&g);

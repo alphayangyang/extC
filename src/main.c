@@ -340,8 +340,13 @@ static void usage(const char *argv0) {
         "  EXTC_NO_LEVELPASS=1  skip the arena level pass -- **CHANGES THE OUTPUT**: it moves arena\n"
         "                       placement in 2 of the 414 golden programs\n"
         "  EXTC_SELFCHECK=1     run the checker's self-check -- **CAN FAIL THE BUILD** (exit 1)\n"
-        "  EXTC_RECLAIM=1       emit the reclamation runtime -- **CHANGES THE OUTPUT**: the generated C\n"
-        "                       carries the slab allocator / holder-count / region-sweep block\n"
+        "  EXTC_RECLAIM=0       turn reclamation off; it is **on by default** -- **CHANGES THE OUTPUT**.\n"
+        "                       A program with a governed allocation point (`new T` / `alloc<T>(n)` /\n"
+        "                       `@overwrite`) gets the slab allocator / holder-count / region-sweep\n"
+        "                       block; `=1` forces that block on for every program (side-by-side runs)\n"
+        "  EXTC_RC_SHARDS=N     reclamation's shard count, the pause knob -- **CHANGES THE OUTPUT**.\n"
+        "                       Default 1 = one runtime region per logical one; N > 1 splits each\n"
+        "                       logical region into N runtime regions that sweep one at a time\n"
 
         "\n"
         "  -h, --help       show this help\n",

@@ -1,0 +1,51 @@
+/* 形状 ⑬：**超大块参与清扫** —— 修 A 的第二个判据。
+ *
+ * ⑫（`big_slot.extc`）只要求"装得下、语义对"。这一条要求超大块**真的被登记/标记/清扫
+ * 一视同仁**：每轮建 4 个 1 MiB 的大槽（每个都带 `next: ?ref big`），把它们丢弃，再建下一轮
+ * —— 分配量足以越过压力线，运行期必须在循环里真的清扫；而跨轮的 `keeper` 大槽只被一个
+ * **局部根**指着，它必须活下来。旧运行期（固定 1 MiB slab，槽 > 512 KiB 直接 trap）连
+ * 程序都起不来；而如果"大槽退回"只是把载荷挪出去、却漏了登记/标记/清扫，`keeper` 会被当
+ * 垃圾放掉，下面读 `keeper.tag` 就会读到空闲链槽号（rc≠0 或打印错值）。
+ *
+ * 判据（开关开与开关关**逐字相同**，rc=0）：
+ *   · `keeper=7 rounds=24`；
+ *   · 每轮 `s`（链上 tag 之和）都等于 6，任何一轮错就打印 `BAD`。
+ */
+use std::io
+
+struct big {
+    tag: i64
+    pad: [600000]u8
+    next: ?ref big
+}
+
+fn main() {
+    var keeper = new big
+    keeper.tag = 7
+
+    var rounds: i64 = 0
+    var bad: i64 = 0
+    while rounds < 24 {
+        var head: ?ref big = null
+        var k: i64 = 0
+        while k < 4 {
+            var p = new big
+            p.tag = k
+            p.next = head
+            head = p
+            k = k + 1
+        }
+        var s: i64 = 0
+        var q = head
+        while q != null {
+            s = s + q.tag
+            q = q.next
+        }
+        if s != 6 { bad = bad + 1 }
+        head = null
+        rounds = rounds + 1
+    }
+
+    var z: i64 = i64(keeper.pad[599999])
+    println("keeper=", keeper.tag, " rounds=", rounds, " bad=", bad, " z=", z)
+}
