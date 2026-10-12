@@ -1,0 +1,41 @@
+/* tests/reclaim-shapes/hole_c/caller_frame.extc —— 同一个洞的**非递归**形态（定位辅助，不是判据）。
+ *
+ * `main` 手里的链头 `head` 是活引用，但它在**主调帧**里；被调 `fresh()` 的清扫触发根表
+ * 只按 `fresh` 自己的词法作用域生成（形参 `n` 都不是引用，触发行又排在 `var n` 之前）
+ * ⇒ 生成物里同样是 `extc_rc_maybeCollect(区域, (void *const *)0, 0)`。链一旦过 1 MiB 压力线，
+ * 下一次 `fresh()` 的触发就把整条链放掉，`head` 成了野指针。
+ *
+ * 这条形状说明：洞**不是"递归"特有的**，而是"分配点的词法根表看不见调用帧里的活引用"。
+ * 只对递归函数打补丁会漏掉这一半。
+ *
+ * 症状不稳定（走链时踩到被复用的槽 ⇒ 无限循环，`timeout` 挂住；有时 SEGV），所以
+ * `run.sh` 不对它做断言；手动跑法：
+ *   EXTC_RECLAIM=1 ./build/extc -w --no-line-map tests/reclaim-shapes/hole_c/caller_frame.extc -o /tmp/cf.c
+ *   cc -O1 -o /tmp/cf /tmp/cf.c && timeout 5 /tmp/cf   # 挂住或崩
+ *   EXTC_RECLAIM=0 ...                                  # rc=0 / n = 70000
+ */
+struct node {
+    next: ?ref node
+    v: i64
+}
+
+fn fresh() -> mut ref node {
+    var n: mut ref node = new node
+    return n
+}
+
+fn main() {
+    var head: ?ref node = null
+    var i: i64 = 0
+    while i < 70000 {
+        var n: mut ref node = fresh()
+        n.v = i
+        n.next = head
+        head = n
+        i = i + 1
+    }
+    var c: i64 = 0
+    var p: ?ref node = head
+    while p != null { c = c + 1  p = p.next }
+    println("n = ", c)
+}

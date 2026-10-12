@@ -1,0 +1,24 @@
+/* tests/reclaim-shapes/hole_c/hole_c.extc —— `bench/heavy/bt.extc` 提前释放（UAF）的最小形状。
+ * 递归构造：外层调用帧里的 `t`（连着已建好的左子树）是活引用，但不在被调帧的清扫根表里
+ * ⇒ 触发时 `maybeCollect(区域, (void *const *)0, 0)` ⇒ 清扫放掉还有持有者的对象。
+ * 深度 15 不触发（差 16 B 没过 1 MiB 下限）rc=0；深度 16 起触发。详见同目录 README.md。 */
+struct tree {
+    left: ?ref tree
+    right: ?ref tree
+}
+
+fn build(d: i32) -> mut ref tree {
+    var t: mut ref tree = new tree
+    if d > 0 { t.left = build(d - 1)  t.right = build(d - 1) }
+    return t
+}
+
+fn count(t: ?ref tree) -> i64 {
+    if t == null { return 0 }
+    return 1 + count(t.left) + count(t.right)
+}
+
+fn main() {
+    var t: mut ref tree = build(16)
+    println("n = ", count(t))
+}
