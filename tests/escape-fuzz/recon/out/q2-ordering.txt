@@ -1,0 +1,49 @@
+== m_main_dfield_direct_before  (tests/escape-fuzz/cases/m_main_dfield_direct_before.extc)  extc_rc=0
+   run_rc=0  sanitizer=CLEAN  stdout=10|
+== m_main_dfield_direct_after  (tests/escape-fuzz/cases/m_main_dfield_direct_after.extc)  extc_rc=1
+   tests/escape-fuzz/cases/m_main_dfield_direct_after.extc:15:1: error: this reference would hold a reference to a local variable that dies first (borrowed from depth 1, but this can only hold up to depth 0)
+== q2_after  (tests/escape-fuzz/recon/probes/q2_after.extc)  extc_rc=1
+   tests/escape-fuzz/recon/probes/q2_after.extc:14:1: error: this reference would hold a reference to a local variable that dies first (borrowed from depth 1, but this can only hold up to depth 0)
+== q2_after_deadassign  (tests/escape-fuzz/recon/probes/q2_after_deadassign.extc)  extc_rc=0
+   run_rc=0  sanitizer=CLEAN  stdout=6|
+
+-- 两个形状的差别只有一行：q2_after_deadassign 在 store 之前多一条 if i < 0 { cur = p }（运行期永不执行）
+   10a11
+   >         if i < 0 { cur = p }
+
+-- DFA（check_dataflow.c，check_top.c:4206 跑在 body 之后）对 cur 的答案：两个形状都一样
+   [m_main_dfield_direct_before]
+     [dfa] main: 4 vars
+            p      depth=1
+            head   depth=1
+            cur    depth=1
+            c      depth=1
+   [m_main_dfield_direct_after]
+     [dfa] main: 4 vars
+            p      depth=1
+            head   depth=1
+            cur    depth=1
+            c      depth=1
+
+-- EXTC_DBG_DEFER：把拒绝记录到求解之后再比一次（只比**值**的深度，不比目的地 at）
+[defer] line=15   at=0  check=1 settled=1 agree
+[defer] line=15   at=0  check=1 settled=1 agree
+
+-- 目的地深度怎么算：check_escape.c:125 与 178-192（storeLayer→slotDepth→targetDepth）
+    if (e->kind == EX_DEREF) return targetDepth(c, e->u.deref.operand);
+int storeLayer(Checker *c, Expr *e) {
+    if (e && e->kind == EX_IDENT) {
+        Sym *sy = lookup(c, e->u.ident.name);
+        if (sy) {
+            /* 参数的槽在本帧（实参是一份拷贝），写它碰不到调用者的绑定 ⇒ 深度 1；全局是静态
+             * 存储，活过每一帧 ⇒ 0。
+             *
+             * A parameter's slot is in this frame: the argument is a copy, so writing it cannot
+             * touch the caller's binding.
+             */
+            if (sy->depth == 0 && !isGlobalSym(c, sy)) return 1;
+            return sy->depth;
+        }
+    }
+    return slotDepth(c, e);
+}

@@ -21,6 +21,8 @@ C++（裸 `new`、不 `delete`），然后看 extC 收不收、收下的在 ASan
 3. **「返回值经投影逃逸」既不被当成逃逸函数的返回（误拒），也不触发提权（漏收）** ——
    `return bx.mid.next` 直接 `new` 会被收下但 ASan 悬垂，换成 `mk()` 又会被拒（6 例误拒 + 5 例漏收）。
 
+> 根因勘察与分步修复计划见 [`RECON.md`](RECON.md)（task-9；`bash recon/run-probes.sh` 复跑全部证据）。
+
 ## 怎么跑
 
 ```sh

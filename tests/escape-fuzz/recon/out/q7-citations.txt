@@ -1,0 +1,72 @@
+-- 调用点 arena 的选定
+415:            markCallHomeIfEscaping(c, s->u.var.init, (int)c->scopes.len);
+1435:void markCallHomeIfEscaping(Checker *c, Expr *v, int at) {
+void markCallHomeIfEscaping(Checker *c, Expr *v, int at) {
+    if (!v) return;
+    if ((v->kind != EX_CALL && v->kind != EX_METHOD) || !planCallee(v)) return;
+    if (!anNeedsHome(planCallee(v))) return;
+    anSetHomeDepth(v, (at < (int)c->scopes.len) ? -1 : (int)c->scopes.len);
+    setCallArenaArg(c, v);          /* always keep `homeDepth` and `arenaArg` in step */
+}
+1519:void setCallArenaArg(Checker *c, Expr *e) {
+void setCallArenaArg(Checker *c, Expr *e) {
+    if (!e) return;
+    if (anHomeDepth(e) == -1) {                 /* destination at the home level: my home arena */
+        planSetArenaArg(e, ARENA_HOME);
+        e->arenaArgPending = false;
+    } else if (anHomeDepth(e) >= 1) {           /* an explicit block level: use that arena */
+        planSetArenaArg(e, anHomeDepth(e));
+        e->arenaArgPending = false;
+    } else {
+        /* No `mut ref` argument gave a reason, so the fallback applies: pass my home
+         * arena if I have one, otherwise the current block.
+         *
+         * Whether I have a home arena is decided by the transitive closure of
+         * `needsHome`, which is only known after every function body has been checked.
+         * The site is therefore recorded as the current block with `arenaArgPending`
+         * set, and the final pass settles it (see `curArenaSites`).
+         *
+         * The decision lives here so it is made in exactly one place: codegen reads
+         * `arenaArg` and decides nothing on its own. */
+        planSetArenaArg(e, (int)c->scopes.len);
+        e->arenaArgPending = true;
+        *(Expr **)vecPush(&c->curArenaSites) = e;   /* the final pass comes back to this site */
+    }
+}
+
+-- 绑定深度的记录 / 读取
+498:                    anSetRefDepth(sym, d);
+689:                            anSetRefDepth(slot0, targetDepth(c, v));
+673:                    int at0 = storeLayer(c, s->u.assign.target);
+684:                    checkEscape(c, v, at0, s->line, "this reference");
+192:    return slotDepth(c, e);
+255:    case EX_INDEX: case EX_FIELD: return slotDepth(c, e);
+
+-- promoteInto2 的分支
+86:    case EX_FIELD: return exprOutOfFrame(c, e->u.field.obj);
+255:    case EX_INDEX: case EX_FIELD: return slotDepth(c, e);
+460:    case EX_FIELD: case EX_INDEX:
+592:    case EX_IDENT: case EX_FIELD: case EX_INDEX: {
+1097:    case EX_FIELD:
+2153:    case EX_FIELD: {
+1062:        if (!sy || !sy->origin) return false;
+1080:        if (!promoteFieldsAt(c, sy, at, hops + 1)) ok = false;
+1149:                    (int)calleeMakesPool(planCallee(val)), planZoneLevel(val), at);
+1150:        if (calleeMakesPool(planCallee(val)) && planZoneLevel(val) != 0) {
+
+-- 字段来源 / 放置 / DFA
+2228:void noteFieldDepthWrite(Checker *c, Sym *root, const char *field, int d2) {
+15:static void noteFieldSrc(Sym *root, const char *field, int d2, Expr *src);
+2200:static void noteFieldSrc(Sym *root, const char *field, int d2, Expr *src) {
+4206:        dfAnalyze(c, f, &dfr);
+4256:                    if (d > anRefDepth(sy)) anSetRefDepth(sy, d);
+6099:                    if (anMinAt(site) == 0) {
+5895:    closeReach(&closeCtx, REACH_HOME, roundNeedsHome);
+6155:            if (!site->arenaArgPending || !planCallee(site) || !planUsesHome(planCallee(site))) continue;
+
+-- 新 site 的初始层与 refDepth
+2426:                planSetArenaLevel(e, (c->curFunc && anNeedsHome(c->curFunc)) ? ARENA_HOME
+
+-- 唯一读 planArenaLevel 的 codegen 位置
+3175:    const char *ar = arenaRefAt(g, planArenaLevel(e));
+3305:    const char *ar = arenaRefAt(g, planArenaLevel(e));

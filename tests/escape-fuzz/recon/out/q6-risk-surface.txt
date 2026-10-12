@@ -1,0 +1,38 @@
+-- 逃逸健全性闸门与其基线（棘轮：修好一条删一条）
+# 闸门⑤·逃逸健全性的基线 = R1/R3 批次的施工单（格式：<文件> <洞> <由哪条不变式修>）
+# 规矩：语料必须被拒绝；这里记着的是已知还在的洞。修好一条就从本文件删掉那一行（棘轮只往一个方向转）。
+# 对照组（control_*）永远不许出现在这里 —— 否则闸门会退化成「一律拒绝就算过」。
+P0-6e_coro_ref_payload.extc	`yield ref <帧内局部>`（引用型协程载荷）被前端接受；且生成物是畸形 C（`node * extc_coro_value_node *`）	指称/逃逸：载荷跨挂起点
+-- ASan 闸门基线
+# ASan 闸门的已知坏（基线）。格式：<文件>	<原因>	<跟踪>
+# 规矩：每个失败都必须在基线里；基线里已经不再失败的条目会让闸门变红（棘轮只往一个方向转）。
+#
+# 当前**没有已知坏**。战果（2026-09-30）：
+#   · P0-11（`d.run{}` 少算 arena 层）修好后，本闸门立刻抓到下一层：
+#     `tests/ext/domain_runs.extc` 的 `stack-use-after-scope`（域块内声明的任务帧被块外驱动）；
+-- 相关语料目录
+tests/arena-promoted
+tests/arena-soundness
+tests/pool
+tests/pool-soundness
+tests/reclaim-shapes
+tests/stl
+-- check.sh 里与逃逸/ASan 有关的节
+38:echo "== 闸门·规模（任何输入都要给结论：不许 SIGSEGV / 不许挂住 —— 审计 §7 闸门④）=="
+45:echo "== 断言版全量（EXTC_DBG=1：断言/兜底一旦被走到就 abort —— src/dbg.h）=="
+46:# 关掉时每个断言点只花一次分支；打开后同一只二进制即可当断言版用（不需要第二套构建）。
+52:        ok "断言版：$(printf '%s' "$out" | tail -1)；闸门⑤ ok；断言/兜底 0 命中；已知活路径 note×$notes" 
+54:        bad "断言版跑出问题：$(printf '%s' "$esc" | tail -1)"
+58:    bad "断言版 tests/run.sh 变红（断言或兜底被走到 ⇒ 见上面的 [assert]/[fallback]）"
+62:echo "== 闸门·逃逸健全性（语料必须被拒绝；基线 = R1/R3 施工单 —— 审计 §7 闸门⑤）=="
+69:echo "== 闸门·实例接线（每个被发出的实例必须调对它该调的那个 —— 生成物结构判据）=="
+77:echo "== 闸门·差分（同一段语义：extC 与等价 C 必须给出同一结论 —— 审计 §7 闸门③）=="
+84:echo "== arena（按块细化：150MB 上限下不许涨）=="
+85:if out=$(timeout 600 ./tests/arena/run.sh 2>&1); then ok "$(echo "$out" | wc -l) 个用例"; else bad "tests/arena/run.sh"; echo "$out"; fi
+273:echo "== arena 层号（定案 68：检查器是唯一权威，codegen 只翻译 —— 不许漂）=="
+277:if out=$(python3 tools/parrun.py --mode arena-scan 2>&1); then
+280:    bad "arena 层号漂移"; echo "$out"
+392:    echo "== 闸门·全语料 --check-c（挡"extc 报成功、生成物编不过"；gcc + clang —— 审计 §7 闸门①）=="
+399:    echo "== 闸门·正例生成物 ASan+UBSan（-O2 会把 UB 优化掉，这里必须真跑 —— 审计 §7 闸门②）=="
+400:    # 挡的是"生成物有 UB 却看起来正常"：从 NULL memmove（P0-8）、越界 arena 格（P0-11）等。
+403:    else bad "tools/gate_asan_corpus.py（正例生成物出现 sanitizer 报告）"; printf '%s\n' "$out" | sed 's/^/  /' | tail -14; fi
