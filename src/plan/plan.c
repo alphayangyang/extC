@@ -1423,6 +1423,19 @@ int planArenaArg(const Expr *e) {
     return (s && resultsBit(s, PLAN_ARENA_ARG)) ? s->arenaArg : 0;
 }
 /**
+ * @brief 记录一个调用点的 arena 参数是否还等末轮落定。
+ *
+ * 落定之后（提权已经给出更长寿的层，或末轮已经算过）要清掉，否则末轮会把它当成"还没算"
+ * 再抬回家 arena。
+ *
+ * @param e  调用点表达式；NULL 时忽略。
+ * @param v  还等末轮落定时为 true。
+ */
+void planSetArenaArgPending(Expr *e, bool v) {
+    if (e) e->arenaArgPending = v;
+}
+
+/**
  * @brief 判断一个表达式是否要先把某部分算进临时变量。
  *
  * 该表达式（或其参数、元素计数）在生成的 C 里会出现不止一次，或需要在循环外只求值一次时

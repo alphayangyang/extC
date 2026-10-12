@@ -753,6 +753,9 @@ void checkStmt(Checker *c, Stmt *s) {
                      * 是内部引用落点的上界。 */
                     {
                         Sym *rootA = placeRoot(c, s->u.assign.target);
+                        /* `(*a).next = b`：`placeRoot` 走不过解引用，槽要挂在 `a` 上，否则
+                         * `return a` 的提权走不到 `b` 指向的对象（环留在块层 ⇒ 返回即悬垂）。 */
+                        if (!rootA) rootA = destDerefSym(c, s->u.assign.target);
                         if (rootA && rootA->type && typeContainsRef(c->tt, rootA->type)) {
                             int dA = targetDepth(c, v);
                             /* 按字段记录。没取过地址时条目是覆盖而不是合并，所以 `h.p = null`

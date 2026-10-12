@@ -188,7 +188,7 @@ int slotDepth(Checker *c, Expr *e) {
  * @param e  写目标的位置表达式。
  * @return    路径尽头 `*` 后面是具名引用绑定时返回它；否则返回 NULL。
  */
-static Sym *destDerefSym(Checker *c, Expr *e) {
+Sym *destDerefSym(Checker *c, Expr *e) {
     for (; e; ) {
         if (e->kind == EX_FIELD) { e = e->u.field.obj; continue; }
         if (e->kind == EX_INDEX) { e = e->u.index.obj; continue; }
@@ -458,6 +458,9 @@ static int poolCallDepth(Checker *c, Expr *e, int d) {
 const char *fieldSlotKey(Checker *c, Expr *e) {
     if (!e) return NULL;
     if (e->kind == EX_IDENT) return "";
+    /* `(*a).next = v` 的槽挂在**绑定 a** 上（根由 `destDerefSym` 给出），键只记解引用之后的
+     * 路径：环/链的提权要从这里走到被存进去的那个对象自己的字段表。 */
+    if (e->kind == EX_DEREF) return "";
     if (e->kind == EX_FIELD) {
         const char *p = fieldSlotKey(c, e->u.field.obj);
         if (!p) return NULL;
@@ -580,6 +583,9 @@ int targetDepth(Checker *c, Expr *e) {
          * 因为两个答案说的是不同的东西。字段没有条目时（刚声明、或名字对不上）退回保守的地方深度。 */
         if (e->kind == EX_FIELD) {
             Sym *rf = placeRoot(c, e);
+            /* `(*a).next` 命不了名（`placeRoot` 走不过解引用），但槽就挂在 `a` 上：环/链
+             * （`(*a).next = b`）要靠它把要求传给 `b` 指向的对象。 */
+            if (!rf) rf = destDerefSym(c, e);
             const char *key = fieldSlotKey(c, e);
             int *slot = (rf && key) ? fieldDepthEntry(c, rf, key, false) : NULL;
             if (slot) { d = *slot; break; }
@@ -872,6 +878,10 @@ bool promoteFieldsAt(Checker *c, Sym *sy, int at, int hops) {
         int want = sy->fields[i].depth;
         if (sy->fields[i].minReq < want) want = sy->fields[i].minReq;
         if (!promoteInto2(c, src, want, hops + 1)) { ok = false; continue; }
+        /* 来源那个绑定自己的字段表也要走：`a.next = b  b.next = ca` 的环/链要一路提到 `want`。
+         * 展平后的 `src` 是站点表达式，没有字段表；`srcSym` 是同一个对象的绑定，出作用域也能用。 */
+        if (sy->fields[i].srcSym && sy->fields[i].srcSym != sy
+            && !promoteFieldsAt(c, sy->fields[i].srcSym, want, hops + 1)) ok = false;
         if (lower && sy->fields[i].depth > want) sy->fields[i].depth = want;   /* promoted -> lower it too */
     }
     /* Same for a store that belongs to no single field: element writes, and stores a callee made
@@ -885,6 +895,8 @@ bool promoteFieldsAt(Checker *c, Sym *sy, int at, int hops) {
         if (sy->otherMinReq < want) want = sy->otherMinReq;
         if (!promoteInto2(c, sy->otherSrc, want, hops + 1)) ok = false;
         else if (lower && sy->otherDepth > want) sy->otherDepth = want;
+        if (sy->otherSrcSym && sy->otherSrcSym != sy
+            && !promoteFieldsAt(c, sy->otherSrcSym, want, hops + 1)) ok = false;
     }
     /* 声明处的**别名来源**（`var head = a`）：head 与 a 共享所指对象，a 后来被改指
      * （`a = p`）时，要求要沿着 a **当前**的来源传下去。这一格只服务提权，不参与深度记账。 */
@@ -973,6 +985,9 @@ void noteStore(Checker *c, Expr *value, Expr *target, int at, int line) {
     markCallHomeIfEscaping(c, value, at);             /* ③ 逃逸集合那一半 */
     /* ④ 字段表 / 整值表 */
     Sym *vs = target ? placeRoot(c, target) : NULL;
+    /* `(*a).next = b` 命不了名（`placeRoot` 走不过解引用），但槽挂在 `a` 上：不记的话，
+     * `return a` 提权时就走不到 `b` 指向的对象，环/链留在块层 ⇒ 返回即悬垂。 */
+    if (!vs && target) vs = destDerefSym(c, target);
     if (!vs) return;
     int d2 = valDepthForStore(c, value);
     if (!(d2 > 0 || (vs->type && typeContainsRef(c->tt, vs->type)))) return;
@@ -1322,6 +1337,32 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
             if (anRefDepth(val) > at) anSetRefDepth(val, at);
             return true;
         }
+        /* 被调方**需要 home arena**（`needsHome`）时，把新分配放进的是**调用点传进去的**那个
+         * arena：那个数由调用点选，所以可以像 `new` 一样提权（越小越长寿）。这条一直是
+         * `return mk(1)` 能通过的原因（`markCallHomeIfEscaping(..., 0)` ⇒ `__extc_home`）；
+         * `var p = mk(1)` 只把 arena 记成块层、提权要求回不到调用点，于是 `return p` 被误拒。
+         * `arenaArg` 与 `homeDepth` 必须一起搬：前者是 codegen 读的，后者是 `checkCallRefArgs`
+         * 读的目的地深度。只往更长寿的一侧挪（单调），已更长寿时不抬回来。 */
+        /* 只对**引用**结果做这件事：它直接命名被调方新分配的那个对象，把调用点的 arena 层
+         * 改掉就把它挪到了正确的地方。按值返回的聚合（`box { p: mut slice<i32> }`）里的视图
+         * 另有既存的保守规则（`tests/errors/escape_call_result_to_outer.extc` 常设反例），
+         * 不在这一步的范围内。 */
+        if (planCallee(val) && anNeedsHome(planCallee(val)) && val->type &&
+            tsub(c, val->type)->kind == TY_REF) {
+            int want = (at == 0) ? ARENA_HOME : at;
+            int cur = planArenaArg(val);
+            bool longEnough = (cur == ARENA_HOME) || (cur >= 1 && cur <= want);
+            if (!longEnough) {
+                if (getenv("EXTC_DBG_ZONE"))
+                    fprintf(stderr, "[promoted-call] %s arenaArg %d -> %d (at=%d)\n",
+                            planCallee(val)->name ? planCallee(val)->name : "-", cur, want, at);
+                planSetArenaArg(val, want);
+                anSetHomeDepth(val, want);
+                planSetArenaArgPending(val, false);
+            }
+            if (anRefDepth(val) > at) anSetRefDepth(val, at);
+            return true;
+        }
         /* 从容器里取出来的值（`v.get(k)`）可能**正是当初存进去的那个引用**：取一次容器元素
          * 并不产生新存储，它交回的寿命就是容器里那份的寿命。容器自己的字段表记着那些来源
          * （`callSrc` / `otherSrc` / 字段槽），这里也把它们提到 `at` —— 只把寿命拉长，是安全
@@ -1665,7 +1706,7 @@ static bool checkEscapeImpl(Checker *c, Expr *val, int at, int line, const char 
     promoteInto(c, val, at);
     int d = targetDepth(c, val);
     if (d <= at) return false;
-    /* 下面照旧报错（或按 `defer` 记下来）；这里只是把问题留给数字定下之后的那一趟。 */
+    /* 下面照旧报错（或按 `defer` 记下来）；这里只是把问题留给定下之后的那一趟。 */
     recordLvlRejection(c, val, at, d, line);
     if (defer) {
         PendingRefStore *p = arenaAllocZero(c->arena, sizeof *p);

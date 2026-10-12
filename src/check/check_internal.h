@@ -72,7 +72,7 @@ const char *checkFnDisplay(const char *name, const char *modName);
 /* ------------------------------------------ shared state and shared types
  * Whatever more than one file needs, so that whoever uses it can see it. */
 
-typedef struct {
+typedef struct Sym {
     const char *name;    /* name as written in the source */
     const char *cname;   /* name used in generated C; a shadowed `a` becomes `a__2` */
     Type       *type;    /* declared type, or the inferred one for an unannotated `let` */
@@ -101,6 +101,11 @@ typedef struct {
               * made of nulls which never mentions the `x` that a later `h.q = x` stored,
               * so walking origins would never reach that site. */
              Expr *src;
+             /* 与 `src` 同一份来源的**绑定**（来源是绑定时有值）。`src` 展平到站点是为了让
+              * 末轮重放不依赖 `lookup`；但展平会丢掉中间绑定的**字段表**（`b.next = ca` 记在
+              * `b` 上），环/链的提权必须能走到那里。Sym 指针活在 checker 的 arena 里，出了作用域
+              * 也能用，所以另存一格，`promoteFieldsAt` 靠它继续往里走。 */
+             struct Sym *srcSym;
              /* Depth of the write that produced `src`. Compare against this number, not
               * against `depth`: `depth` is merged with the maximum on a weak update, so
               * after `h.q = x  h.q = null` it is still deep, and comparing with it would
@@ -136,6 +141,8 @@ typedef struct {
  * expression there is nothing to promote, and a `new` handed to a callee that stores it would be
  * rejected where the same program written as a direct `b.p = n` is accepted. */
     Expr       *otherSrc;
+    /* 与 `srcSym` 同理：`otherSrc` 展平后仍然要知道它原来那个绑定的字段表。 */
+    struct Sym *otherSrcSym;
     int         otherSrcDepth;
     int         otherMinReq;
     /* 声明处初始化式留下的**别名来源**（`var head = a`）：与 `otherSrc` 分开一格，因为
@@ -1157,6 +1164,18 @@ Expr *extcRootLeaf(Expr *e, unsigned steps, int maxHops);
  * @return        判定为拒绝时返回 true。
  */
 bool checkEscapeDefer(Checker *c, Expr *val, int at, int line, const char *what, Expr *target);
+
+/**
+ * @brief 写目标是否**经具名引用**到达（`(*a).f` / `*a`），是则返回那个绑定。
+ *
+ * `(*a).f = v` 的字段槽挂在 `a` 上（`placeRoot` 走不过解引用），环/链的提权要从那里走到被
+ * 存进去的对象自己的字段表。
+ *
+ * @param c  检查器。
+ * @param e  写目标的位置表达式。
+ * @return    路径尽头 `*` 后面是具名引用绑定时返回它；否则返回 NULL。
+ */
+Sym *destDerefSym(Checker *c, Expr *e);
 
 /**
  * @brief DFA 落定后复判推迟的存储判定；仍然不够深才报诊断。

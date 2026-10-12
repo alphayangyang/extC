@@ -2231,6 +2231,10 @@ static void noteFieldSrc(Checker *c, Sym *root, const char *field, int d2, Expr 
      * 根是零值/字面量或一个没有来源的绑定（`p.next = saved`，saved 的根是 `null`）时**不记**：
      * 那样的来源提不动，记下来只会让 `promoteFieldsAt` 答 false，把 `saved = p` 这种正常形状
      * 误拒。来源的唯一用途是提权，提不动的来源没有价值。 */
+    /* 来源展平到根表达式存（末轮重放没有作用域，`lookup` 查不到中间绑定），同时把那个绑定
+     * 另存一格 `srcSym`：展平会丢掉它的**字段表**（`b.next = ca` 记在 `b` 上），环/链的提权
+     * 必须能走到那里。Sym 住在 checker 的 arena 里，出了作用域照样能用。 */
+    Sym *srcSym = (src->kind == EX_IDENT) ? lookup(c, src->u.ident.name) : NULL;
     {
         Expr *r = originOf(c, src, 0);
         if (!r) return;
@@ -2249,6 +2253,7 @@ static void noteFieldSrc(Checker *c, Sym *root, const char *field, int d2, Expr 
              * `promoteFieldsAt` 只会把它收得更紧。 */
             if (!root->otherSrc) root->otherMinReq = d2;
             root->otherSrc = src;
+            root->otherSrcSym = srcSym;
             root->otherSrcDepth = d2;
         }
         return;
@@ -2265,6 +2270,7 @@ static void noteFieldSrc(Checker *c, Sym *root, const char *field, int d2, Expr 
             if (d2 >= root->otherSrcDepth) {
                 if (!root->otherSrc) root->otherMinReq = d2;
                 root->otherSrc = src;
+                root->otherSrcSym = srcSym;
                 root->otherSrcDepth = d2;
             }
             return;
@@ -2273,6 +2279,7 @@ static void noteFieldSrc(Checker *c, Sym *root, const char *field, int d2, Expr 
         root->fields[n].name     = field;   /* interned in the checker's arena, so it cannot dangle */
         root->fields[n].depth    = 0;
         root->fields[n].src      = NULL;
+        root->fields[n].srcSym   = NULL;
         root->fields[n].srcDepth = 0;
         /* 门槛从这次写入的深度起步，不是 0（0 是"必须活过本帧"这句很强的断言）：新槽的来源
          * 现在至少活到 `d2`，之后 `promoteFieldsAt` 只会把它收得更紧。从 0 起步会让
@@ -2287,6 +2294,7 @@ static void noteFieldSrc(Checker *c, Sym *root, const char *field, int d2, Expr 
                 field, d2, root->fields[n].srcDepth, (int)src->kind);
     if (d2 >= root->fields[n].srcDepth) {
         root->fields[n].src = src;
+        root->fields[n].srcSym = srcSym;
         root->fields[n].srcDepth = d2;
     }
 }
@@ -6116,6 +6124,12 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             int nd = callSiteMinDestDepth(&c, rec);
             /* Write the new homeDepth onto `arenaArg`, by the same rules as `setCallArenaArg`. */
             int want = (nd <= 0) ? ARENA_HOME : nd;
+            /* 提权（`promoteInto2` 的调用结果那一格）可能已经把 arena 挪到**更长寿**的一侧：
+             * 两边的要求取 min，别把它抬回来。`ARENA_HOME`(-1) 就是最长寿的一侧。 */
+            {
+                int cur = planArenaArg(rec->call);
+                if (cur == ARENA_HOME || (cur >= 1 && cur < want)) want = cur;
+            }
             if (planArenaArg(rec->call) != want) { planSetArenaArg(rec->call, want); eFixed++; }
             rec->call->arenaArgPending = false;
         }
