@@ -1,0 +1,115 @@
+# extC 自检覆盖对照表：HEAD:check.sh（468 行 / 73 个 `==` 节）里的每条命令 → tools/check.py 的新项名
+#   生成依据：`git show HEAD:check.sh`（不解析 bash 节结构，逐条抽出命令行），再逐条人工对照新声明。
+#   列：旧命令 <TAB> 新项名 <TAB> 旧行号 <TAB> 说明
+#
+# 验收用集合（两边 diff 必须为空）：
+#   git show HEAD:check.sh | grep -oE '(\./[a-z/]+\.sh|python3 tools/[a-z_]+\.py)' | sort -u  → 75 条
+#   grep -oE 同 pattern tools/check.py | sort -u                                                → 75 条
+#   唯一不在上面 pattern 里的旧“命令”是 make -s（构建，新项 build）；
+#   另有 bash tests/*.sh、tests/annot/run.sh 等不带 ./ 前缀的旧命令，pattern 抓不到，本表也逐条列出。
+#   ./check.sh 只出现在旧脚本第 3/4 行的用法注释里（不是被执行的检查），新架构里它是 exec 到
+#   tools/check.py 的 shim —— 仍然自指，故两边集合都含 ./check.sh。
+#
+# 环境变量 / 超时 / 白名单一律照搬；本表 note 列写明。
+./check.sh	(shim；不是检查项)	3	旧脚本用法注释里的自指；现在 ./check.sh = exec 到 tools/check.py，用法与语义不变
+./check.sh	(shim；不是检查项)	4	同上（quick 用法注释）
+make -s	build	20	构建；失败写 /tmp/extc-build.log、打印日志并整体中止（原 exit 1）
+./tests/run.sh	tests	26	timeout 600；失败时剥 ANSI 后白名单判定：白名单现在是空的，多出任何别的失败即红
+./tests/run.sh	tests-assert	48	EXTC_DBG=1、timeout 1800；断言版全量（断言/兜底被走到即 abort）
+python3 tools/gate_scale.py	gate-scale	41	timeout 600
+python3 tools/gate_escape.py	tests-assert	49	EXTC_DBG=1、timeout 600；断言版里再验闸门⑤（取输出最后一行）
+python3 tools/gate_escape.py	gate-escape	65	timeout 600
+python3 tools/gate_callsite.py	gate-callsite	73	timeout 600
+python3 tools/gate_difffuzz.py	gate-difffuzz	80	timeout 600
+./tests/arena/run.sh	arena	85	timeout 600
+./tests/warnings/run.sh	warnings	88	timeout 600
+./tests/generics/run.sh	generics	93	timeout 600
+python3 tools/gen_flags.py --check	gen-flags	98	原命令（单一真源 docs/usage/flags.md）
+python3 tools/gen_flags.py	gen-flags	98	失败提示里让用户跑的修复命令（不是独立项）
+python3 tools/check_manual.py --gate	check-manual	101	棘轮：公开面欠账只许不增长
+python3 tools/manual_surface.py --check	manual-surface	104	原命令
+python3 tools/manual_surface.py	manual-surface	104	失败提示里的修复命令（不是独立项）
+python3 tools/check_no_history.py --gate	check-no-history	107	棘轮
+python3 tools/check_doxygen.py --gate	check-doxygen	110	棘轮
+python3 tools/check_code_examples.py --gate	check-code-examples	113	timeout 600
+python3 tools/check_doc_facts.py --gate	check-doc-facts	116	
+python3 tools/check_doc_examples.py --gate	check-doc-examples	119	
+python3 tools/gen_index.py --check	gen-index	122	
+python3 tools/check_tykind.py	check-tykind	125	
+./tests/impl/run.sh	impl	130	timeout 600
+python3 tools/check_walkers.py	check-walkers	135	原「dyn 阶段 1」节里的第 1 条
+python3 tools/check_plan_seam.py	check-plan-seam	138	计划接缝 X1
+python3 tools/check_ast_freeze.py	check-ast-freeze	141	AST 冻结 R1
+python3 tools/check_layering.py	check-layering	144	只读边界 R3
+python3 tools/check_tmpl_owners.py --verify	check-tmpl-owners	148	字段归属 X3
+python3 tools/check_switches.py	check-switches	150	timeout 120（原脚本唯一一个 120s）
+python3 tools/check_concurrency_guards.py	check-concurrency-guards	152	
+./tests/coro/run.sh	tests-coro	154	timeout 600
+./tests/dyn/run.sh	tests-dyn	156	timeout 600
+./tests/io/run.sh	io	161	timeout 600
+./tests/extern/run.sh	extern	166	timeout 600
+./tests/linkflags/run.sh	linkflags	171	timeout 600
+./tests/frozen/run.sh	frozen	176	timeout 600
+./tests/cabi/run.sh	cabi	181	timeout 600
+./tests/hostile/run.sh	hostile	186	timeout 600
+./tests/contract/run.sh	contract	191	timeout 600
+python3 tools/extpkg.py verify tests/pkg/honest	extpkg-honest	196	timeout 600；额外判据：grep 通过 .*no-retain + grep 不可验证  handle-ownership
+python3 tools/extpkg.py verify tests/pkg/keeper	extpkg-keeper	200	timeout 600；必须 rc=1 且输出含「被证伪」
+./tests/hash/run.sh	hash	209	timeout 900
+./tests/json/run.sh	json	214	timeout 900
+./tests/fstring/run.sh	fstring	219	timeout 300
+./tests/ws/run.sh	ws	224	timeout 300
+./tests/b64/run.sh	b64	229	timeout 300
+./tests/loop/run.sh	loop	234	timeout 300
+./tests/voidret/run.sh	voidret	239	timeout 300
+./tests/extpkg/run.sh	extpkg-chain	244	timeout 900
+./tests/cbindgen/run.sh	cbindgen	249	timeout 600
+./tests/real-lib/run.sh	real-lib	254	timeout 600
+./tests/heap/run.sh	heap	259	timeout 600
+./tests/modules/run.sh	modules	264	timeout 600
+./tests/asan/run.sh	asan	269	timeout 600
+python3 tools/parrun.py --mode arena-scan	arena-levels	277	无 timeout（照搬）
+./tests/qname/run.sh	qname	284	timeout 600
+./tests/fs-shape/run.sh	fs-shape	289	timeout 600
+./tests/fs/run.sh	fs	294	timeout 600
+./tests/argv/run.sh	argv	299	timeout 600
+./tests/pool/run.sh	pool	304	timeout 600
+./tests/map/run.sh	map	309	timeout 600
+./tests/instimpl/run.sh	instimpl	313	timeout 600；原「实例化类型上的 impl 与 dyn」节拆成 4 项
+./tests/lambda/run.sh	lambda	314	timeout 600；同上
+./tests/ext/run.sh	ext	315	timeout 600；同上
+./tests/time/run.sh	time	316	timeout 900；同上
+./tests/hashmap/run.sh	hashmap	323	timeout 600
+bash tests/showcase/run.sh	showcase	328	timeout 300；原命令带 bash，无 ./
+./tests/stl/run.sh	stl	333	timeout 600
+bash tests/linmap/run.sh	linmap	338	timeout 600；原命令带 bash，无 ./
+tests/annot/run.sh	annot	343	`[ -x ]` 条件：不可执行则原脚本静默跳过且不计数；新项显式报「跳过」、仍不计数
+tests/annot/run.sh	annot	344	条件成立时真跑（原命令无 timeout）
+tests/annot/run.sh	annot	345	失败分支里引用的同一条命令（不是第二个项）
+bash tests/ops/run.sh	ops	349	timeout 600
+bash tests/nocopy/run.sh	nocopy	354	timeout 600
+bash tests/ctor/run.sh	ctor	359	timeout 600
+bash tests/genmatrix/run.sh	genmatrix	364	timeout 600
+python3 tools/check_guards.py	guards	372	无 timeout（照搬）
+python3 tools/parrun.py --mode compiles	attacks	381	stdout 写临时文件后与 tests/attacks/BASELINE `diff -q`；新项用 stdout 逐字节比对 + unified diff
+python3 tools/gate_checkc.py --scope full	gate-checkc	395	timeout 1800；仅全量档
+python3 tools/gate_asan_corpus.py --scope full	gate-asan-corpus	401	timeout 1800；仅全量档
+./tools/golden.sh	golden	409	timeout 900；仅全量档；成功时额外打印 `  · ` 行
+./bench/run.sh	bench-extc-vs-c	414	仅全量档；观察项（旧脚本只显示 tail -12，不计数；新项同样不计数）
+./bench/heavy/run.sh	bench-heavy	416	仅全量档；观察项（不计数）
+N=5000000 NIMM=200 RUNS=1 ./bench/dyn/stress/run.sh	bench-dyn-stress	419	仅全量档；env 照搬
+N=50000 ./bench/dyn/alloc/run.sh	bench-dyn-alloc	422	仅全量档；env 照搬
+P=512 MIX=8 RUNS=1 ./bench/dyn/real/run.sh	bench-dyn-real	424	仅全量档；env 照搬
+./bench/stl/run.sh	bench-stl	427	仅全量档；stdout 写 /tmp/extc-bench-stl.log 后 grep 首个「通过」行
+SCALE=1 RUNS=1 WRITE_RESULTS=0 ./bench/app/run.sh	bench-app	431	仅全量档；env 照搬
+./bench/stress/run.sh	bench-stress	437	仅全量档；观察项（不计数）
+NS=500 RUNS=1 ./bench/compile/run.sh	bench-compile	439	仅全量档；env 照搬；成功时先打印 /^N / 起，再按有无 ERR 判 ok
+N=500000 RUNS=1 ./bench/oi/run.sh	bench-oi	448	仅全量档；env 照搬；成功时打印 /^语言/,/^$/ 段
+N=200000 Q=200000 V=200000 RUNS=1 ./bench/oi/persist/run.sh	bench-oi-persist	457	仅全量档；env 照搬；成功时打印「小规模对拍」行 + /^语言/,/^$/ 段
+# ---- 覆盖结论 ----
+# 1) 上面每一行旧命令都有新项名；没有一条旧命令被丢掉。
+# 2) 73 个 `==` 节 → 88 个新项：dyn 阶段1 节 (+8：9 条命令)、包验证节 (+1：诚实/食言两条)、
+#    实例化 impl/dyn 节 (+3：4 条命令)、STL 横评节 (+3：dyn 三档 + stl)，其余 1 节 = 1 项；
+#    另有 3 个基准节（./bench/run.sh / ./bench/heavy/run.sh / ./bench/stress/run.sh）只显示输出、
+#    不判 ok/FAIL —— 新架构里它们是“观察项”，仍会跑、但不计入通过/失败（与原语义一致）。
+# 3) 选不出来（未知 --only / 未知位置参数）会响亮报错，不静默跳过。
