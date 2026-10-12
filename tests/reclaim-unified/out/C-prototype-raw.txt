@@ -1,0 +1,12 @@
+cyclic_pressure default=8 rounds
+proto N=1000 0.10 s / N=2000 0.10 s / N=4000 0.10 s / N=8000 0.10 s
+proto N=20000 (>240 s, killed; ~100% CPU, RSS ~7.7 MB steady)
+base  N=20000 0.10 s / N=200000 0.10 s
+
+runshape (default N): hole_c rc=0 n = 131071 ; caller_frame rc=0 n = 70000 ;
+  persist_nodes rc=0 5 lines ; owed_home rc=0 n = 20000 ;
+  cross_region rc=0 rounds=8 sink=80 last=8 ;
+  cyclic_pressure rc=0 rounds=8 retired=0 live=8 fwd=28 back=28 idx=8 cache=1 hits=0 depth=1 tree=true
+
+proto owed_home (probe): PROBE sweeps=20 max_pause_us=416.2 max_mark_us=115.3 max_sweep_us=313.7 total_pause_us=7220.9
+base  owed_home (probe): PROBE sweeps=20 max_pause_us=490.9 max_mark_us=218.3 max_sweep_us=297.4 total_pause_us=7387.7

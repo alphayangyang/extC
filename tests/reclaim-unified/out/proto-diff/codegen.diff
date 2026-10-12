@@ -1,0 +1,340 @@
+--- /home/alphayang/extC_Compiler/src/back/codegen.c	2026-10-12 16:18:06.047359347 +0800
++++ src/back/codegen.c	2026-10-12 18:54:15.630288305 +0800
+@@ -419,9 +419,16 @@
+      * 协程帧……）。**根表不完整就一个触发都不发** —— 宁可这一轮不清扫，不可漏根误释放。 */
+     Vec         rcRoots;         /* const char *：存活的引用槽表达式 */
+     Vec         rcRootMarks;     /* size_t：每层块进入时的 rcRoots.len */
++    /* 原型：与 `rcRoots` 平行的一份**槽地址**表达式（`&(saved)`、`&(c.a)`），
++     * 由帧入口的登记循环写进 `__extc_rfs`，标记时按链解引用 —— 与 `rcRoots` 同长同截。 */
++    Vec         rcRootSlots;     /* const char *：存活引用槽的地址表达式 */
++    Vec         rcRootSlotMarks; /* size_t：每层块进入时的 rcRootSlots.len */
+     Vec         rcGlobalRoots;   /* const char *：全局引用槽 */
++    Vec         rcGlobalRootSlots; /* const char *：全局引用槽的地址表达式 */
+     bool        rcGlobalsUnreliable; /* 全局量里有枚举不出来的引用存储 ⇒ 所有函数关掉触发 */
+     bool        rcRootsUnreliable;
++    /* 原型：本帧的体级槽是否已经写进 `__extc_rfs`（只在函数体那一层做一次）。 */
++    bool        rcFrameSlotsDone;
+     /* 正在生成的这个函数收不收隐藏的「家 arena」形参（= `planUsesHome(f)`）。
+      *
+      * 触发点只在**本帧拥有的区域**上下手（见 `rcFrameOwnsArena`），而 `@overwrite` 的格子
+@@ -3171,23 +3178,20 @@
+ }
+ 
+ /**
+- * @brief 本帧**不拥有**这只区域时的记账：在区域上记一笔「欠一次收集」（子集 B）。
++ * @brief 原型：帧入口的登记循环 —— 把每个活引用槽的**地址**写进本帧的槽数组。
+  *
+- * 理由（见 `rcFrameOwnsArena` 与文件头的「第三个安全方向」）：家 arena 是调用者一路传下来的
+- * 同一只，本帧的静态根表看不见调用栈上其他帧的活引用 ⇒ 在这只区域上照常扫就是把活对象当
+- * 垃圾放（C 洞）。所以内层帧不扫，只记一笔账；**拥有这只区域的那一帧**在自己没有活跃被调
+- * 者子树时用自己的静态根表销账（`rcEmitOwedCheck`）。
+- *
+- * 记账本身就带压力判据（`extc_rc_shouldSweep`）：没过压力线的分配连账都不记，于是拥有者
+- * 侧的检查是一次「读一个 bit」，不是每个调用点都物化根表。
+- *
+- * 线程本地 arena（`parTls`）不在此列：整条 worker 调用链共用 `extc_tls_arena`，「拥有者帧」
+- * 的归属说不清（全语料没有正向语料），维持一个触发都不发（宁可少收）。
+- *
+- * @param g        生成器。
+- * @param basePtr  区域基址表达式（`(void *)` 形态）。
+- * @param lvl      块层级（`ARENA_HOME` 或 1 以上）；分片时区域号取 `lvl * 片数 + k`。
+- */
++ * 与 `rcRootTableText` 同一份来源（`rcRootSlots` 由 `rcRootLeaves` 与 `rcRoots` 同步 push），
++ * 但写的是地址：于是触发点上不必再物化一张值表，标记沿帧链解引用即可。`n == 0` 时发一个
++ * `(void)0` —— 帧节点仍然要压（父帧的槽也是种子）。
++ */
++static void rcSlotsRegText(CG *g, Buf *b) {
++    if (g->rcRootSlots.len == 0) { bufPuts(b, "(void)0"); return; }
++    bufPuts(b, "do { ");
++    for (size_t i = 0; i < g->rcRootSlots.len; i++)
++        bufPrintf(b, "__extc_rfs[%zu] = (void **)(%s); ", i,
++                  *(const char **)vecAt(&g->rcRootSlots, i));
++    bufPuts(b, "} while (0)");
++}
+ static void rcEmitOwe(CG *g, const char *basePtr, int lvl) {
+     if (g->parTls) return;
+     if (g->rcNShard <= 1) {
+@@ -3222,22 +3226,29 @@
+  * @param lvl      块层级（`main` 的家 arena 是 `ARENA_HOME`，否则 1 以上）。
+  */
+ static void rcEmitOwedCheck(CG *g, const char *basePtr, int lvl) {
+-    if (!g->needReclaim || g->rcRootsUnreliable || g->prefixBlk == 0) return;
++    if (!g->needReclaim || g->prefixBlk == 0) return;
+     if (g->rcGlobalRoots.len + g->rcRoots.len > 4096) { g->rcRootsUnreliable = true; return; }
+-    Buf b;
+-    bufInit(&b, g->arena);
+-    size_t n = rcRootTableText(g, &b);
+     if (g->rcNShard <= 1) {
+         pfLine(g, "{ ExtcRcRegion *__extc_rcc = extc_rc_regionOf(%s, %d);"
+-                  " if (extc_rc_owed(__extc_rcc)) extc_rc_checkOwed(__extc_rcc, %s, %zu); }",
+-               basePtr, lvl, bufCstr(&b), n);
++                  " if (extc_rc_owed(__extc_rcc)) {"
++                  ""
++                  " if (!extc_rc_chainBad()) { size_t __extc_rcz = 0;"
++                  "  void **__extc_rcq = extc_rc_chainRoots(&__extc_rcz);"
++                  "  if (!extc_rc_chainBad()) extc_rc_checkOwed(__extc_rcc, __extc_rcq, __extc_rcz);"
++                  "  if (__extc_rcq) free(__extc_rcq); } } }",
++               basePtr, lvl);
+         return;
+     }
+     pfLine(g, "{ for (int32_t __extc_rcck = 0; __extc_rcck < %d; __extc_rcck++) {"
+               " ExtcRcRegion *__extc_rcc = extc_rc_regionOf((void *)((char *)(%s) + __extc_rcck),"
+               " (int32_t)(%d + __extc_rcck));"
+-              " if (extc_rc_owed(__extc_rcc)) extc_rc_checkOwed(__extc_rcc, %s, %zu); } }",
+-           g->rcNShard, basePtr, lvl * g->rcNShard, bufCstr(&b), n);
++              " if (extc_rc_owed(__extc_rcc)) {"
++              ""
++              " if (!extc_rc_chainBad()) { size_t __extc_rcz = 0;"
++              "  void **__extc_rcq = extc_rc_chainRoots(&__extc_rcz);"
++              "  if (!extc_rc_chainBad()) extc_rc_checkOwed(__extc_rcc, __extc_rcq, __extc_rcz);"
++              "  if (__extc_rcq) free(__extc_rcq); } } } }",
++           g->rcNShard, basePtr, lvl * g->rcNShard);
+ }
+ 
+ /**
+@@ -3265,30 +3276,25 @@
+  * @param frameOwned 这只区域是不是本帧拥有的（假 ⇒ 只记欠收，不扫）。
+  */
+ static void rcEmitTrigger(CG *g, const char *basePtr, int lvl, bool frameOwned) {
+-    if (!g->needReclaim || g->rcRootsUnreliable || g->prefixBlk == 0) return;
++    if (!g->needReclaim || g->prefixBlk == 0) return;
+     if (!frameOwned) { rcEmitOwe(g, basePtr, lvl); return; }
+     size_t n = g->rcGlobalRoots.len + g->rcRoots.len;
+     if (n > 4096) { g->rcRootsUnreliable = true; return; }
+-    Buf b;
+-    bufInit(&b, g->arena);
+-    n = rcRootTableText(g, &b);
++    /* 原型：触发点先把自己的槽登记进本帧数组、压帧节点，再用**整条链**当种子。
++     * 这一步无条件执行（连 `rcRootsUnreliable` 也不挡）——不可靠帧也必须压上去，
++     * 否则标记时看不见"链上有帧枚举不全"，就会在种子不完整时照常扫（C 洞回来）。 */
+     const char *rg = arenaPrintf(g->arena, "__extc_rcg%d", g->rcGuardSeq++);
++    const char *rn = arenaPrintf(g->arena, "__extc_rcq%d", g->rcGuardSeq++);
+     if (g->rcNShard <= 1) {
+-        /* 单片：与接线前逐字节相同（认领键就是区域基址）。 */
+         pfLine(g, "{ ExtcRcRegion *%s = extc_rc_regionOf(%s, %d);"
+-                  " if (extc_rc_shouldSweep(%s)) extc_rc_maybeCollect(%s, %s, %zu); }",
+-               rg, basePtr, lvl, rg, rg, bufCstr(&b), n);
++                  " if (extc_rc_shouldSweep(%s)) {"
++                  ""
++                  " size_t %s_z = 0; void **%s_p = extc_rc_chainRoots(&%s_z);"
++                  " if (!extc_rc_chainBad()) extc_rc_maybeCollect(%s, %s_p, %s_z);"
++                  " if (%s_p) free(%s_p); } }",
++               rg, basePtr, lvl, rg, rn, rn, rn, rg, rn, rn, rn, rn);
+         return;
+     }
+-    /* 分片：区域键是"基址 + k"（只比不读）。一次触发**只收一片**，挑的是**垃圾最多**的那片
+-     * （`bytes - live`，与原型同一办法）：收完它的 `bytes` 掉下来，下一次自然轮到别的片 ——
+-     * 不需要额外的轮转状态，也不会让某一片永远轮不上（先到先收会让第一片独占）。
+-     *
+-     * 内存压力下限**按片均分**（`EXTC_RC_FLOOR / N`，与原型 `TRIGGER / NSHARD` 同一口径）：
+-     * 不除的话 N 片各自守着一个全长下限，总量上界变成 N 倍，停顿旋钮就顺带改了内存界；
+-     * 除完总量仍是 `EXTC_RC_FLOOR`，片多只让每片收得更勤、每次更小。下限由运行期的
+-     * `extc_rc_regionFloor` 设（判据仍在运行期，这里只是给同一个下限除以片数）。
+-     * 根表仍是调用实参、仍只在真的要扫时才物化 —— 与单片的入口守卫同一条口径。 */
+     const char *ck = "__extc_rck";
+     const char *rb = arenaPrintf(g->arena, "__extc_rcb%d", g->rcGuardSeq);
+     const char *rbg = arenaPrintf(g->arena, "__extc_rcbg%d", g->rcGuardSeq);
+@@ -3299,11 +3305,15 @@
+               " if (!extc_rc_shouldSweep(%s)) continue;"
+               " int64_t %s = extc_rc_bytes(%s) - extc_rc_live(%s);"
+               " if (!%s || %s > %s) { %s = %s; %s = %s; } }"
+-              " if (%s) extc_rc_maybeCollect(%s, %s, %zu); }",
++              " if (%s) {"
++              ""
++              " size_t %s_z = 0; void **%s_p = extc_rc_chainRoots(&%s_z);"
++              " if (!extc_rc_chainBad()) extc_rc_maybeCollect(%s, %s_p, %s_z);"
++              " if (%s_p) free(%s_p); } }",
+            rb, rbg, ck, ck, g->rcNShard, ck, rg, basePtr, ck, lvl * g->rcNShard, ck,
+            rg, g->rcNShard, rg,
+            rbg, rg, rg, rb, rbg, rbg, rb, rg, rbg, rbg,
+-           rb, rb, bufCstr(&b), n);
++           rb, rn, rn, rn, rb, rn, rn, rn, rn);
+ }
+ 
+ /**
+@@ -3357,6 +3367,8 @@
+     switch (t->kind) {
+     case TY_REF:
+         *(const char **)vecPush(&g->rcRoots) = base;
++        *(const char **)vecPush(&g->rcRootSlots) =
++            arenaPrintf(g->arena, "&(%s)", base);          /* 原型：同一份来源的槽地址 */
+         return;
+     case TY_ARRAY: {
+         Type *e = subst(g, t->inner);
+@@ -3466,6 +3478,36 @@
+ }
+ 
+ /**
++ * @brief 原型：把**函数体这一层**的引用绑定提前声明，并把槽地址一次写进 `__extc_rfs`。
++ *
++ * 为什么必须提前：C 要求声明先于语句，而槽地址要在任何循环/调用之前就写进帧数组 ——
++ * 否则子帧触发时沿链看到的本帧槽还是空的（那正是 C 洞的形状）。做法是把体级的引用绑定
++ * 全部提到函数体顶部（初值 `(T *)0`；原来那条声明被抹掉，赋值语句照旧留在原处，所以
++ * `var p = new node` 在循环里的执行次数不变）。嵌套块里的声明不在这里动：它们有自己的
++ * 作用域，出了块就不是根。
++ */
++static void rcRootDeclFn(CG *g, const Stmt *st) {
++    if (!g || !st || st->kind != ST_BLOCK) return;
++    for (size_t i = 0; i < st->u.block.stmts.len; i++) {
++        Stmt *s = *(Stmt **)vecAt(&st->u.block.stmts, i);
++        if (!s || s->kind != ST_VAR || s->u.var.overwrite || s->u.var.isGlobal) continue;
++        const char *nm = planCName(s) ? planCName(s) : s->u.var.name;
++        if (!nm) continue;
++        Type *tt = subst(g, s->type);
++        if (!tt) continue;
++        RcScan sc = rcScanType(g, tt, 0);
++        if (sc == RC_CONSERVATIVE) { g->rcRootsUnreliable = true; continue; }
++        if (sc == RC_NO_REFS) continue;
++        /* 零值用复合格字面量 `(T){0}`：结构体/定长数组都合法（`{0}` 初始化第一个成员，
++         * 其余按 C 的规则置零），引用绑定则用 `(T *)0`。原来的声明被改成赋值，留在原处，
++         * 所以初始化式（`new` / 结构体字面量 / 函数调用）的执行次数不变。 */
++        if (tt->kind == TY_REF) cgLine(g, "%s %s = (%s)0;", cType(g, tt), nm, cType(g, tt));
++        else cgLine(g, "%s %s = (%s){0};", cType(g, tt), nm, cType(g, tt));
++        rcRootDecl(g, s->type, nm);
++    }
++}
++
++/**
+  * @brief 生成 `EX_NEW`：在 checker 算出的层级上分配。
+  *
+  * 层级可能因为值被存进活得更久的地方而被提升，这是带自动清理的内存真正被取走的地方。
+@@ -4184,6 +4226,7 @@
+      * lost. It is a no-op when the buffer is empty. */
+     if (g->inMain && g->needCout) cgLine(g, "extc_cout_flush();");
+     if (g->noArena) {
++        if (g->needReclaim) cgLine(g, "extc_rc_framePop(&__extc_rfn0);");
+         if (g->isRecursive) {
+             if (val) cgLine(g, "{ int64_t __r = (int64_t)(%s); --__extc_rec_depth; return __r; }", val);
+             else     cgLine(g, "{ --__extc_rec_depth; return; }");
+@@ -4820,6 +4863,20 @@
+     /* `genFunc` sizes `zoneMark`, `loopLevel` and `loopStep` by `levelCap`; state the bound
+      * here rather than walk off the array. */
+     assert(g->blkLevel < g->levelCap);
++    /* 原型：函数体这一层——先把体级引用绑定提前声明，再把槽地址一次写进 `__extc_rfs`。
++     * 这一步在任何循环/调用之前，所以子帧触发时本帧的槽已经完整。 */
++    if (g->needReclaim && !g->coroFunc && g->blkLevel == 1 && !g->rcFrameSlotsDone) {
++        g->rcFrameSlotsDone = true;
++        rcRootDeclFn(g, block);
++        Buf frb;
++        bufInit(&frb, g->arena);
++        /* 原型：全局槽由 `rcGlobalRootSlots` 在**文件级**登记一次、每个触发点都算根
++         * （原设计如此），所以这里的帧数组只放本帧的槽。 */
++        rcSlotsRegText(g, &frb);
++        cgLine(g, "%s; extc_rc_framePush(&__extc_rfn0, __extc_rfs, %zu);",
++               bufCstr(&frb), g->rcRootSlots.len);
++        if (g->rcRootsUnreliable) cgLine(g, "extc_rc_frameBad(&__extc_rfn0);");
++    }
+     /* Entering a block overwrites this level's mark, so the one that was there is saved
+      * and put back on the way out. Level 1 is the function body, whose mark the prologue
+      * set (it pushed `__extc_zm1`, and the epilogue reads the mark to decide whether to
+@@ -4830,6 +4887,7 @@
+     /* 静态根表的块边界：进入时记下当前登记深度，离开时截回去 —— 块里的局部量出了块就不再
+      * 是根（机制文档第三节第一条：触发点上的活槽由编译器给）。 */
+     *(size_t *)vecPush(&g->rcRootMarks) = g->rcRoots.len;
++    *(size_t *)vecPush(&g->rcRootSlotMarks) = g->rcRootSlots.len;
+     if (!g->noArena) {
+         if (!g->coroFunc) {  /* a coroutine's storage is the task's, not this block's */
+             /* 进入块只清 arena（它的块留给下一轮复用）；回收区域不在这里丢，理由见
+@@ -4863,6 +4921,9 @@
+     assert(g->rcRootMarks.len > 0);
+     g->rcRoots.len = *(size_t *)vecAt(&g->rcRootMarks, g->rcRootMarks.len - 1);
+     g->rcRootMarks.len--;
++    assert(g->rcRootSlotMarks.len > 0);
++    g->rcRootSlots.len = *(size_t *)vecAt(&g->rcRootSlotMarks, g->rcRootSlotMarks.len - 1);
++    g->rcRootSlotMarks.len--;
+     g->blkLevel--;
+ }
+ 
+@@ -5318,7 +5379,14 @@
+                                  : zeroInit(g, s->type);
+ flushPrefix(g);
+ size_t lb = g->out->len;
+-cgLine(g, "%s%s %s = %s;", stg, cType(g, s->type), nm, asF32(g, s->type, s->u.var.init, init));
++if (g->needReclaim && !stg[0] && !s->u.var.overwrite && g->blkLevel == 1 &&
++        s->type && rcScanType(g, s->type, 0) == RC_LEAF_REFS) {
++    /* 原型：这条体级引用绑定已经提前声明（见 `rcRootDeclFn`），这里只保留赋值，
++     * 所以 `var p = new node` 在循环里的执行次数一个字都不变。 */
++    cgLine(g, "%s = %s;", nm, asF32(g, s->type, s->u.var.init, init));
++} else {
++    cgLine(g, "%s%s %s = %s;", stg, cType(g, s->type), nm, asF32(g, s->type, s->u.var.init, init));
++}
+ localDef(g, lb, nm, 1);
+ /* 引用槽的计数。**新槽**走 initRef：它只写 + 目标加一，**绝不读旧值** —— 一个刚声明的
+  * 槽里躺着的"旧值"是空闲链的槽号（slab 分配器的空闲链就存在槽头），当指针解引用会崩。
+@@ -6624,15 +6692,45 @@
+     /* 回收的静态根表按函数重来：形参里含引用的槽从函数体第一行起就是根。
+      * 协程 step 的形参住在帧里（`f->name`），静态枚举不出来 ⇒ 整个 step 关掉触发。 */
+     g->rcRoots.len = 0;
++    g->rcRootSlots.len = 0;
++    g->rcRootMarks.len = 0;
++    g->rcRootSlotMarks.len = 0;
++    g->rcFrameSlotsDone = false;
+     g->rcRootsUnreliable = g->needReclaim && (g->coroFunc != NULL || g->rcGlobalsUnreliable);
++    /* 原型：本帧的根节点 + 槽地址数组（定长 4096，与静态根表的上限同一条）。
++     * 节点声明在函数开头，**推送推迟到第一次登记/触发**（见 `rcFrameRegText`）——
++     * 早推送会让标记在槽还没初始化时读到 0（0 会被跳过，所以只是保守，但推到登记点
++     * 与"活着的槽"的语义更贴近）。`bad` 由不可靠帧标记（协程/spawn/枚举负载）。 */
++    if (g->needReclaim) {
++        cgLine(g, "ExtcRcFrameRoot __extc_rfn0;");
++        cgLine(g, "void *__extc_rfs[4096];");
++    }
+     if (g->needReclaim && !g->coroFunc) {
+         for (size_t i = 0; i < f->params.len; i++) {
+             Param *p = *(Param **)vecAt(&f->params, i);
+             rcRootDecl(g, p->type, p->cname ? p->cname : p->name);
+         }
+     }
++    /* 原型：帧节点在入口就压上去（父帧的槽是子帧触发时的种子）；槽数组的填充推迟到
++     * 函数体的第一条语句（见 `genBlockBody` 的第一个块）——那时体级声明的名字才在作用域里，
++     * 但仍在任何 `while` / 调用之前，所以子帧触发时本帧的槽已经齐了。 */
++    if (g->needReclaim && g->coroFunc) {
++        /* 协程帧不在 C 栈上：节点照压、标 bad ⇒ 链不可用，谁都不许扫。 */
++        cgLine(g, "extc_rc_framePush(&__extc_rfn0, __extc_rfs, 0);");
++        cgLine(g, "extc_rc_frameBad(&__extc_rfn0);");
++    }
+     size_t mb = g->out->len;
+     genBlockBody(g, f->body);
++    /* 原型：函数体跑完 —— `rcRoots`/`rcRootSlots` 此刻正好是**体级**的全部活引用槽
++     * （块里的声明随块退出被截回），而体级声明的名字还都在作用域里（结构体/定长数组这类
++     * 无法提前声明的绑定现在也能取地址）。再写一遍数组，子帧沿链看到的就是完整的一帧。 */
++    if (g->needReclaim && !g->coroFunc && g->rcFrameSlotsDone) {
++        Buf frb;
++        bufInit(&frb, g->arena);
++        rcSlotsRegText(g, &frb);
++        cgLine(g, "%s; __extc_rfn0.n = %zu;", bufCstr(&frb), g->rcRootSlots.len);
++    }
++
+     if (g->coroFunc) {
+         /* The step's ending, **after** the body: falling off it finishes the coroutine. The pc gets a
+          * value no `case` matches, so a further resume falls through to the closing `return false;`.
+@@ -6719,6 +6817,7 @@
+         g->indent--;
+         cgLine(g, "__extc_ret:");
+         g->indent++;
++        if (g->needReclaim) cgLine(g, "extc_rc_framePop(&__extc_rfn0);");   /* 原型：帧退出弹根节点 */
+         /* `destroy`, not `release`: this is the frame's last exit, so the block the
+          * arena kept for the next round has to go too. Emitting `release` here would
+          * leak one block per arena at every return -- bounded, but a leak. */
+@@ -9437,8 +9536,10 @@
+         if (g->needReclaim && gd->ann) {
+             RcScan sc = rcScanType(g, gd->ann, 0);
+             if (sc == RC_CONSERVATIVE) g->rcGlobalsUnreliable = true;
+-            else if (sc == RC_LEAF_REFS)
++            else if (sc == RC_LEAF_REFS) {
+                 *(const char **)vecPush(&g->rcGlobalRoots) = gd->name;
++                *(const char **)vecPush(&g->rcGlobalRootSlots) = gd->name;  /* 原型：全局槽地址 */
++            }
+         }
+     }
+     if (m->globals.len) cgLine(g, "");
+@@ -9578,7 +9679,10 @@
+     /* 回收的编译期状态：三个向量都从空开始，靠 `vecInit` 而不是靠 CG 被清零。 */
+     vecInit(&g->rcRoots, arena, sizeof(const char *));
+     vecInit(&g->rcRootMarks, arena, sizeof(size_t));
++    vecInit(&g->rcRootSlots, arena, sizeof(const char *));
++    vecInit(&g->rcRootSlotMarks, arena, sizeof(size_t));
+     vecInit(&g->rcGlobalRoots, arena, sizeof(const char *));
++    vecInit(&g->rcGlobalRootSlots, arena, sizeof(const char *));
+     for (size_t i = 0; i < tt->instances.len; i++) {
+         Type *it = *(Type **)vecAt(&tt->instances, i);
+         /* A type that still mentions a type parameter gets no C: `[2]box<T>`
