@@ -1,0 +1,247 @@
+--- a/src/back/reclaim.c
++++ b/src/back/reclaim.c
+@@ -12,6 +12,7 @@
+ 
+ #include "reclaim.h"
+ 
++#include <stdio.h>    /* snprintf：切片清扫的 tick 宏 */
+ #include <stdlib.h>   /* getenv：差分判据的开关 */
+ #include <string.h>   /* strcmp：同上 */
+ 
+@@ -158,6 +159,20 @@
+     "    int64_t     floor;       /* 内存压力下限 */\n",
+     "    int64_t     scale;       /* 自学习：连续空扫的倍数；0 = 未学习 */\n",
+     "    size_t      sweeps, freedSlots;\n",
++    "#if EXTC_RC_SLICE_SWEEP\n",
++    "    /* ---- 切片清扫（原型 v2，默认关）：游标 + 进行中 + 字节配速 + 粗粒度 tick ---- */\n",
++    "    ExtcRcSlab *swSlab;      /* 游标：下一个要扫的 slab（0 = 无/该 pass 完成） */\n",
++    "    ExtcRcSlab *swP2Head;    /* pass 2 起点：清扫期间新挂到头部的 slab 要补算 */\n",
++    "    uint32_t    swWord;      /* 游标：下一个要扫的字 */\n",
++    "    int32_t     swPass;      /* 1 = 扫死槽，2 = bytes 重算 */\n",
++    "    int32_t     swActive;    /* 1 = 一次清扫还没走完 */\n",
++    "    size_t      swFreed;     /* 本次清扫已释放的槽数 */\n",
++    "    int64_t     swTot;       /* pass 2 的占用载荷累加 */\n",
++    "    int64_t     swAllocBytes;/* 自开始以来分配的字节（单调） */\n",
++    "    int64_t     swLastBytes; /* 上次推进时的分配字节水位 */\n",
++    "    int64_t     swBPW;       /* 每推进 1 个字需要多少分配字节（清扫开始时量） */\n",
++    "    size_t      swTick;      /* 粗粒度 tick 计数（每 TICK 次分配判一次） */\n",
++    "#endif\n",
+     "    int32_t     rid;\n",
+     "    int32_t     noSweep;     /* 有追不到宿主的跨区入边 ⇒ 这个区域不再清扫（宁可少收） */\n",
+     "    int32_t     part;        /* 这个区域**参与过 rc**（分配过对象，或当过赋值宿主） */\n",
+@@ -489,6 +504,9 @@
+     "__attribute__((unused)) static inline void extc_rc_notePart(ExtcRcRegion *r) {\n",
+     "    if (r && !r->part) { r->part = 1; extc_rc_partN++; }\n",
+     "}\n",
++    "#if EXTC_RC_SLICE_SWEEP\n",
++    "static void extc_rc_swAdvance(ExtcRcRegion *r);   /* 定义在 freeSlot 之后 */\n",
++    "#endif\n",
+     "__attribute__((unused)) static void *extc_rc_alloc(ExtcRcRegion *r, size_t n, const ExtcRcType *td) {\n",
+     "    EXTC_RC_TICK(0);   /* 分项计时（`EXTC_RC_TIME=1`） */\n",
+     "    extc_rc_notePart(r);\n",
+@@ -511,12 +529,19 @@
+     "    char *p = EXTC_RC_SLAB_DATA(s) + i * s->ss;\n",
+     "    memset(p, 0, ss);                         /* 新分配读作 0：语言承诺，也是标记的前提 */\n",
+     "    s->occ[extc_rc_word(i)] |= extc_rc_bit(i);\n",
++    "#if EXTC_RC_SLICE_SWEEP\n",
++    "    s->mark[extc_rc_word(i)] |= extc_rc_bit(i);   /* 分配按\"已标记\"发出：切片清扫的安全前提 */\n",
++    "#endif\n",
+     "    s->tid[i] = extc_rc_typeIdx(s, td);   /* 每槽 2 字节的号，不是 8 字节的指针 */\n",
+     "    s->rscnt[i] = 0;                      /* malloc 来的，占用槽的入边计数从这里起 */\n",
+     "#if !EXTC_RC_NOCOUNT\n",
+     "    s->hold[i] = 0;\n",
+     "#endif\n",
+     "    r->bytes += (int64_t)ss;\n",
++    "#if EXTC_RC_SLICE_SWEEP\n",
++    "    r->swAllocBytes += (int64_t)ss;\n",
++    "    if (r->swActive && ++r->swTick >= (size_t)EXTC_RC_SLICE_TICK) { r->swTick = 0; extc_rc_swAdvance(r); }\n",
++    "#endif\n",
+     "    return p;\n",
+     "}\n",
+     "\n",
+@@ -622,6 +647,87 @@
+     "    s->tid[i] = 0;\n",
+     "    s->region->bytes -= (int64_t)s->ss;\n",
+     "}\n",
++    "#if EXTC_RC_SLICE_SWEEP\n",
++    "/* ---- 切片清扫 v2\n",
++    " *\n",
++    " * 切点：一个字 = 64 槽（`mark` 之后\"占用 & ~标记 = 死\"是对冻结位图的局部判断）。\n",
++    " * 安全前提：分配按\"已标记\"发出（见 `extc_rc_alloc`）；`mark` 前必须清全位图（见 `extc_rc_collect`）。\n",
++    " * 配速（修法③④）：不看分配次数，看**分配的字节数**：清扫开始时量 `swBPW = 区域字节/区域字数`，\n",
++    " * 每 `EXTC_RC_SLICE_TICK` 次分配判一次，推进 `(分配字节增量)/swBPW` 个字。粗粒度 tick 把\n",
++    " * \"每次分配都判一次\"的那几纳秒压到 1/TICK。\n",
++    " * 结算（修法②）：`bytes/live/scale/thr` 只在清扫完成时算；pass 2 完成后把**清扫期间新挂到头部的\n",
++    " * slab 前缀**补算进 `swTot`（不重扫全表）。\n",
++    " * 触发（修法①）：清扫进行中 `shouldSweep` 不响（避免\"每分配一次 collect\"的风暴），\n",
++    " * 进度由分配路径的 tick 推进；完成后再按 `bytes > thr` 正常触发。 */\n",
++    "static void extc_rc_thrUpd(ExtcRcRegion *r);\n",
++    "static int extc_rc_swSlice(ExtcRcRegion *r, size_t budget) {\n",
++    "    if (!r->swActive) return 1;\n",
++    "    while (budget) {\n",
++    "        if (!r->swSlab) {\n",
++    "            if (r->swPass == 1) { r->swPass = 2; r->swSlab = r->slabs; r->swWord = 0; r->swTot = 0; r->swP2Head = r->slabs; continue; }\n",
++    "            /* 修法②：清扫期间新挂到头部的 slab 没被 pass 2 算过 ⇒ 只补这一段前缀 */\n",
++    "            if (r->slabs != r->swP2Head) {\n",
++    "                for (ExtcRcSlab *ns = r->slabs; ns != r->swP2Head; ns = ns->next)\n",
++    "                    for (uint32_t nw = 0; nw < ns->nwords; nw++)\n",
++    "                        r->swTot += (int64_t)__builtin_popcountll(ns->occ[nw]) * (int64_t)ns->ss;\n",
++    "                r->swP2Head = r->slabs;\n",
++    "            }\n",
++    "            if (r->swFreed == 0) {\n",
++    "                r->scale = (r->scale > 0 ? r->scale : 1) * 2;\n",
++    "                if (r->scale > EXTC_RC_SCALE_MAX) r->scale = EXTC_RC_SCALE_MAX;\n",
++    "            } else { r->scale = 0; }\n",
++    "            r->bytes = r->swTot;\n",
++    "            r->freedSlots += r->swFreed;\n",
++    "            r->live = r->bytes;\n",
++    "            extc_rc_thrUpd(r);\n",
++    "            r->swActive = 0;\n",
++    "            return 1;\n",
++    "        }\n",
++    "        ExtcRcSlab *s = r->swSlab;\n",
++    "        if (r->swWord >= s->nwords) {\n",
++    "            if (r->swPass == 1) memset(s->mark, 0, (size_t)s->nwords * sizeof(uint64_t));\n",
++    "            r->swSlab = s->next; r->swWord = 0;\n",
++    "            continue;\n",
++    "        }\n",
++    "        uint32_t w = r->swWord++;\n",
++    "        if (r->swPass == 1) {\n",
++    "            uint64_t dead = s->occ[w] & ~s->mark[w];\n",
++    "            while (dead) {\n",
++    "                uint32_t b = (uint32_t)__builtin_ctzll(dead);\n",
++    "                dead &= dead - 1;\n",
++    "                extc_rc_freeSlot(s, (size_t)w * 64 + b);\n",
++    "                r->swFreed++;\n",
++    "            }\n",
++    "        } else {\n",
++    "            r->swTot += (int64_t)__builtin_popcountll(s->occ[w]) * (int64_t)s->ss;\n",
++    "        }\n",
++    "        budget--;\n",
++    "    }\n",
++    "    return 0;\n",
++    "}\n",
++    "static void extc_rc_swBegin(ExtcRcRegion *r) {\n",
++    "    size_t words = 0;\n",
++    "    for (ExtcRcSlab *s = r->slabs; s; s = s->next) words += s->nwords;\n",
++    "    int64_t bytes = 0;\n",
++    "    for (ExtcRcSlab *s = r->slabs; s; s = s->next) bytes += (int64_t)s->nslots * (int64_t)s->ss;\n",
++    "    int64_t bpw = words ? (bytes + (int64_t)words - 1) / (int64_t)words : 1;\n",
++    "    if (bpw < 1) bpw = 1;\n",
++    "    r->swBPW = bpw;\n",
++    "    r->swLastBytes = r->swAllocBytes;\n",
++    "    r->swSlab = r->slabs; r->swWord = 0; r->swPass = 1;\n",
++    "    r->swFreed = 0; r->swTot = 0; r->swActive = 1; r->swTick = 0;\n",
++    "}\n",
++    "/* 修法③④：每 TICK 次分配判一次；推进 (分配字节增量 / swBPW) 个字。 */\n",
++    "static void extc_rc_swAdvance(ExtcRcRegion *r) {\n",
++    "    if (!r->swActive) return;\n",
++    "    int64_t d = r->swAllocBytes - r->swLastBytes;\n",
++    "    if (d <= 0) return;\n",
++    "    size_t w = (size_t)(d / r->swBPW);\n",
++    "    if (!w) return;\n",
++    "    r->swLastBytes += (int64_t)w * r->swBPW;\n",
++    "    extc_rc_swSlice(r, w);\n",
++    "}\n",
++    "#endif\n",
+     "\n",
+     "/* ---- `EXTC_RC_NOCOUNT=1`：计数入口整体变成空操作 --------------------------------\n",
+     " *\n",
+@@ -931,6 +1037,9 @@
+     "\n",
+     "__attribute__((unused)) static void extc_rc_regionFree(ExtcRcRegion *r) {\n",
+     "    if (!r) return;   /* skip:no-region */\n",
++    "#if EXTC_RC_SLICE_SWEEP\n",
++    "    r->swActive = 0;\n",
++    "#endif\n",
+     "    ExtcRcSlab *s = r->slabs;\n",
+     "    while (s) {\n",
+     "        ExtcRcSlab *n = s->next;\n",
+@@ -1148,6 +1257,13 @@
+     "/* 清扫：死槽 = 占用 & ~标记。按 64 位字顺序走，不追指针、不逐个 free；标记位图整片顺序清零。\n",
+     " * 释放不回改别的对象的计数：被释放的对象这一轮不可达，指它的引用也一起被释放，其余计数只多不少\n",
+     " * ⇒ 宁可晚收，不可早放。 */\n",
++    "#if EXTC_RC_SLICE_SWEEP\n",
++    "__attribute__((unused)) static size_t extc_rc_sweep(ExtcRcRegion *r) {\n",
++    "    extc_rc_swBegin(r);\n",
++    "    extc_rc_swSlice(r, 1);   /* 首片 1 个字 */\n",
++    "    return r->swFreed;\n",
++    "}\n",
++    "#else\n",
+     "__attribute__((unused)) static size_t extc_rc_sweep(ExtcRcRegion *r) {\n",
+     "    size_t freed = 0;\n",
+     "    for (ExtcRcSlab *s = r->slabs; s; s = s->next) {\n",
+@@ -1173,6 +1289,7 @@
+     "    r->freedSlots += freed;\n",
+     "    return freed;\n",
+     "}\n",
++    "#endif\n",
+     "\n",
+     "/* 触发：内存压力，带自学习退场。计数已收掉一切非环垃圾 ⇒ 占用 ≈ 存活，于是\n",
+     " * \"占用 > max(2×上一次清扫后的存活, 下限) × 倍数\"只在环真的攒起来时才成立。\n",
+@@ -1225,9 +1342,19 @@
+     "}\n",
+     "__attribute__((unused)) static size_t extc_rc_collect(ExtcRcRegion *r, void *const *roots, size_t nroots) {\n",
+     "    EXTC_RC_TICK(3);   /* 分项计时（`EXTC_RC_TIME=1`） */\n",
++    "#if EXTC_RC_SLICE_SWEEP\n",
++    "    if (r->swActive) { extc_rc_swAdvance(r); return 0; }   /* 修法①：清扫中触发只推进，不新开 */\n",
++    "    /* 标记位是\"本次 mark 已发现\"的位；分配按已标记发出会留下旧标记，而 `extc_rc_mark`\n",
++    "     * 对已标记对象**不再走孩子** ⇒ 不先清零会漏标（悬垂）。 */\n",
++    "    for (ExtcRcSlab *_s = r->slabs; _s; _s = _s->next)\n",
++    "        memset(_s->mark, 0, (size_t)_s->nwords * sizeof(uint64_t));\n",
++    "#endif\n",
+     "    size_t marked = extc_rc_mark(r, roots, nroots);\n",
+     "    (void)marked;\n",
+     "    size_t freed = extc_rc_sweep(r);\n",
++    "#if EXTC_RC_SLICE_SWEEP\n",
++    "    if (r->swActive) { r->sweeps++; return freed; }   /* 清扫未完：结算留到完成时 */\n",
++    "#endif\n",
+     "    if (freed == 0) {\n",
+     "        r->scale = (r->scale > 0 ? r->scale : 1) * 2;\n",
+     "        if (r->scale > EXTC_RC_SCALE_MAX) r->scale = EXTC_RC_SCALE_MAX;\n",
+@@ -1314,13 +1441,22 @@
+  * @param noCount    `EXTC_RC_NOCOUNT`：计数入口编译成空操作。
+  * @param timeOn     `EXTC_RC_TIME`：运行期分项计时。
+  * @param sweepFree  `EXTC_RC_SWEEP_FREE`：事件档，`shouldSweep` 恒 0。
++ * @param sliceSweep `EXTC_RC_SLICE_SWEEP`：切片清扫原型（默认关）。
++ * @param sliceTick  粗粒度配速：每多少次分配判一次（`EXTC_RC_SLICE_TICK`）。
+  */
+-void reclaimEmitRuntime(Arena *a, Buf *out, int noCount, int timeOn, int sweepFree) {
++void reclaimEmitRuntime(Arena *a, Buf *out, int noCount, int timeOn, int sweepFree, int sliceSweep, int sliceTick) {
+     (void)a;
+     /* 先立宏：上面那些 `#if EXTC_RC_NOCOUNT` / `#if EXTC_RC_TIME` 走哪一支由它们定。 */
+     bufPuts(out, noCount ? "#define EXTC_RC_NOCOUNT 1\n" : "#define EXTC_RC_NOCOUNT 0\n");
+     bufPuts(out, timeOn ? "#define EXTC_RC_TIME 1\n" : "#define EXTC_RC_TIME 0\n");
+     bufPuts(out, sweepFree ? "#define EXTC_RC_SWEEP_FREE 1\n" : "#define EXTC_RC_SWEEP_FREE 0\n");
++    bufPuts(out, sliceSweep ? "#define EXTC_RC_SLICE_SWEEP 1\n" : "#define EXTC_RC_SLICE_SWEEP 0\n");
++    {
++        char tickbuf[64];
++        if (sliceTick < 1) sliceTick = 1;
++        snprintf(tickbuf, sizeof tickbuf, "#define EXTC_RC_SLICE_TICK %d\n", sliceTick);
++        bufPuts(out, tickbuf);
++    }
+     for (size_t i = 0; i < sizeof RECLAIM_RT / sizeof RECLAIM_RT[0]; i++)
+         bufPuts(out, RECLAIM_RT[i]);
+ }
+--- a/src/back/reclaim.h
++++ b/src/back/reclaim.h
+@@ -47,6 +47,6 @@
+  * @param timeOn     `EXTC_RC_TIME`：运行期分项计时。
+  * @param sweepFree  `EXTC_RC_SWEEP_FREE`：事件档，`shouldSweep` 恒 0。
+  */
+-void reclaimEmitRuntime(Arena *a, Buf *out, int noCount, int timeOn, int sweepFree);
++void reclaimEmitRuntime(Arena *a, Buf *out, int noCount, int timeOn, int sweepFree, int sliceSweep, int sliceTick);
+ 
+ #endif /* EXTC_RECLAIM_H */
+--- a/src/back/codegen.c
++++ b/src/back/codegen.c
+@@ -9278,7 +9278,8 @@
+      * `scanUnitReclaim` from that criterion; `EXTC_RECLAIM=1` forces it on, `=0` off). */
+     if (g->needReclaim) {
+         reclaimEmitRuntime(g->arena, out, g->rcNoCount, getenv("EXTC_RC_TIME") != NULL,
+-                           g->rcSweepFree == 1);
++                           g->rcSweepFree == 1, getenv("EXTC_RC_SLICE_SWEEP") != NULL,
++                           getenv("EXTC_RC_SLICE_TICK") ? atoi(getenv("EXTC_RC_SLICE_TICK")) : 64);
+         /* 区域由 **arena 的地址**认领。分配点本来就知道自己落在哪只 arena 上
+          * （`arenaRefAt`），于是区域的寿命与那只 arena 完全一致 —— 包括被调者用调用者的
+          * 家 arena 分配的那种情形（家 arena 是**同一个地址**一路传下来的），也包括递归里
