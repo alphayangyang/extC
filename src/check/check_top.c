@@ -5382,6 +5382,7 @@ typedef struct {
     Vec         idleFieldStores; /* IdleFieldStore*：字段写的原始值（固定点求解的输入） */
     Vec         idleOrig;    /* IdleOrig*：`name` 的取值都是 `origin` 的投影（flavor ii） */
     Vec         idleKeep;    /* const char*：保留根（历次持有的对象都还可达） */
+    Vec         idleFreshSet; /* const char*：每个取值都是本帧新分配（或 null）的绑定 */
     int         idleSeq;    /* 走查里的语句序号（1 起）：判"分配点在站点之前" */
 } AcInfo;
 
@@ -6149,13 +6150,48 @@ static bool idleKeepHas(Vec *keep, const char *name) {
 }
 
 /* 字段 fname 是不是稳定：写它的宿主全是本帧 fresh 分配（没写过 ⇒ 也稳定：没人能改指）。 */
-/** @brief 字段是否稳定（写它的宿主全是本帧 fresh 分配 ⇒ 只会被创建、不会被改指）。 */
+/** @brief 宿主在站点所在的循环里被**推进**过：有一次写入发生在同一循环深度或更深、且写进去的是
+ *  本帧新分配的对象。没有它，"宿主对象是新的"只说明它在循环**外**建过一次 —— 循环里反复写的是
+ *  **同一个**对象（`fixed_slot_overwrite`：峰值随轮数涨，实测 2.99 → 7.85 MB）。 */
+static bool idleAdvancesInLoop(AcInfo *ac, const IdleWrite *w) {
+    if (!w->host) return false;
+    for (size_t i = 0; i < ac->idleWrites.len; i++) {
+        IdleWrite *o = *(IdleWrite **)vecAt(&ac->idleWrites, i);
+        if (o->kind != IDLE_DEST_SLOT_NAMED || !o->host || strcmp(o->host, w->host) != 0) continue;
+        if (o->depth < w->depth) continue;                       /* 要在同一循环里或更深 */
+        if (!o->value) continue;
+        if (o->value->kind == EX_NEW && !o->value->u.new_.count) return true;
+        if (o->value->kind == EX_IDENT) {
+            const char *vn = idleBindName(o->value, o->value->u.ident.name);
+            if (vn && idleNameIn(&ac->idleFreshSet, vn)) return true;
+        }
+    }
+    return false;
+}
+
+/** @brief 这个字段名在本函数里只有一处写站点。
+ *  细化 P 的宿主事实要它：两个**不同名字**的游标（`tail`/`prev2`）可能是同一个对象，
+ *  只按名字查"同（宿主, 字段）两处站点"（规则 A）看不出来。 */
+static bool idleLoneFieldSite(AcInfo *ac, const char *fname) {
+    if (!fname) return false;
+    size_t n = 0;
+    for (size_t i = 0; i < ac->idleFieldStores.len; i++) {
+        IdleFieldStore *fs = *(IdleFieldStore **)vecAt(&ac->idleFieldStores, i);
+        if (fs->fname && strcmp(fs->fname, fname) == 0) n++;
+    }
+    return n == 1;
+}
+
+/** @brief 字段是否稳定：写它的宿主对象都是**本帧新分配**的（只会被创建、不会被改指）。
+ *  判"宿主对象是新的"与 E/C/B 三条宿主条款用的是**同一条事实**（见 `idleHostFresh`）。 */
 static bool idleFieldStable(AcInfo *ac, const char *fname) {
     if (!fname) return false;
     for (size_t i = 0; i < ac->idleFieldStores.len; i++) {
         IdleFieldStore *fs = *(IdleFieldStore **)vecAt(&ac->idleFieldStores, i);
         if (!fs->fname || strcmp(fs->fname, fname) != 0) continue;
-        if (!idleFreshAt(ac, fs->host, fs->seq)) return false;
+        if (idleFreshAt(ac, fs->host, fs->seq)) continue;
+        if (idleNameIn(&ac->idleFreshSet, fs->host) && idleLoneFieldSite(ac, fs->fname)) continue;
+        return false;
     }
     return true;
 }
@@ -6319,6 +6355,65 @@ static bool idleLinksOld(AcInfo *ac, const IdleWrite *w) {
 }
 
 /**
+ * @brief 求"哪些绑定的每个取值都是**本帧新分配**（或 `null`）"的最大不动点。
+ *
+ * 这是细化 P 的**宿主事实**：E/C/B 三条宿主条款与"字段稳定"都问同一个问题 ——
+ * "这次写的那个对象是不是本帧刚建出来的"。字段没被写过 ⇒ 写它不丢根、也不留旧值。
+ *
+ * 关系是传递的（`prev2 = tail`，而 `tail` 的取值都是新建的）⇒ 迭代到不动点。只删不增：
+ * 初始化时所有候选都在，被某次写入否掉的名字才删掉。候选 = 作为具名槽被写过的名字 ∪ 本帧
+ * fresh 的名字。轮数上限 8（与别的台账同一约定）。
+ *
+ * @param ac 这个函数的记录；结果写回 `idleFreshSet`。
+ */
+static void idleSolveFreshSet(AcInfo *ac) {
+    Vec cand;
+    vecInit(&cand, ac->a, sizeof(const char *));
+    for (size_t i = 0; i < ac->idleWrites.len; i++) {
+        IdleWrite *w = *(IdleWrite **)vecAt(&ac->idleWrites, i);
+        if (w->kind != IDLE_DEST_SLOT_NAMED || !w->host) continue;
+        if (!idleNameIn(&cand, w->host)) *(const char **)vecPush(&cand) = w->host;
+    }
+    for (size_t i = 0; i < ac->idleFresh.len; i++) {
+        IdleFresh *fr = *(IdleFresh **)vecAt(&ac->idleFresh, i);
+        if (fr->name && !idleNameIn(&cand, fr->name)) *(const char **)vecPush(&cand) = fr->name;
+    }
+    ac->idleFreshSet = cand;
+    for (int round = 0; round < 8; round++) {
+        Vec next;
+        vecInit(&next, ac->a, sizeof(void *));
+        bool changed = false;
+        for (size_t i = 0; i < ac->idleFreshSet.len; i++) {
+            const char *n = *(const char **)vecAt(&ac->idleFreshSet, i);
+            bool ok = true, any = false;
+            for (size_t j = 0; ok && j < ac->idleWrites.len; j++) {
+                IdleWrite *o = *(IdleWrite **)vecAt(&ac->idleWrites, j);
+                if (o->kind != IDLE_DEST_SLOT_NAMED || !o->host || strcmp(o->host, n) != 0) continue;
+                any = true;
+                if (!o->value || o->value->kind == EX_NULL) continue;
+                if (o->value->kind == EX_GENCALL) continue;
+                if (o->value->kind == EX_NEW) {
+                    if (o->value->u.new_.count) { ok = false; break; }   /* 带长度＝视图/数组 */
+                    continue;
+                }
+                if (o->value->kind == EX_IDENT) {
+                    const char *vn = idleBindName(o->value, o->value->u.ident.name);
+                    if (vn && (strcmp(vn, n) == 0 || idleNameIn(&ac->idleFreshSet, vn)
+                               || idleFreshAt(ac, vn, o->seq)))
+                        continue;
+                }
+                ok = false;
+            }
+            if (ok && any) *(const char **)vecPush(&next) = n;
+            else changed = true;
+        }
+        ac->idleFreshSet = next;
+        if (!changed) break;
+    }
+}
+
+
+/**
  * @brief ② 的**唯一判据**：这一次往引用槽写值，会不会让垃圾不再有界。
  *
  * **判据其实算两维**（flavor (i) 的负结果把这一点钉死了：只算第一维会在
@@ -6374,16 +6469,8 @@ static IdleJudgment idleWriteOk(AcInfo *ac, const IdleWrite *w, size_t idx,
                 "line %d: the destination is not a named field of a named object", w->line);
             return IDLE_REJ;
         }
-        /* (a′)：宿主是**本迭代新建**的 —— 分配点的循环深度 ≥ 站点循环深度、且那条 `new` 没被
-         * 逃逸分析提到更长寿的 arena 层。两个条件都要。 */
-        IdleFresh *fr = idleFreshAt(ac, w->host, w->seq);
-        bool hostThisIter = fr && fr->depth - 1 >= w->depth && fr->arenaLevel >= w->depth;
-        if (w->depth > 0 && !hostThisIter && !w->seqElem) {
-            *why = arenaPrintf(ac->a,
-                "line %d: a reference field is written inside a loop, so one object can be overwritten",
-                w->line);
-            return IDLE_REJ;
-        }
+        /* 宿主是不是"本帧新建的对象"要等整趟走完才判得全（`idleFreshSet` 是不动点）⇒ 这里只筛
+         * 语法，E（循环里写字段）与 C（宿主不是本帧新建）都推迟到后处理期，按同一条事实判。 */
         return IDLE_DEFER;
     }
     if (w->kind == IDLE_DEST_SLOT_NAMED) {
@@ -6410,13 +6497,30 @@ static IdleJudgment idleWriteOk(AcInfo *ac, const IdleWrite *w, size_t idx,
             w->line);
         return IDLE_REJ;
     }
-    /* 堆字段站点的后处理：(C)/(B)/(A)。规则 A 只看**更早**的站点，所以按记录顺序判。 */
-    if (!idleFreshAt(ac, w->host, w->seq) && !w->seqElem) {
+    /* 堆字段站点的后处理：(E)/(C)/(B)/(A)。四问都落在**同一条事实**上 ——
+     * "这次写的那个宿主对象是不是本帧刚建出来的"（`idleHostFresh`）：
+     *   · E：(a′)——**本迭代**新建（分配深度/arena 层两个条件）；细化 P 的宿主事实另加一条路
+     *     （宿主绑定的每个取值都是本帧新分配 + 该字段只有一处站点）；
+     *   · C：放宽到"本帧"（台账里有这个名字，或细化 P 的宿主事实）；
+     *   · B：宿主绑定被重新赋值 ⇒ 只按名字判"每对象写一次"失效；但若走细化 P 那条路（宿主对象
+     *     每次都是新的），重赋值本身不构成问题。
+     * 规则 A 只看**更早**的站点，所以按记录顺序判。 */
+    IdleFresh *fr = idleFreshAt(ac, w->host, w->seq);
+    bool hostThisIter = fr && fr->depth - 1 >= w->depth && fr->arenaLevel >= w->depth;
+    bool hostCursor = idleNameIn(&ac->idleFreshSet, w->host) && idleLoneFieldSite(ac, w->fname)
+                      && idleAdvancesInLoop(ac, w);
+    if (w->depth > 0 && !hostThisIter && !hostCursor && !w->seqElem) {
+        *why = arenaPrintf(ac->a,
+            "line %d: a reference field is written inside a loop, so one object can be overwritten",
+            w->line);
+        return IDLE_REJ;
+    }
+    if (!idleFreshAt(ac, w->host, w->seq) && !hostCursor && !w->seqElem) {
         *why = arenaPrintf(ac->a,
             "line %d: the host object is not a local created by `new` in this frame", w->line);
         return IDLE_REJ;
     }
-    if (idleNameIn(&ac->idleAsgn, w->host)) {
+    if (idleNameIn(&ac->idleAsgn, w->host) && !hostCursor) {
         *why = arenaPrintf(ac->a,
             "line %d: the host binding is reassigned in this function", w->line);
         return IDLE_REJ;
@@ -6982,9 +7086,13 @@ void computeFnAcyclic(Checker *c) {
         vecInit(&info[i].idleFieldStores, a, sizeof(void *));
         vecInit(&info[i].idleOrig, a, sizeof(void *));
         vecInit(&info[i].idleKeep, a, sizeof(void *));
+        vecInit(&info[i].idleFreshSet, a, sizeof(void *));
         IdleWalk iw = { c, &info[i], 0, 1, 0, 0 };
         AstVisit iv = { idleWalkExprCb, idleWalkStmtCb, &iw };
         astWalkStmtChildren(f->body, &iv);
+        idleSolveLvls(&info[i]);
+        idleSolveFreshSet(&info[i]);   /* 细化 P 的宿主事实：哪些绑定的取值都是本帧新分配 */
+        idleSolveProj(&info[i]);       /* flavor (ii) 的两张表（最大不动点） */
         /* (a)/(a′) 剩下的两半与细化 A：判据的**后处理期**（走查期只筛掉了"循环里写非本迭代
          * 宿主"；这里用完整台账再判 C/B/A）。站点顺序就是记录顺序 —— 细化 A 只看更早的站点。 */
         for (size_t k = 0; k < info[i].idleWrites.len && !info[i].idleBad; k++) {
@@ -6997,8 +7105,6 @@ void computeFnAcyclic(Checker *c) {
         /* 细化 (b′)：栈上 ref 槽的赋值站点推迟到这里判 —— 条件是"写进这个槽的**全部**值都随
          * 本迭代的 arena 一起死"（`idleStoreQualified`）。因为同一名字可能有多处写入，只有整趟
          * 走完才看得全；任一处不合格 ⇒ 这个槽的每一次覆盖都判否（保守）。 */
-        idleSolveLvls(&info[i]);
-        idleSolveProj(&info[i]);   /* flavor (ii) 的两张表（最大不动点） */
         for (size_t k = 0; k < info[i].idleWrites.len && !info[i].idleBad; k++) {
             IdleWrite *w = *(IdleWrite **)vecAt(&info[i].idleWrites, k);
             if (w->kind != IDLE_DEST_SLOT_NAMED || !w->isAssign) continue;
