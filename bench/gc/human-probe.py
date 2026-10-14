@@ -19,6 +19,24 @@ RT = r'''
 #include <string.h>
 #include <stdint.h>
 #define PD_HASH (1u<<20)
+/* 运行期自带的"指针→区域"映射（src/back/reclaim.c:544，定义在本注入块之前不可见 ⇒ 前置声明） */
+static ExtcRcRegion *extc_rc_regionOfOwn(void *p);
+static ExtcRcRegion *extc_rc_regVal[]; static size_t extc_rc_regN;   /* 区域注册表（tentative 前置声明，定义在后方） */
+static unsigned long pd_all_sum, pd_all_live;
+/* 对账用：脏页清单（pd_note 里新页时追加）+ 覆盖性 + 全槽口径 */
+static uint64_t *pd_plist; static size_t pd_pl_n, pd_pl_cap;
+static unsigned long pd_spp, pd_slabs, pd_din, pd_dtot, pd_full_sum, pd_occ_sum, pd_ratio_cyc;
+/* ===== 交叉表：每周期把"全部写"按区域归类 ===== */
+#define HP_REG_MAX 512
+static ExtcRcRegion *hp_wreg[HP_REG_MAX]; static unsigned long hp_wcnt[HP_REG_MAX]; static int hp_wreg_n;
+static unsigned long hp_in_sum, hp_in_writes, hp_in_other;
+static unsigned long hp_cyc, hp_matched_writes, hp_total_writes, hp_zero_write_cyc, hp_matched_cyc;
+static unsigned long hp_last_marked_matched, hp_last_total, hp_last_occ, hp_last_live;
+static int hp_marked_idx;
+static void hp_wreg_count(ExtcRcRegion *r){
+    for(int i=0;i<hp_wreg_n;i++) if(hp_wreg[i]==r) { hp_wcnt[i]++; return; }
+    if(hp_wreg_n<HP_REG_MAX){ hp_wreg[hp_wreg_n]=r; hp_wcnt[hp_wreg_n]=1; hp_wreg_n++; }
+}
 static int pd_on=-1; static char pd_prefix[400];
 static uint64_t *pd_page, *pd_blk; static int32_t *pd_pgen, *pd_bgen; static int32_t pd_gen=1;
 static unsigned long pd_stores, pd_period_stores, pd_dirty_pages, pd_dirty_blks;
@@ -28,6 +46,7 @@ static FILE *pd_rows;
 static unsigned long hp_inter_sum, hp_live_sum, hp_rows;   /* 换血率（前向声明给 pd_dump 用） */
 /* (A) 区域限定写集合：本周期被写的槽地址（mark 时按"是否落在本区域 slab 区间"过滤） */
 static uint64_t *pd_ws; static size_t pd_ws_n, pd_ws_cap;
+static uint64_t *pd_wv; static size_t pd_wv_cap;   /* 每次写的新值（目标对象指针）⇒ 指入边判定 */
 static uint64_t *pd_rpage, *pd_rblk; static int32_t *pd_rpgen, *pd_rbgen;
 static unsigned long pd_rdirty_pages, pd_rdirty_blks, pd_r_slots_in_dirty, pd_r_sum_pages, pd_r_sum_blks, pd_r_sum_sid, pd_r_sum_live;
 /* (B) 分配纪元：addr -> 纪元号（纪元 = mark 序号） */
@@ -75,6 +94,17 @@ static void pd_dump(void){ static int d; if(!pd_on||d) return; d=1;
     fprintf(stderr,"PD files=%s.rows.csv\n",pd_prefix);
     fprintf(stderr,"PD-TURN-SUM rows=%lu live_sum=%lu inter_sum=%lu ratio=%.4f\n",hp_rows,hp_live_sum,hp_inter_sum,
             hp_live_sum?(double)hp_inter_sum/(double)hp_live_sum:0.0);
+    fprintf(stderr,"HP-C-SUM cycles=%lu regN=%zu slabs=%lu spp=%lu dirty_in_scanned=%lu/%lu dirty_pages_sum=%lu occ_sum=%lu full_slot_sum=%lu\n",
+            pd_ratio_cyc,(size_t)extc_rc_regN,pd_slabs,pd_spp,pd_din,pd_dtot,pd_full_sum/pd_spp?pd_full_sum/pd_spp:0,pd_occ_sum,pd_full_sum);
+    fprintf(stderr,"HP-RATIO-SUM occ_on_dirty=%lu marked_live=%lu ratio=%.3f\n",pd_all_sum,pd_all_live,
+            pd_all_live?(double)pd_all_sum/(double)pd_all_live:0.0);
+    fprintf(stderr,"HP-IN-SUM inbound_new_edges=%lu total_writes=%lu outbound_other=%lu\n",hp_in_sum,hp_in_writes,hp_in_other);
+    fprintf(stderr,"HP-X-SUM cycles=%lu zero_write_marked_cyc=%lu (%.1f%%) matched_cyc=%lu (%.1f%%) writes_into_marked=%lu/%lu (%.1f%%)\n",
+            hp_cyc,hp_zero_write_cyc,hp_cyc?100.0*hp_zero_write_cyc/hp_cyc:0.0,
+            hp_matched_cyc,hp_cyc?100.0*hp_matched_cyc/hp_cyc:0.0,
+            hp_matched_writes,hp_total_writes,hp_total_writes?100.0*hp_matched_writes/hp_total_writes:0.0);
+    for(int i=0;i<hp_wreg_n;i++)
+        fprintf(stderr,"HP-X-REGION idx=%d region=%p writes=%lu\n",i,(void*)hp_wreg[i],hp_wcnt[i]);
     fprintf(stderr,"PD-REGION-SUM pages=%lu blks=%lu slots_in_dirty=%lu live=%lu change_over_live=%.4f\n",
             pd_r_sum_pages,pd_r_sum_blks,pd_r_sum_sid,pd_r_sum_live,
             pd_r_sum_live?(double)pd_r_sum_sid/(double)pd_r_sum_live:0.0);
@@ -105,7 +135,7 @@ static void pd_note_alloc(void *p){
     if(pd_on<0) pd_arm(); if(!pd_on||!p) return;
     pd_ep_set((uint64_t)(uintptr_t)p, pd_mark_epoch);
 }
-static void pd_store(void **slot){
+static void pd_store2(void **slot, void *v){
     if(pd_on<0) pd_arm(); if(!pd_on) return;
     pd_stores++; pd_period_stores++;
     uint64_t a=(uint64_t)(uintptr_t)slot;
@@ -113,7 +143,9 @@ static void pd_store(void **slot){
     if(pd_ws_n==pd_ws_cap){ size_t nc=pd_ws_cap?pd_ws_cap*2:65536;
         uint64_t *nw=(uint64_t*)realloc(pd_ws,nc*8); if(!nw){fprintf(stderr,"PD-FAIL: ws\n");exit(3);}
         pd_ws=nw; pd_ws_cap=nc; }
-    pd_ws[pd_ws_n++]=a;
+    if(pd_wv_cap<pd_ws_cap){ uint64_t *nv=(uint64_t*)realloc(pd_wv,pd_ws_cap*8); if(!nv){fprintf(stderr,"PD-FAIL: wv\n");exit(3);} pd_wv=nv; pd_wv_cap=pd_ws_cap; }
+    pd_ws[pd_ws_n]=a; pd_wv[pd_ws_n]=(uint64_t)(uintptr_t)v; pd_ws_n++;
+    { ExtcRcRegion *wr=extc_rc_regionOfOwn(v); if(wr) hp_wreg_count(wr); }
 }
 /* ===== 换血率：按区域记相邻两次 mark 的活集交集（全区域） ===== */
 typedef struct HpTurn { ExtcRcRegion *r; uint64_t *prev; size_t nprev; struct HpTurn *next; } HpTurn;
@@ -171,6 +203,30 @@ static size_t pd_after_mark(ExtcRcRegion *r, void *const *roots, size_t nroots){
         if(pd_hask(pd_page,pd_pgen,h,pgv[z])>=0) slots_in_dirty++;
     }
     free(pgv);
+    /* (A0') 指入边：本周期写入的**新值**里，有多少指向"正在被 mark 的这个区域" */
+    { unsigned long inbound=0, attr_ok=0, other=0;
+      for(size_t wi=0; wi<pd_ws_n; wi++){
+          ExtcRcRegion *vr=extc_rc_regionOfOwn((void*)(uintptr_t)pd_wv[wi]);
+          if(vr==r) inbound++; else if(vr) other++;
+          if(vr) attr_ok++;
+      }
+      fprintf(stderr,"HP-IN cyc=%lu marked=%p writes=%lu inbound_new_edges=%lu outbound_other=%lu attr_ok=%lu\n",
+              hp_cyc+1,(void*)r,(unsigned long)pd_ws_n,inbound,other,attr_ok);
+      hp_in_sum+=inbound; hp_in_writes+=(unsigned long)pd_ws_n; hp_in_other+=other;
+    }
+    /* (A0) 交叉表：本周期全部写里，有多少落在"正在被 mark 的这个区域" */
+    { unsigned long matched=0;
+      for(size_t wi=0; wi<pd_ws_n; wi++){
+          if(extc_rc_regionOfOwn((void*)(uintptr_t)pd_ws[wi])==r) matched++;
+      }
+      hp_cyc++; 
+      hp_last_marked_matched=matched; hp_last_total=(unsigned long)pd_ws_n;
+      hp_matched_writes+=matched; hp_total_writes+=(unsigned long)pd_ws_n;
+      if(matched>0) hp_matched_cyc++;
+      if(matched==0) hp_zero_write_cyc++;
+      fprintf(stderr,"HP-X cyc=%lu marked=%p occ=%lu live=%lu writes_total=%lu writes_into_marked=%lu\n",
+              hp_cyc,(void*)r,occslots,liveslots,(unsigned long)pd_ws_n,matched);
+    }
     /* (A) 区域限定：只留落在**本区域 slab 区间**里的写 */
     pd_rdirty_pages=0; pd_rdirty_blks=0; pd_r_slots_in_dirty=0;
     for(size_t wi=0; wi<pd_ws_n; wi++){
@@ -196,6 +252,46 @@ static size_t pd_after_mark(ExtcRcRegion *r, void *const *roots, size_t nroots){
     }
     pd_r_sum_pages+=pd_rdirty_pages; pd_r_sum_blks+=pd_rdirty_blks;
     pd_r_sum_sid+=pd_r_slots_in_dirty; pd_r_sum_live+=liveslots;
+    /* (0) 对账：每页槽位数（实测：4096/slot_size，取被 mark 区域 slab 的最大值）+ 覆盖性三元组 */
+    { unsigned long spp=0; unsigned long slabs=0;
+      for(ExtcRcSlab *sx=r->slabs; sx; sx=sx->next){ if(sx->ss){ unsigned long v=4096u/(unsigned long)sx->ss; if(v>spp) spp=v; } slabs++; }
+      for(size_t ri=0; ri<extc_rc_regN; ri++){ ExtcRcRegion *rr=extc_rc_regVal[ri]; if(!rr) continue;
+          for(ExtcRcSlab *sy=rr->slabs; sy; sy=sy->next) slabs++; }
+      unsigned long din=0;
+      for(size_t pi=0; pi<pd_pl_n; pi++){
+          uintptr_t pg=(uintptr_t)(pd_plist[pi]<<12); int inr=0;
+          for(size_t ri=0; ri<extc_rc_regN && !inr; ri++){ ExtcRcRegion *rr=extc_rc_regVal[ri]; if(!rr) continue;
+              for(ExtcRcSlab *sz=rr->slabs; sz && !inr; sz=sz->next){
+                  uintptr_t lo=(uintptr_t)EXTC_RC_SLAB_DATA(sz), hi=lo+(size_t)sz->nslots*(size_t)sz->ss;
+                  if(pg>=lo && pg<hi) inr=1;
+              } }
+          if(inr) din++;
+      }
+      pd_spp=spp; pd_slabs=slabs; pd_din+=din; pd_dtot+=pd_pl_n;
+      fprintf(stderr,"HP-C cyc=%lu dirty_pages=%lu slots_per_page=%lu occ_on_dirty=%lu full_slot=%lu regN=%zu slabs=%lu dirty_in_scanned=%lu/%lu\n",
+              hp_cyc+1,pd_dirty_pages,spp,0UL,pd_dirty_pages*spp,(size_t)extc_rc_regN,slabs,din,(unsigned long)pd_pl_n);
+    }
+    /* (1) 核心比值：**不受限脏页**（全程序写的那 6 页 / 33 块）上的占用槽 ÷ 被 mark 区域活槽 */
+    { unsigned long allocc=0;
+      for(size_t ri=0; ri<extc_rc_regN; ri++){
+          ExtcRcRegion *rr=extc_rc_regVal[ri]; if(!rr) continue;
+          for(ExtcRcSlab *s5=rr->slabs; s5; s5=s5->next){
+              for(uint32_t w=0; w<s5->nwords; w++){
+                  uint64_t b=s5->occ[w];
+                  while(b){ uint32_t q=(uint32_t)__builtin_ctzll(b); b&=b-1;
+                      void *o=EXTC_RC_SLAB_DATA(s5)+(((size_t)w*64+q)*s5->ss);
+                      uint64_t pg=(uint64_t)(uintptr_t)o>>12;
+                      uint32_t h=(uint32_t)((pg*2654435761ull)>>12)&(PD_HASH-1);
+                      if(pd_hask(pd_page,pd_pgen,h,pg)>=0) allocc++;
+                  }
+              }
+          }
+      }
+      pd_all_sum+=allocc; pd_all_live+=liveslots;
+      pd_full_sum+=pd_dirty_pages*pd_spp; pd_occ_sum+=allocc; pd_ratio_cyc++;
+      fprintf(stderr,"HP-RATIO cyc=%lu dirty_pages=%lu dirty_blks=%lu occ_on_dirty=%lu marked_live=%lu ratio=%.3f\n",
+              hp_cyc+1,pd_dirty_pages,pd_dirty_blks,allocc,liveslots,liveslots?(double)allocc/(double)liveslots:0.0);
+    }
     /* (B) 分配纪元：活槽里"分配于上一纪元之后"的占比 */
     unsigned long newlive=0, liveN=0;
     for(ExtcRcSlab*s4=r->slabs;s4;s4=s4->next){
@@ -251,10 +347,10 @@ static size_t pd_after_mark(ExtcRcRegion *r, void *const *roots, size_t nroots){
 A_ALLOC="__attribute__((unused)) static void *extc_rc_alloc(ExtcRcRegion *r, size_t n, const ExtcRcType *td) {"
 A_MARK="__attribute__((unused)) static size_t extc_rc_mark(ExtcRcRegion *r, void *const *roots, size_t nroots) {"
 A_RET="    return marked;\n}"
-STORES=[("__attribute__((unused)) static void extc_rc_initRef(void **slot, void *v) {","pd_store(slot);"),
- ("__attribute__((unused)) static void extc_rc_initRefNoHold(void **slot, void *v) {","pd_store(slot);"),
- ("__attribute__((unused)) static void extc_rc_storeRef(void **slot, void *v) {","pd_store(slot);"),
- ("__attribute__((unused)) static inline void extc_rc_storeRefOwned(void **slot, void *v, void *owner) {","pd_store(slot);")]
+STORES=[("__attribute__((unused)) static void extc_rc_initRef(void **slot, void *v) {","pd_store2(slot, v);"),
+ ("__attribute__((unused)) static void extc_rc_initRefNoHold(void **slot, void *v) {","pd_store2(slot, v);"),
+ ("__attribute__((unused)) static void extc_rc_storeRef(void **slot, void *v) {","pd_store2(slot, v);"),
+ ("__attribute__((unused)) static inline void extc_rc_storeRefOwned(void **slot, void *v, void *owner) {","pd_store2(slot, v);")]
 def main():
     src,dst=sys.argv[1],sys.argv[2]
     t=open(src,encoding='utf-8',errors='surrogateescape').read()
