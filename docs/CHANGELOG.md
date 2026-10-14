@@ -1,3 +1,15 @@
+## 2026-10-14 · harness 约定落地：产物无 rc 运行期 ⇒ 报 `PAUSE_DIST_STRUCTURAL0`（exit 0），不再是假 FAIL
+
+新增 `bench/gc/pause_dist.sh`（薄包装；`tools/` **未动**）。规则写死在脚本里：
+- `grep -c extc_rc_ <gen.c>` **= 0** ⇒ stderr 打 `PAUSE_DIST_STRUCTURAL0 file=… rc_marks=0`、**exit 0**、**不产出插桩文件**（不再让调用方看到 `exits=0/0/1/1` 与 `cmp=DIFF`）；
+- 记号 > 0 ⇒ **只读复用** `tools/rc-pause-probe.py`；成功 exit 0，失败**透传其 exit code**。
+
+**验证（原文）**：P1 与 P3 均 `rc_marks=0` ⇒ 报结构性 0、exit 0、**无假 FAIL**（**P3 的"结构性无 rc 运行期"由此第五次独立证实**）；P4 `rc_marks=410` ⇒ 正常插桩，实跑 `n=4 / p50 83.2 µs`（units=200，与 units=2000 的 `n=47 / p50 82.8 µs` 一致 ✓）。
+
+**意义**：此前 P3 这类形状会以"探针副本编译失败"的面貌出现（`undefined reference to main` + `cmp=DIFF`），容易被误读为测量失败；现在统一约定为"**结构性 0**"，与 P1 同类、可被下游直接消费。
+
+**未覆盖**：Java 臂矩阵（P2/P4）、Java P1/P3/P5 移植、P5 口径对账。
+
 ## 2026-10-14 · 新默认下归因**重排**：头名从 `ownSlab` 转到 **`alloc`（28.55% self Ir）**；"率上升"是**分母变小**的假象
 
 **总指令数**（callgrind 钉 core 7；指令数与负载无关；与 `gcbench` 在 core 6 并发）：
