@@ -1,0 +1,543 @@
+// bench/gc 形状 7：digraph —— 错综复杂的有向图（复杂环 + 不保证连通）。
+// 四家（extC / 现代 C++ / Rust / Go）必须逐字节同输出；本文件是参照实现。
+//
+// 形状（四家逐字一致）：
+//   根集 = 双向链 handle 表（每分量一个 handle）；结点 = 小载荷 + 变长出边表（头插）+ 命名回指；
+//   每轮 (a) 建 G 个环组（k=3..6 首尾相接成真环，环闭合边计入 backedges）
+//           (b) 改 M 条边（删头边 + 按 60/20/10/10 加边：组内更老/组内更新/全局枢纽集/长程）
+//           (c) 丢：优先摘"无跨组入边"的组（gpin==false）⇒ 制造不可达的环状垃圾
+//           (d) 遍历存活部分累加校验和（反 DCE）
+//   输出（整数，两行）：nodes/edges/sum + backedges/各计数。
+//
+// 注：`back` 是命名回指（指向组内更老的结点）；extC 没有 weak 之分，
+//     环由区域清扫收回（EXTC_RECLAIM=0 档关掉清扫 ⇒ 地板）。
+use std::io
+
+let MASK: i64 = 4611686018427387903
+
+struct edge {
+    to: mut ref node
+    next: ?mut ref edge
+    kind: i64
+}
+
+struct node {
+    id: i64
+    gid: i64
+    payload: i64
+    first: ?mut ref edge
+    ord: ?mut ref node
+    back: ?mut ref node
+    mark: i64
+    cmark: i64
+    snext: ?mut ref node
+    gpin: bool
+}
+
+struct handle {
+    target: mut ref node
+    newest: mut ref node
+    size: i64
+    prev: ?mut ref handle
+    next: ?mut ref handle
+}
+
+struct ctx {
+    head: ?mut ref handle
+    tail: ?mut ref handle
+    n: i64
+    hubs: [8]?mut ref node
+    hubCount: i64
+}
+
+var gstate: i64 = 1
+var nextId: i64 = 0
+var gidCounter: i64 = 0
+var backedges: i64 = 0
+var nodesM: i64 = 0
+var groupsM: i64 = 0
+var droppedG: i64 = 0
+var droppedN: i64 = 0
+var rejected: i64 = 0
+var cyclesDropped: i64 = 0
+var acc: i64 = 0
+var xacc: i64 = 0
+var lastNodes: i64 = 0
+var lastEdges: i64 = 0
+var epoch: i64 = 0
+var cepoch: i64 = 0
+
+fn nxt() -> i64 {
+    gstate = (gstate * 1103515245 + 12345) & 2147483647
+    return gstate
+}
+
+fn mixv(a: i64, b: i64) -> i64 {
+    var x: i64 = (a * 2654435761 + b * 40503 + 12345) & 4611686018427387903
+    x = x ^ (x >> 12)
+    return x & 4611686018427387903
+}
+
+fn parseNum(s: slice<u8>, def: i64) -> i64 {
+    if s.len == 0 { return def }
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < '0' || ch > '9' { return def }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    return v
+}
+
+fn handleAt(c: mut ref ctx, idx: i64) -> mut ref handle {
+    var h: ?mut ref handle = c.head
+    var i: i64 = 0
+    while i < idx {
+        if h == null { break }
+        var hh = h
+        h = hh.next
+        i = i + 1
+    }
+    var r = h!
+    return r
+}
+
+fn nodeInGroup(h: mut ref handle, j: i64) -> mut ref node {
+    var x: ?mut ref node = h.newest
+    var i: i64 = 0
+    while i < j {
+        if x == null { break }
+        var xx = x
+        x = xx.ord
+        i = i + 1
+    }
+    var r = x!
+    return r
+}
+
+fn addEdge(s: mut ref node, t: mut ref node, k: i64) {
+    var e = new edge
+    e.to = t
+    e.kind = k
+    e.next = s.first
+    s.first = e
+}
+
+// 组内"更老"（id 更小）的一个随机祖先；没有就退回 hub
+fn olderInGroup(s: mut ref node, hub: mut ref node) -> mut ref node {
+    var c1: i64 = 0
+    var y: ?mut ref node = s.ord
+    while true {
+        if y == null { break }
+        var yy = y
+        c1 = c1 + 1
+        y = yy.ord
+    }
+    if c1 == 0 { return hub }
+    var j: i64 = nxt() % c1
+    var z: ?mut ref node = s.ord
+    var i2: i64 = 0
+    while true {
+        if z == null { break }
+        var zz = z
+        if i2 == j { return zz }
+        i2 = i2 + 1
+        z = zz.ord
+    }
+    return hub
+}
+
+// 组内"更新"（id 更大）的一个随机后代；没有就退回 hub
+fn newerInGroup(s: mut ref node, newest: mut ref node, hub: mut ref node) -> mut ref node {
+    var c2: i64 = 0
+    var y: ?mut ref node = newest
+    while true {
+        if y == null { break }
+        var yy = y
+        if yy.id > s.id { c2 = c2 + 1 }
+        y = yy.ord
+    }
+    if c2 == 0 { return hub }
+    var j: i64 = nxt() % c2
+    var z: ?mut ref node = newest
+    var i2: i64 = 0
+    while true {
+        if z == null { break }
+        var zz = z
+        if zz.id > s.id {
+            if i2 == j { return zz }
+            i2 = i2 + 1
+        }
+        z = zz.ord
+    }
+    return hub
+}
+
+// 建组时的弦边目标：60% 组内更老 / 20% 组内更新 / 10% 组内 hub / 10% 组内长程随机
+fn pickChordTarget(s: mut ref node, hub: mut ref node, newest: mut ref node, size: i64) -> mut ref node {
+    var r: i64 = nxt() % 100
+    if r < 60 {
+        return olderInGroup(s, hub)
+    }
+    if r < 80 {
+        return newerInGroup(s, newest, hub)
+    }
+    if r < 90 {
+        return hub
+    }
+    var j3: i64 = nxt() % size
+    var z3: ?mut ref node = newest
+    var i4: i64 = 0
+    while true {
+        if z3 == null { break }
+        var zz3 = z3
+        if i4 == j3 { return zz3 }
+        i4 = i4 + 1
+        z3 = zz3.ord
+    }
+    return hub
+}
+
+// 组内是否存在有向环（丢弃时现场验证；只用组内边，独立于"构造上必有环"）
+fn groupHasCycle(newest: mut ref node, gid: i64) -> bool {
+    var u: ?mut ref node = newest
+    while true {
+        if u == null { break }
+        var uu = u
+        u = uu.ord
+        cepoch = cepoch + 1
+        var ep: i64 = cepoch
+        var top: ?mut ref node = null
+        var e: ?mut ref edge = uu.first
+        while true {
+            if e == null { break }
+            var ee = e
+            e = ee.next
+            var t = ee.to
+            if t.gid == gid {
+                if t.id == uu.id { return true }
+                if t.cmark != ep {
+                    t.cmark = ep
+                    t.snext = top
+                    top = t
+                }
+            }
+        }
+        var found: bool = false
+        while true {
+            if top == null { break }
+            var x = top
+            top = x.snext
+            x.snext = null
+            if x.id == uu.id { found = true }
+            if found {
+                // 找到也要把栈排干（否则 snext 留着强引用）
+            } else {
+                var e2: ?mut ref edge = x.first
+                while true {
+                    if e2 == null { break }
+                    var ee2 = e2
+                    e2 = ee2.next
+                    var t2 = ee2.to
+                    if t2.gid == gid && t2.cmark != ep {
+                        t2.cmark = ep
+                        t2.snext = top
+                        top = t2
+                    }
+                }
+            }
+        }
+        if found { return true }
+    }
+    return false
+}
+
+fn createGroup(c: mut ref ctx, k: i64, pin: bool, isHub: bool) {
+    var gid: i64 = gidCounter
+    gidCounter = gidCounter + 1
+    groupsM = groupsM + 1
+
+    var hub = new node
+    hub.id = nextId
+    hub.gid = gid
+    hub.payload = nxt() % 1000
+    hub.first = null
+    hub.ord = null
+    hub.back = null
+    hub.mark = 0
+    hub.cmark = 0
+    hub.snext = null
+    hub.gpin = pin
+    nextId = nextId + 1
+    nodesM = nodesM + 1
+    if isHub {
+        c.hubs[0] = hub
+        c.hubCount = 1
+    }
+
+    var prev = hub
+    var cnt: i64 = 1
+    while cnt < k {
+        var n = new node
+        n.id = nextId
+        n.gid = gid
+        n.payload = nxt() % 1000
+        n.first = null
+        n.ord = prev
+        n.back = prev
+        n.mark = 0
+        n.cmark = 0
+        n.snext = null
+        n.gpin = pin
+        nextId = nextId + 1
+        nodesM = nodesM + 1
+        if isHub {
+            c.hubs[cnt] = n
+            c.hubCount = cnt + 1
+        }
+        var e = new edge
+        e.to = n
+        e.kind = 1
+        e.next = prev.first
+        prev.first = e
+        prev = n
+        cnt = cnt + 1
+    }
+
+    // 环闭合边：newest -> hub（回溯边）
+    var ec = new edge
+    ec.to = hub
+    ec.kind = 1
+    ec.next = prev.first
+    prev.first = ec
+    backedges = backedges + 1
+
+    // 弦边
+    var x: ?mut ref node = prev
+    while true {
+        if x == null { break }
+        var xx = x
+        var d: i64 = nxt() % 3
+        var j: i64 = 0
+        while j < d {
+            var tgt = pickChordTarget(xx, hub, prev, k)
+            var e2 = new edge
+            e2.to = tgt
+            e2.kind = 2
+            e2.next = xx.first
+            xx.first = e2
+            j = j + 1
+        }
+        x = xx.ord
+    }
+
+    var h = new handle
+    h.target = hub
+    h.newest = prev
+    h.size = k
+    h.prev = c.tail
+    h.next = null
+    var tl: ?mut ref handle = c.tail
+    if tl == null {
+        c.head = h
+    } else {
+        tl.next = h
+    }
+    c.tail = h
+    c.n = c.n + 1
+}
+
+// 丢一个组：(c) 步。优先摘无跨组入边（gpin==false）的组；顺手做现场环验证与计数。
+fn tryDrop(c: mut ref ctx) {
+    if c.n == 0 { return }
+    var base: i64 = nxt() % c.n
+    var probe: i64 = 0
+    while probe < 8 {
+        var idx: i64 = base + probe
+        while idx >= c.n { idx = idx - c.n }
+        var h = handleAt(c, idx)
+        var cnt: i64 = 0
+        var anypin: bool = false
+        var x: ?mut ref node = h.newest
+        while true {
+            if x == null { break }
+            var xx = x
+            cnt = cnt + 1
+            if xx.gpin { anypin = true }
+            x = xx.ord
+        }
+        if anypin {
+            rejected = rejected + 1
+            probe = probe + 1
+        } else {
+            droppedG = droppedG + 1
+            droppedN = droppedN + cnt
+            if groupHasCycle(h.newest, h.target.gid) {
+                cyclesDropped = cyclesDropped + 1
+            }
+            var hp: ?mut ref handle = h.prev
+            var hn: ?mut ref handle = h.next
+            if hp == null {
+                c.head = hn
+            } else {
+                var hpp = hp
+                hpp.next = hn
+            }
+            if hn == null {
+                c.tail = hp
+            } else {
+                var hnn = hn
+                hnn.prev = hp
+            }
+            h.prev = null
+            h.next = null
+            c.n = c.n - 1
+            return
+        }
+    }
+}
+
+// (d) 步：从 handle 表出发对存活部分做一次遍历（显式栈，用 snext 串），累加校验和。
+fn traverse(c: mut ref ctx, ep: i64) {
+    var top: ?mut ref node = null
+    var h: ?mut ref handle = c.head
+    while true {
+        if h == null { break }
+        var hh = h
+        h = hh.next
+        var t = hh.target
+        if t.mark != ep {
+            t.mark = ep
+            t.snext = top
+            top = t
+        }
+    }
+    var rn: i64 = 0
+    var re: i64 = 0
+    var radd: i64 = 0
+    var rxor: i64 = 0
+    while true {
+        if top == null { break }
+        var n = top
+        top = n.snext
+        n.snext = null
+        rn = rn + 1
+        radd = (radd + mixv(n.id, n.payload)) & MASK
+        var e: ?mut ref edge = n.first
+        while true {
+            if e == null { break }
+            var ee = e
+            e = ee.next
+            re = re + 1
+            var t2 = ee.to
+            rxor = rxor ^ mixv(n.id, t2.id) ^ (ee.kind * 4099)
+            if t2.mark != ep {
+                t2.mark = ep
+                t2.snext = top
+                top = t2
+            }
+        }
+    }
+    acc = (acc + radd + rn * 1000003 + re * 31) & MASK
+    xacc = (xacc ^ (rxor ^ (rn * 1000003 + re))) & MASK
+    lastNodes = rn
+    lastEdges = re
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var N: i64 = 200000
+    var sd: i64 = 20261013
+    if args.len > 1 { N = parseNum(args[1], N) }
+    if args.len > 2 { sd = parseNum(args[2], sd) }
+    if N < 256 { N = 256 }
+    gstate = sd & 2147483647
+
+    var c: ctx
+    c.head = null
+    c.tail = null
+    c.n = 0
+    c.hubCount = 0
+
+    // 全局枢纽集：一个 8 结点、永久存活的组（10% 的边指向它）
+    createGroup(ref c, 8, true, true)
+
+    var R: i64 = 16 + N / 4096
+    var B: i64 = N / R
+    if B < 24 { B = 24 }
+
+    var round: i64 = 0
+    while round < R {
+        // (a) 建
+        var created: i64 = 0
+        var groupsThisRound: i64 = 0
+        while created < B {
+            var k: i64 = 3 + nxt() % 4
+            createGroup(ref c, k, false, false)
+            created = created + k
+            groupsThisRound = groupsThisRound + 1
+        }
+        // (b) 改：删头边 + 按 60/20/10/10 加边
+        var M: i64 = 2 + nxt() % 3
+        var m: i64 = 0
+        while m < M {
+            if c.n > 0 {
+                var idx: i64 = nxt() % c.n
+                var h = handleAt(ref c, idx)
+                var s = nodeInGroup(h, nxt() % h.size)
+                var f: ?mut ref edge = s.first
+                if f != null {
+                    var ff = f
+                    var f2: ?mut ref edge = ff.next
+                    if f2 != null {
+                        s.first = f2
+                    }
+                }
+                var r: i64 = nxt() % 100
+                var tgt: ?mut ref node = null
+                if r < 60 {
+                    tgt = olderInGroup(s, h.target)
+                } else if r < 80 {
+                    tgt = newerInGroup(s, h.newest, h.target)
+                } else if r < 90 {
+                    if c.hubCount > 0 {
+                        var hj: i64 = nxt() % c.hubCount
+                        var hu: ?mut ref node = c.hubs[hj]
+                        if hu != null {
+                            var hun = hu
+                            tgt = hun
+                        }
+                    }
+                } else {
+                    var idx2: i64 = nxt() % c.n
+                    var h2 = handleAt(ref c, idx2)
+                    tgt = nodeInGroup(h2, nxt() % h2.size)
+                }
+                if tgt != null {
+                    var tg = tgt
+                    if tg.gid != s.gid {
+                        tg.gpin = true
+                    }
+                    addEdge(s, tg, 3)
+                }
+            }
+            m = m + 1
+        }
+        // (c) 丢
+        var d: i64 = 0
+        while d < groupsThisRound {
+            tryDrop(ref c)
+            d = d + 1
+        }
+        // (d) 遍历
+        epoch = epoch + 1
+        traverse(ref c, epoch)
+        round = round + 1
+    }
+
+    var total: i64 = (acc + xacc) & MASK
+    io::cout << "nodes=" << lastNodes << " edges=" << lastEdges << " sum=" << total << "\n"
+    io::cout << "backedges=" << backedges << " groups_made=" << groupsM << " nodes_made=" << nodesM << " dropped_groups=" << droppedG << " dropped_nodes=" << droppedN << " rejected_external=" << rejected << " cycles_dropped=" << cyclesDropped << "\n"
+    return 0
+}
