@@ -1,0 +1,225 @@
+// bench/gc 人类形状 B：**服务端请求型 + 协程域**（task-46）
+// 一个长命、基本只读的**共享缓存**（直接映射 + 侵入式 LRU 双向链，偶发插入/淘汰）；
+// 每个请求在**自己的协程域**里跑：请求内分配短命对象、查询缓存（大量）、偶发插入，
+// 请求结束（协程跑完）整片丢 ⇒ 量“每个协程域的可达闭包有多大 / 跨域引用占比”。
+//
+// 惯常写法 ✓（没有为回收器调整结构）：直接映射表 + LRU 链 + 每请求协程 + 请求内链表。
+//
+// 输出（两行整数，确定性）：
+//   requests=<n> cache=<表内条目> rnodes=<请求内结点总数> sum=<校验和>
+//   hits=<命中> misses=<未命中> evict=<淘汰> inserts=<插入>
+// argv[1] = 请求数（默认 4000）· argv[2] = seed（默认 20261013）
+use std::io
+
+struct centry {
+    key: i64
+    val: i64
+    stamp: i64
+    dead: i64
+    next: ?mut ref centry
+}
+
+struct cache {
+    map: [1024]?mut ref centry
+    count: i64
+    clock: i64
+    hits: i64
+    misses: i64
+    evict: i64
+    inserts: i64
+    cap: i64
+}
+
+struct rnode {
+    id: i64
+    key: i64
+    val: i64
+    parent: ?mut ref rnode
+    sib: ?mut ref rnode
+}
+
+var gstate: i64 = 1
+
+fn nxt() -> i64 {
+    gstate = (gstate * 1103515245 + 12345) & 2147483647
+    return gstate
+}
+
+fn parseI64(s: slice<u8>) -> i64 {
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    return v
+}
+
+fn slotOf(k: i64) -> i64 {
+    return (k * 2654435761) & 1023
+}
+
+// 近似 LRU：命中就刷新访问时刻（`stamp`），淘汰时挑最小者。桶内是单链 + 墓碑（dead）。
+fn cacheGet(c: mut ref cache, k: i64) -> i64 {
+    var h: i64 = slotOf(k)
+    var cur: ?mut ref centry = c.map[h]
+    while cur != null {
+        if cur.dead == 0 && cur.key == k {
+            c.clock = c.clock + 1
+            cur.stamp = c.clock
+            c.hits = c.hits + 1
+            return (cur.val << 20) | 1
+        }
+        cur = cur.next
+    }
+    c.misses = c.misses + 1
+    return i64(-1)
+}
+
+fn cachePut(c: mut ref cache, k: i64, v: i64) {
+    var h: i64 = slotOf(k)
+    // 命中就直接更新（真实缓存会这么做）
+    var cur: ?mut ref centry = c.map[h]
+    while cur != null {
+        if cur.dead == 0 && cur.key == k {
+            cur.val = v
+            c.clock = c.clock + 1
+            cur.stamp = c.clock
+            return
+        }
+        cur = cur.next
+    }
+    var e: mut ref centry = new centry
+    e.key = k
+    e.val = v
+    e.dead = 0
+    c.clock = c.clock + 1
+    e.stamp = c.clock
+    e.next = c.map[h]
+    c.map[h] = e
+    c.count = c.count + 1
+    c.inserts = c.inserts + 1
+    // 超上限 ⇒ 淘汰最小 stamp（墓碑法，不做指针手术：避免把"借来的"引用存进"借来的"对象）
+    if c.count > c.cap {
+        var bi: i64 = 0
+        var worst: i64 = -1
+        var worstStamp: i64 = 0
+        var worstKey: i64 = 0
+        while bi < 1024 {
+            var x: ?mut ref centry = c.map[bi]
+            while x != null {
+                if x.dead == 0 {
+                    if worst < 0 || x.stamp < worstStamp {
+                        worst = bi
+                        worstStamp = x.stamp
+                        worstKey = x.key
+                    }
+                }
+                x = x.next
+            }
+            bi = bi + 1
+        }
+        if worst >= 0 {
+            var y: ?mut ref centry = c.map[worst]
+            while y != null {
+                if y.dead == 0 && y.key == worstKey {
+                    y.dead = 1
+                    c.count = c.count - 1
+                    c.evict = c.evict + 1
+                    break
+                }
+                y = y.next
+            }
+        }
+    }
+}
+
+// 一个请求 = 一个协程域：请求内分配、大量查缓存、偶发插入；协程跑完 ⇒ 整片丢
+fn handle(c: mut ref cache, req: i64, rng: i64) -> coroutine<i64> {
+    var sum: i64 = 0
+    var root: ?mut ref rnode = null
+    var n: i64 = 320 + (rng % 192)
+    var i: i64 = 0
+    var s: i64 = rng | 1
+    while i < n {
+        s = (s * 1103515245 + 12345) & 2147483647
+        var p: mut ref rnode = new rnode
+        p.id = i
+        p.key = s % 2048
+        p.val = s
+        p.parent = root
+        p.sib = null
+        // 请求内“用一下缓存”：拿一个（可能长命的）值算进本地结果
+        var r: i64 = cacheGet(c, p.key)
+        if r < 0 {
+            p.val = p.val + 7
+        } else {
+            p.val = p.val + (r >> 20)
+        }
+        root = p
+        sum = (sum + p.val + p.id) & 4611686018427387903
+        // 沿 parent 链走一小段（真实请求会做几层聚合）
+        var q: ?mut ref rnode = root
+        var d: i64 = 0
+        while d < 3 {
+            if q == null { break }
+            sum = (sum + q.key) & 4611686018427387903
+            q = q.parent
+            d = d + 1
+        }
+        i = i + 1
+        if i % 64 == 0 {
+            yield sum
+        }
+    }
+    // 偶发插入（请求结束前，把本次算出来的一个键写回共享缓存）
+    if req % 3 == 0 {
+        cachePut(c, req % 2048, sum & 1048575)
+    }
+    yield sum
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var reqs: i64 = 4000
+    var sd: i64 = 20261013
+    if args.len > 1 { reqs = parseI64(args[1]) }
+    if args.len > 2 { sd = parseI64(args[2]) }
+    if reqs < 8 { reqs = 8 }
+    gstate = sd & 2147483647
+
+    var c: mut ref cache = new cache
+    c.count = 0
+    c.clock = 0
+    c.hits = 0
+    c.misses = 0
+    c.evict = 0
+    c.inserts = 0
+    c.cap = 6144
+
+    // 预热缓存：长命、之后基本只读
+    var pre: i64 = 0
+    while pre < 2048 {
+        cachePut(c, pre, pre * 31 + 7)
+        pre = pre + 1
+    }
+
+    var sum: i64 = 0
+    var rnodes: i64 = 0
+    var r: i64 = 0
+    while r < reqs {
+        var rng: i64 = nxt()
+        var co = handle(c, r, rng)
+        while co.next() {
+            sum = (sum + co.value()) & 4611686018427387903
+        }
+        rnodes = rnodes + 320 + (rng % 192)
+        r = r + 1
+    }
+
+    io::cout << "requests=" << reqs << " cache=" << c.count << " rnodes=" << rnodes << " sum=" << sum << "\n"
+    io::cout << "hits=" << c.hits << " misses=" << c.misses << " evict=" << c.evict << " inserts=" << c.inserts << "\n"
+    return 0
+}
