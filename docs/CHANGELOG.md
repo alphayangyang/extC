@@ -1,3 +1,30 @@
+## 2026-10-15 · 删掉赋值侧两次冗余 `notePart`：`shard_bands` **79.6 → 45.3 ms（−43%）**、窗口 **102.7 → 10.9 µs**，`evict` **18.4 → 15.7 ms（−15%）**
+
+**动机（量出来的，不是猜的）**：`evict_cache` 的火力全在赋值路径 —— callgrind 里 `extc_rc_storeRefOwned` 占 self 22.4%，它调的 `ownSlab` 占 21.2%。其中最大一笔是 `notePart(owner ? regionOfOwn(owner) : 0)`：为维护「参与区域数」（`partN`，单区域免登记快路径的闸门），**每次赋值都要查一次区域**。而任何 rc 槽的区域在它诞生时就已经记过参与（`extc_rc_alloc` 里无条件 `notePart(r)`）⇒ 赋值侧那次查询**冗余**。`shard_bands` 尤其明显：它的引用面几乎只有赋值、没有大面积分配，于是每次赋值都白付一次查找。
+
+**机制**（`src/back/reclaim.c`）：
+- 删掉 `extc_rc_storeRefOwnedReg` 的 `notePart(host)` 与 `extc_rc_storeRefOwned` 的 `notePart(owner ? regionOfOwn(owner) : 0)`；**保留** `extc_rc_alloc`（槽的诞生点）与 `extc_rc_storeStructCons`（保守分支）的记参与。
+- **不变量换了个守法的位置**：`extc_rc_regionFree` 开头新增运行期守卫 —— `part == 0` 的区域**不得有占用槽**，有就 `oops`（冷路径；`part` 为真时只有一次可预测分支）。它与静态规则一起覆盖同一条不变量「有 rc 槽的区域必须已参与」。
+- **门禁口径 R1 → R2 + R3**（`tools/check_note_part.py`）：删除 R1「会登记 ⇒ 必须记参与」—— 登记只作用在**已存在**的槽上，而槽的区域在诞生时已记参与，赋值侧再记一次是冗余的，R1 会把这份冗余写成"必须保留"；保留 R2「会交出槽 ⇒ 必须记参与」；新增运行期 R3（上面那条守卫）。自检用例随之改口径（"只登记、不产槽"必须绿）。**双红演示**：注入"删掉 `alloc` 的 `notePart`" ⇒ 静态 `FAIL [R2] extc_rc_alloc`（rc=1）**且**运行期 `trap: reclaim: R3: occupied slot in a region with part == 0`（rc=1），撤回后绿。
+
+**实测**（同机同法，五形状：窗口 max / 墙钟 / RSS / 语义；语义与 `EXTC_RECLAIM=0` 逐字比对；口径与 `gate-reclaim-*` 一致）：
+
+| 形状 | 窗口 max（改前 → 改后） | 墙钟（改前 → 改后） | RSS | 语义 |
+|---|---|---|---|---|
+| `shard_bands` | 102.7 → **10.9 µs** | 79.6 → **45.3 ms（−43%）** | 3.7 → 3.7 MB | 同 |
+| `rg_evict_cache` | 7.9 → 8.0 µs | 18.4 → **15.7 ms（−15%）** | 2.7 → 2.6 MB | 同 |
+| `spectrum_p5` | 1473.6 → 1440.1 µs | 20.0 → 20.4 ms | 6.3 → 6.3 MB | 同 |
+| `cross_region` | 475.7 → 478.7 µs | 19.1 → 19.0 ms | 11.0 → 11.0 MB | 同 |
+| `digraph` | 11.9 → 11.5 µs | 1.5 → 1.5 ms | 2.5 → 2.5 MB | 同 |
+
+窗口有 run 间方差（`shard_bands` 的改前窗口在不同轮次落在 102.7–149.5 µs），判据是"降一个数量级"，不押单个数字。
+
+**闸门**：`./check.sh nobench` **100/0**、`./check.sh docs` **12/0**、`gate-reclaim-*` 12 项 + `gate-rc-idle-corpus` + `gate-idle-projection` **15/0**（含 `gate-note-part`，跑的就是改过的 `check_note_part.py`）。ASan/UBSan 抽样 5 形状干净、输出与关档逐字相同；N vs 4N：`cross` 0.99、`shard` 1.02、`evict` 0.95、`digraph` 0.98（<1.5×）；`spectrum_p5` 3.27× 是该形状**活集 O(N)**（同一编译器的改前也是 3.26×，绝对 RSS 6504/6444 KB 同量级）——按 `gate-reclaim-idle` 的文件头口径，这类形状不用 N vs 4N 判，改前改后行为一致即是结论。
+
+**语料指纹**（`tests/reclaim-idle/fingerprint.py`）：`same=YES 628 / same=NO 224` 分类不变；**变化只有 224 个"发射了 rc"的行、且只有 `md5_default` 一列**（`removed 0 · added 0 · changed 224`）；628 个 idle 形状**每一格逐字节不变**；`rc_syms` 无变化（`extc_rc_regionOfOwn` 仍作为定义发射，只是不再被赋值路径调用）。最小复现：`digraph` 的发射文本只差 18 行 = 删掉的两处 `notePart` + 配套注释 + `regionFree` 的 R3 守卫。用**改前**编译器对同一基线跑 `fingerprint.py check` 是**逐行 PASS**，所以差异全部来自本次改动。
+
+**残留（如实）**：① 这条不变量依赖"rc 槽只可能由 `extc_rc_alloc` 产生"（`bump` 槽不置占用位，工具里具名豁免）—— R2 是它的静态半边、R3 是运行期半边；② 基线 `tools/idle-fingerprint-baseline.tsv` 需要按本次发射文本重冻（范围：224 个 `same=NO` 行的 `md5_default` + 头部一行；628 个 idle 行不动），本次提交**不含**重冻（该文件不在本次写范围）；③ 同时跑 `tests/reclaim-idle/sample-asan-bounded.sh` 的 md5 对拍会因此报差异，重冻后自动恢复。
+
 ## 2026-10-14 · 清扫**分步化**（可中断）：sweep 主导形状的 STW 窗口 **167/287 µs → 4.1/18.1 µs**，总时间 **1.01–1.08×**
 
 **动机（量出来的，不是猜的）**：暂停内部拆账（`collect` 里给 mark/sweep 各夹一对时钟）显示**双峰**——`rg_walk_array`/`evict_cache`/`overwrite_ring`/`cross_region`/`scale_growth`/`shard_bands` 的窗口里 **sweep 占 98%**（mark 1–2%），而 `insert_hash`/`spectrum_p2/p5`/`cyclic_pressure`/`digraph`/`owed_home` 是 **mark 占 52–100%**。⇒ "只切 sweep（**不引写屏障**）"对第一峰有真实空间；写屏障此路不通（`MARK-MODEL.md §13`：屏障下界 +38.3% > 增量收益上限 18%）。

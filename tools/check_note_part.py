@@ -10,20 +10,37 @@
 
 这句话一旦被新代码破坏，失效方向是**不安全**的（该登记的没登记 ⇒ 目标区域的清扫可能在
 还有活入边时把它放掉），而且**不会**被语义/输出类判据发现 —— 它需要一条结构性的门禁。
-这个脚本就是那条门禁：解析**发射出来的运行期文本**，逐函数检查两条规则。
+这个脚本就是那条门禁：解析**发射出来的运行期文本**，逐函数检查静态规则，并配一条运行期守卫。
 
-## 两条规则
+## 一条静态规则 + 一条运行期守卫
 
-* R1「会登记 ⇒ 必须记参与」：函数体里出现 `extc_rc_rsInc(` / `extc_rc_rsIncSlab(` 的调用，
-  就必须同时出现 `extc_rc_notePart(`。
-* R2「会交出槽 ⇒ 必须记参与」：函数体里把 `EXTC_RC_SLAB_DATA(...) + …` 赋给某个变量并且
-  最终 `return` 那个变量（即把槽交给调用方当对象用），就必须同时出现 `extc_rc_notePart(`。
+* **R2（静态）**「会交出槽 ⇒ 必须记参与」：函数体里把 `EXTC_RC_SLAB_DATA(...) + …` 赋给某个
+  变量并且最终 `return` 那个变量（即把槽交给调用方当对象用），就必须同时出现
+  `extc_rc_notePart(`。
+* **R3（运行期）**：`extc_rc_regionFree` 里，`part == 0` 的区域**不得有占用槽**，有就
+  `oops`（`R3: occupied slot in a region with part == 0`）。冷路径；`part` 为真时只有一次
+  可预测分支。它覆盖静态规则看不见的那一半：只要有一条"产槽但不记参与"的新路径，运行到
+  区域销毁就会当场炸，而不是等到某个区域的清扫把活对象放掉。
 
-两条都允许**具名豁免**（`EXEMPT`），必须写明理由；豁免是显式的，不会随代码漂移悄悄放行。
+静态规则允许**具名豁免**（`EXEMPT`），必须写明理由；豁免是显式的，不会随代码漂移悄悄放行。
+
+### 为什么没有「会登记 ⇒ 必须记参与」（原 R1）
+
+登记（`rsInc`/`rsDec`）只作用在**已存在**的槽上，而任何槽的区域早在它诞生时（`extc_rc_alloc`，
+即 R2 覆盖的那条路；`bump` 具名豁免）就已经记过参与 ⇒ **赋值侧再记一次是冗余的**，代价是每次
+赋值一次 `ownSlab` 查找。实测（主树五形状；数字与口径见 `docs/CHANGELOG.md` 的
+2026-10-15 条，这里不抄副本）：删掉赋值侧那两次 `notePart` 后 `shard_bands` 墙钟 −4 成量级、
+窗口降一个数量级，`evict` −1.5 成量级，语义逐字不变、闸门全绿。R1 会把这份
+冗余写成"必须保留"，所以删掉它，由 R3 从运行期守住同一条不变量。
+
+**R3 能红的演示**（改完必须做一次）：把 `extc_rc_alloc` 里的 `extc_rc_notePart(r);` 删掉再跑
+任何 reclaim 形状 ⇒ 静态 `FAIL [R2] extc_rc_alloc`（rc=1）**且**运行期
+`trap: reclaim: R3: occupied slot in a region with part == 0`（rc=1）；撤回后绿。
 
 ## 自检
 
-`--selftest` 用合成文本证明两条规则**都能红**（也证明豁免是豁免、不会误报）。
+`--selftest` 用合成文本证明静态规则**能红**（"只登记、不产槽"在收窄后必须绿，也证明豁免是
+豁免、不会误报）；R3 那一半的"能红"由上面的注入演示证明（它是运行期守卫，没有合成文本可喂）。
 """
 import argparse
 import os
@@ -41,7 +58,6 @@ EXEMPT = {
         "它的回收方式是整片 bumpReset ⇒ 不记 partN 是等价的（记上只会白关掉快路径）",
 }
 
-RE_REGISTER = re.compile(r"\bextc_rc_rsInc(?:Slab)?\s*\(")
 RE_NOTE = re.compile(r"\bextc_rc_notePart\s*\(")
 RE_SLOT = re.compile(r"\b(\w+)\s*=\s*[^;]*EXTC_RC_SLAB_DATA\s*\(")
 
@@ -97,10 +113,7 @@ def violations(text: str):
         # 只在**函数体**里找规则：签名行本身含有函数名（`… extc_rc_rsInc(…) {`），
         # 直接搜整段会把定义当成调用（第一版就是这么误报的）。
         body = full.split("{", 1)[1] if "{" in full else full
-        registers = bool(RE_REGISTER.search(body))
         notes = bool(RE_NOTE.search(body))
-        if registers and not notes:
-            bad.append((name, "R1", "会登记跨区边却没记 partN（参与区域数会漏算这个宿主）"))
         handed = {m.group(1) for m in RE_SLOT.finditer(body)}
         returns_slot = any(re.search(r"\breturn\s+%s\s*;" % re.escape(v), body) for v in handed)
         if returns_slot and not notes:
@@ -127,13 +140,13 @@ def emit_runtime(tmp: str) -> str:
 
 SELFTEST_CASES = [
     # (名字, 文本, 期望是否有违规)
-    ("会登记但不记参与 ⇒ 必须红", """
+    ("只登记、不产槽 ⇒ 必须绿（登记只作用于已存在的槽，其区域在 alloc 侧已记参与）", """
 static void extc_rc_storeX(void **slot, void *v, void *owner) {
     ExtcRcSlab *sv = extc_rc_ownSlab(v);
     if (sv) extc_rc_rsIncSlab(sv, v);
     *slot = v;
 }
-""", True),
+""", False),
     ("会交出槽但不记参与 ⇒ 必须红", """
 static void *extc_rc_allocX(ExtcRcRegion *r, size_t n) {
     ExtcRcSlab *s = r->slabs;
@@ -192,7 +205,8 @@ def main() -> int:
         print(f"参与区域数不变量被破坏（{len(bad)} 处）")
         return 1
     n = sum(1 for _ in functions(text))
-    print(f"ok  参与区域数不变量成立（解析了 {n} 个函数；豁免 {len(EXEMPT)} 个，均写明理由）")
+    print(f"ok  参与区域数不变量成立（静态 R2：解析了 {n} 个函数；豁免 {len(EXEMPT)} 个，均写明理由）"
+          f"｜运行期 R3 守卫在 extc_rc_regionFree（见模块 docstring 的红演示步骤）")
     return 0
 
 
