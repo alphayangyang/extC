@@ -72,6 +72,28 @@ const char *checkFnDisplay(const char *name, const char *modName);
 /* ------------------------------------------ shared state and shared types
  * Whatever more than one file needs, so that whoever uses it can see it. */
 
+/* 一张**按需增长**的引用字段表：一个绑定可以有任意多个引用字段（大结构体、`{ mid: { next } }`
+ * 这类投影）。原先固定 4 格，超出就退化到共享的 `otherDepth`/`otherSrc`（更粗、保守，但**会改变提升
+ * 决策**）——语料实测有 63 次撞上限、集中在 `session`/`route`。 */
+typedef struct SymField {
+    const char *name;       /* interned in the AST, so it cannot dangle */
+    int         depth;      /* recorded depth of the value in this field */
+    /* Which value was last written into this field, or NULL when unknown. Used only to find the
+     * allocation site inside a container, never to change bookkeeping: `var h: box = { p: null,
+     * q: null }` has an all-null origin that never mentions the `x` a later `h.q = x` stored. */
+    Expr       *src;
+    /* 与 `src` 同一份来源的**绑定**（来源是绑定时有值）。`src` 展平到站点是为了让末轮重放不依赖
+     * `lookup`，但展平会丢掉中间绑定的字段表（`b.next = ca` 记在 `b` 上），环/链的提权必须能走到
+     * 那里；Sym 指针活在 checker 的 arena 里，出了作用域也能用。 */
+    struct Sym *srcSym;
+    /* 产生 `src` 的这次写入的深度。比它、不要比 `depth`：`depth` 在弱更新时取最大值，所以
+     * `h.q = x  h.q = null` 之后它仍然很深，拿它比会把 null 写入当成更深的、清掉来源、断掉链。 */
+    int         srcDepth;
+    /* 这个字段被要求达到的最浅层；0 = 必须活过本帧（`out = h` 写在层 1，但 `return out` 要求活过
+     * 本帧，站点最终必须进 home arena；只看当前目的地算出的层太浅，会留下 use-after-free）。 */
+    int         minReq;
+} SymField;
+
 typedef struct Sym {
     const char *name;    /* name as written in the source */
     const char *cname;   /* name used in generated C; a shadowed `a` becomes `a__2` */
@@ -92,31 +114,8 @@ typedef struct Sym {
      * `h`, so `h.p = null` can really overwrite that entry. Writes that cannot be
      * attributed to a single field, such as an element write, go to `otherDepth`. The
      * effective depth of the root is the maximum of `otherDepth` and the field entries. */
-    struct { const char *name; int depth;  /* field name; recorded depth of the value in it */
-             /* Which value was last written into this field, or NULL when that is
-              * unknown. It is used only to find the allocation site inside a container,
-              * never to change any bookkeeping.
-              *
-              * It is needed because `var h: box = { p: null, q: null }` has an origin
-              * made of nulls which never mentions the `x` that a later `h.q = x` stored,
-              * so walking origins would never reach that site. */
-             Expr *src;
-             /* 与 `src` 同一份来源的**绑定**（来源是绑定时有值）。`src` 展平到站点是为了让
-              * 末轮重放不依赖 `lookup`；但展平会丢掉中间绑定的**字段表**（`b.next = ca` 记在
-              * `b` 上），环/链的提权必须能走到那里。Sym 指针活在 checker 的 arena 里，出了作用域
-              * 也能用，所以另存一格，`promoteFieldsAt` 靠它继续往里走。 */
-             struct Sym *srcSym;
-             /* Depth of the write that produced `src`. Compare against this number, not
-              * against `depth`: `depth` is merged with the maximum on a weak update, so
-              * after `h.q = x  h.q = null` it is still deep, and comparing with it would
-              * call the null write the deeper one, clear the source and break the chain. */
-             int   srcDepth;
-             /* The shallowest level this field has been required to reach; 0 means it
-              * must outlive the frame. `out = h` stores at level 1, but `return out`
-              * needs the frame-outliving level, so the site has to end up in the home
-              * arena. Looking only at the current destination computes a level that is
-              * too shallow and leaves the site there, which dangles. */
-             int   minReq; } fields[4];
+    SymField   *fields;     /* grown on demand in the checker's arena; no fixed cap */
+    int         fieldsCap;
     /* Whether the field table is complete.
      *
      * Complete means every field of the binding has an entry, or is known to be 0; only
@@ -413,6 +412,9 @@ typedef struct Checker {
     /* 推迟的存储判定（`(*cur).f = v` 那类目的地深度未定的写）：DFA 落定后按 min 复判。
      * 见 `PendingRefStore`。 */
     Vec        pendingRefStores;  /* PendingRefStore* */
+    /* 「可能的环」的候选区域合并（见 `CycleMerge`）：可能闭环的堆引用写，其宿主绑定可能指向
+     * 的分配站点在 DFA 之后收集（那时 `lookup` 还能用），在全局电平求解之后合并。 */
+    Vec        cycleMerges;  /* CycleMerge* */
     Vec        callChecks;  /* CallCheck*: call sites resolved at instantiation */
     Vec       *substParams; /* type arguments substituted while an instance is being
                              * re-checked, NULL when not re-checking */
@@ -616,6 +618,24 @@ typedef struct {
     int         late;   /* depth the settled numbers gave */
 } LvlRejection;
 
+/* 一个赋值站点上「往引用槽里写」的分类，记在语句的结果槽里
+ * （`anSetStoreRefKind`），由查体之后的 `computeFnAcyclic` 读走。判据 v1 的四条：
+ *   (i)   本帧新分配对象（`new T` / `alloc<T>(n)`）
+ *   (ii)  写 `null`
+ *   (iii) 值的层**严格大于**宿主的层（值活得更短，回边不可能）
+ *   (i')  值的来源是一次调用，且被调函数也判无环**且其返回值可证是新分配的**（`SR_CALL`）
+ *   (iv)  引用只住在被计数的堆槽里（非声明初始化地写引用型局部量/参数 ⇒ 判否）
+ * 分类在作用域还活着时做（层号比较要 `Sym`），因为查体之后 `lookup` 已经不可用。 */
+enum {
+    SR_NONE  = 0,   /* 不是引用槽存储，或那一趟没有走到这个站点（按判否处理） */
+    SR_LOCAL = 1,   /* 引用槽在栈上（局部量/参数/局部聚合的字段）：(iv) 判否 */
+    SR_NULL  = 2,   /* (ii) */
+    SR_FRESH = 3,   /* (i) */
+    SR_LAYER = 4,   /* (iii) */
+    SR_CALL  = 5,   /* (i')：值的来源是一次调用，等被调函数的结论 */
+    SR_BAD   = 6    /* (i)(ii)(iii)(i') 都不成立 */
+};
+
 /* 一条**推迟**的存储判定：`(*cur).f = v` 的目的地深度读的是 `anRefDepth(cur)`，它在 body walk
  * 里按词法顺序写、没有 join，而 `dfAnalyze` 要等 walk 之后才跑。这里把判定记下、诊断不发，
  * 等 DFA 落定后用「可能被指物的**最浅**层」（`Sym.minPointee`）复判 —— 词序因此不再影响答案。
@@ -631,6 +651,27 @@ typedef struct {
     const char    *what;    /* 诊断里的操作名（"this reference" / "this assignment"） */
     const FuncDef *fn;      /* 所属函数：只复判当前这一趟的记录 */
 } PendingRefStore;
+
+/* 「可能的环」的候选区域合并（路线 C）的一条记录。
+ *
+ * 触发是一个**可能闭环**的堆引用写 —— acyclic 判据里分类为 `SR_BAD`（值既不是空、也不是新
+ * 分配、也不比宿主年轻）。这时环可能横跨两只区域：宿主（`(*cur).f` 的 `*cur`）可能指向的
+ * 对象分布在**多只区域**里，而值是第三只。区域标记精确 ⟺ 划分不切开任何强连通分量，所以
+ * 跨区种子只在持有它的槽被释放时撤销 ⇒ 环垃圾把两只区域互相钉住，谁都不扫。
+ *
+ * 修法是**把这些候选区域并到最浅的那一只**（等价于"不切开可能的环"）：把宿主可能指向的那些
+ * 分配站点都挪到同一层。方向健全（只把寿命拉长、只会多留）。
+ *
+ * 两段式：`base`/`value` 与候选站点在检查走查里**当场**记下（那时 `lookup` 能用），合并动作在
+ * **全局电平求解之后**做（`applyCycleMerges`）—— 站点最终的层号那时才是定的。作用域到那时
+ * 已经全部关闭，所以这里只存指针、不再查名字。 */
+typedef struct {
+    Sym     *base;       /* 宿主绑定：`(*cur).f = v` 的 `cur`（也可能是 `p.f = v` 的 `p`） */
+    Expr    *value;      /* 被写入的值 */
+    int      line;
+    FuncDef *fn;         /* 所属函数 */
+    Vec      sites;      /* Expr*：`base` 可能指向的分配站点（记录时当场收，那时 `lookup` 能用） */
+} CycleMerge;
 
 /* An operator use on a type parameter, deferred to instantiation: recorded while an
  * expression is checked and consumed by the pass that runs afterwards.
@@ -1189,6 +1230,30 @@ Sym *destDerefSym(Checker *c, Expr *e);
 void recheckPendingRefStores(Checker *c, bool dfaSettled);
 
 /**
+ * @brief 记下一次「可能闭环」的堆引用写，供候选区域合并在电平求解后处理。
+ *
+ * 只在 acyclic 分类为 `SR_BAD` 且宿主经具名引用到达时记（栈上的槽不是这一档）。记录按
+ * `(base, value, fn)` 去重：同一个站点会被驱动程序检查多趟。宿主可能指向的分配站点在这一刻
+ * 当场收（作用域还开着，`lookup` 能用）；合并动作留到全局电平求解之后（见 `applyCycleMerges`）。
+ *
+ * @param c      检查器（作用域还开着）。
+ * @param base   宿主绑定（`(*cur).f = v` 的 `cur`）。
+ * @param value  被写入的值。
+ * @param line   源码行号。
+ */
+void noteCycleMerge(Checker *c, Sym *base, Expr *value, int line);
+
+/**
+ * @brief 全局电平求解之后：把「可能的环」的候选区域并到最浅的那一层。
+ *
+ * 在 placement 之前跑，只改 `anMinAt`（placement 自己会据此写 `arenaLevel`/`refDepth`）。
+ * 只要有候选在家区域（`needsHome` 已定）就**不动**——家区域的决定不能再改，这是本步的边界。
+ *
+ * @param c  检查器。
+ */
+void applyCycleMerges(Checker *c);
+
+/**
  * @brief 用各趟求解后的数字重新核对记录下来的拒绝。
  *
  * 只更新记录里的后算深度并可选打印一行，不改变已经报出的诊断。
@@ -1419,6 +1484,18 @@ void recheckPendingRefStores(Checker *c, bool dfaSettled);
  * @return    true 表示类型的任何部分都能持有引用。
  */
  _Bool typeContainsRef (TypeTable *tt, Type *t);
+/**
+ * @brief 判断类型能否持有**被计数的 rc 引用**（`typeContainsRef` 去掉视图句柄那一层）。
+ *
+ * 与 `typeContainsRef` 的差别只有一条：**视图句柄本身不算**（`slice<T>` 的 `data` 指针不是
+ * 被计数的 rc 槽，视图指向的存储由板/池/区域自己管），但视图的实参里带引用仍算。区域无环判定
+ * (iv) 用它，免得"打印一行字符串"这种处处都在的形状被当成持有堆引用。
+ *
+ * @param tt  类型表。
+ * @param t   要检查的类型；NULL 不持有引用。
+ * @return    能持有被计数的 rc 引用时为 true。
+ */
+ _Bool typeHoldsCountedRef (TypeTable *tt, Type *t);
 /**
  * @brief 判断类型是否就是函数类型或内部含有函数类型。
  *

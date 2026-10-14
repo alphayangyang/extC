@@ -343,14 +343,44 @@ static void usage(const char *argv0) {
         "  EXTC_RECLAIM=0       turn reclamation off; it is **on by default** -- **CHANGES THE OUTPUT**.\n"
         "                       A program with a governed allocation point (`new T` / `alloc<T>(n)` /\n"
         "                       `@overwrite`) gets the slab allocator / holder-count / region-sweep\n"
-        "                       block; `=1` forces that block on for every program (side-by-side runs)\n"
+        "                       block; `=1` **allows** it (side-by-side runs) but does not force it: a\n"
+        "                       unit proved to have no reclaim work emits no reclamation runtime at all\n"
         "  EXTC_RC_SHARDS=N     reclamation's shard count, the pause knob -- **CHANGES THE OUTPUT**.\n"
         "                       Default 1 = one runtime region per logical one; N > 1 splits each\n"
         "                       logical region into N runtime regions that sweep one at a time\n"
+        "  EXTC_ARENA_FILL=NN   diagnostic only: fill every **non-zeroed** arena allocation with the\n"
+        "                       byte NN (0-255), so \"read of never-written arena memory\" becomes\n"
+        "                       deterministic instead of load-dependent -- the arena's own\n"
+        "                       `MALLOC_PERTURB_`. Unset (default) writes nothing: byte-identical output\n"
+        "  EXTC_RUN_DIR=DIR     `--run`/`--build` write `<DIR>/<name>.c` and `<DIR>/<name>` instead of\n"
+        "                       `build/<name>.c` and `build/<name>`. **Does not change the program's\n"
+        "                       output** -- it only picks where the artifacts land, so two runs that\n"
+        "                       share a source basename (`a/generic.extc` and `b/generic.extc`) do not\n"
+        "                       overwrite each other. Default `build`, the path every caller gets\n"
 
         "\n"
         "  -h, --help       show this help\n",
         argv0);
+    /* 本会话新加的诊断开关：与上面那张大表**分开打印** —— 那张表的行为反复误判过（见 CHANGELOG），
+     * 独立一条 fprintf 显然正确，且不再被它的结构牵着走。 */
+    fprintf(stderr,
+        "  EXTC_RC_NOCOUNT=0    re-enable holder counting (it is **off by default**): the default\n"
+        "                       rests on region sweeps alone -- **CHANGES THE OUTPUT**.\n"
+        "  EXTC_RC_DBG_LEVEL=1  diagnostic only: print, for every reference store site, whether the\n"
+        "                       value and its host object sit in the same arena level.\n"
+        "  EXTC_RC_TIME=1       diagnostic only: the generated program counts how often each\n"
+        "                       reclamation component is called and prints the tally to stderr.\n"
+        "  EXTC_RC_SWEEPFREE=1  diagnostic only: event regime -- turn holder counting on and stop\n"
+        "                       sweeping entirely (reclaim only when a holder count hits zero).\n"
+        "  EXTC_DBG_ACYCLIC=1   diagnostic only: at compile time print one line per used function,\n"
+        "                       `[acyclic] <name> fn=<0|1> reason=<...>`, plus a summary.\n"
+        "  EXTC_DBG_RCIDLE=1    diagnostic only: at compile time print one line per used function,\n"
+        "                       `[rcidle] <name> idle=<0|1> reason=<...>` -- the `(a)(b)(c)` proof\n"
+        "                       that its region has no reclaim work to do.\n"
+        "  EXTC_RC_PAUSE=1      diagnostic only: the generated program times every real sweep (one\n"
+        "                       clock read before and after) and prints max/total/collects at exit.\n"
+        "                       Uses a monotonic clock when the platform exposes one, else ISO C\n"
+        "                       clock() (CPU time). See prototype-reclaim/sim.c for the method.\n");
 }
 
 /* ---------------------------------------------------------------- prelude */
@@ -891,18 +921,28 @@ int main(int argc, char **argv) {
         return 0;
     }
 
-    /* `--run`: write build/<base>.c, compile it, then run the result */
+    /* `--run`: write <run dir>/<base>.c, compile it, then run the result.
+     *
+     * The run directory is `build` unless `EXTC_RUN_DIR` says otherwise. Two `extc --run`
+     * invocations that happen to share a source basename (`tests/ops/generic.extc` and
+     * `tests/ctor/generic.extc`, say) write the same two paths, so running them at the same
+     * time truncates the generated C and replaces the binary under a running program -- the
+     * caller gets a spurious failure. A caller that runs several programs at once gives each
+     * one its own directory. Unset (the default, and what every existing caller gets) the
+     * paths are exactly `build/<base>.c` and `build/<base>`. */
     const char *base = baseName(&arena, path);
-    if (mkdir("build", 0755) != 0 && errno != EEXIST) {
-        fprintf(stderr, "extc: cannot create `build/`: %s\n", strerror(errno));
+    const char *runDir = getenv("EXTC_RUN_DIR");
+    if (!runDir || !*runDir) runDir = "build";
+    if (mkdir(runDir, 0755) != 0 && errno != EEXIST) {
+        fprintf(stderr, "extc: cannot create `%s/`: %s\n", runDir, strerror(errno));
         return 1;
     }
 
-    const char *cPath = arenaPrintf(&arena, "build/%s.c", base);
+    const char *cPath = arenaPrintf(&arena, "%s/%s.c", runDir, base);
     /* With `--build`, `-o` names the **binary** (with `--run` it still names the generated
      * C, because there is no other output to name). Without `-o`, both modes use
      * `build/<name>` the way `--run` always has. */
-    const char *binPath = (doBuild && outPath) ? outPath : arenaPrintf(&arena, "build/%s", base);
+    const char *binPath = (doBuild && outPath) ? outPath : arenaPrintf(&arena, "%s/%s", runDir, base);
     char *text = bufCstr(&c);
     if (!writeFile(cPath, text, c.len)) {
         fprintf(stderr, "extc: cannot write `%s`\n", cPath);

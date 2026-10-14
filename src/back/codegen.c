@@ -260,6 +260,9 @@ typedef struct {
      * assertion in `genBlockBody`) and has nothing to do with the array they index (). */
     int        *loopLevel;
     int        *loopStep;
+    /* 每个在册循环**进入时**的 `rcRoots.len`。用来看"这个槽是不是声明在它外面"：
+     * 槽的下标小于某个循环的这一格 ⇒ 它在这个循环之前就活着（循环外的长命槽）。 */
+    int        *loopRootBase;
     int         loopLen;
     int         levelCap;
     /* Per enclosing loop: the label id of the `for` step at the end of that loop's body, or 0
@@ -287,6 +290,30 @@ typedef struct {
      * of discovery). Each of them passes one `void *` cell per callee site, so
      * the callee reuses the caller's storage when it is itself @overwrite. */
     Vec         owCalls;
+    /* 本函数里每个**区域基址**对应的区域指针（局部量）：第一次用到时在块开头声明
+     * `ExtcRcRegion *__extc_rcrN = extc_rc_regionOf(base, lvl);`，之后所有站点复用。
+     * 区域在帧活着期间**不会丢**（块释放不丢区域，只有帧销毁/任务结束才丢），
+     * 所以这个值在函数体内是不变量；每次分配都重新线性扫登记表是白花。 */
+    char       *rcRegBase[40];
+    char        rcRegName[40][24];
+    int         rcRegN;
+    /* 「宿主区域可以静态给出」的局部对象：`var/let x = new T`（单对象、rc 分配）且 x 从不被
+     * 重新赋值。记下发出去的 C 名与分配层级 ⇒ `storeRefOwned` 能省掉宿主那一次 ownSlab 查询
+     * （区域就是那个分配点的 `regionOf` 结果，逐字节相同）。 */
+    const char *rcFreshName[64];
+    int         rcFreshLvl[64];
+    int         rcFreshN;
+    /* 本函数里被**赋值过**的标识符 C 名：上面那条判定的反面证据。 */
+    Vec         rcAssigned;
+    /* 本函数里被**写进堆对象引用字段**的标识符 C 名（`(*cur).next = head` 的 `head`）。
+     * 一个刚 `new` 出来就被链进堆对象的局部，才可能是一棵树/一条环的头；`rcEmitStoreRelease`
+     * 用它当"这个槽被覆盖时旧值可能是一个环"的**触发证据**（判据④）。 */
+    Vec         rcLinked;
+    /* 本函数里**真的可能承载 rc 对象**的 arena 层（位图，第 L 位 = `__extc_a[L]`）：
+     * 出现分配表达式（`arenaRefAt`）或作为 home 实参递给被调者（`homeArg`）时才置位。
+     * 帧销毁只为这些层发 `extc_rc_regionDrop` —— 没人往里分配过的 arena 根本没有区域，
+     * 这个调用只是线性扫一遍登记表然后返回（递归函数里就是每帧 3 次白扫）。 */
+    unsigned    rcArenaUsed;
     bool        owLocalOwn; /* Does the current function keep its @overwrite cells in
                             * its own frame? See FuncDef.owLocal. */
     Vec         insts;          /* Type* - generic instances, deduplicated by C name (see below) */
@@ -405,6 +432,10 @@ typedef struct {
      * 生成的 C 与接线前**逐字节相同**。N > 1 只是多认领几个区域，运行期文本一个字都不用改
      * —— 跨区登记、来源侧撤销、按区域清扫都是已经有的机制，片就是区域。 */
     int         rcNShard;
+    /* `EXTC_RC_NOCOUNT=1`：计数入口编译成空操作（只靠清扫回收）。见 reclaim.c 的 `#if`。 */
+    int         rcNoCount;
+    /* `EXTC_RC_SWEEPFREE=1`：事件档（不扫），见下面开关处的说明。 */
+    int         rcSweepFree;
     /* 分配点序号：片号 = `rcSite++ % rcNShard`。每发射一个 rc 分配表达式加一，所以同一处
      * `new` 在整份生成物里始终是同一个片号（编译两次结果相同）。 */
     int         rcSite;
@@ -454,6 +485,7 @@ typedef struct {
     Vec         deadFuncs;      /* DeadFunc*: functions that may have no caller */
     Vec         deadLocals;     /* DeadLocal*: local declarations that may be unread */
     const char *curFuncName;    /* C name of the function being generated */
+    const FuncDef *curFunc;     /* 正在生成的函数（plan 侧 per-function 事实要用） */
     /* `main` is not a candidate for function pruning, so it has no DeadFunc entry - but its
      * locals still need a stage to be counted on, and that is its body text. */
     const char *mainFuncName;
@@ -2376,6 +2408,7 @@ static const char *genGlobalInit(CG *g, Expr *e) {
 }
 
 static const char *arenaRefAt(CG *g, int level);
+static const char *rcRegionRef(CG *g, const char *basePtr);
 static void arenaDriftCheck(CG *g, Expr *e, const char *what);   /* the arena is picked per level */
 
 /* Emit the C expression for one expression node.
@@ -3142,6 +3175,8 @@ static bool rcFrameOwnsArena(CG *g, int lvl) {
     return true;
 }
 
+static size_t rcRootTableTextSkip(CG *g, Buf *b, size_t skipLocal);
+
 /**
  * @brief 把此刻的静态根表（全局引用槽 + 本帧局部/形参的引用槽）拼成一张复合字面量。
  *
@@ -3153,6 +3188,21 @@ static bool rcFrameOwnsArena(CG *g, int lvl) {
  * @return   根数（表里槽的个数）。
  */
 static size_t rcRootTableText(CG *g, Buf *b) {
+    return rcRootTableTextSkip(g, b, (size_t)-1);
+}
+
+/**
+ * @brief 同 `rcRootTableText`，但**跳过本帧根表里的第 `skipLocal` 格**。
+ *
+ * 覆盖点的定点释放要的是"**其它**根"：被覆盖的那一格此刻还装着旧值，把它算进种子就等于
+ * 自己证明旧结构是活的 ⇒ 一个槽都放不掉。剔除这一格才是"覆盖它 = 判它死"这件事本身。
+ *
+ * @param g          生成器。
+ * @param b          追加文本的目标缓冲。
+ * @param skipLocal  `g->rcRoots` 里要跳过的那一格；`(size_t)-1` = 一格都不跳。
+ * @return           表里实际写出的槽数。
+ */
+static size_t rcRootTableTextSkip(CG *g, Buf *b, size_t skipLocal) {
     size_t n = g->rcGlobalRoots.len + g->rcRoots.len;
     if (n == 0) {
         bufPuts(b, "(void *const *)0");
@@ -3163,11 +3213,13 @@ static size_t rcRootTableText(CG *g, Buf *b) {
     for (size_t i = 0; i < g->rcGlobalRoots.len; i++)
         bufPrintf(b, "%s(void *)(%s)", k++ ? ", " : "",
                   *(const char **)vecAt(&g->rcGlobalRoots, i));
-    for (size_t i = 0; i < g->rcRoots.len; i++)
+    for (size_t i = 0; i < g->rcRoots.len; i++) {
+        if (i == skipLocal) continue;
         bufPrintf(b, "%s(void *)(%s)", k++ ? ", " : "",
                   *(const char **)vecAt(&g->rcRoots, i));
+    }
     bufPuts(b, " }");
-    return n;
+    return k;
 }
 
 /**
@@ -3191,6 +3243,11 @@ static size_t rcRootTableText(CG *g, Buf *b) {
 static void rcEmitOwe(CG *g, const char *basePtr, int lvl) {
     if (g->parTls) return;
     if (g->rcNShard <= 1) {
+        const char *rr = rcRegionRef(g, basePtr);
+        if (rr) {
+            pfLine(g, "{ if (extc_rc_shouldSweep(%s)) extc_rc_owe(%s); }", rr, rr);
+            return;
+        }
         pfLine(g, "{ ExtcRcRegion *__extc_rcw = extc_rc_regionOf(%s, %d);"
                   " if (extc_rc_shouldSweep(__extc_rcw)) extc_rc_owe(__extc_rcw); }",
                basePtr, lvl);
@@ -3228,6 +3285,12 @@ static void rcEmitOwedCheck(CG *g, const char *basePtr, int lvl) {
     bufInit(&b, g->arena);
     size_t n = rcRootTableText(g, &b);
     if (g->rcNShard <= 1) {
+        const char *rr = rcRegionRef(g, basePtr);
+        if (rr) {
+            pfLine(g, "{ if (extc_rc_owed(%s)) extc_rc_checkOwed(%s, %s, %zu); }",
+                   rr, rr, bufCstr(&b), n);
+            return;
+        }
         pfLine(g, "{ ExtcRcRegion *__extc_rcc = extc_rc_regionOf(%s, %d);"
                   " if (extc_rc_owed(__extc_rcc)) extc_rc_checkOwed(__extc_rcc, %s, %zu); }",
                basePtr, lvl, bufCstr(&b), n);
@@ -3275,6 +3338,12 @@ static void rcEmitTrigger(CG *g, const char *basePtr, int lvl, bool frameOwned) 
     const char *rg = arenaPrintf(g->arena, "__extc_rcg%d", g->rcGuardSeq++);
     if (g->rcNShard <= 1) {
         /* 单片：与接线前逐字节相同（认领键就是区域基址）。 */
+        const char *rr = rcRegionRef(g, basePtr);
+        if (rr) {
+            pfLine(g, "{ if (extc_rc_shouldSweep(%s)) extc_rc_maybeCollect(%s, %s, %zu); }",
+                   rr, rr, bufCstr(&b), n);
+            return;
+        }
         pfLine(g, "{ ExtcRcRegion *%s = extc_rc_regionOf(%s, %d);"
                   " if (extc_rc_shouldSweep(%s)) extc_rc_maybeCollect(%s, %s, %zu); }",
                rg, basePtr, lvl, rg, rg, bufCstr(&b), n);
@@ -3292,6 +3361,9 @@ static void rcEmitTrigger(CG *g, const char *basePtr, int lvl, bool frameOwned) 
     const char *ck = "__extc_rck";
     const char *rb = arenaPrintf(g->arena, "__extc_rcb%d", g->rcGuardSeq);
     const char *rbg = arenaPrintf(g->arena, "__extc_rcbg%d", g->rcGuardSeq);
+    /* 本轮这一片的垃圾字节数：**必须与"目前最优"分开**，否则 `gd > rbg` 退化成自比、
+     * `rbg = gd` 退化成自赋值 ⇒ 一次触发永远只收第一个超线的片，后面的片饿死、各自无界。 */
+    const char *gd = arenaPrintf(g->arena, "__extc_rcgd%d", g->rcGuardSeq);
     pfLine(g, "{ ExtcRcRegion *%s = (ExtcRcRegion *)0; int64_t %s = 0;"
               " for (int32_t %s = 0; %s < %d; %s++) {"
               " ExtcRcRegion *%s = extc_rc_regionOf((void *)((char *)(%s) + %s), (int32_t)(%d + %s));"
@@ -3302,7 +3374,7 @@ static void rcEmitTrigger(CG *g, const char *basePtr, int lvl, bool frameOwned) 
               " if (%s) extc_rc_maybeCollect(%s, %s, %zu); }",
            rb, rbg, ck, ck, g->rcNShard, ck, rg, basePtr, ck, lvl * g->rcNShard, ck,
            rg, g->rcNShard, rg,
-           rbg, rg, rg, rb, rbg, rbg, rb, rg, rbg, rbg,
+           gd, rg, rg, rb, gd, rbg, rb, rg, rbg, gd,
            rb, rb, bufCstr(&b), n);
 }
 
@@ -3329,10 +3401,13 @@ static const char *rcAllocCore(CG *g, const char *basePtr, int lvl, bool frameOw
     int nsh = g->rcNShard > 0 ? g->rcNShard : 1;
     int k = g->rcSite++ % nsh;
     rcEmitTrigger(g, basePtr, lvl, frameOwned);
-    if (nsh == 1)
+    if (nsh == 1) {
+        const char *rr = rcRegionRef(g, basePtr);
+        if (rr) return arenaPrintf(g->arena, "extc_rc_alloc(%s, %s, %s)", rr, bytesExpr, td);
         return arenaPrintf(g->arena,
             "extc_rc_alloc(extc_rc_regionOf(%s, %d), %s, %s)",
             basePtr, lvl, bytesExpr, td);
+    }
     return arenaPrintf(g->arena,
         "extc_rc_alloc(extc_rc_regionOf((void *)((char *)(%s) + %d), %d), %s, %s)",
         basePtr, k, lvl * nsh + k, bytesExpr, td);
@@ -4357,7 +4432,110 @@ static const char *zoneArgRef(CG *g, Expr *e) {
  */
 static const char *homeArg(CG *g, int arenaArg) {
     if (arenaArg == ARENA_HOME) return "__extc_home";
+    if (arenaArg >= 1) g->rcArenaUsed |= 1u << arenaArg;   /* 被调者可能往这只 arena 分配 */
     return arenaPrintf(g->arena, "&__extc_a[%d]", arenaArg);
+}
+
+/**
+ * @brief 预声明「这个区域基址的区域指针」局部量，并返回它的名字（已声明则直接返回）。
+ *
+ * 声明必须落在**覆盖所有使用点的作用域**里：`regionOf` 的调用点有的在 `{ … }` 语句块里
+ * （触发/欠收检查），有的在分配表达式里，所以声明统一发在**函数体开头**（`rcPredeclare`,
+ * 由先扫一遍函数体的 `EX_NEW` 得到基址集合）。局部量记录进 `localDef`（`own = 1`）：
+ * 没被任何站点读到的那条会被"死局部量"那一趟删掉。
+ *
+ * `rid` 只被 `regionNew` 存进结构体、没有任何读者（见 `src/back/reclaim.c`），
+ * 所以第一次遇到的那个层级号当参数不会改变行为。
+ *
+ * @param g        生成器状态。
+ * @param basePtr  区域基址表达式（调用方已经套好 `(void *)` / `&` 的形态）。
+ * @param lvl      块层级（只在建区域那一瞬间用得到）。
+ * @return         局部量名；这条基址没被预声明过时返回 NULL（调用方回落内联调用）。
+ */
+static const char *rcRegionDeclare(CG *g, const char *basePtr, int lvl) {
+    for (int i = 0; i < g->rcRegN; i++)
+        if (strcmp(g->rcRegBase[i], basePtr) == 0) return g->rcRegName[i];
+    if (g->rcRegN >= 40) return NULL;
+    int i = g->rcRegN++;
+    g->rcRegBase[i] = arenaPrintf(g->arena, "%s", basePtr);
+    snprintf(g->rcRegName[i], sizeof g->rcRegName[i], "__extc_rcr%d", i);
+    size_t before = g->out->len;
+    cgLine(g, "ExtcRcRegion *%s = extc_rc_regionOf(%s, %d);",
+           g->rcRegName[i], basePtr, lvl);
+    localDef(g, before, g->rcRegName[i], 1);   /* 声明在函数体内：没被读到就删掉 */
+    return g->rcRegName[i];
+}
+
+/**
+ * @brief 找已经预声明过的区域指针局部量；没声明过返回 NULL（调用方回落到内联调用）。
+ *
+ * @param g        生成器状态。
+ * @param basePtr  区域基址表达式。
+ * @return         局部量名或 NULL。
+ */
+static const char *rcRegionRef(CG *g, const char *basePtr) {
+    for (int i = 0; i < g->rcRegN; i++)
+        if (strcmp(g->rcRegBase[i], basePtr) == 0) return g->rcRegName[i];
+    return NULL;
+}
+
+typedef struct { CG *g; } RcPreCtx;
+static bool rcPreStmt(void *ctx, Stmt *s);
+static bool rcPreExpr(void *ctx, Expr *e);
+
+/**
+ * @brief 先扫一遍函数体：把每个 `new` 点用到的 arena 层换算成"区域指针"局部量。
+ *
+ * 只扫 `EX_NEW`：rc 分配只发生在这些点上（触发/欠收检查与分配表达式共用同一个基址文本）。
+ * 基址文本与 `exNew` 生成的**逐字相同** —— 两边都用 `arenaPrintf("(void *)&(%s)", arenaRefAt(…))`，
+ * 因为查找是按文本比较的。
+ *
+ * @param g     生成器状态。
+ * @param body  函数体语句。
+ */
+static void rcPredeclare(CG *g, Stmt *body) {
+    if (!g->needReclaim || !body) return;
+    /* 协程体是 `switch (pc)` + `goto` 的恢复状态机：恢复可以**跳进**body 中间，
+     * 于是"函数开头算一次"的局部量在跳过它的那条路径上是未初始化的（实测 gcc
+     * `-Wmaybe-uninitialized`）。协程帧里的分配一律保留调用点内联，不 hoist。 */
+    if (g->coroFunc) return;
+    RcPreCtx c = { g };
+    AstVisit v = { rcPreExpr, rcPreStmt, &c };
+    astWalkStmtChildren(body, &v);
+}
+
+/**
+ * @brief 语句回调：继续往下走（`new` 可能在任何语句里）。
+ *
+ * @param ctx  预扫描上下文（`RcPreCtx *`）。
+ * @param s    被访问的子语句。
+ * @return     总是 true。
+ */
+static bool rcPreStmt(void *ctx, Stmt *s) {
+    RcPreCtx *c = ctx;
+    AstVisit v = { rcPreExpr, rcPreStmt, c };
+    return astWalkStmtChildren(s, &v);
+}
+
+/**
+ * @brief 表达式回调：遇到 `EX_NEW` 就把它的 arena 基址登记成"区域指针"局部量。
+ *
+ * @param ctx  预扫描上下文（`RcPreCtx *`）。
+ * @param e    被访问的子表达式。
+ * @return     总是 true。
+ */
+static bool rcPreExpr(void *ctx, Expr *e) {
+    RcPreCtx *c = ctx;
+    CG *g = c->g;
+    if (e && e->kind == EX_NEW) {
+        int lvl = planArenaLevel(e);
+        if (lvl == ARENA_HOME || lvl >= 1) {
+            const char *base = arenaPrintf(g->arena, "(void *)&(%s)", arenaRefAt(g, lvl));
+            rcRegionDeclare(g, base, lvl);
+        }
+    }
+    AstVisit v = { rcPreExpr, rcPreStmt, c };
+    return astWalkExprChildren(e, &v);
 }
 
 /**
@@ -4387,8 +4565,12 @@ static const char *arenaRefAt(CG *g, int level) {
     /* A step has no C-stack arena array: the block arenas live **in the frame** (one field per level,
      * `arena1`..`arenaN`), because a block in a coroutine can span a suspension -- the allocation has
      * to survive the resume, and the block's own release point still reclaims it. */
-    if (g->coroFunc)
-        return arenaPrintf(g->arena, "%s->arena%d", g->coroFrame, level > 0 ? level : 1);
+    if (g->coroFunc) {
+        int lv = level > 0 ? level : 1;
+        g->rcArenaUsed |= 1u << lv;
+        return arenaPrintf(g->arena, "%s->arena%d", g->coroFrame, lv);
+    }
+    if (level >= 1) g->rcArenaUsed |= 1u << level;   /* 这只 arena 会有 rc 对象 */
     return arenaPrintf(g->arena, "__extc_a[%d]", level);
 }
 
@@ -4928,6 +5110,185 @@ typedef enum {
     RC_HOST_UNKNOWN   /* 宿主追不到（视图元素、调用结果……）：必须走保守路径 */
 } RcHost;
 
+/* ---- 「宿主区域可静态给出」的局部对象（见 CG.rcFresh*） ------------------------------- */
+
+/** @brief 赋值扫描的语句回调：记下被重新绑定的标识符，并继续下钻。 */
+static bool rcAsgnStmt(void *ctx, Stmt *s);
+/** @brief 赋值扫描的表达式回调：继续下钻。 */
+static bool rcAsgnExpr(void *ctx, Expr *e);
+
+/**
+ * @brief 语句回调：记下被**直接**赋值的标识符（重新绑定），并继续下钻。
+ *
+ * @param ctx  生成器。
+ * @param s    被访问的子语句。
+ * @return     总是 true。
+ */
+static bool rcAsgnStmt(void *ctx, Stmt *s) {
+    CG *g = (CG *)ctx;
+    /* 先判语句种类：联合体里别种语句的指针会被误读成赋值目标。 */
+    Expr *tgt = (s && s->kind == ST_ASSIGN) ? s->u.assign.target : NULL;
+    /* 只有**直接**给标识符赋值才算"重新绑定"：`t.f = v`、`a[i] = v`、`*p = v` 改的是
+     * 对象里的槽/别处，不改变这个局部指向哪个对象。 */
+    if (tgt && tgt->kind == EX_IDENT) {
+        const char *nm = planCName(tgt) ? planCName(tgt) : tgt->u.ident.name;
+        if (nm) *(const char **)vecPush(&g->rcAssigned) = nm;
+    }
+    AstVisit v = { rcAsgnExpr, rcAsgnStmt, ctx };
+    return astWalkStmtChildren(s, &v);
+}
+
+/** @brief 表达式回调：继续下钻（赋值目标也可能嵌在表达式语句里）。 */
+static bool rcAsgnExpr(void *ctx, Expr *e) {
+    AstVisit v = { rcAsgnExpr, rcAsgnStmt, ctx };
+    return astWalkExprChildren(e, &v);
+}
+
+/**
+ * @brief 扫一遍函数体：哪些标识符被赋值过（判定"从不被重新赋值"的反面）。
+ *
+ * @param g     生成器。
+ * @param body  函数体语句。
+ */
+static void rcScanAssigned(CG *g, Stmt *body) {
+    vecInit(&g->rcAssigned, g->arena, sizeof(const char *));
+    if (!body) return;
+    AstVisit v = { rcAsgnExpr, rcAsgnStmt, g };
+    astWalkStmtChildren(body, &v);
+}
+
+/** @brief 该名字是否被赋值过。 */
+static bool rcIsAssigned(CG *g, const char *nm) {
+    for (size_t i = 0; i < g->rcAssigned.len; i++)
+        if (strcmp(*(const char **)vecAt(&g->rcAssigned, i), nm) == 0) return true;
+    return false;
+}
+
+/**
+ * @brief 登记一个"新分配且从不被重新赋值"的局部对象（`stVar` 在发射声明时调用）。
+ *
+ * 条件：初始化是**单个** `EX_NEW`、回收打开（那种分配一定走 rc）、层级是家或块层、
+ * 且这个名字没有被赋值过。协程体不登记（那里的区域局部量不 hoist）。
+ *
+ * @param g  生成器。
+ * @param s  `ST_VAR` 语句。
+ */
+static void rcNoteFreshLocal(CG *g, Stmt *s) {
+    /* 分片时**不发射**：区域键是「基址 + 片号」，同一层级的对象按分配点落在不同片上 ——
+     * 静态给出的那只区域未必是宿主所在的那片（实测 `cross_region_elem` 在 SHARDS=8 下
+     * 峰值比 2.77× ⇒ 登记漏了）。协程体同理（区域局部量不 hoist）。 */
+    if (!g->needReclaim || g->coroFunc || g->rcNShard > 1) return;
+    if (g->rcFreshN >= 64) return;
+    Expr *init = s->u.var.init;
+    if (!init || init->kind != EX_NEW || init->u.new_.count) return;
+    const char *nm = planCName(s);
+    if (!nm || rcIsAssigned(g, nm)) return;
+    int lvl = planArenaLevel(init);
+    if (!(lvl == ARENA_HOME || lvl >= 1)) return;
+    g->rcFreshName[g->rcFreshN] = nm;
+    g->rcFreshLvl[g->rcFreshN] = lvl;
+    g->rcFreshN++;
+}
+
+/**
+ * @brief 宿主表达式若是那种局部对象，返回它的区域局部量名（否则 NULL）。
+ *
+ * 区域局部量由 `rcPredeclare` 在函数体开头声明过（它按全部 `EX_NEW` 点收集），这里按
+ * **逐字节相同的基址文本**去查。
+ *
+ * @param g     生成器。
+ * @param base  宿主对象的 C 表达式节点。
+ * @return      区域局部量名，或 NULL（回落 `storeRefOwned`）。
+ */
+static const char *rcFreshHostRegion(CG *g, Expr *base) {
+    if (!base || base->kind != EX_IDENT) return NULL;
+    const char *nm = planCName(base) ? planCName(base) : base->u.ident.name;
+    if (!nm) return NULL;
+    for (int i = 0; i < g->rcFreshN; i++) {
+        if (strcmp(g->rcFreshName[i], nm) != 0) continue;
+        const char *bt = arenaPrintf(g->arena, "(void *)&(%s)", arenaRefAt(g, g->rcFreshLvl[i]));
+        const char *rr = rcRegionRef(g, bt);
+        return rr;
+    }
+    return NULL;
+}
+
+/** @brief 本帧根表里这个 C 名占第几格；不在表里（或只在全局根表里）返回 -1。 */
+static int rcRootIndexOf(CG *g, const char *nm) {
+    if (!nm) return -1;
+    for (size_t i = 0; i < g->rcRoots.len; i++)
+        if (strcmp(*(const char **)vecAt(&g->rcRoots, i), nm) == 0) return (int)i;
+    return -1;
+}
+
+/** @brief 这个标识符是否被写进过某个堆对象的引用字段（见 `g->rcLinked`）。 */
+static bool rcLinkedHas(CG *g, const char *nm) {
+    if (!nm) return false;
+    for (size_t i = 0; i < g->rcLinked.len; i++)
+        if (strcmp(*(const char **)vecAt(&g->rcLinked, i), nm) == 0) return true;
+    return false;
+}
+
+/**
+ * @brief 引用槽的覆盖：值不值一次**定点释放**（`extc_rc_storeRefOwnedRelease`）。
+ *
+ * 这是"每轮建一棵树、下一轮被同一个长命槽覆盖"的形状（`ring_per_round`：环头 `head` 存进
+ * `keep`，下一轮 `keep` 被覆盖）。四条判据同时成立才发：
+ *
+ *   ① 这条赋值在某个循环体里（循环外没有"每轮丢掉一棵"这回事）；
+ *   ② 目标槽是本帧的引用槽（在 `rcRoots` 里），且声明在**所有**在册循环之外 —— 它每一轮都被
+ *      同一个槽覆盖。循环内的游标（`cur = t`）不满足②，被排除；
+ *   ③ 写进去的值是本帧**新分配、从不被重新赋值**的局部对象（`rcFreshName`），且它所在区域
+ *      是**本帧拥有**的：只有那种区域，本帧的根表才是完整的种子（与分配点的触发同一条判据）；
+ *   ④ 这个对象已经被写进过某个堆对象的引用字段（`(*cur).next = head`）—— 刚 `new` 出来就
+ *      链进堆对象的局部才可能是一棵树/一条环的头。
+ *
+ * **静态判据只决定"值不值"**：真正的死活在运行期 —— 标记从**其它根 + 跨区种子**出发，只放
+ * "仅从旧值可达"的槽。判据全判错也不会悬垂（见 `extc_rc_releaseOld` 的说明）。
+ *
+ * 发不出来（根表不可靠、分片、没有静态区域、目标不在根表里……）就返回 false，**回落今天
+ * 的 `storeRefOwned` + 区域清扫**；关档（`EXTC_RECLAIM=0`）产物逐字不变。
+ *
+ * @param g       生成器。
+ * @param tgt     目标槽的 C 左值文本。
+ * @param tgtName 目标槽的 C 名（根表按名查）。
+ * @param val     被写入的值的 C 文本。
+ * @param value   被写入的值的表达式。
+ * @return        发射了定点释放则 true。
+ */
+static bool rcEmitStoreRelease(CG *g, const char *tgt, const char *tgtName,
+                               const char *val, Expr *value) {
+    if (!g->needReclaim || g->rcRootsUnreliable || g->coroFunc) return false;
+    /* 分片（`EXTC_RC_SHARDS` > 1）：标记只从**这一只片区域**的根 + 跨区种子出发，而"
+     * 只被别的片里的活对象指着"的对象标不到 ⇒ 会被当成"仅从旧值可达"而放掉（悬垂）。
+     * 分片下 `rcNoteFreshLocal` 本来就不登记 ⇒ 这里发不出去；显式挡住是让**注释与代码
+     * 同源**，不靠另一处的副作用。 */
+    if (g->rcNShard > 1) return false;
+    if (g->loopLen <= 0) return false;                       /* ① */
+    if (!value || value->kind != EX_IDENT) return false;
+    const char *vn = planCName(value) ? planCName(value) : value->u.ident.name;
+    if (!vn || !rcLinkedHas(g, vn)) return false;             /* ④ */
+    int idx = rcRootIndexOf(g, tgtName);                     /* ② */
+    if (idx < 0) return false;   /* 目标不是本帧引用槽（全局/局部聚合的字段都不发） */
+    for (int i = 0; i < g->loopLen; i++)
+        if (idx >= g->loopRootBase[i]) return false;         /* 声明在某个外层循环之内 */
+    const char *vreg = NULL;
+    for (int i = 0; i < g->rcFreshN; i++) {
+        if (strcmp(g->rcFreshName[i], vn) != 0) continue;
+        if (!rcFrameOwnsArena(g, g->rcFreshLvl[i])) return false;   /* ③ */
+        vreg = rcFreshHostRegion(g, value);
+        break;
+    }
+    if (!vreg) return false;
+    if (g->rcGlobalRoots.len + g->rcRoots.len > 4096) return false;
+    Buf b;
+    bufInit(&b, g->arena);
+    size_t n = rcRootTableTextSkip(g, &b, (size_t)idx);
+    cgLine(g, "extc_rc_storeRefOwnedRelease((void **)&(%s), (void *)(%s), (void *)0, %s, %s, %zu);",
+           tgt, val, vreg, bufCstr(&b), n);
+    return true;
+}
+
 /**
  * @brief 沿**值投影**找一条引用槽的宿主对象。
  *
@@ -4986,6 +5347,54 @@ static RcHost cgSlotHost(CG *g, Expr *t, Expr **obj) {
             return RC_HOST_UNKNOWN;
         }
     }
+}
+
+static bool rcLinkStmt(void *ctx, Stmt *s);
+static bool rcLinkExpr(void *ctx, Expr *e);
+
+/**
+ * @brief 语句回调：把"被写进堆对象引用字段"的标识符名记进 `g->rcLinked`。
+ *
+ * 只有**堆宿主**（`RC_HOST_OBJ`：`(*cur).next = head`、`p.f = v`）才算"链进了一棵树"；
+ * 局部量的槽（`a[i] = v` 的局部数组、局部结构体字段）是根表覆盖的一档，不算。
+ *
+ * @param ctx  生成器。
+ * @param s    被访问的子语句。
+ * @return     总是 true。
+ */
+static bool rcLinkStmt(void *ctx, Stmt *s) {
+    CG *g = (CG *)ctx;
+    Expr *tgt = (s && s->kind == ST_ASSIGN) ? s->u.assign.target : NULL;
+    Expr *ve  = (s && s->kind == ST_ASSIGN) ? s->u.assign.value : NULL;
+    if (tgt && ve && !s->u.assign.op && ve->kind == EX_IDENT && g->needReclaim &&
+        tgt->type && cgIsRefType(g, tgt->type)) {
+        Expr *base = NULL;
+        if (cgSlotHost(g, tgt, &base) == RC_HOST_OBJ) {
+            const char *nm = planCName(ve) ? planCName(ve) : ve->u.ident.name;
+            if (nm) *(const char **)vecPush(&g->rcLinked) = nm;
+        }
+    }
+    AstVisit v = { rcLinkExpr, rcLinkStmt, ctx };
+    return astWalkStmtChildren(s, &v);
+}
+
+/** @brief 表达式回调：继续下钻（赋值也可能嵌在表达式语句/条件里）。 */
+static bool rcLinkExpr(void *ctx, Expr *e) {
+    AstVisit v = { rcLinkExpr, rcLinkStmt, ctx };
+    return astWalkExprChildren(e, &v);
+}
+
+/**
+ * @brief 扫一遍函数体：哪些局部名被写进过堆对象的引用字段（判据④的反面证据集）。
+ *
+ * @param g     生成器。
+ * @param body  函数体语句。
+ */
+static void rcScanLinked(CG *g, Stmt *body) {
+    vecInit(&g->rcLinked, g->arena, sizeof(const char *));
+    if (!body || !g->needReclaim) return;
+    AstVisit v = { rcLinkExpr, rcLinkStmt, g };
+    astWalkStmtChildren(body, &v);
 }
 
 /**
@@ -5049,6 +5458,9 @@ static void cgValueRefStore(CG *g, Type *t, const char *dstBase, const char *src
  */
 static void cgReclaimDropArena(CG *g, int lvl) {
     if (!g->needReclaim) return;
+    /* 本函数从没引用过这一层（没分配、也没当 home 递出去）⇒ 这只 arena 不可能有区域，
+     * 这个 `regionDrop` 只会白扫登记表。跳过它。 */
+    if (lvl >= 1 && !(g->rcArenaUsed & (1u << lvl))) return;
     if (g->rcNShard <= 1) {
         /* 单片：与接线前逐字节相同。 */
         if (g->coroFunc)
@@ -5072,6 +5484,7 @@ static void cgReclaimDropArena(CG *g, int lvl) {
  * @param s  变量语句。
  */
 static void stVar(CG *g, Stmt *s) {
+    rcNoteFreshLocal(g, s);
 /* `let c = counter(args)`: **spawn**. The frame is a plain value living here, and the
  * arguments initialize the parameters -- a resume has none to pass them again. */
 if (planCName(s) && s->u.var.init && s->u.var.init->kind == EX_CALL &&
@@ -5330,7 +5743,10 @@ localDef(g, lb, nm, 1);
  * 跨区存储（对象在更外层的区域、槽在这个块里）再登记一位：目标对象所在位置置一位，
  * 清扫播种时按位图顺序扫。多登记是安全方向（只让对象多活一会儿），少登记才是漏根。 */
 if (g->needReclaim && !s->u.var.isGlobal && cgIsRefType(g, s->type)) {
-    cgLine(g, "extc_rc_initRef((void **)&%s, (void *)%s);", nm, nm);
+    if (planRcNoDec(g->curFunc))
+        cgLine(g, "extc_rc_initRefNoHold((void **)&%s, (void *)%s);", nm, nm);
+    else
+        cgLine(g, "extc_rc_initRef((void **)&%s, (void *)%s);", nm, nm);
 } else if (g->needReclaim && !s->u.var.isGlobal && s->u.var.init) {
     /* **整值**声明的引用叶子（`var b: wrap = wrap { n: keeper }`）同样要记账：裸的 C 初始化
      * 一条 `inc` 都不发，`b.n` 就是"槽写了但没记账"的又一个出口（与赋值那条同一个洞）。
@@ -5405,6 +5821,9 @@ if (condTemps || ownLevel) {
 }
 g->loopLevel[g->loopLen] = g->blkLevel + 1;   /* the body is the next level */
 g->loopStep[g->loopLen] = stepLabel;
+/* 进入循环时活着的引用槽：下标小于这一格的槽都是"循环开始前就活着"的长命槽（见
+ * `rcEmitStoreRelease` 的判据②）。此刻循环体的块还没进，根表正好是循环外的活槽。 */
+g->loopRootBase[g->loopLen] = (int)g->rcRoots.len;
 g->loopLen++;
 genBlockBody(g, s->u.whiles.body);
 g->loopLen--;
@@ -5638,6 +6057,7 @@ static void genStmtInner(CG *g, Stmt *s) {
             const char *owner = "0";
             bool hostUnknown = false;
             bool hostProven = false;   /* 宿主是**追到区域**的对象（不是局部/静态槽） */
+            Expr *hostBase = NULL;     /* 宿主对象表达式：store 点要用它判"区域可静态给出" */
             if ((refStore || valueStore) && s->u.assign.target) {
                 Expr *t = s->u.assign.target;
                 /* 宿主的三种结局（见 `cgSlotHost`）：纯地方基 ⇒ 登记跨区边；静态声明的
@@ -5646,6 +6066,7 @@ static void genStmtInner(CG *g, Stmt *s) {
                  * 宿主就是 `w`，若在视图里则追不到。 */
                 Expr *base = NULL;
                 RcHost h = cgSlotHost(g, t, &base);
+                hostBase = base;
                 if (h == RC_HOST_OBJ && base && cgPurePlace(g, base)) {
                     owner = genExpr(g, base);
                     hostProven = true;
@@ -5673,6 +6094,49 @@ static void genStmtInner(CG *g, Stmt *s) {
                      * 区域从此只靠计数归零回收，绝不在种子不完整时照常扫。 */
                     cgLine(g, "extc_rc_storeRefUnknown((void **)&(%s), (void *)(%s));", tgt, val);
                     return;
+                }
+                const char *hreg = rcFreshHostRegion(g, hostBase);
+                if (hreg) {
+                    /* 宿主是**本帧新局部量**（编出这行时就知道它的 arena 层）。查一下值是不是
+                     * 也同样：是 ⇒ 两者同区 ⇒ 这条边不可能跨区 ⇒ 登记、区域比较、两次 `ownSlab`
+                     * 查表整段可省（`EXTC_RC_DBG_LEVEL=1` 会把判定打出来）。
+                     *
+                     * 只对无计数档这么做：有计数时 `storeRefOwnedReg` 仍要那两个查询来做持有者
+                     * 计数。判错的方向是"漏登记 ⇒ 悬垂"，护栏是形状棘轮里的跨区登记量判据
+                     * （`gate-reclaim-switch` 的 cross-region 形状：漏登记会让它当场变红）。 */
+                    int hlvl = 0, vlvl = -2;          /* -2 = 值不是新局部量 */
+                    if (hostBase && hostBase->kind == EX_IDENT) {
+                        const char *hn = planCName(hostBase) ? planCName(hostBase)
+                                                             : hostBase->u.ident.name;
+                        for (int i = 0; i < g->rcFreshN; i++)
+                            if (hn && strcmp(g->rcFreshName[i], hn) == 0) hlvl = g->rcFreshLvl[i];
+                    }
+                    Expr *ve = s->u.assign.value;
+                    if (ve && ve->kind == EX_IDENT) {
+                        const char *vn = planCName(ve) ? planCName(ve) : ve->u.ident.name;
+                        for (int i = 0; i < g->rcFreshN; i++)
+                            if (vn && strcmp(g->rcFreshName[i], vn) == 0) vlvl = g->rcFreshLvl[i];
+                    }
+                    if (getenv("EXTC_RC_DBG_LEVEL")) {
+                        int plvl = planArenaLevel(ve);
+                        fprintf(stderr, "[rclevel] host=%s hlvl=%d planLvl=%d eqPlan=%d freshLvl=%d eqFresh=%d\n",
+                                hreg, hlvl, plvl, hlvl == plvl, vlvl, vlvl == hlvl);
+                    }
+                    if (g->rcNoCount && vlvl != -2 && vlvl == hlvl)
+                        cgLine(g, "extc_rc_storeRefSameRegion((void **)&(%s), (void *)(%s));", tgt, val);
+                    else
+                        cgLine(g, "extc_rc_storeRefOwnedReg((void **)&(%s), (void *)(%s), %s);",
+                               tgt, val, hreg);
+                    return;
+                }
+                /* 本帧引用槽（`hostBase == NULL`：局部量/形参的槽，不是堆对象的字段）的覆盖：
+                 * 值不值一次定点释放，交给 `rcEmitStoreRelease` 的四条判据；不发就照旧。 */
+                if (hostBase == NULL && s->u.assign.target &&
+                    s->u.assign.target->kind == EX_IDENT) {
+                    const char *atn = planCName(s->u.assign.target)
+                                          ? planCName(s->u.assign.target)
+                                          : s->u.assign.target->u.ident.name;
+                    if (rcEmitStoreRelease(g, tgt, atn, val, s->u.assign.value)) return;
                 }
                 cgLine(g, "extc_rc_storeRefOwned((void **)&(%s), (void *)(%s), (void *)(%s));",
                        tgt, val, owner);
@@ -6445,6 +6909,7 @@ static void genFunc(CG *g, FuncDef *f) {
     g->zoneMark  = (bool *)arenaAllocZero(g->arena, (size_t)g->levelCap * sizeof(bool));
     g->loopLevel = (int *)arenaAllocZero(g->arena, (size_t)g->levelCap * sizeof(int));
     g->loopStep  = (int *)arenaAllocZero(g->arena, (size_t)g->levelCap * sizeof(int));
+    g->loopRootBase = (int *)arenaAllocZero(g->arena, (size_t)g->levelCap * sizeof(int));
     /* A function that puts nothing into its own block arenas does not even emit
      * the array. The checker decides that (`planMayUseArena(f)`: the body contains a
      * `new`, or calls a function that has a home arena), and about half of the
@@ -6597,12 +7062,18 @@ static void genFunc(CG *g, FuncDef *f) {
     g->loopLen  = 0;
     g->forStepSeq = 0;
     const char *savedFuncName = g->curFuncName;
+    const FuncDef *savedFuncDef = g->curFunc;
     g->curFuncName = cFuncName(g, f);
+    g->curFunc = f;
+    g->rcArenaUsed = 0;
+    g->rcRegN = 0;
+    g->rcFreshN = 0;
     bool savedParTls = g->parTls;
     g->parTls = planParTlsArena(f);
     if (isMain && planUsesHome(f)) {
         size_t hb = g->out->len;
         cgLine(g, "extc_arena *__extc_home = &__extc_a[1];   /* main's home arena is its own body */");
+        g->rcArenaUsed |= 1u;   /* main 的家 arena 就是 1 层：它能承载 rc 对象 */
         localDef(g, hb, "__extc_home", 0);   /* the declaration sits above the body */
     }
     /* The buffered console tail has one guaranteed exit: `main` flushes on every explicit
@@ -6632,6 +7103,9 @@ static void genFunc(CG *g, FuncDef *f) {
         }
     }
     size_t mb = g->out->len;
+    rcScanAssigned(g, f->body);   /* 哪些局部被赋值过（"从不被重新赋值"那条判定的反面） */
+    rcScanLinked(g, f->body);     /* 哪些局部被链进过堆对象（定点释放判据④的证据集） */
+    rcPredeclare(g, f->body);   /* 区域指针局部量：先在函数开头声明，使用点再复用 */
     genBlockBody(g, f->body);
     if (g->coroFunc) {
         /* The step's ending, **after** the body: falling off it finishes the coroutine. The pc gets a
@@ -6643,6 +7117,7 @@ static void genFunc(CG *g, FuncDef *f) {
         cgLine(g, "    }");
         cgLine(g, "return false;");
         g->curFuncName = savedFuncName;
+    g->curFunc = savedFuncDef;
     g->parTls = savedParTls;
         g->parTls = savedParTls;
         g->retType = savedRet;
@@ -6665,6 +7140,7 @@ static void genFunc(CG *g, FuncDef *f) {
         g->mainLen = g->out->len - mb;
     }
     g->curFuncName = savedFuncName;
+    g->curFunc = savedFuncDef;
     /* Falling off the end of the body is an exit too, so the depth is
      * decremented here as well; otherwise the depth would only grow and a
      * legitimate program would be reported as a stack overflow. A function with
@@ -8801,7 +9277,8 @@ static void emitRuntimePrologue(CG *g, Buf *out, Module *m) {
      * only when the program has a governed allocation point (`g->needReclaim`, narrowed by
      * `scanUnitReclaim` from that criterion; `EXTC_RECLAIM=1` forces it on, `=0` off). */
     if (g->needReclaim) {
-        reclaimEmitRuntime(g->arena, out);
+        reclaimEmitRuntime(g->arena, out, g->rcNoCount, getenv("EXTC_RC_TIME") != NULL,
+                           g->rcSweepFree == 1);
         /* 区域由 **arena 的地址**认领。分配点本来就知道自己落在哪只 arena 上
          * （`arenaRefAt`），于是区域的寿命与那只 arena 完全一致 —— 包括被调者用调用者的
          * 家 arena 分配的那种情形（家 arena 是**同一个地址**一路传下来的），也包括递归里
@@ -9615,12 +10092,37 @@ static void scanUnitNeeds(CG *g, Module *m) {
      * 只有 > 1 才会把每个逻辑区域切成 N 只运行期区域；1、未设、空串、非数、越界一律当 1
      * （单片行为）。上限 64：再往上每片至少一只 1 MiB slab 的底噪会盖过停顿收益。 */
     g->rcNShard = 1;
+    /* 默认走**无计数**快路径（第十一刀：默认翻转）。`EXTC_RC_NOCOUNT=0` 恢复计数。 */
+    g->rcNoCount = 1;
     {
         const char *sh = getenv("EXTC_RC_SHARDS");
         if (sh && *sh) {
             long v = strtol(sh, NULL, 10);
             if (v > 1) g->rcNShard = (int)(v > 64 ? 64 : v);
         }
+    }
+    /* `EXTC_RC_NOCOUNT`：持有者计数的开关。**默认 1 = 不计数**（只靠清扫回收）——
+     * 翻转的依据见 CHANGELOG 第十一刀：同一套 31 条形状棘轮、ASan 语料、gaps 集合、
+     * 停顿探针与"大活集 churn"的绝对峰值上，无计数都不差、指令数全面更低。
+     * `=0` 恢复「计数 + 提前回收」（计数收窄分析那一套也只在这个模式下有意义）。 */
+    {
+        const char *nc = getenv("EXTC_RC_NOCOUNT");
+        if (nc && *nc && strcmp(nc, "0") == 0) g->rcNoCount = 0;
+    }
+    /* `EXTC_RC_SWEEPFREE=1`：**事件档**——程序里没有环的时候，清扫无事可做：每个不可达对象
+     * 都会被"最后一个持有者消失"当场释放（计数归零那条快路径）。于是打开计数、并让
+     * `shouldSweep` 恒为 0（见 `src/back/reclaim.c` 的 `EXTC_RC_SWEEP_FREE`）。
+     *
+     * 它现在是**诊断开关**（默认关、逐字节不改产物）：无环判定还没接进来（那是分析侧的活），
+     * 判错了的方向是"该扫却没扫 ⇒ 内存涨"，不是悬垂 —— 所以判据先立：清扫次数必须是 0、
+     * 峰值 RSS 必须有界、把判定强制为真施加在有环形状上必须爆。 */
+    /* 三档语义：未设 = 由分析判定（`unitAllAcyclic`）；`=1` = 强制开（判据的红证明用）；
+     * `=0` = 强制关（对照与 A/B —— 否则分析一旦判定成立就没法拿旧行为比了）。 */
+    {
+        const char *sf = getenv("EXTC_RC_SWEEPFREE");
+        g->rcSweepFree = 0;
+        if (sf && *sf) g->rcSweepFree = (strcmp(sf, "0") == 0) ? -1 : 1;
+        if (g->rcSweepFree == 1) g->rcNoCount = 0;
     }
     /* Does the program use the raw-terminal primitives? They arrive as an `extern!` the
      * library declares (`extc_raw_enter` in `std::sys::term`), which is the one thing
@@ -9724,6 +10226,87 @@ static bool rcAllocInStmtProbe(void *ctx, Stmt *s) {
 }
 
 /**
+ * @brief 整个单元能不能**整段不发射 rc 运行期**：每个被用函数都被判成"不会丢掉任何活引用"。
+ *
+ * 判据 (a)(b)(c) 由检查器算（`planFnReclaimIdle`，逐站点扫描在 `check_top.c` 的
+ * `idleWalkStmt`）：(a) 每个堆 ref 字段每对象最多被写一次；(b) ref 类型的局部量/参数不被
+ * 重新赋值；(c) 没有丢引用的操作（容器删除/替换、`@overwrite` 复用同一格、free 类内建、
+ * 看不清的被调者带引用）。这里只做全单元合取 —— **一处不满足 ⇒ 整单元判否**，
+ * 这是保守方向（判否 = 照常发射 rc）。传递性因此自动覆盖：被调者若会丢引用，它自己也是被
+ * 发射的一具函数，合取会看见它（看不清的被调者已在本地按参数敏感判否）。
+ *
+ * 全局量的初始化式不在任何函数体里、判据覆盖不到 ⇒ 只要它有回收管辖的分配就保守返回 0
+ * （与 `unitAllAcyclic` 同一条口径）。
+ *
+ * 失败方向：判错 = 少收 ⇒ **内存涨**，不是悬垂（rc 只释放标记不到的对象）。安全网：
+ * 同一形状开/关档峰值 RSS 在界内 + N vs 4N < 1.5×（`tests/reclaim-shapes` 与
+ * `tests/reclaim-acyclic` 的 ⑦ 安全格），外加 `tools/inject.py reclaim-idle-always`
+ * 把判定强制为真时的红证明。
+ */
+static int unitReclaimIdle(CG *g, Module *m) {
+    for (size_t i = 0; i < g->funcs.len; i++) {
+        FuncDef *f = *(FuncDef **)vecAt(&g->funcs, i);
+        /* 没有函数体的（extern 声明）：与 `unitAllAcyclic` 同一条承重假设 —— extern 没有体，
+         * 它拿到的引用受调用点的逃逸/借用规则约束（调用者那份引用活过调用），所以它无法成为
+         * "最后一个根被丢掉"的那一处。 */
+        if (f && f->body && !planFnReclaimIdle(f)) return 0;
+    }
+    /* 泛型实例的方法体：模板本身不进 `g->funcs`，实例体由 `emitInstanceBodies` 发。 */
+    for (size_t i = 0; i < g->insts.len; i++) {
+        Type *it = *(Type **)vecAt(&g->insts, i);
+        if (!it || it->kind != TY_GENERIC || !it->sdef) continue;
+        for (size_t j = 0; j < it->sdef->methods.len; j++) {
+            FuncDef *md = *(FuncDef **)vecAt(&it->sdef->methods, j);
+            if (md && planUsed(md) && md->body && !planFnReclaimIdle(md)) return 0;
+        }
+    }
+    for (size_t i = 0; i < m->globals.len; i++) {
+        GlobalDef *gd = *(GlobalDef **)vecAt(&m->globals, i);
+        if (gd && gd->init && !rcAllocInExpr(NULL, gd->init)) return 0;
+    }
+    return 1;
+}
+
+/**
+ * @brief 整个单元能不能走"事件档"：每个被用函数都被判成无环、且引用只住在被计数的槽里。
+ *
+ * 判据由检查器算（`planFnAcyclic`，含"无环"与"能丢引用的位置都被计数"两条）；这里只做
+ * 全单元合取。全局量的初始化式不在任何函数体里、判据覆盖不到 ⇒ 只要它有回收管辖的分配，
+ * 就保守返回 0。
+ *
+ * 失败方向：判错 = "该扫却没扫" ⇒ 内存涨，不是悬垂 ⇒ 强制档与判据见
+ * `tests/reclaim-acyclic/`（清扫必须为 0 **且** 峰值 RSS 有界；把判定强制为真施加在有环
+ * 形状上必须变红）。
+ */
+static int unitAllAcyclic(CG *g, Module *m) {
+    for (size_t i = 0; i < g->funcs.len; i++) {
+        FuncDef *f = *(FuncDef **)vecAt(&g->funcs, i);
+        /* 没有函数体的（extern 声明）：`collectEmitted` 会把 `planUsed` 的 extern 也推进
+         * `g->funcs`，而它们永远没有分析结论 ⇒ 不能因此否掉整个单元，否则**任何调用 C extern
+         * 的程序都进不了事件档**（`io` 的打印路径就会拉出 `extc_cout_*`；判据组的成功形状正是
+         * 被这条挡住的，实测见 CHANGELOG）。
+         *
+         * 承重假设：extern 自己没有体 ⇒ 不会去写我们的引用槽；它拿到的引用受**调用点**的逃逸/借用
+         * 规则约束，调用者的那份引用活过调用 ⇒ 它无法让区域内的对象变成不可达。这条假设写在这里，
+         * 判错的方向是"该扫却没扫 ⇒ 内存涨"（不是悬垂），由 `gate-acyclic` 的 RSS 界与红证明看着。 */
+        if (f && f->body && !planFnAcyclic(f)) return 0;
+    }
+    for (size_t i = 0; i < g->insts.len; i++) {
+        Type *it = *(Type **)vecAt(&g->insts, i);
+        if (!it || it->kind != TY_GENERIC || !it->sdef) continue;
+        for (size_t j = 0; j < it->sdef->methods.len; j++) {
+            FuncDef *md = *(FuncDef **)vecAt(&it->sdef->methods, j);
+            if (md && planUsed(md) && md->body && !planFnAcyclic(md)) return 0;
+        }
+    }
+    for (size_t i = 0; i < m->globals.len; i++) {
+        GlobalDef *gd = *(GlobalDef **)vecAt(&m->globals, i);
+        if (gd && gd->init && !rcAllocInExpr(NULL, gd->init)) return 0;
+    }
+    return 1;
+}
+
+/**
  * @brief 收窄 `needReclaim`：没有回收管辖的分配点就不发运行期。
  *
  * `EXTC_RECLAIM=1`（`rcForced`）时整趟跳过 —— 门禁按"开关打开"这一档写，与分配点在不在无关。
@@ -9734,8 +10317,45 @@ static bool rcAllocInStmtProbe(void *ctx, Stmt *s) {
  * @param g 生成器；`funcs`、`insts` 已填好。
  * @param m 模块，全局量的初始化式从这里看。
  */
+
 static void scanUnitReclaim(CG *g, Module *m) {
-    if (!g->needReclaim || g->rcForced) return;
+    if (!g->needReclaim) return;
+    /* ②「整段不发射 rc 运行期」：整单元被证明"回收无事可做" ⇒ **任何档**下都不发射。
+     *
+     * 这是一条**证明**，不是一个优化开关：证明成立时发射运行期只是空转。所以 `EXTC_RECLAIM=1`
+     * 的语义是"**允许**回收 / 不强制关闭"，不是"强制发射"（回收文档的开关语义那一节）。
+     * 判据 (a)(b)(c) 与"一处不满足 ⇒ 整单元判否"的合取在 `unitReclaimIdle`。
+     *
+     * 失败方向：少收 ⇒ 内存涨，不是悬垂；安全网见 `unitReclaimIdle` 的说明。
+     *
+     * （这是一处**编译期**早退：它不在发射出来的运行期文本里，所以不进回收文档的
+     * 「快路径与跳过」表 —— 那张表由 `tools/check_skip_table.py` 只按运行期文本双向对齐。） */
+    if (unitReclaimIdle(g, m)) {
+        g->needReclaim = false;
+        return;
+    }
+    /* ③「这个单元里有跨站点的可能环」⇒ **拒绝分片**（`EXTC_RC_SHARDS > 1` 在这一单元退化成
+     * 单片）。理由：片边界必须与结构边界对齐 —— 把一条环切开，跨片登记位就成了环垃圾的种子，
+     * 界随轮数涨（`digraph` + `SHARDS=4` 实测 4N/N = 3.84×，与 naive RC 同量级）。只钉"同环组
+     * 的站点"不够：环组之外的站点（容器等）仍在别的片，跨片引用照样把整条环钉住。单站点自环
+     * （`shard_bands` 的每条链一个分配点）不受影响 ⇒ 分片旋钮的停顿收益保留。 */
+    for (size_t i = 0; i < g->funcs.len && g->rcNShard > 1; i++) {
+        FuncDef *f = *(FuncDef **)vecAt(&g->funcs, i);
+        if (f && f->body && planFnCrossSiteCycle(f)) {
+            if (dbgOn("EXTC_DBG_ZONE"))
+                fprintf(stderr, "[shard] 单元有跨站点环（fn=%s）⇒ 拒绝分片\n", f->name ? f->name : "?");
+            g->rcNShard = 1;
+        }
+    }
+    for (size_t i = 0; i < g->insts.len && g->rcNShard > 1; i++) {
+        Type *it = *(Type **)vecAt(&g->insts, i);
+        if (!it || it->kind != TY_GENERIC || !it->sdef) continue;
+        for (size_t j = 0; j < it->sdef->methods.len; j++) {
+            FuncDef *md = *(FuncDef **)vecAt(&it->sdef->methods, j);
+            if (md && planUsed(md) && planFnCrossSiteCycle(md)) { g->rcNShard = 1; break; }
+        }
+    }
+    if (g->rcForced) return;
     for (size_t i = 0; i < g->funcs.len; i++) {
         FuncDef *f = *(FuncDef **)vecAt(&g->funcs, i);
         if (f && rcBodyHasGovernedAlloc(f->body)) return;
@@ -10629,6 +11249,13 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     initRuntimeText(&g, arena);
     collectEmitted(&g, m);
     scanUnitReclaim(&g, m);
+    /* 事件档（`EXTC_RC_SWEEPFREE` 的自动那一半）：整单元被证明"无环 + 引用只住在被计数的槽里"
+     * ⇒ 每个不可达对象迟早会被计数归零当场释放 ⇒ 清扫无事可做。`EXTC_RC_SWEEPFREE=1` 仍然
+     * 是强制覆盖（判据的红证明用它）。 */
+    if (g.rcSweepFree != -1 && g.needReclaim && unitAllAcyclic(&g, m)) {
+        g.rcSweepFree = 1;
+        g.rcNoCount = 0;
+    }
     emitPreamble(&g, out, m);
     emitRuntimePrologue(&g, out, m);
     buildRuntimeText(&g);

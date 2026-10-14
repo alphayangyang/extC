@@ -514,8 +514,12 @@ static void dfStmt(Checker *c, Stmt *s, Facts *f, int depth) {
              * scrutinee is known to have. */
             int sd = dfExprDepth(c, f, s->u.match.scrutinee, 0);
             for (size_t k = 0; k < a->binds.len; k++) {
-                Sym *bs = *(Sym **)vecAt(&a->binds, k);
-                if (bs) raiseTo(f, bs->cname, sd);
+                /* 元素类型是 `const char *`——**绑定的名字本身**（见 `ast.h` 的 `MatchArm.binds`），
+                 * `codegen.c` 与 `check_stmt.c` 都是这么读的。按 `Sym *` 读会把那个名字指针当成
+                 * 结构体，`bs->cname` 于是变成"字符串头几个字节"当地址 ⇒ 事实表里落进一个垃圾名字，
+                 * 之后 `cnameEq` / `symBucket` 的 `strcmp` 就走进未映射内存。 */
+                const char *bn = *(const char **)vecAt(&a->binds, k);
+                if (bn) raiseTo(f, bn, sd);
             }
             copyFacts(&arm, f);
             dfBlock(c, a->body, &arm, depth);

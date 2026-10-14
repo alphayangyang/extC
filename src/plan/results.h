@@ -67,7 +67,33 @@ typedef struct {
     FuncDef    *tmpl;          /* instance -> template */
     FuncDef    *func;          /* the callee a call site / function value resolves to */
     bool        used;          /* was this function called? the emission gate reads it */
+    /* 「本帧不会销账」：本函数及其所有被调者都不写引用槽、没有解析不到的被调者、
+     * 没有 extern/并发 ⇒ 这个函数的动态执行区间里**不会执行任何 `dec`**。
+     * 于是它里面的局部引用绑定（`var p = t`）那一次 `+1` 可以省掉 —— 省 `+1` 只让 hold 更小，
+     * 而只有 `dec` 把 hold 打到 0 才会当场释放（`reclaim.c` 的 `freeSlot`）。
+     * 默认 **false**（不认识 ⇒ 照常计数）；只有 check 侧的整个调用图不动点会把它置 true。 */
+    bool        rcNoDec;
+    /* 「这个函数建立的堆引用图没有回边（无环）」与「这个函数里引用只住在被计数的 rc 槽里」。
+     * 两条合起来是「事件档（计数）可以不要清扫」的静态前提：前者是 (i)(ii)(iii)、
+     * 后者是 (iv)，`planFnAcyclic` 只在两者都成立时答真。分开存是因为调用图上的闭包不同
+     * （(i') 要求被调者整体无环，(iv) 只要求被调者的 (iv) 成立）。默认 false（不认识 ⇒ 保留清扫）。*/
+    bool        fnAcyclic;
+    bool        fnRefsCounted;
+    /* 「这个函数里不会丢掉任何活引用」：判据 (a) 每个 ref 字段每对象最多写一次、(b) ref 类型的
+     * 局部量/参数不被重新赋值、(c) 没有丢引用的操作（容器删除/替换、`@overwrite` 复用同一格、
+     * free 类内建，以及传递地违反 (a)/(b)/(c) 的被调者）。整单元合取成立 ⇒ 回收无事可做 ⇒
+     * 不发射 rc 运行期（`codegen.c` 的 `unitReclaimIdle`）。
+     * 默认 false（没算过 / 不成立 ⇒ 保留回收），这是安全方向。 */
+    bool        fnReclaimIdle;
     const char *cname;         /* the C name a binding is emitted under */
+    /* 这个分配站点所属的「可能成环」组（`CycleMerge` 的站点并查集连通分量）；0 = 不属于跨站点
+     * 的可能环。`codegen.c` 用它把同组站点钉进同一个回收片：片边界必须与结构边界对齐，把一条
+     * 环切开会让跨片登记位变成环垃圾的种子，界随轮数涨。 */
+    int         cycleGroup;
+    /* 这个函数所在单元里有**跨站点**的可能环（分量含 ≥2 个分配站点）⇒ 分片会把一条环切开，
+     * 跨片登记位成为环垃圾的种子 ⇒ 整单元拒绝分片（`codegen.c` 的 `scanUnitReclaim`）。
+     * 单站点自环（`shard_bands` 的每条链）不置这一位：那个站点本来就在一片里。 */
+    bool        fnCrossSiteCycle;
     /* ---- plan facts about a struct definition ---- */
     bool        builtinHolder; /* the struct behind a builtin name needs no C definition */
     FuncDef    *coroOf;        /* this frame struct belongs to that coroutine */
@@ -140,6 +166,12 @@ typedef struct {
         int  effState;
         bool effComplete;
         bool effUnknown;
+        /* 一个 `ST_ASSIGN` 站点上「往引用槽里写」的分类（`SR_*`，定义与判据在
+         * `check_stmt.c` 的 `noteAcyclicStore`）。0 = 不是引用槽存储、或还没记过。 */
+        int  storeRefKind;
+        /* 这个函数被判成「有环 / 引用不只住在堆槽里」的**理由串**（arena 里，活得比
+         * 本趟久），`EXTC_DBG_ACYCLIC=1` 直接打它。NULL = 没有理由（判成了真）。 */
+        const char *acyclicWhy;
     } an;
     /* which of the fields above were written; an unset field reads as its default */
     /* Which fields of this slot were written. **Two words on purpose**: the plan side alone

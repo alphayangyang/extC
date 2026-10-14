@@ -10,8 +10,9 @@
  * —— 它不引用任何用户类型：类型的指针字段布局由调用方通过 `ExtcRcType` 表交给区域。文本里所有
  * 函数与数据都是 `static`，不产生外部符号，也不会与用户代码重名（一律带 `extc_rc_` 前缀）。
  *
- * 机制：区域是一串按 `EXTC_RC_SLAB_BITS` 对齐的 slab；由对象指针找 slab 一次按位与、找槽号一次
- * 右移；持有者计数只挂在**指针赋值**上，归零当场把槽还给空闲链；环、以及计数还被已死对象的出边
+ * 机制：区域是一串按 `EXTC_RC_SLAB_BITS` 对齐的 slab；载荷按 16 字节取整成槽（不是 2 的幂，免得
+ * 80 字节的对象白占 128），由对象指针找 slab 一次按位与、找槽号一次乘倒数右移；持有者计数只挂在
+ * **指针赋值**上，归零当场把槽还给空闲链；环、以及计数还被已死对象的出边
  * 拖着的那部分，由区域清扫兜底 —— 清扫从根 + 跨区登记位图出发标记，再顺序扫 64 位字释放未标记者。
  * 标记按**每个槽自带的类型描述符**走指针字段；描述符由分配点（codegen）随槽交给运行期，
  * 所以这里没有区域级类型表。
@@ -42,7 +43,10 @@
  *
  * @param a    arena（本函数不用，为与其他发射口同形保留）。
  * @param out  正在写的生成 C。
+ * @param noCount    `EXTC_RC_NOCOUNT`：计数入口编译成空操作。
+ * @param timeOn     `EXTC_RC_TIME`：运行期分项计时。
+ * @param sweepFree  `EXTC_RC_SWEEP_FREE`：事件档，`shouldSweep` 恒 0。
  */
-void reclaimEmitRuntime(Arena *a, Buf *out);
+void reclaimEmitRuntime(Arena *a, Buf *out, int noCount, int timeOn, int sweepFree);
 
 #endif /* EXTC_RECLAIM_H */

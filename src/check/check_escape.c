@@ -1818,6 +1818,282 @@ void recheckPendingRefStores(Checker *c, bool dfaSettled) {
     c->pendingRefStores.len = w;
 }
 
+/* ---- 路线 C：把「可能的环」的候选区域并起来 --------------------------------------
+ *
+ * 见 `check_internal.h` 的 `CycleMerge`。三段：记录（检查走查）→ 收集站点（DFA 之后，作用域
+ * 还开着）→ 合并（全局电平求解之后，placement 之前）。
+ *
+ * 为什么合并的判据是「候选站点落在**不止一只**区域」：区域标记精确 ⟺ 划分不切开任何 SCC。
+ * 一个可能闭环的写，如果宿主可能指向的对象分布在多只区域里，这条环就可能跨区；跨区种子只在
+ * 持有它的槽被释放时撤销，于是环垃圾把两只区域互相钉住、谁都不扫。把这些候选站点并到**最浅**
+ * 的那一层（长寿的那一只），这条可能的环就落进同一只区域。
+ *
+ * 方向：只把站点往**更长寿**的一侧挪（`m` 是候选里的最小值），永远不会造成悬垂；代价是可能
+ * 多留一会儿。候选里有家区域（`anMinAt == 0`）时**不动** —— `needsHome` 在合并这一步之前
+ * 已经关死，把别的站点也提进家区域会让 codegen 用到没有声明的 `__extc_home`。
+ */
+
+/**
+ * @brief 把一个分配站点记进候选集（按指针去重，有上限）。
+ *
+ * @param out   候选集（`Expr*`）。
+ * @param site  分配站点表达式。
+ */
+static void cycleSitePush(Vec *out, Expr *site) {
+    if (!site || out->len > 256) return;
+    for (size_t i = 0; i < out->len; i++)
+        if (*(Expr **)vecAt(out, i) == site) return;
+    *(Expr **)vecPush(out) = site;
+}
+
+/**
+ * @brief 只读走查：收出一个表达式「可能指向的那些分配站点」。
+ *
+ * 只走「这个绑定**自己**可能指向谁」的三条来源：当前持有的值（`origin`）、声明处的别名来源
+ * （`initSrc`）、以及直接赋值记下的 `heldSrc`。**不走字段表 / `otherSrc` / `callSrc`**：那三格
+ * 记的是"写进这个绑定的**字段**里的值"（`s.next = keeper`），那是从宿主**可达**的东西，不是
+ * 宿主本身可能指向的对象 —— 把它们当候选会把 `cross_region.extc` 那种「循环体的 `s` 指向长命
+ * 的 `keeper`」也误并成一只区域，而那条跨区边正是 run-switch ①c 要考的登记路径。
+ *
+ * 停下来的方向是安全的那一侧：候选集小 ⇒ 少合并 ⇒ 保留原状，不会放掉什么东西。**不写任何
+ * 记账** —— 这里只是把一个已知的遍历形状借来当"可能指向谁"的近似。
+ *
+ * @param c     检查器；作用域必须还开着（`lookup` 要用，所以本走查只在记录时跑）。
+ * @param e     起点表达式。
+ * @param out   候选集（`Expr*`）。
+ * @param hops  跳数上限（防环）。
+ */
+static void cycleCollectSites(Checker *c, Expr *e, Vec *out, int hops) {
+    if (!e || hops > 32 || out->len > 256) return;
+    switch (e->kind) {
+    case EX_NEW: case EX_GENCALL:
+        cycleSitePush(out, e);
+        return;
+    case EX_IDENT: {
+        Sym *sy = lookup(c, e->u.ident.name);
+        if (!sy) return;
+        cycleCollectSites(c, sy->origin,  out, hops + 1);
+        cycleCollectSites(c, sy->initSrc, out, hops + 1);
+        cycleCollectSites(c, sy->heldSrc, out, hops + 1);
+        return;
+    }
+    case EX_FIELD: cycleCollectSites(c, e->u.field.obj, out, hops + 1); return;
+    case EX_INDEX: cycleCollectSites(c, e->u.index.obj, out, hops + 1); return;
+    case EX_SLICE: cycleCollectSites(c, e->u.slice.obj, out, hops + 1); return;
+    case EX_DEREF: cycleCollectSites(c, e->u.deref.operand, out, hops + 1); return;
+    case EX_SIGN:  cycleCollectSites(c, e->u.sign.operand, out, hops + 1); return;
+    case EX_TRY:   cycleCollectSites(c, e->u.try_.operand, out, hops + 1); return;
+    case EX_CONV:  cycleCollectSites(c, e->u.conv.operand, out, hops + 1); return;
+    case EX_COALESCE:
+        cycleCollectSites(c, e->u.coalesce.main, out, hops + 1);
+        cycleCollectSites(c, e->u.coalesce.fallback, out, hops + 1);
+        return;
+    /* kind-default: 只有会**传递**引用的形状继续走；字面量、调用结果等到此为止。新 kind 若
+     * 是引用载体，必须在这里加 case —— 漏掉只会让候选集更小（合并更少），方向安全。 */
+    default:
+        return;
+    }
+}
+
+/**
+ * @brief 记下一次「可能闭环」的堆引用写，供候选区域合并在电平求解后处理。
+ *
+ * 记录时**当场**收宿主可能指向的分配站点（作用域还开着，`lookup` 能用）；合并动作留到
+ * `applyCycleMerges`。判据与字段说明见 `check_internal.h` 的 `CycleMerge`。
+ *
+ * @param c      检查器（作用域还开着）。
+ * @param base   宿主绑定（`(*cur).f = v` 的 `cur`）。
+ * @param value  被写入的值。
+ * @param line   源码行号。
+ */
+void noteCycleMerge(Checker *c, Sym *base, Expr *value, int line) {
+    if (!c || !base || !value) return;
+    for (size_t i = 0; i < c->cycleMerges.len; i++) {
+        CycleMerge *r = *(CycleMerge **)vecAt(&c->cycleMerges, i);
+        if (r && r->base == base && r->value == value && r->fn == c->curFunc)
+            return;   /* 同一个站点被驱动程序检查多趟：只记一次 */
+    }
+    CycleMerge *r = arenaAllocZero(c->arena, sizeof *r);
+    r->base  = base;
+    r->value = value;
+    r->line  = line;
+    r->fn    = c->curFunc;
+    vecInit(&r->sites, c->arena, sizeof(Expr *));
+    /* 站点**当场**收：这时作用域还开着（`lookup` 能用）。收在 DFA 之后不行 —— 那时块作用域
+     * 已经关掉，`var head = new node` 这种块内绑定查不到（`recheckPendingRefStores` 的注释记着
+     * 同一件事）。层号到全局求解之后才是定的，所以合并动作仍留在后段（见 `applyCycleMerges`）。 */
+    cycleCollectSites(c, base->origin,  &r->sites, 0);
+    cycleCollectSites(c, base->initSrc, &r->sites, 0);
+    cycleCollectSites(c, base->heldSrc, &r->sites, 0);
+    *(CycleMerge **)vecPush(&c->cycleMerges) = r;
+}
+
+/**
+ * @brief 一个分配站点最终会落进哪一只区域；与 placement 用同一条规则。
+ *
+ * @param site  分配站点。
+ * @return      `ARENA_HOME`（家区域）或块层号（>= 1）。
+ */
+static int cycleSiteWant(Expr *site) {
+    int a = anMinAt(site);
+    if (a == 0) return ARENA_HOME;
+    if (a >= 1) return a;
+    int lx = anLexicalLevel(site);
+    return lx >= 1 ? lx : 1;
+}
+
+/**
+ * @brief 全局电平求解之后：把「可能的环」的候选区域并到最浅的那一层。
+ *
+ * 在 placement 之前跑，只改 `anMinAt`（placement 自己会据此写 `arenaLevel`/`refDepth`）。
+ * 候选落在家区域就**不动**（`needsHome` 已定）；`EXTC_RECLAIM=0` 直接返回（没有区域划分）。
+ *
+ * @param c  检查器。
+ */
+/**
+ * @brief 「可能成环」的分配站点并查集：同组的站点不能被回收片切开。
+ *
+ * 组号经 `planSetSiteCycleGroup` 交给 codegen；只有分量含 ≥2 个分配站点时才成组。
+ */
+typedef struct { Expr **site; int *par; size_t n, cap; Arena *a; } SiteUF;
+
+/**
+ * @brief 取站点在并查集里的下标，没有就追加（新元素自成一棵）。
+ *
+ * @param u  并查集。
+ * @param s  分配站点表达式。
+ * @return   下标（0 起）。
+ */
+
+static int sufAdd(SiteUF *u, Expr *s) {
+    for (size_t i = 0; i < u->n; i++) if (u->site[i] == s) return (int)i;
+    if (u->n == u->cap) {
+        size_t c = u->cap ? u->cap * 2 : 64;
+        Expr **ns = (Expr **)arenaAlloc(u->a, c * sizeof *ns);
+        int *np = (int *)arenaAlloc(u->a, c * sizeof *np);
+        for (size_t i = 0; i < u->n; i++) { ns[i] = u->site[i]; np[i] = u->par[i]; }
+        u->site = ns; u->par = np; u->cap = c;
+    }
+    u->site[u->n] = s; u->par[u->n] = (int)u->n;
+    return (int)u->n++;
+}
+
+/**
+ * @brief 找下标所在树的根（带路径压缩）。
+ *
+ * @param u  并查集。
+ * @param i  下标。
+ * @return   根下标。
+ */
+static int sufRoot(SiteUF *u, int i) {
+    while (u->par[i] != i) { u->par[i] = u->par[u->par[i]]; i = u->par[i]; }
+    return i;
+}
+
+/**
+ * @brief 合并两棵（按根挂，不做秩优化 —— 站点数很小）。
+ *
+ * @param u  并查集。
+ * @param a  下标。
+ * @param b  下标。
+ */
+static void sufUnion(SiteUF *u, int a, int b) {
+    a = sufRoot(u, a); b = sufRoot(u, b);
+    if (a != b) u->par[b] = a;
+}
+
+/**
+ * @brief 分配站点所属的「可能成环」组号；0 表示不属于跨站点的可能环。
+ *
+ * @param c  检查器。
+ */
+
+void applyCycleMerges(Checker *c) {
+    if (!c || c->cycleMerges.len == 0) return;
+    /* 这条修法只对**区域**有意义：`EXTC_RECLAIM=0` 根本不发回收运行期，也就没有区域划分，
+     * 功能 arena 的层号保持不动 —— 关档是整套对照的基线，产物逐字不变（`main.c --help` 已经
+     * 点名 `EXTC_RECLAIM` 会改产物）。 */
+    const char *rec = getenv("EXTC_RECLAIM");
+    if (rec && rec[0] == '0' && rec[1] == '\0') return;
+    /* ── 站点并查集 → 「可能成环」组 ─────────────────────────────────────────────
+     * 一条 `CycleMerge` 说：宿主可能指向的那些分配站点 + 被写入的那个分配站点，可能互相成环。
+     * 同一连通分量里的站点**必须落在同一个回收片**：片边界切开一条环 ⇒ 跨片登记位成为环垃圾
+     * 的种子 ⇒ 界随轮数涨（`digraph` + `EXTC_RC_SHARDS=4` 实测 4N/N = 3.84×，与 naive RC 同量级）。
+     * 分量只有一个站点时**不用钉**：那个站点本来就在一片里 —— `shard_bands` 的 8 条独立链正是
+     * 这种（每条链一个分配点），于是分片旋钮的停顿收益不会被一起钉死。 */
+    {
+        SiteUF u;
+        u.a = c->arena; u.n = 0; u.cap = 64;
+        u.site = (Expr **)arenaAlloc(c->arena, u.cap * sizeof *u.site);
+        u.par = (int *)arenaAlloc(c->arena, u.cap * sizeof *u.par);
+        for (size_t i = 0; i < c->cycleMerges.len; i++) {
+            CycleMerge *r = *(CycleMerge **)vecAt(&c->cycleMerges, i);
+            if (!r) continue;
+            int first = -1;
+            for (size_t k = 0; k < r->sites.len; k++) {
+                int id = sufAdd(&u, *(Expr **)vecAt(&r->sites, k));
+                if (first < 0) first = id; else sufUnion(&u, first, id);
+            }
+            if (r->value && (r->value->kind == EX_NEW || r->value->kind == EX_GENCALL)) {
+                int id = sufAdd(&u, r->value);
+                if (first < 0) first = id; else sufUnion(&u, first, id);
+            }
+        }
+        int *size = (int *)arenaAllocZero(c->arena, (u.n ? u.n : 1) * sizeof *size);
+        int *gid = (int *)arenaAllocZero(c->arena, (u.n ? u.n : 1) * sizeof *gid);
+        for (size_t i = 0; i < u.n; i++) size[sufRoot(&u, (int)i)]++;
+        int next = 0;
+        for (size_t i = 0; i < u.n; i++) {
+            int rt = sufRoot(&u, (int)i);
+            if (size[rt] >= 2 && gid[rt] == 0) gid[rt] = ++next;
+        }
+        for (size_t i = 0; i < u.n; i++) {
+            int rt = sufRoot(&u, (int)i);
+            if (gid[rt]) planSetSiteCycleGroup(u.site[i], gid[rt]);
+        }
+        /* 哪些函数坐在"跨站点"的环组里：它们的单元拒绝分片（`codegen.c` 的
+         * `scanUnitReclaim`）。判据只认**分量含 ≥2 个站点**的组 —— 单站点自环不必钉。 */
+        if (next > 0) {
+            for (size_t i = 0; i < c->cycleMerges.len; i++) {
+                CycleMerge *r = *(CycleMerge **)vecAt(&c->cycleMerges, i);
+                if (!r || !r->fn) continue;
+                for (size_t k = 0; k < r->sites.len && r->fn; k++) {
+                    Expr *st = *(Expr **)vecAt(&r->sites, k);
+                    if (planSiteCycleGroup(st) > 0) planSetFnCrossSiteCycle(r->fn, true);
+                }
+            }
+        }
+        if (dbgOn("EXTC_DBG_ZONE"))
+            fprintf(stderr, "[cycle-group] 站点 %zu 个 -> %d 组\n", u.n, next);
+    }
+    for (size_t i = 0; i < c->cycleMerges.len; i++) {
+        CycleMerge *r = *(CycleMerge **)vecAt(&c->cycleMerges, i);
+        if (!r || r->sites.len == 0) continue;
+        int m = -1;
+        bool home = false;
+        for (size_t k = 0; k < r->sites.len; k++) {
+            int w = cycleSiteWant(*(Expr **)vecAt(&r->sites, k));
+            if (w == ARENA_HOME) { home = true; break; }   /* 家区域的决定不能再改 */
+            if (m < 0 || w < m) m = w;
+        }
+        if (home || m < 1) continue;
+        bool multi = false;
+        for (size_t k = 0; k < r->sites.len && !multi; k++)
+            if (cycleSiteWant(*(Expr **)vecAt(&r->sites, k)) != m) multi = true;
+        if (!multi) continue;                              /* 候选只落在一只区域：没被切开 */
+        for (size_t k = 0; k < r->sites.len; k++) {
+            Expr *site = *(Expr **)vecAt(&r->sites, k);
+            int w = cycleSiteWant(site);
+            if (w == ARENA_HOME || w == m) continue;
+            if (anMinAt(site) < 0 || anMinAt(site) > m) anSetMinAt(site, m);
+        }
+        promoteInto(c, r->value, m);                       /* 值也要落进同一只区域 */
+        if (dbgOn("EXTC_DBG_ZONE"))
+            fprintf(stderr, "[merge] fn=%s line=%d sites=%zu -> level %d\n",
+                    r->fn && r->fn->name ? r->fn->name : "?", r->line, r->sites.len, m);
+    }
+}
+
 /* "let 绑定"与"路径跨过只读引用"是两个问题：`var` 也能持有只读引用，如 `fn f(v: ref slice<i32>)`；
  * 写入要同时满足两者。 */
 /**

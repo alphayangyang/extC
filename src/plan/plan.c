@@ -93,6 +93,12 @@
 #define PLAN_OW_SITES            75
 #define PLAN_OW_LOCAL            76
 #define PLAN_VAR_INIT_OO         77
+#define PLAN_RC_NODEC            74   /* “本帧不会销账”：省 initRef 的 +1 的依据 */
+#define PLAN_FN_ACYCLIC          78   /* 无环判定: 这个函数建立的堆引用图无环（(i)(ii)(iii)） */
+#define PLAN_FN_REFS_COUNTED     79   /* 无环判定: 这个函数里引用只住在被计数的 rc 槽里（(iv)） */
+#define AN_STORE_REF_KIND        80   /* 无环判定: 赋值站点的引用槽存储分类（SR_*） */
+#define AN_ACYCLIC_WHY           81   /* 无环判定: 判否理由串，供 EXTC_DBG_ACYCLIC 打印 */
+#define PLAN_FN_RECLAIM_IDLE     82   /* ② 判据 (a)(b)(c): 这个函数里不会丢掉任何活引用 */
 #define AN_DUMMY_PAST_64         65
 #define AN_ADDR_FROM_LOCAL       64
 /* The analysis half of the slot, by name: the checker's own working state, which no later
@@ -100,7 +106,10 @@
  * generation starts reading must move out of this list (and get a `planXxx` accessor). */
 const char *const planAnalysisFields[] = { "lamSig", "makesPoolAny",
                                            "refDepth", "homeDepth", "lexicalLevel", "storedAt",
-                                           "minAt", "reuse", "borrowed", "qualified" };
+                                           "minAt", "reuse", "borrowed", "qualified",
+                                           "fnAcyclic", "fnRefsCounted", "fnReclaimIdle",
+                                           "storeRefKind",
+                                           "acyclicWhy" };
 const size_t planAnalysisFieldCount = sizeof planAnalysisFields / sizeof planAnalysisFields[0];
 
 /* ---- setters (called by the checker) ----------------------------------------------- */
@@ -1327,6 +1336,236 @@ void planSetUsed(FuncDef *f, bool v) {
         r->used = v;
         resultsSetBit(r, PLAN_USED);
     }
+}
+
+/**
+ * @brief 「这个函数的动态执行区间里不会有 `dec`」——省 `initRef` 的 `+1` 的依据。
+ *
+ * 由 check 侧对整张调用图求**最小不动点**得到（本函数不写引用槽、没有解析不到的被调者、
+ * 没有 extern/并发，且所有被调者都满足）。默认 `false`：不认识就照常计数。
+ *
+ * @param f  函数定义。
+ * @return   可以省则 `true`；没有记录时 `false`。
+ */
+bool planRcNoDec(const FuncDef *f) {
+    NodeResults *r = resultsOf(f, false);
+    return r && resultsBit(r, PLAN_RC_NODEC) ? r->rcNoDec : false;
+}
+
+/**
+ * @brief 记下「这个函数不会销账」这个结论（只由 check 侧的调用图不动点写入）。
+ *
+ * @param f  函数定义；NULL 忽略。
+ * @param v  结论。
+ */
+void planSetRcNoDec(FuncDef *f, bool v) {
+    if (!f) return;
+    NodeResults *r = resultsAs(f, true, RKIND_FUNC, __LINE__);
+    if (r) {
+        r->rcNoDec = v;
+        resultsSetBit(r, PLAN_RC_NODEC);
+    }
+}
+
+/**
+ * @brief 「这个函数建立的堆引用图没有回边，而且引用只住在被计数的 rc 槽里」。
+ *
+ * 本判据的静态前提：成立时事件档（计数）**完备**，不需要清扫。三条无环判据 (i)(ii)(iii) 与
+ * 「引用只落在被计数的堆槽里」(iv) 都必须成立；判据、理由与覆盖表见 `check_stmt.c` 的
+ * `noteAcyclicStore` 与 `check_top.c` 的 `computeFnAcyclic`。默认 `false`：没算过（泛型模板 /
+ * 实例、extern、没有函数体）或不成立都必须保留清扫，这是安全方向。
+ *
+ * @param f  函数定义。
+ * @return   成立则 `true`；没有记录时 `false`。
+ */
+bool planFnAcyclic(FuncDef *f) {
+    NodeResults *r = resultsOf(f, false);
+    return r && resultsBit(r, PLAN_FN_ACYCLIC) ? r->fnAcyclic : false;
+}
+
+/**
+ * @brief 记下「这个函数建立的堆引用图没有回边」（判据 (i)(ii)(iii)）。
+ *
+ * 只由 check 侧的调用图不动点写入；`planFnAcyclic` 还会与 (iv) 的结论合取。
+ *
+ * @param f  函数定义；NULL 忽略。
+ * @param v  结论。
+ */
+void planSetFnAcyclic(FuncDef *f, bool v) {
+    if (!f) return;
+    NodeResults *r = resultsAs(f, true, RKIND_FUNC, __LINE__);
+    if (r) {
+        r->fnAcyclic = v;
+        resultsSetBit(r, PLAN_FN_ACYCLIC);
+    }
+}
+
+/**
+ * @brief 「这个函数里引用只住在被计数的 rc 槽里」（判据 (iv)）。
+ *
+ * `planSetFnAcyclic` 的兄弟：单独存是因为调用图上的闭包不同 —— (i') 要看被调者整体无环，
+ * (iv) 只看被调者的 (iv)。
+ *
+ * @param f  函数定义。
+ * @return   成立则 `true`；没有记录时 `false`。
+ */
+bool planFnRefsCounted(FuncDef *f) {
+    NodeResults *r = resultsOf(f, false);
+    return r && resultsBit(r, PLAN_FN_REFS_COUNTED) ? r->fnRefsCounted : false;
+}
+
+/**
+ * @brief 记下「这个函数里引用只住在被计数的 rc 槽里」（判据 (iv)）。
+ *
+ * @param f  函数定义；NULL 忽略。
+ * @param v  结论。
+ */
+void planSetFnRefsCounted(FuncDef *f, bool v) {
+    if (!f) return;
+    NodeResults *r = resultsAs(f, true, RKIND_FUNC, __LINE__);
+    if (r) {
+        r->fnRefsCounted = v;
+        resultsSetBit(r, PLAN_FN_REFS_COUNTED);
+    }
+}
+
+/**
+ * @brief 「这个函数里不会丢掉任何活引用」：判据 (a)(b)(c)。
+ *
+ * (a) 该函数写的每个堆 ref 字段**每对象最多写一次**（初始化，不是覆盖）；(b) ref 类型的局部量
+ * /参数不被重新赋值（声明初始化不算）；(c) 没有丢引用的操作：容器删除/替换、`@overwrite` 复用
+ * 同一格、free 类内建，以及任何（传递地）违反 (a)/(b)/(c) 的被调者 —— 传递那一半不在这里算，
+ * 由**整单元合取**（`codegen.c` 的 `unitReclaimIdle`）覆盖：被调者自己也会被判一遍。
+ *
+ * 成立时函数里没有"让对象提前变成不可达"的动作；整单元再成立 ⇒ 区域内的对象只随区域整体
+ * 释放而消失 ⇒ 回收无事可做 ⇒ 不发射 rc 运行期。默认 `false`：没算过（泛型模板 / 实例 /
+ * extern）或不成立都必须照常发射，这是安全方向（判错 = 少收 ⇒ 内存涨，不是悬垂）。
+ *
+ * @param f  函数定义。
+ * @return   成立则 `true`；没有记录时 `false`。
+ */
+bool planFnReclaimIdle(FuncDef *f) {
+    NodeResults *r = resultsOf(f, false);
+    return r && resultsBit(r, PLAN_FN_RECLAIM_IDLE) ? r->fnReclaimIdle : false;
+}
+
+/**
+ * @brief 记下「这个函数里不会丢掉任何活引用」（判据 (a)(b)(c)）。
+ *
+ * 只由 `check_top.c` 的 `computeFnAcyclic` 写入；`codegen.c` 只经 `planFnReclaimIdle` 读。
+ *
+ * @param f  函数定义；NULL 忽略。
+ * @param v  结论。
+ */
+void planSetFnReclaimIdle(FuncDef *f, bool v) {
+    if (!f) return;
+    NodeResults *r = resultsAs(f, true, RKIND_FUNC, __LINE__);
+    if (r) {
+        r->fnReclaimIdle = v;
+        resultsSetBit(r, PLAN_FN_RECLAIM_IDLE);
+    }
+}
+
+/**
+ * @brief 分配站点所属的「可能成环」组号；0 表示不属于跨站点的可能环。
+ *
+ * 判据见 `check_escape.c` 的 `applyCycleMerges`：同一连通分量的站点可能互相成环，回收片
+ * 不能把它们切开。
+ *
+ * @param e  分配站点表达式。
+ * @return   组号（1 起）；没记录时 0。
+ */
+int planSiteCycleGroup(const Expr *e) {
+    NodeResults *r = resultsOf(e, false);
+    return r ? r->cycleGroup : 0;
+}
+
+/**
+ * @brief 记下一个分配站点的「可能成环」组号（同上一条）。
+ *
+ * @param e  分配站点表达式；NULL 忽略。
+ * @param g  组号（1 起）。
+ */
+void planSetSiteCycleGroup(Expr *e, int g) {
+    if (!e) return;
+    NodeResults *s = resultsAs(e, true, RKIND_EXPR, __LINE__);
+    if (s) s->cycleGroup = g;
+}
+
+/**
+ * @brief 这个函数所在单元是否有**跨站点**的可能环（有 ⇒ 该单元拒绝分片）。
+ *
+ * @param f  函数定义。
+ * @return   有跨站点可能环时 `true`；没记录时 `false`。
+ */
+bool planFnCrossSiteCycle(const FuncDef *f) {
+    NodeResults *r = resultsOf(f, false);
+    return r && r->fnCrossSiteCycle;
+}
+
+/**
+ * @brief 记下「这个函数所在单元有跨站点的可能环」（同上一条）。
+ *
+ * @param f  函数定义；NULL 忽略。
+ * @param v  结论。
+ */
+void planSetFnCrossSiteCycle(FuncDef *f, bool v) {
+    if (!f) return;
+    NodeResults *s = resultsAs(f, true, RKIND_FUNC, __LINE__);
+    if (s) s->fnCrossSiteCycle = v;
+}
+
+/**
+ * @brief 一个赋值站点上「往引用槽里写」的分类（`SR_*`）。
+ *
+ * 由检查器在**作用域还在**的时候记下（层号比较需要 `Sym`），`computeFnAcyclic` 在查体之后
+ * 读它。`0`（`SR_NONE`）表示不是引用槽存储、或那一趟没有走到这个站点 —— 后者按判否处理。
+ *
+ * @param s  赋值语句。
+ * @return   分类；没有记录时 `0`。
+ */
+int anStoreRefKind(const Stmt *s) {
+    NodeResults *r = resultsOf(s, false);
+    return (r && resultsBit(r, AN_STORE_REF_KIND)) ? r->an.storeRefKind : 0;
+}
+
+/**
+ * @brief 记下一个赋值站点的引用槽存储分类。
+ *
+ * @param s  赋值语句；NULL 忽略。
+ * @param v  `SR_*` 分类。
+ */
+void anSetStoreRefKind(Stmt *s, int v) {
+    if (!s) return;
+    NodeResults *r = resultsAs(s, true, RKIND_STMT, __LINE__);
+    if (!r) return;
+    r->an.storeRefKind = v;
+    resultsSetBit(r, AN_STORE_REF_KIND);
+}
+
+/**
+ * @brief 这个函数被判否的理由串（`EXTC_DBG_ACYCLIC=1` 直接打印）。
+ *
+ * @param f  函数定义。
+ * @return   理由串；判成真或还没算过时 NULL。
+ */
+const char *anAcyclicWhy(const FuncDef *f) {
+    NodeResults *r = resultsOf(f, false);
+    return (r && resultsBit(r, AN_ACYCLIC_WHY)) ? r->an.acyclicWhy : NULL;
+}
+
+/**
+ * @brief 记下这个函数被判否的理由串。
+ *
+ * @param f    函数定义；NULL 忽略。
+ * @param why  理由串（应当是 arena 里的常量串）。
+ */
+void anSetAcyclicWhy(FuncDef *f, const char *why) {
+    if (!f) return;
+    NodeResults *r = resultsAs(f, true, RKIND_FUNC, __LINE__);
+    if (!r) return;
+    r->an.acyclicWhy = why;
+    resultsSetBit(r, AN_ACYCLIC_WHY);
 }
 
 /**

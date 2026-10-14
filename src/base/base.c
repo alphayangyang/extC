@@ -96,6 +96,24 @@ static ArenaBlock *arenaNewBlock(Arena *a, size_t need) {
 }
 
 /**
+ * @brief `EXTC_ARENA_FILL` 的取值，只读一次环境；0 表示不填（默认）。
+ *
+ * @return 0..255 的填充字节。
+ */
+static int arenaFillByte(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char *e = getenv("EXTC_ARENA_FILL");
+        cached = 0;
+        if (e && *e) {
+            long v = strtol(e, NULL, 0);
+            if (v > 0 && v <= 255) cached = (int)v;
+        }
+    }
+    return cached;
+}
+
+/**
  * @brief 从 arena 分配 `n` 字节，**不清零**。
  *
  * 单块内存从不单独释放，所以 arena 只适合活到进程结束的数据。对齐来自块自身的对齐，
@@ -113,6 +131,12 @@ void *arenaAlloc(Arena *a, size_t n) {
 
     void *p = b->data + b->used;
     b->used += n;
+    /* 调试档 `EXTC_ARENA_FILL=<0-255>`：把**没有置零**的 arena 分配填成固定图案，于是
+     * "读了没写过的 arena 内存"从偶发变成必现 —— 等价于把 glibc 的 `MALLOC_PERTURB_`
+     * 搬进我们自己的分配器（不再依赖那个环境变量的偶然行为）。默认不设 ⇒ 一个字节都不写，
+     * 产物与行为逐字节不变；`arenaAllocZero` 在调用之后再清零，同样不受影响。 */
+    int fill = arenaFillByte();
+    if (fill) memset(p, fill, n);
     return p;
 }
 

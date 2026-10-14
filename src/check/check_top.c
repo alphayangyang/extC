@@ -2159,6 +2159,35 @@ static void computeEscapesMode(Checker *c, FuncDef *f, bool unionMode) {
 static void computeEscapes(Checker *c, FuncDef *f) { computeEscapesMode(c, f, false); }
 
 /**
+ * @brief 字段表按需增长（翻倍，起步 4），返回增长后的表。
+ *
+ * 拷贝进 checker 的 arena：`Sym` 里的指针只增不减，旧数组留给 arena 整片回收，没有 free
+ * 路径要管。**没有上限** —— 上限会改变提升决策（语料实测 63 次撞上限）。
+ *
+ * @param c    checker。
+ * @param s    要增长的绑定。
+ * @param need 至少要能放下的格数。
+ * @return     增长后的表（调用方通常不用，`s->fields` 已更新）。
+ */
+static SymField *symFieldsGrow(Checker *c, Sym *s, int need) {
+    if (s->fieldsCap >= need) return s->fields;
+    int cap = s->fieldsCap ? s->fieldsCap : 4;
+    while (cap < need) cap *= 2;
+    /* **必须置零**：新表里 `nfields` 之后那些格的 `.src`/`.srcSym`/`.minReq` 没人写
+     * （`fieldDepthEntry` 只写 `.name`/`.depth`），而 `promoteFieldsAt` 会对每个下标 < `nfields`
+     * 的格读 `.src` 并当 `Expr *` 解引用。用 `arenaAlloc` 的话那是个未初始化堆指针 —— 实测
+     * `MALLOC_PERTURB_=165 ./build/extc --run tests/stl/clone.extc` 100% 段错误
+     * （`promoteInto2` 解引用 `val=0x211940`）；不扰动堆时也有 1–4% 的偶发崩溃。
+     * 置零把没来源的槽变成 `src == NULL`（`promoteFieldsAt` 直接 `continue`）、`.minReq == 0`
+     * （"必须活过本帧"，保守方向）。 */
+    SymField *nf = (SymField *)arenaAllocZero(c->arena, (size_t)cap * sizeof *nf);
+    for (int i = 0; i < s->nfields; i++) nf[i] = s->fields[i];
+    s->fields = nf;
+    s->fieldsCap = cap;
+    return nf;
+}
+
+/**
  * @brief 取绑定字段级深度表里某字段的槽，必要时新建。
  *
  * 表最多 4 槽，放不下的记进 `otherDepth` 作保守兜底；根的有效深度是 `otherDepth` 与各字段槽
@@ -2170,14 +2199,21 @@ static void computeEscapes(Checker *c, FuncDef *f) { computeEscapesMode(c, f, fa
  * @param create 表里还没有该字段时是否新建槽。
  * @return       该字段的深度槽指针；没有槽且 `create` 为 false、或表已满时返回 NULL。
  */
+/**
+ * @brief 找到（或按需新建）某个引用字段的深度槽。
+ *
+ * @param c      checker。
+ * @param s      绑定的引用字段表。
+ * @param field  字段名（AST 里 intern 过，不会悬垂）。
+ * @param create 表里还没有该字段时是否新建槽。
+ * @return       该字段的深度槽指针；`create` 为 false 且没有槽时返回 NULL。
+ */
 int *fieldDepthEntry(Checker *c, Sym *s, const char *field, bool create) {
-    (void)c;                                       /* long unused; this silences the old warning */
     if (!s || !field) return NULL;
     for (int i = 0; i < s->nfields; i++)
         if (s->fields[i].name && strcmp(s->fields[i].name, field) == 0) return &s->fields[i].depth;
     if (!create) return NULL;
-    EXTC_DBG_ASSERT(s->nfields <= 4);             /* the table's declared capacity */
-    if (s->nfields >= 4) return NULL;             /* table full: `otherDepth` is the fallback */
+    symFieldsGrow(c, s, s->nfields + 1);
     s->fields[s->nfields].name  = field;          /* interned in the AST, so it cannot dangle */
     s->fields[s->nfields].depth = 0;
     return &s->fields[s->nfields++].depth;
@@ -2265,16 +2301,7 @@ static void noteFieldSrc(Checker *c, Sym *root, const char *field, int d2, Expr 
         /* 槽不存在就**建**。只写已存在的槽会让 `bx.mid.next = p` 这类两层投影永远没有槽：
          * 声明 `{ mid: { next: null } }` 只建了 `mid`，来源于是没人记，返回值的检查也就够不着
          * 那个分配站点。表满时退化到 `otherSrc`：来源仍在，只是粒度更粗（保守方向）。 */
-        EXTC_DBG_ASSERT(root->nfields <= 4);          /* the table's declared capacity */
-        if (root->nfields >= 4) {
-            if (d2 >= root->otherSrcDepth) {
-                if (!root->otherSrc) root->otherMinReq = d2;
-                root->otherSrc = src;
-                root->otherSrcSym = srcSym;
-                root->otherSrcDepth = d2;
-            }
-            return;
-        }
+        symFieldsGrow(c, root, root->nfields + 1);
         n = root->nfields++;
         root->fields[n].name     = field;   /* interned in the checker's arena, so it cannot dangle */
         root->fields[n].depth    = 0;
@@ -2384,6 +2411,7 @@ void noteWholeValueDepthWrite(Checker *c, Sym *dst, Expr *value, int d2) {
 
     Sym *src = value && value->kind == EX_IDENT ? identBindOf(value) : NULL;
     if (!dst->addressed && src && src != dst && src->fieldsComplete) {
+        symFieldsGrow(c, dst, src->nfields > 0 ? src->nfields : 1);
         dst->nfields = src->nfields;
         for (int i = 0; i < src->nfields; i++) dst->fields[i] = src->fields[i];
         dst->otherDepth = src->otherDepth;
@@ -5149,6 +5177,1624 @@ static void allFunctions(Arena *arena, Module *m, Vec *out) {
     }
 }
 
+/* ------------------------------------------------------------------
+ * 「本帧不会销账」：整张调用图的**最小不动点**（`planRcNoDec`）。
+ *
+ * 省掉局部引用绑定（`var p = t`）的 `inc` 只在一种情况下不健全：`p` 活着时某个 `dec`
+ * 把这个对象的 `hold` 打到 0 —— `reclaim.c` 的 `freeSlot` 当场释放，`p` 悬垂。而 `dec` 全部
+ * 来自**引用槽的存储**（`storeRefOwned` / `storeRef` / 覆盖赋值）。所以：
+ *
+ *     rcNoDec(F) = ¬写引用槽(F) ∧ ¬外部/未知调用(F) ∧ ¬并发(F) ∧ ∀g∈callees(F): rcNoDec(g)
+ *
+ * 这是最小不动点（从"全部成立"往下收紧）：**互相递归的一组纯读函数仍然成立** —— 这正是
+ * `bt` 的 `check` 需要的形状（它只读、只调自己）。自环在这里不构成保守理由：只要环里没有
+ * 谁写引用槽，环上就没有 `dec`。
+ *
+ * 不置位的两类：泛型模板/实例（一个 AST 槽被所有实例共享，一个实例成立不代表另一个）、
+ * 以及任何没被标上的函数（默认 `false` = 照常计数，安全方向）。
+ *
+ * **依赖的一条语言规则（协程）**：本扫描只看 AST。协程帧字段的初始化在 resume 时以**覆盖语义**
+ * （`extc_rc_storeRef`，含 `dec`）重跑，那是扫描看不见的写 —— 但它要求"引用跨 `yield` 活着"，
+ * 而那是**编译期拒绝**的（`p lives across a yield and carries a reference`）。所以协程帧字段里
+ * 不会有引用 ⇒ 不存在看不见的 `dec`。按此扫过 78 个程序（37 个协程形状 + 全部回收语料）：
+ * 没有一个函数同时出现 `initRefNoHold` 与覆盖语义的 `storeRef`。
+ * **若那条语言规则哪天放松，这里必须显式排除协程函数。**
+ */
+/**
+ * @brief `rcNoDec` 扫描的上下文：检查器 + "已经确定不合格"的旗标。
+ *
+ * 两个人一起看这个 typedef 与下面两条前置声明：`rcScanStmt` 与 `rcScanExpr` 互相递归
+ * （语句里含表达式、表达式里含语句），所以至少要一条前置声明。
+ */
+typedef struct {
+    Checker *c;      /**< 检查器（读类型表、读调用点解析结果）。 */
+    bool     bad;    /**< 已经发现"会销账"的来源 ⇒ 这个函数不置位。 */
+} RcScan;
+
+/**
+ * @brief 语句回调：这个语句会不会造成一次 `dec`（写引用槽 / 静态引用槽 / 并发域）。
+ *
+ * @param ctx  扫描上下文（`RcScan *`）。
+ * @param s    被访问的子语句。
+ * @return     `false` 停下整趟走。
+ */
+static bool rcScanStmt(void *ctx, Stmt *s);
+
+/**
+ * @brief 表达式回调：这里有没有解析不到的被调者 / extern / 起并发任务。
+ *
+ * @param ctx  扫描上下文（`RcScan *`）。
+ * @param e    被访问的子表达式。
+ * @return     `false` 停下整趟走。
+ */
+static bool rcScanExpr(void *ctx, Expr *e);
+
+/**
+ * @brief 走一层子节点：只给语句时走语句子节点，只给表达式时走表达式子节点。
+ *
+ * @param s   语句；为 NULL 时改用 `e`。
+ * @param e   表达式；`s` 非 NULL 时忽略。
+ * @param sc  扫描上下文（命中即把 `bad` 置位）。
+ * @return    走完了返回 true；被回调提前停下返回 false。
+ */
+static bool rcScanChildren(Stmt *s, Expr *e, RcScan *sc) {
+    AstVisit v = { rcScanExpr, rcScanStmt, sc };
+    return s ? astWalkStmtChildren(s, &v) : astWalkExprChildren(e, &v);
+}
+
+/**
+ * @brief 语句回调：这个语句会不会造成一次 `dec`（写引用槽 / 静态引用槽 / 并发域）。
+ *
+ * @param ctx  扫描上下文（`RcScan *`）。
+ * @param s    被访问的子语句。
+ * @return     `false` 停下整趟走（已经确定这个函数不合格）。
+ */
+static bool rcScanStmt(void *ctx, Stmt *s) {
+    RcScan *sc = ctx;
+    if (!s) return true;
+    switch (s->kind) {
+    case ST_ASSIGN:
+        /* 往"含引用"的槽里写 = 一次可能的 dec（覆盖旧值）。类型不明也当坏。 */
+        if (!s->u.assign.target || !s->u.assign.target->type
+            || typeContainsRef(sc->c->tt, s->u.assign.target->type))
+            sc->bad = true;
+        break;
+    case ST_VAR:
+        /* 静态存储里的引用槽：别处（含被调者）随时可以写它 ⇒ 保守当坏。 */
+        if (s->u.var.isGlobal && (!s->type || typeContainsRef(sc->c->tt, s->type)))
+            sc->bad = true;
+        break;
+    case ST_DOMAIN:
+        sc->bad = true;                       /* 调度域：并发/交错 */
+        break;
+    default:
+        break;
+    }
+    if (sc->bad) return false;
+    return rcScanChildren(s, NULL, sc);
+}
+
+/**
+ * @brief 表达式回调：这里有没有**解析不到**的被调者 / extern / 起并发任务。
+ *
+ * @param ctx  扫描上下文（`RcScan *`）。
+ * @param e    被访问的子表达式。
+ * @return     `false` 停下整趟走。
+ */
+static bool rcScanExpr(void *ctx, Expr *e) {
+    RcScan *sc = ctx;
+    if (!e) return true;
+    if (e->kind == EX_EXT) { sc->bad = true; return false; }      /* 起并发任务 */
+    if (e->kind == EX_DYN) { sc->bad = true; return false; }      /* vtable 派发：被调者解析不到 */
+    if (e->kind == EX_CALL || e->kind == EX_METHOD) {
+        FuncDef *g = planCallee(e);
+        if (!g || g->isExtern) { sc->bad = true; return false; }  /* 未知 / C 黑盒 */
+    }
+    return rcScanChildren(NULL, e, sc);
+}
+
+/**
+ * @brief 求整张调用图的 `rcNoDec` 最小不动点，并把结论写进计划侧。
+ *
+ * 必须**在所有函数体检查完之后**调用：`FuncDef.callees` 那时才填好。泛型模板/实例不置位
+ * （一个 AST 槽被所有实例共享，一个实例成立不代表另一个），默认 `false` = 照常计数。
+ *
+ * @param c  检查器。
+ */
+static void computeRcNoDec(Checker *c) {
+    Module *m = c->m;
+    if (!m || m->funcs.len == 0) return;
+    /* ① 自判：写引用槽 / 未知调用 / 并发 / 泛型 ⇒ 不置位 */
+    for (size_t i = 0; i < m->funcs.len; i++) {
+        FuncDef *f = *(FuncDef **)vecAt(&m->funcs, i);
+        bool ok = f && f->body && !planTemplate(f) && f->typeParams.len == 0 && !f->isExtern;
+        if (ok) {
+            RcScan sc = { c, false };
+            rcScanChildren(f->body, NULL, &sc);
+            ok = !sc.bad;
+        }
+        planSetRcNoDec(f, ok);
+    }
+    /* ② 被调者不成立 ⇒ 自己也不成立；迭代到不动点（互相递归自动收敛） */
+    for (bool changed = true; changed; ) {
+        changed = false;
+        for (size_t i = 0; i < m->funcs.len; i++) {
+            FuncDef *f = *(FuncDef **)vecAt(&m->funcs, i);
+            if (!planRcNoDec(f)) continue;
+            for (size_t k = 0; k < f->callees.len; k++) {
+                if (!planRcNoDec(*(FuncDef **)vecAt(&f->callees, k))) {
+                    planSetRcNoDec(f, false);
+                    changed = true;
+                    break;
+                }
+            }
+        }
+    }
+}
+
+/* ------------------------------------------------------------------
+ * 区域无环判定：`planFnAcyclic` / `planFnRefsCounted`（整张调用图上的两个不动点）。
+ *
+ * 目的：给"事件档（计数）可以取代清扫"一个**静态前提**。判据 v1（健全优先，宁保守勿漏）：
+ *
+ *   (i)   每个 ref 类型字段的 store，值是**本帧新分配对象**：直接 `new T` / `alloc<T>(n)`，
+ *         或经一次调用返回、且被调函数**无环**且其返回值可证是**新分配**的（`retFresh`）；
+ *   (ii)  值是 `null`；
+ *   (iii) 值的层**严格大于**宿主的层（值活得更短 ⇒ 这一条边不可能是回边）。只对层下界可靠的
+ *         形状下这个结论（`noteAcyclicStore` 里判）：拿偏大的上界去放行是判据的反方向；
+ *   (iv)  所有"能丢引用"的位置都是**被计数的 rc 槽**：函数里没有对引用型局部量/参数的非声明
+ *         初始化赋值（引用只住在堆对象的 ref 字段里），也没有看不清的调用（黑盒调用涉及引用
+ *         ⇒ 判否）。这一条是必须的 —— 只有 (i)(ii)(iii) 而无 (iv) 时，引用住在局部量里，
+ *         对象的 `hold` 永远不归零，事件档不会释放任何东西。
+ *
+ * (i)(ii)(iii) 的逐站点分类在查体时做（`noteAcyclicStore`：层号比较需要作用域）；这里只做
+ * 语法层扫描（找 (iv) 的违反、收集调用依赖）与两个不动点：
+ *   · `retFresh(F)`：F 的每个 `return` 都交付一个新分配的对象；
+ *   · `acyc` / `iv` 沿调用图向下收紧（互相递归的一组函数可以同时成立）。
+ * 泛型模板与实例、extern、没有函数体的函数一律不置位（默认 false = 保留清扫，安全方向）。
+ */
+
+/* 一条调用依赖：被调者（NULL = 解析不到）与它在源码里的行，诊断用。 */
+typedef struct { FuncDef *fn; int line; } AcDep;
+
+/* 一个函数这一趟扫出来的东西。 */
+typedef struct {
+    Arena      *a;
+    Vec         acycDeps;   /* AcDep*：SR_CALL 站点（(i') 要看被调者无环且返回新分配） */
+    Vec         ivDeps;     /* AcDep*：能看见函数体的调用点（(iv) 要看被调者也成立） */
+    Vec         retDeps;    /* AcDep*：`return <调用>` 的被调者（retFresh 的闭包） */
+    bool        acycBad;    /* 出现了 (i)(ii)(iii)(i') 站不住的站点 */
+    bool        ivBad;      /* (iv) 的本地部分站不住 */
+    const char *acycWhy;    /* 第一条 (i)(ii)(iii)(i') 的理由 */
+    const char *ivWhy;      /* 第一条 (iv) 的理由 */
+    /* ---- ②「回收无事可做」的另一趟扫描（判据 (a)(b)(c)） ----------------------------
+     *
+     * 与上面那两趟**独立**：无环判据问的是"引用图有没有回边"，这一趟问"有没有活引用被提前
+     * 丢掉"。两者互不蕴含（见 `idleNote` 的说明），所以分开存、分开判。 */
+    bool        idleBad;    /* 出现了 (a)(b)(c) 站不住的站点 */
+    const char *idleWhy;    /* 第一条理由（`EXTC_DBG_RCIDLE=1` 直接打） */
+    Vec         idleFresh;  /* IdleFresh*：`var x = new T` 的 C 名 + 分配点循环深度/arena 层 */
+    Vec         idleAsgn;   /* const char*：被赋值的标识符 C 名（宿主不许在里面） */
+    Vec         idleAsgnLoop; /* int：与 idleAsgn 平行 —— 该赋值所在的**最内层循环体作用域**（0 = 循环外）*/
+    Vec         idleSites;  /* IdleSite*：堆 ref 字段的写站点（(a) 的逐站点部分） */
+    Vec         idleBindLvl;   /* IdleLvl*：绑定 -> 它所指存储的 arena 层（(b′) 的同尺事实） */
+    Vec         idleFieldLvl;  /* IdleLvl*：字段名 -> 写进该字段的值的 arena 层（取最浅） */
+    Vec         idleFieldStores; /* IdleFieldStore*：字段写的原始值（固定点求解的输入） */
+    Vec         idleStores;    /* IdleStore*：每次往 ref 槽写值（声明初始化 + 赋值） */
+    Vec         idleSlotSites; /* IdleSlotSite*：(b′) 候选站点，推迟到后处理判 */
+    int         idleSeq;    /* 走查里的语句序号（1 起）：判"分配点在站点之前" */
+} AcInfo;
+
+/* 一个堆 ref 字段写站点：(a) 要"宿主是本帧新局部量、同（宿主,字段）只有一处"。
+ * 字段名用 `fname` 不用 `field`：`field` 是 AST 节点的成员名，`tools/check_ast_freeze.py`
+ * 是文本扫描，会把这个描述符成员赋值误报成"parser 之外写 AST"。
+ *
+ * `depth` 是站点所在循环深度、`allocDepth` 是宿主那条 `new` 所在循环深度、`seq` 是走查序号；
+ * 细化 (a′) 要比"分配站点在同一层循环体内"，靠的正是这三个数（见 `idleWalkStmt`）。 */
+typedef struct { const char *host; const char *fname; int line; int depth; int allocDepth; int seq;
+                 Expr *value; bool seqElem; } IdleSite;
+
+/* 一条"本帧新局部量"台账：(a) 的候选宿主，也是 (a′) 的"宿主是本轮新建"依据。
+ *
+ * `depth` 是**分配点**所在的循环深度 + 1（1 起：0 留给"不在台账里"）；`arenaLevel` 是那条
+ * `new` 的存储**最后被放**在哪一层 arena（`arenaDepthOf(planArenaLevel)`，逃逸提权之后的值）。
+ * 两者都要 ≥ 站点所在循环深度：(a) 问的是"每对象最多写一次"，所以循环嵌套（`depth`）是主判据；
+ * arena 层是收窄（宿主被提到更长寿的层时更保守）。`seq` 保证分配在站点之前。 */
+typedef struct { const char *name; int depth; int arenaLevel; int seq; } IdleFresh;
+
+/* 一条"这个名字所指的存储落在哪一层 arena"的台账（细化 (b′) 的"同尺事实"）。
+ *
+ * 层号与 (a′) 侧的 `arenaDepthOf(planArenaLevel(new))` 是**同一把尺**（越小 = 活得越久；
+ * 0 = 本帧家区域 / 证不出）。同一名字多条时取**最浅**（活得最久）的那条，方向保守。
+ * `null` 不进台账：它不指任何对象，覆盖掉它不丢东西（见 `IDLE_LVL_NULL`）。 */
+typedef struct { const char *name; int lvl; } IdleLvl;
+
+/* 一次"把引用写进一个 ref 槽"：细化 (b′) 要问"这个槽里被写进去过的值是不是都随本迭代的
+ * arena 一起死"。`lvl` 是被写值的 arena 层（`IDLE_LVL_NULL` = null，不丢任何东西）；
+ * `loopScope` 是这次写入所在的最内层循环体的作用域层（0 = 不在任何循环里）。 */
+typedef struct { const char *name; int line; int loopScope; Expr *value; } IdleStore;
+
+/* 一次"把引用写进某个具名对象字段"：字段读（`p.next`）沿它取"这个字段里可能是什么层"。
+ * 同一字段名取最浅（活得最久），方向保守。 */
+typedef struct { const char *fname; const char *host; Expr *value; } IdleFieldStore;
+
+/* 一个 (b′) 候选站点：栈上槽（ref 局部量）的引用赋值，推迟到整趟走完之后判 —— 因为
+ * "这个槽里被写进去过的**全部**值都合格"是一个需要看完整趟的事实。 */
+typedef struct { const char *name; int line; int loopScope; Expr *value; } IdleSlotSite;
+
+/* "这次写入丢的东西是 null（没有对象）"的哨兵层号：它比任何真实 arena 层都"长寿",
+ * 但按语义它不丢对象，所以 `idleStoreQualified` 直接算合格。 */
+#define IDLE_LVL_NULL 0x3fffffff
+
+/* ② 那一趟的遍历上下文：多带**循环嵌套深度**、**作用域深度**与**最内层循环体的作用域层**。
+ *
+ * `depth` 是判据 (a)/(a′) 的词法状态：站点在深度 d 的循环里时，只有"本迭代新建"的宿主才能
+ * 满足"每对象最多写一次"。`scope` 是块嵌套深度（函数体 1、每进一个块加一，循环体那个块也加
+ * 一）—— 与 arena 层同一把尺（都是 checker 的作用域栈深度）。`minLoopScope` 是**当前所在的
+ * 所有循环体中作用域层最浅的那个**（b′ 用它当"本迭代随哪一次释放一起死"的阈值；0 = 不在任何
+ * 循环里）。语句回调只拿到子节点，三个数都由回调自己往下传。 */
+typedef struct { Checker *c; AcInfo *ac; int depth; int scope; int minLoopScope; } IdleWalk;
+
+/* 扫描上下文：检查器（类型表）与这个函数的记录。 */
+typedef struct { Checker *c; AcInfo *ac; } AcScan;
+
+static bool acScanStmt(void *ctx, Stmt *s);
+static bool acScanExpr(void *ctx, Expr *e);
+static bool idleWalkStmtCb(void *ctx, Stmt *s);
+static bool idleWalkExprCb(void *ctx, Expr *e);
+static bool idleWalkStmt(Checker *c, AcInfo *ac, Stmt *s, int depth, int scope, int minLoopScope);
+static bool idleWalkExpr(Checker *c, AcInfo *ac, Expr *e, int depth, int minLoopScope);
+static bool idleWalkExprFlag(Checker *c, AcInfo *ac, Expr *e, int depth, bool bound, int minLoopScope);
+
+
+/**
+ * @brief 这个函数算得出区域无环结论吗（有函数体、不是泛型体/实例、不是 extern）。
+ *
+ * 泛型体（含**属主结构体带类型参数**的方法，如 `vector<T>::grow`）不置位：一个 AST 槽被所有
+ * 实例共享，模板这一趟的类型是不透明的。算不出结论 ≠ 判否：调用点按参数敏感规则处理
+ * （实参不带引用 ⇒ 它拿不到我们的引用）。
+ *
+ * @param g  函数定义。
+ * @return   算得出则 true。
+ */
+static bool acAnalyzable(const FuncDef *g) {
+    if (!g || !g->body || g->isExtern || planTemplate(g)) return false;
+    if (g->typeParams.len > 0) return false;
+    if (g->owner && g->owner->typeParams.len > 0) return false;
+    return true;
+}
+
+/**
+ * @brief 这个函数是不是某个 `impl Trait for T` 的方法（代码生成会为 vtable 发射它）。
+ *
+ * `codegen.c` 的 `inTraitTable` 的镜像：一个方法**没被点名调用**也可能因为出现在
+ * `impl Trait` 里而被发射，于是 `unitAllAcyclic` 会要求它被判过。诊断要能解释
+ * "为什么没生效"，就得按同一张表算"哪些函数会被发射"。
+ *
+ * @param m  模块。
+ * @param f  函数定义。
+ * @return   在 trait 表里则 true。
+ */
+static bool acTraitTable(const Module *m, const FuncDef *f) {
+    if (!f || !f->owner) return false;
+    for (size_t i = 0; i < m->impls.len; i++) {
+        ImplDef *im = *(ImplDef **)vecAt((Vec *)&m->impls, i);
+        if (!planImplTrait(im) || !planImplTarget(im)) continue;
+        for (size_t j = 0; j < im->methods.len; j++) {
+            FuncDef *mth = *(FuncDef **)vecAt(&im->methods, j);
+            if (mth == f) return true;
+            if (mth->name && f->name && strcmp(mth->name, f->name) == 0) return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * @brief 代码生成会把这个函数发出去吗（`collectEmitted` 的口径，诊断对齐 `unitAllAcyclic`）。
+ *
+ * `unitAllAcyclic` 要求的是**被发射的每个函数**都 `planFnAcyclic`，而"被发射"比"被调用"宽：
+ * extern 声明（`planUsed` 即发射）与 `impl Trait` 的方法都算。泛型模板本身不发射（`T` 还是
+ * 形参，发出来编不过）；泛型结构体的模板方法只有它的**实例**被发射时才算。
+ *
+ * @param m  模块。
+ * @param f  函数定义。
+ * @return   会被发射则 true。
+ */
+static bool acRequired(const Module *m, const FuncDef *f) {
+    if (!f) return false;
+    bool isMain = f->name && strcmp(f->name, "main") == 0;
+    if (!planUsed(f) && !isMain && !f->isExport && !acTraitTable(m, f)) return false;
+    if (f->typeParams.len > 0) return false;                 /* 模板不发射 */
+    if (!planTemplate(f) && f->owner && f->owner->typeParams.len > 0) return false;  /* 泛型结构体的模板方法 */
+    return true;
+}
+
+/**
+ * @brief 一个"会被发射、但没算过"的函数的原因（`unproven` 行用）。
+ *
+ * @param g  函数定义。
+ * @return   原因串（静态字符串）。
+ */
+static const char *acUnprovenWhy(const FuncDef *g) {
+    if (planTemplate(g)) return "a generic instance (not analysed)";
+    if (g->isExtern) return "extern: emitted, but it has no body to analyse";
+    if (!g->body) return "no body (a declaration only)";
+    return "not analysed";
+}
+
+
+/**
+ * @brief 一个**栈槽**（局部量/参数/局部聚合的字段）持有被计数的 rc 引用吗。
+ *
+ * 任何 `ref` 都算：`ref i64` 也可能指向 `new i64` 这种 rc 对象，局部量丢它就没人销账。
+ * 视图句柄不算（`typeHoldsCountedRef`）。
+ *
+ * @param c  检查器（类型表）。
+ * @param t  槽的类型；NULL 按不持有算。
+ * @return   持有则 true。
+ */
+static bool acSlotHoldsCountedRef(Checker *c, Type *t) {
+    if (!t) return false;
+    if (mentionsParam(t)) return true;
+    return typeHoldsCountedRef(c->tt, tsub(c, t));
+}
+
+/**
+ * @brief 一个**实参/接收者**把引用交给黑盒了吗（黑盒测试专用，比槽判据宽一档）。
+ *
+ * 只有"牵得住一个 rc 对象"的引用才算：`ref X` 且 `X` 自己还能装引用（黑盒可能把它存进堆槽，
+ * 而那个对象还可能牵住别的对象）。`ref i64` / `ref bool` 这种指向标量的引用**不算** —— 调用点
+ * 的逃逸规则本来就不许黑盒留住它，它也不牵住任何 rc 对象；`fill(buf)` / `flush()` 这类 I/O
+ * 助手的签名里全是这种（`mut slice<u8>` + `mut ref i64`），拿它们判否会把整程序钉成有环。
+ *
+ * @param c  检查器（类型表）。
+ * @param t  实参或接收者的类型；NULL 按不带引用算。
+ * @return   可能把 rc 引用交给黑盒则 true。
+ */
+static bool acTypeMaybeRef(Checker *c, Type *t) {
+    if (!t) return false;
+    if (mentionsParam(t)) return true;
+    Type *b = tsub(c, t);
+    if (b && b->kind == TY_REF) return typeHoldsCountedRef(c->tt, b->inner);
+    return typeHoldsCountedRef(c->tt, b);
+}
+
+/**
+ * @brief 一个投影的基表达式命名的是**堆对象**吗。
+ *
+ * 只看语法与节点上的类型（后一趟没有作用域，不能 `lookup`）：引用型绑定作基 ⇒ 宿主是被指物；
+ * 解引用 ⇒ 宿主是被指物；普通绑定作基 ⇒ 宿主在栈上。(iv) 判的就是"槽在不在堆上"。
+ *
+ * @param c    检查器（类型表）。
+ * @param obj  投影的基表达式。
+ * @return     基是堆对象则 true。
+ */
+static bool acBaseIsHeap(Checker *c, Expr *obj) {
+    if (!obj) return false;
+    switch (obj->kind) {
+    case EX_DEREF: return true;
+    case EX_IDENT: {
+        Type *t = obj->type ? tsub(c, obj->type) : NULL;
+        return t && t->kind == TY_REF;
+    }
+    case EX_FIELD: return acBaseIsHeap(c, obj->u.field.obj);
+    case EX_INDEX: return acBaseIsHeap(c, obj->u.index.obj);
+    case EX_SLICE: return acBaseIsHeap(c, obj->u.slice.obj);
+    default:       return false;
+    }
+}
+
+/**
+ * @brief 赋值的写目标命名的引用槽在堆对象里吗。
+ *
+ * `EX_IDENT`（改指本帧的绑定）与"根是普通绑定的投影"都在栈上：判据 (iv) 判否的那一栏。
+ *
+ * @param c  检查器（类型表）。
+ * @param t  写目标。
+ * @return   槽在堆对象里则 true。
+ */
+static bool acTargetSlotIsHeap(Checker *c, Expr *t) {
+    if (!t) return false;
+    switch (t->kind) {
+    case EX_DEREF: return true;
+    case EX_FIELD: return acBaseIsHeap(c, t->u.field.obj);
+    case EX_INDEX: return acBaseIsHeap(c, t->u.index.obj);
+    case EX_SLICE: return acBaseIsHeap(c, t->u.slice.obj);
+    default:       return false;
+    }
+}
+
+/**
+ * @brief 一个调用点会不会把引用送进黑盒（看不清的被调者）。
+ *
+ * 参数或接收者可能携带引用时算"涉及引用"：黑盒可能把它存进任何地方，这就不再是"引用只住在
+ * 被计数的堆槽里"。
+ *
+ * @param c  检查器（类型表）。
+ * @param e  调用表达式。
+ * @return   涉及引用则 true。
+ */
+static bool acCallTouchesRef(Checker *c, Expr *e) {
+    switch (e->kind) {
+    case EX_METHOD:
+        if (e->u.method.recv && acTypeMaybeRef(c, e->u.method.recv->type)) return true;
+        for (size_t i = 0; i < e->u.method.args.len; i++)
+            if (acTypeMaybeRef(c, (*(Expr **)vecAt(&e->u.method.args, i))->type)) return true;
+        return false;
+    case EX_CALL:
+        for (size_t i = 0; i < e->u.call.args.len; i++)
+            if (acTypeMaybeRef(c, (*(Expr **)vecAt(&e->u.call.args, i))->type)) return true;
+        return false;
+    case EX_ASSOC:
+        for (size_t i = 0; i < e->u.assoc.args.len; i++)
+            if (acTypeMaybeRef(c, (*(Expr **)vecAt(&e->u.assoc.args, i))->type)) return true;
+        return false;
+    default: return false;
+    }
+}
+
+/* ---- ② 「回收无事可做」：判据 (a)(b)(c) 的逐站点扫描 --------------------------------
+ *
+ * 目的：给「整段不发射 rc 运行期」一个静态前提。一个**区域**
+ * （= 一个 arena 层）不需要回收，当且仅当它里面不会有对象**在原地还没死的时候失去最后一个
+ * 根**。静态上可判的三条：
+ *
+ *   (a) 每个堆对象的每个 ref 字段**每对象最多被写一次**（初始化，不是覆盖）。这里按形状判：
+ *       该写站点的宿主是本帧 `var x = new T` 出来的局部量、这个绑定在整具函数体里从不被重新
+ *       赋值、站点**不在任何循环里**，且同一个（宿主声明, 字段）在这个函数里只有**一处**站点。
+ *       前两条把"宿主对象"钉死在这条 `new` 上（递归的每层调用各有自己的 `x` ⇒ 各有自己的动态
+ *       对象），第三条保证那一处站点每对象只执行一次。
+ *   (b) **ref 类型的局部量 / 参数不被重新赋值**：写进栈上槽（标识符、局部聚合的字段）的引用
+ *       赋值都是丢引用。嵌套块里**声明**一个 ref 局部量不算 —— 它的对象随块 arena 整片释放
+ *       （`bt` 的 `let t = bottomUp(d)` 正是这一档）。
+ *   (c) 没有丢引用的操作：`@overwrite` 复用同一格、`domain` 块、`ext` / `dyn`（看不清的并发与
+ *       派发）、以及**看不清的被调者**带着引用（黑盒可能把它丢掉）。看得清的被调者不在这里
+ *       追 —— 判定按**整单元合取**（`codegen.c` 的 `unitReclaimIdle`），被调者自己会被判一遍。
+ *
+ * **与无环判据 (i)(ii)(iii)(iv) 的关系**：互不蕴含。②允许回边（`a.next = b  b.next = a`
+ * 两条站点各自满足 (a)），而无环判据允许"每对象写一次"以外的丢引用（计数能兜住）。两条判据
+ * 服务两个不同的机制：无环 → 事件档（计数代替清扫），② → 干脆不发射 rc。②的安全网是**峰值
+ * RSS 有界**（判错 = 少收 ⇒ 内存涨，不是悬垂）。
+ *
+ * **失败方向**：任何一条站不住 ⇒ 整具函数判否 ⇒ 整单元判否 ⇒ 照常发射 rc（保守）。
+ */
+
+/** @brief 记下 ② 的第一个判否理由（只记第一条，与 (iv) 同一约定）。 */
+static void idleNote(AcInfo *ac, const char *why) {
+    if (ac->idleBad) return;
+    ac->idleBad = true;
+    ac->idleWhy = why;
+}
+
+/** @brief `planCName` 的首选写法：它答不出时退回源码里的名字。 */
+static const char *idleBindName(const void *node, const char *fallback) {
+    const char *n = planCName(node);
+    return n ? n : fallback;
+}
+
+/**
+ * @brief 一个类型里有没有**回收管辖的引用槽**（② 的"带引用的值聚合"那一问）。
+ *
+ * 与 `codegen.c` 的 `rcScanType` 同一条口径：**视图**（`slice<T>`，包括嵌套在结构体字段里的）
+ * 不是 rc 对象——它指向 arena/板的内存，丢弃它不释放任何 rc 对象；枚举载荷静态展不开 ⇒ 保守；
+ * 泛型实参里有引用槽 ⇒ 枚举不出来 ⇒ 保守；新 kind 可能藏着引用 ⇒ 保守。
+ *
+ * 不直接用 `typeHoldsCountedRef`：它在**结构体字段递归**那一层不套视图规则，于是
+ * `reader` / `writer` 这类"只装一个视图"的值类型会被误判成带引用（实测把 stdlib 的
+ * `readerOf` / `writerOf` / `inSync` 判否，进而整单元判否）。口径必须与 rc 记账那一侧一致：
+ * 只有**会被 `storeRef*` 记账**的槽才算。
+ *
+ * @param tt     类型表。
+ * @param t      要问的类型；NULL 保守答有。
+ * @param depth  递归深度，防类型环。
+ * @return       有（或展不开）则 true。
+ */
+static bool idleCarriesRef(TypeTable *tt, Type *t, int depth) {
+    if (!t || depth > 16) return true;                       /* 保守 */
+    if (ttIsViewType(t)) return false;                       /* 视图不是 rc 对象 */
+    switch (t->kind) {
+    case TY_REF: return true;
+    case TY_VOID: case TY_BUILTIN: case TY_FN: case TY_DYN:
+    case TY_PARAM: case TY_ERROR: case TY_UNRESOLVED:
+        return false;
+    case TY_ENUM:
+        /* 变体载荷逐个看：**这里问的是"丢了这个值会不会松开一个 rc 对象"**，所以按载荷精确
+         * 回答（`rcScanType` 那一侧要的是"能不能枚举出根表"，才必须保守）。 */
+        if (!t->edef) return true;
+        for (size_t v = 0; v < t->edef->variants.len; v++) {
+            Variant *va = *(Variant **)vecAt(&t->edef->variants, v);
+            for (size_t i = 0; i < va->types.len; i++)
+                if (idleCarriesRef(tt, payloadType(tt, t, va, i), depth + 1)) return true;
+        }
+        return false;
+    case TY_ARRAY: return idleCarriesRef(tt, t->inner, depth + 1);
+    case TY_STRUCT: {
+        StructDef *sd = structOf(t);
+        if (!sd) return true;
+        for (size_t i = 0; i < sd->fields.len; i++)
+            if (idleCarriesRef(tt, (*(FieldDef **)vecAt(&sd->fields, i))->type, depth + 1))
+                return true;
+        return false;
+    }
+    case TY_GENERIC: {
+        if (!t->sdef) return true;
+        for (size_t i = 0; i < t->targs.len; i++)
+            if (idleCarriesRef(tt, *(Type **)vecAt(&t->targs, i), depth + 1)) return true;
+        StructDef *sd = t->sdef;
+        Vec *sp = (t->targs.len == sd->typeParams.len) ? &sd->typeParams : NULL;
+        Vec *sa = sp ? &t->targs : NULL;
+        for (size_t i = 0; i < sd->fields.len; i++)
+            if (idleCarriesRef(tt, ttSubstitute(tt, (*(FieldDef **)vecAt(&sd->fields, i))->type, sp, sa),
+                               depth + 1))
+                return true;
+        return false;
+    }
+    default: return true;                                    /* 新 kind 可能藏着引用 */
+    }
+}
+
+/** @brief 名字在不在那个向量里（小向量，线性查）。 */
+static bool idleNameIn(Vec *v, const char *nm) {
+    if (!nm) return false;
+    for (size_t i = 0; i < v->len; i++)
+        if (strcmp(*(const char **)vecAt(v, i), nm) == 0) return true;
+    return false;
+}
+
+/**
+ * @brief 写目标的最外宿主绑定（`t.f` / `(*p).f` / `h.a.f` / `(*p).a.f` → `t` / `p` / `h` / `p`）。
+ *
+ * 只沿**具名**的一路往外走：字段取它的基，解引用取它的操作数（必须是标识符）。元素、切片、
+ * 调用结果作基一律答 NULL ⇒ 站点判否（保守）。判据 (a) 要的正是"这个对象是哪条 `new` 出来的"，
+ * 所以宿主必须是一个绑定。
+ *
+ * @param t  写目标表达式。
+ * @return   绑定表达式（`EX_IDENT`），或 NULL。
+ */
+static Expr *idleHostIdent(Expr *t) {
+    if (!t) return NULL;
+    switch (t->kind) {
+    case EX_FIELD: return idleHostIdent(t->u.field.obj);
+    case EX_INDEX: return idleHostIdent(t->u.index.obj);
+    case EX_DEREF: {
+        Expr *o = t->u.deref.operand;
+        return (o && o->kind == EX_IDENT) ? o : NULL;
+    }
+    case EX_IDENT: return t;
+    default:       return NULL;
+    }
+}
+
+/**
+ * @brief 一条语句是不是**循环**（循环深度要加一）。
+ *
+ * extC 的四种循环写法（`while`、`loop`、`for (init; cond; step)`、`for x in …`）在解析器里
+ * **全部落成 `ST_WHILE`**（见 `src/front/parser.c` 的 `parseFor` / `parseWhile`），`StmtKind` 里
+ * 没有 `ST_FOR` ⇒ 这里只需要认这一个 kind。写成函数是为了让"哪些 kind 算循环"只有一个来源。
+ *
+ * @param s  语句。
+ * @return   是循环则 true。
+ */
+static bool idleLoopStmt(Stmt *s) {
+    return s && s->kind == ST_WHILE;
+}
+
+/**
+ * @brief 一条语句是不是**开新词法作用域**的语句（作用域深度要加一）。
+ *
+ * 只有块。循环体在 extC 里就是一个 `ST_BLOCK`，所以它由这一条覆盖，不需要另加。
+ *
+ * @param s  语句。
+ * @return   是块则 true。
+ */
+static bool idleScopedStmt(Stmt *s) {
+    return s && s->kind == ST_BLOCK;
+}
+
+/**
+ * @brief 细化 E：这个名字是不是在**当前循环体内**被赋过值。
+ *
+ * 元素槽序列（`(*root)[i] = …`）能放行的理由是"每轮写的是**不同叶槽**"。这只在下标**随循环推进**
+ * 时成立，所以要求下标的绑定**在本循环体内被赋值**（`i = i + 1`）；循环外赋一次就固定的下标
+ * （`j = 0` 之后 `arr[j] = x`）会被这条挡住 —— 那才是"同一个槽被每轮改写"。
+ *
+ * @param ac          当前函数的 ② 事实。
+ * @param name        下标绑定的 C 名。
+ * @param minLoopScope 站点所在的最内层循环体作用域。
+ */
+static bool idleNameAssignedInLoop(AcInfo *ac, const char *name, int minLoopScope) {
+    if (!name || minLoopScope == 0) return false;
+    for (size_t j = 0; j < ac->idleAsgn.len && j < ac->idleAsgnLoop.len; j++) {
+        const char *nm = *(const char **)vecAt(&ac->idleAsgn, j);
+        int sc = *(int *)vecAt(&ac->idleAsgnLoop, j);
+        if (nm && strcmp(nm, name) == 0 && sc >= minLoopScope) return true;
+    }
+    return false;
+}
+
+/**
+ * @brief 细化 A：被覆盖的旧值是否"**另有根**"。
+ *
+ * 同一个（宿主, 叶路径）被写两处时，原来一律判否（怕旧值被丢成垃圾）。但如果旧值是 **一个形参的
+ * 投影**（`prev.l` / `*p` / `q[i]`），而且本帧**没有写那个宿主的任何字段**（写了就可能把那条根
+ * 改掉），那么旧值在覆盖之后**仍然从那个形参可达** ⇒ 覆盖没有丢根，放行。
+ *
+ * 窄在哪里：只认"形参的投影 + 本帧不写该宿主"；不是"两处写互斥"（那是另一条，语料里兑现 0），
+ * 也不是"旧值一定还活着"的通用证明 —— 后者要跨过程/别名分析，本帧给不了。
+ *
+ * @param ac 当前函数的 ② 事实。
+ * @param v  被覆盖那处站点写入的值表达式。
+ * @return   true = 旧值另有根（放行）；false = 证不出（仍判否）。
+ */
+static bool idleValueOtherRoot(AcInfo *ac, Expr *v) {
+    int guard = 0;
+    while (v && (v->kind == EX_FIELD || v->kind == EX_DEREF || v->kind == EX_INDEX) && guard++ < 16)
+        v = v->kind == EX_FIELD ? v->u.field.obj
+          : (v->kind == EX_DEREF ? v->u.deref.operand : v->u.index.obj);
+    if (!v || v->kind != EX_IDENT) return false;
+    Sym *b = identBindOf(v);
+    if (!b || b->depth != 0) return false;      /* 只认形参（depth 0） */
+    for (size_t j = 0; j < ac->idleFieldStores.len; j++) {
+        IdleFieldStore *fs = *(IdleFieldStore **)vecAt(&ac->idleFieldStores, j);
+        if (fs->host && strcmp(fs->host, v->u.ident.name) == 0) return false;
+    }
+    return true;
+}
+
+/**
+ * @brief 细化 B：写目的地的**逐叶路径**（`s.kids[0]` → `kids[0]`、`(*root)[i]` → `[i]`）。
+ *
+ * 原来的 B 只认 `EX_FIELD`（具名对象的具名字段）。这里把目的地**求值一次**、逐叶落账：路径当站点键，
+ * 下标只认**整数字面量**（`kids[0]` 与 `kids[1]` 是不同叶槽）；**非字面量下标也收**（键记成 `base[]`），
+ * 因为同叶槽两处写仍然由 A（含细化 A）判 —— 收下标不放过"同一个槽被写两次"。
+ *
+ * **根上的字段用裸字段名**（`(*p).f` → `f`）：字段台账的读一侧（`idleValueLvl` 的 EX_FIELD 分支）
+ * 按 `field.name` 查，键必须对得上；早期版本在这里加了前导点，把已 idle 的 `rebuild` 家族打了回去。
+ *
+ * @param a  分配路径字符串的 arena。
+ * @param t  写目标表达式。
+ * @return   路径；说不清叶槽（带调用的基、切片等）时 NULL（调用方判否）。
+ */
+static const char *idleDestPath(Arena *a, Expr *t) {
+    if (!t) return NULL;
+    switch (t->kind) {
+    case EX_IDENT: return "";
+    case EX_FIELD: {
+        const char *base = idleDestPath(a, t->u.field.obj);
+        if (!base) return NULL;
+        return *base ? arenaPrintf(a, "%s.%s", base, t->u.field.name) : t->u.field.name;
+    }
+    case EX_INDEX: {
+        const char *base = idleDestPath(a, t->u.index.obj);
+        Expr *ix = t->u.index.index;
+        if (!base || !ix) return NULL;
+        if (ix->kind != EX_INT) return arenaPrintf(a, "%s[]", base);
+        return arenaPrintf(a, "%s[%lld]", base, (long long)ix->u.ival);
+    }
+    case EX_DEREF: {
+        Expr *o = t->u.deref.operand;
+        return (o && o->kind == EX_IDENT) ? "" : NULL;
+    }
+    default: return NULL;
+    }
+}
+
+/**
+ * @brief 语句回调：把子节点按当前深度继续往下走。
+ *
+ * `astWalkStmtChildren` 的回调看的是**子**节点，两个深度由回调自己往下传：进循环体时循环深度
+ * +1（见 `idleLoopStmt`），进块时作用域深度 +1（见 `idleScopedStmt`）。
+ *
+ * @param ctx  `IdleWalk *`，其 `depth` / `scope` 是**子**节点所在的深度。
+ * @param s    被访问的子语句。
+ * @return     总是 true。
+ */
+static bool idleWalkStmtCb(void *ctx, Stmt *s) {
+    IdleWalk *w = ctx;
+    return idleWalkStmt(w->c, w->ac, s, w->depth, w->scope, w->minLoopScope);
+}
+
+/** @brief 表达式回调：表达式不改变循环深度，原样往下走。 */
+static bool idleWalkExprCb(void *ctx, Expr *e) {
+    IdleWalk *w = ctx;
+    return idleWalkExpr(w->c, w->ac, e, w->depth, w->minLoopScope);
+}
+
+/**
+ * @brief 在"本帧新局部量"台账里找一个名字（(a) 的候选宿主）。
+ *
+ * 台账是函数级的线性表，同名可能有多条（不同分支里的同名绑定由 C 名区分）。`seq` 保证分配在
+ * 站点**之前**（写站点不可能先于它宿主的那条 `new`）。同一名字取**循环最深**的那条（最有利
+ * 的一条），但仍然要求它自己满足顺序。不在台账里返回 NULL。
+ *
+ * @param ac    这个函数的记录。
+ * @param name  宿主的 C 名。
+ * @param seq   站点的走查序号。
+ * @return      台账里最有利的一条；没有则 NULL。
+ */
+static IdleFresh *idleFreshAt(AcInfo *ac, const char *name, int seq) {
+    if (!name) return NULL;
+    IdleFresh *best = NULL;
+    for (size_t i = 0; i < ac->idleFresh.len; i++) {
+        IdleFresh *fr = *(IdleFresh **)vecAt(&ac->idleFresh, i);
+        if (strcmp(fr->name, name) != 0) continue;
+        if (fr->seq >= seq) continue;                  /* 分配点必须在站点之前 */
+        if (!best || fr->depth > best->depth) best = fr;
+    }
+    return best;
+}
+
+/**
+ * @brief 台账里某个名字的 arena 层（同名的多条取**最浅** = 活得最久的那条，方向保守）。
+ *
+ * @param v     台账（`IdleLvl*` 的向量）。
+ * @param name  名字。
+ * @return      层号；没有记录或"不可知"返回 -1。
+ */
+static int idleLvlName(Vec *v, const char *name) {
+    if (!name) return -1;
+    int best = -1;
+    for (size_t i = 0; i < v->len; i++) {
+        IdleLvl *e = *(IdleLvl **)vecAt(v, i);
+        if (strcmp(e->name, name) != 0) continue;
+        if (e->lvl < 0) return -1;                 /* 不可知优先（保守） */
+        if (best < 0 || e->lvl < best) best = e->lvl;
+    }
+    return best;
+}
+
+/**
+ * @brief 往台账里并一条"这个名字的存储在某层"。同名取最浅；有一条不可知 ⇒ 不可知。
+ *
+ * `null`（`IDLE_LVL_NULL`）不进台账：它不指对象。
+ *
+ * @param v     台账。
+ * @param a     分配用的 arena。
+ * @param name  名字。
+ * @param lvl   层号（-1 = 不可知）。
+ */
+static void idleLvlMerge(Vec *v, Arena *a, const char *name, int lvl) {
+    if (!name) return;
+    if (lvl == IDLE_LVL_NULL) return;
+    for (size_t i = 0; i < v->len; i++) {
+        IdleLvl *e = *(IdleLvl **)vecAt(v, i);
+        if (strcmp(e->name, name) != 0) continue;
+        if (lvl < 0) { e->lvl = -1; return; }
+        if (e->lvl < 0) return;                    /* 不可知优先 */
+        if (lvl < e->lvl) e->lvl = lvl;
+        return;
+    }
+    IdleLvl *e = arenaAllocZero(a, sizeof *e);
+    e->name = name;
+    e->lvl  = lvl;
+    *(IdleLvl **)vecPush(v) = e;
+}
+
+/**
+ * @brief 一个被写的引用值落在**哪一层 arena**（细化 (b′) 的同尺事实）。
+ *
+ * 只用一条尺：`arenaDepthOf(planArenaLevel(...))` —— 与 (a′) 侧、与逃逸分析自己的 placement
+ * 同一个数（越小 = 活得越久，0 = 本帧家区域 / 证不出）。
+ *   · `null`：`IDLE_LVL_NULL`（不指对象）；
+ *   · `new`/`alloc`：这条分配点最后被放在哪一层（逃逸提权之后的值）；
+ *   · 标识符：查**绑定台账**（由 `idleSolveLvls` 从本函数所有写入求出来）；
+ *   · 字段读：查**字段台账**（同一函数里写进该字段的所有值的层，取最浅）。
+ * 其余形状（调用结果、`*p`、下标、聚合字面量……）答 -1 ⇒ 调用方判否。
+ *
+ * **不用** `anRefDepth` / `Sym.fields[].depth` / 词法嵌套计数 / `lookup()->depth` —— 那几把尺
+ * 与 arena 层互不一致（实测 `rebuild` 的 `h = c` 上它们分别给出 1 / 3 / 6 / 4，arena 层是 3）。
+ *
+ * @param bind   绑定台账。
+ * @param field  字段台账。
+ * @param v      被写的值。
+ * @return       层号（`IDLE_LVL_NULL` 表示 null）；证不出返回 -1。
+ */
+static int idleValueLvl(Vec *bind, Vec *field, Expr *v) {
+    if (!v) return -1;
+    if (v->kind == EX_NULL) return IDLE_LVL_NULL;
+    if (v->kind == EX_NEW || v->kind == EX_GENCALL)
+        return arenaDepthOf(planArenaLevel(v));
+    if (v->kind == EX_IDENT)
+        return idleLvlName(bind, idleBindName(v, v->u.ident.name));
+    if (v->kind == EX_FIELD)
+        return idleLvlName(field, v->u.field.name);
+    return -1;
+}
+
+/**
+ * @brief 一次写入"丢的东西"是不是**随本迭代的 arena 一起死**（细化 (b′) 的唯一门槛）。
+ *
+ * 真条件是：写进去的是 `null`（不丢对象），或者它的存储层不比**本次写入所在的最内层循环体**
+ * 更长寿（`lvl >= loopScope`）。后者说的是"这个对象的 arena 就是/就在这次迭代里释放的"，所以
+ * 之后覆盖掉这个槽只是少一个根，不会攒下界随轮数涨的垃圾。不在任何循环里（`loopScope == 0`）
+ * 或层证不出（`lvl < 0`）⇒ 判否（保守）。
+ *
+ * @param lvl        被写值的 arena 层。
+ * @param loopScope  写入点所在的最内层循环体作用域层。
+ * @return           合格则 true。
+ */
+static bool idleStoreQualified(int lvl, int loopScope) {
+    if (lvl == IDLE_LVL_NULL) return true;
+    if (lvl < 0) return false;
+    return loopScope > 0 && lvl >= loopScope;
+}
+
+/** @brief 两个台账是不是逐条相同（名字 + 层号），用于固定点的收敛判断。 */
+static bool idleLvlSame(Vec *x, Vec *y) {
+    if (x->len != y->len) return false;
+    for (size_t i = 0; i < x->len; i++) {
+        IdleLvl *a = *(IdleLvl **)vecAt(x, i);
+        IdleLvl *b = *(IdleLvl **)vecAt(y, i);
+        if (strcmp(a->name, b->name) != 0 || a->lvl != b->lvl) return false;
+    }
+    return true;
+}
+
+/**
+ * @brief 求"每个绑定/字段所指的存储落在哪一层 arena"的**最小不动点**（细化 (b′) 的事实）。
+ *
+ * 为什么要迭代：写入的值可以依赖别的绑定/字段的层，而走查顺序不保证"先定义后使用" ——
+ * `rebuild` 的 `c.next = h` 就在 `h = c` **之前**，`p = p.next` 更在两个循环之后。按走查顺序
+ * 记一次会得到"不可知"，进而把该 idle 的形状判否（实测）。
+ *
+ * 怎么迭代：每一轮从**上一轮**的台账重算一遍（`idleValueLvl` 只读上一轮的结果），直到台账逐条
+ * 相同或到轮数上限。方向单调：不可知只可能变已知、已知层只取更小 ⇒ 只会更保守。上限 8 轮
+ * （普通链两三轮回合；到上限仍不可知 ⇒ 读的一方答 -1 ⇒ 判否）。
+ *
+ * @param ac  这个函数的记录；结果写回 `idleBindLvl` / `idleFieldLvl`。
+ */
+static void idleSolveLvls(AcInfo *ac) {
+    for (int round = 0; round < 8; round++) {
+        Vec nb, nf;
+        vecInit(&nb, ac->a, sizeof(void *));
+        vecInit(&nf, ac->a, sizeof(void *));
+        for (size_t i = 0; i < ac->idleStores.len; i++) {
+            IdleStore *st = *(IdleStore **)vecAt(&ac->idleStores, i);
+            idleLvlMerge(&nb, ac->a, st->name,
+                         idleValueLvl(&ac->idleBindLvl, &ac->idleFieldLvl, st->value));
+        }
+        for (size_t i = 0; i < ac->idleFieldStores.len; i++) {
+            IdleFieldStore *fs = *(IdleFieldStore **)vecAt(&ac->idleFieldStores, i);
+            idleLvlMerge(&nf, ac->a, fs->fname,
+                         idleValueLvl(&ac->idleBindLvl, &ac->idleFieldLvl, fs->value));
+        }
+        if (idleLvlSame(&nb, &ac->idleBindLvl) && idleLvlSame(&nf, &ac->idleFieldLvl)) break;
+        ac->idleBindLvl  = nb;
+        ac->idleFieldLvl = nf;
+    }
+}
+
+/**
+ * @brief ② 的语句访问：判 (a)(b)(c) 的语句那一半，并收集 (a) 需要的局部事实。
+ *
+ * 这里**不用** `switch (s->kind)`：本函数不是一趟"手写的 kind 遍历"（`tools/check_walkers.py`
+ * 的棘轮针对的正是那种），下降一律交给 `astWalkStmtChildren`，所以不存在漏掉新 kind 的盲区。
+ *
+ * @param c            检查器（类型表）。
+ * @param ac           这个函数的记录。
+ * @param s            当前语句。
+ * @param depth        当前的循环嵌套深度（0 = 不在任何循环里）。
+ * @param scope        当前的作用域深度（函数体 1，每进一个块 +1）。
+ * @param minLoopScope 当前所在的所有循环体中**作用域层最浅**的那个（0 = 不在任何循环里）；
+ *                     细化 (b′) 用它当"这次写入丢的东西是否随本迭代释放"的阈值。
+ * @return             总是 true。
+ */
+static bool idleWalkStmt(Checker *c, AcInfo *ac, Stmt *s, int depth, int scope, int minLoopScope) {
+    if (!s) return true;
+    ac->idleSeq++;
+    if (s->kind == ST_DOMAIN)
+        idleNote(ac, "a domain block: the interleaving of reference drops is unprovable");
+    if (s->kind == ST_VAR && s->u.var.overwrite) {
+        idleNote(ac, arenaPrintf(ac->a,
+            "line %d: `@overwrite` reuses one piece of storage, so the previous object is dropped",
+            s->line));
+    }
+    if (s->kind == ST_VAR && !s->u.var.overwrite) {
+        Expr *ini = s->u.var.init;
+        /* (a) 的候选宿主：**单个** `new T`（不带长度；带长度的是视图）初始化出来的局部量。
+         * 记下分配点的循环深度与 arena 层（细化 (a′) 用）。是不是"从不被重新赋值"要等整趟
+         * 走完（赋值可能在声明之后、也可能在分支里）。 */
+        if (ini && ini->kind == EX_NEW && !ini->u.new_.count) {
+            const char *nm = idleBindName(s, NULL);
+            if (nm) {
+                IdleFresh *fr = arenaAllocZero(ac->a, sizeof *fr);
+                fr->name = nm;
+                fr->depth = depth + 1;   /* 1 起：0 要留给"不在台账里" */
+                fr->arenaLevel = arenaDepthOf(planArenaLevel(ini));
+                fr->seq = ac->idleSeq;
+                *(IdleFresh **)vecPush(&ac->idleFresh) = fr;
+            }
+        }
+    }
+    if (s->kind == ST_ASSIGN) {
+        Expr *t = s->u.assign.target;
+        if (t && t->type && acSlotHoldsCountedRef(c, t->type)) {
+            if (s->u.assign.op) {
+                idleNote(ac, arenaPrintf(ac->a,
+                    "line %d: a compound assignment to a reference slot overwrites it", s->line));
+            } else if (!acTargetSlotIsHeap(c, t)) {
+                /* (b)：引用写进了栈上的槽（局部量/参数/局部聚合的字段）—— 那是丢引用。
+                 * 细化 (b′)：**ref 标识符槽**可以覆盖，只要写进这个槽的**全部**值都随本迭代的
+                 * arena 一起死（`idleStoreQualified`）；`null` 也算合格（它不丢对象）。
+                 * 参数走同一套判据：要存进参数的值得活过这次调用 ⇒ 逃逸分析把它放到家区域
+                 * （层 0）⇒ 层判据自然判否。局部聚合的字段与别的目的地不在这条里，仍旧判否。 */
+                const char *nm = (t->kind == EX_IDENT) ? idleBindName(t, t->u.ident.name) : NULL;
+                if (nm) {
+                    IdleStore *st = arenaAllocZero(ac->a, sizeof *st);
+                    st->name      = nm;
+                    st->line      = s->line;
+                    st->loopScope = minLoopScope;
+                    st->value     = s->u.assign.value;
+                    *(IdleStore **)vecPush(&ac->idleStores) = st;
+                    IdleSlotSite *cs = arenaAllocZero(ac->a, sizeof *cs);
+                    cs->name      = nm;
+                    cs->line      = s->line;
+                    cs->loopScope = minLoopScope;
+                    cs->value     = s->u.assign.value;
+                    *(IdleSlotSite **)vecPush(&ac->idleSlotSites) = cs;
+                } else {
+                    idleNote(ac, arenaPrintf(ac->a,
+                        "line %d: a reference is assigned to a stack slot (a local/parameter, or a field of one)",
+                        s->line));
+                }
+            } else {
+                Expr *host = idleHostIdent(t);
+                const char *fld = idleDestPath(ac->a, t);
+                /* 细化 E：最外一层是**元素槽**且下标是"本循环体内被赋值"的标识符。 */
+                bool seqElem = false;
+                if (t->kind == EX_INDEX && t->u.index.index
+                    && t->u.index.index->kind == EX_IDENT)
+                    seqElem = idleNameAssignedInLoop(ac, idleBindName(t->u.index.index,
+                                                       t->u.index.index->u.ident.name),
+                                                     minLoopScope);
+                if (!host || !fld || !*fld) {
+                    idleNote(ac, arenaPrintf(ac->a,
+                        "line %d: the destination is not a named field of a named object", s->line));
+                } else {
+                    const char *hnm = idleBindName(host, host->u.ident.name);
+                    /* 字段写记原始值：(b′) 的"字段读沿根取"由 `idleSolveLvls` 的固定点算 ——
+                     * 写进去的值可能依赖别的绑定（`c.next = h` 在 `h = c` 之前）。 */
+                    IdleFieldStore *fs = arenaAllocZero(ac->a, sizeof *fs);
+                    fs->fname = fld;
+                    fs->host = hnm;
+                    fs->value = s->u.assign.value;
+                    *(IdleFieldStore **)vecPush(&ac->idleFieldStores) = fs;
+                    IdleFresh *fr = idleFreshAt(ac, hnm, ac->idleSeq);
+                    /* (a′) 宿主是**本迭代新建**的：分配点的循环深度 ≥ 站点循环深度（每对象
+                     * 只写一次的主判据），**且**那条 `new` 没被逃逸分析提到更长寿的 arena 层
+                     * （两个条件都要；见 `IdleFresh` 的说明）。 */
+                    bool hostThisIter = fr && fr->depth - 1 >= depth && fr->arenaLevel >= depth;
+                    if (depth > 0 && !hostThisIter && !seqElem) {
+                        idleNote(ac, arenaPrintf(ac->a,
+                            "line %d: a reference field is written inside a loop, so one object can be overwritten",
+                            s->line));
+                    } else {
+                        IdleSite *site = arenaAllocZero(ac->a, sizeof *site);
+                        site->value = s->u.assign.value;
+                        site->seqElem = seqElem;
+                        site->host = hnm;
+                        site->fname = fld;
+                        site->line = s->line;
+                        site->depth = depth;
+                        site->allocDepth = fr ? fr->arenaLevel : -1;   /* 事实，诊断用 */
+                        site->seq = ac->idleSeq;
+                        *(IdleSite **)vecPush(&ac->idleSites) = site;
+                    }
+                }
+            }
+        }
+        if (t && t->kind == EX_IDENT) {
+            /* 宿主候选的"反面"：这个名字在本函数里被赋过值（不管类型）。 */
+            const char *nm = idleBindName(t, t->u.ident.name);
+            if (nm) {
+                *(const char **)vecPush(&ac->idleAsgn) = nm;
+                *(int *)vecPush(&ac->idleAsgnLoop) = minLoopScope;
+            }
+        }
+    }
+    /* 声明初始化式是**有界的**那一支：值落进具名槽，槽的 arena 层由它的块深度给出；所以
+     * 根本身不按"临时量"判（见 `idleWalkExprFlag` 的 `bound`）。它的子表达式照常判。
+     * `ST_VAR` 唯一的子节点就是初始化式，所以这里替掉通用子遍历。
+     *
+     * 同时记下"这个 ref 槽里被写进去的值"（声明初始化算一次写入）—— (b′) 的合取要它。 */
+    if (s->kind == ST_VAR) {
+        const char *nm = idleBindName(s, NULL);
+        if (!s->u.var.overwrite) {
+            Type *dt = s->type ? s->type : (s->u.var.init ? s->u.var.init->type : NULL);
+            if (dt && acSlotHoldsCountedRef(c, dt)) {
+                IdleStore *st = arenaAllocZero(ac->a, sizeof *st);
+                st->name      = nm;
+                st->line      = s->line;
+                st->loopScope = minLoopScope;
+                st->value     = s->u.var.init;
+                *(IdleStore **)vecPush(&ac->idleStores) = st;
+            }
+        }
+        return idleWalkExprFlag(c, ac, s->u.var.init, depth, true, minLoopScope);
+    }
+    /* 进循环体：那个块的作用域层就是"本迭代 arena"的层，取所有在册循环里最浅的一个。 */
+    IdleWalk inner = { c, ac, depth + (idleLoopStmt(s) ? 1 : 0),
+                       scope + (idleScopedStmt(s) ? 1 : 0), minLoopScope };
+    if (idleLoopStmt(s)) {
+        int bodyScope = scope + 1;                  /* 循环体在 extC 里恒是一个块 */
+        if (inner.minLoopScope == 0 || bodyScope < inner.minLoopScope)
+            inner.minLoopScope = bodyScope;
+    }
+    AstVisit v = { idleWalkExprCb, idleWalkStmtCb, &inner };
+    return astWalkStmtChildren(s, &v);
+}
+
+/**
+ * @brief ② 的表达式访问：判 (c) 那一半（并发、派发、看不清的被调者带引用）。
+ *
+ * @param c      检查器（类型表）。
+ * @param ac     这个函数的记录。
+ * @param e      当前表达式。
+ * @param depth  当前的循环嵌套深度（表达式不改变它，原样传下去）。
+ * @return       总是 true。
+ */
+static bool idleWalkExprFlag(Checker *c, AcInfo *ac, Expr *e, int depth, bool bound, int minLoopScope) {
+    if (!e) return true;
+    if (e->kind == EX_EXT)
+        idleNote(ac, "a spawned task (`ext`): the callee frame's drops are not visible");
+    if (e->kind == EX_DYN)
+        idleNote(ac, "a `dyn` call: the callee is not resolved");
+    /* (c)：**带引用的值聚合**（结构体/数组/枚举载荷/按值返回的调用结果）被产生成一颗
+     * **临时量**时，它一死，里面的引用在那个时刻失去这个根 —— 而临时量的存储属于哪一层 arena
+     * 由逃逸分析定，可能的形态是"本帧的家房间"（活得比块长）⇒ 界随轮数涨。
+     *
+     * `bound` 为真表示这个表达式是**一条声明的初始化式**：值落进一个具名槽，槽的 arena 层
+     * 由它的块深度给出（循环体内声明 ⇒ 每轮整片释放）⇒ 有界，不按临时量判。它的**子**表达式
+     * 照常判（`wrap { n: mk(i) }` 里的 `mk(i)` 仍是一颗会被丢掉的临时量）。
+     *
+     * `ref T` 自己不是聚合，不在这一条里（`t.left = bottomUp(...)` 的值是 `?ref tree`）。
+     *
+     * **细化 F**：站点**不在任何循环里**（`minLoopScope == 0`）时放行。理由是失效方向：②的坏
+     * 形态是"**每轮**丢一份、攒在活得比迭代长的 arena 里"，而循环外的临时量每次调用只产生/丢一次，
+     * 它的存储最坏落在**调用方当前块**（`arenaArg` 默认就是调用点的块）—— 调用方在循环里时那块
+     * 每轮归还，调用方不在循环里时也就丢一次。真正会让它变成"家房间垃圾"的路（把聚合体存进比
+     * 迭代长的槽）由 (a)/(b) 那两条判据挡着（实测：`byval_temp` 的 `take(mk(i))` 在**循环里**，
+     * 仍判否；`struct_copy_ret_home` 的站点在 `mk` 里、循环外，判 idle 后 N vs 4N = 1.00×）。 */
+    if (!bound && e->type && e->kind != EX_IDENT && e->kind != EX_FIELD && e->kind != EX_INDEX
+        && e->kind != EX_DEREF && e->kind != EX_SLICE && e->kind != EX_NEW
+        && e->kind != EX_REF) {
+        Type *et = tsub(c, e->type);
+        if (et && et->kind != TY_REF && idleCarriesRef(c->tt, e->type, 0) && minLoopScope != 0)
+            idleNote(ac, arenaPrintf(ac->a,
+                "line %d: a reference-carrying aggregate is produced as a temporary value;"
+                " its references lose this root when it dies", e->line));
+    }
+    if (e->kind == EX_CALL || e->kind == EX_METHOD || e->kind == EX_ASSOC) {
+        FuncDef *g = planCallee(e);
+        /* 看得清的被调者不在本地判：整单元合取会把它判一遍（见本节的说明）。看不清的按
+         * **参数敏感**处理 —— 接收者与实参都不带 rc 引用时它拿不到我们的引用，不构成反例。 */
+        if ((!acAnalyzable(g) || planCallViaFn(e)) && acCallTouchesRef(c, e)) {
+            const char *nm = (g && g->name) ? g->name
+                           : (e->kind == EX_METHOD ? e->u.method.name
+                                                   : (e->u.call.callee && e->u.call.callee->kind == EX_IDENT
+                                                          ? e->u.call.callee->u.ident.name : "?"));
+            idleNote(ac, arenaPrintf(ac->a,
+                "line %d: a call to '%s' (whose body is not analysed) carries a reference",
+                e->line, nm ? nm : "?"));
+        }
+    }
+    /* 表达式走查不改变三个深度：这里给的 0 只为了让聚合初始化完整（表达式不会走到
+     * `idleWalkStmt` 里用它们的那些分支上；真走下去也只会更保守）。 */
+    IdleWalk inner = { c, ac, depth, 0, minLoopScope };
+    AstVisit v = { idleWalkExprCb, idleWalkStmtCb, &inner };
+    return astWalkExprChildren(e, &v);
+}
+
+/** @brief 一般位置的表达式访问（不豁免"带引用的值聚合"那条）。 */
+static bool idleWalkExpr(Checker *c, AcInfo *ac, Expr *e, int depth, int minLoopScope) {
+    return idleWalkExprFlag(c, ac, e, depth, false, minLoopScope);
+}
+
+/**
+ * @brief 把一个调用依赖记进一个向量（`AcDep*`，建在 arena 里）。
+ *
+ * @param dep   依赖向量。
+ * @param f     被调函数；NULL 也记（"解析不到"是一条依赖，闭包按不成立处理）。
+ * @param line  调用点行号。
+ * @param a     分配依赖用的 arena。
+ */
+static void acPushDep(Vec *dep, FuncDef *f, int line, Arena *a) {
+    AcDep *d = arenaAllocZero(a, sizeof *d);
+    d->fn = f;
+    d->line = line;
+    *(AcDep **)vecPush(dep) = d;
+}
+
+/**
+ * @brief 表达式回调：收集 (iv) 的调用依赖、黑盒调用与并发形式。
+ *
+ * @param ctx  扫描上下文（`AcScan *`）。
+ * @param e    被访问的子表达式。
+ * @return     总是 true（走完整趟；理由只记第一条）。
+ */
+static bool acScanExpr(void *ctx, Expr *e) {
+    AcScan *sc = ctx;
+    AcInfo *ac = sc->ac;
+    if (!e) return true;
+    switch (e->kind) {
+    case EX_EXT:
+        if (!ac->ivBad) { ac->ivBad = true; ac->ivWhy = "a spawned task (`ext`)"; }
+        break;
+    case EX_DYN:
+        if (!ac->ivBad) { ac->ivBad = true; ac->ivWhy = "a `dyn` call: the callee is not resolved"; }
+        break;
+    case EX_CALL: case EX_METHOD: case EX_ASSOC: {
+        FuncDef *g = planCallee(e);
+        /* 算得出结论的被调者走调用图闭包（(iv) 也必须成立）；算不出的（黑盒 / extern /
+         * 泛型体）按**参数敏感**处理：实参与接收者都不带 rc 对象引用时它拿不到我们的引用，
+         * 不构成 (iv) 的反例。`ref i64` 这种指向标量的引用也不算（见 `acTypeMaybeRef`）。 */
+        if (!acAnalyzable(g) || planCallViaFn(e)) {
+            if (!ac->ivBad && acCallTouchesRef(sc->c, e)) {
+                const char *nm = g && g->name ? g->name
+                               : (e->kind == EX_METHOD ? e->u.method.name
+                                                       : (e->kind == EX_CALL && e->u.call.callee
+                                                              && e->u.call.callee->kind == EX_IDENT
+                                                          ? e->u.call.callee->u.ident.name : "?"));
+                ac->ivBad = true;
+                ac->ivWhy = arenaPrintf(ac->a,
+                    "a call to '%s' (whose body is not analysed) carries a reference",
+                    nm ? nm : "?");
+            }
+        } else {
+            acPushDep(&ac->ivDeps, g, e->line, ac->a);
+        }
+        break;
+    }
+    default: break;
+    }
+    AstVisit v = { acScanExpr, acScanStmt, sc };
+    return astWalkExprChildren(e, &v);
+}
+
+/**
+ * @brief 语句回调：找 (iv) 的违反与 (i') 的依赖。
+ *
+ * @param ctx  扫描上下文（`AcScan *`）。
+ * @param s    被访问的子语句。
+ * @return     总是 true（走完整趟；理由只记第一条）。
+ */
+static bool acScanStmt(void *ctx, Stmt *s) {
+    AcScan *sc = ctx;
+    AcInfo *ac = sc->ac;
+    if (!s) return true;
+    if (s->kind == ST_DOMAIN && !ac->ivBad) {
+        ac->ivBad = true;
+        ac->ivWhy = "a domain block: the interleaving of reference drops is unprovable";
+    }
+    if (s->kind == ST_VAR && anStoreRefKind(s) == SR_LOCAL && !ac->ivBad) {
+        /* 检查器在作用域还活着时标下的：嵌套块里的引用型局部量，块退出时丢掉引用而不销账。 */
+        ac->ivBad = true;
+        ac->ivWhy = arenaPrintf(ac->a,
+            "line %d: a reference local is declared in a nested block; its reference is dropped without a counted slot",
+            s->line);
+    }
+    if (s->kind == ST_ASSIGN) {
+        Expr *t = s->u.assign.target;
+        /* 带类型判：槽装**被计数的**引用时才算一次引用槽存储。`i = i + 1` 不是，视图句柄
+         * （`s = otherSlice`）也不是。 */
+        if (t && t->type && acSlotHoldsCountedRef(sc->c, t->type)) {
+            if (!acTargetSlotIsHeap(sc->c, t)) {
+                /* (iv)：引用写进了栈上的槽（局部量/参数/局部聚合的字段），不是被计数的 rc 槽。 */
+                if (!ac->ivBad) {
+                    ac->ivBad = true;
+                    ac->ivWhy = arenaPrintf(ac->a,
+                        "line %d: a reference is assigned to a stack slot (a local/parameter, or a field of one); references must live in counted heap slots",
+                        s->line);
+                }
+            } else {
+                int kind = anStoreRefKind(s);
+                if (kind == SR_NONE || kind == SR_BAD) {
+                    if (!ac->acycBad) {
+                        ac->acycBad = true;
+                        ac->acycWhy = arenaPrintf(ac->a,
+                            "line %d: a reference field is written with a value that is neither null, nor a fresh allocation, nor a strictly younger layer",
+                            s->line);
+                    }
+                } else if (kind == SR_CALL) {
+                    acPushDep(&ac->acycDeps, planCallee(s->u.assign.value), s->line, ac->a);
+                }
+            }
+        }
+    }
+    AstVisit v = { acScanExpr, acScanStmt, sc };
+    return astWalkStmtChildren(s, &v);
+}
+
+/* ---- `retFresh`：这个函数的每个 `return` 都交付一个新分配的对象吗 ------------------
+ *
+ * 判据 (i') 允许"值经一次调用返回"。要让这条**健全**，被调者只无环还不够：它可能原样返回一个
+ * 参数（`fn id(p: ref T) -> ref T { return p }`），那样存进去的就是比宿主更老的对象。所以这里
+ * 另问一个问题：F 的每个 `return` 交付的是新分配吗 —— 直接 `new`、调用另一个 `retFresh` 函数、
+ * 或者一个**只被初始化过一次、之后没被改过也没取过地址**的局部绑定（`var n = new T; return n`）。
+ * 名字按"整具函数体里只声明一次"对齐，避免遮蔽造成张冠李戴。
+ */
+typedef struct { const char *name; Expr *init; } AcDecl;
+
+typedef struct {
+    Checker *c;
+    AcInfo  *ac;
+    Vec      rets;      /* Expr*：非 void 的 `return` 值 */
+    Vec      decls;     /* AcDecl*：`ST_VAR` 声明 */
+    Vec      mutated;   /* const char*：直接作为 `=` 左侧的名字 */
+    Vec      addressed; /* const char*：出现在 `ref x` 里的名字 */
+} FreshScan;
+
+static bool freshStmt(void *ctx, Stmt *s);
+static bool freshExpr(void *ctx, Expr *e);
+
+/**
+ * @brief 一个表达式交付的是新分配对象吗（`retFresh` 的递归判定）。
+ *
+ * @param fs  扫描结果（声明表、被改/取址的名字表）。
+ * @param e   被交付的值。
+ * @return    可证是新分配则 true。
+ */
+static bool freshValue(FreshScan *fs, Expr *e) {
+    if (!e) return false;
+    switch (e->kind) {
+    case EX_NEW: case EX_GENCALL:
+        return true;
+    case EX_SIGN: return freshValue(fs, e->u.sign.operand);
+    case EX_TRY:  return freshValue(fs, e->u.try_.operand);
+    case EX_CONV: return freshValue(fs, e->u.conv.operand);
+    case EX_CALL: case EX_METHOD: case EX_ASSOC: {
+        FuncDef *g = planCallee(e);
+        if (!g || g->isExtern || planCallViaFn(e)) return false;
+        acPushDep(&fs->ac->retDeps, g, e->line, fs->ac->a);
+        return true;                      /* 依赖由不动点收紧 */
+    }
+    case EX_IDENT: {
+        const char *nm = e->u.ident.name;
+        if (!nm) return false;
+        AcDecl *d = NULL;
+        int count = 0;
+        for (size_t i = 0; i < fs->decls.len; i++) {
+            AcDecl *cand = *(AcDecl **)vecAt(&fs->decls, i);
+            if (cand->name && strcmp(cand->name, nm) == 0) { d = cand; count++; }
+        }
+        if (count != 1 || !d || !d->init) return false;
+        for (size_t i = 0; i < fs->mutated.len; i++)
+            if (strcmp(*(const char **)vecAt(&fs->mutated, i), nm) == 0) return false;
+        for (size_t i = 0; i < fs->addressed.len; i++)
+            if (strcmp(*(const char **)vecAt(&fs->addressed, i), nm) == 0) return false;
+        return freshValue(fs, d->init);
+    }
+    default: return false;
+    }
+}
+
+/**
+ * @brief 语句回调：收集 `return` 值、声明，以及被改过/取过地址的名字。
+ *
+ * @param ctx  扫描上下文（`FreshScan *`）。
+ * @param s    被访问的子语句。
+ * @return     总是 true。
+ */
+static bool freshStmt(void *ctx, Stmt *s) {
+    FreshScan *fs = ctx;
+    if (!s) return true;
+    if (s->kind == ST_VAR && s->u.var.name) {
+        AcDecl *d = arenaAllocZero(fs->ac->a, sizeof *d);
+        d->name = s->u.var.name;
+        d->init = s->u.var.init;
+        *(AcDecl **)vecPush(&fs->decls) = d;
+    }
+    if (s->kind == ST_ASSIGN && s->u.assign.target
+        && s->u.assign.target->kind == EX_IDENT && s->u.assign.target->u.ident.name)
+        *(const char **)vecPush(&fs->mutated) = s->u.assign.target->u.ident.name;
+    if (s->kind == ST_RETURN && s->u.ret.value)
+        *(Expr **)vecPush(&fs->rets) = s->u.ret.value;
+    AstVisit v = { freshExpr, freshStmt, fs };
+    return astWalkStmtChildren(s, &v);
+}
+
+/**
+ * @brief 表达式回调：记下取过地址的名字（`ref x` 的别名可能改掉那个绑定）。
+ *
+ * @param ctx  扫描上下文（`FreshScan *`）。
+ * @param e    被访问的子表达式。
+ * @return     总是 true。
+ */
+static bool freshExpr(void *ctx, Expr *e) {
+    FreshScan *fs = ctx;
+    if (!e) return true;
+    if (e->kind == EX_REF && e->u.ref.operand && e->u.ref.operand->kind == EX_IDENT
+        && e->u.ref.operand->u.ident.name)
+        *(const char **)vecPush(&fs->addressed) = e->u.ref.operand->u.ident.name;
+    AstVisit v = { freshExpr, freshStmt, fs };
+    return astWalkExprChildren(e, &v);
+}
+
+/**
+ * @brief 静态判定（不看被调者）：「F 的每个 `return` 都交付新分配对象」。
+ *
+ * @param f   函数（有函数体）。
+ * @param c   检查器（arena 与类型表）。
+ * @param ac  记录（retDeps 收在这里）。
+ * @return    静态部分成立则 true；`return` 为空（void 函数）时 false。
+ */
+static bool retFreshLocal(FuncDef *f, Checker *c, AcInfo *ac) {
+    FreshScan fs;
+    memset(&fs, 0, sizeof fs);
+    fs.c = c;
+    fs.ac = ac;
+    vecInit(&fs.rets, c->arena, sizeof(void *));
+    vecInit(&fs.decls, c->arena, sizeof(void *));
+    vecInit(&fs.mutated, c->arena, sizeof(void *));
+    vecInit(&fs.addressed, c->arena, sizeof(void *));
+    AstVisit v = { freshExpr, freshStmt, &fs };
+    astWalkStmtChildren(f->body, &v);
+    if (fs.rets.len == 0) return false;
+    for (size_t i = 0; i < fs.rets.len; i++)
+        if (!freshValue(&fs, *(Expr **)vecAt(&fs.rets, i))) return false;
+    return true;
+}
+
+/**
+ * @brief 函数在名单里的下标。
+ *
+ * @param all  函数名单（`FuncDef *`）。
+ * @param g    要找的函数。
+ * @return     下标；不在名单里（含 NULL）时 -1。
+ */
+static long acIndex(Vec *all, FuncDef *g) {
+    if (!g) return -1;
+    for (size_t i = 0; i < all->len; i++)
+        if (*(FuncDef **)vecAt(all, i) == g) return (long)i;
+    return -1;
+}
+
+/**
+ * @brief 被调者是不是"被算过且结论为真"。
+ *
+ * @param all         函数名单。
+ * @param considered  每一个下标是不是被算过的函数。
+ * @param flags       结论数组。
+ * @param g           被调者。
+ * @return            算过且为真时 true。
+ */
+static bool acFlagAt(Vec *all, const bool *considered, const bool *flags, FuncDef *g) {
+    long i = acIndex(all, g);
+    return i >= 0 && considered[i] && flags[i];
+}
+
+/**
+ * @brief 求 `planFnAcyclic` / `planFnRefsCounted`：整张调用图上的两个不动点。
+ *
+ * 必须在所有函数体检查完、且延迟调用点解析完之后调用（`planCallee` 那时才完整）。诊断
+ * `EXTC_DBG_ACYCLIC=1`：每个被用函数一行，加一行程序级总结。
+ *
+ * @param c  检查器。
+ */
+void computeFnAcyclic(Checker *c) {
+    Module *m = c->m;
+    Arena *a = c->arena;
+    if (!m) return;
+    Vec all;
+    allFunctions(a, m, &all);
+    size_t n = all.len;
+    if (n == 0) return;
+    AcInfo *info = arenaAllocZero(a, n * sizeof *info);
+    bool *considered = arenaAllocZero(a, n * sizeof(bool));
+    bool *rf = arenaAllocZero(a, n * sizeof(bool));
+    bool *acb = arenaAllocZero(a, n * sizeof(bool));
+    bool *ivb = arenaAllocZero(a, n * sizeof(bool));
+    const char **acWhy = arenaAllocZero(a, n * sizeof(const char *));
+    const char **ivWhy = arenaAllocZero(a, n * sizeof(const char *));
+
+    for (size_t i = 0; i < n; i++) {
+        FuncDef *f = *(FuncDef **)vecAt(&all, i);
+        considered[i] = acAnalyzable(f);
+        if (!considered[i]) continue;
+        info[i].a = a;
+        vecInit(&info[i].acycDeps, a, sizeof(void *));
+        vecInit(&info[i].ivDeps, a, sizeof(void *));
+        vecInit(&info[i].retDeps, a, sizeof(void *));
+        AcScan sc = { c, &info[i] };
+        AstVisit v = { acScanExpr, acScanStmt, &sc };
+        astWalkStmtChildren(f->body, &v);
+        rf[i] = retFreshLocal(f, c, &info[i]);
+        acb[i] = !info[i].acycBad;
+        ivb[i] = !info[i].ivBad;
+        acWhy[i] = info[i].acycWhy;
+        ivWhy[i] = info[i].ivWhy;
+
+        /* ---- ②「回收无事可做」：判据 (a)(b)(c) 的本地那一半（见 `idleWalkStmt`）------ */
+        vecInit(&info[i].idleFresh, a, sizeof(void *));
+        vecInit(&info[i].idleAsgn, a, sizeof(void *));
+        vecInit(&info[i].idleAsgnLoop, a, sizeof(int));
+        vecInit(&info[i].idleSites, a, sizeof(void *));
+        vecInit(&info[i].idleBindLvl, a, sizeof(void *));
+        vecInit(&info[i].idleFieldLvl, a, sizeof(void *));
+        vecInit(&info[i].idleFieldStores, a, sizeof(void *));
+        vecInit(&info[i].idleStores, a, sizeof(void *));
+        vecInit(&info[i].idleSlotSites, a, sizeof(void *));
+        IdleWalk iw = { c, &info[i], 0, 1, 0 };
+        AstVisit iv = { idleWalkExprCb, idleWalkStmtCb, &iw };
+        astWalkStmtChildren(f->body, &iv);
+        /* (a)/(a′) 剩下的两半：宿主必须是"本帧 `new` 出来、从不被重新赋值"的局部量，且同一个
+         * （宿主声明, 字段）在这个函数里只有一处站点。站点在循环里时，`idleWalkStmt` 已经用
+         * "宿主是本迭代新建的"（分配循环深度 + arena 层两个条件）筛过一遍，这里仍是同一套
+         * 后处理：台账里没有这个名字 ⇒ 判否。 */
+        for (size_t k = 0; k < info[i].idleSites.len && !info[i].idleBad; k++) {
+            IdleSite *site = *(IdleSite **)vecAt(&info[i].idleSites, k);
+            const char *why = NULL;
+            if (!idleFreshAt(&info[i], site->host, site->seq) && !site->seqElem) {
+                why = "the host object is not a local created by `new` in this frame";
+            } else if (idleNameIn(&info[i].idleAsgn, site->host)) {
+                why = "the host binding is reassigned in this function";
+            } else {
+                for (size_t j = 0; j < k; j++) {
+                    IdleSite *o = *(IdleSite **)vecAt(&info[i].idleSites, j);
+                    if (o->host == site->host && strcmp(o->fname, site->fname) == 0) {
+                        /* 细化 A：旧值另有根 ⇒ 覆盖没丢根 ⇒ 不是冲突。 */
+                        if (!(o->value && idleValueOtherRoot(&info[i], o->value)))
+                            why = "the same field of the same host is written at two sites";
+                        break;
+                    }
+                }
+            }
+            if (why)
+                idleNote(&info[i], arenaPrintf(a, "line %d: %s", site->line, why));
+        }
+        /* 细化 (b′)：栈上 ref 槽的赋值站点推迟到这里判 —— 条件是"写进这个槽的**全部**值都随
+         * 本迭代的 arena 一起死"（`idleStoreQualified`）。因为同一名字可能有多处写入，只有整趟
+         * 走完才看得全；任一处不合格 ⇒ 这个槽的每一次覆盖都判否（保守）。 */
+        idleSolveLvls(&info[i]);
+        for (size_t k = 0; k < info[i].idleSlotSites.len && !info[i].idleBad; k++) {
+            IdleSlotSite *cs = *(IdleSlotSite **)vecAt(&info[i].idleSlotSites, k);
+            int csLvl = idleValueLvl(&info[i].idleBindLvl, &info[i].idleFieldLvl, cs->value);
+            bool ok = idleStoreQualified(csLvl, cs->loopScope);
+            for (size_t j = 0; ok && j < info[i].idleStores.len; j++) {
+                IdleStore *st = *(IdleStore **)vecAt(&info[i].idleStores, j);
+                if (!st->name || !cs->name || strcmp(st->name, cs->name) != 0) continue;
+                if (!idleStoreQualified(idleValueLvl(&info[i].idleBindLvl, &info[i].idleFieldLvl,
+                                                     st->value), st->loopScope)) ok = false;
+            }
+            if (!ok)
+                idleNote(&info[i], arenaPrintf(a,
+                    "line %d: a reference is assigned to a stack slot (a local/parameter, or a field of one)",
+                    cs->line));
+        }
+    }
+
+    /* retFresh 闭包：被调者不成立 ⇒ 自己也不成立。 */
+    for (bool changed = true; changed; ) {
+        changed = false;
+        for (size_t i = 0; i < n; i++) {
+            if (!rf[i]) continue;
+            for (size_t k = 0; k < info[i].retDeps.len; k++) {
+                AcDep *d = *(AcDep **)vecAt(&info[i].retDeps, k);
+                if (!acFlagAt(&all, considered, rf, d->fn)) { rf[i] = false; changed = true; break; }
+            }
+        }
+    }
+    /* acyc 闭包：(i') 的每个站点要求被调者「无环**且**返回新分配」。 */
+    for (bool changed = true; changed; ) {
+        changed = false;
+        for (size_t i = 0; i < n; i++) {
+            if (!acb[i]) continue;
+            for (size_t k = 0; k < info[i].acycDeps.len; k++) {
+                AcDep *d = *(AcDep **)vecAt(&info[i].acycDeps, k);
+                long gi = acIndex(&all, d->fn);
+                const char *why = NULL;
+                if (!d->fn) {
+                    why = "the callee of a stored call result is not resolved";
+                } else if (gi < 0 || !considered[gi] || !acb[gi]) {
+                    why = arenaPrintf(a, "the callee '%s' is not proved acyclic",
+                                      d->fn->name ? d->fn->name : "?");
+                } else if (!rf[gi]) {
+                    why = arenaPrintf(a, "the callee '%s' does not provably return a fresh allocation",
+                                      d->fn->name ? d->fn->name : "?");
+                }
+                if (why) {
+                    acb[i] = false;
+                    acWhy[i] = arenaPrintf(a, "line %d: %s", d->line, why);
+                    changed = true;
+                    break;
+                }
+            }
+        }
+    }
+    /* iv 闭包：看清的被调者也必须成立（引用只住在被计数的堆槽里）。 */
+    for (bool changed = true; changed; ) {
+        changed = false;
+        for (size_t i = 0; i < n; i++) {
+            if (!ivb[i]) continue;
+            for (size_t k = 0; k < info[i].ivDeps.len; k++) {
+                AcDep *d = *(AcDep **)vecAt(&info[i].ivDeps, k);
+                if (!acFlagAt(&all, considered, ivb, d->fn)) {
+                    ivb[i] = false;
+                    ivWhy[i] = arenaPrintf(a,
+                        "line %d: it calls '%s', which may drop references outside counted heap slots",
+                        d->line, (d->fn && d->fn->name) ? d->fn->name : "?");
+                    changed = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    /* 写回计划侧：`fnAcyclic` 是 (i)(ii)(iii)(i') 与 (iv) 的合取，`fnRefsCounted` 单存 (iv)，
+     * `fnReclaimIdle` 是另一条判据 (a)(b)(c)（见 `idleWalkStmt` 的说明：两者互不蕴含）。 */
+    for (size_t i = 0; i < n; i++) {
+        if (!considered[i]) continue;
+        FuncDef *f = *(FuncDef **)vecAt(&all, i);
+        bool ok = acb[i] && ivb[i];
+        planSetFnAcyclic(f, ok);
+        planSetFnRefsCounted(f, ivb[i]);
+        planSetFnReclaimIdle(f, !info[i].idleBad);
+        if (getenv("EXTC_DBG_RCIDLE"))
+            fprintf(stderr, "[rcidle] %s idle=%d reason=%s\n", f->name ? f->name : "?",
+                    (int)!info[i].idleBad,
+                    info[i].idleBad ? (info[i].idleWhy ? info[i].idleWhy : "not computed") : "ok");
+        if (ok) { anSetAcyclicWhy(f, NULL); continue; }
+        if (!acb[i])
+            anSetAcyclicWhy(f, arenaPrintf(a, "i-iii:%s",
+                acWhy[i] ? acWhy[i] : "a reference store is not provably acyclic"));
+        else
+            anSetAcyclicWhy(f, arenaPrintf(a, "iv:%s",
+                ivWhy[i] ? ivWhy[i] : "references do not live only in counted heap slots"));
+    }
+
+    /* `EXTC_DBG_ACYCLIC=1`：每个算过的被用函数一行 `[acyclic] <函数名> fn=<0|1> reason=<...>`；
+     * 没算过的每个一行 `skipped`（extern/只有声明：后端不需要它）或 `unproven`（泛型体：被用到就
+     * 挡着清扫）；最后一行程序级总结。 */
+    if (getenv("EXTC_DBG_ACYCLIC")) {
+        size_t nf = 0, na = 0, nskip = 0, nunproof = 0;
+        bool hasMain = false;
+        for (size_t i = 0; i < n; i++) {
+            FuncDef *f = *(FuncDef **)vecAt(&all, i);
+            if (f && f->name && strcmp(f->name, "main") == 0) hasMain = true;
+        }
+        for (size_t i = 0; i < n; i++) {
+            FuncDef *f = *(FuncDef **)vecAt(&all, i);
+            if (!f) continue;
+            if (!acRequired(c->m, f)) {
+                /* 不会被发射（泛型模板 / 泛型结构体的模板方法）⇒ 不挡"关清扫"，只计数（一个程序
+                 * 里可能有几十个模板方法，逐个打会把真正的原因埋掉）。 */
+                if (planUsed(f) || (f->name && strcmp(f->name, "main") == 0)) nskip++;
+                continue;
+            }
+            if (!considered[i]) {
+                /* 会被发射、但检查器没结论（extern / 泛型实例）⇒ `planFnAcyclic` 恒 false，
+                 * `unitAllAcyclic` 会因此拒绝。列出来，"为什么没生效"一眼可见。 */
+                nunproof++;
+                fprintf(stderr, "[acyclic] unproven %s (%s)\n",
+                        f->name ? f->name : "?", acUnprovenWhy(f));
+                continue;
+            }
+            nf++;
+            if (planFnAcyclic(f)) {
+                na++;
+                fprintf(stderr, "[acyclic] %s fn=1 reason=ok\n", f->name ? f->name : "?");
+                continue;
+            }
+            const char *why = anAcyclicWhy(f);
+            fprintf(stderr, "[acyclic] %s fn=0 reason=%s\n",
+                    f->name ? f->name : "?", why ? why : "not computed");
+        }
+        /* 程序级总结只打一次：定义 `main` 的那个模块就是程序本身；`use` 进来的模块各打各的函数
+         * 行，但不重复"程序"总结。
+         *
+         * `all=1` 的含义是**可用于关清扫**：`unitAllAcyclic` 会发的每个函数都有结论且为真
+         * （算过的 `acyclic/funcs`，没算过的见 `unproven` ⇒ 直接挡）。`skipped`（泛型模板）不挡：
+         * 它本身不发射。**近似之处**：`unitAllAcyclic` 还会要求"被实例化过的类型"的模板方法，
+         * 而实例是 codegen 惰性造的、检查器看不见 ⇒ `skipped` 的模板方法在那种情况下会漏算。 */
+        if (hasMain) {
+            if (nskip)
+                fprintf(stderr, "[acyclic] skipped %zu generic template method(s) (not emitted)\n", nskip);
+            fprintf(stderr, "[acyclic] program: funcs=%zu acyclic=%zu skipped=%zu unproven=%zu all=%d\n",
+                    nf, na, nskip, nunproof, (int)(nf == na && nunproof == 0));
+        }
+    }
+}
+
 /**
  * @brief 调用点的“目的地有多浅”决策，arena 与 zone 两条通道共用这一份。
  *
@@ -5159,6 +6805,7 @@ static void allFunctions(Arena *arena, Module *m, Vec *out) {
  * @param rec  记录的调用点信息。
  * @return     目的地深度。
  */
+
 static int callSiteMinDestDepth(Checker *c, EArenaSite *rec) {
     if (rec->overflow) return -1;
     bool seen = false;
@@ -5219,6 +6866,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     vecInit(&c.refChecks, arena, sizeof(void *));
     vecInit(&c.lvlRejects, arena, sizeof(void *));
     vecInit(&c.pendingRefStores, arena, sizeof(void *));   /* 推迟的 `(*cur).f = v` 判定 */
+    vecInit(&c.cycleMerges, arena, sizeof(void *));        /* 可能闭环的写的候选区域合并 */
     vecInit(&c.callChecks, arena, sizeof(void *));   /* deferred call sites */
     vecInit(&c.narrowMarks, arena, sizeof(size_t));
     vecInit(&c.eSites, arena, sizeof(EArenaSite *));   /* arena decisions that depend on escapes */
@@ -5634,6 +7282,10 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         if (planTemplate(fx)) continue;      /* covered by the per-instance recheck */
         checkFunc(&c, fx);
     }
+
+    /* 调用图不动点：必须在**所有函数体检查完之后**（`callees` 那时才填好），
+     * 且要在下面这些批次改调用点之前 —— 它们不会新增“写引用槽”的来源。 */
+    computeRcNoDec(&c);
 
     /* This batch has to run **before** the requirement batches below.
      *
@@ -6166,6 +7818,13 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             fprintf(stderr, "[lvl] %zu level facts, converged after %d round(s)\n",
                     c.lvlFacts.len, solveRounds);
 
+        /* 路线 C：把「可能的环」的候选区域并到最浅的那一层。
+         *
+         * 必须在**求解之后、placement 之前**：求解给出每个站点最终的 `anMinAt`（合并的输入），
+         * placement 再据此写 `arenaLevel`/`refDepth`（合并的输出）。作用域这时已全部关闭，所以
+         * 这里只读站点指针、不再查名字。见 `CycleMerge` / `applyCycleMerges`。 */
+        applyCycleMerges(&c);
+
         int fixed = 0, keptBlock = 0;
         for (size_t i = 0; i < all.len; i++) {
             FuncDef *f = *(FuncDef **)vecAt(&all, i);
@@ -6581,6 +8240,10 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         fprintf(stderr, "[fx] stores: dedupSteps=%ld preBody=%ld\n",
                 c.fxDedupSteps, c.fxPreBodyStores);
     }
+
+    /* 区域无环判定：所有函数体与延迟调用点都落定之后才算，`planCallee` 那时才完整。
+     * `EXTC_DBG_ACYCLIC=1` 时它自己打诊断。 */
+    computeFnAcyclic(&c);
 
     return !ctx->hasError;
 }

@@ -483,6 +483,32 @@ bool typeContainsRef(TypeTable *tt, Type *t) {
 }
 
 /**
+ * @brief 判断类型能否持有**被计数的 rc 引用**（`typeContainsRef` 去掉视图句柄那一层）。
+ *
+ * `slice<T>` 的 `data` 字段是 `ref`，但**视图句柄本身不是被计数的 rc 槽**：把视图交给黑盒、
+ * 或在局部量里丢掉视图，都不会让某个 rc 对象的持有者计数消失 —— 视图指向的存储由板/池/区域
+ * 自己管。视图**元素/实参**里带引用（`slice<ref T>`）仍然算，聚合里嵌着视图也仍然算（走
+ * `typeContainsRef`，它递归结构体字段）。
+ *
+ * 区域无环判定 (iv) 用这个判据，否则"打印一行字符串"（`println(slice<u8>)`）会把整个程序钉成
+ * 有环 —— 那是把视图误当 rc 引用。视图是不是泄漏源是另一个问题（板/池层的生命周期），不在
+ * "引用只住在被计数的堆槽里"这条判据的范围里。
+ *
+ * @param tt  类型表。
+ * @param t   要检查的类型；NULL 不持有引用。
+ * @return    能持有被计数的 rc 引用时为 true。
+ */
+bool typeHoldsCountedRef(TypeTable *tt, Type *t) {
+    if (!t) return false;
+    if (ttIsViewType(t)) {
+        for (size_t i = 0; i < t->targs.len; i++)
+            if (typeHoldsCountedRef(tt, *(Type **)vecAt(&t->targs, i))) return true;
+        return false;
+    }
+    return typeContainsRef(tt, t);
+}
+
+/**
  * @brief 按给定深度递归查找引用，深度超过上限时保守地返回 true。
  *
  * @param tt     类型表。

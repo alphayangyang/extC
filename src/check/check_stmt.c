@@ -219,10 +219,19 @@ static void checkBlockBody(Checker *c, Stmt *block) {
  */
 static void pMarkGlobal(Checker *c, Stmt *s, Sym *sym) {
     if (!sym || !s->u.var.isGlobal) return;
-    (void)c;
     sym->outOfFrame = true;   /* 深度 0：存储活过每一帧 */
     sym->depth = 0;
     anSetRefDepth(sym, 0);
+    /* **函数内的 `global var` 也要登记进全局表。** `isGlobalSym` 只查这张表；漏登记的话
+     * `storeLayer` 会把它的 depth-0 槽当成"参数槽"（check_escape.c 里
+     * `sy->depth == 0 && !isGlobalSym(...) ⇒ return 1`），于是**存进去的对象被分配在本帧
+     * arena**，函数返回即悬垂。实测：`global var g: ?ref node` 里 `g = new node`，第二次
+     * 调用读 `g` ⇒ plain 段错误 / ASan heap-use-after-free
+     * （用例 `tests/asan/global-frame-holds-new.extc`）。
+     *
+     * `checkGlobals` 早于函数检查运行，所以这张表里追加函数内的全局不会影响那里的
+     * 模块级重名检查（它比的是名字，而 `isGlobalSym` 比的是符号指针）。 */
+    *(Sym **)vecPush(&c->globals) = sym;
 }
 
 /**
@@ -254,6 +263,271 @@ static bool assignTargetWritable(const Expr *e) {
     case EX_SLICE: return assignTargetWritable(e->u.slice.obj);
     case EX_SIGN:  return assignTargetWritable(e->u.sign.operand);
     default:       return false;
+    }
+}
+
+/* ------------------------------------------------- 无环判定: 引用槽存储的分类
+ *
+ * `computeFnAcyclic`（check_top.c）要判「这个函数建立的堆引用图有没有回边」以及「引用是不是只
+ * 住在被计数的堆槽里」。判定需要两类事实，只有在**作用域还活着**时拿得到：
+ *   · 宿主对象的层上界（`(*cur).f` 的宿主是被指物，要 `Sym.refDepth`）；
+ *   · 值的层下界（`ref <局部量>` 取该绑定的块深度，经引用绑定的取 `Sym.minPointee`）。
+ * 所以分类在这里做，结果记在语句的结果槽里（`anSetStoreRefKind`），后一趟只做调用图闭包。
+ * 判据 v1 的四条与 `SR_*` 编码见 `check_internal.h`。
+ */
+
+/**
+ * @brief 投影基表达式所命名的**宿主对象**的层上界（越深 = 越年轻）。
+ *
+ * 只处理「宿主是堆对象」的那一支：基是一个引用型绑定（它指向的对象才是宿主）或者一次
+ * 解引用。返回 -1 表示这个基不是引用（宿主是栈上的局部量/参数/全局 ⇒ 归判据 (iv) 那一栏，
+ * 由后一趟的语法扫描判），或层不可知（保守）。
+ *
+ * 用 `anRefDepth`（`Sym.refDepth` 是"可能被指物"的上界）当**上界**：层判据要的是"宿主可能
+ * 有多年轻"，上界越年轻越保守（值必须比它更年轻才放行）。
+ *
+ * @param c    检查器（作用域还活着）。
+ * @param obj  投影的基表达式。
+ * @return     宿主层上界；不是堆宿主或不可知时 -1。
+ */
+static int acyclicHostUpper(Checker *c, Expr *obj) {
+    if (!obj) return -1;
+    switch (obj->kind) {
+    case EX_DEREF: {
+        /* `(*p).f` 的宿主是 `p` 指向的对象：层上界就是 `p` 的 refDepth。`p` 是参数还是局部量
+         * 不影响这一支 —— 经引用写永远打在被指物上。 */
+        Expr *o = obj->u.deref.operand;
+        if (o && o->kind == EX_IDENT) {
+            Sym *sy = lookup(c, o->u.ident.name);
+            if (sy && sy->type && tsub(c, sy->type)->kind == TY_REF) return anRefDepth(sy);
+        }
+        return -1;
+    }
+    case EX_IDENT: {
+        Sym *sy = lookup(c, obj->u.ident.name);
+        if (!sy || !sy->type) return -1;
+        /* 引用型绑定作基（`p.f = v`）：宿主是它指向的对象。 */
+        if (tsub(c, sy->type)->kind == TY_REF) return anRefDepth(sy);
+        return -1;                       /* 普通绑定作基：宿主在栈上 */
+    }
+    case EX_FIELD: return acyclicHostUpper(c, obj->u.field.obj);
+    case EX_INDEX: return acyclicHostUpper(c, obj->u.index.obj);
+    case EX_SLICE: return acyclicHostUpper(c, obj->u.slice.obj);
+    default:       return -1;
+    }
+}
+
+/**
+ * @brief 写目标里引用槽的宿主对象的层上界。
+ *
+ * `EX_DEREF` 的宿主就是被指物本身；字段/元素/切片看它们的基。
+ *
+ * @param c  检查器（作用域还活着）。
+ * @param t  写目标表达式。
+ * @return   宿主层上界；宿主不是堆对象或不可知时 -1。
+ */
+static int acyclicStoreHostUpper(Checker *c, Expr *t) {
+    if (!t) return -1;
+    switch (t->kind) {
+    case EX_DEREF: return acyclicHostUpper(c, t);
+    case EX_FIELD: return acyclicHostUpper(c, t->u.field.obj);
+    case EX_INDEX: return acyclicHostUpper(c, t->u.index.obj);
+    case EX_SLICE: return acyclicHostUpper(c, t->u.slice.obj);
+    default:       return -1;    /* EX_IDENT：改指本帧的槽，不是堆槽 */
+    }
+}
+
+/**
+ * @brief 写目标里那个「宿主绑定」本身（与 `acyclicHostUpper` 走同一条基链）。
+ *
+ * `(*cur).f = v` 的宿主是 `cur` 指向的对象，而 `cur` 就是这里要的绑定 —— 它可能指向的分配站点
+ * 构成「候选区域」集合（见 `CycleMerge`）。`p.f = v`（`p` 是引用型绑定）同理。
+ *
+ * @param c  检查器（作用域还活着）。
+ * @param obj 投影的基表达式。
+ * @return    引用型绑定；宿主不是堆对象或不可知时 NULL。
+ */
+static Sym *acyclicHostSym(Checker *c, Expr *obj) {
+    if (!obj) return NULL;
+    switch (obj->kind) {
+    case EX_DEREF: {
+        Expr *o = obj->u.deref.operand;
+        if (o && o->kind == EX_IDENT) {
+            Sym *sy = lookup(c, o->u.ident.name);
+            if (sy && sy->type && tsub(c, sy->type)->kind == TY_REF) return sy;
+        }
+        return NULL;
+    }
+    case EX_IDENT: {
+        Sym *sy = lookup(c, obj->u.ident.name);
+        if (!sy || !sy->type) return NULL;
+        return (tsub(c, sy->type)->kind == TY_REF) ? sy : NULL;
+    }
+    case EX_FIELD: return acyclicHostSym(c, obj->u.field.obj);
+    case EX_INDEX: return acyclicHostSym(c, obj->u.index.obj);
+    case EX_SLICE: return acyclicHostSym(c, obj->u.slice.obj);
+    default:       return NULL;
+    }
+}
+
+/**
+ * @brief 写目标对应的宿主绑定（`(*cur).next` → `cur`；`p.f` → `p`）。
+ *
+ * @param c  检查器。
+ * @param t  写目标表达式。
+ * @return    宿主绑定；不是经具名引用的堆宿主时 NULL。
+ */
+static Sym *acyclicStoreHostSym(Checker *c, Expr *t) {
+    if (!t) return NULL;
+    switch (t->kind) {
+    case EX_DEREF: return acyclicHostSym(c, t);
+    case EX_FIELD: return acyclicHostSym(c, t->u.field.obj);
+    case EX_INDEX: return acyclicHostSym(c, t->u.index.obj);
+    case EX_SLICE: return acyclicHostSym(c, t->u.slice.obj);
+    default:       return NULL;
+    }
+}
+
+/**
+ * @brief 写进引用槽的那个值「至少活到哪一层」的**下界**（越小 = 至少活得更久）。
+ *
+ * 层判据 (iii) 要判定"值比宿主年轻"，所以值这边必须是**下界**（不能拿偏大的上界去放行，
+ * 那正是判据健全的反方向）。只有本来就不会被后续层求解器抬高的形状才答数：
+ * 直接分配站点（(i) 已另行放行）、`ref <局部量>`（该绑定的块深度，求解器不移动局部槽）。
+ * 经引用绑定/字段读的值一律答 -1（`Sym.minPointee` 会被后续求解器抬高，不能当下界）。
+ *
+ * @param c  检查器（作用域还活着）。
+ * @param v  被存的值。
+ * @return   层下界；不可知时 -1。
+ */
+static int acyclicValueLower(Checker *c, Expr *v) {
+    if (!v) return -1;
+    switch (v->kind) {
+    case EX_NEW: case EX_GENCALL: {
+        int a = planArenaLevel(v);
+        return a == ARENA_HOME ? 0 : (a > 0 ? a : -1);
+    }
+    case EX_REF: {
+        /* `ref x` 指向 x 的存储本身：x 是局部量时深度就是它的块深度（精确、稳定）。 */
+        Expr *o = v->u.ref.operand;
+        if (!o || o->kind != EX_IDENT) return -1;
+        Sym *sy = lookup(c, o->u.ident.name);
+        if (!sy || !sy->type) return -1;
+        if (tsub(c, sy->type)->kind == TY_REF) return -1;   /* `ref *p`：经引用，答 -1 */
+        return slotDepth(c, o);
+    }
+    case EX_SIGN: return acyclicValueLower(c, v->u.sign.operand);
+    case EX_TRY:  return acyclicValueLower(c, v->u.try_.operand);
+    case EX_CONV: return acyclicValueLower(c, v->u.conv.operand);
+    case EX_COALESCE: {
+        int a = acyclicValueLower(c, v->u.coalesce.main);
+        int b = acyclicValueLower(c, v->u.coalesce.fallback);
+        if (a < 0 || b < 0) return -1;
+        return a < b ? a : b;       /* 两支都可能成为结果 ⇒ 取更长寿的那支 */
+    }
+    default: return -1;
+    }
+}
+
+/**
+ * @brief 一次存储的引用槽分类；`old` 与 `now` 取**更保守**的那一个。
+ *
+ * 同一个站点可能被检查多趟（驱动器的多轮），分类因此可能重复写入：任何一趟说"不成立"，
+ * 结论就是不成立；两趟都是调用来源时保留"要查被调者"（要求更多）。
+ *
+ * @param old  已经记下的分类（`SR_NONE` = 还没记）。
+ * @param now  这一趟的分类。
+ * @return     合并后的分类。
+ */
+static int acyclicMergeKind(int old, int now) {
+    if (old == SR_NONE) return now;
+    if (old == SR_BAD || now == SR_BAD) return SR_BAD;
+    if (old == now) return old;
+    if (old == SR_LOCAL || now == SR_LOCAL) return SR_LOCAL;
+    if (old == SR_CALL || now == SR_CALL) return SR_CALL;
+    return SR_NULL;   /* 两条静态理由都成立：留一个"可以放行"的码 */
+}
+
+/**
+ * @brief 记下一次「往引用槽里写」的分类（判据 (i)(ii)(iii)(i')）。
+ *
+ * 只处理**宿主是堆对象**的写：栈上的引用槽（引用型局部量/参数的改指、局部聚合的字段）不是
+ * 这里的事，它们由后一趟的语法扫描按判据 (iv) 判否。**必须带类型**：目标类型不含引用时直接
+ * 返回，`i = i + 1` 这种整型赋值不会被算进来。
+ *
+ * @param c       检查器（作用域还活着）。
+ * @param s       赋值语句（分类记在它的结果槽上）。
+ * @param target  写目标。
+ * @param value   被写入的值。
+ */
+static void noteAcyclicStore(Checker *c, Stmt *s, Expr *target, Expr *value) {
+    if (!s || !target || !value) return;
+    Type *tt = target->type ? tsub(c, target->type) : NULL;
+    if (!tt) return;
+    /* 槽装**被计数的**引用吗？提及类型参数的类型也按"可能装引用"算（泛型体本来就不置位）；
+     * 视图句柄不算（见 `typeHoldsCountedRef`）。 */
+    if (!typeHoldsCountedRef(c->tt, tt) && !mentionsParam(tt)) return;
+    int host = acyclicStoreHostUpper(c, target);
+    if (host < 0) return;                  /* 栈上的槽：判据 (iv) 那一栏 */
+    int kind;
+    if (value->kind == EX_NULL) {
+        kind = SR_NULL;
+    } else if (value->kind == EX_NEW || value->kind == EX_GENCALL) {
+        kind = SR_FRESH;
+    } else if (value->kind == EX_CALL || value->kind == EX_METHOD
+               || value->kind == EX_ASSOC) {
+        /* (i')：等后一趟看被调者是不是无环、且返回值可证是新分配的。认不出被调者也在这一栏，
+         * 后一趟会按"解析不到 ⇒ 判否"处理。 */
+        kind = SR_CALL;
+    } else {
+        int vl = acyclicValueLower(c, value);
+        if (vl >= 0 && vl > host) kind = SR_LAYER;
+        else                      kind = SR_BAD;
+    }
+    anSetStoreRefKind(s, acyclicMergeKind(anStoreRefKind(s), kind));
+    /* 可能闭环：这条写既不是空、也不是新分配、也不是严格更年轻的层 ⇒ 环可能横跨区域。记下来
+     * （宿主可能指向的分配站点在这一刻当场收，作用域还开着），等全局电平求解之后把这些候选
+     * 区域并到最浅的那一只（见 `CycleMerge` / `applyCycleMerges`）。 */
+    if (kind == SR_BAD) {
+        Sym *base = acyclicStoreHostSym(c, target);
+        if (base) noteCycleMerge(c, base, value, s->line);
+    }
+}
+
+/**
+ * @brief 记下一个**嵌套块里的引用型局部量**：判据 (iv) 判否的那一栏。
+ *
+ * 事件路径只数"被计数的 rc 槽 → 对象"这条边。函数体顶层的引用绑定随帧一起消失，对象最多多活
+ * 一次调用（有界）；**嵌套块**（循环体、分支、裸块）里的绑定每轮新建一个、块退出时不产生
+ * `dec` ⇒ 它**唯一**持有的对象成了没人销账的垃圾，峰值随轮数线性涨（`blind_localhold` 形状）。
+ *
+ * 只在初始化式**自己产生一个持有者**时判否：`new` / 调用结果 / 结构体与数组字面量 / 另一个
+ * 绑定。读一个已有槽（`let cur = head.next`）不算 —— 那个对象还有被计数的持有者。
+ *
+ * @param c  检查器（作用域还活着，`scopes.len` 就是块深度）。
+ * @param s  声明语句。
+ */
+static void noteAcyclicNestedLocal(Checker *c, Stmt *s) {
+    if (!s || !s->type || s->u.var.isGlobal) return;
+    if (!typeHoldsCountedRef(c->tt, tsub(c, s->type)) && !mentionsParam(s->type)) return;
+    if (c->scopes.len <= 1) return;           /* 函数体顶层：有界 */
+    Expr *ini = s->u.var.init;
+    if (!ini) return;                         /* 声明成空引用：没有引用要丢 */
+    switch (ini->kind) {
+    case EX_NEW: case EX_GENCALL: case EX_CALL: case EX_METHOD: case EX_ASSOC:
+    case EX_STRUCTLIT: case EX_ARRAYLIT: case EX_ENUMVAL: case EX_IDENT:
+    case EX_LAMBDA: case EX_DYN:
+        anSetStoreRefKind(s, SR_LOCAL);
+        break;
+    case EX_REF: {
+        /* `ref *p` 借的是被指物（可能是本帧引用绑定唯一的持有者）；`ref x` 只是局部量的地址，
+         * 不产生堆对象。 */
+        Expr *o = ini->u.ref.operand;
+        if (o && o->kind == EX_DEREF) anSetStoreRefKind(s, SR_LOCAL);
+        break;
+    }
+    default:
+        break;                                /* 读已有槽：对象还有被计数的持有者 */
     }
 }
 
@@ -436,6 +710,7 @@ void checkStmt(Checker *c, Stmt *s) {
             Sym *sym = declare(c, s->u.var.name, s->type, s->u.var.mut,
                                !s->u.var.mut, s->line, c->scopes.len);
             planSetCName(s, sym->cname, RKIND_STMT);
+            noteAcyclicNestedLocal(c, s);   /* 判据 (iv)：嵌套块里引用型局部量 */
             /* 记下这个绑定的值从哪来（初始化式）。提权沿链回溯：`var n = new node` 之后的
              * `head = n` 会顺 `n` 找到 `new` 站点并把它提到 `head` 的级别；没有初始化式的声明
              * 记 NULL。 */
@@ -778,6 +1053,7 @@ void checkStmt(Checker *c, Stmt *s) {
                      * 里权限够、深度也够（`p` 是参数，深度 0），只剩“这个值真是调用方的”能拦。
                      * 漏掉这次调用就会产生悬垂引用。 */
                     checkStoreEscape(c, v, s->u.assign.target, s->line);
+                    noteAcyclicStore(c, s, s->u.assign.target, v);
                     return;
                 }
 
@@ -823,6 +1099,7 @@ void checkStmt(Checker *c, Stmt *s) {
             checkStoreEscape(c, s->u.assign.value, s->u.assign.target, s->line);
             if (ttIsError(tt_)) return;
             checkAssignable(c, tt_, vt, s->u.assign.value, "assignment");
+            noteAcyclicStore(c, s, s->u.assign.target, s->u.assign.value);
             return;
         }
 
