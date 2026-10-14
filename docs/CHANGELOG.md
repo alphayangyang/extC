@@ -1,3 +1,14 @@
+## 2026-10-14 · 本地/形参槽只写入口**翻默认为开**（`495241d`；新 md5 `57f6b8ccd7c16100d12e5b51b26849e8`）
+
+- **墙钟（主判据）**：P4 units=2000 新默认 **20 ms/次**（3 组 × 10 次均 20）vs kill switch 24 ms ⇒ 相对改动前基线 **24.3 ms = −17.7%**（判据 ≥5%）。不劣化：`digraph@1M` 479 vs 480 ms、`cyclic_pressure@100k` 7 vs 7 ms。
+- **门禁**：`nobench` 默认 **100/0**、kill switch **100/0**；`smoke 16/0`、`docs 12/0`；`gate-doc-refs`/`gate-invariant-table`/`gate-skip-table` 绿（注集 22 条与 `docs/RECLAMATION.md` 对齐）；`MIN_IDLE` 未动；孤儿 0；工作树干净。
+- **语义**：`EXTC_RECLAIM=0` 档 stdout 逐字节一致（`spectrum_p1/p4`、`cross_region`、`persist_nodes`）；`cross_region` `rs_inc=200000 rs_dec=196611 rs_live=3389 rs_hwm=65537` 在新默认与 kill switch 下**完全相同**；kill switch 产物与 pin `e4c3a869…` 档 `cmp` 相同 ⇒ **翻默认前行为可逐字节复现**。
+- **棘轮收紧**：`tests/reclaim-perf/gate.sh` 的 `LIMIT` **161 930 000 → 161 653 535**（新实测 `cyclic_pressure` N=200000 总指令 **153 955 748** × 1.05），复跑绿；`gate-tax` 的 `bt` 税线**无对应棘轮可收**（`bt` 早已 idle、税 1.000×）⇒ 保持 1050‰ 并写明。
+- **牙入注集**：`tools/inject.py` 新增 `localstore-on-objhost`（打 `src/back/codegen.c` 的 `hreg != NULL` 分支 ⇒ 对象宿主也走只写入口 ⇒ 跨区登记整段丢失）。本轮**实跑复现**：注入后 `gate-reclaim-switch` 红（`FAIL cross-region：登记量判据破了（rs_inc=0 rs_hwm=0）`），随后还原逐字相同、复绿、**原树未改动**、exit 0。条目注释里记了一个坑：只打 `storeRefOwned` 的兜底分支**打不到热路径**（该分支宿主是 `hreg == NULL`）。
+- **提交说明**：实现那一步此前未单独提交 ⇒ "实现 + 翻默认"落在同一提交（拆不干净：翻默认改的正是新加的那几行）；翻默认前行为由 kill switch 复现。
+- **对账**：`gcbench` 的 Owned 格（3,552,955）与运行期内建计数一致；其 Reg 格 `0` 判为计数器放置问题 ⇒ **以本方 `TICK` 计数 1,547,825 为准**（已在报告写明取代）。
+- **下一步**：`CACHE-AUDIT` 第 1 条（标记队列存 `(slab, 槽号)`，外推墙钟 −5~12%）未开工；谱系表需在**新默认**下重跑（P4 的 rc 占比应从 39% 降到约 19%）。
+
 ## 2026-10-14 · 本地槽专用入口落地（`EXTC_RC_LOCALSTORE`，默认关）：**P4 墙钟 −14.8%**
 
 **判据逐条**（`tests/reclaim-perf/LOCALSTORE-IMPL.md`；新 md5 `6eaa20ab4ebd8d2a5602d09433504b61`）：
