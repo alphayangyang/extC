@@ -39,6 +39,9 @@ bench/gc/io/in_lines.txt
 
 # 本地助手工具与废弃草稿（不入库）
 .claude/
+# DSH 认的项目级 skill 根：`.agents/skills` 是指向 `.claude/skills` 的符号链接，
+# 让同一份 skill 同时被 Claude Code 与 DSH 看到（DSH 只扫 .dsh/skills 与 .agents/skills）
+.agents/
 prototype-python/
 
 # prototype-heap 的产物（run.sh 会重新编）

@@ -45,12 +45,39 @@ debug switches -- diagnostics only, **except the marked below**:
   EXTC_RECLAIM=0       turn reclamation off; it is **on by default** -- **CHANGES THE OUTPUT**.
                        A program with a governed allocation point (`new T` / `alloc<T>(n)` /
                        `@overwrite`) gets the slab allocator / holder-count / region-sweep
-                       block; `=1` forces that block on for every program (side-by-side runs)
+                       block; `=1` **allows** it (side-by-side runs) but does not force it: a
+                       unit proved to have no reclaim work emits no reclamation runtime at all
   EXTC_RC_SHARDS=N     reclamation's shard count, the pause knob -- **CHANGES THE OUTPUT**.
                        Default 1 = one runtime region per logical one; N > 1 splits each
                        logical region into N runtime regions that sweep one at a time
+  EXTC_ARENA_FILL=NN   diagnostic only: fill every **non-zeroed** arena allocation with the
+                       byte NN (0-255), so "read of never-written arena memory" becomes
+                       deterministic instead of load-dependent -- the arena's own
+                       `MALLOC_PERTURB_`. Unset (default) writes nothing: byte-identical output
+  EXTC_RUN_DIR=DIR     `--run`/`--build` write `<DIR>/<name>.c` and `<DIR>/<name>` instead of
+                       `build/<name>.c` and `build/<name>`. **Does not change the program's
+                       output** -- it only picks where the artifacts land, so two runs that
+                       share a source basename (`a/generic.extc` and `b/generic.extc`) do not
+                       overwrite each other. Default `build`, the path every caller gets
 
   -h, --help       show this help
+  EXTC_RC_NOCOUNT=0    re-enable holder counting (it is **off by default**): the default
+                       rests on region sweeps alone -- **CHANGES THE OUTPUT**.
+  EXTC_RC_DBG_LEVEL=1  diagnostic only: print, for every reference store site, whether the
+                       value and its host object sit in the same arena level.
+  EXTC_RC_TIME=1       diagnostic only: the generated program counts how often each
+                       reclamation component is called and prints the tally to stderr.
+  EXTC_RC_SWEEPFREE=1  diagnostic only: event regime -- turn holder counting on and stop
+                       sweeping entirely (reclaim only when a holder count hits zero).
+  EXTC_DBG_ACYCLIC=1   diagnostic only: at compile time print one line per used function,
+                       `[acyclic] <name> fn=<0|1> reason=<...>`, plus a summary.
+  EXTC_DBG_RCIDLE=1    diagnostic only: at compile time print one line per used function,
+                       `[rcidle] <name> idle=<0|1> reason=<...>` -- the `(a)(b)(c)` proof
+                       that its region has no reclaim work to do.
+  EXTC_RC_PAUSE=1      diagnostic only: the generated program times every real sweep (one
+                       clock read before and after) and prints max/total/collects at exit.
+                       Uses a monotonic clock when the platform exposes one, else ISO C
+                       clock() (CPU time). See prototype-reclaim/sim.c for the method.
 ```
 
 ## 环境变量与调试开关
