@@ -1,3 +1,17 @@
+## 2026-10-14 · **更正**：本项目所有"Java 默认"档实际是 **Serial GC**（`taskset -c 6` ⇒ JVM 只见 1 CPU ⇒ 自选 Serial，与 `-XX:ActiveProcessorCount` 无关）
+
+**证据**：在**不加**任何 `ActiveProcessorCount` 的情况下，P2/P4 的 JVM 原始首行均为 `[0.001s][info][gc] Using Serial` ⇒ **"默认档 = G1"这个标签是错的** ✗ —— 包括 §6.10 的 `digraph` Java 档在内。**好的一面**：全项目内部口径一致（都是 Serial）；**坏的一面**：要谈 G1 必须**显式** `-XX:+UseG1GC` **并当独立配置**标注。
+
+**干净默认档实测**（无 `ActiveProcessorCount`、每轮独立 `rep$i.err`、解析器用正确路径 `bench/gc/jit_stats.py`；load 0.78→0.80）：
+| 形状 | 墙钟中位 | 峰值 RSS | 5 次原始 |
+|---|---|---|---|
+| P2@10⁶ | **39.412 ms** | 51 228 KB | 38.630 / 41.393 / 39.873 / 39.412 / 39.162 |
+| P4@2000 | **78.552 ms** | 105 360 KB | 87.010 / 77.227 / 79.722 / 78.552 / 75.534（首轮 87.010 为冷启动，**未剔除**） |
+
+**关键一格：Java 侧 GC 次数 = 显式 0**（解析成功，非失败）⇒ **P2/P4 上 Java 根本没触发 GC** ⇒ 这两档的三方差**不是"GC 之差"**，而是**运行时/分配器之差**（同一格：extC 2 / 47 次 collect、Go 有周期、Java **0** 次）。⇒ **要比较 GC，必须显式把 Java 堆压到会触发 GC**（`-Xmx32m` 在 P4 上已使 RSS −49%、墙钟 −17%，**但该档的 GC 次数尚未报**）。
+
+**未覆盖**：①-d WARM 模式（同进程重复跑、报首轮冷值 + 后几轮中位）、② Java P1/P3/P5 移植、③ P5 口径对账。
+
 ## 2026-10-14 · 两个测量坑（Java 列）：`-XX:ActiveProcessorCount=1` **静默把 G1 换成 Serial GC**；Java 墙钟全为**冷值**
 
 **坑 1（配置坑，最要紧）**：为满足"单核"而加的 `-XX:ActiveProcessorCount=1` 让 JVM 选了 **Serial GC**（JVM 原始首行 `[0.001s][info][gc] Using Serial` 为证）⇒ 上一轮那组所谓"Java 默认档"实际是 **Java + Serial**，与 `digraph` §6.10 的 **G1 口径不是同一配置** ✗。⇒ **该旗标不得默默加**：要么去掉（`taskset -c 6` 已单核），要么把 Serial 当**独立配置**明确标注。
