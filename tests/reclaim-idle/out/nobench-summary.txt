@@ -1,0 +1,22 @@
+== nobench 两跑汇总（工作树 /tmp/extc-idle-verify，a170faf；src == 38a94d4）==
+
+-- 第 1 跑（全新 worktree：bench/bigmatrix 的 gitignored 生成输入还不存在）--
+
+通过 96，失败 4
+EXIT=1
+335:  [31mFAIL[0m tools/gate_escape.py（逃逸健全性语料变红）
+1043:  [31mFAIL[0m tests/pool/run.sh
+1195:  [31mFAIL[0m 生成小输入失败（bench/bigmatrix/gen.c）
+1198:  [31mFAIL[0m tests/reclaim-perf/gate-shapes.sh（真实形状的回收开销被付回，或开关语义漂了）
+1200:    [31mFAIL[0m 生成小输入失败（bench/bigmatrix/gen.c）
+1207:  [31mFAIL[0m 小输入不在且生成失败（bench/bigmatrix/gen.c）
+1208:  [31mFAIL[0m tests/reclaim-perf/gate-tax.sh（不需要回收的形状上，回收税超线）
+1210:    [31mFAIL[0m 小输入不在且生成失败（bench/bigmatrix/gen.c）
+
+-- 第 2 跑（先 mkdir -p bench/bigmatrix/{build,in-small} 并跑一次 ./build/gen small in-small）--
+
+通过 100，失败 0
+EXIT=0
+
+完整日志（临时，会随 /tmp 清理）：/tmp/gates/nobench-clean.txt · /tmp/gates/nobench-clean2.txt
+复跑：cd <a170faf 的工作树> && mkdir -p bench/bigmatrix/build bench/bigmatrix/in-small && ./check.sh nobench

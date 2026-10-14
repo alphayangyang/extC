@@ -1,0 +1,22 @@
+== ② 的内存界（判成 idle 的形状峰值必须 N vs 4N < 1.5×、4N 绝对峰值 ≤ 8 MiB；N=50000）==
+   口径：默认档产物与 EXTC_RECLAIM=0 逐字节相同（且 rc 记号 0 个）⇒ ②生效 ⇒ 判峰值
+
+  [32mok[0m   blind_localhold：②生效（产物 == 关档）+ 峰值 1 MB → 1 MB（1.00× < 1.5×，绝对 ≤ 8 MiB）
+  [32mok[0m   bounded_churn：②生效（产物 == 关档）+ 峰值 1 MB → 1 MB（1.00× < 1.5×，绝对 ≤ 8 MiB）
+  --   byval_temp             仍在回收档（产物含 rc 运行期），只打印：峰值 2 MB → 4 MB（1.74×）
+  [32mok[0m   struct_copy_ret_home：②生效（产物 == 关档）+ 峰值 1 MB → 1 MB（1.04× < 1.5×，绝对 ≤ 8 MiB）
+  [32mok[0m   rebuild_per_round：②生效（产物 == 关档）+ 峰值 1 MB → 1 MB（1.04× < 1.5×，绝对 ≤ 8 MiB）
+  [32mok[0m   closure_chain：②生效（产物 == 关档）+ 峰值 1 MB → 1 MB（1.00× < 1.5×，绝对 ≤ 8 MiB）
+  --   outer_alloc_inner_write 仍在回收档（产物含 rc 运行期），只打印：峰值 3 MB → 4 MB（1.15×）
+  [32mok[0m   对照 cyclic_pressure：仍在回收档 —— 判据没有一律放行
+  [32mok[0m   对照 outer_alloc_inner_write：仍在回收档 —— 判据没有一律放行
+  [32mok[0m   对照 byval_temp：仍在回收档 —— 判据没有一律放行
+  [32mok[0m   对照 field_overwrite_lost_root：仍在回收档 —— 判据没有一律放行
+  [32mok[0m   对照 fixed_slot_overwrite：仍在回收档 —— 判据没有一律放行
+
+== ④ 活集 O(N) 的形状：idle 档峰值 ≤ 回收档实测峰值（N vs 4N 对它们不适用，理由见文件头）==
+  [32mok[0m   persist_nodes：②生效 + 峰值 21 MB ≤ 回收档实测 31 MB（同规模对照）
+  [32mok[0m   p3834_nodes：②生效 + 峰值 496 MB ≤ 回收档实测 747 MB（同规模对照）
+
+  [32mok[0m   反空跑：7 个形状真被判成 idle（② 在编译器里生效）
+  （没被 ② 判成 idle 的形状不在这里判有界性：它们仍在回收档，由 rc 那一侧的判据管）

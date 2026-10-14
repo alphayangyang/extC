@@ -1,0 +1,12 @@
+== 抽样：判 idle / 仍发射 rc 两侧各 3 个（N=50000, 4N=200000, 界 1.5×）==
+   EXTC=/tmp/extc-idle-verify/build/extc
+   基线=/home/alphayang/extC_Compiler/tools/idle-fingerprint-baseline.tsv
+
+blind_localhold          (idle)   [32mok[0m   idle · 与冻结基线逐字节同（8895ceed）· 峰值 1→1 MB（0.96×）· ASan 干净
+bounded_churn            (idle)   [32mok[0m   idle · 与冻结基线逐字节同（41624055）· 峰值 1→1 MB（1.00×）· ASan 干净
+rebuild_per_round        (idle)   [32mok[0m   idle · 与冻结基线逐字节同（f8c22eb2）· 峰值 1→1 MB（1.01×）· ASan 干净
+cyclic_pressure          (pays) [32mok[0m   pays · 与冻结基线逐字节同（5ef44bc4）· 峰值 4→5 MB（1.19×）· ASan 干净（这一侧不判 1.5×）
+outer_alloc_inner_write  (pays) [32mok[0m   pays · 与冻结基线逐字节同（02bb0024）· 峰值 3→4 MB（1.17×）· ASan 干净（这一侧不判 1.5×）
+rg_overwrite_ring        (pays) [32mok[0m   pays · 与冻结基线逐字节同（d116af4b）· 峰值 2→3 MB（1.78×）· ASan 干净（这一侧不判 1.5×）
+
+抽样全部通过

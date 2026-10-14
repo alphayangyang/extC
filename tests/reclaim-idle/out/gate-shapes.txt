@@ -1,0 +1,5 @@
+== 回收性能判据（真实形状，小输入，-O2）==
+  [32mok[0m   bt：开档/关档输出逐字一致（rc=0）
+  [32mok[0m   bt：总指令数 2850624 ≤ 2950000（in-small/bt.txt）
+  [32mok[0m   rebuild：开档/关档输出逐字一致（rc=0）
+  [32mok[0m   rebuild：总指令数 15037125 ≤ 15790000（in-small/rebuild.txt）

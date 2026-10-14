@@ -1,0 +1,93 @@
+（选中项依赖 build/extc ⇒ 自动先跑构建）
+extC 自检：12 项（模式 docs）
+并行：-j 4（默认 min(4, nproc)=4；-j1 = 旧行为）· nproc=24
+
+== build（build）==
+  [32mok[0m   make
+       ⏱ 0.007s
+
+== gen-flags（docs）==
+ok  驱动开关页与 `extc --help` 一致（22 个开关）
+  [32mok[0m   ok  驱动开关页与 `extc --help` 一致（22 个开关）
+       ⏱ 0.017s
+
+== manual-surface（docs）==
+ok  清单与源码一致（744 个成员：公开 531 · 内部 213）
+  [32mok[0m   ok  清单与源码一致（744 个成员：公开 531 · 内部 213）
+       ⏱ 0.037s
+
+== check-doxygen（docs）==
+ok  Doxygen 覆盖未退步（1342/1342 个声明有 @brief，欠账 0）
+  [32mok[0m   ok  Doxygen 覆盖未退步（1342/1342 个声明有 @brief，欠账 0）
+       ⏱ 0.042s
+
+== check-doc-facts（docs）==
+ok  文档里的 API 名都能在源码里找到（扫了 8 页）
+  [32mok[0m   ok  文档里的 API 名都能在源码里找到（扫了 8 页）
+       ⏱ 0.123s
+
+== check-no-history（docs）==
+ok  活文档与注释无新增历史词（存量 0 条，只许变短）
+  [32mok[0m   ok  活文档与注释无新增历史词（存量 0 条，只许变短）
+       ⏱ 0.250s
+
+== gen-index（docs）==
+ok  stdlib/INDEX 与源码一致（5 条成员：公开 5 · 私有 0）
+  [32mok[0m   ok  stdlib/INDEX 与源码一致（5 条成员：公开 5 · 私有 0）
+       ⏱ 0.021s
+
+== check-manual（docs）==
+ok  驱动开关全部在手册中；公开面未覆盖计数未增长（合计 35）
+  [32mok[0m   ok  驱动开关全部在手册中；公开面未覆盖计数未增长（合计 35）
+       ⏱ 0.286s
+
+== guards（docs）==
+include guards: 22 ok / 0 broken
+  [32mok[0m   include guards: 22 ok / 0 broken
+       ⏱ 0.016s
+
+== check-tykind（docs）==
+类型 kind 的 switch：10 处（TY_* 共 12 个）
+位置                            case数  default    理由  未处理
+codegen.c:710                    12        -     -  (全)                                     
+codegen.c:3030                   12        有     有  (全)                                     
+codegen.c:3080                    4        有     有  UNRESOLVED,VOID,BUILTIN,ENUM,PARAM,FN,DYN,ERROR
+codegen.c:3488                    4        有     有  UNRESOLVED,VOID,BUILTIN,ENUM,PARAM,FN,DYN,ERROR
+codegen.c:3548                    4        有     有  UNRESOLVED,VOID,BUILTIN,ENUM,PARAM,FN,DYN,ERROR
+check_top.c:5714                 12        有     -  (全)                                     
+types.c:247                       4        有     有  VOID,BUILTIN,STRUCT,ENUM,PARAM,GENERIC,DYN,ERROR
+types.c:454                       7        有     有  UNRESOLVED,BUILTIN,STRUCT,ENUM,DYN      
+types.c:755                       6        有     有  UNRESOLVED,VOID,BUILTIN,STRUCT,DYN,ERROR
+types.c:1055                      8        有     有  UNRESOLVED,BUILTIN,STRUCT,DYN           
+
+ok  每处 kind-switch 要么枚举齐全，要么有 default 兜底
+  [32mok[0m   14 行报告（5 处 kind-switch：1 处枚举齐全 + 4 处 default 带理由）
+       ⏱ 0.066s
+
+== check-doc-examples（docs）==
+extC 示例：完整程序 54 段已检 · 片段 4 段跳过 · 必须失败的 1 段已核
+ok  活文档里的 extC 完整示例全部编过
+  [32mok[0m   extC 示例：完整程序 54 段已检 · 片段 4 段跳过 · 必须失败的 1 段已核
+ok  活文档里的 extC 完整示例全部编过
+       ⏱ 1.452s
+
+== check-code-examples（docs）==
+ok  注释里的 @code 例子全部通过（检了 10 段，显式跳过 0 段）
+  [32mok[0m   ok  注释里的 @code 例子全部通过（检了 10 段，显式跳过 0 段）
+       ⏱ 3.271s
+
+== 最慢的 10 项 ==
+     3.271s  ok    check-code-examples（docs）
+     1.452s  ok    check-doc-examples（docs）
+     0.286s  ok    check-manual（docs）
+     0.250s  ok    check-no-history（docs）
+     0.123s  ok    check-doc-facts（docs）
+     0.066s  ok    check-tykind（docs）
+     0.042s  ok    check-doxygen（docs）
+     0.037s  ok    manual-surface（docs）
+     0.021s  ok    gen-index（docs）
+     0.017s  ok    gen-flags（docs）
+
+耗时表：/tmp/extc-check-times.tsv
+
+通过 12，失败 0

@@ -1,0 +1,18 @@
+== 红集：目标 = 判 idle（默认档与关档逐字节相同）==
+  FAIL rg_walk_chain: 还没判 idle（仍发射回收运行期）
+  FAIL rg_walk_tree: 还没判 idle（仍发射回收运行期）
+  FAIL rg_scan_parent: 还没判 idle（仍发射回收运行期）
+  FAIL rg_walk_buckets: 还没判 idle（仍发射回收运行期）
+  FAIL rg_insert_hash: 还没判 idle（仍发射回收运行期）
+  FAIL rg_grow_tail: 还没判 idle（仍发射回收运行期）
+  FAIL rg_scan_graph: 还没判 idle（仍发射回收运行期）
+  FAIL spectrum_p2: 还没判 idle（仍发射回收运行期）
+  FAIL spectrum_p4: 还没判 idle（仍发射回收运行期）
+== 护栏：必须仍 PAYS + 有界 + 语义一致 ==
+  ok   rg_relink_delete: PAYS（语义一致）
+  ok   rg_overwrite_ring: PAYS 且有界（1.00×）
+  ok   rg_walk_array: PAYS 且有界（0.98×）
+  ok   rg_evict_cache: PAYS 且有界（1.02×）
+  ok   rg_drop_component: PAYS 且有界（1.00×）
+  ok   ring_per_round: PAYS 且有界（1.00×）
+通过（已知欠账 9 条，棘轮只许缩）

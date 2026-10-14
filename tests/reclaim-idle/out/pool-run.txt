@@ -1,0 +1,81 @@
+== 正例：稳定 handle · dense 连续 · 世代失效 · API 面 ==
+  ok   basic  ->  tests/pool/basic.extc:14:1: warning: `println` is deprecated|      println("len = ", p.len())|  ^|  note: `io::cout` is the one console path -- `use std::io`, then `io::cout << x` (`println(x)` is `io::cout << x << "\n"`)|tests/pool/basic.extc:15:1: warning: `println` is deprecated|      println("a = ", p.get(a) ?? i32(-1), " b = ", p.get(b) ?? i32(-1), " c = ", p.get(c) ?? i32(-1))|  ^|  note: `io::cout` is the one console path -- `use std::io`, then `io::cout << x` (`println(x)` is `io::cout << x << "\n"`)|tests/pool/basic.extc:18:1: warning: `println` is deprecated|      println("删掉 b 之后 len = ", p.len(), " · b 失效 = ", !p.contains(b))|  ^|  note: `io::cout` is the one console path -- `use std::io`, then `io::cout << x` (`println(x)` is `io::cout << x << "\n"`)|tests/pool/basic.extc:19:1: warning: `println` is deprecated|      println("dense 前段仍然连续 = ", p.atDense(0), " ", p.atDense(1))|  ^|  note: `io::cout` is the one console path -- `use std::io`, then `io::cout << x` (`println(x)` is `io::cout << x << "\n"`)|tests/pool/basic.extc:22:1: warning: `println` is deprecated|      println("复用槽位后 len = ", p.len(), " · d = ", p.get(d) ?? i32(-1), " · 旧 b 仍是 stale = ", !p.contains(b))|  ^|  note: `io::cout` is the one console path -- `use std::io`, then `io::cout << x` (`println(x)` is `io::cout << x << "\n"`)|len = 3|a = 10 b = 20 c = 30|删掉 b 之后 len = 2 · b 失效 = true|dense 前段仍然连续 = 10 30|复用槽位后 len = 3 · d = 40 · 旧 b 仍是 stale = true|
+  ok   api  ->  tests/pool/api.extc:11:1: warning: `println` is deprecated|      if !p.set(b, 99) { println("set 失败"); return 1 }|  ^|  note: `io::cout` is the one console path -- `use std::io`, then `io::cout << x` (`println(x)` is `io::cout << x << "\n"`)|tests/pool/api.extc:12:1: warning: `println` is deprecated|      println("set 之后 = ", p.get(b) ?? i32(-1))|  ^|  note: `io::cout` is the one console path -- `use std::io`, then `io::cout << x` (`println(x)` is `io::cout << x << "\n"`)|tests/pool/api.extc:15:1: warning: `println` is deprecated|      println("toSlice = ", s[0], " ", s[1], " ", s[2])|  ^|  note: `io::cout` is the one console path -- `use std::io`, then `io::cout << x` (`println(x)` is `io::cout << x << "\n"`)|tests/pool/api.extc:18:1: warning: `println` is deprecated|      println("handleAtDense 读回 = ", p.get(h1) ?? i32(-1))|  ^|  note: `io::cout` is the one console path -- `use std::io`, then `io::cout << x` (`println(x)` is `io::cout << x << "\n"`)|tests/pool/api.extc:21:1: warning: `println` is deprecated|      println("clear 之后 len = ", p.len(), " 且旧 handle 全失效 = ", !p.contains(a) && !p.contains(c))|  ^|  note: `io::cout` is the one console path -- `use std::io`, then `io::cout << x` (`println(x)` is `io::cout << x << "\n"`)|tests/pool/api.extc:26:1: warning: `println` is deprecated|      println("clear 之后复用容量：再插 3 个 len = ", p.len())|  ^|  note: `io::cout` is the one console path -- `use std::io`, then `io::cout << x` (`println(x)` is `io::cout << x << "\n"`)|set 之后 = 99|toSlice = 1 99 3|handleAtDense 读回 = 99|clear 之后 len = 0 且旧 handle 全失效 = true|clear 之后复用容量：再插 3 个 len = 3|
+  ok   gather  ->  tests/pool/gather.extc:16:1: warning: `println` is deprecated|      println("gather 有效 = ", k, "，下标 = ", out[0], " ", out[1], " ", out[2])|  ^|  note: `io::cout` is the one console path -- `use std::io`, then `io::cout << x` (`println(x)` is `io::cout << x << "\n"`)|tests/pool/gather.extc:19:1: warning: `println` is deprecated|      println("用下标读 = ", v[out[0]], " ", v[out[1]], " ", v[out[2]])|  ^|  note: `io::cout` is the one console path -- `use std::io`, then `io::cout << x` (`println(x)` is `io::cout << x << "\n"`)|tests/pool/gather.extc:25:1: warning: `println` is deprecated|      println("remove b 之后：有效 = ", k2, "，b 的下标 = ", out2[1], "（-1 = 失效）")|  ^|  note: `io::cout` is the one console path -- `use std::io`, then `io::cout << x` (`println(x)` is `io::cout << x << "\n"`)|gather 有效 = 3，下标 = 0 1 2|用下标读 = 10 20 30|remove b 之后：有效 = 1，b 的下标 = -1（-1 = 失效）|
+== churn：1e6 轮的峰值 RSS 必须与 1e5 轮相当（还槽位 ⇒ 平 ✓）==
+== 池级 epoch 的价值：clear() 的代价与容量无关（旧版逐槽重写 ⇒ 4096 槽要慢几百倍）==
+  ok   clear O(1) ->  cap=8: 0.05s · cap=4096: 0.05s ⇒ **同量级**（400 万轮）
+  ok   churn      ->  1e5: 1704 KB · 1e6: 1644 KB ⇒ **平** ✓（10 倍轮数，内存不变）
+  ok   canary     ->  不 remove：5964 KB → 33420 KB ⇒ **判据会响** ✓
+== ASan：这些路径必须干净 ==
+  ok   basic · api · churn  ->  ASan 干净
+
+== 期 1 · 池注册表：建 / 世代 / 释放 ==
+  ok   rt_basic  ->  live=0 up=1 gen=1 down=0 stale=0
+  ok   rt_mode_gen  ->  kind=0/1 genchanged=1
+== 建池族按名字认：表池作为**第一只池**也必须成功（三处登记缺一即 -1）==
+  ok   rt_table_first  ->  rid_ok=true kind=1
+== 期 1 · 块退出带走子树 · 父释放带走子 ==
+  ok   rt_blockexit  ->  before=0 in=1 rid=0 after=0 two=2 gone=0
+== 期 1 · churn：容量停在高水位（内存平）==
+  ok   rt_churn  ->  live=0 cap=64 gen=0 acc=20000100000
+== 对象表模式：只追加 —— `poolResizeRaw` 同样被挡（搬家与清零是正交的两件事）==
+  ok   rt_table_no_resize  ->  trap（a block may not be resized in place）
+== 对照：普通池允许原地搬家（容器扩容照常）==
+  ok   rt_container_resize_ok  ->  len=100
+== 期 1 · 旧 handle 带位置地失败（bug ⇒ trap、条件 ⇒ 值）==
+  ok   rt_stale  ->  tests/pool/rt_stale.extc:24: trap: a step in `main` failed: 
+== 期 1 · 一个地方一个 zone：多个池 + 嵌套树，出块整区走 ==
+  ok   rt_tree  ->  live0=1 in=2 depth=2 after=1 depth=1
+  ok   rt_zone  ->  depth=1 live=0 in=2/4 after-drop=3 after-reset=2 out=1/0
+== zone 按需发射 · 正例：不建池的循环体里不许有钩子（次数写死，理由在下面）==
+  ok   rt_zone_ondemand  ->  zoneEnter 2 次（期望 2）· zoneLeaveTo 2 次（期望 2）⇒ 不建池的循环体没有钩子
+== zone 按需发射 · 反例：在循环体里建池 ⇒ 那一层的钩子必须还在 ==
+  ok   rt_zone_inloop  ->  total=6 live=0 depth=1
+  ok   rt_zone_inloop   ->  zoneEnter 2 次 ⇒ 循环体那一层还在（帧 + 循环体）
+== 期 1 · 槽位复用：同一个槽位号，世代 +1 ==
+  ok   rt_reuse  ->  same=true gen=1->2
+== 期 1 · 容器接入：池随容器创建，release 整批还，出块整区走 ==
+  ok   rt_container  ->  live=0 made=1 closed=0 again=1 out=0
+== 期 1 · 拷贝 + 槽位复用：陈旧拷贝不许放掉别人的池（pidGen）==
+  ok   rt_pidgen  ->  live=1 c-len=0
+== 容量工具：shrink 降高水位，数据与 handle 全部继续有效 ==
+  ok   rt_shrink  ->  cap=1024->8 len=3 vals=10,20,30 again=40 len=4
+== 板块：池自己的内存（拿一块 · 原块上长 · 还一块 · 字节账 · drop 归零）==
+  ok   rt_plate  ->  take=800 zero=0 wrote=7 bytes=800 grew=1200 kept=7 tail0=0 dual=1264 gave=1 aftergive=64 live=0
+== 容器接线：一个容器 = 一棵池树（容器自己的池 + 值池以它为父）==
+  ok   rt_ctree  ->  live=2 len=2 v=22 after=0
+== 提权的运行期落点：池生在外层那个地方 ⇒ 内层块退出带不走它 ==
+  ok   rt_promote  ->  in=2 out=1 use=42 live=1
+== 池的提权（容器那一档）：循环里建内层、推入外层 ⇒ 内层池生在外层那个地方 ==
+  ok   rt_nest  ->  after=4 innerlen=2 v=20 bytes=240
+== 池的提权（返回那一档）：函数里建好的容器返回给调用方 ==
+  ok   rt_rett  ->  live=1 len=3 v0=5 v2=7
+== 染色（§7.2/§7.3）：同一个下标每一轮的颜色都不同 ⇒ 翻一位作废整棵树 ==
+  ok   rt_color  ->  c1=1 c2=2 c3=3 diff=1,1 birth_eq_row=1 live=0
+  ok   rt_color_memcheck  ->  新 zone 的颜色先初始化再读取
+== 守卫（别名那一档）：一份 release 之后另一份不许静默写已释放的板块 ==
+  ok   rt_alias   ->  tests/pool/rt_stale_alias.extc:11:1: warning: `vector::vector` copies by val
+== 池级 epoch：clear 是 O(1) 染色（旧句柄整体失配 · 再插不涨容量 · 同 epoch 复用同槽仍失配）==
+  ok   rt_epoch  ->  cap=8 stale=0 len=0 refill=3 cap2=8 live=3 d=7,8,9 removed=1 reuse=0 fresh=1
+== 期 1 · 生成物：-Wall -Wextra -Werror（gcc 与 clang）+ ASan 含泄漏检查 ==
+  ok   gcc -Wall -Wextra -Werror 编得过
+  ok   clang -Wall -Wextra -Werror 也干净
+  ok   ASan（含泄漏检查）干净
+
+== 染色②的结论：地方退出的代价随池数走得**平**（每池约 10 ns，板块 malloc/free 占 7 ns）==
+  ok   地方退出 -> N=500:12.67ns N=5000:12.67ns N=50000:12.67ns ⇒ 每次建+退约 12.67~12.67 ns，**平** ✓
+== 染色③的结论：真收缩（800 KB × 2000 轮，累计 1.6 GB）峰值 RSS 必须平、字节账归零 ==
+  ok   真收缩   ->  峰值 1452 KB（累计分配 1.6 GB）· acc=2000 live=0 bytes=0 ⇒ 板块全还、字节账归零 ✓
+== 摘链必须 O(1)：非头序删除（最老先）与头序删除（最新先）同价，且不随池数涨 ==
+  ok   摘链 O(1) ->  M=1e3: 最老先 9.44 / 最新先 9.04 ns/池 · M=1e4: 最老先 9.86 / 最新先 10.61 ns/池 ⇒ 与删除顺序无关、随 M 近线性 ✓
+== raw 列的读未写金丝雀（两层：毒化快扫大形状 · memcheck 直接抓读未初始化）==
+  -- ① 毒化（输出必须与正常跑一致）
+  ok   毒化 ->  map · hashmap · vector · string · linmap 输出逐字节一致 ✓
+  -- ② memcheck（读未初始化的报告条数不得超过钉住的基线）
+  ok   memcheck map-stress  ->  未初始化读 0 条（上限 2）✓
+  ok   memcheck map-shrink  ->  未初始化读 0 条（上限 2）✓
+  ok   memcheck linmap  ->  未初始化读 0 条（上限 2）✓
+  ok   memcheck vector-grow  ->  未初始化读 0 条（上限 2）✓
+  ok   memcheck hashmap-basic  ->  未初始化读 14 条（上限 20）✓
+失败 0 个（0 = 全过）

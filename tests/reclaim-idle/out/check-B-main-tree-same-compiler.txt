@@ -1,0 +1,6 @@
+baseline: /home/alphayang/extC_Compiler/tools/idle-fingerprint-baseline.tsv
+  build/extc md5=485f47875539d73eb48e648e01d9a68c HEAD=a614c06 extc=/tmp/extc-idle-base/build/extc stdlib=/tmp/extc-idle-base/stdlib tree=/tmp/extc-idle-base
+current : build/extc md5=485f47875539d73eb48e648e01d9a68c HEAD=38a94d4 extc=/tmp/extc-idle-base/build/extc stdlib=/tmp/extc-idle-base/stdlib tree=/home/alphayang/extC_Compiler
+NOTE: 编译器绑定不同（重建过编译器即如此）—— 是否零行为变化由下面的**逐行**比对裁决。
+rows: baseline 1234 · current 1234 · OK 852 · FAIL 382 · TIMEOUT 0 · same=YES 618 · same=NO 234
+PASS: 逐行相同（每一格）
