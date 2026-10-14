@@ -1,3 +1,17 @@
+## 2026-10-14 · 本地槽专用入口落地（`EXTC_RC_LOCALSTORE`，默认关）：**P4 墙钟 −14.8%**
+
+**判据逐条**（`tests/reclaim-perf/LOCALSTORE-IMPL.md`；新 md5 `6eaa20ab4ebd8d2a5602d09433504b61`）：
+1. **主判据（墙钟，P4 units=2000，`taskset -c 6`）**：10 次一组 ns 计时、三组取中位 ⇒ 关 **24.3/24.0/24.4 ms**、开 **20.7/20.7/20.5 ms** ⇒ **改善 14.8%**（判据 ≥5% ✓）。未劣化：`digraph@1M` **479 → 470 ms（−1.9%）**、`cyclic_pressure@100k` 7 → 6 ms。
+2. **机制**：`EXTC_RC_TIME=1` 逐入口计数 ⇒ **`storeOwned` 3,552,955 → 11,081**（−3,541,874；余下 11,081 恰为唯一带真实对象宿主那条站点 = `inserts`）；`storeReg/alloc/collect/slabNew/freeSlot/regionNew` **全不变**。`ownSlab` 为 `static inline`（callgrind 无独立符号）⇒ 按调用关系**推导**下降 **7,083,748 / 8,644,163 = 81.95%**（标明为推导）。
+3. **正确性**：`spectrum_p1..p5` stdout 与 `EXTC_RC_STATS` 行开/关**逐字节一致**；`cross_region` 的 `rs_inc=200000 rs_dec=196611 rs_live=3389 rs_hwm=65537` 开/关**完全相同**；默认档产物对语料 **`IDENTICAL=696 DIFF=0`**；八个钉住对照开档仍发 rc（399/393/398/424/396/398/397/392）。
+4. **门禁**：默认档与开档 `nobench` 均 **100/0**；开档 `gate-rc-idle-corpus`/`gate-reclaim-idle`/`gate-shard-cycles`/`gate-reclaim-tax`/`gate-asan-corpus`/`gate-reclaim-count`/`gate-reclaim-elide` 全 2/0；`smoke 16/0`、`docs 12/0`；`MIN_IDLE` 未动；孤儿 0。
+5. **计数档不动**：新分支要求 `rcNoCount` ⇒ `EXTC_RC_NOCOUNT=0` 径路不变，`gate-reclaim-count` 绿。
+6. **牙（实测红）**：注入 `localstore-on-objhost`（把对象宿主的赋值也改发该入口）⇒ `cross_region` 的 `rs_*` 从 `200000/196611/3389/65537` **塌成 `0/0/0/0`**，`gate-reclaim-switch` **通过 1 失败 1，exit 1** ✓。已写进 `docs/RECLAMATION.md` 义务表；**尚未进 `tools/inject.py` 注集**（待补）。
+
+**实现者自报并已修掉的三处**：① `reclaimEmitRuntime` 加参后 `tests/reclaim/emit_main.c` 未同步（`smoke` 先 5 FAIL ⇒ 补参后 16/0）；② 新开关未进 `--help` ⇒ `check_switches` 红（已在 `src/main.c` 记上）；③ `docs/usage/flags.md` 过期 ⇒ 用 `tools/gen_flags.py` 重生成（+4 行）⇒ `nobench` 回 100/0。
+
+**仍未查清**：`storeRefOwnedReg` 计数两方不一致 —— `loop-idle` 实测 **1,547,825**（生成物内建计数器，`reclaim.c:705` 的 `TICK(1)` 在入口内），而 `gcbench` 的入口分布表写 **0**；两方对 `storeRefOwned` 的计数**完全一致（3,552,955）** ⇒ 差异应在 Reg 那格的计数器覆盖上，待对账。**翻默认**按纪律留作单独一次提交。
+
 ## 2026-10-14 · `CACHE-AUDIT`：rc 成本是**指令与分支**，**不是缺缓存**（开档 D1 缺失率反而更低）
 
 **机制证据**（callgrind `--cache-sim=yes --branch-sim=yes`；两臂 × 两形状）：
