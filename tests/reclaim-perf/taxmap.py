@@ -33,15 +33,15 @@ TMP = "/tmp/taxmap"
 CC_FLAGS = ["-std=c11", "-D_POSIX_C_SOURCE=200809L", "-fwrapv", "-O2"]
 
 # 代表性形状：引用图原型（拓扑 × 变更方式）+ 真实基准形状。
-# 值 = (小规模, 大规模)。平方形状只能用小数（它们在默认档上是 O(N²)，见报告）。
+# 值 = (小规模, 大规模)。三个"悬崖"形状在 A′（全量遍历信用）之后已经线性，可以用常规规模。
 PROBE = [
     ("tests/reclaim-perf/shapes/refgraph/rg_walk_chain.extc", 1000000, 4000000),
     ("tests/reclaim-perf/shapes/refgraph/rg_walk_buckets.extc", 1000000, 4000000),
     ("tests/reclaim-perf/shapes/refgraph/rg_walk_tree.extc", 1000000, 4000000),
     ("tests/reclaim-perf/shapes/refgraph/rg_walk_array.extc", 1000000, 4000000),
     ("tests/reclaim-perf/shapes/refgraph/rg_scan_parent.extc", 1000000, 4000000),
-    ("tests/reclaim-perf/shapes/refgraph/rg_scan_graph.extc", 10000, 40000),
-    ("tests/reclaim-perf/shapes/refgraph/rg_grow_tail.extc", 10000, 40000),
+    ("tests/reclaim-perf/shapes/refgraph/rg_scan_graph.extc", 100000, 400000),
+    ("tests/reclaim-perf/shapes/refgraph/rg_grow_tail.extc", 100000, 400000),
     ("tests/reclaim-perf/shapes/refgraph/rg_insert_hash.extc", 1000000, 4000000),
     ("tests/reclaim-perf/shapes/refgraph/rg_relink_delete.extc", 100000, 400000),
     ("tests/reclaim-perf/shapes/refgraph/rg_overwrite_ring.extc", 1000000, 4000000),
@@ -55,6 +55,19 @@ PROBE = [
 
 CENSUS_ROOTS = ("examples", "tests", "bench")
 CENSUS_SKIP_DIRS = {"archive", "build", "in", "in-small", "out", "stamped", "__pycache__"}
+
+# `/usr/bin/time` 自身的启动底噪（本机 ≈2 ms）：量一次 `/bin/true`，从墙钟里减掉。
+def _time_floor_ms():
+    best = None
+    for _ in range(5):
+        t0 = time.monotonic()
+        subprocess.run(["/usr/bin/time", "-f", "%M", "/bin/true"], capture_output=True)
+        d = (time.monotonic() - t0) * 1000.0
+        best = d if best is None else min(best, d)
+    return best
+
+
+TIME_FLOOR_MS = _time_floor_ms()
 
 
 def md5(path):
@@ -80,33 +93,27 @@ def gen(src, dst, reclaim_on):
 
 
 def run_once(binary, n, limit_s, reclaim_on):
-    """fork+exec，父进程轮询看门狗；返回 (rc, 墙钟 ms, 峰值 RSS KB, 是否超时)。"""
+    """返回 (rc, 墙钟 ms, 峰值 RSS KB, 是否超时)。
+
+    **峰值不用 fork+wait4 量**：子进程在 exec 之前继承父进程页表，`ru_maxrss` 会把**父进程的
+    峰值**一并记进来（实测：Python 父进程读过生成物后，200k 的 5.7 MB 被读成 15.7 MB，把 3.3×
+    的泄漏压成 1.20× —— 判据看不见红）。改用 `/usr/bin/time -f %M` 直接包住被测程序。
+    **墙钟不用 `%e`**：它只有 10 ms 分辨率，快形状会读成 0.00/0.01 并算出假的"1000×"；
+    这里用 Python 单调钟，并减掉一次 `/usr/bin/time` 自身的底噪（本机 ≈2 ms）。
+    """
+    env = dict(os.environ)
+    if not reclaim_on:
+        env["EXTC_RECLAIM"] = "0"
     t0 = time.monotonic()
-    pid = os.fork()
-    if pid == 0:
-        devnull = os.open(os.devnull, os.O_WRONLY)
-        os.dup2(devnull, 1)
-        os.dup2(devnull, 2)
-        if not reclaim_on:
-            os.environ["EXTC_RECLAIM"] = "0"
-        try:
-            os.execv(binary, [binary, str(n)])
-        finally:
-            os._exit(127)
-    killed = False
-    while True:
-        wpid, status, ru = os.wait4(pid, os.WNOHANG)
-        if wpid == pid:
-            break
-        if time.monotonic() - t0 > limit_s:
-            os.kill(pid, signal.SIGKILL)
-            killed = True
-        time.sleep(0.002)
-    wall_ms = (time.monotonic() - t0) * 1000.0
-    if killed:
-        return (124, wall_ms, ru.ru_maxrss, True)
-    rc = os.waitstatus_to_exitcode(status)
-    return (rc, wall_ms, ru.ru_maxrss, False)
+    try:
+        p = subprocess.run(["/usr/bin/time", "-f", "%M", binary, str(n)],
+                           capture_output=True, text=True, env=env, timeout=limit_s)
+    except subprocess.TimeoutExpired:
+        return (124, float(limit_s) * 1000.0, 0, True)
+    wall_ms = max((time.monotonic() - t0) * 1000.0 - TIME_FLOOR_MS, 0.05)
+    last = (p.stderr.strip().splitlines() or [""])[-1].strip()
+    rss = int(last) if last.isdigit() else 0
+    return (p.returncode, wall_ms, rss, False)
 
 
 def find_census_sources():
