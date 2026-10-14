@@ -1,3 +1,48 @@
+## 2026-10-15 · 种子扫描分片：`seedAny` + `EXTC_RC_SEED_WORDS=512` —— cross `over64` **15→2**、shard `over256` **1→0**，均值与墙钟不回退
+
+**动机（用上一提交刚修好的仪器量出来的）**：`markStep` 的种子段只按"**压了几个槽**"限预算
+（`while (pushes < EXTC_RC_SEED_PUSHES && r->seedSlab)`），而 `pushes` 只在真的找到种子时自增 ⇒
+**没有种子（或种子极少）时这个循环会把 `seedSlab` 链上每一个 `rsbit` 字全扫完**（一个 1 MiB slab
+= 1024 个字，p5 这种大区域有十几块）——而且这段与后面的"对象行走"**叠在同一个切片**里。
+证据：`EXTC_RC_SWEEP_BUDGET` 砍到 2 只降均值、`smax` 不动 ⇒ 长尾在 `markStep`/种子扫描侧，不在 sweep 侧。
+
+**机制**（`src/back/reclaim.c`）：
+- **`seedAny`（per-region）**：区域里 `rsbit` 有没有被置过位。三处置位点（`extc_rc_rsInc`、
+  `extc_rc_rsIncSlab`、`extc_rc_register`）顺手置 1，不清零（单向、保守）。`extc_rc_markBegin` 里
+  `seedsDone = (slabs == NULL) || !seedAny` —— **一位都没置过就整段跳过 rsbit 扫描**
+  （没有登记位就没有种子可压，方向健全）。五形状里 p5/shard/evict/digraph 全程 `rsIncN == 0`，
+  这一条对它们直接生效。
+- **`EXTC_RC_SEED_WORDS`（默认 512）**：种子扫描有自己的**字预算**（`pushes` 预算保留），
+  游标跨步推进、`seedsDone` 仍只在游标走完时置位。这条对有大量登记的区域（`cross_region`）生效。
+
+**实测（交错 A/B，同会话内轮转以抵消机器漂移；`EXTC_RC_PAUSE=1`）**：
+
+| 形状 | 指标 | `5302df3` | 本提交 |
+|---|---|---|---|
+| p5 | `o16`/30 · smax 中位 | 635 · 74.8 µs | **536 · 70.8 µs** |
+| cross | `o64`/30 · `o16`/30 · smax 中位 · p90 | 15 · 118 · 35.4 · 90.5 | **2 · 96 · 30.1 · 53.1** |
+| shard | `o64`/15 · `o256`/15 · smax 中位 · p90 | 15 · 1 · 82.5 · 151.7 | **9 · 0 · 63.2 · 98.9** |
+| evict | `o64`/15 · smax 中位 · p90 | 2 · 33.3 · 61.1 | **1 · 16.9 · 35.0** |
+
+- `over1ms` 全程 **0**；切片**均值不升**（`mean_min`：p5 2.0695→2.0667、cross 1.1775→1.1619、
+  evict 0.5394→0.5284、shard 0.6354→0.6214）。
+- **墙钟 ≤1.005×**（交错 3 轮 × best-of-7 取中位）：cross 16.9 vs 16.8 ms、p5 20.2 vs 20.1。
+  取舍点：`SEED_WORDS=128` 会把 cross 抬到 **1.045×**（出预算）、`64` 到 **1.117×** ⇒ 选 **512**。
+- 消融：只加 `seedAny`（`SEED_WORDS` 关）就能把 evict `o64` 2→0、p90 53.0→35.4（`rsIncN==0` 的四个形状受益）；
+  `SEED_WORDS` 再把"有登记"的 cross 与"种子多"的 p5/shard 的长尾削掉。
+
+**闸门（主树，独占跑）**：`count-unit` **103/0**（ASan 净）、`switch` **33/0**、`count` **33/0**、
+`gaps` **9=基线**、`perf` **122,937,189 Ir ≤ 161,653,535**、`tax` bt **1.000×**、`perf-shapes`
+bt 2,850,624 / rebuild 15,037,125、`count-cross` **3/0**、`gate-shard-cycles` **9/0**、`nobench` **100/0**、
+`smoke` **16/0**、`pool` **2/0**、`sample-asan-bounded` 抽样全过；五形状语义与 `EXTC_RECLAIM=0` 逐字同、
+`digraph` 7984/1772 逐字同；语料指纹随发射文本变化**同一提交重冻**（`same=YES 628 · same=NO 224` 不变）。
+
+**残留（如实）**：① `seedAny` 单向（置 1 后不清）——一个区域登记过一次之后每轮都走游标，方向保守、
+   不影响正确性；② `SEED_WORDS=512` 让"种子极多"的区域需要更多步才标完 ⇒ 屏障可能挂更久
+   （方向：不漏、窗口有界；cross 墙钟实测 1.004×）；③ 细粒度分片让 `markStep` 调用数上升
+   （cross n 6270→6640），per-call 开销占比变大；④ `EXTC_RC_SEED_PUSHES`（256）本轮未调；
+   p5/shard 剩余的 100 µs 级长尾未定位到更细的来源（`overK` 桶是粗分位，15 样本下 `o64` 的 ±3 仍是噪声）。
+
 ## 2026-10-15 · 窗口判据层：切片级 `[step]` 分布 + 探针覆盖热路径 + 稳健判据；每步预算加天花板 `EXTC_RC_MARK_BATCH_MAX=256`
 
 **动机（判据层的洞，先红后修）**：上一个提交把热路径从契约入口 `collect` 挪到新入口 `extc_rc_step`，但**量具没跟上**：
