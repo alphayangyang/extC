@@ -38,6 +38,8 @@ debug switches -- diagnostics only, **except the marked below**:
   EXTC_DBG_IMPL=1      print each `impl` block and the type it attaches to
   EXTC_DBG_HOME=1      print each function's home/zone flags and its arena sites
   EXTC_DBG_OWNER=1     report each result slot first reached from another body
+  EXTC_DBG_RCCOST=1    print each region's rc site census (reference stores / allocations /
+                       max root-table slots, split by "inside a loop")
   EXTC_DUMP_EFFECTS=1  print each function's effect summary
   EXTC_NO_LEVELPASS=1  skip the arena level pass -- **CHANGES THE OUTPUT**: it moves arena
                        placement in 2 of the 414 golden programs

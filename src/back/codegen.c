@@ -442,6 +442,14 @@ typedef struct {
     /* 分配点序号：片号 = `rcSite++ % rcNShard`。每发射一个 rc 分配表达式加一，所以同一处
      * `new` 在整份生成物里始终是同一个片号（编译两次结果相同）。 */
     int         rcSite;
+    /* 诊断（`EXTC_DBG_RCCOST=1`）：把 rc 站点按**块层级**（= 区域）记数，只统计、不改发射。
+     * 给"这只区域该靠计数还是靠清扫"做静态定价用：引用存储与分配都分"是否在循环里"两格，
+     * 因为同处一个循环嵌套时执行次数会约掉，剩下的就是**每轮密度**。`rootMax` 记触发点上
+     * 物化过的根表槽数最大值 —— 它是标记起点的规模，清扫摊销的静态代理。 */
+    int         dbgCost;
+    struct {
+        int64_t nRef, nRefLoop, nAlloc, nAllocLoop, rootSlotsMax;
+    }           dbgRc[72];
     /* 区域回收的编译期状态（只在 `needReclaim` 打开时有意义）。
      *
      * `rcRoots` 是**静态根表**：当前作用域里活着的引用槽的 C 表达式（`saved`、`c.a`、
@@ -3178,6 +3186,47 @@ static bool rcFrameOwnsArena(CG *g, int lvl) {
     return true;
 }
 
+/** @brief 记一次 rc 站点（诊断 `EXTC_DBG_RCCOST=1`；只统计，不改发射）。
+ *
+ * @param g    生成器。
+ * @param lvl  块层级（= 区域）；负值并到 0。
+ * @param kind 0 = 引用存储，1 = 分配。
+ */
+static void dbgRcSite(CG *g, int lvl, int kind) {
+    if (!g->dbgCost) return;
+    int i = lvl < 0 ? 0 : (lvl > 71 ? 71 : lvl);
+    if (kind == 0) { g->dbgRc[i].nRef++;   if (g->loopLen > 0) g->dbgRc[i].nRefLoop++; }
+    else           { g->dbgRc[i].nAlloc++; if (g->loopLen > 0) g->dbgRc[i].nAllocLoop++; }
+}
+
+/** @brief 把按层级的 rc 站点表打到 stderr（诊断 `EXTC_DBG_RCCOST=1`；只读，不改发射）。
+ *
+ * 用途：给"这只区域该靠计数还是靠清扫"做静态定价。`nRefLoop/nAllocLoop` 是同循环嵌套下的
+ * 每轮密度（执行次数约掉），`rootSlotsMax` 是触发点上根表槽数的最大值 = 标记起点规模。
+ *
+ * @param g 生成器。
+ */
+static void dbgRcCostReport(CG *g) {
+    if (!g->dbgCost) return;
+    fprintf(stderr, "[rccost] unit needReclaim=%d noCount=%d sweepFree=%d shards=%d\n",
+            g->needReclaim, g->rcNoCount, g->rcSweepFree, g->rcNShard > 0 ? g->rcNShard : 1);
+    fprintf(stderr, "[rccost] %-4s %8s %10s %8s %12s %9s\n",
+            "lvl", "ref", "refInLoop", "alloc", "allocInLoop", "rootMax");
+    int64_t tr = 0, trl = 0, ta = 0, tal = 0, trm = 0;
+    for (int i = 0; i < 72; i++) {
+        if (!g->dbgRc[i].nRef && !g->dbgRc[i].nAlloc && !g->dbgRc[i].rootSlotsMax) continue;
+        fprintf(stderr, "[rccost] %-4d %8lld %10lld %8lld %12lld %9lld\n", i,
+                (long long)g->dbgRc[i].nRef, (long long)g->dbgRc[i].nRefLoop,
+                (long long)g->dbgRc[i].nAlloc, (long long)g->dbgRc[i].nAllocLoop,
+                (long long)g->dbgRc[i].rootSlotsMax);
+        tr += g->dbgRc[i].nRef;   trl += g->dbgRc[i].nRefLoop;
+        ta += g->dbgRc[i].nAlloc; tal += g->dbgRc[i].nAllocLoop;
+        if (g->dbgRc[i].rootSlotsMax > trm) trm = g->dbgRc[i].rootSlotsMax;
+    }
+    fprintf(stderr, "[rccost] TOTAL ref=%lld refInLoop=%lld alloc=%lld allocInLoop=%lld rootMax=%lld\n",
+            (long long)tr, (long long)trl, (long long)ta, (long long)tal, (long long)trm);
+}
+
 static size_t rcRootTableTextSkip(CG *g, Buf *b, size_t skipLocal);
 
 /**
@@ -3207,11 +3256,14 @@ static size_t rcRootTableText(CG *g, Buf *b) {
  */
 static size_t rcRootTableTextSkip(CG *g, Buf *b, size_t skipLocal) {
     size_t n = g->rcGlobalRoots.len + g->rcRoots.len;
+    if (g->dbgCost) {
+        int i = g->blkLevel < 0 ? 0 : (g->blkLevel > 71 ? 71 : g->blkLevel);
+        if ((int64_t)n > g->dbgRc[i].rootSlotsMax) g->dbgRc[i].rootSlotsMax = (int64_t)n;
+    }
     if (n == 0) {
         bufPuts(b, "(void *const *)0");
         return 0;
-    }
-    bufPuts(b, "(void *[]){ ");
+    }    bufPuts(b, "(void *[]){ ");
     size_t k = 0;
     for (size_t i = 0; i < g->rcGlobalRoots.len; i++)
         bufPrintf(b, "%s(void *)(%s)", k++ ? ", " : "",
@@ -3401,6 +3453,7 @@ static void rcEmitTrigger(CG *g, const char *basePtr, int lvl, bool frameOwned) 
  */
 static const char *rcAllocCore(CG *g, const char *basePtr, int lvl, bool frameOwned,
                                const char *bytesExpr, const char *td) {
+    dbgRcSite(g, lvl, 1);
     int nsh = g->rcNShard > 0 ? g->rcNShard : 1;
     int k = g->rcSite++ % nsh;
     rcEmitTrigger(g, basePtr, lvl, frameOwned);
@@ -5261,6 +5314,12 @@ static bool rcLinkedHas(CG *g, const char *nm) {
  */
 static bool rcEmitStoreRelease(CG *g, const char *tgt, const char *tgtName,
                                const char *val, Expr *value) {
+    /* 事件档（`EXTC_RC_SWEEPFREE`）下清扫恒不触发 ⇒ 这个机制无事可做：它的价值是"环不等
+     * 清扫"，而事件档只用于被证明**无环**的单元 —— 那里每个不可达对象都会被计数归零当场
+     * 释放。它自己又**不看计数**（`releaseOld` 从其余根做一遍全活集标记），所以在事件档里
+     * 留着只有成本没有收益：尾插这类形状每次赋值都要付一遍全量标记。判据挂在事件档的内存界
+     * 门禁上（`gate-event-bounded`）。 */
+    if (g->rcSweepFree == 1) return false;
     if (!g->needReclaim || g->rcRootsUnreliable || g->coroFunc) return false;
     /* 分片（`EXTC_RC_SHARDS` > 1）：标记只从**这一只片区域**的根 + 跨区种子出发，而"
      * 只被别的片里的活对象指着"的对象标不到 ⇒ 会被当成"仅从旧值可达"而放掉（悬垂）。
@@ -5434,6 +5493,7 @@ static void cgValueRefStore(CG *g, Type *t, const char *dstBase, const char *src
         const char *d = arenaPrintf(g->arena, "%s%s", dstBase, p);
         if (init) {
             /* 值已经在目标里（声明就是初始化），自读自写一次：只写 + 目标加一。 */
+            dbgRcSite(g, g->blkLevel, 0);
             cgLine(g, "extc_rc_initRef((void **)&(%s), (void *)(%s));", d, d);
         } else if (hostUnknown) {
             cgLine(g, "extc_rc_storeRefUnknown((void **)&(%s), (void *)(%s));",
@@ -5746,6 +5806,7 @@ localDef(g, lb, nm, 1);
  * 跨区存储（对象在更外层的区域、槽在这个块里）再登记一位：目标对象所在位置置一位，
  * 清扫播种时按位图顺序扫。多登记是安全方向（只让对象多活一会儿），少登记才是漏根。 */
 if (g->needReclaim && !s->u.var.isGlobal && cgIsRefType(g, s->type)) {
+    dbgRcSite(g, g->blkLevel, 0);
     if (planRcNoDec(g->curFunc))
         cgLine(g, "extc_rc_initRefNoHold((void **)&%s, (void *)%s);", nm, nm);
     else
@@ -6091,6 +6152,7 @@ static void genStmtInner(CG *g, Stmt *s) {
                 return;
             }
             if (refStore) {
+                dbgRcSite(g, g->blkLevel, 0);
                 if (hostUnknown) {
                     /* 宿主证不出来：这条槽必须仍然是种子，但静态根表里没有它、来源侧也无从
                      * 撤销。于是把**目标所在的区域**标成"不清扫"（安全方向：宁可少收）——
@@ -10141,6 +10203,8 @@ static void scanUnitNeeds(CG *g, Module *m) {
         if (sf && *sf) g->rcSweepFree = (strcmp(sf, "0") == 0) ? -1 : 1;
         if (g->rcSweepFree == 1) g->rcNoCount = 0;
     }
+    /* `EXTC_DBG_RCCOST=1`：按块层级统计 rc 站点（诊断，逐字节不改产物）。 */
+    if (getenv("EXTC_DBG_RCCOST")) g->dbgCost = 1;
     /* Does the program use the raw-terminal primitives? They arrive as an `extern!` the
      * library declares (`extc_raw_enter` in `std::sys::term`), which is the one thing
      * codegen can see from here. */
@@ -11304,6 +11368,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     emitVtTables(&g, out, m, arena);
     emitParTramps(&g);
     emitFuncBodies(&g);
+    dbgRcCostReport(&g);
     /* Final assembly: the pieces whose need is discovered during generation are
      * spliced in ahead of the bodies - the print runtime and the descriptor
      * table, emitted on demand according to what genPrint printed, and the slice

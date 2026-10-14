@@ -155,6 +155,13 @@ p = null                 // 计数 0 —— 放
 `noSweep` / 目标区域有欠账 `owe`（`checkOwed` 同一条理由）/ 旧值经 `ownSlab` 不在静态给出的
 那只区域里。
 
+**信用（`extc_rc_budgetOk`）**：一次 O(活集) 遍历必须由"**自上次遍历以来的新分配**"偿付 ——
+要求 `allocBytes - visitedBytes ≥ max(live, floor)`（`floor` 是区域下限；区域从没扫过时 `live = 0`）。
+清扫本来就满足这条（触发线 `max(2·live, floor)·scale ≥ need`）；**释放是唯一的破口**：它由赋值
+触发，没有分配垫着，于是"赋值 N 次"会变成 N 次全活集标记（实测 `rg_grow_tail`：40k 次追加
+5.08 s、关档 2.4 ms）。加上这条之后，总遍历量 ≤ Σ信用 ≤ 总分配量 = **线性**；代价是信用不够
+时这次释放不做（垃圾晚一步收，峰值有常数上界），失效方向仍是**少收**。
+
 **判据**：`tests/reclaim-gaps/gate-release.sh`（挂 `nobench`）：`ring_per_round` 默认档
 **清扫次数 ≤ 1**、N vs 4N 峰值 **< 1.5×**、语义与关档逐字相同、**释放槽数 > 0**（防空转）。
 实测（本机，N=20/80）：清扫 **55 → 1**、峰值 **10.61 → 6.48 MB**、释放槽数 **4883 / 20303**。
@@ -390,6 +397,7 @@ p = null                 // 计数 0 —— 放
 | `skip:no-region` | 宿主区域证不出来 ⇒ 跳过登记 | —— | 少算（不安全）| 由调用方改走"目标区域退出清扫"（义务 7）|
 | `skip:no-trigger` | 压力没到阈值 ⇒ 不欠账、不销账 | 阈值由 `live`/`scale` 推出 | 内存（界）| `thr-stale` ⇒ `阈值缓存③`；`sweep-never` ⇒ churn 界红 |
 | `skip:nosweep` | 种子不完整的区域 ⇒ 一个字节都不扫 | 该区域有追不到宿主的入边 | 少算（不安全）| 义务 7 单测 + `noSweep-drop` |
+| `skip:release-budget` | 自上次 O(活集) 遍历以来的新分配 < `max(live, floor)` ⇒ 这次定点释放不做 | 一次 O(活集) 遍历必须由分配量摊销；否则赋值路径上出现 O(N²)（40k 次追加 5.08 s vs 关档 2.4 ms）| 多留（保守：垃圾晚一步收）| `gate-release`（`ring_per_round` 释放槽数仍 >0）+ `gate-reclaim-switch` + `gate-idle-bounded` |
 | `skip:no-owe` | 没有欠账 ⇒ 不销账 | `owe` 由触发点置位 | 多留（保守）| `gate-reclaim-switch` 的形状语义判据 |
 | `skip:no-bumpslab` | 还没 bump 过 ⇒ `bumpReset` 直接返回 | 没有 slab 就没有可复位的指针 | 无（幂等）| 单测 `bump：载荷连续排布` / `bump reset：不新增 slab` |
 | `skip:armed` | 统计只装一次 | 幂等 | 无（诊断）| 无（诊断路径，不影响回收语义）|
