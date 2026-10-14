@@ -1,3 +1,15 @@
+## 2026-10-14 · `STOREPATH-RECON`：闸门不粗（B 关闭）；真因是"**本地/形参槽的存储走了对象存储入口**" ⇒ 可省 ≈82% 的 `ownSlab`
+
+**A（编译期，行号实引）**：`src/back/codegen.c` 6068-6075 宿主判定 → 6095 `storeRefUnknown`；**6098** `rcFreshHostRegion` → **6125** `storeRefSameRegion`（还要求 `rcNoCount ∧ 值是本帧新局部量标识符 ∧ 同层`）／**6128** `storeRefOwnedReg`；6134 `rcEmitStoreRelease`；**6141** `storeRefOwned(..., owner="0")`。运行期闸门：`src/back/reclaim.c` **719**（OwnedReg）与 **775**（Owned）。
+- `storeRefSameRegion = 0` 的真因（实测）：两个可用站点 `EXTC_RC_DBG_LEVEL=1` 均 `freshLvl=-2` ⇒ **值侧事实缺失**（值来自符号表/AST 指针），`vlvl==hlvl` 永不成立。
+- **与 gcbench 的数据不一致（照实记）**：`storeRefOwnedReg` **不是 0** —— 静态 2 处、**动态 1,547,825 次**（`[rccount] storeReg`，≈30.3% 入口）；`storeRefSameRegion` 确为 0。**未能复现 gcbench 的"Reg=0"** ✗（待对账）。
+- **81.7% 的真出处**：`owner == 0` 的**本地/形参槽**存储走 `storeRefOwned`（**3,552,955 次 = 69.7% 入口**），其中 **≥98.9% 无对象宿主**（上界＝stdout 的 `inserts+misses=35,578`）；运行期 `so == 0` ⇒ 两次 `ownSlab` 查完即丢 ⇒ **无计数档下整块是死代码**（设计文档亦写明"局部变量/板/池/栈不适用登记，由触发点根表覆盖"）。
+
+**B（运行期收窄闸门）不成立**：两区域 `__extc_rcr0`（`__extc_a[1]`，分配 `sym`(1873)/`table`(1945)）与 `__extc_rcr1`（`__extc_a[2]`，分配 `unit_node`(1976)）**都持有 rc 槽**（`regionNew=2`）；四个 `notePart` 调用点（`reclaim.c` 494/718/767/828）都要求该区域已有 slab 对象（bump 区被刻意排除，`reclaim.c:888-900`）⇒ "**持槽区域**"≡"**参与区域**"，收窄是**恒等变换**、降不到 1；`rs_inc=0` 只表示"这轮真没跨区"，**闸门必须保持开**（否则跨区边漏登记）⇒ 健全性成立、**判 B 关闭**。
+
+**判据**：A 判"**编译期补事实：本地槽专用入口**"——一处 codegen 分支 + 约 3 行运行期入口，省掉 **≈82% 的 `ownSlab`**（外推 ≈42% rc 成本 / ≈27% 默认档总指令，**未实测**）；网兜＝跨区登记量棘轮 + `rs_hwm` + ASan 语料。
+**未查清**：① 与 gcbench 的 `storeRefOwnedReg=0` 不一致；② 3.55M 的"本地槽 vs 对象宿主"精确拆分（仅上界）；③ `partN` 无仪器打印（以 `regionNew=2` + 两区域都分配 + 背景值交叉确认）。
+
 ## 2026-10-14 · `ownSlab` 归因落定：**闸门粗放、现成浪费**（`partN=2` 让每次存储白付两次跨区查表）
 
 **地基（实测）**：P4/units=2000 `partN = **2**`（多区域）⇒ 生成物里 `if (extc_rc_partN > 1)` 的闸门**开着**；`ownSlab` 总调用 **8,640,559**。
