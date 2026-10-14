@@ -1,0 +1,16 @@
+// bench/gc/stamped/overhead_us.extc —— 量"打一次应用侧时间戳"本身要多少 ns（只用于**报告口径的诚实度**，
+// 不参与任何形状的业务统计）。与 stamped/extc/*_us.extc 里的 us() 逐字同形。
+use std::time
+use std::io
+var USN: i64 = 0
+var US: [1000002]i64
+fn us() { if USN < 1000002 { US[USN] = time::now()  USN = USN + 1 } }
+fn main(args: slice<slice<u8>>) -> i32 {
+    var n: i64 = 1000000
+    var t0: i64 = time::now()
+    var i: i64 = 0
+    while i < n { us()  i = i + 1 }
+    var t1: i64 = time::now()
+    io::cout << "USOH n=" << n << " total_ns=" << (t1 - t0) << " stamps=" << USN << "\n"
+    return 0
+}

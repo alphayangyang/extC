@@ -1,0 +1,63 @@
+// P2 分块追加的长命容器（无环）：每 256 个元素一块，块间单链；末尾遍历求和。与 .go 同输出。
+use std::io
+
+use std::time
+var USN: i64 = 0
+var US: [1000002]i64
+fn us() { if USN < 1000002 { US[USN] = time::now()  USN = USN + 1 } }
+fn usDump() {
+    io::cerr << "USMETA n=" << USN << "\n"
+    var usk: i64 = 0
+    while usk < USN { io::cerr << "US " << US[usk] << "\n"  usk = usk + 1 }
+    io::cerr << "USEND\n"
+}
+struct blk { v: [256]i64  next: ?mut ref blk }
+struct vec { head: ?mut ref blk  tail: ?mut ref blk  n: i64 }
+var gstate: i64 = 1
+fn nxt() -> i64 { gstate = (gstate * 1103515245 + 12345) & 2147483647  return gstate }
+fn parseI64(s: slice<u8>) -> i64 {
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len { var c: u8 = s[i]  if c < u8(48) { break }  if c > u8(57) { break }  v = v * 10 + i64(c) - 48  i = i + 1 }
+    return v
+}
+fn push(x: mut ref vec, val: i64) {
+    var t: ?mut ref blk = x.tail
+    if t == null || x.n % 256 == 0 {
+        var b: mut ref blk = new blk
+        b.next = null
+        if t == null { x.head = b } else { t.next = b }
+        x.tail = b
+    }
+    var tt: ?mut ref blk = x.tail
+    if tt != null { tt.v[x.n % 256] = val }
+    x.n = x.n + 1
+}
+fn main(args: slice<slice<u8>>) -> i32 {
+    var n: i64 = 200000
+    if args.len > 1 { n = parseI64(args[1]) }
+    var sd: i64 = 20261013
+    if args.len > 2 { sd = parseI64(args[2]) }
+    gstate = sd & 2147483647
+    var x: mut ref vec = new vec
+    x.n = 0
+    var i: i64 = 0
+    while i < n {
+        if i % 256 == 0 { us() }
+        push(x, nxt() % 1000)  i = i + 1
+    }
+    us()
+    usDump()
+    var sum: i64 = 0
+    var b: ?mut ref blk = x.head
+    var idx: i64 = 0
+    while b != null {
+        var j: i64 = 0
+        while j < 256 && idx < x.n { sum = (sum + b.v[j] * (idx % 7 + 1)) & 4611686018427387903  j = j + 1  idx = idx + 1 }
+        b = b.next
+    }
+    var nb: i64 = (x.n + 255) / 256
+    io::cout << "n=" << x.n << " sum=" << sum << "\n"
+    io::cout << "blocks=" << nb << " per=" << 256 << "\n"
+    return 0
+}
