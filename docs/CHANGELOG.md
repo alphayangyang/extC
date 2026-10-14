@@ -1,3 +1,40 @@
+## 2026-10-15 · 两个入口、两种契约：`collect` 收完一轮 / 新增 `step` 推进 —— 4 条 reclaim 闸门转绿且窗口回到 µs；代价是 `shard_bands` 墙钟 +16.5%
+
+**动机（先红后修，量出来的）**：门控原型 good-23 的增量标记把"契约入口"和"热路径入口"塞进同一个 `extc_rc_collect`：它既被单测/`settle`/记账查询当**公开 API** 调（契约：调一次收完一轮），又被分配点 `maybeCollect` 与销账点 `checkOwed` 当**热路径**调（要求：只推进一步，窗口才 µs 级）。同一个函数兼两职的结果是两条都做不好 —— 实测：
+
+- `gate-reclaim-count-unit` **91/12**（`环：清扫把两个都收回` 等 12 条）：`collect` 第一句 `if (!budgetOk) return 0` 对 32 B 小区域直接返回；
+- `gate-reclaim-switch` / `-count` 的唯一失败 `owed-home … 清扫次数 = 无` 是**探针工具假红**：`tools/rc-pause-probe.py` 只认 head 的同步 `collect` 形态，增量形态两段都不匹配 ⇒ 插桩 `return 1` ⇒ 没生成探针二进制。直接数 `r->sweeps++` 完成次数：原型自己家区域被完整扫了 **15** 次，结算点语义其实已满足；
+- `gate-reclaim-gaps` 新增 2 条（`cross_scope_cycle`、`own_room_cycle`）是**真回归**：信用项被并进 `shouldSweep`，而 codegen 分配点的守门就是 `if (shouldSweep(r)) maybeCollect(...)`（`src/back/codegen.c:3398`），同时 `releaseDead` 每次释放把信用记光 ⇒ 覆盖重的形状 `maybeCollect` **一次不被调用**（实测 `collect=0`、N vs 4N RSS 3.38×/3.04×）。
+
+**机制**（`src/back/reclaim.c`）：
+- **两个入口**：`extc_rc_collect(r,roots,n)` = **契约入口**：起轮 → 排空标记（`while(!seedsDone||msp) markStep(∞)`）→ `finish`（关屏障、起清扫）→ `settle`（清扫做到底）。新增 `extc_rc_step(r,roots,n)` = **热路径入口**：只推进一步 + 本轮做完即 `finish`；`maybeCollect`（分配点）与 `checkOwed`（销账点）都走它。起轮块抽成 `extc_rc_begin`，两个入口共用一份（避免漂移）。
+- **两笔信用必须分开**：新增 `roundVisitedBytes`（**起轮信用**，只在 `begin`/`finish` 消费），`shouldSweep = bytes > thr && extc_rc_roundOk(r)`；定点释放的信用 `budgetOk`/`visitedBytes` **原样只留在 `releaseDead`**。把起轮信用塞回 `visitedBytes` ⇒ `releaseDead` 会把它记光 ⇒ gaps 饿死（上面那条真回归）；把起轮信用从谓词里拿掉（"纯压力触发"）⇒ 压力期间分配点每次都进 `maybeCollect` ⇒ `gate-reclaim-perf` **221,471,406 Ir 红（+82%）**。两者都实测过，别再动。
+- `extc_rc_settle` 补收**在飞标记**（`while(!seedsDone||msp) markStep(∞)` + `finish` + 清扫到底）：查询/`regionFree` 是"本轮会完成"的兜底（单测 `自学习：一无所获把倍数翻到 2` 走的就是它）。
+- `extc_rc_markBegin` 只压**真槽首**的根（`extc_rc_owns(roots[i])`）：M1′ 的低位 force tag 会把测试根 `inside+1` 剥成 `inside` ⇒ 误标活槽（`守卫：外区根不保护本区对象`）。根永远不是 force 项 ⇒ 在入栈处过滤是等价且最小的修法。
+- `checkOwed`：先 `noSweep` 弃账；在飞 → `markAdvance` 成批推进（欠账算兑现）；未在飞 → **第一轮无条件兑现**（`roundVisitedBytes == 0`），之后按起轮信用配速（单测 `义务 7` 依赖）。
+- **保留**主树 D/A/C 的收益：`unlinkChildren` 单次 `ownSlab` + `rsDecSlab`；`alloc` 的 `rscnt[i]=0` 只在 `bump++` 新槽分支；`regionFree` 的 R3 运行期守卫；两处赋值侧 `notePart` 删除（原型本就已无调用，注释按 D 口径同步）。
+- **摘掉原型仪表**（与上一版落地候选同一张清单）：`extc_rc_shadeN++`（**每次赋值**）、`extc_rc_allA++/wbA++`（每次分配）、`extc_rc_msN++`、`extc_rc_cycN++/attN/dbgR` 与 `[cycles]/[wb]/[state]` 转储、死宏 `EXTC_RC_SEED_WORDS`/`EXTC_RC_MARK_FINISH`、死函数 `extc_rc_stepBudgetKeep`、`storeRefSameRegion` 里重复的 `shade`。**这一步是 `shard_bands` 墙钟 54.6 → 51.6 ms 的来源**。
+- **跳过表**：给运行期新增的 8 处早退补 `/* skip:<id> */`（`mark-tick`/`finish-early`/`marking-resume`/`owe-credit`/`shade-off`/`shade-outside`/`shade-free`/`shade-black`）并写进 `docs/RECLAMATION.md`；`skip:no-trigger` 语义更新（含起轮信用）。
+
+**工具**（`tools/rc-pause-probe.py`）：增加**第三种 collect 形态**（增量形态：t0 插在签名后、t2 插在 collect 自己的 `return r->swFreed;` 前），**并加自检**：插桩后必须能查到 globals + 完成计数 + collect 计时 + `atexit` 挂载，否则 `rc=1` 并打印"这是**工具不兼容**，不是目标程序 sweeps=0"。`tests/reclaim-shapes/run-switch.sh` 的 `owed-home` 判据随之区分"**探针不可用**"与"清扫次数真的 = 0"（`set -u` 下新增 `OH_PROBE_OK`）。红演示：把 `extc_rc_collect` 改名 ⇒ 探针退出 1；把 `r->sweeps++` 改名 ⇒ 自检点名"完成计数（r->sweeps++ 处）"。
+
+**实测**（主树，独占跑）：
+- **四条 reclaim 闸门全绿**：`gate-reclaim-count-unit` **103/0**（ASan/UBSan 亦净）、`gate-reclaim-switch` **33/0**、`gate-reclaim-count` **33/0**、`gate-reclaim-gaps` **收不掉 9 条 = 基线**；
+- `gate-reclaim-perf` **119,743,564 Ir ≤ 161,653,535**；`gate-reclaim-tax` bt **1.000×**；`gate-reclaim-perf-shapes` bt **2,850,624** ≤ 2,950,000、rebuild **15,037,125** ≤ 15,790,000；`gate-reclaim-count-cross` **3/0**；
+- `./check.sh nobench` **100/0**、`docs` **12/0**、`smoke` **16/0**、`--only pool` **2/0**；`gate-rc-idle-corpus`、`gate-idle-projection`、`gate-reclaim-{idle,ledger,elide,evidence,count-cross}` 全绿；`gate-skip-table` 由红转绿（8 处补标记 + 表行）；
+- **五形状**（p5 600k / cross 800k / evict 1M / shard 800k / digraph 8000）输出与 `EXTC_RECLAIM=0` **逐字相同**；`digraph` 7984/1772 **cmp 逐字相同**；RSS 同量级。
+- **窗口（核心判据，`EXTC_RC_PAUSE=1`）**：`cross_region` max **5.9 µs**、`spectrum_p5` max **2.3–5.9 µs**（同一构建两次采样）；`cross_region` 的 `[pause] collects` **24**（= 原型值，10²，无 6.6e5 风暴）。
+- **墙钟（无探针，best-of-7）**：p5 **19.7 ms**（主树 19.9）、cross **16.4 ms**（主树 18.9）、shard **51.6 ms**（主树 44.3）。
+- **ASan/UBSan 抽样** + **N vs 4N**：`tests/reclaim-idle/sample-asan-bounded.sh` 全绿（含与指纹基线逐字节对拍）。
+- **语料指纹**：`same=YES 628 · same=NO 224` 分类不变；**removed 0 · added 0 · changed 224**（224 个发射 rc 的行的 `md5_default` 变，`rc_syms` 增 `begin/finish/markAdvance/markBegin/markPushFast/markPushForce/markStep/roundOk/shade/step/stepBudget/wb`、减 `stepBudgetKeep`），628 个 idle/关档行**逐字节未变**。按惯例**同一提交重冻** `tools/idle-fingerprint-baseline.tsv`（md5 `8fa7c8d8…`），重冻后 `check` PASS。
+
+**残留（如实）**：
+① **`shard_bands` 墙钟 +16.5%（44.3 → 51.6 ms）、callgrind +12.1%（277.6M → 311.2M Ir）**：D/A/C **确实并进来了**（生成物里 `unlinkChildren` 一次 `ownSlab` + `rsDecSlab`、`rscnt` 在新槽分支、R3 守卫都在；摘仪表已回收 3 ms），残差是增量设计的**固有成本** —— 每次赋值多一次**写屏障**（`shade`：`if (!wb||!v) return;` + 标记期一次 `ownSlab`）与每次分配多几次状态分支（`marking`/`sweeping`/`finish`/mark-black）。callgrind 热点差分：`extc_rc_alloc` +9.7M、程序侧 `pushOne`（含内联的 `shade`）+17.3M。要让 shard 回到 44 ms 只能削弱屏障或分配路径，那会动到增量标记的健全性 —— 留给用户裁决；
+② `roundOk` 与 `budgetOk` **不许合并**（合并即复发 gaps 饿死；已在字段与 `roundOk` 处各留一行注释）；
+③ `settle` 现在会 **O(轮)** 补收在飞标记：记账查询若将来被热路径调用，窗口会被打穿（当前 codegen 不在热路径发射 `extc_rc_bytes/live/...`）；
+④ `checkOwed` 的"`roundVisitedBytes == 0` 第一轮无条件兑现"是**为单测契约开的口子**（语言层语义：销账点是拥有者帧唯一的结算点）；
+⑤ 五形状之外的**触发频率**只在 `gate-reclaim-perf/-tax/-perf-shapes` 与指纹语料上被守，语料外未证。
+
 ## 2026-10-15 · 再删两处冗余查表：`unlinkChildren` 每子边两次 `ownSlab`、`alloc` 无条件清 `rscnt` —— `cross_region` 指令 **−5.0%**、`shard_bands` −1.6%、`evict` −1.3%
 
 **动机（量出来的，不是猜的）**：D 落地后重新剖析五形状，把"每子边 / 每分配"上的调用按 **频率 × 单次成本** 排序（全运行期入口的动态频率探针 + callgrind 行级自成本）：

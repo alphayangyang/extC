@@ -395,7 +395,15 @@ p = null                 // 计数 0 —— 放
 | `skip:reg-dup` | `extc_rc_register` 已置位就不再置 | 登记位是幂等标记 | 少算（不安全）| 单测 `登记：目标槽登记位置位` + `register-noop` |
 | `skip:no-desc` | 槽没有类型描述符（数据对象）⇒ 不追字段 | 数据对象没有引用字段 | 少算（不安全）| 单测 `类型：描述符字段数正确` + `mark-nodesc` |
 | `skip:no-region` | 宿主区域证不出来 ⇒ 跳过登记 | —— | 少算（不安全）| 由调用方改走"目标区域退出清扫"（义务 7）|
-| `skip:no-trigger` | 压力没到阈值 ⇒ 不欠账、不销账 | 阈值由 `live`/`scale` 推出 | 内存（界）| `thr-stale` ⇒ `阈值缓存③`；`sweep-never` ⇒ churn 界红 |
+| `skip:no-trigger` | 压力没到阈值（或起轮信用未到）⇒ 不起新轮 | 阈值由 `live`/`scale` 推出；起轮信用由起轮/结轮消费的 `roundVisitedBytes` 计（与定点释放的 `visitedBytes` **分开**）| 内存（界）| `thr-stale` ⇒ `阈值缓存③`；`sweep-never` ⇒ churn 界红；`gate-reclaim-gaps` 的 `cross_scope_cycle`/`own_room_cycle`（把起轮信用去掉会让这两个形状饿死）|
+| `skip:mark-tick` | `markAdvance` 的节拍计数没到（每 `EXTC_RC_MARK_EVERY` 次分配推进一步）| 节拍只是**摊销**：少推一步 ⇒ 本轮标记晚一点完成，下个分配点还会推 | 无（只影响时点）| 五形状语义逐字 + `gate-reclaim-switch`；单测 `无环有界负载：清扫次数不随规模增长` |
+| `skip:finish-early` | 标记还没做完（`!marking` / `!seedsDone` / `msp != 0`）⇒ `finish` 不做，留给后续步进 | 只有种子与标记栈都空，才允许关屏障、起清扫 | 无（幂等：步进早晚会做完）| `gate-reclaim-count-unit` 的环/饱和断言 + `gate-reclaim-switch` 语义 |
+| `skip:marking-resume` | 本轮标记还在飞 ⇒ 热路径（`maybeCollect`/`checkOwed`）只做一次**成批推进**，不另记停顿 | 在飞一轮由分配路径的 `markAdvance` + `finish` 摊销；`settle` 在查询/销毁处兜底收完 | 无（把一次长停顿摊成多步）| `gate-reclaim-switch` 语义 + `EXTC_RC_PAUSE` 的 `[step]`；窗口判据（cross ≈ 6–20 µs）|
+| `skip:owe-credit` | 销账点的**第一轮**无条件兑现（`roundVisitedBytes == 0`）；之后起轮信用未到 ⇒ 欠账挂着 | 起轮信用由新分配偿付；一个从没起过轮的区域没有"已消费"的账 | 多留（保守：垃圾晚一步收）| `gate-reclaim-switch` 的 `owed-home`（探针清扫次数 > 0）+ `gate-reclaim-count-unit` 的"义务 7"|
+| `skip:shade-off` | 没有在飞标记（`extc_rc_wb == 0`）或新值为空 ⇒ 屏障不动作 | 没有标记就没有白对象需要着色 | 无（幂等；热路径常态）| 语料指纹 + `gate-reclaim-switch` 语义；`gate-skip-table` 自检 |
+| `skip:shade-outside` | 新值不在本运行期的 slab 里，或它所在区域没在标记 ⇒ 不动作 | 只有本运行期的 slab、且该区域正在标记时才需要着色 | 少算（不安全）| `owns` 守卫单测 + 跨区登记判据 + ASan 语料 |
+| `skip:shade-free` | 槽空闲（`occ` 位为 0）⇒ 不是对象，不动作 | 空闲槽没有引用字段可追 | 少算（不安全）| 单测 `守卫：空闲槽不是活对象`；`gate-skip-table` |
+| `skip:shade-black` | 槽已标黑 ⇒ 不重复着色 | 黑对象不需要再入灰集 | 无（幂等）| `gate-reclaim-switch` 语义 + 单测 `槽唯一` |
 | `skip:nosweep` | 种子不完整的区域 ⇒ 一个字节都不扫 | 该区域有追不到宿主的入边 | 少算（不安全）| 义务 7 单测 + `noSweep-drop` |
 | `skip:release-budget` | 自上次 O(活集) 遍历以来的新分配 < `max(live, floor)` ⇒ 这次定点释放不做 | 一次 O(活集) 遍历必须由分配量摊销；否则赋值路径上出现 O(N²)（40k 次追加 5.08 s vs 关档 2.4 ms）| 多留（保守：垃圾晚一步收）| `gate-release`（`ring_per_round` 释放槽数仍 >0）+ `gate-reclaim-switch` + `gate-idle-bounded` |
 | `skip:not-sweeping` | 没有正在进行的分步清扫 ⇒ `sweepStep` 直接返回 0 | 分步清扫是显式状态（`sweeping`）| 无（幂等）| `gate-reclaim-switch` 的形状语义 + `EXTC_RC_PAUSE` 的 `[step]` 行 |

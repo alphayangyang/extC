@@ -141,12 +141,45 @@ def main() -> int:
     elif src.count(OLD2) == 1:
         src = src.replace(OLD2, NEW2, 1)
     else:
-        sys.stderr.write("插桩失败：collect 形态不认识（整段 %d / 分步 %d）\n" % (src.count(OLD), src.count(OLD2)))
-        return 1
+        # 增量形态（good-23 家族）：collect = 起轮/推进 + finish。按函数体插入计时：
+        # t0 在签名后、t2 在 collect 自己的 `return r->swFreed;` 前。mark/sweep 不再分开记
+        # （finish 内部才起清扫，边界拿不到），max_mark_us 记 0、max_pause_us 仍是进→出。
+        SIG3 = "static size_t extc_rc_collect(ExtcRcRegion *r, void *const *roots, size_t nroots) {\n"
+        if src.count(SIG3) != 1:
+            sys.stderr.write("插桩失败：collect 形态不认识（整段 %d / 分步 %d）\n" % (src.count(OLD), src.count(OLD2)))
+            return 1
+        i = src.index(SIG3) + len(SIG3)
+        j = src.index("    return r->swFreed;", i)
+        body = src[i:j]
+        src = (src[:i] + "    long long extc_probe_t0 = extc_probe_ns();\n" + body +
+               "    long long extc_probe_t2 = extc_probe_ns();\n"
+               "    extc_probe_n++;\n"
+               "    extc_probe_record(extc_probe_t2 - extc_probe_t0);\n"
+               "    extc_probe_sum += extc_probe_t2 - extc_probe_t0;\n"
+               "    if (extc_probe_t2 - extc_probe_t0 > extc_probe_max) extc_probe_max = extc_probe_t2 - extc_probe_t0;\n"
+               "    if (extc_probe_t2 - extc_probe_t0 > extc_probe_max_mark) extc_probe_max_mark = extc_probe_t2 - extc_probe_t0;\n"
+               + src[j:])
     # `sweeps` 口径保持\"扫完的轮数\"：分步清扫在 completion 处计数（不是 collect 入口）
     src = src.replace("    r->sweeps++;", "    extc_probe_n++;\n    r->sweeps++;", 1)
     src = src.replace(MARKER, GLOBALS + "\n" + MARKER, 1)
     src = src.replace(OLD, NEW, 1)
+
+    # 自检：插桩必须**真的**插进去。任何一种"静默返回原文"都会让调用方把"没有探针"错读成
+    # `sweeps = 0`（闸门文案会写成"清扫次数 = 无"，把人引到"回收没发生"的错误结论上 ——
+    # 本仓库已经吃过一次：增量 collect 形态认不出时，`owed-home` 被误判成"家区域从没被扫过"）。
+    # 所以这里对四件事硬断言；不过就 rc=1，让闸门红在"工具不兼容"上。
+    checks = [
+        ("计时探针 globals", "static void extc_probe_dump(void)" in src),
+        ("完成计数（r->sweeps++ 处）", "extc_probe_n++;\n    r->sweeps++;" in src),
+        ("collect 进→出计时", "long long extc_probe_t0 = extc_probe_ns();" in src
+                          and "long long extc_probe_t2 = extc_probe_ns();" in src),
+        ("atexit 挂载", "__attribute__((constructor)) static void extc_probe_arm" in src),
+    ]
+    bad = [name for name, ok in checks if not ok]
+    if bad:
+        sys.stderr.write("插桩失败（自检未通过）：%s —— 这是**工具不兼容**，不是目标程序 sweeps=0；"
+                         "先修 tools/rc-pause-probe.py 的形态识别\n" % "、".join(bad))
+        return 1
     sys.stdout.write(src)
     return 0
 

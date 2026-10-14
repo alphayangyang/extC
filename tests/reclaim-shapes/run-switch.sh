@@ -819,11 +819,14 @@ oh_run() { # <tag> → OH_RC / OH_OUT
     "$TMP/oh-$1" >"$TMP/oh-$1.out" 2>"$TMP/oh-$1.err"; OH_RC=$?
     OH_OUT=$(cat "$TMP/oh-$1.out")
 }
-oh_probe_sweeps() { # <tag> → OH_SWEEPS（没插桩版/没那行 ⇒ 空）
-    OH_SWEEPS=""
-    [ -x "$TMP/oh-$1-p" ] || return
+oh_probe_sweeps() { # <tag> → OH_SWEEPS（没插桩版/没那行 ⇒ 空）；OH_PROBE_OK=0 ⇒ **探针不可用**
+    # 区分"探针不可用"与"清扫次数真的 = 0"：插桩失败（认不出 collect 形态）时 OH_SWEEPS 也是空，
+    # 但那是**工具不兼容**，不是回收没发生 —— 本仓库因此误判过一次（增量 collect 形态）。
+    OH_SWEEPS=""; OH_PROBE_OK=1
+    [ -x "$TMP/oh-$1-p" ] || { OH_PROBE_OK=0; return; }
     "$TMP/oh-$1-p" >"$TMP/oh-$1-p.out" 2>"$TMP/oh-$1-p.err"
     OH_SWEEPS=$(grep -o 'PROBE sweeps=[0-9]*' "$TMP/oh-$1-p.out" | head -1 | cut -d= -f2)
+    [ -n "$OH_SWEEPS" ] || OH_PROBE_OK=0
 }
 
 oh_build 1 r; oh_on_c=$OH_C
@@ -840,8 +843,10 @@ fi
 # 清扫次数判据跟本次调用的开关状态走（`EXTC_RECLAIM=0 ./run-switch.sh` 时必须红）。
 if [ "$sw" = on ]; then oh_tag=r; oh_name="开档"; else oh_tag=o; oh_name="关档"; fi
 oh_probe_sweeps "$oh_tag"
-if [ -n "$OH_SWEEPS" ] && [ "$OH_SWEEPS" -gt 0 ] 2>/dev/null; then
+if [ "$OH_PROBE_OK" = 1 ] && [ -n "$OH_SWEEPS" ] && [ "$OH_SWEEPS" -gt 0 ] 2>/dev/null; then
     ok "owed-home：$oh_name下家区域真的被扫过（探针：清扫次数 = $OH_SWEEPS）—— 内层帧的分配不再白攒"
+elif [ "$OH_PROBE_OK" != 1 ]; then
+    bad "owed-home：**探针不可用**（插桩或编译失败 / 没打出 PROBE 行 ⇒ 工具不兼容）—— 这不是「清扫次数 = 0」，先修 tools/rc-pause-probe.py（原因见 $TMP/oh-$oh_tag.log）"
 else
     bad "owed-home：$oh_name下家区域一次都没被扫过（探针：清扫次数 = ${OH_SWEEPS:-无}）—— 内层帧给外层区域分配，那只区域整片没人收"
 fi
