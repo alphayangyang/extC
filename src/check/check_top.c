@@ -6085,21 +6085,31 @@ static void idleSolveLvls(AcInfo *ac) {
 }
 
 /**
- * @brief ② 的**唯一判据**：这一次往引用槽写值，会不会把最后一个根丢掉。
+ * @brief ② 的**唯一判据**：这一次往引用槽写值，会不会让垃圾不再有界。
  *
- * 判据本身只有一条：**覆盖一个槽不丢根 ⟺ 旧值还能从别的活根到达**。下面这组规则是它的
- * 可靠充分条件（近似），按顺序逐条判 —— 顺序就是"第一条命中的理由"，所以顺序也是行为的一部分。
+ * **判据其实算两维**（flavor (i) 的负结果把这一点钉死了：只算第一维会在
+ * `if i == n-1 { slot = p }` 这类形状上把累积判掉）：
+ *
+ *   · **A 维（不丢根）** —— 覆盖一个槽不丢根 ⟺ 旧值还能从**别的**活根到达；
+ *   · **B 维（不累积）** —— 写进槽 / 被覆盖掉的值，其**存储**不会在后续轮次里无主地留下。
+ *
+ * 下面这组规则是这两维的可靠充分条件（近似），按顺序逐条判 —— 顺序就是"第一条命中的理由"，
+ * 所以顺序也是行为的一部分。
  *
  * 走查期（`IDLE_STAGE_WALK`，只有语法与已走查到的声明）：
- *   1. 具名栈槽 ⇒ 推迟：`(b′)` 要"写进这个槽的**全部**值都合格"，整趟走完才看得全；
- *   2. 其它栈位置 ⇒ 判否；
- *   3. 堆字段：目标不是"具名对象的具名字段" ⇒ 判否；
- *   4. 堆字段：站点在循环里、宿主不是本迭代新建、也不是本循环体内被赋值的元素槽 ⇒ 判否（细化 E）；
- *   5. 其余堆字段 ⇒ 推迟到后处理（`(a)` 的逐站点部分）。
+ *   1. 复合赋值 ⇒ 判否（**A**：旧值被就地改写）；
+ *   2. 具名栈槽 ⇒ 推迟：`(b′)` 要"写进这个槽的**全部**值都合格"，整趟走完才看得全；
+ *   3. 其它栈位置 ⇒ 判否（**A**：引用写进了一个没人追踪的栈位置）；
+ *   4. 堆字段：目标不是"具名对象的具名字段" ⇒ 判否；
+ *   5. 堆字段：站点在循环里、宿主不是本迭代新建、也不是本循环体内被赋值的元素槽 ⇒ 判否
+ *      （细化 E；**B**：非本迭代的宿主会被反复覆盖）；
+ *   6. 其余堆字段 ⇒ 推迟到后处理（`(a)` 的逐站点部分）。
  * 后处理期（`IDLE_STAGE_POST`，台账与不动点都齐了）：
- *   6. 堆字段站点：宿主不是本帧 `new` ⇒ 判否（C）；宿主被重新赋值 ⇒ 判否（B）；同一（宿主, 字段）
- *      的**更早**站点存在且旧值没有别的根 ⇒ 判否（细化 A）；
- *   7. 具名栈槽站点：`(b′)` 合取 —— 写进这个槽的全部值（含声明初始化）都必须合格。
+ *   7. 堆字段站点：宿主不是本帧 `new` ⇒ 判否（**B**：写进别的对象会累积）；宿主被重新赋值
+ *      ⇒ 判否（**B**：宿主可能被换成另一个对象，"每对象写一次"论证失效）；同一（宿主, 字段）
+ *      的**更早**站点存在且旧值没有别的根 ⇒ 判否（细化 A；**A**：旧值被第二次覆盖掉）；
+ *   8. 具名栈槽站点：`(b′)` 合取 —— 写进这个槽的全部值（含声明初始化）都必须合格
+ *      （**B**：值随本迭代的 arena 一起死 ⇒ 不留累积）。
  *
  * 失败方向：任何一条判否 ⇒ 整具函数判否 ⇒ 整单元判否 ⇒ 照常发射回收运行期（保守）。
  *
@@ -6110,8 +6120,8 @@ static void idleSolveLvls(AcInfo *ac) {
  * @param stage `IDLE_STAGE_WALK` / `IDLE_STAGE_POST`。
  * @return      `IDLE_ACC` 合格；`IDLE_REJ` 判否（`*why` 已填）；`IDLE_DEFER` 换一期再判。
  */
-static IdleJudgment idleLosesRoot(AcInfo *ac, const IdleWrite *w, size_t idx,
-                                  const char **why, int stage) {
+static IdleJudgment idleWriteOk(AcInfo *ac, const IdleWrite *w, size_t idx,
+                                const char **why, int stage) {
     if (stage == IDLE_STAGE_WALK) {
         if (w->kind == IDLE_DEST_COMPOUND) {
             *why = arenaPrintf(ac->a,
@@ -6266,7 +6276,7 @@ static bool idleWalkStmt(Checker *c, AcInfo *ac, Stmt *s, int depth, int scope, 
                 if (host) w.host = idleBindName(host, host->u.ident.name);
             }
             const char *why = NULL;
-            IdleJudgment v = idleLosesRoot(ac, &w, 0, &why, IDLE_STAGE_WALK);
+            IdleJudgment v = idleWriteOk(ac, &w, 0, &why, IDLE_STAGE_WALK);
             if (v == IDLE_REJ) {
                 idleNote(ac, why);
             } else if (v == IDLE_DEFER) {
@@ -6314,7 +6324,7 @@ static bool idleWalkStmt(Checker *c, AcInfo *ac, Stmt *s, int depth, int scope, 
                 w.value     = s->u.var.init;
                 w.seq       = ac->idleSeq;
                 const char *why = NULL;
-                if (idleLosesRoot(ac, &w, 0, &why, IDLE_STAGE_WALK) == IDLE_DEFER) {
+                if (idleWriteOk(ac, &w, 0, &why, IDLE_STAGE_WALK) == IDLE_DEFER) {
                     IdleWrite *rec = arenaAllocZero(ac->a, sizeof *rec);
                     *rec = w;
                     *(IdleWrite **)vecPush(&ac->idleWrites) = rec;
@@ -6732,7 +6742,7 @@ void computeFnAcyclic(Checker *c) {
             IdleWrite *w = *(IdleWrite **)vecAt(&info[i].idleWrites, k);
             if (w->kind != IDLE_DEST_HEAP_FIELD) continue;
             const char *why = NULL;
-            if (idleLosesRoot(&info[i], w, k, &why, IDLE_STAGE_POST) == IDLE_REJ)
+            if (idleWriteOk(&info[i], w, k, &why, IDLE_STAGE_POST) == IDLE_REJ)
                 idleNote(&info[i], why);
         }
         /* 细化 (b′)：栈上 ref 槽的赋值站点推迟到这里判 —— 条件是"写进这个槽的**全部**值都随
@@ -6743,7 +6753,7 @@ void computeFnAcyclic(Checker *c) {
             IdleWrite *w = *(IdleWrite **)vecAt(&info[i].idleWrites, k);
             if (w->kind != IDLE_DEST_SLOT_NAMED || !w->isAssign) continue;
             const char *why = NULL;
-            if (idleLosesRoot(&info[i], w, k, &why, IDLE_STAGE_POST) == IDLE_REJ)
+            if (idleWriteOk(&info[i], w, k, &why, IDLE_STAGE_POST) == IDLE_REJ)
                 idleNote(&info[i], why);
         }
     }
