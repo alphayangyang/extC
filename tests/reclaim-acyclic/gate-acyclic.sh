@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
+# manual: 事件档（计数开 + 清扫关）是**诊断档**且已知不完备 —— 实测它在语料里没有一个能赢的
+# 形状（有环形状上不成立 / 无环形状上会漏 / 就算不漏，计数也比清扫贵 +100%~+455%）。
+# 三条都在 `tests/reclaim-perf/TAXMAP.md` 第 7 节。所以本脚本**摘出电池**，留作手工诊断；
+# 机制代码与语料保留（`EXTC_RC_SWEEPFREE` 仍是默认关的诊断开关）。
 # tests/reclaim-acyclic/gate-acyclic.sh —— 「无环区域用事件回收（计数）、关掉清扫」这条改动的
-# **动态判据**（`check.sh` 的 `gate-acyclic` 项；挂 `nobench` 档）。
+# **动态判据**（原本挂 `check.sh`/`nobench` 的 `gate-acyclic` 项，现已摘出）。
 #
 # 背景（已经实测过的两段）：原型 `prototype-reclaim/README.md` 的 `ev` 档 = **0 次清扫** /
 # 0 停顿 / 内存 12 KiB；而今天默认档同时清扫（事件路径 + 全局清扫两份钱）。改动方向：

@@ -460,32 +460,14 @@ def build_items() -> list:
         bad_msg="tests/reclaim-shapes/run-switch.sh（回收开关的形状/内存界回归）",
         bad_dump=dump_tail(12)))
 
-    # ---- 闸门·事件档（无环 + 所有能丢引用的位置都被计数）----------------------------
-    # 判据自己带牙：① 堆槽引用 + 事件档 ⇒ `collect == 0`、stdout 与 `EXTC_RECLAIM=0` 逐字相同、
-    # 峰值 RSS ≤ 默认档 ×1.5；② 有环形状在默认档必须 `collect > 0`（防"开关空转"）；
-    # ③ **红证明**：把事件档强制施加到有环形状 ⇒ RSS 必须爆（阈值 ×5，N=800000）；
-    # ④ `blind_localhold`（引用住在局部量里）是**已知盲点**，与 known-red.txt 逐字比对 ⇒
-    #    补上根引用计数之前，它必须红；补上之后必须转绿（棘轮，只许按这一条动）。
-    items.append(cmd(
-        "gate-acyclic", "gate",
-        "闸门·事件档：清扫必须为 0 + RSS 有界 + 红证明有牙 + 根引用盲点棘轮",
-        ["bash", "tests/reclaim-acyclic/gate-acyclic.sh"], timeout=1800,
-        ok_msg=ok_first(r"^通过 "),
-        bad_msg="tests/reclaim-acyclic/gate-acyclic.sh（事件档清扫/内存界回归，或已知盲点棘轮变动）",
-        bad_dump=dump_tail(14)))
-
-    # ---- 闸门·事件档的**内存界**（计数完备性）-----------------------------------------
-    # 事件档 = 计数开 + 清扫关（原型 `ev` 那条路）。它的前提是计数完备：某处丢弃没销账，
-    # 对象就带着幽灵持有者永不归零 ⇒ 垃圾随规模线性涨。判据：活集与规模无关的形状上
-    # 4N/N 峰值 <1.5×、语义与关档逐字相同、事件档下不许留定点释放调用点。
-    # 已知欠账在 `tools/gate-event-bounded-known-bad.txt`，棘轮只许缩（转绿必须删行）。
-    items.append(cmd(
-        "gate-event-bounded", "gate",
-        "闸门·事件档内存界：计数完备性（覆盖/淘汰/窗口形状 4N/N 峰值 <1.5× + 无释放点 + 语义一致）",
-        ["python3", "tests/reclaim-acyclic/gate-event-bounded.py"], timeout=900,
-        ok_msg=ok_first(r"^通过（已知欠账"),
-        bad_msg="tests/reclaim-acyclic/gate-event-bounded.py（事件档内存界：新增泄漏 / 语义 / 释放点）",
-        bad_dump=dump_tail(14)))
+    # ---- 事件档（计数开 + 清扫关）：**诊断档，判据不进电池** ----------------------------
+    # 实测判定：它在语料里没有一个能赢的形状 —— ① 有环形状上不成立（强制用在 `ring_per_round`
+    # 上：N=8000 涨到 8 369 MB）；② 无环形状上计数不完备（局部绑定只加不减）会漏；
+    # ③ 就算不漏，计数的代价也是清扫侧的 +100%~+455%。三条都在
+    # `tests/reclaim-perf/TAXMAP.md` 第 7 节。机制与语料**保留**（`EXTC_RC_SWEEPFREE` 仍是
+    # 默认关的诊断开关，见 main.c 的 --help），门禁摘出电池：
+    # `tests/reclaim-acyclic/gate-acyclic.sh` 自报 `# manual:`；原先那条
+    # `gate-event-bounded` 已删除（它钉的正是这条已知坏的路径）。
 
     # ---- 闸门·覆盖点定点释放（环垃圾不等清扫）------------------------------------
     # 形状 `ring_per_round`：每轮建一条 256 结点的闭环、环头存进长命槽 `keep`，下一轮覆盖
