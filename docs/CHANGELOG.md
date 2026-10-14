@@ -1,3 +1,21 @@
+## 2026-10-14 · `ALIGN64` 半步：**判据一不成立 ⇒ 按纪律回退**（基址对齐改不了"**一个槽跨多条数组**"）
+
+**实现**（`EXTC_RC_ALIGN64`，编译期、**默认关**；四处）：`extc_rc_metaAlloc = aligned_alloc(64, ⌈bytes⌉·64)`；`occ/mark/rsbit/rscnt/tid/hold` 走对齐分配器（对齐档显式 `memset` 位图）；`offOf/slotOfOff/slotOf/typeOf` 加 `restrict`；`reclaim.h`+`codegen.c` 发射器第 7 实参；`tests/reclaim/emit_main.c` 同步（**不同步会让 `smoke` 红**，已修）。**开关生效性已验证**（on 档 `tid%64==0`/`occ%64==0` ✓，非空测）。
+
+**实测**（callgrind，`taskset -c 7`，与 `gcbench` 并发；计数与负载无关）：
+| 形状 | Ir | **D1mr** | **Dw** | ILmr |
+|---|---|---|---|---|
+| `human_a` u=4000 | −0.00% | **−0.00%**（3 781 131→3 781 063） | −0.03% | +0.1% |
+| `digraph` @1e5 | +0.47% | −0.05%（642 102→641 788） | **+2.04%（更差）** | +1.1% |
+⇒ **判据一（D1mr 与 Dw 应有可测改善）不成立** ✗（0.00–0.05% 不可辨，且 `digraph` 的 Dw 更差）。
+
+**语义 / 安全 / 门禁**：`cross_region` 的 `rs_*` 两档**逐字相同**（100000/65537/34463/65537）✓；默认档/开档/`EXTC_RECLAIM=0` 档 **stdout 逐字节一致**且与 `57f6b8cc…` 产物一致 ✓；**牙 ✓**（把对齐故意做错 ⇒ **ASan `heap-buffer-overflow`**、stdout 跨档不一致 ⇒ 判据当场红）；门禁（默认关在位）`smoke 16/0`、`docs 12/0`、回收门禁 **21/0**、**`nobench 100/0`**、`gate-asan-corpus --scope full` **369（已知 1 / 新增 0）**、`MIN_IDLE=17` 未动、孤儿 0；**回退后复跑同样全绿** ✓。
+
+**机制（决定下一步）**：位图/每槽数组各自几十 KB 且**顺序访问** ⇒ **基址对齐只改"从哪条缓存行开始"，不改"一个槽要碰几条行"**；真正共享行的是一**个槽跨 `occ/mark/rsbit/tid/rscnt`** ⇒ **只有交错布局**（每 64 槽一组连续字，或每槽一字）能改 D1mr。⇒ **排序更新：#1 从"对齐"升级为"交错元数据布局"（中风险）**；#2 标记队列 `(slab, 槽号)`、#3 冷路径 `noinline`+`__builtin_expect` 保持不变。
+
+**补丁存档**：`tests/reclaim-perf/align64-prototype.patch`（141 行，`git apply --check` ✓）；`src/` **已回退 canonical**（md5 `57f6b8cc…`）。
+**未覆盖**：交错布局（未实现）、`restrict` 的单独效果、墙钟（并发下未量）。
+
 ## 2026-10-14 · P5 **实测**业务表（`APP-STALL.md` §3）：**请求型几乎不被卡**；**吞吐型看到 p99 尾部变差**；1 ms / 16.7 ms 两档超预算 **全 0**
 
 **自检先过（各 3/3）**：默认档 `UNITSTAMP=200000` ✓（== 单位数）、`CSTAMP=10` ✓（== 探针 `n=10`）；不回收档 `UNITSTAMP=200000` ✓、`CSTAMP=0` ✓（脚本如实报 `CSTAMP_NOT_FOUND`：该档无 collect）。

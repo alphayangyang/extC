@@ -190,3 +190,62 @@ LL 36 MiB/18 路，均 64 B 行）。**缓存/分支模拟与机器负载无关*
 * **不做墙钟结论**（与 `gcbench` 并发，core 6 归它）⇒ 本段的"预期量级"全部是**外推**，
   墙钟要等机器空出来再验。
 * 未采：P1–P4 其它档、`digraph` 只到 1e5（callgrind 50× 慢）、`ownHot/ownMap` 命中分解。
+
+---
+
+# 新 #1 的"低风险半步"实验：`aligned(64)` + `restrict`（`EXTC_RC_ALIGN64`，默认关）
+
+**结论先行：实现完成、语义/门禁/牙全绿，但判据一（D1mr 与 Dw 应有可测改善）不成立 ⇒ 按纪律回退，
+补丁留在 `tests/reclaim-perf/align64-prototype.patch`（141 行，`git apply --check` ✓）。**
+
+## 实现（四处改动，全部在开关后面）
+* `src/back/reclaim.c`：新增 `EXTC_RC_ALIGN64`（`#ifndef` 默认 0）+ `EXTC_RC_RESTRICT` 宏；
+  `extc_rc_metaAlloc(bytes)` = `aligned_alloc(64, ⌈bytes/64⌉·64)`，失败交 0 给原有的失败检查；
+  位图/每槽数组（`occ`/`mark`/`rsbit`/`rscnt`/`tid`/`hold`）改走 `EXTC_RC_META_CALLOC/MALLOC`
+  （对齐档下三个位图显式 `memset` 清零，因为不再走 `calloc`）；
+  热辅助函数 `offOf`/`slotOfOff`/`slotOf`/`typeOf` 的 slab 形参加 `EXTC_RC_RESTRICT`（默认关时展开为空）。
+* `src/back/reclaim.h` + `src/back/codegen.c`：发射器多一个 `align64` 实参（`getenv("EXTC_RC_ALIGN64")`）。
+* `tests/reclaim/emit_main.c`：同一个发射口的第 7 个实参（不改它，`smoke` 会因为"发射器编译失败"红 —— 已修）。
+
+**开关生效性已验证**：on 档生成物 `#define EXTC_RC_ALIGN64 1`，运行时 `tid % 64 == 0`、`occ % 64 == 0` ✓
+（不是"开关没接线"的空测）。
+
+## 实测（callgrind，`taskset -c 7`，与 `gcbench` 并发；指令数/缓存计数与负载无关）
+
+| 形状 | Ir | D1mr | Dw | ILmr |
+|---|---|---|---|---|
+| `human_a` u=4000 | **−0.00%**（716.1 M）| **−0.00%**（3 781 131 → 3 781 063）| −0.03% | +0.1% |
+| `digraph` @1e5 | +0.47% | **−0.05%**（642 102 → 641 788）| **+2.04%（更差）** | +1.1% |
+
+**判据一裁决**：要求"D1mr 与 Dw 应有可测改善；Ir 不应上升 >1%"。
+* D1mr 变化 **0.00%/0.05%** ⇒ **不可测**（远小于判据可辨的量级）✗；
+* Dw 一边 −0.03%、一边 **+2.04%** ⇒ **没有改善，`digraph` 反而更差** ✗；
+* Ir +0.00% / +0.47% ⇒ 未超 1% ✓（但这是"没损失"，不是收益）。
+⇒ **判据一不成立。**
+
+## 语义 / 安全 / 门禁（补丁在位、默认关时）
+
+* `cross_region` 的 `rs_*` 两档**逐字相同**：`rs_inc=100000 rs_dec=65537 rs_live=34463 rs_hwm=65537` ✓；
+* stdout：**默认档 / 开档 / `EXTC_RECLAIM=0` 档逐字节一致**，且都与 `57f6b8cc…` 产物一致 ✓（两形状）；
+* **牙（注入）**：把对齐故意做错（`return (char *)aligned_alloc(64, rounded) + 32;`）⇒ **ASan
+  `heap-buffer-overflow`（`memset`，rc=1）**，stdout 与关档不一致 ⇒ **判据当场红** ✓；
+* 门禁：`smoke 16/0`、`docs 12/0`、回收门禁 21/0、`nobench 100/0`、`gate-asan-corpus --scope full`
+  369（已知 1 / **新增 0**）、`MIN_IDLE=17` 未动、孤儿 0 ✓；**回退后复跑**：`smoke 16/0`、`docs 12/0`、
+  9 项 gate 全绿、`nobench 100/0`、ASan 同上 ✓。
+
+## 机制：为什么基址对齐没用（这决定后续怎么改）
+
+* 每张位图/每槽数组本身就有几十 KB 且是**顺序访问** ⇒ 一条缓存行里不会再混别的数组；
+  **基址对齐只改变"数组从哪条行开始"，不改变"一个槽要碰几条行"**。
+* 真正共享行的是**同一个槽跨多条数组**（`occ`/`mark`/`rsbit`/`tid`/`rscnt` 各在不同内存）——
+  要降它必须**交错布局**（每 64 槽一组连续字，或每槽一个字），也就是我 #1 里的**中风险那一半**；
+* `restrict` 在这些 helper 上≈空操作（函数只读单个指针目标，本来就不冲突）⇒ 单独做它没有价值。
+
+## 处置与后续
+
+* **回退**：`src/back/reclaim.c`、`src/back/reclaim.h`、`src/back/codegen.c`、`tests/reclaim/emit_main.c`
+  四处恢复到 canonical，`md5 = 57f6b8ccd7c16100d12e5b51b26849e8` ✓；补丁留仓库可复现。
+* **排序更新**：新 #1 从"对齐"升级为**交错元数据布局**（中风险，唯一能改 D1mr 的形态）；
+  旧 #2（标记队列 `(slab, 槽号)`）、旧 #3（冷路径 `noinline`+`__builtin_expect`）**不动**。
+* **未查清**：`restrict` 的单独效果（无可测收益，未分离）；交错布局未实现（下一步的真实验）；
+  **墙钟未量**（与 `gcbench` 并发，等机器空出来再单独报，预期 P4 −1~3%、`digraph` 不得劣化 >1%）。
