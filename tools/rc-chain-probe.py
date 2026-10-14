@@ -11,7 +11,7 @@
      ⇒ 得到有序链；
   2. 取链上还没放宽的第一条，加进放宽集，重跑；
   3. 直到产物里 `extc_rc_` 计数为 0（链尾 idle）或链上再没有新规则（**链断 ⇒ 报错**，不许"说不清"）。
-每一步都做**绊线体检**：`cross_region`/`scale_growth`/`live_churn` 在该放宽集下必须**仍然发 rc**；
+每一步都做**绊线体检**：`cross_region`/`scale_growth` 在该放宽集下必须**仍然发 rc**；
 一旦变 idle ⇒ 该放宽集标 **不可走**（放宽会误判）。
 
 用法：
@@ -32,9 +32,12 @@ PAUSE = ROOT / "bench" / "gc" / "PAUSE-CORPUS.md"
 # "必须仍然发 rc"的形状 = 三条 D 家族绊线（task-17 实测：放宽 D 会把前两条判 idle 且界涨）
 # + `gate-idle-bounded.sh` 的 CONTROLS（task-18 把 `outer_alloc_inner_write` 立成常驻对照：
 # 去掉 (a′) 的循环深度条件它就会 idle ⇒ 那条门禁红）。任何放宽让它们变 idle ⇒ 该集合**不可走**。
+#
+# `live_churn` 已从绊线移出：它的 churn 垃圾随**每轮 arena** 释放（不走 rc），默认档判它 idle 之后
+# 峰值与 churn 无关（实测 7.45 / 7.86 / 7.58 MB @ churn 20 万 / 80 万 / 320 万），只随真活集涨。
+# 真正量的是"被提升到家区域、又被作用域退出丢下"的那一类 ⇒ `scale_growth`（条件存储）继续当绊线。
 TRIPWIRES = ["tests/reclaim-shapes/cross_region.extc",
              "tests/reclaim-shapes/scale_growth.extc",
-             "tests/reclaim-shapes/live_churn.extc",
              "tests/reclaim-shapes/cyclic_pressure.extc",
              "tests/reclaim-perf/shapes/outer_alloc_inner_write.extc"]
 
@@ -355,7 +358,8 @@ def render(rows, table, extc):
           "## 6. 未覆盖与残留风险", "",
           "- 副本的放宽是**整条规则**的开关（不是实现）：它答的是「若这条规则不存在，还差哪几条」，"
           "**不答**「这条规则能不能被安全地细分」。A/D 的细分方案要另立。",
-          "- 绊线体检只看 `cross_region`/`scale_growth`/`live_churn` 三条；"
+          "- 绊线体检只看 `cross_region`/`scale_growth` 两条（`live_churn` 的垃圾随每轮 arena 释放，"
+          "判它 idle 后峰值与 churn 无关，故不作绊线）；"
           "其它形状的语义仍由各自电池看着（本件不改判决，风险为零）。",
           "- 停顿是同一规模口径（argv 形状 N=100000），不做跨规模外推。"]
     return "\n".join(L) + "\n"

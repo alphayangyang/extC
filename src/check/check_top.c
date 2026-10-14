@@ -5412,6 +5412,7 @@ typedef struct {
     int          allocDepth; /* 宿主那条 `new` 的 arena 层（诊断用） */
     int          loopScope;  /* 最内层循环体作用域层（(b′) 的阈值） */
     int          seq;        /* 走查序号（判"分配点在站点之前"） */
+    int          condDepth;  /* 这个写入点被几层条件语句包住（0 = 本迭代必然执行） */
     bool         seqElem;    /* 最外一层是元素槽、且下标是本循环体里被赋值的标识符 */
     bool         isAssign;   /* 是赋值站点（不是声明初始化） */
 } IdleWrite;
@@ -5438,8 +5439,9 @@ typedef struct { const char *name; int depth; int arenaLevel; int seq; } IdleFre
 typedef struct { const char *name; int lvl; } IdleLvl;
 
 /* 一次"把引用写进某个具名对象字段"：字段读（`p.next`）沿它取"这个字段里可能是什么层"。
- * 同一字段名取最浅（活得最久），方向保守。 */
-typedef struct { const char *fname; const char *host; Expr *value; } IdleFieldStore;
+ * 同一字段名取最浅（活得最久），方向保守。
+ * `seq` 是走查序号：细化 P 要问"这次字段写发生在槽覆盖之**前**、且中间没人动过那个槽"。 */
+typedef struct { const char *fname; const char *host; Expr *value; int seq; } IdleFieldStore;
 
 /* "这次写入丢的东西是 null（没有对象）"的哨兵层号：它比任何真实 arena 层都"长寿",
  * 但按语义它不丢对象，所以 `idleStoreQualified` 直接算合格。 */
@@ -5452,7 +5454,7 @@ typedef struct { const char *fname; const char *host; Expr *value; } IdleFieldSt
  * 一）—— 与 arena 层同一把尺（都是 checker 的作用域栈深度）。`minLoopScope` 是**当前所在的
  * 所有循环体中作用域层最浅的那个**（b′ 用它当"本迭代随哪一次释放一起死"的阈值；0 = 不在任何
  * 循环里）。语句回调只拿到子节点，三个数都由回调自己往下传。 */
-typedef struct { Checker *c; AcInfo *ac; int depth; int scope; int minLoopScope; } IdleWalk;
+typedef struct { Checker *c; AcInfo *ac; int depth; int scope; int minLoopScope; int condDepth; } IdleWalk;
 
 /* 扫描上下文：检查器（类型表）与这个函数的记录。 */
 typedef struct { Checker *c; AcInfo *ac; } AcScan;
@@ -5461,7 +5463,7 @@ static bool acScanStmt(void *ctx, Stmt *s);
 static bool acScanExpr(void *ctx, Expr *e);
 static bool idleWalkStmtCb(void *ctx, Stmt *s);
 static bool idleWalkExprCb(void *ctx, Expr *e);
-static bool idleWalkStmt(Checker *c, AcInfo *ac, Stmt *s, int depth, int scope, int minLoopScope);
+static bool idleWalkStmt(Checker *c, AcInfo *ac, Stmt *s, int depth, int scope, int minLoopScope, int condDepth);
 static bool idleWalkExpr(Checker *c, AcInfo *ac, Expr *e, int depth, int minLoopScope);
 static bool idleWalkExprFlag(Checker *c, AcInfo *ac, Expr *e, int depth, bool bound, int minLoopScope);
 
@@ -5910,7 +5912,7 @@ static const char *idleDestPath(Arena *a, Expr *t) {
  */
 static bool idleWalkStmtCb(void *ctx, Stmt *s) {
     IdleWalk *w = ctx;
-    return idleWalkStmt(w->c, w->ac, s, w->depth, w->scope, w->minLoopScope);
+    return idleWalkStmt(w->c, w->ac, s, w->depth, w->scope, w->minLoopScope, w->condDepth);
 }
 
 /** @brief 表达式回调：表达式不改变循环深度，原样往下走。 */
@@ -6085,6 +6087,50 @@ static void idleSolveLvls(AcInfo *ac) {
 }
 
 /**
+ * @brief 细化 P（flavor i）：这次槽覆盖**没丢根** —— 写进去的新值已经把旧值链住了。
+ *
+ * 形状（头插/尾插/桶插入）：`v.f = <这个槽此刻的值>` 先发生，随后 `槽 = v`。旧值由 `v.f` 可达，
+ * 而 `v` 又被写进了槽 ⇒ 覆盖没有切断任何路径。与槽的种类无关（栈槽与字段写都成立），
+ * 与 (b′) 的"值随本迭代死"是**两条独立的**合格路径。
+ *
+ * **B 维的条件不能少**（第一版就是漏了它而不健全）：这次存储必须**本迭代必然执行**
+ * （`condDepth == 0`）。否则会有"只有部分轮次把新值存下来"的形状 —— `scale_growth` 的
+ * `if i == n-1 { saved = p }`：那些没被存下来的实例被提升到家区域、在作用域退出时丢下，
+ * 峰值随轮数涨（实测关档峰值比 3.0×）。**A 维（旧值还有根）不能替代 B 维。**
+ *
+ * 其余条件：被写的是**标识符** `v`（不是字段读、调用结果等看不清的来源）；台账里存在一次字段
+ * 写，宿主正是 `v`，写进去的值是**同一个槽名**；该字段写先于这次覆盖；两者之间这个槽
+ * 没被写过（否则链住的是更早的值，不是这次覆盖掉的旧值）。
+ *
+ * @param ac 这个函数的记录。
+ * @param w  这次槽写入。
+ * @return   成立则 true。
+ */
+static bool idleLinksOld(AcInfo *ac, const IdleWrite *w) {
+    if (w->condDepth != 0) return false;
+    if (!w->value || w->value->kind != EX_IDENT || !w->host) return false;
+    const char *v = idleBindName(w->value, w->value->u.ident.name);
+    if (!v) return false;
+    for (size_t i = 0; i < ac->idleFieldStores.len; i++) {
+        IdleFieldStore *fs = *(IdleFieldStore **)vecAt(&ac->idleFieldStores, i);
+        if (!fs->host || strcmp(fs->host, v) != 0) continue;      /* 宿主就是那个新值 */
+        if (fs->seq >= w->seq) continue;                          /* 字段写在覆盖之前 */
+        if (!fs->value || fs->value->kind != EX_IDENT) continue;
+        const char *held = idleBindName(fs->value, fs->value->u.ident.name);
+        if (!held || strcmp(held, w->host) != 0) continue;        /* 链住的正是这个槽 */
+        bool clean = true;                                        /* 中间没人写过这个槽 */
+        for (size_t j = 0; j < ac->idleWrites.len && clean; j++) {
+            IdleWrite *o = *(IdleWrite **)vecAt(&ac->idleWrites, j);
+            if (o->kind != IDLE_DEST_SLOT_NAMED || !o->host) continue;
+            if (strcmp(o->host, w->host) != 0) continue;
+            if (o->seq > fs->seq && o->seq < w->seq) clean = false;
+        }
+        if (clean) return true;
+    }
+    return false;
+}
+
+/**
  * @brief ② 的**唯一判据**：这一次往引用槽写值，会不会让垃圾不再有界。
  *
  * **判据其实算两维**（flavor (i) 的负结果把这一点钉死了：只算第一维会在
@@ -6154,16 +6200,19 @@ static IdleJudgment idleWriteOk(AcInfo *ac, const IdleWrite *w, size_t idx,
     }
     if (w->kind == IDLE_DEST_SLOT_NAMED) {
         /* (b′)：写进这个槽的**全部**值都得合格 —— 同一名字可能有多处写入，任一处不合格 ⇒
-         * 这个槽的每一次覆盖都判否（保守）。 */
+         * 这个槽的每一次覆盖都判否（保守）。合格有**两条独立路径**：值随本迭代死（(b′)，B 维），
+         * 或这次覆盖被新值链住且本迭代必然执行（细化 P / flavor i，A 维 + B 维）。 */
         if (idleStoreQualified(idleValueLvl(&ac->idleBindLvl, &ac->idleFieldLvl, w->value),
-                               w->loopScope)) {
+                               w->loopScope)
+            || idleLinksOld(ac, w)) {
             bool ok = true;
             for (size_t j = 0; ok && j < ac->idleWrites.len; j++) {
                 IdleWrite *o = *(IdleWrite **)vecAt(&ac->idleWrites, j);
                 if (o->kind != IDLE_DEST_SLOT_NAMED) continue;
                 if (!o->host || !w->host || strcmp(o->host, w->host) != 0) continue;
                 if (!idleStoreQualified(idleValueLvl(&ac->idleBindLvl, &ac->idleFieldLvl, o->value),
-                                        o->loopScope)) ok = false;
+                                        o->loopScope)
+                    && !idleLinksOld(ac, o)) ok = false;
             }
             if (ok) return IDLE_ACC;
         }
@@ -6214,7 +6263,8 @@ static IdleJudgment idleWriteOk(AcInfo *ac, const IdleWrite *w, size_t idx,
  *                     细化 (b′) 用它当"这次写入丢的东西是否随本迭代释放"的阈值。
  * @return             总是 true。
  */
-static bool idleWalkStmt(Checker *c, AcInfo *ac, Stmt *s, int depth, int scope, int minLoopScope) {
+static bool idleWalkStmt(Checker *c, AcInfo *ac, Stmt *s, int depth, int scope, int minLoopScope,
+                         int condDepth) {
     if (!s) return true;
     ac->idleSeq++;
     if (s->kind == ST_DOMAIN)
@@ -6254,6 +6304,7 @@ static bool idleWalkStmt(Checker *c, AcInfo *ac, Stmt *s, int depth, int scope, 
             w.loopScope = minLoopScope;
             w.seq       = ac->idleSeq;
             w.isAssign  = true;
+            w.condDepth = condDepth;
             if (s->u.assign.op) {
                 w.kind = IDLE_DEST_COMPOUND;
             } else if (!acTargetSlotIsHeap(c, t)) {
@@ -6287,6 +6338,7 @@ static bool idleWalkStmt(Checker *c, AcInfo *ac, Stmt *s, int depth, int scope, 
                     fs->fname = w.fname;
                     fs->host  = w.host;
                     fs->value = w.value;
+                    fs->seq   = w.seq;
                     *(IdleFieldStore **)vecPush(&ac->idleFieldStores) = fs;
                     w.allocDepth = idleFreshAt(ac, w.host, w.seq)
                                  ? idleFreshAt(ac, w.host, w.seq)->arenaLevel : -1;
@@ -6323,6 +6375,7 @@ static bool idleWalkStmt(Checker *c, AcInfo *ac, Stmt *s, int depth, int scope, 
                 w.loopScope = minLoopScope;
                 w.value     = s->u.var.init;
                 w.seq       = ac->idleSeq;
+                w.condDepth = condDepth;
                 const char *why = NULL;
                 if (idleWriteOk(ac, &w, 0, &why, IDLE_STAGE_WALK) == IDLE_DEFER) {
                     IdleWrite *rec = arenaAllocZero(ac->a, sizeof *rec);
@@ -6333,9 +6386,13 @@ static bool idleWalkStmt(Checker *c, AcInfo *ac, Stmt *s, int depth, int scope, 
         }
         return idleWalkExprFlag(c, ac, s->u.var.init, depth, true, minLoopScope);
     }
-    /* 进循环体：那个块的作用域层就是"本迭代 arena"的层，取所有在册循环里最浅的一个。 */
+    /* 进循环体：那个块的作用域层就是"本迭代 arena"的层，取所有在册循环里最浅的一个。
+     * `condDepth` 进循环体**归零**：问的是"这一轮的迭代里这次存储会不会发生"，上一层的条件
+     * 包不包住这个循环与"每轮都存"无关。 */
     IdleWalk inner = { c, ac, depth + (idleLoopStmt(s) ? 1 : 0),
-                       scope + (idleScopedStmt(s) ? 1 : 0), minLoopScope };
+                       scope + (idleScopedStmt(s) ? 1 : 0), minLoopScope,
+                       idleLoopStmt(s) ? 0
+                                       : condDepth + ((s->kind == ST_IF || s->kind == ST_MATCH) ? 1 : 0) };
     if (idleLoopStmt(s)) {
         int bodyScope = scope + 1;                  /* 循环体在 extC 里恒是一个块 */
         if (inner.minLoopScope == 0 || bodyScope < inner.minLoopScope)
@@ -6401,7 +6458,7 @@ static bool idleWalkExprFlag(Checker *c, AcInfo *ac, Expr *e, int depth, bool bo
     }
     /* 表达式走查不改变三个深度：这里给的 0 只为了让聚合初始化完整（表达式不会走到
      * `idleWalkStmt` 里用它们的那些分支上；真走下去也只会更保守）。 */
-    IdleWalk inner = { c, ac, depth, 0, minLoopScope };
+    IdleWalk inner = { c, ac, depth, 0, minLoopScope, 1 };
     AstVisit v = { idleWalkExprCb, idleWalkStmtCb, &inner };
     return astWalkExprChildren(e, &v);
 }
@@ -6733,7 +6790,7 @@ void computeFnAcyclic(Checker *c) {
         vecInit(&info[i].idleBindLvl, a, sizeof(void *));
         vecInit(&info[i].idleFieldLvl, a, sizeof(void *));
         vecInit(&info[i].idleFieldStores, a, sizeof(void *));
-        IdleWalk iw = { c, &info[i], 0, 1, 0 };
+        IdleWalk iw = { c, &info[i], 0, 1, 0, 0 };
         AstVisit iv = { idleWalkExprCb, idleWalkStmtCb, &iw };
         astWalkStmtChildren(f->body, &iv);
         /* (a)/(a′) 剩下的两半与细化 A：判据的**后处理期**（走查期只筛掉了"循环里写非本迭代
