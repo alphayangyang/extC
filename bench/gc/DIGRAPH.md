@@ -791,6 +791,12 @@ NODE_JIT compiled=4 marking=6 targets=MAGLEV:4 modes=ConcurrencyMode::kConcurren
 在"缺采集"时报 FAIL ✗；自检 `python3 bench/gc/jit_stats.py selftest` = **4 红 + 1 绿**（绿的那格是
 "有头部行、0 个 GC 事件"= 合法的 0）✓。
 
+> ⚠️ **口径更正（`task-78` ①-f，实测 ✓）**：本项目所有 Java 档都在 **`taskset -c 6`（单核）** 下跑，
+> 而 **JVM 在单核下自选 `Using Serial`（不是 G1）** —— 原始行 `[0.001s][info][gc] Using Serial` ✓，
+> 且**与 `-XX:ActiveProcessorCount=1` 无关**（去掉该旗标仍选 Serial ✓）。
+> ⇒ **"Java 默认档"实为 Serial 口径** ✗；**要 G1 必须显式 `-XX:+UseG1GC`，并当作独立配置标注** ✓。
+> 好消息：**内部口径一致**（§6.10/§6.11 都是单核 Serial）✓。
+
 ### 6.10.5 §6.10 结果表（**实测** ✓ 2026-10-14，core 6，两轮 + k=6 重跑）
 
 **跑法（原文）**：`taskset -c 6 env SKIP_BUILD=1 PIN=6 REPS=5 SIZES="250000 1000000" EXTC_BIN=/tmp/gcbench/extc.pin3 bash run-digraph.sh jit`
