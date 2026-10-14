@@ -22,7 +22,7 @@ else:
     m=cands[0]; cond=m.group(1)
     mm=re.search(r'(?:int64_t|int|long|size_t)\s+(\w+)\s*=', cond) or re.search(r'(\w+)\s*<', cond)
     var=mm.group(1)
-    body='\n        fprintf(stderr,"UNITSTAMP v=%lld t=%lld\\n",(long long)%s,hp_now());'%var
+    body='\n        fprintf(stderr,"UNITSTAMP v=%lld t=%lld\\n",(long long)'+var+',hp_now());'
     if m.group(0).lstrip().startswith('while'):
         # while 循环体在 { 之后 ⇒ 同样插在 { 之后即可
         pass
