@@ -1315,7 +1315,7 @@ static const char *const RECLAIM_RT[] = {
  * @param timeOn     `EXTC_RC_TIME`：运行期分项计时。
  * @param sweepFree  `EXTC_RC_SWEEP_FREE`：事件档，`shouldSweep` 恒 0。
  */
-void reclaimEmitRuntime(Arena *a, Buf *out, int noCount, int timeOn, int sweepFree) {
+void reclaimEmitRuntime(Arena *a, Buf *out, int noCount, int timeOn, int sweepFree, int localStore) {
     (void)a;
     /* 先立宏：上面那些 `#if EXTC_RC_NOCOUNT` / `#if EXTC_RC_TIME` 走哪一支由它们定。 */
     bufPuts(out, noCount ? "#define EXTC_RC_NOCOUNT 1\n" : "#define EXTC_RC_NOCOUNT 0\n");
@@ -1323,4 +1323,17 @@ void reclaimEmitRuntime(Arena *a, Buf *out, int noCount, int timeOn, int sweepFr
     bufPuts(out, sweepFree ? "#define EXTC_RC_SWEEP_FREE 1\n" : "#define EXTC_RC_SWEEP_FREE 0\n");
     for (size_t i = 0; i < sizeof RECLAIM_RT / sizeof RECLAIM_RT[0]; i++)
         bufPuts(out, RECLAIM_RT[i]);
+    /* `EXTC_RC_LOCALSTORE`（编译期，默认关）：**本地/形参槽**的存储专用入口。
+     * `storeRefOwned(slot, v, owner=0)` 在无计数档下的 gated 块做了两次 `ownSlab` 之后
+     * 因为 `so == 0` 什么都不做（`if (so) { … }`）⇒ 那两次查询是死代码。这里给一条只写的
+     * 等价入口；**只在无计数档**有意义（计数档要走 holdUpd，codegen 也不会发它）。 */
+    if (localStore) {
+        bufPuts(out,
+            "#if EXTC_RC_NOCOUNT\n"
+            "__attribute__((unused)) static inline void extc_rc_storeRefLocal(void **slot, void *v) {\n"
+            "    if (slot) { *slot = v; return; }\n"
+            "    extc_rc_storeRef(slot, v);\n"
+            "}\n"
+            "#endif\n");
+    }
 }

@@ -43,7 +43,7 @@ SRC=${SRC:-$ROOT/tests/reclaim-shapes/cyclic_pressure.extc}
 EXTC=${EXTC:-$ROOT/build/extc}
 CC=${CC:-cc}
 N=${N:-200000}
-LIMIT=${LIMIT:-161930000}          # 槽元数据瘦身后实测 154214566 × 1.05（棘轮只许往下）
+LIMIT=${LIMIT:-161653535}          # 本地槽只写入口落地后实测 153955748 × 1.05（棘轮只许往下；上一线 161930000）
 
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 

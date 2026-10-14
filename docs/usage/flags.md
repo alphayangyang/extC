@@ -65,6 +65,11 @@ debug switches -- diagnostics only, **except the marked below**:
                        rests on region sweeps alone -- **CHANGES THE OUTPUT**.
   EXTC_RC_DBG_LEVEL=1  diagnostic only: print, for every reference store site, whether the
                        value and its host object sit in the same arena level.
+  EXTC_RC_LOCALSTORE=0 kill switch: turn OFF the local/parameter slot store entry
+                       `extc_rc_storeRefLocal` (write-only: it skips the two `ownSlab`
+                       probes the generic entry performs and discards, because the host
+                       is a slot, not an object). **On by default**; no-count regime
+                       only; `=0` restores the pre-flip output byte for byte.
   EXTC_RC_TIME=1       diagnostic only: the generated program counts how often each
                        reclamation component is called and prints the tally to stderr.
   EXTC_RC_SWEEPFREE=1  diagnostic only: event regime -- turn holder counting on and stop

@@ -434,6 +434,9 @@ typedef struct {
     int         rcNShard;
     /* `EXTC_RC_NOCOUNT=1`：计数入口编译成空操作（只靠清扫回收）。见 reclaim.c 的 `#if`。 */
     int         rcNoCount;
+    /* `EXTC_RC_LOCALSTORE`（**默认开**，`=0` 是 kill switch）：本地/形参槽（`owner == 0`）
+     * 发专用入口 `extc_rc_storeRefLocal`，省掉无计数档下那两次对结果无用的 `ownSlab`。 */
+    int         rcLocalStore;
     /* `EXTC_RC_SWEEPFREE=1`：事件档（不扫），见下面开关处的说明。 */
     int         rcSweepFree;
     /* 分配点序号：片号 = `rcSite++ % rcNShard`。每发射一个 rc 分配表达式加一，所以同一处
@@ -6138,6 +6141,13 @@ static void genStmtInner(CG *g, Stmt *s) {
                                           : s->u.assign.target->u.ident.name;
                     if (rcEmitStoreRelease(g, tgt, atn, val, s->u.assign.value)) return;
                 }
+                /* 本地/形参槽（`hostBase == NULL` ⇒ `owner` 为 `"0"`）：无计数档下
+                 * `storeRefOwned` 的 gated 块对 `so == 0` 什么都不做 ⇒ 发只写入口。
+                 * 放在 `rcEmitStoreRelease` 之后：定点释放那条路先走、语义不变。 */
+                if (g->rcLocalStore && g->rcNoCount && hostBase == NULL) {
+                    cgLine(g, "extc_rc_storeRefLocal((void **)&(%s), (void *)(%s));", tgt, val);
+                    return;
+                }
                 cgLine(g, "extc_rc_storeRefOwned((void **)&(%s), (void *)(%s), (void *)(%s));",
                        tgt, val, owner);
                 return;
@@ -9278,7 +9288,7 @@ static void emitRuntimePrologue(CG *g, Buf *out, Module *m) {
      * `scanUnitReclaim` from that criterion; `EXTC_RECLAIM=1` forces it on, `=0` off). */
     if (g->needReclaim) {
         reclaimEmitRuntime(g->arena, out, g->rcNoCount, getenv("EXTC_RC_TIME") != NULL,
-                           g->rcSweepFree == 1);
+                           g->rcSweepFree == 1, g->rcLocalStore == 1);
         /* 区域由 **arena 的地址**认领。分配点本来就知道自己落在哪只 arena 上
          * （`arenaRefAt`），于是区域的寿命与那只 arena 完全一致 —— 包括被调者用调用者的
          * 家 arena 分配的那种情形（家 arena 是**同一个地址**一路传下来的），也包括递归里
@@ -10100,6 +10110,13 @@ static void scanUnitNeeds(CG *g, Module *m) {
             long v = strtol(sh, NULL, 10);
             if (v > 1) g->rcNShard = (int)(v > 64 ? 64 : v);
         }
+    }
+    /* `EXTC_RC_LOCALSTORE`：本地/形参槽专用入口。**默认开**（2026-10 翻默认；`=0` 是 kill switch，
+     * 关掉后生成物回到翻默认之前的样子 —— 语料逐字节相同）。只作用于无计数档（见发射点）。 */
+    g->rcLocalStore = 1;
+    {
+        const char *ls = getenv("EXTC_RC_LOCALSTORE");
+        if (ls && *ls && strcmp(ls, "0") == 0) g->rcLocalStore = 0;
     }
     /* `EXTC_RC_NOCOUNT`：持有者计数的开关。**默认 1 = 不计数**（只靠清扫回收）——
      * 翻转的依据见 CHANGELOG 第十一刀：同一套 31 条形状棘轮、ASan 语料、gaps 集合、

@@ -44,6 +44,21 @@ INJECTIONS = {
         "gate": "gate-reclaim-switch",
         "patches": [(SRC, '    "            if (sv   && sv->region   != r) extc_rc_rsIncSlab(sv, v);\\n",\n', ""), (SRC, '    "            if (sv   && sv->region   != host) extc_rc_rsIncSlab(sv, v);\\n",\n', "")],
     },
+    "localstore-on-objhost": {
+        "why": "把对象宿主（`hreg != NULL`）的引用存储也改发本地槽的只写入口 "
+               "`extc_rc_storeRefLocal` ⇒ 跨区登记整段丢失（该入口只允许用在 `owner == 0` 的槽上）",
+        "gate": "gate-reclaim-switch",
+        # 打的是**发射点**（codegen 里 `hreg != NULL` 那条分支），不是运行期文本：
+        # 只改 `storeRefOwned` 的兜底分支打不到热路径（那条分支的宿主 `hreg == NULL`）。
+        "patches": [("src/back/codegen.c",
+                     '                const char *hreg = rcFreshHostRegion(g, hostBase);\n                if (hreg) {\n',
+                     '                const char *hreg = rcFreshHostRegion(g, hostBase);\n'
+                     '                if (hreg && g->rcLocalStore) {   /* 注入 localstore-on-objhost */\n'
+                     '                    cgLine(g, "extc_rc_storeRefLocal((void **)&(%s), (void *)(%s));", tgt, val);\n'
+                     '                    return;\n'
+                     '                }\n'
+                     '                if (hreg) {\n')],
+    },
     "sweep-never": {
         "why": "让 `shouldSweep` 永不触发 ⇒ 垃圾只等区域丢弃，峰值随轮数涨（**内存类**失效）",
         "gate": "gate-reclaim-switch",

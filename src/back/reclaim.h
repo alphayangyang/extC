@@ -47,6 +47,6 @@
  * @param timeOn     `EXTC_RC_TIME`：运行期分项计时。
  * @param sweepFree  `EXTC_RC_SWEEP_FREE`：事件档，`shouldSweep` 恒 0。
  */
-void reclaimEmitRuntime(Arena *a, Buf *out, int noCount, int timeOn, int sweepFree);
+void reclaimEmitRuntime(Arena *a, Buf *out, int noCount, int timeOn, int sweepFree, int localStore);
 
 #endif /* EXTC_RECLAIM_H */

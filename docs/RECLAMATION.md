@@ -418,6 +418,7 @@ p = null                 // 计数 0 —— 放
 | 义务 7：种子不完整 ⇒ 目标区域**退出清扫** | **不安全** | `storeRefUnknown` / `storeStructCons` 的保守分支 | 单测 `义务 7：…退出清扫` + 注入 `noSweep-drop` ⇒ 红在那条上 |
 | 参与区域数（单区域免登记快路径的前提）| **不安全** | `alloc`、赋值宿主、`storeStructCons` 各记 `partN` | `gate-note-part`（**在真实缺陷 `storeStructCons` 上红过**）+ `cross-region` 登记量判据 |
 | 触发语义：压力阈值随 `live`/`scale` 更新 | 性能/内存 | `collect`/`regionFloor`/`regionNew` 末的 `thrUpd` | 注入 `thr-stale` ⇒ `阈值缓存③：倍数翻倍后阈值 ×2` |
+| 本地/形参槽的只写入口（`EXTC_RC_LOCALSTORE`，默认关）**只允许用在 `owner == 0` 的槽上** | **不安全**（对象宿主走它 ⇒ 跨区登记整段丢失）| `codegen.c` 的 `rcLocalStore && rcNoCount && hostBase == NULL`；`storeRefLocal` 只写 | 注入 `localstore-on-objhost`（把 `hreg != NULL` 的对象宿主存储也改发该入口）⇒ `cross_region` 的 `rs_inc/rs_dec/rs_live/rs_hwm` 从 `200000/196611/3389/65537` **塌成 0/0/0/0**，`gate-reclaim-switch` **红（通过 1 失败 1，exit 1）** —— 实测；等价性（无计数档下 `storeRefOwned(slot,v,0)` 的 gated 块因 `so == 0` 无副作用）见 `tests/reclaim-perf/LOCALSTORE-IMPL.md` |
 | 回收税判据线自身有牙（税不许涨）| 性能 | 赋值/分配路径的实现（区域指针复用、登记快路径…）| 注入 `perf-lookup`（让 `rcRegionRef` 恒返回 NULL）⇒ `gate-reclaim-tax` 红在 `税 1.679× > 上限 1.620×` |
 | 界不随轮数涨（churn / 峰值）| 内存 | 触发 + 清扫 + 区域轮转 | 注入 `sweep-never` ⇒ `bounded-churn N→4N 2.71×`；注入 `overregister` ⇒ `cyclic-pressure 3.64×` |
 | 计数模式：计数归零**当场回收** | 性能/内存 | `holdUpd*` | 注入 `count-nodec` ⇒ `storeRef：归零当场释放` |

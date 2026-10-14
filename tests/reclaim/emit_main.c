@@ -21,7 +21,7 @@ int main(void) {
     const char *nc = getenv("EXTC_RC_NOCOUNT");
     int noCount = (nc && nc[0] == '0') ? 0 : 1;
     reclaimEmitRuntime(&a, &out, noCount, getenv("EXTC_RC_TIME") != NULL,
-                          getenv("EXTC_RC_SWEEPFREE") != NULL);
+                          getenv("EXTC_RC_SWEEPFREE") != NULL, getenv("EXTC_RC_LOCALSTORE") != 0 ? 1 : 0);
     fputs(bufCstr(&out), stdout);
     return 0;
 }
