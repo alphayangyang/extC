@@ -469,6 +469,20 @@ def build_items() -> list:
     # `tests/reclaim-acyclic/gate-acyclic.sh` 自报 `# manual:`；原先那条
     # `gate-event-bounded` 已删除（它钉的正是这条已知坏的路径）。
 
+    # ---- 闸门·idle 投影（规则 P）：把"纯税族"判 idle 的**红判据** ---------------------
+    # 目标形状（建好—遍历—块退出整片丢）现在付 1.0–2.5× 墙钟却不省内存；要放宽的规则见
+    # `tests/reclaim-perf/IDLE-PROJECTION-RECON.md`。判据两侧：
+    #   · 红集（9 个形状）必须判 idle（默认档与关档**逐字节相同**）—— 今天全红，入已知欠账；
+    #   · 护栏（真的丢引用的 6 个形状）**不许** idle，且默认档 N vs 4N 峰值 <1.5×、语义一致
+    #     —— 两侧今天都成立（有牙）；护栏翻红是安全问题，不是欠账。
+    items.append(cmd(
+        "gate-idle-projection", "gate",
+        "闸门·idle 投影：目标形状必须判 idle（逐字节=关档）+ 护栏必须仍付钱/有界/语义一致",
+        ["python3", "tests/reclaim-perf/gate-idle-projection.py"], timeout=1200,
+        ok_msg=ok_first(r"^通过（已知欠账"),
+        bad_msg="tests/reclaim-perf/gate-idle-projection.py（idle 判据：护栏被放行 / 目标未转绿 / 语义或界）",
+        bad_dump=dump_tail(14)))
+
     # ---- 闸门·覆盖点定点释放（环垃圾不等清扫）------------------------------------
     # 形状 `ring_per_round`：每轮建一条 256 结点的闭环、环头存进长命槽 `keep`，下一轮覆盖
     # ⇒ 判据：清扫次数 ≤ 1（第 1 次是第 2 轮循环头的启动空扫）、N vs 4N 峰值 < 1.5×、
