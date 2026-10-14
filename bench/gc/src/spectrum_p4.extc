@@ -1,0 +1,166 @@
+// bench/gc 人类形状 A：**编译器前端型**（task-46）
+// 长命、基本只读的**符号表**（链式哈希）+ 逐单元处理：每单元分配大量短命 AST 结点、
+// 往长命表里插入少量条目、大量查询，单元结束整片丢。
+//
+// 期望的“人味”：活集大而**稳定**（表随单元数缓慢长），写足迹只落在“当前单元 + 少量插入”上。
+// 与 `digraph`（单巨分量 / 每轮换血 96.7% / 写足迹铺满活结构）对照。
+//
+// 惯常写法 ✓（没有为回收器调整结构）：链式哈希、链表 AST、按单元作用域整片丢。
+//
+// 输出（两行整数，确定性）：
+//   units=<n> symbols=<表内条目> asts=<本参数下的 AST 结点总数> sum=<校验和>
+//   inserts=<插入次数> hits=<查询命中> misses=<未命中> probes=<链上比较次数>
+// argv[1] = 单元数（默认 2000）· argv[2] = seed（默认 20261013）
+use std::io
+
+struct sym {
+    name: i64
+    val: i64
+    next: ?mut ref sym
+}
+
+struct unit_node {
+    id: i64
+    kind: i64
+    payload: i64
+    sib: ?mut ref unit_node
+}
+
+struct table {
+    buckets: [2048]?mut ref sym
+    count: i64
+}
+
+var gstate: i64 = 1
+
+fn nxt() -> i64 {
+    gstate = (gstate * 1103515245 + 12345) & 2147483647
+    return gstate
+}
+
+fn parseI64(s: slice<u8>) -> i64 {
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    return v
+}
+
+fn bucketOf(name: i64) -> i64 {
+    return (name * 2654435761) & 2047
+}
+
+fn tableInsert(tab: mut ref table, name: i64, val: i64) {
+    var h: i64 = bucketOf(name)
+    var s: mut ref sym = new sym
+    s.name = name
+    s.val = val
+    s.next = tab.buckets[h]
+    tab.buckets[h] = s
+    tab.count = tab.count + 1
+}
+
+// 返回 (val << 20) | 链上比较次数；未命中返回 -1（val/probes 都在 2^20 以内）
+fn tableFind(tab: mut ref table, name: i64) -> i64 {
+    var h: i64 = bucketOf(name)
+    var cur: ?mut ref sym = tab.buckets[h]
+    var probes: i64 = 0
+    while cur != null {
+        probes = probes + 1
+        if cur.name == name {
+            return (cur.val << 20) | probes
+        }
+        cur = cur.next
+    }
+    return i64(-1)
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var units: i64 = 2000
+    var sd: i64 = 20261013
+    if args.len > 1 { units = parseI64(args[1]) }
+    if args.len > 2 { sd = parseI64(args[2]) }
+    if units < 8 { units = 8 }
+    gstate = sd & 2147483647
+
+    var tab: mut ref table = new table
+    tab.count = 0
+
+    var sum: i64 = 0
+    var asts: i64 = 0
+    var inserts: i64 = 0
+    var hits: i64 = 0
+    var misses: i64 = 0
+    var probes: i64 = 0
+    var nmake: i64 = 0
+
+    // 预先放一批“标准库符号”，之后再逐步插入新符号 ⇒ 表是长命、基本只读的
+    var pre: i64 = 0
+    while pre < 4096 {
+        tableInsert(tab, pre, pre * 7 + 11)
+        inserts = inserts + 1
+        pre = pre + 1
+    }
+
+    var u: i64 = 0
+    while u < units {
+        // ---- 本单元：一批短命 AST 结点（链表），单元末尾整片丢 ----
+        var ast: ?mut ref unit_node = null
+        var m: i64 = 640 + nxt() % 256
+        var j: i64 = 0
+        while j < m {
+            var p: mut ref unit_node = new unit_node
+            p.id = nmake
+            nmake = nmake + 1
+            p.kind = nxt() % 7
+            p.payload = nxt() % 1000
+            p.sib = ast
+            ast = p
+            j = j + 1
+        }
+        asts = asts + m
+        // 顺链做一次“走 AST”的读取（防 DCE，也是真实前端会做的事）
+        var cur: ?mut ref unit_node = ast
+        while cur != null {
+            sum = (sum + cur.id * 3 + cur.payload + cur.kind) & 4611686018427387903
+            cur = cur.sib
+        }
+
+        // ---- 少量插入（每单元 2 条新符号；名字取自随机流，可能已存在）----
+        var ins: i64 = 0
+        while ins < 8 {
+            var name: i64 = 4096 + nxt() % (units * 4 + 64)
+            var r: i64 = tableFind(tab, name)
+            if r < 0 {
+                tableInsert(tab, name, name * 13 + u)
+                inserts = inserts + 1
+            }
+            ins = ins + 1
+        }
+
+        // ---- 大量查询（读主导）----
+        var q: i64 = 0
+        while q < 96 {
+            var name2: i64 = nxt() % (4096 + u * 3 + 8)
+            var res: i64 = tableFind(tab, name2)
+            if res < 0 {
+                misses = misses + 1
+            } else {
+                hits = hits + 1
+                probes = probes + (res & 1048575)
+                sum = (sum + (res >> 20)) & 4611686018427387903
+            }
+            q = q + 1
+        }
+        u = u + 1
+    }
+
+    io::cout << "units=" << units << " symbols=" << tab.count << " asts=" << asts << " sum=" << sum << "\n"
+    io::cout << "inserts=" << inserts << " hits=" << hits << " misses=" << misses << " probes=" << probes << "\n"
+    return 0
+}
