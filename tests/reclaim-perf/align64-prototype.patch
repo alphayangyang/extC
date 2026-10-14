@@ -1,0 +1,141 @@
+--- a/src/back/reclaim.c
++++ b/src/back/reclaim.c
+@@ -71,6 +71,13 @@
+     "#ifndef EXTC_RC_SCALE_MAX\n",
+     "#define EXTC_RC_SCALE_MAX ((int64_t)1 << 40)\n",
+     "#endif\n",
++    "/* `EXTC_RC_ALIGN64`（编译期，默认关）：元数据数组按 64 B 对齐 + 热辅助函数加 `restrict`。\n",
++    " * 只改**生成物的内存布局/别名信息**：默认关时走原来的 calloc/malloc、签名不带 restrict。 */\n",
++    "#if EXTC_RC_ALIGN64\n",
++    "#define EXTC_RC_RESTRICT restrict\n",
++    "#else\n",
++    "#define EXTC_RC_RESTRICT\n",
++    "#endif\n",
+     "#ifndef EXTC_RC_HOLD_SAT\n",
+     "#define EXTC_RC_HOLD_SAT 65535u\n",
+     "#endif\n",
+@@ -196,13 +203,13 @@
+     "    return ((uint64_t)1 << EXTC_RC_RCP_SHIFT) / ss + 1;\n",
+     "}\n",
+     "/* 指针到载荷起点的偏移：**槽首校验与索引共用同一个来源**（两处各算一次就会漂移）。 */\n",
+-    "__attribute__((unused)) static inline size_t extc_rc_offOf(const ExtcRcSlab *s, const void *p) {\n",
++    "__attribute__((unused)) static inline size_t extc_rc_offOf(const ExtcRcSlab *EXTC_RC_RESTRICT s, const void *p) {\n",
+     "    return (size_t)((const char *)p - EXTC_RC_SLAB_DATA(s));\n",
+     "}\n",
+-    "__attribute__((unused)) static inline size_t extc_rc_slotOfOff(const ExtcRcSlab *s, size_t off) {\n",
++    "__attribute__((unused)) static inline size_t extc_rc_slotOfOff(const ExtcRcSlab *EXTC_RC_RESTRICT s, size_t off) {\n",
+     "    return (size_t)(((uint64_t)off * s->rcp) >> EXTC_RC_RCP_SHIFT);\n",
+     "}\n",
+-    "__attribute__((unused)) static inline size_t extc_rc_slotOf(ExtcRcSlab *s, void *p) {\n",
++    "__attribute__((unused)) static inline size_t extc_rc_slotOf(ExtcRcSlab *EXTC_RC_RESTRICT s, void *p) {\n",
+     "    return extc_rc_slotOfOff(s, extc_rc_offOf(s, p));\n",
+     "}\n",
+     "__attribute__((unused)) static inline uint64_t extc_rc_bit(size_t i) { return (uint64_t)1 << (i & 63); }\n",
+@@ -212,6 +219,21 @@
+     "    fprintf(stderr, \"trap: reclaim: %s\\n\", why);\n",
+     "    exit(1);\n",
+     "}\n",
++    "#if EXTC_RC_ALIGN64\n",
++    "/* 元数据数组按 64 B 对齐 ⇒ 一个槽的位图/每槽数组不再与别的数组共享缓存行。\n",
++    " * `aligned_alloc` 要求 size 是 alignment 的整数倍 ⇒ 向上取整；失败返回 0 交给调用方 trap。 */\n",
++    "__attribute__((unused)) static void *extc_rc_metaAlloc(size_t bytes) {\n",
++    "    size_t rounded = (bytes + 63u) & ~(size_t)63u;\n",
++    "    /* 溢出（不可能到）⇒ 交 0 给调用方的失败检查；写成三元而不是提前 return，\n",
++    "     * 免得往标记清册里再加一个 skip 口。 */\n",
++    "    return rounded < bytes ? (void *)0 : aligned_alloc(64, rounded);\n",
++    "}\n",
++    "#define EXTC_RC_META_CALLOC(words) extc_rc_metaAlloc((words) * sizeof(uint64_t))\n",
++    "#define EXTC_RC_META_MALLOC(n)     extc_rc_metaAlloc((n) * sizeof(uint16_t))\n",
++    "#else\n",
++    "#define EXTC_RC_META_CALLOC(words) calloc((words), sizeof(uint64_t))\n",
++    "#define EXTC_RC_META_MALLOC(n)     malloc((n) * sizeof(uint16_t))\n",
++    "#endif\n",
+     "\n",
+     "/* ---- rc slab 注册表：只有 extc_rc_alloc 摸过的槽才是计数/标记的对象 ----\n",
+     " *\n",
+@@ -404,7 +426,7 @@
+     "}\n",
+     "/* 号 → 描述符。0 号空指针（无引用字段）。每槽只存 2 字节，代价是这里多一次表读；\n",
+     " * 表通常只有一两个条目，而标记/释放路径本来就要按描述符走一遍指针字段。 */\n",
+-    "__attribute__((unused)) static inline const ExtcRcType *extc_rc_typeOf(const ExtcRcSlab *s, size_t i) {\n",
++    "__attribute__((unused)) static inline const ExtcRcType *extc_rc_typeOf(const ExtcRcSlab *EXTC_RC_RESTRICT s, size_t i) {\n",
+     "    uint16_t k = s->tid[i];\n",
+     "    return k ? s->ttab[k] : (const ExtcRcType *)0;\n",
+     "}\n",
+@@ -445,16 +467,22 @@
+     " * 每槽那两个 16 位数组相反：**只有占用槽会被读**（访问器一律先查 occ），所以用 malloc、\n",
+     " * 在分配那一刻按槽清 —— calloc 会把整片急切清零，落在堆上时（大对象走 mmap 才惰性）\n",
+     " * 这些小形状里的几十万字节立刻变成 RSS。 */\n",
+-    "    s->occ   = (uint64_t *)calloc(s->nwords, sizeof(uint64_t));\n",
+-    "    s->mark  = (uint64_t *)calloc(s->nwords, sizeof(uint64_t));\n",
+-    "    s->rsbit = (uint64_t *)calloc(s->nwords, sizeof(uint64_t));\n",
++    "    s->occ   = (uint64_t *)EXTC_RC_META_CALLOC(s->nwords);\n",
++    "    s->mark  = (uint64_t *)EXTC_RC_META_CALLOC(s->nwords);\n",
++    "    s->rsbit = (uint64_t *)EXTC_RC_META_CALLOC(s->nwords);\n",
++    "#if EXTC_RC_ALIGN64\n",
++    "    /* 对齐分配不走 calloc ⇒ 显式清零（位图会被整片顺序读，必须干净） */\n",
++    "    if (s->occ)   memset(s->occ,   0, (size_t)s->nwords * sizeof(uint64_t));\n",
++    "    if (s->mark)  memset(s->mark,  0, (size_t)s->nwords * sizeof(uint64_t));\n",
++    "    if (s->rsbit) memset(s->rsbit, 0, (size_t)s->nwords * sizeof(uint64_t));\n",
++    "#endif\n",
+     "/* `hold`（每槽 2 字节的持有者计数）只在**开着计数**时才需要；默认无计数时它是纯负担\n",
+     " * （一块 16 B 槽的 slab 上 ≈2.9 万指令）。关掉时连指针都不分配。 */\n",
+     "#if !EXTC_RC_NOCOUNT\n",
+-    "    s->hold  = (uint16_t *)malloc(nslots * sizeof(uint16_t));\n",
++    "    s->hold  = (uint16_t *)EXTC_RC_META_MALLOC(nslots);\n",
+     "#endif\n",
+-    "    s->rscnt = (uint16_t *)malloc(nslots * sizeof(uint16_t));\n",
+-    "    s->tid   = (uint16_t *)malloc(nslots * sizeof(uint16_t));\n",
++    "    s->rscnt = (uint16_t *)EXTC_RC_META_MALLOC(nslots);\n",
++    "    s->tid   = (uint16_t *)EXTC_RC_META_MALLOC(nslots);\n",
+     "    s->ttabCap = 8;\n",
+     "    s->ttabN = 2;\n",
+     "    s->ttab  = (const ExtcRcType **)calloc(s->ttabCap, sizeof(ExtcRcType *));\n",
+@@ -1315,12 +1343,13 @@
+  * @param timeOn     `EXTC_RC_TIME`：运行期分项计时。
+  * @param sweepFree  `EXTC_RC_SWEEP_FREE`：事件档，`shouldSweep` 恒 0。
+  */
+-void reclaimEmitRuntime(Arena *a, Buf *out, int noCount, int timeOn, int sweepFree, int localStore) {
++void reclaimEmitRuntime(Arena *a, Buf *out, int noCount, int timeOn, int sweepFree, int localStore, int align64) {
+     (void)a;
+     /* 先立宏：上面那些 `#if EXTC_RC_NOCOUNT` / `#if EXTC_RC_TIME` 走哪一支由它们定。 */
+     bufPuts(out, noCount ? "#define EXTC_RC_NOCOUNT 1\n" : "#define EXTC_RC_NOCOUNT 0\n");
+     bufPuts(out, timeOn ? "#define EXTC_RC_TIME 1\n" : "#define EXTC_RC_TIME 0\n");
+     bufPuts(out, sweepFree ? "#define EXTC_RC_SWEEP_FREE 1\n" : "#define EXTC_RC_SWEEP_FREE 0\n");
++    bufPuts(out, align64 ? "#define EXTC_RC_ALIGN64 1\n" : "#define EXTC_RC_ALIGN64 0\n");
+     for (size_t i = 0; i < sizeof RECLAIM_RT / sizeof RECLAIM_RT[0]; i++)
+         bufPuts(out, RECLAIM_RT[i]);
+     /* `EXTC_RC_LOCALSTORE`（编译期，默认关）：**本地/形参槽**的存储专用入口。
+--- a/src/back/reclaim.h
++++ b/src/back/reclaim.h
+@@ -47,6 +47,6 @@
+  * @param timeOn     `EXTC_RC_TIME`：运行期分项计时。
+  * @param sweepFree  `EXTC_RC_SWEEP_FREE`：事件档，`shouldSweep` 恒 0。
+  */
+-void reclaimEmitRuntime(Arena *a, Buf *out, int noCount, int timeOn, int sweepFree, int localStore);
++void reclaimEmitRuntime(Arena *a, Buf *out, int noCount, int timeOn, int sweepFree, int localStore, int align64);
+ 
+ #endif /* EXTC_RECLAIM_H */
+--- a/src/back/codegen.c
++++ b/src/back/codegen.c
+@@ -9288,7 +9288,7 @@
+      * `scanUnitReclaim` from that criterion; `EXTC_RECLAIM=1` forces it on, `=0` off). */
+     if (g->needReclaim) {
+         reclaimEmitRuntime(g->arena, out, g->rcNoCount, getenv("EXTC_RC_TIME") != NULL,
+-                           g->rcSweepFree == 1, g->rcLocalStore == 1);
++                           g->rcSweepFree == 1, g->rcLocalStore == 1, getenv("EXTC_RC_ALIGN64") != NULL);
+         /* 区域由 **arena 的地址**认领。分配点本来就知道自己落在哪只 arena 上
+          * （`arenaRefAt`），于是区域的寿命与那只 arena 完全一致 —— 包括被调者用调用者的
+          * 家 arena 分配的那种情形（家 arena 是**同一个地址**一路传下来的），也包括递归里
+--- a/tests/reclaim/emit_main.c
++++ b/tests/reclaim/emit_main.c
+@@ -21,7 +21,8 @@
+     const char *nc = getenv("EXTC_RC_NOCOUNT");
+     int noCount = (nc && nc[0] == '0') ? 0 : 1;
+     reclaimEmitRuntime(&a, &out, noCount, getenv("EXTC_RC_TIME") != NULL,
+-                          getenv("EXTC_RC_SWEEPFREE") != NULL, getenv("EXTC_RC_LOCALSTORE") != 0 ? 1 : 0);
++                          getenv("EXTC_RC_SWEEPFREE") != NULL, getenv("EXTC_RC_LOCALSTORE") != 0 ? 1 : 0,
++                          getenv("EXTC_RC_ALIGN64") != 0 ? 1 : 0);
+     fputs(bufCstr(&out), stdout);
+     return 0;
+ }
