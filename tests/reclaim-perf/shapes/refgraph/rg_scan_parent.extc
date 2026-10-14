@@ -1,0 +1,53 @@
+/* rg_scan_parent —— 引用图原型 A5：**父指针 + 游标上行到根**。
+ *
+ * 现实对应：并查集 `find`（无路径压缩）、DOM/视图树的父链、继承链、任何 "沿 parent 上溯" 的写法。
+ * 与 A1 的区别：字段名与方向不同（向上而不是向下），故意用同一族判据覆盖第二种拓扑。
+ *
+ * argv[1] = 链长 N（一条 N 结点的父链，从叶上溯到根）。
+ */
+use std::io
+
+struct node {
+    parent: ?mut ref node
+    v: i64
+}
+
+fn parseN(args: slice<slice<u8>>) -> i64 {
+    if args.len < 2 { return 200000 }
+    var s: slice<u8> = args[1]
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    if v > 0 { return v }
+    return 200000
+}
+
+fn main(args: slice<slice<u8>>) {
+    var n: i64 = parseN(args)
+    var root: ?mut ref node = null
+    var leaf: ?mut ref node = null
+    var i: i64 = 0
+    while i < n {
+        var p = new node
+        p.v = i
+        p.parent = leaf
+        leaf = p
+        if root == null { root = p }
+        i = i + 1
+    }
+    var sum: i64 = 0
+    var steps: i64 = 0
+    var x: ?mut ref node = leaf
+    while x != null {
+        sum = sum + (*x).v
+        x = (*x).parent
+        steps = steps + 1
+    }
+    io::cout << "n=" << n << " steps=" << steps << " sum=" << sum << "\n"
+}

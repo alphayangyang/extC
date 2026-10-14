@@ -1,0 +1,6 @@
+# gate-event-bounded 的已知欠账：`形状<TAB>判据`。只许缩短，转绿必须删行（见脚本头部）。
+# 判据：sweepfree_on / no_release_site / sem_same / bounded / event_build / default_build
+bench/gc/src/spectrum_p5.extc	bounded
+tests/reclaim-perf/shapes/refgraph/rg_evict_cache.extc	bounded
+tests/reclaim-perf/shapes/refgraph/rg_overwrite_ring.extc	bounded
+tests/reclaim-perf/shapes/refgraph/rg_walk_array.extc	bounded

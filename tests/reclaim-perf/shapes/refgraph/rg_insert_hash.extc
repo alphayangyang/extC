@@ -1,0 +1,82 @@
+/* rg_insert_hash —— 引用图原型 B2：**写进"宿主不是本帧 new 的局部量"的容器**。
+ *
+ * 现实对应：`hashMap.put` / `linmap.insert` / `tableInsert` —— 被调函数把新结点挂进
+ * **调用者传进来的容器**（形参宿主）。这是 `bench/gc` 的 P4/p2/p5 共同命中的那一条。
+ *
+ * 形状要点：结点在本帧循环里 `new`，宿主是形参 `tab`；写站点的宿主**永远不是本帧新局部量**。
+ * 与 B1（尾插）配对，检验"宿主"这一侧的判据。
+ *
+ * argv[1] = 插入结点数 N（桶数固定 64）。插入后再做 N 次只读查找。
+ */
+use std::io
+
+struct node {
+    next: ?mut ref node
+    v: i64
+}
+
+struct table {
+    buckets: [64]?mut ref node
+}
+
+fn parseN(args: slice<slice<u8>>) -> i64 {
+    if args.len < 2 { return 200000 }
+    var s: slice<u8> = args[1]
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    if v > 0 { return v }
+    return 200000
+}
+
+fn insert(tab: mut ref table, p: mut ref node) {
+    var h: i64 = p.v % 64
+    p.next = tab.buckets[h]
+    tab.buckets[h] = p
+}
+
+fn find(tab: mut ref table, key: i64) -> i64 {
+    var h: i64 = key % 64
+    var cur: ?mut ref node = tab.buckets[h]
+    var probes: i64 = 0
+    while cur != null {
+        probes = probes + 1
+        if (*cur).v == key { return probes }
+        cur = (*cur).next
+    }
+    return i64(-1)
+}
+
+fn main(args: slice<slice<u8>>) {
+    var n: i64 = parseN(args)
+    var tab = new table
+    var i: i64 = 0
+    while i < n {
+        var p = new node
+        p.v = i
+        insert(tab, p)
+        i = i + 1
+    }
+    /* 查找次数固定 4096：桶只有 64 个，链长 = N/64 ⇒ 按 N 次查找是 O(N²)，
+     * 那量的是形状自己的算法而不是回收 —— 只取样固定次数。 */
+    var hits: i64 = 0
+    var probes: i64 = 0
+    var k: i64 = 0
+    var lookups: i64 = 4096
+    if n < lookups { lookups = n }
+    while k < lookups {
+        var r: i64 = find(tab, k * 7)
+        if r > 0 {
+            hits = hits + 1
+            probes = probes + r
+        }
+        k = k + 1
+    }
+    io::cout << "n=" << n << " hits=" << hits << " probes=" << probes << "\n"
+}

@@ -1,0 +1,79 @@
+/* rg_evict_cache —— 引用图原型 C3：**有界缓存淘汰（真丢引用，容器态宿主）**。
+ *
+ * 现实对应：LRU/容量受限缓存、连接池的踢出、任何"超过容量就把最老的摘掉"的容器。
+ * 摘掉的那个结点不再可达 ⇒ 真垃圾；宿主是形参容器 ⇒ 同时踩"宿主"那一侧。
+ *
+ * 这一支必须**留在回收档**。
+ *
+ * argv[1] = 插入次数 N（桶数 64，每桶容量 4）。
+ */
+use std::io
+
+struct node {
+    next: ?mut ref node
+    v: i64
+}
+
+struct table {
+    buckets: [64]?mut ref node
+}
+
+fn parseN(args: slice<slice<u8>>) -> i64 {
+    if args.len < 2 { return 200000 }
+    var s: slice<u8> = args[1]
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    if v > 0 { return v }
+    return 200000
+}
+
+fn insertBounded(tab: mut ref table, p: mut ref node, cap: i64) {
+    var h: i64 = p.v % 64
+    p.next = tab.buckets[h]
+    tab.buckets[h] = p
+    var cnt: i64 = 0
+    var prev: ?mut ref node = null
+    var cur: ?mut ref node = tab.buckets[h]
+    while cur != null {
+        cnt = cnt + 1
+        if cnt > cap {
+            var pv: ?mut ref node = prev
+            if pv != null { (*pv).next = (*cur).next } else { tab.buckets[h] = (*cur).next }
+            return
+        }
+        prev = cur
+        cur = (*cur).next
+    }
+}
+
+fn main(args: slice<slice<u8>>) {
+    var n: i64 = parseN(args)
+    var tab = new table
+    var i: i64 = 0
+    while i < n {
+        var p = new node
+        p.v = i
+        insertBounded(tab, p, 4)
+        i = i + 1
+    }
+    var sum: i64 = 0
+    var live: i64 = 0
+    var b: i64 = 0
+    while b < 64 {
+        var cur: ?mut ref node = tab.buckets[b]
+        while cur != null {
+            sum = sum + (*cur).v
+            live = live + 1
+            cur = (*cur).next
+        }
+        b = b + 1
+    }
+    io::cout << "n=" << n << " live=" << live << " sum=" << sum << "\n"
+}

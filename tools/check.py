@@ -474,6 +474,19 @@ def build_items() -> list:
         bad_msg="tests/reclaim-acyclic/gate-acyclic.sh（事件档清扫/内存界回归，或已知盲点棘轮变动）",
         bad_dump=dump_tail(14)))
 
+    # ---- 闸门·事件档的**内存界**（计数完备性）-----------------------------------------
+    # 事件档 = 计数开 + 清扫关（原型 `ev` 那条路）。它的前提是计数完备：某处丢弃没销账，
+    # 对象就带着幽灵持有者永不归零 ⇒ 垃圾随规模线性涨。判据：活集与规模无关的形状上
+    # 4N/N 峰值 <1.5×、语义与关档逐字相同、事件档下不许留定点释放调用点。
+    # 已知欠账在 `tools/gate-event-bounded-known-bad.txt`，棘轮只许缩（转绿必须删行）。
+    items.append(cmd(
+        "gate-event-bounded", "gate",
+        "闸门·事件档内存界：计数完备性（覆盖/淘汰/窗口形状 4N/N 峰值 <1.5× + 无释放点 + 语义一致）",
+        ["python3", "tests/reclaim-acyclic/gate-event-bounded.py"], timeout=900,
+        ok_msg=ok_first(r"^通过（已知欠账"),
+        bad_msg="tests/reclaim-acyclic/gate-event-bounded.py（事件档内存界：新增泄漏 / 语义 / 释放点）",
+        bad_dump=dump_tail(14)))
+
     # ---- 闸门·覆盖点定点释放（环垃圾不等清扫）------------------------------------
     # 形状 `ring_per_round`：每轮建一条 256 结点的闭环、环头存进长命槽 `keep`，下一轮覆盖
     # ⇒ 判据：清扫次数 ≤ 1（第 1 次是第 2 轮循环头的启动空扫）、N vs 4N 峰值 < 1.5×、

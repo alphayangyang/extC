@@ -1,0 +1,62 @@
+/* rg_walk_buckets —— 引用图原型 A2：**哈希桶链 + 只读查找**。
+ *
+ * 现实对应：`hashMap` / `linmap` 的桶链、符号表查找、任何 "数组 of 链表头 + 游标" 的容器。
+ * 与 `bench/gc` 的 P4/human_a `tableFind` 是同一个形状族，这里剥到最小。
+ *
+ * 桶放在**堆上的容器对象**里（不是函数级定长数组）：把桶链放进函数级数组会被逃逸检查拒，
+ * 而真实的容器正是这一形态 ⇒ 原型要照真实写法取样。
+ *
+ * argv[1] = 插入结点数 N（桶数固定 64）。只读扫描全部桶链。
+ */
+use std::io
+
+struct node {
+    next: ?mut ref node
+    v: i64
+}
+
+struct table {
+    buckets: [64]?mut ref node
+}
+
+fn parseN(args: slice<slice<u8>>) -> i64 {
+    if args.len < 2 { return 200000 }
+    var s: slice<u8> = args[1]
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    if v > 0 { return v }
+    return 200000
+}
+
+fn main(args: slice<slice<u8>>) {
+    var n: i64 = parseN(args)
+    var tab = new table
+    var i: i64 = 0
+    while i < n {
+        var p = new node
+        p.v = i
+        p.next = tab.buckets[i % 64]
+        tab.buckets[i % 64] = p
+        i = i + 1
+    }
+    var sum: i64 = 0
+    var steps: i64 = 0
+    var b: i64 = 0
+    while b < 64 {
+        var cur: ?mut ref node = tab.buckets[b]
+        while cur != null {
+            sum = sum + (*cur).v
+            cur = (*cur).next
+            steps = steps + 1
+        }
+        b = b + 1
+    }
+    io::cout << "n=" << n << " steps=" << steps << " sum=" << sum << "\n"
+}

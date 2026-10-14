@@ -1,0 +1,68 @@
+/* rg_relink_delete —— 引用图原型 C1：**中间摘链（真丢引用）**。
+ *
+ * 现实对应：从链表/池里删除元素、观察者注销、LRU 摘链、任何 `prev.next = cur.next` 的写法。
+ *
+ * 与 A/B 两族的本质区别：被摘掉的结点**不再从任何根可达** ⇒ 真的产生了垃圾。
+ * 这一支必须**留在回收档**（判 idle 就会让峰值随 N 涨）。
+ *
+ * argv[1] = 结点数 N（建 N 结点链，然后隔一个摘一个）。
+ */
+use std::io
+
+struct node {
+    next: ?mut ref node
+    v: i64
+}
+
+fn parseN(args: slice<slice<u8>>) -> i64 {
+    if args.len < 2 { return 200000 }
+    var s: slice<u8> = args[1]
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    if v > 0 { return v }
+    return 200000
+}
+
+fn main(args: slice<slice<u8>>) {
+    var n: i64 = parseN(args)
+    var head = new node            /* 哨兵 */
+    head.v = i64(-1)
+    var tail: mut ref node = head
+    var i: i64 = 0
+    while i < n {
+        var p = new node
+        p.v = i
+        (*tail).next = p
+        tail = p
+        i = i + 1
+    }
+    var prev: mut ref node = head
+    var parity: i64 = 0
+    while (*prev).next != null {
+        var v: ?mut ref node = (*prev).next
+        if v != null {
+            if parity == 1 {
+                (*prev).next = (*v).next      /* ← 摘掉 v：它不再可达 */
+            } else {
+                prev = v
+            }
+            parity = 1 - parity
+        }
+    }
+    var sum: i64 = 0
+    var steps: i64 = 0
+    var cur: ?mut ref node = (*head).next
+    while cur != null {
+        sum = sum + (*cur).v
+        cur = (*cur).next
+        steps = steps + 1
+    }
+    io::cout << "n=" << n << " steps=" << steps << " sum=" << sum << "\n"
+}

@@ -1,0 +1,56 @@
+/* rg_grow_tail —— 引用图原型 B1：**尾插增长**（只增不删）。
+ *
+ * 现实对应：日志/事件追加、构建器（builder）模式、任何 `tail.next = p; tail = p` 的写法。
+ *
+ * 与 A1 的区别：没有"走一遍"的游标，只有**增长游标** `tail`。旧 tail 由 head 链可达，
+ * 所以同样不丢根；但字段写站点 `(*tail).next = p` 的宿主**不是本迭代新建**（tail 跨迭代活），
+ * 命中 (a′) 的深度条件 —— 这一支检验"宿主跨迭代"这一侧的判据。
+ *
+ * argv[1] = 结点数 N。
+ */
+use std::io
+
+struct node {
+    next: ?mut ref node
+    v: i64
+}
+
+fn parseN(args: slice<slice<u8>>) -> i64 {
+    if args.len < 2 { return 200000 }
+    var s: slice<u8> = args[1]
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    if v > 0 { return v }
+    return 200000
+}
+
+fn main(args: slice<slice<u8>>) {
+    var n: i64 = parseN(args)
+    var head = new node            /* 哨兵 */
+    head.v = i64(-1)
+    var tail: mut ref node = head
+    var i: i64 = 0
+    while i < n {
+        var p = new node
+        p.v = i
+        (*tail).next = p
+        tail = p
+        i = i + 1
+    }
+    var sum: i64 = 0
+    var steps: i64 = 0
+    var cur: ?mut ref node = (*head).next
+    while cur != null {
+        sum = sum + (*cur).v
+        cur = (*cur).next
+        steps = steps + 1
+    }
+    io::cout << "n=" << n << " steps=" << steps << " sum=" << sum << "\n"
+}

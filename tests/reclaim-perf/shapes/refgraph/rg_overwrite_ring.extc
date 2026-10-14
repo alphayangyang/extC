@@ -1,0 +1,51 @@
+/* rg_overwrite_ring —— 引用图原型 C2：**定长环缓冲覆盖（真丢引用，无环）**。
+ *
+ * 现实对应：`bench/gc` 的 P5 环形窗口、有界队列/日志缓冲、任何 `slot[i % n] = new` 的写法。
+ * 被覆盖的旧对象立刻不可达且**无环** ⇒ 只有清扫（或计数）能收它。
+ *
+ * 这一支必须**留在回收档**：判 idle 会让垃圾随 N 线性涨（它正是 `gate-idle-bounded` 那一类
+ * 反空跑形状的近亲）。
+ *
+ * argv[1] = 写入次数 N（环容量固定 64）。
+ */
+use std::io
+
+struct node {
+    v: i64
+}
+
+fn parseN(args: slice<slice<u8>>) -> i64 {
+    if args.len < 2 { return 200000 }
+    var s: slice<u8> = args[1]
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    if v > 0 { return v }
+    return 200000
+}
+
+fn main(args: slice<slice<u8>>) {
+    var n: i64 = parseN(args)
+    var cells: [64]?mut ref node
+    var i: i64 = 0
+    while i < n {
+        var p = new node
+        p.v = i
+        cells[i % 64] = p            /* ← 覆盖：上一轮的 p 变成不可达垃圾 */
+        i = i + 1
+    }
+    var sum: i64 = 0
+    var k: i64 = 0
+    while k < 64 {
+        var q: ?mut ref node = cells[k]
+        if q != null { sum = sum + (*q).v }
+        k = k + 1
+    }
+    io::cout << "n=" << n << " sum=" << sum << "\n"
+}

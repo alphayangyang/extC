@@ -1,0 +1,64 @@
+/* rg_drop_component —— 引用图原型 D1：**每轮建一个环组、整组丢（真丢环垃圾）**。
+ *
+ * 现实对应：`bench/gc` 的 `digraph`（可扩展的环组表）、会话/连接组、任何"分组建立、
+ * 整组销毁"的结构 —— 组内成环 ⇒ 引用计数永不归零，只有区域清扫能收。
+ *
+ * 这一支必须**留在回收档**：判 idle ⇒ 峰值随轮数线性涨（`gate-idle-bounded` 的红证明形状）。
+ *
+ * argv[1] = 轮数 N（每组建 8 结点、首尾相接成环）。
+ */
+use std::io
+
+struct node {
+    next: ?mut ref node
+    v: i64
+}
+
+fn parseN(args: slice<slice<u8>>) -> i64 {
+    if args.len < 2 { return 200000 }
+    var s: slice<u8> = args[1]
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    if v > 0 { return v }
+    return 200000
+}
+
+fn buildGroup(k: i64, base: i64) -> mut ref node {
+    var hub = new node
+    hub.v = base
+    var prev: mut ref node = hub
+    var i: i64 = 0
+    while i < k {
+        var p = new node
+        p.v = base + i + 1
+        (*prev).next = p
+        prev = p
+        i = i + 1
+    }
+    (*prev).next = hub          /* ← 闭环：整组无论何时被丢都不可达且成环 */
+    return hub
+}
+
+fn main(args: slice<slice<u8>>) {
+    var n: i64 = parseN(args)
+    /* `keep` 声明在循环**外** ⇒ 每轮那组对象必须活到函数层 ⇒ 提权进函数 arena；
+     * 覆盖 `keep` 时上一组变成**不可达环垃圾**（只等清扫收）。若把 `h` 声明在循环体内，
+     * 整组会随每轮 arena 释放 —— 那就测不到环垃圾（`rebuild_per_round` 那一类）。 */
+    var keep: ?mut ref node = null
+    var sink: i64 = 0
+    var r: i64 = 0
+    while r < n {
+        keep = buildGroup(8, r * 9)
+        r = r + 1
+    }
+    var k: ?mut ref node = keep
+    if k != null { sink = sink + (*k).v }
+    io::cout << "n=" << n << " sink=" << sink << "\n"
+}

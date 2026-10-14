@@ -1,0 +1,55 @@
+/* rg_walk_array —— 引用图原型 A6：**引用数组 + 下标迭代（只读）**。
+ *
+ * 现实对应：`varArray<T>` / `array<T>` 的元素遍历、"对象池已用段"的扫描、
+ * 任何 "先填数组、再按 index 读" 的容器（P5 的环形窗口读侧）。
+ *
+ * 与 A1–A5 的区别：**不是指针链游标**，而是"数组里的 ref 槽 + 整数下标"。
+ * 填与读分成两趟（第二趟只读），所以没有"边填边读"的逃逸问题。
+ *
+ * argv[1] = 填充结点数 N（数组容量固定 64，按 i % 64 填，每格是最后一次写入）。
+ */
+use std::io
+
+struct node {
+    v: i64
+}
+
+fn parseN(args: slice<slice<u8>>) -> i64 {
+    if args.len < 2 { return 200000 }
+    var s: slice<u8> = args[1]
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    if v > 0 { return v }
+    return 200000
+}
+
+fn main(args: slice<slice<u8>>) {
+    var n: i64 = parseN(args)
+    var cells: [64]?mut ref node
+    var i: i64 = 0
+    while i < n {
+        var p = new node
+        p.v = i
+        cells[i % 64] = p
+        i = i + 1
+    }
+    var sum: i64 = 0
+    var steps: i64 = 0
+    var k: i64 = 0
+    while k < 64 {
+        var q: ?mut ref node = cells[k]
+        if q != null {
+            sum = sum + (*q).v
+            steps = steps + 1
+        }
+        k = k + 1
+    }
+    io::cout << "n=" << n << " steps=" << steps << " sum=" << sum << "\n"
+}

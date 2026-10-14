@@ -1,0 +1,76 @@
+/* rg_walk_tree —— 引用图原型 A3：**二叉树 + 显式栈只读遍历**。
+ *
+ * 现实对应：AST 遍历、目录树、区间树、任何 "树 + 工作栈" 的算法。
+ * 栈本身是"引用数组"（局部聚合的 ref 槽），所以同时覆盖**栈上聚合**那一类写入。
+ *
+ * 树用递归自底向上建成完美二叉树（深度 ≈ log N）；遍历用显式栈，栈深 ≤ 深度 + 1。
+ * argv[1] = 结点数下界 N（实际结点数 = 2^d - 1 ≥ N）。
+ */
+use std::io
+
+struct node {
+    left: ?mut ref node
+    right: ?mut ref node
+    v: i64
+}
+
+fn parseN(args: slice<slice<u8>>) -> i64 {
+    if args.len < 2 { return 200000 }
+    var s: slice<u8> = args[1]
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    if v > 0 { return v }
+    return 200000
+}
+
+fn build(depth: i64, v: i64) -> ?mut ref node {
+    if depth == 0 { return null }
+    var p = new node
+    p.v = v
+    p.left = build(depth - 1, v * 2)
+    p.right = build(depth - 1, v * 2 + 1)
+    return p
+}
+
+fn main(args: slice<slice<u8>>) {
+    var n: i64 = parseN(args)
+    var d: i64 = 0
+    var cnt: i64 = 1
+    while cnt < n {
+        cnt = cnt * 2
+        d = d + 1
+    }
+    var root: ?mut ref node = build(d, 1)
+    var stack: [256]?mut ref node
+    var top: i64 = 0
+    if root != null {
+        stack[0] = root
+        top = 1
+    }
+    var sum: i64 = 0
+    var steps: i64 = 0
+    while top > 0 {
+        top = top - 1
+        var x: ?mut ref node = stack[top]
+        if x != null {
+            sum = sum + (*x).v
+            steps = steps + 1
+            if (*x).left != null {
+                stack[top] = (*x).left
+                top = top + 1
+            }
+            if (*x).right != null {
+                stack[top] = (*x).right
+                top = top + 1
+            }
+        }
+    }
+    io::cout << "n=" << n << " nodes=" << cnt << " steps=" << steps << " sum=" << sum << "\n"
+}

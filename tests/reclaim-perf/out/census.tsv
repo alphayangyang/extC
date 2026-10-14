@@ -1,0 +1,1236 @@
+# build/extc md5=57f6b8ccd7c16100d12e5b51b26849e8 HEAD=ad5f063
+path	class	size_on	size_off	md5_on	error
+bench/app/log.extc	ZERO	63293	63293	6d79eb20	
+bench/app/route.extc	ZERO	93543	93543	cd192a33	
+bench/app/session.extc	ZERO	81540	81540	b90ca221	
+bench/bigmatrix/src/bt.extc	ZERO	29567	29567	bb7aa7b9	
+bench/bigmatrix/src/cdq.extc	ZERO	40826	40826	80b50797	
+bench/bigmatrix/src/mandel.extc	ZERO	29847	29847	f172decc	
+bench/bigmatrix/src/radix.extc	ZERO	34031	34031	b50dd6aa	
+bench/bigmatrix/src/rebuild.extc	ZERO	27934	27934	1e57b2ef	
+bench/coro/deep1.extc	ZERO	5950	5950	5ac738cb	
+bench/coro/deep3.extc	ZERO	7472	7472	daa86609	
+bench/coro/liveN.extc	ZERO	53162	53162	3ff060cc	
+bench/coro/micro.extc	ZERO	9063	9063	27a9a778	
+bench/coro6/extc.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/bench/coro6/extc.extc:18:1: error: undefined name `R_ROUNDS`
+bench/coro6/loopextc.extc	ZERO	14788	14788	7714fe2f	
+bench/fib.extc	ZERO	8811	8811	eb55a3f3	
+bench/gc/io/read_ints.extc	ZERO	26831	26831	7b57f783	
+bench/gc/io/read_lines.extc	ZERO	24703	24703	9c78d669	
+bench/gc/io/read_tokens.extc	ZERO	23757	23757	16191a88	
+bench/gc/src/churn.extc	ZERO	9604	9604	70997343	
+bench/gc/src/digraph.extc	PAYS	126997	44095	fd97f351	
+bench/gc/src/human_a.extc	PAYS	306672	28185	81353377	
+bench/gc/src/human_b.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/bench/gc/src/human_b.extc:175:1: error: `root` lives across a `yield` and carries a reference
+bench/gc/src/rebuild.extc	ZERO	8427	8427	c5b2bbbb	
+bench/gc/src/spectrum_p1.extc	ZERO	22796	22796	a9b7f856	
+bench/gc/src/spectrum_p2.extc	PAYS	99097	24985	45815c59	
+bench/gc/src/spectrum_p3.extc	ZERO	23191	23191	669a5c05	
+bench/gc/src/spectrum_p4.extc	PAYS	306804	28329	0bcb7102	
+bench/gc/src/spectrum_p5.extc	PAYS	224240	26437	662cb23f	
+bench/heavy/bt.extc	ZERO	14884	14884	174a02d3	
+bench/heavy/mb.extc	ZERO	10646	10646	99d754ee	
+bench/heavy/rs.extc	ZERO	19495	19495	d60f0185	
+bench/httpd/httpd.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/bench/httpd/httpd.extc:175:1: error: module `sysfile` has nothing named `extc_http_date`
+bench/io/extc_in.extc	ZERO	33025	33025	e1693bce	
+bench/io/extc_out.extc	ZERO	34061	34061	d06fdd5a	
+bench/matmul.extc	ZERO	10466	10466	41de2163	
+bench/matmul_big.extc	ZERO	9737	9737	e71ff2bb	
+bench/mod.extc	ZERO	8763	8763	b137e50f	
+bench/multi/matmul.extc	ZERO	9749	9749	17415e85	
+bench/multi/mod.extc	ZERO	8775	8775	3ed728cf	
+bench/multi/sieve.extc	ZERO	9128	9128	8b7f6c00	
+bench/numpy-matmul/extc_native.extc	ZERO	29901	29901	ddb0071e	
+bench/numpy-matmul/extc_numpy.extc	GENFAIL	0	0		error: cannot find module `npytable` (imported by /home/alphayang/extC_Compiler/bench/numpy-matmul/extc_numpy.extc)
+bench/oi/p3810.extc	ZERO	25595	25595	9b6ff87c	
+bench/oi/persist/p3834.extc	ZERO	24814	24814	f6c9cf86	
+bench/oi/persist/p3834_nodes.extc	ZERO	24617	24617	e5c6c3e7	
+bench/poolgc/c_clear_noshrink.extc	ZERO	45755	45755	1715f8ed	
+bench/poolgc/d_clear_shrink.extc	ZERO	46652	46652	05f14330	
+bench/poolgc/e_pop10_shrink.extc	ZERO	47145	47145	6562a553	
+bench/poolgc/f_osc_noshrink.extc	ZERO	83074	83074	3780d10d	
+bench/poolgc/g_osc_shrink.extc	ZERO	95574	95574	4f7e3747	
+bench/runtime/a_fresh.extc	ZERO	9558	9558	006e5e4b	
+bench/runtime/a_reuse.extc	ZERO	9554	9554	c875a8fc	
+bench/runtime/bounds_ck.extc	ZERO	19946	19946	b17beaa0	
+bench/runtime/bounds_un.extc	ZERO	19875	19875	ee7924a0	
+bench/runtime/co.extc	ZERO	4993	4993	87afa9c5	
+bench/runtime/matmul.extc	ZERO	17503	17503	5509a8d3	
+bench/runtime/matmul_unchecked.extc	ZERO	17364	17364	0bce2ba5	
+bench/sieve.extc	ZERO	9663	9663	8500315b	
+bench/sieve_big.extc	ZERO	9124	9124	f9d758ea	
+bench/stl/hashmap.extc	ZERO	76183	76183	dcd561c5	
+bench/stl/map.extc	ZERO	87429	87429	e32655da	
+bench/stl/set.extc	ZERO	76786	76786	ef277127	
+bench/stl/string.extc	ZERO	56018	56018	0a6beb8d	
+bench/stl/vector.extc	ZERO	46656	46656	3e7c8da4	
+bench/stress/stress.extc	PAYS	97216	23181	84fa3d22	
+bench/string_vs_cpp/s.extc	ZERO	107870	107870	36aab6f2	
+bench/vararray/s1_va.extc	ZERO	46405	46405	670f500e	
+bench/vararray/s1_vec.extc	ZERO	44752	44752	90fd362f	
+bench/vararray/s2_va.extc	ZERO	43540	43540	91da341b	
+bench/vararray/s2_vec.extc	ZERO	41165	41165	8577d785	
+bench/vararray/s3_va.extc	ZERO	47102	47102	3140c144	
+bench/vararray/s3_vec.extc	ZERO	45474	45474	e777341b	
+bench/vararray/s4_va.extc	ZERO	46809	46809	db688e78	
+bench/vararray/s4_vec.extc	ZERO	45086	45086	7975cee7	
+bench/zero/exit_cost_tooth.extc	ZERO	46530	46530	93f8ce32	
+bench/zero/probe_arena_new.extc	ZERO	19202	19202	c2f240aa	
+bench/zero/probe_bc_split.extc	ZERO	48565	48565	c1798f03	
+bench/zero/probe_epoch_cycle.extc	ZERO	57972	57972	c786861e	
+bench/zero/probe_epoch_vs_clear.extc	ZERO	52332	52332	286bdfd5	
+bench/zero/probe_pool_cap.extc	ZERO	50947	50947	f402a749	
+bench/zero/probe_raw.extc	ZERO	40224	40224	a7ef863d	
+bench/zero/probe_raw_16m.extc	ZERO	40393	40393	96771353	
+bench/zero/probe_vector_cap.extc	ZERO	44276	44276	47cb1165	
+bench/zero/probe_writeall_raw.extc	ZERO	40978	40978	a33ea470	
+bench/zero/probe_writeall_zero.extc	ZERO	40996	40996	b30fa682	
+bench/zero/probe_zero.extc	ZERO	40241	40241	8914d853	
+bench/zero/probe_zero_16m.extc	ZERO	40408	40408	0e7a7403	
+bench/zoneexit/n1000.extc	ZERO	40411	40411	c3bf923f	
+bench/zoneexit/n10000.extc	ZERO	40429	40429	0c30778e	
+examples/alloc-in-block.extc	ZERO	12555	12555	02c4aaec	
+examples/array-of-struct.extc	ZERO	13503	13503	8a131855	
+examples/arrays.extc	ZERO	14466	14466	e050a4ac	
+examples/borrowing.extc	ZERO	9619	9619	c15dd5f1	
+examples/c-abi-tour.extc	ZERO	55617	55617	de65964b	
+examples/canary-array-nullref-param.extc	ZERO	4945	4945	3dcd5853	
+examples/canary-eq-array-plain-enum.extc	ZERO	8034	8034	c214de15	
+examples/canary-eq-nested_plain.extc	ZERO	8342	8342	1eacc6d2	
+examples/canary-eq-option_match.extc	ZERO	8354	8354	90608dd6	
+examples/canary-eq-struct-plain.extc	ZERO	8200	8200	5050017e	
+examples/canary-generic-view-param.extc	ZERO	8079	8079	069665f0	
+examples/canary-nested-generic-param.extc	ZERO	8797	8797	2af2bd24	
+examples/canary-nullref-param.extc	ZERO	4115	4115	a1a4a462	
+examples/canary-print-payload-enum.extc	ZERO	10169	10169	96c24616	
+examples/canary-print-views.extc	ZERO	14521	14521	a1085fcf	
+examples/canary-struct-nullref-param.extc	ZERO	4221	4221	76d71b67	
+examples/canary-zero-array-nullref.extc	ZERO	4124	4124	6144ca46	
+examples/canary-zero-generic_nullref.extc	ZERO	3136	3136	d8204ef9	
+examples/canary-zero-nopayload-first.extc	ZERO	8230	8230	ab1caf3f	
+examples/canary-zero-nullref-field.extc	ZERO	3106	3106	5829f755	
+examples/canary-zero-option-view.extc	ZERO	8360	8360	d4fc613e	
+examples/chars.extc	ZERO	16571	16571	568d02dc	
+examples/coalesce-order.extc	ZERO	9247	9247	ceaff01f	
+examples/coalesce.extc	ZERO	17399	17399	b39c6c8b	
+examples/container-nested.extc	ZERO	21693	21693	5247a2cd	
+examples/container-of-struct.extc	ZERO	22621	22621	8dfb286c	
+examples/container-of-view.extc	ZERO	18891	18891	d18cc627	
+examples/debug.extc	ZERO	9744	9744	de6b5bac	
+examples/deref.extc	ZERO	9979	9979	0dc8f9a2	
+examples/enums.extc	ZERO	8942	8942	e553e737	
+examples/eq.extc	ZERO	11407	11407	acabf4ae	
+examples/escape-promotion.extc	PAYS	84672	13651	d181a986	
+examples/escape.extc	ZERO	12506	12506	89a718fa	
+examples/euler-sieve.extc	ZERO	13066	13066	8f351f90	
+examples/fenwick.extc	ZERO	15240	15240	548aeb37	
+examples/field-strong-update.extc	ZERO	8242	8242	bf97fe01	
+examples/fizzbuzz.extc	ZERO	9512	9512	a2247e5b	
+examples/float-literal-forms.extc	ZERO	8620	8620	76bbdfbe	
+examples/for-continue.extc	ZERO	18026	18026	613c974d	
+examples/for-loops.extc	ZERO	18344	18344	7b58ed4b	
+examples/for-range-bound.extc	ZERO	16925	16925	0ca1ad4c	
+examples/generic-assoc-ctor.extc	ZERO	3279	3279	5080e78a	
+examples/generic-calls-generic.extc	ZERO	3505	3505	8f2b4112	
+examples/generic-effects-per-instance.extc	ZERO	8713	8713	db01ddbe	
+examples/generic-enum.extc	ZERO	10905	10905	c5c2e11f	
+examples/generic-fold.extc	ZERO	10918	10918	a9021c6a	
+examples/generic-free-fn.extc	ZERO	10939	10939	9951b9f9	
+examples/generic-instance-order.extc	ZERO	14675	14675	f2b5bdfb	
+examples/generic-shared-callsite.extc	ZERO	15071	15071	625450d2	
+examples/generics.extc	ZERO	11343	11343	358060e0	
+examples/globals.extc	ZERO	12532	12532	d05a0195	
+examples/gomoku-board.extc	ZERO	17448	17448	373f938f	
+examples/gomoku.extc	ZERO	39007	39007	bea0089a	
+examples/growth-factor.extc	ZERO	26550	26550	21a46c02	
+examples/hello.extc	ZERO	8161	8161	ba98408d	
+examples/index-bounds.extc	ZERO	5667	5667	81b49724	
+examples/instance-closure.extc	ZERO	16261	16261	c4bb1044	
+examples/list-return.extc	PAYS	92042	18155	cf0bb7c9	
+examples/match.extc	ZERO	11877	11877	26bd3c92	
+examples/mut-ref.extc	ZERO	9113	9113	8a0853f6	
+examples/mut-views.extc	ZERO	11845	11845	c017fa13	
+examples/narrow-wrap.extc	ZERO	17072	17072	3fbb0527	
+examples/nested-views.extc	ZERO	13641	13641	5a867fff	
+examples/new-generic.extc	ZERO	14852	14852	21e22496	
+examples/new.extc	PAYS	91162	16945	38fac2ba	
+examples/newSlice.extc	ZERO	17751	17751	1090ed3e	
+examples/nullable-ref.extc	ZERO	11680	11680	9a9a1b05	
+examples/operator-overload-generic.extc	ZERO	10132	10132	364ae722	
+examples/option-ref-payload.extc	ZERO	14009	14009	8e51061f	
+examples/option-result.extc	ZERO	20900	20900	041aac10	
+examples/option-sugar.extc	ZERO	13588	13588	f1fd64c1	
+examples/out-param.extc	PAYS	90901	17077	8a9e46eb	
+examples/overwrite.extc	PAYS	89097	17530	01ccc139	
+examples/path-narrowing.extc	ZERO	8392	8392	559b50d7	
+examples/payload-enum.extc	ZERO	13049	13049	771f90a3	
+examples/prelude.extc	ZERO	3997	3997	b8e89ef0	
+examples/print-desc-check.extc	ZERO	15723	15723	6408e8d9	
+examples/print-desc-nested.extc	ZERO	19896	19896	935005be	
+examples/reader-home-arena.extc	ZERO	15207	15207	7f72c53a	
+examples/readonly-cursor.extc	PAYS	84262	13233	274ba925	
+examples/ref-field-write.extc	PAYS	84663	13844	7ece821c	
+examples/ref-scalar.extc	ZERO	9564	9564	0f06ad6f	
+examples/refs.extc	ZERO	3621	3621	8806ed32	
+examples/result-usage.extc	ZERO	16734	16734	af2aab34	
+examples/retarget.extc	ZERO	9262	9262	3d2f4f12	
+examples/rng.extc	ZERO	17447	17447	d0930524	
+examples/shadowing.extc	ZERO	9898	9898	69832013	
+examples/showcase-arena-return.extc	ZERO	24189	24189	41d952f5	
+examples/showcase-extern.extc	ZERO	15090	15090	835dc5e8	
+examples/showcase-home.extc	ZERO	20122	20122	e0a5dad5	
+examples/showcase-impl.extc	ZERO	15476	15476	4ef3e76f	
+examples/showcase-pool-identity.extc	ZERO	56360	56360	cb3497ff	
+examples/showcase-views.extc	ZERO	56618	56618	1739771a	
+examples/sign-in-expr.extc	ZERO	17047	17047	89a903fa	
+examples/sign.extc	ZERO	14085	14085	a09ff1c1	
+examples/slices.extc	ZERO	15631	15631	4df3cc59	
+examples/stl-string.extc	ZERO	64122	64122	bb5ab0eb	
+examples/store-promotion.extc	PAYS	87400	15406	54e12e7d	
+examples/stream-sum.extc	ZERO	43960	43960	3b950181	
+examples/strings.extc	ZERO	12398	12398	f844373e	
+examples/structs.extc	ZERO	3774	3774	84b1f416	
+examples/task-place-release.extc	ZERO	57320	57320	cf80f0fa	
+examples/tour-plots.extc	ZERO	100251	100251	6fd80e23	
+examples/tour.extc	ZERO	23175	23175	6f7f3bb1	
+examples/try-positions.extc	ZERO	6226	6226	5ec80537	
+examples/types.extc	ZERO	9719	9719	d790b9ed	
+examples/varArray-asSlice-return.extc	ZERO	18372	18372	50e0a5f2	
+examples/varArray-asSlice.extc	ZERO	18964	18964	58028f88	
+examples/varArray-outparam.extc	ZERO	18154	18154	052bbf8b	
+examples/varArray-return.extc	ZERO	18707	18707	88f27944	
+examples/varArray.extc	ZERO	20624	20624	99629b5d	
+examples/while-condition-temps.extc	ZERO	21620	21620	3d70481c	
+tests/annot/inline_fn.extc	ZERO	3106	3106	4b8933bd	
+tests/annot/inline_method.extc	ZERO	3199	3199	87f89285	
+tests/annot/inline_with_private.extc	ZERO	3116	3116	8827a464	
+tests/annot/no_inline_extern.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/annot/no_inline_extern.extc:3:9: error: `@inline` needs a body, and an `extern` declaration has none
+tests/annot/no_inline_mutual.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/annot/no_inline_mutual.extc:3:1: error: `@inline` cannot be honoured: `isEven` reaches itself, and a recursive function cannot be inlined
+tests/annot/no_inline_recursive.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/annot/no_inline_recursive.extc:3:1: error: `@inline` cannot be honoured: `f` reaches itself, and a recursive function cannot be inlined
+tests/annot/no_recursive_not_implemented.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/annot/no_recursive_not_implemented.extc:3:1: error: `@recursive` is not implemented yet
+tests/annot/no_unchecked_extern.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/annot/no_unchecked_extern.extc:3:12: error: `@unchecked` needs a body, and an `extern` declaration has none
+tests/annot/no_unchecked_field.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/annot/no_unchecked_field.extc:4:16: error: `@unchecked` applies to a function, not to a field
+tests/annot/no_unchecked_struct.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/annot/no_unchecked_struct.extc:3:12: error: `@unchecked` applies to a function, not to a `struct`
+tests/annot/no_unchecked_twice.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/annot/no_unchecked_twice.extc:3:12: error: `@unchecked` appears twice on the same function
+tests/annot/no_unknown_annotation.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/annot/no_unknown_annotation.extc:3:1: error: unknown top-level annotation `@fast`
+tests/annot/unchecked_all.extc	ZERO	4131	4131	f58c23e8	
+tests/annot/unchecked_checks.extc	ZERO	17967	17967	11b381e4	
+tests/annot/unchecked_mixed.extc	ZERO	17460	17460	b4a24517	
+tests/annot/unchecked_trap_div0.extc	ZERO	3077	3077	02193ce7	
+tests/annot/unchecked_trap_narrow.extc	ZERO	3083	3083	8962d6d6	
+tests/annot/unchecked_trap_nullref.extc	ZERO	3147	3147	c30db5ec	
+tests/annot/unchecked_trap_oob.extc	ZERO	3254	3254	adcab908	
+tests/arena-promoted/A_field_root_lowered.extc	PAYS	84447	13604	6981b681	
+tests/arena-promoted/B2_exprstmt_blindspot.extc	PAYS	92555	18569	bf7e9197	
+tests/arena-promoted/B3_exprstmt_method.extc	PAYS	92712	18715	94a3133d	
+tests/arena-promoted/C1_if_join_fieldcell.extc	PAYS	85164	14091	8df56d5e	
+tests/arena-promoted/C2_if_join_refbinding.extc	PAYS	84626	13978	d65becc7	
+tests/arena-promoted/C3_if_join_wholevalue.extc	PAYS	86001	14199	2c48a90f	
+tests/arena-promoted/D1_assoc_publish_home.extc	PAYS	94237	19457	dfb378ea	
+tests/arena-promoted/D2_publish_home_block.extc	PAYS	93648	19293	788f70f9	
+tests/arena-promoted/F_overwrite_reuse_cell.extc	PAYS	83809	13575	58c2b7fe	
+tests/arena-promoted/G_stale_origin.extc	PAYS	84717	13805	6ccd6741	
+tests/arena-promoted/H2_home_zone_two_hops.extc	ZERO	60202	60202	5cbef8a7	
+tests/arena-promoted/H_promote_through_call.extc	ZERO	20373	20373	fe30852e	
+tests/arena-promoted/I_field_arena_flat.extc	ZERO	15032	15032	bc0ca70b	
+tests/arena-promoted/J_field_param_view.extc	ZERO	8058	8058	882a28b5	
+tests/arena-promoted/K_field_arena_nested_block.extc	ZERO	15482	15482	db17ddbd	
+tests/arena-promoted/R2a_generic_instance_first.extc	ZERO	8914	8914	1513d054	
+tests/arena-promoted/R2b_generic_template_first.extc	ZERO	8914	8914	29dfc739	
+tests/arena-promoted/R2c_literal_hidden_nonew.extc	PAYS	92009	18362	06bd3dab	
+tests/arena-promoted/R2d_literal_hidden_nonew2.extc	PAYS	85109	14127	8a6314f8	
+tests/arena-promoted/alloc_return_local.extc	ZERO	7816	7816	6a6efb0f	
+tests/arena-promoted/arena_if_join_field_depth.extc	PAYS	85169	14101	52105e33	
+tests/arena-promoted/arena_if_join_ref_binding.extc	PAYS	84630	13986	9d105443	
+tests/arena-promoted/arena_if_join_whole_value.extc	PAYS	86005	14207	d3d23d53	
+tests/arena-promoted/arena_root_depth_lowered.extc	PAYS	84451	13612	8936bb17	
+tests/arena-promoted/arena_stale_origin.extc	PAYS	84721	13817	600e9d01	
+tests/arena-promoted/h16_allocret.extc	ZERO	7899	7899	d7be067b	
+tests/arena-promoted/newSlice_escape_return.extc	ZERO	2871	2871	269c74dc	
+tests/arena/cond_alloc.extc	ZERO	19282	19282	33e94788	
+tests/arena/control-flow.extc	ZERO	14669	14669	9ac52de0	
+tests/arena/loop-growth.extc	ZERO	12399	12399	72dbe7b2	
+tests/arena/overwrite-dyn-flat.extc	ZERO	14368	14368	2252c32d	
+tests/arena/overwrite-flat.extc	PAYS	84208	13953	33a4e35e	
+tests/arena/promote.extc	PAYS	84154	13501	8d5ecc32	
+tests/argv/args.extc	ZERO	19967	19967	ba7de798	
+tests/argv/errors/bad-return.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/argv/errors/bad-return.extc:3:1: error: `main` cannot return `i64`
+tests/argv/errors/param-type.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/argv/errors/param-type.extc:3:1: error: `main`'s parameter must be `slice<slice<u8>>`, found `slice<slice<i32>>`
+tests/argv/errors/too-many.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/argv/errors/too-many.extc:2:1: error: `main` takes at most one parameter, `slice<slice<u8>>`; 2 were declared
+tests/argv/plain.extc	ZERO	7646	7646	c96d221b	
+tests/asan/borrowed-stash-sameframe.extc	ZERO	9935	9935	34bf2426	
+tests/asan/nonfinite-float.extc	ZERO	3882	3882	e823c583	
+tests/asan/overwrite-callee.extc	PAYS	83956	13503	e36adbb6	
+tests/asan/overwrite-dyn.extc	ZERO	15829	15829	0ef9785b	
+tests/asan/promote-field-lit.extc	PAYS	83973	13262	c7d87527	
+tests/asan/promote-loop.extc	PAYS	83316	12930	74b40cc6	
+tests/asan/promote-nested-block.extc	PAYS	82893	12624	0b63f3b8	
+tests/asan/promote-slice.extc	ZERO	13984	13984	b7ed6c82	
+tests/asan/promote-through-mid.extc	PAYS	83347	12856	1acd6232	
+tests/attacks/h10_deep.extc	ZERO	3880	3880	fab8c2dd	
+tests/attacks/h11_stale.extc	ZERO	8864	8864	1bba1e31	
+tests/attacks/h12_hops.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/attacks/h12_hops.extc:5:1: error: this return value would hold a reference to a local variable that dies first (borrowed from depth 1, but this can only hold up to depth 0)
+tests/attacks/h13_wrap.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/attacks/h13_wrap.extc:4:1: error: this return value would hold a reference to a local variable that dies first (borrowed from depth 1, but this can only hold up to depth 0)
+tests/attacks/h14_halflocal.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/attacks/h14_halflocal.extc:5:1: error: this return value would hold a reference to a local variable that dies first (borrowed from depth 1, but this can only hold up to depth 0)
+tests/attacks/h15_fieldassign.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/attacks/h15_fieldassign.extc:7:1: error: this return value would hold a reference to a local variable that dies first (borrowed from depth 1, but this can only hold up to depth 0)
+tests/attacks/h16_allocret.extc	ZERO	7892	7892	52196a36	
+tests/attacks/h17_enumpayload.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/attacks/h17_enumpayload.extc:5:1: error: this return value would hold a reference to a local variable that dies first (borrowed from depth 1, but this can only hold up to depth 0)
+tests/attacks/h18_genenum.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/attacks/h18_genenum.extc:5:1: error: this return value would hold a reference to a local variable that dies first (borrowed from depth 1, but this can only hold up to depth 0)
+tests/attacks/h19_good.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/attacks/h19_good.extc:4:1: error: `nothing` is a variant of `maybe`, not a function -- did you mean `maybe.nothing(...)`?
+tests/attacks/h1_retarget.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/attacks/h1_retarget.extc:7:1: error: this reference would hold a reference to a local variable that dies first (borrowed from depth 2, but this can only hold up to depth 1)
+tests/attacks/h20_proof.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/attacks/h20_proof.extc:6:1: error: this return value would hold a reference to a local variable that dies first (borrowed from depth 1, but this can only hold up to depth 0)
+tests/attacks/h21_good.extc	ZERO	11177	11177	0dcb17ec	
+tests/attacks/h2_allocarr.extc	ZERO	12901	12901	944f6c9e	
+tests/attacks/h3_allocref.extc	ZERO	13097	13097	ba97d503	
+tests/attacks/h4_oob.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/attacks/h4_oob.extc:4:1: error: index 10 is not inside `[4]i32` (length 4)
+tests/attacks/h5_slice.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/attacks/h5_slice.extc:4:1: error: slice end 100 is not inside `[8]i32` (length 8)
+tests/attacks/h6_global.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/attacks/h6_global.extc:3:1: error: cannot zero-initialize the global `g`: it contains a reference
+tests/attacks/h7_fieldref.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/attacks/h7_fieldref.extc:3:1: error: this return value would hold a reference to a local variable that dies first (borrowed from depth 1, but this can only hold up to depth 0)
+tests/attacks/h8_launder.extc	ZERO	8243	8243	b7b4b3ef	
+tests/attacks/h9_generic.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/attacks/h9_generic.extc:6:1: error: assignment expects `pair<i32, u8>`, found `pair<u8, i32>`
+tests/attacks/r1.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/attacks/r1.extc:2:1: error: cannot write through a read-only reference
+tests/attacks/r2.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/attacks/r2.extc:3:1: error: cannot write through a read-only reference
+tests/attacks/r3.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/attacks/r3.extc:3:1: error: cannot infer the type of a bare `{}` here
+tests/attacks/r4.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/attacks/r4.extc:5:1: error: `ref` applied to a value that is already a reference
+tests/attacks/r5.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/attacks/r5.extc:3:1: error: cannot take a reference to this expression
+tests/attacks/r6.extc	ZERO	9221	9221	3a1bb02e	
+tests/b64/main.extc	ZERO	47079	47079	1630b3ce	
+tests/cabi/checked_path.extc	ZERO	49485	49485	5ae75361	
+tests/cabi/dlmain.extc	ZERO	43075	43075	aca6d573	
+tests/cabi/erase.extc	ZERO	10089	10089	884fabfb	
+tests/cabi/errors/conv_no_ret.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/cabi/errors/conv_no_ret.extc:4:36: error: a function type needs its return type: `fn(...) -> R`, found `(`
+tests/cabi/errors/conv_notptr.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/cabi/errors/conv_notptr.extc:4:1: error: cannot convert `i64` to `fn(i64) -> i64`
+tests/cabi/errors/conv_nullable.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/cabi/errors/conv_nullable.extc:6:1: error: cannot convert `?ref void` to `fn(i64) -> i64`: it may be null
+tests/cabi/errors/dup_a.extc	ZERO	2879	2879	e5d209f1	
+tests/cabi/errors/dup_b.extc	ZERO	2879	2879	ec0fe41f	
+tests/cabi/errors/dup_main.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/cabi/errors/dup_main.extc:1:1: error: `@export` name `init` is already taken by another exported function
+tests/cabi/errors/erase_mut.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/cabi/errors/erase_mut.extc:9:1: error: argument expects `mut ref void`, found `ref u8`
+tests/cabi/errors/erase_nullable.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/cabi/errors/erase_nullable.extc:5:1: error: argument expects `ref void`, found `?ref i64`
+tests/cabi/errors/extern_export.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/cabi/errors/extern_export.extc:2:9: error: `@export` and `extern!` contradict each other
+tests/cabi/errors/generic.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/cabi/errors/generic.extc:2:1: error: `@export` on a generic function
+tests/cabi/errors/hidden_arena.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/cabi/errors/hidden_arena.extc:2:1: error: `@export` on `make`, which takes a hidden arena parameter
+tests/cabi/errors/keyword.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/cabi/errors/keyword.extc:2:1: error: `@export` on `double`: that name is a C keyword, so the symbol would have to be renamed
+tests/cabi/errors/method.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/cabi/errors/method.extc:3:5: error: `@export` goes on a free function, not on a method
+tests/cabi/errors/on_global.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/cabi/errors/on_global.extc:2:9: error: `@export` goes on a function
+tests/cabi/errors/on_struct.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/cabi/errors/on_struct.extc:2:9: error: `@export` goes on a function
+tests/cabi/errors/outframe_frame.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/cabi/errors/outframe_frame.extc:9:1: error: argument 1 of `fn` may be kept by C forever, but it points into this frame (depth 1)
+tests/cabi/errors/outframe_new.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/cabi/errors/outframe_new.extc:8:1: error: argument 1 of `fn` may be kept by C forever, but it points into this frame (depth 1)
+tests/cabi/errors/outframe_reassigned.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/cabi/errors/outframe_reassigned.extc:14:1: error: argument 1 of `fn` may be kept by C forever, but it points into this frame (depth 1)
+tests/cabi/errors/slice_param.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/cabi/errors/slice_param.extc:2:1: error: `@export` parameter 1 has type `slice<u8>`, which C cannot pass
+tests/cabi/errors/slot_copied_out.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/cabi/errors/slot_copied_out.extc:15:1: error: argument 1 of `fn` may be kept by C forever, but it points into this frame (depth 1)
+tests/cabi/errors/slot_on_nonfn.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/cabi/errors/slot_on_nonfn.extc:2:21: error: `effects` on field `n`, which is not a function pointer
+tests/cabi/errors/slot_thread.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/cabi/errors/slot_thread.extc:2:14: error: `Thread=` on a field is not used yet
+tests/cabi/errors/slot_unsigned.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/cabi/errors/slot_unsigned.extc:14:1: error: argument 1 of `copy` may be kept by C forever, but it points into this frame (depth 1)
+tests/cabi/errors/twice.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/cabi/errors/twice.extc:2:9: error: `@export` appears twice
+tests/cabi/heapmain.extc	ZERO	46970	46970	1ce7e33e	
+tests/cabi/outframe.extc	ZERO	45802	45802	4025fb36	
+tests/cabi/platetable.extc	ZERO	57943	57943	e062b497	
+tests/cabi/plugin.extc	ZERO	4309	4309	c1e29867	
+tests/cabi/slots.extc	ZERO	40018	40018	9c48d65f	
+tests/cabi/slotsummary.extc	ZERO	40297	40297	00c376c0	
+tests/cbindgen/libcmain.extc	ZERO	43983	43983	1c2ddb51	
+tests/cbindgen/libcmini.extc	ZERO	32202	32202	faf034f5	
+tests/cbindgen/missym.extc	ZERO	36735	36735	593a6bf0	
+tests/contract/honest.extc	ZERO	53765	53765	0167c626	
+tests/contract/keeper.extc	ZERO	52863	52863	4f5f07d6	
+tests/contract/keeper_poison.extc	ZERO	53453	53453	eb428d2f	
+tests/contract/keeper_silent.extc	ZERO	50924	50924	40f140c7	
+tests/coro/closure_prototype.extc	ZERO	18427	18427	c81a8e61	
+tests/coro/coro_accept.extc	ZERO	97224	97224	0c75031e	
+tests/coro/coro_alloc_loop.extc	ZERO	10276	10276	7cc89c5b	
+tests/coro/coro_boxing.extc	ZERO	43083	43083	d15adbb4	
+tests/coro/coro_copy.extc	ZERO	39559	39559	92b9f9b3	
+tests/coro/coro_copy_expired.extc	ZERO	39110	39110	80d849ed	
+tests/coro/coro_drive.extc	ZERO	17089	17089	53dd1e79	
+tests/coro/coro_echo.extc	ZERO	101583	101583	343d59a6	
+tests/coro/coro_epoll.extc	ZERO	95491	95491	cbe414b9	
+tests/coro/coro_frame_layout.extc	ZERO	7713	7713	e2c1c3ee	
+tests/coro/coro_global.extc	ZERO	104207	104207	21e3ed5d	
+tests/coro/coro_handles.extc	ZERO	51230	51230	f2a9b272	
+tests/coro/coro_literal.extc	ZERO	96757	96757	728d2092	
+tests/coro/coro_mem.extc	ZERO	40216	40216	36497399	
+tests/coro/coro_new.extc	PAYS	79176	9063	6da653e9	
+tests/coro/coro_new_in_block.extc	ZERO	10138	10138	508d152d	
+tests/coro/coro_pool.extc	ZERO	47113	47113	e09fe12d	
+tests/coro/coro_req_resp.extc	ZERO	11682	11682	f6806344	
+tests/coro/coro_sched.extc	ZERO	82274	82274	d8c54260	
+tests/coro/coro_send.extc	ZERO	5941	5941	1f3a1fa1	
+tests/coro/coro_shorthand.extc	ZERO	7349	7349	96ff10cb	
+tests/coro/coro_sleep.extc	ZERO	103872	103872	b0d4981e	
+tests/coro/coro_step.extc	ZERO	5739	5739	57b6e5d3	
+tests/coro/coro_table.extc	ZERO	47175	47175	351ad106	
+tests/coro/coro_tasks.extc	ZERO	46976	46976	9a61966a	
+tests/coro/coro_value_expired.extc	ZERO	39445	39445	035761ea	
+tests/coro/coro_waitw.extc	ZERO	102520	102520	ae92f0d8	
+tests/coro/echo_server.extc	ZERO	94517	94517	de346faf	
+tests/coro/echo_server_fork.extc	ZERO	100384	100384	f98d18b2	
+tests/coro/iterator_protocol.extc	ZERO	21007	21007	d4c01507	
+tests/coro/scheduler_prototype.extc	ZERO	20852	20852	f91cde81	
+tests/coro/statemachine.extc	ZERO	79407	79407	41bef838	
+tests/ctor/basic.extc	ZERO	10512	10512	3f7fca6a	
+tests/ctor/errors/arity.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/ctor/errors/arity.extc:4:1: error: `pt::new` expects 2 argument(s), got 1
+tests/ctor/errors/bad_ret.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/ctor/errors/bad_ret.extc:2:1: error: the constructor `bad::new` must return `bad`
+tests/ctor/errors/no_ctor.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/ctor/errors/no_ctor.extc:2:1: error: `pt` has no constructor `new`, so `pt(...)` has nothing to call
+tests/ctor/fallible.extc	ZERO	9459	9459	c00d6b58	
+tests/ctor/generic.extc	ZERO	8236	8236	08beb299	
+tests/dyn/dyn_call.extc	ZERO	45049	45049	786c7df5	
+tests/dyn/dyn_container_clear.extc	ZERO	52597	52597	15af4646	
+tests/dyn/dyn_imm_mutate.extc	ZERO	45559	45559	0f24a15c	
+tests/dyn/dyn_in_array.extc	ZERO	46137	46137	55c4a9b4	
+tests/dyn/dyn_in_field.extc	ZERO	44747	44747	274214a6	
+tests/dyn/dyn_in_varArray.extc	ZERO	52778	52778	0f1a8076	
+tests/dyn/dyn_payload_param.extc	ZERO	44923	44923	2f73cd55	
+tests/dyn/dyn_promoted_return.extc	ZERO	44956	44956	50ae7650	
+tests/dyn/dyn_promoted_two_hops.extc	ZERO	45201	45201	7da0a436	
+tests/dyn/dyn_ref_receiver.extc	ZERO	45820	45820	67ec162c	
+tests/dyn/dyn_shape_area.extc	ZERO	47047	47047	316e5fad	
+tests/dyn/dyn_slot_reclaim.extc	ZERO	45473	45473	e2a86e70	
+tests/dyn/dyn_stored.extc	ZERO	44587	44587	68407fd5	
+tests/dyn/dyn_stored_call.extc	ZERO	45556	45556	b3795758	
+tests/dyn/errors/dyn_field.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/dyn/errors/dyn_field.extc:8:23: error: `dyn (null)(...)` must be followed by a method call
+tests/dyn/errors/dyn_not_impl.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/dyn/errors/dyn_not_impl.extc:7:1: error: no method `tag` on `box`
+tests/dyn/errors/dyn_self_return.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/dyn/errors/dyn_self_return.extc:8:1: error: `Dup::dup` returns `Self` and cannot be dispatched through `dyn`
+tests/dyn/errors/dyn_wrong_trait.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/dyn/errors/dyn_wrong_trait.extc:11:1: error: `box` does not implement `Mark`
+tests/errors/B_field_table_stale.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/B_field_table_stale.extc:12:1: error: this return value would hold a reference to a local variable that dies first (borrowed from depth 1, but this can only hold up to depth 0)
+tests/errors/D_elemwrite_clears_table.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/D_elemwrite_clears_table.extc:9:1: error: this return value would hold a reference to a local variable that dies first (borrowed from depth 1, but this can only hold up to depth 0)
+tests/errors/H1_strongupdate_missed.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/H1_strongupdate_missed.extc:31:1: error: this return value would hold a reference to a local variable that dies first (borrowed from depth 1, but this can only hold up to depth 0)
+tests/errors/alloc_escapes_block.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/alloc_escapes_block.extc:8:1: error: cannot write through a read-only reference
+tests/errors/allocslice_removed.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/allocslice_removed.extc:4:1: error: `allocSlice<T>(n)` was removed; write `new T[n]`
+tests/errors/array_index_type.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/array_index_type.extc:4:1: error: index must be an integer, found `slice<u8>`
+tests/errors/array_lit_too_few.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/array_lit_too_few.extc:2:1: error: `[3]i32` needs 3 element(s), got 2
+tests/errors/array_lit_too_many.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/array_lit_too_many.extc:2:1: error: `[2]i32` needs 2 element(s), got 3
+tests/errors/array_rest_no_context.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/array_rest_no_context.extc:2:1: error: `...` needs the array length from context
+tests/errors/array_vs_scalar_eq.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/array_vs_scalar_eq.extc:11:1: error: `indexOf_i64` needs `[1]i32` to define `==`
+tests/errors/array_zero_len.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/array_zero_len.extc:2:12: error: array length must be positive, got 0
+tests/errors/assign_bang_of_call.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/assign_bang_of_call.extc:11:1: error: cannot assign to this expression: it is not a place
+tests/errors/assign_field_of_call.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/assign_field_of_call.extc:16:1: error: cannot assign to this expression: it is not a place
+tests/errors/assign_to_let.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/assign_to_let.extc:3:1: error: cannot assign to `x`, which is a `let`
+tests/errors/assign_to_literal.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/assign_to_literal.extc:8:1: error: cannot assign to this expression: it is not a place
+tests/errors/assoc_arity.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/assoc_arity.extc:6:1: error: `box::make` expects 2 argument(s), got 1
+tests/errors/assoc_on_method.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/assoc_on_method.extc:6:1: error: no associated function `get` on `point`
+tests/errors/assoc_unknown.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/assoc_unknown.extc:3:1: error: no associated function `origin` on `point`
+tests/errors/assoc_wrong_arg.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/assoc_wrong_arg.extc:6:1: error: argument expects `i32`, found `slice<u8>`
+tests/errors/bad_escape_in_string.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/bad_escape_in_string.extc:8:17: error: unknown escape `\u` in a string literal
+tests/errors/bad_field.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/bad_field.extc:7:1: error: struct `point` has no field `z`
+tests/errors/bad_return_type.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/bad_return_type.extc:2:1: error: return value expects `i32`, found `slice<u8>`
+tests/errors/bare_ctor_wrong_type.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/bare_ctor_wrong_type.extc:4:1: error: `success` is a variant of `result`, not a function -- did you mean `result.success(...)`?
+tests/errors/bare_variant_hint.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/bare_variant_hint.extc:10:1: error: `circle` is a variant of `shape`, not a function -- did you mean `shape.circle(...)`?
+tests/errors/bitwise_on_bool.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/bitwise_on_bool.extc:2:1: error: cannot apply `&` to `bool` and `bool`
+tests/errors/bitwise_on_float.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/bitwise_on_float.extc:2:1: error: cannot apply `&` to `f64` and `i32`
+tests/errors/borrowed_into_param_place.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/borrowed_into_param_place.extc:17:1: error: argument 2 of `stash` points into a deeper scope (depth 2) than the arena this call may store it in (depth 1)
+tests/errors/builtin_outside_std.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/builtin_outside_std.extc:3:1: error: `@builtin` declarations are standard-library only
+tests/errors/call_writer_on_readonly.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/call_writer_on_readonly.extc:7:1: error: cannot call a method that writes through a read-only reference
+tests/errors/canary_array_nullref_local.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/canary_array_nullref_local.extc:7:1: error: this return value would hold a reference to a local variable that dies first (borrowed from depth 1, but this can only hold up to depth 0)
+tests/errors/canary_eq_array_option.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/canary_eq_array_option.extc:5:1: error: `[4]option<i64>` cannot be compared: its element type `option<i64>` does not define `==`
+tests/errors/canary_eq_array_payload_enum.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/canary_eq_array_payload_enum.extc:7:1: error: `[4]st` cannot be compared: its element type `st` does not define `==`
+tests/errors/canary_eq_nested_payload.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/canary_eq_nested_payload.extc:6:1: error: `[2][2]st` cannot be compared: its element type `[2]st` does not define `==`
+tests/errors/canary_eq_struct_of_payload.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/canary_eq_struct_of_payload.extc:7:1: error: `st` is an enum with a payload, so it has no `==`
+tests/errors/canary_generic_view_local.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/canary_generic_view_local.extc:6:1: error: this return value would hold a reference to a local variable that dies first (borrowed from depth 1, but this can only hold up to depth 0)
+tests/errors/canary_nested_generic_local.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/canary_nested_generic_local.extc:6:1: error: this return value would hold a reference to a local variable that dies first (borrowed from depth 1, but this can only hold up to depth 0)
+tests/errors/canary_nullref_local.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/canary_nullref_local.extc:5:1: error: this return value would hold a reference to a local variable that dies first (borrowed from depth 1, but this can only hold up to depth 0)
+tests/errors/canary_struct_nullref_local.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/canary_struct_nullref_local.extc:7:1: error: this return value would hold a reference to a local variable that dies first (borrowed from depth 1, but this can only hold up to depth 0)
+tests/errors/canary_zero_array_view.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/canary_zero_array_view.extc:2:1: error: cannot zero-initialize `a`: it contains a reference
+tests/errors/canary_zero_generic_view.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/canary_zero_generic_view.extc:3:1: error: cannot zero-initialize `b`: it contains a reference
+tests/errors/canary_zero_payload_first.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/canary_zero_payload_first.extc:3:1: error: cannot zero-initialize `b`: it contains a reference
+tests/errors/canary_zero_ref_field.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/canary_zero_ref_field.extc:4:1: error: cannot zero-initialize `h`: it contains a reference
+tests/errors/canary_zero_view_field.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/canary_zero_view_field.extc:3:1: error: cannot zero-initialize `c`: it contains a reference
+tests/errors/char_bad_escape.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/char_bad_escape.extc:2:32: error: unknown escape `\q` in a character literal
+tests/errors/char_cjk.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/char_cjk.extc:2:32: error: a character literal holds exactly one byte; use a string literal for multi-byte text
+tests/errors/char_empty.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/char_empty.extc:2:32: error: empty character literal (write `'\''` for the quote itself)
+tests/errors/char_multi.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/char_multi.extc:2:32: error: a character literal holds exactly one byte; use a string literal for multi-byte text
+tests/errors/char_unterminated.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/char_unterminated.extc:2:32: error: unterminated character literal
+tests/errors/closure_env_view_escapes_block.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/closure_env_view_escapes_block.extc:18:1: error: this assignment would hold a reference to a local variable that dies first (borrowed from depth 2, but this can only hold up to depth 1)
+tests/errors/coalesce_escape_return.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/coalesce_escape_return.extc:7:1: error: this return value would hold a reference to a local variable that dies first (borrowed from depth 1, but this can only hold up to depth 0)
+tests/errors/coalesce_escape_store.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/coalesce_escape_store.extc:6:1: error: this reference would hold a reference to a local variable that dies first (borrowed from depth 1, but this can only hold up to depth 0)
+tests/errors/coalesce_in_global_init.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/coalesce_in_global_init.extc:4:1: error: the global `g` must be initialized with a constant
+tests/errors/coalesce_in_while_cond.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/coalesce_in_while_cond.extc:4:1: error: `??` here cannot be evaluated ahead of time -- the temporary would run once instead of every round
+tests/errors/coalesce_on_plain.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/coalesce_on_plain.extc:4:1: error: left of `??` is `i64`, which always has a value
+tests/errors/coalesce_order.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/coalesce_order.extc:8:1: error: `??` here would run **before** the call that comes earlier in this statement; split the line so the order you read is the order it runs
+tests/errors/coalesce_type_mismatch.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/coalesce_type_mismatch.extc:4:1: error: the right side of `??` expects `i64`, found `slice<u8>`
+tests/errors/cond_not_bool.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/cond_not_bool.extc:2:1: error: expected `bool`, found `i32`
+tests/errors/const_mut_ref.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/const_mut_ref.extc:2:1: error: `let p` cannot be declared with a `mut` type
+tests/errors/const_mut_view.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/const_mut_view.extc:2:1: error: `let s` cannot be declared with a `mut` type
+tests/errors/const_rebind.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/const_rebind.extc:2:1: error: cannot rebind `this`: the binding is read-only
+tests/errors/conv_not_number.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/conv_not_number.extc:4:1: error: cannot convert `slice<u8>` to `i32`
+tests/errors/coro_forge_alias.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/coro_forge_alias.extc:7:20: error: expected `fn`, `struct`, `type`, `let` or `var`, found `<`
+tests/errors/coro_forge_frame_var.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/coro_forge_frame_var.extc:15:1: error: initializer expects `coroutine<i64>`, found `worker$frame`
+tests/errors/coro_forge_literal.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/coro_forge_literal.extc:14:39: error: `i64` is a type, not a value -- did you mean `i64(x)`?
+tests/errors/coro_view_lives_across_yield.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/coro_view_lives_across_yield.extc:17:1: error: `v` lives across a `yield` and carries a reference
+tests/errors/deref_needed_arith.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/deref_needed_arith.extc:5:1: error: `mut ref i32` is a **reference**, not a value -- dereference it first: `*p`
+tests/errors/deref_needed_assign.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/deref_needed_assign.extc:5:1: error: cannot assign a value to `mut ref i32`: it is a reference, not a place
+tests/errors/deref_needed_pass.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/deref_needed_pass.extc:6:1: error: `mut ref i32` is a **reference**, not a value -- dereference it first: `*p`
+tests/errors/deref_on_value.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/deref_on_value.extc:4:1: error: cannot dereference `i32`, which is not a reference
+tests/errors/deref_readonly_ref.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/deref_readonly_ref.extc:2:1: error: cannot write through a read-only reference
+tests/errors/dunder_reserved.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/dunder_reserved.extc:6:4: error: identifiers starting with `__` are reserved for the compiler
+tests/errors/dyn_assoc_dispatch.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/dyn_assoc_dispatch.extc:15:1: error: `Tag::zero` has no `self`, so it cannot be dispatched through `dyn`
+tests/errors/dyn_no_receiver.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/dyn_no_receiver.extc:16:1: error: `nope` has no receiver, so it cannot be called through `dyn`
+tests/errors/dyn_payload_view_escapes_block.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/dyn_payload_view_escapes_block.extc:42:1: error: this assignment would hold a reference to a local variable that dies first (borrowed from depth 2, but this can only hold up to depth 1)
+tests/errors/enum_payload_forward.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/enum_payload_forward.extc:6:1: error: this return value would hold a reference to a local variable that dies first (borrowed from depth 1, but this can only hold up to depth 0)
+tests/errors/enum_payload_generic.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/enum_payload_generic.extc:5:1: error: this return value would hold a reference to a local variable that dies first (borrowed from depth 1, but this can only hold up to depth 0)
+tests/errors/enum_payload_local.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/enum_payload_local.extc:6:1: error: this return value would hold a reference to a local variable that dies first (borrowed from depth 1, but this can only hold up to depth 0)
+tests/errors/enum_payload_struct.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/enum_payload_struct.extc:6:1: error: this return value would hold a reference to a local variable that dies first (borrowed from depth 1, but this can only hold up to depth 0)
+tests/errors/eq_bad_sig.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/eq_bad_sig.extc:4:1: error: operator `==` must return `bool`
+tests/errors/eq_deferred.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/eq_deferred.extc:9:1: error: `wrapper_tag` needs `tag` to define `==`
+tests/errors/eq_missing.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/eq_missing.extc:8:1: error: `tag` does not define `==` for `tag`, so it cannot be compared
+tests/errors/eq_needs_element_eq.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/eq_needs_element_eq.extc:240:1: error: `varArray_span` needs `span` to define `!=`
+tests/errors/escape_call_result_to_outer.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/escape_call_result_to_outer.extc:23:1: error: this assignment would hold a reference to a local variable that dies first (borrowed from depth 2, but this can only hold up to depth 1)
+tests/errors/escape_forwarded_ref.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/escape_forwarded_ref.extc:7:1: error: this return value would hold a reference to a local variable that dies first (borrowed from depth 1, but this can only hold up to depth 0)
+tests/errors/escape_return_ref.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/escape_return_ref.extc:4:1: error: this return value would hold a reference to a local variable that dies first (borrowed from depth 1, but this can only hold up to depth 0)
+tests/errors/escape_return_struct.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/escape_return_struct.extc:5:1: error: this return value would hold a reference to a local variable that dies first (borrowed from depth 1, but this can only hold up to depth 0)
+tests/errors/escape_return_view.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/escape_return_view.extc:4:1: error: this return value would hold a reference to a local variable that dies first (borrowed from depth 1, but this can only hold up to depth 0)
+tests/errors/escape_stash_borrowed.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/escape_stash_borrowed.extc:4:1: error: cannot store a borrowed value into something that outlives this call
+tests/errors/field_method_same_name.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/field_method_same_name.extc:3:1: error: `thing.value`: a field and a method cannot share a name
+tests/errors/field_view_frame_array.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/field_view_frame_array.extc:11:1: error: this assignment would hold a reference to a local variable that dies first (borrowed from depth 2, but this can only hold up to depth 1)
+tests/errors/field_weak_update_aliased.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/field_weak_update_aliased.extc:14:1: error: this return value would hold a reference to a local variable that dies first (borrowed from depth 1, but this can only hold up to depth 0)
+tests/errors/for_container_not_a_place.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/for_container_not_a_place.extc:5:1: error: `for d in ...` needs a name, a field or `*p` on the right
+tests/errors/free_fn_self.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/free_fn_self.extc:5:1: error: `self` is only allowed in a method declared inside a `struct`
+tests/errors/generic_borrowed_store.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/generic_borrowed_store.extc:11:1: error: argument 2 of `stash` carries a reference into a deeper scope (depth 2) than the place the callee may store it (depth 1)
+tests/errors/generic_return_local.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/generic_return_local.extc:7:1: error: in instance `boxT_slice_u8`: this return value would hold a reference to something that dies first (depth 1, but this can only hold up to 0)
+tests/errors/generic_zero_value.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/generic_zero_value.extc:5:1: error: in instance `boxT_slice_u8`: `local` has no zero value (it contains a reference)
+tests/errors/global_dup.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/global_dup.extc:3:1: error: `x` is already a global
+tests/errors/global_local_frame_holds_new.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/global_local_frame_holds_new.extc:25:1: error: this reference would hold a reference to a local variable that dies first (borrowed from depth 2, but this can only hold up to depth 0)
+tests/errors/global_non_constant.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/global_non_constant.extc:3:1: error: the global `A` must be initialized with a constant
+tests/errors/global_not_const.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/global_not_const.extc:12:1: error: the global `A` must be initialized with a constant
+tests/errors/global_write_let.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/global_write_let.extc:4:1: error: cannot assign to `MOD`, which is a `let`
+tests/errors/global_zero_init_ref.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/global_zero_init_ref.extc:2:1: error: cannot zero-initialize the global `g`: it contains a reference
+tests/errors/instance_name_collision.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/instance_name_collision.extc:7:1: error: `pair_i64` is the name the compiler needs for an instance of `pair`, and the program already defines it
+tests/errors/int_decimal_too_large.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/int_decimal_too_large.extc:3:13: error: integer literal exceeds the supported signed 64-bit range
+tests/errors/int_hex_no_digits.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/int_hex_no_digits.extc:3:13: error: hexadecimal literal needs at least one digit
+tests/errors/int_hex_too_large.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/int_hex_too_large.extc:3:13: error: integer literal exceeds the supported signed 64-bit range
+tests/errors/let_ref_to_mut_param.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/let_ref_to_mut_param.extc:6:1: error: argument expects `mut ref point`, found `ref point`
+tests/errors/let_write_field.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/let_write_field.extc:4:1: error: cannot write through `p`, which is a `let`
+tests/errors/let_write_index.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/let_write_index.extc:3:1: error: cannot write through `a`, which is a `let`
+tests/errors/let_write_view.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/let_write_view.extc:4:1: error: cannot write through `v`: it is a read-only view `slice<i32>`
+tests/errors/literal_index_negative.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/literal_index_negative.extc:5:1: error: index -1 is not inside `[4]i32` (length 4)
+tests/errors/literal_index_oob.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/literal_index_oob.extc:5:1: error: index 10 is not inside `[4]i32` (length 4)
+tests/errors/literal_overflow.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/literal_overflow.extc:2:1: error: initializer: literal `300` does not fit in `u8`
+tests/errors/match_not_exhaustive.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/match_not_exhaustive.extc:5:1: error: `match` does not handle `occupied` -- every variant must be listed
+tests/errors/match_on_non_enum.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/match_on_non_enum.extc:3:1: error: cannot `match` on a value of type `i32`
+tests/errors/match_unknown_variant.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/match_unknown_variant.extc:7:1: error: `nope` is not a variant of `gameError`
+tests/errors/method_needs_ref.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/method_needs_ref.extc:4:1: error: `self` of `point.moveBy` must be `ref point`
+tests/errors/missing_ref_field.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/missing_ref_field.extc:7:1: error: field `target` must be given explicitly
+tests/errors/mut_ref_from_let.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/mut_ref_from_let.extc:5:1: error: `let r` cannot be declared with a `mut` type
+tests/errors/mut_ref_needs_writable.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/mut_ref_needs_writable.extc:8:1: error: cannot assign to `c`, which is a `let`
+tests/errors/narrowing.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/narrowing.extc:2:1: error: initializer expects `i32`, found `f64`
+tests/errors/nesting_too_deep.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/nesting_too_deep.extc:71:5: error: nesting too deep in a block (the compiler's limit is 64 levels)
+tests/errors/new_bad_count.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/new_bad_count.extc:4:1: error: the element count must be an integer, found `slice<u8>`
+tests/errors/no_common_type.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/no_common_type.extc:4:1: error: `u32` and `i32` have no common type for `+`
+tests/errors/no_initializer.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/no_initializer.extc:2:10: error: `var x` needs a type or an initializer
+tests/errors/no_return_value.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/no_return_value.extc:2:1: error: `f` must return a value of type `i32`
+tests/errors/null_arith.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/null_arith.extc:4:1: error: `?ref i64` is a **reference**, not a value -- dereference it first: `*p`
+tests/errors/null_no_context.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/null_no_context.extc:2:1: error: `null` here does not know which `?ref T` it is
+tests/errors/null_on_nonnull_ref.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/null_on_nonnull_ref.extc:2:1: error: `ref i64` is not nullable, so it can never be `null`
+tests/errors/nullable_chain_nocheck.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/nullable_chain_nocheck.extc:5:1: error: `?ref node` is a nullable reference (`?ref T`), so field access needs a non-null one
+tests/errors/nullable_field_nocheck.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/nullable_field_nocheck.extc:3:1: error: `?ref node` is a nullable reference (`?ref T`), so field access needs a non-null one
+tests/errors/nullable_method_nocheck.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/nullable_method_nocheck.extc:6:1: error: `?ref counter` is a nullable reference (`?ref T`), so a method call needs a non-null one
+tests/errors/nullable_ref_slice.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/nullable_ref_slice.extc:8:1: error: `?ref [4]i32` is a nullable reference (`?ref T`), so a slice needs a non-null one
+tests/errors/nullable_ref_subscript.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/nullable_ref_subscript.extc:10:1: error: `?ref [4]i32` is a nullable reference (`?ref T`), so a subscript needs a non-null one
+tests/errors/nullable_star_nocheck.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/nullable_star_nocheck.extc:3:1: error: `?ref node` is a nullable reference (`?ref T`), so `*` needs a non-null one
+tests/errors/nullable_store_deep_local.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/nullable_store_deep_local.extc:8:1: error: cannot write through a read-only reference
+tests/errors/nullable_to_nonnull.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/nullable_to_nonnull.extc:3:1: error: return value expects `ref node`, found `?ref node` -- a nullable reference
+tests/errors/op_arity.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/op_arity.extc:3:1: error: operator `==` must take exactly 2 parameters
+tests/errors/op_free_fn.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/op_free_fn.extc:3:1: error: operator `==` must be defined inside a `struct`
+tests/errors/op_param_type.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/op_param_type.extc:7:1: error: operator `==` must take exactly 2 parameters
+tests/errors/op_ret_void.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/op_ret_void.extc:3:1: error: operator `==` must return `bool`
+tests/errors/op_ret_wrong.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/op_ret_wrong.extc:3:1: error: operator `!=` must return `bool`
+tests/errors/op_self_value.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/op_self_value.extc:3:1: error: `self` of `w.==` must be `ref w`
+tests/errors/overwrite_from_call.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/overwrite_from_call.extc:6:1: error: `@overwrite` only applies to `new`: the initializer must be an allocation
+tests/errors/overwrite_let.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/overwrite_let.extc:4:1: error: `@overwrite` needs `var`: it re-binds the name to the same storage on every execution, and you will usually write into it too
+tests/errors/overwrite_not_new.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/overwrite_not_new.extc:7:1: error: `@overwrite` only applies to `new`: the initializer must be an allocation
+tests/errors/parallel_run_noargs.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/parallel_run_noargs.extc:10:1: error: `parallel::run` needs at least the worker function's name
+tests/errors/path_narrow_param_root.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/path_narrow_param_root.extc:12:1: error: `?ref node` is a nullable reference (`?ref T`), so field access needs a non-null one
+tests/errors/payload_bind_missing.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/payload_bind_missing.extc:5:1: error: `circle` carries 1 value(s), so this arm binds 1 name(s), not 0
+tests/errors/payload_eq.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/payload_eq.extc:3:1: error: `shape` is an enum with a payload, so it has no `==`
+tests/errors/payload_wrong_arity.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/payload_wrong_arity.extc:4:1: error: `shape.circle` carries 1 value(s), got 2
+tests/errors/payload_zero_ref.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/payload_zero_ref.extc:4:1: error: cannot zero-initialize `b`: it contains a reference
+tests/errors/privileged_import.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/privileged_import.extc:3: error: `std::sys::heap` is the standard library's **privileged layer**: it turns any (pointer, length) into a view and can map or unmap any range of the address space.
+tests/errors/promote_borrow_through_call.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/promote_borrow_through_call.extc:10:1: error: argument 2 of `stash` carries a reference into a deeper scope (depth 2) than the place the callee may store it (depth 1)
+tests/errors/readonly_not_launderable.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/readonly_not_launderable.extc:6:1: error: cannot write through a read-only reference
+tests/errors/readonly_view_to_mut_param.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/readonly_view_to_mut_param.extc:5:1: error: argument expects `mut slice<i32>`, found `slice<i32>`
+tests/errors/redeclare_var.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/redeclare_var.extc:5:1: error: `v` is already declared in this scope
+tests/errors/redefine_slice.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/redefine_slice.extc:1:1: error: `slice` is a reserved definition and cannot be redefined
+tests/errors/ref_arg_too_deep.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/ref_arg_too_deep.extc:13:1: error: argument 2 of `stash` points into a deeper scope (depth 2) than the arena this call may store it in (depth 1)
+tests/errors/ref_compare.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/ref_compare.extc:7:1: error: `mut ref i32` is a **reference**, not a value -- dereference it first: `*p`
+tests/errors/ref_field_write_keeps_pointee_depth.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/ref_field_write_keeps_pointee_depth.extc:26:1: error: this reference would hold a reference to a local variable that dies first (borrowed from depth 2, but this can only hold up to depth 1)
+tests/errors/ref_launder_deref.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/ref_launder_deref.extc:4:1: error: cannot store a borrowed value into something that outlives this call
+tests/errors/ref_launder_field.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/ref_launder_field.extc:15:1: error: argument 2 of `bind` points into a deeper scope (depth 2) than the arena this call may store it in (depth 1)
+tests/errors/sign_not_optional.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/sign_not_optional.extc:1:1: error: `!` needs an `option`, a `result`, or a nullable reference, found `i64`
+tests/errors/sign_on_nonnull_ref.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/sign_on_nonnull_ref.extc:1:1: error: `ref i64` is not nullable, so `!` has nothing to assert
+tests/errors/slice_of_scalar.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/slice_of_scalar.extc:3:1: error: cannot slice a value of type `i32`
+tests/errors/slice_proven_negative.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/slice_proven_negative.extc:3:1: error: slice end -1 is not inside `[5]i32` (length 5)
+tests/errors/slice_proven_past_end.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/slice_proven_past_end.extc:3:1: error: slice end 9 is not inside `[5]i32` (length 5)
+tests/errors/slice_proven_reversed.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/slice_proven_reversed.extc:3:1: error: slice `3..1` ends before it starts
+tests/errors/slice_temporary.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/slice_temporary.extc:5:1: error: cannot slice a temporary value; `[4]i32` needs a variable, a field or an index
+tests/errors/stash_view_from_deeper.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/stash_view_from_deeper.extc:11:1: error: argument 2 of `stash` carries a reference into a deeper scope (depth 2) than the place the callee may store it (depth 1)
+tests/errors/struct_lit_in_cond.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/struct_lit_in_cond.extc:7:19: error: struct literal in a condition needs parentheses: `(point { ... })`
+tests/errors/struct_literal_in_return.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/struct_literal_in_return.extc:8:1: error: `make` is generic, so its bare name is not a value
+tests/errors/trap_bad_message.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/trap_bad_message.extc:4:1: error: `trap` needs a message of text, found `i32`
+tests/errors/try_bad_position.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/try_bad_position.extc:2:1: error: `?` may only be used as `f()?`, `let x = e?`, `x = e?` or `return e?`
+tests/errors/try_error_type_changed.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/try_error_type_changed.extc:5:1: error: `?` here would change the error type from `a` to `b`
+tests/errors/try_family_mismatch.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/try_family_mismatch.extc:2:1: error: `?` on `option<i64>` needs the enclosing function to return `option<...>`, but it returns `i32`
+tests/errors/try_no_return.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/try_no_return.extc:2:1: error: `?` on `option<i64>` needs the enclosing function to return `option<...>`, but it returns `void`
+tests/errors/try_not_option.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/try_not_option.extc:2:1: error: `?` needs an `option<...>` or `result<...>`, found `i32`
+tests/errors/try_on_non_option_in_main.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/try_on_non_option_in_main.extc:6:1: error: `?` needs an `option<...>` or `result<...>`, found `i32`
+tests/errors/try_payload_narrows.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/try_payload_narrows.extc:9:1: error: return value expects `u8`, found `i64`
+tests/errors/type_mismatch.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/type_mismatch.extc:2:1: error: initializer expects `i32`, found `slice<u8>`
+tests/errors/type_name_uppercase.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/type_name_uppercase.extc:1:8: error: type name `T` must start with a lowercase letter
+tests/errors/type_param_lowercase.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/type_param_lowercase.extc:1:12: error: type parameter `t` must start with an uppercase letter
+tests/errors/undefined_func.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/undefined_func.extc:2:1: error: call to undefined function `fizz`
+tests/errors/undefined_name.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/undefined_name.extc:2:1: error: undefined name `nope`
+tests/errors/unknown_variant.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/unknown_variant.extc:4:1: error: `status` has no variant `nope`
+tests/errors/view_add_mut.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/view_add_mut.extc:5:1: error: argument expects `mut slice<mut slice<i32>>`, found `slice<slice<i32>>`
+tests/errors/view_write_readonly.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/view_write_readonly.extc:2:1: error: cannot write through `g`: it is a read-only view `slice<slice<i32>>`
+tests/errors/write_string_literal.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/write_string_literal.extc:4:1: error: cannot write through `s`: it is a read-only view `slice<u8>`
+tests/errors/write_through_readonly_deref.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/write_through_readonly_deref.extc:7:1: error: cannot write through a read-only reference
+tests/errors/write_through_readonly_field.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/write_through_readonly_field.extc:7:1: error: cannot write through a read-only reference
+tests/errors/write_through_readonly_ref.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/write_through_readonly_ref.extc:4:1: error: cannot write through a read-only reference
+tests/errors/write_through_readonly_view.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/write_through_readonly_view.extc:3:1: error: cannot write through a read-only reference
+tests/errors/write_view_by_value.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/write_view_by_value.extc:3:1: error: cannot write through `v`: it is a read-only view `slice<i32>`
+tests/errors/wrong_arg_type.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/wrong_arg_type.extc:6:1: error: argument expects `i32`, found `slice<u8>`
+tests/errors/wrong_arity.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/wrong_arity.extc:6:1: error: `add` expects 2 argument(s), got 1
+tests/errors/yield_outside_coroutine.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/yield_outside_coroutine.extc:9:1: error: `yield` outside a coroutine
+tests/errors/zero_init_ref.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/errors/zero_init_ref.extc:9:1: error: cannot zero-initialize `p`: it contains a reference
+tests/escape-fuzz/cases/g_array_global.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/escape-fuzz/cases/g_array_global.extc:3:1: error: cannot zero-initialize the global `g`: it contains a reference
+tests/escape-fuzz/cases/g_ref_global.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/escape-fuzz/cases/g_ref_global.extc:3:1: error: cannot zero-initialize the global `g`: it contains a reference
+tests/escape-fuzz/cases/g_struct_global.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/escape-fuzz/cases/g_struct_global.extc:4:1: error: cannot infer the type of a bare `{}` here
+tests/escape-fuzz/cases/m_home_aelem_direct.extc	PAYS	91016	20185	4632048b	
+tests/escape-fuzz/cases/m_home_aelem_ret.extc	PAYS	91439	20606	2407875d	
+tests/escape-fuzz/cases/m_home_aelem_temp.extc	PAYS	91041	20161	1c3e4515	
+tests/escape-fuzz/cases/m_home_cont_after.extc	PAYS	99793	25691	10e6c4f7	
+tests/escape-fuzz/cases/m_home_cont_before.extc	PAYS	99886	25741	6253a10f	
+tests/escape-fuzz/cases/m_home_dfield_direct_after.extc	PAYS	91361	20406	be6a668d	
+tests/escape-fuzz/cases/m_home_dfield_direct_before.extc	PAYS	91447	20449	26181fc8	
+tests/escape-fuzz/cases/m_home_dfield_direct_old.extc	PAYS	91420	20403	ce2cbf7b	
+tests/escape-fuzz/cases/m_home_dfield_ret_after.extc	PAYS	91774	20829	25ac0998	
+tests/escape-fuzz/cases/m_home_dfield_ret_before.extc	PAYS	91860	20872	180e9ffc	
+tests/escape-fuzz/cases/m_home_dfield_ret_old.extc	PAYS	91833	20826	d8363063	
+tests/escape-fuzz/cases/m_home_dfield_temp_after.extc	PAYS	91404	20396	da25cb4e	
+tests/escape-fuzz/cases/m_home_dfield_temp_before.extc	PAYS	91491	20440	2194e3b4	
+tests/escape-fuzz/cases/m_home_dfield_temp_old.extc	PAYS	91463	20393	5585ebbf	
+tests/escape-fuzz/cases/m_home_ff_direct.extc	PAYS	90441	19626	16df1603	
+tests/escape-fuzz/cases/m_home_ff_ret.extc	PAYS	90874	20057	9c1ebb35	
+tests/escape-fuzz/cases/m_home_ff_temp.extc	PAYS	90474	19610	ac90bc18	
+tests/escape-fuzz/cases/m_home_lfield_direct.extc	PAYS	91095	19956	bfd86098	
+tests/escape-fuzz/cases/m_home_lfield_ret.extc	PAYS	91550	20291	4a7eee85	
+tests/escape-fuzz/cases/m_home_lfield_temp.extc	PAYS	91137	19943	6630ad52	
+tests/escape-fuzz/cases/m_home_pfield_direct.extc	PAYS	91214	20073	73a18b91	
+tests/escape-fuzz/cases/m_home_pfield_ret.extc	PAYS	91669	20408	17c70289	
+tests/escape-fuzz/cases/m_main_aelem_direct.extc	PAYS	90492	19797	29f5ce65	
+tests/escape-fuzz/cases/m_main_aelem_ret.extc	PAYS	91013	20137	ac3878e1	
+tests/escape-fuzz/cases/m_main_aelem_temp.extc	PAYS	90517	19773	bf8ccc81	
+tests/escape-fuzz/cases/m_main_cont_after.extc	PAYS	99407	25351	2f02ee49	
+tests/escape-fuzz/cases/m_main_cont_before.extc	PAYS	99500	25401	239dcc76	
+tests/escape-fuzz/cases/m_main_dfield_direct_after.extc	PAYS	90981	20069	d8eb108a	
+tests/escape-fuzz/cases/m_main_dfield_direct_before.extc	PAYS	91100	20023	9e812cce	
+tests/escape-fuzz/cases/m_main_dfield_direct_old.extc	PAYS	91040	20066	be858932	
+tests/escape-fuzz/cases/m_main_dfield_ret_after.extc	PAYS	91338	20407	709938f0	
+tests/escape-fuzz/cases/m_main_dfield_ret_before.extc	PAYS	91385	20365	2f9fa242	
+tests/escape-fuzz/cases/m_main_dfield_ret_old.extc	PAYS	91397	20404	cb4e3803	
+tests/escape-fuzz/cases/m_main_dfield_temp_after.extc	PAYS	90871	20059	9b39923d	
+tests/escape-fuzz/cases/m_main_dfield_temp_before.extc	PAYS	90914	20014	99ab01fa	
+tests/escape-fuzz/cases/m_main_dfield_temp_old.extc	PAYS	90930	20056	bc7d962b	
+tests/escape-fuzz/cases/m_main_ff_direct.extc	PAYS	89894	19238	234ec5de	
+tests/escape-fuzz/cases/m_main_ff_ret.extc	PAYS	90425	19588	e9c61876	
+tests/escape-fuzz/cases/m_main_ff_temp.extc	PAYS	89927	19222	a7930381	
+tests/escape-fuzz/cases/m_main_lfield_direct.extc	PAYS	90623	19527	127a2f44	
+tests/escape-fuzz/cases/m_main_lfield_ret.extc	PAYS	91138	19866	42baef1c	
+tests/escape-fuzz/cases/m_main_lfield_temp.extc	PAYS	90588	19514	f231afb2	
+tests/escape-fuzz/cases/m_main_pfield_direct.extc	PAYS	90665	19644	06167109	
+tests/escape-fuzz/cases/m_main_pfield_ret.extc	PAYS	91257	19983	c05fe853	
+tests/escape-fuzz/cases/m_nohome_aelem_direct.extc	PAYS	90583	19890	61d3d6c1	
+tests/escape-fuzz/cases/m_nohome_aelem_ret.extc	PAYS	91725	20689	91083e47	
+tests/escape-fuzz/cases/m_nohome_aelem_temp.extc	PAYS	90608	19866	345782a3	
+tests/escape-fuzz/cases/m_nohome_cont_after.extc	PAYS	99821	25767	9b1b42e3	
+tests/escape-fuzz/cases/m_nohome_cont_before.extc	PAYS	99914	25817	d96fd871	
+tests/escape-fuzz/cases/m_nohome_dfield_direct_after.extc	PAYS	91333	20471	754acbaf	
+tests/escape-fuzz/cases/m_nohome_dfield_direct_before.extc	PAYS	91183	20108	938d2f13	
+tests/escape-fuzz/cases/m_nohome_dfield_direct_old.extc	PAYS	91392	20468	ee82455b	
+tests/escape-fuzz/cases/m_nohome_dfield_ret_after.extc	PAYS	91707	20809	e6a14df2	
+tests/escape-fuzz/cases/m_nohome_dfield_ret_before.extc	PAYS	92089	20909	bca29f9b	
+tests/escape-fuzz/cases/m_nohome_dfield_ret_old.extc	PAYS	91766	20806	373977ae	
+tests/escape-fuzz/cases/m_nohome_dfield_temp_after.extc	PAYS	91376	20461	1ebb5c41	
+tests/escape-fuzz/cases/m_nohome_dfield_temp_before.extc	PAYS	90997	20099	24830ea2	
+tests/escape-fuzz/cases/m_nohome_dfield_temp_old.extc	PAYS	91435	20458	10bdabbe	
+tests/escape-fuzz/cases/m_nohome_ff_direct.extc	PAYS	89977	19323	3d705ef7	
+tests/escape-fuzz/cases/m_nohome_ff_ret.extc	PAYS	91129	20132	283b2bc5	
+tests/escape-fuzz/cases/m_nohome_ff_temp.extc	PAYS	90010	19307	b35b4913	
+tests/escape-fuzz/cases/m_nohome_lfield_direct.extc	PAYS	90706	19614	0e5b4b9f	
+tests/escape-fuzz/cases/m_nohome_lfield_ret.extc	PAYS	91842	20412	6a753f1e	
+tests/escape-fuzz/cases/m_nohome_lfield_temp.extc	PAYS	90671	19601	fe69fb20	
+tests/escape-fuzz/cases/m_nohome_pfield_direct.extc	PAYS	90748	19731	d9cfafb4	
+tests/escape-fuzz/cases/m_nohome_pfield_ret.extc	PAYS	91961	20529	c90aed8d	
+tests/escape-fuzz/cases/r_deep_store.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/escape-fuzz/cases/r_deep_store.extc:8:1: error: this reference would hold a reference to a local variable that dies first (borrowed from depth 2, but this can only hold up to depth 1)
+tests/escape-fuzz/cases/r_deep_store_call.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/escape-fuzz/cases/r_deep_store_call.extc:11:1: error: argument 2 of `stash` points into a deeper scope (depth 2) than the arena this call may store it in (depth 1)
+tests/escape-fuzz/cases/s_dlist_home_dfield_direct.extc	PAYS	91655	20514	6b4ba4c3	
+tests/escape-fuzz/cases/s_dlist_home_dfield_ret.extc	PAYS	92061	20933	fb4cb8ec	
+tests/escape-fuzz/cases/s_dlist_home_lfield_direct.extc	PAYS	91433	20145	f794e43b	
+tests/escape-fuzz/cases/s_dlist_home_lfield_ret.extc	PAYS	91884	20476	c26fff0f	
+tests/escape-fuzz/cases/s_dlist_main_dfield_direct.extc	PAYS	91308	20088	d880354b	
+tests/escape-fuzz/cases/s_dlist_main_dfield_ret.extc	PAYS	91586	20426	e3f5aa5c	
+tests/escape-fuzz/cases/s_dlist_main_lfield_direct.extc	PAYS	90961	19716	de40b1f0	
+tests/escape-fuzz/cases/s_dlist_main_lfield_ret.extc	PAYS	91472	20051	93b57e2a	
+tests/escape-fuzz/cases/s_dlist_nohome_dfield_direct.extc	PAYS	91391	20173	902211f8	
+tests/escape-fuzz/cases/s_dlist_nohome_dfield_ret.extc	PAYS	92290	20970	a08651e0	
+tests/escape-fuzz/cases/s_dlist_nohome_lfield_direct.extc	PAYS	91044	19803	f1972b23	
+tests/escape-fuzz/cases/s_dlist_nohome_lfield_ret.extc	PAYS	92176	20597	8bd51b18	
+tests/escape-fuzz/cases/s_ring_home_dfield_direct.extc	PAYS	92313	20759	fef7f842	
+tests/escape-fuzz/cases/s_ring_home_dfield_ret.extc	PAYS	91918	20815	cec01f51	
+tests/escape-fuzz/cases/s_ring_home_lfield_direct.extc	PAYS	91659	20274	f338c267	
+tests/escape-fuzz/cases/s_ring_home_lfield_ret.extc	PAYS	91293	20334	0b718baa	
+tests/escape-fuzz/cases/s_ring_main_dfield_direct.extc	PAYS	91803	20327	d8af909b	
+tests/escape-fuzz/cases/s_ring_main_dfield_ret.extc	PAYS	91772	20310	5d622454	
+tests/escape-fuzz/cases/s_ring_main_lfield_direct.extc	PAYS	91184	19880	4ccc251f	
+tests/escape-fuzz/cases/s_ring_main_lfield_ret.extc	PAYS	91182	19867	adac6cf8	
+tests/escape-fuzz/cases/s_ring_nohome_dfield_direct.extc	PAYS	91886	20416	091c7b23	
+tests/escape-fuzz/cases/s_ring_nohome_dfield_ret.extc	PAYS	92476	20854	4bfd3c84	
+tests/escape-fuzz/cases/s_ring_nohome_lfield_direct.extc	PAYS	91267	19969	b3b6d035	
+tests/escape-fuzz/cases/s_ring_nohome_lfield_ret.extc	PAYS	91886	20411	ee29ea8e	
+tests/escape-fuzz/cases/s_selfref_home_dfield_direct.extc	PAYS	91590	20423	297a5868	
+tests/escape-fuzz/cases/s_selfref_home_dfield_ret.extc	PAYS	91539	20368	d78099b0	
+tests/escape-fuzz/cases/s_selfref_home_lfield_direct.extc	PAYS	91146	20089	ba737c87	
+tests/escape-fuzz/cases/s_selfref_home_lfield_ret.extc	PAYS	91095	20034	67921d28	
+tests/escape-fuzz/cases/s_selfref_main_dfield_direct.extc	PAYS	91039	19994	bade5216	
+tests/escape-fuzz/cases/s_selfref_main_dfield_ret.extc	PAYS	90988	19939	39b7b6e7	
+tests/escape-fuzz/cases/s_selfref_main_lfield_direct.extc	PAYS	90619	19698	1063d7c2	
+tests/escape-fuzz/cases/s_selfref_main_lfield_ret.extc	PAYS	90568	19643	67f70bf1	
+tests/escape-fuzz/cases/s_selfref_nohome_dfield_direct.extc	PAYS	91122	20081	c0f48304	
+tests/escape-fuzz/cases/s_selfref_nohome_dfield_ret.extc	PAYS	91071	20026	388e4e71	
+tests/escape-fuzz/cases/s_selfref_nohome_lfield_direct.extc	PAYS	90702	19785	32b2d34e	
+tests/escape-fuzz/cases/s_selfref_nohome_lfield_ret.extc	PAYS	90651	19730	b27f4755	
+tests/escape-fuzz/cases/s_tree_home_dfield_direct.extc	PAYS	93581	21590	95e88dbd	
+tests/escape-fuzz/cases/s_tree_home_dfield_ret.extc	PAYS	93409	21685	57546b72	
+tests/escape-fuzz/cases/s_tree_home_lfield_direct.extc	PAYS	93279	21384	61646104	
+tests/escape-fuzz/cases/s_tree_home_lfield_ret.extc	PAYS	93151	21480	41454645	
+tests/escape-fuzz/cases/s_tree_main_dfield_direct.extc	PAYS	93108	21158	c87669f7	
+tests/escape-fuzz/cases/s_tree_main_dfield_ret.extc	PAYS	93202	21261	8b7ab6ec	
+tests/escape-fuzz/cases/s_tree_main_lfield_direct.extc	PAYS	92810	20990	83afa386	
+tests/escape-fuzz/cases/s_tree_main_lfield_ret.extc	PAYS	92948	21094	072a7740	
+tests/escape-fuzz/cases/s_tree_nohome_dfield_direct.extc	PAYS	93195	21251	8cc4dddb	
+tests/escape-fuzz/cases/s_tree_nohome_dfield_ret.extc	PAYS	93910	21811	519fe4be	
+tests/escape-fuzz/cases/s_tree_nohome_lfield_direct.extc	PAYS	92897	21083	8d522554	
+tests/escape-fuzz/cases/s_tree_nohome_lfield_ret.extc	PAYS	93656	21644	ffbd0a22	
+tests/escape-fuzz/min/callres_ret_store.extc	PAYS	91119	20234	fa8b1746	
+tests/escape-fuzz/min/deep_store.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/escape-fuzz/min/deep_store.extc:8:1: error: this reference would hold a reference to a local variable that dies first (borrowed from depth 2, but this can only hold up to depth 1)
+tests/escape-fuzz/min/global_ref.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/escape-fuzz/min/global_ref.extc:3:1: error: cannot zero-initialize the global `g`: it contains a reference
+tests/escape-fuzz/min/home_ff_return.extc	PAYS	90686	19957	d108c922	
+tests/escape-fuzz/min/home_pfield_uaf.extc	PAYS	91095	19940	4e871cb8	
+tests/escape-fuzz/min/home_ret_binding.extc	ZERO	19754	19754	47ebf40b	
+tests/escape-fuzz/min/main_dfield_after.extc	PAYS	91013	19948	8fd5bfab	
+tests/escape-fuzz/min/nohome_dfield_after.extc	PAYS	91165	20292	7ff428da	
+tests/escape-fuzz/min/param_ret_arg.extc	PAYS	83464	12671	15c0ac57	
+tests/escape-fuzz/recon/probes/A_ff1_new.extc	PAYS	90478	19672	c095747a	
+tests/escape-fuzz/recon/probes/B2_preexisting.extc	PAYS	90625	19754	9e89b9c8	
+tests/escape-fuzz/recon/probes/B_ff2_new.extc	PAYS	90508	19694	69aa47b5	
+tests/escape-fuzz/recon/probes/C1_two_stage.extc	PAYS	90502	19715	6e653d18	
+tests/escape-fuzz/recon/probes/C_ff2_mk.extc	PAYS	90975	20160	ec02f305	
+tests/escape-fuzz/recon/probes/D_arr_new.extc	PAYS	91148	20315	78e2a0dc	
+tests/escape-fuzz/recon/probes/E_arr_mk.extc	PAYS	91611	20777	e8f23780	
+tests/escape-fuzz/recon/probes/F_direct.extc	PAYS	90286	19584	d5248c0c	
+tests/escape-fuzz/recon/probes/G_bind.extc	PAYS	90447	19630	74974281	
+tests/escape-fuzz/recon/probes/H_ff1_mk.extc	PAYS	90945	20138	7a7cb5d3	
+tests/escape-fuzz/recon/probes/q1_assign_noescape.extc	PAYS	90629	20021	30184e42	
+tests/escape-fuzz/recon/probes/q1_binding.extc	ZERO	7075	7075	c5c2451e	
+tests/escape-fuzz/recon/probes/q1_direct.extc	PAYS	90503	19841	8b6a8025	
+tests/escape-fuzz/recon/probes/q1_frame_nonescape.extc	ZERO	19340	19340	15bb7bee	
+tests/escape-fuzz/recon/probes/q1_homefn_loop.extc	ZERO	20027	20027	aba9442d	
+tests/escape-fuzz/recon/probes/q1_inloop_nonescape.extc	ZERO	19606	19606	7d22057f	
+tests/escape-fuzz/recon/probes/q1_loop.extc	PAYS	91209	20179	29db2b81	
+tests/escape-fuzz/recon/probes/q2_after.extc	PAYS	90794	19871	ef2729ee	
+tests/escape-fuzz/recon/probes/q2_after_deadassign.extc	PAYS	91202	20124	1045e1e8	
+tests/escape-fuzz/recon/probes/q2_dualpointee.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/escape-fuzz/recon/probes/q2_dualpointee.extc:14:1: error: this reference would hold a reference to a local variable that dies first (borrowed from depth 1, but this can only hold up to depth 0)
+tests/ext/bare.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/ext/bare.extc:2:1: error: undefined name `ext`
+tests/ext/binding.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/ext/binding.extc:3:1: error: there is no domain here: `ext` is only legal inside `sched::run { … }` or `par::pool(n) { … }`
+tests/ext/builtin_effects.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/ext/builtin_effects.extc:5:1: error: `@builtin` declarations are standard-library only
+tests/ext/control_ident.extc	ZERO	14212	14212	b72d3094	
+tests/ext/domain_needs_object.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/ext/domain_needs_object.extc:5:1: error: a trailing block needs `run` on a domain object, found `i64`
+tests/ext/domain_plain_task.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/ext/domain_plain_task.extc:7:1: error: `ext` needs a coroutine function, and `plain` is a plain function
+tests/ext/domain_runs.extc	ZERO	42273	42273	336394a3	
+tests/ext/domain_wrong_method.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/ext/domain_wrong_method.extc:3:1: error: a trailing block needs `run` on a domain object, found `domain`
+tests/ext/nested.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/ext/nested.extc:4:1: error: there is no domain here: `ext` is only legal inside `sched::run { … }` or `par::pool(n) { … }`
+tests/ext/plain_block.extc	ZERO	14106	14106	543e2ebf	
+tests/ext/plain_fn.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/ext/plain_fn.extc:3:1: error: there is no domain here: `ext` is only legal inside `sched::run { … }` or `par::pool(n) { … }`
+tests/ext/stmt.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/ext/stmt.extc:3:1: error: there is no domain here: `ext` is only legal inside `sched::run { … }` or `par::pool(n) { … }`
+tests/ext/use_advice.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/ext/use_advice.extc:5:1: error: `sys::domain` is not imported here -- add `use std::sys::domain` and call it `domain::Name`
+tests/ext/use_advice_works.extc	ZERO	34217	34217	1a338a10	
+tests/ext/variable_named_ext.extc	ZERO	14376	14376	2b2bb416	
+tests/extern/capi-main.extc	ZERO	34995	34995	67cd72dc	
+tests/extern/capi.extc	ZERO	2915	2915	c2d38e1e	
+tests/extern/errors/no_effects.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/extern/errors/no_effects.extc:3:1: error: argument 1 of `fill` may be kept by C forever, but it points into this frame (depth 1)
+tests/extern/errors/owned.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/extern/errors/owned.extc:3:5: error: `owned` is not implemented yet
+tests/extern/errors/ptr_unsigned.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/extern/errors/ptr_unsigned.extc:15:1: error: argument 1 of `bad` may be kept by C forever, but it points into this frame (depth 1)
+tests/extern/errors/slice_param.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/extern/errors/slice_param.extc:2:1: error: `extern!` argument 1 has type `slice<u8>`, which cannot cross the C boundary
+tests/extern/errors/struct_by_value.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/extern/errors/struct_by_value.extc:8:1: error: `extern!` argument 1 has type `point`, which cannot cross the C boundary
+tests/extern/errors/void_deref.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/extern/errors/void_deref.extc:10:1: error: cannot dereference `ref void`: `void` has no size
+tests/extern/libc.extc	ZERO	2821	2821	be34c7a6	
+tests/extern/main.extc	ZERO	8350	8350	b0f61945	
+tests/frozen/errors/not_frozen.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/frozen/errors/not_frozen.extc:7:1: error: `extern!` argument 1 has type `point`, which cannot cross the C boundary
+tests/frozen/errors/on_enum.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/frozen/errors/on_enum.extc:2:9: error: `@frozen` goes on a `struct`
+tests/frozen/errors/on_fn.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/frozen/errors/on_fn.extc:2:9: error: `@frozen` goes on a `struct`
+tests/frozen/errors/on_impl.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/frozen/errors/on_impl.extc:3:9: error: no annotation applies to an `impl` block
+tests/frozen/errors/twice.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/frozen/errors/twice.extc:2:9: error: `@frozen` appears twice
+tests/frozen/frozen.extc	ZERO	44386	44386	c30b2382	
+tests/fs-shape/errors/read-as-output.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/fs-shape/errors/read-as-output.extc:6:1: error: no method `put` on `fs::ifstream`
+tests/fs-shape/errors/write-as-input.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/fs-shape/errors/write-as-input.extc:11:1: error: argument expects `ref fs::ifstream`, found `mut ref fs::ofstream`
+tests/fs-shape/fsproto.extc	ZERO	35731	35731	32e0653f	
+tests/fs/close-twice.extc	ZERO	19884	19884	4b58d27f	
+tests/fs/closed-use.extc	ZERO	22475	22475	fef86a0d	
+tests/fs/fd-constant.extc	ZERO	25999	25999	68036c7a	
+tests/fs/global-io.extc	ZERO	46358	46358	58952fea	
+tests/fs/leak-canary.extc	ZERO	16472	16472	41ed0f4d	
+tests/fs/read-all.extc	ZERO	30803	30803	4d08e379	
+tests/fstring/main.extc	ZERO	17267	17267	58f873ad	
+tests/fstring/pad.extc	ZERO	25557	25557	56a65baa	
+tests/fstring/plain.extc	ZERO	17284	17284	580bf48b	
+tests/generics/deferred_op_through_call.extc	ZERO	41073	41073	202f2ac6	
+tests/generics/errors/cannot_infer.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/generics/errors/cannot_infer.extc:8:1: error: cannot infer type parameter `T` of `makeDefault`
+tests/generics/errors/deferred_let_type.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/generics/errors/deferred_let_type.extc:11:1: error: `bad_pt` expects `i8`, found `i64`
+tests/generics/errors/deferred_op_through_call_bad.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/generics/errors/deferred_op_through_call_bad.extc:8:1: error: `lt_plain` needs `plain` to define `<`
+tests/generics/errors/deferred_return_type.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/generics/errors/deferred_return_type.extc:11:1: error: `bad_pt` expects `i8`, found `i64`
+tests/generics/errors/method_arity.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/generics/errors/method_arity.extc:10:1: error: `hash` takes 0 arguments, but 1 was written
+tests/generics/errors/needs_eq.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/generics/errors/needs_eq.extc:6:1: error: `indexOf_pt` needs `pt` to define `==`
+tests/generics/errors/needs_method.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/generics/errors/needs_method.extc:7:1: error: `hashOf_nopoint` needs `nopoint` to define `hash`
+tests/generics/method_on_t.extc	ZERO	40072	40072	54809450	
+tests/genmatrix/eq_view.extc	ZERO	10679	10679	8ff1ac37	
+tests/genmatrix/hetero_values.extc	ZERO	18442	18442	4b41b08f	
+tests/genmatrix/t_field.extc	ZERO	9683	9683	bdc868fa	
+tests/genmatrix/t_foreign_option_return.extc	ZERO	22247	22247	b6254f87	
+tests/genmatrix/t_nested.extc	ZERO	9768	9768	a0cdab8e	
+tests/genmatrix/t_param_ret.extc	ZERO	8746	8746	4e547a71	
+tests/genmatrix/t_two_param_slice.extc	ZERO	17081	17081	92e109d5	
+tests/genmatrix/t_variant_construct.extc	ZERO	11861	11861	ba8aa023	
+tests/genmatrix/t_variant_match.extc	ZERO	17442	17442	2c2e9752	
+tests/genmatrix/t_variant_match_concrete.extc	ZERO	10397	10397	51584c0d	
+tests/genmatrix/t_variant_try.extc	ZERO	10503	10503	db10504b	
+tests/genmatrix/t_view_read.extc	ZERO	16224	16224	8f93f949	
+tests/genmatrix/t_view_write.extc	ZERO	15185	15185	7110a23b	
+tests/hash/api.extc	ZERO	39542	39542	0a5047a3	
+tests/hash/bench.extc	ZERO	49822	49822	894f0f10	
+tests/hash/cross.extc	ZERO	52615	52615	34a0a92e	
+tests/hash/hmac.extc	ZERO	56405	56405	3fb223c6	
+tests/hash/uuid.extc	ZERO	30544	30544	3539863f	
+tests/hash/vectors.extc	ZERO	49933	49933	eaaabba9	
+tests/hashmap/basic.extc	ZERO	71071	71071	a1a6c87b	
+tests/hashmap/churn-leak.extc	ZERO	69535	69535	433289ff	
+tests/hashmap/churn.extc	ZERO	74334	74334	284b0897	
+tests/hashmap/collide.extc	ZERO	75298	75298	3cd3f75b	
+tests/hashmap/dense.extc	ZERO	78480	78480	987c6928	
+tests/hashmap/grow_rss.extc	ZERO	68214	68214	c9ef7706	
+tests/hashmap/grow_rss_reserved.extc	ZERO	68813	68813	05196f31	
+tests/hashmap/index.extc	ZERO	70038	70038	72582a9b	
+tests/hashmap/structkey.extc	ZERO	70315	70315	3e548c5b	
+tests/heap/afterclose.extc	ZERO	44990	44990	c82445fc	
+tests/heap/loan.extc	ZERO	52464	52464	ba7ede73	
+tests/heap/loanwrite.extc	ZERO	45112	45112	14abdfb9	
+tests/heap/plate.extc	ZERO	67123	67123	21463c8e	
+tests/hostile/forger.extc	ZERO	41092	41092	855a2dd4	
+tests/hostile/keeper_frame.extc	ZERO	38020	38020	a693d930	
+tests/hostile/keeper_plate.extc	ZERO	50191	50191	a6b9a739	
+tests/hostile/missym.extc	ZERO	42124	42124	4d8ab841	
+tests/hostile/missym_call.extc	ZERO	42151	42151	c677f21d	
+tests/hostile/overrun_plate.extc	ZERO	50292	50292	ed5c3c9a	
+tests/hostile/overrun_stack.extc	ZERO	36989	36989	41f0eba8	
+tests/hostile/remap.extc	ZERO	52625	52625	30dc54d6	
+tests/hostile/tablewrite.extc	ZERO	42652	42652	33704c8b	
+tests/http/client.extc	ZERO	59448	59448	90d69acf	
+tests/http/multi.extc	ZERO	63394	63394	ef660fee	
+tests/http/parse.extc	ZERO	62118	62118	ae54c55a	
+tests/http/qqbot.extc	ZERO	59853	59853	72fed560	
+tests/impl/basic.extc	ZERO	66125	66125	33ea909e	
+tests/impl/cin_string.extc	ZERO	65344	65344	599ee6d2	
+tests/impl/errors/annotation.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/impl/errors/annotation.extc:6:1: error: no annotation applies to an `impl` block
+tests/impl/errors/dup_body_and_impl.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/impl/errors/dup_body_and_impl.extc:10:1: error: struct `pt` has duplicate method `sum`
+tests/impl/errors/dup_two_impls.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/impl/errors/dup_two_impls.extc:6:1: error: struct `pt` has duplicate method `sum`
+tests/impl/errors/generic_target.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/impl/errors/generic_target.extc:6:1: error: unknown type `T`
+tests/impl/errors/method_needs_import.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/impl/errors/method_needs_import.extc:5:1: error: no method `hash` on `i64`
+tests/impl/errors/on_enum.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/impl/errors/on_enum.extc:4:1: error: `impl` on `st`, which cannot own methods
+tests/impl/errors/unknown_type.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/impl/errors/unknown_type.extc:4:1: error: unknown type `nope`
+tests/impl/errors/with_field.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/impl/errors/with_field.extc:4:11: error: expected `fn` in the `impl` block, found `y`
+tests/impl/file_string.extc	ZERO	70687	70687	77eb2885	
+tests/impl/orphan_impl.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/impl/orphan_impl.extc:5:1: error: `impl Tr for orphanmod$thing` is an orphan: module `this file` declares neither
+tests/impl/orphanmod.extc	ZERO	2883	2883	12c5a6b1	
+tests/impl/privacy_field.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/impl/privacy_field.extc:7:1: error: field `seen` of `privmod::counter` is private to module `privmod`
+tests/impl/privacy_literal.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/impl/privacy_literal.extc:6:1: error: field `seen` of `privmod::counter` is private to module `privmod`
+tests/impl/privacy_method.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/impl/privacy_method.extc:7:1: error: `zero` is private to module `privmod`
+tests/impl/privacy_ok.extc	ZERO	15253	15253	d50f4d15	
+tests/impl/privmod.extc	ZERO	2923	2923	77e4dc6c	
+tests/impl/stream_string.extc	ZERO	74962	74962	5c36a0de	
+tests/impl/trait_collide_cross.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/impl/trait_collide_cross.extc:7:1: error: struct `box` has duplicate method `tag`
+tests/impl/trait_collide_inherent.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/impl/trait_collide_inherent.extc:6:1: error: struct `box` has duplicate method `tag`
+tests/impl/trait_dup.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/impl/trait_dup.extc:6:1: error: `Tag` is already implemented for `box` (first at line 5)
+tests/impl/trait_missing.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/impl/trait_missing.extc:8:1: error: `impl Both for box` is missing `other`
+tests/impl/trait_ok.extc	ZERO	15035	15035	10e11b1a	
+tests/impl/trait_self_outside.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/impl/trait_self_outside.extc:4:1: error: unknown type `Self`
+tests/impl/trait_sig_arity.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/impl/trait_sig_arity.extc:5:1: error: `Tag`: `tag` does not match the signature the trait declares
+tests/impl/trait_sig_type.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/impl/trait_sig_type.extc:5:1: error: `Get`: `get` returns `bool`, but the trait declares `i64`
+tests/impl/trait_static_only.extc	ZERO	14568	14568	0bb40656	
+tests/impl/trait_table.extc	ZERO	44979	44979	cf35b0a1	
+tests/impl/trait_unknown.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/impl/trait_unknown.extc:4:1: error: `impl` on unknown trait `Nope`
+tests/instimpl/t_dyn.extc	ZERO	45617	45617	5efd99ee	
+tests/instimpl/t_dyn_multi.extc	ZERO	45196	45196	ac665cd8	
+tests/instimpl/t_explicit_targs.extc	ZERO	15112	15112	5cec913a	
+tests/instimpl/t_gen_badname.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/instimpl/t_gen_badname.extc:3:1: error: `impl` on `pair`: the type parameters must match the declaration's
+tests/instimpl/t_gen_inherent.extc	ZERO	14599	14599	14559d3b	
+tests/instimpl/t_gen_method.extc	ZERO	14707	14707	9c940e96	
+tests/instimpl/t_gen_method_bad.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/instimpl/t_gen_method_bad.extc:7:1: error: cannot infer type parameter `U` of `make`
+tests/instimpl/t_gen_return.extc	ZERO	15319	15319	320def13	
+tests/instimpl/t_gen_trait.extc	ZERO	14599	14599	07609ecc	
+tests/instimpl/t_generic_coro.extc	ZERO	49453	49453	e7fab095	
+tests/instimpl/t_inherent.extc	ZERO	15530	15530	96bad22a	
+tests/instimpl/t_isolate.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/instimpl/t_isolate.extc:5:1: error: no method `half` on `slice<i64>`
+tests/instimpl/t_main_falls_off.extc	ZERO	16413	16413	334183c0	
+tests/instimpl/t_param_arity.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/instimpl/t_param_arity.extc:4:1: error: `impl Codec for box`: the trait has 1 type parameter(s), 0 given
+tests/instimpl/t_param_sig.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/instimpl/t_param_sig.extc:4:1: error: `Codec`: parameter 2 of `enc` is `bool`, but the trait declares `i64`
+tests/instimpl/t_param_trait.extc	ZERO	14547	14547	be1801c8	
+tests/instimpl/t_trait.extc	ZERO	14432	14432	f962a346	
+tests/instimpl/t_two.extc	ZERO	15051	15051	ebac7559	
+tests/instimpl/t_unbound.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/instimpl/t_unbound.extc:2:1: error: unknown type `T`
+tests/io/cerr.extc	ZERO	15718	15718	5cefa161	
+tests/io/crlf.extc	ZERO	25764	25764	948ec2f7	
+tests/io/eof.extc	ZERO	23621	23621	c209a3cb	
+tests/io/exit-code.extc	ZERO	8086	8086	dd375aae	
+tests/io/file-reader.extc	ZERO	49600	49600	f5c0e725	
+tests/io/iohelper.extc	ZERO	4681	4681	c677b7bc	
+tests/io/line-too-long.extc	ZERO	26432	26432	7031f8f2	
+tests/io/main-question.extc	ZERO	33802	33802	114b4f7a	
+tests/io/main.extc	ZERO	35774	35774	44ab9eae	
+tests/io/order.extc	ZERO	8194	8194	a6798e70	
+tests/io/raw-mode.extc	ZERO	26108	26108	a126a023	
+tests/io/raw-trap.extc	ZERO	18572	18572	af4a5c19	
+tests/io/read-failed.extc	ZERO	25767	25767	c1877633	
+tests/io/stream-file.extc	ZERO	45069	45069	de7dfca5	
+tests/io/stream.extc	ZERO	23616	23616	fe987946	
+tests/io/struct-print.extc	ZERO	25145	25145	0a4587ca	
+tests/io/sum-big.extc	ZERO	27211	27211	8e198c96	
+tests/io/writer-file.extc	ZERO	32392	32392	1954d639	
+tests/json/bad.extc	ZERO	76098	76098	b1b89aee	
+tests/json/bench.extc	ZERO	71980	71980	9242f29e	
+tests/json/fuzz.extc	ZERO	109360	109360	e46372cc	
+tests/json/roundtrip.extc	ZERO	99756	99756	f4445318	
+tests/json/zerocopy.extc	ZERO	75922	75922	5a53ad60	
+tests/lambda/bad_capture.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/lambda/bad_capture.extc:3:23: error: a capture list entry is `mut ref name`, found `hits`
+tests/lambda/bad_capture2.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/lambda/bad_capture2.extc:3:23: error: a capture list entry is `mut ref name`, found `ref`
+tests/lambda/called.extc	ZERO	4054	4054	f576ec8b	
+tests/lambda/cannot_infer.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/lambda/cannot_infer.extc:2:1: error: cannot infer the result type of this lambda
+tests/lambda/capture_unused.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/lambda/capture_unused.extc:3:1: error: `a` is not an enclosing variable this body uses
+tests/lambda/closed_over_view.extc	ZERO	19720	19720	732763cd	
+tests/lambda/control_flow.extc	ZERO	14477	14477	03aec560	
+tests/lambda/infer_ret.extc	ZERO	14472	14472	b76b2bf3	
+tests/lambda/modcross/greet.extc	ZERO	2915	2915	731a9512	
+tests/lambda/modcross/main.extc	ZERO	14791	14791	ad3fbc2b	
+tests/lambda/mut_capture.extc	ZERO	14740	14740	9384e87a	
+tests/lambda/nested_in_fn.extc	ZERO	14624	14624	75a99549	
+tests/lambda/nested_lambda.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/lambda/nested_lambda.extc:2:1: error: a lambda inside a lambda is not supported yet
+tests/lambda/new_in_body.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/lambda/new_in_body.extc:2:1: error: a lambda body may not allocate yet
+tests/lambda/no_capture.extc	ZERO	14489	14489	fff135d7	
+tests/lambda/no_param.extc	ZERO	3974	3974	621890ae	
+tests/lambda/plain.extc	ZERO	14147	14147	0a594884	
+tests/lambda/read_capture.extc	ZERO	14514	14514	53754a08	
+tests/lambda/ret_no_value.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/lambda/ret_no_value.extc:2:1: error: this lambda returns no value, but its type says `i64`
+tests/lambda/struct_field.extc	ZERO	14585	14585	de985803	
+tests/lambda/two_params.extc	ZERO	14513	14513	319bbde7	
+tests/lambda/write_undeclared.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/lambda/write_undeclared.extc:3:1: error: the body writes `h`, but the capture list does not name it
+tests/linkflags/autolink/app.extc	ZERO	3852	3852	d32d5aaf	
+tests/linkflags/autolink/zmod.extc	ZERO	2850	2850	84394b1d	
+tests/linkflags/badlink/app.extc	GENFAIL	0	0		extc: /home/alphayang/extC_Compiler/tests/linkflags/badlink/bmod.link:2: unknown directive `frobnicate` (expected `lib`, `pkgconfig` or `ccflag`)
+tests/linkflags/badlink/bmod.extc	ZERO	2821	2821	be34c7a6	
+tests/linkflags/openssl_version.extc	ZERO	3729	3729	6c040ebe	
+tests/linkflags/order/app.extc	ZERO	3978	3978	d43a1018	
+tests/linkflags/order/zmod.extc	ZERO	2821	2821	be34c7a6	
+tests/linkflags/soname/app.extc	ZERO	3894	3894	264bcbf4	
+tests/linkflags/soname/sqlitemod.extc	ZERO	2857	2857	e25dda19	
+tests/linkflags/sqlite_version.extc	ZERO	3743	3743	36579c1b	
+tests/linkflags/unused/main.extc	ZERO	2871	2871	269c74dc	
+tests/linkflags/unused/noext.extc	ZERO	2821	2821	be34c7a6	
+tests/linkflags/zlib_version.extc	ZERO	3726	3726	b02517ef	
+tests/linmap/index.extc	ZERO	48975	48975	96e9549a	
+tests/linmap/map.extc	ZERO	49702	49702	aa0e6d20	
+tests/linmap/release.extc	ZERO	49161	49161	53e255ff	
+tests/linmap/set.extc	ZERO	57733	57733	fd09d01a	
+tests/linmap/structkey.extc	ZERO	46061	46061	4e4835b0	
+tests/loop/io.extc	ZERO	40251	40251	9781767e	
+tests/loop/main.extc	ZERO	40085	40085	2455844c	
+tests/map/bounds.extc	ZERO	85370	85370	1f6fa891	
+tests/map/churn.extc	ZERO	89024	89024	e3ccf7b7	
+tests/map/cx_app.extc	ZERO	92550	92550	3529ece9	
+tests/map/ends.extc	ZERO	98386	98386	8c6b1ff1	
+tests/map/errors/index_assign.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/map/errors/index_assign.extc:13:1: error: `readOnly` defines `[]` but not `[]=`, so `x[i] = v` is not available
+tests/map/grow_rss.extc	ZERO	67447	67447	89ed009f	
+tests/map/grow_rss_reserved.extc	ZERO	68017	68017	b4775ca3	
+tests/map/index.extc	ZERO	69262	69262	19862f0e	
+tests/map/leak.extc	ZERO	70978	70978	6b0a7bce	
+tests/map/release.extc	ZERO	67450	67450	f1dc8d8f	
+tests/map/rss.extc	ZERO	87293	87293	516c4854	
+tests/map/shrink.extc	ZERO	102708	102708	e0b31393	
+tests/map/sorted.extc	ZERO	87639	87639	98014707	
+tests/map/stress.extc	ZERO	92177	92177	978e71cf	
+tests/map/structkey.extc	ZERO	72896	72896	8757603d	
+tests/modules/chain/lib/calc.extc	GENFAIL	0	0		error: cannot find module `lib::util` (imported by /home/alphayang/extC_Compiler/tests/modules/chain/lib/calc.extc)
+tests/modules/chain/lib/util.extc	ZERO	2895	2895	af759607	
+tests/modules/chain/main.extc	ZERO	8263	8263	be9de1ef	
+tests/modules/crossmod/color.extc	ZERO	2893	2893	8d97b5bd	
+tests/modules/crossmod/main.extc	ZERO	8901	8901	16bd0fa2	
+tests/modules/crossmod/pair.extc	ZERO	2821	2821	be34c7a6	
+tests/modules/errors/ambiguous-type/alpha.extc	ZERO	2895	2895	af759607	
+tests/modules/errors/ambiguous-type/beta.extc	ZERO	2895	2895	7c5c7ce6	
+tests/modules/errors/ambiguous-type/main.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/modules/errors/ambiguous-type/main.extc:11:1: error: ambiguous type `pair` -- 2 modules export it, write `module::pair`
+tests/modules/errors/body-position/main.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/modules/errors/body-position/mod.extc:2:1: warning: parameter `v` is never used
+tests/modules/errors/body-position/mod.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/modules/errors/body-position/mod.extc:3:1: error: call to undefined function `nosuchtype`
+tests/modules/errors/cycle/a.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/modules/errors/cycle/a.extc:1: error: import cycle: `b` is still being loaded
+tests/modules/errors/cycle/b.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/modules/errors/cycle/b.extc:1: error: import cycle: `a` is still being loaded
+tests/modules/errors/cycle/main.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/modules/errors/cycle/b.extc:1: error: import cycle: `a` is still being loaded
+tests/modules/errors/main-in-module/lib.extc	ZERO	2871	2871	f366b10a	
+tests/modules/errors/main-in-module/main.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/modules/errors/main-in-module/lib.extc:1:1: error: `main` must live in the entry file, not in a module
+tests/modules/errors/missing-file/main.extc	GENFAIL	0	0		error: cannot find module `nowhere` (imported by /home/alphayang/extC_Compiler/tests/modules/errors/missing-file/main.extc)
+tests/modules/errors/not-imported/greet.extc	ZERO	2821	2821	be34c7a6	
+tests/modules/errors/not-imported/main.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/modules/errors/not-imported/main.extc:1:1: error: module `greet` is not imported here -- add `use greet`
+tests/modules/errors/open-ambiguous/main.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/modules/errors/open-ambiguous/main.extc:4:1: error: `who` is exported by both `x1` and `x2`, which are opened here
+tests/modules/errors/open-ambiguous/x1.extc	ZERO	2821	2821	be34c7a6	
+tests/modules/errors/open-ambiguous/x2.extc	ZERO	2821	2821	be34c7a6	
+tests/modules/errors/open-leak/a.extc	ZERO	2824	2824	6f4a11f2	
+tests/modules/errors/open-leak/b.extc	ZERO	2821	2821	be34c7a6	
+tests/modules/errors/open-leak/main.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/modules/errors/open-leak/main.extc:4:1: error: `bSecret` belongs to module `b` -- write `b::bSecret`
+tests/modules/errors/private-open/lib.extc	ZERO	2822	2822	0573957a	
+tests/modules/errors/private-open/main.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/modules/errors/private-open/main.extc:3:1: error: `lib::secret` is private to module `lib`
+tests/modules/errors/private/lib.extc	ZERO	2824	2824	6f4a11f2	
+tests/modules/errors/private/main.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/modules/errors/private/main.extc:2:1: error: `lib::secret` is private to module `lib`
+tests/modules/errors/privileged/main.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/modules/errors/privileged/main.extc:3: error: `std::sys::heap` is the standard library's **privileged layer**: it turns any (pointer, length) into a view and can map or unmap any range of the address space.
+tests/modules/errors/selective-bare/lib.extc	ZERO	2821	2821	be34c7a6	
+tests/modules/errors/selective-bare/main.extc	GENFAIL	0	0		note:  `twice` is a **name**, not a module -- `use` resolves module paths only.
+tests/modules/errors/selective-private/lib.extc	ZERO	2821	2821	be34c7a6	
+tests/modules/errors/selective-private/main.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/modules/errors/selective-private/main.extc:2:1: error: `lib::secret` is private to module `lib`
+tests/modules/errors/selective-unlisted/lib.extc	ZERO	2821	2821	be34c7a6	
+tests/modules/errors/selective-unlisted/main.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/modules/errors/selective-unlisted/main.extc:4:1: error: `unlisted` belongs to module `lib` -- write `lib::unlisted`
+tests/modules/errors/unqualified/lib.extc	ZERO	2821	2821	be34c7a6	
+tests/modules/errors/unqualified/main.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/modules/errors/unqualified/main.extc:2:1: error: `open` belongs to module `lib` -- write `lib::open`
+tests/modules/hello/greet.extc	ZERO	2825	2825	5d4de90e	
+tests/modules/hello/main.extc	ZERO	8649	8649	6c1e27ec	
+tests/modules/impl-stdlib/addstr.extc	ZERO	34957	34957	3eb5d909	
+tests/modules/impl-stdlib/main.extc	ZERO	57341	57341	f1fb99eb	
+tests/modules/manydecls/main.extc	ZERO	14538	14538	76fe2d36	
+tests/modules/manydecls/many.extc	ZERO	2821	2821	be34c7a6	
+tests/modules/namedlit/main.extc	ZERO	3382	3382	88439c3e	
+tests/modules/namedlit/shape.extc	ZERO	2877	2877	060e7567	
+tests/modules/open/lib.extc	ZERO	2896	2896	4d1162c1	
+tests/modules/open/main.extc	ZERO	8828	8828	73926abc	
+tests/modules/qn-array/a.extc	ZERO	2898	2898	55e8c145	
+tests/modules/qn-array/main.extc	ZERO	18717	18717	c87ab647	
+tests/modules/qn-local/a.extc	ZERO	2821	2821	be34c7a6	
+tests/modules/qn-local/b.extc	ZERO	2824	2824	6f4a11f2	
+tests/modules/qn-local/main.extc	ZERO	8364	8364	865849b5	
+tests/modules/samenames/alpha.extc	ZERO	2895	2895	af759607	
+tests/modules/samenames/beta.extc	ZERO	2910	2910	e09bc5ae	
+tests/modules/samenames/main.extc	ZERO	10069	10069	4bc0fd5e	
+tests/modules/selective/lib.extc	ZERO	2896	2896	4d1162c1	
+tests/modules/selective/main.extc	ZERO	8724	8724	7bde739f	
+tests/modules/stdlib-via-include/main.extc	ZERO	48756	48756	8ad43552	
+tests/nocopy/basic.extc	ZERO	8800	8800	967dd9a1	
+tests/nocopy/errors/arg_copy.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/nocopy/errors/arg_copy.extc:7:1: error: `counter` is `@noCopy`: it may not be copied by value
+tests/nocopy/errors/assign_copy.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/nocopy/errors/assign_copy.extc:7:1: error: `counter` is `@noCopy`: it may not be copied by value
+tests/nocopy/errors/bind_copy.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/nocopy/errors/bind_copy.extc:6:1: error: `counter` is `@noCopy`: it may not be copied by value
+tests/nocopy/errors/field_copy.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/nocopy/errors/field_copy.extc:7:1: error: `counter` is `@noCopy`: it may not be copied by value
+tests/ops/builtin.extc	ZERO	9476	9476	1227fb72	
+tests/ops/concrete.extc	ZERO	12702	12702	edffadb9	
+tests/ops/conv_float.extc	ZERO	18118	18118	c27db640	
+tests/ops/errors/arith_missing.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/ops/errors/arith_missing.extc:6:1: error: `raw` does not define `+`
+tests/ops/errors/derive_not_done.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/ops/errors/derive_not_done.extc:9:1: error: `ver` does not define `>` for `ver`, so it cannot be ordered
+tests/ops/errors/fn_field_missing.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/ops/errors/fn_field_missing.extc:8:1: error: field `f` must be given explicitly
+tests/ops/errors/fn_generic.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/ops/errors/fn_generic.extc:6:1: error: `id` is generic, so its bare name is not a value
+tests/ops/errors/fn_no_init.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/ops/errors/fn_no_init.extc:6:1: error: cannot zero-initialize `f`: it contains a `fn`
+tests/ops/errors/fn_slice.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/ops/errors/fn_slice.extc:7:1: error: `fn` argument 1 has type `slice<u8>`, which cannot cross the C boundary
+tests/ops/errors/instance_bool_order.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/ops/errors/instance_bool_order.extc:2:1: error: cannot apply `<` to `bool`
+tests/ops/errors/instance_enum_order.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/ops/errors/instance_enum_order.extc:6:1: error: cannot apply `<` to `order`
+tests/ops/errors/instance_missing.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/ops/errors/instance_missing.extc:5:1: error: `less_raw` needs `raw` to define `<`
+tests/ops/errors/modulo_float_instance.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/ops/errors/modulo_float_instance.extc:3:1: error: cannot apply `%` to `f64`
+tests/ops/errors/order_missing.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/ops/errors/order_missing.extc:6:1: error: `raw` does not define `<` for `raw`, so it cannot be ordered
+tests/ops/errors/ref_arg.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/ops/errors/ref_arg.extc:9:1: error: a stream operator's result is a borrow of the stream, not a value -- it can only be chained (`fin >> x >> y`)
+tests/ops/errors/ref_value.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/ops/errors/ref_value.extc:8:1: error: a stream operator's result is a borrow of the stream, not a value -- it can only be chained (`fin >> x >> y`)
+tests/ops/errors/sig_arith_wrong_ret.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/ops/errors/sig_arith_wrong_ret.extc:3:1: error: operator `+` must return `bad`
+tests/ops/errors/sig_returns_void.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/ops/errors/sig_returns_void.extc:3:1: error: operator `<` must return `bool`
+tests/ops/fnptr.extc	ZERO	41454	41454	0a702cea	
+tests/ops/generic.extc	ZERO	10035	10035	4883b73f	
+tests/ops/hetero.extc	ZERO	10909	10909	7c6e2a20	
+tests/ops/long_line.extc	ZERO	24504	24504	bb786397	
+tests/ops/slice_place.extc	ZERO	16855	16855	c39abfb5	
+tests/ops/stream-ref.extc	ZERO	9284	9284	59c98560	
+tests/ops/stream.extc	ZERO	9044	9044	71ec4e4e	
+tests/ops/teeth.extc	ZERO	9026	9026	1ddbec95	
+tests/pkg/honest/demo.extc	ZERO	2821	2821	be34c7a6	
+tests/pkg/honest/tests/contract_no_retain.extc	GENFAIL	0	0		error: cannot find module `demo` (imported by /home/alphayang/extC_Compiler/tests/pkg/honest/tests/contract_no_retain.extc)
+tests/pkg/keeper/demo.extc	ZERO	2821	2821	be34c7a6	
+tests/pkg/keeper/tests/contract_no_retain.extc	GENFAIL	0	0		error: cannot find module `demo` (imported by /home/alphayang/extC_Compiler/tests/pkg/keeper/tests/contract_no_retain.extc)
+tests/pool-soundness/C1_vector_toslice_copy.extc	ZERO	49336	49336	6411782a	
+tests/pool-soundness/C2_stale_copy_release.extc	ZERO	46326	46326	6d2db45b	
+tests/pool-soundness/C3_string_sub_now_copies.extc	ZERO	59133	59133	138230fa	
+tests/pool-soundness/C4_subview_contract.extc	ZERO	53247	53247	8c018674	
+tests/pool/api.extc	ZERO	53971	53971	37d82748	
+tests/pool/basic.extc	ZERO	50614	50614	c7b5e36b	
+tests/pool/churn-leak.extc	ZERO	52898	52898	08832590	
+tests/pool/churn.extc	ZERO	54705	54705	3c8b0f48	
+tests/pool/gather.extc	ZERO	55673	55673	30b2604d	
+tests/pool/perf_clear_4096.extc	ZERO	52687	52687	aab2de77	
+tests/pool/perf_clear_8.extc	ZERO	52588	52588	f16606a2	
+tests/pool/plate.extc	ZERO	42551	42551	de657bd5	
+tests/pool/rt_basic.extc	ZERO	40368	40368	af071185	
+tests/pool/rt_blockexit.extc	ZERO	40578	40578	e8a4fd99	
+tests/pool/rt_churn.extc	ZERO	40538	40538	554122c5	
+tests/pool/rt_color.extc	ZERO	42344	42344	7db33cd9	
+tests/pool/rt_container.extc	ZERO	45208	45208	771c9f68	
+tests/pool/rt_container_resize_ok.extc	ZERO	44294	44294	baaee5d8	
+tests/pool/rt_container_tree.extc	ZERO	71887	71887	b971f3db	
+tests/pool/rt_epoch.extc	ZERO	59357	59357	bad76fe7	
+tests/pool/rt_mode_gen.extc	ZERO	40067	40067	9f287373	
+tests/pool/rt_nest_promote.extc	ZERO	53692	53692	849e8339	
+tests/pool/rt_pidgen.extc	ZERO	44571	44571	729e3a2e	
+tests/pool/rt_promote.extc	ZERO	40753	40753	6561e997	
+tests/pool/rt_return_promote.extc	ZERO	46327	46327	aff43168	
+tests/pool/rt_reuse.extc	ZERO	40489	40489	3ac70b11	
+tests/pool/rt_shrink.extc	ZERO	56677	56677	739ac443	
+tests/pool/rt_stale.extc	ZERO	34660	34660	58e413ef	
+tests/pool/rt_stale_alias.extc	ZERO	34861	34861	d20d9b19	
+tests/pool/rt_table_first.extc	ZERO	39845	39845	9e27482e	
+tests/pool/rt_table_no_resize.extc	ZERO	39986	39986	3ed69479	
+tests/pool/rt_tree.extc	ZERO	40084	40084	5222da54	
+tests/pool/rt_zone.extc	ZERO	40836	40836	b5c6e47c	
+tests/pool/rt_zone_inloop.extc	ZERO	39988	39988	34a48cb2	
+tests/pool/rt_zone_ondemand.extc	ZERO	78888	78888	e6716d54	
+tests/pool/zt_drop_order.extc	ZERO	50569	50569	ff7a99ce	
+tests/pool/zt_exit_cost.extc	ZERO	45954	45954	1108b999	
+tests/pool/zt_shrink_rss.extc	ZERO	44716	44716	5222a9db	
+tests/qname/errors/not-imported.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/qname/errors/not-imported.extc:4:1: error: `std::sys::io` is not imported here -- add `use std::sys::io` and call it `io::Name`
+tests/qname/lib/color.extc	ZERO	2893	2893	8d97b5bd	
+tests/qname/lib/sub/color.extc	ZERO	2893	2893	8d97b5bd	
+tests/qname/lib/sub/payload.extc	ZERO	3022	3022	22a72277	
+tests/qname/lib/sub/util.extc	ZERO	2821	2821	be34c7a6	
+tests/qname/t11.extc	ZERO	4763	4763	546110a4	
+tests/qname/t12.extc	ZERO	5029	5029	b044572c	
+tests/qname/t13.extc	ZERO	4742	4742	6f500945	
+tests/qname/t14.extc	ZERO	12365	12365	19dacd70	
+tests/qname/t15.extc	ZERO	3152	3152	d6d6df9e	
+tests/qname/t16.extc	ZERO	3000	3000	24c23e5a	
+tests/qname/t17.extc	ZERO	14435	14435	fba369db	
+tests/real-lib/cairo-logo.extc	ZERO	73394	73394	48b7572c	
+tests/real-lib/cairoapi.extc	ZERO	33846	33846	abbdfd04	
+tests/real-lib/numpy.extc	GENFAIL	0	0		error: cannot find module `npytable` (imported by /home/alphayang/extC_Compiler/tests/real-lib/numpy.extc)
+tests/reclaim-acyclic/acyclic_heapref.extc	PAYS	95274	21753	438334b7	
+tests/reclaim-acyclic/blind_localhold.extc	ZERO	21318	21318	fa88d6e6	
+tests/reclaim-elide/elide_fresh_alloc.extc	PAYS	89775	19207	28c880fc	
+tests/reclaim-elide/elide_other_holder.extc	PAYS	89900	19415	0ffdcff8	
+tests/reclaim-elide/elide_readonly_recursion.extc	ZERO	15335	15335	c5ac9589	
+tests/reclaim-elide/elide_swept_region.extc	PAYS	90763	19717	7bdf3cb8	
+tests/reclaim-elide/keep_callee_writes.extc	PAYS	89922	19372	8346acba	
+tests/reclaim-elide/keep_count_granularity.extc	PAYS	90110	19356	ca0ec10f	
+tests/reclaim-elide/keep_indirect_callee.extc	PAYS	113762	43214	a3cf6f0b	
+tests/reclaim-elide/keep_other_holder_dies.extc	PAYS	90336	19455	6f8f94ce	
+tests/reclaim-elide/keep_shared_overwrite.extc	PAYS	90175	19446	a16bb333	
+tests/reclaim-elide/keep_sole_holder.extc	PAYS	90072	19646	98723792	
+tests/reclaim-elide/keep_two_edges.extc	PAYS	89615	18864	84d4f4f7	
+tests/reclaim-elide/keep_unknown_region.extc	PAYS	90212	19580	5ec025bc	
+tests/reclaim-elide/writes_dense.extc	PAYS	92496	20355	de6d0c81	
+tests/reclaim-gaps/shapes/base_call_unknown.extc	PAYS	97440	22685	cfbc213c	
+tests/reclaim-gaps/shapes/byval_temp.extc	PAYS	95264	21912	c148739c	
+tests/reclaim-gaps/shapes/carray_slot.extc	PAYS	95629	22131	0a605c88	
+tests/reclaim-gaps/shapes/closure_chain.extc	ZERO	22047	22047	29c6484b	
+tests/reclaim-gaps/shapes/coro_frame_cycle.extc	PAYS	96013	22623	a685f3b6	
+tests/reclaim-gaps/shapes/cross_scope_cycle.extc	PAYS	95709	21966	6e496d59	
+tests/reclaim-gaps/shapes/dyn_payload.extc	PAYS	123626	50399	cbcb855d	
+tests/reclaim-gaps/shapes/ext_frame_cycle.extc	PAYS	121054	47662	a60cb98b	
+tests/reclaim-gaps/shapes/global_slot.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/reclaim-gaps/shapes/global_slot.extc:18:1: error: cannot zero-initialize the global `g`: it contains a reference
+tests/reclaim-gaps/shapes/home_cycle.extc	PAYS	96350	22384	5efafefb	
+tests/reclaim-gaps/shapes/match_payload.extc	PAYS	96109	22373	fc0c9c73	
+tests/reclaim-gaps/shapes/owcell_garbage.extc	PAYS	95882	22391	d37d82f7	
+tests/reclaim-gaps/shapes/own_room_cycle.extc	PAYS	95152	21494	5828b708	
+tests/reclaim-gaps/shapes/par_tls_cycle.extc	PAYS	125922	52491	d9f29b2d	
+tests/reclaim-gaps/shapes/pool_ref_slot.extc	PAYS	132709	59328	0dd46db2	
+tests/reclaim-gaps/shapes/ring_per_round.extc	PAYS	96403	22375	d85076fe	
+tests/reclaim-gaps/shapes/slot_elem_known.extc	PAYS	97322	22547	74db1a53	
+tests/reclaim-gaps/shapes/slot_elem_unknown.extc	PAYS	98201	23446	15ce763b	
+tests/reclaim-gaps/shapes/struct_copy_ret_home.extc	ZERO	22113	22113	7a6e34d1	
+tests/reclaim-gaps/shapes/struct_copy_slot.extc	PAYS	96757	22207	ea6c01d9	
+tests/reclaim-perf/shapes/field_overwrite_lost_root.extc	PAYS	95852	22045	560bf467	
+tests/reclaim-perf/shapes/fixed_slot_overwrite.extc	PAYS	96091	22095	e0f1aea9	
+tests/reclaim-perf/shapes/outer_alloc_inner_write.extc	PAYS	89296	15680	a384c58f	
+tests/reclaim-perf/shapes/rebuild_per_round.extc	ZERO	15686	15686	2de2e715	
+tests/reclaim-perf/shapes/refgraph/rg_drop_component.extc	PAYS	96354	22580	e8990f56	
+tests/reclaim-perf/shapes/refgraph/rg_evict_cache.extc	PAYS	104236	23999	cb7c6767	
+tests/reclaim-perf/shapes/refgraph/rg_grow_tail.extc	PAYS	95939	22168	85f4ead0	
+tests/reclaim-perf/shapes/refgraph/rg_insert_hash.extc	PAYS	103752	23879	aa66ba50	
+tests/reclaim-perf/shapes/refgraph/rg_overwrite_ring.extc	PAYS	97267	22540	74d817ef	
+tests/reclaim-perf/shapes/refgraph/rg_relink_delete.extc	PAYS	97031	23064	dc365206	
+tests/reclaim-perf/shapes/refgraph/rg_scan_graph.extc	PAYS	98434	23333	828b91d0	
+tests/reclaim-perf/shapes/refgraph/rg_scan_parent.extc	PAYS	95758	22225	a6a579d6	
+tests/reclaim-perf/shapes/refgraph/rg_walk_array.extc	PAYS	97385	22654	734ac3ec	
+tests/reclaim-perf/shapes/refgraph/rg_walk_buckets.extc	PAYS	103149	23281	acbae8a4	
+tests/reclaim-perf/shapes/refgraph/rg_walk_chain.extc	PAYS	95403	21978	9ab53df3	
+tests/reclaim-perf/shapes/refgraph/rg_walk_tree.extc	PAYS	98522	24864	60550dbb	
+tests/reclaim-shapes/big_slot.extc	PAYS	91382	20374	87fb1719	
+tests/reclaim-shapes/big_slot_reclaim.extc	ZERO	18879	18879	ce67b040	
+tests/reclaim-shapes/bounded_churn.extc	ZERO	21677	21677	94035490	
+tests/reclaim-shapes/cond_save.extc	PAYS	89852	19282	c5653abe	
+tests/reclaim-shapes/cross_region.extc	PAYS	95726	21887	4a917d91	
+tests/reclaim-shapes/cross_region_elem.extc	PAYS	99134	24248	bbaea49f	
+tests/reclaim-shapes/cyclic_pressure.extc	PAYS	230366	33685	973bfbaf	
+tests/reclaim-shapes/cyclic_shape.extc	PAYS	95792	22806	141df005	
+tests/reclaim-shapes/generic_instance_desc.extc	PAYS	95133	21435	43d0010e	
+tests/reclaim-shapes/hole_c/caller_frame.extc	PAYS	83687	13151	faccbcd8	
+tests/reclaim-shapes/hole_c/hole_c.extc	ZERO	13892	13892	2c204886	
+tests/reclaim-shapes/live_churn.extc	PAYS	95738	21976	aa27da7f	
+tests/reclaim-shapes/owed_home.extc	PAYS	84331	13543	f1c2b7fb	
+tests/reclaim-shapes/persist_nodes.extc	ZERO	24812	24812	148c1318	
+tests/reclaim-shapes/promote_place.extc	PAYS	90664	19593	c6460109	
+tests/reclaim-shapes/reject_deep_store.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/reclaim-shapes/reject_deep_store.extc:18:1: error: this reference would hold a reference to a local variable that dies first (borrowed from depth 2, but this can only hold up to depth 1)
+tests/reclaim-shapes/reject_deep_store_call.extc	GENFAIL	0	0		/home/alphayang/extC_Compiler/tests/reclaim-shapes/reject_deep_store_call.extc:22:1: error: argument 2 of `stash` points into a deeper scope (depth 2) than the arena this call may store it in (depth 1)
+tests/reclaim-shapes/scale_growth.extc	PAYS	94953	21603	099911c3	
+tests/reclaim-shapes/shard_bands.extc	PAYS	108403	27008	d42a43a7	
+tests/reclaim-shapes/struct_copy.extc	PAYS	98304	23622	0bf02162	
+tests/reclaim-shapes/unknown_host.extc	PAYS	89613	19081	e095e0f2	
+tests/stl/clone.extc	ZERO	200791	200791	2c944657	
+tests/stl/clone_ok.extc	ZERO	35939	35939	d1e188f9	
+tests/stl/clone_warn.extc	ZERO	34055	34055	645dbe7c	
+tests/stl/copyInto.extc	ZERO	60178	60178	7e239735	
+tests/stl/custom_pool.extc	ZERO	44958	44958	9e88d9c2	
+tests/stl/from.extc	ZERO	62751	62751	0f07ff84	
+tests/stl/fromI64.extc	ZERO	71561	71561	33963370	
+tests/stl/hashSet.extc	ZERO	78989	78989	058de925	
+tests/stl/memFind.extc	ZERO	21277	21277	7e8450ef	
+tests/stl/setOrdered.extc	ZERO	89148	89148	9f302c54	
+tests/stl/setStructKey.extc	ZERO	73334	73334	040de5a1	
+tests/stl/sort.extc	ZERO	48642	48642	5123e1bb	
+tests/stl/string.extc	ZERO	61027	61027	11272622	
+tests/stl/stringFind.extc	ZERO	70235	70235	5c01fea3	
+tests/stl/stringOps.extc	ZERO	92796	92796	2b74e983	
+tests/stl/string_churn_a.extc	ZERO	51756	51756	5083bd02	
+tests/stl/string_churn_b.extc	ZERO	51757	51757	7d785c1a	
+tests/stl/varArray_mutview_lost.extc	ZERO	25025	25025	4928b546	
+tests/stl/varArray_snapshot.extc	ZERO	25975	25975	47d692f6	
+tests/stl/vararray_ref.extc	ZERO	24336	24336	e4cdeb08	
+tests/stl/vector.extc	ZERO	53202	53202	9c210ba6	
+tests/stl/vector_churn_a.extc	ZERO	44944	44944	42be5825	
+tests/stl/vector_churn_b.extc	ZERO	44945	44945	596e2eba	
+tests/stl/vector_grow.extc	ZERO	44864	44864	96eeb049	
+tests/stl/vector_rss_arena.extc	ZERO	20404	20404	4a5f7bd4	
+tests/stl/vector_rss_plate.extc	ZERO	44987	44987	a9b10f9c	
+tests/time/basic.extc	ZERO	18286	18286	3aac8fd1	
+tests/time/control_no_time.extc	ZERO	7626	7626	644044fa	
+tests/traps/arena_oom.extc	ZERO	12455	12455	10ddfee5	
+tests/traps/conv_narrow.extc	ZERO	3690	3690	b37bef12	
+tests/traps/conv_negative_to_unsigned.extc	ZERO	3714	3714	849c5e6e	
+tests/traps/copyInto_bad_count.extc	ZERO	16649	16649	488e9541	
+tests/traps/copy_into_dead_view.extc	ZERO	40503	40503	fbcaca25	
+tests/traps/div_zero.extc	ZERO	8753	8753	6611296c	
+tests/traps/index_out_of_range.extc	ZERO	4083	4083	6b1d3096	
+tests/traps/main_question.extc	ZERO	22374	22374	a8932f97	
+tests/traps/recursion_too_deep.extc	ZERO	3885	3885	5fbbd4d5	
+tests/traps/shift_too_big.extc	ZERO	8684	8684	80a284ac	
+tests/traps/sign_nullref.extc	ZERO	4338	4338	e3e31a45	
+tests/traps/sign_option_none.extc	ZERO	4599	4599	b3eed8fe	
+tests/traps/sign_result_failure.extc	ZERO	4735	4735	10221438	
+tests/traps/trap_cstr.extc	ZERO	8272	8272	04d95642	
+tests/traps/trap_literal.extc	ZERO	8194	8194	ed70aa96	
+tests/traps/trap_slice.extc	ZERO	9416	9416	08c6e990	
+tests/traps/varArray_set_oob.extc	ZERO	12257	12257	fd9fc3c2	
+tests/traps/view_no_storage.extc	ZERO	40875	40875	b9556c12	
+tests/voidret/main.extc	ZERO	8959	8959	fef7ccdc	
+tests/warnings/let-fresh-alloc.extc	ZERO	12322	12322	e03d76d6	
+tests/warnings/never-closed.extc	ZERO	12737	12737	20181250	
+tests/warnings/silent/params-used-deeply.extc	ZERO	19861	19861	10196866	
+tests/ws/main.extc	ZERO	83643	83643	1cc9caf9	

@@ -1,0 +1,77 @@
+/* rg_scan_graph —— 引用图原型 A4：**结点链 + 每结点出边链，全图只读扫描**。
+ *
+ * 现实对应：图算法的校验和/统计趟（`digraph` 的 (d) 遍历就是这一趟）、邻接表遍历、调用图扫描。
+ * 结点链是插入序；每个结点的两条出边指向**前一个 / 前两个**结点 ⇒ 边只指向更老的结点，
+ * 图是 DAG（无环），且不需要函数级引用数组（那种写法会被逃逸检查拒）。
+ *
+ * argv[1] = 结点数 N。
+ */
+use std::io
+
+struct edge {
+    to: mut ref node
+    next: ?mut ref edge
+}
+
+struct node {
+    first: ?mut ref edge
+    next: ?mut ref node
+    v: i64
+}
+
+fn parseN(args: slice<slice<u8>>) -> i64 {
+    if args.len < 2 { return 200000 }
+    var s: slice<u8> = args[1]
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    if v > 0 { return v }
+    return 200000
+}
+
+fn main(args: slice<slice<u8>>) {
+    var n: i64 = parseN(args)
+    var head = new node            /* 哨兵：让 tail/prev 全程非空，免去可空解引用 */
+    head.v = i64(-1)
+    var tail: mut ref node = head
+    var prev2: mut ref node = head
+    var i: i64 = 0
+    while i < n {
+        var p = new node
+        p.v = i
+        (*tail).next = p
+        var e1 = new edge
+        e1.to = tail
+        e1.next = p.first
+        p.first = e1
+        var e2 = new edge
+        e2.to = prev2
+        e2.next = p.first
+        p.first = e2
+        prev2 = tail
+        tail = p
+        i = i + 1
+    }
+    var sum: i64 = 0
+    var nodes: i64 = 0
+    var edges: i64 = 0
+    var cur: ?mut ref node = (*head).next
+    while cur != null {
+        sum = sum + (*cur).v
+        nodes = nodes + 1
+        var e: ?mut ref edge = (*cur).first
+        while e != null {
+            sum = sum + (*e).to.v
+            edges = edges + 1
+            e = (*e).next
+        }
+        cur = (*cur).next
+    }
+    io::cout << "n=" << n << " nodes=" << nodes << " edges=" << edges << " sum=" << sum << "\n"
+}

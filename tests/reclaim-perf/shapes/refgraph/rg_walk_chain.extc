@@ -1,0 +1,55 @@
+/* rg_walk_chain —— 引用图原型 A1：**单链 + 只读游标遍历**。
+ *
+ * 现实对应：链表/队列/栈的读取、token 链、内核链表遍历、任何 "build 一遍再扫一遍" 的结构。
+ *
+ * 两个引用槽写入站点，**都不丢根**：
+ *   · `head = p`（头插）：旧 head 由新值的 `p.next` 可达；
+ *   · `cur = (*cur).next`（游标）：旧 cur 由常驻根 `head` 沿链可达。
+ * 所以这是"只读遍历"族——理论上回收无事可做。
+ *
+ * argv[1] = 结点数 N。输出一个校验和，防止死代码消除。
+ */
+use std::io
+
+struct node {
+    next: ?mut ref node
+    v: i64
+}
+
+fn parseN(args: slice<slice<u8>>) -> i64 {
+    if args.len < 2 { return 200000 }
+    var s: slice<u8> = args[1]
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    if v > 0 { return v }
+    return 200000
+}
+
+fn main(args: slice<slice<u8>>) {
+    var n: i64 = parseN(args)
+    var head: ?mut ref node = null
+    var i: i64 = 0
+    while i < n {
+        var p = new node
+        p.v = i
+        p.next = head
+        head = p
+        i = i + 1
+    }
+    var cur: ?mut ref node = head
+    var sum: i64 = 0
+    var steps: i64 = 0
+    while cur != null {
+        sum = sum + (*cur).v
+        cur = (*cur).next
+        steps = steps + 1
+    }
+    io::cout << "n=" << n << " steps=" << steps << " sum=" << sum << "\n"
+}

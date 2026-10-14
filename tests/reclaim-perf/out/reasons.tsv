@@ -1,0 +1,304 @@
+# build/extc md5=57f6b8ccd7c16100d12e5b51b26849e8 HEAD=ad5f063
+path	functions_blocked	reason	sites
+bench/gc/src/digraph.extc	11	a reference is assigned to a stack slot (a local/parameter, or a field of one)	6
+bench/gc/src/digraph.extc	11	a reference field is written inside a loop, so one object can be overwritten	4
+bench/gc/src/digraph.extc	11	the host object is not a local created by `new` in this frame	1
+bench/gc/src/human_a.extc	2	the host object is not a local created by `new` in this frame	1
+bench/gc/src/human_a.extc	2	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+bench/gc/src/spectrum_p2.extc	2	the host object is not a local created by `new` in this frame	1
+bench/gc/src/spectrum_p2.extc	2	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+bench/gc/src/spectrum_p4.extc	2	the host object is not a local created by `new` in this frame	1
+bench/gc/src/spectrum_p4.extc	2	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+bench/gc/src/spectrum_p5.extc	3	the host object is not a local created by `new` in this frame	1
+bench/gc/src/spectrum_p5.extc	3	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+bench/gc/src/spectrum_p5.extc	3	a reference field is written inside a loop, so one object can be overwritten	1
+bench/stress/stress.extc	2	a reference field is written inside a loop, so one object can be overwritten	1
+bench/stress/stress.extc	2	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+examples/escape-promotion.extc	2	a reference field is written inside a loop, so one object can be overwritten	1
+examples/escape-promotion.extc	2	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+examples/list-return.extc	3	the host object is not a local created by `new` in this frame	1
+examples/list-return.extc	3	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+examples/list-return.extc	3	a call to 'push' (whose body is not analysed) carries a reference	1
+examples/new.extc	1	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+examples/out-param.extc	2	the host object is not a local created by `new` in this frame	1
+examples/out-param.extc	2	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+examples/overwrite.extc	3	`@overwrite` reuses one piece of storage, so the previous object is dropped	3
+examples/readonly-cursor.extc	2	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+examples/readonly-cursor.extc	2	the host object is not a local created by `new` in this frame	1
+examples/ref-field-write.extc	2	the host object is not a local created by `new` in this frame	2
+examples/store-promotion.extc	4	a reference is assigned to a stack slot (a local/parameter, or a field of one)	4
+tests/arena-promoted/A_field_root_lowered.extc	1	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/arena-promoted/B2_exprstmt_blindspot.extc	3	the host object is not a local created by `new` in this frame	1
+tests/arena-promoted/B2_exprstmt_blindspot.extc	3	the destination is not a named field of a named object	1
+tests/arena-promoted/B2_exprstmt_blindspot.extc	3	a call to 'push' (whose body is not analysed) carries a reference	1
+tests/arena-promoted/B3_exprstmt_method.extc	3	the host object is not a local created by `new` in this frame	2
+tests/arena-promoted/B3_exprstmt_method.extc	3	a call to 'push' (whose body is not analysed) carries a reference	1
+tests/arena-promoted/C1_if_join_fieldcell.extc	1	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/arena-promoted/C2_if_join_refbinding.extc	1	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/arena-promoted/C3_if_join_wholevalue.extc	1	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/arena-promoted/D1_assoc_publish_home.extc	2	the host object is not a local created by `new` in this frame	1
+tests/arena-promoted/D1_assoc_publish_home.extc	2	a call to 'push' (whose body is not analysed) carries a reference	1
+tests/arena-promoted/D2_publish_home_block.extc	2	the host object is not a local created by `new` in this frame	1
+tests/arena-promoted/D2_publish_home_block.extc	2	a call to 'push' (whose body is not analysed) carries a reference	1
+tests/arena-promoted/F_overwrite_reuse_cell.extc	1	`@overwrite` reuses one piece of storage, so the previous object is dropped	1
+tests/arena-promoted/G_stale_origin.extc	1	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/arena-promoted/R2c_literal_hidden_nonew.extc	1	a call to 'push' (whose body is not analysed) carries a reference	1
+tests/arena-promoted/R2d_literal_hidden_nonew2.extc	1	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/arena-promoted/arena_if_join_field_depth.extc	1	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/arena-promoted/arena_if_join_ref_binding.extc	1	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/arena-promoted/arena_if_join_whole_value.extc	1	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/arena-promoted/arena_root_depth_lowered.extc	1	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/arena-promoted/arena_stale_origin.extc	1	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/arena/overwrite-flat.extc	1	`@overwrite` reuses one piece of storage, so the previous object is dropped	1
+tests/arena/promote.extc	1	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/asan/overwrite-callee.extc	1	`@overwrite` reuses one piece of storage, so the previous object is dropped	1
+tests/asan/promote-field-lit.extc	1	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/asan/promote-loop.extc	1	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/asan/promote-nested-block.extc	1	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/asan/promote-through-mid.extc	1	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/coro/coro_new.extc	1	a call to 'next' (whose body is not analysed) carries a reference	1
+tests/escape-fuzz/cases/m_home_aelem_direct.extc	2	a reference is assigned to a stack slot (a local/parameter, or a field of one)	2
+tests/escape-fuzz/cases/m_home_aelem_ret.extc	2	a reference is assigned to a stack slot (a local/parameter, or a field of one)	2
+tests/escape-fuzz/cases/m_home_aelem_temp.extc	2	a reference is assigned to a stack slot (a local/parameter, or a field of one)	2
+tests/escape-fuzz/cases/m_home_cont_after.extc	2	a reference field is written inside a loop, so one object can be overwritten	1
+tests/escape-fuzz/cases/m_home_cont_after.extc	2	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/escape-fuzz/cases/m_home_cont_before.extc	2	a reference field is written inside a loop, so one object can be overwritten	1
+tests/escape-fuzz/cases/m_home_cont_before.extc	2	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/escape-fuzz/cases/m_home_dfield_direct_after.extc	2	a reference field is written inside a loop, so one object can be overwritten	1
+tests/escape-fuzz/cases/m_home_dfield_direct_after.extc	2	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/escape-fuzz/cases/m_home_dfield_direct_before.extc	2	a reference field is written inside a loop, so one object can be overwritten	1
+tests/escape-fuzz/cases/m_home_dfield_direct_before.extc	2	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/escape-fuzz/cases/m_home_dfield_direct_old.extc	2	a reference field is written inside a loop, so one object can be overwritten	1
+tests/escape-fuzz/cases/m_home_dfield_direct_old.extc	2	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/escape-fuzz/cases/m_home_dfield_ret_after.extc	2	a reference field is written inside a loop, so one object can be overwritten	1
+tests/escape-fuzz/cases/m_home_dfield_ret_after.extc	2	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/escape-fuzz/cases/m_home_dfield_ret_before.extc	2	a reference field is written inside a loop, so one object can be overwritten	1
+tests/escape-fuzz/cases/m_home_dfield_ret_before.extc	2	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/escape-fuzz/cases/m_home_dfield_ret_old.extc	2	a reference field is written inside a loop, so one object can be overwritten	1
+tests/escape-fuzz/cases/m_home_dfield_ret_old.extc	2	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/escape-fuzz/cases/m_home_dfield_temp_after.extc	2	a reference field is written inside a loop, so one object can be overwritten	1
+tests/escape-fuzz/cases/m_home_dfield_temp_after.extc	2	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/escape-fuzz/cases/m_home_dfield_temp_before.extc	2	a reference field is written inside a loop, so one object can be overwritten	1
+tests/escape-fuzz/cases/m_home_dfield_temp_before.extc	2	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/escape-fuzz/cases/m_home_dfield_temp_old.extc	2	a reference field is written inside a loop, so one object can be overwritten	1
+tests/escape-fuzz/cases/m_home_dfield_temp_old.extc	2	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/escape-fuzz/cases/m_home_ff_direct.extc	2	a reference is assigned to a stack slot (a local/parameter, or a field of one)	2
+tests/escape-fuzz/cases/m_home_ff_ret.extc	2	a reference is assigned to a stack slot (a local/parameter, or a field of one)	2
+tests/escape-fuzz/cases/m_home_ff_temp.extc	2	a reference is assigned to a stack slot (a local/parameter, or a field of one)	2
+tests/escape-fuzz/cases/m_home_lfield_direct.extc	2	a reference field is written inside a loop, so one object can be overwritten	1
+tests/escape-fuzz/cases/m_home_lfield_direct.extc	2	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/escape-fuzz/cases/m_home_lfield_ret.extc	2	a reference field is written inside a loop, so one object can be overwritten	1
+tests/escape-fuzz/cases/m_home_lfield_ret.extc	2	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/escape-fuzz/cases/m_home_lfield_temp.extc	2	a reference field is written inside a loop, so one object can be overwritten	1
+tests/escape-fuzz/cases/m_home_lfield_temp.extc	2	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/escape-fuzz/cases/m_home_pfield_direct.extc	3	the host object is not a local created by `new` in this frame	1
+tests/escape-fuzz/cases/m_home_pfield_direct.extc	3	a reference field is written inside a loop, so one object can be overwritten	1
+tests/escape-fuzz/cases/m_home_pfield_direct.extc	3	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/escape-fuzz/cases/m_home_pfield_ret.extc	3	the host object is not a local created by `new` in this frame	1
+tests/escape-fuzz/cases/m_home_pfield_ret.extc	3	the host binding is reassigned in this function	1
+tests/escape-fuzz/cases/m_home_pfield_ret.extc	3	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/escape-fuzz/cases/m_main_aelem_direct.extc	1	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/escape-fuzz/cases/m_main_aelem_ret.extc	1	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/escape-fuzz/cases/m_main_aelem_temp.extc	1	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/escape-fuzz/cases/m_main_cont_after.extc	1	a call to 'push' (whose body is not analysed) carries a reference	1
+tests/escape-fuzz/cases/m_main_cont_before.extc	1	a call to 'push' (whose body is not analysed) carries a reference	1
+tests/escape-fuzz/cases/m_main_dfield_direct_after.extc	1	a reference field is written inside a loop, so one object can be overwritten	1
+tests/escape-fuzz/cases/m_main_dfield_direct_before.extc	1	a reference field is written inside a loop, so one object can be overwritten	1
+tests/escape-fuzz/cases/m_main_dfield_direct_old.extc	1	a reference field is written inside a loop, so one object can be overwritten	1
+tests/escape-fuzz/cases/m_main_dfield_ret_after.extc	1	a reference field is written inside a loop, so one object can be overwritten	1
+tests/escape-fuzz/cases/m_main_dfield_ret_before.extc	1	a reference field is written inside a loop, so one object can be overwritten	1
+tests/escape-fuzz/cases/m_main_dfield_ret_old.extc	1	a reference field is written inside a loop, so one object can be overwritten	1
+tests/escape-fuzz/cases/m_main_dfield_temp_after.extc	1	a reference field is written inside a loop, so one object can be overwritten	1
+tests/escape-fuzz/cases/m_main_dfield_temp_before.extc	1	a reference field is written inside a loop, so one object can be overwritten	1
+tests/escape-fuzz/cases/m_main_dfield_temp_old.extc	1	a reference field is written inside a loop, so one object can be overwritten	1
+tests/escape-fuzz/cases/m_main_ff_direct.extc	1	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/escape-fuzz/cases/m_main_ff_ret.extc	1	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/escape-fuzz/cases/m_main_ff_temp.extc	1	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/escape-fuzz/cases/m_main_lfield_direct.extc	1	a reference field is written inside a loop, so one object can be overwritten	1
+tests/escape-fuzz/cases/m_main_lfield_ret.extc	1	a reference field is written inside a loop, so one object can be overwritten	1
+tests/escape-fuzz/cases/m_main_lfield_temp.extc	1	a reference field is written inside a loop, so one object can be overwritten	1
+tests/escape-fuzz/cases/m_main_pfield_direct.extc	2	the host object is not a local created by `new` in this frame	1
+tests/escape-fuzz/cases/m_main_pfield_direct.extc	2	the host binding is reassigned in this function	1
+tests/escape-fuzz/cases/m_main_pfield_ret.extc	2	the host object is not a local created by `new` in this frame	1
+tests/escape-fuzz/cases/m_main_pfield_ret.extc	2	the host binding is reassigned in this function	1
+tests/escape-fuzz/cases/m_nohome_aelem_direct.extc	1	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/escape-fuzz/cases/m_nohome_aelem_ret.extc	1	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/escape-fuzz/cases/m_nohome_aelem_temp.extc	1	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/escape-fuzz/cases/m_nohome_cont_after.extc	1	a call to 'push' (whose body is not analysed) carries a reference	1
+tests/escape-fuzz/cases/m_nohome_cont_before.extc	1	a call to 'push' (whose body is not analysed) carries a reference	1
+tests/escape-fuzz/cases/m_nohome_dfield_direct_after.extc	1	a reference field is written inside a loop, so one object can be overwritten	1
+tests/escape-fuzz/cases/m_nohome_dfield_direct_before.extc	1	a reference field is written inside a loop, so one object can be overwritten	1
+tests/escape-fuzz/cases/m_nohome_dfield_direct_old.extc	1	a reference field is written inside a loop, so one object can be overwritten	1
+tests/escape-fuzz/cases/m_nohome_dfield_ret_after.extc	1	a reference field is written inside a loop, so one object can be overwritten	1
+tests/escape-fuzz/cases/m_nohome_dfield_ret_before.extc	1	a reference field is written inside a loop, so one object can be overwritten	1
+tests/escape-fuzz/cases/m_nohome_dfield_ret_old.extc	1	a reference field is written inside a loop, so one object can be overwritten	1
+tests/escape-fuzz/cases/m_nohome_dfield_temp_after.extc	1	a reference field is written inside a loop, so one object can be overwritten	1
+tests/escape-fuzz/cases/m_nohome_dfield_temp_before.extc	1	a reference field is written inside a loop, so one object can be overwritten	1
+tests/escape-fuzz/cases/m_nohome_dfield_temp_old.extc	1	a reference field is written inside a loop, so one object can be overwritten	1
+tests/escape-fuzz/cases/m_nohome_ff_direct.extc	1	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/escape-fuzz/cases/m_nohome_ff_ret.extc	1	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/escape-fuzz/cases/m_nohome_ff_temp.extc	1	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/escape-fuzz/cases/m_nohome_lfield_direct.extc	1	a reference field is written inside a loop, so one object can be overwritten	1
+tests/escape-fuzz/cases/m_nohome_lfield_ret.extc	1	a reference field is written inside a loop, so one object can be overwritten	1
+tests/escape-fuzz/cases/m_nohome_lfield_temp.extc	1	a reference field is written inside a loop, so one object can be overwritten	1
+tests/escape-fuzz/cases/m_nohome_pfield_direct.extc	2	the host object is not a local created by `new` in this frame	1
+tests/escape-fuzz/cases/m_nohome_pfield_direct.extc	2	the host binding is reassigned in this function	1
+tests/escape-fuzz/cases/m_nohome_pfield_ret.extc	2	the host object is not a local created by `new` in this frame	1
+tests/escape-fuzz/cases/m_nohome_pfield_ret.extc	2	the host binding is reassigned in this function	1
+tests/escape-fuzz/cases/s_dlist_home_dfield_direct.extc	2	a reference field is written inside a loop, so one object can be overwritten	1
+tests/escape-fuzz/cases/s_dlist_home_dfield_direct.extc	2	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/escape-fuzz/cases/s_dlist_home_dfield_ret.extc	2	a reference field is written inside a loop, so one object can be overwritten	1
+tests/escape-fuzz/cases/s_dlist_home_dfield_ret.extc	2	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/escape-fuzz/cases/s_dlist_home_lfield_direct.extc	2	a reference field is written inside a loop, so one object can be overwritten	1
+tests/escape-fuzz/cases/s_dlist_home_lfield_direct.extc	2	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/escape-fuzz/cases/s_dlist_home_lfield_ret.extc	2	a reference field is written inside a loop, so one object can be overwritten	1
+tests/escape-fuzz/cases/s_dlist_home_lfield_ret.extc	2	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/escape-fuzz/cases/s_dlist_main_dfield_direct.extc	1	a reference field is written inside a loop, so one object can be overwritten	1
+tests/escape-fuzz/cases/s_dlist_main_dfield_ret.extc	1	a reference field is written inside a loop, so one object can be overwritten	1
+tests/escape-fuzz/cases/s_dlist_main_lfield_direct.extc	1	a reference field is written inside a loop, so one object can be overwritten	1
+tests/escape-fuzz/cases/s_dlist_main_lfield_ret.extc	1	a reference field is written inside a loop, so one object can be overwritten	1
+tests/escape-fuzz/cases/s_dlist_nohome_dfield_direct.extc	1	a reference field is written inside a loop, so one object can be overwritten	1
+tests/escape-fuzz/cases/s_dlist_nohome_dfield_ret.extc	1	a reference field is written inside a loop, so one object can be overwritten	1
+tests/escape-fuzz/cases/s_dlist_nohome_lfield_direct.extc	1	a reference field is written inside a loop, so one object can be overwritten	1
+tests/escape-fuzz/cases/s_dlist_nohome_lfield_ret.extc	1	a reference field is written inside a loop, so one object can be overwritten	1
+tests/escape-fuzz/cases/s_ring_home_dfield_direct.extc	2	the host object is not a local created by `new` in this frame	1
+tests/escape-fuzz/cases/s_ring_home_dfield_direct.extc	2	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/escape-fuzz/cases/s_ring_home_dfield_ret.extc	2	the host object is not a local created by `new` in this frame	1
+tests/escape-fuzz/cases/s_ring_home_dfield_ret.extc	2	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/escape-fuzz/cases/s_ring_home_lfield_direct.extc	2	the same field of the same host is written at two sites	1
+tests/escape-fuzz/cases/s_ring_home_lfield_direct.extc	2	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/escape-fuzz/cases/s_ring_home_lfield_ret.extc	2	the host object is not a local created by `new` in this frame	1
+tests/escape-fuzz/cases/s_ring_home_lfield_ret.extc	2	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/escape-fuzz/cases/s_ring_main_dfield_direct.extc	1	the host object is not a local created by `new` in this frame	1
+tests/escape-fuzz/cases/s_ring_main_dfield_ret.extc	1	the host object is not a local created by `new` in this frame	1
+tests/escape-fuzz/cases/s_ring_main_lfield_direct.extc	1	the same field of the same host is written at two sites	1
+tests/escape-fuzz/cases/s_ring_main_lfield_ret.extc	1	the host object is not a local created by `new` in this frame	1
+tests/escape-fuzz/cases/s_ring_nohome_dfield_direct.extc	1	the host object is not a local created by `new` in this frame	1
+tests/escape-fuzz/cases/s_ring_nohome_dfield_ret.extc	1	the host object is not a local created by `new` in this frame	1
+tests/escape-fuzz/cases/s_ring_nohome_lfield_direct.extc	1	the same field of the same host is written at two sites	1
+tests/escape-fuzz/cases/s_ring_nohome_lfield_ret.extc	1	the host object is not a local created by `new` in this frame	1
+tests/escape-fuzz/cases/s_selfref_home_dfield_direct.extc	2	the host object is not a local created by `new` in this frame	1
+tests/escape-fuzz/cases/s_selfref_home_dfield_direct.extc	2	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/escape-fuzz/cases/s_selfref_home_dfield_ret.extc	2	the host object is not a local created by `new` in this frame	1
+tests/escape-fuzz/cases/s_selfref_home_dfield_ret.extc	2	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/escape-fuzz/cases/s_selfref_home_lfield_direct.extc	2	the same field of the same host is written at two sites	1
+tests/escape-fuzz/cases/s_selfref_home_lfield_direct.extc	2	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/escape-fuzz/cases/s_selfref_home_lfield_ret.extc	2	the same field of the same host is written at two sites	1
+tests/escape-fuzz/cases/s_selfref_home_lfield_ret.extc	2	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/escape-fuzz/cases/s_selfref_main_dfield_direct.extc	1	the host object is not a local created by `new` in this frame	1
+tests/escape-fuzz/cases/s_selfref_main_dfield_ret.extc	1	the host object is not a local created by `new` in this frame	1
+tests/escape-fuzz/cases/s_selfref_main_lfield_direct.extc	1	the same field of the same host is written at two sites	1
+tests/escape-fuzz/cases/s_selfref_main_lfield_ret.extc	1	the same field of the same host is written at two sites	1
+tests/escape-fuzz/cases/s_selfref_nohome_dfield_direct.extc	1	the host object is not a local created by `new` in this frame	1
+tests/escape-fuzz/cases/s_selfref_nohome_dfield_ret.extc	1	the host object is not a local created by `new` in this frame	1
+tests/escape-fuzz/cases/s_selfref_nohome_lfield_direct.extc	1	the same field of the same host is written at two sites	1
+tests/escape-fuzz/cases/s_selfref_nohome_lfield_ret.extc	1	the same field of the same host is written at two sites	1
+tests/escape-fuzz/cases/s_tree_home_dfield_direct.extc	1	the host object is not a local created by `new` in this frame	1
+tests/escape-fuzz/cases/s_tree_home_dfield_ret.extc	1	the host object is not a local created by `new` in this frame	1
+tests/escape-fuzz/cases/s_tree_home_lfield_direct.extc	1	the same field of the same host is written at two sites	1
+tests/escape-fuzz/cases/s_tree_home_lfield_ret.extc	1	the same field of the same host is written at two sites	1
+tests/escape-fuzz/cases/s_tree_main_dfield_direct.extc	1	the host object is not a local created by `new` in this frame	1
+tests/escape-fuzz/cases/s_tree_main_dfield_ret.extc	1	the host object is not a local created by `new` in this frame	1
+tests/escape-fuzz/cases/s_tree_main_lfield_direct.extc	1	the same field of the same host is written at two sites	1
+tests/escape-fuzz/cases/s_tree_main_lfield_ret.extc	1	the same field of the same host is written at two sites	1
+tests/escape-fuzz/cases/s_tree_nohome_dfield_direct.extc	1	the host object is not a local created by `new` in this frame	1
+tests/escape-fuzz/cases/s_tree_nohome_dfield_ret.extc	1	the host object is not a local created by `new` in this frame	1
+tests/escape-fuzz/cases/s_tree_nohome_lfield_direct.extc	1	the same field of the same host is written at two sites	1
+tests/escape-fuzz/cases/s_tree_nohome_lfield_ret.extc	1	the same field of the same host is written at two sites	1
+tests/escape-fuzz/min/callres_ret_store.extc	1	a reference field is written inside a loop, so one object can be overwritten	1
+tests/escape-fuzz/min/home_ff_return.extc	1	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/escape-fuzz/min/home_pfield_uaf.extc	3	the host object is not a local created by `new` in this frame	1
+tests/escape-fuzz/min/home_pfield_uaf.extc	3	a reference field is written inside a loop, so one object can be overwritten	1
+tests/escape-fuzz/min/home_pfield_uaf.extc	3	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/escape-fuzz/min/main_dfield_after.extc	1	a reference field is written inside a loop, so one object can be overwritten	1
+tests/escape-fuzz/min/nohome_dfield_after.extc	1	a reference field is written inside a loop, so one object can be overwritten	1
+tests/escape-fuzz/min/param_ret_arg.extc	2	the host object is not a local created by `new` in this frame	1
+tests/escape-fuzz/min/param_ret_arg.extc	2	a reference field is written inside a loop, so one object can be overwritten	1
+tests/escape-fuzz/recon/probes/A_ff1_new.extc	2	a reference is assigned to a stack slot (a local/parameter, or a field of one)	2
+tests/escape-fuzz/recon/probes/B2_preexisting.extc	2	a reference is assigned to a stack slot (a local/parameter, or a field of one)	2
+tests/escape-fuzz/recon/probes/B_ff2_new.extc	2	a reference is assigned to a stack slot (a local/parameter, or a field of one)	2
+tests/escape-fuzz/recon/probes/C1_two_stage.extc	2	a reference is assigned to a stack slot (a local/parameter, or a field of one)	2
+tests/escape-fuzz/recon/probes/C_ff2_mk.extc	2	a reference is assigned to a stack slot (a local/parameter, or a field of one)	2
+tests/escape-fuzz/recon/probes/D_arr_new.extc	2	a reference is assigned to a stack slot (a local/parameter, or a field of one)	2
+tests/escape-fuzz/recon/probes/E_arr_mk.extc	2	a reference is assigned to a stack slot (a local/parameter, or a field of one)	2
+tests/escape-fuzz/recon/probes/F_direct.extc	1	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/escape-fuzz/recon/probes/G_bind.extc	2	a reference is assigned to a stack slot (a local/parameter, or a field of one)	2
+tests/escape-fuzz/recon/probes/H_ff1_mk.extc	2	a reference is assigned to a stack slot (a local/parameter, or a field of one)	2
+tests/escape-fuzz/recon/probes/q1_assign_noescape.extc	1	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/escape-fuzz/recon/probes/q1_direct.extc	1	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/escape-fuzz/recon/probes/q1_loop.extc	1	a reference field is written inside a loop, so one object can be overwritten	1
+tests/escape-fuzz/recon/probes/q2_after.extc	1	a reference field is written inside a loop, so one object can be overwritten	1
+tests/escape-fuzz/recon/probes/q2_after_deadassign.extc	1	a reference field is written inside a loop, so one object can be overwritten	1
+tests/reclaim-acyclic/acyclic_heapref.extc	1	a reference field is written inside a loop, so one object can be overwritten	1
+tests/reclaim-elide/elide_fresh_alloc.extc	1	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/reclaim-elide/elide_other_holder.extc	1	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/reclaim-elide/elide_swept_region.extc	1	a reference field is written inside a loop, so one object can be overwritten	1
+tests/reclaim-elide/keep_callee_writes.extc	2	the host object is not a local created by `new` in this frame	1
+tests/reclaim-elide/keep_callee_writes.extc	2	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/reclaim-elide/keep_count_granularity.extc	1	a reference field is written inside a loop, so one object can be overwritten	1
+tests/reclaim-elide/keep_indirect_callee.extc	3	the host object is not a local created by `new` in this frame	1
+tests/reclaim-elide/keep_indirect_callee.extc	3	a call to 'f' (whose body is not analysed) carries a reference	1
+tests/reclaim-elide/keep_indirect_callee.extc	3	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/reclaim-elide/keep_other_holder_dies.extc	1	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/reclaim-elide/keep_shared_overwrite.extc	1	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/reclaim-elide/keep_sole_holder.extc	1	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/reclaim-elide/keep_two_edges.extc	1	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/reclaim-elide/keep_unknown_region.extc	1	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/reclaim-elide/writes_dense.extc	1	a reference field is written inside a loop, so one object can be overwritten	1
+tests/reclaim-gaps/shapes/base_call_unknown.extc	1	the destination is not a named field of a named object	1
+tests/reclaim-gaps/shapes/byval_temp.extc	1	a reference-carrying aggregate is produced as a temporary value; its references lose this root when it dies	1
+tests/reclaim-gaps/shapes/carray_slot.extc	1	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/reclaim-gaps/shapes/coro_frame_cycle.extc	2	the host binding is reassigned in this function	1
+tests/reclaim-gaps/shapes/coro_frame_cycle.extc	2	a call to 'next' (whose body is not analysed) carries a reference	1
+tests/reclaim-gaps/shapes/cross_scope_cycle.extc	1	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/reclaim-gaps/shapes/dyn_payload.extc	1	a `dyn` call: the callee is not resolved	1
+tests/reclaim-gaps/shapes/ext_frame_cycle.extc	2	the host binding is reassigned in this function	1
+tests/reclaim-gaps/shapes/ext_frame_cycle.extc	2	a domain block: the interleaving of reference drops is unprovable	1
+tests/reclaim-gaps/shapes/home_cycle.extc	2	a reference field is written inside a loop, so one object can be overwritten	1
+tests/reclaim-gaps/shapes/home_cycle.extc	2	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/reclaim-gaps/shapes/match_payload.extc	1	the host binding is reassigned in this function	1
+tests/reclaim-gaps/shapes/owcell_garbage.extc	2	`@overwrite` reuses one piece of storage, so the previous object is dropped	1
+tests/reclaim-gaps/shapes/owcell_garbage.extc	2	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/reclaim-gaps/shapes/own_room_cycle.extc	1	the host binding is reassigned in this function	1
+tests/reclaim-gaps/shapes/par_tls_cycle.extc	1	a reference field is written inside a loop, so one object can be overwritten	1
+tests/reclaim-gaps/shapes/pool_ref_slot.extc	1	a call to 'insert' (whose body is not analysed) carries a reference	1
+tests/reclaim-gaps/shapes/ring_per_round.extc	1	a reference field is written inside a loop, so one object can be overwritten	1
+tests/reclaim-gaps/shapes/slot_elem_known.extc	1	the same field of the same host is written at two sites	1
+tests/reclaim-gaps/shapes/slot_elem_unknown.extc	1	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/reclaim-gaps/shapes/struct_copy_slot.extc	1	a reference-carrying aggregate is produced as a temporary value; its references lose this root when it dies	1
+tests/reclaim-perf/shapes/field_overwrite_lost_root.extc	1	the same field of the same host is written at two sites	1
+tests/reclaim-perf/shapes/fixed_slot_overwrite.extc	1	a reference field is written inside a loop, so one object can be overwritten	1
+tests/reclaim-perf/shapes/outer_alloc_inner_write.extc	1	a reference field is written inside a loop, so one object can be overwritten	1
+tests/reclaim-perf/shapes/refgraph/rg_drop_component.extc	1	a reference field is written inside a loop, so one object can be overwritten	1
+tests/reclaim-perf/shapes/refgraph/rg_evict_cache.extc	2	a reference field is written inside a loop, so one object can be overwritten	1
+tests/reclaim-perf/shapes/refgraph/rg_evict_cache.extc	2	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/reclaim-perf/shapes/refgraph/rg_grow_tail.extc	1	a reference field is written inside a loop, so one object can be overwritten	1
+tests/reclaim-perf/shapes/refgraph/rg_insert_hash.extc	2	the host object is not a local created by `new` in this frame	1
+tests/reclaim-perf/shapes/refgraph/rg_insert_hash.extc	2	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/reclaim-perf/shapes/refgraph/rg_overwrite_ring.extc	1	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/reclaim-perf/shapes/refgraph/rg_relink_delete.extc	1	a reference field is written inside a loop, so one object can be overwritten	1
+tests/reclaim-perf/shapes/refgraph/rg_scan_graph.extc	1	a reference field is written inside a loop, so one object can be overwritten	1
+tests/reclaim-perf/shapes/refgraph/rg_scan_parent.extc	1	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/reclaim-perf/shapes/refgraph/rg_walk_array.extc	1	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/reclaim-perf/shapes/refgraph/rg_walk_buckets.extc	1	a reference field is written inside a loop, so one object can be overwritten	1
+tests/reclaim-perf/shapes/refgraph/rg_walk_chain.extc	1	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/reclaim-perf/shapes/refgraph/rg_walk_tree.extc	1	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/reclaim-shapes/big_slot.extc	1	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/reclaim-shapes/cond_save.extc	1	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/reclaim-shapes/cross_region.extc	1	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/reclaim-shapes/cross_region_elem.extc	1	the same field of the same host is written at two sites	1
+tests/reclaim-shapes/cyclic_pressure.extc	8	the host object is not a local created by `new` in this frame	7
+tests/reclaim-shapes/cyclic_pressure.extc	8	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/reclaim-shapes/cyclic_shape.extc	3	the host object is not a local created by `new` in this frame	2
+tests/reclaim-shapes/cyclic_shape.extc	3	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/reclaim-shapes/generic_instance_desc.extc	1	a call to 'push' (whose body is not analysed) carries a reference	1
+tests/reclaim-shapes/hole_c/caller_frame.extc	1	a reference field is written inside a loop, so one object can be overwritten	1
+tests/reclaim-shapes/live_churn.extc	1	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/reclaim-shapes/owed_home.extc	3	a reference is assigned to a stack slot (a local/parameter, or a field of one)	2
+tests/reclaim-shapes/owed_home.extc	3	a reference field is written inside a loop, so one object can be overwritten	1
+tests/reclaim-shapes/promote_place.extc	1	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/reclaim-shapes/scale_growth.extc	1	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/reclaim-shapes/shard_bands.extc	3	the host object is not a local created by `new` in this frame	2
+tests/reclaim-shapes/shard_bands.extc	3	a reference is assigned to a stack slot (a local/parameter, or a field of one)	1
+tests/reclaim-shapes/struct_copy.extc	1	a reference-carrying aggregate is produced as a temporary value; its references lose this root when it dies	1
+tests/reclaim-shapes/unknown_host.extc	1	the destination is not a named field of a named object	1
