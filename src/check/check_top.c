@@ -5380,6 +5380,8 @@ typedef struct {
     Vec         idleBindLvl;   /* IdleLvl*：绑定 -> 它所指存储的 arena 层（(b′) 的同尺事实） */
     Vec         idleFieldLvl;  /* IdleLvl*：字段名 -> 写进该字段的值的 arena 层（取最浅） */
     Vec         idleFieldStores; /* IdleFieldStore*：字段写的原始值（固定点求解的输入） */
+    Vec         idleOrig;    /* IdleOrig*：`name` 的取值都是 `origin` 的投影（flavor ii） */
+    Vec         idleKeep;    /* const char*：保留根（历次持有的对象都还可达） */
     int         idleSeq;    /* 走查里的语句序号（1 起）：判"分配点在站点之前" */
 } AcInfo;
 
@@ -6086,6 +6088,192 @@ static void idleSolveLvls(AcInfo *ac) {
     }
 }
 
+/* flavor (ii) 的来源事实：`name` 的每个取值都是 `origin` 沿**稳定字段**的投影。
+ * 最大不动点求（只删不增）：初始化时所有对都在，被"某次写入不是投影"否掉的对才删掉。 */
+typedef struct { const char *name; const char *origin; } IdleOrig;
+
+/** @brief 细化 P（flavor i）的声明（定义在下面）。 */
+static bool idleLinksOld(AcInfo *ac, const IdleWrite *w);
+
+/**
+ * @brief 细化 P（flavor ii）：这次槽覆盖**没丢根** —— 槽里的取值都是某个"保留根"的投影。
+ *
+ * 语义：`cur = (*cur).next` 这类**游标**。旧的值并没有被丢掉：它仍然是 `head`（或别的保留根）
+ * 沿 `next` 这条**只会被初始化、不会被改指**的链上的一个结点。要成立需要三件事：
+ *
+ *   1. **槽里的每个取值都是同一个根 `origin` 的投影**（表 `ac->idleOrig`：由"这个名字的每次写入
+ *      都是 `origin` 的投影"这个合取按最大不动点算出来）；
+ *   2. `origin` 是**保留根**（`ac->idleKeep`：它自己历次持有的对象都还可达 —— 每次非空写入要么
+ *      被新值链住（细化 P），要么是它自己的投影，要么是唯一一次 `new` 初始化且此后不再赋值）；
+ *   3. 投影沿途的字段都是**稳定字段**（`idleFieldStable`：写它的宿主全是本帧 fresh 分配 ⇒ 只会
+ *      被创建，不会被改指）。
+ *
+ * 三条合起来：旧值从 `origin` 沿一条不会被断开的路径仍然可达 ⇒ 覆盖这个槽不丢根。
+ * 方向保守：任何一条证不出 ⇒ 不成立（判否）。
+ *
+ * @param ac 这个函数的记录。
+ * @param w  这次槽写入。
+ * @return   成立则 true。
+ */
+static bool idleProjRetained(AcInfo *ac, const IdleWrite *w) {
+    if (!w->host) return false;
+    for (size_t i = 0; i < ac->idleOrig.len; i++) {
+        IdleOrig *o = *(IdleOrig **)vecAt(&ac->idleOrig, i);
+        if (!o->name || strcmp(o->name, w->host) != 0) continue;
+        for (size_t j = 0; j < ac->idleKeep.len; j++) {
+            const char *k = *(const char **)vecAt(&ac->idleKeep, j);
+            if (k && strcmp(k, o->origin) == 0) return true;
+        }
+    }
+    return false;
+}
+
+/* 表里有没有 (name, origin) 这对。 */
+/** @brief 表里有没有 (name, origin) 这对投影。 */
+static bool idleOrigHas(Vec *orig, const char *name, const char *origin) {
+    for (size_t i = 0; i < orig->len; i++) {
+        IdleOrig *o = *(IdleOrig **)vecAt(orig, i);
+        if (o->name && o->origin && strcmp(o->name, name) == 0 && strcmp(o->origin, origin) == 0)
+            return true;
+    }
+    return false;
+}
+
+/** @brief 名字在不在保留根集合里。 */
+static bool idleKeepHas(Vec *keep, const char *name) {
+    for (size_t i = 0; i < keep->len; i++) {
+        const char *k = *(const char **)vecAt(keep, i);
+        if (k && strcmp(k, name) == 0) return true;
+    }
+    return false;
+}
+
+/* 字段 fname 是不是稳定：写它的宿主全是本帧 fresh 分配（没写过 ⇒ 也稳定：没人能改指）。 */
+/** @brief 字段是否稳定（写它的宿主全是本帧 fresh 分配 ⇒ 只会被创建、不会被改指）。 */
+static bool idleFieldStable(AcInfo *ac, const char *fname) {
+    if (!fname) return false;
+    for (size_t i = 0; i < ac->idleFieldStores.len; i++) {
+        IdleFieldStore *fs = *(IdleFieldStore **)vecAt(&ac->idleFieldStores, i);
+        if (!fs->fname || strcmp(fs->fname, fname) != 0) continue;
+        if (!idleFreshAt(ac, fs->host, fs->seq)) return false;
+    }
+    return true;
+}
+
+/* `v` 是不是 `origin` 沿稳定字段的投影（`self` 是正在判的那个名字：自引用按"假设成立"处理，
+ * 这是最大不动点的常规做法）。 */
+/** @brief `v` 是不是 `origin` 沿稳定字段的投影（自引用按假设成立，配合最大不动点）。 */
+static bool idleProjOf(AcInfo *ac, Vec *orig, Vec *keep, Expr *v, const char *origin,
+                       const char *self) {
+    if (!v) return false;
+    if (v->kind == EX_NULL) return true;                    /* 不指对象 ⇒ 不破坏投影这条不变量 */
+    if (v->kind == EX_IDENT) {
+        const char *n = idleBindName(v, v->u.ident.name);
+        if (!n) return false;
+        if (strcmp(n, origin) == 0) return idleKeepHas(keep, origin);
+        if (self && strcmp(n, self) == 0) return true;      /* 自引用：假设成立 */
+        return idleOrigHas(orig, n, origin);
+    }
+    if (v->kind == EX_FIELD || v->kind == EX_DEREF) {
+        Expr *base = (v->kind == EX_FIELD) ? v->u.field.obj : v->u.deref.operand;
+        const char *fld = (v->kind == EX_FIELD) ? v->u.field.name : "[]";
+        if (!idleFieldStable(ac, fld)) return false;
+        return idleProjOf(ac, orig, keep, base, origin, self);
+    }
+    return false;                                           /* `new`/调用结果/下标：不是谁的投影 */
+}
+
+/* `r` 是不是保留根：它历次持有的对象都还可达。 */
+/** @brief `r` 是不是保留根（历次持有的对象都还可达）。 */
+static bool idleRetains(AcInfo *ac, Vec *orig, Vec *keep, const char *r) {
+    size_t nonzero = 0;
+    bool loneNew = false;
+    int declDepth = 0;
+    for (size_t i = 0; i < ac->idleWrites.len; i++) {
+        IdleWrite *o = *(IdleWrite **)vecAt(&ac->idleWrites, i);
+        if (o->kind != IDLE_DEST_SLOT_NAMED || !o->host || strcmp(o->host, r) != 0) continue;
+        if (!o->value || o->value->kind == EX_NULL) continue;
+        nonzero++;
+        loneNew = (nonzero == 1) && (o->value->kind == EX_NEW) && !o->isAssign;
+        declDepth = o->depth;
+    }
+    if (nonzero == 0) return false;                         /* 从没被赋过值：不是可依赖的根 */
+    /* 只有一次 `new` 声明初始化 ⇒ 它持有的那个对象一直有根。**但必须不在任何循环里**：
+     * 循环内每轮新建的绑定，旧实例在作用域退出后无人持有（存储还可能被提升）⇒ 会累积。 */
+    if (nonzero == 1 && loneNew && declDepth == 0) return true;
+    for (size_t i = 0; i < ac->idleWrites.len; i++) {
+        IdleWrite *o = *(IdleWrite **)vecAt(&ac->idleWrites, i);
+        if (o->kind != IDLE_DEST_SLOT_NAMED || !o->host || strcmp(o->host, r) != 0) continue;
+        if (!o->value || o->value->kind == EX_NULL) continue;
+        if (idleLinksOld(ac, o)) continue;                  /* 被新值链住 ⇒ 旧值仍可达 */
+        if (idleProjOf(ac, orig, keep, o->value, r, r)) continue;   /* 还在自己的结构上 */
+        return false;
+    }
+    return true;
+}
+
+/**
+ * @brief 求 flavor (ii) 的两张表（`idleOrig` / `idleKeep`）的**最大不动点**。
+ *
+ * 单调收紧（只删）：初始化时所有候选对与所有候选根都在，然后每一轮把"被某次写入否掉"的对与
+ * "不再保留"的根删掉，直到不动点。轮数上限 8（普通链两三轮回合）。表建在 `idleWrites` 与
+ * `idleFieldStores` 上，规模是函数级的（名字数 × 名字数），不做跨函数外推。
+ *
+ * @param ac 这个函数的记录；结果写回 `idleOrig` / `idleKeep`。
+ */
+static void idleSolveProj(AcInfo *ac) {
+    Vec names;
+    vecInit(&names, ac->a, sizeof(const char *));
+    for (size_t i = 0; i < ac->idleWrites.len; i++) {
+        IdleWrite *w = *(IdleWrite **)vecAt(&ac->idleWrites, i);
+        if (w->kind != IDLE_DEST_SLOT_NAMED || !w->host) continue;
+        if (!idleKeepHas(&names, w->host)) *(const char **)vecPush(&names) = w->host;
+    }
+    for (size_t i = 0; i < ac->idleFresh.len; i++) {
+        IdleFresh *fr = *(IdleFresh **)vecAt(&ac->idleFresh, i);
+        if (fr->name && !idleKeepHas(&names, fr->name))
+            *(const char **)vecPush(&names) = fr->name;
+    }
+    for (size_t i = 0; i < names.len; i++) {
+        const char *n = *(const char **)vecAt(&names, i);
+        for (size_t j = 0; j < names.len; j++) {
+            const char *o = *(const char **)vecAt(&names, j);
+            IdleOrig *p = arenaAllocZero(ac->a, sizeof *p);
+            p->name = n;
+            p->origin = o;
+            *(IdleOrig **)vecPush(&ac->idleOrig) = p;
+        }
+        *(const char **)vecPush(&ac->idleKeep) = n;
+    }
+    for (int round = 0; round < 8; round++) {
+        bool changed = false;
+        Vec next, keep;
+        vecInit(&next, ac->a, sizeof(void *));
+        vecInit(&keep, ac->a, sizeof(void *));
+        for (size_t i = 0; i < ac->idleOrig.len; i++) {
+            IdleOrig *p = *(IdleOrig **)vecAt(&ac->idleOrig, i);
+            bool ok = true;
+            for (size_t j = 0; ok && j < ac->idleWrites.len; j++) {
+                IdleWrite *w = *(IdleWrite **)vecAt(&ac->idleWrites, j);
+                if (w->kind != IDLE_DEST_SLOT_NAMED || !w->host) continue;
+                if (strcmp(w->host, p->name) != 0) continue;
+                if (!idleProjOf(ac, &ac->idleOrig, &ac->idleKeep, w->value, p->origin, p->name))
+                    ok = false;
+            }
+            if (ok) *(IdleOrig **)vecPush(&next) = p;
+            else changed = true;
+        }
+        for (size_t i = 0; i < ac->idleKeep.len; i++) {
+            const char *k = *(const char **)vecAt(&ac->idleKeep, i);
+            if (idleRetains(ac, &next, &ac->idleKeep, k)) *(const char **)vecPush(&keep) = k;
+            else changed = true;
+        }
+        ac->idleOrig = next;
+        ac->idleKeep = keep;
+        if (!changed) break;
+    }
+}
+
 /**
  * @brief 细化 P（flavor i）：这次槽覆盖**没丢根** —— 写进去的新值已经把旧值链住了。
  *
@@ -6216,6 +6404,7 @@ static IdleJudgment idleWriteOk(AcInfo *ac, const IdleWrite *w, size_t idx,
             }
             if (ok) return IDLE_ACC;
         }
+        if (idleProjRetained(ac, w)) return IDLE_ACC;   /* flavor (ii)：整槽取值都是保留根的投影 */
         *why = arenaPrintf(ac->a,
             "line %d: a reference is assigned to a stack slot (a local/parameter, or a field of one)",
             w->line);
@@ -6376,6 +6565,7 @@ static bool idleWalkStmt(Checker *c, AcInfo *ac, Stmt *s, int depth, int scope, 
                 w.value     = s->u.var.init;
                 w.seq       = ac->idleSeq;
                 w.condDepth = condDepth;
+                w.depth     = depth;
                 const char *why = NULL;
                 if (idleWriteOk(ac, &w, 0, &why, IDLE_STAGE_WALK) == IDLE_DEFER) {
                     IdleWrite *rec = arenaAllocZero(ac->a, sizeof *rec);
@@ -6790,6 +6980,8 @@ void computeFnAcyclic(Checker *c) {
         vecInit(&info[i].idleBindLvl, a, sizeof(void *));
         vecInit(&info[i].idleFieldLvl, a, sizeof(void *));
         vecInit(&info[i].idleFieldStores, a, sizeof(void *));
+        vecInit(&info[i].idleOrig, a, sizeof(void *));
+        vecInit(&info[i].idleKeep, a, sizeof(void *));
         IdleWalk iw = { c, &info[i], 0, 1, 0, 0 };
         AstVisit iv = { idleWalkExprCb, idleWalkStmtCb, &iw };
         astWalkStmtChildren(f->body, &iv);
@@ -6806,6 +6998,7 @@ void computeFnAcyclic(Checker *c) {
          * 本迭代的 arena 一起死"（`idleStoreQualified`）。因为同一名字可能有多处写入，只有整趟
          * 走完才看得全；任一处不合格 ⇒ 这个槽的每一次覆盖都判否（保守）。 */
         idleSolveLvls(&info[i]);
+        idleSolveProj(&info[i]);   /* flavor (ii) 的两张表（最大不动点） */
         for (size_t k = 0; k < info[i].idleWrites.len && !info[i].idleBad; k++) {
             IdleWrite *w = *(IdleWrite **)vecAt(&info[i].idleWrites, k);
             if (w->kind != IDLE_DEST_SLOT_NAMED || !w->isAssign) continue;

@@ -7,5 +7,4 @@ tests/reclaim-perf/shapes/refgraph/rg_insert_hash.extc	not_idle
 tests/reclaim-perf/shapes/refgraph/rg_scan_graph.extc	not_idle
 tests/reclaim-perf/shapes/refgraph/rg_scan_parent.extc	not_idle
 tests/reclaim-perf/shapes/refgraph/rg_walk_buckets.extc	not_idle
-tests/reclaim-perf/shapes/refgraph/rg_walk_chain.extc	not_idle
 tests/reclaim-perf/shapes/refgraph/rg_walk_tree.extc	not_idle

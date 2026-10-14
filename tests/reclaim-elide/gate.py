@@ -79,6 +79,35 @@ def criterion_selftest() -> bool:
     return p.returncode == 0
 
 
+def idle_shapes() -> set:
+    """哪些形状**整单元不发射回收运行期**（判 idle）。
+
+    判据与语料指纹同一口径：同一个形状在 `EXTC_RECLAIM=1` 与 `EXTC_RECLAIM=0` 下生成物**逐字节
+    相同**。**判 idle ⇒ 根本没有计数可省**，本目录的"计数收窄"判据对它不适用（那是另一条判据的
+    地盘：`gate-idle-projection` 的红集 + 语料指纹的发射类别）。这样 elide 判据与 idle 判据
+    钉的是**同一个事实**的两面，不需要形状排除清单。"""
+    idle = set()
+    extra = os.environ.get("EXTRA_CFLAGS", "")
+    for src in sorted(HERE.glob("*.extc")):
+        outs = []
+        for rec in ("1", "0"):
+            dst = pathlib.Path(tempfile.mkdtemp(prefix="elide-idle.")) / "out.c"
+            env = dict(os.environ, EXTC_RECLAIM=rec)
+            cmd = [str(ROOT / "build" / "extc"), "-w", "--no-line-map", "-I",
+                   str(ROOT / "stdlib"), str(src), "-o", str(dst)]
+            if extra:
+                cmd += extra.split()
+            p = subprocess.run(cmd, cwd=str(ROOT), env=env,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if p.returncode != 0 or not dst.exists():
+                outs = []
+                break
+            outs.append(dst.read_bytes())
+        if len(outs) == 2 and outs[0] == outs[1]:
+            idle.add(src.stem.replace("_", "-"))
+    return idle
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="计数收窄语料的棘轮闸门")
     ap.add_argument("--tsv", help="用现成的判定表，不重跑语料")
@@ -106,15 +135,21 @@ def main() -> int:
         print(f"[elide] 判定表为空：{tsv}（列数不足 7？）")
         return 2
 
+    # 判 idle 的形状没有计数可省：从"接线"与"红"两侧都排除（理由见 `idle_shapes`）。
+    idle = idle_shapes()
+    if idle:
+        print("[elide] 判 idle（不发射回收运行期，无计数可省）：" + ", ".join(sorted(idle)))
+
     # 判据必须先"测得到"：接线未生效时"该省"的红是假红。
-    not_wired = [r["name"] for r in rows if r["wired"] != "yes"]
+    not_wired = [r["name"] for r in rows if r["wired"] != "yes" and r["name"] not in idle]
     if not_wired:
         print(f"[elide] 计数接线未生效（{len(not_wired)} 个形状的生成 C 里 0 处计数调用）"
               f"⇒ 判据测不到，不允许绿：" + ", ".join(not_wired))
         return 2
 
-    now = {r["name"] for r in rows if r["verdict"] == "红"}
+    now = {r["name"] for r in rows if r["verdict"] == "红" and r["name"] not in idle}
     base = read_baseline(pathlib.Path(a.baseline)) if pathlib.Path(a.baseline).exists() else set()
+    base = base - idle          # 判 idle 的形状不再属于"计数收窄"这条判据的地盘
 
     if a.update_baseline:
         pathlib.Path(a.baseline).write_text(

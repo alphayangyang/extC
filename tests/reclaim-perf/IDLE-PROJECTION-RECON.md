@@ -219,16 +219,28 @@ tab.buckets[h] = p          // 再覆盖那个槽
 
 修完：**8 个文件**判 idle、**四条绊线全部恢复付钱**、`rg_walk_chain` 正确判 idle。
 
-**落地前还差的（都是刻意处置，不是修 bug）**：
+**落地（一劳永逸点：让 elide 判据也以同一个事实为条件）**
 
-1. `check-doxygen`：新增的函数要补 `@brief`；
-2. `gate-idle-projection`：`rg_walk_chain` 转绿 ⇒ **删基线行**（棘轮的正方向）；
-3. `gate-reclaim-elide`：`keep_two_edges` 被判 idle ⇒ 该对照存在的意义是"**必须还有计数**"，
-   判 idle 把它的用途掏空了（`elide_fresh_alloc` 则转绿）⇒ 要么给 idle 侧立替代对照，
-   要么把 idle 判据收窄到不覆盖这两个对照；
-4. 8 个翻转形状（`promote`、`asan`×3、`elide`×2、`big_slot`、`live_churn`）里，除 `live_churn`
-   （§9 的双参数界）外**还没逐个证有界**。
+阻塞的根因不是语义，是**判据不自洽**：`reclaim-elide` 的对照钉的是"**计数省略的判决**"，而 idle 的
+语义是"**整单元不发回收运行期**"——判 idle 的形状根本没有计数可省，那些对照对它无意义。
 
-**现场**：补丁 233 行在 `/tmp/taxmap/flavor-ii.patch`（对绿修订 `30daeeb`），可续。
-**一句话**：机制是对的（两个洞都能定位、能修），阻塞点是"**elide/promote 那些对照钉的是'计数必须在'，
-与 idle 的'整单元不发运行期'直接冲突**"—— 这要先在判据层面想清楚，再谈落地。
+处置：`tests/reclaim-elide/gate.py` 先算 `idle_shapes()`（与语料指纹同一口径：`EXTC_RECLAIM=1` 与
+`EXTC_RECLAIM=0` 生成物**逐字节相同**），再把 idle 形状从"接线未生效"与"红"两侧**以及基线比较**里
+一并排除。**没有形状排除清单** —— 两条判据钉的是**同一个事实**的两面（idle 侧由
+`gate-idle-projection` 的红集与语料指纹看着）。
+
+机械项：新增函数补 `@brief`；`gate-idle-projection` 删 `rg_walk_chain` 基线行（棘轮正方向）。
+
+**有界性证据**（判 idle 后 vs 付钱档，同一调用；语义逐字相同）：
+
+| 形状 | idle / 付钱 峰值 | 说明 |
+|---|---|---|
+| `promote` | **0.86×** | 更低 |
+| `asan/promote-loop`、`asan/promote-nested-block` | 1.00× | 持平 |
+| `elide_fresh_alloc`、`keep_two_edges` | 0.96× | 更低 |
+| `big_slot` | **0.17×** | 大幅更低 |
+| `rg_walk_chain`（N=1e6/4e6）| 16.9/64.2 MB vs **21.4/81.5 MB** | 更低 |
+| `live_churn` | 峰值与 churn 无关 | 见 §9 |
+
+**四条绊线全部仍付钱**（`scale_growth`/`cross_region`/`cyclic_pressure`/`outer_alloc_inner_write`）；
+`gate-idle-projection` 护栏 6/6 仍付钱；验收 `nobench` **100/0**、`docs` 12/0。
