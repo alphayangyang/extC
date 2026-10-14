@@ -1,0 +1,153 @@
+// bench/app/log.extc —— **场景 C：请求日志 / 动态缓冲**
+//
+// 模拟一个"有界日志缓冲"：请求记录按字节追加进去，缓冲满了就**截断**（丢掉最老的一半，
+// 留下最新的 KEEP 字节），期间还会在缓冲里**找**一条刚写进去的记录（`find`）。
+// 三种语言用各自最自然的动态字节缓冲：extC `stl::string` · C++ `std::string` · Go `[]byte`。
+//
+// 用法：log <ops>            （默认 2000000）
+// 输出（三种语言必须逐字相同）：
+//   c.appended=<累计追加字节> c.trunc=<截断次数> c.find=<find 偏移之和> c.acc=<校验和> c.len=<最终长度>
+//
+// 记录是**定长 24 字节**、内容由 `i` 决定（不做十进制格式化 ⇒ 三种语言的工作量逐字节一致）。
+// 每 512 轮找一次"上一条记录的前 4 个字节"：它一定在缓冲**末尾**，所以 `find` 会扫过几乎
+// 整条缓冲 —— 这是这个场景里最贵的一步，也正是要量的东西。
+use std::io
+use stl::string
+
+use std::time
+use std::sys::io as sysio
+
+/* ================ 应用侧逐单位时间戳（USER-STALL / bench/app） ================
+ * 只写**戳文件**（路径来自 argv 最后一项）；stdout 一个字节都不动。
+ * 40 字节头 + (nstamps-1) 个 unsigned-LEB128 增量（小端）。
+ * 戳数 = 单位数 + 1：第一次 us() 记 t0，其后每次记一个增量，循环后补最后一次。
+ * ============================================================================ */
+let US_CAP: i64 = 10000114
+var USB: [10000114]u8
+var USBL: i64 = 40
+var USN: i64 = 0
+var UST0: i64 = 0
+var USPREV: i64 = 0
+var USNEG: i64 = 0
+var USOVF: i64 = 0
+var USSTART: bool = false
+var USPB: [512]u8
+var USPL: i64 = 0
+
+fn usByte(b: u8) {
+    if USBL < US_CAP { USB[USBL] = b  USBL = USBL + i64(1) } else { USOVF = USOVF + i64(1) }
+}
+
+fn usSet64(off: i64, v: u64) {
+    var k: i64 = 0
+    while k < i64(8) { USB[off + k] = u8(v & u64(255))  v = v >> u64(8)  k = k + i64(1) }
+}
+
+fn us() {
+    let t = time::now()
+    if !USSTART {
+        USSTART = true
+        UST0 = t
+        USPREV = t
+        USN = i64(1)
+        return
+    }
+    var d: i64 = t - USPREV
+    if d < i64(0) { USNEG = USNEG + i64(1)  d = i64(0) }
+    USPREV = t
+    USN = USN + i64(1)
+    var v: u64 = u64(d)
+    while v >= u64(128) {
+        usByte(u8((v & u64(127)) | u64(128)))
+        v = v >> u64(7)
+    }
+    usByte(u8(v))
+}
+
+fn usSetPath(p: slice<u8>) {
+    var k: i64 = 0
+    while k < p.len && k < i64(511) { USPB[k] = p[k]  k = k + i64(1) }
+    USPL = k
+    USPB[k] = u8(0)
+}
+
+fn usDump() {
+    USB[0] = u8(85)  USB[1] = u8(83)  USB[2] = u8(65)  USB[3] = u8(80)
+    USB[4] = u8(80)  USB[5] = u8(83)  USB[6] = u8(84)  USB[7] = u8(49)
+    usSet64(i64(8), u64(USN))
+    usSet64(i64(16), u64(UST0))
+    usSet64(i64(24), u64(USNEG))
+    usSet64(i64(32), u64(USOVF))
+    if USPL == i64(0) { return }
+    let fd = sysio::open(USPB[..USPL].data, sysio::O_WRONLY | sysio::O_CREAT | sysio::O_TRUNC, i32(420))
+    if fd < i32(0) { io::cerr << "USAPP: open stamp file failed\n"  return }
+    var done: i64 = 0
+    while done < USBL {
+        let n = sysio::write(fd, USB[done..].data, USBL - done)
+        if n <= i64(0) { break }
+        done = done + n
+    }
+    sysio::close(fd)
+}
+
+let CAP:  i64 = 16384
+let KEEP: i64 = 8192
+let REC:  i64 = 24
+
+fn toInt(s: slice<u8>, dflt: i64) -> i64 {
+    if s.len == i64(0) { return dflt }
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        let b = i64(s[i])
+        if b < i64(48) || b > i64(57) { return dflt }
+        v = v * i64(10) + (b - i64(48))
+        i = i + i64(1)
+    }
+    return v
+}
+
+/* 第 i 条记录的第 j 个字节：33..122，可打印、三种语言逐字节相同。 */
+fn recByte(i: i64, j: i64) -> u8 { return u8(33 + ((i + j * i64(3)) % i64(90))) }
+
+/* 丟掉最前面的字节走 `string::removeFront` —— 一次 `memmove`。
+ *
+ * 这里原来是一个**逐字节**循环（`s.buf[d] = s.buf[d+n]`）：清零/搬移本身没错，但它每字节
+ * 一次边界检查，而 Go 那边是 `copy(buf, buf[n:])`。补上 `copyInto` 原语之后 `string` 提供
+ * `removeFront`，这一处就与 Go 同构了（DEVLOG 第十一段续八/九）。 */
+fn main(args: slice<slice<u8>>) -> i32 {
+    var ops: i64 = i64(2000000)
+    if args.len > i64(1) { ops = toInt(args[1], ops) }
+    if args.len > i64(2) { usSetPath(args[2]) }
+
+    var s: string = string::withCap(CAP)
+    var trunc: i64 = 0
+    var findSum: i64 = 0
+    var acc: i64 = 0
+    var i: i64 = 0
+    while i < ops {
+        us()
+        var j: i64 = 0
+        while j < REC {
+            s.push(recByte(i, j))
+            j = j + i64(1)
+        }
+        /* 找"上一条记录的前 4 个字节"：它只可能出现在缓冲末尾附近 ⇒ find 扫满整条缓冲。 */
+        if i % i64(512) == i64(0) && i > i64(0) {
+            var needle: [4]u8 = [recByte(i - i64(1), i64(0)), recByte(i - i64(1), i64(1)), recByte(i - i64(1), i64(2)), recByte(i - i64(1), i64(3))]
+            let at = s.find(needle[..]) ?? i64(-1)
+            findSum = findSum + at
+        }
+        if s.len() >= CAP {
+            /* 读两个字节走公开的 `at()`：SSO 之后存储分内联/池两态，`buf` 字段没有了。 */
+            acc = acc + i64(s.at(i64(0)) ?? u8(0)) + i64(s.at(s.len() - i64(1)) ?? u8(0))
+            s.removeFront(s.len() - KEEP)
+            trunc = trunc + i64(1)
+        }
+        i = i + i64(1)
+    }
+    us()
+    usDump()
+    io::cout << "c.appended=" << (ops * REC) << " c.trunc=" << trunc << " c.find=" << (findSum % i64(1000000007)) << " c.acc=" << acc << " c.len=" << s.len() << "\n"
+    return 0
+}

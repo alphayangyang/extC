@@ -1,3 +1,32 @@
+## 2026-10-14 · `bench/app` 用户视角停顿（**真实业务形状**）：**三个形状上回收运行期根本不发射**；但 route/log 我们比 Go/C++ 慢 **3–6×** ⇒ **差距不在 GC**
+
+**素材**：`session`（会话表：高频写+删+查）、`route`（路由表：插入/前驱/区间扫描/删除）、`log`（有界字节缓冲：追加/截断/查找）—— 各 **extC/C++/Go** 三语言、默认规模 2×10⁶ ops；**6 臂 × 3 形状 × 5 rep = 180 次**。戳只打在**形状源码**的业务单位边界（extC `time::now()` / C++ `steady_clock` / Go `time.Since` 单调部分），全默认档、不 pin 核、不设堆上限；**GC 侧计时一行都没用于停顿定义**。
+
+**发现 1（结构性的 0，最重要的正面结果）**：session/route/log 的**默认档与 `EXTC_RECLAIM=0` 生成物逐字节相同**，且 **`.text` 段 md5 也相同**（6/6 组合）⇒ "回收让业务多付" = **0 条被执行指令**（是结构性事实，不是"测出来的 0 ns"）。
+**正对照（证明这个判据有牙）**：`bench/gc/src/digraph.extc` 默认 4 处 collect / `=0` 处、`.text` 不同、`nm` 44 vs 0 个 `extc_rc_*`。
+**`EXTC_RECLAIM=1` 强制开启**时 session/route 的 `.text` **仍相同**（-O2 把死代码删净）⇒ 仍 0；**log 例外**（`.text` 不同、7 个符号存活，属登记路径），但 canon 墙钟 **177.2 vs 177.2 ms** ⇒ 只能记"**未测到**（低于噪声地板）"。
+
+**发现 2（真正的差距不在 GC）**：无插桩 canon 的**单位均值（ns/单位）**——
+| 形状 | extC | C++ | Go |
+|---|---|---|---|
+| session | 19.4 | **7.1** | 15.2 |
+| route | 517 | 1073 | **161** |
+| log | 88.6 | **15.6** | **17.2** |
+⇒ **route 比 Go 慢 3.2×**（比 C++ 快 2×），**log 比 C++/Go 慢 5.7×/5.2×**，session 比 C++ 慢 2.7×、比 Go 快。**这些形状上我们一个回收指令都没执行，却仍然慢** ⇒ 差距在 **codegen/运行期/容器实现**，与 GC 无关。
+
+**发现 3（可能的历史回归，独立发现）**：`bench/app/RESULTS.md`（2026-09-25 22:25）的 **log 行已过期** —— 该文件写 extC **24.50 ns/op**，而**当前树**用 `run.sh` 自跑（`WRITE_RESULTS=0`，未改该文件）是 **88.27 ns/op**（校验和逐字节一致）；`log.extc` 的 mtime 为 2026-09-27（**晚于**该文件）。⇒ **疑似 3.6× 回归或口径差**，成因**未查清**；未改该文件。
+
+**负结果与方法学**：
+- Go 默认 vs `GOGC=off`：Δp50/p90/p99/p99.9 **≤0.02 µs**、预算计数相同 ⇒ **未测到 GC 归因的停顿增量**（`GOGC=off` 同时改内存占用，两因素分不开）。
+- **Go route 的"252.9 ms 停顿"是假的**：5/5 rep 都落在 i=1999999（insert 相位最后一笔，区间里装的是"建+排序 100 万键"的 setup）；剔除 3 笔相位过渡后 Go route 最长 **2.06 ms**、`>16.7 ms` **0**。
+- **extC route 的最长一笔是确定性的**：i=1942311，`EXTC_RECLAIM=0` 5/5、`force` 4/5 都在同一序号（≈0.85–1.07 ms）⇒ 某把特定键的结构事件，**不是 OS、不是回收**；**C++ route 才有真长尾**（最长 68.2 ms、序号每次不同）。
+- **噪声地板很大**：两份**逐字节相同**的 extC 产物之间，log 的"最长一笔"差 **89.6 ms**、`>0.1 ms` 单位数差 **54 个** ⇒ **0.1 ms 档一律不作结论**，只有 p50–p99.9 与远超地板的量可下结论。
+- **插桩扰动 +19–223 ns/单位且三语言不同**（route：extC +55 / C++ +223 / Go +121）⇒ **跨语言绝对分位比较受污染**（本件最大方法学弱点）。
+- **第一遍（arm 主序）已作废**：session 在 load≈3.8、log 在 load≈1.0 时跑，尾部被负载混杂；改用 **rep 主序轮转**（各臂 load 0.76–1.76），旧数据留档 `/tmp/appstall/logs/runA_noninterleaved/`。
+
+**交付**：`bench/app/STALL.md`（695 行）+ `make_stamped_app.py` / `appstall.py` / `appstall_analyze.py` + `stamped/{extc,cpp,go}/*_us.*`（9 个）；原始日志 `/tmp/appstall/`（464 MB，90 个原始戳文件）。
+**未覆盖**：未做时间域对齐（无"第 k 个单位撞上第 j 次 GC"的断言）；`bench/app` 无 Java 移植；单规模；0.1 ms 计数不可复现；C++ route 单笔 68 ms 与 Go route lookup 29–39 ms 的成因未查清。
+
 ## 2026-10-14 · `ALIGN64` 半步：**判据一不成立 ⇒ 按纪律回退**（基址对齐改不了"**一个槽跨多条数组**"）
 
 **实现**（`EXTC_RC_ALIGN64`，编译期、**默认关**；四处）：`extc_rc_metaAlloc = aligned_alloc(64, ⌈bytes⌉·64)`；`occ/mark/rsbit/rscnt/tid/hold` 走对齐分配器（对齐档显式 `memset` 位图）；`offOf/slotOfOff/slotOf/typeOf` 加 `restrict`；`reclaim.h`+`codegen.c` 发射器第 7 实参；`tests/reclaim/emit_main.c` 同步（**不同步会让 `smoke` 红**，已修）。**开关生效性已验证**（on 档 `tid%64==0`/`occ%64==0` ✓，非空测）。
