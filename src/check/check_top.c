@@ -6196,11 +6196,31 @@ static bool idleFieldStable(AcInfo *ac, const char *fname) {
     return true;
 }
 
+/** @brief L1「链接入结构」：`vname` 指向的那个对象，是否被某次字段写**链进了 `origin` 的结构**。
+ *
+ * 形式规格 §3 的那条传递：对 `h.f := v`，若 `h` 是 `origin` 的投影且字段 `f` 稳定
+ * ⇒ `v` 这个对象从 `origin` 可达 ⇒ 它成为 `origin` 的投影。缺了它，不动点就比 `A*` 小
+ * （`rg_grow_tail` 的 `tail = p` 正是这一条）。 */
+static bool idleLinkedInto(AcInfo *ac, Vec *orig, const char *vname, const char *origin,
+                           int seq) {
+    for (size_t i = 0; i < ac->idleFieldStores.len; i++) {
+        IdleFieldStore *fs = *(IdleFieldStore **)vecAt(&ac->idleFieldStores, i);
+        if (!fs->value || fs->value->kind != EX_IDENT) continue;
+        const char *vn = idleBindName(fs->value, fs->value->u.ident.name);
+        if (!vn || strcmp(vn, vname) != 0) continue;
+        if (seq > 0 && fs->seq >= seq) continue;                 /* 链入发生在这条写之前 */
+        if (!idleFieldStable(ac, fs->fname)) continue;
+        if (fs->host && idleOrigHas(orig, fs->host, origin)) return true;
+    }
+    return false;
+}
+
 /* `v` 是不是 `origin` 沿稳定字段的投影（`self` 是正在判的那个名字：自引用按"假设成立"处理，
  * 这是最大不动点的常规做法）。 */
-/** @brief `v` 是不是 `origin` 沿稳定字段的投影（自引用按假设成立，配合最大不动点）。 */
+/** @brief `v` 是不是 `origin` 沿稳定字段的投影（自引用按假设成立，配合最大不动点）。
+ *  `seq` = 这条写的走查序号（判 L1 的"链入在前"；0 = 不要求顺序）。 */
 static bool idleProjOf(AcInfo *ac, Vec *orig, Vec *keep, Expr *v, const char *origin,
-                       const char *self) {
+                       const char *self, int seq) {
     if (!v) return false;
     if (v->kind == EX_NULL) return true;                    /* 不指对象 ⇒ 不破坏投影这条不变量 */
     if (v->kind == EX_IDENT) {
@@ -6208,13 +6228,14 @@ static bool idleProjOf(AcInfo *ac, Vec *orig, Vec *keep, Expr *v, const char *or
         if (!n) return false;
         if (strcmp(n, origin) == 0) return idleKeepHas(keep, origin);
         if (self && strcmp(n, self) == 0) return true;      /* 自引用：假设成立 */
-        return idleOrigHas(orig, n, origin);
+        if (idleOrigHas(orig, n, origin)) return true;
+        return idleLinkedInto(ac, orig, n, origin, seq);     /* L1：被链进 origin 的结构 */
     }
     if (v->kind == EX_FIELD || v->kind == EX_DEREF) {
         Expr *base = (v->kind == EX_FIELD) ? v->u.field.obj : v->u.deref.operand;
         const char *fld = (v->kind == EX_FIELD) ? v->u.field.name : "[]";
         if (!idleFieldStable(ac, fld)) return false;
-        return idleProjOf(ac, orig, keep, base, origin, self);
+        return idleProjOf(ac, orig, keep, base, origin, self, seq);
     }
     return false;                                           /* `new`/调用结果/下标：不是谁的投影 */
 }
@@ -6242,7 +6263,7 @@ static bool idleRetains(AcInfo *ac, Vec *orig, Vec *keep, const char *r) {
         if (o->kind != IDLE_DEST_SLOT_NAMED || !o->host || strcmp(o->host, r) != 0) continue;
         if (!o->value || o->value->kind == EX_NULL) continue;
         if (idleLinksOld(ac, o)) continue;                  /* 被新值链住 ⇒ 旧值仍可达 */
-        if (idleProjOf(ac, orig, keep, o->value, r, r)) continue;   /* 还在自己的结构上 */
+        if (idleProjOf(ac, orig, keep, o->value, r, r, o->seq)) continue;   /* 还在自己的结构上 */
         return false;
     }
     return true;
@@ -6293,7 +6314,7 @@ static void idleSolveProj(AcInfo *ac) {
                 IdleWrite *w = *(IdleWrite **)vecAt(&ac->idleWrites, j);
                 if (w->kind != IDLE_DEST_SLOT_NAMED || !w->host) continue;
                 if (strcmp(w->host, p->name) != 0) continue;
-                if (!idleProjOf(ac, &ac->idleOrig, &ac->idleKeep, w->value, p->origin, p->name))
+                if (!idleProjOf(ac, &ac->idleOrig, &ac->idleKeep, w->value, p->origin, p->name, w->seq))
                     ok = false;
             }
             if (ok) *(IdleOrig **)vecPush(&next) = p;

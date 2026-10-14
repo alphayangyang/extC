@@ -2,7 +2,6 @@
 # 护栏那侧的 guard_idle / unbounded / sem_same 是安全问题，不该出现在这里。
 bench/gc/src/spectrum_p2.extc	not_idle
 bench/gc/src/spectrum_p4.extc	not_idle
-tests/reclaim-perf/shapes/refgraph/rg_grow_tail.extc	not_idle
 tests/reclaim-perf/shapes/refgraph/rg_insert_hash.extc	not_idle
 tests/reclaim-perf/shapes/refgraph/rg_scan_graph.extc	not_idle
 tests/reclaim-perf/shapes/refgraph/rg_scan_parent.extc	not_idle

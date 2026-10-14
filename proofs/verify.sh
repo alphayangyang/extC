@@ -30,6 +30,11 @@ if ! "$LEAN" -o ExtCRegion.olean ExtCRegion.lean >>"$OUT" 2>&1; then
   echo "  FAIL ExtCRegion.lean"; sed 's/^/       /' "$OUT"; exit 1
 fi
 echo "  OK   ExtCRegion.lean"
+if LEAN_PATH=. "$LEAN" ExtCIdleMax.lean >>"$OUT" 2>&1; then
+  echo "  OK   ExtCIdleMax.lean"
+else
+  echo "  FAIL ExtCIdleMax.lean"; sed 's/^/       /' "$OUT"; exit 1
+fi
 for f in ExtCPool.lean ExtCModel.lean ExtCPrecision.lean ExtCPath.lean ExtCGap.lean ExtCMemGap.lean; do
   if LEAN_PATH=. "$LEAN" "$f" >>"$OUT" 2>&1; then
     echo "  OK   $f"
