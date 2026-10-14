@@ -45,11 +45,6 @@ UNDOCUMENTED = {
     "EXTC_DUMP_POOL",
     "EXTC_EXPLAIN_MEMORY",
     "EXTC_EXPLAIN_ROOT",
-    # 回收的分片数（停顿旋钮，`src/back/codegen.c`）：与 EXTC_RECLAIM 同一档"接线期开关"，
-    # 默认 1 = 不切片、生成物与接线前逐字节相同。它改产物，本该写进 `--help`；但 `--help`
-    # 的单一真源页 `docs/usage/flags.md` 由 `tools/gen_flags.py` 整页生成，本轮改动范围不含
-    # `docs/`，所以先挂在这里；文档那一轮再把它点进 `--help`。
-    "EXTC_RC_SHARDS",
     "EXTC_SELFCHECK_VERBOSE",
     "EXTC_STD",
 }
@@ -67,6 +62,22 @@ def switches_in_code() -> set:
 def help_text() -> str:
     r = subprocess.run([str(ROOT / "build" / "extc"), "--help"], capture_output=True, text=True)
     return r.stdout + r.stderr
+
+
+def usage_shape_ok(text: str) -> str:
+    """帮助文本的**结构**是否完好（不只是"名字出现过"）。
+
+    起因：往 `usage()` 那张大表里加条目时，条目被挤进 `usage: %s ...` 那一行内部 —— 名字照样
+    出现在输出里（旧判据因此放行），而整篇说明被打乱、`[options] <file.extc>` 被吃掉 ✗。
+    所以这里补一条独立的结构判据：usage 行必须完整，`-h, --help` 必须在。
+    """
+    lines = text.split("\n")
+    u = next((l for l in lines if l.startswith("usage:")), "")
+    if "[options] <file.extc>" not in u:
+        return "`--help` 的 usage 行被打乱（缺 `[options] <file.extc>`）：%r" % u[:80]
+    if not any(" -h, --help" in l for l in lines):
+        return "`--help` 里找不到 `-h, --help` 那一行"
+    return ""
 
 
 def main() -> int:
@@ -91,6 +102,10 @@ def main() -> int:
     if bad:
         print("  ✗ 见上")
         return 1
+    shape = usage_shape_ok(doc)
+    if shape:
+        print("  " + shape)
+        bad += 1
     print(f"  {len(code)} 个 EXTC_ 开关：{len(code) - len(undocumented)} 个写进 --help，"
           f"{len(undocumented)} 个挂在 UNDOCUMENTED（棘轮，只能降）；改产物/改接受的两个都点了名")
     return 0

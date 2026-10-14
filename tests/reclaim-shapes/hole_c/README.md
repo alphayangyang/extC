@@ -31,7 +31,9 @@ bash tests/reclaim-shapes/hole_c/evidence.sh   # 修前 exit 0 = 证据成立；
 ```
 
 开关口径：本分支（`reclaim-default`）回收**默认打开**；`EXTC_RECLAIM=0` 关掉，`EXTC_RECLAIM=1`
-强制打开（不看分配点）。所以开档 = `EXTC_RECLAIM=1`，关档 = `EXTC_RECLAIM=0`。
+是"**允许**回收 / 不强制发射"（②判 idle 的单元整段不发射 rc 运行期 —— `hole_c` 今天就是这一支）。
+所以开档 = `EXTC_RECLAIM=1`，关档 = `EXTC_RECLAIM=0`；**开档不再等于"一定有运行期"**，
+`run.sh` 的 ① 因此接受两种结果（发运行期且正确 / ②生效 + 等价断言），见该脚本头部。
 
 ---
 

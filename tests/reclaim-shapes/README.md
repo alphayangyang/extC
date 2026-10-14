@@ -54,6 +54,23 @@
 形状都会经过 `inc`/`dec`/`register`；`owns` 守卫必须一个字节都不碰（否则 `slabOf` 的按位与会
 找到一段无关内存，板的 4 GiB 保留区甚至没 commit ⇒ SEGV）。
 
+### `EXTC_RC_NOCOUNT=1`（无计数模式）与 ①l
+
+`bounded_churn.extc`（①l）问的是"去掉计数会不会让**低于 floor 的 churn** 无界"：每轮分配一个
+小对象、上一轮立刻不可达，总分配随轮数线性涨而活集是常数。两种模式都必须 ~1.0×；
+判据的牙用"无计数 + 不触发清扫"（`-DEXTC_RC_FLOOR=1TiB`）验（2.70× ⇒ 红）。
+`live_churn.extc`（①m）判的是**绝对**峰值：活集 `live_n` 个 16 B 结点 + 同量级 churn，
+上界 4×活集字节 + 4 MiB（两档：20 万 / 80 万）。相对涨幅由 ①/①l 判，两条互补。
+
+**默认是无计数**；`EXTC_RC_NOCOUNT=0` 恢复计数模式，那一档同样必须 **31/0**（门禁项 `gate-reclaim-count`，默认那一档由 `gate-reclaim-switch` 覆盖）。
+
+### `./gate-shard.sh`（门禁，分片旋钮）
+
+分片（`EXTC_RC_SHARDS`）是 codegen 的**第四条发射路径**（区域键 = 基址 + 片号）。
+`run-shard.sh` 是证据脚本（停顿/峰值/吞吐对照），**门禁是 `gate-shard.sh`**：旋钮非空转
+（1 与 8 的生成物必须不同）+ 输出逐字一致（两个规模）+ 分片=8 下 N vs 4N 峰值比 < 1.5。
+跑 `check.sh` 的 `gate-shard` 项。
+
 ### `./run-switch.sh`（门禁，`EXTC_RECLAIM=1`）
 
 判据：`scale_growth` N vs 4N 峰值比 **< 1.5**；`cyclic_pressure` N vs 4N 峰值比 **< 1.5**

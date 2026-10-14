@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# manual: 勘察证据集（只读 src/、只写 recon/out/，退出码恒 0），不进电池是设计
 # tests/escape-fuzz/recon/run-probes.sh —— task-9 勘察的可复跑实验集。
 #
 # 只读 src/、只写 recon/out/（+ /tmp 临时产物）；不改仓库任何一行源码。

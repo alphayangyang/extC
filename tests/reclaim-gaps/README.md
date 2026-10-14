@@ -16,7 +16,7 @@ python3 tests/reclaim-gaps/audit-static.py            # 全语料静态审计（
 python3 tests/reclaim-gaps/audit-static.py --gate     # 红计数非 0 ⇒ exit 1（建议接进 check.sh）
 ```
 
-原始输出：`out/matrix.tsv`（39 行明细）、`out/scale.tsv`（19 行 N vs 4N 判定）、
+原始输出：`out/matrix.tsv`（41 行明细）、`out/scale.tsv`（20 行 N vs 4N 判定）、
 `out/raw.txt`（逐形状 stdout/rc/ASan）、`out/audit-static.tsv` + `out/audit-static-summary.txt`、
 每个形状开档生成物 `out/<形状>.on.c`。
 
@@ -24,9 +24,9 @@ python3 tests/reclaim-gaps/audit-static.py --gate     # 红计数非 0 ⇒ exit 
 
 ## 0. 一句话结论
 
-**19 个可运行形状里，9 条收不掉**（涉及 8 个形状族；N=160000→640000 峰值比 2.65×~3.38×，判据 < 1.5）。
+**20 个可运行形状里，9 条收不掉**（涉及 8 个形状族；N=160000→640000 峰值比 3.17×~3.44×，判据 < 1.5）。
 其中 **7 条比「整块关掉回收」还差**（on 档峰值 − off 档峰值 ≈ +3.6~+6.6 MB @ N=640000）——
-那是「花了回收的钱没拿到货」。收不掉的 7 个根因（G1–G7）：
+那是「花了回收的钱没拿到货」。收不掉的 7 个根因（G1–G7），外加**已修**的第 8 个（G8）：
 
 | # | 根因 | 形状 | 严重度 | 能否补 |
 |---|---|---|---|---|
@@ -35,8 +35,9 @@ python3 tests/reclaim-gaps/audit-static.py --gate     # 红计数非 0 ⇒ exit 
 | G3 | **`match` 绑定引用载荷** ⇒ 整函数根不可靠 ⇒ 触发全关 | `match_payload` | **高**（+6.6 MB）| 可收窄：只让"枚举不出来的那个变量"不可靠，而不是整个函数 |
 | G4 | **`parTls`（TLS worker 房间）** ⇒ 既不触发也不欠收 | `par_tls_cycle` | **高**（+6.5 MB）| 需设计（TLS 区域归属）；本轮**首次**给出正向并行程序 |
 | G5 | **池容器里的引用** ⇒ `storeRefUnknown`（目标区域 `noSweep`）+ 无触发 | `pool_ref_slot` | **高**（+6.6 MB）| 同 G6 |
-| G6 | **视图元素 / 基表达式带调用**的槽 ⇒ `noSweep`（目标区域退出清扫）| `slot_elem_unknown`、`base_call_unknown` | 中（2.7×，但比关档好）| 保守路径是有意的；要补得把宿主追出来 |
+| G6 | **视图元素 / 基表达式带调用**的槽 ⇒ `noSweep`（目标区域退出清扫）| `slot_elem_unknown`、`base_call_unknown` | 中（3.4×，但比关档好）| 保守路径是有意的；要补得把宿主追出来 |
 | G7 | **dyn 载荷里的引用** ⇒ dyn 池不回收（已知限制，回收推到 place 退出）| `dyn_payload` | 中（+3.6 MB）| `DYN.md` 已记为已知限制 |
+| G8 | **可能的环被区域划分切开** ⇒ 两只区域互相钉住 + 自学习退场 | `ring_per_round` | **高**（修前 3.90×、比关档差 160 MB）| **已修**（路线 C：候选区域合并，见 §G8）|
 
 **静态审计**：① 区域没有回收者的程序 = **13**（今天必然非 0 ✓）；② 未记账的引用槽写入 = **0**
 （与任务预期相反，见 §4——检测器有牙，但今天这类直接字段写入确实一条不剩）。
@@ -72,10 +73,11 @@ python3 tests/reclaim-gaps/audit-static.py --gate     # 红计数非 0 ⇒ exit 
 | 18 | `byval_temp` | 调用者家房间 | **按值返回纯临时量** | 自环 | 拥有者反复调 | ✓ 0.99× | 5.04→4.98 | 3.86→11.41 | 2 / 9 | 否 | 无（建议①s）|
 | 19 | `closure_chain` | 本帧房间 | **嵌套闭包环境** | 自环 | 本帧自己 | ✓ 0.99× | 5.04→4.98 | 1.48→1.42 | 2 / 9 | 否 | 无（建议①s）|
 | 20 | `global_slot`（G9）| 全局量 | — | — | — | **编译期拒** | — | — | — | — | 前端已有 |
+| 21 | `ring_per_round`（G8）| 外层循环体（region 1）| 普通字段 | **跨区闭环** | 本帧自己（环被切开 ⇒ 两区互相钉住）| ✓ **1.00×**（修前 3.90× ✗）| 10.61→10.61 | 3.08→3.45 | 13 / 55 | 修前 **+160.7** | §G8 |
 
-`matrix.tsv` 另有 N=40000/160000 的 39 行明细（含 on 档生成物的
+`matrix.tsv` 另有 N=40000/160000 的 41 行明细（含 on 档生成物的
 `maybeCollect`/`owe`/`checkOwed`/`storeRefUnknown`/`storeRefOwned`/`storeStructCons`/`initRef`
-调用点数）。所有 38 个 ASan/UBSan 跑都是 `rc=0`、无 `SEGV/UAF/runtime error`。
+调用点数）。所有 39 个 ASan/UBSan 跑都是 `rc=0`、无 `SEGV/UAF/runtime error`。
 **语义**：19 个可运行形状开档/关档 stdout 与退出码**逐字一致**（`sem=一致`）。
 
 > 「比关档差」= on 档峰值比同一形状 `EXTC_RECLAIM=0` 还大 ≥ 0.5 MB——第 1、12、13、14、15、16、17 条命中。
@@ -104,8 +106,8 @@ python3 tests/reclaim-gaps/audit-static.py --gate     # 红计数非 0 ⇒ exit 
 
 形状 `home_cycle.extc`：`build` 在**调用者的家房间**里建自环链（`p.next = p` + `keep` 覆盖），
 `build` 自己就是长循环。生成物里 `build` 的分配点**一个触发都不发**，只发
-`extc_rc_owe(__extc_rcw)`（欠收）；`main` 只在**下一次把家 arena 传给被调者之前**
-`extc_rc_checkOwed(__extc_rcc, …)` 销账。
+`extc_rc_owe(__extc_…)`（欠收；局部量名随发射形态变，按 `__extc_` 前缀认）；`main` 只在**下一次把家 arena 传给被调者之前**
+`extc_rc_checkOwed(__extc_…, …)` 销账。
 
 | rounds × per | on 峰值 | off 峰值 | sweeps | 读法 |
 |---|---|---|---|---|
@@ -124,7 +126,7 @@ python3 tests/reclaim-gaps/audit-static.py --gate     # 红计数非 0 ⇒ exit 
 
 `coro_frame_cycle.extc`（`yield` 长循环）与 `ext_frame_cycle.extc`（`domain::single().run { ext task(n) }`）：
 两个函数都因为“帧挂起后不在 C 栈上”被置 `rcRootsUnreliable` ⇒ **一个触发都不发、也不欠收**
-（生成物里 `maybeCollect(__extc_rcg…` = 0、`owe(` = 0，`sweeps = 0`）。
+（生成物里 `maybeCollect(__extc_…` = 0、`owe(` = 0，`sweeps = 0`）。
 `keep = p` 把自环节点提到帧的函数级区域，只有帧销毁才还。
 
 on 5.96→17.71（2.97×）、off 3.65→11.21；`ext` 5.90→17.71（3.00×）。
@@ -182,6 +184,89 @@ on 8.60→22.79（2.65×）、off 5.17→16.29，**比关档差 +6.5 MB**。
 off 20.73→78.67；`sweeps` 2/9 但 dyn 池本身不回收（`DYN.md` 记为已知限制：回收推到 place 退出）。
 on 仍比 off 差 +3.6 MB。
 
+### G8 可能的环被**区域划分切开**（新根因；**已修**，路线 C）—— §G8
+
+形状 `shapes/ring_per_round.extc`：每轮建一条 **256 结点的闭环**，环头存进长命槽 `keep`；轮数来自
+argv（`ring*` 这一族用**轮数**当规模，不是结点数；每轮垃圾 ≈ 1 MiB）。它和前面 7 条的成因都不同：
+
+* 触发**发生了**、清扫也**在跑**（on 档 `sweeps` 13 / 55），但每次收 0 个槽；
+* 生成物里环横跨**两只区域**：`head` 在外层循环体（`__extc_rcr0`），256 个 `t` 在内层循环体
+  （`__extc_rcr1`）；`(*cur).next = head` 是一条 `r1 → r0` 的跨区边，`head.next = t` 是一条
+  `r0 → r1` 的跨区边 —— **两只区域互相钉住**；
+* 跨区种子按来源侧记账撤销（`freeSlot` → `unlinkChildren`），而环里的槽**永不释放**
+  ⇒ 鸡生蛋：两边的标记都能从种子走到整整一环，`freedSlots = 0` ⇒ 自学习把 `scale` 翻倍、
+  阈值涨到 `EXTC_RC_SCALE_MAX`（17 GB）⇒ 该区域**彻底不扫**。
+
+这就是 `docs/RECLAMATION.md:128-130` 早就写下的那条（"把一条链或一个环强行切开，跨片登记位就会
+成为环垃圾的种子……界随轮数增长"）：**区域标记精确 ⟺ 划分不切开任何 SCC**。
+
+| 消融（生成物副本）| 250 轮 | 1000 轮 | 规模律 | 健全？ |
+|---|---|---|---|---|
+| 今天默认 `EXTC_RECLAIM=1`（修前）| 510 MB | 2036 MB | **3.99× 线性 ✗** | — |
+| `EXTC_RECLAIM=0`（对照）| 4.1 MB | 7.1 MB | 1.76×（绝对值平）✓ | ✓ |
+| 关掉 `rsInc`/`rsIncSlab` 登记 | 5.4 MB | 5.5 MB | 平 ✓ | **故意不健全 ✗**（种子不全）|
+| **把两只区域并成一只** | 10.6 MB | 10.6 MB | 平 ✓ | ✓ |
+
+**修法（路线 C）**：*可能闭环*的写 + 宿主可能有**多只区域** ⇒ 把这些候选区域**合并**到最浅的那一只。
+判据现成，不用新造：`fnAcyclic` 的扫描把这种写分类成 `SR_BAD`
+（"既不是空、也不是新分配、也不是严格更年轻的层"，`EXTC_DBG_ACYCLIC=1` 逐字可复现）。
+
+实现（三段，`src/check/check_escape.c` + `check_stmt.c` + `check_top.c`）：
+
+1. **记录**（`noteCycleMerge`，检查走查里）：`SR_BAD` 且宿主经具名引用到达（`(*cur).f = v` / `p.f = v`）
+   时记下 `(宿主绑定, 值)`；同一个站点多趟只记一次。
+2. **收候选站点**（同一处，作用域还开着）：只走宿主绑定**自己**可能指向谁的三条来源
+   （`origin` / `initSrc` / `heldSrc`）。**不走字段表** —— 那记的是"写进宿主**字段**里的值"
+   （从宿主**可达**的东西），当候选会把 `cross_region.extc` 的跨区边也误并掉。
+3. **合并**（`applyCycleMerges`，全局电平求解之后、placement 之前）：候选站点落进**不止一只**
+   区域时，把它们与值一起并到**最浅**的那一层（`anMinAt`）。只往更长寿的一侧挪（多合并只多留），
+   候选里出现家区域就**不动**（`needsHome` 已定，不许在后段改）。
+   入口：`check_top.c` 的 `applyCycleMerges(&c)`（求解之后、placement 之前）；
+   `applyCycleMerges` 在 `EXTC_RECLAIM=0` 时直接返回 —— 没有回收运行期就没有区域划分，
+   关档产物逐字不变（关档是整套对照的基线）。
+
+**实测（2026-10-13，本轮）**：
+
+| | 20 轮 | 80 轮（4×）| 判据 < 1.5× |
+|---|---|---|---|
+| on（修前）| 42.11 MB | 164.17 MB | **3.90× ✗** |
+| on（修后）| 10.61 MB | 10.61 MB | **1.00× ✓** |
+| off（修前/修后**逐字相同**）| 3.08 MB | 3.45 MB | 1.12×（对照不瞎 ✓）|
+
+on 档清扫次数从 3/3（收了 0 个）变成 **13/55**（真的在收）；stdout 与关档逐字一致；ASan 0。
+
+**判据与棘轮**：`run-gaps.sh` 的 SCALE 段加一行 `ring_per_round 20 80`，`gate.py` 的已知坏基线
+`gate-known-bad.txt` 修前登记 `ring_per_round`（今天必然红），**修后已删掉该条**（棘轮只许缩）。
+**红向注入（去掉修法）** —— 手动形态（`tools/inject.py` 不在本轮的写范围里）：删掉
+`src/check/check_stmt.c` 里 `if (kind == SR_BAD) { … noteCycleMerge … }` 那一段，重编，跑判据：
+
+```sh
+OUTDIR=/tmp/gaps-inject bash tests/reclaim-gaps/run-gaps.sh
+python3 tests/reclaim-gaps/gate.py --scale /tmp/gaps-inject/scale.tsv --raw /tmp/gaps-inject/raw.txt
+```
+
+原样输出（2026-10-13；注入点就是上面那一段）：
+
+```text
+ring_per_round	42.11	164.17	3.90	3.14	3.51	3	3	**收不掉(随规模涨)**
+[reclaim-gaps] sanitizer：0 条失败，与基线一致（0 条）
+[reclaim-gaps] 新出现的缺口 1 条（收不掉的形状变多了）：ring_per_round
+gate exit=1
+```
+
+还原后 `build/extc` 的 md5 与注入前**逐字相同**（`0a0fb29dc54ff8c97e7a293f7dd14aa9`），
+`gate.py` 复绿（`收不掉 9 条，与基线一致`）。
+
+**这条路没覆盖的**（说清楚，别把"没测到"读成"没问题"）：
+
+* 候选集只走 `origin`/`initSrc`/`heldSrc`：一个绑定被**多次改指**时只记得住当前值与声明来源，
+  更早的目标站点收不到 ⇒ 那一档不合并（方向安全：保留原状，不会放掉东西）。
+* 候选里出现**家区域**时整条记录跳过（`needsHome` 在合并之前已关死）；这类形状的可能环仍可能
+  被切开，界仍随规模涨 —— 未实测具体形状。
+* **值**那边只调一次 `promoteInto(value, m)`；值若是调用结果（`SR_CALL` 不触发本路径）或跨函数
+  来源，提不动时保持原状（安全方向）。
+* 只在**单线程 `main`** 上实测；分片（`EXTC_RC_SHARDS`）、TLS/coroutine 形状未测。
+
 ### 绿（对照，说明矩阵不是「处处红」）
 
 `own_room_cycle` 1.01×、`cross_scope_cycle` 0.99×、`slot_elem_known` 1.00×、
@@ -221,15 +306,15 @@ var arr: [4]?mut ref node       → 同上（contains a reference）
 `silent-both`（不触发也不欠收）/ `no-alloc`（没有回收管辖的分配点）。
 **红计数① = `silent-both` + `owe-no-settle`。**
 
-实测（1266 个 `.extc`；编译成功 862，失败 404）：
+实测（1277 个 `.extc`；编译成功 872，失败 405）：
 
 | 类 | 程序数 |
 |---|---|
-| ok-trigger | 114 |
+| ok-trigger | 123 |
 | owe-settled | 116 |
 | owe-no-settle | 0 |
 | **silent-both** | **13** |
-| no-alloc | 619 |
+| no-alloc | 620 |
 | **红计数①** | **13** |
 
 13 个程序（= 今天必然非 0 的那一半）：
@@ -256,7 +341,7 @@ tools/escape-corpus/P2-7_container_before_uaf.extc        同上
 + `struct T { … }` 定义（字段 → C 类型）做**类型感知**检测：LHS 字段链逐段解析，
 只有**所有可能类型**都落到 `T *`（T 是回收管辖的结构）才算候选。宁可漏报，不虚报。
 
-**实测：② = 0**（862 个程序里一条直接字段写入都没有漏记账）。
+**实测：② = 0**（872 个程序里一条直接字段写入都没有漏记账）。
 这与任务预期的「今天必然非 0」**相反**，所以把「判据有牙」的证据一并给出：
 
 ```
@@ -328,7 +413,7 @@ selftest: 干净生成物候选 = 0，注入一条裸写入后候选 = 1 ⇒ ok�
 * **协程只测了「帧级 keep 攒自环」**；挂起期间跨 `yield` 持有引用、`ext` 的 `out` 视图等未测。
 * **静态审计 ②** 只覆盖「直接字段链写入」；整值/临时量/池/dyn 那一档抓不到（见 §4），
   所以 ② = 0 **不等于**「引用记账完备」。
-* **`owe-no-settle` = 0** 是 862 个程序的实测；语料里 `owe` 与 `checkOwed` 几乎成对出现，
+* **`owe-no-settle` = 0** 是 872 个程序的实测；语料里 `owe` 与 `checkOwed` 几乎成对出现，
   但不排除手工写的形状（例如 `main` 只调一次的 `hole_c`）在别的口径下会落进这一类。
 * ASan 的 LeakSanitizer 对域运行时（`extc_dom_new`/`extc_dom_add` 152 B）有既有噪声，
   已置 `ASAN_OPTIONS=detect_leaks=0`；本条不是本轮发现，`tests/ext/domain_runs.extc` 基线同样报。
@@ -345,8 +430,8 @@ selftest: 干净生成物候选 = 0，注入一条裸写入后候选 = 1 ⇒ ok�
   `PROBE sweeps=N`。**判据只用「sweeps」**；生成物里有没有 `maybeCollect` 是另一列（弱证据）。
 * 规模判据取 **160000 → 640000（4×）**，不取 40000→160000：后者的 40000 常常还在 1 MiB
   压力下限（`EXTC_RC_FLOOR`）以下，比的是进程底噪而不是界。
-* 语义：开档/关档 stdout + 退出码逐字比（38/38 个可编译 spec 一致）。
-* 正确性：38 个 ASan/UBSan 跑全 `rc=0`，无 `SEGV/UAF/runtime error`。
+* 语义：开档/关档 stdout + 退出码逐字比（39/39 个可编译 spec 一致）。
+* 正确性：39 个 ASan/UBSan 跑全 `rc=0`，无 `SEGV/UAF/runtime error`。
 * 静态审计：`-w`（**不带** `--no-line-map`，要 `#line` 划出用户代码段）。
 * 本目录**只新增文件**；不改 `run-switch.sh` / `check.sh`（§5 只是建议片段）。
 
@@ -355,9 +440,18 @@ selftest: 干净生成物候选 = 0，注入一条裸写入后候选 = 1 ⇒ ok�
 | 文件 | 作用 |
 |---|---|
 | `README.md` | 本文件（矩阵 + 结论 + 建议判据）|
-| `run-gaps.sh` | 一键复跑：矩阵（39 行）+ 规模判据（19 行），**exit 0** |
-| `audit-static.py` | 全语料静态审计 ①②，`--gate` / `--selftest` |
-| `shapes/*.extc` | 19 个形状（+1 个编译期反例），每个 ≤ 60 行 |
+| `run-gaps.sh` | 一键复跑：矩阵（41 行）+ 规模判据（20 行）+ 每形状 ASan 结论，**恒 exit 0** |
+| `gate.py` | **棘轮闸门**：① 每个形状的 `asan=<非 0>`；② 规模判据里"收不掉"的集合。两者都"多一条红、少一条也红" |
+| `gate-known-bad.txt` | ① 的基线（当前 9 条收不掉的形状）|
+| `asan-known-bad.txt` | ② 的基线（当前**没有已知坏**：所有 ASan/UBSan 跑都是 rc=0）|
+| `audit-static.py` | 全语料静态审计 ①②，`--gate` / `--selftest` / `--baseline`（棘轮）|
+| `ledger-gate.py` | 把静态审计按固定口径跑成闸门（`gate-reclaim-ledger` 的入口）|
+| `audit-known-bad.txt` | 静态审计棘轮的基线（当前 13 条没有回收者的程序）|
+| `shapes/*.extc` | 20 个形状（+1 个编译期反例），每个 ≤ 60 行 |
 | `out/matrix.tsv` `out/scale.tsv` `out/raw.txt` | 原始数字 |
 | `out/audit-static.tsv` `out/audit-static-summary.txt` | 静态审计原始输出 |
 | `out/<形状>.on.c` | 开档生成物（判据的文本证据）|
+
+> `gate.py` 跑矩阵时用 `OUTDIR=<临时目录>`，**不覆盖**上面那些入库的 `out/*`（想刷原始数字就直接跑
+> `run-gaps.sh`）。手动复用现成结果：`gate.py --scale out/scale.tsv`（同目录的 `raw.txt` 会给
+> sanitizer 那一段用）。

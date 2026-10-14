@@ -53,7 +53,10 @@ run_one() {
 echo "== ① 清扫是不是压住峰值的那一层？（只动清扫触发阈值）=="
 
 # 开关关：连回收运行期都不发射。
-env -u EXTC_RECLAIM "$EXTC" -w --no-line-map "$SRC" -o "$TMP/off.c" >"$TMP/off.log" 2>&1 \
+# **必须是 `=0`，不能是 `env -u`**：`EXTC_RECLAIM` 现在是**默认开**（`src/main.c` 的帮助文本、
+# `codegen.c` 的 `scanUnitNeeds`），`unset` 那一档生成物与 `=1` **逐字节相同** ⇒ off_ratio
+# 比的是开档对自己，第三条断言（"开关关峰值比 > 2"）永远红，且 ② 表里"开关关"那行名不副实。
+EXTC_RECLAIM=0 "$EXTC" -w --no-line-map "$SRC" -o "$TMP/off.c" >"$TMP/off.log" 2>&1 \
     && "$CC" -std=c11 -fwrapv -O1 -o "$TMP/off" "$TMP/off.c" >>"$TMP/off.log" 2>&1
 # 开关开：默认阈值。
 EXTC_RECLAIM=1 "$EXTC" -w --no-line-map "$SRC" -o "$TMP/on.c" >"$TMP/on.log" 2>&1 \
@@ -135,7 +138,7 @@ fi
 
 # ── ② 三方对照 ────────────────────────────────────────────────────────────────
 echo
-echo "== ② 三方对照：extC 默认 / extC 开关 / C 原型 stress.c（同 N / 4N）=="
+echo "== ② 三方对照：extC 关档（EXTC_RECLAIM=0）/ extC 开档（=1）/ C 原型 stress.c（同 N / 4N）=="
 PROTO=prototype-reclaim/stress.c
 proto_ok=no
 if [ -f "$PROTO" ] && "$CC" -O2 -std=c11 -o "$TMP/stress" "$PROTO" >"$TMP/stress.log" 2>&1; then
@@ -146,7 +149,7 @@ fi
 
 printf '  %-34s %-22s %-26s %s\n' "实现" "耗时 N / 4N (ms)" "峰值 RSS N / 4N" "是否随轮数增长"
 for spec in off on; do
-    [ "$spec" = off ] && name="extC 默认（开关关）" || name="extC EXTC_RECLAIM=1"
+    [ "$spec" = off ] && name="extC EXTC_RECLAIM=0（关档）" || name="extC EXTC_RECLAIM=1（开档）"
     run_one "$TMP/$spec" 200000; a_ms=$OUT_MS; a_rss=$OUT_RSS
     run_one "$TMP/$spec" 800000; b_ms=$OUT_MS; b_rss=$OUT_RSS
     eval "r=\$${spec}_ratio"

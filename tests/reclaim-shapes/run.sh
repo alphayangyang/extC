@@ -15,7 +15,7 @@
 #   ⑪ struct-copy(N→4N)        整值存储携带引用叶子        → 峰值 RSS 是否随轮数涨（预期红；开关开的那条门禁在 run-switch.sh ①f）
 #                              （垃圾是环 ⇒ 计数永不归零；开关开的那条门禁在 run-switch.sh）
 #
-# ⚠️ 本脚本是**基线**：不设开关（`EXTC_RECLAIM` 不设 ⇒ 回收运行期不发射），红条目照旧 exit 0。
+# ⚠️ 本脚本是**基线**：不设开关（`EXTC_RECLAIM` 默认**开** ⇒ 本脚本跑在开档），红条目照旧 exit 0。
 # 开关（`EXTC_RECLAIM=1`）下**必须成立**的那组判据在 run-switch.sh（门禁，关掉开关必须红）。
 # 峰值内存一律取 `/usr/bin/time -v` 的 Maximum resident set size。
 # 时间：每个形状 ≈ 一次 extc + 一次 gcc + 一次运行，秒级；N=800000 那条也在 1s 量级。

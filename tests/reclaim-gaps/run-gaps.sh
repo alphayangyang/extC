@@ -89,6 +89,11 @@ SPECS=(
   # ══ G19：嵌套闭包持有链 ═════════════════════════════════════════════════
   "closure_chain_n40000|closure_chain|40000|asan"
   "closure_chain_n160000|closure_chain|160000|asan"
+  # ══ G20：**可能的环**被区域划分切开 ⇒ 两只区域互相钉住 + 自学习退场（新根因）════
+  # 参数是**轮数**（不是结点数），每轮 ≈1 MiB 垃圾；20/80 是同一把尺子的两个数（见 SCALE）。
+  # 大的一档不跑 ASan：0.16 GB 的堆在 ASan 下要 ×2~3，nobench 电池要轻。
+  "ring_per_round_n20|ring_per_round|20|asan"
+  "ring_per_round_n80|ring_per_round|80|"
 )
 
 ok_pick() { # 是否要跑这个形状
@@ -206,9 +211,9 @@ for spec in "${SPECS[@]}"; do
     mc=""; owe=""; co=""; su=""; so=""; sc=""; ir=""
     if [ "$on_c" = ok ]; then
         c="$TMP/$name-on.c"
-        mc=$(extract 'extc_rc_maybeCollect(__extc_rcg' "$c")     # 触发点调用（不含运行期定义）
-        owe=$(extract 'extc_rc_owe(__extc_rcw' "$c")             # 欠收记账调用
-        co=$(extract 'extc_rc_checkOwed(__extc_rcc' "$c")        # 拥有者销账调用
+        mc=$(extract 'extc_rc_maybeCollect(__extc_' "$c")     # 触发点调用（不含运行期定义）
+        owe=$(extract 'extc_rc_owe(__extc_' "$c")             # 欠收记账调用
+        co=$(extract 'extc_rc_checkOwed(__extc_' "$c")        # 拥有者销账调用
         # 下面四条只匹配**调用**（定义是单括号 `(void **slot`，不会命中 `((void **)`）
         su=$(extract 'extc_rc_storeRefUnknown((void \*\*)' "$c")   # 追不到宿主 ⇒ 目标区域 noSweep
         so=$(extract 'extc_rc_storeRefOwned((void \*\*)' "$c")
@@ -273,6 +278,8 @@ SCALE=(
   "pool_ref_slot|pool_ref_slot|160000|640000"
   "dyn_payload|dyn_payload|160000|640000"
   "closure_chain|closure_chain|160000|640000"
+  # G20：参数是轮数；20 → 80（4×）。开档今天 ≈3.9×，关档（EXTC_RECLAIM=0）≈1.1× 做对照。
+  "ring_per_round|ring_per_round|20|80"
 )
 
 echo

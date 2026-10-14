@@ -1,0 +1,35 @@
+// 函数内的 `global var` 是**静态存储**（codegen 发块作用域 `static`），活过每一帧；
+// 而 `var n = new node` 的 n 是**本帧**的引用（depth 2）。把一个帧内引用存进 depth-0 的
+// 静态槽 ⇒ 第二次调用读它必然悬垂。
+//
+// 这条形状曾经是 `ACCEPT + UAF`：`pMarkGlobal` 只把符号标成 depth=0，却没登记进 `c->globals`
+// ⇒ `isGlobalSym` 只认模块级全局 ⇒ `storeLayer` 把 depth 0 误判成"参数槽"（返回 1）
+// ⇒ 对象被分配在**本帧 arena**（生成物里是 `__extc_a[1]`），函数返回即悬垂。
+// 实测（修复前）：plain 段错误、ASan 报 heap-use-after-free（读 `g`）。
+// 修法：`pMarkGlobal` 把函数内的全局也登记进 `c->globals` ⇒ 深度规则与模块级 `global`
+// 一致 ⇒ 这里被**编译期拒绝**（`a global`/静态槽只能装 depth ≤ 0 的值）。
+//
+// 按 tests/arena-soundness/README 的口径：REJECT = 洞已被编译期挡住 ⇒ 从反例库毕业到这里。
+use std::io
+
+struct node { val: i64  next: ?ref node }
+
+fn peek(p: ?ref node) -> i64 { if p == null { return -1 }  return (*p).val }
+
+fn f(k: i64) -> i64 {
+    global var g: ?ref node
+    if g == null {
+        var n = new node
+        n.val = k
+        n.next = null
+        g = n                 // ← 帧内引用存进静态槽：必须编译期拒绝
+    }
+    return peek(g)
+}
+
+fn main() -> i32 {
+    var a: i64 = f(11)
+    var b: i64 = f(22)
+    io::cout << "a=" << a << " b=" << b << "\n"
+    return 0
+}

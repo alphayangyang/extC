@@ -1,0 +1,7 @@
+# 「计数按编译期收窄」语料的已知红（基线）。格式：<形状>	<原因>	<跟踪>
+# 规矩：每条红都必须在基线里；基线里已不再红的条目会让闸门变红（棘轮只许缩）。
+# 形状、为什么该省/不该省见 README.md §「三类该省与三个反面对照」。
+elide-fresh-alloc	未实现收窄/计数仍发射	见 README.md
+elide-other-holder	未实现收窄/计数仍发射	见 README.md
+elide-swept-region	未实现收窄/计数仍发射	见 README.md
+writes-dense	未实现收窄/计数仍发射	见 README.md

@@ -1,0 +1,31 @@
+/* `keep_two_edges.extc` —— 反例：**同一个对象的计数是对象级的，只省一条边就出事**。
+ *
+ * 与 `keep_other_holder_dies.extc` 一样，这条钉的是**健全性**（省错会读出坏值），不是策略。
+ *
+ * 形状：`p` 这个对象被**四条边**持着（`var p` / `var v = p` / `var a = p` / `var b = p`）。
+ * 之后三条边依次置 null。若只把其中**一条**边的 `inc` 省掉（比如 `var a = p`），
+ * 计数就会在 `a = null` 那一刻走到 0 ⇒ 对象当场被放掉 ⇒ 最后 `(*p).val` 读到的是
+ * 空闲链里那个槽的残留（基线 5，省后不是 5）。
+ *
+ * 义务：要省某条边的 `inc`，必须对**该对象的所有入边**一起说话（对象级，不是边级）。
+ *
+ * 语义面（绿的要求）：编译通过 + 输出 `x=5`。
+ */
+use std::io
+
+struct node { val: i64  next: ?ref node }
+
+fn main() -> i32 {
+    var p = new node
+    p.val = 5
+    p.next = null
+    var v: ?ref node = p
+    var a: ?ref node = p
+    var b: ?ref node = p
+    v = null
+    b = null
+    a = null
+    var x: i64 = (*p).val
+    io::cout << "x=" << x << "\n"
+    return 0
+}

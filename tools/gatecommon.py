@@ -19,6 +19,12 @@ import sys
 import tempfile
 from concurrent.futures import ProcessPoolExecutor
 
+# 孤儿回收只有一份实现（`tools/parrun.py`，按会话**所有权**回收）。gatecommon 与 parrun 同目录，
+# 但调用方可能从别处 import（`python3 -m tools.gate_x`），所以把本目录追加进 sys.path 再 import。
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from parrun import reap_orphans as reap_orphans_scoped          # noqa: E402
+from parrun import register_session, unregister_session          # noqa: E402
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 EXTC = os.environ.get("EXTC_BIN") or os.path.join(ROOT, "build", "extc")
 GATEDIR = os.path.join(ROOT, "build", "gate")
@@ -43,11 +49,19 @@ def corpus(scope):
 
 
 def positive_corpus(scope):
-    """Programs that are meant to run: examples plus the lifetime/sanitizer suites."""
+    """Programs that are meant to run: examples plus the lifetime/sanitizer suites.
+
+    `tests/escape-fuzz/cases/` 与 `tests/reclaim-shapes/hole_c/` 是**回收健全性的风险面**：
+    前者的夹具全部自足（不用 argv、不读 stdin），后者是 C 洞的最小复现。它们原先只有
+    "恒 exit 0 的证据脚本"在看，所以把这个语料纳进来，让 UB/悬垂在 CI 里**必须报**。
+    需要 argv 的回收形状（`tests/reclaim-shapes/*.extc`、`tests/reclaim-gaps/shapes/*.extc`）
+    还不在这一份里：本闸门不带实参跑程序，塞进来只会得到"用法错误"的噪声。
+    """
     import glob
     files = sorted(glob.glob(os.path.join(ROOT, "examples/*.extc")))
     for d in ("tests/asan", "tests/arena", "tests/arena-promoted", "tests/traps",
-              "tests/ops", "tests/ctor", "tests/impl", "tests/ext"):
+              "tests/ops", "tests/ctor", "tests/impl", "tests/ext",
+              "tests/escape-fuzz/cases", "tests/reclaim-shapes/hole_c"):
         files += sorted(glob.glob(os.path.join(ROOT, d, "*.extc")))
     files = sorted(set(files))
     if scope == "quick":
@@ -105,10 +119,14 @@ def run(cmd, timeout=120, cwd=None, env=None, mem_mb=0):
     "compiler eats all RAM" is exactly the failure this file exists to catch, and an
     OOM that takes the machine down cannot be reported as a red gate.
     """
-    # The command runs in its own process group, and a timeout kills that group. A gate
+    # The command runs in its own session, and a timeout kills that whole session. A gate
     # that times out must not leave anything running: `extc --run` forks the compiled
     # program, so killing only the compiler leaves one orphan per timed-out case spinning at
     # 100% CPU.
+    #
+    # The session is registered for the duration (`tools/parrun.py` owns the registry): a gate
+    # killed outright cannot clean up after itself, and a later `reap_orphans()` collects a
+    # registered session whose owner is gone while leaving every unregistered process alone.
     try:
         p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                              text=True, cwd=cwd or ROOT, env=env,
@@ -116,6 +134,7 @@ def run(cmd, timeout=120, cwd=None, env=None, mem_mb=0):
                              preexec_fn=_limit_mem(mem_mb) if mem_mb else None)
     except OSError as e:
         return 127, f"(cannot run: {e})"
+    register_session(p.pid)
     try:
         out, _ = p.communicate(timeout=timeout)
         return p.returncode, out or ""
@@ -126,28 +145,18 @@ def run(cmd, timeout=120, cwd=None, env=None, mem_mb=0):
         except subprocess.TimeoutExpired:
             out = ""
         return 124, ((out or "") + "(timed out)")
+    finally:
+        unregister_session(p.pid)
 
 
 def reap_orphans():
-    """Kill and report compiled artifacts still running from the repository.
+    """Collect leftover compiled artifacts belonging to a run that is gone.
 
-    Same reason as the one in `tools/parrun.py`: a gate that times out must leave nothing
-    behind. Returns the number of processes reaped.
+    One implementation, in `tools/parrun.py`: it is scoped by **ownership** (registered
+    sessions whose owner process is not running), so it never touches a process another
+    run started. A name-pattern sweep cannot make that distinction and is not used.
     """
-    try:
-        out = subprocess.run(["pgrep", "-f", r"^build/[A-Za-z0-9_]+$"],
-                             capture_output=True, text=True, cwd=ROOT).stdout
-    except OSError:
-        return 0
-    pids = [int(x) for x in out.split()]
-    for pid in pids:
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except OSError:
-            pass
-    if pids:
-        print(f"  [leak] 清理了 {len(pids)} 个跑飞的编译产物进程: {pids}")
-    return len(pids)
+    return reap_orphans_scoped()
 
 
 def _kill_group(p):

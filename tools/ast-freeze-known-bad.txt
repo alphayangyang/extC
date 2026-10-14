@@ -65,3 +65,4 @@ src/back/modules.c:srcName	4 处（行 1335, 1341, 1606, 1611）	R1 AST 冻结�
 src/back/modules.c:typeName	6 处（行 906, 913, 965, 1146, 1152）	R1 AST 冻结的施工单：P2 把它降到 0
 src/back/modules.c:u	1 处（行 1500）	R1 AST 冻结的施工单：P2 把它降到 0
 src/back/modules.c:unit	2 处（行 1885, 1970）	R1 AST 冻结的施工单：P2 把它降到 0
+src/check/check_top.c:fields	1 处（行 2181）	R1 AST 冻结的施工单：`Sym.fields` 改成按需增长的表（检查器内部结构，不是 AST）

@@ -1,0 +1,31 @@
+/* **健全性反例**：被调者**解析不到**（函数值 / 间接调用）⇒ 局部拷贝不许省。
+ *
+ * `check` 自己不写引用槽，但它通过函数值 `f` 调用 —— 编译器不知道 `f` 是谁、会不会写槽。
+ * 所以"本帧不会销账"这条证明必须把**解析不到的调用**整片当坏；否则 `f` 实际是 `dropbox`
+ * 时，省掉 `q` 的 `+1` 就会读到被释放的槽。
+ *
+ * 语义面（绿的要求）：输出 `v=0`（对象是零初始化的 `new node`；**误省**时读到的是空闲链残留，不是 0）。判据：用户区**必须**有计数调用，且 `check` 里那一处
+ * 必须是 `extc_rc_initRef`（不是 `NoHold`）。
+ */
+use std::io
+
+struct node { val: i64  next: ?ref node }
+struct box  { head: ?ref node }
+
+fn peek(p: ?ref node) -> i64 { if p == null { return -1 }  return (*p).val }
+fn dropbox(b: mut ref box) -> i64 { b.head = null  return 0 }
+
+fn check(p: ?ref node, b: mut ref box, f: fn(mut ref box) -> i64) -> i64 {
+    var q = p                       /* ← 不许省：被调者解析不到 */
+    if q == null { return 0 }
+    f(b)
+    return peek(q)
+}
+
+fn main() -> i32 {
+    var b: box = { head: null }
+    b.head = new node
+    var v: i64 = check(b.head, ref b, dropbox)
+    io::cout << "v=" << v << "\n"
+    return 0
+}

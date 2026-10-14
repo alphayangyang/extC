@@ -11,10 +11,17 @@
     ./check.sh                 全部（含基准；几十分钟）
     ./check.sh quick           测试 + 攻击库，跳过基准
     ./check.sh docs            只跑文档/工具项（秒级）
+    ./check.sh -j 8 nobench    并行跑（默认 min(4, nproc)；`-j1` = 逐项串行）
     ./check.sh --only <名或组>  可多次；名字或组都行
-    ./check.sh --list          名字 + 组 + 最近一次耗时 + 一行理由
+    ./check.sh --list          名字 + 组 + 基准标记 + 最近一次耗时 + 一行理由
+    ./check.sh --list nobench  按档位过滤（基准项默认隐藏；`--all` 看全部）
     ./check.sh --changed       看 git diff --name-only HEAD + 未跟踪文件 ⇒ 说该跑哪档
     ./check.sh --changed --run 直接跑它建议的那档
+
+并行只换**墙钟**、不换**判据**：自己开线程池/进程池的项（`INNER`）走**单槽车道**（彼此串行，
+可与池并发）；墙钟敏感项（`WALL_CLOCK`）进池但优先取 worker（j ≤ nproc ⇒ 各自独占一个核）；
+写固定 `build/<名字>` 的项（`COLLIDE`）**彼此之间**串行（一把锁）⇒ `extc --run` 不跨项撞车。
+每项输出攒完整块打印（不交错）。`-j1` 精确回到逐项串行的旧行为。
 
 选择不到任何项 = **响亮报错**（列名字/组），不静默跳过。
 """
@@ -22,6 +29,7 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import difflib
 import os
 import queue
@@ -143,7 +151,14 @@ def _pump(tag, stream, q: "queue.Queue", bufs: dict) -> None:
 
 def run_proc(argv: list, timeout: Optional[float] = None,
              env: Optional[dict] = None, merge: bool = True,
-             echo: bool = True, quiet: bool = False) -> Proc:
+             echo: bool = True, quiet: bool = False,
+             capture: Optional[list] = None) -> Proc:
+    """跑一个子进程。
+
+    `capture`：不空时，子进程的输出**逐行追加到它**（而不是写给 stdout）—— 并行模式下每项
+    自己攒一份，跑完整体打印，于是**各项输出不会交错**。`echo=False`（调用方主动噤声）时
+    两个去处都不写。
+    """
     full_env = os.environ.copy()
     if env:
         full_env.update(env)
@@ -193,8 +208,11 @@ def run_proc(argv: list, timeout: Optional[float] = None,
             pending -= 1
             continue
         if echo and not quiet:
-            sys.stdout.write(ln)
-            sys.stdout.flush()
+            if capture is not None:
+                capture.append(ln)
+            else:
+                sys.stdout.write(ln)
+                sys.stdout.flush()
 
     try:
         proc.wait(timeout=10)
@@ -229,12 +247,18 @@ class Item:
 
 
 class Runner:
-    def __init__(self, quiet: bool = False):
+    def __init__(self, quiet: bool = False, capture: Optional[list] = None,
+                 env: Optional[dict] = None):
         self.quiet = quiet
+        self.capture = capture
+        self.env = env or {}          # 逐项固定环境（如私有的 EXTC_RUN_DIR），调用点的 env 覆盖它
 
     def run(self, argv, timeout=None, env=None, merge=True, echo=True) -> Proc:
-        return run_proc(argv, timeout=timeout, env=env, merge=merge,
-                        echo=echo, quiet=self.quiet)
+        full = dict(self.env)
+        if env:
+            full.update(env)
+        return run_proc(argv, timeout=timeout, env=full or None, merge=merge,
+                        echo=echo, quiet=self.quiet, capture=self.capture)
 
 
 # --------------------------------------------------------------------------
@@ -391,6 +415,342 @@ def build_items() -> list:
         sh('python3 tools/gate_difffuzz.py'), timeout=600,
         ok_msg=ok_first(r"^\[diff\]"),
         bad_msg="tools/gate_difffuzz.py（差分用例变红）",
+        bad_dump=dump_tail(12)))
+
+    # ---- 闸门·回收的因果闭合（清扫真的压住了峰值）----
+    # 这条钉的是"界是谁给的"：同一份生成物只改清扫触发阈值 ⇒ 峰值必须重新随轮数涨；
+    # 关档也必须涨（否则 run-switch.sh ①b 的对比没牙）。约 5 秒，所以进 quick。
+    items.append(cmd(
+        "gate-reclaim-evidence", "gate",
+        "闸门·回收因果闭合：关档涨 / 开档平 / 清扫永不触发涨（三方对照）+ gdb 数清扫次数",
+        ["./tests/reclaim-shapes/run-evidence.sh"], timeout=600,
+        ok_msg=ok_count_ok(" 项（三种变体语义逐字一致 · 开档 < 1.5× · 关档与永不触发都 > 2×）"),
+        bad_msg="tests/reclaim-shapes/run-evidence.sh（清扫的作用不再可证）",
+        bad_dump=dump_tail(20)))
+
+    # ---- 闸门·C 洞健全性（先赤后修的那一支；本帧拥有的区域才允许触发清扫）----
+    items.append(cmd(
+        "gate-hole-c", "gate",
+        "闸门·C 洞：内层帧不得扫外层帧的家区域（开/关档输出逐字 + ASan 干净 + 生成物里分配点不发触发）",
+        ["bash", "tests/reclaim-shapes/hole_c/run.sh"], timeout=600,
+        ok_msg=ok_count_ok(" 项（开档 rc=0 · ASan 无 UAF · 关档对照绿 · 分配点不发触发 · 压力线前提）"),
+        bad_msg="tests/reclaim-shapes/hole_c/run.sh（C 洞复发：种子不完整时下手了）",
+        bad_dump=dump_tail(14)))
+
+    # ---- 闸门·回收性能（入口守卫的指令数上限）----
+    # 判据线 = 改动前实测 × 0.6；`gate.sh` 里写清了为什么是 0.6（根表物化占 56.1%）。
+    items.append(cmd(
+        "gate-reclaim-perf", "gate",
+        "闸门·回收性能：cyclic_pressure N=200000 的 callgrind 总指令数 ≤ 现行线（线在 gate.sh 里随落地收紧）",
+        ["./tests/reclaim-perf/gate.sh"], timeout=900,
+        ok_msg=ok_first(r"^  ok"),
+        bad_msg="tests/reclaim-perf/gate.sh（指令数超上限：回收开销被付回了）",
+        bad_dump=dump_tail(10)))
+
+    # ---- 闸门·回收开关的形状断言（EXTC_RECLAIM=1）----
+    # 这是 `tests/reclaim-shapes/` 的**主门禁**：30 条断言把一个旋钮（开关）的效果钉在
+    # 形状上 —— 语义逐字一致、以及每个形状的 N vs 4N 峰值/登记量棘轮（<1.5×）。
+    # 它长期没进 check.py（只在手工跑），于是一类"回收不生效 ⇒ 峰值随轮数涨"的回归
+    # 从 `storeRefOwned` 的宿主兜底里溜了进来（见 CHANGELOG）。门禁不进电池 = 没有门禁。
+    items.append(cmd(
+        "gate-reclaim-switch", "gate",
+        "闸门·开关形状断言（run-switch.sh 30 条）：语义一致 + 每个形状 N vs 4N 峰值/登记量 <1.5×",
+        ["./tests/reclaim-shapes/run-switch.sh"], timeout=1800,
+        ok_msg=ok_first(r"^  ok"),
+        bad_msg="tests/reclaim-shapes/run-switch.sh（回收开关的形状/内存界回归）",
+        bad_dump=dump_tail(12)))
+
+    # ---- 闸门·事件档（无环 + 所有能丢引用的位置都被计数）----------------------------
+    # 判据自己带牙：① 堆槽引用 + 事件档 ⇒ `collect == 0`、stdout 与 `EXTC_RECLAIM=0` 逐字相同、
+    # 峰值 RSS ≤ 默认档 ×1.5；② 有环形状在默认档必须 `collect > 0`（防"开关空转"）；
+    # ③ **红证明**：把事件档强制施加到有环形状 ⇒ RSS 必须爆（阈值 ×5，N=800000）；
+    # ④ `blind_localhold`（引用住在局部量里）是**已知盲点**，与 known-red.txt 逐字比对 ⇒
+    #    补上根引用计数之前，它必须红；补上之后必须转绿（棘轮，只许按这一条动）。
+    items.append(cmd(
+        "gate-acyclic", "gate",
+        "闸门·事件档：清扫必须为 0 + RSS 有界 + 红证明有牙 + 根引用盲点棘轮",
+        ["bash", "tests/reclaim-acyclic/gate-acyclic.sh"], timeout=1800,
+        ok_msg=ok_first(r"^通过 "),
+        bad_msg="tests/reclaim-acyclic/gate-acyclic.sh（事件档清扫/内存界回归，或已知盲点棘轮变动）",
+        bad_dump=dump_tail(14)))
+
+    # ---- 闸门·覆盖点定点释放（环垃圾不等清扫）------------------------------------
+    # 形状 `ring_per_round`：每轮建一条 256 结点的闭环、环头存进长命槽 `keep`，下一轮覆盖
+    # ⇒ 判据：清扫次数 ≤ 1（第 1 次是第 2 轮循环头的启动空扫）、N vs 4N 峰值 < 1.5×、
+    # 语义与关档逐字相同、**释放槽数 > 0**（防空转）。红证明 = 注入 `release-off`。
+    items.append(cmd(
+        "gate-release", "gate",
+        "闸门·定点释放：ring_per_round 清扫 ≤1 + N vs 4N 峰值 <1.5× + 语义一致 + 释放槽数 >0",
+        ["bash", "tests/reclaim-gaps/gate-release.sh"], timeout=600,
+        ok_msg=ok_first(r"^通过 "),
+        bad_msg="tests/reclaim-gaps/gate-release.sh（定点释放失效：清扫回来 / 界变坏 / 空转）",
+        bad_dump=dump_tail(12)))
+
+    # ---- 元判据·判据自己：自称门禁的脚本必须在电池可达闭包里 ----
+    # 起因：`run-switch.sh` 自称门禁却从没进 check.py，于是"回收不生效 ⇒ 峰值随轮数涨"
+    # 的一整类回归在 nobench 全绿的情况下溜了进来。判据不进电池 = 没有判据。
+    items.append(cmd(
+        "gate-wiring", "gate",
+        "元判据·接线：每个 run*/gate* 脚本要么在电池可达闭包里，要么文件开头自报 `# manual: 理由`",
+        ["python3", "tools/check_gate_wiring.py"], timeout=120,
+        ok_msg=ok_first(r"^\[wiring\] ok"),
+        bad_msg="tools/check_gate_wiring.py（有自称门禁的脚本没进电池）",
+        bad_dump=dump_tail(8)))
+
+    # ---- 元判据·验牙注入不许没写进文档 ----
+    # 两张表（义务表 / 跳过表）的"判据"列引用的是 `tools/inject.py` 里的注入名。表的价值取决于
+    # 引用完整：新写一条注入却不进表，读表的人就会以为那条路径没有牙。名字从工具的 `--list` 读，
+    # 不在检查器里另抄一份（避免"清单与真相各有一份"）。
+    items.append(cmd(
+        "gate-doc-refs", "gate",
+        "元判据·文档引用：`tools/inject.py` 里的每条注入都必须出现在 docs/RECLAMATION.md 里",
+        ["python3", "tools/check_doc_refs.py"], timeout=120,
+        ok_msg=ok_first(r"^ok "),
+        bad_msg="tools/check_doc_refs.py（有注入没写进文档）",
+        bad_dump=dump_tail(8)))
+
+    # ---- 元判据·跳过清单与代码同步 ----
+    # 运行期里每处"直接返回"都是一刀；`docs/RECLAMATION.md` 的跳过表写明它们的前提与失效方向。
+    # 义务表已有门禁（gate-invariant-table），这条是跳过表的对应物：标记 ↔ 表行双向对齐，
+    # 并且"未标记的单行早退"是个只许往下拧的棘轮（当前 0）。
+    items.append(cmd(
+        "gate-skip-table", "gate",
+        "元判据·跳过清单：每处 `if (…) return` 都带 `/* skip:<id> */`，且与 docs 的跳过表双向对齐",
+        ["python3", "tools/check_skip_table.py"], timeout=120,
+        ok_msg=ok_first(r"^ok "),
+        bad_msg="tools/check_skip_table.py（跳过清单与代码不同步）",
+        bad_dump=dump_tail(8)))
+
+    # ---- 元判据·不变量清单不许漏项 ----
+    # 清单（`docs/RECLAMATION.md` 那张表）的价值全在完整：新写一条义务忘了进表，表就退化成
+    # 抽查记录。清单本身没法自动生成（"在哪强制""怎么证明"要人写），但完整性可以机械检查。
+    items.append(cmd(
+        "gate-invariant-table", "gate",
+        "元判据·不变量清单：运行期里出现的每个「义务 N」都必须在 docs/RECLAMATION.md 的表里",
+        ["python3", "tools/check_invariant_table.py"], timeout=120,
+        ok_msg=ok_first(r"^ok "),
+        bad_msg="tools/check_invariant_table.py（不变量清单漏项）",
+        bad_dump=dump_tail(8)))
+
+    # ---- 元判据·参与区域数不变量（单区域免登记快路径的健全性前提）----
+    # 快路径"只在 `partN == 1` 时跳过跨区登记"，它的前提是"每个会登记/会交出槽的函数都记了
+    # `partN`"。漏一处，失效方向是**不安全**的（该登记没登记），而语义/输出类判据看不出来
+    # ⇒ 用这条结构门禁钉住（它在修好之前就在真实代码上红过一次，见 CHANGELOG）。
+    items.append(cmd(
+        "gate-note-part", "gate",
+        "元判据·参与区域数：会登记跨区边 / 会交出 rc 槽的函数都必须记 partN（否则单区域快路径不安全）",
+        ["python3", "tools/check_note_part.py"], timeout=120,
+        ok_msg=ok_first(r"^ok "),
+        bad_msg="tools/check_note_part.py（参与区域数不变量被破坏）",
+        bad_dump=dump_tail(8)))
+
+    # ---- 闸门·计数模式（EXTC_RC_NOCOUNT=0，非默认；**gate 档**：这一档只在很少的地方跑，
+    # 放 bench 会 rot —— 2026-10-13 的教训就是"判据不进常规档 = 判据会僵"）----
+    # 默认走**无计数**（见 CHANGELOG 第十一刀，`gate-reclaim-switch` 覆盖它）；
+    # 这一项保护**非默认的计数模式**：同 31 条形状棘轮必须一字不差地成立。
+    items.append(cmd(
+        "gate-reclaim-count", "gate",
+        "闸门·计数模式（EXTC_RC_NOCOUNT=0）：31 条形状棘轮仍然全绿（语义 + N vs 4N 峰值）",
+        ["./tests/reclaim-shapes/run-switch.sh"], timeout=1800,
+        env={"EXTC_RC_NOCOUNT": "0"},
+        ok_msg=ok_first(r"^  ok"),
+        bad_msg="tests/reclaim-shapes/run-switch.sh（计数模式回归）",
+        bad_dump=dump_tail(12)))
+
+    # 计数模式还缺两块：**单测驱动**（阈值缓存/自学习/登记/生命周期 77 条）与**跨语言对拍**。
+    # 非默认的计数档若只被形状那一条判据守着，就容易悄悄腐烂 ⇒ 把这两块也补成棘轮。
+    items.append(cmd(
+        "gate-reclaim-count-unit", "gate",
+        "闸门·计数模式：单测驱动 77 条断言（阈值缓存 / 自学习 / 跨区登记 / 区域生命周期）",
+        ["./tests/reclaim/run.sh"], timeout=1800,
+        env={"EXTC_RC_NOCOUNT": "0"},
+        ok_msg=ok_first(r"通过 \d+"),
+        bad_msg="tests/reclaim/run.sh（计数模式单测回归）",
+        bad_dump=dump_tail(12)))
+    items.append(cmd(
+        "gate-reclaim-count-cross", "gate",
+        "闸门·计数模式：跨语言对拍（bench/app 三语言校验和一致；分配密集，走 rc 路径）",
+        ["./bench/app/run.sh"], timeout=1800,
+        env={"EXTC_RC_NOCOUNT": "0", "SCALE": "1", "RUNS": "1", "WRITE_RESULTS": "0"},
+        ok_msg=ok_const("计数模式跨语言对拍：三语言校验和一致 ✓"),
+        bad_msg="bench/app（计数模式跨语言对拍不一致）",
+        bad_dump=dump_tail(20)))
+
+    # ---- 闸门·分片路径（EXTC_RC_SHARDS）----
+    # 分片是 codegen 的第四条发射路径，run-shard.sh 只是证据脚本 ⇒ 这里把三条判据钉住：
+    # 旋钮非空转（1 与 8 的生成物必须不同）、语义一致（两个规模、输出逐字相同）、
+    # 界与轮数无关（分片=8 下 N vs 4N 峰值比 < 1.5）。
+    items.append(cmd(
+        "gate-shard", "gate",
+        "闸门·分片路径：EXTC_RC_SHARDS=1/8 生成物必须不同、输出逐字一致、分片=8 下 N vs 4N 峰值比 < 1.5",
+        ["./tests/reclaim-shapes/gate-shard.sh"], timeout=900,
+        ok_msg=ok_first(r"^  ok"),
+        bad_msg="tests/reclaim-shapes/gate-shard.sh（分片路径语义/内存界回归）",
+        bad_dump=dump_tail(10)))
+
+    # ---- 闸门·回收性能（真实形状）----
+    # 合成形状之外，`bt` / `rebuild` 这两条真实形状的指令数也钉住（线在脚本里随落地收紧）；
+    # 同时要求开档/关档输出逐字一致 —— 性能判据不许靠改语义换。小输入缺了就地生成。
+    items.append(cmd(
+        "gate-reclaim-perf-shapes", "gate",
+        "闸门·回收性能（真实形状）：bt / rebuild 小输入的 callgrind 总指令数 ≤ 各自的线，且开/关档输出逐字一致",
+        ["./tests/reclaim-perf/gate-shapes.sh"], timeout=900,
+        ok_msg=ok_count_ok(" 项（两条形状：指令数在线上 + 开/关档输出一致）"),
+        bad_msg="tests/reclaim-perf/gate-shapes.sh（真实形状的回收开销被付回，或开关语义漂了）",
+        bad_dump=dump_tail(12)))
+
+    # ---- 闸门·回收税（目标：不需要回收的形状，回收开销趋近 0）----
+    # 判据 = bt 的"开档 Ir / 关档 Ir"。bt 不产生环、整棵树的死期就是区域死期 ⇒ 理想值 1.00×。
+    # 现行线是棘轮：每收窄一块就往下拧一次。rebuild / cyclic_pressure 只打印（TAX_EXTRA=1）。
+    items.append(cmd(
+        "gate-reclaim-tax", "gate",
+        "闸门·回收税：bt（不需要回收的形状）开档/关档指令数比 ≤ 现行线（棘轮只许往下拧）",
+        ["./tests/reclaim-perf/gate-tax.sh"], timeout=600,
+        ok_msg=ok_first(r"^  ok"),
+        bad_msg="tests/reclaim-perf/gate-tax.sh（不需要回收的形状上，回收税超线）",
+        bad_dump=dump_tail(8)))
+
+    # ---- 闸门·「不需要回收 ⇒ 不发射 rc」的内存界 ----
+    # 判据 = 被 ②（判据 (a)(b)(c)）判成 idle 的形状，峰值必须 N vs 4N < 1.5× 且有绝对上界；
+    # 另带一个**必须仍在回收档**的对照形状（防判据瞎放行）与反空跑（②真的生效：rc 记号 → 0）。
+    # 这条是实测抓出来的那个洞（按值返回的带引用聚合只当临时量用 ⇒ 峰值线性涨）的常驻门禁。
+    items.append(cmd(
+        "gate-reclaim-idle", "gate",
+        "闸门·不发射 rc 的内存界：被判 idle 的形状 N vs 4N 峰值 < 1.5×（含对照形状 + 反空跑）",
+        ["./tests/reclaim-perf/gate-idle-bounded.sh"], timeout=600,
+        ok_msg=ok_first(r"^  ok"),
+        bad_msg="tests/reclaim-perf/gate-idle-bounded.sh（被 ② 判成 idle 的形状峰值随规模涨）",
+        bad_dump=dump_tail(10)))
+
+    # ---- 闸门·「不需要回收 ⇒ 不发射 rc」的能力棘轮（固定语料清单）----
+    # ②的能力必须能被**数出来**：固定清单里"产物不含任何 `extc_rc_`"的形状数只许往上（8 → 14：
+    # 细化 (a′)+(b′) 把"循环里建、每轮丢"那一类也判成 idle）。此前这份进度只散在别处的形状
+    # 名单里 ⇒ 某个形状悄悄退回回收档不会有人红。另带一个**必须仍在回收档**的对照
+    # （`cyclic_pressure`），防这条退化成"一律 idle"。
+    items.append(cmd(
+        "gate-rc-idle-corpus", "gate",
+        "闸门·不发射 rc 的能力棘轮：固定语料清单里产物无 rc 的形状数 ≥ 14（含对照形状）",
+        ["./tests/reclaim-perf/gate-rc-idle-corpus.sh"], timeout=600,
+        ok_msg=ok_first(r"^  ok"),
+        bad_msg="tests/reclaim-perf/gate-rc-idle-corpus.sh（有能力判 idle 的形状退回了回收档）",
+        bad_dump=dump_tail(10)))
+
+    # ---- 闸门·孤儿回收的语义（只回收自己的后代）----
+    # 三条判据：没登记过的进程一根手指都不许碰 / 登记过而所有者已结束的会话必须回收 /
+    # 登记过而所有者还活着的会话不许动。替身程序的名字落在 `^build/[A-Za-z0-9_]+$` 里 ⇒
+    # 任何"按进程名扫杀"的实现都会在①③变红（判据有牙）。实现见 tools/parrun.py。
+    items.append(cmd(
+        "gate-reap-orphans", "gate",
+        "闸门·孤儿回收语义：只回收自己（登记过、所有者已结束）的会话，别人的活进程一律不碰",
+        ["python3", "tools/parrun.py", "--reap-selftest"], timeout=300, needs_build=False,
+        ok_msg=ok_first(r"^reap 语义自检：通过"),
+        bad_msg="tools/parrun.py --reap-selftest（孤儿回收越界或漏收）",
+        bad_dump=dump_tail(8)))
+
+    # ---- 闸门·编译期崩溃（未初始化堆读）----
+    # `MALLOC_PERTURB_=165` 把未初始化堆内存填成确定值 ⇒ 这类崩溃 100% 复现（不扰动堆时要撞运气，
+    # 实测 1–4%）。判据：三个源在扰动堆下各跑 3 次必须 rc==0，再在普通堆下跑 10 次也必须 rc==0。
+    # 对应 `symFieldsGrow` 少置零那类 bug：字段表的新格 `.src` 没人写，却被 `promoteFieldsAt`
+    # 当 `Expr *` 解引用（`src/check/check_escape.c` 的 `promoteInto2`）。
+    def fn_perturb_run(ctx: Runner, it: Item) -> Outcome:
+        srcs = ["tests/stl/clone.extc", "tests/stl/string.extc", "examples/hello.extc"]
+        bad, n = [], 0
+        for src in srcs:
+            for _ in range(3):
+                n += 1
+                p = ctx.run(["./build/extc", "--run", src],
+                            env={"MALLOC_PERTURB_": "165"}, echo=False)
+                if p.rc != 0:
+                    bad.append(f"{src}（MALLOC_PERTURB_=165）rc={p.rc}"
+                               f"{(p.out + p.err).strip()[:100]}")
+        for _ in range(10):
+            n += 1
+            p = ctx.run(["./build/extc", "--run", "tests/stl/clone.extc"], echo=False)
+            if p.rc != 0:
+                bad.append(f"tests/stl/clone.extc（普通堆）rc={p.rc}"
+                           f"{(p.out + p.err).strip()[:100]}")
+        if bad:
+            return Outcome(False, f"{len(bad)}/{n} 次 `extc --run` 崩溃（未初始化堆读一类）", bad[:6])
+        return Outcome(True, f"{n} 次 `extc --run` 全部 rc=0"
+                             f"（扰动堆 {len(srcs) * 3} 次 + 普通堆 10 次）")
+    items.append(Item(
+        "gate-perturb-run", "gate",
+        "闸门·编译期崩溃：`MALLOC_PERTURB_=165` 下 `--run` 三个源必须 rc=0（未初始化堆读）",
+        fn_perturb_run))
+
+    # ---- 闸门·扰动普查（bench 档：过全语料）----
+    # `MALLOC_PERTURB_=165` 把"未初始化堆读"从偶发变成必现；普查脚本在 `tests/perturb/` 里。
+    # 判据 = 崩的源集合与 `tests/perturb/known-bad.txt` **逐条相同**（多=新增坏源，少=清单过期）。
+    # 这是 ASan/UBSan 照不到的那一类（MSan 领域），也是 task-10 那条 `symFieldsGrow` 的常驻守卫。
+    items.append(cmd(
+        "gate-perturb-corpus", "gate",
+        "闸门·扰动普查：MALLOC_PERTURB_ 42/165 + EXTC_ARENA_FILL 四档过全语料，崩的源只许在 known-bad.txt 里",
+        ["python3", "tests/perturb/census.py", "--check",
+         "--arms", "plain,42,165,afill"], timeout=3600, bench=True,
+        ok_msg=ok_first(r"^扰动普查："), bad_msg="tests/perturb/census.py --check（扰动下崩的源变了）",
+        bad_dump=dump_tail(12)))
+
+    # ---- 闸门·扰动普查的进程卫生（超时"只杀编译器"就留下孤儿）----
+    # `extc --run` 会 fork 出被编译的程序（`echo_server_fork` 这类还会再 fork 后代）；超时只杀
+    # 编译器，那些程序就被 double-fork 甩给 init 当孤儿，跨多轮普查会累积到上百个。修法是每个
+    # 用例跑在自己的会话/进程组 + 登记（复用 `tools/parrun.py` 的原语），超时 `killpg` 整组。
+    # 判据 = 一次**有界子集**普查（2 个源 × 1 档，必含超时用例）跑完，`/tmp/extc-perturb-runs/`
+    # 下 0 进程；挂 `nobench` 的理由：约 5 秒，且它防的是**跨轮累积**，只有每轮都跑才有意义。
+    items.append(cmd(
+        "gate-perturb-orphans", "gate",
+        "闸门·扰动普查不留孤儿：有界子集（含超时用例）跑完，/tmp/extc-perturb-runs/ 下必须 0 进程",
+        ["bash", "tests/perturb/gate-orphans.sh"], timeout=300,
+        ok_msg=ok_first(r"^  ok   跑完 0 个残留"),
+        bad_msg="tests/perturb/gate-orphans.sh（超时只杀了编译器，留下了孤儿进程）",
+        bad_dump=dump_tail(10)))
+
+    # ---- 闸门·运行期注释声称的默认值 vs 产物真实 #define（便宜：只编译一份产物）----
+    # 由来：这段注释曾写"默认 0 = 保持计数"，而产物真是 `#define EXTC_RC_NOCOUNT 1` ⇒ 注释与
+    # 事实漂移，靠人读才发现。判据见 `tests/reclaim-perf/gate-rt-defaults.sh`。
+    items.append(cmd(
+        "gate-rt-defaults", "gate",
+        "闸门·运行期注释与产物一致：注释里声称的 `EXTC_RC_*` 默认值必须等于产物里的 `#define`",
+        ["bash", "tests/reclaim-perf/gate-rt-defaults.sh"], timeout=300,
+        ok_msg=ok_first(r"^  ok   运行期注释里声称的默认值与产物一致"),
+        bad_msg="tests/reclaim-perf/gate-rt-defaults.sh（运行期注释声称的默认值漂移了）",
+        bad_dump=dump_tail(10)))
+
+    # ---- 闸门·分片在环负载下有界（且旋钮没被关掉）----
+    # 挂 bench 档的理由：要跑 1M 规模的形状 + 停顿探针（单次约 5s，但**不是**秒级项，且
+    # 它测的是"回收片"这个旋钮本身，属于性能线一族 ⇒ 与 `gate-reclaim-tax`/`gate-shapes` 同类）。
+    # 判据见 `tests/reclaim-perf/gate-shard-cycles.sh`：digraph(`SHARDS=4`) 4N/N < 1.5× 且
+    # 4N ≤ 2× 默认档；`shard_bands` 上 `SHARDS=4` 的停顿仍 < 0.75× `SHARDS=1`（旋钮没被钉死）。
+    items.append(cmd(
+        "gate-shard-cycles", "gate",
+        "闸门·分片有界：环负载 digraph 上 SHARDS=4 的 4N/N < 1.5×（且 4N ≤ 2× 默认档），"
+        "对齐形状 shard_bands 的停顿收益仍在",
+        ["bash", "tests/reclaim-perf/gate-shard-cycles.sh"], timeout=900, bench=True,
+        ok_msg=ok_first(r"^  ok   分片在高环负载形状上有界"),
+        bad_msg="tests/reclaim-perf/gate-shard-cycles.sh（分片把环切开 ⇒ 界随轮数涨，或旋钮被钉死）",
+        bad_dump=dump_tail(14)))
+
+    # ---- 闸门·回收能力账本（全语料，棘轮）----
+    # 每个能编译的程序按生成物分类：ok-trigger / owe-settled / silent-both / …
+    # 红计数①（silent-both + owe-no-settle）基线 13 条，逐条相同才绿：
+    # 多一条 = 回收能力退化；少一条 = 优化拿回了能力，基线（在 tests/ 下）要一起缩。
+    # 入口在 tests/ 下（那里没有 tools 的历史词棘轮），`--out` 落 build/，不冲入库的 out/*.tsv。
+    items.append(cmd(
+        "gate-reclaim-ledger", "gate",
+        "闸门·回收能力账本：全语料红计数①（silent-both + owe-no-settle）与基线逐条相同（只许缩）",
+        ["python3", "tests/reclaim-gaps/ledger-gate.py"], timeout=1800,
+        ok_msg=ok_first(r"^\[ledger\]"),
+        bad_msg="tests/reclaim-gaps/ledger-gate.py（有程序丢了回收者，或基线过期）",
+        bad_dump=dump_tail(16)))
+
+    # ---- 闸门·计数按编译期收窄的语料（棘轮 + 反空跑）----
+    # 「该省」4 行的红 = 收窄还没实现（在基线里，实现一条删一条）；「不该省」4 行必须一直有计数
+    # （少了就是误省，健全性方向）。接线未生效（0 处调用点）时 rc=2 —— 那时"该省"的红是假红。
+    items.append(cmd(
+        "gate-reclaim-elide", "gate",
+        "闸门·计数收窄语料：4 个「该省」形状 = 基线，4 个「不该省」形状必须仍有计数（棘轮 + 反空跑）",
+        sh('python3 tests/reclaim-elide/gate.py'), timeout=600,
+        ok_msg=ok_first(r"^\[elide\]"),
+        bad_msg="tests/reclaim-elide/gate.py（计数被误省 / 新红 / 基线过期 / 接线失效）",
         bad_dump=dump_tail(12)))
 
     # ---- arena ----
@@ -728,6 +1088,16 @@ def build_items() -> list:
         ok_msg=ok_count_ok(" 个形状 ASan 干净"),
         bad_msg="tests/asan/run.sh", bad_dump=dump_all))
 
+    # ---- 回收运行期的语义网（70 条断言 + ASan/UBSan；0.9s）----
+    # 这一套一直在跑却**没接进来**（`grep tests/reclaim tools/check.py` 只有 shapes/perf/gaps）。
+    # 它覆盖的正是"计数/清扫/归还"的语义面，是安全那一半的主网。
+    items.append(cmd(
+        "reclaim-unit", "tests",
+        "回收运行期语义网：70 条断言 + ASan/UBSan（tests/reclaim/run.sh）",
+        ["./tests/reclaim/run.sh"], timeout=600,
+        ok_msg=ok_first(r"ASan/UBSan 运行干净"),
+        bad_msg="tests/reclaim/run.sh（回收语义/内存安全回归）", bad_dump=dump_tail(12)))
+
     # ---- arena 层号 ----
     items.append(cmd(
         "arena-levels", "tools",
@@ -915,6 +1285,17 @@ def build_items() -> list:
         bad_msg="tools/golden.sh（生成物里有非法 C）", bad_dump=dump_tail(8),
         extra_ok=lambda out: [ln for ln in out.split("\n") if ln.startswith("  · ")]))
 
+    # ---- 闸门·回收缺口矩阵的棘轮（bench 档：跑一遍矩阵约 1 分钟）----
+    # `run-gaps.sh` 自己恒 exit 0，这里把它的结果变成有牙的棘轮：① 任何形状的 `asan=<非 0>`；
+    # ② 19 行规模判据里"收不掉"的集合。两者都是"多一条红、少一条也红"（只许缩）。
+    items.append(cmd(
+        "gate-reclaim-gaps", "bench",
+        "闸门·回收缺口矩阵棘轮：19 个形状的收不掉集合 + 每个形状的 sanitizer 结论都只许缩（两份基线）",
+        sh('python3 tests/reclaim-gaps/gate.py'), timeout=1800, bench=True,
+        ok_msg=ok_first(r"^\[reclaim-gaps\] 收不掉"),
+        bad_msg="tests/reclaim-gaps/gate.py（新增收不掉的形状 / 新增 sanitizer 失败，或基线过期）",
+        bad_dump=dump_tail(12)))
+
     def display(name: str, desc: str, argv: list, post) -> Item:
         def fn(ctx: Runner, it: Item) -> Outcome:
             p = ctx.run(argv, echo=False)
@@ -1066,18 +1447,55 @@ def write_times(path: str, results: dict) -> None:
 # --------------------------------------------------------------------------
 # 选择
 # --------------------------------------------------------------------------
-MODE_TOKENS = {"all", "full", "quick", "docs"}
+# 分档（名字要与实际相符）：
+#   smoke   —— 快速高信号集，改完代码第一件事跑这个（见 SMOKE，≈10s）
+#   nobench —— 非基准全量（CI 跑这档）；`quick` 是它的历史别名（会自己说明一句）
+#   all     —— 含基准（`full` 同义）
+#   docs    —— 只要文档/工具项（秒级）
+MODE_TOKENS = {"all", "full", "smoke", "nobench", "quick", "docs"}
+
+# smoke 集：**编译 + 改动面最相关的高信号判据**，按"改名要一起改这里"维护。
+# 选的标准是"能在 10 秒内给出'这次改动有没有把地基弄坏'的信号"，
+# 不是"跑得快的项都塞进来"（≤4s 的项有 70 个、合计 75s，那还是慢）。
+SMOKE = (
+    "build",                   # 编译器自己得先编出来
+    "check-plan-seam",         # codegen 只许经 plan.h 读分析（接缝）
+    "check-layering",          # 分层不许倒挂
+    "check-no-history",        # 活文档/注释不许出现历史词（词表棘轮）
+    "gate-callsite",           # 运行期调用点的发射形状
+    "gate-hole-c",             # C 洞最小复现（种子完整性）
+    "gate-reclaim-perf",       # 合成形状的指令数（回收开销不许被付回）
+    "gate-reclaim-perf-shapes",# 真实形状 bt/rebuild 的指令数 + 开关语义
+    "gate-reclaim-elide",      # 计数收窄语料（含两条健全性判据 + 口径自检）
+    "gate-reclaim-tax",        # 目标度量：不需要回收的形状上，回收税趋近 1.00×
+    "gate-wiring",             # 判据自己：自称门禁的脚本必须进电池（<0.1s）
+    "gate-note-part",           # 参与区域数不变量（结构门禁，~1s）
+    "gate-invariant-table",     # 不变量清单完整性（结构门禁，~1s）
+    "gate-skip-table",           # 跳过清单同步（结构门禁，~1s）
+    "gate-doc-refs",             # 注入 ↔ 文档引用完整（结构门禁，~1s）
+    "reclaim-unit",            # 回收运行期语义网（70 断言 + ASan，0.9s）
+)
 
 
 def select(items: list, mode: Optional[str], only: list) -> list:
     if mode in (None, "all", "full"):
         sel = list(items)
-    elif mode == "quick":
+    elif mode in ("nobench", "quick"):
+        if mode == "quick":
+            print("注：`quick` 就是 `nobench`（非基准**全量**）—— 名字不实，"
+                  "要快请用 `./check.sh smoke`（≈10s）。", flush=True)
         sel = [it for it in items if not it.bench]
+    elif mode == "smoke":
+        known = {it.name: it for it in items}
+        missing = [n for n in SMOKE if n not in known]
+        if missing:
+            raise SystemExit("smoke 集里有不存在的项（名字改了要同步 SMOKE）："
+                             + " ".join(missing))
+        sel = [known[n] for n in SMOKE]
     elif mode == "docs":
         sel = [it for it in items if it.group == "docs"]
     else:
-        raise SystemExit(f"未知模式：{mode}（可用：all / full / quick / docs）")
+        raise SystemExit(f"未知模式：{mode}（可用：all / nobench / smoke / docs）")
 
     if only:
         known_names = {it.name for it in items}
@@ -1113,44 +1531,198 @@ def with_build(items: list, all_items: list) -> list:
 # --------------------------------------------------------------------------
 # 跑
 # --------------------------------------------------------------------------
-def run_items(items: list, ctx: Runner, args, all_items: list) -> int:
-    tpath = times_path(args)
-    n_pass = n_fail = 0
-    results = []          # (name, group, secs, status)
-    times_out = {}
-    for it in items:
-        print(f"\n== {it.name}（{it.group}）==", flush=True)
-        t0 = time.monotonic()
+# `-j N` 的三条**敏感清单**：并行只许换**墙钟**，不许换**判据** ✗。
+#
+#   · WALL_CLOCK —— 结论会随负载漂的（吞吐 MB/s、`/usr/bin/time -f %e`、`date +%s`、
+#     sleep/tick 的界）。它们进池，但**优先取 worker**：`j <= nproc` ⇒ 各自独占一个核。
+#   · INNER —— 自己开线程池/进程池的项（parrun 与三个 gate 工具，`min(nproc,16)` 个 worker）。
+#     它们彼此之间**单槽**（同一时刻只跑一个），但可以和别的项并发：两个撞在一起就是 32 个
+#     worker 抢 24 个核，既慢又可能把超时判据推红；和"单进程"项并发则没有正确性问题。
+#   · COLLIDE —— 用**显式 `-o build/<名字>`** 写同一路径的项。`extc --run` 的固定路径已经由
+#     逐项 `EXTC_RUN_DIR` 隔离（见 `_exec_item`），但 `-o` 是脚本自己写的字面路径，隔离不了：
+#     `map` 与 `hashmap` 都建 `build/map-churn`、`build/map-leak`。它们彼此之间串行（一把锁），
+#     但可以和不相干的项并发。
+# 孤儿回收不再需要独占：`reap_orphans()` 按**会话所有权**回收（只收登记过、且所有者已结束的
+# 会话），不认识进程名，所以邻居正在跑的 `build/<名字>` 一个都不碰。它自己有常驻判据
+# `gate-reap-orphans`（`tools/parrun.py --reap-selftest`）。
+WALL_CLOCK = {
+    "tests-coro": "tests/coro/run.sh 量墙钟与 RSS（`/usr/bin/time -q -f %M`）；协程调度时序",
+    "hash": "吞吐绝对阈值（实测 sha1 287 MB/s vs 线 200 MB/s，余量只有 1.4×）",
+    "hashmap": "同 hash/pool 一族：分配吞吐 + 峰值 RSS",
+    "io": "tests/io/run.sh 用 `date +%s%N` 量墙钟（std::time 行为）",
+    "json": "吞吐绝对阈值（`parse ≥ 200 MB/s`）",
+    "map": "同 pool/hashmap 一族：分配/查找吞吐 + 峰值 RSS",
+    "pool": "`/usr/bin/time -f %e` 量 pool-perf 的墙钟（小池 vs 大池）",
+    "time": "tests/time/run.sh：sleep_ms ∈ [45,5000] 且 min_tick_ns < 1e6（墙钟界）",
+    "gate-reclaim-evidence": "run-evidence.sh 量三条实现的 N/4N **耗时**（三方对照）",
+    "gate-reclaim-switch": "run-switch.sh 量 N vs 4N 峰值/登记量 + 30 条形状语义",
+    "gate-reclaim-count": "同一个 run-switch.sh（EXTC_RC_NOCOUNT=0 档）",
+}
+# **自己开池、彼此单槽**的项：脚本内部按 `min(nproc,16)` 起 worker，两个同时跑就超订。
+INNER = {
+    "tests": "tests/run.sh → `tools/parrun.py`（cases 模式，16 worker）",
+    "tests-assert": "同一个 tests/run.sh（EXTC_DBG=1 断言版）",
+    "warnings": "tests/warnings/run.sh → `parrun.py --mode warn-scan`",
+    "arena-levels": "`parrun.py --mode arena-scan`",
+    "attacks": "`parrun.py --mode compiles`",
+    "gate-difffuzz": "`tools/gate_difffuzz.py` → ProcessPoolExecutor(min(8, jobs))",
+    "gate-checkc": "`tools/gate_checkc.py` → ProcessPoolExecutor(jobs)（基准档）",
+    "gate-asan-corpus": "`tools/gate_asan_corpus.py` → ProcessPoolExecutor(jobs)（基准档）",
+    "gate-perturb-corpus": "`tests/perturb/census.py` 自己开 ThreadPool（基准档：过全语料）",
+}
+# parrun.py 的默认 worker 上界（`min(cpu_count, 16)`）—— 估核数用，见 `_lane_room`。
+INNER_WORKERS = 16
+# **互相撞 `build/` 的项**：这些脚本用 `extc --run`/`--build` 往**固定的** `build/<名字>` 写，
+# 两个脚本同名字就会互相截断/覆盖（静态可查的两组：7 个脚本都写 `build/main`；`map` 与
+# `hashmap` 都写 `build/map-churn`、`build/map-leak`）。它们**彼此之间**串行（一把锁），
+# 但仍可以和别的项并发 —— 不碰 CWD（沙箱会把 `-I $PWD/stdlib` 的路径变掉，触发编译器的
+# "特权层" 判定，实测 `modules` 因此报错）。
+COLLIDE = {
+    "map": "`-o build/map-churn`、`-o build/map-leak`（与 hashmap 同名）",
+    "hashmap": "`-o build/map-churn`、`-o build/map-leak`（与 map 同名）",
+}
+
+
+def resolve_jobs(args) -> int:
+    """生效的并行度：`-j N`；默认 `min(4, nproc)`；`-j1` = 逐项串行（今天的行为）。
+
+    显式给得比核数大时按核数收（并发不是越多越快，超订只会互相拖），并把收窄打印出来。
+    """
+    nproc = os.cpu_count() or 1
+    want = getattr(args, "jobs", None)
+    if want is None:
+        return min(4, nproc)
+    if want < 1:
+        raise SystemExit(f"-j 要 ≥1（给的是 {want}）；-j1 = 逐项串行")
+    if want > nproc:
+        print(f"注：-j {want} 超过核数 {nproc} ⇒ 收到 -j {nproc}（超订只会互相拖）", flush=True)
+        return nproc
+    return want
+
+
+def print_run_config(items: list, j: int) -> None:
+    """打印生效的并行度与三批敏感项 —— 结论要可复现，配置就必须看得见。"""
+    wall = [it for it in items if it.name in WALL_CLOCK]
+    inner = [it for it in items if it.name in INNER]
+    coll = [it for it in items if it.name in COLLIDE]
+    if j <= 1:
+        print("并行：关（-j1 = 逐项串行，今天的行为）", flush=True)
+        return
+    nproc = os.cpu_count() or 1
+    print(f"并行：-j {j}（默认 min(4, nproc)={min(4, nproc)}；-j1 = 旧行为）· nproc={nproc}", flush=True)
+    if inner:
+        room = _lane_room(j)
+        print(f"  **单槽** {len(inner)} 项（自己开 min(nproc,{INNER_WORKERS}) 个 worker ⇒ 彼此串行，"
+              f"不与同类嵌套；与池并发：{'是' if room else '否（核数放不下 ⇒ 先单槽、再池）'}）", flush=True)
+        for it in inner:
+            print(f"    {it.name} —— {INNER[it.name]}", flush=True)
+    if coll:
+        print(f"  **互斥** {len(coll)} 项（彼此之间串行，可与别的项并发；都往固定的 `build/<名字>` 写）", flush=True)
+        for it in coll:
+            print(f"    {it.name} —— {COLLIDE[it.name]}", flush=True)
+    if wall:
+        print(f"  墙钟敏感 {len(wall)} 项：进池、**优先**取 worker（j ≤ nproc ⇒ 各自独占一个核）", flush=True)
+        for it in wall:
+            print(f"    {it.name} —— {WALL_CLOCK[it.name]}", flush=True)
+
+
+
+
+def _exec_item(it: Item, args, capture: Optional[list]):
+    """跑一项：返回 (Outcome, 秒数)。回调炸了算这一项 FAIL，不吞掉整轮。
+
+    并行时给每项一个**私有的 `--run` 输出目录**（`EXTC_RUN_DIR`，绝对路径 —— 脚本会 `cd`）：
+    `extc --run` 默认写 `build/<源文件基名>`，两个 item 撞上同名源文件（`tests/ops/generic.extc`
+    与 `tests/ctor/generic.extc`）就会互相截断/覆盖（实测两个并发 `--run` 同一基名，50 轮里
+    21 轮有一个失败）。默认（`-j1`、或环境里没有这个变量）路径仍是 `build/<基名>`，逐字节不变。
+    """
+    t0 = time.monotonic()
+    env = None
+    if (getattr(args, "jobs_eff", 1) or 1) > 1:
+        d = os.path.join(ROOT, "build", "run", it.name)
         try:
-            oc = it.fn(ctx, it)
-        except Exception as exc:  # 回调自身炸了 = 这一项 FAIL，别把整轮吞掉
-            oc = Outcome(False, f"{it.name}：编排回调异常 {type(exc).__name__}: {exc}")
-        secs = time.monotonic() - t0
-        if oc.ok is None:
-            status = "skip" if oc.msg.startswith("跳过") else "ran"
-            print(f"  --   {oc.msg}", flush=True)
-        elif oc.ok:
-            n_pass += 1
-            status = "ok"
-            print(f"  \033[32mok\033[0m   {oc.msg}", flush=True)
-        else:
-            n_fail += 1
-            status = "FAIL"
-            print(f"  \033[31mFAIL\033[0m {oc.msg}", flush=True)
-        for ln in oc.extra:
-            print(ln, flush=True)
-        if oc.ok is not None:
-            print(f"       ⏱ {secs:.3f}s", flush=True)
-        results.append((it.name, it.group, secs, status))
-        times_out[it.name] = (secs, status, time.strftime("%Y-%m-%dT%H:%M:%S"), it.group)
-        if oc.ok is False and it.abort_on_fail:
-            print(f"\n构建失败 ⇒ 中止（其余项都假设 build/extc 在）。", flush=True)
-            write_times(tpath, times_out)
-            print(f"\n通过 {n_pass}，失败 {n_fail}", flush=True)
-            return 1
+            os.makedirs(d, exist_ok=True)
+            env = {"EXTC_RUN_DIR": d}
+        except OSError:
+            env = None               # 建不出来就退回默认路径（宁可慢/偶发，也不许跑不起来）
+    try:
+        oc = it.fn(Runner(quiet=args.quiet, capture=capture, env=env), it)
+    except Exception as exc:
+        oc = Outcome(False, f"{it.name}：编排回调异常 {type(exc).__name__}: {exc}")
+    return oc, time.monotonic() - t0
 
+
+def _print_outcome(it: Item, oc: Outcome, secs: float, counters: list) -> str:
+    """打印一项的结果行（ok/FAIL/--、extra、⏱）并计数。调用方保证独占 stdout。"""
+    if oc.ok is None:
+        status = "skip" if oc.msg.startswith("跳过") else "ran"
+        print(f"  --   {oc.msg}", flush=True)
+    elif oc.ok:
+        counters[0] += 1
+        status = "ok"
+        print(f"  \033[32mok\033[0m   {oc.msg}", flush=True)
+    else:
+        counters[1] += 1
+        status = "FAIL"
+        print(f"  \033[31mFAIL\033[0m {oc.msg}", flush=True)
+    for ln in oc.extra:
+        print(ln, flush=True)
+    if oc.ok is not None:
+        print(f"       ⏱ {secs:.3f}s", flush=True)
+    return status
+
+
+def _run_live(it: Item, args, counters: list) -> tuple:
+    """独占跑一项：表头先打、子进程输出现场流式打印（`-j1` 的跑法）。"""
+    print(f"\n== {it.name}（{it.group}）==", flush=True)
+    oc, secs = _exec_item(it, args, capture=None)
+    return oc, secs, _print_outcome(it, oc, secs, counters)
+
+
+
+def _lane_room(j: int) -> bool:
+    """单槽车道（内部开 `min(nproc,INNER_WORKERS)` 个 worker）能不能和池（j 个 worker）并发。
+
+    判据是"两边都拿得到自己那份核"：`j + min(nproc,INNER_WORKERS) <= nproc`。核数不够就退化成
+    "先单槽跑完、再跑池" —— 多花的时间换的是**不把机器压满**（超订既慢又可能把超时判据推到红）。
+    """
+    nproc = os.cpu_count() or 1
+    return j + min(nproc, INNER_WORKERS) <= nproc
+
+
+def _run_captured(it: Item, args, counters: list, lock: threading.Lock) -> tuple:
+    """并行跑一项：子进程输出攒进 cap，跑完**整块**打出来（各项不许交错）。"""
+    cap: list = []
+    oc, secs = _exec_item(it, args, capture=cap)
+    with lock:
+        print(f"\n== {it.name}（{it.group}）==", flush=True)
+        if cap:
+            sys.stdout.write("".join(cap))
+            sys.stdout.flush()
+        status = _print_outcome(it, oc, secs, counters)
+    return oc, secs, status
+
+
+def run_items(items: list, ctx: Runner, args, all_items: list) -> int:
+    j = getattr(args, "jobs_eff", None) or resolve_jobs(args)
+    print_run_config(items, j)
+    if j <= 1:
+        return _run_items_serial(items, args)
+    return _run_items_parallel(items, args, j)
+
+
+def _times_of(runs: list) -> dict:
+    out = {}
+    for it, secs, status in runs:
+        out[it.name] = (secs, status, time.strftime("%Y-%m-%dT%H:%M:%S"), it.group)
+    return out
+
+
+def _finish(items_runs: list, tpath: str, args, counters: list) -> int:
+    """写耗时表 + 打印最慢 N 项 + 总计。`items_runs` = [(Item, secs, status)]。"""
+    times_out = _times_of(items_runs)
+    results = [(it.name, it.group, secs, status) for it, secs, status in items_runs]
     write_times(tpath, times_out)
-
     top = getattr(args, "top", 10)
     slow = sorted([r for r in results if r[3] in ("ok", "FAIL")],
                   key=lambda r: r[2], reverse=True)[:top]
@@ -1159,22 +1731,122 @@ def run_items(items: list, ctx: Runner, args, all_items: list) -> int:
         for name, group, secs, status in slow:
             print(f"  {secs:8.3f}s  {status:<4}  {name}（{group}）", flush=True)
     print(f"\n耗时表：{tpath}", flush=True)
-    print(f"\n通过 {n_pass}，失败 {n_fail}", flush=True)
-    return 0 if n_fail == 0 else 1
+    print(f"\n通过 {counters[0]}，失败 {counters[1]}", flush=True)
+    return 0 if counters[1] == 0 else 1
+
+
+def _run_items_serial(items: list, args) -> int:
+    """`-j1`：逐项串行，表头先打、输出现场流式 —— 与加并行之前逐字节一致的行为。"""
+    tpath = times_path(args)
+    counters = [0, 0]
+    runs = []
+    for it in items:
+        oc, secs, status = _run_live(it, args, counters)
+        runs.append((it, secs, status))
+        if oc.ok is False and it.abort_on_fail:
+            print(f"\n构建失败 ⇒ 中止（其余项都假设 build/extc 在）。", flush=True)
+            write_times(tpath, _times_of(runs))
+            print(f"\n通过 {counters[0]}，失败 {counters[1]}", flush=True)
+            return 1
+    return _finish(runs, tpath, args, counters)
+
+
+def _run_items_parallel(items: list, args, j: int) -> int:
+    """并行两段：build 独占 → 单槽车道（`INNER`）与 j-worker 池并发。
+
+    三条纪律（都是被测出来的）：
+      · `build` 必须独占最先（其余项都假设 build/extc 在）；
+      · `INNER`（自己开 min(nproc,16) 个 worker 的项）彼此**单槽**：两个同时跑就是 32 个 worker
+        抢 24 个核，既慢又可能把超时判据推红。和"单进程"项并发没有正确性问题，所以只限同类。
+      · 池里写**固定** `build/<名字>` 的项（`COLLIDE`）彼此之间串行 —— 两个脚本同名就会互相
+        截断/覆盖（静态可查：`build/main` 7 个脚本、`build/map-churn`/`map-leak` map 与 hashmap）。
+        不碰 CWD：沙箱会把 `-I $PWD/stdlib` 的路径变掉，触发编译器的"特权层"判定（实测 `modules` 红）。
+
+    `INNER` 车道先起（它是现在的最长边），池的墙钟项先提交；`j <= nproc` 保证每个 worker 有
+    自己的核。每项输出攒完整块打印 ⇒ 不交错。
+    """
+    tpath = times_path(args)
+    counters = [0, 0]
+    runs: list = []
+    build = [it for it in items if it.name == "build"]
+    inner = [it for it in items if it.name in INNER]
+    rest = [it for it in items if it.name not in INNER and it.name != "build"]
+    # 墙钟项**先提交**：池的前几个 worker 先服务它们（判据最脆的一批），其余项随后。
+    pooled = [it for it in rest if it.name in WALL_CLOCK] + \
+             [it for it in rest if it.name not in WALL_CLOCK]
+
+    # ① build（独占、在仓库根：它就是 `make`；失败即中止）
+    for it in build:
+        oc, secs, status = _run_live(it, args, counters)
+        runs.append((it, secs, status))
+        if oc.ok is False and it.abort_on_fail:
+            print(f"\n构建失败 ⇒ 中止（其余项都假设 build/extc 在）。", flush=True)
+            write_times(tpath, _times_of(runs))
+            print(f"\n通过 {counters[0]}，失败 {counters[1]}", flush=True)
+            return 1
+
+    # ② 单槽车道（INNER：自己开 min(nproc,16) 个 worker）+ ③ 池（j 个 worker）。
+    #    顺序上**先起单槽车道**：那 5 项合计 ~76s，是现在的最长边；它和池并发 ⇒ 总时长 ≈ 76s。
+    #    核数放不下（`_lane_room` 假）就退化成"先单槽、再池"，只慢不错。
+    lock = threading.Lock()
+    collide_lock = threading.Lock()
+
+    def run_pooled(it: Item) -> tuple:
+        """池里的项：INNER 不会走到这里（它们走单槽车道）；COLLIDE 组内串行。"""
+        if it.name in COLLIDE:
+            with collide_lock:
+                return _run_captured(it, args, counters, lock)
+        return _run_captured(it, args, counters, lock)
+
+    def run_lane() -> None:
+        for it in inner:
+            oc, secs, status = _run_captured(it, args, counters, lock)
+            runs.append((it, secs, status))
+
+    if _lane_room(j):
+        with concurrent.futures.ThreadPoolExecutor(max_workers=j) as ex:
+            futs = [ex.submit(run_pooled, it) for it in pooled]
+            run_lane()
+            for it, fut in zip(pooled, futs):
+                oc, secs, status = fut.result()
+                runs.append((it, secs, status))
+    else:
+        run_lane()
+        if pooled:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=j) as ex:
+                futs = [ex.submit(run_pooled, it) for it in pooled]
+                for it, fut in zip(pooled, futs):
+                    oc, secs, status = fut.result()
+                    runs.append((it, secs, status))
+
+    return _finish(runs, tpath, args, counters)
 
 
 # --------------------------------------------------------------------------
 # --list / --changed
 # --------------------------------------------------------------------------
-def do_list(items: list, tpath: str) -> int:
+def do_list(items: list, tpath: str, mode: Optional[str] = None,
+            total: Optional[int] = None) -> int:
+    """列项。带 `基准` 列 —— 于是"`nobench` 里到底有没有 bench"一眼可查。
+
+    给了档位（`./check.sh --list nobench`）就**按档位过滤**（bench 项默认不出现，这正是用户
+    被老 `--list` 骗到的地方），并用 `--all` 看全部；不给档位时列全部、但标出基准列。
+    """
     tf = read_times_full(tpath)
-    print(f"{'名称':<26}{'组':<9}{'最近耗时':<10}说明")
+    print(f"{'名称':<26}{'组':<9}{'基准':<7}{'最近耗时':<10}说明")
     for it in items:
         last = f"{tf[it.name][0]:.2f}s" if it.name in tf else "-"
-        print(f"{it.name:<26}{it.group:<9}{last:<10}{it.desc}")
+        print(f"{it.name:<26}{it.group:<9}{'bench' if it.bench else '-':<7}{last:<10}{it.desc}")
     n_bench = sum(1 for it in items if it.bench)
-    print(f"\n共 {len(items)} 项：非基准 {len(items) - n_bench} · 基准 {n_bench}"
-          f"（quick = 非基准；docs = {sum(1 for it in items if it.group == 'docs')} 项文档/工具）")
+    shown = f"共 {len(items)} 项：非基准 {len(items) - n_bench} · 基准 {n_bench}"
+    if mode is not None:
+        shown += f"（档位 {mode} ⇒ 基准项已隐藏；--all 或去掉档位看全部）"
+    elif total is not None and total != len(items):
+        shown += f"（全部 {total} 项）"
+    else:
+        shown += "（nobench/quick 跳过带 bench 标记的项；`--list nobench` 只看非基准）"
+    print(f"\n{shown}")
+    print(f"（smoke = 快速高信号集 {len(SMOKE)} 项；docs = {sum(1 for it in items if it.group == 'docs')} 项文档/工具）")
     groups: dict = {}
     for it in items:
         groups.setdefault(it.group, []).append(it.name)
@@ -1213,11 +1885,11 @@ def recommend(paths: list):
     if bench:
         return "all", "有 bench/ 改动 ⇒ 该跑含基准的完整档", docs, bench, code, self_
     if code:
-        return "quick", "有源码/测试/工具改动 ⇒ quick（跳过基准）", docs, bench, code, self_
+        return "nobench", "有源码/测试/工具改动 ⇒ nobench（非基准全量）", docs, bench, code, self_
     if docs:
         return "docs", "只有文档改动 ⇒ docs（秒级）", docs, bench, code, self_
     if self_:
-        return "quick", "只有编排层自身改动 ⇒ quick（被改的就是 runner，值得完整验一遍）", docs, bench, code, self_
+        return "nobench", "只有编排层自身改动 ⇒ nobench（被改的就是 runner，值得完整验一遍）", docs, bench, code, self_
     return "docs", "工作区相对 HEAD 没有改动 ⇒ docs（秒级自检）", docs, bench, code, self_
 
 
@@ -1241,34 +1913,12 @@ def do_changed(items: list, args, all_items: list) -> int:
 # --------------------------------------------------------------------------
 # main
 # --------------------------------------------------------------------------
-def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(
-        prog="./check.sh", add_help=True,
-        description="extC 自检编排层：检查项是数据，runner 负责选/跑/计时/统计。")
-    ap.add_argument("mode", nargs="?", default=None,
-                    help="all（默认，含基准）/ quick（跳过基准）/ docs（文档·工具，秒级）")
-    ap.add_argument("--only", action="append", default=[], metavar="名或组",
-                    help="只跑这些项（名字或组；可多次）")
-    ap.add_argument("--list", action="store_true", help="列出项：名字 + 组 + 最近耗时 + 一行说明")
-    ap.add_argument("--changed", action="store_true",
-                    help="看 git diff --name-only HEAD + 未跟踪文件，说该跑哪档")
-    ap.add_argument("--run", action="store_true", help="配合 --changed：直接跑建议的那档")
-    ap.add_argument("--quiet", "-q", action="store_true",
-                    help="不流式打印子进程输出（失败时仍打印该看的行）")
-    ap.add_argument("--top", type=int, default=10, help="末尾打印最慢 N 项（默认 10）")
-    ap.add_argument("--times", default=None, help=f"耗时表路径（默认 $SEC_TIMES 或 {SEC_TIMES_DEFAULT}）")
-    args = ap.parse_args(argv)
+def resolve_mode(all_items: list, mode: Optional[str], only_in: list) -> tuple:
+    """位置参数解析：模式（all/nobench/smoke/docs）或名字/组；返回 (mode, only)。
 
-    all_items = build_items()
-    tpath = times_path(args)
-
-    if args.list:
-        return do_list(all_items, tpath)
-    if args.changed:
-        return do_changed(all_items, args, all_items)
-
-    mode = args.mode
-    only = list(args.only)
+    `main` 与 `--list` 共用这一份，于是两处的口径不会漂。
+    """
+    only = list(only_in)
     if mode is not None and mode not in MODE_TOKENS:
         # 位置参数也可能是名字/组（方便 ./check.sh tests）
         if mode in {it.name for it in all_items} or mode in {it.group for it in all_items}:
@@ -1278,7 +1928,51 @@ def main(argv=None) -> int:
             near = difflib.get_close_matches(mode, sorted({it.name for it in all_items}
                                                           | {it.group for it in all_items}), n=5)
             hint = ("；相近的有：" + " ".join(near)) if near else ""
-            raise SystemExit(f"选不出来：位置参数 {mode!r} 既不是模式(all/quick/docs)也不是名字/组{hint}")
+            raise SystemExit(f"选不出来：位置参数 {mode!r} 既不是模式(all/nobench/smoke/docs)也不是名字/组{hint}")
+    return mode, only
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(
+        prog="./check.sh", add_help=True,
+        description="extC 自检编排层：检查项是数据，runner 负责选/跑/计时/统计。")
+    ap.add_argument("mode", nargs="?", default=None,
+                    help="all（默认，含基准）/ nobench（非基准全量，别名 quick）/ smoke（快速高信号集，≈10s）/ docs（文档·工具，秒级）")
+    ap.add_argument("--only", action="append", default=[], metavar="名或组",
+                    help="只跑这些项（名字或组；可多次）")
+    ap.add_argument("-j", "--jobs", type=int, default=None, metavar="N",
+                    help=f"并行度：默认 min(4, nproc)={min(4, os.cpu_count() or 1)}；"
+                         "`-j1` = 逐项串行（旧行为）。自己开池的项（`INNER`）走单槽车道，"
+                         "墙钟敏感项（`WALL_CLOCK`）进池但优先占核；写同一 `build/<名字>` 的项（`COLLIDE`）彼此串行")
+    ap.add_argument("--all", action="store_true",
+                    help="配合 --list：连基准（bench）项一起列；带档位时默认隐藏基准项")
+    ap.add_argument("--list", action="store_true",
+                    help="列出项：名字 + 组 + 基准标记 + 最近耗时 + 一行说明（带档位则按档位过滤）")
+    ap.add_argument("--changed", action="store_true",
+                    help="看 git diff --name-only HEAD + 未跟踪文件，说该跑哪档")
+    ap.add_argument("--run", action="store_true", help="配合 --changed：直接跑建议的那档")
+    ap.add_argument("--quiet", "-q", action="store_true",
+                    help="不流式打印子进程输出（失败时仍打印该看的行）")
+    ap.add_argument("--top", type=int, default=10, help="末尾打印最慢 N 项（默认 10）")
+    ap.add_argument("--times", default=None, help=f"耗时表路径（默认 $SEC_TIMES 或 {SEC_TIMES_DEFAULT}）")
+    args = ap.parse_args(argv)
+    # 并行度先校验/定格（`-j0` 当场响亮报错；超订在这里收窄一次并说明）—— `--list` 也照解析。
+    args.jobs_eff = resolve_jobs(args)
+
+    all_items = build_items()
+    tpath = times_path(args)
+
+    if args.list:
+        # 档位口径：不给档位/--only 就列全部（带 `基准` 列）；给了就按档位过滤（bench 默认隐藏）。
+        if args.all or (args.mode is None and not args.only):
+            return do_list(all_items, tpath, mode=None, total=len(all_items))
+        mode_l, only_l = resolve_mode(all_items, args.mode, args.only)
+        return do_list(select(all_items, mode_l, only_l), tpath,
+                       mode=(args.mode or "only"), total=len(all_items))
+    if args.changed:
+        return do_changed(all_items, args, all_items)
+
+    mode, only = resolve_mode(all_items, args.mode, args.only)
 
     sel = select(all_items, mode, only)
     if not sel:

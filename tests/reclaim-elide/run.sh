@@ -29,7 +29,52 @@ TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 if [ -t 1 ]; then G=$'\033[32m'; R=$'\033[31m'; O=$'\033[0m'; else G=; R=; O=; fi
 
 SHAPES="elide_swept_region elide_fresh_alloc elide_other_holder writes_dense \
-        keep_unknown_region keep_shared_overwrite keep_sole_holder keep_count_granularity"
+        keep_unknown_region keep_shared_overwrite keep_sole_holder keep_count_granularity \
+        keep_other_holder_dies keep_two_edges \
+        elide_readonly_recursion keep_callee_writes keep_indirect_callee"
+
+# 计数调用点：只数**用户区**里 codegen 发射的那种形状（实参带 `(void` 转换）。两个坑都踩过：
+#   ① 运行期 prelude 的**函数体**里有两条 `extc_rc_storeRef(slot, v);`（没有转换），
+#      只排 `static void` 定义行排不掉它们 ⇒ 每个形状恒有 2 处"计数"：判据两个方向都是死的
+#     · 定义行的排除**按形状**（含 `static`，或以 `{` 收尾），不钉字面 `static void`——
+#       否则发射形态一改（例如 `static inline void`）定义行就被当成调用点，判据又变空转/误红。
+#      （"该省"永远红、"不该省"被误省也永远绿）。`--selftest` 专门钉这一点。
+#   ② 只认 `initRef|storeRef` 会漏掉 `storeRefOwned`/`storeRefUnknown`/`storeStructCons`
+#      —— 指针赋值真正发的是后三个。
+count_calls() { # <生成的 C> → 调用点行（标准输出）
+    grep -nE '\bextc_rc_(initRef|storeRef|storeRefOwned|storeRefUnknown|storeStructCons)\(' "$1" 2>/dev/null \
+        | grep -vE '(^|[^A-Za-z_])static([^A-Za-z_]|$)' \
+        | grep -vE '\{[[:space:]]*$' \
+        | grep '(void' || true
+}
+
+if [ "${1:-}" = "--selftest" ]; then
+    # 判据自身的牙：合成的样本上，prelude 那种没有转换的调用**不许**被数进来，
+    # 而用户区那三种发射形状**都必须**被数到。
+    cat >"$TMP/self.c" <<'EOF'
+static void extc_rc_initRef(void **slot, void *v) {
+    *slot = v;
+    extc_rc_inc(v);
+}
+static inline void extc_rc_storeRefOwned(void **slot, void *v, void *owner) {
+    extc_rc_storeRef(slot, v);
+}
+int main(void) {
+    extc_rc_initRef((void **)&x, (void *)x);
+    extc_rc_storeRefOwned((void **)&(a->f), (void *)v, (void *)0);
+    extc_rc_storeRefUnknown((void **)&(b->g), (void *)w);
+    return 0;
+}
+EOF
+    got=$(count_calls "$TMP/self.c" | wc -l | tr -d ' ')
+    if [ "$got" = "3" ]; then
+        echo "selftest ok：prelude 的 2 处不计（含一处 static inline 定义），用户区 3 处都数到"
+        exit 0
+    fi
+    echo "selftest FAIL：期望 3 处用户区调用，数到 $got 处"
+    count_calls "$TMP/self.c" | sed 's/^/    /'
+    exit 1
+fi
 
 expect_of() { # <用例名> → 该省 / 不该省
     case "$1" in
@@ -47,12 +92,18 @@ want_of() { # <用例名> → 期望的程序输出（语义面）
         keep_shared_overwrite)    echo "a=1 slot=2" ;;
         keep_sole_holder)         echo "sole=9 cleared=true" ;;
         keep_count_granularity)   echo "gran=7" ;;
+        keep_other_holder_dies)   echo "v=7" ;;   # 健全性：省错这条 ⇒ v=2
+        keep_two_edges)           echo "x=5" ;;   # 健全性：只省一条边 ⇒ x=1
+        elide_readonly_recursion) echo "n=0" ;;   # 跨过程 mayDec：纯读递归一行计数都不该有
+        keep_callee_writes)       echo "v=0" ;;   # 健全性：被调者写槽 ⇒ 不许省（误省 ⇒ v=1）
+        keep_indirect_callee)     echo "v=0" ;;   # 健全性：被调者解析不到 ⇒ 不许省（误省 ⇒ v=1）
     esac
 }
 
 echo "== tests/reclaim-elide：计数按编译期收窄 —— 红判据（exit 0 = 记录，不是门禁）=="
 echo "   编译：EXTC_RECLAIM=1 $EXTC <形状>.extc -o <生成>.c；计数按生成 C 里"
-echo "   extc_rc_initRef / extc_rc_storeRef 的**调用点**数（运行期定义行不计）。"
+echo "   用户区的 extc_rc_{initRef,storeRef,storeRefOwned,storeRefUnknown,storeStructCons} 调用点"
+echo "   （实参带 (void 转换；运行期 prelude 的 2 处内部调用不计 —— 见 count_calls 与 --selftest）。"
 echo
 
 # ── 逐个形状：编译 → 生成 C 编过 → 跑 → 数计数调用 ────────────────────────────────
@@ -73,9 +124,9 @@ for n in $SHAPES; do
         elif [ "$out" != "$want" ]; then
             fail_reason="输出不符：得到 [$out]，要 [$want]"
         fi
-        # 计数调用点：排除运行期 prelude 里的 `static void extc_rc_initRef(...)` 定义行
-        grep -nE '\bextc_rc_(initRef|storeRef)\(' "$TMP/$n.c" 2>/dev/null \
-            | grep -v 'static void' >"$TMP/$n.calls" || true
+        # 计数调用点：口径与理由见上面的 `count_calls`（`--selftest` 钉它的牙）。
+        count_calls "$TMP/$n.c" >"$TMP/$n.calls"
+        # 判据不许空转：发射形状若变了（这里一处都抓不到），下面按 `wired=no` 处理并让闸门 rc=2。
     fi
     printf '%s\n' "$fail_reason" >"$TMP/$n.fail"
 done
@@ -90,8 +141,8 @@ if [ "$all_calls" -gt 0 ]; then wired=yes; else wired=no; fi
 # ── 判据 ──────────────────────────────────────────────────────────────────────
 table=$TMP/table.tsv
 : >"$table"
-row() { # 名称 期望 实际计数 颜色 判据 备注
-    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$5" "$6" >>"$table"
+row() { # 名称 期望 实际计数 颜色 判据 备注 wired
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$5" "$6" "$wired" >>"$table"
 }
 
 for n in $SHAPES; do
@@ -163,12 +214,19 @@ PY
     else
         # 退路：中文出现在「期望」与末列 ⇒ 不做像素级对齐，一行一条
         printf '%s\n' "形状	期望	实际计数	判据"
-        while IFS=$'\t' read -r a b c d e f; do
+        while IFS=$'\t' read -r a b c d e f g; do
             printf '%s\t%s\t%s\t%s%s%s  %s\n' "$a" "$b" "$c" "$d" "$e" "$O" "$f"
         done <"$table"
     fi
 }
 print_table
+
+# ── 机器可读的判定表（给 gate.py 用）──────────────────────────────────────────
+# 不设 `ELIDE_TSV` 就什么都不写 —— 本脚本自身仍是"只记录"的基线（exit 0）。
+if [ -n "${ELIDE_TSV:-}" ]; then
+    cp "$table" "$ELIDE_TSV"
+    echo "判定表 → $ELIDE_TSV（列：形状 期望 计数 颜色 判定 备注 wired）"
+fi
 
 # ── 计数调用出现的位置（生成 C 行号）─────────────────────────────────────────────
 echo

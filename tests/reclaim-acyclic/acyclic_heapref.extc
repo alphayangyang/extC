@@ -1,0 +1,53 @@
+/* 形状：无环 + 引用住在**堆槽**里 —— 事件档（`EXTC_RC_SWEEPFREE=1`）的成功样例。
+ *
+ * 每轮 `new` 一个新结点、**直接**存进本帧堆对象 `head` 的 `next` 字段：
+ *   · 宿主是堆对象（不是局部量），事件路径数得到这条边；
+ *   · 值是本帧新分配 ⇒ 不可能指向更老的对象 ⇒ 无回边（分析侧 v1(i) 的形态）；
+ *   · 覆盖同一个堆槽 ⇒ 上一个结点最后一个持有者消失 ⇒ 计数归零当场释放 ⇒
+ *     "完全不扫、只靠计数"是完备的：清扫次数必须 0、峰值 RSS 有界、stdout 不变。
+ *
+ * 为什么不拿 `tests/reclaim-shapes/scale_growth.extc`（churn 型）当成功样例：
+ * 那里的引用只住在**局部量**里，而现有事件路径只数"rc 槽 → 对象"这条边 ⇒ 局部量里的
+ * 引用不产生 hold ⇒ 对象永不触发释放（Lead 实测 churn/rebuild 事件档下 831 MB / 521 MB）。
+ * 这一条把引用放进堆字段，事件路径才覆盖得到；churn 型在 gate 里作**预期的红**对照。
+ *
+ * 分析侧旁证（analysis-acyclic 用 `EXTC_DBG_ACYCLIC=1` 实测）：本形状 `main fn=1 reason=ok`。
+ */
+use std::io
+
+struct node { val: i64  next: ?mut ref node }
+
+/* argv[1] 是十进制轮数（没给就是 8）：手写解析，避免为本判据引入别的依赖。 */
+fn parseRounds(args: slice<slice<u8>>) -> i64 {
+    if args.len < 2 { return 8 }
+    var s: slice<u8> = args[1]
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    return v
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var n: i64 = parseRounds(args)
+    var head = new node            /* 函数层（家）区域；宿主是堆对象 */
+    head.val = 0
+    head.next = null
+    var sum: i64 = 0
+    var i: i64 = 0
+    while i < n {
+        head.next = new node       /* 引用住在堆槽：宿主 = head，值 = 本帧新分配 */
+        if head.next != null {
+            (*head.next).val = i
+            sum = sum + (*head.next).val
+        }
+        i = i + 1
+    }
+    io::cout << "rounds=" << n << " sum=" << sum << "\n"
+    return 0
+}

@@ -5,6 +5,7 @@
  */
 
 #include <stdio.h>
+#include <stdlib.h>
 
 #include "base.h"
 #include "reclaim.h"
@@ -14,7 +15,13 @@ int main(void) {
     Buf out;
     arenaInit(&a, 1 << 16);
     bufInit(&out, &a);
-    reclaimEmitRuntime(&a, &out);
+    /* 与编译器保持一致：**默认无计数**，`EXTC_RC_NOCOUNT=0` 才导计数档。
+     * （此前这里硬写 0 ⇒ 驱动一直在跑计数档，默认档的编译分支从没被单测过，
+     *   而"计数档单测门禁"于是只是同一件事跑两遍。） */
+    const char *nc = getenv("EXTC_RC_NOCOUNT");
+    int noCount = (nc && nc[0] == '0') ? 0 : 1;
+    reclaimEmitRuntime(&a, &out, noCount, getenv("EXTC_RC_TIME") != NULL,
+                          getenv("EXTC_RC_SWEEPFREE") != NULL);
     fputs(bufCstr(&out), stdout);
     return 0;
 }

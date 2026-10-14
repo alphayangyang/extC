@@ -5,9 +5,9 @@
 
   ① **区域没有回收者**：数每个程序的
        alloc  = `extc_rc_alloc(` 调用点（有回收管辖的分配点）
-       trig   = `extc_rc_maybeCollect(__extc_rcg…` 调用点（真触发）
-       owe    = `extc_rc_owe(__extc_rcw…` 调用点（只记欠收）
-       check  = `extc_rc_checkOwed(__extc_rcc…` 调用点（拥有者销账）
+       trig   = `extc_rc_maybeCollect(__extc_…` 调用点（真触发）
+       owe    = `extc_rc_owe(__extc_…` 调用点（只记欠收）
+       check  = `extc_rc_checkOwed(__extc_…` 调用点（拥有者销账）
        srunk  = `extc_rc_storeRefUnknown(` 调用点（⇒ 目标区域运行期 `noSweep`）
      分类（`class` 列）：
        ok-trigger            有触发（本帧拥有的区域照常扫）
@@ -27,7 +27,11 @@
     python3 tests/reclaim-gaps/audit-static.py                 # 全语料，打印摘要
     python3 tests/reclaim-gaps/audit-static.py --limit 40      # 冒烟
     python3 tests/reclaim-gaps/audit-static.py --gate          # 两个红计数非 0 ⇒ exit 1
+    python3 tests/reclaim-gaps/audit-static.py --baseline FILE # 棘轮：红计数①的程序集合与基线
+                                                               # 逐条相同才绿（多一条/少一条都红）
     python3 tests/reclaim-gaps/audit-static.py --out DIR       # 原始 TSV 落盘目录
+                                                               # （接进 check.sh 时给 build/ 下的路径，
+                                                               #   别冲掉入库的 out/*.tsv）
 
 不改 `src/`、`tools/`、`tests/` 既有文件；只写 `--out`（默认 `tests/reclaim-gaps/out`）。
 """
@@ -128,9 +132,13 @@ def scan(path, extc, tmpdir):
         text = f.read()
 
     alloc = count_call(text, r"extc_rc_alloc\(", True)
-    trig = count_call(text, r"extc_rc_maybeCollect\(__extc_rcg", False)
-    owe = count_call(text, r"extc_rc_owe\(__extc_rcw", False)
-    check = count_call(text, r"extc_rc_checkOwed\(__extc_rcc", False)
+    # 判据是"**调用点**"，不是"某个局部量名"：形参写成 `__extc_…` 的才是 codegen 发的调用点，
+    # 运行期里的定义第一个形参是 `ExtcRcRegion *` ⇒ 天然被排除。
+    # （原来钉的是 `\(__extc_rcg` / `\(__extc_rcw` / `\(__extc_rcc` —— 局部量一改名，
+    #  209 个程序就全被误判成"没有回收者"。判据不该绑在变量命名上，见 CHANGELOG。）
+    trig = count_call(text, r"extc_rc_maybeCollect\(__extc_", False)
+    owe = count_call(text, r"extc_rc_owe\(__extc_", False)
+    check = count_call(text, r"extc_rc_checkOwed\(__extc_", False)
     srunk = count_call(text, r"extc_rc_storeRefUnknown\(", True)
     # storeStructCons 里 hostKnown=0 的那一档（最后一个实参是 0）也是"目标区域退出清扫"
     srcons0 = len(re.findall(r"extc_rc_storeStructCons\([^;]*?,\s*0\);", text))
@@ -159,6 +167,8 @@ def main():
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--jobs", type=int, default=4)
     ap.add_argument("--gate", action="store_true")
+    ap.add_argument("--baseline", default="",
+                    help="棘轮：把红计数①的程序集合与这份基线比，多一条或少一条都算红")
     ap.add_argument("--out", default=os.path.join(ROOT, "tests/reclaim-gaps/out"))
     ap.add_argument("--extc", default=os.path.join(ROOT, "build/extc"))
     ap.add_argument("--selftest", action="store_true",
@@ -256,6 +266,33 @@ def main():
 
     if args.gate and (len(red1) > 0 or len(red2) > 0):
         return 1
+
+    if args.baseline:
+        # 棘轮（与 tools/gate_scale.py 同一条规矩）：红计数①的**程序集合**必须与基线逐条相同 ——
+        # 多一条 = 回收能力退化；少一条 = 优化拿回了能力，基线要一起缩，否则闸门绿在过期基线上。
+        now_paths = sorted(r["path"] for r in red1)
+        base_paths = []
+        if os.path.exists(args.baseline):
+            with open(args.baseline, encoding="utf-8") as f:
+                for ln in f:
+                    ln = ln.strip()
+                    if ln and not ln.startswith("#"):
+                        base_paths.append(ln.split("\t")[0].split()[0])
+        base_set, now_set = set(base_paths), set(now_paths)
+        added = sorted(now_set - base_set)
+        gone = sorted(base_set - now_set)
+        if added or gone:
+            if added:
+                print(f"[ledger] 新增没有回收者的程序 {len(added)} 条（能力退化）：")
+                for p in added:
+                    print(f"   + {p}")
+            if gone:
+                print(f"[ledger] 基线里的 {len(gone)} 条已有回收者（棘轮只许缩，"
+                      f"请更新 {args.baseline}）：")
+                for p in gone:
+                    print(f"   - {p}")
+            return 1
+        print(f"[ledger] 红计数① = {len(now_paths)} 条，与基线一致（无新增、无过期）")
     return 0
 
 

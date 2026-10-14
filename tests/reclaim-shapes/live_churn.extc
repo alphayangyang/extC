@@ -1,0 +1,55 @@
+/* 形状 ⑫：**大活集 + churn** —— 绝对峰值的那一类。
+ *
+ * 先挂一条 live 链（活集 = 参数 1 个结点），再 churn 同样量级的短命对象（参数 2）。
+ * 这一条问的不是"界随不随轮数涨"（那是 ① / ①l），而是**稳态峰值本身**：
+ *   · 有计数：churn 当场归零回收 ⇒ 峰值 ≈ 活集；
+ *   · 只靠清扫：`bytes` 涨到 `max(2·live, floor)` 才扫 ⇒ 峰值可能顶到 ~2× 活集。
+ * 判据（`run-switch.sh` ①m）按形状参数给一个**绝对上界**：峰值 ≤ 4×活集字节 + 4 MiB。
+ * 实测（活集 10/20/40 万 × 16 B）：无计数 7.6/11.1/15.7 MB、计数 7.8/11.4/16.4 MB —— 都过；
+ * 把清扫关掉（`-DEXTC_RC_FLOOR=1TiB`）则 22.5 MB ⇒ 会红（见 CHANGELOG）。
+ */
+use std::io
+
+struct cell {
+    next: ?mut ref cell
+    pad: i64
+}
+
+fn parseI(args: slice<slice<u8>>, idx: i64, dflt: i64) -> i64 {
+    if args.len <= idx { return dflt }
+    var s: slice<u8> = args[idx]
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    return v
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var live_n: i64 = parseI(args, 1, 200000)
+    var churn_n: i64 = parseI(args, 2, 200000)
+    var head: ?mut ref cell = null
+    var i: i64 = 0
+    while i < live_n {
+        var c = new cell
+        c.pad = i
+        c.next = head
+        head = c
+        i = i + 1
+    }
+    var j: i64 = 0
+    while j < churn_n {
+        var d = new cell
+        d.pad = j
+        j = j + 1
+    }
+    var ok: i64 = 0
+    if head != null { ok = 1 }
+    io::cout << "live=" << live_n << " churn=" << churn_n << " ok=" << ok << "\n"
+    return 0
+}

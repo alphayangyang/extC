@@ -1,10 +1,13 @@
-# extC 自检覆盖对照表：HEAD:check.sh（468 行 / 73 个 `==` 节）里的每条命令 → tools/check.py 的新项名
-#   生成依据：`git show HEAD:check.sh`（不解析 bash 节结构，逐条抽出命令行），再逐条人工对照新声明。
+# extC 自检覆盖对照表：旧 check.sh（468 行 / 73 个 `==` 节，重写提交 `9e62cb8` 的父）里的每条命令 → tools/check.py 的新项名
+#   生成依据：`git show 9e62cb8^:check.sh`（不解析 bash 节结构，逐条抽出命令行），再逐条人工对照新声明。
+#   ⚠️ 不能写成 `HEAD:check.sh`：HEAD 上它已退化成本文件提到的 shim（10 行），命令集对不上。
 #   列：旧命令 <TAB> 新项名 <TAB> 旧行号 <TAB> 说明
 #
 # 验收用集合（两边 diff 必须为空）：
-#   git show HEAD:check.sh | grep -oE '(\./[a-z/]+\.sh|python3 tools/[a-z_]+\.py)' | sort -u  → 75 条
-#   grep -oE 同 pattern tools/check.py | sort -u                                                → 75 条
+#   git show 9e62cb8^:check.sh | grep -oE '(\./[a-z/]+\.sh|python3 tools/[a-z_]+\.py)' | sort -u  → 75 条
+#   grep -oE 同 pattern tools/check.py | sort -u                                                  → 75 条
+#   注：这个 pattern 的字符集不含 `-`，带连字符的项（如 tests/reclaim-shapes/run-evidence.sh）
+#   两边都数不到 —— 集合相等仍成立，但它**不等于**"没有新增项"（见文末第 4 条）。
 #   唯一不在上面 pattern 里的旧“命令”是 make -s（构建，新项 build）；
 #   另有 bash tests/*.sh、tests/annot/run.sh 等不带 ./ 前缀的旧命令，pattern 抓不到，本表也逐条列出。
 #   ./check.sh 只出现在旧脚本第 3/4 行的用法注释里（不是被执行的检查），新架构里它是 exec 到
@@ -108,8 +111,35 @@ N=500000 RUNS=1 ./bench/oi/run.sh	bench-oi	448	仅全量档；env 照搬；成�
 N=200000 Q=200000 V=200000 RUNS=1 ./bench/oi/persist/run.sh	bench-oi-persist	457	仅全量档；env 照搬；成功时打印「小规模对拍」行 + /^语言/,/^$/ 段
 # ---- 覆盖结论 ----
 # 1) 上面每一行旧命令都有新项名；没有一条旧命令被丢掉。
-# 2) 73 个 `==` 节 → 88 个新项：dyn 阶段1 节 (+8：9 条命令)、包验证节 (+1：诚实/食言两条)、
+# 2) 73 个 `==` 节 → 88 个新项（重写当时）：dyn 阶段1 节 (+8：9 条命令)、包验证节 (+1：诚实/食言两条)、
 #    实例化 impl/dyn 节 (+3：4 条命令)、STL 横评节 (+3：dyn 三档 + stl)，其余 1 节 = 1 项；
 #    另有 3 个基准节（./bench/run.sh / ./bench/heavy/run.sh / ./bench/stress/run.sh）只显示输出、
 #    不判 ok/FAIL —— 新架构里它们是“观察项”，仍会跑、但不计入通过/失败（与原语义一致）。
 # 3) 选不出来（未知 --only / 未知位置参数）会响亮报错，不静默跳过。
+# 4) 重写之后新增 5 项（旧 check.sh 没有对应命令，故不在上表）：
+#    · gate-reclaim-evidence（gate，约 5s）：`tests/reclaim-shapes/run-evidence.sh` —— 回收的因果闭合；
+#    · gate-hole-c（gate，约 1s）：`tests/reclaim-shapes/hole_c/run.sh` —— C 洞健全性（先赤后修那一支）；
+#    · gate-reclaim-perf（gate，约 3s）：`tests/reclaim-perf/gate.sh` —— 入口守卫的指令数上限；
+#    · gate-reclaim-ledger（gate，约 6s）：`tests/reclaim-gaps/ledger-gate.py` ——
+#      全语料回收能力账本（红计数①=13 逐条比；`--out build/reclaim-ledger` 不冲入库的 out/）；
+#    · gate-reclaim-gaps（bench，约 63s）：`python3 tests/reclaim-gaps/gate.py` —— 缺口矩阵棘轮
+#      （收不掉的集合 + 每个形状的 sanitizer 结论，两份基线）；
+#    · gate-reclaim-perf-shapes（gate，约 2s）：`tests/reclaim-perf/gate-shapes.sh` —— 真实形状
+#      `bt`/`rebuild` 小输入的指令数上限 + 开/关档输出逐字一致（小输入缺了就地生成）；
+#    · gate-reclaim-elide（gate，约 2.5s）：`python3 tests/reclaim-elide/gate.py` —— 计数收窄语料
+#      的棘轮（4 个「该省」形状在基线里；「不该省」形状必须仍有计数；接线未生效 ⇒ rc=2）；
+#    · gate-reclaim-tax（gate，约 1.1s）：`tests/reclaim-perf/gate-tax.sh` —— 回收税（bt 开档/关档
+#      的指令数比）≤ 现行线，棘轮只许往下拧（目标值 1.00×）；
+#    · gate-reclaim-perf-shapes（gate，约 1.8s）：真实形状 bt/rebuild 的指令数上限 + 开关语义。
+#    · reclaim-unit（tests，约 0.9s）：`tests/reclaim/run.sh` —— 回收运行期语义网（70 条断言 +
+#      ASan/UBSan）。（这一套此前**没接进 check.sh**，2026-10-12 补上。）
+#    · gate-shard（gate，约 4.6s）：`tests/reclaim-shapes/gate-shard.sh` —— 分片路径
+#      （`EXTC_RC_SHARDS`）：旋钮非空转 + 输出逐字一致 + 分片=8 下 N vs 4N 峰值比 < 1.5。
+#    · gate-reclaim-switch（gate，约 12s）：`tests/reclaim-shapes/run-switch.sh` ——
+#      开关形状主门禁 30 条（语义一致 + 每形状 N vs 4N 峰值/登记量 <1.5×）。
+#    · gate-wiring（gate，<0.1s，也在 smoke 里）：`tools/check_gate_wiring.py` ——
+#      自称门禁的脚本必须在电池可达闭包里（否则必须自报 `# manual: 理由`）。
+#    · gate-reclaim-count（gate，约 13s）：`EXTC_RC_NOCOUNT=0`（**非默认**计数模式）下同 31 条形状棘轮。
+#    现共 101 项：非基准 86 · 基准 15。
+#    分档：`smoke` = 快速高信号集（11 项，≈10s，见 tools/check.py 的 SMOKE）；
+#    `nobench` = 非基准全量（≈220s，CI 跑这档）；`quick` 是 `nobench` 的别名（名字不实，会自报一句）。

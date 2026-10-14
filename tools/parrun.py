@@ -29,27 +29,85 @@ import argparse
 import concurrent.futures as cf
 import os
 import re
+import signal
 import subprocess
 import sys
+import tempfile
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTC = ROOT / "build" / "extc"
 
+# 每个我们起的子进程都是一个**新会话**（`start_new_session=True`），会话号就是它的 pid。
+# 起的时候往这个目录里记一笔 `<sid>` → `<owner pid> <owner 启动时刻>`；正常收尾时删掉。
+# 收尾的 `reap_orphans()` 只回收"**登记过、且所有者进程已不存在**"的会话 ——
+# 于是它只杀自己的后代，邻居的进程一个都不碰。按进程名扫杀做不到这一点：进程名认不出
+# 谁是自己的后代，会把邻居正在跑的 `build/<名字>` 一起杀掉，所以那条路不能用 ✗。
+# 目录而不是单文件：每条记录一个文件，多进程并发登记/删除不需要加锁。
+REGISTRY = Path(tempfile.gettempdir()) / "extc-case-sessions"
 
-def sh(cmd, timeout=120):
+
+def _proc_starttime(pid):
+    """`/proc/<pid>/stat` 里的启动时刻（第 22 个字段）—— 判 pid 有没有被复用。"""
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as f:
+            body = f.read().rsplit(b")", 1)[1].split()
+        return int(body[19])
+    except (OSError, IndexError, ValueError):
+        return None
+
+
+def _owner_alive(owner, start):
+    """所有者还活着吗？连启动时刻一起比 —— pid 被复用时不会把别人的进程当成自己人。"""
+    cur = _proc_starttime(owner)
+    return cur is not None and (start < 0 or cur == start)
+
+
+def _session_alive(sid):
+    try:
+        os.killpg(sid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def register_session(sid, owner=None):
+    """记下"会话 `sid` 属于运行 `owner`"。owner 默认本进程。"""
+    owner = os.getpid() if owner is None else owner
+    start = _proc_starttime(owner)
+    try:
+        REGISTRY.mkdir(parents=True, exist_ok=True)
+        (REGISTRY / str(sid)).write_text(f"{owner} {start if start is not None else -1}\n")
+    except OSError:
+        pass
+
+
+def unregister_session(sid):
+    try:
+        os.unlink(REGISTRY / str(sid))
+    except OSError:
+        pass
+
+
+def sh(cmd, timeout=120, env=None):
     """Run one command, merge stderr into stdout, and never raise.
 
-    The command runs in its **own process group**, and a timeout kills the whole group.
+    The command runs in its **own session**, and a timeout kills that whole session.
     `extc --run` forks the compiled program, so killing only `extc` leaves that
     program behind as one orphan per timed-out case, spinning at 100% CPU. A hanging case
     must not outlive the test run.
+
+    The session is also **registered** for the duration: if this run is killed outright
+    (SIGKILL, so no cleanup here can run), a later `reap_orphans()` can still tell the
+    leftover session from a live neighbour's and collect it.
     """
     try:
         p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                             text=True, start_new_session=True)
+                             text=True, env=env, start_new_session=True)
     except OSError as e:
         return 127, f"(cannot run: {e})"
+    register_session(p.pid)
     try:
         out, _ = p.communicate(timeout=timeout)
         return p.returncode, out or ""
@@ -60,36 +118,166 @@ def sh(cmd, timeout=120):
         except subprocess.TimeoutExpired:
             out = ""
         return 124, ((out or "") + "(timed out)")
+    finally:
+        unregister_session(p.pid)
 
 
 def reap_orphans():
-    """Report and kill compiled test programs still running from this directory.
+    """Recover only **our own** leftovers, and name them.
 
-    A case that hangs must not outlive the run: `extc --run` forks the compiled program,
-    so a timed-out case leaves that program spinning forever when only the compiler is
-    killed, one orphan per case.
-    Anything matched here is by definition a leak, so it is killed and named.
+    A case that hangs must not outlive the run: `extc --run` forks the compiled program, so a
+    timed-out case leaves that program spinning forever when only the compiler is killed, one
+    orphan per case. A name-pattern sweep (`pgrep -f '^build/[A-Za-z0-9_]+$'`) cannot tell our
+    leftovers from a neighbour's live program -- it kills whatever matches, so a suite sharing
+    the machine with other items also kills *their* running compiled programs.
+
+    Ownership instead of a name pattern: every child we start is its own session and is
+    recorded with the run that started it (`register_session`). Here we kill exactly the
+    recorded sessions whose owner is gone -- a live owner's session, or any process we never
+    started, is left alone. A record whose owner is gone but whose session is empty is just
+    dropped.
     """
-    import signal
+    killed = []
     try:
-        out = subprocess.run(["pgrep", "-f", r"^build/[A-Za-z0-9_]+$"],
-                             capture_output=True, text=True, cwd=str(ROOT)).stdout
+        names = os.listdir(REGISTRY)
     except OSError:
         return 0
-    pids = [int(x) for x in out.split()]
-    for pid in pids:
+    for name in names:
+        rec = REGISTRY / name
         try:
-            os.kill(pid, signal.SIGKILL)
+            sid = int(name)
+            owner, start = (int(x) for x in rec.read_text().split()[:2])
+        except (OSError, ValueError, IndexError):
+            unregister_session(name)          # 坏记录：只清理，不杀任何东西
+            continue
+        if _owner_alive(owner, start):
+            continue                          # 别人的（或自己还在跑的）run：一根手指都不许碰
+        if _session_alive(sid):
+            try:
+                os.killpg(sid, signal.SIGKILL)
+                killed.append(sid)
+            except OSError:
+                pass
+        unregister_session(name)
+    if killed:
+        print(f"  [leak] 清理了 {len(killed)} 个**本次/上次自己运行**遗留的进程组: {killed}")
+    return len(killed)
+
+
+def _selftest_reap():
+    """`--reap-selftest`：三条语义判据，**对旧实现（按进程名扫杀）为红**。
+
+    ① 没登记过的进程一律不许动（哪怕它长得像编译产物、哪怕它的父进程还活着）；
+    ② 登记过、而所有者进程已不存在的会话，必须被收掉；
+    ③ 登记过、而所有者进程仍存在的会话，不许动。
+
+    判据用的替身程序叫 `build/reap_selftest_a` 且**不带参数** —— 名字落在
+    `^build/[A-Za-z0-9_]+$` 里，任何"按进程名扫杀"的实现都会在①③上变红，判据因此有牙。
+    """
+    import shutil
+    prog = ROOT / "build" / "reap_selftest_a"
+    tmp = Path(tempfile.mkdtemp(prefix="reap-selftest-"))
+    (tmp / "s.c").write_text("#include <unistd.h>\nint main(void){sleep(300);return 0;}\n")
+    cc = os.environ.get("CC", "cc")
+    built = subprocess.run([cc, "-O0", "-o", str(prog), str(tmp / "s.c")],
+                           capture_output=True, text=True)
+    bad = 0
+
+    def report(ok, what, detail=""):
+        nonlocal bad
+        print(("  ok   " if ok else "  \033[31mFAIL\033[0m ") + what + (f" —— {detail}" if detail else ""))
+        if not ok:
+            bad += 1
+
+    def spawn():
+        """起一个长命替身：cmdline 正好是 `build/reap_selftest_a`（不带参数），独立会话。"""
+        return subprocess.Popen(["build/reap_selftest_a"], cwd=str(ROOT),
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                start_new_session=True)
+
+    def dead(p, secs):
+        """等它真死。SIGKILL 是异步的，紧接着 `poll()` 会读到 None（判据假绿）。"""
+        try:
+            p.wait(timeout=secs)
+            return True
+        except subprocess.TimeoutExpired:
+            return False
+
+    def session_gone(sid, secs=2.0):
+        """等会话真清空。僵尸进程还挂在组里，`killpg(sid, 0)` 会短暂成功。"""
+        deadline = time.monotonic() + secs
+        while time.monotonic() < deadline:
+            if not _session_alive(sid):
+                return True
+            time.sleep(0.05)
+        return not _session_alive(sid)
+
+    if built.returncode != 0:
+        print(f"  FAIL 编译替身程序失败：{built.stderr.strip()[:200]}")
+        shutil.rmtree(tmp, ignore_errors=True)
+        return 1
+
+    # ① 别人的活进程：**不登记**（模拟另一个工具/另一棵树起的进程）⇒ 不许碰
+    other = spawn()
+    killed = reap_orphans()
+    alive = not dead(other, 0.5)
+    report(alive, "① 无关的、父进程还活着的进程没有被杀",
+           f"reap_orphans() 返回 {killed}；它{'仍活着' if alive else '被杀了'}")
+
+    # ② 所有者会消失的登记会话：fork 一个"运行"出来，它登记会话、起子进程、然后立刻退出
+    rfd, wfd = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        os.close(rfd)
+        try:
+            p = spawn()
+            register_session(p.pid, os.getpid())
+            os.write(wfd, str(p.pid).encode())
+            os.close(wfd)
+        finally:
+            os._exit(0)
+    os.close(wfd)
+    sid = int(os.read(rfd, 64).decode())
+    os.close(rfd)
+    os.waitpid(pid, 0)
+    killed = reap_orphans()
+    gone = session_gone(sid)
+    report(gone, "② 所有者已结束的登记会话被收掉",
+           f"sid={sid}，reap_orphans() 返回 {killed}；会话{'已清空' if gone else '还在'}")
+
+    # ③ 自己正在跑的 run：登记了但 owner 还活着 ⇒ 不许碰
+    mine = spawn()
+    register_session(mine.pid, os.getpid())
+    killed = reap_orphans()
+    alive = not dead(mine, 0.5)
+    report(alive, "③ 自己正在跑的 run 的进程组没有被误收",
+           f"reap_orphans() 返回 {killed}；它{'仍活着' if alive else '被杀了'}")
+
+    # 收尾：把自检自己起的东西清干净（三条判据都不依赖它）
+    for p in (other, mine):
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+            p.wait(timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    unregister_session(mine.pid)
+    if _session_alive(sid):
+        try:
+            os.killpg(sid, signal.SIGKILL)
         except OSError:
             pass
-    if pids:
-        print(f"  [leak] 清理了 {len(pids)} 个跑飞的编译产物进程: {pids}")
-    return len(pids)
+    for f in (prog,):
+        try:
+            os.unlink(f)
+        except OSError:
+            pass
+    shutil.rmtree(tmp, ignore_errors=True)
+    print(f"reap 语义自检：{'通过' if not bad else f'失败 {bad}'}")
+    return 1 if bad else 0
 
 
 def kill_group(p):
     """Kill the process group `p` leads, then reap it."""
-    import signal
     try:
         os.killpg(os.getpgid(p.pid), signal.SIGKILL)
     except (ProcessLookupError, PermissionError, OSError):
@@ -191,11 +379,9 @@ def case_scan(f, token, env):
     e = dict(os.environ)
     if env:
         e.update(env)
-    try:
-        p = subprocess.run([str(EXTC), str(f), "-o", os.devnull],
-                           capture_output=True, text=True, timeout=120, env=e)
-        out = (p.stdout or "") + (p.stderr or "")
-    except subprocess.TimeoutExpired:
+    # 走 `sh()`：会话 + 登记（同 cases 档），超时按进程组杀，跑飞的编译不许赖着。
+    rc, out = sh([str(EXTC), str(f), "-o", os.devnull], env=e)
+    if rc == 124 and out.endswith("(timed out)"):
         return False, 0, "(timed out)"
     out, nDep = strip_deprecated(out)
     return (token not in out), nDep, out
@@ -246,7 +432,13 @@ def main():
     ap.add_argument("--mode", default="cases",
                     choices=["cases", "compiles"] + sorted(SCAN_MODES),
                     help="cases=三个用例套件；其余=并行编译整个语料查某个标记")
+    ap.add_argument("--reap-selftest", action="store_true",
+                    help="只跑孤儿回收的三条语义判据（别人的活进程不许动 / 自己的遗留要收 / "
+                         "自己正在跑的不许动），不跑用例")
     args = ap.parse_args()
+
+    if args.reap_selftest:
+        return _selftest_reap()
 
     if not EXTC.exists():
         print(f"parrun: {EXTC} 不存在 —— 先 make", file=sys.stderr)

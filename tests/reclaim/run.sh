@@ -40,7 +40,7 @@ if ! "$CC" -std=c11 -Wall -Wextra -Wpedantic -Werror -O1 -g -I "$work" \
         tests/reclaim/driver.c -o "$work/driver" 2>"$work/driver.log"; then
     bad "断言程序编译失败（-Werror）"; sed 's/^/    /' "$work/driver.log"; exit 1
 fi
-if ! out=$("$work/driver"); then
+if ! out=$(timeout 120 "$work/driver"); then
     printf '%s\n' "$out" | sed 's/^/    /'
     bad "断言失败"
     exit 1
@@ -52,7 +52,7 @@ ok "全部断言通过"
 echo "== ASan / UBSan（内存安全形状要真的跑得干净）=="
 if "$CC" -std=c11 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -I "$work" \
         tests/reclaim/driver.c -o "$work/driver-asan" 2>"$work/asan-build.log"; then
-    if "$work/driver-asan" >"$work/asan.out" 2>"$work/asan.err"; then
+    if timeout 300 "$work/driver-asan" >"$work/asan.out" 2>"$work/asan.err"; then
         ok "ASan/UBSan 运行干净（$(tail -1 "$work/asan.out")）"
     else
         bad "ASan/UBSan 报错"

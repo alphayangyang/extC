@@ -1,0 +1,35 @@
+/* **健全性反例**：被调者写引用槽 ⇒ 本函数的局部拷贝**不许省**。
+ *
+ * `check` 里 `var q = p` 看着像纯读，但它调了 `dropbox`，而 `dropbox` 写引用槽
+ * （`b.head = null`）—— 那是一次 `dec`。若实现只看"本函数没写槽"就省掉 `q` 的 `+1`，
+ * 这次 `dec` 就会把对象的 `hold` 打到 0 ⇒ 当场释放 ⇒ 后面 `peek(q)` 读的是悬垂槽。
+ *
+ * 形状安排成"对象的**唯一持有边**就是 `b.head`"：对象由 `mknode()` 造出来直接存进字段，
+ * main 里没有别的局部绑定给它计数 ⇒ 计数在则 `hold` 2 → dropbox 后 1 → 活着（读到零初始化的 `v=0`）；
+ * 计数被误省则 `hold` 1 → dropbox 后 0 → 释放 → `v` 是垃圾。
+ *
+ * 语义面（绿的要求）：输出 `v=0`（对象是零初始化的 `new node`；**误省**时读到的是空闲链残留，不是 0）。判据：用户区**必须**有计数调用，且 `check` 里那一处
+ * 必须是 `extc_rc_initRef`（不是 `NoHold`）。
+ */
+use std::io
+
+struct node { val: i64  next: ?ref node }
+struct box  { head: ?ref node }
+
+fn peek(p: ?ref node) -> i64 { if p == null { return -1 }  return (*p).val }
+fn dropbox(b: mut ref box) -> i64 { b.head = null  return 0 }
+
+fn check(p: ?ref node, b: mut ref box) -> i64 {
+    var q = p                       /* ← 不许省：被调者会销账 */
+    if q == null { return 0 }
+    dropbox(b)
+    return peek(q)
+}
+
+fn main() -> i32 {
+    var b: box = { head: null }
+    b.head = new node               /* 唯一持有边：没有别的局部绑定给它计数 */
+    var v: i64 = check(b.head, ref b)
+    io::cout << "v=" << v << "\n"
+    return 0
+}

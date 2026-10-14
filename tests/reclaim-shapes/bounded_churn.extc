@@ -1,0 +1,50 @@
+/* 形状 ⑪：**低于 floor 的 churn** —— 每轮分配一个小对象、上一轮立刻不可达。
+ *
+ * 这是"计数 vs 清扫"分工的**分界形状**：总分配量随轮数线性涨（N=200000 时 3.2 MB、
+ * N=800000 时 12.8 MB，都远超 `EXTC_RC_FLOOR`=1 MiB），但**活集是常数**。
+ *
+ *   · 有持有者计数：每轮的对象当场归零回收 ⇒ 峰值 = 常驻（与轮数无关）。
+ *   · 只靠清扫（`EXTC_RC_NOCOUNT=1`）：对象要等一次区域清扫才能回收；关键是
+ *     `bytes` 只增不减 ⇒ 很快越过 `max(2·live, floor)` ⇒ 清扫**照常触发** ⇒ 峰值仍有界。
+ *
+ * 两种模式都必须满足 N vs 4N 峰值比 < 1.5（`run-switch.sh` ①l），语义逐字 `rounds=N kept=1`。
+ * 这条形状存在的理由：它是"去掉计数会不会让低于 floor 的 churn 无界"这个问题的最小判据 ——
+ * 该问题在语料里此前没有形状能回答。
+ */
+use std::io
+
+struct cell {
+    next: ?mut ref cell
+    pad: i64
+}
+
+fn parseRounds(args: slice<slice<u8>>) -> i64 {
+    if args.len < 2 { return 200000 }
+    var s: slice<u8> = args[1]
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    return v
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var rounds: i64 = parseRounds(args)
+    var kept: mut ref cell = new cell
+    kept.pad = 1
+    var i: i64 = 0
+    while i < rounds {
+        var n = new cell
+        n.pad = i
+        i = i + 1
+    }
+    var live: i64 = 0
+    if kept.pad == 1 { live = 1 } else { live = 0 }
+    io::cout << "rounds=" << rounds << " kept=" << live << "\n"
+    return 0
+}

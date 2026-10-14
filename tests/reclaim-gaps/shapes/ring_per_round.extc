@@ -1,0 +1,68 @@
+/* tests/reclaim-gaps/shapes/ring_per_round.extc —— 每轮建一条 **闭环**，环头存进长命槽。
+ *
+ * 与 `own_room_cycle`（阳性对照）的区别只在**环跨了两只区域**：
+ *   · 环头 `head` 在**外层循环体**里 `new` ⇒ 区域 `regionOf(&__extc_a[1], 1)`；
+ *   · 256 个结点 `t` 在**内层循环体**里 `new` ⇒ 区域 `regionOf(&__extc_a[2], 2)`；
+ *   · 环尾 `(*cur).next = head` 于是是一条 `r1 → r0` 的跨区边，登记成**种子**；
+ *   · 环头 `head.next = t` 是一条 `r0 → r1` 的跨区边，同样登记成种子。
+ * 跨区种子只在"持有它的槽被释放"时撤销（`freeSlot` → `unlinkChildren`）⇒ 两只区域互相钉住：
+ * 各自的标记都能从种子走到整整一环，`freedSlots = 0` ⇒ 自学习把 `scale` 翻倍、阈值涨到
+ * `EXTC_RC_SCALE_MAX`（17 GB）⇒ 该区域彻底不扫 ⇒ **峰值随轮数线性涨**。
+ *
+ * 根因不是"回收没触发"，而是**区域划分切开了一条环**（`docs/RECLAMATION.md` 的"一起生一起死
+ * 的东西放在同一层区域里"）。同一形状把两只区域并成一只（生成物里 `__extc_rcr1 = __extc_rcr0`）
+ * 实测峰值平（见 README §G8 的三条消融）。
+ *
+ * 轮数来自 argv[1]（`run-gaps.sh` 的 SCALE 段用 N vs 4N）。每轮垃圾 ≈ 256 × 4112 B ≈ 1 MiB。
+ * 期望：开档峰值随规模涨（**收不掉**，登记在 `gate-known-bad.txt`）；`EXTC_RECLAIM=0` 做对照。
+ */
+use std::io
+
+struct node {
+    val: i64
+    next: ?ref node
+    pad: [512]i64
+}
+
+fn parseI64(s: slice<u8>) -> i64 {
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    return v
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var n: i64 = parseI64(args[1])
+    var keep: ?ref node = null
+    var i: i64 = 0
+    var sink: i64 = 0
+    while i < n {
+        var head = new node
+        head.val = i
+        head.next = null
+        var cur: mut ref node = head
+        var j: i64 = 0
+        while j < 256 {
+            var t = new node
+            t.val = j
+            t.next = null
+            (*cur).next = t
+            cur = t
+            j = j + 1
+        }
+        (*cur).next = head        /* 闭环：整轮是一条环垃圾 */
+        keep = head
+        sink = sink + i
+        i = i + 1
+    }
+    var v: i64 = 0
+    if keep != null { v = (*keep).val }
+    io::cout << "v=" << v << " rounds=" << n << " sink=" << sink << "\n"
+    return 0
+}

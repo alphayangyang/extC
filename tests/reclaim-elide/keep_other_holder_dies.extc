@@ -1,0 +1,33 @@
+/* `keep_other_holder_dies.extc` —— 反例：**"另有持有者"这句话不够**。
+ *
+ * 本目录原有的四类"该省/不该省"都只钉**策略**（计数该不该发）；这一条钉**健全性**：
+ * 把 `b.head = keep` 的 `inc` 省掉，程序会**读出错的值**。
+ *
+ * 形状：`b.head = keep` 之后，`keep` 这个"另一个持有者"被 `keep = new node` **覆盖掉** ——
+ * 覆盖的那一刻它的 `dec` 就是老对象的最后一次销账。于是"还有别的持有者"这个理由在
+ * 覆盖之后**不成立**了。
+ *
+ * 正确条件不是"存在别的持有者"，而是"**那条持有边在 `b.head = keep` 活着期间不会被销账**"。
+ * 实测（见 CHANGELOG）：省掉那次 `inc` ⇒ 读到 `v=2`（基线 `v=7`）。
+ *
+ * 语义面（绿的要求）：编译通过 + 输出 `v=7`。
+ */
+use std::io
+
+struct node { val: i64  next: ?ref node }
+struct box { head: ?ref node }
+
+fn main() -> i32 {
+    var keep = new node
+    keep.val = 7
+    keep.next = null
+    var b: box = { head: null }
+    b.head = keep            // ← 若省掉这次 inc：下面的覆盖会把它打到 0
+    keep = new node          // ← "另一个持有者"在这里被覆盖（老对象少一个持有者）
+    keep.val = 2
+    keep.next = null
+    var v: i64 = -1
+    if b.head != null { v = (*b.head).val }
+    io::cout << "v=" << v << "\n"
+    return 0
+}

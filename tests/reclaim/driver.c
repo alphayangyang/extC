@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 typedef struct Node { struct Node *next; } Node;                /* 16 字节（槽大小 16） */
 typedef struct Pair { struct Node *a; struct Node *b; } Pair;   /* 16 字节，两个指针字段 */
@@ -27,6 +28,23 @@ typedef struct Wide { uint64_t pad; struct Node *p; } Wide;     /* 16 字节，�
 #include "extc_reclaim_runtime.inc"
 
 static int g_pass, g_fail;
+static void fail(const char *what);   /* 定义在后面：预算那条路要用它 */
+
+/* ---- 预算：长循环必须在预算内跑完，否则**红并退出**（不是卡住） ----------------
+ *
+ * 为什么需要：把触发语义改坏（例如忘了重算压力阈值 ⇒ 一分配就扫）之后，下面那些
+ * 10 万~100 万轮的循环会进入病态清扫，**卡住而不是给出一行红** —— 那样判据就只能靠
+ * 调用方的超时兜住。有了预算，注入会得到一个**快的 FAIL**（见 CHANGELOG 第十四刀）。 */
+#define EXTC_DRIVER_BUDGET_SEC 20.0
+static clock_t g_deadline;
+static void budget(const char *what) {
+    if (clock() > g_deadline) {
+        fail(what);
+        printf("  [budget] 超过 %.0f 秒预算 ⇒ 判据以失败告终（不是继续卡住）\n",
+               EXTC_DRIVER_BUDGET_SEC);
+        exit(1);
+    }
+}
 
 static void ok(const char *what) { printf("  ok   %s\n", what); g_pass++; }
 static void fail(const char *what) { printf("  FAIL %s\n", what); g_fail++; }
@@ -37,12 +55,16 @@ static void check(int cond, const char *what) { if (cond) ok(what); else fail(wh
  * 这里故意准备三种字段数/偏移不同的布局来抓"一张区域级表套所有对象"的漏。 */
 static const uint32_t g_offNode[1] = { (uint32_t)offsetof(Node, next) };
 static const uint32_t g_offPair[2] = { (uint32_t)offsetof(Pair, a), (uint32_t)offsetof(Pair, b) };
+#if !EXTC_RC_NOCOUNT
 static const uint32_t g_offWide[1] = { (uint32_t)offsetof(Wide, p) };
+#endif
 
 static const ExtcRcType g_data = { 0u, NULL };      /* 没有引用字段：一个都不追 */
 static const ExtcRcType g_node = { 1u, g_offNode };
 static const ExtcRcType g_pair = { 2u, g_offPair };
+#if !EXTC_RC_NOCOUNT
 static const ExtcRcType g_wide = { 1u, g_offWide };
+#endif
 
 static ExtcRcRegion *regionNew(int32_t rid, int64_t floor) {
     ExtcRcRegion *r = extc_rc_regionNew(rid);      /* 类型描述符随槽走 ⇒ 区域只认领一个号 */
@@ -51,6 +73,7 @@ static ExtcRcRegion *regionNew(int32_t rid, int64_t floor) {
 }
 
 /* ---------------------------------------------------------------- 分配 / 释放 */
+#if !EXTC_RC_NOCOUNT
 static void t_allocFree(void) {
     ExtcRcRegion *r = regionNew(1, 4096);
     check(extc_rc_bytes(r) == 0 && extc_rc_slabCount(r) == 0, "空区域：零占用、零 slab");
@@ -79,8 +102,10 @@ static void t_allocFree(void) {
     check(extc_rc_sweeps(r) == 0, "计数归零不走清扫");
     extc_rc_regionFree(r);
 }
+#endif
 
 /* ---------------------------------------------------------------- 环必须由清扫收回 */
+#if !EXTC_RC_NOCOUNT
 static void t_cycle(void) {
     ExtcRcRegion *r = regionNew(2, 4096);
     Node *a = (Node *)extc_rc_alloc(r, sizeof(Node), &g_node);
@@ -97,8 +122,10 @@ static void t_cycle(void) {
     check(extc_rc_sweeps(r) == 1 && extc_rc_scale(r) == 0, "环：真收到东西 ⇒ 自学习复位");
     extc_rc_regionFree(r);
 }
+#endif
 
 /* ---------------------------------------------------------------- 饱和计数不得提前释放 */
+#if !EXTC_RC_NOCOUNT
 static void t_saturate(void) {
     ExtcRcRegion *r = regionNew(3, 4096);
     Node *p = (Node *)extc_rc_alloc(r, sizeof(Node), &g_node);
@@ -112,8 +139,10 @@ static void t_saturate(void) {
     check(freed == 1 && extc_rc_bytes(r) == 0, "饱和：只能由清扫收回");
     extc_rc_regionFree(r);
 }
+#endif
 
 /* ---------------------------------------------------------------- 释放后登记位被清 */
+#if !EXTC_RC_NOCOUNT
 static void t_staleRegister(void) {
     ExtcRcRegion *r = regionNew(4, 4096);
     Node *b = (Node *)extc_rc_alloc(r, sizeof(Node), &g_node);
@@ -133,8 +162,10 @@ static void t_staleRegister(void) {
     check(freed == 1 && !extc_rc_isLive(b2), "登记：陈旧入口不会把新对象救活");
     extc_rc_regionFree(r);
 }
+#endif
 
 /* ---------------------------------------------------------------- 跨区登记 + 区域外止步 */
+#if !EXTC_RC_NOCOUNT
 static void t_crossRegion(void) {
     ExtcRcRegion *ra = regionNew(5, 4096);
     ExtcRcRegion *rb = regionNew(6, 4096);
@@ -156,6 +187,166 @@ static void t_crossRegion(void) {
     check(freedB == 0 && extc_rc_isLive(b1) && extc_rc_isLive(b2),
           "跨区：B 从入边位图播种，链条完整（残留标记会把孩子释放掉）");
     check(extc_rc_hold(b1) == 1 && extc_rc_hold(b2) == 1, "跨区：计数仍由指针赋值维护");
+    extc_rc_regionFree(ra);
+    extc_rc_regionFree(rb);
+}
+#endif
+
+/* ---------------------------------------------------------------- 跨区入边计数的饱和粘住 */
+static void t_rsSat(void) {
+    ExtcRcRegion *rb = regionNew(8, 4096);
+    Node *v = (Node *)extc_rc_alloc(rb, sizeof(Node), &g_node);
+    /* 目标槽被 6.5 万条跨区入边指着：计数到顶**必须粘住** —— 回绕到 0 会让「还有活入边」
+     * 这条判断失效，目标就可能在还有入边时被清扫掉（不安全方向）。 */
+    for (int k = 0; k < 70000; k++) extc_rc_rsInc(v);
+    check(extc_rc_rsCount(v) == EXTC_RC_HOLD_SAT, "跨区计数：到顶粘住");
+    extc_rc_rsDec(v);                                     /* 撤一条：饱和值不再减回去 */
+    check(extc_rc_rsCount(v) == EXTC_RC_HOLD_SAT, "跨区计数：饱和值不再减回去");
+    check(extc_rc_isRegistered(v), "跨区计数：饱和时登记位仍在");
+    size_t freed = extc_rc_collect(rb, NULL, 0);
+    check(freed == 0 && extc_rc_isLive(v), "跨区计数：饱和时目标绝不被提前回收");
+    extc_rc_regionFree(rb);
+
+    /* 第二阶段：走**真实跨区赋值**（区域比较 + 登记）把同一个目标槽压到饱和 ——
+     * 只压内部 API 的话，证明的是"计数在饱和处粘住"，证明不了"真实路径走得到饱和"。 */
+    ExtcRcRegion *ra = regionNew(9, 4096);
+    ExtcRcRegion *rc = regionNew(10, 4096);
+    Node *w = (Node *)extc_rc_alloc(rc, sizeof(Node), &g_node);
+    Pair *holder[70000];
+    for (int k = 0; k < 70000; k++) {
+        holder[k] = (Pair *)extc_rc_alloc(ra, sizeof(Pair), &g_pair);
+        extc_rc_storeRefOwnedReg((void **)&holder[k]->a, w, ra);   /* A 区槽写 C 区对象 */
+    }
+    check(extc_rc_rsCount(w) == EXTC_RC_HOLD_SAT, "跨区计数（真实路径）：到顶粘住");
+    extc_rc_storeRefOwnedReg((void **)&holder[0]->a, NULL, ra);    /* 撤一条 */
+    check(extc_rc_rsCount(w) == EXTC_RC_HOLD_SAT, "跨区计数（真实路径）：饱和值不再减回去");
+    check(extc_rc_isRegistered(w), "跨区计数（真实路径）：饱和时登记位仍在");
+    size_t freed2 = extc_rc_collect(rc, NULL, 0);
+    check(freed2 == 0 && extc_rc_isLive(w), "跨区计数（真实路径）：饱和时目标绝不被提前回收");
+    extc_rc_regionFree(ra);
+    extc_rc_regionFree(rc);
+}
+
+/* ---------------------------------------------------------------- 撤销：不留陈旧登记位 */
+static void t_unregister(void) {
+    /* "登记与撤销成对"这条不变量的**撤销侧**：跨区边撤掉时，目标槽的计数与登记位要跟着撤。
+     * 两条边 + 一个额外持有者，是为了把这条路径**隔离**出来：单个持有者在计数档下会因归零
+     * 被 `freeSlot` 顺手清位（那是另一条路径），于是注入 `rsdec-nop` 会被它掩盖、看不出来。 */
+    ExtcRcRegion *ra = regionNew(16, 4096);
+    ExtcRcRegion *rb = regionNew(17, 4096);
+    Pair *a = (Pair *)extc_rc_alloc(ra, sizeof(Pair), &g_pair);   /* 来源槽 1 */
+    Pair *c = (Pair *)extc_rc_alloc(ra, sizeof(Pair), &g_pair);   /* 来源槽 2 */
+    Pair *keep = (Pair *)extc_rc_alloc(ra, sizeof(Pair), &g_pair);
+    Pair *b = (Pair *)extc_rc_alloc(rb, sizeof(Pair), &g_pair);   /* 目标 */
+    extc_rc_initRef((void **)&keep->a, b);        /* 额外持有者：不让 b 的持有者计数归零 */
+    extc_rc_storeRefOwnedReg((void **)&a->a, b, ra);   /* 跨区边 1 */
+    extc_rc_storeRefOwnedReg((void **)&c->a, b, ra);   /* 跨区边 2 */
+    check(extc_rc_rsCount(b) == 2, "撤销：两条跨区边 ⇒ 目标入边计数 2");
+
+    extc_rc_storeRefOwnedReg((void **)&a->a, NULL, ra);         /* 撤边 1 */
+    check(extc_rc_rsCount(b) == 1 && extc_rc_isRegistered(b),
+          "撤销：撤掉一条边后计数减一、登记位仍在");
+
+    extc_rc_storeRefOwnedReg((void **)&c->a, NULL, ra);         /* 撤边 2 */
+    check(extc_rc_rsCount(b) == 0 && !extc_rc_isRegistered(b),
+          "撤销：边全撤掉后登记位清掉（否则目标被多留）");
+    extc_rc_regionFree(ra);
+    extc_rc_regionFree(rb);
+}
+
+/* ---------------------------------------------------------------- 回收持有者：出边登记跟着撤 */
+static void t_unlink(void) {
+    /* 一个对象被回收时，它**手里**的跨区边也要从目标槽上撤掉（`unlinkChildren`）。
+     * 撤不掉的方向是保守的（目标被多留一会儿），但"多留"会一路累积成不回落的占用；
+     * 这条是登记与撤销成对的另一半，此前只被形状级判据间接守着。 */
+    ExtcRcRegion *ra = regionNew(18, 4096);
+    ExtcRcRegion *rb = regionNew(19, 4096);
+    Pair *a = (Pair *)extc_rc_alloc(ra, sizeof(Pair), &g_pair);   /* 持有者（A 区）*/
+    Pair *b = (Pair *)extc_rc_alloc(rb, sizeof(Pair), &g_pair);   /* 目标（B 区）*/
+    extc_rc_storeRefOwnedReg((void **)&a->a, b, ra);              /* A 的槽 -> B 的对象 */
+    check(extc_rc_rsCount(b) == 1 && extc_rc_isRegistered(b), "撤销链：边建立后目标入边计数 1");
+
+    extc_rc_collect(ra, NULL, 0);        /* a 无根 ⇒ 被回收 ⇒ 它手里的出边必须撤掉 */
+    check(extc_rc_rsCount(b) == 0 && !extc_rc_isRegistered(b),
+          "撤销链：持有者被回收时，出边的登记跟着撤（否则目标被多留）");
+    extc_rc_regionFree(ra);
+    extc_rc_regionFree(rb);
+}
+
+/* ---------------------------------------------------------------- 分配器：一个槽不会重复发出 */
+static int cmp_ptr(const void *x, const void *y) {
+    const void *a = *(const void *const *)x, *b = *(const void *const *)y;
+    return a < b ? -1 : (a > b ? 1 : 0);
+}
+static int has_dup(void **v, int n) {                 /* 排序后看相邻 */
+    qsort(v, (size_t)n, sizeof v[0], cmp_ptr);
+    for (int i = 1; i < n; i++) if (v[i] == v[i - 1]) return 1;
+    return 0;
+}
+static void t_slotUnique(void) {
+    /* 分配器最基本的不变量：**活着的对象地址两两不同**。清扫释放掉的槽会被复用，但复用只能
+     * 发生在"已经没人指着"的槽上 —— 这条正是"提前回收/悬垂"的最上游表现，值得自己钉一条，
+     * 而不是只靠 ASan 语料与峰值界间接守着。 */
+    enum { N = 1024 };
+    static void *p[N], *q[N / 2], *roots[N / 2];
+    ExtcRcRegion *r = regionNew(15, 1 << 20);
+    for (int i = 0; i < N; i++) p[i] = extc_rc_alloc(r, 16, &g_data);
+    check(!has_dup(p, N), "槽唯一：首批 N 个对象地址两两不同");
+
+    for (int i = 0; i < N / 2; i++) roots[i] = p[2 * i];   /* 只留偶数下标当根 */
+    extc_rc_collect(r, roots, N / 2);                      /* 另一半被清扫 ⇒ 槽进空闲链 */
+    for (int i = 0; i < N / 2; i++) q[i] = extc_rc_alloc(r, 16, &g_data);
+
+    check(!has_dup(q, N / 2), "槽唯一：复用之后新拿到的这批也两两不同");
+    int clash = 0;
+    for (int i = 0; i < N / 2 && !clash; i++)
+        for (int k = 0; k < N / 2; k++) if (q[i] == roots[k]) { clash = 1; break; }
+    check(!clash, "槽唯一：复用绝不把还活着的槽再发一次");
+    check(extc_rc_live(r) >= N / 2, "槽唯一：活集没被复用打穿");
+    extc_rc_regionFree(r);
+}
+
+/* ---------------------------------------------------------------- 义务 7：种子不完整就退出清扫 */
+static void t_noSweep(void) {
+    /* 宿主证不出来的跨区赋值（`f()->f = v`、视图元素）没有可信的种子位置。这时**唯一安全的方向**
+     * 是让目标所在区域整个退出清扫（只靠计数回收）—— 扫一个种子不完整的区域就可能把还被指着的
+     * 对象放掉。这条不变量此前**只有形状级判据间接守着，单测里一条都没有**。 */
+    ExtcRcRegion *ra = regionNew(13, 4096);
+    ExtcRcRegion *rb = regionNew(14, 4096);
+    Pair *a = (Pair *)extc_rc_alloc(ra, sizeof(Pair), &g_pair);
+    Pair *b = (Pair *)extc_rc_alloc(rb, sizeof(Pair), &g_pair);
+    void *roots[1] = { a };
+    extc_rc_owe(ra);
+    check(extc_rc_checkOwed(ra, roots, 1) == 0, "义务 7：种子完整时照常销账（回收 0 个）");
+    check(extc_rc_isLive(a), "义务 7：有根，目标活着");
+
+    extc_rc_storeRefUnknown((void **)&b->a, a);      /* 宿主证不出来 ⇒ 只能保守 */
+    extc_rc_owe(ra);
+    check(extc_rc_checkOwed(ra, roots, 1) == -1, "义务 7：之后目标区域一个字节都不扫（退出清扫）");
+    check(extc_rc_isLive(a), "义务 7：保守之后目标仍然活着（宁可少收）");
+
+    void *rootsb[1] = { b };
+    extc_rc_owe(rb);
+    check(extc_rc_checkOwed(rb, rootsb, 1) == 0, "义务 7：宿主区域不受影响，照常清扫");
+    extc_rc_regionFree(ra);
+    extc_rc_regionFree(rb);
+}
+
+/* ---------------------------------------------------------------- bump 槽在按槽登记之外 */
+static void t_bumpCross(void) {
+    /* `extc_rc_bump` 交出的槽**从不置占用位**，而 `rsIncSlab`/`rsDecSlab` 对无占用位的槽一律
+     * 早退 ⇒ 按槽登记对 bump 对象不适用（整片 `bumpReset` 才是它的回收方式）。这条用例把
+     * 这个设计事实钉住：跨区赋值后目标**不会**被登记，但也**不会**留下陈旧登记。 */
+    ExtcRcRegion *ra = regionNew(11, 4096);
+    ExtcRcRegion *rb = regionNew(12, 4096);
+    Pair *b = (Pair *)extc_rc_alloc(rb, sizeof(Pair), &g_pair);
+    Pair *a = (Pair *)extc_rc_bump(ra, sizeof(Pair));
+    check(a != NULL && b != NULL, "bump 跨区：负载摆好");
+    extc_rc_storeRefOwnedReg((void **)&b->a, a, rb);       /* B 区槽 <- A 区 bump 对象 */
+    check(!extc_rc_isRegistered(a), "bump 跨区：bump 槽在按槽登记之外（登记对它不适用）");
+    check(extc_rc_isLive(b) && b->a == (void *)a, "bump 跨区：赋值本身照常生效");
+    extc_rc_storeRefOwnedReg((void **)&b->a, NULL, rb);
+    check(!extc_rc_isRegistered(a), "bump 跨区：撤销后同样不留登记");
     extc_rc_regionFree(ra);
     extc_rc_regionFree(rb);
 }
@@ -227,6 +418,7 @@ static void t_ownsGuard(void) {
 /* ---------------------------------------------------------------- 描述符随槽：按对象自己的走 */
 /* Wide 的指针在**第二个**字，Node 在第一个字。若运行时用一张区域级表（或把某个对象的描述符
  * 套到别的对象上），要么漏标链尾、要么把数据字当指针读 ⇒ 这里会释放掉活对象。 */
+#if !EXTC_RC_NOCOUNT
 static void t_perSlotType(void) {
     ExtcRcRegion *r = regionNew(13, 4096);
     Wide *w = (Wide *)extc_rc_alloc(r, sizeof(Wide), &g_wide);
@@ -244,8 +436,10 @@ static void t_perSlotType(void) {
     check(extc_rc_hold(x) == 1 && extc_rc_hold(y) == 1, "描述符随槽：计数仍由指针赋值维护");
     extc_rc_regionFree(r);
 }
+#endif
 
 /* 同一个槽被复用成**另一种布局**：描述符必须随新分配换掉，不能留着上一任的。 */
+#if !EXTC_RC_NOCOUNT
 static void t_slotReuseType(void) {
     ExtcRcRegion *r = regionNew(14, 4096);
     Wide *w = (Wide *)extc_rc_alloc(r, sizeof(Wide), &g_wide);
@@ -266,6 +460,7 @@ static void t_slotReuseType(void) {
           "复用：新分配的描述符生效（残留的 Wide 描述符会走到垃圾字上）");
     extc_rc_regionFree(r);
 }
+#endif
 
 /* 兜底描述符：`alloc<T>(n)` 的元素偏移随运行期计数变，静态描述符表达不了 ⇒ 保守标记扫每个字。 */
 static void t_conservative(void) {
@@ -316,12 +511,50 @@ static void t_trigger(void) {
     extc_rc_regionFree(r);
 }
 
+/* ------------------------------------------------- 压力阈值缓存：三个更新点都要生效 */
+/* `thr = max(2·live, floor)·scale` 被缓存进区域（每次分配只做一次比较）。它的三个输入只在
+ * 三处变：`live`/`scale` 在 collect 末尾、`floor` 在 regionFloor、建区域在 regionNew。
+ * 下面三条各自钉一个更新点：任何一个忘记重算，`shouldSweep` 就会用**过期的阈值**，
+ * 这三条立刻红。 */
+static void t_thresholdCache(void) {
+    /* ① collect 之后：`live` 变成"存活字节"，阈值必须是 2×存活（陈旧的小阈值会让
+     *    紧随其后的一次判定直接为真）。 */
+    ExtcRcRegion *r = regionNew(11, 4096);
+    void *keep = extc_rc_alloc(r, sizeof(Pair), &g_pair);
+    while (extc_rc_bytes(r) <= 4096) (void)extc_rc_alloc(r, sizeof(Pair), &g_pair);
+    void *roots[1] = { keep };
+    int got = extc_rc_maybeCollect(r, roots, 1);
+    check(got > 0, "阈值缓存①：清扫真的收掉了垃圾");
+    check(!extc_rc_shouldSweep(r), "阈值缓存①：清扫后立刻不触发（阈值已按新的 live 重算）");
+    extc_rc_regionFree(r);
+
+    /* ② 改 floor：把压力线抬到当前占用之上，必须立刻不触发（陈旧阈值仍是旧 floor）。 */
+    r = regionNew(12, 4096);
+    while (extc_rc_bytes(r) <= 4096) (void)extc_rc_alloc(r, sizeof(Pair), &g_pair);
+    check(extc_rc_shouldSweep(r), "阈值缓存②：旧 floor 下确实触发");
+    extc_rc_regionFloor(r, (int64_t)1 << 20);
+    check(!extc_rc_shouldSweep(r), "阈值缓存②：抬高 floor 后立刻不触发（阈值已重算）");
+    extc_rc_regionFree(r);
+
+    /* ③ scale 翻倍：一次一无所获的清扫把倍数 ×2，阈值跟着 ×2。 */
+    r = regionNew(13, 4096);
+    void *all[300];
+    for (int i = 0; i < 300; i++) all[i] = extc_rc_alloc(r, sizeof(Pair), &g_pair);
+    int freed = extc_rc_maybeCollect(r, all, 300);        /* 全是根 ⇒ 一个也收不掉 */
+    check(freed == 0, "阈值缓存③：一无所获的清扫收到了 0");
+    check(extc_rc_scale(r) == 2, "自学习：一无所获把倍数翻到 2");
+    check(!extc_rc_shouldSweep(r), "阈值缓存③：倍数翻倍后阈值 ×2，当下不触发");
+    extc_rc_regionFree(r);
+}
+
 /* ---------------------------------------------------------------- 无环有界负载：不进清扫 */
+#if !EXTC_RC_NOCOUNT
 static size_t boundedLiveSweeps(long n, int64_t *bytesOut) {
     ExtcRcRegion *r = regionNew(10, 4096);
     void *slots[64];
     memset(slots, 0, sizeof slots);
     for (long i = 0; i < n; i++) {
+        if ((i & 4095) == 0) budget("无环有界负载：预算内没跑完（触发/回收语义坏了？）");
         void *nd = extc_rc_alloc(r, sizeof(Node), &g_node);
         extc_rc_storeRef(&slots[i & 63], nd);      /* 覆盖即释放旧的 */
         (void)extc_rc_maybeCollect(r, slots, 64);
@@ -331,7 +564,9 @@ static size_t boundedLiveSweeps(long n, int64_t *bytesOut) {
     extc_rc_regionFree(r);
     return sw;
 }
+#endif
 
+#if !EXTC_RC_NOCOUNT
 static void t_acyclic(void) {
     int64_t b1 = 0, b2 = 0;
     size_t s1 = boundedLiveSweeps(10000, &b1);
@@ -339,6 +574,7 @@ static void t_acyclic(void) {
     check(b1 <= 64 * 16 && b2 == b1, "无环有界负载：占用不随规模增长");
     check(s1 == 0 && s2 == 0, "无环负载：规模涨 20 倍，清扫次数都是 0");
 }
+#endif
 
 /* ---------------------------------------------------------------- 自学习退场 */
 static size_t liveGrowthSweeps(long n, int64_t *scaleOut) {
@@ -346,6 +582,7 @@ static size_t liveGrowthSweeps(long n, int64_t *scaleOut) {
     void **roots = (void **)malloc((size_t)n * sizeof(void *));
     if (!roots) { fail("自学习：roots 分配失败"); extc_rc_regionFree(r); return 0; }
     for (long i = 0; i < n; i++) {
+        if ((i & 4095) == 0) budget("自学习负载：预算内没跑完（触发/回收语义坏了？）");
         roots[i] = extc_rc_alloc(r, sizeof(Node), &g_node);   /* 全部从根可达 ⇒ 一个都收不回 */
         (void)extc_rc_maybeCollect(r, roots, (size_t)i + 1);
     }
@@ -370,19 +607,43 @@ static void t_learning(void) {
 
 int main(void) {
     printf("== reclaim 运行期断言 ==\n");
+#if !EXTC_RC_NOCOUNT
     t_allocFree();
+#endif
+#if !EXTC_RC_NOCOUNT
     t_cycle();
+#endif
+#if !EXTC_RC_NOCOUNT
     t_saturate();
+#endif
+#if !EXTC_RC_NOCOUNT
     t_staleRegister();
+#endif
+#if !EXTC_RC_NOCOUNT
     t_crossRegion();
+#endif
+    t_rsSat();
+    t_bumpCross();
+    t_noSweep();
+    t_slotUnique();
+    t_unregister();
+    t_unlink();
     t_types();
     t_ownsGuard();
+#if !EXTC_RC_NOCOUNT
     t_perSlotType();
+#endif
+#if !EXTC_RC_NOCOUNT
     t_slotReuseType();
+#endif
     t_conservative();
+    g_deadline = clock() + (clock_t)(EXTC_DRIVER_BUDGET_SEC * (double)CLOCKS_PER_SEC);
     t_bump();
     t_trigger();
+    t_thresholdCache();
+#if !EXTC_RC_NOCOUNT
     t_acyclic();
+#endif
     t_learning();
     printf("通过 %d，失败 %d\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

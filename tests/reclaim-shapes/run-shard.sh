@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# manual: 停顿/峰值/吞吐的**对照实验**（证据脚本）；分片门禁是 gate-shard.sh
 # tests/reclaim-shapes/run-shard.sh —— **停顿/分片对照实验**（`EXTC_RC_SHARDS`）
 #
 # 这不是门禁（门禁是 `run-switch.sh` 的 ①e）；这是**证据脚本**，口径跟 `run-evidence.sh`：

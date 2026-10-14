@@ -1,0 +1,24 @@
+/* 形状 E4（**该省** · 跨过程"本帧不会销账"）：**纯读递归**。
+ *
+ * 这是 `bt` 的 `check()` 的最小化：`count` 只读引用、只调自己（互相递归也可以），
+ * 一不写引用槽、二没有解析不到的调用/extern/并发 ⇒ 它的动态执行区间里**没有 `dec`**。
+ * 既然没有 `dec`，`var q = p` 那一次 `+1` 就永远不会被销账 —— 省掉它不会让任何对象提前释放。
+ *
+ * 判据（绿的要求）：这个形状编译出来的用户区**一个计数调用都不该有**
+ * （`extc_rc_initRefNoHold` 不算计数，名字不同）。
+ * 语义面：`count(null) == 0` ⇒ 输出 `n=0`。
+ */
+use std::io
+
+struct node { val: i64  next: ?ref node }
+
+fn count(p: ?ref node) -> i64 {
+    var q = p                       /* ← 该省：本函数（含被调者）不会销账 */
+    if q == null { return 0 }
+    return i64(1) + count((*q).next)
+}
+
+fn main() -> i32 {
+    io::cout << "n=" << count(null) << "\n"
+    return 0
+}

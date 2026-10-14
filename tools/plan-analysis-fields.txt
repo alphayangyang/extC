@@ -1,5 +1,9 @@
 # 分析侧字段（只有检查器读写；codegen 一读就必须搬走并配 planXxx 访问器）
+acyclicWhy
 borrowed
+fnAcyclic
+fnReclaimIdle
+fnRefsCounted
 homeDepth
 lamSig
 lexicalLevel
@@ -9,3 +13,4 @@ qualified
 refDepth
 reuse
 storedAt
+storeRefKind

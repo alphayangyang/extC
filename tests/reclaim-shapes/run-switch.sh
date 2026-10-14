@@ -61,7 +61,9 @@ TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 
 # 开关：**默认打开**（`reclaim-default` 接线之后；带回收管辖分配点的程序自动带运行期）。
 # 本脚本的两档一律**显式**给值，不看默认：
-#   开档 = `EXTC_RECLAIM=1`（强制发射，与默认档在这些形状上等价）；
+#   开档 = `EXTC_RECLAIM=1`（**允许**回收 / 不强制发射）。②（"这个区域不需要回收"的静态
+#          证明）判 idle 的单元**整段不发射 rc 运行期**；本脚本的形状都会被判否，所以这一档
+#          仍与默认档等价。⚠️ 因此它**不能**再当"一定有运行期"用：要断言发射，请先看生成物。
 #   关档 = `EXTC_RECLAIM=0`（明确关掉）。⚠️ 不能再用 `env -u EXTC_RECLAIM` 表示"关"：
 #   接线之后 unset 就是**默认打开**，那样两档是同一档，"关掉必须红"的证据就没了。
 case "${EXTC_RECLAIM-1}" in
@@ -102,6 +104,51 @@ build_run() { # <源文件> [程序参数...]
     fi
 }
 
+# ── ①l bounded_churn：低于 floor 的 churn 也必须与轮数解耦 ──────────────────
+# 这一条是"去掉计数会不会让低于 floor 的 churn 无界"的最小判据：总分配量随轮数线性涨、
+# 活集是常数。有计数靠归零回收；只靠清扫（`EXTC_RC_NOCOUNT=1`）时 `bytes` 只增不减 ⇒
+# 照常越过 `max(2·live, floor)` ⇒ 两种模式都必须有界。语料里此前没有形状能回答这个问题。
+echo "-- ①l bounded-churn N→4N：低于 floor 的 churn 峰值必须与轮数解耦 --"
+build_run tests/reclaim-shapes/bounded_churn.extc 200000
+bc_n_c=$BR_C; bc_n_rc=$BR_RC; bc_n_out=$BR_OUT; bc_n_rss=$BR_RSS
+build_run tests/reclaim-shapes/bounded_churn.extc 800000
+bc_f_c=$BR_C; bc_f_rc=$BR_RC; bc_f_out=$BR_OUT; bc_f_rss=$BR_RSS
+if [ "$bc_n_c" = ok ] && [ "$bc_f_c" = ok ] && [ "$bc_n_rc" = 0 ] && [ "$bc_f_rc" = 0 ] \
+   && [ "$bc_n_out" = "rounds=200000 kept=1" ] && [ "$bc_f_out" = "rounds=800000 kept=1" ]; then
+    bc_ratio=$(awk -v a="$bc_n_rss" -v b="$bc_f_rss" 'BEGIN { printf "%.2f", b/a }')
+    if awk -v a="$bc_n_rss" -v b="$bc_f_rss" 'BEGIN { exit !(b < a * 1.5) }'; then
+        ok "bounded-churn N→4N：$(rss_mb "$bc_n_rss") → $(rss_mb "$bc_f_rss")（${bc_ratio}× < 1.5×）—— churn 的界与轮数无关"
+    else
+        bad "bounded-churn N→4N：$(rss_mb "$bc_n_rss") → $(rss_mb "$bc_f_rss")（${bc_ratio}× ≥ 1.5×）—— churn 的界仍随轮数涨"
+    fi
+else
+    bad "bounded-churn N→4N：编译/运行/语义没同时成立（N: c=$bc_n_c rc=$bc_n_rc out=$bc_n_out / 4N: c=$bc_f_c rc=$bc_f_rc out=$bc_f_out）"
+fi
+
+# ── ①m live_churn：大活集 + churn 的**绝对**峰值上界 ────────────────────────
+# ①/①l 判的是"界随不随轮数涨"；这一条判**稳态峰值本身**：活集 live_n 个 16 B 结点，
+# 再 churn 同样量级。上界按形状参数给：峰值 ≤ 4×(live_n×16 B) + 4 MiB。
+# 依据（CHANGELOG 第十一刀）：无计数 7.6/11.1/15.7 MB、计数 7.8/11.4/16.4 MB；
+# 把清扫关掉（`-DEXTC_RC_FLOOR=1TiB`）在 20 万那一档是 22.5 MB ⇒ 越界会红。
+echo "-- ①m live-churn 绝对峰值：≤ 4×活集字节 + 4 MiB --"
+lc_bad=0
+for lc_pair in "200000 200000" "800000 800000"; do
+    lc_live=${lc_pair%% *}
+    build_run tests/reclaim-shapes/live_churn.extc $lc_pair
+    lc_c=$BR_C; lc_rc=$BR_RC; lc_out=$BR_OUT; lc_rss=$BR_RSS
+    lc_want="live=$lc_live churn=${lc_pair##* } ok=1"
+    lc_bound_kb=$(( (lc_live * 16 * 4) / 1024 + 4096 ))
+    if [ "$lc_c" != ok ] || [ "$lc_rc" != 0 ] || [ "$lc_out" != "$lc_want" ]; then
+        bad "live-churn live=$lc_live：编译/运行/语义没同时成立（c=$lc_c rc=$lc_rc out=$lc_out want=$lc_want）"
+        lc_bad=1
+    elif [ -n "$lc_rss" ] && [ "$lc_rss" -le "$lc_bound_kb" ]; then
+        ok "live-churn live=$lc_live：$(rss_mb "$lc_rss") ≤ 上界 $(rss_mb "$lc_bound_kb")（4×活集 + 4 MiB）"
+    else
+        bad "live-churn live=$lc_live：$(rss_mb "$lc_rss") > 上界 $(rss_mb "$lc_bound_kb") —— 稳态峰值越过 4×活集"
+        lc_bad=1
+    fi
+done
+
 # ── ① scale_growth：峰值与轮数无关（开关关掉，这条就是红的）─────────────────────
 echo "-- ① scale-growth N→4N：峰值必须与轮数解耦 --"
 build_run tests/reclaim-shapes/scale_growth.extc 200000
@@ -124,7 +171,7 @@ fi
 # 形状见 tests/reclaim-shapes/cyclic_pressure.extc 的文件头：桶满时整条双向链退役 ⇒ 链内
 # next/prev 互指、每个节点都还有入边 ⇒ 持有者计数**永不归零** ⇒ 计数归零一个也放不掉，
 # 只有区域清扫能收。判据：
-#   · 默认（开关关）与开关开：输出**逐字一致**（回收只换运行期，不改语义）；
+#   · 关档（`EXTC_RECLAIM=0`）与开档：输出**逐字一致**（回收只换运行期，不改语义）；
 #   · 开关开 N vs 4N：峰值比 < 1.5（界与轮数解耦）。
 # 同一形状开关关掉时 ≈3.4×（run.sh 基线里那条红）；「清扫真的上场」的对照实验（把清扫触发
 # 阈值抬到 1 TB ⇒ 一次清扫都不发 ⇒ 峰值重新随轮数涨 ≈3.5×）在 run-evidence.sh。
@@ -132,7 +179,8 @@ echo "-- ①b cyclic-pressure N→4N：有环形状的峰值必须与轮数解�
 CYC_WANT_N="rounds=200000 retired=22208 live=128 fwd=25591744 back=25591744 idx=20000 cache=1024 hits=155520 depth=212 tree=true"
 CYC_WANT_F="rounds=800000 retired=88832 live=512 fwd=409468672 back=409468672 idx=20000 cache=1024 hits=622272 depth=80 tree=true"
 
-# 编译 cyclic_pressure：on 带开关，off 显式不带（`env -u`，因为本脚本已 export 了开关）。
+# 编译 cyclic_pressure：on 显式 `EXTC_RECLAIM=1`，off 显式 `EXTC_RECLAIM=0`
+# （本脚本已 `export EXTC_RECLAIM=1`，所以关档必须就地覆盖成 0；不能用 `env -u` —— 那是默认开档）。
 cyc_build() { # <on|off> <tag> → CY_C=ok/fail
     local mode=$1 tag=$2
     CY_C=fail
@@ -296,9 +344,17 @@ el_build() { # <on|off> <tag> → EL_C=ok/fail；开关开时另给 EL_SEED（�
     if [ "$1" = on ] && [ "$EL_C" = ok ]; then
         el_kids=$(grep -E 'storeRef(Owned|Unknown)' "$TMP/el-$2.c" | grep -F 'kids' | grep -F 'keeper')
         case "$el_kids" in
+            # 按**调用形状**判，不钉字面 owner 写法：登记那两支是 `storeRefOwned` /
+            # `storeRefOwnedReg`（后者把宿主区域当实参，省一次查表），且 owner **不是**
+            # `(void *)(0)`（旧写法 = 既没登记也没退出清扫，必须仍然是 bad）。
             *storeRefUnknown*) EL_SEED="保守路径（目标区域退出清扫）" ;;
-            *'(void *)(s));'*) EL_SEED="登记（owner = 容器对象 s）" ;;
-            *)                 EL_SEED="bad" ;;
+            *)
+                if grep -E 'extc_rc_storeRefOwnedReg?\(\(void \*\*\)' "$TMP/el-$2.c" \
+                        | grep -qv '(void \*)(0))'; then
+                    EL_SEED="登记（owner = 容器对象或它的区域）"
+                else
+                    EL_SEED="bad"
+                fi ;;
         esac
     fi
 }

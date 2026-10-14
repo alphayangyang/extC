@@ -1,0 +1,50 @@
+/* 形状：**引用只住在局部量里** —— 事件档当前盲点的最小复现（预期红，见 README「已知盲点」）。
+ *
+ * 每轮 `new` 一个结点、只由本轮作用域的局部量 `p` 持有，什么都不存进任何 rc 槽。
+ *
+ * 现有事件路径只数"rc 槽 → 对象"这条边：局部量**不产生 hold**（`initRef` 的 +1 在块
+ * 退出时不撤销）⇒ 每个 `new` 出来的对象 `hold` 永不归零 ⇒ 事件档下谁也不释放它，
+ * 内存随轮数线性涨。对照形状是 `bench/gc/src/churn.extc`（3 200 万轮，实测 5 100 KB →
+ * 831 852 KB）；这一条用 argv 控轮数，做成 gate 里**轻量**的预期红格。
+ *
+ * 注意它与分析侧的关系：`EXTC_DBG_ACYCLIC=1` 实测把这一条判成 **fn=0**
+ * （`reason=iv:line 40: 嵌套块里的引用型局部量`）⇒ 今天不会被自动放进事件档。
+ * 所以这条红是**潜在**的：它钉的是"计数完备"这个前提本身还差一块（缺根引用计数）；
+ * 一旦 (iv) 放宽或根引用计数落地，这一格就是那道必须跨过的门。
+ *
+ * 这条红**不是**"判据太严"：根引用计数落地（`tests/reclaim-elide/` 那条线）之后，
+ * 这一格必须转绿 —— `known-red.txt` 是棘轮。
+ */
+use std::io
+
+struct node { v: i64  next: ?ref node }
+
+/* argv[1] 是十进制轮数（没给就是 8）。 */
+fn parseRounds(args: slice<slice<u8>>) -> i64 {
+    if args.len < 2 { return 8 }
+    var s: slice<u8> = args[1]
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    return v
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var n: i64 = parseRounds(args)
+    var acc: i64 = 0
+    var i: i64 = 0
+    while i < n {
+        var p = new node            /* 唯一持有者 = 局部量 ⇒ 现有事件路径看不见这条边 */
+        p.v = i
+        acc = acc + p.v
+        i = i + 1
+    }
+    io::cout << "rounds=" << n << " acc=" << acc << "\n"
+    return 0
+}
