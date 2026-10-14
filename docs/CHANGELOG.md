@@ -1,3 +1,31 @@
+## 2026-10-15 · 再删两处冗余查表：`unlinkChildren` 每子边两次 `ownSlab`、`alloc` 无条件清 `rscnt` —— `cross_region` 指令 **−5.0%**、`shard_bands` −1.6%、`evict` −1.3%
+
+**动机（量出来的，不是猜的）**：D 落地后重新剖析五形状，把"每子边 / 每分配"上的调用按 **频率 × 单次成本** 排序（全运行期入口的动态频率探针 + callgrind 行级自成本）：
+- `cross_region@200k` 的成本高水位里，`unlinkChildren`（15.0M）与 `ownSlab`（14.1M）排第二、第三：`regionOfOwn(c) != s->region` 内部查一次 `ownSlab`，紧接着 `rsDec(c)` 又对**同一个指针**查一次 ⇒ **每条跨区入边两次查表**。
+- `alloc` 里 `s->rscnt[i] = 0` 是**每分配一次**的写，而复用的槽在 `freeSlot` 尾部已经清零，只有 `bump++` 出来的新槽需要它。
+
+**机制**（`src/back/reclaim.c`）：
+- `extc_rc_unlinkChildren` 的两个分支都改成"一次查表 + `extc_rc_rsDecSlab`"：
+  `if (c) { ExtcRcSlab *cs = extc_rc_ownSlab(c); if (cs && cs->region != s->region) extc_rc_rsDecSlab(cs, c); }`
+  （`cs == 0` ⇔ 原来的 `regionOfOwn == 0`，两种写法都在此时早退；`rsDecSlab` 与 `rsDec` 是同一条计账，只是不再重复查表。）
+- `extc_rc_alloc`：把 `s->rscnt[i] = 0` 从公共路径挪进 `else { i = (size_t)s->bump++; … }` 新槽分支。
+
+**实测**（callgrind `Ir`，`-O2 -g`；改前 = 与 HEAD `99838c7` 逐字节相同的干净构建，源码 md5 `0364d423…`；改后 = 主树）：
+
+| 形状 | 改前 | 改后 | Δ |
+|---|---|---|---|
+| `cross_region@200k` | 101,918,642 | **96,806,741** | **−5.02%** |
+| `shard_bands@200k` | 282,215,015 | **277,611,601** | −1.63% |
+| `rg_evict_cache@300k` | 56,142,949 | **55,439,478** | −1.25% |
+
+`cross_region` 的 `extc_rc_ownSlab` self 14.08M → 9.83M。**负对照**：`evict`/`shard` 对第一刀完全不敏感（它们 `rsIncN == 0` ⇒ `unlinkChildren` 从不被调用）—— 收益只落在"有真实跨区登记"的语料上，这正是按频率×成本挑刀的结果。
+
+五形状（p5 / cross_region / evict / shard_bands / digraph）输出与 `EXTC_RECLAIM=0` **逐字相同**，RSS 同量级且回收档更低（如 `shard_bands` 3.7 MB vs 关档 149 MB）。墙钟两刀都在噪声内 —— 收益是**指令级**的。
+
+**闸门**：`./check.sh nobench` **100/0**、`docs` **12/0**、`gate-reclaim-*` 12 项 + `gate-rc-idle-corpus` + `gate-idle-projection` + `gate-note-part` **16/0**、`pool` **2/0**（都独占跑）；ASan/UBSan 抽样 5 形状干净；N vs 4N：cross 1.00 / shard 1.00 / evict 1.05 / digraph 1.00（p5 3.30× 是该形状活集 O(N)，改前同值）。
+
+**残留（如实）**：① 第二刀依赖"把槽放回空闲链的路径只有 `freeSlot`，且它清零 `rscnt`"—— 将来新增回收路径而忘了清零就会破；② 第一刀的 `rsDecSlab` 替换在 `cs == 0`（不是槽）与同区这两个边界上与 `rsDec` 等价，目前是**推理 + 五形状逐字同**，还没有一条注入判据专门钉住这个等价；③ 两条刀在没有跨区登记、或不走空闲链复用的形状上看不出收益（负结果与未覆盖项见本次审计）。
+
 ## 2026-10-15 · 删掉赋值侧两次冗余 `notePart`：`shard_bands` **79.6 → 45.3 ms（−43%）**、窗口 **102.7 → 10.9 µs**，`evict` **18.4 → 15.7 ms（−15%）**
 
 **动机（量出来的，不是猜的）**：`evict_cache` 的火力全在赋值路径 —— callgrind 里 `extc_rc_storeRefOwned` 占 self 22.4%，它调的 `ownSlab` 占 21.2%。其中最大一笔是 `notePart(owner ? regionOfOwn(owner) : 0)`：为维护「参与区域数」（`partN`，单区域免登记快路径的闸门），**每次赋值都要查一次区域**。而任何 rc 槽的区域在它诞生时就已经记过参与（`extc_rc_alloc` 里无条件 `notePart(r)`）⇒ 赋值侧那次查询**冗余**。`shard_bands` 尤其明显：它的引用面几乎只有赋值、没有大面积分配，于是每次赋值都白付一次查找。
