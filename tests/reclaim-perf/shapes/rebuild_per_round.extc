@@ -1,0 +1,58 @@
+/* 形状：**每轮重建一条链、每轮丢** —— 判据 (a′)+(b′)（"循环里建、每轮丢"）的安全网形状。
+ *
+ * 这是真实程序里最常见的循环模式（`bench/gc/src/rebuild.extc` 的骨架）：每轮把"建链 + 遍历"
+ * 包在一个块里，块内 `var c = new node` 新建、`c.next = h` 挂到本轮链上、`h = c` 把游标指到
+ * 新结点。块尾整片 arena 释放 ⇒ **回收无事可做**，该单元应当整段不发射 rc 运行期。
+ *
+ * 它在 `gate-idle-bounded.sh` 里当"新判 idle 的这一类的峰值有界"的判据：N vs 4N 的峰值 RSS
+ * 必须 < 1.5×，且默认档产物与 `EXTC_RECLAIM=0` 逐字节相同（rc 记号 0 个）。argv[1] = 轮数
+ * （默认 50000），与 `bounded_churn` 同一约定。
+ */
+use std::io
+
+struct node {
+    v: i64
+    next: ?ref node
+}
+
+fn parseRounds(args: slice<slice<u8>>) -> i64 {
+    if args.len < 2 { return 50000 }
+    var s: slice<u8> = args[1]
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    if v > 0 { return v }
+    return 50000
+}
+
+fn main(args: slice<slice<u8>>) {
+    var rounds: i64 = parseRounds(args)
+    var acc: i64 = 0
+    var r: i64 = 0
+    while r < rounds {
+        {
+            var h: ?ref node = null
+            var i: i64 = 0
+            while i < 64 {
+                var c = new node
+                c.v = i
+                c.next = h
+                h = c
+                i = i + 1
+            }
+            var p = h
+            while p != null {
+                acc = acc + p.v
+                p = p.next
+            }
+        }
+        r = r + 1
+    }
+    println(acc)
+}

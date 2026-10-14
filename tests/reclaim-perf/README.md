@@ -35,6 +35,27 @@
 > **落地状态**：第 1 条（入口守卫）**已经落进 `src/back/codegen.c`**，判据 `gate.sh` 先红后绿，
 > N=2e5 开关开实测 **−56.5 %**。本文 §1–§4 的所有数字都是**落地前**的归因（绑在 `build/extc`
 > md5 `5e51d77f…` 上）；落地后的数字与复跑见 §0 第 1 条、§5.1 第 1 行、§7.4 的 `gate.sh` 与 §8 末条。
+>
+> 第 2 条（`owns` 登记表查询 O(1) 化）**也已经落地**（`src/back/reclaim.c` 的运行期文本），
+> 落地后把 `gate.sh` 的线收紧到 **425 000 000**：N=2e5 **404 358 444 Ir**（相对入口守卫那一版 −20.8 %）；
+> 真实形状 `bt` **1120 → 640 ms**、`rebuild` **420 → 360 ms**。§5.1 第 2 行与 §9 已按落地后的状态更新。
+>
+> 第三刀（**赋值路径上每个指针只查一次登记表**）也落了：`storeRefOwned` 复用 slab、记账走
+> `*Slab` 变体、命中路径去冗余比对 ⇒ `gate.sh` 的线再收到 **356 000 000**，N=2e5
+> **339 186 860 Ir**（相对第二刀 −16.1 %）。真实形状 `rebuild` 360 → **320 ms**；
+> **`bt` 的墙钟 610 → 610 ms 没动**（Ir 只 −3.8 %）—— 见 §9 的说明。
+>
+> 第六刀（**`rsIncN==0` 时跳过「撤跨区边」的走查**）：`cyclic_pressure` **279 224 856 Ir**
+>（线收到 **294 000 000**）；`bt` −5.3 %、`rebuild` −10.0 %；`bt` 的税 **1.910×**。
+>
+> 第四刀（**热路径小助手一律 `static inline`**）也落了：`slabOf`/`slotOf`/`bit`/`word`/`ownSlab`
+> ⇒ `gate.sh` 的线收到 **324 000 000**，N=2e5 **308 485 778 Ir**（相对第三刀 −9.1 %）。
+> 三个形状的 Ir 一起降（`bt` −10.7 %、`rebuild` −9.9 %），但**墙钟几乎不动**
+> （`bt` best-of-9 610 → 570 ms 而均值持平，`rebuild` 330 → 330 ms）。
+> 原因见 §10 的消融：**墙钟确实由指令决定，但不由"我们前四刀减掉的那些指令"决定** ——
+> `bt` 的墙钟差几乎全在 `initRef` 里那一行计数上；把回收入口的总 Ir 降 9 % 而没碰到它，
+> 墙钟自然不动。（早先这里写过"这三个形状是内存受限"，那是从"Ir 降了墙钟没动"推出来的，
+> **已被消融推翻**：见 §10 的更正。）
 
 **1412 项根表**从哪来：`world` 这个帧内结构体的**全部 `ref` 槽**——`cache[1024]` + `tree[256]`
 + `bkHead[64]` + `bkTail[64]` + `last`/`idxHead`/`retire` = **1411**，两个站点再加当轮新分配的
@@ -50,7 +71,9 @@
    `rcEmitTrigger`），收益 **56.5 %**（N=2e5 实测 1 169 388 408 → 508 581 405 Ir），
    判据 [`gate.sh`](gate.sh)（改动前红、改动后绿）。§5.1 及 §8 的对应条目已按落地后的状态更新。
 
-2. **`owns` 登记表查询 O(1) 化**（直接映射 + 校验，碰撞回落二分）—— 收益 **~10 %**，改动在运行时，风险低。
+2. ~~**`owns` 登记表查询 O(1) 化**（直接映射 + 校验，碰撞回落二分）~~ —— **已落地**（−20.8 %）；
+   其后又落了**第三刀**（赋值路径上每个指针只查一次登记表），两刀合计 **−33.6 %**（相对第一刀那一版）。
+   细节与真实形状的数字见 §0 落地状态与 §9。下一档是第 3 条，但上界要按当前剖析重算。
 3. **`owns` 守卫静态化**（能证明是 rc 槽的赋值直接发计数）—— 收益上界 **23 %**，前端要传"来源是 rc 槽"的信息，风险中（判错即 SEGV）。
 4. **计数按编译期收窄** —— 收益 ≤ **10.7 %**，成本中高，红判据在 [`tests/reclaim-elide/`](../reclaim-elide/)。
 5. **根表去重/共享** —— 单独做**指令收益为 0**，只省生成物体积（根表占生成物 **64 %**，121.5 KB → ~40 KB）。
@@ -334,7 +357,7 @@ Program received signal SIGSEGV
 | 序 | 动作 | 实测收益 | 实现成本 | 风险 | 判据/回归 |
 |---|---|---|---|---|---|
 | **1** | **分配点入口守卫**（**已落地**） | **56.1 %**（N=8e5 实测）；落地后 N=2e5 **−56.5 %** | **极低**：codegen 把 `extc_rc_maybeCollect(r, (void*[]){…}, n)` 包成 `{ ExtcRcRegion *t = extc_rc_regionOf(…); if (extc_rc_shouldSweep(t)) extc_rc_maybeCollect(t, (void*[]){…}, n); }` | **≈0**：`maybeCollect` 第一句就是同一判据（同一份 `extc_rc_shouldSweep`）⇒ 语义逐字等价 | [`gate.sh`](gate.sh)（先红后绿）+ `tests/reclaim-shapes/run-switch.sh`（17 条全绿，关掉仍红）+ `run-evidence.sh`（清扫确实上场） |
-| **2** | **登记表查询 O(1) 化** | **10.3 %**（N=2e5）；`ownLower` 自身 11.9 % 是上界 | 低：运行时加一张直接映射表，`ownAdd`/`ownDel` 维护，命中即用、未命中回落二分 | **低**：回落路径保证语义不变（`guardfast` 原型已验证输出逐字一致） | `tests/reclaim-shapes/run-switch.sh` + 4 个 SEGV 用例 |
+| **2** | **登记表查询 O(1) 化**（**已落地**）＋**第三刀：赋值路径每个指针只查一次**＋**第四刀：热路径 `static inline`** | N=2e5 **510 475 244 → 404 358 444 → 339 186 860 → 308 485 778 Ir**；真实形状 `rebuild` 420 → **330 ms**、`bt` 1120 → **570–610 ms**（后两刀的墙钟与 Ir 脱钩：三个形状内存受限） | 低：直接映射命中缓存 + `*Slab` 记账变体 + `inline`（**不给 `always_inline`**，强制内联在 `rebuild` 上反而 +0.5 %） | **低**：判据与回落路径一字不改（原型与落地后输出都逐字一致；运行时 70 条断言 + ASan 干净） | [`gate.sh`](gate.sh)（现行线 324 000 000 = 第四刀实测 × 1.05）+ `run-switch.sh` 30/0 + `hole_c` 7/0 |
 | **3** | **`owns` 守卫静态化** | 上界 **23.0 %**（守卫总量）；实际取决于能证明多少赋值 | 中高：前端把"这个引用值来自 rc 槽"的来源信息传到 codegen，能证明的直接发 `inc`/`dec`，不发 `ownSlab` | **中**：判错就是 SEGV/漏收 —— 正是 `tests/heap/loan`、`tests/heap/plate`、`tests/cabi/heapmain`、`tests/coro/iterator_protocol` 钉的那条 | 同上 4 个用例 + `tests/reclaim-shapes/run-switch.sh` |
 | **4** | **计数按编译期收窄**（`RECLAMATION.md` 五节末条） | ≤ **10.7 %**（计数自身）；`nohold` 上界 17 % | 中高：编译期唯一性/新鲜度证明 | 中：`tests/reclaim-elide/` 既有绿判据与**红判据**都必须不动 | `tests/reclaim-elide/run.sh` |
 | 5 | 根表**去重/共享** | 指令 **0 %**；生成物体积 **−64 %**（121.5 KB → ~40 KB） | 低（codegen 去重） | 低 | 生成物 diff |
@@ -528,8 +551,9 @@ diff <(sed 's/[0-9]\+//g' /tmp/pristine.c) <(sed 's/[0-9]\+//g' /tmp/on.c) | hea
 |---|---|---|
 | `rootprobe.py` | 只读插桩：每个站点的根表**槽数 / 曾非空数 / 永久死槽数 / 平均非空数**，站点调用次数；`ownSlab` 的五类互斥分类、`ownLower` 次数、登记表最大条目数 | 只加计数，不改任何判据；结果走 stderr，前缀 `extc_probe` |
 | `latemark.py` | **槽地址延迟绑定**原型：把"每分配点物化值表"换成"每站点建一次槽地址表、清扫时解引用" | 只改 `/tmp` 生成物副本 |
+| `../inject.py`（`tools/`）| **注入验牙**：`--list` 列出注入（`thr-stale` / `rsinc-drop` / `sweep-never` / `overregister` / `perf-lookup` / **`count-noinc`**（只打计数档））；每条会改源码 → 重编 → 跑期望判据（**必须红**）→ 还原 → 再跑（**必须绿**），且默认在硬链接副本树里跑、收尾核对原树未被改动 | 手工注入有**忘记还原**的隐患；用这个工具代替 |
 | `ablate.py` | 单项消融/原型：`guardfast`（登记表 O(1)）/ `guardfirst`（入口守卫）/ `nohold`（拆计数，上界）/ `noreg`、`noreg0`（拆跨区登记）/ `padN`（根表补空到 N 项） | `nohold`/`noreg` 会改健全性或内存行为，**只能当上界**；`guardfast`/`guardfirst`/`noreg0`/`padN` 语义不变（可验证输出逐字一致）。入口守卫**已在 codegen 落地** ⇒ `guardfirst` 对新生成物是 **no-op**（`already guarded`，该变体 == `on`） |
-| `gate.sh` | **性能判据**（本目录唯一有牙的脚本）：开关开的 `cyclic_pressure` 固定 N=200000，callgrind 总指令数 ≤ 701 633 044（= 改动前实测 × 0.6）；口径与 `run.sh` 一致 | 入口守卫**落地前红**（1.169 G > 0.702 G）、落地后绿（0.509 G）。用法：`tests/reclaim-perf/gate.sh` |
+| `gate.sh` | **性能判据 + 槽号索引判据**：①开关开的 `cyclic_pressure` 固定 N=200000，callgrind 总指令数 ≤ 现行线（**线在脚本头部，每落地一次就往下拧一次**）；②`slotindex.c` 把发射出来的 `extc_rc_rcpOf`/`extc_rc_slotOf` 在 16..1 MiB 的每个 16 倍步长 × 全部合法槽号上做**域内穷举**（槽步长按 16 字节取整 ⇒ 索引是乘倒数右移，算错一格就会漏认合法槽 ⇒ 悬垂） | 性能线落地过一次就收紧一次（现行线见脚本头）；索引判据有牙：注入 `EXTC_RC_RCP_SHIFT` 42 → 19 ⇒ `slotindex: FAIL`（140384 处不符，exit 1）。用法：`tests/reclaim-perf/gate.sh` |
 | `run.sh` | 一键复跑上面全部：固定编译器 → 生成/编译 → 语义校验 → callgrind → 打印总表与差值 | `N=`、`SMALL=`、`SKIP_PROTO=1` 可调 |
 
 ---
@@ -582,10 +606,269 @@ diff <(sed 's/[0-9]\+//g' /tmp/pristine.c) <(sed 's/[0-9]\+//g' /tmp/on.c) | hea
 ⇒ **开销在 `owns` 守卫上**，不在计数（`storeRefOwned` 1.5 %）也不在清扫（0.08 %）。
 指令比只有约 2.2×，而**墙钟**是 4.7× —— 差在守卫的数据结构（登记表有序 + 二分）**cache 不友好**。
 
-**下一步的两条路**（都需要再量）：
-1. **静态化**：编译期能证明"这个指针是回收槽"的赋值直接发计数，只在证不出时走运行期守卫
-   （§5 建议里的第 ③ 条，此前按"上界 23 %"排序 —— 本形状说明它在分配密集的形状上被低估了）；
-2. **加速守卫本身**：热 slab 先比一次 / 按页做位图哈希，替掉每次二分。
+**两条路的状态**：
+
+1. **加速守卫本身**（**已落地，三刀**）：
+   · 第二刀：登记表查询 O(1) 化 —— 一张直接映射的命中缓存（命中即取，未命中/碰撞回落二分
+     ⇒ 结果与只有二分时逐字相同），在 `src/back/reclaim.c` 的运行期文本里。
+     N=2e5 `cyclic_pressure` **510 475 244 → 404 358 444 Ir（−20.8 %）**。
+   · 第三刀：**赋值路径上每个指针只查一次登记表** —— `storeRefOwned` 把 owner/旧值/新值
+     各查一次（原来连同 `rsInc`/`rsDec`/`inc`/`dec` 里的查询最多 7 次），记账走
+     `holdUpdSlab`/`rsIncSlab`/`rsDecSlab`；命中路径再省掉一次冗余比对。
+     再降到 **339 186 860 Ir**（相对第二刀 −16.1 %）。
+   · 第四刀：**热路径小助手一律 `static inline`**（`slabOf`/`slotOf`/`bit`/`word`/`ownSlab`）
+     → **308 485 778 Ir**（相对第三刀 −9.1 %）。量过五组变体：收益全部来自 `ownSlab`；
+     **`always_inline` 在 `rebuild` 上反而 +0.5 %**（代码变大），只给 `inline` 才三个形状一起降。
+   · 负结果（如实记）：`unlinkChildren` 里同样的"复用查询"反而 **+1.7 M Ir** ⇒ 没做。
+   · 真实形状（同档 `-O3 -march=native`，输入 `bench/bigmatrix/in/*.txt`；关档 230 / 40 ms）：
+     `bt` 1120 → **570–610 ms**、`rebuild` 420 → **330 ms**，输出都逐字一致。
+     **墙钟与"入口总 Ir"脱钩**：第四刀把三个形状的 Ir 又降了 9~11 %，`bt` 的 best-of-9 只从
+     610 到 570 ms 而**均值持平**，`rebuild` 330 → 330 ms。**原因在 §10 的消融里**：
+     墙钟由指令决定（不是 cache 缺失），但由**计数那一支**决定 —— 前四刀减的入口 Ir
+     没碰到 `initRef` 里的那行计数，所以墙钟不动。
+   · 第五刀（**跨过程"本帧不会销账"**，见 `tests/reclaim-unified/DESIGN.md` 步 0.5 路线 A）：
+     纯读函数里 `var p = t` 的 `+1` 改发 `extc_rc_initRefNoHold` ⇒ `bt` 的税
+     **4.637× → 2.040×**（in-small）、**4.124× → 1.075×**（全输入）；`rebuild` 不受影响。
+     线：`gate-tax.sh` 4870 → **2150**、`gate-shapes.sh` 的 bt 11 090 000 → **5 150 000**。
+   · 第六刀（**`rsIncN==0` 跳过撤边走查**）：跨区登记计数为 0 ⇒ 无物可撤 ⇒ 两处走查整段跳过。
+     `cyclic_pressure` 308 485 778 → **279 224 856**，`bt` 4 870 353 → **4 611 436**，
+     `rebuild` 140 491 750 → **126 466 892**；`bt` 的税 2.040× → **1.910×**。
+   · **目标口径的现状**（第八刀后实测）：`bt` 全输入（`16 18 500`）**税 1.035×、占比 3.4 %**
+     （跨过程 `rcNoDec` 之前是 4.124×）；`12 14 200` 1.088×/8.1 %；in-small 1.711×/41.6 %。
+     消融定价：把持有者计数**全省**只值 5.1 % ⇒ 残余 87 % 是分配器结构（Tier 3 才是下一档）。
+   · **口径**（第七刀只动判据、没动代码）：`gate-tax.sh` 现在同时判**两个口径** ——
+     `in-small`（分配占主导，1.910×）与 `12 14 200`（**遍历占主导**，1.148×）。
+     用户的"不需要回收 ⇒ 占比接近 0"要读后者；`14 16 300` 1.119×、全输入（第六刀前）1.075×，
+     趋势是遍历/分配比越大越趋近 1.0。
+   · **负结果**：给 `extc_rc_regionOf` 加 64 格直接映射缓存**反而更慢**（bt 1.910×→1.920×，
+     `cyclic_pressure` +465 k Ir）—— 登记表只有几个条目、线性扫本来就便宜。已回退。
+   · 第七刀（**删掉没人用的 arena 上那次 `regionDrop`**，codegen 死调用消除）：`CG` 记下本函数
+     哪些 arena 层可能承载 rc 对象（分配表达式 / home 实参 / `main` 的家 arena），帧销毁只为这些层发丢弃。
+     `bt` 税 1.910× → **1.762×**、mid 口径 1.148× → **1.103×**；`rebuild`/`cyclic_pressure` 不受影响。
+   · 第八刀（**`regionOf` 结果做成函数级局部量**）：区域在帧内是不变量，线性扫登记只做一次。
+     `bt` 税 1.762× → **1.711×**、mid 口径 1.103× → **1.088×**；`rebuild` −8.5 %。
+     协程函数不 hoist（恢复状态机可跳进 body 中间）。
+   · 判据三条闸门：`gate.sh`（合成形状 `cyclic_pressure`，线收到 **324 000 000**）＋
+     `gate-shapes.sh`（**真实形状** `bt` / `rebuild` 的小输入，线 11 090 000 / 147 600 000，
+     并要求开档/关档输出逐字一致）＋ `gate-tax.sh`（**回收税**：`bt` 开档/关档指令数比 ≤ 现行线，
+     棘轮只许往下拧 —— 目标值 **1.00×**）。任一红都说明收益被付回或目标退步。
+2. **静态化**（**未做**，上界要重算）：编译期能证明"这个指针是回收槽"的赋值直接发计数，
+   只在证不出时走运行期守卫（§5 建议里的第 ③ 条）。原来的"上界 23 %"是相对**每次赋值查
+   5～7 次**的守卫算的，第二、三刀之后这个上界会明显缩水 —— 动手前先按当前剖析重估。
+   §10 的 `tinymap` 消融给了个弱信号：守卫那条路如今只值 ~2 %（`bt` 606 vs 592 ms，噪声内），
+   **优先级低于计数**；既然墙钟是"指令受限但受限在计数那一支"，下一档就该动计数，不是继续
+   削守卫、更不是去优化 cache（元数据只占 `bt` 缺失的 12 %，`ownMap` 只值 4 547 次缺失）。
 
 **复现**：本节的命令都是 `build/extc` + `cc -O3 -march=native -fwrapv` + 上表输入，
 `EXTC_RECLAIM=0` 取关闭档；`callgrind` 与探针用法见本文件第 1 节与 `tools/rc-pause-probe.py` 的文件头。
+
+---
+
+## 10. `bt` 的回收开销落在**局部引用的计数**上（不是 `storeRefOwned`）
+
+§9 的剖析（第四刀之前）说 `bt` 的开销在 `owns` 守卫。守卫单次变便宜之后 **`bt` 的墙钟没动**
+（610 → 610 ms，最佳 5 次交错），所以直接**数调用**（把 `/tmp` 生成物副本加上计数器）：
+
+`bench/bigmatrix/in-small/bt.txt`（输入 `8 10 50`）：
+
+| 入口 | 调用次数 |
+|---|---|
+| `extc_rc_ownSlab` | **115 461**（命中 115 461 / 回落 0）|
+| `extc_rc_initRef` | **106 377** |
+| `extc_rc_holdUpd` | 106 377（**全部**来自 `initRef`）|
+| `extc_rc_storeRefOwned` | 3 028 |
+| `extc_rc_regionOfOwn` | 3 028 |
+| `extc_rc_alloc` | 3 034 |
+| `owns` / `mark` / `maybeCollect` | 0 |
+
+⇒ **92 % 的 `ownSlab` 调用来自 `initRef`**；而这个形状里 `initRef` 几乎全是 `check()` 里的
+`var p = t` —— **把一个已有的引用拷进一个局部绑定**。全输入（`in/bt.txt`，`16 18 500`）上
+同一支量到 **265 551 145** 次 `ownSlab`（命中 265 551 085、回落 60、`ownLower` 84 次）。
+
+**为什么这些计数只增不减**：`src/back/codegen.c` 只在两处发计数 ——
+`extc_rc_initRef`（`:5333` 局部/全局引用绑定、`:5025` 整值存储的引用叶子）与
+`extc_rc_storeRefOwned` / `storeRefUnknown`（赋值）。**块退出与函数返回都不发 `dec`**：
+一个局部绑定唯一的"销账"机会是**它自己被重新赋值**（那时发的是 `storeRefOwned`，
+`dec` 的是旧值）。`check()` 里的 `p` 从不重新赋值 ⇒ 那 10 万次 `inc` 一笔也没销掉。
+
+**复现（只改 `/tmp` 副本）**：给 `extc_rc_ownSlab` / `initRef` / `storeRefOwned` / `holdUpd` /
+`alloc` / `owns` / `mark` / `maybeCollect` 各插一个 `__g_*++`，挂 `atexit` 打印；
+计数变量**声明要放在 `extc_rc_ownTab` 声明之后**（`ownLower` 定义在它前面，`ownLower` 也要用计数器，
+得先有声明）。输入用 `bench/bigmatrix/in[-small]/bt.txt`。
+
+**这条把"计数按编译期收窄"的优先级抬上来了**（`docs/RECLAMATION.md` 第五节末条）：
+在**读式拷贝多、写指针少**的遍历形状上，计数是当下最大的一笔；
+它的三类"该省"判据已经全红在 `tests/reclaim-elide/`（`gate-reclaim-elide` 盯着，见那个目录）。
+
+### 10.1 墙钟归因：**是指令，而且是计数那一支的指令**（消融实测）
+
+在 `/tmp` 的生成物副本上做**消融**（改的是副本、语义已变 ⇒ 只能当**上界**读），
+交错 best-of-9 量墙钟，并用 `valgrind --tool=cachegrind --cache-sim=yes` 取 D1/LL：
+
+| 变体 | `bt` 墙钟 | `bt` Ir | `bt` D1mr |
+|---|---|---|---|
+| 开档 | 592–622 ms | 16.63 G | 74.94 M |
+| 关档 `EXTC_RECLAIM=0` | 244–248 ms | 4.03 G | 65.68 M |
+| **删掉 `initRef` 里那一行计数**（不安全）| **251 ms** | **4.30 G** | **66.18 M** |
+| `ownMap` 缩到 4 KB | 606 ms | — | — |
+
+⇒ ① 删一行计数：**指令 −74 %、墙钟 −57 %**，而 **D1 缺失只降 12 %**（LL 几乎不动）；
+多出来的缺失对应约 1 350 条指令/次 ⇒ 缺失最多值 ~24 ms，差是 341 ms。**墙钟由指令决定。**
+② 既然"减 9 % 入口 Ir"不动墙钟、而"删掉计数那一支"就收回全部差距 ⇒
+**前四刀减在了不是墙钟主项的地方**；下一步要动的是计数本身。
+③ `ownMap`（32 KB 直接映射）在 `bt` 上被查了 2.66 亿次却只值 **4 547** 次 D1 缺失，
+`rebuild` 1.6 亿次 / **464** 次；回收元数据整体只占 `bt` 全部缺失的 12.3 %，
+每 MiB slab 的元数据 ~0.23 MB 装得进 D1 ⇒ **不是缺失问题，是指令问题**。
+④ `rebuild` 的回收侧是**广谱**的（`alloc` 与计数各 20 M 次调用）：全部计数消融只值
+33 ms / 294 ms，它剩下的账（每槽清零、位图维护、20 M 次 slab 分配）还没单独量。
+
+**方法学坑**：valgrind 3.26 的 `cachegrind` 默认 `--cache-sim=no`，不给这个开关的输出里
+**只有 `Ir` 事件**、没有任何 D1/LL 列 —— 读到"缺失 0"要先怀疑没开开关。
+
+---
+
+## 11. 槽元数据瘦身（`task-19`）：每槽字节数与命名形状前后对照
+
+两处改动都在 `src/back/reclaim.c` 的**发射文本**里（逐项独立可回退）：
+
+1. **每槽类型描述符指针 → 16 位类型号**：`ExtcRcSlab.type`（`const ExtcRcType **`，8 B/槽）换成
+   `tid`（`uint16_t`，2 B/槽）+ 每 slab 一张**小类型表** `ttab`（描述符按**指针相等**去重；号 0 =
+   无描述符、1 = `EXTC_RC_CONSERVATIVE`、≥2 = 表下标）。表满（6.5 万个不同描述符挤进同一块 slab）
+   当场 trap：静默退回 0 会让标记漏走这个对象的引用字段 ⇒ 提前释放（不安全方向）。
+2. **槽步长从"2 的幂取整"改成"16 字节取整"**：80 字节的对象不再占 128 字节的槽。代价是
+   "由对象指针找槽号"从一次移位变成一次**乘倒数右移**（`rcp = 2^42/ss + 1`，精确性判据见 §11.4）。
+   "放不下两个"的阈值随之变成 `slotSize > (1 MiB - 头)/2`（超大块语义不变）。
+
+### 11.1 每 slot 的元数据（`digraph` @1M，默认无计数档）
+
+量具：在 `/tmp` 的**生成物副本**上给 `slabNew` / `alloc` / `freeSlot` 插计数并挂 `atexit` 打印
+（工作树零改动）。口径是"全过程的 slab 普查"与"峰值同时存活"。
+
+| 版本 | occ+mark+rsbit | 跨区入边计数 | 类型 | **合计 B/slot** | 尺寸档 | slab 数 | 峰值存活槽容量 |
+|---|---|---|---|---|---|---|---|
+| 改动前 | 0.375 | 2 | 8（指针）| **10.375** | 32 / 64 / 128 | 3 / 1 / 5 | 6 765 984 B |
+| 只换类型号 | 0.375 | 2 | 2（号）| **4.375** | 32 / 64 / 128 | 3 / 1 / 5 | 6 765 984 B |
+| 两项都做 | 0.375 | 2 | 2（号）| **4.375** | 32 / 48 / 80 | 3 / 1 / 3 | 5 139 536 B |
+
+程序的普查行（改动前 / 两项都做，`stderr`）：
+
+```text
+# 改动前
+[census] shift= 5 slotsize=      32 slabs=    3 slots=    98292 slotbytes=     3145344 meta/slot=10.375 peaklive=    65551
+[census] shift= 6 slotsize=      64 slabs=    1 slots=    16382 slotbytes=     1048448 meta/slot=10.375 peaklive=     7299
+[census] shift= 7 slotsize=     128 slabs=    5 slots=    40955 slotbytes=     5242240 meta/slot=10.375 peaklive=    32822
+[census] TOTAL slots=155629 meta=1614658 slotbytes=9436032 meta/slot=10.375 allocs=3223802 bumps=0 peak_livebytes=6765984
+# 两项都做
+[census] ss=    32 slabs=   3 slots=   98286 slotbytes=    3145152 meta/slot= 4.376 peak_live=   66403
+[census] ss=    48 slabs=   1 slots=   21841 slotbytes=    1048368 meta/slot= 4.382 peak_live=    7410
+[census] ss=    80 slabs=   3 slots=   39312 slotbytes=    3144960 meta/slot= 4.379 peak_live=   33237
+[census] TOTAL slots=159439 meta=697972 slotbytes=7338480 meta/slot=4.378 allocs=3223802 bumps=0 peak_livebytes=5139536
+```
+
+⇒ 元数据 **1 614 658 → 697 972 B（−57 %）**；槽容量 **9 436 032 → 7 338 480 B（−2.1 MB）**。
+
+### 11.2 最终对照（每个形状每个编译器 **10 次**；min/中位/max；pin `build/extc` md5 `180e74b9…`）
+
+```text
+形状                                                 档           base min/med/max KB      t19d min/med/max KB      Δ中位  stdout
+bench/gc/src/digraph.extc（@1M）                    named         11820/11820/11884           8748/8748/8812   -26.0%    same rc0
+bench/gc/src/digraph.extc（@250k）                  named            7980/7980/8044           3180/3180/3244   -60.2%    same rc0
+bench/gc/src/churn.extc                            named            1644/1644/1704           1644/1644/1708    +0.0%    same rc0
+bench/gc/src/rebuild.extc                          named            1644/1644/1708           1644/1644/1708    +0.0%    same rc0
+bench/bigmatrix/src/bt.extc                        named            9880/9880/9940           9880/9880/9948    +0.0%    same rc0
+bench/bigmatrix/src/rebuild.extc                   named            1836/1836/1900           1836/1836/1900    +0.0%    same rc0
+tests/reclaim-shapes/persist_nodes.extc            corpus        36972/36972/37036        32172/32172/32236   -13.0%    same rc0
+tests/reclaim-gaps/shapes/base_call_unknown.extc   corpus        27180/27240/27244        24492/24524/24556   -10.0%    same rc0
+tests/reclaim-gaps/shapes/slot_elem_unknown.extc   corpus        27180/27180/27244        24492/24492/24556    -9.9%    same rc0
+tests/reclaim-gaps/shapes/dyn_payload.extc         corpus        26604/26604/26668        25836/25866/25900    -2.8%    same rc0
+tests/reclaim-shapes/cross_region.extc             corpus        10668/10668/10732           8748/8748/8812   -18.0%    same rc0
+tests/reclaim-shapes/cyclic_pressure.extc          corpus           7404/7404/7468           5676/5772/5928   -22.0%    same rc0
+tests/reclaim-gaps/shapes/ring_per_round.extc      corpus           6636/6636/6700           4524/4524/4588   -31.8%    same rc0
+tests/reclaim-shapes/cond_save.extc                small            1452/1452/1516           1440/1452/1516    +0.0%    same rc0
+tests/reclaim-shapes/unknown_host.extc             small            1452/1452/1516           1452/1452/1516    +0.0%    same rc0
+tests/reclaim-shapes/bounded_churn.extc            small            1452/1452/1516           1452/1452/1516    +0.0%    same rc0
+tests/reclaim-gaps/shapes/closure_chain.extc       small            1440/1482/1516           1452/1452/1516    -2.0%    same rc0
+```
+
+**噪声地板**：小形状（1.4–1.9 MB）的 min/中位/max 在同一二进制上就横跨 **±15 页（≈60 KB）**
+（glibc arena / THP / ASLR），所以这一档只声称"**不显著变差**"，改善只对 **≥ 数 MB** 的形状声称。
+`bt`（②已判"不需要回收"⇒ 不发射 rc）**产物与关档逐字节相同**，它的 +0.0% 就是量具地板。
+
+`digraph` @1M 的墙钟（10 次交错，`bench/gc/build/digraph_run --pin 0`）：
+
+| | min | 中位 | max | RSS |
+|---|---|---|---|---|
+| 改动前 | 524.4 ms | 535.5 ms | 547.0 ms | 11 820–11 884 KB |
+| 两项都做 | 480.2 ms | 487.4 ms | 499.0 ms | 8 748–8 812 KB |
+
+两边 stdout 逐字相同（`nodes=14077 edges=28166 …`）⇒ 瘦身没有用语义换内存。
+
+### 11.3 一个量出来的坑：`calloc` 的急切清零把 RSS 抬起来
+
+只换类型号那一版在 46 个语料形状里让 **8 个小形状**的峰值涨了 300~450 KB（`cond_save`
+1452→1836）。根因不是"数组变大"（其实是变小），而是 **glibc 的 mmap/brk 选择变了**：旧版每槽
+`type` 8 B（16 B 槽时 512 KB）走 **mmap**（内核零页，只有写到的页常驻）；新版两个 2 B 数组
+（各 128 KB）落在**堆**上，`calloc` 整片急切清零 ⇒ 多 ~256 KB 常驻。修法：三张位图（会被整片
+顺序遍历）保持 `calloc`；**每槽那两个 16 位数组改 `malloc` + 在分配那一刻按槽清**。
+
+那条修法引入一条**不变量**："只有占用槽才会被读 `hold[i]`/`rscnt[i]`/`tid[i]`"。逐读点审计：
+
+| 读点 | 守卫 |
+|---|---|
+| `extc_rc_rsInc` / `rsDec` / `rsIncSlab` / `rsDecSlab` | 每处先 `if (!(s->occ[word] & bit)) return;`（`skip:occ-free`）|
+| `extc_rc_rsCount` / `extc_rc_hold` | 同上 |
+| `extc_rc_holdUpdSlab` / `holdUpd` | 同上 |
+| `extc_rc_typeOf`（读 `tid`）| 三个调用点：`mark` / `releaseOld` 都在 `occ` 位判之后；`unlinkChildren` 只被 `freeSlot` 与"按 `occ` 位遍历"的 `regionFree` 调用 |
+
+判据：`plain` / `MALLOC_PERTURB_=165` / `EXTC_ARENA_FILL=165` 三档跑 41 个回收语料形状
+（N=200000），比对退出码 + stdout md5 ⇒ **不一致 0、崩溃 0**；全量
+`tests/perturb/census.py --check --arms plain,42,165,afill`（1213 源 × 4 档）崩的源 0。
+
+### 11.4 判据与牙
+
+* **槽号索引（`slotindex.c`，挂 `gate.sh`）**：`#include` **发射出来的**运行期文本，用里面的
+  `extc_rc_rcpOf` / `extc_rc_slotOf` 对 16..1 MiB 的每个 16 倍步长 × 全部合法槽号做域内穷举，
+  另加"槽内偏移/ slab 头里的指针必须被拒"。实测 **736 839 组 0 处不符、736 902 处被拒**。
+  牙：注入 `EXTC_RC_RCP_SHIFT` 42 → 19 ⇒ **140 384 处不符 + `slotindex: FAIL`，exit 1**。
+* **性能线棘轮（`gate.sh`）**：`cyclic_pressure` N=200000 的 Ir
+  **160 049 784（改动前）→ 165 100 449（只换类型号，+3.2 %）→ 154 214 566（两项都做，−3.6 %）**
+  ⇒ 线从 168 050 000 收到 **161 930 000**（= 实测 × 1.05，只许往下）。
+
+### 11.5 `gate-shard-cycles` 判据去腐
+
+旧 ① 判"`digraph` 的 4N/N < 1.5×"。它隐含依赖**每槽元数据的常数地板**：改动前 250k 的 7 980 KB
+里一大块是那个地板，把比值压在 1.49（贴着线、没有余量）；瘦身把地板拿掉以后，比值变成 2.70 ——
+**两边绝对峰值都更好了**（−59 % / −26 %，开档/关档压缩比 0.228/0.087 → 0.093/0.064），红的只是
+一个**在量"地板还在不在"**的代理量。改后的 ① 与**同 N 的关档基准**比，把常数项消掉：
+
+| 判据 | 改动前 pin0 | 改动后 t19d | 注入 `sweep-never` |
+|---|---|---|---|
+| ①a `peak_on ≤ 0.5 × peak_off`（N 与 4N）| 0.228 / 0.087 ✓ | 0.092 / 0.065 ✓ | **1.232 / 1.233 ⇒ FAIL** |
+| ①b `on_ratio < off_ratio` | 1.49 < 3.88 ✓ | 2.72 < 3.88 ✓ | **3.88 = 3.88 ⇒ FAIL** |
+| ①c `SHARDS=4` 的 4N ≤ 2× 默认档 | ✓ | ✓ | **✓（仍绿）** |
+
+①c 在注入下仍绿，说明三格互不掩盖；②（`shard_bands` 的停顿收益）保留。新判据仍然覆盖旧判据
+原本保护的那件事：分片把环钉住时 `SHARDS=4` 会 ≈ 关档 ⇒ ①a 必红。
+
+### 11.6 停顿与分项计数（`rc-pause-probe.py` + `EXTC_RC_TIME=1`）
+
+`EXTC_RC_TIME=1` 的分项计数（`digraph` @1M，改动前 / 两项都做）：
+`alloc` 3 223 802 / 3 223 802 · `storeReg` 7 670 189 / 7 670 189 · `storeOwned` 219 087 400 /
+219 087 400 · `freeSlot` 3 166 259 / 3 166 259 · `regionNew` 1 / 1 · `slabNew` **9 / 7** ·
+`collect` **146 / 156**。除了 `collect` 与 `slabNew`，其余逐字相同（语义没动）。
+
+`tools/rc-pause-probe.py` 的 `PROBE` 行（3 次重跑的中位）：
+
+| 形状 | 清扫次数 | 最大单次停顿 | 停顿合计 |
+|---|---|---|---|
+| `digraph` @250k | **67 → 50** ✓ | 623 → 514 µs ✓ | 8 987 → 8 416 µs ✓ |
+| `cyclic_pressure` @800k | **28 → 25** ✓ | 891 → 646 µs ✓ | 14 153 → 12 608 µs ✓ |
+| `digraph` @1M | **146 → 156**（+6.8 %）| 1 365 → 1 687 µs（区间重叠：1 269–1 723 vs 1 192–1 757）| 55 732 → 56 642 µs（+1.6 %）|
+
+**`digraph` @1M 的清扫次数涨了 10 次**，而**释放槽总数逐字相同（3 166 259）**、156 次里 155 次
+是真收到东西（改动前 146 次里 142 次）⇒ 同样的回收工作量被切成了更多批。机制：`bytes` / `live`
+的记账单位换成了 16 字节取整的槽步长（改动前是 2 的幂步长），而触发式
+`thr = max(2·live, floor)·scale` 里的 `floor` 是**绝对字节常数**，于是触发轨迹相对分配批次发生
+相位移动。方向不系统：@250k 与 `cyclic_pressure` 都是次数更少、停顿更小，只有 @1M 这一档次数多
+10 次、停顿合计 +1.6 %（最大停顿的 3 次区间重叠）。触发阈值属于**策略**（换它就是在换内存 ↔ 吞吐），
+所以这里只报数，不顺手调常数。

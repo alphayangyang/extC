@@ -1,0 +1,44 @@
+/* `fixed_slot_overwrite.extc` —— 细化 E（`NE2`）的**对照**：宿主是**循环外**新建的数组，
+ * 每个元素槽是一个引用槽，而**下标固定**（`j` 在循环外赋值、循环内不变）⇒ 每一轮都写**同一个槽**、
+ * 把上一轮的对象丢成垃圾（对象由 `mk` 返回、逃逸提升进调用方家房间）⇒ 判 idle 就是漏收，峰值随轮数涨。
+ *
+ * 细化 E 的判据（"下标在**本循环体内**被赋值"）在这里**必须**判否：`j` 的赋值在循环外 ⇒ 不是序列。 */
+use std::io
+
+struct node {
+    next: ?mut ref node
+    v: i64
+}
+
+fn parseI64(s: slice<u8>) -> i64 {
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    return v
+}
+
+fn mk(k: i64) -> ?mut ref node {
+    var t: mut ref node = new node
+    t.v = k
+    t.next = ref *t
+    return t
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var n: i64 = parseI64(args[1])
+    var j: i64 = 0
+    var root: mut ref [4]?mut ref node = new [4]?mut ref node
+    var i: i64 = 0
+    while i < n {
+        (*root)[j] = mk(i)
+        i = i + 1
+    }
+    io::cout << "n=" << n << "\n"
+    return 0
+}

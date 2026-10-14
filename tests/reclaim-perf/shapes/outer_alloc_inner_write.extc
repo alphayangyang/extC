@@ -1,0 +1,60 @@
+/* 形状：**外层循环建宿主、内层循环反复写它的 ref 字段** —— 判据 (a′) 的"循环深度"条件的
+ * 常驻判据形状（`task-17` 把这条洞用推理堵上的，这里做成能红的门禁）。
+ *
+ * 形状要发作的洞：宿主 `head` 在**外层**循环体里 `new`，而写站点 `head.next = p` 在**内层**
+ * 循环里 —— 同一个 `head` 对象被**每一轮内层**改写。只用 arena 层判"宿主是本迭代新建的"会放行
+ * （`p` 要被存进 `head` 的字段 ⇒ 逃逸分析把 `p` 提到 `head` 所在的那一层，`head` 自己的 arena
+ * 层也正好等于内层循环深度），于是整个单元被误判成"回收无事可做"，每个外层迭代里堆起来的 `p`
+ * 只等外层迭代结束才释放 ⇒ 峰值随内层轮数（= argv 给的 N）线性涨。
+ *
+ * 正确的判据（`src/check/check_top.c` 的 `hostThisIter`）还要求**宿主那条 `new` 的分配循环深度
+ * ≥ 站点循环深度**：`head` 建在深度 1、站点在深度 2 ⇒ 判否 ⇒ 留在回收档、峰值有界。
+ *
+ * 规模：argv[1] = 内层轮数（默认 200000；外层固定 2 轮，保证每轮都有"堆起来再整片放"的机会），
+ * 与 `rebuild_per_round.extc` 同一约定 ⇒ 判据用 N 与 4N 两档量峰值 RSS。
+ */
+use std::io
+
+struct node {
+    v: i64
+    next: ?ref node
+}
+
+fn parseN(args: slice<slice<u8>>) -> i64 {
+    if args.len < 2 { return 200000 }
+    var s: slice<u8> = args[1]
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    if v > 0 { return v }
+    return 200000
+}
+
+fn main(args: slice<slice<u8>>) {
+    var n: i64 = parseN(args)
+    var acc: i64 = 0
+    var r: i64 = 0
+    while r < 2 {
+        var head = new node            /* 外层循环里建：宿主（深度 1；字段零初始化） */
+        head.v = r
+        var k: i64 = 0
+        while k < n {
+            var p = new node           /* 内层循环里建：值（深度 2） */
+            p.v = k
+            p.next = null
+            head.next = p              /* ← 内层循环反复写**外层建的同一个宿主**的 ref 字段 */
+            acc = acc + p.v
+            k = k + 1
+        }
+        var q: ?ref node = head.next
+        if q != null { acc = acc + (*q).v }
+        r = r + 1
+    }
+    println(acc)
+}

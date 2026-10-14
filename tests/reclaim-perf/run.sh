@@ -43,7 +43,8 @@ fi
 gen() { # <out.c> <env:on|off>；其余参数是 extc 参数
     local out=$1 mode=$2; shift 2
     if [ "$mode" = on ]; then EXTC_RECLAIM=1 "$TMP/extc" -I "$ROOT/stdlib" "$@" -o "$out"
-    else unset EXTC_RECLAIM; "$TMP/extc" -I "$ROOT/stdlib" "$@" -o "$out"; fi
+    # `=0` 才是关档：`EXTC_RECLAIM` 默认开，`unset` 与 `=1` 的生成物逐字节相同（实测）。
+    else EXTC_RECLAIM=0 "$TMP/extc" -I "$ROOT/stdlib" "$@" -o "$out"; fi
 }
 
 echo

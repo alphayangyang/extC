@@ -1,0 +1,45 @@
+/* `field_overwrite_lost_root.extc` —— 细化 A（`NA2`）的**对照**：宿主每轮新建，但**同一个字段被写两次**，
+ * 且**第一处写入的值只有一个根**（就是那个字段本身）—— `mk(i)` 的返回值是自环、逃逸提升过的对象，
+ * 除了 `s.next` 没有别的根。第二处写把第一个对象丢成垃圾（家在调用方家房间）⇒ 判 idle 就是漏收，
+ * 峰值随轮数涨。
+ *
+ * 细化 A 的判据（"旧值另有根"）在这里**必须**判否：`mk(i)` 不是形参的投影 ⇒ 证不出另有根。 */
+use std::io
+
+struct node {
+    next: ?mut ref node
+    v: i64
+}
+
+fn parseI64(s: slice<u8>) -> i64 {
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    return v
+}
+
+fn mk(k: i64) -> ?mut ref node {
+    var t: mut ref node = new node
+    t.v = k
+    t.next = ref *t
+    return t
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var n: i64 = parseI64(args[1])
+    var i: i64 = 0
+    while i < n {
+        var s: mut ref node = new node
+        s.next = mk(i)
+        s.next = null
+        i = i + 1
+    }
+    io::cout << "n=" << n << "\n"
+    return 0
+}

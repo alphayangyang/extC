@@ -10,7 +10,9 @@
   1. `extc_rc_collect` 前后加墙钟计时（`mark` 与 `sweep` 分开记），进程退出时打印一行
      `PROBE sweeps=… max_pause_us=… max_mark_us=… max_sweep_us=… total_pause_us=…`。
      “最大单次清扫耗时”就是 `max_pause_us`：一次 `extc_rc_collect` 从进到出的墙钟。
-  2. 一个 `atexit` 钩子把累计值打印出来。
+  2. 一个 `atexit` 钩子把累计值打印出来（既有 `PROBE` 行**原样、仍走 stdout** —— 门禁在读它 ✓）。
+  3. 另注册一个 `atexit`：设 `DIGRAPH_PAUSE_DIST=1` 时把**逐次清扫时长分布**（分位 / 阈值桶 /
+     排序后全部时长（n ≤ 1024）或前 50 + 后 50）打到 **stderr** 的 `PAUSE_DIST` 行 —— 不碰 stdout、不碰既有字段 ✓。
 
 判据一个字都不动：回收的触发阈值、标记规则、清扫规则全在被插桩的代码里原样保留，
 所以 N=1 与 N=8 的数字是同一把尺子量的。`-D_POSIX_C_SOURCE=200809L` 是 `clock_gettime`
@@ -29,12 +31,75 @@ static long long extc_probe_ns(void) {
 }
 static long long extc_probe_max, extc_probe_max_mark, extc_probe_max_sweep, extc_probe_sum;
 static size_t extc_probe_n;
+/* ⚠️ 既有 `PROBE` 行**原样保留**（`tests/reclaim-perf/gate-shard-cycles.sh` 读它的
+ * `max_pause_us=`，且它按现状打 stdout ✗ 不许动）——新增的分布一律走**门控 stderr** 行 ✗。 */
 static void extc_probe_dump(void) {
     printf("PROBE sweeps=%zu max_pause_us=%.1f max_mark_us=%.1f max_sweep_us=%.1f total_pause_us=%.1f\n",
            extc_probe_n, (double)extc_probe_max / 1000.0, (double)extc_probe_max_mark / 1000.0,
            (double)extc_probe_max_sweep / 1000.0, (double)extc_probe_sum / 1000.0);
 }
-__attribute__((constructor)) static void extc_probe_arm(void) { atexit(extc_probe_dump); }
+/* ---- 逐次时长分布（门控：DIGRAPH_PAUSE_DIST=1，只写 stderr） ----
+ * 环形数组记每一次 `extc_rc_collect` 的墙钟（进→出，ns；与 `max_pause_us` 同口径），
+ * 汇总行给：样本数 / 溢出数 / p50,p90,p99,max / 阈值桶 / 排序后前 50 + 后 50。 */
+#define EXTC_PROBE_RING 4096
+static long long extc_probe_ring[EXTC_PROBE_RING];
+static size_t extc_probe_ring_n, extc_probe_ring_over;
+static void extc_probe_record(long long ns) {
+    if (extc_probe_ring_n < EXTC_PROBE_RING) extc_probe_ring[extc_probe_ring_n++] = ns;
+    else extc_probe_ring_over++;
+}
+static int extc_probe_cmp(const void *a, const void *b) {
+    long long x = *(const long long *)a, y = *(const long long *)b;
+    return (x > y) - (x < y);
+}
+static void extc_probe_dist(void) {
+    if (getenv("DIGRAPH_PAUSE_DIST") == (char *)0) return;
+    size_t i;
+    size_t b1 = 0, b4 = 0, b16 = 0, b64 = 0, b256 = 0, b1ms = 0, bge = 0;
+    double p50 = 0, p90 = 0, p99 = 0, mx = 0;
+    if (extc_probe_ring_n > 0) {
+        qsort(extc_probe_ring, extc_probe_ring_n, sizeof(long long), extc_probe_cmp);
+        for (i = 0; i < extc_probe_ring_n; i++) {
+            long long d = extc_probe_ring[i];
+            if (d < 1000LL) b1++;
+            if (d < 4000LL) b4++;
+            if (d < 16000LL) b16++;
+            if (d < 64000LL) b64++;
+            if (d < 256000LL) b256++;
+            if (d < 1000000LL) b1ms++;
+            else bge++;
+        }
+        p50 = (double)extc_probe_ring[(extc_probe_ring_n - 1) * 50 / 100] / 1000.0;
+        p90 = (double)extc_probe_ring[(extc_probe_ring_n - 1) * 90 / 100] / 1000.0;
+        p99 = (double)extc_probe_ring[(extc_probe_ring_n - 1) * 99 / 100] / 1000.0;
+        mx = (double)extc_probe_ring[extc_probe_ring_n - 1] / 1000.0;
+    }
+    fprintf(stderr,
+            "PAUSE_DIST n=%zu overflow=%zu p50_us=%.1f p90_us=%.1f p99_us=%.1f max_us=%.1f "
+            "total_us=%.1f b_lt1us=%zu b_lt4us=%zu b_lt16us=%zu b_lt64us=%zu b_lt256us=%zu "
+            "b_lt1ms=%zu b_ge1ms=%zu ",
+            extc_probe_ring_n, extc_probe_ring_over, p50, p90, p99, mx,
+            (double)extc_probe_sum / 1000.0, b1, b4, b16, b64, b256, b1ms, bge);
+    /* n 小时给**全部**时长（便于把 REPS 轮次拼起来做精确分位）；n 大时才截断成前 50 + 后 50。 */
+    if (extc_probe_ring_n <= 1024) {
+        fprintf(stderr, "all=[");
+        for (i = 0; i < extc_probe_ring_n; i++)
+            fprintf(stderr, "%s%.1f", i ? "," : "", (double)extc_probe_ring[i] / 1000.0);
+        fprintf(stderr, "]\n");
+    } else {
+        fprintf(stderr, "first=[");
+        for (i = 0; i < 50; i++)
+            fprintf(stderr, "%s%.1f", i ? "," : "", (double)extc_probe_ring[i] / 1000.0);
+        fprintf(stderr, "] last=[");
+        for (i = extc_probe_ring_n - 50; i < extc_probe_ring_n; i++)
+            fprintf(stderr, "%s%.1f", i == extc_probe_ring_n - 50 ? "" : ",", (double)extc_probe_ring[i] / 1000.0);
+        fprintf(stderr, "]\n");
+    }
+}
+__attribute__((constructor)) static void extc_probe_arm(void) {
+    atexit(extc_probe_dump);
+    atexit(extc_probe_dist);
+}
 """
 
 OLD = """    size_t marked = extc_rc_mark(r, roots, nroots);
@@ -49,6 +114,7 @@ NEW = """    long long extc_probe_t0 = extc_probe_ns();
     size_t freed = extc_rc_sweep(r);
     long long extc_probe_t2 = extc_probe_ns();
     extc_probe_n++;
+    extc_probe_record(extc_probe_t2 - extc_probe_t0);
     extc_probe_sum += extc_probe_t2 - extc_probe_t0;
     if (extc_probe_t2 - extc_probe_t0 > extc_probe_max) extc_probe_max = extc_probe_t2 - extc_probe_t0;
     if (extc_probe_t1 - extc_probe_t0 > extc_probe_max_mark) extc_probe_max_mark = extc_probe_t1 - extc_probe_t0;

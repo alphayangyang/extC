@@ -47,9 +47,10 @@ def take_func(src, header):
 
 # 调用点：区域表达式里含内层括号，所以靠后面那个 `, (void *[]){` 字面量收口；
 # 根项里不会出现 `}`（都是 `(void *)(表达式)`），所以用 `[^}]*?` 取项表最稳。
-# 入口守卫**落地后**，调用点长成 `maybeCollect(__extc_rcgN, …)`（第一实参是块内临时量）
-# ⇒ 交替项里也认它，本目录的消融/原型对两种发射形态都能跑。
-CALL = re.compile(r"extc_rc_maybeCollect\(((?:extc_rc_regionOf\(.*?\))|(?:__extc_rcg\d+)), \(void \*\[\]\)\{ ([^}]*?) \}, (\d+)\);", re.S)
+# 入口守卫 / 分片 / `regionOf` 复用**落地后**，调用点长成 `maybeCollect(__extc_xxxN, …)`
+# （第一实参是块内临时量，名字随发射形态变）⇒ 交替项按"`__extc_` 前缀"认它，
+# 各种发射形态都能跑。
+CALL = re.compile(r"extc_rc_maybeCollect\(((?:extc_rc_regionOf\(.*?\))|(?:__extc_\w+)), \(void \*\[\]\)\{ ([^}]*?) \}, (\d+)\);", re.S)
 
 if mode == "guardfast":
     # 1) 表与哈希函数，插在登记表变量之后。
@@ -82,17 +83,18 @@ if mode == "guardfast":
     s = s.replace(dele, newdel, 1)
 
     # 3) ownSlab 里：映射命中直接用，未命中才二分。
+    #    当前发射形态带**超大块**的回落（`ownBig`），所以这里只把"取 s"这一步换成
+    #    "映射命中即取、未命中回落二分"，后面的槽首校验与 `ownBig` 回落原样保留。
     old = ("    size_t i = extc_rc_ownLower(base);\n"
-           "    if (i >= extc_rc_ownN) return (ExtcRcSlab *)0;\n"
-           "    ExtcRcSlab *s = extc_rc_ownTab[i];\n")
+           "    if (i < extc_rc_ownN) {\n"
+           "        ExtcRcSlab *s = extc_rc_ownTab[i];\n")
     assert s.count(old) == 1, "ownSlab lookup body not unique/found"
     new = ("    ExtcRcSlab *s = extc_rc_ownMap[extc_rc_ownHashOf(base)];\n"
            "    if ((void *)s != base) {              /* 未命中/碰撞：回落二分，语义不变 */\n"
            "        size_t i = extc_rc_ownLower(base);\n"
-           "        if (i >= extc_rc_ownN) return (ExtcRcSlab *)0;\n"
-           "        s = extc_rc_ownTab[i];\n"
-           "        if (!s || s != (ExtcRcSlab *)base) return (ExtcRcSlab *)0;\n"
-           "    }\n")
+           "        s = (i < extc_rc_ownN) ? extc_rc_ownTab[i] : (ExtcRcSlab *)0;\n"
+           "    }\n"
+           "    if (s) {\n")
     s = s.replace(old, new, 1)
 
 elif mode == "guardfirst":
@@ -101,7 +103,7 @@ elif mode == "guardfirst":
     noop = [0]
 
     def rep(m):
-        if m.group(1).startswith("__extc_rcg"):
+        if m.group(1).startswith("__extc_"):
             # 入口守卫已在 codegen 里落地 ⇒ 这一档没有"未守卫的调用点"可消：
             # 原样保留，该变体 == on（`on-guardfirst` 的差值为 0，正是现状）。
             noop[0] += 1
