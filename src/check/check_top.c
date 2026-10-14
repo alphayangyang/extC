@@ -5376,23 +5376,51 @@ typedef struct {
     Vec         idleFresh;  /* IdleFresh*：`var x = new T` 的 C 名 + 分配点循环深度/arena 层 */
     Vec         idleAsgn;   /* const char*：被赋值的标识符 C 名（宿主不许在里面） */
     Vec         idleAsgnLoop; /* int：与 idleAsgn 平行 —— 该赋值所在的**最内层循环体作用域**（0 = 循环外）*/
-    Vec         idleSites;  /* IdleSite*：堆 ref 字段的写站点（(a) 的逐站点部分） */
+    Vec         idleWrites; /* IdleWrite*：每一次往引用槽写值 —— 判据的唯一事实来源 */
     Vec         idleBindLvl;   /* IdleLvl*：绑定 -> 它所指存储的 arena 层（(b′) 的同尺事实） */
     Vec         idleFieldLvl;  /* IdleLvl*：字段名 -> 写进该字段的值的 arena 层（取最浅） */
     Vec         idleFieldStores; /* IdleFieldStore*：字段写的原始值（固定点求解的输入） */
-    Vec         idleStores;    /* IdleStore*：每次往 ref 槽写值（声明初始化 + 赋值） */
-    Vec         idleSlotSites; /* IdleSlotSite*：(b′) 候选站点，推迟到后处理判 */
     int         idleSeq;    /* 走查里的语句序号（1 起）：判"分配点在站点之前" */
 } AcInfo;
 
-/* 一个堆 ref 字段写站点：(a) 要"宿主是本帧新局部量、同（宿主,字段）只有一处"。
+/* 一个引用槽的种类。判据只看这几种：别的形状不存在"覆盖丢根"的问题。 */
+typedef enum {
+    IDLE_DEST_COMPOUND,     /* 复合赋值（`x += …`）：不是"覆盖"，但同样会丢引用 */
+    IDLE_DEST_SLOT_NAMED,   /* 栈上具名 ref 槽（局部量/参数）：推迟到 (b′) 的合取 */
+    IDLE_DEST_SLOT_OTHER,   /* 栈上其它位置（局部聚合的字段等）：直接判否 */
+    IDLE_DEST_HEAP_FIELD,   /* 具名对象的具名字段：(a) 的逐站点判据 */
+} IdleDestKind;
+
+/* 一次"往引用槽写值"的规范化描述 —— 判据的**唯一**输入。
+ *
+ * 三种槽（具名栈槽、其它栈位置、堆字段）过去各有自己的结构与台账；现在合成一份，
+ * 于是"加规则"改的是判据那一处，而不是再添一个台账。
+ *
  * 字段名用 `fname` 不用 `field`：`field` 是 AST 节点的成员名，`tools/check_ast_freeze.py`
  * 是文本扫描，会把这个描述符成员赋值误报成"parser 之外写 AST"。
  *
- * `depth` 是站点所在循环深度、`allocDepth` 是宿主那条 `new` 所在循环深度、`seq` 是走查序号；
- * 细化 (a′) 要比"分配站点在同一层循环体内"，靠的正是这三个数（见 `idleWalkStmt`）。 */
-typedef struct { const char *host; const char *fname; int line; int depth; int allocDepth; int seq;
-                 Expr *value; bool seqElem; } IdleSite;
+ * `host` 一词两用：`HEAP_FIELD` 是宿主名，`SLOT_NAMED` 是槽名（两者判据里都按名字比）。
+ * `isAssign` 区分"赋值站点"与"声明初始化"：(b′) 的合取两种都看，候选站点只取赋值那一半。
+ * `allocDepth` 只在堆字段站点上有意义（宿主那条 `new` 的 arena 层，诊断用）。 */
+typedef struct {
+    IdleDestKind kind;
+    Expr        *value;
+    const char  *host;       /* HEAP_FIELD：宿主名；SLOT_NAMED：槽名 */
+    const char  *fname;      /* HEAP_FIELD：字段名 */
+    int          line;
+    int          depth;      /* 站点所在循环深度 */
+    int          allocDepth; /* 宿主那条 `new` 的 arena 层（诊断用） */
+    int          loopScope;  /* 最内层循环体作用域层（(b′) 的阈值） */
+    int          seq;        /* 走查序号（判"分配点在站点之前"） */
+    bool         seqElem;    /* 最外一层是元素槽、且下标是本循环体里被赋值的标识符 */
+    bool         isAssign;   /* 是赋值站点（不是声明初始化） */
+} IdleWrite;
+
+/* 判据的结论：`IDLE_DEFER` = 这一期答不了（事实还没齐），换一期再判。 */
+typedef enum { IDLE_ACC, IDLE_REJ, IDLE_DEFER } IdleJudgment;
+
+/* 判据的两期：走查期（只有语法与已走查到的声明）与后处理期（台账与不动点都齐了）。 */
+enum { IDLE_STAGE_WALK = 0, IDLE_STAGE_POST = 1 };
 
 /* 一条"本帧新局部量"台账：(a) 的候选宿主，也是 (a′) 的"宿主是本轮新建"依据。
  *
@@ -5409,18 +5437,9 @@ typedef struct { const char *name; int depth; int arenaLevel; int seq; } IdleFre
  * `null` 不进台账：它不指任何对象，覆盖掉它不丢东西（见 `IDLE_LVL_NULL`）。 */
 typedef struct { const char *name; int lvl; } IdleLvl;
 
-/* 一次"把引用写进一个 ref 槽"：细化 (b′) 要问"这个槽里被写进去过的值是不是都随本迭代的
- * arena 一起死"。`lvl` 是被写值的 arena 层（`IDLE_LVL_NULL` = null，不丢任何东西）；
- * `loopScope` 是这次写入所在的最内层循环体的作用域层（0 = 不在任何循环里）。 */
-typedef struct { const char *name; int line; int loopScope; Expr *value; } IdleStore;
-
 /* 一次"把引用写进某个具名对象字段"：字段读（`p.next`）沿它取"这个字段里可能是什么层"。
  * 同一字段名取最浅（活得最久），方向保守。 */
 typedef struct { const char *fname; const char *host; Expr *value; } IdleFieldStore;
-
-/* 一个 (b′) 候选站点：栈上槽（ref 局部量）的引用赋值，推迟到整趟走完之后判 —— 因为
- * "这个槽里被写进去过的**全部**值都合格"是一个需要看完整趟的事实。 */
-typedef struct { const char *name; int line; int loopScope; Expr *value; } IdleSlotSite;
 
 /* "这次写入丢的东西是 null（没有对象）"的哨兵层号：它比任何真实 arena 层都"长寿",
  * 但按语义它不丢对象，所以 `idleStoreQualified` 直接算合格。 */
@@ -6048,10 +6067,11 @@ static void idleSolveLvls(AcInfo *ac) {
         Vec nb, nf;
         vecInit(&nb, ac->a, sizeof(void *));
         vecInit(&nf, ac->a, sizeof(void *));
-        for (size_t i = 0; i < ac->idleStores.len; i++) {
-            IdleStore *st = *(IdleStore **)vecAt(&ac->idleStores, i);
-            idleLvlMerge(&nb, ac->a, st->name,
-                         idleValueLvl(&ac->idleBindLvl, &ac->idleFieldLvl, st->value));
+        for (size_t i = 0; i < ac->idleWrites.len; i++) {
+            IdleWrite *w = *(IdleWrite **)vecAt(&ac->idleWrites, i);
+            if (w->kind != IDLE_DEST_SLOT_NAMED) continue;
+            idleLvlMerge(&nb, ac->a, w->host,
+                         idleValueLvl(&ac->idleBindLvl, &ac->idleFieldLvl, w->value));
         }
         for (size_t i = 0; i < ac->idleFieldStores.len; i++) {
             IdleFieldStore *fs = *(IdleFieldStore **)vecAt(&ac->idleFieldStores, i);
@@ -6062,6 +6082,111 @@ static void idleSolveLvls(AcInfo *ac) {
         ac->idleBindLvl  = nb;
         ac->idleFieldLvl = nf;
     }
+}
+
+/**
+ * @brief ② 的**唯一判据**：这一次往引用槽写值，会不会把最后一个根丢掉。
+ *
+ * 判据本身只有一条：**覆盖一个槽不丢根 ⟺ 旧值还能从别的活根到达**。下面这组规则是它的
+ * 可靠充分条件（近似），按顺序逐条判 —— 顺序就是"第一条命中的理由"，所以顺序也是行为的一部分。
+ *
+ * 走查期（`IDLE_STAGE_WALK`，只有语法与已走查到的声明）：
+ *   1. 具名栈槽 ⇒ 推迟：`(b′)` 要"写进这个槽的**全部**值都合格"，整趟走完才看得全；
+ *   2. 其它栈位置 ⇒ 判否；
+ *   3. 堆字段：目标不是"具名对象的具名字段" ⇒ 判否；
+ *   4. 堆字段：站点在循环里、宿主不是本迭代新建、也不是本循环体内被赋值的元素槽 ⇒ 判否（细化 E）；
+ *   5. 其余堆字段 ⇒ 推迟到后处理（`(a)` 的逐站点部分）。
+ * 后处理期（`IDLE_STAGE_POST`，台账与不动点都齐了）：
+ *   6. 堆字段站点：宿主不是本帧 `new` ⇒ 判否（C）；宿主被重新赋值 ⇒ 判否（B）；同一（宿主, 字段）
+ *      的**更早**站点存在且旧值没有别的根 ⇒ 判否（细化 A）；
+ *   7. 具名栈槽站点：`(b′)` 合取 —— 写进这个槽的全部值（含声明初始化）都必须合格。
+ *
+ * 失败方向：任何一条判否 ⇒ 整具函数判否 ⇒ 整单元判否 ⇒ 照常发射回收运行期（保守）。
+ *
+ * @param ac    这个函数的记录（判据的全部事实来源）。
+ * @param w     这次写入的规范化描述。
+ * @param idx   `w` 在 `ac->idleWrites` 里的下标（后处理期判"更早站点"用；走查期传 0）。
+ * @param why   判否时的理由。**文案与合并前逐字相同**：挡路者分类工具按它认规则。
+ * @param stage `IDLE_STAGE_WALK` / `IDLE_STAGE_POST`。
+ * @return      `IDLE_ACC` 合格；`IDLE_REJ` 判否（`*why` 已填）；`IDLE_DEFER` 换一期再判。
+ */
+static IdleJudgment idleLosesRoot(AcInfo *ac, const IdleWrite *w, size_t idx,
+                                  const char **why, int stage) {
+    if (stage == IDLE_STAGE_WALK) {
+        if (w->kind == IDLE_DEST_COMPOUND) {
+            *why = arenaPrintf(ac->a,
+                "line %d: a compound assignment to a reference slot overwrites it", w->line);
+            return IDLE_REJ;
+        }
+        if (w->kind == IDLE_DEST_SLOT_NAMED) return IDLE_DEFER;
+        if (w->kind == IDLE_DEST_SLOT_OTHER) {
+            *why = arenaPrintf(ac->a,
+                "line %d: a reference is assigned to a stack slot (a local/parameter, or a field of one)",
+                w->line);
+            return IDLE_REJ;
+        }
+        if (!w->host || !w->fname || !*w->fname) {
+            *why = arenaPrintf(ac->a,
+                "line %d: the destination is not a named field of a named object", w->line);
+            return IDLE_REJ;
+        }
+        /* (a′)：宿主是**本迭代新建**的 —— 分配点的循环深度 ≥ 站点循环深度、且那条 `new` 没被
+         * 逃逸分析提到更长寿的 arena 层。两个条件都要。 */
+        IdleFresh *fr = idleFreshAt(ac, w->host, w->seq);
+        bool hostThisIter = fr && fr->depth - 1 >= w->depth && fr->arenaLevel >= w->depth;
+        if (w->depth > 0 && !hostThisIter && !w->seqElem) {
+            *why = arenaPrintf(ac->a,
+                "line %d: a reference field is written inside a loop, so one object can be overwritten",
+                w->line);
+            return IDLE_REJ;
+        }
+        return IDLE_DEFER;
+    }
+    if (w->kind == IDLE_DEST_SLOT_NAMED) {
+        /* (b′)：写进这个槽的**全部**值都得合格 —— 同一名字可能有多处写入，任一处不合格 ⇒
+         * 这个槽的每一次覆盖都判否（保守）。 */
+        if (idleStoreQualified(idleValueLvl(&ac->idleBindLvl, &ac->idleFieldLvl, w->value),
+                               w->loopScope)) {
+            bool ok = true;
+            for (size_t j = 0; ok && j < ac->idleWrites.len; j++) {
+                IdleWrite *o = *(IdleWrite **)vecAt(&ac->idleWrites, j);
+                if (o->kind != IDLE_DEST_SLOT_NAMED) continue;
+                if (!o->host || !w->host || strcmp(o->host, w->host) != 0) continue;
+                if (!idleStoreQualified(idleValueLvl(&ac->idleBindLvl, &ac->idleFieldLvl, o->value),
+                                        o->loopScope)) ok = false;
+            }
+            if (ok) return IDLE_ACC;
+        }
+        *why = arenaPrintf(ac->a,
+            "line %d: a reference is assigned to a stack slot (a local/parameter, or a field of one)",
+            w->line);
+        return IDLE_REJ;
+    }
+    /* 堆字段站点的后处理：(C)/(B)/(A)。规则 A 只看**更早**的站点，所以按记录顺序判。 */
+    if (!idleFreshAt(ac, w->host, w->seq) && !w->seqElem) {
+        *why = arenaPrintf(ac->a,
+            "line %d: the host object is not a local created by `new` in this frame", w->line);
+        return IDLE_REJ;
+    }
+    if (idleNameIn(&ac->idleAsgn, w->host)) {
+        *why = arenaPrintf(ac->a,
+            "line %d: the host binding is reassigned in this function", w->line);
+        return IDLE_REJ;
+    }
+    for (size_t j = 0; j < idx; j++) {
+        IdleWrite *o = *(IdleWrite **)vecAt(&ac->idleWrites, j);
+        if (o->kind != IDLE_DEST_HEAP_FIELD) continue;
+        if (o->host == w->host && o->fname && w->fname && strcmp(o->fname, w->fname) == 0) {
+            /* 细化 A：旧值另有根 ⇒ 覆盖没丢根 ⇒ 不是冲突。 */
+            if (!(o->value && idleValueOtherRoot(ac, o->value))) {
+                *why = arenaPrintf(ac->a,
+                    "line %d: the same field of the same host is written at two sites", w->line);
+                return IDLE_REJ;
+            }
+            break;
+        }
+    }
+    return IDLE_ACC;
 }
 
 /**
@@ -6109,78 +6234,56 @@ static bool idleWalkStmt(Checker *c, AcInfo *ac, Stmt *s, int depth, int scope, 
     if (s->kind == ST_ASSIGN) {
         Expr *t = s->u.assign.target;
         if (t && t->type && acSlotHoldsCountedRef(c, t->type)) {
+            /* 把这次写入规范化成一个 case，交给**唯一判据**。事实（哪些名字是 fresh、哪些被重新
+             * 赋值、各值的 arena 层）由走查就地收集；判据只看 case。 */
+            IdleWrite w;
+            memset(&w, 0, sizeof w);
+            w.value     = s->u.assign.value;
+            w.line      = s->line;
+            w.depth     = depth;
+            w.loopScope = minLoopScope;
+            w.seq       = ac->idleSeq;
+            w.isAssign  = true;
             if (s->u.assign.op) {
-                idleNote(ac, arenaPrintf(ac->a,
-                    "line %d: a compound assignment to a reference slot overwrites it", s->line));
+                w.kind = IDLE_DEST_COMPOUND;
             } else if (!acTargetSlotIsHeap(c, t)) {
                 /* (b)：引用写进了栈上的槽（局部量/参数/局部聚合的字段）—— 那是丢引用。
                  * 细化 (b′)：**ref 标识符槽**可以覆盖，只要写进这个槽的**全部**值都随本迭代的
                  * arena 一起死（`idleStoreQualified`）；`null` 也算合格（它不丢对象）。
                  * 参数走同一套判据：要存进参数的值得活过这次调用 ⇒ 逃逸分析把它放到家区域
                  * （层 0）⇒ 层判据自然判否。局部聚合的字段与别的目的地不在这条里，仍旧判否。 */
-                const char *nm = (t->kind == EX_IDENT) ? idleBindName(t, t->u.ident.name) : NULL;
-                if (nm) {
-                    IdleStore *st = arenaAllocZero(ac->a, sizeof *st);
-                    st->name      = nm;
-                    st->line      = s->line;
-                    st->loopScope = minLoopScope;
-                    st->value     = s->u.assign.value;
-                    *(IdleStore **)vecPush(&ac->idleStores) = st;
-                    IdleSlotSite *cs = arenaAllocZero(ac->a, sizeof *cs);
-                    cs->name      = nm;
-                    cs->line      = s->line;
-                    cs->loopScope = minLoopScope;
-                    cs->value     = s->u.assign.value;
-                    *(IdleSlotSite **)vecPush(&ac->idleSlotSites) = cs;
-                } else {
-                    idleNote(ac, arenaPrintf(ac->a,
-                        "line %d: a reference is assigned to a stack slot (a local/parameter, or a field of one)",
-                        s->line));
-                }
+                w.kind = (t->kind == EX_IDENT) ? IDLE_DEST_SLOT_NAMED : IDLE_DEST_SLOT_OTHER;
+                if (t->kind == EX_IDENT) w.host = idleBindName(t, t->u.ident.name);
             } else {
                 Expr *host = idleHostIdent(t);
-                const char *fld = idleDestPath(ac->a, t);
+                w.kind  = IDLE_DEST_HEAP_FIELD;
+                w.fname = idleDestPath(ac->a, t);
                 /* 细化 E：最外一层是**元素槽**且下标是"本循环体内被赋值"的标识符。 */
-                bool seqElem = false;
                 if (t->kind == EX_INDEX && t->u.index.index
                     && t->u.index.index->kind == EX_IDENT)
-                    seqElem = idleNameAssignedInLoop(ac, idleBindName(t->u.index.index,
-                                                       t->u.index.index->u.ident.name),
-                                                     minLoopScope);
-                if (!host || !fld || !*fld) {
-                    idleNote(ac, arenaPrintf(ac->a,
-                        "line %d: the destination is not a named field of a named object", s->line));
-                } else {
-                    const char *hnm = idleBindName(host, host->u.ident.name);
+                    w.seqElem = idleNameAssignedInLoop(ac, idleBindName(t->u.index.index,
+                                                    t->u.index.index->u.ident.name), minLoopScope);
+                if (host) w.host = idleBindName(host, host->u.ident.name);
+            }
+            const char *why = NULL;
+            IdleJudgment v = idleLosesRoot(ac, &w, 0, &why, IDLE_STAGE_WALK);
+            if (v == IDLE_REJ) {
+                idleNote(ac, why);
+            } else if (v == IDLE_DEFER) {
+                if (w.kind == IDLE_DEST_HEAP_FIELD) {
                     /* 字段写记原始值：(b′) 的"字段读沿根取"由 `idleSolveLvls` 的固定点算 ——
                      * 写进去的值可能依赖别的绑定（`c.next = h` 在 `h = c` 之前）。 */
                     IdleFieldStore *fs = arenaAllocZero(ac->a, sizeof *fs);
-                    fs->fname = fld;
-                    fs->host = hnm;
-                    fs->value = s->u.assign.value;
+                    fs->fname = w.fname;
+                    fs->host  = w.host;
+                    fs->value = w.value;
                     *(IdleFieldStore **)vecPush(&ac->idleFieldStores) = fs;
-                    IdleFresh *fr = idleFreshAt(ac, hnm, ac->idleSeq);
-                    /* (a′) 宿主是**本迭代新建**的：分配点的循环深度 ≥ 站点循环深度（每对象
-                     * 只写一次的主判据），**且**那条 `new` 没被逃逸分析提到更长寿的 arena 层
-                     * （两个条件都要；见 `IdleFresh` 的说明）。 */
-                    bool hostThisIter = fr && fr->depth - 1 >= depth && fr->arenaLevel >= depth;
-                    if (depth > 0 && !hostThisIter && !seqElem) {
-                        idleNote(ac, arenaPrintf(ac->a,
-                            "line %d: a reference field is written inside a loop, so one object can be overwritten",
-                            s->line));
-                    } else {
-                        IdleSite *site = arenaAllocZero(ac->a, sizeof *site);
-                        site->value = s->u.assign.value;
-                        site->seqElem = seqElem;
-                        site->host = hnm;
-                        site->fname = fld;
-                        site->line = s->line;
-                        site->depth = depth;
-                        site->allocDepth = fr ? fr->arenaLevel : -1;   /* 事实，诊断用 */
-                        site->seq = ac->idleSeq;
-                        *(IdleSite **)vecPush(&ac->idleSites) = site;
-                    }
+                    w.allocDepth = idleFreshAt(ac, w.host, w.seq)
+                                 ? idleFreshAt(ac, w.host, w.seq)->arenaLevel : -1;
                 }
+                IdleWrite *rec = arenaAllocZero(ac->a, sizeof *rec);
+                *rec = w;
+                *(IdleWrite **)vecPush(&ac->idleWrites) = rec;
             }
         }
         if (t && t->kind == EX_IDENT) {
@@ -6202,12 +6305,20 @@ static bool idleWalkStmt(Checker *c, AcInfo *ac, Stmt *s, int depth, int scope, 
         if (!s->u.var.overwrite) {
             Type *dt = s->type ? s->type : (s->u.var.init ? s->u.var.init->type : NULL);
             if (dt && acSlotHoldsCountedRef(c, dt)) {
-                IdleStore *st = arenaAllocZero(ac->a, sizeof *st);
-                st->name      = nm;
-                st->line      = s->line;
-                st->loopScope = minLoopScope;
-                st->value     = s->u.var.init;
-                *(IdleStore **)vecPush(&ac->idleStores) = st;
+                IdleWrite w;
+                memset(&w, 0, sizeof w);
+                w.kind      = IDLE_DEST_SLOT_NAMED;
+                w.host      = nm;
+                w.line      = s->line;
+                w.loopScope = minLoopScope;
+                w.value     = s->u.var.init;
+                w.seq       = ac->idleSeq;
+                const char *why = NULL;
+                if (idleLosesRoot(ac, &w, 0, &why, IDLE_STAGE_WALK) == IDLE_DEFER) {
+                    IdleWrite *rec = arenaAllocZero(ac->a, sizeof *rec);
+                    *rec = w;
+                    *(IdleWrite **)vecPush(&ac->idleWrites) = rec;
+                }
             }
         }
         return idleWalkExprFlag(c, ac, s->u.var.init, depth, true, minLoopScope);
@@ -6608,58 +6719,32 @@ void computeFnAcyclic(Checker *c) {
         vecInit(&info[i].idleFresh, a, sizeof(void *));
         vecInit(&info[i].idleAsgn, a, sizeof(void *));
         vecInit(&info[i].idleAsgnLoop, a, sizeof(int));
-        vecInit(&info[i].idleSites, a, sizeof(void *));
+        vecInit(&info[i].idleWrites, a, sizeof(void *));
         vecInit(&info[i].idleBindLvl, a, sizeof(void *));
         vecInit(&info[i].idleFieldLvl, a, sizeof(void *));
         vecInit(&info[i].idleFieldStores, a, sizeof(void *));
-        vecInit(&info[i].idleStores, a, sizeof(void *));
-        vecInit(&info[i].idleSlotSites, a, sizeof(void *));
         IdleWalk iw = { c, &info[i], 0, 1, 0 };
         AstVisit iv = { idleWalkExprCb, idleWalkStmtCb, &iw };
         astWalkStmtChildren(f->body, &iv);
-        /* (a)/(a′) 剩下的两半：宿主必须是"本帧 `new` 出来、从不被重新赋值"的局部量，且同一个
-         * （宿主声明, 字段）在这个函数里只有一处站点。站点在循环里时，`idleWalkStmt` 已经用
-         * "宿主是本迭代新建的"（分配循环深度 + arena 层两个条件）筛过一遍，这里仍是同一套
-         * 后处理：台账里没有这个名字 ⇒ 判否。 */
-        for (size_t k = 0; k < info[i].idleSites.len && !info[i].idleBad; k++) {
-            IdleSite *site = *(IdleSite **)vecAt(&info[i].idleSites, k);
+        /* (a)/(a′) 剩下的两半与细化 A：判据的**后处理期**（走查期只筛掉了"循环里写非本迭代
+         * 宿主"；这里用完整台账再判 C/B/A）。站点顺序就是记录顺序 —— 细化 A 只看更早的站点。 */
+        for (size_t k = 0; k < info[i].idleWrites.len && !info[i].idleBad; k++) {
+            IdleWrite *w = *(IdleWrite **)vecAt(&info[i].idleWrites, k);
+            if (w->kind != IDLE_DEST_HEAP_FIELD) continue;
             const char *why = NULL;
-            if (!idleFreshAt(&info[i], site->host, site->seq) && !site->seqElem) {
-                why = "the host object is not a local created by `new` in this frame";
-            } else if (idleNameIn(&info[i].idleAsgn, site->host)) {
-                why = "the host binding is reassigned in this function";
-            } else {
-                for (size_t j = 0; j < k; j++) {
-                    IdleSite *o = *(IdleSite **)vecAt(&info[i].idleSites, j);
-                    if (o->host == site->host && strcmp(o->fname, site->fname) == 0) {
-                        /* 细化 A：旧值另有根 ⇒ 覆盖没丢根 ⇒ 不是冲突。 */
-                        if (!(o->value && idleValueOtherRoot(&info[i], o->value)))
-                            why = "the same field of the same host is written at two sites";
-                        break;
-                    }
-                }
-            }
-            if (why)
-                idleNote(&info[i], arenaPrintf(a, "line %d: %s", site->line, why));
+            if (idleLosesRoot(&info[i], w, k, &why, IDLE_STAGE_POST) == IDLE_REJ)
+                idleNote(&info[i], why);
         }
         /* 细化 (b′)：栈上 ref 槽的赋值站点推迟到这里判 —— 条件是"写进这个槽的**全部**值都随
          * 本迭代的 arena 一起死"（`idleStoreQualified`）。因为同一名字可能有多处写入，只有整趟
          * 走完才看得全；任一处不合格 ⇒ 这个槽的每一次覆盖都判否（保守）。 */
         idleSolveLvls(&info[i]);
-        for (size_t k = 0; k < info[i].idleSlotSites.len && !info[i].idleBad; k++) {
-            IdleSlotSite *cs = *(IdleSlotSite **)vecAt(&info[i].idleSlotSites, k);
-            int csLvl = idleValueLvl(&info[i].idleBindLvl, &info[i].idleFieldLvl, cs->value);
-            bool ok = idleStoreQualified(csLvl, cs->loopScope);
-            for (size_t j = 0; ok && j < info[i].idleStores.len; j++) {
-                IdleStore *st = *(IdleStore **)vecAt(&info[i].idleStores, j);
-                if (!st->name || !cs->name || strcmp(st->name, cs->name) != 0) continue;
-                if (!idleStoreQualified(idleValueLvl(&info[i].idleBindLvl, &info[i].idleFieldLvl,
-                                                     st->value), st->loopScope)) ok = false;
-            }
-            if (!ok)
-                idleNote(&info[i], arenaPrintf(a,
-                    "line %d: a reference is assigned to a stack slot (a local/parameter, or a field of one)",
-                    cs->line));
+        for (size_t k = 0; k < info[i].idleWrites.len && !info[i].idleBad; k++) {
+            IdleWrite *w = *(IdleWrite **)vecAt(&info[i].idleWrites, k);
+            if (w->kind != IDLE_DEST_SLOT_NAMED || !w->isAssign) continue;
+            const char *why = NULL;
+            if (idleLosesRoot(&info[i], w, k, &why, IDLE_STAGE_POST) == IDLE_REJ)
+                idleNote(&info[i], why);
         }
     }
 
