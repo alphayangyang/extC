@@ -121,6 +121,9 @@ NEW = """    long long extc_probe_t0 = extc_probe_ns();
     if (extc_probe_t2 - extc_probe_t1 > extc_probe_max_sweep) extc_probe_max_sweep = extc_probe_t2 - extc_probe_t1;
 """
 
+OLD2 = '    size_t marked = extc_rc_mark(r, roots, nroots);\n    (void)marked;\n    r->visitedBytes = r->allocBytes;   /* 这次**标记遍历**吃掉的信用 */\n    extc_rc_sweepBegin(r);\n    extc_rc_sweepStep(r, EXTC_RC_SWEEP_BUDGET);   /* 只做一步；余下在分配路径上续扫 */\n    return r->swFreed;\n'
+NEW2 = '    long long extc_probe_t0 = extc_probe_ns();\n    size_t marked = extc_rc_mark(r, roots, nroots);\n    long long extc_probe_t1 = extc_probe_ns();\n    (void)marked;\n    r->visitedBytes = r->allocBytes;\n    extc_rc_sweepBegin(r);\n    extc_rc_sweepStep(r, EXTC_RC_SWEEP_BUDGET);\n    long long extc_probe_t2 = extc_probe_ns();\n    extc_probe_record(extc_probe_t2 - extc_probe_t0);\n    extc_probe_sum += extc_probe_t2 - extc_probe_t0;\n    if (extc_probe_t2 - extc_probe_t0 > extc_probe_max) extc_probe_max = extc_probe_t2 - extc_probe_t0;\n    if (extc_probe_t1 - extc_probe_t0 > extc_probe_max_mark) extc_probe_max_mark = extc_probe_t1 - extc_probe_t0;\n    if (extc_probe_t2 - extc_probe_t1 > extc_probe_max_sweep) extc_probe_max_sweep = extc_probe_t2 - extc_probe_t1;\n    return r->swFreed;\n'
+
 MARKER = "#ifndef EXTC_RC_SLAB_BITS"
 
 
@@ -133,9 +136,15 @@ def main() -> int:
     if src.count(MARKER) != 1:
         sys.stderr.write("插桩失败：找不到回收运行期（%r 出现 %d 次）\n" % (MARKER, src.count(MARKER)))
         return 1
-    if src.count(OLD) != 1:
-        sys.stderr.write("插桩失败：extc_rc_collect 的 mark/sweep 形态变了（匹配 %d 次）\n" % src.count(OLD))
+    if src.count(OLD) == 1:
+        src = src.replace(OLD, NEW, 1)
+    elif src.count(OLD2) == 1:
+        src = src.replace(OLD2, NEW2, 1)
+    else:
+        sys.stderr.write("插桩失败：collect 形态不认识（整段 %d / 分步 %d）\n" % (src.count(OLD), src.count(OLD2)))
         return 1
+    # `sweeps` 口径保持\"扫完的轮数\"：分步清扫在 completion 处计数（不是 collect 入口）
+    src = src.replace("    r->sweeps++;", "    extc_probe_n++;\n    r->sweeps++;", 1)
     src = src.replace(MARKER, GLOBALS + "\n" + MARKER, 1)
     src = src.replace(OLD, NEW, 1)
     sys.stdout.write(src)

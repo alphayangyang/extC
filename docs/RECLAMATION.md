@@ -398,6 +398,10 @@ p = null                 // 计数 0 —— 放
 | `skip:no-trigger` | 压力没到阈值 ⇒ 不欠账、不销账 | 阈值由 `live`/`scale` 推出 | 内存（界）| `thr-stale` ⇒ `阈值缓存③`；`sweep-never` ⇒ churn 界红 |
 | `skip:nosweep` | 种子不完整的区域 ⇒ 一个字节都不扫 | 该区域有追不到宿主的入边 | 少算（不安全）| 义务 7 单测 + `noSweep-drop` |
 | `skip:release-budget` | 自上次 O(活集) 遍历以来的新分配 < `max(live, floor)` ⇒ 这次定点释放不做 | 一次 O(活集) 遍历必须由分配量摊销；否则赋值路径上出现 O(N²)（40k 次追加 5.08 s vs 关档 2.4 ms）| 多留（保守：垃圾晚一步收）| `gate-release`（`ring_per_round` 释放槽数仍 >0）+ `gate-reclaim-switch` + `gate-idle-bounded` |
+| `skip:not-sweeping` | 没有正在进行的分步清扫 ⇒ `sweepStep` 直接返回 0 | 分步清扫是显式状态（`sweeping`）| 无（幂等）| `gate-reclaim-switch` 的形状语义 + `EXTC_RC_PAUSE` 的 `[step]` 行 |
+| `skip:sweeping-resume` | 上一轮分步清扫没扫完 ⇒ 触发点只**续扫一步**，不起新的 mark | mark 依赖"标记位图已清零"，位图由清扫逐字清零 | 无（把一次长停顿摊成多步）| `gate-reclaim-switch` / 语料指纹（语义逐字节）|
+| `skip:sweep-continue` | 这一步没扫到底 ⇒ `sweepStep` 返回 0，下一轮（分配点）继续 | 游标留在区域里 | 无（同上）| `gate-skip-table` + `gate-reclaim-switch` |
+| `skip:nosweep-abandon` | 义务 7 区域（`noSweep`）**弃扫**：在飞的一轮就地作废，之后一个字节都不扫 | 种子不完整 ⇒ 该区域只靠计数回收 | 无（少收 ⇒ 内存涨，不是悬垂）| `gate-reclaim-count-unit` / `reclaim-unit` 的"义务 7"断言 |
 | `skip:no-owe` | 没有欠账 ⇒ 不销账 | `owe` 由触发点置位 | 多留（保守）| `gate-reclaim-switch` 的形状语义判据 |
 | `skip:no-bumpslab` | 还没 bump 过 ⇒ `bumpReset` 直接返回 | 没有 slab 就没有可复位的指针 | 无（幂等）| 单测 `bump：载荷连续排布` / `bump reset：不新增 slab` |
 | `skip:armed` | 统计只装一次 | 幂等 | 无（诊断）| 无（诊断路径，不影响回收语义）|

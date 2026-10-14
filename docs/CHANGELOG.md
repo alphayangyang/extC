@@ -1,3 +1,29 @@
+## 2026-10-14 · 清扫**分步化**（可中断）：sweep 主导形状的 STW 窗口 **167/287 µs → 4.1/18.1 µs**，总时间 **1.01–1.08×**
+
+**动机（量出来的，不是猜的）**：暂停内部拆账（`collect` 里给 mark/sweep 各夹一对时钟）显示**双峰**——`rg_walk_array`/`evict_cache`/`overwrite_ring`/`cross_region`/`scale_growth`/`shard_bands` 的窗口里 **sweep 占 98%**（mark 1–2%），而 `insert_hash`/`spectrum_p2/p5`/`cyclic_pressure`/`digraph`/`owed_home` 是 **mark 占 52–100%**。⇒ "只切 sweep（**不引写屏障**）"对第一峰有真实空间；写屏障此路不通（`MARK-MODEL.md §13`：屏障下界 +38.3% > 增量收益上限 18%）。
+
+**机制**（`src/back/reclaim.c`）：
+- 区域加游标 `swSlab/swWord/swFreed` 与轮次号 `swId`；`sweepBegin` 起游标，`sweepWord` 扫**一个字**（64 槽：放未标对象、清该字标记位、扫完一只 slab 给它打 `swEpoch` 年龄），`sweepStep(budget)` 每步最多 **8 字**；扫到底才做总账（自学习倍数、`live`、阈值、`sweeps++`）。
+- **清扫期间分配即标黑**，且只标"游标还没走到"的位置（`swEpoch != swId` 且 `s == swSlab ⇒ word >= swWord`）—— 已扫过的位置标了会留下没人清的陈旧位（下一轮 mark 不清位图）。
+- 续扫挂在**分配路径**（每个分配一步）与触发点；触发点在清扫未完时只续扫，**不起新 mark**（mark 依赖位图已清零）。
+- **义务 7**：`noSweep` 区域**弃扫**（在飞的一轮就地作废），一个字节都不再扫。
+- **结算**只放**非热路径**：查询账目（`extc_rc_bytes/live/scale/sweeps/freedSlots`）与**区域销毁**时把在飞的一轮推到底 —— 于是"一次收集的账"在观测时已是终值（`tests/reclaim/driver.c` 的记账断言）。**销账点（`checkOwed`，每个函数调用都走）只推一步**：早先在销账点 drain 会把窗口拼回去（实测 `rg_walk_array` 18 → 242 µs），所以撤掉。
+- 顺带删掉收尾的**全量重算**：`bytes` 本由 `extc_rc_alloc`（+ss）/`extc_rc_freeSlot`（−ss）增量维护，popcount 那一趟是多余的。
+
+**实测（同机同法，改前/改后同形状同参数；旧档 = `HEAD~` 前编译器）**：
+
+| 形状 | 总时间 | 比 | STW 窗口 max | collect 均值 | 步 max |
+|---|---|---|---|---|---|
+| `rg_walk_array` | 5.3 → 5.6 ms | ×1.05 | 167 → **4.1 µs** | 2.1 µs | 13.9 µs |
+| `shard_bands` | 77.9 → 80.2 ms | ×1.03 | 287 → **18.1 µs** | 2.3 µs | 121.7 µs |
+| `cross_region` | 17.8 → 19.2 ms | ×1.08 | 818 → **465.9 µs** | 58.5 µs | 19.6 µs |
+| `digraph` | 95.2 → 96.6 ms | ×1.01 | 784 → **316.9 µs** | 148.8 µs | 17.7 µs |
+| `spectrum_p5`（mark 主导）| 48.3 → 50.7 ms | ×1.05 | 3783 → 3732.9 µs | 1048.9 µs | 84.8 µs |
+
+**残留（如实）**：① `cross_region` 剩的 466 µs、`spectrum_p5` 的 3.7 ms 都在 **mark**（前者是首次收集的活集、后者是活闭包）；**触发线**是不要屏障的现成杠杆 —— 1 MiB → 64 KiB 时 `cross_region` 窗口 614 → **47 µs** 且总时间 **−21%**，但**本轮未落地**（需先量全语料/电池，避免把每轮固定开销放大到别的形状）；② mark 主导族要真正有界只能上增量标记（屏障，下界 +38.3%）；③ **种子表**（登记位 0→1 入表、mark 只走表）实测**无收益**（466 → 505 µs，噪声内）⇒ 设计里留了全量扫描、表格方案丢弃；④ 分步清扫与 `noSweep`/欠收/协程路径的交互只覆盖了电池里有的形状。
+
+**验收**：`nobench` **100/0**（含 `reclaim-unit` 60 条、`gate-reclaim-count-unit` 100 条、`gate-reclaim-switch` 的 `owed-home` "家区域清扫次数 > 0"）；`docs` 12/0；语料指纹**故意重冻**：`same=YES 628 · same=NO 224`（224 个发射文件的生成物变了、628 个 idle/关档**逐字节未变**）；ASan 干净；内存界 N vs 4N 不变量化（`cross_region` 8804/11296 vs 8740/11300 KB、`shard_bands` 3748 → 3812 KB）。判据工具 `tools/rc-pause-probe.py` 随之支持新形态（认两种 `collect` 形态），`sweeps` 口径保持**扫完的轮数**。
+
 ## 2026-10-14 · `bench/app` 用户视角停顿（**真实业务形状**）：**三个形状上回收运行期根本不发射**；但 route/log 我们比 Go/C++ 慢 **3–6×** ⇒ **差距不在 GC**
 
 **素材**：`session`（会话表：高频写+删+查）、`route`（路由表：插入/前驱/区间扫描/删除）、`log`（有界字节缓冲：追加/截断/查找）—— 各 **extC/C++/Go** 三语言、默认规模 2×10⁶ ops；**6 臂 × 3 形状 × 5 rep = 180 次**。戳只打在**形状源码**的业务单位边界（extC `time::now()` / C++ `steady_clock` / Go `time.Since` 单调部分），全默认档、不 pin 核、不设堆上限；**GC 侧计时一行都没用于停顿定义**。
