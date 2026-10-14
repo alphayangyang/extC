@@ -230,3 +230,22 @@ env GODEBUG=gctrace=1 taskset -c 6-9 /tmp/gopause/digraph_go 1000000 20261013
   `runtime/mgcmark.go:499`、`runtime/mgcsweep.go:272/359`、`runtime/mgcpacer.go:17-30`、`runtime/proc.go:1452-1453`
 - 本仓库：[MARK-MODEL.md](../tests/reclaim-perf/MARK-MODEL.md)（§9/§10/§11/§13）、[CHAIN-BLOCKERS.md](../tests/reclaim-perf/CHAIN-BLOCKERS.md)、
   [DIGRAPH.md](DIGRAPH.md) §6.9/§6.10
+
+
+---
+
+## 7. Go 的“GC 吞吐代价”：`GOGC` 三档（`task-52` · @250k · 同一次会话）
+
+**跑法**：`digraph` @**N=250000** seed=20261013 · `taskset -c 6`（⇒ Go 只看到 **1 P**）· `GODEBUG=gctrace=1` · 每臂 **5 次取中位** · A/B 都不带额外插桩 · 跑前/跑后 **load ≈ 0.24–0.41**（`/tmp/ggo/load.txt`）。**GC CPU%** = `gctrace` 每行开头那个 `#%` 字段（官方口径：**“percentage of time spent in GC since program start”**，`runtime/extern.go:123` ✓）。
+
+| 臂 | 墙钟中位 ms | 周期数 | **ΣSTW ms** | 单次 p50 µs | 单次 max µs | 峰值 RSS MiB | **GC CPU% 中位/最大** | assist+bg CPU ms/跑 |
+|---|---|---|---|---|---|---|---|---|
+| `GOGC=off` | **48.1** | **0**（显式 0 ✓） | 0 | — | — | **36.4** | **0 / 0** | 0 |
+| `GOGC=100`（默认） | 48.8 | 11 | 0.067 | 4.0 | 46.0 | **6.7** | **6% / 8%** | 2.9 |
+| `GOGC=200` | 49.4 | 5 | 0.040 | 7.0 | 17.0 | 11.8 | **3% / 3%** | 1.5 |
+
+**两个问题的回答**：
+1. **关掉 GC 快不了多少** ✗：`GOGC=off` **48.1 ms** vs 默认 **48.8 ms** ⇒ **−1.4%**（噪声量级）；代价是峰值 RSS **6.7 → 36.4 MiB（5.4×）** ✓。⇒ 在本形状/规模上 **GC 的墙钟代价 ≈ 1%**，与 §6.9 的 STW 占比 **0.20%**、本表 ΣSTW **0.067 ms / 48.8 ms ≈ 0.14%** 一致 ✓。
+2. **默认档 GC 拿走的 CPU ≈ 6%** ✓（`gctrace` 中位 **6%**、最大 **8%**）；`GOGC=200` 减半到 **3%** ✓（周期 5 vs 11，与官方“GOGC 翻倍 ⇒ GC CPU 大致减半”的模型一致 ✓）。与我们此前在 **@1M** 量的 assist+bg **39.5 ms / 7.8% 墙钟** **同量级、方向一致** ✓（本表用同一字段直接读出 assist+bg = **2.9 ms/跑** ⇒ 与 6% 自洽 ✓）。⚠️ 两处**规模不同**（本表 @250k、那次 @1M）⇒ 只作**同量级对照**，**不混算** ✗。
+
+**口径注意（如实写 ✓）**：`GOGC=off` 的 RSS 涨到 36.4 MiB（>5×），**没有**为了跑完而暗中加 `GOMEMLIMIT` ✗（三档都无额外限制 ✓）；三档**同一次会话**跑完 ✓（原始行 `/tmp/ggo/GOGC=*.*.err`）。
