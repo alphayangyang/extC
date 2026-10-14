@@ -7,9 +7,12 @@
 
 插入的东西只有两处，都在**发射出来的那份运行期文本**上：
 
-  1. `extc_rc_collect` 前后加墙钟计时（`mark` 与 `sweep` 分开记），进程退出时打印一行
-     `PROBE sweeps=… max_pause_us=… max_mark_us=… max_sweep_us=… total_pause_us=…`。
-     “最大单次清扫耗时”就是 `max_pause_us`：一次 `extc_rc_collect` 从进到出的墙钟。
+  1. `extc_rc_collect`（契约入口）与 `extc_rc_step`（**热路径入口**，merge 后分配点/销账点走这条）
+     前后各加墙钟计时，进程退出时打印一行
+     `PROBE sweeps=… max_pause_us=… … total_pause_us=… step_n=… step_max_us=… step_over64=…`。
+     “最大单次清扫耗时”是 `max_pause_us`（一次 `extc_rc_collect` 从进到出）；热路径的对应量是
+     `step_max_us` / `step_over*`（阈值桶：超 16/64/256 µs/1 ms 的步数）。**两个都要看**：
+     只报 `max_pause_us` 会在"热路径改走 `step`"后恒为 0（`gate-shard-cycles` 因此假绿过一轮）。
   2. 一个 `atexit` 钩子把累计值打印出来（既有 `PROBE` 行**原样、仍走 stdout** —— 门禁在读它 ✓）。
   3. 另注册一个 `atexit`：设 `DIGRAPH_PAUSE_DIST=1` 时把**逐次清扫时长分布**（分位 / 阈值桶 /
      排序后全部时长（n ≤ 1024）或前 50 + 后 50）打到 **stderr** 的 `PAUSE_DIST` 行 —— 不碰 stdout、不碰既有字段 ✓。
@@ -33,10 +36,24 @@ static long long extc_probe_max, extc_probe_max_mark, extc_probe_max_sweep, extc
 static size_t extc_probe_n;
 /* ⚠️ 既有 `PROBE` 行**原样保留**（`tests/reclaim-perf/gate-shard-cycles.sh` 读它的
  * `max_pause_us=`，且它按现状打 stdout ✗ 不许动）——新增的分布一律走**门控 stderr** 行 ✗。 */
+static long long extc_probe_stepN, extc_probe_stepMax, extc_probe_stepSum;
+static long long extc_probe_stepOver16, extc_probe_stepOver64, extc_probe_stepOver256, extc_probe_stepOver1ms;
+/* 热路径入口（`extc_rc_step`）的进→出墙钟：契约入口的 `max_pause_us` 量不到它。 */
+static void extc_probe_steprec(long long ns) {
+    extc_probe_stepN++; extc_probe_stepSum += ns;
+    if (ns > extc_probe_stepMax) extc_probe_stepMax = ns;
+    if (ns >= 16000) extc_probe_stepOver16++;
+    if (ns >= 64000) extc_probe_stepOver64++;
+    if (ns >= 256000) extc_probe_stepOver256++;
+    if (ns >= 1000000) extc_probe_stepOver1ms++;
+}
 static void extc_probe_dump(void) {
-    printf("PROBE sweeps=%zu max_pause_us=%.1f max_mark_us=%.1f max_sweep_us=%.1f total_pause_us=%.1f\n",
+    printf("PROBE sweeps=%zu max_pause_us=%.1f max_mark_us=%.1f max_sweep_us=%.1f total_pause_us=%.1f"
+           " step_n=%lld step_max_us=%.1f step_total_us=%.1f step_over16=%lld step_over64=%lld step_over256=%lld step_over1ms=%lld\n",
            extc_probe_n, (double)extc_probe_max / 1000.0, (double)extc_probe_max_mark / 1000.0,
-           (double)extc_probe_max_sweep / 1000.0, (double)extc_probe_sum / 1000.0);
+           (double)extc_probe_max_sweep / 1000.0, (double)extc_probe_sum / 1000.0,
+           extc_probe_stepN, (double)extc_probe_stepMax / 1000.0, (double)extc_probe_stepSum / 1000.0,
+           extc_probe_stepOver16, extc_probe_stepOver64, extc_probe_stepOver256, extc_probe_stepOver1ms);
 }
 /* ---- 逐次时长分布（门控：DIGRAPH_PAUSE_DIST=1，只写 stderr） ----
  * 环形数组记每一次 `extc_rc_collect` 的墙钟（进→出，ns；与 `max_pause_us` 同口径），
@@ -149,7 +166,10 @@ def main() -> int:
             sys.stderr.write("插桩失败：collect 形态不认识（整段 %d / 分步 %d）\n" % (src.count(OLD), src.count(OLD2)))
             return 1
         i = src.index(SIG3) + len(SIG3)
-        j = src.index("    return r->swFreed;", i)
+        j = src.find("    return r->swFreed;", i)
+        if j < 0:
+            sys.stderr.write("插桩失败：collect 形态不认识（签名有、收尾没有）\n")
+            return 1
         body = src[i:j]
         src = (src[:i] + "    long long extc_probe_t0 = extc_probe_ns();\n" + body +
                "    long long extc_probe_t2 = extc_probe_ns();\n"
@@ -164,6 +184,20 @@ def main() -> int:
     src = src.replace(MARKER, GLOBALS + "\n" + MARKER, 1)
     src = src.replace(OLD, NEW, 1)
 
+    # 热路径入口 `extc_rc_step`：契约入口的 `max_pause_us` 量不到它（merge 后热路径走这条）。
+    # 有就插：t0 在签名后、记录在它自己的 `return r->swFreed;` 前。没有（老形态）就不插，
+    # 自检也不对它提要求 —— 但 `step_n=0` 会被闸门当成"探针没覆盖热路径"。
+    step_forms = "static size_t extc_rc_step(ExtcRcRegion *r, void *const *roots, size_t nroots) {\n"
+    step_seen = src.count(step_forms) == 1
+    if step_seen:
+        i = src.index(step_forms) + len(step_forms)
+        j = src.find("    return r->swFreed;", i)
+        if j < 0:
+            sys.stderr.write("插桩失败：step 形态不认识（签名有、收尾没有）\n")
+            return 1
+        src = (src[:i] + "    long long extc_probe_st0 = extc_probe_ns();\n" + src[i:j] +
+               "    extc_probe_steprec(extc_probe_ns() - extc_probe_st0);\n" + src[j:])
+
     # 自检：插桩必须**真的**插进去。任何一种"静默返回原文"都会让调用方把"没有探针"错读成
     # `sweeps = 0`（闸门文案会写成"清扫次数 = 无"，把人引到"回收没发生"的错误结论上 ——
     # 本仓库已经吃过一次：增量 collect 形态认不出时，`owed-home` 被误判成"家区域从没被扫过"）。
@@ -175,6 +209,8 @@ def main() -> int:
                           and "long long extc_probe_t2 = extc_probe_ns();" in src),
         ("atexit 挂载", "__attribute__((constructor)) static void extc_probe_arm" in src),
     ]
+    if step_seen:
+        checks.append(("热路径 step 计时", "extc_probe_steprec(extc_probe_ns() - extc_probe_st0);" in src))
     bad = [name for name, ok in checks if not ok]
     if bad:
         sys.stderr.write("插桩失败（自检未通过）：%s —— 这是**工具不兼容**，不是目标程序 sweeps=0；"

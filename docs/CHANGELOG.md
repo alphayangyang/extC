@@ -1,3 +1,68 @@
+## 2026-10-15 · 窗口判据层：切片级 `[step]` 分布 + 探针覆盖热路径 + 稳健判据；每步预算加天花板 `EXTC_RC_MARK_BATCH_MAX=256`
+
+**动机（判据层的洞，先红后修）**：上一个提交把热路径从契约入口 `collect` 挪到新入口 `extc_rc_step`，但**量具没跟上**：
+- `tools/rc-pause-probe.py` 只包 `extc_rc_collect` ⇒ `PROBE max_pause_us` 恒 `0.0`；
+- `tests/reclaim-perf/gate-shard-cycles.sh` 的 ② 判据 `SHARDS=4 < 0.75×SHARDS=1` 因此变成 **`0 < 0` 恒假**
+  （复跑原文：`最大单次清扫：SHARDS=1 0.0 µs · SHARDS=4 0.0 µs · 4/1=0.00` ⇒ `FAIL 分片被钉死了`，通过 5 失败 1）；
+  而它 `bench=True`（`tools/check.py:736`）⇒ `nobench` 从不跑它；
+- 运行期 `[step]` 只记 `sweepStep`，**`markStep` 没有任何计时** ⇒ 连"切片级窗口"都漏了热路径的主要来源。
+  实测同一版本连跑两次，`[step] max_us` 能差 3.6×（长尾 + 抢占）⇒ 旧口径的 `max` 本身也不适合当判据。
+
+**机制**（`src/back/reclaim.c`、`tools/rc-pause-probe.py`、`tests/reclaim-perf/gate-shard-cycles.sh`）：
+- **切片级记账**：`markStep` 与 `sweepStep`（仅有的两种不可中断工作块）现在都进 `extc_rc_stepNote()`：
+  `[step] n=… max_us=… total_us=… over16=… over64=… over256=… over1ms=…`（`overK` = 超过 K 的切片数；
+  新字段全部**追加**在旧格式之后，向后兼容）。`markStep` 侧按 `extc_rc_pauseOn > 0` 门控（默认档零开销）。
+- **探针覆盖热路径**：`PROBE` 行追加 `step_n/step_max_us/step_total_us/step_over16/64/256/1ms`（仪器化
+  `extc_rc_step` 进→出），自检从 4 条扩到 5 条（多"热路径 step 计时"一条）；插桩失败仍 **rc=1** 且区分
+  "collect 形态不认识 / step 形态不认识 / 自检未通过"，并写明"这是**工具不兼容**，不是目标程序 `sweeps=0`"。
+- **判据换稳健口径**（`gate-shard-cycles.sh` ②）：比 `SHARDS=1/4` 的**平均切片** `total_us/n`
+  （REPS 取最小值抗抢占，`< 0.75×`）+ **`over1ms == 0`**（绝对上界）+ **`over64 ≤ 5`**（长切片受控）
+  + 语义逐字一致 + **元判据"探针必须报 `PROBE step_n > 0`"**（这个洞不许复发）。修后 **9/0**（旧 5/1）。
+  能红演示：把生成物里 `#define EXTC_RC_SWEEP_BUDGET 8` 改成 `100000000` ⇒ `over64=73`（真实 0/0）⇒ 红；
+  4/1 用同一份产物 = 1.00 ≥ 0.75 ⇒ 红。
+- **让调参可做**：原来 `#ifndef EXTC_RC_MARK_STEP` 把 `SEED_PUSHES`/`MARK_EVERY`/`MARK_WINDOW` 一起包住
+  （`-D` 其中一个会把另外三个跳过、编译不过）⇒ 四个宏各自一个 `#ifndef`（`SWEEP_BUDGET` 同样加）；
+  新增 `EXTC_RC_MARK_BATCH_MAX`，并让闲置的 `EXTC_RC_ASSIST_CAP`（注释写着"债务再多也不许把一步撑成
+  一次全量标记"、但从未被使用）真正生效：`b = MARK_EVERY·MARK_STEP + min(wbDebt, ASSIST_CAP)`，
+  `×8` 加力之后夹到 `BATCH_MAX`。
+- **默认值**：`EXTC_RC_MARK_BATCH_MAX = 256`（原为无天花板）。
+
+**实测（参数曲线，10 个点 × 五形状；窗口 `EXTC_RC_PAUSE=1`，墙钟 best-of-9）**：
+
+| `BATCH_MAX` | p5 mean / smax (µs) | cross mean / smax | evict mean / smax | shard mean / smax | 墙钟 p5 / cross / evict / shard（相对 1024）|
+|---|---|---|---|---|---|
+| 1e9（≈无）| 2.98 / 180 | 1.20 / 251 | 0.55 / 47 | 0.64 / 150 | — |
+| 1024 | 2.73 / 132 | 1.21 / 64 | 0.64 / 33 | 0.65 / 140 | 1.000 / 1.000 / 1.000 / 1.000 |
+| 512 | 2.74 / 108 | 1.20 / 85 | 0.56 / 38 | 0.64 / 206 | 0.975 / 0.976 / 0.996 / 0.995 |
+| **256（默认）** | **2.41 / 158** | **1.23 / 140** | **0.55 / 29** | **0.65 / 124** | 0.985 / 1.010 / 0.996 / 0.992 |
+| 128 | 1.74 / 130 | 1.13 / 134 | 0.54 / 18 | 0.64 / 108 | 0.980 / **1.063** / 1.010 / 0.992 |
+| 64 / 32 | 1.20 / 0.75（smax 117 / 93）| 0.92 / 0.81 | 0.54 / 0.54 | 0.63 / 0.63 | cross +16~18% |
+| 256 + `MARK_STEP=4` | 2.17 / 81 | 1.19 / 106 | 0.55 / **16** | 0.64 / 115 | ≈1.00 |
+| 256 + `SWEEP_BUDGET=4/2` | mean 1.45 / 0.83（smax 仍 132~165）| 0.61 / 0.33 | 0.29 / 0.15 | 0.32 / 0.17 | ≈1.00 |
+
+- 切片均值随天花板收小而**单调下降**（p5 2.98→0.75）；`smax` 基本不降（p5 90–180 µs、shard 100–200 µs）——
+  长尾在 **mark/seed-scan** 侧，不在 sweep 侧（把 `SWEEP_BUDGET` 砍到 2 只降均值、不降 max）。
+- 推荐 **256**：窗口比无天花板/1024 好，墙钟四个形状 0.985–1.010（≤ +1%，满足"不比当前 merge 差 >2%"）。
+- **目标"evict/shard 最坏切片 ≤ 父树 `e289868`"未完全达到，如实说明**：最终默认 `win_max`（REPS=5 中位）
+  p5 **69.5** / cross **108.4** / evict **30.4** / shard **180.6** / digraph **3.2 µs**，对照父树
+  **2052.7 / 451.0 / 12.7 / 127.1 / 12.5**：p5/cross/digraph 大幅更好、shard 同量级、**evict 的最坏片大 2.4×**。
+  原因是**口径不可比**：父树标记是同步整段（记进 `[pause]`），它的 `[step]` 只数 `sweepStep`；合并后
+  标记片才第一次被单独计数。在"墙钟 ≤ +2%"内找不到把 evict 最坏片压到 ≤12.7 µs 的点（所有点停在 16–30 µs）。
+  两个次优：**偏窗口** `BATCH_MAX=128`（evict ~18 µs、p5 mean 1.74，代价 cross 墙钟 **+6.3%**）、
+  **偏吞吐** `BATCH_MAX=512`（墙钟 −2.5%，窗口退回 1024 附近）。
+
+**闸门（主树，独占跑）**：`gate-reclaim-count-unit` **103/0**（ASan 净）、`switch` **33/0**、`count` **33/0**、
+`gaps` **9=基线**、`gate-reclaim-perf` **123,044,936 Ir ≤ 161,653,535**、`tax` bt **1.000×**、
+`perf-shapes` bt 2,850,624 / rebuild 15,037,125、`count-cross` **3/0**、**`gate-shard-cycles` 9/0（修后）**、
+`nobench` **100/0**、`smoke` **16/0**、`sample-asan-bounded` 抽样全过；五形状语义与 `EXTC_RECLAIM=0` 逐字同、
+`digraph` 7984/1772 逐字同。语料指纹随发射文本变化**同一提交重冻**（`same=YES 628 · same=NO 224` 不变）。
+
+**残留（如实）**：① `BATCH_MAX=256` 是行为改动（标记推进粒度变小）——"活集极大且持续写入"的极端语料未覆盖；
+   `×8` 加力在 2 MiB 后被天花板夹回 256，**追不上时的方向是"屏障挂更久"**（不漏、窗口有界）；
+② `overK` 是粗分位（1/4/16/64/256/1000 µs 边界）；③ `gate-shard-cycles` 仍 `bench=True`，`nobench` 盖不到
+   （本轮没改档位），但它现在能红且判据稳健；④ p5/shard 的 100 µs 级长尾疑似来自 **seed 扫描**
+   （`EXTC_RC_SEED_PUSHES` 只限压栈数、不限每步走的 rsbit 字数），下一刀应在这里，本轮未调。
+
 ## 2026-10-15 · 两个入口、两种契约：`collect` 收完一轮 / 新增 `step` 推进 —— 4 条 reclaim 闸门转绿且窗口回到 µs；代价是 `shard_bands` 墙钟 +16.5%
 
 **动机（先红后修，量出来的）**：门控原型 good-23 的增量标记把"契约入口"和"热路径入口"塞进同一个 `extc_rc_collect`：它既被单测/`settle`/记账查询当**公开 API** 调（契约：调一次收完一轮），又被分配点 `maybeCollect` 与销账点 `checkOwed` 当**热路径**调（要求：只推进一步，窗口才 µs 级）。同一个函数兼两职的结果是两条都做不好 —— 实测：
