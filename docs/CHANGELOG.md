@@ -1,3 +1,45 @@
+## 2026-10-15 · `[work]` 工作量界接成自动闸门 `gate-reclaim-work`（挂 `nobench`，约 3 s）—— 无界种子字扫描那类洞从此当天就红
+
+**为什么接**：`[step]`/墙钟已被证明不可靠（同一产物 `step_smax` 差 8×、与 `involuntary csw` 无一致
+关系 ⇒ 外部干扰/测量噪声），**唯一确定性的窗口判据就是 `[work]` 工作量界**。而"工作量越界"此前
+只靠人看报告：2026-10-15 那个洞（`markStep` 里种子字扫描**无界** —— 没有种子时把整条 slab 链每个
+`rsbit` 字扫完）如果早有 `scan_max` 闸门，**第一天就该红**。本轮把它接上，**只动 `tools/` + 文档、
+运行期零改动**（`[work]` 已由 `001e366` 发射，`src/back/reclaim.c` md5 仍是
+`00210620a542421890a2ce08f8c34e32`）。
+
+**放在哪一层**：新闸门 `gate-reclaim-work`（`tools/check.py` 登记，`tests/reclaim-perf/gate-work.py`）
+**不挂 `bench`** ⇒ 进 `nobench`。理由：**约 2.7–3 s**（五形状现场生成+编译+各跑 3 次），而且是
+每轮都该看的确定性判据。调用：`python3 tools/check.py gate-reclaim-work`。
+
+**判据**（全部实测，不硬编码）：
+- **元判据**：`[work]` 行必须存在且 `n > 0`，否则 FAIL 且文案写明
+  「**插桩失败/工具不兼容**（不是「这一步没工作」）」，**不许当绿**。
+- **确定性**：每形状跑 3 次，`[work]` 行必须**逐字相同**；不一致 ⇒ FAIL（工作量本应确定）。
+- **蕴含式界**：`walk_max ≤ EXTC_RC_MARK_BATCH_MAX`、`walk_gt<BATCH_MAX>==0`（桶存在时）、
+  `scan_max ≤ EXTC_RC_SEED_WORDS`、`push_max ≤ EXTC_RC_SEED_PUSHES + (rsbit 字宽-1)`。
+  三个预算与字宽**全部从本树现场生成的 C 里 grep `#define` / `uint64_t *rsbit`**，任何一个读不到
+  ⇒ 直接 FAIL（防"会漂的副本"进判据）。
+- 绿输出（本树实测）：`BATCH_MAX=256 SEED_WORDS=512 SEED_PUSHES=256 rsbit=64位 ⇒ push ≤ 319`；
+  `p5 n=1833 walk=256/scan=0/push=0` · `cross n=184 walk=256/scan=512/push=319` ·
+  `shard n=388 walk=129` · `evict n=45 walk=245` · `digraph n=6 walk=150`，**通过 5，失败 0**。
+
+**两则红演示（都实测，原始输出留档）**：
+1. **界违规**：临时把发射文本里的种子扫描字预算拿掉（复现无界形态）⇒
+   `FAIL cross：工作量越界 —— scan_max=5120 > SEED_WORDS=512；push_max=65537 > SEED_PUSHES+63=319`
+   ⇒ rc=1。**这正是今天那个洞**：闸门接上后它当天就红。
+2. **元判据**：临时把产物里的 `[work]` 改名 ⇒ 五形状全部
+   `FAIL：拿不到 [work] 行 —— **插桩失败/工具不兼容**` ⇒ rc=1（不是绿）。
+
+**闸门**：`nobench` **101/0**（新增这一条）、四条 reclaim 闸门 + `perf` + `gate-shard-cycles` +
+`smoke`/`docs` 全绿；五形状语义与 `EXTC_RECLAIM=0` 逐字同、`digraph` 7984/1772 逐字同；
+指纹无需重冻（运行期文本零改动，`git diff` 只碰 `tools/**` + `docs/**`）。
+
+**残留**：① 界判据只覆盖**有界热路径步**（`budget ≤ BATCH_MAX`）——契约排空（`collect`/`settle`/`mark`
+的 `budget=∞`）工作量仍不受此闸门约束（`settle` 是 O(轮)，仍是已知残留）；② 桶阈值是发射期固定的
+16/64/256：预算改成别的值时 `walk_gt<BATCH_MAX>` 桶不存在，闸门退化为只看 `walk_max`（已在输出里注明）；
+③ 闸门用现场 `cc -O2` 编译五形状，与 `nobench` 其它项共享机器 ⇒ 计数是确定性的、但**生成/编译**会受
+磁盘与并行度影响（超时 600 s）。
+
 ## 2026-10-15 · 把"工作量"与"调度"分开量：`[work]` 确定性每步工作计数 + 钉核对照 —— 残余长尾**不是工作量**，判据口径写进 `RECLAMATION` §四.一
 
 **动机**：task-16 之后同一版本的**单次** `smax` 仍能从 57 跳到 246 µs（shard 42.6↔153.1，3.6×），

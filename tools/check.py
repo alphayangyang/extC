@@ -724,6 +724,21 @@ def build_items() -> list:
         bad_msg="tests/reclaim-perf/gate-rt-defaults.sh（运行期注释声称的默认值漂移了）",
         bad_dump=dump_tail(10)))
 
+    # ---- 闸门·工作量界（[work] 确定性 + 蕴含式界）----
+    # 挂 nobench 的理由：**约 3 秒**（五形状现场生成+编译+各跑 3 次），而且它是**确定的**
+    # 窗口判据 —— `[step]`/墙钟已被证明不可靠（同产物 `step_smax` 差 8×，与 `involuntary csw`
+    # 无一致关系 ⇒ 外部干扰），所以它必须每轮都跑，不能只挂 bench。
+    # 判据见 `tests/reclaim-perf/gate-work.py`：`[work]` 行存在且 n>0（否则文案是"插桩失败"）、
+    # 每形状 3 次逐字相同、`walk_max ≤ EXTC_RC_MARK_BATCH_MAX`、`scan_max ≤ EXTC_RC_SEED_WORDS`、
+    # `push_max ≤ EXTC_RC_SEED_PUSHES + (字宽-1)`，三个参数与字宽都从**产物**里 grep（不许硬编码）。
+    items.append(cmd(
+        "gate-reclaim-work", "gate",
+        "闸门·工作量界：[work] 存在/确定/n>0，且五形状 walk/scan/push max 都在本树产物预算内",
+        ["python3", "tests/reclaim-perf/gate-work.py"], timeout=600,
+        ok_msg=ok_first(r"^  ok   工作量界"),
+        bad_msg="tests/reclaim-perf/gate-work.py（工作量越界，或 `[work]` 插桩失败）",
+        bad_dump=dump_tail(14)))
+
     # ---- 闸门·分片在环负载下有界（且旋钮没被关掉）----
     # 挂 bench 档的理由：要跑 1M 规模的形状 + 停顿探针（单次约 5s，但**不是**秒级项，且
     # 它测的是"回收片"这个旋钮本身，属于性能线一族 ⇒ 与 `gate-reclaim-tax`/`gate-shapes` 同类）。
