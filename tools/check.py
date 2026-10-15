@@ -739,6 +739,21 @@ def build_items() -> list:
         bad_msg="tests/reclaim-perf/gate-work.py（工作量越界，或 `[work]` 插桩失败）",
         bad_dump=dump_tail(14)))
 
+    # ---- 闸门·跳过旧值登记的不变量（FS1/FS2/FS3 静态 + G1 运行期守卫）----
+    # 挂 nobench 的理由：**约 3 秒**（现场发射运行期文本 + 编 P4 跑一次），但它是**健全性**门禁：
+    # "region 没出现过外来指针就省掉旧值登记查表"这条优化一旦被新代码破坏，失效方向是**不安全**
+    # （漏撤一条跨区入边 ⇒ 目标区域可能提前放掉还被指着的对象），语义/输出判据看不出来。
+    # 判据见 `tools/check_foreign_skip.py`：每个 `rsDec` 被 `foreign` 把门、每个 `rsInc` 同行置
+    # `foreign = 1`、字段与跳过判定存在；再编 P4（`-DEXTC_RC_FOREIGN_GUARD=1`）要求
+    # `[fg] checks>0 bad==0`（拿不到 `[fg]` 行 ⇒ 文案是"插桩失败"，不许当绿）。
+    items.append(cmd(
+        "gate-foreign-skip", "gate",
+        "闸门·旧值登记跳过：FS1/FS2/FS3 静态前提 + G1 运行期守卫（checks>0、bad==0）",
+        ["python3", "tools/check_foreign_skip.py"], timeout=600,
+        ok_msg=ok_first(r"^  ok   跳过旧值登记"),
+        bad_msg="tools/check_foreign_skip.py（旧值登记跳过的不变量被破坏，或守卫插桩失效）",
+        bad_dump=dump_tail(14)))
+
     # ---- 闸门·分片在环负载下有界（且旋钮没被关掉）----
     # 挂 bench 档的理由：要跑 1M 规模的形状 + 停顿探针（单次约 5s，但**不是**秒级项，且
     # 它测的是"回收片"这个旋钮本身，属于性能线一族 ⇒ 与 `gate-reclaim-tax`/`gate-shapes` 同类）。

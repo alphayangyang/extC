@@ -416,6 +416,8 @@ cache/内存带宽争用 —— µs 级切片上这就是测量噪声。**结论
 | `skip:chain-bad` | 帧根链上有一帧**枚举不全**（协程帧/`ext` 帧/池元素/视图元素/`match` 绑定那几档）⇒ 整条链拒绝清扫（种子不完整）| 该帧的槽枚举不全 ⇒ 标记走不到它持有的引用 | 多留（保守）| 与 `skip:nosweep` 同一个出口：义务 7 单测 + 注入 `noSweep-drop` | 
 | `skip:sweepfree` | `EXTC_RC_SWEEPFREE=1`（事件档）⇒ 该区域永不触发清扫，只靠计数归零当场回收 | 整程序被证明无环、且**所有能丢引用的位置都是被计数的 rc 槽**（否则记数不完备）| 少算（内存涨，不是悬垂）| **诊断档**：实测它在语料里没有一个能赢的形状，判据已摘出电池（`gate-acyclic` 自报 manual，见 [`tests/reclaim-perf/TAXMAP.md`](../tests/reclaim-perf/TAXMAP.md) 第 7 节）；手工红证明仍用注入 `acyclic-always`（有环形状 RSS 爆）| 
 | `skip:own-hot` | 指针所在的那块 1 MiB slab 就是上一次**验证过**的 slab ⇒ 直接复用，省掉哈希与查表 | 掩码后的基址与缓存里的 slab 地址**相等**，且槽边界校验照旧通过 | 少算（不安全）| 注入 `ownhot-nobase`（去掉基址判等）⇒ 跨 slab 的指针会拿到错的 slab、校验失败后被当成区域外 | 
+| `skip:rscnt-have` | `rscnt`（每槽跨区入边计数表）已经建过 ⇒ `extc_rc_rsAlloc` 直接返回 | 表一旦建好就跟着 slab 活到 `slabFree`（懒分配只发生在第一次 `rsInc`）| 无（幂等；若重复分配就会泄漏旧表 ⇒ 这条必须保持）| 跨区形状语义逐字（`cross_region`）+ `gate-reclaim-work` |
+| `skip:rscnt-none` | `rscnt` 表不存在 ⇒ 只读访问器返回 0、`rsDec`/`freeSlot` 跳过写 | 表不存在 ⇔ 这块 slab 一次登记都没有过（`rsAlloc` 只在 `rsInc`/`rsIncSlab` 里调）⇒ 没有入边可减/可读 | 少算（把「有入边」读成 0）| 跨区形状 `EXTC_RC_STATS=1` 的 `rs_live` 不随轮数涨 + `gate-reclaim-switch` / `gate-reclaim-gaps` |
 | `skip:same-region` | 值与宿主**在同一个区域**（编译期证得）⇒ 赋值时不登记、不查表 | 两项都是**本帧新局部量**且 arena 层相同 ⇒ 这条边不可能跨区 | 少算（不安全）| `gate-reclaim-switch` 的 `cross-region：登记量判据`；注入 `same-region-always`（把判定强制为真）⇒ 红在那条上 | 
 | `skip:occ-free` | 按槽计数/登记/持有的入口：槽没占用就返回 | 只有**占用**的槽才有计数、登记位、类型 | 多留（保守）| 注入 `occ-guard-drop` ⇒ 红在 `bump 跨区：bump 槽在按槽登记之外` |
 | `skip:sat-inc` / `skip:sat-dec` / `skip:hold-zero` | 计数到顶粘住 / 降到零以下不再减 | 饱和值粘住 | 少算（不安全）| `count-nosat` / `rsinc-nosat` ⇒ 各自红在饱和判据上 |
