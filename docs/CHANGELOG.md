@@ -1,3 +1,41 @@
+## 2026-10-15 · 回收收尾**取消式**有界化 + 分片触发不再收尾 + 无界步量具（P5@6M 最坏步 **75.9 ms → 0.22–0.45 ms**，`over1ms` 3→0）
+
+**为什么**：`[work]` 只统计 `budget ≤ EXTC_RC_MARK_BATCH_MAX` 的**有界热路径步**，而 `[pause]` 的
+包裹（`pauseArm`）只挂在 `maybeCollect`/`checkOwed` 上 ⇒ 两条"日常看"的行**都看不见无界排空**。
+实测 P5@6M 一次 `[step]` = **75.7 ms、`over1ms=2–3`**，来源是
+`regionDrop → regionFree → settle` 的 `while(!seedsDone||msp) markStep(∞)`：**单次排空 268,785 个对象**；
+分片模式下 `extc_rc_bytes/live` 还把同一条排空带进**热循环**（实测在 run 中段单次 65,569 对象 ≈1.1 ms，
+而 `[pause]` 只有 1.7 µs）。
+
+**改了什么**（`src/back/reclaim.c` +219/−11、`src/back/codegen.c` +3/−3、`tests/reclaim-perf/gate-work.py` +40/−3）
+- **`extc_rc_abort`（取消式收尾）**：区域将死时不再把在飞一轮做完 —— 清 `marking`、配对减 `wb`、
+  清扫游标随 slab 消失。健全性：`mstk` 是**工作列表不是根**（随区域释放消失）；跨区登记的撤销走
+  `occ` + `unlinkChildren`，**不读标记位**；账目只有本区域自己读，而 `r` 随后 `free`。
+- **R4 配对自检常驻**：`finish`/`abort` 里 `wb` 必须恰好比减之前少 1，漏减/下溢即
+  `extc_rc_oops`（`trap: reclaim: R4:` + rc≠0）。**不**写成"退出时 `wb==0`" —— 程序可以不
+  `regionDrop`（`digraph` 产物里没有 drop 点），那时 `wb>0` 合法。
+- **`garbageHint`**：分片触发的片选择不再走 `extc_rc_bytes/live`（那会把在飞一轮 `settle` 掉），
+  改用 `bytes - live` 的**提示量**（不 settle；`live` 偏旧 ⇒ 垃圾被高估 ⇒ 方向保守）。
+- **量具**：`[worst]`（最坏步分项 + 入口标签）、`[ubwork]`（无界步按入口单列 + `mark_n`/`walk_max`）、
+  `[wbudget]`（统一预算总额 + 标记栈高水位）、`[guard]`、`EXTC_RC_TRACE_UB`、`EXTC_RC_SLOWSTEP`。
+- **统一工作量预算 `EXTC_RC_WORK_BUDGET`（默认 `0` = 逐字走旧路径）**：`W>0` 时 walk/scan/push/assist
+  共用一个总额（`tot_max == W`；种子字用 `seedBits` 做到整字不丢位、不靠 `+63` 超发）。**本轮不设默认**。
+
+**实测（交错对照 = 父提交 `1b93a45`，`taskset -c 6`、best-of-5、`-O2`）**：
+
+| P5 | 1b93a45 | 本提交 |
+|---|---|---|
+| N=2.4M `[step] max` | 20.8–26.6 ms（`over1ms=2`） | **274–428 µs（`over1ms=0`）** |
+| N=6M `[step] max` | 71.3–75.9 ms（`over1ms=2–3`） | **219–448 µs（`over1ms=0`）** |
+| N=6M `[step] total` | 537–607 ms | 484–520 ms |
+
+`[ubwork]` 各入口计数在 2.4M/6M 上**全 0**。语义：五形状 + P2/P4/P6 与 `EXTC_RC_RECLAIM=0`
+逐字相同；W=0 下五形状 + P1–P6 的墙钟合计 **−2.8%**、RSS 变化 ≤0.3%（无劣化）；
+内存收益保留（P6@1M 开 **9.9** vs 关 **132.9** MiB；P5@2.4M 开 21.3 vs 关 63.7）。
+闸门全绿（含 `gate-reclaim-work` 的新 `[ubwork]`/R4 判据与 `gate-foreign-skip`）；红演示两则在
+`gate-reclaim-work` 里能红（无界 settle ⇒ `mark_n=1`；漏 `wb--` ⇒ `R4:` trap rc=1）。
+量化口径、全部原始数与未覆盖见会话归档报告索引里的 `PAUSE_10US.md`。
+
 ## 2026-10-15 · 文档：把当天结论并回 `RECLAMATION`（E2 卡点 / 口径与无界步 / 开放项 / 两条新闸门）+ `TODO` 收敛 + 会话归档
 
 **只改 `docs/**`，运行期与工具零改动**（`src/back/reclaim.c` md5 与本轮之前一致）。为什么写这一条：

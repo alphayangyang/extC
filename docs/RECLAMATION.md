@@ -346,6 +346,24 @@ P2 与这个反例的差别**只有"旧值是否另有根"这一维**（P2 的�
 `tools/rc-pause-probe.py` 也能插桩 `extc_rc_collect` 与热路径 `extc_rc_step`（`PROBE … step_*`），
 并在插桩失败时 **rc=1**（不许伪装成 `sweeps=0`）。
 
+**`[work]` 的盲区（2026-10-15 抓到，已补量具）**：`[work]` 只统计 `budget ≤ EXTC_RC_MARK_BATCH_MAX`
+的**有界热路径步**；契约排空/结算收尾（`budget=∞`）连量具都躲过去 —— `[step] n` 与 `[work] n`
+的差就是它们。于是「一次无界排空」在 `[work]` 里表现为**零工作量**（看起来像"这一步没工作"）。
+补的三行：
+
+* `[ubwork]`：无界步单列 —— `mark_n/walk_max/scan_max/push_max` + `sweep_n/sw_words_max/sw_freed_max`
+  + 按入口分 `settle_n/collect_n/release_n/other_n`。判据：正常程序 `mark_n == 0 && sweep_n == 0`
+  （无界排空只允许出现在显式契约入口，且必须被点名）。
+* `[worst]`：**耗时最大那一步**的分项归因（`kind=mark|sweep`、`why=` 入口标签、预算与各项计数），
+  用来区分「多项叠加」与「单一项顶到预算」。
+* `[guard]`：屏障参与者计数 `r4_wb_open`（**信息量** —— 程序可以不 `regionDrop`，那时 >0 合法）。
+  **真正的判据是 `finish`/`abort` 里的配对自检**：`r->marking` 为真 ⇒ 该区域贡献过 `wb+1`，
+  减完必须恰好少 1，漏减/下溢都会 `extc_rc_oops`（`trap: reclaim: R4:` + rc≠0）。**不要**写成
+  "退出时 `wb==0`"。
+
+`EXTC_RC_TRACE_UB=1` 再把每一次无界排空连**当时的步号**打出来（`[ubtrace] step_n=…`）⇒
+「热循环里每轮一次」与「进程退出时一次」由步号直接区分，不靠推理。
+
 **判据用哪两个数**：
 1. **确定性工作量界**（`[work]`）：热路径每步 `walk ≤ EXTC_RC_MARK_BATCH_MAX`、
    `scan ≤ EXTC_RC_SEED_WORDS`、`push ≤ EXTC_RC_SEED_PUSHES + 63`（压栈按**字**收口：一个字最多
@@ -357,6 +375,26 @@ P2 与这个反例的差别**只有"旧值是否另有根"这一维**（P2 的�
    `scan_max=5120 > SEED_WORDS=512` 直接红（就是那个历史洞）；把 `[work]` 改名 ⇒ 五形状全红在"插桩失败"。
 2. **超阈切片计数**（`[step]` 的 `overK`）：`over1ms` 必须恒 0；`over64/over256` 用于比值。
    判据是"计数在中位数/最小值口径下不上升"，不是单次最大值。
+
+**统一工作量预算 `EXTC_RC_WORK_BUDGET=W`（C 编译期 `-D`，默认 0 = 关）**：默认形态下
+`walk`（`MARK_BATCH_MAX`）、`scan`（`SEED_WORDS`）、`push`（`SEED_PUSHES`）是**三个独立预算**且
+**叠在同一步**里 ⇒ 一步最坏 = W_walk + W_scan + W_push 个单位。`W > 0` 时三者与 `wbDebt` 加力
+**共用一个总额**（walk 1 对象 = scan 1 字 = push 1 槽 = 1 个单位），由 `markStep` 里的
+`wleft` 扣减；种子字**压不完就把剩余位留在 `seedBits`、游标停在同一字**，所以一个字绝不半途
+丢弃（丢位 = 种子不完整 = 不安全），也**不靠 `+63` 超发**换完整性。观测口径是 `[wbudget]`：
+`tot_max`（单步 walk+scan+push 最大值）必须 `≤ W`，`assist_max` 是其中 `wbDebt` 加力的份额。
+
+**两个非预算停顿源（已定位并封掉）**：
+* **`settle` 的无界排空**：`regionFree` 原来调 `settle` 把在飞一轮**做完**。P5@2.4M 实测一次排空
+  **268,785 个对象 / 25.2 ms**（`[worst] why=settle budget=4294967295`，`over1ms=2`）。区域马上整片
+  `free` ⇒ 收尾没有可观测意义 ⇒ 改成 `extc_rc_abort`（取消在飞轮 + 屏障参与者 -1），
+  25.2 ms → **200–570 µs**、`over1ms` → **0**（`[ubwork] mark_n=0 sweep_n=0`）。
+* **分片触发的 `extc_rc_bytes/live`**：这两个访问器的契约是"先 `settle` 再读数" ⇒ 落在 mutator 触发
+  路径上时**每次触发**付一次 O(在飞轮) 停顿（实测 8 片 2.4M：`step_n=19101` 处**在环内**排空
+  65,569 个对象 ≈1.1 ms，`[pause]` 看不见它）。触发只需要一个**序** ⇒ 换 `extc_rc_garbageHint`
+  （`bytes - live`，不 settle）。分片 2.4M 的 `[step] max` 1.1–1.4 ms → **12.8–178.3 µs**。
+* **慢步量具** `EXTC_RC_SLOWSTEP=<µs>`（默认关）：超阈值的每一步都打 `kind/why/分项/mscap/msp`
+  ⇒ 判"长尾是外部抢占还是真的重对象"（前者工作量恰好等于预算、`mscap` 不变）。
 
 **不要用单次 `smax` 当判据**（实测）：同一份产物、同一确定性工作量（`[work]` 逐字相同），
 p5 的 `smax` 在 40 次里能从 17.2 µs 跳到 362.2 µs（**21×**）、shard 16.6↔249.2（15×），
@@ -376,16 +414,16 @@ reclaim 形状闸门（`gate-shapes`/`gate-work`/`gate-shard-cycles`/`gate-idle-
 **无界步必须单列。** `[work]` 只统计**有界热路径步**（`budget ≤ EXTC_RC_MARK_BATCH_MAX`）⇒
 `regionFree`→`settle`、`collect`、定点释放的 `mark` 这些 `budget=∞` 的排空**整段不进 `[work]`**；
 而 `[pause]` 的包裹（`pauseArm`）只挂在 `maybeCollect`/`checkOwed` 上，**不包 `settle`** ⇒ 一次无界
-收尾只在 `[step]` 的 max 里露头，两个"日常看"的行都看不见它。口径因此是：**无界步单列计数**
-（按入口分 `settle`/`collect`/`release`/其它，带 `mark_n`/`walk_max`/`sweep_n` 之类），并且它必须为 0；
-`over1ms` 恒 0。这条量具的规格见会话归档报告索引里的 `PAUSE_10US.md`，**未落地** —— 在那之前，
-`gate-reclaim-work` 全绿**不等于**没有无界步。
+收尾只在 `[step]` 的 max 里露头，两个"日常看"的行都看不见它。**量具与判据见本节上面的
+`[ubwork]`/`[worst]` 段**（本节只有一份规格，不重复）：正常程序各入口计数必须为 0，`over1ms` 恒 0。
+`gate-reclaim-work` 现在强制这两条；在那之前它全绿**不等于**没有无界步。
 
 **工作量守恒不是时间守恒。** 若把标记侧那几条独立预算并成一个统一工作量预算 W，记住它的单位是
-"1 对象 = 1 字 = 1 槽 = 1 个单位"：`tot_max == W` 是**工作量**守恒，**不是时间界**。单对象/单槽的
-**单位价格**是 µs 级且随形状变，所以"最坏停顿 = W × 常数"这种推法会错。清扫另有**独立预算**
+"1 对象 = 1 字 = 1 槽 = 1 个单位"：`tot_max == W` 是**工作量**守恒，**不是时间界**。单位价格
+**不是一个常数**（同一份工作的冷/暖态能差两个数量级），所以"最坏停顿 = W × 常数"这种推法会错；
+把"最坏步耗时 ÷ 预算"当作单位价格也是错的（那是尾部，不是价格）。清扫另有**独立预算**
 （按字计，1 字最多 64 槽 ⇒ 一步的释放数 ≈ 字预算 × 64），标记侧的天花板压不到它；要压最坏步
-必须两边一起看。W 的观测口径与推荐值见会话归档报告索引里的 `PAUSE_10US.md`，**未落地**。
+必须两边一起看。W 的观测口径与推荐值见会话归档报告索引里的 `PAUSE_10US.md`。
 
 ## 五、要做的
 
@@ -437,12 +475,12 @@ reclaim 形状闸门（`gate-shapes`/`gate-work`/`gate-shard-cycles`/`gate-idle-
 与出处。实测数字只在归档与 `CHANGELOG.md` 里，本节不复制它们 —— 出处见会话归档
 [`archive/2026-10-15-gc-pause.md`](archive/2026-10-15-gc-pause.md) 的报告索引。
 
-1. **取消式收尾（最高优先）**：`regionFree` 到 `settle` 的**无界排空**要换成"取消在飞的一轮" ——
-   区域紧接着整片释放，排空改变不了任何可观测事实（方向：少收，不是悬垂）。这是"还能不能出现
-   毫秒量级"的那一条；机制已验、**未落地**（`PAUSE_10US.md`）。
+1. **取消式收尾 —— 已落地**（`extc_rc_abort`：`regionFree` 不再排空在飞的一轮，取消并配对减
+   `wb`；`finish`/`abort` 带运行期配对自检）。P5@2.4M 的 25.2 ms 排空消失（`over1ms` 0，
+   `[ubwork]` 各入口全 0）；**残留**：多区域同时标记（`wb>1`）下的取消路径没测。
 2. **记账访问器不要再收尾**：`bytes`/`live`/`scale`/`sweeps`/`freedSlots` 现在每次观测都 `settle`
-   ⇒ 程序在循环里查账就付 O(在飞轮)。分片触发的片选择能改走"不 settle 的垃圾量提示"，但对外的
-   "观测即终值"契约要单独决定（`PAUSE_10US.md`）。
+   ⇒ 程序在循环里查账就付 O(在飞轮)。**分片触发的片选择已改走 `garbageHint`**（不 settle）；
+   对外的"观测即终值"契约要单独决定（`PAUSE_10US.md`）。
 3. **`collect` 契约入口的无界是设计决定，不是缺口**：它承诺"调用内收完一轮"，codegen 不发它；
    要它有界就得改契约语义（`PAUSE_10US.md`）。
 4. **定点释放的无界标记**：`releaseOld` 里的 `mark` 仍是 `budget=∞` 的 O(活集) 遍历，靠信用摊销、

@@ -36,6 +36,9 @@ REPS = int(os.environ.get("WORK_REPS", "3"))
 # 分片(shard) / 环负载(digraph)。
 SHAPES = [
     ("p5", "bench/gc/src/spectrum_p5.extc", "600000"),
+    # P5@2.4M 是那个**无界收尾**的复现形状：`regionFree → settle` 一次排空 268,785 个对象（25 ms）。
+    # 小 N 抓不到它（退出时在飞轮恰好排空）⇒ 必须有一个"在飞轮还剩很多"的档。
+    ("p5big", "bench/gc/src/spectrum_p5.extc", "2400000"),
     ("cross", "tests/reclaim-shapes/cross_region.extc", "800000"),
     ("shard", "tests/reclaim-shapes/shard_bands.extc", "800000"),
     ("evict", "tests/reclaim-perf/shapes/refgraph/rg_evict_cache.extc", "1000000"),
@@ -119,15 +122,49 @@ def main():
 
         # ── 每形状：3 次；元判据 + 确定性 + 界 ───────────────────────────────
         for tag, bpath, n in bins:
-            lines = []
+            lines, ublines, guards, rcs = [], [], [], []
             for _ in range(REPS):
                 r = subprocess.run([bpath, n], capture_output=True, text=True,
                                    env=dict(os.environ, EXTC_RC_PAUSE="1"), timeout=1800)
                 m = re.search(r"^\[work\] (.*)$", r.stderr, re.M)
+                u = re.search(r"^\[ubwork\] (.*)$", r.stderr, re.M)
+                g = re.search(r"^\[guard\] (.*)$", r.stderr, re.M)
                 lines.append(m.group(1).strip() if m else None)
+                ublines.append(u.group(1).strip() if u else None)
+                guards.append(g.group(1).strip() if g else None)
+                rcs.append((r.returncode, r.stderr))
             if any(x is None for x in lines):
                 bad(f"{tag}：拿不到 `[work]` 行 —— **插桩失败/工具不兼容**（不是「这一步没工作」）；"
                     f"先查 `src/back/reclaim.c` 的 `[work]` 输出与 `EXTC_RC_PAUSE` 门控")
+                continue
+            if any(x is None for x in ublines):
+                bad(f"{tag}：拿不到 `[ubwork]` 行 —— **插桩失败/工具不兼容**；`[work]` 只统计"
+                    f"`budget ≤ BATCH_MAX` 的有界步，无界排空必须由 `[ubwork]` 单列（不许隐形）")
+                continue
+            if any(x is None for x in guards):
+                bad(f"{tag}：拿不到 `[guard]` 行 —— **插桩失败/工具不兼容**（R4 屏障参与者自检）")
+                continue
+            # **R4 配对自检**：漏减/下溢会让 `extc_rc_oops` 打印 `trap: reclaim: R4:` 并 rc≠0。
+            # 判据是"进程正常结束且没有 R4 trap"；`r4_wb_open` 本身只是信息量（未 drop 的区域合法）。
+            r4bad = [(rc, err) for rc, err in rcs if rc != 0 or "R4:" in err]
+            if r4bad:
+                bad(f"{tag}：R4 配对自检红 —— rc={r4bad[0][0]}，stderr 含 `R4:`"
+                    f"（finish/abort 的屏障参与者 -1 漏了或重复了）："
+                    f"{[l for l in r4bad[0][1].splitlines() if 'R4' in l or 'trap' in l][:2]}")
+                continue
+            # **无界步判据**：正常程序不许有 mark/sweep 的无界排空（它们只在显式契约入口允许，
+            # 而这里跑的六个形状都不是契约驱动）。这一条正是 2026-10-15 那个 25 ms 收尾的判据。
+            uf = fields(ublines[0])
+            uviol = []
+            if uf.get("mark_n", -1) != 0:
+                uviol.append(f"mark_n={uf.get('mark_n')}（无界标记排空；settle_n={uf.get('settle_n')} "
+                             f"collect_n={uf.get('collect_n')} release_n={uf.get('release_n')} "
+                             f"other_n={uf.get('other_n')}，walk_max={uf.get('walk_max')}）")
+            if uf.get("sweep_n", -1) != 0:
+                uviol.append(f"sweep_n={uf.get('sweep_n')}（无界清扫排空；sw_words_max={uf.get('sw_words_max')}）")
+            if uviol:
+                bad(f"{tag}：存在**无界排空步** —— " + "；".join(uviol) +
+                    "；`[work]` 看不见它们，但 `[step] max`/`over1ms` 会顶穿预算")
                 continue
             if len(set(lines)) != 1:
                 bad(f"{tag}：{REPS} 次 `[work]` 行不一致（工作量本应确定）⇒ 探针/统计写错了：{lines}")
@@ -154,7 +191,7 @@ def main():
             if viol:
                 bad(f"{tag}：工作量越界 —— " + "；".join(viol) + f"（{d}）")
             else:
-                ok(f"{tag}：{d}（{REPS} 次逐字相同）")
+                ok(f"{tag}：{d}；无界步 0；R4 ok（{REPS} 次逐字相同）")
 
         print(flush=True)
         print(f"通过 {pass_n}，失败 {fail_n}", flush=True)

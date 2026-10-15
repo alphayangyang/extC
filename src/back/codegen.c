@@ -3424,12 +3424,12 @@ static void rcEmitTrigger(CG *g, const char *basePtr, int lvl, bool frameOwned) 
               " ExtcRcRegion *%s = extc_rc_regionOf((void *)((char *)(%s) + %s), (int32_t)(%d + %s));"
               " extc_rc_regionFloor(%s, (EXTC_RC_FLOOR) / %d);"
               " if (!extc_rc_shouldSweep(%s)) continue;"
-              " int64_t %s = extc_rc_bytes(%s) - extc_rc_live(%s);"
+              " int64_t %s = extc_rc_garbageHint(%s);"
               " if (!%s || %s > %s) { %s = %s; %s = %s; } }"
               " if (%s) extc_rc_maybeCollect(%s, %s, %zu); }",
            rb, rbg, ck, ck, g->rcNShard, ck, rg, basePtr, ck, lvl * g->rcNShard, ck,
            rg, g->rcNShard, rg,
-           gd, rg, rg, rb, gd, rbg, rb, rg, rbg, gd,
+           gd, rg, rb, gd, rbg, rb, rg, rbg, gd,
            rb, rb, bufCstr(&b), n);
 }
 
