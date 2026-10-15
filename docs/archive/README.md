@@ -24,6 +24,7 @@
 | `SPEC.md` · `DESIGN.md` · `WHY-EXTC.md` · `SYNTAX.md` · `WARNINGS.md` | 定位、原则、语法与警告策略的设计文档 |
 | `STATUS.md` · `DESIGN-OPEN.md` | 2026-10-08/09 的现状页与未决设计页 |
 | `COMMENT-STYLE.md` | 旧注释规范（已被新的 Doxygen 规范取代） |
+| `2026-10-15-gc-pause.md` | 2026-10-15 的回收 / GC 停顿会话快照（提交链、指标、负结果、开放项、报告索引；口径声明在开头）|
 | `topics/` | 各机制的专题论证（arena / pool / dyn / 并发 / C-ABI / codegen…） |
 | `history/` · `reviews/` · `audit/` | 历次审阅报告与原始证据（`.audit/` 原样搬入） |
 | `manual/`（后续搬入） | 旧语言手册与其 HTML 生成物 |
