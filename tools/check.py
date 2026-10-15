@@ -801,6 +801,19 @@ def build_items() -> list:
         bad_msg="tools/check_mark_both.py（mark-both 屏障结构或红自测失效）",
         bad_dump=dump_tail(10)))
 
+    # ---- 闸门·slab 发放容量按尺寸类定 ----
+    # 这条买的是**峰值 RSS**：一块 slab 发出去的槽数按槽大小定（至少 1024 个槽、块大小下限
+    # 64 KiB 并按 2 的幂上取到 1 MiB），不再一律发满 1 MiB。判据是结构 + 红自测：谁把固定
+    # 1 MiB 的旧公式放回来、把"至少 1024 个槽"这一条撤了、或动了 1 MiB 对齐这个前提，
+    # 门禁就红。数字（六档墙钟/RSS）记在 CHANGELOG.md，不在这里副本。
+    items.append(cmd(
+        "gate-slab-cap", "gate",
+        "闸门·slab 容量按槽大小定：常量/上取循环/cap 由 chunk 推/超大块判定/1 MiB 对齐前提/按槽记账，且红自测有效",
+        ["python3", "tools/check_slab_cap.py"], timeout=60,
+        ok_msg=ok_first(r"^ok slab cap structure"),
+        bad_msg="tools/check_slab_cap.py（slab 发放容量的结构或红自测失效）",
+        bad_dump=dump_tail(10)))
+
     # 挂 bench 档的理由：要跑 1M 规模的形状 + 停顿探针（单次约 5s，但**不是**秒级项，且
     # 它测的是"回收片"这个旋钮本身，属于性能线一族 ⇒ 与 `gate-reclaim-tax`/`gate-shapes` 同类）。
     # 判据见 `tests/reclaim-perf/gate-shard-cycles.sh`：digraph(`SHARDS=4`) 4N/N < 1.5× 且
