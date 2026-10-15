@@ -1,0 +1,44 @@
+# task-30：GC 停顿（各自默认策略 + 只开日志/插桩；策略一个字没改）
+# caliber 列写清每个数字的来源与总体；extC 有 pop=pause / pop=step 两个互不混同的总体
+# extC: EXTC_RC_PAUSE=1（生成物自带，只加两次 clock 读）；逐次分布 = /tmp 生成物副本插桩（只测量）
+#       pop=pause = extc_rc_maybeCollect/checkOwed 武装窗口内的事件（= [pause] 行）；pop=step = 全部 mark/sweep 子步（= [step] 行）
+# Go: GODEBUG=gctrace=1；STW = 每行 clock 的 a+c；assist+bg+idle = 同一行的 cpu 字段（ms）；不改 GOGC/策略
+# Java: -Xlog:gc:file=...（默认 G1，不加 -Xmx/-XX）；Pause 行里的 <x>ms；并发标记周期不计入
+# shape	lang	pop	n_per_run	sum_per_run_ms	max_us	p50_us	p90_us	p99_us	caliber
+P1	extC	pause	0.0	0.0000	0.0	0.00	0.00	structural zero: no reclaim runtime emitted (extc_rc_collect sites=0)
+P1	extC	step	0.0	0.0000	0.0	0.00	0.00	structural zero: no reclaim runtime emitted (extc_rc_collect sites=0)
+P1	Go	stw	0.0	0.0000	0.0	0.00	0.00	GODEBUG=gctrace=1, STW=a+c ms; 5 runs pooled
+P1	Java	pause	31.0	4.2476	387.0	162.00	320.00	-Xlog:gc Pause lines (default G1); 5 runs pooled
+P2	extC	pause	5.0	0.0099	3.9	2.36	3.21	run-time instrumentation on generated-copy; 5 runs pooled
+P2	extC	step	1216.0	5.7349	122.5	6.22	12.45	run-time instrumentation on generated-copy; 5 runs pooled
+P2	Go	stw	6.0	0.0678	19.0	10.00	18.00	GODEBUG=gctrace=1, STW=a+c ms; 5 runs pooled
+P2	Java	pause	5.0	135.6372	42492.0	25822.00	37100.00	-Xlog:gc Pause lines (default G1); 5 runs pooled
+P2	Go	assist+bg+idle_cpu	-	33.8008	-	-	-	GODEBUG=gctrace=1 cpu field; 5 runs pooled
+P2	extC	builtin-pause	5	0.0089	3.6	-	-	EXTC_RC_PAUSE=1 generated-code [pause] line; median-of-5 total, max-of-5 max
+P2	extC	builtin-step	1216	6.2562	122.2	-	-	EXTC_RC_PAUSE=1 generated-code [step] line; median-of-5 total, max-of-5 max
+P3	extC	pause	0.0	0.0000	0.0	0.00	0.00	structural zero: no reclaim runtime emitted (extc_rc_collect sites=0)
+P3	extC	step	0.0	0.0000	0.0	0.00	0.00	structural zero: no reclaim runtime emitted (extc_rc_collect sites=0)
+P3	Go	stw	489.2	2.6268	38.0	5.00	14.00	GODEBUG=gctrace=1, STW=a+c ms; 5 runs pooled
+P3	Java	pause	32.0	4.4136	364.0	107.00	314.00	-Xlog:gc Pause lines (default G1); 5 runs pooled
+P3	Go	assist+bg+idle_cpu	-	28.1680	-	-	-	GODEBUG=gctrace=1 cpu field; 5 runs pooled
+P4	extC	pause	655.0	0.2315	167.2	0.22	1.38	run-time instrumentation on generated-copy; 5 runs pooled
+P4	extC	step	85963.0	57.8119	198.2	0.70	1.78	run-time instrumentation on generated-copy; 5 runs pooled
+P4	Go	stw	248.2	1.4432	23.0	5.00	14.00	GODEBUG=gctrace=1, STW=a+c ms; 5 runs pooled
+P4	Java	pause	12.0	16.2400	1716.0	1370.00	1708.00	-Xlog:gc Pause lines (default G1); 5 runs pooled
+P4	Go	assist+bg+idle_cpu	-	369.3170	-	-	-	GODEBUG=gctrace=1 cpu field; 5 runs pooled
+P4	extC	builtin-pause	655	0.1802	60.8	-	-	EXTC_RC_PAUSE=1 generated-code [pause] line; median-of-5 total, max-of-5 max
+P4	extC	builtin-step	85963	57.6462	149.3	-	-	EXTC_RC_PAUSE=1 generated-code [step] line; median-of-5 total, max-of-5 max
+P5	extC	pause	41.0	0.0579	20.9	1.20	3.86	run-time instrumentation on generated-copy; 5 runs pooled
+P5	extC	step	163297.0	2919.0614	4865.8	1.58	62.09	run-time instrumentation on generated-copy; 5 runs pooled
+P5	Go	stw	30.6	0.2546	21.0	9.00	14.00	GODEBUG=gctrace=1, STW=a+c ms; 5 runs pooled
+P5	Java	pause	10.0	134.7556	17028.0	13434.00	16133.00	-Xlog:gc Pause lines (default G1); 5 runs pooled
+P5	Go	assist+bg+idle_cpu	-	610.5668	-	-	-	GODEBUG=gctrace=1 cpu field; 5 runs pooled
+P5	extC	builtin-pause	41	0.0487	3.1	-	-	EXTC_RC_PAUSE=1 generated-code [pause] line; median-of-5 total, max-of-5 max
+P5	extC	builtin-step	163297	2934.6325	704.9	-	-	EXTC_RC_PAUSE=1 generated-code [step] line; median-of-5 total, max-of-5 max
+P6	extC	pause	88.0	0.0614	3.9	0.47	2.49	run-time instrumentation on generated-copy; 5 runs pooled
+P6	extC	step	32011.0	37.7363	335.3	1.21	3.69	run-time instrumentation on generated-copy; 5 runs pooled
+P6	Go	stw	54.0	0.4320	21.0	8.00	16.00	GODEBUG=gctrace=1, STW=a+c ms; 5 runs pooled
+P6	Java	pause	2.0	2.8994	1868.0	1463.00	1713.00	-Xlog:gc Pause lines (default G1); 5 runs pooled
+P6	Go	assist+bg+idle_cpu	-	41.6320	-	-	-	GODEBUG=gctrace=1 cpu field; 5 runs pooled
+P6	extC	builtin-pause	88	0.0514	2.3	-	-	EXTC_RC_PAUSE=1 generated-code [pause] line; median-of-5 total, max-of-5 max
+P6	extC	builtin-step	32011	37.8075	245.5	-	-	EXTC_RC_PAUSE=1 generated-code [step] line; median-of-5 total, max-of-5 max
