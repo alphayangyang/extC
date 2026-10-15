@@ -553,7 +553,7 @@ diff <(sed 's/[0-9]\+//g' /tmp/pristine.c) <(sed 's/[0-9]\+//g' /tmp/on.c) | hea
 | `latemark.py` | **槽地址延迟绑定**原型：把"每分配点物化值表"换成"每站点建一次槽地址表、清扫时解引用" | 只改 `/tmp` 生成物副本 |
 | `../inject.py`（`tools/`）| **注入验牙**：`--list` 列出注入（`thr-stale` / `rsinc-drop` / `sweep-never` / `overregister` / `perf-lookup` / **`count-noinc`**（只打计数档））；每条会改源码 → 重编 → 跑期望判据（**必须红**）→ 还原 → 再跑（**必须绿**），且默认在硬链接副本树里跑、收尾核对原树未被改动 | 手工注入有**忘记还原**的隐患；用这个工具代替 |
 | `ablate.py` | 单项消融/原型：`guardfast`（登记表 O(1)）/ `guardfirst`（入口守卫）/ `nohold`（拆计数，上界）/ `noreg`、`noreg0`（拆跨区登记）/ `padN`（根表补空到 N 项） | `nohold`/`noreg` 会改健全性或内存行为，**只能当上界**；`guardfast`/`guardfirst`/`noreg0`/`padN` 语义不变（可验证输出逐字一致）。入口守卫**已在 codegen 落地** ⇒ `guardfirst` 对新生成物是 **no-op**（`already guarded`，该变体 == `on`） |
-| `gate.sh` | **性能判据 + 槽号索引判据**：①开关开的 `cyclic_pressure` 固定 N=200000，callgrind 总指令数 ≤ 现行线（**线在脚本头部，每落地一次就往下拧一次**）；②`slotindex.c` 把发射出来的 `extc_rc_rcpOf`/`extc_rc_slotOf` 在 16..1 MiB 的每个 16 倍步长 × 全部合法槽号上做**域内穷举**（槽步长按 16 字节取整 ⇒ 索引是乘倒数右移，算错一格就会漏认合法槽 ⇒ 悬垂） | 性能线落地过一次就收紧一次（现行线见脚本头）；索引判据有牙：注入 `EXTC_RC_RCP_SHIFT` 42 → 19 ⇒ `slotindex: FAIL`（140384 处不符，exit 1）。用法：`tests/reclaim-perf/gate.sh` |
+| `gate.sh` | **性能判据 + 槽号索引判据**：①开关开的 `cyclic_pressure` 固定 N=200000，callgrind 总指令数 ≤ 现行线（**线在脚本头部，每落地一次就往下拧一次**）；②`slotindex.c` 把发射出来的 `extc_rc_rcpOf`/`extc_rc_slotOf` 在 16..1 MiB 的每个 8 倍步长 × 全部合法槽号上做**域内穷举**（槽步长按 8 字节取整 ⇒ 索引是乘倒数右移，算错一格就会漏认合法槽 ⇒ 悬垂） | 性能线落地过一次就收紧一次（现行线见脚本头）；索引判据有牙：注入 `EXTC_RC_RCP_SHIFT` 42 → 19 ⇒ `slotindex: FAIL`（140384 处不符，exit 1）。用法：`tests/reclaim-perf/gate.sh` |
 | `run.sh` | 一键复跑上面全部：固定编译器 → 生成/编译 → 语义校验 → callgrind → 打印总表与差值 | `N=`、`SMALL=`、`SKIP_PROTO=1` 可调 |
 
 ---
@@ -735,7 +735,9 @@ diff <(sed 's/[0-9]\+//g' /tmp/pristine.c) <(sed 's/[0-9]\+//g' /tmp/on.c) | hea
    `tid`（`uint16_t`，2 B/槽）+ 每 slab 一张**小类型表** `ttab`（描述符按**指针相等**去重；号 0 =
    无描述符、1 = `EXTC_RC_CONSERVATIVE`、≥2 = 表下标）。表满（6.5 万个不同描述符挤进同一块 slab）
    当场 trap：静默退回 0 会让标记漏走这个对象的引用字段 ⇒ 提前释放（不安全方向）。
-2. **槽步长从"2 的幂取整"改成"16 字节取整"**：80 字节的对象不再占 128 字节的槽。代价是
+2. **槽步长从"2 的幂取整"改成"8 字节取整"**（下限 16 = 空闲链槽头）：80 字节的对象不再占
+   128 字节的槽，24 字节的对象也不再多占 8。8 是够用的粒度，因为语言里最大自然对齐就是 8
+   （判据 `tools/check_slot_unit.py`）。代价是
    "由对象指针找槽号"从一次移位变成一次**乘倒数右移**（`rcp = 2^42/ss + 1`，精确性判据见 §11.4）。
    "放不下两个"的阈值随之变成 `slotSize > (1 MiB - 头)/2`（超大块语义不变）。
 
@@ -827,8 +829,8 @@ tests/reclaim-gaps/shapes/closure_chain.extc       small            1440/1482/15
 ### 11.4 判据与牙
 
 * **槽号索引（`slotindex.c`，挂 `gate.sh`）**：`#include` **发射出来的**运行期文本，用里面的
-  `extc_rc_rcpOf` / `extc_rc_slotOf` 对 16..1 MiB 的每个 16 倍步长 × 全部合法槽号做域内穷举，
-  另加"槽内偏移/ slab 头里的指针必须被拒"。实测 **736 839 组 0 处不符、736 902 处被拒**。
+  `extc_rc_rcpOf` / `extc_rc_slotOf` 对 16..1 MiB 的每个 8 倍步长 × 全部合法槽号做域内穷举，
+  另加"槽内偏移/ slab 头里的指针必须被拒"。实测 **1 433 436 组 0 处不符、1 433 499 处被拒**。
   牙：注入 `EXTC_RC_RCP_SHIFT` 42 → 19 ⇒ **140 384 处不符 + `slotindex: FAIL`，exit 1**。
 * **性能线棘轮（`gate.sh`）**：`cyclic_pressure` N=200000 的 Ir
   **160 049 784（改动前）→ 165 100 449（只换类型号，+3.2 %）→ 154 214 566（两项都做，−3.6 %）**
@@ -867,7 +869,7 @@ tests/reclaim-gaps/shapes/closure_chain.extc       small            1440/1482/15
 
 **`digraph` @1M 的清扫次数涨了 10 次**，而**释放槽总数逐字相同（3 166 259）**、156 次里 155 次
 是真收到东西（改动前 146 次里 142 次）⇒ 同样的回收工作量被切成了更多批。机制：`bytes` / `live`
-的记账单位换成了 16 字节取整的槽步长（改动前是 2 的幂步长），而触发式
+的记账单位换成了 8 字节取整的槽步长（改动前是 2 的幂步长），而触发式
 `thr = max(2·live, floor)·scale` 里的 `floor` 是**绝对字节常数**，于是触发轨迹相对分配批次发生
 相位移动。方向不系统：@250k 与 `cyclic_pressure` 都是次数更少、停顿更小，只有 @1M 这一档次数多
 10 次、停顿合计 +1.6 %（最大停顿的 3 次区间重叠）。触发阈值属于**策略**（换它就是在换内存 ↔ 吞吐），

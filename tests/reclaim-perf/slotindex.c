@@ -1,13 +1,13 @@
 /* tests/reclaim-perf/slotindex.c —— 槽号索引的**域内穷举**判据。
  *
- * 为什么需要它：`extc_rc_slotSize` 按 16 字节取整（不是 2 的幂），所以"由指针找槽号"不再是一次
+ * 为什么需要它：`extc_rc_slotSize` 按 8 字节取整（不是 2 的幂），所以"由指针找槽号"不再是一次
  * 移位，而是 `extc_rc_slotOfOff` 的**乘倒数右移**（`rcp = 2^42/ss + 1`）。它只要在某个 (ss, off)
  * 上算错一格，`ownSlab` 的槽首校验就会把**合法对象**判成"不是本运行期的槽" —— 标记漏走它 ⇒
  * 清扫把它当垃圾放掉 ⇒ 悬垂。所以这条不是性能判据，是健全性判据。
  *
  * 口径：`#include` **发射出来的那份**运行期文本（与 tests/reclaim/run.sh 同一条发射路径），
  * 直接调用里面的 `extc_rc_rcpOf` / `extc_rc_slotOf`，**不另抄一份实现**（抄一份就会漂移）。
- * 穷举：槽步长 16..1 MiB 的每个 16 的倍数 × 该 slab 里全部合法槽号，外加槽内偏移与"指针落在
+ * 穷举：槽步长 16..1 MiB 的每个 8 的倍数 × 该 slab 里全部合法槽号，外加槽内偏移与"指针落在
  * slab 头里"两档必须被拒。
  *
  * 调用者：tests/reclaim-perf/gate.sh（`gate-reclaim-perf`）。退出码 0 = 全中。
@@ -27,7 +27,7 @@ int main(void) {
         printf("slotindex: calloc 失败\n");
         return 2;
     }
-    for (size_t ss = 16; ss <= (size_t)EXTC_RC_SLAB_SIZE; ss += 16) {
+    for (size_t ss = 16; ss <= (size_t)EXTC_RC_SLAB_SIZE; ss += 8) {
         ExtcRcSlab s;
         memset(&s, 0, sizeof s);
         s.ss = ss;

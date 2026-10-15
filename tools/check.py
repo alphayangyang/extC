@@ -765,6 +765,19 @@ def build_items() -> list:
         bad_msg="tools/check_alloc_hot.py（区域 slab 分配缓存结构或红自测失效）",
         bad_dump=dump_tail(10)))
 
+    # ---- 闸门·槽粒度（8 字节取整）与它的对齐前提 ----
+    # 买的是**峰值 RSS**：槽粒度直接决定内部碎片，而 8 是一切类型的自然对齐上界。
+    # 谁把粒度改回 16（或改细）、把尺寸类表/类号单位改得与粒度不符、或让穷举判据不再覆盖
+    # 真实粒度，这里就红；对齐前提（内建类型没有 >64 位、TypeKind 没有向量种类）也在判据里，
+    # 新加宽类型必须让这条红一次再同步。数字记在 CHANGELOG.md，不在这里副本。
+    items.append(cmd(
+        "gate-slot-unit", "gate",
+        "闸门·槽粒度 8 字节：取整/下限/溢出守卫 + 尺寸类表与单位 + 穷举步长一致 + 无宽类型前提",
+        ["python3", "tools/check_slot_unit.py"], timeout=60,
+        ok_msg=ok_first(r"^ok slot unit structure"),
+        bad_msg="tools/check_slot_unit.py（槽粒度、尺寸类单位、穷举步长或对齐前提被破坏）",
+        bad_dump=dump_tail(14)))
+
     # ---- 闸门·标记 walk 的批弹出结构 ----
     # 这条买的是**延迟**（LIFO 逐个弹是串行指针链），不是指令数，所以判据是结构 + 红自测：
     # 谁把"先弹一批→整批预取→逐个扫"改回逐对象，门禁就红。

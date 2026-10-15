@@ -29,8 +29,8 @@ def violations(text):
         b += 1
     alloc = text[a:b]
     checks = {
-        'cache field': 'ExtcRcSlab *allocHot[16];' in text,
-        'cache read': 'ExtcRcSlab **hot = ac < 16 ? &r->allocHot[ac]' in alloc,
+        'cache field': 'ExtcRcSlab *allocHot[32];' in text,
+        'cache read': 'ExtcRcSlab **hot = ac < 32 ? &r->allocHot[ac]' in alloc,
         'size check': 's->ss != ss' in alloc,
         'capacity check': 's->freelist < 0 && s->bump >= s->nslots' in alloc,
         'fallback': 's = r->slabs;' in alloc and 'while (s &&' in alloc,
@@ -46,7 +46,7 @@ def main():
     text = emitter_text()
     if args.selftest:
         assert not violations(text)
-        for token in ['ExtcRcSlab *allocHot[16];', 'ExtcRcSlab **hot = ac < 16 ? &r->allocHot[ac]',
+        for token in ['ExtcRcSlab *allocHot[32];', 'ExtcRcSlab **hot = ac < 32 ? &r->allocHot[ac]',
                       's->ss != ss', 's->freelist < 0 && s->bump >= s->nslots',
                       's = r->slabs;', 'if (hot) *hot = s;']:
             assert token in text, token
