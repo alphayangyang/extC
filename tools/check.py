@@ -754,7 +754,17 @@ def build_items() -> list:
         bad_msg="tools/check_foreign_skip.py（旧值登记跳过的不变量被破坏，或守卫插桩失效）",
         bad_dump=dump_tail(14)))
 
-    # ---- 闸门·分片在环负载下有界（且旋钮没被关掉）----
+    # ---- 闸门·区域 slab 分配缓存结构 ----
+    # 这是语义不变量的静态门禁：region 缓存必须经过尺寸/容量校验，链表备用路径不能删除，
+    # 结构自测会注入每个缺口并确认判据真的变红。
+    items.append(cmd(
+        "gate-alloc-hot", "gate",
+        "闸门·区域 slab 分配缓存：缓存字段/尺寸容量校验/链表备用路径/成功回写，且红自测有效",
+        ["python3", "tools/check_alloc_hot.py"], timeout=60,
+        ok_msg=ok_first(r"^ok allocation cache structure"),
+        bad_msg="tools/check_alloc_hot.py（区域 slab 分配缓存结构或红自测失效）",
+        bad_dump=dump_tail(10)))
+
     # 挂 bench 档的理由：要跑 1M 规模的形状 + 停顿探针（单次约 5s，但**不是**秒级项，且
     # 它测的是"回收片"这个旋钮本身，属于性能线一族 ⇒ 与 `gate-reclaim-tax`/`gate-shapes` 同类）。
     # 判据见 `tests/reclaim-perf/gate-shard-cycles.sh`：digraph(`SHARDS=4`) 4N/N < 1.5× 且

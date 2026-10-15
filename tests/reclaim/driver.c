@@ -467,6 +467,8 @@ static void t_conservative(void) {
     ExtcRcRegion *r = regionNew(15, 4096);
     Node *blob = (Node *)extc_rc_alloc(r, sizeof(Node), EXTC_RC_CONSERVATIVE);
     Node *t = (Node *)extc_rc_alloc(r, sizeof(Node), &g_node);
+    ExtcRcSlab *hdr = extc_rc_ownSlab(blob);
+    *(void **)((char *)blob + 0) = hdr;       /* slab 头不是对象，不能进入槽位索引 */
     *(void **)((char *)blob + 8) = t;          /* 指针在运行期才知道的位置 */
     void *roots[1] = { blob };
     size_t freed = extc_rc_collect(r, roots, 1);
