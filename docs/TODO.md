@@ -96,7 +96,7 @@
   ⇒ 最小清扫步仍可能远大于目标量级）。判据口径见 RECLAMATION「四.一」（"p99"要区分每步时长与
   每 run 最大步）。
 
-## 回收：大横评（P1–P6 × 三语言）暴露的三条
+## 回收：大横评（P1–P6 × 三语言）暴露的开放项
 
 出处：[`bench/gc/SPECTRUM-MATRIX.md`](../bench/gc/SPECTRUM-MATRIX.md)（task-30 矩阵 §1–§9；原始数据
 `spectrum-matrix.tsv`、`spectrum-matrix-pause.tsv`）与它的 **§10 + `bench/gc/spectrum-matrix-reclaim0.tsv`**
@@ -104,22 +104,15 @@
 **口径**（extC 的两个停顿总体、三家"停顿"不是一回事）只写在 [`RECLAMATION.md`](RECLAMATION.md)
 「四.一」；本节只留"待查/待修什么"，不复制口径。
 
-- **最要紧：滑窗 + 长命链式索引形状上，回收工作量随规模超线性（幂次约 1.7–1.8），根因未定位。**
-  同一形状的 **`EXTC_RECLAIM=0` 对照臂**是**线性**的（幂次 ≈0.97）：同一个程序、同一份逐字节相同的
-  stdout，只因为开着回收，6M→20M 的倍数就从 ~3.2× 变成 ~8.5×。出处：
-  [`bench/gc/SPECTRUM-MATRIX.md`](../bench/gc/SPECTRUM-MATRIX.md) **§10**（提交 `9d71e00`，on/off
-  两轮 × best-of-5、6M/20M 两点幂次）与 `bench/gc/spectrum-matrix-reclaim0.tsv`；主矩阵 §2–§4
-  当时没测这只臂（§8 把它列为未覆盖）。
-  - **更正（分解）：超线性的**大部分不在 `[step]` 记账里**。Σ`[step]` 随规模只涨约 **5.4–5.7×**，
-    而**非-`[step]` 残差**（墙钟 − Σ`[step]`）涨约 **12.6–19.0×**，程序本体按 O(n) 最多也只有
-    3.33× ⇒ 大头在 `[step]` 之外：槽管理/引用计数与写屏障、起轮种子、活集变大后的 cache/TLB。
-    **未拆分、根因仍未定位**；要归因，先得把 `[step]` 之外的那几百毫秒拆开（见下面「诊断路线」）。
-  - **硬警告：`EXTC_RECLAIM=0` 不是"只关 GC"。** 它同时把分配器换成 `extc_arena_*` bump —— off 臂
-    的生成物里 `extc_rc_*` 记号与 `malloc` 都是 **0**、行数远少于 on 臂（具体见 §10.1）⇒ 这个对照
-    是「回收运行期 + **槽式分配器** + 记账」vs「**纯 bump arena**」，**横评/结论里不得把 on/off 的
-    倍数当纯 GC 税**。
-  - 候选方向：**轮数 × 活集**（每一轮都完整标记一个还在增长的活集）、触发策略/自适应阈值把轮数打多、
-    只标记增量/分代、或**该形状本就不该走 rc**（与「三点七」的 E2/E1 判定相关）。
+- **`digraph`（P6）是六档里唯一仍慢于 Go 的**（1M：590 vs 509 ms ⇒ 1.16×）。要做的：按函数
+  归因它的时间去向（标记 / 清扫 / 分配各占多少），再决定改哪一处；先量后改，量法与判据见本文
+  「回收的量具与访存局部性」与下面的「回收性能改动的验收与锚点」。
+- **P5 的内存高于 Go**（20M：183 MB vs 142 MB，墙钟已快 0.85×）。要做的：把这 40 MB 拆成
+  活集 / slab 碎片 / "扫完不还给 OS" 三份，并与 `EXTC_RECLAIM=0` 的 533 MB 一起给。
+- **硬警告：`EXTC_RECLAIM=0` 不是"只关 GC"。** 它同时把分配器换成 `extc_arena_*` bump —— off 臂
+  的生成物里 `extc_rc_*` 记号与 `malloc` 都是 **0**、行数远少于 on 臂（具体见 §10.1）⇒ 这个对照
+  是「回收运行期 + **槽式分配器** + 记账」vs「**纯 bump arena**」，**横评/结论里不得把 on/off 的
+  倍数当纯 GC 税**。
 - **探针 `PAUSE_DIST` 恒 `n=0` ⇒ 不能用它断言"0 次停顿"**：`tools/rc-pause-probe.py` 把环形记录
   插在冷契约入口 `extc_rc_collect`，而热路径走 `extc_rc_step` ⇒ 选定的 4 个档全部 `PAUSE_DIST n=0`，
   而同一次运行里生成物自己报的 `[pause]`/`[step]` 计数都不为 0。它同一行的 `step_n`/`step_max_us`
@@ -130,58 +123,27 @@
   只引用 extC 的 `[pause]` 会得出"几乎不停顿"的错结论**。口径已写进 RECLAMATION「四.一」，
   本节要做的只是**别再沿用只含 `[pause]` 的结论**，后续横评表同时给两个总体。
 
-### P5 超线性：诊断路线（自修用）
+### 回收性能改动的验收与锚点
 
-对应上面第 1 条。**先量后改**；每步只给"怎么取"，预期数字自己量。口径提醒：`[pause]` 只圈武装
-窗口、是**下界**（成批推进 `markAdvance` 在武装之前、收尾不武装）⇒ 量"回收总时间"看 `[step]` 总量。
+**先量后改**；`[pause]` 只圈武装窗口、是**下界**（成批推进在武装之前、收尾不武装）⇒ 量"回收总时间"
+看 `[step]` 总量。
 
-1. **数轮数 vs 规模（现在没有 `cycN`）**。两个现成量：`[pause] collects=`（= `extc_rc_pauseN`，
-   在 `extc_rc_maybeCollect`/`extc_rc_checkOwed` 里自增）与 `[step] n`（子步数）。注意 `collects`
-   数的是**武装窗口里真正进了 `extc_rc_step` 的次数**（起轮 + 在飞轮的每一次推进），**不是纯轮数**。
-   在 **6M / 20M 两点**分别记两个数（同口径、同 `taskset -c 6`、best-of-N）⇒ 看谁随规模涨。
-   要**纯轮数**就临时在"起轮那一点"加一个计数器（`!r->marking` 且触发通过处，即起轮调用点），
-   一次性插桩、别提交。
-   **第一轮实测已完成**：`collects=32→41`（1.28×），而规模为 3.33×；`[step] n` 为
-   `45,503→163,297`（3.59×），`[ubwork] mark_n=sweep_n=0`。当前证据不支持“轮数超线性”
-   作为主因；组件计数与残差拆分仍待做。第二轮已发现并验证分配 slab 链扫描：`ss=32` 扫描
-   6M→20M 为 50.7M→544.4M（10.74×）。20M 交错复测 3 轮，缓存当前可用 slab 的生成物原型
-   为 3.20–3.28 s，基线为 5.89–6.01 s；stdout 逐轮相同、RSS 均 183276 KB。6M callgrind
-   为 3.232B vs 3.689B Ir（−12.39%）。已落地最小实现：每个 region 缓存最近可用 slab，尺寸/容量
-   不符时走原链表备用路径；完整的按尺寸类索引仍未做。原始记录见
-   [`archive/2026-10-15-p5-diagnosis.md`](archive/2026-10-15-p5-diagnosis.md)。
-2. **每轮标记量**。`[work] n`（有界热路径步数）+ `[worst]`（最坏步的 `pops`/`marked`）+ `[ubwork]`
-   （无界步，正常应为 0）⇒ 估每轮弹了多少对象；与活集比（`r->live`；走访问器会 `settle`，
-   只在非热路径或临时打印里取）。若"每轮量 ≈ 当前活集"且活集随 N 增长，第 1 步又显示轮数不降
-   ⇒ 就是**轮数 × 活集**。
-3. **阈值 / 触发账（锚点）**。函数名是稳定锚点；行号是当前树 `src/back/reclaim.c`
-   （md5 `3361ee46…`），改代码后会漂：
-   - 触发条件：`extc_rc_shouldSweep` 末句 `r->bytes > r->thr && extc_rc_roundOk(r)`（~1693–1702）；
-   - 阈值重算 `extc_rc_thrUpd`：`thr = max(live×2, floor) × scale`（`scale` 溢出 ⇒ `thr = 0`）（~1681–1686）；
-   - 起轮信用 `extc_rc_roundOk`：`allocBytes - roundVisitedBytes ≥ max(live, floor)`（~1689–1692）；
-     **它与定点释放的 `visitedBytes` 是两本账**；
-   - 窗口加力：`allocBytes - markStartAlloc > EXTC_RC_MARK_WINDOW ⇒ 该步预算 ×8`（~642；常量 ~535）；
-   - 记账字段（结构体 `ExtcRcRegion`，~158–162）：`bytes`/`allocBytes`/`visitedBytes`/
-     `roundVisitedBytes`/`live`/`floor`/`thr`；分配侧 `allocBytes += ss`（~695），释放侧
-     `bytes -= ss`（`extc_rc_freeSlot`，~820），起轮/结轮消费信用（~1558、~1784–1796）。
-   ⇒ 随规模记 `live`/`bytes`/`thr` 三点（临时打印最省事）。
-4. **两条判定实验（先分辨"轮数"还是"单轮成本"）**。动手前先算**残差**（墙钟 − Σ`[step]`）：
-   §10 已给出"超线性的大头在 `[step]` 之外"，所以**第一步是把那部分拆开**，而不是只盯 `[step]` 的桶。
-   - **(a) 把阈值抬到极高**（临时让 `shouldSweep` 只在 `bytes` 超过一个大常数时成立）⇒ 若**轮数降到 1
-     且总时间回到线性** ⇒ 根因是**轮数 × 活集**；改法方向 = 触发策略/自适应阈值（上面那本账），
-     或把标记做成增量/分代。
-   - **(b) 若轮数 = 1 仍超线性** ⇒ 根因在**单轮成本**：先查残差里那几类路径（槽管理 `extc_rc_alloc`、
-     引用计数/写屏障 `storeRef*`、起轮种子压栈、cache/TLB），再查 glue 与遍历本体。glue 怎么取 = 在
-     生成物里 `grep` 三个调用点各几处（`extc_rc_regionOf`/`extc_rc_shouldSweep`/`extc_rc_maybeCollect`；
-     复核时是 **8 / 6 / 4** 处，会随发射点改动漂，以现场为准），发射点在 `src/back/codegen.c` 的
-     `rcEmitTrigger`/`rcEmitOwe`/`rcEmitOwedCheck`/`rcAllocCore`；单轮成本超线性也可能是**访存局部性**
-     （见「回收的量具与访存局部性」一节与 [`archive/2026-10-15-locality.md`](archive/2026-10-15-locality.md)）
-     ⇒ 改法方向 = 把 glue 提出循环/减少每元素查表，或按 locality 的候选方向（清扫按槽、热缓存、预取…）。
-5. **改完怎么验**：6M / 20M 两点 on/off 比值（目标：`on` 收到 `off` 的 ~1.2× 以内，且**保住 RSS 收益**
-   ——`off` 档 RSS 明显更高）、重估幂次、记 `[step]` 总量占墙钟比；语义 **8/8**（五形状 + P2/P4/P6 与
-   `EXTC_RECLAIM=0` 逐字相同）+ `digraph` **7984/1772** 逐字；reclaim 那组闸门（`count-unit`/`switch`/
-   `count`/`gaps` 等）+ `gate-reclaim-work` + `gate-shard-cycles` + `nobench`/`docs`/`smoke`
-   （`gate-shard-cycles` 仍挂 `bench`，`nobench` 盖不到，别忘单独跑）；指纹**同提交重冻**。
-   记 on/off 比值时**必须带上那条硬警告**：`off` 臂连分配器一起换（纯 bump arena）⇒ 比值不是纯 GC 税。
+**锚点**（函数名是稳定锚点；行号会漂，别抄行号）：
+
+- 触发条件：`extc_rc_shouldSweep` 末句 `r->bytes > r->thr && extc_rc_roundOk(r)`；
+- 阈值重算 `extc_rc_thrUpd`：`thr = max(live×2, floor) × scale`（`scale` 溢出 ⇒ `thr = 0`）；
+- 起轮信用 `extc_rc_roundOk`：`allocBytes - roundVisitedBytes ≥ max(live, floor)`（与定点释放的
+  `visitedBytes` 是两本账）；
+- 窗口加力：`allocBytes - markStartAlloc > EXTC_RC_MARK_WINDOW ⇒ 该步预算 ×8`；
+- 标记 walk 的批弹出：`EXTC_RC_MARK_BATCH_POP`（只动遍历顺序与延迟，**不是**预算）；
+- 记账字段（结构体 `ExtcRcRegion`）：`bytes`/`allocBytes`/`visitedBytes`/`roundVisitedBytes`/
+  `live`/`floor`/`thr`/`scale`；分配侧 `allocBytes += ss`，释放侧 `bytes -= ss`。
+  ⇒ 随规模记 `live`/`bytes`/`thr` 三点（临时打印最省事）。
+
+**验收**：on/off 两点比值 + 重估幂次 + `[step]` 总量占墙钟比；语义（各形状与
+`EXTC_RECLAIM=0` 逐字相同）+ reclaim 那组闸门 + `gate-reclaim-work` + `gate-shard-cycles`
+（挂 `bench`，`nobench` 盖不到）+ `nobench`/`docs`/`smoke`；指纹**同提交重冻**。
+记 on/off 比值时**必须带上那条硬警告**：`off` 臂连分配器一起换（纯 bump arena）⇒ 比值不是纯 GC 税。
 
 ## 语言功能（已定案、未实现）
 

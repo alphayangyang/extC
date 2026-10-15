@@ -765,6 +765,17 @@ def build_items() -> list:
         bad_msg="tools/check_alloc_hot.py（区域 slab 分配缓存结构或红自测失效）",
         bad_dump=dump_tail(10)))
 
+    # ---- 闸门·标记 walk 的批弹出结构 ----
+    # 这条买的是**延迟**（LIFO 逐个弹是串行指针链），不是指令数，所以判据是结构 + 红自测：
+    # 谁把"先弹一批→整批预取→逐个扫"改回逐对象，门禁就红。
+    items.append(cmd(
+        "gate-mark-batch", "gate",
+        "闸门·标记 walk 批弹出：批常量/批数组/弹出循环/预算记账/整批预取/逐个扫，且红自测有效",
+        ["python3", "tools/check_mark_batch.py"], timeout=60,
+        ok_msg=ok_first(r"^ok batched mark walk structure"),
+        bad_msg="tools/check_mark_batch.py（标记 walk 的批弹出结构或红自测失效）",
+        bad_dump=dump_tail(10)))
+
     # 挂 bench 档的理由：要跑 1M 规模的形状 + 停顿探针（单次约 5s，但**不是**秒级项，且
     # 它测的是"回收片"这个旋钮本身，属于性能线一族 ⇒ 与 `gate-reclaim-tax`/`gate-shapes` 同类）。
     # 判据见 `tests/reclaim-perf/gate-shard-cycles.sh`：digraph(`SHARDS=4`) 4N/N < 1.5× 且
