@@ -132,7 +132,8 @@ best-of-5 不受影响；median-of-5 = 322.6 ms。）
   P3 上 `-O1` 更快（348.0 vs 403.9 = −14%），P1 上 `-O2` 快 39%，P5/P6 上差 ~1–6%。
   ⇒ **"同 Ir 两档差 ~30%"这句话只在部分形状成立，且方向会翻** ⇒ 报告里每个 extC 数字都必须带档位，不许合并成一个"extC"列。
 - **P3 的 3.8× 不是 GC 差**：Go 在这档真在堆上分配（`&node{...} escapes to heap`【事实：`go build -gcflags=-m`】），
-  而 extC 的生成物里**一个 `malloc`/`extc_rc_alloc` 都没有**、全靠 `extc_arena_release` 每轮整片归还【实测】⇒ 差在**分配器**。
+  而 extC 的生成物里**没有回收运行期**（`grep -c 'extc_rc_' /tmp/bm/out/p3.c` = **0**；`grep -c 'malloc('` = **0**
+  真调用，`grep -c malloc` = 3 全是注释/宏名 `EXTC_MALLOC`），全靠 `extc_arena_release` 每轮整片归还【实测】⇒ 差在**分配器**。
 
 ---
 
@@ -152,8 +153,9 @@ best-of-5 不受影响；median-of-5 = 322.6 ms。）
 - **extC 赢 5/6 档**；P5 上 Go 最小（143.3 vs extC 179.0 vs Java 189.0），但三家同量级（1.3× 以内）。
 - **P2/P5 是"活集本来就大"的两档**：P2 的活集就是 ~375 MiB 的链表（48M/256 块 × 2 KiB），谁的 RSS 都下不来
   ⇒ **这档的 RSS 比的是"活集"，不是"回收能力"**。数字自洽：extC 375.2 / Go 426.6 / Java 443.2 = 1 : 1.14 : 1.18。
-- **P1/P3 的 72.8×/73.0× 是结构性差距**：这两档 extC 根本不进堆（P1/P3 生成物 `extc_rc_alloc` 0 处、`malloc` 0 处、
-  `extc_rc_collect` 0 处），Go 在 P1 靠逃逸分析把 `&buf{}` 放栈上（所以 Go 也只有 1.9 MiB），
+- **P1/P3 的 72.8×/73.0× 是结构性差距**：这两档 extC 根本不进堆
+  （`/tmp/bm/out/p1.c`（593 行）/ `p3.c`（601 行）：`grep -c 'extc_rc_'` = **0**、`grep -c 'malloc('` = **0** 真调用；
+  `grep -c malloc` = 3 全是注释/宏名 — 生成命令见 §9），Go 在 P1 靠逃逸分析把 `&buf{}` 放栈上（所以 Go 也只有 1.9 MiB），
   **Java 的 `long[]`/对象逃逸分析消不掉 ⇒ 真分配**（P1 31 次 Young GC、P3 32 次）⇒ Java 的 108 MiB 里绝大部分是**堆本身**。
   ⇒ **这条差距是"谁能把分配消掉"，不是"谁 GC 快"** ✓。
 
@@ -231,7 +233,7 @@ best-of-5 不受影响；median-of-5 = 322.6 ms。）
 ## 5. 每档一句话判词（谁赢哪把尺 · 差多少 · 形状解释了哪部分）
 
 - **P1（纯短命分配、无引用）**：墙钟 extC-O2 赢（0.62× Go）；RSS extC 赢 72.8×（1.5 vs 107.8 MiB）；停顿
-  **extC 结构性 0**（不进堆：生成物 0 个 `malloc`/`extc_rc_*`）· **Go 0 个 GC 周期**（`&buf{} does not escape` ⇒ 上栈），
+  **extC 结构性 0**（不进堆：`grep -c 'extc_rc_'` = 0、`grep -c 'malloc('` = 0；口径见 §7-2）· **Go 0 个 GC 周期**（`&buf{} does not escape` ⇒ 上栈），
   Java 31 次 Young Σ4.25 ms（0.9% 墙钟）。
   **形状解释了全部**：无引用 ⇒ 三家都不需要追踪；Java 的 `long[]` 消不掉 ⇒ 它是唯一真在分配的。
 - **P2（分块追加、活集单调长）**：**三把尺全打平**（墙钟 319.5/400.4/346.9/322.8；RSS 375–443 MiB 同量级）——
@@ -239,7 +241,8 @@ best-of-5 不受影响；median-of-5 = 322.6 ms。）
   Go ΣSTW 0.068 ms（+9% CPU）、extC `[step]` 5.7 ms（1.8%）。
 - **P3（每轮建链、轮末整片丢）**：extC-O1 赢墙钟（0.26× Go，**3.8× 快**）、RSS 赢 73.0×；
   三家的 Σ停顿都 ≤0.2% 墙钟 ⇒ **这档的墙钟差是"分配器 vs 堆分配"，不是 GC**：
-  Go 真在堆上分配 94.5M 个 node（`escapes to heap`），extC 每轮 `extc_arena_release` 整片归还（生成物 0 个 `malloc`）。
+  Go 真在堆上分配 94.5M 个 node（`escapes to heap`），extC 每轮 `extc_arena_release` 整片归还
+  （`grep -c 'malloc('` = 0 真调用；口径见 §7-2）。
 - **P4（长命只读符号表 + 每单元短命 AST）**：**三把尺三个赢家** —— 墙钟 extC-O2（0.48× Go）、
   RSS extC-O2（7.3 vs Go 14.4 / Java 115.4 MiB）、**单次停顿没有单一赢家**：
   extC 的 p50/p99 最小（`pause` 0.22/1.4 µs、`step` 0.70/1.8 µs）但 `step` max 被一个 **167 µs** 的离群步
@@ -275,8 +278,11 @@ best-of-5 不受影响；median-of-5 = 322.6 ms。）
 ## 7. 缺失 / 失败 / 不可比（**如实清单**）
 
 1. **没有作废的臂** ✓：120/120 墙钟样本 `OK`、6/6 档三语言逐字节一致、无 `rc != 0`、无 `DISCARD`。
-2. **P1/P3 的 extC 停顿不是"0"，是"结构性 0"**：生成物里 `extc_rc_collect` **0 处**、`extc_rc_alloc` **0 处**、
-   `malloc` **0 处**（`/tmp/bm/out/p1.c`、`p3.c`）⇒ 它压根没发射回收运行期，**不是"extC GC 很快"**。
+2. **P1/P3 的 extC 停顿不是"0"，是"结构性 0"**：生成物里**没有回收运行期**。复核命令/结果
+   （`task-36`；`/tmp/bm/out/p1.c` 593 行、`p3.c` 601 行，生成命令见 §9）：
+   `grep -c 'extc_rc_'` = **0**、`grep -c 'extc_rc_alloc'` = **0**、`grep -c 'extc_rc_collect'` = **0**、
+   `grep -c 'malloc('` = **0**（真调用；`grep -c malloc` = 3 全是注释/宏名 `EXTC_MALLOC`）、
+   `grep -c 'extc_arena_'` = **19 / 21** ⇒ 它压根没发射回收运行期，**不是"extC GC 很快"**。
 3. **extC 的 `EXTC_RC_PAUSE=1` 不是完整停顿账**（§4.3-3）⇒ 主表同时给两个总体；**任何单看 `[pause]` 的结论都作废** ✗。
 4. **`tools/rc-pause-probe.py` 的 `PAUSE_DIST` 在当前形态下恒为 0**（§4.3-4）⇒ 本轮改用**自己的生成物副本插桩**
    （`/tmp/bm/patch_dist.py`，只测量、不改策略），并在 TSV 里标 caliber。**这是本轮唯一"另起量具"的地方**。
@@ -357,11 +363,42 @@ python3 /tmp/bm/finalize.py    # => spectrum-matrix.tsv / spectrum-matrix-pause.
   **独立跑两轮**（每点 10 个样本），每样本记 `/proc/loadavg`。
 - **stdout 与默认档逐字节相同** ✓：四个点的 sha16 与主矩阵同点**完全一致**
   （P5@20M `eda465c7a07daf0c`、P2@48M `96f6e94a3c8237d1`、P4@28k `e0bf791ffe98e490`；P5@6M 为新增点 `b53b07972a041c89`）。
-- load1 实测区间 **0.50 → 2.78**（机器上有别的会话的常驻轻活，见 §10.5）；两轮结果一致（见 §10.2 的"单轮"列）。
-- ⚠️ **口径警告（很重要）**：`EXTC_RECLAIM=0` **不是"只把 GC 关掉"** —— 生成物里连回收运行期都不发射
-  （`extc_rc_collect` **0 处**、`extc_rc_alloc` **0 处**、`malloc` **0 处**；on 臂是 1/10/12 处，
-  生成 C 2625 行 vs off 676 行），off 臂改走 `extc_arena_alloc`/`extc_arena_release`（pure bump arena）。
-  ⇒ 这个对照是 **「回收运行期 + 槽式分配器 + 记账」vs「纯 bump arena」**，**不是纯 GC 税** ✗。
+- load1 实测区间 **0.50 → 2.78**（机器上有别的会话的常驻轻活，见 §10.6）；两轮结果一致（见 §10.2 的"单轮"列）。
+- ⚠️ **口径警告（很重要）**：`EXTC_RECLAIM=0` **不是"只把 GC 关掉"** —— 生成物里连回收运行期都不发射。
+  **复核命令与结果**（`task-36`，2026-10-15；在**本附录实际使用**的那两份生成物上，`-O2`、`spectrum_p5.extc`）：
+
+  ```
+  # on  = env -u EXTC_RECLAIM build/extc -w --no-line-map -I stdlib src/spectrum_p5.extc -o /tmp/bm2/out/p5_on.c
+  # off = env EXTC_RECLAIM=0   <同上>                                          -o /tmp/bm2/out/p5_off.c
+  #   p5_on.c : 2625 行, md5 e6ae658e7584aadd59721bd71a9a5407
+  #   p5_off.c:  676 行, md5 43f9c77bd378832771bcc91fb6823383
+  #   （p5_on.c 与 task-30 的 /tmp/bm/out/p5.c 逐字节相同 ⇒ task-30/33 两份记录同源）
+  ```
+
+  | 命令（对 `$F` 跑；`grep -c` = 命中**行数**）| `$F = p5_on.c` | `$F = p5_off.c` |
+  |---|---|---|
+  | `grep -c 'malloc('`（真调用）| **3** | **0** |
+  | `grep -c 'malloc'`（含注释 / 宏名 `EXTC_MALLOC`）| **12** | **3** |
+  | `grep -c 'extc_rc_alloc'` | **10** | **0** |
+  | `grep -c 'extc_rc_collect'` | **2** | **0** |
+  | `grep -c 'extc_rc_collect('` | **1** | **0** |
+  | `grep -c 'extc_rc_'`（子串总计）| **635** | **0** |
+  | `grep -c 'extc_arena_'` | **28** | **32** |
+  | `wc -l` | **2625** | **676** |
+
+  **`extc_rc_collect` 的 1 vs 2 是什么口径**（Lead 表的"2"与我早先写的"1"都对）：
+  - `grep -c 'extc_rc_collect'` = **2**：一是**注释**里的反引号名（`p5_on.c:1478`），二是**函数定义**（`:1804`）；
+  - `grep -c 'extc_rc_collect('` = **1**：只有定义带括号；
+  - **真正的调用点 = 0**：`grep -n 'extc_rc_collect(' p5_on.c | grep -v 'static size_t extc_rc_collect'` 输出为空
+    ⇒ 与 §4.3-4 的"自带探针 `PAUSE_DIST n=0`"**同源**（热路径从不走这个契约入口）。
+  同理 `grep -c 'extc_rc_alloc'` = **10** = 5 行注释 + 1 行定义 + **4 个调用点**（`:2489 :2555 :2563 :2573`）；
+  `grep -o 'extc_rc_alloc(' | wc -l` = 5（1 定义 + 4 调用）。`malloc(` 的 3 次**都是真调用**（`:450 :476 :478`，
+  都在 slab 分配里）；on 臂另外 9 行只是注释/宏名。off 臂的 3 行 `malloc` **全是注释/宏名**（`:92 :120 :143`，
+  与 P1/P3 的同样三行样板相同）。
+
+  ⇒ **结论不变**：off 臂**不用回收运行期**（`extc_rc_` 子串 **0** 处）、改走
+  `extc_arena_alloc`/`extc_arena_release`（pure bump arena，`extc_arena_` 28 → 32 处），生成 C **2625 行 vs 676 行**。
+  这个对照是 **「回收运行期 + 槽式分配器 + 记账」vs「纯 bump arena」**，**不是纯 GC 税** ✗。
   报"回收让 P5 慢 23×"时必须带上这一条。
 
 ### 10.2 结果（两轮 × best-of-5；`best-of-2` = 两轮最佳值）

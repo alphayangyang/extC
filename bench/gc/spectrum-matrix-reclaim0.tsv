@@ -1,7 +1,8 @@
 # task-33 附录：extC `EXTC_RECLAIM=0` 对照（补 task-30 矩阵缺的那只臂）
 # 口径与 SPECTRUM-MATRIX.md 主表一致：cc -O2 -fwrapv（同一份生成 C 的 on/off 两份）、taskset -c 6、
 #   两臂同档交错（顺序按 rep 轮转）、墙钟 best-of-5、峰值 RSS max-of-5（wait4.ru_maxrss）、两轮独立重复
-# on = EXTC_RECLAIM 未设（默认，回收开）；off = EXTC_RECLAIM=0（生成物里 0 个 extc_rc_collect/extc_rc_alloc，改走 extc_arena_* bump）
+# on = EXTC_RECLAIM 未设（默认，回收开）；off = EXTC_RECLAIM=0（生成物不用回收运行期：grep -c 'extc_rc_' = 0、
+#   grep -c 'malloc(' = 0 真调用（grep -c malloc = 3 全注释/宏名）、grep -c 'extc_arena_' = 32；2625 行 vs 676 行 —— 口径见 SPECTRUM-MATRIX.md §10.1）
 # 每点 5 次 × 2 轮 = 10 个样本；stdout 全部与主矩阵同点 sha 逐字节相同（见 sha16 列）
 # kind	shape	N	run	arm	best_ms	max_rss_kb	rss_MiB	spread_pct	valid	sha16	load1
 sample	P5	20000000	1	on	6180.629	183340	179.04	2.6	5/5	eda465c7a07daf0c	0.50,0.58,0.62,0.73,0.77
