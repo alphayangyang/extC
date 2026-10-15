@@ -789,6 +789,18 @@ def build_items() -> list:
         bad_msg="tools/check_mark_batch.py（标记 walk 的批弹出结构或红自测失效）",
         bad_dump=dump_tail(10)))
 
+    # ---- 闸门·mark-both 屏障（删除屏障 + 本地槽省屏障）----
+    # 这条买的是 **P6 的墙钟**：无计数档把"每次本地槽写都着色"整段省掉，保护改由"被覆盖的旧边"
+    # 承担。判据是结构 + 红自测：谁把删除屏障删了、把本地槽的门撤了、或让 storeRefLocal 又
+    # 着色，门禁就红。数字（六档墙钟/RSS/停顿）记在 CHANGELOG.md，不在这里副本。
+    items.append(cmd(
+        "gate-mark-both", "gate",
+        "闸门·mark-both 屏障：删除屏障定义/只对无计数档/四个堆写入口 + 本地槽三处把门，且红自测有效",
+        ["python3", "tools/check_mark_both.py"], timeout=60,
+        ok_msg=ok_first(r"^ok mark-both barrier structure"),
+        bad_msg="tools/check_mark_both.py（mark-both 屏障结构或红自测失效）",
+        bad_dump=dump_tail(10)))
+
     # 挂 bench 档的理由：要跑 1M 规模的形状 + 停顿探针（单次约 5s，但**不是**秒级项，且
     # 它测的是"回收片"这个旋钮本身，属于性能线一族 ⇒ 与 `gate-reclaim-tax`/`gate-shapes` 同类）。
     # 判据见 `tests/reclaim-perf/gate-shard-cycles.sh`：digraph(`SHARDS=4`) 4N/N < 1.5× 且
