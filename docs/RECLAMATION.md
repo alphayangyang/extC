@@ -563,7 +563,11 @@ reclaim 形状闸门（`gate-shapes`/`gate-work`/`gate-shard-cycles`/`gate-idle-
 7. **多区域同时标记（`wb>1`）下的取消路径没测**：取消式收尾只在单区域的销毁路径上验过（`PAUSE_10US.md`）。
 8. **统一预算 W 自身的覆盖**：W>0 的 sanitizer 抽样与 N vs 4N 都没测（`PAUSE_10US.md`）。
 9. **`gate-shard-cycles` 仍挂在 `bench` 档** ⇒ `nobench` 盖不到它；要么降规模进 `nobench`，
-   要么接受它只在含基准的档里跑（`GATE_FIX.md`/`WORK_GATE.md`）。
+   要么接受它只在含基准的档里跑（`GATE_FIX.md`/`WORK_GATE.md`）。**并且它现在是红的**：② 判据要求
+   `shard_bands`（N=300000）上 `SHARDS=4` 的平均切片 < **0.75×** `SHARDS=1`，而两片数的比值只有
+   **0.88–0.90×**（REPS=3 各跑两遍、两臂都稳定）；同一条脚本配历史提交的编译器跑出同样的比值 ⇒ 旋钮
+   按「平均切片」量的收益不足阈值，是既有缺口、不是某一次改动（① 的峰值三格仍全绿）。待查方向：
+   切片的收益是不是该按**长尾**（`over64`/`over1ms`）而不是均值来判（见第 14 条的粗粒度问题）。
 10. **已黑值缓存**：指令数收益大，但缺"守卫 + 红演示 + 尺寸标定"才能谈落地（`C3_DIRTY.md`）。
 11. **两笔归因还没做**：`alloc` 每调用的指令数、P4 的清扫分步成本（`REDUNDANCY_AUDIT.md`/`PAUSE_10US.md`）。
 12. **E1/E2 悬置**：E2 卡在跨过程 must 分析（见"三点七"），E1 是它的直接后果；不立这条大项，
@@ -576,6 +580,9 @@ reclaim 形状闸门（`gate-shapes`/`gate-work`/`gate-shard-cycles`/`gate-idle-
     把每对象要碰的几样结构靠拢或合并 / 清扫预算按槽不按字）与证据记在 [`TODO.md`](TODO.md) 的
     「回收的量具与访存局部性」一节，原始实测归档在
     [`archive/2026-10-15-locality.md`](archive/2026-10-15-locality.md)；本清单不复制。
+    其中「批弹出窗口」一项已落地（`EXTC_RC_MARK_BATCH_POP` 默认 **200**，见
+    [`CHANGELOG.md`](CHANGELOG.md)）：拉长一步内的在飞窗口就能压 `[step]` 总量，而软件预取与其
+    对照证明不是杠杆；批宽同时是遍历顺序旋钮（`collects`/峰值 RSS 跟着动）。
 16. **滑窗 + 长命索引形状上的超线性回收**：回收工作量随规模超线性（幂次约 1.7–1.8），而
     `EXTC_RECLAIM=0` 对照臂是线性的（≈0.97）；**超线性的大头在 `[step]` 记账之外**（残差）
     ⇒ **根因未定位**。候选方向记在 [`TODO.md`](TODO.md) 的「回收：大横评」一节；出处

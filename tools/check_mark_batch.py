@@ -38,6 +38,7 @@ def violations(text):
         'budget accounting': 'budget--; pops++;' in body,
         'uniform prefetch': re.search(r'for \(size_t _pf = 0; _pf < _nb; _pf\+\+\)\s*\n\s*__builtin_prefetch', body) is not None,
         'scan loop': 'for (size_t _b = 0; _b < _nb; _b++) {' in body and 'uintptr_t _raw = _batch[_b];' in body,
+        'width ceiling': re.search(r'#if EXTC_RC_MARK_BATCH_POP > EXTC_RC_MARK_BATCH_MAX\s*\n#error', text) is not None,
     }
     return [k for k, ok in checks.items() if not ok]
 
@@ -51,7 +52,8 @@ def main():
         assert not violations(text)
         for token in ['#define EXTC_RC_MARK_BATCH_POP', 'uintptr_t _batch[EXTC_RC_MARK_BATCH_POP];',
                       'while (_nb < EXTC_RC_MARK_BATCH_POP && budget > 0 && r->msp',
-                      'budget--; pops++;', 'uintptr_t _raw = _batch[_b];']:
+                      'budget--; pops++;', 'uintptr_t _raw = _batch[_b];',
+                      '#if EXTC_RC_MARK_BATCH_POP > EXTC_RC_MARK_BATCH_MAX']:
             assert token in text, token
             mutated = text.replace(token, '/* injected */')
             assert violations(mutated), token
