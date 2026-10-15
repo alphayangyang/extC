@@ -119,6 +119,48 @@
   只引用 extC 的 `[pause]` 会得出"几乎不停顿"的错结论**。口径已写进 RECLAMATION「四.一」，
   本节要做的只是**别再沿用只含 `[pause]` 的结论**，后续横评表同时给两个总体。
 
+### P5 超线性：诊断路线（自修用）
+
+对应上面第 1 条。**先量后改**；每步只给"怎么取"，预期数字自己量。口径提醒：`[pause]` 只圈武装
+窗口、是**下界**（成批推进 `markAdvance` 在武装之前、收尾不武装）⇒ 量"回收总时间"看 `[step]` 总量。
+
+1. **数轮数 vs 规模（现在没有 `cycN`）**。两个现成量：`[pause] collects=`（= `extc_rc_pauseN`，
+   在 `extc_rc_maybeCollect`/`extc_rc_checkOwed` 里自增）与 `[step] n`（子步数）。注意 `collects`
+   数的是**武装窗口里真正进了 `extc_rc_step` 的次数**（起轮 + 在飞轮的每一次推进），**不是纯轮数**。
+   在 **6M / 20M 两点**分别记两个数（同口径、同 `taskset -c 6`、best-of-N）⇒ 看谁随规模涨。
+   要**纯轮数**就临时在"起轮那一点"加一个计数器（`!r->marking` 且触发通过处，即起轮调用点），
+   一次性插桩、别提交。
+2. **每轮标记量**。`[work] n`（有界热路径步数）+ `[worst]`（最坏步的 `pops`/`marked`）+ `[ubwork]`
+   （无界步，正常应为 0）⇒ 估每轮弹了多少对象；与活集比（`r->live`；走访问器会 `settle`，
+   只在非热路径或临时打印里取）。若"每轮量 ≈ 当前活集"且活集随 N 增长，第 1 步又显示轮数不降
+   ⇒ 就是**轮数 × 活集**。
+3. **阈值 / 触发账（锚点）**。函数名是稳定锚点；行号是当前树 `src/back/reclaim.c`
+   （md5 `3361ee46…`），改代码后会漂：
+   - 触发条件：`extc_rc_shouldSweep` 末句 `r->bytes > r->thr && extc_rc_roundOk(r)`（~1693–1702）；
+   - 阈值重算 `extc_rc_thrUpd`：`thr = max(live×2, floor) × scale`（`scale` 溢出 ⇒ `thr = 0`）（~1681–1686）；
+   - 起轮信用 `extc_rc_roundOk`：`allocBytes - roundVisitedBytes ≥ max(live, floor)`（~1689–1692）；
+     **它与定点释放的 `visitedBytes` 是两本账**；
+   - 窗口加力：`allocBytes - markStartAlloc > EXTC_RC_MARK_WINDOW ⇒ 该步预算 ×8`（~642；常量 ~535）；
+   - 记账字段（结构体 `ExtcRcRegion`，~158–162）：`bytes`/`allocBytes`/`visitedBytes`/
+     `roundVisitedBytes`/`live`/`floor`/`thr`；分配侧 `allocBytes += ss`（~695），释放侧
+     `bytes -= ss`（`extc_rc_freeSlot`，~820），起轮/结轮消费信用（~1558、~1784–1796）。
+   ⇒ 随规模记 `live`/`bytes`/`thr` 三点（临时打印最省事）。
+4. **两条判定实验（先分辨"轮数"还是"单轮成本"）**：
+   - **(a) 把阈值抬到极高**（临时让 `shouldSweep` 只在 `bytes` 超过一个大常数时成立）⇒ 若**轮数降到 1
+     且总时间回到线性** ⇒ 根因是**轮数 × 活集**；改法方向 = 触发策略/自适应阈值（上面那本账），
+     或把标记做成增量/分代。
+   - **(b) 若轮数 = 1 仍超线性** ⇒ 根因在**单轮成本**：查 glue 与遍历本体。glue 怎么取 = 在生成物里
+     `grep` 三个调用点各几处（`extc_rc_regionOf`/`extc_rc_shouldSweep`/`extc_rc_maybeCollect`；
+     复核时是 **8 / 6 / 4** 处，会随发射点改动漂，以现场为准），发射点在 `src/back/codegen.c` 的
+     `rcEmitTrigger`/`rcEmitOwe`/`rcEmitOwedCheck`/`rcAllocCore`；单轮成本超线性多半是**访存局部性**
+     （见「回收的量具与访存局部性」一节与 [`archive/2026-10-15-locality.md`](archive/2026-10-15-locality.md)）
+     ⇒ 改法方向 = 把 glue 提出循环/减少每元素查表，或按 locality 的候选方向（清扫按槽、热缓存、预取…）。
+5. **改完怎么验**：6M / 20M 两点 on/off 比值（目标：`on` 收到 `off` 的 ~1.2× 以内，且**保住 RSS 收益**
+   ——`off` 档 RSS 明显更高）、重估幂次、记 `[step]` 总量占墙钟比；语义 **8/8**（五形状 + P2/P4/P6 与
+   `EXTC_RECLAIM=0` 逐字相同）+ `digraph` **7984/1772** 逐字；reclaim 那组闸门（`count-unit`/`switch`/
+   `count`/`gaps` 等）+ `gate-reclaim-work` + `gate-shard-cycles` + `nobench`/`docs`/`smoke`
+   （`gate-shard-cycles` 仍挂 `bench`，`nobench` 盖不到，别忘单独跑）；指纹**同提交重冻**。
+
 ## 语言功能（已定案、未实现）
 
 - `f"…"` 的格式说明符（对齐、补零、定点小数）。

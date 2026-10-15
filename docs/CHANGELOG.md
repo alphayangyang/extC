@@ -1,3 +1,26 @@
+## 2026-10-15 · 文档：TODO 补「P5 超线性：诊断路线（自修用）」（五步 + 代码锚点 + 两条判定实验 + 验收判据）
+
+**只改 `docs/**`。** 用户决定自己修 P5 超线性，所以在已有条目下补一份可直接照做的诊断路线：
+**先量后改**，每步只给"怎么取"，预期数字自己量。
+
+- **① 数轮数 vs 规模**：现在没有 `cycN` ⇒ 用 `[pause] collects=`（= `extc_rc_pauseN`，在
+  `extc_rc_maybeCollect`/`extc_rc_checkOwed` 里自增；它数的是**武装窗口里进入 `extc_rc_step` 的次数**，
+  不是纯轮数）与 `[step] n`，在 6M/20M 两点对记；要纯轮数就临时在起轮点插一个计数器（别提交）。
+- **② 每轮标记量**：`[work] n` + `[worst]` 的 `pops`/`marked` + `[ubwork]`（正常应为 0），与 `r->live` 比。
+- **③ 阈值/触发账锚点**：`extc_rc_shouldSweep`（`bytes > thr && roundOk`）、`extc_rc_thrUpd`
+  （`max(live×2, floor) × scale`）、`extc_rc_roundOk`（`allocBytes - roundVisitedBytes ≥ max(live, floor)`）、
+  窗口 ×8 加力（`EXTC_RC_MARK_WINDOW`）、记账字段（`bytes`/`allocBytes`/`visitedBytes`/
+  `roundVisitedBytes`/`live`/`floor`/`thr`）。**函数名是稳定锚点，行号按当前树标注、会漂。**
+- **④ 两条判定实验**：(a) 阈值抬到极高 ⇒ 若轮数降到 1 且总时间变线性 ⇒ 根因是"轮数 × 活集"；
+  (b) 轮数=1 仍超线性 ⇒ 单轮成本超线性：查 glue（生成物里 `grep` `regionOf`/`shouldSweep`/
+  `maybeCollect`，复核 8/6/4 处；发射点在 `codegen.c` 的 `rcEmitTrigger`/`rcEmitOwe`/
+  `rcEmitOwedCheck`/`rcAllocCore`）与访存局部性（归档 `2026-10-15-locality.md`）。
+- **⑤ 验收**：6M/20M 两点 on/off 比值（目标 `on` 收到 `off` 的 ~1.2× 内且**保住 RSS 收益**）、
+  重估幂次、`[step]` 占墙钟比；语义 8/8 + `digraph` 7984/1772；reclaim 闸门组 + `gate-reclaim-work`
+  + `gate-shard-cycles` + `nobench`/`docs`/`smoke`；指纹同提交重冻。
+- **口径提醒**：`[pause]` 只圈武装窗口、是**下界**（`markAdvance` 在武装之前、收尾不武装）⇒
+  量"回收总时间"看 `[step]` 总量。
+
 ## 2026-10-15 · 文档：把 LOCALITY 实测入库为 `docs/archive/2026-10-15-locality.md`，活文档引用改为有路径
 
 **只改 `docs/**`。** 目的是让"标记遍历的访存局部性"这条 open 项的证据可查（此前只活在会话报告里）。
