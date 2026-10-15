@@ -1,3 +1,16 @@
+## 2026-10-15 · 文档：把 LOCALITY 实测入库为 `docs/archive/2026-10-15-locality.md`，活文档引用改为有路径
+
+**只改 `docs/**`。** 目的是让"标记遍历的访存局部性"这条 open 项的证据可查（此前只活在会话报告里）。
+
+- 新建 `docs/archive/2026-10-15-locality.md`：开头写清**日期 + 口径**（`cc -O2 -std=c11 -fwrapv`、
+  `taskset -c 6`、`/usr/bin/time -f %M`；停顿 = `EXTC_RC_PAUSE=1` 下 `max([pause],[step])`；callgrind
+  缓存模拟参数）与"**数字会漂，设计文档只认口径与出处**"。正文：三条假设的排除、callgrind 缓存模拟
+  （`markStep` 指令占比小但 L1 数据读缺失占比近半）、同预算下单位成本随堆增大、慢步成分、
+  `[step]` 桶阈值的读法提醒、两个 p99 口径的分布、候选方向、未覆盖。**与 `RECLAMATION`「四.一」的
+  桶阈值校正一致**（`over16`=≥16 µs、`over1ms`=≥1 ms、细档只计数不打印）。
+- `docs/archive/README.md` 加一行索引；把 `TODO.md` 的 locality 出处、`RECLAMATION`「四.一」（两种
+  p99 口径的实测分布来源）与「五.一」第 15 条都改为**指向该归档路径**（只改引用与路径，不搬数字）。
+
 ## 2026-10-15 · 文档：把大横评暴露的三条记进 `TODO` 与停顿口径段（P5 超线性 / 探针 `PAUSE_DIST` 恒 0 / 三家停顿不可相减）
 
 **只改 `docs/**`**，不修代码。出处是已入库的 `bench/gc/SPECTRUM-MATRIX.md`（task-30 三语言矩阵）
@@ -16,7 +29,8 @@
   并写明**三家"停顿"只可并排、不可相减或相除**（Go 的 STW 不含 assist+bg，那些是可并发 CPU）；
   量具段登记 `PAUSE_DIST` 恒 0 这条不可信点并把出处指向横评报告。§五.一 加两条指向 TODO 的开放项
   （超线性回收、`PAUSE_DIST`）。
-- 顺带把 task-29 那条 locality 的出处从"尚无报告"改成"报告 `LOCALITY.md`（尚未入库）"。
+- 顺带把 task-29 那条 locality 的出处从"尚无报告"改成"报告 `LOCALITY.md`（尚未入库）"
+  （随后已在 task-32 入库为 `docs/archive/2026-10-15-locality.md`）。
 
 ## 2026-10-15 · 文档：把三条记录写进 `TODO` 与 `[step]` 口径段（桶的实际阈值、`EXTC_RC_SLOWSTEP` 可用区间、标记遍历 locality）
 

@@ -406,7 +406,8 @@ P2 与这个反例的差别**只有"旧值是否另有根"这一维**（P2 的�
 p99"）；另一种是**每 run 只取一个最大步**、再对这些 per-run max 取 p99（"per-run max 的 p99"）。
 两者的尾巴完全不同：前者的 p99 由极小比例的长步决定，后者每次运行只贡献一个样本、天然更靠尾部
 ⇒ 只报一种会得出误导结论（长步占比可以极小，而 per-run max 仍明显更高）。任何"p99 ≤ X"都要
-写清口径；量具必须两种都读得出来。
+写清口径；量具必须两种都读得出来。两种口径的实测分布对照见归档
+[`archive/2026-10-15-locality.md`](archive/2026-10-15-locality.md)。
 
 **统一工作量预算 `EXTC_RC_WORK_BUDGET=W`（C 编译期 `-D`，默认 0 = 关）**：默认形态下
 `walk`（`MARK_BATCH_MAX`）、`scan`（`SEED_WORDS`）、`push`（`SEED_PUSHES`）是**三个独立预算**且
@@ -541,7 +542,8 @@ reclaim 形状闸门（`gate-shapes`/`gate-work`/`gate-shard-cycles`/`gate-idle-
    这条耦合没定量（`PAUSE_10US.md`）。
 15. **标记遍历的访存局部性**：方向（`ownSlab` 热缓存 / 按 slab 局部性排序遍历 / 预取下一个对象 /
     把每对象要碰的几样结构靠拢或合并 / 清扫预算按槽不按字）与证据记在 [`TODO.md`](TODO.md) 的
-    「回收的量具与访存局部性」一节，本清单不复制。
+    「回收的量具与访存局部性」一节，原始实测归档在
+    [`archive/2026-10-15-locality.md`](archive/2026-10-15-locality.md)；本清单不复制。
 16. **滑窗 + 长命索引形状上的超线性回收**：回收工作量随规模超线性（幂次约 1.7–1.8）、而关掉回收
     时线性 ⇒ 这一档 extC 是三家里最差的；**根因未定位**，候选方向记在 [`TODO.md`](TODO.md) 的
     「回收：大横评」一节，出处 [`bench/gc/SPECTRUM-MATRIX.md`](../bench/gc/SPECTRUM-MATRIX.md)。
