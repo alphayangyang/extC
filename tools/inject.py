@@ -145,7 +145,7 @@ INJECTIONS = {
         "why": "空闲链弹出后不前进 ⇒ 同一个槽被反复发出（两个活对象同址）。**ASan 抓不到这种别名**"
                "（内存是合法的）⇒ 只有'槽唯一'那条判据能抓",
         "gate": "reclaim-unit",
-        "patches": [(SRC, '    "        s->freelist = *(int64_t *)(EXTC_RC_SLAB_DATA(s) + (i << s->shift));\\n",\n',
+        "patches": [(SRC, '    "        s->freelist = (int64_t)s->tid[i] - 1;  /* 0 = 链尾；载荷不参与复用链（见 extc_rc_freeSlot） */\\n",\n',
                      '    "        s->freelist = (int64_t)i;   /* 注入：空闲链不前进（同一个槽反复发出） */\\n",\n')],
     },
     "register-noop": {

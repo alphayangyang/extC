@@ -789,6 +789,18 @@ def build_items() -> list:
         bad_msg="tools/check_mark_batch.py（标记 walk 的批弹出结构或红自测失效）",
         bad_dump=dump_tail(10)))
 
+    # ---- 闸门·复用链存在 tid[] 里（不是槽载荷）----
+    # 这条买的是 **P5 的墙钟**（0.910×）：被释放的槽是冷的，把链的 8 字节头插指针写进载荷
+    # 等于清扫每放一槽多一次末级写失手；两种编码**语义等价**，所以行为判据抓不到它回潮，
+    # 只判结构 + 红自测。数字（墙钟/RSS/cachegrind 失手）记在 CHANGELOG.md，不在这里副本。
+    items.append(cmd(
+        "gate-reuse-chain", "gate",
+        "闸门·复用链存在 tid[] 里：freeSlot 只写 tid[]、不碰载荷、不清零，分配端解 +1 编码，槽数上限有守卫",
+        ["python3", "tools/check_reuse_chain.py"], timeout=60,
+        ok_msg=ok_first(r"^ok reuse chain lives in tid"),
+        bad_msg="tools/check_reuse_chain.py（复用链的存放位置回潮或红自测失效）",
+        bad_dump=dump_tail(10)))
+
     # ---- 闸门·mark-both 屏障（删除屏障 + 本地槽省屏障）----
     # 这条买的是 **P6 的墙钟**：无计数档把"每次本地槽写都着色"整段省掉，保护改由"被覆盖的旧边"
     # 承担。判据是结构 + 红自测：谁把删除屏障删了、把本地槽的门撤了、或让 storeRefLocal 又
