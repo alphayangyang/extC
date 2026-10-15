@@ -270,6 +270,9 @@ P2 与这个反例的差别**只有"旧值是否另有根"这一维**（P2 的�
 
 **开关语义**：`EXTC_RECLAIM=1` 是"**允许**回收 / 不强制关闭"，不是"强制发射"——证明成立时
 发射运行期只是空转，所以②在**任何档**下都跳过。`EXTC_RECLAIM=0` 仍然是从不发射、对照组。
+**注意它不是"只关 GC"**：这一档下分配器也换成 `extc_arena_*` 纯 bump（生成物里连 `malloc` 都没有）
+⇒ 拿它做 on/off 对照时，差值是「回收运行期 + **槽式分配器** + 记账」vs「纯 bump arena」，
+**不是纯 GC 税**；出处与实测见 [`bench/gc/SPECTRUM-MATRIX.md`](../bench/gc/SPECTRUM-MATRIX.md) §10.1。
 
 **失效方向**：少收 ⇒ **内存涨**，不是悬垂（rc 只释放标记不到的对象）。安全网是两条动态判据
 加一条红证明：
@@ -544,9 +547,13 @@ reclaim 形状闸门（`gate-shapes`/`gate-work`/`gate-shard-cycles`/`gate-idle-
     把每对象要碰的几样结构靠拢或合并 / 清扫预算按槽不按字）与证据记在 [`TODO.md`](TODO.md) 的
     「回收的量具与访存局部性」一节，原始实测归档在
     [`archive/2026-10-15-locality.md`](archive/2026-10-15-locality.md)；本清单不复制。
-16. **滑窗 + 长命索引形状上的超线性回收**：回收工作量随规模超线性（幂次约 1.7–1.8）、而关掉回收
-    时线性 ⇒ 这一档 extC 是三家里最差的；**根因未定位**，候选方向记在 [`TODO.md`](TODO.md) 的
-    「回收：大横评」一节，出处 [`bench/gc/SPECTRUM-MATRIX.md`](../bench/gc/SPECTRUM-MATRIX.md)。
+16. **滑窗 + 长命索引形状上的超线性回收**：回收工作量随规模超线性（幂次约 1.7–1.8），而
+    `EXTC_RECLAIM=0` 对照臂是线性的（≈0.97）；**超线性的大头在 `[step]` 记账之外**（残差）
+    ⇒ **根因未定位**。候选方向记在 [`TODO.md`](TODO.md) 的「回收：大横评」一节；出处
+    [`bench/gc/SPECTRUM-MATRIX.md`](../bench/gc/SPECTRUM-MATRIX.md) **§10** 与
+    `bench/gc/spectrum-matrix-reclaim0.tsv`（两轮 × best-of-5、两点幂次、stdout 逐字节相同）。
+    **警告**：`EXTC_RECLAIM=0` 连**分配器**一起换（`extc_arena_*` 纯 bump）⇒ 该对照不是纯 GC 税，
+    详见 [`TODO.md`](TODO.md)「回收：大横评」一节的硬警告与「三点七」的开关语义。
 17. **量具 `PAUSE_DIST` 恒 `n=0`**：不能用来断言"0 次停顿"；待修，记在 [`TODO.md`](TODO.md)。
 
 ## 六、怎么知道是真的
