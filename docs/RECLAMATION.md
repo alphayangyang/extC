@@ -340,11 +340,29 @@ P2 与这个反例的差别**只有"旧值是否另有根"这一维**（P2 的�
 ### 四.一、窗口怎么量、判据用哪个数（`EXTC_RC_PAUSE=1`）
 
 **量具**：`EXTC_RC_PAUSE=1` 时进程退出打三行到 stderr ——
-`[pause]`（契约入口 `collect`/`checkOwed` 进→出）· `[step]`（**每个切片**：`markStep`/`sweepStep`
-每次调用的墙钟 n/max/total + 阈值桶 `over16/over64/over256/over1ms`）·
+`[pause]`（契约入口 `collect`/`checkOwed` 的**武装窗口**进→出）· `[step]`（**每个切片**：
+`markStep`/`sweepStep` 每次调用的墙钟 n/max/total + 阈值桶 `over16/over64/over256/over1ms`）·
 `[work]`（同一批切片的**确定性工作量**：`walk_max/scan_max/push_max` + `>16/>64/>256` 桶）。
 `tools/rc-pause-probe.py` 也能插桩 `extc_rc_collect` 与热路径 `extc_rc_step`（`PROBE … step_*`），
-并在插桩失败时 **rc=1**（不许伪装成 `sweeps=0`）。
+并在插桩失败时 **rc=1**（不许伪装成 `sweeps=0`）。**但它的 `PAUSE_DIST` 行在当前代码形态下恒
+`n=0`**（环形记录插在**冷**契约入口 `extc_rc_collect`，而热路径走 `extc_rc_step`）⇒ **不能用它断言
+"0 次停顿"**；同一次运行里生成物自己报的 `[pause]`/`[step]` 计数都不为 0。它同一行的
+`step_n`/`step_max_us` 仍然有效。出处与实测见
+[`bench/gc/SPECTRUM-MATRIX.md`](../bench/gc/SPECTRUM-MATRIX.md)（§4.3、§7）。
+
+**两个停顿总体，别只报一个；三家"停顿"也不可相减。** extC 的生成物自己有**两行**，是两个不同的
+总体：
+
+* `[pause]` 只圈**武装窗口**（`maybeCollect`/`checkOwed` 里的 `pauseArm`）—— **成批推进**
+  （`markAdvance`）发生在武装**之前**、**收尾/取消**路径也不武装 ⇒ 它是**下界**，不是全部回收
+  时间账。
+* `[step]` 记**每一次**子步（`markStep`/`sweepStep`，含成批推进与收尾触发的那些）= extC 在
+  **mutator 线程上同步花的回收时间**（extC 没有 GC 线程，这些时间应用就是干不了活）。
+
+同一批运行里两者的总量可以差几个数量级 ⇒ **引用 extC 停顿时必须说清是哪个总体**，只含 `[pause]`
+的结论不能读成"几乎不停顿"。跨语言的口径同样不是一回事：Go 的 `gctrace` STW 不含 assist+bg
+（那些是可并发的 CPU），Java 的 GC Pause 才是真 STW 墙钟 ⇒ **三家的"停顿"只可并排，不可相减或
+相除**。实测与不可比清单见 [`bench/gc/SPECTRUM-MATRIX.md`](../bench/gc/SPECTRUM-MATRIX.md) §4/§7。
 
 **`[work]` 的盲区（2026-10-15 抓到，已补量具）**：`[work]` 只统计 `budget ≤ EXTC_RC_MARK_BATCH_MAX`
 的**有界热路径步**；契约排空/结算收尾（`budget=∞`）连量具都躲过去 —— `[step] n` 与 `[work] n`
@@ -524,6 +542,10 @@ reclaim 形状闸门（`gate-shapes`/`gate-work`/`gate-shard-cycles`/`gate-idle-
 15. **标记遍历的访存局部性**：方向（`ownSlab` 热缓存 / 按 slab 局部性排序遍历 / 预取下一个对象 /
     把每对象要碰的几样结构靠拢或合并 / 清扫预算按槽不按字）与证据记在 [`TODO.md`](TODO.md) 的
     「回收的量具与访存局部性」一节，本清单不复制。
+16. **滑窗 + 长命索引形状上的超线性回收**：回收工作量随规模超线性（幂次约 1.7–1.8）、而关掉回收
+    时线性 ⇒ 这一档 extC 是三家里最差的；**根因未定位**，候选方向记在 [`TODO.md`](TODO.md) 的
+    「回收：大横评」一节，出处 [`bench/gc/SPECTRUM-MATRIX.md`](../bench/gc/SPECTRUM-MATRIX.md)。
+17. **量具 `PAUSE_DIST` 恒 `n=0`**：不能用来断言"0 次停顿"；待修，记在 [`TODO.md`](TODO.md)。
 
 ## 六、怎么知道是真的
 
