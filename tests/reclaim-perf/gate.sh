@@ -35,6 +35,9 @@
 #   EXTC=...    指定编译器（默认 <repo>/build/extc）
 #   N=200000    callgrind 的轮数（LIMIT 只对默认 N=200000 成立，改 N 请同时改 LIMIT）
 #   LIMIT=...   覆盖判据线（调试用）
+#
+# 缺 valgrind：打印 `  --   跳过：…` 后**只跑**下面那半（槽号索引，判据不依赖 valgrind），退出码 0
+#   —— `tools/check.py` 把这一项记 `skip`、不计数（判据没验就不许算通过；CI 装了 valgrind ⇒ 不许跳过）。
 set -u
 
 DIR=$(cd "$(dirname "$0")" && pwd)
@@ -49,6 +52,8 @@ TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 
 ok()  { printf '  \033[32mok\033[0m   %s\n' "$1"; }
 bad() { printf '  \033[31mFAIL\033[0m %s\n' "$1"; }
+skip() { printf '  --   跳过：%s\n' "$1"; }   # 缺件 ⇒ 明说"没验"（check.py 认这一行 ⇒ 记 skip、不计数）
+VG=$(command -v valgrind || true)
 
 echo "== 回收性能判据（EXTC_RECLAIM=1，N=$N）=="
 echo "  形状   $SRC"
@@ -65,22 +70,26 @@ if ! $CC -std=c11 -fwrapv -O1 -o "$TMP/on" "$TMP/on.c" 2>"$TMP/cc.log"; then
     bad "生成物编译失败"; sed 's/^/    /' "$TMP/cc.log"; exit 1
 fi
 
-if ! valgrind --tool=callgrind --callgrind-out-file="$TMP/cg.on" "$TMP/on" "$N" \
-        >"$TMP/on.out" 2>"$TMP/on.vg"; then
-    bad "callgrind 那跑失败"; tail -5 "$TMP/on.vg" | sed 's/^/    /'; exit 1
-fi
-IR=$(grep '^summary:' "$TMP/cg.on" | awk '{print $2}')
-if [ -z "${IR:-}" ]; then bad "callgrind 输出没有 summary 行"; exit 1; fi
-
-awk -v ir="$IR" -v lim="$LIMIT" -v base=1169388408 \
-    'BEGIN { printf "  实测   总指令数 %d Ir（%.1f%% of 改动前）\n", ir, 100*ir/base }'
-
-if [ "$IR" -le "$LIMIT" ]; then
-    awk -v ir="$IR" -v lim="$LIMIT" -v base=1169388408 \
-        'BEGIN { printf "  ok   回收性能成立：%d ≤ %d（相对改动前 −%.1f%%）\n", ir, lim, 100*(base-ir)/base }'
+if [ -z "$VG" ]; then
+    skip "没有 valgrind（本机缺 callgrind）⇒ 本形状的指令数棘轮这轮没验（下面的槽号索引判据照跑）"
 else
-    bad "指令数 $IR > $LIMIT（回收开销被付回了：入口守卫或守卫 O(1) 化的收益丢了）"
-    exit 1
+    if ! valgrind --tool=callgrind --callgrind-out-file="$TMP/cg.on" "$TMP/on" "$N" \
+            >"$TMP/on.out" 2>"$TMP/on.vg"; then
+        bad "callgrind 那跑失败"; tail -5 "$TMP/on.vg" | sed 's/^/    /'; exit 1
+    fi
+    IR=$(grep '^summary:' "$TMP/cg.on" | awk '{print $2}')
+    if [ -z "${IR:-}" ]; then bad "callgrind 输出没有 summary 行"; exit 1; fi
+
+    awk -v ir="$IR" -v lim="$LIMIT" -v base=1169388408 \
+        'BEGIN { printf "  实测   总指令数 %d Ir（%.1f%% of 改动前）\n", ir, 100*ir/base }'
+
+    if [ "$IR" -le "$LIMIT" ]; then
+        awk -v ir="$IR" -v lim="$LIMIT" -v base=1169388408 \
+            'BEGIN { printf "  ok   回收性能成立：%d ≤ %d（相对改动前 −%.1f%%）\n", ir, lim, 100*(base-ir)/base }'
+    else
+        bad "指令数 $IR > $LIMIT（回收开销被付回了：入口守卫或守卫 O(1) 化的收益丢了）"
+        exit 1
+    fi
 fi
 
 # ---- 槽号索引：域内穷举（健全性判据，不是性能判据）----------------------------------

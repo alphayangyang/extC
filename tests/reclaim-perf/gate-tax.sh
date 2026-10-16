@@ -17,6 +17,8 @@
 # 用法：tests/reclaim-perf/gate-tax.sh
 #   EXTC=… / CC=…         换编译器
 #   BT_TAX_LIMIT=…        覆盖 bt 的税上限（自检"闸门有牙"用）
+#
+# 缺 valgrind：本脚本的判据整条没验 ⇒ 打印 `  --   跳过：…`、退出码 0（check.py 记 skip、不计数）。
 set -u
 
 DIR=$(cd "$(dirname "$0")" && pwd)
@@ -36,6 +38,13 @@ ok()  { printf '  \033[32mok\033[0m   %s\n' "$1"; }
 bad() { printf '  \033[31mFAIL\033[0m %s\n' "$1"; }
 
 echo "== 回收税判据（不需要回收的形状应当趋近 0；棘轮只许往下）=="
+
+# 判据**全部**建在 callgrind 上 ⇒ 缺 valgrind 时明说"没验"并退 0（不许静默假装判过）：
+# check.py 认这一行 ⇒ 记 `skip`、不计数（CI 装了 valgrind ⇒ 不许跳过）。
+if ! command -v valgrind >/dev/null 2>&1; then
+    printf '  --   跳过：没有 valgrind ⇒ 回收税判据（bt / bt-mid 两条棘轮）这轮没验\n'
+    exit 0
+fi
 
 [ -f "$BIG/in-small/bt.txt" ] || {
     ( cd "$BIG" && cc -O2 -o build/gen gen.c && ./build/gen small in-small ) >/dev/null 2>&1 \

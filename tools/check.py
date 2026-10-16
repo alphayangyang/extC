@@ -24,6 +24,10 @@
 每项输出攒完整块打印（不交错）。`-j1` 精确回到逐项串行的旧行为。
 
 选择不到任何项 = **响亮报错**（列名字/组），不静默跳过。
+
+跳过协议（`skip` 与 `ok` 是两回事）：某项的子脚本**自己**发现环境缺件（如本机没有 valgrind）时，
+打印一行 `  --   跳过：<原因>` 并退出 0 ⇒ 该项记 `skip`、**不计数**，但汇总里单列「跳过 N」——
+绝不让"没验"混进"通过"。CI 另有一条相反方向的判据：装了 valgrind 却仍跳过 ⇒ CI 失败。
 """
 
 from __future__ import annotations
@@ -101,6 +105,17 @@ def first_matching(s: str, pat: str) -> str:
         if rx.search(ln):
             return ln
     return ""
+
+
+def skip_line(out: str) -> str:
+    """子脚本的跳过协议：命中 `  --   跳过：<原因>` ⇒ 返回 `跳过：<原因>`（否则空串）。
+
+    `skip` 不是 `ok`：脚本缺件时**明说没验**，runner 记 skip、不计数（见文件头）。
+    """
+    ln = first_matching(out, r"^  --   跳过：")
+    if not ln:
+        return ""
+    return "跳过：" + ln.split("跳过：", 1)[1].strip()
 
 
 def line_count(s: str) -> int:
@@ -281,6 +296,9 @@ def cmd(name: str, group: str, desc: str, argv: list, *,
     def fn(ctx: Runner, it: Item) -> Outcome:
         p = ctx.run(argv, timeout=timeout, env=env, echo=echo)
         if p.rc == 0:
+            sk = skip_line(p.out)      # 子脚本自报"没验"（见文件头）⇒ 记 skip、不计数
+            if sk:
+                return Outcome(None, sk)
             extra = extra_ok(p.out) if extra_ok else []
             return Outcome(True, _resolve_msg(ok_msg, p.out) if ok_msg is not None else tail1(p.out), extra)
         msg = bad_msg or name
@@ -1787,6 +1805,8 @@ def _print_outcome(it: Item, oc: Outcome, secs: float, counters: list) -> str:
     """打印一项的结果行（ok/FAIL/--、extra、⏱）并计数。调用方保证独占 stdout。"""
     if oc.ok is None:
         status = "skip" if oc.msg.startswith("跳过") else "ran"
+        if status == "skip":
+            counters[2] += 1        # 跳过单列：汇总里说得出来"有几项没验"
         print(f"  --   {oc.msg}", flush=True)
     elif oc.ok:
         counters[0] += 1
@@ -1849,6 +1869,13 @@ def _times_of(runs: list) -> dict:
     return out
 
 
+def _summary(counters: list) -> str:
+    """汇总行：有跳过就单列出来 —— 跳过 = 没验，不许混进「通过」。"""
+    if len(counters) > 2 and counters[2]:
+        return f"通过 {counters[0]}，跳过 {counters[2]}，失败 {counters[1]}"
+    return f"通过 {counters[0]}，失败 {counters[1]}"
+
+
 def _finish(items_runs: list, tpath: str, args, counters: list) -> int:
     """写耗时表 + 打印最慢 N 项 + 总计。`items_runs` = [(Item, secs, status)]。"""
     times_out = _times_of(items_runs)
@@ -1862,14 +1889,14 @@ def _finish(items_runs: list, tpath: str, args, counters: list) -> int:
         for name, group, secs, status in slow:
             print(f"  {secs:8.3f}s  {status:<4}  {name}（{group}）", flush=True)
     print(f"\n耗时表：{tpath}", flush=True)
-    print(f"\n通过 {counters[0]}，失败 {counters[1]}", flush=True)
+    print(f"\n{_summary(counters)}", flush=True)
     return 0 if counters[1] == 0 else 1
 
 
 def _run_items_serial(items: list, args) -> int:
     """`-j1`：逐项串行，表头先打、输出现场流式 —— 与加并行之前逐字节一致的行为。"""
     tpath = times_path(args)
-    counters = [0, 0]
+    counters = [0, 0, 0]
     runs = []
     for it in items:
         oc, secs, status = _run_live(it, args, counters)
@@ -1877,7 +1904,7 @@ def _run_items_serial(items: list, args) -> int:
         if oc.ok is False and it.abort_on_fail:
             print(f"\n构建失败 ⇒ 中止（其余项都假设 build/extc 在）。", flush=True)
             write_times(tpath, _times_of(runs))
-            print(f"\n通过 {counters[0]}，失败 {counters[1]}", flush=True)
+            print(f"\n{_summary(counters)}", flush=True)
             return 1
     return _finish(runs, tpath, args, counters)
 
@@ -1897,7 +1924,7 @@ def _run_items_parallel(items: list, args, j: int) -> int:
     自己的核。每项输出攒完整块打印 ⇒ 不交错。
     """
     tpath = times_path(args)
-    counters = [0, 0]
+    counters = [0, 0, 0]
     runs: list = []
     build = [it for it in items if it.name == "build"]
     inner = [it for it in items if it.name in INNER]
@@ -1913,7 +1940,7 @@ def _run_items_parallel(items: list, args, j: int) -> int:
         if oc.ok is False and it.abort_on_fail:
             print(f"\n构建失败 ⇒ 中止（其余项都假设 build/extc 在）。", flush=True)
             write_times(tpath, _times_of(runs))
-            print(f"\n通过 {counters[0]}，失败 {counters[1]}", flush=True)
+            print(f"\n{_summary(counters)}", flush=True)
             return 1
 
     # ② 单槽车道（INNER：自己开 min(nproc,16) 个 worker）+ ③ 池（j 个 worker）。

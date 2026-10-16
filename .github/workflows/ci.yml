@@ -5,6 +5,11 @@
 # `g++` + `rustc`; the six-language matrix in bench/bigmatrix also needs `go` + `java`.
 # Keep it that way: a contributor with a C compiler and Python must be able to run
 # the whole acceptance suite.
+#
+# valgrind is NOT part of that contract: the three reclaim perf/tax gates detect it and
+# print `  --   跳过：…` instead of failing (./check.sh lists those as "跳过", never as a
+# pass).  This job installs it anyway so the ratchets are really judged on every push,
+# and it turns a skip into a failure -- "installed but not effective" is a broken state.
 name: ci
 
 on:
@@ -27,6 +32,12 @@ jobs:
           make -j"$(nproc)" 2>&1 | tee /tmp/build.log
           ! grep -q warning /tmp/build.log
 
+      - name: valgrind (回收性能/税闸门要用；缺了它们会自跳过 ⇒ 这里装上，让它们真跑)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq valgrind
+          valgrind --version
+
       - name: quick acceptance suite
         # 失败要**能从 API 读到**：本机没有 gh，看不了 Actions 日志；
         # 而 `::error::` 会变成 GitHub 注解，注解对公开仓库**无需认证**即可读
@@ -40,5 +51,11 @@ jobs:
             grep -a "FAIL" -A 2 /tmp/quick.log | head -80 | while IFS= read -r line; do
               echo "::error::$line"
             done
+          fi
+          # 装了 valgrind 却仍跳过 ⇒ 那三条回收性能/税棘轮在 CI 上没跑（上面那步白装了）——
+          # 这是失败，不是"跳过"。本机缺 valgrind 时才允许跳过（契约：只要 cc + python3）。
+          if grep -aq "跳过：没有 valgrind" /tmp/quick.log; then
+            echo "::error::回收性能/税闸门被跳过：valgrind 没生效（判据没跑）"
+            rc=1
           fi
           exit "$rc"

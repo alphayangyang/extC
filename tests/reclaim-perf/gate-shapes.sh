@@ -16,6 +16,9 @@
 # 用法：tests/reclaim-perf/gate-shapes.sh
 #   EXTC=... / CC=...             指定编译器
 #   BT_LIMIT=... / RB_LIMIT=...   覆盖判据线（调试 / 自检"闸门有牙"）
+#
+# 缺 valgrind：每个形状打印 `  --   跳过：…`（指令数判据没验），**语义一致那半照判**；退出码 0
+#   —— `tools/check.py` 把这一项记 `skip`、不计数（CI 装了 valgrind ⇒ 不许跳过）。
 set -u
 
 DIR=$(cd "$(dirname "$0")" && pwd)
@@ -34,6 +37,8 @@ RB_LIMIT=${RB_LIMIT:-15790000}
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 ok()  { printf '  \033[32mok\033[0m   %s\n' "$1"; }
 bad() { printf '  \033[31mFAIL\033[0m %s\n' "$1"; }
+skip() { printf '  --   跳过：%s\n' "$1"; }   # 缺件 ⇒ 明说"没验"（check.py 认这一行 ⇒ 记 skip、不计数）
+VG=$(command -v valgrind || true)
 
 echo "== 回收性能判据（真实形状，小输入，-O2）=="
 
@@ -68,6 +73,10 @@ one() { # <形状> <线>
         bad "$shp：开档与关档输出不一致（rc $rc_on / $rc_off）"; fail=1; return
     fi
 
+    if [ -z "$VG" ]; then
+        skip "$shp：没有 valgrind ⇒ 指令数判据没验（开档/关档输出一致那条已判）"
+        return
+    fi
     if ! valgrind --tool=callgrind --callgrind-out-file="$TMP/$shp.cg" \
              "$TMP/$shp.on" < "$BIG/in-small/$shp.txt" >/dev/null 2>"$TMP/$shp.vg"; then
         bad "$shp：callgrind 那跑失败"; tail -3 "$TMP/$shp.vg" | sed 's/^/    /'; fail=1; return
