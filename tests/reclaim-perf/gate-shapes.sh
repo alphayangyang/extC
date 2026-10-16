@@ -43,7 +43,7 @@ VG=$(command -v valgrind || true)
 echo "== 回收性能判据（真实形状，小输入，-O2）=="
 
 if [ ! -f "$BIG/in-small/bt.txt" ] || [ ! -f "$BIG/in-small/rebuild.txt" ]; then
-    if ( cd "$BIG" && cc -O2 -o build/gen gen.c && ./build/gen small in-small ) >"$TMP/gen.log" 2>&1; then
+    if ( cd "$BIG" && cc -O2 -o "$TMP/gen" gen.c && "$TMP/gen" small "$BIG/in-small" ) >"$TMP/gen.log" 2>&1; then
         echo "  注：小输入不在（生成物）⇒ 就地生成了一份（bench/bigmatrix/gen.c small）"
     else
         bad "生成小输入失败（bench/bigmatrix/gen.c）"

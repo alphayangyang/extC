@@ -48,6 +48,8 @@ jobs:
         # （/commits/<sha>/check-runs → annotations_url）。注解一步最多 10 条，所以失败项清单
         # 只从耗时表读（tools/ci_annotate.py）—— 别 `grep -a FAIL`：闸门会为已知欠账打 FAIL，
         # 那样抓到的多半是噪声，真正的失败项被挤出 10 条之外。
+        # 每个失败项的现场由 tools/check.py 的 `dump_fail` 摘出来（判据自己的 FAIL 行 + 尾部若干行，
+        # 因为闸门常把真正的失败打在前面、后面接一堆逐形状的 ok）。
         run: |
           set +e
           ./check.sh quick > /tmp/quick.log 2>&1

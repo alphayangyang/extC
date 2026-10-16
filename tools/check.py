@@ -305,6 +305,10 @@ def cmd(name: str, group: str, desc: str, argv: list, *,
         dump = bad_dump(p.out) if bad_dump else []
         if p.timed_out:
             msg = f"{msg}（超时 {timeout:g}s 被杀 ⇒ FAIL）"
+        else:
+            # rc 与输出行数挂在判决行上：子脚本"自己的统计说全过、rc 却不是 0"这类现场
+            # （尾部只剩统计行）不看 rc 根本判不出来。
+            msg = f"{msg}（rc={p.rc}，{len(lines(p.out))} 行输出）"
         return Outcome(False, msg, dump)
     return Item(name, group, desc, fn, needs_build=needs_build, bench=bench,
                 abort_on_fail=abort_on_fail)
@@ -333,6 +337,30 @@ def ok_linecount(suffix: str = ""):
 
 def dump_tail(n: int):
     return lambda out: ind(tail(out, n))
+
+
+def dump_fail(n: int, fails: int = 4):
+    """失败现场：判据脚本自己打的 `  FAIL …` 行（**可能不在尾部**）+ 尾部 n 行。
+
+    为什么不能只取尾部：闸门脚本的失败行常出现在输出前段（后面还有逐形状的 ok 与统计），
+    只取尾部会把真正的原因切掉 —— CI 上日志留在远端、注解又只有 10 条配额，
+    所以这几行必须自己冒出来（见 tools/ci_annotate.py 的文件头）。
+    """
+    def f(out: str) -> list:
+        ls = lines(out)
+        badge = [ln for ln in ls if ln.startswith("  FAIL")]
+        rest = tail(out, n)
+        if not badge:
+            return ind(rest)
+        # 首尾各取几条：闸门的判决行有时在前面（一开头就生成输入失败），有时在最后
+        # （逐形状跑完才汇总），只取一头就会漏。
+        picks: list[str] = []
+        for ln in badge[:fails // 2 + fails % 2] + badge[-(fails // 2):]:
+            if ln not in picks:
+                picks.append(ln)
+        extra = [] if len(badge) <= len(picks) else [f"…（共 {len(badge)} 条判据 FAIL 行）"]
+        return ind(picks + extra) + ind([f"--- 尾部 {len(rest)} 行 ---"]) + ind(rest)
+    return f
 
 
 def dump_head(n: int):
@@ -385,7 +413,7 @@ def build_items() -> list:
         sh('python3 tools/gate_scale.py'), timeout=600,
         ok_msg=ok_first(r"^\[scale\]"),
         bad_msg="tools/gate_scale.py（规模用例变红）",
-        bad_dump=dump_tail(12)))
+        bad_dump=dump_fail(12)))
 
     # ---- 断言版全量（EXTC_DBG=1）+ 闸门⑤ ----
     def fn_assert(ctx: Runner, it: Item) -> Outcome:
@@ -415,7 +443,7 @@ def build_items() -> list:
         sh('python3 tools/gate_escape.py'), timeout=600,
         ok_msg=ok_first(r"^\[escape\]"),
         bad_msg="tools/gate_escape.py（逃逸健全性语料变红）",
-        bad_dump=dump_tail(12)))
+        bad_dump=dump_fail(12)))
 
     # ---- 闸门·实例接线 ----
     items.append(cmd(
@@ -424,7 +452,7 @@ def build_items() -> list:
         sh('python3 tools/gate_callsite.py'), timeout=600,
         ok_msg=ok_first(r"^\[callsite\]"),
         bad_msg="tools/gate_callsite.py（实例接线变红）",
-        bad_dump=dump_tail(12)))
+        bad_dump=dump_fail(12)))
 
     # ---- 闸门·差分 ----
     items.append(cmd(
@@ -433,7 +461,7 @@ def build_items() -> list:
         sh('python3 tools/gate_difffuzz.py'), timeout=600,
         ok_msg=ok_first(r"^\[diff\]"),
         bad_msg="tools/gate_difffuzz.py（差分用例变红）",
-        bad_dump=dump_tail(12)))
+        bad_dump=dump_fail(12)))
 
     # ---- 闸门·回收的因果闭合（清扫真的压住了峰值）----
     # 这条钉的是"界是谁给的"：同一份生成物只改清扫触发阈值 ⇒ 峰值必须重新随轮数涨；
@@ -444,7 +472,7 @@ def build_items() -> list:
         ["./tests/reclaim-shapes/run-evidence.sh"], timeout=600,
         ok_msg=ok_count_ok(" 项（三种变体语义逐字一致 · 开档 < 1.5× · 关档与永不触发都 > 2×）"),
         bad_msg="tests/reclaim-shapes/run-evidence.sh（清扫的作用不再可证）",
-        bad_dump=dump_tail(20)))
+        bad_dump=dump_fail(20)))
 
     # ---- 闸门·C 洞健全性（先赤后修的那一支；本帧拥有的区域才允许触发清扫）----
     items.append(cmd(
@@ -453,7 +481,7 @@ def build_items() -> list:
         ["bash", "tests/reclaim-shapes/hole_c/run.sh"], timeout=600,
         ok_msg=ok_count_ok(" 项（开档 rc=0 · ASan 无 UAF · 关档对照绿 · 分配点不发触发 · 压力线前提）"),
         bad_msg="tests/reclaim-shapes/hole_c/run.sh（C 洞复发：种子不完整时下手了）",
-        bad_dump=dump_tail(14)))
+        bad_dump=dump_fail(14)))
 
     # ---- 闸门·回收性能（入口守卫的指令数上限）----
     # 判据线 = 改动前实测 × 0.6；`gate.sh` 里写清了为什么是 0.6（根表物化占 56.1%）。
@@ -463,7 +491,7 @@ def build_items() -> list:
         ["./tests/reclaim-perf/gate.sh"], timeout=900,
         ok_msg=ok_first(r"^  ok"),
         bad_msg="tests/reclaim-perf/gate.sh（指令数超上限：回收开销被付回了）",
-        bad_dump=dump_tail(10)))
+        bad_dump=dump_fail(10)))
 
     # ---- 闸门·回收开关的形状断言（EXTC_RECLAIM=1）----
     # 这是 `tests/reclaim-shapes/` 的**主门禁**：30 条断言把一个旋钮（开关）的效果钉在
@@ -476,7 +504,7 @@ def build_items() -> list:
         ["./tests/reclaim-shapes/run-switch.sh"], timeout=1800,
         ok_msg=ok_first(r"^  ok"),
         bad_msg="tests/reclaim-shapes/run-switch.sh（回收开关的形状/内存界回归）",
-        bad_dump=dump_tail(12)))
+        bad_dump=dump_fail(12)))
 
     # ---- 事件档（计数开 + 清扫关）：**诊断档，判据不进电池** ----------------------------
     # 实测判定：它在语料里没有一个能赢的形状 —— ① 有环形状上不成立（强制用在 `ring_per_round`
@@ -499,7 +527,7 @@ def build_items() -> list:
         ["python3", "tests/reclaim-perf/gate-idle-projection.py"], timeout=1200,
         ok_msg=ok_first(r"^通过（已知欠账"),
         bad_msg="tests/reclaim-perf/gate-idle-projection.py（idle 判据：护栏被放行 / 目标未转绿 / 语义或界）",
-        bad_dump=dump_tail(14)))
+        bad_dump=dump_fail(14)))
 
     # ---- 闸门·覆盖点定点释放（环垃圾不等清扫）------------------------------------
     # 形状 `ring_per_round`：每轮建一条 256 结点的闭环、环头存进长命槽 `keep`，下一轮覆盖
@@ -511,7 +539,7 @@ def build_items() -> list:
         ["bash", "tests/reclaim-gaps/gate-release.sh"], timeout=600,
         ok_msg=ok_first(r"^通过 "),
         bad_msg="tests/reclaim-gaps/gate-release.sh（定点释放失效：清扫回来 / 界变坏 / 空转）",
-        bad_dump=dump_tail(12)))
+        bad_dump=dump_fail(12)))
 
     # ---- 元判据·判据自己：自称门禁的脚本必须在电池可达闭包里 ----
     # 起因：`run-switch.sh` 自称门禁却从没进 check.py，于是"回收不生效 ⇒ 峰值随轮数涨"
@@ -522,7 +550,7 @@ def build_items() -> list:
         ["python3", "tools/check_gate_wiring.py"], timeout=120,
         ok_msg=ok_first(r"^\[wiring\] ok"),
         bad_msg="tools/check_gate_wiring.py（有自称门禁的脚本没进电池）",
-        bad_dump=dump_tail(8)))
+        bad_dump=dump_fail(8)))
 
     # ---- 元判据·树卫生：runner 的裸转储不许入库 ----
     # 起因：`tests/reclaim-gaps/out/*.on.c` 这类转储入库 2.5 MB，复跑一次就要 `git checkout --`
@@ -534,7 +562,7 @@ def build_items() -> list:
         ["python3", "tools/check_tree.py", "--gate"], timeout=60, needs_build=False,
         ok_msg=ok_first(r"^ok "),
         bad_msg="tools/check_tree.py（有转储入库，或 `.gitignore` 漏了模式）",
-        bad_dump=dump_tail(10)))
+        bad_dump=dump_fail(10)))
 
     # ---- 元判据·验牙注入不许没写进文档 ----
     # 两张表（义务表 / 跳过表）的"判据"列引用的是 `tools/inject.py` 里的注入名。表的价值取决于
@@ -546,7 +574,7 @@ def build_items() -> list:
         ["python3", "tools/check_doc_refs.py"], timeout=120,
         ok_msg=ok_first(r"^ok "),
         bad_msg="tools/check_doc_refs.py（有注入没写进文档）",
-        bad_dump=dump_tail(8)))
+        bad_dump=dump_fail(8)))
 
     # ---- 元判据·跳过清单与代码同步 ----
     # 运行期里每处"直接返回"都是一刀；`docs/RECLAMATION.md` 的跳过表写明它们的前提与失效方向。
@@ -558,7 +586,7 @@ def build_items() -> list:
         ["python3", "tools/check_skip_table.py"], timeout=120,
         ok_msg=ok_first(r"^ok "),
         bad_msg="tools/check_skip_table.py（跳过清单与代码不同步）",
-        bad_dump=dump_tail(8)))
+        bad_dump=dump_fail(8)))
 
     # ---- 元判据·不变量清单不许漏项 ----
     # 清单（`docs/RECLAMATION.md` 那张表）的价值全在完整：新写一条义务忘了进表，表就退化成
@@ -569,7 +597,7 @@ def build_items() -> list:
         ["python3", "tools/check_invariant_table.py"], timeout=120,
         ok_msg=ok_first(r"^ok "),
         bad_msg="tools/check_invariant_table.py（不变量清单漏项）",
-        bad_dump=dump_tail(8)))
+        bad_dump=dump_fail(8)))
 
     # ---- 元判据·参与区域数不变量（单区域免登记快路径的健全性前提）----
     # 快路径"只在 `partN == 1` 时跳过跨区登记"，它的前提是"每个会登记/会交出槽的函数都记了
@@ -581,7 +609,7 @@ def build_items() -> list:
         ["python3", "tools/check_note_part.py"], timeout=120,
         ok_msg=ok_first(r"^ok "),
         bad_msg="tools/check_note_part.py（参与区域数不变量被破坏）",
-        bad_dump=dump_tail(8)))
+        bad_dump=dump_fail(8)))
 
     # ---- 闸门·计数模式（EXTC_RC_NOCOUNT=0，非默认；**gate 档**：这一档只在很少的地方跑，
     # 放 bench 会 rot —— 2026-10-13 的教训就是"判据不进常规档 = 判据会僵"）----
@@ -594,7 +622,7 @@ def build_items() -> list:
         env={"EXTC_RC_NOCOUNT": "0"},
         ok_msg=ok_first(r"^  ok"),
         bad_msg="tests/reclaim-shapes/run-switch.sh（计数模式回归）",
-        bad_dump=dump_tail(12)))
+        bad_dump=dump_fail(12)))
 
     # 计数模式还缺两块：**单测驱动**（阈值缓存/自学习/登记/生命周期 77 条）与**跨语言对拍**。
     # 非默认的计数档若只被形状那一条判据守着，就容易悄悄腐烂 ⇒ 把这两块也补成棘轮。
@@ -605,7 +633,7 @@ def build_items() -> list:
         env={"EXTC_RC_NOCOUNT": "0"},
         ok_msg=ok_first(r"通过 \d+"),
         bad_msg="tests/reclaim/run.sh（计数模式单测回归）",
-        bad_dump=dump_tail(12)))
+        bad_dump=dump_fail(12)))
     items.append(cmd(
         "gate-reclaim-count-cross", "gate",
         "闸门·计数模式：跨语言对拍（bench/app 三语言校验和一致；分配密集，走 rc 路径）",
@@ -613,7 +641,7 @@ def build_items() -> list:
         env={"EXTC_RC_NOCOUNT": "0", "SCALE": "1", "RUNS": "1", "WRITE_RESULTS": "0"},
         ok_msg=ok_const("计数模式跨语言对拍：三语言校验和一致 ✓"),
         bad_msg="bench/app（计数模式跨语言对拍不一致）",
-        bad_dump=dump_tail(20)))
+        bad_dump=dump_fail(20)))
 
     # ---- 闸门·分片路径（EXTC_RC_SHARDS）----
     # 分片是 codegen 的第四条发射路径，run-shard.sh 只是证据脚本 ⇒ 这里把三条判据钉住：
@@ -625,7 +653,7 @@ def build_items() -> list:
         ["./tests/reclaim-shapes/gate-shard.sh"], timeout=900,
         ok_msg=ok_first(r"^  ok"),
         bad_msg="tests/reclaim-shapes/gate-shard.sh（分片路径语义/内存界回归）",
-        bad_dump=dump_tail(10)))
+        bad_dump=dump_fail(10)))
 
     # ---- 闸门·回收性能（真实形状）----
     # 合成形状之外，`bt` / `rebuild` 这两条真实形状的指令数也钉住（线在脚本里随落地收紧）；
@@ -636,7 +664,7 @@ def build_items() -> list:
         ["./tests/reclaim-perf/gate-shapes.sh"], timeout=900,
         ok_msg=ok_count_ok(" 项（两条形状：指令数在线上 + 开/关档输出一致）"),
         bad_msg="tests/reclaim-perf/gate-shapes.sh（真实形状的回收开销被付回，或开关语义漂了）",
-        bad_dump=dump_tail(12)))
+        bad_dump=dump_fail(12)))
 
     # ---- 闸门·回收税（目标：不需要回收的形状，回收开销趋近 0）----
     # 判据 = bt 的"开档 Ir / 关档 Ir"。bt 不产生环、整棵树的死期就是区域死期 ⇒ 理想值 1.00×。
@@ -647,7 +675,7 @@ def build_items() -> list:
         ["./tests/reclaim-perf/gate-tax.sh"], timeout=600,
         ok_msg=ok_first(r"^  ok"),
         bad_msg="tests/reclaim-perf/gate-tax.sh（不需要回收的形状上，回收税超线）",
-        bad_dump=dump_tail(8)))
+        bad_dump=dump_fail(8)))
 
     # ---- 闸门·「不需要回收 ⇒ 不发射 rc」的内存界 ----
     # 判据 = 被 ②（判据 (a)(b)(c)）判成 idle 的形状，峰值必须 N vs 4N < 1.5× 且有绝对上界；
@@ -659,7 +687,7 @@ def build_items() -> list:
         ["./tests/reclaim-perf/gate-idle-bounded.sh"], timeout=600,
         ok_msg=ok_first(r"^  ok"),
         bad_msg="tests/reclaim-perf/gate-idle-bounded.sh（被 ② 判成 idle 的形状峰值随规模涨）",
-        bad_dump=dump_tail(10)))
+        bad_dump=dump_fail(10)))
 
     # ---- 闸门·「不需要回收 ⇒ 不发射 rc」的能力棘轮（固定语料清单）----
     # ②的能力必须能被**数出来**：固定清单里"产物不含任何 `extc_rc_`"的形状数只许往上（8 → 14：
@@ -672,7 +700,7 @@ def build_items() -> list:
         ["./tests/reclaim-perf/gate-rc-idle-corpus.sh"], timeout=600,
         ok_msg=ok_first(r"^  ok"),
         bad_msg="tests/reclaim-perf/gate-rc-idle-corpus.sh（有能力判 idle 的形状退回了回收档）",
-        bad_dump=dump_tail(10)))
+        bad_dump=dump_fail(10)))
 
     # ---- 闸门·孤儿回收的语义（只回收自己的后代）----
     # 三条判据：没登记过的进程一根手指都不许碰 / 登记过而所有者已结束的会话必须回收 /
@@ -684,7 +712,7 @@ def build_items() -> list:
         ["python3", "tools/parrun.py", "--reap-selftest"], timeout=300, needs_build=False,
         ok_msg=ok_first(r"^reap 语义自检：通过"),
         bad_msg="tools/parrun.py --reap-selftest（孤儿回收越界或漏收）",
-        bad_dump=dump_tail(8)))
+        bad_dump=dump_fail(8)))
 
     # ---- 闸门·编译期崩溃（未初始化堆读）----
     # `MALLOC_PERTURB_=165` 把未初始化堆内存填成确定值 ⇒ 这类崩溃 100% 复现（不扰动堆时要撞运气，
@@ -727,7 +755,7 @@ def build_items() -> list:
         ["python3", "tests/perturb/census.py", "--check",
          "--arms", "plain,42,165,afill"], timeout=3600, bench=True,
         ok_msg=ok_first(r"^扰动普查："), bad_msg="tests/perturb/census.py --check（扰动下崩的源变了）",
-        bad_dump=dump_tail(12)))
+        bad_dump=dump_fail(12)))
 
     # ---- 闸门·扰动普查的进程卫生（超时"只杀编译器"就留下孤儿）----
     # `extc --run` 会 fork 出被编译的程序（`echo_server_fork` 这类还会再 fork 后代）；超时只杀
@@ -741,7 +769,7 @@ def build_items() -> list:
         ["bash", "tests/perturb/gate-orphans.sh"], timeout=300,
         ok_msg=ok_first(r"^  ok   跑完 0 个残留"),
         bad_msg="tests/perturb/gate-orphans.sh（超时只杀了编译器，留下了孤儿进程）",
-        bad_dump=dump_tail(10)))
+        bad_dump=dump_fail(10)))
 
     # ---- 闸门·运行期注释声称的默认值 vs 产物真实 #define（便宜：只编译一份产物）----
     # 由来：这段注释曾写"默认 0 = 保持计数"，而产物真是 `#define EXTC_RC_NOCOUNT 1` ⇒ 注释与
@@ -752,7 +780,7 @@ def build_items() -> list:
         ["bash", "tests/reclaim-perf/gate-rt-defaults.sh"], timeout=300,
         ok_msg=ok_first(r"^  ok   运行期注释里声称的默认值与产物一致"),
         bad_msg="tests/reclaim-perf/gate-rt-defaults.sh（运行期注释声称的默认值漂移了）",
-        bad_dump=dump_tail(10)))
+        bad_dump=dump_fail(10)))
 
     # ---- 闸门·工作量界（[work] 确定性 + 蕴含式界）----
     # 挂 nobench 的理由：**约 3 秒**（五形状现场生成+编译+各跑 3 次），而且它是**确定的**
@@ -767,7 +795,7 @@ def build_items() -> list:
         ["python3", "tests/reclaim-perf/gate-work.py"], timeout=600,
         ok_msg=ok_first(r"^  ok   工作量界"),
         bad_msg="tests/reclaim-perf/gate-work.py（工作量越界，或 `[work]` 插桩失败）",
-        bad_dump=dump_tail(14)))
+        bad_dump=dump_fail(14)))
 
     # ---- 闸门·跳过旧值登记的不变量（FS1/FS2/FS3 静态 + G1 运行期守卫）----
     # 挂 nobench 的理由：**约 3 秒**（现场发射运行期文本 + 编 P4 跑一次），但它是**健全性**门禁：
@@ -782,7 +810,7 @@ def build_items() -> list:
         ["python3", "tools/check_foreign_skip.py"], timeout=600,
         ok_msg=ok_first(r"^  ok   跳过旧值登记"),
         bad_msg="tools/check_foreign_skip.py（旧值登记跳过的不变量被破坏，或守卫插桩失效）",
-        bad_dump=dump_tail(14)))
+        bad_dump=dump_fail(14)))
 
     # ---- 闸门·区域 slab 分配缓存结构 ----
     # 这是语义不变量的静态门禁：region 缓存必须经过尺寸/容量校验，链表备用路径不能删除，
@@ -793,7 +821,7 @@ def build_items() -> list:
         ["python3", "tools/check_alloc_hot.py"], timeout=60,
         ok_msg=ok_first(r"^ok allocation cache structure"),
         bad_msg="tools/check_alloc_hot.py（区域 slab 分配缓存结构或红自测失效）",
-        bad_dump=dump_tail(10)))
+        bad_dump=dump_fail(10)))
 
     # ---- 闸门·槽粒度（8 字节取整）与它的对齐前提 ----
     # 买的是**峰值 RSS**：槽粒度直接决定内部碎片，而 8 是一切类型的自然对齐上界。
@@ -806,7 +834,7 @@ def build_items() -> list:
         ["python3", "tools/check_slot_unit.py"], timeout=60,
         ok_msg=ok_first(r"^ok slot unit structure"),
         bad_msg="tools/check_slot_unit.py（槽粒度、尺寸类单位、穷举步长或对齐前提被破坏）",
-        bad_dump=dump_tail(14)))
+        bad_dump=dump_fail(14)))
 
     # ---- 闸门·标记 walk 的批弹出结构 ----
     # 这条买的是**延迟**（LIFO 逐个弹是串行指针链），不是指令数，所以判据是结构 + 红自测：
@@ -817,7 +845,7 @@ def build_items() -> list:
         ["python3", "tools/check_mark_batch.py"], timeout=60,
         ok_msg=ok_first(r"^ok batched mark walk structure"),
         bad_msg="tools/check_mark_batch.py（标记 walk 的批弹出结构或红自测失效）",
-        bad_dump=dump_tail(10)))
+        bad_dump=dump_fail(10)))
 
     # ---- 闸门·复用链存在 tid[] 里（不是槽载荷）----
     # 这条买的是 **P5 的墙钟**（0.910×）：被释放的槽是冷的，把链的 8 字节头插指针写进载荷
@@ -829,7 +857,7 @@ def build_items() -> list:
         ["python3", "tools/check_reuse_chain.py"], timeout=60,
         ok_msg=ok_first(r"^ok reuse chain lives in tid"),
         bad_msg="tools/check_reuse_chain.py（复用链的存放位置回潮或红自测失效）",
-        bad_dump=dump_tail(10)))
+        bad_dump=dump_fail(10)))
 
     # ---- 闸门·mark-both 屏障（删除屏障 + 本地槽省屏障）----
     # 这条买的是 **P6 的墙钟**：无计数档把"每次本地槽写都着色"整段省掉，保护改由"被覆盖的旧边"
@@ -841,7 +869,7 @@ def build_items() -> list:
         ["python3", "tools/check_mark_both.py"], timeout=60,
         ok_msg=ok_first(r"^ok mark-both barrier structure"),
         bad_msg="tools/check_mark_both.py（mark-both 屏障结构或红自测失效）",
-        bad_dump=dump_tail(10)))
+        bad_dump=dump_fail(10)))
 
     # ---- 闸门·slab 发放容量按尺寸类定 ----
     # 这条买的是**峰值 RSS**：一块 slab 发出去的槽数按槽大小定（至少 1024 个槽、块大小下限
@@ -854,7 +882,7 @@ def build_items() -> list:
         ["python3", "tools/check_slab_cap.py"], timeout=60,
         ok_msg=ok_first(r"^ok slab cap structure"),
         bad_msg="tools/check_slab_cap.py（slab 发放容量的结构或红自测失效）",
-        bad_dump=dump_tail(10)))
+        bad_dump=dump_fail(10)))
 
     # 挂 bench 档的理由：要跑 1M 规模的形状 + 停顿探针（单次约 5s，但**不是**秒级项，且
     # 它测的是"回收片"这个旋钮本身，属于性能线一族 ⇒ 与 `gate-reclaim-tax`/`gate-shapes` 同类）。
@@ -869,7 +897,7 @@ def build_items() -> list:
         ["bash", "tests/reclaim-perf/gate-shard-cycles.sh"], timeout=900, bench=True,
         ok_msg=ok_first(r"^  ok   分片在高环负载形状上有界"),
         bad_msg="tests/reclaim-perf/gate-shard-cycles.sh（分片把环切开 ⇒ 界随轮数涨，或旋钮被钉死）",
-        bad_dump=dump_tail(14)))
+        bad_dump=dump_fail(14)))
 
     # ---- 闸门·回收能力账本（全语料，棘轮）----
     # 每个能编译的程序按生成物分类：ok-trigger / owe-settled / silent-both / …
@@ -882,7 +910,7 @@ def build_items() -> list:
         ["python3", "tests/reclaim-gaps/ledger-gate.py"], timeout=1800,
         ok_msg=ok_first(r"^\[ledger\]"),
         bad_msg="tests/reclaim-gaps/ledger-gate.py（有程序丢了回收者，或基线过期）",
-        bad_dump=dump_tail(16)))
+        bad_dump=dump_fail(16)))
 
     # ---- 闸门·计数按编译期收窄的语料（棘轮 + 反空跑）----
     # 「该省」4 行的红 = 收窄还没实现（在基线里，实现一条删一条）；「不该省」4 行必须一直有计数
@@ -893,7 +921,7 @@ def build_items() -> list:
         sh('python3 tests/reclaim-elide/gate.py'), timeout=600,
         ok_msg=ok_first(r"^\[elide\]"),
         bad_msg="tests/reclaim-elide/gate.py（计数被误省 / 新红 / 基线过期 / 接线失效）",
-        bad_dump=dump_tail(12)))
+        bad_dump=dump_fail(12)))
 
     # ---- arena ----
     items.append(cmd(
@@ -1245,7 +1273,7 @@ def build_items() -> list:
         "回收运行期语义网：70 条断言 + ASan/UBSan（tests/reclaim/run.sh）",
         ["./tests/reclaim/run.sh"], timeout=600,
         ok_msg=ok_first(r"ASan/UBSan 运行干净"),
-        bad_msg="tests/reclaim/run.sh（回收语义/内存安全回归）", bad_dump=dump_tail(12)))
+        bad_msg="tests/reclaim/run.sh（回收语义/内存安全回归）", bad_dump=dump_fail(12)))
 
     # ---- arena 层号 ----
     items.append(cmd(
@@ -1259,28 +1287,28 @@ def build_items() -> list:
         "qname", "tests", "全限定名：全名是权利 · `as` 别名是方便",
         ["./tests/qname/run.sh"], timeout=600,
         ok_msg=ok_count_ok(" 项（6 正例 + 1 反例 + 1 结构判据）"),
-        bad_msg="tests/qname/run.sh", bad_dump=dump_tail(8)))
+        bad_msg="tests/qname/run.sh", bad_dump=dump_fail(8)))
 
     # ---- std::fs 命名规范 ----
     items.append(cmd(
         "fs-shape", "tests", "std::fs 命名规范：读型/写型分开 ⇒ 误用编不过",
         ["./tests/fs-shape/run.sh"], timeout=600,
         ok_msg=ok_count_ok(" 项（1 正例 + 2 反例 + 常量不外露 + 规范入档）"),
-        bad_msg="tests/fs-shape/run.sh", bad_dump=dump_tail(8)))
+        bad_msg="tests/fs-shape/run.sh", bad_dump=dump_fail(8)))
 
     # ---- 文件归属 ----
     items.append(cmd(
         "fs", "tests", "文件归属：程序拥有 ⇒ 忘关报警告 · 双关安全 · ASan",
         ["./tests/fs/run.sh"], timeout=600,
         ok_msg=ok_count_ok(" 项（fd 恒定 + canary + 泄漏警告 + readAll + 双关 + closed + ASan）"),
-        bad_msg="tests/fs/run.sh", bad_dump=dump_tail(8)))
+        bad_msg="tests/fs/run.sh", bad_dump=dump_fail(8)))
 
     # ---- 命令行 ----
     items.append(cmd(
         "argv", "tests", "命令行（IO.md §7）：`main(args)` ⇒ args.len 含程序名 · 形状写错编译期挡住",
         ["./tests/argv/run.sh"], timeout=600,
         ok_msg=ok_count_ok(" 项（正例 + 边界 + 无参哨兵 + 3 反例）"),
-        bad_msg="tests/argv/run.sh", bad_dump=dump_tail(8)))
+        bad_msg="tests/argv/run.sh", bad_dump=dump_fail(8)))
 
     # ---- 池 ----
     items.append(cmd(
@@ -1288,13 +1316,13 @@ def build_items() -> list:
         "池（期 0 库级 slot map + 期 1 运行期池注册表：handle · dense · churn 不涨 · 块退出带走子树 —— 见 POOLS.md）",
         ["./tests/pool/run.sh"], timeout=600,
         ok_msg=ok_count_ok(" 项（handle/dense/世代 · churn 平 · canary 会响 · ASan）"),
-        bad_msg="tests/pool/run.sh", bad_dump=dump_tail(8)))
+        bad_msg="tests/pool/run.sh", bad_dump=dump_fail(8)))
 
     # ---- 有序 map ----
     items.append(cmd(
         "map", "tests", "有序 map<K, V>（POOLS.md §11：B 树；第一步是单节点有序表）",
         ["./tests/map/run.sh"], timeout=600,
-        ok_msg=tail1, bad_msg="tests/map/run.sh", bad_dump=dump_tail(8)))
+        ok_msg=tail1, bad_msg="tests/map/run.sh", bad_dump=dump_fail(8)))
 
     # ---- 实例化类型上的 impl 与 dyn（4 条各自计数）----
     for nm, argv, to in (("instimpl", ["./tests/instimpl/run.sh"], 600),
@@ -1305,7 +1333,7 @@ def build_items() -> list:
             nm, "tests",
             "实例化类型上的 impl 与 dyn（slice<u8> 挂方法 · 按实例隔离 · dyn 派发 · L 债金丝雀）",
             argv, timeout=to, ok_msg=tail1,
-            bad_msg=f"{argv[0].lstrip('./')}", bad_dump=dump_tail(8)))
+            bad_msg=f"{argv[0].lstrip('./')}", bad_dump=dump_fail(8)))
 
     # ---- 期 0 · 哈希表 ----
     items.append(cmd(
@@ -1313,7 +1341,7 @@ def build_items() -> list:
         "期 0 · 哈希表（key→value 随机的正解：开放寻址 + 墓碑 · 见 POOLS.md §10.2）",
         ["./tests/hashmap/run.sh"], timeout=600,
         ok_msg=ok_count_ok(" 项（新键/覆盖/碰撞/墓碑 churn 平/canary/ASan）"),
-        bad_msg="tests/hashmap/run.sh", bad_dump=dump_tail(8)))
+        bad_msg="tests/hashmap/run.sh", bad_dump=dump_fail(8)))
 
     # ---- 展示代码 ----
     items.append(cmd(
@@ -1321,7 +1349,7 @@ def build_items() -> list:
         "展示代码（examples/showcase-*.extc：文档里的六段，每次编译并运行）",
         ["bash", "tests/showcase/run.sh"], timeout=300,
         ok_msg=ok_count_ok(" 项（Arena 返回值 · home 机制 · 池身份 · 视图 · impl · extern!）"),
-        bad_msg="tests/showcase/run.sh", bad_dump=dump_tail(8)))
+        bad_msg="tests/showcase/run.sh", bad_dump=dump_fail(8)))
 
     # ---- STL ----
     items.append(cmd(
@@ -1329,7 +1357,7 @@ def build_items() -> list:
         "STL 库（一个库装所有动态容器；容器建在池上 —— 见 POOLS.md 期 3）",
         ["./tests/stl/run.sh"], timeout=600,
         ok_msg=ok_count_ok(" 项（vector：翻倍/dense 连续/shrink/clear · ASan）"),
-        bad_msg="tests/stl/run.sh", bad_dump=dump_tail(8)))
+        bad_msg="tests/stl/run.sh", bad_dump=dump_fail(8)))
 
     # ---- 线性关联容器 ----
     items.append(cmd(
@@ -1337,7 +1365,7 @@ def build_items() -> list:
         "线性关联容器（std::linmap / std::linset：只用 ==，不依赖 #57 的 hash）",
         ["bash", "tests/linmap/run.sh"], timeout=600,
         ok_msg=ok_count_ok(" 项（覆盖/缺失/删除/扩容 · 结构体键 · 集合）"),
-        bad_msg="tests/linmap/run.sh", bad_dump=dump_tail(6)))
+        bad_msg="tests/linmap/run.sh", bad_dump=dump_fail(6)))
 
     # ---- 注解（可执行才跑；不可执行时原脚本静默跳过 —— 这里显式报「跳过」且不计数）----
     def fn_annot(ctx: Runner, it: Item) -> Outcome:
@@ -1359,7 +1387,7 @@ def build_items() -> list:
         "运算符重载（方法名就是运算符：比较六个 + 算术五个 + 流 << >> · 按右操作数类型重名 · 泛型体里实例化时检查）",
         ["bash", "tests/ops/run.sh"], timeout=600,
         ok_msg=ok_count_ok(" 项（具体类型 · 有牙 · 泛型体 · 流运算符 · 重名分派 · mangle · 9 反例 · 两条不许漏到 gcc）"),
-        bad_msg="tests/ops/run.sh", bad_dump=dump_tail(12)))
+        bad_msg="tests/ops/run.sh", bad_dump=dump_fail(12)))
 
     # ---- @noCopy ----
     items.append(cmd(
@@ -1367,7 +1395,7 @@ def build_items() -> list:
         "@noCopy（状态有身份的类型不许按值拷：正例 4 件事 · 四个复制点全挡）",
         ["bash", "tests/nocopy/run.sh"], timeout=600,
         ok_msg=ok_count_ok(" 项（新值/ref 传参/读字段/调方法照旧 · 绑定·实参·字段·赋值四个复制点全挡 ✓）"),
-        bad_msg="tests/nocopy/run.sh", bad_dump=dump_tail(8)))
+        bad_msg="tests/nocopy/run.sh", bad_dump=dump_fail(8)))
 
     # ---- 构造函数 ----
     items.append(cmd(
@@ -1375,7 +1403,7 @@ def build_items() -> list:
         "构造函数（`T(args)` 就是 `T::new(args)`：糖=显式 · 可失败 · 泛型 · 3 反例）",
         ["bash", "tests/ctor/run.sh"], timeout=600,
         ok_msg=ok_count_ok(" 项（正例 3 · 反例 3 —— 无 new 教你怎么写 · 返回类型必须对 · 实参个数）"),
-        bad_msg="tests/ctor/run.sh", bad_dump=dump_tail(8)))
+        bad_msg="tests/ctor/run.sh", bad_dump=dump_fail(8)))
 
     # ---- 泛型组合矩阵 ----
     items.append(cmd(
@@ -1383,7 +1411,7 @@ def build_items() -> list:
         "泛型组合矩阵（T 的位置 × 特性 · 13 格 · 缺口清单空 —— 见 GENERICS.md）",
         ["bash", "tests/genmatrix/run.sh"], timeout=600,
         ok_msg=ok_count_ok(" 项（13 格全过 ✓ · #60/#61/#62/#63/#64/#65 六条当天撞到当天修完、当天搬进矩阵或正例 ⇒ 缺口清单空，机制留着）"),
-        bad_msg="tests/genmatrix/run.sh", bad_dump=dump_tail(8)))
+        bad_msg="tests/genmatrix/run.sh", bad_dump=dump_fail(8)))
 
     # ---- 头文件 include guard ----
     items.append(cmd(
@@ -1419,19 +1447,19 @@ def build_items() -> list:
         "闸门①：全语料 --check-c（挡「extc 报成功、生成物编不过」；gcc + clang -c -O2）",
         sh('python3 tools/gate_checkc.py --scope full'), timeout=1800, bench=True,
         ok_msg=ok_first(r"^\[checkc\]"),
-        bad_msg="tools/gate_checkc.py（全语料 --check-c 变红）", bad_dump=dump_tail(14)))
+        bad_msg="tools/gate_checkc.py（全语料 --check-c 变红）", bad_dump=dump_fail(14)))
     items.append(cmd(
         "gate-asan-corpus", "bench",
         "闸门②：正例生成物 ASan+UBSan（-O2 会把 UB 优化掉，这里必须真跑）",
         sh('python3 tools/gate_asan_corpus.py --scope full'), timeout=1800, bench=True,
         ok_msg=ok_first(r"^\[asan\]"),
-        bad_msg="tools/gate_asan_corpus.py（正例生成物出现 sanitizer 报告）", bad_dump=dump_tail(14)))
+        bad_msg="tools/gate_asan_corpus.py（正例生成物出现 sanitizer 报告）", bad_dump=dump_fail(14)))
     items.append(cmd(
         "golden", "bench",
         "生成物快照（观察项：与冻结哈希的差异不作为判据；判据只有「必须是合法 C」）",
         ["./tools/golden.sh"], timeout=900, bench=True,
         ok_msg=lambda out: first_matching(out, r"^  ok").strip(),
-        bad_msg="tools/golden.sh（生成物里有非法 C）", bad_dump=dump_tail(8),
+        bad_msg="tools/golden.sh（生成物里有非法 C）", bad_dump=dump_fail(8),
         extra_ok=lambda out: [ln for ln in out.split("\n") if ln.startswith("  · ")]))
 
     # ---- 闸门·回收缺口矩阵的棘轮（bench 档：跑一遍矩阵约 1 分钟）----
@@ -1443,7 +1471,7 @@ def build_items() -> list:
         sh('python3 tests/reclaim-gaps/gate.py'), timeout=1800, bench=True,
         ok_msg=ok_first(r"^\[reclaim-gaps\] 收不掉"),
         bad_msg="tests/reclaim-gaps/gate.py（新增收不掉的形状 / 新增 sanitizer 失败，或基线过期）",
-        bad_dump=dump_tail(12)))
+        bad_dump=dump_fail(12)))
 
     def display(name: str, desc: str, argv: list, post) -> Item:
         def fn(ctx: Runner, it: Item) -> Outcome:
@@ -1466,20 +1494,20 @@ def build_items() -> list:
         ["./bench/dyn/stress/run.sh"], timeout=None, bench=True,
         env={"N": "5000000", "NIMM": "200", "RUNS": "1"},
         ok_msg=lambda out: f"dyn 极端压测（{first_matching(out, r'^通过')}）",
-        bad_msg="bench/dyn/stress", bad_dump=dump_tail(8)))
+        bad_msg="bench/dyn/stress", bad_dump=dump_fail(8)))
     items.append(cmd(
         "bench-dyn-alloc", "bench",
         "基准·dyn 构造成本（拷贝 vs 分配，N=50000）",
         ["./bench/dyn/alloc/run.sh"], timeout=None, bench=True, env={"N": "50000"},
         ok_msg=ok_const("dyn 构造成本（拷贝 vs 分配）"),
-        bad_msg="bench/dyn/alloc", bad_dump=dump_tail(6)))
+        bad_msg="bench/dyn/alloc", bad_dump=dump_fail(6)))
     items.append(cmd(
         "bench-dyn-real", "bench",
         "基准·dyn 现实负载（P=512 MIX=8 RUNS=1）",
         ["./bench/dyn/real/run.sh"], timeout=None, bench=True,
         env={"P": "512", "MIX": "8", "RUNS": "1"},
         ok_msg=lambda out: f"dyn 现实负载（{first_matching(out, r'^通过')}）",
-        bad_msg="bench/dyn/real", bad_dump=dump_tail(8)))
+        bad_msg="bench/dyn/real", bad_dump=dump_fail(8)))
 
     def fn_bench_stl(ctx: Runner, it: Item) -> Outcome:
         log = "/tmp/extc-bench-stl.log"
@@ -1500,7 +1528,7 @@ def build_items() -> list:
         ["./bench/app/run.sh"], timeout=None, bench=True,
         env={"SCALE": "1", "RUNS": "1", "WRITE_RESULTS": "0"},
         ok_msg=ok_const("综合场景横评（三语言校验和一致 ✓ · 完整表见 bench/app/RESULTS.md）"),
-        bad_msg="综合场景横评（构建失败 / 语言之间对拍不一致 ✗）", bad_dump=dump_tail(20)))
+        bad_msg="综合场景横评（构建失败 / 语言之间对拍不一致 ✗）", bad_dump=dump_fail(20)))
 
     items.append(display(
         "bench-stress", "基准：随机负载压力（同种子对拍 C；观察项）",

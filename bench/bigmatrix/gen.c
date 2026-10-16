@@ -10,11 +10,15 @@
  *
  * Usage:  ./gen [outdir]        (default: in/)
  *         ./gen small [outdir]  (small sizes, for the brute-force cross-check)
+ *
+ * outdir 不存在时自己建（递归）；两个默认目录都是 .gitignore 里的生成物，
+ * 所以"新鲜克隆直接跑"必须能自己长出来。
  */
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 static uint64_t st, inc;
 
@@ -41,8 +45,27 @@ static uint64_t bounded(uint64_t b) {  /* uniform in [0,b) */
     return x % b;
 }
 
+/* 输出目录是生成物（`bench/bigmatrix/.gitignore`：`in/`、`in-small/`）⇒ 新鲜检出里不存在。
+ * 原来只 fopen，写不进去就 exit(1)：本地能跑纯属"碰巧先跑过 run.sh 或手敲过 mkdir"，
+ * 新鲜克隆 + CI 上就变成 `cannot open output file build/gen` / `gen: cannot write in-small/…`。
+ * 生成器自己保证输出目录在（mkdir -p 语义，已存在时忽略 EEXIST）。 */
+static void mkdirs(const char *path) {
+    char tmp[1024];
+    size_t n = strlen(path);
+    if (n == 0 || n >= sizeof tmp) return;
+    memcpy(tmp, path, n + 1);
+    for (char *p = tmp + 1; *p; p++) {
+        if (*p != '/') continue;
+        *p = '\0';
+        (void)mkdir(tmp, 0777);
+        *p = '/';
+    }
+    (void)mkdir(tmp, 0777);
+}
+
 static FILE *open_out(const char *dir, const char *name) {
     char path[1024];
+    mkdirs(dir);
     snprintf(path, sizeof path, "%s/%s.txt", dir, name);
     FILE *f = fopen(path, "w");
     if (!f) { fprintf(stderr, "gen: cannot write %s\n", path); exit(1); }

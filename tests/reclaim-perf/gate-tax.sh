@@ -47,8 +47,8 @@ if ! command -v valgrind >/dev/null 2>&1; then
 fi
 
 [ -f "$BIG/in-small/bt.txt" ] || {
-    ( cd "$BIG" && cc -O2 -o build/gen gen.c && ./build/gen small in-small ) >/dev/null 2>&1 \
-        || { bad "小输入不在且生成失败（bench/bigmatrix/gen.c）"; exit 1; }
+    ( cd "$BIG" && cc -O2 -o "$TMP/gen" gen.c && "$TMP/gen" small "$BIG/in-small" ) >"$TMP/gen.log" 2>&1 \
+        || { bad "小输入不在且生成失败（bench/bigmatrix/gen.c）"; tail -3 "$TMP/gen.log" | sed 's/^/    /'; exit 1; }
 }
 
 ir_of() { # <标签> <源> <是否开档> <输入或 -> <程序参数…> → 打印 Ir

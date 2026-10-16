@@ -11,7 +11,10 @@
 # 所以这里的权威清单只有一份：`tools/check.py` 写的耗时表（`$SEC_TIMES`，默认
 # `/tmp/extc-check-times.tsv`，列 `name group seconds status time`）里 status == FAIL 的项。
 # 日志只负责给每个失败项摘"像原因的那几行"：该项表头 `== <名字>（<组>）==` 到下个项表头之间，
-# 取那里最后一条 FAIL 行（= check.py 对该项的判决行）与它前面的现场行。
+# 主因取那里**最后一条判决行**（check.py 的 `  FAIL <msg>（rc=…，N 行输出）` 或闸门自己的
+# `  FAIL …`；带 rc 是因为"子脚本自己的统计说全过、rc 却不是 0"这种现场只有 rc 说得清），
+# 现场取它**紧后面**的行（闸门 `bad()` 之后跟的才是 dump 出来的编译/运行错误），不够再往前补。
+# 配额先保每条失败项的主因行，剩下的才均分给现场行 —— 否则失败项一多，后面的项会被 10 条上限切掉。
 #
 # 用法：
 #   python3 tools/ci_annotate.py --log /tmp/quick.log --times /tmp/extc-check-times.tsv
@@ -29,6 +32,28 @@ HEADER = re.compile(r"^== (?P<name>.+)（(?P<group>[^（）]*)）==\s*$")
 SUMMARY = re.compile(r"^通过 .*失败")
 # 判据脚本自己判"这项不行"的行：闸门的 FAIL、棘轮的 新增/该删/转绿、崩了的栈。
 REASON = re.compile(r"FAIL|Traceback|Error|error:|新增|该删|转绿|失败|超|不含|未|不成立|跳过")
+# 判决行（check.py 的 `  FAIL <msg>（rc=…，N 行输出）`、闸门脚本的 `  FAIL …`）；
+# dump 行会被 check.py 缩进两格，`\s*` 一并认。
+BADGE = re.compile(r"^\s*FAIL\b")
+
+
+def pick_reason(body: list, ctx_max: int) -> tuple:
+    """(主因行, 现场行)：主因优先取**最后一条判决行**（它带 rc/退出原因 —— 子脚本
+    "自己的统计说全过、rc 却不是 0"这类现场只有 rc 说得清），现场取它**紧后面**的行
+    （闸门脚本的 `bad()` 后面跟的才是 dump 出来的编译/运行错误），不够再往前找。"""
+    idx = [i for i, x in enumerate(body) if BADGE.match(x)]
+    if idx:
+        i = idx[-1]
+        after = [x for x in body[i + 1:] if x.strip() and "⏱" not in x]
+        ctx = after[:ctx_max] if after else []
+        if len(ctx) < ctx_max:
+            before = [x for x in body[:i] if x.strip()][-(ctx_max - len(ctx)):]
+            ctx = before + ctx
+        return body[i], ctx
+    reasons = [x for x in body if REASON.search(x)]
+    if reasons:
+        return reasons[-1], reasons[-(ctx_max + 1):-1] if ctx_max else []
+    return (body[-1] if body else "（空）"), (body[-(ctx_max + 1):-1] if (ctx_max and body) else [])
 
 
 def read_lines(path: str) -> list:
@@ -97,19 +122,22 @@ def main(argv=None) -> int:
 
     if fails:
         heads = item_headers(log, {n for n, _g, _st in rows})
+        # 配额：每条失败项先占 1 行主因，剩下的均分给"现场"行（塞不下就先砍现场，别把项本身挤掉）。
+        spare = max(0, max(1, args.max) - len(out) - len(fails))
+        ctx_max = min(3, spare // len(fails))
         for name, group in fails:
             idx = next((k for k, (_i, n, g) in enumerate(heads) if n == name and g == group), None)
             if idx is None:
+                out.append("项 %s（%s）：日志里没有这一项的表头" % (name, group))
                 continue
             body = [x for x in block_of(log, heads, idx) if x.strip()]
-            reasons = [x for x in body if REASON.search(x)]
-            pick = reasons[-3:] if reasons else body[-3:]
-            if pick:
-                out.append("项 %s（%s）：%s" % (name, group, clean(pick[-1], 200)))
-                for extra in pick[:-1]:
-                    out.append("  ↳ " + clean(extra, 200))
-            else:
+            if not body:
                 out.append("项 %s（%s）：日志里没有输出" % (name, group))
+                continue
+            main, ctx = pick_reason(body, ctx_max)
+            out.append("项 %s（%s）：%s" % (name, group, clean(main, 200)))
+            for extra in ctx:
+                out.append("  ↳ " + clean(extra, 200))
     if not fails and not summary:
         out.append("耗时表里没有失败项，日志里也没有汇总行：%s / %s" % (args.times, args.log))
 

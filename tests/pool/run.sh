@@ -222,12 +222,19 @@ rt_run rt_rett     tests/pool/rt_return_promote.extc "live=1 len=3 v0=5 v2=7"
 echo "== 染色（§7.2/§7.3）：同一个下标每一轮的颜色都不同 ⇒ 翻一位作废整棵树 =="
 rt_run rt_color    tests/pool/rt_color.extc    "c1=1 c2=2 c3=3 diff=1,1 birth_eq_row=1 live=0"
 if command -v valgrind >/dev/null 2>&1; then
-    if "$CC" -std=c11 -O0 -g -fwrapv build/rt_color.c -o build/rt_color_memcheck \
-       && valgrind --quiet --error-exitcode=99 ./build/rt_color_memcheck >/dev/null; then
+    # 这一支自己生成 C 再编：上面 rt_run 的 `--run` 顺手落下的 build/rt_color.c 是**它的副作用产物**，
+    # 不是这条判据的前置 —— 新鲜检出（build/ 整个不存在）或并行套件里谁先把它带走都撑不住这个假设，
+    # 2026-10-17 的 CI 就是因此在 cc1 报 "build/rt_color.c: No such file or directory"。
+    CTMP=$(mktemp -d)
+    if "$EXTC" -w tests/pool/rt_color.extc -o "$CTMP/rt_color.c" >"$CTMP/gen.log" 2>&1 \
+       && "$CC" -std=c11 -O0 -g -fwrapv "$CTMP/rt_color.c" -o "$CTMP/rt_color_memcheck" \
+       && valgrind --quiet --error-exitcode=99 "$CTMP/rt_color_memcheck" >/dev/null; then
         echo "  ok   rt_color_memcheck  ->  新 zone 的颜色先初始化再读取"
     else
         echo "  FAIL rt_color_memcheck  ->  未初始化读取或 C 编译失败"; fail=1
+        tail -3 "$CTMP/gen.log" 2>/dev/null | sed 's/^/        /'
     fi
+    rm -rf "$CTMP"
 else
     echo "  skip rt_color_memcheck  ->  valgrind 不可用"
 fi
