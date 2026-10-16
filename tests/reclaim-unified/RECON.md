@@ -461,3 +461,6 @@ tests/reclaim-unified/out/compare.sh              # 打印 §C.3 的表（base v
 tests/reclaim-unified/out/proto-diff/codegen.diff     # 原型对 src/back/codegen.c 的改动
 tests/reclaim-unified/out/proto-diff/reclaim.diff     # 原型对 src/back/reclaim.c 的改动
 ```
+
+> 复跑会**重写** `out/proto-build.log` 与 `out/C-prototype-raw.txt`：这两个是裸转储、**不入库**
+> （`check.sh` 的 `check-tree` 盯着这条）。上面列的 `.sh` 与 `proto-diff/*.diff` 是复现脚本与原型记录，在库里。

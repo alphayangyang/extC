@@ -1,7 +1,0 @@
-baseline: /tmp/baseline-corrupt.tsv
-  build/extc md5=485f47875539d73eb48e648e01d9a68c HEAD=a614c06 extc=/tmp/extc-idle-base/build/extc stdlib=/tmp/extc-idle-base/stdlib tree=/tmp/extc-idle-base
-current : build/extc md5=485f47875539d73eb48e648e01d9a68c HEAD=a614c06 extc=/tmp/extc-idle-base/build/extc stdlib=/tmp/extc-idle-base/stdlib tree=/tmp/extc-idle-base
-DIFF tests/reclaim-perf/shapes/refgraph/rg_walk_chain.extc:
-  md5_default: '00000000000000000000000000000000' -> '309f1903681ae20eb7b8975664bfff0b'
-rows: baseline 1234 · current 1234 · OK 852 · FAIL 382 · TIMEOUT 0 · same=YES 618 · same=NO 234
-FAIL: 1 行有差异（removed 0 · added 0 · changed 1）

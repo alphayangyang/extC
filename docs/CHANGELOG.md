@@ -1,3 +1,12 @@
+## 2026-10-17 · 卫生：跑出来的裸转储移出版本库（106 个文件 / 2.8 MB）+ 新增 `check-tree` 判据
+
+**只改 `.gitignore`、`tools/`、`tests/**`、`bench/gc/v2/pause/README.md`。** 撤出 106 个「每次复跑都会被重写」的裸转储，写进 `.gitignore`，再加一条元判据 `check-tree` 同时钉住这两件事 —— 不然下一次跑 runner 就把它们加回来。
+
+- **撤出的 7 类**（在 `git ls-files` 上按模式点数）：`tests/reclaim-gaps/out/*.on.c` 38 · `tests/reclaim-idle/out/*.txt` 17 · `bench/gc/v2/pause/*/*.events` 16 · `bench/gc/v2/pause/*/*.hist` 24 · `tests/escape-fuzz/recon/out/*.txt` 7 · `tests/*/out/*.log` 3 · `tests/reclaim-unified/out/C-prototype-raw.txt` 1。
+- **为什么撤这些不撤那些**：留的是**记录**（`tests/reclaim-gaps/out/{matrix,scale,raw,audit-static}.*`、`tests/reclaim-perf/out/*.tsv`、`pause/*/*.meta` 与 `PAUSE.md` / `pause_v2.tsv`、`tools/idle-fingerprint-baseline.tsv`、`tools/golden.sha256`），撤的是**转储**：同一条命令再跑一遍内容就变，闸门一个都不读它们。`tests/reclaim-unified/out/` 里的 `proto-run.sh` / `compare.sh` / `proto-diff/*.diff` 是复现脚本与原型记录，保留。
+- **判据两条口径**（`tools/check_tree.py`）：① 这 7 类模式不得出现在 `git ls-files`；② 它们必须被 `git check-ignore --no-index` 命中。② 不可省：只撤不忽略，下一次 runner 一跑工作区就重新变脏 —— 两条一起才叫「撤干净了」。文档里把 `out/` 生成物当证据链接的几处也改成索引（`tests/reclaim-gaps/README.md`、`tests/reclaim-idle/README.md`、`tests/escape-fuzz/RECON.md`、`tests/reclaim-unified/RECON.md`、`bench/gc/v2/pause/README.md`）。
+- **为什么现在做**：清完未推送历史里的交叉编译二进制后 `.git` 从 307 MB 降到 20 MB、待推包 8.2 MB —— 这时候撤转储才不会立刻被下一次复跑又加回去。
+- **验收**：`./check.sh docs -j4` 通过 12 / 失败 0 · `./check.sh nobench -j4` 通过 109 / 失败 0（比上一版多的是 `check-tree`）。
 ## 2026-10-16 · 文档：新增 `docs/usage/reclamation.md` —— 给人看的回收说明（从 arena 讲起）
 
 **只改 `docs/**`。** 新增一页面向第一次接触 extC 的读者的说明，并登记进 `docs/usage/README.md` 索引：作用域即寿命 → 逃逸提权 → 长命槽被反复覆盖 → 回收器的四层（含「计数默认关闭」的口径）→ 为什么几乎没有停顿 → 边界与代价 → 数字怎么读（三把尺 + 占比配峰值 RSS）→ 现有成绩单。

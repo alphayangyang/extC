@@ -29,6 +29,9 @@ bench/gc/v2/pause/
     <shape>.meta     必需：KEY=VALUE，一行一个
 ```
 
+> `.events` / `.hist` 是 runner 写出的**原始流、不入库**（跑一遍即得）；入库的是 `.meta` 与聚合产物
+> （`PAUSE.md` / `pause_v2.tsv` / `pause.png`）。见 `check.sh` 的 `check-tree`。
+
 ### 1.1 meta 必需键
 
 | 键 | 含义 |

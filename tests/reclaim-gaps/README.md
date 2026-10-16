@@ -18,7 +18,8 @@ python3 tests/reclaim-gaps/audit-static.py --gate     # 红计数非 0 ⇒ exit 
 
 原始输出：`out/matrix.tsv`（41 行明细）、`out/scale.tsv`（20 行 N vs 4N 判定）、
 `out/raw.txt`（逐形状 stdout/rc/ASan）、`out/audit-static.tsv` + `out/audit-static-summary.txt`、
-每个形状开档生成物 `out/<形状>.on.c`。
+每个形状的开档生成物 `out/<形状>.on.c`（跑 `run-gaps.sh` 现场写、**不入库** —— 要看就自己跑一遍；
+`check.sh` 的 `check-tree` 盯着这条）。
 
 ---
 
@@ -450,8 +451,11 @@ selftest: 干净生成物候选 = 0，注入一条裸写入后候选 = 1 ⇒ ok�
 | `shapes/*.extc` | 20 个形状（+1 个编译期反例），每个 ≤ 60 行 |
 | `out/matrix.tsv` `out/scale.tsv` `out/raw.txt` | 原始数字 |
 | `out/audit-static.tsv` `out/audit-static-summary.txt` | 静态审计原始输出 |
-| `out/<形状>.on.c` | 开档生成物（判据的文本证据）|
+| `out/<形状>.on.c` | 开档生成物：`run-gaps.sh` 现场写，**不入库**（要看就自己跑一遍）|
 
 > `gate.py` 跑矩阵时用 `OUTDIR=<临时目录>`，**不覆盖**上面那些入库的 `out/*`（想刷原始数字就直接跑
 > `run-gaps.sh`）。手动复用现成结果：`gate.py --scale out/scale.tsv`（同目录的 `raw.txt` 会给
 > sanitizer 那一段用）。
+>
+> 入库的是**记录**（`matrix.tsv` / `scale.tsv` / `raw.txt` / `audit-static*.tsv`），不入库的是**转储**
+> （每个形状的 `.on.c`）：后者跑一遍就被重写，留着只会让每次复跑都欠一笔 `git checkout --`。

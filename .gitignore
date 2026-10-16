@@ -62,3 +62,13 @@ bench/io/bin/
 prototype-reclaim/crosslang/bench_*
 prototype-reclaim/crosslang/stress_*
 prototype-reclaim/crosslang/writes_*
+
+# 跑出来的裸转储：每次复跑都被重写，不入库（判据 `check-tree` / tools/check_tree.py）
+# 文件仍留在工作区里，只是不再跟踪 —— 要看就自己跑一遍对应的 runner
+tests/reclaim-gaps/out/*.on.c
+tests/*/out/*.log
+tests/reclaim-idle/out/*.txt
+tests/escape-fuzz/recon/out/*.txt
+tests/reclaim-unified/out/C-prototype-raw.txt
+bench/gc/v2/pause/*/*.events
+bench/gc/v2/pause/*/*.hist

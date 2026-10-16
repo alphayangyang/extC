@@ -506,6 +506,18 @@ def build_items() -> list:
         bad_msg="tools/check_gate_wiring.py（有自称门禁的脚本没进电池）",
         bad_dump=dump_tail(8)))
 
+    # ---- 元判据·树卫生：runner 的裸转储不许入库 ----
+    # 起因：`tests/reclaim-gaps/out/*.on.c` 这类转储入库 2.5 MB，复跑一次就要 `git checkout --`
+    # 还债。光撤文件不够：`.gitignore` 不写，下一次 `run-gaps.sh` 就把它们加回来 —— 所以判据
+    # 同时钉住"没入库"与"被忽略"。
+    items.append(cmd(
+        "check-tree", "gate",
+        "元判据·树卫生：跑出来的裸转储不许入库，且 `.gitignore` 必须覆盖它们",
+        ["python3", "tools/check_tree.py", "--gate"], timeout=60, needs_build=False,
+        ok_msg=ok_first(r"^ok "),
+        bad_msg="tools/check_tree.py（有转储入库，或 `.gitignore` 漏了模式）",
+        bad_dump=dump_tail(10)))
+
     # ---- 元判据·验牙注入不许没写进文档 ----
     # 两张表（义务表 / 跳过表）的"判据"列引用的是 `tools/inject.py` 里的注入名。表的价值取决于
     # 引用完整：新写一条注入却不进表，读表的人就会以为那条路径没有牙。名字从工具的 `--list` 读，

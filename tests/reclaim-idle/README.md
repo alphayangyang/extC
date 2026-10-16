@@ -96,7 +96,7 @@ python3 tests/reclaim-idle/fingerprint.py check --baseline /tmp/b.tsv \
 
 用与基线相同的编译器跑，差异才只剩被改掉的那一格。
 
-原始输出在 [`out/selfcheck-red.txt`](out/selfcheck-red.txt)：改掉
+原始输出在 `out/selfcheck-red.txt`（**不入库**，跑一遍上面的自检即得）：改掉
 `tests/reclaim-perf/shapes/refgraph/rg_walk_chain.extc` 的 `md5_default` 后，`check` 报出
 **恰好 1 行 changed**、其余 1233 行不动，退出码 1。
 
@@ -104,10 +104,13 @@ python3 tests/reclaim-idle/fingerprint.py check --baseline /tmp/b.tsv \
 
 | 文件 | 是什么 |
 |---|---|
-| [`out/freeze-pre-refactor.log`](out/freeze-pre-refactor.log) | 冻结基线的进度与总数 |
-| [`out/check-A-same-tree.txt`](out/check-A-same-tree.txt) | 同树同编译器重跑：逐行相同（运行间确定性）|
-| [`out/check-B-main-tree-same-compiler.txt`](out/check-B-main-tree-same-compiler.txt) | 换了语料树、同一个编译器：逐行相同（指纹不绑定 checkout 位置）|
-| [`out/selfcheck-red.txt`](out/selfcheck-red.txt) | 自检能红的原始输出 |
+| `out/freeze-pre-refactor.log` | 冻结基线的进度与总数 |
+| `out/check-A-same-tree.txt` | 同树同编译器重跑：逐行相同（运行间确定性）|
+| `out/check-B-main-tree-same-compiler.txt` | 换了语料树、同一个编译器：逐行相同（指纹不绑定 checkout 位置）|
+| `out/selfcheck-red.txt` | 自检能红的原始输出 |
+
+> `out/` 下都是跑出来的原始输出，**不入库**（复跑就重写；`check.sh` 的 `check-tree` 盯着这条）；
+> 上表是文件名索引，不是仓库里的链接。
 
 ## 未覆盖 / 残留风险
 

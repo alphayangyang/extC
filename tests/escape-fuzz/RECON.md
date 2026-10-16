@@ -9,17 +9,17 @@
 bash tests/escape-fuzz/recon/run-probes.sh      # 约 5–15 秒，exit 0
 ```
 
-它把每条实验的**原始输出**写到 `recon/out/`：
+它把每条实验的**原始输出**写到 `recon/out/`（这些是**转储、不入库**：跑一遍 `run-probes.sh` 即得，下表是索引）：
 
 | 文件 | 内容 |
 |---|---|
-| [`q1-callres.txt`](recon/out/q1-callres.txt) | Q1：调用结果深度、调用点传了哪只 arena、`promoteInto2` 的 gate |
-| [`q2-ordering.txt`](recon/out/q2-ordering.txt) | Q2：before/after、dead-assign 对照、DFA 答案、`[defer]` |
-| [`q3-projections.txt`](recon/out/q3-projections.txt) | Q3：投影真值表、minAt/home、`[fs]`、5 例 UAF 的生成物 |
-| [`q4-dualpointee-hole.txt`](recon/out/q4-dualpointee-hole.txt) | 反向发现：**新**的漏收形状 |
-| [`q5-excc-dbg-survey.txt`](recon/out/q5-excc-dbg-survey.txt) | `EXTC_DBG=1` 下 12 例 rc=134（既存兜底） |
-| [`q6-risk-surface.txt`](recon/out/q6-risk-surface.txt) | 闸门/基线/语料清单 |
-| [`q7-citations.txt`](recon/out/q7-citations.txt) | 本文件引用的每个函数/判据的 `grep -n` 行号 |
+| `q1-callres.txt` | Q1：调用结果深度、调用点传了哪只 arena、`promoteInto2` 的 gate |
+| `q2-ordering.txt` | Q2：before/after、dead-assign 对照、DFA 答案、`[defer]` |
+| `q3-projections.txt` | Q3：投影真值表、minAt/home、`[fs]`、5 例 UAF 的生成物 |
+| `q4-dualpointee-hole.txt` | 反向发现：**新**的漏收形状 |
+| `q5-excc-dbg-survey.txt` | `EXTC_DBG=1` 下 12 例 rc=134（既存兜底） |
+| `q6-risk-surface.txt` | 闸门/基线/语料清单 |
+| `q7-citations.txt` | 本文件引用的每个函数/判据的 `grep -n` 行号 |
 
 探针在 [`recon/probes/`](recon/probes/)（20 个 `.extc`）。每条结论标 **【实测】**（有命令与输出）、
 **【代码】**（有文件:行）、**【推断】**（由前两者推出、未直接观测）。没查清的直接写「未查清」。
