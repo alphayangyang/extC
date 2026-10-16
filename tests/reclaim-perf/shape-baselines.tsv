@@ -1,0 +1,16 @@
+# tests/reclaim-perf/shape-baselines.tsv —— 指令数判据（tests/reclaim-perf/gate-shapes.sh）的**按工具链**基线。
+#
+# 为什么按工具链：callgrind 的 Ir 只对“同一份 C + 同一条工具链”是确定的 —— 换 gcc 版本或 glibc，
+# 编译决定与库实现都会变（连 glibc 的 IFUNC 都会按 CPU 派发 memcpy），同一条绝对线在别的机器上
+# 会**假红**。实测同一份 extc 生成的 C（-O2，in-small）：本机 gcc 15.2.0 + glibc 2.43 是
+# bt 2 850 953 / rebuild 15 037 454；CI 的 gcc 13.3.0 + glibc 2.39 是 bt 3 018 399 / 16 891 222。
+# 同一台机器上逐次跑也还有几百 Ir 的抖动（约 0.01%，`summary:` 把 ld.so 与环境的开销也算进去）
+# —— 线的 5% 余量远超它，所以这里记的是「这台实测」，不是「这台每次都分毫不差」。
+#
+# 列（TAB 分隔）：键 · bt 实测 · bt 线 · rebuild 实测 · rebuild 线 · 记录日 · 备注
+#   键 = <cc -dumpfullversion>+glibc-<ldd --version 最后一列>；调试/自检可用 SHAPE_TOOLKEY 覆盖。
+#   线 = 该键上实测 × 1.05（棘轮只许压：往上必须在备注里写清为什么这台的实测变了）。
+# 键不在表里 ⇒ gate-shapes.sh 打出实测值并 `  --   跳过：…`（**没验**，不许当通过）。
+# 新工具链（换 runner 镜像 / 换本机）第一次跑：把打印出来的实测值抄成一行、×1.05 定线。
+15.2.0+glibc-2.43	2850953	2950000	15037454	15790000	2026-10-17	参考机（gcc 15.2.0 · glibc 2.43）；线沿用落地时那条（比 ×1.05 还紧一点）
+13.3.0+glibc-2.39	3018399	3170000	16891222	17740000	2026-10-17	GitHub CI ubuntu-latest（gcc 13.3.0 · glibc 2.39 · nproc=4）

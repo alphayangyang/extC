@@ -23,6 +23,7 @@
 set -u
 cd "$(dirname "$0")/../.."
 EXTC=./build/extc
+CC=${CC:-cc}
 fail=0
 
 echo "== 正例（两种风格混用：nextInt + nextLine）=="
@@ -309,19 +310,29 @@ else
 fi
 
 echo "== 不是逐字节读（老实现 50 万行 2.3s —— 这条抓"能跑但慢 190 倍" ✓）=="
-# 10 万行 × 3 个数 ≈ 1.7MB。逐字节读要 ~0.5s 以上；分块读是毫秒级 ✓
+# 10 万行 × 3 个数 ≈ 1.2MB。分块读（一次 64KB）**只花几毫秒**；逐字节读（120 万次 read 系统调用）
+# 实测 158~250ms（本机，把 `fillState` 的 `read` 改成一次 1 字节的对照跑）。判据取 50ms。
+# **编译时间不计入**：`--run` 里 `cc` 编这份生成的 C 要 ~0.3s，比被测的那段读还长 ——
+# 量进去就是量 cc 的调度抖动（2026-10-17 实测同一台机器上 215/346/476ms 漂 ⇒ 撞过一次假红）。
 BIG=$(mktemp)
 i=0
 while [ $i -lt 100000 ]; do printf '123 456 789\n'; i=$((i+1)); done > "$BIG"
-start=$(date +%s%N)
-out=$(printf '' | "$EXTC" --run tests/io/sum-big.extc < "$BIG" 2>&1)
-end=$(date +%s%N)
-ms=$(( (end - start) / 1000000 ))
-rm -f "$BIG"
+# 先编出来（extc → C → cc，与 `--run` 同一条工具链），只把**跑**计入：
+TMPC=$(mktemp -d)
+if "$EXTC" -o "$TMPC/sum-big.c" tests/io/sum-big.extc >/dev/null 2>&1 \
+   && $CC -O2 -fwrapv "$TMPC/sum-big.c" -o "$TMPC/sum-big" >/dev/null 2>&1; then
+    start=$(date +%s%N)
+    out=$("$TMPC/sum-big" < "$BIG" 2>&1)
+    end=$(date +%s%N)
+    ms=$(( (end - start) / 1000000 ))
+else
+    ms=-1; out="编不过"
+fi
+rm -rf "$TMPC"; rm -f "$BIG"
 # 期望和 = 100000 * (123+456+789) = 136800000
 if echo "$out" | grep -qF "sum = 136800000"; then
-    if [ "$ms" -lt 400 ]; then
-        echo "  ok   分块读  ->  10 万行 ${ms}ms（< 400ms ✓ 逐字节要 ~500ms 以上）"
+    if [ "$ms" -ge 0 ] && [ "$ms" -lt 50 ]; then
+        echo "  ok   分块读  ->  10 万行 ${ms}ms（< 50ms ✓ 逐字节读实测 158~250ms；只量跑、不量编）"
     else
         echo "  FAIL 分块读  ->  10 万行花了 ${ms}ms ⇒ 像是退回逐字节了 ✗"; fail=1
     fi

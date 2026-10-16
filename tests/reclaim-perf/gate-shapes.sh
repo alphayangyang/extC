@@ -10,12 +10,18 @@
 #
 #   EXTC_RECLAIM=1 extc → cc -std=c11 -O2 -fwrapv → valgrind --tool=callgrind
 #
-# 判据两条：① 每个形状的总指令数 ≤ 它的线（= 落地后实测 × 1.05，callgrind 的 Ir 是确定的）；
+# 判据两条：① 每个形状的总指令数 ≤ 它的线（线按**工具链键**记在 shape-baselines.tsv 里）；
 # ② 开档输出与关档（`EXTC_RECLAIM=0`）**逐字相同** —— 性能判据不许靠改语义换。
+#
+# 为什么线要按工具链记：callgrind 的 Ir 只对“同一份 C + 同一条工具链”是确定的 —— 换 gcc/glibc，
+# 编译决定与库实现都会变（连 glibc 的 IFUNC 都会按 CPU 派发 memcpy）。同一条绝对线在别的机器上
+# 是**假红**：同一份 extc 生成的 C，本机（gcc 15.2.0+glibc 2.43）bt 2 850 953，CI（gcc 13.3.0+
+# glibc 2.39）bt 3 018 399。键不在表里 ⇒ 打出实测值并 `  --   跳过：…`（**明说没验**，不装绿）。
 #
 # 用法：tests/reclaim-perf/gate-shapes.sh
 #   EXTC=... / CC=...             指定编译器
 #   BT_LIMIT=... / RB_LIMIT=...   覆盖判据线（调试 / 自检"闸门有牙"）
+#   SHAPE_TOOLKEY=...             覆盖工具链键（自检"表里没这个键就跳过"那条路）
 #
 # 缺 valgrind：每个形状打印 `  --   跳过：…`（指令数判据没验），**语义一致那半照判**；退出码 0
 #   —— `tools/check.py` 把这一项记 `skip`、不计数（CI 装了 valgrind ⇒ 不许跳过）。
@@ -26,13 +32,15 @@ ROOT=$(cd "$DIR/../.." && pwd)
 BIG=$ROOT/bench/bigmatrix
 EXTC=${EXTC:-$ROOT/build/extc}
 CC=${CC:-cc}
-# 线 = 实测 × 1.05（`-O2`，`in-small`；callgrind Ir，逐次跑是确定值）：
-#   bt     2 850 624 → 2 950 000 —— ②（区域不需要回收 ⇒ 整段不发射 rc）把 bt 的回收运行期
-#          整段拿掉后从 3 091 855 掉到这里；线跟着往下拧（棘轮只许压）。
-#   rebuild 15 037 125 → 15 790 000 —— 细化 (a′)+(b′)（"循环里建、每轮丢"）让 rebuild 也整单元
-#          不发射 rc：从 23 075 542 掉到这里（-34.8%），线跟着往下拧（棘轮只许压）。
-BT_LIMIT=${BT_LIMIT:-2950000}
-RB_LIMIT=${RB_LIMIT:-15790000}
+# 线按**工具链键**从表里取（列与来历见 tests/reclaim-perf/shape-baselines.tsv）：
+#   键 = <cc -dumpfullversion>+glibc-<ldd --version 最后一列>；表里没有这个组合 ⇒ 判据没验。
+BASE=$DIR/shape-baselines.tsv
+CC_VER=$($CC -dumpfullversion 2>/dev/null || $CC -dumpversion 2>/dev/null || echo ?)
+GLIBC_VER=$(ldd --version 2>/dev/null | head -1 | awk '{print $NF}')
+TOOLKEY=${SHAPE_TOOLKEY:-"$CC_VER+glibc-${GLIBC_VER:-?}"}
+read -r TBL_BT TBL_RB <<<"$(awk -F'\t' -v k="$TOOLKEY" '!/^#/ && $1==k && $3!="" && $5!="" {print $3" "$5; exit}' "$BASE" 2>/dev/null)"
+BT_LIMIT=${BT_LIMIT:-$TBL_BT}
+RB_LIMIT=${RB_LIMIT:-$TBL_RB}
 
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 ok()  { printf '  \033[32mok\033[0m   %s\n' "$1"; }
@@ -41,6 +49,7 @@ skip() { printf '  --   跳过：%s\n' "$1"; }   # 缺件 ⇒ 明说"没验"（c
 VG=$(command -v valgrind || true)
 
 echo "== 回收性能判据（真实形状，小输入，-O2）=="
+echo "  工具链键 $TOOLKEY · 线：bt ${BT_LIMIT:-（表里没有）} · rebuild ${RB_LIMIT:-（表里没有）}（$BASE）"
 
 if [ ! -f "$BIG/in-small/bt.txt" ] || [ ! -f "$BIG/in-small/rebuild.txt" ]; then
     if ( cd "$BIG" && cc -O2 -o "$TMP/gen" gen.c && "$TMP/gen" small "$BIG/in-small" ) >"$TMP/gen.log" 2>&1; then
@@ -84,6 +93,10 @@ one() { # <形状> <线>
     local ir
     ir=$(grep '^summary:' "$TMP/$shp.cg" | awk '{print $2}')
     if [ -z "${ir:-}" ]; then bad "$shp：callgrind 输出没有 summary 行"; fail=1; return; fi
+    if [ -z "$lim" ]; then
+        skip "$shp：$TOOLKEY 不在 shape-baselines.tsv 里 ⇒ 指令数判据没验（实测 $ir；抄进表里再 ×1.05 定线）"
+        return
+    fi
     if [ "$ir" -le "$lim" ]; then
         ok "$shp：总指令数 $ir ≤ $lim（in-small/$shp.txt）"
     else

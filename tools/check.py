@@ -1726,7 +1726,7 @@ WALL_CLOCK = {
     "tests-coro": "tests/coro/run.sh 量墙钟与 RSS（`/usr/bin/time -q -f %M`）；协程调度时序",
     "hash": "吞吐绝对阈值（实测 sha1 287 MB/s vs 线 200 MB/s，余量只有 1.4×）",
     "hashmap": "同 hash/pool 一族：分配吞吐 + 峰值 RSS",
-    "io": "tests/io/run.sh 用 `date +%s%N` 量墙钟（std::time 行为）",
+    "io": "tests/io/run.sh 用 `date +%s%N` 量「分块读」那一段（10 万行只量跑、不量编；线 50ms）",
     "json": "吞吐绝对阈值（`parse ≥ 200 MB/s`）",
     "map": "同 pool/hashmap 一族：分配/查找吞吐 + 峰值 RSS",
     "pool": "`/usr/bin/time -f %e` 量 pool-perf 的墙钟（小池 vs 大池）",

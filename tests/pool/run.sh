@@ -10,6 +10,7 @@
 #   ⑥ ASan 干净 ✓
 #   ⑦ 染色这一关的两条实测结论，钉成**常设判据**（见文件末尾）：
 #        · 地方退出的代价随池数走得平（每池约 10 ns，其中板块 malloc/free 7 ns 是必需的）
+#          —— R 轮交错取最小（POOL_TIME_ROUNDS）；同一档自身离散 > 1.25× ⇒ 明说**没测到**、不当回归
 #        · 真收缩：800 KB × 2000 轮的峰值 RSS 必须平，且期末字节账归零
 set -u
 cd "$(dirname "$0")/../.."
@@ -288,24 +289,40 @@ echo "== 染色②的结论：地方退出的代价随池数走得**平**（每�
 # 所以可以跨 N 直接比"每次建+退"的纳秒数。判据：最小与最大之比 ≤ 1.5。
 #   若有人按 §7.4-1 去改注册表（期望收益 2~3 ns/池），这条会告诉他收益上限；若改出回归
 #   （例如 zone 退出退化成 O(池数) 之外的额外结构开销），小 N 会先翘起来 ⇒ 判据响。
+#   **量法**：三个 N 交错各量一次、共 R 轮，每档取轮内最小（同档 max 只用来报噪声）。为什么
+#   交错：并行套件里别的项会撞进来，某一档若连着量三次、整段都在噪声窗口里，"三次取最小"
+#   救不了它（CI 上 N=5000 三连测 1.70 s，另两档 1.04 s ⇒ 假红）。判据响之前先看同一档自己
+#   有多不稳：离散 > 1.25× ⇒ 明说**没测到**（跳过），不当回归 —— 没测到 ≠ 已证伪。
+#   自检：`POOL_TIME_CMD` 换掉被测命令（喂一个定时脚本 ⇒ 能分别走到 ok / 跳过 / FAIL 三条路），
+#   `POOL_TIME_ROUNDS` 换轮数。
 build_one zt-exit zt_exit_cost && build_one zt-shrink zt_shrink_rss
 if [ -x build/zt-exit ]; then
-    ns_min=""; ns_max=""; line=""
-    for n in 500 5000 50000; do
-        b=999
-        for _ in 1 2 3; do
-            t=$( { /usr/bin/time -f "%e" ./build/zt-exit "$n" 30000000 >/dev/null; } 2>&1 | tail -1 )
-            b=$(awk -v a="$t" -v b="$b" 'BEGIN{print (a<b)?a:b}')
+    TMPT=$(mktemp -d)
+    R=${POOL_TIME_ROUNDS:-6}
+    for n in 500 5000 50000; do : > "$TMPT/$n"; done
+    for _r in $(seq "$R"); do
+        for n in 500 5000 50000; do
+            /usr/bin/time -a -o "$TMPT/$n" -f "%e" ${POOL_TIME_CMD:-./build/zt-exit} "$n" 30000000 >/dev/null 2>/dev/null
         done
+    done
+    ns_min=""; ns_max=""; line=""; drift=1
+    for n in 500 5000 50000; do
+        b=$(sort -g "$TMPT/$n" | head -1)
+        w=$(sort -g "$TMPT/$n" | tail -1)
         v=$(awk -v t="$b" 'BEGIN{printf "%.2f", t*1e9/3e7}')
         line="$line N=$n:${v}ns"
+        drift=$(awk -v a="$w" -v b="$b" -v d="$drift" 'BEGIN{r=(b>0)?a/b:1; print (r>d)?r:d}')
         if [ -z "$ns_min" ]; then ns_min=$v; ns_max=$v; else
             ns_min=$(awk -v a="$v" -v b="$ns_min" 'BEGIN{print (a<b)?a:b}')
             ns_max=$(awk -v a="$v" -v b="$ns_max" 'BEGIN{print (a>b)?a:b}')
         fi
     done
+    rm -rf "$TMPT"
     if awk -v a="$ns_min" -v b="$ns_max" 'BEGIN{exit !(b <= a*1.5 + 0.5)}'; then
-        echo "  ok   地方退出 -> ${line# } ⇒ 每次建+退约 ${ns_min}~${ns_max} ns，**平** ✓"
+        echo "  ok   地方退出 -> ${line# } ⇒ 每次建+退约 ${ns_min}~${ns_max} ns，**平** ✓（$R 轮交错取最小）"
+    elif awk -v d="$drift" 'BEGIN{exit !(d > 1.25)}'; then
+        echo "  --   跳过：机器太吵（同一档 $R 轮重复的离散最大 ×$(printf %.2f "$drift") > 1.25）⇒ 地方退出的墙钟判据**没测到**"
+        echo "        ${line# }（${ns_min} → ${ns_max} ns/次；机器安静时这条照判）"
     else
         echo "  FAIL 地方退出 -> ${line# } ⇒ 随池数翘了（${ns_min} → ${ns_max} ns/次）✗"; fail=1
     fi

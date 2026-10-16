@@ -554,6 +554,7 @@ diff <(sed 's/[0-9]\+//g' /tmp/pristine.c) <(sed 's/[0-9]\+//g' /tmp/on.c) | hea
 | `../inject.py`（`tools/`）| **注入验牙**：`--list` 列出注入（`thr-stale` / `rsinc-drop` / `sweep-never` / `overregister` / `perf-lookup` / **`count-noinc`**（只打计数档））；每条会改源码 → 重编 → 跑期望判据（**必须红**）→ 还原 → 再跑（**必须绿**），且默认在硬链接副本树里跑、收尾核对原树未被改动 | 手工注入有**忘记还原**的隐患；用这个工具代替 |
 | `ablate.py` | 单项消融/原型：`guardfast`（登记表 O(1)）/ `guardfirst`（入口守卫）/ `nohold`（拆计数，上界）/ `noreg`、`noreg0`（拆跨区登记）/ `padN`（根表补空到 N 项） | `nohold`/`noreg` 会改健全性或内存行为，**只能当上界**；`guardfast`/`guardfirst`/`noreg0`/`padN` 语义不变（可验证输出逐字一致）。入口守卫**已在 codegen 落地** ⇒ `guardfirst` 对新生成物是 **no-op**（`already guarded`，该变体 == `on`） |
 | `gate.sh` | **性能判据 + 槽号索引判据**：①开关开的 `cyclic_pressure` 固定 N=200000，callgrind 总指令数 ≤ 现行线（**线在脚本头部，每落地一次就往下拧一次**）；②`slotindex.c` 把发射出来的 `extc_rc_rcpOf`/`extc_rc_slotOf` 在 16..1 MiB 的每个 8 倍步长 × 全部合法槽号上做**域内穷举**（槽步长按 8 字节取整 ⇒ 索引是乘倒数右移，算错一格就会漏认合法槽 ⇒ 悬垂） | 性能线落地过一次就收紧一次（现行线见脚本头）；索引判据有牙：注入 `EXTC_RC_RCP_SHIFT` 42 → 19 ⇒ `slotindex: FAIL`（140384 处不符，exit 1）。用法：`tests/reclaim-perf/gate.sh` |
+| `shape-baselines.tsv` | **按工具链**记 `gate-shapes.sh` 的指令数基线：键 = `cc -dumpfullversion` + `glibc-<版本>`，线 = 该键实测 × 1.05 | 换 gcc / glibc 会改编译决定与库实现（glibc 的 IFUNC 还按 CPU 派发 `memcpy`）⇒ 绝对线只在同一条工具链上有意义；表里没有的键**跳过并打出实测值**，新工具链第一次跑就把实测值抄成一行 |
 | `run.sh` | 一键复跑上面全部：固定编译器 → 生成/编译 → 语义校验 → callgrind → 打印总表与差值 | `N=`、`SMALL=`、`SKIP_PROTO=1` 可调 |
 
 ---
@@ -649,8 +650,10 @@ diff <(sed 's/[0-9]\+//g' /tmp/pristine.c) <(sed 's/[0-9]\+//g' /tmp/on.c) | hea
      `bt` 税 1.762× → **1.711×**、mid 口径 1.103× → **1.088×**；`rebuild` −8.5 %。
      协程函数不 hoist（恢复状态机可跳进 body 中间）。
    · 判据三条闸门：`gate.sh`（合成形状 `cyclic_pressure`，线收到 **324 000 000**）＋
-     `gate-shapes.sh`（**真实形状** `bt` / `rebuild` 的小输入，线 11 090 000 / 147 600 000，
-     并要求开档/关档输出逐字一致）＋ `gate-tax.sh`（**回收税**：`bt` 开档/关档指令数比 ≤ 现行线，
+     `gate-shapes.sh`（**真实形状** `bt` / `rebuild` 的小输入，线**按工具链**记在
+     `shape-baselines.tsv`（现行：参考机 2 950 000 / 15 790 000，CI 的 gcc 13.3.0 3 170 000 / 17 740 000），
+     并要求开档/关档输出逐字一致；该工具链不在表里就打实测值 + `  --   跳过：`，不当通过）
+     ＋ `gate-tax.sh`（**回收税**：`bt` 开档/关档指令数比 ≤ 现行线，
      棘轮只许往下拧 —— 目标值 **1.00×**）。任一红都说明收益被付回或目标退步。
 2. **静态化**（**未做**，上界要重算）：编译期能证明"这个指针是回收槽"的赋值直接发计数，
    只在证不出时走运行期守卫（§5 建议里的第 ③ 条）。原来的"上界 23 %"是相对**每次赋值查
