@@ -1,0 +1,75 @@
+use std::io
+var gstate: i64 = 1
+fn nxt() -> i64 { gstate = (gstate * 1103515245 + 12345) & 2147483647  return gstate }
+fn pick(k: i64) -> i64 { return (nxt() / 1024) % k }
+fn parseI64(s: slice<u8>) -> i64 {
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len { var c: u8 = s[i]  if c < u8(48) { break }  if c > u8(57) { break }  v = v * 10 + i64(c) - 48  i = i + 1 }
+    return v
+}
+// G2 sizeratio：4 个尺寸类（32/64/96/128 字节）的对象池 + 碎片。每轮分配一个随机尺寸类的对象，
+// 其中 1/8 存进该类 1024 槽的定长表（顶掉同槽旧对象 ⇒ 长命集有回收），其余 7/8 立即变垃圾。
+struct c0 { k: i64  p: [3]i64 }
+struct c1 { k: i64  p: [7]i64 }
+struct c2 { k: i64  p: [11]i64 }
+struct c3 { k: i64  p: [15]i64 }
+struct tbl { a0: [1024]?mut ref c0  a1: [1024]?mut ref c1  a2: [1024]?mut ref c2  a3: [1024]?mut ref c3 }
+fn main(args: slice<slice<u8>>) -> i32 {
+    var n: i64 = 2000000
+    if args.len > 1 { n = parseI64(args[1]) }
+    var sd: i64 = 20261013
+    if args.len > 2 { sd = parseI64(args[2]) }
+    gstate = sd & 2147483647
+    var t: mut ref tbl = new tbl
+    var sum: i64 = 0  var kept: i64 = 0  var livebytes: i64 = 0
+    var i: i64 = 0
+    while i < n {
+        var cls: i64 = pick(4)
+        if cls == 0 {
+            var o: mut ref c0 = new c0
+            o.k = i
+            sum = (sum + o.k) & 4611686018427387903
+            if i % 8 == 0 {
+                var b: i64 = (i / 8) % 1024
+                var old: ?mut ref c0 = t.a0[b]
+                if old != null { livebytes = livebytes - 32 } else { kept = kept + 1 }
+                t.a0[b] = o  livebytes = livebytes + 32
+            }
+        } else if cls == 1 {
+            var o: mut ref c1 = new c1
+            o.k = i
+            sum = (sum + o.k) & 4611686018427387903
+            if i % 8 == 0 {
+                var b: i64 = (i / 8) % 1024
+                var old: ?mut ref c1 = t.a1[b]
+                if old != null { livebytes = livebytes - 64 } else { kept = kept + 1 }
+                t.a1[b] = o  livebytes = livebytes + 64
+            }
+        } else if cls == 2 {
+            var o: mut ref c2 = new c2
+            o.k = i
+            sum = (sum + o.k) & 4611686018427387903
+            if i % 8 == 0 {
+                var b: i64 = (i / 8) % 1024
+                var old: ?mut ref c2 = t.a2[b]
+                if old != null { livebytes = livebytes - 96 } else { kept = kept + 1 }
+                t.a2[b] = o  livebytes = livebytes + 96
+            }
+        } else {
+            var o: mut ref c3 = new c3
+            o.k = i
+            sum = (sum + o.k) & 4611686018427387903
+            if i % 8 == 0 {
+                var b: i64 = (i / 8) % 1024
+                var old: ?mut ref c3 = t.a3[b]
+                if old != null { livebytes = livebytes - 128 } else { kept = kept + 1 }
+                t.a3[b] = o  livebytes = livebytes + 128
+            }
+        }
+        i = i + 1
+    }
+    io::cout << "ops=" << n << " kept=" << kept << " livebytes=" << livebytes << " sum=" << sum << "\n"
+    io::cout << "classes=4 sizes=32..128 slots=1024\n"
+    return 0
+}

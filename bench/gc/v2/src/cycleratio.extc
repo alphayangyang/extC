@@ -1,0 +1,53 @@
+use std::io
+var gstate: i64 = 1
+fn nxt() -> i64 { gstate = (gstate * 1103515245 + 12345) & 2147483647  return gstate }
+fn pick(k: i64) -> i64 { return (nxt() / 1024) % k }
+fn parseI64(s: slice<u8>) -> i64 {
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len { var c: u8 = s[i]  if c < u8(48) { break }  if c > u8(57) { break }  v = v * 10 + i64(c) - 48  i = i + 1 }
+    return v
+}
+
+// G4 cycleratio：每轮造 k(3..6) 个节点、以概率 f% 闭成环，然后放进 256 槽窗口；被顶掉的那组若成环
+// 就是不可达环（引用计数收不掉），不成环则是普通垃圾。
+struct node { k: i64  v: i64  next: ?mut ref node }
+fn mkNode(k: i64, v: i64) -> mut ref node { var s: mut ref node = new node  s.k = k  s.v = v  s.next = null  return s }
+struct win { s: [256]?mut ref node  n: [256]i64 }
+fn main(args: slice<slice<u8>>) -> i32 {
+    var g: i64 = 400000
+    if args.len > 1 { g = parseI64(args[1]) }
+    var sd: i64 = 20261013
+    if args.len > 2 { sd = parseI64(args[2]) }
+    var f: i64 = 100
+    if args.len > 3 { f = parseI64(args[3]) }
+    gstate = sd & 2147483647
+    var w: mut ref win = new win
+    var sum: i64 = 0  var made: i64 = 0  var evicted: i64 = 0  var dropnodes: i64 = 0  var rings: i64 = 0
+    var i: i64 = 0
+    while i < g {
+        var k: i64 = 3 + pick(4)
+        var isring: bool = pick(100) < f
+        var first: ?mut ref node = null
+        var prev: ?mut ref node = null
+        var j: i64 = 0
+        while j < k {
+            var s: mut ref node = mkNode(i, nxt() % 1000)
+            if first == null { first = s }
+            if prev != null { prev.next = s }
+            prev = s
+            sum = (sum + s.v) & 4611686018427387903
+            j = j + 1
+        }
+        if isring { rings = rings + 1  if prev != null { prev.next = first } }
+        made = made + k
+        var b: i64 = i % 256
+        var old: ?mut ref node = w.s[b]
+        if old != null { evicted = evicted + 1  dropnodes = dropnodes + w.n[b] }
+        w.s[b] = first  w.n[b] = k
+        i = i + 1
+    }
+    io::cout << "groups=" << g << " made=" << made << " evicted=" << evicted << " dropnodes=" << dropnodes << " sum=" << sum << "\n"
+    io::cout << "f=" << f << " window=256 kmin=3 kmax=6 rings=" << rings << "\n"
+    return 0
+}

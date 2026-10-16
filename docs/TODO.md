@@ -181,6 +181,15 @@
 （挂 `bench`，`nobench` 盖不到）+ `nobench`/`docs`/`smoke`；指纹**同提交重冻**。
 记 on/off 比值时**必须带上那条硬警告**：`off` 臂连分配器一起换（纯 bump arena）⇒ 比值不是纯 GC 税。
 
+## 回收：大横评 v2（`promote` / `sizeratio` / `chase` / `cycleratio` × 六语言）
+
+出处：[`bench/gc/v2/SPEC.md`](../bench/gc/v2/SPEC.md)（形状规格与判据）、[`bench/gc/v2/REPORT.md`](../bench/gc/v2/REPORT.md)（四档 × 11 臂 + 停顿表）、原始数据 `bench/gc/v2/matrix.tsv` 与 `bench/gc/v2/pause.tsv`；数字与结论只在 [`CHANGELOG.md`](CHANGELOG.md)。本节只留待查项。
+
+- **跨语言停顿还不可比（开放项）**：现在只有 extC 一侧的停顿（`[step]`/`[pause]`）。要并排得三家各自取证：Go `GODEBUG=gctrace=1` 的 STW 段落、Java `-Xlog:gc` 的 pause 行、Node `--trace-gc`。动手前先定口径（assist/bg 是 CPU 不是 STW，见上一节的停顿口径条目）。
+- **`chase`/`cycleratio` 上回收是纯开销（开放项）**：extC 默认档比自家纯 bump arena 慢 49%/43%，而 `promote`/`sizeratio` 上是快 1.45×/2.01×。同一批里 Go 的 `GOGC=off` 也只在 `chase` 上倒挂 ⇒「活集大的形状上追踪与记账的代价」是共性，但 extC 这份差额能不能收窄还没做。读 off 臂前先看上一节的硬警告（分配器一起换了，不是纯 GC 对照）。
+- **`chase` 上 C++ 0.82× / Rust 1.46×（记录，非缺陷）**：Rust 的 `Rc<RefCell>` 共享图有引用计数代价；`Rc` 与 extC「计数 + 清扫」在动态图上的差距值得单独量一次（`RefCell` 借用检查与 `unsafe` 两条写法都试）。
+- **Node 在 `chase` 上 7.2×（记录，非缺陷）**：JS 对象图加分代 scavenge 的固有代价，只作对照。
+
 ## 语言功能（已定案、未实现）
 
 - `f"…"` 的格式说明符（对齐、补零、定点小数）。

@@ -1,0 +1,51 @@
+use std::io
+var gstate: i64 = 1
+fn nxt() -> i64 { gstate = (gstate * 1103515245 + 12345) & 2147483647  return gstate }
+fn parseI64(s: slice<u8>) -> i64 {
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len { var c: u8 = s[i]  if c < u8(48) { break }  if c > u8(57) { break }  v = v * 10 + i64(c) - 48  i = i + 1 }
+    return v
+}
+
+// G1 promote：分代假设。每轮 SHORT 个短命节点（下轮即垃圾），每 EVERY 轮提升 1 个长命节点进定长表；
+// 每轮再走一个长命桶（最多 WALKCAP 个）。短命:长命 = 9:0.1。
+struct node { k: i64  v: i64  next: ?mut ref node }
+struct table { b: [65536]?mut ref node }
+fn main(args: slice<slice<u8>>) -> i32 {
+    var n: i64 = 500000
+    if args.len > 1 { n = parseI64(args[1]) }
+    var sd: i64 = 20261013
+    if args.len > 2 { sd = parseI64(args[2]) }
+    gstate = sd & 2147483647
+    var t: mut ref table = new table
+    var sum: i64 = 0  var walksum: i64 = 0  var live: i64 = 0  var tailv: i64 = 0
+    var i: i64 = 0
+    while i < n {
+        var head: ?mut ref node = null
+        var j: i64 = 0
+        while j < 9 {
+            var s: mut ref node = new node
+            s.k = i * 9 + j  s.v = nxt() % 1000  s.next = head
+            head = s
+            sum = (sum + s.v) & 4611686018427387903
+            j = j + 1
+        }
+        if head != null { tailv = head.v }
+        if i % 10 == 0 {
+            var p: mut ref node = new node
+            p.k = i  p.v = nxt() % 1000
+            var b: i64 = i % 65536
+            p.next = t.b[b]  t.b[b] = p
+            live = live + 1
+        }
+        var b2: i64 = (i * 40503) % 65536
+        var c: ?mut ref node = t.b[b2]
+        var cnt: i64 = 0
+        while c != null { if cnt >= 8 { break }  walksum = (walksum + c.v) & 4611686018427387903  c = c.next  cnt = cnt + 1 }
+        i = i + 1
+    }
+    io::cout << "rounds=" << n << " promoted=" << live << " walksum=" << walksum << " sum=" << sum << " tailv=" << tailv << "\n"
+    io::cout << "table=65536 short=9 every=10 walkcap=8\n"
+    return 0
+}

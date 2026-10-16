@@ -1,3 +1,23 @@
+## 2026-10-16 · 大横评 v2：四个新形状 × 六语言 —— extC 回收档在 `promote`/`sizeratio` 上比自家纯 bump arena 快 1.45×/2.01×、内存省 14×/22×；对 Go 打平（`chase`/`cycleratio`）或 2.0×/1.5× 领先
+
+**新增 `bench/gc/v2/`（形状规格 `SPEC.md`、六个语言的实现 `src/`、跑表 `run.sh`、垫片 `shim.c`、报表 `report.py`、停顿表 `pause.sh`）与四档 × 11 臂的成绩单 `REPORT.md`。**
+
+- **为什么**：P1–P6 里有两档（P1/P3）根本不发射回收运行期、其余档的分配模式偏单一；要问「回收器在别的形状上值不值」，得造几个专打回收器的形状，并且**用工程自然写法**（裸 `new`/对象引用，不许拿 arena 模拟冒充托管语言），横向铺到 extC/Go/Java/Rust/Node/C++。
+- **四个形状**（`bench/gc/v2/SPEC.md`，都是「常量内存的活集 + 可控的垃圾」）：`promote` 分代假设（每轮 9 个短命节点头插 + 每 10 轮 1 个提升进 6.5 万槽长命表）· `sizeratio` 四个尺寸类（每类 1024 槽、活对象轮转）· `chase` 6.5 万节点 / 26 万边的大活集指针追逐 + 每 256 步 4 个短命对象 · `cycleratio` 环垃圾占比 f（窗口 256、kmin 3 / kmax 6）。判据仍是**所有臂 stdout 逐字节相同**（`run.sh align`），并各留一份「分配没被优化掉」的证据：Go `CALL runtime.newobject` · Java `-XX:-EliminateAllocations` 的 GC 次数与估算分配量 A/B（+145 组参数与 extC 差分 0）· Rust `LD_PRELOAD` 计 malloc · Node `--print-opt-code | grep Allocate` · C++ `objdump _Znwm`。
+- **卡具**：`shim.c` 用 `wait4` 一次收齐 `ms/rss_kb/utime_ms/stime_ms/minflt/majflt/nvcsw/nivcsw`（旧垫片只有 ms/rss）；`run.sh bench` 落 TSV，`report.py <tsv> <md> <png> [pause.tsv]` 出表加 log 轴条形图；`pause.sh` 出 extC 侧 `[step]`/`[pause]` 汇总。修掉的三处卡具缺陷：参考产物必须在 extC 二进制**构建之后**才取（否则参考是空的、全臂 BAD）· wrapper 的 `printf` 少引号（含空格的 java/go/node 命令全废，症状 `Could not find or load main class 500000`）· `field()` 少引号导致字段被词分割黏成 `52.648rss_kb`。
+- **成绩单**（`taskset -c 6`、best-of-5、stdout 全同；ms / 峰值 RSS MB；完整 11 臂表见 [`bench/gc/v2/REPORT.md`](../bench/gc/v2/REPORT.md)、原始数据 `bench/gc/v2/matrix.tsv`）：
+
+| 形状（N, seed 20261013） | extC | extC:off | Go | Java | Rust | Node | C++ |
+|---|---|---|---|---|---|---|---|
+| `promote` 500000 | **51.3 / 7.4** | 74.3 / 107.0 | 103.8 / 7.7 | 88.5 / 110.9 | 37.2 / 7.3 | 99.8 / 75.9 | 93.6 / 143.1 |
+| `sizeratio` 2000000 | **29.0 / 7.1** | 58.3 / 154.2 | 43.0 / 7.5 | 82.8 / 109.2 | 20.4 / 7.3 | 78.0 / 72.3 | 69.0 / 187.1 |
+| `chase` 1048576 | 136.0 / 73.7 | 91.2 / 60.7 | 134.7 / 64.6 | 282.9 / 172.2 | 198.6 / 90.1 | 980.5 / 288.5 | **111.8 / 79.6** |
+| `cycleratio` 400000 f=100 | 35.8 / 7.5 | 25.0 / 43.4 | 33.0 / 7.4 | 73.3 / 104.2 | 17.6 / 7.3 | 57.8 / 71.0 | 34.9 / 7.1 |
+
+  ⇒ 对 Go：`promote` **2.02×**、`sizeratio` **1.49×**、`chase` 0.99×、`cycleratio` 0.92×（内存 extC 7.1–73.7 MB vs Go 7.4–64.6 MB）；对 Java 1.7–2.9×、对 Node 1.6–7.2×；Rust/C++ 靠手工所有权在前两档更快（0.70–0.72×），`chase` 上 C++ 0.82× 领先、Rust 1.46×（`Rc<RefCell>` 共享图有引用计数代价），`cycleratio` 的 0.49× 来自 **careful 臂**（顶掉前手工断环，与 extC 收集环不是一回事）。
+- **extC 自己的开/关对照**（`EXTC_RECLAIM=0` 是**编译期**开关、产物不同；默认档 vs off：`promote` **1.45×**、`sizeratio` **2.01×**、`chase` **0.67×**、`cycleratio` **0.70×**；RSS 7.4/107.0、7.1/154.2、73.7/60.7、7.5/43.4 MB）⇒ 回收档在**垃圾多**的形状上赚（又快又省 14×/22× 内存），在**活集大或环垃圾**的形状上是纯开销。**照 `docs/TODO.md` 的硬警告读**：off 臂同时把分配器换成纯 bump arena（生成物里 `extc_rc_*` 与 `malloc` 都是 0）⇒ 这不是「纯 GC 税」，而是「回收运行期 + 槽式分配器 + 记账」对「纯 bump arena」。Go 的 `GOGC=off` 同型：`promote`/`sizeratio` 更慢（117.7/78.3），`chase` 反而更快（106.7 vs 134.7）。
+- **extC 侧停顿形状**（`pause.sh`，单跑）：切片均值 0.68–2.12 µs、`collects` 2–149；`over1ms` 四次运行里出现 1 次（`chase`，max 2769 µs，抢占噪声）；`cycleratio` 没有一条 ≥16 µs 的切片。**跨语言停顿没做**（Go/Java/Node 各有自己的停顿源，先不出不可比的三方表）—— 记进 `docs/TODO.md`。
+- **验收**：四档 × 11 臂 stdout 全部与 extC 逐字节相同（`REPS=5`，0 BAD/FAIL）；`bash bench/gc/v2/run.sh align` 六语言全绿；`./check.sh nobench -j4` 通过 108 / 失败 0、`./check.sh docs -j4` 通过 12 / 失败 0。**没有改编译器** ⇒ 生成物与语料指纹都不动。
 ## 2026-10-16 · 闸门：`gate-shard-cycles` ② 改判**确定性工作量** —— 分片旋钮不再被步粒度稀释
 
 **改 `tests/reclaim-perf/gate-shard-cycles.sh` 的 ② 段与 `tools/check.py` 的闸门描述：② 不再用运行期 `[step]` 的平均切片时长判「分片旋钮还在不在」，改用运行期 `[work]` 的确定性计数。**
