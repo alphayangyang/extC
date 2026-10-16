@@ -11,13 +11,20 @@
 #        · `SHARDS=4` 的 4N 绝对峰值 **≤ 2× 默认档**（分片不许把环负载抬起来）。
 #     口径：`/usr/bin/time -v` 的 Maximum resident set size（自足，不依赖 bench/gc 的垫片）。
 #     牙：注入 `sweep-never` ⇒ 前两条红、第三条仍绿（格与格独立，不互相掩盖）。
-#   ② 不许把旋钮关掉：分片友好的对齐形状 `tests/reclaim-shapes/shard_bands.extc` 上
-#        `SHARDS=4` 的**平均切片时长**（运行期 `[step]` 的 `total_us/n`，取 REPS 次最小值）
-#        必须**明显低于** `SHARDS=1`（判据取 < 0.75× 留余量），两种片数都**不许有 ≥1ms 的切片**
-#        （`[step] over1ms == 0`，窗口有绝对上界），且两种片数下程序输出逐字一致。
-#        口径说明：旧判据比的是探针的 `max_pause_us`（只包 `collect`），热路径改走 `step` 后
-#        恒为 0 ⇒ `0 < 0.75×0` 恒假。现在比**每个切片**的均值（~1e4 样本）＋ 绝对上界；
+#   ② 不许把旋钮关掉：分片友好的对齐形状 `tests/reclaim-shapes/shard_bands.extc` 上，分片必须
+#        真的把工作切开 —— 判据用运行期 `[work]` 的**确定性计数**（与计时无关）：
+#          · `SHARDS=4` 的单步最大遍历对象数 `walk_max` **≤ 0.5×** `SHARDS=1`；
+#          · `SHARDS=4` 的工作项数 `n` **≥ 2×** `SHARDS=1`（片多 ⇒ 每片分到的工作少、项数多）。
+#        计时只留两条**绝对上界**：两种片数都 `[step] over1ms == 0`、`over64 ≤ 5`（窗口有界、
+#        长切片受控），再加「两种片数下程序输出逐字一致」。平均切片仍打印，但只作参考值。
+#        口径说明（2026-10-16 修）：最早那版判据比探针的 `max_pause_us`（只包 `collect`），热路径
+#        改走 `step` 后恒为 0 ⇒ `0 < 0.75×0` 恒假；随后改比**平均切片时长** `[step] total_us/n`，
+#        但均值 = 总时间/步数，步粒度一变（同一份工作量被切成更少的步）就整体抬高，与分片无关 ——
+#        `097c455` 把该形状的步数从 9490/19008 变成 5076/6264、均值随之从 0.60/0.62 抬到 0.89
+#        ⇒ 误红。`[work]` 的 `walk_max`/`n` 只数工作量，才是「旋钮还在不在」的直读量。
 #        另加一条元判据：探针必须报告 `PROBE step_n > 0`（覆盖热路径），否则红。
+#        牙：`BAND_SHARDS4=1` 跑本脚本 ⇒ 两臂是同一份产物（旋钮被钉死）⇒ `walk_max` 相等、
+#        `n` 相等 ⇒ 两项确定性判据都红。
 #
 # 为什么这样修：片边界必须与结构边界对齐。跨**站点**的可能环一旦被切开，跨片登记位就成了
 # 环垃圾的种子，界随轮数涨。编译器现在（`scanUnitReclaim`）对"单元里存在跨站点可能环"的情形
@@ -33,6 +40,8 @@ N2=${N2:-1000000}
 SEED=${SEED:-20261013}
 BAND_N=${BAND_N:-300000}
 REPS=${REPS:-3}
+# ② 里 SHARDS=4 那一臂的片数；`BAND_SHARDS4=1` ⇒ 两臂同一份产物 = 旋钮被钉死（红演示用）
+BAND_SHARDS4=${BAND_SHARDS4:-4}
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 pass=0; fail=0
 ok()  { printf '  ok   %s\n' "$1"; pass=$((pass+1)); }
@@ -97,12 +106,12 @@ done
   || bad "SHARDS=4 的 4N 峰值 > 2× 默认档（$((r4b/1024))MB vs $((r1b/1024))MB）"
 
 echo "== ② 旋钮不许被关掉：shard_bands（对齐形状，N=$BAND_N，REPS=$REPS）=="
-# 口径（2026-10-15 修）：merge 后热路径走 `extc_rc_step`，**契约入口**的 `max_pause_us` 恒 0，
-# 旧判据 `0 < 0.75×0` 恒假。正确的窗口量是**每个切片**的停顿：运行期 `[step]` 现在把
-# `markStep`/`sweepStep` 每次调用都记进 n/max/total + 阈值桶（over16/over64/over256/over1ms）。
-# `max` 是长尾（同版本两次能差几倍，受抢占影响）⇒ 判据用**平均切片时长 total_us/n**
-# （~1e4 个样本，稳定；取 REPS 次的最小值）＋ 绝对上界 `over1ms == 0`。
-band() {     # band <片数> → "<平均切片µs>|<over1ms>|<n>|<maxµs>|<over64>|<语义输出sha12>"
+# 口径（2026-10-16 修）：判「旋钮还在不在」用运行期 `[work]` 的**确定性计数**，不用 `[step]` 的
+# 平均切片时长 —— 均值 = 总时间/步数，步粒度一变就整体抬高，与分片无关（详见头注释与
+# docs/RECLAMATION.md 未覆盖清单第 9 条）。`[work] walk_max` = 单步最大遍历对象数（分片就是要
+# 把它切小），`[work] n` = 工作项数（片多 ⇒ 项多）。计时侧只留绝对上界 `over1ms == 0`、
+# `over64 ≤ 5`。读不到 `[work]` 行按「插桩失败」判红，不许静默变绿。
+band() {     # band <片数> → "<walk_max>|<work_n>|<平均切片µs>|<over1ms>|<步数>|<maxµs>|<over64>|<语义sha12>"
     local sh=$1 f="tests/reclaim-shapes/shard_bands.extc"
     if [ "$sh" = 1 ]; then
         EXTC_RECLAIM=1 env -u EXTC_RC_SHARDS "$EXTC" -O2 -I "$STDLIB" -w -o "$TMP/b$sh.c" "$f" 2>/dev/null
@@ -110,16 +119,21 @@ band() {     # band <片数> → "<平均切片µs>|<over1ms>|<n>|<maxµs>|<over
         EXTC_RECLAIM=1 EXTC_RC_SHARDS=$sh "$EXTC" -O2 -I "$STDLIB" -w -o "$TMP/b$sh.c" "$f" 2>/dev/null
     fi
     $CC -std=c11 -fwrapv -O1 -o "$TMP/b$sh" "$TMP/b$sh.c" 2>/dev/null || return 1
-    local best="" ov1="" nn="" mx="" ov64=""
+    local best="" ov1="" nn="" mx="" ov64="" wmax="" wn=""
     for _ in $(seq 1 "$REPS"); do
-        local line tot mean o64 o1
-        line=$(EXTC_RC_PAUSE=1 "$TMP/b$sh" "$BAND_N" 2>&1 >/dev/null | grep '^\[step\]' | tail -1)
+        local out line wline tot mean o64 o1
+        out=$(EXTC_RC_PAUSE=1 "$TMP/b$sh" "$BAND_N" 2>&1 >/dev/null)
+        line=$(printf '%s\n' "$out"  | grep '^\[step\]' | tail -1)
+        wline=$(printf '%s\n' "$out" | grep '^\[work\]' | tail -1)
         nn=$(printf '%s\n' "$line"   | sed -n 's/^\[step\] n=\([0-9]*\) .*/\1/p')
         mx=$(printf '%s\n' "$line"   | sed -n 's/.* max_us=\([0-9.]*\) .*/\1/p')
         tot=$(printf '%s\n' "$line"  | sed -n 's/.* total_us=\([0-9.]*\) .*/\1/p')
         o64=$(printf '%s\n' "$line"  | sed -n 's/.* over64=\([0-9]*\) .*/\1/p')
         o1=$(printf '%s\n' "$line"   | sed -n 's/.* over1ms=\([0-9]*\).*/\1/p')
+        wmax=$(printf '%s\n' "$wline" | sed -n 's/.* walk_max=\([0-9]*\) .*/\1/p')
+        wn=$(printf '%s\n' "$wline"   | sed -n 's/^\[work\] n=\([0-9]*\) .*/\1/p')
         [ -n "$nn" ] && [ "$nn" != 0 ] && [ -n "$tot" ] || return 1
+        [ -n "$wmax" ] && [ -n "$wn" ] || return 1
         mean=$(awk -v t="$tot" -v k="$nn" 'BEGIN{printf "%.4f", t/k}')
         best=$(awk -v a="$best" -v b="$mean" 'BEGIN{ print (a=="" || b<a) ? b : a }')   # min：抗抢占
         ov64=$(awk -v a="$ov64" -v b="$o64" 'BEGIN{ print (a=="" || b<a) ? b : a }')    # min：抗抢占
@@ -127,22 +141,26 @@ band() {     # band <片数> → "<平均切片µs>|<over1ms>|<n>|<maxµs>|<over
     done
     local sha
     sha=$("$TMP/b$sh" "$BAND_N" 2>/dev/null | sha256sum | cut -c1-12)
-    printf '%s|%s|%s|%s|%s|%s' "$best" "$ov1" "$nn" "$mx" "$ov64" "$sha"
+    printf '%s|%s|%s|%s|%s|%s|%s|%s' "$wmax" "$wn" "$best" "$ov1" "$nn" "$mx" "$ov64" "$sha"
 }
-IFS="|" read -r m1 o1 n1 x1 c1 s1 <<<"$(band 1)"; IFS="|" read -r m4 o4 n4 x4 c4 s4 <<<"$(band 4)"
-if [ -z "$m1" ] || [ -z "$m4" ]; then
-    bad "窗口读数没取到（$m1 / $m4）：运行期 [step] 行缺字段（over1ms/n/total_us）？"
+IFS="|" read -r w1 d1 m1 o1 n1 x1 c1 s1 <<<"$(band 1)"; IFS="|" read -r w4 d4 m4 o4 n4 x4 c4 s4 <<<"$(band "$BAND_SHARDS4")"
+if [ -z "$m1" ] || [ -z "$m4" ] || [ -z "$w1$d1$w4$d4" ]; then
+    bad "读数没取到（walk_max=$w1/$w4 · work_n=$d1/$d4 · 平均切片=$m1/$m4）：运行期 [step]/[work] 行缺字段？"
 else
-    echo "  平均切片：SHARDS=1 ${m1}µs（n=$n1 · max=${x1}µs · over64=$c1 · over1ms=$o1）· SHARDS=4 ${m4}µs（n=$n4 · max=${x4}µs · over64=$c4 · over1ms=$o4）· 4/1=$(awk -v a="$m1" -v b="$m4" 'BEGIN{printf "%.2f", a?b/a:0}')"
+    echo "  单步遍历量：walk_max $w1 → $w4 · 工作项数 $d1 → $d4（SHARDS=1 → SHARDS=$BAND_SHARDS4）"
+    echo "  平均切片（参考值）：SHARDS=1 ${m1}µs（n=$n1 · max=${x1}µs · over64=$c1 · over1ms=$o1）· SHARDS=$BAND_SHARDS4 ${m4}µs（n=$n4 · max=${x4}µs · over64=$c4 · over1ms=$o4）· 比=$(awk -v a="$m1" -v b="$m4" 'BEGIN{printf "%.2f", a?b/a:0}')"
     [ "$o1" = 0 ] && [ "$o4" = 0 ] \
       && ok "两种片数都没有 ≥1ms 的切片（over1ms=0/0）⇒ 窗口有绝对上界" \
       || bad "出现 ≥1ms 的切片（over1ms=$o1/$o4）⇒ 窗口没有绝对上界"
     [ "$c1" -le 5 ] 2>/dev/null && [ "$c4" -le 5 ] 2>/dev/null \
       && ok "两种片数的 >64µs 长切片都受控（over64=$c1/$c4 ≤ 5，REPS 取最小）" \
       || bad ">64µs 的长切片变多（over64=$c1/$c4 > 5）⇒ 切片预算没兜住（注入 SWEEP_BUDGET=1e8 时这里是 73/73）"
-    [ "$(awk -v a="$m1" -v b="$m4" 'BEGIN{print (b < 0.75*a) ? 1 : 0}')" = 1 ] \
-      && ok "SHARDS=4 的平均切片明显小于 SHARDS=1（< 0.75×）⇒ 旋钮没被关掉" \
-      || bad "SHARDS=4 没拿到切片收益（${m4}µs vs ${m1}µs）——分片被钉死了"
+    [ "$(awk -v a="$w1" -v b="$w4" 'BEGIN{print (b <= 0.5*a) ? 1 : 0}')" = 1 ] \
+      && ok "分片把单步最大遍历对象数切成 ≤ 0.5×（walk_max $w1 → $w4，$(awk -v a="$w1" -v b="$w4" 'BEGIN{printf "%.3f", a?b/a:0}')×）⇒ 旋钮没被关掉" \
+      || bad "单步最大遍历对象数没被切开（walk_max $w1 → $w4，> 0.5×）——分片被钉死了（红演示：BAND_SHARDS4=1）"
+    [ "$(awk -v a="$d1" -v b="$d4" 'BEGIN{print (b >= 2*a) ? 1 : 0}')" = 1 ] \
+      && ok "分片把工作项数切到 ≥ 2×（[work] n $d1 → $d4，$(awk -v a="$d1" -v b="$d4" 'BEGIN{printf "%.2f", a?b/a:0}')×）" \
+      || bad "工作项数没随片数增长（[work] n $d1 → $d4，< 2×）——分片被钉死了（红演示：BAND_SHARDS4=1）"
 fi
 [ "$s1" = "$s4" ] && ok "shard_bands 两种片数输出逐字一致（sha $s1）" \
                   || bad "shard_bands 两种片数输出不同（$s1 vs $s4）"

@@ -829,11 +829,13 @@ def build_items() -> list:
     # 挂 bench 档的理由：要跑 1M 规模的形状 + 停顿探针（单次约 5s，但**不是**秒级项，且
     # 它测的是"回收片"这个旋钮本身，属于性能线一族 ⇒ 与 `gate-reclaim-tax`/`gate-shapes` 同类）。
     # 判据见 `tests/reclaim-perf/gate-shard-cycles.sh`：digraph(`SHARDS=4`) 4N/N < 1.5× 且
-    # 4N ≤ 2× 默认档；`shard_bands` 上 `SHARDS=4` 的停顿仍 < 0.75× `SHARDS=1`（旋钮没被钉死）。
+    # 4N ≤ 2× 默认档；`shard_bands` 上分片必须真的把工作切开 —— 判据是运行期 `[work]` 的
+    # `walk_max ≤ 0.5×`、工作项数 `n ≥ 2×`（确定性计数，与计时无关；平均切片只作参考值，
+    # 它会被步粒度稀释），另加计时侧两条绝对上界 `over1ms == 0`、`over64 ≤ 5`（旋钮没被钉死）。
     items.append(cmd(
         "gate-shard-cycles", "gate",
         "闸门·分片有界：环负载 digraph 上 SHARDS=4 的 4N/N < 1.5×（且 4N ≤ 2× 默认档），"
-        "对齐形状 shard_bands 的停顿收益仍在",
+        "对齐形状 shard_bands 的单步遍历量被切成 ≤ 0.5×（工作项数 ≥ 2×，窗口上界仍在）",
         ["bash", "tests/reclaim-perf/gate-shard-cycles.sh"], timeout=900, bench=True,
         ok_msg=ok_first(r"^  ok   分片在高环负载形状上有界"),
         bad_msg="tests/reclaim-perf/gate-shard-cycles.sh（分片把环切开 ⇒ 界随轮数涨，或旋钮被钉死）",
