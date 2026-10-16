@@ -646,10 +646,11 @@ def build_items() -> list:
     # ---- 闸门·分片路径（EXTC_RC_SHARDS）----
     # 分片是 codegen 的第四条发射路径，run-shard.sh 只是证据脚本 ⇒ 这里把三条判据钉住：
     # 旋钮非空转（1 与 8 的生成物必须不同）、语义一致（两个规模、输出逐字相同）、
-    # 界与轮数无关（分片=8 下 N vs 4N 峰值比 < 1.5）。
+    # 界与轮数无关（分片=8 下 N vs 4N 峰值比 < 1.5；峰值 RSS 是跨环境读数 ⇒ 红了才复测一对
+    # 取较小值，FAIL 行自带原始 KB 与 SHARDS=1 的 4N 参考）。
     items.append(cmd(
         "gate-shard", "gate",
-        "闸门·分片路径：EXTC_RC_SHARDS=1/8 生成物必须不同、输出逐字一致、分片=8 下 N vs 4N 峰值比 < 1.5",
+        "闸门·分片路径：EXTC_RC_SHARDS=1/8 生成物必须不同、输出逐字一致、分片=8 下 N vs 4N 峰值比 < 1.5（红了才复测取小）",
         ["./tests/reclaim-shapes/gate-shard.sh"], timeout=900,
         ok_msg=ok_first(r"^  ok"),
         bad_msg="tests/reclaim-shapes/gate-shard.sh（分片路径语义/内存界回归）",

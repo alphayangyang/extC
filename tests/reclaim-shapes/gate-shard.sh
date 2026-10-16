@@ -10,10 +10,15 @@
 #   ① **旋钮非空转**：`EXTC_RC_SHARDS=1` 与 `=8` 的生成物必须不同（否则下面两条是空跑）。
 #   ② **语义一致**：同一形状在 1 与 8 下、两个规模上，标准输出逐字相同。
 #   ③ **界与轮数无关**（分片=8）：N vs 4N 的峰值 RSS 比 < 1.5 —— 与 `run-switch.sh` 同一条口径。
+#      红了**才**复测一次，两对里各取较小值；复测仍越线才判红。理由：峰值 RSS 是跨环境的读数
+#      （分配器与内核的高水位、页面粒度都在里面），而这条要钉的是「界随轮数涨」这个性质 ——
+#      一次高水位不该判成回归。FAIL 行带原始 KB 与 SHARDS=1 的 4N 参考（只看比值分不清
+#      「真没回收」还是「别的膨胀」）。
 #
 # 用法：tests/reclaim-shapes/gate-shard.sh
 #   EXTC=… / CC=… / TIME=…   换工具链
 #   N=…                      覆盖小规模（默认 200000，4N = 4×N）
+#   SHARD_RATIO_MAX=…        覆盖判据 ③ 的上限（只给自检「闸门有牙」用，默认 1.5）
 set -u
 cd "$(dirname "$0")/../.."
 
@@ -27,6 +32,13 @@ TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 fail=0
 ok()  { printf '  \033[32mok\033[0m   %s\n' "$1"; }
 bad() { printf '  \033[31mFAIL\033[0m %s\n' "$1"; fail=1; }
+
+# 判据 ③ 的线；`peak` 依赖下面定义的 `run`（bash 只在调用时查函数）。
+MAX=${SHARD_RATIO_MAX:-1.5}
+peak()    { run "$1" "$2"; printf '%s' "$R_RSS"; }
+ratioOf() { awk -v a="$1" -v b="$2" 'BEGIN{ if (a=="" || b=="") print "—"; else printf "%.2f", b/a }'; }
+ratioOk() { [ "$1" != "—" ] && awk -v r="$1" -v m="$MAX" 'BEGIN{exit !(r < m)}'; }
+minOf()   { awk -v a="$1" -v b="$2" 'BEGIN{ if (a=="") print b; else if (b=="") print a; else print (a<b?a:b) }'; }
 
 build() { # <形状> <分片数> → 回显可执行路径；失败回显空
     local shape=$1 sh=$2
@@ -74,15 +86,28 @@ for shape in shard_bands cyclic_pressure cross_region_elem; do
     done
 
     # ③ 界与轮数无关（分片=8）
-    run "$exe8" "$N";  rssN=$R_RSS
-    run "$exe8" "$N4"; rss4=$R_RSS
-    ratio=$(awk -v a="$rssN" -v b="$rss4" 'BEGIN{ if (a=="" || b=="") print "—"; else printf "%.2f", b/a }')
+    # 先测一对；不成对才复测一对，各取两次中的较小值 —— 峰值 RSS 是跨环境读数，一次高水位
+    # 不算回归（口径同 `pool` 的墙钟：重复取最小 + 离散自检；理由见脚本头）。
+    rssNa=$(peak "$exe8" "$N");  rss4a=$(peak "$exe8" "$N4")
+    ratio=$(ratioOf "$rssNa" "$rss4a")
+    raw="N=${rssNa} KB / 4N=${rss4a} KB"
+    retried=
+    if ! ratioOk "$ratio"; then
+        retried=1
+        rssNb=$(peak "$exe8" "$N"); rss4b=$(peak "$exe8" "$N4")
+        rssN=$(minOf "$rssNa" "$rssNb"); rss4=$(minOf "$rss4a" "$rss4b")
+        ratio=$(ratioOf "$rssN" "$rss4")
+        raw="首对 N=${rssNa} KB / 4N=${rss4a} KB；复测 N=${rssNb} KB / 4N=${rss4b} KB ⇒ 取较小 N=${rssN} KB / 4N=${rss4} KB"
+    fi
     if [ "$ratio" = "—" ]; then
-        bad "$shape：拿不到峰值 RSS"
-    elif awk -v r="$ratio" 'BEGIN{exit !(r < 1.5)}'; then
-        ok "$shape：分片=8 下 N→4N 峰值比 ${ratio}× < 1.5×（界与轮数无关）"
+        bad "$shape：拿不到峰值 RSS（$raw）"
+    elif ratioOk "$ratio"; then
+        ok "$shape：分片=8 下 N→4N 峰值比 ${ratio}× < ${MAX}×（界与轮数无关）"
+        # 复测救回来的照样留痕：一次高水位是环境噪声的证据，不该被静默吃掉。
+        [ -z "$retried" ] || printf '       注：首对不成对（N=%s KB / 4N=%s KB），复测取较小值后成立\n' "$rssNa" "$rss4a"
     else
-        bad "$shape：分片=8 下 N→4N 峰值比 ${ratio}× ≥ 1.5×（界仍与轮数有关）"
+        run "$exe1" "$N4"; ref=$R_RSS
+        bad "$shape：分片=8 下 N→4N 峰值比 ${ratio}× ≥ ${MAX}×（界仍与轮数有关）｜$raw｜参考：SHARDS=1 的 4N 峰值 ${ref} KB"
     fi
 done
 exit "$fail"

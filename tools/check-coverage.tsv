@@ -133,8 +133,10 @@ N=200000 Q=200000 V=200000 RUNS=1 ./bench/oi/persist/run.sh	bench-oi-persist	457
 #    · gate-reclaim-perf-shapes（gate，约 1.8s）：真实形状 bt/rebuild 的指令数上限 + 开关语义。
 #    · reclaim-unit（tests，约 0.9s）：`tests/reclaim/run.sh` —— 回收运行期语义网（70 条断言 +
 #      ASan/UBSan）。（这一套此前**没接进 check.sh**，2026-10-12 补上。）
-#    · gate-shard（gate，约 4.6s）：`tests/reclaim-shapes/gate-shard.sh` —— 分片路径
+#    · gate-shard（gate，约 8s）：`tests/reclaim-shapes/gate-shard.sh` —— 分片路径
 #      （`EXTC_RC_SHARDS`）：旋钮非空转 + 输出逐字一致 + 分片=8 下 N vs 4N 峰值比 < 1.5。
+#      峰值比红了**才**复测一对、两规模各取较小值（峰值 RSS 是跨环境读数）；FAIL 行带
+#      首对/复测的原始 KB 与 SHARDS=1 的 4N 参考。
 #    · gate-reclaim-switch（gate，约 12s）：`tests/reclaim-shapes/run-switch.sh` ——
 #      开关形状主门禁 30 条（语义一致 + 每形状 N vs 4N 峰值/登记量 <1.5×）。
 #    · gate-wiring（gate，<0.1s，也在 smoke 里）：`tools/check_gate_wiring.py` ——
