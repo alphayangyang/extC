@@ -25,7 +25,7 @@
 | | Java | 0 | — | — | — | — | 0 | 0% |
 | | Node | 33 | 100 | 736 | 794 | 800 | 0 | 6.1% |
 
-- **读法**（`PAUSE.md` 开头同样五条）：① 事件数不可比（extC 上万条 = 每个有界步；Java 0–3 条 = 每次 GC）；② extC 除 `chase` 的一次 2.36 ms（抢占）外，单次停顿全部 ≤ 115 µs（promote 的最大值，其余三档更小），而 Java/Node 在 `chase` 上有 45 ms / 84 ms 的单次停顿（Node 12 条里 10 条 ≥1 ms）；③ Go 的 STW 只有 6–14 µs，因为并发阶段不算停顿 —— 但 Σ GC 工作仍是四家最高（28–49% 墙钟），那是同一条核上的时间；④ extC 的分族臂 `extc_mark`/`extc_sweep` 说明长尾全在**标记**族（`chase` max 5 ms），**清扫**族极窄（p50 = p99 = 1 µs、max ≤ 50 µs）；⑤ Rust/C++ 手工释放，不进表。
+- **读法**（`PAUSE.md` 开头同样五条）：① 事件数不可比（extC 上万条 = 每个有界步；Java 0–3 条 = 每次 GC）；② extC 除 `chase` 的一次 2.36 ms（抢占）外，单次停顿全部 ≤ 115 µs（promote 的最大值，其余三档更小），而 Java/Node 在 `chase` 上有 45 ms / 84 ms 的单次停顿（Node 12 条里 10 条 ≥1 ms）；③ Go 的 STW 只有 6–14 µs，因为并发阶段不算停顿 —— 但 Σ GC 工作仍是四家最高（28–49% 墙钟），那是同一条核上的时间；④ extC 的分族臂 `extc_mark`/`extc_sweep` 说明长尾全在**标记**族（`chase` max 5 ms），**清扫**族极窄（p50 = p99 = 1 µs、max ≤ 50 µs）；⑤ Rust/C++ 手工释放，不进表；⑥ **占比高不是缺陷、占比低也不等于便宜** —— 占比只是「这次回收付出了多少」，判值不值要配同一形状的峰值 RSS：extC `promote` 36.1% 占比换来 7.4 MB 峰值，而 Java 的 `cycleratio` 0 事件 / 0.0% 占比、`promote` 4.5% 占比，代价是 104 / 111 MB 堆；低占比既可能是「回收便宜」，也可能是「还没回收」。
 - **已知局限**（都写进 `PAUSE.md` 与各臂 `meta.notes`）：Go 的 `chase` 只有 2 个 GC 周期（4 事件，分位无统计意义）· Java 的 `cycleratio` 一条 GC 都没有（0 事件）· Node 的 pause 分辨率只有 100 µs（独占 100 µs 一档 = 低于分辨率）· Java 单核默认落在 SerialGC，与生产上的 G1/ZGC 不是一回事 · 单机、单核、REPS=3。
 - **口径**：`bench/gc/v2/pause/README.md`（产物布局 `pause/<arm>/<shape>.{events,hist,meta}`、meta 必需键、公共 14 档阶梯、`total_gc_us` 的定义与「拿不到写 `-`」）· `bench/gc/v2/SPEC.md` §6/§7 · `docs/TODO.md`。
 - **验收**：`bash bench/gc/v2/pause/{extc,go,java,node}.sh` 逐个跑通（带/不带诊断的 stdout 每次 `cmp` 相同、exit 0）；`./check.sh nobench -j4` 通过 108 / 失败 0、`./check.sh docs -j4` 通过 12 / 失败 0。**没有改编译器** ⇒ 生成物与语料指纹都不动。

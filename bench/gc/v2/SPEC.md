@@ -221,4 +221,5 @@ python3 bench/gc/v2/report.py bench/gc/v2/matrix.tsv bench/gc/v2/REPORT.md bench
   **定义不是同一件事**，事件数（extC 上万条 vs Java 个位数）不可直接比。
 - extC 的停顿步就是在 mutator 线程上做的**全部 GC 工作**（它没有独立 GC 线程）⇒ `total_us == total_gc_us`；
   Go/Java/Node 的并发阶段不进停顿、但进 `total_gc_us`。所以除了停顿表，必须同时看「Σ GC 归因时间」表。
+- 占比要配 `REPORT.md` 的峰值 RSS 一起读：extC `promote` 36.1% 占比换来 7.4 MB 峰值，Java `cycleratio` 0 事件 / 0.0% 占比而 RSS 104 MB ⇒ 低占比也可能是「还没回收」。
 - Rust / C++ 手工释放，没有 GC 停顿，不进本表。

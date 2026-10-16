@@ -189,7 +189,7 @@ def write_md(rows, path, tsvinfo):
     ]
     for arm in sorted(srcs):
         lines.append("| %s | %s |" % (arm, srcs[arm]))
-    lines += ["## 读法（先看这五条，再看数）", "",
+    lines += ["## 读法（先看这六条，再看数）", "",
               "1. **事件数不可直接比**：extC 每条有界回收步算一个事件（上万条），Go 每个 GC 周期两段、Java 每条 GC 暂停、Node 每次 GC 各算一个（个位数到两位数）。",
               "   频率差异是「细粒度增量 vs 整轮 STW」的口径差，不是谁更忙。",
               "2. **样本量与分辨率**：Java 0–3 条、Go 4–102 条 ⇒ 它们的 p99/max 基本是单点噪声；Node 的 `pause` 只有 1 位小数 ms（100 µs 分辨率），",
@@ -198,7 +198,10 @@ def write_md(rows, path, tsvinfo):
               "   拿它的 p50 去和 Go 的 STW p50 排名次是错的，要比的是「mutator 被占住多少时间」= 下一节的 Σ 表。",
               "4. **max 是抢占敏感量**：extC chase 的 2.36 ms 是一次被抢占（`over1ms=1`），不是某个更贵的回收单元；",
               "   仓库纪律是用超阈计数与分位（`≥1ms` 列、p99/p99.9）而不是 max。",
-              "5. **取数必须串行**：所有臂都钉同一条核（见 `pause/README.md` 第 2 节），并发跑会互相抢占（同一臂两次数值可差数倍）。", ""]
+              "5. **取数必须串行**：所有臂都钉同一条核（见 `pause/README.md` 第 2 节），并发跑会互相抢占（同一臂两次数值可差数倍）。",
+              "6. **占比高不是缺陷，占比低也不等于便宜**：停顿/GC 占比是「这次运行里回收付出了多少」；判「值不值」要配同一形状的**峰值 RSS**（见 `REPORT.md` 的墙钟/RSS 表）。",
+              "   extC 占比高（`promote` 36.1%、`cycleratio` 8.6%）换来的是 7.4–7.5 MB 峰值；Java 的 `cycleratio` 0 事件、0.0% 占比，代价是 **104 MB**（`promote` 的 4.5% 也是靠 111 MB 堆头寸）。",
+              "   低占比既可能是「回收便宜」，也可能是「还没回收」，两张表要一起读。", ""]
     lines += ["", "## 分形状", ""]
     for s in SHAPES:
         rs = [r for r in rows if r["shape"] == s]
