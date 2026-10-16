@@ -4,7 +4,9 @@
 # 目标口径（用户目标）：像 `bt` 这种**根本不产生垃圾/环**的形状（整棵树的死期就是所在区域的
 # 死期，帧内不需要"提前回收"换内存），回收档与关闭档的差距应当**趋近 0**。
 #
-# 度量：同一个程序源，`EXTC_RECLAIM=1` 与 `=0` 各编一份（`cc -O3 -march=native -fwrapv`），
+# 度量：同一个程序源，`EXTC_RECLAIM=1` 与 `=0` 各编一份（`cc -O3 -fwrapv`；**不带
+# `-march=native`**：判的是同一份源、同一组 flags 下的开/关档**比值**，不需要 native，
+# 而闸门的产物不该随 runner 的 CPU 变——口径与 `gate-shapes.sh` 一致），
 # 小输入下取 callgrind 总指令数，算
 #        税 = 开档 Ir / 关档 Ir      （1.00× = 完全不花钱）
 # 与 占比 = 1 − 关档/开档。
@@ -51,25 +53,64 @@ fi
         || { bad "小输入不在且生成失败（bench/bigmatrix/gen.c）"; tail -3 "$TMP/gen.log" | sed 's/^/    /'; exit 1; }
 }
 
-ir_of() { # <标签> <源> <是否开档> <输入或 -> <程序参数…> → 打印 Ir
+ir_of() { # <标签> <源> <是否开档> <输入或 -> <程序参数…> → 打印 Ir；失败打印 `ERR:<步骤>`
     local tag=$1 src=$2 on=$3 inp=$4; shift 4
     local rc=0; [ "$on" = 1 ] && rc=1
-    EXTC_RECLAIM=$rc "$EXTC" -I "$ROOT/stdlib" "$src" -o "$TMP/$tag.c" >/dev/null 2>&1 \
-        && $CC -O3 -march=native -fwrapv -o "$TMP/$tag" "$TMP/$tag.c" >/dev/null 2>&1 \
-        || { echo ERR; return; }
+    # 每一步都留现场（ERR:extc / ERR:cc / ERR:callgrind / ERR:summary）：以前三处失败都只回一个
+    # `ERR`，CI 上只看到"生成/编译/callgrind 失败" ⇒ 查不动（现场由 why() 打）。
+    if ! EXTC_RECLAIM=$rc "$EXTC" -I "$ROOT/stdlib" "$src" -o "$TMP/$tag.c" >"$TMP/$tag.extc.log" 2>&1; then
+        echo ERR:extc; return
+    fi
+    if ! $CC -O3 -fwrapv -o "$TMP/$tag" "$TMP/$tag.c" >"$TMP/$tag.cc.log" 2>&1; then
+        echo ERR:cc; return
+    fi
+    local vg_rc
     if [ "$inp" = "-" ]; then
-        valgrind --tool=callgrind --callgrind-out-file="$TMP/$tag.cg" "$TMP/$tag" "$@" >/dev/null 2>&1
+        valgrind --tool=callgrind --callgrind-out-file="$TMP/$tag.cg" "$TMP/$tag" "$@" >"$TMP/$tag.run.log" 2>&1
     else
-        valgrind --tool=callgrind --callgrind-out-file="$TMP/$tag.cg" "$TMP/$tag" "$@" < "$inp" >/dev/null 2>&1
-    fi || { echo ERR; return; }
-    grep '^summary:' "$TMP/$tag.cg" | awk '{print $2}'
+        valgrind --tool=callgrind --callgrind-out-file="$TMP/$tag.cg" "$TMP/$tag" "$@" < "$inp" >"$TMP/$tag.run.log" 2>&1
+    fi; vg_rc=$?
+    [ "$vg_rc" = 0 ] || { echo "ERR:callgrind(rc=$vg_rc)"; return; }
+    local ir
+    ir=$(grep '^summary:' "$TMP/$tag.cg" 2>/dev/null | awk '{print $2}')
+    [ -n "$ir" ] || { echo ERR:summary; return; }
+    echo "$ir"
+}
+
+why() { # <标签.档> <ir_of 回的 ERR 行> <输入或 -> ⇒ 把失败那一步的现场打出来
+    local t=$1 e=$2 inp=$3
+    case "$e" in
+        ERR:extc*)      printf '        ↳ %s：extc 生成 C 失败\n' "$t"
+                        tail -3 "$TMP/$t.extc.log" 2>/dev/null | sed 's/^/          /' ;;
+        ERR:cc*)        printf '        ↳ %s：%s 编不过\n' "$t" "$CC"
+                        tail -3 "$TMP/$t.cc.log" 2>/dev/null | sed 's/^/          /' ;;
+        ERR:callgrind*) printf '        ↳ %s：valgrind 里失败（%s）\n' "$t" "$e"
+                        tail -3 "$TMP/$t.run.log" 2>/dev/null | sed 's/^/          /'
+                        local nrc=0
+                        if [ -x "$TMP/$t" ]; then
+                            if [ "$inp" = "-" ]; then "$TMP/$t" >/dev/null 2>&1; nrc=$?
+                            else "$TMP/$t" < "$inp" >/dev/null 2>&1; nrc=$?; fi
+                            if [ "$nrc" = 0 ]; then
+                                printf '          （同一二进制在 valgrind 之外跑 rc=0 ⇒ 产物没问题，折在 callgrind 这关）\n'
+                            else
+                                printf '          （同一二进制在 valgrind 之外跑 rc=%s）\n' "$nrc"
+                            fi
+                        fi ;;
+        ERR:summary*)   printf '        ↳ %s：callgrind 退出码 0 却没有 summary 行（cg 不完整）\n' "$t" ;;
+        *)              printf '        ↳ %s：%s\n' "$t" "$e" ;;
+    esac
 }
 
 show() { # <形状> <源> <输入或 -> <是否判> [线] [程序参数…]
     local name=$1 src=$2 inp=$3 judge=$4 lim=${5:-}; shift 4; [ $# -gt 0 ] && shift 1
     local on off
     on=$(ir_of "$name.on" "$src" 1 "$inp" "$@"); off=$(ir_of "$name.off" "$src" 0 "$inp" "$@")
-    if [ "$on" = ERR ] || [ "$off" = ERR ]; then bad "$name：生成/编译/callgrind 失败"; return 1; fi
+    if [ "$on" != "${on#ERR}" ] || [ "$off" != "${off#ERR}" ]; then
+        bad "$name：生成/编译/callgrind 失败"
+        [ "$on" != "${on#ERR}" ] && why "$name.on" "$on" "$inp"
+        [ "$off" != "${off#ERR}" ] && why "$name.off" "$off" "$inp"
+        return 1
+    fi
     local per_mille pct
     per_mille=$(awk -v a="$on" -v b="$off" 'BEGIN{printf "%d", 1000.0*a/b}')
     pct=$(awk -v a="$on" -v b="$off" 'BEGIN{printf "%.1f", 100.0*(a-b)/a}')
