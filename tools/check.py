@@ -928,6 +928,13 @@ def build_items() -> list:
         sh('python3 tools/check_no_history.py --gate'),
         ok_msg=ok_out, bad_msg="活文档出现新的历史词", bad_dump=dump_head(8)))
 
+    # ---- 开发历史按月分页 ----
+    items.append(cmd(
+        "check-changelog", "docs",
+        "开发历史按月分页：条目落在当月页，索引里的月份表与月份页一致",
+        sh('python3 tools/check_changelog.py --gate'),
+        ok_msg=ok_first(r"^ok "), bad_msg="历史分页或索引不一致", bad_dump=dump_head(8)))
+
     # ---- 头文件 Doxygen 覆盖 ----
     items.append(cmd(
         "check-doxygen", "docs",

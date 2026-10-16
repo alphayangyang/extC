@@ -104,7 +104,7 @@ depth(引用) >= depth(存放位置)      // 满足才允许存
 > 清扫的种子/遍历不依赖计数（从根槽与已登记的跨区种子出发、靠每槽的类型描述符下钻），
 > 所以区域仍然有界；少掉的只是"最后一个持有者死 ⇒ 当场回收"这条快路。
 > 翻转的依据与全套证据（31 条形状棘轮、ASan 语料、gaps 集合、停顿探针、绝对峰值）
-> 见 `CHANGELOG.md` 第十一刀。下面这一节描述的是**打开计数时**的口径。
+> 见 `changelog/2026-10.md` 第十一刀。下面这一节描述的是**打开计数时**的口径。
 
 **最后一根线断掉的时刻，就是持有者数归零的时刻。** 每次指针赋值加减一次，归零当场释放。
 
@@ -138,7 +138,7 @@ p = null                 // 计数 0 —— 放
   **无计数档（默认）因此把本地槽的着色整段省掉**（`initRef` / `initRefNoHold` / `storeRefLocal`：
   本地槽是根，不需要①，②在删除点已经兜住），保护从"每次本地槽写"搬到"每次堆边删除"；
   计数档不动（`extc_rc_shadeOld` 在计数档编译成 no-op）。判据 = `tools/check_mark_both.py`
-  （挂 `gate-mark-both`，7 项注入红自测）；六档数字在 `CHANGELOG.md`。
+  （挂 `gate-mark-both`，7 项注入红自测）；六档数字在 `changelog/2026-10.md`。
 * **根表只覆盖本帧，所以清扫只在「本帧拥有」的区域上进行；不属于本帧的，记一笔账留给拥有者。**
   根表按词法作用域拼：本帧活着的局部量、形参、全局量。它看不见调用栈上其他帧的活引用，因此往
   **调用者传下来的区域**（被调者的分配落进调用者的那一层）分配时，触发点不物化根表，只在那个区域上
@@ -423,7 +423,7 @@ P2 与这个反例的差别**只有"旧值是否另有根"这一维**（P2 的�
    **这条已由 `gate-reclaim-work` 自动强制**（挂 `nobench`，约 3 秒）：五形状现场生成+运行，
    `[work]` 必须存在且 `n>0`（否则文案是"插桩失败/工具不兼容"，不许当绿）、每形状 3 次逐字相同、
    三条界全部**蕴含式**成立；三个预算与 `rsbit` 字宽都从**产物** `#define` grep（读不到 ⇒ 红，
-   不许硬编码）。红演示见 `docs/CHANGELOG.md` 顶部：把种子扫描的字预算拿掉 ⇒
+   不许硬编码）。红演示见 `docs/changelog/2026-10.md` 顶部：把种子扫描的字预算拿掉 ⇒
    `scan_max=5120 > SEED_WORDS=512` 直接红（就是那个历史洞）；把 `[work]` 改名 ⇒ 五形状全红在"插桩失败"。
 2. **超阈切片计数**（`[step]` 的 `overK`）：`over1ms` 必须恒 0；`over64/over256` 用于比值。
    判据是"计数在中位数/最小值口径下不上升"，不是单次最大值。
@@ -546,7 +546,7 @@ reclaim 形状闸门（`gate-shapes`/`gate-work`/`gate-shard-cycles`/`gate-idle-
 ### 五.一、按优先级的开放项（机制与出处）
 
 上面两块是"清扫覆盖不到"的机制缺口；下面这份是**开放项清单**，按优先级排，每条只写"要什么行为"
-与出处。实测数字只在归档与 `CHANGELOG.md` 里，本节不复制它们 —— 出处见会话归档
+与出处。实测数字只在归档与 `changelog/` 里，本节不复制它们 —— 出处见会话归档
 [`archive/2026-10-15-gc-pause.md`](archive/2026-10-15-gc-pause.md) 的报告索引。
 
 1. **取消式收尾 —— 已落地**（`extc_rc_abort`：`regionFree` 不再排空在飞的一轮，取消并配对减
@@ -585,7 +585,7 @@ reclaim 形状闸门（`gate-shapes`/`gate-work`/`gate-shard-cycles`/`gate-idle-
     「回收的量具与访存局部性」一节，原始实测归档在
     [`archive/2026-10-15-locality.md`](archive/2026-10-15-locality.md)；本清单不复制。
     其中「批弹出窗口」一项已落地（`EXTC_RC_MARK_BATCH_POP` 默认 **200**，见
-    [`CHANGELOG.md`](CHANGELOG.md)）：拉长一步内的在飞窗口就能压 `[step]` 总量，而软件预取与其
+    [`changelog/2026-10.md`](changelog/2026-10.md)）：拉长一步内的在飞窗口就能压 `[step]` 总量，而软件预取与其
     对照证明不是杠杆；批宽同时是遍历顺序旋钮（`collects`/峰值 RSS 跟着动）。
 16. **滑窗 + 长命索引形状上的超线性回收**：回收工作量随规模超线性（幂次约 1.7–1.8），而
     `EXTC_RECLAIM=0` 对照臂是线性的（≈0.97）；**超线性的大头在 `[step]` 记账之外**（残差）
@@ -624,7 +624,7 @@ reclaim 形状闸门（`gate-shapes`/`gate-work`/`gate-shard-cycles`/`gate-idle-
 * **两条新闸门**（都挂 `nobench`，运行期零改动）：
   - `gate-reclaim-work` 强制**工作量界** —— `[work]` 必须存在且 `n>0`（否则文案是"插桩失败/
     工具不兼容"，不许当绿）、每形状多次运行逐字相同、三条界全部从**产物**里读出（读不到即红，
-    不许硬编码）；红演示见 `CHANGELOG.md`：拿掉种子扫描的字预算 ⇒ `scan_max` 越界直接红，
+    不许硬编码）；红演示见 `changelog/2026-10.md`：拿掉种子扫描的字预算 ⇒ `scan_max` 越界直接红，
     把 `[work]` 改名 ⇒ 五形状全红在"插桩失败"。
   - `gate-foreign-skip` 守**"跳过旧值登记查表"的前提** —— 每个撤销点被"这只区域出现过跨区值"
     把门、每个登记点同行置位，再编一个带守卫的构建跑一次，要求守卫被检查过且零违例（拿不到守卫
@@ -709,7 +709,7 @@ reclaim 形状闸门（`gate-shapes`/`gate-work`/`gate-shard-cycles`/`gate-idle-
 | 义务 3：计数到顶**粘住**（`hold` 与 `rscnt` 都一样）| 不安全 | `rsInc`/`rsIncSlab`/`holdUpd*` 的 `SAT` 守卫 | 注入 `count-nosat` ⇒ `饱和：计数到顶粘住`；注入 `rsinc-nosat` ⇒ `跨区计数：到顶粘住`；注入 `realpath-noreg`（只破坏**真实赋值路径**的登记）⇒ 红在 `跨区计数（真实路径）：到顶粘住`，证明真实路径那一组断言有独立的牙 |
 | 义务 4：按**对象自己的**描述符走指针字段 | 不安全（走漏 ⇒ 少标）| `extc_rc_mark` 用 `s->type[i]` | 单测 `类型：描述符字段数正确` + 注入 `mark-nodesc` ⇒ 红在 `跨区：B 从入边位图播种` |
 | 义务 7：种子不完整 ⇒ 目标区域**退出清扫** | **不安全** | `storeRefUnknown` / `storeStructCons` 的保守分支 | 单测 `义务 7：…退出清扫` + 注入 `noSweep-drop` ⇒ 红在那条上 |
-| 参与区域数（单区域免登记快路径的前提）| **不安全** | 槽的**诞生点**记 `partN`：`extc_rc_alloc` 无条件记、`storeStructCons` 的保守分支也记；**赋值侧不再记**（冗余：槽的区域在诞生时已记过，见 CHANGELOG 2026-10-15）；`extc_rc_regionFree` 开头有 **R3 运行期守卫**复查"有占用槽 ⇒ `part == 1`" | `gate-note-part`：静态 R2「会交出槽 ⇒ 必须记参与」（**在真实缺陷 `storeStructCons` 上红过**）+ 运行期 R3。R3 的红演示：注入"删掉 `alloc` 的 `notePart`" ⇒ 静态 `FAIL [R2] extc_rc_alloc`（rc=1）**且** `trap: reclaim: R3: occupied slot in a region with part == 0`（rc=1），撤回后绿。另有 `cross-region` 登记量判据 |
+| 参与区域数（单区域免登记快路径的前提）| **不安全** | 槽的**诞生点**记 `partN`：`extc_rc_alloc` 无条件记、`storeStructCons` 的保守分支也记；**赋值侧不再记**（冗余：槽的区域在诞生时已记过，见 `changelog/2026-10.md` 的 2026-10-15 条目）；`extc_rc_regionFree` 开头有 **R3 运行期守卫**复查"有占用槽 ⇒ `part == 1`" | `gate-note-part`：静态 R2「会交出槽 ⇒ 必须记参与」（**在真实缺陷 `storeStructCons` 上红过**）+ 运行期 R3。R3 的红演示：注入"删掉 `alloc` 的 `notePart`" ⇒ 静态 `FAIL [R2] extc_rc_alloc`（rc=1）**且** `trap: reclaim: R3: occupied slot in a region with part == 0`（rc=1），撤回后绿。另有 `cross-region` 登记量判据 |
 | 触发语义：压力阈值随 `live`/`scale` 更新 | 性能/内存 | `collect`/`regionFloor`/`regionNew` 末的 `thrUpd` | 注入 `thr-stale` ⇒ `阈值缓存③：倍数翻倍后阈值 ×2` |
 | 本地/形参槽的只写入口（`EXTC_RC_LOCALSTORE`，默认关）**只允许用在 `owner == 0` 的槽上** | **不安全**（对象宿主走它 ⇒ 跨区登记整段丢失）| `codegen.c` 的 `rcLocalStore && rcNoCount && hostBase == NULL`；`storeRefLocal` 只写 | 注入 `localstore-on-objhost`（把 `hreg != NULL` 的对象宿主存储也改发该入口）⇒ `cross_region` 的 `rs_inc/rs_dec/rs_live/rs_hwm` 从 `200000/196611/3389/65537` **塌成 0/0/0/0**，`gate-reclaim-switch` **红（通过 1 失败 1，exit 1）** —— 实测；等价性（无计数档下 `storeRefOwned(slot,v,0)` 的 gated 块因 `so == 0` 无副作用）见 `tests/reclaim-perf/LOCALSTORE-IMPL.md` |
 | 回收税判据线自身有牙（税不许涨）| 性能 | 赋值/分配路径的实现（区域指针复用、登记快路径…）| 注入 `perf-lookup`（让 `rcRegionRef` 恒返回 NULL）⇒ `gate-reclaim-tax` 红在 `税 1.679× > 上限 1.620×` |

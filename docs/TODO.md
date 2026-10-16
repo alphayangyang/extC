@@ -125,11 +125,11 @@
 「四.一」；本节只留"待查/待修什么"，不复制口径。
 
 - **P6 唯一慢于 Go 的那一档 —— 已解决**（2026-10-15，mark-both 屏障）：1M 从 530 ms 降到 **460 ms
-  （0.92× Go）**，六档墙钟第一次全部不慢于 Go（逐档数字见 [`CHANGELOG.md`](CHANGELOG.md) 的表）。做法：无计数档把三处本地槽
+  （0.92× Go）**，六档墙钟第一次全部不慢于 Go（逐档数字见 [`changelog/2026-10.md`](changelog/2026-10.md) 的表）。做法：无计数档把三处本地槽
   写入（`initRef` / `initRefNoHold` / `storeRefLocal`）的 `shade` 整段省掉，保护改由**删除屏障**
   （`extc_rc_shadeOld`：覆盖堆槽前给被删掉的旧值着色）承担 —— 即 mark-both（插入 + 删除）。
   判据 = `tools/check_mark_both.py`（挂 `gate-mark-both`，7 项注入红自测）+ 六档 stdout 逐字节。
-  计数形状（`shade` 452.6M 次、99.8% 出「已经黑」）与消融记录在 `docs/CHANGELOG.md`。
+  计数形状（`shade` 452.6M 次、99.8% 出「已经黑」）与消融记录在 `docs/changelog/2026-10.md`。
 - **P4 的墙钟对"释放集变化"敏感（新记录，开放项）**：mark-both 后在官方 N=28 000 上 510 → 600 ms
   （**0.54× Go**，仍远快于 Go），但回收工作量不变（collects 655、`[step]` 总时长 56.4 → 56.8 ms）、
   指令数反而少 13.5%（cachegrind 6.76G → 5.85G Ir，D1/LL 未命中数相同），且 N=56 000 / 112 000 两臂
@@ -144,7 +144,7 @@
 - **P6 的内存高于 Go —— 已解决**（2026-10-16，slab 容量按槽大小定）：1M 从 9.7 MB 降到 **8.5 MB**
    （Go 12 次绑核分布 8.5–9.1 MB、中位 8.9 MB ⇒ **0.97×**；Rust 211 MB、C++ 276 MB ⇒ 0.04×），同一改动
    把 P5 的 129.8 MB 再压到 **77.1 MB（0.55× Go）**。判据 = `tools/check_slab_cap.py`（挂 `gate-slab-cap`）；
-   机制与六档 A/B 表在 `docs/CHANGELOG.md` 的 2026-10-16 条目。
+   机制与六档 A/B 表在 `docs/changelog/2026-10.md` 的 2026-10-16 条目。
 - **硬警告：`EXTC_RECLAIM=0` 不是"只关 GC"。** 它同时把分配器换成 `extc_arena_*` bump —— off 臂
   的生成物里 `extc_rc_*` 记号与 `malloc` 都是 **0**、行数远少于 on 臂（具体见 §10.1）⇒ 这个对照
   是「回收运行期 + **槽式分配器** + 记账」vs「**纯 bump arena**」，**横评/结论里不得把 on/off 的

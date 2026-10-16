@@ -7,7 +7,7 @@
     tools/check_doc_examples.py            报告
     tools/check_doc_examples.py --gate     有失败就 exit 1（check.sh 调用）
 
-判据（对 `docs/**/*.md`，不含 `archive/` 与 `manual/`）：
+判据（对 `docs/**/*.md`，不含 `archive/`、`manual/` 与 `changelog/`）：
 
 * 围栏 ```` ```extc ```` 且**含 `fn main`** ⇒ 是一段完整程序：必须 `extc --check-c` 通过；
   能跑的还会 `--run` 一次（用 `--run` 的退出码当判据时，页面里要写明期望输出）。
@@ -25,7 +25,7 @@ import pathlib
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 EXTC = ROOT / "build" / "extc"
 TMP = pathlib.Path("/tmp/extc-docex")
-SKIP_PARTS = {"archive", "manual"}
+SKIP_PARTS = {"archive", "manual", "changelog"}
 SKIP_NAMES = {"CHANGELOG.md"}
 
 FENCE = re.compile(r"^```(\w*)\s*$")

@@ -11,7 +11,7 @@
 棘轮：`tools/no-history-baseline.txt` 记录**存量**（键 = 文件|规则|整行文字，行号变动不 churn）。
 基线**只许变短，不许变长** —— 清掉一条就从基线里删掉那行。
 
-范围：活文档（`docs/**/*.md`，**不含** `archive/`、`manual/`、`CHANGELOG.md`）· 源码与脚本
+范围：活文档（`docs/**/*.md`，**不含** `archive/`、`manual/`、`changelog/`、`CHANGELOG.md`）· 源码与脚本
 （`src/**/*.{c,h}` · `stdlib/**/*.extc` · `tools/**/*.py`）。`tests/` 不在范围内。
 """
 import re
@@ -31,8 +31,8 @@ RULES = [
     ("history-en", r"\bused to\b|\bmeasured\b|\bno longer\b|\bearlier (version|implementation|code)\b|\bpreviously\b|\boriginally\b"),
 ]
 
-# 活文档里**不算**的范围（已归档 / 待归档 / 唯一历史档）。
-DOC_SKIP_PARTS = {"archive", "manual"}
+# 活文档里**不算**的范围（已归档 / 待归档 / 历史档：索引页与它的月份页）。
+DOC_SKIP_PARTS = {"archive", "manual", "changelog"}
 DOC_SKIP_NAMES = {"CHANGELOG.md"}
 
 GLOBS = ["docs/**/*.md", "src/**/*.c", "src/**/*.h", "stdlib/**/*.extc", "tools/**/*.py"]
