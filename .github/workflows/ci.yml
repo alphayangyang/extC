@@ -38,19 +38,23 @@ jobs:
           sudo apt-get install -y -qq valgrind
           valgrind --version
 
+      - name: 这台机器上有什么（注解是唯一读得到的通道 ⇒ 关键工具先报上来）
+        run: |
+          echo "::notice::runner: nproc=$(nproc) · cc=$(cc --version | head -1) · glibc=$(ldd --version | head -1) · python3=$(python3 -V 2>&1) · /usr/bin/time=$(test -x /usr/bin/time && echo 有 || echo 无) · valgrind=$(valgrind --version 2>/dev/null || echo 无)"
+
       - name: quick acceptance suite
-        # 失败要**能从 API 读到**：本机没有 gh，看不了 Actions 日志；
+        # 失败要**能从 API 读到**：跑 CI 的机器上没有 gh，看不了 Actions 日志；
         # 而 `::error::` 会变成 GitHub 注解，注解对公开仓库**无需认证**即可读
-        # （/commits/<sha>/check-runs → annotations_url）。
+        # （/commits/<sha>/check-runs → annotations_url）。注解一步最多 10 条，所以失败项清单
+        # 只从耗时表读（tools/ci_annotate.py）—— 别 `grep -a FAIL`：闸门会为已知欠账打 FAIL，
+        # 那样抓到的多半是噪声，真正的失败项被挤出 10 条之外。
         run: |
           set +e
           ./check.sh quick > /tmp/quick.log 2>&1
           rc=$?
           tail -30 /tmp/quick.log
           if [ "$rc" -ne 0 ]; then
-            grep -a "FAIL" -A 2 /tmp/quick.log | head -80 | while IFS= read -r line; do
-              echo "::error::$line"
-            done
+            python3 tools/ci_annotate.py --log /tmp/quick.log --times "${SEC_TIMES:-/tmp/extc-check-times.tsv}"
           fi
           # 装了 valgrind 却仍跳过 ⇒ 那三条回收性能/税棘轮在 CI 上没跑（上面那步白装了）——
           # 这是失败，不是"跳过"。本机缺 valgrind 时才允许跳过（契约：只要 cc + python3）。
