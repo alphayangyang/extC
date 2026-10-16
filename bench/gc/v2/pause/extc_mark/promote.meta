@@ -1,0 +1,14 @@
+lang=extc
+arm=extc_mark
+shape=promote
+args=500000 20261013
+events=7187
+total_us=12130.900
+wall_ms=62.446
+wall_plain_ms=53.235
+source=EXTC_RC_SLOWSTEP=0.001 -> [slow] lines with kind=mark
+slices=20648
+collects=82
+step_total_us=19196.8
+pause_total_us=2189.2
+notes=extc 全体的 kind=mark 子集；只存 hist（分位按档上界近似），逐事件表在 extc/ 下

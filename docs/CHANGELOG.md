@@ -1,3 +1,34 @@
+## 2026-10-16 · 跨语言 GC 停顿分布（直方 + 分位）—— extC 单次停顿 ≤ 115 µs，Java/Node 在 `chase` 上有 45 ms / 84 ms；Σ GC 工作四档都低于 Go
+
+**新增 `bench/gc/v2/pause/`（四个语言的 runner + `README.md` 接口约定）与聚合器 `pause_report.py`，产出 `PAUSE.md` + `pause_v2.tsv` + `pause.png`；上一版的 `pause.sh`/`pause.tsv` 删除（被取代），`report.py` 的成绩单里加第二张「Σ GC 归因时间」表。**
+
+- **为什么**：上一版只报了 extC 侧 `[step]` 的**均值与 max**，而 `max_us` 是受抢占影响的长尾量（同版本两次跑能差几倍），跨语言一个都没测。要回答「谁的停顿糟」，必须给**分布**：直方 + p50/p99/p99.9 + 超阈计数，而不是单点。
+- **四个 runner 各报自己运行期承认的停顿**：extC = 每个有界回收步（`EXTC_RC_SLOWSTEP=0.001` 逐事件留档）· Go = `GODEBUG=gctrace=1` 的 A+C 两段 STW · Java = `-Xlog:gc` 的每条 ` Pause ` · Node = `--trace-gc-nvp` 的 `pause=`。**定义不是同一件事**：extC 没有独立 GC 线程 ⇒ 停顿步就是它的全部 GC 工作；另外三家只报停止时间。所以必须同时报第二把尺 `total_gc_us`（extC = Σ`[step]`；Go = Σ(A+B+C)；Java = Σ暂停 + Σ并发；Node = Σ整段；拿不到写 `-`）。
+- **结果**（`taskset -c 6`、**runner 逐个串行**、REPS=3、四档 stdout 与 extC 逐字节相同；单位 µs）：
+
+| 形状 | 臂 | 事件数 | p50 | p99 | p99.9 | max | ≥1 ms | Σ GC 工作 / 墙钟 |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| `promote` | extC | 20648 | 0.70 | 1.90 | 30.1 | 114.5 | 0 | **36.1%** |
+| | Go | 90 | 3.00 | 7.77 | 13.4 | 14.0 | 0 | 49.2% |
+| | Java | 2 | 1989.5 | 2124 | 2127 | 2127 | 2 | 4.5% |
+| | Node | 63 | 100 | 800 | 800 | 800 | 0 | 9.7% |
+| `sizeratio` | extC | 5776 | 0.70 | 1.90 | 2.22 | 14.8 | 0 | 12.0% |
+| | Go | 102 | 3.00 | 8.00 | 9.8 | 10.0 | 0 | 28.3% |
+| | Java | 3 | 239 | 414 | 418 | 418 | 0 | 0.9% |
+| | Node | 51 | 100 | 700 | 700 | 700 | 0 | 7.2% |
+| `chase` | extC | 3377 | 1.40 | 2.00 | 12.9 | 2363.7 | 1 | 4.5% |
+| | Go | 4 | 8.00 | 12.9 | 13.0 | 13.0 | 0 | 29.2% |
+| | Java | 1 | 45413 | — | — | **45413** | 1 | 17.1% |
+| | Node | 12 | 4800 | 79224 | 83342 | **83800** | 10 | 19.4% |
+| `cycleratio` | extC | 4018 | 0.80 | 1.80 | 2.10 | 6.2 | 0 | 8.6% |
+| | Go | 26 | 3.00 | 5.50 | 6.0 | 6.0 | 0 | 28.5% |
+| | Java | 0 | — | — | — | — | 0 | 0% |
+| | Node | 33 | 100 | 736 | 794 | 800 | 0 | 6.1% |
+
+- **读法**（`PAUSE.md` 开头同样五条）：① 事件数不可比（extC 上万条 = 每个有界步；Java 0–3 条 = 每次 GC）；② extC 除 `chase` 的一次 2.36 ms（抢占）外，单次停顿全部 ≤ 115 µs（promote 的最大值，其余三档更小），而 Java/Node 在 `chase` 上有 45 ms / 84 ms 的单次停顿（Node 12 条里 10 条 ≥1 ms）；③ Go 的 STW 只有 6–14 µs，因为并发阶段不算停顿 —— 但 Σ GC 工作仍是四家最高（28–49% 墙钟），那是同一条核上的时间；④ extC 的分族臂 `extc_mark`/`extc_sweep` 说明长尾全在**标记**族（`chase` max 5 ms），**清扫**族极窄（p50 = p99 = 1 µs、max ≤ 50 µs）；⑤ Rust/C++ 手工释放，不进表。
+- **已知局限**（都写进 `PAUSE.md` 与各臂 `meta.notes`）：Go 的 `chase` 只有 2 个 GC 周期（4 事件，分位无统计意义）· Java 的 `cycleratio` 一条 GC 都没有（0 事件）· Node 的 pause 分辨率只有 100 µs（独占 100 µs 一档 = 低于分辨率）· Java 单核默认落在 SerialGC，与生产上的 G1/ZGC 不是一回事 · 单机、单核、REPS=3。
+- **口径**：`bench/gc/v2/pause/README.md`（产物布局 `pause/<arm>/<shape>.{events,hist,meta}`、meta 必需键、公共 14 档阶梯、`total_gc_us` 的定义与「拿不到写 `-`」）· `bench/gc/v2/SPEC.md` §6/§7 · `docs/TODO.md`。
+- **验收**：`bash bench/gc/v2/pause/{extc,go,java,node}.sh` 逐个跑通（带/不带诊断的 stdout 每次 `cmp` 相同、exit 0）；`./check.sh nobench -j4` 通过 108 / 失败 0、`./check.sh docs -j4` 通过 12 / 失败 0。**没有改编译器** ⇒ 生成物与语料指纹都不动。
 ## 2026-10-16 · 大横评 v2：四个新形状 × 六语言 —— extC 回收档在 `promote`/`sizeratio` 上比自家纯 bump arena 快 1.45×/2.01×、内存省 14×/22×；对 Go 打平（`chase`/`cycleratio`）或 2.0×/1.5× 领先
 
 **新增 `bench/gc/v2/`（形状规格 `SPEC.md`、六个语言的实现 `src/`、跑表 `run.sh`、垫片 `shim.c`、报表 `report.py`、停顿表 `pause.sh`）与四档 × 11 臂的成绩单 `REPORT.md`。**
@@ -16,7 +47,7 @@
 
   ⇒ 对 Go：`promote` **2.02×**、`sizeratio` **1.49×**、`chase` 0.99×、`cycleratio` 0.92×（内存 extC 7.1–73.7 MB vs Go 7.4–64.6 MB）；对 Java 1.7–2.9×、对 Node 1.6–7.2×；Rust/C++ 靠手工所有权在前两档更快（0.70–0.72×），`chase` 上 C++ 0.82× 领先、Rust 1.46×（`Rc<RefCell>` 共享图有引用计数代价），`cycleratio` 的 0.49× 来自 **careful 臂**（顶掉前手工断环，与 extC 收集环不是一回事）。
 - **extC 自己的开/关对照**（`EXTC_RECLAIM=0` 是**编译期**开关、产物不同；默认档 vs off：`promote` **1.45×**、`sizeratio` **2.01×**、`chase` **0.67×**、`cycleratio` **0.70×**；RSS 7.4/107.0、7.1/154.2、73.7/60.7、7.5/43.4 MB）⇒ 回收档在**垃圾多**的形状上赚（又快又省 14×/22× 内存），在**活集大或环垃圾**的形状上是纯开销。**照 `docs/TODO.md` 的硬警告读**：off 臂同时把分配器换成纯 bump arena（生成物里 `extc_rc_*` 与 `malloc` 都是 0）⇒ 这不是「纯 GC 税」，而是「回收运行期 + 槽式分配器 + 记账」对「纯 bump arena」。Go 的 `GOGC=off` 同型：`promote`/`sizeratio` 更慢（117.7/78.3），`chase` 反而更快（106.7 vs 134.7）。
-- **extC 侧停顿形状**（`pause.sh`，单跑）：切片均值 0.68–2.12 µs、`collects` 2–149；`over1ms` 四次运行里出现 1 次（`chase`，max 2769 µs，抢占噪声）；`cycleratio` 没有一条 ≥16 µs 的切片。**跨语言停顿没做**（Go/Java/Node 各有自己的停顿源，先不出不可比的三方表）—— 记进 `docs/TODO.md`。
+- **extC 侧停顿形状**（`pause.sh`，单跑）：切片均值 0.68–2.12 µs、`collects` 2–149；`over1ms` 四次运行里出现 1 次（`chase`，max 2769 µs，抢占噪声）；`cycleratio` 没有一条 ≥16 µs 的切片。**跨语言停顿没做**（Go/Java/Node 各有自己的停顿源，先不出不可比的三方表）—— 当时记进 `docs/TODO.md`；**本条目之后已补上跨语言停顿分布**（见文件上方「跨语言 GC 停顿分布」一条）。
 - **验收**：四档 × 11 臂 stdout 全部与 extC 逐字节相同（`REPS=5`，0 BAD/FAIL）；`bash bench/gc/v2/run.sh align` 六语言全绿；`./check.sh nobench -j4` 通过 108 / 失败 0、`./check.sh docs -j4` 通过 12 / 失败 0。**没有改编译器** ⇒ 生成物与语料指纹都不动。
 ## 2026-10-16 · 闸门：`gate-shard-cycles` ② 改判**确定性工作量** —— 分片旋钮不再被步粒度稀释
 

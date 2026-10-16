@@ -1,0 +1,19 @@
+lang=extc
+arm=extc
+shape=cycleratio
+args=400000 20261013 100
+events=4018
+total_us=3240.800
+wall_ms=39.782
+wall_plain_ms=37.748
+source=EXTC_RC_SLOWSTEP=0.001 -> [slow] dur_us= lines (per bounded step: mark / sweep)
+events_mark=246
+total_us_mark=328.600
+events_sweep=3772
+total_us_sweep=2912.200
+slices=4018
+step_total_us=3234.9
+total_gc_us=3234.9
+collects=41
+pause_total_us=128.9
+notes=单次运行；REPS=3 取墙钟最小的一次，events 取自该次

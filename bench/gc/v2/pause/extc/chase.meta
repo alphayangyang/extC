@@ -1,0 +1,19 @@
+lang=extc
+arm=extc
+shape=chase
+args=1048576 20261013 4000000
+events=3377
+total_us=6740.300
+wall_ms=144.699
+wall_plain_ms=149.004
+source=EXTC_RC_SLOWSTEP=0.001 -> [slow] dur_us= lines (per bounded step: mark / sweep)
+events_mark=2050
+total_us_mark=6654.800
+events_sweep=1327
+total_us_sweep=85.500
+slices=3377
+step_total_us=6751.6
+total_gc_us=6751.6
+collects=2
+pause_total_us=3398.4
+notes=单次运行；REPS=3 取墙钟最小的一次，events 取自该次

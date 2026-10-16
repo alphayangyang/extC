@@ -1,0 +1,14 @@
+lang=extc
+arm=extc_mark
+shape=cycleratio
+args=400000 20261013 100
+events=246
+total_us=328.600
+wall_ms=39.782
+wall_plain_ms=37.748
+source=EXTC_RC_SLOWSTEP=0.001 -> [slow] lines with kind=mark
+slices=4018
+collects=41
+step_total_us=3234.9
+pause_total_us=128.9
+notes=extc 全体的 kind=mark 子集；只存 hist（分位按档上界近似），逐事件表在 extc/ 下

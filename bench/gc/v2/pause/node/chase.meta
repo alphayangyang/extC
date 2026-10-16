@@ -1,0 +1,17 @@
+lang=node
+arm=node
+shape=chase
+args=1048576 20261013 4000000
+events=12
+total_us=193500.000
+wall_ms=982.772
+wall_plain_ms=997.448
+source=node --trace-gc-nvp -> per-GC 'pause' field (ms) x1000 to us; V8 STW pause of Scavenge/Mark-Compact/Mark-Sweep
+events_minor=11
+events_major=1
+total_gc_us=193340.000
+gc_us_scavenge=166540.000
+gc_us_major_pause_only=26800.000
+js_mode=split
+reps=3
+notes=plain x1 + diag x3 on cpu 6; events/wall from the min-wall diag run; V8 trace goes to stdout so diag stdout is normalized by dropping '^[' lines before cmp; intermediates kept in /tmp only; total_gc_us = sum(scavenge= over gc=s lines) + sum(pause= over major lines) -- major 行的并发标记不在 nvp 行里，该部分对 major 只是下界; pause 字段只有 1 位小数 ms = 100us 分辨率（亚 100us 的 scavenge 记 0）

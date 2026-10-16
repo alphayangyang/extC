@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """bench/gc/v2/report.py - 把 run.sh bench 的 TSV 变成 REPORT.md 里的表与图。
 
-用法： python3 bench/gc/v2/report.py <in.tsv> [out.md] [out.png]
+用法： python3 bench/gc/v2/report.py <in.tsv> [out.md] [out.png] [pause_v2.tsv]
 TSV 列（制表符）： shape arm ms_min ms_med ms_max rss_kb utime_ms stime_ms minflt majflt nvcsw nivcsw
 
 口径：所有臂都经 bench/gc/v2/shim.c 垫片（wait4 内核值），best-of-REPS 取 ms 最小；
@@ -91,22 +91,71 @@ def main():
             cells.append(f"{fmt(b['ms_min'])} ({rel:.2f}×, {tag})")
         L.append('| %s | %s |' % (s, ' | '.join(cells)))
     L.append('')
-    pause_tsv = sys.argv[4] if len(sys.argv) > 4 else os.path.join(os.path.dirname(out_md) or '.', 'pause.tsv')
+    pause_tsv = sys.argv[4] if len(sys.argv) > 4 else os.path.join(os.path.dirname(out_md) or '.', 'pause_v2.tsv')
     if os.path.exists(pause_tsv):
-        L.append('## extC 侧的停顿形状（`EXTC_RC_PAUSE=1`，由 `bench/gc/v2/pause.sh` 产出的 `pause.tsv`）')
+        L.append('## 跨语言停顿分布（`pause_v2.tsv`；每个臂的口径与完整讨论见 `PAUSE.md`）')
         L.append('')
-        L.append('切片 = `extc_rc_stepNote` 记下的每个有界标记/清扫步（`[step]`）；`[pause]` 只计起轮与销账入口，不等于全部回收时间（口径见 `docs/RECLAMATION.md` 与 `docs/TODO.md`）。')
+        L.append('事件 = 各语言**自己运行期承认的停顿**（extC 是有界回收步、Go 是两段 STW、Java 是每条 GC 暂停、Node 是每次 GC），')
+        L.append('定义逐臂不同，读表前先看 `PAUSE.md` 的「事件来源」栏。extC 行的切片数与 `collects` 就是 `pause_v2.tsv` 的同名列。')
         L.append('')
-        L.append('| 形状 | 切片数 | 切片均值 µs | 切片 max µs | ≥16µs | ≥64µs | ≥1ms | collects | `[pause]` 总 µs |')
-        L.append('|---|---:|---:|---:|---:|---:|---:|---:|---:|')
+        L.append('| 形状 | 臂 | 事件数 | p50 | p90 | p99 | p99.9 | max | 占墙钟 |')
+        L.append('|---|---|---:|---:|---:|---:|---:|---:|---:|')
         with open(pause_tsv, newline='') as fp:
-            next(fp, None)
-            for line in fp:
-                c = line.rstrip('\n').split('\t')
-                if len(c) < 11:
-                    continue
+            head = next(fp, '').rstrip('\n').split('\t')
+            idx = {k: i for i, k in enumerate(head)}
+
+            def cell(c, k):
+                return c[idx[k]] if k in idx and idx[k] < len(c) else '-'
+
+            def us(v):
+                try:
+                    f = float(v)
+                except ValueError:
+                    return v
+                return '%.2f ms' % (f / 1000.0) if f >= 1000 else '%.2f µs' % f
+            order = {s: i for i, s in enumerate(shapes)}
+            rows2 = [ln.rstrip('\n').split('\t') for ln in fp if ln.strip()]
+            def p99key(c):
+                try:
+                    return float(cell(c, 'p99_us'))
+                except ValueError:
+                    return 0.0
+
+            rows2.sort(key=lambda c: (order.get(cell(c, 'shape'), 9), p99key(c)))
+            for c in rows2:
+                try:
+                    share = '%.2f%%' % float(cell(c, 'share_pct'))
+                except ValueError:
+                    share = cell(c, 'share_pct')
                 L.append('| %s | %s | %s | %s | %s | %s | %s | %s | %s |' % (
-                    c[0], f'{int(c[1]):,}', c[3], c[4], c[5], c[6], c[8], c[9], c[10]))
+                    cell(c, 'shape'), cell(c, 'arm'), f"{int(cell(c, 'events') or 0):,}",
+                    us(cell(c, 'p50_us')), us(cell(c, 'p90_us')), us(cell(c, 'p99_us')),
+                    us(cell(c, 'p999_us')), us(cell(c, 'max_us')), share))
+        L.append('')
+        L.append('### Sigma GC time（Σ GC 归因时间；口径见 `PAUSE.md` 第 1.2 节）')
+        L.append('')
+        L.append('上表是**停顿**（定义逐臂不同）；这里是同一次运行里可观测到的**全部 GC 时间**：')
+        L.append('extC 没有独立 GC 线程 ⇒ 停顿步就是全部 GC 工作；Go/Java/Node 的并发阶段不进停顿、但进这里。')
+        L.append('')
+        L.append('| 形状 | 臂 | Σ 停顿 | 停顿/墙钟 | Σ GC 工作 | GC/墙钟 |')
+        L.append('|---|---|---:|---:|---:|---:|')
+        for c in rows2:
+            try:
+                tg = float(cell(c, 'total_gc_us'))
+            except ValueError:
+                continue
+            if tg <= 0:
+                continue
+            try:
+                gs = '%.2f%%' % float(cell(c, 'gc_share_pct'))
+            except ValueError:
+                gs = '-'
+            try:
+                ps = '%.2f%%' % float(cell(c, 'share_pct'))
+            except ValueError:
+                ps = '-'
+            L.append('| %s | %s | %s | %s | %s | %s |' % (
+                cell(c, 'shape'), cell(c, 'arm'), us(cell(c, 'total_us')), ps, us(cell(c, 'total_gc_us')), gs))
         L.append('')
     with open(out_md, 'w') as f:
         f.write('\n'.join(L))

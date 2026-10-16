@@ -196,17 +196,29 @@ bash bench/gc/v2/run.sh align --lang go           # 只查自己那一种
 bash bench/gc/v2/run.sh build                     # 只构建、不跑
 ```
 
-## 6. 出成绩单（跑表 → 表/图/停顿表）
+## 6. 出成绩单（跑表 → 表/图/停顿分布）
 
 `run.sh bench` 的一切都在 `bench/gc/v2/shim.c` 垫片里跑（`wait4` 内核值：`ms/rss_kb/utime_ms/stime_ms/minflt/majflt/nvcsw/nivcsw`），
 stdout 仍与 extC 参考逐字节比对，任何一臂不同就 `BAD` 且退出码非 0。给 `TSV=<路径>` 就落原始表。
 
 ```bash
 B=/tmp/v2matrix/build TSV=/tmp/v2matrix/matrix.tsv REPS=5 bash bench/gc/v2/run.sh bench
-B=/tmp/v2matrix/build bash bench/gc/v2/pause.sh bench/gc/v2/pause.tsv   # extC 侧 [step]/[pause]
-python3 bench/gc/v2/report.py bench/gc/v2/matrix.tsv bench/gc/v2/REPORT.md bench/gc/v2/matrix.png bench/gc/v2/pause.tsv
+for l in extc go java node; do REPS=3 bash bench/gc/v2/pause/$l.sh; done  # 逐个串行！见 pause/README.md 第 2 节
+python3 bench/gc/v2/pause_report.py bench/gc/v2/pause                     # -> PAUSE.md + pause.png + pause_v2.tsv
+python3 bench/gc/v2/report.py bench/gc/v2/matrix.tsv bench/gc/v2/REPORT.md bench/gc/v2/matrix.png bench/gc/v2/pause_v2.tsv
 ```
 
 臂清单（11 个）：`extc:default` / `extc:off`（编译期 `EXTC_RECLAIM=0`，**产物不同**，不是「纯 GC 税」对照，见 `docs/TODO.md`）·
 `go:default` / `go:off` · `java:default` · `rust:default` / `rust:careful` · `node:split` / `node:bigint` · `cpp:default` / `cpp:careful`。
-提交在库里的成绩单是 `REPORT.md` + `matrix.tsv` + `pause.tsv` + `matrix.png`。
+提交在库里的成绩单是 `REPORT.md` + `matrix.tsv` + `matrix.png` + `PAUSE.md` + `pause_v2.tsv` + `pause.png` + `pause/<arm>/`（原始停顿事件）。
+
+## 7. 停顿分布（直方与分位）
+
+各语言一个 runner：`bench/gc/v2/pause/<lang>.sh` → `pause/<arm>/<shape>.{events,hist,meta}`；
+接口（产物布局、meta 必需键、公共阶梯、`total_gc_us` 口径）见 `bench/gc/v2/pause/README.md`，结果与读法见 `PAUSE.md`。三条硬口径：
+
+- 每个臂报的是**它自己运行期承认的停顿**：extC 是有界回收步、Go 是两个 STW 段、Java 是每条 GC 暂停、Node 是每次 GC 的 buffer pause。
+  **定义不是同一件事**，事件数（extC 上万条 vs Java 个位数）不可直接比。
+- extC 的停顿步就是在 mutator 线程上做的**全部 GC 工作**（它没有独立 GC 线程）⇒ `total_us == total_gc_us`；
+  Go/Java/Node 的并发阶段不进停顿、但进 `total_gc_us`。所以除了停顿表，必须同时看「Σ GC 归因时间」表。
+- Rust / C++ 手工释放，没有 GC 停顿，不进本表。
