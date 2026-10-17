@@ -1,0 +1,15 @@
+// 运算符的实参从左到右求值：`a << f() << g()` 里 f() 先于 g()。
+// 这条链就是一次方法调用链；C 的实参顺序未指定（gcc 从右往左），生成器把每一步的
+// 接收者先物化，所以链上的副作用按源码顺序发生。
+// expect: x<f><g>
+use std::io
+
+fn note(t: slice<u8>) -> slice<u8> {
+    io::cout << "<" << t << ">"
+    return ""
+}
+
+fn main() -> i32 {
+    io::cout << "x" << note("f") << note("g") << "\n"
+    return 0
+}

@@ -1654,11 +1654,29 @@ static const char *genBin(CG *g, Expr *e) {
 
         Param *p0 = *(Param **)vecAt(&m->params, 0);
         Param *p1 = *(Param **)vecAt(&m->params, 1);
+        /* 求值顺序：C 的实参顺序是未指定的（gcc 从右往左），而这里一个运算符就是一次调用。
+         * 于是 `cout << "x" << a() << b()` 里 b() 先跑、`<< dl::close(h)` 成了先释放后
+         * 使用。**左半边先物化成一条语句**：链上每一步的副作用按源码从左到右发生。
+         *
+         * 左半边是地方时不物化：它的求值没有副作用，而保住地址才能让写参数（`+=` 这类）
+         * 落在原对象上。是地方时的接收者也照旧交给 selfOperandAsParam。 */
         const char *l = genExpr(g, e->u.bin.left);
+        Type *lT = subst(g, e->u.bin.left->type);
+        const bool lIsPlace = printArgIsPlace(e->u.bin.left);
+        const bool wantRef0 = p0->type && p0->type->kind == TY_REF;
+        const bool haveRef0 = lT && lT->kind == TY_REF;
+        if (!lIsPlace && g->prefixBlk > 0 && !(lT && lT->kind == TY_ARRAY)) {
+            const char *tmp = arenaPrintf(g->arena, "__extc_op%d", g->tmpSeq++);
+            pfLine(g, "%s %s = %s;", cType(g, lT), tmp, l);
+            if (wantRef0 && !haveRef0)      l = arenaPrintf(g->arena, "&%s", tmp);
+            else if (!wantRef0 && haveRef0) l = arenaPrintf(g->arena, "*(%s)", tmp);
+            else                            l = tmp;
+        } else {
+            /* The left operand is the method receiver, so it obeys the receiver rule: a value
+             * that is not a place, such as the result of a chained `<<`, has to be materialized. */
+            l = selfOperandAsParam(g, e->u.bin.left, l, p0, e->u.bin.left->type);
+        }
         const char *r = genExpr(g, e->u.bin.right);
-        /* The left operand is the method receiver, so it obeys the receiver rule: a value
-         * that is not a place, such as the result of a chained `<<`, has to be materialized. */
-        l = selfOperandAsParam(g, e->u.bin.left, l, p0, e->u.bin.left->type);
         if (p1->type->kind == TY_REF) r = arenaPrintf(g->arena, "&(%s)", r);
 
         /* An operator is a method call, so it asks the same single owner for the hidden
@@ -2712,8 +2730,17 @@ static const char *exCall(CG *g, Expr *e) {
 
     /* Only `cSymName` is used, without the owner prefix: a call site names the callee itself,
      * whereas `ownerPrefix` is the instance currently being generated. This also renames a name
-     * that collides with a C keyword (`fn double`). */
-    name = (planCallee(e) && planInstName(planCallee(e))) ? planInstName(planCallee(e)) : cSymName(g, name);
+     * that collides with a C keyword (`fn double`).
+     *
+     * `@export` has to be asked first: the definition names the C symbol after the author's
+     * spelling with the module prefix dropped (`cFuncName`'s export branch), while a cross-module
+     * call site spells the identifier `lib$exported`. Printing that identifier verbatim calls a
+     * symbol nobody defines. */
+    FuncDef *ce = planCallee(e);
+    if (ce && ce->isExport)
+        name = exportName(ce);
+    else
+        name = (ce && planInstName(ce)) ? planInstName(ce) : cSymName(g, name);
     /* 运行期那一层：库里的 `extc_pool_new(parent)` 在收「家 zone」的函数里换成
      * `extc_pool_new_at(parent, __extc_home_zone)` —— 池因此生到**调用者选的
      * 那个地方**去。库侧一个字都不用改。 */
@@ -4067,11 +4094,20 @@ static const char *genExprInner(CG *g, Expr *e) {
             /* `o! = v` writes the payload, so the comma expression below cannot be
              * used: C11 6.5.17p3 says its result is not an lvalue. The assertion goes
              * into the statement prefix (the same mechanism `??` uses) and the payload
-             * itself is returned as the lvalue. The checker guarantees the operand of
-             * an assignment target is a place (check_stmt.c, `assignTargetWritable`),
-             * so no temporary is needed and nothing is evaluated twice. */
+             * itself is returned as the lvalue.
+             *
+             * A call operand (`f()!.field = v` on a `?ref T`) is not a C lvalue, so the
+             * expression may not appear twice -- once in the assert, once in the
+             * assignment: evaluate it into a temporary of the same type and assert that.
+             * A place operand (`p! = v`) stays exactly as it is, because the payload must
+             * remain the lvalue the assignment writes. */
             if (g->inAssignTarget) {
                 const char *v = genExpr(g, e->u.sign.operand);
+                if (!printArgIsPlace(e->u.sign.operand)) {
+                    const char *tmp = arenaPrintf(g->arena, "__extc_sig%d", g->tmpSeq++);
+                    pfLine(g, "%s %s = %s;", cType(g, e->type), tmp, v);
+                    v = tmp;
+                }
                 if (isRef) {
                     pfLine(g, "(void)extc_refAssert((void *)(%s), \"%s\", %d);",
                            v, g->path, e->line);
@@ -9752,9 +9788,17 @@ static void emitTypes(CG *g, Module *m, TypeTable *tt, Arena *arena) {
         *(SUnit **)vecPush(&units) = u;
     }
     /* Each instance of a generic enum (`option<i64>`) is a struct definition of
-     * its own. */
+     * its own. Two instances can share one C name -- `option<mut slice<u8>>` and
+     * `option<slice<u8>>` are both `option_slice_u8`, because `mut` changes the
+     * extC type but not the C layout -- and emitting both redefines the struct,
+     * the typedef and the tag enum. The first one wins, which is the same rule
+     * `addInstanceUnit` applies to instances reached through method signatures. */
     for (size_t i = 0; i < tt->enumInstances.len; i++) {
         Type *it = *(Type **)vecAt(&tt->enumInstances, i);
+        bool dup = false;
+        for (size_t k = 0; k < units.len && !dup; k++)
+            dup = strcmp(unitName(*(SUnit **)vecAt(&units, k)), it->name) == 0;
+        if (dup) continue;
         SUnit *u = (SUnit *)arenaAllocZero(arena, sizeof(SUnit));
         u->td = it->edef;
         u->inst = it;
@@ -9926,6 +9970,13 @@ static void emitTypes(CG *g, Module *m, TypeTable *tt, Arena *arena) {
     for (size_t i = 0; i < tt->enumInstances.len; i++) {
         Type *it = *(Type **)vecAt(&tt->enumInstances, i);
         TypeDef *td = it->edef;
+        /* Skip a repeat of a C name (see the unit list above): its tag constants
+         * were emitted by the first instance, and a second enum with the same
+         * enumerators is a redefinition. */
+        bool dup = false;
+        for (size_t k = 0; k < i && !dup; k++)
+            dup = strcmp((*(Type **)vecAt(&tt->enumInstances, k))->name, it->name) == 0;
+        if (dup) continue;
         /* The tag constants of the instance (`maybe_i64_nothing = 0`) carry the
          * same values as the base type, both following the variant order, so the
          * rule that the zero value has tag 0 holds for an instance as well. */

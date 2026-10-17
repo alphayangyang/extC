@@ -1,0 +1,9 @@
+// expect: got=42
+/* `lib.extc` 里的 `@export` 函数走**模块限定名**调用 —— 定义处与调用点的 C 符号必须是同一个 ✓ */
+use std::io
+use lib
+
+fn main() -> i32 {
+    io::cout << "got=" << lib::exported(i64(41)) << "\n"
+    return 0
+}

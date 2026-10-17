@@ -11,7 +11,7 @@ pass=0; fail=0
 
 # ① 输出
 "$EXTC" -w --run tests/fstring/main.extc > "$tmp/out" 2>&1
-printf 'n=42 who=世界 b=true f=1.5\nesc {} and 42\n3 2 1\nonly text\n42 ← 单个槽（没有文本段）\n手写对照：n=42 who=世界\n' > "$tmp/want"
+printf 'n=42 who=世界 b=true f=1.5\nesc {} and 42\n1 2 3\nonly text\n42 ← 单个槽（没有文本段）\n手写对照：n=42 who=世界\n' > "$tmp/want"
 if diff -q "$tmp/out" "$tmp/want" >/dev/null 2>&1; then
     echo "  ok   fstring-out       ->  多槽 · {{}} 转义 · 每槽求值一次 · 无文本段"
     pass=$((pass+1))

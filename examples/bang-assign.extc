@@ -1,0 +1,19 @@
+// 赋值目标里的 `!` 只求值一次：`f()!.field = v` 调用 f **一次**，然后写它指向的对象。
+// expect: calls=1 v=5
+use std::io
+
+struct node {
+    value: i64
+}
+
+fn pick(n: ?mut ref node) -> ?mut ref node {
+    io::cout << "calls=" << 1 << " "
+    return n
+}
+
+fn main() -> i32 {
+    var n: node = node { value: 1 }
+    pick(ref n)!.value = i64(5)
+    io::cout << "v=" << n.value << "\n"
+    return 0
+}

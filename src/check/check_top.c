@@ -4227,6 +4227,19 @@ static void checkFunc(Checker *c, FuncDef *f) {
      * 参数，那个就是它。 */
     planSetYieldType(f, planIsCoro(f)
         ? *(Type **)vecAt(&f->ret->targs, f->ret->targs.len - 1) : NULL);
+    /* What a coroutine yields is a **value**. Its frame is released when the task ends, so a
+     * reference handed out from it can outlive the storage it points into -- the consumer has no
+     * way to know the referent is gone. A pointer type is also not a spelling the per-type
+     * helper names can be built from. Refusing the type here, at the declaration, reports the
+     * mistake against the protocol instead of inside the generated C. */
+    if (planIsCoro(f) && planYieldType(f) && typeContainsRef(c->tt, planYieldType(f)))
+        ckError(c, f->line,
+                "A coroutine hands out values. Its frame dies with the task, so a reference"
+                " yielded from it can point at storage the consumer cannot tell is gone. Yield the"
+                " value itself, or an index the consumer resolves against something that outlives"
+                " the task.",
+                "`%s` yields `%s`, which carries a reference",
+                f->name, typeStr(c, planYieldType(f)));
     if (planIsCoro(f)) coroSetup(c, f);
     /* A parameter typed `coroutine<T>` is legal: the unified handle, not a
      * marker, is what the type stands for, so no check rejects such a parameter here. */

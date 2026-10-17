@@ -1,0 +1,7 @@
+/* 反例：协程交出带引用的类型。帧随任务释放，交出去的引用会指向消费者无从知道的
+ * 已释放存储 —— 在声明处就拒绝，而不是生成畸形的 C。
+ * expect: carries a reference
+ */
+fn gen(n: i64) -> coroutine<ref i64> {
+    yield ref n
+}

@@ -246,6 +246,10 @@ static void pMarkGlobal(Checker *c, Stmt *s, Sym *sym) {
  *   EX_SIGN                         -> 解包后的操作数是 place 才是
  *   其余                            -> 没有存储
  *
+ * 一个例外是**引用载荷的 `!` 站在基链上**：`f()!.x = v` 里 `f()` 返回 `?ref T`，`!` 断言出来
+ * 的是指针，写的是指针指向的对象，所以断言本身不是 place 也无所谓。它只能站在基链上：作为
+ * 赋值目标本身（`f()! = v`）时，写进去的仍是载荷临时值。
+ *
  * 有一种形状靠语法走不出来：视图（`slice<T>`）上的 `s[i]`，元素真实存在于 `s.data + i`，
  * 即使视图值本身是临时值。调用方（`ST_ASSIGN`）在本函数说否时再按基类型解析一次，固定数组
  * （`f()[i]`）与视图也在那里区分。
@@ -253,17 +257,32 @@ static void pMarkGlobal(Checker *c, Stmt *s, Sym *sym) {
  * @param e  赋值目标表达式。
  * @return   目标是可写 place 则返回 true；否则返回 false。
  */
-static bool assignTargetWritable(const Expr *e) {
+static bool assignTargetWritableAt(const Expr *e, bool asBase) {
     if (!e) return false;
     switch (e->kind) {
     case EX_IDENT: return true;
     case EX_DEREF: return true;
-    case EX_FIELD: return assignTargetWritable(e->u.field.obj);
-    case EX_INDEX: return assignTargetWritable(e->u.index.obj);
-    case EX_SLICE: return assignTargetWritable(e->u.slice.obj);
-    case EX_SIGN:  return assignTargetWritable(e->u.sign.operand);
+    case EX_FIELD: return assignTargetWritableAt(e->u.field.obj, true);
+    case EX_INDEX: return assignTargetWritableAt(e->u.index.obj, true);
+    case EX_SLICE: return assignTargetWritableAt(e->u.slice.obj, true);
+    /* A `!` that hands back a **reference** may sit in the base chain: the assignment writes
+     * through the pointer, not into the asserted temporary. As the target itself the payload is
+     * written, so the old rule stands. */
+    case EX_SIGN:
+        if (asBase && e->type && e->type->kind == TY_REF) return true;
+        return assignTargetWritableAt(e->u.sign.operand, false);
     default:       return false;
     }
+}
+
+/**
+ * @brief 判断表达式是不是可写 place（见上一条的基链规则）。
+ *
+ * @param e  赋值目标表达式。
+ * @return   目标是可写 place 则返回 true；否则返回 false。
+ */
+static bool assignTargetWritable(const Expr *e) {
+    return assignTargetWritableAt(e, false);
 }
 
 /* ------------------------------------------------- 无环判定: 引用槽存储的分类
@@ -833,7 +852,8 @@ void checkStmt(Checker *c, Stmt *s) {
         case ST_ASSIGN: {
             /* 左侧必须是一个 **place**：绑定、place 的字段/下标/切片、`*` 解引用，或 place 的
              * 载荷 `o!`。判据是上面的 `assignTargetWritable`：它走整条**基链**，因此
-             * `f().x = v` 与 `p.get(h)!.x = v` 都会被拒。 */
+             * `f().x = v` 与 `p.get(h)!.x = v`（载荷是值）都会被拒；载荷是**引用**的
+             * `f()!.x = v` 例外——写的是指针指向的对象，基链上真的有一个 place。 */
             Expr *tgt0 = s->u.assign.target;
             /* 被标为“存储在本帧之外”的绑定一旦再次被写就不再可信：否则
              * `if c { v = mem[..] } else { v = buf[..] }` 会继承某一分支的信任，让另一分支的帧内
@@ -851,7 +871,24 @@ void checkStmt(Checker *c, Stmt *s) {
                     idxBaseT = checkExpr(c, tgt0->u.index.obj);
                     viewElem = idxBaseT && !ttIsError(idxBaseT) && ttIsViewType(idxBaseT);
                 }
-                if (!viewElem) {
+                /* 另一种形态同理：基链的根是 `!`，而断言出来的是引用（`?ref T`）时，写的是
+                 * 指针指向的对象。这一步靠语法判不了——目标还没被检查，`!` 的类型还没写上
+                 * ——所以只在这条失败路径上解析根的 `!` 操作数。 */
+                bool throughRef = false;
+                if (!viewElem && tgt0) {
+                    Expr *base = tgt0;
+                    while (base) {
+                        if (base->kind == EX_FIELD)      base = base->u.field.obj;
+                        else if (base->kind == EX_INDEX) base = base->u.index.obj;
+                        else if (base->kind == EX_SLICE) base = base->u.slice.obj;
+                        else break;
+                    }
+                    if (base && base->kind == EX_SIGN) {
+                        Type *ot = checkExpr(c, base->u.sign.operand);
+                        throughRef = ot && !ttIsError(ot) && ot->kind == TY_REF;
+                    }
+                }
+                if (!viewElem && !throughRef) {
                     ckError(c, s->line,
                             "The left side of an assignment must be a place with storage: a variable,"
                             " a field/index/slice **of a place**, a `*` dereference, or the payload"

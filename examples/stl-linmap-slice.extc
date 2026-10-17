@@ -1,0 +1,21 @@
+/* 两个标准库模块同时带进来的泛型实例：`linMap<i64, slice<u8>>` 让 `option<slice<u8>>` 只该有一份。
+ *
+ * 判据：编译过、跑对。修复前 `stl::linmap` 与 `stl::string` 各自的实例收集各发一遍
+ *   `option_slice_u8`（重复 typedef / struct / enum）⇒ 生成的 C 编不过。
+ * 为什么单列一条：这是**类型名去重**，编译器不报错、只在 C 里炸，必须端到端跑一遍才看得见 ✓ */
+// expect: got=one len=1
+use std::io
+use stl::linmap
+use stl::string
+
+fn main() -> i32 {
+    var m: linMap<i64, slice<u8>> = linMap<i64, slice<u8>>::withCap(i64(2))
+    m.put(i64(1), "one")
+    let got: slice<u8> = m.get(i64(1)) ?? "?"
+
+    var s: string = string::withCap(i64(32))
+    s.append("x")
+
+    io::cout << "got=" << got << " len=" << m.len() << "\n"
+    return 0
+}

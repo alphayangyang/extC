@@ -25,10 +25,8 @@ fn viaMutRef(r: mut ref dyn Tag) -> i64 { return r.bump() }
 fn main() -> i32 {
     var b: box = box { v: i64(7) }
     var d: dyn Tag = dyn Tag(b)
-    /* 先把两个值算出来再打印：`<<` 链上的实参求值顺序是未指定的（codegen 从右往左也行），
-     * 直接写在一个链里会让 bump 先跑、把 tag 读到的值从 7 变成 8。 */
-    var r1: i64 = viaRef(ref d)
-    var r2: i64 = viaMutRef(ref d)
-    io::cout << "ref=" << r1 << " mutref=" << r2 << "\n"
+    /* `<<` 链上的实参从左到右求值：生成器把每一步的接收者先物化成一条语句，所以
+     * 「先读、后改」直接写在一个表达式里也是这个顺序（读发生在 bump 之前）。 */
+    io::cout << "ref=" << viaRef(ref d) << " mutref=" << viaMutRef(ref d) << "\n"
     return i32(0)
 }
