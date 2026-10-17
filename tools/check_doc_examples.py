@@ -7,7 +7,7 @@
     tools/check_doc_examples.py            报告
     tools/check_doc_examples.py --gate     有失败就 exit 1（check.sh 调用）
 
-判据（对 `docs/**/*.md`，不含 `archive/`、`manual/` 与 `changelog/`）：
+判据（对根 `README.md` 与 `docs/**/*.md`，不含 `archive/`、`manual/` 与 `changelog/`）：
 
 * 围栏 ```` ```extc ```` 且**含 `fn main`** ⇒ 是一段完整程序：必须 `extc --check-c` 通过；
   能跑的还会 `--run` 一次（用 `--run` 的退出码当判据时，页面里要写明期望输出）。
@@ -32,6 +32,7 @@ FENCE = re.compile(r"^```(\w*)\s*$")
 
 
 def pages():
+    yield ROOT / "README.md"      # 门面也是活文档：示例同样要有闸门
     for p in sorted(ROOT.glob("docs/**/*.md")):
         if SKIP_PARTS & set(p.parts) or p.name in SKIP_NAMES:
             continue

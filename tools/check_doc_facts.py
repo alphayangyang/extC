@@ -4,7 +4,7 @@
     tools/check_doc_facts.py           报告
     tools/check_doc_facts.py --gate    有找不到的名字就失败（check.sh 调用）
 
-扫 `docs/usage/*.md` 里两种写法：
+扫根 `README.md` 与 `docs/usage/*.md` 里两种写法：
 
 * `` `mod::name` `` —— `mod` 必须是**真模块**（`std` / `stl`，或 stdlib 里存在的模块名）；
   示意用的假模块（文档里讲错误信息时的 `alpha::open2` 那种）会被跳过。
@@ -18,7 +18,7 @@ import sys
 import pathlib
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-DOCS = sorted((ROOT / "docs" / "usage").glob("*.md"))
+DOCS = [ROOT / "README.md"] + sorted((ROOT / "docs" / "usage").glob("*.md"))
 
 
 def corpus():
