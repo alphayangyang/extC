@@ -121,7 +121,11 @@ def violations(text: str):
     return bad
 
 
-def emit_runtime(tmp: str) -> str:
+def emit_runtime(tmp: str, env=None) -> str:
+    """编译并运行发射器，返回它吐出的运行期文本。
+
+    env：给发射器的额外环境变量（档位开关，如 {"EXTC_RC_TIME": "1"}）；缺省 = 默认档。
+    """
     exe = os.path.join(tmp, "emit")
     cc = os.environ.get("CC", "cc")
     p = subprocess.run([cc, "-std=c11", "-O1", "-I", f"{ROOT}/src/base", "-I", f"{ROOT}/src/back",
@@ -131,7 +135,11 @@ def emit_runtime(tmp: str) -> str:
     if p.returncode != 0:
         print("发射器编译失败：\n" + p.stdout, file=sys.stderr)
         return ""
-    q = subprocess.run([exe], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    run_env = dict(os.environ)
+    if env:
+        run_env.update(env)
+    q = subprocess.run([exe], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                       env=run_env)
     if q.returncode != 0:
         print("发射器运行失败：\n" + q.stdout, file=sys.stderr)
         return ""

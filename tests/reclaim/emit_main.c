@@ -20,8 +20,12 @@ int main(void) {
      *   而"计数档单测门禁"于是只是同一件事跑两遍。） */
     const char *nc = getenv("EXTC_RC_NOCOUNT");
     int noCount = (nc && nc[0] == '0') ? 0 : 1;
+    /* 帧根链（reclaim.c 的 [rt:chain]）还没有发射方往链里 push ⇒ 与 codegen 一致传 0。
+     * EXTC_RC_FRAMEROOTS 只给"跳过表跨档核对"用：那一档里的 skip 标记也得对得上表。 */
+    int frameRoots = getenv("EXTC_RC_FRAMEROOTS") != NULL;
     reclaimEmitRuntime(&a, &out, noCount, getenv("EXTC_RC_TIME") != NULL,
-                          getenv("EXTC_RC_SWEEPFREE") != NULL, getenv("EXTC_RC_LOCALSTORE") != 0 ? 1 : 0);
+                       getenv("EXTC_RC_SWEEPFREE") != NULL, getenv("EXTC_RC_LOCALSTORE") != 0 ? 1 : 0,
+                       frameRoots);
     fputs(bufCstr(&out), stdout);
     return 0;
 }

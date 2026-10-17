@@ -7,17 +7,73 @@
  * （相邻字面量拼接起来同样算一个，所以不能靠拼接），以及这段运行期是**可读的生成物** ——
  * 一行一条比一整块转义文本好审。
  *
- * 文本自身的形状与五条健全性义务写在文本开头的块注释里：它们是判据，不是优化。
+ * 文本自身的形状与健全性义务写在文本开头的块注释里：它们是判据，不是优化。
+ *
+ * 发射是**分档**的：每一节的标题行里带一个稳定的标签 `[rt:名字]`，发射时按本次编译的档位
+ * 决定整节发不发（没有帧根链就没有压链的代码，不发计数就没有计数数组）。跳过的文本与让
+ * 预处理器丢掉它逐字等价，只是生成物里不再留着"这一档根本走不到"的代码。
  */
 
 #include "reclaim.h"
 
+#include <stdio.h>    /* snprintf：拼档位宏名 */
 #include <stdlib.h>   /* getenv：差分判据的开关 */
 #include <string.h>   /* strcmp：同上 */
 
+/** @brief 这一节的标签在本次编译的档位下该不该发。
+ *
+ * 带 `[rt:counters]` 的节只在计数档发，`[rt:chain]` 只在帧根链接线后发，其余节恒发。
+ * 跳掉一节不改变语义：那一档本来就走不到那些代码，发出来只是让人多翻几页。
+ */
+static int rtSectionOn(const char *line, int timeOn, int chainOn) {
+    const char *p = strstr(line, "[rt:");
+    if (p == NULL) return 1;
+    p += 4;
+    const char *e = strchr(p, ']');
+    if (e == NULL) return 1;
+    size_t n = (size_t)(e - p);
+    if (n == 8 && memcmp(p, "counters", 8) == 0) return timeOn;   /* 计数数组只在计数档有用 */
+    if (n == 5 && memcmp(p, "chain", 5) == 0) return chainOn;     /* 帧根链还没有发射方 */
+    return 1;
+}
+
+/** @brief 认一条「档位开关」#if：条件只有一个宏名、可选一个 `!`，取值本次编译已知。
+ *
+ * 解得开返回 1（*val = 条件真假），发射器据此连 #if 指令一起不发；解不开的
+ * （#ifndef、#if X > N、组合条件）返回 0，原样发出去仍由编译器和 -D 决定 ——
+ * 那些旋钮就是靠 -D 覆写来切换行为或跑对照的。
+ *
+ * @param p         条件文本（已剥掉行首的 `#if`）。
+ * @param noCount   EXTC_RC_NOCOUNT 的取值。
+ * @param timeOn    EXTC_RC_TIME 的取值。
+ * @param sweepFree EXTC_RC_SWEEP_FREE 的取值。
+ * @param[out] val  解出来时写入条件真假。
+ * @return 1 = 解得开；0 = 这个条件留给预处理器。
+ */
+static int rtCfgIf(const char *p, int noCount, int timeOn, int sweepFree, int *val) {
+    static const char *const suffixes[3] = { "NOCOUNT", "TIME", "SWEEP_FREE" };
+    const int vals[3] = { noCount, timeOn, sweepFree };
+    while (*p == ' ') p++;
+    int neg = 0;
+    if (*p == '!') { neg = 1; p++; while (*p == ' ') p++; }
+    for (int k = 0; k < 3; k++) {
+        /* 宏名由前缀 + 后缀拼出来，不写成整串字面量：这三个是**发射进生成物**的宏，
+         * 不是编译器自己的开关（整串字面量会被开关表的静态扫描当成新开关）。 */
+        char name[32];
+        int n = snprintf(name, sizeof name, "EXTC_RC_%s", suffixes[k]);
+        if (n <= 0 || (size_t)n >= sizeof name) continue;
+        if (strncmp(p, name, (size_t)n) != 0) continue;
+        const char *q = p + n;
+        while (*q == ' ' || *q == '\n' || *q == '\r') q++;
+        if (*q != '\0') continue;
+        *val = neg ? !vals[k] : vals[k];
+        return 1;
+    }
+    return 0;
+}
 /* 发射文本，按行切开。每行自带换行符，拼接后与源文本逐字节一致。 */
 static const char *const RECLAIM_RT[] = {
-    "/* ---- reclaim runtime: bitmap slab + holder counts + regional sweep ----\n",
+    "/* ---- reclaim runtime: bitmap slab + holder counts + regional sweep [rt:head] ----\n",
     " *\n",
     " * 四层模型里运行期要提供的三层（本地整片释放、计数归零、区域清扫）：\n",
     " *\n",
@@ -74,18 +130,21 @@ static const char *const RECLAIM_RT[] = {
     "#ifndef EXTC_RC_HOLD_SAT\n",
     "#define EXTC_RC_HOLD_SAT 65535u\n",
     "#endif\n",
-    "/* ---- 分项**计数**（`EXTC_RC_TIME=1`）：每个回收组件被调用了多少次 ---------------------------\n",
+    "/* 分项计数默认不记：计数入口定义成空操作，免得每个调用点都背上一个自增。\n",
+    " * 记的时候由下一节重定义成真自增。 */\n",
+    "#if !EXTC_RC_TIME\n",
+    "#define EXTC_RC_TICK(k) do { } while (0)\n",
+    "#endif\n",
+    "\n",
+    "/* ---- 分项计数（EXTC_RC_TIME=1）：每个回收组件被调用了多少次 [rt:counters] -----------------------\n",
     " *\n",
-    " * 只记次数、不记时间：在函数内部夹一对时钟读数框不住函数体 ——\n",
-    " *   · 每次调用都读一对 rdtsc：开销（几十周期）比被测量的小操作还大；\n",
-    " *   · 改成每 4096 次读一次、窗口相减：量到的是**包含式**时间（三个组件报同一段循环时间）；\n",
-    " *   · 用 `__attribute__((cleanup))` 在函数出口收尾：实测读数对仍然只跨十几 ns（连一次\n",
-    " *     清扫都量不到），编译器会把收尾调度到声明附近；\n",
-    " *   · `cpuid` 串行化：单对开销涨到约 990 周期，身体依旧框不住。\n",
-    " * 所以**时间**归因走程序外：`EXTC_RECLAIM` 开/关 A/B + 单项消融（见 CHANGELOG 里的真实负载\n",
-    " * 测量）。这里留下的次数是精确的、每次调用一条自增，用来回答\"哪些组件真被走到、各多少次\"。\n",
-    " */\n",
-    "#if EXTC_RC_TIME\n",
+    " * 只记次数、不记时间。在函数内部夹一对时钟读数框不住函数体：\n",
+    " *   · 每次调用读一对 rdtsc，开销比被测量的小操作还大；\n",
+    " *   · 改成每 N 次读一次、窗口相减，量到的是包含式时间 —— 几个组件报的是同一段循环；\n",
+    " *   · 用 cleanup 属性在函数出口收尾，编译器常把收尾调度到声明附近；\n",
+    " *   · cpuid 串行化本身又贵到把被测量的东西盖掉。\n",
+    " * 时间归因因此放到程序外做：同一程序开/关整个回收、或单项消解，跑 A/B 比。\n",
+    " * 这里留下的是精确的调用次数，用来回答哪些组件真被走到、各多少次。 */\n",
     "enum { EXTC_RC_NCOMP = 8 };\n",
     "static unsigned long long extc_rc_tc[EXTC_RC_NCOMP];\n",
     "static const char *const extc_rc_tname[EXTC_RC_NCOMP] = {\n",
@@ -100,9 +159,13 @@ static const char *const RECLAIM_RT[] = {
     "    if (!extc_rc_tinit) { extc_rc_tinit = 1; atexit(extc_rc_treport); } \\\n",
     "    extc_rc_tc[k]++; \\\n",
     "} while (0)\n",
-    "#else\n",
-    "#define EXTC_RC_TICK(k) do { } while (0)\n",
-    "#endif\n",
+    "\n",
+
+    "/* ---- 结构体与常量：槽、slab、区域三张表的布局 [rt:types] --------------------------------------\n",
+    " *\n",
+    " * 后面的每一节都按这些字段读写。类型描述符是标记时唯一知道哪些字是指针的来源（义务 4），\n",
+    " * 所以它先于所有代码定下来。 */\n",
+    "\n",
     "/* 一个类型的引用槽布局：nptr 个引用字段，各在 off[k] 偏移处。off 指向一张独立的\n",
     " * uint32_t 表，所以条目数没有上限。描述符由分配点随槽交给运行期，标记时按对象自己的\n",
     " * 描述符走（义务 4）。\n",
@@ -213,14 +276,13 @@ static const char *const RECLAIM_RT[] = {
     " * 位图 / 计数 / 登记 / 描述符 / 标记 / 清扫全都只有一条代码路径。 */\n",
     "#define EXTC_RC_SLAB_DATA(s) ((s)->data)\n",
     "\n",
-    "/* ---- 热路径上的小助手：一律 `static inline` ----\n",
+    "/* ---- 热路径上的小助手：一律 `static inline` [rt:helpers] ----\n",
     " *\n",
-    " * 它们都在 inc/dec/register/标记的每一次调用里出现，而 `ownSlab` 在真实形状上一次运行要被调用\n",
-    " * 上亿次：调用/返回本身就是可观的一笔。\n",
+    " * 它们落在 inc/dec/register/标记的每一次调用里，`ownSlab` 又是每次取证都要走的一步：\n",
+    " * 多一次调用/返回本身就是可观的一笔。\n",
     " *\n",
-    " * **只给 `inline`，不给 `always_inline`**（实测）：强制内联在分配密集的形状上是有害的 ——\n",
-    " * 同一批调用点被展开之后代码变大，`rebuild` 的总指令数反而 +0.5 %；让编译器按代价模型决定\n",
-    " * 之后三个形状一起降（`bt` −10.7 %、`rebuild` −9.9 %、`cyclic_pressure` −9.1 %）。 */\n",
+    " * 只给 `inline`、不给 `always_inline`：强制内联会把同一批调用点全部展开，分配密集的形状上\n",
+    " * 代码变大、指令缓存变差；交给编译器按代价模型决定，该摊平的摊平、该保留的保留。 */\n",
     "/* 由对象指针找 slab：slab 按 EXTC_RC_SLAB_SIZE 对齐 ⇒ 一次按位与。 */\n",
     "__attribute__((unused)) static inline ExtcRcSlab *extc_rc_slabOf(void *p) {\n",
     "    return (ExtcRcSlab *)((uintptr_t)p & ~(uintptr_t)(EXTC_RC_SLAB_SIZE - 1));\n",
@@ -252,7 +314,7 @@ static const char *const RECLAIM_RT[] = {
     "    exit(1);\n",
     "}\n",
     "\n",
-    "/* ---- rc slab 注册表：只有 extc_rc_alloc 摸过的槽才是计数/标记的对象 ----\n",
+    "/* ---- rc slab 注册表：只有 extc_rc_alloc 摸过的槽才是计数/标记的对象 [rt:slab] ----\n",
     " *\n",
     " * 语言允许把**板/池/栈/C 函数**返回的指针存进引用槽（`ref h.c`、`plate[..].data`、\n",
     " * `dl::sym` 的结果）。那些指针不在任何 slab 里，进 slabOf 按位与之后读到的是一段无关\n",
@@ -515,14 +577,12 @@ static const char *const RECLAIM_RT[] = {
     "    if (!s->occ || !s->mark || !s->rsbit || !s->hold || !s->tid || !s->ttab)\n",
     "#endif\n",
     "        extc_rc_oops(\"slab metadata allocation failed\");\n",
-    "    /* **不**预先把整块串成空闲链：`nslots` 可以到 6.5 万，串一遍的代价（实测 ≈39 万\n",
-    "     * 指令/slab）比大多数程序整轮分配还贵 —— 小负载要为一次 slab 建立付巨额固定成本。\n",
-    "     * 改成「没发过的槽走 bump、被释放过的槽才进 freelist」：链只在真正复用时维护。\n",
-    "     *\n",
-    "     * 另一种做法（**分块补链**：链空时补 `EXTC_RC_CHUNK` 个）也试过：重负载形状更好\n",
-    "     * （`rebuild` 52.52 M vs 52.85 M、`cyc` 195.65 M vs 196.64 M），但在**被判的两个口径**上\n",
-    "     * 差一点（`bt` in-small 1.144× vs 1.140×、mid 1.034× vs 1.033×）⇒ 按棘轮只许往下拧的\n",
-    "     * 规矩，留这一版。 */\n",
+    "/* **不**预先把整块串成空闲链：一块 slab 的槽数可以很多，串一遍的成本比多数程序整轮\n",
+    " * 分配还贵 —— 小负载会为一次 slab 建立付巨额固定成本。\n",
+    " * 改成「没发过的槽走 bump、被释放过的槽才进 freelist」：链只在真正复用时维护。\n",
+    " *\n",
+    " * 分块补链（链空时一次补 `EXTC_RC_CHUNK` 个）是另一种做法：重负载形状省一点指针跳转，\n",
+    " * 但两个被判口径都略差 ⇒ 按棘轮只许往下拧的规矩，留这一版。 */\n",
     "    s->freelist = -1;   /* 表头空：链的下一槽号写在各槽的 tid[] 里（见 extc_rc_freeSlot） */\n",
     "    s->bump = 0;\n",
     "    extc_rc_ownAdd(s);        /* 从这一刻起这个 slab 里的槽才可能被计数/标记 */\n",
@@ -551,7 +611,7 @@ static const char *const RECLAIM_RT[] = {
     "#define EXTC_RC_SEED_PUSHES 256  /* 每步最多压几个**种子槽** */\n",
     "#endif\n",
     "#ifndef EXTC_RC_SEED_WORDS\n",
-    "#define EXTC_RC_SEED_WORDS 512  /* 每步最多**扫**几个 rsbit 字（种子扫描独立预算：字扫描不许把一步撑长；512 是取舍点，见 CHANGELOG） */\n",
+    "#define EXTC_RC_SEED_WORDS 512  /* 每步最多**扫**几个 rsbit 字（种子扫描独立预算：字扫描不许把一步撑长；大了单步时长随 slab 漂，小了长 slab 一轮扫不完） */\n",
     "#endif\n",
     "#ifndef EXTC_RC_MARK_EVERY\n",
     "#define EXTC_RC_MARK_EVERY 64        /* 每多少次分配推进一次标记 */\n",
@@ -563,12 +623,12 @@ static const char *const RECLAIM_RT[] = {
     "#define EXTC_RC_MARK_STEP 8       /* 基础步长：每个分配点至少推进这么多对象 */\n",
     "#endif\n",
     "#ifndef EXTC_RC_MARK_BATCH_MAX\n",
-    "#define EXTC_RC_MARK_BATCH_MAX 256   /* 一次 `markAdvance` 的预算**天花板**（窗口有界的最后一道；256 是取舍点，见 CHANGELOG） */\n",
+    "#define EXTC_RC_MARK_BATCH_MAX 256   /* 一次 `markAdvance` 的预算**天花板**（窗口有界的最后一道；大了单步停顿变长，小了预取批被打断） */\n",
     "#endif\n",
     "#ifndef EXTC_RC_MARK_BATCH_POP\n",
     "#define EXTC_RC_MARK_BATCH_POP 200  /* 一步里先弹出这么多对象、统一预取，再逐个扫（打掉 LIFO 串行指针链）；\n",
-    "                                      * 批宽也是**遍历顺序**的旋钮：步边界跟着动 ⇒ collects 与峰值 RSS 跟着动，\n",
-    "                                      * 取舍点（P5 墙钟 / [step] 总量 / 峰值 RSS 三者）见 CHANGELOG */\n",
+    "                                    * 批宽也是**遍历顺序**的旋钮：步边界跟着动 ⇒ collects 与峰值 RSS 跟着动，\n",
+    "                                    * 取舍点：墙钟 / 单步总量 / 峰值 RSS 三者互相牵制 */\n",
     "#endif\n",
     "#if EXTC_RC_MARK_BATCH_POP > EXTC_RC_MARK_BATCH_MAX\n",
     "#error \"EXTC_RC_MARK_BATCH_POP exceeds EXTC_RC_MARK_BATCH_MAX\"\n",
@@ -644,7 +704,7 @@ static const char *const RECLAIM_RT[] = {
     "#ifndef EXTC_RC_ASSIST_CAP\n",
     "#define EXTC_RC_ASSIST_CAP 512   /* assist 每步上限：债务再多也不许把一步撑成一次全量标记 */\n",
     "#endif\n",
-    "/* ---- 统一工作量预算（`EXTC_RC_WORK_BUDGET`，默认 0 = 关）----\n",
+    "/* ---- 统一工作量预算（`EXTC_RC_WORK_BUDGET`，默认 0 = 关）[rt:budget] ----\n",
     " *\n",
     " * 关（0）：沿用历史形态 —— walk 预算（`MARK_BATCH_MAX`）、种子字扫描（`SEED_WORDS`）、\n",
     " * 种子压栈（`SEED_PUSHES`）**各自独立**，且三者**叠在同一步**里；`wbDebt` 加力另外算。\n",
@@ -734,7 +794,7 @@ static const char *const RECLAIM_RT[] = {
     "    return p;\n",
     "}\n",
     "\n",
-    "/* ---- 来源侧记账：跨区入边的计数与撤销 ----\n",
+    "/* ---- 来源侧记账：跨区入边的计数与撤销 [rt:xregion] ----\n",
     " *\n",
     " * `rsbit` 是\"这个目标槽有来自别区的活入边\"的**缓存**，由每槽的 `rscnt` 维护：计数 0→1\n",
     " * 置位、1→0 清位，饱和值（\"很多边\"）粘住不再减 —— 与持有者计数同一条健全性规则。\n",
@@ -760,7 +820,7 @@ static const char *const RECLAIM_RT[] = {
     "    return s ? s->region : (ExtcRcRegion *)0;\n",
     "}\n",
     "\n",
-    "/* C3-(A) 的运行期守卫（**编译期**开关，默认关 ⇒ 默认档零开销）：\n",
+    "/* 跨区旧值不变量的运行期守卫（**编译期**开关，默认关 ⇒ 默认档零开销）：\n",
     " * 在「本区域没有外来指针」因而跳过旧值查表的那些点上，重算一次旧值的区域并计数；\n",
     " * 若真出现「旧值是外来指针却没登记过」，说明 foreign 不变量被破坏 ⇒ 计数非 0（门禁判红）。\n",
     " * 判据要求 checks>0 且 bad==0：**没跑到守卫（checks==0）也要红**，不许伪装成绿。 */\n",
@@ -773,7 +833,7 @@ static const char *const RECLAIM_RT[] = {
     "static void extc_rc_fgArm(void) { static int _a; if (!_a) { _a = 1; atexit(extc_rc_fgDump); } }\n",
     "#endif\n",
     "/* `rscnt`（每槽跨区入边计数）**懒分配**：一次登记都没有的 slab 从不建这张表\n",
-    " * ⇒ P4 这类「全程 rs_inc=rs_dec=0」的形状省下整张表（19.6 万槽 × 2 B ≈ 0.38 MiB/slab）。 */\n",
+    " * ⇒ 从不跨区的形状整张表都省掉（每槽 2 B）。 */\n",
     "static void extc_rc_rsAlloc(ExtcRcSlab *s) {\n",
     "    if (s->rscnt) return;   /* skip:rscnt-have */\n",
     "    s->rscnt = (uint16_t *)calloc((size_t)s->nslots, sizeof(uint16_t));\n",
@@ -860,15 +920,15 @@ static const char *const RECLAIM_RT[] = {
 
     "    s->region->bytes -= (int64_t)s->ss;\n",
     "    s->region->freedSlots++;   /* 口径：**每一次** freeSlot 都计入（原实现只在清扫收尾累加\n",
-    "                                * ⇒ 热路径的计数归零释放全被漏掉，P4 上访问器报 0） */\n",
+    " * ⇒ 热路径的计数归零释放全被漏掉，访问器因此报 0） */\n",
     "}\n",
     "\n",
-    "/* ---- `EXTC_RC_NOCOUNT=1`：计数入口整体变成空操作 --------------------------------\n",
+    "/* ---- `EXTC_RC_NOCOUNT=1`：计数入口整体变成空操作 [rt:nocount] ----------------------\n",
     " *\n",
-    " * 依据（见 CHANGELOG）：标记/清扫**不依赖计数** —— `extc_rc_mark` 从根槽与已登记的跨区\n",
-    " * 种子出发、靠每槽的类型描述符下钻，`extc_rc_sweep` 放掉未标记的占用槽；计数的唯一作用是\n",
-    " * 「计数归零立刻回收」。四个垃圾密集形状与 `bt` 上的实测：关掉计数后峰值仍有界（有的更低）、\n",
-    " * 语义逐字一致，指令数全面下降。**默认 `EXTC_RC_NOCOUNT=1`：计数入口整体编掉** ——\n"
+    " * 标记/清扫**不依赖计数** —— `extc_rc_mark` 从根槽与已登记的跨区种子出发、靠每槽的类型\n",
+    " * 描述符下钻，`extc_rc_sweep` 放掉未标记的占用槽；计数的唯一作用是「计数归零立刻回收」。\n",
+    " * 关掉计数后，垃圾密集的形状照样在固定轮内被清扫收走，峰值不涨、语义一致，而热路径上\n",
+    " * 少一整套只增不减的引用计数账。**默认 `EXTC_RC_NOCOUNT=1`：计数入口整体编掉** ——\n",
     " * 只靠区域清扫回收；写 `EXTC_RC_NOCOUNT=0` 才恢复「计数 + 提前回收」。 */\n",
     "#if EXTC_RC_NOCOUNT\n",
     "__attribute__((unused)) static void extc_rc_holdUpdSlab(ExtcRcSlab *s, void *p, int delta) {\n",
@@ -1004,7 +1064,7 @@ static const char *const RECLAIM_RT[] = {
     "         * 见 `tools/check_note_part.py`）。 */\n",
     "        if (extc_rc_partN > 1) {\n",
     "            ExtcRcSlab *sv = v ? extc_rc_ownSlab(v) : (ExtcRcSlab *)0;\n",
-    "            /* C3-(A)：新值仍必须查（首次跨区写就是它把 foreign 置起来的）；\n",
+    "            /* 跨区守卫：**新值仍必须查**（首次跨区写就是它把 foreign 置起来的）；\n",
     "             * 旧值只在「本区域出现过外来指针」时才可能有登记要撤 ⇒ 否则省掉这次查表。 */\n",
     "            if (host && sv && sv->region != host) { extc_rc_rsIncSlab(sv, v); host->foreign = 1; }\n",
     "            if (host && host->foreign) { void *old = *slot; ExtcRcSlab *sold = old ? extc_rc_ownSlab(old) : (ExtcRcSlab *)0; if (sold && sold->region != host) extc_rc_rsDecSlab(sold, old); }\n",
@@ -1031,7 +1091,7 @@ static const char *const RECLAIM_RT[] = {
     "    extc_rc_storeRef(slot, v);\n",
     "}\n",
     "\n",
-    "/* ---- 跨区边的来源侧记账入口 + 计数统计 ----\n",
+    "/* ---- 跨区边的来源侧记账入口 + 计数统计 [rt:xentry] ----\n",
     " *\n",
     " * `owner` 是**装着这条槽的那个对象**（`a->f = v` 传 `a`，`*p = v` 传 `p`）；不是本运行期\n",
     " * 的槽（局部变量、板/池/栈指针）传空，注册不适用 —— 那些地方的引用由触发点的根表覆盖。\n",
@@ -1330,26 +1390,19 @@ static const char *const RECLAIM_RT[] = {
     "    extc_rc_markPush(r, (void *)((uintptr_t)o | (uintptr_t)1));\n",
     "}\n",
     "\n",
-    "/* 从根 + 本区域的登记位图出发标记。只走区域内的对象：碰到区域外的就停，且不写它的标记位，\n",
-    " * 于是每个区域只碰自己的位图，别的区域的清扫不会被残留标记干扰。根可以是本区域的，也可以是\n",
-    " * 区域外的（外面当活的）。\n",
+    "/* ---- 帧根链：把根从静态值表换成一条在栈上维护的链 [rt:chain] ------------------------------\n",
     " *\n",
-    " * 指针进 slabOf 之前必须先过 owns：根与字段里都可能有板/池/栈/C 返回的指针，直接按位与\n",
-    " * 会读到一段无关内存。 */\n",
-    "/* ---- 帧根链（回收统一方案的第一步：只加结构，codegen 还没往里压 ------------------------------\n",
+    " * 要解决的事：根现在由 codegen 在每条触发路径上当场物化成一张值表（把当前作用域里每个引用槽\n",
+    " * 的值抄进数组）。抄一遍就是一次遍历，而且抄完的值可能已经和槽里的值脱节。链的形态是登记\n",
+    " * 槽地址而不是值：每个活引用槽连同它的宿主帧压一次，标记时沿链解引用，值在用的那一刻现读 ——\n",
+    " * 帧里重新赋值自动可见，也不必为每条触发路径各生成一张表。\n",
     " *\n",
-    " * 为什么要有它：现在\"根\"的事实有**两份**来源（codegen 的 `rcRoots` 静态值表、\n",
-    " * 运行期 `rcFrameOwnsArena`/欠收/`noSweep` 那一套），而最统一的形态是**一份事实 + 一条链**：\n",
-    " * 每个活引用槽连同它的宿主帧被登记一次，运行期沿链解引用，标记的播种不再\"当场物化值表\"。\n",
+    " * 现在只把数据结构放进生成物，还没有发射方往链里 push（看 reclaimEmitRuntime 的 frameRoots\n",
+    " * 参数）⇒ 链恒空，标记仍然只用静态值表，行为与没有这段代码逐字相同。接线时改的是发射方。\n",
     " *\n",
-    " * 本步只把链的**数据结构**放进生成物，`extc_rc_mark` 的播种从\"roots[]\"扩成\"链 + roots\"；\n",
-    " * codegen 尚未 push ⇒ 链恒空 ⇒ **行为逐字不变**（验收见 DESIGN 步 1：`run-switch.sh` 全绿 +\n",
-    " * `cross_region`/`cyclic_pressure` 的 `sweeps`/`rs_*` 逐字不变）。\n",
-    " *\n",
-    " * `slots` 是**槽地址**数组（不是值）：值在标记时现读，所以帧里绑定的重新赋值自动可见。\n",
-    " * `bad` = 这一帧枚举不全（协程帧/`ext` 帧/池元素/视图元素/match 绑定那几档）⇒ 整条链拒绝清扫；\n",
-    " * 目前无人置位，等后续接线。 */\n",
-    "typedef void **ExtcRcSlot;   /* 一个引用槽的地址（`addr[k]` 是槽，`*addr[k]` 是值） */\n",
+    " * bad = 这一帧的槽枚举不全（协程帧/ext 帧/池元素/视图元素/match 绑定那几类，编译器拿不到\n",
+    " * 完整的槽清单）⇒ 种子会缺，整条链拒绝清扫；目前无人置位，等接线时置。 */\n",
+    "typedef void **ExtcRcSlot;   /* 一个引用槽的地址（addr[k] 是槽，*addr[k] 是值） */\n",
     "typedef struct ExtcRcFrameRoot {\n",
     "    ExtcRcSlot *addr;    /* 槽地址数组 */\n",
     "    size_t  n;\n",
@@ -1367,12 +1420,19 @@ static const char *const RECLAIM_RT[] = {
     "__attribute__((unused)) static void extc_rc_frameBad(void) {\n",
     "    if (extc_rc_chainTop) extc_rc_chainTop->bad = 1;\n",
     "}\n",
-    "/* 链上有没有\"枚举不全\"的帧 ⇒ 种子不完整 ⇒ 宁可不扫（与 `noSweep` 同一个出口，见义务 7）。 */\n",
+    "/* 链上有没有枚举不全的帧 ⇒ 种子不完整 ⇒ 宁可不扫（与 noSweep 是同一个判断）。 */\n",
     "__attribute__((unused)) static int extc_rc_chainBad(void) {\n",
     "    for (ExtcRcFrameRoot *fr = extc_rc_chainTop; fr; fr = fr->parent)\n",
     "        if (fr->bad) return 1;   /* skip:chain-bad */\n",
     "    return 0;\n",
     "}\n",
+    "/* ---- 标记：从根与本区域的登记位图出发，分步走完本区域 [rt:mark] --------------------------------\n",
+    " *\n",
+    " * 只走区域内的对象：碰到区域外的就停，且不写它的标记位 —— 别的区域的对象保持已标记会让它\n",
+    " * 下一次清扫跳过自己、把还活着的东西释放掉；区域外的一律当活的。\n",
+    " *\n",
+    " * 指针进 slabOf 之前必须先过 owns：根与字段里都可能有板/池/栈/C 返回的指针，直接按位与\n",
+    " * 会读到一段无关内存。 */\n",
     "/** @brief 起一轮标记：清栈、压根、压跨区种子。 */\n",
     "__attribute__((unused)) static void extc_rc_markBegin(ExtcRcRegion *r, void *const *roots, size_t nroots) {\n",
     "    r->msp = 0;\n",
@@ -1568,7 +1628,7 @@ static const char *const RECLAIM_RT[] = {
     "    return marked;\n",
     "}\n",
     "\n",
-    "/* ---- 覆盖点定点释放：\"覆盖这个槽\"本身就把旧值那棵树判死 ----------------------------\n",
+    "/* ---- 覆盖点定点释放：\"覆盖这个槽\"本身就把旧值那棵树判死 [rt:release] ----------------\n",
     " *\n",
     " * 调用方（`extc_rc_storeRefOwnedRelease`）已经确认：旧值落在**本帧拥有**的这只区域里、\n",
     " * 且这只区域可清扫（没有 `noSweep` / 没有欠账）。这里做的是一次**收窄的清扫**：\n",
@@ -1665,7 +1725,7 @@ static const char *const RECLAIM_RT[] = {
     "/* 清扫：死槽 = 占用 & ~标记。按 64 位字顺序走，不追指针、不逐个 free；标记位图整片顺序清零。\n",
     " * 释放不回改别的对象的计数：被释放的对象这一轮不可达，指它的引用也一起被释放，其余计数只多不少\n",
     " * ⇒ 宁可晚收，不可早放。 */\n",
-    "/* ---- 分步（可中断）清扫：一次只扫一个字（64 槽），游标存在区域里 ----\n",
+    "/* ---- 分步（可中断）清扫：一次只扫一个字（64 槽），游标存在区域里 [rt:sweep] ----\n",
     " *\n",
     " * 一次把整只区域扫完时，停顿 ∝ 区域内容。这里切成\"每步 N 个字\"：\n",
     " *   · `sweepBegin` 起游标并让轮次号自增；`sweepWord` 扫一个字（放掉未标对象、\n",
@@ -1860,7 +1920,7 @@ static const char *const RECLAIM_RT[] = {
     "    }\n",
     "}\n",
     "/* 收尾：标记已完成但本轮还开着 ⇒ 当场关屏障、起（分步）清扫。\n",
-    " * 只收尾、**不起新轮** —— 走 collect 会顺手起新一轮（实测把 evict 从 1.73x 推到 2.40x）。 */\n",
+    " * 只收尾、**不起新轮** —— 走 collect 会顺手起新一轮，把刚收完的空间立刻又压回去。 */\n",
     "__attribute__((unused)) static void extc_rc_finish(ExtcRcRegion *r) {\n",
     "    if (!r->marking || !r->seedsDone || r->msp != 0) return;   /* skip:finish-early */\n",
     "    extc_rc_why = \"finish\";\n",
@@ -1938,7 +1998,7 @@ static const char *const RECLAIM_RT[] = {
     "    return _pcr;\n",
     "}\n",
     "\n",
-    "/* ---- 欠收标志（子集 B）：内层帧给外层区域分配 ----\n",
+    "/* ---- 欠收标志（子集 B）：内层帧给外层区域分配 [rt:owe] ----\n",
     " *\n",
     " * 内层帧的静态根表对**外层帧拥有**的区域不完整（调用栈上其他帧的活引用不在表里），\n",
     " * 所以它不能扫那只区域；但它可以在区域上记一笔「欠一次收集」。真正动手的是**拥有它的\n",
@@ -1994,7 +2054,7 @@ static const char *const RECLAIM_RT[] = {
     "/* 触发路径挑\"哪片垃圾多\"专用的**提示量**：`bytes - live`，**不做 settle**。\n",
     " * 为什么必须分开：`extc_rc_bytes/live` 的契约是\"观测时账已是终值\" ⇒ 先 settle ⇒ 那里会把\n",
     " * 在飞的一轮**无界排空**。分片触发每次都要评所有片，这条路径落在 mutator 热循环里 ⇒\n",
-    " * 每次触发付一次 O(在飞轮) 停顿（实测 65,569 个对象 / ≈1.1 ms，2.4M 规模 8 片）。\n",
+    " * 每次触发付一次 O(在飞轮) 的停顿。\n",
     " * 触发只需要一个**序**：用上一次完成轮的 `live` 就够。方向：`live` 偏旧 ⇒ 垃圾被高估\n",
     " * ⇒ 更早触发、更早回收（保守方向），不会更晚。 */\n",
     "__attribute__((unused)) static int64_t extc_rc_garbageHint(const ExtcRcRegion *r) {\n",
@@ -2008,35 +2068,79 @@ static const char *const RECLAIM_RT[] = {
 };
 
 /**
- * @brief 把回收运行期的 C 文本追加到 `out`。
+ * @brief 把回收运行期的 C 文本追加到 out。
  *
- * 逐条把 `RECLAIM_RT` 拼进 `out`：文本是纯字符串，没有需要 arena 的状态。
+ * 按本次编译的档位切开发射：先在 out 里立三个开关宏（文本里那些 #if 与生成物后面的代码都按
+ * 它们取舍），再逐行拼。整节用不到的段（计数、帧根链）与只可能走一支的 #if，另一支直接不发 ——
+ * 与让预处理器丢掉逐字等价，只是生成物里不再留着这一档根本走不到的代码。
  *
- * @param a    未使用：运行时是纯文本。
- * @param out  追加生成代码的输出缓冲。
- * @param noCount    `EXTC_RC_NOCOUNT`：计数入口编译成空操作。
- * @param timeOn     `EXTC_RC_TIME`：运行期分项计时。
- * @param sweepFree  `EXTC_RC_SWEEP_FREE`：事件档，`shouldSweep` 恒 0。
+ * @param a          未使用：运行时是纯文本。
+ * @param out        追加生成代码的输出缓冲。
+ * @param noCount    EXTC_RC_NOCOUNT：计数入口编译成空操作。
+ * @param timeOn     EXTC_RC_TIME：运行期分项计数。
+ * @param sweepFree  EXTC_RC_SWEEP_FREE：事件档，shouldSweep 恒 0。
+ * @param localStore EXTC_RC_LOCALSTORE：本地槽的只写存储入口（只在无计数档有意义）。
+ * @param frameRoots 帧根链：1 = 发压链/查链的代码；还没有发射方往链里 push，所以传 0。
  */
-void reclaimEmitRuntime(Arena *a, Buf *out, int noCount, int timeOn, int sweepFree, int localStore) {
+void reclaimEmitRuntime(Arena *a, Buf *out, int noCount, int timeOn, int sweepFree,
+                        int localStore, int frameRoots) {
     (void)a;
-    /* 先立宏：上面那些 `#if EXTC_RC_NOCOUNT` / `#if EXTC_RC_TIME` 走哪一支由它们定。 */
+    /* 先立宏：下面那些 #if EXTC_RC_NOCOUNT / #if EXTC_RC_TIME 走哪一支由它们定。默认
+     * EXTC_RC_NOCOUNT=1 —— 计数入口整体编成空操作，回收只靠区域清扫。 */
     bufPuts(out, noCount ? "#define EXTC_RC_NOCOUNT 1\n" : "#define EXTC_RC_NOCOUNT 0\n");
     bufPuts(out, timeOn ? "#define EXTC_RC_TIME 1\n" : "#define EXTC_RC_TIME 0\n");
     bufPuts(out, sweepFree ? "#define EXTC_RC_SWEEP_FREE 1\n" : "#define EXTC_RC_SWEEP_FREE 0\n");
-    for (size_t i = 0; i < sizeof RECLAIM_RT / sizeof RECLAIM_RT[0]; i++)
-        bufPuts(out, RECLAIM_RT[i]);
-    /* `EXTC_RC_LOCALSTORE`（编译期，默认关）：**本地/形参槽**的存储专用入口。
-     * `storeRefOwned(slot, v, owner=0)` 在无计数档下的 gated 块做了两次 `ownSlab` 之后
-     * 因为 `so == 0` 什么都不做（`if (so) { … }`）⇒ 那两次查询是死代码。这里给一条只写的
-     * 等价入口；**只在无计数档**有意义（计数档要走 holdUpd，codegen 也不会发它）。 */
-    if (localStore) {
+    int skipSec = 0;        /* 当前这一节整节不发 */
+    int sup = 0;            /* 未发出去的 #if 层里，眼下这一支要不要发 */
+    int depth = 0;
+    int resolvable[16];     /* 这一层 #if 的档位是否已知（已知 ⇒ 整条指令都不发） */
+    int skipped[16];        /* 已知层：当前这一支是不是被丢掉的那一支 */
+    for (size_t i = 0; i < sizeof RECLAIM_RT / sizeof RECLAIM_RT[0]; i++) {
+        const char *line = RECLAIM_RT[i];
+        if (strstr(line, "[rt:") != NULL) skipSec = !rtSectionOn(line, timeOn, frameRoots);
+        if (skipSec) continue;
+        if (strncmp(line, "#if ", 4) == 0) {
+            int v = 0;
+            int known = rtCfgIf(line + 4, noCount, timeOn, sweepFree, &v);
+            resolvable[depth] = known;
+            skipped[depth] = known && !v;
+            if (skipped[depth]) sup++;
+            depth++;
+            if (!known && !sup) bufPuts(out, line);
+            continue;
+        }
+        if (strncmp(line, "#else", 5) == 0) {
+            if (depth > 0 && resolvable[depth - 1]) {
+                sup += skipped[depth - 1] ? -1 : 1;
+                skipped[depth - 1] = !skipped[depth - 1];
+                continue;
+            }
+            if (!sup) bufPuts(out, line);
+            continue;
+        }
+        if (strncmp(line, "#endif", 6) == 0) {
+            if (depth > 0) {
+                depth--;
+                if (resolvable[depth]) {
+                    if (skipped[depth]) sup--;
+                    continue;
+                }
+            }
+            if (!sup) bufPuts(out, line);
+            continue;
+        }
+        if (!sup) bufPuts(out, line);
+    }
+    /* EXTC_RC_LOCALSTORE（编译期，默认关）：本地/形参槽的存储专用入口。
+     * storeRefOwned(slot, v, owner=0) 在无计数档下先做两次 ownSlab，再因为 so == 0 什么都不做
+     * ⇒ 那两次查询是白费的。这条入口省掉它们；只在无计数档有意义。 */
+    if (localStore && noCount) {
         bufPuts(out,
-            "#if EXTC_RC_NOCOUNT\n"
+            "/* 本地/形参槽的只写存储入口：无计数档下先查两次所有权、再发现拿不到宿主，等于白查。\n"
+            " * 只写、不设屏障：本地槽换掉旧值时，旧边由 shadeOld 管。 */\n"
             "__attribute__((unused)) static inline void extc_rc_storeRefLocal(void **slot, void *v) {\n"
-            "    if (slot) { *slot = v; return; }   /* 无计数档：本地槽不设屏障，旧边由 shadeOld 管 */\n"
+            "    if (slot) { *slot = v; return; }\n"
             "    extc_rc_storeRef(slot, v);\n"
-            "}\n"
-            "#endif\n");
+            "}\n");
     }
 }

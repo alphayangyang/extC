@@ -9349,8 +9349,10 @@ static void emitRuntimePrologue(CG *g, Buf *out, Module *m) {
      * only when the program has a governed allocation point (`g->needReclaim`, narrowed by
      * `scanUnitReclaim` from that criterion; `EXTC_RECLAIM=1` forces it on, `=0` off). */
     if (g->needReclaim) {
+        /* 帧根链（reclaim.c 里的 [rt:chain] 段）还没有发射方往链里 push，压链的代码发出来也
+         * 全是死代码 ⇒ 传 0 不发。接线时要改的就是这个 0：改成对应的 codegen 标志。 */
         reclaimEmitRuntime(g->arena, out, g->rcNoCount, getenv("EXTC_RC_TIME") != NULL,
-                           g->rcSweepFree == 1, g->rcLocalStore == 1);
+                           g->rcSweepFree == 1, g->rcLocalStore == 1, 0);
         /* 区域由 **arena 的地址**认领。分配点本来就知道自己落在哪只 arena 上
          * （`arenaRefAt`），于是区域的寿命与那只 arena 完全一致 —— 包括被调者用调用者的
          * 家 arena 分配的那种情形（家 arena 是**同一个地址**一路传下来的），也包括递归里
