@@ -518,6 +518,19 @@ def build_items() -> list:
         bad_msg="tests/reclaim-perf/gate-reclaim-tables.sh（表维护/查找退化成线性，或判据失去牙）",
         bad_dump=dump_fail(12)))
 
+    # ---- 闸门·标记遍历的访存局部性（批量弹出是**延迟**机制，只能拿 cache-sim 守）----
+    # 判据：P5（N=500000、固定种子）的 cache-sim 末级读失手 DLmr ≤ 190000、一级数据读失手
+    # D1mr ≤ 700000。批量弹出拆掉后**指令数反而变少**（markStep 里那一处 ownSlab 被内联），
+    # DLmr 却涨 4×、墙钟慢 4–6× ⇒ 指令数棘轮与墙钟各管一件事，这条专门守延迟那一半。
+    # --selftest 把批量填充换成短批（_lim = 1）要求判据变红。具体数字记在 gate 脚本与 changelog。
+    items.append(cmd(
+        "gate-mark-locality", "gate",
+        "闸门·标记局部性：P5 的 cache-sim DLmr ≤ 190000、D1mr ≤ 700000（批量弹出不许被拆），且注入短批会变红",
+        ["./tests/reclaim-perf/gate-mark-locality.sh", "--selftest"], timeout=900,
+        ok_msg=ok_first(r"^  ok   标记遍历的访存局部性成立"),
+        bad_msg="tests/reclaim-perf/gate-mark-locality.sh（标记遍历的局部性退化，或判据失去牙）",
+        bad_dump=dump_fail(12)))
+
     # ---- 闸门·回收开关的形状断言（EXTC_RECLAIM=1）----
     # 这是 `tests/reclaim-shapes/` 的**主门禁**：30 条断言把一个旋钮（开关）的效果钉在
     # 形状上 —— 语义逐字一致、以及每个形状的 N vs 4N 峰值/登记量棘轮（<1.5×）。
