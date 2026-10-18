@@ -11,6 +11,8 @@
   S3 四个堆写入口都调删除屏障（storeRef / SameRegion / OwnedReg / Owned）
   S4 initRef / initRefNoHold 的着色被 #if !EXTC_RC_NOCOUNT 把门
   S5 storeRefLocal 不再着色（它只写本地槽，保护由删除屏障承担）
+  S6/S7 initRef / initRefNoHold 必须 always_inline：每个对象初始化一次，-O1 不内联就要
+        每次付一次调用+返回（cyclic_pressure 上占 3.0% 指令）
 每条都能红：--selftest 逐 token 注入缺口，确认 violations 真的变红。
 """
 import argparse
@@ -51,6 +53,8 @@ def violations(text):
     nh = body(text, 'extc_rc_initRefNoHold(void **slot, void *v)')
     checks['local nohold guarded'] = ('#if !EXTC_RC_NOCOUNT' in nh and 'extc_rc_shade(v);' in nh
                                       and '#endif' in nh)
+    checks['initRef forced inline'] = ('static inline __attribute__((always_inline)) void extc_rc_initRef(void **slot, void *v)' in text)
+    checks['nohold forced inline'] = ('static inline __attribute__((always_inline)) void extc_rc_initRefNoHold(void **slot, void *v)' in text)
     lc = body(text, 'extc_rc_storeRefLocal(void **slot, void *v)')
     checks['local store unbarriered'] = bool(lc) and 'extc_rc_shade' not in lc and '*slot = v;' in lc
     return [k for k, ok in checks.items() if not ok]
@@ -64,6 +68,8 @@ INJECTIONS = [
     ('extc_rc_shadeOld(slot);', 'all'),
     ('#if !EXTC_RC_NOCOUNT', 'all'),
     ('extc_rc_storeRefLocal(void **slot, void *v) {', 'add-shade'),
+    ('static inline __attribute__((always_inline)) void extc_rc_initRef(void **slot, void *v)', 'first'),
+    ('static inline __attribute__((always_inline)) void extc_rc_initRefNoHold(void **slot, void *v)', 'first'),
 ]
 
 

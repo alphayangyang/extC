@@ -55,6 +55,10 @@
 #      `memset(p, 0, ss)` 才能展开成定长内联存储（不再每分配一次库调用）；同块子对象的去重
 #      也不再查 `occ` 位（`mark` 位立着就是已黑）：本形状 **102 633 660 Ir** ⇒ 线收到
 #      **107 765 343**（= 实测 × 1.05）。
+#   ㉒ 批量填充把标记栈头/栈深提到局部（`void **_stk = r->mstk; size_t _sp = r->msp;`，弹完整批
+#      再 `r->msp = _sp` 压回）：循环里不反复读 `r`；每对象初始化一次的 `initRef`/`initRefNoHold`
+#      也强制内联（-O1 不内联就每个初始化点多一次调用+返回，自赋值常量点还能被折掉）：本形状
+#      **98 924 997 Ir** ⇒ 线收到 **103 871 247**（= 实测 × 1.05）。
 #
 # 口径与 `run.sh` 一致：pinned `extc` → `EXTC_RECLAIM=1` 生成 → `cc -std=c11 -fwrapv -O1`
 # → `valgrind --tool=callgrind` 的 `summary:` 行。只写自己的临时目录，`src/` 一个字节不动。
@@ -74,7 +78,7 @@ SRC=${SRC:-$ROOT/tests/reclaim-shapes/cyclic_pressure.extc}
 EXTC=${EXTC:-$ROOT/build/extc}
 CC=${CC:-cc}
 N=${N:-200000}
-LIMIT=${LIMIT:-107765343}          # 槽大小内联 + 去重只查 mark 位后实测 102633660 × 1.05（棘轮只许往下；上一线 115894468）
+LIMIT=${LIMIT:-103871247}          # 批量填充栈头局部化 + initRef 强制内联后实测 98924997 × 1.05（棘轮只许往下；上一线 107765343）
 
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 

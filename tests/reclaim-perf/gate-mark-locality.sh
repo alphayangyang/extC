@@ -111,11 +111,12 @@ anchor = (
     "#if EXTC_RC_WORK_BUDGET > 0\n"
     "        if (wleft < _lim) _lim = wleft;\n"
     "#endif\n"
-    "        if ((size_t)r->msp < _lim) _lim = (size_t)r->msp;\n"
+    "        void **_stk = r->mstk; size_t _sp = r->msp;   /* 栈头提到局部：弹出循环里不反复读 r */\n"
+    "        if (_sp < _lim) _lim = _sp;\n"
 )
 if anchor not in t:
     raise SystemExit("注入失败：找不到「先算上限」的批量填充段（发射文本形状变了？）")
-open(dst, "w").write(t.replace(anchor, "        size_t _lim = 1;\n", 1))
+open(dst, "w").write(t.replace(anchor, "        size_t _lim = 1;\n        void **_stk = r->mstk; size_t _sp = r->msp;\n", 1))
 PY
     then
         bad "红自测注入失败"; exit 1
