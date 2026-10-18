@@ -673,7 +673,13 @@ reclaim 形状闸门（`gate-shapes`/`gate-work`/`gate-shard-cycles`/`gate-idle-
     → 当活对象止步。三种情况可达集都不变。
     弹出端的两道检查也换了序：先查 `mark` 位（已黑 ⇒ 一步跳出，这是绝大多数弹出）、再查 `occ` 位
     （陈旧指针的第二道）；两者互不替代，换序只改到达 `continue` 的先后。
-    这一项由指令数棘轮守（`gate-reclaim-perf`：89 675 091 Ir），可达集不变由 `reclaim-unit`（含
+    扫描体的子对象循环走**指针步进**（`const uint32_t *_op = t->off; const uint32_t *_oend = _op + t->nptr;`，
+    条件 `_op < _oend`、偏移取 `*_op`）：每轮不再重读 `t->nptr` 与 `t->off` 的基址。分配路径的推进计数器
+    `extc_rc_markAdvance` 也强制内联 —— 每个分派点都经过它，-O1 不跨调用点内联就每趟多一次调用/返回。
+    两条都是纯代码形状（可达集、清扫集合都不动），`check_mark_batch` 的 `child loop pointer walk` /
+    `mark advance inlined` 钉住它们；`markPushFast` 里的 `__builtin_prefetch` 保留 —— 删掉它指令数会降
+    （约 0.27%），P5 的墙钟却变差，预取这一半只能靠墙钟评。
+    这一项由指令数棘轮守（`gate-reclaim-perf`：88 852 320 Ir），可达集不变由 `reclaim-unit`（含
     ASan/UBSan）与五形状语义逐字兜底。
     批弹出是**延迟**机制（先攒一批，让每个对象的指针追逐装载各自独立在飞），不是指令数机制：
     拆掉它指令数会**下降**（同一处 `ownSlab` 被内联），末级读失手却会翻倍 —— 所以这一项由

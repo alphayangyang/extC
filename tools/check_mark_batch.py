@@ -58,6 +58,12 @@ def violations(text):
         'no separate prefetch sweep': 'for (size_t _pf = 0' not in text,
         'scan loop calls macro': 'for (size_t _b = 0; _b < _nb; _b++) { EXTC_RC_MARK_SCAN(_batch[_b]); }' in text,
         'width ceiling': re.search(r'#if EXTC_RC_MARK_BATCH_POP > EXTC_RC_MARK_BATCH_MAX\s*\n#error', text) is not None,
+        # 扫描体：子对象循环走「指针步进」而不是每次重读 t->nptr/t->off[k]（-O1 下实测省 0.68%）；
+        # 推进计数器的分派点改成内联（-O1 不跨调用点内联 ⇒ 每趟一次调用/返回）。
+        'child loop pointer walk': ('const uint32_t *_op = t->off; const uint32_t *_oend = _op + t->nptr;' in text and
+                                    'for (; _op < _oend; ++_op) {' in text and
+                                    'void *child = *(void **)((char *)o + *_op);' in text),
+        'mark advance inlined': '__attribute__((unused)) static inline __attribute__((always_inline)) void extc_rc_markAdvance(' in text,
     }
     return [k for k, ok in checks.items() if not ok]
 
@@ -84,7 +90,9 @@ def main():
                       'budget -= _nb; pops += _nb;',
                       'for (size_t _b = 0; _b < _nb; _b++) { EXTC_RC_MARK_SCAN(_batch[_b]); }',
                       '__builtin_prefetch((void *)(_batch[_nb] & ~(uintptr_t)1)',
-                      '#if EXTC_RC_MARK_BATCH_POP > EXTC_RC_MARK_BATCH_MAX']:
+                      '#if EXTC_RC_MARK_BATCH_POP > EXTC_RC_MARK_BATCH_MAX',
+                      'const uint32_t *_op = t->off;',
+                      '__attribute__((unused)) static inline __attribute__((always_inline)) void extc_rc_markAdvance(']:
             assert token in text, token
             mutated = text.replace(token, '/* injected */')
             assert violations(mutated), token

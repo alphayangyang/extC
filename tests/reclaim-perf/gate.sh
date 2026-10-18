@@ -68,6 +68,11 @@
 #      换不来东西；对象处理体移进文件级宏 `EXTC_RC_MARK_SCAN` 供两条路共用。同块子对象去重先查
 #      `mark` 位（已黑最省一步），`occ` 位只作陈旧指针的第二道。本形状 **89 675 091 Ir** ⇒ 线收到
 #      **94 158 845**（= 实测 × 1.05）。
+#   ㉕ 标记步两笔代码形状：分配路径的推进计数器 `extc_rc_markAdvance` 强制内联（每个分派点都过它，
+#      -O1 不跨调用点内联 ⇒ 每趟一次调用/返回）；扫描体里子对象循环改**指针步进**（`_op`/`_oend`，
+#      不再每次重读 `t->nptr` 的边界与 `t->off[k]` 的基址）。本形状 **88 852 320 Ir** ⇒ 线收到
+#      **93 294 936**（= 实测 × 1.05）。`cross_region` 形状 +0.25%（≈ +1 Ir/分配）是内联后的
+#      codegen 抖动，归因到 `markAdvance` 内联那一半（单独量只内联 ≈ +19 950 Ir）。
 #
 # 口径与 `run.sh` 一致：pinned `extc` → `EXTC_RECLAIM=1` 生成 → `cc -std=c11 -fwrapv -O1`
 # → `valgrind --tool=callgrind` 的 `summary:` 行。只写自己的临时目录，`src/` 一个字节不动。
@@ -87,7 +92,7 @@ SRC=${SRC:-$ROOT/tests/reclaim-shapes/cyclic_pressure.extc}
 EXTC=${EXTC:-$ROOT/build/extc}
 CC=${CC:-cc}
 N=${N:-200000}
-LIMIT=${LIMIT:-94158845}          # 浅栈单个处理（不装批）后实测 89675091 × 1.05（棘轮只许往下；上一线 99316871）
+LIMIT=${LIMIT:-93294936}          # 推进计数器内联 + 子对象循环指针步进后实测 88852320 × 1.05（棘轮只许往下；上一线 94158845）
 
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 
