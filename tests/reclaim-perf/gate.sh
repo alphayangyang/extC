@@ -46,7 +46,7 @@ SRC=${SRC:-$ROOT/tests/reclaim-shapes/cyclic_pressure.extc}
 EXTC=${EXTC:-$ROOT/build/extc}
 CC=${CC:-cc}
 N=${N:-200000}
-LIMIT=${LIMIT:-161653535}          # 本地槽只写入口落地后实测 153955748 × 1.05（棘轮只许往下；上一线 161930000）
+LIMIT=${LIMIT:-143605649}          # 开放寻址登记表落地后实测 136767285 × 1.05（棘轮只许往下；上一线 161653535）
 
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 
@@ -58,7 +58,7 @@ VG=$(command -v valgrind || true)
 echo "== 回收性能判据（EXTC_RECLAIM=1，N=$N）=="
 echo "  形状   $SRC"
 echo "  编译   EXTC_RECLAIM=1 extc -I <repo>/stdlib → cc -std=c11 -fwrapv -O1"
-echo "  判据   总指令数 ≤ $LIMIT（现行线 = 守卫 O(1) 化落地后实测 × 1.05）"
+echo "  判据   总指令数 ≤ $LIMIT（现行线 = 最近一次实测 × 1.05；棘轮只许往下）"
 
 # 固定编译器：`extc` 按自身所在目录找 stdlib ⇒ 拷到别处要显式 -I。
 cp "$EXTC" "$TMP/extc"; chmod +x "$TMP/extc"

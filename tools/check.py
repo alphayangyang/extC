@@ -506,6 +506,18 @@ def build_items() -> list:
         bad_msg="tests/reclaim-perf/gate-slab-scale.sh（每分配成本随存活 slab 数涨，或判据失去牙）",
         bad_dump=dump_fail(12)))
 
+    # ---- 闸门·两张按结构体规模存活的表的缩放（own 登记表、每 slab 小类型表）----
+    # 判据：own 表每次 add+del 在 S=1024 与 4096 两档的 callgrind 指令数比 ≤ 2.0、绝对值
+    # ≤ 800；小类型表每次 typeIdx 在 T=8 与 256 两档之比 ≤ 2.0、绝对值 ≤ 200。--selftest
+    # 分别注入「整表线性探测」与「类型表哈希分支短路」两种线性形状，要求判据变红（有牙）。
+    items.append(cmd(
+        "gate-reclaim-tables", "gate",
+        "闸门·登记表/类型表缩放：own 每次 add+del 与 typeIdx 每次查找的成本不随表规模涨，且注入线性形状会变红",
+        ["./tests/reclaim-perf/gate-reclaim-tables.sh", "--selftest"], timeout=900,
+        ok_msg=ok_first(r"^  ok   登记表维护成本与存活 slab 数无关"),
+        bad_msg="tests/reclaim-perf/gate-reclaim-tables.sh（表维护/查找退化成线性，或判据失去牙）",
+        bad_dump=dump_fail(12)))
+
     # ---- 闸门·回收开关的形状断言（EXTC_RECLAIM=1）----
     # 这是 `tests/reclaim-shapes/` 的**主门禁**：30 条断言把一个旋钮（开关）的效果钉在
     # 形状上 —— 语义逐字一致、以及每个形状的 N vs 4N 峰值/登记量棘轮（<1.5×）。

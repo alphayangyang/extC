@@ -74,6 +74,15 @@ while i < n {
 判据是 [\`tools/check_alloc_hot.py\`](../tools/check_alloc_hot.py)（结构）与
 [\`tests/reclaim-perf/gate-slab-scale.sh\`](../tests/reclaim-perf/gate-slab-scale.sh)（N vs 4N 的每分配指令数比）。
 
+登记 slab 的**反向表**（指针 → slab，兜底路径）与每块 slab 的**小类型表**同样是按结构体规模存活的表，
+也必须每操作 O(1)：反向表是开放寻址哈希（键 = slab 基址；超大块按载荷地址进第二张表），线性探测、装载上限 1/2、
+删除走 Knuth 回移（不留墓碑），扩容翻倍重排；小类型表在描述符少时线性扫（一块通常只落一两个分配点），超过
+`EXTC_RC_TTAB_LINEAR_MAX`（8）之后建一张 16 位开放寻址索引（描述符指针 → 表下标），此后每次分配一次探测。
+线性形状的代价是：有序数组每次插入/删除搬整段 ⇒ 整区释放是 O(块数²) 的指针搬动；每次分配线性扫块内类型数 ⇒
+泛型单态化把上千个分配点塞进同一尺寸类时每分配几十条指令（实测 T=1→256：133→770 Ir/分配）。判据是
+[`tests/reclaim-perf/gate-reclaim-tables.sh`](../tests/reclaim-perf/gate-reclaim-tables.sh)：S=1024 vs 4096 的每次
+add+del 指令数比、T=8 vs 256 的每次查找指令数比，注入线性形状必须变红。
+
 被释放过的槽另有一条**复用链**（`bump` 游标只管从没发出去过的槽）：表头是 slab 头里的槽号，
 **「下一槽号」编码在各槽的 `tid[]` 里**（槽号 + 1，0 = 链尾），不写进载荷 —— 释放的槽是冷的，
 把 8 字节头插指针写进载荷等于每释放一槽就白拉一条 cache line 进来（末级写失手）；
@@ -679,7 +688,8 @@ reclaim 形状闸门（`gate-shapes`/`gate-work`/`gate-shard-cycles`/`gate-idle-
 | `skip:occ-free` | 按槽计数/登记/持有的入口：槽没占用就返回 | 只有**占用**的槽才有计数、登记位、类型 | 多留（保守）| 注入 `occ-guard-drop` ⇒ 红在 `bump 跨区：bump 槽在按槽登记之外` |
 | `skip:sat-inc` / `skip:sat-dec` / `skip:hold-zero` | 计数到顶粘住 / 降到零以下不再减 | 饱和值粘住 | 少算（不安全）| `count-nosat` / `rsinc-nosat` ⇒ 各自红在饱和判据上 |
 | `skip:not-own` / `skip:no-pointer` | 指针查不到自己的 slab（或指针为空）⇒ 当作"不是本运行期的槽" | 只有本运行期的 slab 才会被查 | 少算（不安全）| 反向表 `ownTab`/`bigTab` **无上限**（`realloc` 翻倍）⇒ 查不到只可能是外来指针；ASan 语料 + 跨语言对拍 |
-| `skip:lookup-probe` | 反向表二分查找的越界/不等判断 | 表按载荷地址有序 | 少算（不安全）| `gate-checkc` 两模式全语料编过 + ASan 语料；**没有专门注入** |
+| `skip:ttab-hit` | 小类型表的哈希索引探测命中 ⇒ 直接返回该描述符的号 | 索引按描述符**指针相等**建、装载上限 1/2 ⇒ 命中即等价于线性扫到同一个描述符 | 无（就是命中路径）| `gate-reclaim-tables`（T=8 vs 256 的成本比）；语义由 `reclaim-unit` / 语料对拍兜底 |
+| `skip:lookup-probe` | 反向表探测的「表不存在 / 未命中 / 载荷地址不等」判断 | 探测表只登记本运行期造过的 slab，装载上限 1/2 ⇒ 探测必遇空格；超大块表按载荷地址精确匹配 | 少算（不安全）| `gate-checkc` 两模式全语料编过 + ASan 语料 + `gate-reclaim-tables` 的注入；**没有逐点注入** |
 | `skip:reg-dup` | `extc_rc_register` 已置位就不再置 | 登记位是幂等标记 | 少算（不安全）| 单测 `登记：目标槽登记位置位` + `register-noop` |
 | `skip:no-desc` | 槽没有类型描述符（数据对象）⇒ 不追字段 | 数据对象没有引用字段 | 少算（不安全）| 单测 `类型：描述符字段数正确` + `mark-nodesc` |
 | `skip:no-region` | 宿主区域证不出来 ⇒ 跳过登记 | —— | 少算（不安全）| 由调用方改走"目标区域退出清扫"（义务 7）|
