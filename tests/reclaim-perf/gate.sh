@@ -59,6 +59,10 @@
 #      再 `r->msp = _sp` 压回）：循环里不反复读 `r`；每对象初始化一次的 `initRef`/`initRefNoHold`
 #      也强制内联（-O1 不内联就每个初始化点多一次调用+返回，自赋值常量点还能被折掉）：本形状
 #      **98 924 997 Ir** ⇒ 线收到 **103 871 247**（= 实测 × 1.05）。
+#   ㉓ 清扫按**字**批量释放（`extc_rc_freeSlotWord`）：一个死字里逐槽只做链头插，占用位/登记位、
+#      字节账与 freedSlots、avail 回挂都按整字一次；`unlinkChildren` 与 rscnt 清零仍逐槽，
+#      但「一次登记都没发生过」的分支提到字外（默认档 rsIncN 恒 0 ⇒ 整段不执行）：本形状
+#      **94 587 496 Ir** ⇒ 线收到 **99 316 871**（= 实测 × 1.05）。
 #
 # 口径与 `run.sh` 一致：pinned `extc` → `EXTC_RECLAIM=1` 生成 → `cc -std=c11 -fwrapv -O1`
 # → `valgrind --tool=callgrind` 的 `summary:` 行。只写自己的临时目录，`src/` 一个字节不动。
@@ -78,7 +82,7 @@ SRC=${SRC:-$ROOT/tests/reclaim-shapes/cyclic_pressure.extc}
 EXTC=${EXTC:-$ROOT/build/extc}
 CC=${CC:-cc}
 N=${N:-200000}
-LIMIT=${LIMIT:-103871247}          # 批量填充栈头局部化 + initRef 强制内联后实测 98924997 × 1.05（棘轮只许往下；上一线 107765343）
+LIMIT=${LIMIT:-99316871}          # 清扫按字批量释放后实测 94587496 × 1.05（棘轮只许往下；上一线 103871247）
 
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 
