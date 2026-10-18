@@ -11,10 +11,14 @@ once) instead of re-testing four conditions on every pop.
 
 The scan body lives in one file-scope macro (EXTC_RC_MARK_SCAN) shared by two
 call sites: the batch loop (deep stack) and a shallow-stack fast path that pops
-and scans a single object without assembling a batch. The fast path exists
-because the batch machinery (array / limit min / fill loop / scan loop) is pure
-fixed cost when the mark stack holds only a handful of objects; the batch is a
-prefetch-lead-time mechanism, so it only pays when enough objects are queued.
+and scans objects without assembling a batch, draining the shallow stack in a
+loop of its own. The fast path exists because the batch machinery (array / limit
+min / fill loop / scan loop) is pure fixed cost when the mark stack holds only a
+handful of objects; the batch is a prefetch-lead-time mechanism, so it only pays
+when enough objects are queued. The drain loop pins one more thing: once we are
+in the shallow path, re-entering the outer loop to re-test the walk/budget/
+shallow conditions for every single object costs about as much as the scan
+so the shallow path keeps popping until the stack grows past the threshold.
 Both properties are pinned below -- measurement: callgrind on cyclic_pressure
 200000 drops 94,587,483 -> 89,675,120 Ir once the shallow path is in.
 """
@@ -44,6 +48,8 @@ def violations(text):
         'shallow fast path': ('if ((size_t)r->msp <= (size_t)EXTC_RC_MARK_SHALLOW && budget > 0' in text and
                               'void *_one = r->mstk[--r->msp];' in text and
                               'EXTC_RC_MARK_SCAN((uintptr_t)_one);' in text),
+        # 浅栈路径要一次把浅栈排空：每弹一个就回外层重判 while/浅栈条件，比扫描体本身还显眼
+        'shallow drain loop': ('} while (r->msp > 0 && (size_t)r->msp <= (size_t)EXTC_RC_MARK_SHALLOW && budget > 0' in text),
         'batch constant': '#define EXTC_RC_MARK_BATCH_POP' in text,
         'batch array': 'uintptr_t _batch[EXTC_RC_MARK_BATCH_POP];' in text,
         'limit hoisted': ('size_t _lim = EXTC_RC_MARK_BATCH_POP;' in text and
@@ -79,6 +85,7 @@ def main():
                       '    uintptr_t _raw = (_rawIn); ',
                       '#define EXTC_RC_MARK_SHALLOW',
                       'if ((size_t)r->msp <= (size_t)EXTC_RC_MARK_SHALLOW && budget > 0',
+                      '} while (r->msp > 0 && (size_t)r->msp <= (size_t)EXTC_RC_MARK_SHALLOW && budget > 0',
                       '#define EXTC_RC_MARK_BATCH_POP',
                       'uintptr_t _batch[EXTC_RC_MARK_BATCH_POP];',
                       'size_t _lim = EXTC_RC_MARK_BATCH_POP;',

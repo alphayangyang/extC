@@ -672,8 +672,10 @@ reclaim 形状闸门（`gate-shapes`/`gate-work`/`gate-shard-cycles`/`gate-idle-
 整批弹完、重复压栈因此变多。阈值是「去重收益 vs 预取收益」的折中，按形状实测取值：本形状
 Ir 随阈值 8 → 32 → 64 单调降到 87 823 666，再往上（128 / 256）回升；P5 这类深栈形状几乎永远走
 批路径，D1mr/DLmr 逐位不变 ⇒ 取 64。对象处理体因此移进一个文件级宏 `EXTC_RC_MARK_SCAN`，深栈
-批扫与浅栈单扫共用同一份体（两份体迟早漂）。`check_mark_batch` 的 `shallow fast path` /
-`scan loop calls macro` / `scan body shared once` 钉住这三条；拆掉批量的路只留给出问题的形状
+批扫与浅栈单扫共用同一份体（两份体迟早漂）。浅栈路径还**一次把浅栈排空**（`do { … } while (r->msp > 0
+&& r->msp <= EXTC_RC_MARK_SHALLOW && budget > 0)`）：弹一个就回外层重判 while/预算/浅栈条件，在单发路径
+上这点重判并不比扫描体本身小，排空循环把它摊到一次。`check_mark_batch` 的 `shallow fast path` /
+`shallow drain loop` / `scan loop calls macro` / `scan body shared once` 钉住这几条；拆掉批量的路只留给出问题的形状
 （`gate-mark-locality --selftest` 用 `-DEXTC_RC_MARK_SHALLOW=4000000000u` 把它翻成全单扫，要求
 cache-sim 判据变红）。
     子对象循环里的同块去重也不再验槽首、也不查 `occ`：只按「包含该地址的槽」查 `mark` 位，省掉
@@ -689,7 +691,7 @@ cache-sim 判据变红）。
     两条都是纯代码形状（可达集、清扫集合都不动），`check_mark_batch` 的 `child loop pointer walk` /
     `mark advance inlined` 钉住它们；`markPushFast` 里的 `__builtin_prefetch` 保留 —— 删掉它指令数会降
     （约 0.27%），P5 的墙钟却变差，预取这一半只能靠墙钟评。
-    这一项由指令数棘轮守（`gate-reclaim-perf`：86 646 164 Ir），可达集不变由 `reclaim-unit`（含
+    这一项由指令数棘轮守（`gate-reclaim-perf`：86 174 829 Ir），可达集不变由 `reclaim-unit`（含
     ASan/UBSan）与五形状语义逐字兜底。
     批弹出是**延迟**机制（先攒一批，让每个对象的指针追逐装载各自独立在飞），不是指令数机制：
     拆掉它指令数会**下降**（同一处 `ownSlab` 被内联），末级读失手却会翻倍 —— 所以这一项由
