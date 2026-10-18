@@ -616,6 +616,11 @@ reclaim 形状闸门（`gate-shapes`/`gate-work`/`gate-shard-cycles`/`gate-idle-
     对照证明不是杠杆；批宽同时是遍历顺序旋钮（`collects`/峰值 RSS 跟着动）。**批宽上限在进填充循环前
     一次算好**（`min(批宽, 剩余预算, 窗口配额, 标记栈深度)`），预算与配额按整批扣（`budget -= _nb; pops += _nb;`）
     —— 填充循环里不再每弹一个对象比较三个条件、扣两次账；弹出的集合与顺序逐字不变。
+    子对象循环里的同块去重也不再验槽首：只按「包含该地址的槽」查 `occ`/`mark` 位，省掉每个同块子对象
+    一次 `k * s->ss == off` 的乘法校验。这是安全的：非槽首的指针在弹栈端本来就会被 `ownSlab` 判成
+    「不是本运行期的槽」（`skip:not-own`）→ 当活对象止步，所以提前用包含槽的位去重不改变可达集。
+    这一项由指令数棘轮守（`gate-reclaim-perf`：125 487 946 Ir），可达集不变由 `reclaim-unit`（含
+    ASan/UBSan）与五形状语义逐字兜底。
     批弹出是**延迟**机制（先攒一批，让每个对象的指针追逐装载各自独立在飞），不是指令数机制：
     拆掉它指令数会**下降**（同一处 `ownSlab` 被内联），末级读失手却会翻倍 —— 所以这一项由
     cache-sim 判据 [`gate-mark-locality.sh`](../tests/reclaim-perf/gate-mark-locality.sh)（P5 的
