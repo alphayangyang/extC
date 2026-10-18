@@ -39,6 +39,8 @@
 #      弹栈端本来就会被 ownSlab 判成非对象）：本形状 **125 487 946 Ir** ⇒ 线收到 131 762 343（= 实测 × 1.05）。
 #   ⑯ alloc 不再逐次重验缓存块的尺寸类（`allocHot` 只有本函数一个写入点，s 只来自
 #      classSlot/slabNew ⇒ 同尺寸类是不变式）：本形状 **125 022 751 Ir** ⇒ 线收到 131 273 889（= 实测 × 1.05）。
+#   ⑰ `ownSlab` 不再显式挡空指针（`p == 0 ⇒ base == 0`，映射格/登记表/超大块表里都没有键 0
+#      ⇒ 每一层探测都落空、返回 0 与显式检查相同）：本形状 **124 032 889 Ir** ⇒ 线收到 130 234 533（= 实测 × 1.05）。
 #
 # 口径与 `run.sh` 一致：pinned `extc` → `EXTC_RECLAIM=1` 生成 → `cc -std=c11 -fwrapv -O1`
 # → `valgrind --tool=callgrind` 的 `summary:` 行。只写自己的临时目录，`src/` 一个字节不动。
@@ -58,7 +60,7 @@ SRC=${SRC:-$ROOT/tests/reclaim-shapes/cyclic_pressure.extc}
 EXTC=${EXTC:-$ROOT/build/extc}
 CC=${CC:-cc}
 N=${N:-200000}
-LIMIT=${LIMIT:-131273889}          # alloc 不再重验尺寸类后实测 125022751 × 1.05（棘轮只许往下；上一线 131762343）
+LIMIT=${LIMIT:-130234533}          # ownSlab 不再挡空指针后实测 124032889 × 1.05（棘轮只许往下；上一线 131273889）
 
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 

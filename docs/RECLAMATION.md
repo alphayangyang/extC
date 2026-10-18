@@ -706,7 +706,7 @@ reclaim 形状闸门（`gate-shapes`/`gate-work`/`gate-shard-cycles`/`gate-idle-
 | `skip:same-region` | 值与宿主**在同一个区域**（编译期证得）⇒ 赋值时不登记、不查表 | 两项都是**本帧新局部量**且 arena 层相同 ⇒ 这条边不可能跨区 | 少算（不安全）| `gate-reclaim-switch` 的 `cross-region：登记量判据`；注入 `same-region-always`（把判定强制为真）⇒ 红在那条上 | 
 | `skip:occ-free` | 按槽计数/登记/持有的入口：槽没占用就返回 | 只有**占用**的槽才有计数、登记位、类型 | 多留（保守）| 注入 `occ-guard-drop` ⇒ 红在 `bump 跨区：bump 槽在按槽登记之外` |
 | `skip:sat-inc` / `skip:sat-dec` / `skip:hold-zero` | 计数到顶粘住 / 降到零以下不再减 | 饱和值粘住 | 少算（不安全）| `count-nosat` / `rsinc-nosat` ⇒ 各自红在饱和判据上 |
-| `skip:not-own` / `skip:no-pointer` | 指针查不到自己的 slab（或指针为空）⇒ 当作"不是本运行期的槽" | 只有本运行期的 slab 才会被查 | 少算（不安全）| 反向表 `ownTab`/`bigTab` **无上限**（`realloc` 翻倍）⇒ 查不到只可能是外来指针；ASan 语料 + 跨语言对拍 |
+| `skip:not-own` / `skip:no-pointer` | 指针查不到自己的 slab（或指针为空）⇒ 当作"不是本运行期的槽" | 只有本运行期的 slab 才会被查 | 少算（不安全）| 反向表 `ownTab`/`bigTab` **无上限**（`realloc` 翻倍）⇒ 查不到只可能是外来指针；ASan 语料 + 跨语言对拍。`ownSlab` 自己不再显式挡空指针：`p == 0 ⇒ base == 0`，而映射格/登记表/超大块表里都没有键 0 ⇒ 每层探测落空、返回 0 与显式检查相同；空指针边界由 `reclaim-unit` 的「空指针查不到 slab」「空指针不算本运行期的槽」两条断言钉住 |
 | `skip:ttab-hit` | 小类型表的哈希索引探测命中 ⇒ 直接返回该描述符的号 | 索引按描述符**指针相等**建、装载上限 1/2 ⇒ 命中即等价于线性扫到同一个描述符 | 无（就是命中路径）| `gate-reclaim-tables`（T=8 vs 256 的成本比）；语义由 `reclaim-unit` / 语料对拍兜底 |
 | `skip:type-hot` | 本块上一次落表的描述符与本次**指针相等** ⇒ 直接返回上次的类型号，跳过类型表查找 | 描述符按指针相等去重、类型号在本块内只增不改（`ttab` 下标一旦落表就不动），缓存只在落表成功后回填 ⇒ 缓存对等价于查表结果 | 无（就是命中路径）| `gate-reclaim-tables`（T=8 vs 256 成本比）+ 语料对拍；`gate-skip-table` |
 | `skip:lookup-probe` | 反向表探测的「表不存在 / 未命中 / 载荷地址不等」判断 | 探测表只登记本运行期造过的 slab，装载上限 1/2 ⇒ 探测必遇空格；超大块表按载荷地址精确匹配 | 少算（不安全）| `gate-checkc` 两模式全语料编过 + ASan 语料 + `gate-reclaim-tables` 的注入；**没有逐点注入** |

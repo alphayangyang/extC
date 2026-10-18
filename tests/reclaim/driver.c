@@ -377,6 +377,9 @@ static void t_types(void) {
  * 这里用"外区内存 + 槽内但不在槽首的指针"两种形状钉住它：全部操作都必须是空操作，
  * 且外区内存一个字节都不能被改。 */
 static void t_ownsGuard(void) {
+    /* 空指针不单独挡：没有键 0 可命中，ownSlab(0) 走到表尾仍返回 0（结果仍必须是否为 0）。 */
+    check(extc_rc_ownSlab(NULL) == NULL, "守卫：空指针查不到 slab");
+    check(!extc_rc_owns(NULL), "守卫：空指针不算本运行期的槽");
     ExtcRcRegion *r = regionNew(12, 4096);
     Node *inside = (Node *)extc_rc_alloc(r, sizeof(Node), &g_node);
 
