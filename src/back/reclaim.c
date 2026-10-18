@@ -563,7 +563,10 @@ static const char *const RECLAIM_RT[] = {
     " * （src/types/types.c 的 BUILTIN_NAMES），结构体 / 枚举 / 数组 / 引用 / 函数指针 / dyn 全由它们搭出来\n"
     " * （src/ast/ast.h 的 TypeKind 里没有向量与 128 位种类）⇒ 不存在需要更大对齐的载荷；\n"
     " * 槽号索引走乘倒数右移（见 extc_rc_rcpOf），本来就不要求 2 的幂步长。 */\n",
-    "__attribute__((unused)) static size_t extc_rc_slotSize(size_t n) {\n",
+    "/* 强制内联的理由：分配点常常是常量 n（sizeof 一个类型），内联后槽步长在这里就是常量，\n",
+    " * `memset(p, 0, ss)` 才能被 GCC 展开成定长内联存储，而不是每次分配一次 libc 调用；\n",
+    " * 动态 n 的调用点也省掉一次调用/返回（判据：check_slot_unit 钉签名与槽大小规则）。 */\n",
+    "__attribute__((unused)) static inline __attribute__((always_inline)) size_t extc_rc_slotSize(size_t n) {\n",
     "    size_t s = (n + 7) & ~(size_t)7;\n",
     "    if (s <= 16 && n > 16) extc_rc_oops(\"slot size overflow\");   /* 只可能是 n 本身溢出 */\n",
     "    return s > 16 ? s : 16;\n",
@@ -1829,8 +1832,11 @@ static const char *const RECLAIM_RT[] = {
     "        r->markedBytes += (int64_t)s->ss;\n",
     "        const ExtcRcType *t = extc_rc_typeOf(s, i);\n",
     "        if (t == EXTC_RC_CONSERVATIVE) {           /* 兜底：把槽里每个字都当候选指针 */\n",
-    /* 子对象的同块去重只按「包含该地址的槽」查 occ/mark 位，不再验槽首：非槽首指针在弹栈端会被
-       ownSlab 判成非对象（当区域外跳过），提前去重不改变可达集，省掉每个同块子对象的乘法校验。 */
+    /* 子对象的同块去重只按「包含该地址的槽」查 **mark 位**，不再验槽首、也不查 occ：
+       mark 立着 ⇒ 这个槽本轮已经黑过（走过，或标记期分配时由 alloc 标黑），弹栈端会用同一道
+       mark 位挡下 ⇒ 提前 continue 不丢可达；occ 位不查也不会错 —— 槽空而 mark 立着时旧写法的
+       压栈同样只会被弹栈端的 occ 检查丢掉，可达集相同。非槽首指针在弹栈端会被 ownSlab 判成
+       非对象（当区域外跳过），提前去重同样不改变可达集，还省掉每个同块子对象的乘法校验。 */
     "            size_t words = s->ss / sizeof(void *);\n",
     "            for (size_t w2 = 0; w2 < words; w2++) {\n",
     "                void *child = ((void **)o)[w2];\n",
@@ -1841,8 +1847,8 @@ static const char *const RECLAIM_RT[] = {
     "                size_t _ci = extc_rc_slotOfOff(s, _off);\n",
     "                if (_ci < s->nslots) {\n",
     "                    uint64_t _cbit = extc_rc_bit(_ci);\n",
-    "                    size_t _cw = extc_rc_word(_ci);   /* occ/mark 同字 */\n",
-    "                    if (s->occ[_cw] & _cbit && (s->mark[_cw] & _cbit)) continue;\n",
+    "                    size_t _cw = extc_rc_word(_ci);   /* 去重只看 mark 位 */\n",
+    "                    if (s->mark[_cw] & _cbit) continue;   /* 已经黑过：弹栈端也会被同一道位挡下 */\n",
     "                }\n",
     "            }\n",
     "            extc_rc_markPushFast(r, child);\n",
@@ -1860,8 +1866,8 @@ static const char *const RECLAIM_RT[] = {
     "                size_t _ci = extc_rc_slotOfOff(s, _off);\n",
     "                if (_ci < s->nslots) {\n",
     "                    uint64_t _cbit = extc_rc_bit(_ci);\n",
-    "                    size_t _cw = extc_rc_word(_ci);   /* occ/mark 同字 */\n",
-    "                    if (s->occ[_cw] & _cbit && (s->mark[_cw] & _cbit)) continue;\n",
+    "                    size_t _cw = extc_rc_word(_ci);   /* 去重只看 mark 位 */\n",
+    "                    if (s->mark[_cw] & _cbit) continue;   /* 已经黑过：弹栈端也会被同一道位挡下 */\n",
     "                }\n",
     "            }\n",
     "            extc_rc_markPushFast(r, child);\n",

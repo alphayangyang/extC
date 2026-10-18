@@ -11,6 +11,10 @@ allocation-heavy shapes. It does not establish a bound by itself -- the exhausti
 index check is tests/reclaim-perf/slotindex.c (gate-reclaim-perf), and the numbers
 are recorded in docs/CHANGELOG.md.
 
+Also pins the forced-inline attribute on the slot-size function: with it, every
+allocation site with a constant size folds the step and its zeroing becomes inline
+stores instead of a libc memset call.
+
 Injection self-test runs on every invocation: each rule is deleted in turn and the
 run must turn red.
 """
@@ -37,6 +41,11 @@ CACHE_RULES = [
 # The exhaustive index check must enumerate the *real* granularity, otherwise
 # "exhaustive over the domain" would be circular.
 INDEX_RULE = ('index domain step', 'ss += 8')
+# The slot-size function must stay forced-inline: every allocation site with a
+# constant size then folds the step, and zeroing becomes inline stores instead of
+# a libc memset call per allocation.
+INLINE_RULE = ('slot size forced inline',
+               'static inline __attribute__((always_inline)) size_t extc_rc_slotSize(')
 # Alignment premise: exactly these built-ins, nothing wider than 64 bits.
 KNOWN_BUILTINS = ['i8', 'i16', 'i32', 'i64', 'u8', 'u16', 'u32', 'u64', 'f32', 'f64', 'bool']
 WIDE = re.compile(r'(128|256|512|f80|f128|__m128|simd|vec)', re.I)
@@ -78,7 +87,7 @@ def type_kinds():
 
 
 def violations(text, builtins, kinds, index_src):
-    slot_body = body_of(text, 'static size_t extc_rc_slotSize(')
+    slot_body = body_of(text, 'static inline __attribute__((always_inline)) size_t extc_rc_slotSize(')
     alloc_body = body_of(text, 'static EXTC_RC_ALLOC_DECL void *extc_rc_alloc(')
     bad = []
     if slot_body is None:
@@ -90,6 +99,8 @@ def violations(text, builtins, kinds, index_src):
     for name, token in SLOT_RULES:
         if token not in slot_body:
             bad.append(name)
+    if INLINE_RULE[1] not in text:
+        bad.append(INLINE_RULE[0])
     for name, token in CACHE_RULES:
         if token not in (text if name == 'cache field' else alloc_body):
             bad.append(name)
@@ -123,6 +134,7 @@ def main():
         assert not bad, bad
     # Red self-test: delete each rule in turn, plus both alignment-premise halves.
     mutations = [(token, text) for _, token in SLOT_RULES + CACHE_RULES]
+    mutations.append((INLINE_RULE[1], text))
     mutations.append((INDEX_RULE[1], index_src))
     for token, where in mutations:
         assert token in where, token

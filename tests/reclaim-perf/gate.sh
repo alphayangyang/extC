@@ -51,6 +51,10 @@
 #      `always_inline`，只被 `markStep` 调用）。全站点强制内联会让 `cross_region` 这类形状慢两成，
 #      只喂最热的那个调用点：本形状 **110 375 684 Ir** ⇒ 线收到 115 894 468（= 实测 × 1.05）。
 #      两份体的逐字一致由 `check_ownslab_body.py` 守（`--selftest` 四条注入）。
+#   ㉑ 槽大小计算 `extc_rc_slotSize` 强制内联：常量尺寸的分配点上槽步长变成常量，
+#      `memset(p, 0, ss)` 才能展开成定长内联存储（不再每分配一次库调用）；同块子对象的去重
+#      也不再查 `occ` 位（`mark` 位立着就是已黑）：本形状 **102 633 660 Ir** ⇒ 线收到
+#      **107 765 343**（= 实测 × 1.05）。
 #
 # 口径与 `run.sh` 一致：pinned `extc` → `EXTC_RECLAIM=1` 生成 → `cc -std=c11 -fwrapv -O1`
 # → `valgrind --tool=callgrind` 的 `summary:` 行。只写自己的临时目录，`src/` 一个字节不动。
@@ -70,7 +74,7 @@ SRC=${SRC:-$ROOT/tests/reclaim-shapes/cyclic_pressure.extc}
 EXTC=${EXTC:-$ROOT/build/extc}
 CC=${CC:-cc}
 N=${N:-200000}
-LIMIT=${LIMIT:-115894468}          # 标记步内联副本后实测 110375684 × 1.05（棘轮只许往下；上一线 117822205）
+LIMIT=${LIMIT:-107765343}          # 槽大小内联 + 去重只查 mark 位后实测 102633660 × 1.05（棘轮只许往下；上一线 115894468）
 
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 
