@@ -206,8 +206,8 @@ INJECTIONS = {
         # `ownSlab` 让那份大语料中的一个形状跑不完（判据红不了，只会超时）⇒ 挂单测。
         "gate": "reclaim-unit",
         "patches": [(SRC,
-                     "    if (hot && (void *)hot == base) {          /* skip:own-hot */",
-                     "    if (hot) {                                 /* 注入：基址判等去掉 */")],
+                     '    "__attribute__((unused)) static inline ExtcRcSlab *extc_rc_ownSlab(void *p) {\\n",\n    "    /* 空指针不单独挡：p == 0 ⇒ base == 0，而映射格、登记表、超大块表里都不会有键 0\\n",\n    "     * （slab 基址与超大块载荷地址都不可能是 0）⇒ 每一层探测都落空、ownBig 也返回 0，\\n",\n    "     * 结果与显式检查逐字相同。省掉每次调用的一次比较（热路径上每次 2 Ir）。 */\\n",\n    "    void *base = (void *)((uintptr_t)p & ~(uintptr_t)(EXTC_RC_SLAB_SIZE - 1));\\n",\n    "    ExtcRcSlab *hot = extc_rc_ownHot;\\n",\n    "    if (hot && (void *)hot == base) {          /* skip:own-hot */\\n",\n',
+                     '    "__attribute__((unused)) static inline ExtcRcSlab *extc_rc_ownSlab(void *p) {\\n",\n    "    /* 空指针不单独挡：p == 0 ⇒ base == 0，而映射格、登记表、超大块表里都不会有键 0\\n",\n    "     * （slab 基址与超大块载荷地址都不可能是 0）⇒ 每一层探测都落空、ownBig 也返回 0，\\n",\n    "     * 结果与显式检查逐字相同。省掉每次调用的一次比较（热路径上每次 2 Ir）。 */\\n",\n    "    void *base = (void *)((uintptr_t)p & ~(uintptr_t)(EXTC_RC_SLAB_SIZE - 1));\\n",\n    "    ExtcRcSlab *hot = extc_rc_ownHot;\\n",\n    "    if (hot) {                                 /* 注入：基址判等去掉 */\\n",\n')],
     },
     "same-region-always": {
         "why": "把「同区」判定强制为真 ⇒ 跨区赋值也走免登记快路径（漏登记 ⇒ 悬垂）",

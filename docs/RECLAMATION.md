@@ -645,6 +645,13 @@ reclaim 形状闸门（`gate-shapes`/`gate-work`/`gate-shard-cycles`/`gate-idle-
     拆掉它指令数会**下降**（同一处 `ownSlab` 被内联），末级读失手却会翻倍 —— 所以这一项由
     cache-sim 判据 [`gate-mark-locality.sh`](../tests/reclaim-perf/gate-mark-locality.sh)（P5 的
     `DLmr` / `D1mr` 上界，注入短批必须变红）守；`gate-reclaim-perf` 的指令数棘轮单独管不到这一半。
+    标记步的 `ownSlab` 是一份**逐字复制**的副本（`extc_rc_ownSlabMark`，只多
+    `always_inline`、只被 `markStep` 调用）：这个站点是全运行期最热的调用点，内联省掉每次查找的
+    调用/返回；而把原件整体标成 `always_inline` 会让**所有**调用点都内联，`cross_region` 这类形状在
+    别的调用点被撑大后会变慢 —— 收益只在这一个站点，副本也只喂这一个站点。两份体逐字一致、副本带属性
+    而原件不带、`markStep` 只调副本，三条由 [`check_ownslab_body.py`](../tools/check_ownslab_body.py) 守
+    （`--selftest` 每条各注入一次）；跳过标记在两份体里的数量也一致（`check_skip_table` 取并集，
+    数量对不上时本门禁先红）。
 16. **滑窗 + 长命索引形状上的超线性回收**：回收工作量随规模超线性（幂次约 1.7–1.8），而
     `EXTC_RECLAIM=0` 对照臂是线性的（≈0.97）；**超线性的大头在 `[step]` 记账之外**（残差）
     ⇒ **根因未定位**。候选方向记在 [`TODO.md`](TODO.md) 的「回收：大横评」一节；出处

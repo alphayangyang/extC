@@ -887,6 +887,18 @@ def build_items() -> list:
         bad_msg="tools/check_slot_unit.py（槽粒度、尺寸类单位、穷举步长或对齐前提被破坏）",
         bad_dump=dump_fail(14)))
 
+    # ---- 闸门·标记步专用的 ownSlab 副本 ----
+    # 买的是**标记步的常数**：这个调用点占指令两成，强制内联唯一值得；全站点内联会让
+    # cross_region 这类形状慢两成。副本的代价是两份体可能漂移，所以判据 = 逐字相同 +
+    # 副本带 always_inline、原件不带 + markStep 只调副本，--selftest 每条各注入一次。
+    items.append(cmd(
+        "gate-ownslab-body", "gate",
+        "闸门·标记步 ownSlab 副本：两份体逐字相同/副本 always_inline/原件不内联/markStep 只调副本",
+        ["python3", "tools/check_ownslab_body.py"], timeout=60,
+        ok_msg=ok_first(r"^ok ownSlab mark-step copy structure"),
+        bad_msg="tools/check_ownslab_body.py（两份 ownSlab 漂移，或标记步没走内联副本）",
+        bad_dump=dump_fail(10)))
+
     # ---- 闸门·标记 walk 的批弹出结构 ----
     # 这条买的是**延迟**（LIFO 逐个弹是串行指针链），不是指令数，所以判据是结构 + 红自测：
     # 谁把"先弹一批→整批预取→逐个扫"改回逐对象，门禁就红。

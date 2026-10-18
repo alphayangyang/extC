@@ -47,6 +47,10 @@
 #   ⑲ 分配体在每个分配点内联（`always_inline`，`-DEXTC_RC_ALLOC_INLINE=0` 可关）：省掉每分配一次
 #      调用 + 进出栈，编译器还能把常量尺寸折叠掉：本形状 **112 211 624 Ir** ⇒ 线收到 117 822 205
 #      （= 实测 × 1.05）。`gate-mark-locality` 同口径下 P5 也降（Ir 215.7 M → 186.1 M，失手位数不动）。
+#   ⑳ 标记步专用的 `ownSlab` 副本（`extc_rc_ownSlabMark`：函数体与原件逐字相同、只加
+#      `always_inline`，只被 `markStep` 调用）。全站点强制内联会让 `cross_region` 这类形状慢两成，
+#      只喂最热的那个调用点：本形状 **110 375 684 Ir** ⇒ 线收到 115 894 468（= 实测 × 1.05）。
+#      两份体的逐字一致由 `check_ownslab_body.py` 守（`--selftest` 四条注入）。
 #
 # 口径与 `run.sh` 一致：pinned `extc` → `EXTC_RECLAIM=1` 生成 → `cc -std=c11 -fwrapv -O1`
 # → `valgrind --tool=callgrind` 的 `summary:` 行。只写自己的临时目录，`src/` 一个字节不动。
@@ -66,7 +70,7 @@ SRC=${SRC:-$ROOT/tests/reclaim-shapes/cyclic_pressure.extc}
 EXTC=${EXTC:-$ROOT/build/extc}
 CC=${CC:-cc}
 N=${N:-200000}
-LIMIT=${LIMIT:-117822205}          # 分配体内联后实测 112211624 × 1.05（棘轮只许往下；上一线 122566248）
+LIMIT=${LIMIT:-115894468}          # 标记步内联副本后实测 110375684 × 1.05（棘轮只许往下；上一线 117822205）
 
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 
