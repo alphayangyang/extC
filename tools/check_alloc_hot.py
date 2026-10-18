@@ -9,6 +9,12 @@ the `EXTC_RC_ALLOC_DECL` macro; `-DEXTC_RC_ALLOC_INLINE=0` swaps it to
 `noinline` for size), because the per-allocation call and stack frame are a
 third of the allocation cost.  This is a structure check
 only; the scaling bound is enforced by gate-slab-scale.
+
+The per-allocation epilogue guard is pinned at the call site: `extc_rc_finish`
+starts with `!marking || !seedsDone || msp != 0` and the alloc path calls it on
+every allocation while marking, so the caller tests the two remaining
+conditions (`seedsDone && msp == 0`) and skips the call otherwise; the guard
+inside finish stays as defence in depth.
 """
 import argparse
 import ast
@@ -70,6 +76,11 @@ def violations(text):
             '#define EXTC_RC_ALLOC_DECL __attribute__((always_inline)) inline',
             '__attribute__((unused)) static EXTC_RC_ALLOC_DECL void *extc_rc_alloc(')),
         'freeSlot re-registers room': 'if (!s->avail) extc_rc_classPush(s->region, s);' in free_slot,
+        # 标记期每分配都调一次 finish，而它的首行就是「marking 且 seedsDone 且栈空」才真收尾
+        # ⇒ 绝大多数调用是调用+返回+早退。守卫上提到调用点（这里是 marking 分支内，只剩两条），
+        # 裸调用回潮就红。
+        'finish guard hoisted': 'if (r->seedsDone && r->msp == 0) extc_rc_finish(r);' in alloc,
+        'no bare finish call': not re.search(r'(?m)^\s*extc_rc_finish\(r\);', alloc),
         'class table freed': 'r->clsBkt[b] = c->next;' in region_free and 'free(c);' in region_free,
         'class helpers': all(name in text for name in (
             'extc_rc_classBucket(size_t ss)',
@@ -130,6 +141,12 @@ def main():
                                '#define EXTC_RC_ALLOC_DECL')
         assert 'alloc inline switch' in violations(noglass), violations(noglass)
         print('ok red: size escape hatch lost noinline')
+        # 收尾守卫退回裸调用（每次分配白付一次调用+返回+早退）也必须红。
+        bare = text.replace('if (r->seedsDone && r->msp == 0) extc_rc_finish(r);',
+                            'extc_rc_finish(r);')
+        assert 'finish guard hoisted' in violations(bare), violations(bare)
+        assert 'no bare finish call' in violations(bare), violations(bare)
+        print('ok red: finish guard not hoisted')
         return 0
     bad = violations(text)
     for item in bad:

@@ -79,6 +79,10 @@
 #      8（88 852 305）→ 32（87 922 567）→ **64（87 823 666）** → 128（87 910 790）→ 256（87 901 977）；
 #      P5 这类深栈形状几乎永远走批路径，D1mr/DLmr 逐位不变（628 009 / 146 467）。两笔合计本形状
 #      **87 360 471 Ir** ⇒ 线收到 **91 728 908**（= gate 自量 87 360 865 × 1.05）。
+#   ㉗ 分配点的收尾守卫上提：`extc_rc_finish` 的首行就是「marking 且 seedsDone 且栈空」才真收尾，
+#      而标记期**每分配**都调它一次 ⇒ 绝大多数调用只是调用+返回+早退。alloc 里就地判掉那两条
+#      （已在 `if (r->marking)` 分支内），finish 内部的守卫保留作纵深防御。本形状
+#      **86 646 193 Ir** ⇒ 线收到 **90 978 472**（= gate 自量 86 646 164 × 1.05）。
 #
 # 口径与 `run.sh` 一致：pinned `extc` → `EXTC_RECLAIM=1` 生成 → `cc -std=c11 -fwrapv -O1`
 # → `valgrind --tool=callgrind` 的 `summary:` 行。只写自己的临时目录，`src/` 一个字节不动。
@@ -98,7 +102,7 @@ SRC=${SRC:-$ROOT/tests/reclaim-shapes/cyclic_pressure.extc}
 EXTC=${EXTC:-$ROOT/build/extc}
 CC=${CC:-cc}
 N=${N:-200000}
-LIMIT=${LIMIT:-91728908}          # 浅栈阈值 8→64 + why 存移进清扫分支后实测 87360865 × 1.05（棘轮只许往下；上一线 93294936）
+LIMIT=${LIMIT:-90978472}          # 分配点收尾守卫上提后实测 86646164 × 1.05（棘轮只许往下；上一线 91728908）
 
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 

@@ -97,6 +97,12 @@ while i < n {
 在 `-O1` 下没人替你摊）；判据在 [`tools/check_mark_both.py`](../tools/check_mark_both.py)（S6/S7，摘掉
 `always_inline` 的注入会红）。
 
+标记期分配路径上的**收尾守卫**（`extc_rc_finish`）同样把判断上提到调用点：finish 的首行是
+「marking 且 seedsDone 且栈空」才真收尾，而分配点只在自己处于 `r->marking` 分支里时才调它 ⇒ 调用点就地
+判掉剩下的两条（`seedsDone && msp == 0`），省掉每次分配（标记期）一次必然早退的调用 + 返回；finish 内部
+的守卫保留作纵深防御（别的入口不经过这条快路）。判据是 `check_alloc_hot` 的 `finish guard hoisted` 与
+`no bare finish call`：把裸调用写回去（两处都）就红。
+
 登记 slab 的**反向表**（指针 → slab，兜底路径）与每块 slab 的**小类型表**同样是按结构体规模存活的表，
 也必须每操作 O(1)：反向表是开放寻址哈希（键 = slab 基址；超大块按载荷地址进第二张表），线性探测、装载上限 1/2、
 删除走 Knuth 回移（不留墓碑），扩容翻倍重排；小类型表在描述符少时线性扫（一块通常只落一两个分配点），超过
@@ -683,7 +689,7 @@ cache-sim 判据变红）。
     两条都是纯代码形状（可达集、清扫集合都不动），`check_mark_batch` 的 `child loop pointer walk` /
     `mark advance inlined` 钉住它们；`markPushFast` 里的 `__builtin_prefetch` 保留 —— 删掉它指令数会降
     （约 0.27%），P5 的墙钟却变差，预取这一半只能靠墙钟评。
-    这一项由指令数棘轮守（`gate-reclaim-perf`：87 360 865 Ir），可达集不变由 `reclaim-unit`（含
+    这一项由指令数棘轮守（`gate-reclaim-perf`：86 646 164 Ir），可达集不变由 `reclaim-unit`（含
     ASan/UBSan）与五形状语义逐字兜底。
     批弹出是**延迟**机制（先攒一批，让每个对象的指针追逐装载各自独立在飞），不是指令数机制：
     拆掉它指令数会**下降**（同一处 `ownSlab` 被内联），末级读失手却会翻倍 —— 所以这一项由
