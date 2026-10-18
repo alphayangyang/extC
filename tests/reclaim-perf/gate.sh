@@ -63,6 +63,11 @@
 #      字节账与 freedSlots、avail 回挂都按整字一次；`unlinkChildren` 与 rscnt 清零仍逐槽，
 #      但「一次登记都没发生过」的分支提到字外（默认档 rsIncN 恒 0 ⇒ 整段不执行）：本形状
 #      **94 587 496 Ir** ⇒ 线收到 **99 316 871**（= 实测 × 1.05）。
+#   ㉔ 待扫对象少时单个处理（`EXTC_RC_MARK_SHALLOW`，默认 8）：栈深 ≤ 阈值就直接弹一个、扫一个，
+#      不装批 —— 批装（数组/上限 min/填充循环/扫批循环）在栈深 ≈1 时是纯固定开销，预取提前量也
+#      换不来东西；对象处理体移进文件级宏 `EXTC_RC_MARK_SCAN` 供两条路共用。同块子对象去重先查
+#      `mark` 位（已黑最省一步），`occ` 位只作陈旧指针的第二道。本形状 **89 675 091 Ir** ⇒ 线收到
+#      **94 158 845**（= 实测 × 1.05）。
 #
 # 口径与 `run.sh` 一致：pinned `extc` → `EXTC_RECLAIM=1` 生成 → `cc -std=c11 -fwrapv -O1`
 # → `valgrind --tool=callgrind` 的 `summary:` 行。只写自己的临时目录，`src/` 一个字节不动。
@@ -82,7 +87,7 @@ SRC=${SRC:-$ROOT/tests/reclaim-shapes/cyclic_pressure.extc}
 EXTC=${EXTC:-$ROOT/build/extc}
 CC=${CC:-cc}
 N=${N:-200000}
-LIMIT=${LIMIT:-99316871}          # 清扫按字批量释放后实测 94587496 × 1.05（棘轮只许往下；上一线 103871247）
+LIMIT=${LIMIT:-94158845}          # 浅栈单个处理（不装批）后实测 89675091 × 1.05（棘轮只许往下；上一线 99316871）
 
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 

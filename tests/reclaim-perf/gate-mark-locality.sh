@@ -2,20 +2,24 @@
 # tests/reclaim-perf/gate-mark-locality.sh —— 标记遍历的**访存局部性**判据（批量弹出不许被拆）。
 #
 # 由来：标记栈是**链式**的（对象里存下一个对象的地址），弹出一个就要解引用它读指针字段 —— 这是
-# 指针追逐，延迟被前一次装载卡住。现行 markStep 一次先弹一批（EXTC_RC_MARK_BATCH_POP=200）再
-# 统一处理：先攒一批、边攒边预取，处理时这些对象的头已经各自独立地在飞。这是**延迟**机制，不是
+# 指针追逐，延迟被前一次装载卡住。现行 markStep 在栈深时一次先弹一批（EXTC_RC_MARK_BATCH_POP=200）
+# 再统一处理：先攒一批、边攒边预取，处理时这些对象的头已经各自独立地在飞。这是**延迟**机制，不是
 # 指令数机制 —— 拆掉批量，指令数反而**变少**（GCC 把 markStep 里那一处 ownSlab 内联了），但墙钟
 # 慢 4–6 倍（bench/gc/src/spectrum_p5.extc，N=20 000 000：批量 0.53–0.86 s vs 逐个 3.29–3.55 s）。
-# 所以判据不能是指令数，必须是 cache-sim 的**末级读失手（DLmr）**：拆掉批量时 P5 的 DLmr 从
-# 146 733 涨到 586 764（4.00×），D1mr 从 577 086 涨到 1 409 627（2.44×），而指令数只 +1.2%。
+# 所以判据不能是指令数，必须是 cache-sim 的**末级读失手（DLmr）**：拆掉批量时 P5 的 DLmr 涨到
+# 586 445、D1mr 涨到 1 536 364，而指令数只 +2.3%。
+#
+# 现行实现有两条路：栈深够就装批（上面那套），待扫对象少到 EXTC_RC_MARK_SHALLOW（默认 8）以内
+# 就单个弹出、直接扫 —— 批装机制在栈深≈1 时是纯固定开销（攒批的数组/上限/填充循环/扫批循环），
+# 提前量也换不来任何东西。浅栈那条路**不许**把批量整体拆掉（深栈形状如 P5 必须还走批）。
 #
 # 判据（两条，都是 callgrind --cache-sim=yes 的确定量）：
-#   ① DLmr ≤ LIM_DLMR（默认 190 000；现行实现 146 733，拆批量后 586 764）
-#   ② D1mr ≤ LIM_D1MR（默认 700 000；现行实现 577 086，拆批量后 1 409 627）
+#   ① DLmr ≤ LIM_DLMR（默认 190 000；现行实现 146 460，拆批量后 586 445）
+#   ② D1mr ≤ LIM_D1MR（默认 700 000；现行实现 628 541，拆批量后 1 536 364）
 # 只钉「局部性」这一件事：指令数/时间由 tests/reclaim-perf/gate.sh 与真实墙钟负责。
 #
-# --selftest：把发射文本里「先算上限、攒一批」那段换成短批（_lim = 1，每弹一个就处理，等价于
-#   拆批量），要求两条判据**变红**（有牙），且真实运行期那两条为绿（先绿后红都验到）。
+# --selftest：编译时把浅栈阈值调到无穷大（-DEXTC_RC_MARK_SHALLOW=4000000000u）⇒ 永远走单个处理，
+#   等价于拆掉批量；要求两条判据**变红**（有牙），且真实运行期那两条为绿（先绿后红都验到）。
 #
 # 缺 valgrind：打印一行 跳过：… 后退出 0（check.py 记 skip；CI 装了 valgrind ⇒ 不许跳过）。
 #
@@ -60,9 +64,10 @@ emit() {   # $1 = 生成的 C 文件
     fi
 }
 
-build() {  # $1 = C 文件, $2 = 可执行文件
-    if ! $CC -std=c11 -fwrapv -O1 -g -D_POSIX_C_SOURCE=200809L -o "$2" "$1" 2>"$TMP/cc.log"; then
-        bad "生成物编译失败（$1）"; sed 's/^/    /' "$TMP/cc.log"; return 1
+build() {  # $1 = C 文件, $2 = 可执行文件；$3... = 额外编译参数
+    local c=$1 exe=$2; shift 2
+    if ! $CC -std=c11 -fwrapv -O1 -g -D_POSIX_C_SOURCE=200809L "$@" -o "$exe" "$c" 2>"$TMP/cc.log"; then
+        bad "生成物编译失败（$c）"; sed 's/^/    /' "$TMP/cc.log"; return 1
     fi
 }
 
@@ -98,30 +103,10 @@ else
     exit 1
 fi
 
-# ---- --selftest：把批量弹出拆成「每弹一个就处理」，判据必须变红 ----------------------
+# ---- --selftest：浅栈阈值调到无穷大 = 永远逐个处理，判据必须变红 ---------------------
 if [ "${1:-}" = "--selftest" ]; then
-    echo "== 红自测：拆掉批量弹出（短批 _lim = 1）=="
-    if ! python3 - "$TMP/p5.c" "$TMP/p5.nb.c" <<'PY'
-import sys
-src, dst = sys.argv[1], sys.argv[2]
-t = open(src).read()
-anchor = (
-    "        size_t _lim = EXTC_RC_MARK_BATCH_POP;\n"
-    "        if (budget < _lim) _lim = budget;\n"
-    "#if EXTC_RC_WORK_BUDGET > 0\n"
-    "        if (wleft < _lim) _lim = wleft;\n"
-    "#endif\n"
-    "        void **_stk = r->mstk; size_t _sp = r->msp;   /* 栈头提到局部：弹出循环里不反复读 r */\n"
-    "        if (_sp < _lim) _lim = _sp;\n"
-)
-if anchor not in t:
-    raise SystemExit("注入失败：找不到「先算上限」的批量填充段（发射文本形状变了？）")
-open(dst, "w").write(t.replace(anchor, "        size_t _lim = 1;\n        void **_stk = r->mstk; size_t _sp = r->msp;\n", 1))
-PY
-    then
-        bad "红自测注入失败"; exit 1
-    fi
-    if ! build "$TMP/p5.nb.c" "$TMP/p5.nb"; then exit 1; fi
+    echo "== 红自测：把浅栈阈值调到无穷大（永远逐个处理，等价拆掉批量）=="
+    if ! build "$TMP/p5.c" "$TMP/p5.nb" -DEXTC_RC_MARK_SHALLOW=4000000000u; then exit 1; fi
     out=$(measure "$TMP/p5.nb") || exit 1
     read -r NIR ND1 NDL <<< "$out"
     awk -v ir="$NIR" -v d1="$ND1" -v dl="$NDL" -v b1="$D1MR" -v bl="$DLMR" -v l1="$LIM_D1MR" -v ll="$LIM_DLMR" 'BEGIN {

@@ -7,8 +7,16 @@ scan the batch) from being silently refactored back into a serial
 one-object-at-a-time chase. It also pins the prefetch where it pays: inside the
 fill loop, not re-split into a second pass over the batch, and pins the hoisted
 batch limit (min of batch width / budget / work quota / stack depth computed
-once) instead of re-testing four conditions on every pop -- measurement:
-callgrind 130,453,175 -> 128,473,122 Ir on cyclic_pressure 200000.
+once) instead of re-testing four conditions on every pop.
+
+The scan body lives in one file-scope macro (EXTC_RC_MARK_SCAN) shared by two
+call sites: the batch loop (deep stack) and a shallow-stack fast path that pops
+and scans a single object without assembling a batch. The fast path exists
+because the batch machinery (array / limit min / fill loop / scan loop) is pure
+fixed cost when the mark stack holds only a handful of objects; the batch is a
+prefetch-lead-time mechanism, so it only pays when enough objects are queued.
+Both properties are pinned below -- measurement: callgrind on cyclic_pressure
+200000 drops 94,587,483 -> 89,675,120 Ir once the shallow path is in.
 """
 import argparse
 import ast
@@ -26,30 +34,29 @@ def emitter_text():
 
 
 def violations(text):
-    start = text.find('static size_t extc_rc_markStep(ExtcRcRegion *r, size_t budget) {')
-    if start < 0:
-        return ['markStep missing']
-    a = text.index('{', start)
-    depth = 1
-    b = a + 1
-    while b < len(text) and depth:
-        depth += (text[b] == '{') - (text[b] == '}')
-        b += 1
-    body = text[a:b]
     checks = {
+        'scan macro defined': '#define EXTC_RC_MARK_SCAN(_rawIn) do { ' in text,
+        'scan macro takes raw': '    uintptr_t _raw = (_rawIn); ' in text,
+        'scan body shared once': text.count('uintptr_t _raw = (_rawIn);') == 1,
+        'scan body not inlined twice': 'uintptr_t _raw = _batch[_b];' not in text,
+        'shallow threshold defined': ('#ifndef EXTC_RC_MARK_SHALLOW' in text and
+                                      '#define EXTC_RC_MARK_SHALLOW' in text),
+        'shallow fast path': ('if ((size_t)r->msp <= (size_t)EXTC_RC_MARK_SHALLOW && budget > 0' in text and
+                              'void *_one = r->mstk[--r->msp];' in text and
+                              'EXTC_RC_MARK_SCAN((uintptr_t)_one);' in text),
         'batch constant': '#define EXTC_RC_MARK_BATCH_POP' in text,
-        'batch array': 'uintptr_t _batch[EXTC_RC_MARK_BATCH_POP];' in body,
-        'limit hoisted': ('size_t _lim = EXTC_RC_MARK_BATCH_POP;' in body and
-                          'if (budget < _lim) _lim = budget;' in body and
-                          'if (_sp < _lim) _lim = _sp;' in body),
-        'stack head hoisted': 'void **_stk = r->mstk; size_t _sp = r->msp;' in body,
-        'pop from local head': '_batch[_nb] = (uintptr_t)_stk[--_sp];' in body,
-        'stack head restored': 'r->msp = _sp;' in body,
-        'pop loop': 'while (_nb < _lim) {' in body,
-        'budget accounting': 'budget -= _nb; pops += _nb;' in body,
-        'prefetch in fill loop': re.search(r'_batch\[_nb\] = \(uintptr_t\)_stk\[--_sp\];\s*\n\s*__builtin_prefetch\(\(void \*\)\(_batch\[_nb\]', body) is not None,
-        'no separate prefetch sweep': 'for (size_t _pf = 0' not in body,
-        'scan loop': 'for (size_t _b = 0; _b < _nb; _b++) {' in body and 'uintptr_t _raw = _batch[_b];' in body,
+        'batch array': 'uintptr_t _batch[EXTC_RC_MARK_BATCH_POP];' in text,
+        'limit hoisted': ('size_t _lim = EXTC_RC_MARK_BATCH_POP;' in text and
+                          'if (budget < _lim) _lim = budget;' in text and
+                          'if (_sp < _lim) _lim = _sp;' in text),
+        'stack head hoisted': 'void **_stk = r->mstk; size_t _sp = r->msp;' in text,
+        'pop from local head': '_batch[_nb] = (uintptr_t)_stk[--_sp];' in text,
+        'stack head restored': 'r->msp = _sp;' in text,
+        'pop loop': 'while (_nb < _lim) {' in text,
+        'budget accounting': 'budget -= _nb; pops += _nb;' in text,
+        'prefetch in fill loop': re.search(r'_batch\[_nb\] = \(uintptr_t\)_stk\[--_sp\];\s*\n\s*__builtin_prefetch\(\(void \*\)\(_batch\[_nb\]', text) is not None,
+        'no separate prefetch sweep': 'for (size_t _pf = 0' not in text,
+        'scan loop calls macro': 'for (size_t _b = 0; _b < _nb; _b++) { EXTC_RC_MARK_SCAN(_batch[_b]); }' in text,
         'width ceiling': re.search(r'#if EXTC_RC_MARK_BATCH_POP > EXTC_RC_MARK_BATCH_MAX\s*\n#error', text) is not None,
     }
     return [k for k, ok in checks.items() if not ok]
@@ -62,14 +69,20 @@ def main():
     text = emitter_text()
     if args.selftest:
         assert not violations(text)
-        for token in ['#define EXTC_RC_MARK_BATCH_POP', 'uintptr_t _batch[EXTC_RC_MARK_BATCH_POP];',
+        for token in ['#define EXTC_RC_MARK_SCAN(_rawIn) do { ',
+                      '    uintptr_t _raw = (_rawIn); ',
+                      '#define EXTC_RC_MARK_SHALLOW',
+                      'if ((size_t)r->msp <= (size_t)EXTC_RC_MARK_SHALLOW && budget > 0',
+                      '#define EXTC_RC_MARK_BATCH_POP',
+                      'uintptr_t _batch[EXTC_RC_MARK_BATCH_POP];',
                       'size_t _lim = EXTC_RC_MARK_BATCH_POP;',
                       'if (budget < _lim) _lim = budget;',
                       'void **_stk = r->mstk; size_t _sp = r->msp;',
                       'if (_sp < _lim) _lim = _sp;',
                       'r->msp = _sp;',
                       'while (_nb < _lim) {',
-                      'budget -= _nb; pops += _nb;', 'uintptr_t _raw = _batch[_b];',
+                      'budget -= _nb; pops += _nb;',
+                      'for (size_t _b = 0; _b < _nb; _b++) { EXTC_RC_MARK_SCAN(_batch[_b]); }',
                       '__builtin_prefetch((void *)(_batch[_nb] & ~(uintptr_t)1)',
                       '#if EXTC_RC_MARK_BATCH_POP > EXTC_RC_MARK_BATCH_MAX']:
             assert token in text, token
@@ -81,6 +94,11 @@ def main():
                              'for (size_t _pf = 0; _pf < _nb; _pf++) __builtin_prefetch((void *)(_batch[_pf] & ~(uintptr_t)1), 0, 1);\n        budget -= _nb; pops += _nb;')
         assert 'no separate prefetch sweep' in violations(split)
         print('ok red: separate prefetch sweep')
+        # 对象处理体抄回扫描循环里（宏只剩一处调用点）⇒ 两份体迟早漂
+        dup = text.replace('        for (size_t _b = 0; _b < _nb; _b++) { EXTC_RC_MARK_SCAN(_batch[_b]); }',
+                           '        for (size_t _b = 0; _b < _nb; _b++) {\n            uintptr_t _raw = _batch[_b];\n        }')
+        assert 'scan body not inlined twice' in violations(dup)
+        print('ok red: batch body inlined again')
         return 0
     bad = violations(text)
     for item in bad:

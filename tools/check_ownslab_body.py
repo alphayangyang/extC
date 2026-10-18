@@ -14,7 +14,8 @@ always_inline，且只被 markStep 调用。
 
 1. 两份体逐字相同（含注释；只允许函数名不同），跳过标记数量也一致；
 2. 副本带 always_inline、原件**不带**（带上就回到那条会拖慢别的形状的路）；
-3. markStep 只调副本，不再调原件。
+3. 对象处理体宏 EXTC_RC_MARK_SCAN 里只调副本、不再调原件，且 markStep 真的调那个宏
+   （处理体在宏里，标记步与浅栈快路共用一份）。
 
 --selftest 把上面每一条各注入一次，要求判据变红。
 """
@@ -28,6 +29,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SIG_ORIG = 'static inline ExtcRcSlab *extc_rc_ownSlab(void *p) {'
 SIG_COPY = 'static inline __attribute__((always_inline)) ExtcRcSlab *extc_rc_ownSlabMark(void *p) {'
 MARK_STEP_SIG = 'static size_t extc_rc_markStep(ExtcRcRegion *r, size_t budget) {'
+SCAN_MACRO_HEAD = '#define EXTC_RC_MARK_SCAN(_rawIn) do {'
+SCAN_MACRO_TAIL = '} while (0)'
 SKIP_TAGS = ['skip:own-hot', 'skip:lookup-probe']
 
 
@@ -52,6 +55,16 @@ def body_of(text, needle):
     return text[a:b]
 
 
+def macro_body(text):
+    i = text.find(SCAN_MACRO_HEAD)
+    if i < 0:
+        return None
+    j = text.find(SCAN_MACRO_TAIL, i)
+    if j < 0:
+        return None
+    return text[i:j + len(SCAN_MACRO_TAIL)]
+
+
 def check(text):
     bad = []
     orig = body_of(text, SIG_ORIG)
@@ -74,14 +87,19 @@ def check(text):
     if re.search(r'always_inline\)\)\s+(?:static\s+inline\s+)?ExtcRcSlab \*extc_rc_ownSlab\(',
                  text):
         bad.append('原件也被标成 always_inline（会在所有调用点内联，别的形状会变慢）')
+    scan = macro_body(text)
+    if scan is None:
+        bad.append('对象处理体宏 EXTC_RC_MARK_SCAN 不见了（形状变了就同步本门禁）')
+    else:
+        if 'extc_rc_ownSlabMark(' not in scan:
+            bad.append('对象处理体宏没调标记步副本')
+        if re.search(r'extc_rc_ownSlab\s*\(', scan):
+            bad.append('对象处理体宏还在调原件（副本白复制了）')
     step = body_of(text, MARK_STEP_SIG)
     if step is None:
         bad.append('extc_rc_markStep 不见了（签名变了就同步本门禁）')
-    else:
-        if 'extc_rc_ownSlabMark(' not in step:
-            bad.append('markStep 没调标记步副本')
-        if re.search(r'extc_rc_ownSlab\s*\(', step):
-            bad.append('markStep 还在调原件（副本白复制了）')
+    elif 'EXTC_RC_MARK_SCAN(' not in step:
+        bad.append('markStep 没调对象处理体宏（两处处理体就会各写一份）')
     return bad
 
 
@@ -99,8 +117,9 @@ def main():
         line = [l for l in copy.splitlines() if 'extc_rc_ownBig(p)' in l][0]
         cases = [
             ('copy body drifted', text.replace(copy, copy.replace(line, line + ' ', 1), 1)),
-            ('markStep calls the original', text.replace('extc_rc_ownSlabMark(o)',
-                                                         'extc_rc_ownSlab(o)', 1)),
+            ('scan macro calls the original', text.replace('extc_rc_ownSlabMark(o)',
+                                                           'extc_rc_ownSlab(o)', 1)),
+            ('scan macro gone', text.replace(SCAN_MACRO_HEAD, '#define EXTC_RC_MARK_SCAN_OLD(_rawIn) do {', 1)),
             ('original marked always_inline',
              text.replace(SIG_ORIG, '__attribute__((always_inline)) ' + SIG_ORIG, 1)),
             ('skip tag deleted from the copy',

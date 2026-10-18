@@ -660,12 +660,20 @@ reclaim 形状闸门（`gate-shapes`/`gate-work`/`gate-shard-cycles`/`gate-idle-
     —— 填充循环里不再每弹一个对象比较三个条件、扣两次账；弹出的集合与顺序逐字不变。标记栈头与栈深
 也提到局部（`void **_stk = r->mstk; size_t _sp = r->msp;`），弹完整批再 `r->msp = _sp` 压回 —— 循环里
 不反复读 `r`；扫批时孩子压栈改的是 `r->msp`，所以压回必须发生在扫之前，弹/扫的语义不变。
+待扫对象少到 `EXTC_RC_MARK_SHALLOW`（默认 **8**）以内时直接弹一个、扫一个，**不装批** —— 批装
+（数组 / 上限 min / 填充循环 / 扫批循环）在栈深 ≈1 时是纯固定开销，预取提前量也换不来东西；
+对象处理体因此移进一个文件级宏 `EXTC_RC_MARK_SCAN`，深栈批扫与浅栈单扫共用同一份体（两份体
+迟早漂）。`check_mark_batch` 的 `shallow fast path` / `scan loop calls macro` / `scan body shared once`
+钉住这三条；拆掉批量的路只留给出问题的形状（`gate-mark-locality --selftest` 用
+`-DEXTC_RC_MARK_SHALLOW=4000000000u` 把它翻成全单扫，要求 cache-sim 判据变红）。
     子对象循环里的同块去重也不再验槽首、也不查 `occ`：只按「包含该地址的槽」查 `mark` 位，省掉
     每个同块子对象一次 `k * s->ss == off` 的乘法校验与一次 `occ` 读。这是安全的：`mark` 位立着 ⇒ 这个槽
     本轮已经黑过，弹栈端会用同一道位挡下；槽空而 `mark` 立着时旧写法的压栈同样只会被弹栈端的 `occ`
     检查丢掉；非槽首的指针在弹栈端本来就会被 `ownSlab` 判成「不是本运行期的槽」（`skip:not-own`）
     → 当活对象止步。三种情况可达集都不变。
-    这一项由指令数棘轮守（`gate-reclaim-perf`：94 587 496 Ir），可达集不变由 `reclaim-unit`（含
+    弹出端的两道检查也换了序：先查 `mark` 位（已黑 ⇒ 一步跳出，这是绝大多数弹出）、再查 `occ` 位
+    （陈旧指针的第二道）；两者互不替代，换序只改到达 `continue` 的先后。
+    这一项由指令数棘轮守（`gate-reclaim-perf`：89 675 091 Ir），可达集不变由 `reclaim-unit`（含
     ASan/UBSan）与五形状语义逐字兜底。
     批弹出是**延迟**机制（先攒一批，让每个对象的指针追逐装载各自独立在飞），不是指令数机制：
     拆掉它指令数会**下降**（同一处 `ownSlab` 被内联），末级读失手却会翻倍 —— 所以这一项由
