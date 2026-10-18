@@ -674,11 +674,11 @@ def build_items() -> list:
         bad_msg="tests/reclaim-shapes/run-switch.sh（计数模式回归）",
         bad_dump=dump_fail(12)))
 
-    # 计数模式还缺两块：**单测驱动**（阈值缓存/自学习/登记/生命周期 112 条）与**跨语言对拍**。
+    # 计数模式还缺两块：**单测驱动**（阈值缓存/自学习/登记/生命周期 116 条）与**跨语言对拍**。
     # 非默认的计数档若只被形状那一条判据守着，就容易悄悄腐烂 ⇒ 把这两块也补成棘轮。
     items.append(cmd(
         "gate-reclaim-count-unit", "gate",
-        "闸门·计数模式：单测驱动 112 条断言（阈值缓存 / 自学习 / 跨区登记 / 区域生命周期 / 着色缓存）",
+        "闸门·计数模式：单测驱动 116 条断言（阈值缓存 / 自学习 / 跨区登记 / 区域生命周期 / 着色缓存）",
         ["./tests/reclaim/run.sh"], timeout=1800,
         env={"EXTC_RC_NOCOUNT": "0"},
         ok_msg=ok_first(r"通过 \d+"),
@@ -898,6 +898,19 @@ def build_items() -> list:
         ok_msg=ok_first(r"^ok ownSlab mark-step copy structure"),
         bad_msg="tools/check_ownslab_body.py（两份 ownSlab 漂移，或标记步没走内联副本）",
         bad_dump=dump_fail(10)))
+
+    # ---- 闸门·着色缓存的旋转散列结构 ----
+    # 买的是**插入屏障的常数**（P5 上 shadeSlow 仍是仅次于 markStep 的项）：缓存必须精确
+    # （假阳性 = 白对象当黑），所以格号把代际号**旋进**格号、只存地址单字，等号即精确；
+    # 每窗口回绕前整表清零，旧记录不可能复活。失效契约=四处清 mark 的路径都调
+    # extc_rc_shadeNextGen()（不许出现裸 extc_rc_shadeGen++）。--selftest 六条注入全红。
+    items.append(cmd(
+        "gate-shade-cache", "gate",
+        "闸门·着色缓存旋转散列：单字格/格号旋入代际号/回绕清表/四站点只调 NextGen，且 6 条注入全红",
+        ["python3", "tools/check_shade_cache.py", "--selftest"], timeout=60,
+        ok_msg=ok_first(r"^ok shade cache structure"),
+        bad_msg="tools/check_shade_cache.py（着色缓存退回两字结构/绕不过回绕清零，失效契约有洞）",
+        bad_dump=dump_fail(12)))
 
     # ---- 闸门·标记 walk 的批弹出结构 ----
     # 这条买的是**延迟**（LIFO 逐个弹是串行指针链），不是指令数，所以判据是结构 + 红自测：
@@ -1328,12 +1341,12 @@ def build_items() -> list:
         ok_msg=ok_count_ok(" 个形状 ASan 干净"),
         bad_msg="tests/asan/run.sh", bad_dump=dump_all))
 
-    # ---- 回收运行期的语义网（70 条断言 + ASan/UBSan；0.9s）----
+    # ---- 回收运行期的语义网（74 条断言 + ASan/UBSan；0.9s）----
     # 这一套一直在跑却**没接进来**（`grep tests/reclaim tools/check.py` 只有 shapes/perf/gaps）。
     # 它覆盖的正是"计数/清扫/归还"的语义面，是安全那一半的主网。
     items.append(cmd(
         "reclaim-unit", "tests",
-        "回收运行期语义网：70 条断言 + ASan/UBSan（tests/reclaim/run.sh）",
+        "回收运行期语义网：74 条断言 + ASan/UBSan（tests/reclaim/run.sh）",
         ["./tests/reclaim/run.sh"], timeout=600,
         ok_msg=ok_first(r"ASan/UBSan 运行干净"),
         bad_msg="tests/reclaim/run.sh（回收语义/内存安全回归）", bad_dump=dump_fail(12)))

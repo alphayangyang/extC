@@ -655,6 +655,23 @@ static void t_shadeCache(void) {
     check(slotBlack(b), "着色缓存：失效后可达对象重新变黑");
     check(extc_rc_isLive(b), "着色缓存：可达对象没有被误回收");
     extc_rc_regionFree(r);
+
+    /* ③ 旋转散列：代际号旋进格号 ⇒ 记录只在**同一代**里可见；代际号每 2048 代回绕一次、
+     *    回绕前整表清零。若回绕不清表，2048 代前的同一指针记录（格号因回绕再次相同）会被
+     *    当成「这一代里黑过」—— 恰恰是缓存最不能出的那种错。 */
+    r = regionNew(19, (int64_t)1 << 40);
+    a = (Node *)extc_rc_alloc(r, sizeof(Node), &g_node);
+    extc_rc_shadeRemember(a);
+    check(extc_rc_shadeKnown(a), "着色缓存：旋转散列同代命中");
+    extc_rc_shadeNextGen();
+    check(!extc_rc_shadeKnown(a), "着色缓存：代际号一变旧记录立刻不可见");
+    extc_rc_shadeGen = 2047;   /* 窗口最后一格：这里记下的记录在回绕时必须被清掉 */
+    extc_rc_shadeRemember(a);
+    check(extc_rc_shadeKnown(a), "着色缓存：窗口末尾仍命中");
+    extc_rc_shadeNextGen();
+    check(!extc_rc_shadeKnown(a), "着色缓存：回绕清表（2048 代前的记录不得复活）");
+    extc_rc_shadeGen = 1;      /* 复位：后面从第一代起，只为输出干净 */
+    extc_rc_regionFree(r);
 }
 
 int main(void) {
