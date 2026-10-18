@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Structural smoke check for the regional allocation cache, with mutations.
-This does not establish a complexity bound or replace runtime tests.
+
+The fallback path is pinned to the size-class "has room" lists
+(extc_rc_classSlot / extc_rc_classPush): allocation must be O(1) in the number
+of live slabs and must not fall back to scanning r->slabs.  This is a
+structure check only; the scaling bound is enforced by gate-slab-scale.
 """
 import argparse
 import ast
@@ -17,24 +21,43 @@ def emitter_text():
     return ''.join(ast.literal_eval(m.group()) for m in re.finditer(r'"(?:[^"\\]|\\.)*"', source[start:end]))
 
 
-def violations(text):
-    start = text.find('static void *extc_rc_alloc(')
+def body(text, sig):
+    start = text.find(sig)
     if start < 0:
-        return ['allocation function missing']
+        return ''
     a = text.index('{', start)
     depth = 1
     b = a + 1
     while b < len(text) and depth:
         depth += (text[b] == '{') - (text[b] == '}')
         b += 1
-    alloc = text[a:b]
+    return text[a:b]
+
+
+def violations(text):
+    alloc = body(text, 'static void *extc_rc_alloc(')
+    free_slot = body(text, 'static void extc_rc_freeSlot(')
+    region_free = body(text, 'static void extc_rc_regionFree(')
+    if not alloc:
+        return ['allocation function missing']
     checks = {
         'cache field': 'ExtcRcSlab *allocHot[32];' in text,
         'cache read': 'ExtcRcSlab **hot = ac < 32 ? &r->allocHot[ac]' in alloc,
         'size check': 's->ss != ss' in alloc,
         'capacity check': 's->freelist < 0 && s->bump >= s->nslots' in alloc,
-        'fallback': 's = r->slabs;' in alloc and 'while (s &&' in alloc,
+        'class lookup': 'ExtcRcClass *c = extc_rc_classSlot(r, ss);' in alloc,
+        'class head': 's = c ? c->head : (ExtcRcSlab *)0;' in alloc,
+        'lazy pop': 'c->head = s->availNext;' in alloc and 's->avail = 0;' in alloc,
+        'no slab scan': 's = r->slabs;' not in alloc and 'while (s && (s->ss != ss' not in alloc,
+        'new slab pushed': 'extc_rc_classPush(r, s);' in alloc,
         'cache write': 'if (hot) *hot = s;' in alloc,
+        'freeSlot re-registers room': 'if (!s->avail) extc_rc_classPush(s->region, s);' in free_slot,
+        'class table freed': 'r->clsBkt[b] = c->next;' in region_free and 'free(c);' in region_free,
+        'class helpers': all(name in text for name in (
+            'extc_rc_classBucket(size_t ss)',
+            'extc_rc_classNeed(ExtcRcRegion *r, size_t ss)',
+            'extc_rc_classSlot(const ExtcRcRegion *r, size_t ss)',
+            'extc_rc_classPush(ExtcRcRegion *r, ExtcRcSlab *s)')),
     }
     return [k for k, ok in checks.items() if not ok]
 
@@ -45,14 +68,26 @@ def main():
     args = ap.parse_args()
     text = emitter_text()
     if args.selftest:
-        assert not violations(text)
+        assert not violations(text), violations(text)
         for token in ['ExtcRcSlab *allocHot[32];', 'ExtcRcSlab **hot = ac < 32 ? &r->allocHot[ac]',
                       's->ss != ss', 's->freelist < 0 && s->bump >= s->nslots',
-                      's = r->slabs;', 'if (hot) *hot = s;']:
+                      'ExtcRcClass *c = extc_rc_classSlot(r, ss);',
+                      's = c ? c->head : (ExtcRcSlab *)0;', 'c->head = s->availNext;',
+                      'extc_rc_classPush(r, s);',
+                      'if (!s->avail) extc_rc_classPush(s->region, s);',
+                      'r->clsBkt[b] = c->next;']:
             assert token in text, token
             mutated = text.replace(token, '/* injected */')
             assert violations(mutated), token
             print('ok red:', token)
+        # 线性扫描必须能被单独注入成红：把类链兜底整段换成线性扫描形状。
+        old_scan = ('s = r->slabs;\n'
+                    '        while (s && (s->ss != ss ||\n'
+                    '                    (s->freelist < 0 && s->bump >= s->nslots))) s = s->next;')
+        injected = text.replace('s = c ? c->head : (ExtcRcSlab *)0;', old_scan)
+        injected = injected.replace('ExtcRcClass *c = extc_rc_classSlot(r, ss);', '')
+        assert 'no slab scan' in violations(injected), violations(injected)
+        print('ok red: linear slab scan reintroduced')
         return 0
     bad = violations(text)
     for item in bad:

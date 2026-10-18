@@ -17,6 +17,9 @@
   S5 对齐前提：掩码仍按 EXTC_RC_SLAB_SIZE、分配仍是同尺寸的 aligned_alloc
   S6 容量记账按**已发放的槽**（每槽 ss），不是按块大小
   S7 文档注释与常量同步（slabNew 的注释里提到 CHUNK_MIN）
+  S8 块大小被收回块大小上限以内 —— CHUNK_MIN 是**配置无关**的 64 KiB，而
+     EXTC_RC_SLAB_BITS 可配置（< 16 时块 < 64 KiB）；不夹这一下，chunk 会大于
+     EXTC_RC_SLAB_SIZE，cap 按块大小算就会写出界（ASan 实测 16 B 写越界）
 每条都能红：--selftest 逐 token 注入缺口，确认 violations 真的变红。
 """
 import argparse
@@ -30,6 +33,7 @@ NEW_CAP = 'size_t cap = (chunk - EXTC_RC_SLAB_HDR) / slotSize;'
 LOOP = 'while (chunk < EXTC_RC_SLAB_SIZE && chunk / slotSize < EXTC_RC_SLAB_SLOTS_MIN)'
 ALLOC = 'aligned_alloc(EXTC_RC_SLAB_SIZE, EXTC_RC_SLAB_SIZE)'
 MASK = '(uintptr_t)p & ~(uintptr_t)(EXTC_RC_SLAB_SIZE - 1)'
+CLAMP = 'if (chunk > EXTC_RC_SLAB_SIZE) chunk = EXTC_RC_SLAB_SIZE;'
 
 
 def source_text():
@@ -56,6 +60,7 @@ def violations(text):
     checks['chunk starts at min'] = 'size_t chunk = EXTC_RC_SLAB_CHUNK_MIN;' in sn
     checks['chunk doubles while small'] = LOOP in sn and 'chunk <<= 1;' in sn
     checks['cap from chunk'] = NEW_CAP in sn
+    checks['chunk clamped to slab size'] = CLAMP in sn
     checks['fixed 1 MiB cap gone'] = OLD_CAP not in text
     checks['big by cap'] = 'int big = (cap < 2);' in sn
     checks['alignment mask kept'] = MASK in text
@@ -75,6 +80,7 @@ INJECTIONS = [
     (MASK, 'drop-literal'),
     (ALLOC, 'drop-literal'),
     ('r->bytes += (int64_t)ss;', 'drop-literal'),
+    (CLAMP, 'drop-literal'),
     ('EXTC_RC_SLAB_SLOTS_MIN', 'drop-in-doc'),
 ]
 

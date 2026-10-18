@@ -493,6 +493,19 @@ def build_items() -> list:
         bad_msg="tests/reclaim-perf/gate.sh（指令数超上限：回收开销被付回了）",
         bad_dump=dump_fail(10)))
 
+    # ---- 闸门·分配路径的缩放（每分配 O(1)，不随存活 slab 数涨）----
+    # 判据：同一探针在 N 与 4N 两档上，callgrind 每分配指令数之比 ≤ 1.15（指令数是确定量，
+    # 无墙钟噪声）。探针用 -DEXTC_RC_SLAB_BITS=14 压小 slab，让旧「热缓存失手 ⇒ 线性走链」
+    # 的 O(存活 slab) 在小规模下就显露；--selftest 注入旧扫描形状要求判据变红（有牙）。
+    # 数字（旧实现 35.7 s / 5.2 s → 亚秒）记在 changelog，不在这里副本。
+    items.append(cmd(
+        "gate-slab-scale", "gate",
+        "闸门·分配缩放：发射运行期上 N vs 4N 的每分配指令数比 ≤ 1.15、绝对值 ≤ 400，且注入旧扫描会变红",
+        ["./tests/reclaim-perf/gate-slab-scale.sh", "--selftest"], timeout=900,
+        ok_msg=ok_first(r"^  ok   分配路径缩放成立"),
+        bad_msg="tests/reclaim-perf/gate-slab-scale.sh（每分配成本随存活 slab 数涨，或判据失去牙）",
+        bad_dump=dump_fail(12)))
+
     # ---- 闸门·回收开关的形状断言（EXTC_RECLAIM=1）----
     # 这是 `tests/reclaim-shapes/` 的**主门禁**：30 条断言把一个旋钮（开关）的效果钉在
     # 形状上 —— 语义逐字一致、以及每个形状的 N vs 4N 峰值/登记量棘轮（<1.5×）。
