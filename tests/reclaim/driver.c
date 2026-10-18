@@ -610,6 +610,53 @@ static void t_learning(void) {
     check(sc2 > sc1, "自学习：倍数继续涨 ⇒ 阈值退场");
 }
 
+/* ------------------------------------ 着色缓存：清 mark 的每条路都要让缓存失效 */
+/* 缓存记的是「这一代里这个指针黑过」。失效的唯一依据是代际号 —— **每一处清 mark 位的
+ * 路径都必须代际++**（起轮 / 清扫起轮 / 收窄清扫的整片清零 / 整区释放）。漏一处，缓存就会
+ * 把白对象当黑、跳过屏障，可达对象最终被下一次清扫扫掉。下面按路径钉住。 */
+static int slotBlack(void *p) {
+    ExtcRcSlab *s = extc_rc_ownSlab(p);
+    size_t i = extc_rc_slotOf(s, p);
+    return (s->mark[extc_rc_word(i)] & extc_rc_bit(i)) != 0;
+}
+
+static void t_shadeCache(void) {
+    /* ① 标黑即记下；清扫起轮会一片片清 mark 位 ⇒ 必须失效。 */
+    ExtcRcRegion *r = regionNew(17, (int64_t)1 << 40);
+    Node *a = (Node *)extc_rc_alloc(r, sizeof(Node), &g_node);
+    Node *b = (Node *)extc_rc_alloc(r, sizeof(Node), &g_node);
+    a->next = b;
+    void *roots[1] = { a };
+    extc_rc_begin(r, roots, 1);
+    extc_rc_shade(b);
+    while (!r->seedsDone || r->msp) extc_rc_markStep(r, 0xffffffffu);
+    check(extc_rc_shadeKnown(b), "着色缓存：标黑后记下这个指针");
+    extc_rc_shade(b);   /* 同一指针再问一次：命中；guard 版就在这里核对"确实还黑" */
+    check(extc_rc_shadeKnown(b), "着色缓存：重复着色命中");
+    extc_rc_sweepBegin(r);
+    check(!extc_rc_shadeKnown(b), "着色缓存：清扫起轮后失效");
+    extc_rc_regionFree(r);
+
+    /* ② 收窄清扫：可达对象 a→b 的 mark 位在返回前被整片清零 ⇒ 缓存必须失效；否则下一次
+     *    对 b 的屏障被跳过、b 保持白 ⇒ 下一次清扫会把可达的 b 扫掉。 */
+    r = regionNew(18, (int64_t)1 << 40);
+    a = (Node *)extc_rc_alloc(r, sizeof(Node), &g_node);
+    b = (Node *)extc_rc_alloc(r, sizeof(Node), &g_node);
+    void *c = extc_rc_alloc(r, sizeof(Node), &g_data);
+    a->next = b;
+    roots[0] = a;
+    extc_rc_begin(r, roots, 1);
+    extc_rc_shade(b);
+    while (!r->seedsDone || r->msp) extc_rc_markStep(r, 0xffffffffu);
+    check(extc_rc_shadeKnown(b), "着色缓存：收窄清扫前 b 已在缓存里");
+    extc_rc_releaseOld(r, c, roots, 1);   /* c 不可达 ⇒ 释放；返回前整片清 mark */
+    check(!extc_rc_shadeKnown(b), "着色缓存：收窄清扫清 mark 后失效");
+    extc_rc_shade(b);                     /* 可达的 b 必须被重新标黑 */
+    check(slotBlack(b), "着色缓存：失效后可达对象重新变黑");
+    check(extc_rc_isLive(b), "着色缓存：可达对象没有被误回收");
+    extc_rc_regionFree(r);
+}
+
 int main(void) {
     printf("== reclaim 运行期断言 ==\n");
 #if !EXTC_RC_NOCOUNT
@@ -650,6 +697,7 @@ int main(void) {
     t_acyclic();
 #endif
     t_learning();
+    t_shadeCache();
     printf("通过 %d，失败 %d\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

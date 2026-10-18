@@ -33,6 +33,14 @@ PLAN = "src/plan/plan.c"
 
 
 INJECTIONS = {
+    "shade-noinval": {
+        "why": "拿掉收窄清扫前的代际自增 ⇒ 那片 mark 被清之后，着色缓存还把对象记成黑的，"
+               "屏障整段跳过、可达对象漏标",
+        "gate": "reclaim-unit",
+        # 打的是 releaseOld（覆盖点定点释放）那条失效路径，不是 begin/sweepBegin 的；
+        # 后两条各有代际++ 兜底，只有这条是承重的（去掉它探针就漏标，见 changelog）。
+        "patches": [(SRC, '    "    extc_rc_shadeGen++;   /* 收窄清扫在下面清整片 mark：黑记录作废 */\\n",\n', "")],
+    },
     "thr-stale": {
         "why": "拿掉 `collect` 末尾的 `thrUpd` ⇒ 压力阈值过期，触发语义坏掉",
         "gate": "reclaim-unit",

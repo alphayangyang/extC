@@ -164,6 +164,17 @@ p = null                 // 计数 0 —— 放
   本地槽是根，不需要①，②在删除点已经兜住），保护从"每次本地槽写"搬到"每次堆边删除"；
   计数档不动（`extc_rc_shadeOld` 在计数档编译成 no-op）。判据 = `tools/check_mark_both.py`
   （挂 `gate-mark-both`，7 项注入红自测）；六档数字在 `changelog/2026-10.md`。
+* **插入屏障先查一张"已经黑过"的缓存，命中就不进慢路径。** `extc_rc_shade` 查一张 1024 格的
+  直接映射表（`(uintptr_t)v >> 3 & 1023`，每格记指针与代际号）命中就直接返回，连
+  `ownSlab` 的基址/槽首校验都省掉；不变量是「**同一代里某槽的 mark 位只会 0→1**」
+  （`freeSlot` 不清 mark 位），所以"上次查时是黑的"在本代内一直成立。失效靠代际号：内核里
+  **每一处清 mark 位的路径**都 `extc_rc_shadeGen++` —— `begin`（起轮）、`sweepBegin`（清扫开始）、
+  `releaseOld`（定点释放前 `memset` 整片 mark）、`regionFree`（slab 载荷还给 malloc，地址可能复用）。
+  漏一条就会把白对象当黑、跳过屏障而漏标可达对象 ⇒ `tests/reclaim/run.sh` 用
+  `-DEXTC_RC_SHADE_GUARD=1` 把 driver 再编一遍（命中时重做一次慢路径核对，要求 `bad=0` 且
+  `hits > 0`），注入 `shade-noinval`（删掉 `releaseOld` 的代际++）给这条契约提供红证据。
+  缓存查询放在**内联壳**里，壳因此变大 —— `extc_rc_storeRefOwned` 必须 `always_inline`，
+  否则 `-O1` 会改主意不内联它（代价见 `changelog/2026-10.md`）。
 * **根表只覆盖本帧，所以清扫只在「本帧拥有」的区域上进行；不属于本帧的，记一笔账留给拥有者。**
   根表按词法作用域拼：本帧活着的局部量、形参、全局量。它看不见调用栈上其他帧的活引用，因此往
   **调用者传下来的区域**（被调者的分配落进调用者的那一层）分配时，触发点不物化根表，只在那个区域上
@@ -721,7 +732,8 @@ reclaim 形状闸门（`gate-shapes`/`gate-work`/`gate-shard-cycles`/`gate-idle-
 | `skip:shade-off` | 没有在飞标记（`extc_rc_wb == 0`）或新值为空 ⇒ 屏障不动作 | 没有标记就没有白对象需要着色 | 无（幂等；热路径常态）| 语料指纹 + `gate-reclaim-switch` 语义；`gate-skip-table` 自检 |
 | `skip:shade-outside` | 新值不在本运行期的 slab 里，或它所在区域没在标记 ⇒ 不动作 | 只有本运行期的 slab、且该区域正在标记时才需要着色 | 少算（不安全）| `owns` 守卫单测 + 跨区登记判据 + ASan 语料 |
 | `skip:shade-free` | 槽空闲（`occ` 位为 0）⇒ 不是对象，不动作 | 空闲槽没有引用字段可追 | 少算（不安全）| 单测 `守卫：空闲槽不是活对象`；`gate-skip-table` |
-| `skip:shade-black` | 槽已标黑 ⇒ 不重复着色 | 黑对象不需要再入灰集 | 无（幂等）| `gate-reclaim-switch` 语义 + 单测 `槽唯一` |
+| `skip:shade-known` | 同一指针、同一代已被记成"黑过" ⇒ 屏障整段跳过（连慢路径的 `ownSlab` 校验都不进）| 同一代里某槽的 mark 位只会 0→1（`freeSlot` 不清 mark 位），清 mark 的四条路径各自代际++ ⇒ 记录不会过期 | 无（幂等）| `gate-reclaim-perf` 棘轮 + run.sh 的 `EXTC_RC_SHADE_GUARD=1` 自检（`bad=0` 且 `hits>0`）+ 注入 `shade-noinval`（删掉 `releaseOld` 的代际++ ⇒ 单测红在「着色缓存：收窄清扫清 mark 后失效」）|
+| `skip:shade-black` | 槽已标黑 ⇒ 不重复着色（缓存命中时连慢路径的校验都跳过）| 黑对象不需要再入灰集；同一代里 mark 位只会 0→1 ⇒ "黑过"的记录不会过期（失效靠代际号）| 无（幂等）| `gate-reclaim-switch` 语义 + run.sh 的 guard 自检（`EXTC_RC_SHADE_GUARD=1` 要求 `bad=0`、`hits>0`）+ 注入 `shade-noinval` |
 | `skip:old-off` | 没有在飞标记（`extc_rc_wb == 0`）或槽为空 ⇒ 删除屏障不动作（连 `*slot` 都不读）| 没有标记就没有白对象需要保护；`wb == 0` 时被覆盖的旧值不会在本轮被判死 | 无（幂等；热路径常态）| 语料指纹 + `gate-mark-both` 结构判据 + 六档 stdout 逐字节 |
 | `skip:nosweep` | 种子不完整的区域 ⇒ 一个字节都不扫 | 该区域有追不到宿主的入边 | 少算（不安全）| 义务 7 单测 + `noSweep-drop` |
 | `skip:release-budget` | 自上次 O(活集) 遍历以来的新分配 < `max(live, floor)` ⇒ 这次定点释放不做 | 一次 O(活集) 遍历必须由分配量摊销；否则赋值路径上出现 O(N²)（40k 次追加 5.08 s vs 关档 2.4 ms）| 多留（保守：垃圾晚一步收）| `gate-release`（`ring_per_round` 释放槽数仍 >0）+ `gate-reclaim-switch` + `gate-idle-bounded` |
@@ -765,7 +777,8 @@ reclaim 形状闸门（`gate-shapes`/`gate-work`/`gate-shard-cycles`/`gate-idle-
 | `extc_rc_register` 置的**种子位**与它的清理配对 | 不安全 | `register` 置位、`freeSlot` 清位 | 单测 `登记：目标槽登记位置位` + 注入 `register-noop` ⇒ 红在那条上 |
 | 分配器：一个槽不重复发出（活对象地址两两不同）| 不安全 | `freelist`/`bump` 不变量 | 单测 `槽唯一：…` + 注入 `freelist-stuck` ⇒ 红在 `复用之后新拿到的这批也两两不同`（**ASan 抓不到这种别名**：内存是合法的）|
 | 覆盖点定点释放：只放"**仅**从旧值可达"的槽（其它活根/种子一律标活）| 不安全（会放掉还被别的根指着的对象）| `extc_rc_releaseOld`：先 `extc_rc_mark`（其它根 + 跨区种子），只 `freeSlot` 未标记的 | 注入 `release-off` ⇒ `gate-release` 红在"清扫次数 ≤1 / 峰值比 / 释放槽数 >0"三条上（实测关掉发射 55 次扫、10.61 MB）|
+| 着色缓存的失效契约：**每一处清 mark 位都要自增代际号** | **不安全**（漏一条 ⇒ 把白对象当黑、跳过屏障、漏标可达对象）| `extc_rc_begin` / `sweepBegin` / `releaseOld` / `regionFree` 开头各一句 `extc_rc_shadeGen++` | 注入 `shade-noinval`（删掉 `releaseOld` 那条）⇒ 单测红在 `着色缓存：收窄清扫清 mark 后失效`；`EXTC_RC_SHADE_GUARD=1` 的 `[sg] bad` 同时计数。其余三条是纵深防御（`begin` 每轮都会清缓存），由 run.sh 的 guard 自检守着 |
 
 **13 条全部有牙**（每条都给了注入或结构门禁，且红点写在表里）。单测现在**两档都跑**：
-默认（无计数）**59 条**、计数档 **101 条** —— 后者是计数专属断言，用 `#if !EXTC_RC_NOCOUNT`
+默认（无计数）**70 条**、计数档 **112 条** —— 后者是计数专属断言，用 `#if !EXTC_RC_NOCOUNT`
 显式标注（driver 不显式标注就只会覆盖计数档，默认档的编译分支不会被单测碰到）。

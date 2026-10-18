@@ -26,7 +26,8 @@ DOC = "docs/RECLAMATION.md"
 def injection_names() -> list:
     p = subprocess.run([sys.executable, "tools/inject.py", "--list"],
                        cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    names = re.findall(r"^\s{2}([a-z0-9][a-z0-9-]*)\s", p.stdout, re.M)
+    # 名字里允许大写（例如 `noSweep-drop`）：只认小写时，大写命名的注入会被静默漏掉。
+    names = re.findall(r"^\s{2}([A-Za-z0-9][A-Za-z0-9-]*)\s", p.stdout, re.M)
     return sorted(set(names))
 
 

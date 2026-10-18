@@ -674,11 +674,11 @@ def build_items() -> list:
         bad_msg="tests/reclaim-shapes/run-switch.sh（计数模式回归）",
         bad_dump=dump_fail(12)))
 
-    # 计数模式还缺两块：**单测驱动**（阈值缓存/自学习/登记/生命周期 77 条）与**跨语言对拍**。
+    # 计数模式还缺两块：**单测驱动**（阈值缓存/自学习/登记/生命周期 112 条）与**跨语言对拍**。
     # 非默认的计数档若只被形状那一条判据守着，就容易悄悄腐烂 ⇒ 把这两块也补成棘轮。
     items.append(cmd(
         "gate-reclaim-count-unit", "gate",
-        "闸门·计数模式：单测驱动 77 条断言（阈值缓存 / 自学习 / 跨区登记 / 区域生命周期）",
+        "闸门·计数模式：单测驱动 112 条断言（阈值缓存 / 自学习 / 跨区登记 / 区域生命周期 / 着色缓存）",
         ["./tests/reclaim/run.sh"], timeout=1800,
         env={"EXTC_RC_NOCOUNT": "0"},
         ok_msg=ok_first(r"通过 \d+"),

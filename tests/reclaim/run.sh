@@ -62,4 +62,29 @@ else
     echo "  skip ASan/UBSan（本机工具链不支持，不算失败）"
 fi
 
+# 着色缓存自检（EXTC_RC_SHADE_GUARD=1）：命中时重做一遍"确实还黑"的判定。它验证的是
+# 「每一处清 mark 位的路径都自增了代际号」这条失效契约 —— 漏一条，缓存就会把白对象当黑、
+# 跳过屏障，可达对象最终被清扫扫掉。bad 必须为 0 且命中次数必须 > 0（不然判据是空转）。
+echo "== 着色缓存自检（EXTC_RC_SHADE_GUARD=1：命中必须仍是黑的）=="
+if "$CC" -std=c11 -Wall -Wextra -Wpedantic -Werror -O1 -g -DEXTC_RC_SHADE_GUARD=1 -I "$work" \
+        tests/reclaim/driver.c -o "$work/driver-sg" 2>"$work/sg-build.log"; then
+    if timeout 300 "$work/driver-sg" >"$work/sg.out" 2>"$work/sg.err"; then
+        sg_line=$(grep '^\[sg\] hits=' "$work/sg.err" | tail -1)
+        sg_hits=$(printf '%s\n' "$sg_line" | sed -n 's/^\[sg\] hits=\([0-9][0-9]*\) bad=\([0-9][0-9]*\)$/\1/p')
+        sg_bad=$(printf '%s\n' "$sg_line" | sed -n 's/^\[sg\] hits=\([0-9][0-9]*\) bad=\([0-9][0-9]*\)$/\2/p')
+        if [ -n "$sg_hits" ] && [ "${sg_bad:-1}" = 0 ] && [ "$sg_hits" -gt 0 ]; then
+            ok "着色缓存自检：命中 $sg_hits 次，一次也没有把白对象当黑（bad=0）"
+        else
+            bad "着色缓存自检：bad=${sg_bad:-缺失} hits=${sg_hits:-缺失}（有清 mark 的路径忘了代际++）"
+            printf '%s\n' "$sg_line" | sed 's/^/    /'
+        fi
+    else
+        bad "着色缓存自检：guard 版断言失败"
+        tail -5 "$work/sg.out" | sed 's/^/    /'
+    fi
+else
+    bad "着色缓存自检：guard 版编译失败"
+    sed 's/^/    /' "$work/sg-build.log" | head -10
+fi
+
 exit "$fail"
