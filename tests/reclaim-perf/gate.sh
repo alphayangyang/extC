@@ -27,6 +27,9 @@
 #      小类型表；槽步长 2 的幂 → 8 字节取整（由指针找槽号从一次移位变成一次乘倒数右移）。
 #      本形状 **154 214 566 Ir** ⇒ 线收到 161 930 000（= 实测 × 1.05；中间态"只换类型号"是
 #      165 100 449 Ir，被这一项的缓存收益盖过去了）。
+#   ⑫ 标记/分配路径里重复计算的合并：每 slab 缓存类型号（lastTd/lastTid）、word/bit 一次算好
+#      复用、同块子对象复用槽号、shade 拆「内联壳 + 冷半段」（标记外的赋值连调用都不产生）、
+#      预取折进批量填充循环：本形状 **130 453 179 Ir** ⇒ 线收到 136 975 833（= 实测 × 1.05）。
 #
 # 口径与 `run.sh` 一致：pinned `extc` → `EXTC_RECLAIM=1` 生成 → `cc -std=c11 -fwrapv -O1`
 # → `valgrind --tool=callgrind` 的 `summary:` 行。只写自己的临时目录，`src/` 一个字节不动。
@@ -46,7 +49,7 @@ SRC=${SRC:-$ROOT/tests/reclaim-shapes/cyclic_pressure.extc}
 EXTC=${EXTC:-$ROOT/build/extc}
 CC=${CC:-cc}
 N=${N:-200000}
-LIMIT=${LIMIT:-143605649}          # 开放寻址登记表落地后实测 136767285 × 1.05（棘轮只许往下；上一线 161653535）
+LIMIT=${LIMIT:-136975833}          # 标记/分配路径重复计算合并后实测 130453175 × 1.05（棘轮只许往下；上一线 143605649）
 
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 
