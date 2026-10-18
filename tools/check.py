@@ -614,6 +614,18 @@ def build_items() -> list:
         bad_msg="tools/check_doc_refs.py（有注入没写进文档）",
         bad_dump=dump_fail(8)))
 
+    # ---- 元判据·验牙注入的锚点不许漂 ----
+    # inject.py 的每处原文是**逐字**匹配源码的；发射文本一加注释、一改缩进，锚点就失效。
+    # 失效只会在真去跑那条注入时才炸，而 inject.py 不在电池里 ⇒ 曾一次漂了 16 处没人发现。
+    # 这一条不重编、毫秒级，只核对每处原文在目标文件恰好出现一次（且 old != new）。
+    items.append(cmd(
+        "gate-inject-anchors", "gate",
+        "元判据·验牙锚点：`tools/inject.py` 每处注入原文在源码里恰好命中 1 次（不重编）",
+        ["python3", "tools/inject.py", "--check-anchors"], timeout=60, needs_build=False,
+        ok_msg=ok_first(r"注入锚点自检："),
+        bad_msg="tools/inject.py --check-anchors（注入锚点陈旧：源码演进后没重锚）",
+        bad_dump=dump_fail(8)))
+
     # ---- 元判据·跳过清单与代码同步 ----
     # 运行期里每处"直接返回"都是一刀；`docs/RECLAMATION.md` 的跳过表写明它们的前提与失效方向。
     # 义务表已有门禁（gate-invariant-table），这条是跳过表的对应物：标记 ↔ 表行双向对齐，

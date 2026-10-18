@@ -16,6 +16,7 @@
 #   python3 tools/inject.py thr-stale                 # 跑一条
 #   python3 tools/inject.py thr-stale --gate gate-reclaim-tax   # 换判据
 #   python3 tools/inject.py thr-stale --no-verify-green         # 跳过"还原后必须绿"
+#   python3 tools/inject.py --check-anchors                      # 只核对锚点（不重编、不跑判据）
 import argparse
 import os
 import pathlib
@@ -35,14 +36,14 @@ INJECTIONS = {
     "thr-stale": {
         "why": "拿掉 `collect` 末尾的 `thrUpd` ⇒ 压力阈值过期，触发语义坏掉",
         "gate": "reclaim-unit",
-        "patches": [(SRC, '    "    extc_rc_thrUpd(r);   /* live/scale 变了 ⇒ 阈值跟着变 */\\n",\n', "")],
+        "patches": [(SRC, '    "    r->live = r->markedBytes > 0 ? r->markedBytes : r->live;\\n",\n    "    extc_rc_thrUpd(r);\\n",\n', "")],
     },
     "rsinc-drop": {
         "why": "拿掉跨区边的登记（`rsInc`）⇒ 目标区域的清扫会放掉还被指着的对象",
         # **两处都要拆**：`storeRefOwned` 与第十二刀的 `storeRefOwnedReg` 各有一份登记逻辑；
         # 只拆前者时形状走的是后者 ⇒ 打不到活路径。
         "gate": "gate-reclaim-switch",
-        "patches": [(SRC, '    "            if (sv   && sv->region   != r) extc_rc_rsIncSlab(sv, v);\\n",\n', ""), (SRC, '    "            if (sv   && sv->region   != host) extc_rc_rsIncSlab(sv, v);\\n",\n', "")],
+        "patches": [(SRC, '    "            if (host && sv && sv->region != host) { extc_rc_rsIncSlab(sv, v); host->foreign = 1; }\\n",\n', ""), (SRC, '    "                if (sv && sv->region != r) { extc_rc_rsIncSlab(sv, v); r->foreign = 1; }\\n",\n    "                if (r->foreign) { void *old = *slot; ExtcRcSlab *sold = old ? extc_rc_ownSlab(old) : (ExtcRcSlab *)0; if (sold && sold->region != r) extc_rc_rsDecSlab(sold, old); }\\n",\n', "")],
     },
     "localstore-on-objhost": {
         "why": "把对象宿主（`hreg != NULL`）的引用存储也改发本地槽的只写入口 "
@@ -62,22 +63,25 @@ INJECTIONS = {
     "sweep-never": {
         "why": "让 `shouldSweep` 永不触发 ⇒ 垃圾只等区域丢弃，峰值随轮数涨（**内存类**失效）",
         "gate": "gate-reclaim-switch",
-        "patches": [(SRC, '    "    return r->bytes > r->thr;\\n",\n', '    "    return 0;   /* 注入：永不触发 */\\n",\n')],
+        "patches": [(SRC, '    "    return r->bytes > r->thr && extc_rc_roundOk(r);   /* 起轮信用：独立计数器，定点释放不消耗 */\\n",\n', '    "    return 0;   /* 注入：永不触发 */\\n",\n')],
     },
     "overregister": {
         "why": "宿主证不出时也登记目标（第 18 轮那个真回归）⇒ 登记只增不减、峰值随轮数涨",
         "gate": "gate-reclaim-switch",
         # 两个变体各插一处（只插 `storeRefOwned` 打不到活路径 —— 与 `rsinc-drop` 同一条教训）。
         "patches": [
-            (SRC, '    "            if (sv   && sv->region   != r) extc_rc_rsIncSlab(sv, v);\\n",\n    "        }\\n",\n    "        *slot = v;\\n",\n',
-             '    "            if (sv   && sv->region   != r) extc_rc_rsIncSlab(sv, v);\\n",\n    "        }\\n",\n    "        if (sv) extc_rc_rsIncSlab(sv, v);   /* 注入：过度登记（第 18 轮那个回归） */\\n",\n    "        *slot = v;\\n",\n'),
-            (SRC, '    "            if (sv   && sv->region   != host) extc_rc_rsIncSlab(sv, v);\\n",\n    "        }\\n",\n    "        *slot = v;\\n",\n',
-             '    "            if (sv   && sv->region   != host) extc_rc_rsIncSlab(sv, v);\\n",\n    "        }\\n",\n    "        if (sv) extc_rc_rsIncSlab(sv, v);   /* 注入：过度登记（第 18 轮那个回归） */\\n",\n    "        *slot = v;\\n",\n'),
+            (SRC, '    "            if (host && sv && sv->region != host) { extc_rc_rsIncSlab(sv, v); host->foreign = 1; }\\n",\n    "            if (host && host->foreign) { void *old = *slot; ExtcRcSlab *sold = old ? extc_rc_ownSlab(old) : (ExtcRcSlab *)0; if (sold && sold->region != host) extc_rc_rsDecSlab(sold, old); }\\n",\n',
+             '    "            if (host && sv && sv->region != host) { extc_rc_rsIncSlab(sv, v); host->foreign = 1; }\\n",\n    "            if (sv) extc_rc_rsIncSlab(sv, v);   /* 注入：过度登记（第 18 轮那个回归） */\\n",\n    "            if (host && host->foreign) { void *old = *slot; ExtcRcSlab *sold = old ? extc_rc_ownSlab(old) : (ExtcRcSlab *)0; if (sold && sold->region != host) extc_rc_rsDecSlab(sold, old); }\\n",\n'),
+            (SRC, '    "                if (sv && sv->region != r) { extc_rc_rsIncSlab(sv, v); r->foreign = 1; }\\n",\n    "                if (r->foreign) { void *old = *slot; ExtcRcSlab *sold = old ? extc_rc_ownSlab(old) : (ExtcRcSlab *)0; if (sold && sold->region != r) extc_rc_rsDecSlab(sold, old); }\\n",\n',
+             '    "                if (sv && sv->region != r) { extc_rc_rsIncSlab(sv, v); r->foreign = 1; }\\n",\n    "                if (sv) extc_rc_rsIncSlab(sv, v);   /* 注入：过度登记（第 18 轮那个回归） */\\n",\n    "                if (r->foreign) { void *old = *slot; ExtcRcSlab *sold = old ? extc_rc_ownSlab(old) : (ExtcRcSlab *)0; if (sold && sold->region != r) extc_rc_rsDecSlab(sold, old); }\\n",\n'),
         ],
     },
     "perf-lookup": {
         "why": "让 `rcRegionRef` 恒返回 NULL ⇒ 触发/分配退回每次内联 `regionOf`（第 13 刀那笔优化没了）",
-        "gate": "gate-reclaim-tax",
+        # 原先挂在 `gate-reclaim-tax`：`bt` 那时还发射 rc，去掉区域指针复用会把税抬高。
+        # 「区域不需要回收 ⇒ 整段不发射 rc」落地后 `bt` 的开/关档产物逐字节相同（税恒 1.000×）
+        # ⇒ 这条注入在税判据上失去牙，改挂指令数棘轮（同一形状的回收开销被付回来）。
+        "gate": "gate-reclaim-perf",
         "patches": [(CODEGEN, 'static const char *rcRegionRef(CG *g, const char *basePtr) {\n', 'static const char *rcRegionRef(CG *g, const char *basePtr) {\n    return NULL;   /* 注入：不复用区域指针 */')],
     },
     "count-noinc": {
@@ -118,8 +122,8 @@ INJECTIONS = {
         # 所以默认档的单测就会红 —— 新补的 `t_rsSat` 正是为它写的。
         "gate": "reclaim-unit",
         "patches": [
-            (SRC, '    "    if (s->rscnt[i] == EXTC_RC_HOLD_SAT) return;          /* 饱和粘住，永不误判归零 */\\n",\n', ""),
-            (SRC, '    "    if (s->rscnt[i] == EXTC_RC_HOLD_SAT) return;\\n",\n', ""),
+            (SRC, '    "    if (s->rscnt[i] == EXTC_RC_HOLD_SAT) return;          /* 饱和粘住，永不误判归零 */   /* skip:sat-inc */\\n",\n', ""),
+            (SRC, '    "    if (s->rscnt[i] == EXTC_RC_HOLD_SAT) return;   /* skip:sat-inc */\\n",\n', ""),
         ],
     },
     "realpath-noreg": {
@@ -127,8 +131,8 @@ INJECTIONS = {
         # 打的正是 `storeRefOwnedReg` 的登记那一句：内部 API 阶段（直接调 `rsInc`）不受影响，
         # 所以能红的**只能**是"真实路径"那一组断言 —— 它们有没有牙，靠这条注入证明。
         "gate": "reclaim-unit",
-        "patches": [(SRC, '    "            if (sv   && sv->region   != host) extc_rc_rsIncSlab(sv, v);\\n",\n',
-                     '    "            if (sv   && sv->region   != host) { /* 注入：真实赋值路径不登记 */ }\\n",\n')],
+        "patches": [(SRC, '    "            if (host && sv && sv->region != host) { extc_rc_rsIncSlab(sv, v); host->foreign = 1; }\\n",\n',
+                     '    "            if (host && sv && sv->region != host) { host->foreign = 1; }   /* 注入：真实赋值路径不登记 */\\n",\n')],
     },
     "noSweep-drop": {
         "why": "拿掉\"宿主证不出来 ⇒ 目标区域退出清扫\"（义务 7）⇒ 种子不完整的区域照样被扫（不安全方向）",
@@ -150,45 +154,49 @@ INJECTIONS = {
     },
     "register-noop": {
         "why": "`extc_rc_register` 不再置入边位 ⇒ 目标区域清扫时**种子少一个**，还被指着的对象会被放掉",
-        "gate": "reclaim-unit",
-        "patches": [(SRC, '    "    if (s->rsbit[extc_rc_word(i)] & extc_rc_bit(i)) return;\\n",\n    "    s->rsbit[extc_rc_word(i)] |= extc_rc_bit(i);\\n",\n',
-                     '    "    if (s->rsbit[extc_rc_word(i)] & extc_rc_bit(i)) return;\\n",\n    "    (void)i; (void)s;   /* 注入：不置入边位 */\\n",\n')],
+        # 默认档（`EXTC_RC_NOCOUNT=1`）里没有任何断言验「register 真的置了位」
+        # （t_staleRegister/t_crossRegion 都在 `#if !EXTC_RC_NOCOUNT` 里）⇒ 只有计数档单测抓得住。
+        "gate": "gate-reclaim-count-unit",
+        "patches": [(SRC, '    "    if (s->rsbit[extc_rc_word(i)] & extc_rc_bit(i)) return;   /* skip:reg-dup */\\n",\n    "    s->rsbit[extc_rc_word(i)] |= extc_rc_bit(i); s->region->seedAny = 1;\\n",\n',
+                     '    "    if (s->rsbit[extc_rc_word(i)] & extc_rc_bit(i)) return;   /* skip:reg-dup */\\n",\n    /* 注入：不置入边位 */\n')],
     },
     "rsdec-nop": {
         "why": "跨区计数不再减、登记位永不清 ⇒ 留下陈旧入边位（保守方向：目标被多留）",
         "gate": "reclaim-unit",
         "patches": [
-            (SRC, '    "__attribute__((unused)) static void extc_rc_rsDec(void *t) {\\n",\n    "    ExtcRcSlab *s = extc_rc_ownSlab(t);\\n",\n    "    if (!s) return;\\n",\n    "    size_t i = extc_rc_slotOf(s, t);\\n",\n    "    if (!(s->occ[extc_rc_word(i)] & extc_rc_bit(i))) return;\\n",\n    "    if (s->rscnt[i] == 0 || s->rscnt[i] == EXTC_RC_HOLD_SAT) return;\\n",\n    "    if (--s->rscnt[i] == 0) s->rsbit[extc_rc_word(i)] &= ~extc_rc_bit(i);\\n",\n',
-             '    "__attribute__((unused)) static void extc_rc_rsDec(void *t) {\\n",\n    "    ExtcRcSlab *s = extc_rc_ownSlab(t);\\n",\n    "    if (!s) return;\\n",\n    "    size_t i = extc_rc_slotOf(s, t);\\n",\n    "    if (!(s->occ[extc_rc_word(i)] & extc_rc_bit(i))) return;\\n",\n    "    if (s->rscnt[i] == 0 || s->rscnt[i] == EXTC_RC_HOLD_SAT) return;\\n",\n    "    if ((s->rscnt[i] += 0) == 0) s->rsbit[extc_rc_word(i)] &= ~extc_rc_bit(i);\\n",   /* 注入：计数不减，登记位永不清 */\n'),
-            (SRC, '    "__attribute__((unused)) static void extc_rc_rsDecSlab(ExtcRcSlab *s, void *t) {\\n",\n    "    size_t i = extc_rc_slotOf(s, t);\\n",\n    "    if (!(s->occ[extc_rc_word(i)] & extc_rc_bit(i))) return;\\n",\n    "    if (s->rscnt[i] == 0 || s->rscnt[i] == EXTC_RC_HOLD_SAT) return;\\n",\n    "    if (--s->rscnt[i] == 0) s->rsbit[extc_rc_word(i)] &= ~extc_rc_bit(i);\\n",\n',
-             '    "__attribute__((unused)) static void extc_rc_rsDecSlab(ExtcRcSlab *s, void *t) {\\n",\n    "    size_t i = extc_rc_slotOf(s, t);\\n",\n    "    if (!(s->occ[extc_rc_word(i)] & extc_rc_bit(i))) return;\\n",\n    "    if (s->rscnt[i] == 0 || s->rscnt[i] == EXTC_RC_HOLD_SAT) return;\\n",\n    "    if ((s->rscnt[i] += 0) == 0) s->rsbit[extc_rc_word(i)] &= ~extc_rc_bit(i);\\n",   /* 注入：计数不减，登记位永不清 */\n'),
+            (SRC, '    "__attribute__((unused)) static void extc_rc_rsDec(void *t) {\\n",\n    "    ExtcRcSlab *s = extc_rc_ownSlab(t);\\n",\n    "    if (!s) return;   /* skip:not-own */\\n",\n    "    size_t i = extc_rc_slotOf(s, t);\\n",\n    "    if (!(s->occ[extc_rc_word(i)] & extc_rc_bit(i))) return;   /* skip:occ-free */\\n",\n    "    if (!s->rscnt || s->rscnt[i] == 0 || s->rscnt[i] == EXTC_RC_HOLD_SAT) return;   /* skip:sat-dec */\\n",\n    "    if (--s->rscnt[i] == 0) s->rsbit[extc_rc_word(i)] &= ~extc_rc_bit(i);\\n",\n',
+             '    "__attribute__((unused)) static void extc_rc_rsDec(void *t) {\\n",\n    "    ExtcRcSlab *s = extc_rc_ownSlab(t);\\n",\n    "    if (!s) return;   /* skip:not-own */\\n",\n    "    size_t i = extc_rc_slotOf(s, t);\\n",\n    "    if (!(s->occ[extc_rc_word(i)] & extc_rc_bit(i))) return;   /* skip:occ-free */\\n",\n    "    if (!s->rscnt || s->rscnt[i] == 0 || s->rscnt[i] == EXTC_RC_HOLD_SAT) return;   /* skip:sat-dec */\\n",\n    "    if ((s->rscnt[i] += 0) == 0) s->rsbit[extc_rc_word(i)] &= ~extc_rc_bit(i);   /* 注入：计数不减，登记位永不清 */\\n",\n'),
+            (SRC, '    "__attribute__((unused)) static void extc_rc_rsDecSlab(ExtcRcSlab *s, void *t) {\\n",\n    "    size_t i = extc_rc_slotOf(s, t);\\n",\n    "    if (!(s->occ[extc_rc_word(i)] & extc_rc_bit(i))) return;   /* skip:occ-free */\\n",\n    "    if (!s->rscnt || s->rscnt[i] == 0 || s->rscnt[i] == EXTC_RC_HOLD_SAT) return;   /* skip:sat-dec */\\n",\n    "    if (--s->rscnt[i] == 0) s->rsbit[extc_rc_word(i)] &= ~extc_rc_bit(i);\\n",\n',
+             '    "__attribute__((unused)) static void extc_rc_rsDecSlab(ExtcRcSlab *s, void *t) {\\n",\n    "    size_t i = extc_rc_slotOf(s, t);\\n",\n    "    if (!(s->occ[extc_rc_word(i)] & extc_rc_bit(i))) return;   /* skip:occ-free */\\n",\n    "    if (!s->rscnt || s->rscnt[i] == 0 || s->rscnt[i] == EXTC_RC_HOLD_SAT) return;   /* skip:sat-dec */\\n",\n    "    if ((s->rscnt[i] += 0) == 0) s->rsbit[extc_rc_word(i)] &= ~extc_rc_bit(i);   /* 注入：计数不减，登记位永不清 */\\n",\n'),
         ],
     },
     "mark-nodesc": {
         "why": "标记时不标孩子（描述符字段读了却不推）⇒ 孩子少标、被提前回收（**不安全方向**）",
         "gate": "reclaim-unit",
-        "patches": [(SRC, '    "            void *child = *(void **)((char *)o + t->off[k]);\\n",\n    "            if (child) extc_rc_markPush(r, child);\\n",\n',
-                     '    "            void *child = *(void **)((char *)o + t->off[k]);\\n",\n    "            if (child) { (void)child; (void)k; }   /* 注入：不标孩子 */\\n",\n')],
+        "patches": [(SRC, '    "        for (uint32_t k = 0; k < t->nptr; k++) {   /* 义务 4：按对象自己的描述符走 */\\n",\n    "            void *child = *(void **)((char *)o + t->off[k]);\\n",\n    "        if (child) {\\n",\n    "            uintptr_t _cb = (uintptr_t)child & ~(uintptr_t)(EXTC_RC_SLAB_SIZE - 1);\\n",\n    "            if (_cb == (uintptr_t)s) {   /* 同块：先验证槽首，再复用标记位 */\\n",\n    "                size_t _off = extc_rc_offOf(s, child);\\n",\n    "                size_t _ci = extc_rc_slotOfOff(s, _off);\\n",\n    "                if (_ci < s->nslots && _ci * s->ss == _off) {\\n",\n    "                    uint64_t _cbit = extc_rc_bit(_ci);\\n",\n    "                    size_t _cw = extc_rc_word(_ci);   /* occ/mark 同字 */\\n",\n    "                    if (s->occ[_cw] & _cbit && (s->mark[_cw] & _cbit)) continue;\\n",\n    "                }\\n",\n    "            }\\n",\n    "            extc_rc_markPushFast(r, child);\\n",\n    "        }\\n",\n',
+                     '    "        for (uint32_t k = 0; k < t->nptr; k++) {   /* 义务 4：按对象自己的描述符走 */\\n",\n    "            void *child = *(void **)((char *)o + t->off[k]);\\n",\n    "        if (child) {\\n",\n    "            uintptr_t _cb = (uintptr_t)child & ~(uintptr_t)(EXTC_RC_SLAB_SIZE - 1);\\n",\n    "            if (_cb == (uintptr_t)s) {   /* 同块：先验证槽首，再复用标记位 */\\n",\n    "                size_t _off = extc_rc_offOf(s, child);\\n",\n    "                size_t _ci = extc_rc_slotOfOff(s, _off);\\n",\n    "                if (_ci < s->nslots && _ci * s->ss == _off) {\\n",\n    "                    uint64_t _cbit = extc_rc_bit(_ci);\\n",\n    "                    size_t _cw = extc_rc_word(_ci);   /* occ/mark 同字 */\\n",\n    "                    if (s->occ[_cw] & _cbit && (s->mark[_cw] & _cbit)) continue;\\n",\n    "                }\\n",\n    "            }\\n",\n    "            (void)child;   /* 注入：不标孩子 */\\n",\n    "        }\\n",\n')],
     },
     "unlink-nop": {
         "why": "对象被回收时不撤它手里的跨区边 ⇒ 目标槽留下陈旧入边登记（保守方向：目标被多留）",
         "gate": "reclaim-unit",
         "patches": [
-            (SRC, '    "            if (c && extc_rc_regionOfOwn(c) != s->region) extc_rc_rsDec(c);\\n",\n',
-             '    "            if (c && extc_rc_regionOfOwn(c) != s->region) (void)c;   /* 注入：不撤出边 */\\n",\n'),
-            (SRC, '    "        if (c && extc_rc_regionOfOwn(c) != s->region) extc_rc_rsDec(c);\\n",\n',
-             '    "        if (c && extc_rc_regionOfOwn(c) != s->region) (void)c;   /* 注入：不撤出边 */\\n",\n'),
+            (SRC, '    "            if (c) { ExtcRcSlab *cs = extc_rc_ownSlab(c); if (cs && cs->region != s->region) extc_rc_rsDecSlab(cs, c); }\\n",\n',
+             '    "            if (c) { ExtcRcSlab *cs = extc_rc_ownSlab(c); if (cs && cs->region != s->region) (void)cs; }\\n",\n'),
+            (SRC, '    "        if (c) { ExtcRcSlab *cs = extc_rc_ownSlab(c); if (cs && cs->region != s->region) extc_rc_rsDecSlab(cs, c); }\\n",\n',
+             '    "        if (c) { ExtcRcSlab *cs = extc_rc_ownSlab(c); if (cs && cs->region != s->region) (void)cs; }\\n",\n'),
         ],
     },
     "occ-guard-drop": {
         "why": "跨区登记不再检查占用位 ⇒ 空闲槽也会被置入边位（保守方向：复用后目标被多留）",
         "gate": "reclaim-unit",
-        "patches": [(SRC, '    "__attribute__((unused)) static void extc_rc_rsIncSlab(ExtcRcSlab *s, void *t) {\\n",\n    "    size_t i = extc_rc_slotOf(s, t);\\n",\n    "    if (!(s->occ[extc_rc_word(i)] & extc_rc_bit(i))) return;\\n",\n',
-                     '    "__attribute__((unused)) static void extc_rc_rsIncSlab(ExtcRcSlab *s, void *t) {\\n",\n    "    size_t i = extc_rc_slotOf(s, t);\\n",\n    "    /* 注入：拿掉占用位守卫 */\\n",\n')],
+        "patches": [(SRC, '    "__attribute__((unused)) static void extc_rc_rsIncSlab(ExtcRcSlab *s, void *t) {\\n",\n    "    size_t i = extc_rc_slotOf(s, t);\\n",\n    "    if (!(s->occ[extc_rc_word(i)] & extc_rc_bit(i))) return;   /* skip:occ-free */\\n",\n',
+                     '    "__attribute__((unused)) static void extc_rc_rsIncSlab(ExtcRcSlab *s, void *t) {\\n",\n    "    size_t i = extc_rc_slotOf(s, t);\\n",\n    /* 注入：拿掉占用位守卫 */\n')],
     },
     "ownhot-nobase": {
         "why": "把「上一块」缓存的基址判等去掉 ⇒ 跨 slab 的指针也用缓存里的 slab 判定（校验会失败 ⇒ 活对象被当区域外跳过）",
-        "gate": "gate-reclaim-switch",
+        # 语义档（少算，不安全）⇒ 单测立刻抓得到；挂 `gate-reclaim-switch` 时被污染的
+        # `ownSlab` 让那份大语料中的一个形状跑不完（判据红不了，只会超时）⇒ 挂单测。
+        "gate": "reclaim-unit",
         "patches": [(SRC,
                      "    if (hot && (void *)hot == base) {          /* skip:own-hot */",
                      "    if (hot) {                                 /* 注入：基址判等去掉 */")],
@@ -281,6 +289,52 @@ def run_gate(name: str):
     return p.returncode, p.stdout
 
 
+def check_anchors() -> int:
+    # 便宜的自检：锚点是**逐字**匹配源码的，发射文本一改行/一加注释锚点就漂。
+    # 漂了之后 inject.py 只会在真去跑那条注入时才报错，而它不在 `check.sh` 电池里
+    # ⇒ 可能一漂好几轮没人发现（这一轮就是 16 处一起漂）。检查本身不重编，毫秒级。
+    bad = 0
+    total = 0
+    for nm, spec in INJECTIONS.items():
+        for i, (rel, old, new) in enumerate(spec["patches"]):
+            total += 1
+            p = ROOT / rel
+            if not p.exists():
+                print(f"  STALE {nm}[{i}]  目标文件不存在：{rel}", file=sys.stderr)
+                bad += 1
+                continue
+            n = p.read_text().count(old)
+            if n != 1:
+                print(f"  STALE {nm}[{i}]  原文在 {rel} 里出现 {n} 次（要求恰好 1 次）", file=sys.stderr)
+                bad += 1
+            elif old == new:
+                print(f"  NOOP  {nm}[{i}]  原文与替换文相同 ⇒ 注入什么也没做（{rel}）", file=sys.stderr)
+                bad += 1
+    if bad:
+        print(f"注入锚点自检：{bad} 处陈旧 —— 源码演进后锚点漂了，请按当前源码重锚", file=sys.stderr)
+        return 2
+    print(f"  ok   注入锚点自检：{len(INJECTIONS)} 条注入的 {total} 处原文各自命中恰好 1 次，且 old != new")
+    return 0
+
+
+def has_real_fail(out: str) -> bool:
+    """门禁输出里有没有**判据本身**打出来的 FAIL。
+
+    多形状门禁（`run-switch.sh` 那种）在注入下常有一两个形状「生成/编译失败」或
+    「探针不可用」—— 那是注入把某个形状的**前提**改了（例如把 rc 运行期整段不发射，
+    依赖 rc 符号的插桩工具就不可用了），不是判据没牙。只要还有一条别的 FAIL，就
+    说明判据抓住了这个错。
+    """
+    skip = ("生成/编译失败", "编译失败", "探针不可用", "编不过")
+    for line in out.split("\n"):
+        if "FAIL" not in line:
+            continue
+        if any(s in line for s in skip):
+            continue
+        return True
+    return False
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("name", nargs="?")
@@ -291,7 +345,12 @@ def main() -> int:
                     help="copy：在临时副本里改/编/跑（原树一个字节都不动，默认）；"
                          "inplace：就地改（快，但 SIGKILL/断电会留下注入态）")
     ap.add_argument("--keep", action="store_true", help="保留临时副本（失败后排查用）")
+    ap.add_argument("--check-anchors", action="store_true",
+                    help="只核对每条注入的原文在目标文件恰好出现一次（且 old != new）；不重编、不跑判据")
     args = ap.parse_args()
+
+    if args.check_anchors:
+        return check_anchors()
 
     if args.list or not args.name:
         for nm, spec in INJECTIONS.items():
@@ -363,7 +422,7 @@ def main() -> int:
             if rc == 0:
                 status["rc"] = 1
                 status["note"] = f"FAIL：注入之后 {gate} 仍然是绿的 —— 这条判据抓不住这个错！"
-            elif "编译失败" in out or "生成/编译" in out:
+            elif not has_real_fail(out) and ("编译失败" in out or "生成/编译" in out):
                 status["rc"] = 1
                 status["note"] = ("注入让门禁**编不过**（不是判据红）—— 请换一种改法：\n"
                                   + "\n".join(l for l in out.split("\n") if "error" in l or "FAIL" in l)[:600])

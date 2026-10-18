@@ -669,7 +669,9 @@ reclaim 形状闸门（`gate-shapes`/`gate-work`/`gate-shard-cycles`/`gate-idle-
     9490/19008 变成 5076/6264 就是例子）。它仍挂 `bench` 档（`nobench` 盖不到，见"五.一"）。
 * **两条通用规则**（比任何单条判据都重要）：
   - **判据必须能红。** 每条不变量都要有一个注入或结构门禁，红点写进表里（见下面两张表）；
-    "没测到"不等于"已证否"。
+    "没测到"不等于"已证否"。注入本身也是判据：它的原文是**逐字**匹配发射文本的，
+    源码一改就悄悄打不中 ⇒ `python3 tools/inject.py --check-anchors`（不重编、毫秒级）
+    逐条核对每处原文在目标文件恰好出现一次，由 `gate-inject-anchors` 每次电池跑。
   - **插桩/判定失败不许伪装成绿。** 量具读不到目标时必须报"工具不兼容/插桩失败"并让判据红，
     而不是报一个 0：`[work]` 缺失、以及探针认不出增量形态（`owed-home` 这类形状），都属于这一类。
     同一条规则也管"按区域判定"：判定缺席时不许落"空壳绿"的判据（见"三点七"）。
@@ -750,7 +752,7 @@ reclaim 形状闸门（`gate-shapes`/`gate-work`/`gate-shard-cycles`/`gate-idle-
 | 参与区域数（单区域免登记快路径的前提）| **不安全** | 槽的**诞生点**记 `partN`：`extc_rc_alloc` 无条件记、`storeStructCons` 的保守分支也记；**赋值侧不再记**（冗余：槽的区域在诞生时已记过，见 `changelog/2026-10.md` 的 2026-10-15 条目）；`extc_rc_regionFree` 开头有 **R3 运行期守卫**复查"有占用槽 ⇒ `part == 1`" | `gate-note-part`：静态 R2「会交出槽 ⇒ 必须记参与」（**在真实缺陷 `storeStructCons` 上红过**）+ 运行期 R3。R3 的红演示：注入"删掉 `alloc` 的 `notePart`" ⇒ 静态 `FAIL [R2] extc_rc_alloc`（rc=1）**且** `trap: reclaim: R3: occupied slot in a region with part == 0`（rc=1），撤回后绿。另有 `cross-region` 登记量判据 |
 | 触发语义：压力阈值随 `live`/`scale` 更新 | 性能/内存 | `collect`/`regionFloor`/`regionNew` 末的 `thrUpd` | 注入 `thr-stale` ⇒ `阈值缓存③：倍数翻倍后阈值 ×2` |
 | 本地/形参槽的只写入口（`EXTC_RC_LOCALSTORE`，默认关）**只允许用在 `owner == 0` 的槽上** | **不安全**（对象宿主走它 ⇒ 跨区登记整段丢失）| `codegen.c` 的 `rcLocalStore && rcNoCount && hostBase == NULL`；`storeRefLocal` 只写 | 注入 `localstore-on-objhost`（把 `hreg != NULL` 的对象宿主存储也改发该入口）⇒ `cross_region` 的 `rs_inc/rs_dec/rs_live/rs_hwm` 从 `200000/196611/3389/65537` **塌成 0/0/0/0**，`gate-reclaim-switch` **红（通过 1 失败 1，exit 1）** —— 实测；等价性（无计数档下 `storeRefOwned(slot,v,0)` 的 gated 块因 `so == 0` 无副作用）见 `tests/reclaim-perf/LOCALSTORE-IMPL.md` |
-| 回收税判据线自身有牙（税不许涨）| 性能 | 赋值/分配路径的实现（区域指针复用、登记快路径…）| 注入 `perf-lookup`（让 `rcRegionRef` 恒返回 NULL）⇒ `gate-reclaim-tax` 红在 `税 1.679× > 上限 1.620×` |
+| 回收税判据线自身有牙（税不许涨）| 性能 | 赋值/分配路径的实现（区域指针复用、登记快路径…）| 把线手动拧到现行值以下（`BT_TAX_LIMIT=999`；bt 现行税恒 1.000×）⇒ 判据红在「税 > 线」那一支。注入 `perf-lookup`（让 `rcRegionRef` 恒返回 NULL）改挂 `gate-reclaim-perf`：**bt 的产物已不含 rc**（开/关档逐字节相同）⇒ 税尺对它无感，注入挂在这里会退化成空转 |
 | 界不随轮数涨（churn / 峰值）| 内存 | 触发 + 清扫 + 区域轮转 | 注入 `sweep-never` ⇒ `bounded-churn N→4N 2.71×`；注入 `overregister` ⇒ `cyclic-pressure 3.64×` |
 | 计数模式：计数归零**当场回收** | 性能/内存 | `holdUpd*` | 注入 `count-nodec` ⇒ `storeRef：归零当场释放` |
 | bump 槽在**按槽登记之外** | 保守（设计事实）| `bump` 不置占用位 | 单测 `bump 跨区：…`（钉住事实，不是判"好坏"）|
