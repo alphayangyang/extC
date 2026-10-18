@@ -37,6 +37,8 @@
 #      ⇒ 调用/返回本身是一笔）：本形状 **126 954 696 Ir** ⇒ 线收到 133 302 430（= 实测 × 1.05）。
 #   ⑮ 子对象循环里的同块去重不再验槽首（只按「包含该地址的槽」查 occ/mark 位；非槽首指针在
 #      弹栈端本来就会被 ownSlab 判成非对象）：本形状 **125 487 946 Ir** ⇒ 线收到 131 762 343（= 实测 × 1.05）。
+#   ⑯ alloc 不再逐次重验缓存块的尺寸类（`allocHot` 只有本函数一个写入点，s 只来自
+#      classSlot/slabNew ⇒ 同尺寸类是不变式）：本形状 **125 022 751 Ir** ⇒ 线收到 131 273 889（= 实测 × 1.05）。
 #
 # 口径与 `run.sh` 一致：pinned `extc` → `EXTC_RECLAIM=1` 生成 → `cc -std=c11 -fwrapv -O1`
 # → `valgrind --tool=callgrind` 的 `summary:` 行。只写自己的临时目录，`src/` 一个字节不动。
@@ -56,7 +58,7 @@ SRC=${SRC:-$ROOT/tests/reclaim-shapes/cyclic_pressure.extc}
 EXTC=${EXTC:-$ROOT/build/extc}
 CC=${CC:-cc}
 N=${N:-200000}
-LIMIT=${LIMIT:-131762343}          # 同块去重省掉槽首校验后实测 125487946 × 1.05（棘轮只许往下；上一线 133302430）
+LIMIT=${LIMIT:-131273889}          # alloc 不再重验尺寸类后实测 125022751 × 1.05（棘轮只许往下；上一线 131762343）
 
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 

@@ -43,7 +43,10 @@ def violations(text):
     checks = {
         'cache field': 'ExtcRcSlab *allocHot[32];' in text,
         'cache read': 'ExtcRcSlab **hot = ac < 32 ? &r->allocHot[ac]' in alloc,
-        'size check': 's->ss != ss' in alloc,
+        # allocHot 的尺寸类不变式（唯一写入点见下） ⇒ 不再逐次验 s->ss；若有人把
+        # "顺手校验"加回来，这里红。
+        'no redundant size check': 's->ss != ss' not in alloc,
+        'cache write single site': text.count('*hot = s;') == 1,
         'capacity check': 's->freelist < 0 && s->bump >= s->nslots' in alloc,
         'class lookup': 'ExtcRcClass *c = extc_rc_classSlot(r, ss);' in alloc,
         'class head': 's = c ? c->head : (ExtcRcSlab *)0;' in alloc,
@@ -70,7 +73,7 @@ def main():
     if args.selftest:
         assert not violations(text), violations(text)
         for token in ['ExtcRcSlab *allocHot[32];', 'ExtcRcSlab **hot = ac < 32 ? &r->allocHot[ac]',
-                      's->ss != ss', 's->freelist < 0 && s->bump >= s->nslots',
+                      's->freelist < 0 && s->bump >= s->nslots',
                       'ExtcRcClass *c = extc_rc_classSlot(r, ss);',
                       's = c ? c->head : (ExtcRcSlab *)0;', 'c->head = s->availNext;',
                       'extc_rc_classPush(r, s);',
@@ -88,6 +91,15 @@ def main():
         injected = injected.replace('ExtcRcClass *c = extc_rc_classSlot(r, ss);', '')
         assert 'no slab scan' in violations(injected), violations(injected)
         print('ok red: linear slab scan reintroduced')
+        # 把多余的尺寸校验加回来也必须红（allocHot 的尺寸类不变式）。
+        redundant = text.replace('if (!s || (s->freelist < 0 && s->bump >= s->nslots)) {',
+                                 'if (!s || s->ss != ss || (s->freelist < 0 && s->bump >= s->nslots)) {')
+        assert 'no redundant size check' in violations(redundant), violations(redundant)
+        print('ok red: redundant size re-validation')
+        # 缓存写入点变成两处（比如复制到别的路径）也必须红。
+        twice = text.replace('if (hot) *hot = s;', 'if (hot) *hot = s;\n    if (hot) *hot = s;')
+        assert 'cache write single site' in violations(twice), violations(twice)
+        print('ok red: second cache write site')
         return 0
     bad = violations(text)
     for item in bad:
