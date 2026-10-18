@@ -3,8 +3,12 @@
 
 The fallback path is pinned to the size-class "has room" lists
 (extc_rc_classSlot / extc_rc_classPush): allocation must be O(1) in the number
-of live slabs and must not fall back to scanning r->slabs.  This is a
-structure check only; the scaling bound is enforced by gate-slab-scale.
+of live slabs and must not fall back to scanning r->slabs.  The allocation body
+is also pinned to be inlined at every allocation site (`always_inline` through
+the `EXTC_RC_ALLOC_DECL` macro; `-DEXTC_RC_ALLOC_INLINE=0` swaps it to
+`noinline` for size), because the per-allocation call and stack frame are a
+third of the allocation cost.  This is a structure check
+only; the scaling bound is enforced by gate-slab-scale.
 """
 import argparse
 import ast
@@ -35,7 +39,7 @@ def body(text, sig):
 
 
 def violations(text):
-    alloc = body(text, 'static void *extc_rc_alloc(')
+    alloc = body(text, 'static EXTC_RC_ALLOC_DECL void *extc_rc_alloc(')
     free_slot = body(text, 'static void extc_rc_freeSlot(')
     region_free = body(text, 'static void extc_rc_regionFree(')
     if not alloc:
@@ -54,6 +58,17 @@ def violations(text):
         'no slab scan': 's = r->slabs;' not in alloc and 'while (s && (s->ss != ss' not in alloc,
         'new slab pushed': 'extc_rc_classPush(r, s);' in alloc,
         'cache write': 'if (hot) *hot = s;' in alloc,
+        # 分配体在每个分配点内联：一次调用 + 进出栈约 13.5 Ir/分配（-O1 实测），内联后
+        # 每分配省掉这一笔，还能让常量 n 折叠成尺寸类的立即数。开关保留给「分配点极多、
+        # 不想按每点 ~2.7 KB 涨二进制」的程序。摘掉属性或开关就红。
+        'alloc inline switch': all(t in text for t in (
+            '#ifndef EXTC_RC_ALLOC_INLINE',
+            '#define EXTC_RC_ALLOC_INLINE 1',
+            '#if EXTC_RC_ALLOC_INLINE',
+            '#define EXTC_RC_ALLOC_DECL __attribute__((noinline))')),
+        'alloc always inlined': all(t in text for t in (
+            '#define EXTC_RC_ALLOC_DECL __attribute__((always_inline)) inline',
+            '__attribute__((unused)) static EXTC_RC_ALLOC_DECL void *extc_rc_alloc(')),
         'freeSlot re-registers room': 'if (!s->avail) extc_rc_classPush(s->region, s);' in free_slot,
         'class table freed': 'r->clsBkt[b] = c->next;' in region_free and 'free(c);' in region_free,
         'class helpers': all(name in text for name in (
@@ -100,6 +115,21 @@ def main():
         twice = text.replace('if (hot) *hot = s;', 'if (hot) *hot = s;\n    if (hot) *hot = s;')
         assert 'cache write single site' in violations(twice), violations(twice)
         print('ok red: second cache write site')
+        # 分配体的内联属性被摘掉（回到每次分配付一次调用 + 进出栈）也必须红。
+        noinline = text.replace(
+            '#define EXTC_RC_ALLOC_DECL __attribute__((always_inline)) inline',
+            '#define EXTC_RC_ALLOC_DECL')
+        assert 'alloc always inlined' in violations(noinline), violations(noinline)
+        print('ok red: allocation body not inlined')
+        # 开关被删掉（没法用 -DEXTC_RC_ALLOC_INLINE=0 换体积）也必须红。
+        noswitch = text.replace('#if EXTC_RC_ALLOC_INLINE', '#if 1')
+        assert 'alloc inline switch' in violations(noswitch), violations(noswitch)
+        print('ok red: allocation inline switch removed')
+        # 体积出口那一档必须**明确** noinline（不是「赌编译器不内联」）。
+        noglass = text.replace('#define EXTC_RC_ALLOC_DECL __attribute__((noinline))',
+                               '#define EXTC_RC_ALLOC_DECL')
+        assert 'alloc inline switch' in violations(noglass), violations(noglass)
+        print('ok red: size escape hatch lost noinline')
         return 0
     bad = violations(text)
     for item in bad:

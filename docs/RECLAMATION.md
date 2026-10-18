@@ -75,6 +75,14 @@ while i < n {
 判据是 [\`tools/check_alloc_hot.py\`](../tools/check_alloc_hot.py)（结构）与
 [\`tests/reclaim-perf/gate-slab-scale.sh\`](../tests/reclaim-perf/gate-slab-scale.sh)（N vs 4N 的每分配指令数比）。
 
+分配体本身在**每个分配点**内联（`always_inline`）：分配体只有几十条指令，而每个分配点都要调它一次 ——
+不内联就每分配付一次调用 + 进出栈（接近分配成本的三成），内联之后编译器还能把常量 `n` 折叠成尺寸类的
+立即数。代价是每个分配点多一份分配体（约 2.7 KB 机器码）：分配点极多的程序可以 `-DEXTC_RC_ALLOC_INLINE=0`
+换回体积 —— 那一档把属性宏声明成 `noinline`，只留一份函数体，不是「赌编译器不内联」；语义逐字相同，只是不走内联。
+属性走宏、**签名只留一份**：写两份签名会给同一函数两个开括号，靠花括号配平切函数体的结构门禁
+（[`tools/check_foreign_skip.py`](../tools/check_foreign_skip.py)）会把后面的函数体一起算进来。判据是
+[`tools/check_alloc_hot.py`](../tools/check_alloc_hot.py)，开关、属性宏与 `noinline` 出口都在它的检查项里，摘掉任何一处都变红。
+
 登记 slab 的**反向表**（指针 → slab，兜底路径）与每块 slab 的**小类型表**同样是按结构体规模存活的表，
 也必须每操作 O(1)：反向表是开放寻址哈希（键 = slab 基址；超大块按载荷地址进第二张表），线性探测、装载上限 1/2、
 删除走 Knuth 回移（不留墓碑），扩容翻倍重排；小类型表在描述符少时线性扫（一块通常只落一两个分配点），超过

@@ -87,4 +87,20 @@ else
     sed 's/^/    /' "$work/sg-build.log" | head -10
 fi
 
+# 体积出口（-DEXTC_RC_ALLOC_INLINE=0）：分配体的 \`#else\` 分支（不内联的那份签名）也得能编、
+# 能过同一套断言 —— 两份签名只差内联属性，任何一边腐坏都在这里现形。
+echo "== 体积出口（-DEXTC_RC_ALLOC_INLINE=0：不内联的分配体也要过同一套断言）=="
+if "$CC" -std=c11 -Wall -Wextra -Wpedantic -Werror -O1 -g -DEXTC_RC_ALLOC_INLINE=0 -I "$work" \
+        tests/reclaim/driver.c -o "$work/driver-noinl" 2>"$work/noinl-build.log"; then
+    if out=$(timeout 120 "$work/driver-noinl"); then
+        ok "不内联档编译并跑过同一套断言（$(printf '%s\n' "$out" | tail -1)）"
+    else
+        bad "不内联档断言失败"
+        printf '%s\n' "$out" | sed 's/^/    /' | tail -10
+    fi
+else
+    bad "不内联档编译失败"
+    sed 's/^/    /' "$work/noinl-build.log" | head -10
+fi
+
 exit "$fail"

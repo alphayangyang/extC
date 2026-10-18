@@ -79,7 +79,7 @@ def type_kinds():
 
 def violations(text, builtins, kinds, index_src):
     slot_body = body_of(text, 'static size_t extc_rc_slotSize(')
-    alloc_body = body_of(text, 'static void *extc_rc_alloc(')
+    alloc_body = body_of(text, 'static EXTC_RC_ALLOC_DECL void *extc_rc_alloc(')
     bad = []
     if slot_body is None:
         bad.append('slot size function missing')
