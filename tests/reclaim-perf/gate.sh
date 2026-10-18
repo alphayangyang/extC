@@ -30,6 +30,9 @@
 #   ⑫ 标记/分配路径里重复计算的合并：每 slab 缓存类型号（lastTd/lastTid）、word/bit 一次算好
 #      复用、同块子对象复用槽号、shade 拆「内联壳 + 冷半段」（标记外的赋值连调用都不产生）、
 #      预取折进批量填充循环：本形状 **130 453 179 Ir** ⇒ 线收到 136 975 833（= 实测 × 1.05）。
+#   ⑬ 批量填充先一次算好上限（批宽/预算/配额/栈深取 min），不再每弹一个重判四个条件、
+#      各减一次预算和配额（批平均不到 2 个对象，固定开销摊不薄）：本形状 **128 473 126 Ir**
+#      ⇒ 线收到 134 896 782（= 实测 × 1.05）。
 #
 # 口径与 `run.sh` 一致：pinned `extc` → `EXTC_RECLAIM=1` 生成 → `cc -std=c11 -fwrapv -O1`
 # → `valgrind --tool=callgrind` 的 `summary:` 行。只写自己的临时目录，`src/` 一个字节不动。
@@ -49,7 +52,7 @@ SRC=${SRC:-$ROOT/tests/reclaim-shapes/cyclic_pressure.extc}
 EXTC=${EXTC:-$ROOT/build/extc}
 CC=${CC:-cc}
 N=${N:-200000}
-LIMIT=${LIMIT:-136975833}          # 标记/分配路径重复计算合并后实测 130453175 × 1.05（棘轮只许往下；上一线 143605649）
+LIMIT=${LIMIT:-134896782}          # 批量填充上限提升后实测 128473126 × 1.05（棘轮只许往下；上一线 136975833）
 
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 

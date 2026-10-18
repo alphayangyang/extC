@@ -610,7 +610,9 @@ reclaim 形状闸门（`gate-shapes`/`gate-work`/`gate-shard-cycles`/`gate-idle-
     [`archive/2026-10-15-locality.md`](archive/2026-10-15-locality.md)；本清单不复制。
     其中「批弹出窗口」一项已落地（`EXTC_RC_MARK_BATCH_POP` 默认 **200**，见
     [`changelog/2026-10.md`](changelog/2026-10.md)）：拉长一步内的在飞窗口就能压 `[step]` 总量，而软件预取与其
-    对照证明不是杠杆；批宽同时是遍历顺序旋钮（`collects`/峰值 RSS 跟着动）。
+    对照证明不是杠杆；批宽同时是遍历顺序旋钮（`collects`/峰值 RSS 跟着动）。**批宽上限在进填充循环前
+    一次算好**（`min(批宽, 剩余预算, 窗口配额, 标记栈深度)`），预算与配额按整批扣（`budget -= _nb; pops += _nb;`）
+    —— 填充循环里不再每弹一个对象比较三个条件、扣两次账；弹出的集合与顺序逐字不变。
 16. **滑窗 + 长命索引形状上的超线性回收**：回收工作量随规模超线性（幂次约 1.7–1.8），而
     `EXTC_RECLAIM=0` 对照臂是线性的（≈0.97）；**超线性的大头在 `[step]` 记账之外**（残差）
     ⇒ **根因未定位**。候选方向记在 [`TODO.md`](TODO.md) 的「回收：大横评」一节；出处
@@ -683,7 +685,7 @@ reclaim 形状闸门（`gate-shapes`/`gate-work`/`gate-shard-cycles`/`gate-idle-
 |---|---|---|---|---|
 | `skip:chain-bad` | 帧根链上有一帧**枚举不全**（协程帧/`ext` 帧/池元素/视图元素/`match` 绑定那几档）⇒ 整条链拒绝清扫（种子不完整）| 该帧的槽枚举不全 ⇒ 标记走不到它持有的引用 | 多留（保守）| 与 `skip:nosweep` 同一个出口：义务 7 单测 + 注入 `noSweep-drop` | 
 | `skip:sweepfree` | `EXTC_RC_SWEEPFREE=1`（事件档）⇒ 该区域永不触发清扫，只靠计数归零当场回收 | 整程序被证明无环、且**所有能丢引用的位置都是被计数的 rc 槽**（否则记数不完备）| 少算（内存涨，不是悬垂）| **诊断档**：实测它在语料里没有一个能赢的形状，判据已摘出电池（`gate-acyclic` 自报 manual，见 [`tests/reclaim-perf/TAXMAP.md`](../tests/reclaim-perf/TAXMAP.md) 第 7 节）；手工红证明仍用注入 `acyclic-always`（有环形状 RSS 爆）| 
-| `skip:own-hot` | 指针所在的那块 1 MiB slab 就是上一次**验证过**的 slab ⇒ 直接复用，省掉哈希与查表 | 掩码后的基址与缓存里的 slab 地址**相等**，且槽边界校验照旧通过 | 少算（不安全）| 注入 `ownhot-nobase`（去掉基址判等）⇒ 跨 slab 的指针会拿到错的 slab、校验失败后被当成区域外 | 
+| `skip:own-hot` | 指针所在的那块 1 MiB slab 就是上一次**验证过**的 slab ⇒ 直接复用，省掉哈希与查表 | 掩码后的基址与缓存里的 slab 地址**相等**，且槽边界校验照旧通过 | 少算（不安全）| 注入 `ownhot-nobase`（去掉基址判等）⇒ 跨 slab 的指针会拿到错的 slab、校验失败后被当成区域外；**注意**这一格服务的是末级读失手、不是指令数，别按 `-O1` 指令数删它（收益口径见 changelog）|
 | `skip:rscnt-have` | `rscnt`（每槽跨区入边计数表）已经建过 ⇒ `extc_rc_rsAlloc` 直接返回 | 表一旦建好就跟着 slab 活到 `slabFree`（懒分配只发生在第一次 `rsInc`）| 无（幂等；若重复分配就会泄漏旧表 ⇒ 这条必须保持）| 跨区形状语义逐字（`cross_region`）+ `gate-reclaim-work` |
 | `skip:rscnt-none` | `rscnt` 表不存在 ⇒ 只读访问器返回 0、`rsDec`/`freeSlot` 跳过写 | 表不存在 ⇔ 这块 slab 一次登记都没有过（`rsAlloc` 只在 `rsInc`/`rsIncSlab` 里调）⇒ 没有入边可减/可读 | 少算（把「有入边」读成 0）| 跨区形状 `EXTC_RC_STATS=1` 的 `rs_live` 不随轮数涨 + `gate-reclaim-switch` / `gate-reclaim-gaps` |
 | `skip:same-region` | 值与宿主**在同一个区域**（编译期证得）⇒ 赋值时不登记、不查表 | 两项都是**本帧新局部量**且 arena 层相同 ⇒ 这条边不可能跨区 | 少算（不安全）| `gate-reclaim-switch` 的 `cross-region：登记量判据`；注入 `same-region-always`（把判定强制为真）⇒ 红在那条上 | 
