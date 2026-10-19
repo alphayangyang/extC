@@ -1,5 +1,5 @@
 ### home_cycle_r1_n40000  args=1:40000
---- on: compile=ok rc=0 rss_kb=2220 sweeps=0
+--- on: compile=ok rc=0 rss_kb=2280 sweeps=0
 rounds=1 per=40000 last=39999
 --- off: compile=ok rc=0 rss_kb=2028
 rounds=1 per=40000 last=39999
@@ -7,7 +7,7 @@ rounds=1 per=40000 last=39999
 ### home_cycle_r1_n160000  args=1:160000
 --- on: compile=ok rc=0 rss_kb=4716 sweeps=0
 rounds=1 per=160000 last=159999
---- off: compile=ok rc=0 rss_kb=4012
+--- off: compile=ok rc=0 rss_kb=3948
 rounds=1 per=160000 last=159999
 --- asan: asan=0
 ### home_cycle_r64_n40000  args=64:40000
@@ -19,17 +19,17 @@ rounds=64 per=40000 last=39999
 ### home_cycle_r256_n40000  args=256:40000
 --- on: compile=ok rc=0 rss_kb=3180 sweeps=127
 rounds=256 per=40000 last=39999
---- off: compile=ok rc=0 rss_kb=162796
+--- off: compile=ok rc=0 rss_kb=162732
 rounds=256 per=40000 last=39999
 --- asan: asan=0
 ### own_room_cycle_n40000  args=40000
---- on: compile=ok rc=0 rss_kb=2280 sweeps=0
+--- on: compile=ok rc=0 rss_kb=2220 sweeps=0
 n=40000 last=39999
 --- off: compile=ok rc=0 rss_kb=2028
 n=40000 last=39999
 --- asan: asan=0
 ### own_room_cycle_n160000  args=160000
---- on: compile=ok rc=0 rss_kb=2988 sweeps=2
+--- on: compile=ok rc=0 rss_kb=3052 sweeps=2
 n=160000 last=159999
 --- off: compile=ok rc=0 rss_kb=4008
 n=160000 last=159999
@@ -37,19 +37,19 @@ n=160000 last=159999
 ### cross_scope_cycle_n40000  args=40000
 --- on: compile=ok rc=0 rss_kb=2988 sweeps=1
 n=40000 sink=799980000
---- off: compile=ok rc=0 rss_kb=2796
+--- off: compile=ok rc=0 rss_kb=2860
 n=40000 sink=799980000
 --- asan: asan=0
 ### cross_scope_cycle_n160000  args=160000
 --- on: compile=ok rc=0 rss_kb=2988 sweeps=4
 n=160000 sink=12799920000
---- off: compile=ok rc=0 rss_kb=6508
+--- off: compile=ok rc=0 rss_kb=6444
 n=160000 sink=12799920000
 --- asan: asan=0
 ### slot_elem_known_n40000  args=40000
---- on: compile=ok rc=0 rss_kb=5548 sweeps=4
+--- on: compile=ok rc=0 rss_kb=5484 sweeps=4
 n=40000
---- off: compile=ok rc=0 rss_kb=5292
+--- off: compile=ok rc=0 rss_kb=5352
 n=40000
 --- asan: asan=0
 ### slot_elem_known_n160000  args=160000
@@ -59,15 +59,15 @@ n=160000
 n=160000
 --- asan: asan=0
 ### slot_elem_unknown_n40000  args=40000
---- on: compile=ok rc=0 rss_kb=7276 sweeps=1
+--- on: compile=ok rc=0 rss_kb=4204 sweeps=4
 n=40000
---- off: compile=ok rc=0 rss_kb=5292
+--- off: compile=ok rc=0 rss_kb=5352
 n=40000
 --- asan: asan=0
 ### slot_elem_unknown_n160000  args=160000
---- on: compile=ok rc=0 rss_kb=20520 sweeps=4
+--- on: compile=ok rc=0 rss_kb=4200 sweeps=18
 n=160000
---- off: compile=ok rc=0 rss_kb=16620
+--- off: compile=ok rc=0 rss_kb=16684
 n=160000
 --- asan: asan=0
 ### base_call_unknown_n40000  args=40000
@@ -85,13 +85,13 @@ n=160000
 ### struct_copy_slot_n40000  args=40000
 --- on: compile=ok rc=0 rss_kb=4716 sweeps=4
 n=40000
---- off: compile=ok rc=0 rss_kb=4584
+--- off: compile=ok rc=0 rss_kb=4524
 n=40000
 --- asan: asan=0
 ### struct_copy_slot_n160000  args=160000
---- on: compile=ok rc=0 rss_kb=4776 sweeps=19
+--- on: compile=ok rc=0 rss_kb=4780 sweeps=19
 n=160000
---- off: compile=ok rc=0 rss_kb=14124
+--- off: compile=ok rc=0 rss_kb=14184
 n=160000
 --- asan: asan=0
 ### struct_copy_ret_home_n40000  args=40000
@@ -101,7 +101,7 @@ n=40000 sink=799980000
 n=40000 sink=799980000
 --- asan: asan=0
 ### struct_copy_ret_home_n160000  args=160000
---- on: compile=ok rc=0 rss_kb=1516 sweeps=
+--- on: compile=ok rc=0 rss_kb=1512 sweeps=
 n=160000 sink=12799920000
 --- off: compile=ok rc=0 rss_kb=1452
 n=160000 sink=12799920000
@@ -114,19 +114,19 @@ n=160000 sink=12799920000
 --- on error: tests/reclaim-gaps/shapes/global_slot.extc:18:1: error: cannot zero-initialize the global `g`: it contains a r
 --- off error: tests/reclaim-gaps/shapes/global_slot.extc:18:1: error: cannot zero-initialize the global `g`: it contains a r
 ### carray_slot_n40000  args=40000
---- on: compile=ok rc=0 rss_kb=2284 sweeps=0
+--- on: compile=ok rc=0 rss_kb=2220 sweeps=0
 n=40000 sink=319964
 --- off: compile=ok rc=0 rss_kb=2028
 n=40000 sink=319964
 --- asan: asan=0
 ### carray_slot_n160000  args=160000
---- on: compile=ok rc=0 rss_kb=3052 sweeps=2
+--- on: compile=ok rc=0 rss_kb=2988 sweeps=2
 n=160000 sink=1279964
 --- off: compile=ok rc=0 rss_kb=3948
 n=160000 sink=1279964
 --- asan: asan=0
 ### owcell_garbage_n40000  args=40000
---- on: compile=ok rc=0 rss_kb=2284 sweeps=0
+--- on: compile=ok rc=0 rss_kb=2220 sweeps=0
 n=40000 last=39999
 --- off: compile=ok rc=0 rss_kb=2028
 n=40000 last=39999
@@ -134,7 +134,7 @@ n=40000 last=39999
 ### owcell_garbage_n160000  args=160000
 --- on: compile=ok rc=0 rss_kb=2988 sweeps=2
 n=160000 last=159999
---- off: compile=ok rc=0 rss_kb=3948
+--- off: compile=ok rc=0 rss_kb=4008
 n=160000 last=159999
 --- asan: asan=0
 ### coro_frame_cycle_n40000  args=40000
@@ -146,41 +146,41 @@ n=40000 last=40000
 ### coro_frame_cycle_n160000  args=160000
 --- on: compile=ok rc=0 rss_kb=4508 sweeps=0
 n=160000 last=160000
---- off: compile=ok rc=0 rss_kb=3740
+--- off: compile=ok rc=0 rss_kb=3804
 n=160000 last=160000
 --- asan: asan=0
 ### ext_frame_cycle_n40000  args=40000
---- on: compile=ok rc=0 rss_kb=2072 sweeps=0
+--- on: compile=ok rc=0 rss_kb=2012 sweeps=0
 n=40000
 --- off: compile=ok rc=0 rss_kb=1884
 n=40000
 --- asan: asan=0
 ### ext_frame_cycle_n160000  args=160000
---- on: compile=ok rc=0 rss_kb=4572 sweeps=0
+--- on: compile=ok rc=0 rss_kb=4508 sweeps=0
 n=160000
 --- off: compile=ok rc=0 rss_kb=3740
 n=160000
 --- asan: asan=0
 ### match_payload_n40000  args=40000
---- on: compile=ok rc=0 rss_kb=2284 sweeps=0
+--- on: compile=ok rc=0 rss_kb=2220 sweeps=0
 n=40000 sink=799980000
 --- off: compile=ok rc=0 rss_kb=2028
 n=40000 sink=799980000
 --- asan: asan=0
 ### match_payload_n160000  args=160000
---- on: compile=ok rc=0 rss_kb=3048 sweeps=2
+--- on: compile=ok rc=0 rss_kb=2988 sweeps=2
 n=160000 sink=12799920000
 --- off: compile=ok rc=0 rss_kb=3948
 n=160000 sink=12799920000
 --- asan: asan=0
 ### byval_temp_n40000  args=40000
---- on: compile=ok rc=0 rss_kb=2208 sweeps=0
+--- on: compile=ok rc=0 rss_kb=2220 sweeps=0
 n=40000 sink=799980000
 --- off: compile=ok rc=0 rss_kb=2028
 n=40000 sink=799980000
 --- asan: asan=0
 ### byval_temp_n160000  args=160000
---- on: compile=ok rc=0 rss_kb=2796 sweeps=2
+--- on: compile=ok rc=0 rss_kb=2856 sweeps=2
 n=160000 sink=12799920000
 --- off: compile=ok rc=0 rss_kb=3948
 n=160000 sink=12799920000
@@ -188,11 +188,11 @@ n=160000 sink=12799920000
 ### par_tls_cycle_n40000  args=40000
 --- on: compile=ok rc=0 rss_kb=2412 sweeps=0
 n=40000 rc=0 out0=195
---- off: compile=ok rc=0 rss_kb=2604
+--- off: compile=ok rc=0 rss_kb=2412
 n=40000 rc=0 out0=195
 --- asan: asan=0
 ### par_tls_cycle_n160000  args=160000
---- on: compile=ok rc=0 rss_kb=4332 sweeps=2
+--- on: compile=ok rc=0 rss_kb=4396 sweeps=2
 n=160000 rc=0 out0=15
 --- off: compile=ok rc=0 rss_kb=3948
 n=160000 rc=0 out0=15
@@ -200,23 +200,23 @@ n=160000 rc=0 out0=15
 ### pool_ref_slot_n40000  args=40000
 --- on: compile=ok rc=0 rss_kb=2412 sweeps=0
 n=40000 len=0
---- off: compile=ok rc=0 rss_kb=2088
+--- off: compile=ok rc=0 rss_kb=2092
 n=40000 len=0
 --- asan: asan=0
 ### pool_ref_slot_n160000  args=160000
 --- on: compile=ok rc=0 rss_kb=4716 sweeps=0
 n=160000 len=0
---- off: compile=ok rc=0 rss_kb=4012
+--- off: compile=ok rc=0 rss_kb=4008
 n=160000 len=0
 --- asan: asan=0
 ### dyn_payload_n40000  args=40000
 --- on: compile=ok rc=0 rss_kb=7212 sweeps=0
 n=40000 sink=799980000
---- off: compile=ok rc=0 rss_kb=6508
+--- off: compile=ok rc=0 rss_kb=6504
 n=40000 sink=799980000
 --- asan: asan=0
 ### dyn_payload_n160000  args=160000
---- on: compile=ok rc=0 rss_kb=22764 sweeps=2
+--- on: compile=ok rc=0 rss_kb=22828 sweeps=2
 n=160000 sink=12799920000
 --- off: compile=ok rc=0 rss_kb=21228
 n=160000 sink=12799920000
@@ -224,7 +224,7 @@ n=160000 sink=12799920000
 ### closure_chain_n40000  args=40000
 --- on: compile=ok rc=0 rss_kb=1452 sweeps=
 n=40000 sink=800020000
---- off: compile=ok rc=0 rss_kb=1512
+--- off: compile=ok rc=0 rss_kb=1516
 n=40000 sink=800020000
 --- asan: asan=0
 ### closure_chain_n160000  args=160000
@@ -234,7 +234,7 @@ n=160000 sink=12800080000
 n=160000 sink=12800080000
 --- asan: asan=0
 ### ring_per_round_n20  args=20
---- on: compile=ok rc=0 rss_kb=4780 sweeps=1
+--- on: compile=ok rc=0 rss_kb=4716 sweeps=1
 v=19 rounds=20 sink=190
 --- off: compile=ok rc=0 rss_kb=3152
 v=19 rounds=20 sink=190
@@ -242,5 +242,5 @@ v=19 rounds=20 sink=190
 ### ring_per_round_n80  args=80
 --- on: compile=ok rc=0 rss_kb=4716 sweeps=1
 v=79 rounds=80 sink=3160
---- off: compile=ok rc=0 rss_kb=3536
+--- off: compile=ok rc=0 rss_kb=3540
 v=79 rounds=80 sink=3160

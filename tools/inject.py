@@ -143,12 +143,12 @@ INJECTIONS = {
                      '    "            if (host && sv && sv->region != host) { host->foreign = 1; }   /* 注入：真实赋值路径不登记 */\\n",\n')],
     },
     "noSweep-drop": {
-        "why": "拿掉\"宿主证不出来 ⇒ 目标区域退出清扫\"（义务 7）⇒ 种子不完整的区域照样被扫（不安全方向）",
-        # 两处：`storeRefUnknown` 与 `storeStructCons` 的保守分支。
+        "why": "拿掉\"钉不住 ⇒ 目标区域退出清扫\"（义务 7 的最后兜底）⇒ 种子不完整的区域照样被扫（不安全方向）",
+        # 两处：`storeRefUnknown` 的钉不住回落（OOM 兜底）与 `storeStructCons` 的保守分支。
         "gate": "reclaim-unit",
         "patches": [
-            (SRC, '    "    if (r) r->noSweep = 1;\\n",\n',
-             '    "    if (r) { /* 注入：不退出清扫 */ }\\n",\n'),
+            (SRC, '    "        if (r) r->noSweep = 1;\\n",\n',
+             '    "        if (r) { /* 注入：不退出清扫 */ }\\n",\n'),
             (SRC, '    "        else if (rv) rv->noSweep = 1;\\n",\n',
              '    "        else if (rv) { /* 注入：不退出清扫 */ }\\n",\n'),
         ],

@@ -307,11 +307,22 @@ static void t_slotUnique(void) {
     extc_rc_regionFree(r);
 }
 
-/* ---------------------------------------------------------------- 义务 7：种子不完整就退出清扫 */
+/* 钉住表查询（测试专用）：值在表里被几条槽指着。表本身在运行期文本里。
+ * 表是开放寻址哈希（空格 v == NULL），所以按容量扫、跳过空格。 */
+static size_t extc_rc_pinCountOf(void *v) {
+    size_t n = 0;
+    for (size_t i = 0; i < extc_rc_pinCap; i++)
+        if (extc_rc_pins[i].v == v) n += extc_rc_pins[i].n;
+    return n;
+}
+
+/* ------------------------------- 义务 7：种子不完整（区域级 noSweep → 钉住值）
+ *
+ * 宿主证不出来的赋值（`f()->f = v`、视图元素）没有可信的种子位置：旧做法是让**目标区域**
+ * 整个退出清扫（只靠计数回收）。现在改成把值钉成根 —— 区域照常清扫，粒度收到被指着的那几个
+ * 对象；覆盖即撤销，所以「每轮写同一槽」的形状不会无界少收。这里钉四条：值在标记里真的活下来、
+ * 目标区域不再 noSweep、覆盖后钉住撤销、区域释放清掉死指针。 */
 static void t_noSweep(void) {
-    /* 宿主证不出来的跨区赋值（`f()->f = v`、视图元素）没有可信的种子位置。这时**唯一安全的方向**
-     * 是让目标所在区域整个退出清扫（只靠计数回收）—— 扫一个种子不完整的区域就可能把还被指着的
-     * 对象放掉。这条不变量此前**只有形状级判据间接守着，单测里一条都没有**。 */
     ExtcRcRegion *ra = regionNew(13, 4096);
     ExtcRcRegion *rb = regionNew(14, 4096);
     Pair *a = (Pair *)extc_rc_alloc(ra, sizeof(Pair), &g_pair);
@@ -321,14 +332,21 @@ static void t_noSweep(void) {
     check(extc_rc_checkOwed(ra, roots, 1) == 0, "义务 7：种子完整时照常销账（回收 0 个）");
     check(extc_rc_isLive(a), "义务 7：有根，目标活着");
 
-    extc_rc_storeRefUnknown((void **)&b->a, a);      /* 宿主证不出来 ⇒ 只能保守 */
-    extc_rc_owe(ra);
-    check(extc_rc_checkOwed(ra, roots, 1) == -1, "义务 7：之后目标区域一个字节都不扫（退出清扫）");
-    check(extc_rc_isLive(a), "义务 7：保守之后目标仍然活着（宁可少收）");
+    extc_rc_storeRefUnknown((void **)&b->a, a);      /* 宿主证不出来 ⇒ 把 a 钉成根 */
+    check(!ra->noSweep, "义务 7：钉住之后目标区域不再退出清扫");
+    check(extc_rc_pinCountOf(a) == 1, "义务 7：目标对象被登记进钉住表");
+
+    extc_rc_collect(ra, NULL, 0);                    /* 没有静态根：a 唯一的活路是钉住 */
+    check(extc_rc_isLive(a), "义务 7：钉住的值在标记里当场活下来（宁可少收）");
 
     void *rootsb[1] = { b };
     extc_rc_owe(rb);
     check(extc_rc_checkOwed(rb, rootsb, 1) == 0, "义务 7：宿主区域不受影响，照常清扫");
+
+    extc_rc_storeRefUnknown((void **)&b->a, NULL);   /* 覆盖 = 撤掉旧边 */
+    check(extc_rc_pinCountOf(a) == 0, "义务 7：覆盖之后钉住撤销");
+    extc_rc_collect(ra, NULL, 0);
+    check(!extc_rc_isLive(a), "义务 7：钉住撤销后照常收掉（不是永久少收）");
     extc_rc_regionFree(ra);
     extc_rc_regionFree(rb);
 }
@@ -379,16 +397,22 @@ static void t_hostSlot(void) {
     if (extc_rc_partN > 1)
         check(extc_rc_rsCount(b) == 0, "槽地址反查：撤销时登记位跟着撤（不留陈旧入边）");
 
-    /* 槽不在 rc slab（栈上局部变量、视图数据、C/池缓冲）⇒ 只能沿用保守方向。 */
+    /* 槽不在 rc slab（栈上局部变量、视图数据、C/池缓冲）⇒ 追不到宿主，但值本身是 rc 对象
+     * ⇒ 改成把值钉成根：目标区域照常清扫，写空即撤销。 */
     ExtcRcRegion *rc = regionNew(19, 4096);
     Node *c = (Node *)extc_rc_alloc(rc, sizeof(Node), &g_node);
     void *stackSlot = NULL;
     extc_rc_storeRefSlot(&stackSlot, c);
     check(stackSlot == (void *)c, "槽地址反查：栈上槽照常赋值");
-    check(rc->noSweep, "槽地址反查：槽不在 rc slab ⇒ 回落保守（目标区域退出清扫）");
+    check(!rc->noSweep, "槽地址反查：槽不在 rc slab ⇒ 目标区域不再退出清扫（改钉住值）");
+    extc_rc_collect(rc, NULL, 0);
+    check(extc_rc_isLive(c), "槽地址反查：栈上槽里的值被钉住 ⇒ 没有静态根也活过一轮");
+    extc_rc_storeRefSlot(&stackSlot, NULL);
+    extc_rc_collect(rc, NULL, 0);
+    check(!extc_rc_isLive(c), "槽地址反查：栈上槽写空 ⇒ 钉住撤销，照常收掉");
 
     /* 超大块：载荷是单独 malloc 的，按掩码定位不成立 ⇒ 反查必须失手，不能返回一只
-     * 看起来对的 slab（那会让误认的宿主区域被当成可扫）。 */
+     * 看起来对的 slab（那会让误认的宿主区域被当成可扫）。失手同样靠钉住值兜底。 */
     ExtcRcRegion *rd = regionNew(20, 4096);
     void *bigSlot = extc_rc_alloc(rd, EXTC_RC_SLAB_SIZE, &g_data);   /* cap<2 ⇒ 超大块 */
     check(extc_rc_slabOfInterior(bigSlot) == NULL,
@@ -396,14 +420,71 @@ static void t_hostSlot(void) {
     ExtcRcRegion *re = regionNew(21, 4096);
     Node *e = (Node *)extc_rc_alloc(re, sizeof(Node), &g_node);
     extc_rc_storeRefSlot((void **)bigSlot, e);
-    check(*(void **)bigSlot == (void *)e && re->noSweep,
-          "槽地址反查：超大块里的槽也走保守回落");
+    check(*(void **)bigSlot == (void *)e && !re->noSweep,
+          "槽地址反查：超大块里的槽也不退出清扫（钉住值）");
+    extc_rc_collect(re, NULL, 0);
+    check(extc_rc_isLive(e), "槽地址反查：超大块槽里的值被钉住 ⇒ 活过一轮");
+    extc_rc_storeRefSlot((void **)bigSlot, NULL);
+    extc_rc_collect(re, NULL, 0);
+    check(!extc_rc_isLive(e), "槽地址反查：超大块槽写空 ⇒ 钉住撤销");
 
     extc_rc_regionFree(ra);
     extc_rc_regionFree(rb);
     extc_rc_regionFree(rc);
     extc_rc_regionFree(rd);
     extc_rc_regionFree(re);
+}
+
+/* ---------------------------------------------------------- 钉住表：按引用计数、可撤销、随区域清死指针
+ *
+ * 未知宿主槽的边现在按「值」登记，所以表必须支持同一个值被多条槽指着（计数）、覆盖时撤一条、
+ * 区域释放时把属于它的死指针清掉（否则表会一直涨、标记期还会走废值）。这三条都是抽象不变式，
+ * 形状级判据（slot_elem_unknown 有界）只间接覆盖第一条。 */
+static void t_pin(void) {
+    ExtcRcRegion *ra = regionNew(22, 4096);
+    ExtcRcRegion *rb = regionNew(23, 4096);
+    Node *a = (Node *)extc_rc_alloc(ra, sizeof(Node), &g_node);
+    Node *b = (Node *)extc_rc_alloc(rb, sizeof(Node), &g_node);
+    void *slot1 = NULL, *slot2 = NULL;
+
+    {
+        int local = 0;
+        extc_rc_storeRefUnknown(&slot1, &local);   /* 本栈帧地址不是 rc 槽 ⇒ 不是引用 */
+    }
+    check(extc_rc_pinCountOf(&slot1) == 0 && extc_rc_pinCountOf(slot1) == 0,
+          "钉住：不是本运行期活槽的值不登记（只认 rc 对象）");
+
+    extc_rc_storeRefUnknown(&slot1, a);
+    check(extc_rc_pinCountOf(a) == 1, "钉住：未知宿主槽里的值登记成根");
+    extc_rc_storeRefUnknown(&slot2, a);
+    check(extc_rc_pinCountOf(a) == 2, "钉住：同一个值被两条槽指着 ⇒ 计数 2（撤一条不能整个出表）");
+    extc_rc_storeRefUnknown(&slot1, NULL);
+    check(extc_rc_pinCountOf(a) == 1, "钉住：写空只撤这一条边");
+    extc_rc_collect(ra, NULL, 0);
+    check(extc_rc_isLive(a), "钉住：还剩一条边 ⇒ 没有静态根也活过一轮");
+    extc_rc_storeRefUnknown(&slot2, NULL);
+    check(extc_rc_pinCountOf(a) == 0, "钉住：最后一条边撤掉就出表");
+    extc_rc_collect(ra, NULL, 0);
+    check(!extc_rc_isLive(a), "钉住：根全撤之后照常收掉（不是永久少收）");
+
+    /* 覆盖成另一个值：这条槽的旧边撤掉、新边补上（不是只加不减）；另一条槽的边不受影响。 */
+    Node *c = (Node *)extc_rc_alloc(ra, sizeof(Node), &g_node);
+    extc_rc_storeRefUnknown(&slot2, b);      /* slot2 指着 b */
+    extc_rc_storeRefUnknown(&slot1, b);      /* slot1 也指着 b */
+    extc_rc_storeRefUnknown(&slot1, c);      /* slot1 改成 c ⇒ 只撤 slot1 那条 */
+    check(extc_rc_pinCountOf(b) == 1 && extc_rc_pinCountOf(c) == 1,
+          "钉住：覆盖成别的值 ⇒ 旧边撤销、新边登记（另一条槽的边还在）");
+
+    /* 区域释放：属于它的表项按归属清掉，不留悬空值（表长度回到只含别人的项）。 */
+    size_t before = extc_rc_pinN;
+    extc_rc_regionFree(ra);
+    check(extc_rc_pinCountOf(c) == 0 && extc_rc_pinN == before - 1,
+          "钉住：区域释放时按归属清掉死指针（表不留下悬空值）");
+    check(extc_rc_pinCountOf(b) == 1, "钉住：别的区域的表项不受牵连");
+
+    extc_rc_storeRefUnknown(&slot2, NULL);   /* b 那条边也撤掉，表清空 */
+    check(extc_rc_pinCountOf(b) == 0, "钉住：跨区边写空后同样出表");
+    extc_rc_regionFree(rb);
 }
 
 /* 标记位查询：下面那条用例要在「增量标记在飞」时确认结构拷贝的叶子当场被标黑。 */
@@ -905,6 +986,7 @@ int main(void) {
     t_bumpCross();
     t_noSweep();
     t_hostSlot();
+    t_pin();
     t_storeStructRooted();
     t_slotUnique();
     t_unregister();

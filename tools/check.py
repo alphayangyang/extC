@@ -506,6 +506,20 @@ def build_items() -> list:
         bad_msg="tests/reclaim-perf/gate-slab-scale.sh（每分配成本随存活 slab 数涨，或判据失去牙）",
         bad_dump=dump_fail(12)))
 
+    # ---- 闸门·钉住表的缩放（每钉一个 O(1)，不随表长涨）----
+    # 钉住表 = 宿主证不出来的槽里那个值的「根登记」：旧语义是给目标区域打 noSweep（永久退出
+    # 清扫 ⇒ OOM 根因），现行语义是钉成根（标记开始按区域播种、区域死时清死指针）。第一版是
+    # 「数组 + 线性扫」⇒ 钉 n 个 O(n²)（实测 5 万 0.26 s、20 万 5.23 s）。判据与 slab-scale 同形：
+    # N vs 4N 的每钉一个指令数之比 ≤ 1.15（指令数是确定量）、绝对值 ≤ 400，表项数应 ~4×；
+    # --selftest 往 pinAdd 里注入线性预扫，要求判据变红（有牙）。
+    items.append(cmd(
+        "gate-pin-scale", "gate",
+        "闸门·钉住表缩放：发射运行期上 N vs 4N 的每钉一个指令数比 ≤ 1.15、绝对值 ≤ 400，且注入线性预扫会变红",
+        ["./tests/reclaim-perf/gate-pin-scale.sh", "--selftest"], timeout=900,
+        ok_msg=ok_first(r"^  ok   钉住表缩放成立"),
+        bad_msg="tests/reclaim-perf/gate-pin-scale.sh（每钉一个的成本随表长涨，或判据失去牙）",
+        bad_dump=dump_fail(12)))
+
     # ---- 闸门·两张按结构体规模存活的表的缩放（own 登记表、每 slab 小类型表）----
     # 判据：own 表每次 add+del 在 S=1024 与 4096 两档的 callgrind 指令数比 ≤ 2.0、绝对值
     # ≤ 800；小类型表每次 typeIdx 在 T=8 与 256 两档之比 ≤ 2.0、绝对值 ≤ 200。--selftest
