@@ -541,14 +541,14 @@ static void t_thresholdCache(void) {
     check(!extc_rc_shouldSweep(r), "阈值缓存②：抬高 floor 后立刻不触发（阈值已重算）");
     extc_rc_regionFree(r);
 
-    /* ③ scale 翻倍：一次一无所获的清扫把倍数 ×2，阈值跟着 ×2。 */
+    /* ③ scale 退场：一次一无所获的清扫把倍数 ×EXTC_RC_SCALE_MUL（默认 4），阈值跟着 ×4。 */
     r = regionNew(13, 4096);
     void *all[300];
     for (int i = 0; i < 300; i++) all[i] = extc_rc_alloc(r, sizeof(Pair), &g_pair);
     int freed = extc_rc_maybeCollect(r, all, 300);        /* 全是根 ⇒ 一个也收不掉 */
     check(freed == 0, "阈值缓存③：一无所获的清扫收到了 0");
-    check(extc_rc_scale(r) == 2, "自学习：一无所获把倍数翻到 2");
-    check(!extc_rc_shouldSweep(r), "阈值缓存③：倍数翻倍后阈值 ×2，当下不触发");
+    check(extc_rc_scale(r) == EXTC_RC_SCALE_MUL, "自学习：一无所获把倍数退场到 EXTC_RC_SCALE_MUL");
+    check(!extc_rc_shouldSweep(r), "阈值缓存③：倍数退场后阈值按新倍数重算，当下不触发");
     extc_rc_regionFree(r);
 }
 
@@ -604,7 +604,7 @@ static void t_learning(void) {
     int64_t sc1 = 0, sc2 = 0;
     size_t s1 = liveGrowthSweeps(10000, &sc1);
     size_t s2 = liveGrowthSweeps(1000000, &sc2);
-    check(s1 > 0 && sc1 > 1, "自学习：全存活增长会空扫，倍数翻倍");
+    check(s1 > 0 && sc1 > 1, "自学习：全存活增长会空扫，倍数退场");
     check(s2 <= s1 + 2, "自学习：规模涨 100 倍，清扫次数只多一两次");
     check(s2 <= 6, "自学习：清扫次数是有界的小常数");
     check(sc2 > sc1, "自学习：倍数继续涨 ⇒ 阈值退场");

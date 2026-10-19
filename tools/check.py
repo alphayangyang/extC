@@ -912,6 +912,18 @@ def build_items() -> list:
         bad_msg="tools/check_shade_cache.py（着色缓存退回两字结构/绕不过回绕清零，失效契约有洞）",
         bad_dump=dump_fail(12)))
 
+    # ---- 闸门·空清扫之后的退场倍数 ----
+    # 买的是**触发策略**：活集大、垃圾少的负载（chase）只做一轮便宜的整堆标记，不再付
+    # 「标记 32 MiB 活集只换回几 MB」的第二轮。判据=默认 4 / 退场走宏（不许字面量 2）/
+    # 无旧 *2 残留 / 退场后有 SCALE_MAX 夹紧；--selftest 四条注入全红。
+    items.append(cmd(
+        "gate-retreat", "gate",
+        "闸门·空清扫退场倍数：默认 4 / 退场走宏 / 无旧 *2 / 溢出夹紧，且 4 条注入全红",
+        ["python3", "tools/check_retreat.py", "--selftest"], timeout=60,
+        ok_msg=ok_first(r"^ok retreat structure"),
+        bad_msg="tools/check_retreat.py（退场倍数退回 2 或绕开宏，活集大垃圾少的负载要多付整堆标记）",
+        bad_dump=dump_fail(12)))
+
     # ---- 闸门·标记 walk 的批弹出结构 ----
     # 这条买的是**延迟**（LIFO 逐个弹是串行指针链），不是指令数，所以判据是结构 + 红自测：
     # 谁把"先弹一批→整批预取→逐个扫"改回逐对象，门禁就红。
