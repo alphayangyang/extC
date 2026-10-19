@@ -263,6 +263,22 @@ INJECTIONS = {
                      '    (void)f;\n'
                      '    return true;   /* 注入：回收无事可做的判定强制为真 */\n')],
     },
+    "struct-shade-nop": {
+        "why": "拿掉枚举局部量整值存储的逐叶着色 ⇒ 增量标记期间写进结构拷贝的引用"
+               "这一轮标不黑、被本轮清扫放掉（**少算/不安全方向**）。默认档里 `extc_rc_inc`"
+               "是空操作 ⇒ 登记单测红的那两条恰好只剩着色，判据有牙",
+        "gate": "reclaim-unit",
+        "patches": [(SRC,
+                     '    "__attribute__((unused)) static void extc_rc_storeStructRooted(void *dst, size_t size) {\\n",\n'
+                     '    "    size_t words = size / sizeof(void *);\\n",\n'
+                     '    "    for (size_t i = 0; i < words; i++) {\\n",\n'
+                     '    "        void *nw = ((void **)dst)[i];\\n",\n'
+                     '    "        extc_rc_shade(nw);   /* 结构拷贝也是写引用：逐叶着色，否则增量标记会漏 */\\n",\n',
+                     '    "__attribute__((unused)) static void extc_rc_storeStructRooted(void *dst, size_t size) {\\n",\n'
+                     '    "    size_t words = size / sizeof(void *);\\n",\n'
+                     '    "    for (size_t i = 0; i < words; i++) {\\n",\n'
+                     '    "        void *nw = ((void **)dst)[i];\\n",\n')],
+    },
 }
 
 

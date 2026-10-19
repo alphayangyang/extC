@@ -5,7 +5,6 @@ coro_frame_cycle	收不掉(随规模涨)	见 README.md §1
 dyn_payload	收不掉(随规模涨)	见 README.md §1
 ext_frame_cycle	收不掉(随规模涨)	见 README.md §1
 home_cycle_r1	收不掉(随规模涨)	见 README.md §1
-match_payload	收不掉(随规模涨)	见 README.md §1
 par_tls_cycle	收不掉(随规模涨)	见 README.md §1
 pool_ref_slot	收不掉(随规模涨)	见 README.md §1
 slot_elem_unknown	收不掉(随规模涨)	见 README.md §1

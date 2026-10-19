@@ -8,7 +8,8 @@
  * 被清（无陈旧入口）、跨区登记播种与"区域外止步"、按对象**自己的**类型描述符走指针字段
  * （描述符随槽交，同区混放不同布局）、`owns` 守卫（外区/非槽首指针一个字节都不碰）、
  * 槽复用换描述符、保守描述符、bump 整片回收、压力触发与自学习退场（无环负载下清扫次数不随
- * 规模增长）、证不出宿主时按**槽地址**反查宿主（反查得到就照常记账，失手才保守）。
+ * 规模增长）、证不出宿主时按**槽地址**反查宿主（反查得到就照常记账，失手才保守）、
+ * 枚举局部量的整值存储（只记引用、不让目标区域退出清扫，增量标记期间叶子当场标黑）。
  *
  * API 形状（task-4 后）：`extc_rc_alloc(区域, 字节, const ExtcRcType *描述符)`；
  * `ExtcRcType = { nptr, off }`，描述符由分配点随槽交给运行期，区域只认领一个号。
@@ -405,6 +406,81 @@ static void t_hostSlot(void) {
     extc_rc_regionFree(re);
 }
 
+/* 标记位查询：下面那条用例要在「增量标记在飞」时确认结构拷贝的叶子当场被标黑。 */
+static int rcSlotBlack(void *p) {
+    ExtcRcSlab *s = extc_rc_ownSlab(p);
+    if (!s) return 0;
+    size_t i = extc_rc_slotOf(s, p);
+    return (s->mark[extc_rc_word(i)] & extc_rc_bit(i)) != 0;
+}
+
+/* ------------------- 义务 7（存储侧）：枚举局部量的整值存储不再让目标区域退出清扫
+ *
+ * `var m: maybe = maybe.some(p)` 的 C 布局里，有效字是哪个变体**静态枚举不出来**（枚举
+ * 载荷）。旧路发 `storeStructCons(hostKnown = 0)` ⇒ 目标区域永久 `noSweep`、只靠计数回收；
+ * 现在 codegen 把所有变体的载荷叶子都按根登记（`rcRootLeaves` 的 TY_ENUM 分支），存储侧
+ * 只逐字记账、不下调保守 —— 判据：字照原样、目标区域照常清扫、叶子在增量标记期间标黑。
+ *
+ * 对照那一组是同一只新区域上的旧路：它**必须**置 `noSweep`，否则说明这条用例根本没碰到
+ * 旧路（旧路被悄悄换掉时，判据就成了空转）。
+ */
+static void t_storeStructRooted(void) {
+    ExtcRcRegion *ra = regionNew(30, 4096);
+    ExtcRcRegion *rb = regionNew(31, 4096);
+    Pair *a = (Pair *)extc_rc_alloc(ra, sizeof(Pair), &g_pair);
+    Node *b = (Node *)extc_rc_alloc(rb, sizeof(Node), &g_node);
+
+    /* `maybe` 的 C 布局：标号 + 载荷。这里直接拿一个两字数组当那块值。 */
+    void *w[2] = { b, NULL };
+    extc_rc_storeStructRooted((void *)w, sizeof(w));
+    check(w[0] == (void *)b && w[1] == NULL,
+          "枚举整值存储：内容照原样（这条路径只记账，不碰字）");
+    check(!ra->noSweep && !rb->noSweep,
+          "枚举整值存储：目标区域照常清扫（与保守路的分界线）");
+#if !EXTC_RC_NOCOUNT
+    check(extc_rc_hold(b) == 1, "枚举整值存储：载荷拿到一笔计数（分配时 0 + 这里 1）");
+#endif
+
+    /* 认不出的字（栈上地址、槽内非首址）当引用是认错；认错的代价只能是「多留」，
+     * 不该崩、也不该把哪只区域记成保守。 */
+    void *w2[2] = { (void *)&a, (void *)((char *)b + 1) };
+    extc_rc_storeStructRooted((void *)w2, sizeof(w2));
+    check(w2[0] == (void *)&a && w2[1] == (void *)((char *)b + 1),
+          "枚举整值存储：认不出的字原样留着、不崩");
+    check(!ra->noSweep && !rb->noSweep, "枚举整值存储：认不出的字不会把区域记成保守");
+
+    /* 对照：旧路（hostKnown = 0）在同一只新区域上必须让目标退出清扫。 */
+    {
+        ExtcRcRegion *rc = regionNew(32, 4096);
+        Node *c = (Node *)extc_rc_alloc(rc, sizeof(Node), &g_node);
+        void *wc[1] = { c };
+        extc_rc_storeStructCons((void *)wc, sizeof(wc), NULL, 0);
+        check(rc->noSweep && !ra->noSweep && !rb->noSweep,
+              "枚举整值存储（对照）：旧路仍然让目标区域退出清扫（用例没走空）");
+        extc_rc_regionFree(rc);
+    }
+
+    /* 增量标记期间：结构拷贝也是**写引用**，叶子必须当场标黑 —— 否则「本对象已被扫过 +
+     * 之后才写进来的引用」这一轮收不到，会被本轮清扫放掉。这条与 inc 并列、同样承重。 */
+    {
+        ExtcRcRegion *rm = regionNew(33, (int64_t)1 << 40);
+        Node *root = (Node *)extc_rc_alloc(rm, sizeof(Node), &g_node);
+        Node *leaf = (Node *)extc_rc_alloc(rm, sizeof(Node), &g_node);
+        void *rootsm[1] = { root };
+        extc_rc_begin(rm, rootsm, 1);
+        void *wm[1] = { leaf };
+        extc_rc_storeStructRooted((void *)wm, sizeof(wm));
+        check(rcSlotBlack(leaf), "枚举整值存储：增量标记期间叶子当场被标黑");
+        while (!rm->seedsDone || rm->msp) extc_rc_markStep(rm, 0xffffffffu);
+        extc_rc_sweepBegin(rm);
+        extc_rc_sweep(rm);
+        check(extc_rc_isLive(leaf), "枚举整值存储：标黑的叶子活过这一轮清扫（不会漏收）");
+        extc_rc_regionFree(rm);
+    }
+
+    extc_rc_regionFree(ra);
+    extc_rc_regionFree(rb);
+}
 /* ---------------------------------------------------------------- bump 槽在按槽登记之外 */
 static void t_bumpCross(void) {
     /* `extc_rc_bump` 交出的槽**从不置占用位**，而 `rsIncSlab`/`rsDecSlab` 对无占用位的槽一律
@@ -829,6 +905,7 @@ int main(void) {
     t_bumpCross();
     t_noSweep();
     t_hostSlot();
+    t_storeStructRooted();
     t_slotUnique();
     t_unregister();
     t_unlink();

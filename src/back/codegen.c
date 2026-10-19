@@ -3532,6 +3532,28 @@ static void rcRootLeaves(CG *g, Type *t, const char *base, int depth) {
     case TY_REF:
         *(const char **)vecPush(&g->rcRoots) = base;
         return;
+    case TY_ENUM: {
+        /* 枚举负载：**所有**变体的引用叶子都登记（不按运行期 tag 挑一支）。读不活跃变体的
+         * `u.<v>._<k>` 是垃圾值，而根表入口在 `markBegin` 里过 `extc_rc_owns` ⇒ 认错
+         * 只多留、不会少留。这样"叶子枚举不出来"的局部量（`var m: maybe = …`）也能当根，
+         * 存储侧就不需要让目标区域退出清扫（见 `extc_rc_storeStructRooted`）。 */
+        if (!t->edef) return;
+        for (size_t i = 0; i < t->edef->variants.len; i++) {
+            Variant *v = *(Variant **)vecAt(&t->edef->variants, i);
+            for (size_t k = 0; k < v->types.len; k++) {
+                Type *pt = *(Type **)vecAt(&v->types, k);
+                if (g->rcRoots.len > 4096) { g->rcRootsUnreliable = true; return; }
+                /* 泛型枚举实例要把实参代进负载类型（与 `stMatch` 的绑定同一个做法）。 */
+                if (t->edef->typeParams.len > 0 &&
+                    t->targs.len == t->edef->typeParams.len)
+                    pt = ttSubstitute(g->tt, pt, &t->edef->typeParams, &t->targs);
+                rcRootLeaves(g, pt,
+                             arenaPrintf(g->arena, "%s.u.%s._%zu", base, v->name, k),
+                             depth + 1);
+            }
+        }
+        return;
+    }
     case TY_ARRAY: {
         Type *e = subst(g, t->inner);
         for (int64_t i = 0; i < t->asize; i++) {
@@ -3625,6 +3647,81 @@ static void rcLeafPaths(CG *g, Type *t, const char *base, Vec *out, int depth) {
 }
 
 /**
+ * @brief 保守类型里"叶子其实枚举得出来"的那一类：引用只藏在**枚举负载**里。
+ *
+ * `rcScanType` 对 TY_ENUM 一律返回 `RC_CONSERVATIVE`，因为它要按运行期 tag 挑一支；但
+ * "不信任根表"不是唯一出路 —— 把**所有**变体的负载叶子都登记成根，读不活跃变体产生的
+ * 垃圾值由 `extc_rc_owns` 过滤，方向只多不少（同 `rcRootLeaves` 的 TY_ENUM 分支）。
+ * 于是局部量可以当根、触发点照常发，存储侧也不再需要让目标区域退出清扫 —— 这就是
+ * 「match 绑定引用载荷」那个缺口的堵点。
+ *
+ * 只认**形状上确实枚举得出来**的保守类型：只有 TY_ENUM 是"读不活跃变体也无害"的。
+ * 泛型实参带引用（元素住在容器自己的板上，字段扫不见）以及将来新加的 kind 一律返回假，
+ * 那些仍然不信任根表。
+ *
+ * @param g        生成器。
+ * @param t        要检查的类型。
+ * @param depth    递归深度，防环。
+ * @param hasRefs  出口：这个类型里**有没有**引用叶子。全是不带引用的枚举负载时
+ *                 （`var x: option<i64>`）没有登记的根，返回真也没有意义 —— 调用方
+ *                 用这个出参把那一类留在原来的保守路径上（不多发无用根）。
+ * @return         真 = 每个引用叶子都能按变体静态展开成根。
+ */
+static bool rcEnumRootable(CG *g, Type *t, int depth, bool *hasRefs) {
+    if (!t || depth > 16) return false;
+    t = subst(g, t);
+    if (!t) return false;
+    switch (t->kind) {
+    case TY_REF:
+        *hasRefs = true;
+        return true;
+    case TY_VOID: case TY_BUILTIN: case TY_FN: case TY_DYN:
+    case TY_PARAM: case TY_ERROR: case TY_UNRESOLVED:
+        return true;
+    case TY_ENUM:
+        if (!t->edef) return false;
+        for (size_t i = 0; i < t->edef->variants.len; i++) {
+            Variant *v = *(Variant **)vecAt(&t->edef->variants, i);
+            for (size_t k = 0; k < v->types.len; k++) {
+                Type *pt = *(Type **)vecAt(&v->types, k);
+                if (t->edef->typeParams.len > 0 &&
+                    t->targs.len == t->edef->typeParams.len)
+                    pt = ttSubstitute(g->tt, pt, &t->edef->typeParams, &t->targs);
+                if (!rcEnumRootable(g, pt, depth + 1, hasRefs)) return false;
+            }
+        }
+        return true;
+    case TY_ARRAY:
+        return rcEnumRootable(g, t->inner, depth + 1, hasRefs);
+    case TY_STRUCT:
+        for (size_t i = 0; i < t->sdef->fields.len; i++) {
+            FieldDef *fd = *(FieldDef **)vecAt(&t->sdef->fields, i);
+            if (!rcEnumRootable(g, fd->type, depth + 1, hasRefs)) return false;
+        }
+        return true;
+    case TY_GENERIC: {
+        if (isView(t)) return true;
+        if (!t->sdef) return false;
+        for (size_t i = 0; i < t->targs.len; i++) {
+            if (rcScanType(g, *(Type **)vecAt(&t->targs, i), depth + 1) != RC_NO_REFS)
+                return false;
+        }
+        SubCtx sv = substEnter(g, t);
+        bool ok = true;
+        for (size_t i = 0; i < t->sdef->fields.len && ok; i++) {
+            FieldDef *fd = *(FieldDef **)vecAt(&t->sdef->fields, i);
+            ok = rcEnumRootable(g, fd->type, depth + 1, hasRefs);
+        }
+        substLeave(g, sv);
+        return ok;
+    }
+    /* kind-default: 与 `rcScanType` 的默认支对齐 —— 认不出来就当枚举不出来。 */
+    default:
+        return false;
+    }
+}
+
+/**
  * @brief 声明一个存储时登记它的引用根；枚举不出来就把本函数的触发整个关掉。
  *
  * @param g     生成器。
@@ -3634,7 +3731,15 @@ static void rcLeafPaths(CG *g, Type *t, const char *base, Vec *out, int depth) {
 static void rcRootDecl(CG *g, Type *t, const char *base) {
     if (!g->needReclaim || !t) return;
     RcScan sc = rcScanType(g, t, 0);
-    if (sc == RC_CONSERVATIVE) { g->rcRootsUnreliable = true; return; }
+    if (sc == RC_CONSERVATIVE) {
+        bool hasRefs = false;
+        if (rcEnumRootable(g, t, 0, &hasRefs) && hasRefs) {
+            rcRootLeaves(g, t, base, 0);
+            return;
+        }
+        g->rcRootsUnreliable = true;
+        return;
+    }
     if (sc == RC_NO_REFS) return;
     rcRootLeaves(g, t, base, 0);
 }
@@ -5876,10 +5981,21 @@ if (g->needReclaim && !s->u.var.isGlobal && cgIsRefType(g, s->type)) {
     if (vsc == RC_LEAF_REFS) {
         cgValueRefStore(g, s->type, nm, nm, true, "0", false);
     } else if (vsc == RC_CONSERVATIVE) {
-        /* 叶子枚举不出来（枚举负载 / 泛型实参带引用）：逐字当候选引用，只加不减。局部量这一档
-         * 没有可撤销的来源、根表也枚举不出这些叶子 ⇒ `hostKnown = 0`，目标区域退出清扫。 */
-        cgLine(g, "extc_rc_storeStructCons((void *)&(%s), sizeof(%s), (void *)0, 0);",
-               nm, cType(g, s->type));
+        bool enumRefs = false;
+        if (rcEnumRootable(g, s->type, 0, &enumRefs) && enumRefs) {
+            /* 引用只藏在枚举负载里：`rcRootDecl` 紧接着会把**所有**变体的负载叶子登记成根
+             * （读不活跃变体的垃圾字由 `extc_rc_owns` 过滤），存储侧只需要"逐字当候选引用
+             * 加一次计数"。两件事合起来把这块值认领完整，所以**不**让目标区域退出清扫 ——
+             * 这正是「match 绑定引用载荷」那个缺口里区域永久 noSweep 的堵点。 */
+            cgLine(g, "extc_rc_storeStructRooted((void *)&(%s), sizeof(%s));",
+                   nm, cType(g, s->type));
+        } else {
+            /* 叶子枚举不出来（泛型实参带引用 / 认不出来的 kind）：逐字当候选引用，只加不减。
+             * 局部量这一档没有可撤销的来源、根表也枚举不出这些叶子 ⇒ `hostKnown = 0`，
+             * 目标区域退出清扫（安全方向：宁可少收）。 */
+            cgLine(g, "extc_rc_storeStructCons((void *)&(%s), sizeof(%s), (void *)0, 0);",
+                   nm, cType(g, s->type));
+        }
     }
 }
 /* 这个声明从此刻起是**根**：触发点的根表要列出它（结构与定长数组按叶子引用槽展开）。

@@ -256,6 +256,17 @@ p = null                 // 计数 0 —— 放
 `ownSlab`。判据：单测 `槽地址反查：…`（反查形状 / 反查成功绝不下调保守 / 超大块失手）与
 `tests/reclaim-gaps` 的 `base_call_unknown`（峰值比 0.95×）。
 
+**枚举局部量的整值存储靠「根表按变体展开」认领。** `var m: maybe = maybe.some(keep)` 这类声明没有可点的引用叶子：
+值里的引用藏在判联体负载里，C 的 `union` 让「哪个负载是活的」只有运行期 tag 知道。两件事合起来把这块值认领完整：
+① `rcRootLeaves` 的 `TY_ENUM` 分支把**所有**变体的负载引用叶子按 `<base>.u.<variant>._<k>` 静态展开进根表
+（不按 tag 挑一支；泛型枚举实例先把实参代进负载类型）—— 读不活跃变体的字是垃圾值，根表入口在 `markBegin` 里过
+`extc_rc_owns` ⇒ 认错只多留、不会少留；② 存储侧发 `extc_rc_storeStructRooted`：逐字着色（增量标记期间结构拷贝
+也是写引用）+ 只对 rc 槽 `inc`，**不**让目标区域退出清扫、也不登记跨区边（宿主是栈上局部量，跨区可达性由根表
+种子覆盖）。可枚举不出来时照旧保守：认不出来的 kind、泛型实参带引用的枚举 ⇒ 发 `storeStructCons(..., 0, 0)`，
+目标区域退出清扫（方向仍安全）。判据：单测 `枚举整值存储：…`（增量标记期间叶子当场标黑 / 黑叶子活过本轮清扫 /
+不置 `noSweep`，对照 `storeStructCons(hostKnown=0)` 在另一只区域上会置）+ 注入 `struct-shade-nop`（拿掉逐叶着色）
+⇒ 红在「增量标记期间叶子当场标黑」；`tests/reclaim-gaps` 的 `match_payload` 峰值比 3.04× → 1.00×。
+
 ## 三点五、覆盖点的定点释放（环在覆盖点就没了）
 
 环永不归零，所以计数那一层收不了它；但"**覆盖一个槽**"这个动作本身能判死一棵树 —— 只要那
@@ -884,7 +895,7 @@ cache-sim 判据变红）。
 | 义务 2/5：登记位不留陈旧入口（撤销出边、释放清位）| 泄漏（保守）| `freeSlot` 清 `rsbit`、`unlinkChildren` 撤出边 | 注入 `rsinc-drop` ⇒ `cross-region：登记量判据破了`；撤销侧：单测 `撤销：…` + 注入 `rsdec-nop` ⇒ 红在 `撤销：撤掉一条边后计数减一、登记位仍在` |
 | 义务 3：计数到顶**粘住**（`hold` 与 `rscnt` 都一样）| 不安全 | `rsInc`/`rsIncSlab`/`holdUpd*` 的 `SAT` 守卫 | 注入 `count-nosat` ⇒ `饱和：计数到顶粘住`；注入 `rsinc-nosat` ⇒ `跨区计数：到顶粘住`；注入 `realpath-noreg`（只破坏**真实赋值路径**的登记）⇒ 红在 `跨区计数（真实路径）：到顶粘住`，证明真实路径那一组断言有独立的牙 |
 | 义务 4：按**对象自己的**描述符走指针字段 | 不安全（走漏 ⇒ 少标）| `extc_rc_mark` 用 `s->type[i]` | 单测 `类型：描述符字段数正确` + 注入 `mark-nodesc` ⇒ 红在 `跨区：B 从入边位图播种` |
-| 义务 7：种子不完整 ⇒ 目标区域**退出清扫** | **不安全** | `extc_rc_storeRefSlot` 先按槽地址反查宿主（`slabOfInterior`），槽不在 rc slab 里才落 `storeRefUnknown`；`storeStructCons` 的保守分支同向 | 单测 `义务 7：…退出清扫`、`槽地址反查：…`（反查成功不下调保守 / 反查失手才保守 / 超大块失手）+ 注入 `noSweep-drop` ⇒ 红在那条上 |
+| 义务 7：种子不完整 ⇒ 目标区域**退出清扫** | **不安全** | `extc_rc_storeRefSlot` 先按槽地址反查宿主（`slabOfInterior`），槽不在 rc slab 里才落 `storeRefUnknown`；`storeStructCons` 的保守分支同向。**叶子枚举得出来的枚举整值存储不进这一档**：根表按所有变体展开 + `storeStructRooted` 只记引用（§三），区域照常清扫 | 单测 `义务 7：…退出清扫`、`槽地址反查：…`（反查成功不下调保守 / 反查失手才保守 / 超大块失手）、`枚举整值存储：…`（叶子当场标黑 / 活过本轮清扫 / 不置 `noSweep`）+ 注入 `noSweep-drop`、`struct-shade-nop` ⇒ 各红在对应那条上 |
 | 参与区域数（单区域免登记快路径的前提）| **不安全** | 槽的**诞生点**记 `partN`：`extc_rc_alloc` 无条件记、`storeStructCons` 的保守分支也记；**赋值侧不再记**（冗余：槽的区域在诞生时已记过，见 `changelog/2026-10.md` 的 2026-10-15 条目）；`extc_rc_regionFree` 开头有 **R3 运行期守卫**复查"有占用槽 ⇒ `part == 1`" | `gate-note-part`：静态 R2「会交出槽 ⇒ 必须记参与」（**在真实缺陷 `storeStructCons` 上红过**）+ 运行期 R3。R3 的红演示：注入"删掉 `alloc` 的 `notePart`" ⇒ 静态 `FAIL [R2] extc_rc_alloc`（rc=1）**且** `trap: reclaim: R3: occupied slot in a region with part == 0`（rc=1），撤回后绿。另有 `cross-region` 登记量判据 |
 | 触发语义：压力阈值随 `live`/`scale` 更新 | 性能/内存 | `collect`/`regionFloor`/`regionNew` 末的 `thrUpd` | 注入 `thr-stale` ⇒ `阈值缓存③：倍数翻倍后阈值 ×2` |
 | 本地/形参槽的只写入口（`EXTC_RC_LOCALSTORE`，默认关）**只允许用在 `owner == 0` 的槽上** | **不安全**（对象宿主走它 ⇒ 跨区登记整段丢失）| `codegen.c` 的 `rcLocalStore && rcNoCount && hostBase == NULL`；`storeRefLocal` 只写 | 注入 `localstore-on-objhost`（把 `hreg != NULL` 的对象宿主存储也改发该入口）⇒ `cross_region` 的 `rs_inc/rs_dec/rs_live/rs_hwm` 从 `200000/196611/3389/65537` **塌成 0/0/0/0**，`gate-reclaim-switch` **红（通过 1 失败 1，exit 1）** —— 实测；等价性（无计数档下 `storeRefOwned(slot,v,0)` 的 gated 块因 `so == 0` 无副作用）见 `tests/reclaim-perf/LOCALSTORE-IMPL.md` |
