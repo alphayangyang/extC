@@ -213,9 +213,12 @@ def write_md(rows, path, tsvinfo, rss=None):
     java_span = ("Java %d–%d 条" % (jlo, jhi)) if jlo != jhi else ("Java %d 条" % jlo)
     go_span = ("Go %d–%d 条" % (glo, ghi)) if glo != ghi else ("Go %d 条" % glo)
     ch = find_pause(rows, "chase", "extc")
-    if ch:
+    if ch and ch["ge1ms"] > 0:
         max_sentence = ("4. **max 是抢占敏感量**：extC chase 的 %.2f ms 是一次被抢占（`over1ms=%d`），不是某个更贵的回收单元；"
                         % (ch["max_us"] / 1000.0, ch["ge1ms"]))
+    elif ch:
+        max_sentence = ("4. **max 是抢占敏感量**：extC chase 的最长一步是 %.2f ms（`over1ms=%d`，没有事件跨过 1 ms），"
+                        "分位与超阈计数比 max 更值得看；" % (ch["max_us"] / 1000.0, ch["ge1ms"]))
     else:
         max_sentence = "4. **max 是抢占敏感量**：max 常是一次被抢占（`over1ms` 列），不是某个更贵的回收单元；"
     ep, ec = find_pause(rows, "promote", "extc"), find_pause(rows, "cycleratio", "extc")

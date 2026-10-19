@@ -3,12 +3,12 @@ arm=extc_sweep
 shape=promote
 args=500000 20261013
 events=13461
-total_us=5967.400
-wall_ms=89.033
-wall_plain_ms=89.668
+total_us=4027.300
+wall_ms=62.184
+wall_plain_ms=91.844
 source=EXTC_RC_SLOWSTEP=0.001 -> [slow] lines with kind=sweep
 slices=20648
 collects=82
-step_total_us=24081.9
-pause_total_us=3281.8
+step_total_us=17198.0
+pause_total_us=2464.5
 notes=extc 全体的 kind=sweep 子集；只存 hist（分位按档上界近似），逐事件表在 extc/ 下

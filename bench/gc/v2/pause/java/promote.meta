@@ -3,11 +3,11 @@ arm=java
 shape=promote
 args=500000 20261013
 events=2
-total_us=3643.000
-wall_ms=99.202
-wall_plain_ms=92.785
+total_us=5414.000
+wall_ms=105.740
+wall_plain_ms=215.004
 source=-Xlog:gc:file=<tmp> ' Pause ' lines; trailing <N>ms field -> us (per STW GC pause event)
-total_gc_us=3643.000
+total_gc_us=5414.000
 gc_algo=Serial
 reps=1
 concurrent_lines=0

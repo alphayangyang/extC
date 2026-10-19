@@ -185,11 +185,11 @@
 
 出处：[`bench/gc/v2/SPEC.md`](../bench/gc/v2/SPEC.md)（形状规格与判据）、[`bench/gc/v2/REPORT.md`](../bench/gc/v2/REPORT.md)（四档 × 11 臂 + 停顿表）、停顿分布 [`bench/gc/v2/PAUSE.md`](../bench/gc/v2/PAUSE.md)，原始数据 `bench/gc/v2/matrix.tsv` 与 `bench/gc/v2/pause_v2.tsv`；数字与结论只在 [`CHANGELOG.md`](CHANGELOG.md)。本节只留待查项。
 
-- **停顿分布的三格还没有统计意义（开放项）**：四语言 × 四形状的直方与分位已在 `bench/gc/v2/PAUSE.md`（口径与 runner：`bench/gc/v2/pause/README.md`、`SPEC.md` 第 7 节），但这三格要放大规模才有数：Go 的 `chase` 只跑了 2 个 GC 周期（4 个事件）· Java 的 `cycleratio` 一次 GC 都没有（0 事件）· Node 的 `--trace-gc-nvp` 只有 100 µs 分辨率（独占 100 µs 一档 = 低于分辨率，要看亚毫秒得另找源）。
+- **停顿分布的三格还没有统计意义（开放项）**：四语言 × 四形状的直方与分位已在 `bench/gc/v2/PAUSE.md`（口径与 runner：`bench/gc/v2/pause/README.md`、`SPEC.md` 第 7 节），但这三格要放大规模才有数：Go 的 `chase` 只留了 2 个 STW 事件· Java 的 `cycleratio` 一次 GC 都没有（0 事件）· Node 的 `--trace-gc-nvp` 只有 100 µs 分辨率（独占 100 µs 一档 = 低于分辨率，要看亚毫秒得另找源）。
 - **Java 的停顿形状只测了 SerialGC（开放项）**：单核 ergonomics 落到 SerialGC，与生产上的 G1/ZGC 不是一回事；要另开一臂（`-XX:+UseG1GC` / `-XX:+UseZGC`，配 `-Xmx` 对齐内存预算）并把并发阶段与暂停分开报（见 `PAUSE.md` 的两把尺）。
-- **`chase`/`cycleratio` 上回收是纯开销（开放项）**：extC 默认档比自家纯 bump arena 慢 49%/43%，而 `promote`/`sizeratio` 上是快 1.45×/2.01×。同一批里 Go 的 `GOGC=off` 也只在 `chase` 上倒挂 ⇒「活集大的形状上追踪与记账的代价」是共性，但 extC 这份差额能不能收窄还没做。读 off 臂前先看上一节的硬警告（分配器一起换了，不是纯 GC 对照）。
-- **`chase` 上 C++ 0.82× / Rust 1.46×（记录，非缺陷）**：Rust 的 `Rc<RefCell>` 共享图有引用计数代价；`Rc` 与 extC「计数 + 清扫」在动态图上的差距值得单独量一次（`RefCell` 借用检查与 `unsafe` 两条写法都试）。
-- **Node 在 `chase` 上 7.2×（记录，非缺陷）**：JS 对象图加分代 scavenge 的固有代价，只作对照。
+- **`chase` 上回收是纯开销（开放项）**：extC 默认档比自家纯 bump arena 慢 41%（`156.7` vs `111.0` ms），而 `promote`/`sizeratio`/`cycleratio` 上是快 1.97×/2.24×/1.45×。同一批里 Go 的 `GOGC=off` 也只在 `chase` 上倒挂 ⇒「活集大的形状上追踪与记账的代价」是共性，但 extC 这份差额能不能收窄还没做。读 off 臂前先看上一节的硬警告（分配器一起换了，不是纯 GC 对照）。
+- **`chase` 上 C++ 0.82× / Rust 1.54×（记录，非缺陷）**：Rust 的 `Rc<RefCell>` 共享图有引用计数代价；`Rc` 与 extC「计数 + 清扫」在动态图上的差距值得单独量一次（`RefCell` 借用检查与 `unsafe` 两条写法都试）。
+- **Node 在 `chase` 上 7.4×（记录，非缺陷）**：JS 对象图加分代 scavenge 的固有代价，只作对照。
 
 ## 语言功能（已定案、未实现）
 

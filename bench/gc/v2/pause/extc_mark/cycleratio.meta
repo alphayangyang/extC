@@ -3,12 +3,12 @@ arm=extc_mark
 shape=cycleratio
 args=400000 20261013 100
 events=246
-total_us=335.200
-wall_ms=24.466
-wall_plain_ms=20.418
+total_us=373.700
+wall_ms=23.303
+wall_plain_ms=19.360
 source=EXTC_RC_SLOWSTEP=0.001 -> [slow] lines with kind=mark
 slices=4018
 collects=41
-step_total_us=1658.4
-pause_total_us=136.7
+step_total_us=1774.9
+pause_total_us=180.6
 notes=extc 全体的 kind=mark 子集；只存 hist（分位按档上界近似），逐事件表在 extc/ 下
