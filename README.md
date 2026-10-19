@@ -166,6 +166,7 @@ EXTC_RC_PAUSE=1 ./build/x                  # 打印每次清扫的最大/累计�
 ```
 src/       编译器（C11 实现，按 pass 拆分）
 stdlib/    prelude 与标准库（用 extC 写；std/sys 是唯一声明 C 原语的一层）
+extlib/    扩展库（std 之外的第三方绑定，用 -I 引入；进 std 的边界见各库 README）
 examples/  示例          tests/  回归用例      tools/  辅助工具
 bench/     横向基准（含六语言矩阵与 bench/app 的三场景 STL 横评）   docs/   文档
 prototype-reclaim/  回收机制的原型与数值（C 探针 + 跨语言对照）

@@ -1,0 +1,197 @@
+/* extlib/blas/tests/sgemm.extc —— 判据：BLAS 绑定算得对、且确实比裸循环快
+ *
+ * 用法：sgemm [库路径]
+ *   不给路径就按 soname 探测（probe）。机器上没有任何 BLAS 时以退出码 3 表示「跳过」。
+ * 输出以 "OK " / "FAIL " 开头，恰一行总结，其余是细节。
+ *   · 正确性：小尺寸 37×41×29 与裸循环逐元素比（相对误差 < 1e-4）
+ *   · 正确性：gemv 与裸循环比
+ *   · 速度：512³ 的 GFLOP/s 打点（只报数，不设下限 —— 下限归 tests/run.sh 判） */
+use std::io
+use std::time
+use blas
+
+let M_SMALL: i64 = 37
+let K_SMALL: i64 = 41
+let N_SMALL: i64 = 29
+let M_BIG: i64 = 512
+
+/* 线性同余：只为了每次跑一样的数，不追求统计性质。
+ * 状态放模块级 var —— 判据程序不是库，不必背「没有模块级状态」的约束。 */
+var lcgState: i64 = 20261019
+
+@private
+fn lcg() -> i64 {
+    lcgState = lcgState * 6364136223846793005 + 1442695040888963407
+    return (lcgState >> 33) & 0xFFFF
+}
+
+@private
+fn fill(v: mut slice<f32>) {
+    var i: i64 = 0
+    while i < v.len {
+        v[i] = f32(lcg() % 2000) * 0.001 - 1.0
+        i = i + 1
+    }
+}
+
+/* 裸循环 C = A*B（行主序），用于正确性对照。
+ * @unchecked：判据要比的是「BLAS 快多少」，不是「边界检查多贵」——
+ * 对照循环关掉运行期检查，比的才是内核。 */
+@unchecked
+@private
+fn naive(m: i64, n: i64, k: i64, a: slice<f32>, b: slice<f32>, c: mut slice<f32>) {
+    var i: i64 = 0
+    while i < m {
+        var j: i64 = 0
+        while j < n {
+            var acc: f32 = 0.0
+            var t: i64 = 0
+            while t < k {
+                acc = acc + a[i * k + t] * b[t * n + j]
+                t = t + 1
+            }
+            c[i * n + j] = acc
+            j = j + 1
+        }
+        i = i + 1
+    }
+}
+
+/* f64 的对照（小尺寸），抓 ABI 宽度写错的另一条分支。 */
+@unchecked
+@private
+fn naiveD(m: i64, n: i64, k: i64, a: slice<f64>, b: slice<f64>, c: mut slice<f64>) {
+    var i: i64 = 0
+    while i < m {
+        var j: i64 = 0
+        while j < n {
+            var acc: f64 = 0.0
+            var t: i64 = 0
+            while t < k {
+                acc = acc + a[i * k + t] * b[t * n + j]
+                t = t + 1
+            }
+            c[i * n + j] = acc
+            j = j + 1
+        }
+        i = i + 1
+    }
+}
+
+@private
+fn closeEnough(x: f32, y: f32) -> bool {
+    var d: f32 = x - y
+    if d < 0.0 { d = -d }
+    var s: f32 = y
+    if s < 0.0 { s = -s }
+    if s < 1.0 { s = 1.0 }
+    return d / s < 0.0001
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var bk: option<blas::backend> = blas::probe()
+    if args.len > 1 {
+        bk = blas::open(args[1])
+    }
+    match bk {
+        none => {
+            io::cout << "SKIP no cblas library (give a path: sgemm /path/to/libopenblas.so)\n"
+            return 3
+        }
+        some(be) => {
+
+    var a: mut slice<f32> = new f32[M_SMALL * K_SMALL]
+    var b: mut slice<f32> = new f32[K_SMALL * N_SMALL]
+    var c: mut slice<f32> = new f32[M_SMALL * N_SMALL]
+    var want: mut slice<f32> = new f32[M_SMALL * N_SMALL]
+    fill(a)
+    fill(b)
+    naive(M_SMALL, N_SMALL, K_SMALL, a, b, want)
+    be.sgemm(M_SMALL, N_SMALL, K_SMALL, 1.0, a, b, 0.0, c)
+    var bad: i64 = 0
+    var i: i64 = 0
+    while i < M_SMALL * N_SMALL {
+        if !closeEnough(c[i], want[i]) { bad = bad + 1 }
+        i = i + 1
+    }
+    io::cout << "sgemm " << M_SMALL << "x" << K_SMALL << "x" << N_SMALL << " mismatch=" << bad << "\n"
+    if bad != 0 { return 1 }
+
+    /* gemv：y = A*x */
+    var x: mut slice<f32> = new f32[K_SMALL]
+    var y: mut slice<f32> = new f32[M_SMALL]
+    fill(x)
+    be.sgemv(false, M_SMALL, K_SMALL, 1.0, a, x, 0.0, y)
+    var badv: i64 = 0
+    i = 0
+    while i < M_SMALL {
+        var acc: f32 = 0.0
+        var t: i64 = 0
+        while t < K_SMALL {
+            acc = acc + a[i * K_SMALL + t] * x[t]
+            t = t + 1
+        }
+        if !closeEnough(y[i], acc) { badv = badv + 1 }
+        i = i + 1
+    }
+    io::cout << "sgemv " << M_SMALL << "x" << K_SMALL << " mismatch=" << badv << "\n"
+    if badv != 0 { return 1 }
+
+    /* dgemm：小尺寸，只判正确性（f64 的 naive 对照跑在大尺寸上太慢）。 */
+    var da: mut slice<f64> = new f64[23 * 19]
+    var db: mut slice<f64> = new f64[19 * 17]
+    var dc: mut slice<f64> = new f64[23 * 17]
+    var dw: mut slice<f64> = new f64[23 * 17]
+    var i2: i64 = 0
+    while i2 < 23 * 19 { da[i2] = f64(lcg() % 200) * 0.01 - 1.0  i2 = i2 + 1 }
+    i2 = 0
+    while i2 < 19 * 17 { db[i2] = f64(lcg() % 200) * 0.01 - 1.0  i2 = i2 + 1 }
+    naiveD(23, 17, 19, da, db, dw)
+    be.dgemm(23, 17, 19, 1.0, da, db, 0.0, dc)
+    var badd: i64 = 0
+    i2 = 0
+    while i2 < 23 * 17 {
+        var diff: f64 = dc[i2] - dw[i2]
+        if diff < 0.0 { diff = -diff }
+        var mag: f64 = dw[i2]
+        if mag < 0.0 { mag = -mag }
+        if mag < 1.0 { mag = 1.0 }
+        if diff / mag > 0.0001 { badd = badd + 1 }
+        i2 = i2 + 1
+    }
+    io::cout << "dgemm 23x19x17 mismatch=" << badd << "\n"
+    if badd != 0 { return 1 }
+
+    /* 速度：512³，按 2*m*n*k flop 算（+ alpha/beta 的逐元素项忽略）。 */
+    var n2: i64 = M_BIG * M_BIG
+    var a2: mut slice<f32> = new f32[n2]
+    var b2: mut slice<f32> = new f32[n2]
+    var c2: mut slice<f32> = new f32[n2]
+    fill(a2)
+    fill(b2)
+    var t0: i64 = time::now()
+    var rep: i64 = 0
+    while rep < 3 {
+        be.sgemm(M_BIG, M_BIG, M_BIG, 1.0, a2, b2, 0.0, c2)
+        rep = rep + 1
+    }
+    var t1: i64 = time::now()
+    var ns: i64 = t1 - t0
+    var flop: i64 = 2 * M_BIG * M_BIG * M_BIG * 3
+    var gflops: f64 = f64(flop) / f64(ns)
+    io::cout << "sgemm " << M_BIG << "^3 blas " << ns / 3000000 << " ms/iter " << gflops << " GFLOP/s\n"
+
+    /* 同一个尺寸、同一个算式，裸循环跑一遍：判据看的是这个比值。 */
+    var t2: i64 = time::now()
+    naive(M_BIG, M_BIG, M_BIG, a2, b2, c2)
+    var t3: i64 = time::now()
+    var nns: i64 = t3 - t2
+    var nflop: i64 = 2 * M_BIG * M_BIG * M_BIG
+    var naiveG: f64 = f64(nflop) / f64(nns)
+    var ratio: f64 = gflops / naiveG
+    io::cout << "sgemm " << M_BIG << "^3 naive " << nns / 1000000 << " ms " << naiveG << " GFLOP/s ratio=" << ratio << "\n"
+    io::cout << "OK blas backend kind=" << be.kind << " gflops=" << gflops << " ratio=" << ratio << "\n"
+    return 0
+        }
+    }
+}

@@ -1,0 +1,212 @@
+/* extlib/blas/blas.extc —— BLAS 的 dlopen 后端：不链接、不装包，按符号名认 ABI
+ *
+ * 为什么 BLAS 是扩展库而不是 std：见同目录 README.md。要点 —— std 里声明的 C 原语必须是
+ * libc 或平台绕不开的东西；BLAS 是可选的第三方大库，还有 ABI 分叉和自带的线程池。
+ *
+ * 这一层只做三件事：
+ *   ① 认 ABI。CBLAS 有两套事实约定：LP64（符号 cblas_sgemm，维度是 int）与 ILP64
+ *      （符号 cblas_sgemm64_，维度是 blasint = int64_t）。同名不同宽度 ⇒ 声明错了不报错、
+ *      静默算错数。所以这里按符号名认 ABI，不靠调用方记忆。
+ *   ② 收切片。CBLAS 收裸指针 + lda/ldb/ldc；这里收 slice<f32> / slice<f64>，并检查长度
+ *      （不匹配就带位置 trap：形状不对是程序 bug，不是运行期状况）。
+ *   ③ 状态是一个值，不是全局。backend 里装的是符号地址，可以传参、可以放进结构体、
+ *      可以在 parallel::run 的 worker 里调（这个模块没有模块级 var）。
+ *
+ * 线程：BLAS 自带线程池，要么让它吃满核（OPENBLAS_NUM_THREADS 等环境变量由库自己读），
+ * 要么钉成 1 自己分块；别嵌套 —— 与 parallel::run 叠在一起会超订。
+ *
+ * 用法：var b: blas::backend = blas::probe()!   或   blas::open("libopenblas.so.0")! */
+use std::dl
+
+/* CBLAS 的枚举（cblas.h）：行主序、不转置、转置。 */
+let ROW_MAJOR: i32 = 101
+let NO_TRANS: i32 = 111
+let TRANS: i32 = 112
+/* LP64 后端的维度上限（int）。超过它不是静默截断，下面有一句人话 trap。 */
+let INT32_MAX_I64: i64 = 2147483647
+/* 探测表的大小（定长数组没有 .len —— 长度是类型的一部分）。 */
+let CAND_COUNT: i64 = 9
+
+/* 一个已绑定的后端。kind：1 = LP64（int32 维度），2 = ILP64（int64 维度）。
+ * 四只函数指针是 dlsym 回来的原始地址：调用点按 kind 选签名、在那里写转换 ——
+ * 「这个地址就是这个签名」这句话和它的使用处挨在同一行（与 std::dl 的规矩一致）。 */
+struct backend {
+    kind: i32
+    pSgemm: ?ref void
+    pSgemv: ?ref void
+    pDgemm: ?ref void
+    pDgemv: ?ref void
+
+    /* C = alpha * A * B + beta * C，全部行主序：A 是 m×k（lda = k）、B 是 k×n（ldb = n）、
+     * C 是 m×n（ldc = n）。只读 a 的前 m*k、b 的前 k*n，只写 c 的前 m*n。 */
+    fn sgemm(self: ref backend, m: i64, n: i64, k: i64, alpha: f32,
+             a: slice<f32>, b: slice<f32>, beta: f32, c: mut slice<f32>) {
+        trapUnless(gemmFits(m, n, k, a.len, b.len, c.len),
+            "blas::sgemm: shape mismatch (need m,n,k >= 0, a.len >= m*k, b.len >= k*n, c.len >= m*n)")
+        if self.kind == 1 {
+            trapUnless(int32Fits(m) && int32Fits(n) && int32Fits(k),
+                "blas::sgemm: dimension exceeds this LP64 backend's int32 range")
+            var f: fn(i32, i32, i32, i32, i32, i32, f32, ref f32, i32, ref f32, i32, f32, ref f32, i32) -> void = fn(i32, i32, i32, i32, i32, i32, f32, ref f32, i32, ref f32, i32, f32, ref f32, i32) -> void(self.pSgemm!)
+            f(ROW_MAJOR, NO_TRANS, NO_TRANS, i32(m), i32(n), i32(k), alpha,
+              a.data, i32(k), b.data, i32(n), beta, c.data, i32(n))
+        } else {
+            var f: fn(i32, i32, i32, i64, i64, i64, f32, ref f32, i64, ref f32, i64, f32, ref f32, i64) -> void = fn(i32, i32, i32, i64, i64, i64, f32, ref f32, i64, ref f32, i64, f32, ref f32, i64) -> void(self.pSgemm!)
+            f(ROW_MAJOR, NO_TRANS, NO_TRANS, m, n, k, alpha,
+              a.data, k, b.data, n, beta, c.data, n)
+        }
+    }
+
+    /* 同样的乘加，f64。 */
+    fn dgemm(self: ref backend, m: i64, n: i64, k: i64, alpha: f64,
+             a: slice<f64>, b: slice<f64>, beta: f64, c: mut slice<f64>) {
+        trapUnless(gemmFits(m, n, k, a.len, b.len, c.len),
+            "blas::dgemm: shape mismatch (need m,n,k >= 0, a.len >= m*k, b.len >= k*n, c.len >= m*n)")
+        if self.kind == 1 {
+            trapUnless(int32Fits(m) && int32Fits(n) && int32Fits(k),
+                "blas::dgemm: dimension exceeds this LP64 backend's int32 range")
+            var f: fn(i32, i32, i32, i32, i32, i32, f64, ref f64, i32, ref f64, i32, f64, ref f64, i32) -> void = fn(i32, i32, i32, i32, i32, i32, f64, ref f64, i32, ref f64, i32, f64, ref f64, i32) -> void(self.pDgemm!)
+            f(ROW_MAJOR, NO_TRANS, NO_TRANS, i32(m), i32(n), i32(k), alpha,
+              a.data, i32(k), b.data, i32(n), beta, c.data, i32(n))
+        } else {
+            var f: fn(i32, i32, i32, i64, i64, i64, f64, ref f64, i64, ref f64, i64, f64, ref f64, i64) -> void = fn(i32, i32, i32, i64, i64, i64, f64, ref f64, i64, ref f64, i64, f64, ref f64, i64) -> void(self.pDgemm!)
+            f(ROW_MAJOR, NO_TRANS, NO_TRANS, m, n, k, alpha,
+              a.data, k, b.data, n, beta, c.data, n)
+        }
+    }
+
+    /* y = alpha * A * x + beta * y（trans = false：A 是 m×n，x 长 n，y 长 m），
+     * 或 y = alpha * A^T * x + beta * y（trans = true：x 长 m，y 长 n）。 */
+    fn sgemv(self: ref backend, trans: bool, m: i64, n: i64, alpha: f32,
+             a: slice<f32>, x: slice<f32>, beta: f32, y: mut slice<f32>) {
+        trapUnless(gemvFits(trans, m, n, a.len, x.len, y.len),
+            "blas::sgemv: shape mismatch (a.len >= m*n, and x/y lengths follow trans)")
+        var tr: i32 = NO_TRANS
+        if trans { tr = TRANS }
+        if self.kind == 1 {
+            trapUnless(int32Fits(m) && int32Fits(n),
+                "blas::sgemv: dimension exceeds this LP64 backend's int32 range")
+            var f: fn(i32, i32, i32, i32, f32, ref f32, i32, ref f32, i32, f32, ref f32, i32) -> void = fn(i32, i32, i32, i32, f32, ref f32, i32, ref f32, i32, f32, ref f32, i32) -> void(self.pSgemv!)
+            f(ROW_MAJOR, tr, i32(m), i32(n), alpha, a.data, i32(n), x.data, i32(1), beta, y.data, i32(1))
+        } else {
+            var f: fn(i32, i32, i64, i64, f32, ref f32, i64, ref f32, i64, f32, ref f32, i64) -> void = fn(i32, i32, i64, i64, f32, ref f32, i64, ref f32, i64, f32, ref f32, i64) -> void(self.pSgemv!)
+            f(ROW_MAJOR, tr, m, n, alpha, a.data, n, x.data, i64(1), beta, y.data, i64(1))
+        }
+    }
+
+    /* f64 的 gemv。 */
+    fn dgemv(self: ref backend, trans: bool, m: i64, n: i64, alpha: f64,
+             a: slice<f64>, x: slice<f64>, beta: f64, y: mut slice<f64>) {
+        trapUnless(gemvFits(trans, m, n, a.len, x.len, y.len),
+            "blas::dgemv: shape mismatch (a.len >= m*n, and x/y lengths follow trans)")
+        var tr: i32 = NO_TRANS
+        if trans { tr = TRANS }
+        if self.kind == 1 {
+            trapUnless(int32Fits(m) && int32Fits(n),
+                "blas::dgemv: dimension exceeds this LP64 backend's int32 range")
+            var f: fn(i32, i32, i32, i32, f64, ref f64, i32, ref f64, i32, f64, ref f64, i32) -> void = fn(i32, i32, i32, i32, f64, ref f64, i32, ref f64, i32, f64, ref f64, i32) -> void(self.pDgemv!)
+            f(ROW_MAJOR, tr, i32(m), i32(n), alpha, a.data, i32(n), x.data, i32(1), beta, y.data, i32(1))
+        } else {
+            var f: fn(i32, i32, i64, i64, f64, ref f64, i64, ref f64, i64, f64, ref f64, i64) -> void = fn(i32, i32, i64, i64, f64, ref f64, i64, ref f64, i64, f64, ref f64, i64) -> void(self.pDgemv!)
+            f(ROW_MAJOR, tr, m, n, alpha, a.data, n, x.data, i64(1), beta, y.data, i64(1))
+        }
+    }
+}
+
+/* 打开一个库并绑定（soname 或绝对路径）。库不存在 / 四只符号不全都返回 none。 */
+fn open(path: slice<u8>) -> option<backend> {
+    match dl::open(path) {
+        some(h) => return bind(h)
+        none => return none
+    }
+}
+
+/* 能不能把这个路径绑成后端（不返回载荷：把 option 的载荷重新绑成局部再返回会被
+ * 逃逸检查拒 —— 见 std::dl 里对 symOrNull 的说明）。 */
+@private
+fn usable(path: slice<u8>) -> bool {
+    match open(path) {
+        some(_) => return true
+        none => return false
+    }
+}
+
+/* 按常见 soname 自动探测，返回第一个四只符号齐全的库。
+ * 顺序是「OpenBLAS 先、参考 BLAS 后」：前者才有 ILP64 与更好的内核。
+ * 每个候选调两次（先 usable 再 open）：这是在「返回一个装着指针的结构体」这件事上
+ * 唯一能过逃逸检查的写法，dlopen 同一个库两次是幂等的。 */
+fn probe() -> option<backend> {
+    if usable("libopenblas.so.0") { return open("libopenblas.so.0") }
+    if usable("libopenblas64_.so.0") { return open("libopenblas64_.so.0") }
+    if usable("libopenblas64.so.0") { return open("libopenblas64.so.0") }
+    if usable("libopenblas.so") { return open("libopenblas.so") }
+    if usable("libopenblas64_.so") { return open("libopenblas64_.so") }
+    if usable("libcblas.so.3") { return open("libcblas.so.3") }
+    if usable("libblas.so.3") { return open("libblas.so.3") }
+    if usable("libmkl_rt.so.2") { return open("libmkl_rt.so.2") }
+    if usable("libmkl_rt.so") { return open("libmkl_rt.so") }
+    return none
+}
+
+/* 认 ABI：先 LP64 的四个名字，再 ILP64 的标准名，最后 numpy 轮子的 scipy_ 前缀名。
+ * 三块都在本函数里当场构造（不互相返回 option）：一个装着指针的结构体在函数之间来回
+ * 传，逃逸检查会把它当成借用了某一帧的存储，而在同一个函数里从 dlsym 的地址直接拼
+ * 出来是干净的 —— 与 std::heap 的 plate::open 是同一个写法。 */
+@private
+fn bind(h: ref void) -> option<backend> {
+    var s: ?ref void = dl::symOrNull(h, "cblas_sgemm")
+    var v: ?ref void = dl::symOrNull(h, "cblas_sgemv")
+    var d: ?ref void = dl::symOrNull(h, "cblas_dgemm")
+    var dv: ?ref void = dl::symOrNull(h, "cblas_dgemv")
+    if s != null && v != null && d != null && dv != null {
+        return some(backend { kind: 1, pSgemm: s, pSgemv: v, pDgemm: d, pDgemv: dv })
+    }
+    s = dl::symOrNull(h, "cblas_sgemm64_")
+    v = dl::symOrNull(h, "cblas_sgemv64_")
+    d = dl::symOrNull(h, "cblas_dgemm64_")
+    dv = dl::symOrNull(h, "cblas_dgemv64_")
+    if s != null && v != null && d != null && dv != null {
+        return some(backend { kind: 2, pSgemm: s, pSgemv: v, pDgemm: d, pDgemv: dv })
+    }
+    s = dl::symOrNull(h, "scipy_cblas_sgemm64_")
+    v = dl::symOrNull(h, "scipy_cblas_sgemv64_")
+    d = dl::symOrNull(h, "scipy_cblas_dgemm64_")
+    dv = dl::symOrNull(h, "scipy_cblas_dgemv64_")
+    if s != null && v != null && d != null && dv != null {
+        return some(backend { kind: 2, pSgemm: s, pSgemv: v, pDgemm: d, pDgemv: dv })
+    }
+    return none
+}
+
+/* ---------------------------------------------------------------- 形状检查
+ *
+ * 三条检查都写成「乘法不溢出」的形式：x*y <= len 用 y 与 len/x 比，而不是先算 x*y
+ * 再比 —— 前者在 x*y 溢出成负数时仍然说真话，而 C 侧是按没溢出的 x*y 写内存的。 */
+@private
+fn trapUnless(ok: bool, why: slice<u8>) { if !ok { trap(why) } }
+
+@private
+fn countFits(c: i64, len: i64) -> bool { return c >= 0 && c <= len }
+
+@private
+fn rangeFits(x: i64, y: i64, len: i64) -> bool {
+    if x < 0 || y < 0 { return false }
+    if x == 0 || y == 0 { return true }
+    return y <= len / x
+}
+
+@private
+fn gemmFits(m: i64, n: i64, k: i64, aLen: i64, bLen: i64, cLen: i64) -> bool {
+    if !rangeFits(m, k, aLen) { return false }
+    if !rangeFits(k, n, bLen) { return false }
+    return rangeFits(m, n, cLen)
+}
+
+@private
+fn gemvFits(trans: bool, m: i64, n: i64, aLen: i64, xLen: i64, yLen: i64) -> bool {
+    if !rangeFits(m, n, aLen) { return false }
+    if trans { return countFits(n, yLen) && countFits(m, xLen) }
+    return countFits(m, yLen) && countFits(n, xLen)
+}
+
+@private
+fn int32Fits(x: i64) -> bool { return x >= 0 && x <= INT32_MAX_I64 }

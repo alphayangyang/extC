@@ -936,6 +936,19 @@ def build_items() -> list:
         bad_msg="tools/check_rc_desc_dedup.py（描述符退回每个分配点一份/块作用域，分配路径常数会退化）",
         bad_dump=dump_fail(12)))
 
+    # ---- 闸门·BLAS 扩展库的绑定 ----
+    # 买的是**扩展库这条路本身**：std 之外的东西能不能只靠 -I + std::dl 接进来，且接进来
+    # 不丢性能。判据自带 LP64 shim（本机常常只有 numpy 的 ILP64，系统没有 libcblas），
+    # 两条 ABI 分支都要逐元素对上裸循环；机器上有真 CBLAS 时再加一条「512³ 至少快
+    # MIN_RATIO 倍」，否则跳过（shim 那半永远跑）。没有 CBLAS 的干净机器上不会红。
+    items.append(cmd(
+        "gate-blas", "gate",
+        "闸门·extlib/blas：LP64 与 ILP64 两条 ABI 分支都逐元素对上裸循环（有真库时还要快 2× 以上）",
+        ["./extlib/blas/tests/run.sh"], timeout=600,
+        ok_msg=ok_first(r"^  ok   blas"),
+        bad_msg="extlib/blas/tests/run.sh（BLAS 绑定认错 ABI/算错数/封装把性能吃掉了）",
+        bad_dump=dump_fail(12)))
+
     # ---- 闸门·标记 walk 的批弹出结构 ----
     # 这条买的是**延迟**（LIFO 逐个弹是串行指针链），不是指令数，所以判据是结构 + 红自测：
     # 谁把"先弹一批→整批预取→逐个扫"改回逐对象，门禁就红。
