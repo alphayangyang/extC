@@ -222,7 +222,16 @@ p = null                 // 计数 0 —— 放
   **调用者传下来的区域**（被调者的分配落进调用者的那一层）分配时，触发点不物化根表，只在那个区域上
   留一个「欠一次清扫」的标志；**拥有它的那一帧在自己下一次把同一层 arena 交给被调者之前**销账 ——
   那一刻上一批被调者已经返回、这一批还没进入，它的静态根表就是完整的种子；拥有者没有下一处调用点时，
-  整片要等到帧销毁才还。**整条调用链共用的线程本地区域只在 worker 帧里清扫**，归属按调用链算。
+  整片要等到帧销毁才还。**整条调用链共用的线程本地区域按运行期深度认领归属**：`parTls` 的分配落在 worker 的
+线程本地 arena 上，而静态判据分不出「worker 入口帧」与「它调进来的内层帧」（同一个函数两种身份都可能）——
+所以运行期设一个 `_Thread_local` 深度 `extc_rc_tlsDepth`，每个「parTls + 需要回收 + 有 arena + 不是协程」的帧
+序言 `int __extc_tlsOwner = (extc_rc_tlsDepth++ == 0);`、尾部 `extc_rc_tlsDepth--;` 配对：入口帧（0 ⇒ 1）是拥有者，
+触发点物化根表当场清**自己的**那一层；内层帧只记 `extc_rc_owe`（销账仍归拥有者的调用点）。worker 调回调前
+把深度保存 / 清零 / 恢复 —— 线程起不出来、`threads <= 1` 时回调在同线程内联跑，只有这样入口帧才一定是拥有者。
+线程本地区域随 arena 同寿丢弃两处（`extc_par_close` 的每个 worker arena、worker 兜底销毁的局部 arena）；
+不碰 `parallel` 的帧只多一份恒发的 `_Thread_local` 声明，序言与三态一个字节都不发（9 形状 `-O2` Ir 逐位不变）。
+判据：`gate-par-tls-owner`（发射物结构：声明恒发 / 序言尾声配对 / 三态 / worker 清零恢复顺序 / 两处区域丢弃 /
+普通程序零税，6 条注入全红）+ 注入 `par-tls-depth-noreset` + `tests/reclaim-gaps` 的 `par_tls_cycle`（3.40× → 1.13×）。
   种子不完整时宁可不清扫，也不能把活对象当垃圾放掉。
 * **跨区引用只登记一个 bit。** 引用被存进别的区域时，在**目标对象所在位置**的位图里置一位，
   播种时顺序扫这张位图；位置释放时那一位跟着清掉，所以没有陈旧表项。
@@ -648,9 +657,10 @@ reclaim 形状闸门（`gate-shapes`/`gate-work`/`gate-shard-cycles`/`gate-idle-
     这些要么把视图基址登记进根表，要么整块按保守处理。
   - **出口**：「别收」现在有四种互不相干的表达（编译期的区域级与函数级、运行期的一次性与永久），
     各自在不同地方查。应当合成一个。
-* **把登记点铺全**：协程帧、`ext` 派生的帧、整条 worker 调用链共用的线程本地区域，以及被当作
-  「枚举不出引用」处理的几类载荷（`match` 绑定、`dyn` 载荷、池容器元素、视图元素），都要能把引用
-  登记进那条链。
+* **把登记点铺全**：协程帧、`ext` 派生的帧，以及被当作「枚举不出引用」处理的几类载荷（`match`
+  绑定、`dyn` 载荷、池容器元素、视图元素），都要能把引用登记进那条链。**整条 worker 调用链共用的
+  线程本地区域已落地**：按运行期深度认领归属（入口帧触发、内层帧记欠账，见 §三），`par_tls_cycle`
+  3.40× → 1.13×。
 
 **语义边界**（是决定，不是缺口）：板、池、C 栈、`dyn` 池这类**不受回收管辖**的内存里放着的引用，
 它的入边无法被登记-撤销追踪，只能把**目标钉住** —— 那块内存活着，目标就不放；界由容器的生命周期给。
@@ -875,7 +885,7 @@ cache-sim 判据变红）。
 | `skip:armed` | 统计只装一次 | 幂等 | 无（诊断）| 无（诊断路径，不影响回收语义）|
 | （无标记）`if (extc_rc_rsIncN) unlinkChildren(...)` | 一次登记都没发生过 ⇒ 不必撤边 | `rsIncN == 0` ⇒ 没有 `rsInc` 类边 | 多留（保守）| `unlink-nop` 证明"撤边"有牙；这个**守卫**没有专门注入 |
 | （无标记）`if (partN > 1) { 登记 }` | 只有一个区域参与 rc ⇒ 免登记 | 单区域不可能有跨区边 | 少算（不安全）| `gate-note-part` + `cross-region` 登记量判据 |
-| （无标记）`#if EXTC_RC_NOCOUNT` 整段 | 关掉计数时计数入口变空操作 | 没有读者 | 少算（不安全）| 单测**两档都跑**（默认 61 / 计数 103）|
+| （无标记）`#if EXTC_RC_NOCOUNT` 整段 | 关掉计数时计数入口变空操作 | 没有读者 | 少算（不安全）| 单测**两档都跑**（默认 110 / 计数 153）|
 | （无标记）`ownTab`/`bigTab`/`mstk` 增长 | `realloc` 翻倍；失败即 `oops` | 不静默截断 | 不会静默失效 | `gate-checkc` + ASan 语料 |
 | （无标记）区域注册表上限 `EXTC_RC_REG_MAX = 512` | 满了仍新建区域但**不登记** | 活跃区域数不超过 512 | **仅泄漏**（该区域不会被 `regionDrop` 回收）| **无判据**（需要 >512 个活跃块区域 ≈ 512 MiB slab，成本不成比例）|
 | （无标记）递归深度上限 `EXTC_RC_REC_LIMIT = 100000` | —— | —— | 明确 trap（不静默）| `extc_rec_enter` 主动报错 |
@@ -896,6 +906,7 @@ cache-sim 判据变红）。
 | 义务 3：计数到顶**粘住**（`hold` 与 `rscnt` 都一样）| 不安全 | `rsInc`/`rsIncSlab`/`holdUpd*` 的 `SAT` 守卫 | 注入 `count-nosat` ⇒ `饱和：计数到顶粘住`；注入 `rsinc-nosat` ⇒ `跨区计数：到顶粘住`；注入 `realpath-noreg`（只破坏**真实赋值路径**的登记）⇒ 红在 `跨区计数（真实路径）：到顶粘住`，证明真实路径那一组断言有独立的牙 |
 | 义务 4：按**对象自己的**描述符走指针字段 | 不安全（走漏 ⇒ 少标）| `extc_rc_mark` 用 `s->type[i]` | 单测 `类型：描述符字段数正确` + 注入 `mark-nodesc` ⇒ 红在 `跨区：B 从入边位图播种` |
 | 义务 7：种子不完整 ⇒ 目标区域**退出清扫** | **不安全** | `extc_rc_storeRefSlot` 先按槽地址反查宿主（`slabOfInterior`），槽不在 rc slab 里才落 `storeRefUnknown`；`storeStructCons` 的保守分支同向。**叶子枚举得出来的枚举整值存储不进这一档**：根表按所有变体展开 + `storeStructRooted` 只记引用（§三），区域照常清扫 | 单测 `义务 7：…退出清扫`、`槽地址反查：…`（反查成功不下调保守 / 反查失手才保守 / 超大块失手）、`枚举整值存储：…`（叶子当场标黑 / 活过本轮清扫 / 不置 `noSweep`）+ 注入 `noSweep-drop`、`struct-shade-nop` ⇒ 各红在对应那条上 |
+| 并行：线程本地区域归**调用链入口帧**（运行期深度认领）| 泄漏（内存涨）| 每个 parTls 回收帧序言 `int __extc_tlsOwner = (extc_rc_tlsDepth++ == 0);`、尾部 `extc_rc_tlsDepth--;`；触发点三态（拥有者 ⇒ 物化根表 + `maybeCollect`，内层 ⇒ 只 `extc_rc_owe`）；worker 调回调前保存/清零/恢复深度；`extc_par_close` 的每个 worker arena 与 worker 兜底局部 arena 两处 `extc_rc_regionDrop` | 结构门禁 `gate-par-tls-owner`（声明恒发 / 序言尾声配对 / 三态两侧 / worker 清零恢复顺序 / 两处丢弃 / 普通程序零税，6 条注入全红）+ 注入 `par-tls-depth-noreset` ⇒ gate 红 + gaps `par_tls_cycle` 3.40× → 1.13×（sweeps 0/0 → 2/9）|
 | 参与区域数（单区域免登记快路径的前提）| **不安全** | 槽的**诞生点**记 `partN`：`extc_rc_alloc` 无条件记、`storeStructCons` 的保守分支也记；**赋值侧不再记**（冗余：槽的区域在诞生时已记过，见 `changelog/2026-10.md` 的 2026-10-15 条目）；`extc_rc_regionFree` 开头有 **R3 运行期守卫**复查"有占用槽 ⇒ `part == 1`" | `gate-note-part`：静态 R2「会交出槽 ⇒ 必须记参与」（**在真实缺陷 `storeStructCons` 上红过**）+ 运行期 R3。R3 的红演示：注入"删掉 `alloc` 的 `notePart`" ⇒ 静态 `FAIL [R2] extc_rc_alloc`（rc=1）**且** `trap: reclaim: R3: occupied slot in a region with part == 0`（rc=1），撤回后绿。另有 `cross-region` 登记量判据 |
 | 触发语义：压力阈值随 `live`/`scale` 更新 | 性能/内存 | `collect`/`regionFloor`/`regionNew` 末的 `thrUpd` | 注入 `thr-stale` ⇒ `阈值缓存③：倍数翻倍后阈值 ×2` |
 | 本地/形参槽的只写入口（`EXTC_RC_LOCALSTORE`，默认关）**只允许用在 `owner == 0` 的槽上** | **不安全**（对象宿主走它 ⇒ 跨区登记整段丢失）| `codegen.c` 的 `rcLocalStore && rcNoCount && hostBase == NULL`；`storeRefLocal` 只写 | 注入 `localstore-on-objhost`（把 `hreg != NULL` 的对象宿主存储也改发该入口）⇒ `cross_region` 的 `rs_inc/rs_dec/rs_live/rs_hwm` 从 `200000/196611/3389/65537` **塌成 0/0/0/0**，`gate-reclaim-switch` **红（通过 1 失败 1，exit 1）** —— 实测；等价性（无计数档下 `storeRefOwned(slot,v,0)` 的 gated 块因 `so == 0` 无副作用）见 `tests/reclaim-perf/LOCALSTORE-IMPL.md` |
@@ -908,6 +919,6 @@ cache-sim 判据变红）。
 | 覆盖点定点释放：只放"**仅**从旧值可达"的槽（其它活根/种子一律标活）| 不安全（会放掉还被别的根指着的对象）| `extc_rc_releaseOld`：先 `extc_rc_mark`（其它根 + 跨区种子），只 `freeSlot` 未标记的 | 注入 `release-off` ⇒ `gate-release` 红在"清扫次数 ≤1 / 峰值比 / 释放槽数 >0"三条上（实测关掉发射 55 次扫、10.61 MB）|
 | 着色缓存的失效契约：**每一处清 mark 位都要自增代际号** | **不安全**（漏一条 ⇒ 把白对象当黑、跳过屏障、漏标可达对象）| `extc_rc_begin` / `sweepBegin` / `releaseOld` / `regionFree` 统一调 `extc_rc_shadeNextGen()`（自增代际号，回绕时整表 `memset`） | 注入 `shade-noinval`（删掉 `releaseOld` 那条）⇒ 单测红在 `着色缓存：收窄清扫清 mark 后失效`；`EXTC_RC_SHADE_GUARD=1` 的 `[sg] bad` 同时计数。其余三条是纵深防御（`begin` 每轮都会清缓存），由 run.sh 的 guard 自检守着；结构由 `gate-shade-cache` 钉住（单字格/格号旋入代际号/四站点只调 NextGen，6 项注入），回绕清表由 `t_shadeCache` ③ 组证明 |
 
-**13 条全部有牙**（每条都给了注入或结构门禁，且红点写在表里）。单测现在**两档都跑**：
-默认（无计数）**103 条**、计数档 **145 条** —— 后者是计数专属断言，用 `#if !EXTC_RC_NOCOUNT`
+**14 条全部有牙**（每条都给了注入或结构门禁，且红点写在表里）。单测现在**两档都跑**：
+默认（无计数）**110 条**、计数档 **153 条** —— 后者是计数专属断言，用 `#if !EXTC_RC_NOCOUNT`
 显式标注（driver 不显式标注就只会覆盖计数档，默认档的编译分支不会被单测碰到）。

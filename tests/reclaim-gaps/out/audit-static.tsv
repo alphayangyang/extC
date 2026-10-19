@@ -1204,10 +1204,10 @@ tests/reclaim-gaps/shapes/dyn_payload.extc	ok	ok-trigger	1	1	0	0	1	0	0
 tests/reclaim-gaps/shapes/ext_frame_cycle.extc	ok	silent-both	2	0	0	0	1	0	0
 tests/reclaim-gaps/shapes/global_slot.extc	fail	-	-	-	-	-	-	-	-
 tests/reclaim-gaps/shapes/home_cycle.extc	ok	owe-settled	2	0	2	2	1	0	0
-tests/reclaim-gaps/shapes/match_payload.extc	ok	ok-trigger	2	2	0	0	1	1	0
+tests/reclaim-gaps/shapes/match_payload.extc	ok	ok-trigger	2	2	0	0	1	0	0
 tests/reclaim-gaps/shapes/owcell_garbage.extc	ok	owe-settled	1	0	1	1	1	0	0
 tests/reclaim-gaps/shapes/own_room_cycle.extc	ok	ok-trigger	2	2	0	0	1	0	0
-tests/reclaim-gaps/shapes/par_tls_cycle.extc	ok	silent-both	2	0	0	0	1	0	0
+tests/reclaim-gaps/shapes/par_tls_cycle.extc	ok	ok-trigger	2	2	2	0	1	0	0
 tests/reclaim-gaps/shapes/pool_ref_slot.extc	ok	silent-both	1	0	0	0	1	2	0
 tests/reclaim-gaps/shapes/ring_per_round.extc	ok	ok-trigger	2	2	0	0	1	0	0
 tests/reclaim-gaps/shapes/slot_elem_known.extc	ok	ok-trigger	3	3	0	0	1	0	0

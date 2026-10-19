@@ -912,6 +912,21 @@ def build_items() -> list:
         bad_msg="tools/check_shade_cache.py（着色缓存退回两字结构/绕不过回绕清零，失效契约有洞）",
         bad_dump=dump_fail(12)))
 
+    # ---- 闸门·线程本地 arena 的归属（parTls）----
+    # 买的是**parallel + 回收同时在场时的健全性**：静态判据分不出"worker 入口帧"与
+    # "内层帧"（同一个函数两种身份都可能），所以归属靠运行期深度 extc_rc_tlsDepth 判：
+    # 序言 ++ 记下是不是 0、尾声 -- 配对；触发点三态（拥有 ⇒ 物化根表当场扫 / 内层 ⇒
+    # 只记欠收）；worker 调回调前清零、后恢复（同线内联跑时入口帧才一定是拥有者）；
+    # 线程本地区域随 arena 同寿丢弃两处。不碰 parallel 的帧一个字节都不多发。
+    # 判据跑真实发射（正向并行形状 + 普通形状），--selftest 六条注入全红。
+    items.append(cmd(
+        "gate-par-tls-owner", "gate",
+        "闸门·线程本地 arena 归属：深度序言/尾声配对 + 触发三态 + worker 清零/恢复 + 区域丢弃两处，且 6 条注入全红",
+        ["python3", "tools/check_par_tls_owner.py", "--selftest"], timeout=120,
+        ok_msg=ok_first(r"^ok par_tls owner structure"),
+        bad_msg="tools/check_par_tls_owner.py（parTls 归属判定/三态触发/区域丢弃或缺红自测失效）",
+        bad_dump=dump_fail(12)))
+
     # ---- 闸门·空清扫之后的退场倍数 ----
     # 买的是**触发策略**：活集大、垃圾少的负载（chase）只做一轮便宜的整堆标记，不再付
     # 「标记 32 MiB 活集只换回几 MB」的第二轮。判据=默认 4 / 退场走宏（不许字面量 2）/

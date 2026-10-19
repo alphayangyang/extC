@@ -10,7 +10,6 @@ tests/escape-fuzz/cases/m_nohome_cont_after.extc	silent-both
 tests/escape-fuzz/cases/m_nohome_cont_before.extc	silent-both
 tests/reclaim-gaps/shapes/coro_frame_cycle.extc	silent-both
 tests/reclaim-gaps/shapes/ext_frame_cycle.extc	silent-both
-tests/reclaim-gaps/shapes/par_tls_cycle.extc	silent-both
 tests/reclaim-gaps/shapes/pool_ref_slot.extc	silent-both
 tools/escape-corpus/P2-6_container_uaf.extc	silent-both
 tools/escape-corpus/P2-7_container_before_uaf.extc	silent-both

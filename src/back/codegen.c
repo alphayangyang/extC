@@ -801,9 +801,16 @@ static bool cgIsMain(const FuncDef *f);
 static const char *zoneArgRef(CG *g, Expr *e);   /* the zone argument of a pool-creating callee */
 static void cgReclaimDropArena(CG *g, int lvl);  /* 帧销毁处释放区域（定义在 cgIsRefType 之后） */
 /* 回收的触发闸门与欠收销账（定义在后面）：`cgImplicitArgs` 在调用点上要用它们决定
- * 「这一帧有没有资格／需不需要在自己身上收一次」。 */
+ * 「这一帧有没有资格／需不需要在自己身上收一次」。
+ *
+ * 触发路线是三态：本帧拥有那只区域 ⇒ 当场扫（`RC_OWN_YES`）；不拥有 ⇒ 只记欠收
+ * （`RC_OWN_NO`）；线程本地 arena（parTls）⇒ 运行期看 `extc_rc_tlsDepth` 判「是不是
+ * worker 入口帧」，入口帧当场扫、内层帧记欠收（`RC_OWN_TLS`，见 `rcOwnKind`）。 */
+typedef enum { RC_OWN_NO = 0, RC_OWN_YES = 1, RC_OWN_TLS = 2 } RcOwn;
+
 static bool rcFrameOwnsArena(CG *g, int lvl);
-static void rcEmitOwedCheck(CG *g, const char *basePtr, int lvl);
+static RcOwn rcOwnKind(CG *g, int lvl);
+static void rcEmitOwedCheck(CG *g, const char *basePtr, int lvl, RcOwn own);
 
 
     
@@ -2118,8 +2125,9 @@ static void cgImplicitArgs(CG *g, Buf *b, const FuncDef *callee, const Expr *sit
              * 「上一批被调者已返回、这一批还没进入」把欠账收掉 —— 此刻本帧没有活跃的被调者
              * 子树，本帧的静态根表就是完整的种子（见 `rcEmitOwedCheck` 的不变量）。
              * `main` 的家 arena 就是 `&__extc_a[1]`（子集 A），所以 `main` 也在这一档。 */
-            if (rcFrameOwnsArena(g, hlvl))
-                rcEmitOwedCheck(g, arenaPrintf(g->arena, "(void *)(%s)", harg), hlvl);
+            RcOwn own = rcOwnKind(g, hlvl);
+            if (own != RC_OWN_NO)   /* TLS 一档发出来，归属在运行期判 */
+                rcEmitOwedCheck(g, arenaPrintf(g->arena, "(void *)(%s)", harg), hlvl, own);
         }
         n++;
     }
@@ -3229,6 +3237,27 @@ static bool rcFrameOwnsArena(CG *g, int lvl) {
     return true;
 }
 
+/**
+ * @brief 分配点该走哪条触发路线（三态，见 `RcOwn`）。
+ *
+ * 静态判据只到「拥有／不拥有」；线程本地 arena 的归属是**运行期**才知道的：整条 worker
+ * 调用链共用 `extc_tls_arena`，入口帧（`extc_rc_tlsDepth++ == 0` 的那一帧）的调用者只有 C
+ * 运行期，静态根表就是完整的种子 ⇒ 它拥有；内层帧的根表看不见调用帧的活引用 ⇒ 只记欠收。
+ * 协程帧本来整函数关触发，先挡掉；`noArena` 的帧不发序言（见下），也挡掉 —— 否则
+ * 触发点会引用不存在的 `__extc_tlsOwner`。
+ *
+ * @param g    生成器。
+ * @param lvl  `ARENA_HOME`（-1）或 1 以上的块层级。
+ * @return     `RC_OWN_NO` / `RC_OWN_YES` / `RC_OWN_TLS`。
+ */
+static RcOwn rcOwnKind(CG *g, int lvl) {
+    if (g->coroFunc) return RC_OWN_NO;
+    /* 序言只在 `parTls && !noArena && !coroFunc` 的帧里发（见 `genFunc`）⇒ 这里同一条判据，
+     * 否则触发点会引用一个在本帧不存在的 `__extc_tlsOwner`。 */
+    if (g->parTls) return (g->noArena || g->coroFunc) ? RC_OWN_NO : RC_OWN_TLS;
+    return rcFrameOwnsArena(g, lvl) ? RC_OWN_YES : RC_OWN_NO;
+}
+
 /** @brief 记一次 rc 站点（诊断 `EXTC_DBG_RCCOST=1`；只统计，不改发射）。
  *
  * @param g    生成器。
@@ -3331,15 +3360,15 @@ static size_t rcRootTableTextSkip(CG *g, Buf *b, size_t skipLocal) {
  * 记账本身就带压力判据（`extc_rc_shouldSweep`）：没过压力线的分配连账都不记，于是拥有者
  * 侧的检查是一次「读一个 bit」，不是每个调用点都物化根表。
  *
- * 线程本地 arena（`parTls`）不在此列：整条 worker 调用链共用 `extc_tls_arena`，「拥有者帧」
- * 的归属说不清（全语料没有正向语料），维持一个触发都不发（宁可少收）。
+ * 线程本地 arena（`parTls`）的归属在运行期才知道：整条 worker 调用链共用 `extc_tls_arena`，
+ * worker 入口帧（`extc_rc_tlsDepth` 读到 0 的那一帧）拥有它、内层帧记欠收（`RC_OWN_TLS`）。
+ * 所以本函数是**不带 parTls 守卫**的记账本体；非 TLS 的入口 `rcEmitOwe` 才带守卫。
  *
  * @param g        生成器。
  * @param basePtr  区域基址表达式（`(void *)` 形态）。
  * @param lvl      块层级（`ARENA_HOME` 或 1 以上）；分片时区域号取 `lvl * 片数 + k`。
  */
-static void rcEmitOwe(CG *g, const char *basePtr, int lvl) {
-    if (g->parTls) return;
+static void rcEmitOweNow(CG *g, const char *basePtr, int lvl) {
     if (g->rcNShard <= 1) {
         const char *rr = rcRegionRef(g, basePtr);
         if (rr) {
@@ -3360,6 +3389,12 @@ static void rcEmitOwe(CG *g, const char *basePtr, int lvl) {
            g->rcNShard, basePtr, lvl * g->rcNShard);
 }
 
+/** @brief 不拥有这只区域时的记账入口：TLS 一档不走这里（见 `rcEmitTrigger` 的三态）。 */
+static void rcEmitOwe(CG *g, const char *basePtr, int lvl) {
+    if (g->parTls) return;   /* TLS 的归属交给 `RC_OWN_TLS` 的运行期分支 */
+    rcEmitOweNow(g, basePtr, lvl);
+}
+
 /**
  * @brief 拥有者帧的销账点：用**此刻自己的静态根表**收掉外层区域欠下的清扫（子集 B）。
  *
@@ -3375,30 +3410,33 @@ static void rcEmitOwe(CG *g, const char *basePtr, int lvl) {
  * @param g        生成器。
  * @param basePtr  本帧拥有的那只区域的基址表达式（`(void *)` 形态）。
  * @param lvl      块层级（`main` 的家 arena 是 `ARENA_HOME`，否则 1 以上）。
+ * @param own      触发路线（`RC_OWN_TLS` 时整个销账点上再加一道运行期归属判断
+ *                 `if (__extc_tlsOwner && …)`：内层帧的根表不完整，销不得）。
  */
-static void rcEmitOwedCheck(CG *g, const char *basePtr, int lvl) {
+static void rcEmitOwedCheck(CG *g, const char *basePtr, int lvl, RcOwn own) {
     if (!g->needReclaim || g->rcRootsUnreliable || g->prefixBlk == 0) return;
     if (g->rcGlobalRoots.len + g->rcRoots.len > 4096) { g->rcRootsUnreliable = true; return; }
     Buf b;
     bufInit(&b, g->arena);
     size_t n = rcRootTableText(g, &b);
+    const char *ownCond = own == RC_OWN_TLS ? "__extc_tlsOwner && " : "";
     if (g->rcNShard <= 1) {
         const char *rr = rcRegionRef(g, basePtr);
         if (rr) {
-            pfLine(g, "{ if (extc_rc_owed(%s)) extc_rc_checkOwed(%s, %s, %zu); }",
-                   rr, rr, bufCstr(&b), n);
+            pfLine(g, "{ if (%sextc_rc_owed(%s)) extc_rc_checkOwed(%s, %s, %zu); }",
+                   ownCond, rr, rr, bufCstr(&b), n);
             return;
         }
         pfLine(g, "{ ExtcRcRegion *__extc_rcc = extc_rc_regionOf(%s, %d);"
-                  " if (extc_rc_owed(__extc_rcc)) extc_rc_checkOwed(__extc_rcc, %s, %zu); }",
-               basePtr, lvl, bufCstr(&b), n);
+                  " if (%sextc_rc_owed(__extc_rcc)) extc_rc_checkOwed(__extc_rcc, %s, %zu); }",
+               basePtr, lvl, ownCond, bufCstr(&b), n);
         return;
     }
     pfLine(g, "{ for (int32_t __extc_rcck = 0; __extc_rcck < %d; __extc_rcck++) {"
               " ExtcRcRegion *__extc_rcc = extc_rc_regionOf((void *)((char *)(%s) + __extc_rcck),"
               " (int32_t)(%d + __extc_rcck));"
-              " if (extc_rc_owed(__extc_rcc)) extc_rc_checkOwed(__extc_rcc, %s, %zu); } }",
-           g->rcNShard, basePtr, lvl * g->rcNShard, bufCstr(&b), n);
+              " if (%sextc_rc_owed(__extc_rcc)) extc_rc_checkOwed(__extc_rcc, %s, %zu); } }",
+           g->rcNShard, basePtr, lvl * g->rcNShard, ownCond, bufCstr(&b), n);
 }
 
 /**
@@ -3415,19 +3453,16 @@ static void rcEmitOwedCheck(CG *g, const char *basePtr, int lvl) {
  * 这是纯粹的求值顺序改动，改变的是"什么时候物化根表"，不是"什么时候收集"：
  * 判据只有 `extc_rc_shouldSweep` 这一份（`maybeCollect` 内部用的就是同一个函数），不另抄。
  *
- * **本帧拥有的区域**：`frameOwned` 为真才在这里扫；为假时改走欠收记账（`rcEmitOwe`）——
- * 根表看不见调用帧的活引用，在那种区域上照常扫就是把活对象当垃圾放。
+ * **只看「本帧拥有」这一侧**：为假时改走欠收记账（`rcEmitOwe`）—— 根表看不见调用帧的
+ * 活引用，在那种区域上照常扫就是把活对象当垃圾放。三态分派在 `rcEmitTrigger`。
  *
  * @param g          生成器。
  * @param basePtr    该分配要落进去的那只区域的**基址表达式**（已经是 `(void *)` 形态），
  *                   形如 `(void *)&(__extc_a[1])`、`(void *)__owc0->home`；第 k 片的认领键是
  *                   `(char *)basePtr + k`（只比不读，见 `rcAllocCore`）。
  * @param lvl        块层级（1 = 函数体，-1 = 家区域）；分片时区域号取 `lvl * 片数 + k`。
- * @param frameOwned 这只区域是不是本帧拥有的（假 ⇒ 只记欠收，不扫）。
  */
-static void rcEmitTrigger(CG *g, const char *basePtr, int lvl, bool frameOwned) {
-    if (!g->needReclaim || g->rcRootsUnreliable || g->prefixBlk == 0) return;
-    if (!frameOwned) { rcEmitOwe(g, basePtr, lvl); return; }
+static void rcEmitTriggerNow(CG *g, const char *basePtr, int lvl) {
     size_t n = g->rcGlobalRoots.len + g->rcRoots.len;
     if (n > 4096) { g->rcRootsUnreliable = true; return; }
     Buf b;
@@ -3477,6 +3512,34 @@ static void rcEmitTrigger(CG *g, const char *basePtr, int lvl, bool frameOwned) 
 }
 
 /**
+ * @brief 触发点的三态分派（见 `RcOwn`）：拥有 ⇒ 当场扫；不拥有 ⇒ 只记欠收；
+ *        TLS ⇒ 运行期按「是不是 worker 入口帧」二选一。
+ *
+ * TLS 那一态的根表只在 owner 分支里物化（复合字面量是 `rcEmitTriggerNow` 的实参，
+ * 而它整体在 `if (__extc_tlsOwner)` 里面）⇒ 内层帧不多付一次根表拷贝。
+ *
+ * @param g        生成器。
+ * @param basePtr  区域基址表达式（同 `rcEmitTriggerNow`）。
+ * @param lvl      块层级（同 `rcEmitTriggerNow`）。
+ * @param own      触发路线。
+ */
+static void rcEmitTrigger(CG *g, const char *basePtr, int lvl, RcOwn own) {
+    if (!g->needReclaim || g->rcRootsUnreliable || g->prefixBlk == 0) return;
+    if (own == RC_OWN_YES) { rcEmitTriggerNow(g, basePtr, lvl); return; }
+    if (own == RC_OWN_NO)  { rcEmitOwe(g, basePtr, lvl); return; }
+    /* RC_OWN_TLS：整条 worker 调用链共用一只区域，归属在运行期。 */
+    pfLine(g, "if (__extc_tlsOwner) {");
+    g->indent++;
+    rcEmitTriggerNow(g, basePtr, lvl);
+    g->indent--;
+    pfLine(g, "} else {");
+    g->indent++;
+    rcEmitOweNow(g, basePtr, lvl);
+    g->indent--;
+    pfLine(g, "}");
+}
+
+/**
  * @brief 发射一个 rc 分配：片号按**分配点**轮转，返回 `extc_rc_alloc(...)` 调用的文本。
  *
  * 片号 = `rcSite++ % rcNShard`：同一处 `new` 永远进同一片，所以片内链条与环完整；片与片之间
@@ -3489,17 +3552,17 @@ static void rcEmitTrigger(CG *g, const char *basePtr, int lvl, bool frameOwned) 
  * @param g          生成器。
  * @param basePtr    区域基址表达式（同 `rcEmitTrigger`）。
  * @param lvl        块层级（可 -1，只用于区域号）。
- * @param frameOwned 这只区域是不是本帧拥有的（同 `rcEmitTrigger`；假 ⇒ 不发射触发）。
+ * @param own        触发路线（同 `rcEmitTrigger`；`RC_OWN_NO` ⇒ 不扫、只记欠收）。
  * @param bytesExpr  字节数的 C 文本（原样拼进调用，不再加括号）。
  * @param td         类型描述符的 C 文本。
  * @return           `extc_rc_alloc(...)` 的 C 文本。
  */
-static const char *rcAllocCore(CG *g, const char *basePtr, int lvl, bool frameOwned,
+static const char *rcAllocCore(CG *g, const char *basePtr, int lvl, RcOwn own,
                                const char *bytesExpr, const char *td) {
     dbgRcSite(g, lvl, 1);
     int nsh = g->rcNShard > 0 ? g->rcNShard : 1;
     int k = g->rcSite++ % nsh;
-    rcEmitTrigger(g, basePtr, lvl, frameOwned);
+    rcEmitTrigger(g, basePtr, lvl, own);
     if (nsh == 1) {
         const char *rr = rcRegionRef(g, basePtr);
         if (rr) return arenaPrintf(g->arena, "extc_rc_alloc(%s, %s, %s)", rr, bytesExpr, td);
@@ -3777,10 +3840,11 @@ static const char *exNew(CG *g, Expr *e) {    Type *w = subst(g, e->u.new_.type)
             int lvl = planArenaLevel(e);
             /* 顺序：先类型描述符（它必须在这一条语句里可见），再触发（落在语句之前），
              * 最后是分配表达式 —— 三者都按**同一个片号**（见 `rcAllocCore`）。
-             * `frameOwned`：家 arena / 线程本地 arena 上的触发不发（根表看不见调用帧）。 */
+             * 触发路线：家 arena / 线程本地 arena 上的归属见 `rcOwnKind`（根表看不见调用帧的
+ * 活引用 ⇒ 不拥有的一侧只记欠收）。 */
             const char *td = rcEmitTypeDesc(g, w);
             const char *base = arenaPrintf(g->arena, "(void *)&(%s)", ar);
-            const char *core = rcAllocCore(g, base, lvl, rcFrameOwnsArena(g, lvl),
+            const char *core = rcAllocCore(g, base, lvl, rcOwnKind(g, lvl),
                 arenaPrintf(g->arena, "(int64_t)sizeof(%s)", cType(g, w)), td);
             return arenaPrintf(g->arena, "((%s *)%s)", cType(g, w), core);
         }
@@ -3905,7 +3969,7 @@ static const char *exGencall(CG *g, Expr *e) {
         const char *td = "(const ExtcRcType *)0";
         if (rcScanType(g, et, 0) != RC_NO_REFS) td = "((const ExtcRcType *)-1)";
         const char *core = rcAllocCore(g, arenaPrintf(g->arena, "(void *)&(%s)", ar), lvl,
-            rcFrameOwnsArena(g, lvl),
+            rcOwnKind(g, lvl),
             arenaPrintf(g->arena, "(int64_t)(%s) * (int64_t)sizeof(%s)", n, tn), td);
         return arenaPrintf(g->arena, "(%s *)%s", tn, core);
     }
@@ -5889,8 +5953,11 @@ if (s->u.var.overwrite) {
                  * **`main` 例外（子集 A）**：`main` 收到的 home 就是它自己的 `&__extc_a[1]`，
                  * 认它（与 `rcFrameOwnsArena` 同一条判据）。 */
                 bool own = loc && (!g->rcFuncUsesHome || g->inMain);
+                /* 线程本地 arena 一档：格子里的 `home` 就是 `extc_tls_arena` 或本帧 arena，
+                 * 归属在运行期（`RC_OWN_TLS`）⇒ 内层帧只记欠收。 */
+                RcOwn owOwn = g->parTls ? RC_OWN_TLS : (own ? RC_OWN_YES : RC_OWN_NO);
                 const char *core = rcAllocCore(g, arenaPrintf(g->arena, "(void *)%s->home", owcv),
-                                               planArenaLevel(nx), own,
+                                               planArenaLevel(nx), owOwn,
                                                arenaPrintf(g->arena, "(int64_t)sizeof(%s)", ct), td);
                 flushPrefix(g);
                 cgLine(g, "if (!%s || !%s->p) { void *%s = %s;  if (%s) %s->p = %s;"
@@ -7338,6 +7405,13 @@ static void genFunc(CG *g, FuncDef *f) {
     g->isRecursive = funcCallsItself(g, f);
     if (g->isRecursive)
         cgLine(g, "extc_rec_enter(\"%s\", %d);", g->path, f->line);
+    /* 线程本地 arena 的拥有者深度（见 `rcOwnKind`）：整条 worker 调用链共用
+     * `extc_tls_arena`，入口帧读到 0 ⇒ 它拥有那只区域（调用者只有 C 运行期，静态根表
+     * 就是完整的种子），内层帧只记欠收。深度在每条 worker 链的序言/尾声维护；trap/exit
+     * 直接结束进程，不需要补偿。`noArena` 的帧不参与（尾声不发递减，序言也不发递增）。 */
+    bool tlsOwnerFrame = g->needReclaim && g->parTls && !g->noArena && !g->coroFunc;
+    if (tlsOwnerFrame)
+        cgLine(g, "EXTC_UNUSED int __extc_tlsOwner = (extc_rc_tlsDepth++ == 0);");
     /* 回收的静态根表按函数重来：形参里含引用的槽从函数体第一行起就是根。
      * 协程 step 的形参住在帧里（`f->name`），静态枚举不出来 ⇒ 整个 step 关掉触发。 */
     g->rcRoots.len = 0;
@@ -7441,6 +7515,7 @@ static void genFunc(CG *g, FuncDef *f) {
         g->indent--;
         cgLine(g, "__extc_ret:");
         g->indent++;
+        if (tlsOwnerFrame) cgLine(g, "extc_rc_tlsDepth--;");   /* 与序言的递增配对 */
         /* `destroy`, not `release`: this is the frame's last exit, so the block the
          * arena kept for the next round has to go too. Emitting `release` here would
          * leak one block per arena at every return -- bounded, but a leak. */
@@ -11142,7 +11217,17 @@ static void emitParallelRuntime(CG *g, Buf *out) {
             "/* Release: hand every worker arena back. */\n"
             "EXTC_UNUSED static void extc_par_close(extc_par_region *r) {\n"
             "    if (!r) return;\n"
-            "    for (int64_t i = 0; i < r->workers; i++) extc_arena_destroy(&r->arenas[i]);\n"
+            "    for (int64_t i = 0; i < r->workers; i++) {\n"
+            );
+        /* 回收区域与 worker arena 同寿：整条 worker 链共用的 TLS 区域在这里（下一次 run
+         * 开始时）随 arena 一起丢弃 —— 与既有「父帧 join 后还能读、下一次 run 前销毁」的
+         * 寿命假设完全一致。没开回收时这一行不存在。 */
+        if (g->needReclaim)
+            bufPuts(out,
+            "        extc_rc_regionDrop((void *)&r->arenas[i]);\n");
+        bufPuts(out,
+            "        extc_arena_destroy(&r->arenas[i]);\n"
+            "    }\n"
             "    free(r);\n"
             "}\n"
             "#endif\n"
@@ -11168,15 +11253,37 @@ static void emitParallelRuntime(CG *g, Buf *out) {
             "        if (lo >= j->n) break;\n"
             "        int64_t hi = lo + j->chunk;\n"
             "        if (hi > j->n) hi = j->n;\n"
+            );
+        if (g->needReclaim)
+            bufPuts(out,
+            "        /* worker 入口：调用者只有 C 运行期。同一个线程内联跑（threads <= 1 或起不出\n"
+            "         * 线程）时外层帧的深度还挂在 TLS 上，这里清零 ⇒ 入口帧一定是拥有者；它分配\n"
+            "         * 的每只区域都是这一轮新开的，外层帧手里不可能有指向它的引用。 */\n"
+            "        int32_t __extc_depth = extc_rc_tlsDepth;\n"
+            "        extc_rc_tlsDepth = 0;\n");
+        bufPuts(out,
             "        int64_t rc = j->fn(a->id, lo, hi, j->ctx);\n"
+            );
+        if (g->needReclaim)
+            bufPuts(out,
+            "        extc_rc_tlsDepth = __extc_depth;\n");
+        bufPuts(out,
             "        if (rc != 0 && __atomic_load_n(&j->first_err, __ATOMIC_RELAXED) == 0)\n"
             "            __atomic_store_n(&j->first_err, rc, __ATOMIC_RELAXED);\n"
             "    }\n"
             "    extc_tls_arena = NULL;\n"
             "#ifdef EXTC_PAR_REGION\n"
-            "    if (!r)\n"
+            "    if (!r) {\n"
+            "#else\n"
+            "    {\n"
             "#endif\n"
+            );
+        if (g->needReclaim)
+            bufPuts(out,
+            "        extc_rc_regionDrop((void *)&local);   /* 回收区域与这块 arena 同寿 */\n");
+        bufPuts(out,
             "        extc_arena_destroy(&local);   /* a region's arenas are the parent's to free */\n"
+            "    }\n"
             "    return NULL;\n"
             "}\n"
             "\n"

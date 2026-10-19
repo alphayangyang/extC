@@ -279,6 +279,15 @@ INJECTIONS = {
                      '    "    for (size_t i = 0; i < words; i++) {\\n",\n'
                      '    "        void *nw = ((void **)dst)[i];\\n",\n')],
     },
+    "par-tls-depth-noreset": {
+        "why": "拿掉 worker 调回调之前的深度清零 ⇒ threads <= 1（或起不出线程）时回调在本线程"
+               "内联跑，外层帧的深度还挂在 TLS 上，入口帧被当成内层帧、只记欠收 ⇒ 那只线程本地"
+               "区域整片收不掉（**内存类**失效，不是悬垂）。判据是归属结构的运行期前提",
+        "gate": "gate-par-tls-owner",
+        "patches": [(CODEGEN,
+                     '            "        extc_rc_tlsDepth = 0;\\n");\n',
+                     '            "        extc_rc_tlsDepth = extc_rc_tlsDepth;   /* 注入：不再清零深度 */\\n");\n')],
+    },
 }
 
 
