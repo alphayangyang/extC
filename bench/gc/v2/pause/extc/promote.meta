@@ -3,17 +3,17 @@ arm=extc
 shape=promote
 args=500000 20261013
 events=20648
-total_us=19159.300
-wall_ms=62.446
-wall_plain_ms=53.235
+total_us=24087.900
+wall_ms=89.033
+wall_plain_ms=89.668
 source=EXTC_RC_SLOWSTEP=0.001 -> [slow] dur_us= lines (per bounded step: mark / sweep)
 events_mark=7187
-total_us_mark=12130.900
+total_us_mark=18120.500
 events_sweep=13461
-total_us_sweep=7028.400
+total_us_sweep=5967.400
 slices=20648
-step_total_us=19196.8
-total_gc_us=19196.8
+step_total_us=24081.9
+total_gc_us=24081.9
 collects=82
-pause_total_us=2189.2
-notes=单次运行；REPS=3 取墙钟最小的一次，events 取自该次
+pause_total_us=3281.8
+notes=单次运行；REPS=1 取墙钟最小的一次，events 取自该次

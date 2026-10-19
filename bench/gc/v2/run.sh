@@ -163,29 +163,37 @@ do_bench() {
   fi
   for s in $SHAPES; do
     args=$(bench_args $s)
-    if ! build_one extc $s; then echo '   FAIL build extc' $s; bad=1; continue; fi
+    for lang in $LANGS; do for kind in $(arms_of $lang); do
+      build_one $lang $s || { echo '   FAIL build' $lang $s; bad=1; }
+    done; done
     refbase=$B/out/ref_$s.txt
     run_arm extc default $s $args > $refbase 2>/dev/null
     if [ ! -s $refbase ]; then echo '   FAIL extC 参考输出为空' $s; bad=1; continue; fi
     echo
     echo '== '$s' ('$args')'
     printf '%-18s %9s %9s %9s %11s %7s\n' arm ms_min ms_med ms_max rss_kb rel
-    REF=
     for lang in $LANGS; do for kind in $(arms_of $lang); do
-      if ! build_one $lang $s; then echo '   FAIL build' $lang $s; bad=1; continue; fi
-      w=$(wrapper $lang $kind $s)
       f=$B/out/ms_${lang}_${kind}_$s.txt
       : > $f
       : > $f.raw
-      for r in $(seq 1 $REPS); do
+    done; done
+    # 交错测量：同一轮里每个臂各跑一次（噪声突发不会整段压在某一臂的连续 REPS 次上）
+    for r in $(seq 1 $REPS); do
+      for lang in $LANGS; do for kind in $(arms_of $lang); do
+        w=$(wrapper $lang $kind $s)
+        f=$B/out/ms_${lang}_${kind}_$s.txt
         outf=$B/out/got_${lang}_${kind}_$s.txt
         line=$($B/v2run --pin $PIN --out $outf -- $w $args)
         ms=$(field "$line" ms)
-        if [ -z "$ms" ]; then echo '   FAIL run' $lang:$kind; bad=1; break; fi
+        if [ -z "$ms" ]; then echo '   FAIL run' $lang:$kind; bad=1; continue; fi
         echo $ms >> $f
         echo "$line" >> $f.raw
         cmp -s $outf $refbase || { echo '   BAD  stdout 与 extC 不同' $lang:$kind; bad=1; }
-      done
+      done; done
+    done
+    REF=
+    for lang in $LANGS; do for kind in $(arms_of $lang); do
+      f=$B/out/ms_${lang}_${kind}_$s.txt
       [ -s $f ] || continue
       min=$(sort -g $f | head -1)
       med=$(sort -g $f | awk '{a[NR]=$1} END{print a[int((NR+1)/2)]}')

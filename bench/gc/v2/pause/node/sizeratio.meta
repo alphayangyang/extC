@@ -3,15 +3,15 @@ arm=node
 shape=sizeratio
 args=2000000 20261013
 events=51
-total_us=7300.000
-wall_ms=99.452
-wall_plain_ms=83.741
+total_us=14100.000
+wall_ms=208.567
+wall_plain_ms=174.672
 source=node --trace-gc-nvp -> per-GC 'pause' field (ms) x1000 to us; V8 STW pause of Scavenge/Mark-Compact/Mark-Sweep
 events_minor=51
 events_major=0
-total_gc_us=5990.000
-gc_us_scavenge=5990.000
+total_gc_us=13700.000
+gc_us_scavenge=13700.000
 gc_us_major_pause_only=0.000
 js_mode=split
-reps=3
-notes=plain x1 + diag x3 on cpu 6; events/wall from the min-wall diag run; V8 trace goes to stdout so diag stdout is normalized by dropping '^[' lines before cmp; intermediates kept in /tmp only; total_gc_us = sum(scavenge= over gc=s lines) + sum(pause= over major lines) -- major 行的并发标记不在 nvp 行里，该部分对 major 只是下界; pause 字段只有 1 位小数 ms = 100us 分辨率（亚 100us 的 scavenge 记 0）
+reps=1
+notes=plain x1 + diag x1 on cpu 6; events/wall from the min-wall diag run; V8 trace goes to stdout so diag stdout is normalized by dropping '^[' lines before cmp; intermediates kept in /tmp only; total_gc_us = sum(scavenge= over gc=s lines) + sum(pause= over major lines) -- major 行的并发标记不在 nvp 行里，该部分对 major 只是下界; pause 字段只有 1 位小数 ms = 100us 分辨率（亚 100us 的 scavenge 记 0）

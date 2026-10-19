@@ -2,13 +2,13 @@ lang=extc
 arm=extc_sweep
 shape=chase
 args=1048576 20261013 4000000
-events=1327
-total_us=85.500
-wall_ms=144.699
-wall_plain_ms=149.004
+events=1
+total_us=0.000
+wall_ms=137.606
+wall_plain_ms=150.675
 source=EXTC_RC_SLOWSTEP=0.001 -> [slow] lines with kind=sweep
-slices=3377
-collects=2
-step_total_us=6751.6
-pause_total_us=3398.4
+slices=2
+collects=1
+step_total_us=1256.7
+pause_total_us=1305.2
 notes=extc 全体的 kind=sweep 子集；只存 hist（分位按档上界近似），逐事件表在 extc/ 下

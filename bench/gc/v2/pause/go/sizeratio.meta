@@ -3,14 +3,14 @@ arm=go
 shape=sizeratio
 args=2000000 20261013
 events=102
-total_us=214.000
-wall_ms=47.692
-wall_plain_ms=46.460
+total_us=183.000
+wall_ms=46.774
+wall_plain_ms=52.809
 source=GODEBUG=gctrace=1 stderr 'gc N ... A+B+C ms clock' -> A (sweep termination STW) + C (mark termination STW), *1000 = us
 gc_cycles=51
 events_sweepterm=51
-total_us_sweepterm=204.000
+total_us_sweepterm=179.000
 events_markterm=51
-total_us_markterm=10.000
-total_gc_us=13134.000
-notes=单次运行；REPS=3 取带诊断墙钟最小的一次，events 取自该次；events=2*gc_cycles；total_gc_us=Σ(A+B+C) 即全部 GC 阶段的墙钟之和（GOMAXPROCS=1 ⇒ 并发标记也占同一条核，可与 extC 的 Σ[step] 对照；total_us 只是其中 A+C 两段 STW）
+total_us_markterm=4.000
+total_gc_us=12803.000
+notes=单次运行；REPS=1 取带诊断墙钟最小的一次，events 取自该次；events=2*gc_cycles；total_gc_us=Σ(A+B+C) 即全部 GC 阶段的墙钟之和（GOMAXPROCS=1 ⇒ 并发标记也占同一条核，可与 extC 的 Σ[step] 对照；total_us 只是其中 A+C 两段 STW）

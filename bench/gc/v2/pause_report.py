@@ -171,10 +171,66 @@ def fmt_us(v):
     return "%.2f µs" % v
 
 
-def write_md(rows, path, tsvinfo):
+def arm_events_span(rows, arm):
+    ev = [r["events"] for r in rows if r["arm"] == arm]
+    return (min(ev), max(ev)) if ev else (0, 0)
+
+
+def read_matrix_rss(path):
+    """matrix.tsv -> {(shape, arm): rss_kb}；缺文件返回空（正文退化成不带数字的写法）。"""
+    d = {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            head = f.readline().rstrip("\n").split("\t")
+            for line in f:
+                p = line.rstrip("\n").split("\t")
+                if len(p) != len(head):
+                    continue
+                row = dict(zip(head, p))
+                try:
+                    d[(row["shape"], row["arm"])] = int(row["rss_kb"])
+                except (KeyError, ValueError):
+                    pass
+    except OSError:
+        return {}
+    return d
+
+
+def fmt_mb(kb):
+    return "%.1f MB" % (kb / 1024.0)
+
+
+def find_pause(rows, shape, arm):
+    return next((r for r in rows if r["shape"] == shape and r["arm"] == arm), None)
+
+
+def write_md(rows, path, tsvinfo, rss=None):
     srcs = {}
     for r in rows:
         srcs.setdefault(r["arm"], r["source"])
+    jlo, jhi = arm_events_span(rows, "java")
+    glo, ghi = arm_events_span(rows, "go")
+    java_span = ("Java %d–%d 条" % (jlo, jhi)) if jlo != jhi else ("Java %d 条" % jlo)
+    go_span = ("Go %d–%d 条" % (glo, ghi)) if glo != ghi else ("Go %d 条" % glo)
+    ch = find_pause(rows, "chase", "extc")
+    if ch:
+        max_sentence = ("4. **max 是抢占敏感量**：extC chase 的 %.2f ms 是一次被抢占（`over1ms=%d`），不是某个更贵的回收单元；"
+                        % (ch["max_us"] / 1000.0, ch["ge1ms"]))
+    else:
+        max_sentence = "4. **max 是抢占敏感量**：max 常是一次被抢占（`over1ms` 列），不是某个更贵的回收单元；"
+    ep, ec = find_pause(rows, "promote", "extc"), find_pause(rows, "cycleratio", "extc")
+    jp, jc = find_pause(rows, "promote", "java"), find_pause(rows, "cycleratio", "java")
+    rss = rss or {}
+    er = [rss.get(("promote", "extc:default")), rss.get(("cycleratio", "extc:default"))]
+    jcr, jpr = rss.get(("cycleratio", "java:default")), rss.get(("promote", "java:default"))
+    if ep and ec and jc and all(v is not None for v in er + [jcr, jpr]):
+        body6 = ("   extC 占比高（`promote` %.1f%%、`cycleratio` %.1f%%）换来的是 %.1f–%.1f MB 峰值；"
+                 "Java 的 `cycleratio` %d 事件、%.1f%% 占比，代价是 **%s**（`promote` 的 %.1f%% 也是靠 %s 堆头寸）。"
+                 % (ep["share_pct"], ec["share_pct"], min(er) / 1024.0, max(er) / 1024.0,
+                    jc["events"], jc["share_pct"], fmt_mb(jcr),
+                    jp["share_pct"] if jp else 0.0, fmt_mb(jpr)))
+    else:
+        body6 = "   extC 与 Java 的占比都要配 `REPORT.md` 的峰值 RSS 读（本次没找到 matrix.tsv，正文不带数字）。"
     lines = [
         "# 跨语言停顿分布（v2）",
         "",
@@ -192,15 +248,15 @@ def write_md(rows, path, tsvinfo):
     lines += ["## 读法（先看这六条，再看数）", "",
               "1. **事件数不可直接比**：extC 每条有界回收步算一个事件（上万条），Go 每个 GC 周期两段、Java 每条 GC 暂停、Node 每次 GC 各算一个（个位数到两位数）。",
               "   频率差异是「细粒度增量 vs 整轮 STW」的口径差，不是谁更忙。",
-              "2. **样本量与分辨率**：Java 0–3 条、Go 4–102 条 ⇒ 它们的 p99/max 基本是单点噪声；Node 的 `pause` 只有 1 位小数 ms（100 µs 分辨率），",
+              "2. **样本量与分辨率**：%s、%s ⇒ 它们的 p99/max 基本是单点噪声；Node 的 `pause` 只有 1 位小数 ms（100 µs 分辨率），" % (java_span, go_span),
               "   亚 100 µs 的 scavenge 记成 0 ⇒ `[0,100)` 那些细档别读；三个托管语言都是新进程、无预热。",
               "3. **extC 的「停顿」是在 mutator 线程上做的 GC 工作**（没有独立 GC 线程）⇒ 它的 `total_us` 与 `total_gc_us` 同值（见下一节）；",
               "   拿它的 p50 去和 Go 的 STW p50 排名次是错的，要比的是「mutator 被占住多少时间」= 下一节的 Σ 表。",
-              "4. **max 是抢占敏感量**：extC chase 的 2.36 ms 是一次被抢占（`over1ms=1`），不是某个更贵的回收单元；",
+              max_sentence,
               "   仓库纪律是用超阈计数与分位（`≥1ms` 列、p99/p99.9）而不是 max。",
               "5. **取数必须串行**：所有臂都钉同一条核（见 `pause/README.md` 第 2 节），并发跑会互相抢占（同一臂两次数值可差数倍）。",
               "6. **占比高不是缺陷，占比低也不等于便宜**：停顿/GC 占比是「这次运行里回收付出了多少」；判「值不值」要配同一形状的**峰值 RSS**（见 `REPORT.md` 的墙钟/RSS 表）。",
-              "   extC 占比高（`promote` 36.1%、`cycleratio` 8.6%）换来的是 7.4–7.5 MB 峰值；Java 的 `cycleratio` 0 事件、0.0% 占比，代价是 **104 MB**（`promote` 的 4.5% 也是靠 111 MB 堆头寸）。",
+              body6,
               "   低占比既可能是「回收便宜」，也可能是「还没回收」，两张表要一起读。", ""]
     lines += ["", "## 分形状", ""]
     for s in SHAPES:
@@ -294,7 +350,7 @@ def main():
         print("没找到任何 .meta（检查 %s）" % pausedir, file=sys.stderr)
         return 1
     write_tsv(rows, tsv)
-    write_md(rows, md, {"png": png})
+    write_md(rows, md, {"png": png}, read_matrix_rss(os.path.join(v2, "matrix.tsv")))
     write_png(rows, png)
     print("表：%s（%d 行）" % (tsv, len(rows)))
     return 0

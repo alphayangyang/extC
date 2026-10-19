@@ -3,12 +3,12 @@ arm=extc_mark
 shape=sizeratio
 args=2000000 20261013
 events=892
-total_us=748.700
-wall_ms=33.678
-wall_plain_ms=31.633
+total_us=730.300
+wall_ms=34.600
+wall_plain_ms=33.165
 source=EXTC_RC_SLOWSTEP=0.001 -> [slow] lines with kind=mark
 slices=5776
 collects=149
-step_total_us=3783.1
-pause_total_us=455.7
+step_total_us=2238.3
+pause_total_us=569.4
 notes=extc 全体的 kind=mark 子集；只存 hist（分位按档上界近似），逐事件表在 extc/ 下

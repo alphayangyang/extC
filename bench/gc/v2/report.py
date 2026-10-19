@@ -47,7 +47,7 @@ def main():
     L = []
     L.append('# GC 大横评 v2 —— 四形状六语言')
     L.append('')
-    L.append('所有臂都经 `bench/gc/v2/shim.c`（`wait4` 内核值，best-of-REPS 取 ms 最小），单核绑核，stdout 与 extC 参考逐字节相同（`run.sh align`）。')
+    L.append('所有臂都经 `bench/gc/v2/shim.c`（`wait4` 内核值，best-of-REPS 取 ms 最小），单核绑核，stdout 与 extC 参考逐字节相同（`run.sh align`）；每个形状内 REPS 轮**交错**跑（一轮里每个臂各一次），噪声突发不会整段压在某一个臂上。')
     L.append('')
     for s in shapes:
         rs = [r for r in rows if r['shape'] == s]
@@ -55,13 +55,13 @@ def main():
         base = next((r for r in rs if r['arm'].startswith('extc')), None)
         L.append(f'## {s}')
         L.append('')
-        L.append('| 臂 | 墙钟 ms | ×extC | RSS MB | CPU ms | 次缺页 | 非自愿切换 |')
-        L.append('|---|---:|---:|---:|---:|---:|---:|')
+        L.append('| 臂 | 墙钟 ms（min） | 中位 ms | ×extC | RSS MB | CPU ms | 次缺页 | 非自愿切换 |')
+        L.append('|---|---:|---:|---:|---:|---:|---:|---:|')
         for r in rs:
             rel = (r['ms_min'] / base['ms_min']) if base else float('nan')
             cpu = r['utime_ms'] + r['stime_ms']
-            L.append('| `%s` | %s | %.2f× | %s | %s | %s | %s |' % (
-                r['arm'], fmt(r['ms_min']), rel, fmt(r['rss_kb'] / 1024.0), fmt(cpu),
+            L.append('| `%s` | %s | %s | %.2f× | %s | %s | %s | %s |' % (
+                r['arm'], fmt(r['ms_min']), fmt(r['ms_med']), rel, fmt(r['rss_kb'] / 1024.0), fmt(cpu),
                 f"{r['minflt']:,}", f"{r['nivcsw']:,}"))
         L.append('')
     # 跨形状概览：每个语言最快臂
@@ -72,7 +72,8 @@ def main():
         lg = r['arm'].split(':')[0]
         if lg not in langs:
             langs.append(lg)
-    L.append('每语言取该形状最快的一档（`extC:off` / `Go:off` 是 GC 关档对照，不计入）；extC 一列即参考臂。')
+    L.append('每语言按 **min** 取该形状最快的一档（`extC:off` / `Go:off` 是 GC 关档对照，不计入）；extC 一列即参考臂。')
+    L.append('min 对噪声突发敏感（这台 VM 上同一臂两次可差 30%），所以上一节同时给出中位；两者结论不一致时以中位为准。')
     L.append('')
     L.append('| 形状 | ' + ' | '.join(CJK.get(lg, lg) for lg in langs) + ' |')
     L.append('|---|' + '---:|' * len(langs))

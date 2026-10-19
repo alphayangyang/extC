@@ -3,12 +3,12 @@ arm=java
 shape=promote
 args=500000 20261013
 events=2
-total_us=3979.000
-wall_ms=86.254
-wall_plain_ms=89.008
+total_us=3643.000
+wall_ms=99.202
+wall_plain_ms=92.785
 source=-Xlog:gc:file=<tmp> ' Pause ' lines; trailing <N>ms field -> us (per STW GC pause event)
-total_gc_us=3979.000
+total_gc_us=3643.000
 gc_algo=Serial
-reps=3
+reps=1
 concurrent_lines=0
-notes=单次运行；REPS=3 取带诊断墙钟最小的一次，events/hist 取自该次；taskset -c 6 单核下 JVM 人体工学选 Serial；SerialGC 无并发阶段（全部 GC 都是 STW）⇒ total_gc_us 与 total_us 同值
+notes=单次运行；REPS=1 取带诊断墙钟最小的一次，events/hist 取自该次；taskset -c 6 单核下 JVM 人体工学选 Serial；SerialGC 无并发阶段（全部 GC 都是 STW）⇒ total_gc_us 与 total_us 同值
