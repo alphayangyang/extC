@@ -245,6 +245,17 @@ p = null                 // 计数 0 —— 放
 `tid[]` 链、`freeSlotWord` 逐槽插链且撤边、三段都不写载荷/不清 `tid[]`/不算载荷地址），
 每条 `--selftest` 注入各变红一条。
 
+**宿主证不出来时先按槽地址反查。** 写引用要说出「这条槽装在哪个对象里」。基表达式带调用
+（`(*id(s)).kids[0] = v`）时证不出宿主**对象**，但**槽地址本身**还能查：`extc_rc_slabOfInterior`
+把地址按 `EXTC_RC_SLAB_SIZE` 掩掉低位得到 slab 基址（普通 slab 按整块对齐 ⇒ 一次按位与），再按
+基址查登记表，最后用 `offOf(p) < nslots * ss` 夹住**发放容量**；命中就拿到槽所在的那只区域，这条
+边照常按「宿主已知」记账（旧值撤销、跨区登记都做，`extc_rc_storeRefSlot`）。这条路**不要求槽首**
+（`ownSlab` 才要校验 `k * ss == off`），所以下标槽、视图里的槽也能用；**超大块**的载荷是单独
+`malloc` 的、掩码定不了位 ⇒ 返回 0，调用方回落保守路径；反查失手（栈上局部量、视图数据、C/池
+缓冲）才落 `storeRefUnknown` 的「目标区域退出清扫」。代价与回落路径同量级：那条路本来也要查一次
+`ownSlab`。判据：单测 `槽地址反查：…`（反查形状 / 反查成功绝不下调保守 / 超大块失手）与
+`tests/reclaim-gaps` 的 `base_call_unknown`（峰值比 0.95×）。
+
 ## 三点五、覆盖点的定点释放（环在覆盖点就没了）
 
 环永不归零，所以计数那一层收不了它；但"**覆盖一个槽**"这个动作本身能判死一棵树 —— 只要那
@@ -620,8 +631,10 @@ reclaim 形状闸门（`gate-shapes`/`gate-work`/`gate-shard-cycles`/`gate-idle-
   - **根**：活引用槽的位置现在按词法作用域分函数拼。应当由逃逸分析那一份「引用槽在哪、指向什么、
     活到哪一层」的事实统一产出，运行期只维护**一条任何触发点都走得通的根链**（帧节点 + 槽表 +
     线程本地链）：进帧登记一次、出帧撤销，标记时遍历整条链。
-  - **宿主**：写引用时要能说出"这条槽装在哪个对象里"。现在下标槽、基表达式带调用或视图的槽证不出
-    宿主，于是整个区域不扫；应当把目的地求值一次，再逐叶落账。
+  - **宿主**：写引用时要能说出"这条槽装在哪个对象里"。**已落一半**：槽地址落在 rc 槽里时按槽地址
+    反查宿主（见 §三「宿主证不出来时先按槽地址反查」），基表达式带调用的槽不必再退出清扫；仍缺的
+    是槽自己也不在 rc slab 里的那几档 —— 本帧 `new T[n]` 的 arena 数组视图、池板元素、C/外部缓冲，
+    这些要么把视图基址登记进根表，要么整块按保守处理。
   - **出口**：「别收」现在有四种互不相干的表达（编译期的区域级与函数级、运行期的一次性与永久），
     各自在不同地方查。应当合成一个。
 * **把登记点铺全**：协程帧、`ext` 派生的帧、整条 worker 调用链共用的线程本地区域，以及被当作
@@ -821,6 +834,7 @@ cache-sim 判据变红）。
 | `skip:same-region` | 值与宿主**在同一个区域**（编译期证得）⇒ 赋值时不登记、不查表 | 两项都是**本帧新局部量**且 arena 层相同 ⇒ 这条边不可能跨区 | 少算（不安全）| `gate-reclaim-switch` 的 `cross-region：登记量判据`；注入 `same-region-always`（把判定强制为真）⇒ 红在那条上 | 
 | `skip:occ-free` | 按槽计数/登记/持有的入口：槽没占用就返回 | 只有**占用**的槽才有计数、登记位、类型 | 多留（保守）| 注入 `occ-guard-drop` ⇒ 红在 `bump 跨区：bump 槽在按槽登记之外` |
 | `skip:sat-inc` / `skip:sat-dec` / `skip:hold-zero` | 计数到顶粘住 / 降到零以下不再减 | 饱和值粘住 | 少算（不安全）| `count-nosat` / `rsinc-nosat` ⇒ 各自红在饱和判据上 |
+| `skip:host-slab` | 宿主表达式证不出来时按**槽地址**反查宿主：「槽不属于任何 rc slab」⇒ 回落 `storeRefUnknown` 的保守方向 | 普通 slab 一造出来就进登记表（映射格 + 开放寻址表，整片丢弃时注销），超大块表按载荷地址精确匹配；反查还要过 `offOf(p) < nslots*ss`（夹**发放容量**，不是整块）⇒ 查不到只可能是视图/arena 数组/池/C 缓冲里的槽，那种槽确实没有「装着它的 rc 区域」 | 多留（保守）| 单测 `t_hostSlot` 的「反查失手」组（栈上槽 ⇒ 目标区域退出清扫；超大块载荷不认）+ `gate-reclaim-gaps` 的 `base_call_unknown`（反查得到 ⇒ 峰值比 0.95×） |
 | `skip:not-own` / `skip:no-pointer` | 指针查不到自己的 slab（或指针为空）⇒ 当作"不是本运行期的槽" | 只有本运行期的 slab 才会被查 | 少算（不安全）| 反向表 `ownTab`/`bigTab` **无上限**（`realloc` 翻倍）⇒ 查不到只可能是外来指针；ASan 语料 + 跨语言对拍。`ownSlab` 自己不再显式挡空指针：`p == 0 ⇒ base == 0`，而映射格/登记表/超大块表里都没有键 0 ⇒ 每层探测落空、返回 0 与显式检查相同；空指针边界由 `reclaim-unit` 的「空指针查不到 slab」「空指针不算本运行期的槽」两条断言钉住 |
 | `skip:ttab-hit` | 小类型表的哈希索引探测命中 ⇒ 直接返回该描述符的号 | 索引按描述符**指针相等**建、装载上限 1/2 ⇒ 命中即等价于线性扫到同一个描述符 | 无（就是命中路径）| `gate-reclaim-tables`（T=8 vs 256 的成本比）；语义由 `reclaim-unit` / 语料对拍兜底 |
 | `skip:type-hot` | 本块上一次落表的描述符与本次**指针相等** ⇒ 直接返回上次的类型号，跳过类型表查找 | 描述符按指针相等去重、类型号在本块内只增不改（`ttab` 下标一旦落表就不动），缓存只在落表成功后回填 ⇒ 缓存对等价于查表结果 | 无（就是命中路径）| `gate-reclaim-tables`（T=8 vs 256 成本比）+ 语料对拍；`gate-skip-table` |
@@ -870,7 +884,7 @@ cache-sim 判据变红）。
 | 义务 2/5：登记位不留陈旧入口（撤销出边、释放清位）| 泄漏（保守）| `freeSlot` 清 `rsbit`、`unlinkChildren` 撤出边 | 注入 `rsinc-drop` ⇒ `cross-region：登记量判据破了`；撤销侧：单测 `撤销：…` + 注入 `rsdec-nop` ⇒ 红在 `撤销：撤掉一条边后计数减一、登记位仍在` |
 | 义务 3：计数到顶**粘住**（`hold` 与 `rscnt` 都一样）| 不安全 | `rsInc`/`rsIncSlab`/`holdUpd*` 的 `SAT` 守卫 | 注入 `count-nosat` ⇒ `饱和：计数到顶粘住`；注入 `rsinc-nosat` ⇒ `跨区计数：到顶粘住`；注入 `realpath-noreg`（只破坏**真实赋值路径**的登记）⇒ 红在 `跨区计数（真实路径）：到顶粘住`，证明真实路径那一组断言有独立的牙 |
 | 义务 4：按**对象自己的**描述符走指针字段 | 不安全（走漏 ⇒ 少标）| `extc_rc_mark` 用 `s->type[i]` | 单测 `类型：描述符字段数正确` + 注入 `mark-nodesc` ⇒ 红在 `跨区：B 从入边位图播种` |
-| 义务 7：种子不完整 ⇒ 目标区域**退出清扫** | **不安全** | `storeRefUnknown` / `storeStructCons` 的保守分支 | 单测 `义务 7：…退出清扫` + 注入 `noSweep-drop` ⇒ 红在那条上 |
+| 义务 7：种子不完整 ⇒ 目标区域**退出清扫** | **不安全** | `extc_rc_storeRefSlot` 先按槽地址反查宿主（`slabOfInterior`），槽不在 rc slab 里才落 `storeRefUnknown`；`storeStructCons` 的保守分支同向 | 单测 `义务 7：…退出清扫`、`槽地址反查：…`（反查成功不下调保守 / 反查失手才保守 / 超大块失手）+ 注入 `noSweep-drop` ⇒ 红在那条上 |
 | 参与区域数（单区域免登记快路径的前提）| **不安全** | 槽的**诞生点**记 `partN`：`extc_rc_alloc` 无条件记、`storeStructCons` 的保守分支也记；**赋值侧不再记**（冗余：槽的区域在诞生时已记过，见 `changelog/2026-10.md` 的 2026-10-15 条目）；`extc_rc_regionFree` 开头有 **R3 运行期守卫**复查"有占用槽 ⇒ `part == 1`" | `gate-note-part`：静态 R2「会交出槽 ⇒ 必须记参与」（**在真实缺陷 `storeStructCons` 上红过**）+ 运行期 R3。R3 的红演示：注入"删掉 `alloc` 的 `notePart`" ⇒ 静态 `FAIL [R2] extc_rc_alloc`（rc=1）**且** `trap: reclaim: R3: occupied slot in a region with part == 0`（rc=1），撤回后绿。另有 `cross-region` 登记量判据 |
 | 触发语义：压力阈值随 `live`/`scale` 更新 | 性能/内存 | `collect`/`regionFloor`/`regionNew` 末的 `thrUpd` | 注入 `thr-stale` ⇒ `阈值缓存③：倍数翻倍后阈值 ×2` |
 | 本地/形参槽的只写入口（`EXTC_RC_LOCALSTORE`，默认关）**只允许用在 `owner == 0` 的槽上** | **不安全**（对象宿主走它 ⇒ 跨区登记整段丢失）| `codegen.c` 的 `rcLocalStore && rcNoCount && hostBase == NULL`；`storeRefLocal` 只写 | 注入 `localstore-on-objhost`（把 `hreg != NULL` 的对象宿主存储也改发该入口）⇒ `cross_region` 的 `rs_inc/rs_dec/rs_live/rs_hwm` 从 `200000/196611/3389/65537` **塌成 0/0/0/0**，`gate-reclaim-switch` **红（通过 1 失败 1，exit 1）** —— 实测；等价性（无计数档下 `storeRefOwned(slot,v,0)` 的 gated 块因 `so == 0` 无副作用）见 `tests/reclaim-perf/LOCALSTORE-IMPL.md` |
@@ -884,5 +898,5 @@ cache-sim 判据变红）。
 | 着色缓存的失效契约：**每一处清 mark 位都要自增代际号** | **不安全**（漏一条 ⇒ 把白对象当黑、跳过屏障、漏标可达对象）| `extc_rc_begin` / `sweepBegin` / `releaseOld` / `regionFree` 统一调 `extc_rc_shadeNextGen()`（自增代际号，回绕时整表 `memset`） | 注入 `shade-noinval`（删掉 `releaseOld` 那条）⇒ 单测红在 `着色缓存：收窄清扫清 mark 后失效`；`EXTC_RC_SHADE_GUARD=1` 的 `[sg] bad` 同时计数。其余三条是纵深防御（`begin` 每轮都会清缓存），由 run.sh 的 guard 自检守着；结构由 `gate-shade-cache` 钉住（单字格/格号旋入代际号/四站点只调 NextGen，6 项注入），回绕清表由 `t_shadeCache` ③ 组证明 |
 
 **13 条全部有牙**（每条都给了注入或结构门禁，且红点写在表里）。单测现在**两档都跑**：
-默认（无计数）**84 条**、计数档 **126 条** —— 后者是计数专属断言，用 `#if !EXTC_RC_NOCOUNT`
+默认（无计数）**103 条**、计数档 **145 条** —— 后者是计数专属断言，用 `#if !EXTC_RC_NOCOUNT`
 显式标注（driver 不显式标注就只会覆盖计数档，默认档的编译分支不会被单测碰到）。

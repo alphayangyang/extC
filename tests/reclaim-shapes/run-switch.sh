@@ -404,9 +404,10 @@ else
     bad "cross-region-elem N→4N：两次运行没同时跑对（N: rc=$en_rc out=$en_out / 4N: rc=$ef_rc out=$ef_out）"
 fi
 
-# ①d′ 宿主**证不出来**那一档（`(*id(a)).next = a`：基表达式带调用；视图元素 `v[i].f = x` 同档）。
-# 硬要求是"证不出 owner 时那条槽绝不能照常扫"：生成物里该条赋值要么是 `storeRefUnknown`
-# （把目标所在区域整个标成 noSweep），要么是登记了一个**真** owner；绝不许落回
+# ①d′ 宿主**表达式**证不出来那一档（`(*id(a)).next = a`：基表达式带调用；视图元素 `v[i].f = x` 同档）。
+# 硬要求是"证不出 owner 时那条槽绝不能照常扫"：生成物里该条赋值要么按**槽地址**反查宿主
+# （`storeRefSlot`：槽在 rc slab 里 ⇒ 照常记账；失手才回落 `storeRefUnknown` 的 noSweep），
+# 要么直接 `storeRefUnknown`，要么登记了一个**真** owner；绝不许落回
 # `storeRefOwned(..., (void *)(0))`（owner=0 = 既没登记、也没退出清扫 ⇒ seed 缺一条还照扫）。
 echo "-- ①d′ 宿主证不出来：带调用的基表达式必须退出清扫，不许照常扫 --"
 UH_WANT="got=7"
@@ -422,8 +423,9 @@ uh_build() { # <on|off> <tag> → UH_C=ok/fail；开关开时另给 UH_FORM（�
     if [ $? -eq 0 ] && "$CC" -std=c11 -fwrapv -O1 -o "$TMP/uh-$2" "$TMP/uh-$2.c" \
             >>"$TMP/uh-$2.build.log" 2>&1; then UH_C=ok; fi
     if [ "$1" = on ] && [ "$UH_C" = ok ]; then
-        uh_line=$(grep -E 'storeRef(Owned|Unknown)' "$TMP/uh-$2.c" | grep -F 'id(a)' | grep -F '.next')
+        uh_line=$(grep -E 'storeRef(Owned|Unknown|Slot)' "$TMP/uh-$2.c" | grep -F 'id(a)' | grep -F '.next')
         case "$uh_line" in
+            *storeRefSlot*)                    UH_FORM="槽地址反查（命中 ⇒ 照常记账 / 失手 ⇒ 保守）" ;;
             *storeRefUnknown*)                 UH_FORM="保守路径（目标区域退出清扫）" ;;
             *storeRefOwned*', (void *)(0));'*) UH_FORM="bad" ;;
             *storeRefOwned*)                   UH_FORM="登记（宿主已证出）" ;;
@@ -445,7 +447,7 @@ uh_run o; uho_rc=$UH_RC; uho_out=$UH_OUT
 if [ "$uh_on_c" = ok ] && [ "$uh_form" != bad ] && [ "$uh_form" != - ]; then
     ok "unknown-host：带调用的基表达式槽种子完整（生成物：$uh_form）"
 else
-    bad "unknown-host：宿主证不出来却既没登记也没退出清扫（生成物形态：$uh_form）—— seed 不完整还照常扫"
+    bad "unknown-host：宿主证不出来、槽地址反查也没接上（生成物形态：$uh_form）—— seed 不完整还照常扫"
 fi
 if [ "$uh_off_c" = ok ] && [ "$uhr_rc" = 0 ] && [ "$uho_rc" = 0 ] \
    && [ "$uhr_out" = "$UH_WANT" ] && [ "$uho_out" = "$UH_WANT" ]; then

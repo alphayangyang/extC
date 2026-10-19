@@ -3570,7 +3570,7 @@ static void rcRootLeaves(CG *g, Type *t, const char *base, int depth) {
  *
  * 与 `rcRootLeaves` 是同一个递归形状，区别只在出口：那里把叶子登记成**根**，这里把叶子的
  * 路径交给调用方 —— **整值存储**（`s.w = wrap { n: keeper }`、`var b: wrap = ...`）要按叶子
- * 逐条走引用槽的记账（`initRef` / `storeRefOwned` / `storeRefUnknown`）。整块裸拷既不 `inc`
+ * 逐条走引用槽的记账（`initRef` / `storeRefOwned` / `storeRefSlot`）。整块裸拷既不 `inc`
  * 也不登记跨区边：槽被写进去了却没记账，对象会在计数归零或区域清扫时被放掉，而槽还指着它。
  *
  * `base` 必须是**可重复求值**的左值（调用方先用临时量 / `(*p)` 把目标与值各求值一次）：
@@ -5520,8 +5520,9 @@ static void rcScanLinked(CG *g, Stmt *body) {
  * 没记账 —— 一条路是计数根本不知道这个持有者（唯一可见持有者一放手就归零回收，槽成悬垂），
  * 另一条路是清扫的种子不全（跨区入边没登记 ⇒ 目标区域的清扫把还被指着的对象当垃圾放掉，
  * 与 `cross_region_elem` 同一个洞的另一半）。这里把一整块拆回**逐条引用槽赋值**：新槽走
- * `initRef`（只写 + 加一，绝不读旧值），覆盖槽走 `storeRefOwned` / `storeRefUnknown`
- * （读旧减一、新值加一；宿主证不出来时让目标区域退出清扫）—— 与直接引用槽赋值同一条路。
+ * `initRef`（只写 + 加一，绝不读旧值），覆盖槽走 `storeRefOwned` / `storeRefSlot`
+ * （读旧减一、新值加一；宿主证不出来时先按**槽地址**反查它落在哪只区域，查不到才让目标
+ * 区域退出清扫）—— 与直接引用槽赋值同一条路。
  *
  * 调用方负责：目标与值**各求值一次**（引用进临时量），因为每条记账都会把路径再拼一次。
  *
@@ -5531,7 +5532,8 @@ static void rcScanLinked(CG *g, Stmt *body) {
  * @param srcBase    值的 C 左值表达式（如 `__extc_svv3`）；`init` 为真时不读。
  * @param init       true = 新槽（`var ...` 的初始化）：只加一；false = 覆盖：读旧减一。
  * @param owner      "装着这条槽的对象"（同 `storeRefOwned` 第三个实参）；局部/静态槽传 `0`。
- * @param hostUnknown 宿主证不出来 ⇒ 每条叶子走保守路径（目标区域退出清扫）。
+ * @param hostUnknown 宿主证不出来 ⇒ 每条叶子走 `storeRefSlot`（槽地址反查区域），槽也不在
+ *                    rc slab 里才走保守路径（目标区域退出清扫）。
  */
 static void cgValueRefStore(CG *g, Type *t, const char *dstBase, const char *srcBase,
                             bool init, const char *owner, bool hostUnknown) {
@@ -5548,7 +5550,9 @@ static void cgValueRefStore(CG *g, Type *t, const char *dstBase, const char *src
             dbgRcSite(g, g->blkLevel, 0);
             cgLine(g, "extc_rc_initRef((void **)&(%s), (void *)(%s));", d, d);
         } else if (hostUnknown) {
-            cgLine(g, "extc_rc_storeRefUnknown((void **)&(%s), (void *)(%s));",
+            /* 宿主表达式证不出来时，**槽地址**自己可能就带着答案（它落在 rc 槽里 ⇒ 那是哪只
+             * 区域的内存），先试反查；槽也不在 rc slab 里（视图数据、C/池缓冲）才回落保守路径。 */
+            cgLine(g, "extc_rc_storeRefSlot((void **)&(%s), (void *)(%s));",
                    d, arenaPrintf(g->arena, "%s%s", srcBase, p));
         } else {
             cgLine(g, "extc_rc_storeRefOwned((void **)&(%s), (void *)(%s), (void *)(%s));",
@@ -6164,7 +6168,7 @@ static void genStmtInner(CG *g, Stmt *s) {
              * 可能藏着引用叶子（`s.w = wrap { n: keeper }`）。这种赋值不能再走裸的 C 整块拷贝
              * —— 那样槽被写进去却没有 `inc`、也没有跨区登记（`a7e2642` 是同一类"槽写了但没
              * 记账"，只是走另一个机制）。三态与引用槽一致：枚举得出来 ⇒ 逐叶走
-             * `storeRefOwned`/`storeRefUnknown`；枚举不出来（枚举负载、泛型实参带引用）⇒
+             * `storeRefOwned`/`storeRefSlot`；枚举不出来（枚举负载、泛型实参带引用）⇒
              * 逐字保守路径（只加不减 + 登记/退出清扫）。 */
             Type *rawTT = s->u.assign.target ? s->u.assign.target->type : NULL;
             const RcScan valScan = (g->needReclaim && !s->u.assign.op && !refStore && rawTT)
@@ -6206,10 +6210,12 @@ static void genStmtInner(CG *g, Stmt *s) {
             if (refStore) {
                 dbgRcSite(g, g->blkLevel, 0);
                 if (hostUnknown) {
-                    /* 宿主证不出来：这条槽必须仍然是种子，但静态根表里没有它、来源侧也无从
-                     * 撤销。于是把**目标所在的区域**标成"不清扫"（安全方向：宁可少收）——
-                     * 区域从此只靠计数归零回收，绝不在种子不完整时照常扫。 */
-                    cgLine(g, "extc_rc_storeRefUnknown((void **)&(%s), (void *)(%s));", tgt, val);
+                    /* 宿主表达式证不出来（`(*id(s)).kids[0] = v`、视图元素写）：这条槽必须仍然是
+                     * 种子，但静态根表里没有它、来源侧也无从撤销。**槽地址**本身通常还带着答案
+                     * —— 槽落在 rc 槽里就说明装着它的 slab（⇒ 区域）是谁，于是照常按宿主已知记账
+                     * （跨区登记、旧值撤销都做）。槽也不在 rc slab 里（视图数据、C/池缓冲）才回落
+                     * 保守方向：把**目标所在的区域**标成不清扫，区域从此只靠计数归零回收。 */
+                    cgLine(g, "extc_rc_storeRefSlot((void **)&(%s), (void *)(%s));", tgt, val);
                     return;
                 }
                 const char *hreg = rcFreshHostRegion(g, hostBase);

@@ -8,7 +8,7 @@
  * 被清（无陈旧入口）、跨区登记播种与"区域外止步"、按对象**自己的**类型描述符走指针字段
  * （描述符随槽交，同区混放不同布局）、`owns` 守卫（外区/非槽首指针一个字节都不碰）、
  * 槽复用换描述符、保守描述符、bump 整片回收、压力触发与自学习退场（无环负载下清扫次数不随
- * 规模增长）。
+ * 规模增长）、证不出宿主时按**槽地址**反查宿主（反查得到就照常记账，失手才保守）。
  *
  * API 形状（task-4 后）：`extc_rc_alloc(区域, 字节, const ExtcRcType *描述符)`；
  * `ExtcRcType = { nptr, off }`，描述符由分配点随槽交给运行期，区域只认领一个号。
@@ -330,6 +330,79 @@ static void t_noSweep(void) {
     check(extc_rc_checkOwed(rb, rootsb, 1) == 0, "义务 7：宿主区域不受影响，照常清扫");
     extc_rc_regionFree(ra);
     extc_rc_regionFree(rb);
+}
+
+/* ---------------------------------------- 义务 7（宿主侧）：证不出宿主时按**槽地址**反查
+ *
+ * 上下文：宿主表达式证不出来时（`(*id(s)).kids[0] = v`），旧行为是让目标区域整个退出清扫
+ * （`noSweep`，只靠计数回收）。但槽地址本身若落在 rc 槽里，槽所在的那只 slab 就告诉我们
+ * 装着它的区域 ⇒ 这条边可以照常按「宿主已知」记账。两条判据在这里：反查的形状（任意字节
+ * 地址、不要求槽首）与「反查成功就绝不下调成保守」。
+ */
+static void t_hostSlot(void) {
+    ExtcRcRegion *ra = regionNew(17, 4096);
+    ExtcRcRegion *rb = regionNew(18, 4096);
+    Pair *a = (Pair *)extc_rc_alloc(ra, sizeof(Pair), &g_pair);
+    Node *b = (Node *)extc_rc_alloc(rb, sizeof(Node), &g_node);
+
+    ExtcRcSlab *sa = extc_rc_slabOfInterior(a);
+    check(sa != NULL && sa->region == ra, "槽地址反查：对象首址落在自己区域的 slab 里");
+    check(extc_rc_slabOfInterior((char *)a + 1) == sa,
+          "槽地址反查：槽内非首址也认（这条路不要求槽首）");
+    check(extc_rc_slabOfInterior((char *)a + offsetof(Pair, b)) == sa,
+          "槽地址反查：字段地址与对象同 slab");
+    check(extc_rc_slabOfInterior(EXTC_RC_SLAB_DATA(sa) + (size_t)sa->nslots * sa->ss) == NULL,
+          "槽地址反查：数据区尾之后不认（按发放容量夹住，不是按整块）");
+    check(extc_rc_slabOfInterior((void *)sa) == NULL, "槽地址反查：slab 头不认");
+    {
+        int local = 0;
+        check(extc_rc_slabOfInterior(&local) == NULL, "槽地址反查：不在 slab 里的地址不认");
+    }
+
+    /* 反查成功 ⇒ 走「宿主已知」：目标区域不得因为这条边退出清扫。 */
+    void *rootsb[1] = { b };
+    extc_rc_owe(rb);
+    check(extc_rc_checkOwed(rb, rootsb, 1) == 0, "槽地址反查：写入前目标区域种子完整（对照）");
+    extc_rc_storeRefSlot((void **)&a->a, b);   /* a 在 ra、b 在 rb ⇒ 跨区边，但宿主可证 */
+    check(!rb->noSweep, "槽地址反查：反查成功 ⇒ 目标区域照常清扫（不下调保守）");
+    check(!ra->noSweep, "槽地址反查：宿主区域也不会被记成保守");
+    check(*(void **)&a->a == (void *)b, "槽地址反查：赋值本身照常发生");
+    extc_rc_owe(rb);
+    check(extc_rc_checkOwed(rb, rootsb, 1) == 0, "槽地址反查：写入后目标区域仍然种子完整");
+    if (extc_rc_partN > 1) {
+        check(extc_rc_rsCount(b) == 1, "槽地址反查：跨区入边照常登记（宿主已知）");
+        check(ra->foreign, "槽地址反查：宿主区域被标记为写过外来指针");
+    }
+    extc_rc_storeRefSlot((void **)&a->a, NULL);
+    check(*(void **)&a->a == NULL, "槽地址反查：撤销写空");
+    if (extc_rc_partN > 1)
+        check(extc_rc_rsCount(b) == 0, "槽地址反查：撤销时登记位跟着撤（不留陈旧入边）");
+
+    /* 槽不在 rc slab（栈上局部变量、视图数据、C/池缓冲）⇒ 只能沿用保守方向。 */
+    ExtcRcRegion *rc = regionNew(19, 4096);
+    Node *c = (Node *)extc_rc_alloc(rc, sizeof(Node), &g_node);
+    void *stackSlot = NULL;
+    extc_rc_storeRefSlot(&stackSlot, c);
+    check(stackSlot == (void *)c, "槽地址反查：栈上槽照常赋值");
+    check(rc->noSweep, "槽地址反查：槽不在 rc slab ⇒ 回落保守（目标区域退出清扫）");
+
+    /* 超大块：载荷是单独 malloc 的，按掩码定位不成立 ⇒ 反查必须失手，不能返回一只
+     * 看起来对的 slab（那会让误认的宿主区域被当成可扫）。 */
+    ExtcRcRegion *rd = regionNew(20, 4096);
+    void *bigSlot = extc_rc_alloc(rd, EXTC_RC_SLAB_SIZE, &g_data);   /* cap<2 ⇒ 超大块 */
+    check(extc_rc_slabOfInterior(bigSlot) == NULL,
+          "槽地址反查：超大块载荷不认（掩码定不了位 ⇒ 调用方回落保守）");
+    ExtcRcRegion *re = regionNew(21, 4096);
+    Node *e = (Node *)extc_rc_alloc(re, sizeof(Node), &g_node);
+    extc_rc_storeRefSlot((void **)bigSlot, e);
+    check(*(void **)bigSlot == (void *)e && re->noSweep,
+          "槽地址反查：超大块里的槽也走保守回落");
+
+    extc_rc_regionFree(ra);
+    extc_rc_regionFree(rb);
+    extc_rc_regionFree(rc);
+    extc_rc_regionFree(rd);
+    extc_rc_regionFree(re);
 }
 
 /* ---------------------------------------------------------------- bump 槽在按槽登记之外 */
@@ -755,6 +828,7 @@ int main(void) {
     t_rsSat();
     t_bumpCross();
     t_noSweep();
+    t_hostSlot();
     t_slotUnique();
     t_unregister();
     t_unlink();
