@@ -2,8 +2,8 @@
 扫描 1329 个 .extc；编译成功 916；失败 413
 
 ① 区域回收者分类（程序数）：
-   ok-trigger         129
-   owe-settled        113
+   ok-trigger         242
+   owe-settled          0
    owe-no-settle        0
    silent-both          0
    no-alloc           674

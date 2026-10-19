@@ -992,6 +992,19 @@ def build_items() -> list:
         bad_msg="tools/check_dyn_place.py（dyn 池挂到了函数体/当前栈顶，或逃逸站点没提权，或零税失守，或缺红自测失效）",
         bad_dump=dump_fail(12)))
 
+    # ---- 闸门·家 arena 的拥有权委托:拥有者没有活引用槽时当场把清扫权交给被调者 -------
+    # 拥有者此后再也不分配(例如 main 只调一次 build、之后不再 new),欠收就一辈子没人还:
+    # home_cycle_r1 峰值比 3.04×。两半成对 —— 调用点发 flag(0/1/转发)、被调者的 RC_OWN_NO
+    # 触发按 flag 三态(owner 分支物化根表并 maybeCollect,else 分支照旧 owe)。
+    # 判据跑真实发射(home_cycle + 无家 arena 形参的普通程序),--selftest 九条注入全红。
+    items.append(cmd(
+        "gate-home-delegation", "gate",
+        "闸门·家 arena 拥有权委托:顶层无根调用发 1、有根调用发 0,被调者按 flag 三态触发,无家 arena 程序零税,且 9 条注入全红",
+        ["python3", "tools/check_home_delegation.py", "--selftest"], timeout=180,
+        ok_msg=ok_first(r"^ok home delegation"),
+        bad_msg="tools/check_home_delegation.py(拥有权委托的 flag 或三态触发被改坏,或缺红自测失效)",
+        bad_dump=dump_fail(12)))
+
     # ---- 闸门·空清扫之后的退场倍数 ----
     # 买的是**触发策略**：活集大、垃圾少的负载（chase）只做一轮便宜的整堆标记，不再付
     # 「标记 32 MiB 活集只换回几 MB」的第二轮。判据=默认 4 / 退场走宏（不许字面量 2）/

@@ -220,6 +220,10 @@ typedef struct {
      * outside one (a file-scope initializer, say) nothing may be emitted. */
     Buf         prefix;
     int         prefixBlk;
+    /* 当前语句的**顶层值表达式**（`genTopExpr` 设，出语句即恢复）。
+     * 「拥有权委托」只在这一层允许：调用点就是整条语句的顶层值时，拥有者手里才不可能还
+     * 攥着只活在寄存器里的本区域引用（见 `homeOwnArg` 与 `rcEmitOwe`）。 */
+    const Expr *topExpr;
     /* ---- Arenas are refined per block ----
      * `__extc_a[k]` is the arena of the block at level k; k is the block depth,
      * known at compile time, the same lexical depth the checker uses when it
@@ -792,6 +796,26 @@ static const char *fnParamList(CG *g, Type *ft) {
 /* ---------------------------------------------------------------- expressions */
 
 static const char *genExpr(CG *g, Expr *e);
+
+/**
+ * @brief 生成一条语句的**顶层值表达式**，并把「现在处在语句顶层」这件事记进 `g->topExpr`。
+ *
+ * 只有拥有权委托要看这个标记（`homeOwnArg`）：调用点就是整条语句的顶层值时，拥有者手里
+ * 不可能还攥着「只活在寄存器里」的本区域引用 —— 那正是被调者借它的静态根表清扫会漏掉的
+ * 东西。子表达式一律不委托（回到 `rcEmitOwe` 的欠收路径）。
+ *
+ * @param g  生成器。
+ * @param e  语句的值表达式。
+ * @return   该表达式的 C 文本。
+ */
+static const char *genTopExpr(CG *g, Expr *e) {
+    const Expr *saved = g->topExpr;
+    g->topExpr = e;
+    const char *code = genExpr(g, e);
+    g->topExpr = saved;
+    return code;
+}
+
 static const char *selfOperandAsParam(CG *g, Expr *operand, const char *code,
                                       Param *p0, Type *want);
 static const char *genSlice(CG *g, Expr *e);
@@ -2094,6 +2118,34 @@ static void owPassCells(CG *g, Buf *b, Expr *e, size_t nargs, bool hasHome);
 static bool cgHasImplicitArgs(const FuncDef *callee) {
     return callee && (funcTakesHomeArena(callee) || funcTakesHomeZone(callee));
 }
+
+/**
+ * @brief 生成「拥有权委托」实参的 C 文本：这只家 arena 的拥有者此刻有没有活引用槽？
+ *
+ * 家 arena 是调用者一路传下来的同一只，内核帧（`rcFrameOwnsArena` 为假）的静态根表看不见
+ * 调用帧的活引用，所以内核帧不扫、只记欠收（`rcEmitOwe`）。但**拥有者自己**刚把这只 arena
+ * 递出去、并且它此刻没有任何活引用槽时，被调者的根表（形参 + 局部 + 全局）就是完整的种子：
+ * 那一刻这片区域里的活对象只可能从被调者的形参出发 —— 于是可以把「清扫权」当场委托给被调者，
+ * 不必把账欠到「拥有者下次分配」。`parTls` 的归属由 `RcOwn` 的运行期深度判，不走这条。
+ *
+ * 只有一个调用点形状允许委托：**调用点就是整条语句的顶层值表达式**（`g->topExpr`）。子表达式
+ * 里可能还有同一表达式内先建、只活在寄存器里的本区域引用（`f(mk(1).v, deep(x))`），那时
+ * 被调者拿自己的根表扫就会把活对象当垃圾放。
+ *
+ * @param g     生成器。
+ * @param site  调用点表达式（NULL ⇒ 保守）。
+ * @param hlvl  这次调用递出去的是哪一层 arena（`ARENA_HOME` 或 1 以上）。
+ * @return      `0`（不委托）/ `1`（本帧就是拥有者）/ `__extc_homeOwn`（把收到的那一份转发）。
+ */
+static const char *homeOwnArg(CG *g, const Expr *site, int hlvl) {
+    if (!g->needReclaim || g->parTls || g->coroFunc) return "0";
+    if (g->rcRootsUnreliable) return "0";
+    if (g->rcGlobalRoots.len + g->rcRoots.len > 0) return "0";
+    if (!site || site != g->topExpr) return "0";
+    if (g->inMain) return "1";                      /* main 的 arena 归 main 自己 */
+    if (hlvl == ARENA_HOME && g->rcFuncUsesHome) return "__extc_homeOwn";
+    return "0";
+}
 /**
  * @brief 按被调用者的声明追加隐式尾参：家 arena 与家 zone。
  *
@@ -2113,11 +2165,11 @@ static void cgImplicitArgs(CG *g, Buf *b, const FuncDef *callee, const Expr *sit
     if (!callee) return;
     size_t n = nargs;
     if (funcTakesHomeArena(callee)) {
+        int hlvl = site ? planArenaArg(site) : ARENA_HOME;
         if (n) bufPuts(b, ", ");
         if (forSignature) {
             bufPuts(b, "extc_arena *__extc_home");
         } else {
-            int hlvl = site ? planArenaArg(site) : ARENA_HOME;
             const char *harg = homeArg(g, hlvl);
             bufPuts(b, harg);
             /* 子集 B 的销账点：把**本帧拥有**的 arena 当被调者的家 arena 传出去时，被调者
@@ -2130,6 +2182,14 @@ static void cgImplicitArgs(CG *g, Buf *b, const FuncDef *callee, const Expr *sit
                 rcEmitOwedCheck(g, arenaPrintf(g->arena, "(void *)(%s)", harg), hlvl, own);
         }
         n++;
+        /* 拥有权委托 flag：紧跟家 arena 实参，两侧都必须发（见 `homeOwnArg`）。被调者拿它
+         * 决定「自己的静态根表够不够格当场清扫」，所以它只在 `needReclaim` 的编译单元里存在。 */
+        if (g->needReclaim) {
+            if (n) bufPuts(b, ", ");
+            bufPuts(b, forSignature ? "EXTC_UNUSED int32_t __extc_homeOwn"
+                                    : homeOwnArg(g, site, hlvl));
+            n++;
+        }
     }
     if (funcTakesHomeZone(callee)) {
         if (n) bufPuts(b, ", ");
@@ -3540,7 +3600,25 @@ static void rcEmitTriggerNow(CG *g, const char *basePtr, int lvl) {
 static void rcEmitTrigger(CG *g, const char *basePtr, int lvl, RcOwn own) {
     if (!g->needReclaim || g->rcRootsUnreliable || g->prefixBlk == 0) return;
     if (own == RC_OWN_YES) { rcEmitTriggerNow(g, basePtr, lvl); return; }
-    if (own == RC_OWN_NO)  { rcEmitOwe(g, basePtr, lvl); return; }
+    if (own == RC_OWN_NO) {
+        /* 拥有权委托（`homeOwnArg` 的另一半）：本帧不拥有家 arena，但调用者的 flag 可能说
+         * 「拥有者此刻没有活引用槽，你自己的根表就是完整种子」。根表只在 owner 分支里物化 ——
+         * 复合字面量是 `rcEmitTriggerNow` 的实参，整体留在 `if` 里。 */
+        if (lvl == ARENA_HOME && g->rcFuncUsesHome && !g->parTls && !g->coroFunc) {
+            pfLine(g, "if (__extc_homeOwn) {");
+            g->indent++;
+            rcEmitTriggerNow(g, basePtr, lvl);
+            g->indent--;
+            pfLine(g, "} else {");
+            g->indent++;
+            rcEmitOwe(g, basePtr, lvl);
+            g->indent--;
+            pfLine(g, "}");
+            return;
+        }
+        rcEmitOwe(g, basePtr, lvl);
+        return;
+    }
     /* RC_OWN_TLS：整条 worker 调用链共用一只区域，归属在运行期。 */
     pfLine(g, "if (__extc_tlsOwner) {");
     g->indent++;
@@ -5881,7 +5959,7 @@ if (g->coroFunc && planCName(s)) {
     }
     if (framed) {
         if (s->u.var.init) {
-            const char *v = genExpr(g, s->u.var.init);
+            const char *v = genTopExpr(g, s->u.var.init);
             flushPrefix(g);
             /* 帧字段是**既有槽**（帧是复合字面量，指针字段先读作 0），resume 会重跑这条
              * 初始化 ⇒ 覆盖语义，走 storeRef：旧值减一、新值加一。 */
@@ -6032,7 +6110,7 @@ if (s->u.var.init && s->u.var.init->kind == EX_TRY) {
     rcRootDecl(g, s->type, nm);
     return;
 }
-const char *init = s->u.var.init ? genExpr(g, s->u.var.init)
+const char *init = s->u.var.init ? genTopExpr(g, s->u.var.init)
                                  : zeroInit(g, s->type);
 flushPrefix(g);
 size_t lb = g->out->len;
@@ -6347,7 +6425,7 @@ static void genStmtInner(CG *g, Stmt *s) {
             g->inAssignTarget = true;
             const char *tgt = genExpr(g, s->u.assign.target);
             g->inAssignTarget = false;
-            const char *val = genExpr(g, s->u.assign.value);
+            const char *val = genTopExpr(g, s->u.assign.value);
             /* 引用槽的赋值是**覆盖**语义（槽里已经有旧值），所以走 storeRef：读旧值减一、
              * 新值加一。数据字段（`p.val = x`）不是引用类型 ⇒ 一个字都不发。
              *
@@ -6564,7 +6642,7 @@ static void genStmtInner(CG *g, Stmt *s) {
                 cgReturn(g, bufCstr(&rb));
                 return;
             }
-            const char *v = genExpr(g, s->u.ret.value);
+            const char *v = genTopExpr(g, s->u.ret.value);
             flushPrefix(g);              /* must precede the return */
             cgReturn(g, v);
             return;
@@ -6595,7 +6673,7 @@ static void genStmtInner(CG *g, Stmt *s) {
                 (void)genTryHead(g, s->u.expr.expr);
                 return;
             }
-            const char *ex = genExpr(g, s->u.expr.expr);
+            const char *ex = genTopExpr(g, s->u.expr.expr);
             flushPrefix(g);
             /* A discarded **unwrap** (`f()!` as a statement) is the one shape that needs `(void)`:
              * it lowers to a union field read (`(g()).u.success._0;`), which gcc reports as
@@ -7658,7 +7736,12 @@ static void genParTramp(CG *g, FuncDef *f) {
         /* worker 体内只要有 `new`，它就会多一个隐藏的 home 形参（needsHome 那套，尾参），
          * 所以这里补传 **线程本地 arena**：worker 只写自己那段输出、只返回 i64 ⇒ 分配逃不出
          * 这个 worker ⇒ 线程本地安全，而且两个 worker 不会去抢主线程的帧 arena。 */
-        if (planUsesHome(f)) bufPrintf(&args, "%sextc_tls_arena", nViews ? ", " : "");
+        if (planUsesHome(f)) {
+            bufPrintf(&args, "%sextc_tls_arena", nViews ? ", " : "");
+            /* 拥有权委托的 flag 恒为 0：线程本地 arena 的归属由运行期深度判（`RC_OWN_TLS`），
+             * 委托是「拥有者把清扫权当场交给被调者」，worker 那条链上不适用。 */
+            if (g->needReclaim) bufPuts(&args, ", 0");
+        }
         cgLine(g, "    return (int64_t)%s(id, lo, hi, %s);", f->name, bufCstr(&args));
     }
     cgLine(g, "}");

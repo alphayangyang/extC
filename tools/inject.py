@@ -322,6 +322,13 @@ INJECTIONS = {
                      '            if (planZoneLevel(val) > want) planSetZoneLevel(val, want);\n',
                      '            (void)want;   /* 注入：站点层不提权 */\n')],
     },
+    "home-own-always-zero": {
+        "why": "拥有者永不委托：main 明明没有活引用槽，也只记欠收 ⇒ 这笔欠账要等 main 自己最后再分配一次才还；main 此后再也不分配（home_cycle_r1）就一辈子不还，峰值随规模涨。",
+        "gate": "gate-home-delegation",
+        "patches": [(CODEGEN,
+                     '    if (g->inMain) return "1";                      /* main 的 arena 归 main 自己 */\n',
+                     '    if (g->inMain) return "0";                      /* 注入：main 也不委托 */\n')],
+    },
 }
 
 
