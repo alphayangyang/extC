@@ -674,6 +674,67 @@ static void t_shadeCache(void) {
     extc_rc_regionFree(r);
 }
 
+/* ------------------------------------------------- 大对象分段扫描 */
+/* 对象里的指针特别多时（大数组字段、或运行期才知道长度的结构），标记它曾经是**单步不可分片**
+ * 的工作：一次弹出要把整槽的字全走完、全压栈 ⇒ 单步停顿 ∝ 对象大小。现在按 EXTC_RC_SCAN_CHUNK
+ * 分段：走一段就存下游标，下一整步接着走。描述符扫描不分段（长度是结构体字段数，源码常量）。
+ *
+ * 判据只用**确定性量**（一步之后的游标、栈深、记账），不碰墙钟 —— 墙钟在这台 VM 上噪声 ±10ms，
+ * 而这里要钉的是「单步工作量有上界」，它有确定的上下界。 */
+static void t_scanChunk(void) {
+    /* 红自测会把 chunk 开到十亿（等于关掉分段）：那时也要给数组一个有限大小，
+     * 否则测试先编不过、而不是红在判据上。 */
+    enum { SLOTS = EXTC_RC_SCAN_CHUNK > 100000 ? 200005 : 3 * (int)EXTC_RC_SCAN_CHUNK / 2 + 5 };
+    ExtcRcRegion *r = regionNew(20, (int64_t)1 << 40);
+    char *obj = (char *)extc_rc_alloc(r, (int64_t)SLOTS * (int64_t)sizeof(void *), EXTC_RC_CONSERVATIVE);
+    Node *kid = (Node *)extc_rc_alloc(r, sizeof(Node), &g_data);
+    size_t words = extc_rc_ownSlab(obj)->ss / sizeof(void *);   /* 槽按 8 字节取整后的字数 */
+    for (size_t i = 0; i < words; i++) ((void **)obj)[i] = kid;
+    void *roots[1] = { obj };
+
+    extc_rc_markBegin(r, roots, 1);
+    check(r->seedsDone && r->msp == 1, "分段：起轮后标记栈里只有大对象本身");
+    size_t marked = extc_rc_markStep(r, 1);
+    check(marked == 1, "分段：首步只记对象本身一次（指针还没走）");
+    check(r->scanObj == (void *)obj, "分段：一步扫不完 ⇒ 留下续扫游标");
+    check(r->scanOff == 0, "分段：首步只留游标（不扫指针）");
+    check(r->msp == 0, "分段：游标不占标记栈（写屏障的 force 项不会被挤错位置）");
+
+    marked += extc_rc_markStep(r, 1);
+    if (EXTC_RC_SCAN_CHUNK < (int)(words - 1)) {
+        check(r->scanObj == (void *)obj && (size_t)r->scanOff == (size_t)EXTC_RC_SCAN_CHUNK,
+              "分段：续扫一步恰好走一个 chunk");
+    }
+
+    int bounded = 1, steps = 2;
+    while (!r->seedsDone || r->msp || r->scanObj) {
+        size_t before = (size_t)r->scanOff;
+        marked += extc_rc_markStep(r, 1);
+        steps++;
+        if (r->scanObj == (void *)obj) {   /* 这一步在续扫：游标推进不得超过一个 chunk */
+            size_t after = (size_t)r->scanOff;
+            if (after < before || after - before > (size_t)EXTC_RC_SCAN_CHUNK) bounded = 0;
+        }
+        if ((size_t)steps > 2 * ((size_t)words + 4) + 8) break;   /* 游标不前进会在这里现形，而不是卡住 */
+    }
+    check(bounded, "分段：续扫每步游标增量不超过一个 chunk（单步工作量有上界）");
+    check(r->scanObj == NULL && r->msp == 0, "分段：扫完游标清空、标记栈空");
+    check(r->markedBytes == (int64_t)extc_rc_ownSlab(obj)->ss + (int64_t)extc_rc_ownSlab(kid)->ss,
+          "分段：续扫不重复记账（markedBytes 只算一遍）");
+    check(marked == 2, "分段：大对象与孩子各标一次（续扫不重复计 marked）");
+    extc_rc_regionFree(r);
+}
+
+
+#ifdef EXTC_DRIVER_ONLY_SCAN
+/* 粒度出口用：分段/续扫的断言单独跑，不受其余用例「一次 collect 必须收完」这类步数假设影响。 */
+int main(void) {
+    printf("== reclaim 分段扫描断言（只跑 t_scanChunk）==\n");
+    t_scanChunk();
+    printf("通过 %d，失败 %d\n", g_pass, g_fail);
+    return g_fail ? 1 : 0;
+}
+#else
 int main(void) {
     printf("== reclaim 运行期断言 ==\n");
 #if !EXTC_RC_NOCOUNT
@@ -715,6 +776,9 @@ int main(void) {
 #endif
     t_learning();
     t_shadeCache();
+    t_scanChunk();
     printf("通过 %d，失败 %d\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }
+
+#endif

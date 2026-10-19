@@ -62,7 +62,16 @@ def violations(text):
         'budget accounting': 'budget -= _nb; pops += _nb;' in text,
         'prefetch in fill loop': re.search(r'_batch\[_nb\] = \(uintptr_t\)_stk\[--_sp\];\s*\n\s*__builtin_prefetch\(\(void \*\)\(_batch\[_nb\]', text) is not None,
         'no separate prefetch sweep': 'for (size_t _pf = 0' not in text,
-        'scan loop calls macro': 'for (size_t _b = 0; _b < _nb; _b++) { EXTC_RC_MARK_SCAN(_batch[_b]); }' in text,
+        # 大对象分段扫描：批扫被 _split 截断时必须把**本批已弹出、还没扫**的栈项压回（它们已经
+        # 从标记栈弹出来了，丢掉就是可达对象漏标）；三个循环都要在 _split 上停步；续扫游标不占
+        # 栈，由 markStep 入口的 markResume 整步处理；所有完成判定都要多看一眼 scanObj。
+        'scan loop calls macro': 'for (; _b < _nb && !_split; _b++) { EXTC_RC_MARK_SCAN(_batch[_b]); }' in text,
+        'split stops the step': text.count('&& !_split') >= 3,
+        'split leaves resume cursor': 'r->scanObj = o; r->scanOff = 0; _split = 1;' in text,
+        'split keeps unscanned batch items': ('if (_split) {' in text and 'while (_nb > _b) {' in text and
+                                             'extc_rc_markPushForce(r, (void *)(_raw & ~(uintptr_t)1));' in text),
+        'resume handled at entry': ('if (r->scanObj) {' in text and 'extc_rc_markResume(r);' in text),
+        'completion checks cursor': text.count('r->scanObj') >= 10 and text.count('|| r->scanObj') >= 5,
         'width ceiling': re.search(r'#if EXTC_RC_MARK_BATCH_POP > EXTC_RC_MARK_BATCH_MAX\s*\n#error', text) is not None,
         # 扫描体：子对象循环走「指针步进」而不是每次重读 t->nptr/t->off[k]（-O1 下实测省 0.68%）；
         # 推进计数器的分派点改成内联（-O1 不跨调用点内联 ⇒ 每趟一次调用/返回）。
@@ -95,7 +104,11 @@ def main():
                       'r->msp = _sp;',
                       'while (_nb < _lim) {',
                       'budget -= _nb; pops += _nb;',
-                      'for (size_t _b = 0; _b < _nb; _b++) { EXTC_RC_MARK_SCAN(_batch[_b]); }',
+                      'for (; _b < _nb && !_split; _b++) { EXTC_RC_MARK_SCAN(_batch[_b]); }',
+                      'while (_nb > _b) {',
+                      'r->scanObj = o; r->scanOff = 0; _split = 1;',
+                      'if (r->scanObj) {',
+                      'extc_rc_markResume(r);',
                       '__builtin_prefetch((void *)(_batch[_nb] & ~(uintptr_t)1)',
                       '#if EXTC_RC_MARK_BATCH_POP > EXTC_RC_MARK_BATCH_MAX',
                       'const uint32_t *_op = t->off;',
@@ -109,9 +122,17 @@ def main():
                              'for (size_t _pf = 0; _pf < _nb; _pf++) __builtin_prefetch((void *)(_batch[_pf] & ~(uintptr_t)1), 0, 1);\n        budget -= _nb; pops += _nb;')
         assert 'no separate prefetch sweep' in violations(split)
         print('ok red: separate prefetch sweep')
+        # 分段截断后不把没扫的批项压回（可达对象漏标）也必须红。
+        lost = text.replace('if (_split) {', 'if (0) {')
+        assert 'split keeps unscanned batch items' in violations(lost)
+        print('ok red: split drops unscanned batch items')
+        # 完成判定漏看续扫游标（会提前收尾/漏标）也必须红。
+        nocursor = text.replace('|| r->scanObj', '')
+        assert 'completion checks cursor' in violations(nocursor)
+        print('ok red: completion ignores scan cursor')
         # 对象处理体抄回扫描循环里（宏只剩一处调用点）⇒ 两份体迟早漂
-        dup = text.replace('        for (size_t _b = 0; _b < _nb; _b++) { EXTC_RC_MARK_SCAN(_batch[_b]); }',
-                           '        for (size_t _b = 0; _b < _nb; _b++) {\n            uintptr_t _raw = _batch[_b];\n        }')
+        dup = text.replace('        for (; _b < _nb && !_split; _b++) { EXTC_RC_MARK_SCAN(_batch[_b]); }',
+                           '        for (; _b < _nb && !_split; _b++) {\n            uintptr_t _raw = _batch[_b];\n        }')
         assert 'scan body not inlined twice' in violations(dup)
         print('ok red: batch body inlined again')
         return 0

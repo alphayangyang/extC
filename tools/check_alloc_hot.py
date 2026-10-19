@@ -79,7 +79,10 @@ def violations(text):
         # 标记期每分配都调一次 finish，而它的首行就是「marking 且 seedsDone 且栈空」才真收尾
         # ⇒ 绝大多数调用是调用+返回+早退。守卫上提到调用点（这里是 marking 分支内，只剩两条），
         # 裸调用回潮就红。
-        'finish guard hoisted': 'if (r->seedsDone && r->msp == 0) extc_rc_finish(r);' in alloc,
+        # 标记完成还多一个条件：分段扫描的游标（scanObj）没走完时不许收尾 —— 收尾会清标记位，
+        # 把还没扫的大对象和孩子一起当垃圾。丢掉这个条件就红。
+        'finish guard hoisted': 'if (r->seedsDone && r->msp == 0 && !r->scanObj) extc_rc_finish(r);' in alloc,
+        'finish waits for scan cursor': 'r->msp == 0 && !r->scanObj' in alloc,
         'no bare finish call': not re.search(r'(?m)^\s*extc_rc_finish\(r\);', alloc),
         'class table freed': 'r->clsBkt[b] = c->next;' in region_free and 'free(c);' in region_free,
         'class helpers': all(name in text for name in (
@@ -142,11 +145,15 @@ def main():
         assert 'alloc inline switch' in violations(noglass), violations(noglass)
         print('ok red: size escape hatch lost noinline')
         # 收尾守卫退回裸调用（每次分配白付一次调用+返回+早退）也必须红。
-        bare = text.replace('if (r->seedsDone && r->msp == 0) extc_rc_finish(r);',
+        bare = text.replace('if (r->seedsDone && r->msp == 0 && !r->scanObj) extc_rc_finish(r);',
                             'extc_rc_finish(r);')
         assert 'finish guard hoisted' in violations(bare), violations(bare)
         assert 'no bare finish call' in violations(bare), violations(bare)
         print('ok red: finish guard not hoisted')
+        # 收尾不等分段游标（扫描没走完就收尾 = 可达对象漏标）也必须红。
+        early = text.replace('r->msp == 0 && !r->scanObj', 'r->msp == 0')
+        assert 'finish waits for scan cursor' in violations(early), violations(early)
+        print('ok red: finish ignores scan cursor')
         return 0
     bad = violations(text)
     for item in bad:

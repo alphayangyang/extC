@@ -1,0 +1,33 @@
+// 大对象分段扫描的停顿探针（判据不在这里：确定性断言在 tests/reclaim/driver.c 的 t_scanChunk）。
+// 一个 1M 指针字段的数组对象在回收时被保守扫描，单步停顿因此曾经 ∝ 对象大小：
+//   EXTC_RC_PAUSE=1 实测单步 max：关掉分段 1226 µs（over1ms=1）→ 默认 EXTC_RC_SCAN_CHUNK=65536 时 85 µs（over1ms=0）。
+// 跑法：EXTC_RECLAIM=1 ./build/extc -I stdlib tests/reclaim-perf/scanchunk.extc -o /tmp/p.c
+//       cc -std=c11 -fwrapv -O1 -g /tmp/p.c -o /tmp/p -lm
+//       EXTC_RC_PAUSE=1 /tmp/p | grep -E '\[pause\]|\[step\]'
+// 期望输出 sum=549755289600 n=1048576（内容校验），以及 [pause]/[step] 的 max_us 在几十 µs 内。
+use std::io
+
+struct node { v: i64 }
+struct big { a: [1048576]?mut ref node }
+fn main(args: slice<slice<u8>>) -> i32 {
+    var n: i64 = 1048576
+    var b: mut ref big = new big
+    var i: i64 = 0
+    while i < n {
+        var p: mut ref node = new node
+        p.v = i
+        b.a[i] = p
+        i = i + 1
+    }
+    var j: i64 = 0
+    while j < 4000000 { var q: mut ref node = new node  q.v = j  j = j + 1 }
+    var s: i64 = 0
+    var k: i64 = 0
+    while k < n {
+        var t: ?mut ref node = b.a[k]
+        if t != null { s = s + t.v }
+        k = k + 1
+    }
+    io::cout << "sum=" << s << " n=" << n << "\n"
+    return 0
+}

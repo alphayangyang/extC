@@ -103,4 +103,37 @@ else
     sed 's/^/    /' "$work/noinl-build.log" | head -10
 fi
 
+# 分段扫描出口（EXTC_DRIVER_ONLY_SCAN=1）：默认 chunk 下大对象一步扫不完要留下续扫游标；把 chunk
+# 开到 1（每个多指针对象都真的分步续扫）仍然必须全绿 —— 续扫的每次推进都要接得上；反过来把 chunk
+# 开到十亿（等于关掉分段）必须**红在分段断言上**，证明这组判据真的在量这个机制、不是空转。
+echo "== 分段扫描出口（chunk=1 全绿；chunk=1e9 红在分段断言上）=="
+scan_build() {   # $1 = chunk 值, $2 = 输出可执行
+    "$CC" -std=c11 -Wall -Wextra -Wpedantic -Werror -Wno-unused-function -O1 -g \
+        -DEXTC_RC_SCAN_CHUNK="$1" -DEXTC_DRIVER_ONLY_SCAN=1 -I "$work" \
+        tests/reclaim/driver.c -o "$2" 2>"$2.log"
+}
+if scan_build 1 "$work/driver-chunk1"; then
+    if out=$(timeout 120 "$work/driver-chunk1"); then
+        ok "分段扫描：chunk=1 时每个多指针对象都分步续扫，探针仍全绿（$(printf '%s\n' "$out" | tail -1)）"
+    else
+        bad "分段扫描：chunk=1 的续扫断言失败"
+        printf '%s\n' "$out" | sed 's/^/    /' | tail -10
+    fi
+else
+    bad "分段扫描：chunk=1 档编译失败"
+    sed 's/^/    /' "$work/driver-chunk1.log" | head -10
+fi
+if scan_build 1000000000 "$work/driver-chunkbig"; then
+    if out=$(timeout 120 "$work/driver-chunkbig"); then
+        bad "分段扫描：chunk=1e9（关掉分段）竟然全绿 —— 分段断言没有牙"
+    elif printf '%s\n' "$out" | grep -q 'FAIL 分段：一步扫不完'; then
+        ok "分段扫描红自测：chunk=1e9（关掉分段）红在分段断言上（判据有牙）"
+    else
+        bad "分段扫描：chunk=1e9 红了，但不是红在分段断言上"
+        printf '%s\n' "$out" | sed 's/^/    /' | grep FAIL | head -5
+    fi
+else
+    bad "分段扫描：chunk=1e9 档编译失败"
+    sed 's/^/    /' "$work/driver-chunkbig.log" | head -10
+fi
 exit "$fail"
