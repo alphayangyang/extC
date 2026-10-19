@@ -3079,16 +3079,23 @@ static RcScan rcScanType(CG *g, Type *t, int depth) {
     case TY_GENERIC: {
         if (isView(t)) return RC_NO_REFS;
         if (!t->sdef) return RC_CONSERVATIVE;
-        /* 泛型实参里有引用槽就按枚举不出来处理：池/板容器的元素住在池自己的板上，**不在
-         * C 结构体的字段里**（`vector<ref node>` 的元素引用就是这样），字段扫描看不见它们，
-         * 根表会漏。宁可这一类函数一个触发都不发。 */
+        /* 池/板容器的元素住在容器自己的板上，**不在 C 结构体的字段里**（`pool<ref node>`、
+         * `vector<ref node>` 的元素引用就是这样）：描述符字段是三块视图，元素写的是板上的
+         * 裸槽。字段扫出来**一个引用叶子都没有**时，说明这只描述符自己没有引用槽 —— 根表
+         * 不欠这笔账，触发可以照常发；元素里的引用由写入点的屏障负责（`storeRefSlot`
+         * 查得到 rc 槽就按槽记账，查不到就把值钉成根）。只有字段里**也**看得见引用（内联
+         * 数组、按值内嵌的结构体）才仍然算枚举不出来，一直走到 `rcEnumRootable` 那条保守路。 */
+        bool targRefs = false;
         for (size_t i = 0; i < t->targs.len; i++) {
-            if (rcScanType(g, *(Type **)vecAt(&t->targs, i), depth + 1) != RC_NO_REFS)
-                return RC_CONSERVATIVE;
+            if (rcScanType(g, *(Type **)vecAt(&t->targs, i), depth + 1) != RC_NO_REFS) {
+                targRefs = true;
+                break;
+            }
         }
         SubCtx sv = substEnter(g, t);
         RcScan s = rcScanFields(g, &t->sdef->fields, depth);
         substLeave(g, sv);
+        if (targRefs && s != RC_NO_REFS) return RC_CONSERVATIVE;
         return s;
     }
     /* kind-default: 只有上面列出的 kind 参与"有没有引用槽"的判断；任何新 kind 都可能

@@ -967,6 +967,18 @@ def build_items() -> list:
         bad_msg="tools/check_coro_frame_roots.py（协程帧字段根/块 arena 归属/触发点，或缺红自测失效）",
         bad_dump=dump_fail(12)))
 
+    # ---- 闸门·容器描述符里的引用：字段扫不到引用就照常触发，元素引用交给写入屏障 ------
+    # 池/板容器的元素住在自己的板上（描述符字段只有视图），泛型实参带引用不再让整函数关触发；
+    # 字段里也看得见引用（内联数组 / 按值内嵌）仍走保守路。
+    # 判据跑真实发射（pool_ref_slot + wrap<box> 窄化控制），--selftest 六条注入全红。
+    items.append(cmd(
+        "gate-container-refs", "gate",
+        "闸门·容器描述符引用：描述符字段没引用 ⇒ 触发照常发（元素引用靠写入屏障钉住），字段里有引用仍保守，且 6 条注入全红",
+        ["python3", "tools/check_container_refs.py", "--selftest"], timeout=180,
+        ok_msg=ok_first(r"^ok container descriptor refs"),
+        bad_msg="tools/check_container_refs.py（容器描述符被当成有引用槽而关掉触发，或窄化被放宽，或缺红自测失效）",
+        bad_dump=dump_fail(12)))
+
     # ---- 闸门·空清扫之后的退场倍数 ----
     # 买的是**触发策略**：活集大、垃圾少的负载（chase）只做一轮便宜的整堆标记，不再付
     # 「标记 32 MiB 活集只换回几 MB」的第二轮。判据=默认 4 / 退场走宏（不许字面量 2）/

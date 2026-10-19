@@ -661,8 +661,8 @@ tests/escape-fuzz/cases/g_struct_global.extc	fail	-	-	-	-	-	-	-	-
 tests/escape-fuzz/cases/m_home_aelem_direct.extc	ok	owe-settled	1	0	1	1	1	0	0
 tests/escape-fuzz/cases/m_home_aelem_ret.extc	ok	owe-settled	1	0	1	1	1	0	0
 tests/escape-fuzz/cases/m_home_aelem_temp.extc	ok	owe-settled	1	0	1	1	1	0	0
-tests/escape-fuzz/cases/m_home_cont_after.extc	ok	silent-both	1	0	0	1	1	2	0
-tests/escape-fuzz/cases/m_home_cont_before.extc	ok	silent-both	1	0	0	1	1	2	0
+tests/escape-fuzz/cases/m_home_cont_after.extc	ok	owe-settled	1	0	1	1	1	0	0
+tests/escape-fuzz/cases/m_home_cont_before.extc	ok	owe-settled	1	0	1	1	1	0	0
 tests/escape-fuzz/cases/m_home_dfield_direct_after.extc	ok	owe-settled	1	0	1	1	1	0	0
 tests/escape-fuzz/cases/m_home_dfield_direct_before.extc	ok	owe-settled	1	0	1	1	1	0	0
 tests/escape-fuzz/cases/m_home_dfield_direct_old.extc	ok	owe-settled	1	0	1	1	1	0	0
@@ -683,8 +683,8 @@ tests/escape-fuzz/cases/m_home_pfield_ret.extc	ok	owe-settled	2	0	2	1	1	0	0
 tests/escape-fuzz/cases/m_main_aelem_direct.extc	ok	ok-trigger	1	1	0	0	1	0	0
 tests/escape-fuzz/cases/m_main_aelem_ret.extc	ok	owe-settled	1	0	1	1	1	0	0
 tests/escape-fuzz/cases/m_main_aelem_temp.extc	ok	ok-trigger	1	1	0	0	1	0	0
-tests/escape-fuzz/cases/m_main_cont_after.extc	ok	silent-both	1	0	0	1	1	2	0
-tests/escape-fuzz/cases/m_main_cont_before.extc	ok	silent-both	1	0	0	1	1	2	0
+tests/escape-fuzz/cases/m_main_cont_after.extc	ok	ok-trigger	1	1	0	2	1	0	0
+tests/escape-fuzz/cases/m_main_cont_before.extc	ok	ok-trigger	1	1	0	2	1	0	0
 tests/escape-fuzz/cases/m_main_dfield_direct_after.extc	ok	ok-trigger	1	1	0	0	1	0	0
 tests/escape-fuzz/cases/m_main_dfield_direct_before.extc	ok	ok-trigger	1	1	0	0	1	0	0
 tests/escape-fuzz/cases/m_main_dfield_direct_old.extc	ok	ok-trigger	1	1	0	0	1	0	0
@@ -705,8 +705,8 @@ tests/escape-fuzz/cases/m_main_pfield_ret.extc	ok	ok-trigger	2	1	1	1	1	0	0
 tests/escape-fuzz/cases/m_nohome_aelem_direct.extc	ok	ok-trigger	1	1	0	0	1	0	0
 tests/escape-fuzz/cases/m_nohome_aelem_ret.extc	ok	owe-settled	1	0	1	2	1	0	0
 tests/escape-fuzz/cases/m_nohome_aelem_temp.extc	ok	ok-trigger	1	1	0	0	1	0	0
-tests/escape-fuzz/cases/m_nohome_cont_after.extc	ok	silent-both	1	0	0	1	1	2	0
-tests/escape-fuzz/cases/m_nohome_cont_before.extc	ok	silent-both	1	0	0	1	1	2	0
+tests/escape-fuzz/cases/m_nohome_cont_after.extc	ok	ok-trigger	1	1	0	1	1	0	0
+tests/escape-fuzz/cases/m_nohome_cont_before.extc	ok	ok-trigger	1	1	0	1	1	0	0
 tests/escape-fuzz/cases/m_nohome_dfield_direct_after.extc	ok	owe-settled	1	0	1	1	1	0	0
 tests/escape-fuzz/cases/m_nohome_dfield_direct_before.extc	ok	ok-trigger	1	1	0	0	1	0	0
 tests/escape-fuzz/cases/m_nohome_dfield_direct_old.extc	ok	owe-settled	1	0	1	1	1	0	0
@@ -1208,7 +1208,7 @@ tests/reclaim-gaps/shapes/match_payload.extc	ok	ok-trigger	2	2	0	0	1	0	0
 tests/reclaim-gaps/shapes/owcell_garbage.extc	ok	owe-settled	1	0	1	1	1	0	0
 tests/reclaim-gaps/shapes/own_room_cycle.extc	ok	ok-trigger	2	2	0	0	1	0	0
 tests/reclaim-gaps/shapes/par_tls_cycle.extc	ok	ok-trigger	2	2	2	0	1	0	0
-tests/reclaim-gaps/shapes/pool_ref_slot.extc	ok	silent-both	1	0	0	0	1	2	0
+tests/reclaim-gaps/shapes/pool_ref_slot.extc	ok	ok-trigger	1	1	0	0	1	0	0
 tests/reclaim-gaps/shapes/ring_per_round.extc	ok	ok-trigger	2	2	0	0	1	0	0
 tests/reclaim-gaps/shapes/slot_elem_known.extc	ok	ok-trigger	3	3	0	0	1	0	0
 tests/reclaim-gaps/shapes/slot_elem_unknown.extc	ok	ok-trigger	3	3	0	0	1	0	0
@@ -1323,8 +1323,8 @@ tools/escape-corpus/P2-2_ffproj_new_uaf.extc	ok	owe-settled	1	0	1	1	1	0	0
 tools/escape-corpus/P2-3_ffproj_temp_uaf.extc	ok	owe-settled	1	0	1	1	1	0	0
 tools/escape-corpus/P2-4_ffproj_noinit_uaf.extc	ok	owe-settled	1	0	1	1	1	0	0
 tools/escape-corpus/P2-5_pfield_helper_uaf.extc	ok	owe-settled	2	0	2	1	1	0	0
-tools/escape-corpus/P2-6_container_uaf.extc	ok	silent-both	1	0	0	1	1	2	0
-tools/escape-corpus/P2-7_container_before_uaf.extc	ok	silent-both	1	0	0	1	1	2	0
+tools/escape-corpus/P2-6_container_uaf.extc	ok	owe-settled	1	0	1	1	1	0	0
+tools/escape-corpus/P2-7_container_before_uaf.extc	ok	owe-settled	1	0	1	1	1	0	0
 tools/escape-corpus/control_m2.extc	fail	-	-	-	-	-	-	-	-
 tools/escape-corpus/control_n2.extc	fail	-	-	-	-	-	-	-	-
 tools/escape-corpus/control_small2.extc	fail	-	-	-	-	-	-	-	-

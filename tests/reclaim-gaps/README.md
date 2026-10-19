@@ -25,10 +25,11 @@ python3 tests/reclaim-gaps/audit-static.py --gate     # 红计数非 0 ⇒ exit 
 
 ## 0. 一句话结论
 
-**20 个可运行形状里，3 条收不掉**（涉及 3 个形状族；N=160000→640000 峰值比 3.04×~3.61×，判据 < 1.5）。
-其中 **3 条都比「整块关掉回收」还差**（on 档峰值 − off 档峰值 ≈ +1.5~+2.6 MB @ N=640000）——
-那是「花了回收的钱没拿到货」。收不掉的根因是 G1/G5/G7；G2（协程帧 / `ext` 帧）**已修**（见 §G2）、
+**20 个可运行形状里，2 条收不掉**（涉及 2 个形状族；N=160000→640000 峰值比 3.04×~3.61×，判据 < 1.5）。
+其中 **2 条都比「整块关掉回收」还差**（on 档峰值 − off 档峰值 ≈ +1.5~+2.6 MB @ N=640000）——
+那是「花了回收的钱没拿到货」。收不掉的根因是 G1/G7；G2（协程帧 / `ext` 帧）**已修**（见 §G2）、
 G3（`match` 载荷）**已修**（见 §G3）、G4（`parTls` 线程本地区域）**已修**（见 §G4）、
+G5（池容器里的引用）**已修**（见 §G5）、
 G6（视图/arena 数组里的槽）**已修**（见 §G6a）；外加**已修**的 G8：
 
 | # | 根因 | 形状 | 严重度 | 能否补 |
@@ -37,12 +38,12 @@ G6（视图/arena 数组里的槽）**已修**（见 §G6a）；外加**已修**
 | G2 | **协程帧 / `ext` 帧**（`rcRootsUnreliable`）⇒ 一个触发都不发 | `coro_frame_cycle`、`ext_frame_cycle` | **已修**（1.00× / 1.00×，比关档差消失）| 按 `coroFrame` 表把帧字段登记成根 + 块 arena 归帧自己（见 §G2）|
 | G3 | **`match` 绑定引用载荷** ⇒ 整值存储让目标区域退出清扫、根表枚举不出枚举负载 | `match_payload` | **已修**（1.00×，比关档差消失）| 两件事合起来认领完整：根表按所有变体展开负载叶子 + `storeStructRooted` 只记引用（见 §G3）|
 | G4 | **`parTls`（TLS worker 房间）** ⇒ 既不触发也不欠收 | `par_tls_cycle` | **已修**（1.13×，比关档差消失）| 按运行期深度认领归属：入口帧物化根表当场扫、内层帧只记欠收，区域随 arena 同寿丢弃（见 §G4）|
-| G5 | **池容器里的引用** ⇒ `storeRefUnknown`（目标区域 `noSweep`）+ 无触发 | `pool_ref_slot` | **高**（+2.6 MB）| 与 G6a 同方向（值钉成根）；但池**描述符**是保守整值存储 ⇒ 仍 `noSweep` |
+| G5 | **池容器里的引用** ⇒ `storeRefUnknown` + 无触发 | `pool_ref_slot` | **已修**（1.00×，比关档差消失）| 泛型描述符字段里没有引用叶子 ⇒ 不再整函数关触发；元素引用由写入屏障钉住（见 §G5）|
 | G6 | **视图/arena 数组里的槽**（视图元素 `v[0].kids[0]`）⇒ 旧行为 `noSweep`（目标区域退出清扫）| `slot_elem_unknown` | **已修**（1.00×，比关档差消失）| 反查失手 ⇒ 把**值钉成根**（`pinAdd`），`markBegin` 按区域播种、`regionFree` 按区域清死指针，表有界（§G6a）。**基表达式带调用已修**：槽地址反查宿主（1.03×）|
 | G7 | **dyn 载荷里的引用** ⇒ dyn 池不回收（已知限制，回收推到 place 退出）| `dyn_payload` | 中（+1.5 MB）| `DYN.md` 已记为已知限制 |
 | G8 | **可能的环被区域划分切开** ⇒ 两只区域互相钉住 + 自学习退场 | `ring_per_round` | **高**（修前 3.90×、比关档差 160 MB）| **已修**（路线 C：候选区域合并，见 §G8）|
 
-**静态审计**：① 区域没有回收者的程序 = **9**（今天必然非 0 ✓）；② 未记账的引用槽写入 = **0**
+**静态审计**：① 区域没有回收者的程序 = **0**（全语料每个会分配回收管辖内存的程序都有回收者）；② 未记账的引用槽写入 = **0**
 （与任务预期相反，见 §4——检测器有牙，但今天这类直接字段写入确实一条不剩）。
 
 ---
@@ -71,7 +72,7 @@ G6（视图/arena 数组里的槽）**已修**（见 §G6a）；外加**已修**
 | 13 | `ext_frame_cycle` | **`ext` spawn 帧** | 普通字段 | 自环 | 本帧自己（同上） | ✓ **1.00×** | 2.71→2.71 | 3.65→11.15 | 2 / 9 | 否 | 无（**已修**：见 §G2） |
 | 14 | `match_payload` | 本帧房间 | **枚举载荷绑定** | 自环 | 本帧自己 | ✓ 1.00× | 2.92→2.92 | 3.86→11.36 | 2 / 9 | 否 | 无（**已修**：§G3） |
 | 15 | `par_tls_cycle` | **TLS worker 房间** | 普通字段 | 自环 | 本帧自己（TLS 拥有者帧触发） | ✓ 1.13× | 4.23→4.79 | 3.67→11.54 | 2 / 8 | 否 | 无（**已修**：TLS 区域按运行期深度认领；见 §G4） |
-| 16 | `pool_ref_slot` | **池缓冲（视图）** | `pool<mut ref node>` 的槽 | 自环 | **无（`noSweep`+无触发）** | ✗ **3.04×** | 4.61→**13.98** | 3.86→11.36 | **0 / 0** | **是 +2.6** | 无（建议①q） |
+| 16 | `pool_ref_slot` | **池缓冲（视图）** | `pool<mut ref node>` 的槽 | 自环 | 本帧自己（描述符无引用叶子 ⇒ 触发照常） | ✓ **1.00×** | 2.92→2.92 | 3.86→11.36 | **2 / 9** | 否 | 无（**已修**：§G5） |
 | 17 | `dyn_payload` | **dyn 池** | dyn 载荷里的引用 | 自环 | 本帧自己（dyn 池不回收） | ✗ **3.61×** | 22.23→**80.17** | 20.73→78.67 | 2 / 9 | **是 +1.5** | 无（建议①r） |
 | 18 | `byval_temp` | 调用者家房间 | **按值返回纯临时量** | 自环 | 拥有者反复调 | ✓ 1.00× | 2.73→2.73 | 3.86→11.41 | 2 / 9 | 否 | 无（建议①s） |
 | 19 | `closure_chain` | 本帧房间 | **嵌套闭包环境** | 自环 | 本帧自己 | ✓ 1.00× | 1.42→1.42 | 1.42→1.42 | - / - | 否 | 无（建议①s） |
@@ -83,7 +84,8 @@ G6（视图/arena 数组里的槽）**已修**（见 §G6a）；外加**已修**
 调用点数）。所有 39 个 ASan/UBSan 跑都是 `rc=0`、无 `SEGV/UAF/runtime error`。
 **语义**：19 个可运行形状开档/关档 stdout 与退出码**逐字一致**（`sem=一致`）。
 
-> 「比关档差」= on 档峰值比同一形状 `EXTC_RECLAIM=0` 还大 ≥ 0.5 MB——第 1、16、17 条命中（3 条）。
+> 「比关档差」= on 档峰值比同一形状 `EXTC_RECLAIM=0` 还大 ≥ 0.5 MB——第 1、17 条命中（2 条）。
+> 第 16 条（池容器里的引用）**已修**：1.00×、sweeps 2 / 9、比关档差消失，见 §G5。
 > 第 6 条（视图元素）**已修**：1.00×、sweeps 18 / 77、比关档差消失，见 §G6a。
 > 第 7 条（基表达式带调用的槽）**已修**：1.03×、sweeps 16 / 68，与第 5 条（同形状、只换宿主可证性）1.03× 同档。
 > 第 14 条（`match` 绑定引用载荷）**已修**：1.00×、sweeps 2 / 9，见 §G3。
@@ -94,9 +96,9 @@ G6（视图/arena 数组里的槽）**已修**（见 §G6a）；外加**已修**
 
 ## 2. 逐类证据
 
-> **数字口径**：§2 各节的绝对峰值/比值来自 2026-10-13 的首轮缺口普查；之后回收器改过清扫频率与
-> 退场倍数，绝对峰值整体下移（结论不变）。§0/§1 的矩阵与「收得掉?」列已按最新复跑刷新，
-> 与 `out/scale.tsv` 同一批数字。
+> **数字口径**：§2 各节的绝对峰值/比值多数来自 2026-10-13 的首轮缺口普查（仍红的 G1/G7 两节
+> 已按最新复跑刷新）；之后回收器改过清扫频率与退场倍数，绝对峰值整体下移（结论不变）。
+> §0/§1 的矩阵与「收得掉?」列已按最新复跑刷新，与 `out/scale.tsv` 同一批数字。
 
 ### 2.0 十条嫌疑的确认 / 推翻一览
 
@@ -109,7 +111,7 @@ G6（视图/arena 数组里的槽）**已修**（见 §G6a）；外加**已修**
 | 5 协程帧 | **确认 → 已修** | G2：`coro_frame_cycle` 已修 1.00×、`sweeps` 2 / 9、比关档差消失 |
 | 6 `ext`（spawn）帧 | **确认 → 已修** | G2：`ext_frame_cycle` 已修 1.00×、`sweeps` 2 / 9、比关档差消失 |
 | 7 TLS / 并行（`parTls`）| **确认 → 已修**（首轮新写正向程序实测；按运行期深度认领归属后收得掉）| G4：`par_tls_cycle` 已修 1.13×、`sweeps` 2 / 8、比关档差消失 |
-| 8 池/板容器里的引用、`match` 绑定、`dyn` 载荷 | **确认（池 / dyn）+ `match` 已修 + 板未实测** | G5 池 3.04×、G3 match 已修 1.00×、G7 dyn 3.61×；板只存字节 ⇒ §6 |
+| 8 池/板容器里的引用、`match` 绑定、`dyn` 载荷 | **确认（dyn）+ 池已修 + `match` 已修 + 板未实测** | G5 池已修 1.00×（§G5）、G3 match 已修 1.00×、G7 dyn 3.61×；板只存字节 ⇒ §6 |
 | 9 `@overwrite` 格子 | **推翻（本形状下收得掉）** | 第 11 行 `owcell_garbage` 1.00× |
 | 10 全局量里的引用 / C 层数组里的引用 | **全局：前端拒；C 数组：推翻（收得掉）** | §3（编译期拒）、第 10 行 `carray_slot` 1.00× |
 
@@ -122,11 +124,11 @@ G6（视图/arena 数组里的槽）**已修**（见 §G6a）；外加**已修**
 
 | rounds × per | on 峰值 | off 峰值 | sweeps | 读法 |
 |---|---|---|---|---|
-| 1 × 40000 | 2.92 MB | 1.98 MB | **0** | 640 KB 垃圾还没过 1 MiB 压力线 |
-| 1 × 160000 | 6.11 MB | 3.86 MB | **0** | 欠收标志记了（生成物 `owe=2`），但**没有下一次调用** ⇒ 不销账 |
-| 1 × 640000 | **17.98 MB** | 11.41 MB | **0** | 峰值随规模 2.94×，比关档**差 6.6 MB** |
-| 64 × 40000 | 4.98 MB | 40.79 MB | 31 | 拥有者反复调 ⇒ 每轮销账，有界 |
-| 256 × 40000 | 4.98 MB | 158.98 MB | 127 | 界与调用次数解耦 |
+| 1 × 40000 | 2.17 MB | 1.98 MB | **0** | 640 KB 垃圾还没过 1 MiB 压力线 |
+| 1 × 160000 | 4.61 MB | 3.86 MB | **0** | 欠收标志记了（生成物 `owe=2`），但**没有下一次调用** ⇒ 不销账 |
+| 1 × 640000 | **13.98 MB** | 11.36 MB | **0** | 峰值随规模 **3.04×**，比关档**差 2.6 MB** |
+| 64 × 40000 | 3.11 MB | 40.79 MB | 31 | 拥有者反复调 ⇒ 每轮销账，有界 |
+| 256 × 40000 | 3.11 MB | 158.92 MB | 127 | 界与调用次数解耦 |
 
 ⇒ 子集 B 的健全性不变量（“销账时不能有活跃被调者子树”）保住了，但**销账点只在调用前**：
 拥有者此后再不发起调用，这笔账永远挂着，区域等到帧销毁（`main` = 进程结束）。
@@ -206,14 +208,26 @@ fn main(args) { … parallel::run(w, out, n, i64(2)) }
 + 注入 `par-tls-depth-noreset`（拿掉 worker 的清零 ⇒ 同线内联跑时入口帧当成内层帧、区域整片收不掉）。
 9 形状 `-O2` callgrind Ir 逐位不变（不碰 parallel 的帧零税）。
 
-### G5 池容器里的引用（嫌疑 8）——**新洞，比关档差**
+### G5 池容器里的引用（嫌疑 8）——**已修（1.00×）**
 
-`pool_ref_slot.extc`：`pool<mut ref node>::withCap(8)` 的 dense 缓冲是一条引用槽数组。
-生成物里 `p.insert(nd)` 内部对缓冲槽发 `extc_rc_storeRefUnknown`（池缓冲是视图 ⇒ 宿主追不到）
-⇒ **目标区域 `noSweep`**；同时 `new node` 的分配点**一个触发都不发**（`var p = pool<…>` 的声明走
-`rcRootDecl`，类型扫描回 `RC_CONSERVATIVE` ⇒ 整函数 `rcRootsUnreliable`，`src/back/codegen.c:3463`）
-⇒ `sweeps = 0`、峰值 6.09→17.92（2.94×）、比关档差 +6.6 MB。
-
+- 形状 `pool_ref_slot.extc`：`pool<mut ref node>::withCap(8)` 的 dense 缓冲是一条引用槽数组，
+  每轮 `p.insert(nd)` / `p.remove(h)`，`nd` 是 `new node` 出来的自环。
+- 旧行为：`var p: pool<mut ref node>` 的类型是泛型实例且实参含引用 ⇒ `rcScanType` 的 `TY_GENERIC`
+  分支一律 `RC_CONSERVATIVE` ⇒ ① 描述符整值存储走 `storeStructCons(…, 0, 0)`（目标区域 `noSweep`）
+  ② `rcRootDecl` 置整函数 `rcRootsUnreliable` ⇒ 一个触发都不发 ⇒ `sweeps = 0`、
+  on 4.61→13.98（3.04×）、比关档差 +2.6 MB。
+- 判据为什么错：池的字段 `vals/slots/ent` 都是视图，`rcScanType` 对视图本就回 `RC_NO_REFS`
+  ⇒ **描述符自己一个引用叶子都没有**，根表不欠账；元素里的引用在板上，由写入点屏障认领
+  （`storeRefSlot`：查得到 rc 槽就按槽记账，查不到就 `pinAdd` 钉住，见 §G6a）。
+- 修法（`src/back/codegen.c` 的 `rcScanType` `TY_GENERIC` 分支）：先记 `bool targRefs`（实参里有没有
+  引用槽），再扫字段；只有**字段里也看得见引用**（`s != RC_NO_REFS`）才回 `RC_CONSERVATIVE`，
+  否则返回字段扫描结果 ⇒ 容器描述符照常触发。这是安全方向的窄化：字段里也带引用的泛型实例
+  （内联数组、按值内嵌结构体）仍走保守路。
+- 实测：on 160k→640k = 2.92→2.92 MB（**1.00×**）、sweeps 2 / 9、off 3.86→11.36、
+  stdout 与关档逐字一致；修前 4.61→13.98（3.04×）、0 / 0。
+- 牙：`tools/check_container_refs.py` 两侧都钉（容器 main 必须有触发、不得发整值保守存储；
+  泛型实参带引用且字段里也看得见的窄化控制程序必须仍保守）；注入 `container-desc-conservative`
+  回到修复前判据时门禁变红；9 形状 `-O2` callgrind Ir 逐位不变（这 9 个形状不含这类局部量）。
 ### G6 视图元素 / 基表达式带调用（嫌疑 3）——**两半都已修**
 
 - `slot_elem_known`（`s.kids[0] = keeper`，宿主 = `s`）：生成物逐叶 `storeRefOwned`，扫得掉，
@@ -244,14 +258,14 @@ fn main(args) { … parallel::run(w, out, n, i64(2)) }
 
 ### G7 dyn 载荷（嫌疑 8）——已知限制
 
-`dyn_payload.extc`：`dyn Tag(box { v, n: nd })` 的载荷按值拷进 dyn 池。on 24.35→82.29（3.38×）、
+`dyn_payload.extc`：`dyn Tag(box { v, n: nd })` 的载荷按值拷进 dyn 池。on 22.23→80.17（3.61×）、
 off 20.73→78.67；`sweeps` 2/9 但 dyn 池本身不回收（`DYN.md` 记为已知限制：回收推到 place 退出）。
-on 仍比 off 差 +3.6 MB。
+on 仍比 off 差 +1.5 MB。
 
 ### G8 可能的环被**区域划分切开**（新根因；**已修**，路线 C）—— §G8
 
 形状 `shapes/ring_per_round.extc`：每轮建一条 **256 结点的闭环**，环头存进长命槽 `keep`；轮数来自
-argv（`ring*` 这一族用**轮数**当规模，不是结点数；每轮垃圾 ≈ 1 MiB）。它和前面 3 条的成因都不同：
+argv（`ring*` 这一族用**轮数**当规模，不是结点数；每轮垃圾 ≈ 1 MiB）。它和前面那几条的成因都不同：
 
 * 触发**发生了**、清扫也**在跑**（on 档 `sweeps` 13 / 55），但每次收 0 个槽；
 * 生成物里环横跨**两只区域**：`head` 在外层循环体（`__extc_rcr0`），256 个 `t` 在内层循环体
@@ -374,27 +388,15 @@ var arr: [4]?mut ref node       → 同上（contains a reference）
 
 | 类 | 程序数 |
 |---|---|
-| ok-trigger | 124 |
-| owe-settled | 109 |
+| ok-trigger | 129 |
+| owe-settled | 113 |
 | owe-no-settle | 0 |
-| **silent-both** | **9** |
+| **silent-both** | **0** |
 | no-alloc | 674 |
-| **红计数①** | **9** |
+| **红计数①** | **0** |
 
-9 个程序（= 今天必然非 0 的那一半）：
-
-```
-tests/escape-fuzz/cases/m_home_cont_after.extc          alloc=1 trig=0 owe=0 check=1 srUnknown=1
-tests/escape-fuzz/cases/m_home_cont_before.extc         alloc=1 trig=0 owe=0 check=1 srUnknown=1
-tests/escape-fuzz/cases/m_main_cont_after.extc          alloc=1 trig=0 owe=0 check=1 srUnknown=1
-tests/escape-fuzz/cases/m_main_cont_before.extc         alloc=1 trig=0 owe=0 check=1 srUnknown=1
-tests/escape-fuzz/cases/m_nohome_cont_after.extc        alloc=1 trig=0 owe=0 check=1 srUnknown=1
-tests/escape-fuzz/cases/m_nohome_cont_before.extc       alloc=1 trig=0 owe=0 check=1 srUnknown=1
-tests/reclaim-gaps/shapes/pool_ref_slot.extc            alloc=1 trig=0 owe=0 check=0 srUnknown=1
-tools/escape-corpus/P2-6_container_uaf.extc             alloc=1 trig=0 owe=0 check=1 srUnknown=1
-tools/escape-corpus/P2-7_container_before_uaf.extc      alloc=1 trig=0 owe=0 check=1 srUnknown=1
-```
-
+**0 个程序** —— `silent-both` / `owe-no-settle` 都不再出现：每个会分配回收管辖内存的程序
+要么有触发、要么欠收且销账（第 16 条 `pool_ref_slot` 由泛型窄化转成 `ok-trigger`，见 §G5）。
 ### ② 引用槽写入没有对应记账调用
 
 用生成物自带的 `ExtcRcType` 偏移表（`__extc_rcoN[]` 的 `offsetof(T, f)` ⇒ 哪些字段是引用叶子）
@@ -416,10 +418,10 @@ selftest: 干净生成物候选 = 0，注入一条裸写入后候选 = 1 ⇒ ok�
 > 漏的是「压根不走引用槽记账路径」的那几档（整值/临时量/池/dyn/不可靠函数）——
 > 它们不表现为裸字段赋值，② 这种文本判据天生抓不到。要抓得做值级分析，那是另一轮。
 
-**②′（补充计数）**：走 `storeRefUnknown`（目标区域运行期 `noSweep`）的程序 = **242**、
-走 `storeStructCons(..., 0)` 保守分支的程序 = **10**（并集 242；机器数自 `out/audit-static.tsv` 的 `srUnknown`/`srCons0` 列）。这不是 bug 计数，
-是「编译器主动放弃了这个区域的清扫」的规模，与 §1 第 16 条直接对应（第 6 条已改成值钉成根、
-第 7 条已改成槽地址反查、第 14 条已修：`storeStructRooted` 取代了那条保守存储）。
+**②′（补充计数）**：走 `storeRefUnknown`（宿主证不出来 ⇒ 把值钉成根，见 §G6a）的程序 = **242**、
+走 `storeStructCons(..., 0)` 保守分支的程序 = **1**（并集 242；机器数自 `out/audit-static.tsv` 的 `srUnknown`/`srCons0` 列）。这不是 bug 计数，
+是「编译器走保守路径」的规模，与 §1 第 16 条同一方向（第 6 条已改成值钉成根、
+第 7 条已改成槽地址反查、第 14 条已修：`storeStructRooted` 取代了那条保守存储、第 16 条的池描述符现在走字段扫描）。
 
 ---
 
@@ -438,7 +440,7 @@ selftest: 干净生成物候选 = 0，注入一条裸写入后候选 = 1 ⇒ ok�
 #  ①n coro_frame_cycle / ext_frame_cycle           已修 1.00× / 1.00×（绿）—— 帧字段根表 + 块 arena 归帧自己
 #  ①o match_payload                                已修 1.00×（绿）—— 枚举负载整值存储 + 按变体展开根
 #  ①p par_tls_cycle                                已修 1.13×（绿）—— TLS 区域按运行期深度认领
-#  ①q pool_ref_slot                                今天 3.04×，sweeps=0（红）—— 池里的引用
+#  ①q pool_ref_slot                                已修 1.00×（绿）—— 池描述符字段里没有引用叶子 ⇒ 触发照常发
 #  ①r dyn_payload                                  今天 3.61×（红）—— dyn 池（已知限制）
 #  ①s（护栏，防回归）struct_copy_ret_home / carray_slot / owcell_garbage /
 #     byval_temp / closure_chain 今天都 ≤ 1.05×（绿）；加上它们是为了
@@ -505,11 +507,11 @@ selftest: 干净生成物候选 = 0，注入一条裸写入后候选 = 1 ⇒ ok�
 | `README.md` | 本文件（矩阵 + 结论 + 建议判据）|
 | `run-gaps.sh` | 一键复跑：矩阵（41 行）+ 规模判据（20 行）+ 每形状 ASan 结论，**恒 exit 0** |
 | `gate.py` | **棘轮闸门**：① 每个形状的 `asan=<非 0>`；② 规模判据里"收不掉"的集合。两者都"多一条红、少一条也红" |
-| `gate-known-bad.txt` | ① 的基线（当前 3 条收不掉的形状）|
+| `gate-known-bad.txt` | ① 的基线（当前 2 条收不掉的形状：`home_cycle` rounds=1、`dyn_payload`）|
 | `asan-known-bad.txt` | ② 的基线（当前**没有已知坏**：所有 ASan/UBSan 跑都是 rc=0）|
 | `audit-static.py` | 全语料静态审计 ①②，`--gate` / `--selftest` / `--baseline`（棘轮）|
 | `ledger-gate.py` | 把静态审计按固定口径跑成闸门（`gate-reclaim-ledger` 的入口）|
-| `audit-known-bad.txt` | 静态审计棘轮的基线（当前 9 条没有回收者的程序）|
+| `audit-known-bad.txt` | 静态审计棘轮的基线（当前 **0** 条 —— 语料里每个会分配回收管辖内存的程序都有回收者）|
 | `shapes/*.extc` | 20 个形状（+1 个编译期反例），每个 ≤ 60 行 |
 | `out/matrix.tsv` `out/scale.tsv` `out/raw.txt` | 原始数字 |
 | `out/audit-static.tsv` `out/audit-static-summary.txt` | 静态审计原始输出 |

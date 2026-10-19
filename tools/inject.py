@@ -306,6 +306,15 @@ INJECTIONS = {
                      '        for (size_t i = 0; i < cf->coroFrame.len; i++) {\n',
                      '        for (size_t i = 0; i < (size_t)0; i++) {\n')],
     },
+    "container-desc-conservative": {
+        "why": "把泛型那条窄化规则放宽成「只看实参」—— 泛型实参带引用就整函数关触发（回到修复前的"
+               "保守判据），于是 pool<mut ref node> 这类局部量让池里每轮的节点永远收不掉"
+               "（方向是**多留**，但不是有界多留：峰值随轮数涨）",
+        "gate": "gate-container-refs",
+        "patches": [(CODEGEN,
+                     '        if (targRefs && s != RC_NO_REFS) return RC_CONSERVATIVE;\n',
+                     '        if (targRefs || s != RC_NO_REFS) return RC_CONSERVATIVE;\n')],
+    },
 }
 
 

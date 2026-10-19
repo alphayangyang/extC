@@ -3,4 +3,3 @@
 #       （棘轮只往一个方向转）。形状与数字见 README.md 的 §1 矩阵。
 dyn_payload	收不掉(随规模涨)	见 README.md §1
 home_cycle_r1	收不掉(随规模涨)	见 README.md §1
-pool_ref_slot	收不掉(随规模涨)	见 README.md §1

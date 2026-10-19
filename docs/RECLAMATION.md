@@ -299,6 +299,16 @@ p = null                 // 计数 0 —— 放
 不置 `noSweep`，对照 `storeStructCons(hostKnown=0)` 在另一只区域上会置）+ 注入 `struct-shade-nop`（拿掉逐叶着色）
 ⇒ 红在「增量标记期间叶子当场标黑」；`tests/reclaim-gaps` 的 `match_payload` 峰值比 3.04× → 1.00×。
 
+**泛型容器描述符：字段里没有引用叶子就不整体保守。** `var p: pool<mut ref node>` 的类型是泛型实例，
+实参带引用；旧 `rcScanType` 见到这种实参就整类回 `RC_CONSERVATIVE` ⇒ 描述符整值存储走 `storeStructCons(...,0,0)`
+（目标区域退出清扫）+ `rcRootDecl` 置整函数 `rcRootsUnreliable`（一个触发都不发）。判据本身错在：池/板的字段
+（`vals`/`slots`/`ent`）都是视图，`rcScanType` 对视图本就回 `RC_NO_REFS` ⇒ 描述符自己一个引用叶子都没有，
+根表不欠账；元素里的引用在板上，由写入点屏障认领（`storeRefSlot`：查得到 rc 槽就按槽记账，查不到就把值钉住，
+见上一段）。现在 `TY_GENERIC` 分支先记「实参里有没有引用槽」再扫字段，**只有字段里也看得见引用**
+（内联数组、按值内嵌结构体）才回 `RC_CONSERVATIVE`，否则返回字段扫描结果 ⇒ 容器局部量照常触发。
+判据：`gate-container-refs`（容器形状的 `main` 必须有触发、不得发整值保守存储；泛型实参带引用且字段里也
+看得见引用的窄化控制程序必须仍保守）与注入 `container-desc-conservative`；`tests/reclaim-gaps` 的
+`pool_ref_slot` 峰值比 3.04× → 1.00×（sweeps 0/0 → 2/9），语料全量静态检查的 `silent-both` 9 → 0。
 **并行：两处进程级共享写走独立协议。** 并行 worker 各自的回收区域互不相交（`parTls` 的分配落线程本地 arena），但运行期有两处状态是**进程级共享**的：① slab 登记表（地址 → slab → 区域）—— 写侧曾用 `realloc` + `free` 旧表，两个 worker 同时建 slab 时另一个线程正在已释放的旧表里探测（ASan 下 8 路并行 400 次复现 10 次 SEGV）；现在**按代发布**：写侧在 `extc_rc_regLock` 下 `calloc` 新代重散、`__atomic_store_n` 发布、`extc_rc_regSeq` + 1，**旧代永不 free**（容量 2× 增长 ⇒ 旧代总内存被最终容量界住）；读侧 `extc_rc_ownFind` 无锁，最多 32 轮「读 seq → 读当前代 → 探一格 → 复读 seq」后持锁兜底，热路径入口再叠一层 `extc_rc_ownProbeFast`（镜像表探一格 + 前后 seq 一致即权威）。② 标记参与者计数 `extc_rc_wb`（写屏障门控）—— 每只区域各自 begin/finish，普通 `++/--` 丢更新 ⇒ `barrier participant underflow` 崩溃（修前 1/400）；写侧改原子，但原子的 lock 前缀与内存屏障会渗进热路径（`if (!extc_rc_wb ...)` 每次都要重载 ⇒ owed_home +2.8% Ir），所以声明保持普通 `int`、原子加减包进 noinline 冷函数 `extc_rc_wbAdd`。判据：`gate-reclaim-conc`（结构 11 项 + 8 路并行 ASan 512 次 smoke + 10 条注入自测）与注入 `reg-retry-nocap`；跳过表里 `skip:reg-hit` / `skip:reg-settled` / `skip:reg-race` 三条各写明为什么无锁路径的结果仍是权威的。9 形状 Ir 相对上一提交 −14.1% ~ +1.1%（`extc_rc_shadeSlow` 冷半段不内联、wb 原子移出热路径是主要来源）。
 ## 三点五、覆盖点的定点释放（环在覆盖点就没了）
 
@@ -944,6 +954,7 @@ cache-sim 判据变红）。
 | 挂起帧（协程 / `ext`）的根表按**帧字段**拼，块 arena 归帧自己 | **不安全**（挂起期间漏根 ⇒ 活对象当垃圾放）| `genFunc` 按 `coroFrame` 表把 `f->name` 各引用叶子登记成根（起点零初始化 + 根表入口过 `owns` ⇒ 认错只多留）；`rcFrameOwnsArena` 不挡 `coroFunc`、`rcOwnKind` 不整函数返回 `RC_OWN_NO` | 结构门禁 `gate-coro-frame-roots`（帧字段进根数组 / 块级区域而非家 arena / 不发 TLS 序言 / 普通程序零帧字段根 / 生成器源码四条事实，9 条注入全红）+ 注入 `coro-frame-roots-nop` ⇒ gate 红 + gaps `coro_frame_cycle` 3.10× → 1.00×、`ext_frame_cycle` 3.13× → 1.00× |
 | 并行：线程本地区域归**调用链入口帧**（运行期深度认领）| 泄漏（内存涨）| 每个 parTls 回收帧序言 `int __extc_tlsOwner = (extc_rc_tlsDepth++ == 0);`、尾部 `extc_rc_tlsDepth--;`；触发点三态（拥有者 ⇒ 物化根表 + `maybeCollect`，内层 ⇒ 只 `extc_rc_owe`）；worker 调回调前保存/清零/恢复深度；`extc_par_close` 的每个 worker arena 与 worker 兜底局部 arena 两处 `extc_rc_regionDrop` | 结构门禁 `gate-par-tls-owner`（声明恒发 / 序言尾声配对 / 三态两侧 / worker 清零恢复顺序 / 两处丢弃 / 普通程序零税，6 条注入全红）+ 注入 `par-tls-depth-noreset` ⇒ gate 红 + gaps `par_tls_cycle` 3.40× → 1.13×（sweeps 0/0 → 2/9）|
 | 并行：**进程级共享写**（slab 登记表 / 标记参与者计数）走按代发布 + 原子计数 | **不安全**（UAF / 丢更新）| 登记表：`extc_rc_ownNextReg` 换代不 free 旧代、`ownAdd`/`ownDel` 持锁 + RELEASE 发布 + `regSeq`；读者 `ownFind` 两次 seq 读 + 32 次上限 + 持锁兜底、热路径 `ownProbeFast`；wb：普通 int 声明 + `extc_rc_wbAdd` noinline 原子加/减 | `gate-reclaim-conc` 结构判据 + 8 路并行 ASan 512 次 smoke；注入 `reg-retry-nocap` ⇒ 结构判据红；修前 8 路并行 400 次复现 SEGV 10 次 / underflow 1 次 |
+| 泛型容器描述符：字段里没有引用叶子 ⇒ 不整类保守（照常触发） | **不安全**（若字段里真有引用却当成没有 ⇒ 根表漏叶子 / 元素引用漏记账）| `rcScanType` 的 `TY_GENERIC` 分支先记实参有无引用槽，再扫字段，只有字段里也看得见引用（`s != RC_NO_REFS`）才回 `RC_CONSERVATIVE`；元素里的引用由写入点屏障认领（`storeRefSlot` ⇒ 槽地址反查 / 钉住，见义务 7）| 结构门禁 `gate-container-refs`（容器 `main` 必须有触发且不得发整值保守存储；实参带引用且字段里也看得见引用的窄化控制程序必须仍保守）6 条注入全红 + 注入 `container-desc-conservative` ⇒ gate 红；gaps `pool_ref_slot` 3.04× → 1.00×（sweeps 0/0 → 2/9）；语料全量静态检查的 `silent-both` 9 → 0 |
 | 参与区域数（单区域免登记快路径的前提）| **不安全** | 槽的**诞生点**记 `partN`：`extc_rc_alloc` 无条件记、`storeStructCons` 的保守分支也记；**赋值侧不再记**（冗余：槽的区域在诞生时已记过，见 `changelog/2026-10.md` 的 2026-10-15 条目）；`extc_rc_regionFree` 开头有 **R3 运行期守卫**复查"有占用槽 ⇒ `part == 1`" | `gate-note-part`：静态 R2「会交出槽 ⇒ 必须记参与」（**在真实缺陷 `storeStructCons` 上红过**）+ 运行期 R3。R3 的红演示：注入"删掉 `alloc` 的 `notePart`" ⇒ 静态 `FAIL [R2] extc_rc_alloc`（rc=1）**且** `trap: reclaim: R3: occupied slot in a region with part == 0`（rc=1），撤回后绿。另有 `cross-region` 登记量判据 |
 | 触发语义：压力阈值随 `live`/`scale` 更新 | 性能/内存 | `collect`/`regionFloor`/`regionNew` 末的 `thrUpd` | 注入 `thr-stale` ⇒ `阈值缓存③：倍数翻倍后阈值 ×2` |
 | 本地/形参槽的只写入口（`EXTC_RC_LOCALSTORE`，默认关）**只允许用在 `owner == 0` 的槽上** | **不安全**（对象宿主走它 ⇒ 跨区登记整段丢失）| `codegen.c` 的 `rcLocalStore && rcNoCount && hostBase == NULL`；`storeRefLocal` 只写 | 注入 `localstore-on-objhost`（把 `hreg != NULL` 的对象宿主存储也改发该入口）⇒ `cross_region` 的 `rs_inc/rs_dec/rs_live/rs_hwm` 从 `200000/196611/3389/65537` **塌成 0/0/0/0**，`gate-reclaim-switch` **红（通过 1 失败 1，exit 1）** —— 实测；等价性（无计数档下 `storeRefOwned(slot,v,0)` 的 gated 块因 `so == 0` 无副作用）见 `tests/reclaim-perf/LOCALSTORE-IMPL.md` |
@@ -956,6 +967,6 @@ cache-sim 判据变红）。
 | 覆盖点定点释放：只放"**仅**从旧值可达"的槽（其它活根/种子一律标活）| 不安全（会放掉还被别的根指着的对象）| `extc_rc_releaseOld`：先 `extc_rc_mark`（其它根 + 跨区种子），只 `freeSlot` 未标记的 | 注入 `release-off` ⇒ `gate-release` 红在"清扫次数 ≤1 / 峰值比 / 释放槽数 >0"三条上（实测关掉发射 55 次扫、10.61 MB）|
 | 着色缓存的失效契约：**每一处清 mark 位都要自增代际号** | **不安全**（漏一条 ⇒ 把白对象当黑、跳过屏障、漏标可达对象）| `extc_rc_begin` / `sweepBegin` / `releaseOld` / `regionFree` 统一调 `extc_rc_shadeNextGen()`（自增代际号，回绕时整表 `memset`） | 注入 `shade-noinval`（删掉 `releaseOld` 那条）⇒ 单测红在 `着色缓存：收窄清扫清 mark 后失效`；`EXTC_RC_SHADE_GUARD=1` 的 `[sg] bad` 同时计数。其余三条是纵深防御（`begin` 每轮都会清缓存），由 run.sh 的 guard 自检守着；结构由 `gate-shade-cache` 钉住（单字格/格号旋入代际号/四站点只调 NextGen，6 项注入），回绕清表由 `t_shadeCache` ③ 组证明 |
 
-**16 条全部有牙**（每条都给了注入或结构门禁，且红点写在表里）。单测现在**两档都跑**：
+**17 条全部有牙**（每条都给了注入或结构门禁，且红点写在表里）。单测现在**两档都跑**：
 默认（无计数）**128 条**、计数档 **171 条** —— 后者是计数专属断言，用 `#if !EXTC_RC_NOCOUNT`
 显式标注（driver 不显式标注就只会覆盖计数档，默认档的编译分支不会被单测碰到）。
