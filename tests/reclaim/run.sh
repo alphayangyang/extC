@@ -52,7 +52,10 @@ ok "全部断言通过"
 echo "== ASan / UBSan（内存安全形状要真的跑得干净）=="
 if "$CC" -std=c11 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -I "$work" \
         tests/reclaim/driver.c -o "$work/driver-asan" 2>"$work/asan-build.log"; then
-    if timeout 300 "$work/driver-asan" >"$work/asan.out" 2>"$work/asan.err"; then
+    # detect_leaks=0：slab 登记表的**旧代永不 free**（按代发布协议的一部分，寿命到进程结束），
+    # LeakSanitizer 会把它们当泄漏；这里要抓的是越界与 use-after-free，泄漏由「界不随轮数涨」
+    # 那些棘轮管。
+    if ASAN_OPTIONS=detect_leaks=0 timeout 300 "$work/driver-asan" >"$work/asan.out" 2>"$work/asan.err"; then
         ok "ASan/UBSan 运行干净（$(tail -1 "$work/asan.out")）"
     else
         bad "ASan/UBSan 报错"

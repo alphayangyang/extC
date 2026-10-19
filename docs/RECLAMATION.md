@@ -288,6 +288,7 @@ p = null                 // 计数 0 —— 放
 不置 `noSweep`，对照 `storeStructCons(hostKnown=0)` 在另一只区域上会置）+ 注入 `struct-shade-nop`（拿掉逐叶着色）
 ⇒ 红在「增量标记期间叶子当场标黑」；`tests/reclaim-gaps` 的 `match_payload` 峰值比 3.04× → 1.00×。
 
+**并行：两处进程级共享写走独立协议。** 并行 worker 各自的回收区域互不相交（`parTls` 的分配落线程本地 arena），但运行期有两处状态是**进程级共享**的：① slab 登记表（地址 → slab → 区域）—— 写侧曾用 `realloc` + `free` 旧表，两个 worker 同时建 slab 时另一个线程正在已释放的旧表里探测（ASan 下 8 路并行 400 次复现 10 次 SEGV）；现在**按代发布**：写侧在 `extc_rc_regLock` 下 `calloc` 新代重散、`__atomic_store_n` 发布、`extc_rc_regSeq` + 1，**旧代永不 free**（容量 2× 增长 ⇒ 旧代总内存被最终容量界住）；读侧 `extc_rc_ownFind` 无锁，最多 32 轮「读 seq → 读当前代 → 探一格 → 复读 seq」后持锁兜底，热路径入口再叠一层 `extc_rc_ownProbeFast`（镜像表探一格 + 前后 seq 一致即权威）。② 标记参与者计数 `extc_rc_wb`（写屏障门控）—— 每只区域各自 begin/finish，普通 `++/--` 丢更新 ⇒ `barrier participant underflow` 崩溃（修前 1/400）；写侧改原子，但原子的 lock 前缀与内存屏障会渗进热路径（`if (!extc_rc_wb ...)` 每次都要重载 ⇒ owed_home +2.8% Ir），所以声明保持普通 `int`、原子加减包进 noinline 冷函数 `extc_rc_wbAdd`。判据：`gate-reclaim-conc`（结构 11 项 + 8 路并行 ASan 512 次 smoke + 10 条注入自测）与注入 `reg-retry-nocap`；跳过表里 `skip:reg-hit` / `skip:reg-settled` / `skip:reg-race` 三条各写明为什么无锁路径的结果仍是权威的。9 形状 Ir 相对上一提交 −14.1% ~ +1.1%（`extc_rc_shadeSlow` 冷半段不内联、wb 原子移出热路径是主要来源）。
 ## 三点五、覆盖点的定点释放（环在覆盖点就没了）
 
 环永不归零，所以计数那一层收不了它；但"**覆盖一个槽**"这个动作本身能判死一棵树 —— 只要那
@@ -880,6 +881,9 @@ cache-sim 判据变红）。
 | `skip:ttab-hit` | 小类型表的哈希索引探测命中 ⇒ 直接返回该描述符的号 | 索引按描述符**指针相等**建、装载上限 1/2 ⇒ 命中即等价于线性扫到同一个描述符 | 无（就是命中路径）| `gate-reclaim-tables`（T=8 vs 256 的成本比）；语义由 `reclaim-unit` / 语料对拍兜底 |
 | `skip:type-hot` | 本块上一次落表的描述符与本次**指针相等** ⇒ 直接返回上次的类型号，跳过类型表查找 | 描述符按指针相等去重、类型号在本块内只增不改（`ttab` 下标一旦落表就不动），缓存只在落表成功后回填 ⇒ 缓存对等价于查表结果 | 无（就是命中路径）| `gate-reclaim-tables`（T=8 vs 256 成本比）+ 语料对拍；`gate-skip-table` |
 | `skip:lookup-probe` | 反向表探测的「表不存在 / 未命中 / 载荷地址不等」判断 | 探测表只登记本运行期造过的 slab，装载上限 1/2 ⇒ 探测必遇空格；超大块表按载荷地址精确匹配 | 少算（不安全）| `gate-checkc` 两模式全语料编过 + ASan 语料 + `gate-reclaim-tables` 的注入；**没有逐点注入** |
+| `skip:reg-hit` | 无锁读者探测一格**命中** ⇒ 直接返回该 slab | 登记表按「载荷基址」这一把钥匙放项，命中即等价于权威表（当前代）的查表结果 | 无（就是命中路径）| `gate-reclaim-conc`（按代发布结构判据 + 8 路并行 ASan 512 次）+ 全量电池兜底 |
+| `skip:reg-settled` | 无锁读者探测落空、且前后两次读 `extc_rc_regSeq` 相同 ⇒ 判定「权威落空」返回 0 | 写侧每次插入/注销/换代都把 `extc_rc_regSeq` +1（RELEASE 发布）；两次读之间没变 ⇒ 没有写侧活动 ⇒ 读到的就是当前代，不存在「读旧代漏掉刚插入的项」 | 无（就是落空路径）| `gate-reclaim-conc` 的 `no-retry-cap` 注入 + 8 路并行 ASan 压测 |
+| `skip:reg-race` | 无锁读者连续 32 次都撞上写侧换代/插入 ⇒ 放弃无锁路径 | 只有和写侧抢了几十次才会走到；持锁兜底查的是**同一张当前代**，结果与无锁路径一致 | 无（兜底路径，不改变结果）| `gate-reclaim-conc` 的 `no-retry-cap` 注入（去掉上限必须变红）+ 8 路并行 ASan 压测 |
 | `skip:reg-dup` | `extc_rc_register` 已置位就不再置 | 登记位是幂等标记 | 少算（不安全）| 单测 `登记：目标槽登记位置位` + `register-noop` |
 | `skip:no-desc` | 槽没有类型描述符（数据对象）⇒ 不追字段 | 数据对象没有引用字段 | 少算（不安全）| 单测 `类型：描述符字段数正确` + `mark-nodesc` |
 | `skip:no-region` | 宿主区域证不出来 ⇒ 跳过登记 | —— | 少算（不安全）| 由调用方改走"目标区域退出清扫"（义务 7）|
@@ -927,6 +931,7 @@ cache-sim 判据变红）。
 | 义务 4：按**对象自己的**描述符走指针字段 | 不安全（走漏 ⇒ 少标）| `extc_rc_mark` 用 `s->type[i]` | 单测 `类型：描述符字段数正确` + 注入 `mark-nodesc` ⇒ 红在 `跨区：B 从入边位图播种` |
 | 义务 7：种子不完整 ⇒ 目标区域**退出清扫**（今天只剩「钉不住」的 OOM 兜底走这条）| **不安全** | 两层：① `extc_rc_storeRefSlot` 先按槽地址反查宿主（`slabOfInterior`），命中就按宿主已知记账；② 反查失手 ⇒ `storeRefUnknown` 把值**钉成根**（`pinAdd`；`markBegin` 按区域 `pinSeed`、`regionFree` 按区域 `pinDropRegion` 有界收缩），只有钉不住（扩容失败）才给目标区域打 `noSweep`。`storeStructCons` 的保守分支与 ① 同向。**叶子枚举得出来的枚举整值存储不进这一档**：根表按所有变体展开 + `storeStructRooted` 只记引用（§三），区域照常清扫 | 单测 `义务 7：…退出清扫`、`槽地址反查：…`（反查成功不下调保守 / 反查失手才保守 / 超大块失手）、`t_pin`（同值两条槽计数 2 / 覆盖撤旧边 / 区域死清死指针）、`枚举整值存储：…`（叶子当场标黑 / 活过本轮清扫 / 不置 `noSweep`）+ 注入 `noSweep-drop`、`struct-shade-nop` ⇒ 各红在对应那条上；`gate-pin-scale`（N vs 4N 每钉一个指令数比 ≤ 1.15，注入线性预扫会红）+ gaps `slot_elem_unknown` 3.59× → 1.00×（sweeps 18/77） |
 | 并行：线程本地区域归**调用链入口帧**（运行期深度认领）| 泄漏（内存涨）| 每个 parTls 回收帧序言 `int __extc_tlsOwner = (extc_rc_tlsDepth++ == 0);`、尾部 `extc_rc_tlsDepth--;`；触发点三态（拥有者 ⇒ 物化根表 + `maybeCollect`，内层 ⇒ 只 `extc_rc_owe`）；worker 调回调前保存/清零/恢复深度；`extc_par_close` 的每个 worker arena 与 worker 兜底局部 arena 两处 `extc_rc_regionDrop` | 结构门禁 `gate-par-tls-owner`（声明恒发 / 序言尾声配对 / 三态两侧 / worker 清零恢复顺序 / 两处丢弃 / 普通程序零税，6 条注入全红）+ 注入 `par-tls-depth-noreset` ⇒ gate 红 + gaps `par_tls_cycle` 3.40× → 1.13×（sweeps 0/0 → 2/9）|
+| 并行：**进程级共享写**（slab 登记表 / 标记参与者计数）走按代发布 + 原子计数 | **不安全**（UAF / 丢更新）| 登记表：`extc_rc_ownNextReg` 换代不 free 旧代、`ownAdd`/`ownDel` 持锁 + RELEASE 发布 + `regSeq`；读者 `ownFind` 两次 seq 读 + 32 次上限 + 持锁兜底、热路径 `ownProbeFast`；wb：普通 int 声明 + `extc_rc_wbAdd` noinline 原子加/减 | `gate-reclaim-conc` 结构判据 + 8 路并行 ASan 512 次 smoke；注入 `reg-retry-nocap` ⇒ 结构判据红；修前 8 路并行 400 次复现 SEGV 10 次 / underflow 1 次 |
 | 参与区域数（单区域免登记快路径的前提）| **不安全** | 槽的**诞生点**记 `partN`：`extc_rc_alloc` 无条件记、`storeStructCons` 的保守分支也记；**赋值侧不再记**（冗余：槽的区域在诞生时已记过，见 `changelog/2026-10.md` 的 2026-10-15 条目）；`extc_rc_regionFree` 开头有 **R3 运行期守卫**复查"有占用槽 ⇒ `part == 1`" | `gate-note-part`：静态 R2「会交出槽 ⇒ 必须记参与」（**在真实缺陷 `storeStructCons` 上红过**）+ 运行期 R3。R3 的红演示：注入"删掉 `alloc` 的 `notePart`" ⇒ 静态 `FAIL [R2] extc_rc_alloc`（rc=1）**且** `trap: reclaim: R3: occupied slot in a region with part == 0`（rc=1），撤回后绿。另有 `cross-region` 登记量判据 |
 | 触发语义：压力阈值随 `live`/`scale` 更新 | 性能/内存 | `collect`/`regionFloor`/`regionNew` 末的 `thrUpd` | 注入 `thr-stale` ⇒ `阈值缓存③：倍数翻倍后阈值 ×2` |
 | 本地/形参槽的只写入口（`EXTC_RC_LOCALSTORE`，默认关）**只允许用在 `owner == 0` 的槽上** | **不安全**（对象宿主走它 ⇒ 跨区登记整段丢失）| `codegen.c` 的 `rcLocalStore && rcNoCount && hostBase == NULL`；`storeRefLocal` 只写 | 注入 `localstore-on-objhost`（把 `hreg != NULL` 的对象宿主存储也改发该入口）⇒ `cross_region` 的 `rs_inc/rs_dec/rs_live/rs_hwm` 从 `200000/196611/3389/65537` **塌成 0/0/0/0**，`gate-reclaim-switch` **红（通过 1 失败 1，exit 1）** —— 实测；等价性（无计数档下 `storeRefOwned(slot,v,0)` 的 gated 块因 `so == 0` 无副作用）见 `tests/reclaim-perf/LOCALSTORE-IMPL.md` |
@@ -939,6 +944,6 @@ cache-sim 判据变红）。
 | 覆盖点定点释放：只放"**仅**从旧值可达"的槽（其它活根/种子一律标活）| 不安全（会放掉还被别的根指着的对象）| `extc_rc_releaseOld`：先 `extc_rc_mark`（其它根 + 跨区种子），只 `freeSlot` 未标记的 | 注入 `release-off` ⇒ `gate-release` 红在"清扫次数 ≤1 / 峰值比 / 释放槽数 >0"三条上（实测关掉发射 55 次扫、10.61 MB）|
 | 着色缓存的失效契约：**每一处清 mark 位都要自增代际号** | **不安全**（漏一条 ⇒ 把白对象当黑、跳过屏障、漏标可达对象）| `extc_rc_begin` / `sweepBegin` / `releaseOld` / `regionFree` 统一调 `extc_rc_shadeNextGen()`（自增代际号，回绕时整表 `memset`） | 注入 `shade-noinval`（删掉 `releaseOld` 那条）⇒ 单测红在 `着色缓存：收窄清扫清 mark 后失效`；`EXTC_RC_SHADE_GUARD=1` 的 `[sg] bad` 同时计数。其余三条是纵深防御（`begin` 每轮都会清缓存），由 run.sh 的 guard 自检守着；结构由 `gate-shade-cache` 钉住（单字格/格号旋入代际号/四站点只调 NextGen，6 项注入），回绕清表由 `t_shadeCache` ③ 组证明 |
 
-**14 条全部有牙**（每条都给了注入或结构门禁，且红点写在表里）。单测现在**两档都跑**：
-默认（无计数）**110 条**、计数档 **153 条** —— 后者是计数专属断言，用 `#if !EXTC_RC_NOCOUNT`
+**15 条全部有牙**（每条都给了注入或结构门禁，且红点写在表里）。单测现在**两档都跑**：
+默认（无计数）**128 条**、计数档 **171 条** —— 后者是计数专属断言，用 `#if !EXTC_RC_NOCOUNT`
 显式标注（driver 不显式标注就只会覆盖计数档，默认档的编译分支不会被单测碰到）。

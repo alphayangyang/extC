@@ -520,6 +520,22 @@ def build_items() -> list:
         bad_msg="tests/reclaim-perf/gate-pin-scale.sh（每钉一个的成本随表长涨，或判据失去牙）",
         bad_dump=dump_fail(12)))
 
+    # ---- 闸门·回收运行期的并发边界（全局 slab 登记表 + 屏障参与者计数）----
+    # 为什么需要：回收运行期是全局无锁的，唯一被多线程同时写的地方就是 slab 登记表与 wb 计数。
+    # 旧的「realloc + free 旧表」在并行 worker 同时建 slab 时会让另一个线程在已释放的旧表里探测
+    # （ASan 下 8 路并行 400 次里抖 1~10 次 SEGV，旧基线可复现）⇒ 改成「按代发布：写侧锁、
+    # 读侧无锁 + seq 重试、旧代永不 free」。判据 = 结构（ownNextReg 不 free 旧代、ownAdd 持锁
+    # RELEASE 发布、ownFind 两次 seq 读 + 重试上限 + 持锁兜底、ownHot 线程本地、wb 声明普通 int
+    # 但加减原子且包进 noinline 冷函数、快速探测在热路径上）+ 8 路并行 ASan 512 次 smoke；
+    # --selftest 10 条注入全红。
+    items.append(cmd(
+        "gate-reclaim-conc", "gate",
+        "闸门·回收并发：登记表按代发布/无锁读者重试/线程本地热缓存/原子 wb 结构判据 + 8 路并行 ASan 512 次，且注入失去牙会变红",
+        ["./tools/check_reclaim_conc.py", "--selftest"], timeout=900,
+        ok_msg=ok_first(r"^ok reclaim concurrency"),
+        bad_msg="tools/check_reclaim_conc.py（并发发布协议/热缓存线程本地性/wb 原子性或并行 smoke 失败）",
+        bad_dump=dump_fail(12)))
+
     # ---- 闸门·两张按结构体规模存活的表的缩放（own 登记表、每 slab 小类型表）----
     # 判据：own 表每次 add+del 在 S=1024 与 4096 两档的 callgrind 指令数比 ≤ 2.0、绝对值
     # ≤ 800；小类型表每次 typeIdx 在 T=8 与 256 两档之比 ≤ 2.0、绝对值 ≤ 200。--selftest

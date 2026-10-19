@@ -288,6 +288,15 @@ INJECTIONS = {
                      '            "        extc_rc_tlsDepth = 0;\\n");\n',
                      '            "        extc_rc_tlsDepth = extc_rc_tlsDepth;   /* 注入：不再清零深度 */\\n");\n')],
     },
+    "reg-retry-nocap": {
+        "why": "拿掉无锁读者的重试上限 —— 与写侧抢几十次后不再持锁兜底，而是直接返回「查不到」"
+               "⇒ 并发下可能把**刚登记**的 slab 当成区域外（方向保守：只多留不漏收），但那是意外的"
+               "行为差异；这层兜底是「无锁读者最终一定看到权威表」的唯一保证",
+        "gate": "gate-reclaim-conc",
+        "patches": [(SRC,
+                     '    "        if (tries >= 32) break;   /* skip:reg-race */\\n",\n',
+                     '    "        break;   /* skip:reg-race */\\n",\n')],
+    },
 }
 
 
