@@ -330,6 +330,13 @@ typedef struct {
      * bodies - the same layout trick the slice helpers use. */
     Vec         descs;          /* Type* - types needing a table, deduplicated by C name */
     Buf         desc;           /* descriptor pool, prepended to the bodies */
+    /* 回收运行期的类型描述符池：与上面那块（打印/相等的描述符）分开放，因为去重键不同。
+     * 每个描述符只是一张指针偏移表 + 个数，**同构的分配点可以共用一份**；按偏移表文本去重，
+     * 下标就是描述符号。历史上每个分配点各发一份，同一个 slab 的类型表里会堆起同构描述符，
+     * 分配路径的 `extc_rc_typeIdx` 于是要线性扫过它们（`shard_bands` 八个节点分配点实测每分配
+     * 约 40 Ir）。去重之后同一类型只剩一个号，`lastTd` 热缓存也重新有用。 */
+    Buf         rcDesc;         /* rc 类型描述符声明，同样 prepended to the bodies */
+    Vec         rcDescKeys;     /* const char* - 唯一偏移表文本；下标即描述符号 */
     Buf         rt;             /* table types + shared scalars; needed by print or eq */
     Buf         rtPrint;        /* `extc_print` - only if a structured type is printed */
     /* Are we generating `main`? A `?` there traps instead of returning a failure
@@ -3159,8 +3166,12 @@ static void rcCollectOffsets(CG *g, Type *t, const char *base, Vec *out, int dep
  * @brief 为一次分配发射类型描述符，返回指向它的 C 表达式。
  *
  * 没有引用槽 ⇒ 返回 `(const ExtcRcType *)0`（标记到这个对象就停）；枚举不出来 ⇒
- * `EXTC_RC_CONSERVATIVE`（标记扫这个槽的每个字）。描述符是**块作用域 static const**：
- * 地址有静态存储期，槽里存得下；放在分配表达式之前（语句前缀）。
+ * `EXTC_RC_CONSERVATIVE`（标记扫这个槽的每个字）。
+ *
+ * 描述符是**文件作用域 static const**，写进 `g->rcDesc`，和其它按需定义一样在函数体之前
+ * 拼进单元（地址有静态存储期，槽里存得下）。按偏移表文本去重：同一个类型在多个分配点只发
+ * 一份 —— 每点一份会让同一个 slab 的类型表堆起同构描述符，分配路径的 `typeIdx` 得线性扫过
+ * 它们（`shard_bands` 八个节点分配点实测每分配约 40 Ir，占该形状三成）。
  *
  * @param g  生成器；`needReclaim` 关着时返回空描述符。
  * @param t  分配的类型。
@@ -3182,11 +3193,21 @@ static const char *rcEmitTypeDesc(CG *g, Type *t) {
         if (i) bufPuts(&b, ", ");
         bufPrintf(&b, "%s", *(const char **)vecAt(&offs, i));
     }
-    int id = g->rcSeq++;
-    pfLine(g, "__attribute__((unused)) static const uint32_t __extc_rco%d[] = { %s };",
-           id, bufCstr(&b));
-    pfLine(g, "__attribute__((unused)) static const ExtcRcType __extc_rct%d = { %zuu, __extc_rco%d };",
-           id, offs.len, id);
+    /* 去重：键是偏移表文本（它同时决定指针个数与每个偏移，键相同即同构）。描述符是纯数据，
+     * 共用一份没有语义差别，而每点一份的代价在分配路径上（见上面的函数注释）。 */
+    const char *key = bufCstr(&b);
+    int id = -1;
+    for (size_t i = 0; i < g->rcDescKeys.len; i++) {
+        if (strcmp(*(const char **)vecAt(&g->rcDescKeys, i), key) == 0) { id = (int)i; break; }
+    }
+    if (id < 0) {
+        id = (int)g->rcDescKeys.len;
+        *(const char **)vecPush(&g->rcDescKeys) = key;
+        bufPrintf(&g->rcDesc,
+                  "__attribute__((unused)) static const uint32_t __extc_rco%d[] = { %s };\n"
+                  "__attribute__((unused)) static const ExtcRcType __extc_rct%d = { %zuu, __extc_rco%d };\n",
+                  id, key, id, offs.len, id);
+    }
     return arenaPrintf(g->arena, "&__extc_rct%d", id);
 }
 
@@ -9407,7 +9428,9 @@ static void emitRuntimePrologue(CG *g, Buf *out, Module *m) {
             "static void *extc_rc_regKey[EXTC_RC_REG_MAX];\n"
             "static ExtcRcRegion *extc_rc_regVal[EXTC_RC_REG_MAX];\n"
             "static size_t extc_rc_regN;\n"
-            "__attribute__((unused)) static ExtcRcRegion *extc_rc_regionOf(void *key, int32_t rid) {\n"
+            "/* 函数序言里每帧查一次家 arena：这张表通常只有两三个条目，线性扫就够；但调用/返回\n"
+            " * 本身占了它成本的三成，所以让它 inline 进序言（`static inline` 在 -O2 下会内联）。 */\n"
+            "__attribute__((unused)) static inline ExtcRcRegion *extc_rc_regionOf(void *key, int32_t rid) {\n"
             "    for (size_t i = 0; i < extc_rc_regN; i++)\n"
             "        if (extc_rc_regKey[i] == key) return extc_rc_regVal[i];\n"
             "    ExtcRcRegion *r = extc_rc_regionNew(rid);\n"
@@ -10535,6 +10558,8 @@ static void initRuntimeText(CG *g, Arena *arena) {
     vecInit(&g->deadLocals, arena, sizeof(DeadLocal *));
     vecInit(&g->primEnts, arena, sizeof(PrimEnt *));
     bufInit(&g->desc, arena);
+    bufInit(&g->rcDesc, arena);
+    vecInit(&g->rcDescKeys, arena, sizeof(const char *));
     bufInit(&g->rt, arena);              /* print/compare runtime: emitted only if needed */
     bufInit(&g->rtPrint, arena);
     bufInit(&g->rtEq, arena);
@@ -11137,6 +11162,7 @@ static void emitLateRuntime(CG *g, Buf *out, Module *m, Arena *arena) {
     }
     if (g->eqNeed.len)                  bufPuts(out, bufCstr(&g->rtEq));
     bufPuts(out, bufCstr(&g->desc));
+    bufPuts(out, bufCstr(&g->rcDesc));   /* rc 类型描述符：同样必须在函数体之前 */
     for (size_t i = 0; i < g->helpers.len; i++) {
         /* A slice helper is emitted on demand, and the demand is conservative: a
          * helper whose only user is unused is still emitted. It is registered

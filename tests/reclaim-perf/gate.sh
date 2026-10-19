@@ -97,6 +97,12 @@
 #      （= 实测 × 1.05）。P5 同时变好：Ir 171 549 794 → 170 538 858（−0.59%）、D1mr 628 200 →
 #      618 225（判据线 700 000 余量更厚）、DLmr 146 271。被否：xor-key 变体（key = 地址 ^ 代际号）
 #      指令数略低但存在理论假命中（假阳性 = 白对象当黑）⇒ 一律不用。
+#   ㉚ rc 类型描述符改**按布局去重**（src/back/codegen.c）：以前每个分配点各发一份 `ExtcRcType`，
+#      同一个结构体的多个 `new` 站点就发多份指针不同的同构描述符 —— 每块 slab 的小类型表按指针
+#      相等去重，于是表里堆同构项、`lastTd` 缓存因指针交替而永远失手。改成文件作用域、键 = 偏移表
+#      文本后本形状 **83 837 253 Ir** ⇒ 线收到 **88 029 115**（= 实测 × 1.05）。同批 `extc_rc_regionOf`
+#      改 `static inline`（调用的进入/返回占它三成成本；cycleratio 413 905 535 → 369 404 623 Ir，−10.75%，
+#      本形状无变化）。判据 `tools/check_rc_desc_dedup.py` / `gate-rc-desc-dedup`。
 #
 # 口径与 `run.sh` 一致：pinned `extc` → `EXTC_RECLAIM=1` 生成 → `cc -std=c11 -fwrapv -O1`
 # → `valgrind --tool=callgrind` 的 `summary:` 行。只写自己的临时目录，`src/` 一个字节不动。
@@ -116,7 +122,7 @@ SRC=${SRC:-$ROOT/tests/reclaim-shapes/cyclic_pressure.extc}
 EXTC=${EXTC:-$ROOT/build/extc}
 CC=${CC:-cc}
 N=${N:-200000}
-LIMIT=${LIMIT:-88804155}          # 旋转散列着色缓存后实测 84575386 × 1.05（棘轮只许往下；上一线 90483570）
+LIMIT=${LIMIT:-88029115}          # 描述符去重 + regionOf 内联后实测 83837253 × 1.05（棘轮只许往下；上一线 88804155）
 
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 

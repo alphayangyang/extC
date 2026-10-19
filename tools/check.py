@@ -923,6 +923,18 @@ def build_items() -> list:
         ok_msg=ok_first(r"^ok retreat structure"),
         bad_msg="tools/check_retreat.py（退场倍数退回 2 或绕开宏，活集大垃圾少的负载要多付整堆标记）",
         bad_dump=dump_fail(12)))
+    # ---- 闸门·rc 类型描述符按布局去重 ----
+    # 买的是**分配路径的常数**：描述符若每个分配点各发一份，同一类型的 8 个站点会让每块
+    # slab 的小类型表堆 8 个同构表项、lastTd 缓存永远失手（shard_bands 分配路径吃掉该形状
+    # 三成以上指令数）。判据跑真实发射：合成程序 3 种布局 / 5 个分配点，必须只发 3 份
+    # **文件作用域**描述符、同布局站点引用同一符号；--selftest 三条注入全红。
+    items.append(cmd(
+        "gate-rc-desc-dedup", "gate",
+        "闸门·rc 描述符按布局去重：3 种布局/5 个分配点共用 3 份文件作用域描述符，且 3 条注入全红",
+        ["python3", "tools/check_rc_desc_dedup.py", "--selftest"], timeout=120,
+        ok_msg=ok_first(r"^ok rc 描述符去重"),
+        bad_msg="tools/check_rc_desc_dedup.py（描述符退回每个分配点一份/块作用域，分配路径常数会退化）",
+        bad_dump=dump_fail(12)))
 
     # ---- 闸门·标记 walk 的批弹出结构 ----
     # 这条买的是**延迟**（LIFO 逐个弹是串行指针链），不是指令数，所以判据是结构 + 红自测：
