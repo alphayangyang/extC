@@ -962,6 +962,19 @@ def build_items() -> list:
         ok_msg=ok_first(r"^  ok   ggml"),
         bad_msg="extlib/ggml/tests/run.sh（量化块布局读错/vec_dot 算错/q4 的带宽优势没兑现）",
         bad_dump=dump_fail(12)))
+    # ---- 闸门·端到端 decode（bench/llm-decode）----
+    # 买的是**整条链一起对**：GGUF 解析（元数据/张量表/量化行）、NeoX RoPE、RMSNorm、
+    # KV cache 的层×位置×头布局、SwiGLU、输出层的 argmax —— 任何一环错了，贪心 20 个 id
+    # 就不可能和 llama.cpp 逐 id 一致（oracle 是 llama.cpp 在同一模型上的实测结果）。
+    # 再加一条护栏：单线程吞吐不得低于 MIN_TOKS（GEMV 一旦退回标量/解释就红）。
+    # 依赖 ggml 共享库与 stories15M GGUF：缺任一样脚本自己跳过（电池记 skip）。
+    items.append(cmd(
+        "gate-llm-decode", "gate",
+        "闸门·bench/llm-decode：extC 端到端跑 stories15M 的贪心 20 token 与 llama.cpp 逐 id 一致，且不慢于下限（无 ggml/模型时跳过）",
+        ["./bench/llm-decode/tests/run.sh"], timeout=600,
+        ok_msg=ok_first(r"^  ok   llm-decode"),
+        bad_msg="bench/llm-decode/tests/run.sh（GGUF 解析/前向/量化 GEMV 哪一环算错了，或吞吐退化成标量）",
+        bad_dump=dump_fail(12)))
 
     # ---- 闸门·标记 walk 的批弹出结构 ----
     # 这条买的是**延迟**（LIFO 逐个弹是串行指针链），不是指令数，所以判据是结构 + 红自测：

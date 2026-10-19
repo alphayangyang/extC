@@ -1,0 +1,570 @@
+/* bench/llm-decode/decode.extc —— 用 extC 自己跑一遍 tiny llama 的 decode。
+ *
+ * 自己解析 GGUF、自己做 forward（RMSNorm / NeoX RoPE / GQA 无 / SwiGLU / 输出层），
+ * 权重与激活的矩阵乘全部走 extlib/ggml 的量化 GEMV（q4_0/q8_0），与 llama.cpp 的
+ * CPU decode 路径同一套 kernel；BLAS 留给 prefill（见 README）。
+ *
+ * 用法：decode <model.gguf> [n_tokens] [ggml_build_dir]
+ * 输出：GEN <token ids...> 与 TIME / PREFILL / LOAD 三行，归 tests/run.sh 判。
+ */
+use std::io
+use std::time
+use std::fs
+use ggml
+
+extern!("m") fn sqrtf(x: f32) -> f32 effects Addr=0 Cont=0
+extern!("m") fn expf(x: f32) -> f32 effects Addr=0 Cont=0
+extern!("m") fn cosf(x: f32) -> f32 effects Addr=0 Cont=0
+extern!("m") fn sinf(x: f32) -> f32 effects Addr=0 Cont=0
+extern!("m") fn logf(x: f32) -> f32 effects Addr=0 Cont=0
+
+let NEMBD: i64 = 288
+let NHEAD: i64 = 6
+let HDIM: i64 = 48
+let NFF: i64 = 768
+let NLAYER: i64 = 6
+let NVOCAB: i64 = 32000
+let NCTX: i64 = 128
+let MAXFILE: i64 = 64 * 1024 * 1024
+
+var GP: i64 = 0
+
+fn rdU32(buf: slice<u8>) -> u32 {
+    var v: u32 = u32(buf[GP]) | (u32(buf[GP + 1]) << 8) | (u32(buf[GP + 2]) << 16) | (u32(buf[GP + 3]) << 24)
+    GP = GP + 4
+    return v
+}
+
+fn rdU64(buf: slice<u8>) -> u64 {
+    var lo: u64 = u64(rdU32(buf))
+    var hi: u64 = u64(rdU32(buf))
+    return lo | (hi << 32)
+}
+
+/* 读字符串：返回 (偏移, 长度)，偏移指向 buf 里的字节。 */
+var GS: i64 = 0
+var GL: i64 = 0
+fn rdStr(buf: slice<u8>) -> void {
+    var n: i64 = i64(rdU64(buf))
+    GS = GP
+    GL = n
+    GP = GP + n
+}
+
+fn skipVal(buf: slice<u8>, t: i32) -> void {
+    if t == 0 || t == 1 || t == 7 { GP = GP + 1  return }
+    if t == 2 || t == 3 { GP = GP + 2  return }
+    if t == 4 || t == 5 || t == 6 { GP = GP + 4  return }
+    if t == 10 || t == 11 || t == 12 { GP = GP + 8  return }
+    if t == 8 {
+        var n: i64 = i64(rdU64(buf))
+        GP = GP + n
+        return
+    }
+    if t == 9 {
+        var at: i32 = i32(rdU32(buf))
+        var n: i64 = i64(rdU64(buf))
+        var i: i64 = 0
+        while i < n { skipVal(buf, at)  i = i + 1 }
+        return
+    }
+    trap("gguf: unknown kv value type")
+}
+
+/* f32 从字节读出来（没有 bitcast，按 IEEE754 自己拼；只用于 F32 的 norm 权重）。 */
+fn f32At(buf: slice<u8>, off: i64) -> f32 {
+    var bits: u32 = u32(buf[off]) | (u32(buf[off + 1]) << 8) | (u32(buf[off + 2]) << 16) | (u32(buf[off + 3]) << 24)
+    var sgn: f32 = 1.0
+    if (bits >> 31) != u32(0) { sgn = f32(-1.0) }
+    var ex: i64 = i64((bits >> 23) & u32(255))
+    var mant: i64 = i64(bits & u32(0x7FFFFF))
+    if ex == 0 { ex = 1 - 127 - 23 } else { mant = mant | i64(0x800000)  ex = ex - 127 - 23 }
+    var v: f32 = f32(mant)
+    var k: i64 = ex
+    while k > 0 { v = v * 2.0  k = k - 1 }
+    while k < 0 { v = v * 0.5  k = k + 1 }
+    return sgn * v
+}
+
+fn nameIs(buf: slice<u8>, off: i64, len: i64, lit: slice<u8>) -> bool {
+    if len != lit.len { return false }
+    var i: i64 = 0
+    while i < len {
+        if buf[off + i] != lit[i] { return false }
+        i = i + 1
+    }
+    return true
+}
+
+/* 名字 → 槽号。0=token_embd 1=output_norm 2=output，层 L 的九个张量从 3+L*9 开始。 */
+fn slotOf(buf: slice<u8>, off: i64, len: i64) -> i64 {
+    if nameIs(buf, off, len, "token_embd.weight") { return 0 }
+    if nameIs(buf, off, len, "output_norm.weight") { return 1 }
+    if nameIs(buf, off, len, "output.weight") { return 2 }
+    if len < 7 { return -1 }
+    if !nameIs(buf, off, 4, "blk.") { return -1 }
+    var c: u8 = buf[off + 4]
+    if c < u8(48) || c > u8(57) { return -1 }
+    var layer: i64 = i64(c) - 48
+    var so: i64 = off + 6
+    var sl: i64 = len - 6
+    var idx: i64 = -1
+    if nameIs(buf, so, sl, "attn_norm.weight") { idx = 0 }
+    if nameIs(buf, so, sl, "attn_q.weight") { idx = 1 }
+    if nameIs(buf, so, sl, "attn_k.weight") { idx = 2 }
+    if nameIs(buf, so, sl, "attn_v.weight") { idx = 3 }
+    if nameIs(buf, so, sl, "attn_output.weight") { idx = 4 }
+    if nameIs(buf, so, sl, "ffn_norm.weight") { idx = 5 }
+    if nameIs(buf, so, sl, "ffn_gate.weight") { idx = 6 }
+    if nameIs(buf, so, sl, "ffn_down.weight") { idx = 7 }
+    if nameIs(buf, so, sl, "ffn_up.weight") { idx = 8 }
+    if idx < 0 { return -1 }
+    return 3 + layer * 9 + idx
+}
+
+fn rowBytes(ty: i32, k: i64) -> i64 {
+    if ty == 0 { return k * 4 }
+    if ty == 2 { return (k / 32) * 18 }
+    if ty == 8 { return (k / 32) * 34 }
+    trap("ggml: tensor type not supported (q4_0/q8_0/f32 only)")
+}
+
+fn rmsnormTo(dst: mut slice<f32>, src: slice<f32>, w: slice<f32>, n: i64, eps: f32) {
+    var s: f32 = 0.0
+    var i: i64 = 0
+    while i < n {
+        s = s + src[i] * src[i]
+        i = i + 1
+    }
+    var r: f32 = 1.0 / sqrtf(s / f32(n) + eps)
+    i = 0
+    while i < n {
+        dst[i] = src[i] * r * w[i]
+        i = i + 1
+    }
+}
+
+/* NeoX 交错 RoPE：每个头内 (2i, 2i+1) 成对转，freq = pos * theta^(-2i/hdim)。 */
+fn rope(v: mut slice<f32>, pos: i64, rcos: slice<f32>, rsin: slice<f32>, nhead: i64, hd: i64) {
+    var h: i64 = 0
+    while h < nhead {
+        var base: i64 = h * hd
+        var i: i64 = 0
+        while i < hd / 2 {
+            var ti: i64 = pos * (HDIM / 2) + i
+            var c: f32 = rcos[ti]
+            var s: f32 = rsin[ti]
+            var x0: f32 = v[base + 2 * i]
+            var x1: f32 = v[base + 2 * i + 1]
+            v[base + 2 * i] = x0 * c - x1 * s
+            v[base + 2 * i + 1] = x0 * s + x1 * c
+            i = i + 1
+        }
+        h = h + 1
+    }
+}
+
+/* 一次量化 GEMV：x 先量化成 q8_0（llama.cpp 的 mul_mat 对量化权重也这么干），再按行点积。 */
+fn gemv(be: ref ggml::backend, ty: i32, w: slice<u8>, x: slice<f32>, xq: mut slice<u8>,
+        y: mut slice<f32>, m: i64, k: i64) {
+    be.quantize(8, x, i64(1), k, xq)
+    if ty == 2 { be.gemvQ4(w, xq, y, m, k) } else { be.gemvQ8(w, xq, y, m, k) }
+}
+
+fn argmax(v: slice<f32>, n: i64) -> i64 {
+    var best: i64 = 0
+    var bv: f32 = v[0]
+    var i: i64 = 1
+    while i < n {
+        if v[i] > bv { bv = v[i]  best = i }
+        i = i + 1
+    }
+    return best
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    if args.len < 2 { io::cout << "usage: decode <model.gguf> [n_tokens] [ggml_build_dir]\n"  return 2 }
+    var ntok: i64 = 20
+    if args.len > 2 { ntok = i64(args[2].len) }
+    var toksArg: slice<u8> = "20"
+    if args.len > 2 { toksArg = args[2] }
+    ntok = 0
+    var ti: i64 = 0
+    while ti < toksArg.len { ntok = ntok * 10 + i64(toksArg[ti]) - 48  ti = ti + 1 }
+    var gdir: slice<u8> = "/tmp/ggml/build/src"
+    if args.len > 3 { gdir = args[3] }
+
+    var t0: i64 = time::now()
+    var data: mut slice<u8> = new u8[MAXFILE]
+    var f = fs::openRead(args[1])!
+    var nraw: i64 = f.readAll(data[..])!
+    f.close()!
+    var tload: i64 = time::now() - t0
+
+    /* ---- GGUF 头 ---- */
+    var pos: i64 = 0
+    GP = 0
+    var magic: u32 = rdU32(data)
+    if magic != u32(0x46554747) { io::cout << "FAIL not a gguf\n"  return 1 }
+    var ver: u32 = rdU32(data)
+    var nten: i64 = i64(rdU64(data))
+    var nkv: i64 = i64(rdU64(data))
+    var align: i64 = 32
+    var eps: f32 = 0.00001
+    var theta: f32 = 10000.0
+    var k: i64 = 0
+    while k < nkv {
+        rdStr(data)
+        var koff: i64 = GS
+        var klen: i64 = GL
+        var ty: i32 = i32(rdU32(data))
+        if ty == 9 {
+            skipVal(data, ty)
+        } else if ty == 8 {
+            rdStr(data)
+        } else if ty == 4 {
+            var v: u32 = rdU32(data)
+            if nameIs(data, koff, klen, "general.alignment") { align = i64(v) }
+        } else if ty == 6 {
+            var o: i64 = GP
+            GP = GP + 4
+            if nameIs(data, koff, klen, "llama.attention.layer_norm_rms_epsilon") { eps = f32At(data, o) }
+            if nameIs(data, koff, klen, "llama.rope.freq_base") { theta = f32At(data, o) }
+        } else {
+            skipVal(data, ty)
+        }
+        k = k + 1
+    }
+    var toff: mut slice<i64> = new i64[64]
+    var tty: mut slice<i32> = new i32[64]
+    var tne0: mut slice<i64> = new i64[64]
+    var tne1: mut slice<i64> = new i64[64]
+    var i: i64 = 0
+    while i < 64 { toff[i] = -1  tty[i] = 0  tne0[i] = 0  tne1[i] = 0  i = i + 1 }
+    /* tensor info：名字、维数、类型、相对偏移 */
+    var infos: mut slice<i64> = new i64[nten * 4]
+    i = 0
+    while i < nten {
+        rdStr(data)
+        var noff: i64 = GS
+        var nlen: i64 = GL
+        var nd: i32 = i32(rdU32(data))
+        var d0: i64 = 0
+        var d1: i64 = 0
+        var j: i64 = 0
+        while j < i64(nd) {
+            var d: i64 = i64(rdU64(data))
+            if j == 0 { d0 = d }
+            if j == 1 { d1 = d }
+            j = j + 1
+        }
+        var tt: i32 = i32(rdU32(data))
+        var ro: i64 = i64(rdU64(data))
+        var s: i64 = slotOf(data, noff, nlen)
+        if s >= 0 {
+            toff[s] = ro
+            tty[s] = tt
+            tne0[s] = d0
+            tne1[s] = d1
+        }
+        infos[i * 4] = s
+        i = i + 1
+    }
+    /* 数据区起点 = 信息区末尾按 align 对齐 */
+    var hdrEnd: i64 = GP
+    var data0: i64 = ((hdrEnd + align - 1) / align) * align
+    i = 0
+    while i < 64 {
+        if toff[i] >= 0 { toff[i] = data0 + toff[i] }
+        i = i + 1
+    }
+    if toff[0] < 0 || toff[2] < 0 { io::cout << "FAIL model missing tensors\n"  return 1 }
+
+    match ggml::openDir(gdir) {
+        none => {
+            io::cout << "SKIP cannot bind ggml in " << gdir << "\n"
+            return 3
+        }
+        some(be) => {
+            var bev: ggml::backend = be
+            return run(ref bev, data, toff, tty, tne0, tne1, ntok, eps, theta, tload)
+        }
+    }
+}
+
+fn run(be: ref ggml::backend, data: slice<u8>, toff: slice<i64>, tty: slice<i32>,
+       tne0: slice<i64>, tne1: slice<i64>, ntok: i64, eps: f32, theta: f32, tload: i64) -> i32 {
+    /* ---- 常量与缓冲 ---- */
+    var invf: mut slice<f32> = new f32[HDIM / 2]
+    var lt: f32 = logf(theta)
+    var i: i64 = 0
+    while i < HDIM / 2 {
+        invf[i] = expf(f32(0 - 2 * i) / f32(HDIM) * lt)
+        i = i + 1
+    }
+    var x: mut slice<f32> = new f32[NEMBD]
+    var xn: mut slice<f32> = new f32[NEMBD]
+    var xq: mut slice<u8> = new u8[ggml::q8Bytes(NEMBD)]
+    var yq: mut slice<u8> = new u8[ggml::q8Bytes(NFF)]
+    var q: mut slice<f32> = new f32[NEMBD]
+    var kk: mut slice<f32> = new f32[NEMBD]
+    var vv: mut slice<f32> = new f32[NEMBD]
+    var o: mut slice<f32> = new f32[NEMBD]
+    var gate: mut slice<f32> = new f32[NFF]
+    var up: mut slice<f32> = new f32[NFF]
+    var ff: mut slice<f32> = new f32[NFF]
+    var dn: mut slice<f32> = new f32[NEMBD]
+    var nwall: mut slice<f32> = new f32[(NLAYER * 2 + 1) * NEMBD]
+    var rcos: mut slice<f32> = new f32[NCTX * (HDIM / 2)]
+    var rsin: mut slice<f32> = new f32[NCTX * (HDIM / 2)]
+    var att: mut slice<f32> = new f32[NEMBD]
+    var kc: mut slice<f32> = new f32[NLAYER * NCTX * NEMBD]
+    var vc: mut slice<f32> = new f32[NLAYER * NCTX * NEMBD]
+    var sc: mut slice<f32> = new f32[NCTX]
+    var logits: mut slice<f32> = new f32[NVOCAB]
+    var scale: f32 = 1.0 / sqrtf(f32(HDIM))
+    var rowN: i64 = rowBytes(0, NEMBD)
+
+    /* rope 的 cos/sin 只依赖位置与维度，加载时算好整张表 */
+    var pr: i64 = 0
+    while pr < NCTX {
+        var ii: i64 = 0
+        while ii < HDIM / 2 {
+            var aa: f32 = f32(pr) * invf[ii]
+            rcos[pr * (HDIM / 2) + ii] = cosf(aa)
+            rsin[pr * (HDIM / 2) + ii] = sinf(aa)
+            ii = ii + 1
+        }
+        pr = pr + 1
+    }
+    /* 归一化权重加载时读出来：别每个 token 再用 f32At 逐元素解码 */
+    var L0: i64 = 0
+    while L0 < NLAYER {
+        var an0: i64 = toff[3 + L0 * 9 + 0]
+        var fn0: i64 = toff[3 + L0 * 9 + 5]
+        var j0: i64 = 0
+        while j0 < NEMBD {
+            nwall[(L0 * 2) * NEMBD + j0] = f32At(data, an0 + j0 * 4)
+            nwall[(L0 * 2 + 1) * NEMBD + j0] = f32At(data, fn0 + j0 * 4)
+            j0 = j0 + 1
+        }
+        L0 = L0 + 1
+    }
+    var j1: i64 = 0
+    while j1 < NEMBD { nwall[(NLAYER * 2) * NEMBD + j1] = f32At(data, toff[1] + j1 * 4)  j1 = j1 + 1 }
+
+    /* ---- 处理一个 token，返回 logits 就绪 ---- */
+    var pos: i64 = 0
+    var tok: i64 = 0
+    var outIds: mut slice<i64> = new i64[ntok]
+    var tpre0: i64 = time::now()
+    var prompt: [5]i64 = [1, 9038, 2501, 263, 931]
+    var pi: i64 = 0
+    while pi < 5 {
+        tok = prompt[pi]
+        /* 嵌入行（q8_0 / q4_0 / f32 三种都可能） */
+        var ety: i32 = tty[0]
+        var rb: i64 = rowBytes(ety, NEMBD)
+        var es: slice<u8> = data[toff[0] + tok * rb..toff[0] + tok * rb + rb]
+        if ety == 0 {
+            var j2: i64 = 0
+            while j2 < NEMBD { x[j2] = f32At(data, toff[0] + tok * rb + j2 * 4)  j2 = j2 + 1 }
+        } else {
+            be.dequant(ety, es, x, NEMBD)
+        }
+        var L: i64 = 0
+        while L < NLAYER {
+            var an: i64 = toff[3 + L * 9 + 0]
+            var qo: i64 = 3 + L * 9 + 1
+            var ko: i64 = 3 + L * 9 + 2
+            var vo: i64 = 3 + L * 9 + 3
+            var ao: i64 = 3 + L * 9 + 4
+            var fnorm: i64 = toff[3 + L * 9 + 5]
+            var go: i64 = 3 + L * 9 + 6
+            var do: i64 = 3 + L * 9 + 7
+            var uo: i64 = 3 + L * 9 + 8
+            var j: i64 = 0
+            rmsnormTo(xn, x, nwall[(L * 2) * NEMBD..(L * 2 + 1) * NEMBD], NEMBD, eps)
+            gemv(be, tty[qo], data[toff[qo]..toff[qo] + tne1[qo] * rowBytes(tty[qo], NEMBD)], xn, xq, q, tne1[qo], NEMBD)
+            gemv(be, tty[ko], data[toff[ko]..toff[ko] + tne1[ko] * rowBytes(tty[ko], NEMBD)], xn, xq, kk, tne1[ko], NEMBD)
+            gemv(be, tty[vo], data[toff[vo]..toff[vo] + tne1[vo] * rowBytes(tty[vo], NEMBD)], xn, xq, vv, tne1[vo], NEMBD)
+            rope(q, pos, rcos, rsin, NHEAD, HDIM)
+            rope(kk, pos, rcos, rsin, NHEAD, HDIM)
+
+            /* 写 KV cache */
+            j = 0
+            var kb: i64 = (L * NCTX + pos) * NEMBD
+            while j < NEMBD { kc[kb + j] = kk[j]  vc[kb + j] = vv[j]  j = j + 1 }
+            /* 每个头做注意力 */
+            var h: i64 = 0
+            while h < NHEAD {
+                var hb: i64 = h * HDIM
+                var mx: f32 = f32(-1e30)
+                var t: i64 = 0
+                while t <= pos {
+                    var s2: f32 = 0.0
+                    var d: i64 = 0
+                    while d < HDIM {
+                        s2 = s2 + q[hb + d] * kc[(L * NCTX + t) * NEMBD + hb + d]
+                        d = d + 1
+                    }
+                    s2 = s2 * scale
+                    sc[t] = s2
+                    if s2 > mx { mx = s2 }
+                    t = t + 1
+                }
+                var sum: f32 = 0.0
+                t = 0
+                while t <= pos {
+                    var ex: f32 = expf(sc[t] - mx)
+                    sc[t] = ex
+                    sum = sum + ex
+                    t = t + 1
+                }
+                var inv: f32 = 1.0 / sum
+                var d2: i64 = 0
+                while d2 < HDIM {
+                    var acc: f32 = 0.0
+                    t = 0
+                    while t <= pos {
+                        acc = acc + sc[t] * vc[(L * NCTX + t) * NEMBD + hb + d2]
+                        t = t + 1
+                    }
+                    att[hb + d2] = acc * inv
+                    d2 = d2 + 1
+                }
+                h = h + 1
+            }
+            gemv(be, tty[ao], data[toff[ao]..toff[ao] + tne1[ao] * rowBytes(tty[ao], NEMBD)], att, xq, o, tne1[ao], NEMBD)
+            j = 0
+            while j < NEMBD { x[j] = x[j] + o[j]  j = j + 1 }
+            /* FFN */
+            j = 0
+            rmsnormTo(xn, x, nwall[(L * 2 + 1) * NEMBD..(L * 2 + 2) * NEMBD], NEMBD, eps)
+            gemv(be, tty[go], data[toff[go]..toff[go] + tne1[go] * rowBytes(tty[go], NFF)], xn, yq, gate, tne1[go], NEMBD)
+            gemv(be, tty[uo], data[toff[uo]..toff[uo] + tne1[uo] * rowBytes(tty[uo], NFF)], xn, yq, up, tne1[uo], NEMBD)
+            j = 0
+            while j < NFF {
+                var g: f32 = gate[j]
+                ff[j] = (g / (1.0 + expf(0.0 - g))) * up[j]
+                j = j + 1
+            }
+            gemv(be, tty[do], data[toff[do]..toff[do] + tne1[do] * rowBytes(tty[do], NFF)], ff, yq, dn, tne1[do], NFF)
+            j = 0
+            while j < NEMBD { x[j] = x[j] + dn[j]  j = j + 1 }
+            L = L + 1
+        }
+        pos = pos + 1
+        pi = pi + 1
+    }
+    var tpre: i64 = time::now() - tpre0
+    /* 最后一层输出 */
+    var j3: i64 = 0
+    rmsnormTo(xn, x, nwall[(NLAYER * 2) * NEMBD..(NLAYER * 2 + 1) * NEMBD], NEMBD, eps)
+    gemv(be, tty[2], data[toff[2]..toff[2] + tne1[2] * rowBytes(tty[2], NEMBD)], xn, xq, logits, tne1[2], NEMBD)
+    var tdec0: i64 = time::now()
+    var s3: i64 = 0
+    while s3 < ntok {
+        var best: i64 = argmax(logits, NVOCAB)
+        outIds[s3] = best
+        s3 = s3 + 1
+        /* 喂回去：一个 token 的 forward */
+        var ety2: i32 = tty[0]
+        var rb2: i64 = rowBytes(ety2, NEMBD)
+        if ety2 == 0 {
+            var j4: i64 = 0
+            while j4 < NEMBD { x[j4] = f32At(data, toff[0] + best * rb2 + j4 * 4)  j4 = j4 + 1 }
+        } else {
+            be.dequant(ety2, data[toff[0] + best * rb2..toff[0] + best * rb2 + rb2], x, NEMBD)
+        }
+        var L2: i64 = 0
+        while L2 < NLAYER {
+            var an2: i64 = toff[3 + L2 * 9 + 0]
+            var qo2: i64 = 3 + L2 * 9 + 1
+            var ko2: i64 = 3 + L2 * 9 + 2
+            var vo2: i64 = 3 + L2 * 9 + 3
+            var ao2: i64 = 3 + L2 * 9 + 4
+            var fn2: i64 = toff[3 + L2 * 9 + 5]
+            var go2: i64 = 3 + L2 * 9 + 6
+            var do2: i64 = 3 + L2 * 9 + 7
+            var uo2: i64 = 3 + L2 * 9 + 8
+            var j: i64 = 0
+            rmsnormTo(xn, x, nwall[(L2 * 2) * NEMBD..(L2 * 2 + 1) * NEMBD], NEMBD, eps)
+            gemv(be, tty[qo2], data[toff[qo2]..toff[qo2] + tne1[qo2] * rowBytes(tty[qo2], NEMBD)], xn, xq, q, tne1[qo2], NEMBD)
+            gemv(be, tty[ko2], data[toff[ko2]..toff[ko2] + tne1[ko2] * rowBytes(tty[ko2], NEMBD)], xn, xq, kk, tne1[ko2], NEMBD)
+            gemv(be, tty[vo2], data[toff[vo2]..toff[vo2] + tne1[vo2] * rowBytes(tty[vo2], NEMBD)], xn, xq, vv, tne1[vo2], NEMBD)
+            rope(q, pos, rcos, rsin, NHEAD, HDIM)
+            rope(kk, pos, rcos, rsin, NHEAD, HDIM)
+            j = 0
+            var kb2: i64 = (L2 * NCTX + pos) * NEMBD
+            while j < NEMBD { kc[kb2 + j] = kk[j]  vc[kb2 + j] = vv[j]  j = j + 1 }
+            var h: i64 = 0
+            while h < NHEAD {
+                var hb: i64 = h * HDIM
+                var mx: f32 = f32(-1e30)
+                var t: i64 = 0
+                while t <= pos {
+                    var s2: f32 = 0.0
+                    var d: i64 = 0
+                    while d < HDIM { s2 = s2 + q[hb + d] * kc[(L2 * NCTX + t) * NEMBD + hb + d]  d = d + 1 }
+                    s2 = s2 * scale
+                    sc[t] = s2
+                    if s2 > mx { mx = s2 }
+                    t = t + 1
+                }
+                var sum: f32 = 0.0
+                t = 0
+                while t <= pos {
+                    var ex: f32 = expf(sc[t] - mx)
+                    sc[t] = ex
+                    sum = sum + ex
+                    t = t + 1
+                }
+                var inv: f32 = 1.0 / sum
+                var d2: i64 = 0
+                while d2 < HDIM {
+                    var acc: f32 = 0.0
+                    t = 0
+                    while t <= pos { acc = acc + sc[t] * vc[(L2 * NCTX + t) * NEMBD + hb + d2]  t = t + 1 }
+                    att[hb + d2] = acc * inv
+                    d2 = d2 + 1
+                }
+                h = h + 1
+            }
+            gemv(be, tty[ao2], data[toff[ao2]..toff[ao2] + tne1[ao2] * rowBytes(tty[ao2], NEMBD)], att, xq, o, tne1[ao2], NEMBD)
+            j = 0
+            while j < NEMBD { x[j] = x[j] + o[j]  j = j + 1 }
+            j = 0
+            rmsnormTo(xn, x, nwall[(L2 * 2 + 1) * NEMBD..(L2 * 2 + 2) * NEMBD], NEMBD, eps)
+            gemv(be, tty[go2], data[toff[go2]..toff[go2] + tne1[go2] * rowBytes(tty[go2], NFF)], xn, yq, gate, tne1[go2], NEMBD)
+            gemv(be, tty[uo2], data[toff[uo2]..toff[uo2] + tne1[uo2] * rowBytes(tty[uo2], NFF)], xn, yq, up, tne1[uo2], NEMBD)
+            j = 0
+            while j < NFF {
+                var g2: f32 = gate[j]
+                ff[j] = (g2 / (1.0 + expf(0.0 - g2))) * up[j]
+                j = j + 1
+            }
+            gemv(be, tty[do2], data[toff[do2]..toff[do2] + tne1[do2] * rowBytes(tty[do2], NFF)], ff, yq, dn, tne1[do2], NFF)
+            j = 0
+            while j < NEMBD { x[j] = x[j] + dn[j]  j = j + 1 }
+            L2 = L2 + 1
+        }
+        pos = pos + 1
+        j3 = 0
+        rmsnormTo(xn, x, nwall[(NLAYER * 2) * NEMBD..(NLAYER * 2 + 1) * NEMBD], NEMBD, eps)
+        gemv(be, tty[2], data[toff[2]..toff[2] + tne1[2] * rowBytes(tty[2], NEMBD)], xn, xq, logits, tne1[2], NEMBD)
+    }
+    var tdec: i64 = time::now() - tdec0
+    io::cout << "LOAD us=" << tload / 1000 << "\n"
+    io::cout << "PREFILL us=" << tpre / 1000 << "\n"
+    io::cout << "TIME us=" << tdec / 1000 << " per_tok_us=" << tdec / 1000 / ntok << " tok_s=" << f64(ntok) * 1000000000.0 / f64(tdec) << "\n"
+    var dbgmax: f32 = logits[0]
+    var dbgmi: i64 = 0
+    var dbgj: i64 = 1
+    while dbgj < NVOCAB { if logits[dbgj] > dbgmax { dbgmax = logits[dbgj]  dbgmi = dbgj }  dbgj = dbgj + 1 }
+    io::cout << "GEN"
+    i = 0
+    while i < ntok { io::cout << " " << outIds[i]  i = i + 1 }
+    io::cout << "\n"
+    return 0
+}
