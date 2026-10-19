@@ -2896,6 +2896,13 @@ static const char *exConv(CG *g, Expr *e) {
     if (!planConvCheck(e) || g->uncheckedBody)
         return arenaPrintf(g->arena, "((%s)(%s))", cType(g, t), x);
 
+    /* 目标是浮点（int->float、f32->f64）：一条 C 强制转换就是全部语义 —— 就近舍入，整数
+     * 永远在目标浮点数的范围内。这条必须挡在下面的整数范围检查**之前**：那几条把操作数
+     * 按无符号读（`(uint64_t)`），负数会被读成 2^64 附近的巨值（回归守卫
+     * tests/ops/conv_int_float.extc）。 */
+    if (ttIsFloat(t))
+        return arenaPrintf(g->arena, "((%s)(%s))", cType(g, t), x);
+
     /* A checked conversion: look the range up in a table and go
      * through one of the `static inline` helpers. */
     const char *tn = t->name;
@@ -2938,21 +2945,9 @@ static const char *exConv(CG *g, Expr *e) {
             "((%s)extc_narrowI((int64_t)(%s), %lldLL, %lldLL, \"%s\", %d))",
             cType(g, t), x, (long long)lo, (long long)hi, g->path, e->line);
     }
-    /* When the target is a float, the checked call's result is used directly: the context already
-     * asks for a `double`, so the conversion happens implicitly, and an explicit cast applied
-     * straight to a function call is what clang reports as `-Wbad-function-cast`. */
-    bool toFloat = (strcmp(tn, "f32") == 0 || strcmp(tn, "f64") == 0);
+    /* 目标不是浮点 ⇒ 只剩整数目标的范围检查（无符号目标，含符号变化）。
+     * 目标是浮点的情况在前面已经返回了 C 强制转换。 */
     unsigned long long hi = 0;
-    if (toFloat) {
-        /* The conversion has to be spelled out (`-Wimplicit-int-float-conversion` is right that a
-         * u64 does not become a double without losing something), but it must not be applied
-         * straight to the call (`-Wbad-function-cast`). The intermediate cast names the type the
-         * call already returns. */
-        const char *ct = cType(g, t);
-        return arenaPrintf(g->arena,
-            "((%s)(uint64_t)extc_narrowU((uint64_t)(%s), UINT64_MAX, \"%s\", %d))",
-            ct, x, g->path, e->line);
-    }
     if (strcmp(tn,"u8")==0)  hi = 255ULL;
     else if (strcmp(tn,"u16")==0) hi = 65535ULL;
     else if (strcmp(tn,"u32")==0) hi = 4294967295ULL;

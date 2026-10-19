@@ -2377,9 +2377,11 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             }
             /* Float to float follows C (round to nearest; out of range becomes an infinity),
              * so it is not checked. An integer widening is lossless and keeps the signedness,
-             * so it is not checked either. Everything else -- narrowing, a sign change, float
-             * to integer -- is checked. */
-            bool lossless = (si && ti && ttCanWiden(src, t)) || (sf && tf);
+             * so it is not checked either. Integer to float is not checked either: every integer
+             * is inside the target float's range, the only loss is precision (round to nearest,
+             * as in C). Everything else -- narrowing, a sign change, float to integer -- is
+             * checked. */
+            bool lossless = (si && ti && ttCanWiden(src, t)) || (sf && tf) || (si && tf);
             planSetConvCheck(e, !lossless);
             return t;
         }

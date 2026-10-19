@@ -1,0 +1,28 @@
+// expect: neg64=-2 neg32=-2 big=-1234567890123 negf32=-1.5 impl=-7 ok
+// 整数 → 浮点的回归守卫。
+//
+// 从前 codegen 的「目标浮点」分支把操作数按**无符号**读成 `(uint64_t)` 再过范围检查 ⇒
+// 任何负的 i64/i32/i8 转浮点都变成 2^64 附近的巨值（`f64(-2)` 打印 1.84467e+19），
+// 不 trap、静默算错；隐式加宽（`var d: f64 = i32value`）走的是另一条路，所以一直是对的。
+// 现在按 docs/usage/language.md §3.4：整数 → 浮点只做 C 的强制转换（就近舍入，不检查）。
+use std::io
+
+fn main() -> i32 {
+    var n: i64 = 0 - 2
+    var big: i64 = 0 - 1234567890123
+    var a: i32 = 0 - 7
+    var b: i8 = i8(0 - 7)
+    var u: u64 = u64(5)
+    var f: f32 = f32(0 - 3) / f32(2)          /* -1.5 */
+    io::cout << "neg64=" << i64(f64(n)) << " neg32=" << i64(f32(n))
+    io::cout << " big=" << i64(f64(big)) << " negf32=" << f64(f)
+    var imp: f64 = a                          /* 隐式 i32→f64：无损加宽，本来就不检查 */
+    io::cout << " impl=" << imp
+    if f64(b) == f64(a) && f64(a) == f64(0 - 7) && f64(u) == f64(5) {
+        io::cout << " ok"
+    } else {
+        io::cout << " bad"
+    }
+    io::cout << "\n"
+    return 0
+}
