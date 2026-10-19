@@ -69,6 +69,7 @@ fi
 rm -rf "$d"
 
 # `EX_DYN` 的子表达式：**每个手写遍历器都要看得见载荷**（曾漏掉 ⇒ 参数被误报未使用）
+tmp=$(mktemp -d)
 warn=$("$EXTC" tests/dyn/dyn_payload_param.extc -o "$tmp/pw.c" 2>&1 | head -5)
 pout=$("$EXTC" -w --run tests/dyn/dyn_payload_param.extc 2>&1)
 if [ -z "$warn" ] && [ "$pout" = "p=7" ]; then
@@ -117,7 +118,6 @@ case "$err" in
     *) bad dyn_field "$err" ;;
 esac
 
-tmp=$(mktemp -d)
 # ── 立即形式（路线 C，DYN.md §11）：载荷是本条表达式的**临时量** ⇒ 不需要拥有者 ──
 #   判的是两件事：① 不碰池（生成物里没有 put/slot 的**调用**）；
 #                ② 派发形状 = **编译期地址的表** + 直接接收者（没有槽查找、没有校验）。
@@ -171,7 +171,7 @@ if "$EXTC" -w --no-line-map -o "$tmp/r.c" tests/dyn/dyn_call.extc >/dev/null 2>&
 int main(void) {
     int64_t z = extc_pool_zoneEnter();
     box b; b.v = 7;
-    ExtcDynHandle h = extc_dyn_put((const void *)&b, (int64_t)sizeof(box), &extc_vt$Tag$box);
+    ExtcDynHandle h = extc_dyn_put((const void *)&b, (int64_t)sizeof(box), &extc_vt$Tag$box, z);
     ExtcDynSlot *s = extc_dyn_slot(h, "runtime-judge", 1);
     printf("alive=%lld\n", (long long)*((int64_t *)s->addr));
     fflush(stdout);

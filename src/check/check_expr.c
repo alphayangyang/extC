@@ -3354,6 +3354,10 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             /* `dyn` 值由池支撑，所以所在函数要标记为建池 —— 与派发点用的是同一个已有标志，这里也
              * 必须置上：少了它池运行期不会被发出，生成的 C 会调用未声明的 `extc_dyn_put`。 */
             if (c->curFunc) planSetMakesPool(c->curFunc, true);
+            /* 站点所在的 place 就是池该住的地方：句柄活着是因为池活着，所以池的寿命不能短于
+             * 值的寿命。规则与建池的调用同一套（`setCallZoneArg`）：库函数对地方透明、把选择权
+             * 交给调用者，否则默认当前块。逃逸时 `promoteInto2` 把这个层再往长寿一侧提。 */
+            setCallZoneArg(c, e);
             dynTraitOf(c, e->u.dynv.traitName, payT, e->line);
             Type *dt = typeNamed(c->arena, e->u.dynv.traitName);
             dt->kind = TY_DYN;

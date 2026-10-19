@@ -2186,6 +2186,10 @@ static const char *selfOperandAsParam(CG *g, Expr *operand, const char *code,
  * 载荷的 C 类型取自 checker 记下的 `payloadType`：这个节点自身的类型此时已是 `dyn Trait`，
  * 临时必须是载荷的类型。
  *
+ * 第四个实参是池要登记到的 zone：`dyn` 的载荷池按 **place** 存活，而 place 由 checker 的
+ * `zoneLevel` 定（逃逸时被提权到更长寿命的一层）。运行期不能自己拿"当前栈顶"顶替 —— 提权
+ * 之后构造点在内层块、池却必须生在外层，那是两回事。
+ *
  * @param g  生成器。
  * @param e  `EX_DYN` 节点。
  * @return   `extc_dyn_put` 的调用表达式（池里的句柄）。
@@ -2195,10 +2199,11 @@ static const char *genDynValue(CG *g, Expr *e) {
     Type *pt = subst(g, e->u.dynv.payloadType);
     const char *ct = cType(g, ttBase(pt));
     const char *tmp = arenaPrintf(g->arena, "__extc_dyp%d", g->tmpSeq++);
+    const char *zi  = zoneArgRef(g, e);
     pfLine(g, "%s %s = %s;", ct, tmp, payC);
     return arenaPrintf(g->arena,
-                       "extc_dyn_put((const void *)&%s, (int64_t)sizeof(%s), &extc_vt$%s$%s)",
-                       tmp, ct, e->u.dynv.traitName, ct);
+                       "extc_dyn_put((const void *)&%s, (int64_t)sizeof(%s), &extc_vt$%s$%s, %s)",
+                       tmp, ct, e->u.dynv.traitName, ct, zi);
 }
 
 /**

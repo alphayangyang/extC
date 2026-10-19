@@ -279,6 +279,22 @@ int storeLayer(Checker *c, Expr *e) {
 }
 
 /**
+ * @brief `dyn` 值的寿命深度：句柄是普通值，载荷却住在**站点那一层地方**的 dyn 池里。
+ *
+ * 载荷被拷进池，池按站点所在的 place 存活 ⇒ 值至少要活到那一层。`ZONE_HOME`（-1）表示
+ * "调用者的地方"，对深度来说就是 0。站点层还没定（0）时不加东西：调用点若真让它逃逸，
+ * 提权会把层写上，深度那一趟会看到。
+ *
+ * @param e   `EX_DYN` 站点。
+ * @param d   载荷本身给出的深度（值里引用的上界）。
+ * @return    `d` 与站点层的较大者；深度越大活得越短，所以取较大者是保守方向。
+ */
+static int dynSiteDepth(Expr *e, int d) {
+    int lvl = planZoneLevel(e);
+    if (lvl == 0) return d;
+    return maxInt(d, (lvl == ZONE_HOME) ? 0 : lvl);
+}
+/**
  * @brief 按语法形状求一个值里引用深度的上界，不看类型。
  *
  * `targetDepth` 在 `typeContainsRef` 说类型不带引用时提前返回，但“字段类型是引用”的结构体在那里
@@ -355,8 +371,9 @@ int valDepthStructural(Checker *c, Expr *e) {
     case EX_NEW: case EX_GENCALL:
         return planArenaLevel(e) == ARENA_HOME ? 0 : (planArenaLevel(e) > 0 ? planArenaLevel(e) : 0);
     /* The payload is **copied** into the pool, so any reference it carries is carried by this
-     * value too -- take the payload's depth. */
-    case EX_DYN: return valDepthStructural(c, e->u.dynv.payload);
+     * value too -- take the payload's depth. The pool itself lives in the place the site names, so
+     * the value cannot outlive that level either. */
+    case EX_DYN: return dynSiteDepth(e, valDepthStructural(c, e->u.dynv.payload));
     default:
         /* 认不出的形状答“结构里没有引用”是**不安全的那一侧**（它可能真的带着引用）⇒ 这是兜底，
          * 不是语义：被走到就说明分类漏了形状。`EX_INT` 之类的标量本来就答 0，是语义。
@@ -525,8 +542,9 @@ int targetDepth(Checker *c, Expr *e) {
         d = targetDepth(c, e->u.sign.operand);
         break;
     case EX_DYN:
-        /* The payload is copied into the pool: its references are this value's references. */
-        d = targetDepth(c, e->u.dynv.payload);
+        /* The payload is copied into the pool: its references are this value's references, and the
+         * pool lives in the place this site names -- both bound how long the value can live. */
+        d = dynSiteDepth(e, targetDepth(c, e->u.dynv.payload));
         break;
     case EX_NEW:
     case EX_GENCALL:
@@ -1134,11 +1152,29 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
     if (hops > EXTC_PROMOTE_MAX_HOPS) { EXTC_DBG_NOTE("promoteInto2: recursion budget exhausted"); return false; }
     /*
      * `dyn Trait(x)`：负载被拷进池、由句柄保活，所以负载里的分配站点要到达本值要到达的层。
+     * 句柄的池也生在站点那一层：值要活到 `at`，池就必须生在活到 `at` 的那个地方，所以站点层
+     * 也要往长寿一侧提（与建池的调用同一条规则：`want = at == 0 ? ZONE_HOME : at`）。池生在更
+     * 深的一层而句柄存到外面，就是悬垂 —— 这一提正是让 `let d: dyn T = dyn T(x)` 出块仍然有效。
      *
      * `dyn Trait(x)`: the payload is copied into the pool and the handle keeps it alive, so the
-     * payload's allocation sites have to reach the level this value has to reach.
+     * payload's allocation sites have to reach the level this value has to reach. The pool itself is
+     * born in the place the site names, so that level has to reach `at` as well -- the same rule as
+     * the pool-building call below.
      */
-    if (val->kind == EX_DYN) return promoteInto2(c, val->u.dynv.payload, at, hops + 1);
+    if (val->kind == EX_DYN) {
+        /* 池的层先提，再递归负载：负载可能提到一半就答"提不动"（结构体字面量里一个转换运算
+         * 就足以），而池的层必须独立于那个答案 —— 站点层若留在块层，深度判定会拿一个比真实
+         * 寿命更短的层去比，`return dyn T(x)` 会被误拒。
+         *
+         * Lift the pool's level first, then recurse into the payload: the payload walk can answer
+         * "cannot lift" halfway (one conversion inside a struct literal is enough), and the pool's
+         * level must not depend on that answer. */
+        if (planZoneLevel(val) != 0) {
+            int want = (at == 0) ? ZONE_HOME : at;
+            if (planZoneLevel(val) > want) planSetZoneLevel(val, want);
+        }
+        return promoteInto2(c, val->u.dynv.payload, at, hops + 1);
+    }
     /* 顺带记一条事实，不改变任何行为。只在最外层（`hops == 0`）记：重放跑的正是这一层，内层由
      * 本次调用自己到达，重复记只是重复工作。 */
     if (hops == 0) {
@@ -2734,7 +2770,8 @@ static int targetDepthPure(Checker *c, Expr *e, int hops, Expr **seen) {
 
     switch (e->kind) {
     case EX_DYN:
-        return targetDepthPure(c, e->u.dynv.payload, hops + 1, seen);   /* payload is copied into the pool */
+        /* payload is copied into the pool, and the pool lives in the place the site names */
+        return dynSiteDepth(e, targetDepthPure(c, e->u.dynv.payload, hops + 1, seen));
     case EX_NEW:
     case EX_GENCALL:
         /* 站点出生的块。`lexicalLevel` 在节点首次被检查时定下，之后不动。 */

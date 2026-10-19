@@ -315,6 +315,13 @@ INJECTIONS = {
                      '        if (targRefs && s != RC_NO_REFS) return RC_CONSERVATIVE;\n',
                      '        if (targRefs || s != RC_NO_REFS) return RC_CONSERVATIVE;\n')],
     },
+    "dyn-site-no-promote": {
+        "why": "逃逸的 dyn 构造点不再把站点层提到家 place（只把 want 用掉）⇒ 返回 dyn 的站点要么被深度判定误拒、要么把池登在内层栈顶上，句柄一返回池就跟着弹掉。这层提权必须放在递归负载之前（负载里的 i64(88) 是 EX_CONV，promoteInto2 的 default 分支答 false），否则整段被跳过。",
+        "gate": "gate-dyn-place",
+        "patches": [("src/check/check_escape.c",
+                     '            if (planZoneLevel(val) > want) planSetZoneLevel(val, want);\n',
+                     '            (void)want;   /* 注入：站点层不提权 */\n')],
+    },
 }
 
 

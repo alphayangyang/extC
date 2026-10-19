@@ -979,6 +979,19 @@ def build_items() -> list:
         bad_msg="tools/check_container_refs.py（容器描述符被当成有引用槽而关掉触发，或窄化被放宽，或缺红自测失效）",
         bad_dump=dump_fail(12)))
 
+    # ---- 闸门·dyn 载荷池生在哪一层地方 ----
+    # 买的是**dyn 池的寿命粒度**：构造点没有自己的 place 就把池挂在函数体上，循环里一轮一份
+    # 载荷攒到函数返回（dyn_payload 开档 22.23 MB -> 80.17 MB，3.61×；关档同样涨）。判据跑真实
+    # 发射：循环体自压/弹 place、extc_dyn_put 的第 4 实参是块层 __extc_zm<k>、返回 dyn 的站点
+    # 提到家 place、不含 dyn 的程序零 place/dyn 运行期；--selftest 九条注入全红。
+    items.append(cmd(
+        "gate-dyn-place", "gate",
+        "闸门·dyn 载荷池的地方：循环体自压 place、池按站点 place 建、逃逸站点提到家 place，无 dyn 零税，且 9 条注入全红",
+        ["python3", "tools/check_dyn_place.py", "--selftest"], timeout=180,
+        ok_msg=ok_first(r"^ok dyn place"),
+        bad_msg="tools/check_dyn_place.py（dyn 池挂到了函数体/当前栈顶，或逃逸站点没提权，或零税失守，或缺红自测失效）",
+        bad_dump=dump_fail(12)))
+
     # ---- 闸门·空清扫之后的退场倍数 ----
     # 买的是**触发策略**：活集大、垃圾少的负载（chase）只做一轮便宜的整堆标记，不再付
     # 「标记 32 MiB 活集只换回几 MB」的第二轮。判据=默认 4 / 退场走宏（不许字面量 2）/

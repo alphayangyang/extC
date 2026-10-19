@@ -9431,8 +9431,14 @@ static bool exprMakesPool(Expr *e, bool descendBlocks) {
         for (size_t i = 0; i < e->u.gencall.args.len; i++)
             if (exprMakesPool(*(Expr **)vecAt(&e->u.gencall.args, i), descendBlocks)) return true;
         return false;
-    /* The payload may build a pool of its own, and then the enclosing call needs a zone. */
-    case EX_DYN: return exprMakesPool(e->u.dynv.payload, descendBlocks);
+    /* `dyn Trait(x)` **is** a pool site: `extc_dyn_put` lazily builds an object table in the zone it
+     * is handed, and that table holds the copied payload. So the block that constructs a `dyn` value
+     * needs a zone of its own -- otherwise the table (and every payload in it) hangs off the enclosing
+     * function's zone and cannot be dropped at the end of the block or of the iteration.
+     *
+     * The payload walk is subsumed by `true`: whatever the payload builds, the enclosing block needs a
+     * zone for this value anyway. */
+    case EX_DYN: return true;
     default: return false;
     }
 }
