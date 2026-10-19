@@ -1,0 +1,248 @@
+/* extlib/ggml/ggml.extc —— ggml 的量化内核接进 extC：q4_0 / q8_0 的量化、反量化、点积
+ *
+ * 为什么这件事值得单开一个扩展库：BLAS 只解决「浮点 GEMM」，而 LLM 推理的 decode 阶段是
+ * **量化权重 × 少量激活的 GEMV**（q4_0 / q8_0 是 llama.cpp 家族最常见的两种权重格式）。
+ * 纯 extC 写这种内核能到 autovec 的天花板（见 README 的对照表），但 ggml 的 q4 kernel 用了
+ * 普通 C 表达不出来的 x86 指令（maddubs/madd 那一类），所以差 1.4–2.8×。
+ *
+ * 这一层只做三件事：
+ *   ① 认符号。ggml 不装进 extC：dlopen libggml-base.so（量化/反量化在 base）与
+ *      libggml-cpu.so（CPU 内核在这里），dlsym 六只符号，缺一只就返回 none。
+ *   ② 收切片。量化尺寸由 k 决定（一块 32 个元素：q4_0 18 字节、q8_0 34 字节），
+ *      长度不对带位置 trap —— 形状不对是程序 bug，不是运行期状况。
+ *   ③ 状态是一个值。backend 里是符号地址，可以传参、可以放进结构体、可以在
+ *      parallel::run 的 worker 里各持一份（这个模块没有模块级 var）。
+ *
+ * **这些符号是 ggml 的导出符号，但不是公开头文件里的 API**：其中 ggml_vec_dot_q4_0_q8_0
+ * 连声明都没有、只导出地址（ggml-cpu.h 那节写着 "internal types and functions exposed
+ * for tests and benchmarks"）。所以 open() 逐只 dlsym、任何一只缺席就返回 none
+ * （版本漂移是运行期事实，不是编译期错误）；真正的稳定性由 tests/run.sh 的对拍判据兜。
+ *
+ * 用法：var g: ggml::backend = ggml::openDir("/path/to/ggml/build/src")!
+ * 线程：这些内核是单线程的 GEMV（与 llama.cpp 一样按行并行）；要多核就
+ * parallel::run 把行区间分给 worker，每个 worker 调同一个 backend 值。 */
+use std::dl
+
+/* ggml_type 的两个枚举值（ggml.h：GGML_TYPE_Q4_0 = 2，GGML_TYPE_Q8_0 = 8）。 */
+let TYPE_Q4_0: i32 = 2
+let TYPE_Q8_0: i32 = 8
+
+/* 一块 32 个元素（GGML_QK 家族）。块字节数 = 2 字节 f16 尺度 + 量化位。 */
+let QK: i64 = 32
+let Q4_BLOCK: i64 = 18
+let Q8_BLOCK: i64 = 34
+
+let INT32_MAX_I64: i64 = 2147483647
+
+/* 一个已绑定的后端。**函数地址写在带签名的槽上**（effects Addr=0 Cont=0）：C 侧不留
+ * 我们给的指针（它只读 src、只写 dst/y 的元素，且不跨调用保存），这条断言让"把本帧的
+ * 切片数据交给内核"在编译期过得了逃逸检查 —— 与 tests/cabi/slots.extc 是同一把尺子。
+ *
+ * 签名出处（ggml 头文件）：
+ *   ggml_quantize_chunk(enum ggml_type, const float *, void *, int64_t, int64_t, int64_t,
+ *                       const float *) -> size_t
+ *   dequantize_row_q4_0(const void *, float *, int64_t)      /  _q8_0 同构
+ *   ggml_vec_dot_q4_0_q8_0(int n, float * s, size_t bs, const void * x, size_t bx,
+ *                          const void * y, size_t by, int nrc)
+ *     nrc = 1 且 x/y 连续时 bs/bx/by 用不到，按 llama.cpp 的调用点全传 0。 */
+struct backend {
+    pQuant: fn(i32, ref f32, ref u8, i64, i64, i64, ?ref f32) -> i64 effects Addr=0 Cont=0
+    pDeqQ4: fn(ref u8, ref f32, i64) -> void effects Addr=0 Cont=0
+    pDeqQ8: fn(ref u8, ref f32, i64) -> void effects Addr=0 Cont=0
+    pDotQ4: fn(i32, mut ref f32, i64, ref u8, i64, ref u8, i64, i32) -> void effects Addr=0 Cont=0
+    pDotQ8: fn(i32, mut ref f32, i64, ref u8, i64, ref u8, i64, i32) -> void effects Addr=0 Cont=0
+    pF16: fn(i32) -> f32 effects Addr=0 Cont=0
+
+    /* f16 位模式 → f32（量化块里的尺度就存在这 16 位里）。
+     * 判据用它对拍块布局；真要做数值计算不必经过它。 */
+    fn f16ToF32(self: ref backend, h: i32) -> f32 {
+        return self.pF16(h)
+    }
+
+    /* f32 → 量化。src 是 rows 行 × k 列的行主序；k 必须是 32 的倍数；
+     * dst 至少 rows * 每行字节数。返回写掉的字节数（等于 rows * 每行字节数）。 */
+    fn quantize(self: ref backend, kind: i32, src: slice<f32>, rows: i64, k: i64,
+                dst: mut slice<u8>) -> i64 {
+        trapUnless(checkLayout(kind, k, rows, src.len, dst.len),
+            "ggml::quantize: bad shape (need k a multiple of 32, src.len >= rows*k, dst.len >= rows*blockBytes)")
+        return self.pQuant(kind, src.data, dst.data, i64(0), rows, k, null)
+    }
+
+    /* 量化 → f32。src 至少 blockBytes(kind, n)；dst 至少 n。 */
+    fn dequant(self: ref backend, kind: i32, src: slice<u8>, dst: mut slice<f32>, n: i64) {
+        trapUnless(n >= 0 && (kind == TYPE_Q4_0 || kind == TYPE_Q8_0) && countFits(blockBytes(kind, n), src.len) && countFits(n, dst.len),
+            "ggml::dequant: bad shape (need kind in {q4_0, q8_0}, src.len >= blockBytes, dst.len >= n)")
+        if kind == TYPE_Q4_0 {
+            self.pDeqQ4(src.data, dst.data, n)
+        } else {
+            self.pDeqQ8(src.data, dst.data, n)
+        }
+    }
+
+    /* 一行 q4_0 权重 · 一行 q8_0 激活（都是 quantize 的产物，k 个元素）。 */
+    fn dotQ4(self: ref backend, wq4: slice<u8>, xq8: slice<u8>, k: i64) -> f32 {
+        trapUnless(dotFits(TYPE_Q4_0, k, wq4.len, xq8.len),
+            "ggml::dotQ4: bad shape (need k a multiple of 32, wq4.len >= k/32*18, xq8.len >= k/32*34)")
+        var s: f32 = 0.0
+        self.pDotQ4(i32(k), ref s, i64(0), wq4.data, i64(0), xq8.data, i64(0), i32(1))
+        return s
+    }
+
+    /* 一行 q8_0 权重 · 一行 q8_0 激活。 */
+    fn dotQ8(self: ref backend, wq8: slice<u8>, xq8: slice<u8>, k: i64) -> f32 {
+        trapUnless(dotFits(TYPE_Q8_0, k, wq8.len, xq8.len),
+            "ggml::dotQ8: bad shape (need k a multiple of 32, both >= k/32*34)")
+        var s: f32 = 0.0
+        self.pDotQ8(i32(k), ref s, i64(0), wq8.data, i64(0), xq8.data, i64(0), i32(1))
+        return s
+    }
+
+    /* y = W · x：W 是 m×k 的 q4_0（行主序、每行连续），xq8 是一行 q8_0 激活，y 长 m。
+     * 这就是 decode 阶段的那个 GEMV；按行调 ggml 的 vec_dot，与 llama.cpp 的
+     * mul_mat 在每行的做法一致。 */
+    fn gemvQ4(self: ref backend, wq4: slice<u8>, xq8: slice<u8>, y: mut slice<f32>, m: i64, k: i64) {
+        trapUnless(gemvFits(TYPE_Q4_0, m, k, wq4.len, xq8.len, y.len),
+            "ggml::gemvQ4: bad shape (need m,k >= 0, k a multiple of 32, wq4.len >= m*k/32*18, xq8.len >= k/32*34, y.len >= m)")
+        var rb: i64 = rowBytes(TYPE_Q4_0, k)
+        var r: i64 = 0
+        while r < m {
+            let row: slice<u8> = wq4[(r * rb)..(r * rb + rb)]
+            var s: f32 = 0.0
+            self.pDotQ4(i32(k), ref s, i64(0), row.data, i64(0), xq8.data, i64(0), i32(1))
+            y[r] = s
+            r = r + 1
+        }
+    }
+
+    /* 同 gemvQ4，但权重是 q8_0。 */
+    fn gemvQ8(self: ref backend, wq8: slice<u8>, xq8: slice<u8>, y: mut slice<f32>, m: i64, k: i64) {
+        trapUnless(gemvFits(TYPE_Q8_0, m, k, wq8.len, xq8.len, y.len),
+            "ggml::gemvQ8: bad shape (need m,k >= 0, k a multiple of 32, wq8.len >= m*k/32*34, xq8.len >= k/32*34, y.len >= m)")
+        var rb: i64 = rowBytes(TYPE_Q8_0, k)
+        var r: i64 = 0
+        while r < m {
+            let row: slice<u8> = wq8[(r * rb)..(r * rb + rb)]
+            var s: f32 = 0.0
+            self.pDotQ8(i32(k), ref s, i64(0), row.data, i64(0), xq8.data, i64(0), i32(1))
+            y[r] = s
+            r = r + 1
+        }
+    }
+}
+
+/* 单调的「量化后要多少字节」：调用方拿它开缓冲区。k 不是 32 的倍数就 trap。 */
+fn q4Bytes(k: i64) -> i64 { return rowBytes(TYPE_Q4_0, k) }
+fn q8Bytes(k: i64) -> i64 { return rowBytes(TYPE_Q8_0, k) }
+
+/* 打开两份库并绑定。base 是 libggml-base.so（或 .so.0），cpu 是 libggml-cpu.so。
+ * 任何一只符号缺席都返回 none —— 版本漂移是运行期事实。
+ *
+ * 两个 handle 不关：backend 的寿命就是进程的寿命（与 blas 同一个取舍）。要提前放就
+ * 自己 dl::close —— 但那时 backend 里的地址就悬空了。 */
+fn open(base: slice<u8>, cpu: slice<u8>) -> option<backend> {
+    var hb: ref void = dl::open(base)?
+    var hc: ref void = dl::open(cpu)?
+    var pc: ?ref void = dl::symOrNull(hb, "ggml_quantize_chunk")
+    var d4: ?ref void = dl::symOrNull(hb, "dequantize_row_q4_0")
+    var d8: ?ref void = dl::symOrNull(hb, "dequantize_row_q8_0")
+    var i0: ?ref void = dl::symOrNull(hc, "ggml_cpu_init")
+    var k4: ?ref void = dl::symOrNull(hc, "ggml_vec_dot_q4_0_q8_0")
+    var k8: ?ref void = dl::symOrNull(hc, "ggml_vec_dot_q8_0_q8_0")
+    var f16: ?ref void = dl::symOrNull(hb, "ggml_fp16_to_fp32")
+    if pc == null || d4 == null || d8 == null || i0 == null || k4 == null || k8 == null || f16 == null {
+        return none
+    }
+    /* ggml_cpu_init 建 CPU 特性表与量化表（vec_dot 的分发依赖它先跑一遍）。 */
+    var finit: fn() -> void = fn() -> void(i0!)
+    finit()
+    return some(backend {
+        pQuant: fn(i32, ref f32, ref u8, i64, i64, i64, ?ref f32) -> i64(pc!),
+        pDeqQ4: fn(ref u8, ref f32, i64) -> void(d4!),
+        pDeqQ8: fn(ref u8, ref f32, i64) -> void(d8!),
+        pDotQ4: fn(i32, mut ref f32, i64, ref u8, i64, ref u8, i64, i32) -> void(k4!),
+        pDotQ8: fn(i32, mut ref f32, i64, ref u8, i64, ref u8, i64, i32) -> void(k8!),
+        pF16: fn(i32) -> f32(f16!)
+    })
+}
+
+/* 从 ggml 的构建目录取两份库（build/src 里 libggml-base.so 与 libggml-cpu.so 是符号链接）。 */
+fn openDir(dir: slice<u8>) -> option<backend> {
+    var base: mut slice<u8> = join0(dir, "/libggml-base.so")
+    var cpu: mut slice<u8> = join0(dir, "/libggml-cpu.so")
+    return open(base, cpu)
+}
+
+/* ---------------------------------------------------------------- 内部
+ *
+ * 尺寸检查一律写成「乘法不溢出」的形式（与 blas 同一条规矩）：先除后乘、与长度比，
+ * 而不是先算 rows*k 再比 —— 溢出成负数时前者仍然说真话。 */
+@private
+fn trapUnless(ok: bool, why: slice<u8>) { if !ok { trap(why) } }
+
+@private
+fn countFits(c: i64, len: i64) -> bool { return c >= 0 && c <= len }
+
+@private
+fn rangeFits(x: i64, y: i64, len: i64) -> bool {
+    if x < 0 || y < 0 { return false }
+    if x == 0 || y == 0 { return true }
+    return y <= len / x
+}
+
+/* 一块多少字节；kind 不认就 trap（尺寸函数被调用方用来开缓冲区，认错格式比返回 0 好）。 */
+@private
+fn blockBytes(kind: i32, k: i64) -> i64 {
+    trapUnless(k >= 0 && k % QK == 0, "ggml: k must be a multiple of 32")
+    if kind == TYPE_Q4_0 { return Q4_BLOCK }
+    if kind == TYPE_Q8_0 { return Q8_BLOCK }
+    trap("ggml: unsupported quant type (this binding knows q4_0 and q8_0)")
+    return i64(0)
+}
+
+@private
+fn rowBytes(kind: i32, k: i64) -> i64 {
+    trapUnless(k >= 0 && k % QK == 0 && k <= INT32_MAX_I64, "ggml: k must be a non-negative multiple of 32 (and fit in int)")
+    return (k / QK) * blockBytes(kind, k)
+}
+
+@private
+fn checkLayout(kind: i32, k: i64, rows: i64, srcLen: i64, dstLen: i64) -> bool {
+    if rows < 0 { return false }
+    if k < 0 || k % QK != 0 { return false }
+    if !rangeFits(rows, k, srcLen) { return false }
+    return rangeFits(rows, rowBytes(kind, k), dstLen)
+}
+
+@private
+fn dotFits(kind: i32, k: i64, wLen: i64, xLen: i64) -> bool {
+    if k <= 0 || k % QK != 0 || k > INT32_MAX_I64 { return false }
+    if !countFits(rowBytes(kind, k), wLen) { return false }
+    return countFits(rowBytes(TYPE_Q8_0, k), xLen)
+}
+
+@private
+fn gemvFits(kind: i32, m: i64, k: i64, wLen: i64, xLen: i64, yLen: i64) -> bool {
+    if m < 0 || k <= 0 || k % QK != 0 || k > INT32_MAX_I64 { return false }
+    if !rangeFits(m, rowBytes(kind, k), wLen) { return false }
+    if !countFits(rowBytes(TYPE_Q8_0, k), xLen) { return false }
+    return countFits(m, yLen)
+}
+
+/* dir + name + NUL。dlopen 要 NUL 结尾的路径（字面量自带，运行期拼的得自己补）。 */
+@private
+fn join0(dir: slice<u8>, name: slice<u8>) -> mut slice<u8> {
+    var n: i64 = dir.len + name.len + i64(1)
+    var b: mut slice<u8> = new u8[n]
+    var i: i64 = 0
+    while i < dir.len {
+        b[i] = dir[i]
+        i = i + 1
+    }
+    var j: i64 = 0
+    while j < name.len {
+        b[dir.len + j] = name[j]
+        j = j + 1
+    }
+    b[n - i64(1)] = u8(0)
+    return b
+}

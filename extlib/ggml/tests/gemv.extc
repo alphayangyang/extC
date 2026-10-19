@@ -1,0 +1,281 @@
+/* extlib/ggml/tests/gemv.extc —— 判据：ggml 绑定算得对、块布局读得对、量化 GEMV 的确省带宽
+ *
+ * 用法：gemv [ggml 构建目录]      目录里应有 libggml-base.so 与 libggml-cpu.so
+ *                                  （cmake -B build && make -C build 后的 build/src）
+ * 没有目录/认不出符号时退出码 3 = 「跳过」，归 tests/run.sh 判。
+ *
+ * 四层判据（依次，任一层不过就 FAIL）：
+ *   ① 块布局：自己按 ggml-common.h 的位序解一遍 q4_0 / q8_0 的块，与库的
+ *      dequantize_row_* 逐元素比 —— 这一层抓的是「头文件版本漂移 + 我们读错了 nibble 序」；
+ *   ② 量化-反量化往返：quantize 返回的字节数必须等于 rows*每行字节数；
+ *   ③ 量化点积：vec_dot 与「反量化后 f32 点积」比（相对误差 < 1e-3，f16 尺度的量化损失）；
+ *   ④ 速度：m×k 的 q4_0 GEMV 与同规模 f32 GEMV 比 ns/elem —— 前者少读 4 倍字节。 */
+use std::io
+use std::time
+use ggml
+
+let M_SMALL: i64 = 33
+let K_SMALL: i64 = 1024
+let K_BIG: i64 = 4096
+let M_BIG: i64 = 4096
+
+var lcgState: i64 = 20261020
+
+@private
+fn lcg() -> i64 {
+    lcgState = lcgState * 6364136223846793005 + 1442695040888963407
+    return (lcgState >> 33) & 0xFFFF
+}
+
+@private
+fn fill(v: mut slice<f32>) {
+    var i: i64 = 0
+    while i < v.len {
+        v[i] = f32(lcg() % 2000) * 0.001 - 1.0
+        i = i + 1
+    }
+}
+
+@private
+fn closeEnough(x: f32, y: f32, rel: f32) -> bool {
+    var d: f32 = x - y
+    if d < 0.0 { d = -d }
+    var s: f32 = y
+    if s < 0.0 { s = -s }
+    if s < 1.0 { s = 1.0 }
+    return d / s < rel
+}
+
+/* 手写 q4_0 反量化：18 字节一块（2 字节 f16 尺度 + 16 字节 nibble），
+ * 元素 j 取低 nibble、j+16 取高 nibble，值 = (nibble - 8) * d。 */
+@unchecked
+@private
+fn deqQ4Hand(be: ref ggml::backend, src: slice<u8>, dst: mut slice<f32>, n: i64) {
+    var b: i64 = 0
+    var nb: i64 = n / 32
+    while b < nb {
+        var off: i64 = b * 18
+        var h: i32 = i32(src[off]) | (i32(src[off + 1]) << 8)
+        var d: f32 = be.f16ToF32(h)
+        var j: i64 = 0
+        while j < 16 {
+            var byte: i32 = i32(src[off + 2 + j])
+            var lo: i32 = byte & 15
+            var hi: i32 = (byte >> 4) & 15
+            dst[b * 32 + j] = f32(lo - 8) * d
+            dst[b * 32 + j + 16] = f32(hi - 8) * d
+            j = j + 1
+        }
+        b = b + 1
+    }
+}
+
+/* 手写 q8_0 反量化：34 字节一块（2 字节 f16 尺度 + 32 个 int8）。 */
+@unchecked
+@private
+fn deqQ8Hand(be: ref ggml::backend, src: slice<u8>, dst: mut slice<f32>, n: i64) {
+    var b: i64 = 0
+    var nb: i64 = n / 32
+    while b < nb {
+        var off: i64 = b * 34
+        var h: i32 = i32(src[off]) | (i32(src[off + 1]) << 8)
+        var d: f32 = be.f16ToF32(h)
+        var j: i64 = 0
+        while j < 32 {
+            var v: i32 = i32(src[off + 2 + j])
+            if v >= 128 { v = v - 256 }
+            dst[b * 32 + j] = f32(v) * d
+            j = j + 1
+        }
+        b = b + 1
+    }
+}
+
+/* f32 点积的对照（@unchecked：比的是内核不是边界检查）。 */
+@unchecked
+@private
+fn dotNaive(a: slice<f32>, b: slice<f32>, k: i64) -> f32 {
+    var a0: f32 = 0.0
+    var a1: f32 = 0.0
+    var a2: f32 = 0.0
+    var a3: f32 = 0.0
+    var i: i64 = 0
+    while i + 3 < k {
+        a0 = a0 + a[i] * b[i]
+        a1 = a1 + a[i + 1] * b[i + 1]
+        a2 = a2 + a[i + 2] * b[i + 2]
+        a3 = a3 + a[i + 3] * b[i + 3]
+        i = i + 4
+    }
+    while i < k {
+        a0 = a0 + a[i] * b[i]
+        i = i + 1
+    }
+    return (a0 + a1) + (a2 + a3)
+}
+
+/* f32 GEMV 的对照：y[r] = W[r,·]·x。 */
+@unchecked
+@private
+fn gemvNaive(w: slice<f32>, x: slice<f32>, y: mut slice<f32>, m: i64, k: i64) {
+    var r: i64 = 0
+    while r < m {
+        y[r] = dotNaive(w[(r * k)..(r * k + k)], x, k)
+        r = r + 1
+    }
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    if args.len < 2 {
+        io::cout << "SKIP no ggml dir (give: gemv /path/to/ggml/build/src)\n"
+        return 3
+    }
+    var ob: option<ggml::backend> = ggml::openDir(args[1])
+    match ob {
+        none => {
+            io::cout << "SKIP cannot bind ggml symbols in that dir\n"
+            return 3
+        }
+        some(be) => {
+            var rc: i32 = run(be)
+            return rc
+        }
+    }
+}
+
+@private
+fn run(be: ggml::backend) -> i32 {
+    /* 手写解码要借 backend 的 f16 转换 ⇒ 传引用需要一个可变的本地值。 */
+    var bev: ggml::backend = be
+    /* ---------- ① 块布局 ---------- */
+    var nb: i64 = K_SMALL / 32
+    var probe: mut slice<f32> = new f32[K_SMALL]
+    fill(probe)
+    var q4: mut slice<u8> = new u8[nb * 18]
+    var q8: mut slice<u8> = new u8[nb * 34]
+    var nq4: i64 = be.quantize(2, probe, i64(1), K_SMALL, q4)
+    var nq8: i64 = be.quantize(8, probe, i64(1), K_SMALL, q8)
+    io::cout << "q4_0 bytes=" << nq4 << " (want " << nb * 18 << ") q8_0 bytes=" << nq8 << " (want " << nb * 34 << ")\n"
+    if nq4 != nb * 18 || nq8 != nb * 34 { io::cout << "FAIL quantize byte count\n"  return 1 }
+
+    var dq4: mut slice<f32> = new f32[K_SMALL]
+    var dq8: mut slice<f32> = new f32[K_SMALL]
+    be.dequant(2, q4, dq4, K_SMALL)
+    be.dequant(8, q8, dq8, K_SMALL)
+    var h4: mut slice<f32> = new f32[K_SMALL]
+    var h8: mut slice<f32> = new f32[K_SMALL]
+    deqQ4Hand(ref bev, q4, h4, K_SMALL)
+    deqQ8Hand(ref bev, q8, h8, K_SMALL)
+    var bad4: i64 = 0
+    var bad8: i64 = 0
+    var i: i64 = 0
+    while i < K_SMALL {
+        if !closeEnough(h4[i], dq4[i], 0.000001) { bad4 = bad4 + 1 }
+        if !closeEnough(h8[i], dq8[i], 0.000001) { bad8 = bad8 + 1 }
+        i = i + 1
+    }
+    io::cout << "layout q4_0 mismatch=" << bad4 << " q8_0 mismatch=" << bad8 << "\n"
+    if bad4 != 0 || bad8 != 0 { io::cout << "FAIL block layout (hand decode != dequantize_row_*)\n"  return 1 }
+
+    /* ---------- ③ 量化点积（m=33 行 × k=1024） ---------- */
+    var w: mut slice<f32> = new f32[M_SMALL * K_SMALL]
+    fill(w)
+    var wq4: mut slice<u8> = new u8[M_SMALL * (K_SMALL / 32) * 18]
+    var nw4: i64 = be.quantize(2, w, M_SMALL, K_SMALL, wq4)
+    if nw4 != M_SMALL * (K_SMALL / 32) * 18 { io::cout << "FAIL quantize W bytes\n"  return 1 }
+    var xb: mut slice<u8> = new u8[(K_SMALL / 32) * 34]
+    var nxq: i64 = be.quantize(8, probe, i64(1), K_SMALL, xb)
+    if nxq != (K_SMALL / 32) * 34 { io::cout << "FAIL quantize x bytes\n"  return 1 }
+
+    var row4: mut slice<f32> = new f32[K_SMALL]
+    be.dequant(2, wq4[0..((K_SMALL / 32) * 18)], row4, K_SMALL)
+    var got4: f32 = be.dotQ4(wq4[0..((K_SMALL / 32) * 18)], xb, K_SMALL)
+    var want4: f32 = dotNaive(row4, dq8, K_SMALL)
+    io::cout << "dotQ4 got=" << f64(got4) << " ref=" << f64(want4) << " rel=" << f64(relErr(got4, want4)) << "\n"
+    if !closeEnough(got4, want4, 0.001) { io::cout << "FAIL dotQ4 vs dequant f32 dot\n"  return 1 }
+
+    var wq8: mut slice<u8> = new u8[M_SMALL * (K_SMALL / 32) * 34]
+    var nw8: i64 = be.quantize(8, w, M_SMALL, K_SMALL, wq8)
+    if nw8 != M_SMALL * (K_SMALL / 32) * 34 { io::cout << "FAIL quantize W q8_0 bytes\n"  return 1 }
+    var row8: mut slice<f32> = new f32[K_SMALL]
+    be.dequant(8, wq8[0..((K_SMALL / 32) * 34)], row8, K_SMALL)
+    var got8: f32 = be.dotQ8(wq8[0..((K_SMALL / 32) * 34)], xb, K_SMALL)
+    var want8: f32 = dotNaive(row8, dq8, K_SMALL)
+    io::cout << "dotQ8 got=" << f64(got8) << " ref=" << f64(want8) << " rel=" << f64(relErr(got8, want8)) << "\n"
+    if !closeEnough(got8, want8, 0.001) { io::cout << "FAIL dotQ8 vs dequant f32 dot\n"  return 1 }
+
+    /* GEMV：整矩阵走绑定，与「反量化成 f32 再朴素 GEMV」逐行比。
+     * 反量化产物用 dequant 逐行填进 f32 矩阵（33×1024 很小，不值得为它让步）。 */
+    var wf: mut slice<f32> = new f32[M_SMALL * K_SMALL]
+    var rb4: i64 = (K_SMALL / 32) * 18
+    var r: i64 = 0
+    while r < M_SMALL {
+        be.dequant(2, wq4[(r * rb4)..(r * rb4 + rb4)], wf[(r * K_SMALL)..(r * K_SMALL + K_SMALL)], K_SMALL)
+        r = r + 1
+    }
+    var y1: mut slice<f32> = new f32[M_SMALL]
+    var y2: mut slice<f32> = new f32[M_SMALL]
+    be.gemvQ4(wq4, xb, y1, M_SMALL, K_SMALL)
+    gemvNaive(wf, dq8, y2, M_SMALL, K_SMALL)
+    var badg: i64 = 0
+    r = 0
+    while r < M_SMALL {
+        if !closeEnough(y1[r], y2[r], 0.001) { badg = badg + 1 }
+        r = r + 1
+    }
+    io::cout << "gemvQ4 " << M_SMALL << "x" << K_SMALL << " mismatch=" << badg << "\n"
+    if badg != 0 { io::cout << "FAIL gemvQ4 vs naive dequant gemv\n"  return 1 }
+
+    /* ---------- ④ 速度：q4 权重 vs f32 权重，同一个 m×k GEMV ---------- */
+    var wq: mut slice<u8> = new u8[M_BIG * (K_BIG / 32) * 18]
+    var wb: mut slice<f32> = new f32[M_BIG * K_BIG]
+    fill(wb)
+    var nwb: i64 = be.quantize(2, wb, M_BIG, K_BIG, wq)
+    if nwb != M_BIG * (K_BIG / 32) * 18 { io::cout << "FAIL big quantize bytes\n"  return 1 }
+    var xbig: mut slice<f32> = new f32[K_BIG]
+    fill(xbig)
+    var xbq: mut slice<u8> = new u8[(K_BIG / 32) * 34]
+    if be.quantize(8, xbig, i64(1), K_BIG, xbq) != (K_BIG / 32) * 34 { io::cout << "FAIL big quantize x\n"  return 1 }
+    var yq: mut slice<f32> = new f32[M_BIG]
+    var yf: mut slice<f32> = new f32[M_BIG]
+
+    var t0: i64 = time::now()
+    var rep: i64 = 0
+    var bestq: i64 = -1
+    while rep < 5 {
+        var a: i64 = time::now()
+        be.gemvQ4(wq, xbq, yq, M_BIG, K_BIG)
+        var b: i64 = time::now()
+        if bestq < 0 || b - a < bestq { bestq = b - a }
+        rep = rep + 1
+    }
+    var bestf: i64 = -1
+    rep = 0
+    while rep < 3 {
+        var a: i64 = time::now()
+        gemvNaive(wb, xbig, yf, M_BIG, K_BIG)
+        var b: i64 = time::now()
+        if bestf < 0 || b - a < bestf { bestf = b - a }
+        rep = rep + 1
+    }
+    /* 大矩阵不再对拍：q4_0 的量化误差让「与原始 f32 权重点积」的相对误差没有意义
+     * （点积均值近 0），数值正确性已由 ①②③ 三层在 k=1024 上锁住。 */
+    var elems: i64 = M_BIG * K_BIG
+    var nsq: f64 = f64(bestq) / f64(elems)
+    var nsf: f64 = f64(bestf) / f64(elems)
+    var ratio: f64 = f64(bestf) / f64(bestq)
+    var gib: f64 = f64(M_BIG * (K_BIG / 32) * 18) / f64(bestq)
+    io::cout << "gemv" << M_BIG << "x" << K_BIG << " q4_0 " << nsq << " ns/elem " << gib << " GiB/s  f32 " << nsf << " ns/elem  ratio=" << ratio << "\n"
+    io::cout << "OK ggml q4_0=" << nsq << "ns/elem f32=" << nsf << "ns/elem ratio=" << ratio << "\n"
+    return 0
+}
+
+@private
+fn relErr(x: f32, y: f32) -> f32 {
+    var d: f32 = x - y
+    if d < 0.0 { d = -d }
+    var s: f32 = y
+    if s < 0.0 { s = -s }
+    if s < 1.0 { s = 1.0 }
+    return d / s
+}

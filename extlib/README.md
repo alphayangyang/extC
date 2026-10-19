@@ -10,3 +10,4 @@
 | 库 | 内容 | 判据 |
 |---|---|---|
 | `blas/` | CBLAS（sgemm/dgemm/sgemv/dgemv），dlopen，LP64/ILP64 自动认 ABI | `blas/tests/run.sh`（gate-blas） |
+| `ggml/` | ggml 的量化内核：q4_0/q8_0 的量化、反量化、点积与 GEMV（decode 阶段的主力），dlopen | `ggml/tests/run.sh`（gate-ggml） |

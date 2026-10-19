@@ -949,6 +949,20 @@ def build_items() -> list:
         bad_msg="extlib/blas/tests/run.sh（BLAS 绑定认错 ABI/算错数/封装把性能吃掉了）",
         bad_dump=dump_fail(12)))
 
+    # ---- 闸门·ggml 扩展库的量化内核 ----
+    # 买的是**量化格式的位级正确性**：q4_0（18 字节块、低 nibble 先、f16 尺度）与 q8_0
+    # （34 字节块）的手写解码必须与 ggml 的 dequantize_row_* 逐位一致，vec_dot 必须等于
+    # 「反量化后 f32 点积」——按 4 字节宽或 nibble 序反了，这两条立刻红，而不是悄悄算错数。
+    # 再加一条收益判据：q4_0 GEMV 至少比 f32 GEMV 快 MIN_RATIO 倍，否则绑定白绑。
+    # ggml 是可选第三方库（要自己 cmake 构建）：找不到时脚本先编过模块与判据程序再跳过。
+    items.append(cmd(
+        "gate-ggml", "gate",
+        "闸门·extlib/ggml：q4_0/q8_0 块布局与 dequantize 逐位一致、q4_0 GEMV 比 f32 快 2× 以上（无 ggml 时跳过）",
+        ["./extlib/ggml/tests/run.sh"], timeout=600,
+        ok_msg=ok_first(r"^  ok   ggml"),
+        bad_msg="extlib/ggml/tests/run.sh（量化块布局读错/vec_dot 算错/q4 的带宽优势没兑现）",
+        bad_dump=dump_fail(12)))
+
     # ---- 闸门·标记 walk 的批弹出结构 ----
     # 这条买的是**延迟**（LIFO 逐个弹是串行指针链），不是指令数，所以判据是结构 + 红自测：
     # 谁把"先弹一批→整批预取→逐个扫"改回逐对象，门禁就红。
