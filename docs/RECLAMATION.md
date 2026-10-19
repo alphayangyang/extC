@@ -233,6 +233,17 @@ p = null                 // 计数 0 —— 放
 判据：`gate-par-tls-owner`（发射物结构：声明恒发 / 序言尾声配对 / 三态 / worker 清零恢复顺序 / 两处区域丢弃 /
 普通程序零税，6 条注入全红）+ 注入 `par-tls-depth-noreset` + `tests/reclaim-gaps` 的 `par_tls_cycle`（3.40× → 1.13×）。
   种子不完整时宁可不清扫，也不能把活对象当垃圾放掉。
+* **挂起帧（协程 / `ext`）的根表按帧字段拼。** 协程 step 的 C 形参只有帧指针（`f`），跨 `yield` 活下来的
+  形参与局部量住在帧字段里 ⇒ 不按帧字段登记就只剩「整函数置 `rcRootsUnreliable`」（一个触发都不发）；`genFunc` 按 checker 排好的
+  `coroFrame` 表把每个字段的引用叶子登记成根（`f->name`，与普通帧的形参根同一个入口）；帧由调用者的复合字面量
+  建、起点零初始化，未赋值前读到的是 0，而根表入口在 `markBegin` 里过 `extc_rc_owns` ⇒ 认错只多留；yield 出来的
+  值不带引用由 checker 保证（`s` 的协程 yield 类型检查）⇒ 帧里的引用不会从 yield 出口漏到调用者根表之外，step 只扫
+  自己的块 arena 时种子是完整的。`rcFrameOwnsArena` 因此不再挡 `coroFunc`：step 的块 arena（`f->arena1`，
+  `lvl >= 1`）归帧自己；`ext` spawn 帧走同一条判据（它的块 arena 字段也在帧里），`rcOwnKind` 也不再整函数
+  返回 `RC_OWN_NO`。判据：`gate-coro-frame-roots`（发射物结构：帧字段进根数组 / 触发装块级区域而非家 arena /
+  不发 TLS 序言 / 普通程序零帧字段根 + 生成器源码四条结构事实，9 条注入全红）+ 注入 `coro-frame-roots-nop` +
+  `s` 的 `coro_frame_cycle` / `ext_frame_cycle`（3.10× / 3.13× → 1.00× / 1.00×）；
+  9 形状 `-O2` Ir 逐位不变。
 * **跨区引用只登记一个 bit。** 引用被存进别的区域时，在**目标对象所在位置**的位图里置一位，
   播种时顺序扫这张位图；位置释放时那一位跟着清掉，所以没有陈旧表项。
 * **触发按内存压力，并会自行退场。** 计数已收掉所有非环垃圾，于是区域占用≈存活，清扫只在
@@ -930,6 +941,7 @@ cache-sim 判据变红）。
 | 义务 3：计数到顶**粘住**（`hold` 与 `rscnt` 都一样）| 不安全 | `rsInc`/`rsIncSlab`/`holdUpd*` 的 `SAT` 守卫 | 注入 `count-nosat` ⇒ `饱和：计数到顶粘住`；注入 `rsinc-nosat` ⇒ `跨区计数：到顶粘住`；注入 `realpath-noreg`（只破坏**真实赋值路径**的登记）⇒ 红在 `跨区计数（真实路径）：到顶粘住`，证明真实路径那一组断言有独立的牙 |
 | 义务 4：按**对象自己的**描述符走指针字段 | 不安全（走漏 ⇒ 少标）| `extc_rc_mark` 用 `s->type[i]` | 单测 `类型：描述符字段数正确` + 注入 `mark-nodesc` ⇒ 红在 `跨区：B 从入边位图播种` |
 | 义务 7：种子不完整 ⇒ 目标区域**退出清扫**（今天只剩「钉不住」的 OOM 兜底走这条）| **不安全** | 两层：① `extc_rc_storeRefSlot` 先按槽地址反查宿主（`slabOfInterior`），命中就按宿主已知记账；② 反查失手 ⇒ `storeRefUnknown` 把值**钉成根**（`pinAdd`；`markBegin` 按区域 `pinSeed`、`regionFree` 按区域 `pinDropRegion` 有界收缩），只有钉不住（扩容失败）才给目标区域打 `noSweep`。`storeStructCons` 的保守分支与 ① 同向。**叶子枚举得出来的枚举整值存储不进这一档**：根表按所有变体展开 + `storeStructRooted` 只记引用（§三），区域照常清扫 | 单测 `义务 7：…退出清扫`、`槽地址反查：…`（反查成功不下调保守 / 反查失手才保守 / 超大块失手）、`t_pin`（同值两条槽计数 2 / 覆盖撤旧边 / 区域死清死指针）、`枚举整值存储：…`（叶子当场标黑 / 活过本轮清扫 / 不置 `noSweep`）+ 注入 `noSweep-drop`、`struct-shade-nop` ⇒ 各红在对应那条上；`gate-pin-scale`（N vs 4N 每钉一个指令数比 ≤ 1.15，注入线性预扫会红）+ gaps `slot_elem_unknown` 3.59× → 1.00×（sweeps 18/77） |
+| 挂起帧（协程 / `ext`）的根表按**帧字段**拼，块 arena 归帧自己 | **不安全**（挂起期间漏根 ⇒ 活对象当垃圾放）| `genFunc` 按 `coroFrame` 表把 `f->name` 各引用叶子登记成根（起点零初始化 + 根表入口过 `owns` ⇒ 认错只多留）；`rcFrameOwnsArena` 不挡 `coroFunc`、`rcOwnKind` 不整函数返回 `RC_OWN_NO` | 结构门禁 `gate-coro-frame-roots`（帧字段进根数组 / 块级区域而非家 arena / 不发 TLS 序言 / 普通程序零帧字段根 / 生成器源码四条事实，9 条注入全红）+ 注入 `coro-frame-roots-nop` ⇒ gate 红 + gaps `coro_frame_cycle` 3.10× → 1.00×、`ext_frame_cycle` 3.13× → 1.00× |
 | 并行：线程本地区域归**调用链入口帧**（运行期深度认领）| 泄漏（内存涨）| 每个 parTls 回收帧序言 `int __extc_tlsOwner = (extc_rc_tlsDepth++ == 0);`、尾部 `extc_rc_tlsDepth--;`；触发点三态（拥有者 ⇒ 物化根表 + `maybeCollect`，内层 ⇒ 只 `extc_rc_owe`）；worker 调回调前保存/清零/恢复深度；`extc_par_close` 的每个 worker arena 与 worker 兜底局部 arena 两处 `extc_rc_regionDrop` | 结构门禁 `gate-par-tls-owner`（声明恒发 / 序言尾声配对 / 三态两侧 / worker 清零恢复顺序 / 两处丢弃 / 普通程序零税，6 条注入全红）+ 注入 `par-tls-depth-noreset` ⇒ gate 红 + gaps `par_tls_cycle` 3.40× → 1.13×（sweeps 0/0 → 2/9）|
 | 并行：**进程级共享写**（slab 登记表 / 标记参与者计数）走按代发布 + 原子计数 | **不安全**（UAF / 丢更新）| 登记表：`extc_rc_ownNextReg` 换代不 free 旧代、`ownAdd`/`ownDel` 持锁 + RELEASE 发布 + `regSeq`；读者 `ownFind` 两次 seq 读 + 32 次上限 + 持锁兜底、热路径 `ownProbeFast`；wb：普通 int 声明 + `extc_rc_wbAdd` noinline 原子加/减 | `gate-reclaim-conc` 结构判据 + 8 路并行 ASan 512 次 smoke；注入 `reg-retry-nocap` ⇒ 结构判据红；修前 8 路并行 400 次复现 SEGV 10 次 / underflow 1 次 |
 | 参与区域数（单区域免登记快路径的前提）| **不安全** | 槽的**诞生点**记 `partN`：`extc_rc_alloc` 无条件记、`storeStructCons` 的保守分支也记；**赋值侧不再记**（冗余：槽的区域在诞生时已记过，见 `changelog/2026-10.md` 的 2026-10-15 条目）；`extc_rc_regionFree` 开头有 **R3 运行期守卫**复查"有占用槽 ⇒ `part == 1`" | `gate-note-part`：静态 R2「会交出槽 ⇒ 必须记参与」（**在真实缺陷 `storeStructCons` 上红过**）+ 运行期 R3。R3 的红演示：注入"删掉 `alloc` 的 `notePart`" ⇒ 静态 `FAIL [R2] extc_rc_alloc`（rc=1）**且** `trap: reclaim: R3: occupied slot in a region with part == 0`（rc=1），撤回后绿。另有 `cross-region` 登记量判据 |
@@ -944,6 +956,6 @@ cache-sim 判据变红）。
 | 覆盖点定点释放：只放"**仅**从旧值可达"的槽（其它活根/种子一律标活）| 不安全（会放掉还被别的根指着的对象）| `extc_rc_releaseOld`：先 `extc_rc_mark`（其它根 + 跨区种子），只 `freeSlot` 未标记的 | 注入 `release-off` ⇒ `gate-release` 红在"清扫次数 ≤1 / 峰值比 / 释放槽数 >0"三条上（实测关掉发射 55 次扫、10.61 MB）|
 | 着色缓存的失效契约：**每一处清 mark 位都要自增代际号** | **不安全**（漏一条 ⇒ 把白对象当黑、跳过屏障、漏标可达对象）| `extc_rc_begin` / `sweepBegin` / `releaseOld` / `regionFree` 统一调 `extc_rc_shadeNextGen()`（自增代际号，回绕时整表 `memset`） | 注入 `shade-noinval`（删掉 `releaseOld` 那条）⇒ 单测红在 `着色缓存：收窄清扫清 mark 后失效`；`EXTC_RC_SHADE_GUARD=1` 的 `[sg] bad` 同时计数。其余三条是纵深防御（`begin` 每轮都会清缓存），由 run.sh 的 guard 自检守着；结构由 `gate-shade-cache` 钉住（单字格/格号旋入代际号/四站点只调 NextGen，6 项注入），回绕清表由 `t_shadeCache` ③ 组证明 |
 
-**15 条全部有牙**（每条都给了注入或结构门禁，且红点写在表里）。单测现在**两档都跑**：
+**16 条全部有牙**（每条都给了注入或结构门禁，且红点写在表里）。单测现在**两档都跑**：
 默认（无计数）**128 条**、计数档 **171 条** —— 后者是计数专属断言，用 `#if !EXTC_RC_NOCOUNT`
 显式标注（driver 不显式标注就只会覆盖计数档，默认档的编译分支不会被单测碰到）。

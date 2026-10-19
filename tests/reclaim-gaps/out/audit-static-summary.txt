@@ -2,26 +2,23 @@
 扫描 1329 个 .extc；编译成功 916；失败 413
 
 ① 区域回收者分类（程序数）：
-   ok-trigger         121
+   ok-trigger         124
    owe-settled        109
    owe-no-settle        0
-   silent-both         12
+   silent-both          9
    no-alloc           674
-   红计数①（silent-both + owe-no-settle）= 12
+   红计数①（silent-both + owe-no-settle）= 9
 
 ① 明细（silent-both / owe-no-settle，最多 60 条）：
-   [silent-both   ] alloc=1    trig=0 owe=0 check=0 srUnknown=1  tests/coro/coro_new.extc
    [silent-both   ] alloc=1    trig=0 owe=0 check=1 srUnknown=1  tests/escape-fuzz/cases/m_home_cont_after.extc
    [silent-both   ] alloc=1    trig=0 owe=0 check=1 srUnknown=1  tests/escape-fuzz/cases/m_home_cont_before.extc
    [silent-both   ] alloc=1    trig=0 owe=0 check=1 srUnknown=1  tests/escape-fuzz/cases/m_main_cont_after.extc
    [silent-both   ] alloc=1    trig=0 owe=0 check=1 srUnknown=1  tests/escape-fuzz/cases/m_main_cont_before.extc
    [silent-both   ] alloc=1    trig=0 owe=0 check=1 srUnknown=1  tests/escape-fuzz/cases/m_nohome_cont_after.extc
    [silent-both   ] alloc=1    trig=0 owe=0 check=1 srUnknown=1  tests/escape-fuzz/cases/m_nohome_cont_before.extc
-   [silent-both   ] alloc=2    trig=0 owe=0 check=0 srUnknown=1  tests/reclaim-gaps/shapes/coro_frame_cycle.extc
-   [silent-both   ] alloc=2    trig=0 owe=0 check=0 srUnknown=1  tests/reclaim-gaps/shapes/ext_frame_cycle.extc
    [silent-both   ] alloc=1    trig=0 owe=0 check=0 srUnknown=1  tests/reclaim-gaps/shapes/pool_ref_slot.extc
-   [silent-both   ] alloc=1    trig=0 owe=0 check=1 srUnknown=1  tools/escape-corpus/P2-7_container_before_uaf.extc
    [silent-both   ] alloc=1    trig=0 owe=0 check=1 srUnknown=1  tools/escape-corpus/P2-6_container_uaf.extc
+   [silent-both   ] alloc=1    trig=0 owe=0 check=1 srUnknown=1  tools/escape-corpus/P2-7_container_before_uaf.extc
 
 ② 引用叶子字段的**裸写入候选**：0 个程序（启发式，样本如下）
 

@@ -3220,7 +3220,9 @@ static const char *rcEmitTypeDesc(CG *g, Type *t) {
  * 判据（见上面「第三个安全方向」）：本帧自己的块 arena（`&__extc_a[lvl]`，`lvl >= 1`）算；
  * 家 arena（`ARENA_HOME`：调用者一路传下来的 `(*__extc_home)`）一般不算；线程本地 arena
  * （`parTls`）也不算 —— 后者同样是整条 worker 调用链共用的，与家 arena 一个道理。
- * 协程帧本来就 `rcRootsUnreliable`，这里一并挡住。
+ * 协程 step 的块 arena 住在帧里（`f->arena<lvl>`），归帧自己：`genFunc` 把 `coroFrame`
+ * 那张表里的字段引用都登记成根，checker 又不许 yield 出带引用的值（`src/check/check_top.c`
+ * 的协程 yield 类型检查）⇒ 调用者手里拿不到指向这只区域的引用，根表对它是完整的。
  *
  * **`main` 是家 arena 的例外（子集 A）**：`main` 没有调用者，它的家 arena 就是它自己的
  * `&__extc_a[1]`（`genFunc` 里 `__extc_home = &__extc_a[1]`）⇒ 静态根表对它完整，认它。
@@ -3232,7 +3234,7 @@ static const char *rcEmitTypeDesc(CG *g, Type *t) {
  * @return     真 = 本帧拥有，可以在这个区域上触发清扫。
  */
 static bool rcFrameOwnsArena(CG *g, int lvl) {
-    if (g->parTls || g->coroFunc) return false;
+    if (g->parTls) return false;
     if (lvl == ARENA_HOME) return g->inMain;
     return true;
 }
@@ -3243,15 +3245,15 @@ static bool rcFrameOwnsArena(CG *g, int lvl) {
  * 静态判据只到「拥有／不拥有」；线程本地 arena 的归属是**运行期**才知道的：整条 worker
  * 调用链共用 `extc_tls_arena`，入口帧（`extc_rc_tlsDepth++ == 0` 的那一帧）的调用者只有 C
  * 运行期，静态根表就是完整的种子 ⇒ 它拥有；内层帧的根表看不见调用帧的活引用 ⇒ 只记欠收。
- * 协程帧本来整函数关触发，先挡掉；`noArena` 的帧不发序言（见下），也挡掉 —— 否则
- * 触发点会引用不存在的 `__extc_tlsOwner`。
+ * `noArena` 的帧不发序言（见下），所以 TLS 一档要挡掉 —— 否则触发点会引用不存在的
+ * `__extc_tlsOwner`。协程 step 不参与 TLS 这一档（同上），但它的块 arena 归帧自己
+ * （见 `rcFrameOwnsArena`）。
  *
  * @param g    生成器。
  * @param lvl  `ARENA_HOME`（-1）或 1 以上的块层级。
  * @return     `RC_OWN_NO` / `RC_OWN_YES` / `RC_OWN_TLS`。
  */
 static RcOwn rcOwnKind(CG *g, int lvl) {
-    if (g->coroFunc) return RC_OWN_NO;
     /* 序言只在 `parTls && !noArena && !coroFunc` 的帧里发（见 `genFunc`）⇒ 这里同一条判据，
      * 否则触发点会引用一个在本帧不存在的 `__extc_tlsOwner`。 */
     if (g->parTls) return (g->noArena || g->coroFunc) ? RC_OWN_NO : RC_OWN_TLS;
@@ -7413,13 +7415,26 @@ static void genFunc(CG *g, FuncDef *f) {
     if (tlsOwnerFrame)
         cgLine(g, "EXTC_UNUSED int __extc_tlsOwner = (extc_rc_tlsDepth++ == 0);");
     /* 回收的静态根表按函数重来：形参里含引用的槽从函数体第一行起就是根。
-     * 协程 step 的形参住在帧里（`f->name`），静态枚举不出来 ⇒ 整个 step 关掉触发。 */
+     * 协程 step 的 C 形参只有帧（`f`）：跨 `yield` 活下来的形参与局部量住在帧字段里
+     * （`f->name`，见 `exIdent`），所以按 checker 排好的 `coroFrame` 那张表把各字段的
+     * 引用叶子登记成根。帧由调用者的复合字面量建、起点零初始化 ⇒ 未赋值前读到的是 0，
+     * 而根表入口在 `markBegin` 里过 `extc_rc_owns` ⇒ 认错只多留。yield 出来的值不带
+     * 引用由 checker 保证（`src/check/check_top.c` 里协程 yield 类型那条检查）⇒ 帧里的
+     * 引用不会从 yield 出口漏到调用者的根表之外，step 只扫自己的块 arena 时种子是完整的。 */
     g->rcRoots.len = 0;
-    g->rcRootsUnreliable = g->needReclaim && (g->coroFunc != NULL || g->rcGlobalsUnreliable);
+    g->rcRootsUnreliable = g->needReclaim && g->rcGlobalsUnreliable;
     if (g->needReclaim && !g->coroFunc) {
         for (size_t i = 0; i < f->params.len; i++) {
             Param *p = *(Param **)vecAt(&f->params, i);
             rcRootDecl(g, p->type, p->cname ? p->cname : p->name);
+        }
+    } else if (g->needReclaim) {
+        const FuncDef *cf = g->coroFunc;
+        for (size_t i = 0; i < cf->coroFrame.len; i++) {
+            const Param *p = (const Param *)vecAt((Vec *)&cf->coroFrame, i);
+            if (!p->cname) continue;
+            rcRootDecl(g, p->type,
+                       arenaPrintf(g->arena, "%s->%s", g->coroFrame, p->cname));
         }
     }
     size_t mb = g->out->len;

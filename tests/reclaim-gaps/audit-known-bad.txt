@@ -1,15 +1,12 @@
 # 全语料静态审计的已知坏（基线）。格式：<程序路径>\t<分类>\n# 规矩：红计数①（silent-both + owe-no-settle）的程序集合必须与这份基线**逐条相同**；
 #       多一条 = 回收能力退化；少一条 = 优化拿回了能力，基线要一起缩（棘轮只许缩）。
 # 生成/更新：python3 tests/reclaim-gaps/audit-static.py --out <tmp> 之后按 audit-static.tsv 取。
-tests/coro/coro_new.extc	silent-both
 tests/escape-fuzz/cases/m_home_cont_after.extc	silent-both
 tests/escape-fuzz/cases/m_home_cont_before.extc	silent-both
 tests/escape-fuzz/cases/m_main_cont_after.extc	silent-both
 tests/escape-fuzz/cases/m_main_cont_before.extc	silent-both
 tests/escape-fuzz/cases/m_nohome_cont_after.extc	silent-both
 tests/escape-fuzz/cases/m_nohome_cont_before.extc	silent-both
-tests/reclaim-gaps/shapes/coro_frame_cycle.extc	silent-both
-tests/reclaim-gaps/shapes/ext_frame_cycle.extc	silent-both
 tests/reclaim-gaps/shapes/pool_ref_slot.extc	silent-both
 tools/escape-corpus/P2-6_container_uaf.extc	silent-both
 tools/escape-corpus/P2-7_container_before_uaf.extc	silent-both

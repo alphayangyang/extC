@@ -132,6 +132,26 @@ run_one() {
     R_OUT=$(cat "$TMP/$tag.out")
 }
 
+# 峰值取多次最小值：并行 worker 的分区/分配时机受同机调度影响，同一二进制重复跑
+# par_tls_cycle 的 RSS 会双峰（160k 约 3.0/3.9 MB、640k 约 3.6/4.9 MB），比值因此在
+# 1.13×~1.51× 之间跳 —— 单次测量会让 <1.5 的判据偶发误红。真正的「随规模涨」是每一次
+# 都在，所以取最小值不会掩盖回归；任何一次非 0 退出直接算失败（不取最小）。
+RSS_TRIALS=${RSS_TRIALS:-3}
+run_min_rss() { # <tag> <args...> → R_RC / R_RSS / R_OUT（RSS 取 RSS_TRIALS 次最小）
+    local tag=$1; shift
+    R_RC=-; R_RSS=""; R_OUT=""
+    local i rc rss best=""
+    for ((i = 1; i <= RSS_TRIALS; i++)); do
+        "$TIME" -v -o "$TMP/$tag.$i.time" "$TMP/$tag" "$@" >"$TMP/$tag.$i.out" 2>"$TMP/$tag.$i.err"
+        rc=$?
+        rss=$(awk -F': ' '/Maximum resident set size \(kbytes\)/{print $2}' "$TMP/$tag.$i.time")
+        if [ "$rc" != 0 ]; then R_RC=$rc; return 0; fi
+        if [ -z "$best" ] || [ "$rss" -lt "$best" ]; then best=$rss; fi
+        R_OUT=$(cat "$TMP/$tag.$i.out")
+    done
+    R_RC=0; R_RSS=$best
+}
+
 # 探针：扫次数 → P_SWEEPS（空 = 没插上 / 没跑）
 P_SWEEPS=""
 probe_sweeps() { # <tag> <args...>
@@ -294,15 +314,15 @@ for spec in "${SCALE[@]}"; do
     src="$SHAPES/$srcbase.extc"
     [ -f "$src" ] || continue
     build_one "$src" on "sc-$label"; [ "$B_C" = ok ] || continue
-    run_one "sc-$label" "${v1[@]}"; n_rss=$R_RSS
+    run_min_rss "sc-$label" "${v1[@]}"; n_rss=$R_RSS
     probe_sweeps "sc-$label" "${v1[@]}"; n_sw=$P_SWEEPS
-    run_one "sc-$label" "${v2[@]}"; f_rss=$R_RSS
+    run_min_rss "sc-$label" "${v2[@]}"; f_rss=$R_RSS
     probe_sweeps "sc-$label" "${v2[@]}"; f_sw=$P_SWEEPS
     build_one "$src" off "sco-$label"
     o_n=""; o_f=""
     if [ "$B_C" = ok ]; then
-        run_one "sco-$label" "${v1[@]}"; o_n=$R_RSS
-        run_one "sco-$label" "${v2[@]}"; o_f=$R_RSS
+        run_min_rss "sco-$label" "${v1[@]}"; o_n=$R_RSS
+        run_min_rss "sco-$label" "${v2[@]}"; o_f=$R_RSS
     fi
     ratio=$(awk -v a="$n_rss" -v b="$f_rss" 'BEGIN { if (a=="" || b=="") printf "-"; else printf "%.2f", b/a }')
     verdict="?"

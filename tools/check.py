@@ -956,6 +956,16 @@ def build_items() -> list:
         ok_msg=ok_first(r"^ok par_tls owner structure"),
         bad_msg="tools/check_par_tls_owner.py（parTls 归属判定/三态触发/区域丢弃或缺红自测失效）",
         bad_dump=dump_fail(12)))
+    # ---- 闸门·协程帧字段根：step 的帧字段进根表、块 arena 归帧自己 -------------------
+    # 协程帧由调用者复合字面量建、跨 yield 活下来；整函数 rcRootsUnreliable 会让它一个触发都不发。
+    # 判据跑真实发射（coro_frame_cycle + 普通程序），--selftest 九条注入全红。
+    items.append(cmd(
+        "gate-coro-frame-roots", "gate",
+        "闸门·协程帧字段根：帧字段进根表 + 块 arena 归帧自己（不是家 arena）+ 不发 TLS 序言，且 9 条注入全红",
+        ["python3", "tools/check_coro_frame_roots.py", "--selftest"], timeout=120,
+        ok_msg=ok_first(r"^ok coro frame roots"),
+        bad_msg="tools/check_coro_frame_roots.py（协程帧字段根/块 arena 归属/触发点，或缺红自测失效）",
+        bad_dump=dump_fail(12)))
 
     # ---- 闸门·空清扫之后的退场倍数 ----
     # 买的是**触发策略**：活集大、垃圾少的负载（chase）只做一轮便宜的整堆标记，不再付

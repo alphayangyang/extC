@@ -25,55 +25,56 @@ python3 tests/reclaim-gaps/audit-static.py --gate     # 红计数非 0 ⇒ exit 
 
 ## 0. 一句话结论
 
-**20 个可运行形状里，5 条收不掉**（涉及 5 个形状族；N=160000→640000 峰值比 2.99×~3.61×，判据 < 1.5）。
-其中 **5 条都比「整块关掉回收」还差**（on 档峰值 − off 档峰值 ≈ +1.5~+2.7 MB @ N=640000）——
-那是「花了回收的钱没拿到货」。收不掉的根因是 G1/G2/G5/G7；G6（视图/arena 数组里的槽）**已修**（见 §G6a）、
-G3（`match` 载荷）**已修**（见 §G3）、G4（`parTls` 线程本地区域）**已修**（见 §G4）；外加**已修**的 G8：
+**20 个可运行形状里，3 条收不掉**（涉及 3 个形状族；N=160000→640000 峰值比 3.04×~3.61×，判据 < 1.5）。
+其中 **3 条都比「整块关掉回收」还差**（on 档峰值 − off 档峰值 ≈ +1.5~+2.6 MB @ N=640000）——
+那是「花了回收的钱没拿到货」。收不掉的根因是 G1/G5/G7；G2（协程帧 / `ext` 帧）**已修**（见 §G2）、
+G3（`match` 载荷）**已修**（见 §G3）、G4（`parTls` 线程本地区域）**已修**（见 §G4）、
+G6（视图/arena 数组里的槽）**已修**（见 §G6a）；外加**已修**的 G8：
 
 | # | 根因 | 形状 | 严重度 | 能否补 |
 |---|---|---|---|---|
-| G1 | **拥有者只调用一次** ⇒ 欠收标志一辈子没被销账，家的房间里的环垃圾等到帧销毁 | `home_cycle`（rounds=1） | **高**（比关档差 +2.7 MB）| 需新机制（帧销毁前销账 / 根栈），非判据能补 |
-| G2 | **协程帧 / `ext` 帧**（`rcRootsUnreliable`）⇒ 一个触发都不发 | `coro_frame_cycle`、`ext_frame_cycle` | **高**（+2.7/+2.6 MB）| 需设计（挂起帧的根表） |
+| G1 | **拥有者只调用一次** ⇒ 欠收标志一辈子没被销账，家的房间里的环垃圾等到帧销毁 | `home_cycle`（rounds=1） | **高**（比关档差 +2.6 MB）| 需新机制（帧销毁前销账 / 根栈），非判据能补 |
+| G2 | **协程帧 / `ext` 帧**（`rcRootsUnreliable`）⇒ 一个触发都不发 | `coro_frame_cycle`、`ext_frame_cycle` | **已修**（1.00× / 1.00×，比关档差消失）| 按 `coroFrame` 表把帧字段登记成根 + 块 arena 归帧自己（见 §G2）|
 | G3 | **`match` 绑定引用载荷** ⇒ 整值存储让目标区域退出清扫、根表枚举不出枚举负载 | `match_payload` | **已修**（1.00×，比关档差消失）| 两件事合起来认领完整：根表按所有变体展开负载叶子 + `storeStructRooted` 只记引用（见 §G3）|
 | G4 | **`parTls`（TLS worker 房间）** ⇒ 既不触发也不欠收 | `par_tls_cycle` | **已修**（1.13×，比关档差消失）| 按运行期深度认领归属：入口帧物化根表当场扫、内层帧只记欠收，区域随 arena 同寿丢弃（见 §G4）|
-| G5 | **池容器里的引用** ⇒ `storeRefUnknown`（目标区域 `noSweep`）+ 无触发 | `pool_ref_slot` | **高**（+2.6 MB）| 同 G6 |
+| G5 | **池容器里的引用** ⇒ `storeRefUnknown`（目标区域 `noSweep`）+ 无触发 | `pool_ref_slot` | **高**（+2.6 MB）| 与 G6a 同方向（值钉成根）；但池**描述符**是保守整值存储 ⇒ 仍 `noSweep` |
 | G6 | **视图/arena 数组里的槽**（视图元素 `v[0].kids[0]`）⇒ 旧行为 `noSweep`（目标区域退出清扫）| `slot_elem_unknown` | **已修**（1.00×，比关档差消失）| 反查失手 ⇒ 把**值钉成根**（`pinAdd`），`markBegin` 按区域播种、`regionFree` 按区域清死指针，表有界（§G6a）。**基表达式带调用已修**：槽地址反查宿主（1.03×）|
 | G7 | **dyn 载荷里的引用** ⇒ dyn 池不回收（已知限制，回收推到 place 退出）| `dyn_payload` | 中（+1.5 MB）| `DYN.md` 已记为已知限制 |
 | G8 | **可能的环被区域划分切开** ⇒ 两只区域互相钉住 + 自学习退场 | `ring_per_round` | **高**（修前 3.90×、比关档差 160 MB）| **已修**（路线 C：候选区域合并，见 §G8）|
 
-**静态审计**：① 区域没有回收者的程序 = **12**（今天必然非 0 ✓）；② 未记账的引用槽写入 = **0**
+**静态审计**：① 区域没有回收者的程序 = **9**（今天必然非 0 ✓）；② 未记账的引用槽写入 = **0**
 （与任务预期相反，见 §4——检测器有牙，但今天这类直接字段写入确实一条不剩）。
 
 ---
 
 ## 1. 矩阵总表（每一行都有实测数字）
 
-口径：峰值 = `/usr/bin/time -v` 的 Maximum resident set size，量**生成物二进制**（KB/1024 = MB）。
+口径：峰值 = `/usr/bin/time -v` 的 Maximum resident set size，量**生成物二进制**（KB/1024 = MB），**规模判据段取 3 次运行的最小值**（并行 worker 的分区时机受同机调度影响；真正的「随规模涨」每次都在，取最小值不掩盖回归，理由见 `run-gaps.sh` 的 `run_min_rss`）。
 「on 160k→640k」= `EXTC_RECLAIM=1` 两跑；「off」= `EXTC_RECLAIM=0` 两跑。
 「sweeps」= 探针观察到的 `extc_rc_collect` 次数（160k / 640k）。
 **「收得掉」= on 档 160k→640k 峰值比 < 1.5**。
 
 | # | 形状（shapes/）| A 房间 | B 槽 | C 结构 | D 谁触发 | 收得掉? | on 160k→640k | off 160k→640k | sweeps 160k/640k | 比关档差? | 红判据 |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| 1 | `home_cycle` rounds=1 | 调用者家房间 | 普通字段 | 自环 | **拥有者只调一次** | ✗ **3.04×** | 4.61→**13.98** | 3.92→11.36 | **0 / 0** | **是 +2.6** | 无（建议①l） |
-| 2 | `home_cycle` rounds=64/256 | 调用者家房间 | 普通字段 | 自环 | 拥有者反复调 | ✓ 0.98× | 3.17→3.11 | 40.79→158.92 | 31 / 127 | 否 | 现成 ①k 同机制 |
-| 3 | `own_room_cycle` | 本帧房间 | 普通字段 | 自环 | 本帧自己 | ✓ 1.00× | 2.92→2.92 | 3.92→11.36 | 2 / 9 | 否 | 现成 ①/①b 同类 |
-| 4 | `cross_scope_cycle` | 本帧房间 | 普通字段 | **跨作用域圈** | 本帧自己 | ✓ 0.98× | 2.98→2.92 | 6.36→21.11 | 4 / 19 | 否 | 现成 ① 同类 |
-| 5 | `slot_elem_known` | 本帧房间 | **下标槽 `s.kids[0]`** | 圈 | 本帧自己 | ✓ 1.04× | 5.73→5.98 | 16.23→60.29 | 16 / 68 | 否 | 现成 ①d |
-| 6 | `slot_elem_unknown` | 本帧房间 | **视图元素 `v[0].kids[0]`** | 圈 | 本帧自己（值被钉住） | ✓ 1.00× | 4.04→4.04 | 16.29→60.29 | 18 / 77 | 否 | 无（**已修**：反查失手 ⇒ 值钉成根；见 §G6a） |
-| 7 | `base_call_unknown` | 本帧房间 | **`(*id(s)).kids[0]`** | 圈 | 本帧自己（槽地址反查命中） | ✓ 1.03× | 5.73→5.92 | 16.23→60.36 | 16 / 68 | 否 | 无（**已修**：槽地址反查宿主；见 §G6） |
-| 8 | `struct_copy_slot` | 本帧房间 | **整值存储 `s.w=wrap{…}`** | 圈 | 本帧自己 | ✓ 0.99× | 4.67→4.61 | 13.85→50.60 | 19 / 79 | 否 | 现成 ①f |
+| 1 | `home_cycle` rounds=1 | 调用者家房间 | 普通字段 | 自环 | **拥有者只调一次** | ✗ **3.04×** | 4.61→**13.98** | 3.86→11.36 | **0 / 0** | **是 +2.6** | 无（建议①l） |
+| 2 | `home_cycle` rounds=64/256 | 调用者家房间 | 普通字段 | 自环 | 拥有者反复调 | ✓ 1.00× | 3.11→3.11 | 40.79→158.92 | 31 / 127 | 否 | 现成 ①k 同机制 |
+| 3 | `own_room_cycle` | 本帧房间 | 普通字段 | 自环 | 本帧自己 | ✓ 1.00× | 2.92→2.92 | 3.86→11.34 | 2 / 9 | 否 | 现成 ①/①b 同类 |
+| 4 | `cross_scope_cycle` | 本帧房间 | 普通字段 | **跨作用域圈** | 本帧自己 | ✓ 1.02× | 2.92→2.98 | 6.29→21.11 | 4 / 19 | 否 | 现成 ① 同类 |
+| 5 | `slot_elem_known` | 本帧房间 | **下标槽 `s.kids[0]`** | 圈 | 本帧自己 | ✓ 1.03× | 5.73→5.92 | 16.23→60.29 | 16 / 68 | 否 | 现成 ①d |
+| 6 | `slot_elem_unknown` | 本帧房间 | **视图元素 `v[0].kids[0]`** | 圈 | 本帧自己（值被钉住） | ✓ 1.00× | 4.04→4.04 | 16.23→60.29 | 18 / 77 | 否 | 无（**已修**：反查失手 ⇒ 值钉成根；见 §G6a） |
+| 7 | `base_call_unknown` | 本帧房间 | **`(*id(s)).kids[0]`** | 圈 | 本帧自己（槽地址反查命中） | ✓ 1.03× | 5.73→5.92 | 16.23→60.29 | 16 / 68 | 否 | 无（**已修**：槽地址反查宿主；见 §G6） |
+| 8 | `struct_copy_slot` | 本帧房间 | **整值存储 `s.w=wrap{…}`** | 圈 | 本帧自己 | ✓ 1.00× | 4.61→4.61 | 13.79→50.54 | 19 / 79 | 否 | 现成 ①f |
 | 9 | `struct_copy_ret_home` | 调用者家房间 | **按值返回**落具名槽 | 自环 | 拥有者反复调 | ✓ 1.00× | 1.42→1.42 | 1.42→1.42 | - / - | 否 | 无（建议①s） |
-| 10 | `carray_slot` | 本帧房间 | **C 定长数组 `arr[i%8]`** | 自环 | 本帧自己 | ✓ 0.98× | 2.98→2.92 | 3.86→11.36 | 2 / 9 | 否 | 无（建议①s） |
-| 11 | `owcell_garbage` | **`@overwrite` 格子** | 普通字段 | 自环 | 拥有者反复调 | ✓ 1.00× | 2.92→2.92 | 3.92→11.41 | 2 / 9 | 否 | 无（建议①s） |
-| 12 | `coro_frame_cycle` | **协程帧** | 普通字段 | 自环 | **无（不触发）** | ✗ **3.10×** | 4.46→**13.84** | 3.65→11.15 | **0 / 0** | **是 +2.6** | 无（建议①n） |
-| 13 | `ext_frame_cycle` | **`ext` spawn 帧** | 普通字段 | 自环 | **无（不触发）** | ✗ **3.13×** | 4.40→**13.78** | 3.65→11.21 | **0 / 0** | **是 +2.6** | 无（建议①n） |
-| 14 | `match_payload` | 本帧房间 | **枚举载荷绑定** | 自环 | 本帧自己 | ✓ 0.98× | 2.98→2.92 | 3.86→11.36 | 2 / 9 | 否 | 无（**已修**：§G3） |
-| 15 | `par_tls_cycle` | **TLS worker 房间** | 普通字段 | 自环 | 本帧自己（TLS 拥有者帧触发） | ✓ 1.13× | 4.23→4.79 | 3.86→11.79 | 2 / 8 | 否 | 无（**已修**：TLS 区域按运行期深度认领；见 §G4） |
-| 16 | `pool_ref_slot` | **池缓冲（视图）** | `pool<mut ref node>` 的槽 | 自环 | **无（`noSweep`+无触发）** | ✗ **2.99×** | 4.67→**13.98** | 3.86→11.41 | **0 / 0** | **是 +2.6** | 无（建议①q） |
-| 17 | `dyn_payload` | **dyn 池** | dyn 载荷里的引用 | 自环 | 本帧自己（dyn 池不回收） | ✗ **3.61×** | 22.23→**80.23** | 20.79→78.66 | 2 / 9 | **是 +1.5** | 无（建议①r） |
-| 18 | `byval_temp` | 调用者家房间 | **按值返回纯临时量** | 自环 | 拥有者反复调 | ✓ 0.98× | 2.79→2.73 | 3.86→11.42 | 2 / 9 | 否 | 无（建议①s） |
-| 19 | `closure_chain` | 本帧房间 | **嵌套闭包环境** | 自环 | 本帧自己 | ✓ 1.04× | 1.42→1.48 | 1.42→1.48 | - / - | 否 | 无（建议①s） |
+| 10 | `carray_slot` | 本帧房间 | **C 定长数组 `arr[i%8]`** | 自环 | 本帧自己 | ✓ 1.00× | 2.92→2.92 | 3.86→11.36 | 2 / 9 | 否 | 无（建议①s） |
+| 11 | `owcell_garbage` | **`@overwrite` 格子** | 普通字段 | 自环 | 拥有者反复调 | ✓ 1.00× | 2.92→2.92 | 3.86→11.36 | 2 / 9 | 否 | 无（建议①s） |
+| 12 | `coro_frame_cycle` | **协程帧** | 普通字段 | 自环 | 本帧自己（帧字段根表 + 块 arena 归帧） | ✓ **1.00×** | 2.53→2.53 | 3.65→11.15 | 2 / 9 | 否 | 无（**已修**：帧字段进根表、块 arena 归帧自己；见 §G2） |
+| 13 | `ext_frame_cycle` | **`ext` spawn 帧** | 普通字段 | 自环 | 本帧自己（同上） | ✓ **1.00×** | 2.71→2.71 | 3.65→11.15 | 2 / 9 | 否 | 无（**已修**：见 §G2） |
+| 14 | `match_payload` | 本帧房间 | **枚举载荷绑定** | 自环 | 本帧自己 | ✓ 1.00× | 2.92→2.92 | 3.86→11.36 | 2 / 9 | 否 | 无（**已修**：§G3） |
+| 15 | `par_tls_cycle` | **TLS worker 房间** | 普通字段 | 自环 | 本帧自己（TLS 拥有者帧触发） | ✓ 1.13× | 4.23→4.79 | 3.67→11.54 | 2 / 8 | 否 | 无（**已修**：TLS 区域按运行期深度认领；见 §G4） |
+| 16 | `pool_ref_slot` | **池缓冲（视图）** | `pool<mut ref node>` 的槽 | 自环 | **无（`noSweep`+无触发）** | ✗ **3.04×** | 4.61→**13.98** | 3.86→11.36 | **0 / 0** | **是 +2.6** | 无（建议①q） |
+| 17 | `dyn_payload` | **dyn 池** | dyn 载荷里的引用 | 自环 | 本帧自己（dyn 池不回收） | ✗ **3.61×** | 22.23→**80.17** | 20.73→78.67 | 2 / 9 | **是 +1.5** | 无（建议①r） |
+| 18 | `byval_temp` | 调用者家房间 | **按值返回纯临时量** | 自环 | 拥有者反复调 | ✓ 1.00× | 2.73→2.73 | 3.86→11.41 | 2 / 9 | 否 | 无（建议①s） |
+| 19 | `closure_chain` | 本帧房间 | **嵌套闭包环境** | 自环 | 本帧自己 | ✓ 1.00× | 1.42→1.42 | 1.42→1.42 | - / - | 否 | 无（建议①s） |
 | 20 | `global_slot`（G9）| 全局量 | — | — | — | **编译期拒** | — | — | — | — | 前端已有 |
 | 21 | `ring_per_round`（G8）| 外层循环体（region 1）| 普通字段 | **跨区闭环** | 本帧自己（环被切开 ⇒ 两区互相钉住）| ✓ **1.00×**（修前 3.90× ✗）| 10.61→10.61 | 3.08→3.45 | 13 / 55 | 修前 **+160.7** | §G8 |
 
@@ -82,11 +83,12 @@ G3（`match` 载荷）**已修**（见 §G3）、G4（`parTls` 线程本地区�
 调用点数）。所有 39 个 ASan/UBSan 跑都是 `rc=0`、无 `SEGV/UAF/runtime error`。
 **语义**：19 个可运行形状开档/关档 stdout 与退出码**逐字一致**（`sem=一致`）。
 
-> 「比关档差」= on 档峰值比同一形状 `EXTC_RECLAIM=0` 还大 ≥ 0.5 MB——第 1、12、13、16、17 条命中（5 条）。
+> 「比关档差」= on 档峰值比同一形状 `EXTC_RECLAIM=0` 还大 ≥ 0.5 MB——第 1、16、17 条命中（3 条）。
 > 第 6 条（视图元素）**已修**：1.00×、sweeps 18 / 77、比关档差消失，见 §G6a。
-> 第 7 条（基表达式带调用的槽）**已修**：1.03×、sweeps 16 / 68，与第 5 条（同形状、只换宿主可证性）1.04× 同档。
-> 第 14 条（`match` 绑定引用载荷）**已修**：0.98×、sweeps 2 / 9，见 §G3。
+> 第 7 条（基表达式带调用的槽）**已修**：1.03×、sweeps 16 / 68，与第 5 条（同形状、只换宿主可证性）1.03× 同档。
+> 第 14 条（`match` 绑定引用载荷）**已修**：1.00×、sweeps 2 / 9，见 §G3。
 > 第 15 条（TLS worker 房间）**已修**：1.13×、sweeps 2 / 8、比关档差消失，见 §G4。
+> 第 12、13 条（协程帧 / `ext` 帧）**已修**：各 1.00×、sweeps 2 / 9、比关档差消失，见 §G2。
 
 ---
 
@@ -103,13 +105,13 @@ G3（`match` 载荷）**已修**（见 §G3）、G4（`parTls` 线程本地区�
 | 1 拥有者只调一次、被调者在它房间里攒大垃圾 | **确认** | G1：`home_cycle` rounds=1，3.04×、比关档差 +2.6 MB |
 | 2 被调者自己是长循环，调用期间没人清 | **确认** | G1 同一形状（`build` 的 while 就是长循环；`sweeps=0`）|
 | 3 判不出宿主的引用槽（`a[i]` / 基表达式带调用 / 视图）| **确认（能力损失、非悬垂）→ 两半都已修** | G6：`base_call_unknown` 已修 1.03×（槽地址反查宿主）；G6a：`slot_elem_unknown` 已修 1.00×（反查失手 ⇒ 值钉成根，对照 known = 1.04×）|
-| 4 按值传递/返回的临时量携带引用 | **推翻（本形状下收得掉）** | 第 9 行 `struct_copy_ret_home` 1.00×、第 18 行 `byval_temp` 0.98× |
-| 5 协程帧 | **确认** | G2：`coro_frame_cycle` 3.10×、`sweeps=0`、比关档差 +2.7 MB |
-| 6 `ext`（spawn）帧 | **确认** | G2：`ext_frame_cycle` 3.13×、`sweeps=0`、比关档差 +2.6 MB |
+| 4 按值传递/返回的临时量携带引用 | **推翻（本形状下收得掉）** | 第 9 行 `struct_copy_ret_home` 1.00×、第 18 行 `byval_temp` 1.00× |
+| 5 协程帧 | **确认 → 已修** | G2：`coro_frame_cycle` 已修 1.00×、`sweeps` 2 / 9、比关档差消失 |
+| 6 `ext`（spawn）帧 | **确认 → 已修** | G2：`ext_frame_cycle` 已修 1.00×、`sweeps` 2 / 9、比关档差消失 |
 | 7 TLS / 并行（`parTls`）| **确认 → 已修**（首轮新写正向程序实测；按运行期深度认领归属后收得掉）| G4：`par_tls_cycle` 已修 1.13×、`sweeps` 2 / 8、比关档差消失 |
-| 8 池/板容器里的引用、`match` 绑定、`dyn` 载荷 | **确认（池 / dyn）+ `match` 已修 + 板未实测** | G5 池 2.99×、G3 match 已修 1.00×、G7 dyn 3.61×；板只存字节 ⇒ §6 |
+| 8 池/板容器里的引用、`match` 绑定、`dyn` 载荷 | **确认（池 / dyn）+ `match` 已修 + 板未实测** | G5 池 3.04×、G3 match 已修 1.00×、G7 dyn 3.61×；板只存字节 ⇒ §6 |
 | 9 `@overwrite` 格子 | **推翻（本形状下收得掉）** | 第 11 行 `owcell_garbage` 1.00× |
-| 10 全局量里的引用 / C 层数组里的引用 | **全局：前端拒；C 数组：推翻（收得掉）** | §3（编译期拒）、第 10 行 `carray_slot` 0.98× |
+| 10 全局量里的引用 / C 层数组里的引用 | **全局：前端拒；C 数组：推翻（收得掉）** | §3（编译期拒）、第 10 行 `carray_slot` 1.00× |
 
 ### G1 拥有者只调用一次（嫌疑 1 + 2）——**新洞，比关档差**
 
@@ -131,15 +133,31 @@ G3（`match` 载荷）**已修**（见 §G3）、G4（`parTls` 线程本地区�
 这正是 `tests/reclaim-shapes/README.md` §「代价与后续」自己标出来的那条损失，
 本轮第一次把它量成「比关档差」。
 
-### G2 协程帧 / `ext` 帧（嫌疑 5 + 6）——**新洞，比关档差**
+### G2 协程帧 / `ext` 帧（嫌疑 5 + 6）——**已修（1.00× / 1.00×）**
 
 `coro_frame_cycle.extc`（`yield` 长循环）与 `ext_frame_cycle.extc`（`domain::single().run { ext task(n) }`）：
-两个函数都因为“帧挂起后不在 C 栈上”被置 `rcRootsUnreliable` ⇒ **一个触发都不发、也不欠收**
-（生成物里 `maybeCollect(__extc_…` = 0、`owe(` = 0，`sweeps = 0`）。
-`keep = p` 把自环节点提到帧的函数级区域，只有帧销毁才还。
+帧挂起后不在 C 栈上，以前 `genFunc` 对这类函数整体置 `rcRootsUnreliable` ⇒ **一个触发都不发、也不欠收**
+（生成物里 `maybeCollect(__extc_…` = 0、`owe(` = 0，`sweeps = 0`）；`keep = p` 把自环节点提到帧的
+函数级区域，只有帧销毁才还。
 
-on 5.96→17.71（2.97×）、off 3.65→11.21；`ext` 5.90→17.71（3.00×）。
-ASan 干净（`rc=0`）——纯上界问题，不是悬垂。
+两头一起改才认领完整：
+
+* 协程 step 的 C 形参只有帧指针（`f`），跨 `yield` 活下来的形参/局部量住在帧字段里 ⇒ `genFunc` 按 checker
+  排好的 `coroFrame` 表把各字段的引用叶子登记成根（`f->name`）。帧由调用者的复合字面量建、起点零初始化，
+  未赋值前读到的是 0，而根表入口在 `markBegin` 里过 `extc_rc_owns` ⇒ 认错只多留；yield 出来的值不带引用
+  由 checker 保证（`s` 的协程 yield 类型检查）⇒ 帧里的引用不会从 yield 出口漏到调用者根表之外。
+* `rcFrameOwnsArena` 不再挡 `coroFunc`：step 的块 arena（`f->arena1`，`lvl >= 1`）归帧自己；
+  `rcOwnKind` 也不再整函数返回 `RC_OWN_NO`（parTls 一档仍要挡 `coroFunc` —— step 不发
+  `__extc_tlsOwner` 序言）。`ext` spawn 帧走同一条判据（它的块 arena 字段也在帧里）。
+
+⇒ `coro_frame_cycle` on 2.53→2.53（**1.00×**）、sweeps 2 / 9、比关档差消失；`ext` 2.71→2.71（**1.00×**）、
+sweeps 2 / 9；off 各 3.65→11.15；stdout 与关档逐字节相同；ASan 干净（`rc=0`）。
+
+牙：结构门禁 `gate-coro-frame-roots`（`tools/check_coro_frame_roots.py`，跑真实发射：协程形状的 step 必须把
+`f->keep` / `f->p` 放进某个 `maybeCollect` 的根数组、触发装 `f->arena1` 的块级区域（lvl 1，不是家
+arena -1）、不发 TLS 归属序言；普通程序一个帧字段根都不许有；再断生成器源码四条结构事实）+ 注入
+`coro-frame-roots-nop`（把帧字段根循环改成空转 ⇒ 门禁红）。零税：9 形状 -O2 callgrind Ir 与并发修复提交
+**逐位相同**（coro 分支只对协程函数生效）。
 
 ### G3 `match` 绑定引用载荷（嫌疑 8）——**已修（1.00×）**
 
@@ -199,7 +217,7 @@ fn main(args) { … parallel::run(w, out, n, i64(2)) }
 ### G6 视图元素 / 基表达式带调用（嫌疑 3）——**两半都已修**
 
 - `slot_elem_known`（`s.kids[0] = keeper`，宿主 = `s`）：生成物逐叶 `storeRefOwned`，扫得掉，
-  on 5.73→5.98（1.04×）、sweeps 16 / 68；off 16.23→60.29。
+  on 5.73→5.92（1.03×）、sweeps 16 / 68；off 16.23→60.29。
 - `base_call_unknown`（`(*id(s)).kids[0] = keeper`）：**已修**。槽地址落在 `s` 的数据区里 ⇒
   `extc_rc_storeRefSlot` 按**槽地址**反查宿主 slab（`extc_rc_slabOfInterior`：ownHot/ownMap/ownTab 按
   slab 基址查，校验偏移 < `nslots * ss`）⇒ 走 `storeRefOwnedReg`，不再 `noSweep`。
@@ -233,7 +251,7 @@ on 仍比 off 差 +3.6 MB。
 ### G8 可能的环被**区域划分切开**（新根因；**已修**，路线 C）—— §G8
 
 形状 `shapes/ring_per_round.extc`：每轮建一条 **256 结点的闭环**，环头存进长命槽 `keep`；轮数来自
-argv（`ring*` 这一族用**轮数**当规模，不是结点数；每轮垃圾 ≈ 1 MiB）。它和前面 5 条的成因都不同：
+argv（`ring*` 这一族用**轮数**当规模，不是结点数；每轮垃圾 ≈ 1 MiB）。它和前面 3 条的成因都不同：
 
 * 触发**发生了**、清扫也**在跑**（on 档 `sweeps` 13 / 55），但每次收 0 个槽；
 * 生成物里环横跨**两只区域**：`head` 在外层循环体（`__extc_rcr0`），256 个 `t` 在内层循环体
@@ -356,25 +374,22 @@ var arr: [4]?mut ref node       → 同上（contains a reference）
 
 | 类 | 程序数 |
 |---|---|
-| ok-trigger | 121 |
+| ok-trigger | 124 |
 | owe-settled | 109 |
 | owe-no-settle | 0 |
-| **silent-both** | **12** |
-| no-alloc | 620 |
-| **红计数①** | **12** |
+| **silent-both** | **9** |
+| no-alloc | 674 |
+| **红计数①** | **9** |
 
-12 个程序（= 今天必然非 0 的那一半）：
+9 个程序（= 今天必然非 0 的那一半）：
 
 ```
-tests/coro/coro_new.extc                                alloc=1 trig=0 owe=0 check=0 srUnknown=1
 tests/escape-fuzz/cases/m_home_cont_after.extc          alloc=1 trig=0 owe=0 check=1 srUnknown=1
 tests/escape-fuzz/cases/m_home_cont_before.extc         alloc=1 trig=0 owe=0 check=1 srUnknown=1
 tests/escape-fuzz/cases/m_main_cont_after.extc          alloc=1 trig=0 owe=0 check=1 srUnknown=1
 tests/escape-fuzz/cases/m_main_cont_before.extc         alloc=1 trig=0 owe=0 check=1 srUnknown=1
 tests/escape-fuzz/cases/m_nohome_cont_after.extc        alloc=1 trig=0 owe=0 check=1 srUnknown=1
 tests/escape-fuzz/cases/m_nohome_cont_before.extc       alloc=1 trig=0 owe=0 check=1 srUnknown=1
-tests/reclaim-gaps/shapes/coro_frame_cycle.extc         alloc=2 trig=0 owe=0 check=0 srUnknown=1
-tests/reclaim-gaps/shapes/ext_frame_cycle.extc          alloc=2 trig=0 owe=0 check=0 srUnknown=1
 tests/reclaim-gaps/shapes/pool_ref_slot.extc            alloc=1 trig=0 owe=0 check=0 srUnknown=1
 tools/escape-corpus/P2-6_container_uaf.extc             alloc=1 trig=0 owe=0 check=1 srUnknown=1
 tools/escape-corpus/P2-7_container_before_uaf.extc      alloc=1 trig=0 owe=0 check=1 srUnknown=1
@@ -419,11 +434,11 @@ selftest: 干净生成物候选 = 0，注入一条裸写入后候选 = 1 ⇒ ok�
 #  ①l home_cycle  rounds=1   1:160000 / 1:640000   今天 3.04×（红）—— 拥有者只调一次
 #  ①m slot_elem_unknown                            已修 1.00×（绿）—— 反查失手 ⇒ 值钉成根
 #     base_call_unknown 已修 1.03×（绿）—— 槽地址反查宿主
-#     对照 slot_elem_known 必须 1.04×（绿）⇒ 差分闭合
-#  ①n coro_frame_cycle / ext_frame_cycle           今天 3.10× / 3.13×，sweeps=0（红）
+#     对照 slot_elem_known 必须 1.03×（绿）⇒ 差分闭合
+#  ①n coro_frame_cycle / ext_frame_cycle           已修 1.00× / 1.00×（绿）—— 帧字段根表 + 块 arena 归帧自己
 #  ①o match_payload                                已修 1.00×（绿）—— 枚举负载整值存储 + 按变体展开根
 #  ①p par_tls_cycle                                已修 1.13×（绿）—— TLS 区域按运行期深度认领
-#  ①q pool_ref_slot                                今天 2.99×，sweeps=0（红）—— 池里的引用
+#  ①q pool_ref_slot                                今天 3.04×，sweeps=0（红）—— 池里的引用
 #  ①r dyn_payload                                  今天 3.61×（红）—— dyn 池（已知限制）
 #  ①s（护栏，防回归）struct_copy_ret_home / carray_slot / owcell_garbage /
 #     byval_temp / closure_chain 今天都 ≤ 1.05×（绿）；加上它们是为了
@@ -490,11 +505,11 @@ selftest: 干净生成物候选 = 0，注入一条裸写入后候选 = 1 ⇒ ok�
 | `README.md` | 本文件（矩阵 + 结论 + 建议判据）|
 | `run-gaps.sh` | 一键复跑：矩阵（41 行）+ 规模判据（20 行）+ 每形状 ASan 结论，**恒 exit 0** |
 | `gate.py` | **棘轮闸门**：① 每个形状的 `asan=<非 0>`；② 规模判据里"收不掉"的集合。两者都"多一条红、少一条也红" |
-| `gate-known-bad.txt` | ① 的基线（当前 5 条收不掉的形状）|
+| `gate-known-bad.txt` | ① 的基线（当前 3 条收不掉的形状）|
 | `asan-known-bad.txt` | ② 的基线（当前**没有已知坏**：所有 ASan/UBSan 跑都是 rc=0）|
 | `audit-static.py` | 全语料静态审计 ①②，`--gate` / `--selftest` / `--baseline`（棘轮）|
 | `ledger-gate.py` | 把静态审计按固定口径跑成闸门（`gate-reclaim-ledger` 的入口）|
-| `audit-known-bad.txt` | 静态审计棘轮的基线（当前 12 条没有回收者的程序）|
+| `audit-known-bad.txt` | 静态审计棘轮的基线（当前 9 条没有回收者的程序）|
 | `shapes/*.extc` | 20 个形状（+1 个编译期反例），每个 ≤ 60 行 |
 | `out/matrix.tsv` `out/scale.tsv` `out/raw.txt` | 原始数字 |
 | `out/audit-static.tsv` `out/audit-static-summary.txt` | 静态审计原始输出 |

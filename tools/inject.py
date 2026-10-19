@@ -297,6 +297,15 @@ INJECTIONS = {
                      '    "        if (tries >= 32) break;   /* skip:reg-race */\\n",\n',
                      '    "        break;   /* skip:reg-race */\\n",\n')],
     },
+    "coro-frame-roots-nop": {
+        "why": "把协程帧字段的根登记循环改成空转 ⇒ step 的静态根表里没有 f->keep / f->p，"
+               "而触发点又装在这只块 arena 上 ⇒ 挂起期间被帧字段持有的环垃圾会被当成垃圾放掉"
+               "（**悬垂/越界**类失效）。方向看起来是「多留一条根」的反面，所以只能靠结构门禁钉住",
+        "gate": "gate-coro-frame-roots",
+        "patches": [(CODEGEN,
+                     '        for (size_t i = 0; i < cf->coroFrame.len; i++) {\n',
+                     '        for (size_t i = 0; i < (size_t)0; i++) {\n')],
+    },
 }
 
 

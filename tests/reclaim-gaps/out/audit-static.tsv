@@ -413,7 +413,7 @@ tests/coro/coro_global.extc	ok	no-alloc	0	0	0	0	0	0	0
 tests/coro/coro_handles.extc	ok	no-alloc	0	0	0	0	0	0	0
 tests/coro/coro_literal.extc	ok	no-alloc	0	0	0	0	0	0	0
 tests/coro/coro_mem.extc	ok	no-alloc	0	0	0	0	0	0	0
-tests/coro/coro_new.extc	ok	silent-both	1	0	0	0	1	0	0
+tests/coro/coro_new.extc	ok	ok-trigger	1	1	0	0	1	0	0
 tests/coro/coro_new_in_block.extc	ok	no-alloc	0	0	0	0	0	0	0
 tests/coro/coro_pool.extc	ok	no-alloc	0	0	0	0	0	0	0
 tests/coro/coro_req_resp.extc	ok	no-alloc	0	0	0	0	0	0	0
@@ -1198,10 +1198,10 @@ tests/reclaim-gaps/shapes/base_call_unknown.extc	ok	ok-trigger	3	3	0	0	1	0	0
 tests/reclaim-gaps/shapes/byval_temp.extc	ok	owe-settled	1	0	1	1	1	0	0
 tests/reclaim-gaps/shapes/carray_slot.extc	ok	ok-trigger	1	1	0	0	1	0	0
 tests/reclaim-gaps/shapes/closure_chain.extc	ok	no-alloc	0	0	0	0	0	0	0
-tests/reclaim-gaps/shapes/coro_frame_cycle.extc	ok	silent-both	2	0	0	0	1	0	0
+tests/reclaim-gaps/shapes/coro_frame_cycle.extc	ok	ok-trigger	2	2	0	0	1	0	0
 tests/reclaim-gaps/shapes/cross_scope_cycle.extc	ok	ok-trigger	2	2	0	0	1	0	0
 tests/reclaim-gaps/shapes/dyn_payload.extc	ok	ok-trigger	1	1	0	0	1	0	0
-tests/reclaim-gaps/shapes/ext_frame_cycle.extc	ok	silent-both	2	0	0	0	1	0	0
+tests/reclaim-gaps/shapes/ext_frame_cycle.extc	ok	ok-trigger	2	2	0	0	1	0	0
 tests/reclaim-gaps/shapes/global_slot.extc	fail	-	-	-	-	-	-	-	-
 tests/reclaim-gaps/shapes/home_cycle.extc	ok	owe-settled	2	0	2	2	1	0	0
 tests/reclaim-gaps/shapes/match_payload.extc	ok	ok-trigger	2	2	0	0	1	0	0
