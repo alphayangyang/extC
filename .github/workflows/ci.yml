@@ -1,15 +1,26 @@
-# CI: build the compiler and run the quick acceptance suite.
+# CI: build the compiler and run the `ci` acceptance tier (`./check.sh ci`).
 #
 # Only `cc` and `python3` are needed for this job -- that is exactly what
-# `./check.sh quick` was made to require.  The full mode adds benchmarks and needs
+# `./check.sh ci` was made to require.  The full mode adds benchmarks and needs
 # `g++` + `rustc`; the six-language matrix in bench/bigmatrix also needs `go` + `java`.
 # Keep it that way: a contributor with a C compiler and Python must be able to run
 # the whole acceptance suite.
 #
-# valgrind is NOT part of that contract: the three reclaim perf/tax gates detect it and
-# print `  --   跳过：…` instead of failing (./check.sh lists those as "跳过", never as a
-# pass).  This job installs it anyway so the ratchets are really judged on every push,
-# and it turns a skip into a failure -- "installed but not effective" is a broken state.
+# Why `ci` and not `quick` (= `nobench` = non-benchmark everything): the gates that
+# tools/check.py marks `callgrind=True` judge *absolute* callgrind numbers (total Ir,
+# cache-sim misses) against lines calibrated on the author's machine, and those numbers
+# move with the compiler and valgrind versions.  Evidence from this runner (gcc 13.3.0,
+# valgrind 3.22.0): gate-mark-locality measured D1mr 805785 against a line of 700000,
+# while the same gate on the author's box (gcc 15.2.0, valgrind 3.26.0) reads D1mr
+# 617826 and a DLmr two orders of magnitude larger.  So this job skips those items by
+# tier; local `nobench`/`quick` still runs them -- that is where the lines were
+# calibrated, and judging them anywhere else is judging a different machine.
+#
+# valgrind is NOT part of the cc+python3 contract: items that need it print
+# `  --   跳过：…` instead of failing (tools/check.py lists those as "跳过", never as a
+# pass).  This job installs it anyway -- the `map` / `pool` functional suites use callgrind
+# and memcheck -- and it turns a skip into a failure: "installed but not effective" is a
+# broken state.
 name: ci
 
 on:
@@ -18,7 +29,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  quick:
+  acceptance:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -32,7 +43,7 @@ jobs:
           make -j"$(nproc)" 2>&1 | tee /tmp/build.log
           ! grep -q warning /tmp/build.log
 
-      - name: valgrind (回收性能/税闸门要用；缺了它们会自跳过 ⇒ 这里装上，让它们真跑)
+      - name: valgrind (map/pool 功能套件要用 callgrind/memcheck；缺了它们会自跳过 ⇒ 这里装上，让它们真跑)
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq valgrind
@@ -42,7 +53,7 @@ jobs:
         run: |
           echo "::notice::runner: nproc=$(nproc) · cc=$(cc --version | head -1) · glibc=$(ldd --version | head -1) · python3=$(python3 -V 2>&1) · /usr/bin/time=$(test -x /usr/bin/time && echo 有 || echo 无) · valgrind=$(valgrind --version 2>/dev/null || echo 无)"
 
-      - name: quick acceptance suite
+      - name: ci acceptance suite (./check.sh ci)
         # 失败要**能从 API 读到**：跑 CI 的机器上没有 gh，看不了 Actions 日志；
         # 而 `::error::` 会变成 GitHub 注解，注解对公开仓库**无需认证**即可读
         # （/commits/<sha>/check-runs → annotations_url）。注解一步最多 10 条，所以失败项清单
@@ -52,16 +63,16 @@ jobs:
         # 因为闸门常把真正的失败打在前面、后面接一堆逐形状的 ok）。
         run: |
           set +e
-          ./check.sh quick > /tmp/quick.log 2>&1
+          ./check.sh ci > /tmp/ci.log 2>&1
           rc=$?
-          tail -30 /tmp/quick.log
+          tail -30 /tmp/ci.log
           if [ "$rc" -ne 0 ]; then
-            python3 tools/ci_annotate.py --log /tmp/quick.log --times "${SEC_TIMES:-/tmp/extc-check-times.tsv}"
+            python3 tools/ci_annotate.py --log /tmp/ci.log --times "${SEC_TIMES:-/tmp/extc-check-times.tsv}"
           fi
-          # 装了 valgrind 却仍跳过 ⇒ 那三条回收性能/税棘轮在 CI 上没跑（上面那步白装了）——
+          # 装了 valgrind 却仍跳过 ⇒ 依赖它的功能项（map/pool 等）在 CI 上没跑（上面那步白装了）——
           # 这是失败，不是"跳过"。本机缺 valgrind 时才允许跳过（契约：只要 cc + python3）。
-          if grep -aq "跳过：没有 valgrind" /tmp/quick.log; then
-            echo "::error::回收性能/税闸门被跳过：valgrind 没生效（判据没跑）"
+          if grep -aq "跳过：没有 valgrind" /tmp/ci.log; then
+            echo "::error::依赖 valgrind 的功能项被跳过：valgrind 没生效（判据没跑）"
             rc=1
           fi
           exit "$rc"

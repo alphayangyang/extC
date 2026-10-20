@@ -111,6 +111,7 @@ bad.extc:3:1: error: index 7 is not inside `[4]i32` (length 4)
 make -j"$(nproc)"     # 只依赖 cc，产出 build/extc
 ./tests/run.sh        # 回归：正例要跑对、编译期反例必须被挡住、运行时反例必须真的 trap 且带源码位置
 ./check.sh quick      # 上面的 + 闸门 + 各子系统套件（要 cc 与 python3）
+./check.sh ci         # 同上，再跳过 callgrind 判据（CI 用这档：指令数/失手数的线绑本机工具链）
 ./check.sh            # 完整验收：另含全语料 ASan/UBSan 与基准（另需 g++、rustc）
 ```
 
@@ -126,7 +127,7 @@ make -j"$(nproc)"
 
 | 目标 | 依赖 |
 |---|---|
-| `make`、`tests/run.sh`、`check.sh quick` | `cc`（gcc 或 clang）、`python3` |
+| `make`、`tests/run.sh`、`check.sh quick`、`check.sh ci` | `cc`（gcc 或 clang）、`python3` |
 | `check.sh`（完整模式，含基准）| 另需 `g++`、`rustc` |
 | `bench/bigmatrix/run.sh`（六语言横评）| 另需 `go`、`java` |
 

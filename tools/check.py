@@ -7,9 +7,10 @@
 统计 ok/FAIL、末尾打印最慢的 N 项、把耗时表写进 $SEC_TIMES（默认
 /tmp/extc-check-times.tsv）。
 
-用法（`./check.sh` 现在只是 exec 到本文件的 shim，README / CI 里的用法不变）：
+用法（`./check.sh` 现在只是 exec 到本文件的 shim；README 与 CI 用的就是下面这几条）：
     ./check.sh                 全部（含基准；几十分钟）
     ./check.sh quick           测试 + 攻击库，跳过基准
+    ./check.sh ci              CI 档：nobench 再减去 callgrind 判据（那几条的结论绑工具链）
     ./check.sh docs            只跑文档/工具项（秒级）
     ./check.sh -j 8 nobench    并行跑（默认 min(4, nproc)；`-j1` = 逐项串行）
     ./check.sh --only <名或组>  可多次；名字或组都行
@@ -27,7 +28,9 @@
 
 跳过协议（`skip` 与 `ok` 是两回事）：某项的子脚本**自己**发现环境缺件（如本机没有 valgrind）时，
 打印一行 `  --   跳过：<原因>` 并退出 0 ⇒ 该项记 `skip`、**不计数**，但汇总里单列「跳过 N」——
-绝不让"没验"混进"通过"。CI 另有一条相反方向的判据：装了 valgrind 却仍跳过 ⇒ CI 失败。
+绝不让"没验"混进"通过"。CI 跑 `ci` 档（不选 callgrind 项：它们的绝对线是在作者机上标定的，
+换编译器/valgrind 版本就会漂，见 Item.callgrind）；但 CI 仍装 valgrind 让只靠它取指令数/内存错误
+的功能项真跑，并有一条相反方向的判据：装了 valgrind 却仍跳过 ⇒ CI 失败。
 """
 
 from __future__ import annotations
@@ -257,6 +260,10 @@ class Item:
     fn: Callable[["Runner", Item], Outcome]
     needs_build: bool = True
     bench: bool = False
+    # 判据的结论来自 callgrind（总指令数 / cache-sim 失手数）⇒ 数字绑**编译器与 valgrind 版本**，
+    # 线是在作者机上标定的。换一套工具链（如 CI 的 gcc 13 / valgrind 3.22）数字就会漂，
+    # 于是 CI 档（`ci`）不选这些项；本机 nobench/quick 仍全跑。
+    callgrind: bool = False
     abort_on_fail: bool = False
     counts: bool = True
 
@@ -287,7 +294,7 @@ def _resolve_msg(spec, out: str) -> str:
 
 def cmd(name: str, group: str, desc: str, argv: list, *,
         timeout: Optional[float] = None, env: Optional[dict] = None,
-        needs_build: bool = True, bench: bool = False,
+        needs_build: bool = True, bench: bool = False, callgrind: bool = False,
         ok_msg=None, bad_msg: Optional[str] = None,
         bad_dump: Optional[Callable[[str], list]] = None,
         extra_ok: Optional[Callable[[str], list]] = None,
@@ -311,7 +318,7 @@ def cmd(name: str, group: str, desc: str, argv: list, *,
             msg = f"{msg}（rc={p.rc}，{len(lines(p.out))} 行输出）"
         return Outcome(False, msg, dump)
     return Item(name, group, desc, fn, needs_build=needs_build, bench=bench,
-                abort_on_fail=abort_on_fail)
+                callgrind=callgrind, abort_on_fail=abort_on_fail)
 
 
 def ok_const(s: str):
@@ -485,10 +492,18 @@ def build_items() -> list:
 
     # ---- 闸门·回收性能（入口守卫的指令数上限）----
     # 判据线 = 改动前实测 × 0.6；`gate.sh` 里写清了为什么是 0.6（根表物化占 56.1%）。
+    #
+    # 下面这一段的 7 条判据全部标 `callgrind=True`：结论是"指令数/失手数 ≤ 线"，而线是从
+    # **作者机**（gcc 15.2.0 / valgrind 3.26.0）的实测派生的绝对量。换工具链数字就漂 —— 证据：CI 的
+    # gcc 13.3.0 / valgrind 3.22.0 上 `gate-mark-locality` 实测 D1mr 805785（线 700000）、
+    # DLmr 1281（远低于线），本机同判据 D1mr 617826 / DLmr 146276，DLmr 差 100×。所以 CI 跑
+    # `ci` 档（nobench 减去这些项），本机的 nobench/quick 照跑（要的就是本机数据）。
+    # 换机器验收这 7 条时，`ci` 档的绿只说明"这台机器上还没退化"，不说明判据仍然成立。
     items.append(cmd(
         "gate-reclaim-perf", "gate",
         "闸门·回收性能：cyclic_pressure N=200000 的 callgrind 总指令数 ≤ 现行线（线在 gate.sh 里随落地收紧）",
         ["./tests/reclaim-perf/gate.sh"], timeout=900,
+        callgrind=True,
         ok_msg=ok_first(r"^  ok"),
         bad_msg="tests/reclaim-perf/gate.sh（指令数超上限：回收开销被付回了）",
         bad_dump=dump_fail(10)))
@@ -502,6 +517,7 @@ def build_items() -> list:
         "gate-slab-scale", "gate",
         "闸门·分配缩放：发射运行期上 N vs 4N 的每分配指令数比 ≤ 1.15、绝对值 ≤ 400，且注入旧扫描会变红",
         ["./tests/reclaim-perf/gate-slab-scale.sh", "--selftest"], timeout=900,
+        callgrind=True,
         ok_msg=ok_first(r"^  ok   分配路径缩放成立"),
         bad_msg="tests/reclaim-perf/gate-slab-scale.sh（每分配成本随存活 slab 数涨，或判据失去牙）",
         bad_dump=dump_fail(12)))
@@ -516,6 +532,7 @@ def build_items() -> list:
         "gate-pin-scale", "gate",
         "闸门·钉住表缩放：发射运行期上 N vs 4N 的每钉一个指令数比 ≤ 1.15、绝对值 ≤ 400，且注入线性预扫会变红",
         ["./tests/reclaim-perf/gate-pin-scale.sh", "--selftest"], timeout=900,
+        callgrind=True,
         ok_msg=ok_first(r"^  ok   钉住表缩放成立"),
         bad_msg="tests/reclaim-perf/gate-pin-scale.sh（每钉一个的成本随表长涨，或判据失去牙）",
         bad_dump=dump_fail(12)))
@@ -544,6 +561,7 @@ def build_items() -> list:
         "gate-reclaim-tables", "gate",
         "闸门·登记表/类型表缩放：own 每次 add+del 与 typeIdx 每次查找的成本不随表规模涨，且注入线性形状会变红",
         ["./tests/reclaim-perf/gate-reclaim-tables.sh", "--selftest"], timeout=900,
+        callgrind=True,
         ok_msg=ok_first(r"^  ok   登记表维护成本与存活 slab 数无关"),
         bad_msg="tests/reclaim-perf/gate-reclaim-tables.sh（表维护/查找退化成线性，或判据失去牙）",
         bad_dump=dump_fail(12)))
@@ -557,6 +575,7 @@ def build_items() -> list:
         "gate-mark-locality", "gate",
         "闸门·标记局部性：P5 的 cache-sim DLmr ≤ 190000、D1mr ≤ 700000（批量弹出不许被拆），且注入短批会变红",
         ["./tests/reclaim-perf/gate-mark-locality.sh", "--selftest"], timeout=900,
+        callgrind=True,
         ok_msg=ok_first(r"^  ok   标记遍历的访存局部性成立"),
         bad_msg="tests/reclaim-perf/gate-mark-locality.sh（标记遍历的局部性退化，或判据失去牙）",
         bad_dump=dump_fail(12)))
@@ -743,6 +762,7 @@ def build_items() -> list:
         "gate-reclaim-perf-shapes", "gate",
         "闸门·回收性能（真实形状）：bt / rebuild 小输入的 callgrind 总指令数 ≤ 各自的线，且开/关档输出逐字一致",
         ["./tests/reclaim-perf/gate-shapes.sh"], timeout=900,
+        callgrind=True,
         ok_msg=ok_count_ok(" 项（两条形状：指令数在线上 + 开/关档输出一致）"),
         bad_msg="tests/reclaim-perf/gate-shapes.sh（真实形状的回收开销被付回，或开关语义漂了）",
         bad_dump=dump_fail(12)))
@@ -754,6 +774,7 @@ def build_items() -> list:
         "gate-reclaim-tax", "gate",
         "闸门·回收税：bt（不需要回收的形状）开档/关档指令数比 ≤ 现行线（棘轮只许往下拧）",
         ["./tests/reclaim-perf/gate-tax.sh"], timeout=600,
+        callgrind=True,
         ok_msg=ok_first(r"^  ok"),
         bad_msg="tests/reclaim-perf/gate-tax.sh（不需要回收的形状上，回收税超线）",
         bad_dump=dump_fail(8)))
@@ -1876,10 +1897,11 @@ def write_times(path: str, results: dict) -> None:
 # --------------------------------------------------------------------------
 # 分档（名字要与实际相符）：
 #   smoke   —— 快速高信号集，改完代码第一件事跑这个（见 SMOKE，≈10s）
-#   nobench —— 非基准全量（CI 跑这档）；`quick` 是它的历史别名（会自己说明一句）
+#   nobench —— 非基准全量；`quick` 是它的历史别名（会自己说明一句）
+#   ci      —— nobench 再减去 callgrind 项（CI 跑这档：那些判据的绝对线绑工具链，见 Item.callgrind）
 #   all     —— 含基准（`full` 同义）
 #   docs    —— 只要文档/工具项（秒级）
-MODE_TOKENS = {"all", "full", "smoke", "nobench", "quick", "docs"}
+MODE_TOKENS = {"all", "full", "smoke", "nobench", "quick", "ci", "docs"}
 
 # smoke 集：**编译 + 改动面最相关的高信号判据**，按"改名要一起改这里"维护。
 # 选的标准是"能在 10 秒内给出'这次改动有没有把地基弄坏'的信号"，
@@ -1912,6 +1934,14 @@ def select(items: list, mode: Optional[str], only: list) -> list:
             print("注：`quick` 就是 `nobench`（非基准**全量**）—— 名字不实，"
                   "要快请用 `./check.sh smoke`（≈10s）。", flush=True)
         sel = [it for it in items if not it.bench]
+    elif mode == "ci":
+        # CI 档 = nobench − callgrind 项。理由见 Item.callgrind：那几条判据的结论是
+        # "callgrind 数 ≤ 线"，而线是作者机上的绝对量；CI 的 gcc/valgrind 与作者机不同 ⇒ 会误红。
+        # 明说跳过了哪些项，免得"少跑了几条"变成看不出的事。
+        cg = [it.name for it in items if it.callgrind and not it.bench]
+        sel = [it for it in items if not it.bench and not it.callgrind]
+        print(f"注：`ci` 档 = nobench 减去 {len(cg)} 条 callgrind 判据"
+              f"（结论绑编译器/valgrind 版本，换机器数字就漂）：" + " ".join(cg), flush=True)
     elif mode == "smoke":
         known = {it.name: it for it in items}
         missing = [n for n in SMOKE if n not in known]
@@ -1922,7 +1952,7 @@ def select(items: list, mode: Optional[str], only: list) -> list:
     elif mode == "docs":
         sel = [it for it in items if it.group == "docs"]
     else:
-        raise SystemExit(f"未知模式：{mode}（可用：all / nobench / smoke / docs）")
+        raise SystemExit(f"未知模式：{mode}（可用：all / nobench / ci / smoke / docs）")
 
     if only:
         known_names = {it.name for it in items}
@@ -2262,27 +2292,33 @@ def _run_items_parallel(items: list, args, j: int) -> int:
 # --list / --changed
 # --------------------------------------------------------------------------
 def do_list(items: list, tpath: str, mode: Optional[str] = None,
-            total: Optional[int] = None) -> int:
+            total: Optional[int] = None, cg_total: Optional[int] = None) -> int:
     """列项。带 `基准` 列 —— 于是"`nobench` 里到底有没有 bench"一眼可查。
 
     给了档位（`./check.sh --list nobench`）就**按档位过滤**（bench 项默认不出现，这正是用户
     被老 `--list` 骗到的地方），并用 `--all` 看全部；不给档位时列全部、但标出基准列。
     """
     tf = read_times_full(tpath)
-    print(f"{'名称':<26}{'组':<9}{'基准':<7}{'最近耗时':<10}说明")
+    print(f"{'名称':<26}{'组':<9}{'基准':<7}{'cg':<4}{'最近耗时':<10}说明")
     for it in items:
         last = f"{tf[it.name][0]:.2f}s" if it.name in tf else "-"
-        print(f"{it.name:<26}{it.group:<9}{'bench' if it.bench else '-':<7}{last:<10}{it.desc}")
+        print(f"{it.name:<26}{it.group:<9}{'bench' if it.bench else '-':<7}"
+              f"{'cg' if it.callgrind else '-':<4}{last:<10}{it.desc}")
     n_bench = sum(1 for it in items if it.bench)
     shown = f"共 {len(items)} 项：非基准 {len(items) - n_bench} · 基准 {n_bench}"
     if mode is not None:
-        shown += f"（档位 {mode} ⇒ 基准项已隐藏；--all 或去掉档位看全部）"
+        shown += f"（档位 {mode} ⇒ 基准项已隐藏"
+        if mode == "ci":
+            shown += "、callgrind 项按档位隐藏"
+        shown += "；--all 或去掉档位看全部）"
     elif total is not None and total != len(items):
         shown += f"（全部 {total} 项）"
     else:
         shown += "（nobench/quick 跳过带 bench 标记的项；`--list nobench` 只看非基准）"
     print(f"\n{shown}")
-    print(f"（smoke = 快速高信号集 {len(SMOKE)} 项；docs = {sum(1 for it in items if it.group == 'docs')} 项文档/工具）")
+    n_cg = cg_total if cg_total is not None else sum(1 for it in items if it.callgrind)
+    print(f"（smoke = 快速高信号集 {len(SMOKE)} 项；docs = {sum(1 for it in items if it.group == 'docs')} 项文档/工具；"
+          f"cg = callgrind 判据 {n_cg} 项 —— ci 档不跑）")
     groups: dict = {}
     for it in items:
         groups.setdefault(it.group, []).append(it.name)
@@ -2350,7 +2386,7 @@ def do_changed(items: list, args, all_items: list) -> int:
 # main
 # --------------------------------------------------------------------------
 def resolve_mode(all_items: list, mode: Optional[str], only_in: list) -> tuple:
-    """位置参数解析：模式（all/nobench/smoke/docs）或名字/组；返回 (mode, only)。
+    """位置参数解析：模式（all/nobench/ci/smoke/docs）或名字/组；返回 (mode, only)。
 
     `main` 与 `--list` 共用这一份，于是两处的口径不会漂。
     """
@@ -2364,7 +2400,7 @@ def resolve_mode(all_items: list, mode: Optional[str], only_in: list) -> tuple:
             near = difflib.get_close_matches(mode, sorted({it.name for it in all_items}
                                                           | {it.group for it in all_items}), n=5)
             hint = ("；相近的有：" + " ".join(near)) if near else ""
-            raise SystemExit(f"选不出来：位置参数 {mode!r} 既不是模式(all/nobench/smoke/docs)也不是名字/组{hint}")
+            raise SystemExit(f"选不出来：位置参数 {mode!r} 既不是模式(all/nobench/ci/smoke/docs)也不是名字/组{hint}")
     return mode, only
 
 
@@ -2373,7 +2409,8 @@ def main(argv=None) -> int:
         prog="./check.sh", add_help=True,
         description="extC 自检编排层：检查项是数据，runner 负责选/跑/计时/统计。")
     ap.add_argument("mode", nargs="?", default=None,
-                    help="all（默认，含基准）/ nobench（非基准全量，别名 quick）/ smoke（快速高信号集，≈10s）/ docs（文档·工具，秒级）")
+                    help="all（默认，含基准）/ nobench（非基准全量，别名 quick）/ ci（nobench − callgrind 判据，CI 用这档）"
+                         " / smoke（快速高信号集，≈10s）/ docs（文档·工具，秒级）")
     ap.add_argument("--only", action="append", default=[], metavar="名或组",
                     help="只跑这些项（名字或组；可多次）")
     ap.add_argument("-j", "--jobs", type=int, default=None, metavar="N",
@@ -2404,7 +2441,8 @@ def main(argv=None) -> int:
             return do_list(all_items, tpath, mode=None, total=len(all_items))
         mode_l, only_l = resolve_mode(all_items, args.mode, args.only)
         return do_list(select(all_items, mode_l, only_l), tpath,
-                       mode=(args.mode or "only"), total=len(all_items))
+                       mode=(args.mode or "only"), total=len(all_items),
+                       cg_total=sum(1 for it in all_items if it.callgrind))
     if args.changed:
         return do_changed(all_items, args, all_items)
 
