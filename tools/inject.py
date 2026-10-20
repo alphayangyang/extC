@@ -12,7 +12,8 @@
 # 任何一步异常都会走 `finally` 还原，并在最后用字节比较确认文件与备份逐字相同。
 #
 # 用法：
-#   python3 tools/inject.py --list
+#   python3 tools/inject.py --list            # 名字 + 期望判据 + 为什么
+#   python3 tools/inject.py --list-docs       # 名字 + 写明它牙的文档（默认 docs/RECLAMATION.md）
 #   python3 tools/inject.py thr-stale                 # 跑一条
 #   python3 tools/inject.py thr-stale --gate gate-reclaim-tax   # 换判据
 #   python3 tools/inject.py thr-stale --no-verify-green         # 跳过"还原后必须绿"
@@ -28,6 +29,9 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 # 每条注入：改哪一处（字节级精确匹配）、期望哪条 check.py 判据变红、为什么。
 # `patches` 里 (相对路径, 原文, 替换文)；原文必须**恰好出现一次**。
 SRC = "src/back/reclaim.c"
+# 每条注入的牙写在哪份活文档里：默认回收文档的义务表/跳过表；不属于回收的判据（例如
+# `@module` 分发器）在各自的功能文档里写明。check_doc_refs.py 按这份声明逐条核对。
+DOC_DEFAULT = "docs/RECLAMATION.md"
 CODEGEN = "src/back/codegen.c"
 PLAN = "src/plan/plan.c"
 
@@ -329,6 +333,15 @@ INJECTIONS = {
                      '    if (g->inMain) return "1";                      /* main 的 arena 归 main 自己 */\n',
                      '    if (g->inMain) return "0";                      /* 注入：main 也不委托 */\n')],
     },
+    "module-tramp-no-m": {
+        "why": "分发器不再认 -m：命令行永远落到根入口（没有根入口就打用法）⇒ ./a -m demo 静默跑错东西，"
+               "而普通测试全绿。catalog 名字与描述、-m 的语义都在这一个分支里。",
+        "gate": "gate-module-tramp",
+        "doc": "docs/usage/modules-cabi.md",
+        "patches": [(CODEGEN,
+                     '    cgLine(g, "    if (argc > 1 && strcmp(argv[1], \\"-m\\") == 0) {");\n',
+                     '    cgLine(g, "    if (0) {");\n')],
+    },
 }
 
 
@@ -413,6 +426,8 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("name", nargs="?")
     ap.add_argument("--list", action="store_true")
+    ap.add_argument("--list-docs", action="store_true",
+                    help="每行：名字<TAB>写明它的牙的活文档（check_doc_refs.py 用这个）")
     ap.add_argument("--gate")
     ap.add_argument("--no-verify-green", action="store_true")
     ap.add_argument("--tree", choices=("copy", "inplace"), default="copy",
@@ -425,6 +440,11 @@ def main() -> int:
 
     if args.check_anchors:
         return check_anchors()
+
+    if args.list_docs:
+        for nm, spec in INJECTIONS.items():
+            print(f"  {nm}\t{spec.get('doc', DOC_DEFAULT)}")
+        return 0
 
     if args.list or not args.name:
         for nm, spec in INJECTIONS.items():

@@ -1,0 +1,8 @@
+struct node { v: i64 }
+
+impl node {
+    @module
+    fn run(self) -> i32 { return 0 }
+}
+
+fn main() -> i32 { return 0 }

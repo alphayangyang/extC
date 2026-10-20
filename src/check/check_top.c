@@ -4166,21 +4166,27 @@ static void checkFunc(Checker *c, FuncDef *f) {
      * The return type is C's `int`, so it may be absent or `i32`; `-> i64` would be
      * truncated silently by the C compiler, which is exactly the kind of thing that must not
      * be silent. */
-    if (!f->owner && strcmp(f->name, "main") == 0) {
+    bool isEntryFn = !f->owner &&
+                     (f->isModuleEntry || strcmp(f->name, "main") == 0);
+    if (isEntryFn) {
+        /* 一个 `@module` 入口与 `main` 过同一道门：分发器把命令行原样交给它，所以返回值
+         * 与参数形状的要求一模一样。消息里叫它用户写的那个名字，不叫 `main`。 */
+        const char *what = f->isModuleEntry ? "an `@module` entry" : "`main`";
         Type *r = f->ret ? ttBase(f->ret) : NULL;
         bool retOk = !r || r->kind == TY_VOID ||
                      (r->kind == TY_BUILTIN && r->name && strcmp(r->name, "i32") == 0);
         if (!retOk)
             ckError(c, f->line,
-                    "C's entry point returns an `int`, so `main` may return `i32` (or nothing at"
-                    " all). Any other type would be converted by the C compiler without a word.",
-                    "`main` cannot return `%s`", typeStr(c, f->ret));
+                    "C's entry point returns an `int`, so an entry point may return `i32`"
+                    " (or nothing at all). Any other type would be converted by the C compiler"
+                    " without a word.",
+                    "%s cannot return `%s`", what, typeStr(c, f->ret));
         if (f->params.len > 1)
             ckError(c, f->line,
                     "The command line is one view of the arguments. Wrap several pieces of"
                     " information in a struct if the entry point needs more.",
-                    "`main` takes at most one parameter, `slice<slice<u8>>`; %zu were declared",
-                    f->params.len);
+                    "%s takes at most one parameter, `slice<slice<u8>>`; %zu were declared",
+                    what, f->params.len);
         else if (f->params.len == 1) {
             Param *p = *(Param **)vecAt(&f->params, 0);
             /* The shape is judged by shape and not through `ttBase`: resolving a view
@@ -4193,8 +4199,8 @@ static void checkFunc(Checker *c, FuncDef *f) {
                         "The arguments arrive as bytes, the way the operating system hands them"
                         " over, so the entry point takes `slice<slice<u8>>`: the outer view is"
                         " `args`, and `args[0]` is the program name, again as C defines it.",
-                        "`main`'s parameter must be `slice<slice<u8>>`, found `%s`",
-                        typeStr(c, p->type));
+                        "%s's parameter must be `slice<slice<u8>>`, found `%s`",
+                        what, typeStr(c, p->type));
         }
     }
     /* Every diagnostic inside this body has to name the file the body came from. The

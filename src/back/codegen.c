@@ -157,6 +157,14 @@ typedef struct {
     const char *text;
 } PrimPiece;
 
+/* 分发器表里的一行：一个 `@module` 入口。`name` 是命令行写的那段，`desc` 是 `--help`
+ * 打印的一句话（没有就是空串）。函数统一是 `int (int, char **)`，与 C 的 `main` 同形。 */
+typedef struct {
+    FuncDef    *f;
+    const char *name;
+    const char *desc;
+} ModEntry;
+
 /* One registered definition of the primitive block: its name, the text it consists of, and
  * what kind of definition it is. Everything the dead-code decision needs is here, so it never
  * has to look at the shape of a line to find out where a definition begins or ends. */
@@ -513,6 +521,12 @@ typedef struct {
     const char *mainFuncName;
     const char *mainBody;
     size_t      mainOff, mainLen;
+    /* `@module` 入口：产物里的 C `main` 变成一张分发器，`./a -m <名字>` 按名字调入口，
+     * `--help` 把名字与描述列出来。没有 `@module` 的程序 `needModuleTramp` 为假，
+     * 生成物与不带 `@module` 的程序逐字节相同（普通程序不为这个功能付任何代价）。 */
+    bool        needModuleTramp;
+    bool        hasMainEntry;
+    Vec         moduleEntries;  /* ModEntry*：入口函数、`--help` 里的显示名与描述 */
     /* The runtime primitive block is a table (`PRIM_BLOCK`): one row per definition, one per
      * piece of scaffolding. `primEmit` registers each definition in `primEnts` as the block is
      * assembled, and `primSplice` decides -- from that registry, before the block is part of
@@ -822,6 +836,8 @@ static const char *genSlice(CG *g, Expr *e);
 static const char *descRef(CG *g, Type *t);
 static bool printArgIsPlace(const Expr *e);
 static bool cgIsMain(const FuncDef *f);
+static bool cgIsEntry(CG *g, const FuncDef *f);       /* `main`, or a `@module` entry */
+static const char *cgEntryCName(CG *g, const FuncDef *f);
 static const char *zoneArgRef(CG *g, Expr *e);   /* the zone argument of a pool-creating callee */
 static void cgReclaimDropArena(CG *g, int lvl);  /* 帧销毁处释放区域（定义在 cgIsRefType 之后） */
 /* 回收的触发闸门与欠收销账（定义在后面）：`cgImplicitArgs` 在调用点上要用它们决定
@@ -6721,8 +6737,9 @@ static const char *cgParamList(CG *g, FuncDef *f) {
      * own body. A parameter the language wrote is not a C parameter either:
      * `main(args)` is built from `argc`/`argv` in the prologue, so C still sees
      * exactly the two arguments it insists on. */
-    if (!f->owner && strcmp(f->name, "main") == 0) {
-        bufPuts(&sig, f->params.len ? "int argc, char **argv" : "void");
+    if (!f->owner && (strcmp(f->name, "main") == 0 || f->isModuleEntry)) {
+        /* 有分发器时每个入口都收同样两个 C 形参：表里存的是同一种函数指针。 */
+        bufPuts(&sig, (g->needModuleTramp || f->params.len) ? "int argc, char **argv" : "void");
         return bufCstr(&sig);
     }
     if (f->params.len == 0 && !planUsesHome(f) && !planMakesPool(f) && planOwLocal(f)) {   /* no hidden parameters follow */
@@ -7257,14 +7274,22 @@ static void genFunc(CG *g, FuncDef *f) {
         g->coroYieldSeq = 0;
     }
     bool isMain = cgIsMain(f);
+    /* 一个入口点：`main`，或者带 `@module` 的函数。两者都由 C（有分发器时是分发器）把命令行
+     * 交进来、都返回 `int`；有分发器时真正的 `main` 也改名成 static 助手，C 的 `main` 是分发器。 */
+    bool isEntry = isMain || (f && f->isModuleEntry);
     /* `main(args)`: the one parameter the language may declare is not a C
      * parameter (C fixes the entry signature), so `argc`/`argv` come in and the
      * view is built in the prologue. */
-    bool mainArgs = isMain && f->params.len > 0;
-    if (isMain) {
+    bool mainArgs = isEntry && f->params.len > 0;
+    if (isEntry) {
         /* C fixes the signature of `main`, so it takes no hidden parameter; its
          * home arena is one of its own block arenas. */
-        cgLine(g, "int main(%s) {", mainArgs ? "int argc, char **argv" : "void");
+        cgLine(g, "%sint %s(%s) {", g->needModuleTramp ? "static " : "",
+               cgEntryCName(g, f), cgParamList(g, f));
+        if (g->needModuleTramp && !mainArgs) {
+            cgLine(g, "    (void)argc;");   /* 分发器一律传两个 C 形参，用不用是本函数的事 */
+            cgLine(g, "    (void)argv;");
+        }
     } else if (g->coroFunc) {
         /* The step's signature: it takes **the frame**, not the coroutine's source parameters -- a
          * resume has no arguments to pass them again. `switch (f->pc)` is Duff's device: every `yield`
@@ -7291,7 +7316,7 @@ static void genFunc(CG *g, FuncDef *f) {
     Type *savedRet = g->retType;
     int   savedSeq = g->tmpSeq;
     g->retType = subst(g, f->ret);
-    g->inMain  = isMain;
+    g->inMain  = isEntry;
     /* 回收触发只在本帧拥有的区域上下手；`@overwrite` 的格子住的 arena 归谁，要看本函数收不收
      * 隐藏的「家 arena」形参（见 `rcFuncUsesHome` 字段的注释）。 */
     g->rcFuncUsesHome = planUsesHome(f);
@@ -7350,12 +7375,12 @@ static void genFunc(CG *g, FuncDef *f) {
      * one in. When `main` only passes that arena down, its body holds no `new` of its own and
      * `mayUseArena` is false while the prologue still points at the array -- so force it here.
      * Every other function receives `__extc_home` as a parameter and needs no array of its own. */
-    if (isMain && planUsesHome(f)) g->noArena = false;
+    if (isEntry && planUsesHome(f)) g->noArena = false;
     /* Same reason, for pools: the frame mark and the per-block release hooks hang off the
      * arena's lifetime, so a `main` that only *uses* a pool (it allocates nothing itself)
      * still needs the frame. Phase 1 keys pools to `main`'s frame; when `new (r) T[n]`
      * lands, every function that can create one gets the same treatment. */
-    if (isMain && g->needPool) g->noArena = false;
+    if (isEntry && g->needPool) g->noArena = false;
     if (!g->noArena)
         cgLine(g, "extc_arena __extc_a[%d] = {0};", maxLv + 1);
     /* The frame mark: pools created while this frame runs are linked to it, so leaving
@@ -7375,9 +7400,10 @@ static void genFunc(CG *g, FuncDef *f) {
          * 库方法有它，入口文件为空，所以库函数对地方透明 ——
          * `pool<T>::withCap` 里建的池属于它的调用者所在的地方。 */
         (void)lib;
-        g->zoneHere = g->needPool && (!f->modName || !*f->modName);
-        /* main 的 C 签名是固定的，收不了隐藏参数 ⇒ 它用当前那个地方的 zone（今天的行为）。 */
-        g->funcHasZoneParam = planMakesPool(f) && !isMain;
+        g->zoneHere = g->needPool && (isEntry || !f->modName || !*f->modName);
+        /* main 的 C 签名是固定的，收不了隐藏参数 ⇒ 它用当前那个地方的 zone（今天的行为）。
+         * 分发器模式下的入口助手同样是固定的 C 签名，同一条规矩。 */
+        g->funcHasZoneParam = planMakesPool(f) && !isEntry;
     }
     /* 函数体的 zone（`__extc_zm1`）同样按需发射：没有这个函数，就没有任何池会登记在它的帧上，
      * 压了也是空压。`zoneMark[1]` 记下这次决定，收尾的 `zoneLeaveTo(__extc_zm1)` 查它 ——
@@ -7475,9 +7501,9 @@ static void genFunc(CG *g, FuncDef *f) {
     g->rcFreshN = 0;
     bool savedParTls = g->parTls;
     g->parTls = planParTlsArena(f);
-    if (isMain && planUsesHome(f)) {
+    if (isEntry && planUsesHome(f)) {
         size_t hb = g->out->len;
-        cgLine(g, "extc_arena *__extc_home = &__extc_a[1];   /* main's home arena is its own body */");
+        cgLine(g, "extc_arena *__extc_home = &__extc_a[1];   /* 入口的家 arena 就是自己的函数体 */");
         g->rcArenaUsed |= 1u;   /* main 的家 arena 就是 1 层：它能承载 rc 对象 */
         localDef(g, hb, "__extc_home", 0);   /* the declaration sits above the body */
     }
@@ -7486,7 +7512,8 @@ static void genFunc(CG *g, FuncDef *f) {
      * neither. A trap exits from wherever it stands, and so does `sys::proc::exit`; one
      * `atexit` covers every way out, and the explicit flushes stay for the ordering they give
      * inside the program. Registered only when the program uses that console (`needCout`). */
-    if (isMain && g->needCout) cgLine(g, "atexit(extc_cout_flush);");
+    /* 有分发器时由分发器注册：入口助手只是被调的一个函数，注册两次会刷两遍。 */
+    if (isMain && g->needCout && !g->needModuleTramp) cgLine(g, "atexit(extc_cout_flush);");
     /* Only a self-recursive function needs the depth guard; see
      * funcCallsItself. Entering increments, every exit decrements, and
      * `extc_rec_enter` traps with a position once the limit is passed.
@@ -7598,7 +7625,7 @@ static void genFunc(CG *g, FuncDef *f) {
          * for it says as much ("the return type may be absent or `i32`"): trapping there would
          * kill a program every C programmer expects to exit 0. Still a trap everywhere else:
          * the value there is genuinely undefined. */
-        if (g->mainFuncName && f->name && strcmp(g->mainFuncName, f->name) == 0)
+        if (isEntry)
             cgLine(g, "return 0;");
         else
             cgLine(g, "extc_trapMsg(\"%s\", %d, \"a non-void function reached its end without returning\");",
@@ -7635,7 +7662,7 @@ static void genFunc(CG *g, FuncDef *f) {
         for (int lv = maxLv; lv >= 1; lv--)
             if (lv < g->levelCap && g->zoneMark[lv])
                 cgLine(g, "extc_pool_zoneLeaveTo(__extc_zm%d);", lv);
-        if (isMain) {
+        if (isEntry) {
             if (g->needCout) cgLine(g, "extc_cout_flush();");
             /* The C entry point returns an `int`, so the value is cast - and it **is** the
              * value: `fn main() -> i32` sets the exit code. A `main` that returns nothing
@@ -7688,6 +7715,188 @@ static void genFunc(CG *g, FuncDef *f) {
  */
 static bool cgIsMain(const FuncDef *f) {
     return f && !f->owner && f->name && strcmp(f->name, "main") == 0;
+}
+
+/**
+ * @brief 判断一个函数是不是**入口点**：C 的 main，或者带 @module 的自由函数。
+ *
+ * 两者在产物里的待遇相同：返回值是 C 的 int、不收隐藏形参、家 arena 是自己的函数体、
+ * 掉出函数体时返回 0。区别只在有分发器时 C 的 main 是分发器、入口本身成为 static 助手。
+ *
+ * @param g  代码生成状态（判据本身与它无关，保留参数是为了调用处读起来一致）。
+ * @param f  候选函数；可以为 NULL。
+ * @return   是入口点为 true。
+ */
+static bool cgIsEntry(CG *g, const FuncDef *f) {
+    (void)g;
+    return cgIsMain(f) || (f && f->isModuleEntry);
+}
+
+/**
+ * @brief 入口函数在产物里的 C 名。
+ *
+ * 有分发器时入口全部改名成 __extc_entry_<C 名>：C 的 main 已经属于分发器，而入口自己
+ * 还得有一个内部链接的名字让表能取地址。没有分发器时逐字就是 main（普通程序生成物不变）。
+ *
+ * @param g  代码生成状态，needModuleTramp 决定要不要前缀。
+ * @param f  函数定义；非入口原样返回它的 C 名。
+ * @return   产物里的 C 标识符。
+ */
+static const char *cgEntryCName(CG *g, const FuncDef *f) {
+    if (!f) return "";
+    const char *base = cFuncName(g, (FuncDef *)f);
+    if (g->needModuleTramp && cgIsEntry(g, f))
+        return arenaPrintf(g->arena, "__extc_entry_%s", base);
+    return base;
+}
+
+/**
+ * @brief 把名字 / 描述这类**已经词法化过**的串发成 C 字符串字面量（带引号）。
+ *
+ * 字符串 token 的文本去掉两侧引号、**转义按源码原样保留**（转义拼法已由词法器的
+ * `lexEscape` 校验过，C 与它认同一套）：所以这里原样放进引号里，不再转义一遍。
+ * 若在这里重新转义，源码里写 `"\""` 会打印成 `\"`（多一层反斜杠），描述里的
+ * TAB 也会变回两个字符。
+ *
+ * @param b  接收文本的缓冲。
+ * @param s  字符串 token 的文本（以 NUL 结尾）；NULL 按空串处理。
+ */
+static void emitStringToken(Buf *b, const char *s) {
+    bufPutc(b, '"');
+    bufPuts(b, s ? s : "");
+    bufPutc(b, '"');
+}
+
+/**
+ * @brief 一行的「模块键」：同一个键就是同一个模块（入口文件是空串）。
+ */
+static const char *moduleEntryKey(const FuncDef *f) {
+    return (f->modName && *f->modName) ? f->modName : "";
+}
+
+/**
+ * @brief 收集 @module 入口，定出 --help 里的名字，并校验唯一性。
+ *
+ * 两条规则在这里报错，因为它们是**命令行语义**而不是类型错误：一个模块只有一个入口
+ * （-m 选的是模块），以及 -m 的名字全局唯一（否则命令行无从选择）。
+ * 检查不过的入口不进表，剩下的程序照常生成。
+ *
+ * @param g  代码生成状态；moduleEntries/needModuleTramp/hasMainEntry 被填。
+ * @param m  当前模块，funcs 是全部候选。
+ */
+static void scanModuleEntries(CG *g, Module *m) {
+    g->hasMainEntry = false;
+    for (size_t i = 0; i < m->funcs.len; i++) {
+        FuncDef *f = *(FuncDef **)vecAt(&m->funcs, i);
+        if (cgIsMain(f)) g->hasMainEntry = true;
+    }
+    for (size_t i = 0; i < m->funcs.len; i++) {
+        FuncDef *f = *(FuncDef **)vecAt(&m->funcs, i);
+        if (!f->isModuleEntry) continue;
+        const char *key = moduleEntryKey(f);
+        bool sameModule = false;
+        for (size_t j = 0; j < i && !sameModule; j++) {
+            FuncDef *o = *(FuncDef **)vecAt(&m->funcs, j);
+            if (o->isModuleEntry && strcmp(moduleEntryKey(o), key) == 0) sameModule = true;
+        }
+        if (sameModule) {
+            ctxError(g->ctx, f->line ? f->line : 1, 1,
+                     "One module has one entry: -m names a module, not a function. Move this"
+                     " one into another module, or drop @module from it.",
+                     "module %s already has an @module entry", key[0] ? key : "<root>");
+            continue;
+        }
+        const char *name = f->moduleEntryName;
+        if (!name || !*name) name = key[0] ? key : "main";
+        bool dup = false;
+        for (size_t j = 0; j < g->moduleEntries.len && !dup; j++) {
+            ModEntry *e = (ModEntry *)vecAt(&g->moduleEntries, j);
+            if (strcmp(e->name, name) == 0) dup = true;
+        }
+        if (!dup && g->hasMainEntry && strcmp(name, "main") == 0) dup = true;
+        if (dup) {
+            ctxError(g->ctx, f->line ? f->line : 1, 1,
+                     "-m names how the command line picks an entry, so two entries cannot"
+                     " share one name. Give this one its own: @module(\"other\").",
+                     "duplicate module entry name %s", name);
+            continue;
+        }
+        ModEntry *e = (ModEntry *)vecPush(&g->moduleEntries);
+        e->f = f;
+        e->name = name;
+        e->desc = f->moduleDesc ? f->moduleDesc : "";
+    }
+    g->needModuleTramp = g->moduleEntries.len > 0;
+}
+
+/**
+ * @brief 发出 C 的 main：一张按 -m 分发的表，加上 --help。
+ *
+ * 没有 @module 的程序整段都不发（needModuleTramp 为假），普通程序因此零代价。
+ * 分发是纯查表，没有 dlopen、没有跨模块 ABI：所有入口都在同一个编译单元里。
+ * -m x a b 把 a b 原地压成新的 argv（argv[0] 仍是程序名），入口看到的命令行
+ * 与「它自己就是主程序」时一致。
+ *
+ * @param g  代码生成状态，moduleEntries 已由 scanModuleEntries 填好。
+ */
+static void emitModuleTramp(CG *g) {
+    cgLine(g, "/* ---- module dispatcher: ./a -m <name> args... ---- */");
+    cgLine(g, "typedef struct ExtcModuleEntry { const char *name; const char *desc; int (*fn)(int, char **); } ExtcModuleEntry;");
+    cgLine(g, "static const ExtcModuleEntry extc_module_entries[] = {");
+    for (size_t i = 0; i < g->moduleEntries.len; i++) {
+        ModEntry *e = (ModEntry *)vecAt(&g->moduleEntries, i);
+        Buf row;
+        bufInit(&row, g->arena);
+        bufPuts(&row, "    { ");
+        emitStringToken(&row, e->name);
+        bufPuts(&row, ", ");
+        emitStringToken(&row, e->desc);
+        bufPrintf(&row, ", %s },", cgEntryCName(g, e->f));
+        cgLine(g, "%s", bufCstr(&row));
+    }
+    cgLine(g, "};");
+    cgLine(g, "static const size_t extc_module_count = sizeof(extc_module_entries) / sizeof(extc_module_entries[0]);");
+    cgLine(g, "");
+    cgLine(g, "static void extc_module_usage(const char *prog) {");
+    cgLine(g, "    printf(\"usage: %%s [-m <module>] [args...]\\n\", prog);");
+    cgLine(g, "    printf(\"       %%s --help\\n\", prog);");
+    if (g->hasMainEntry)
+        cgLine(g, "    printf(\"\\nWithout -m it runs the program's own entry.\\n\");");
+    else
+        cgLine(g, "    printf(\"\\nPass -m to pick one of the compiled-in modules.\\n\");");
+    cgLine(g, "    printf(\"\\nmodules:\\n\");");
+    cgLine(g, "    for (size_t i = 0; i < extc_module_count; i++)");
+    cgLine(g, "        printf(\"  -m %%-16s %%s\\n\", extc_module_entries[i].name, extc_module_entries[i].desc);");
+    cgLine(g, "}");
+    cgLine(g, "");
+    cgLine(g, "int main(int argc, char **argv) {");
+    cgLine(g, "    if (argc > 1 && (strcmp(argv[1], \"--help\") == 0 || strcmp(argv[1], \"-h\") == 0)) {");
+    cgLine(g, "        extc_module_usage(argv[0]);");
+    cgLine(g, "        return 0;");
+    cgLine(g, "    }");
+    cgLine(g, "    if (argc > 1 && strcmp(argv[1], \"-m\") == 0) {");
+    cgLine(g, "        if (argc < 3) {");
+    cgLine(g, "            fprintf(stderr, \"%%s: -m needs a module name\\n\", argv[0]);");
+    cgLine(g, "            extc_module_usage(argv[0]);");
+    cgLine(g, "            return 2;");
+    cgLine(g, "        }");
+    cgLine(g, "        for (size_t i = 0; i < extc_module_count; i++)");
+    cgLine(g, "            if (strcmp(argv[2], extc_module_entries[i].name) == 0) {");
+    cgLine(g, "                for (int k = 3; k < argc; k++) argv[k - 2] = argv[k];");
+    cgLine(g, "                return extc_module_entries[i].fn(argc - 2, argv);");
+    cgLine(g, "            }");
+    cgLine(g, "        fprintf(stderr, \"%%s: unknown module '%%s'\\n\", argv[0], argv[2]);");
+    cgLine(g, "        extc_module_usage(argv[0]);");
+    cgLine(g, "        return 2;");
+    cgLine(g, "    }");
+    if (g->hasMainEntry)
+        cgLine(g, "    return __extc_entry_main(argc, argv);");
+    else {
+        cgLine(g, "    extc_module_usage(argv[0]);");
+        cgLine(g, "    return 2;");
+    }
+    cgLine(g, "}");
+    cgLine(g, "");
 }
 
 /* Emit the forward declaration of one function, so that definitions may appear
@@ -7761,9 +7970,11 @@ static void genFuncProto(CG *g, FuncDef *f) {
     if (planIsCoro(f)) return;
     Buf sig;
     bufInit(&sig, g->arena);
+    bool entry = cgIsEntry(g, f);
     bufPrintf(&sig, "%s%s %s(%s);",
-              (cgIsMain(f) || f->isExport) ? "" : (f->isInline ? "EXTC_INLINE " : "static "),
-              cType(g, f->ret), cFuncName(g, f), cgParamList(g, f));
+              entry ? (g->needModuleTramp ? "static " : "")
+                    : (f->isExport ? "" : (f->isInline ? "EXTC_INLINE " : "static ")),
+              entry ? "int" : cType(g, f->ret), cgEntryCName(g, f), cgParamList(g, f));
     cgLine(g, "%s", bufCstr(&sig));
 }
 
@@ -10428,7 +10639,8 @@ static void emitProtos(CG *g, Module *m, Arena *arena) {
     for (size_t i = 0; i < g->funcs.len; i++) {
         FuncDef *f = *(FuncDef **)vecAt(&g->funcs, i);
         SubCtx sv = substEnterFunc(g, f);
-        const char *ret = cgIsMain(f) ? "int" : cType(g, f->ret);
+        bool entry = cgIsEntry(g, f);
+        const char *ret = entry ? "int" : cType(g, f->ret);
         Buf sig;
         bufInit(&sig, arena);
         /* The parameter list must come from the same cgParamList the definition
@@ -10441,14 +10653,15 @@ static void emitProtos(CG *g, Module *m, Arena *arena) {
          * alone does not bind: C takes the first declaration as the function's type. */
         if (planIsCoro(f)) continue;   /* a coroutine emits `$frame` + `$step` last */
         bufPrintf(&sig, "%s%s %s(%s);",
-                  (cgIsMain(f) || f->isExtern || f->isExport) ? ""
-                                               : (f->isInline ? "EXTC_INLINE " : "static "),
-                  ret, cFuncName(g, f), cgParamList(g, f));
+                  entry ? (g->needModuleTramp ? "static " : "")
+                        : ((f->isExtern || f->isExport) ? ""
+                                                        : (f->isInline ? "EXTC_INLINE " : "static ")),
+                  ret, cgEntryCName(g, f), cgParamList(g, f));
         cgLine(g, "%s", bufCstr(&sig));
         /* An exported function is registered like `main`: nowhere. The pruners drop a definition
          * only when its name occurs nowhere but its own declaration and definition, and a symbol
          * C calls is mentioned by nobody in this file -- so registering it would delete it. */
-        if (!cgIsMain(f) && !f->isExtern && !f->isExport && !inTraitTable(m, f)) {
+        if (!entry && !f->isExtern && !f->isExport && !inTraitTable(m, f)) {
             DeadFunc *df = arenaAllocZero(g->arena, sizeof *df);
             df->name  = cFuncName(g, f);
             df->proto = bufCstr(&sig);
@@ -10502,6 +10715,7 @@ static void initCGState(CG *g, Module *m, TypeTable *tt, Arena *arena) {
         }
     }
     vecInit(&g->insts, arena, sizeof(void *));
+    vecInit(&g->moduleEntries, arena, sizeof(ModEntry));
     /* 回收的编译期状态：三个向量都从空开始，靠 `vecInit` 而不是靠 CG 被清零。 */
     vecInit(&g->rcRoots, arena, sizeof(const char *));
     vecInit(&g->rcRootMarks, arena, sizeof(size_t));
@@ -10998,7 +11212,7 @@ static void collectEmitted(CG *g, Module *m) {
         if (planTemplate(f) && funcSignatureMentionsParam(f)) continue;
         /* Free functions are pruned the same way; `main` is always kept, and
          * `@export` is a root too because nothing on the extC side names it. */
-        if (!planUsed(f) && !cgIsMain(f) && !f->isExport && !inTraitTable(m, f)) continue;
+        if (!planUsed(f) && !cgIsMain(f) && !f->isModuleEntry && !f->isExport && !inTraitTable(m, f)) continue;
         /* The coroutine protocols (`next`/`value`) are emitted inline at their call sites and have no
          * body of their own -- emitting one here hit genBlockBody with a null body. */
         if (planCoroProto(f)) continue;
@@ -11224,6 +11438,8 @@ static void emitFuncBodies(CG *g) {
         substLeave(g, sv);
         cgLine(g, "");
     }
+    /* 分发器写进 g->body 的末尾：finishUnit 先拼 body 再剪枝，表里对入口的引用因此算数。 */
+    if (g->needModuleTramp) emitModuleTramp(g);
 }
 
 /**
@@ -11739,6 +11955,8 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     }
 
     initCGState(&g, m, tt, arena);
+    /* 入口表要在 emitProtos 之前就位：cgParamList 按 needModuleTramp 决定入口的 C 形参。 */
+    scanModuleEntries(&g, m);
     scanUnitNeeds(&g, m);
     initRuntimeText(&g, arena);
     collectEmitted(&g, m);

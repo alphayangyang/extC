@@ -1,0 +1,17 @@
+/* 判据：一个二进制、多个入口。
+ *
+ * 根文件有自己的 main，另有两个模块各带一个 @module 入口：
+ *   ./m            -> 根入口（命令行原样交给它）
+ *   ./m -m demo a  -> demo 模块的入口（-m 被吃掉，入口看到 argv[0]=程序名、argv[1]=a）
+ *   ./m -m calc    -> 不带参数的入口（C 的两个形参由分发器给，入口自己不声明参数）
+ *   ./m --help     -> 列出两个入口的名字与描述
+ *   ./m -m nope    -> exit 2，并列出可用的入口
+ */
+use demo;
+use calc;
+use std::io;
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    io::cout << "root args=" << args.len << "\n";
+    return 0;
+}

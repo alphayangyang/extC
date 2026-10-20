@@ -1,0 +1,4 @@
+@module
+struct node { v: i64 }
+
+fn main() -> i32 { return 0 }

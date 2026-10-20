@@ -1,0 +1,5 @@
+@module
+fn one() -> i32 { return 1 }
+
+@module
+fn two() -> i32 { return 2 }

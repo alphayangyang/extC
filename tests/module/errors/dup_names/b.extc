@@ -1,0 +1,2 @@
+@module("same")
+fn two() -> i32 { return 2 }

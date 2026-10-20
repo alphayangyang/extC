@@ -1,0 +1,6 @@
+@module
+fn run(n: i64) -> coroutine<i64> {
+    yield n
+}
+
+fn main() -> i32 { return 0 }

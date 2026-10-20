@@ -1,0 +1,7 @@
+use std::io;
+
+@module("only", "the only entry of a program without main")
+fn run() -> i32 {
+    io::cout << "only ran\n";
+    return 5;
+}

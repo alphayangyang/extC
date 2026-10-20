@@ -1,0 +1,6 @@
+/* 不写名字：--help 里用模块名 calc；也不写描述（空串）。入口不收命令行参数，测试分发器
+ * 在「入口没有参数」时补的 (void)argc/(void)argv。 */
+@module
+fn run() -> i32 {
+    return 3;
+}

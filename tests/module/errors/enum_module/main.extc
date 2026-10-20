@@ -1,0 +1,4 @@
+@module
+type color = red | green
+
+fn main() -> i32 { return 0 }

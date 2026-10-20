@@ -87,16 +87,16 @@ $ extc --run main.extc
 | 形状 | 现象 |
 |---|---|
 | 两个模块各声明一个 `fn helper`，入口文件也声明一个 `helper` | **编得过**（各自的被改名） |
-| 两个模块逐声明重名 | 互不干扰 —— 正面判据 （ 的①） |
+| 两个模块逐声明重名 | 互不干扰 —— 正面判据 （`tests/modules/run.sh` 的判据①） |
 | 两个导入的末段同名（`a::util`、`b::util`） | `` error: both `a::util` and `b::util` are used as `util` `` |
 | 两个模块都导出同名**裸类型**，而你要裸写 | `` error: ambiguous type `box` -- 2 modules export it, write `module::box` ``（实测；） |
 | **`extern!` 的同一个 C 符号声明两次** | `` error: duplicate function `write` `` —— `extern!` 必须保持 C 符号名，所以它**不改名**：`use std::io`（依赖 `std::sys::io`，那里声明了 `read`/`write`/`open`/`close`，）之后自己再声明 `write` 就撞；实测一个模块里的 `extern!("libc") fn getpid()` 与用户文件里的同名声明同样撞 |
 
-`$`（改名后的内部名字）**不许**出现在诊断、普通输出与调试开关里（ 的判据③）。
+`$`（改名后的内部名字）**不许**出现在诊断、普通输出与调试开关里（`tests/modules/run.sh` 的判据③）。
 
 ### 1.5 环检测
 
-一个模块在**还在加载**时又被要求加载 = 环，直接拒绝（、）：
+一个模块在**还在加载**时又被要求加载 = 环，直接拒绝（`tests/modules/run.sh` 的 `cycle` 反例）：
 
 ```text
 $ ./build/extc --build -o /dev/null std-d-m14.extc      # cyc_a.extc 用 cyc_b，cyc_b.extc 用 cyc_a
@@ -108,8 +108,34 @@ note:  two modules must not depend on each other (each one's type is
 ### 1.6 诊断质量：内部改名不许漏出来
 
 模块会把自己的声明改名（`pair` → `pair$pair`）来避免撞车，但**诊断、输出、调试开关里不许出现
-`$` 夹在标识符之间**（ 的判据③； 另要求
+`$` 夹在标识符之间**（`tests/modules/run.sh` 的判据③；判据④另要求
 模块体内的诊断指到**模块文件**而不是入口文件）。
+
+### 1.7 一个二进制、多个入口：`@module`
+
+产品里常要「一个可执行文件，几个子命令」。extC 的做法不是 dlopen，而是全部编进同一个二进制、
+由编译器生成的 C `main` 查表分发：
+
+<!-- fragment -->
+```extc
+@module("demo", "prints how many arguments it got, then exits 7")
+fn run(args: slice<slice<u8>>) -> i32 { ... }
+```
+
+- 三种写法：`@module`（名字默认是模块名，入口文件里默认 `main`）、`@module("name")`、
+  `@module("name", "description")`。
+- 签名与 `main` 过同一道门：返回 `i32` 或什么都不返回，参数最多一个 `slice<slice<u8>>`。
+- 一个模块最多一个入口；`-m` 的名字全局唯一。`@module` 与 `@export` 互斥，也不能放在泛型函数、
+  协程、方法、结构体、枚举、全局变量上。
+- 命令行：`./a -m demo x y` 查表分发（`argv` 原地压紧，入口看到的 `args[0]` 仍是程序名）；
+  不带 `-m` 跑程序自己的 `main`；`./a --help` 列出每个 `-m` 的名字与描述；未知模块、
+  或 `-m` 后面缺名字，都打印用法并 exit 2。
+- 分发器只在有 `@module` 的程序里生成 —— 没有 `@module` 的程序生成物逐字节不变（零税）。
+- 入口编成 `static` 的 `__extc_entry_<模块>$<函数>`：两个程序链接到一起也不撞符号。
+- 入口文件可以没有 `main`（只放 `@module` 入口）；这时 `./a` 打印用法并 exit 2，
+  必须用 `-m` 选一个。
+- 判据：`tests/module/run.sh`（26 项：生成物结构、分发行为、无 main 程序、零税、13 个负例）与
+  `gate-module-tramp`（真实发射 + 10 条注入自测；注入 `module-tramp-no-m` 要求门禁变红）。
 
 ## 2. C 互操作
 
@@ -181,12 +207,12 @@ fn main() -> i32 {
 ### 2.3 `@export`：extC 函数变成 C 符号
 
 `@export` 只能贴在**自由函数**上；产出的 C 符号名就是源文件里那个名字（模块前缀被去掉），
-定义与原型都是外部链接（ 用 `nm -D` 查 `T triple` / `T mid` / `T makePair`）。
+定义与原型都是外部链接（`tests/cabi/run.sh` 用 `nm -D` 查 `T triple` / `T mid` / `T makePair`）。
 
 | 形状 | 现象（实测/判据） |
 |---|---|
-| `@export fn triple(x: i64) -> i64` | 产物里 `int64_t triple(int64_t x)` + 定义；`nm -D` 有 `T triple`（、） |
-| `@export` + 返回 `@frozen` 结构体 | 可以（System V 上从 RAX:RDX 回来； 的 `makePair`） |
+| `@export fn triple(x: i64) -> i64` | 产物里 `int64_t triple(int64_t x)` + 定义；`nm -D` 有 `T triple`（`tests/cabi/run.sh` 的 `export-linkage`） |
+| `@export` + 返回 `@frozen` 结构体 | 可以（System V 上从 RAX:RDX 回来；`tests/cabi/run.sh` 的 `makePair`） |
 | `@export` 泛型函数 | `` error: `@export` on a generic function `` |
 | `@export` 方法 | `` error: `@export` goes on a free function, not on a method ``（`.../method.extc`） |
 | `@export` struct | `` error: `@export` goes on a function ``（`.../on_struct.extc`） |
@@ -228,7 +254,7 @@ $ ./build/extc -w --no-line-map -o /tmp/usage-std/exp1.c std-d-exp1.extc
 
 ### 2.5 `@noCopy`：有身份的值不许按值拷贝
 
-`@noCopy` 贴 struct，规则是"**已经存在的值**不许按值拷贝"（ 的判据）。
+`@noCopy` 贴 struct，规则是"**已经存在的值**不许按值拷贝"（`tests/nocopy/run.sh` 的判据）。
 
 | 形状 | 现象 |
 |---|---|

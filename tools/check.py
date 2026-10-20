@@ -638,7 +638,7 @@ def build_items() -> list:
     # 不在检查器里另抄一份（避免"清单与真相各有一份"）。
     items.append(cmd(
         "gate-doc-refs", "gate",
-        "元判据·文档引用：`tools/inject.py` 里的每条注入都必须出现在 docs/RECLAMATION.md 里",
+        "元判据·文档引用：`tools/inject.py` 里的每条注入都必须出现在它声明的活文档里（默认 docs/RECLAMATION.md）",
         ["python3", "tools/check_doc_refs.py"], timeout=120,
         ok_msg=ok_first(r"^ok "),
         bad_msg="tools/check_doc_refs.py（有注入没写进文档）",
@@ -1005,6 +1005,18 @@ def build_items() -> list:
         bad_msg="tools/check_home_delegation.py(拥有权委托的 flag 或三态触发被改坏,或缺红自测失效)",
         bad_dump=dump_fail(12)))
 
+    # ---- 闸门·@module 分发器 ----
+    # 一个二进制、一个运行期:C 的 main 由编译器生成,按 -m 查表分发、--help 列名字与描述。
+    # 只在有 @module 的程序里存在的东西(入口 static、argv 原地压紧、两个用法错 exit 2、
+    # 普通程序零税)普通测试看不见;--selftest 十条注入全红。
+    items.append(cmd(
+        "gate-module-tramp", "gate",
+        "闸门·@module 分发器:C main 查表 -m、argv 原地压紧、--help 列名字与描述、两个用法错 exit 2、入口 static、无 @module 程序零税,且 10 条注入全红",
+        ["python3", "tools/check_module_tramp.py", "--selftest"], timeout=180,
+        ok_msg=ok_first(r"^ok module tramp"),
+        bad_msg="tools/check_module_tramp.py(分发器形状或零税被改坏,或缺红自测失效)",
+        bad_dump=dump_fail(12)))
+
     # ---- 闸门·空清扫之后的退场倍数 ----
     # 买的是**触发策略**：活集大、垃圾少的负载（chase）只做一轮便宜的整堆标记，不再付
     # 「标记 32 MiB 活集只换回几 MB」的第二轮。判据=默认 4 / 退场走宏（不许字面量 2）/
@@ -1311,6 +1323,11 @@ def build_items() -> list:
         ["./tests/dyn/run.sh"], timeout=600,
         ok_msg=ok_count_ok(" 项（正例 + 拒绝存储/字段 + 派发经表 + 合同编译）"),
         bad_msg="tests/dyn/run.sh", bad_dump=dump_all))
+    items.append(cmd(
+        "tests-module", "tests",
+        "@module 入口：-m 分发 / --help 列描述 / argv 原地压紧 / 未知模块与缺名字 exit 2 / 零税 / 13 条负例",
+        ["./tests/module/run.sh"], timeout=600,
+        ok_msg=ok_first(r"^通过"), bad_msg="tests/module/run.sh", bad_dump=dump_all))
 
     # ---- IO ----
     items.append(cmd(

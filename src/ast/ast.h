@@ -816,6 +816,18 @@ struct FuncDef {
      *   · **不能被可达性剪枝剪掉**（extC 侧没人调它，剪枝只看"有没有人提这个名字"）。
      * 泛型、方法、协程、`extern!` 都不能导出：它们没有"那一个 C 符号"。 */
     bool        isExport;
+    /* `@module`：**这个自由函数是本模块的入口** —— 产物里的 C `main` 是一张分发器，
+     * `./a -m <模块名> args...` 选中它、`./a --help` 把名字与描述列出来。
+     *
+     * 一个二进制、一个运行期，不需要 dlopen，也没有跨模块 ABI：模块入口是同一个编译单元里
+     * 的另一个 `int (int, char **)` 函数。规则与 `main` 相同（返回 `i32` 或什么都不返回，
+     * 参数最多一个 `slice<slice<u8>>`），因为分发器把命令行原样交给它。
+     *
+     * `moduleEntryName` 是 `--help` 里显示的名字（没写就用模块名；入口文件里的 `@module`
+     * 用 `main`）；`moduleDesc` 是可选的一句话描述。三者都只影响分发器与帮助文本。 */
+    bool        isModuleEntry;
+    const char *moduleEntryName;
+    const char *moduleDesc;
     /* 被 `parallel::run` 用过一次的 worker：codegen 要给它生成一个 static trampoline
      * （语言层没有函数指针，所以这份"取地址"只能由编译器写出来）。 */
     /* 这个函数（worker 或它调用链上的辅助函数）里的 `new` 要用**线程本地** arena：

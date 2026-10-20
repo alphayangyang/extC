@@ -1,0 +1,1 @@
+an `@module` entry cannot return `i64`

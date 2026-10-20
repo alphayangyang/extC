@@ -1,0 +1,10 @@
+use std::io;
+
+/* 名字与描述都写出来：--help 显示的就是这两句。描述里带一个转义引号 —— 它必须在
+ * --help 里打印成 `exits "7"`（不是 `exits \"7\"`）：字符串 token 保留转义原文，
+ * 后端原样放进 C 字符串，C 解码一次。 */
+@module("demo", "prints how many arguments it got, then exits \"7\"")
+fn run(args: slice<slice<u8>>) -> i32 {
+    io::cout << "demo args=" << args.len << "\n";
+    return 7;
+}

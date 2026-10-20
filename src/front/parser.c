@@ -589,12 +589,15 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
         bool sharesStorage = false; /* @sharesStorage：按值拷贝时两份共用存储（容器那一族） */
         bool frozen     = false;   /* @frozen：作者签字"布局就是 C 的布局"（按值过界的门票） */
         bool exported   = false;   /* @export：这个函数的 C 符号给外面用（extern! 的另一面） */
+        bool moduleEntry = false;  /* @module：这个自由函数是本模块的入口（分发器按名字调它） */
+        const char *moduleName = NULL;  /* @module("name") 里写的显示名，没写就是模块名 */
+        const char *moduleDesc = NULL;  /* @module("name", "what it does") 的第二个串 */
         /* `@private` 隐藏声明，`@inline` 要求内联：两者可以出现在同一声明前、顺序无意义，
          * 所以一起读。其余注解在这里一律报错 —— 给编译器的指令若被忽略，读者会以为要求的
          * 事情发生了，而它并没有。 */
         while (at(&p, "@")) {
             Token *a = take(&p);
-            Token *nm = expectIdent(&p, "an annotation name (only `private` at the top level)");
+            Token *nm = expectIdent(&p, "an annotation name");
             if (!nm) return false;
             if (strcmp(nm->text, "private") == 0) {
                 if (isPrivate) {
@@ -675,6 +678,49 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
                 skipJunk(&p);
                 continue;
             }
+            /* `@module`：这个自由函数是**本模块的入口**。一个二进制里可以有多个入口，
+             * C `main` 按 `./a -m <名字>` 分发；名字与描述是可选的、只喂给 `--help`。
+             * 别的声明用它没有意义，各自在下面拒掉（与 `@export` 同一形状）。 */
+            if (strcmp(nm->text, "module") == 0) {
+                if (moduleEntry) {
+                    ctxError(ctx, a->line, a->col, NULL, "`@module` appears twice");
+                    return false;
+                }
+                moduleEntry = true;
+                skipJunk(&p);
+                if (accept(&p, "(")) {
+                    skipJunk(&p);
+                    Token *s = cur(&p);
+                    if (s->kind != TK_STRING) {
+                        ctxError(ctx, s->line, s->col,
+                                 "Write the name the command line uses, as a string:"
+                                 " `@module(\"demo\")`.",
+                                 "`@module` takes an optional string name");
+                        return false;
+                    }
+                    take(&p);
+                    moduleName = s->text;
+                    skipJunk(&p);
+                    if (accept(&p, ",")) {
+                        skipJunk(&p);
+                        Token *d = cur(&p);
+                        if (d->kind != TK_STRING) {
+                            ctxError(ctx, d->line, d->col,
+                                     "The description is one string literal; it is printed by"
+                                     " `--help`.",
+                                     "`@module` takes an optional string description");
+                            return false;
+                        }
+                        take(&p);
+                        moduleDesc = d->text;
+                        skipJunk(&p);
+                    }
+                    if (!expect(&p, ")", "the list is `@module(\"name\", \"description\")`"))
+                        return false;
+                }
+                skipJunk(&p);
+                continue;
+            }
             if (strcmp(nm->text, "recursive") == 0 || strcmp(nm->text, "main") == 0) {
                 ctxError(ctx, a->line, a->col,
                          "The annotation is designed but not implemented yet, and accepting"
@@ -690,13 +736,21 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
                      " it may only be passed as `ref` / `mut ref`), `@poolObject` (on a struct: it owns"
                      " a pool), `@sharesStorage` (on a struct: a by-value copy shares storage) and"
                      " `@frozen` (on a struct: its layout is the C layout, so it may cross the C"
-                     " boundary by value) and `@export` (on a function: it becomes a C symbol that"
-                     " C can call). `@overwrite` is for"
+                     " boundary by value), `@export` (on a function: it becomes a C symbol that"
+                     " C can call) and `@module` (on a free function: it becomes this module's"
+                     " entry point, run by `./a -m <name>`). `@overwrite` is for"
                      " locals.",
                      "unknown top-level annotation `@%s`", nm->text);
             return false;
         }
         if (at(&p, "struct")) {
+            if (moduleEntry) {
+                ctxError(ctx, cur(&p)->line, cur(&p)->col,
+                         "A type has no command line to be an entry for. Write `@module` on the"
+                         " free function that the module should run.",
+                         "`@module` goes on a free function");
+                return false;
+            }
             if (exported) {
                 ctxError(ctx, cur(&p)->line, cur(&p)->col,
                          "A struct is storage, not code. Export the functions that operate on it.",
@@ -725,7 +779,7 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
              * `@sharesStorage` 描述存储，`@inline`/`@unchecked` 描述函数体。与其静默忽略，
              * 不如直接说清楚。 */
             if (isPrivate || noCopy || sharesStorage || poolObject || fnInline || fnUnchecked || frozen
-                || exported) {
+                || exported || moduleEntry) {
                 Token *t = cur(&p);
                 ctxError(ctx, t->line, t->col,
                          "An `impl` block adds methods to a type that is declared elsewhere, so it "
@@ -739,7 +793,7 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
         } else if (at(&p, "trait")) {
             /* 与 `impl` 块一样，trait 只声明行为，任何注解都不适用。 */
             if (isPrivate || fnInline || fnUnchecked || noCopy || sharesStorage || poolObject || frozen
-                || exported) {
+                || exported || moduleEntry) {
                 Token *t = cur(&p);
                 ctxError(ctx, t->line, t->col,
                          "A `trait` declares method signatures only: it has no storage to hide"
@@ -791,6 +845,12 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
                          "`@export` goes on a function");
                 return false;
             }
+            if (moduleEntry) {
+                ctxError(ctx, cur(&p)->line, cur(&p)->col,
+                         "Only a function can be an entry point; an enum has no code.",
+                         "`@module` goes on a free function");
+                return false;
+            }
             TypeDef *td = parseTypeDecl(&p);
             if (!td) return false;
             td->isPrivate = isPrivate;
@@ -804,6 +864,12 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
                          " -- a shared symbol needs a name the two sides agree on, which is the"
                          " decision `@export` makes for functions.",
                          "`@export` goes on a function");
+                return false;
+            }
+            if (moduleEntry) {
+                ctxError(ctx, cur(&p)->line, cur(&p)->col,
+                         "A global is a value, not something a command line can run.",
+                         "`@module` goes on a free function");
                 return false;
             }
             if (frozen) {
@@ -830,6 +896,12 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
                          "`extern!` already says this symbol comes **from** C; `@export` says the"
                          " opposite. An `extern!` declaration has no body to hand out.",
                          "`@export` and `extern!` contradict each other");
+                return false;
+            }
+            if (moduleEntry) {
+                ctxError(ctx, cur(&p)->line, cur(&p)->col,
+                         "An `extern!` declaration has no body, so there is nothing to run.",
+                         "`@module` needs a body");
                 return false;
             }
             if (frozen) {
@@ -894,6 +966,35 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
             f->isUnchecked = unchk;
             f->isPrivate = isPrivate;
             f->isBuiltin = builtin;
+            /* `@module`：分发器按名字查表调用它。三条"没有那个入口"的形状当场拒掉：泛型
+             * （每个实例是一个函数）、协程（值是帧句柄）、`@export`（那个符号是给 C 的，不是给
+             * `-m` 的）。签名（返回 `i32`、参数最多一个 `slice<slice<u8>>`）在 checker 里验。 */
+            if (moduleEntry) {
+                if (exported) {
+                    ctxError(ctx, f->line, 1,
+                             "`@export` hands one symbol to C and `@module` hands one entry to the"
+                             " command line; one function cannot be both.",
+                             "`@export` and `@module` on the same function");
+                    return false;
+                }
+                if (f->typeParams.len > 0) {
+                    ctxError(ctx, f->line, 1,
+                             "A generic function has one body per instantiation, so there is no one"
+                             " function for the dispatcher to call.",
+                             "`@module` on a generic function");
+                    return false;
+                }
+                if (f->ret && f->ret->name && strcmp(f->ret->name, "coroutine") == 0) {
+                    ctxError(ctx, f->line, 1,
+                             "A coroutine's value is a frame handle driven by a task, not something"
+                             " a command line can run.",
+                             "`@module` on a coroutine");
+                    return false;
+                }
+                f->isModuleEntry = true;
+                f->moduleEntryName = moduleName;
+                f->moduleDesc = moduleDesc;
+            }
             /* `@export`：符号交出去。三个"没有那一个 C 符号"的形状当场拒掉（泛型的每个实例是
              * 一个函数、协程的值是帧句柄、`extern!` 已经在别处了），方法与它自己的成员循环里拒。 */
             if (exported) {
@@ -1614,12 +1715,24 @@ static bool parseFuncAnnotations(Parser *p, bool *outInline, bool *outPrivate,
                      "`@export` goes on a free function, not on a method");
             return false;
         }
+        /* `@module` on a **member** or an `extern!`: the dispatcher calls the entry with
+         * `(argc, argv)` and no receiver. Saying which function to write beats "unknown
+         * annotation", which reads like a typo. */
+        if (strcmp(nm->text, "module") == 0) {
+            ctxError(p->ctx, a->line, a->col,
+                     "The dispatcher calls the entry with `(argc, argv)` and no receiver."
+                     " Write a free function for the entry and forward to the method.",
+                     "`@module` goes on a free function, not on a method");
+            return false;
+        }
         ctxError(p->ctx, a->line, a->col,
                  "Annotations are compile-time instructions written in the source, so a"
                  " typo must not be silently ignored. On a function they are `@inline`"
-                 " (the call must be inlined) and `@unchecked` (this body's indexes are not"
-                 " bounds-checked).",
-                 "unknown annotation `@%s` on a function -- `@inline` and `@unchecked` exist today",
+                 " (the call must be inlined), `@unchecked` (this body's indexes are not"
+                 " bounds-checked) and `@module` (this free function is an entry point the"
+                 " command line can run).",
+                 "unknown annotation `@%s` on a function -- `@inline`, `@unchecked` and"
+                 " `@module` exist today",
                  nm->text);
         return false;
     }

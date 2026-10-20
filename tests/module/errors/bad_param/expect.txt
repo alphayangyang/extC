@@ -1,0 +1,1 @@
+an `@module` entry's parameter must be `slice<slice<u8>>`

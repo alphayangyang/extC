@@ -1,0 +1,4 @@
+@module
+fn run(a: slice<slice<u8>>, b: slice<slice<u8>>) -> i32 { return 0 }
+
+fn main() -> i32 { return 0 }
