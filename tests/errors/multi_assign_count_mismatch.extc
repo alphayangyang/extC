@@ -1,0 +1,8 @@
+// 并行赋值：目标数必须等于值数（每个目标都要有自己的值）。
+// expect: target(s) but
+fn main() -> i32 {
+    var a: i32 = 1
+    var b: i32 = 2
+    a, b = 1
+    return 0
+}

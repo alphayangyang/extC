@@ -1,0 +1,39 @@
+// 糖在 match 臂体里（单语句臂体，不带花括号）：
+// red => 并行赋值，green => 多名字声明，blue => 多名字声明里逐名字的标注（p: i32，q: i64）。
+// expect: 2 1|trace=12|trace2=1234
+use std::io
+
+type color = | red | green | blue
+
+var trace: i64 = 0
+
+fn mark(n: i64) -> i64 {
+    trace = trace * 10 + n
+    return n
+}
+
+fn main() -> i32 {
+    var a: i32 = 1
+    var b: i32 = 2
+    match color.red {
+        red   => a, b = b, a
+        green => { a = 1 }
+        blue  => { a = 1 }
+    }
+    io::cout << a << " " << b << "\n"
+
+    match color.green {
+        red   => { }
+        green => let c, d: i64 = mark(1), mark(2)
+        blue  => { }
+    }
+    io::cout << "trace=" << trace << "\n"
+
+    match color.blue {
+        red   => { }
+        green => { }
+        blue  => let p: i32, q: i64 = i32(mark(3)), mark(4)
+    }
+    io::cout << "trace2=" << trace << "\n"
+    return 0
+}

@@ -35,6 +35,13 @@ typedef struct {
     /* Set by the `global` soft keyword just before a declaration and consumed by `parseVarDecl`
      * (`ST_VAR.isGlobal`). Soft, not a lexer keyword: `global` stays a legal identifier. */
     bool   sawGlobal;
+    /* 语法糖展开出的额外语句。一条用户语句可能变成几条相邻语句（见文件后半的脱糖一节）：
+     * 解析器返回第一条，其余排在这个队列里，由手里有语句向量的调用者接上。 */
+    Vec    pending;
+    /* 顶层多名字声明展开出的其余全局量，同样由调用者接上。 */
+    Vec    pendingGlobals;
+    /* 合成名字 `__extc_t<N>` 的计数器：同一个块里可以有多次并行赋值，名字不能撞。 */
+    int    sugarSeq;
 } Parser;
 
 /* The compiler's nesting budget for blocks and expressions.
@@ -566,8 +573,13 @@ static FuncDef *parseExtern(Parser *p) {
  *               `out` 里留的是已经解析出来的声明。
  */
 bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
-    Parser p = { ctx, arena, toks, 0, false, false, false, 0, 0 , false};   /* 末两位 = depth, typeDepth */
-    p.sawBuiltin = false;                 /* 位置初始化列表不动，免得顺序一变就错位 */
+    /* 逐个字段赋值：解析器还会长出字段，位置初始化列表会在那时悄悄错位。 */
+    Parser p = {0};
+    p.ctx   = ctx;
+    p.arena = arena;
+    p.toks  = toks;
+    vecInit(&p.pending, arena, sizeof(Stmt *));
+    vecInit(&p.pendingGlobals, arena, sizeof(GlobalDef *));
     skipJunk(&p);
 
     while (!atKind(&p, TK_EOF) && !ctx->hasError) {
@@ -890,6 +902,13 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
             if (!g) return false;
             g->isPrivate = isPrivate;
             *(GlobalDef **)vecPush(&out->globals) = g;
+            /* 一条声明写了多个名字：其余全局量由同一条声明产出，可见性相同。 */
+            for (size_t i = 0; i < p.pendingGlobals.len; i++) {
+                GlobalDef *extra = *(GlobalDef **)vecAt(&p.pendingGlobals, i);
+                extra->isPrivate = isPrivate;
+                *(GlobalDef **)vecPush(&out->globals) = extra;
+            }
+            p.pendingGlobals.len = 0;
         } else if (at(&p, "extern")) {
             if (exported) {
                 ctxError(ctx, cur(&p)->line, cur(&p)->col,
@@ -2051,6 +2070,83 @@ static Type *parseFnType(Parser *p) {
 
 /* ================================================================ statements */
 
+/* ------------------------------------------------------------------ 脱糖
+ *
+ * 两种语法糖在这里直接改写成相邻的普通语句，**不加 AST 节点** —— 理由与 `for` 的四种形式
+ * 相同（见下面 `for` 一节）：加一种语句，编译器里每个递归的 pass 都要学会它（效果摘要、
+ * 逃逸分析、arena 放置、`@overwrite`、名字标记……），漏掉一处就是一类缺陷。
+ *
+ *     var a, b: i32 = 1, 2;   ->  var a: i32 = 1
+ *                                  var b: i32 = 2
+ *     a, b = b, a;            ->  var __extc_t0 = b
+ *                                  var __extc_t1 = a
+ *                                  a = __extc_t0
+ *                                  b = __extc_t1
+ *
+ * 一条用户语句因此可能展开成几条**相邻**语句。解析器返回第一条，其余排在 `p->pending`；
+ * 手里有语句向量的四处（块体、match 臂体、`for` 的 init 与 step）用 `pendingSplice` 按
+ * 顺序接在同一个位置。队列只在一次 `parseStmt` 之内有意义：内层语句自己的队列在同一层展
+ * 开并接走，所以调用点之间不用保存现场。
+ *
+ * 临时量用 `var` 而不是 `let`：右边的值可能是可写视图或可写引用，而只读绑定不允许带这类
+ * 类型。计数让同一个块里的多次并行赋值各用各的名字；用户绑了同名就是遮蔽，`declare` 会像
+ * 对别的名字一样重命名它。
+ */
+
+/**
+ * @brief 清空展开队列，准备解析下一条用户语句。
+ * @param p  解析器。
+ */
+static void pendingReset(Parser *p) { p->pending.len = 0; }
+
+/**
+ * @brief 把一条展开出的语句排进队列。
+ * @param p  解析器。
+ * @param s  要排队的语句。
+ */
+static void pendingPush(Parser *p, Stmt *s) {
+    *(Stmt **)vecPush(&p->pending) = s;
+}
+
+/**
+ * @brief 把队列里的语句按顺序接到 `stmts` 末尾，然后清空队列。
+ * @param p      解析器。
+ * @param stmts  接收语句的向量（块体或合成语句数组）。
+ */
+static void pendingSplice(Parser *p, Vec *stmts) {
+    for (size_t i = 0; i < p->pending.len; i++)
+        *(Stmt **)vecPush(stmts) = *(Stmt **)vecAt(&p->pending, i);
+    p->pending.len = 0;
+}
+
+/**
+ * @brief 造一个并行赋值用的隐藏名字（`__extc_t0`、`__extc_t1`……）。
+ * @param p  解析器。
+ * @return   名字；存在解析器的 arena 里，生命周期与 AST 相同。
+ */
+static const char *sugarTempName(Parser *p) {
+    return arenaPrintf(p->arena, "__extc_t%d", p->sugarSeq++);
+}
+
+/**
+ * @brief 这个表达式是不是纯字面量（不读位置、没有副作用）。
+ *
+ * 并行赋值的临时量可以省掉纯字面量：把它的求值挪到写回阶段不改变程序结果，
+ * 而普通赋值会带上目标的类型上下文，窄类型和 `null` 因此能定型。
+ *
+ * @param e  表达式。
+ * @return   是纯字面量时为 true。
+ */
+static bool exprIsPureLiteral(const Expr *e) {
+    if (!e) return false;
+    switch (e->kind) {
+    case EX_INT: case EX_FLOAT: case EX_BOOL: case EX_STR: case EX_NULL:
+        return true;
+    default:
+        return false;
+    }
+}
+
 /**
  * @brief 解析一个 `{ ... }` 块，产出一个 ST_BLOCK 语句。
  *
@@ -2084,9 +2180,11 @@ static Stmt *parseBlockInner(Parser *p) {
 
     skipJunk(p);
     while (!at(p, "}")) {
+        pendingReset(p);
         Stmt *s = parseStmt(p);
         if (!s) return NULL;
         *(Stmt **)vecPush(&b->u.block.stmts) = s;
+        pendingSplice(p, &b->u.block.stmts);
         skipJunk(p);
     }
     if (!expect(p, "}", NULL)) return NULL;
@@ -2163,11 +2261,13 @@ static Stmt *parseMatch(Parser *p) {
         if (at(p, "{")) {
             arm->body = parseBlock(p);
         } else {
+            pendingReset(p);
             Stmt *inner = parseStmt(p);
             if (!inner) return NULL;
             arm->body = stmtNew(p->arena, ST_BLOCK, inner->line);
             vecInit(&arm->body->u.block.stmts, p->arena, sizeof(void *));
             *(Stmt **)vecPush(&arm->body->u.block.stmts) = inner;
+            pendingSplice(p, &arm->body->u.block.stmts);
         }
         *(MatchArm **)vecPush(&s->u.match.arms) = arm;
 
@@ -2208,6 +2308,14 @@ static Stmt *parseStmt(Parser *p) {
             return NULL;
         }
         Stmt *v = parseVarDecl(p);
+        /* `@overwrite` 说的是「这一处存储被复用」，只对一个绑定有意义。 */
+        if (v && p->pending.len != 0) {
+            p->pending.len = 0;
+            ctxError(p->ctx, a->line, a->col,
+                     "`@overwrite` reuses one piece of storage, so it needs exactly one name.",
+                     "`@overwrite` cannot sit on a declaration that binds several names");
+            return NULL;
+        }
         if (v) v->u.var.overwrite = true;
         return v;
     }
@@ -2296,6 +2404,85 @@ static Stmt *parseStmt(Parser *p) {
         return s;
     }
 
+    /* `a, b = b, a`：并行赋值。右边**全部求值**进临时量之后，才按从左到右写回左边 ——
+     * 交换因此不需要用户自己写临时量。临时量与写回的语句排在 `p->pending` 里，接在当前
+     * 语句的位置。 */
+    if (at(p, ",")) {
+        Vec targets, values;
+        vecInit(&targets, p->arena, sizeof(Expr *));
+        vecInit(&values,  p->arena, sizeof(Expr *));
+        *(Expr **)vecPush(&targets) = e;
+        while (accept(p, ",")) {
+            skipNl(p);
+            Expr *target = parseExpr(p);
+            if (!target) return NULL;
+            *(Expr **)vecPush(&targets) = target;
+        }
+        if (!at(p, "=")) {
+            ctxError(p->ctx, cur(p)->line, cur(p)->col,
+                     "`+=` and friends write one target back, so a parallel assignment takes"
+                     " plain `=`.",
+                     "expected `=` after the assignment targets");
+            return NULL;
+        }
+        take(p);                                     /* `=` */
+        skipNl(p);
+        for (;;) {
+            Expr *v = parseExpr(p);
+            if (!v) return NULL;
+            *(Expr **)vecPush(&values) = v;
+            if (!accept(p, ",")) break;
+            skipNl(p);
+        }
+        if (vecLen(&values) != vecLen(&targets)) {
+            ctxError(p->ctx, t->line, t->col,
+                     "A parallel assignment writes every target, so it needs one value per"
+                     " target, in the same order.",
+                     "`%zu` target(s) but `%zu` value(s)",
+                     vecLen(&targets), vecLen(&values));
+            return NULL;
+        }
+        /* 先声明临时量，再写回：两条循环就是「全部求值」然后是「全部写入」。
+         *
+         * 纯字面量不需要临时量：它不读任何位置、也没有副作用，所以提到写回阶段求值
+         * 不改变结果。这样走的是普通赋值（带目标的类型上下文），窄类型和 `null`
+         * 都能定型；若先存进无标注的临时量，它们的自然类型就丢了（`var t = 1` 是
+         * i32，写回 i8 目标会被判成收窄）。 */
+        Vec temps, out;
+        vecInit(&temps, p->arena, sizeof(const char *));
+        vecInit(&out,   p->arena, sizeof(Stmt *));
+        for (size_t i = 0; i < vecLen(&values); i++) {
+            Expr *v = *(Expr **)vecAt(&values, i);
+            if (exprIsPureLiteral(v)) {
+                *(const char **)vecPush(&temps) = NULL;
+                continue;
+            }
+            const char *tmp = sugarTempName(p);
+            *(const char **)vecPush(&temps) = tmp;
+            Stmt *d = stmtNew(p->arena, ST_VAR, t->line);
+            d->u.var.name = tmp;
+            d->u.var.ann  = NULL;
+            d->u.var.init = v;
+            d->u.var.mut  = true;                /* 可写视图/可写引用类型的值需要 `var` */
+            d->u.var.isGlobal = false;
+            *(Stmt **)vecPush(&out) = d;
+        }
+        for (size_t i = 0; i < vecLen(&targets); i++) {
+            const char *tmp = *(const char **)vecAt(&temps, i);
+            Stmt *as = stmtNew(p->arena, ST_ASSIGN, t->line);
+            as->u.assign.target = *(Expr **)vecAt(&targets, i);
+            as->u.assign.value  = tmp ? exprIdent(p->arena, tmp, t->line)
+                                      : *(Expr **)vecAt(&values, i);
+            as->u.assign.op     = NULL;
+            as->u.assign.opExpr = NULL;
+            *(Stmt **)vecPush(&out) = as;
+        }
+        Stmt *first = *(Stmt **)vecAt(&out, 0);
+        for (size_t i = 1; i < vecLen(&out); i++)
+            pendingPush(p, *(Stmt **)vecAt(&out, i));
+        return first;
+    }
+
     /* `=` 与五种复合形式。`+=` 之类就是 `x = x + y`，所以是同一条语句多一个字段：检查器
      * 解析运算符，代码生成在 C 输出里保留复合形式，于是目标**只求值一次**。`++` / `--`
      * 故意不在这里：一个表达式同时读和写同一个位置，是未定义行为的经典来源。 */
@@ -2328,78 +2515,193 @@ static Stmt *parseStmt(Parser *p) {
 }
 
 /**
+ * @brief 解析一条声明开头的名字列表，每个名字可以带自己的类型标注。
+ *
+ * 最后一个名字后面的标注也填给前面没写标注的名字：`var a, b: i32 = 1, 2` 两个都是
+ * `i32`。一条声明就是一个整体，标注跟着最后一个名字，读起来也就是「它们都是这个类型」。
+ * 于是三种写法都有意义 —— 什么都不写（各自推断）、每个名字都写（各自不同）、只在最后写
+ * （全部统一一个）。
+ *
+ * @param p      解析器。
+ * @param names  输出：`Token *` 的向量。
+ * @param anns   输出：`Type *` 的向量，与 `names` 一一对应，没写标注的位置是 `NULL`。
+ * @return       成功为 `true`；出错为 `false`（已报告诊断）。
+ */
+static bool declParseNames(Parser *p, Vec *names, Vec *anns) {
+    vecInit(names, p->arena, sizeof(Token *));
+    vecInit(anns,  p->arena, sizeof(Type *));
+
+    Token *name = expectIdent(p, "a variable name");
+    if (!name) return false;
+    for (;;) {
+        Type *ann = NULL;
+        if (accept(p, ":")) {
+            ann = parseType(p);
+            if (!ann) return false;
+        }
+        *(Token **)vecPush(names) = name;
+        *(Type **)vecPush(anns)   = ann;
+        if (!accept(p, ",")) break;
+        skipNl(p);
+        name = expectIdent(p, "a variable name");
+        if (!name) return false;
+    }
+
+    const size_t n = vecLen(names);
+    Type *last = *(Type **)vecAt(anns, n - 1);
+    if (last) {
+        bool anyMissing = false;
+        for (size_t i = 0; i + 1 < n; i++)
+            if (!*(Type **)vecAt(anns, i)) anyMissing = true;
+        if (anyMissing)
+            for (size_t i = 0; i + 1 < n; i++)
+                if (!*(Type **)vecAt(anns, i)) *(Type **)vecAt(anns, i) = last;
+    }
+
+    /* 同一条声明里的两个同名绑定只是笔误：第二个会遮住第一个。 */
+    for (size_t i = 0; i < n; i++)
+        for (size_t j = i + 1; j < n; j++) {
+            Token *a = *(Token **)vecAt(names, i);
+            Token *b = *(Token **)vecAt(names, j);
+            if (strcmp(a->text, b->text) == 0) {
+                ctxError(p->ctx, b->line, b->col,
+                         "Each name in one declaration is its own binding, so a repeat is a typo"
+                         " -- and only the second one would be visible.",
+                         "duplicate name `%s` in one declaration", b->text);
+                return false;
+            }
+        }
+    return true;
+}
+
+/**
+ * @brief 检查名字列表与初始化器列表对不对得上。
+ *
+ * 没有初始化器时每个名字都必须有标注；有初始化器时一个名字一个值，顺序对应。
+ *
+ * @param p      解析器。
+ * @param kw     声明关键字（`let` / `var`），只用在错误文本里。
+ * @param names  名字列表。
+ * @param anns   标注列表。
+ * @param inits  初始化器列表；没有 `=` 时长度为 0。
+ * @return       成功为 `true`；出错为 `false`（已报告诊断）。
+ */
+static bool declCheckShape(Parser *p, Token *kw, Vec *names, Vec *anns, Vec *inits) {
+    const size_t n = vecLen(names);
+    if (vecLen(inits) == 0) {
+        for (size_t i = 0; i < n; i++) {
+            if (*(Type **)vecAt(anns, i)) continue;
+            Token *nm = *(Token **)vecAt(names, i);
+            ctxError(p->ctx, nm->line, nm->col,
+                     "without an initializer you must write the type: `var x: T`",
+                     "`%s %s` needs a type or an initializer", kw->text, nm->text);
+            return false;
+        }
+        return true;
+    }
+    if (vecLen(inits) != n) {
+        Token *t = cur(p);
+        /* 留下一个 `=` 说明作者写的是「每个名字自己带初始化器」那种形状。把它点出来，
+         * 而不是让计数错误去抱怨「2 个值」——那个值其实是一个名字。 */
+        if (at(p, "=")) {
+            ctxError(p->ctx, t->line, t->col,
+                     "A declaration writes its names first, then one `=` and one value per"
+                     " name: `var a, b = 1, 2`.",
+                     "expected one value per name, not `name = value` pairs");
+            return false;
+        }
+        ctxError(p->ctx, t->line, t->col,
+                 "A declaration takes one value per name, in the same order.",
+                 "`%s` binds %zu name(s) but gets %zu initializer(s)",
+                 kw->text, n, vecLen(inits));
+        return false;
+    }
+    return true;
+}
+
+/**
  * @brief 解析顶层的 `let` / `var`，即全局变量或常量。
  *
- * 语法与局部声明一致：类型可以省略，省略初始化器表示零初始化。初始化器必须是字面量，
- * 因为 C 的全局初始化器只能是常量表达式。
+ * 语法与局部声明一致，包括一条声明写多个名字：类型可以省略（写一个标注在末尾就是所有名字
+ * 共用一个标注），省略初始化器表示零初始化。初始化器必须是字面量，因为 C 的全局初始化器
+ * 只能是常量表达式。
+ *
+ * 一条用户声明可能产出好几个 `GlobalDef`：这里返回第一个，其余排在 `p->pendingGlobals`，
+ * 由解析模块的循环接上（`GlobalDef` 不是 `Stmt`，所以另有一个队列）。
  *
  * @param p  解析器。
- * @return   新的 GlobalDef；出错时返回 `NULL`（已报告诊断）。
+ * @return   第一个 GlobalDef；出错时返回 `NULL`（已报告诊断）。
  */
 static GlobalDef *parseGlobalDecl(Parser *p) {
     Token *kw = take(p);
-    Token *name = expectIdent(p, "a variable name");
-    if (!name) return NULL;
+    Vec names, anns, inits;
+    if (!declParseNames(p, &names, &anns)) return NULL;
 
-    Type *ann = NULL;
-    if (accept(p, ":")) {
-        ann = parseType(p);
-        if (!ann) return NULL;
-    }
-
-    Expr *init = NULL;
+    vecInit(&inits, p->arena, sizeof(Expr *));
     if (accept(p, "=")) {
         skipNl(p);
-        init = parseExpr(p);
-        if (!init) return NULL;
-    } else if (ann == NULL) {
-        Token *t = cur(p);
-        ctxError(p->ctx, t->line, t->col,
-                 "without an initializer you must write the type: `var x: T`",
-                 "`%s %s` needs a type or an initializer", kw->text, name->text);
-        return NULL;
+        for (;;) {
+            Expr *v = parseExpr(p);
+            if (!v) return NULL;
+            *(Expr **)vecPush(&inits) = v;
+            if (!accept(p, ",")) break;
+            skipNl(p);
+        }
     }
+    if (!declCheckShape(p, kw, &names, &anns, &inits)) return NULL;
 
-    GlobalDef *g = (GlobalDef *)arenaAllocZero(p->arena, sizeof(GlobalDef));
-    g->name = name->text;
-    g->ann  = ann;
-    g->init = init;
-    g->mut  = (strcmp(kw->text, "var") == 0);
-    g->line = kw->line;
-    return g;
+    GlobalDef *first = NULL;
+    for (size_t i = 0; i < vecLen(&names); i++) {
+        GlobalDef *g = (GlobalDef *)arenaAllocZero(p->arena, sizeof(GlobalDef));
+        g->name = (*(Token **)vecAt(&names, i))->text;
+        g->ann  = *(Type **)vecAt(&anns, i);
+        g->init = vecLen(&inits) ? *(Expr **)vecAt(&inits, i) : NULL;
+        g->mut  = (strcmp(kw->text, "var") == 0);
+        g->line = kw->line;
+        if (i == 0) first = g;
+        else *(GlobalDef **)vecPush(&p->pendingGlobals) = g;
+    }
+    return first;
 }
 /**
- * @brief 解析局部的 `let` / `var` 声明。
+ * @brief 解析局部的 `let` / `var` 声明，一条可以写多个名字。
  *
- * 没有初始化器时类型标注就是必需的；两者都没有，错误会点名读者忘了标类型的那个绑定。
+ * 没有初始化器时每个名字都要有类型标注；一个标注都不写时每个名字各自推断（`var a, b =
+ * 1, 2.0` 是 `i32` 和 `f64`）。每个名字可以有自己的标注，只写在最后一个名字后面的标注
+ * 则填给所有没写标注的名字（见 `declParseNames`）。
+ *
+ * 多个名字展开成相邻的 ST_VAR 语句：返回第一条，其余排在 `p->pending`，由手里有语句向量
+ * 的调用者接上（块体、match 臂体、`for` 的 init 与 step）。
  *
  * @param p  解析器。
- * @return   新的 ST_VAR 语句；出错时返回 `NULL`（已报告诊断）。
+ * @return   第一条 ST_VAR 语句；出错时返回 `NULL`（已报告诊断）。
  */
 static Stmt *parseVarDecl(Parser *p) {
     Token *kw = take(p);
-    Token *name = expectIdent(p, "a variable name");
-    if (!name) return NULL;
-
-    Type *ann = NULL;
-    if (accept(p, ":")) {
-        ann = parseType(p);
-        if (!ann) return NULL;
-    }
+    Vec names, anns, inits;
+    if (!declParseNames(p, &names, &anns)) return NULL;
 
     /* 初始化器可以省略，省略就表示零初始化。读未初始化的内存是 C 里最大的未定义行为
      * 来源之一，而且只能在运行时发现；缺省为零把它变成编译器保证的事情。 */
-    Expr *init = NULL;
+    vecInit(&inits, p->arena, sizeof(Expr *));
     if (accept(p, "=")) {
         skipNl(p);
         /* `var got: T = yield e` -- the declaration **is** the yield statement, and `got` is a
          * coroutine-frame local: the frame holds it, and a resume re-runs the assignment from the
-         * frame's `in` slot. */
+         * frame's `in` slot. `yield` hands over one value, so it cannot be one of several names. */
         if (at(p, "yield")) {
+            Token *nm = *(Token **)vecAt(&names, 0);
+            if (vecLen(&names) > 1) {
+                ctxError(p->ctx, nm->line, nm->col,
+                         "`yield` hands one value to the resumer, so it binds one name: split"
+                         " the declaration.",
+                         "`yield` cannot initialize %zu names", vecLen(&names));
+                return NULL;
+            }
             Token *yk = take(p);
             Stmt *ys = stmtNew(p->arena, ST_YIELD, yk->line);
-            ys->u.yield_.bind     = name->text;
-            ys->u.yield_.bindAnn  = ann;
+            ys->u.yield_.bind     = nm->text;
+            ys->u.yield_.bindAnn  = *(Type **)vecAt(&anns, 0);
             ys->u.yield_.bindLine = kw->line;
             if (atKind(p, TK_NEWLINE) || atKind(p, TK_EOF) || at(p, "}")) {
                 ctxError(p->ctx, yk->line, yk->col, NULL,
@@ -2410,24 +2712,29 @@ static Stmt *parseVarDecl(Parser *p) {
             ys->u.yield_.value = parseExpr(p);
             return ys->u.yield_.value ? ys : NULL;
         }
-        init = parseExpr(p);
-        if (!init) return NULL;
-    } else if (ann == NULL) {
-        Token *t = cur(p);
-        ctxError(p->ctx, t->line, t->col,
-                 "without an initializer you must write the type: `var x: T`",
-                 "`%s %s` needs a type or an initializer", kw->text, name->text);
-        return NULL;
+        for (;;) {
+            Expr *v = parseExpr(p);
+            if (!v) return NULL;
+            *(Expr **)vecPush(&inits) = v;
+            if (!accept(p, ",")) break;
+            skipNl(p);
+        }
     }
+    if (!declCheckShape(p, kw, &names, &anns, &inits)) return NULL;
 
-    Stmt *s = stmtNew(p->arena, ST_VAR, kw->line);
-    s->u.var.name = name->text;
-    s->u.var.ann = ann;
-    s->u.var.init = init;
-    s->u.var.mut = (strcmp(kw->text, "var") == 0);
-    s->u.var.isGlobal = p->sawGlobal;      /* 由 `global` 前缀置位，见 parseStmt */
+    Stmt *first = NULL;
+    for (size_t i = 0; i < vecLen(&names); i++) {
+        Stmt *s = stmtNew(p->arena, ST_VAR, kw->line);
+        s->u.var.name = (*(Token **)vecAt(&names, i))->text;
+        s->u.var.ann  = *(Type **)vecAt(&anns, i);
+        s->u.var.init = vecLen(&inits) ? *(Expr **)vecAt(&inits, i) : NULL;
+        s->u.var.mut  = (strcmp(kw->text, "var") == 0);
+        s->u.var.isGlobal = p->sawGlobal;   /* 由 `global` 前缀置位，见 parseStmt */
+        if (i == 0) first = s;
+        else pendingPush(p, s);
+    }
     p->sawGlobal = false;
-    return s;
+    return first;
 }
 
 /**
@@ -2582,17 +2889,31 @@ static Stmt *parseFor(Parser *p) {
     /* ---- form four: `for (init; cond; step) { B }` ---- */
     if (at(p, "(")) {
         take(p);
+        Vec outer, inner;
+        vecInit(&outer, p->arena, sizeof(Stmt *));
+        vecInit(&inner, p->arena, sizeof(Stmt *));
+
+        pendingReset(p);
         Stmt *init = parseStmt(p);
         if (!init) return NULL;
+        *(Stmt **)vecPush(&outer) = init;
+        pendingSplice(p, &outer);        /* `var i = 0, j = 0` 展开出的第二条 */
         if (!expect(p, ";", "`for (init; cond; step)` needs `;` after the initializer")) return NULL;
         skipNl(p);
         Expr *cond = parseExpr(p);
         if (!cond) return NULL;
         if (!expect(p, ";", "`for (init; cond; step)` needs `;` after the condition")) return NULL;
         skipNl(p);
+        pendingReset(p);
         Stmt *step = parseStmt(p);
         if (!step) return NULL;
         if (!expect(p, ")", "`for (init; cond; step)` needs the closing `)`")) return NULL;
+
+        /* 步进的展开语句要先收走：解析循环体又会调用 parseBlockInner，那里每条语句开头的
+         * pendingReset 会清空队列。 */
+        Vec stepExtra;
+        vecInit(&stepExtra, p->arena, sizeof(Stmt *));
+        pendingSplice(p, &stepExtra);    /* 步进是 `a, b = b, a` 时的那些语句 */
 
         Stmt *body = parseBlock(p);
         if (!body) return NULL;
@@ -2600,14 +2921,17 @@ static Stmt *parseFor(Parser *p) {
         /* The step runs after the body: both go in a block inside the `while`. The block also
          * records **which** statement is the step, so codegen can put a label in front of it and
          * `continue` can jump there (C's `for` semantics; ). */
-        Stmt *inner[2] = { body, step };
-        Stmt *loopBody = forBlock(p, inner, 2, line);
+        *(Stmt **)vecPush(&inner) = body;
+        *(Stmt **)vecPush(&inner) = step;
+        for (size_t i = 0; i < vecLen(&stepExtra); i++)
+            *(Stmt **)vecPush(&inner) = *(Stmt **)vecAt(&stepExtra, i);
+        Stmt *loopBody = forBlock(p, (Stmt **)inner.data, inner.len, line);
         loopBody->forStep = step;
         Stmt *w = stmtNew(p->arena, ST_WHILE, line);
         w->u.whiles.cond = cond;
         w->u.whiles.body = loopBody;
-        Stmt *outer[2] = { init, w };
-        return forBlock(p, outer, 2, line);
+        *(Stmt **)vecPush(&outer) = w;
+        return forBlock(p, (Stmt **)outer.data, outer.len, line);
     }
 
     /* ---- `for <name> in ...` ---- */

@@ -1,0 +1,6 @@
+// 多名字声明：末尾一个标注管所有名字 ⇒ 每个值都得是这个类型；2.5 是 f64，收不进 i32。
+// expect: initializer expects `i32`, found `f64`
+fn main() -> i32 {
+    var a, b: i32 = 1, 2.5
+    return 0
+}

@@ -1,0 +1,8 @@
+// @overwrite 说的是「这一处存储被复用」，只对一个绑定有意义 ⇒ 不能带多个名字。
+// expect: binds several names
+struct node { value: i64 }
+
+fn main() -> i32 {
+    @overwrite var a, b = new node, new node
+    return 0
+}

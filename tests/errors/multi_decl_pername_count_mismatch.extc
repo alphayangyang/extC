@@ -1,0 +1,6 @@
+// 多名字声明：逐名字写标注时，名字数与值数同样必须相等（标注不改变这条规矩）。
+// expect: binds 2 name(s) but gets 1 initializer(s)
+fn main() -> i32 {
+    var a: i32, b: i64 = 1
+    return 0
+}

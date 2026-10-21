@@ -377,6 +377,9 @@ fn main() -> i32 {
 | `var NAME: T = e` | `var x: T = e` | 存储：可以赋值、可以取可写引用 |
 | （`global` 前缀） | `global let/var x` | 冗余写法，顶层本来就是全局 |
 | `let NAME: T`（无 `=`） | `let x: T` | 零初始化（类型必须写出来） |
+| `var A, B: T = e1, e2` | `var a, b: i32 = 1, 2` | 一条声明绑多个名字：类型写一次，所有名字共享 |
+| `var A, B = e1, e2` | `var a, b = 1, 2.5` | 多名字声明不写类型：每个名字从自己的值推断 |
+| `var A: T, B: U = e1, e2` | `var a: i32, b: i64 = 1, 2` | 多名字声明：每个名字各写各的类型 |
 
 - 顶层初始化式必须是**常量**：字面量、字面量的算术、字符串、枚举常量、字段都是常量的
   结构体字面量。调用、别的全局名不行（`the global 'A' must be initialized with a constant`）。
@@ -385,6 +388,17 @@ fn main() -> i32 {
   被遮蔽的旧名字连同它的存储留在原地，之前取到的引用仍然指向它。
 - `var` 是存储：同一层重复声明同名报 `` `v` is already declared in this scope ``。
 - 参数可以被同层的 `let` 遮蔽。
+- 多名字声明 `var a, b: i32 = 1, 2` 只是一条声明绑多个名字，语义和两条单名字声明相同。
+  类型可以只写在**最后一个**名字后面，表示前面没写类型的名字共享它（`var a, b: i32`）；
+  也可以每个名字各写一个（`var a: i32, b: i64 = 1, 2`）；什么都不写时，每个名字从**自己的**值推断
+  （`var a, b = 1, 2.5` ⇒ `a` 是 `i32`、`b` 是 `f64`）。混写时自带的类型优先，末尾的类型只填给前面没写的。
+- 名字数必须等于初始化式数，对不上报 `` `var` binds 2 name(s) but gets 1 initializer(s) ``。
+  写法是「先名字、再一个 `=`、再按顺序的值」，所以给每个名字各写一个初始化式（`var a = 1, b = 2`）
+  报 `` expected one value per name, not `name = value` pairs ``。
+- 一条声明里重复同一个名字报 `` duplicate name `a` in one declaration ``；`@overwrite` 只带一个名字。
+- 不写类型就必须写值：`var a, b: i32` 是零初始化（两个名字都是零值），`var a, b` 报
+  `` `var a` needs a type or an initializer ``。
+- 顶层多名字声明与局部同形（`global var g1, g2: i64 = 10, 20`），初始化式仍然必须是常量。
 - `mut` **不是变量的修饰符**，而是类型里的一部分：`mut ref T`、`mut slice<T>`（见「引用与视图」一节）。
   `let r: mut ref T = …` 是自相矛盾的，报 `` `let r` cannot be declared with a `mut` type ``。
 
@@ -404,6 +418,14 @@ fn main() -> i32 {
     io::cout << a << " " << b << " " << counter << " " << LIMIT << "\n"
     return 0
 }
+```
+
+<!-- fragment -->
+```extc
+var a, b: i32 = 1, 2        // 一条声明两个名字，共享 i32
+let c, d = 1, 2.5           // 不写类型：c 是 i32，d 是 f64
+var e: i64, f = 10, 20.5    // 各写各的：e 是 i64，f 是 f64
+var g, h: i32               // 零初始化：两个都是 0
 ```
 
 ---
@@ -751,7 +773,7 @@ fn main() -> i32 { return i32(add(i64(1), i64(2)) + addTwice(i64(3))) }
 
 ### 11.1 语句
 
-`let`/`var`、`global let/var`、赋值（`=` `+=` `-=` `*=` `/=` `%=`）、
+`let`/`var`、`global let/var`、赋值（`=` `+=` `-=` `*=` `/=` `%=`）、并行赋值（`t1, t2 = e1, e2`）、
 `if`/`else if`/`else`、`while`、`for`、`match`、`return`、`break`、`continue`、
 块 `{ … }`、`trap(msg)`、`yield expr`、表达式语句。
 `if`/`while` 的条件必须是 `bool`（`expected 'bool', found 'i32'`）。
@@ -847,6 +869,50 @@ fn main() -> i32 {
 （`impl io::ostream { fn <<(self: ref io::ostream, other: T) -> io::ostream { … } }`），
 否则报 `` `io::ostream` does not define `<<` for `shape` ``。格式化串见第 2.2 节。
 
+### 11.6 并行赋值
+
+`t1, t2, … = e1, e2, …` 是**并行**赋值：右边先**全部求值**（从左到右），然后左边**全部写**
+（从左到右）。所以 `a, b = b, a` 交换两个变量，而不是把两个都写成一个值。
+
+- 每个目标都得是**地方**：变量、字段、下标/切片元素、`*p`，以及 place 的载荷 `o!`
+  —— 和单目标赋值的左边同一套规则。
+- 目标数必须等于值数：`` `2` target(s) but `1` value(s) ``。
+- 多个目标只接受 `=`：`a, b += 1, 2` 报 `` expected `=` after the assignment targets ``。
+- 它是一条语句，所以块里、`match` 分支体（不带块也行）、`for (init; cond; step)` 的 init 与 step
+  里都能写；多名字声明同样能出现在这些位置。
+
+```extc
+// 结果：2 1 / 2 1 / 20 10
+use std::io
+
+type color = | red | green | blue
+struct pt { x: i32  y: i32 }
+
+fn main() -> i32 {
+    var a, b: i32 = 1, 2
+    a, b = b, a                            // 交换
+    io::cout << a << " " << b << "\n"
+
+    var p: pt = pt { x: 1, y: 2 }
+    p.x, p.y = p.y, p.x                    // 字段交换
+    io::cout << p.x << " " << p.y << "\n"
+
+    var arr: [2]i32 = [10, 20]
+    arr[0], arr[1] = arr[1], arr[0]        // 下标交换
+    io::cout << arr[0] << " " << arr[1] << "\n"
+
+    var c: color = color.red
+    match c {
+        red => a, b = b, a                 // 分支体不带块也能写
+        green => { a = 0 }
+        blue => { a = 0 }
+    }
+
+    for (var i, j: i32 = 0, 0; i < 3; i, j = i + 1, j + 10) { }
+    return 0
+}
+```
+
 ---
 
 ## 12. 结果：现在写不出来的写法
@@ -871,3 +937,21 @@ fn main() -> i32 {
 
 - `(*f()).field = v` 能写，而且实测 `f` **只被求值一次**（`var calls` 计数为 1）。
 - `m!.field = v` 能写，前提是 `m` 是可写的可空引用（`var m: mut ?ref box = ref b`）。
+
+---
+
+## 13. 已知局限
+
+多名字声明与并行赋值是语法糖：除纯字面量外，右边的每个值先落进一个隐藏临时量，再逐个目标写回。
+由此能撞上的局限：
+
+- `@noCopy` 类型不能拿来交换：`a, b = b, a` 里每个值都要过一遍临时量，
+  报 `` `counter` is `@noCopy`: it may not be copied by value ``。
+- 右值是「返回含引用聚合的函数调用」、而目标在外层或循环里时，会误报 borrow-from-local：
+  先 `var t = make()` 再 `b = t` 不行，直接写 `b = make()` 可以。
+- 右值是裸结构体字面量 `{}` 时临时量定不了型（`` cannot infer the type of a bare `{}` here ``），
+  直接单目标赋值则可以。`null` 没有这个问题：它是纯字面量，直接走带目标类型上下文的赋值。
+- `@sharesStorage` 类型每个临时量各刷一条 `copies by value but **shares storage**` 警告，
+  交换一次会看到两条。
+
+彻底解决要新增 StmtKind（让并行赋值成为一等语句），属后续工作。

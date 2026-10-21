@@ -24,7 +24,7 @@ extC 是一门编译到 C11 的语言：**把内存安全、边界与错误检�
 
 | 面 | 有什么 |
 |---|---|
-| 语言 | 泛型 · `trait` 与 `dyn` · 带载荷枚举 · `option`/`result`/`?`/`??` · `match` · 切片与引用 · 运算符重载 · `f"…"` · 注解（[语言现状](docs/usage/language.md)）|
+| 语言 | 泛型 · `trait` 与 `dyn` · 带载荷枚举 · `option`/`result`/`?`/`??` · `match` · 多名字声明与并行赋值 · 切片与引用 · 运算符重载 · `f"…"` · 注解（[语言现状](docs/usage/language.md)）|
 | 内存 | 按词法块的 arena · `pool<T>` · `varArray<T>` · 域；编译器只给真需要回收的单元发回收运行期（[语言现状](docs/usage/language.md)）|
 | 并发与 I/O | 协程与调度器 · 线程 · epoll 事件循环 · 终端 raw 模式（[标准库现状](docs/usage/stdlib.md)）|
 | 系统与 C | `extern!` 声明 C 原语 · `@export` 反向给 C 调 · 动态加载 · 链接开关与 `--pkg-config`（[模块与 C 互操作](docs/usage/modules-cabi.md)）|

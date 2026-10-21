@@ -1,0 +1,19 @@
+// 多名字声明（三）：顶层的 global var / let 是同一套形状；初始化式仍必须是常量。
+// 零初始化的全局就是 C 的静态对象（自动清零）。
+// 逐名字的标注在顶层同样成立（g5: i32, g6: i64；g7: i64, g8: i32 零初始化）。
+// expect: 7 9 0 0|16|30|3 4|0 0
+use std::io
+
+global var g1, g2: i32 = 7, 9
+global var g3, g4: i64
+let G5, G6: i64 = 10, 20
+global var g5: i32, g6: i64 = 3, 4
+global var g7: i64, g8: i32
+
+fn main() -> i32 {
+    io::cout << g1 << " " << g2 << " " << g3 << " " << g4 << "\n"
+    io::cout << i64(g1) + i64(g2) << "\n"
+    io::cout << G5 + G6 << "\n"
+    io::cout << g5 << " " << g6 << " " << g7 << " " << g8 << "\n"
+    return 0
+}

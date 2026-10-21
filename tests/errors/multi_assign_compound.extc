@@ -1,0 +1,8 @@
+// 并行赋值只收 =：+= 之类是「读一个、写回一个」，多个目标没有意义。
+// expect: after the assignment targets
+fn main() -> i32 {
+    var a: i32 = 1
+    var b: i32 = 2
+    a, b += 1, 2
+    return 0
+}

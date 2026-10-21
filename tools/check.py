@@ -1481,6 +1481,14 @@ def build_items() -> list:
         ok_msg=ok_count_ok(" 项（超时计算五边界 · 到期恰好一次 · 等值稳定 · 表满响亮 · 500 个乱序 deadline；真事件源：一轮拿回 3 个 · 先写后注册不丢 · 两个实例并行 · runOnce 等 25ms）"),
         bad_msg="tests/loop/run.sh", bad_dump=dump_all))
 
+    # ---- 语法糖：多名字声明 / 并行赋值（解析期脱糖，不新增 AST 节点）----
+    items.append(cmd(
+        "sugar", "tests",
+        "语法糖：一条声明多个名字（逐名字/共享标注）+ 并行赋值（交换/字段/下标/deref/载荷）",
+        ["./tests/sugar/run.sh"], timeout=300,
+        ok_msg=ok_count_ok(" 项（共享标注 · 逐名字标注与推断 · 顶层 global · 先求值后写 · match 臂体 · for 头 · 9 条反例）"),
+        bad_msg="tests/sugar/run.sh", bad_dump=dump_all))
+
     # ---- 裸 return ----
     items.append(cmd(
         "voidret", "tests",

@@ -1,0 +1,24 @@
+// 并行赋值（四）：先求值、后写回要能被看见 —— 右边两个调用都是可观察的。
+//
+// probe(1) 和 probe(2) 打印它们看到的全局 a：两个都必须是 1，也就是第一个右值算完
+// 不能先把 a 写掉。trace 记录调用顺序：12 表示 probe(1) 在 probe(2) 之前
+// （21 就是右到左求值了）。
+// expect: a=1 a=1|a=10 b=20|trace=12
+use std::io
+
+var a: i64 = 1
+var b: i64 = 2
+var trace: i64 = 0
+
+fn probe(n: i64) -> i64 {
+    io::cout << "a=" << a << " "
+    trace = trace * 10 + n
+    return n * 10
+}
+
+fn main() -> i32 {
+    a, b = probe(1), probe(2)
+    io::cout << "a=" << a << " b=" << b << "\n"
+    io::cout << "trace=" << trace << "\n"
+    return 0
+}

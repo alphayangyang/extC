@@ -1,0 +1,6 @@
+// 多名字声明：名字数必须等于值数（一条声明 = 一个名字一个值，顺序对应）。
+// expect: binds 2 name(s) but gets 1 initializer(s)
+fn main() -> i32 {
+    var a, b: i32 = 1
+    return 0
+}

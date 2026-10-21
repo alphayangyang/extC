@@ -1,0 +1,17 @@
+// 多名字声明（二）：不写标注 ⇒ 每个名字从自己那个值推类型，不是一个标注全用上。
+// 两颗钉子：a 能进 i32 形参、b 能进 f64 形参 —— 两个名字真的不同型。
+// expect: a=1 b=2.5|pin=2 5|hi 9
+use std::io
+
+fn wantI32(x: i32) -> i32 { return x * 2 }
+fn wantF64(x: f64) -> f64 { return x * 2.0 }
+
+fn main() -> i32 {
+    var a, b = 1, 2.5
+    io::cout << "a=" << a << " b=" << b << "\n"
+    io::cout << "pin=" << wantI32(a) << " " << wantF64(b) << "\n"
+
+    var s, t = "hi", i64(9)
+    io::cout << s << " " << t << "\n"
+    return 0
+}

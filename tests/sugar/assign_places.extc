@@ -1,0 +1,19 @@
+// 并行赋值（三）：一条语句里混用四种 place —— 字段、下标、星号解引用、载荷 v!。
+// 右边四个值全部先读出来（旧值），写回时每个目标各拿自己那一个。
+// expect: 3 7 2 5
+use std::io
+
+struct pt { x: i64  y: i64 }
+
+fn main() -> i32 {
+    var p: pt = pt { x: 1, y: 2 }
+    var arr: [2]i64 = [3, 4]
+    var u: i64 = 5
+    var pu: mut ref i64 = ref u
+    var o: ?i64 = some(7)
+
+    p.x, arr[0], *pu, o! = arr[0], o!, p.y, *pu
+
+    io::cout << p.x << " " << arr[0] << " " << u << " " << (o ?? -1) << "\n"
+    return 0
+}

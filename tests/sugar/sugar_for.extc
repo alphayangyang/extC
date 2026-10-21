@@ -1,0 +1,26 @@
+// 糖在 for 的头部：init 是多名字声明，step 是并行赋值。
+// 一：init 里声明 i, j，step 一句同时更新两个（i + 1 与 j + 10 用的是同一轮旧值）。
+// 二：init 直接是并行赋值，进循环之前就把 x, y 换好了。
+// 三：init 的声明逐名字带标注（i: i32，j: i64），step 仍是并行赋值。
+// expect: 33|7 5|101
+use std::io
+
+fn main() -> i32 {
+    var s: i64 = 0
+    for (var i, j: i64 = 0, 0; i < 3; i, j = i + 1, j + 10) {
+        s = s + i + j
+    }
+    io::cout << s << "\n"
+
+    var x: i64 = 5
+    var y: i64 = 6
+    for (x, y = y, x; x < 7; x += 1) { }
+    io::cout << x << " " << y << "\n"
+
+    var t: i64 = 0
+    for (var i: i32, j: i64 = 0, 0; i < 2; i, j = i + 1, j + 100) {
+        t = t + i64(i) + j
+    }
+    io::cout << t << "\n"
+    return 0
+}

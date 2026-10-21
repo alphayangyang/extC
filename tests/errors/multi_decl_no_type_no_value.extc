@@ -1,0 +1,6 @@
+// 既不写类型也不写值 ⇒ 没有东西能定类型。
+// expect: needs a type or an initializer
+fn main() -> i32 {
+    var a, b
+    return 0
+}

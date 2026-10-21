@@ -1,0 +1,7 @@
+// 多名字声明：值写在第一个名字后面、后面又写 name = value —— 这是「每个名字各自带初始化器」的形状，
+// 语言只收「先列名字，再一个 =，然后一个名字一个值」，所以这里点出后面那个 =。
+// expect: expected one value per name
+fn main() -> i32 {
+    var a = 1, b = 2
+    return 0
+}

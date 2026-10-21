@@ -1,0 +1,16 @@
+// 并行赋值（二）：目标是 struct 字段和数组元素，同样先读后写 —— 交换是结构性的。
+// expect: 2 1|4 3
+use std::io
+
+struct pt { x: i32  y: i32 }
+
+fn main() -> i32 {
+    var p: pt = pt { x: 1, y: 2 }
+    p.x, p.y = p.y, p.x
+    io::cout << p.x << " " << p.y << "\n"
+
+    var arr: [2]i32 = [3, 4]
+    arr[0], arr[1] = arr[1], arr[0]
+    io::cout << arr[0] << " " << arr[1] << "\n"
+    return 0
+}

@@ -1,0 +1,18 @@
+// 并行赋值（一）：交换不需要临时量 —— 右边全部求值完，左边才逐个写回。
+// expect: 2 1|3 1 2
+use std::io
+
+fn main() -> i32 {
+    var a: i32 = 1
+    var b: i32 = 2
+    a, b = b, a
+    io::cout << a << " " << b << "\n"
+
+    // 三路置换：右边是旧值的轮换，左边按顺序落下。
+    var x: i32 = 1
+    var y: i32 = 2
+    var z: i32 = 3
+    x, y, z = z, x, y
+    io::cout << x << " " << y << " " << z << "\n"
+    return 0
+}

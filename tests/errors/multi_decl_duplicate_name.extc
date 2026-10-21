@@ -1,0 +1,6 @@
+// 一条声明里两个同名绑定：第二个会遮住第一个，只能是笔误。
+// expect: duplicate name
+fn main() -> i32 {
+    var a, a: i32 = 1, 2
+    return 0
+}
