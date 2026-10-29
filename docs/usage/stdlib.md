@@ -374,6 +374,36 @@ fn main() -> i32 {
 ```
 实测：`11345 sorted=true`。
 
+### `seq`：序列归约
+
+| 名字 | 签名 |
+|---|---|
+| `sum<T>` | `fn sum<T>(a: slice<T>) -> ?T` |
+| `max<T>` | `fn max<T>(a: slice<T>) -> ?T` |
+| `min<T>` | `fn min<T>(a: slice<T>) -> ?T` |
+| `count<T>` | `fn count<T>(a: slice<T>, v: T) -> i64` |
+
+语义：只读、**零分配**、顺序就是视图顺序（`sum` 的浮点累加也按从左到右，结果可复现）；
+空视图返回 `none`（`count` 返回 0）—— 库不替你决定"空的时候算多少"，用 `??` 或 `match` 接。
+`max` / `min` 用 `<` / `>`，相等时保留靠前的那个；`count` 用 `==`。
+这些函数只碰 `Thread=0` 的数据，可以原样放进 `parallel::run` 的 worker 里。
+
+```extc
+use std::io
+use stl::seq
+
+fn main() -> i32 {
+    var xs: [4]f64 = [1.0, 2.0, 3.0, 4.5]
+    let v: slice<f64> = xs[..]
+    let s = seq::sum(v) ?? f64(0.0)
+    let mx = seq::max(v) ?? f64(0.0)
+    let mn = seq::min(v) ?? f64(0.0)
+    io::cout << "sum=" << i64(s * 1000000.0) << " max=" << i64(mx * 1000000.0) << " min=" << i64(mn * 1000000.0) << " c=" << seq::count(v, f64(3.0)) << "\n"
+    return 0
+}
+```
+实测：`sum=10500000 max=4500000 min=1000000 c=1`。
+
 ## 3. `std::*`：模块
 
 ### `std::io`：控制台与缓冲的读写

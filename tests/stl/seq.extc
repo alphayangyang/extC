@@ -1,0 +1,50 @@
+/* tests/stl/seq.extc —— 序列归约的常设验收（tests/stl/run.sh 用整行期望输出比对）
+ *
+ * 判据一次性覆盖：f64 与 i64 两种实例化、空视图三连 none、count 的相等语义。
+ * 打印用整数化（f64 × 1e6 后截断）而不是格式化浮点，这样"从左到右的累加顺序"
+ * 有任何变化都会让这一行变。
+ */
+use std::io
+use stl::seq
+
+fn main() -> i32 {
+    var xs: mut slice<f64> = new f64[i64(4)]
+    xs[0] = 1.0
+    xs[1] = 2.0
+    xs[2] = 3.0
+    xs[3] = 4.5
+
+    var ys: mut slice<i64> = new i64[i64(4)]
+    ys[0] = 3
+    ys[1] = 5
+    ys[2] = 7
+    ys[3] = 5
+
+    var es: mut slice<f64> = new f64[i64(0)]
+
+    let fs = seq::sum(xs) ?? f64(0.0)
+    let fm = seq::max(xs) ?? f64(0.0)
+    let fn_ = seq::min(xs) ?? f64(0.0)
+
+    let is = seq::sum(ys) ?? i64(0)
+    let im = seq::max(ys) ?? i64(0)
+    let imn = seq::min(ys) ?? i64(0)
+    let c = seq::count(ys, i64(5))
+
+    var e: i64 = i64(0)
+    match seq::sum(es) {
+        none => e = e + i64(1)
+        some(_) => {}
+    }
+    match seq::max(es) {
+        none => e = e + i64(2)
+        some(_) => {}
+    }
+    match seq::min(es) {
+        none => e = e + i64(4)
+        some(_) => {}
+    }
+
+    io::cout << "sum=" << i64(fs * 1000000.0) << " max=" << i64(fm * 1000000.0) << " min=" << i64(fn_ * 1000000.0) << " isum=" << is << " imax=" << im << " imin=" << imn << " c=" << c << " e=" << e << " c0=" << seq::count(es, f64(0.0)) << "\n"
+    return 0
+}

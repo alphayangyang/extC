@@ -1,0 +1,84 @@
+/* stl/seq.extc —— 序列归约：`sum` / `max` / `min` / `count`
+ *
+ * **语义按"从左到右"钉死**：`sum` 的累加顺序就是视图元素顺序，浮点也一样。
+ * 这条不是实现细节 —— 它让归约**可复现**（同一份输入永远同一个 bit 结果），
+ * 也让并行版必须按固定分段、按段顺序合并，而不是随手并发累加。
+ *
+ * **空视图不 trap**：三个归约返回 `option`，空输入是 `none`。
+ * 库不替调用方决定"空的时候算多少"：没有泛型的零值可填，替它填 0 又会把
+ * "没有元素"和"和是 0"混成一件事；`??` 与 `match` 两条路都在调用方手里。
+ *
+ * 只收缩看、不分配、不改变入参 —— 这三个函数在任何一个线程上都合法（`Thread=0`）。
+ *
+ * @code
+ * use stl::seq
+ *
+ * fn main() -> i32 {
+ *     var xs: mut slice<f64> = new f64[i64(3)]
+ *     xs[0] = 1.0
+ *     xs[1] = 2.0
+ *     xs[2] = 3.5
+ *     let s = seq::sum(xs) ?? f64(0.0)
+ *     if s > f64(6.0) { return 0 }
+ *     return 1
+ * }
+ * @endcode
+ */
+
+/** @brief 从左到右累加 `a` 的所有元素。
+ *  @param a 参与求和的只读视图。
+ *  @return 和；空视图是 `none`。
+ */
+fn sum<T>(a: slice<T>) -> ?T {
+    if a.len == i64(0) { return none }
+    var s: T = a[i64(0)]
+    var i: i64 = i64(1)
+    while i < a.len {
+        s = s + a[i]
+        i = i + i64(1)
+    }
+    return some(s)
+}
+
+/** @brief 找 `a` 里最大的元素（用 `>` 比较，相等时保留靠前的那个）。
+ *  @param a 参与比较的只读视图。
+ *  @return 最大值；空视图是 `none`。
+ */
+fn max<T>(a: slice<T>) -> ?T {
+    if a.len == i64(0) { return none }
+    var best: T = a[i64(0)]
+    var i: i64 = i64(1)
+    while i < a.len {
+        if a[i] > best { best = a[i] }
+        i = i + i64(1)
+    }
+    return some(best)
+}
+
+/** @brief 找 `a` 里最小的元素（用 `<` 比较，相等时保留靠前的那个）。
+ *  @param a 参与比较的只读视图。
+ *  @return 最小值；空视图是 `none`。
+ */
+fn min<T>(a: slice<T>) -> ?T {
+    if a.len == i64(0) { return none }
+    var best: T = a[i64(0)]
+    var i: i64 = i64(1)
+    while i < a.len {
+        if a[i] < best { best = a[i] }
+        i = i + i64(1)
+    }
+    return some(best)
+}
+
+/** @brief 数一数 `v` 在 `a` 里出现了多少次（用 `==` 比较）。
+ *  @param a 要扫的只读视图。
+ *  @param v 要找的值。
+ *  @return 出现次数；空视图是 0。
+ */
+fn count<T>(a: slice<T>, v: T) -> i64 {
+    var n: i64 = i64(0)
+    for x in a {
+        if x == v { n = n + i64(1) }
+    }
+    return n
+}

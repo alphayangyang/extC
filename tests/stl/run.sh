@@ -30,6 +30,9 @@ bad=0 accepted=0"
 run_case from    tests/stl/from.extc  "s=5 e=0 v=3 w=2 sum=6"
 run_case sort tests/stl/sort.extc "ok=11 sorted=1 sum=499500 xo=0 sm0=0 sm1=999 i64ok=1 ptok=1 pt0=1"
 
+echo "== stl::seq：归约（空视图给 option · 从左到右顺序 · f64 与 i64 两种实例化）=="
+run_case seq     tests/stl/seq.extc     "sum=10500000 max=4500000 min=1000000 isum=20 imax=7 imin=3 c=2 e=7 c0=0"
+
 echo "== vector<T>：grow 摊还（1000 次 push 只搬 14 次 · 1.5 倍）=="
 run_case grow    tests/stl/vector_grow.extc    "caps=4,6,9,13,19,28,42,63,94,141,211,316,474,711,1066 n=1000"
 
