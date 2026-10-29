@@ -1,0 +1,49 @@
+// bench/fortran/stencil.extc —— 2D 5 点 Jacobi 模板（f64，flat 行主序）。
+//
+// 形状、初始化、迭代、checksum 的输出格式全部钉在 SPEC.md；三臂必须逐字节同 stdout。
+// 用法：stencil [n] [iters]，缺省 64 10。输出：cs=<整数> n=<n>
+//
+// 这臂按 extC 的日常写法（甜的那一面）来：range-for 遍历、并行赋值换 buffer、
+// `stl::string::toI64` + `??` 解析参数、f-string 输出。SPEC §2 记了这一点 ——
+// 横评要比的是「用这门语言的惯用写法」，不是手写 C 的翻版。
+use std::io
+use stl::string as str
+
+// 第 i 个参数按十进制 i64 读；没给、或不是数字，就用缺省值
+// （`toI64` 给 option，`??` 在缺的时候兜底，正常路径只求值一次）。
+fn argOr(args: slice<slice<u8>>, i: i64, dflt: i64) -> i64 {
+    if args.len <= i { return dflt }
+    return str::toI64(args[i]) ?? dflt
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    let n: i64 = argOr(args, 1, 64)
+    let iters: i64 = argOr(args, 2, 10)
+    let cells: i64 = n * n
+
+    // 两块 buffer 一条声明；`new` 从 arena 拿并清零，边界格从零开始。
+    var a, b: mut slice<f64> = new f64[cells], new f64[cells]
+
+    for i in 0..n {
+        for j in 0..n {
+            a[i * n + j] = f64((i * 7 + j * 13) % 17) / 17
+        }
+    }
+
+    for _ in 0..iters {
+        for r in 1..(n - 1) {
+            for c in 1..(n - 1) {
+                b[r * n + c] = (a[(r - 1) * n + c] + a[(r + 1) * n + c] + a[r * n + c - 1] + a[r * n + c + 1]) * 0.25
+            }
+        }
+        // 交换角色：并行赋值（右边先全求值再写）；两块都是本地 mut slice，交换的是视图，不搬数据。
+        a, b = b, a
+    }
+
+    // 求和次序与 SPEC 一致（i 外、j 内 = 索引 0..cells 递增）；容器 for 的元素是拷贝，这里只读。
+    var cs: f64 = 0.0
+    for v in a { cs = cs + v }
+
+    io::cout << f"cs={i64(cs * 1000000.0)} n={n}\n"
+    return 0
+}

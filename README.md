@@ -102,6 +102,7 @@ bad.extc:3:1: error: index 7 is not inside `[4]i32` (length 4)
 
 - [`bench/app/`](bench/app/RESULTS.md)：extC STL 对 C++ STL 对 Go 的三场景（会话表、路由表、日志缓冲）。路由表那一整场（插入 / 前驱 / 区间扫描 / 删除）比 C++ 的 `std::map` 快 1.6 倍；会话表那格落后（高频删的哈希表打不过 C++ 的 `unordered_map`），落后多少、卡在哪，报告里逐条剖开。
 - [`bench/httpd/`](bench/httpd/README.md)：约 300 行 extC 写的 HTTP/1.1 静态服务器（epoll + 协程 + `sendfile`），与 `python3 -m http.server` 同判据对照：吞吐 5376 req/s 对 4368、峰值 RSS 1.9 MB 对 22.7 MB（报告里的快照）。
+- [`bench/fortran/`](bench/fortran/RESULTS.md)：一个数值 kernel 形状 —— 2D 5 点 Jacobi 模板（`f64`、flat 行主序），extC / C / gfortran 三臂。Fortran 与手写 C 基本并列（-O2 下比值 1.00–1.02），extC 在 384/768 上慢 1.7–1.9 倍、1536 上向 1 收敛（内存带宽吃掉边界检查的余量）；这臂按 extC 的惯用写法（range-for、并行赋值换 buffer、`??` 解析参数、f-string），-O3 档、向量化自报与读表须知见报告。
 
 ## 凭什么信它
 
@@ -130,6 +131,7 @@ make -j"$(nproc)"
 | `make`、`tests/run.sh`、`check.sh quick`、`check.sh ci` | `cc`（gcc 或 clang）、`python3` |
 | `check.sh`（完整模式，含基准）| 另需 `g++`、`rustc` |
 | `bench/bigmatrix/run.sh`（六语言横评）| 另需 `go`、`java` |
+| `bench/fortran/run.sh`（extC / C / gfortran 三臂）| 另需 `gfortran` |
 
 常用驱动选项：
 

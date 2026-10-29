@@ -1,0 +1,33 @@
+bench/fortran/raw.txt —— 由 run.sh 生成，别手改（原始记录，RESULTS.md 由 report.py 从本文件生成）
+machine	Intel(R) Core(TM) Ultra 9 275HX
+kernel	Linux 6.18.54.1-microsoft-standard-WSL2
+nproc	24
+gcc	cc (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+gfortran	GNU Fortran (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+extc	./build/extc
+pin	6
+iters	200
+runs	5
+sizes	384 768 1536
+flags_O2	extc/c: -O2 -std=c11 -fwrapv · fortran: -O2
+flags_O3	extc/c: -O3 -march=native -fwrapv · fortran: -O3 -march=native
+vec_O3_extc	0
+vec_O3_c	3
+data	extc	O2	384	24.364	3772	66699387122
+data	c	O2	384	12.738	3952	66699387122
+data	fortran	O2	384	12.958	5276	66699387122
+data	extc	O2	768	99.109	10684	272117169232
+data	c	O2	768	58.699	10928	272117169232
+data	fortran	O2	768	59.551	12076	272117169232
+data	extc	O2	1536	683.239	38396	1099292897289
+data	c	O2	1536	658.258	38572	1099292897289
+data	fortran	O2	1536	660.950	39732	1099292897289
+data	extc	O3	384	26.982	3832	66699387122
+data	c	O3	384	8.329	3952	66699387122
+data	fortran	O3	384	8.750	5164	66699387122
+data	extc	O3	768	106.361	10748	272117169232
+data	c	O3	768	45.026	10864	272117169232
+data	fortran	O3	768	45.736	12116	272117169232
+data	extc	O3	1536	686.355	38332	1099292897289
+data	c	O3	1536	385.897	38576	1099292897289
+data	fortran	O3	1536	384.504	39732	1099292897289
