@@ -1397,9 +1397,32 @@ void checkStmt(Checker *c, Stmt *s) {
             }
             TypeDef *td = sb->edef;
 
+            /* `_` 臂：匹配上面所有臂没覆盖的变体。它必须最后（解析器已挡），且没有载荷可绑
+             * —— 每个可能落进来的变体载荷类型都不同，一个名字没有一种类型可给。它让
+             * `if let` / `while let` 的脱糖变成普通 match 的第二条臂，也让手写 match 可以
+             * 选择「剩下的都不重要」。 */
+            MatchArm *wild = NULL;
+            for (size_t i = 0; i < s->u.match.arms.len; i++) {
+                MatchArm *arm = *(MatchArm **)vecAt(&s->u.match.arms, i);
+                if (!arm->wildcard) continue;
+                if (wild) {
+                    ckError(c, arm->line, NULL, "`_` may appear only once");
+                    return;
+                }
+                wild = arm;
+                if (i + 1 != s->u.match.arms.len) {
+                    ckError(c, arm->line,
+                            "`_` matches whatever the arms above it did not, so an arm after it"
+                            " can never match.",
+                            "`_` must be the last arm");
+                    return;
+                }
+            }
+
             /* 每臂：名字必须是本枚举的变体，且同一变体不许匹配两次。 */
             for (size_t i = 0; i < s->u.match.arms.len; i++) {
                 MatchArm *arm = *(MatchArm **)vecAt(&s->u.match.arms, i);
+                if (arm->wildcard) continue;
                 if (!findVariant(td, arm->variant)) {
                     Buf note;
                     bufInit(&note, c->arena);
@@ -1414,6 +1437,7 @@ void checkStmt(Checker *c, Stmt *s) {
                 }
                 for (size_t j = 0; j < i; j++) {
                     MatchArm *prev = *(MatchArm **)vecAt(&s->u.match.arms, j);
+                    if (prev->wildcard) continue;
                     if (strcmp(prev->variant, arm->variant) == 0) {
                         ckError(c, arm->line, NULL,
                                 "`%s` is matched twice", arm->variant);
@@ -1422,8 +1446,8 @@ void checkStmt(Checker *c, Stmt *s) {
                 }
             }
 
-            /* 穷尽性：不许漏掉变体。 */
-            for (size_t j = 0; j < td->variants.len; j++) {
+            /* 穷尽性：`_` 臂兜住剩下的；没有它就必须列全每个变体。 */
+            if (!wild) for (size_t j = 0; j < td->variants.len; j++) {
                 const char *vn = (*(Variant **)vecAt(&td->variants, j))->name;
                 bool covered = false;
                 for (size_t i = 0; i < s->u.match.arms.len && !covered; i++)
@@ -1445,6 +1469,16 @@ void checkStmt(Checker *c, Stmt *s) {
              * 第 i 个载荷字段。 */
             for (size_t i = 0; i < s->u.match.arms.len; i++) {
                 MatchArm *arm = *(MatchArm **)vecAt(&s->u.match.arms, i);
+
+                /* 兜底臂没有载荷绑定，体照常在自己的作用域里检查。 */
+                if (arm->wildcard) {
+                    pushScope(c);
+                    for (size_t k = 0; k < arm->body->u.block.stmts.len; k++)
+                        checkStmt(c, *(Stmt **)vecAt(&arm->body->u.block.stmts, k));
+                    popScope(c);
+                    continue;
+                }
+
                 Variant  *v   = findVariant(td, arm->variant);
 
                 if (arm->binds.len != v->types.len) {

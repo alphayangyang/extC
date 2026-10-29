@@ -2192,14 +2192,120 @@ static Stmt *parseBlockInner(Parser *p) {
 }
 
 /**
- * @brief 解析 `match e { variant => statement ... }`。
+ * @brief 造一个空的 `{ }` 语句块。
+ *
+ * `if let` 没有 `else` 时兜底的 `_` 臂体就是它；`while let` 的 `_` 臂体则是包着
+ * `break` 的块。
+ *
+ * @param p     解析器（取 arena）。
+ * @param line  块的行号，用于诊断定位。
+ * @return      新的空 ST_BLOCK。
+ */
+static Stmt *emptyBlock(Parser *p, int line) {
+    Stmt *b = stmtNew(p->arena, ST_BLOCK, line);
+    vecInit(&b->u.block.stmts, p->arena, sizeof(void *));
+    return b;
+}
+
+/**
+ * @brief 把 `s` 包成一个语句块；`s` 本身已经是块时原样返回。
+ *
+ * `match` 的臂体在检查器里按块遍历（`arm->body->u.block.stmts`），所以脱糖出来的臂体必须
+ * 是块 —— `if let` 的 `else` 分支可能是 `else if`（ST_IF），要在这一层包起来。
+ *
+ * @param p  解析器（取 arena）。
+ * @param s  要包起来的语句。
+ * @return   块语句。
+ */
+static Stmt *wrapInBlock(Parser *p, Stmt *s) {
+    if (s->kind == ST_BLOCK) return s;
+    Stmt *b = emptyBlock(p, s->line);
+    *(Stmt **)vecPush(&b->u.block.stmts) = s;
+    return b;
+}
+
+/**
+ * @brief 解析一条 `match` 臂（也用于 `if let` / `while let`）的模式头：变体名 + 载荷绑定。
+ *
+ * `_` 是兜底臂：它匹配上面所有臂没覆盖的变体，因此**没有**载荷可绑 —— 每个可能落进来的
+ * 变体载荷类型都不同，同一个名字没有一种类型能给。它也必须写在最后。
+ *
+ * 载荷绑定位置写 `_` 表示「这个值我不要」：名字换成一个生成的名字，没有语句会读它，
+ * 代码生成随后把它当死声明删掉。同一臂里写两个 `_ ->` 也不会撞名。
+ *
+ * @param p              解析器。
+ * @param arm            要填充的臂（`variant` / `wildcard` / `binds` / `line`）。
+ * @param allowWildcard  是否允许 `_` 作为整条臂的模式（只有 `match` 允许）。
+ * @param what           诊断里对模式位置的称呼，如 `"if let"`。
+ * @return               成功为 true；否则已报告诊断并返回 false。
+ */
+static bool parseArmPattern(Parser *p, MatchArm *arm, bool allowWildcard, const char *what) {
+    Token *name = cur(p);
+    if (name->kind != TK_IDENT && name->kind != TK_KEYWORD) {
+        ctxError(p->ctx, name->line, name->col,
+                 "a `match` arm names one of the enum's variants, e.g. `occupied => { ... }`",
+                 "expected a variant name, found `%s`", name->text);
+        return false;
+    }
+    take(p);
+    arm->variant = name->text;
+    arm->line = name->line;
+    vecInit(&arm->binds, p->arena, sizeof(void *));
+
+    if (strcmp(name->text, "_") == 0) {
+        if (!allowWildcard) {
+            ctxError(p->ctx, name->line, name->col,
+                     "`if let` / `while let` take one variant's payload into the block, so"
+                     " they need a variant to name; `_` matches everything and has no payload"
+                     " to bring.",
+                     "`_` cannot be the pattern of %s -- name the variant instead", what);
+            return false;
+        }
+        arm->wildcard = true;
+        skipNl(p);
+        if (at(p, "(")) {
+            ctxError(p->ctx, name->line, name->col,
+                     "Every variant it might match carries its own payload type, so one name"
+                     " cannot be bound to all of them.",
+                     "`_` matches any variant, so it binds no payload");
+            return false;
+        }
+        return true;
+    }
+
+    /* 载荷绑定：`circle(r) => ...` / `rect(w, h) => ...`。必须在 `=>` 之前解析，
+     * 因为它紧跟 variant 名。 */
+    skipNl(p);
+    if (at(p, "(")) {
+        take(p);
+        skipNl(p);
+        while (!at(p, ")")) {
+            Token *b = expectIdent(p, "a name to bind the payload to");
+            if (!b) return false;
+            const char *bn = b->text;
+            /* 绑定写 `_` 是「丢弃」：换成生成的名字，同一个臂里写两次也不会撞名。 */
+            if (strcmp(bn, "_") == 0) bn = sugarTempName(p);
+            *(const char **)vecPush(&arm->binds) = bn;
+            skipNl(p);
+            if (accept(p, ",")) { skipNl(p); continue; }
+            break;
+        }
+        if (!expect(p, ")", NULL)) return false;
+        skipNl(p);
+    }
+    return true;
+}
+
+/**
+ * @brief 解析 `match e { variant => statement ... }`，`_` 是最后一条兜底臂。
  *
  * 这是语句而不是表达式，理由与 `?` 相同：C 没有语句表达式，所以 "match yields a value"
  * 在这里没有新机制就表达不出来。每条臂的体是一个语句，通常是一个块。
  *
  * 每条 arm's body 是一个语句，通常是一个块；臂写的是 enum's variants 之一，它是否存在、
- * 载荷绑定是否匹配，都对照类型在类型检查器里检查。这里故意没有 `_ =>` 兜底：列全每个
- * variant 正是 match 提供的价值。
+ * 载荷绑定是否匹配，都对照类型在类型检查器里检查。列全每个 variant 是默认要求；`_`
+ * 兜底臂要**显式写**出来（它覆盖剩下所有变体，必须在最后）—— "没列全"因此仍然是一个
+ * 能用眼睛看出来的决定，而不是悄悄发生的省略。
  *
  * @param p  解析器。
  * @return   新的 ST_MATCH 语句；出错时返回 `NULL`（已报告诊断）。
@@ -2222,37 +2328,8 @@ static Stmt *parseMatch(Parser *p) {
 
     skipJunk(p);
     while (!at(p, "}")) {
-        Token *name = cur(p);
-        if (name->kind != TK_IDENT && name->kind != TK_KEYWORD) {
-            ctxError(p->ctx, name->line, name->col,
-                     "a `match` arm names one of the enum's variants, e.g. `occupied => { ... }`",
-                     "expected a variant name, found `%s`", name->text);
-            return NULL;
-        }
-        take(p);
-
         MatchArm *arm = (MatchArm *)arenaAllocZero(p->arena, sizeof(MatchArm));
-        arm->variant = name->text;
-        arm->line = name->line;
-        vecInit(&arm->binds, p->arena, sizeof(void *));
-
-        /* 载荷绑定：`circle(r) => ...` / `rect(w, h) => ...`。必须在 `=>` 之前解析，
-         * 因为它紧跟 variant 名。 */
-        skipNl(p);
-        if (at(p, "(")) {
-            take(p);
-            skipNl(p);
-            while (!at(p, ")")) {
-                Token *b = expectIdent(p, "a name to bind the payload to");
-                if (!b) return NULL;
-                *(const char **)vecPush(&arm->binds) = b->text;
-                skipNl(p);
-                if (accept(p, ",")) { skipNl(p); continue; }
-                break;
-            }
-            if (!expect(p, ")", NULL)) return NULL;
-            skipNl(p);
-        }
+        if (!parseArmPattern(p, arm, true, "a `match` arm")) return NULL;
 
         if (!expect(p, "=>", NULL)) return NULL;
 
@@ -2269,9 +2346,19 @@ static Stmt *parseMatch(Parser *p) {
             *(Stmt **)vecPush(&arm->body->u.block.stmts) = inner;
             pendingSplice(p, &arm->body->u.block.stmts);
         }
+        if (!arm->body) return NULL;
         *(MatchArm **)vecPush(&s->u.match.arms) = arm;
 
         skipJunk(p);
+        /* `_` 兜住的是「上面所有臂都没匹配」的变体：它后面再写臂永远匹配不到，所以直接
+         * 在解析期挡住，而不是让检查器事后才发现。 */
+        if (arm->wildcard && !at(p, "}")) {
+            ctxError(p->ctx, cur(p)->line, cur(p)->col,
+                     "`_` matches whatever the arms above it did not, so an arm after it can"
+                     " never match.",
+                     "an arm after `_` can never match -- `_` must be the last arm");
+            return NULL;
+        }
     }
     if (!expect(p, "}", NULL)) return NULL;
     return s;
@@ -2738,6 +2825,69 @@ static Stmt *parseVarDecl(Parser *p) {
 }
 
 /**
+ * @brief 解析 `if let PAT = E { A } else { B }`，脱糖成单变体的 `match`。
+ *
+ * 这是糖而不是新语句：`if let some(v) = e { A } else { B }` 与 `if let some(v) = e { A }`
+ * 分别变成
+ *
+ *     match e { some(v) => { A }  _ => { B } }
+ *     match e { some(v) => { A }  _ => { } }
+ *
+ * 所以检查器、代码生成、逃逸分析、回收都只要认识 `match` 与 `_` 臂 —— 与 `for` 的脱糖
+ * 同一条路线。`else if let` 链会把下一个 `if` 作为 `_` 臂体（包成块），语义不变。
+ *
+ * @param p   解析器。
+ * @param kw  已经消费掉的 `if` token（用于行号）。
+ * @return    新的 ST_MATCH；出错时返回 `NULL`（已报告诊断）。
+ */
+static Stmt *parseIfLet(Parser *p, Token *kw) {
+    take(p);                 /* `let` */
+    skipNl(p);
+
+    MatchArm *arm = (MatchArm *)arenaAllocZero(p->arena, sizeof(MatchArm));
+    if (!parseArmPattern(p, arm, false, "`if let`")) return NULL;
+
+    skipNl(p);
+    if (!expect(p, "=", "`if let` tests one variant of a value: `if let some(v) = e { ... }`"))
+        return NULL;
+    skipNl(p);
+
+    /* 条件位置：这里的 `{` 是块的开头，不是结构体字面量（与 `if`、`match` 一致）。 */
+    const bool saved = p->inCond;
+    p->inCond = true;
+    Expr *scrut = parseExpr(p);
+    p->inCond = saved;
+    if (!scrut) return NULL;
+
+    arm->body = parseBlock(p);
+    if (!arm->body) return NULL;
+
+    skipJunk(p);
+    Stmt *els = NULL;
+    if (at(p, "else")) {
+        take(p);
+        skipJunk(p);
+        els = at(p, "if") ? parseIf(p) : parseBlock(p);
+        if (!els) return NULL;
+    }
+
+    /* 兜底臂：匹配到别的变体时跑 `else`（没写 `else` 就什么都不做）。 */
+    MatchArm *wild = (MatchArm *)arenaAllocZero(p->arena, sizeof(MatchArm));
+    wild->variant = "_";
+    wild->wildcard = true;
+    wild->line = kw->line;
+    vecInit(&wild->binds, p->arena, sizeof(void *));
+    wild->body = els ? wrapInBlock(p, els) : emptyBlock(p, kw->line);
+
+    Stmt *s = stmtNew(p->arena, ST_MATCH, kw->line);
+    s->u.match.scrutinee = scrut;
+    vecInit(&s->u.match.arms, p->arena, sizeof(void *));
+    *(MatchArm **)vecPush(&s->u.match.arms) = arm;
+    *(MatchArm **)vecPush(&s->u.match.arms) = wild;
+    return s;
+}
+
+/**
  * @brief 解析 `if <cond> <block>`，可带 `else` 块或 `else if`。
  *
  * 条件解析期间 `p->inCond` 置位，那里的 `{` 因此是体的开头而不是结构体字面量。
@@ -2747,6 +2897,7 @@ static Stmt *parseVarDecl(Parser *p) {
  */
 static Stmt *parseIf(Parser *p) {
     Token *kw = take(p);
+    if (at(p, "let")) return parseIfLet(p, kw);
     const bool saved = p->inCond;
     p->inCond = true;
     Expr *cond = parseExpr(p);
@@ -3070,6 +3221,67 @@ static Stmt *parseFor(Parser *p) {
 }
 
 /**
+ * @brief 解析 `while let PAT = E { B }`，脱糖成
+ *        `while true { match E { PAT => { B }  _ => { break } } }`。
+ *
+ * 每轮重新求值 `E`，所以「取下一个、再判断」的循环不用在循环体末尾再写一遍取值；体里的
+ * `continue` 回到循环开头（重新求值），`break` 直接出循环 —— 检查器看到的仍然是普通的
+ * `while` + `match`，`break`/`continue` 的作用域规则不用改。
+ *
+ * @param p   解析器。
+ * @param kw  已经消费掉的 `while` token（用于行号）。
+ * @return    新的 ST_WHILE；出错时返回 `NULL`（已报告诊断）。
+ */
+static Stmt *parseWhileLet(Parser *p, Token *kw) {
+    take(p);                 /* `let` */
+    skipNl(p);
+
+    MatchArm *arm = (MatchArm *)arenaAllocZero(p->arena, sizeof(MatchArm));
+    if (!parseArmPattern(p, arm, false, "`while let`")) return NULL;
+
+    skipNl(p);
+    if (!expect(p, "=", "`while let` tests one variant of a value each round: `while let some(v) = next(it) { ... }`"))
+        return NULL;
+    skipNl(p);
+
+    const bool saved = p->inCond;
+    p->inCond = true;
+    Expr *scrut = parseExpr(p);
+    p->inCond = saved;
+    if (!scrut) return NULL;
+
+    arm->body = parseBlock(p);
+    if (!arm->body) return NULL;
+
+    /* 没匹配上的唯一出路是离开循环。 */
+    Stmt *brk = stmtNew(p->arena, ST_BREAK, kw->line);
+    MatchArm *wild = (MatchArm *)arenaAllocZero(p->arena, sizeof(MatchArm));
+    wild->variant = "_";
+    wild->wildcard = true;
+    wild->line = kw->line;
+    vecInit(&wild->binds, p->arena, sizeof(void *));
+    wild->body = emptyBlock(p, kw->line);
+    *(Stmt **)vecPush(&wild->body->u.block.stmts) = brk;
+
+    Stmt *m = stmtNew(p->arena, ST_MATCH, kw->line);
+    m->u.match.scrutinee = scrut;
+    vecInit(&m->u.match.arms, p->arena, sizeof(void *));
+    *(MatchArm **)vecPush(&m->u.match.arms) = arm;
+    *(MatchArm **)vecPush(&m->u.match.arms) = wild;
+
+    /* `while true`：条件每轮都为真，真正的出口是 `_` 臂里的 `break`。 */
+    Expr *always = exprNew(p->arena, EX_BOOL, kw->line);
+    always->u.bval = true;
+    Stmt *body = emptyBlock(p, kw->line);
+    *(Stmt **)vecPush(&body->u.block.stmts) = m;
+
+    Stmt *s = stmtNew(p->arena, ST_WHILE, kw->line);
+    s->u.whiles.cond = always;
+    s->u.whiles.body = body;
+    return s;
+}
+
+/**
  * @brief 解析 `while <cond> <block>`。
  *
  * 条件与 `parseIf` 一样在 `p->inCond` 置位下解析，那里的 `{` 是循环体的开头。
@@ -3079,6 +3291,7 @@ static Stmt *parseFor(Parser *p) {
  */
 static Stmt *parseWhile(Parser *p) {
     Token *kw = take(p);
+    if (at(p, "let")) return parseWhileLet(p, kw);
     const bool saved = p->inCond;
     p->inCond = true;
     Expr *cond = parseExpr(p);
@@ -3318,6 +3531,135 @@ static Expr *fmtStr(Parser *p, const char *s, size_t len, int line) {
 }
 
 /**
+ * @brief 一份解析好的格式说明符（`{x:>8}` 里 `>8` 那一段）。
+ *
+ * 说明符本身不带类型信息，所以选哪个填充原语、缺省对齐朝哪边，都要等检查器知道槽里那个值的
+ * 静态类型才定；这里只把**写下来的**东西记成五个整数实参。
+ */
+typedef struct {
+    long long width;   /* 补到多宽（按字节）；0 表示不补 */
+    long long fill;    /* 填充用的字节（ASCII）；缺省是空格 */
+    long long align;   /* `<` 左对齐、`>` 右对齐、`^` 居中；-1 表示没写 */
+    long long prec;    /* 浮点的小数位数；-1 表示没写 */
+    long long code;    /* 类型码：0 `d`、1 `f`、2 `s`；-1 表示没写 */
+} FmtSpec;
+
+/**
+ * @brief 把一个对齐字符翻成方向号，与 io::LEFT / io::RIGHT / io::CENTER 一致。
+ *
+ * @param c  对齐字符。
+ * @return    0 左、1 右、2 居中；不是对齐字符时返回 -1。
+ */
+static int fmtAlignCode(char c) {
+    if (c == '<') return 0;
+    if (c == '>') return 1;
+    if (c == '^') return 2;
+    return -1;
+}
+
+/**
+ * @brief 解析 f-string 格式说明符：`[[fill]align][0][width][.prec][type]`。
+ *
+ * 语法与 Python 的 format spec 大体一致，但只保留三种填充原语需要的部分：宽度按**字节**算，
+ * 精度只对浮点有意义，类型码 `d` / `f` / `s` 只用来和值的静态类型对齐（真正的选择在检查器）。
+ *
+ * @param p     解析器。
+ * @param s     说明符文本（冒号之后、`}` 之前，未必以 NUL 结尾）。
+ * @param n     说明符字节数。
+ * @param line  说明符所在的源码行。
+ * @param col   说明符第一个字节的列（诊断用）。
+ * @param out   解析结果；调用方只填写初值，成功时整体覆盖。
+ * @return      成功为 `true`；语法错误为 `false`（已报告诊断）。
+ */
+static bool fmtParseSpec(Parser *p, const char *s, size_t n, int line, int col, FmtSpec *out) {
+    out->width = 0; out->fill = 32; out->align = -1; out->prec = -1; out->code = -1;
+    if (n == 0) {
+        ctxError(p->ctx, line, col,
+                 "a specifier says how to lay the value out; `{}` already prints it as `<<` would",
+                 "an empty format specifier");
+        return false;
+    }
+    size_t k = 0;
+    /* [fill]align：两个字符且第二个是对齐符时第一个是填充字节；否则一个对齐符 */
+    int a = n >= 2 ? fmtAlignCode(s[1]) : -1;
+    if (a >= 0) {
+        out->fill = (long long)(unsigned char)s[0];
+        out->align = a;
+        k = 2;
+    } else if ((a = fmtAlignCode(s[0])) >= 0) {
+        out->align = a;
+        k = 1;
+    }
+    /* `0` 标志：零填充；没写对齐时按右对齐（`{n:04}` 的常见写法） */
+    bool zero = false;
+    if (k < n && s[k] == '0') {
+        zero = true;
+        out->fill = 48;
+        if (out->align < 0) out->align = 1;
+        k += 1;
+    }
+    /* width */
+    while (k < n && s[k] >= '0' && s[k] <= '9') {
+        out->width = out->width * 10 + (s[k] - '0');
+        if (out->width > 999999) {
+            ctxError(p->ctx, line, col + (int)k,
+                     "a wider field than this is a typo, not a layout",
+                     "format width is too large");
+            return false;
+        }
+        k += 1;
+    }
+    if (zero && out->width == 0) {
+        ctxError(p->ctx, line, col + (int)k,
+                 "`0` means zero padding and needs a width, as in `{n:04}`",
+                 "`0` in a format specifier needs a width");
+        return false;
+    }
+    /* .prec */
+    if (k < n && s[k] == '.') {
+        k += 1;
+        if (k >= n || s[k] < '0' || s[k] > '9') {
+            ctxError(p->ctx, line, col + (int)k,
+                     "a precision is `.` followed by the number of decimal places, as in `{v:.2f}`",
+                     "expected digits after `.` in a format specifier");
+            return false;
+        }
+        out->prec = 0;
+        while (k < n && s[k] >= '0' && s[k] <= '9') {
+            out->prec = out->prec * 10 + (s[k] - '0');
+            if (out->prec > 99) {
+                ctxError(p->ctx, line, col + (int)k,
+                         "a precision this large would only print noise",
+                         "format precision is too large");
+                return false;
+            }
+            k += 1;
+        }
+    }
+    /* type */
+    if (k < n) {
+        if (s[k] == 'd') out->code = 0;
+        else if (s[k] == 'f') { out->code = 1; if (out->prec < 0) out->prec = 6; }
+        else if (s[k] == 's') out->code = 2;
+        else {
+            ctxError(p->ctx, line, col + (int)k,
+                     "a specifier is `[[fill]align][0][width][.prec][type]`, and the type is"
+                     " `d`, `f` or `s`",
+                     "unexpected `%c` in a format specifier", s[k]);
+            return false;
+        }
+        k += 1;
+    }
+    if (k != n) {
+        ctxError(p->ctx, line, col + (int)k,
+                 "a specifier is `[[fill]align][0][width][.prec][type]`",
+                 "unexpected `%c` in a format specifier", s[k]);
+        return false;
+    }
+    return true;
+}
+
+/**
  * @brief 把 f-string 的部件展开进 `lhs << …` 链。
  *
  * 每个槽先在片段上跑**真正的词法与解析器**（行列保持真实），再按
@@ -3374,27 +3716,34 @@ static bool fmtSplice(Parser *p, Expr **lhs, Token *ft) {
             ctxError(p->ctx, ft->line, col + 1, NULL, "an f-string slot cannot be empty");
             return false;
         }
-        /* 顶层的 `:` ⇒ 格式说明符：**v2**（先明确拒绝，别让它静默变成表达式的一部分） */
+        /* 顶层的 `:` ⇒ 格式说明符：按 `[[fill]align][0][width][.prec][type]` 解析 */
+        size_t q = j;
         {
             int d2 = 0; bool st = false;
-            for (size_t q = i + 1; q < j; q++) {
-                char d = src[q];
-                if (st) { if (d == '\\') q += 1; else if (d == '"') st = false; continue; }
+            for (size_t t = i + 1; t < j; t++) {
+                char d = src[t];
+                if (st) { if (d == '\\') t += 1; else if (d == '"') st = false; continue; }
                 if (d == '"') { st = true; continue; }
                 if (d == '(' || d == '[' || d == '{') d2 += 1;
                 else if (d == ')' || d == ']' || d == '}') d2 -= 1;
-                else if (d == ':' && d2 == 0) {
-                    ctxError(p->ctx, ft->line, col,
-                             "format specs (`{x:>8}`) are v2; v1 prints the value as `<<` would",
-                             "format specifiers are not implemented yet");
-                    return false;
-                }
+                else if (d == ':' && d2 == 0) { q = t; break; }
             }
         }
+        size_t exprLen = q - (i + 1);
+        if (exprLen == 0) {
+            ctxError(p->ctx, ft->line, col + 1,
+                     "write the value before the `:`",
+                     "an f-string slot has no value before its format specifier");
+            return false;
+        }
+        FmtSpec spec;
+        spec.width = 0; spec.fill = 32; spec.align = -1; spec.prec = -1; spec.code = -1;
+        if (q < j && !fmtParseSpec(p, src + q + 1, j - q - 1, ft->line, col + (int)(q - i) + 1, &spec))
+            return false;
         /* 槽里的表达式：**真解析器**跑在片段上（行列保持真实） */
         Vec toks;
         vecInit(&toks, p->arena, sizeof(Token));   /* token 是**按值**存的（见 lxPushAt）*/
-        lexRange(p->ctx, src + i + 1, innerLen, ft->line, col + 1, &toks);
+        lexRange(p->ctx, src + i + 1, exprLen, ft->line, col + 1, &toks);
         if (p->ctx->hasError) return false;
         Parser sub = *p;
         sub.toks = &toks;
@@ -3409,8 +3758,27 @@ static bool fmtSplice(Parser *p, Expr **lhs, Token *ft) {
                      cur(&sub)->text);
             return false;
         }
-        *lhs = mkBin(p, "<<", *lhs, e, ft->line);
-        col += (int)(innerLen + 2);
+        if (q < j) {
+            /* 说明符：脱糖成保留名的 `__extc_pad` 方法调用。实参依次是槽值、宽度、填充字节、
+             * 对齐（-1 = 没写）、精度（-1 = 没写）、类型码（-1 = 没写）。选哪个填充原语要等
+             * 检查器知道槽值的静态类型才定，所以这里只把说明符原样记下来。 */
+            Vec args;
+            vecInit(&args, p->arena, sizeof(void *));
+            *(Expr **)vecPush(&args) = e;
+            *(Expr **)vecPush(&args) = forInt(p, spec.width, ft->line);
+            *(Expr **)vecPush(&args) = forInt(p, spec.fill, ft->line);
+            *(Expr **)vecPush(&args) = forInt(p, spec.align, ft->line);
+            *(Expr **)vecPush(&args) = forInt(p, spec.prec, ft->line);
+            *(Expr **)vecPush(&args) = forInt(p, spec.code, ft->line);
+            Expr *m = exprNew(p->arena, EX_METHOD, ft->line);
+            m->u.method.recv = *lhs;
+            m->u.method.name = "__extc_pad";
+            m->u.method.args = args;
+            *lhs = m;
+        } else {
+            *lhs = mkBin(p, "<<", *lhs, e, ft->line);
+        }
+        col += (int)(j - i + 1);
         i = j + 1;
     }
     if (tl > 0) *lhs = mkBin(p, "<<", *lhs, fmtStr(p, txt, tl, ft->line), ft->line);

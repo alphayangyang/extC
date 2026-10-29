@@ -494,8 +494,11 @@ typedef enum {
  *
  * A variant that carries a payload also carries a list of names to bind it to. */
 typedef struct {
-    const char *variant;   /* the variant name; `_` is the catch-all arm, which is not
-                            * supported yet -- the slot is reserved for it */
+    const char *variant;   /* the variant name; for the catch-all arm it is "_" */
+    bool        wildcard;  /* `_ => ...`: matches every variant the arms above it did not.
+                            * It must be the last arm and binds no payload -- one name cannot
+                            * have the type of every variant's payload. `if let` desugars to
+                            * a match whose second arm is exactly this one. */
     Vec         binds;     /* const char*: the names bound to the payload, that is, the
                             * `r` of `circle(r) => ...` */
     Stmt       *body;

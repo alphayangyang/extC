@@ -968,6 +968,19 @@ void planSetNeedOp(Expr *e, bool v);
  * 一个 `EX_ASSOC` 解析到了哪个实例类型、以及 `dyn` 调用怎么到达接收者。 */
 
 /**
+ * @brief f-string 格式说明符会选中的填充原语。
+ *
+ * 说明符本身不带类型，选哪个原语由槽里那个值的**静态类型**决定：整数走 `padInt`，浮点走
+ * `padF`，文本（`slice<u8>`）走 `padText`。检查器把这个选择记在节点上，代码生成按它发调用。
+ */
+typedef enum {
+    PLAN_PAD_NONE = 0,
+    PLAN_PAD_TEXT,
+    PLAN_PAD_INT,
+    PLAN_PAD_FLOAT
+} PlanPadKind;
+
+/**
  * @brief 取 `ext` 任务被交给的那个域表达式。
  *
  * @param e  `ext` 调用节点。
@@ -1050,6 +1063,22 @@ bool     planCallViaFn(const Expr *e);
  * @param v  经函数值调用为 `true`。
  */
 void planSetCallViaFn(Expr *e, bool v);
+
+/**
+ * @brief 取 f-string 格式说明符槽选中的填充原语。
+ *
+ * @param e  方法调用节点（`__extc_pad`）。
+ * @return   选中的原语；没有记录时为 `PLAN_PAD_NONE`。
+ */
+PlanPadKind planPadKind(const Expr *e);
+
+/**
+ * @brief 记下 f-string 格式说明符槽选中的填充原语。
+ *
+ * @param e  方法调用节点（`__extc_pad`）。
+ * @param v  选中的原语。
+ */
+void planSetPadKind(Expr *e, PlanPadKind v);
 
 /* ---- depth and origin facts --------------------------------------------------------
  *

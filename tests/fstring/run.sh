@@ -2,7 +2,7 @@
 # tests/fstring/run.sh —— `f"…"` 的判据：
 #   ① 输出正确（多槽 / 转义 / 每槽求值一次 / 无文本段）
 #   ② **生成物与手写 `<<` 链逐字节相同** ← 零运行时成本 + "它就是语法糖"的最硬证据
-#   ③ 五条反例（空槽 · 未闭合 · 多余 `}` · 格式说明符是 v2 · 只在 `<<` 右侧合法）
+#   ③ 反例：空槽 · 未闭合 · 多余 `}` · 只在 `<<` 右侧合法 · 格式说明符的 10 条语法/类型错误
 set -u
 cd "$(dirname "$0")/../.."
 EXTC=${EXTC:-./build/extc}
@@ -27,6 +27,16 @@ if diff -q "$tmp/pad" "$tmp/padwant" >/dev/null 2>&1; then
     pass=$((pass+1))
 else
     echo "  FAIL pad-primitives    ->  $(tr '\n' '|' < "$tmp/pad")"; fail=$((fail+1))
+fi
+
+# ①c 格式说明符（v2）：宽度 / 填充 / 对齐 / 精度 / 类型码
+"$EXTC" -w --run tests/fstring/spec.extc > "$tmp/spec" 2>&1
+printf '[    hi][hi    ][**hi**]\n[-005][    -5][    -5]\n[3.14][    3.14][3.141590]\n[   42][hi  ]\nmixed 42 and 0042 and {}\n3|\n' > "$tmp/specwant"
+if diff -q "$tmp/spec" "$tmp/specwant" >/dev/null 2>&1; then
+    echo "  ok   spec-output       ->  左/右/居中 · 填充 · 零填充（符号在前）· 精度 · 宽度+精度"
+    pass=$((pass+1))
+else
+    echo "  FAIL spec-output       ->  $(tr '\n' '|' < "$tmp/spec")"; fail=$((fail+1))
 fi
 
 # ② 与手写链逐字节相同
@@ -65,11 +75,55 @@ neg fstring-stray-brace "$H
     io::cout << f\"a}b\"
     return 0
 }" "no matching"
-neg fstring-spec-v2     "$H
+neg spec-align-unknown "$H
     let n: i64 = 1
-    io::cout << f\"{n:>8}\"
+    io::cout << f\"{n:q8}\"
     return 0
-}" "not implemented yet"
+}" "unexpected"
+neg spec-empty         "$H
+    let n: i64 = 1
+    io::cout << f\"{n:}\"
+    return 0
+}" "an empty format specifier"
+neg spec-zero-narrow   "$H
+    let n: i64 = 1
+    io::cout << f\"{n:0}\"
+    return 0
+}" "needs a width"
+neg spec-dot-nodigits  "$H
+    let v: f64 = 1.5
+    io::cout << f\"{v:.}\"
+    return 0
+}" "expected digits"
+neg spec-width-huge    "$H
+    let n: i64 = 1
+    io::cout << f\"{n:9999999}\"
+    return 0
+}" "too large"
+neg spec-prec-int      "$H
+    let n: i64 = 1
+    io::cout << f\"{n:.2}\"
+    return 0
+}" "applies to floats"
+neg spec-code-mismatch "$H
+    let s: slice<u8> = \"x\"
+    io::cout << f\"{s:d}\"
+    return 0
+}" "says the value is"
+neg spec-bool          "$H
+    let b: bool = true
+    io::cout << f\"{b:>4}\"
+    return 0
+}" "cannot take a format specifier"
+neg spec-not-stream    "$H
+    let n: i64 = 5
+    n << f\"{n:8}\"
+    return 0
+}" "cannot take a format specifier"
+neg spec-no-value      "$H
+    io::cout << f\"{:>8}\"
+    return 0
+}" "no value before its format specifier"
 neg fstring-not-shift   "$H
     let s: slice<u8> = f\"x\"
     return 0

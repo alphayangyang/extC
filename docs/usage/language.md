@@ -104,20 +104,27 @@ fn main() -> i32 { let __x = 1  return 0 }
 - 槽位 `{表达式}`；`{{` / `}}` 表示字面花括号；每槽只求值一次。
 - **只在 `<<` 的右操作数位置合法**（`io::cout << f"…"`）；别处报
   `an f-string is only valid as the right-hand side of '<<'`。
-- 格式说明符（`{x:>8}` / `{:04}` / `{:.2f}`）**现在不支持**，写 `<` 之外的说明符报
-  `format specifiers are not implemented yet`（见 [`../TODO.md`](../TODO.md)）。
-- 空槽 `{}`、未闭合 `{`、多余的 `}`、整体为空的 `f""` 都是编译错误。
+- 格式说明符：槽里写 `{值:说明符}`，语法 `[[fill]align][0][width][.prec][type]`。
+  - 对齐 `<` 左 / `>` 右 / `^` 居中，前面可加一个填充字节（`{:*^8}`）；不写对齐时文本靠左、数字靠右。
+  - `0` 是零填充（默认右对齐），负号在数字前：`{n:04}` 遇到 -5 输出 `-005`；宽度按**字节**算。
+  - `.精度` 只对浮点有意义（`{v:.2f}`），类型码 `d` / `f` / `s` 只做一致性校验。
+  - 能带说明符的只有输出流上的整数、浮点、`slice<u8>` / `mut slice<u8>`；别的类型或接收者不是流时报
+    `` `T` cannot take a format specifier ``。
+- 空槽 `{}`、未闭合 `{`、多余的 `}`、整体为空的 `f""`、空说明符 `{x:}` 都是编译错误。
 
 ```extc
 // 结果：tab:[	] nl:[\n] quote:["] backslash:[\] hex:[A]
 //       10 65 92
 //       n=42 {brace} 世界
+//       [    42][0042][3.14]
 use std::io
 fn main() -> i32 {
     io::cout << "tab:[\t] nl:[\\n] quote:[\"] backslash:[\\] hex:[\x41]\n"
     io::cout << i64('\n') << " " << i64('\x41') << " " << i64('\\') << "\n"
     let n = 42
+    let v: f64 = 3.14159
     io::cout << f"n={n} {{brace}} 世界\n"
+    io::cout << f"[{n:>6}][{n:04}][{v:.2f}]\n"
     return 0
 }
 ```
@@ -686,7 +693,8 @@ fn main() -> i32 {
 ### 9.5 `option` / `result` 与 `?`
 
 `option<T> = | none | some(T)`、`result<T, E> = | failure(E) | success(T)`。取值两条路：
-`match`（穷尽）或 `?`（失败往上抛）。
+`match`（穷尽）或 `?`（失败往上抛）。只关心一个变体时还可以用 `if let` / `while let`
+（第 11.7 节）—— 它们是 `match` + `_` 兜底臂的糖。
 
 `?` **只能**出现在这四个位置（整条语句可以重写的地方）：
 
@@ -774,7 +782,7 @@ fn main() -> i32 { return i32(add(i64(1), i64(2)) + addTwice(i64(3))) }
 ### 11.1 语句
 
 `let`/`var`、`global let/var`、赋值（`=` `+=` `-=` `*=` `/=` `%=`）、并行赋值（`t1, t2 = e1, e2`）、
-`if`/`else if`/`else`、`while`、`for`、`match`、`return`、`break`、`continue`、
+`if`/`else if`/`else`、`if let`/`while let`、`while`、`for`、`match`（含最后的 `_` 兜底臂）、`return`、`break`、`continue`、
 块 `{ … }`、`trap(msg)`、`yield expr`、表达式语句。
 `if`/`while` 的条件必须是 `bool`（`expected 'bool', found 'i32'`）。
 `if`/`while`/`match` 的条件里不能直接写结构体字面量，要加括号
@@ -784,8 +792,12 @@ fn main() -> i32 { return i32(add(i64(1), i64(2)) + addTwice(i64(3))) }
 ### 11.2 `match` 是语句
 
 - `match e { 变体 => 语句 … }`；分支体是**一条语句**，通常写成块。
-- 必须**穷尽**所有变体，没有 `_` 兜底：漏一个报
+- 默认必须**穷尽**所有变体：漏一个报
   `` `match` does not handle `blue` -- every variant must be listed ``。
+- 想兜底就**显式**写最后一条 `_ => 语句`：它匹配上面没列出的所有变体，必须最后、不绑载荷
+  （`` an arm after `_` can never match -- `_` must be the last arm `` /
+  `` `_` matches any variant, so it binds no payload ``）。
+- 载荷位写 `_` 是**丢弃该位**（`circle(_) => …`、`pair(a, _) => …`），和整条 `_` 臂不是一回事。
 - 带载荷的变体用 `circle(r) => …` 按位置绑定；被 match 的表达式只求值一次。
 - 它是语句不是表达式：想往外传值就在分支里 `return` / 赋值。
 
@@ -913,6 +925,59 @@ fn main() -> i32 {
 }
 ```
 
+### 11.7 `if let` / `while let`
+
+只关心一个变体时，用 `if let` 代替写全的 `match`：
+
+- `if let PAT = e { … }`：`e` 求值一次，形状是 `PAT` 就绑载荷跑块；否则跑 `else`（没有 `else` 就什么也不做）。
+- `if let PAT = e { … } else if let PAT2 = e2 { … } else { … }`：链式写，按顺序试。
+- `while let PAT = e { … }`：每轮重新求值 `e`；匹配就跑块，不匹配就结束循环；块里的
+  `continue` 回到条件、`break` 跳出循环。
+- `PAT` 只能是**一个**变体，按位置绑定载荷（`some(v)`、`pair(a, b)`）；载荷位写 `_` 表示丢弃
+  （`some(_)`、`pair(a, _)`）。`_` 本身不能当 `if let` / `while let` 的模式。
+
+两者都是 parser 期脱糖，没有新语义：
+
+- `if let PAT = e { A } else { B }` 就是 `match e { PAT => { A } _ => { B } }`；
+- `while let PAT = e { A }` 就是 `while true { match e { PAT => { A } _ => { break } } }`。
+
+所以脱糖出来的 `_` 是**显式**的兜底臂 —— 手写 `match` 不写 `_` 仍然要求穷尽（见 11.2）。
+`else` 里再嵌套 `if let`、块里再写 `if let` 都可以。
+
+```extc
+// 结果：some 42 / empty / 0 1 / done
+use std::io
+
+fn next(v: i32) -> ?i32 {
+    if v < 2 { return some(v) }
+    return none
+}
+
+fn main() -> i32 {
+    let o: ?i32 = some(42)
+    if let some(v) = o {
+        io::cout << "some " << v << "\n"
+    } else {
+        io::cout << "none\n"
+    }
+
+    let n: ?i32 = none
+    if let some(_) = n {
+        io::cout << "has\n"
+    } else {
+        io::cout << "empty\n"
+    }
+
+    var k: i32 = 0
+    while let some(v) = next(k) {
+        io::cout << v << " "
+        k = v + 1
+    }
+    io::cout << "done\n"
+    return 0
+}
+```
+
 ---
 
 ## 12. 结果：现在写不出来的写法
@@ -955,3 +1020,18 @@ fn main() -> i32 {
   交换一次会看到两条。
 
 彻底解决要新增 StmtKind（让并行赋值成为一等语句），属后续工作。
+
+`if let` / `while let` 是 `match` + 显式 `_` 兜底臂的糖，由此能撞上的局限：
+
+- 只能测**一个**变体：没有 guard（`if let some(v) = o && v > 0`）、没有 `let … else`、
+  也没有或模式（`a | b`）；两个变体都要处理就还是写 `match`。
+- `_` 整臂只能最后一条、不能绑载荷；`if let` / `while let` 的模式不能是 `_` 本身
+  （要忽略载荷就写 `some(_)`）。
+
+`f"…"` 的格式说明符只覆盖输出流上的三种值（整数、浮点、`slice<u8>`）：
+
+- 宽度按**字节**算（中文一个字算 3 字节）。
+- 定点格式化在 `|v| >= 1e15` 时**运行时 trap**（`io::pFmtF` 的边界）；要打这么大的数就先用 `<<`，
+  或自己缩小数量级。
+- 没有 `+` / `#` / 千分位之类的符号选项，也没有 `e` / `x` 等类型码：`d` / `f` / `s` 只做
+  类型一致性校验，不换写法。

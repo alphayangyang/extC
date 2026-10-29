@@ -1,0 +1,41 @@
+// `_` 兜底臂：match 里显式写 `_` 才免穷尽检查，而且必须是最后一条、不能绑载荷。
+// 载荷里写 `_` 是丢弃该位（和 `_` 整臂不是一回事）。
+// expect: 1 0 0|width 3|only-wild|none|dot
+
+use std::io
+
+type shape = | circle(f64) | rect(f64, f64) | dot
+
+fn name(s: shape) -> i32 {
+    match s {
+        circle(r) => { return 1 }
+        _ => { return 0 }
+    }
+}
+
+fn main() -> i32 {
+    io::cout << name(shape.circle(2.0)) << " " << name(shape.rect(1.0, 2.0)) << " " << name(shape.dot) << "\n"
+
+    var s: shape = shape.rect(3.0, 4.0)
+    match s {
+        rect(w, _) => { io::cout << "width " << w << "\n" }
+        _ => { io::cout << "other\n" }
+    }
+
+    match s { _ => { io::cout << "only-wild\n" } }
+
+    let o: ?i32 = none
+    match o {
+        none => { io::cout << "none\n" }
+        _ => { io::cout << "some\n" }
+    }
+
+    s = shape.dot
+    match s {
+        circle(_) => { io::cout << "c\n" }
+        _ => {
+            match o { none => { io::cout << "dot\n" } _ => { io::cout << "nested\n" } }
+        }
+    }
+    return 0
+}

@@ -2283,6 +2283,55 @@ static const char *genDynValue(CG *g, Expr *e) {
 }
 
 /**
+ * @brief 发射 f-string 槽的格式说明符：按检查器记下的填充原语发 `padText` / `padInt` / `padF`。
+ *
+ * 实参按**参数名**对应（`padF` 的 `prec` 在 `fill` / `align` 之前，按位置取会错位）。
+ * 宽度、填充、对齐、精度在解析期就是字面量；对齐没写时（-1）按值的种类给缺省：文本靠左、
+ * 数字靠右。类型码只是给检查器做一致性校验的，不发射。
+ *
+ * @param g  生成器。
+ * @param e  保留名的 EX_METHOD；实参依次是槽值、宽度、填充字节、对齐、精度、类型码。
+ * @return   C 调用表达式；plan 侧没有记录或方法对不上时返回 "0"。
+ */
+static const char *genPadCall(CG *g, Expr *e) {
+    static const char *const padNames[] = {"", "padText", "padInt", "padF"};
+    PlanPadKind kind = planPadKind(e);
+    if (kind <= PLAN_PAD_NONE || kind > PLAN_PAD_FLOAT) return "0";
+    Type *recvT = subst(g, e->u.method.recv->type);
+    FuncDef *f = findMethod(ttBase(recvT), padNames[kind]);
+    if (!f || f->params.len < 2) return "0";
+    Param *p0 = *(Param **)vecAt(&f->params, 0);
+    const char *recvC = genExpr(g, e->u.method.recv);
+    recvC = selfOperandAsParam(g, e->u.method.recv, recvC, p0, recvT);
+    const char *fname = cMethodName(g, recvT, f);
+    Buf b;
+    bufInit(&b, g->arena);
+    bufPrintf(&b, "%s(%s", fname, recvC);
+    for (size_t i = 1; i < f->params.len; i++) {
+        Param *pm = *(Param **)vecAt(&f->params, i);
+        int slot = -1;
+        if (pm->name && strcmp(pm->name, "v") == 0) slot = 0;
+        else if (pm->name && strcmp(pm->name, "width") == 0) slot = 1;
+        else if (pm->name && strcmp(pm->name, "fill") == 0) slot = 2;
+        else if (pm->name && strcmp(pm->name, "align") == 0) slot = 3;
+        else if (pm->name && strcmp(pm->name, "prec") == 0) slot = 4;
+        if (slot < 0 || slot >= (int)e->u.method.args.len) return "0";
+        Expr *ae = *(Expr **)vecAt(&e->u.method.args, slot);
+        if (slot == 3 && ae->kind == EX_INT && ae->u.ival < 0) {
+            /* 没写对齐：文本靠左，数字靠右 */
+            bufPrintf(&b, ", %s", kind == PLAN_PAD_TEXT ? "0" : "1");
+            continue;
+        }
+        const char *at = genExpr(g, ae);
+        if (slot == 0 && kind == PLAN_PAD_INT) bufPrintf(&b, ", (int64_t)(%s)", at);
+        else if (slot == 0 && kind == PLAN_PAD_FLOAT) bufPrintf(&b, ", (double)(%s)", at);
+        else bufPrintf(&b, ", %s", at);
+    }
+    bufPutc(&b, ')');
+    return bufCstr(&b);
+}
+
+/**
  * @brief 把方法调用生成成对接收者的普通函数调用。
  *
  * `a.f(x)` 就是 `f(a, x)`：接收者要变成第一个参数要求的形态（引用取地址、值直接传），
@@ -2307,6 +2356,10 @@ static const char *genMethodCall(CG *g, Expr *e) {
      * template body has many instances, so a `func` stored there would be the wrong method for
      * all but the last one. */
     Type *recvT = subst(g, e->u.method.recv->type);
+    /* f-string 槽的格式说明符是解析器脱糖出的保留名调用：填充原语由检查器记进 plan 侧，
+     * 这里按那个选择直接发，不走普通方法解析。 */
+    if (e->u.method.name && strcmp(e->u.method.name, "__extc_pad") == 0)
+        return genPadCall(g, e);
     FuncDef *f = planCallee(e);
     if (!f) f = findMethod(ttBase(recvT), e->u.method.name);
     /* The **handle** protocol: the receiver is a `coroutine<T>` (the marker type, whatever the
@@ -6249,7 +6302,7 @@ return;
  *
  * 被匹配表达式只求值一次（枚举带载荷时先落进临时量），因为分支体读 `.u.<variant>`，第二次求值会有副作用。泛型实例里先把记录的类型 `subst` 成实例类型，否则分支会拿模板类型去比一个不存在的常量。
  *
- * 用 if/else 链而**不是**变体常量上的 `switch`：分支体里的 `break`/`continue` 属于外层循环，在 `switch` 里只会跳出 switch。检查器保证 match 穷尽，所以不需要收尾的 `else`。
+ * 用 if/else 链而**不是**变体常量上的 `switch`：分支体里的 `break`/`continue` 属于外层循环，在 `switch` 里只会跳出 switch。收尾的 `else` 只在最后一条是 `_` 兜底臂时出现；否则检查器已保证 match 穷尽。
  *
  * @param g  代码生成状态。
  * @param s  `match` 语句。
@@ -6280,11 +6333,20 @@ if (payload) {
  * would only leave the switch, so a `while true` with a `break`
  * would never terminate.
  *
- * No final `else` is needed: the checker guarantees that the match
- * is exhaustive, and a missing variant would not compile at all. */
+ * A final `else` appears only when the last arm is the `_` catch-all;
+ * otherwise the checker guarantees that the match is exhaustive, and a
+ * missing variant would not compile at all. */
 flushPrefix(g);
 for (size_t i = 0; i < s->u.match.arms.len; i++) {
     MatchArm *arm = *(MatchArm **)vecAt(&s->u.match.arms, i);
+    if (arm->wildcard) {
+        /* `_` 臂没有载荷可绑：它就是 if 链的收尾 else（第一臂就是 `_` 时发一个块）。 */
+        cgLine(g, "%s", i == 0 ? "{" : "} else {");
+        g->indent++;
+        genBlockBody(g, arm->body);
+        g->indent--;
+        continue;
+    }
     cgLine(g, "%s (%s%s == %s_%s) {", i == 0 ? "if" : "} else if",
            subj, payload ? ".tag" : "", et ? et->name : "?", arm->variant);
     g->indent++;

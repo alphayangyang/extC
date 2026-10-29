@@ -1,0 +1,11 @@
+// `_` 兜底臂必须最后：它后面的臂永远匹配不到。
+// expect: an arm after `_` can never match
+type color = | red | green
+
+fn main() -> i32 {
+    let c: color = color.red
+    match c {
+        _ => { return 0 }
+        red => { return 1 }
+    }
+}

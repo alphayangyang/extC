@@ -1,0 +1,7 @@
+// if let 必须点名一个变体；`_` 是整臂兜底，不是模式。
+// expect: cannot be the pattern of `if let`
+fn main() -> i32 {
+    let o: ?i32 = none
+    if let _ = o { return 1 }
+    return 0
+}

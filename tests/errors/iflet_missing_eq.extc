@@ -1,0 +1,7 @@
+// if let 的写法是「模式 = 表达式」，少了 = 就是语法错。
+// expect: expected `=`
+fn main() -> i32 {
+    let o: ?i32 = none
+    if let some(v) { return 1 }
+    return 0
+}

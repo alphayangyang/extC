@@ -1330,6 +1330,81 @@ static Type *checkCallThroughFn(Checker *c, Expr *e, Type *ft) {
 }
 
 /**
+ * @brief 检查 f-string 槽里的格式说明符（解析器脱糖出的保留名 `__extc_pad` 调用）。
+ *
+ * 说明符在源码里只写"怎么排"，用哪个填充原语却取决于槽值的**静态类型**：整数走 `padInt`、
+ * 浮点走 `padF`、`slice<u8>` 走 `padText`。这个选择只能在这里做——只有这里同时知道值的
+ * 类型和写下来的宽度/填充/对齐/精度；发射端按记进 plan 侧的选择发对应的调用。
+ *
+ * @param c  检查器。
+ * @param e  保留名的 EX_METHOD；实参依次是槽值、宽度、填充字节、对齐、精度、类型码。
+ * @return   输出流的类型；参数不自洽或值类型不支持说明符时返回错误类型（已报告诊断）。
+ */
+static Type *checkPadCall(Checker *c, Expr *e) {
+    if (e->u.method.args.len != 6) return ttError(c->tt);   /* 解析器自己造的，不可能 */
+    Type *rt = checkExpr(c, e->u.method.recv);
+    if (!rt || rt->kind == TY_ERROR) return ttError(c->tt);
+    Type *rb = ttBase(rt);
+    /* 能带说明符的只有输出流：`padText` 是流身上的方法，用它当"这是不是流"的闸门 */
+    if (!findMethod(rb, "padText")) {
+        ckError(c, e->line,
+                "A format specifier writes through a stream: put the f-string on the right of `<<`,"
+                " as in `io::cout << f\"{x:>8}\"`.",
+                "`%s` cannot take a format specifier", typeStr(c, rt));
+        return ttError(c->tt);
+    }
+    Type *vt = checkExpr(c, *(Expr **)vecAt(&e->u.method.args, 0));
+    if (!vt || vt->kind == TY_ERROR) return ttError(c->tt);
+    const char *padName = NULL;
+    PlanPadKind kind = PLAN_PAD_NONE;
+    if (ttIsInteger(vt)) { padName = "padInt"; kind = PLAN_PAD_INT; }
+    else if (ttIsFloat(vt)) { padName = "padF"; kind = PLAN_PAD_FLOAT; }
+    else if (ttIsViewType(vt) && vt->targs.len == 1 &&
+             ttIs(*(Type **)vecAt(&vt->targs, 0), "u8")) {
+        padName = "padText"; kind = PLAN_PAD_TEXT;
+    }
+    if (!padName) {
+        ckError(c, e->line,
+                "A format specifier picks the integer, floating-point or text padder from the"
+                " value's type; anything else goes through `<<`.",
+                "`%s` cannot take a format specifier", typeStr(c, vt));
+        return ttError(c->tt);
+    }
+    /* 写下来的类型码必须和值的类型一致：`{x:d}` 说这是整数，那就得真是整数 */
+    const long long code = (*(Expr **)vecAt(&e->u.method.args, 5))->u.ival;
+    const long long prec = (*(Expr **)vecAt(&e->u.method.args, 4))->u.ival;
+    if (code >= 0) {
+        const long long want = kind == PLAN_PAD_INT ? 0 : kind == PLAN_PAD_FLOAT ? 1 : 2;
+        if (code != want) {
+            const char wc = code == 0 ? 'd' : code == 1 ? 'f' : 's';
+            ckError(c, e->line,
+                    "The type code says how the value is written, so it has to match what the"
+                    " value is.",
+                    "`%c` says the value is %s, but it is %s", (int)wc,
+                    code == 0 ? "an integer" : code == 1 ? "a float" : "text",
+                    kind == PLAN_PAD_INT ? "an integer" : kind == PLAN_PAD_FLOAT ? "a float" : "text");
+            return ttError(c->tt);
+        }
+    }
+    if (prec >= 0 && kind != PLAN_PAD_FLOAT) {
+        ckError(c, e->line,
+                "Precision (`.N`) applies to floats, and this value is not one.",
+                "a precision (`.N`) applies to floats, and `%s` is not one", typeStr(c, vt));
+        return ttError(c->tt);
+    }
+    /* 宽度/填充/对齐/精度是解析期造的字面量，也要在这里走一遍（后续 pass 会读它们的类型） */
+    for (size_t i = 1; i < e->u.method.args.len; i++)
+        (void)checkExpr(c, *(Expr **)vecAt(&e->u.method.args, i));
+    FuncDef *f = findMethod(rb, padName);
+    if (!f) return ttError(c->tt);
+    /* 记下这个方法被调用过：实例方法只发被调用的那些（pad 原语是工具方法，不 collect 就缺定义）*/
+    planSetUsed(f, true);
+    planSetPadKind(e, kind);
+    e->type = f->ret;
+    return f->ret;
+}
+
+/**
  * @brief 检查一个表达式并返回它的类型：检查器里的递归核心。
  *
  * `checkExpr` 在它外面包了每个子表达式都需要的记账。检查过程中有些节点会被**原地**改写，所以调用
@@ -3366,6 +3441,9 @@ static Type *checkExprInner(Checker *c, Expr *e) {
         }
 
         case EX_METHOD: {
+            /* f-string 槽的格式说明符：解析器脱糖成这个保留名，检查按值的静态类型选填充原语 */
+            if (e->u.method.name && strcmp(e->u.method.name, "__extc_pad") == 0)
+                return checkPadCall(c, e);
             /* `o.f(x)` where `f` is a **field** holding a `fn`, not a method. The parser reads the
              * shape `receiver.name(args)` as a method call (only a bare `f(x)` becomes EX_CALL), so
              * the field case has to be recognised here -- otherwise the answer is "no method `f` on

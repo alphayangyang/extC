@@ -1,0 +1,11 @@
+// `_` 匹配任意变体，所以不绑载荷 —— 写 `_(v)` 没有意义。
+// expect: `_` matches any variant, so it binds no payload
+type color = | red | green
+
+fn main() -> i32 {
+    let c: color = color.red
+    match c {
+        red => { return 1 }
+        _(v) => { return 0 }
+    }
+}

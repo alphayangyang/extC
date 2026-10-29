@@ -1,0 +1,7 @@
+// while let 同样必须点名变体。
+// expect: cannot be the pattern of `while let`
+fn main() -> i32 {
+    let o: ?i32 = none
+    while let _ = o { return 1 }
+    return 0
+}

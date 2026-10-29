@@ -1,0 +1,18 @@
+// expect: spec ok
+// 格式说明符（v2）：`[[fill]align][0][width][.prec][type]`。判据：左/右/居中 · 填充字节 ·
+// 零填充（符号在前）· 精度 · 宽度+精度 · 类型码校验 · 同一串里混有说明符与裸槽。
+use std::io
+
+fn main() -> i32 {
+    let s: slice<u8> = "hi"
+    let n: i64 = -5
+    let v: f64 = 3.14159
+    let a: i32 = 42
+    io::cout << f"[{s:>6}][{s:<6}][{s:*^6}]\n"
+    io::cout << f"[{n:04}][{n:6}][{n:6d}]\n"
+    io::cout << f"[{v:.2f}][{v:8.2f}][{v:8f}]\n"
+    io::cout << f"[{a:5}][{s:4s}]\n"
+    io::cout << f"mixed {a} and {a:04} and {{}}\n"
+    io::cout << f"{v:.0f}" << "|\n"
+    return 0
+}

@@ -1,0 +1,25 @@
+// if let（二）：result 的两个变体都能拆；else if let 链按顺序试。
+// expect: ok 5|err|failed 7|v=3|e=4
+
+use std::io
+
+fn half(n: i32) -> result<i32, i32> {
+    if n % 2 == 0 { return success(n / 2) }
+    return failure(n)
+}
+
+fn main() -> i32 {
+    var r: result<i32, i32> = half(10)
+    if let success(v) = r { io::cout << "ok " << v << "\n" } else { io::cout << "err\n" }
+
+    r = half(7)
+    if let success(v) = r { io::cout << "ok " << v << "\n" } else { io::cout << "err\n" }
+
+    if let failure(e) = r { io::cout << "failed " << e << "\n" }
+
+    r = success(3)
+    if let success(v) = r { io::cout << "v=" << v << "\n" } else if let failure(e) = r { io::cout << "e=" << e << "\n" }
+    r = failure(4)
+    if let success(v) = r { io::cout << "v=" << v << "\n" } else if let failure(e) = r { io::cout << "e=" << e << "\n" }
+    return 0
+}

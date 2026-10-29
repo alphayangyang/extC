@@ -117,6 +117,7 @@ typedef struct {
     Type       *assocOwner;    /* `EX_ASSOC`: the instance type it resolved to */
     bool        dynRecvViaRef; /* the receiver of a `dyn` call arrives through a reference */
     bool        callViaFn;     /* the call goes through a function value, not a declaration */
+    int         padKind;       /* `__extc_pad`: the padder the slot's value type picked (PlanPadKind) */
     bool        usedDyn;       /* a trait named by a `dyn` form (only then is its vtable emitted) */
     bool        usesDyn;       /* a module that saw a `dyn` form (the runtime is needed) */
 

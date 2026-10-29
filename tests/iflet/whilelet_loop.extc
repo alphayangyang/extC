@@ -1,0 +1,37 @@
+// while let：每轮重新求值被测表达式，匹配就绑载荷跑体、不匹配就结束循环；
+// break 提前退出、continue 回到开头。脱糖成 `while true { match ... _ => { break } }`。
+// expect: sum 6 k 4|seen 2 j 4|once 5
+
+use std::io
+
+fn next(v: i32) -> ?i32 {
+    if v < 4 { return some(v) }
+    return none
+}
+
+fn main() -> i32 {
+    var k: i32 = 0
+    var sum: i32 = 0
+    while let some(v) = next(k) {
+        sum += v
+        k = v + 1
+    }
+    io::cout << "sum " << sum << " k " << k << "\n"
+
+    var j: i32 = 0
+    var seen: i32 = 0
+    while let some(w) = next(j) {
+        j = w + 1
+        if w % 2 == 0 { continue }
+        seen += 1
+        if w == 3 { break }
+    }
+    io::cout << "seen " << seen << " j " << j << "\n"
+
+    var n: ?i32 = some(5)
+    while let some(v) = n {
+        io::cout << "once " << v << "\n"
+        n = none
+    }
+    return 0
+}

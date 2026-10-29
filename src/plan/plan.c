@@ -99,6 +99,7 @@
 #define AN_STORE_REF_KIND        80   /* 无环判定: 赋值站点的引用槽存储分类（SR_*） */
 #define AN_ACYCLIC_WHY           81   /* 无环判定: 判否理由串，供 EXTC_DBG_ACYCLIC 打印 */
 #define PLAN_FN_RECLAIM_IDLE     82   /* ② 判据 (a)(b)(c): 这个函数里不会丢掉任何活引用 */
+#define PLAN_PAD_KIND            83   /* f-string 格式说明符：槽值的类型选了哪个填充原语（PlanPadKind） */
 #define AN_DUMMY_PAST_64         65
 #define AN_ADDR_FROM_LOCAL       64
 /* The analysis half of the slot, by name: the checker's own working state, which no later
@@ -1074,6 +1075,8 @@ PLAN_GET(planDynRecvViaRef, bool, dynRecvViaRef, PLAN_DYN_RECV_VIA_REF, false)
 PLAN_SET(planSetDynRecvViaRef, bool, dynRecvViaRef, PLAN_DYN_RECV_VIA_REF)
 PLAN_GET(planCallViaFn, bool, callViaFn, PLAN_CALL_VIA_FN, false)
 PLAN_SET(planSetCallViaFn, bool, callViaFn, PLAN_CALL_VIA_FN)
+PLAN_GET(planPadKind, PlanPadKind, padKind, PLAN_PAD_KIND, PLAN_PAD_NONE)
+PLAN_SET(planSetPadKind, PlanPadKind, padKind, PLAN_PAD_KIND)
 
 /* `storedAt` is the one field of this group whose **unset value is not the type's zero**:
  * "has this value been seen being published?" is answered `-1` (not yet) or a level `>= 0`

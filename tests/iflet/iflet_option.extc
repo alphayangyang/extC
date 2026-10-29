@@ -1,0 +1,28 @@
+// if let（一）：option 拆包、else 分支、丢弃载荷、else if let 链、嵌套。
+// 脱糖成 match + 显式 `_` 兜底臂，所以检查器与代码生成只看到普通 match。
+// expect: some 42|none|empty|no-value|A1 B|nested 78
+
+use std::io
+
+fn main() -> i32 {
+    var o: ?i32 = some(42)
+    if let some(v) = o { io::cout << "some " << v << "\n" } else { io::cout << "none\n" }
+
+    o = none
+    if let some(v) = o { io::cout << "some " << v << "\n" } else { io::cout << "none\n" }
+
+    if let none = o { io::cout << "empty\n" }
+
+    if let some(_) = o { io::cout << "has\n" } else { io::cout << "no-value\n" }
+
+    o = some(1)
+    if let some(v) = o { io::cout << "A" << v << " " } else if let none = o { io::cout << "B " } else { io::cout << "C " }
+    o = none
+    if let some(v) = o { io::cout << "A" << v << " " } else if let none = o { io::cout << "B " } else { io::cout << "C " }
+    io::cout << "\n"
+
+    let oa: ?i32 = some(7)
+    let ob: ?i32 = some(8)
+    if let some(a) = oa { if let some(b) = ob { io::cout << "nested " << a << b << "\n" } }
+    return 0
+}

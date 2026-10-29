@@ -1452,9 +1452,9 @@ def build_items() -> list:
     # ---- f-string ----
     items.append(cmd(
         "fstring", "tests",
-        'f"…" 编译期格式拼接：输出 · 与手写 << 链逐字节相同 · 六条反例',
+        'f"…" 编译期格式拼接与格式说明符：输出 · 与手写 << 链逐字节相同 · 十五条反例',
         ["./tests/fstring/run.sh"], timeout=300,
-        ok_msg=ok_count_ok(" 项（多槽/转义/每槽求值一次 · 生成物与手写链逐字节相同 · 六条反例）"),
+        ok_msg=ok_count_ok(" 项（多槽/转义/每槽求值一次 · 对齐/补零/定点小数 · 生成物与手写链逐字节相同 · 十五条反例）"),
         bad_msg="tests/fstring/run.sh", bad_dump=dump_all))
 
     # ---- WebSocket ----
@@ -1488,6 +1488,14 @@ def build_items() -> list:
         ["./tests/sugar/run.sh"], timeout=300,
         ok_msg=ok_count_ok(" 项（共享标注 · 逐名字标注与推断 · 顶层 global · 先求值后写 · match 臂体 · for 头 · 9 条反例）"),
         bad_msg="tests/sugar/run.sh", bad_dump=dump_all))
+
+    # ---- 语法糖：`_` 兜底臂 / if let / while let（解析期脱糖，不新增 AST 节点）----
+    items.append(cmd(
+        "iflet", "tests",
+        "语法糖：`_` 兜底臂 + if let / while let（else if let 链 · while let 的 continue/break · 载荷位丢弃）",
+        ["./tests/iflet/run.sh"], timeout=300,
+        ok_msg=ok_count_ok(" 项（option/result 拆包 · else if let · while let 每轮重新求值 · `_` 兜底与载荷丢弃 · 7 条反例）"),
+        bad_msg="tests/iflet/run.sh", bad_dump=dump_all))
 
     # ---- 裸 return ----
     items.append(cmd(
