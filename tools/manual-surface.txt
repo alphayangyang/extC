@@ -657,6 +657,9 @@ stl::pool	pool	vals	field	internal
 stl::pool	pool	vals	field	internal
 stl::pool	pool	withCap	method	public
 stl::pool	pool	withParent	method	public
+stl::seq	-	maxBlocksF64	fn	public
+stl::seq	-	minBlocksF64	fn	public
+stl::seq	-	sumBlocksI64	fn	public
 stl::set	set	at	method	public
 stl::set	set	clear	method	public
 stl::set	set	clone	method	public

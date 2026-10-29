@@ -382,11 +382,34 @@ fn main() -> i32 {
 | `max<T>` | `fn max<T>(a: slice<T>) -> ?T` |
 | `min<T>` | `fn min<T>(a: slice<T>) -> ?T` |
 | `count<T>` | `fn count<T>(a: slice<T>, v: T) -> i64` |
+| `sumBlocksI64` | `fn sumBlocksI64(a: slice<i64>, parts: mut slice<i64>) -> ?i64` |
+| `maxBlocksF64` | `fn maxBlocksF64(a: slice<f64>, parts: mut slice<f64>) -> ?f64` |
+| `minBlocksF64` | `fn minBlocksF64(a: slice<f64>, parts: mut slice<f64>) -> ?f64` |
 
 语义：只读、**零分配**、顺序就是视图顺序（`sum` 的浮点累加也按从左到右，结果可复现）；
 空视图返回 `none`（`count` 返回 0）—— 库不替你决定"空的时候算多少"，用 `??` 或 `match` 接。
 `max` / `min` 用 `<` / `>`，相等时保留靠前的那个；`count` 用 `==`。
 这些函数只碰 `Thread=0` 的数据，可以原样放进 `parallel::run` 的 worker 里。
+
+`*Blocks*` 三兄弟是**固定分块的并行归约**：`a` 均分成 `parts.len` 段，`par` 让每段在自己的
+worker 上算局部结果写进 `parts[b]`，再按段序串行合并。前置条件 `parts.len <= a.len`（每段至少
+一个元素），不满足时返回 `none`。只有"结合后与串行逐位相同"的归约才在此列：整数加法（模算术）、
+`f64` 的 `max`/`min`（取极值）。**浮点 `sum` 不在**——分块改变加法结合顺序，浮点加法不结合，
+结果不能同时保证逐位相同；浮点求和仍用串行 `sum` 或"先算进数组再 `sum`"。典型用法：
+
+```extc
+use std::io
+use stl::seq
+
+fn main() -> i32 {
+    var a: mut slice<i64> = new i64[i64(4096)]
+    var parts: mut slice<i64> = new i64[i64(8)]
+    for i in 0..i64(4096) { a[i] = i }
+    let s = seq::sumBlocksI64(a, parts) ?? i64(0)
+    io::cout << f"s={s}\n"
+    return 0
+}
+```
 
 ```extc
 use std::io

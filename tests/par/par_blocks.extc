@@ -1,0 +1,23 @@
+// 固定分块的并行归约：`stl::seq` 为此只提供"结合后与串行逐位相同"的那几种
+// （整数求和、f64 的 max/min）。1 线程与多线程必须同输出。
+use std::io
+use stl::seq
+
+fn main() -> i32 {
+    let n: i64 = 4096
+    var a: mut slice<i64> = new i64[n]
+    for i in 0..n { a[i] = (i * i64(7)) % i64(101) - i64(50) }
+    var parts: mut slice<i64> = new i64[i64(8)]
+    let sp: i64 = seq::sumBlocksI64(a, parts) ?? -12345
+    let ss: i64 = seq::sum(a) ?? -12345
+
+    var f: mut slice<f64> = new f64[n]
+    for i in 0..n { f[i] = f64((i * i64(13)) % i64(97)) / 7.0 }
+    var fp: mut slice<f64> = new f64[i64(8)]
+    let mx: f64 = seq::maxBlocksF64(f, fp) ?? -1.0
+    let mn: f64 = seq::minBlocksF64(f, fp) ?? -1.0
+    let smx: f64 = seq::max(f) ?? -1.0
+    let smn: f64 = seq::min(f) ?? -1.0
+    io::cout << f"sum={sp == ss} max={mx == smx} min={mn == smn} s={sp}\n"
+    return 0
+}

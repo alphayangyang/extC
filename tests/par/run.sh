@@ -84,6 +84,8 @@ case_run par_2d       tests/par/par_2d.extc     "same=true s=18090"
 case_run par_2d_t1    tests/par/par_2d.extc     "same=true s=18090" EXTC_PAR_THREADS=1
 case_run par_reduce   tests/par/par_reduce.extc "same=true s=16773120"
 case_run par_reduce_t1 tests/par/par_reduce.extc "same=true s=16773120" EXTC_PAR_THREADS=1
+case_run par_blocks   tests/par/par_blocks.extc "sum=true max=true min=true s=-100"
+case_run par_blocks_t1 tests/par/par_blocks.extc "sum=true max=true min=true s=-100" EXTC_PAR_THREADS=1
 if build par_2d_det tests/par/par_2d.extc; then
     one=$(EXTC_PAR_THREADS=1 "$tmp/par_2d_det"); many=$(EXTC_PAR_THREADS=8 "$tmp/par_2d_det")
     if [ "$one" = "$many" ]; then ok "par_2d_det -> 1 线程与 8 线程同输出：$one"

@@ -82,3 +82,113 @@ fn count<T>(a: slice<T>, v: T) -> i64 {
     }
     return n
 }
+
+// ---- 固定分块的并行归约 -------------------------------------------------------------
+//
+// 一维 `par` 的归约路线是两步：先把每段的局部结果写进 `parts`，再按段序串行合并。这里内置
+// 的只是"结合后与串行逐位相同"的那几种归约：
+//
+//   - 整数加法（模算术，任意结合顺序结果相同）；
+//   - `max` / `min`（取极值，与顺序无关，浮点也一样精确）。
+//
+// 浮点 `sum` 不在此列：分块改变了加法结合顺序，浮点加法不结合，所以并行合并的结果不能同时
+// 保证"与从左到右串行逐位相同"。浮点求和仍走 `sum`（串行）或"先算进数组再 `sum`"。
+//
+// 前置条件：`parts.len <= a.len`（每段至少一个元素，`max`/`min` 才有初值）；不满足时返回
+// `none`。段长是 `ceil(a.len / parts.len)`，固定不变 ⇒ 同一个 `parts.len` 下结果可复现。
+
+/** @brief 固定分块的整数求和：每段之和写进 `parts[b]`，再按段序串行合并。
+ *
+ *  @param a     参与求和的只读视图。
+ *  @param parts 每段结果的输出视图（长度 = 段数，必须 `<= a.len`）。
+ *  @return 总和；`a` 或 `parts` 为空、或 `parts.len > a.len` 时是 `none`。
+ */
+fn sumBlocksI64(a: slice<i64>, parts: mut slice<i64>) -> ?i64 {
+    if a.len == i64(0) { return none }
+    if parts.len == i64(0) { return none }
+    if parts.len > a.len { return none }
+    let blk: i64 = (a.len + parts.len - i64(1)) / parts.len
+    par b in 0..parts.len {
+        let lo: i64 = b * blk
+        var hi: i64 = lo + blk
+        if hi > a.len { hi = a.len }
+        var s: i64 = i64(0)
+        var i: i64 = lo
+        while i < hi {
+            s = s + a[i]
+            i = i + i64(1)
+        }
+        parts[b] = s
+    }
+    var t: i64 = i64(0)
+    var j: i64 = i64(0)
+    while j < parts.len {
+        t = t + parts[j]
+        j = j + i64(1)
+    }
+    return some(t)
+}
+
+/** @brief 固定分块的 `f64` 求最大值：每段的极值写进 `parts[b]`，再按段序合并。
+ *
+ *  @param a     参与比较的只读视图。
+ *  @param parts 每段结果的输出视图（长度 = 段数，必须 `<= a.len`）。
+ *  @return 最大值；`a` 或 `parts` 为空、或 `parts.len > a.len` 时是 `none`。
+ */
+fn maxBlocksF64(a: slice<f64>, parts: mut slice<f64>) -> ?f64 {
+    if a.len == i64(0) { return none }
+    if parts.len == i64(0) { return none }
+    if parts.len > a.len { return none }
+    let blk: i64 = (a.len + parts.len - i64(1)) / parts.len
+    par b in 0..parts.len {
+        let lo: i64 = b * blk
+        var hi: i64 = lo + blk
+        if hi > a.len { hi = a.len }
+        var m: f64 = a[lo]
+        var i: i64 = lo + i64(1)
+        while i < hi {
+            if a[i] > m { m = a[i] }
+            i = i + i64(1)
+        }
+        parts[b] = m
+    }
+    var t: f64 = parts[i64(0)]
+    var j: i64 = i64(1)
+    while j < parts.len {
+        if parts[j] > t { t = parts[j] }
+        j = j + i64(1)
+    }
+    return some(t)
+}
+
+/** @brief 固定分块的 `f64` 求最小值：每段的极值写进 `parts[b]`，再按段序合并。
+ *
+ *  @param a     参与比较的只读视图。
+ *  @param parts 每段结果的输出视图（长度 = 段数，必须 `<= a.len`）。
+ *  @return 最小值；`a` 或 `parts` 为空、或 `parts.len > a.len` 时是 `none`。
+ */
+fn minBlocksF64(a: slice<f64>, parts: mut slice<f64>) -> ?f64 {
+    if a.len == i64(0) { return none }
+    if parts.len == i64(0) { return none }
+    if parts.len > a.len { return none }
+    let blk: i64 = (a.len + parts.len - i64(1)) / parts.len
+    par b in 0..parts.len {
+        let lo: i64 = b * blk
+        var hi: i64 = lo + blk
+        if hi > a.len { hi = a.len }
+        var m: f64 = a[lo]
+        var i: i64 = lo + i64(1)
+        while i < hi {
+            if a[i] < m { m = a[i] }
+            i = i + i64(1)
+        }
+        parts[b] = m
+    }
+    var t: f64 = parts[i64(0)]
+    var j: i64 = i64(1)
+    while j < parts.len {
+        if parts[j] < t { t = parts[j] }
+        j = j + i64(1)
+    }
+    return some(t)
+}
