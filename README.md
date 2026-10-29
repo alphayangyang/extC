@@ -104,6 +104,7 @@ bad.extc:3:1: error: index 7 is not inside `[4]i32` (length 4)
 - [`bench/httpd/`](bench/httpd/README.md)：约 300 行 extC 写的 HTTP/1.1 静态服务器（epoll + 协程 + `sendfile`），与 `python3 -m http.server` 同判据对照：吞吐 5376 req/s 对 4368、峰值 RSS 1.9 MB 对 22.7 MB（报告里的快照）。
 - [`bench/fortran/`](bench/fortran/RESULTS.md)：一个数值 kernel 形状 —— 2D 5 点 Jacobi 模板（`f64`、flat 行主序），extC / C / gfortran 三臂。三条臂在 -O2 与 -O3 -march=native 下都基本并列（-O2 extC 是 C 的 0.99–1.01×、Fortran 是 C 的 0.99–1.02×；-O3 三臂相对差异同样在 ±2% 内），GCC 自报的 `loop vectorized` 处数 extC 与手写 C 都是 3。这臂按 extC 的惯用写法（range-for、并行赋值换 buffer、`??` 解析参数、f-string）；-O3 档、向量化自报与读表须知见报告。
 - [`bench/par/`](bench/par/RESULTS.md)：语言层数据并行 `par i in lo..hi { … }` 的基准 —— 逐元素递推链（计算受限，链长按 argv 传入）。`par1` 与顺序 `for` 基本相等（不给顺序版加税），8 线程在 n=1<<20 上快 4.1×、n=1<<18 上快 3.5×；手写 C 参照臂不检查下标、但链长同样是运行期值，-O2 下与 `seq` 基本并齐，读加速比以 `seq`/`par1` 为基线。
+- [`bench/stream/`](bench/stream/RESULTS.md)：流式管线的 DRAM 代价 —— 同一条逐元素管线写成「物化中间数组 / 融合 / 不落数组直接归约」三种形状，n 跨 L2、L3、DRAM 三档。n=4M 时 extC 的 77 → 49 → 28 ms（融合 −36%，流式 −64%）；C 层唯一赢的调整是非临时写（省写分配的 RFO 读，−21%），`restrict`+对齐+ivdep+预取都不赢。
 
 ## 凭什么信它
 

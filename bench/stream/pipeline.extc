@@ -1,0 +1,56 @@
+// bench/stream —— 同一条逐元素管线 + 归约，几种写法（argv[2] 选形状）：
+//   1 materialize  中间数组落到内存（5 遍 DRAM）
+//   2 fused        融成一个循环写 out（3 遍）
+//   3 stream       不落数组，边算边归约（1 遍）
+//   4 par-fused    融合 + par（多线程写 out，再串行归约）
+// argv[3] = 重复次数：三块数组在重复循环外一次分配，管线跑 reps 遍，
+// 把分配/首次触页摊到每遍（外部计时除不掉进程启动，这是本 bench 的口径）。
+// 判据：各形状 stdout 必须逐字节相同（f64 严格求值、Σ 严格按 i 递增）。
+use std::io
+use stl::string as str
+
+fn argOr(args: slice<slice<u8>>, i: i64, dflt: i64) -> i64 {
+    if args.len <= i { return dflt }
+    return str::toI64(args[i]) ?? dflt
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    let n: i64 = argOr(args, i64(1), i64(1024))
+    let mode: i64 = argOr(args, i64(2), i64(1))
+    let reps: i64 = argOr(args, i64(3), i64(1))
+    var inv: mut slice<f64> = new f64[n]
+    var tmp: mut slice<f64> = new f64[n]
+    var out: mut slice<f64> = new f64[n]
+    for i in 0..n {
+        inv[i] = f64((i * i64(7) + i64(3)) % i64(17)) / f64(17)
+    }
+    var cs: f64 = 0.0
+    var rep: i64 = 0
+    while rep < reps {
+        if mode == i64(1) {
+            for i in 0..n { tmp[i] = inv[i] * 1.5 + 0.25 }
+            for i in 0..n { out[i] = tmp[i] * tmp[i] + 1.0 }
+            for v in out { cs = cs + v }
+        } else if mode == i64(2) {
+            for i in 0..n {
+                let y: f64 = inv[i] * 1.5 + 0.25
+                out[i] = y * y + 1.0
+            }
+            for v in out { cs = cs + v }
+        } else if mode == i64(3) {
+            for i in 0..n {
+                let y: f64 = inv[i] * 1.5 + 0.25
+                cs = cs + (y * y + 1.0)
+            }
+        } else {
+            par i in 0..n {
+                let y: f64 = inv[i] * 1.5 + 0.25
+                out[i] = y * y + 1.0
+            }
+            for v in out { cs = cs + v }
+        }
+        rep = rep + i64(1)
+    }
+    io::cout << f"cs={i64(cs * 1000000.0)} n={n}\n"
+    return 0
+}
