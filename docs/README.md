@@ -5,7 +5,7 @@
 | 类别 | 位置 |
 |---|---|
 | **现在有什么 / 怎么用** | [`usage/`](usage/) |
-| **有什么待做** | [`TODO.md`](TODO.md)（清单）· [`RECLAMATION.md`](RECLAMATION.md)（回收机制）|
+| **有什么待做** | [`TODO.md`](TODO.md)（清单）· [`RECLAMATION.md`](RECLAMATION.md)（回收机制）· [`PARALLEL.md`](PARALLEL.md)（并行机制）|
 | **开发历史（全仓库唯一）** | [`CHANGELOG.md`](CHANGELOG.md)（索引）· [`changelog/`](changelog/)（正文按月分页）|
 | **门面** | 根 [`README.md`](../README.md) —— 和 `usage/` 同级：同样受下面的示例闸门、历史词闸门与事实闸门管 |
 
