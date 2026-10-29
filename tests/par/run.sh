@@ -77,13 +77,27 @@ fi
 case_run par_empty  tests/par/par_empty.extc    "b0=7"
 case_run par_softkey tests/par/par_softkey.extc "par=3"
 
+# ---- ⑤ 标量捕获 / 二维折叠 / 归约路线 ----
+case_run par_scalar   tests/par/par_scalar.extc "s=108"
+case_run par_scalar_t1 tests/par/par_scalar.extc "s=108" EXTC_PAR_THREADS=1
+case_run par_2d       tests/par/par_2d.extc     "same=true s=18090"
+case_run par_2d_t1    tests/par/par_2d.extc     "same=true s=18090" EXTC_PAR_THREADS=1
+case_run par_reduce   tests/par/par_reduce.extc "same=true s=16773120"
+case_run par_reduce_t1 tests/par/par_reduce.extc "same=true s=16773120" EXTC_PAR_THREADS=1
+if build par_2d_det tests/par/par_2d.extc; then
+    one=$(EXTC_PAR_THREADS=1 "$tmp/par_2d_det"); many=$(EXTC_PAR_THREADS=8 "$tmp/par_2d_det")
+    if [ "$one" = "$many" ]; then ok "par_2d_det -> 1 线程与 8 线程同输出：$one"
+    else bad "par_2d_det -> 线程数改变了输出：[$one] vs [$many]"; fi
+fi
+
 # ---- ③ 限制集（每条一个必须编译失败的用例） ----
 case_neg neg_call      tests/par/neg_call.extc      "cannot call a function inside a par loop"
 case_neg neg_new       tests/par/neg_new.extc       "cannot allocate inside a par loop"
 case_neg neg_two_views tests/par/neg_two_views.extc "may write only its own output slot"
 case_neg neg_subscript tests/par/neg_subscript.extc "may write only its own output slot"
 case_neg neg_alias     tests/par/neg_alias.extc     "aliases a read-only view"
-case_neg neg_scalar    tests/par/neg_scalar.extc    "only views can be captured by a par loop in v1"
+case_neg neg_scalar    tests/par/neg_scalar.extc    "only read-only views and scalar values can be captured by a par loop"
+case_neg neg_nest3     tests/par/neg_nest3.extc     "cannot nest \`par\` more than two levels"
 case_neg neg_escape    tests/par/neg_escape.extc    "cannot escape a par loop"
 case_neg neg_generic   tests/par/neg_generic.extc   "cannot use \`par\` inside a generic function"
 case_neg neg_no_output tests/par/neg_no_output.extc "needs exactly one output view"

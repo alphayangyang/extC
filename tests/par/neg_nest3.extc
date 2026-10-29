@@ -1,0 +1,17 @@
+// 限制集：`par` 最多折叠两层（`par r { par c { … } }`）。
+use std::io
+
+fn main() -> i32 {
+    let rows: i64 = i64(4)
+    let cols: i64 = i64(4)
+    var out: mut slice<f64> = new f64[rows * cols]
+    par r in 0..rows {
+        par c in 0..cols {
+            par k in 0..i64(2) {
+                out[r * cols + c] = f64(r + c + k)
+            }
+        }
+    }
+    io::cout << f"s={out[0]}\n"
+    return 0
+}

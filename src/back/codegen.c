@@ -2746,33 +2746,36 @@ static const char *exCall(CG *g, Expr *e) {
          * 结构体，只读视图原样带过去、输出的那一份在 trampoline 里按 [lo,hi) 切段；每个实参
          * **只求值一次**。chunk 传 0 让运行期自己取（约每线程 8 块，动态取块）。 */
         FuncDef *wf = planParWorker(e);
-        size_t nViews = wf->params.len - 3, mutIdx = 0;
-        for (size_t i = 0; i < nViews; i++)
-            if ((*(Param **)vecAt(&wf->params, 3 + i))->type->mut) mutIdx = i;
+        /* 形参布局：`(id, lo, hi, 捕获们…, out)`。捕获可能是只读视图，也可能是按值捕获的
+         * 标量（`par` 降糖才产标量；手写 worker 全是视图）；输出是其中**唯一**的 `mut` 视图，
+         * 不一定在末位（手写 worker 可以把它写在捕获中间）。 */
+        size_t nCaps = wf->params.len - 4, outIdx = 0;
+        for (size_t i = 0; i <= nCaps; i++)
+            if ((*(Param **)vecAt(&wf->params, 3 + i))->type->mut) outIdx = i;
         const char *ctn = arenaPrintf(g->arena, "__extc_parctx_%s", wf->name);
         const char *tmp = arenaPrintf(g->arena, "__extc_pc%d", g->tmpSeq++);
         const char *ntmp = arenaPrintf(g->arena, "__extc_pn%d", g->tmpSeq++);
         Buf init;
         bufInit(&init, g->arena);
-        for (size_t i = 0; i < nViews; i++)
+        for (size_t i = 0; i <= nCaps; i++)
             bufPrintf(&init, "%s.v%zu = (%s)", i ? ", " : "", i,
                       genExpr(g, *(Expr **)vecAt(&e->u.call.args, 1 + i)));
         pfLine(g, "%s %s = { %s };", ctn, tmp, bufCstr(&init));
         pfLine(g, "int64_t %s = (int64_t)(%s);", ntmp,
-               genExpr(g, *(Expr **)vecAt(&e->u.call.args, 1 + nViews)));
+               genExpr(g, *(Expr **)vecAt(&e->u.call.args, 2 + nCaps)));
         /* 分区按 [lo,hi) 切 ⇒ 输出比 n 短的话会切到界外。在这里挡住（worker 里的检查是另一
          * 道防线，`@unchecked` 的 worker 没有它们）。 */
         pfLine(g, "if (%s > 0 && %s.v%zu.len < %s)"
                   " extc_trapMsg(\"%s\", %d, \"parallel::run: the output view is shorter than n\");",
-               ntmp, tmp, mutIdx, ntmp, g->path, e->line);
+               ntmp, tmp, outIdx, ntmp, g->path, e->line);
         g->needPar = true;
         /* A worker that allocates takes its memory from the run's region, so the region
          * half of the runtime has to be compiled in for this program. */
         if (planUsesHome(wf)) g->needParRegion = true;
         /* `par` 降糖把 threads 写成 `-1` 哨兵：没写线程数就是"用这台机器能用的核"。
          * 运行期把它当 ≤1 会静默顺序跑，所以在这里换成 `extc_par_default_threads()`。 */
-        if (e->u.call.args.len > 2 + nViews) {
-            Expr *th = *(Expr **)vecAt(&e->u.call.args, 2 + nViews);
+        if (e->u.call.args.len > 3 + nCaps) {
+            Expr *th = *(Expr **)vecAt(&e->u.call.args, 3 + nCaps);
             if (th && th->kind == EX_INT && th->u.ival == -1)
                 return arenaPrintf(g->arena,
                     "((int32_t)extc_par_run(__extc_par_%s, &%s, %s, %s,"
@@ -2782,7 +2785,7 @@ static const char *exCall(CG *g, Expr *e) {
         return arenaPrintf(g->arena,
             "((int32_t)extc_par_run(__extc_par_%s, &%s, %s, %s, (int64_t)(%s), 0))",
             wf->name, tmp, planUsesHome(wf) ? "1" : "0", ntmp,
-            genExpr(g, *(Expr **)vecAt(&e->u.call.args, 2 + nViews)));
+            genExpr(g, *(Expr **)vecAt(&e->u.call.args, 3 + nCaps)));
     }
     /* A handle-protocol call can arrive here too (a `ref coroutine<T>` receiver resolves as
      * an ordinary call, not as EX_METHOD), so both paths share the dispatch. */
@@ -8558,38 +8561,41 @@ static void emitModuleTramp(CG *g) {
  * @param f  worker 函数；形参前三个是 `id`/`lo`/`hi`，其后全是视图。
  */
 static void genParTramp(CG *g, FuncDef *f) {
-    size_t nViews = f->params.len - 3;
-    size_t mutIdx = 0;
-    for (size_t i = 0; i < nViews; i++)
-        if ((*(Param **)vecAt(&f->params, 3 + i))->type->mut) mutIdx = i;
-    {   /* ctx 类型：字段名 v0..vN，类型就是各视图的 C 名（mut 与否同名，见 ttViewMut 的注释） */
+    size_t nCaps = f->params.len - 4, outIdx = 0;
+    for (size_t i = 0; i <= nCaps; i++)
+        if ((*(Param **)vecAt(&f->params, 3 + i))->type->mut) outIdx = i;
+    {   /* ctx 类型：字段名 v0..vN，类型就是各形参的 C 名（视图与标量同名规则见各 cType 注释） */
         Buf ct;
         bufInit(&ct, g->arena);
         bufPrintf(&ct, "typedef struct {");
-        for (size_t i = 0; i < nViews; i++)
+        for (size_t i = 0; i <= nCaps; i++)
             bufPrintf(&ct, " %s v%zu;",
                       cType(g, (*(Param **)vecAt(&f->params, 3 + i))->type), i);
         bufPrintf(&ct, " } __extc_parctx_%s;", f->name);
         cgLine(g, "%s", bufCstr(&ct));
     }
-    Type *vt = (*(Param **)vecAt(&f->params, 3 + mutIdx))->type;
+    Type *vt = (*(Param **)vecAt(&f->params, 3 + outIdx))->type;
     const char *vn = cType(g, vt);
     const char *ctn = arenaPrintf(g->arena, "__extc_parctx_%s", f->name);
+    /* 二维折叠的 worker 按绝对行号写 `out[r * cols + c]`，切段会把行号对错，所以那一形状
+     * 传整份输出视图（`planParFullOut`）。 */
+    bool full = planParFullOut(f);
     cgLine(g, "static int64_t __extc_par_%s(int64_t id, int64_t lo, int64_t hi, void *ctxp);", f->name);
     cgLine(g, "static int64_t __extc_par_%s(int64_t id, int64_t lo, int64_t hi, void *ctxp) {", f->name);
     cgLine(g, "    %s *c = (%s *)ctxp;", ctn, ctn);
-    cgLine(g, "    %s sub = { .data = c->v%zu.data + lo, .len = hi - lo };", vn, mutIdx);
-    {   /* 实参：只读视图原样，输出的那一份换成切好的 sub */
+    if (!full)
+        cgLine(g, "    %s sub = { .data = c->v%zu.data + lo, .len = hi - lo };", vn, outIdx);
+    {   /* 实参：捕获（视图/标量）原样，输出的那一份换成切好的 sub（整份模式则原样） */
         Buf args;
         bufInit(&args, g->arena);
-        for (size_t i = 0; i < nViews; i++)
+        for (size_t i = 0; i <= nCaps; i++)
             bufPrintf(&args, "%s%s", i ? ", " : "",
-                      i == mutIdx ? "sub" : arenaPrintf(g->arena, "c->v%zu", i));
+                      (i == outIdx && !full) ? "sub" : arenaPrintf(g->arena, "c->v%zu", i));
         /* worker 体内只要有 `new`，它就会多一个隐藏的 home 形参（needsHome 那套，尾参），
          * 所以这里补传 **线程本地 arena**：worker 只写自己那段输出、只返回 i64 ⇒ 分配逃不出
          * 这个 worker ⇒ 线程本地安全，而且两个 worker 不会去抢主线程的帧 arena。 */
         if (planUsesHome(f)) {
-            bufPrintf(&args, "%sextc_tls_arena", nViews ? ", " : "");
+            bufPrintf(&args, "%sextc_tls_arena", ", ");
             /* 拥有权委托的 flag 恒为 0：线程本地 arena 的归属由运行期深度判（`RC_OWN_TLS`），
              * 委托是「拥有者把清扫权当场交给被调者」，worker 那条链上不适用。 */
             if (g->needReclaim) bufPuts(&args, ", 0");

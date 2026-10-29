@@ -662,6 +662,25 @@ bool     planParTlsArena(const FuncDef *f);
  */
 void planSetParTlsArena(FuncDef *f, bool v);
 
+/**
+ * @brief 判断这个 worker 拿到的输出视图是不是整份（而不是 `[lo, hi)` 切段）。
+ *
+ * 一维 `par` 把输出视图按 worker 的行区间切段，worker 写 `out[i - lo]`；二维折叠的
+ * worker 要按 `out[r * cols + c]` 写绝对槽位，切段就对不上行号了，所以那一形状改传整份视图。
+ *
+ * @param f  函数定义。
+ * @return   传整份输出视图则返回 true；没有记录时返回 false。
+ */
+bool     planParFullOut(const FuncDef *f);
+
+/**
+ * @brief 记录这个 worker 的输出视图是否整份传过去。
+ *
+ * @param f  函数定义；为 NULL 时忽略本次写入。
+ * @param v  是否传整份输出视图。
+ */
+void planSetParFullOut(FuncDef *f, bool v);
+
 /* ---- per-function analysis facts ---------------------------------------------------
  *
  * 这些事实按节点槽存储。`funcInstance` 用 `*in = *tmpl` 做浅拷贝，槽不随拷贝走，所以

@@ -105,6 +105,7 @@ typedef struct {
     bool        isExtTarget;   /* an extern target the ABI calls directly */
     bool        isParWorker;   /* used as a `parallel::run` worker */
     bool        parTlsArena;   /* a worker that may use the thread-local arena */
+    bool        parFullOut;    /* the worker gets the whole output view, not a [lo,hi) slice */
     bool        deref;         /* value position, but the type is `ref T`: emit `*(…)` */
     int         coroKind;      /* the index codegen's prepass gave this coroutine */
     bool        dynTable;      /* its body is named by a `dyn` vtable thunk, from outside */

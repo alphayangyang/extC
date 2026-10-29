@@ -16,6 +16,7 @@ static int64_t toInt(const char *s, int64_t dflt) {
 
 int main(int argc, char **argv) {
     int64_t n = argc > 1 ? toInt(argv[1], 64) : 64;
+    int64_t iters = argc > 2 ? toInt(argv[2], 48) : 48;
     double *in = calloc((size_t)n, sizeof(double));
     double *out = calloc((size_t)n, sizeof(double));
     if (!in || !out) return 1;
@@ -23,7 +24,7 @@ int main(int argc, char **argv) {
         in[i] = (double)((i * 7 + 3) % 17) / 17.0;
     for (int64_t i = 0; i < n; i++) {
         double x = in[i], y = x;
-        for (int64_t k = 0; k < 48; k++) {
+        for (int64_t k = 0; k < iters; k++) {
             y = y * 1.0000001 + x * 0.5 + 1.0;
             x = x * 1.0000003;
         }

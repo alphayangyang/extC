@@ -984,19 +984,23 @@ fn main() -> i32 {
 `par i in lo..hi { … }` 把一个循环变体交给多个线程跑。它是**唯一的并行动词**：一个循环嵌套就是
 一个内核（kernel）形状，检查能在一个词法块里做完 —— 这也是将来换设备后端时不用改用户代码的原因。
 
-规则只有四条（细节和判据见 `docs/PARALLEL.md`）：
+规则只有五条（细节和判据见 `docs/PARALLEL.md`）：
 
-- 输入**只读共享**：体内读的视图按引用捕获，所有 worker 看同一份数据；
+- 输入**只读共享**：体内读的视图按引用捕获，所有 worker 看同一份数据；内建标量（整数、`f32`/
+  `f64`、`bool`）按值捕获，进入 worker 前求值一次（worker 拿自己的副本，写副本不影响调用者）；
 - 输出**恰好一个**：体内只许写 `out[i]`，`out` 是一个 `mut slice<T>`，下标**恰好是循环变量本身**
   （一个 worker 只写自己那一格，所以不用锁）；
+- **二维折叠**：内层再写一个 `par` 不会另开一批线程 —— 它折叠进同一个内核，写
+  `out[r * cols + c]`（下标只由并行循环变量、整数常量和按值捕获的标量构成）；
 - 体内**不分配、不调用函数**（v1 比设计更严：连纯函数调用也不许），不许把控制流带出并行体
   （`return` / `break` / `continue` / `yield` / `ext`）；
 - 体内声明的 `var` 是 worker 私有的，随便写。
 
 `lo..hi` 的两端必须能无损进 `i64`（`par i in 0..n` 可以）；空区间一次都不跑、不 trap。
-写别的视图、下标不是循环变量、把输出视图当输入读、捕获标量，都会在编译期被拒
+写别的视图、下标不合形状、把输出视图当输入读、捕获结构体/引用这类没有捕获故事的值，都会在编译期被拒
 （`` cannot call a function inside a par loop `` / `` this par loop may write only its own output slot `` /
-`` cannot escape a par loop `` 等）。v1 不支持：标量捕获、体内调用、二维折叠、泛型/协程体里写 `par`。
+`` only read-only views and scalar values can be captured by a par loop `` 等）。
+v1 只折叠两层、体内禁一切调用、泛型/协程体里不能写 `par`、下标必须是 `i64` 能无损容纳的整数。
 
 线程数用环境变量 `EXTC_PAR_THREADS` 覆盖（默认 `_SC_NPROCESSORS_ONLN`，上限 256）；线程数只影响
 速度，不影响结果。生成的 C 用 pthread，链接时要加 `-pthread`。
@@ -1018,6 +1022,32 @@ fn main() -> i32 {
     var s: f64 = 0.0
     for v in b { s = s + v }
     io::cout << f"sum={i64(s)}\n"   // "sum=499500"
+    return 0
+}
+```
+
+二维折叠与标量捕获：
+
+```extc
+// 结果：s=18090
+use std::io
+
+fn parFill(rows: i64, cols: i64, dst: mut slice<f64>) {
+    par r in 0..rows {
+        par c in 0..cols {
+            dst[r * cols + c] = f64(r * i64(100) + c)
+        }
+    }
+}
+
+fn main() -> i32 {
+    let rows: i64 = 9
+    let cols: i64 = 5
+    var a: mut slice<f64> = new f64[rows * cols]
+    parFill(rows, cols, a)
+    var s: f64 = 0.0
+    for v in a { s = s + v }
+    io::cout << f"s={i64(s)}\n"   // "s=18090"
     return 0
 }
 ```

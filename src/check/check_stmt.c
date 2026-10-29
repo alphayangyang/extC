@@ -256,6 +256,10 @@ typedef struct {
     int         outLine;    /* 第一次写的行 */
     Vec         locals;     /* const char*：体内 `var` 声明的名字 */
     Vec         captures;   /* const char*：只读捕获的视图名，按首次出现顺序 */
+    Vec         scalars;    /* const char*：按值捕获的标量名，按首次出现顺序 */
+    Vec         parVars;    /* const char*：par 循环变量名（二维折叠时含内层循环变量） */
+    int         foldDepth;  /* 已折叠的内层 `par` 层数（v1 最多 1） */
+    bool        fullOut;    /* 折叠过内层 `par`：输出视图整份交给 worker */
     Vec         items;      /* ParItem：显式工作栈 */
     int         loopDepth;  /* 内层循环层数：`break`/`continue` 只有在内层才不逃出内核 */
     bool        failed;     /* 已经报过错：停止继续扫描（避免刷屏） */
@@ -311,6 +315,44 @@ static void parAddCapture(ParLower *w, const char *name) {
 }
 
 /**
+ * @brief 记一个按值捕获的标量名（重复的只记一次）。
+ *
+ * 标量没有共享状态，值在调用前求一次就固定了，所以按值捕获是安全的；worker 拿到的是
+ * 自己的副本，写它也只写副本。
+ *
+ * @param w     扫描上下文。
+ * @param name  标量名。
+ */
+static void parAddScalar(ParLower *w, const char *name) {
+    if (!name || parHasName(&w->scalars, name)) return;
+    *(const char **)vecPush(&w->scalars) = name;
+}
+
+/**
+ * @brief 记一个 par 循环变量名（写目标的下标只允许由这些名字与常量构成）。
+ *
+ * @param w     扫描上下文。
+ * @param name  循环变量名。
+ */
+static void parAddParVar(ParLower *w, const char *name) {
+    if (!name || parHasName(&w->parVars, name)) return;
+    *(const char **)vecPush(&w->parVars) = name;
+}
+
+/**
+ * @brief 标量类型能否按值捕获。
+ *
+ * 只收内建标量：整数、`f32`/`f64`、`bool`。视图走另的路径（按引用共享），结构体/引用/
+ * 数组这些带内部指针或可变的类型都不收 —— v1 的捕获面就到这里。
+ *
+ * @param t  类型（已 `ttBase`）。
+ * @return   可以按值捕获则 `true`。
+ */
+static bool parIsScalarCopyable(Type *t) {
+    return t && (ttIsInteger(t) || ttIs(t, "f64") || ttIs(t, "f32") || ttIs(t, "bool"));
+}
+
+/**
  * @brief 报一条 `par` 限制集诊断并停止扫描。
  *
  * @param w     扫描上下文。
@@ -335,6 +377,44 @@ static bool parNameIsView(ParLower *w, const char *name) {
     if (!name) return false;
     Sym *sym = lookup(w->c, name);
     return sym && sym->type && ttIsViewType(ttBase(sym->type));
+}
+
+/**
+ * @brief 判断一个写目标的下标是否只由 par 循环变量与整数常量构成。
+ *
+ * 二维折叠的 worker 按绝对槽位写（`out[r * cols + c]`），所以下标是"以循环变量为自变量
+ * 的整数表达式"：整数常量、par 循环变量、`+ - *` 与一元 `-`。别的名字（捕获的标量/视图、
+ * 全局变量）与调用都不收。
+ *
+ * @param w  扫描上下文（`parVars` 已填）。
+ * @param e  下标表达式。
+ * @return   形状允许则 `true`。
+ */
+static bool parIndexOverLoops(ParLower *w, Expr *e) {
+    if (!e) return false;
+    switch (e->kind) {
+    case EX_INT:
+        return true;
+    case EX_IDENT:
+        /* 循环变量，或按值捕获的标量（worker 里的不可变副本，`out[r * cols + c]` 的 `cols`
+         * 就是它）。视图出现在下标里是类型错误，交给复查去报。 */
+        return parHasName(&w->parVars, e->u.ident.name) || !parNameIsView(w, e->u.ident.name);
+    case EX_BIN:
+        if (!e->u.bin.op) return false;
+        if (strcmp(e->u.bin.op, "+") != 0 && strcmp(e->u.bin.op, "-") != 0 &&
+            strcmp(e->u.bin.op, "*") != 0)
+            return false;
+        return parIndexOverLoops(w, e->u.bin.left) && parIndexOverLoops(w, e->u.bin.right);
+    case EX_UN:
+        if (!e->u.un.op || strcmp(e->u.un.op, "-") != 0) return false;
+        return parIndexOverLoops(w, e->u.un.operand);
+    case EX_CONV:
+        return parIndexOverLoops(w, e->u.conv.operand);
+    case EX_SIGN:
+        return parIndexOverLoops(w, e->u.sign.operand);
+    default:
+        return false;
+    }
 }
 
 /**
@@ -387,6 +467,19 @@ static void parScanTarget(ParLower *w, Expr *t) {
     if (!w->outName) {
         w->outName = name;
         w->outLine = t->line;
+    }
+    if (w->fullOut) {
+        /* 二维折叠：下标是"以循环变量为自变量的整数表达式"（`out[r * cols + c]`）。只认
+         * 整数常量、par 循环变量、`+ - *` 与一元 `-`。 */
+        if (!parIndexOverLoops(w, idx)) {
+            parFail(w, t->line,
+                    "A folded two-dimensional loop writes `out[r * cols + c]`: the subscript may"
+                    " use only the parallel loop variables and integer constants.",
+                    "this par loop may write only its own output slot");
+            return;
+        }
+        parPushItem(w, idx, 1);
+        return;                                 /* 绝对下标：不重写 */
     }
     if (!idx || idx->kind != EX_IDENT || !idx->u.ident.name ||
         strcmp(idx->u.ident.name, w->loopVar) != 0) {
@@ -466,10 +559,15 @@ static void parScanExpr(ParLower *w, Expr *e) {
             parAddCapture(w, name);
             return;
         }
+        if (parIsScalarCopyable(sym->type)) {   /* 标量按值捕获：副本不共享 */
+            parAddScalar(w, name);
+            return;
+        }
         parFail(w, e->line,
-                "A copy would hide writes from the caller; the first version shares only"
-                " read-only views.",
-                "only views can be captured by a par loop in v1");
+                "Only read-only views and builtin scalars have a capture story: views are"
+                " shared by pointer, scalars are copied by value; other values would hide"
+                " writes from the caller.",
+                "only read-only views and scalar values can be captured by a par loop");
         return;
     }
     case EX_BIN:
@@ -496,6 +594,35 @@ static void parScanExpr(ParLower *w, Expr *e) {
     default:
         return;
     }
+}
+
+/**
+ * @brief 把一个内层 `par` 块折叠进外层内核：清标记、记内层循环变量、切到整份输出视图。
+ *
+ * 内层 `par` 不再另开一批线程，它就是 worker 里的普通循环（`par r in .. { par c in .. }`
+ * 的设计语义）。形状不对（不是区间循环块）时不动它，让 worker 复查去报错。
+ *
+ * @param w    扫描上下文。
+ * @param blk  内层 `par` 块。
+ * @return     折叠成功（或本来就不需要折叠）返回 `true`；嵌套过深返回 `false`。
+ */
+static bool parFoldInner(ParLower *w, Stmt *blk) {
+    if (!blk || blk->kind != ST_BLOCK || !blk->parLoop) return true;
+    if (w->foldDepth >= 1) {
+        parFail(w, blk->line,
+                "A worker is one range loop nesting: `par r in .. { par c in .. { … } }`.",
+                "cannot nest `par` more than two levels");
+        return false;
+    }
+    w->foldDepth++;
+    w->fullOut = true;
+    stmtSetParLoop(blk, false);
+    if (blk->u.block.stmts.len >= 1) {
+        Stmt *idecl = *(Stmt **)vecAt(&blk->u.block.stmts, 0);
+        if (idecl && idecl->kind == ST_VAR && idecl->u.var.name)
+            parAddParVar(w, idecl->u.var.name);
+    }
+    return true;
 }
 
 /**
@@ -543,6 +670,8 @@ static void parScanStmt(ParLower *w, Stmt *s) {
         for (size_t i = s->u.block.stmts.len; i > 0; i--) {
             Stmt *child = *(Stmt **)vecAt(&s->u.block.stmts, i - 1);
             if (child && child == s->forStep) continue;
+            if (child && child->kind == ST_BLOCK && child->parLoop &&
+                !parFoldInner(w, child)) return;
             parPushItem(w, child, 0);
         }
         return;
@@ -587,6 +716,7 @@ static void parScanStmt(ParLower *w, Stmt *s) {
  * @return      扫描成功（没有诊断）时返回 `true`。
  */
 static bool parScanBody(ParLower *w, Stmt *body) {
+    if (!parFoldInner(w, body)) return false;
     parPushItem(w, body, 0);
     while (w->items.len > 0) {
         ParItem *it = (ParItem *)vecAt(&w->items, w->items.len - 1);
@@ -693,6 +823,11 @@ static FuncDef *parMakeWorker(ParLower *w, Stmt *decl, Stmt *hiDecl, Stmt *loop)
         *(Param **)vecPush(&wf->params) =
             parParam(c, cn, ttViewReadonly(c->tt, sym->type), line);
     }
+    for (size_t i = 0; i < w->scalars.len; i++) {
+        const char *sn = *(const char **)vecAt(&w->scalars, i);
+        Sym *sym = lookup(c, sn);
+        *(Param **)vecPush(&wf->params) = parParam(c, sn, sym->type, line);
+    }
     Sym *outSym = lookup(c, w->outName);
     *(Param **)vecPush(&wf->params) = parParam(c, w->outName, outSym->type, line);
 
@@ -709,6 +844,8 @@ static FuncDef *parMakeWorker(ParLower *w, Stmt *decl, Stmt *hiDecl, Stmt *loop)
     *(Stmt **)vecPush(&body->u.block.stmts) = ret;
     wf->body = body;
     wf->ret  = c->tI32;
+    /* 二维折叠的 worker 写绝对槽位，所以 trampoline 传整份输出视图而不是 [lo,hi) 切段。 */
+    if (w->fullOut) planSetParFullOut(wf, true);
 
     *(FuncDef **)vecPush(&c->m->funcs) = wf;   /* 主检查循环稍后会 checkFunc 它 */
     return wf;
@@ -769,7 +906,10 @@ static void parLower(Checker *c, Stmt *block) {
     w.loopVar = decl->u.var.name;
     vecInit(&w.locals,   c->arena, sizeof(void *));
     vecInit(&w.captures, c->arena, sizeof(void *));
+    vecInit(&w.scalars,  c->arena, sizeof(void *));
+    vecInit(&w.parVars,  c->arena, sizeof(void *));
     vecInit(&w.items,    c->arena, sizeof(ParItem));
+    parAddParVar(&w, decl->u.var.name);
     Expr *loInit = decl->u.var.init;
     Expr *hiInit = hiDecl->u.var.init;
     if (!parScanBody(&w, loop->u.whiles.body)) return;
@@ -797,6 +937,11 @@ static void parLower(Checker *c, Stmt *block) {
         const char *cn = *(const char **)vecAt(&w.captures, i);
         Sym *sym = lookup(c, cn);
         *(Expr **)vecPush(&call->u.call.args) = parCheckedIdent(c, cn, sym, block->line);
+    }
+    for (size_t i = 0; i < w.scalars.len; i++) {
+        const char *sn = *(const char **)vecAt(&w.scalars, i);
+        Sym *sym = lookup(c, sn);
+        *(Expr **)vecPush(&call->u.call.args) = parCheckedIdent(c, sn, sym, block->line);
     }
     *(Expr **)vecPush(&call->u.call.args) = parCheckedIdent(c, w.outName, outSym, block->line);
     Expr *span = exprBinNew(c->arena, "-", hiInit, loInit, block->line);

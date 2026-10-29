@@ -1,11 +1,13 @@
-// 限制集：v1 只捕获视图，不捕获标量。
-use std::io
+// 限制集：捕获只收只读视图与内建标量；结构体值没有捕获故事。
+struct point {
+    x: i64
+    y: i64
+}
 
 fn main() -> i32 {
-    let n: i64 = i64(16)
-    let k: f64 = 3.0
+    let n: i64 = i64(8)
+    let p: point = point { x: i64(1), y: i64(2) }
     var b: mut slice<f64> = new f64[n]
-    par i in 0..n { b[i] = f64(i) * k }
-    io::cout << f"s={b[0]}\n"
+    par i in 0..n { b[i] = f64(i) + f64(p.x) }
     return 0
 }

@@ -1,0 +1,24 @@
+// 归约的 v1 路线：先 `par` 把结果写进数组，再用 `stl::seq` 串行归约（合并顺序固定 ⇒ 与
+// 顺序 for 逐位相同，线程数无关）。
+use std::io
+use stl::seq
+
+fn fillPar(n: i64, out: mut slice<f64>) {
+    par i in 0..n { out[i] = f64(i) * 2.0 }
+}
+
+fn fillSeq(n: i64, out: mut slice<f64>) {
+    for i in 0..n { out[i] = f64(i) * 2.0 }
+}
+
+fn main() -> i32 {
+    let n: i64 = 4096
+    var a: mut slice<f64> = new f64[n]
+    var b: mut slice<f64> = new f64[n]
+    fillSeq(n, a)
+    fillPar(n, b)
+    let sa: f64 = seq::sum(a) ?? -1.0
+    let sb: f64 = seq::sum(b) ?? -1.0
+    io::cout << f"same={sa == sb} s={i64(sb)}\n"
+    return 0
+}

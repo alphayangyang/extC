@@ -85,6 +85,7 @@
 #define AN_HOME_ADDR_MASK        62
 #define AN_HOME_CONT_MASK        63
 #define PLAN_PAR_TLS_ARENA       62
+#define PLAN_PAR_FULL_OUT        84
 #define PLAN_DEREF               63
 #define PLAN_BOXED_CORO          64
 #define PLAN_CORO_KIND           65
@@ -959,6 +960,8 @@ PLF_GET(planIsParWorker, bool, isParWorker, PLAN_IS_PAR_WORKER, false)
 PLF_SET(planSetIsParWorker, bool, isParWorker, PLAN_IS_PAR_WORKER)
 PLF_GET(planParTlsArena, bool, parTlsArena, PLAN_PAR_TLS_ARENA, false)
 PLF_SET(planSetParTlsArena, bool, parTlsArena, PLAN_PAR_TLS_ARENA)
+PLF_GET(planParFullOut, bool, parFullOut, PLAN_PAR_FULL_OUT, false)
+PLF_SET(planSetParFullOut, bool, parFullOut, PLAN_PAR_FULL_OUT)
 
 /* ---- operator / comparison facts -----------------------------------------------------
  *

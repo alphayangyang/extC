@@ -1,0 +1,35 @@
+// 二维折叠：内层 `par` 折叠进同一个内核（不是另开一批线程），写 `out[r * cols + c]`。
+use std::io
+
+fn parFill(rows: i64, cols: i64, dst: mut slice<f64>) {
+    par r in 0..rows {
+        par c in 0..cols {
+            dst[r * cols + c] = f64(r * i64(100) + c)
+        }
+    }
+}
+
+fn seqFill(rows: i64, cols: i64, dst: mut slice<f64>) {
+    for r in 0..rows {
+        for c in 0..cols {
+            dst[r * cols + c] = f64(r * i64(100) + c)
+        }
+    }
+}
+
+fn main() -> i32 {
+    let rows: i64 = 9
+    let cols: i64 = 5
+    var a: mut slice<f64> = new f64[rows * cols]
+    var b: mut slice<f64> = new f64[rows * cols]
+    seqFill(rows, cols, a)
+    parFill(rows, cols, b)
+    var same: bool = true
+    var s: f64 = 0.0
+    for i in 0..(rows * cols) {
+        if a[i] != b[i] { same = false }
+        s = s + b[i]
+    }
+    io::cout << f"same={same} s={i64(s)}\n"
+    return 0
+}

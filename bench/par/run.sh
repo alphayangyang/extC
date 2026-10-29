@@ -21,6 +21,7 @@ RUNS=${RUNS:-5}
 PIN=${PIN:-6-13}
 SIZES=${SIZES:-"262144 1048576"}
 THREADS=${THREADS:-"1 2 4 8"}
+ITERS=${ITERS:-48}
 
 die() { echo "FAIL: $*" >&2; exit 1; }
 
@@ -39,18 +40,18 @@ echo "== 构建各臂"
 "$CC" -O2 -std=c11 -fwrapv -o "$tmp/c" "$dir/par.c" || die "编译 c 失败"
 
 echo "== 逐字节对拍（等价性先于性能）"
-ref=$("$tmp/seq" 4096) || die "seq 运行失败"
+ref=$("$tmp/seq" 4096 "$ITERS") || die "seq 运行失败"
 for exe in "$tmp/par" "$tmp/c"; do
-    got=$("$exe" 4096) || die "$(basename "$exe") 运行失败"
+    got=$("$exe" 4096 "$ITERS") || die "$(basename "$exe") 运行失败"
     [ "$got" = "$ref" ] || die "对齐失败：$(basename "$exe") 输出 '$got'，seq 是 '$ref'"
 done
 for t in $THREADS; do
-    got=$(EXTC_PAR_THREADS=$t "$tmp/par" 4096) || die "par($t 线程) 运行失败"
+    got=$(EXTC_PAR_THREADS=$t "$tmp/par" 4096 "$ITERS") || die "par($t 线程) 运行失败"
     [ "$got" = "$ref" ] || die "对齐失败：par($t) 输出 '$got'，seq 是 '$ref'"
 done
 echo "   seq / par(1,2,4,8) / c 在 n=4096 上 stdout 逐字节一致：$ref"
 
-export EXTC CC RUNS PIN SIZES THREADS
+export EXTC CC RUNS PIN SIZES THREADS ITERS
 echo "== 计时（RUNS=$RUNS，pin=$PIN，n=$SIZES）"
 python3 - "$tmp" "$root" <<'PY'
 import os
@@ -72,7 +73,7 @@ def timed(exe, n, env_extra):
     env = dict(os.environ)
     env.update(env_extra)
     t0 = time.perf_counter()
-    p = subprocess.run(pfx() + [exe, str(n)], capture_output=True, text=True, env=env)
+    p = subprocess.run(pfx() + [exe, str(n), os.environ["ITERS"]], capture_output=True, text=True, env=env)
     dt = (time.perf_counter() - t0) * 1e3
     if p.returncode != 0:
         sys.exit(f"FAIL: {exe} n={n} 退出码 {p.returncode}: {p.stderr[:200]}")
@@ -84,7 +85,7 @@ def rss_kb(exe, n, env_extra):
         return 0
     env = dict(os.environ)
     env.update(env_extra)
-    p = subprocess.run(pfx() + [timer, "-v", exe, str(n)], capture_output=True, text=True, env=env)
+    p = subprocess.run(pfx() + [timer, "-v", exe, str(n), os.environ["ITERS"]], capture_output=True, text=True, env=env)
     m = re.search(r"Maximum resident set size \(kbytes\):\s*(\d+)", p.stderr)
     return int(m.group(1)) if m else 0
 
@@ -129,7 +130,7 @@ lines = [
     f"runs\t{runs}",
     f"threads\t{' '.join(map(str, threads))}",
     f"sizes\t{' '.join(map(str, sizes))}",
-    f"chain\t48",
+    f"chain\t{os.environ['ITERS']}",
     f"flags\textC 前端 + cc -O2 -std=c11 -fwrapv -pthread；手写 C 同一组（无 -pthread）",
 ]
 for name, n, ms, rss, cs in rows:

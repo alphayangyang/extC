@@ -1,0 +1,17 @@
+// 标量按值捕获：`k`、`base`、`bias` 在进入 worker 前各求值一次，worker 拿到自己的副本。
+use std::io
+
+fn main() -> i32 {
+    let n: i64 = i64(8)
+    let k: f64 = 3.0
+    let base: f64 = 1.0
+    let bias: i64 = 2
+    var a: mut slice<f64> = new f64[n]
+    var b: mut slice<f64> = new f64[n]
+    for i in 0..n { a[i] = f64(i) }
+    par i in 0..n { b[i] = a[i] * k + base + f64(bias) }
+    var s: f64 = 0.0
+    for v in b { s = s + v }
+    io::cout << f"s={i64(s)}\n"
+    return 0
+}

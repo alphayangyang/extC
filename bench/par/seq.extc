@@ -9,6 +9,7 @@ fn argOr(args: slice<slice<u8>>, i: i64, dflt: i64) -> i64 {
 
 fn main(args: slice<slice<u8>>) -> i32 {
     let n: i64 = argOr(args, i64(1), i64(64))
+    let iters: i64 = argOr(args, i64(2), i64(48))
     var in: mut slice<f64> = new f64[n]
     var out: mut slice<f64> = new f64[n]
     for i in 0..n {
@@ -18,7 +19,7 @@ fn main(args: slice<slice<u8>>) -> i32 {
         var x: f64 = in[i]
         var y: f64 = x
         var k: i64 = 0
-        while k < i64(48) {
+        while k < iters {
             y = y * 1.0000001 + x * 0.5 + 1.0
             x = x * 1.0000003
             k = k + i64(1)
