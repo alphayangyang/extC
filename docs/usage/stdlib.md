@@ -427,6 +427,51 @@ fn main() -> i32 {
 ```
 实测：`sum=10500000 max=4500000 min=1000000 c=1`。
 
+### `tensor`：二维 strided 视图（张量的最小一等公民）
+
+| 名字 | 签名 |
+|---|---|
+| `tensor2<T>` | 结构体：`data: mut slice<T>`、`off`、`rows`、`cols`、`rs`、`cs`（步长以元素为单位） |
+| `fromFlat<T>` | `fn fromFlat<T>(data: mut slice<T>, rows: i64, cols: i64) -> ?tensor2<T>` |
+| `fromStrided<T>` | `fn fromStrided<T>(data: mut slice<T>, off: i64, rows: i64, cols: i64, rs: i64, cs: i64) -> ?tensor2<T>` |
+| `empty<T>` | `fn empty<T>(data: mut slice<T>) -> tensor2<T>` |
+| `nRows` / `nCols` / `rowStride` / `colStride` | `fn …(self: ref tensor2<T>) -> i64` |
+| `get` / `set` | `fn get(self: ref tensor2<T>, r: i64, c: i64) -> ?T` · `fn set(self: mut ref tensor2<T>, r: i64, c: i64, v: T) -> bool` |
+| `fill` | `fn fill(self: mut ref tensor2<T>, v: T)` |
+| `sum` | `fn sum(self: ref tensor2<T>) -> ?T`（行主序：r 递增再 c 递增） |
+| `transpose` | `fn transpose(self: mut ref tensor2<T>) -> tensor2<T>`（零拷贝：换形状与步长） |
+| `subview` | `fn subview(self: mut ref tensor2<T>, r0: i64, c0: i64, rn: i64, cn: i64) -> ?tensor2<T>`（零拷贝：挪起点） |
+| `copyFrom` / `addScaled` | `fn copyFrom(self: mut ref tensor2<T>, src: tensor2<T>) -> bool` · `fn addScaled(self: mut ref tensor2<T>, x: tensor2<T>, k: T) -> bool` |
+
+**它是视图，不是容器**：一个 `tensor2<T>` 只有「底层存储 + 起点 + 形状 + 两个步长」，拷贝张量拷贝的是
+这几个数（视图按设计共享存储）。元素下标是 `off + r*rs + c*cs`，所以连续矩阵、转置、子矩阵、步长视图
+是同一个类型、都不复制数据。构造失败（形状为负、装不下、步长为负、最远元素越界）返回 `none` —— 库不 trap；
+`empty` 是给 `??` 用的空视图兜底值。读在 `ref` 上、写在 `mut ref` 上；`fromFlat`/`fromStrided` 收
+`mut slice<T>`（要写的张量必须从可写视图建）。表达式位置要写**不带模块前缀**的类型名
+（`use stl::tensor` 之后 `tensor2<i64>::fromFlat(...)`），这是当前解析器的形状。
+
+```extc
+use std::io
+use stl::tensor
+
+fn main() -> i32 {
+    var buf: mut slice<i64> = new i64[i64(12)]
+    for i in 0..i64(12) { buf[i] = i }
+    var m = tensor2<i64>::fromFlat(buf, i64(3), i64(4)) ?? tensor2<i64>::empty(buf)
+    let g = m.get(i64(1), i64(2)) ?? i64(-1)
+    m.set(i64(1), i64(2), i64(99))
+    let s = m.sum() ?? i64(-1)
+    var tr = m.transpose()
+    let ts = tr.sum() ?? i64(-1)
+    var sub = m.subview(i64(1), i64(1), i64(2), i64(3)) ?? tensor2<i64>::empty(buf)
+    let ss = sub.sum() ?? i64(-1)
+    io::cout << "g=" << g << " s=" << s << " ts=" << ts << " ss=" << ss << "\n"
+    return 0
+}
+```
+
+实测：`g=6 s=159 ts=159 ss=141`。细节见 `stdlib/stl/tensor.extc` 与 `tests/stl/tensor.extc`。
+
 ## 3. `std::*`：模块
 
 ### `std::io`：控制台与缓冲的读写
