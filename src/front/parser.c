@@ -268,6 +268,7 @@ static GlobalDef *parseGlobalDecl(Parser *p);
 static Stmt    *parseIf(Parser *p);
 static Stmt    *parseWhile(Parser *p);
 static Stmt    *parseFor(Parser *p);
+static Stmt    *parsePar(Parser *p);
 static StructDef *parseStruct(Parser *p);
 static FuncDef   *parseFunc(Parser *p);
 static bool       parseFuncAnnotations(Parser *p, bool *outInline, bool *outPrivate,
@@ -2429,6 +2430,12 @@ static Stmt *parseStmt(Parser *p) {
     if (at(p, "if"))                   return parseIf(p);
     if (at(p, "while"))                return parseWhile(p);
     if (at(p, "for"))                  return parseFor(p);
+    /* `par i in lo..hi { … }`：并行的唯一动词。与 `ext` / `trap` 一样是**软关键字**，
+     * 靠形状识别（`par` 后面是一个名字、再后面是 `in`），叫 `par` 的变量照常可用。 */
+    if (at(p, "par") && pk(p, 1) &&
+        (pk(p, 1)->kind == TK_IDENT || pk(p, 1)->kind == TK_TYPE) &&
+        pk(p, 2) && strcmp(pk(p, 2)->text, "in") == 0)
+        return parsePar(p);
     /* `trap(msg)`：程序无法继续（`ST_TRAP`）。靠**形状**识别（这个词后面跟
      * `(`），与 `ext` 运算符同一招：叫 `trap` 的变量、字段或参数照常可用，只有语句位置的
      * 调用才是这个内建。 */
@@ -3028,6 +3035,99 @@ static bool forRepeatable(Expr *e) {
 }
 
 /**
+ * @brief 把 `i in lo..hi { B }` 脱糖成 `[var i = lo, var __extc_hi = hi, while i < __extc_hi { B; i += 1 }]`。
+ *
+ * `for` 与 `par` 共用这一个尾巴：`par` 只在同一个块上多置一个 `parLoop` 标记（真正的并行
+ * 限制集由检查器判定，解析器不需要知道类型）。
+ *
+ * @param p     解析器。
+ * @param vn    循环变量 token。
+ * @param head  `lo` 表达式（已解析）。
+ * @param hi    `hi` 表达式（已解析）。
+ * @param body  循环体块（已解析）。
+ * @param line  挂到节点上的源码行。
+ * @return      脱糖后的三语句外层块。
+ */
+static Stmt *forRangeFrom(Parser *p, Token *vn, Expr *head, Expr *hi, Stmt *body, int line) {
+    Stmt *decl = stmtNew(p->arena, ST_VAR, line);
+    decl->u.var.name = vn->text;
+    decl->u.var.ann  = NULL;
+    decl->u.var.init = head;
+    decl->u.var.mut  = true;                 /* the loop itself writes it */
+    decl->u.var.overwrite = false;
+
+    /* **上界只求值一次**，在进入循环时。照写进条件里会让循环每轮重读它，
+     * `for i in 0..n { n = 0 ... }` 就会跟着体里改动的 `n` 走。区间是有界区间 ——
+     * `for i in 0..xs.len` 必须指进入时的长度 —— 隐藏的 `let` 正好给上界脱糖承诺的
+     * 生命周期。名字沿用 `__extc_s` / `__extc_i` 的 `__extc_` 约定；用户绑了同名就是
+     * 遮蔽，`declare` 会像对别的名字一样重命名它。 */
+    Stmt *hiDecl = stmtNew(p->arena, ST_VAR, line);
+    hiDecl->u.var.name = "__extc_hi";
+    hiDecl->u.var.ann  = NULL;
+    hiDecl->u.var.init = hi;
+    hiDecl->u.var.mut  = false;              /* a bound is not something the loop writes */
+    hiDecl->u.var.overwrite = false;
+
+    Expr *cond = exprNew(p->arena, EX_BIN, line);
+    cond->u.bin.op    = "<";                 /* half open, like a slice range */
+    cond->u.bin.left  = forIdent(p, vn->text, line);
+    cond->u.bin.right = forIdent(p, "__extc_hi", line);
+
+    Stmt *stepStmt = forStep(p, vn->text, "+=", forInt(p, 1, line), line);
+    Stmt *inner[2] = { body, stepStmt };
+    Stmt *loopBody = forBlock(p, inner, 2, line);
+    loopBody->forStep = stepStmt;         /* label target for `continue` */
+    Stmt *w = stmtNew(p->arena, ST_WHILE, line);
+    w->u.whiles.cond = cond;
+    w->u.whiles.body = loopBody;
+    Stmt *outer[3] = { decl, hiDecl, w };
+    return forBlock(p, outer, 3, line);
+}
+
+/**
+ * @brief 解析 `par i in lo..hi { B }`（并行循环），脱糖成与区间 `for` 相同的块并打标记。
+ *
+ * `par` 是**软关键字**：只有形状是 `par <名字> in` 时才是这个语句，叫 `par` 的变量照常可用。
+ * 类型与限制集都在检查器里判（`parLower`）。
+ *
+ * @param p  解析器。
+ * @return   脱糖后的块；出错时返回 `NULL`（已报告诊断）。
+ */
+static Stmt *parsePar(Parser *p) {
+    Token *kw = take(p);
+    const int line = kw->line;
+    if (cur(p)->kind != TK_IDENT && cur(p)->kind != TK_TYPE) {
+        ctxError(p->ctx, cur(p)->line, cur(p)->col, NULL,
+                 "`par` binds a name here: `par i in 0..n { … }`");
+        return NULL;
+    }
+    Token *vn = take(p);
+    if (!expect(p, "in", "`par` needs `in`: `par i in 0..n { … }`")) return NULL;
+    const bool savedCond = p->inCond;
+    p->inCond = true;
+    Expr *head = parseExpr(p);
+    p->inCond = savedCond;
+    if (!head) return NULL;
+    if (!at(p, "..")) {
+        ctxError(p->ctx, cur(p)->line, cur(p)->col,
+                 "A `par` loop is a range loop `<name> in lo..hi { … }`; other `for` forms do not"
+                 " carry the index an output slot is decided by.",
+                 "`par` needs a range loop: `par i in 0..n { … }`");
+        return NULL;
+    }
+    take(p);
+    p->inCond = true;
+    Expr *hi = parseExpr(p);
+    p->inCond = savedCond;
+    if (!hi) return NULL;
+    Stmt *body = parseBlock(p);
+    if (!body) return NULL;
+    Stmt *block = forRangeFrom(p, vn, head, hi, body, line);
+    if (block) block->parLoop = true;
+    return block;
+}
+
+/**
  * @brief 解析 `for` 的四种形式，并在这里脱糖成 `var` + `while`。
  *
  * @param p  解析器。
@@ -3114,41 +3214,7 @@ static Stmt *parseFor(Parser *p) {
     Stmt *body = parseBlock(p);
     if (!body) return NULL;
 
-    if (hi) {
-        Stmt *decl = stmtNew(p->arena, ST_VAR, line);
-        decl->u.var.name = vn->text;
-        decl->u.var.ann  = NULL;
-        decl->u.var.init = head;
-        decl->u.var.mut  = true;                 /* the loop itself writes it */
-        decl->u.var.overwrite = false;
-
-        /* **上界只求值一次**，在进入循环时。照写进条件里会让循环每轮重读它，
-         * `for i in 0..n { n = 0 ... }` 就会跟着体里改动的 `n` 走。区间是有界区间 ——
-         * `for i in 0..xs.len` 必须指进入时的长度 —— 隐藏的 `let` 正好给上界脱糖承诺的
-         * 生命周期。名字沿用 `__extc_s` / `__extc_i` 的 `__extc_` 约定；用户绑了同名就是
-         * 遮蔽，`declare` 会像对别的名字一样重命名它。 */
-        Stmt *hiDecl = stmtNew(p->arena, ST_VAR, line);
-        hiDecl->u.var.name = "__extc_hi";
-        hiDecl->u.var.ann  = NULL;
-        hiDecl->u.var.init = hi;
-        hiDecl->u.var.mut  = false;              /* a bound is not something the loop writes */
-        hiDecl->u.var.overwrite = false;
-
-        Expr *cond = exprNew(p->arena, EX_BIN, line);
-        cond->u.bin.op    = "<";                 /* half open, like a slice range */
-        cond->u.bin.left  = forIdent(p, vn->text, line);
-        cond->u.bin.right = forIdent(p, "__extc_hi", line);
-
-        Stmt *stepStmt = forStep(p, vn->text, "+=", forInt(p, 1, line), line);
-        Stmt *inner[2] = { body, stepStmt };
-        Stmt *loopBody = forBlock(p, inner, 2, line);
-        loopBody->forStep = stepStmt;         /* label target for `continue` () */
-        Stmt *w = stmtNew(p->arena, ST_WHILE, line);
-        w->u.whiles.cond = cond;
-        w->u.whiles.body = loopBody;
-        Stmt *outer[3] = { decl, hiDecl, w };
-        return forBlock(p, outer, 3, line);
-    }
+    if (hi) return forRangeFrom(p, vn, head, hi, body, line);
 
     /* ---- form one: `for d in c { B }` ---- */
     if (!forRepeatable(head)) {

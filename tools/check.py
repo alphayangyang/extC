@@ -1646,6 +1646,14 @@ def build_items() -> list:
         ok_msg=ok_count_ok(" 项（vector：翻倍/dense 连续/shrink/clear · ASan）"),
         bad_msg="tests/stl/run.sh", bad_dump=dump_fail(8)))
 
+    # ---- 数据并行：`par` ----
+    items.append(cmd(
+        "par", "tests",
+        "数据并行：`par i in lo..hi` 的等价/线程数无关/空区间/软关键字 + 限制集逐条拒绝",
+        ["./tests/par/run.sh"], timeout=600,
+        ok_msg=ok_count_ok(" 项（等价 · 线程数无关 · 空区间 · 软关键字 · 9 条反例）"),
+        bad_msg="tests/par/run.sh", bad_dump=dump_fail(8)))
+
     # ---- 线性关联容器 ----
     items.append(cmd(
         "linmap", "tests",

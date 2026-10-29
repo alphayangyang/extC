@@ -2769,6 +2769,16 @@ static const char *exCall(CG *g, Expr *e) {
         /* A worker that allocates takes its memory from the run's region, so the region
          * half of the runtime has to be compiled in for this program. */
         if (planUsesHome(wf)) g->needParRegion = true;
+        /* `par` 降糖把 threads 写成 `-1` 哨兵：没写线程数就是"用这台机器能用的核"。
+         * 运行期把它当 ≤1 会静默顺序跑，所以在这里换成 `extc_par_default_threads()`。 */
+        if (e->u.call.args.len > 2 + nViews) {
+            Expr *th = *(Expr **)vecAt(&e->u.call.args, 2 + nViews);
+            if (th && th->kind == EX_INT && th->u.ival == -1)
+                return arenaPrintf(g->arena,
+                    "((int32_t)extc_par_run(__extc_par_%s, &%s, %s, %s,"
+                    " extc_par_default_threads(), 0))",
+                    wf->name, tmp, planUsesHome(wf) ? "1" : "0", ntmp);
+        }
         return arenaPrintf(g->arena,
             "((int32_t)extc_par_run(__extc_par_%s, &%s, %s, %s, (int64_t)(%s), 0))",
             wf->name, tmp, planUsesHome(wf) ? "1" : "0", ntmp,
@@ -12280,6 +12290,18 @@ static void emitParallelRuntime(CG *g, Buf *out) {
             "    { extc_par_arg self; self.job = &job; self.id = 0; extc_par_worker(&self); }\n"
             "    for (i = 1; i <= started; i++) { void *r = NULL; pthread_join(th[i], &r); }\n"
             "    return job.first_err;\n"
+            "}\n"
+            "\n"
+            "/* 默认 worker 数：`par` 没写线程数时用这台机器能用的核。`sysconf` 走自己声明\n"
+            " * （生成的 C 不 include unistd.h：库自己声明 read/write，会与它冲突）。 */\n"
+            "extern long sysconf(int);\n"
+            "EXTC_UNUSED static int64_t extc_par_default_threads(void) {\n"
+            "    const char *e = getenv(\"EXTC_PAR_THREADS\");\n"
+            "    long t = e ? atol(e) : -1;\n"
+            "    if (t <= 0) t = sysconf(84 /* _SC_NPROCESSORS_ONLN */);\n"
+            "    if (t <= 0) t = 4;\n"
+            "    if (t > 256) t = 256;\n"
+            "    return t;\n"
             "}\n");
     }
 }

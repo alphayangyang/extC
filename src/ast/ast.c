@@ -171,6 +171,94 @@ Expr *exprIdent(Arena *a, const char *name, int line) {
 }
 
 /**
+ * @brief 造一个二元运算节点：`op`、左右操作数一次填好。
+ *
+ * 解析器的 `mkBin` 与检查器的降糖都走这里，免得「构造 Bin 节点」这件事散成七八处手写。
+ * `type` 留给检查器填（降糖自己知道类型时在调用点补）。
+ *
+ * @param a     拥有节点的 arena。
+ * @param op    运算符文本（`"+"`、`"<"`、`"-"` 等），生命周期与 arena 一致。
+ * @param left  左操作数。
+ * @param right 右操作数。
+ * @param line  源码行号（1 起）。
+ * @return      新 `EX_BIN` 节点。
+ */
+Expr *exprBinNew(Arena *a, const char *op, Expr *left, Expr *right, int line) {
+    Expr *e = exprNew(a, EX_BIN, line);
+    e->u.bin.op = op;
+    e->u.bin.left = left;
+    e->u.bin.right = right;
+    return e;
+}
+
+/**
+ * @brief 造一个整数字面量节点。
+ *
+ * @param a     拥有节点的 arena。
+ * @param value 字面量值（同时存进 `u.ival`）。
+ * @param line  源码行号（1 起）。
+ * @return      新 `EX_INT` 节点；`type` 留给调用方填。
+ */
+Expr *exprIntNew(Arena *a, long long value, int line) {
+    Expr *e = exprNew(a, EX_INT, line);
+    e->u.ival = value;
+    return e;
+}
+
+/**
+ * @brief 造一个 `EX_CALL` 节点：被调者填好、实参表初始化成空。
+ *
+ * @param a      拥有节点的 arena。
+ * @param callee 被调者表达式。
+ * @param line   源码行号（1 起）。
+ * @return       新 `EX_CALL` 节点，`u.call.args` 可用 `vecPush` 追加。
+ */
+Expr *exprCallNew(Arena *a, Expr *callee, int line) {
+    Expr *e = exprNew(a, EX_CALL, line);
+    e->u.call.callee = callee;
+    vecInit(&e->u.call.args, a, sizeof(Expr *));
+    return e;
+}
+
+/**
+ * @brief 把一个下标表达式节点里的下标换掉（降糖用：`out[i]` → `out[i - lo]`）。
+ *
+ * 只改下标槽，不动 `obj`、`type` 与其他字段；调用方负责新下标已经检查过。
+ *
+ * @param e     必须是 `EX_INDEX` 节点。
+ * @param index 新下标表达式。
+ */
+void exprIndexRetarget(Expr *e, Expr *index) {
+    e->u.index.index = index;
+}
+
+/**
+ * @brief 给 `FuncDef` 记下它所属模块的名字。
+ *
+ * 检查器合成的函数（`par` 的 worker）没有解析期的模块上下文，靠这条把后续诊断与发射需要的
+ * 名字补齐。
+ *
+ * @param f       要写的函数定义。
+ * @param modName 模块名；生命周期与 arena 一致，可为 NULL。
+ */
+void funcDefSetModName(FuncDef *f, const char *modName) {
+    f->modName = modName;
+}
+
+/**
+ * @brief 把语句标记/取消「并行循环块」标记。
+ *
+ * 标记只由解析器造，检查器在降糖之后清掉；不新增 `StmtKind` 的代价就是这一个可由两侧设置的
+ * 布尔值。
+ *
+ * @param s       要写的语句节点。
+ * @param parLoop 新值。
+ */
+void stmtSetParLoop(Stmt *s, bool parLoop) {
+    s->parLoop = parLoop;
+}
+
+/**
  * @brief 判断一个函数是不是方法。
  *
  * 规则就是名字：第一个参数名为 `self` 就是方法，声明里没有别的东西区分方法与自由函数。

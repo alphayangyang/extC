@@ -1,0 +1,14 @@
+// `par` 的一维形状：输出槽 = 循环变量自己；结果必须与顺序 for 逐位相同。
+use std::io
+
+fn main() -> i32 {
+    let n: i64 = i64(1000)
+    var a: mut slice<f64> = new f64[n]
+    var b: mut slice<f64> = new f64[n]
+    for i in 0..n { a[i] = f64(i) * 2.0 }
+    par i in 0..n { b[i] = a[i] * 3.0 }
+    var s: f64 = 0.0
+    for v in b { s = s + v }
+    io::cout << f"bsum={i64(s)}\n"
+    return 0
+}

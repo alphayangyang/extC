@@ -4308,11 +4308,16 @@ static void checkFunc(Checker *c, FuncDef *f) {
      * whether every handle the function opened also gets closed. */
     checkOpenHandles(c, f);
 
+    /* `par` 合成的 worker 体照普通函数检查，但 worker 的签名有运行期约定（`id` 就是给
+     * trampoline 的），这里在体检查完之后把它按解析好的形状复查一遍。 */
+    if (planIsParWorker(f)) parWorkerAudit(c, f);
+
     /* A parameter the body never reads. extC lets the program keep it and the generated C marks it
      * `unused` so the C compiler stays quiet, but the reader deserves to hear about dead weight in
      * a signature they wrote. `self` is exempt: a method that ignores its receiver is ordinary. */
     for (size_t i = 0; i < f->params.len; i++) {
         Param *p = *(Param **)vecAt(&f->params, i);
+        if (planIsParWorker(f) && p->name && strcmp(p->name, "id") == 0) continue;
         if (!p->name || !p->cname || strcmp(p->name, "self") == 0) continue;
         if (stmtUsesCname(f->body, p->cname)) continue;
         ckWarn(c, p->line,

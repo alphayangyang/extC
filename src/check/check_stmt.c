@@ -229,6 +229,685 @@ static void widenRangeForVar(Checker *c, Stmt *block) {
     sym->type = hi;
 }
 
+/* ----------------------------------------------------- `par` 降糖 */
+
+/**
+ * @brief `par` 降糖扫描栈里的一项：语句、表达式或"内层循环结束"标记。
+ *
+ * 用显式栈而不是递归：`tools/check_walkers.py` 那本棘轮数的是"手写递归 kind-walker"，
+ * `par` 的扫描只是**分类器**（不完整、遇到没列的 kind 就放过），不该去动那本账。
+ */
+typedef struct {
+    const void   *node;
+    unsigned char tag;    /* 0 = Stmt*，1 = Expr*，2 = 内层循环结束 */
+} ParItem;
+
+/**
+ * @brief `par` 降糖的扫描上下文。
+ *
+ * 扫描发生在循环变量与 `__extc_hi` 都检查完、`while` 还没检查的时候：外侧作用域还开着，
+ * 所以捕获视图的名字能 `lookup` 到；体内自己的 `var` 只是先记下名字（它们的类型要等
+ * worker 复查时才有）。
+ */
+typedef struct {
+    Checker    *c;
+    const char *loopVar;    /* 循环变量的源码名 */
+    const char *outName;    /* 输出视图名；NULL 表示还没看到写 */
+    int         outLine;    /* 第一次写的行 */
+    Vec         locals;     /* const char*：体内 `var` 声明的名字 */
+    Vec         captures;   /* const char*：只读捕获的视图名，按首次出现顺序 */
+    Vec         items;      /* ParItem：显式工作栈 */
+    int         loopDepth;  /* 内层循环层数：`break`/`continue` 只有在内层才不逃出内核 */
+    bool        failed;     /* 已经报过错：停止继续扫描（避免刷屏） */
+} ParLower;
+
+/**
+ * @brief 名字是否在字符串表里。
+ *
+ * @param v     表（`const char *` 元素）。
+ * @param name  要找的名字；NULL 返回 false。
+ * @return      在表里则 `true`。
+ */
+static bool parHasName(const Vec *v, const char *name) {
+    if (!name) return false;
+    for (size_t i = 0; i < v->len; i++)
+        if (strcmp(*(const char **)vecAt((Vec *)v, i), name) == 0) return true;
+    return false;
+}
+
+/**
+ * @brief 往扫描栈里压一项。
+ *
+ * @param w     扫描上下文。
+ * @param node  语句或表达式节点。
+ * @param tag   0 = 语句，1 = 表达式，2 = 内层循环结束。
+ */
+static void parPushItem(ParLower *w, const void *node, unsigned char tag) {
+    ParItem *it = (ParItem *)vecPush(&w->items);
+    it->node = node;
+    it->tag  = tag;
+}
+
+/**
+ * @brief 记一个体内声明的局部名（重复的只记一次）。
+ *
+ * @param w     扫描上下文。
+ * @param name  局部变量名。
+ */
+static void parAddLocal(ParLower *w, const char *name) {
+    if (!name || parHasName(&w->locals, name)) return;
+    *(const char **)vecPush(&w->locals) = name;
+}
+
+/**
+ * @brief 记一个只读捕获的视图名（重复的只记一次）。
+ *
+ * @param w     扫描上下文。
+ * @param name  视图名。
+ */
+static void parAddCapture(ParLower *w, const char *name) {
+    if (!name || parHasName(&w->captures, name)) return;
+    *(const char **)vecPush(&w->captures) = name;
+}
+
+/**
+ * @brief 报一条 `par` 限制集诊断并停止扫描。
+ *
+ * @param w     扫描上下文。
+ * @param line  源码行。
+ * @param note  解释"为什么"的补充说明（可为 NULL）。
+ * @param msg   主诊断文案。
+ */
+static void parFail(ParLower *w, int line, const char *note, const char *msg) {
+    if (w->failed) return;
+    w->failed = true;
+    ckError(w->c, line, note, "%s", msg);
+}
+
+/**
+ * @brief 判断一个名字在当前作用域里是不是视图。
+ *
+ * @param w     扫描上下文。
+ * @param name  名字。
+ * @return      解析到视图类型则 `true`。
+ */
+static bool parNameIsView(ParLower *w, const char *name) {
+    if (!name) return false;
+    Sym *sym = lookup(w->c, name);
+    return sym && sym->type && ttIsViewType(ttBase(sym->type));
+}
+
+/**
+ * @brief 把一个赋值目标按 `par` 的限制集分类，并把输出写下标改写成子视图下标。
+ *
+ * 允许的目标只有两种：体内声明的局部标量（私有的，随便写），以及**唯一**输出视图的
+ * `out[i]`。后者要同时满足：`out` 是视图、`i` 恰好是循环变量本身。改写把 `out[i]` 变成
+ * `out[i - __extc_plo]`：trampoline 交给 worker 的是 `[lo, hi)` 切过的零基子视图。
+ *
+ * @param w  扫描上下文。
+ * @param t  赋值目标表达式。
+ */
+static void parScanTarget(ParLower *w, Expr *t) {
+    if (!t || w->failed) return;
+    /* 体内声明的私有标量：写它不共享，随便写。 */
+    if (t->kind == EX_IDENT && t->u.ident.name && parHasName(&w->locals, t->u.ident.name))
+        return;
+    if (t->kind != EX_INDEX) {
+        parFail(w, t->line,
+                "Shared data is written only through the one output view the loop declared;"
+                " a local `var` is private and can be written freely.",
+                "this par loop may write only its own output slot");
+        return;
+    }
+    Expr *obj = t->u.index.obj;
+    Expr *idx = t->u.index.index;
+    if (!obj || obj->kind != EX_IDENT || !obj->u.ident.name) {
+        parFail(w, t->line, NULL, "this par loop may write only its own output slot");
+        return;
+    }
+    const char *name = obj->u.ident.name;
+    if (parHasName(&w->locals, name)) {      /* 私有标量 */
+        parPushItem(w, idx, 1);
+        return;
+    }
+    if (!parNameIsView(w, name)) {
+        parFail(w, t->line,
+                "A par loop shares only read-only views and writes only its output view's own"
+                " slot; writing a captured scalar or another name is not one of those shapes.",
+                "this par loop may write only its own output slot");
+        return;
+    }
+    if (w->outName && strcmp(w->outName, name) != 0) {
+        parFail(w, t->line,
+                "One loop has exactly one output view; a separate write names a different"
+                " view, which makes the slot each worker owns ambiguous.",
+                "this par loop may write only its own output slot");
+        return;
+    }
+    if (!w->outName) {
+        w->outName = name;
+        w->outLine = t->line;
+    }
+    if (!idx || idx->kind != EX_IDENT || !idx->u.ident.name ||
+        strcmp(idx->u.ident.name, w->loopVar) != 0) {
+        parFail(w, t->line,
+                "The slot a worker owns is decided by the loop index, so the subscript has to"
+                " be the loop variable itself.",
+                "this par loop may write only its own output slot");
+        return;
+    }
+    /* `out[i]` -> `out[i - lo]`：trampoline 给的是 [lo, hi) 的子视图。 */
+    Expr *lo = exprIdent(w->c->arena, "__extc_plo", t->line);
+    Expr *sub = exprBinNew(w->c->arena, "-", idx, lo, t->line);
+    sub->type = w->c->tI64;
+    exprIndexRetarget(t, sub);
+}
+
+/**
+ * @brief 扫描一个表达式节点：分类名字、拒掉分配与调用、把子表达式压栈。
+ *
+ * @param w  扫描上下文。
+ * @param e  表达式。
+ */
+static void parScanExpr(ParLower *w, Expr *e) {
+    if (!e || w->failed) return;
+    switch (e->kind) {
+    case EX_CALL:
+    case EX_METHOD:
+    case EX_ASSOC:
+    case EX_GENCALL:
+    case EX_EXT:
+        parFail(w, e->line,
+                "A worker runs on another thread; the first version keeps the body to scalar"
+                " arithmetic and view reads so no call can touch shared state.",
+                "cannot call a function inside a par loop");
+        return;
+    case EX_NEW:
+        parFail(w, e->line,
+                "A worker's allocations would have to outlive the loop, and the worker's arena"
+                " is private to the thread; the first version keeps allocation outside.",
+                "cannot allocate inside a par loop");
+        return;
+    case EX_SLICE:
+        parFail(w, e->line,
+                "A sub-view of shared data would make the slot a worker owns impossible to"
+                " decide; index the view directly instead.",
+                "cannot take a slice inside a par loop");
+        return;
+    case EX_STRUCTLIT:
+    case EX_ARRAYLIT:
+    case EX_DYN:
+    case EX_TRY:
+    case EX_COALESCE:
+    case EX_ENUMVAL:
+    case EX_LAMBDA:
+    case EX_NULL:
+        parFail(w, e->line, NULL, "cannot build a value inside a par loop");
+        return;
+    case EX_CONV:
+        /* 标量转换是纯的（可能带截断检查，失败也只是 `trap`）：`f64(i)` 正是逐元素循环
+         * 最常见的写法。 */
+        parPushItem(w, e->u.conv.operand, 1);
+        return;
+    case EX_IDENT: {
+        const char *name = e->u.ident.name;
+        if (!name || strcmp(name, w->loopVar) == 0) return;
+        if (parHasName(&w->locals, name)) return;
+        if (w->outName && strcmp(w->outName, name) == 0) {
+            parFail(w, e->line,
+                    "One iteration must not see another's half-written value, so the output"
+                    " view is write-only inside the loop.",
+                    "the output view of a par loop aliases a read-only view");
+            return;
+        }
+        Sym *sym = lookup(w->c, name);
+        if (!sym) return;                       /* 更外层的名字：留给 worker 复查报错 */
+        if (parNameIsView(w, name)) {
+            parAddCapture(w, name);
+            return;
+        }
+        parFail(w, e->line,
+                "A copy would hide writes from the caller; the first version shares only"
+                " read-only views.",
+                "only views can be captured by a par loop in v1");
+        return;
+    }
+    case EX_BIN:
+        parPushItem(w, e->u.bin.left, 1);
+        parPushItem(w, e->u.bin.right, 1);
+        return;
+    case EX_UN:
+    case EX_SIGN:
+    case EX_REF:
+    case EX_DEREF:
+        parPushItem(w, e->u.un.operand, 1);
+        return;
+    case EX_FIELD:
+        parPushItem(w, e->u.field.obj, 1);
+        return;
+    case EX_INDEX:
+        parPushItem(w, e->u.index.obj, 1);
+        parPushItem(w, e->u.index.index, 1);
+        return;
+    case EX_INT:
+    case EX_FLOAT:
+    case EX_BOOL:
+    case EX_STR:
+    default:
+        return;
+    }
+}
+
+/**
+ * @brief 扫描一条语句：收集声明、检查写目标、把子块与子表达式压栈。
+ *
+ * @param w  扫描上下文。
+ * @param s  语句。
+ */
+static void parScanStmt(ParLower *w, Stmt *s) {
+    if (!s || w->failed) return;
+    switch (s->kind) {
+    case ST_VAR:
+        parAddLocal(w, s->u.var.name);
+        if (s->u.var.init && s->u.var.init->kind == EX_IDENT &&
+            parNameIsView(w, s->u.var.init->u.ident.name)) {
+            parFail(w, s->line,
+                    "Reading the view directly gives the loop its value; a local view would"
+                    " need the same disjointness proof the slot rule avoids.",
+                    "cannot bind a view to a local inside a par loop");
+            return;
+        }
+        parPushItem(w, s->u.var.init, 1);
+        return;
+    case ST_ASSIGN:
+        parScanTarget(w, s->u.assign.target);
+        parPushItem(w, s->u.assign.value, 1);
+        return;
+    case ST_EXPR:
+        parPushItem(w, s->u.expr.expr, 1);
+        return;
+    case ST_IF:
+        parPushItem(w, s->u.ifs.cond, 1);
+        parPushItem(w, s->u.ifs.thenBody, 0);
+        parPushItem(w, s->u.ifs.elseBody, 0);
+        return;
+    case ST_WHILE:
+        w->loopDepth++;
+        parPushItem(w, NULL, 2);                 /* 出内层循环时把层数减回去 */
+        parPushItem(w, s->u.whiles.cond, 1);
+        parPushItem(w, s->u.whiles.body, 0);
+        return;
+    case ST_BLOCK:
+        /* 脱糖 `for` 的步进语句挂在体块上（`forStep`）：它是循环机制，不是用户写的赋值，
+         * 写的是循环变量自己。扫描跳过它，和 `widenRangeForVar` 的口径一致。 */
+        for (size_t i = s->u.block.stmts.len; i > 0; i--) {
+            Stmt *child = *(Stmt **)vecAt(&s->u.block.stmts, i - 1);
+            if (child && child == s->forStep) continue;
+            parPushItem(w, child, 0);
+        }
+        return;
+    case ST_MATCH: {
+        Vec *arms = &s->u.match.arms;
+        parPushItem(w, s->u.match.scrutinee, 1);
+        for (size_t i = arms->len; i > 0; i--) {
+            MatchArm *a = *(MatchArm **)vecAt(arms, i - 1);
+            parPushItem(w, a->body, 0);
+        }
+        return;
+    }
+    case ST_BREAK:
+    case ST_CONTINUE:
+        if (w->loopDepth > 0) return;
+        parFail(w, s->line,
+                "A worker takes exactly the slots it is handed; leaving the loop early would"
+                " let the join see a different iteration set.",
+                "cannot escape a par loop");
+        return;
+    case ST_RETURN:
+    case ST_YIELD:
+    case ST_DOMAIN:
+        parFail(w, s->line,
+                "A worker takes exactly the slots it is handed; leaving the loop early would"
+                " let the join see a different iteration set.",
+                "cannot escape a par loop");
+        return;
+    case ST_TRAP:
+        parPushItem(w, s->u.trap_.msg, 1);
+        return;
+    default:
+        return;
+    }
+}
+
+/**
+ * @brief 用显式栈把循环体扫一遍。
+ *
+ * @param w     扫描上下文。
+ * @param body  循环体块。
+ * @return      扫描成功（没有诊断）时返回 `true`。
+ */
+static bool parScanBody(ParLower *w, Stmt *body) {
+    parPushItem(w, body, 0);
+    while (w->items.len > 0) {
+        ParItem *it = (ParItem *)vecAt(&w->items, w->items.len - 1);
+        const void   *node = it->node;
+        unsigned char tag  = it->tag;
+        w->items.len--;
+        if (w->failed) return false;
+        if (tag == 0)      parScanStmt(w, (Stmt *)node);
+        else if (tag == 1) parScanExpr(w, (Expr *)node);
+        else if (w->loopDepth > 0) w->loopDepth--;
+    }
+    return !w->failed;
+}
+
+/**
+ * @brief 造一个 worker 形参。
+ *
+ * @param c     检查器（提供 arena）。
+ * @param name  源码里的名字（也就是 worker 作用域里要解析到的名字）。
+ * @param type  形参类型。
+ * @param line  源码行。
+ * @return      新形参。
+ */
+static Param *parParam(Checker *c, const char *name, Type *type, int line) {
+    Param *p = (Param *)arenaAllocZero(c->arena, sizeof(Param));
+    p->name = name;
+    p->type = type;
+    p->line = line;
+    return p;
+}
+
+/**
+ * @brief 造一个 `i32` 整数字面量表达式。
+ *
+ * @param c     检查器。
+ * @param value 值。
+ * @param line  源码行。
+ * @return      `EX_INT` 节点，类型已填。
+ */
+static Expr *parIntLit(Checker *c, long long value, int line) {
+    Expr *e = exprIntNew(c->arena, value, line);
+    e->type = c->tI32;
+    return e;
+}
+
+/**
+ * @brief 造一个已检查过、带 C 名的 `EX_IDENT` 引用（给合成的调用实参用）。
+ *
+ * 这些节点不会交给 `checkExpr`：它们引用的绑定在外层作用域里已经检查过，这里把
+ * `planCName` 直接抄过去，代码生成就照普通标识符发。
+ *
+ * @param c     检查器。
+ * @param name  源码名。
+ * @param sym   它解析到的绑定。
+ * @param line  源码行。
+ * @return      填好类型与 C 名的标识符节点。
+ */
+static Expr *parCheckedIdent(Checker *c, const char *name, Sym *sym, int line) {
+    Expr *e = exprIdent(c->arena, name, line);
+    e->type = sym->type;
+    planSetCName(e, sym->cname, RKIND_EXPR);
+    return e;
+}
+
+/**
+ * @brief 合成 worker 函数并追加进模块。
+ *
+ * worker 的形状与 `parallel::run` 手写的 worker 完全一致：`(id, lo, hi, <只读视图…>,
+ * out: mut slice<T>) -> i32`。名字从 `__extc_parw<N>` 里挑一个没被占用的（codegen 直接拿
+ * `wf->name` 拼 `__extc_par_<name>`，所以它必须是合法 C 标识符）。
+ *
+ * @param w     扫描上下文（捕获表、输出视图名都已填）。
+ * @param decl  循环变量声明（拿 lo 初始化式）。
+ * @param hiDecl `__extc_hi` 声明（拿 hi 初始化式）。
+ * @param loop  原 `while` 节点。
+ * @return      合成出来的 worker。
+ */
+static FuncDef *parMakeWorker(ParLower *w, Stmt *decl, Stmt *hiDecl, Stmt *loop) {
+    Checker *c = w->c;
+    FuncDef *wf = (FuncDef *)arenaAllocZero(c->arena, sizeof(FuncDef));
+    Buf nm;
+    bufInit(&nm, c->arena);
+    size_t serial = c->m->funcs.len;
+    for (;; serial++) {
+        bufInit(&nm, c->arena);
+        bufPrintf(&nm, "__extc_parw%zu", serial);
+        if (!findFunc(c, bufCstr(&nm))) break;
+    }
+    wf->name      = bufCstr(&nm);
+    wf->ctx       = c->ctx;
+    funcDefSetModName(wf, c->curFunc ? c->curFunc->modName : NULL);
+    wf->line      = decl->line;
+    vecInit(&wf->typeParams, c->arena, sizeof(void *));
+    vecInit(&wf->targs,      c->arena, sizeof(void *));
+    vecInit(&wf->params,     c->arena, sizeof(void *));
+
+    int line = decl->line;
+    *(Param **)vecPush(&wf->params) = parParam(c, "id",              c->tI64, line);
+    *(Param **)vecPush(&wf->params) = parParam(c, "__extc_plo",      c->tI64, line);
+    *(Param **)vecPush(&wf->params) = parParam(c, "__extc_phi",      c->tI64, line);
+    for (size_t i = 0; i < w->captures.len; i++) {
+        const char *cn = *(const char **)vecAt(&w->captures, i);
+        Sym *sym = lookup(c, cn);
+        *(Param **)vecPush(&wf->params) =
+            parParam(c, cn, ttViewReadonly(c->tt, sym->type), line);
+    }
+    Sym *outSym = lookup(c, w->outName);
+    *(Param **)vecPush(&wf->params) = parParam(c, w->outName, outSym->type, line);
+
+    /* 体：`[var <i> = lo, var __extc_hi = hi, while … , return 0]`。 */
+    decl->u.var.init   = exprIdent(c->arena, "__extc_plo", line);
+    hiDecl->u.var.init = exprIdent(c->arena, "__extc_phi", line);
+    Stmt *ret = stmtNew(c->arena, ST_RETURN, line);
+    ret->u.ret.value = parIntLit(c, 0, line);
+    Stmt *body = stmtNew(c->arena, ST_BLOCK, line);
+    vecInit(&body->u.block.stmts, c->arena, sizeof(Stmt *));
+    *(Stmt **)vecPush(&body->u.block.stmts) = decl;
+    *(Stmt **)vecPush(&body->u.block.stmts) = hiDecl;
+    *(Stmt **)vecPush(&body->u.block.stmts) = loop;
+    *(Stmt **)vecPush(&body->u.block.stmts) = ret;
+    wf->body = body;
+    wf->ret  = c->tI32;
+
+    *(FuncDef **)vecPush(&c->m->funcs) = wf;   /* 主检查循环稍后会 checkFunc 它 */
+    return wf;
+}
+
+/**
+ * @brief 把一个 `par` 块降糖成对合成 worker 的调用。
+ *
+ * 时机与 `widenRangeForVar` 相同（`[循环变量, __extc_hi, while]` 的前两条刚检查完）：
+ * 这时两端有类型、名字在外层作用域里可查，而 `while` 还没检查。成功后块里只剩一条
+ * `ST_EXPR(EX_CALL)`，并盖好 `plan` 标记 —— 那就是 `parallel::run` 内建校验本来会盖的
+ * 那几项。失败时块原样保留，让普通检查继续报错。
+ *
+ * @param c      检查器。
+ * @param block  带 `parLoop` 标记的块。
+ */
+static void parLower(Checker *c, Stmt *block) {
+    if (c->curParams && c->curParams->len > 0) {
+        ckError(c, block->line,
+                "A generic body is checked once per instantiation, and each instance would"
+                " need its own worker; the first version keeps `par` out of generics.",
+                "cannot use `par` inside a generic function");
+        return;
+    }
+    if (c->curFunc && planIsCoro(c->curFunc)) {
+        ckError(c, block->line,
+                "A coroutine body is split at its yields, so a parallel loop has no single"
+                " frame to borrow the output view from.",
+                "cannot use `par` inside a coroutine");
+        return;
+    }
+    if (block->u.block.stmts.len != 3) {
+        ckError(c, block->line, NULL,
+                "`par` needs a range loop: `par i in lo..hi { … }`");
+        return;
+    }
+    Stmt *decl   = *(Stmt **)vecAt(&block->u.block.stmts, 0);
+    Stmt *hiDecl = *(Stmt **)vecAt(&block->u.block.stmts, 1);
+    Stmt *loop   = *(Stmt **)vecAt(&block->u.block.stmts, 2);
+    if (!decl || !hiDecl || !loop || decl->kind != ST_VAR || hiDecl->kind != ST_VAR ||
+        loop->kind != ST_WHILE) {
+        ckError(c, block->line, NULL,
+                "`par` needs a range loop: `par i in lo..hi { … }`");
+        return;
+    }
+    /* 下标是 `i64`：两端都得能无损进 `i64`（`0..n` 这种 `i32` 字面量允许 —— 它是精确的
+     * 常量，比较与算术都加宽到 `i64`）。 */
+    if (!decl->type || !hiDecl->type || !ttIsInteger(decl->type) || !ttIsInteger(hiDecl->type) ||
+        !ttCanWiden(decl->type, c->tI64) || !ttCanWiden(hiDecl->type, c->tI64)) {
+        ckError(c, decl->line,
+                "The index a worker's slot is decided by is an `i64`, so both bounds have to"
+                " widen into it without loss.",
+                "par loop bounds must be integers that fit in i64");
+        return;
+    }
+    ParLower w = {0};
+    w.c       = c;
+    w.loopVar = decl->u.var.name;
+    vecInit(&w.locals,   c->arena, sizeof(void *));
+    vecInit(&w.captures, c->arena, sizeof(void *));
+    vecInit(&w.items,    c->arena, sizeof(ParItem));
+    Expr *loInit = decl->u.var.init;
+    Expr *hiInit = hiDecl->u.var.init;
+    if (!parScanBody(&w, loop->u.whiles.body)) return;
+    if (!w.outName) {
+        ckError(c, block->line,
+                "The loop writes nothing, so there is no slot to give a worker; every"
+                " iteration would be pure work with no result.",
+                "a par loop needs exactly one output view it writes into");
+        return;
+    }
+    Sym *outSym = lookup(c, w.outName);
+    if (!outSym || !outSym->type || !outSym->type->mut) {
+        ckError(c, w.outLine, NULL,
+                "this par loop may write only its own output slot");
+        return;
+    }
+    FuncDef *wf = parMakeWorker(&w, decl, hiDecl, loop);
+
+    /* 合成调用：`__extc_parwN(0, 捕获视图…, out, hi - lo, -1)`。args[0] 是占位：codegen 对
+     * worker 调用从不 genExpr 它。threads 用 `-1` 哨兵，codegen 会换成
+     * `extc_par_default_threads()`。 */
+    Expr *call = exprCallNew(c->arena, exprIdent(c->arena, wf->name, block->line), block->line);
+    *(Expr **)vecPush(&call->u.call.args) = parIntLit(c, 0, block->line);
+    for (size_t i = 0; i < w.captures.len; i++) {
+        const char *cn = *(const char **)vecAt(&w.captures, i);
+        Sym *sym = lookup(c, cn);
+        *(Expr **)vecPush(&call->u.call.args) = parCheckedIdent(c, cn, sym, block->line);
+    }
+    *(Expr **)vecPush(&call->u.call.args) = parCheckedIdent(c, w.outName, outSym, block->line);
+    Expr *span = exprBinNew(c->arena, "-", hiInit, loInit, block->line);
+    span->type = c->tI64;
+    *(Expr **)vecPush(&call->u.call.args) = span;
+    *(Expr **)vecPush(&call->u.call.args) = parIntLit(c, -1, block->line);
+
+    planSetParWorker(call, wf);
+    /* 也记成普通被调者：效应摘要按调用图闭合，这条边不在图上就会让外层函数变成
+     * “effects could not be fully analyzed”（合成调用被 `checkStmt` 的守卫跳过，
+     * 不再经过 `checkExpr` 的记账路径）。 */
+    planSetCallee(call, wf);
+    planSetIsParWorker(wf, true);
+    planSetParTlsArena(wf, true);
+    planSetUsed(wf, true);
+    call->type = c->tI32;
+
+    /* 块里只剩一条被丢弃的调用；`checkStmt` 的 `ST_EXPR` 分支看到 plan 标记就不再复查。 */
+    block->u.block.stmts.len = 0;
+    Stmt *s = stmtNew(c->arena, ST_EXPR, block->line);
+    s->u.expr.expr = call;
+    *(Stmt **)vecPush(&block->u.block.stmts) = s;
+    stmtSetParLoop(block, false);
+}
+
+/**
+ * @brief 复查 worker 体：拒掉检查之后才认得出的调用形状。
+ *
+ * 降糖时的扫描只能看**解析形状**：`io::cout << x` 是 `EX_BIN`，要到检查器才变成方法调用。
+ * worker 体照普通函数检查完之后，这里按解析好的形状再扫一遍，把调用、分配与"体内又有
+ * 一个 `par`"拒掉。显式栈，同样是为了不碰 walker 棘轮。
+ *
+ * @param c  检查器。
+ * @param f  刚检查完的 worker。
+ */
+void parWorkerAudit(Checker *c, FuncDef *f) {
+    if (!f->body) return;
+    Vec stmts, exprs;
+    vecInit(&stmts, c->arena, sizeof(Stmt *));
+    vecInit(&exprs, c->arena, sizeof(Expr *));
+    *(Stmt **)vecPush(&stmts) = f->body;
+    while (stmts.len > 0) {
+        Stmt *s = *(Stmt **)vecAt(&stmts, stmts.len - 1);
+        stmts.len--;
+        if (!s) continue;
+        switch (s->kind) {
+        case ST_VAR:    if (s->u.var.init) *(Expr **)vecPush(&exprs) = s->u.var.init; break;
+        case ST_ASSIGN:
+            *(Expr **)vecPush(&exprs) = s->u.assign.target;
+            *(Expr **)vecPush(&exprs) = s->u.assign.value;
+            break;
+        case ST_EXPR: *(Expr **)vecPush(&exprs) = s->u.expr.expr; break;
+        case ST_IF:
+            *(Expr **)vecPush(&exprs) = s->u.ifs.cond;
+            *(Stmt **)vecPush(&stmts) = s->u.ifs.thenBody;
+            *(Stmt **)vecPush(&stmts) = s->u.ifs.elseBody;
+            break;
+        case ST_WHILE:
+            *(Expr **)vecPush(&exprs) = s->u.whiles.cond;
+            *(Stmt **)vecPush(&stmts) = s->u.whiles.body;
+            break;
+        case ST_BLOCK:
+            for (size_t i = 0; i < s->u.block.stmts.len; i++)
+                *(Stmt **)vecPush(&stmts) = *(Stmt **)vecAt(&s->u.block.stmts, i);
+            break;
+        case ST_MATCH:
+            *(Expr **)vecPush(&exprs) = s->u.match.scrutinee;
+            for (size_t i = 0; i < s->u.match.arms.len; i++)
+                *(Stmt **)vecPush(&stmts) = ((MatchArm *)vecAt(&s->u.match.arms, i))->body;
+            break;
+        case ST_TRAP: *(Expr **)vecPush(&exprs) = s->u.trap_.msg; break;
+        default: break;
+        }
+    }
+    while (exprs.len > 0) {
+        Expr *e = *(Expr **)vecAt(&exprs, exprs.len - 1);
+        exprs.len--;
+        if (!e) continue;
+        switch (e->kind) {
+        case EX_CALL: case EX_METHOD: case EX_ASSOC: case EX_GENCALL: case EX_EXT:
+            ckError(c, e->line, NULL, "cannot call a function inside a par loop");
+            continue;
+        case EX_NEW:
+            ckError(c, e->line, NULL, "cannot allocate inside a par loop");
+            continue;
+        case EX_SLICE:
+            ckError(c, e->line, NULL, "cannot take a slice inside a par loop");
+            continue;
+        case EX_BIN:
+            if (planCallee(e) || planNeedOp(e)) {
+                ckError(c, e->line, NULL, "cannot call a function inside a par loop");
+                continue;
+            }
+            *(Expr **)vecPush(&exprs) = e->u.bin.left;
+            *(Expr **)vecPush(&exprs) = e->u.bin.right;
+            break;
+        case EX_UN: case EX_SIGN: case EX_REF: case EX_DEREF:
+            *(Expr **)vecPush(&exprs) = e->u.un.operand;
+            break;
+        case EX_FIELD:
+            *(Expr **)vecPush(&exprs) = e->u.field.obj;
+            break;
+        case EX_INDEX:
+            *(Expr **)vecPush(&exprs) = e->u.index.obj;
+            *(Expr **)vecPush(&exprs) = e->u.index.index;
+            break;
+        default: break;
+        }
+    }
+}
+
 /**
  * @brief 在新作用域里检查一个块体，块结束时块内绑定随之出作用域。
  *
@@ -247,8 +926,12 @@ static void checkBlockBody(Checker *c, Stmt *block) {
     for (size_t i = 0; i < block->u.block.stmts.len; i++) {
         checkStmt(c, *(Stmt **)vecAt(&block->u.block.stmts, i));
         /* 区间循环的外层块是 `[循环变量, __extc_hi, while]`：等两者都检查完、`while` 还没
-         * 检查时把循环变量放宽，体里的使用才会拿到放宽后的类型（见 widenRangeForVar）。 */
-        if (i == 1) widenRangeForVar(c, block);
+         * 检查时把循环变量放宽，体里的使用才会拿到放宽后的类型（见 widenRangeForVar）。
+         * `par` 块在同一个时机降糖：两端类型已定、名字可查（见 parLower）。 */
+        if (i == 1) {
+            if (block->parLoop) parLower(c, block);
+            else                widenRangeForVar(c, block);
+        }
     }
     popScope(c);
 
@@ -1242,6 +1925,9 @@ void checkStmt(Checker *c, Stmt *s) {
         }
 
         case ST_EXPR:
+            /* `par` 降糖时合成的那条 worker 调用已经检查过（实参与 plan 标记都由
+             * `parLower` 填好）；再走普通调用路径会按 worker 的形参做 arity 检查。 */
+            if (s->u.expr.expr && planParWorker(s->u.expr.expr)) return;
             /* 单独成句的 `f()?`：意思是“这一步必须成功，否则整条链失败”。 */
             if (s->u.expr.expr && s->u.expr.expr->kind == EX_TRY) {
                 checkMaybeTry(c, s->u.expr.expr);

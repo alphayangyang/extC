@@ -1,0 +1,24 @@
+// 只读视图按引用捕获（多个），输出视图恰好一个；另加体内私有标量与内层循环。
+use std::io
+
+fn dot(a: slice<f64>, b: slice<f64>, c: mut slice<f64>) {
+    par i in 0..c.len {
+        var acc: f64 = 0.0
+        var k: i64 = 0
+        while k < i64(3) { acc = acc + a[i] * b[i]  k = k + i64(1) }
+        c[i] = acc
+    }
+}
+
+fn main() -> i32 {
+    let n: i64 = i64(500)
+    var a: mut slice<f64> = new f64[n]
+    var b: mut slice<f64> = new f64[n]
+    var c: mut slice<f64> = new f64[n]
+    for i in 0..n { a[i] = f64(i) * 1.0  b[i] = f64(i) * 2.0 }
+    dot(a, b, c)
+    var s: f64 = 0.0
+    for v in c { s = s + v }
+    io::cout << f"sum={i64(s)}\n"
+    return 0
+}

@@ -1,0 +1,10 @@
+// 限制集：把输出视图当只读视图读，等于自己和自己别名。
+use std::io
+
+fn main() -> i32 {
+    let n: i64 = i64(16)
+    var b: mut slice<f64> = new f64[n]
+    par i in 0..n { b[i] = b[i] + 1.0 }
+    io::cout << f"s={b[0]}\n"
+    return 0
+}

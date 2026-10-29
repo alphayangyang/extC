@@ -1,0 +1,33 @@
+// bench/par：数据并行基准的 extC 臂。`par` 与顺序 for 是同一段循环体，只差一个词。
+// 输出唯一一行：cs=<checksum> n=<n>；各臂必须逐字节相同。
+use std::io
+use stl::string as str
+
+fn argOr(args: slice<slice<u8>>, i: i64, dflt: i64) -> i64 {
+    if args.len <= i { return dflt }
+    return str::toI64(args[i]) ?? dflt
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    let n: i64 = argOr(args, i64(1), i64(64))
+    var in: mut slice<f64> = new f64[n]
+    var out: mut slice<f64> = new f64[n]
+    for i in 0..n {
+        in[i] = f64((i * i64(7) + i64(3)) % i64(17)) / 17.0
+    }
+    par i in 0..n {
+        var x: f64 = in[i]
+        var y: f64 = x
+        var k: i64 = 0
+        while k < i64(48) {
+            y = y * 1.0000001 + x * 0.5 + 1.0
+            x = x * 1.0000003
+            k = k + i64(1)
+        }
+        out[i] = y
+    }
+    var cs: f64 = 0.0
+    for v in out { cs = cs + v }
+    io::cout << f"cs={i64(cs * 1000000.0)} n={n}\n"
+    return 0
+}

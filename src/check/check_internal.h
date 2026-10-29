@@ -1833,6 +1833,18 @@ int valDepthForStore (Checker *, Expr *);
  */
  void checkStmt (Checker *c, Stmt *s);
 /**
+ * @brief 复查一个由 `par` 降糖合成的 worker 体，拒掉限制集之外的东西。
+ *
+ * 降糖发生在检查器里，合成出来的 worker 走的仍是普通函数的检查路径（这样它和手写 worker
+ * 拿到的类型、plan 标记完全一致）。普通函数允许调用、分配、提前返回；worker 不允许 ——
+ * 这里在体检查完之后按**解析好的**形状复查一遍：`io::cout << x` 这类写法要到检查器才变成
+ * 方法调用，降糖那一刻看形状是认不出来的。
+ *
+ * @param c  检查器。
+ * @param f  刚被检查完的 worker；调用方保证 `planIsParWorker(f)` 为真。
+ */
+ void parWorkerAudit (Checker *c, FuncDef *f);
+/**
  * @brief 把签名里的类型名就地解析到类型表。
  *
  * 在任何函数体被检查之前运行，因此之后的检查不必再解析类型名。方法看到所属类型的

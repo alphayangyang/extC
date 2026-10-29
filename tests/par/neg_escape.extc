@@ -1,0 +1,10 @@
+// 限制集：不许把控制流带出并行体。
+use std::io
+
+fn main() -> i32 {
+    let n: i64 = i64(16)
+    var b: mut slice<f64> = new f64[n]
+    par i in 0..n { if i > i64(3) { return 1 }  b[i] = f64(i) }
+    io::cout << f"s={b[0]}\n"
+    return 0
+}

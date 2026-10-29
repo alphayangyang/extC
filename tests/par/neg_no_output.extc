@@ -1,0 +1,9 @@
+// 限制集：一个 par 循环必须写恰好一个输出槽（没有输出的循环不是数据并行）。
+use std::io
+
+fn main() -> i32 {
+    var s: f64 = 0.0
+    par i in 0..i64(8) { var t: f64 = f64(i) }
+    io::cout << f"s={i64(s)}\n"
+    return 0
+}

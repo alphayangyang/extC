@@ -103,6 +103,7 @@ bad.extc:3:1: error: index 7 is not inside `[4]i32` (length 4)
 - [`bench/app/`](bench/app/RESULTS.md)：extC STL 对 C++ STL 对 Go 的三场景（会话表、路由表、日志缓冲）。路由表那一整场（插入 / 前驱 / 区间扫描 / 删除）比 C++ 的 `std::map` 快 1.6 倍；会话表那格落后（高频删的哈希表打不过 C++ 的 `unordered_map`），落后多少、卡在哪，报告里逐条剖开。
 - [`bench/httpd/`](bench/httpd/README.md)：约 300 行 extC 写的 HTTP/1.1 静态服务器（epoll + 协程 + `sendfile`），与 `python3 -m http.server` 同判据对照：吞吐 5376 req/s 对 4368、峰值 RSS 1.9 MB 对 22.7 MB（报告里的快照）。
 - [`bench/fortran/`](bench/fortran/RESULTS.md)：一个数值 kernel 形状 —— 2D 5 点 Jacobi 模板（`f64`、flat 行主序），extC / C / gfortran 三臂。三条臂在 -O2 与 -O3 -march=native 下都基本并列（-O2 extC 是 C 的 0.99–1.01×、Fortran 是 C 的 0.99–1.02×；-O3 三臂相对差异同样在 ±2% 内），GCC 自报的 `loop vectorized` 处数 extC 与手写 C 都是 3。这臂按 extC 的惯用写法（range-for、并行赋值换 buffer、`??` 解析参数、f-string）；-O3 档、向量化自报与读表须知见报告。
+- [`bench/par/`](bench/par/RESULTS.md)：语言层数据并行 `par i in lo..hi { … }` 的基准 —— 逐元素递推链（计算受限）。`par1` 与顺序 `for` 基本相等（不给顺序版加税），8 线程在 n=1<<20 上快 4.1×；手写 C 臂不检查下标、外层循环被 GCC 2 宽向量化，比顺序版快 1.7×（安全检查挡向量化这条已知差距），读加速比以 `seq`/`par1` 为基线。
 
 ## 凭什么信它
 
@@ -132,6 +133,7 @@ make -j"$(nproc)"
 | `check.sh`（完整模式，含基准）| 另需 `g++`、`rustc` |
 | `bench/bigmatrix/run.sh`（六语言横评）| 另需 `go`、`java` |
 | `bench/fortran/run.sh`（extC / C / gfortran 三臂）| 另需 `gfortran` |
+| `bench/par/run.sh`（`par` 顺序/并行/C 参照）| 一般不用另装（`cc -pthread`） |
 
 常用驱动选项：
 
@@ -171,7 +173,7 @@ src/       编译器（C11 实现，按 pass 拆分）
 stdlib/    prelude 与标准库（用 extC 写；std/sys 是唯一声明 C 原语的一层）
 extlib/    扩展库（std 之外的第三方绑定，用 -I 引入；进 std 的边界见各库 README）
 examples/  示例          tests/  回归用例      tools/  辅助工具
-bench/     横向基准（含六语言矩阵与 bench/app 的三场景 STL 横评）   docs/   文档
+bench/     横向基准（含六语言矩阵、bench/app 的场景横评与 bench/par 的并行基准）   docs/   文档
 prototype-reclaim/  回收机制的原型与数值（C 探针 + 跨语言对照）
 proofs/             机制不变量的机器检查证明
 ```

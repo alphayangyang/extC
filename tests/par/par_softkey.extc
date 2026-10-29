@@ -1,0 +1,8 @@
+// `par` 是形状识别的软关键字：叫 `par` 的变量照常可用。
+use std::io
+
+fn main() -> i32 {
+    var par: i64 = 3
+    io::cout << f"par={par}\n"
+    return 0
+}

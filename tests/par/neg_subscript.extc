@@ -1,0 +1,10 @@
+// 限制集：输出槽的下标必须恰好是循环变量本身。
+use std::io
+
+fn main() -> i32 {
+    let n: i64 = i64(16)
+    var b: mut slice<f64> = new f64[n]
+    par i in 0..n - i64(1) { b[i + i64(1)] = f64(i) }
+    io::cout << f"s={b[0]}\n"
+    return 0
+}

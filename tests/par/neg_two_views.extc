@@ -1,0 +1,11 @@
+// 限制集：一个 par 循环恰好一个输出视图。
+use std::io
+
+fn main() -> i32 {
+    let n: i64 = i64(16)
+    var a: mut slice<f64> = new f64[n]
+    var b: mut slice<f64> = new f64[n]
+    par i in 0..n { a[i] = f64(i)  b[i] = f64(i) }
+    io::cout << f"s={a[0]}\n"
+    return 0
+}

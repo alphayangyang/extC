@@ -473,6 +473,62 @@ Expr *exprNew(Arena *a, ExprKind kind, int line);
  */
 Expr *exprIdent(Arena *a, const char *name, int line);
 
+/**
+ * @brief 造一个二元运算节点：`op`、左右操作数一次填好。
+ *
+ * @param a     拥有节点的 arena。
+ * @param op    运算符文本（`"+"`、`"<"`、`"-"` 等）。
+ * @param left  左操作数。
+ * @param right 右操作数。
+ * @param line  源码行号（1 起）。
+ * @return      新 `EX_BIN` 节点。
+ */
+Expr *exprBinNew(Arena *a, const char *op, Expr *left, Expr *right, int line);
+
+/**
+ * @brief 造一个整数字面量节点。
+ *
+ * @param a     拥有节点的 arena。
+ * @param value 字面量值。
+ * @param line  源码行号（1 起）。
+ * @return      新 `EX_INT` 节点；`type` 留给调用方填。
+ */
+Expr *exprIntNew(Arena *a, long long value, int line);
+
+/**
+ * @brief 造一个 `EX_CALL` 节点：被调者填好、实参表初始化成空。
+ *
+ * @param a      拥有节点的 arena。
+ * @param callee 被调者表达式。
+ * @param line   源码行号（1 起）。
+ * @return       新 `EX_CALL` 节点。
+ */
+Expr *exprCallNew(Arena *a, Expr *callee, int line);
+
+/**
+ * @brief 把一个下标表达式节点里的下标换掉（降糖用）。
+ *
+ * @param e     必须是 `EX_INDEX` 节点。
+ * @param index 新下标表达式。
+ */
+void exprIndexRetarget(Expr *e, Expr *index);
+
+/**
+ * @brief 给 `FuncDef` 记下它所属模块的名字（检查器合成的函数用）。
+ *
+ * @param f       要写的函数定义。
+ * @param modName 模块名，可为 NULL。
+ */
+void funcDefSetModName(FuncDef *f, const char *modName);
+
+/**
+ * @brief 设置语句的「并行循环块」标记。
+ *
+ * @param s       要写的语句节点。
+ * @param parLoop 新值。
+ */
+void stmtSetParLoop(Stmt *s, bool parLoop);
+
 /* ------------------------------------------------------------ statements */
 
 typedef enum {
@@ -513,6 +569,12 @@ struct Stmt {
      * whether SUBJ is sliceable -- it does not consult the symbol table -- so this flag is how the
      * checker finds the candidate for the iterator protocol). See `checkBlockBody`. */
     bool     forDesugar;
+
+    /* Set on the block that a `par i in lo..hi { … }` was desugared into: the parser builds the
+     * same shape as a range `for` and marks the outer block; the checker then lowers it to a call
+     * to a synthesized worker (see `parLower` in check_stmt.c). The flag is what keeps the parser
+     * from needing types and the language from needing a new statement kind. */
+    bool     parLoop;
 
     Type    *type;      /* ST_VAR: the final type of the declaration, filled in by
                          * the checker */

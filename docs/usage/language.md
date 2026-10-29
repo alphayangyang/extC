@@ -811,6 +811,7 @@ parser 把 `for` 脱糖成 `var` + `while`，共有三种脱糖形状；
 | 区间 | `for i in lo..hi { … }` | 半开区间；`i` 的类型取两端的**较宽者**（`hi` 能无损容纳 `lo` 时，`for i in 0..n` 且 `n: i64` ⇒ `i: i64`；反之 `for i in 0..k` 且 `k: i32` ⇒ `i: i32`）；**上界只求值一次** |
 | 容器 | `for d in subj { … }` | `subj` 只能是名字、字段或 `*p`；元素是**拷贝**，改 `d` 不写回 |
 | C 风格 | `for (init; cond; step) { … }` | 三段都是普通语句/表达式；`continue` 跳到 step |
+| 并行 | `par i in lo..hi { … }` | 数据并行（多线程跑同一个循环体），形状与区间 for 相同；见 11.8 |
 
 容器形状覆盖：定长数组、`slice<T>`（含字符串字面量）、协程帧，
 以及任何声明了 `iter` / `next` / `value` 三个方法的用户类型
@@ -977,6 +978,53 @@ fn main() -> i32 {
     return 0
 }
 ```
+
+### 11.8 `par`：数据并行
+
+`par i in lo..hi { … }` 把一个循环变体交给多个线程跑。它是**唯一的并行动词**：一个循环嵌套就是
+一个内核（kernel）形状，检查能在一个词法块里做完 —— 这也是将来换设备后端时不用改用户代码的原因。
+
+规则只有四条（细节和判据见 `docs/PARALLEL.md`）：
+
+- 输入**只读共享**：体内读的视图按引用捕获，所有 worker 看同一份数据；
+- 输出**恰好一个**：体内只许写 `out[i]`，`out` 是一个 `mut slice<T>`，下标**恰好是循环变量本身**
+  （一个 worker 只写自己那一格，所以不用锁）；
+- 体内**不分配、不调用函数**（v1 比设计更严：连纯函数调用也不许），不许把控制流带出并行体
+  （`return` / `break` / `continue` / `yield` / `ext`）；
+- 体内声明的 `var` 是 worker 私有的，随便写。
+
+`lo..hi` 的两端必须能无损进 `i64`（`par i in 0..n` 可以）；空区间一次都不跑、不 trap。
+写别的视图、下标不是循环变量、把输出视图当输入读、捕获标量，都会在编译期被拒
+（`` cannot call a function inside a par loop `` / `` this par loop may write only its own output slot `` /
+`` cannot escape a par loop `` 等）。v1 不支持：标量捕获、体内调用、二维折叠、泛型/协程体里写 `par`。
+
+线程数用环境变量 `EXTC_PAR_THREADS` 覆盖（默认 `_SC_NPROCESSORS_ONLN`，上限 256）；线程数只影响
+速度，不影响结果。生成的 C 用 pthread，链接时要加 `-pthread`。
+
+```extc
+// 结果：sum=499500
+use std::io
+
+fn scale(src: slice<f64>, dst: mut slice<f64>) {
+    par i in 0..dst.len { dst[i] = src[i] * 1.0 }
+}
+
+fn main() -> i32 {
+    let n: i64 = i64(1000)
+    var a: mut slice<f64> = new f64[n]
+    var b: mut slice<f64> = new f64[n]
+    for i in 0..n { a[i] = f64(i) }
+    scale(a, b)
+    var s: f64 = 0.0
+    for v in b { s = s + v }
+    io::cout << f"sum={i64(s)}\n"   // "sum=499500"
+    return 0
+}
+```
+
+归约是第二形状，不是我行我素的第三种语法：先 `par` 写进数组，再用 `stl::seq` 的
+`sum` / `max` / `min` / `count` 合并（`seq::sum(xs) ?? f64(0.0)`）。这两个形状合起来覆盖
+"切块算 + 汇总"这条主线。
 
 ---
 
