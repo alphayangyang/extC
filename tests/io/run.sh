@@ -288,6 +288,27 @@ else
     echo "  FAIL writeBytes  ->  少了 flush() ⇒ 与 println 混用会乱序 ✗"; fail=1
 fi
 
+echo "== 下标检查前移的资格：循环体里有调用（`<<` 是方法调用）⇒ 必须逐元素检查 =="
+# 反例形状：`io::cout << f"…"` 在检查器里是**方法调用**，不是纯运算符。若代码生成把它当
+# 纯表达式、把视图下标的边界检查前移到循环入口，trap 会提前到第一轮 —— 打印顺序就变了，
+# 报文里的下标也会变成整个区间上的极值（3）而不是第一个越界元素（2）。
+if "$EXTC" tests/io/hoist-order.extc -o build/hoist-order.c >/dev/null 2>&1 \
+   && ${CC:-cc} -std=c11 -O1 build/hoist-order.c -o build/hoist-order >/dev/null 2>&1; then
+    ./build/hoist-order >build/hoist-order.out 2>build/hoist-order.err
+    rc=$?
+    ok=1
+    [ "$rc" = 1 ] || ok=0
+    grep -q "trap: index 2 out of range (length 2)" build/hoist-order.err || ok=0
+    for k in 0 1 2; do grep -qxF "k=$k" build/hoist-order.out || ok=0; done
+    if [ "$ok" = 1 ]; then
+        echo "  ok   hoist-order  ->  先打印 3 轮、再按第一个越界元素 trap（$(cat build/hoist-order.err | head -1 | sed 's/.*trap: /trap: /')）✓"
+    else
+        echo "  FAIL hoist-order  ->  rc=$rc · stdout=$(tr '\n' '|' < build/hoist-order.out) · $(head -1 build/hoist-order.err)"; fail=1
+    fi
+else
+    echo "  FAIL hoist-order  ->  编不过"; fail=1
+fi
+
 echo "== writer（写文件 → 用 reader 读回，两边对称 ✓）=="
 if out=$(printf '' | "$EXTC" --run tests/io/writer-file.extc 2>&1) && echo "$out" | grep -qF "回读 = 100/200 ✓"; then
     echo "  ok   writer-file  ->  $(echo "$out" | tr '\n' '|')"

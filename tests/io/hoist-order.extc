@@ -1,0 +1,15 @@
+// 回归：循环体里有调用（`io::cout << …` 的 `<<` 是方法调用）时，视图下标的边界检查
+// 不得前移到循环入口 —— 否则 trap 会提前到第一轮，可观察输出顺序就会变。
+// 判据（tests/io/run.sh）：trap 报文里的下标必须是第一个越界元素（2），
+// 而不是整个区间上的极值（3）。
+use std::io
+
+fn main() -> i32 {
+  var v: mut slice<f64> = new f64[i64(2)]
+  var s: f64 = 0.0
+  for k in i64(0)..i64(4) {
+    io::cout << f"k={k}\n"
+    s = s + v[k]
+  }
+  io::cout << f"s={i64(s * 1000000.0)}\n"
+  return 0 }

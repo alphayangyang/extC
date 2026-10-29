@@ -480,6 +480,9 @@ typedef struct {
      * 协程帧……）。**根表不完整就一个触发都不发** —— 宁可这一轮不清扫，不可漏根误释放。 */
     Vec         rcRoots;         /* const char *：存活的引用槽表达式 */
     Vec         rcRootMarks;     /* size_t：每层块进入时的 rcRoots.len */
+    /* 视图下标的循环入口检查已经覆盖的站点（`EX_INDEX *`，见 `loopHoistRangeFor`）。
+     * 元素是节点身份：`exIndex` 查到它就发裸指针访问，省掉每轮的分支。 */
+    Vec         hoistedIdx;
     Vec         rcGlobalRoots;   /* const char *：全局引用槽 */
     bool        rcGlobalsUnreliable; /* 全局量里有枚举不出来的引用存储 ⇒ 所有函数关掉触发 */
     bool        rcRootsUnreliable;
@@ -2921,6 +2924,18 @@ static const char *exCall(CG *g, Expr *e) {
 }
 
 /**
+ * @brief 这个 `EX_INDEX` 站点是否已被外层 range-for 的入口区间检查覆盖。
+ *
+ * 查生成器里那张按节点身份登记的表（`loopHoistRangeFor` 在进入循环体之前压入、
+ * 出去后截回）。命中时 `exIndex` 发裸指针访问，不再逐元素查边界。
+ *
+ * @param g  生成器。
+ * @param e  `EX_INDEX` 节点。
+ * @return 被覆盖返回 true。
+ */
+static bool idxHoisted(CG *g, Expr *e);
+
+/**
  * @brief 生成 `EX_INDEX`：数组下标与视图下标。
  *
  * 数组的长度是编译期常量，生成的检查直接带上长度。视图走 `viewIndexer` 选出的检查原语，
@@ -2969,6 +2984,12 @@ static const char *exIndex(CG *g, Expr *e) {
      * to go because there is no check. The checked primitive is *not* emitted for this body:
      * nothing in it names that one. */
     if (g->uncheckedBody)
+        return arenaPrintf(g->arena, "(*((%s).data + (int64_t)(%s)))", obj, idx);
+
+    /* 这个下标已经被外层 `for` 的入口区间检查覆盖（见 `loopHoistRangeFor`）：行程一定在界内，
+     * 直接走裸指针，省掉每轮的空指针/越界分支。形状与 `@unchecked` 的视图下标相同，所以读、
+     * 赋值、取 `ref` 都还成立。 */
+    if (idxHoisted(g, e))
         return arenaPrintf(g->arena, "(*((%s).data + (int64_t)(%s)))", obj, idx);
 
     /* The primitive returns a pointer and the dereference is an lvalue: it can be read, addressed
@@ -5066,6 +5087,9 @@ static bool blockMakesPool(Stmt *b) {
     return false;
 }
 
+static void cgZoneLeave(CG *g, int lvl);
+static void cgArenaRelease(CG *g, int lvl);
+
 /**
  * @brief 把块 arena 释放到某一层（含该层）。
  *
@@ -5086,31 +5110,60 @@ static bool blockMakesPool(Stmt *b) {
  */
 static void cgReleaseLevel(CG *g, int lvl) {
     if (lvl <= 0) return;
-    /* A step keeps `noArena` (its prologue has no `__extc_a` and its returns take the direct path),
-     * but it still releases block levels -- out of the frame's per-level arenas. */
     if (g->noArena && !g->coroFunc) return;
     /* Memory only: files are the program's business (decision 79), so the one place a
      * block release is emitted has nothing to close. */
     /* Regions first, then the arena: a pool's memory is its own malloc block, so the two are
      * independent, but releasing the pools that belong to this block is what the block's
      * release point is for. */
-    /* 离开一个地方：弹回它开始时的深度（mark），而不是盲目弹一个 —— 早退路径
-     * （return/break/continue）因此不会把 zone 栈弄歪。
-     *
-     * 发射与弹出靠 `zoneMark` 配对，`zoneHere` 只说明"这个函数是个地方"：块的 zone 现在
-     * 是按需压的，所以某层没压却弹一次，弹掉的就是**外层**的 zone（外层建的池随后就没有
-     * zone ⇒ `extc_pool_new` 返回 -1 ⇒ 记录不再被回收）。表在进入块时写，这里读，两者
-     * 是同一份事实，不可能走散。 */
-    if (lvl < g->levelCap && g->zoneMark[lvl])
-        cgLine(g, "extc_pool_zoneLeaveTo(__extc_zm%d);", lvl);
-    /* A coroutine body owns no place of its own, so it must not release the **caller's** arena levels
-     * -- that release would free, at every resume, exactly what the next resume still needs. Its own
-     * block arenas live in the frame (see `arenaRefAt`), and a block's exit still reclaims its level. */
-    /* **块的释放不动回收区域**：区域按 arena 的地址认领，而同一层的兄弟块共用一只 arena、
-     * 循环体每轮又复用同一只 —— 在这里把区域丢掉，下一轮 `regionOf` 就新建一个**1 MiB 的
-     * slab**，分配与清零的代价落在每一轮上，长循环直接跑不动。区域活到帧销毁
-     * （`extc_arena_destroy` 那一处才 `regionDrop`）：块里的对象全部不可达，清扫按压力把它们
-     * 收回空闲链，槽于是跨轮复用 —— 内存有界，且每轮没有额外开销。 */
+    cgZoneLeave(g, lvl);
+    cgArenaRelease(g, lvl);
+}
+
+/**
+ * @brief 发出这一层的 zone 弹出（只在这层压过 zone 时发，`zoneMark` 是那张表）。
+ *
+ * 离开一个地方：弹回它开始时的深度（mark），而不是盲目弹一个 —— 早退路径
+ * （return/break/continue）因此不会把 zone 栈弄歪。
+ *
+ * 发射与弹出靠 `zoneMark` 配对，`zoneHere` 只说明"这个函数是个地方"：块的 zone 现在
+ * 是按需压的，所以某层没压却弹一次，弹掉的就是**外层**的 zone（外层建的池随后就没有
+ * zone ⇒ `extc_pool_new` 返回 -1 ⇒ 记录不再被回收）。表在进入块时写，这里读，两者
+ * 是同一份事实，不可能走散。
+ *
+ * @param g    生成器状态。
+ * @param lvl  块层级；越界或这层没压过 zone 时什么都不发。
+ */
+static void cgZoneLeave(CG *g, int lvl) {
+    if (lvl <= 0 || lvl >= g->levelCap || !g->zoneMark[lvl]) return;
+    cgLine(g, "extc_pool_zoneLeaveTo(__extc_zm%d);", lvl);
+}
+
+/**
+ * @brief 发出这一层 arena 的释放。
+ *
+ * 对空 arena 几乎免费，但**它是一次调用**：落在内层循环体里就足以挡住向量化。调用点
+ * 因此先问"这个块碰过这一层吗"（`arenaLevelInText`），没碰过就不发 —— 入口的清空同理。
+ *
+ * 协程的块层级活在帧里（`<frame>->arenaN`）：协程体不拥有自己的地方，所以它不能释放
+ * **调用者**的 arena 层级 —— 每次 resume 都放掉下一次 resume 还要用的东西。它的块 arena
+ * 随帧销毁，这个块的释放点照旧回收它自己那一层。
+ *
+ * **块的释放不动回收区域**：区域按 arena 的地址认领，而同一层的兄弟块共用一只 arena、
+ * 循环体每轮又复用同一只 —— 在这里把区域丢掉，下一轮 `regionOf` 就新建一个**1 MiB 的
+ * slab**，分配与清零的代价落在每一轮上，长循环直接跑不动。区域活到帧销毁
+ * （`extc_arena_destroy` 那一处才 `regionDrop`）：块里的对象全部不可达，清扫按压力把它们
+ * 收回空闲链，槽于是跨轮复用 —— 内存有界，且每轮没有额外开销。
+ *
+ * @param g    生成器状态。
+ * @param lvl  块层级；0 或更小什么都不发 —— 层级 0 不是块 arena。带 `noArena` 的函数
+ *             （协程 step 除外）什么都不发：它从不分配。
+ */
+static void cgArenaRelease(CG *g, int lvl) {
+    if (lvl <= 0) return;
+    /* A step keeps `noArena` (its prologue has no `__extc_a` and its returns take the direct path),
+     * but it still releases block levels -- out of the frame's per-level arenas. */
+    if (g->noArena && !g->coroFunc) return;
     if (g->coroFunc)
         cgLine(g, "extc_arena_release(&%s->arena%d);", g->coroFrame, lvl);
     else
@@ -5424,9 +5477,38 @@ int blkMaxLevel(Stmt *s) {
 }
 
 /**
+ * @brief 生成的块体文本里有没有提到某一层 arena（`__extc_a[<lvl>]`）。
+ *
+ * 块入口的清空与块出口的释放都只回收**这一层**里这个块自己分配的东西。文本里凡是分配
+ * （`extc_arena_alloc(&__extc_a[k], …)`）或把这一层当 home 递给被调者
+ * （`&__extc_a[k]`）、以及回收区域指针的基址，都带着这串文本；所以"没提到"就是"这个块
+ * 没碰过这一层"，两条都可以不发。多认一个（比如字符串字面量里恰好有这串）只会多发，
+ * 安全方向；少认不可能 —— 所有用到这一层的发射点都以 `arenaRefAt` 的拼法为唯一来源。
+ *
+ * @param b    块体文本。
+ * @param lvl  块层级。
+ * @return     文本里出现了这一层为 true。
+ */
+static bool arenaLevelInText(const Buf *b, int lvl) {
+    char needle[32];
+    int n = snprintf(needle, sizeof needle, "__extc_a[%d]", lvl);
+    if (n <= 0 || (size_t)n >= sizeof needle) return true;   /* 拼不出来就当碰过 */
+    size_t nl = (size_t)n;
+    if (!b->data || b->len < nl) return false;
+    for (size_t i = 0; i + nl <= b->len; i++)
+        if (b->data[i] == '_' && memcmp(b->data + i, needle, nl) == 0) return true;
+    return false;
+}
+
+/**
  * @brief 发出一个块的体：进入时清掉它那一层的 arena，退出时释放。
  *
  * 循环体也是块，所以每一轮进入都清一次 —— 循环占用的内存因此被限制在一轮，而不是迭代次数。
+ *
+ * 两条都只回收这一层里这个块分配的东西。块体先发进临时缓冲，扫一遍再决定：这一层没被
+ * 碰过就两条都不发。对空 arena 释放几乎免费，但它**是一次调用**，落在内层循环体里就足以
+ * 挡住向量化 —— 而没分配过的循环体恰恰是要向量化的那种。发射顺序不变：清空 → zoneEnter
+ * → 块体 → zoneLeave → 释放。
  *
  * @param g      代码生成状态。
  * @param block  块语句，其语句按顺序发出；调用点保证它是 `ST_BLOCK`（有断言）。
@@ -5450,22 +5532,27 @@ static void genBlockBody(CG *g, Stmt *block) {
     /* 静态根表的块边界：进入时记下当前登记深度，离开时截回去 —— 块里的局部量出了块就不再
      * 是根（机制文档第三节第一条：触发点上的活槽由编译器给）。 */
     *(size_t *)vecPush(&g->rcRootMarks) = g->rcRoots.len;
+    /* 协程的块层级活在帧里、早退路径也绕；`noArena` 的函数两条本来就不发。两种情况都按
+     * 原样发，只有"普通函数里的一层块 arena"才值得先问再发。 */
+    const bool probe = !g->coroFunc && !g->noArena;
+    Buf  scratch;
+    Buf *savedOut = g->out;
+    bool bodyTouches = true;
+    bool zoneHere = false;
     if (!g->noArena) {
-        if (!g->coroFunc) {  /* a coroutine's storage is the task's, not this block's */
-            /* 进入块只清 arena（它的块留给下一轮复用）；回收区域不在这里丢，理由见
-             * `cgReleaseLevel`：每轮丢一次区域就是每轮新建一个 1 MiB slab。 */
-            cgLine(g, "extc_arena_release(&__extc_a[%d]);", g->blkLevel);   /* clear */
-        }
         /* 进入一个地方：压一个 zone，标记按层号命名（同级块不嵌套，名字不冲突）。
          * 只在这个块**可能建池**时才压（`blockMakesPool`）：只调用 `v.push` 这类不建池的
          * 库函数的循环体不需要自己的 zone，省下每轮一次的压/弹。
          * 弹出发射与否记进 `zoneMark`，`cgReleaseLevel` 查同一张表。 */
         g->zoneMark[g->blkLevel] = false;
         if (g->zoneHere && g->blkLevel > 1 && blockMakesPool(block)) {
-            if (!g->coroFunc)      /* see the note on the release below: the task owns the place */
-                cgLine(g, "int64_t __extc_zm%d = extc_pool_zoneEnter();", g->blkLevel);
             g->zoneMark[g->blkLevel] = true;
+            zoneHere = true;
         }
+    }
+    if (probe) {   /* 块体先发进临时缓冲，扫完再搬回输出：三条进入/退出行都在块体之外 */
+        bufInit(&scratch, g->arena);
+        g->out = &scratch;
     }
     for (size_t i = 0; i < block->u.block.stmts.len; i++) {
         Stmt *st = *(Stmt **)vecAt(&block->u.block.stmts, i);
@@ -5477,7 +5564,23 @@ static void genBlockBody(CG *g, Stmt *block) {
             cgLine(g, "__extc_forstep_%d: ;", g->loopStep[g->loopLen - 1]);
         genStmt(g, st);
     }
-    cgReleaseLevel(g, g->blkLevel);
+    if (probe) {
+        g->out = savedOut;
+        bodyTouches = arenaLevelInText(&scratch, g->blkLevel);
+        /* 进入块只清 arena（它的块留给下一轮复用）；回收区域不在这里丢，理由见
+         * `cgReleaseLevel`：每轮丢一次区域就是每轮新建一个 1 MiB slab。 */
+        if (bodyTouches) cgArenaRelease(g, g->blkLevel);   /* clear */
+        if (zoneHere) cgLine(g, "int64_t __extc_zm%d = extc_pool_zoneEnter();", g->blkLevel);
+        bufPutn(g->out, scratch.data, scratch.len);        /* the body itself */
+        if (zoneHere) cgZoneLeave(g, g->blkLevel);
+        if (bodyTouches) cgArenaRelease(g, g->blkLevel);
+    } else {
+        if (!g->noArena && !g->coroFunc)   /* a coroutine's storage is the task's, not this block's */
+            cgArenaRelease(g, g->blkLevel);   /* clear */
+        if (zoneHere && !g->coroFunc)      /* see the note on the release below: the task owns the place */
+            cgLine(g, "int64_t __extc_zm%d = extc_pool_zoneEnter();", g->blkLevel);
+        cgReleaseLevel(g, g->blkLevel);
+    }
     g->zoneMark[g->blkLevel] = savedZoneMark;
     /* 离开块：这个块声明的引用槽不再是根。 */
     assert(g->rcRootMarks.len > 0);
@@ -6232,6 +6335,469 @@ rcRootDecl(g, s->type, nm);
 return;
 }
 
+/* ---------------------------------------------------------------- 视图下标的循环入口检查
+ *
+ * `a[i]` 每次访问都调一次检查原语（空指针 + 越界，越界 trap）再返回指针。检查本身不贵，但
+ * 它是内层循环体里的一个**分支**，足以让整段循环无法向量化；而 `for k in lo..hi` 体内最
+ * 常见的下标恰恰是 k 的仿射式（`a[r*n + c]`），整个循环的行程在进来之前就知道了（上界被
+ * 解析器脱糖成 `__extc_hi` 临时量，只求值一次）。
+ *
+ * 认出来之后，把体里"对 k 仿射"的视图下标收集起来，在 `while` 之前对每个（视图, coef,
+ * base）发一次区间检查，体内改成裸指针访问：检查区间取 `coef*k + base` 在 k ∈ [lo, hi)
+ * 上的两端值，谁大谁小运行时比。越界仍然 trap，文案仍是
+ * `trap: index %lld out of range (length %lld)` —— 只是报在循环入口。
+ *
+ * 只做保守的这一档，证不出来就整个循环退回逐元素检查：
+ *   · 体里有调用 / 新建 / trap / 提前退出 / 条件求值的表达式 —— 不碰；
+ *   · 下标不是标量算术的仿射式、或下标类型不是 i64（i32 会回绕，重算不等价）—— 不收；
+ *   · coef/base 里的量在体里被赋值 —— 不收；
+ *   · 视图对象不是普通标识符、视图本身在体里被重新赋值、站点在条件分支里 —— 不收；
+ *   · `@unchecked` 体（作者已经关掉检查）、协程体（形状是状态机）—— 不碰。
+ *
+ * 裸访问用节点身份记：`g->hoistedIdx` 里是已被覆盖的 `EX_INDEX`，`exIndex` 查表决定发
+ * 检查原语还是裸指针。嵌套循环各自追加，出体把长度截回进入时的 `mark`。
+ */
+
+/** @brief 一个被循环入口检查覆盖的视图下标站点。 */
+typedef struct {
+    const char *view;   /* 视图对象的 C 名 */
+    const char *coef;   /* 下标 = coef*k + base 的 coef（C 表达式） */
+    const char *base;   /* 同上，base（C 表达式，不含 k） */
+    int         line;   /* 站点行号（trap 用） */
+    Expr       *site;   /* 被覆盖的 EX_INDEX 节点 */
+} HoistedIdx;
+
+/** @brief `coef*k + base` 的文本形式（coef 为 "0" 表示与 k 无关）。 */
+typedef struct {
+    const char *coef;
+    const char *base;
+} Affine;
+
+/**
+ * @brief 标识符的 C 名：检查器若给它改过名（遮蔽、`__extc_hi` 加后缀）就用改过的。
+ *
+ * @param e  表达式；不是 `EX_IDENT` 时返回 NULL。
+ */
+static const char *identCName(const Expr *e) {
+    if (!e || e->kind != EX_IDENT) return NULL;
+    const char *cn = planCName(e);
+    return cn ? cn : e->u.ident.name;
+}
+
+/**
+ * @brief 这个表达式是不是"在循环入口再求值一次也不改变程序行为"：无调用、无新建、无赋值。
+ *
+ * @param e  待判表达式。
+ */
+static bool hoistPureExpr(const Expr *e) {
+    if (!e) return false;
+    switch (e->kind) {
+    case EX_INT: case EX_FLOAT: case EX_BOOL: case EX_IDENT: return true;
+    case EX_BIN: return hoistPureExpr(e->u.bin.left) && hoistPureExpr(e->u.bin.right);
+    case EX_UN: return hoistPureExpr(e->u.un.operand);
+    default: return false;
+    }
+}
+
+/**
+ * @brief `e` 里有没有 C 名叫 `name` 的标识符。
+ *
+ * @param e     待搜表达式（只走纯表达式的那几种节点）。
+ * @param name  比较用的 C 名。
+ */
+static bool exprHasIdent(const Expr *e, const char *name) {
+    if (!e || !name) return false;
+    switch (e->kind) {
+    case EX_IDENT: {
+        const char *cn = identCName(e);
+        return cn && strcmp(cn, name) == 0;
+    }
+    case EX_BIN: return exprHasIdent(e->u.bin.left, name) || exprHasIdent(e->u.bin.right, name);
+    case EX_UN: return exprHasIdent(e->u.un.operand, name);
+    default: return false;
+    }
+}
+
+/**
+ * @brief 试着把表达式拆成 `coef*k + base`；拆不出来返回 false。
+ *
+ * `coef`/`base` 是**文本**：与 k 无关的子式原样发进去，入口求值一次。只认标量算术
+ * （`+`、`-`、`*`、一元 `-`），不引入符号证明器。
+ *
+ * @param g    生成器（临时文本从它的 arena 分配）。
+ * @param e    下标表达式。
+ * @param var  循环变量的 C 名。
+ * @param out  拆出来的系数与常数项。
+ */
+static bool affineIn(CG *g, Expr *e, const char *var, Affine *out) {
+    if (!e || !var) return false;
+    /* 与 k 无关的纯表达式整体当常数项：原样发一遍，循环入口求值一次。 */
+    if (hoistPureExpr(e) && !exprHasIdent(e, var)) {
+        out->coef = "0";
+        out->base = genExpr(g, e);
+        return true;
+    }
+    if (e->kind == EX_IDENT) {
+        const char *cn = identCName(e);
+        if (cn && strcmp(cn, var) == 0) { out->coef = "1"; out->base = "0"; return true; }
+        return false;
+    }
+    if (e->kind == EX_BIN && e->u.bin.op) {
+        const char *op = e->u.bin.op;
+        if (strcmp(op, "+") == 0 || strcmp(op, "-") == 0) {
+            Affine l, r;
+            if (!affineIn(g, e->u.bin.left, var, &l)) return false;
+            if (!affineIn(g, e->u.bin.right, var, &r)) return false;
+            const bool sub = strcmp(op, "-") == 0;
+            if (strcmp(l.coef, "0") == 0 && strcmp(r.coef, "0") == 0) return false;
+            out->coef = arenaPrintf(g->arena, "(%s %s %s)", l.coef, sub ? "-" : "+", r.coef);
+            out->base = arenaPrintf(g->arena, "(%s %s %s)", l.base, sub ? "-" : "+", r.base);
+            return true;
+        }
+        if (strcmp(op, "*") == 0) {
+            /* 只允许一侧含 k：另一侧整个乘过去。两边都含 k 是非线性的，不收。 */
+            const bool lk = exprHasIdent(e->u.bin.left, var);
+            const bool rk = exprHasIdent(e->u.bin.right, var);
+            if (lk == rk) return false;
+            Expr *kSide = lk ? e->u.bin.left : e->u.bin.right;
+            Expr *cSide = lk ? e->u.bin.right : e->u.bin.left;
+            Affine kk;
+            if (!affineIn(g, kSide, var, &kk)) return false;
+            const char *factor = genExpr(g, cSide);
+            out->coef = arenaPrintf(g->arena, "(%s * %s)", kk.coef, factor);
+            out->base = arenaPrintf(g->arena, "(%s * %s)", kk.base, factor);
+            return true;
+        }
+        return false;
+    }
+    if (e->kind == EX_UN && e->u.un.op && strcmp(e->u.un.op, "-") == 0) {
+        Affine kk;
+        if (!affineIn(g, e->u.un.operand, var, &kk)) return false;
+        out->coef = arenaPrintf(g->arena, "(-%s)", kk.coef);
+        out->base = arenaPrintf(g->arena, "(-%s)", kk.base);
+        return true;
+    }
+    return false;
+}
+
+/**
+ * @brief 收集 `e` 里除循环变量外的标识符 C 名；有一个不是标量内建类型就返回 false。
+ *
+ * 只放行标量内建：结构体字段、视图、引用、「某个函数返回的量」都不能当常数项前移。
+ *
+ * @param g      生成器（`subst` 需要）。
+ * @param e      下标表达式。
+ * @param var    循环变量的 C 名（它的类型不必是标量内建）。
+ * @param names  收集结果（`const char *`）。
+ */
+static bool hoistCollectIdents(CG *g, const Expr *e, const char *var, Vec *names) {
+    if (!e) return true;
+    switch (e->kind) {
+    case EX_INT: case EX_FLOAT: case EX_BOOL: return true;
+    case EX_IDENT: {
+        const char *cn = identCName(e);
+        if (cn && var && strcmp(cn, var) == 0) return true;
+        Type *t = e->type ? ttBase(subst(g, e->type)) : NULL;
+        if (!t || t->kind != TY_BUILTIN) return false;
+        if (!cn) return false;
+        *(const char **)vecPush(names) = cn;
+        return true;
+    }
+    case EX_BIN:
+        return hoistCollectIdents(g, e->u.bin.left, var, names)
+            && hoistCollectIdents(g, e->u.bin.right, var, names);
+    case EX_UN: return hoistCollectIdents(g, e->u.un.operand, var, names);
+    default: return false;
+    }
+}
+
+/** @brief `name` 是否已在 `names`（`const char *`）里。 */
+static bool nameInVec(const Vec *names, const char *name) {
+    if (!name) return false;
+    for (size_t i = 0; i < names->len; i++)
+        if (strcmp(*(const char **)vecAt((Vec *)names, i), name) == 0) return true;
+    return false;
+}
+
+/** @brief 体内有没有"检查前移会改变行为"的成分：调用、新建、trap、提前退出、lambda… */
+static bool hoistForbiddenExpr(const Expr *e);
+
+/**
+ * @brief 语句树里有没有检查前移的禁区（提前退出、调用、trap、条件求值）。
+ *
+ * 提前退出是硬禁区：把 `a[k]` 的检查挪到循环入口，等于在 `break`/`return` 之前就 trap。
+ * 条件求值的表达式（`??`、短路求值、调用）同理：入口求值一次会改变副作用次数。
+ *
+ * @param s  语句。
+ */
+static bool hoistForbiddenStmt(const Stmt *s) {
+    if (!s) return false;
+    switch (s->kind) {
+    case ST_VAR: return hoistForbiddenExpr(s->u.var.init);
+    case ST_ASSIGN:
+        return hoistForbiddenExpr(s->u.assign.target) || hoistForbiddenExpr(s->u.assign.value)
+            || hoistForbiddenExpr(s->u.assign.opExpr);
+    case ST_EXPR: return hoistForbiddenExpr(s->u.expr.expr);
+    case ST_IF:
+        return hoistForbiddenExpr(s->u.ifs.cond) || hoistForbiddenStmt(s->u.ifs.thenBody)
+            || hoistForbiddenStmt(s->u.ifs.elseBody);
+    case ST_WHILE:
+        return hoistForbiddenExpr(s->u.whiles.cond) || hoistForbiddenStmt(s->u.whiles.body);
+    case ST_BLOCK:
+        for (size_t i = 0; i < s->u.block.stmts.len; i++)
+            if (hoistForbiddenStmt(*(Stmt **)vecAt((Vec *)&s->u.block.stmts, i))) return true;
+        return false;
+    case ST_MATCH: {
+        if (hoistForbiddenExpr(s->u.match.scrutinee)) return true;
+        for (size_t i = 0; i < s->u.match.arms.len; i++) {
+            MatchArm *arm = *(MatchArm **)vecAt((Vec *)&s->u.match.arms, i);
+            if (arm && hoistForbiddenStmt(arm->body)) return true;
+        }
+        return false;
+    }
+    /* 只列放行的 kind：`break`/`continue`/`return`/`trap`/`yield`/`domain` 以及将来新增的
+     * 语句 kind 都落在 default 上，一律当禁区（退回逐元素检查，语义不变）。 */
+    default: return true;
+    }
+}
+
+/** @brief `e` 里有没有禁区（只看纯表达式能出现的节点，其余一律当禁区）。 */
+static bool hoistForbiddenExpr(const Expr *e) {
+    if (!e) return false;
+    switch (e->kind) {
+    case EX_INT: case EX_FLOAT: case EX_BOOL: case EX_STR: case EX_IDENT: case EX_NULL: return false;
+    case EX_BIN:
+        /* 运算符可能被检查器解析成方法调用（`cout << x`、用户定义运算符、数组 `==` 走
+         * `extc_eq`），也可能是延迟到实例化才解析的运算符 —— 都是调用，不算纯表达式。 */
+        if (planCallee(e) || planNeedOp(e)) return true;
+        return hoistForbiddenExpr(e->u.bin.left) || hoistForbiddenExpr(e->u.bin.right);
+    case EX_UN:
+        if (planCallee(e) || planNeedOp(e)) return true;
+        return hoistForbiddenExpr(e->u.un.operand);
+    case EX_FIELD: return hoistForbiddenExpr(e->u.field.obj);
+    case EX_INDEX: return hoistForbiddenExpr(e->u.index.obj) || hoistForbiddenExpr(e->u.index.index);
+    case EX_DEREF: return hoistForbiddenExpr(e->u.deref.operand);
+    case EX_SIGN: return hoistForbiddenExpr(e->u.sign.operand);
+    case EX_ARRAYLIT: {
+        for (size_t i = 0; i < e->u.arraylit.elems.len; i++)
+            if (hoistForbiddenExpr(*(Expr **)vecAt((Vec *)&e->u.arraylit.elems, i))) return true;
+        return false;
+    }
+    default: return true;
+    }
+}
+
+/** @brief 收集"每一轮都一定执行"的视图下标站点（不穿条件分支与内层循环）。 */
+static void hoistSitesExpr(Expr *e, Vec *sites);
+
+/**
+ * @brief 收集语句链里每轮必然执行的视图下标站点。
+ *
+ * 只穿无条件的语句：`ST_BLOCK` 的语句链、`ST_VAR` 的初值、赋值两侧、表达式语句。
+ * `if`/`match` 的分支与内层 `while` 里的站点不算"每轮都执行"（不进），跳过的站点继续
+ * 走逐元素检查，语义不变。
+ *
+ * @param g      gen
+ * @param s      语句。
+ * @param sites  收集结果（`Expr *`）。
+ */
+static void hoistSitesStmt(CG *g, Stmt *s, Vec *sites) {
+    (void)g;
+    if (!s) return;
+    switch (s->kind) {
+    case ST_BLOCK: {
+        Stmt *step = planForStep(s);
+        for (size_t i = 0; i < s->u.block.stmts.len; i++) {
+            Stmt *one = *(Stmt **)vecAt(&s->u.block.stmts, i);
+            if (step && one == step) continue;   /* for 的步进每轮只在末尾执行，不在这里收 */
+            hoistSitesStmt(g, one, sites);
+        }
+        return;
+    }
+    case ST_VAR: hoistSitesExpr(s->u.var.init, sites); return;
+    case ST_ASSIGN:
+        hoistSitesExpr(s->u.assign.target, sites);
+        hoistSitesExpr(s->u.assign.value, sites);
+        return;
+    case ST_EXPR: hoistSitesExpr(s->u.expr.expr, sites); return;
+    default: return;
+    }
+}
+
+/** @brief 表达式里的视图下标站点（只在纯表达式上穿，副作用节点本来就被禁区挡掉了）。 */
+static void hoistSitesExpr(Expr *e, Vec *sites) {
+    if (!e) return;
+    switch (e->kind) {
+    case EX_INDEX:
+        *(Expr **)vecPush(sites) = e;
+        hoistSitesExpr(e->u.index.obj, sites);
+        hoistSitesExpr(e->u.index.index, sites);
+        return;
+    case EX_BIN:
+        hoistSitesExpr(e->u.bin.left, sites);
+        hoistSitesExpr(e->u.bin.right, sites);
+        return;
+    case EX_UN: hoistSitesExpr(e->u.un.operand, sites); return;
+    case EX_FIELD: hoistSitesExpr(e->u.field.obj, sites); return;
+    case EX_CONV: hoistSitesExpr(e->u.conv.operand, sites); return;
+    case EX_DEREF: hoistSitesExpr(e->u.deref.operand, sites); return;
+    default: return;
+    }
+}
+
+/** @brief 收集体内被赋值的标识符 C 名（for 的步进不算：它只推进循环变量）。 */
+static void hoistWrites(Stmt *s, Vec *names) {
+    if (!s) return;
+    switch (s->kind) {
+    case ST_ASSIGN: {
+        Expr *t = s->u.assign.target;
+        if (t && t->kind == EX_IDENT) {
+            const char *cn = identCName(t);
+            if (cn) *(const char **)vecPush(names) = cn;
+        }
+        return;
+    }
+    case ST_BLOCK: {
+        Stmt *step = planForStep(s);
+        for (size_t i = 0; i < s->u.block.stmts.len; i++) {
+            Stmt *one = *(Stmt **)vecAt(&s->u.block.stmts, i);
+            if (step && one == step) continue;
+            hoistWrites(one, names);
+        }
+        return;
+    }
+    case ST_IF:
+        hoistWrites(s->u.ifs.thenBody, names);
+        hoistWrites(s->u.ifs.elseBody, names);
+        return;
+    case ST_WHILE: hoistWrites(s->u.whiles.body, names); return;
+    case ST_MATCH:
+        for (size_t i = 0; i < s->u.match.arms.len; i++) {
+            MatchArm *arm = *(MatchArm **)vecAt(&s->u.match.arms, i);
+            if (arm) hoistWrites(arm->body, names);
+        }
+        return;
+    default: return;
+    }
+}
+
+/**
+ * @brief 认出 range-for 形状，并对体里的视图下标做入口区间检查（证不出就什么都不发）。
+ *
+ * 形状由检查器脱糖决定：`for k in lo..hi` 发成 `k = lo; while (k < __extc_hi) { body; k += 1 }`，
+ * 上界在**循环外**求值一次。入口检查因此只对 `[lo, hi)` 这个行程成立，数组/视图的越界
+ * 判定与逐元素检查完全一样（早 trap：只在循环体真会执行时）。
+ *
+ * @param g  生成器（`tmpSeq`、`arena`、`path` 用）。
+ * @param s  `while` 语句；调用方保证 `!condTemps && !ownLevel` 且函数体没关检查。
+ */
+static void loopHoistRangeFor(CG *g, Stmt *s) {
+    if (!g || !s || g->uncheckedBody || g->coroFunc) return;
+    Stmt *body = s->u.whiles.body;
+    Expr *cond = s->u.whiles.cond;
+    if (!body || body->kind != ST_BLOCK || !cond || cond->kind != EX_BIN) return;
+    if (!cond->u.bin.op || strcmp(cond->u.bin.op, "<") != 0) return;
+    Expr *lv = cond->u.bin.left, *rv = cond->u.bin.right;
+    if (!lv || lv->kind != EX_IDENT || !rv || rv->kind != EX_IDENT) return;
+    const char *var = identCName(lv);
+    const char *hi = identCName(rv);
+    if (!var || !hi || strncmp(hi, "__extc_hi", 9) != 0) return;
+    if (!planForStep(body)) return;    /* 步进被重定向（迭代器 for）就不是这个行程 */
+    if (hoistForbiddenStmt(body)) return;
+
+    /* 体里给谁赋过值：循环变量的行程、上界、常数项、视图对象本身都不能被改。 */
+    Vec writes; vecInit(&writes, g->arena, sizeof(const char *));
+    hoistWrites(body, &writes);
+    if (nameInVec(&writes, var) || nameInVec(&writes, hi)) return;
+
+    Vec sites; vecInit(&sites, g->arena, sizeof(Expr *));
+    hoistSitesStmt(g, body, &sites);
+
+    Vec picks; vecInit(&picks, g->arena, sizeof(HoistedIdx));
+    for (size_t i = 0; i < sites.len; i++) {
+        Expr *site = *(Expr **)vecAt(&sites, i);
+        Expr *obj = site->u.index.obj;
+        Expr *ix = site->u.index.index;
+        if (!obj || obj->kind != EX_IDENT || !ix || idxHoisted(g, site)) continue;
+        Type *ot = obj->type;
+        if (!ot || ot->kind == TY_REF) continue;
+        if (!isView(ttBase(subst(g, ot)))) continue;
+        Type *it = ix->type;
+        if (!it) continue;
+        it = ttBase(subst(g, it));
+        if (!it || !ttIs(it, "i64")) continue;
+        const char *view = identCName(obj);
+        if (!view || nameInVec(&writes, view)) continue;
+        Vec ids; vecInit(&ids, g->arena, sizeof(const char *));
+        if (!hoistCollectIdents(g, ix, var, &ids)) continue;
+        bool bad = false;
+        for (size_t k = 0; k < ids.len; k++)
+            if (nameInVec(&writes, *(const char **)vecAt(&ids, k))) { bad = true; break; }
+        if (bad) continue;
+        Affine af;
+        if (!affineIn(g, ix, var, &af)) continue;
+        HoistedIdx *h = vecPush(&picks);
+        h->view = view;
+        h->coef = af.coef;
+        h->base = af.base;
+        h->line = site->line;
+        h->site = site;
+    }
+    if (picks.len == 0) return;
+
+    /* 先把空视图检查发齐（文案与检查原语一致），再对每个去重后的仿射式发区间检查。
+     * 包在 `k < hi` 里：行程为空时循环体根本不执行，检查也不该 trap。 */
+    cgLine(g, "if ((int64_t)(%s) < (int64_t)(%s)) {", var, hi);
+    g->indent++;
+    for (size_t i = 0; i < picks.len; i++) {
+        HoistedIdx *h = vecAt(&picks, i);
+        bool seen = false;
+        for (size_t k = 0; k < i && !seen; k++)
+            if (strcmp(((HoistedIdx *)vecAt(&picks, k))->view, h->view) == 0) seen = true;
+        if (!seen)
+            cgLine(g, "if (!(%s).data) extc_trapMsg(\"%s\", %d, \"the view has no storage\");",
+                   h->view, g->path, h->line);
+    }
+    for (size_t i = 0; i < picks.len; i++) {
+        HoistedIdx *h = vecAt(&picks, i);
+        bool seen = false;
+        for (size_t k = 0; k < i && !seen; k++) {
+            HoistedIdx *p = vecAt(&picks, k);
+            if (strcmp(p->view, h->view) == 0 && strcmp(p->coef, h->coef) == 0
+                && strcmp(p->base, h->base) == 0) seen = true;
+        }
+        if (seen) continue;
+        const int id = g->tmpSeq++;
+        cgLine(g, "int64_t __extc_rk%d_c = (int64_t)(%s);", id, h->coef);
+        cgLine(g, "int64_t __extc_rk%d_b = (int64_t)(%s);", id, h->base);
+        cgLine(g, "int64_t __extc_rk%d_i = __extc_rk%d_c * (int64_t)(%s) + __extc_rk%d_b;",
+               id, id, var, id);
+        cgLine(g, "int64_t __extc_rk%d_j = __extc_rk%d_c * ((int64_t)(%s) - 1) + __extc_rk%d_b;",
+               id, id, hi, id);
+        cgLine(g, "if (__extc_rk%d_i > __extc_rk%d_j) { int64_t __extc_rk%d_t = __extc_rk%d_i; "
+                  "__extc_rk%d_i = __extc_rk%d_j; __extc_rk%d_j = __extc_rk%d_t; }",
+               id, id, id, id, id, id, id, id);
+        cgLine(g, "if (__extc_rk%d_i < 0 || __extc_rk%d_j >= (int64_t)(%s).len) "
+                  "extc_trap(\"%s\", %d, __extc_rk%d_i < 0 ? __extc_rk%d_i : __extc_rk%d_j, "
+                  "(int64_t)(%s).len);",
+               id, id, h->view, g->path, h->line, id, id, id, h->view);
+    }
+    g->indent--;
+    cgLine(g, "}");
+
+    for (size_t i = 0; i < picks.len; i++)
+        *(Expr **)vecPush(&g->hoistedIdx) = ((HoistedIdx *)vecAt(&picks, i))->site;
+}
+
+/** @brief 这个视图下标站点是否已经被某个外层循环的入口检查覆盖。 */
+static bool idxHoisted(CG *g, Expr *e) {
+    if (!g || g->hoistedIdx.len == 0) return false;
+    for (size_t i = 0; i < g->hoistedIdx.len; i++)
+        if (*(Expr **)vecAt(&g->hoistedIdx, i) == e) return true;
+    return false;
+}
+
+
 /**
  * @brief 发出 `ST_WHILE`：普通 `while (...)` 或自占一层的 `while (1)` 形状。
  *
@@ -6271,6 +6837,10 @@ if (wbody && planForStep(wbody)) {
  * and the body agree with what the checker assigned; the body block then sits one level
  * deeper than before, which is why `blkMaxLevel` counts an extra level for this shape. */
 const bool ownLevel = planCondAllocs(s);
+/* 视图下标的检查前移到循环入口（②）。只在条件与前缀都"干净"的形状上做：另一条路把条件
+ * 挪进体内，检查会每轮重跑、条件为假时还会误 trap。 */
+const size_t hoistMark = g->hoistedIdx.len;
+if (!condTemps && !ownLevel) loopHoistRangeFor(g, s);
 if (condTemps || ownLevel) {
     cgLine(g, "while (1) {");
     g->indent++;
@@ -6290,6 +6860,7 @@ g->loopStep[g->loopLen] = stepLabel;
 g->loopRootBase[g->loopLen] = (int)g->rcRoots.len;
 g->loopLen++;
 genBlockBody(g, s->u.whiles.body);
+g->hoistedIdx.len = hoistMark;   /* 外层循环的站表恢复：本循环的区间只在本循环成立 */
 g->loopLen--;
 if (ownLevel) g->blkLevel--;
 g->indent--;
@@ -10748,6 +11319,7 @@ static void emitProtos(CG *g, Module *m, Arena *arena) {
  */
 static void initCGState(CG *g, Module *m, TypeTable *tt, Arena *arena) {
     vecInit(&g->structs, arena, sizeof(void *));
+    vecInit(&g->hoistedIdx, arena, sizeof(Expr *));
     bufInit(&g->prefix, arena);          /* statement prefix; uninitialized, it segfaults */
     /* The instance table is deduplicated by C name: a writable and a read-only
      * view are one C struct, so the type table can hold two instances under one
