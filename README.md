@@ -102,7 +102,7 @@ bad.extc:3:1: error: index 7 is not inside `[4]i32` (length 4)
 
 - [`bench/app/`](bench/app/RESULTS.md)：extC STL 对 C++ STL 对 Go 的三场景（会话表、路由表、日志缓冲）。路由表那一整场（插入 / 前驱 / 区间扫描 / 删除）比 C++ 的 `std::map` 快 1.6 倍；会话表那格落后（高频删的哈希表打不过 C++ 的 `unordered_map`），落后多少、卡在哪，报告里逐条剖开。
 - [`bench/httpd/`](bench/httpd/README.md)：约 300 行 extC 写的 HTTP/1.1 静态服务器（epoll + 协程 + `sendfile`），与 `python3 -m http.server` 同判据对照：吞吐 5376 req/s 对 4368、峰值 RSS 1.9 MB 对 22.7 MB（报告里的快照）。
-- [`bench/fortran/`](bench/fortran/RESULTS.md)：一个数值 kernel 形状 —— 2D 5 点 Jacobi 模板（`f64`、flat 行主序），extC / C / gfortran 三臂。三条臂在 -O2 下基本并列（extC 是 C 的 0.94–1.05×、Fortran 是 C 的 1.01–1.10×）；-O3 -march=native 档 C/Fortran 明显提速而 extC 不提速（生成 C 里只有 1 处 `loop vectorized`，手写 C 有 3 处）。这臂按 extC 的惯用写法（range-for、并行赋值换 buffer、`??` 解析参数、f-string）；-O3 档、向量化自报与读表须知见报告。
+- [`bench/fortran/`](bench/fortran/RESULTS.md)：一个数值 kernel 形状 —— 2D 5 点 Jacobi 模板（`f64`、flat 行主序），extC / C / gfortran 三臂。三条臂在 -O2 与 -O3 -march=native 下都基本并列（-O2 extC 是 C 的 0.99–1.01×、Fortran 是 C 的 0.99–1.02×；-O3 三臂相对差异同样在 ±2% 内），GCC 自报的 `loop vectorized` 处数 extC 与手写 C 都是 3。这臂按 extC 的惯用写法（range-for、并行赋值换 buffer、`??` 解析参数、f-string）；-O3 档、向量化自报与读表须知见报告。
 
 ## 凭什么信它
 

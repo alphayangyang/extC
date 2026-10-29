@@ -1484,9 +1484,9 @@ def build_items() -> list:
     # ---- 语法糖：多名字声明 / 并行赋值（解析期脱糖，不新增 AST 节点）----
     items.append(cmd(
         "sugar", "tests",
-        "语法糖：一条声明多个名字（逐名字/共享标注）+ 并行赋值（交换/字段/下标/deref/载荷）",
+        "语法糖：一条声明多个名字（逐名字/共享标注）+ 并行赋值（交换/字段/下标/deref/载荷）+ 区间循环变量按上界放宽",
         ["./tests/sugar/run.sh"], timeout=300,
-        ok_msg=ok_count_ok(" 项（共享标注 · 逐名字标注与推断 · 顶层 global · 先求值后写 · match 臂体 · for 头 · 9 条反例）"),
+        ok_msg=ok_count_ok(" 项（共享标注 · 逐名字标注与推断 · 顶层 global · 先求值后写 · match 臂体 · for 头 · 区间循环变量放宽 · 9 条反例）"),
         bad_msg="tests/sugar/run.sh", bad_dump=dump_all))
 
     # ---- 语法糖：`_` 兜底臂 / if let / while let（解析期脱糖，不新增 AST 节点）----

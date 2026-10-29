@@ -184,6 +184,52 @@ static bool forRetargetToIterator(Checker *c, Stmt *block) {
 }
 
 /**
+ * @brief 把区间循环的循环变量按上界放宽（`for i in 0..n` 里 `n: i64` 时 `i` 也变 `i64`）。
+ *
+ * 解析器把 `for i in lo..hi` 脱糖成外层块 `[var i = lo, var __extc_hi = hi,
+ * while i < __extc_hi { 体; i += 1 }]`，`i` 没有注解、类型取自 `lo`，所以 `for i in 0..n`
+ * 拿到 `i32` —— 即使 `n` 是 `i64`。比较本身在更宽的类型里做（两侧都加宽），语义没问题；
+ * 但**变量停在窄类型**会让体里每次下标算术都先窄后宽，生成 C 里到处是 `(int64_t)(…)`，
+ * 向量化因此失效（见 `bench/fortran` 的 -O3 档）。
+ *
+ * 只在 `hi` 能无损容纳 `lo`（`ttCanWiden`）时放宽：比较两侧的相对关系不变，循环变量的
+ * 算术从“先窄后宽”变成“全宽”。两端同型、反向、非整数、或形状不是区间循环时都不动。
+ *
+ * 调用点在 `checkBlockBody` 检查完 `stmts[1]` 之后：两端类型都已落地、`while` 还没检查，
+ * 体里对 `i` 的使用会解析到放宽后的类型。
+ *
+ * @param c      检查器。
+ * @param block  块语句；不是区间循环的外层块就直接返回。
+ */
+static void widenRangeForVar(Checker *c, Stmt *block) {
+    if (!block || block->kind != ST_BLOCK || block->u.block.stmts.len != 3) return;
+    Stmt *decl = *(Stmt **)vecAt(&block->u.block.stmts, 0);
+    Stmt *hiDecl = *(Stmt **)vecAt(&block->u.block.stmts, 1);
+    Stmt *loop = *(Stmt **)vecAt(&block->u.block.stmts, 2);
+    if (!decl || !hiDecl || !loop) return;
+    if (decl->kind != ST_VAR || !decl->u.var.init || decl->u.var.ann) return;
+    if (hiDecl->kind != ST_VAR || !hiDecl->u.var.name || hiDecl->u.var.ann) return;
+    if (strcmp(hiDecl->u.var.name, "__extc_hi") != 0) return;
+    if (loop->kind != ST_WHILE || !loop->u.whiles.cond) return;
+    Expr *cond = loop->u.whiles.cond;
+    if (cond->kind != EX_BIN || !cond->u.bin.op || strcmp(cond->u.bin.op, "<") != 0) return;
+    if (!cond->u.bin.left || cond->u.bin.left->kind != EX_IDENT) return;
+    if (!cond->u.bin.right || cond->u.bin.right->kind != EX_IDENT) return;
+    if (!decl->u.var.name || !cond->u.bin.left->u.ident.name ||
+        !cond->u.bin.right->u.ident.name) return;
+    if (strcmp(cond->u.bin.left->u.ident.name, decl->u.var.name) != 0) return;
+    if (strcmp(cond->u.bin.right->u.ident.name, "__extc_hi") != 0) return;
+
+    Type *lo = decl->type, *hi = hiDecl->type;
+    if (!lo || !hi || !ttIsInteger(lo) || !ttIsInteger(hi)) return;
+    if (ttEquals(lo, hi) || !ttCanWiden(lo, hi)) return;
+    Sym *sym = lookup(c, decl->u.var.name);
+    if (!sym) return;
+    decl->type = hi;
+    sym->type = hi;
+}
+
+/**
  * @brief 在新作用域里检查一个块体，块结束时块内绑定随之出作用域。
  *
  * 会自行回收存储的块是 place 边界：其中不许挂起（规则 3），通过 `c->placeBoundaryDepth`
@@ -198,8 +244,12 @@ static void checkBlockBody(Checker *c, Stmt *block) {
     if (boundary) c->placeBoundaryDepth++;
 
     pushScope(c);
-    for (size_t i = 0; i < block->u.block.stmts.len; i++)
+    for (size_t i = 0; i < block->u.block.stmts.len; i++) {
         checkStmt(c, *(Stmt **)vecAt(&block->u.block.stmts, i));
+        /* 区间循环的外层块是 `[循环变量, __extc_hi, while]`：等两者都检查完、`while` 还没
+         * 检查时把循环变量放宽，体里的使用才会拿到放宽后的类型（见 widenRangeForVar）。 */
+        if (i == 1) widenRangeForVar(c, block);
+    }
     popScope(c);
 
     if (boundary) c->placeBoundaryDepth--;
