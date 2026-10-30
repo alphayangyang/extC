@@ -53,6 +53,7 @@ check_pos() {
 echo "== 正例：S2 归约融合（写循环 + 累加器循环）与 S3（两层元素链 + 归约）=="
 check_pos fuse/reduce tests/fuse/reduce.extc "cs=38.000" tmpv
 check_pos fuse/stream tests/fuse/stream.extc "cs=38.000" tmpv tv2
+check_pos fuse/stream_ext tests/fuse/stream_ext.extc "cs=64" tv1 tv2
 
 echo "== 反例：不满足资格时不许融合（临时视图仍在）且输出正确 =="
 check_neg() {   # check_neg <名字> <文件> <期望输出>
@@ -67,6 +68,8 @@ check_neg fuse/neg_call     tests/fuse/neg_call.extc     "out3=9.0"
 check_neg fuse/neg_readwrite tests/fuse/neg_readwrite.extc "out0=0.0 out3=6.0"
 check_neg fuse/neg_reduce_mul   tests/fuse/neg_reduce_mul.extc   "p=1.5000"
 check_neg fuse/neg_reduce_order tests/fuse/neg_reduce_order.extc "cs=5.000"
+check_neg neg_reduce_order tests/fuse/neg_reduce_order.extc "cs=5.000"
+check_neg neg_container_expr tests/fuse/neg_container_expr.extc "acc=20"
 
 rm -rf "$tmp"
 [ "$fail" -eq 0 ]

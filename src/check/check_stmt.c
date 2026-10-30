@@ -1766,6 +1766,127 @@ static bool fuseTryReduce(Checker *c, Stmt *block, size_t i) {
 }
 
 /**
+ * @brief 把容器形式的归约循环改写成索引形式，交给 `fuseTryReduce` 折叠。
+ *
+ * `for v in tmp { acc = acc + v }` 遍历的是 `tmp.len` 个元素，而上一层元素链 `A` 遍历
+ * `[0, hi)`。只有在 `A` 的上界与 `tmp` 的分配长度是同一个表达式时两者才是同一个迭代空间，
+ * 所以这里先要求 `fuseExprSame(aHi, new T[len] 的长度)`；成立之后把容器循环换成
+ * `for <aVar> in <aHi> { acc = acc + tmp[<aVar>] }`，下一遍扫描就由 `fuseTryReduce` 把它
+ * 折进 `A` 的体里。
+ *
+ * 只认最简单的形状：元素值恰好以 `v` 本身参与累加（`acc = acc + v`），体里也不能有别的
+ * 语句；`tmp` 在本块的其它语句里不能再出现。
+ *
+ * @param c     检查器。
+ * @param block 语句块。
+ * @param i     `var tmp = new T[n]` 在块里的位置。
+ * @return      改写了一处返回 `true`；形状不匹配返回 `false`（不动 AST）。
+ */
+static bool fuseTryReduceContainer(Checker *c, Stmt *block, size_t i) {
+    Vec *v = &block->u.block.stmts;
+    Stmt *decl = *(Stmt **)vecAt(v, i);
+    if (!decl || decl->kind != ST_VAR || !decl->u.var.ann || !decl->u.var.init) return false;
+    if (decl->u.var.init->kind != EX_NEW) return false;
+    Expr *lenExpr = decl->u.var.init->u.new_.count;
+    if (!lenExpr) return false;
+    const char *tmp = decl->u.var.name;
+    size_t n = v->len;
+    if (i + 3 >= n) return false;
+    Stmt *a = *(Stmt **)vecAt(v, i + 1);
+    Stmt *aW, *aBody;
+    const char *aVar;
+    Expr *aLo, *aHi;
+    if (!fuseLoopFrom(c, a, &aW, &aBody, &aVar, &aLo, &aHi)) return false;
+    (void)aW;
+    if (fuseMentions(aLo, tmp) || fuseMentions(aHi, tmp)) return false;
+    if (!fuseExprSame(aHi, lenExpr)) return false;
+    Stmt *accDecl = *(Stmt **)vecAt(v, i + 2);
+    if (!accDecl || accDecl->kind != ST_VAR || !accDecl->u.var.init) return false;
+    if (accDecl->u.var.init->kind == EX_NEW) return false;
+    const char *acc = accDecl->u.var.name;
+    if (strcmp(acc, tmp) == 0 || strcmp(acc, aVar) == 0) return false;
+    if (fuseStmtMentions(accDecl, tmp)) return false;
+    /* A 的体：恰好 `tmp[aVar] = <纯 rhs>`。 */
+    Expr *rhs = NULL;
+    {
+        size_t seen = 0;
+        for (size_t k = 0; k < aBody->u.block.stmts.len; k++) {
+            Stmt *s = *(Stmt **)vecAt(&aBody->u.block.stmts, k);
+            if (s == aBody->forStep) continue;
+            if (++seen > 1) break;
+            if (s->kind != ST_ASSIGN || s->u.assign.op) break;
+            Expr *t = s->u.assign.target;
+            if (!t || t->kind != EX_INDEX || !t->u.index.obj || t->u.index.obj->kind != EX_IDENT
+                || strcmp(t->u.index.obj->u.ident.name, tmp) != 0
+                || !t->u.index.index || t->u.index.index->kind != EX_IDENT
+                || strcmp(t->u.index.index->u.ident.name, aVar) != 0) break;
+            if (!fusePureExpr(s->u.assign.value)) break;
+            if (fuseMentions(s->u.assign.value, tmp)) break;
+            rhs = s->u.assign.value;
+        }
+        if (!rhs || seen != 1) return false;
+    }
+    if (fuseMentions(rhs, acc)) return false;
+    /* 容器形式的归约循环：`for v in tmp { acc = acc + v }`。 */
+    Stmt *cf = *(Stmt **)vecAt(v, i + 3);
+    if (!cf || cf->kind != ST_BLOCK || !cf->forDesugar) return false;
+    Vec *cs = &cf->u.block.stmts;
+    if (cs->len != 3) return false;
+    Stmt *viewDecl = *(Stmt **)vecAt(cs, 0);
+    Stmt *idxDecl  = *(Stmt **)vecAt(cs, 1);
+    Stmt *cw       = *(Stmt **)vecAt(cs, 2);
+    if (!viewDecl || viewDecl->kind != ST_VAR || strcmp(viewDecl->u.var.name, "__extc_s") != 0) return false;
+    Expr *viewInit = viewDecl->u.var.init;
+    if (!viewInit || viewInit->kind != EX_SLICE || viewInit->u.slice.lo || viewInit->u.slice.hi) return false;
+    if (!viewInit->u.slice.obj || viewInit->u.slice.obj->kind != EX_IDENT
+        || strcmp(viewInit->u.slice.obj->u.ident.name, tmp) != 0) return false;
+    if (!idxDecl || idxDecl->kind != ST_VAR || strcmp(idxDecl->u.var.name, "__extc_i") != 0) return false;
+    if (!cw || cw->kind != ST_WHILE || !cw->u.whiles.body || cw->u.whiles.body->kind != ST_BLOCK) return false;
+    Stmt *loopBody = cw->u.whiles.body;
+    if (loopBody->u.block.stmts.len != 3) return false;
+    Stmt *elemDecl = *(Stmt **)vecAt(&loopBody->u.block.stmts, 0);
+    Stmt *userBody = *(Stmt **)vecAt(&loopBody->u.block.stmts, 1);
+    if (!elemDecl || elemDecl->kind != ST_VAR) return false;
+    Expr *elemInit = elemDecl->u.var.init;
+    if (!elemInit || elemInit->kind != EX_INDEX) return false;
+    if (!elemInit->u.index.obj || elemInit->u.index.obj->kind != EX_IDENT
+        || strcmp(elemInit->u.index.obj->u.ident.name, "__extc_s") != 0) return false;
+    if (!elemInit->u.index.index || elemInit->u.index.index->kind != EX_IDENT
+        || strcmp(elemInit->u.index.index->u.ident.name, "__extc_i") != 0) return false;
+    const char *elem = elemDecl->u.var.name;
+    if (!userBody || userBody->kind != ST_BLOCK || userBody->u.block.stmts.len != 1) return false;
+    Stmt *red = *(Stmt **)vecAt(&userBody->u.block.stmts, 0);
+    if (!red || red->kind != ST_ASSIGN || red->u.assign.op) return false;
+    Expr *target = red->u.assign.target;
+    Expr *value  = red->u.assign.value;
+    if (!target || target->kind != EX_IDENT || strcmp(target->u.ident.name, acc) != 0) return false;
+    if (!value || value->kind != EX_BIN || !value->u.bin.op || strcmp(value->u.bin.op, "+") != 0) return false;
+    if (!value->u.bin.left || value->u.bin.left->kind != EX_IDENT
+        || strcmp(value->u.bin.left->u.ident.name, acc) != 0) return false;
+    if (!value->u.bin.right || value->u.bin.right->kind != EX_IDENT
+        || strcmp(value->u.bin.right->u.ident.name, elem) != 0) return false;
+    /* `tmp` 在这一块的其它语句里没有别的用处。 */
+    for (size_t k = 0; k < n; k++) {
+        if (k == i || k == i + 1 || k == i + 3) continue;
+        if (fuseStmtMentions(*(Stmt **)vecAt(v, k), tmp)) return false;
+    }
+    /* 换成索引形式的归约循环，迭代空间与 A 相同。 */
+    int line = cf->line;
+    Expr *sum = exprBinNew(c->arena, "+", exprIdent(c->arena, acc, line),
+                           exprIndexNew(c->arena, exprIdent(c->arena, tmp, line),
+                                        exprIdent(c->arena, aVar, line), line), line);
+    Vec bodyStmts;
+    vecInit(&bodyStmts, c->arena, sizeof(Stmt *));
+    *(Stmt **)vecPush(&bodyStmts) =
+        stmtAssignNew(c->arena, exprIdent(c->arena, acc, line), sum, NULL, line);
+    Stmt *innerBlock = stmtNew(c->arena, ST_BLOCK, line);
+    stmtBlockSetStmts(innerBlock, &bodyStmts);
+    *(Stmt **)vecAt(v, i + 3) =
+        stmtRangeForNew(c->arena, aVar, exprClone(c->arena, aHi), innerBlock, line);
+    return true;
+}
+
+/**
  * @brief 在块里找**一处**可融合的元素链并改写它（找到就返回，一次只动一处）。
  *
  * 从前往后扫"临时视图声明"，先试 S1（声明后是写它的循环 A，再紧跟读它的循环 B），不成立
@@ -1790,7 +1911,7 @@ static bool fuseOnePass(Checker *c, Stmt *block) {
         Expr *aLo, *aHi, *bLo, *bHi;
         if (!fuseLoopFrom(c, a, &aW, &aBody, &aVar, &aLo, &aHi)) continue;
         if (!fuseLoopFrom(c, b, &bW, &bBody, &bVar, &bLo, &bHi)) {
-            if (fuseTryReduce(c, block, i)) return true;
+            if (fuseTryReduce(c, block, i) || fuseTryReduceContainer(c, block, i)) return true;
             continue;
         }
         (void)aW;
