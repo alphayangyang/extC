@@ -710,6 +710,7 @@ stl::string	-	trimStart	fn	public
 stl::string	-	withCap	fn	public
 stl::string	string	append	method	public
 stl::string	string	appendByte	method	public
+stl::string	string	appendI64	method	public
 stl::string	string	at	method	public
 stl::string	string	big	field	internal
 stl::string	string	big	field	internal
@@ -750,6 +751,7 @@ stl::string	string	toSlice	method	public
 stl::stringio	-	fromF64	fn	public
 stl::stringio	-	readAll	fn	public
 stl::stringio	-	readLine	fn	public
+stl::stringio	string	appendF64	method	public
 stl::stringio	string	readAllFrom	method	public
 stl::stringio	string	writeLineTo	method	public
 stl::stringio	string	writeTo	method	public

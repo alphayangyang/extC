@@ -2,6 +2,7 @@
 # name<TAB>type<TAB>module<TAB>visibility<TAB>kind; check.sh fails when this file is stale.
 # The compiler reads only the first three columns (a `no method` diagnostic names the
 # module to import); tools/manual-surface.txt is derived from all five.
+appendF64	string	stl::stringio	public	method
 hash	i64	stl::hashMap	public	method
 readAllFrom	string	stl::stringio	public	method
 readLineFrom	string	stl::stringio	public	method

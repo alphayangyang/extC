@@ -420,6 +420,14 @@ struct string {
 
     fn appendByte(self: mut ref string, b: u8) { self.push(b) }
 
+    /* 十进制整数的追加：`s.appendI64(n)`。与 `s.append(str::fromI64(n).toSlice())` 的区别是
+     * 中间那个临时 `string` 不出现 —— 拼日志/报表时不必为"数字"多写一层转换，
+     * 也不会踩到"切临时值的视图"的借用规则。负数带 `-`，`i64` 最小值按无符号处理不会溢出。 */
+    fn appendI64(self: mut ref string, v: i64) {
+        var t: string = fromI64(v)
+        self.append(t.subView(0, t.n))
+    }
+
     /* 缩容到刚好装下（下限 16）；连续性与字节不变。
      *
      * 内联态（`cap == 0`）没有可缩的：它本来就只占 16 字节，而且"下限 16"这条承诺

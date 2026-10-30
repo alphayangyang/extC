@@ -74,6 +74,14 @@ impl string {
         let m = w.write("\n")?
         return success(n + m)
     }
+
+    /* 定点浮点数的追加：`s.appendF64(x, 2)`。与 `string::appendI64` 同一个目的 —— 拼一行
+     * 日志少一次临时 `string`。`prec` 上限 20，与 `fromF64` 同一条口径。 */
+    fn appendF64(self: mut ref string, x: f64, prec: i64) {
+        var buf: [64]u8
+        let n = io::pFmtF(x, prec, buf[..])
+        self.append(buf[0..n])
+    }
 }
 
 /* `>>` into a `string`: the operator overloads the I/O layer already has (`mut ref i64`,

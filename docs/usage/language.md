@@ -856,6 +856,8 @@ fn main() -> i32 {
 - 运算符方法**可以分配**：调用点和方法调用走同一套 zone 记账（`setOpCallArgs` 里的
   `setCallZoneArg`），所以 `fn +(self: ref string, other: slice<u8>) -> string` 这种"分配并
   返回新值"的运算符是合法形状（见 `stl::string` 的 `+`：`s + "…"`、`a + b`）。
+- 字符串的 `+` 与 `appendI64` / `appendF64` 覆盖两种拼法：表达式里拼用 `+`（返回新值），
+  循环里拼用 `append*`（就地长）。
 - 移位（`<<` / `>>`）的计数在运行期按左操作数**位宽**检查（越界 trap）；计数是**字面量**时
   检查器提前到编译期：`1 << 32` 报 `shift count 32 does not fit in `i32` (width 32)`，
   写 `i64(1) << 32` 才是 64 位结果。

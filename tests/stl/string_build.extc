@@ -1,0 +1,24 @@
+/* 拼字符串：`append`（字节视图）+ `appendI64` / `appendF64`（数字直接追加）。
+ * 判据见 tests/stl/run.sh 的 run_case。 */
+use std::io
+use stl::string as str
+use stl::stringio as sio
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    if args.len > i64(2) { return 1 }
+    var s: string
+    s.append("n=")
+    s.appendI64(-42)
+    s.append(" b=")
+    s.appendF64(3.14159, 2)
+    s.append(" big=")
+    s.appendI64(-9223372036854775807 - 1)
+
+    var csv: string
+    for i in 1..6 {
+        if i > 1 { csv.append(",") }
+        csv.appendI64(i)
+    }
+    io::cout << s.toSlice() << " | " << csv.toSlice() << " | e=" << csv.len() - csv.len() << "\n"
+    return 0
+}

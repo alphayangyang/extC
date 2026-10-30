@@ -184,6 +184,10 @@ for line in io::lines() { ... }            // 逐行迭代，错误在迭代器�
 - `stringio::readLine()` / `readAll()`：控制台读一句版（内部做 `io::inSync()` 与 `inSave` 的
   取还，调用点不用再记那两行样板；空行给 `some("")`，只有 EOF 给 `none`）。
 
+数字进字符串不必先转成 `string` 再切视图：`s.appendI64(n)`、`s.appendF64(x, 2)` 直接追加
+（`appendI64` 在 `stl::string`、`appendF64` 在 `stl::stringio`，后者要 I/O 层的格式化）。
+循环里拼 `csv` 这种形状因此是一行一个调用。
+
 字符串拼接有运算符写法：`let s = str::from("a") + "=" + v`（`fn +` 返回新值；右操作数是
 `slice<u8>` 或 `string`）。运算符方法因此也能分配：运算符调用点与方法调用共用同一套 zone 记账。
 
