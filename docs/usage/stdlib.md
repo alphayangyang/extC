@@ -585,9 +585,9 @@ fn main() -> i32 {
 - `cin >> line` / `fin >> line` **不跳过空白**、**不返回长度**。
 - 读全是阻塞式 `read(2)`：没有超时、没有非阻塞、没有 select/poll。
 - `ostream` 收所有比 `i64` 窄的整数（`i8`/`i16`/`u8`/`u16`/`u32`）与 `f32`：窄位宽无损加宽到
-  `i64`/`f64` 再打，调用点不用写 cast。**`u64` 还不在**（加宽到 `i64` 会丢上界，得有独立的无符号
-  格式化路径），`cerr` 也只收 `i64`/`bool`/`slice<u8>`，没有 `f64`；没有 `seek` / `tell` / `peek` /
-  `unget`（`grep` 整个 `io.extc` 无这些名字）。
+  `i64`/`f64` 再打，调用点不用写 cast。`u64` 走自己的无符号格式化路径（`fmtU64Fast`，不经过
+  `i64`，所以 `2^64-1` 打得出来）；`cerr` 只收 `i64`/`bool`/`slice<u8>`，没有 `f64`；没有
+  `seek` / `tell` / `peek` / `unget`（`grep` 整个 `io.extc` 无这些名字）。
 
 ```extc
 use std::io

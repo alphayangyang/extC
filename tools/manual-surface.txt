@@ -244,6 +244,7 @@ std::io	-	flushCout	fn	internal
 std::io	-	flushOut	fn	public
 std::io	-	fmtI64	fn	internal
 std::io	-	fmtI64Fast	fn	internal
+std::io	-	fmtU64Fast	fn	public
 std::io	-	inBad	fn	public
 std::io	-	inClear	fn	public
 std::io	-	inSave	fn	public

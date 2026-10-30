@@ -596,8 +596,7 @@ struct ostream { fd: i32
     fn <<(self: ref ostream, v: i32) -> ostream {
       return self << i64(v)
     }
-    /* 其余整数宽度同理：位宽比 `i64` 窄的都无损加宽过去，一个字面量/窄变量都能直接打。
-     * `u64` 不在这里 —— 它加宽到 `i64` 会丢上界，得有独立的无符号格式化路径。 */
+    /* 其余整数宽度同理：位宽比 `i64` 窄的都无损加宽过去，一个字面量/窄变量都能直接打。 */
     @inline
     fn <<(self: ref ostream, v: i8) -> ostream { return self << i64(v) }
     @inline
@@ -608,6 +607,15 @@ struct ostream { fd: i32
     fn <<(self: ref ostream, v: u16) -> ostream { return self << i64(v) }
     @inline
     fn <<(self: ref ostream, v: u32) -> ostream { return self << i64(v) }
+    @inline
+    /* `u64` 单独一条：加宽到 `i64` 会丢上界（`2^64-1` 变负数），所以有自己的格式化路径。 */
+    fn <<(self: ref ostream, v: u64) -> ostream {
+        pairsReady()
+        let st = fmtU64Fast(v)
+        let n = 24 - st
+        extc_cout_put(FMT[st..24].data, n)
+        return { fd: self.fd }
+    }
     @inline
     fn <<(self: ref ostream, v: f32) -> ostream { return self << f64(v) }
     fn <<(self: ref ostream, v: f64) -> ostream {
@@ -927,6 +935,31 @@ fn pFmtF(v: f64, prec: i64, out: mut slice<u8>) -> i64 {
         while m > 0 { m = m - 1  out[o] = fd[m]  o = o + 1 }
     }
     return o
+}
+
+/* 无符号版：`u64` 的上界 `18446744073709551615` 有 20 位，24 字节缓冲够用。
+ * 与 `fmtI64Fast` 同形（尾部往前填、两位一组），只是**没有符号**、余数不为负，
+ * 所以不需要"从负数一侧取位"那一招。与 `FMT` 同一个约定：格式化完立刻取用。 */
+@inline
+fn fmtU64Fast(v: u64) -> i64 {
+    var end: i64 = 24
+    while v >= u64(100) {
+        let m: u64 = v % u64(100)
+        v = v / u64(100)
+        end = end - 2
+        FMT[end]     = PAIRS[i64(m) * 2]
+        FMT[end + 1] = PAIRS[i64(m) * 2 + 1]
+    }
+    let r: i64 = i64(v)
+    if r >= 10 {
+        end = end - 2
+        FMT[end]     = PAIRS[r * 2]
+        FMT[end + 1] = PAIRS[r * 2 + 1]
+    } else {
+        end = end - 1
+        FMT[end] = u8(48 + r)
+    }
+    return end
 }
 
 fn fmtI64(v: i64, out: mut slice<u8>) -> i64 {
