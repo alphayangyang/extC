@@ -66,7 +66,7 @@ let TOMB:  u8 = 2
  * 连续整数键不是刁钻输入 —— 自增的连接 id / 会话号 / 数组下标都是这样。
  * 乘一个奇数（与 2^64 互质 ⇒ 是置换）把低位的信息搬上去，右移再把它混回低位。 */
 fn hashI64(k: i64) -> i64 {
-    var x = k & i64(9223372036854775807)          /* drop the sign bit: the i64 -> u64 conversion must not be lossy */
+    var x = k & 9223372036854775807          /* drop the sign bit: the i64 -> u64 conversion must not be lossy */
     var u = u64(x)
     u = u * u64(6364136223846793005)              /* Knuth 的 LCG 乘数：奇数 ⇒ 与 2^64 互质 */
     u = u ^ (u >> u64(21))
@@ -111,9 +111,9 @@ struct hashMap<K, V> {
 
     /* A map with room for `want` entries before the first rebuild. */
     fn withCap(want: i64) -> hashMap<K, V> {
-        var c: i64 = i64(8)
-        while c < want * i64(2) { c = c * i64(2) }
-        let rp  = syspool::extc_pool_new(i64(-1))
+        var c: i64 = 8
+        while c < want * 2 { c = c * 2 }
+        let rp  = syspool::extc_pool_new(-1)
         let rpg = syspool::extc_pool_generation(rp)
         var m: hashMap<K, V> = {
             pid:    rp,
@@ -126,8 +126,8 @@ struct hashMap<K, V> {
             slot: poolSliceRaw<i32>(rp, c),
             bucketOfDense: poolSliceRaw<i32>(rp, c),
             vals: pool<V>::withParent(rp, c),      /* 值池以这个容器自己的池为父 */
-            n:    i64(0),
-            dead: i64(0),
+            n:    0,
+            dead: 0,
             cap:  c,
         }
         return m
@@ -144,8 +144,8 @@ struct hashMap<K, V> {
         var c: i64 = 0
         var i: i64 = 0
         while i < self.cap {
-            if i64(self.tag[i]) == which { c = c + i64(1) }
-            i = i + i64(1)
+            if i64(self.tag[i]) == which { c = c + 1 }
+            i = i + 1
         }
         return c
     }
@@ -157,19 +157,19 @@ struct hashMap<K, V> {
 
     /* Find the bucket holding `k`: live bucket index, or -1 when absent. */
     fn find(self: ref hashMap<K, V>, k: K) -> i64 {
-        var i = k.hash() & (self.cap - i64(1))
+        var i = k.hash() & (self.cap - 1)
         var steps: i64 = 0
         while steps < self.cap {
             let t = self.tag[i]
-            if t == EMPTY { return i64(-1) }
+            if t == EMPTY { return -1 }
             if t == LIVE && self.keys[i] == k { return i }
-            i = (i + i64(1)) & (self.cap - i64(1))
-            steps = steps + i64(1)
+            i = (i + 1) & (self.cap - 1)
+            steps = steps + 1
         }
-        return i64(-1)
+        return -1
     }
 
-    fn contains(self: ref hashMap<K, V>, k: K) -> bool { return self.find(k) >= i64(0) }
+    fn contains(self: ref hashMap<K, V>, k: K) -> bool { return self.find(k) >= 0 }
 
     /* `hm[k]` -- the read side of the subscript syntax (`[]` and `[]=` are independent names, so
      * a type may offer reading without writing). Same answer as `get`: `none` when absent. */
@@ -178,7 +178,7 @@ struct hashMap<K, V> {
     /* The value for `k`, or `none`. */
     fn get(self: ref hashMap<K, V>, k: K) -> ?V {
         let b = self.find(k)
-        if b < i64(0) { return none }
+        if b < 0 { return none }
         return self.vals.get(self.vals.handleAtDense(i64(self.slot[b])))
     }
 
@@ -190,7 +190,7 @@ struct hashMap<K, V> {
     fn put(self: mut ref hashMap<K, V>, k: K, v: V) -> bool {
         if self.pStale() { self.pPoison() }
         let had = self.find(k)
-        if had >= i64(0) {
+        if had >= 0 {
             self.vals.set(self.vals.handleAtDense(i64(self.slot[had])), v)
             return true
         }
@@ -205,19 +205,19 @@ struct hashMap<K, V> {
          * ②的上界取 25%：探测链的期望长度随 1/(1-墓碑比例) 走，25% 时约 1.33 倍，
          * 再高就开始看得见（40% 时 1.67 倍，而实测的差距远不止这个比例 —— 它还会
          * 把 probe 跨过的桶都拉进 cache）。 */
-        if (self.n + self.dead + i64(1)) * i64(10) >= self.cap * i64(7) { self.rebuild(self.cap * i64(2)) }
-        var i = k.hash() & (self.cap - i64(1))
+        if (self.n + self.dead + 1) * 10 >= self.cap * 7 { self.rebuild(self.cap * 2) }
+        var i = k.hash() & (self.cap - 1)
         while self.tag[i] == LIVE {
-            i = (i + i64(1)) & (self.cap - i64(1))
+            i = (i + 1) & (self.cap - 1)
         }
-        if self.tag[i] == TOMB { self.dead = self.dead - i64(1) }
+        if self.tag[i] == TOMB { self.dead = self.dead - 1 }
         let h = self.vals.insert(v)
-        let d = self.vals.len() - i64(1)
+        let d = self.vals.len() - 1
         self.tag[i]  = LIVE
         self.keys[i] = k
         self.slot[i] = i32(d)
         self.bucketOfDense[d] = i32(i)
-        self.n = self.n + i64(1)
+        self.n = self.n + 1
         return false
     }
 
@@ -225,9 +225,9 @@ struct hashMap<K, V> {
      * probes still find what is behind it. */
     fn remove(self: mut ref hashMap<K, V>, k: K) -> bool {
         let b = self.find(k)
-        if b < i64(0) { return false }
+        if b < 0 { return false }
         let d      = i64(self.slot[b])
-        let last   = self.vals.len() - i64(1)
+        let last   = self.vals.len() - 1
         let bMoved = i64(self.bucketOfDense[last])
         let gone   = self.vals.remove(self.vals.handleAtDense(d))
         /* The pool filled the hole with the last live value; point that element's bucket at its
@@ -237,8 +237,8 @@ struct hashMap<K, V> {
             self.bucketOfDense[d] = i32(bMoved)
         }
         self.tag[b] = TOMB
-        self.n    = self.n - i64(1)
-        self.dead = self.dead + i64(1)
+        self.n    = self.n - 1
+        self.dead = self.dead + 1
         /* **墓碑清空**：删到一定量就重建一次（重建会丢掉全部墓碑）。
          *
          * 为什么必须在 `remove` 里做：`put` 的触发线只看"放得下放不下"（`n + dead` 到 70%），
@@ -251,7 +251,7 @@ struct hashMap<K, V> {
          * （实测 5% 时就已经"几乎不花钱"，25% 已经太晚 —— 下面这条按 1/4 触发，
          * 每次重建把 dead 归零，于是实际稳定在远低于 25%）。
          * 代价：重建是 O(cap)，但每 cap/4 次删除才做一次 ⇒ 摊到每次删除是 O(4)。 */
-        if self.dead * i64(4) >= self.cap { self.rebuild(self.cap) }
+        if self.dead * 4 >= self.cap { self.rebuild(self.cap) }
         return gone
     }
 
@@ -278,14 +278,14 @@ struct hashMap<K, V> {
         var i: i64 = 0
         while i < self.cap {
             if self.tag[i] == LIVE {
-                var j = self.keys[i].hash() & (ncap - i64(1))
-                while nt[j] == LIVE { j = (j + i64(1)) & (ncap - i64(1)) }
+                var j = self.keys[i].hash() & (ncap - 1)
+                while nt[j] == LIVE { j = (j + 1) & (ncap - 1) }
                 nt[j] = LIVE
                 nk[j] = self.keys[i]
                 ns[j] = self.slot[i]
                 self.bucketOfDense[i64(self.slot[i])] = i32(j)
             }
-            i = i + i64(1)
+            i = i + 1
         }
         poolGive<K>(self.pid, self.keys)
         poolGive<u8>(self.pid, self.tag)
@@ -294,17 +294,17 @@ struct hashMap<K, V> {
         self.tag  = nt
         self.slot = ns
         self.cap  = ncap
-        self.dead = i64(0)
+        self.dead = 0
     }
 
     /* Drop every entry, keeping the capacity. `clear` on the pool is O(1) (it flips the pool
      * epoch, */
     fn clear(self: mut ref hashMap<K, V>) {
         var i: i64 = 0
-        while i < self.cap { self.tag[i] = EMPTY  i = i + i64(1) }
+        while i < self.cap { self.tag[i] = EMPTY  i = i + 1 }
         self.vals.clear()
-        self.n    = i64(0)
-        self.dead = i64(0)
+        self.n    = 0
+        self.dead = 0
     }
 
     /* Hand the value pool back: the container and its pool are born together. */
@@ -312,32 +312,32 @@ struct hashMap<K, V> {
      * 父池的递归本来也会带走子池，两处都做不冲突：谁先到谁放，后到的查不到活记录就跳过。 */
     /* **守卫**：这一份哈希表值还指着它的池吗？陈旧 ⇒ 四列收空，下一次访问带位置地 trap。 */
     fn pStale(self: ref hashMap<K, V>) -> bool {
-        if self.pid < i64(0) { return false }
+        if self.pid < 0 { return false }
         return syspool::extc_pool_generation(self.pid) != self.pidGen
     }
     fn pPoison(self: mut ref hashMap<K, V>) {
-        self.keys = poolSlice<K>(i64(-1), i64(0))
-        self.tag  = poolSlice<u8>(i64(-1), i64(0))
-        self.slot = poolSlice<i32>(i64(-1), i64(0))
-        self.bucketOfDense = poolSlice<i32>(i64(-1), i64(0))
-        self.n    = i64(0)
-        self.dead = i64(0)
-        self.cap  = i64(0)
-        self.pid  = i64(-1)
+        self.keys = poolSlice<K>(-1, 0)
+        self.tag  = poolSlice<u8>(-1, 0)
+        self.slot = poolSlice<i32>(-1, 0)
+        self.bucketOfDense = poolSlice<i32>(-1, 0)
+        self.n    = 0
+        self.dead = 0
+        self.cap  = 0
+        self.pid  = -1
     }
 
     fn release(self: mut ref hashMap<K, V>) {
         self.vals.release()
-        if self.pid < i64(0) { return }
+        if self.pid < 0 { return }
         /* One staleness question, one place to ask it (`pStale`): the comparison lives in
          * exactly one place, and two copies of a load-bearing check would drift. */
         if self.pStale() {
-            self.pid = i64(-1)  /* 陈旧拷贝：槽位已被别的池复用 */
+            self.pid = -1  /* 陈旧拷贝：槽位已被别的池复用 */
             return
         }
         syspool::extc_pool_reset(self.pid)
         syspool::extc_pool_drop(self.pid)
-        self.pid = i64(-1)
+        self.pid = -1
     }
 
     /* Scan by bucket position (the face the first version had). */
@@ -354,11 +354,11 @@ struct hashMap<K, V> {
     /* **深拷贝：要一份独立的表就用它。** `var b = a` 是结构体逐成员拷贝（共用板块）⇒
      * 改 b 会改到 a、a.release() 会让 b 悬垂。这里显式拷一份（O(n) + 一块新板块）。 */
     fn clone(self: ref hashMap<K, V>) -> hashMap<K, V> {
-        var out = hashMap<K, V>::withCap(self.n + i64(1))
+        var out = hashMap<K, V>::withCap(self.n + 1)
         var d: i64 = 0
         while d < self.denseLen() {
             out.put(self.keyAtDense(d), self.valAtDense(d))
-            d = d + i64(1)
+            d = d + 1
         }
         return out
     }

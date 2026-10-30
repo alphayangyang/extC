@@ -48,11 +48,11 @@ fn self() -> i32 { return sysproc::getpid() }
 fn pin(cpu: i64) -> i32 {
     var mask: mut slice<u8> = new u8[8]
     var i: i64 = 0
-    while i < i64(8) { mask[i] = u8(0)  i = i + i64(1) }
-    if cpu >= i64(0) {
-        let byte: i64 = cpu / i64(8)
-        let bit: i64 = cpu % i64(8)
+    while i < 8 { mask[i] = u8(0)  i = i + 1 }
+    if cpu >= 0 {
+        let byte: i64 = cpu / 8
+        let bit: i64 = cpu % 8
         mask[byte] = u8(i32(mask[byte]) | (i32(1) << i32(bit)))
     }
-    return sysproc::sched_setaffinity(i32(0), i64(8), mask.data)
+    return sysproc::sched_setaffinity(i32(0), 8, mask.data)
 }

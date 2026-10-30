@@ -6,8 +6,8 @@
  *
  *     var sp: [2]i64
  *     if net::sockPair(sp[..].data) != 0 { }        // 一对已连接的 fd（测试与唤醒常用）
- *     let l: i64 = net::tcpListenShared(i64(8080), i64(128))   // 多进程分片的关键
- *     let c: i64 = net::tcpConnectTo(net::dnsLookup(host, ipbuf[..]), i64(443))
+ *     let l: i64 = net::tcpListenShared(8080, 128)   // 多进程分片的关键
+ *     let c: i64 = net::tcpConnectTo(net::dnsLookup(host, ipbuf[..]), 443)
  *
  * 约定与内核一致：失败给**负数**，`>= 0` 是 fd / 字节数（`dnsLookup` 返回主机序 IPv4）。
  */
@@ -43,7 +43,7 @@ fn dnsLookup(host: slice<u8>, out: mut slice<u8>) -> i64 {
 /* 把 `addr`（形如 "1.2.3.4" 或 "localhost"）解析成一个 IPv4 字面量。 */
 fn resolve(addr: slice<u8>, out: mut slice<u8>) -> i64 {
     let n: i64 = dnsLookup(addr, out)
-    if n >= i64(1) { return n }
+    if n >= 1 { return n }
     /* 已经是字面量：原样拷过去（`dnsLookup` 只接受主机名） */
     var i: i64 = 0
     while i < addr.len && i < out.len {

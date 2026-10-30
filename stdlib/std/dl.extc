@@ -42,7 +42,7 @@ let RTLD_GLOBAL: i32 = 256
  * 这件事就不需要证明。 */
 fn cstr(s: slice<u8>) -> mut slice<u8> {
     var n: i64 = s.len
-    var b: mut slice<u8> = new u8[n + i64(1)]
+    var b: mut slice<u8> = new u8[n + 1]
     var i: i64 = 0
     while i < n {
         b[i] = s[i]
@@ -99,16 +99,16 @@ let CSTR_MAX: i64 = 1024
 fn cstrLen(p: ref u8) -> i64 {
     var i: i64 = 0
     while i < CSTR_MAX {
-        var v: slice<u8> = sysheap::extc_viewOf(p, i + i64(1))
+        var v: slice<u8> = sysheap::extc_viewOf(p, i + 1)
         if v[i] == u8(0) { return i }
         i = i + 1
     }
-    return i64(-1)
+    return -1
 }
 
 /* C 字符串 → extC 视图（不含终止符）。`len < 0` 表示在 `CSTR_MAX` 之内没找到终止符。 */
 fn viewCStr(p: ref u8) -> slice<u8> {
     var n: i64 = cstrLen(p)
-    if n < i64(0) { n = i64(0) }
+    if n < 0 { n = 0 }
     return sysheap::extc_viewOf(p, n)
 }

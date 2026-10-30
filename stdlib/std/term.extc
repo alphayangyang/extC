@@ -45,9 +45,9 @@ struct terminal {
         }
         /* Copy, then modify the copy: the original has to survive until `restore`. */
         var i: i64 = 0
-        while i < i64(128) {
+        while i < 128 {
             self.rawbuf[i] = self.saved[i]
-            i = i + i64(1)
+            i = i + 1
         }
         sys::cfmakeraw(self.rawbuf[0..128].data)
         if sys::tcsetattr(self.fd, sys::TCSANOW, self.rawbuf[0..128].data) < i32(0) {
@@ -56,7 +56,7 @@ struct terminal {
         /* Hand the settings we found to the **runtime** as well: it restores them on the
          * trap path, where the program's own code (this type, this frame) is already
          * gone. */
-        sys::extc_raw_enter(self.fd, self.saved[0..128].data, i64(128))
+        sys::extc_raw_enter(self.fd, self.saved[0..128].data, 128)
         self.on = true
         return success(unit {})
     }

@@ -14,7 +14,7 @@
  * use stl::seq
  *
  * fn main() -> i32 {
- *     var xs: mut slice<f64> = new f64[i64(3)]
+ *     var xs: mut slice<f64> = new f64[3]
  *     xs[0] = 1.0
  *     xs[1] = 2.0
  *     xs[2] = 3.5
@@ -30,12 +30,12 @@
  *  @return 和；空视图是 `none`。
  */
 fn sum<T>(a: slice<T>) -> ?T {
-    if a.len == i64(0) { return none }
-    var s: T = a[i64(0)]
-    var i: i64 = i64(1)
+    if a.len == 0 { return none }
+    var s: T = a[0]
+    var i: i64 = 1
     while i < a.len {
         s = s + a[i]
-        i = i + i64(1)
+        i = i + 1
     }
     return some(s)
 }
@@ -45,12 +45,12 @@ fn sum<T>(a: slice<T>) -> ?T {
  *  @return 最大值；空视图是 `none`。
  */
 fn max<T>(a: slice<T>) -> ?T {
-    if a.len == i64(0) { return none }
-    var best: T = a[i64(0)]
-    var i: i64 = i64(1)
+    if a.len == 0 { return none }
+    var best: T = a[0]
+    var i: i64 = 1
     while i < a.len {
         if a[i] > best { best = a[i] }
-        i = i + i64(1)
+        i = i + 1
     }
     return some(best)
 }
@@ -60,12 +60,12 @@ fn max<T>(a: slice<T>) -> ?T {
  *  @return 最小值；空视图是 `none`。
  */
 fn min<T>(a: slice<T>) -> ?T {
-    if a.len == i64(0) { return none }
-    var best: T = a[i64(0)]
-    var i: i64 = i64(1)
+    if a.len == 0 { return none }
+    var best: T = a[0]
+    var i: i64 = 1
     while i < a.len {
         if a[i] < best { best = a[i] }
-        i = i + i64(1)
+        i = i + 1
     }
     return some(best)
 }
@@ -76,9 +76,9 @@ fn min<T>(a: slice<T>) -> ?T {
  *  @return 出现次数；空视图是 0。
  */
 fn count<T>(a: slice<T>, v: T) -> i64 {
-    var n: i64 = i64(0)
+    var n: i64 = 0
     for x in a {
-        if x == v { n = n + i64(1) }
+        if x == v { n = n + 1 }
     }
     return n
 }
@@ -104,27 +104,27 @@ fn count<T>(a: slice<T>, v: T) -> i64 {
  *  @return 总和；`a` 或 `parts` 为空、或 `parts.len > a.len` 时是 `none`。
  */
 fn sumBlocksI64(a: slice<i64>, parts: mut slice<i64>) -> ?i64 {
-    if a.len == i64(0) { return none }
-    if parts.len == i64(0) { return none }
+    if a.len == 0 { return none }
+    if parts.len == 0 { return none }
     if parts.len > a.len { return none }
-    let blk: i64 = (a.len + parts.len - i64(1)) / parts.len
+    let blk: i64 = (a.len + parts.len - 1) / parts.len
     par b in 0..parts.len {
         let lo: i64 = b * blk
         var hi: i64 = lo + blk
         if hi > a.len { hi = a.len }
-        var s: i64 = i64(0)
+        var s: i64 = 0
         var i: i64 = lo
         while i < hi {
             s = s + a[i]
-            i = i + i64(1)
+            i = i + 1
         }
         parts[b] = s
     }
-    var t: i64 = i64(0)
-    var j: i64 = i64(0)
+    var t: i64 = 0
+    var j: i64 = 0
     while j < parts.len {
         t = t + parts[j]
-        j = j + i64(1)
+        j = j + 1
     }
     return some(t)
 }
@@ -136,27 +136,27 @@ fn sumBlocksI64(a: slice<i64>, parts: mut slice<i64>) -> ?i64 {
  *  @return 最大值；`a` 或 `parts` 为空、或 `parts.len > a.len` 时是 `none`。
  */
 fn maxBlocksF64(a: slice<f64>, parts: mut slice<f64>) -> ?f64 {
-    if a.len == i64(0) { return none }
-    if parts.len == i64(0) { return none }
+    if a.len == 0 { return none }
+    if parts.len == 0 { return none }
     if parts.len > a.len { return none }
-    let blk: i64 = (a.len + parts.len - i64(1)) / parts.len
+    let blk: i64 = (a.len + parts.len - 1) / parts.len
     par b in 0..parts.len {
         let lo: i64 = b * blk
         var hi: i64 = lo + blk
         if hi > a.len { hi = a.len }
         var m: f64 = a[lo]
-        var i: i64 = lo + i64(1)
+        var i: i64 = lo + 1
         while i < hi {
             if a[i] > m { m = a[i] }
-            i = i + i64(1)
+            i = i + 1
         }
         parts[b] = m
     }
-    var t: f64 = parts[i64(0)]
-    var j: i64 = i64(1)
+    var t: f64 = parts[0]
+    var j: i64 = 1
     while j < parts.len {
         if parts[j] > t { t = parts[j] }
-        j = j + i64(1)
+        j = j + 1
     }
     return some(t)
 }
@@ -168,27 +168,27 @@ fn maxBlocksF64(a: slice<f64>, parts: mut slice<f64>) -> ?f64 {
  *  @return 最小值；`a` 或 `parts` 为空、或 `parts.len > a.len` 时是 `none`。
  */
 fn minBlocksF64(a: slice<f64>, parts: mut slice<f64>) -> ?f64 {
-    if a.len == i64(0) { return none }
-    if parts.len == i64(0) { return none }
+    if a.len == 0 { return none }
+    if parts.len == 0 { return none }
     if parts.len > a.len { return none }
-    let blk: i64 = (a.len + parts.len - i64(1)) / parts.len
+    let blk: i64 = (a.len + parts.len - 1) / parts.len
     par b in 0..parts.len {
         let lo: i64 = b * blk
         var hi: i64 = lo + blk
         if hi > a.len { hi = a.len }
         var m: f64 = a[lo]
-        var i: i64 = lo + i64(1)
+        var i: i64 = lo + 1
         while i < hi {
             if a[i] < m { m = a[i] }
-            i = i + i64(1)
+            i = i + 1
         }
         parts[b] = m
     }
-    var t: f64 = parts[i64(0)]
-    var j: i64 = i64(1)
+    var t: f64 = parts[0]
+    var j: i64 = 1
     while j < parts.len {
         if parts[j] < t { t = parts[j] }
-        j = j + i64(1)
+        j = j + 1
     }
     return some(t)
 }

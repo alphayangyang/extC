@@ -12,15 +12,15 @@
  *
  * 用法（客户端 GET）：
  *     var buf: mut slice<u8> = new u8[65536]
- *     var c: http::Conn = http::open("127.0.0.1", i64(8080), i64(5000))!
+ *     var c: http::Conn = http::open("127.0.0.1", 8080, 5000)!
  *     var r: http::Response = http::get(ref c, "127.0.0.1", "/small.txt", "", buf)
- *     if r.status == i64(200) { io::cout << r.body }
+ *     if r.status == 200 { io::cout << r.body }
  *     http::close(ref c)
  *
  * 用法（服务端一个请求）：
  *     var req: http::Request = http::parseRequest(raw)
  *     var out: mut slice<u8> = new u8[4096]
- *     var at: i64 = http::beginResponse(out, i64(0), i64(200))
+ *     var at: i64 = http::beginResponse(out, 0, 200)
  *     at = http::putHeader(out, at, "Content-Type", "text/plain; charset=utf-8")
  *     at = http::putHeaderI64(out, at, "Content-Length", body.len)
  *     at = http::endHeaders(out, at)
@@ -31,19 +31,19 @@ use std::sys::io as sysio
 /* ---------------------------------------------------------------- 小工具（不导出） */
 
 fn findSub(hay: slice<u8>, from: i64, needle: slice<u8>) -> i64 {
-    if needle.len == i64(0) { return from }
+    if needle.len == 0 { return from }
     var i: i64 = from
     while i + needle.len <= hay.len {
-        var j: i64 = i64(0)
+        var j: i64 = 0
         var hit: bool = true
         while j < needle.len {
             if hay[i + j] != needle[j] { hit = false  break }
-            j = j + i64(1)
+            j = j + 1
         }
         if hit { return i }
-        i = i + i64(1)
+        i = i + 1
     }
-    return i64(-1)
+    return -1
 }
 
 fn lower(c: u8) -> u8 {
@@ -54,10 +54,10 @@ fn lower(c: u8) -> u8 {
 /* 头名比较：**大小写不敏感**（HTTP 的头名本来就是 ✓）。也导出 —— 调用者常要自己比 ✓ */
 fn eqCI(a: slice<u8>, b: slice<u8>) -> bool {
     if a.len != b.len { return false }
-    var i: i64 = i64(0)
+    var i: i64 = 0
     while i < a.len {
         if lower(a[i]) != lower(b[i]) { return false }
-        i = i + i64(1)
+        i = i + 1
     }
     return true
 }
@@ -89,27 +89,27 @@ struct request {
 
 /* 头块结束（`\r\n\r\n` 的**末尾之后**那个位置）——没找到返回 -1 ✓。 */
 fn headerEnd(raw: slice<u8>) -> i64 {
-    var i: i64 = findSub(raw, i64(0), "\r\n\r\n")
-    if i < i64(0) { return i64(-1) }
-    return i + i64(4)
+    var i: i64 = findSub(raw, 0, "\r\n\r\n")
+    if i < 0 { return -1 }
+    return i + 4
 }
 
 /* 头**块**结束（不含末尾空行）——`headers` 字段用这个 ✓。 */
-fn headerBlockEnd(raw: slice<u8>) -> i64 { return findSub(raw, i64(0), "\r\n\r\n") }
+fn headerBlockEnd(raw: slice<u8>) -> i64 { return findSub(raw, 0, "\r\n\r\n") }
 
 /* 解析一个请求。**只切视图，不校验语义**（状态码那类判断留给调用者 ✓）。 */
 fn parseRequest(raw: slice<u8>) -> request {
     var r: request = request { method: raw[..i64(0)], target: raw[..i64(0)], version: raw[..i64(0)],
                                headers: raw[..i64(0)], body: raw[..i64(0)], complete: false }
     var end: i64 = headerEnd(raw)
-    if end < i64(0) { return r }                       /* 头还没齐 ⇒ complete = false ✓ */
+    if end < 0 { return r }                       /* 头还没齐 ⇒ complete = false ✓ */
     r.complete = true
-    var sp1: i64 = findSub(raw, i64(0), " ")
-    if sp1 < i64(0) { return r }
-    var sp2: i64 = findSub(raw, sp1 + i64(1), " ")
-    if sp2 < i64(0) { return r }
-    var eol: i64 = findSub(raw, i64(0), "\r\n")
-    if eol < i64(0) { eol = end }
+    var sp1: i64 = findSub(raw, 0, " ")
+    if sp1 < 0 { return r }
+    var sp2: i64 = findSub(raw, sp1 + 1, " ")
+    if sp2 < 0 { return r }
+    var eol: i64 = findSub(raw, 0, "\r\n")
+    if eol < 0 { eol = end }
     r.method = raw[..sp1]
     r.target = raw[sp1 + i64(1)..sp2]
     r.version = raw[sp2 + i64(1)..eol]
@@ -123,20 +123,20 @@ fn parseRequest(raw: slice<u8>) -> request {
  * 注意写法：**全用下标、最后直接从参数上取视图** ✓ —— 把子视图赋给局部再返回会被逃逸检查拒
  * （实测 `borrowed from depth 3`：赋值之后来源就说不清了 ✗）。 */
 fn headerOf(hdrs: slice<u8>, name: slice<u8>) -> option<slice<u8>> {
-    var p: i64 = i64(0)
+    var p: i64 = 0
     while p < hdrs.len {
         var eol: i64 = findSub(hdrs, p, "\r\n")
-        if eol < i64(0) { eol = hdrs.len }
+        if eol < 0 { eol = hdrs.len }
         var colon: i64 = findSub(hdrs, p, ":")
         if colon > p && colon < eol {
-            var vs: i64 = colon + i64(1)
+            var vs: i64 = colon + 1
             var ve: i64 = eol
-            while vs < ve && isSpace(hdrs[vs]) { vs = vs + i64(1) }
-            while ve > vs && isSpace(hdrs[ve - i64(1)]) { ve = ve - i64(1) }
+            while vs < ve && isSpace(hdrs[vs]) { vs = vs + 1 }
+            while ve > vs && isSpace(hdrs[ve - 1]) { ve = ve - 1 }
             if eqCI(hdrs[p..colon], name) { return some(hdrs[vs..ve]) }
         }
         if eol >= hdrs.len { break }
-        p = eol + i64(2)
+        p = eol + 2
     }
     return none
 }
@@ -144,15 +144,15 @@ fn headerOf(hdrs: slice<u8>, name: slice<u8>) -> option<slice<u8>> {
 /* `Content-Length`（没有或不是数字 ⇒ -1 ✓）。 */
 fn contentLength(hdrs: slice<u8>) -> i64 {
     match headerOf(hdrs, "Content-Length") {
-        none => { return i64(-1) }
+        none => { return -1 }
         some(s) => {
-            if s.len == i64(0) { return i64(-1) }
-            var n: i64 = i64(0)
-            var i: i64 = i64(0)
+            if s.len == 0 { return -1 }
+            var n: i64 = 0
+            var i: i64 = 0
             while i < s.len {
-                if s[i] < u8(48) || s[i] > u8(57) { return i64(-1) }
-                n = n * i64(10) + (i64(s[i]) - i64(48))
-                i = i + i64(1)
+                if s[i] < u8(48) || s[i] > u8(57) { return -1 }
+                n = n * 10 + (i64(s[i]) - 48)
+                i = i + 1
             }
             return n
         }
@@ -161,26 +161,26 @@ fn contentLength(hdrs: slice<u8>) -> i64 {
 
 /* 路径部分（去掉 `?查询串` ✓）。 */
 fn pathOf(target: slice<u8>) -> slice<u8> {
-    var q: i64 = findSub(target, i64(0), "?")
-    if q < i64(0) { return target }
+    var q: i64 = findSub(target, 0, "?")
+    if q < 0 { return target }
     return target[..q]
 }
 
 /* 查询串里取一个参数（`?a=1&b=2` ✓；不做百分号解码 —— 那是 `decode` 的事 ✓）。
  * 同样：下标运算 + 从参数取视图 ✓。 */
 fn queryOf(target: slice<u8>, name: slice<u8>) -> option<slice<u8>> {
-    var q: i64 = findSub(target, i64(0), "?")
-    if q < i64(0) { return none }
-    var p: i64 = q + i64(1)
+    var q: i64 = findSub(target, 0, "?")
+    if q < 0 { return none }
+    var p: i64 = q + 1
     while p <= target.len {
         var amp: i64 = findSub(target, p, "&")
-        if amp < i64(0) { amp = target.len }
+        if amp < 0 { amp = target.len }
         var eq: i64 = findSub(target, p, "=")
         if eq > p && eq < amp {
             if eqCI(target[p..eq], name) { return some(target[eq + i64(1)..amp]) }
         }
         if amp >= target.len { break }
-        p = amp + i64(1)
+        p = amp + 1
     }
     return none
 }
@@ -195,26 +195,26 @@ fn hexVal(c: u8) -> u8 {
 
 /* 百分号解码 + `+` 当空格（查串/表单的标准口径 ✓）。写进调用者的 `dst` ✓，返回长度；坏输入 -1 ✓。 */
 fn decode(src: slice<u8>, dst: mut slice<u8>) -> i64 {
-    var i: i64 = i64(0)
-    var o: i64 = i64(0)
+    var i: i64 = 0
+    var o: i64 = 0
     while i < src.len {
         var c: u8 = src[i]
         if c == u8(37) {                                   /* '%' */
-            if i + i64(2) >= src.len { return i64(-1) }
-            var hi: u8 = hexVal(src[i + i64(1)])
-            var lo: u8 = hexVal(src[i + i64(2)])
-            if hi == u8(255) || lo == u8(255) { return i64(-1) }
+            if i + 2 >= src.len { return -1 }
+            var hi: u8 = hexVal(src[i + 1])
+            var lo: u8 = hexVal(src[i + 2])
+            if hi == u8(255) || lo == u8(255) { return -1 }
             c = hi * u8(16) + lo
-            i = i + i64(3)
+            i = i + 3
         } else if c == u8(43) {                            /* '+' */
             c = u8(32)
-            i = i + i64(1)
+            i = i + 1
         } else {
-            i = i + i64(1)
+            i = i + 1
         }
-        if o >= dst.len { return i64(-1) }
+        if o >= dst.len { return -1 }
         dst[o] = c
-        o = o + i64(1)
+        o = o + 1
     }
     return o
 }
@@ -234,7 +234,7 @@ struct response {
     }
     fn length(self: ref response) -> i64 { return contentLength(self.headers) }
     fn isOk(self: ref response) -> bool {
-        return self.status >= i64(200) && self.status < i64(300)
+        return self.status >= 200 && self.status < 300
     }
     /* 状态是否等于给定的那个（写 `r.is(200)` 比 `r.status == 200` 更像对象 ✓）*/
     fn is(self: ref response, status: i64) -> bool { return self.status == status }
@@ -242,49 +242,49 @@ struct response {
 
 /* 常见状态码的 reason（够用就好；没有的给空串 ✓）。 */
 fn reasonOf(status: i64) -> slice<u8> {
-    if status == i64(200) { return "OK" }
-    if status == i64(201) { return "Created" }
-    if status == i64(204) { return "No Content" }
-    if status == i64(301) { return "Moved Permanently" }
-    if status == i64(302) { return "Found" }
-    if status == i64(304) { return "Not Modified" }
-    if status == i64(400) { return "Bad Request" }
-    if status == i64(401) { return "Unauthorized" }
-    if status == i64(403) { return "Forbidden" }
-    if status == i64(404) { return "Not Found" }
-    if status == i64(405) { return "Method Not Allowed" }
-    if status == i64(413) { return "Payload Too Large" }
-    if status == i64(429) { return "Too Many Requests" }
-    if status == i64(431) { return "Request Header Fields Too Large" }
-    if status == i64(500) { return "Internal Server Error" }
-    if status == i64(502) { return "Bad Gateway" }
-    if status == i64(503) { return "Service Unavailable" }
+    if status == 200 { return "OK" }
+    if status == 201 { return "Created" }
+    if status == 204 { return "No Content" }
+    if status == 301 { return "Moved Permanently" }
+    if status == 302 { return "Found" }
+    if status == 304 { return "Not Modified" }
+    if status == 400 { return "Bad Request" }
+    if status == 401 { return "Unauthorized" }
+    if status == 403 { return "Forbidden" }
+    if status == 404 { return "Not Found" }
+    if status == 405 { return "Method Not Allowed" }
+    if status == 413 { return "Payload Too Large" }
+    if status == 429 { return "Too Many Requests" }
+    if status == 431 { return "Request Header Fields Too Large" }
+    if status == 500 { return "Internal Server Error" }
+    if status == 502 { return "Bad Gateway" }
+    if status == 503 { return "Service Unavailable" }
     return ""
 }
 
 /* 解析一个响应（**状态行 + 头**；body 是"头之后的全部字节" ✓ —— chunked 不做 ✗）。 */
 fn parseResponse(raw: slice<u8>) -> response {
-    var r: response = response { version: raw[..i64(0)], status: i64(0), reason: raw[..i64(0)],
+    var r: response = response { version: raw[..i64(0)], status: 0, reason: raw[..i64(0)],
                                  headers: raw[..i64(0)], body: raw[..i64(0)], complete: false }
     var end: i64 = headerEnd(raw)
-    if end < i64(0) { return r }
+    if end < 0 { return r }
     r.complete = true
-    var eol: i64 = findSub(raw, i64(0), "\r\n")
-    if eol < i64(0) { eol = end }
-    var sp1: i64 = findSub(raw, i64(0), " ")
-    if sp1 < i64(0) { return r }
+    var eol: i64 = findSub(raw, 0, "\r\n")
+    if eol < 0 { eol = end }
+    var sp1: i64 = findSub(raw, 0, " ")
+    if sp1 < 0 { return r }
     r.version = raw[..sp1]
-    var codeEnd: i64 = sp1 + i64(4)
+    var codeEnd: i64 = sp1 + 4
     if codeEnd > eol { codeEnd = eol }
-    var code: i64 = i64(0)
-    var i: i64 = sp1 + i64(1)
+    var code: i64 = 0
+    var i: i64 = sp1 + 1
     while i < codeEnd {
         if raw[i] < u8(48) || raw[i] > u8(57) { break }
-        code = code * i64(10) + (i64(raw[i]) - i64(48))
-        i = i + i64(1)
+        code = code * 10 + (i64(raw[i]) - 48)
+        i = i + 1
     }
     r.status = code
-    if i + i64(1) <= eol { r.reason = raw[i + i64(1)..eol] }
+    if i + 1 <= eol { r.reason = raw[i + i64(1)..eol] }
     r.headers = raw[eol + i64(2)..headerBlockEnd(raw)]
     r.body = raw[end..]
     return r
@@ -294,10 +294,10 @@ fn parseResponse(raw: slice<u8>) -> response {
  * 所以这一族函数都返回游标 ✓（比传 `mut ref i64` 干净，也少一层解引用 ✓）。 */
 
 fn putBytes(out: mut slice<u8>, at: i64, s: slice<u8>) -> i64 {
-    var i: i64 = i64(0)
+    var i: i64 = 0
     while i < s.len {
         out[at + i] = s[i]
-        i = i + i64(1)
+        i = i + 1
     }
     return at + s.len
 }
@@ -305,22 +305,22 @@ fn putBytes(out: mut slice<u8>, at: i64, s: slice<u8>) -> i64 {
 fn putI64(out: mut slice<u8>, at: i64, v0: i64) -> i64 {
     var v: i64 = v0
     var at2: i64 = at
-    if v == i64(0) { out[at2] = u8(48)  return at2 + i64(1) }
+    if v == 0 { out[at2] = u8(48)  return at2 + 1 }
     var tmp: [24]u8
-    var n: i64 = i64(0)
-    var neg: bool = v < i64(0)
-    if neg { v = i64(0) - v }
-    while v > i64(0) {
-        tmp[n] = u8(48 + v % i64(10))
-        n = n + i64(1)
-        v = v / i64(10)
+    var n: i64 = 0
+    var neg: bool = v < 0
+    if neg { v = 0 - v }
+    while v > 0 {
+        tmp[n] = u8(48 + v % 10)
+        n = n + 1
+        v = v / 10
     }
-    if neg { out[at2] = u8(45)  at2 = at2 + i64(1) }
+    if neg { out[at2] = u8(45)  at2 = at2 + 1 }
     var i: i64 = n
-    while i > i64(0) {
-        i = i - i64(1)
+    while i > 0 {
+        i = i - 1
         out[at2] = tmp[i]
-        at2 = at2 + i64(1)
+        at2 = at2 + 1
     }
     return at2
 }
@@ -351,12 +351,12 @@ fn endHeaders(out: mut slice<u8>, at: i64) -> i64 { return putBytes(out, at, "\r
 
 /* 一个最小响应：状态 + `Content-Length` + `Content-Type`（一行搞定常见情形 ✓）。 */
 fn simpleResponse(out: mut slice<u8>, status: i64, ctype: slice<u8>, bodyLen: i64) -> i64 {
-    var p: i64 = beginResponse(out, i64(0), status)
-    if bodyLen > i64(0) {
+    var p: i64 = beginResponse(out, 0, status)
+    if bodyLen > 0 {
         p = putHeader(out, p, "Content-Type", ctype)
         p = putHeaderI64(out, p, "Content-Length", bodyLen)
     } else {
-        p = putHeaderI64(out, p, "Content-Length", i64(0))
+        p = putHeaderI64(out, p, "Content-Length", 0)
     }
     return endHeaders(out, p)
 }
@@ -371,7 +371,7 @@ fn beginRequest(out: mut slice<u8>, at: i64, method: slice<u8>, host: slice<u8>,
     p = putBytes(out, p, " HTTP/1.1\r\nHost: ")
     p = putBytes(out, p, host)
     p = putBytes(out, p, "\r\n")
-    if bodyLen > i64(0) { p = putHeaderI64(out, p, "Content-Length", bodyLen) }
+    if bodyLen > 0 { p = putHeaderI64(out, p, "Content-Length", bodyLen) }
     p = putBytes(out, p, extraHeaders)
     if keepAlive { p = putBytes(out, p, "Connection: keep-alive\r\n") }
     else         { p = putBytes(out, p, "Connection: close\r\n") }
@@ -380,10 +380,10 @@ fn beginRequest(out: mut slice<u8>, at: i64, method: slice<u8>, host: slice<u8>,
 
 /* 把 `buf[from..from+n]` 挪到最前面（keep-alive 的滑窗 ✓）。 */
 fn shiftToFront(buf: mut slice<u8>, from: i64, n: i64) {
-    var i: i64 = i64(0)
+    var i: i64 = 0
     while i < n {
         buf[i] = buf[from + i]
-        i = i + i64(1)
+        i = i + 1
     }
 }
 
@@ -409,28 +409,28 @@ struct conn {
         var ip: [64]u8
         var ipv: mut slice<u8> = ip[..]
         var n: i64 = resolve(host, ipv)
-        if n <= i64(0) { return none }
+        if n <= 0 { return none }
         var fd: i64 = net::extc_tcp_connect_to(ipv.data, n, port)
-        if fd < i64(0) { return none }
-        if timeoutMs > i64(0) {
+        if fd < 0 { return none }
+        if timeoutMs > 0 {
             var _t: i64 = net::extc_sock_timeout(fd, timeoutMs)
         }
-        return some(conn { fd: fd, rest: i64(0) })
+        return some(conn { fd: fd, rest: 0 })
     }
 
     fn close(self: mut ref conn) {
-        if self.fd >= i64(0) {
+        if self.fd >= 0 {
             var _r: i32 = sysio::close(i32(self.fd))
-            self.fd = i64(-1)
+            self.fd = -1
         }
     }
 
     /* 把一整片写完（阻塞 socket ⇒ 写不动就重试 ✓）。 */
     fn send(self: mut ref conn, raw: slice<u8>) -> bool {
-        var off: i64 = i64(0)
+        var off: i64 = 0
         while off < raw.len {
             var w: i64 = net::extc_sock_write_from(self.fd, raw.data, off, raw.len - off)
-            if w <= i64(0) { return false }
+            if w <= 0 { return false }
             off = off + w
         }
         return true
@@ -440,14 +440,14 @@ struct conn {
     fn readResponse(self: mut ref conn, buf: mut slice<u8>) -> response {
         var have: i64 = self.rest                        /* 残字节已经在开头 ✓ */
         var end: i64 = headerEnd(buf[..have])
-        while end < i64(0) {
+        while end < 0 {
             if have >= buf.len { break }                 /* 缓冲满了头还没齐 ⇒ 放弃 ✓ */
             var n: i64 = net::extc_sock_read(self.fd, buf.data, buf.len - have)
-            if n <= i64(0) { break }
+            if n <= 0 { break }
             have = have + n
             end = headerEnd(buf[..have])
         }
-        if end < i64(0) {
+        if end < 0 {
             self.rest = have
             return parseResponse(buf[..have])
         }
@@ -455,28 +455,28 @@ struct conn {
         var cl: i64 = contentLength(r.headers)
         /* 没有 `Content-Length` 就只有 204/304 才算"读完"（它们本来没有 body ✓）；
          * 其它情况**不许**猜 0 —— 猜了就会把没读完的响应当成读完 ⇒ 滑窗搬出垃圾（实测 ✗）。 */
-        if cl < i64(0) {
-            if r.status == i64(204) || r.status == i64(304) { cl = i64(0) } else { cl = i64(-1) }
+        if cl < 0 {
+            if r.status == 204 || r.status == 304 { cl = 0 } else { cl = -1 }
         }
-        if cl < i64(0) {                                 /* 长度未知 ⇒ 不搬字节，交给上层 ✓ */
-            self.rest = i64(0)
+        if cl < 0 {                                 /* 长度未知 ⇒ 不搬字节，交给上层 ✓ */
+            self.rest = 0
             return parseResponse(buf[..have])
         }
         var total: i64 = end + cl
         while have < total {
             if have >= buf.len { break }                 /* 装不下 ⇒ 调用者换大缓冲 ✓ */
             var n2: i64 = net::extc_sock_read(self.fd, buf.data, buf.len - have)
-            if n2 <= i64(0) { break }
+            if n2 <= 0 { break }
             have = have + n2
         }
         r = parseResponse(buf[..have])
         /* 读完整了 ⇒ 多余的字节挪到开头（keep-alive 的下一条响应可能已经在缓冲里 ✓）*/
         if have >= total {
             var left: i64 = have - total
-            if left > i64(0) { shiftToFront(buf, total, left) }
+            if left > 0 { shiftToFront(buf, total, left) }
             self.rest = left
         } else {
-            self.rest = i64(0)
+            self.rest = 0
         }
         return r
     }
@@ -485,9 +485,9 @@ struct conn {
     fn exchange(self: mut ref conn, method: slice<u8>, host: slice<u8>, path: slice<u8>,
                 extraHeaders: slice<u8>, body: slice<u8>, out: mut slice<u8>,
                 buf: mut slice<u8>, keepAlive: bool) -> response {
-        var at: i64 = beginRequest(out, i64(0), method, host, path, extraHeaders, body.len, keepAlive)
+        var at: i64 = beginRequest(out, 0, method, host, path, extraHeaders, body.len, keepAlive)
         if !self.send(out[..at]) { return parseResponse(buf[..i64(0)]) }
-        if body.len > i64(0) && !self.send(body) { return parseResponse(buf[..i64(0)]) }
+        if body.len > 0 && !self.send(body) { return parseResponse(buf[..i64(0)]) }
         return self.readResponse(buf)
     }
 
@@ -527,21 +527,21 @@ struct session {
     buf: mut slice<u8>          /* 接收缓冲：new ✓（响应里的切片指向它 ✓）*/
 
     fn make(host: slice<u8>, port: i64, timeoutMs: i64) -> session {
-        var fd: i64 = i64(-1)
+        var fd: i64 = -1
         var ip: [64]u8
         var ipv: mut slice<u8> = ip[..]
         var n: i64 = resolve(host, ipv)
-        if n > i64(0) {
+        if n > 0 {
             fd = net::extc_tcp_connect_to(ipv.data, n, port)
         }
-        if fd >= i64(0) && timeoutMs > i64(0) {
+        if fd >= 0 && timeoutMs > 0 {
             var _t: i64 = net::extc_sock_timeout(fd, timeoutMs)
         }
-        return session { c: conn { fd: fd, rest: i64(0) },
+        return session { c: conn { fd: fd, rest: 0 },
                          out: new u8[1024], buf: new u8[65536] }
     }
 
-    fn ok(self: ref session) -> bool { return self.c.fd >= i64(0) }
+    fn ok(self: ref session) -> bool { return self.c.fd >= 0 }
 
     fn close(self: mut ref session) { self.c.close() }
 

@@ -28,7 +28,7 @@ let GUID: slice<u8> = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 /* 握手应答：`base64(SHA1(key + GUID))`。`key` 是客户端发来的 `Sec-WebSocket-Key`。 */
 fn acceptFor(key: slice<u8>, out: mut slice<u8>) -> i64 {
-    if key.len + GUID.len > i64(256) { return i64(-1) }
+    if key.len + GUID.len > 256 { return -1 }
     var cat: [256]u8
     var i: i64 = 0
     while i < key.len {
@@ -41,7 +41,7 @@ fn acceptFor(key: slice<u8>, out: mut slice<u8>) -> i64 {
         j = j + 1
     }
     var digest: [20]u8
-    if !sha1::sum(cat[0..key.len + GUID.len], digest[..]) { return i64(-1) }
+    if !sha1::sum(cat[0..key.len + GUID.len], digest[..]) { return -1 }
     return b64::encode(digest[..], out)
 }
 
@@ -49,7 +49,7 @@ fn acceptFor(key: slice<u8>, out: mut slice<u8>) -> i64 {
 /* 追加一段到缓冲；缓冲不够给 -1。 */
 @private
 fn pAppend(out: mut slice<u8>, o: i64, seg: slice<u8>) -> i64 {
-    if o + seg.len > out.len { return i64(-1) }
+    if o + seg.len > out.len { return -1 }
     var k: i64 = 0
     while k < seg.len {
         out[o + k] = seg[k]
@@ -60,57 +60,57 @@ fn pAppend(out: mut slice<u8>, o: i64, seg: slice<u8>) -> i64 {
 
 /* 客户端升级请求（已含结尾空行）。返回写入长度；缓冲不够 -1。 */
 fn requestInto(host: slice<u8>, path: slice<u8>, key: slice<u8>, out: mut slice<u8>) -> i64 {
-    var o: i64 = pAppend(out, i64(0), "GET ")
-    if o < i64(0) { return i64(-1) }
+    var o: i64 = pAppend(out, 0, "GET ")
+    if o < 0 { return -1 }
     o = pAppend(out, o, path)
-    if o < i64(0) { return i64(-1) }
+    if o < 0 { return -1 }
     o = pAppend(out, o, " HTTP/1.1\r\nHost: ")
-    if o < i64(0) { return i64(-1) }
+    if o < 0 { return -1 }
     o = pAppend(out, o, host)
-    if o < i64(0) { return i64(-1) }
+    if o < 0 { return -1 }
     o = pAppend(out, o, "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ")
-    if o < i64(0) { return i64(-1) }
+    if o < 0 { return -1 }
     o = pAppend(out, o, key)
-    if o < i64(0) { return i64(-1) }
+    if o < 0 { return -1 }
     return pAppend(out, o, "\r\nSec-WebSocket-Version: 13\r\n\r\n")
 }
 
 /* 编码一个帧（客户端：**总是带掩码**）。`mask` 必须是 4 字节。返回写入长度。 */
 fn frameInto(op: i64, fin: bool, payload: slice<u8>, mask: slice<u8>, out: mut slice<u8>) -> i64 {
-    if !((op >= i64(0) && op <= i64(2)) || (op >= i64(8) && op <= i64(10))) || mask.len != i64(4) { return i64(-1) }
+    if !((op >= 0 && op <= 2) || (op >= 8 && op <= 10)) || mask.len != 4 { return -1 }
     let n: i64 = payload.len
-    if op >= i64(8) && (n > i64(125) || !fin) { return i64(-1) }
-    var h: i64 = i64(2) + i64(4)
-    if n >= i64(126) && n <= i64(65535) { h = h + i64(2) }
-    else if n > i64(65535) { h = h + i64(8) }
-    if out.len < h + n { return i64(-1) }
+    if op >= 8 && (n > 125 || !fin) { return -1 }
+    var h: i64 = 2 + 4
+    if n >= 126 && n <= 65535 { h = h + 2 }
+    else if n > 65535 { h = h + 8 }
+    if out.len < h + n { return -1 }
     if fin { out[0] = u8(128 + i32(op)) } else { out[0] = u8(i32(op)) }
-    var p: i64 = i64(2)
-    if n < i64(126) {
+    var p: i64 = 2
+    if n < 126 {
         out[1] = u8(128 + i32(n))
-    } else if n <= i64(65535) {
+    } else if n <= 65535 {
         out[1] = u8(128 + 126)
-        out[2] = u8((n / i64(256)) % i64(256))
-        out[3] = u8(n % i64(256))
-        p = i64(4)
+        out[2] = u8((n / 256) % 256)
+        out[3] = u8(n % 256)
+        p = 4
     } else {
         out[1] = u8(128 + 127)
-        var sh: i64 = i64(56)
-        var q: i64 = i64(0)
-        while q < i64(8) {
-            out[2 + q] = u8((n / pPow2(sh)) % i64(256))
-            sh = sh - i64(8)
-            q = q + i64(1)
+        var sh: i64 = 56
+        var q: i64 = 0
+        while q < 8 {
+            out[2 + q] = u8((n / pPow2(sh)) % 256)
+            sh = sh - 8
+            q = q + 1
         }
-        p = i64(10)
+        p = 10
     }
     out[p] = mask[0]
-    out[p + i64(1)] = mask[1]
-    out[p + i64(2)] = mask[2]
-    out[p + i64(3)] = mask[3]
+    out[p + 1] = mask[1]
+    out[p + 2] = mask[2]
+    out[p + 3] = mask[3]
     var i: i64 = 0
     while i < n {
-        out[p + i64(4) + i] = u8(i32(payload[i]) ^ i32(mask[i % i64(4)]))
+        out[p + 4 + i] = u8(i32(payload[i]) ^ i32(mask[i % 4]))
         i = i + 1
     }
     return h + n
@@ -118,10 +118,10 @@ fn frameInto(op: i64, fin: bool, payload: slice<u8>, mask: slice<u8>, out: mut s
 
 @private
 fn pPow2(e: i64) -> i64 {
-    var v: i64 = i64(1)
+    var v: i64 = 1
     var i: i64 = 0
     while i < e {
-        v = v * i64(2)
+        v = v * 2
         i = i + 1
     }
     return v
@@ -129,44 +129,44 @@ fn pPow2(e: i64) -> i64 {
 
 /* 帧头长度：**0 = 数据还不够**（增量解析）、**-1 = 协议错**、否则是头字节数。 */
 fn hdrLen(buf: slice<u8>) -> i64 {
-    if buf.len < i64(2) { return i64(0) }
+    if buf.len < 2 { return 0 }
     let b0: i64 = i64(buf[0])
     let b1: i64 = i64(buf[1])
-    let op: i64 = b0 % i64(16)
-    if b0 / i64(16) % i64(8) != i64(0) { return i64(-1) }        /* RSV 必须为 0（未协商扩展） */
-    if !((op >= i64(0) && op <= i64(2)) || (op >= i64(8) && op <= i64(10))) { return i64(-1) }
-    if op >= i64(8) && (b0 / i64(128) != i64(1) || b1 % i64(128) > i64(125)) { return i64(-1) }
-    let masked: bool = b1 / i64(128) == i64(1)
-    var h: i64 = i64(2)
-    let len7: i64 = b1 % i64(128)
-    if len7 == i64(126) {
-        h = h + i64(2)
-        if buf.len < h { return i64(0) }
-        let e: i64 = i64(buf[2]) * i64(256) + i64(buf[3])
-        if e < i64(126) { return i64(-1) }                       /* 非最短编码：拒绝 */
-    } else if len7 == i64(127) {
-        h = h + i64(8)
-        if buf.len < h { return i64(0) }
-        if i64(buf[2]) / i64(128) != i64(0) { return i64(-1) }   /* 最高位必须为 0 */
+    let op: i64 = b0 % 16
+    if b0 / 16 % 8 != 0 { return -1 }        /* RSV 必须为 0（未协商扩展） */
+    if !((op >= 0 && op <= 2) || (op >= 8 && op <= 10)) { return -1 }
+    if op >= 8 && (b0 / 128 != 1 || b1 % 128 > 125) { return -1 }
+    let masked: bool = b1 / 128 == 1
+    var h: i64 = 2
+    let len7: i64 = b1 % 128
+    if len7 == 126 {
+        h = h + 2
+        if buf.len < h { return 0 }
+        let e: i64 = i64(buf[2]) * 256 + i64(buf[3])
+        if e < 126 { return -1 }                       /* 非最短编码：拒绝 */
+    } else if len7 == 127 {
+        h = h + 8
+        if buf.len < h { return 0 }
+        if i64(buf[2]) / 128 != 0 { return -1 }   /* 最高位必须为 0 */
     }
-    if masked { h = h + i64(4) }
-    if buf.len < h { return i64(0) }
+    if masked { h = h + 4 }
+    if buf.len < h { return 0 }
     return h
 }
 
-fn opOf(buf: slice<u8>) -> i64 { return i64(buf[0]) % i64(16) }
-fn finOf(buf: slice<u8>) -> bool { return i64(buf[0]) / i64(128) == i64(1) }
-fn maskedOf(buf: slice<u8>) -> bool { return i64(buf[1]) / i64(128) == i64(1) }
+fn opOf(buf: slice<u8>) -> i64 { return i64(buf[0]) % 16 }
+fn finOf(buf: slice<u8>) -> bool { return i64(buf[0]) / 128 == 1 }
+fn maskedOf(buf: slice<u8>) -> bool { return i64(buf[1]) / 128 == 1 }
 
 /* 负载长度（不含掩码键）。要求 `hdrLen(buf) > 0`。 */
 fn lenOf(buf: slice<u8>) -> i64 {
-    let len7: i64 = i64(buf[1]) % i64(128)
-    if len7 < i64(126) { return len7 }
-    if len7 == i64(126) { return i64(buf[2]) * i64(256) + i64(buf[3]) }
-    var v: i64 = i64(0)
-    var i: i64 = i64(2)
-    while i < i64(10) {
-        v = v * i64(256) + i64(buf[i])
+    let len7: i64 = i64(buf[1]) % 128
+    if len7 < 126 { return len7 }
+    if len7 == 126 { return i64(buf[2]) * 256 + i64(buf[3]) }
+    var v: i64 = 0
+    var i: i64 = 2
+    while i < 10 {
+        v = v * 256 + i64(buf[i])
         i = i + 1
     }
     return v
@@ -174,18 +174,18 @@ fn lenOf(buf: slice<u8>) -> i64 {
 
 /* 掩码键在头里的偏移；没有掩码给 -1。 */
 fn maskAt(buf: slice<u8>) -> i64 {
-    if !maskedOf(buf) { return i64(-1) }
-    let len7: i64 = i64(buf[1]) % i64(128)
-    if len7 < i64(126) { return i64(2) }
-    if len7 == i64(126) { return i64(4) }
-    return i64(10)
+    if !maskedOf(buf) { return -1 }
+    let len7: i64 = i64(buf[1]) % 128
+    if len7 < 126 { return 2 }
+    if len7 == 126 { return 4 }
+    return 10
 }
 
 /* 就地解掩码（客户端发的帧用它还原；服务端的帧没有掩码，不用调）。 */
 fn unmask(payload: mut slice<u8>, mask: slice<u8>) -> void {
     var i: i64 = 0
     while i < payload.len {
-        payload[i] = u8(i32(payload[i]) ^ i32(mask[i % i64(4)]))
+        payload[i] = u8(i32(payload[i]) ^ i32(mask[i % 4]))
         i = i + 1
     }
 }

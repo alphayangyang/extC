@@ -22,35 +22,35 @@ impl string {
      * convention, and this follows it rather than inventing a second meaning for the same
      * word). Returns the number of bytes appended; 0 means EOF and nothing was read. */
     fn readLineFrom(self: mut ref string, r: mut ref io::reader) -> result<i64, io::ioError> {
-        var n: i64 = i64(0)
+        var n: i64 = 0
         var heldCR: bool = false
         while true {
             let b = r.nextByte()?
-            if b < i64(0) {
+            if b < 0 {
                 /* EOF: a '\r' that never got its '\n' was content, not a line ending. */
-                if heldCR { self.push(u8(13))  n = n + i64(1) }
+                if heldCR { self.push(u8(13))  n = n + 1 }
                 break
             }
-            if b == i64(10) { break }              /* the '\n' is not part of the line */
-            if heldCR { self.push(u8(13))  n = n + i64(1) }
-            if b == i64(13) { heldCR = true } else { self.push(u8(b))  n = n + i64(1)  heldCR = false }
+            if b == 10 { break }              /* the '\n' is not part of the line */
+            if heldCR { self.push(u8(13))  n = n + 1 }
+            if b == 13 { heldCR = true } else { self.push(u8(b))  n = n + 1  heldCR = false }
         }
         return success(n)
     }
 
     /* Read everything that is left, one buffered chunk per append. */
     fn readAllFrom(self: mut ref string, r: mut ref io::reader) -> result<i64, io::ioError> {
-        var n: i64 = i64(0)
+        var n: i64 = 0
         while true {
             let have = r.avail()
-            if have > i64(0) {
+            if have > 0 {
                 self.append(r.chunk[r.pos..r.pos + have])
                 r.pos = r.len
                 n = n + have
                 continue
             }
             let got = r.fill()?
-            if got == i64(0) { break }
+            if got == 0 { break }
         }
         return success(n)
     }
@@ -60,7 +60,7 @@ impl string {
         /* Straight at the storage, no intermediate copy: `w.write` copies the bytes into the
          * writer's own buffer anyway, so a `toSlice()` here would copy them twice. The view is
          * consumed by the call and dies with it. */
-        let n = w.write(self.subView(i64(0), self.n))?
+        let n = w.write(self.subView(0, self.n))?
         return success(n)
     }
 
@@ -70,7 +70,7 @@ impl string {
      * static (depth 0), while `nl[..]` hands an unanalyzable callee a reference into the
      * callee's own frame -- the escape checker refuses that, and rightly so. */
     fn writeLineTo(self: ref string, w: mut ref io::writer) -> result<i64, io::ioError> {
-        let n = w.write(self.subView(i64(0), self.n))?   /* see `writeTo`: no intermediate copy */
+        let n = w.write(self.subView(0, self.n))?   /* see `writeTo`: no intermediate copy */
         let m = w.write("\n")?
         return success(n + m)
     }

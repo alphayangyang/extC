@@ -14,18 +14,18 @@ use std::hash::sha1
 
 /* HMAC-SHA256。`out.len < 32` 返回 false。 */
 fn sha256(key: slice<u8>, msg: slice<u8>, out: mut slice<u8>) -> bool {
-    if out.len < i64(32) { return false }
+    if out.len < 32 { return false }
     var kblk: [64]u8
     var i: i64 = 0
-    while i < i64(64) {
+    while i < 64 {
         kblk[i] = u8(0)
         i = i + 1
     }
-    if key.len > i64(64) {
+    if key.len > 64 {
         var kh: [32]u8
         if !sha256::sum(key, kh[..]) { return false }
         i = 0
-        while i < i64(32) {
+        while i < 32 {
             kblk[i] = kh[i]
             i = i + 1
         }
@@ -40,7 +40,7 @@ fn sha256(key: slice<u8>, msg: slice<u8>, out: mut slice<u8>) -> bool {
     var inner: sha256::state
     inner.init()
     i = 0
-    while i < i64(64) {
+    while i < 64 {
         blk[i] = kblk[i] ^ u8(0x36)
         i = i + 1
     }
@@ -51,7 +51,7 @@ fn sha256(key: slice<u8>, msg: slice<u8>, out: mut slice<u8>) -> bool {
     var outer: sha256::state
     outer.init()
     i = 0
-    while i < i64(64) {
+    while i < 64 {
         blk[i] = kblk[i] ^ u8(0x5c)
         i = i + 1
     }
@@ -62,18 +62,18 @@ fn sha256(key: slice<u8>, msg: slice<u8>, out: mut slice<u8>) -> bool {
 
 /* HMAC-SHA1。`out.len < 20` 返回 false。 */
 fn sha1(key: slice<u8>, msg: slice<u8>, out: mut slice<u8>) -> bool {
-    if out.len < i64(20) { return false }
+    if out.len < 20 { return false }
     var kblk: [64]u8
     var i: i64 = 0
-    while i < i64(64) {
+    while i < 64 {
         kblk[i] = u8(0)
         i = i + 1
     }
-    if key.len > i64(64) {
+    if key.len > 64 {
         var kh: [20]u8
         if !sha1::sum(key, kh[..]) { return false }
         i = 0
-        while i < i64(20) {
+        while i < 20 {
             kblk[i] = kh[i]
             i = i + 1
         }
@@ -88,7 +88,7 @@ fn sha1(key: slice<u8>, msg: slice<u8>, out: mut slice<u8>) -> bool {
     var inner: sha1::state
     inner.init()
     i = 0
-    while i < i64(64) {
+    while i < 64 {
         blk[i] = kblk[i] ^ u8(0x36)
         i = i + 1
     }
@@ -99,7 +99,7 @@ fn sha1(key: slice<u8>, msg: slice<u8>, out: mut slice<u8>) -> bool {
     var outer: sha1::state
     outer.init()
     i = 0
-    while i < i64(64) {
+    while i < 64 {
         blk[i] = kblk[i] ^ u8(0x5c)
         i = i + 1
     }

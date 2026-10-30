@@ -33,11 +33,11 @@
  * use stl::map
  *
  * fn main() -> i32 {
- *     var m: map<i64, i32> = map<i64, i32>::withCap(i64(4))
- *     m.put(i64(30), i32(300))
- *     m.put(i64(10), i32(100))
- *     let v: i32 = m.get(i64(10)) ?? i32(-1)
- *     io::cout << "v=" << v << " len=" << m.len() << " rank10=" << m.lowerBound(i64(10)) << "\n"
+ *     var m: map<i64, i32> = map<i64, i32>::withCap(4)
+ *     m.put(30, i32(300))
+ *     m.put(10, i32(100))
+ *     let v: i32 = m.get(10) ?? i32(-1)
+ *     io::cout << "v=" << v << " len=" << m.len() << " rank10=" << m.lowerBound(10) << "\n"
  *     return 0
  * }
  * @endcode
@@ -84,27 +84,27 @@ struct map<K, V> {
 
     /* ---------------------------------------------------------------- construction */
     fn withCap(want: i64) -> map<K, V> {
-        var c: i64 = i64(4)
-        while c < want { c = c * i64(2) }
-        let rp  = syspool::extc_pool_new(i64(-1))
+        var c: i64 = 4
+        while c < want { c = c * 2 }
+        let rp  = syspool::extc_pool_new(-1)
         let rpg = syspool::extc_pool_generation(rp)
         var m: map<K, V> = {
             /* 四处长期存储都在**这张表自己的池板块**上（不是 arena 切片）：增长/压实时旧的
              * 那几块当场还回去。之前用 `new` 时，每一代旧存储都留给 arena —— 1e6 条目下
              * 峰值 179,820 KB 对 90,604 KB，那 49% 就是它们。 */
             nodes: poolSliceRaw<bnode<K, V>>(rp, c),
-            keys:  poolSliceRaw<K>(rp, c * i64(17)),
-            vals:  poolSliceRaw<V>(rp, c * i64(17)),
-            kids:  poolSliceRaw<i32>(rp, c * i64(18)),
-            nnodes: i64(0), ncap: c, root: i32(0), freeHead: i32(-1),
-            pid: rp, pidGen: rpg, n: i64(0),
-            path: poolSlice<i32>(rp, i64(16)), side: poolSlice<i32>(rp, i64(16)), depth: i64(0),
+            keys:  poolSliceRaw<K>(rp, c * 17),
+            vals:  poolSliceRaw<V>(rp, c * 17),
+            kids:  poolSliceRaw<i32>(rp, c * 18),
+            nnodes: 0, ncap: c, root: i32(0), freeHead: i32(-1),
+            pid: rp, pidGen: rpg, n: 0,
+            path: poolSlice<i32>(rp, 16), side: poolSlice<i32>(rp, 16), depth: 0,
         }
         m.root = m.newNode(true)
         return m
     }
 
-    fn new() -> map<K, V> { return map<K, V>::withCap(i64(16)) }
+    fn new() -> map<K, V> { return map<K, V>::withCap(16) }
 
     fn len(self: ref map<K, V>) -> i64 { return self.n }
     fn nodeCount(self: ref map<K, V>) -> i64 { return self.nnodes }
@@ -114,9 +114,9 @@ struct map<K, V> {
      * 旧块若还留着，它会**大一整代**（见 tests/map/run.sh 的精确字节账）。 */
     fn bytesOf(self: ref map<K, V>) -> i64 { return syspool::extc_pool_bytes(self.pid) }
     fn height(self: ref map<K, V>) -> i64 {
-        var h: i64 = i64(1)
+        var h: i64 = 1
         var id: i32 = self.root
-        while !self.leafOf(id) { id = self.kd(id, i64(0))  h = h + i64(1) }
+        while !self.leafOf(id) { id = self.kd(id, 0)  h = h + 1 }
         return h
     }
 
@@ -167,24 +167,24 @@ struct map<K, V> {
          * 这里一次换四块：逐元素拷不但 O(n)，还要在最长的一跳里让新旧两代同时在手
          * （1e6 条目下峰值内存会多出几十 MB）。
          * 1.5 倍的另一个好处：末代容量从 2 的幂（262,144 节点，只用 140,623）降到 ~157,000。 */
-        var want: i64 = self.ncap + self.ncap / i64(2)
-        if want < i64(4) { want = i64(4) }
-        self.keys  = poolResizeRaw<K>(self.pid, self.keys, want * i64(17))
-        self.vals  = poolResizeRaw<V>(self.pid, self.vals, want * i64(17))
-        self.kids  = poolResizeRaw<i32>(self.pid, self.kids, want * i64(18))
+        var want: i64 = self.ncap + self.ncap / 2
+        if want < 4 { want = 4 }
+        self.keys  = poolResizeRaw<K>(self.pid, self.keys, want * 17)
+        self.vals  = poolResizeRaw<V>(self.pid, self.vals, want * 17)
+        self.kids  = poolResizeRaw<i32>(self.pid, self.kids, want * 18)
         self.nodes = poolResizeRaw<bnode<K, V>>(self.pid, self.nodes, want)
         /* 基址可能变了（realloc 搬家），所以视图必须重新算一遍 —— 这是 O(节点数) 次指针写，
          * 不是 O(节点数 × 17) 次拷贝。 */
-        var i: i64 = i64(0)
+        var i: i64 = 0
         while i < self.nnodes {
-            let kb = i * i64(17)
-            let cb = i * i64(18)
+            let kb = i * 17
+            let cb = i * 18
             var nd: bnode<K, V> = self.nodes[i]
-            nd.keys = self.keys[kb..kb + i64(17)]
-            nd.vals = self.vals[kb..kb + i64(17)]
-            nd.kids = self.kids[cb..cb + i64(18)]
+            nd.keys = self.keys[kb..kb + 17]
+            nd.vals = self.vals[kb..kb + 17]
+            nd.kids = self.kids[cb..cb + 18]
             self.nodes[i] = nd
-            i = i + i64(1)
+            i = i + 1
         }
         self.ncap = want
     }
@@ -205,27 +205,27 @@ struct map<K, V> {
         }
         if self.nnodes >= self.ncap { self.growStores() }
         let id = i32(self.nnodes)
-        let kb = self.nnodes * i64(17)
-        let cb = self.nnodes * i64(18)
+        let kb = self.nnodes * 17
+        let cb = self.nnodes * 18
         var nd: bnode<K, V> = {
             n: i32(0), cnt: i32(0), leaf: leaf,
-            keys: self.keys[kb..kb + i64(17)],
-            vals: self.vals[kb..kb + i64(17)],
-            kids: self.kids[cb..cb + i64(18)],
+            keys: self.keys[kb..kb + 17],
+            vals: self.vals[kb..kb + 17],
+            kids: self.kids[cb..cb + 18],
             next: i32(-1),
         }
         self.nodes[self.nnodes] = nd
-        self.nnodes = self.nnodes + i64(1)
+        self.nnodes = self.nnodes + 1
         return id
     }
 
     /* Sum of the key counts of children [0, upto) of an internal node. */
     fn kidsCnt(self: ref map<K, V>, id: i32, upto: i64) -> i64 {
-        var s: i64 = i64(0)
-        var i: i64 = i64(0)
+        var s: i64 = 0
+        var i: i64 = 0
         while i < upto {
             s = s + self.cntOf(self.kd(id, i))
-            i = i + i64(1)
+            i = i + 1
         }
         return s
     }
@@ -234,19 +234,19 @@ struct map<K, V> {
      * confused with the public `firstKey()` below, which is the smallest key of the whole map. */
     fn subMinKey(self: ref map<K, V>, id: i32) -> K {
         var cur: i32 = id
-        while !self.leafOf(cur) { cur = self.kd(cur, i64(0)) }
-        return self.kn(cur, i64(0))
+        while !self.leafOf(cur) { cur = self.kd(cur, 0) }
+        return self.kn(cur, 0)
     }
 
     /* ---------------------------------------------------------------- search */
     /* First index in [0, n) whose key is not less than `k` (the lower bound inside one node). */
 @inline
     fn lowerIn(self: ref map<K, V>, id: i32, k: K) -> i64 {
-        var lo: i64 = i64(0)
+        var lo: i64 = 0
         var hi: i64 = self.bn(id)
         while lo < hi {
-            let mid = lo + (hi - lo) / i64(2)
-            if self.kn(id, mid) < k { lo = mid + i64(1) } else { hi = mid }
+            let mid = lo + (hi - lo) / 2
+            if self.kn(id, mid) < k { lo = mid + 1 } else { hi = mid }
         }
         return lo
     }
@@ -254,11 +254,11 @@ struct map<K, V> {
     /* Child slot to descend into: the first `i` with `k < keys[i]`, else n (the last child). */
 @inline
     fn childSlot(self: ref map<K, V>, id: i32, k: K) -> i64 {
-        var lo: i64 = i64(0)
+        var lo: i64 = 0
         var hi: i64 = self.bn(id)
         while lo < hi {
-            let mid = lo + (hi - lo) / i64(2)
-            if k < self.kn(id, mid) { hi = mid } else { lo = mid + i64(1) }
+            let mid = lo + (hi - lo) / 2
+            if k < self.kn(id, mid) { hi = mid } else { lo = mid + 1 }
         }
         return lo
     }
@@ -293,7 +293,7 @@ struct map<K, V> {
     /* Rank of the first key not less than `k` -- the count of keys strictly less than `k`.
      * Descending adds whole subtrees, so this is O(log n) rather than a walk. */
     fn lowerBound(self: ref map<K, V>, k: K) -> i64 {
-        var rank: i64 = i64(0)
+        var rank: i64 = 0
         var id: i32 = self.root
         while !self.leafOf(id) {
             let c = self.childSlot(id, k)
@@ -306,13 +306,13 @@ struct map<K, V> {
     /* The smallest / largest key, `none` on an empty map. Both are O(log n): a rank query on the
      * order-statistic side (`cnt`), not a walk. */
     fn firstKey(self: ref map<K, V>) -> ?K {
-        if self.n == i64(0) { return none }
-        return some(self.keyAt(i64(0)))
+        if self.n == 0 { return none }
+        return some(self.keyAt(0))
     }
 
     fn lastKey(self: ref map<K, V>) -> ?K {
-        if self.n == i64(0) { return none }
-        return some(self.keyAt(self.n - i64(1)))
+        if self.n == 0 { return none }
+        return some(self.keyAt(self.n - 1))
     }
 
     /* The i-th smallest entry, encoded as `leafId * 16 + position` (16 = ORDER, and a leaf never
@@ -321,25 +321,25 @@ struct map<K, V> {
         var id: i32 = self.root
         var want: i64 = i
         while !self.leafOf(id) {
-            var c: i64 = i64(0)
-            var found: i64 = i64(0)
-            while found == i64(0) {
+            var c: i64 = 0
+            var found: i64 = 0
+            while found == 0 {
                 let s = self.cntOf(self.kd(id, c))
-                if want < s { found = i64(1) } else { want = want - s  c = c + i64(1) }
+                if want < s { found = 1 } else { want = want - s  c = c + 1 }
             }
             id = self.kd(id, c)
         }
-        return i64(id) * i64(16) + want
+        return i64(id) * 16 + want
     }
 
     fn keyAt(self: ref map<K, V>, i: i64) -> K {
         let e = self.rankAt(i)
-        return self.kn(i32(e / i64(16)), e % i64(16))
+        return self.kn(i32(e / 16), e % 16)
     }
 
     fn valAt(self: ref map<K, V>, i: i64) -> V {
         let e = self.rankAt(i)
-        return self.vn(i32(e / i64(16)), e % i64(16))
+        return self.vn(i32(e / 16), e % 16)
     }
 
     /* **深拷贝：要一份独立的 map 就用它。**
@@ -348,11 +348,11 @@ struct map<K, V> {
      * （`vals` 是指针被抄了一份）：`b.put(...)` 会改到 `a`，`a.release()` 会让 `b` 悬垂。
      * 显式拷贝的代价可见（一次 O(n) 拷贝 + 一块新板块），新存储生在调用者所在的地方。 */
     fn clone(self: ref map<K, V>) -> map<K, V> {
-        var out = map<K, V>::withCap(self.n + i64(1))
+        var out = map<K, V>::withCap(self.n + 1)
         var i: i64 = 0
         while i < self.n {
             out.put(self.keyAt(i), self.valAt(i))
-            i = i + i64(1)
+            i = i + 1
         }
         return out
     }
@@ -368,12 +368,12 @@ struct map<K, V> {
         if self.pStale() { self.pPoison() }
         /* Descend to the leaf, recording the path: a split has to be pushed back up it. */
         var id: i32 = self.root
-        self.depth = i64(0)
+        self.depth = 0
         while !self.leafOf(id) {
             let c = self.childSlot(id, k)
             self.path[self.depth] = id
             self.side[self.depth] = i32(c)
-            self.depth = self.depth + i64(1)
+            self.depth = self.depth + 1
             id = self.kd(id, c)
         }
         let at = self.lowerIn(id, k)
@@ -381,22 +381,22 @@ struct map<K, V> {
 
         var j: i64 = self.bn(id)
         while j > at {
-            self.setKey(id, j, self.kn(id, j - i64(1)))
-            self.setVal(id, j, self.vn(id, j - i64(1)))
-            j = j - i64(1)
+            self.setKey(id, j, self.kn(id, j - 1))
+            self.setVal(id, j, self.vn(id, j - 1))
+            j = j - 1
         }
         self.setKey(id, at, k)
         self.setVal(id, at, v)
-        self.setN(id, self.bn(id) + i64(1))
-        self.setCnt(id, self.cntOf(id) + i64(1))
-        self.n = self.n + i64(1)
+        self.setN(id, self.bn(id) + 1)
+        self.setCnt(id, self.cntOf(id) + 1)
+        self.n = self.n + 1
 
         /* one more key in every subtree on the path */
-        var d: i64 = self.depth - i64(1)
-        while d >= i64(0) {
+        var d: i64 = self.depth - 1
+        while d >= 0 {
             let p = self.path[d]
-            self.setCnt(p, self.cntOf(p) + i64(1))
-            d = d - i64(1)
+            self.setCnt(p, self.cntOf(p) + 1)
+            d = d - 1
         }
 
         /* Split upward while a node is overfull. A leaf split COPIES its first key up (the key
@@ -407,13 +407,13 @@ struct map<K, V> {
         while self.bn(child) > ORDER {
             var right: i32 = self.newNode(self.leafOf(child))
             if self.leafOf(child) {
-                var r: i64 = i64(0)
+                var r: i64 = 0
                 var s: i64 = HALF
                 while s < self.bn(child) {
                     self.setKey(right, r, self.kn(child, s))
                     self.setVal(right, r, self.vn(child, s))
-                    r = r + i64(1)
-                    s = s + i64(1)
+                    r = r + 1
+                    s = s + 1
                 }
                 self.setN(right, r)
                 self.setCnt(right, r)
@@ -421,56 +421,56 @@ struct map<K, V> {
                 self.setCnt(child, HALF)
                 self.setNext(right, self.nx(child))
                 self.setNext(child, right)
-                sep = self.kn(right, i64(0))
+                sep = self.kn(right, 0)
             } else {
                 sep = self.kn(child, HALF)
-                var r: i64 = i64(0)
-                var s: i64 = HALF + i64(1)
+                var r: i64 = 0
+                var s: i64 = HALF + 1
                 while s < self.bn(child) {
                     self.setKey(right, r, self.kn(child, s))
-                    r = r + i64(1)
-                    s = s + i64(1)
+                    r = r + 1
+                    s = s + 1
                 }
                 self.setN(right, r)
-                var k2: i64 = i64(0)
-                var cs: i64 = HALF + i64(1)
+                var k2: i64 = 0
+                var cs: i64 = HALF + 1
                 while cs <= self.bn(child) {
                     self.setKid(right, k2, self.kd(child, cs))
-                    k2 = k2 + i64(1)
-                    cs = cs + i64(1)
+                    k2 = k2 + 1
+                    cs = cs + 1
                 }
                 self.setN(child, HALF)
-                self.setCnt(right, self.kidsCnt(right, r + i64(1)))
-                self.setCnt(child, self.kidsCnt(child, HALF + i64(1)))
+                self.setCnt(right, self.kidsCnt(right, r + 1))
+                self.setCnt(child, self.kidsCnt(child, HALF + 1))
             }
-            if level == i64(0) {
+            if level == 0 {
                 /* the root itself split: a new root above both halves, and the tree grows */
                 var nr: i32 = self.newNode(false)
-                self.setKey(nr, i64(0), sep)
-                self.setKid(nr, i64(0), child)
-                self.setKid(nr, i64(1), right)
-                self.setN(nr, i64(1))
+                self.setKey(nr, 0, sep)
+                self.setKid(nr, 0, child)
+                self.setKid(nr, 1, right)
+                self.setN(nr, 1)
                 self.setCnt(nr, self.cntOf(child) + self.cntOf(right))
                 self.root = nr
                 return false
             }
-            let p = self.path[level - i64(1)]
-            let ci = i64(self.side[level - i64(1)])
+            let p = self.path[level - 1]
+            let ci = i64(self.side[level - 1])
             var q: i64 = self.bn(p)
             while q > ci {
-                self.setKey(p, q, self.kn(p, q - i64(1)))
-                q = q - i64(1)
+                self.setKey(p, q, self.kn(p, q - 1))
+                q = q - 1
             }
-            var qc: i64 = self.bn(p) + i64(1)
-            while qc > ci + i64(1) {
-                self.setKid(p, qc, self.kd(p, qc - i64(1)))
-                qc = qc - i64(1)
+            var qc: i64 = self.bn(p) + 1
+            while qc > ci + 1 {
+                self.setKid(p, qc, self.kd(p, qc - 1))
+                qc = qc - 1
             }
             self.setKey(p, ci, sep)
-            self.setKid(p, ci + i64(1), right)
-            self.setN(p, self.bn(p) + i64(1))
+            self.setKid(p, ci + 1, right)
+            self.setN(p, self.bn(p) + 1)
             child = p
-            level = level - i64(1)
+            level = level - 1
         }
         return false
     }
@@ -486,54 +486,54 @@ struct map<K, V> {
     /* Drop keys[ci-1] and kids[ci] from internal node `p`: the separator and the child it bounded
      * are removed together. */
     fn dropChild(self: mut ref map<K, V>, p: i32, ci: i64) {
-        var j: i64 = ci - i64(1)
-        while j + i64(1) < self.bn(p) {
-            self.setKey(p, j, self.kn(p, j + i64(1)))
-            j = j + i64(1)
+        var j: i64 = ci - 1
+        while j + 1 < self.bn(p) {
+            self.setKey(p, j, self.kn(p, j + 1))
+            j = j + 1
         }
         var jc: i64 = ci
-        while jc + i64(1) <= self.bn(p) {
-            self.setKid(p, jc, self.kd(p, jc + i64(1)))
-            jc = jc + i64(1)
+        while jc + 1 <= self.bn(p) {
+            self.setKid(p, jc, self.kd(p, jc + 1))
+            jc = jc + 1
         }
-        self.setN(p, self.bn(p) - i64(1))
+        self.setN(p, self.bn(p) - 1)
     }
 
     /* One entry moves from the left sibling into `cur` (children ci-1 and ci of `p`). */
     fn borrowLeft(self: mut ref map<K, V>, p: i32, ci: i64) {
         let cur: i32 = self.kd(p, ci)
-        let left: i32 = self.kd(p, ci - i64(1))
+        let left: i32 = self.kd(p, ci - 1)
         if self.leafOf(cur) {
             var j: i64 = self.bn(cur)
-            while j > i64(0) {
-                self.setKey(cur, j, self.kn(cur, j - i64(1)))
-                self.setVal(cur, j, self.vn(cur, j - i64(1)))
-                j = j - i64(1)
+            while j > 0 {
+                self.setKey(cur, j, self.kn(cur, j - 1))
+                self.setVal(cur, j, self.vn(cur, j - 1))
+                j = j - 1
             }
-            self.setKey(cur, i64(0), self.kn(left, self.bn(left) - i64(1)))
-            self.setVal(cur, i64(0), self.vn(left, self.bn(left) - i64(1)))
-            self.setN(cur, self.bn(cur) + i64(1))
-            self.setN(left, self.bn(left) - i64(1))
-            self.setCnt(cur, self.cntOf(cur) + i64(1))
-            self.setCnt(left, self.cntOf(left) - i64(1))
+            self.setKey(cur, 0, self.kn(left, self.bn(left) - 1))
+            self.setVal(cur, 0, self.vn(left, self.bn(left) - 1))
+            self.setN(cur, self.bn(cur) + 1)
+            self.setN(left, self.bn(left) - 1)
+            self.setCnt(cur, self.cntOf(cur) + 1)
+            self.setCnt(left, self.cntOf(left) - 1)
             return
         }
         var j: i64 = self.bn(cur)
-        while j > i64(0) {
-            self.setKey(cur, j, self.kn(cur, j - i64(1)))
-            j = j - i64(1)
+        while j > 0 {
+            self.setKey(cur, j, self.kn(cur, j - 1))
+            j = j - 1
         }
-        var jc: i64 = self.bn(cur) + i64(1)
-        while jc > i64(0) {
-            self.setKid(cur, jc, self.kd(cur, jc - i64(1)))
-            jc = jc - i64(1)
+        var jc: i64 = self.bn(cur) + 1
+        while jc > 0 {
+            self.setKid(cur, jc, self.kd(cur, jc - 1))
+            jc = jc - 1
         }
-        self.setKey(cur, i64(0), self.kn(p, ci - i64(1)))
-        self.setKid(cur, i64(0), self.kd(left, self.bn(left)))
-        self.setKey(p, ci - i64(1), self.kn(left, self.bn(left) - i64(1)))
+        self.setKey(cur, 0, self.kn(p, ci - 1))
+        self.setKid(cur, 0, self.kd(left, self.bn(left)))
+        self.setKey(p, ci - 1, self.kn(left, self.bn(left) - 1))
         let moved: i64 = self.cntOf(self.kd(left, self.bn(left)))
-        self.setN(cur, self.bn(cur) + i64(1))
-        self.setN(left, self.bn(left) - i64(1))
+        self.setN(cur, self.bn(cur) + 1)
+        self.setN(left, self.bn(left) - 1)
         self.setCnt(cur, self.cntOf(cur) + moved)
         self.setCnt(left, self.cntOf(left) - moved)
     }
@@ -541,39 +541,39 @@ struct map<K, V> {
     /* One entry moves from the right sibling into `cur`. */
     fn borrowRight(self: mut ref map<K, V>, p: i32, ci: i64) {
         let cur: i32 = self.kd(p, ci)
-        let right: i32 = self.kd(p, ci + i64(1))
+        let right: i32 = self.kd(p, ci + 1)
         if self.leafOf(cur) {
-            self.setKey(cur, self.bn(cur), self.kn(right, i64(0)))
-            self.setVal(cur, self.bn(cur), self.vn(right, i64(0)))
-            var j: i64 = i64(0)
-            while j + i64(1) < self.bn(right) {
-                self.setKey(right, j, self.kn(right, j + i64(1)))
-                self.setVal(right, j, self.vn(right, j + i64(1)))
-                j = j + i64(1)
+            self.setKey(cur, self.bn(cur), self.kn(right, 0))
+            self.setVal(cur, self.bn(cur), self.vn(right, 0))
+            var j: i64 = 0
+            while j + 1 < self.bn(right) {
+                self.setKey(right, j, self.kn(right, j + 1))
+                self.setVal(right, j, self.vn(right, j + 1))
+                j = j + 1
             }
-            self.setN(cur, self.bn(cur) + i64(1))
-            self.setN(right, self.bn(right) - i64(1))
-            self.setCnt(cur, self.cntOf(cur) + i64(1))
-            self.setCnt(right, self.cntOf(right) - i64(1))
-            self.setKey(p, ci, self.kn(right, i64(0)))
+            self.setN(cur, self.bn(cur) + 1)
+            self.setN(right, self.bn(right) - 1)
+            self.setCnt(cur, self.cntOf(cur) + 1)
+            self.setCnt(right, self.cntOf(right) - 1)
+            self.setKey(p, ci, self.kn(right, 0))
             return
         }
         self.setKey(cur, self.bn(cur), self.kn(p, ci))
-        self.setKid(cur, self.bn(cur) + i64(1), self.kd(right, i64(0)))
-        self.setKey(p, ci, self.kn(right, i64(0)))
-        let moved: i64 = self.cntOf(self.kd(right, i64(0)))
-        var j: i64 = i64(0)
-        while j + i64(1) < self.bn(right) {
-            self.setKey(right, j, self.kn(right, j + i64(1)))
-            j = j + i64(1)
+        self.setKid(cur, self.bn(cur) + 1, self.kd(right, 0))
+        self.setKey(p, ci, self.kn(right, 0))
+        let moved: i64 = self.cntOf(self.kd(right, 0))
+        var j: i64 = 0
+        while j + 1 < self.bn(right) {
+            self.setKey(right, j, self.kn(right, j + 1))
+            j = j + 1
         }
-        j = i64(0)
-        while j + i64(1) <= self.bn(right) {
-            self.setKid(right, j, self.kd(right, j + i64(1)))
-            j = j + i64(1)
+        j = 0
+        while j + 1 <= self.bn(right) {
+            self.setKid(right, j, self.kd(right, j + 1))
+            j = j + 1
         }
-        self.setN(cur, self.bn(cur) + i64(1))
-        self.setN(right, self.bn(right) - i64(1))
+        self.setN(cur, self.bn(cur) + 1)
+        self.setN(right, self.bn(right) - 1)
         self.setCnt(cur, self.cntOf(cur) + moved)
         self.setCnt(right, self.cntOf(right) - moved)
     }
@@ -583,30 +583,30 @@ struct map<K, V> {
      * becomes left's new last key and the child counts add up unchanged. */
     fn mergeLeft(self: mut ref map<K, V>, p: i32, ci: i64) {
         let cur: i32 = self.kd(p, ci)
-        let left: i32 = self.kd(p, ci - i64(1))
+        let left: i32 = self.kd(p, ci - 1)
         if self.leafOf(cur) {
-            var j: i64 = i64(0)
+            var j: i64 = 0
             while j < self.bn(cur) {
                 self.setKey(left, self.bn(left) + j, self.kn(cur, j))
                 self.setVal(left, self.bn(left) + j, self.vn(cur, j))
-                j = j + i64(1)
+                j = j + 1
             }
             self.setN(left, self.bn(left) + self.bn(cur))
             self.setCnt(left, self.cntOf(left) + self.cntOf(cur))
             self.setNext(left, self.nx(cur))
         } else {
-            self.setKey(left, self.bn(left), self.kn(p, ci - i64(1)))
-            var j: i64 = i64(0)
+            self.setKey(left, self.bn(left), self.kn(p, ci - 1))
+            var j: i64 = 0
             while j < self.bn(cur) {
-                self.setKey(left, self.bn(left) + i64(1) + j, self.kn(cur, j))
-                j = j + i64(1)
+                self.setKey(left, self.bn(left) + 1 + j, self.kn(cur, j))
+                j = j + 1
             }
-            var jc: i64 = i64(0)
+            var jc: i64 = 0
             while jc <= self.bn(cur) {
-                self.setKid(left, self.bn(left) + i64(1) + jc, self.kd(cur, jc))
-                jc = jc + i64(1)
+                self.setKid(left, self.bn(left) + 1 + jc, self.kd(cur, jc))
+                jc = jc + 1
             }
-            self.setN(left, self.bn(left) + i64(1) + self.bn(cur))
+            self.setN(left, self.bn(left) + 1 + self.bn(cur))
             self.setCnt(left, self.cntOf(left) + self.cntOf(cur))
         }
         self.dropChild(p, ci)
@@ -617,43 +617,43 @@ struct map<K, V> {
      * caller may still refresh the separator above it. */
     fn mergeRight(self: mut ref map<K, V>, p: i32, ci: i64) {
         let cur: i32 = self.kd(p, ci)
-        let right: i32 = self.kd(p, ci + i64(1))
+        let right: i32 = self.kd(p, ci + 1)
         if self.leafOf(cur) {
-            var j: i64 = i64(0)
+            var j: i64 = 0
             while j < self.bn(right) {
                 self.setKey(cur, self.bn(cur) + j, self.kn(right, j))
                 self.setVal(cur, self.bn(cur) + j, self.vn(right, j))
-                j = j + i64(1)
+                j = j + 1
             }
             self.setN(cur, self.bn(cur) + self.bn(right))
             self.setCnt(cur, self.cntOf(cur) + self.cntOf(right))
             self.setNext(cur, self.nx(right))
         } else {
             self.setKey(cur, self.bn(cur), self.kn(p, ci))
-            var j: i64 = i64(0)
+            var j: i64 = 0
             while j < self.bn(right) {
-                self.setKey(cur, self.bn(cur) + i64(1) + j, self.kn(right, j))
-                j = j + i64(1)
+                self.setKey(cur, self.bn(cur) + 1 + j, self.kn(right, j))
+                j = j + 1
             }
-            var jc: i64 = i64(0)
+            var jc: i64 = 0
             while jc <= self.bn(right) {
-                self.setKid(cur, self.bn(cur) + i64(1) + jc, self.kd(right, jc))
-                jc = jc + i64(1)
+                self.setKid(cur, self.bn(cur) + 1 + jc, self.kd(right, jc))
+                jc = jc + 1
             }
-            self.setN(cur, self.bn(cur) + i64(1) + self.bn(right))
+            self.setN(cur, self.bn(cur) + 1 + self.bn(right))
             self.setCnt(cur, self.cntOf(cur) + self.cntOf(right))
         }
         var k: i64 = ci
-        while k + i64(1) < self.bn(p) {
-            self.setKey(p, k, self.kn(p, k + i64(1)))
-            k = k + i64(1)
+        while k + 1 < self.bn(p) {
+            self.setKey(p, k, self.kn(p, k + 1))
+            k = k + 1
         }
-        var kc: i64 = ci + i64(1)
-        while kc + i64(1) <= self.bn(p) {
-            self.setKid(p, kc, self.kd(p, kc + i64(1)))
-            kc = kc + i64(1)
+        var kc: i64 = ci + 1
+        while kc + 1 <= self.bn(p) {
+            self.setKid(p, kc, self.kd(p, kc + 1))
+            kc = kc + 1
         }
-        self.setN(p, self.bn(p) - i64(1))
+        self.setN(p, self.bn(p) - 1)
         self.freeNode(right)
     }
 
@@ -662,31 +662,31 @@ struct map<K, V> {
      * under HALF entries -- every query stays correct, the tree only gets sparse. */
     fn remove(self: mut ref map<K, V>, k: K) -> bool {
         var id: i32 = self.root
-        self.depth = i64(0)
+        self.depth = 0
         while !self.leafOf(id) {
             let c = self.childSlot(id, k)
             self.path[self.depth] = id
             self.side[self.depth] = i32(c)
-            self.depth = self.depth + i64(1)
+            self.depth = self.depth + 1
             id = self.kd(id, c)
         }
         let at = self.lowerIn(id, k)
         if at >= self.bn(id) { return false }
         if k < self.kn(id, at) { return false }
         var j: i64 = at
-        while j + i64(1) < self.bn(id) {
-            self.setKey(id, j, self.kn(id, j + i64(1)))
-            self.setVal(id, j, self.vn(id, j + i64(1)))
-            j = j + i64(1)
+        while j + 1 < self.bn(id) {
+            self.setKey(id, j, self.kn(id, j + 1))
+            self.setVal(id, j, self.vn(id, j + 1))
+            j = j + 1
         }
-        self.setN(id, self.bn(id) - i64(1))
-        self.setCnt(id, self.cntOf(id) - i64(1))
-        self.n = self.n - i64(1)
-        var d: i64 = self.depth - i64(1)
-        while d >= i64(0) {
+        self.setN(id, self.bn(id) - 1)
+        self.setCnt(id, self.cntOf(id) - 1)
+        self.n = self.n - 1
+        var d: i64 = self.depth - 1
+        while d >= 0 {
             let p = self.path[d]
-            self.setCnt(p, self.cntOf(p) - i64(1))
-            d = d - i64(1)
+            self.setCnt(p, self.cntOf(p) - 1)
+            d = d - 1
         }
         /* Walk up: refresh the separator that bounds this subtree (its smallest key may have
          * gone), and rebalance a node that fell under HALF entries -- borrow from a sibling that
@@ -694,16 +694,16 @@ struct map<K, V> {
          * rebalanced on the next turn of this loop. */
         var cur: i32 = id
         var level: i64 = self.depth
-        while level > i64(0) {
-            let p = self.path[level - i64(1)]
-            let ci = i64(self.side[level - i64(1)])
+        while level > 0 {
+            let p = self.path[level - 1]
+            let ci = i64(self.side[level - 1])
             if self.bn(cur) < HALF {
-                if ci > i64(0) && self.bn(self.kd(p, ci - i64(1))) > HALF {
+                if ci > 0 && self.bn(self.kd(p, ci - 1)) > HALF {
                     self.borrowLeft(p, ci)
-                    if ci > i64(0) { self.setKey(p, ci - i64(1), self.subMinKey(cur)) }
-                } else if ci < self.bn(p) && self.bn(self.kd(p, ci + i64(1))) > HALF {
+                    if ci > 0 { self.setKey(p, ci - 1, self.subMinKey(cur)) }
+                } else if ci < self.bn(p) && self.bn(self.kd(p, ci + 1)) > HALF {
                     self.borrowRight(p, ci)
-                } else if ci > i64(0) {
+                } else if ci > 0 {
                     /* `cur` is freed by this: nothing to refresh above it, the separator went
                      * away with it. */
                     self.mergeLeft(p, ci)
@@ -711,16 +711,16 @@ struct map<K, V> {
                     self.mergeRight(p, ci)
                 }
             } else {
-                if ci > i64(0) { self.setKey(p, ci - i64(1), self.subMinKey(cur)) }
+                if ci > 0 { self.setKey(p, ci - 1, self.subMinKey(cur)) }
             }
             cur = p
-            level = level - i64(1)
+            level = level - 1
         }
         /* The root may have lost its last key, or become an empty leaf's parent: the tree gets
          * shorter and the retired root goes back to the free list. */
-        while !self.leafOf(self.root) && self.bn(self.root) == i64(0) {
+        while !self.leafOf(self.root) && self.bn(self.root) == 0 {
             let old: i32 = self.root
-            self.root = self.kd(old, i64(0))
+            self.root = self.kd(old, 0)
             self.freeNode(old)
         }
         return true
@@ -731,31 +731,31 @@ struct map<K, V> {
      * a released map cannot drop somebody else's pool. */
     /* **守卫**：这一份有序表值还指着它的池吗？陈旧 ⇒ 四处存储收空，下一次访问带位置地 trap。 */
     fn pStale(self: ref map<K, V>) -> bool {
-        if self.pid < i64(0) { return false }
+        if self.pid < 0 { return false }
         return syspool::extc_pool_generation(self.pid) != self.pidGen
     }
     fn pPoison(self: mut ref map<K, V>) {
-        self.nodes = poolSlice<bnode<K, V>>(i64(-1), i64(0))
-        self.keys  = poolSlice<K>(i64(-1), i64(0))
-        self.vals  = poolSlice<V>(i64(-1), i64(0))
-        self.kids  = poolSlice<i32>(i64(-1), i64(0))
-        self.nnodes = i64(0)
-        self.ncap   = i64(0)
-        self.n      = i64(0)
-        self.pid    = i64(-1)
+        self.nodes = poolSlice<bnode<K, V>>(-1, 0)
+        self.keys  = poolSlice<K>(-1, 0)
+        self.vals  = poolSlice<V>(-1, 0)
+        self.kids  = poolSlice<i32>(-1, 0)
+        self.nnodes = 0
+        self.ncap   = 0
+        self.n      = 0
+        self.pid    = -1
     }
 
     fn release(self: mut ref map<K, V>) {
-        if self.pid < i64(0) { return }
+        if self.pid < 0 { return }
         /* One staleness question, one place to ask it (`pStale`): the comparison lives in
          * exactly one place, and two copies of a load-bearing check would drift. */
         if self.pStale() {
-            self.pid = i64(-1)
+            self.pid = -1
             return
         }
         syspool::extc_pool_reset(self.pid)
         syspool::extc_pool_drop(self.pid)
-        self.pid = i64(-1)
+        self.pid = -1
     }
 
     /* Lower the water mark: repack the LIVE nodes into ids 0..k-1, drop the free list and reallocate
@@ -769,60 +769,60 @@ struct map<K, V> {
     fn shrink(self: mut ref map<K, V>) {
         var order:   mut slice<i32> = new i32[self.nnodes]   /* live nodes in DFS order = new ids */
         var old2new: mut slice<i32> = new i32[self.nnodes]
-        var i: i64 = i64(0)
+        var i: i64 = 0
         while i < self.nnodes {
             old2new[i] = i32(-1)
-            i = i + i64(1)
+            i = i + 1
         }
-        var count: i64 = i64(1)
-        order[i64(0)] = self.root
+        var count: i64 = 1
+        order[0] = self.root
         old2new[i64(self.root)] = i32(0)
-        var head: i64 = i64(0)
+        var head: i64 = 0
         while head < count {
             let id = order[head]
             if !self.leafOf(id) {
-                var c: i64 = i64(0)
+                var c: i64 = 0
                 while c <= self.bn(id) {
                     let ch = self.kd(id, c)
                     order[count] = ch
                     old2new[i64(ch)] = i32(count)
-                    count = count + i64(1)
-                    c = c + i64(1)
+                    count = count + 1
+                    c = c + 1
                 }
             }
-            head = head + i64(1)
+            head = head + 1
         }
         /* `order` / `old2new` 是这次调用的临时草稿：随方法那个块一起回收，正是 arena 的活。
          * 四处长期存储则从池拿新块、旧的还回去。 */
-        var nk: mut slice<K>   = poolSliceRaw<K>(self.pid, count * i64(17))
-        var nv: mut slice<V>   = poolSliceRaw<V>(self.pid, count * i64(17))
-        var nc: mut slice<i32> = poolSliceRaw<i32>(self.pid, count * i64(18))
+        var nk: mut slice<K>   = poolSliceRaw<K>(self.pid, count * 17)
+        var nv: mut slice<V>   = poolSliceRaw<V>(self.pid, count * 17)
+        var nc: mut slice<i32> = poolSliceRaw<i32>(self.pid, count * 18)
         var nn: mut slice<bnode<K, V>> = poolSliceRaw<bnode<K, V>>(self.pid, count)
-        i = i64(0)
+        i = 0
         while i < count {
             let src = i64(order[i])
-            let kb  = i * i64(17)
-            let cb  = i * i64(18)
-            let skb = src * i64(17)
-            let scb = src * i64(18)
+            let kb  = i * 17
+            let cb  = i * 18
+            let skb = src * 17
+            let scb = src * 18
             /* ⚠️ 只拷**用到的前缀**：`keys`/`vals` 是 `bn` 个，`kids` 是 `bn + 1` 个。
              * 无条件拷满 17/17/18 会把**从没被写过**的槽也拷过去：清零时读到 0 无害，
              * 换成不清零的列之后读到的就是垃圾，而 `old2new[kid]` 会拿它去索引 ⇒ 越界 trap
              * （`tests/map/shrink.extc`：`index 3756 out of range (length 2810)`）。 */
             let sn: i64 = self.bn(i32(src))
-            var j: i64 = i64(0)
+            var j: i64 = 0
             /* `vals` 同理**只有叶子**有：内部节点那 `sn` 个 val 槽从没写过，拷它既是白干、
              * 也是一处读未初始化。 */
             if self.leafOf(i32(src)) {
                 while j < sn {
                     nk[kb + j] = self.keys[skb + j]
                     nv[kb + j] = self.vals[skb + j]
-                    j = j + i64(1)
+                    j = j + 1
                 }
             } else {
                 while j < sn {
                     nk[kb + j] = self.keys[skb + j]
-                    j = j + i64(1)
+                    j = j + 1
                 }
             }
             /* ⚠️ `kids` **只有内部节点**才有：叶子的 18 个 kid 槽从来没写过。
@@ -830,30 +830,30 @@ struct map<K, V> {
              * 合法节点号，于是"看着没事"），换成不清零的列之后 `old2new[kid]` 拿它
              * 索引 ⇒ 越界 trap（`tests/map/shrink.extc`：`index 3756/8785 out of range`）。 */
             if !self.leafOf(i32(src)) {
-                j = i64(0)
-                while j < sn + i64(1) {
+                j = 0
+                while j < sn + 1 {
                     var kid: i32 = self.kids[scb + j]
                     if kid >= i32(0) { kid = old2new[i64(kid)] }
                     nc[cb + j] = kid
-                    j = j + i64(1)
+                    j = j + 1
                 }
             }
             var nd: bnode<K, V> = self.nodes[src]
-            nd.keys = nk[kb..kb + i64(17)]
-            nd.vals = nv[kb..kb + i64(17)]
-            nd.kids = nc[cb..cb + i64(18)]
+            nd.keys = nk[kb..kb + 17]
+            nd.vals = nv[kb..kb + 17]
+            nd.kids = nc[cb..cb + 18]
             nn[i] = nd
-            i = i + i64(1)
+            i = i + 1
         }
         /* The DFS visits leaves left to right, so the chain is rebuilt in the same pass. */
         var prev: i32 = i32(-1)
-        i = i64(0)
+        i = 0
         while i < count {
             if self.leafOf(order[i]) {
                 if prev >= i32(0) { nn[i64(prev)].next = i32(i) }
                 prev = i32(i)
             }
-            i = i + i64(1)
+            i = i + 1
         }
         if prev >= i32(0) { nn[i64(prev)].next = i32(-1) }
         poolGive<bnode<K, V>>(self.pid, self.nodes)
@@ -871,8 +871,8 @@ struct map<K, V> {
     }
 
     fn clear(self: mut ref map<K, V>) {
-        self.nnodes = i64(0)
-        self.n = i64(0)
+        self.nnodes = 0
+        self.n = 0
         self.root = self.newNode(true)
     }
 }

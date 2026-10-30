@@ -6,8 +6,8 @@
  *
  *     use stl::linset
  *     var s: linSet<i64> = linSet<i64>::withCap(4)
- *     s.add(i64(7))
- *     println(s.contains(i64(7)))
+ *     s.add(7)
+ *     println(s.contains(7))
  *
  * It is a thin wrapper over `linMap<T, unit>` rather than a second array: the table and
  * the set differ only in the value half, and one implementation means one place for the

@@ -26,17 +26,17 @@ fn find(hay: slice<u8>, needle: slice<u8>) -> i64 {
 }
 
 fn contains(hay: slice<u8>, needle: slice<u8>) -> bool {
-    return extc_memFind(hay.data, hay.len, needle.data, needle.len) >= i64(0)
+    return extc_memFind(hay.data, hay.len, needle.data, needle.len) >= 0
 }
 
 fn eq(a: slice<u8>, b: slice<u8>) -> bool {
     if a.len != b.len { return false }
-    return extc_memEq(a.data, b.data, a.len) != i64(0)
+    return extc_memEq(a.data, b.data, a.len) != 0
 }
 
 /* 原地整块拷贝（两边都是可写视图时用；跨界拷贝见 `heap::copyIn`）。 */
 fn copy(dst: mut slice<u8>, src: slice<u8>) -> i64 {
-    if src.len > dst.len { return i64(-1) }
+    if src.len > dst.len { return -1 }
     var i: i64 = 0
     while i < src.len {
         dst[i] = src[i]

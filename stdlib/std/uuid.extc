@@ -13,7 +13,7 @@ use std::hash::sha1
 /* `SHA-1(ns ∥ name)` 取前 16 字节，钉上 version=5 与 RFC 4122 变体。
  * `out.len < 16` 返回 false。 */
 fn v5(ns: slice<u8>, name: slice<u8>, out: mut slice<u8>) -> bool {
-    if out.len < i64(16) { return false }
+    if out.len < 16 { return false }
     var c: sha1::state
     c.init()
     c.update(ns)
@@ -21,7 +21,7 @@ fn v5(ns: slice<u8>, name: slice<u8>, out: mut slice<u8>) -> bool {
     var d: [20]u8
     if !c.final(d[..]) { return false }
     var i: i64 = 0
-    while i < i64(16) {
+    while i < 16 {
         out[i] = d[i]
         i = i + 1
     }
@@ -58,13 +58,13 @@ fn v5x500(name: slice<u8>, out: mut slice<u8>) -> bool {
 /* 16 字节 → 36 字符的规范小写形式（`8-4-4-4-12`）；返回写入的字符数，
  * `out.len < 36` 返回 -1。 */
 fn format(id: slice<u8>, out: mut slice<u8>) -> i64 {
-    if out.len < i64(36) { return i64(-1) }
+    if out.len < 36 { return -1 }
     let dashes: [4]i64 = [8, 13, 18, 23]          /* 输出里的短横位置 */
     var i: i64 = 0
     var o: i64 = 0
     var d: i64 = 0
-    while i < i64(16) {
-        if d < i64(4) && o == dashes[d] {
+    while i < 16 {
+        if d < 4 && o == dashes[d] {
             out[o] = u8(45)
             o = o + 1
             d = d + 1
@@ -73,9 +73,9 @@ fn format(id: slice<u8>, out: mut slice<u8>) -> i64 {
         let hi: u8 = (b >> 4) & u8(0x0f)
         let lo: u8 = b & u8(0x0f)
         if hi < u8(10) { out[o] = u8(48) + hi } else { out[o] = u8(87) + hi }
-        if lo < u8(10) { out[o + i64(1)] = u8(48) + lo } else { out[o + i64(1)] = u8(87) + lo }
-        o = o + i64(2)
+        if lo < u8(10) { out[o + 1] = u8(48) + lo } else { out[o + 1] = u8(87) + lo }
+        o = o + 2
         i = i + 1
     }
-    return i64(36)
+    return 36
 }

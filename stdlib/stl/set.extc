@@ -20,7 +20,7 @@ struct set<T> {
         return s
     }
 
-    fn new() -> set<T> { return set<T>::withCap(i64(16)) }
+    fn new() -> set<T> { return set<T>::withCap(16) }
 
     fn len(self: ref set<T>) -> i64 { return self.m.len() }
     /* **深拷贝**：`var b = a` 是结构体逐成员拷贝（两份共用底层 map 的板块）。 */
@@ -47,13 +47,13 @@ struct set<T> {
 
     /* The smallest / largest element, `none` on an empty set. */
     fn first(self: ref set<T>) -> ?T {
-        if self.m.len() == i64(0) { return none }
-        return some(self.m.keyAt(i64(0)))
+        if self.m.len() == 0 { return none }
+        return some(self.m.keyAt(0))
     }
 
     fn last(self: ref set<T>) -> ?T {
-        if self.m.len() == i64(0) { return none }
-        return some(self.m.keyAt(self.m.len() - i64(1)))
+        if self.m.len() == 0 { return none }
+        return some(self.m.keyAt(self.m.len() - 1))
     }
 
     /* The i-th smallest element, i in [0, len). Walking `i` from 0 to len-1 is the ordered walk. */

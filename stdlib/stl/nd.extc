@@ -22,7 +22,7 @@
  * use stl::nd
  *
  * fn main() -> i32 {
- *     var a: ndarray<f64> = ndarray<f64>::zeros3(i64(2), i64(3), i64(4)) ?? ndarray<f64>::empty()
+ *     var a: ndarray<f64> = ndarray<f64>::zeros3(2, 3, 4) ?? ndarray<f64>::empty()
  *     var v: ndview<f64> = a.viewMut()
  *     nd::filled(v, 1.5)
  *     let s: f64 = nd::sumv(a.view()) ?? f64(0.0)
@@ -44,9 +44,9 @@ struct ndarray<T> {
      *  @return 数组；`n` 为负时 `none`。
      */
     fn zeros1(n: i64) -> ?ndarray<T> {
-        var sh: [8]i64 = [i64(0), i64(0), i64(0), i64(0), i64(0), i64(0), i64(0), i64(0)]
-        sh[i64(0)] = n
-        return ndarray<T>::allocate(i64(1), sh)
+        var sh: [8]i64
+        sh[0] = n
+        return ndarray<T>::allocate(1, sh)
     }
 
     /** @brief 全零的 2 维数组（行主序）。
@@ -55,10 +55,10 @@ struct ndarray<T> {
      *  @return 数组；任一维为负时 `none`。
      */
     fn zeros2(rows: i64, cols: i64) -> ?ndarray<T> {
-        var sh: [8]i64 = [i64(0), i64(0), i64(0), i64(0), i64(0), i64(0), i64(0), i64(0)]
-        sh[i64(0)] = rows
-        sh[i64(1)] = cols
-        return ndarray<T>::allocate(i64(2), sh)
+        var sh: [8]i64
+        sh[0] = rows
+        sh[1] = cols
+        return ndarray<T>::allocate(2, sh)
     }
 
     /** @brief 全零的 3 维数组（行主序）。
@@ -68,11 +68,11 @@ struct ndarray<T> {
      *  @return 数组；任一维为负时 `none`。
      */
     fn zeros3(d0: i64, d1: i64, d2: i64) -> ?ndarray<T> {
-        var sh: [8]i64 = [i64(0), i64(0), i64(0), i64(0), i64(0), i64(0), i64(0), i64(0)]
-        sh[i64(0)] = d0
-        sh[i64(1)] = d1
-        sh[i64(2)] = d2
-        return ndarray<T>::allocate(i64(3), sh)
+        var sh: [8]i64
+        sh[0] = d0
+        sh[1] = d1
+        sh[2] = d2
+        return ndarray<T>::allocate(3, sh)
     }
 
     /** @brief 全零的 4 维数组（行主序）。
@@ -83,12 +83,12 @@ struct ndarray<T> {
      *  @return 数组；任一维为负时 `none`。
      */
     fn zeros4(d0: i64, d1: i64, d2: i64, d3: i64) -> ?ndarray<T> {
-        var sh: [8]i64 = [i64(0), i64(0), i64(0), i64(0), i64(0), i64(0), i64(0), i64(0)]
-        sh[i64(0)] = d0
-        sh[i64(1)] = d1
-        sh[i64(2)] = d2
-        sh[i64(3)] = d3
-        return ndarray<T>::allocate(i64(4), sh)
+        var sh: [8]i64
+        sh[0] = d0
+        sh[1] = d1
+        sh[2] = d2
+        sh[3] = d3
+        return ndarray<T>::allocate(4, sh)
     }
 
     /** @brief 按 rank 与每维长度分配数组（长度全为 0）。
@@ -97,13 +97,13 @@ struct ndarray<T> {
      *  @return 数组；rank 越界、任一维为负、或总元素数为 0 以外的情况装不下时 `none`。
      */
     fn allocate(rank: i64, shape: [8]i64) -> ?ndarray<T> {
-        if rank < i64(1) || rank > i64(8) { return none }
-        var total: i64 = i64(1)
-        var k: i64 = i64(0)
+        if rank < 1 || rank > 8 { return none }
+        var total: i64 = 1
+        var k: i64 = 0
         while k < rank {
-            if shape[k] < i64(0) { return none }
+            if shape[k] < 0 { return none }
             total = total * shape[k]
-            k = k + i64(1)
+            k = k + 1
         }
         var a: ndarray<T> = { data: new T[total], rank: rank, shape: shape }
         return some(a)
@@ -113,8 +113,8 @@ struct ndarray<T> {
      *  @return 空数组。
      */
     fn empty() -> ndarray<T> {
-        var sh: [8]i64 = [i64(0), i64(0), i64(0), i64(0), i64(0), i64(0), i64(0), i64(0)]
-        var a: ndarray<T> = { data: new T[i64(0)], rank: i64(1), shape: sh }
+        var sh: [8]i64
+        var a: ndarray<T> = { data: new T[0], rank: 1, shape: sh }
         return a
     }
 
@@ -149,15 +149,15 @@ struct ndview<T> {
      *  @return 视图；rank 越界、形状为负、或装不下时 `none`。
      */
     fn rowMajor(data: mut slice<T>, rank: i64, shape: [8]i64) -> ndview<T> {
-        var st: [8]i64 = [i64(0), i64(0), i64(0), i64(0), i64(0), i64(0), i64(0), i64(0)]
-        var acc: i64 = i64(1)
-        var k: i64 = rank - i64(1)
-        while k >= i64(0) {
+        var st: [8]i64
+        var acc: i64 = 1
+        var k: i64 = rank - 1
+        while k >= 0 {
             st[k] = acc
             acc = acc * shape[k]
-            k = k - i64(1)
+            k = k - 1
         }
-        var v: ndview<T> = { data: data, off: i64(0), rank: rank, shape: shape, strides: st }
+        var v: ndview<T> = { data: data, off: 0, rank: rank, shape: shape, strides: st }
         return v
     }
 
@@ -170,16 +170,16 @@ struct ndview<T> {
      *  @return 视图；rank 越界、形状/步长为负、或最远元素超出存储时 `none`。
      */
     fn strided(data: mut slice<T>, off: i64, rank: i64, shape: [8]i64, strides: [8]i64) -> ?ndview<T> {
-        if rank < i64(1) || rank > i64(8) { return none }
-        if off < i64(0) { return none }
+        if rank < 1 || rank > 8 { return none }
+        if off < 0 { return none }
         var last: i64 = off
         var any: bool = false
-        var k: i64 = i64(0)
+        var k: i64 = 0
         while k < rank {
-            if shape[k] < i64(0) || strides[k] < i64(0) { return none }
-            if shape[k] > i64(0) { any = true }
-            last = last + (shape[k] - i64(1)) * strides[k]
-            k = k + i64(1)
+            if shape[k] < 0 || strides[k] < 0 { return none }
+            if shape[k] > 0 { any = true }
+            last = last + (shape[k] - 1) * strides[k]
+            k = k + 1
         }
         if any {
             if last >= data.len { return none }
@@ -194,11 +194,11 @@ struct ndview<T> {
      *  @return 元素总数。
      */
     fn count(self: ref ndview<T>) -> i64 {
-        var total: i64 = i64(1)
-        var k: i64 = i64(0)
+        var total: i64 = 1
+        var k: i64 = 0
         while k < self.rank {
             total = total * self.shape[k]
-            k = k + i64(1)
+            k = k + 1
         }
         return total
     }
@@ -207,8 +207,8 @@ struct ndview<T> {
      *  @return 最内层步长为 1 时 `true`。
      */
     fn isContig(self: ref ndview<T>) -> bool {
-        if self.rank < i64(1) { return false }
-        return self.strides[self.rank - i64(1)] == i64(1)
+        if self.rank < 1 { return false }
+        return self.strides[self.rank - 1] == 1
     }
 }
 
@@ -218,28 +218,28 @@ struct ndview<T> {
  *  @return 形状非空且 rank 合法时 `true`；空视图直接 `true`。
  */
 fn filled<T>(v: ndview<T>, x: T) -> bool {
-    if v.rank < i64(1) { return false }
-    var idx: [8]i64 = [i64(0), i64(0), i64(0), i64(0), i64(0), i64(0), i64(0), i64(0)]
+    if v.rank < 1 { return false }
+    var idx: [8]i64
     var o: i64 = v.off
-    var k: i64 = v.rank - i64(1)
-    while k >= i64(0) {
-        if v.shape[k] == i64(0) { return true }
-        k = k - i64(1)
+    var k: i64 = v.rank - 1
+    while k >= 0 {
+        if v.shape[k] == 0 { return true }
+        k = k - 1
     }
     while true {
         v.data[o] = x
-        var d: i64 = v.rank - i64(1)
+        var d: i64 = v.rank - 1
         var more: bool = false
-        while d >= i64(0) {
-            idx[d] = idx[d] + i64(1)
+        while d >= 0 {
+            idx[d] = idx[d] + 1
             o = o + v.strides[d]
             if idx[d] < v.shape[d] {
                 more = true
-                d = i64(-1)
+                d = -1
             } else {
-                idx[d] = i64(0)
+                idx[d] = 0
                 o = o - v.shape[d] * v.strides[d]
-                d = d - i64(1)
+                d = d - 1
             }
         }
         if more { continue }
@@ -255,33 +255,33 @@ fn filled<T>(v: ndview<T>, x: T) -> bool {
  */
 fn addInto<T>(dst: ndview<T>, a: ndview<T>, b: ndview<T>) -> bool {
     if sameShapeAdd(dst, a) && sameShapeAdd(dst, b) { } else { return false }
-    var idx: [8]i64 = [i64(0), i64(0), i64(0), i64(0), i64(0), i64(0), i64(0), i64(0)]
+    var idx: [8]i64
     var od: i64 = dst.off
     var oa: i64 = a.off
     var ob: i64 = b.off
-    var d: i64 = dst.rank - i64(1)
-    while d >= i64(0) {
-        if dst.shape[d] == i64(0) { return true }
-        d = d - i64(1)
+    var d: i64 = dst.rank - 1
+    while d >= 0 {
+        if dst.shape[d] == 0 { return true }
+        d = d - 1
     }
     while true {
         dst.data[od] = a.data[oa] + b.data[ob]
-        d = dst.rank - i64(1)
+        d = dst.rank - 1
         var more: bool = false
-        while d >= i64(0) {
-            idx[d] = idx[d] + i64(1)
+        while d >= 0 {
+            idx[d] = idx[d] + 1
             od = od + dst.strides[d]
             oa = oa + a.strides[d]
             ob = ob + b.strides[d]
             if idx[d] < dst.shape[d] {
                 more = true
-                d = i64(-1)
+                d = -1
             } else {
-                idx[d] = i64(0)
+                idx[d] = 0
                 od = od - dst.shape[d] * dst.strides[d]
                 oa = oa - a.shape[d] * a.strides[d]
                 ob = ob - b.shape[d] * b.strides[d]
-                d = d - i64(1)
+                d = d - 1
             }
         }
         if more { continue }
@@ -297,33 +297,33 @@ fn addInto<T>(dst: ndview<T>, a: ndview<T>, b: ndview<T>) -> bool {
  */
 fn subInto<T>(dst: ndview<T>, a: ndview<T>, b: ndview<T>) -> bool {
     if sameShapeAdd(dst, a) && sameShapeAdd(dst, b) { } else { return false }
-    var idx: [8]i64 = [i64(0), i64(0), i64(0), i64(0), i64(0), i64(0), i64(0), i64(0)]
+    var idx: [8]i64
     var od: i64 = dst.off
     var oa: i64 = a.off
     var ob: i64 = b.off
-    var d: i64 = dst.rank - i64(1)
-    while d >= i64(0) {
-        if dst.shape[d] == i64(0) { return true }
-        d = d - i64(1)
+    var d: i64 = dst.rank - 1
+    while d >= 0 {
+        if dst.shape[d] == 0 { return true }
+        d = d - 1
     }
     while true {
         dst.data[od] = a.data[oa] - b.data[ob]
-        d = dst.rank - i64(1)
+        d = dst.rank - 1
         var more: bool = false
-        while d >= i64(0) {
-            idx[d] = idx[d] + i64(1)
+        while d >= 0 {
+            idx[d] = idx[d] + 1
             od = od + dst.strides[d]
             oa = oa + a.strides[d]
             ob = ob + b.strides[d]
             if idx[d] < dst.shape[d] {
                 more = true
-                d = i64(-1)
+                d = -1
             } else {
-                idx[d] = i64(0)
+                idx[d] = 0
                 od = od - dst.shape[d] * dst.strides[d]
                 oa = oa - a.shape[d] * a.strides[d]
                 ob = ob - b.shape[d] * b.strides[d]
-                d = d - i64(1)
+                d = d - 1
             }
         }
         if more { continue }
@@ -339,33 +339,33 @@ fn subInto<T>(dst: ndview<T>, a: ndview<T>, b: ndview<T>) -> bool {
  */
 fn mulInto<T>(dst: ndview<T>, a: ndview<T>, b: ndview<T>) -> bool {
     if sameShapeAdd(dst, a) && sameShapeAdd(dst, b) { } else { return false }
-    var idx: [8]i64 = [i64(0), i64(0), i64(0), i64(0), i64(0), i64(0), i64(0), i64(0)]
+    var idx: [8]i64
     var od: i64 = dst.off
     var oa: i64 = a.off
     var ob: i64 = b.off
-    var d: i64 = dst.rank - i64(1)
-    while d >= i64(0) {
-        if dst.shape[d] == i64(0) { return true }
-        d = d - i64(1)
+    var d: i64 = dst.rank - 1
+    while d >= 0 {
+        if dst.shape[d] == 0 { return true }
+        d = d - 1
     }
     while true {
         dst.data[od] = a.data[oa] * b.data[ob]
-        d = dst.rank - i64(1)
+        d = dst.rank - 1
         var more: bool = false
-        while d >= i64(0) {
-            idx[d] = idx[d] + i64(1)
+        while d >= 0 {
+            idx[d] = idx[d] + 1
             od = od + dst.strides[d]
             oa = oa + a.strides[d]
             ob = ob + b.strides[d]
             if idx[d] < dst.shape[d] {
                 more = true
-                d = i64(-1)
+                d = -1
             } else {
-                idx[d] = i64(0)
+                idx[d] = 0
                 od = od - dst.shape[d] * dst.strides[d]
                 oa = oa - a.shape[d] * a.strides[d]
                 ob = ob - b.shape[d] * b.strides[d]
-                d = d - i64(1)
+                d = d - 1
             }
         }
         if more { continue }
@@ -381,30 +381,30 @@ fn mulInto<T>(dst: ndview<T>, a: ndview<T>, b: ndview<T>) -> bool {
  */
 fn scaleInto<T>(dst: ndview<T>, a: ndview<T>, k: T) -> bool {
     if sameShapeAdd(dst, a) { } else { return false }
-    var idx: [8]i64 = [i64(0), i64(0), i64(0), i64(0), i64(0), i64(0), i64(0), i64(0)]
+    var idx: [8]i64
     var od: i64 = dst.off
     var oa: i64 = a.off
-    var d: i64 = dst.rank - i64(1)
-    while d >= i64(0) {
-        if dst.shape[d] == i64(0) { return true }
-        d = d - i64(1)
+    var d: i64 = dst.rank - 1
+    while d >= 0 {
+        if dst.shape[d] == 0 { return true }
+        d = d - 1
     }
     while true {
         dst.data[od] = a.data[oa] * k
-        d = dst.rank - i64(1)
+        d = dst.rank - 1
         var more: bool = false
-        while d >= i64(0) {
-            idx[d] = idx[d] + i64(1)
+        while d >= 0 {
+            idx[d] = idx[d] + 1
             od = od + dst.strides[d]
             oa = oa + a.strides[d]
             if idx[d] < dst.shape[d] {
                 more = true
-                d = i64(-1)
+                d = -1
             } else {
-                idx[d] = i64(0)
+                idx[d] = 0
                 od = od - dst.shape[d] * dst.strides[d]
                 oa = oa - a.shape[d] * a.strides[d]
-                d = d - i64(1)
+                d = d - 1
             }
         }
         if more { continue }
@@ -421,33 +421,33 @@ fn scaleInto<T>(dst: ndview<T>, a: ndview<T>, k: T) -> bool {
  */
 fn axpyInto<T>(dst: ndview<T>, a: ndview<T>, b: ndview<T>, k: T) -> bool {
     if sameShapeAdd(dst, a) && sameShapeAdd(dst, b) { } else { return false }
-    var idx: [8]i64 = [i64(0), i64(0), i64(0), i64(0), i64(0), i64(0), i64(0), i64(0)]
+    var idx: [8]i64
     var od: i64 = dst.off
     var oa: i64 = a.off
     var ob: i64 = b.off
-    var d: i64 = dst.rank - i64(1)
-    while d >= i64(0) {
-        if dst.shape[d] == i64(0) { return true }
-        d = d - i64(1)
+    var d: i64 = dst.rank - 1
+    while d >= 0 {
+        if dst.shape[d] == 0 { return true }
+        d = d - 1
     }
     while true {
         dst.data[od] = a.data[oa] + k * b.data[ob]
-        d = dst.rank - i64(1)
+        d = dst.rank - 1
         var more: bool = false
-        while d >= i64(0) {
-            idx[d] = idx[d] + i64(1)
+        while d >= 0 {
+            idx[d] = idx[d] + 1
             od = od + dst.strides[d]
             oa = oa + a.strides[d]
             ob = ob + b.strides[d]
             if idx[d] < dst.shape[d] {
                 more = true
-                d = i64(-1)
+                d = -1
             } else {
-                idx[d] = i64(0)
+                idx[d] = 0
                 od = od - dst.shape[d] * dst.strides[d]
                 oa = oa - a.shape[d] * a.strides[d]
                 ob = ob - b.shape[d] * b.strides[d]
-                d = d - i64(1)
+                d = d - 1
             }
         }
         if more { continue }
@@ -460,32 +460,32 @@ fn axpyInto<T>(dst: ndview<T>, a: ndview<T>, b: ndview<T>, k: T) -> bool {
  *  @return 和；空视图 `none`。
  */
 fn sumv<T>(v: ndview<T>) -> ?T {
-    if v.rank < i64(1) { return none }
-    var d: i64 = i64(0)
+    if v.rank < 1 { return none }
+    var d: i64 = 0
     var empty: bool = false
     while d < v.rank {
-        if v.shape[d] == i64(0) { empty = true }
-        d = d + i64(1)
+        if v.shape[d] == 0 { empty = true }
+        d = d + 1
     }
     if empty { return none }
     var zero: T = v.data[v.off] - v.data[v.off]
     var s: T = zero
-    var idx: [8]i64 = [i64(0), i64(0), i64(0), i64(0), i64(0), i64(0), i64(0), i64(0)]
+    var idx: [8]i64
     var o: i64 = v.off
     while true {
         s = s + v.data[o]
-        var k: i64 = v.rank - i64(1)
+        var k: i64 = v.rank - 1
         var more: bool = false
-        while k >= i64(0) {
-            idx[k] = idx[k] + i64(1)
+        while k >= 0 {
+            idx[k] = idx[k] + 1
             o = o + v.strides[k]
             if idx[k] < v.shape[k] {
                 more = true
-                k = i64(-1)
+                k = -1
             } else {
-                idx[k] = i64(0)
+                idx[k] = 0
                 o = o - v.shape[k] * v.strides[k]
-                k = k - i64(1)
+                k = k - 1
             }
         }
         if more { continue }
@@ -500,14 +500,14 @@ fn sumv<T>(v: ndview<T>) -> ?T {
  *  @return 换过维度的视图；维度越界时 `none`。
  */
 fn swapDims<T>(v: ndview<T>, i: i64, j: i64) -> ?ndview<T> {
-    if i < i64(0) || j < i64(0) || i >= v.rank || j >= v.rank { return none }
-    var shape: [8]i64 = [i64(0), i64(0), i64(0), i64(0), i64(0), i64(0), i64(0), i64(0)]
-    var strides: [8]i64 = [i64(0), i64(0), i64(0), i64(0), i64(0), i64(0), i64(0), i64(0)]
-    var k: i64 = i64(0)
+    if i < 0 || j < 0 || i >= v.rank || j >= v.rank { return none }
+    var shape: [8]i64
+    var strides: [8]i64
+    var k: i64 = 0
     while k < v.rank {
         shape[k] = v.shape[k]
         strides[k] = v.strides[k]
-        k = k + i64(1)
+        k = k + 1
     }
     shape[i] = v.shape[j]
     shape[j] = v.shape[i]
@@ -522,17 +522,17 @@ fn swapDims<T>(v: ndview<T>, i: i64, j: i64) -> ?ndview<T> {
  *  @return 降一维的视图；越界或 rank 为 1 时 `none`。
  */
 fn sub<T>(v: ndview<T>, i: i64) -> ?ndview<T> {
-    if v.rank < i64(2) { return none }
-    if i < i64(0) || i >= v.shape[i64(0)] { return none }
-    var shape: [8]i64 = [i64(0), i64(0), i64(0), i64(0), i64(0), i64(0), i64(0), i64(0)]
-    var strides: [8]i64 = [i64(0), i64(0), i64(0), i64(0), i64(0), i64(0), i64(0), i64(0)]
-    var k: i64 = i64(1)
+    if v.rank < 2 { return none }
+    if i < 0 || i >= v.shape[0] { return none }
+    var shape: [8]i64
+    var strides: [8]i64
+    var k: i64 = 1
     while k < v.rank {
-        shape[k - i64(1)] = v.shape[k]
-        strides[k - i64(1)] = v.strides[k]
-        k = k + i64(1)
+        shape[k - 1] = v.shape[k]
+        strides[k - 1] = v.strides[k]
+        k = k + 1
     }
-    return ndview<T>::strided(v.data, v.off + i * v.strides[i64(0)], v.rank - i64(1), shape, strides)
+    return ndview<T>::strided(v.data, v.off + i * v.strides[0], v.rank - 1, shape, strides)
 }
 
 
@@ -542,13 +542,13 @@ fn sub<T>(v: ndview<T>, i: i64) -> ?ndview<T> {
  *  @return rank 与每维长度都一致时 `true`。
  */
 fn sameShapeAdd<T>(dst: ndview<T>, src: ndview<T>) -> bool {
-    if dst.rank < i64(1) || dst.rank > i64(8) { return false }
+    if dst.rank < 1 || dst.rank > 8 { return false }
     if dst.rank != src.rank { return false }
-    var k: i64 = i64(0)
+    var k: i64 = 0
     while k < dst.rank {
         if dst.shape[k] != src.shape[k] { return false }
-        if dst.shape[k] < i64(0) { return false }
-        k = k + i64(1)
+        if dst.shape[k] < 0 { return false }
+        k = k + 1
     }
     return true
 }

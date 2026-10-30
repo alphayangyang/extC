@@ -27,7 +27,7 @@
  * use stl::string
  *
  * fn main() -> i32 {
- *     var s: string = string::withCap(i64(8))
+ *     var s: string = string::withCap(8)
  *     s.append("hello")
  *     io::cout << s.toSlice() << " len=" << s.len() << "\n"
  *     return 0
@@ -56,12 +56,12 @@ struct string {
      * 因为"预分配 n 字节"这句承诺不能靠内联的 16 字节兑现。SSO 省下的是**零值**与短串的默认构造，
      * 不是显式的 `withCap`。 */
     fn create(c: i64) -> string {
-        let rp = syspool::extc_pool_new(i64(-1))
+        let rp = syspool::extc_pool_new(-1)
         let rpg = syspool::extc_pool_generation(rp)
         var cc: i64 = c
-        if cc < i64(16) { cc = i64(16) }
+        if cc < 16 { cc = 16 }
         var s: string = {
-            n:      i64(0),
+            n:      0,
             cap:    cc,
             big:    some(poolSliceRaw<u8>(rp, cc)),
             pid:    rp,
@@ -77,7 +77,7 @@ struct string {
     fn capacity(self: ref string) -> i64 { return self.cap }
 
     @inline
-    fn isEmpty(self: ref string) -> bool { return self.n == i64(0) }
+    fn isEmpty(self: ref string) -> bool { return self.n == 0 }
 
     /* **拿到内容只有这一条路：`toSlice()` —— 拷一份到调用者所在的地方。**
      *
@@ -94,7 +94,7 @@ struct string {
      *（arena 的 home 机制）⇒ 它活得比这一次调用长，可以存、可以返回。 */
     fn toSlice(self: ref string) -> slice<u8> {
         var out: mut slice<u8> = new u8[self.n]
-        copyInto<u8>(out, self.subView(i64(0), self.n), self.n)
+        copyInto<u8>(out, self.subView(0, self.n), self.n)
         return out
     }
 
@@ -106,7 +106,7 @@ struct string {
      * 新缓冲区生在调用者所在的地方。短串从这里出去仍是**内联**的：`append` 会自己按需升级。 */
     fn clone(self: ref string) -> string {
         var out: string
-        out.append(self.subView(i64(0), self.n))
+        out.append(self.subView(0, self.n))
         return out
     }
     
@@ -121,16 +121,16 @@ struct string {
      * Both sides go through `subView(0, n)`: a read-only view of this value, consumed by the
      * comparison before anything can change. */
     fn ==(self: ref string, other: string) -> bool {
-        return string::bytesEq(self.subView(i64(0), self.n), other.subView(i64(0), other.n))
+        return string::bytesEq(self.subView(0, self.n), other.subView(0, other.n))
     }
 
-    fn ==(self: ref string, other: slice<u8>) -> bool { return string::bytesEq(self.subView(i64(0), self.n), other) }
+    fn ==(self: ref string, other: slice<u8>) -> bool { return string::bytesEq(self.subView(0, self.n), other) }
 
     fn <(self: ref string, other: string) -> bool {
-        return string::bytesLt(self.subView(i64(0), self.n), other.subView(i64(0), other.n))
+        return string::bytesLt(self.subView(0, self.n), other.subView(0, other.n))
     }
 
-    fn <(self: ref string, other: slice<u8>) -> bool { return string::bytesLt(self.subView(i64(0), self.n), other) }
+    fn <(self: ref string, other: slice<u8>) -> bool { return string::bytesLt(self.subView(0, self.n), other) }
 
     /* 逐字节比较的两条循环都**跳过边界检查**（`@unchecked`，手册 12.5）。
      *
@@ -146,7 +146,7 @@ struct string {
         var i: i64 = 0
         while i < a.len {
             if a[i] != b[i] { return false }
-            i = i + i64(1)
+            i = i + 1
         }
         return true
     }
@@ -156,7 +156,7 @@ struct string {
         var i: i64 = 0
         while i < a.len && i < b.len {
             if a[i] != b[i] { return a[i] < b[i] }
-            i = i + i64(1)
+            i = i + 1
         }
         return a.len < b.len
     }
@@ -166,15 +166,15 @@ struct string {
     /* `@unchecked`：范围由循环条件 `i < v.len` 那一行保证（`v` 是本函数自己取的视图，之后不再变）。 */
     @unchecked
     fn hash(self: ref string) -> i64 {
-        let v = self.subView(i64(0), self.n)
-        var h: i64 = i64(1469598103934665603)
+        let v = self.subView(0, self.n)
+        var h: i64 = 1469598103934665603
         var i: i64 = 0
         while i < v.len {
             h = h ^ i64(v[i])
-            h = h * i64(1099511628211)
-            i = i + i64(1)
+            h = h * 1099511628211
+            i = i + 1
         }
-        return h & i64(9223372036854775807)
+        return h & 9223372036854775807
     }
 
     /* ---------------------------------------------------------------- 拼接
@@ -194,14 +194,14 @@ struct string {
      * concatenation does not fit in the 16 inline bytes -- a short join allocates nothing at all. */
     fn concat(self: ref string, other: string) -> string {
         var out: string
-        out.append(self.subView(i64(0), self.n))
-        out.append(other.subView(i64(0), other.n))
+        out.append(self.subView(0, self.n))
+        out.append(other.subView(0, other.n))
         return out
     }
 
     fn concatBytes(self: ref string, other: slice<u8>) -> string {
         var out: string
-        out.append(self.subView(i64(0), self.n))
+        out.append(self.subView(0, self.n))
         out.append(other)
         return out
     }
@@ -209,8 +209,8 @@ struct string {
     /* ---------------------------------------------------------------- 取字节与视图 */
     /* One byte, or `none` when out of range (no trap: reading past the end is a condition). */
     fn at(self: ref string, i: i64) -> ?u8 {
-        if i < i64(0) || i >= self.n { return none }
-        if self.cap == i64(0) { return some(self.small[i]) }
+        if i < 0 || i >= self.n { return none }
+        if self.cap == 0 { return some(self.small[i]) }
         return some(self.big![i])
     }
 
@@ -231,7 +231,7 @@ struct string {
     fn sub(self: ref string, lo: i64, hi: i64) -> slice<u8> {
         var a: i64 = lo
         var b: i64 = hi
-        if a < i64(0) { a = i64(0) }
+        if a < 0 { a = 0 }
         if b > self.n { b = self.n }
         if b < a { b = a }
         var out: mut slice<u8> = new u8[b - a]
@@ -254,10 +254,10 @@ struct string {
     fn subView(self: ref string, lo: i64, hi: i64) -> slice<u8> {
         var a: i64 = lo
         var b: i64 = hi
-        if a < i64(0) { a = i64(0) }
+        if a < 0 { a = 0 }
         if b > self.n { b = self.n }
         if b < a { b = a }
-        if self.cap == i64(0) { return self.small[a..b] }
+        if self.cap == 0 { return self.small[a..b] }
         return self.big![a..b]
     }
 
@@ -285,19 +285,19 @@ struct string {
     fn find(self: ref string, needle: slice<u8>) -> ?i64 {
         let m = self.n
         let n = needle.len
-        if n == i64(0) { return some(i64(0)) }
+        if n == 0 { return some(0) }
         if n > m { return none }
-        let hay = self.subView(i64(0), m)
+        let hay = self.subView(0, m)
         /* `hay.data` is the first byte, `needle.data` the first pattern byte; `m` is the whole
          * string and `n <= m` holds from the line above, so the runtime sees a range it can use. */
         let r = std::mem::extc_memFind(hay.data, m, needle.data, n)
-        if r < i64(0) { return none }
+        if r < 0 { return none }
         return some(r)
     }
 
     fn contains(self: ref string, needle: slice<u8>) -> bool {
-        let at = self.find(needle) ?? i64(-1)      /* a found offset is never negative */
-        return at >= i64(0)
+        let at = self.find(needle) ?? -1      /* a found offset is never negative */
+        return at >= 0
     }
 
     /* `startsWith` / `endsWith` are one `memcmp` (through the runtime's integer door --
@@ -310,17 +310,17 @@ struct string {
      * guard above means no clamping happens. The empty pattern compares nothing and is true. */
     fn startsWith(self: ref string, p: slice<u8>) -> bool {
         if p.len > self.n { return false }
-        if p.len == i64(0) { return true }
-        let v = self.subView(i64(0), p.len)
-        return std::mem::extc_memEq(v.data, p.data, p.len) == i64(1)
+        if p.len == 0 { return true }
+        let v = self.subView(0, p.len)
+        return std::mem::extc_memEq(v.data, p.data, p.len) == 1
     }
 
     fn endsWith(self: ref string, p: slice<u8>) -> bool {
         if p.len > self.n { return false }
-        if p.len == i64(0) { return true }
+        if p.len == 0 { return true }
         let off = self.n - p.len
         let v = self.subView(off, self.n)
-        return std::mem::extc_memEq(v.data, p.data, p.len) == i64(1)
+        return std::mem::extc_memEq(v.data, p.data, p.len) == 1
     }
 
     /* 扩到 1.5 倍：在原块上长（装不下时才由分配器搬家），字节由 resize 保住。
@@ -330,28 +330,28 @@ struct string {
      * 把 16 个内联字节拷进去。之后才走 1.5 倍那条老路。两条路的纪律是同一条：
      * 换块时旧块（这里是"没有块"）当场还回去，不留历代旧副本。 */
     fn grow(self: mut ref string) {
-        if self.cap == i64(0) {
-            let rp = syspool::extc_pool_new(i64(-1))
+        if self.cap == 0 {
+            let rp = syspool::extc_pool_new(-1)
             let rpg = syspool::extc_pool_generation(rp)
-            var blk: mut slice<u8> = poolSliceRaw<u8>(rp, i64(32))
-            copyInto<u8>(blk, self.small[0..i64(16)], i64(16))
+            var blk: mut slice<u8> = poolSliceRaw<u8>(rp, 32)
+            copyInto<u8>(blk, self.small[0..i64(16)], 16)
             self.big = some(blk)
-            self.cap = i64(32)
+            self.cap = 32
             self.pid = rp
             self.pidGen = rpg
             return
         }
-        if self.pid < i64(0) { return }
-        let ncap = self.cap + self.cap / i64(2)
+        if self.pid < 0 { return }
+        let ncap = self.cap + self.cap / 2
         self.big = some(poolResizeRaw<u8>(self.pid, self.big!, ncap))
         self.cap = ncap
     }
 
     fn push(self: mut ref string, b: u8) {
         if self.pStale() { self.pPoison() }
-        if self.cap == i64(0) && self.n < i64(16) {
+        if self.cap == 0 && self.n < 16 {
             self.small[self.n] = b
-            self.n = self.n + i64(1)
+            self.n = self.n + 1
             return
         }
         if self.n >= self.cap { self.grow() }
@@ -362,7 +362,7 @@ struct string {
          * 若有人手工拼一个 `{ cap: 8 }`（`big` 为零值 `none`），载荷是零值切片
          * ⇒ 下标写带位置 trap，而不是野指针。 */
         self.big![self.n] = b
-        self.n = self.n + i64(1)
+        self.n = self.n + 1
     }
 
     /* 追加一段字节（"序列化面"最常见的一步）。
@@ -374,9 +374,9 @@ struct string {
      * SSO：装得下 16 个内联字节就地写（**一个池都不建**）；装不下先 `grow` 升级再搬。 */
     fn append(self: mut ref string, s: slice<u8>) {
         if self.pStale() { self.pPoison() }
-        if s.len <= i64(0) { return }
+        if s.len <= 0 { return }
         let need: i64 = self.n + s.len
-        if self.cap == i64(0) && need <= i64(16) {
+        if self.cap == 0 && need <= 16 {
             copyInto<u8>(self.small[self.n..need], s, s.len)
             self.n = need
             return
@@ -396,11 +396,11 @@ struct string {
      * 一次 `memmove`（区间重叠，所以必须是 move 不是 copy）。 */
     fn removeFront(self: mut ref string, n: i64) {
         if self.pStale() { self.pPoison() }
-        if n <= i64(0) { return }
+        if n <= 0 { return }
         var k: i64 = n
         if k > self.n { k = self.n }
         let keep: i64 = self.n - k
-        if self.cap == i64(0) {
+        if self.cap == 0 {
             copyInto<u8>(self.small[i64(0)..keep], self.small[k..self.n], keep)
             self.n = keep
             return
@@ -423,15 +423,15 @@ struct string {
      * 与内联缓冲等大 —— 池态缩到 16 之后仍是池态，不往回退（退回内联会让 `capacity()`
      * 从 16 掉到 0，那是另一个语义）。 */
     fn shrink(self: mut ref string) {
-        if self.cap == i64(0) { return }
+        if self.cap == 0 { return }
         var ncap: i64 = self.n
-        if ncap < i64(16) { ncap = i64(16) }
+        if ncap < 16 { ncap = 16 }
         if ncap >= self.cap { return }
         self.big = some(poolResizeRaw<u8>(self.pid, self.big!, ncap))
         self.cap = ncap
     }
 
-    fn clear(self: mut ref string) { self.n = i64(0) }
+    fn clear(self: mut ref string) { self.n = 0 }
 
     /* **守卫**：这一份容器值还指着它的池吗？（池被 release 掉 / 槽位被别的池复用时世代对不上）
      * 陈旧 ⇒ 把这一份收成空容器，让下一次下标访问带位置地 trap，而不是写已还给 malloc 的内存。
@@ -439,23 +439,23 @@ struct string {
      * 内联态（`cap == 0`）没有池，谈不上陈旧 —— 这一条**必须问在 `pid` 之前**：
      * 零值的 `pid` 就是 0，而 0 是一个合法的池 rid（第一个池）。 */
     fn pStale(self: ref string) -> bool {
-        if self.cap == i64(0) { return false }
-        if self.pid < i64(0) { return false }
+        if self.cap == 0 { return false }
+        if self.pid < 0 { return false }
         return syspool::extc_pool_generation(self.pid) != self.pidGen
     }
     /* 收成**零值**（内联空串）：这是 SSO 之后唯一的"空且合法"状态 ——
      * 陈旧拷贝从此不再指向任何池块，所以既不会写已还给 malloc 的内存，
      * 也不会像旧实现那样把 0 长视图留在身上（那要求每个访问点都记得自己会 trap）。 */
     fn pPoison(self: mut ref string) {
-        self.n   = i64(0)
-        self.cap = i64(0)
+        self.n   = 0
+        self.cap = 0
         self.big = none
-        self.pid = i64(-1)
+        self.pid = -1
     }
 
     fn release(self: mut ref string) {
         /* 内联：没有池可还（`pid` 可能是 0 —— 第一个池的 rid —— 所以这里**不能**看 pid）。 */
-        if self.cap == i64(0) { return }
+        if self.cap == 0 { return }
         /* One staleness question, one place to ask it (`pStale`): the comparison lives in
          * exactly one place, and two copies of a load-bearing check would drift. */
         if self.pStale() {
@@ -466,13 +466,13 @@ struct string {
         /* 先把视图收成 0 长，再把板块还给池：之后任何下标都是响亮越界
          * （带位置的 trap），而不是写进一块已经还掉的内存。还完收成零值（内联空串）：
          * 释放过的字符串就是空串 —— 读它不再需要"记得它会 trap"。 */
-        self.big = some(poolResize<u8>(rp, self.big!, i64(0)))
-        self.cap = i64(0)
+        self.big = some(poolResize<u8>(rp, self.big!, 0))
+        self.cap = 0
         self.big = none
-        self.n   = i64(0)
+        self.n   = 0
         syspool::extc_pool_reset(rp)
         syspool::extc_pool_drop(rp)
-        self.pid = i64(-1)
+        self.pid = -1
     }
 }
 
@@ -501,7 +501,7 @@ fn empty() -> string { var s: string  return s }
  * （字面量不偷偷采纳上下文类型）—— 一旦开了，"哪里会发生什么"就要靠背了。
  */
 fn from(b: slice<u8>) -> string {
-  var r: string = withCap(i64(b.len) + i64(1))   /* +1：结尾那个 0 */
+  var r: string = withCap(i64(b.len) + 1)   /* +1：结尾那个 0 */
   r.append(b)
   return r
 }
@@ -513,37 +513,37 @@ fn from(b: slice<u8>) -> string {
  */
 fn fromI64(n: i64) -> string {
   var tmp: [24]u8
-  var i: i64 = i64(24)
+  var i: i64 = 24
   var v: i64 = n
-  if v == i64(0) { i = i - i64(1)  tmp[i] = u8(48) }
-  while v != i64(0) {
-    var d: i64 = v % i64(10)
-    if d < i64(0) { d = i64(0) - d }
-    i = i - i64(1)
+  if v == 0 { i = i - 1  tmp[i] = u8(48) }
+  while v != 0 {
+    var d: i64 = v % 10
+    if d < 0 { d = 0 - d }
+    i = i - 1
     tmp[i] = u8(d) + u8(48)
-    v = v / i64(10)
+    v = v / 10
   }
-  if n < i64(0) { i = i - i64(1)  tmp[i] = u8(45) }
+  if n < 0 { i = i - 1  tmp[i] = u8(45) }
   /* 逐字节 push，而不是 `from(tmp[i..])`：对**局部数组**取视图再交给 `from`，逃逸分析会（保守地）
    * 以为返回值攥着那个视图 —— 实测报 "this return value would hold a reference to a local variable
    * that dies first"。`from` 其实只拷贝，但它没有声明 `effects Addr=0 Cont=0`，所以编译器必须假设最坏。
    * 走 `push` 就没有视图，问题自然不存在。 */
-  var r: string = withCap(i64(24) - i)
+  var r: string = withCap(24 - i)
   var k: i64 = i
-  while k < i64(24) { r.push(tmp[k])  k = k + i64(1) }
+  while k < 24 { r.push(tmp[k])  k = k + 1 }
   return r
 }
 
 /* 反过来：解析十进制 `i64`。空串、只有符号、非数字、溢出 ⇒ `none`。
  * 先按 `u64` 累加并挡住 u64 溢出，最后再按符号比边界 —— 比"边算边比 i64 边界"少一半特例。 */
 fn toI64(b: slice<u8>) -> ?i64 {
-  if b.len == i64(0) { return none }
-  var i: i64 = i64(0)
+  if b.len == 0 { return none }
+  var i: i64 = 0
   var neg: bool = false
-  if b[i64(0)] == u8(45) || b[i64(0)] == u8(43) {
-    neg = b[i64(0)] == u8(45)
-    i = i64(1)
-    if b.len == i64(1) { return none }
+  if b[0] == u8(45) || b[0] == u8(43) {
+    neg = b[0] == u8(45)
+    i = 1
+    if b.len == 1 { return none }
   }
   var acc: u64 = u64(0)
   while i < b.len {
@@ -551,7 +551,7 @@ fn toI64(b: slice<u8>) -> ?i64 {
     if c < u8(48) || c > u8(57) { return none }
     if acc > u64(1844674407370955161) { return none }   /* acc*10 会超过 u64 */
     acc = acc * u64(10) + u64(c - u8(48))
-    i = i + i64(1)
+    i = i + 1
   }
   var lim: u64 = u64(9223372036854775807)              /* 2^63-1 */
   if neg { lim = lim + u64(1) }                        /* 负数能多装一个：2^63 */
@@ -565,7 +565,7 @@ fn toI64(b: slice<u8>) -> ?i64 {
      * `i64(u64(2^63))` 不 trap）—— 只是"不碰边界"比"赌边界行为"省事，而且 `2^63` 这个值在
      * **打印**路径上确实有个 bug（见 `std::io` 里那段注释：`io::cout << i64 最小值` 会 trap）。 */
     if acc == u64(9223372036854775807) + u64(1) { return some(i64(-9223372036854775807 - 1)) }
-    return some(i64(0) - i64(acc))
+    return some(0 - i64(acc))
   }
   return some(i64(acc))
 }

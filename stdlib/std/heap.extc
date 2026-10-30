@@ -45,7 +45,7 @@ struct plate {
         var p: ?ref u8 = sysheap::mmap(null, reserve, sysheap::PROT_NONE,
                                        sysheap::MAP_PRIVATE | sysheap::MAP_ANONYMOUS |
                                        sysheap::MAP_NORESERVE,
-                                       -1, i64(0))
+                                       -1, 0)
         if p == null { return none }
         /* 最高一页里的地址都不是合法的映射起点（`MAP_FAILED` 就在那里）。 */
         if u64(p) >= u64(0) - PAGE { return none }
@@ -136,7 +136,7 @@ struct plate {
      * 长度，而"先把指针变成视图再验"会多绕一圈：`extc_viewOf` 让调用者带上隐藏的 arena 参数，
      * 于是那个函数的地址就不是一个 `fn` 值了，放不进表槽 —— 实测的报错很直白）。 */
     fn holdsRange(self: ref plate, p: ref u8, n: i64) -> bool {
-        if n <= i64(0) { return true }
+        if n <= 0 { return true }
         var a: u64 = u64(p)
         var base: u64 = u64(self.mem.data)
         return a >= base && a + u64(n) <= base + self.reserved
@@ -149,7 +149,7 @@ struct plate {
 
     /* 宿主把一块内存拷进板里（`dst` 必须是板内的视图 —— 门在这里）。返回拷了多少字节。 */
     fn copyIn(self: ref plate, dst: mut slice<u8>, src: slice<u8>) -> i64 {
-        if !self.holdsView(dst) { return i64(-1) }
+        if !self.holdsView(dst) { return -1 }
         var n: i64 = dst.len
         if src.len < n { n = src.len }
         return sysheap::extc_memCopy(dst.data, src.data, n)
@@ -157,7 +157,7 @@ struct plate {
 
     /* 模块的结果拷回宿主的视图（`src` 必须是板内的 —— 同一道门）。方向反过来。 */
     fn copyOut(self: ref plate, src: slice<u8>, dst: mut slice<u8>) -> i64 {
-        if !self.holdsView(src) { return i64(-1) }
+        if !self.holdsView(src) { return -1 }
         var n: i64 = src.len
         if dst.len < n { n = dst.len }
         return sysheap::extc_memCopy(dst.data, src.data, n)
@@ -166,7 +166,7 @@ struct plate {
     /* 申请 + 拷进去：宿主最常用的一步（"把这块数据放进板里，给我板内视图"）。 */
     fn store(self: mut ref plate, src: slice<u8>) -> ?mut slice<u8> effects Ret=0 {
         var dst: mut slice<u8> = self.alloc(u64(src.len))?
-        if self.copyIn(dst, src) < i64(0) { return none }
+        if self.copyIn(dst, src) < 0 { return none }
         return some(dst)
     }
 

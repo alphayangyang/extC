@@ -9,8 +9,8 @@
  *
  *     use stl::linmap
  *     var m: linMap<i64, slice<u8>> = linMap<i64, slice<u8>>::withCap(4)
- *     m.put(i64(1), "one")
- *     println(m.get(i64(1)) ?? "missing")
+ *     m.put(1, "one")
+ *     println(m.get(1) ?? "missing")
  *
  * Cost, stated plainly: a lookup is O(n) probes with `==` each, against O(1) for the
  * hashed `hashMapI64`. Use this while keys are not integers and the table is small; switch to
@@ -43,15 +43,15 @@ struct linMap<K, V> {
 
     /* A table with room for `want` entries before the first growth. */
     fn withCap(want: i64) -> linMap<K, V> {
-        var c: i64 = i64(4)
-        while c < want { c = c * i64(2) }
-        let rp  = syspool::extc_pool_new(i64(-1))
+        var c: i64 = 4
+        while c < want { c = c * 2 }
+        let rp  = syspool::extc_pool_new(-1)
         let rpg = syspool::extc_pool_generation(rp)
         /* 两个视图在**这张表自己的板块**上：增长时同一块加长，旧的不会留给 arena。 */
         var lm: linMap<K, V> = {
             pid: rp, pidGen: rpg,
             keys: poolSliceRaw<K>(rp, c), vals: poolSliceRaw<V>(rp, c),
-            n: i64(0), cap: c,
+            n: 0, cap: c,
         }
         return lm
     }
@@ -67,10 +67,10 @@ struct linMap<K, V> {
             if self.keys[i] == k { return i }
             i = i + 1
         }
-        return 0 - i64(1)
+        return 0 - 1
     }
 
-    fn contains(self: ref linMap<K, V>, k: K) -> bool { return self.find(k) >= i64(0) }
+    fn contains(self: ref linMap<K, V>, k: K) -> bool { return self.find(k) >= 0 }
 
     /* Write the pair, overwriting a key that is already there.
      *
@@ -83,7 +83,7 @@ struct linMap<K, V> {
         fn put(self: mut ref linMap<K, V>, k: K, v: V) -> bool {
             if self.pStale() { self.pPoison() }
         let at = self.find(k)
-        if at >= i64(0) {
+        if at >= 0 {
             self.vals[at] = v
             return true
         }
@@ -91,7 +91,7 @@ struct linMap<K, V> {
         if self.n >= self.cap { return false }
         self.keys[self.n] = k
         self.vals[self.n] = v
-        self.n = self.n + i64(1)
+        self.n = self.n + 1
         return true
     }
 
@@ -103,15 +103,15 @@ struct linMap<K, V> {
 
     fn get(self: ref linMap<K, V>, k: K) -> ?V {
         let at = self.find(k)
-        if at < i64(0) { return none }
+        if at < 0 { return none }
         return some(self.vals[at])
     }
 
     /* Drop the entry for a key. The last entry takes its place (swap-remove). */
     fn remove(self: mut ref linMap<K, V>, k: K) -> bool {
         let at = self.find(k)
-        if at < i64(0) { return false }
-        let last = self.n - i64(1)
+        if at < 0 { return false }
+        let last = self.n - 1
         self.keys[at] = self.keys[last]
         self.vals[at] = self.vals[last]
         self.n = last
@@ -124,21 +124,21 @@ struct linMap<K, V> {
     fn valAt(self: ref linMap<K, V>, i: i64) -> V { return self.vals[i] }
     /* **深拷贝**（同 vector/map：`var b = a` 是结构体逐成员拷贝、两份共用板块）。 */
     fn clone(self: ref linMap<K, V>) -> linMap<K, V> {
-        var out = linMap<K, V>::withCap(self.n + i64(1))
+        var out = linMap<K, V>::withCap(self.n + 1)
         var i: i64 = 0
         while i < self.n {
             out.put(self.keyAt(i), self.valAt(i))
-            i = i + i64(1)
+            i = i + 1
         }
         return out
     }
 
-    fn clear(self: mut ref linMap<K, V>) { self.n = i64(0) }
+    fn clear(self: mut ref linMap<K, V>) { self.n = 0 }
 
     /* 增到 1.5 倍：**在原块上加长**（`poolResize` 保住内容）。这里连拷贝循环都不需要 ——
      * 这张表的下标就是插入序，加长不改变任何已有元素的位置。 */
     fn grow(self: mut ref linMap<K, V>) {
-        let c = self.cap + self.cap / i64(2)
+        let c = self.cap + self.cap / 2
         self.keys = poolResizeRaw<K>(self.pid, self.keys, c)
         self.vals = poolResizeRaw<V>(self.pid, self.vals, c)
         self.cap = c
@@ -147,30 +147,30 @@ struct linMap<K, V> {
     /* 把这一层还回去：两个视图先收成 0 长，再把板块还给池（之后越界是响亮 trap）。 */
     /* **守卫**：这一份线性表值还指着它的池吗？陈旧 ⇒ 两个视图收空，下一次访问带位置地 trap。 */
     fn pStale(self: ref linMap<K, V>) -> bool {
-        if self.pid < i64(0) { return false }
+        if self.pid < 0 { return false }
         return syspool::extc_pool_generation(self.pid) != self.pidGen
     }
     fn pPoison(self: mut ref linMap<K, V>) {
-        self.keys = poolSlice<K>(i64(-1), i64(0))
-        self.vals = poolSlice<V>(i64(-1), i64(0))
-        self.n    = i64(0)
-        self.cap  = i64(0)
-        self.pid  = i64(-1)
+        self.keys = poolSlice<K>(-1, 0)
+        self.vals = poolSlice<V>(-1, 0)
+        self.n    = 0
+        self.cap  = 0
+        self.pid  = -1
     }
 
     fn release(self: mut ref linMap<K, V>) {
-        if self.pid < i64(0) { return }
+        if self.pid < 0 { return }
         /* One staleness question, one place to ask it (`pStale`): the comparison lives in
          * exactly one place, and two copies of a load-bearing check would drift. */
         if self.pStale() {
-            self.pid = i64(-1)  /* 陈旧拷贝：槽位已被别的池复用 */
+            self.pid = -1  /* 陈旧拷贝：槽位已被别的池复用 */
             return
         }
-        self.keys = poolResize<K>(self.pid, self.keys, i64(0))
-        self.vals = poolResize<V>(self.pid, self.vals, i64(0))
-        self.cap  = i64(0)
+        self.keys = poolResize<K>(self.pid, self.keys, 0)
+        self.vals = poolResize<V>(self.pid, self.vals, 0)
+        self.cap  = 0
         syspool::extc_pool_reset(self.pid)
         syspool::extc_pool_drop(self.pid)
-        self.pid = i64(-1)
+        self.pid = -1
     }
 }

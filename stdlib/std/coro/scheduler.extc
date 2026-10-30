@@ -70,19 +70,19 @@ struct tasks<T> {
 
     /* 加一个任务：座位从 `freeq` 里 O(1) 拿（没有就长一行），并进 `runq` 等第一次推进。 */
     fn add(self: mut ref tasks<T>, s: mut ref loop, h: coroutine<i64>) -> bool {
-        var i: i64 = i64(-1)
-        if self.freeq.len() > i64(0) {
+        var i: i64 = -1
+        if self.freeq.len() > 0 {
             var oi: option<i64> = self.freeq.pop()
             i = oi!                       /* 刚查过 len > 0 ✓ */
         }
-        if i >= i64(0) {
-            self.rows.vals[i] = { h: h, done: false, started: false, fd: i64(-2) }
+        if i >= 0 {
+            self.rows.vals[i] = { h: h, done: false, started: false, fd: -2 }
         } else {
-            self.rows.push({ h: h, done: false, started: false, fd: i64(-2) })
-            i = self.rows.len() - i64(1)
+            self.rows.push({ h: h, done: false, started: false, fd: -2 })
+            i = self.rows.len() - 1
         }
         self.runq.push(i)
-        s.live = s.live + i64(1)
+        s.live = s.live + 1
         return true
     }
 
@@ -122,30 +122,30 @@ struct tasks<T> {
             if req == WAIT_UNTIL {
                 let nowDl: i64 = time::now()
                 let dl: i64 = s.pendingUntil
-                if dl > nowDl && s.timers.add(dl, i) >= i64(0) { return }
+                if dl > nowDl && s.timers.add(dl, i) >= 0 { return }
                 if !self.rows.vals[i].h.send(req) { self.finish(s, i)  return }
                 continue
             }
             if req == WAIT_FD_W {
                 let fdw: i64 = s.pendingFd
-                if fdw < i64(0) {
+                if fdw < 0 {
                     /* 没给 fd：立刻再推一轮（别把任务卡死） */
                     if !self.rows.vals[i].h.send(req) { self.finish(s, i)  return }
                     continue
                 }
-                if self.rows.vals[i].fd != fdw || self.rows.vals[i].mode != i64(2) {
-                    net::extc_epoll_arm(s.ep, fdw, i64(0), i)     /* readable=0 ⇒ EPOLLOUT */
+                if self.rows.vals[i].fd != fdw || self.rows.vals[i].mode != 2 {
+                    net::extc_epoll_arm(s.ep, fdw, 0, i)     /* readable=0 ⇒ EPOLLOUT */
                     self.rows.vals[i].fd = fdw
-                    self.rows.vals[i].mode = i64(2)
+                    self.rows.vals[i].mode = 2
                 }
                 return
             }
-            if req >= i64(0) {
+            if req >= 0 {
                 /* 等这个 fd 可读；**行号就是 epoll 的 tag** ⇒ 回来时不用查任何表 ✓ */
-                if self.rows.vals[i].fd != req || self.rows.vals[i].mode != i64(1) {
-                    net::extc_epoll_arm(s.ep, req, i64(1), i)
+                if self.rows.vals[i].fd != req || self.rows.vals[i].mode != 1 {
+                    net::extc_epoll_arm(s.ep, req, 1, i)
                     self.rows.vals[i].fd = req
-                    self.rows.vals[i].mode = i64(1)
+                    self.rows.vals[i].mode = 1
                 }
                 return
             }
@@ -159,10 +159,10 @@ struct tasks<T> {
         if self.rows.vals[i].done { return }
         self.rows.vals[i].done = true
         s.timers.cancel(i)
-        self.rows.vals[i].fd = i64(-2)
-        self.rows.vals[i].mode = i64(0)
+        self.rows.vals[i].fd = -2
+        self.rows.vals[i].mode = 0
         self.freeq.push(i)
-        s.live = s.live - i64(1)
+        s.live = s.live - 1
     }
 
     /* 脚本化的"事件源"：按 order 里的下标依次推进；返回还剩几个活任务。 */
@@ -170,7 +170,7 @@ struct tasks<T> {
         var k: i64 = 0
         while k < order.len {
             var i: i64 = order[k]
-            if i >= i64(0) && i < self.rows.len() { self.step(s, i) }
+            if i >= 0 && i < self.rows.len() { self.step(s, i) }
             k = k + 1
         }
         return s.live
@@ -180,50 +180,50 @@ struct tasks<T> {
      * O(1) 派发。全程不扫任务表 ✓（这是 10k 空闲连接不再砍半的原因）。 */
     fn pump(self: mut ref tasks<T>, s: mut ref loop, timeout_ms: i64) -> i64 {
         /* **先还上一次批量 accept 攒下的连接**（不花系统调用 ✓）*/
-        if self.acceptq.len() > i64(0) {
+        if self.acceptq.len() > 0 {
             var oq: option<i64> = self.acceptq.pop()
             return oq!
         }
         var waitMs: i64 = timeout_ms
-        if waitMs < i64(0) { waitMs = i64(0) }          /* 负超时 = 不阻塞 */
+        if waitMs < 0 { waitMs = 0 }          /* 负超时 = 不阻塞 */
         waitMs = s.timers.timeoutMs(time::now(), waitMs)
-        if s.ep < i64(0) { return i64(-2) }
+        if s.ep < 0 { return -2 }
 
         /* ① runq：要立刻推进的行。一个行可能连着推进多次（`yield 负数` = 别等，再来一轮）*/
         while self.rqHead < self.runq.len() {
             var i: i64 = self.runq.vals[self.rqHead]
-            self.rqHead = self.rqHead + i64(1)
+            self.rqHead = self.rqHead + 1
             self.resumeRow(s, i, false)
         }
-        if self.rqHead >= self.runq.len() && self.runq.len() > i64(0) {
+        if self.rqHead >= self.runq.len() && self.runq.len() > 0 {
             self.runq.clear()                              /* 整轮读完了 ⇒ 从头开始，别让它长 ✗ */
-            self.rqHead = i64(0)
+            self.rqHead = 0
         }
 
         /* ② 等**一批**就绪（listener 在 `init` 里注册过一次，tag = -1）。
          * 从前是"每次一个 tag"、靠运行时里的 static 环形队列 —— 那条隐藏状态让一个进程
          * 只能有一个循环。现在缓冲在这里（栈上 32 个），多实例、可重入、容量自己定。 */
         var tags: [32]i64
-        let n: i64 = net::extc_epoll_wait_into(s.ep, tags[..].data, i64(32), waitMs)
-        if n < i64(0) { return i64(-3) }                /* 出错 */
+        let n: i64 = net::extc_epoll_wait_into(s.ep, tags[..].data, 32, waitMs)
+        if n < 0 { return -3 }                /* 出错 */
         /* 超时（n == 0）**不能提前返回**：超时正是定时等待到期的时刻 */
-        var accepted: i64 = i64(-1)
+        var accepted: i64 = -1
         var k: i64 = 0
         while k < n {
             var tag: i64 = tags[k]
-            if tag == i64(-1) {
+            if tag == -1 {
                 /* **一次 accept 一批**（上限 64，别把别的事件饿死 ✓）。从前是"一轮只 accept 一个" ✗
                  * —— 建连风暴时 accept 速率被"每轮 ~20µs"卡在 ~50k/s：实测 10k 忙连接的 p50 就有
                  * 1.05s ✗，50k 直接排队到测量窗口之外（0 响应 ✗）。多出来的先入队，由 `pump` 开头
                  * 依次还回去 ⇒ 调用方的 `while { fd = pump(); if fd >= 0 add(fd) }` 一个字不改 ✓。 */
                 var j: i64 = 0
-                while s.listener >= i64(0) && j < i64(64) {
+                while s.listener >= 0 && j < 64 {
                     var cfd: i64 = net::extc_sock_accept(s.listener)
-                    if cfd < i64(0) { break }
-                    if accepted < i64(0) { accepted = cfd } else { self.acceptq.push(cfd) }
-                    j = j + i64(1)
+                    if cfd < 0 { break }
+                    if accepted < 0 { accepted = cfd } else { self.acceptq.push(cfd) }
+                    j = j + 1
                 }
-            } else if tag >= i64(0) && tag < self.rows.len() {
+            } else if tag >= 0 && tag < self.rows.len() {
                 self.resumeRow(s, tag, true)            /* 就绪恢复 ⇒ 之后可能是负请求/结束，都归它管 ✓ */
             }
             k = k + 1
@@ -234,18 +234,18 @@ struct tasks<T> {
         let nd: i64 = s.timers.popDue(time::now(), due[..])
         var d: i64 = 0
         while d < nd {
-            if due[d] >= i64(0) && due[d] < self.rows.len() { self.resumeRow(s, due[d], true) }
+            if due[d] >= 0 && due[d] < self.rows.len() { self.resumeRow(s, due[d], true) }
             d = d + 1
         }
-        if n == i64(0) && nd == i64(0) { return i64(-2) }   /* 既没就绪也没到期 = 真的超时 */
+        if n == 0 && nd == 0 { return -2 }   /* 既没就绪也没到期 = 真的超时 */
         return accepted
     }
 
     /* 一直跑到所有任务结束（没有 listener 的用法）。 */
     fn runEpoll(self: mut ref tasks<T>, s: mut ref loop, timeout_ms: i64) -> i64 {
-        while s.live > i64(0) {
+        while s.live > 0 {
             var r: i64 = self.pump(s, timeout_ms)
-            if r == i64(-2) && s.timers.count() == i64(0) { break }
+            if r == -2 && s.timers.count() == 0 { break }
         }
         return s.live
     }
@@ -255,7 +255,7 @@ struct tasks<T> {
  * 组装在调用点写一行字面量（**必须写在驱动它的那个作用域里**：池的板块跟着那个 place 走 ✓）：
  *
  *     var tasks: sched::tasks<i64> = { rows: sched::newRows(), runq: sched::newQ(),
- *                                     rqHead: i64(0), freeq: sched::newQ(), acceptq: sched::newQ() }
+ *                                     rqHead: 0, freeq: sched::newQ(), acceptq: sched::newQ() }
  *
  * 不能提供 `newTasks() -> tasks<i64>`：**包装结构体不算容器** ⇒ 从函数里返回它会被
  * "return value would hold a reference to a local variable that dies first" 拒 ✓（实测 ✓）。 */
@@ -266,14 +266,14 @@ fn newQ() -> vector<i64> { return vector<i64>::new() }
 /* `listener` 传 -1 就是"只驱动任务，不 accept"。 */
 fn init(s: mut ref loop, listener: i64) -> bool {
     s.listener = listener
-    s.live = i64(0)
+    s.live = 0
     s.timers.init()
-    s.pendingUntil = i64(0)
-    s.pendingFd = i64(-1)
+    s.pendingUntil = 0
+    s.pendingFd = -1
     s.ep = net::extc_epoll_new()
-    if s.ep < i64(0) { return false }
+    if s.ep < 0 { return false }
     /* listener **只注册一次**（从前每轮都 `epoll_ctl(ADD)` 一次 = 每轮一个白费的系统调用 ✗）*/
-    if listener >= i64(0) { net::extc_epoll_add(s.ep, listener, i64(1), i64(-1)) }
+    if listener >= 0 { net::extc_epoll_add(s.ep, listener, 1, -1) }
     return true
 }
 

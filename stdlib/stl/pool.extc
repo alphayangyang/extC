@@ -126,13 +126,13 @@ struct pool<T> {
 
     /* --- the packed metadata, in one place --- */
     @inline
-    fn pLow(e: i64) -> i64 { return e & i64(4294967295) }
+    fn pLow(e: i64) -> i64 { return e & 4294967295 }
     @inline
-    fn pDense(e: i64) -> i64 { return (e & i64(4294967295)) - i64(1) }
+    fn pDense(e: i64) -> i64 { return (e & 4294967295) - 1 }
     @inline
-    fn pGen(e: i64) -> i64 { return e >> i64(32) }
+    fn pGen(e: i64) -> i64 { return e >> 32 }
     @inline
-    fn pPack(gen: i64, low: i64) -> i64 { return (gen << i64(32)) | low }
+    fn pPack(gen: i64, low: i64) -> i64 { return (gen << 32) | low }
 
     /* --- the pool epoch, in one place: width lives in HANDLE_EPOCH_BITS --- */
     @inline
@@ -149,11 +149,11 @@ struct pool<T> {
     @inline
     fn pFree(self: ref pool<T>, e: i64) -> bool {
         let lo = pool<T>::pLow(e)
-        return lo == i64(0) || lo > self.cap
+        return lo == 0 || lo > self.cap
     }
 
     /* An empty pool that can hold `n` values before it has to grow. */
-    fn withCap(n: i64) -> pool<T> { return pool<T>::withParent(i64(-1), n) }
+    fn withCap(n: i64) -> pool<T> { return pool<T>::withParent(-1, n) }
 
     /* The same, nested: `parent` is the pool of the container that owns this one, so the two
      * records form the LOGICAL pool tree -- dropping the outer pool takes this
@@ -163,7 +163,7 @@ struct pool<T> {
         let rp = syspool::extc_pool_new(parent)      /* 池随容器创建，父池 = 外层容器 */
         let rpg = syspool::extc_pool_generation(rp)
         var c: i64 = n
-        if c < i64(8) { c = i64(8) }
+        if c < 8 { c = 8 }
         var p: pool<T> = {
             /* 这三块是**池自己的簿记**（`vals` 里未写过的槽在 `pFree` 判据下是空闲的，
              * 没人能读到未写的值）⇒ 用不清零那条路：一张新表天然全空闲，
@@ -173,10 +173,10 @@ struct pool<T> {
             ent:    poolSliceRaw<i64>(rp, c),
             pid:    rp,
             pidGen: rpg,
-            epoch:  i64(0),
+            epoch:  0,
             cursor: i32(0),
             holeHead: i32(-1),
-            n:      i64(0),
+            n:      0,
             cap:    c,
         }
         /* **不再逐槽初始化**：板块是清零的，而 `pFree` 把 `low == 0` 也认作空闲 ⇒ 全新的表
@@ -200,7 +200,7 @@ struct pool<T> {
     fn pLive(self: ref pool<T>, h: handle) -> bool {
         if pool<T>::pEp(h.ep) != pool<T>::pEp(self.epoch) { return false }
         let s = i64(h.slot)
-        if s < i64(0) || s >= self.cap { return false }
+        if s < 0 || s >= self.cap { return false }
         let e = self.ent[s]
         if self.pFree(e) { return false }                     /* 空闲槽（含从未用过的 0）*/
         return pool<T>::pGen(e) == i64(h.gen)
@@ -235,19 +235,19 @@ struct pool<T> {
     fn insert(self: mut ref pool<T>, v: T) -> handle {
         if self.pStaleSelf() { self.pPoisonSelf() }
         if self.holeHead < i32(0) && i64(self.cursor) >= self.cap { self.grow() }
-        var s: i64 = i64(0)
+        var s: i64 = 0
         if self.holeHead >= i32(0) {
             s = i64(self.holeHead)
-            self.holeHead = i32(pool<T>::pLow(self.ent[s]) - self.cap - i64(2))   /* pop the hole chain */
+            self.holeHead = i32(pool<T>::pLow(self.ent[s]) - self.cap - 2)   /* pop the hole chain */
         } else {
             s = i64(self.cursor)
             self.cursor = self.cursor + i32(1)
         }
         let e = self.ent[s]                                       /* may be last epoch's word */
-        self.ent[s] = pool<T>::pPack(pool<T>::pGen(e), self.n + i64(1))   /* live at dense n */
+        self.ent[s] = pool<T>::pPack(pool<T>::pGen(e), self.n + 1)   /* live at dense n */
         self.slots[self.n] = i32(s)
         self.vals[self.n] = v
-        self.n = self.n + i64(1)
+        self.n = self.n + 1
         return handle { slot: i32(s), gen: i32(pool<T>::pGen(e)), ep: pool<T>::pEp(self.epoch) }
     }
 
@@ -260,19 +260,19 @@ struct pool<T> {
         let s    = i64(h.slot)
         let e    = self.ent[s]
         let d    = pool<T>::pDense(e)            /* where it lives in the dense array */
-        let last = self.n - i64(1)
+        let last = self.n - 1
         if d != last {
             self.vals[d]   = self.vals[last]     /* move the last value into the hole */
             let moved = i64(self.slots[last])
             self.slots[d] = i32(moved)
             let me = self.ent[moved]
-            self.ent[moved] = pool<T>::pPack(pool<T>::pGen(me), d + i64(1))
+            self.ent[moved] = pool<T>::pPack(pool<T>::pGen(me), d + 1)
         }
         self.n = last
         /* Generation +1 (old handles of this slot are stale, IN THIS EPOCH TOO) and onto the
          * hole chain, in one store. The bumped gen is the whole reason the epoch check alone
          * is not enough: this slot can be handed out again moments from now, same epoch. */
-        self.ent[s] = pool<T>::pPack(pool<T>::pGen(e) + i64(1), i64(self.holeHead) + self.cap + i64(2))
+        self.ent[s] = pool<T>::pPack(pool<T>::pGen(e) + 1, i64(self.holeHead) + self.cap + 2)
         self.holeHead = i32(s)
         return true
     }
@@ -292,37 +292,37 @@ struct pool<T> {
     /* **守卫**：这一份池值还指着它的运行期记录吗？陈旧 ⇒ 收成空池（三块视图归零），
      * 下一次访问带位置地 trap。 */
     fn pStaleSelf(self: ref pool<T>) -> bool {
-        if self.pid < i64(0) { return false }
+        if self.pid < 0 { return false }
         return syspool::extc_pool_generation(self.pid) != self.pidGen
     }
     fn pPoisonSelf(self: mut ref pool<T>) {
-        self.vals  = poolSlice<T>(i64(-1), i64(0))
-        self.slots = poolSlice<i32>(i64(-1), i64(0))
-        self.ent   = poolSlice<i64>(i64(-1), i64(0))
-        self.n     = i64(0)
-        self.cap   = i64(0)
-        self.pid   = i64(-1)
+        self.vals  = poolSlice<T>(-1, 0)
+        self.slots = poolSlice<i32>(-1, 0)
+        self.ent   = poolSlice<i64>(-1, 0)
+        self.n     = 0
+        self.cap   = 0
+        self.pid   = -1
     }
 
     fn release(self: mut ref pool<T>) {
-        if self.pid < i64(0) { return }                        /* 已经放过 */
+        if self.pid < 0 { return }                        /* 已经放过 */
         /* One staleness question, one place to ask it (`pStaleSelf` -- this file's name for it,
          * kept apart from the element type's own methods): the inline copy of this compare used
          * to live here too, and two copies of a load-bearing check drift. */
         if self.pStaleSelf() {
-            self.pid = i64(-1)  /* 陈旧拷贝：槽位已被别的池复用，什么都不许做 */
+            self.pid = -1  /* 陈旧拷贝：槽位已被别的池复用，什么都不许做 */
             return
         }
         /* 三块视图先收成 0 长、容量归零，再把板块还给池：之后任何下标都是响亮越界
          * （带位置的 trap），而不是读写一块已经还掉的内存。 */
-        self.vals  = poolResize<T>(self.pid, self.vals, i64(0))
-        self.slots = poolResize<i32>(self.pid, self.slots, i64(0))
-        self.ent   = poolResize<i64>(self.pid, self.ent, i64(0))
-        self.cap   = i64(0)
+        self.vals  = poolResize<T>(self.pid, self.vals, 0)
+        self.slots = poolResize<i32>(self.pid, self.slots, 0)
+        self.ent   = poolResize<i64>(self.pid, self.ent, 0)
+        self.cap   = 0
         syspool::extc_pool_reset(self.pid)
         self.clear()
         syspool::extc_pool_drop(self.pid)
-        self.pid = i64(-1)
+        self.pid = -1
     }
 
     /* 当前容量（`shrink` 之后小下去；`grow` 是翻倍）*/
@@ -333,7 +333,7 @@ struct pool<T> {
      * 判据用它把「旧的几代列到底还没还」量成**精确字节**（tests/hashmap/run.sh）：
      * 还清了 ⇒ 只等于当下这几列；留了一代 ⇒ 立刻大一整代的量。 */
     fn bytesOf(self: ref pool<T>) -> i64 {
-        if self.pid < i64(0) { return i64(0) }
+        if self.pid < 0 { return 0 }
         return syspool::extc_pool_bytes(self.pid)
     }
 
@@ -347,7 +347,7 @@ struct pool<T> {
      * 三块都是**同一块缩回去**（内容由 resize 保住）⇒ 让出去的是真的内存。 */
     fn shrink(self: mut ref pool<T>) {
         var ncap: i64 = self.n
-        if ncap < i64(8) { ncap = i64(8) }
+        if ncap < 8 { ncap = 8 }
         if ncap >= self.cap { return }                  /* 没有可缩的 */
         self.vals  = poolResize<T>(self.pid, self.vals, ncap)
         self.slots = poolResize<i32>(self.pid, self.slots, ncap)
@@ -360,23 +360,23 @@ struct pool<T> {
          * above the new `cursor` are "never used this epoch" and need no chaining at all --
          * `insert` reaches them through the bump cursor, not through this chain. */
         var head: i32 = i32(-1)
-        var prev: i64 = i64(-1)
+        var prev: i64 = -1
         var used: i64 = i64(self.cursor)
         if used > ncap { used = ncap }
-        i = used - i64(1)
-        while i >= i64(0) {
+        i = used - 1
+        while i >= 0 {
             if self.pFree(ne[i]) {
-                if prev < i64(0) {
+                if prev < 0 {
                     head = i32(i)
                 } else {
-                    ne[prev] = pool<T>::pPack(pool<T>::pGen(ne[prev]), i + ncap + i64(2))
+                    ne[prev] = pool<T>::pPack(pool<T>::pGen(ne[prev]), i + ncap + 2)
                 }
                 prev = i
             }
-            i = i - i64(1)
+            i = i - 1
         }
-        if prev >= i64(0) {
-            ne[prev] = pool<T>::pPack(pool<T>::pGen(ne[prev]), i64(head) + ncap + i64(2))
+        if prev >= 0 {
+            ne[prev] = pool<T>::pPack(pool<T>::pGen(ne[prev]), i64(head) + ncap + 2)
         }
         /* Everything past `n` in the new table was either a hole (now on the chain) or never
          * used at all, so the frontier is "the first never-used slot". */
@@ -387,8 +387,8 @@ struct pool<T> {
 
     /* O(1) clear: flip the pool epoch, reset the cursors, write no slot at all. */
     fn clear(self: mut ref pool<T>) {
-        self.epoch    = self.epoch + i64(1)
-        self.n        = i64(0)
+        self.epoch    = self.epoch + 1
+        self.n        = 0
         self.cursor   = i32(0)
         self.holeHead = i32(-1)
     }
@@ -437,16 +437,16 @@ struct pool<T> {
         while i < hs.len {
             let h = hs[i]
             let s = i64(h.slot)
-            var d: i64 = i64(-1)
-            if s >= i64(0) && s < self.cap {
+            var d: i64 = -1
+            if s >= 0 && s < self.cap {
                 let e = self.ent[s]
                 if pool<T>::pLow(e) <= self.cap && pool<T>::pGen(e) == i64(h.gen) {
                     d = pool<T>::pDense(e)
-                    k = k + i64(1)
+                    k = k + 1
                 }
             }
             out[i] = d
-            i = i + i64(1)
+            i = i + 1
         }
         return k
     }
@@ -458,15 +458,15 @@ struct pool<T> {
     fn toSlice(self: ref pool<T>) -> slice<T> {
         var out: mut slice<T> = new T[self.n]
         var i: i64 = 0
-        while i < self.n { out[i] = self.vals[i]  i = i + i64(1) }
+        while i < self.n { out[i] = self.vals[i]  i = i + 1 }
         return out
     }
 
     /* Grow by 1.5x, in place when the allocator can: the three blocks are OURS (the pool's
      * plate), so growing returns the old blocks instead of leaving them behind. */
     fn grow(self: mut ref pool<T>) {
-        if self.pid < i64(0) { return }
-        let ncap = self.cap + self.cap / i64(2)
+        if self.pid < 0 { return }
+        let ncap = self.cap + self.cap / 2
         self.vals  = poolResize<T>(self.pid, self.vals, ncap)
         self.slots = poolResize<i32>(self.pid, self.slots, ncap)
         self.ent   = poolResize<i64>(self.pid, self.ent, ncap)

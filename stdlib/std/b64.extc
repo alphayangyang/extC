@@ -33,10 +33,10 @@ let PAD: u8 = 61            /* '=' */
 /* 6 bit → 输出字符 */
 @private
 fn pEnc6(v: i64, url: bool) -> u8 {
-    if v < i64(26) { return u8(i32(65) + i32(v)) }
-    if v < i64(52) { return u8(i32(97) + i32(v) - i32(26)) }
-    if v < i64(62) { return u8(i32(48) + i32(v) - i32(52)) }
-    if v == i64(62) {
+    if v < 26 { return u8(i32(65) + i32(v)) }
+    if v < 52 { return u8(i32(97) + i32(v) - i32(26)) }
+    if v < 62 { return u8(i32(48) + i32(v) - i32(52)) }
+    if v == 62 {
         if url { return u8(45) }
         return u8(43)
     }
@@ -51,55 +51,55 @@ fn pDec6(c: u8, url: bool) -> i64 {
     if c >= u8(97) && c <= u8(122) { return i64(i32(c) - i32(97) + i32(26)) }
     if c >= u8(48) && c <= u8(57) { return i64(i32(c) - i32(48) + i32(52)) }
     if url {
-        if c == u8(45) { return i64(62) }
-        if c == u8(95) { return i64(63) }
-        return i64(-1)
+        if c == u8(45) { return 62 }
+        if c == u8(95) { return 63 }
+        return -1
     }
-    if c == u8(43) { return i64(62) }
-    if c == u8(47) { return i64(63) }
-    return i64(-1)
+    if c == u8(43) { return 62 }
+    if c == u8(47) { return 63 }
+    return -1
 }
 
 /* `n` 字节编码后要多长（含填充）。调用方用它算缓冲大小。 */
 fn encodedLen(n: i64) -> i64 {
-    if n <= i64(0) { return i64(0) }
-    return ((n + i64(2)) / i64(3)) * i64(4)
+    if n <= 0 { return 0 }
+    return ((n + 2) / 3) * 4
 }
 
 /* `n` 个 base64 字符最多解出多少字节（上界，用来算缓冲大小）。 */
 fn decodedMax(n: i64) -> i64 {
-    if n <= i64(0) { return i64(0) }
-    return (n / i64(4)) * i64(3)
+    if n <= 0 { return 0 }
+    return (n / 4) * 3
 }
 
 @private
 fn pEnc(src: slice<u8>, out: mut slice<u8>, url: bool) -> i64 {
     let need: i64 = encodedLen(src.len)
-    if out.len < need { return i64(-1) }
+    if out.len < need { return -1 }
     var i: i64 = 0
     var o: i64 = 0
-    while i + i64(3) <= src.len {
-        let n: i64 = i64(src[i]) * i64(65536) + i64(src[i + i64(1)]) * i64(256) + i64(src[i + i64(2)])
-        out[o] = pEnc6(n / i64(262144), url)
-        out[o + i64(1)] = pEnc6((n / i64(4096)) % i64(64), url)
-        out[o + i64(2)] = pEnc6((n / i64(64)) % i64(64), url)
-        out[o + i64(3)] = pEnc6(n % i64(64), url)
-        i = i + i64(3)
-        o = o + i64(4)
+    while i + 3 <= src.len {
+        let n: i64 = i64(src[i]) * 65536 + i64(src[i + 1]) * 256 + i64(src[i + 2])
+        out[o] = pEnc6(n / 262144, url)
+        out[o + 1] = pEnc6((n / 4096) % 64, url)
+        out[o + 2] = pEnc6((n / 64) % 64, url)
+        out[o + 3] = pEnc6(n % 64, url)
+        i = i + 3
+        o = o + 4
     }
     let rem: i64 = src.len - i
-    if rem == i64(1) {
-        let n: i64 = i64(src[i]) * i64(65536)
-        out[o] = pEnc6(n / i64(262144), url)
-        out[o + i64(1)] = pEnc6((n / i64(4096)) % i64(64), url)
-        out[o + i64(2)] = PAD
-        out[o + i64(3)] = PAD
-    } else if rem == i64(2) {
-        let n: i64 = i64(src[i]) * i64(65536) + i64(src[i + i64(1)]) * i64(256)
-        out[o] = pEnc6(n / i64(262144), url)
-        out[o + i64(1)] = pEnc6((n / i64(4096)) % i64(64), url)
-        out[o + i64(2)] = pEnc6((n / i64(64)) % i64(64), url)
-        out[o + i64(3)] = PAD
+    if rem == 1 {
+        let n: i64 = i64(src[i]) * 65536
+        out[o] = pEnc6(n / 262144, url)
+        out[o + 1] = pEnc6((n / 4096) % 64, url)
+        out[o + 2] = PAD
+        out[o + 3] = PAD
+    } else if rem == 2 {
+        let n: i64 = i64(src[i]) * 65536 + i64(src[i + 1]) * 256
+        out[o] = pEnc6(n / 262144, url)
+        out[o + 1] = pEnc6((n / 4096) % 64, url)
+        out[o + 2] = pEnc6((n / 64) % 64, url)
+        out[o + 3] = PAD
     }
     return need
 }
@@ -107,39 +107,39 @@ fn pEnc(src: slice<u8>, out: mut slice<u8>, url: bool) -> i64 {
 @private
 fn pDec(src: slice<u8>, out: mut slice<u8>, url: bool) -> i64 {
     let n: i64 = src.len
-    if n == i64(0) { return i64(0) }
-    if n % i64(4) != i64(0) { return i64(-1) }        /* 长度必须是 4 的倍数 */
-    var pad: i64 = i64(0)
-    if n >= i64(1) && src[n - i64(1)] == PAD { pad = pad + i64(1) }
-    if n >= i64(2) && src[n - i64(2)] == PAD { pad = pad + i64(1) }
-    if pad > i64(2) { return i64(-1) }
-    let total: i64 = (n / i64(4)) * i64(3) - pad
-    if out.len < total { return i64(-1) }
-    var o: i64 = i64(0)
-    var g: i64 = i64(0)
+    if n == 0 { return 0 }
+    if n % 4 != 0 { return -1 }        /* 长度必须是 4 的倍数 */
+    var pad: i64 = 0
+    if n >= 1 && src[n - 1] == PAD { pad = pad + 1 }
+    if n >= 2 && src[n - 2] == PAD { pad = pad + 1 }
+    if pad > 2 { return -1 }
+    let total: i64 = (n / 4) * 3 - pad
+    if out.len < total { return -1 }
+    var o: i64 = 0
+    var g: i64 = 0
     while g < n {
-        let last: bool = g + i64(4) >= n
+        let last: bool = g + 4 >= n
         let c0: i64 = pDec6(src[g], url)
-        let c1: i64 = pDec6(src[g + i64(1)], url)
-        if c0 < i64(0) || c1 < i64(0) { return i64(-1) }
-        var c2: i64 = i64(0)
-        var c3: i64 = i64(0)
-        if src[g + i64(2)] == PAD {
-            if !last || src[g + i64(3)] != PAD { return i64(-1) }   /* 填充只能出现在最后一组，且连用 */
-        } else if src[g + i64(3)] == PAD {
-            if !last { return i64(-1) }
-            c2 = pDec6(src[g + i64(2)], url)
-            if c2 < i64(0) { return i64(-1) }
+        let c1: i64 = pDec6(src[g + 1], url)
+        if c0 < 0 || c1 < 0 { return -1 }
+        var c2: i64 = 0
+        var c3: i64 = 0
+        if src[g + 2] == PAD {
+            if !last || src[g + 3] != PAD { return -1 }   /* 填充只能出现在最后一组，且连用 */
+        } else if src[g + 3] == PAD {
+            if !last { return -1 }
+            c2 = pDec6(src[g + 2], url)
+            if c2 < 0 { return -1 }
         } else {
-            c2 = pDec6(src[g + i64(2)], url)
-            c3 = pDec6(src[g + i64(3)], url)
-            if c2 < i64(0) || c3 < i64(0) { return i64(-1) }
+            c2 = pDec6(src[g + 2], url)
+            c3 = pDec6(src[g + 3], url)
+            if c2 < 0 || c3 < 0 { return -1 }
         }
-        let v: i64 = c0 * i64(262144) + c1 * i64(4096) + c2 * i64(64) + c3
-        if o < total { out[o] = u8((v / i64(65536)) % i64(256))  o = o + i64(1) }
-        if o < total { out[o] = u8((v / i64(256)) % i64(256))  o = o + i64(1) }
-        if o < total { out[o] = u8(v % i64(256))  o = o + i64(1) }
-        g = g + i64(4)
+        let v: i64 = c0 * 262144 + c1 * 4096 + c2 * 64 + c3
+        if o < total { out[o] = u8((v / 65536) % 256)  o = o + 1 }
+        if o < total { out[o] = u8((v / 256) % 256)  o = o + 1 }
+        if o < total { out[o] = u8(v % 256)  o = o + 1 }
+        g = g + 4
     }
     return total
 }

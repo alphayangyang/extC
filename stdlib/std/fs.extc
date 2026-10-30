@@ -75,9 +75,9 @@ struct ifstream {
     /* Read once. Returns how many bytes arrived; 0 means end of file. */
     fn readSome(self: mut ref ifstream, out: mut slice<u8>) -> result<i64, io::ioError> {
         if !self.open { return failure(io::ioError.closed(self.fd)) }
-        if out.len == i64(0) { return success(i64(0)) }
+        if out.len == 0 { return success(0) }
         let n = sysio::read(self.fd, out.data, out.len)
-        if n < i64(0) { return failure(io::ioError.readFailed(self.fd)) }
+        if n < 0 { return failure(io::ioError.readFailed(self.fd)) }
         return success(n)
     }
 
@@ -90,12 +90,12 @@ struct ifstream {
         var total: i64 = 0
         while total < out.len {
             let n = self.readSome(out[total..])?
-            if n == i64(0) { return success(total) }        /* end of file */
+            if n == 0 { return success(total) }        /* end of file */
             total = total + n
         }
         var probe: [1]u8
         let more = self.readSome(probe[..])?
-        if more > i64(0) { return failure(io::ioError.destFull(total)) }
+        if more > 0 { return failure(io::ioError.destFull(total)) }
         return success(total)
     }
 
@@ -230,7 +230,7 @@ struct ofstream {
         var done: i64 = 0
         while done < buf.len {
             let n = sysio::write(self.fd, buf[done..].data, buf.len - done)
-            if n < i64(0) { return failure(io::ioError.writeFailed(self.fd)) }
+            if n < 0 { return failure(io::ioError.writeFailed(self.fd)) }
             done = done + n
         }
         return success(done)
@@ -344,10 +344,10 @@ fn openOut(path: slice<u8>) -> result<unit, io::ioError> {
 
 /* 把缓冲里已有的字节写出去 ✓ */
 fn flushOut() -> result<unit, io::ioError> {
-    if OUT_LEN == i64(0) { return success(unit {}) }
+    if OUT_LEN == 0 { return success(unit {}) }
     let n = sysio::write(OUT_FD, OUT_BUF[..].data, OUT_LEN)
-    if n < i64(0) { OUT_FAILED = true  return failure(io::ioError.writeFailed(OUT_FD)) }
-    OUT_LEN = i64(0)
+    if n < 0 { OUT_FAILED = true  return failure(io::ioError.writeFailed(OUT_FD)) }
+    OUT_LEN = 0
     return success(unit {})
 }
 
@@ -356,7 +356,7 @@ fn closeOut() -> result<unit, io::ioError> {
     let r = flushOut()
     let c = sysio::close(OUT_FD)
     OUT_FD = i32(0) - i32(1)
-    if OUT_LEN != i64(0) { return r }
+    if OUT_LEN != 0 { return r }
     if c < i32(0) { return failure(io::ioError.closed(i32(0) - i32(1))) }
     return success(unit {})
 }
@@ -366,13 +366,13 @@ fn outPut(s: slice<u8>) {
     if OUT_FD < i32(0) { OUT_FAILED = true  return }
     var done: i64 = 0
     while done < s.len {
-        if OUT_LEN >= i64(65536) {
+        if OUT_LEN >= 65536 {
             match flushOut() {
                 success(u) => { }
                 failure(e) => { OUT_FAILED = true  return }
             }
         }
-        var room: i64 = i64(65536) - OUT_LEN
+        var room: i64 = 65536 - OUT_LEN
         var left: i64 = s.len - done
         if left < room { room = left }
         var k: i64 = 0
