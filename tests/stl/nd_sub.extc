@@ -1,0 +1,26 @@
+// stl::nd 的两下标糖：`v[i, j]` 直译成 `nd::at2`、`v[r0..r1, c0..c1]` 直译成
+// `nd::slice2`（都是库函数，没有新语法节点，也没有新的运行期形状）。
+use std::io
+use stl::nd
+
+fn main() -> i32 {
+    var a: ndarray<f64> = ndarray<f64>::zeros2(3, 4) ?? ndarray<f64>::empty()
+    var v: ndview<f64> = a.viewMut()
+    var r: i64 = 0
+    while r < 3 {
+        var c: i64 = 0
+        while c < 4 {
+            v.data[r * 4 + c] = f64(r * 10 + c)
+            c = c + 1
+        }
+        r = r + 1
+    }
+    let x: f64 = v[1, 2]
+    let y: f64 = v[2, 3]
+    let sub: ndview<f64> = v[1..3, 1..3] ?? v
+    let s: f64 = nd::sumv(sub) ?? f64(-1.0)
+    let t: ndview<f64> = nd::swapDims(v, 0, 1) ?? v
+    let z: f64 = t[2, 1]
+    io::cout << f"x={x} y={y} s={s} z={z}\n"
+    return 0
+}

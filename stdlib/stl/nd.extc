@@ -536,6 +536,42 @@ fn sub<T>(v: ndview<T>, i: i64) -> ?ndview<T> {
 }
 
 
+/** @brief 读二维视图的一个元素（`v[i, j]` 的下标糖直译到这里）。
+ *  @param v 视图（rank 至少 2）。
+ *  @param i 第 0 维下标。
+ *  @param j 第 1 维下标。
+ *  @return 元素值；维度不足或下标越界时 trap。
+ */
+fn at2<T>(v: ndview<T>, i: i64, j: i64) -> T {
+    if v.rank < 2 { trap("at2: the view has fewer than 2 dimensions") }
+    if i < 0 || i >= v.shape[0] { trap("at2: the first index is out of range") }
+    if j < 0 || j >= v.shape[1] { trap("at2: the second index is out of range") }
+    return v.data[v.off + i * v.strides[0] + j * v.strides[1]]
+}
+
+/** @brief 取二维视图的一个子矩形（`v[r0..r1, c0..c1]` 的下标糖直译到这里）；零拷贝。
+ *  @param v 视图（rank 至少 2）。
+ *  @param r0 第 0 维起点。
+ *  @param r1 第 0 维终点（不含）。
+ *  @param c0 第 1 维起点。
+ *  @param c1 第 1 维终点（不含）。
+ *  @return 二维子视图；rank 不足或区间为空/越界时 `none`。
+ */
+fn slice2<T>(v: ndview<T>, r0: i64, r1: i64, c0: i64, c1: i64) -> ?ndview<T> {
+    if v.rank < 2 { return none }
+    if r0 < 0 || c0 < 0 || r1 > v.shape[0] || c1 > v.shape[1] { return none }
+    if r1 < r0 || c1 < c0 { return none }
+    var shape: [8]i64
+    var k: i64 = 0
+    while k < v.rank {
+        shape[k] = v.shape[k]
+        k = k + 1
+    }
+    shape[0] = r1 - r0
+    shape[1] = c1 - c0
+    return ndview<T>::strided(v.data, v.off + r0 * v.strides[0] + c0 * v.strides[1], v.rank, shape, v.strides)
+}
+
 /** @brief 整体形状是否一致（逐元素运算的守卫）。
  *  @param dst 目标视图。
  *  @param src 输入视图。

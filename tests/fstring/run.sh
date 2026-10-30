@@ -50,6 +50,16 @@ else
     echo "  FAIL value-fstring    ->  $(tr '\n' '|' < "$tmp/value")"; fail=$((fail+1))
 fi
 
+# ①e 槽里的模块路径（`{nd::at2(v, 0, 1)}`）：`::` 不是说明符的开头
+"$EXTC" -w --run tests/fstring/modpath.extc > "$tmp/modpath" 2>&1
+printf 'e=2.5 at=2.5\n' > "$tmp/modpathwant"
+if diff -q "$tmp/modpath" "$tmp/modpathwant" >/dev/null 2>&1; then
+    echo "  ok   module-path-slot  ->  槽里的 \`::\` 是模块路径，不当说明符"
+    pass=$((pass+1))
+else
+    echo "  FAIL module-path-slot  ->  $(tr '\n' '|' < "$tmp/modpath")"; fail=$((fail+1))
+fi
+
 # ② 与手写链逐字节相同
 "$EXTC" -w --no-line-map -o "$tmp/a.c" tests/fstring/main.extc >/dev/null 2>&1
 "$EXTC" -w --no-line-map -o "$tmp/b.c" tests/fstring/plain.extc >/dev/null 2>&1

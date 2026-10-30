@@ -3792,7 +3792,12 @@ static bool fmtSplice(Parser *p, Expr **lhs, Token *ft) {
                 if (d == '"') { st = true; continue; }
                 if (d == '(' || d == '[' || d == '{') d2 += 1;
                 else if (d == ')' || d == ']' || d == '}') d2 -= 1;
-                else if (d == ':' && d2 == 0) { q = t; break; }
+                else if (d == ':' && d2 == 0) {
+                    /* `::` 是模块路径分隔符（`{nd::sumv(v)}`），不是说明符的开头。 */
+                    if (t + 1 < j && src[t + 1] == ':') { t += 1; continue; }
+                    q = t;
+                    break;
+                }
             }
         }
         size_t exprLen = q - (i + 1);
@@ -3855,6 +3860,30 @@ static bool fmtSplice(Parser *p, Expr **lhs, Token *ft) {
         return false;
     }
     return true;
+}
+
+/**
+ * @brief 造一个模块函数的调用节点（如 `stl::nd::at2(...)`）。
+ *
+ * 与 `fstrFrom` 同一招：写**完整模块路径**，这样解析器不必知道调用方的 import 别名，
+ * 只要那个模块被 import 过就能被加载器解析出来。
+ *
+ * @param p         解析器。
+ * @param modPrefix 模块路径（`"stl::nd"`）。
+ * @param name      函数名。
+ * @param args      实参表（已填好，所有权转给节点）。
+ * @param line      挂到节点上的源码行。
+ * @return          新的 EX_ASSOC 节点（`isCall = true`）。
+ */
+static Expr *moduleCall(Parser *p, const char *modPrefix, const char *name, Vec *args, int line) {
+    Expr *f = exprNew(p->arena, EX_ASSOC, line);
+    f->u.assoc.typeName = "stl";
+    f->u.assoc.modPrefix = modPrefix;
+    f->u.assoc.name = name;
+    vecInit(&f->u.assoc.targs, p->arena, sizeof(void *));
+    f->u.assoc.args = *args;
+    f->u.assoc.isCall = true;
+    return f;
 }
 
 /**
@@ -3951,6 +3980,8 @@ static Expr *fmtValue(Parser *p, Token *ft) {
                 if (d == '(' || d == '[' || d == '{') d2 += 1;
                 else if (d == ')' || d == ']' || d == '}') d2 -= 1;
                 else if (d == ':' && d2 == 0) {
+                    /* `::` 是模块路径分隔符（`{nd::sumv(v)}`），不是说明符的开头。 */
+                    if (t + 1 < j && src[t + 1] == ':') { t += 1; continue; }
                     ctxError(p->ctx, line, col + (int)(t - i),
                              "a value f-string takes no format specifiers yet -- drop the `:…`,"
                              " or write this one through `io::cout << f\"…\"`",
@@ -4246,44 +4277,95 @@ static Expr *parsePostfix(Parser *p) {
                 e = f;
             }
         } else if (at(p, "[")) {
-            /* `a[i]` indexes and `a[lo..hi]` slices.  The brackets hold an
-             * ordinary expression, so struct literals are allowed inside. */
+            /* `a[i]` indexes, `a[lo..hi]` slices, and `a[i, j]` / `a[r0..r1, c0..c1]`
+             * are the two-subscript forms (lowered to `stl::nd::at2` / `stl::nd::slice2`,
+             * so they are plain library calls: no new AST kind, no new runtime shape). */
             Token *br = take(p);
             skipNl(p);
             const bool savedC = p->inCond;
             p->inCond = false;
 
-            Expr *lo = NULL, *hi = NULL;
-            bool isRange = false;
-            if (!at(p, "..")) {
-                lo = parseExpr(p);
-                if (!lo) { p->inCond = savedC; return NULL; }
-                skipNl(p);
-            }
-            if (at(p, "..")) {
-                isRange = true;
-                take(p);
-                skipNl(p);
-                if (!at(p, "]")) {
-                    hi = parseExpr(p);
-                    if (!hi) { p->inCond = savedC; return NULL; }
+            typedef struct { Expr *lo, *hi; bool isRange; } SubItem;
+            Vec items;
+            vecInit(&items, p->arena, sizeof(SubItem));
+            for (;;) {
+                SubItem it;
+                it.lo = NULL;
+                it.hi = NULL;
+                it.isRange = false;
+                if (!at(p, "..")) {
+                    it.lo = parseExpr(p);
+                    if (!it.lo) { p->inCond = savedC; return NULL; }
+                    skipNl(p);
                 }
+                if (at(p, "..")) {
+                    it.isRange = true;
+                    take(p);
+                    skipNl(p);
+                    if (!at(p, "]") && !at(p, ",")) {
+                        it.hi = parseExpr(p);
+                        if (!it.hi) { p->inCond = savedC; return NULL; }
+                        skipNl(p);
+                    }
+                }
+                *(SubItem *)vecPush(&items) = it;
+                if (!at(p, ",")) break;
+                take(p);
                 skipNl(p);
             }
             p->inCond = savedC;
             if (!expect(p, "]", NULL)) return NULL;
 
-            if (isRange) {
-                Expr *sl = exprNew(p->arena, EX_SLICE, br->line);
-                sl->u.slice.obj = e;
-                sl->u.slice.lo  = lo;
-                sl->u.slice.hi  = hi;
-                e = sl;
+            if (items.len == 1) {
+                SubItem *it = (SubItem *)vecAt(&items, 0);
+                if (it->isRange) {
+                    Expr *sl = exprNew(p->arena, EX_SLICE, br->line);
+                    sl->u.slice.obj = e;
+                    sl->u.slice.lo  = it->lo;
+                    sl->u.slice.hi  = it->hi;
+                    e = sl;
+                } else {
+                    Expr *ix = exprNew(p->arena, EX_INDEX, br->line);
+                    ix->u.index.obj = e;
+                    ix->u.index.index = it->lo;
+                    e = ix;
+                }
+            } else if (items.len == 2) {
+                SubItem *a0 = (SubItem *)vecAt(&items, 0);
+                SubItem *a1 = (SubItem *)vecAt(&items, 1);
+                Vec args;
+                vecInit(&args, p->arena, sizeof(void *));
+                *(Expr **)vecPush(&args) = e;
+                if (!a0->isRange && !a1->isRange) {
+                    *(Expr **)vecPush(&args) = a0->lo;
+                    *(Expr **)vecPush(&args) = a1->lo;
+                    e = moduleCall(p, "stl::nd", "at2", &args, br->line);
+                } else if (a0->isRange && a1->isRange) {
+                    if (!a0->lo || !a0->hi || !a1->lo || !a1->hi) {
+                        ctxError(p->ctx, br->line, br->col,
+                                 "write both ends of each range: `v[r0..r1, c0..c1]`",
+                                 "an open-ended range is not supported in a two-subscript"
+                                 " slice");
+                        return NULL;
+                    }
+                    *(Expr **)vecPush(&args) = a0->lo;
+                    *(Expr **)vecPush(&args) = a0->hi;
+                    *(Expr **)vecPush(&args) = a1->lo;
+                    *(Expr **)vecPush(&args) = a1->hi;
+                    e = moduleCall(p, "stl::nd", "slice2", &args, br->line);
+                } else {
+                    ctxError(p->ctx, br->line, br->col,
+                             "use two indices (`v[i, j]`) or two ranges"
+                             " (`v[r0..r1, c0..c1]`), not one of each",
+                             "a two-subscript expression mixes an index and a range");
+                    return NULL;
+                }
             } else {
-                Expr *ix = exprNew(p->arena, EX_INDEX, br->line);
-                ix->u.index.obj = e;
-                ix->u.index.index = lo;
-                e = ix;
+                ctxError(p->ctx, br->line, br->col,
+                         "two subscripts are supported for now (rank-2 views); for higher ranks"
+                         " use `stl::nd`'s view constructors",
+                         "a subscript list holds at most two items");
+                return NULL;
             }
         } else if (at(p, "(")) {
             Vec args;

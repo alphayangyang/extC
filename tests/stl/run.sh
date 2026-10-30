@@ -36,6 +36,7 @@ run_case seq     tests/stl/seq.extc     "sum=10500000 max=4500000 min=1000000 is
 echo "== stl::tensor：二维 strided 视图（连续 / 转置 / 子矩阵 / 步长 / 失败路径）=="
 run_case tensor  tests/stl/tensor.extc  "g=6 w=true g2=99 s=159 ts=159 rs=1 ss=141 bsum=-1 ior=false fs=42 as=183 cs=12 st=12"
 run_case nd      tests/stl/nd.extc      "f=true s=true a=true x=true s1=24 s2=72 s3=96 s4=168 st=24 s5=12 bad=false s6=-1 cnt=16 c3=24"
+run_case nd_sub  tests/stl/nd_sub.extc  "x=12 y=23 s=66 z=12"
 run_case split tests/stl/split.extc "n=4 total=6 e=0"
 run_case string_ops tests/stl/string_ops.extc "n=3 j=[ a | b | c ] t1=[hi] t2=[x ] t3=[ y] e=0"
 run_case string_plus tests/stl/string_plus.extc "abcde ababcde x#7"

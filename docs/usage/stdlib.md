@@ -494,6 +494,13 @@ fn main() -> i32 {
 | 逐元素 | `fn filled<T>(v, x)` · `addInto<T>(dst, a, b)` · `subInto<T>` · `mulInto<T>` · `scaleInto<T>(dst, a, k)` · `axpyInto<T>(dst, a, b, k)`（`dst = a + k*b`，全部写到目标、形状不一致返回 `false`） |
 | `sumv<T>` | `fn sumv<T>(v: ndview<T>) -> ?T`（行主序：idx[0] 变化最慢；空视图 `none`） |
 | `swapDims<T>` / `sub<T>` | `fn swapDims<T>(v, i, j) -> ?ndview<T>`（换维，零拷贝）· `fn sub<T>(v, i) -> ?ndview<T>`（取第 0 维的第 i 片，降一维） |
+| `at2<T>` / `slice2<T>` | `fn at2<T>(v, i, j) -> T`（读一个元素；维度不足/越界 trap）· `fn slice2<T>(v, r0, r1, c0, c1) -> ?ndview<T>`（二维子矩形，零拷贝；越界或空区间 `none`）。**下标糖** `v[i, j]` / `v[r0..r1, c0..c1]` 就直译到这两个函数（rank-2 糖；更高维仍用上面的视图构造器） |
+
+**两下标糖**：`v[i, j]` 读一个元素（等价于 `nd::at2(v, i, j)`，越界 trap），
+`v[r0..r1, c0..c1]` 取一个二维子视图（等价于 `nd::slice2(...)`，越界给 `none`）。
+糖只是把这两种写法直译成库函数调用 —— 没有新的语法节点，也没有新的运行期形状，所以转置、步长视图
+（`nd::swapDims` 的结果）上同样能用。两下标要求"两个下标"或"两个区间"，一标一区间在编译期就报错；
+赋值目标形式（`v[i, j] = x`）第一版不支持，请写 `v.data[...]` 或逐元素内核。
 
 **为什么不是 `slice<slice<T>>`**：嵌套切片每层是另一块 buffer 或指向别处的描述符，遍历时每行跳一次地址，
 预取器跟不住。这里是一块 buffer + 每维步长，行主序时最内层步长为 1，N 维遍历在内存里仍是一条流；
@@ -519,6 +526,28 @@ fn main() -> i32 {
 ```
 
 实测：`n=24 s=36 t=72 tr=36`。细节见 `stdlib/stl/nd.extc` 与 `tests/stl/nd.extc`。
+
+二维视图上可以直接写下标糖（`use stl::nd` 之后）：
+
+```extc
+// 结果：one=12 sub=66
+use std::io
+use stl::nd
+
+fn main() -> i32 {
+    var a: ndarray<f64> = ndarray<f64>::zeros2(3, 4) ?? ndarray<f64>::empty()
+    var v: ndview<f64> = a.viewMut()
+    for r in 0..3 {
+        for c in 0..4 {
+            v.data[r * 4 + c] = f64(r * 10 + c)
+        }
+    }
+    let sub: ndview<f64> = v[1..3, 1..3] ?? v
+    let s: f64 = nd::sumv(sub) ?? f64(0.0)
+    io::cout << f"one={v[1, 2]} sub={s}\n"
+    return 0
+}
+```
 
 ## 3. `std::*`：模块
 
