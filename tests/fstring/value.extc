@@ -17,6 +17,8 @@ fn main() -> i32 {
     let d = f"none"
     let x: f64 = 3.14159
     let e = f"[{n:>4}][{n:<4}][{n:03}][{x:8.2f}][{x:.1f}]"
-    io::cout << a << "\n" << b << "\n" << c << "\n" << d << "\n" << tag(n) << "\n" << e << "\n"
+    let t: slice<u8> = "hi"
+    let g = f"[{t:6}][{n:6}]"      /* 没写对齐：文本靠左、数字靠右（与 `<<` 路径同一条规定） */
+    io::cout << a << "\n" << b << "\n" << c << "\n" << d << "\n" << tag(n) << "\n" << e << "\n" << g << "\n"
     return 0
 }

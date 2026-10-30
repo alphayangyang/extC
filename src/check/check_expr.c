@@ -1313,7 +1313,10 @@ static Vec fnTypeParams(Checker *c, Type *ft) {
 static bool lendViewArg(Checker *c, Type *want, Expr **pslot) {
     if (!c || !want || !pslot || !*pslot) return false;
     Type *wb = ttBase(want);
-    if (!wb || ttIsError(wb) || !ttIsViewType(wb) || want->mut) return false;
+    if (!wb || ttIsError(wb) || !ttIsViewType(wb)) return false;
+    /* 只读视图借 `asSlice` / `a[..]`；可写视图借 `asMutSlice` / `a[..]`（后者产生的视图随
+     * 数组的可写性而定）。可写借出要求容器本身是可写的地方 —— 借用检查在后面照常把关。 */
+    bool wantMut = want->mut;
     Type *wantElem = viewElemOf(wb);
     if (!wantElem) return false;
     Expr *a = *pslot;
@@ -1335,7 +1338,7 @@ static bool lendViewArg(Checker *c, Type *want, Expr **pslot) {
         node = exprSliceNew(c->arena, a, NULL, NULL, a->line);
     } else if (isProtoType(got, "varArray", 1) && got->targs.len == 1 &&
                (elemOk || ttEquals(*(Type **)vecAt(&got->targs, 0), wantElem))) {
-        node = exprMethodNew(c->arena, a, "asSlice", a->line);
+        node = exprMethodNew(c->arena, a, wantMut ? "asMutSlice" : "asSlice", a->line);
     }
     if (!node) return false;
     *pslot = node;
@@ -1526,6 +1529,17 @@ static Type *checkFstrPadCall(Checker *c, Expr *e) {
                 " value's type; anything else has to be converted first.",
                 "`%s` cannot take a format specifier", typeStr(c, vt));
         return ttError(c->tt);
+    }
+    /* 没写对齐时的缺省方向：文本靠左、数字靠右 —— 与 `<<` 路径在 codegen 里做的同一条规定
+     * 相同（`genPadCall` 把 -1 换成 0/1），这里在检查器把它落实成字面量，库里的 pad* 就
+     * 不必各自猜。 */
+    {
+        Expr *alignE = *(Expr **)vecAt(&e->u.call.args, 3);
+        if (alignE->kind == EX_INT && alignE->u.ival < 0) {
+            Expr *lit = exprIntNew(c->arena, kind == PLAN_PAD_TEXT ? 0 : 1, alignE->line);
+            lit->type = c->tI64;
+            *(Expr **)vecAt(&e->u.call.args, 3) = lit;
+        }
     }
     const long long code = (*(Expr **)vecAt(&e->u.call.args, 5))->u.ival;
     const long long prec = (*(Expr **)vecAt(&e->u.call.args, 4))->u.ival;

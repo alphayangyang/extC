@@ -42,7 +42,7 @@ fi
 
 # ①d 值位置（`let s: string = f"…"`）：文字段起步 / 槽起步 / 表达式槽 / 无槽 / 函数返回
 "$EXTC" -w --run tests/fstring/value.extc > "$tmp/value" 2>&1
-printf 'hi extC, n=7\n7\nexpr 14 flag true float 1.500000\nnone\n<7>\n[   7][7   ][007][    3.14][3.1]\n' > "$tmp/valuewant"
+printf 'hi extC, n=7\n7\nexpr 14 flag true float 1.500000\nnone\n<7>\n[   7][7   ][007][    3.14][3.1]\n[hi    ][     7]\n' > "$tmp/valuewant"
 if diff -q "$tmp/value" "$tmp/valuewant" >/dev/null 2>&1; then
     echo "  ok   value-fstring    ->  值位置展开成 \`from(文字段) + 槽\` 链 · 说明符走 stringio 的 pad"
     pass=$((pass+1))
