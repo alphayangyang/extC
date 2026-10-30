@@ -950,6 +950,21 @@ fn fmtI64(v: i64, out: mut slice<u8>) -> i64 {
  * （`println` 已弃置 ⇒ 不再有"与 stdio 抢顺序"的问题 ✓ 只剩"退出前别丢"一条 ✓）*/
 fn flushCout() { extc_cout_flush() }
 
+/* ================================================================ print / println
+ *
+ * 不用链式写法的一行输出：`io::println(s)` 就是 `io::cout << s << "\n"` 的薄包装。
+ * 走**同一个缓冲**（`extc_cout_put`）⇒ 与 `io::cout` 混用也不会有顺序问题 ✓
+ * 与 prelude 里弃置的全局 `println` 不同命名空间（这里显式写 `io::`）。
+ */
+fn print(s: slice<u8>) {
+    if s.len > 0 { extc_cout_put(s.data, s.len) }
+}
+
+fn println(s: slice<u8>) {
+    print(s)
+    extc_cout_put("\n".data, 1)
+}
+
 /* ================================================================ stderr 流
  *
  * `cerr << ...` —— 诊断走 stderr，而 `print`/`println` 走 **stdout** ✓

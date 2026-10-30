@@ -252,6 +252,8 @@ std::io	-	pFillBytes	fn	internal
 std::io	-	pFmtF	fn	internal
 std::io	-	pPadText	fn	internal
 std::io	-	pairsReady	fn	internal
+std::io	-	print	fn	public
+std::io	-	println	fn	public
 std::io	-	readSome	fn	public
 std::io	-	readerOf	fn	public
 std::io	-	writeBytes	fn	public
@@ -697,6 +699,7 @@ stl::string	-	empty	fn	public
 stl::string	-	from	fn	public
 stl::string	-	fromI64	fn	public
 stl::string	-	new	fn	public
+stl::string	-	split	fn	public
 stl::string	-	toI64	fn	public
 stl::string	-	withCap	fn	public
 stl::string	string	append	method	public

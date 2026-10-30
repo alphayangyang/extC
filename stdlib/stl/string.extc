@@ -534,6 +534,30 @@ fn fromI64(n: i64) -> string {
   return r
 }
 
+/* 按分隔符切分：每一段都是 `s` 的**零拷贝视图**，存放它们的数组由调用者的 arena 拥有。
+ * 空分隔符没有可切的边界 ⇒ 返回空数组（不把每个字节切出来）。
+ * 末尾那一段总是入列（可以为空视图）⇒ 段数 = 出现次数 + 1，`"a,b,"` 切出 3 段。
+ *
+ * 比较走 `string::bytesEq`（`==` 在泛型方法上的实例化在本模块里有坑，见下；
+ * 而且字节比较本来就是它的专长：长度对上后循环跳过边界检查）。 */
+fn split(s: slice<u8>, sep: slice<u8>) -> varArray<slice<u8>> {
+    var out: varArray<slice<u8>> = varArray<slice<u8>>::withCap(4)
+    if sep.len == 0 { return out }
+    var start: i64 = 0
+    var i: i64 = 0
+    while i + sep.len <= s.len {
+        if string::bytesEq(s[i..i + sep.len], sep) {
+            out.push(s[start..i])
+            i = i + sep.len
+            start = i
+        } else {
+            i = i + 1
+        }
+    }
+    out.push(s[start..s.len])
+    return out
+}
+
 /* 反过来：解析十进制 `i64`。空串、只有符号、非数字、溢出 ⇒ `none`。
  * 先按 `u64` 累加并挡住 u64 溢出，最后再按符号比边界 —— 比"边算边比 i64 边界"少一半特例。 */
 fn toI64(b: slice<u8>) -> ?i64 {

@@ -137,6 +137,12 @@ io::println(s)                             // 一行输出，不要求 << 链
 for line in io::lines() { ... }            // 逐行迭代，错误在迭代器里收
 ```
 
+### 第 1 层 B 的进展（字符串与 IO）
+
+- `stl::string::split(s, sep)`：按字节分隔符切分，每段是零拷贝视图（`varArray<slice<u8>>`）。
+  替掉"手写两层 while 找分隔符"约 8–12 行。
+- `io::print(s)` / `io::println(s)`：不用链式写法的一行输出，替掉 `io::cout << s << "\n"`。
+
 ## 第 2 层：整数组表达式与融合（结构调整）
 
 `docs/ARRAY.md` 的 M3 与 `docs/FUSION.md` 的 S1–S3：`c = a + b`、`sum(c)` 由编译器降成融合循环，

@@ -134,6 +134,7 @@ fn main() -> i32 {
 | 查找 | `find(needle) -> ?i64`（无匹配 `none`）、`contains`、`startsWith`、`endsWith`、`hash()` |
 | 容量 | `grow()`（1.5 倍）、`shrink()`、`clear()`、`release()`、`removeFront(n)` |
 | 解析 | `string::toI64(b) -> ?i64` |
+| 切分 | `string::split(s: slice<u8>, sep: slice<u8>) -> varArray<slice<u8>>`（每段是 `s` 的零拷贝视图；空 `sep` 返回空数组；末尾空段也入列 ⇒ 段数 = 出现次数 + 1）|
 | 比两段字节 | `bytesEq(a, b)` / `bytesLt(a, b)`（模块级关联函数，直接比两段 `slice<u8>`）|
 
 **拿到内容只有 `toSlice()` 一条路（拷贝）**：池里不放视图出去。
@@ -528,6 +529,7 @@ fn main() -> i32 {
 | `readerOf(fd)` | 造一个带 64 KiB 缓冲的 reader |
 | `istream >>` | `mut ref i64` / `mut slice<u8>` / `mut ref u8`；`bad()` / `clear()` |
 | `flushOut` / `writeBytes` / `writeBytesRaw` | 冲 stdio 侧 / 进 cout 缓冲 / 直写 fd 1 |
+| `print` / `println` | `fn print(s: slice<u8>)` / `fn println(s: slice<u8>)`（不用链式写法的一行输出，走 cout 同一缓冲；数字仍用 `io::cout`）|
 
 关键语义：
 

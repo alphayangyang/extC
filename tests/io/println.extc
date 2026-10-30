@@ -1,0 +1,10 @@
+// `io::println` / `io::print`：一行输出不用链式写法；与 io::cout 共用同一缓冲
+use std::io
+
+fn main() -> i32 {
+    io::println("a")
+    io::print("b")
+    io::cout << " 3\n"
+    io::println("")
+    return 0
+}

@@ -1,0 +1,18 @@
+// `stl::string::split`：零拷贝切片 + 末尾空段（段数 = 出现次数 + 1）
+use std::io
+use stl::string as str
+
+fn main() -> i32 {
+    let s: slice<u8> = "a,bb,,ccc"
+    let p = str::split(s, ",")
+    var i: i64 = 0
+    var total: i64 = 0
+    while i < p.size() {
+        let seg: slice<u8> = p.get(i) ?? ""
+        total = total + seg.len
+        i = i + 1
+    }
+    let none = str::split(s, "")
+    io::cout << "n=" << p.size() << " total=" << total << " e=" << none.size() << "\n"
+    return 0
+}

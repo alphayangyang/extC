@@ -317,6 +317,13 @@ else
 fi
 rm -f tests/io/writer-tmp.txt
 
+echo "== print / println（不用链式写法的一行输出）=="
+if out=$(printf '' | "$EXTC" --run tests/io/println.extc 2>&1) && [ "$out" = "$(printf 'a\nb 3')" ]; then
+    echo "  ok   println      ->  $(echo "$out" | tr '\n' '|')"
+else
+    echo "  FAIL println      ->  $(echo "$out" | tr '\n' '|')"; fail=1
+fi
+
 echo "== 分层（std::sys::io = 特权层 · io 族，std::io = 普通库）=="
 # ⚠️ 这是**结构检查**，不是编译器强制的（"只有特权模块能声明原语"那条还没做 ✗ 见定案 72）
 if grep -q '^extern!' stdlib/std/sys/io.extc && ! grep -q '^fn main' stdlib/std/sys/io.extc; then
