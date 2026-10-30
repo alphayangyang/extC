@@ -179,6 +179,9 @@ for line in io::lines() { ... }            // 逐行迭代，错误在迭代器�
 - `stringio::readLine()` / `readAll()`：控制台读一句版（内部做 `io::inSync()` 与 `inSave` 的
   取还，调用点不用再记那两行样板；空行给 `some("")`，只有 EOF 给 `none`）。
 
+本段又补：`io::eprint` / `io::eprintln`（诊断通道的一句版）、`stringio::fromF64(x, prec)`（定点浮点
+转字符串，复用 `io::pFmtF`；容器不认识"小数点后几位"，所以放 stringio 层）。
+
 还缺的（第 1 层 B 后续）：f-string 只能作 `<<` 的右操作数（还不能直接当值用）；`varArray` 与
 `slice` 之间仍要显式 `asSlice()`。
 

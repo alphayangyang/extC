@@ -152,6 +152,7 @@ fn main() -> i32 {
 | `io::istream >> string` / `fs::ifstream >> string` | 读一行（`\n` 与 CRLF 的 `\r` 都不算内容），**目标被替换** |
 | `stringio::readLine()` | `fn readLine() -> ?string`：从控制台读一行（自带 `io::inSync` / `inSave` 的取还；行尾 CRLF 不算内容；空行是 `some("")`，**EOF 才给 `none`**）|
 | `stringio::readAll()` | `fn readAll() -> ?string`：把控制台剩下的输入一次读完（错误给 `none`）|
+| `stringio::fromF64` | `fn fromF64(x: f64, prec: i64) -> string`：定点格式化成字符串（`prec` 位小数、四舍五入；`prec` 上限 20）|
 
 ```extc
 use std::io
@@ -534,6 +535,7 @@ fn main() -> i32 {
 | `istream >>` | `mut ref i64` / `mut slice<u8>` / `mut ref u8`；`bad()` / `clear()` |
 | `flushOut` / `writeBytes` / `writeBytesRaw` | 冲 stdio 侧 / 进 cout 缓冲 / 直写 fd 1 |
 | `print` / `println` | `fn print(s: slice<u8>)` / `fn println(s: slice<u8>)`（不用链式写法的一行输出，走 cout 同一缓冲；数字仍用 `io::cout`）|
+| `eprint` / `eprintln` | `fn eprint(s: slice<u8>)` / `fn eprintln(s: slice<u8>)`（诊断通道，写 stderr；与 stdout 两条通道分开，`cerr` 是流式写法）|
 
 关键语义：
 

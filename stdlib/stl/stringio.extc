@@ -204,6 +204,22 @@ impl fs::ifstream {
  *     另一个模块）⇒ 修法就不是"补列表"，而是**让列表的来源与模块无关**（从类型表/所有模块取）。
  */
 
+/* 浮点数转 `string`：`stringio::fromF64(x, prec)`（定点 `prec` 位小数，四舍五入）。
+ *
+ * 为什么放这里：格式化浮点的实现（`io::pFmtF`）属于 I/O 层，而 `string` 是容器 —— 容器不
+ * 该认识"小数点后几位"这种显示决策。这一层同时认识两边，所以转换放这一层。
+ *
+ * 与 `io::cout << x` 的区别：那条路走 `%g`（最短可回读形式），这里走固定小数位（报表/日志的
+ * 形状）。`prec` 上限 20 —— 超过 `f64` 的有效位数只是噪音。
+ */
+fn fromF64(x: f64, prec: i64) -> string {
+    var buf: [64]u8
+    let n = io::pFmtF(x, prec, buf[..])
+    var out: string = string::withCap(n)
+    out.append(buf[0..n])
+    return out
+}
+
 /* ---------------------------------------------------------------- 从 stdin 读整块文本
  *
  * 用 `impl` 块里的 `readLineFrom` / `readAllFrom` 能做到，但每个调用点都要

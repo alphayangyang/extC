@@ -1,0 +1,11 @@
+/* io::eprint / eprintln：诊断走 stderr，与 stdout 两条通道分开。 */
+use std::io
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    if args.len > i64(2) { return 1 }
+    io::eprint("diag1")
+    io::eprintln("")
+    io::eprintln("diag2")
+    io::println("out")
+    return 0
+}

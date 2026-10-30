@@ -66,6 +66,18 @@ else
     echo "  FAIL file-eof  ->  跑不起来"; echo "$out" | sed 's/^/        /' | head -4; fail=1
 fi
 
+echo "== eprint / eprintln（诊断通道的一句版）=="
+if "$EXTC" --run tests/io/eprint.extc >build/eprint-out.txt 2>build/eprint-err.txt; then
+    if [ "$(cat build/eprint-out.txt)" = "out" ] && [ "$(cat build/eprint-err.txt)" = "diag1
+diag2" ]; then
+        echo "  ok   eprint       ->  stdout 与 stderr 各走各的"
+    else
+        echo "  FAIL eprint       ->  out=[$(cat build/eprint-out.txt | tr '\n' '|')] err=[$(cat build/eprint-err.txt | tr '\n' '|')]"; fail=1
+    fi
+else
+    echo "  FAIL eprint       ->  编译/运行失败"; fail=1
+fi
+
 echo "== cerr：诊断走 stderr，print/println 走 stdout（两条通道分得开）=="
 if "$EXTC" --run tests/io/cerr.extc >build/cerr-out.txt 2>build/cerr-err.txt; then
     ok=1

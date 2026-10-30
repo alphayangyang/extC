@@ -999,3 +999,14 @@ fn errWrite(s: slice<u8>) {
     /* 返回值丢弃：stderr 写失败也没有别的地方可报（这正是"诊断通道"的处境 ✓）*/
     sysio::write(i32(2), s.data, s.len)
 }
+
+/* 诊断输出的一句版：`io::eprint("x")` / `io::eprintln("x")`。
+ *
+ * 为什么是"两个名字"而不是重载 `print`：普通函数不能按参数类型重载（只有运算符能），
+ * 而诊断通道又必须与 stdout 分开 —— 名字里带 `err` 是这里唯一不歧义的做法。
+ * `eprintln` 的换行是单独的 `errWrite`：两次写、两次 flush，诊断流量小，不值得为它攒缓冲。 */
+fn eprint(s: slice<u8>) { errWrite(s) }
+fn eprintln(s: slice<u8>) {
+    errWrite(s)
+    errWrite("\n")
+}

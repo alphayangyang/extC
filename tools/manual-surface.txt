@@ -236,6 +236,8 @@ std::http	session	out	field	public
 std::http	session	out	field	public
 std::http	session	post	method	public
 std::io	-	accDigit	fn	internal
+std::io	-	eprint	fn	public
+std::io	-	eprintln	fn	public
 std::io	-	errWrite	fn	internal
 std::io	-	fillState	fn	internal
 std::io	-	flushCout	fn	internal
@@ -745,6 +747,7 @@ stl::string	string	startsWith	method	public
 stl::string	string	sub	method	public
 stl::string	string	subView	method	public
 stl::string	string	toSlice	method	public
+stl::stringio	-	fromF64	fn	public
 stl::stringio	-	readAll	fn	public
 stl::stringio	-	readLine	fn	public
 stl::stringio	string	readAllFrom	method	public
