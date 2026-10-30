@@ -1,0 +1,30 @@
+use std::io
+
+/* 区间循环体里声明出来的名字当视图下标（`off`）：入口区间检查前移时它还没进作用域，
+ * 生成的 C 会引用未声明的标识符 —— 这里同时覆盖普通区间 for 与 par 的 worker 体。
+ * 判据：能编过（C 合法），且两种写法结果与顺序计算一致、线程数无关。 */
+fn seqSum() -> i64 {
+    var a: mut slice<i64> = new i64[32]
+    for i in 0..32 { a[i] = i * 7 }
+    var s: i64 = 0
+    for k in 0..16 {
+        let off: i64 = k * 2
+        s = s + a[off]
+    }
+    return s
+}
+
+fn main() -> i32 {
+    var a: mut slice<i64> = new i64[32]
+    var b: mut slice<i64> = new i64[16]
+    for i in 0..32 { a[i] = i * 7 }
+    par k in 0..16 {
+        let off: i64 = k * 2
+        b[k] = a[off]
+    }
+    var p: i64 = 0
+    for k in 0..16 { p = p + b[k] }
+    let q: i64 = seqSum()
+    io::cout << f"p={p} q={q}\n"
+    return 0
+}

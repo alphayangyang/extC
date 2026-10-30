@@ -64,6 +64,8 @@ case_run par_for_t1    tests/par/par_for.extc     "bsum=2997000" EXTC_PAR_THREAD
 case_run par_for_t4    tests/par/par_for.extc     "bsum=2997000" EXTC_PAR_THREADS=4
 case_run par_helper    tests/par/par_helper.extc  "sum=999000"
 case_run par_captures  tests/par/par_captures.extc "sum=249250500"
+case_run par_hoist_local    tests/par/par_hoist_local.extc   "p=1680 q=1680"
+case_run par_hoist_local_t1 tests/par/par_hoist_local.extc   "p=1680 q=1680" EXTC_PAR_THREADS=1
 case_run par_captures_t1 tests/par/par_captures.extc "sum=249250500" EXTC_PAR_THREADS=1
 
 # 确定性：同一用例跑两次，stdout 必须逐字节相同

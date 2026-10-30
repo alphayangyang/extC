@@ -6694,6 +6694,49 @@ static void hoistWrites(Stmt *s, Vec *names) {
     }
 }
 
+/** @brief 收集体内声明出来的名字（`var`、match 绑定；for 的步进不声明新名字）。
+ *
+ * 入口检查发在循环**之前**，此时体内声明的名字还不在作用域里：拿它们当仿射式的常数项
+ * 会让生成的 C 引用未声明的标识符（`a[off]` 里的 `off` 就是这种）。收集一遍，按名字拒绝
+ * 这些站点 —— 检查退回逐元素，语义不变，只是少了前移。
+ */
+static void hoistDecls(Stmt *s, Vec *names) {
+    if (!s) return;
+    switch (s->kind) {
+    case ST_VAR: {
+        const char *cn = planCName(s);
+        if (cn) *(const char **)vecPush(names) = cn;
+        return;
+    }
+    case ST_BLOCK: {
+        Stmt *step = planForStep(s);
+        for (size_t i = 0; i < s->u.block.stmts.len; i++) {
+            Stmt *one = *(Stmt **)vecAt(&s->u.block.stmts, i);
+            if (step && one == step) continue;
+            hoistDecls(one, names);
+        }
+        return;
+    }
+    case ST_IF:
+        hoistDecls(s->u.ifs.thenBody, names);
+        hoistDecls(s->u.ifs.elseBody, names);
+        return;
+    case ST_WHILE: hoistDecls(s->u.whiles.body, names); return;
+    case ST_MATCH:
+        for (size_t i = 0; i < s->u.match.arms.len; i++) {
+            MatchArm *arm = *(MatchArm **)vecAt(&s->u.match.arms, i);
+            if (!arm) continue;
+            for (size_t k = 0; k < arm->binds.len; k++) {
+                const char *cn = *(const char **)vecAt(&arm->binds, k);
+                if (cn) *(const char **)vecPush(names) = cn;
+            }
+            hoistDecls(arm->body, names);
+        }
+        return;
+    default: return;
+    }
+}
+
 /**
  * @brief 认出 range-for 形状，并对体里的视图下标做入口区间检查（证不出就什么都不发）。
  *
@@ -6723,6 +6766,10 @@ static void loopHoistRangeFor(CG *g, Stmt *s) {
     hoistWrites(body, &writes);
     if (nameInVec(&writes, var) || nameInVec(&writes, hi)) return;
 
+    /* 体内声明出来的名字在入口处还不在作用域里，不能当仿射式的常数项。 */
+    Vec decls; vecInit(&decls, g->arena, sizeof(const char *));
+    hoistDecls(body, &decls);
+
     Vec sites; vecInit(&sites, g->arena, sizeof(Expr *));
     hoistSitesStmt(g, body, &sites);
 
@@ -6744,8 +6791,10 @@ static void loopHoistRangeFor(CG *g, Stmt *s) {
         Vec ids; vecInit(&ids, g->arena, sizeof(const char *));
         if (!hoistCollectIdents(g, ix, var, &ids)) continue;
         bool bad = false;
-        for (size_t k = 0; k < ids.len; k++)
-            if (nameInVec(&writes, *(const char **)vecAt(&ids, k))) { bad = true; break; }
+        for (size_t k = 0; k < ids.len; k++) {
+            const char *one = *(const char **)vecAt(&ids, k);
+            if (nameInVec(&writes, one) || nameInVec(&decls, one)) { bad = true; break; }
+        }
         if (bad) continue;
         Affine af;
         if (!affineIn(g, ix, var, &af)) continue;
