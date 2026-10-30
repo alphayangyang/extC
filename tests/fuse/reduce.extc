@@ -1,0 +1,15 @@
+// S2 归约融合的正例：写 tmp 的循环 + `var acc = init` + 升序单累加器归约循环。
+// 判据（tests/fuse/run.sh）：两臂输出逐字节相同，且融合后的生成 C 里没有 tmp 视图。
+use std::io
+
+fn main() -> i32 {
+    let n: i64 = 16
+    var a: mut slice<f64> = new f64[n]
+    for i in 0..n { a[i] = f64(i) * 0.25 }
+    var tmpv: mut slice<f64> = new f64[n]
+    for i in 0..n { tmpv[i] = a[i] * 2.0 + 1.0 }
+    var cs: f64 = 0.0
+    for i in 0..n { cs = cs + tmpv[i] * 0.5 }
+    io::cout << f"cs={cs:.3}\n"
+    return 0
+}

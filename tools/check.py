@@ -1657,9 +1657,9 @@ def build_items() -> list:
     # ---- 元素链融合（第 2 层 S1）----
     items.append(cmd(
         "fuse", "tests",
-        "S1 元素链融合：相邻写/读循环合并（临时视图消失）· `--no-fuse` 对拍 · 反例不融合",
+        "元素链融合 S1/S2/S3：相邻写/读循环、归约循环合并（临时视图消失）· `--no-fuse` 对拍 · 反例不融合",
         ["./tests/fuse/run.sh"], timeout=300,
-        ok_msg=ok_count_ok(" 项（正例对拍 · 临时视图消失 · 4 条反例不融合）"),
+        ok_msg=ok_count_ok(" 项（S1/S2/S3 正例对拍 · 临时视图消失 · 6 条反例不融合）"),
         bad_msg="tests/fuse/run.sh", bad_dump=dump_fail(8)))
 
     # ---- 线性关联容器 ----

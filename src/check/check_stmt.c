@@ -1184,24 +1184,41 @@ static bool fuseMentions(Expr *e, const char *name) {
  * @param c    检查器（取 arena）。
  * @param body 循环体块（含步进语句）。
  */
-static void fuseFlattenBody(Checker *c, Stmt *body) {
-    bool nested = false;
-    for (size_t i = 0; i < body->u.block.stmts.len; i++) {
-        Stmt *s = *(Stmt **)vecAt(&body->u.block.stmts, i);
-        if (s != body->forStep && s->kind == ST_BLOCK) { nested = true; break; }
+static bool fuseIsLoopBlock(Stmt *s) {
+    if (!s || s->kind != ST_BLOCK) return false;
+    if (s->parLoop || s->forStep) return true;
+    /* 区间/容器 `for` 脱糖出来的外层块：`[循环变量, 上界, while]`。形状相同就不再往里摊，
+     * 否则会把一个独立循环的体并进外层循环（`par r { par c { … } }` 的嵌套检查就是被这么
+     * 弄坏的）。 */
+    if (s->u.block.stmts.len == 3) {
+        Stmt *a = *(Stmt **)vecAt(&s->u.block.stmts, 0);
+        Stmt *b = *(Stmt **)vecAt(&s->u.block.stmts, 1);
+        Stmt *c = *(Stmt **)vecAt(&s->u.block.stmts, 2);
+        if (a && b && c && a->kind == ST_VAR && b->kind == ST_VAR && c->kind == ST_WHILE)
+            return true;
     }
-    if (!nested) return;
+    return false;
+}
+
+/**
+ * @brief 把解析器给循环体套的那一层包装块摊平：`{ {用户语句…}, step }` → `{用户语句…, step}`。
+ *
+ * 只认"这个块正好是 `[块, 步进]` 两件、且那个块不是循环"这一种形状；循环块（`par`/`for` 的
+ * 脱糖块）不动 —— 摊平它会把内层循环的体并进外层循环，破坏 `par` 的嵌套检查与循环语义。
+ *
+ * @param c    检查器（取 arena）。
+ * @param body 循环体块。
+ */
+static void fuseFlattenBody(Checker *c, Stmt *body) {
+    if (!body || body->kind != ST_BLOCK || body->u.block.stmts.len != 2 || !body->forStep)
+        return;
+    Stmt *first = *(Stmt **)vecAt(&body->u.block.stmts, 0);
+    if (first == body->forStep || first->kind != ST_BLOCK || fuseIsLoopBlock(first)) return;
     Vec nv;
     vecInit(&nv, c->arena, sizeof(Stmt *));
-    for (size_t i = 0; i < body->u.block.stmts.len; i++) {
-        Stmt *s = *(Stmt **)vecAt(&body->u.block.stmts, i);
-        if (s != body->forStep && s->kind == ST_BLOCK) {
-            for (size_t k = 0; k < s->u.block.stmts.len; k++)
-                *(Stmt **)vecPush(&nv) = *(Stmt **)vecAt(&s->u.block.stmts, k);
-        } else {
-            *(Stmt **)vecPush(&nv) = s;
-        }
-    }
+    for (size_t k = 0; k < first->u.block.stmts.len; k++)
+        *(Stmt **)vecPush(&nv) = *(Stmt **)vecAt(&first->u.block.stmts, k);
+    *(Stmt **)vecPush(&nv) = body->forStep;
     stmtBlockSetStmts(body, &nv);
 }
 
@@ -1527,21 +1544,142 @@ static bool fuseStmtMentions(Stmt *s, const char *name) {
 }
 
 /**
- * @brief 尝试把"写临时视图的循环 A + 紧跟着读它的循环 B"融合成一个循环（S1 元素链）。
+ * @brief 认 S2 归约循环体里那一句 `acc = acc + <纯表达式>`。
  *
- * 资格（全中才动手）：`var tmp: mut slice<T> = new ...` 紧挨着 A；A、B 是同一块里相邻的两个
- * 区间 `for`，循环变量同名、两端结构相等（`fuseExprSame`）；A 体恰好一条
- * `tmp[i] = <纯表达式>`；B 的体满足 `fuseCheckBody`；`tmp` 在这一块的其它语句里没有再被提到。
- * 命中后 B 的语句搬进 A 的体（`tmp[i]` 换成 A 的右值），删掉 `tmp` 声明与 B，A 留在原位。
+ * 只认"升序、单个累加器、`+`、右值纯且真的读到 tmp"这一种形状：融合把 `tmp[i]` 换成写循环
+ * 的右值以后，累加的顺序仍然是 i 递增的同一串加法，逐位不变。`*` 不认（浮点乘法不满足这种
+ * 重排的逐位等价，整数虽可但先不加第二种口径），也不认右值里出现 `acc` 自己的写法。
+ *
+ * @param s    归约循环体里的一句。
+ * @param tmp  临时视图名字。
+ * @param var  循环变量名字。
+ * @param rhs 输出：`acc +` 右边那个纯表达式。
+ * @return 形状合格时为 `true`。
+ */
+static bool fuseReduceStmt(Stmt *s, const char *tmp, const char *var, Expr **rhs) {
+    if (!s || s->kind != ST_ASSIGN || s->u.assign.op) return false;
+    Expr *t = s->u.assign.target, *v = s->u.assign.value;
+    if (!t || t->kind != EX_IDENT) return false;
+    if (strcmp(t->u.ident.name, tmp) == 0 || strcmp(t->u.ident.name, var) == 0) return false;
+    if (!v || v->kind != EX_BIN || !v->u.bin.op || strcmp(v->u.bin.op, "+") != 0) return false;
+    Expr *l = v->u.bin.left, *r = v->u.bin.right;
+    if (!l || l->kind != EX_IDENT || strcmp(l->u.ident.name, t->u.ident.name) != 0) return false;
+    if (!r || !fusePureExpr(r) || !fuseTmpReadsOk(r, tmp, var)) return false;
+    if (fuseMentions(r, t->u.ident.name)) return false;
+    if (!fuseMentions(r, tmp)) return false;
+    *rhs = r;
+    return true;
+}
+
+/**
+ * @brief 尝试 S2 归约融合：`var tmp = new …` + 写它的循环 A + `var acc = init` + 升序归约循环。
+ *
+ * 形状（全中才动手）：`var tmp: mut slice<T> = new …` 在 `i`；A 在 `i+1`；`var acc = init` 在
+ * `i+2`（`init` 不是 `new`，即 acc 是标量）；归约循环在 `i+3`，与 A 循环变量同名、两端结构相等；
+ * A 体恰好 `tmp[i] = <纯 rhs>`；归约体恰好一句 `acc = acc + <纯表达式>`（`tmp` 只以 `tmp[i]` 读）；
+ * `tmp` 在本块其它语句里没有再被提到；A 的右值不读 `acc`（否则融合会把 A 与累加交错）。
+ * 命中后：累加语句搬进 A 的体、`tmp[i]` 换成 A 的右值，删掉 `tmp` 声明、归约循环与 A 原位，
+ * 把 `acc` 声明挪到融合循环之前。
  *
  * @param c     检查器。
- * @param block 正在被检查的块（语句表会原地缩短）。
+ * @param block 正在被检查的块。
+ * @param i     临时视图声明在块里的下标。
+ * @return 融合成功时为 `true`（语句表已原地改写）。
  */
-static void fuseElementChains(Checker *c, Stmt *block) {
-    if (!block || block->kind != ST_BLOCK || block->u.block.stmts.len < 4) return;
-    if (block->parLoop) return;
-    if (c->curFunc && (planIsCoro(c->curFunc) || planIsParWorker(c->curFunc))) return;
+static bool fuseTryReduce(Checker *c, Stmt *block, size_t i) {
     Vec *v = &block->u.block.stmts;
+    Stmt *decl = *(Stmt **)vecAt(v, i);
+    if (!decl || decl->kind != ST_VAR || !decl->u.var.ann || !decl->u.var.init) return false;
+    if (decl->u.var.init->kind != EX_NEW) return false;
+    const char *tmp = decl->u.var.name;
+    size_t n = v->len;
+    if (i + 3 >= n) return false;
+    Stmt *a = *(Stmt **)vecAt(v, i + 1);
+    Stmt *aW, *aBody, *rW, *rBody;
+    const char *aVar, *rVar;
+    Expr *aLo, *aHi, *rLo, *rHi;
+    if (!fuseLoopFrom(c, a, &aW, &aBody, &aVar, &aLo, &aHi)) return false;
+    if (fuseMentions(aLo, tmp) || fuseMentions(aHi, tmp)) return false;
+    Stmt *accDecl = *(Stmt **)vecAt(v, i + 2);
+    if (!accDecl || accDecl->kind != ST_VAR || !accDecl->u.var.init) return false;
+    if (accDecl->u.var.init->kind == EX_NEW) return false;
+    const char *acc = accDecl->u.var.name;
+    if (strcmp(acc, tmp) == 0 || strcmp(acc, aVar) == 0) return false;
+    if (fuseStmtMentions(accDecl, tmp)) return false;
+    if (!fuseLoopFrom(c, *(Stmt **)vecAt(v, i + 3), &rW, &rBody, &rVar, &rLo, &rHi)) return false;
+    (void)rW;
+    if (strcmp(aVar, rVar) != 0) return false;
+    if (!fuseExprSame(aLo, rLo) || !fuseExprSame(aHi, rHi)) return false;
+    if (fuseMentions(rLo, tmp) || fuseMentions(rHi, tmp)) return false;
+    /* A 的体：恰好 [tmp[i] = rhs, step]。 */
+    Expr *rhs = NULL;
+    {
+        size_t seen = 0;
+        for (size_t k = 0; k < aBody->u.block.stmts.len; k++) {
+            Stmt *s = *(Stmt **)vecAt(&aBody->u.block.stmts, k);
+            if (s == aBody->forStep) continue;
+            if (++seen > 1) break;
+            if (s->kind != ST_ASSIGN || s->u.assign.op) break;
+            Expr *t = s->u.assign.target;
+            if (!t || t->kind != EX_INDEX || !t->u.index.obj || t->u.index.obj->kind != EX_IDENT
+                || strcmp(t->u.index.obj->u.ident.name, tmp) != 0
+                || !t->u.index.index || t->u.index.index->kind != EX_IDENT
+                || strcmp(t->u.index.index->u.ident.name, aVar) != 0) break;
+            if (!fusePureExpr(s->u.assign.value)) break;
+            if (fuseMentions(s->u.assign.value, tmp)) break;
+            rhs = s->u.assign.value;
+        }
+        if (!rhs || seen != 1) return false;
+    }
+    if (fuseMentions(rhs, acc)) return false;
+    /* 归约体：恰好一句。 */
+    Stmt *red = NULL;
+    {
+        size_t seen = 0;
+        for (size_t k = 0; k < rBody->u.block.stmts.len; k++) {
+            Stmt *s = *(Stmt **)vecAt(&rBody->u.block.stmts, k);
+            if (s == rBody->forStep) continue;
+            if (++seen > 1) return false;
+            red = s;
+        }
+        if (!red) return false;
+    }
+    Expr *redRhs = NULL;
+    if (!fuseReduceStmt(red, tmp, aVar, &redRhs)) return false;
+    /* `tmp` 在这一块的其它语句里没有别的用处。 */
+    for (size_t k = 0; k < n; k++) {
+        if (k == i || k == i + 1 || k == i + 3) continue;
+        if (fuseStmtMentions(*(Stmt **)vecAt(v, k), tmp)) return false;
+    }
+    /* 改写：累加语句搬进 A 的体，tmp[i] 换成 A 的右值；acc 声明挪到融合循环之前。 */
+    fuseSubstStmt(c, red, tmp, aVar, rhs);
+    Vec fused;
+    vecInit(&fused, c->arena, sizeof(Stmt *));
+    *(Stmt **)vecPush(&fused) = red;
+    *(Stmt **)vecPush(&fused) = aBody->forStep;
+    stmtBlockSetStmts(aBody, &fused);
+    size_t w = i;
+    *(Stmt **)vecAt(v, w++) = accDecl;
+    *(Stmt **)vecAt(v, w++) = a;
+    for (size_t k = i + 4; k < n; k++)
+        *(Stmt **)vecAt(v, w++) = *(Stmt **)vecAt(v, k);
+    v->len = w;
+    return true;
+}
+
+/**
+ * @brief 在块里找**一处**可融合的元素链并改写它（找到就返回，一次只动一处）。
+ *
+ * 从前往后扫"临时视图声明"，先试 S1（声明后是写它的循环 A，再紧跟读它的循环 B），不成立
+ * 再试 S2（声明后是 A、然后是 `var acc = init`、再是升序归约循环 B）。
+ *
+ * @param c     检查器。
+ * @param block 块语句（语句表会原地缩短）。
+ * @return 改写了一处时为 `true`。
+ */
+static bool fuseOnePass(Checker *c, Stmt *block) {
+    Vec *v = &block->u.block.stmts;
+
     for (size_t i = 0; i + 2 < v->len; i++) {
         Stmt *decl = *(Stmt **)vecAt(v, i);
         if (decl->kind != ST_VAR || !decl->u.var.ann || !decl->u.var.init) continue;
@@ -1553,7 +1691,10 @@ static void fuseElementChains(Checker *c, Stmt *block) {
         const char *aVar, *bVar;
         Expr *aLo, *aHi, *bLo, *bHi;
         if (!fuseLoopFrom(c, a, &aW, &aBody, &aVar, &aLo, &aHi)) continue;
-        if (!fuseLoopFrom(c, b, &bW, &bBody, &bVar, &bLo, &bHi)) continue;
+        if (!fuseLoopFrom(c, b, &bW, &bBody, &bVar, &bLo, &bHi)) {
+            if (fuseTryReduce(c, block, i)) return true;
+            continue;
+        }
         (void)aW;
         (void)bW;
         if (strcmp(aVar, bVar) != 0) continue;
@@ -1619,8 +1760,26 @@ static void fuseElementChains(Checker *c, Stmt *block) {
         for (size_t k = i + 3; k < v->len; k++)
             *(Stmt **)vecAt(v, w++) = *(Stmt **)vecAt(v, k);
         v->len = w;
-        if (i > 0) i--;
+        return true;
     }
+    return false;
+}
+
+/**
+ * @brief 把块里所有可融合的元素链改写到不动点（每处融合都会让语句表变短，必然停下）。
+ *
+ * 资格见 `fuseOnePass` / `fuseTryReduce` 的注释：S1 是"写临时视图的循环 + 紧邻读它的
+ * 循环"，S2 是"写临时视图的循环 + `var acc = init` + 升序归约循环"；两者都要求循环变量同名、
+ * 两端结构相等、临时视图在本块其它地方没有引用。
+ *
+ * @param c     检查器。
+ * @param block 正在被检查的块（语句表会原地缩短）。
+ */
+static void fuseElementChains(Checker *c, Stmt *block) {
+    if (!block || block->kind != ST_BLOCK || block->u.block.stmts.len < 4) return;
+    if (block->parLoop) return;
+    if (c->curFunc && (planIsCoro(c->curFunc) || planIsParWorker(c->curFunc))) return;
+    while (fuseOnePass(c, block)) { }
 }
 
 /**

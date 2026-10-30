@@ -37,6 +37,23 @@ gen_c tests/fuse/pipeline.extc "$tmp/plain.c" --no-fuse || true
 if grep -q "slice_f64 tmpv" "$tmp/fused.c"; then bad "融合后生成 C 里还有 tmpv"; else ok "融合后 tmpv 已消失"; fi
 if grep -q "slice_f64 tmpv" "$tmp/plain.c"; then ok "--no-fuse 保留了 tmpv"; else bad "--no-fuse 把 tmpv 也删了"; fi
 
+# check_pos <名字> <文件> <期望输出> <禁止出现的视图名…>
+check_pos() {
+    local name=$1 f=$2 want=$3; shift 3
+    expect_run "$name" "$f" "$want" || return
+    expect_run "$name-nofuse" "$f" "$want" --no-fuse || return
+    gen_c "$f" "$tmp/pos.c" || return
+    local gone=1
+    for view in "$@"; do
+        if grep -q "slice_f64 $view" "$tmp/pos.c"; then bad "$name：融合后 $view 还在"; gone=0; fi
+    done
+    [ "$gone" -eq 1 ] && ok "$name 融合后临时视图已消失"
+}
+
+echo "== 正例：S2 归约融合（写循环 + 累加器循环）与 S3（两层元素链 + 归约）=="
+check_pos fuse/reduce tests/fuse/reduce.extc "cs=38.000" tmpv
+check_pos fuse/stream tests/fuse/stream.extc "cs=38.000" tmpv tv2
+
 echo "== 反例：不满足资格时不许融合（临时视图仍在）且输出正确 =="
 check_neg() {   # check_neg <名字> <文件> <期望输出>
     local name=$1 f=$2 want=$3
@@ -48,6 +65,8 @@ check_neg fuse/neg_reuse    tests/fuse/neg_reuse.extc    "out0=5.0 extra=42.0"
 check_neg fuse/neg_index    tests/fuse/neg_index.extc    "out0=7.0"
 check_neg fuse/neg_call     tests/fuse/neg_call.extc     "out3=9.0"
 check_neg fuse/neg_readwrite tests/fuse/neg_readwrite.extc "out0=0.0 out3=6.0"
+check_neg fuse/neg_reduce_mul   tests/fuse/neg_reduce_mul.extc   "p=1.5000"
+check_neg fuse/neg_reduce_order tests/fuse/neg_reduce_order.extc "cs=5.000"
 
 rm -rf "$tmp"
 [ "$fail" -eq 0 ]

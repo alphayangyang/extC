@@ -1,0 +1,30 @@
+// bench/fusion S3：元素链（两层临时视图）+ 归约，编译器应把三处全化掉（流式归约）。
+// argv: n [iters]；每轮分配两层临时视图、写两次、再升序累加。
+use std::io
+use stl::string as str
+
+fn argOr(args: slice<slice<u8>>, i: i64, dflt: i64) -> i64 {
+    if args.len <= i { return dflt }
+    return str::toI64(args[i]) ?? dflt
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    let n: i64 = argOr(args, 1, 1048576)
+    let iters: i64 = argOr(args, 2, 8)
+    var a: mut slice<f64> = new f64[n]
+    for i in 0..n { a[i] = f64((i * 7 + 3) % 17) / 17.0 }
+    var cs: f64 = 0.0
+    var k: i64 = 0
+    while k < iters {
+        var tmpv: mut slice<f64> = new f64[n]
+        for i in 0..n { tmpv[i] = a[i] * 2.0 + 1.0 }
+        var tv2: mut slice<f64> = new f64[n]
+        for i in 0..n { tv2[i] = tmpv[i] * 0.5 }
+        var part: f64 = 0.0
+        for i in 0..n { part = part + tv2[i] }
+        cs = cs + part
+        k = k + 1
+    }
+    io::cout << f"cs={i64(cs * 1000.0)} n={n}\n"
+    return 0
+}

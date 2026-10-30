@@ -1,0 +1,14 @@
+// 反例：归约用 `*`（浮点乘法的重排不满足逐位等价）⇒ 不许融合，临时视图仍在。
+use std::io
+
+fn main() -> i32 {
+    let n: i64 = 4
+    var a: mut slice<f64> = new f64[n]
+    for i in 0..n { a[i] = f64(i) + 1.0 }
+    var tmpv: mut slice<f64> = new f64[n]
+    for i in 0..n { tmpv[i] = a[i] * 0.5 }
+    var p: f64 = 1.0
+    for i in 0..n { p = p * tmpv[i] }
+    io::cout << f"p={p:.4}\n"
+    return 0
+}

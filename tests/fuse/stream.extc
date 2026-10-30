@@ -1,0 +1,17 @@
+// S3（S1 + S2）：元素链写两层临时视图，最后一步做归约 —— 三处全部化掉，只剩一个循环。
+// 判据（tests/fuse/run.sh）：两臂输出逐字节相同，且融合后的生成 C 里两层临时视图都没有了。
+use std::io
+
+fn main() -> i32 {
+    let n: i64 = 16
+    var a: mut slice<f64> = new f64[n]
+    for i in 0..n { a[i] = f64(i) * 0.25 }
+    var tmpv: mut slice<f64> = new f64[n]
+    for i in 0..n { tmpv[i] = a[i] * 2.0 + 1.0 }
+    var tv2: mut slice<f64> = new f64[n]
+    for i in 0..n { tv2[i] = tmpv[i] * 0.5 }
+    var cs: f64 = 0.0
+    for i in 0..n { cs = cs + tv2[i] }
+    io::cout << f"cs={cs:.3}\n"
+    return 0
+}
