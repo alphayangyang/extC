@@ -210,6 +210,10 @@ for line in io::lines() { ... }            // 逐行迭代，错误在迭代器�
 字符串拼接有运算符写法：`let s = str::from("a") + "=" + v`（`fn +` 返回新值；右操作数是
 `slice<u8>` 或 `string`）。运算符方法因此也能分配：运算符调用点与方法调用共用同一套 zone 记账。
 
+数字与布尔也能直接接在 `+` 后面：`let s = str::from("a=") + n`（整数按十进制、`f64`/`f32` 六位
+小数、`bool` 给 `true`/`false`）；`io::cout << s` 也能直接吃 `string`，不用再写 `s.toSlice()`。
+这两项让"用字符串拼一行"彻底不需要临时视图。
+
 本段又补：`io::eprint` / `io::eprintln`（诊断通道的一句版）、`stringio::fromF64(x, prec)`（定点浮点
 转字符串，复用 `io::pFmtF`；容器不认识"小数点后几位"，所以放 stringio 层）。
 

@@ -1,0 +1,23 @@
+/* `string + 数字/布尔`：值形式的拼接（数字按十进制追加，浮点默认 6 位小数），
+ * 以及 `io::cout << string`（之前只能打 `s.toSlice()`）。
+ * 判据见 tests/stl/run.sh 的 run_case。
+ */
+use std::io
+use stl::string as str
+use stl::stringio
+
+fn main() -> i32 {
+    let n: i64 = 7
+    let k: i32 = 3
+    let x: f64 = 2.5
+    let y: f32 = 0.5
+    let t: bool = true
+    let a: string = str::from("a=") + n
+    let b: string = str::from("b=") + k
+    let c: string = str::from("c=") + x
+    let d: string = str::from("d=") + y
+    let e: string = str::from("e=") + t
+    io::cout << a << " " << b << " " << c << " " << d << " " << e << "\n"
+    io::cout << (str::from("x") + n) + "!" << "\n"
+    return 0
+}

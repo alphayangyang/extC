@@ -209,6 +209,32 @@ struct string {
 
     fn +(self: ref string, other: string) -> string { return self.concat(other) }
 
+    /* 数字与布尔值的运算符重载：`"a=" + n` 直接得到字符串（值形式的 f-string 就靠这一组
+     * 脱糖）。走的是"复制接收者 + 追加"的朴素路径，与 `appendI64` 一样不为数字多写一层
+     * 临时视图。整数按位宽各一份 —— 运算符重载按右操作数的静态类型精确选，没有隐式加宽。 */
+    fn +(self: ref string, other: i64) -> string { return self.pNumeric(i64(other)) }
+    fn +(self: ref string, other: i32) -> string { return self.pNumeric(i64(other)) }
+    fn +(self: ref string, other: i16) -> string { return self.pNumeric(i64(other)) }
+    fn +(self: ref string, other: i8) -> string { return self.pNumeric(i64(other)) }
+    fn +(self: ref string, other: u32) -> string { return self.pNumeric(i64(other)) }
+    fn +(self: ref string, other: u16) -> string { return self.pNumeric(i64(other)) }
+    fn +(self: ref string, other: u8) -> string { return self.pNumeric(i64(other)) }
+
+    fn +(self: ref string, other: bool) -> string {
+        var out: string
+        out.append(self.subView(0, self.n))
+        if other { out.append("true") } else { out.append("false") }
+        return out
+    }
+
+    /* 复制接收者再追加一个十进制数字：`+` 的数字重载共用这一条。 */
+    fn pNumeric(self: ref string, v: i64) -> string {
+        var out: string
+        out.append(self.subView(0, self.n))
+        out.appendI64(v)
+        return out
+    }
+
     /* ---------------------------------------------------------------- 取字节与视图 */
     /* One byte, or `none` when out of range (no trap: reading past the end is a condition). */
     fn at(self: ref string, i: i64) -> ?u8 {

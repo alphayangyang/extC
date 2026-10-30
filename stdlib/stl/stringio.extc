@@ -82,6 +82,24 @@ impl string {
         let n = io::pFmtF(x, prec, buf[..])
         self.append(buf[0..n])
     }
+
+    /* 浮点数的运算符重载：`s + 1.5` 得到新字符串（默认 6 位小数，与 `appendF64` 的常用
+     * 精度一致；要别的精度写 `s.appendF64(x, prec)`）。放在这里而不是 `stl/string.extc`，
+     * 是因为十进制格式化（`io::pFmtF`）属于 I/O 层。 */
+    fn +(self: ref string, other: f64) -> string {
+        var out: string
+        out.append(self.subView(0, self.n))
+        out.appendF64(other, 6)
+        return out
+    }
+
+    fn +(self: ref string, other: f32) -> string { return (*self) + f64(other) }
+}
+
+/* `io::cout << s`：把 `string` 直接交给输出流。`std::io` 不能 import `stl`（会成环），所以
+ * 这个重载挂在这里，和上面 `>> string` 的理由一样。实现的语义就是"打印它的字节"。 */
+impl io::ostream {
+    fn <<(self: ref ostream, v: string) -> ostream { return self << v.toSlice() }
 }
 
 /* `>>` into a `string`: the operator overloads the I/O layer already has (`mut ref i64`,
