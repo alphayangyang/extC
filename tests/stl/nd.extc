@@ -1,0 +1,38 @@
+// stl::nd —— N 维视图：3 维/4 维、转置、降维、逐元素运算、形状不匹配
+use std::io
+use stl::nd
+
+fn main() -> i32 {
+    var a: ndarray<f64> = ndarray<f64>::zeros3(i64(2), i64(3), i64(4)) ?? ndarray<f64>::empty()
+    var va: ndview<f64> = a.viewMut()
+    let okf: bool = nd::filled(va, f64(1.0))
+    let s1: f64 = nd::sumv(a.view()) ?? f64(0.0)
+
+    var b: ndarray<f64> = ndarray<f64>::zeros3(i64(2), i64(3), i64(4)) ?? ndarray<f64>::empty()
+    let oks: bool = nd::scaleInto(b.viewMut(), a.view(), f64(3.0))
+    let s2: f64 = nd::sumv(b.view()) ?? f64(0.0)
+
+    var c: ndarray<f64> = ndarray<f64>::zeros3(i64(2), i64(3), i64(4)) ?? ndarray<f64>::empty()
+    let oka: bool = nd::addInto(c.viewMut(), a.view(), b.view())
+    let s3: f64 = nd::sumv(c.view()) ?? f64(0.0)
+
+    var d: ndarray<f64> = ndarray<f64>::zeros3(i64(2), i64(3), i64(4)) ?? ndarray<f64>::empty()
+    let okx: bool = nd::axpyInto(d.viewMut(), a.view(), b.view(), f64(2.0))
+    let s4: f64 = nd::sumv(d.view()) ?? f64(0.0)
+
+    let t: ndview<f64> = nd::swapDims(a.view(), i64(0), i64(2)) ?? a.view()
+    let st: f64 = nd::sumv(t) ?? f64(0.0)
+    let r2: ndview<f64> = nd::sub(a.view(), i64(1)) ?? a.view()
+    let s5: f64 = nd::sumv(r2) ?? f64(0.0)
+    let bad: bool = nd::addInto(c.viewMut(), a.view(), r2)
+
+    var e: ndarray<f64> = ndarray<f64>::zeros1(i64(0)) ?? ndarray<f64>::empty()
+    let s6: f64 = nd::sumv(e.view()) ?? f64(-1.0)
+
+    var q: ndarray<f64> = ndarray<f64>::zeros4(i64(2), i64(2), i64(2), i64(2)) ?? ndarray<f64>::empty()
+    let cnt: i64 = q.view().count()
+    let c3: i64 = va.count()
+
+    io::cout << f"f={okf} s={oks} a={oka} x={okx} s1={s1} s2={s2} s3={s3} s4={s4} st={st} s5={s5} bad={bad} s6={s6} cnt={cnt} c3={c3}\n"
+    return i32(0)
+}

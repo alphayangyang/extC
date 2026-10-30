@@ -472,6 +472,45 @@ fn main() -> i32 {
 
 实测：`g=6 s=159 ts=159 ss=141`。细节见 `stdlib/stl/tensor.extc` 与 `tests/stl/tensor.extc`。
 
+### `nd`：N 维 strided 视图（一个 buffer + 每维步长）
+
+| 名字 | 签名 |
+|---|---|
+| `ndview<T>` | 结构体：`data: mut slice<T>`、`off`、`rank`、`shape: [8]i64`、`strides: [8]i64`（元素为单位） |
+| `ndarray<T>` | 拥有存储的结构体：`data: mut slice<T>`、`rank`、`shape: [8]i64`；`zeros1/zeros2/zeros3/zeros4`、`allocate(rank, shape)`、`empty()` 造它 |
+| `view` / `viewMut` | `fn view(self: ref ndarray<T>) -> ndview<T>` · `fn viewMut(self: mut ref ndarray<T>) -> ndview<T>`（零拷贝） |
+| `rowMajor<T>` | `fn rowMajor<T>(data: mut slice<T>, rank: i64, shape: [8]i64) -> ndview<T>` |
+| `strided<T>` | `fn strided<T>(data: mut slice<T>, off: i64, rank: i64, shape: [8]i64, strides: [8]i64) -> ?ndview<T>` |
+| `count` / `isContig` | `fn count(self: ref ndview<T>) -> i64` · `fn isContig(self: ref ndview<T>) -> bool` |
+| 逐元素 | `fn filled<T>(v, x)` · `addInto<T>(dst, a, b)` · `subInto<T>` · `mulInto<T>` · `scaleInto<T>(dst, a, k)` · `axpyInto<T>(dst, a, b, k)`（`dst = a + k*b`，全部写到目标、形状不一致返回 `false`） |
+| `sumv<T>` | `fn sumv<T>(v: ndview<T>) -> ?T`（行主序：idx[0] 变化最慢；空视图 `none`） |
+| `swapDims<T>` / `sub<T>` | `fn swapDims<T>(v, i, j) -> ?ndview<T>`（换维，零拷贝）· `fn sub<T>(v, i) -> ?ndview<T>`（取第 0 维的第 i 片，降一维） |
+
+**为什么不是 `slice<slice<T>>`**：嵌套切片每层是另一块 buffer 或指向别处的描述符，遍历时每行跳一次地址，
+预取器跟不住。这里是一块 buffer + 每维步长，行主序时最内层步长为 1，N 维遍历在内存里仍是一条流；
+`swapDims`、`sub`、切片都只改描述符。`rank` 是描述符里的运行期值（上限 8），所以三维、四维不需要整数泛型；
+代价是跨函数边界后下标个数由运行期检查。库不 trap：rank 越界、形状为负、装不下返回 `none`。
+
+```extc
+use std::io
+use stl::nd
+
+fn main() -> i32 {
+    var a: ndarray<f64> = ndarray<f64>::zeros3(i64(2), i64(3), i64(4)) ?? ndarray<f64>::empty()
+    var v: ndview<f64> = a.viewMut()
+    nd::filled(v, f64(1.5))
+    var b: ndarray<f64> = ndarray<f64>::zeros3(i64(2), i64(3), i64(4)) ?? ndarray<f64>::empty()
+    nd::scaleInto(b.viewMut(), a.view(), f64(2.0))
+    let s = nd::sumv(a.view()) ?? f64(0.0)
+    let t = nd::sumv(b.view()) ?? f64(0.0)
+    let tr = nd::sumv(nd::swapDims(a.view(), i64(0), i64(2)) ?? a.view()) ?? f64(0.0)
+    io::cout << f"n={v.count()} s={i64(s)} t={i64(t)} tr={i64(tr)}\n"
+    return 0
+}
+```
+
+实测：`n=24 s=36 t=72 tr=36`。细节见 `stdlib/stl/nd.extc` 与 `tests/stl/nd.extc`。
+
 ## 3. `std::*`：模块
 
 ### `std::io`：控制台与缓冲的读写
