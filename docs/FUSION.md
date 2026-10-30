@@ -81,14 +81,20 @@ for i in 0..n {
 
 ## 放哪一层（实现位置）
 
-- 现在没有 IR，codegen 直接吃 AST。采取与 `par` 降糖同一招：**checker 阶段做 AST→AST 改写**
-  （新文件 `src/fuse.c`，入口 `fuseBlock(Checker*, Stmt*)`，在 `checkBlockBody` 逐条语句检查之后
-  按块调一次），新节点用 plan API 手工登记（`planSetCName`；不分配 ⇒ arena 层是家层，不需要
-  `planSetArenaLevel`）。
-- 使用计数：`Checker` 已经记 `nameUses`；再加一条"这个局部视图的整块读都在本块内某条循环里"的
-  判定即可（v1 可以更窄：只认紧邻的下一条循环）。
-- **开关**：`--no-fuse`（测试专用；默认开）。测试里同源两份二进制对拍，红的半边必须先红。
+- 现在没有 IR，codegen 直接吃 AST。S1 走与 `par` 降糖同一招：**checker 阶段做 AST→AST 改写**，
+  但时机比 `par` 更早 —— 在检查器逐条检查之前就改，改完的树只被检查一次（检查过再改会让
+  plan/效果摘要失效）。
+- 代码在 `src/check/check_stmt.c` 的「融合段」（`checkBlockBody` 之前）：`fuseElementChains` 是主过程，
+  识别/替换的助手全部 static（`fuseExprSame`/`fusePureExpr`/`fuseTmpReadsOk`/`fuseSubstExpr`/
+  `fuseCheckBody`/`fuseLoopFrom`…）。两个入口：`checkBlockBody` 开头、`checkFuseFuncBody`
+  （由 `src/check/check_top.c` 的 `checkFunc` 在检查函数体前调用 —— 函数体本身不走 `checkBlockBody`）。
+- 节点的整体替换用 `src/ast/ast.c` 的 `exprClone`（深拷贝纯表达式）与 `stmtBlockSetStmts`
+  （整表换块体语句）；这两处写 AST 成员发生在 builder 文件里，`tools/check_ast_freeze.py` 允许。
+- **开关**：`--no-fuse`（默认开）。`checkSetNoFuse(bool)` 由 `src/main.c` 在解析完 argv 后传入
+  （`getenv` 会被 `tools/check_switches.py` 判成"没写进 `--help` 的暗开关"）。
 - 保守退回：任何一条判据不满足就原样保留，不做部分融合、不做猜测。
+- 与"用计数"相比，S1 更窄：不信全局使用计数，只要求临时视图**除了这条读循环以外没有任何引用**
+  （该判据用 AST 通用遍历 `astWalkStmtChildren` 扫全块，含子块/分支/match 臂）。
 
 ## 不做的
 
@@ -101,19 +107,21 @@ for i in 0..n {
 
 ## 判据
 
-- **语义**：`tests/run.sh`、`smoke`、`nobench`、`docs` 全绿；新增 `tests/fuse/`：S1/S2/S3 正例
-  （融合后与手写融合版逐字节一致、生成 C 里只剩一个循环）、反例（不满足判据的写法不融合、结果
-  不变）、trap 用例（融合前后报的越界下标相同）。
+- **语义**：`tests/run.sh`、`smoke`、`nobench`、`docs` 全绿；`tests/fuse/`（已落地）：
+  正例 = 融合/`--no-fuse` 两臂输出逐字节相同、且融合臂生成 C 里临时视图消失；
+  反例四条 = 临时视图在后面被复用 / 读侧下标不同（倒序）/ 写侧右值含调用 / 读侧既读又写同一视图，
+  都**不许**融合（临时视图仍在）且输出不变。
 - **逐位**：`bench/fortran`、`bench/par`、`bench/stream` 的 `cs` 与改前一致。
-- **性能**：新增 `bench/fusion/`（未融合的 extC 写法 vs 编译器融合后 vs 手写融合）：4M 下 S3
-  ≥ 2× 相对未融合，S1 ≥ 1.3×；不满足判据的对照臂不许变慢（±3%）。
-- **可解释**：生成 C 的注释里标出融合了哪几条（或至少 `EXTC_FUSE_DEBUG=1` 能打印），否则下次
-  没人知道数字为什么变了。
+- **性能**：`bench/fusion/`（已落地）同一份源码编两臂，`--no-fuse` 为参照：n=1M、iters=8 实测
+  16.98 ms vs 30.63 ms（**0.555×**，即快 1.80×），两臂 `cs=1017735235`；S1 判据 ≥1.3× 满足。
+- **可解释**：能直接看见的判据是"生成 C 里没有那个临时视图"，测试里就是这么断言的；调试期用的
+  `EXTC_FUSE_DEBUG` 打印没有保留（不想要只有开发期能看见的行为），需要时按上面的助手名加日志。
 
 ## 分步
 
-1. 本设计页与索引接线（本次提交）。
-2. S1 元素链融合 + `--no-fuse` + `tests/fuse/` 正反例（先红后绿）。
-3. S2/S3 归约融合。
-4. `bench/fusion/` 与数字；文档、changelog。
+1. ~~本设计页与索引接线~~（已完成）。
+2. ~~S1 元素链融合 + `--no-fuse` + `tests/fuse/` 正反例（先红后绿）~~（已完成，见上；
+   生成 C 里只剩一个循环，`bench/fusion` 1.80×）。
+3. S2/S3 归约融合（`sum(tmp)` 折进写循环；v1 不跨函数）。
+4. S2/S3 的 `bench/fusion` 三臂（未融合 vs 编译器融合 vs 手写融合）与数字。
 5. 之后再看：`seq::sum(tmp)` 的识别、跨 `par` 融合、非临时写。

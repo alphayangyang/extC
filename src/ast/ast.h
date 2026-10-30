@@ -528,6 +528,28 @@ void funcDefSetModName(FuncDef *f, const char *modName);
  * @param parLoop 新值。
  */
 void stmtSetParLoop(Stmt *s, bool parLoop);
+/**
+ * @brief 深拷贝一个表达式子树（融合降糖用：同一条右值要出现在多个位置）。
+ *
+ * 只复制表达式形状与源码位置；`type` / plan 侧的表在拷贝后清空，由检查器重新填 —— 拷贝
+ * 发生在检查之前，被拷贝的源节点也还没被检查过。允许的节点形状是纯表达式（字面量、标识符、
+ * 二元/一元、转换、字段、下标、切片）；其它形状（调用、`new`、闭包等）原样浅拷贝，调用方
+ * 不应把融合用在它们上面。
+ *
+ * @param a   分配用的 arena。
+ * @param src 源表达式；NULL 时返回 NULL。
+ * @return    新子树。
+ */
+Expr *exprClone(Arena *a, Expr *src);
+/**
+ * @brief 换掉一个块语句的语句表（融合降糖用）。
+ *
+ * @param s     必须是 `ST_BLOCK` 节点。
+ * @param stmts 新语句表（`Stmt*` 的 `Vec`）。
+ */
+void stmtBlockSetStmts(Stmt *s, Vec *stmts);
+
+
 
 /* ------------------------------------------------------------ statements */
 

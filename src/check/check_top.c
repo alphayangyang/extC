@@ -4322,6 +4322,7 @@ static void checkFunc(Checker *c, FuncDef *f) {
      * Shadowing a parameter with `let a = ...` is therefore only a new name, which is
      * legal and becomes `a__2` in the generated C, while `var a = ...` declares a second
      * piece of storage and is rejected (see `declare`). */
+    checkFuseFuncBody(c, f->body);
     for (size_t i = 0; i < f->body->u.block.stmts.len; i++)
         checkStmt(c, *(Stmt **)vecAt(&f->body->u.block.stmts, i));
 

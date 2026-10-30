@@ -259,6 +259,61 @@ void stmtSetParLoop(Stmt *s, bool parLoop) {
 }
 
 /**
+ * @brief 深拷贝一个表达式子树（融合降糖用）。
+ *
+ * 见 `ast.h` 的同名声明：只保证纯表达式形状的子树被完整复制，其它形状退化为浅拷贝。
+ *
+ * @param a   分配用的 arena。
+ * @param src 源表达式；NULL 时返回 NULL。
+ * @return    新子树。
+ */
+Expr *exprClone(Arena *a, Expr *src) {
+    if (!src) return NULL;
+    Expr *n = arenaAllocZero(a, sizeof(Expr));
+    *n = *src;
+    switch (src->kind) {
+    case EX_BIN:
+        n->u.bin.left  = exprClone(a, src->u.bin.left);
+        n->u.bin.right = exprClone(a, src->u.bin.right);
+        break;
+    case EX_UN:
+        n->u.un.operand = exprClone(a, src->u.un.operand);
+        break;
+    case EX_CONV:
+        n->u.conv.operand = exprClone(a, src->u.conv.operand);
+        break;
+    case EX_FIELD:
+        n->u.field.obj = exprClone(a, src->u.field.obj);
+        break;
+    case EX_INDEX:
+        n->u.index.obj   = exprClone(a, src->u.index.obj);
+        n->u.index.index = exprClone(a, src->u.index.index);
+        break;
+    case EX_SLICE:
+        n->u.slice.obj = exprClone(a, src->u.slice.obj);
+        n->u.slice.lo  = exprClone(a, src->u.slice.lo);
+        n->u.slice.hi  = exprClone(a, src->u.slice.hi);
+        break;
+    case EX_SIGN:
+        n->u.sign.operand = exprClone(a, src->u.sign.operand);
+        break;
+    case EX_COALESCE:
+        n->u.coalesce.main     = exprClone(a, src->u.coalesce.main);
+        n->u.coalesce.fallback = exprClone(a, src->u.coalesce.fallback);
+        break;
+    case EX_REF:
+        n->u.ref.operand = exprClone(a, src->u.ref.operand);
+        break;
+    case EX_DEREF:
+        n->u.deref.operand = exprClone(a, src->u.deref.operand);
+        break;
+    default:
+        break;   /* 叶子与"不该融合"的形状：浅拷贝已经足够 */
+    }
+    return n;
+}
+
+/**
  * @brief 判断一个函数是不是方法。
  *
  * 规则就是名字：第一个参数名为 `self` 就是方法，声明里没有别的东西区分方法与自由函数。
@@ -271,6 +326,16 @@ bool funcIsMethod(const FuncDef *f) {
     /* vecAt 取非 const 的 Vec；这里只读元素，不写它。 */
     Param *p0 = *(Param **)vecAt((Vec *)&f->params, 0);
     return strcmp(p0->name, "self") == 0;
+}
+
+/**
+ * @brief 换掉一个块语句的语句表（融合降糖用）。
+ *
+ * @param s     必须是 `ST_BLOCK` 节点。
+ * @param stmts 新语句表（`Stmt*` 的 `Vec`，按值拷进去）。
+ */
+void stmtBlockSetStmts(Stmt *s, Vec *stmts) {
+    s->u.block.stmts = *stmts;
 }
 
 /* ---------------------------------------------------------------- walking */

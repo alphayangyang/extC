@@ -1053,6 +1053,586 @@ void parWorkerAudit(Checker *c, FuncDef *f) {
     }
 }
 
+/* ------------------------------------------------- S1 元素链融合（第 2 层） */
+
+/* 融合总开关：`--no-fuse` 把它打开（关掉融合）。检查器只读它。 */
+static bool gNoFuse = false;
+
+/**
+ * @brief 设置"关掉融合"开关（驱动层的 `--no-fuse` 调用）。
+ *
+ * @param off 为 `true` 时不融合。
+ */
+void checkSetNoFuse(bool off) {
+    gNoFuse = off;
+}
+
+/**
+ * @brief 融合是否被关掉。
+ *
+ * 调试与对拍开关：关掉之后同一份源码走未融合的路径，`tests/fuse` 用它逐字节比对两种形状的
+ * 输出。
+ *
+ * @return 关掉时为 `true`。
+ */
+static bool fuseOff(void) {
+    return gNoFuse;
+}
+
+/**
+ * @brief 两个表达式是否结构相等（融合的迭代空间判据）。
+ *
+ * 只比形状：标识符同名、整数字面量同值、二元同运算符且子项递归相等、字段同名且对象递归相等。
+ * 允许的更复杂形状（调用等）一律判不等，于是融合自动放弃。
+ *
+ * @param a 左表达式。
+ * @param b 右表达式。
+ * @return 结构相等时为 `true`。
+ */
+static bool fuseExprSame(Expr *a, Expr *b) {
+    if (a == b) return true;
+    if (!a || !b || a->kind != b->kind) return false;
+    switch (a->kind) {
+    case EX_IDENT: return strcmp(a->u.ident.name, b->u.ident.name) == 0;
+    case EX_INT:   return a->u.ival == b->u.ival;
+    case EX_FLOAT: return a->u.fval == b->u.fval;
+    case EX_BOOL:  return a->u.bval == b->u.bval;
+    case EX_BIN:
+        return strcmp(a->u.bin.op, b->u.bin.op) == 0
+            && fuseExprSame(a->u.bin.left, b->u.bin.left)
+            && fuseExprSame(a->u.bin.right, b->u.bin.right);
+    case EX_FIELD:
+        return strcmp(a->u.field.name, b->u.field.name) == 0
+            && fuseExprSame(a->u.field.obj, b->u.field.obj);
+    default: return false;
+    }
+}
+
+/**
+ * @brief 表达式是否"纯"：可以搬进另一个循环体而语义不变。
+ *
+ * 纯 = 只有字面量、标识符、二元/一元运算、转换、字段与下标（下标本身也要纯）。调用、`new`、
+ * 切片、闭包、`trap`、`?` 传播都不算：它们要么有副作用，要么依赖执行次数。
+ *
+ * @param e 要看的表达式。
+ * @return 纯时为 `true`。
+ */
+static bool fusePureExpr(Expr *e) {
+    if (!e) return false;
+    switch (e->kind) {
+    case EX_INT: case EX_FLOAT: case EX_BOOL: case EX_STR: case EX_IDENT:
+        return true;
+    case EX_BIN: return fusePureExpr(e->u.bin.left) && fusePureExpr(e->u.bin.right);
+    case EX_UN:  return fusePureExpr(e->u.un.operand);
+    case EX_CONV: return fusePureExpr(e->u.conv.operand);
+    case EX_FIELD: return fusePureExpr(e->u.field.obj);
+    case EX_INDEX: return fusePureExpr(e->u.index.obj) && fusePureExpr(e->u.index.index);
+    default: return false;
+    }
+}
+
+/**
+ * @brief 表达式里是否出现了某个标识符（名字比较）。
+ *
+ * @param e    要扫描的表达式。
+ * @param name 要找的标识符名字。
+ * @return 出现时为 `true`。
+ */
+static bool fuseMentions(Expr *e, const char *name) {
+    if (!e) return false;
+    switch (e->kind) {
+    case EX_IDENT: return strcmp(e->u.ident.name, name) == 0;
+    case EX_BIN:   return fuseMentions(e->u.bin.left, name) || fuseMentions(e->u.bin.right, name);
+    case EX_UN:    return fuseMentions(e->u.un.operand, name);
+    case EX_CONV:  return fuseMentions(e->u.conv.operand, name);
+    case EX_FIELD: return fuseMentions(e->u.field.obj, name);
+    case EX_INDEX: return fuseMentions(e->u.index.obj, name) || fuseMentions(e->u.index.index, name);
+    case EX_SLICE: return fuseMentions(e->u.slice.obj, name) || fuseMentions(e->u.slice.lo, name)
+                       || fuseMentions(e->u.slice.hi, name);
+    case EX_CALL: {
+        if (fuseMentions(e->u.call.callee, name)) return true;
+        for (size_t i = 0; i < e->u.call.args.len; i++)
+            if (fuseMentions(*(Expr **)vecAt(&e->u.call.args, i), name)) return true;
+        return false;
+    }
+    case EX_METHOD: {
+        if (fuseMentions(e->u.method.recv, name)) return true;
+        for (size_t i = 0; i < e->u.method.args.len; i++)
+            if (fuseMentions(*(Expr **)vecAt(&e->u.method.args, i), name)) return true;
+        return false;
+    }
+    case EX_ASSOC: {
+        for (size_t i = 0; i < e->u.assoc.args.len; i++)
+            if (fuseMentions(*(Expr **)vecAt(&e->u.assoc.args, i), name)) return true;
+        return false;
+    }
+    case EX_COALESCE: return fuseMentions(e->u.coalesce.main, name)
+                           || fuseMentions(e->u.coalesce.fallback, name);
+    case EX_REF:   return fuseMentions(e->u.ref.operand, name);
+    case EX_DEREF: return fuseMentions(e->u.deref.operand, name);
+    case EX_SIGN:  return fuseMentions(e->u.sign.operand, name);
+    default: return false;
+    }
+}
+
+/**
+ * @brief 把循环体里"唯一的内层块"摊平（解析器给 `{ … }` 体包了一层块）。
+ *
+ * 摊平只发生在形状合格时：`for i in 0..n { stmt }` 的体解析成 `ST_BLOCK{ ST_BLOCK{stmt}, step }`，
+ * 融合要按语句逐条看，所以先把这层壳去掉。内层块自己没有步进语句，搬上来不丢东西。
+ *
+ * @param c    检查器（取 arena）。
+ * @param body 循环体块（含步进语句）。
+ */
+static void fuseFlattenBody(Checker *c, Stmt *body) {
+    bool nested = false;
+    for (size_t i = 0; i < body->u.block.stmts.len; i++) {
+        Stmt *s = *(Stmt **)vecAt(&body->u.block.stmts, i);
+        if (s != body->forStep && s->kind == ST_BLOCK) { nested = true; break; }
+    }
+    if (!nested) return;
+    Vec nv;
+    vecInit(&nv, c->arena, sizeof(Stmt *));
+    for (size_t i = 0; i < body->u.block.stmts.len; i++) {
+        Stmt *s = *(Stmt **)vecAt(&body->u.block.stmts, i);
+        if (s != body->forStep && s->kind == ST_BLOCK) {
+            for (size_t k = 0; k < s->u.block.stmts.len; k++)
+                *(Stmt **)vecPush(&nv) = *(Stmt **)vecAt(&s->u.block.stmts, k);
+        } else {
+            *(Stmt **)vecPush(&nv) = s;
+        }
+    }
+    stmtBlockSetStmts(body, &nv);
+}
+
+/**
+ * @brief 把"区间 for 脱糖块"拆成融合需要的那几件：循环变量名、两端、`while` 与体。
+ *
+ * 形状来自 `parser.c` 的 `forRangeFrom`：块里正好三条语句 `[var i, var __extc_hi, while]`，
+ * `while` 的条件是 `i < __extc_hi`，体是 `[原体..., step]` 且 `body->forStep` 指着那条步进。
+ *
+ * @param c       检查器（摊平内层块时取 arena）。
+ * @param blk     候选语句。
+ * @param whileOut 命中时填 `while` 语句。
+ * @param bodyOut  命中时填循环体块。
+ * @param varOut   命中时填循环变量名。
+ * @param loOut    命中时填下界表达式。
+ * @param hiOut    命中时填上界表达式。
+ * @return 形状对上时为 `true`。
+ */
+static bool fuseLoopFrom(Checker *c, Stmt *blk, Stmt **whileOut, Stmt **bodyOut, const char **varOut,
+                         Expr **loOut, Expr **hiOut) {
+    if (!blk || blk->kind != ST_BLOCK || blk->u.block.stmts.len != 3) return false;
+    Stmt *decl = *(Stmt **)vecAt(&blk->u.block.stmts, 0);
+    Stmt *hi   = *(Stmt **)vecAt(&blk->u.block.stmts, 1);
+    Stmt *w    = *(Stmt **)vecAt(&blk->u.block.stmts, 2);
+    if (decl->kind != ST_VAR || !decl->u.var.init || decl->u.var.ann) return false;
+    if (hi->kind != ST_VAR || !hi->u.var.init || strcmp(hi->u.var.name, "__extc_hi") != 0) return false;
+    if (w->kind != ST_WHILE || !w->u.whiles.cond || w->u.whiles.cond->kind != EX_BIN) return false;
+    Expr *cond = w->u.whiles.cond;
+    if (strcmp(cond->u.bin.op, "<") != 0) return false;
+    if (cond->u.bin.left->kind != EX_IDENT || cond->u.bin.right->kind != EX_IDENT) return false;
+    if (strcmp(cond->u.bin.left->u.ident.name, decl->u.var.name) != 0) return false;
+    if (strcmp(cond->u.bin.right->u.ident.name, "__extc_hi") != 0) return false;
+    Stmt *body = w->u.whiles.body;
+    if (!body || body->kind != ST_BLOCK || !body->forStep) return false;
+    fuseFlattenBody(c, body);
+    *whileOut = w; *bodyOut = body; *varOut = decl->u.var.name;
+    *loOut = decl->u.var.init; *hiOut = hi->u.var.init;
+    return true;
+}
+
+
+/**
+ * @brief 往一列表里加名字（去重，按出现顺序）。
+ *
+ * @param v    `const char*` 的 `Vec`。
+ * @param name 要加的名字。
+ */
+static void fuseAddName(Vec *v, const char *name) {
+    for (size_t i = 0; i < v->len; i++)
+        if (strcmp(*(const char **)vecAt(v, i), name) == 0) return;
+    *(const char **)vecPush(v) = name;
+}
+
+/**
+ * @brief 表达式里出现的所有标识符名字。
+ *
+ * @param e 要扫描的表达式。
+ * @param v `const char*` 的 `Vec`；重复的名字只记一次。
+ */
+static void fuseCollectIdents(Expr *e, Vec *v) {
+    if (!e) return;
+    switch (e->kind) {
+    case EX_IDENT: fuseAddName(v, e->u.ident.name); break;
+    case EX_BIN:   fuseCollectIdents(e->u.bin.left, v); fuseCollectIdents(e->u.bin.right, v); break;
+    case EX_UN:    fuseCollectIdents(e->u.un.operand, v); break;
+    case EX_CONV:  fuseCollectIdents(e->u.conv.operand, v); break;
+    case EX_FIELD: fuseCollectIdents(e->u.field.obj, v); break;
+    case EX_INDEX: fuseCollectIdents(e->u.index.obj, v); fuseCollectIdents(e->u.index.index, v); break;
+    case EX_SLICE: fuseCollectIdents(e->u.slice.obj, v); fuseCollectIdents(e->u.slice.lo, v);
+                   fuseCollectIdents(e->u.slice.hi, v); break;
+    case EX_CALL:
+        fuseCollectIdents(e->u.call.callee, v);
+        for (size_t i = 0; i < e->u.call.args.len; i++)
+            fuseCollectIdents(*(Expr **)vecAt(&e->u.call.args, i), v);
+        break;
+    case EX_METHOD:
+        fuseCollectIdents(e->u.method.recv, v);
+        for (size_t i = 0; i < e->u.method.args.len; i++)
+            fuseCollectIdents(*(Expr **)vecAt(&e->u.method.args, i), v);
+        break;
+    case EX_ASSOC:
+        for (size_t i = 0; i < e->u.assoc.args.len; i++)
+            fuseCollectIdents(*(Expr **)vecAt(&e->u.assoc.args, i), v);
+        break;
+    case EX_COALESCE: fuseCollectIdents(e->u.coalesce.main, v);
+                      fuseCollectIdents(e->u.coalesce.fallback, v); break;
+    case EX_REF:   fuseCollectIdents(e->u.ref.operand, v); break;
+    case EX_DEREF: fuseCollectIdents(e->u.deref.operand, v); break;
+    case EX_SIGN:  fuseCollectIdents(e->u.sign.operand, v); break;
+    default: break;
+    }
+}
+
+/**
+ * @brief 表达式里每一处 `tmp` 是否都恰好是"以循环变量为唯一下标"的读形状。
+ *
+ * 融合把 `tmp[i]` 整个替换成 A 的右值，所以任何别的用法（`tmp.len`、`tmp[j]`、把 `tmp`
+ * 整体传给谁、写 `tmp`）都让融合放弃。
+ *
+ * @param e   要扫描的表达式。
+ * @param tmp 临时视图名字。
+ * @param var 循环变量名字。
+ * @return 全是可替换的读形状时为 `true`。
+ */
+static bool fuseTmpReadsOk(Expr *e, const char *tmp, const char *var) {
+    if (!e) return true;
+    if (e->kind == EX_IDENT) return strcmp(e->u.ident.name, tmp) != 0;
+    if (e->kind == EX_INDEX) {
+        Expr *obj = e->u.index.obj, *idx = e->u.index.index;
+        if (obj && obj->kind == EX_IDENT && strcmp(obj->u.ident.name, tmp) == 0)
+            return idx && idx->kind == EX_IDENT && strcmp(idx->u.ident.name, var) == 0;
+        return fuseTmpReadsOk(obj, tmp, var) && fuseTmpReadsOk(idx, tmp, var);
+    }
+    switch (e->kind) {
+    case EX_BIN: return fuseTmpReadsOk(e->u.bin.left, tmp, var)
+                     && fuseTmpReadsOk(e->u.bin.right, tmp, var);
+    case EX_UN:  return fuseTmpReadsOk(e->u.un.operand, tmp, var);
+    case EX_CONV: return fuseTmpReadsOk(e->u.conv.operand, tmp, var);
+    case EX_FIELD: return fuseTmpReadsOk(e->u.field.obj, tmp, var);
+    case EX_SLICE: return fuseTmpReadsOk(e->u.slice.obj, tmp, var)
+                        && fuseTmpReadsOk(e->u.slice.lo, tmp, var)
+                        && fuseTmpReadsOk(e->u.slice.hi, tmp, var);
+    case EX_CALL:
+        if (!fuseTmpReadsOk(e->u.call.callee, tmp, var)) return false;
+        for (size_t i = 0; i < e->u.call.args.len; i++)
+            if (!fuseTmpReadsOk(*(Expr **)vecAt(&e->u.call.args, i), tmp, var)) return false;
+        return true;
+    case EX_METHOD:
+        if (!fuseTmpReadsOk(e->u.method.recv, tmp, var)) return false;
+        for (size_t i = 0; i < e->u.method.args.len; i++)
+            if (!fuseTmpReadsOk(*(Expr **)vecAt(&e->u.method.args, i), tmp, var)) return false;
+        return true;
+    case EX_ASSOC:
+        for (size_t i = 0; i < e->u.assoc.args.len; i++)
+            if (!fuseTmpReadsOk(*(Expr **)vecAt(&e->u.assoc.args, i), tmp, var)) return false;
+        return true;
+    case EX_COALESCE: return fuseTmpReadsOk(e->u.coalesce.main, tmp, var)
+                          && fuseTmpReadsOk(e->u.coalesce.fallback, tmp, var);
+    case EX_REF:   return fuseTmpReadsOk(e->u.ref.operand, tmp, var);
+    case EX_DEREF: return fuseTmpReadsOk(e->u.deref.operand, tmp, var);
+    case EX_SIGN:  return fuseTmpReadsOk(e->u.sign.operand, tmp, var);
+    default: return true;
+    }
+}
+
+/**
+ * @brief 就地替换表达式里的 `tmp[i]`（融合的第二步）。
+ *
+ * 命中节点的内容整体换成右值深拷贝（整节点赋值，不逐字段写，于是 AST 的字段写守卫不受影响）。
+ *
+ * @param c   检查器（取 arena）。
+ * @param e   要改写的表达式。
+ * @param tmp 临时视图名字。
+ * @param var 循环变量名字。
+ * @param rhs 要替进去的右值。
+ */
+static void fuseSubstExpr(Checker *c, Expr *e, const char *tmp, const char *var, Expr *rhs) {
+    if (!e) return;
+    if (e->kind == EX_INDEX && e->u.index.obj && e->u.index.obj->kind == EX_IDENT
+        && strcmp(e->u.index.obj->u.ident.name, tmp) == 0
+        && e->u.index.index && e->u.index.index->kind == EX_IDENT
+        && strcmp(e->u.index.index->u.ident.name, var) == 0) {
+        *e = *exprClone(c->arena, rhs);
+        return;
+    }
+    switch (e->kind) {
+    case EX_BIN: fuseSubstExpr(c, e->u.bin.left, tmp, var, rhs);
+                 fuseSubstExpr(c, e->u.bin.right, tmp, var, rhs); break;
+    case EX_UN:  fuseSubstExpr(c, e->u.un.operand, tmp, var, rhs); break;
+    case EX_CONV: fuseSubstExpr(c, e->u.conv.operand, tmp, var, rhs); break;
+    case EX_FIELD: fuseSubstExpr(c, e->u.field.obj, tmp, var, rhs); break;
+    case EX_INDEX: fuseSubstExpr(c, e->u.index.obj, tmp, var, rhs);
+                   fuseSubstExpr(c, e->u.index.index, tmp, var, rhs); break;
+    case EX_SLICE: fuseSubstExpr(c, e->u.slice.obj, tmp, var, rhs);
+                   fuseSubstExpr(c, e->u.slice.lo, tmp, var, rhs);
+                   fuseSubstExpr(c, e->u.slice.hi, tmp, var, rhs); break;
+    case EX_CALL:
+        fuseSubstExpr(c, e->u.call.callee, tmp, var, rhs);
+        for (size_t i = 0; i < e->u.call.args.len; i++)
+            fuseSubstExpr(c, *(Expr **)vecAt(&e->u.call.args, i), tmp, var, rhs);
+        break;
+    case EX_METHOD:
+        fuseSubstExpr(c, e->u.method.recv, tmp, var, rhs);
+        for (size_t i = 0; i < e->u.method.args.len; i++)
+            fuseSubstExpr(c, *(Expr **)vecAt(&e->u.method.args, i), tmp, var, rhs);
+        break;
+    case EX_ASSOC:
+        for (size_t i = 0; i < e->u.assoc.args.len; i++)
+            fuseSubstExpr(c, *(Expr **)vecAt(&e->u.assoc.args, i), tmp, var, rhs);
+        break;
+    case EX_COALESCE: fuseSubstExpr(c, e->u.coalesce.main, tmp, var, rhs);
+                      fuseSubstExpr(c, e->u.coalesce.fallback, tmp, var, rhs); break;
+    case EX_REF:   fuseSubstExpr(c, e->u.ref.operand, tmp, var, rhs); break;
+    case EX_DEREF: fuseSubstExpr(c, e->u.deref.operand, tmp, var, rhs); break;
+    case EX_SIGN:  fuseSubstExpr(c, e->u.sign.operand, tmp, var, rhs); break;
+    default: break;
+    }
+}
+
+/**
+ * @brief 就地替换语句里所有可写位置上的 `tmp[i]`。
+ *
+ * 只处理融合接受的那几种语句形状（赋值与表达式语句）；别的形状在资格判定那一步已经被拒。
+ *
+ * @param c   检查器。
+ * @param s   要改写的语句。
+ * @param tmp 临时视图名字。
+ * @param var 循环变量名字。
+ * @param rhs 要替进去的右值。
+ */
+static void fuseSubstStmt(Checker *c, Stmt *s, const char *tmp, const char *var, Expr *rhs) {
+    if (!s) return;
+    switch (s->kind) {
+    case ST_ASSIGN:
+        fuseSubstExpr(c, s->u.assign.target, tmp, var, rhs);
+        fuseSubstExpr(c, s->u.assign.value, tmp, var, rhs);
+        break;
+    case ST_EXPR:
+        fuseSubstExpr(c, s->u.expr.expr, tmp, var, rhs);
+        break;
+    case ST_BLOCK:
+        for (size_t i = 0; i < s->u.block.stmts.len; i++) {
+            Stmt *child = *(Stmt **)vecAt(&s->u.block.stmts, i);
+            if (child == s->forStep) continue;
+            fuseSubstStmt(c, child, tmp, var, rhs);
+        }
+        break;
+    default: break;
+    }
+}
+
+/**
+ * @brief 判断 B 的体是不是"每个元素只写自己的槽"的可融合形状，并收集读写名字。
+ *
+ * 规则（v1 的保守版）：每句只能是 `X[i] = <表达式>` 或表达式语句；写目标必须是"以循环变量
+ * 为唯一下标"的视图槽，且写目标名不能出现在任何读位置（否则融合前后跨元素依赖的顺序会变）。
+ *
+ * @param body   B 的循环体（`ST_BLOCK`，其中含步进语句）。
+ * @param tmp    临时视图名字。
+ * @param var    循环变量名字。
+ * @param writes `const char*` 的 `Vec`，收集写目标视图名。
+ * @param reads  `const char*` 的 `Vec`，收集读到的名字。
+ * @return 形状合格时为 `true`。
+ */
+static bool fuseCheckBody(Stmt *body, const char *tmp, const char *var, Vec *writes, Vec *reads) {
+    for (size_t i = 0; i < body->u.block.stmts.len; i++) {
+        Stmt *s = *(Stmt **)vecAt(&body->u.block.stmts, i);
+        if (s == body->forStep) continue;
+        if (s->kind == ST_ASSIGN && !s->u.assign.op) {
+            Expr *t = s->u.assign.target;
+            if (!t || t->kind != EX_INDEX || !t->u.index.obj || t->u.index.obj->kind != EX_IDENT
+                || !t->u.index.index || t->u.index.index->kind != EX_IDENT
+                || strcmp(t->u.index.index->u.ident.name, var) != 0)
+                return false;
+            const char *w = t->u.index.obj->u.ident.name;
+            if (strcmp(w, tmp) == 0) return false;
+            fuseAddName(writes, w);
+            if (!fuseTmpReadsOk(s->u.assign.value, tmp, var)) return false;
+            fuseCollectIdents(s->u.assign.value, reads);
+        } else if (s->kind == ST_EXPR && s->u.expr.expr) {
+            if (!fuseTmpReadsOk(s->u.expr.expr, tmp, var)) return false;
+            fuseCollectIdents(s->u.expr.expr, reads);
+        } else {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool fuseMentionOnStmt(void *raw, Stmt *s);
+
+/** `fuseStmtMentions` 的走树上下文：要找的名字与是否已经找到。 */
+typedef struct { const char *name; bool hit; } FuseMentionCtx;
+
+/**
+ * @brief `fuseStmtMentions` 的表达式回调：命中名字就停下整趟走。
+ *
+ * @param raw 上下文（`FuseMentionCtx *`）。
+ * @param e   被访问的子表达式。
+ * @return 没命中时为 `true`（继续走）。
+ */
+static bool fuseMentionOnExpr(void *raw, Expr *e) {
+    FuseMentionCtx *m = raw;
+    if (!e) return true;
+    if (e->kind == EX_IDENT && strcmp(e->u.ident.name, m->name) == 0) {
+        m->hit = true;
+        return false;
+    }
+    AstVisit v = { fuseMentionOnExpr, fuseMentionOnStmt, m };
+    return astWalkExprChildren(e, &v);
+}
+
+/**
+ * @brief `fuseStmtMentions` 的语句回调：继续往下走子语句。
+ *
+ * @param raw 上下文（`FuseMentionCtx *`）。
+ * @param s   被访问的子语句。
+ * @return 没命中时为 `true`（继续走）。
+ */
+static bool fuseMentionOnStmt(void *raw, Stmt *s) {
+    FuseMentionCtx *m = raw;
+    if (!s) return true;
+    AstVisit v = { fuseMentionOnExpr, fuseMentionOnStmt, m };
+    return astWalkStmtChildren(s, &v);
+}
+
+/**
+ * @brief 语句（含所有子语句与其中的表达式）里是否提到某个标识符。
+ *
+ * 走的是 AST 的通用遍历（`astWalkStmtChildren`），于是新增的语句/表达式种类自动覆盖，
+ * 不需要在这里再写一份 switch。
+ *
+ * @param s    要扫描的语句。
+ * @param name 要找的标识符名字。
+ * @return 提到时为 `true`。
+ */
+static bool fuseStmtMentions(Stmt *s, const char *name) {
+    if (!s) return false;
+    FuseMentionCtx m = { name, false };
+    AstVisit v = { fuseMentionOnExpr, fuseMentionOnStmt, &m };
+    astWalkStmtChildren(s, &v);
+    return m.hit;
+}
+
+/**
+ * @brief 尝试把"写临时视图的循环 A + 紧跟着读它的循环 B"融合成一个循环（S1 元素链）。
+ *
+ * 资格（全中才动手）：`var tmp: mut slice<T> = new ...` 紧挨着 A；A、B 是同一块里相邻的两个
+ * 区间 `for`，循环变量同名、两端结构相等（`fuseExprSame`）；A 体恰好一条
+ * `tmp[i] = <纯表达式>`；B 的体满足 `fuseCheckBody`；`tmp` 在这一块的其它语句里没有再被提到。
+ * 命中后 B 的语句搬进 A 的体（`tmp[i]` 换成 A 的右值），删掉 `tmp` 声明与 B，A 留在原位。
+ *
+ * @param c     检查器。
+ * @param block 正在被检查的块（语句表会原地缩短）。
+ */
+static void fuseElementChains(Checker *c, Stmt *block) {
+    if (!block || block->kind != ST_BLOCK || block->u.block.stmts.len < 4) return;
+    if (block->parLoop) return;
+    if (c->curFunc && (planIsCoro(c->curFunc) || planIsParWorker(c->curFunc))) return;
+    Vec *v = &block->u.block.stmts;
+    for (size_t i = 0; i + 2 < v->len; i++) {
+        Stmt *decl = *(Stmt **)vecAt(v, i);
+        if (decl->kind != ST_VAR || !decl->u.var.ann || !decl->u.var.init) continue;
+        if (decl->u.var.init->kind != EX_NEW) continue;
+        const char *tmp = decl->u.var.name;
+        Stmt *a = *(Stmt **)vecAt(v, i + 1);
+        Stmt *b = *(Stmt **)vecAt(v, i + 2);
+        Stmt *aW, *aBody, *bW, *bBody;
+        const char *aVar, *bVar;
+        Expr *aLo, *aHi, *bLo, *bHi;
+        if (!fuseLoopFrom(c, a, &aW, &aBody, &aVar, &aLo, &aHi)) continue;
+        if (!fuseLoopFrom(c, b, &bW, &bBody, &bVar, &bLo, &bHi)) continue;
+        (void)aW;
+        (void)bW;
+        if (strcmp(aVar, bVar) != 0) continue;
+        if (!fuseExprSame(aLo, bLo) || !fuseExprSame(aHi, bHi)) continue;
+        if (fuseMentions(aLo, tmp) || fuseMentions(aHi, tmp)) continue;
+        /* A 的体：恰好 [tmp[i] = rhs, step]。 */
+        Expr *rhs = NULL;
+        {
+            size_t seen = 0;
+            for (size_t k = 0; k < aBody->u.block.stmts.len; k++) {
+                Stmt *s = *(Stmt **)vecAt(&aBody->u.block.stmts, k);
+                if (s == aBody->forStep) continue;
+                if (++seen > 1) break;
+                if (s->kind != ST_ASSIGN || s->u.assign.op) break;
+                Expr *t = s->u.assign.target;
+                if (!t || t->kind != EX_INDEX || !t->u.index.obj || t->u.index.obj->kind != EX_IDENT
+                    || strcmp(t->u.index.obj->u.ident.name, tmp) != 0
+                    || !t->u.index.index || t->u.index.index->kind != EX_IDENT
+                    || strcmp(t->u.index.index->u.ident.name, aVar) != 0) break;
+                if (!fusePureExpr(s->u.assign.value)) break;
+                if (fuseMentions(s->u.assign.value, tmp)) break;
+                rhs = s->u.assign.value;
+            }
+            if (!rhs || seen != 1) continue;
+        }
+        /* B 的体与读写名字：写目标与读到的名字不许相交（跨元素依赖的顺序会变）。 */
+        Vec writes, reads;
+        vecInit(&writes, c->arena, sizeof(const char *));
+        vecInit(&reads, c->arena, sizeof(const char *));
+        if (!fuseCheckBody(bBody, tmp, bVar, &writes, &reads)) continue;
+        fuseCollectIdents(rhs, &reads);
+        bool clash = false;
+        for (size_t k = 0; k < writes.len && !clash; k++) {
+            const char *w = *(const char **)vecAt(&writes, k);
+            for (size_t m = 0; m < reads.len; m++)
+                if (strcmp(w, *(const char **)vecAt(&reads, m)) == 0) { clash = true; break; }
+        }
+        if (clash) continue;
+        /* `tmp` 在这一块的其它语句里（含子块、分支、match 臂）没有别的用处。 */
+        for (size_t k = 0; k < v->len && !clash; k++) {
+            if (k == i || k == i + 1 || k == i + 2) continue;
+            if (fuseStmtMentions(*(Stmt **)vecAt(v, k), tmp)) clash = true;
+        }
+        if (clash) continue;
+        /* 改写：先替换 B 体里的 tmp[i]，再把 B 的语句搬进 A 的体。 */
+        for (size_t k = 0; k < bBody->u.block.stmts.len; k++) {
+            Stmt *s = *(Stmt **)vecAt(&bBody->u.block.stmts, k);
+            if (s == bBody->forStep) continue;
+            fuseSubstStmt(c, s, tmp, aVar, rhs);
+        }
+        Vec fused;
+        vecInit(&fused, c->arena, sizeof(Stmt *));
+        for (size_t k = 0; k < bBody->u.block.stmts.len; k++) {
+            Stmt *s = *(Stmt **)vecAt(&bBody->u.block.stmts, k);
+            if (s == bBody->forStep) continue;
+            *(Stmt **)vecPush(&fused) = s;
+        }
+        *(Stmt **)vecPush(&fused) = aBody->forStep;
+        stmtBlockSetStmts(aBody, &fused);
+        /* 顶层删掉 decl 与 B 两句，A（融合后那个循环）留在 decl 的位置上。 */
+        size_t w = i;
+        *(Stmt **)vecAt(v, w++) = a;
+        for (size_t k = i + 3; k < v->len; k++)
+            *(Stmt **)vecAt(v, w++) = *(Stmt **)vecAt(v, k);
+        v->len = w;
+        if (i > 0) i--;
+    }
+}
+
+/**
+ * @brief 对函数体执行一次融合改写（函数体不经 `checkBlockBody`，要单独挂）。
+ *
+ * @param c     检查器。
+ * @param body  函数体块。
+ */
+void checkFuseFuncBody(Checker *c, Stmt *body) {
+    if (!fuseOff()) fuseElementChains(c, body);
+}
+
 /**
  * @brief 在新作用域里检查一个块体，块结束时块内绑定随之出作用域。
  *
@@ -1064,6 +1644,7 @@ void parWorkerAudit(Checker *c, FuncDef *f) {
  */
 static void checkBlockBody(Checker *c, Stmt *block) {
     if (block->forDesugar) forRetargetToIterator(c, block);
+    if (!fuseOff()) fuseElementChains(c, block);
     const bool boundary = stmtNeedsPlaceBoundary(block, c->curFunc && planIsCoro(c->curFunc));
     if (boundary) c->placeBoundaryDepth++;
 

@@ -1654,6 +1654,14 @@ def build_items() -> list:
         ok_msg=ok_count_ok(" 项（等价 · 线程数无关 · 空区间 · 软关键字 · 标量捕获 · 二维折叠 · 归约路线 · 10 条反例）"),
         bad_msg="tests/par/run.sh", bad_dump=dump_fail(8)))
 
+    # ---- 元素链融合（第 2 层 S1）----
+    items.append(cmd(
+        "fuse", "tests",
+        "S1 元素链融合：相邻写/读循环合并（临时视图消失）· `--no-fuse` 对拍 · 反例不融合",
+        ["./tests/fuse/run.sh"], timeout=300,
+        ok_msg=ok_count_ok(" 项（正例对拍 · 临时视图消失 · 4 条反例不融合）"),
+        bad_msg="tests/fuse/run.sh", bad_dump=dump_fail(8)))
+
     # ---- 线性关联容器 ----
     items.append(cmd(
         "linmap", "tests",

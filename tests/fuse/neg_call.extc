@@ -1,0 +1,16 @@
+// 反例：写 tmp 的一侧右值里有调用 ⇒ 不纯，不许融合。
+use std::io
+
+fn bump(x: f64) -> f64 { return x + 1.0 }
+
+fn main() -> i32 {
+    let n: i64 = 4
+    var a: mut slice<f64> = new f64[n]
+    var out: mut slice<f64> = new f64[n]
+    for i in 0..n { a[i] = f64(i) }
+    var tmpv: mut slice<f64> = new f64[n]
+    for i in 0..n { tmpv[i] = bump(a[i]) * 2.0 }
+    for i in 0..n { out[i] = tmpv[i] + 1.0 }
+    io::cout << f"out3={out[3]:.1f}\n"
+    return 0
+}

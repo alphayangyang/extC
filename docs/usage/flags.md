@@ -2,7 +2,7 @@
 
 本页由编译器自身的 `--help` 生成（`tools/gen_flags.py`），因此与实现同步：`check.sh` 在本页与 `extc --help` 不一致时会失败。
 
-开关共 22 个：`--build` · `--ccflag` · `--cflags` · `--check-c` · `--dump-effects` · `--dump-tokens` · `--help` · `--libs` · `--no-line-map` · `--pkg-config` · `--run` · `-I` · `-L` · `-O0` · `-O2` · `-O3` · `-fsyntax-only` · `-h` · `-l` · `-march` · `-o` · `-w`
+开关共 23 个：`--build` · `--ccflag` · `--cflags` · `--check-c` · `--dump-effects` · `--dump-tokens` · `--help` · `--libs` · `--no-fuse` · `--no-line-map` · `--pkg-config` · `--run` · `-I` · `-L` · `-O0` · `-O2` · `-O3` · `-fsyntax-only` · `-h` · `-l` · `-march` · `-o` · `-w`
 
 ```text
 extC compiler
@@ -21,15 +21,15 @@ options:
   -I <dir>         add a module search directory (for `use a::b`)
   -l <name>        link with `-l<name>` (repeatable; e.g. `-l z`)
   -L <dir>         add a library search directory (repeatable)
-  --ccflag <flag>  append one raw flag to the C compiler command (repeatable)
-                   escape hatch, e.g. `--ccflag -l:libsqlite3.so.0` (a soname,
-                   which `-l` cannot spell) or `--ccflag -I/usr/include/cairo`
+  --ccflag <flag>  append one raw flag to the C compiler command (repeatable);
+                   e.g. `--ccflag -l:libsqlite3.so.0` or `--ccflag -I/x`
   --pkg-config <name>  add `pkg-config --cflags --libs <name>` (repeatable)
   -O0 .. -O3       optimisation level for the generated C (default: -O2)
   -march=native    allow host-specific instructions (faster, less portable)
   --dump-tokens    lex only; print the token table
   --dump-effects   print each function's effect summary (Addr/Cont, arena rule)
   --no-line-map    do not emit `#line` directives (default: emit them)
+  --no-fuse        keep adjacent element loops separate
 
 debug switches -- diagnostics only, **except the marked below**:
   EXTC_DBG_ARENA=1     check the arena level the checker computed vs codegen

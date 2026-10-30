@@ -1,0 +1,14 @@
+// 反例：读的那一侧下标不是循环变量（倒序读）⇒ 不是同一格，不许融合。
+use std::io
+
+fn main() -> i32 {
+    let n: i64 = 4
+    var a: mut slice<f64> = new f64[n]
+    var out: mut slice<f64> = new f64[n]
+    for i in 0..n { a[i] = f64(i) }
+    var tmpv: mut slice<f64> = new f64[n]
+    for i in 0..n { tmpv[i] = a[i] * 2.0 }
+    for i in 0..n { out[i] = tmpv[n - 1 - i] + 1.0 }
+    io::cout << f"out0={out[0]:.1f}\n"
+    return 0
+}

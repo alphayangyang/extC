@@ -1,0 +1,17 @@
+// S1 元素链融合的正例：写 tmp 的循环与读 tmp 的循环**相邻**、循环变量同名、上下界一致。
+// 判据（tests/fuse/run.sh）：两种开关下输出逐字节相同，且融合后的生成 C 里没有 tmp 视图。
+use std::io
+
+fn main() -> i32 {
+    let n: i64 = 8
+    var a: mut slice<f64> = new f64[n]
+    var out: mut slice<f64> = new f64[n]
+    for i in 0..n { a[i] = f64(i) * 0.5 }
+    var tmpv: mut slice<f64> = new f64[n]
+    for i in 0..n { tmpv[i] = a[i] * 2.0 + 1.0 }
+    for i in 0..n { out[i] = tmpv[i] + 10.0 }
+    var s: f64 = 0.0
+    for i in 0..n { s = s + out[i] }
+    io::cout << f"s={s:.1f}\n"
+    return 0
+}

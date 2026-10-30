@@ -1,0 +1,16 @@
+// 反例：tmp 在读它的循环之后还有别的用处 ⇒ 不许融合（删掉它会让后面的语句悬空）。
+use std::io
+
+fn main() -> i32 {
+    let n: i64 = 4
+    var a: mut slice<f64> = new f64[n]
+    var out: mut slice<f64> = new f64[n]
+    for i in 0..n { a[i] = f64(i) + 2.0 }
+    var tmpv: mut slice<f64> = new f64[n]
+    for i in 0..n { tmpv[i] = a[i] * 3.0 }
+    for i in 0..n { out[i] = tmpv[i] - 1.0 }
+    var extra: f64 = 0.0
+    for i in 0..n { extra = extra + tmpv[i] }
+    io::cout << f"out0={out[0]:.1f} extra={extra:.1f}\n"
+    return 0
+}

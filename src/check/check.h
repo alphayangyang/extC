@@ -26,6 +26,13 @@
 bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m);
 
 /**
+ * @brief 关掉 S1 元素链融合（驱动层的 `--no-fuse` 用）。
+ *
+ * @param off 为 `true` 时不融合。
+ */
+void checkSetNoFuse(bool off);
+
+/**
  * @brief 把 stdlib 目录交给检查器，用于从 `INDEX` 读"没有这个方法"的提示。
  *
  * 加载器（更后的一层）解析这个目录，而提示本身住在检查器这一侧、紧挨着用它的诊断，所以

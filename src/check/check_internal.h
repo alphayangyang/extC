@@ -1419,6 +1419,14 @@ void applyCycleMerges(Checker *c);
  */
 _Bool structLitNameMatches (const struct StructDef *sd, const char *written);
 /**
+ * @brief 对函数体执行一次 S1 元素链融合（函数体不走 `checkBlockBody`）。
+ *
+ * @param c    检查器。
+ * @param body 函数体块语句。
+ */
+void checkFuseFuncBody (Checker *c, Stmt *body);
+
+/**
  * @brief 判断类型是否直接或间接提及类型参数。
  *
  * @param t  要检查的类型。

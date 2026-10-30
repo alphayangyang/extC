@@ -316,15 +316,15 @@ static void usage(const char *argv0) {
         "  -I <dir>         add a module search directory (for `use a::b`)\n"
         "  -l <name>        link with `-l<name>` (repeatable; e.g. `-l z`)\n"
         "  -L <dir>         add a library search directory (repeatable)\n"
-        "  --ccflag <flag>  append one raw flag to the C compiler command (repeatable)\n"
-        "                   escape hatch, e.g. `--ccflag -l:libsqlite3.so.0` (a soname,\n"
-        "                   which `-l` cannot spell) or `--ccflag -I/usr/include/cairo`\n"
+        "  --ccflag <flag>  append one raw flag to the C compiler command (repeatable);\n"
+        "                   e.g. `--ccflag -l:libsqlite3.so.0` or `--ccflag -I/x`\n"
         "  --pkg-config <name>  add `pkg-config --cflags --libs <name>` (repeatable)\n"
         "  -O0 .. -O3       optimisation level for the generated C (default: -O2)\n"
         "  -march=native    allow host-specific instructions (faster, less portable)\n"
         "  --dump-tokens    lex only; print the token table\n"
         "  --dump-effects   print each function's effect summary (Addr/Cont, arena rule)\n"
         "  --no-line-map    do not emit `#line` directives (default: emit them)\n"
+        "  --no-fuse        keep adjacent element loops separate\n"
         "\n"
         /* 下面两个开关会改变输出，所以这段文字不能声称它们都只是诊断：`EXTC_SELFCHECK`
          * 能让一次好构建变红，`EXTC_NO_LEVELPASS` 会改动生成物。声称与代码矛盾比不声称更糟，
@@ -528,6 +528,7 @@ int main(int argc, char **argv) {
      * 一类 bug —— 它的承诺就是类型检查通过的程序必然能构建。 */
     bool doCheckC = false;
     bool lineMap = true;
+    bool noFuse = false;       /* `--no-fuse`：关掉 S1 元素链融合 */
     /* `-I <dir>` module search directories. The command line is parsed before
      * `arenaInit` runs, so the names are collected in a fixed-size array here and
      * copied into a Vec afterwards; pushing into a Vec that has never been
@@ -573,6 +574,10 @@ int main(int argc, char **argv) {
             doRun = true;
         } else if (strcmp(argv[i], "--build") == 0) {
             doBuild = true;
+        } else if (strcmp(argv[i], "--no-fuse") == 0) {
+            /* 融合（第 2 层的 S1 元素链）默认开；这个开关是给对拍与调试用的：关掉之后
+             * 同一份源码走未融合的路径。 */
+            noFuse = true;
         } else if (strcmp(argv[i], "--no-line-map") == 0) {
             lineMap = false;
         } else if (strcmp(argv[i], "-I") == 0) {
@@ -688,6 +693,7 @@ int main(int argc, char **argv) {
     TypeTable *tt = ttNew(&arena, NULL);
 
     /* 1. the prelude */
+    checkSetNoFuse(noFuse);
     if (!ctx.hasError && !loadPrelude(&arena, tt, &m)) return 1;
 
     /* 2. the root file is parsed into a module of its own first, because which
