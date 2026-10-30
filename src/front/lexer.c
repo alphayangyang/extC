@@ -301,27 +301,33 @@ static void lexIdent(Lexer *lx, Vec *out, int line, int col) {
 static long lexEscape(Lexer *lx, int line, int col, const char *what);
 
 /**
- * @brief 把一个字符串字面量词法化进 `out`，存下的内容不含两侧引号。
+ * @brief 扫描一个字符串字面量；格式串还要照顾槽里的引号。
  *
- * 字面量里出现换行即报错，而不是并入字符串：缺右引号不会吞掉文件余下部分。
- * 转义序列由 `lexEscape` 校验后原样拷给 C 后端，解析器与类型检查器不看其内容。
- * 存下的文本去掉了引号，所以解析器拿 token 文本比较标点拼法之前必须先问 `lexIsPunct`。
+ * 普通的 `"…"` 问到下一个 `"` 为止。格式串（`f"…"`）不一样：槽 `{ … }` 里的表达式可以含
+ * **字符串字面量**，`f"c={\"hi\"}"` 的 `"` 属于槽里的表达式，不是格式串的结尾。所以
+ * `fstr` 为真时先按 `{{` / `}}` 与花括号深度走：槽内遇到 `"` 或 `'` 就整段跳过那个字面量
+ * （连同它的转义），槽的花括号不参与配对。解析器随后在片段上跑真正的词法/语法，槽内文本
+ * 原样保留即可。
  *
- * @param lx    游标，停在起始引号上。
+ * @param lx    游标，停在 `f`（若 `fstr`）或开引号上。
  * @param out   追加到的 token 向量。
- * @param line  起始引号的行号，由调用方先取好。
- * @param col   起始引号的列号，由调用方先取好。
+ * @param line  开引号所在行。
+ * @param col   开引号所在列。
+ * @param fstr  这是不是格式串。
  */
-static void lexString(Lexer *lx, Vec *out, int line, int col) {
-    lxAdvance(lx);
+static void lexStringTagged(Lexer *lx, Vec *out, int line, int col, bool fstr) {
+    lxAdvance(lx);                              /* 开引号（`f` 已由调用方吃掉） */
     size_t start = lx->pos;
+    int depth = 0;                              /* 槽的花括号深度；非格式串恒为 0 */
 
-    while (lx->pos < lx->len && lxPeek(lx, 0) != '"') {
-        if (lxPeek(lx, 0) == '\n') {
-            ctxError(lx->ctx, line, col, NULL, "unterminated string literal");
+    while (lx->pos < lx->len) {
+        char c = lxPeek(lx, 0);
+        if (c == '\n') {
+            ctxError(lx->ctx, line, col, NULL, fstr ? "unterminated f-string literal"
+                                                   : "unterminated string literal");
             return;
         }
-        if (lxPeek(lx, 0) == '\\') {
+        if (c == '\\') {
             /* 转义必须经 `lexEscape` 校验（"which escapes exist" 的唯一判据）：原样漏给 C 后端
              * 会被它整个拒绝，例如 `"\u64"` 报 "incomplete universal character name \u64"。
              * `lexEscape` 已消费掉转义及其参数，这里不能再前进一次，否则会多吃一个字面量字符。 */
@@ -329,10 +335,37 @@ static void lexString(Lexer *lx, Vec *out, int line, int col) {
             if (lexEscape(lx, line, col, "a string literal") < 0) return;
             continue;
         }
+        if (fstr) {
+            if (c == '{' && lxPeek(lx, 1) == '{') { lxAdvance(lx); lxAdvance(lx); continue; }
+            if (c == '}' && lxPeek(lx, 1) == '}') { lxAdvance(lx); lxAdvance(lx); continue; }
+            if (c == '{') { depth += 1; lxAdvance(lx); continue; }
+            if (c == '}') { if (depth > 0) depth -= 1; lxAdvance(lx); continue; }
+            if (depth > 0 && (c == '"' || c == '\'')) {
+                /* 槽里的字面量：整段跳过，其中的引号不结束格式串。 */
+                char q = c;
+                lxAdvance(lx);
+                while (lx->pos < lx->len) {
+                    char d = lxPeek(lx, 0);
+                    if (d == '\n') {
+                        ctxError(lx->ctx, line, col, NULL, "unterminated f-string literal");
+                        return;
+                    }
+                    if (d == '\\') { lxAdvance(lx); lxAdvance(lx); continue; }
+                    lxAdvance(lx);
+                    if (d == q) break;
+                }
+                continue;
+            }
+            if (c == '"' && depth == 0) break;
+            lxAdvance(lx);
+            continue;
+        }
+        if (c == '"') break;
         lxAdvance(lx);
     }
-    if (lx->pos >= lx->len) {
-        ctxError(lx->ctx, line, col, NULL, "unterminated string literal");
+    if (lx->pos >= lx->len || (fstr && lxPeek(lx, 0) != '"')) {
+        ctxError(lx->ctx, line, col, NULL, fstr ? "unterminated f-string literal"
+                                               : "unterminated string literal");
         return;
     }
 
@@ -557,7 +590,7 @@ void lexRange(Ctx *ctx, const char *src, size_t len, int line0, int col0, Vec *o
         if (isAlpha(c)) {
             if (c == 'f' && lx.pos + 1 < lx.len && lx.src[lx.pos + 1] == '"') {
                 lxAdvance(&lx);
-                lexString(&lx, out, line, col);
+                lexStringTagged(&lx, out, line, col, true);
                 if (ctx->hasError) return;
                 Token *ft = lxLast(out);
                 if (ft && ft->kind == TK_STRING) ft->kind = TK_FSTRING;
@@ -566,7 +599,7 @@ void lexRange(Ctx *ctx, const char *src, size_t len, int line0, int col0, Vec *o
             lexIdent(&lx, out, line, col);
             continue;
         }
-        if (c == '"')                        { lexString(&lx, out, line, col); if (ctx->hasError) return; continue; }
+        if (c == '"')                        { lexStringTagged(&lx, out, line, col, false); if (ctx->hasError) return; continue; }
         if (c == '\'')                      { lexChar(&lx, out, line, col); if (ctx->hasError) return; continue; }
         if (!lexPunct(&lx, out, line, col))  { return; }
     }

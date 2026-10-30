@@ -60,6 +60,16 @@ else
     echo "  FAIL module-path-slot  ->  $(tr '\n' '|' < "$tmp/modpath")"; fail=$((fail+1))
 fi
 
+# ①f 槽里的字符串/字符字面量：内层引号不结束格式串
+"$EXTC" -w --run tests/fstring/quotes.extc > "$tmp/quotes" 2>&1
+printf 'c=hi n=3 e=}\nab\nt=120\ns=nested\n' > "$tmp/quoteswant"
+if diff -q "$tmp/quotes" "$tmp/quoteswant" >/dev/null 2>&1; then
+    echo "  ok   nested-literals   ->  槽里的 \`\"…\"\` / \`'c'\` 不结束格式串（流与值两条路）"
+    pass=$((pass+1))
+else
+    echo "  FAIL nested-literals   ->  $(tr '\n' '|' < "$tmp/quotes")"; fail=$((fail+1))
+fi
+
 # ② 与手写链逐字节相同
 "$EXTC" -w --no-line-map -o "$tmp/a.c" tests/fstring/main.extc >/dev/null 2>&1
 "$EXTC" -w --no-line-map -o "$tmp/b.c" tests/fstring/plain.extc >/dev/null 2>&1
@@ -91,7 +101,7 @@ neg fstring-empty-slot  "$H
 neg fstring-unclosed    "$H
     io::cout << f\"{1\"
     return 0
-}" "no matching"
+}" "unterminated f-string literal"
 neg fstring-stray-brace "$H
     io::cout << f\"a}b\"
     return 0
