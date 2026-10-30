@@ -241,6 +241,34 @@ let sub: ndview<f64> = v[1..3, 1..3] ?? v  // 二维子视图（越界给 none�
 顺带修掉一个解析器 bug：槽里的模块路径（`f"{nd::at2(v, 0, 1)}"`）曾被当成格式说明符的开头
 （`::` 的第一个 `:` 触发"unexpected `:` in a format specifier"），现在 `::` 按路径分隔符跳过。
 
+## 第 1 层 D 的进展（fn 形参的效果摘要）
+
+第 1 层 D 那格说的是：`fn` 形参（回调）会让"收回调的库函数"的效果摘要**永远**不完整，于是
+调用点传帧内的视图就报
+
+```text
+argument 1 of `apply` carries a reference into a deeper scope (depth 1) than the place the
+callee may store it (depth 0); the callee's effects could not be fully analyzed
+```
+
+**判据**（`src/check/check_top.c` 的 `fnTypeCarriesNoRef`）：回调签名里**既没有引用形参、也没有
+引用返回值**（每个形参类型、返回类型都不含引用）⇒ 这个间接调用拿不到调用方的引用、也交不出
+引用 ⇒ 它不可能把调用方的引用发布到别处 ⇒ 摘要保持完整，调用点按真实效果检查。签名里带引用的
+`fn` 值仍然按最坏情况处理（保守方向不变）。
+
+```extc
+fn apply(v: mut slice<i64>, f: fn(i64) -> i64) { for i in 0..v.len { v[i] = f(v[i]) } }
+fn inc(x: i64) -> i64 { return x + 1 }
+fn main() -> i32 {
+    var buf: mut slice<i64> = new i64[4]
+    for i in 0..4 { buf[i] = i64(i) }
+    apply(buf, inc)                     // 签名不带引用 ⇒ 这里按真实效果检查
+    return 0
+}
+```
+
+回归：`tests/ops/fn_callback_view.extc`（帧内视图 + 块内视图各一次，先红后绿）。
+
 ## 第 2 层：整数组表达式与融合（结构调整）
 
 `docs/ARRAY.md` 的 M3 与 `docs/FUSION.md` 的 S1–S3：`c = a + b`、`sum(c)` 由编译器降成融合循环，

@@ -39,6 +39,7 @@ check_err() {
 
 echo "== 正例：具体类型（比较 + 算术）· 有牙 · 泛型体 · 内建不改 =="
 run_case fnptr
+run_case fn_callback_view
 run_case long_line
 run_case slice_place
 run_case conv_float

@@ -2642,6 +2642,25 @@ static void collectEffectsStmt(Checker *c, FuncDef *f, Stmt *s, Vec *fresh) {
 }
 
 /**
+ * @brief 判断一个函数类型是否"既拿不到引用、也交不出引用"。
+ *
+ * 只看签名：每个形参类型都不含引用、返回类型也不含引用。这样的 `fn` 值被间接调用时，
+ * 调用方没有任何引用能通过它流进去，它也没有引用能流出来 —— 所以这个间接调用**不可能**
+ * 把调用方的引用发布到别处，摘要不必因此判成不完整（见 `collectEffectsExpr`）。
+ *
+ * @param tt 类型表（解释泛型实参用）。
+ * @param t  类型；不是 `fn(...) -> ...` 时返回 false（保守：不认识的形状不享受这条豁免）。
+ * @return   签名里完全没有引用时 true。
+ */
+static bool fnTypeCarriesNoRef(TypeTable *tt, Type *t) {
+    if (!t || t->kind != TY_FN) return false;
+    for (size_t i = 0; i < t->params.len; i++)
+        if (typeContainsRef(tt, *(Type **)vecAt(&t->params, i))) return false;
+    if (t->ret && typeContainsRef(tt, t->ret)) return false;
+    return true;
+}
+
+/**
  * @brief 记录表达式里的调用及其到达的被调者。
  *
  * 解析不了的调用会置 `anEffUnknown(f)`，摘要永久不完整，不能据此放宽任何检查；记录的边就是
@@ -2697,6 +2716,12 @@ static void collectEffectsExpr(Checker *c, FuncDef *f, Expr *e) {
                     anSetOtherMask(f, anOtherMask(f) | (1u));
                 }
             }
+        } else if (e->kind == EX_CALL && e->u.call.callee
+                   && fnTypeCarriesNoRef(c->tt, tsub(c, e->u.call.callee->type))) {
+            /* 走 `fn` 值的间接调用，但签名里既没有引用形参也没有引用返回值：
+             * 调用方传不进引用、被调者也交不出引用，所以它不可能把调用方的引用发布出去。
+             * 摘要保持完整（否则每一个"收回调"的库函数都会把它的调用方拖进最坏情况：
+             * `apply(buf, inc)` 会报"effects could not be fully analyzed"）。 */
         } else {
             anSetEffUnknown(f, true);   /* nothing to go on -> incomplete, conservatively */
         }
