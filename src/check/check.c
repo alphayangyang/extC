@@ -301,6 +301,27 @@ bool literalFits(Expr *e, Type *want) {
 }
 
 /**
+ * @brief 字面量里写的结构体名，是否就是上下文类型背后的那个结构体。
+ *
+ * 模块系统会把重名的声明改写成 `lib$pair`，所以比较要同时看源名与最后一段：源码里写的
+ * 永远是源名，而 `srcName` 正是它。名字对不上时不认上下文 —— 那可能真的是另一个类型，
+ * 让名字解析按原路报错（未知名、歧义名）更诚实。
+ *
+ * @param sd      上下文类型背后的结构体（非 NULL）。
+ * @param written 结构体字面量里写的名字（非 NULL）。
+ * @return        写的名字指向同一个结构体时返回 true。
+ */
+bool structLitNameMatches(const StructDef *sd, const char *written) {
+    if (!sd || !written) return false;
+    if (sd->srcName && strcmp(sd->srcName, written) == 0) return true;
+    if (strcmp(sd->name, written) == 0) return true;
+    const char *last = sd->name;
+    for (const char *q = sd->name; *q; q++)
+        if (*q == '$' || *q == ':') last = q + 1;
+    return strcmp(last, written) == 0;
+}
+
+/**
  * @brief 给说不出自己类型的表达式套上上下文期望的类型。
  *
  * 只处理裸 `null`、数组字面量和没有限定名的结构体字面量，并且只在上下文唯一确定类型时生效；
@@ -321,7 +342,11 @@ void adoptContextType(Expr *e, Type *want) {
      * 数组字面量不知道自己的长度，这是它们唯一能得到类型的途径。 */
     if (e->kind == EX_ARRAYLIT) { e->type = w; return; }
     if (w->kind != TY_STRUCT && w->kind != TY_GENERIC) return;
-    if (e->kind == EX_STRUCTLIT && !e->u.lit.name) e->type = w;
+    /* 结构体字面量的类型来自上下文（`var c: box<i64> = box { v: 2 }`）：名字必须指向同一个
+     * 结构体，泛型实例由上下文给全。裸 `{ ... }` 一律接受。 */
+    if (e->kind == EX_STRUCTLIT &&
+        (!e->u.lit.name || structLitNameMatches(w->sdef, e->u.lit.name)))
+        e->type = w;
 }
 
 /**

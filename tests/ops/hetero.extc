@@ -29,11 +29,11 @@ struct vec2 { x: f64  y: f64
 fn main() -> i32 {
     var v: vec2 = { x: 1.5, y: 3.0 }
     var s: vec2 = v * 2.0
-    var t: vec2 = v * i64(2)
+    var t: vec2 = v * 2          /* 字面量按能放进的宽度找重载：命中 *(vec2, i64) */
     println("缩放 f64 = ", s.x, ",", s.y)
     println("缩放 i64 = ", t.x, ",", t.y)
     println("同型 = ", v == v)
-    println("异型 = ", v == i64(2))
+    println("异型 = ", v == 2)
     println("序 = ", v < 2.0)
     return 0
 }

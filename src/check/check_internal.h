@@ -1411,6 +1411,14 @@ void applyCycleMerges(Checker *c);
  */
  _Bool literalFits (Expr *e, Type *want);
 /**
+ * @brief 结构体字面量里写的名字是否指向上下文类型背后的那个结构体。
+ *
+ * @param sd      上下文类型背后的结构体。
+ * @param written 字面量里写的名字。
+ * @return        同一个结构体时返回 true。
+ */
+_Bool structLitNameMatches (const struct StructDef *sd, const char *written);
+/**
  * @brief 判断类型是否直接或间接提及类型参数。
  *
  * @param t  要检查的类型。

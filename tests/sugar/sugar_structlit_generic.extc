@@ -1,0 +1,19 @@
+/* 泛型结构体字面量由上下文给全类型实参：
+ *
+ *   `var c: box<i64> = box { v: 2 }`
+ *
+ * 以前无名可查的泛型实例只能写全 `box<i64> { ... }` —— 那个位置是表达式、写成类型名不算；
+ * 字面量的名字本来就只是"哪个结构体"，实例该由期望类型决定。裸字面量字段同样按期望类型适配
+ * （`v: 2` 在 `box<i64>` 上下文里是 i64）。
+ */
+// expect: c=2 d=1.5
+use std::io
+
+struct box<T> { v: T }
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var c: box<i64> = box { v: 2 }
+    let d: box<f64> = box { v: 1.5 }
+    io::cout << f"c={c.v} d={d.v}\n"
+    return 0
+}

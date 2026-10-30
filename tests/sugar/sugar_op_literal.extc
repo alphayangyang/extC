@@ -1,0 +1,24 @@
+/* 运算符按右操作数类型精确匹配，而字面量没有自己的类型：`v * 2` 按"能放进哪些宽度"找重载。
+ *
+ *   `v * 2`   命中 `*(vec2, i64)`
+ *   `v * 2.5` 命中 `*(vec2, f64)`
+ *
+ * 以前 `v * 2` 报 `vec2` does not define `*`：`2` 默认 i32，一个重载都不中。
+ */
+// expect: a=3,6 b=3.75,7.5
+use std::io
+
+struct vec2 { x: f64 y: f64 }
+
+impl vec2 {
+    fn *(self: ref vec2, k: i64) -> vec2 { return vec2 { x: self.x * f64(k), y: self.y * f64(k) } }
+    fn *(self: ref vec2, k: f64) -> vec2 { return vec2 { x: self.x * k, y: self.y * k } }
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    let v: vec2 = vec2 { x: 1.5, y: 3.0 }
+    let a: vec2 = v * 2
+    let b: vec2 = v * 2.5
+    io::cout << f"a={a.x},{a.y} b={b.x},{b.y}\n"
+    return 0
+}

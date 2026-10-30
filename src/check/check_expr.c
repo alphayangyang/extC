@@ -333,6 +333,32 @@ static void setOpCallArgs(Checker *c, Expr *e, FuncDef *m) {
 }
 
 /**
+ * @brief 运算符按右操作数类型精确匹配；字面量没有自己的类型，所以要按"能放进哪些宽度"去找。
+ *
+ * `vec2` 同时定义了 `*(vec2, f64)` 与 `*(vec2, i64)` 时，`v * 2` 的 `2` 默认是 `i32`，精确匹配
+ * 一个都不中。字面量的值本身已经限定了候选（`literalFits`），按 `i64`、`f64`、`i32`……的顺序取
+ * 第一个命中。这不是重载排序：候选集合由字面量的值决定，没有"更近的转换"这类规则。
+ *
+ * @param c        检查器。
+ * @param st       左操作数（承接运算符方法的类型）。
+ * @param op       运算符名。
+ * @param fallback 兜底运算符名（`!=` -> `==`），可以传 `NULL`。
+ * @param rhs      右操作数表达式。
+ * @return         找到的方法；右操作数不是字面量、或没有候选命中时返回 NULL。
+ */
+static FuncDef *findOpLiteral(Checker *c, Type *st, const char *op, const char *fallback, Expr *rhs) {
+    if (!rhs || !isNumericLit(rhs)) return NULL;
+    static const char *cands[] = {"i64", "f64", "i32", "u32", "i16", "u16", "i8", "u8", "f32"};
+    for (size_t i = 0; i < sizeof cands / sizeof cands[0]; i++) {
+        Type *t = ttFromName(c->tt, cands[i]);
+        if (!t || ttIsError(t) || !literalFits(rhs, t)) continue;
+        FuncDef *m = findOp(c->tt, st, op, ttBase(t), fallback);
+        if (m) return m;
+    }
+    return NULL;
+}
+
+/**
  * @brief 算一个二元算术运算符的结果类型。
  *
  * 结果规则只住在这里：位运算符也用这一份，抄第二份就会漂移。
@@ -360,6 +386,7 @@ static Type *checkArith(Checker *c, Expr *e, Type *lt, Type *rt) {
         StructDef *sd = structOf(ttBase(lt));
         if (sd) {
             FuncDef *m = findOp(c->tt, ttBase(lt), op, rt, NULL);
+            if (!m) m = findOpLiteral(c, ttBase(lt), op, NULL, e->u.bin.right);
             if (!m) {
                 Buf note;
                 bufInit(&note, c->arena);
@@ -1634,6 +1661,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     }
 
                     FuncDef *m = findOp(tt, b, op, rt, strcmp(op, "!=") == 0 ? "==" : NULL);
+                    if (!m) m = findOpLiteral(c, b, op, strcmp(op, "!=") == 0 ? "==" : NULL, e->u.bin.right);
                     if (!m) {
                         Buf note;
                         bufInit(&note, c->arena);
@@ -1668,6 +1696,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 StructDef *osd = structOf(ttBase(lt));
                 if (osd) {
                     FuncDef *m = findOp(tt, ttBase(lt), op, rt, NULL);
+                    if (!m) m = findOpLiteral(c, ttBase(lt), op, NULL, e->u.bin.right);
                     if (!m) {
                         Buf note;
                         bufInit(&note, c->arena);
@@ -3987,7 +4016,8 @@ static Type *checkExprInner(Checker *c, Expr *e) {
              * `ttResolve`, which also reports the ambiguous case (`pair` exported by two
              * modules). The literal's own fields are then looked up in the resolved struct. */
             Type *st = e->type;
-            if (e->u.lit.name) {
+            if (e->u.lit.name &&
+                !(st && structLitNameMatches(structOf(st), e->u.lit.name))) {
                 st = ttResolve(tt, c->ctx, typeNamed(c->arena, e->u.lit.name), e->line, c->curParams);
                 if (!st || ttIsError(st)) return ttError(tt);
             }
