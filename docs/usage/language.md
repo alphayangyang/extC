@@ -479,6 +479,8 @@ var g, h: i32               // 零初始化：两个都是 0
   `let v = a[1..3]` 得到 `slice<i32>`，写它报
   `` cannot write through `v`: it is a read-only view `slice<i32>` ``。
 - 编译器能证明的界不生成检查（`a[0..3]`）；界是变量时生成带检查的 helper。
+- **容器不隐式变视图**：`varArray<T>` 用 `v.asSlice()` 借出，定长数组 `[N]T` 用 `a[..]` 切片；
+  漏写时诊断会指出该写哪个（借出的视图带生命周期，悄悄替用户造一个会绕过借用检查）。
 
 ```extc
 // 结果：3 10 80 1059 / hello world 0

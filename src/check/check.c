@@ -475,6 +475,24 @@ bool checkAssignable(Checker *c, Type *want, Type *got, Expr *node, const char *
         return false;
     }
 
+    /* 容器到视图是**借出**而不是转换：`varArray<T>` 自己有 `asSlice()`，定长数组切 `[..]`。
+     * 不隐式做，是因为借出的视图带着生命周期（`asSlice()` 的返回值可以借用检查），悄悄替用户
+     * 造一个视图会把那层检查绕过去。这里至少把该写什么指出来。 */
+    if (want && got && !ttIsError(want) && !ttIsError(got) && ttIsViewType(ttBase(want))) {
+        if (!want->mut && isProtoType(got, "varArray", 1)) {
+            ckError(c, node ? node->line : 0,
+                    "lend a read-only view explicitly: `v.asSlice()`",
+                    "%s expects `%s`, found `%s`", what, typeStr(c, want), typeStr(c, got));
+            return false;
+        }
+        if (!want->mut && got->kind == TY_ARRAY) {
+            ckError(c, node ? node->line : 0,
+                    "slice the array explicitly: `a[..]` is a view over the whole array",
+                    "%s expects `%s`, found `%s`", what, typeStr(c, want), typeStr(c, got));
+            return false;
+        }
+    }
+
     ckError(c, node ? node->line : 0,
             "extC only widens implicitly (lossless); a lossy conversion must be written out",
             "%s expects `%s`, found `%s`", what, typeStr(c, want), typeStr(c, got));
