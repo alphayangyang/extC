@@ -1,0 +1,42 @@
+/* rank-2 整数组表达式：`vs = va + vb` 一类形状直接落成 stl::nd 的逐元素内核调用
+ * （addInto / subInto / mulInto / scaleInto / axpyInto），不展开循环、不留中间视图。
+ * 判据见 tests/stl/run.sh 的 nd_expr 一项。 */
+use std::io
+use stl::nd
+
+fn show(name: slice<u8>, v: ndview<f64>) -> i32 {
+    io::cout << name << "=" << v[0, 0] << "," << v[0, 2] << " " << v[1, 1] << "\n"
+    return 0
+}
+
+fn main() -> i32 {
+    var a: ndarray<f64> = ndarray<f64>::zeros2(2, 3) ?? ndarray<f64>::empty()
+    var b: ndarray<f64> = ndarray<f64>::zeros2(2, 3) ?? ndarray<f64>::empty()
+    var s: ndarray<f64> = ndarray<f64>::zeros2(2, 3) ?? ndarray<f64>::empty()
+    let va = a.viewMut()
+    let vb = b.viewMut()
+    let vs = s.viewMut()
+    var i: i64 = 0
+    while i < 2 {
+        var j: i64 = 0
+        while j < 3 {
+            nd::set2(va, i, j, f64(i * 3 + j))
+            nd::set2(vb, i, j, f64(i * 3 + j) * 10.0)
+            j += 1
+        }
+        i += 1
+    }
+    vs = va + vb
+    show("add", vs)
+    vs = va - vb
+    show("sub", vs)
+    vs = va * vb
+    show("mul", vs)
+    vs = va * f64(2.0)
+    show("sc", vs)
+    vs = va + vb * f64(0.5)
+    show("axpy", vs)
+    vs += va
+    show("pe", vs)
+    return 0
+}

@@ -1,0 +1,15 @@
+/* rank-2 整数组表达式的形状检查在运行期：a 是 1x2、b 是 1x3，`s = a + b` 必须 trap。 */
+use std::io
+use stl::nd
+
+fn main() -> i32 {
+    var a: ndarray<f64> = ndarray<f64>::zeros2(1, 2) ?? ndarray<f64>::empty()
+    var b: ndarray<f64> = ndarray<f64>::zeros2(1, 3) ?? ndarray<f64>::empty()
+    var s: ndarray<f64> = ndarray<f64>::zeros2(1, 2) ?? ndarray<f64>::empty()
+    let va = a.viewMut()
+    let vb = b.viewMut()
+    let vs = s.viewMut()
+    vs = va + vb
+    io::cout << "unreachable" << "\n"
+    return 0
+}

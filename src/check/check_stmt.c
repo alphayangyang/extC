@@ -1910,6 +1910,174 @@ static const char *arrayCompoundOp(const char *aop) {
 
 
 /**
+ * @brief 判断一个类型是不是模块里声明的泛型结构体实例（`ndview<T>`）。
+ *
+ * 模块结构体的 `sdef->name` 带模块前缀（`nd$ndview`），`isProtoType` 只比较完整名字，
+ * 所以这里只比最后一段。
+ *
+ * @param t    类型。
+ * @param want 结构体名（不带模块前缀）。
+ * @return     是 `want<T>` 的实例时返回真。
+ */
+static bool arrayNdProto(const Type *t, const char *want) {
+    if (!t || !t->sdef) return false;
+    const char *n = t->sdef->name;
+    const char *d = strrchr(n, '$');
+    return strcmp(d ? d + 1 : n, want) == 0;
+}
+
+/**
+ * @brief 取一个名字的 `ndview<T>` 元素类型。
+ *
+ * 整数组表达式的 rank-2 形状直接落成 `stl::nd` 的逐元素内核调用（`addInto` 一类），
+ * 所以这里只认"绑定是 `ndview<T>`"这一种，返回它的元素类型。
+ *
+ * @param c    checker。
+ * @param name 名字。
+ * @return     元素类型；不是 `ndview<T>` 时返回 NULL。
+ */
+static Type *arrayNdElem(Checker *c, const char *name) {
+    Sym *sym = lookup(c, name);
+    if (!sym) return NULL;
+    Type *bt = ttBase(sym->type);
+    if (!arrayNdProto(bt, "ndview") || bt->targs.len < 1) return NULL;
+    return *(Type **)vecAt(&bt->targs, 0);
+}
+
+/**
+ * @brief 判断一个表达式是不是元素类型匹配的 `ndview<T>` 名字。
+ *
+ * @param c    checker。
+ * @param e    表达式。
+ * @param elem 期望元素类型。
+ * @return     是匹配的 `ndview<T>` 名字时返回真。
+ */
+static bool arrayNdName(Checker *c, Expr *e, Type *elem) {
+    if (!e || e->kind != EX_IDENT || !e->u.ident.name) return false;
+    Type *got = arrayNdElem(c, e->u.ident.name);
+    return got && ttEquals(got, elem);
+}
+
+/**
+ * @brief 判断一个表达式是不是元素类型匹配的标量操作数（`scaleInto` 的 `k`）。
+ *
+ * @param c    checker。
+ * @param e    表达式。
+ * @param elem 期望类型。
+ * @return     字面量，或类型匹配且不是 ndview 的名字时返回真。
+ */
+static bool arrayNdScalar(Checker *c, Expr *e, Type *elem) {
+    if (!e) return false;
+    if (e->kind == EX_INT || e->kind == EX_FLOAT || e->kind == EX_BOOL) return true;
+    /* `f64(2.0)` 这类显式转换：检查器还没走到这里，但解析器已经写好转换后的类型。 */
+    if (e->kind == EX_CONV) return true;
+    if (e->type && ttEquals(ttBase(e->type), elem)) return true;
+    if (e->kind != EX_IDENT || !e->u.ident.name) return false;
+    Sym *sym = lookup(c, e->u.ident.name);
+    if (!sym) return false;
+    Type *bt = ttBase(sym->type);
+    return !arrayNdProto(bt, "ndview") && ttEquals(bt, elem);
+}
+
+/**
+ * @brief 造一条 "`if !nd::<fn>(dst, …) { trap }`" 语句，交给检查器按普通调用检查。
+ *
+ * 内核名用模块扁平名（`nd$addInto`），并打上 `anSetQualified`：加载器的限定名改写发生在
+ * 检查之前，检查器里新造的模块调用要走同一条"已限定"标记，才不会撞 `requireQualified`。
+ *
+ * @param c     checker。
+ * @param fn    内核名（不含模块前缀）。
+ * @param dst   目标视图名。
+ * @param args  其余实参（表达式），按内核签名顺序。
+ * @param line  位置。
+ * @return      包好的语句。
+ */
+static Stmt *arrayNdKernelStmt(Checker *c, const char *fn, const char *dst,
+                               Expr **args, size_t nargs, int line) {
+    Arena *a = c->arena;
+    /* 名字要活过本函数：`exprIdent` 只存指针，栈上的缓冲区返回后会被后续调用覆盖。 */
+    char name[64];
+    snprintf(name, sizeof name, "nd$%s", fn);
+    Expr *call = exprCallNew(a, exprIdent(a, arenaStrndup(a, name, strlen(name)), line), line);
+    *(Expr **)vecPush(&call->u.call.args) = exprIdent(a, dst, line);
+    for (size_t i = 0; i < nargs; i++) *(Expr **)vecPush(&call->u.call.args) = args[i];
+    anSetQualified(call, true);
+    Expr *ok = exprUnNew(a, "!", call, line);
+    Stmt *die = stmtTrapNew(a, exprStrNew(a,
+        "array expression operands must have the same shape as the destination", line), line);
+    Stmt *dieBlock = stmtNew(a, ST_BLOCK, line);
+    vecInit(&dieBlock->u.block.stmts, a, sizeof(Stmt *));
+    *(Stmt **)vecPush(&dieBlock->u.block.stmts) = die;
+    /* 直接返回这一条 `if`：再包一层 `ST_BLOCK` 会多开一个块级 arena，生成的 C 就与手写
+     * 调用不再逐字节相同（多一对 `extc_arena_destroy`）。 */
+    return stmtIfNew(a, ok, dieBlock, NULL, line);
+}
+
+/**
+ * @brief 把 `ndview<T>` 目标上的整数组表达式落成 `stl::nd` 的逐元素内核调用。
+ *
+ * 收的形状（rank-2 第一版）：`dst = a + b`、`dst = a - b`、`dst = a * b`、`dst = a * k`
+ * （`k` 在前在后都行）、`dst = a + b * k`，以及它们的复合赋值形式（`dst += a` 等，先造成
+ * `dst = dst <op> rhs`）。内核自己按形状检查并返回 `bool`，失败就 trap —— 与 rank-1 降糖的
+ * "长度不一致就 trap"同一套判据，只是这里形状是运行期才知道的。
+ *
+ * @param c checker。
+ * @param s 候选赋值语句。
+ * @return   降糖后的语句；形状不认识时返回 NULL。
+ */
+static Stmt *arrayNdLower(Checker *c, Stmt *s) {
+    if (!s || s->kind != ST_ASSIGN || !s->u.assign.target || !s->u.assign.value) return NULL;
+    if (s->u.assign.op) return NULL;            /* 复合形式先在上面造好，见调用点 */
+    Expr *tgt = s->u.assign.target;
+    if (tgt->kind != EX_IDENT || !tgt->u.ident.name) return NULL;
+    const char *dst = tgt->u.ident.name;
+    Type *elem = arrayNdElem(c, dst);
+    if (!elem) return NULL;
+    Expr *v = s->u.assign.value;
+    if (v->kind != EX_BIN || !v->u.bin.op) return NULL;
+    const char *op = v->u.bin.op;
+    Expr *l = v->u.bin.left, *r = v->u.bin.right;
+    const int line = s->line;
+
+    if (strcmp(op, "+") == 0) {
+        if (arrayNdName(c, l, elem) && arrayNdName(c, r, elem)) {
+            Expr *args[2] = { l, r };
+            return arrayNdKernelStmt(c, "addInto", dst, args, 2, line);
+        }
+        if (arrayNdName(c, l, elem) && r->kind == EX_BIN && r->u.bin.op &&
+            strcmp(r->u.bin.op, "*") == 0 && arrayNdName(c, r->u.bin.left, elem) &&
+            arrayNdScalar(c, r->u.bin.right, elem)) {
+            Expr *args[3] = { l, r->u.bin.left, r->u.bin.right };
+            return arrayNdKernelStmt(c, "axpyInto", dst, args, 3, line);
+        }
+        return NULL;
+    }
+    if (strcmp(op, "-") == 0) {
+        if (arrayNdName(c, l, elem) && arrayNdName(c, r, elem)) {
+            Expr *args[2] = { l, r };
+            return arrayNdKernelStmt(c, "subInto", dst, args, 2, line);
+        }
+        return NULL;
+    }
+    if (strcmp(op, "*") == 0) {
+        if (arrayNdName(c, l, elem) && arrayNdName(c, r, elem)) {
+            Expr *args[2] = { l, r };
+            return arrayNdKernelStmt(c, "mulInto", dst, args, 2, line);
+        }
+        if (arrayNdName(c, l, elem) && arrayNdScalar(c, r, elem)) {
+            Expr *args[2] = { l, r };
+            return arrayNdKernelStmt(c, "scaleInto", dst, args, 2, line);
+        }
+        if (arrayNdScalar(c, l, elem) && arrayNdName(c, r, elem)) {
+            Expr *args[2] = { r, l };
+            return arrayNdKernelStmt(c, "scaleInto", dst, args, 2, line);
+        }
+        return NULL;
+    }
+    return NULL;
+}
+
+/**
  * @brief 整数组表达式语句的降糖：`out = a + b` → `for i in 0..out.len { out[i] = a[i] + b[i] }`。
  *
  * 只认"目标是可写 rank-1 视图、右值是逐元素表达式"这一种赋值；命中就把语句换成一个块：
@@ -1927,8 +2095,23 @@ Stmt *arrayAssignLower(Checker *c, Stmt *s) {
     if (tgt->kind != EX_IDENT || !tgt->u.ident.name) return NULL;
     /* 裸视图名不是整数组表达式：`buf = t` 是**视图值**赋值（换掉指针与长度、别名关系照旧），
      * 不是逐元素拷贝。降糖只接带运算的形状。 */
-    if (s->u.assign.value->kind == EX_IDENT) return NULL;
+    if (!s->u.assign.op && s->u.assign.value->kind == EX_IDENT) return NULL;
     const char *outName = tgt->u.ident.name;
+    /* rank-2 形状（`ndview<T>` 目标）先试：它走 stl::nd 的逐元素内核，不展开循环。 */
+    if (!arrayViewElem(c, outName)) {
+        Stmt *nd = arrayNdLower(c, s);
+        if (nd) return nd;
+        if (s->u.assign.op) {
+            const char *cop = arrayCompoundOp(s->u.assign.op);
+            if (!cop) return NULL;
+            Expr *rewritten = exprBinNew(c->arena, cop, exprIdent(c->arena, outName, s->line),
+                                         s->u.assign.value, s->line);
+            Stmt tmp = *s;
+            stmtAssignSetValue(&tmp, rewritten, NULL);
+            return arrayNdLower(c, &tmp);
+        }
+        return NULL;
+    }
     Type *elem = arrayViewElem(c, outName);
     if (!elem) return NULL;
 

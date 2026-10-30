@@ -489,6 +489,19 @@ Stmt *stmtAssignNew(Arena *a, Expr *target, Expr *value, const char *op, int lin
     s->u.assign.opExpr = NULL;
     return s;
 }
+/**
+ * @brief 换掉一条赋值语句的右值与运算符（降糖重写用）。
+ *
+ * @param s     赋值语句（`ST_ASSIGN`）。
+ * @param value 新的右值。
+ * @param op    新的复合运算符；普通 `=` 传 NULL。
+ */
+void stmtAssignSetValue(Stmt *s, Expr *value, const char *op) {
+    if (!s || s->kind != ST_ASSIGN) return;
+    s->u.assign.value = value;
+    s->u.assign.op = op;
+}
+
 
 /**
  * @brief 造 `trap(msg)` 语句。

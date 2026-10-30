@@ -526,6 +526,13 @@ fn main() -> i32 {
 - 裸视图名不是表达式：`buf = t` 仍是**视图值赋值**（换指针与长度），不是逐元素拷贝。
 - 降糖产物就是手写循环的形状，所以边界检查消除、向量化与融合照常作用在它上面；实测与
   手写 C 的 AXPY 循环同一量级。`par` 体里暂不支持这种写法，仍写显式 `out[i] = …`。
+- **rank-2 形状**（目标是 `ndview<T>`）：不展开循环，直接落成 `stl::nd` 的逐元素内核调用
+  —— `dst = a + b` → `nd::addInto`、`a - b` → `subInto`、`a * b` → `mulInto`、
+  `a * k` → `scaleInto`、`a + b * k` → `axpyInto`，复合形式同理（`dst += a` →
+  `addInto(dst, dst, a)`）。形状在运行期才知道，所以内核返回 `bool`，编译器在外面补一条
+  `if !… { trap("…same shape as the destination") }`。写出来的 C 就是一次内核调用加一次
+  失败分支（形状不匹配才走 trap），热路径没有额外指令；`v[i, j]` 读写照旧是 `nd::at2` /
+  `nd::set2`。
 
 ```extc
 // 结果：out = 0 3 6 9 sum = 18

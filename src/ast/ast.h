@@ -640,6 +640,17 @@ Expr *exprUnNew(Arena *a, const char *op, Expr *operand, int line);
  */
 Stmt *stmtAssignNew(Arena *a, Expr *target, Expr *value, const char *op, int line);
 /**
+ * @brief 换掉一条赋值语句的右值与运算符（降糖重写用）。
+ *
+ * 复合赋值（`dst += rhs`）先被重写成 `dst = dst <op> rhs` 再交给同一套降糖，重写时只动
+ * 这两处；节点本身不换，所以位置与其它已被计划表记下的字段都不用动。
+ *
+ * @param s     赋值语句（`ST_ASSIGN`）。
+ * @param value 新的右值。
+ * @param op    新的复合运算符；普通 `=` 传 NULL。
+ */
+void stmtAssignSetValue(Stmt *s, Expr *value, const char *op);
+/**
  * @brief 造 `trap(msg)` 语句。
  *
  * @param a   分配用的 arena。
