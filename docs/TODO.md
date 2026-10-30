@@ -117,11 +117,14 @@
 - **数组与视图的模型统一**：拥有者 `array`/`array2` + 内建 `view1`/`view2`，整数组表达式降成融合循环
   （不分配临时数组），`par` 按"每维下标即该维循环变量"做结构性不相交。语义契约与分阶段见
   [`ARRAY.md`](ARRAY.md)。
-- **`slice<u8>` 的 `==` 在 `stl::string` 模块里实例化失败**：在 `stdlib/stl/string.extc` 里写
-  `fn eq(a: slice<u8>, b: slice<u8>) -> bool { return a == b }` 后，任何 import `stl::string`
-  的程序都以 ``slice_pool$handle needs pool::handle to define !=`` 失败（同样的代码在用户程序
-  与别的模块里都正常；`string::split` 因此走 `string::bytesEq`）。看起来是运算符方法实例化时
-  类型参数被本模块的池句柄污染，属第 1 层 A（字面量/推断补洞）同一条泛型实例化线路。
+- **使用 `slice<T>::==` 会让每个 `slice<T>` 实例都被要求"T 可比较"**：`planUsed` 是按模板记的位
+  （`src/plan`），`emitInstanceBodies`（`src/back/codegen.c` 约 11930-11960）按它给**每个**类型
+  实例都发同一个方法体，于是程序里任何一处 `slice<u8> == …` 都会让 `slice<pool::handle>`、
+  `slice<map::bnode<…>>` 也要求 `T: ==`，报 ``needs … to define `!=` ``。真正缺的是**按实例记的
+  方法使用集合**（或让代码生成按调用图惰性实例化方法体）。检查器侧的重放（
+  `src/check/check_top.c` 的 `runOpCheck` 里 owner 路径）同样按类型实例重放，所以两边都得改；
+  只给 `pool::handle` 加 `==` 是打地鼠（`map::bnode` 是递归容器节点，没有自然的 `==`）。
+  `string::split` 因此暂走 `string::bytesEq`。
 - 多文件输出 / 运行时独立 TU（收益未测）。
 - 协程协议换成枚举（要先修协程类型两个槽位的精度）。
 - 清理活函数内部未用的局部。

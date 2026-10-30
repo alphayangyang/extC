@@ -29,7 +29,7 @@ fn main() -> i32 {
     let is = seq::sum(ys) ?? 0
     let im = seq::max(ys) ?? 0
     let imn = seq::min(ys) ?? 0
-    let c = seq::count(ys, i64(5))
+    let c = seq::count(ys, 5)
 
     var e: i64 = 0
     match seq::sum(es) {
@@ -45,6 +45,6 @@ fn main() -> i32 {
         some(_) => {}
     }
 
-    io::cout << "sum=" << i64(fs * 1000000.0) << " max=" << i64(fm * 1000000.0) << " min=" << i64(fn_ * 1000000.0) << " isum=" << is << " imax=" << im << " imin=" << imn << " c=" << c << " e=" << e << " c0=" << seq::count(es, f64(0.0)) << "\n"
+    io::cout << "sum=" << i64(fs * 1000000.0) << " max=" << i64(fm * 1000000.0) << " min=" << i64(fn_ * 1000000.0) << " isum=" << is << " imax=" << im << " imin=" << imn << " c=" << c << " e=" << e << " c0=" << seq::count(es, 0.0) << "\n"
     return 0
 }

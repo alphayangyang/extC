@@ -1,0 +1,26 @@
+/* `parallel::run` 的 `n` 与 `threads` 收裸整数字面量：这个位置只能是 i64，字面量直接变成 i64。 */
+use std::io
+use std::parallel
+
+fn twice(id: i64, lo: i64, hi: i64, a: slice<i64>, out: mut slice<i64>) -> i32 {
+    var i: i64 = lo
+    while i < hi {
+        out[i - lo] = a[i] * 2
+        i = i + 1
+    }
+    return 0
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    let n: i64 = 8
+    var a: mut slice<i64> = new i64[n]
+    var out: mut slice<i64> = new i64[n]
+    var i: i64 = 0
+    while i < n { a[i] = i; i = i + 1 }
+    let rc: i32 = parallel::run(twice, a, out, n, 2)
+    var s: i64 = 0
+    i = i64(0)
+    while i < n { s = s + out[i]; i = i + 1 }
+    io::cout << f"rc={rc} s={s}\n"
+    return 0
+}

@@ -83,6 +83,7 @@ case_run par_softkey tests/par/par_softkey.extc "par=3"
 case_run par_scalar   tests/par/par_scalar.extc "s=108"
 case_run par_scalar_t1 tests/par/par_scalar.extc "s=108" EXTC_PAR_THREADS=1
 case_run par_2d       tests/par/par_2d.extc     "same=true s=18090"
+case_run par_litargs   tests/par/par_run_literals.extc "rc=0 s=56"
 case_run par_2d_t1    tests/par/par_2d.extc     "same=true s=18090" EXTC_PAR_THREADS=1
 case_run par_reduce   tests/par/par_reduce.extc "same=true s=16773120"
 case_run par_reduce_t1 tests/par/par_reduce.extc "same=true s=16773120" EXTC_PAR_THREADS=1

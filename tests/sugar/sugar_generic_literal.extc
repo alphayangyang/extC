@@ -1,0 +1,26 @@
+/* 字面量实参不替泛型类型参数作主：
+ *
+ *   `seq::count(ys, 5)`   T 由 `ys: slice<i64>` 定，`5` 只是"能放进 i64"
+ *   `m<i64>(3)`           写出的类型实参定 T，`3` 同样只是"能放进去"
+ *   `f(5)`               没有别的见证，仍按默认 i32 推断
+ *
+ * 以前这三处都要写成 `i64(5)`，把"字面量没有自己的类型"这件事漏给了用户。
+ */
+// expect: c=2 a=3 d=4
+use std::io
+use stl::seq
+
+fn m<T>(x: T) -> T { return x }
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var ys: mut slice<i64> = new i64[4]
+    ys[0] = 5
+    ys[1] = 7
+    ys[2] = 5
+    ys[3] = 9
+    let c: i64 = seq::count(ys, 5)
+    let a: i64 = m<i64>(3)
+    let d = m(4)
+    io::cout << f"c={c} a={a} d={d}\n"
+    return 0
+}

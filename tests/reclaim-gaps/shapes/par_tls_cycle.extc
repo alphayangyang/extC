@@ -54,7 +54,7 @@ fn main(args: slice<slice<u8>>) -> i32 {
     var out: mut slice<u8> = new u8[n]
     var k: i64 = 0
     while k < n { out[k] = u8(0)  k = k + 1 }
-    let rc: i32 = parallel::run(w, out, n, i64(2))
+    let rc: i32 = parallel::run(w, out, n, 2)
     io::cout << "n=" << n << " rc=" << rc << " out0=" << i64(out[0]) << "\n"
     return 0
 }

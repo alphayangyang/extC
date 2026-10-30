@@ -17,7 +17,7 @@ fn dup<A, B>(x: A, y: B) -> pair<A, B> {
   return p
 }
 fn main() -> i32 {
-  var b: box<i64> = wrap(i64(8))
+  var b: box<i64> = wrap<i64>(8)
   var p: pair<i64, u8> = dup(i64(3), u8(4))
   io::cout << "box=" << b.v << " pair=" << p.a << "," << i64(p.b) << "\n"
   return 0

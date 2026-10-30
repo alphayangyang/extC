@@ -2276,9 +2276,15 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     }
                 }
                 {
-                    Type *tn = checkExpr(c, *(Expr **)vecAt(&e->u.call.args, 1 + nViews));
-                    Type *tx = checkExpr(c, *(Expr **)vecAt(&e->u.call.args, 2 + nViews));
-                    if (!isI64Type(tn) || !isI64Type(tx)) {
+                    Expr *an = *(Expr **)vecAt(&e->u.call.args, 1 + nViews);
+                    Expr *ax = *(Expr **)vecAt(&e->u.call.args, 2 + nViews);
+                    Type *tn = checkExpr(c, an);
+                    Type *tx = checkExpr(c, ax);
+                    /* A bare integer literal is an i64 in this position (the argument has no
+                     * other context to say otherwise), so `parallel::run(w, out, n, 2)` does not
+                     * need the `i64(...)` wrapper. Anything else still has to be i64. */
+                    if (!(isI64Type(tn) || (an->kind == EX_INT && literalFits(an, c->tI64))) ||
+                        !(isI64Type(tx) || (ax->kind == EX_INT && literalFits(ax, c->tI64)))) {
                         ckError(c, e->line, NULL,
                                 "`parallel::run` takes `(worker, <view>..., n, threads)`: `n` and `threads`"
                                 " are `i64`");
@@ -3211,9 +3217,15 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     }
                 }
                 {
-                    Type *tn = checkExpr(c, *(Expr **)vecAt(&e->u.call.args, 1 + nViews));
-                    Type *tx = checkExpr(c, *(Expr **)vecAt(&e->u.call.args, 2 + nViews));
-                    if (!isI64Type(tn) || !isI64Type(tx)) {
+                    Expr *an = *(Expr **)vecAt(&e->u.call.args, 1 + nViews);
+                    Expr *ax = *(Expr **)vecAt(&e->u.call.args, 2 + nViews);
+                    Type *tn = checkExpr(c, an);
+                    Type *tx = checkExpr(c, ax);
+                    /* A bare integer literal is an i64 in this position (the argument has no
+                     * other context to say otherwise), so `parallel::run(w, out, n, 2)` does not
+                     * need the `i64(...)` wrapper. Anything else still has to be i64. */
+                    if (!(isI64Type(tn) || (an->kind == EX_INT && literalFits(an, c->tI64))) ||
+                        !(isI64Type(tx) || (ax->kind == EX_INT && literalFits(ax, c->tI64)))) {
                         ckError(c, e->line, NULL,
                                 "`parallel::run` takes `(worker, <view>..., n, threads)`: `n` and `threads`"
                                 " are `i64`");
@@ -3260,6 +3272,16 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                                    ? *(Type **)vecAt(written, i) : NULL;
                     *(Type **)vecPush(&targs) = ex;
                 }
+                /* Literal arguments are set aside: a literal has no type of its own before the
+                 * context decides one, so it must not *decide* a type parameter that another
+                 * argument can decide. `seq::count(xs, 5)` with `xs: slice<i64>` infers `T = i64`
+                 * from `xs` and then fits the `5`; `m<i64>(3)` fits the `3` against the written
+                 * argument. Only a literal that leaves no other witness keeps the old behaviour
+                 * (it is unified at its default type, which is how `f(5)` infers i32). */
+                Vec argTypes;
+                vecInit(&argTypes, c->arena, sizeof(void *));
+                Vec lateArgs;
+                vecInit(&lateArgs, c->arena, sizeof(size_t));
                 for (size_t i = 0; i < f->params.len; i++) {
                     Param *p = *(Param **)vecAt(&f->params, i);
                     Expr  *a = *(Expr **)vecAt(&e->u.call.args, i);
@@ -3270,6 +3292,12 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                      * reference, so the pointee types are unified. */
                     Type *want = p->type;
                     if (want->kind == TY_REF && at->kind == TY_REF) { want = want->inner; at = at->inner; }
+                    *(Type **)vecPush(&argTypes) = at;
+                    if (ttHasParam(want) &&
+                        (a->kind == EX_INT || a->kind == EX_FLOAT || a->kind == EX_BOOL)) {
+                        *(size_t *)vecPush(&lateArgs) = i;
+                        continue;
+                    }
                     if (!unifyTParams(c->tt, &f->typeParams, &targs, want, at)) {
                         ckError(c, e->line,
                                 "A generic function's type parameters are inferred from its arguments."
@@ -3278,6 +3306,23 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                                 "cannot infer type parameter(s) of `%s` from the arguments", name);
                         return f->ret ? f->ret : ttVoid(tt);
                     }
+                }
+                for (size_t k = 0; k < lateArgs.len; k++) {
+                    size_t i = *(size_t *)vecAt(&lateArgs, k);
+                    Param *p = *(Param **)vecAt(&f->params, i);
+                    Expr  *a = *(Expr **)vecAt(&e->u.call.args, i);
+                    Type *at = *(Type **)vecAt(&argTypes, i);
+                    Type *want = p->type;
+                    if (want->kind == TY_REF && at->kind == TY_REF) { want = want->inner; at = at->inner; }
+                    if (unifyTParams(c->tt, &f->typeParams, &targs, want, at)) continue;
+                    Type *fitted = ttSubstitute(c->tt, want, &f->typeParams, &targs);
+                    if (literalFits(a, fitted)) continue;
+                    ckError(c, e->line,
+                            "A generic function's type parameters are inferred from its arguments."
+                            " Write them out at the call to supply one that no argument mentions:"
+                            " `f<i32>(...)` seeds the inference.",
+                            "cannot infer type parameter(s) of `%s` from the arguments", name);
+                    return f->ret ? f->ret : ttVoid(tt);
                 }
                 for (size_t i = 0; i < f->typeParams.len; i++) {
                     if (*(Type **)vecAt(&targs, i)) continue;
@@ -3702,9 +3747,15 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     }
                 }
                 {
-                    Type *tn = checkExpr(c, *(Expr **)vecAt(&e->u.call.args, 1 + nViews));
-                    Type *tx = checkExpr(c, *(Expr **)vecAt(&e->u.call.args, 2 + nViews));
-                    if (!isI64Type(tn) || !isI64Type(tx)) {
+                    Expr *an = *(Expr **)vecAt(&e->u.call.args, 1 + nViews);
+                    Expr *ax = *(Expr **)vecAt(&e->u.call.args, 2 + nViews);
+                    Type *tn = checkExpr(c, an);
+                    Type *tx = checkExpr(c, ax);
+                    /* A bare integer literal is an i64 in this position (the argument has no
+                     * other context to say otherwise), so `parallel::run(w, out, n, 2)` does not
+                     * need the `i64(...)` wrapper. Anything else still has to be i64. */
+                    if (!(isI64Type(tn) || (an->kind == EX_INT && literalFits(an, c->tI64))) ||
+                        !(isI64Type(tx) || (ax->kind == EX_INT && literalFits(ax, c->tI64)))) {
                         ckError(c, e->line, NULL,
                                 "`parallel::run` takes `(worker, <view>..., n, threads)`: `n` and `threads`"
                                 " are `i64`");

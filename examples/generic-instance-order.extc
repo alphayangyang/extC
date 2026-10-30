@@ -11,7 +11,7 @@ fn g<T>(x: T) -> T { return f(x) }
 fn m<T>(x: T) -> T { return g(x) }
 
 fn main() -> i32 {
-    let r: i64 = m<i64>(i64(3))
+    let r: i64 = m<i64>(3)
     io::cout << "r = " << r << "\n"
     return 0
 }

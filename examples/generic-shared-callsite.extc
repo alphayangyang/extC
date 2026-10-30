@@ -19,7 +19,7 @@ fn wrap<T>(x: T) -> T { return pick(x) }
 
 fn main() -> i32 {
     let a: i32 = wrap<i32>(i32(9))
-    let b: i64 = wrap<i64>(i64(8))
+    let b: i64 = wrap<i64>(8)
     io::cout << a << " " << b << "\n"
     return 0
 }
