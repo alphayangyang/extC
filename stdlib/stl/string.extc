@@ -179,16 +179,12 @@ struct string {
 
     /* ---------------------------------------------------------------- 拼接
      *
-     * TWO SPELLINGS, and the reason is a compiler gap rather than a design choice:
+     * THREE SPELLINGS, one meaning each:
      *   - `s.append(t)` grows the receiver in place (the usual way to build a string);
-     *   - `s.concat(t)` / `s.concatBytes(t)` return a NEW string, leaving the receiver alone.
-     * A `fn +` / `s += t` spelling would be nicer, and the plan was to add it here, but an
-     * operator method that ALLOCATES and hands the value back is not plumbed through yet: the
-     * call site never passes the arena the callee's allocation belongs to (the declaration has
-     * three parameters -- self, other, home -- and the call two), and the first repair attempt
-     * leaked the buffer into an arena nothing reclaims. The operator path has to pick
-     * up the whole `homeDepth` + `setCallArenaArg` + escape-site bookkeeping the method-call path
-     * does; until then concatenation is spelled as a method.
+     *   - `s.concat(t)` / `s.concatBytes(t)` return a NEW string, leaving the receiver alone;
+     *   - `s + t` is the operator spelling of the same thing (see the two `fn +` overloads
+     *     below). It allocates through the same zone the concat methods use, so the operator
+     *     call site needs no arena argument beyond the zone the operator path already passes.
      *
      * The result starts as a **zero value** (inline, no pool) and reaches for the pool only if the
      * concatenation does not fit in the 16 inline bytes -- a short join allocates nothing at all. */
@@ -205,6 +201,13 @@ struct string {
         out.append(other)
         return out
     }
+
+    /* `s + t`：拼接的运算符写法。返回**新值**、不写接收者（`+=` 不在可重载集合里）；
+     * 右操作数按类型分三份重载 —— `slice<u8>`（字面量与视图）、`string`、单字节。分配落在
+     * 调用点给的 arena 上（运算符调用点现在与方法调用点走同一套 home/zone 记账）。 */
+    fn +(self: ref string, other: slice<u8>) -> string { return self.concatBytes(other) }
+
+    fn +(self: ref string, other: string) -> string { return self.concat(other) }
 
     /* ---------------------------------------------------------------- 取字节与视图 */
     /* One byte, or `none` when out of range (no trap: reading past the end is a condition). */

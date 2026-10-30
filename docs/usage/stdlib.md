@@ -131,6 +131,7 @@ fn main() -> i32 {
 | 拷贝 | `clone()`（内联态出来的仍是内联串） |
 | 比较 | `==` / `<`，右边可以是 `string` 也可以是 `slice<u8>`（所以 `s == "abc"` 成立） |
 | 拼接 | `concat(other) -> string`、`concatBytes(slice<u8>)`、就地 `append(slice<u8>)`、`push(u8)`、`appendByte` |
+| 运算符 | `a + b`：返回**新值**的拼接（右操作数是 `slice<u8>` 或 `string`；要求 `a` 是 `string`）。分配落在调用点的 arena 上，可以在函数里拼完返回 |
 | 查找 | `find(needle) -> ?i64`（无匹配 `none`）、`contains`、`startsWith`、`endsWith`、`hash()` |
 | 容量 | `grow()`（1.5 倍）、`shrink()`、`clear()`、`release()`、`removeFront(n)` |
 | 解析 | `string::toI64(b) -> ?i64` |

@@ -38,6 +38,7 @@ run_case tensor  tests/stl/tensor.extc  "g=6 w=true g2=99 s=159 ts=159 rs=1 ss=1
 run_case nd      tests/stl/nd.extc      "f=true s=true a=true x=true s1=24 s2=72 s3=96 s4=168 st=24 s5=12 bad=false s6=-1 cnt=16 c3=24"
 run_case split tests/stl/split.extc "n=4 total=6 e=0"
 run_case string_ops tests/stl/string_ops.extc "n=3 j=[ a | b | c ] t1=[hi] t2=[x ] t3=[ y] e=0"
+run_case string_plus tests/stl/string_plus.extc "abcde ababcde x#7"
 run_case string_fmt tests/stl/string_fmt.extc "pi=[3.14] neg=[-0.500] big=[1234.5] i=[-42]"
 
 echo "== vector<T>：grow 摊还（1000 次 push 只搬 14 次 · 1.5 倍）=="

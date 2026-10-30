@@ -1,0 +1,22 @@
+/* `s + t`：字符串拼接的运算符写法（`fn +` 返回新值，右操作数按类型分重载）。
+ * 同时钉住"运算符方法可以分配"这条编译器能力：拼接结果由调用点给的 arena 承接，
+ * 在函数里拼完再返回也不漏。判据见 tests/stl/run.sh 的 run_case。 */
+use std::io
+use stl::string as str
+
+fn tag(name: slice<u8>, n: i64) -> string {
+    /* 右操作数是 `string` 值时按值传（拷贝），不会把本地的视图借给返回值 ——
+     * `tmp.toSlice()` 在这里会被借用检查挡下（视图可能比局部活得久），这正是不变量在干活。 */
+    let tmp: string = str::fromI64(n)
+    return str::from(name) + "#" + tmp
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    if args.len > i64(2) { return 1 }
+    let a: string = str::from("ab")
+    let s: string = a + "cd" + "e"
+    let t: string = a + s
+    let u: string = tag("x", 7)
+    io::cout << s.toSlice() << " " << t.toSlice() << " " << u.toSlice() << "\n"
+    return 0
+}
