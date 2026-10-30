@@ -324,6 +324,14 @@ else
     echo "  FAIL println      ->  $(echo "$out" | tr '\n' '|')"; fail=1
 fi
 
+echo "== stringio::readLine / readAll（控制台读取的一句版：行不含 CRLF、空行保留、EOF 给 none）=="
+readlines_want=$(printf 'L1=a\nL0=\nL1=b\nL4=last\nn=4 acc=6\nrest=0')
+if out=$(printf 'a\n\nb\r\nlast' | "$EXTC" --run tests/io/readlines.extc 2>&1) && [ "$out" = "$readlines_want" ]; then
+    echo "  ok   readlines    ->  4 行（含空行 / CRLF）后 EOF 结束"
+else
+    echo "  FAIL readlines    ->  $(echo "$out" | tr '\n' '|')"; fail=1
+fi
+
 echo "== 分层（std::sys::io = 特权层 · io 族，std::io = 普通库）=="
 # ⚠️ 这是**结构检查**，不是编译器强制的（"只有特权模块能声明原语"那条还没做 ✗ 见定案 72）
 if grep -q '^extern!' stdlib/std/sys/io.extc && ! grep -q '^fn main' stdlib/std/sys/io.extc; then

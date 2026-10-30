@@ -593,3 +593,56 @@ fn toI64(b: slice<u8>) -> ?i64 {
   }
   return some(i64(acc))
 }
+
+/* ---------------------------------------------------------------- 裁剪与拼接
+ *
+ * 这两件事每天都要写：`trim` 把协议行两端的空白去掉，`join` 把 `split` 的段拼回去。它们放
+ * 在这里而不是让调用者手写，是因为手写版本每次都有人写错边界（`s.len - 1`、空串、全空白）。
+ *
+ * `trim` 系列返回的是**原缓冲的视图**（零拷贝）：裁剪只挪起点和长度，不复制字节。
+ */
+
+/* ASCII 空白：空格、`\t`、`\n`、`\r`、`\v`、`\f`。非 ASCII 一律不算空白 —— 不猜编码。
+ * 判定写在两个函数体里而不是抽成公开助手：这是库的**公开面**，一个只服务两行代码的谓词没有
+ * 独立存在的价值（公开面每多一个名字都要在手册里写清语义）。 */
+/* 去掉开头的空白。 */
+fn trimStart(s: slice<u8>) -> slice<u8> {
+    var lo: i64 = 0
+    while lo < s.len && (s[lo] == u8(32) || s[lo] == u8(9) || s[lo] == u8(10) || s[lo] == u8(13) || s[lo] == u8(11) || s[lo] == u8(12)) { lo = lo + 1 }
+    return s[lo..s.len]
+}
+
+/* 去掉结尾的空白。 */
+fn trimEnd(s: slice<u8>) -> slice<u8> {
+    var hi: i64 = s.len
+    while hi > 0 && (s[hi - 1] == u8(32) || s[hi - 1] == u8(9) || s[hi - 1] == u8(10) || s[hi - 1] == u8(13) || s[hi - 1] == u8(11) || s[hi - 1] == u8(12)) { hi = hi - 1 }
+    return s[0..hi]
+}
+
+/* 去掉两端的空白，返回视图。 */
+fn trim(s: slice<u8>) -> slice<u8> {
+    let lo = trimStart(s)
+    return trimEnd(lo)
+}
+
+/* 把 `parts` 用 `sep` 连起来。空数组给空串；`sep` 可以是空视图（纯拼接）。
+ *
+ * 先算总长一次分配：`append` 自己会增长，但一次给够省掉中间几次搬家（`withCap(total)` 之后
+ * 的 append 不再扩容）。 */
+fn join(parts: slice<slice<u8>>, sep: slice<u8>) -> string {
+    var total: i64 = 0
+    var i: i64 = 0
+    while i < parts.len {
+        total = total + parts[i].len
+        if i + 1 < parts.len { total = total + sep.len }
+        i = i + 1
+    }
+    var out: string = withCap(total)
+    i = 0
+    while i < parts.len {
+        if i > 0 { out.append(sep) }
+        out.append(parts[i])
+        i = i + 1
+    }
+    return out
+}

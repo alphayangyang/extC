@@ -135,6 +135,8 @@ fn main() -> i32 {
 | 容量 | `grow()`（1.5 倍）、`shrink()`、`clear()`、`release()`、`removeFront(n)` |
 | 解析 | `string::toI64(b) -> ?i64` |
 | 切分 | `string::split(s: slice<u8>, sep: slice<u8>) -> varArray<slice<u8>>`（每段是 `s` 的零拷贝视图；空 `sep` 返回空数组；末尾空段也入列 ⇒ 段数 = 出现次数 + 1）|
+| 拼接 | `string::join(parts: slice<slice<u8>>, sep: slice<u8>) -> string`（空数组给空串；`sep` 可以是空视图；一次按总长分配）|
+| 裁剪 | `string::trim(s)` / `trimStart(s)` / `trimEnd(s)`：去掉两端 ASCII 空白（空格、`\t`、`\n`、`\r`、`\v`、`\f`），返回**原缓冲视图**（零拷贝）|
 | 比两段字节 | `bytesEq(a, b)` / `bytesLt(a, b)`（模块级关联函数，直接比两段 `slice<u8>`）|
 
 **拿到内容只有 `toSlice()` 一条路（拷贝）**：池里不放视图出去。
@@ -148,6 +150,8 @@ fn main() -> i32 {
 | `string::readAllFrom` | `fn readAllFrom(self: mut ref string, r: mut ref io::reader) -> result<i64, io::ioError>` |
 | `string::writeTo` / `writeLineTo` | `fn writeTo(self: ref string, w: mut ref io::writer) -> result<i64, io::ioError>` |
 | `io::istream >> string` / `fs::ifstream >> string` | 读一行（`\n` 与 CRLF 的 `\r` 都不算内容），**目标被替换** |
+| `stringio::readLine()` | `fn readLine() -> ?string`：从控制台读一行（自带 `io::inSync` / `inSave` 的取还；行尾 CRLF 不算内容；空行是 `some("")`，**EOF 才给 `none`**）|
+| `stringio::readAll()` | `fn readAll() -> ?string`：把控制台剩下的输入一次读完（错误给 `none`）|
 
 ```extc
 use std::io

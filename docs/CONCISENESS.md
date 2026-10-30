@@ -172,6 +172,16 @@ for line in io::lines() { ... }            // 逐行迭代，错误在迭代器�
   替掉"手写两层 while 找分隔符"约 8–12 行。
 - `io::print(s)` / `io::println(s)`：不用链式写法的一行输出，替掉 `io::cout << s << "\n"`。
 
+第一刀（`8cead15`）加了 `string::split` + `io::print` / `io::println`；第二刀（本次）加：
+
+- `string::join(parts, sep)`：把 `split` 的段拼回去（一次按总长分配）。
+- `string::trim` / `trimStart` / `trimEnd`：去两端 ASCII 空白，返回原缓冲视图（零拷贝）。
+- `stringio::readLine()` / `readAll()`：控制台读一句版（内部做 `io::inSync()` 与 `inSave` 的
+  取还，调用点不用再记那两行样板；空行给 `some("")`，只有 EOF 给 `none`）。
+
+还缺的（第 1 层 B 后续）：f-string 只能作 `<<` 的右操作数（还不能直接当值用）；`varArray` 与
+`slice` 之间仍要显式 `asSlice()`。
+
 ## 第 2 层：整数组表达式与融合（结构调整）
 
 `docs/ARRAY.md` 的 M3 与 `docs/FUSION.md` 的 S1–S3：`c = a + b`、`sum(c)` 由编译器降成融合循环，

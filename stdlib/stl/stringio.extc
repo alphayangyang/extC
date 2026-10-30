@@ -203,3 +203,60 @@ impl fs::ifstream {
  *     `impl` 块的方法在别的 `Module` 对象里（或 attach 时被搬进了目标类型的列表，而那个类型住在
  *     另一个模块）⇒ 修法就不是"补列表"，而是**让列表的来源与模块无关**（从类型表/所有模块取）。
  */
+
+/* ---------------------------------------------------------------- 从 stdin 读整块文本
+ *
+ * 用 `impl` 块里的 `readLineFrom` / `readAllFrom` 能做到，但每个调用点都要
+ * `io::inSync()` + `io::inSave(ref r)` 两行样板：控制台读取的状态住在 `std::io` 的模块级缓冲里
+ * （`IN_POS` 等），不 save 回去，下一次 `inSync()` 就会重读同一段。这两个函数把"同步取还"
+ * 收进来，调用点只剩一句。
+ *
+ * 返回 `none` 只表示 **EOF 且什么都没读到**（空行是 `some("")`，与 EOF 区分开）；读取错误也
+ * 用 `none` 表示（控制台读失败基本只意味着 fd 坏了，不值得为它加一条分支）。
+ */
+
+/* 读一行，行尾的 `\n` / `\r\n` 不算内容（与 `io::reader::nextLine` 的口径一致）。 */
+fn readLine() -> ?string {
+    var r: io::reader = io::inSync()
+    var s: string = string::new()
+    var any: bool = false
+    var eof: bool = false
+    var heldCR: bool = false
+    while true {
+        let got = r.nextByte()
+        match got {
+            failure(_) => { io::inSave(ref r)  return none }
+            success(b) => {
+                if b < 0 { eof = true  break }
+                /* `\n` 收尾：扣着的 `\r` 是 CRLF 的前半，不是内容。 */
+                if b == 10 { heldCR = false  break }
+                /* `\r` 先扣着：后面跟 `\n` 就是行尾，否则它是内容。 */
+                if heldCR { s.push(u8(13))  any = true  heldCR = false }
+                if b == 13 { heldCR = true } else { s.push(u8(b))  any = true }
+            }
+        }
+    }
+    /* EOF 之前那个没等到 `\n` 的 `\r` 是内容，不是行尾。 */
+    if heldCR { s.push(u8(13))  any = true }
+    io::inSave(ref r)
+    if !any && eof { return none }
+    return some(s)
+}
+
+/* 读剩下的全部输入。 */
+fn readAll() -> ?string {
+    var r: io::reader = io::inSync()
+    var s: string = string::new()
+    while true {
+        let got = r.fill()
+        match got {
+            failure(_) => { io::inSave(ref r)  return none }
+            success(n) => {
+                if n == 0 { break }
+                s.append(r.chunk[0..n])
+            }
+        }
+    }
+    io::inSave(ref r)
+    return some(s)
+}

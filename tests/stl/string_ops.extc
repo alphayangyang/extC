@@ -1,0 +1,17 @@
+/* join / trim / trimStart / trimEnd：把 `split` 的段拼回去、把协议行两端的空白去掉。
+ * 判据：一行机判输出（见 tests/stl/run.sh 里的 run_case）。 */
+use std::io
+use stl::string as str
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    if args.len > i64(2) { return 1 }
+    let parts = str::split(" a , b , c ", ",")
+    /* join 要 slice<slice<u8>>：varArray 先 asSlice()（容器自己的视图） */
+    let j = str::join(parts.asSlice(), "|")
+    let t1 = str::trim("   hi \t")
+    let t2 = str::trimStart("  x ")
+    let t3 = str::trimEnd(" y  ")
+    let empty = str::join(parts.asSlice()[0..0], ".")
+    io::cout << f"n={parts.len} j=[{j.toSlice()}] t1=[{t1}] t2=[{t2}] t3=[{t3}] e={empty.len()}\n"
+    return 0
+}

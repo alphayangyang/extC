@@ -1,0 +1,26 @@
+/* stringio::readLine / readAll：控制台读取的两句便利函数。
+ * 判据：一行一行读（含空行、CRLF、EOF 区分），再 readAll 读剩下的。 */
+use std::io
+use stl::string as str
+use stl::stringio as sio
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    if args.len > i64(2) { return 1 }
+    var n: i64 = 0
+    var acc: i64 = 0
+    while true {
+        let got = sio::readLine()
+        match got {
+            none => { break }
+            some(line) => {
+                n = n + 1
+                acc = acc + line.len()
+                io::cout << f"L{line.len()}={line.toSlice()}\n"
+            }
+        }
+    }
+    io::cout << f"n={n} acc={acc}\n"
+    let rest = sio::readAll() ?? str::new()
+    io::cout << f"rest={rest.len()}\n"
+    return 0
+}
