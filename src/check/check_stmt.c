@@ -1892,6 +1892,24 @@ static Expr *arrayExprIndexed(Checker *c, Expr *e, const char *loop) {
 }
 
 /**
+ * @brief 复合赋值对应的二元运算符名（`+=` 给 `"+"`）。
+ *
+ * 整数组表达式的形状表只认 `+ - * /`，所以 `%=` 与其它给 `NULL`（调用方据此放弃降糖）。
+ *
+ * @param aop 解析器存下的复合赋值运算符文本（`"+="` 等；`NULL` 表示普通 `=`）。
+ * @return 静态存储的运算符名；不认的形式给 `NULL`。
+ */
+static const char *arrayCompoundOp(const char *aop) {
+    if (!aop) return NULL;
+    if (strcmp(aop, "+=") == 0) return "+";
+    if (strcmp(aop, "-=") == 0) return "-";
+    if (strcmp(aop, "*=") == 0) return "*";
+    if (strcmp(aop, "/=") == 0) return "/";
+    return NULL; /* `%=` 不在整数组表达式的形状里 */
+}
+
+
+/**
  * @brief 整数组表达式语句的降糖：`out = a + b` → `for i in 0..out.len { out[i] = a[i] + b[i] }`。
  *
  * 只认"目标是可写 rank-1 视图、右值是逐元素表达式"这一种赋值；命中就把语句换成一个块：
@@ -1904,7 +1922,7 @@ static Expr *arrayExprIndexed(Checker *c, Expr *e, const char *loop) {
  */
 Stmt *arrayAssignLower(Checker *c, Stmt *s) {
     if (!s || s->kind != ST_ASSIGN) return NULL;
-    if (s->u.assign.op || !s->u.assign.target || !s->u.assign.value) return NULL;
+    if (!s->u.assign.target || !s->u.assign.value) return NULL;
     Expr *tgt = s->u.assign.target;
     if (tgt->kind != EX_IDENT || !tgt->u.ident.name) return NULL;
     /* 裸视图名不是整数组表达式：`buf = t` 是**视图值**赋值（换掉指针与长度、别名关系照旧），
@@ -1914,12 +1932,19 @@ Stmt *arrayAssignLower(Checker *c, Stmt *s) {
     Type *elem = arrayViewElem(c, outName);
     if (!elem) return NULL;
 
-    Vec views;
-    vecInit(&views, c->arena, sizeof(const char *));
-    if (!arrayExprShapes(c, s->u.assign.value, elem, &views) || views.len == 0) return NULL;
-
     Arena *a = c->arena;
     const int line = s->line;
+    /* 复合形式 `out += rhs` 就是 `out = out <op> rhs`：目标按格读一次、写一次，别名安全。 */
+    Expr *value = s->u.assign.value;
+    if (s->u.assign.op) {
+        const char *op = arrayCompoundOp(s->u.assign.op);
+        if (!op) return NULL;
+        value = exprBinNew(a, op, exprIdent(a, outName, line), value, line);
+    }
+
+    Vec views;
+    vecInit(&views, c->arena, sizeof(const char *));
+    if (!arrayExprShapes(c, value, elem, &views) || views.len == 0) return NULL;
     const char *loop = "__extc_ae";
     Vec out;
     vecInit(&out, a, sizeof(Stmt *));
@@ -1941,7 +1966,7 @@ Stmt *arrayAssignLower(Checker *c, Stmt *s) {
     }
 
     Expr *slot = exprIndexNew(a, exprIdent(a, outName, line), exprIdent(a, loop, line), line);
-    Stmt *write = stmtAssignNew(a, slot, arrayExprIndexed(c, s->u.assign.value, loop), NULL, line);
+    Stmt *write = stmtAssignNew(a, slot, arrayExprIndexed(c, value, loop), NULL, line);
     Stmt *body = stmtNew(a, ST_BLOCK, line);
     vecInit(&body->u.block.stmts, a, sizeof(Stmt *));
     *(Stmt **)vecPush(&body->u.block.stmts) = write;
