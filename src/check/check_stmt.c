@@ -258,6 +258,9 @@ typedef struct {
     Vec         captures;   /* const char*：只读捕获的视图名，按首次出现顺序 */
     Vec         scalars;    /* const char*：按值捕获的标量名，按首次出现顺序 */
     Vec         parVars;    /* const char*：par 循环变量名（二维折叠时含内层循环变量） */
+    const char *innerVar;   /* 二维折叠时内层循环变量名；未折叠为 NULL */
+    Expr       *innerLo;    /* 内层循环区间的下界 */
+    Expr       *innerHi;    /* 内层循环区间的上界 */
     int         foldDepth;  /* 已折叠的内层 `par` 层数（v1 最多 1） */
     bool        fullOut;    /* 折叠过内层 `par`：输出视图整份交给 worker */
     Vec         items;      /* ParItem：显式工作栈 */
@@ -380,6 +383,92 @@ static bool parNameIsView(ParLower *w, const char *name) {
 }
 
 /**
+ * @brief 两个表达式在"同一个值"的意义上是否相同（判据只到名字与整数字面量）。
+ *
+ * 二维折叠的展开常数要证明"至少等于内层循环的迭代次数"，最常用的写法是把内层上界本身
+ * 当常数用（`out[r * cols + c]` 内层是 `0..cols`），所以这里只需要认出同一个名字/同一个数。
+ *
+ * @param a 表达式。
+ * @param b 表达式。
+ * @return   同名标识符、同值整数字面量，或两者结构相同的加乘组合时返回 `true`。
+ */
+static bool parSameExpr(Expr *a, Expr *b) {
+    if (!a || !b) return false;
+    if (a->kind == EX_CONV) return parSameExpr(a->u.conv.operand, b);
+    if (b->kind == EX_CONV) return parSameExpr(a, b->u.conv.operand);
+    if (a->kind != b->kind) return false;
+    switch (a->kind) {
+    case EX_IDENT:
+        return a->u.ident.name && b->u.ident.name &&
+               strcmp(a->u.ident.name, b->u.ident.name) == 0;
+    case EX_INT:
+        return a->u.ival == b->u.ival;
+    case EX_BIN:
+        return a->u.bin.op && b->u.bin.op && strcmp(a->u.bin.op, b->u.bin.op) == 0 &&
+               parSameExpr(a->u.bin.left, b->u.bin.left) &&
+               parSameExpr(a->u.bin.right, b->u.bin.right);
+    default:
+        return false;
+    }
+}
+
+/**
+ * @brief 判断展开常数 `k` 能不能保证 `outer * k + inner` 一格一槽。
+ *
+ * 需要 `k >= innerHi - innerLo`。可证的两种写法：`k` 与内层上界是同一个名字（内层从 0 起
+ * 时成立），或两者都是整数字面量且 `k >= hi - lo`。证不出来就拒 —— 猜一个常数会让两个
+ * 外层落进同一格，是静默错值。
+ *
+ * @param w 扫描上下文（`innerLo`/`innerHi` 已填）。
+ * @param k 乘数表达式。
+ * @return  能证明一格一槽则 `true`。
+ */
+static bool parFlattenConstOk(ParLower *w, Expr *k) {
+    if (!k || !w->innerHi) return false;
+    Expr *lo = w->innerLo, *hi = w->innerHi;
+    while (lo && lo->kind == EX_CONV) lo = lo->u.conv.operand;
+    while (hi && hi->kind == EX_CONV) hi = hi->u.conv.operand;
+    if (parSameExpr(k, hi) && lo && lo->kind == EX_INT && lo->u.ival == 0) return true;
+    Expr *kk = k;
+    while (kk && kk->kind == EX_CONV) kk = kk->u.conv.operand;
+    if (kk && kk->kind == EX_INT && hi && hi->kind == EX_INT && lo && lo->kind == EX_INT)
+        return kk->u.ival >= hi->u.ival - lo->u.ival;
+    return false;
+}
+
+/**
+ * @brief 判断二维折叠的写下标是否一一对应每个 `(r, c)`：只认 `out[r * K + c]`。
+ *
+ * 一维的槽规则（下标就是循环变量）天生一一对应；折叠两层之后"下标由循环变量构成"不够
+ * ——`out[c]` 里没有 `r`，每个外层 worker 都会重写整列。能证明的情况只有
+ * `outer * K + inner`（`K >=` 内层迭代次数），或交换两层的等价写法。
+ *
+ * @param w 扫描上下文。
+ * @param e 写下标。
+ * @return  一格一槽则 `true`。
+ */
+static bool parIndexInjective(ParLower *w, Expr *e) {
+    if (!e || e->kind != EX_BIN || !e->u.bin.op || strcmp(e->u.bin.op, "+") != 0) return false;
+    Expr *l = e->u.bin.left, *r = e->u.bin.right;
+    for (int swap = 0; swap < 2; swap++) {
+        Expr *sum = swap ? r : l, *prod = swap ? l : r;
+        if (!sum || sum->kind != EX_IDENT || !sum->u.ident.name) continue;
+        if (!w->innerVar || strcmp(sum->u.ident.name, w->innerVar) != 0) continue;
+        if (!prod || prod->kind != EX_BIN || !prod->u.bin.op ||
+            strcmp(prod->u.bin.op, "*") != 0)
+            continue;
+        Expr *a = prod->u.bin.left, *b = prod->u.bin.right;
+        if (a && a->kind == EX_IDENT && w->loopVar && a->u.ident.name &&
+            strcmp(a->u.ident.name, w->loopVar) == 0 && parFlattenConstOk(w, b))
+            return true;
+        if (b && b->kind == EX_IDENT && w->loopVar && b->u.ident.name &&
+            strcmp(b->u.ident.name, w->loopVar) == 0 && parFlattenConstOk(w, a))
+            return true;
+    }
+    return false;
+}
+
+/**
  * @brief 判断一个写目标的下标是否只由 par 循环变量与整数常量构成。
  *
  * 二维折叠的 worker 按绝对槽位写（`out[r * cols + c]`），所以下标是"以循环变量为自变量
@@ -471,10 +560,11 @@ static void parScanTarget(ParLower *w, Expr *t) {
     if (w->fullOut) {
         /* 二维折叠：下标是"以循环变量为自变量的整数表达式"（`out[r * cols + c]`）。只认
          * 整数常量、par 循环变量、`+ - *` 与一元 `-`。 */
-        if (!parIndexOverLoops(w, idx)) {
+        if (!parIndexOverLoops(w, idx) || !parIndexInjective(w, idx)) {
             parFail(w, t->line,
-                    "A folded two-dimensional loop writes `out[r * cols + c]`: the subscript may"
-                    " use only the parallel loop variables and integer constants.",
+                    "A folded two-dimensional loop writes `out[r * K + c]` with `K` at least the"
+                    " inner loop's iteration count (the inner upper bound is the usual choice):"
+                    " anything else lets two outer iterations land in the same slot.",
                     "this par loop may write only its own output slot");
             return;
         }
@@ -619,8 +709,16 @@ static bool parFoldInner(ParLower *w, Stmt *blk) {
     stmtSetParLoop(blk, false);
     if (blk->u.block.stmts.len >= 1) {
         Stmt *idecl = *(Stmt **)vecAt(&blk->u.block.stmts, 0);
-        if (idecl && idecl->kind == ST_VAR && idecl->u.var.name)
+        if (idecl && idecl->kind == ST_VAR && idecl->u.var.name) {
+            w->innerVar = idecl->u.var.name;
+            w->innerLo  = idecl->u.var.init;
             parAddParVar(w, idecl->u.var.name);
+            /* `[循环变量, 上界, while]`：上界声明里存着内层区间的上界表达式。 */
+            if (blk->u.block.stmts.len >= 2) {
+                Stmt *hdecl = *(Stmt **)vecAt(&blk->u.block.stmts, 1);
+                if (hdecl && hdecl->kind == ST_VAR) w->innerHi = hdecl->u.var.init;
+            }
+        }
     }
     return true;
 }

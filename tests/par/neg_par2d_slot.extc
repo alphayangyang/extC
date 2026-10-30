@@ -1,0 +1,19 @@
+// 二维折叠的写下标必须一一对应每个 (r, c)：`dst[c]` 里没有 `r`，每个外层 worker 都会
+// 重写整列 ⇒ 必须编译失败。
+use std::io
+
+fn parFill(rows: i64, cols: i64, dst: mut slice<f64>) {
+    par r in 0..rows {
+        par c in 0..cols {
+            dst[c] = f64(r)
+        }
+    }
+}
+
+fn main() -> i32 {
+    let rows: i64 = 2
+    let cols: i64 = 3
+    var b: mut slice<f64> = new f64[rows * cols]
+    parFill(rows, cols, b)
+    return 0
+}

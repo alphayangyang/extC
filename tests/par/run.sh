@@ -101,6 +101,7 @@ case_neg neg_new       tests/par/neg_new.extc       "cannot allocate inside a pa
 case_neg neg_two_views tests/par/neg_two_views.extc "may write only its own output slot"
 case_neg neg_subscript tests/par/neg_subscript.extc "may write only its own output slot"
 case_neg neg_alias     tests/par/neg_alias.extc     "aliases a read-only view"
+case_neg neg_par2d_slot tests/par/neg_par2d_slot.extc "may write only its own output slot"
 case_neg neg_scalar    tests/par/neg_scalar.extc    "only read-only views and scalar values can be captured by a par loop"
 case_neg neg_nest3     tests/par/neg_nest3.extc     "cannot nest \`par\` more than two levels"
 case_neg neg_escape    tests/par/neg_escape.extc    "cannot escape a par loop"
