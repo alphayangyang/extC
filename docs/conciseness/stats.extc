@@ -2,22 +2,16 @@
 use std::io
 
 fn main() -> i32 {
-    var v: mut slice<i64> = new i64[i64(16)]
-    var i: i64 = i64(0)
-    while i < i64(16) {
-        v[i] = (i * i64(7) + i64(3)) % i64(23)
-        i = i + i64(1)
+    var v: mut slice<i64> = new i64[16]
+    for i in 0..16 { v[i] = (i * 7 + 3) % 23 }
+    var sum: i64 = 0
+    var lo: i64 = v[0]
+    var hi: i64 = v[0]
+    for x in v {
+        sum = sum + x
+        if x < lo { lo = x }
+        if x > hi { hi = x }
     }
-    var sum: i64 = i64(0)
-    var lo: i64 = v[i64(0)]
-    var hi: i64 = v[i64(0)]
-    i = i64(0)
-    while i < v.len {
-        sum = sum + v[i]
-        if v[i] < lo { lo = v[i] }
-        if v[i] > hi { hi = v[i] }
-        i = i + i64(1)
-    }
-    io::cout << "sum=" << sum << " min=" << lo << " max=" << hi << " avg=" << sum / i64(16) << "\n"
+    io::cout << f"sum={sum} min={lo} max={hi} avg={sum / 16}\n"
     return 0
 }

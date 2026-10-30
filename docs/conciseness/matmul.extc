@@ -2,30 +2,22 @@
 use std::io
 
 fn main() -> i32 {
-    var a: mut slice<i64> = new i64[i64(9)]
-    var b: mut slice<i64> = new i64[i64(9)]
-    var i: i64 = i64(0)
-    while i < i64(9) {
-        a[i] = (i * i64(5) + i64(1)) % i64(7)
-        b[i] = (i * i64(3) + i64(2)) % i64(5)
-        i = i + i64(1)
+    var a: mut slice<i64> = new i64[9]
+    var b: mut slice<i64> = new i64[9]
+    for i in 0..9 {
+        a[i] = (i * 5 + 1) % 7
+        b[i] = (i * 3 + 2) % 5
     }
-    var c: mut slice<i64> = new i64[i64(9)]
-    var r: i64 = i64(0)
-    while r < i64(3) {
-        var k: i64 = i64(0)
-        while k < i64(3) {
-            var s: i64 = i64(0)
-            var j: i64 = i64(0)
-            while j < i64(3) {
-                s = s + a[r * i64(3) + j] * b[j * i64(3) + k]
-                j = j + i64(1)
+    var c: mut slice<i64> = new i64[9]
+    for r in 0..3 {
+        for k in 0..3 {
+            var s: i64 = 0
+            for j in 0..3 {
+                s = s + a[r * 3 + j] * b[j * 3 + k]
             }
-            c[r * i64(3) + k] = s
-            k = k + i64(1)
+            c[r * 3 + k] = s
         }
-        r = r + i64(1)
     }
-    io::cout << "diag=" << c[i64(0)] + c[i64(4)] + c[i64(8)] << "\n"
+    io::cout << f"diag={c[0] + c[4] + c[8]}\n"
     return 0
 }
