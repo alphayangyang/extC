@@ -8,7 +8,7 @@ fn passThrough(a: vector<i32>) -> vector<i32> {
 }
 
 fn main() -> i32 {
-    var a: vector<i32> = vector<i32>::withCap(i64(4))
+    var a: vector<i32> = vector<i32>::withCap(4)
     a.push(i32(1))
     var b = a
     b.push(i32(2))

@@ -6,7 +6,7 @@ struct holder<T> { v: T
 }
 struct pt { x: i64  y: i64 }
 fn main() -> i32 {
-    var a: holder<i64> = { v: i64(7) }
+    var a: holder<i64> = { v: 7 }
     var b: holder<slice<u8>> = { v: "hi" }
     var c: holder<pt> = { v: pt { x: 1, y: 2 } }
     c.put(pt { x: 3, y: 4 })

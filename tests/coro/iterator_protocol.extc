@@ -18,11 +18,11 @@ struct holder { c: counter }
 
 impl counter {
     fn iter(self: ref counter) -> counter {
-        return counter { i: i64(0), n: self.n }
+        return counter { i: 0, n: self.n }
     }
     fn next(self: mut ref counter) -> bool {
         if self.i >= self.n { return false }
-        self.i = self.i + i64(1)
+        self.i = self.i + 1
         return true
     }
     fn value(self: ref counter) -> i64 {
@@ -31,7 +31,7 @@ impl counter {
 }
 
 fn main() -> i32 {
-    var c: counter = counter { i: i64(0), n: i64(5) }
+    var c: counter = counter { i: 0, n: 5 }
 
     /* ① 手写驱动：这就是 `for x in c` 落地后应当被脱糖成的形状 */
     var it: counter = c.iter()
@@ -39,51 +39,51 @@ fn main() -> i32 {
     var shown: i64 = 0
     while it.next() {
         sum = sum + it.value()
-        shown = shown + i64(1)
+        shown = shown + 1
     }
     io::cout << "sum=" << sum << " shown=" << shown << "\n"   /* 期望 sum=15 shown=5 */
 
     /* ② 空集合：一次都不该进 */
-    var empty: counter = counter { i: i64(0), n: i64(0) }
+    var empty: counter = counter { i: 0, n: 0 }
     var eit: counter = empty.iter()
     var hits: i64 = 0
-    while eit.next() { hits = hits + i64(1) }
+    while eit.next() { hits = hits + 1 }
     io::cout << "empty=" << hits << "\n"                      /* 期望 empty=0 */
 
     /* ③ 迭代状态是**值**、活在调用者帧里 ⇒ 两个迭代器互不干扰（无引用聚合的直接好处） */
-    var a: counter = counter { i: i64(0), n: i64(2) }
-    var b: counter = counter { i: i64(0), n: i64(2) }
+    var a: counter = counter { i: 0, n: 2 }
+    var b: counter = counter { i: 0, n: 2 }
     var ai: counter = a.iter()
     var bi: counter = b.iter()
     var steps: i64 = 0
-    while ai.next() { steps = steps + i64(1) }
-    while bi.next() { steps = steps + i64(1) }
+    while ai.next() { steps = steps + 1 }
+    while bi.next() { steps = steps + 1 }
     io::cout << "steps=" << steps << "\n"                     /* 期望 steps=4 */
 
     /* ④ 同一件事用 `for` 驱动（检查器把它改写成上面那个形状）—— 三条数字必须与 ① 逐字节相同 */
-    var c2: counter = counter { i: i64(0), n: i64(5) }
+    var c2: counter = counter { i: 0, n: 5 }
     var fsum: i64 = 0
     var fshown: i64 = 0
     for x in c2 {
         fsum = fsum + x
-        fshown = fshown + i64(1)
+        fshown = fshown + 1
     }
     io::cout << "for:sum=" << fsum << " shown=" << fshown << "\n"
 
-    var empty2: counter = counter { i: i64(0), n: i64(0) }
+    var empty2: counter = counter { i: 0, n: 0 }
     var fhits: i64 = 0
-    for x in empty2 { fhits = fhits + i64(1) }
+    for x in empty2 { fhits = fhits + 1 }
     io::cout << "for:empty=" << fhits << "\n"
 
-    var a2: counter = counter { i: i64(0), n: i64(2) }
-    var b2: counter = counter { i: i64(0), n: i64(2) }
+    var a2: counter = counter { i: 0, n: 2 }
+    var b2: counter = counter { i: 0, n: 2 }
     var fsteps: i64 = 0
-    for x in a2 { fsteps = fsteps + i64(1) }
-    for x in b2 { fsteps = fsteps + i64(1) }
+    for x in a2 { fsteps = fsteps + 1 }
+    for x in b2 { fsteps = fsteps + 1 }
     io::cout << "for:steps=" << fsteps << "\n"
 
     /* ⑤ subject 是**字段**、以及**解引用**：两种形状都要与手写 while 版数字相同 */
-    var h: holder = holder { c: counter { i: i64(0), n: i64(3) } }
+    var h: holder = holder { c: counter { i: 0, n: 3 } }
     var hit: counter = h.c.iter()
     var wfield: i64 = 0
     while hit.next() { wfield = wfield + hit.value() }

@@ -10,7 +10,7 @@ struct api { take: fn(?ref u8, i64) -> i64 effects Addr=0 Cont=0
 fn give(a: api) {
     var tmp: [64]u8
     tmp[0] = u8(0x11)
-    a.take(tmp[..].data, i64(64))
+    a.take(tmp[..].data, 64)
 }
 
 fn main() -> i32 {

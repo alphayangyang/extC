@@ -4,16 +4,16 @@ use std::io
 use stl::map
 
 fn main() -> i32 {
-    var m: map<i64, i32> = map<i64, i32>::withCap(i64(16))
-    m.put(i64(1), i32(10))
-    m.put(i64(2), i32(20))
-    var a: i32 = m[i64(1)] ?? i32(-1)
-    var n: i32 = m[i64(9)] ?? i32(-1)
-    m[i64(3)] = i32(30)
+    var m: map<i64, i32> = map<i64, i32>::withCap(16)
+    m.put(1, i32(10))
+    m.put(2, i32(20))
+    var a: i32 = m[1] ?? i32(-1)
+    var n: i32 = m[9] ?? i32(-1)
+    m[3] = i32(30)
     var nl: i64 = m.len()
-    m[i64(1)] = i32(11)
-    var u: i32 = m[i64(1)] ?? i32(-1)
-    var miss: i32 = m[i64(7)] ?? i32(-9)
+    m[1] = i32(11)
+    var u: i32 = m[1] ?? i32(-1)
+    var miss: i32 = m[7] ?? i32(-9)
     io::cout << "a=" << i64(a) << " none=" << i64(n) << " newLen=" << nl
     io::cout << " upd=" << i64(u) << " updLen=" << m.len() << " missing=" << i64(miss) << "\n"
     return 0

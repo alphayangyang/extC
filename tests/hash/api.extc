@@ -14,9 +14,9 @@ fn main() -> i32 {
     if !sha256::sum("abc", out32[..]) { return 1 }
     if sha256::sum("abc", small31[..]) { return 2 }        /* 31 < 32 ⇒ false */
     if sha1::sum("abc", small19[..]) { return 3 }          /* 19 < 20 ⇒ false */
-    if sha256::hex(out32[..], hx[..]) != i64(64) { return 4 }
-    if sha256::hex(out32[..], six[..]) != i64(-1) { return 5 }
-    if sha1::hex(out20[..], hx[..]) != i64(40) { return 6 }
+    if sha256::hex(out32[..], hx[..]) != 64 { return 4 }
+    if sha256::hex(out32[..], six[..]) != -1 { return 5 }
+    if sha1::hex(out20[..], hx[..]) != 40 { return 6 }
     io::cout << "api ok\n"
     return 0
 }

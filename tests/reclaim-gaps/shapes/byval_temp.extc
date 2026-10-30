@@ -36,7 +36,7 @@ fn mk(k: i64) -> wrap {
 fn take(w: wrap) -> i64 {
     var q: ?mut ref node = w.n
     if q != null { return (*q).v }
-    return i64(-1)
+    return -1
 }
 
 fn main(args: slice<slice<u8>>) -> i32 {

@@ -15,7 +15,7 @@ struct node { val: i64  next: ?ref node }
 fn count(p: ?ref node) -> i64 {
     var q = p                       /* ← 该省：本函数（含被调者）不会销账 */
     if q == null { return 0 }
-    return i64(1) + count((*q).next)
+    return 1 + count((*q).next)
 }
 
 fn main() -> i32 {

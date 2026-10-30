@@ -3,13 +3,13 @@
 struct readOnly {
     v: i64
     fn [](self: ref readOnly, k: i64) -> ?i64 {
-        if k == i64(0) { return some(self.v) }
+        if k == 0 { return some(self.v) }
         return none
     }
 }
 
 fn main() -> i32 {
-    var r: readOnly = { v: i64(1) }
-    r[i64(0)] = i64(2)
+    var r: readOnly = { v: 1 }
+    r[0] = 2
     return 0
 }

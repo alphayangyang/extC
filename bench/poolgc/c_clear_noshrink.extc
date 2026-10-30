@@ -4,16 +4,16 @@ use stl::vector
 fn main() -> i32 {
     var v = vector<i64>::new()
     var i: i64 = 0
-    while i < i64(1000000) {
+    while i < 1000000 {
         v.push(i)
-        i = i + i64(1)
+        i = i + 1
     }
     v.clear()
     var acc: i64 = 0
     var k: i64 = 0
-    while k < i64(120000000) {
-        acc = acc + k % i64(7)
-        k = k + i64(1)
+    while k < 120000000 {
+        acc = acc + k % 7
+        k = k + 1
     }
     io::cout << "n=" << v.len() << " cap=" << v.capacity() << " acc=" << acc << "\n"
     return 0

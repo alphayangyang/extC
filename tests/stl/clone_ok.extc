@@ -5,7 +5,7 @@ use stl::vector
 
 /* 返回刚建好的值 ⇒ 移交，没有第二份 */
 fn make() -> vector<i32> {
-    var v: vector<i32> = vector<i32>::withCap(i64(4))
+    var v: vector<i32> = vector<i32>::withCap(4)
     v.push(i32(7))
     return v
 }
@@ -14,7 +14,7 @@ fn main() -> i32 {
     var a = make()
     var b = a.clone()            /* 显式深拷贝 */
     b.push(i32(2))
-    var c: vector<i32> = vector<i32>::withCap(i64(4))
+    var c: vector<i32> = vector<i32>::withCap(4)
     c.push(i32(3))
     var d = c.clone()            /* 带标注的绑定也不是共享 */
     d.push(i32(4))

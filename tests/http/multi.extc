@@ -7,14 +7,14 @@ use std::http
 
 fn main(args: slice<slice<u8>>) -> i32 {
     var host: slice<u8> = args[1]
-    var port: i64 = i64(0)
+    var port: i64 = 0
     var ps: slice<u8> = args[2]
-    var k: i64 = i64(0)
-    while k < ps.len { port = port * i64(10) + (i64(ps[k]) - i64(48))  k = k + i64(1) }
+    var k: i64 = 0
+    while k < ps.len { port = port * 10 + (i64(ps[k]) - 48)  k = k + 1 }
 
-    var a: http::session = http::session::make(host, port, i64(5000))
-    var b: http::session = http::session::make(host, port, i64(5000))
-    var c: http::session = http::session::make(host, port, i64(5000))
+    var a: http::session = http::session::make(host, port, 5000)
+    var b: http::session = http::session::make(host, port, 5000)
+    var c: http::session = http::session::make(host, port, 5000)
     if !a.ok() || !b.ok() || !c.ok() { return 1 }
 
     /* 三条**交错**发（各自的缓冲 ✓，互不干扰 ✓）*/
@@ -27,9 +27,9 @@ fn main(args: slice<slice<u8>>) -> i32 {
         io::cout << "状态 " << ra.status << "/" << rb.status << "/" << rc.status << "\n"
         return 2
     }
-    if ra.body.len != i64(11) || ra.body != "plain text\n" { return 3 }
-    if rb.body.len != i64(58) || rb.body[..i64(9)] != "<!doctype" { return 4 }
-    if rc.body.len != i64(50) || rc.body[..i64(9)] != "<!doctype" { return 5 }
+    if ra.body.len != 11 || ra.body != "plain text\n" { return 3 }
+    if rb.body.len != 58 || rb.body[..i64(9)] != "<!doctype" { return 4 }
+    if rc.body.len != 50 || rc.body[..i64(9)] != "<!doctype" { return 5 }
     var ct: slice<u8> = ra.header("Content-Type")!
     io::cout << "三条 session 同时活着 ✓ 各自 " << ra.status << "/" << rb.status << "/" << rc.status << "，body 逐字节正确（11/58/50），ct=[" << ct << "]\n"
     return 0

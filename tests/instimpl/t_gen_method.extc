@@ -4,8 +4,8 @@ struct box { v: i64 }
 impl box { fn cast<U>(self: ref box, u: U) -> U { return u } }
 fn main() -> i32 {
   var b: box
-  b.v = i64(1)
+  b.v = 1
   var s: slice<u8> = "hi"
-  io::cout << b.cast(i64(5)) << " " << b.cast(s.len) << "\n"
+  io::cout << b.cast(5) << " " << b.cast(s.len) << "\n"
   return 0
 }

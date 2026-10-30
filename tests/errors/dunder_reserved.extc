@@ -4,4 +4,4 @@
 // 从根上消失。语言层面禁掉用户使用它，比事后逐个比对可靠得多。
 // expect: reserved for the compiler
 fn __helper(x: i64) -> i64 { return x }
-fn main() -> i32 { return i32(__helper(i64(1))) }
+fn main() -> i32 { return i32(__helper(1)) }

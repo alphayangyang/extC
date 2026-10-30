@@ -6,10 +6,10 @@ trait Tag { fn tag(self: ref Self) -> i64 }
 struct box { v: i64 }
 impl Tag for box { fn tag(self: ref box) -> i64 { return self.v } }
 
-fn sink(d: dyn Tag) -> i64 { return i64(0) }
+fn sink(d: dyn Tag) -> i64 { return 0 }
 
 fn main() -> i32 {
-    let d: dyn Tag = dyn Tag(box { v: i64(42) })
+    let d: dyn Tag = dyn Tag(box { v: 42 })
     io::cout << "stored=" << sink(d) << "\n"
     return 0
 }

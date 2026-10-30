@@ -3,13 +3,13 @@ use std::io
 use stl::vector
 
 fn main() -> i32 {
-    var v = vector<i64>::withCap(i64(1024))
+    var v = vector<i64>::withCap(1024)
     var i: i64 = 0
-    while i < i64(100000) {
+    while i < 100000 {
         v.clear()
         var k: i64 = 0
-        while k < i64(200) { v.push(k)  k = k + i64(1) }
-        i = i + i64(1)
+        while k < 200 { v.push(k)  k = k + 1 }
+        i = i + 1
     }
     io::cout << "len=" << v.len() << " cap=" << v.capacity() << "\n"
     return 0

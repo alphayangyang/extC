@@ -11,8 +11,8 @@ fn task(n: i64, tag: i64) -> coroutine<i64> {
 fn main() -> i32 {
   let d = domain::single()
   d.run {
-    ext task(i64(2), i64(1))
-    ext task(i64(3), i64(2))
+    ext task(2, 1)
+    ext task(3, 2)
   }
   io::cout << "done\n"
   return 0 }

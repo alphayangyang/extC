@@ -13,40 +13,40 @@ use std::io
 use std::sys::pool as syspool
 
 fn toInt(s: slice<u8>, dflt: i64) -> i64 {
-    if s.len == i64(0) { return dflt }
+    if s.len == 0 { return dflt }
     var v: i64 = 0
     var i: i64 = 0
     while i < s.len {
         let b = i64(s[i])
-        if b < i64(48) || b > i64(57) { return dflt }
-        v = v * i64(10) + (b - i64(48))
-        i = i + i64(1)
+        if b < 48 || b > 57 { return dflt }
+        v = v * 10 + (b - 48)
+        i = i + 1
     }
     return v
 }
 
 fn main(args: slice<slice<u8>>) -> i32 {
-    var n: i64 = i64(1000)
-    if args.len > i64(1) { n = toInt(args[1], n) }
-    var total: i64 = i64(1000000)
-    if args.len > i64(2) { total = toInt(args[2], total) }
+    var n: i64 = 1000
+    if args.len > 1 { n = toInt(args[1], n) }
+    var total: i64 = 1000000
+    if args.len > 2 { total = toInt(args[2], total) }
     var rounds: i64 = total / n
-    if rounds < i64(1) { rounds = i64(1) }
+    if rounds < 1 { rounds = 1 }
     var sink: i64 = 0
     var r: i64 = 0
     while r < rounds {
         var i: i64 = 0
         while i < n {
-            let rid = syspool::extc_pool_new(i64(-1))
+            let rid = syspool::extc_pool_new(-1)
             var s: mut slice<i32> = poolSlice<i32>(rid, 8)
             s[0] = i32(1)
             var k: i64 = 0
-            while k < n { sink = sink + k   k = k + i64(1) }
-            i = i + i64(1)
+            while k < n { sink = sink + k   k = k + 1 }
+            i = i + 1
         }
-        r = r + i64(1)
+        r = r + 1
     }
-    if sink < i64(0) { return 1 }
+    if sink < 0 { return 1 }
     io::cout << "n=" << n << " ops=" << (n * rounds) << " live=" << syspool::extc_pool_live() << "\n"
     return 0
 }

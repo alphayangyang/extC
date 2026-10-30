@@ -2,7 +2,7 @@
 use std::io
 
 fn main() -> i32 {
-    let n: i64 = i64(8)
+    let n: i64 = 8
     let k: f64 = 3.0
     let base: f64 = 1.0
     let bias: i64 = 2

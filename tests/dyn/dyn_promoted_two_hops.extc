@@ -21,7 +21,7 @@ fn mid(v: i64) -> dyn Tag {
 }
 
 fn main() -> i32 {
-    let d: dyn Tag = mid(i64(88))
+    let d: dyn Tag = mid(88)
     io::cout << "two=" << d.tag() << "\n"
     return 0
 }

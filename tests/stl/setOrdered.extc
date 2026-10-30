@@ -4,36 +4,36 @@ use std::io
 use stl::set
 
 fn main() -> i32 {
-    var s: set<i64> = set<i64>::withCap(i64(4))
-    s.put(i64(4))
-    s.put(i64(1))
-    s.put(i64(5))
-    s.put(i64(2))
-    s.put(i64(3))
+    var s: set<i64> = set<i64>::withCap(4)
+    s.put(4)
+    s.put(1)
+    s.put(5)
+    s.put(2)
+    s.put(3)
     io::cout << "order="
-    var i: i64 = i64(0)
+    var i: i64 = 0
     while i < s.len() {
-        if i > i64(0) { io::cout << "," }
+        if i > 0 { io::cout << "," }
         io::cout << s.at(i)
-        i = i + i64(1)
+        i = i + 1
     }
     io::cout << " len=" << s.len()
-    var dup: i64 = i64(0)
-    if s.put(i64(3)) { dup = i64(1) }
+    var dup: i64 = 0
+    if s.put(3) { dup = 1 }
     io::cout << " dup=" << dup
-    var has3: i64 = i64(0)
-    if s.contains(i64(3)) { has3 = i64(1) }
+    var has3: i64 = 0
+    if s.contains(3) { has3 = 1 }
     io::cout << " has3=" << has3
-    io::cout << " lb3=" << s.lowerBound(i64(3)) << " lb6=" << s.lowerBound(i64(6))
-    var rm: i64 = i64(0)
-    if s.remove(i64(3)) { rm = i64(1) }
+    io::cout << " lb3=" << s.lowerBound(3) << " lb6=" << s.lowerBound(6)
+    var rm: i64 = 0
+    if s.remove(3) { rm = 1 }
     io::cout << " rm=" << rm << " after="
-    i = i64(0)
+    i = 0
     while i < s.len() {
-        if i > i64(0) { io::cout << "," }
+        if i > 0 { io::cout << "," }
         io::cout << s.at(i)
-        i = i + i64(1)
+        i = i + 1
     }
-    io::cout << " lb4=" << s.lowerBound(i64(4)) << "\n"
+    io::cout << " lb4=" << s.lowerBound(4) << "\n"
     return 0
 }

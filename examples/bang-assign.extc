@@ -13,7 +13,7 @@ fn pick(n: ?mut ref node) -> ?mut ref node {
 
 fn main() -> i32 {
     var n: node = node { value: 1 }
-    pick(ref n)!.value = i64(5)
+    pick(ref n)!.value = 5
     io::cout << "v=" << n.value << "\n"
     return 0
 }

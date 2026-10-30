@@ -22,11 +22,11 @@ fn writeFile(n: i64) {
 
 fn main(args: slice<slice<u8>>) -> i32 {
     if args.len < 3 { println("用法: out <文件|-> <n>"); return 2 }
-    var n: i64 = i64(0)
+    var n: i64 = 0
     /* 参数文本 → 整数：用 fs 的流式读法读一个 `slice<u8>`？这里简单手写 ✓ */
     var k: i64 = 0
     while k < args[2].len {
-        n = n * i64(10) + i64(args[2][k] - u8(48))
+        n = n * 10 + i64(args[2][k] - u8(48))
         k = k + 1
     }
     if args[1] == "-" {

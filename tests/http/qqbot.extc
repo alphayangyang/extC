@@ -10,12 +10,12 @@ fn arg(args: slice<slice<u8>>, i: i64) -> slice<u8> {
 }
 
 fn main(args: slice<slice<u8>>) -> i32 {
-    var port: i64 = i64(0)
+    var port: i64 = 0
     var ps: slice<u8> = arg(args, 1)
-    var k: i64 = i64(0)
-    while k < ps.len { port = port * i64(10) + (i64(ps[k]) - i64(48))  k = k + i64(1) }
+    var k: i64 = 0
+    while k < ps.len { port = port * 10 + (i64(ps[k]) - 48)  k = k + 1 }
     var c: http::conn                        /* `conn` 只有标量 ⇒ 可零初始化 ✓ */
-    match http::conn::open("127.0.0.1", port, i64(5000)) {
+    match http::conn::open("127.0.0.1", port, 5000) {
         none => { io::cout << "连不上\n"  return 1 }
         some(v) => { c = v }
     }
@@ -27,11 +27,11 @@ fn main(args: slice<slice<u8>>) -> i32 {
                                    json, out, buf)
     /* 假服务器把请求原样回显在 body 里 ⇒ 逐条验 ✓ */
     var b: slice<u8> = r.body
-    if http::findSub(b, i64(0), "POST /v2/users/123/messages HTTP/1.1") < i64(0) { return 2 }
-    if http::findSub(b, i64(0), "Authorization: Bot 1020xxxx") < i64(0) { return 3 }
-    if http::findSub(b, i64(0), "Content-Type: application/json") < i64(0) { return 4 }
-    if http::findSub(b, i64(0), "Content-Length: 33") < i64(0) { return 5 }
-    if http::findSub(b, i64(0), json) < i64(0) { return 6 }
+    if http::findSub(b, 0, "POST /v2/users/123/messages HTTP/1.1") < 0 { return 2 }
+    if http::findSub(b, 0, "Authorization: Bot 1020xxxx") < 0 { return 3 }
+    if http::findSub(b, 0, "Content-Type: application/json") < 0 { return 4 }
+    if http::findSub(b, 0, "Content-Length: 33") < 0 { return 5 }
+    if http::findSub(b, 0, json) < 0 { return 6 }
     c.close()
     io::cout << "QQBot 形状 ✓（POST + Authorization + JSON body " << json.len << " 字节）\n"
     return 0

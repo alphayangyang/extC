@@ -167,7 +167,7 @@ fn rope(v: mut slice<f32>, pos: i64, rcos: slice<f32>, rsin: slice<f32>, nhead: 
 /* 一次量化 GEMV：x 先量化成 q8_0（llama.cpp 的 mul_mat 对量化权重也这么干），再按行点积。 */
 fn gemv(be: ref ggml::backend, ty: i32, w: slice<u8>, x: slice<f32>, xq: mut slice<u8>,
         y: mut slice<f32>, m: i64, k: i64) {
-    be.quantize(8, x, i64(1), k, xq)
+    be.quantize(8, x, 1, k, xq)
     if ty == 2 { be.gemvQ4(w, xq, y, m, k) } else { be.gemvQ8(w, xq, y, m, k) }
 }
 

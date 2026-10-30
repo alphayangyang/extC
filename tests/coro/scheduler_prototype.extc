@@ -27,28 +27,28 @@ struct task {
 /* 推进一个任务一步；返回这一步的值，-1 表示已结束。
  * 里面的 `new` 的 zone 由**调用链**决定（今天如此）—— 这就是要测的那件事 ✓ */
 fn step(t: mut ref task) -> i64 {
-    if t.pc >= t.n { return i64(-1) }
+    if t.pc >= t.n { return -1 }
     var scratch: mut slice<i64> = new i64[4]
     scratch[0] = i64(t.pc) * t.step10
     t.sum = t.sum + scratch[0]
-    t.pc = t.pc + i64(1)
+    t.pc = t.pc + 1
     return scratch[0]
 }
 
 fn main() -> i32 {
     /* 两份帧：住在 main 的帧里（今天没有 spawn ⇒ 由写作者摆在这儿）✓ */
-    var t0: task = task { pc: i64(0), n: i64(3), sum: i64(0), step10: i64(10) }
-    var t1: task = task { pc: i64(0), n: i64(3), sum: i64(0), step10: i64(11) }
+    var t0: task = task { pc: 0, n: 3, sum: 0, step10: 10 }
+    var t1: task = task { pc: 0, n: 3, sum: 0, step10: 11 }
 
     io::cout << "t0="
     var a: i64 = step(ref t0)
-    while a >= i64(0) {
+    while a >= 0 {
         io::cout << a << ","
         var b: i64 = step(ref t1)
-        if b >= i64(0) { io::cout << b << "," }
+        if b >= 0 { io::cout << b << "," }
         a = step(ref t0)
     }
-    while step(ref t1) >= i64(0) { }
+    while step(ref t1) >= 0 { }
     io::cout << " sum0=" << t0.sum << " sum1=" << t1.sum << "\n"
     return 0
 }

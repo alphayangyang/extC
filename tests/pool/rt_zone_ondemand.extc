@@ -22,36 +22,36 @@ fn main() -> i32 {
     var k: i64 = 0
     while k < n {
         a[k] = i32(k + 1)
-        k = k + i64(1)
+        k = k + 1
     }
     /* 两条循环：体内只读元素，不建池 ⇒ 都不该有 zone 钩子 */
     var i: i64 = 0
     var s1: i64 = 0
     while i < n {
         s1 = s1 + i64(a.get(i))
-        i = i + i64(1)
+        i = i + 1
     }
-    i = i64(0)
+    i = 0
     var s2: i64 = 0
     while i < n {
         s2 = s2 + i64(a.get(i))
-        i = i + i64(1)
+        i = i + 1
     }
     /* 第三条：**泛型容器的方法**（体内有 `k.hash()` 这类推迟解析的协议方法）。
      * 这一条是 2026-09-26 加上的 —— 前两条盖不到它，所以"钩子发多了"曾经长期看不见。 */
     var m: hashMapI64<i32> = hashMapI64<i32>::withCap(n)
-    i = i64(0)
+    i = 0
     var s3: i64 = 0
     while i < n {
         m.put(i, i32(i))
         s3 = s3 + i64(m.get(i) ?? i32(0))
-        if m.remove(i) { s3 = s3 + i64(1) }
-        i = i + i64(1)
+        if m.remove(i) { s3 = s3 + 1 }
+        i = i + 1
     }
     var d: i64 = 0
     {
         /* 这个块自己建池 ⇒ 这一层必须有 zone 钩子 */
-        let r = pool::extc_pool_new(i64(-1))
+        let r = pool::extc_pool_new(-1)
         let c = pool::extc_pool_new(r)
         d = d + pool::extc_pool_live()
         pool::extc_pool_drop(r)

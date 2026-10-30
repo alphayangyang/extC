@@ -12,20 +12,20 @@
 use std::io
 
 fn main() -> i32 {
-    var a: varArray<i32> = varArray<i32>::withCap(i64(2))
+    var a: varArray<i32> = varArray<i32>::withCap(2)
     a.push(i32(11))
     a.push(i32(22))
 
     var m: mut slice<i32> = a.asMutSlice()     /* 可写视图，指着当前那块 */
-    m[i64(0)] = i32(77)                        /* 未扩容：写的是**容器正在用的**那块 ⇒ 生效 */
-    let landed: i32 = a.asSlice()[i64(0)]
+    m[0] = i32(77)                        /* 未扩容：写的是**容器正在用的**那块 ⇒ 生效 */
+    let landed: i32 = a.asSlice()[0]
 
     a.push(i32(33))                            /* 触发扩容：换块，旧块留在 arena 里但不再属于容器 */
-    m[i64(1)] = i32(88)                        /* 写进**已作废**的旧块 ⇒ 静默丢 */
+    m[1] = i32(88)                        /* 写进**已作废**的旧块 ⇒ 静默丢 */
 
     io::cout << "landed=" << i64(landed)
-    io::cout << " live0=" << i64(a.asSlice()[i64(0)]) << " live1=" << i64(a.asSlice()[i64(1)])
-    io::cout << " stale=" << i64(m[i64(0)]) << "," << i64(m[i64(1)])
+    io::cout << " live0=" << i64(a.asSlice()[0]) << " live1=" << i64(a.asSlice()[1])
+    io::cout << " stale=" << i64(m[0]) << "," << i64(m[1])
     io::cout << " alen=" << a.size() << "\n"
     return 0
 }

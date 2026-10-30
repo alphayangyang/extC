@@ -13,16 +13,16 @@ struct out {
     n: i64
     fn <<(self: ref out, v: i64) -> out {
         print("[i64 ", v, "] ")
-        return { n: self.n + i64(1) }
+        return { n: self.n + 1 }
     }
     fn <<(self: ref out, v: slice<u8>) -> out {
         print(v)
-        return { n: self.n + i64(1) }
+        return { n: self.n + 1 }
     }
 }
 
 fn main() -> i32 {
-    var cout: out = { n: i64(0) }
+    var cout: out = { n: 0 }
     var r = cout << "x = " << i64(42) << " · " << i64(7) << "\n"
     println("一共调了 ", r.n, " 次 <<")
     return 0

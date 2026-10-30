@@ -10,10 +10,10 @@ struct counter {
     @private seen: i64
     label: i64
 
-    fn bump(self: mut ref counter) -> i64 { self.seen = self.seen + i64(1)  return self.seen }
-    @private fn zero(self: ref counter) -> i64 { return self.seen * i64(0) }
+    fn bump(self: mut ref counter) -> i64 { self.seen = self.seen + 1  return self.seen }
+    @private fn zero(self: ref counter) -> i64 { return self.seen * 0 }
     fn total(self: ref counter) -> i64 { return self.seen + self.zero() }
 }
 
-fn make(start: i64) -> counter { return counter { seen: start  label: i64(7) } }
-fn probe() -> i64 { var c: counter = make(i64(5))  c.bump()  return c.total() + c.label }
+fn make(start: i64) -> counter { return counter { seen: start  label: 7 } }
+fn probe() -> i64 { var c: counter = make(5)  c.bump()  return c.total() + c.label }

@@ -169,36 +169,36 @@ fn main() -> i32 {
     var midBand: i64 = 0
     var i: i64 = 0
     while i < i64(W) * i64(H) {
-        var o: i64 = i * i64(4)
+        var o: i64 = i * 4
         var b: i64 = i64(px[o])
         var g: i64 = i64(px[o + 1])
         var rd: i64 = i64(px[o + 2])
-        var isGreen: bool = rd > i64(30) && rd < i64(95) && g > i64(185) && g < i64(245) &&
-                           b > i64(95) && b < i64(170)
-        var isWhite: bool = rd > i64(200) && g > i64(200) && b > i64(200)
+        var isGreen: bool = rd > 30 && rd < 95 && g > 185 && g < 245 &&
+                           b > 95 && b < 170
+        var isWhite: bool = rd > 200 && g > 200 && b > 200
         if isGreen { green = green + 1 }
         if isWhite { white = white + 1 }
         if isGreen || isWhite { different = different + 1 }
         var y: i64 = i / i64(W)
         var x: i64 = i - y * i64(W)
         if isGreen {
-            if y >= i64(20) && y <= i64(32) { topEdge = topEdge + 1 }
-            if y >= i64(480) && y <= i64(492) { bottomEdge = bottomEdge + 1 }
-            if x >= i64(20) && x <= i64(32) { leftEdge = leftEdge + 1 }
-            if x >= i64(480) && x <= i64(492) { rightEdge = rightEdge + 1 }
+            if y >= 20 && y <= 32 { topEdge = topEdge + 1 }
+            if y >= 480 && y <= 492 { bottomEdge = bottomEdge + 1 }
+            if x >= 20 && x <= 32 { leftEdge = leftEdge + 1 }
+            if x >= 480 && x <= 492 { rightEdge = rightEdge + 1 }
         }
-        if isWhite && y >= i64(240) && y <= i64(310) { midBand = midBand + 1 }
+        if isWhite && y >= 240 && y <= 310 { midBand = midBand + 1 }
         i = i + 1
     }
     io::cout << " green=" << green << " white=" << white
     var edges: i64 = 0
-    if topEdge > i64(100) { edges = edges + 1000 }
-    if bottomEdge > i64(100) { edges = edges + 100 }
-    if leftEdge > i64(100) { edges = edges + 10 }
-    if rightEdge > i64(100) { edges = edges + 1 }
+    if topEdge > 100 { edges = edges + 1000 }
+    if bottomEdge > 100 { edges = edges + 100 }
+    if leftEdge > 100 { edges = edges + 10 }
+    if rightEdge > 100 { edges = edges + 1 }
     io::cout << " edges=" << edges
-    if different > i64(1000) { io::cout << " drawn=1" } else { io::cout << " drawn=0" }
-    if midBand > i64(200) { io::cout << " center=ok" } else { io::cout << " center=thin" }
+    if different > 1000 { io::cout << " drawn=1" } else { io::cout << " drawn=0" }
+    if midBand > 200 { io::cout << " center=ok" } else { io::cout << " center=thin" }
 
     c.destroy(r)
     c.surface_destroy(surf)

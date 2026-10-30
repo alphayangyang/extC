@@ -1,5 +1,5 @@
 use std::io
 fn main() -> i32 {
-  var f = fn(x: i64) -> i64 { return x * i64(2) }
-  io::cout << f(i64(21)) << "\n"
+  var f = fn(x: i64) -> i64 { return x * 2 }
+  io::cout << f(21) << "\n"
   return 0 }

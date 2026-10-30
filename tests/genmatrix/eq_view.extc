@@ -20,7 +20,7 @@ fn main() -> i32 {
     var b: slice<u8> = "y"
     var c: slice<u8> = "x"
     println("视图 eq = ", same(a, c), " ne = ", differ(a, b),
-            " · 数值 eq = ", same(i64(3), i64(3)), " ne = ", differ(i64(3), i64(4)))
+            " · 数值 eq = ", same(3, 3), " ne = ", differ(3, 4))
     return 0
 }
 // expect: 视图 eq = true ne = true · 数值 eq = true ne = true

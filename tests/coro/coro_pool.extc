@@ -15,7 +15,7 @@ fn g(n: i64) -> coroutine<i64> {
 }
 
 fn main() -> i32 {
-    var c = g(i64(3))
+    var c = g(3)
     var n: i64 = 0
     while c.next() { n = n + c.value() }
     return i32(n)

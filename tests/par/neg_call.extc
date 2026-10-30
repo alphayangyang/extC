@@ -4,7 +4,7 @@ use std::io
 fn work(x: f64) -> f64 { return x * 2.0 }
 
 fn main() -> i32 {
-    let n: i64 = i64(16)
+    let n: i64 = 16
     var a: mut slice<f64> = new f64[n]
     var b: mut slice<f64> = new f64[n]
     par i in 0..n { b[i] = work(a[i]) }

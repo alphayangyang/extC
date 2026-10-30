@@ -42,13 +42,13 @@ fn main() -> i32 {
     c20.init()
     var chunk: mut slice<u8> = new u8[997]
     var i: i64 = 0
-    while i < i64(997) {
+    while i < 997 {
         chunk[i] = u8(97)
         i = i + 1
     }
-    var left: i64 = i64(1000000)
-    while left > i64(0) {
-        var n: i64 = i64(997)
+    var left: i64 = 1000000
+    while left > 0 {
+        var n: i64 = 997
         if left < n { n = left }              /* 最后一片按剩下的喂，别越界 */
         c32.update(chunk[0..n])
         c20.update(chunk[0..n])

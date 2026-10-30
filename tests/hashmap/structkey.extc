@@ -6,19 +6,19 @@ use stl::hashMap
 struct pt {
     x: i64
     y: i64
-    fn hash(self: ref pt) -> i64 { return self.x * i64(31) + self.y }
+    fn hash(self: ref pt) -> i64 { return self.x * 31 + self.y }
     fn ==(self: ref pt, o: pt) -> bool { return self.x == o.x && self.y == o.y }
 }
 
 fn main() -> i32 {
-    var m: hashMap<pt, i32> = hashMap<pt, i32>::withCap(i64(8))
-    var a: pt = { x: i64(2), y: i64(3) }
-    var b: pt = { x: i64(4), y: i64(5) }
+    var m: hashMap<pt, i32> = hashMap<pt, i32>::withCap(8)
+    var a: pt = { x: 2, y: 3 }
+    var b: pt = { x: 4, y: 5 }
     m.put(a, i32(11))
     m.put(b, i32(22))
     var g: i32 = m.get(a) ?? i32(-1)
     var h: i32 = m.get(b) ?? i32(-1)
-    var miss: i32 = m.get(pt { x: i64(9), y: i64(9) }) ?? i32(-7)
+    var miss: i32 = m.get(pt { x: 9, y: 9 }) ?? i32(-7)
     io::cout << "a=" << i64(g) << " b=" << i64(h) << " miss=" << i64(miss) << " len=" << m.len()
     m.remove(a)
     var after: i32 = m.get(a) ?? i32(-1)

@@ -3,13 +3,13 @@ use std::io
 use stl::linmap
 
 fn main() -> i32 {
-    var m: linMap<i64, slice<u8>> = linMap<i64, slice<u8>>::withCap(i64(4))
-    m.put(i64(1), "one")
-    let a = m[i64(1)] ?? "?"
-    let b = m[i64(9)] ?? "?"
-    m[i64(2)] = "two"
+    var m: linMap<i64, slice<u8>> = linMap<i64, slice<u8>>::withCap(4)
+    m.put(1, "one")
+    let a = m[1] ?? "?"
+    let b = m[9] ?? "?"
+    m[2] = "two"
     var nl: i64 = m.len()
-    m[i64(1)] = "ONE"
-    io::cout << "k=" << a << " none=" << b << " newLen=" << nl << " upd=" << (m[i64(1)] ?? "?") << "\n"
+    m[1] = "ONE"
+    io::cout << "k=" << a << " none=" << b << " newLen=" << nl << " upd=" << (m[1] ?? "?") << "\n"
     return 0
 }

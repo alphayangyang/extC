@@ -10,12 +10,12 @@ use std::sys::pool
 fn main() -> i32 {
     var total: i64 = 0
     var i: i64 = 0
-    while i < i64(3) {
+    while i < 3 {
         /* 循环体自己建池：整区在出块时一起走，所以每轮都从 0 开始涨到 1 */
-        let r = pool::extc_pool_new(i64(-1))
+        let r = pool::extc_pool_new(-1)
         let c = pool::extc_pool_new(r)
         total = total + pool::extc_pool_live()
-        i = i + i64(1)
+        i = i + 1
     }
     io::cout << "total=" << total << " live=" << pool::extc_pool_live() << " depth=" << pool::extc_pool_zoneDepth() << "\n"
     return 0

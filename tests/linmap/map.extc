@@ -5,18 +5,18 @@
 use stl::linmap
 
 fn main() -> i32 {
-    var m: linMap<i64, slice<u8>> = linMap<i64, slice<u8>>::withCap(i64(2))
-    m.put(i64(1), "one")
-    m.put(i64(2), "two")
-    m.put(i64(1), "ONE")                                     /* 覆盖 */
-    let overwrite = m.get(i64(1)) ?? "?"
-    let missing   = m.get(i64(9)) ?? "missing"               /* 缺失 ⇒ none */
-    m.remove(i64(1))                                         /* swap-remove */
-    let gone = !m.contains(i64(1))
+    var m: linMap<i64, slice<u8>> = linMap<i64, slice<u8>>::withCap(2)
+    m.put(1, "one")
+    m.put(2, "two")
+    m.put(1, "ONE")                                     /* 覆盖 */
+    let overwrite = m.get(1) ?? "?"
+    let missing   = m.get(9) ?? "missing"               /* 缺失 ⇒ none */
+    m.remove(1)                                         /* swap-remove */
+    let gone = !m.contains(1)
     var k: i64 = 0
-    while k < i64(40) { m.put(k, "v")  k = k + i64(1) }       /* 三次扩容 */
+    while k < 40 { m.put(k, "v")  k = k + 1 }       /* 三次扩容 */
     println("覆盖/缺失/删除/扩容 全对：len=", m.len(), " cap=", m.capOf(),
-            " get(39)=", m.get(i64(39)) ?? "?", " contains(1)=", m.contains(i64(1)),
+            " get(39)=", m.get(39) ?? "?", " contains(1)=", m.contains(1),
             " （overwrite=", overwrite, " missing=", missing, " gone=", gone, "）")
     return 0
 }

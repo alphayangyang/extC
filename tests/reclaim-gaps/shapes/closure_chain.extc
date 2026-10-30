@@ -39,7 +39,7 @@ fn main(args: slice<slice<u8>>) -> i32 {
             return x
         }
         var outer = fn(x: i64) -> i64 { return inner(x) }
-        sink = sink + outer(i64(1))
+        sink = sink + outer(1)
         i = i + 1
     }
     io::cout << "n=" << n << " sink=" << sink << "\n"

@@ -17,7 +17,7 @@ extern!("libc") fn munmap(p: ref void, n: u64) -> i32
     effects Addr=0 Cont=0
 
 /* 收 `ref void` 的 extC 函数：`ref u8`（只读）、`mut ref i64`（可写）、`ref void` 三种来源都能进。 */
-fn anyOf(p: ref void) -> i64 { return i64(1) }
+fn anyOf(p: ref void) -> i64 { return 1 }
 
 fn main() -> i32 {
     /* PROT_NONE 先保留，再显式给 RW（commit），最后收掉 —— 第 ③ 块那块板的三个动作。 */
@@ -36,7 +36,7 @@ fn main() -> i32 {
     var a: [4]u8 = [1, 2, 3, 4]
     var s: slice<u8> = a[..]
     var x: i64 = 5
-    if anyOf(s.data) + anyOf(ref x) + anyOf(p) != i64(3) {
+    if anyOf(s.data) + anyOf(ref x) + anyOf(p) != 3 {
         io::cout << "erase=fail\n"
         return 1
     }

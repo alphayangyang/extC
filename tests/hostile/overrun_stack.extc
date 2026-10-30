@@ -12,9 +12,9 @@ fn main() -> i32 {
     var h: ?ref void = dl::open("build/hostile-overrun.so")!
     var a: api = api { ctx: null, scribble: fn(?ref u8, i64) -> i64(dl::sym(h, "scribble")!) }
     var b: box
-    b.canary = i64(123456789)
+    b.canary = 123456789
     var s: slice<u8> = b.buf[..]
-    a.scribble(s.data, i64(128))
+    a.scribble(s.data, 128)
     if b.canary == 123456789 { io::cout << "stack-canary=intact\n" } else { io::cout << "stack-canary=smashed\n" }
     dl::close(h)
     return 0

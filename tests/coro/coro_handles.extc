@@ -25,11 +25,11 @@ fn drain(h: mut ref coroutine<i64>) -> i64 {
 }
 
 fn main() -> i32 {
-    var h1: coroutine<i64> = worker(i64(3), i64(0))
-    var h2: coroutine<i64> = worker(i64(3), i64(10))
-    var h3: coroutine<i64> = worker(i64(3), i64(20))
-    var v: vector<coroutine<i64>> = vector<coroutine<i64>>::withCap(i64(3))
-    v.push(worker(i64(3), i64(30)))
+    var h1: coroutine<i64> = worker(3, 0)
+    var h2: coroutine<i64> = worker(3, 10)
+    var h3: coroutine<i64> = worker(3, 20)
+    var v: vector<coroutine<i64>> = vector<coroutine<i64>>::withCap(3)
+    v.push(worker(3, 30))
     var sum: i64 = drain(ref h1) + drain(ref h2) + drain(ref h3)
-    return i32(sum / i64(9))
+    return i32(sum / 9)
 }

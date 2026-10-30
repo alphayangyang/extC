@@ -13,6 +13,6 @@ fn mk() -> s {
 }
 
 fn main() -> i32 {
-    mk().x = i64(9)
+    mk().x = 9
     return 0
 }

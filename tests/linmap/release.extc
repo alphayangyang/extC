@@ -5,14 +5,14 @@ use std::sys::pool as syspool
 use stl::linmap
 
 fn main() -> i32 {
-    var m = linMap<i64, i32>::withCap(i64(8))
+    var m = linMap<i64, i32>::withCap(8)
     io::cout << "cap0=" << m.capOf()
     var i: i64 = 0
-    while i < i64(100) {
+    while i < 100 {
         m.put(i, i32(i))
-        i = i + i64(1)
+        i = i + 1
     }
-    io::cout << " key83=" << i64(m.get(i64(83)) ?? i32(-1)) << " cap=" << m.capOf()
+    io::cout << " key83=" << i64(m.get(83) ?? i32(-1)) << " cap=" << m.capOf()
     m.release()
     io::cout << " after=" << m.capOf() << " live=" << syspool::extc_pool_live() << "\n"
     return 0

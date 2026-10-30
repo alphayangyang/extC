@@ -8,10 +8,10 @@ struct pt { x: i64
     fn ==(self: ref pt, o: ref pt) -> bool { return self.x == o.x }
 }
 fn main() -> i32 {
-    var p: pair<i64, slice<u8>> = { a: i64(7), b: "hi" }
-    var q: pair<i64, slice<u8>> = { a: i64(7), b: "yo" }
-    var m: pair<pt, i64> = { a: pt { x: 5 }, b: i64(9) }
-    var n: pair<pt, i64> = { a: pt { x: 5 }, b: i64(1) }
+    var p: pair<i64, slice<u8>> = { a: 7, b: "hi" }
+    var q: pair<i64, slice<u8>> = { a: 7, b: "yo" }
+    var m: pair<pt, i64> = { a: pt { x: 5 }, b: 9 }
+    var n: pair<pt, i64> = { a: pt { x: 5 }, b: 1 }
     var w: pair<f64, bool> = { a: 1.5, b: true }
     println("i64+text sameA = ", p.sameA(ref q))
     println("pt+i64 sameA = ", m.sameA(ref n))

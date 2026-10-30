@@ -28,7 +28,7 @@ fn parseI64(s: slice<u8>) -> i64 {
 fn main(args: slice<slice<u8>>) -> i32 {
     var n: i64 = parseI64(args[1])
     var keep: mut ref node = new node
-    keep.v = i64(0)
+    keep.v = 0
     keep.next = keep
     var i: i64 = 0
     while i < n {

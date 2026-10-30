@@ -18,12 +18,12 @@ fn adder(n: i64) -> coroutine<i64> {
 }
 
 fn main() -> i32 {
-    var c = adder(i64(3))
+    var c = adder(3)
     var seen: i64 = 0
     var r: bool = c.next()
     while r {
         seen = seen + c.value()
-        r = c.send(i64(7))
+        r = c.send(7)
     }
     return i32(seen + c.value())
 }

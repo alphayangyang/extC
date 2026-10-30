@@ -15,7 +15,7 @@ fn main() -> i32 {
                        useLater: fn() -> i64(dl::sym(h, "use_later")!) }
     var pl: heap::plate = heap::plate::open(heap::DEFAULT_RESERVE)!
     var v: mut slice<u8> = pl.alloc(u64(64))!
-    a.take(v.data, i64(64))
+    a.take(v.data, 64)
     pl.close()
     io::cout << "closed\n"
     io::flushCout()

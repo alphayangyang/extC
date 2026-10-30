@@ -27,7 +27,7 @@ fn parseI64(s: slice<u8>) -> i64 {
     var v: i64 = 0
     var i: i64 = 0
     while i < s.len {
-        v = v * i64(10) + i64(s[i]) - i64(48)
+        v = v * 10 + i64(s[i]) - 48
         i = i + 1
     }
     return v
@@ -59,8 +59,8 @@ fn mul(a: slice<f64>, b: slice<f64>, c: mut slice<f64>, n: i64) {
 }
 
 fn main(args: slice<slice<u8>>) -> i32 {
-    var n: i64 = argOr(args, i64(1), i64(256))
-    var reps: i64 = argOr(args, i64(2), i64(3))
+    var n: i64 = argOr(args, 1, 256)
+    var reps: i64 = argOr(args, 2, 3)
     /* 裸算三块矩阵用 **arena**（`new`）：板是给"过 C 边界的内存"用的，这里不需要 ✓ */
     var a: mut slice<f64> = new f64[n * n]
     var b: mut slice<f64> = new f64[n * n]
@@ -75,7 +75,7 @@ fn main(args: slice<slice<u8>>) -> i32 {
     mul(a, b, c, n)                                   /* 预热 */
     var best: f64 = 1.0e30
     var r: i64 = 0
-    while r < i64(3) {
+    while r < 3 {
         var t0: timespec = timespec { sec: 0, nsec: 0 }
         clock_gettime(CLOCK_MONOTONIC, ref t0)
         var q: i64 = 0

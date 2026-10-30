@@ -3,6 +3,6 @@ struct box { v: i64 }
 impl box { fn make<U>(self: ref box) -> i64 { return self.v } }
 fn main() -> i32 {
   var b: box
-  b.v = i64(1)
+  b.v = 1
   return i32(b.make())
 }

@@ -76,7 +76,7 @@ fn cacheGet(c: mut ref cache, k: i64) -> i64 {
         cur = cur.next
     }
     c.misses = c.misses + 1
-    return i64(-1)
+    return -1
 }
 
 fn cachePut(c: mut ref cache, k: i64, v: i64) {

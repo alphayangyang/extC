@@ -23,6 +23,6 @@ fn tagOf(p: i64) -> i64 {
 }
 
 fn main() -> i32 {
-    io::cout << "p=" << tagOf(i64(7)) << "\n"
+    io::cout << "p=" << tagOf(7) << "\n"
     return 0
 }

@@ -6,8 +6,8 @@ use stl::string
 use stl::stringio
 
 fn main() -> i32 {
-    var a: string = string::withCap(i64(16))
-    var b: string = string::withCap(i64(16))
+    var a: string = string::withCap(16)
+    var b: string = string::withCap(16)
     io::cin >> a >> b
     io::cout << "a=[" << a.toSlice() << "]|la=" << a.len()
     io::cout << "|b=[" << b.toSlice() << "]|lb=" << b.len() << "\n"

@@ -4,11 +4,11 @@ use std::io
 use stl::vector
 
 fn main() -> i32 {
-    var v: vector<i64> = vector<i64>::withCap(i64(2))
+    var v: vector<i64> = vector<i64>::withCap(2)
     var i: i64 = 0
     while i < 100 {                                     /* 触发多次扩容 ⇒ 多次 poolResizeRaw */
         v.push(i)
-        i = i + i64(1)
+        i = i + 1
     }
     io::cout << "len=" << v.len() << "\n"
     return 0

@@ -22,11 +22,11 @@ use stl::string
 struct store { keys: varArray<string> }
 
 fn newString(s: slice<u8>) -> string {
-    var t: string = string::withCap(s.len + i64(1))
+    var t: string = string::withCap(s.len + 1)
     t.append(s)
     return t
 }
-fn mk() -> store { return store { keys: varArray<string>::withCap(i64(8)) } }
+fn mk() -> store { return store { keys: varArray<string>::withCap(8) } }
 fn put(st: mut ref store, k: slice<u8>) { st.keys.push(newString(k)) }
 fn wrap(st: mut ref store, k: slice<u8>) { put(st, k) }      /* ← 多这一层就坏 */
 
@@ -34,8 +34,8 @@ fn main() -> i32 {
     var a: store = mk()
     wrap(ref a, "k")
     wrap(ref a, "aa")
-    let k0 = a.keys.get(i64(0))!.toSlice()
-    let k1 = a.keys.get(i64(1))!.toSlice()
+    let k0 = a.keys.get(0)!.toSlice()
+    let k1 = a.keys.get(1)!.toSlice()
     io::cout << "keys[0]=" << k0 << " keys[1]=" << k1 << "\n"
     if k0 == "k" { return 0 }
     io::cout << "SILENT-WRONG: keys[0] 应为 k，实际是 " << k0 << "（未 trap）\n"

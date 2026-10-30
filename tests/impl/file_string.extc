@@ -7,8 +7,8 @@ use stl::stringio
 
 fn go() -> result<unit, io::ioError> {
     var f = fs::ifstream("tests/io/stream-file.txt")?
-    var a: string = string::withCap(i64(16))
-    var b: string = string::withCap(i64(16))
+    var a: string = string::withCap(16)
+    var b: string = string::withCap(16)
     f >> a >> b
     io::cout << "a=[" << a.toSlice() << "]|la=" << a.len()
     io::cout << "|b=[" << b.toSlice() << "]|lb=" << b.len() << "|bad=" << f.bad() << "\n"

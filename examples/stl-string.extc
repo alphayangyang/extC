@@ -25,22 +25,22 @@ fn main() -> i32 {
 
     /* ③ 跨过 16 字节 ⇒ 升级：建池 → 拿 32 字节的块 → 把 16 个内联字节搬过去 */
     var k: i64 = 3
-    while k < i64(17) {
-        s.push(u8(97 + k % i64(26)))
-        k = k + i64(1)
+    while k < 17 {
+        s.push(u8(97 + k % 26))
+        k = k + 1
     }
     /* ④ 升级之后内容仍正确、容量大于 16（池态） */
     io::cout << " up=" << s.toSlice() << " cap=" << s.capacity()
-    io::cout << " gt16=" << (s.capacity() > i64(16)) << " len=" << s.len()
+    io::cout << " gt16=" << (s.capacity() > 16) << " len=" << s.len()
 
     /* ⑤ 两个实例各写各的（内联缓冲在值里，天然互不干扰） */
     var a: string
     var b: string
     var i: i64 = 0
-    while i < i64(3) {
+    while i < 3 {
         a.push(u8(97))
         b.push(u8(98))
-        i = i + i64(1)
+        i = i + 1
     }
     io::cout << " a=" << a.toSlice() << " b=" << b.toSlice()
 

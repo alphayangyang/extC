@@ -6,11 +6,11 @@ use std::io
 fn count(n: i64) -> coroutine<i64> {
   var i: i64 = 0
   while i < n { yield i
-    i = i + i64(1) }
+    i = i + 1 }
 }
 fn main() -> i32 {
   var s: i64 = 0
-  var c = count(i64(4))
+  var c = count(4)
   while c.next() { s = s + c.value() }
   io::cout << "sum=" << s << "\n"
 }

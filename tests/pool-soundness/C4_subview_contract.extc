@@ -6,12 +6,12 @@ use std::io
 use stl::string
 
 fn main() -> i32 {
-    var s: string = string::withCap(i64(8))
+    var s: string = string::withCap(8)
     s.append("hello world")
-    var v: slice<u8> = s.subView(i64(0), i64(5))     // 零拷贝
+    var v: slice<u8> = s.subView(0, 5)     // 零拷贝
     var i: i64 = 0
-    var sum: i64 = i64(0)
-    while i < v.len { sum = sum + i64(v[i])  i = i + i64(1) }   // 只读：不碰 s
+    var sum: i64 = 0
+    while i < v.len { sum = sum + i64(v[i])  i = i + 1 }   // 只读：不碰 s
     io::cout << "view=" << v.len << " sum=" << sum << "\n"
     return 0
 }

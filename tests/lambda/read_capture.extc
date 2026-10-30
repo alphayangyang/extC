@@ -3,6 +3,6 @@ use std::io
 fn main() -> i32 {
   var base: i64 = 100
   var f = fn(x: i64) -> i64 { return x + base }
-  base = i64(7)
-  io::cout << f(i64(1)) << "\n"
+  base = 7
+  io::cout << f(1) << "\n"
   return 0 }

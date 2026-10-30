@@ -34,7 +34,7 @@ fn parseN(args: slice<slice<u8>>) -> i64 {
 fn main(args: slice<slice<u8>>) {
     var n: i64 = parseN(args)
     var head = new node            /* 哨兵 */
-    head.v = i64(-1)
+    head.v = -1
     var tail: mut ref node = head
     var i: i64 = 0
     while i < n {

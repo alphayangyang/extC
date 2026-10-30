@@ -7,7 +7,7 @@ fn go() -> result<unit, io::ioError> {
     var total: i64 = 0
     while true {
         let n = r.nextToken(buf[..])?
-        if n == i64(0) { break }
+        if n == 0 { break }
         toks = toks + 1
         total = total + n
     }

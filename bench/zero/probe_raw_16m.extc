@@ -5,13 +5,13 @@ use std::sys::pool as syspool
 fn main() -> i32 {
     var acc: i64 = 0
     var r: i64 = 0
-    while r < i64(200) {
-        let rid = syspool::extc_pool_new(i64(-1))
-        var s: mut slice<i64> = poolSliceRaw<i64>(rid, i64(4000000))
-        s[0] = i64(1)
-        acc = acc + s[i64(3999999)]
+    while r < 200 {
+        let rid = syspool::extc_pool_new(-1)
+        var s: mut slice<i64> = poolSliceRaw<i64>(rid, 4000000)
+        s[0] = 1
+        acc = acc + s[3999999]
         syspool::extc_pool_drop(rid)
-        r = r + i64(1)
+        r = r + 1
     }
     io::cout << "acc=" << acc << "\n"
     return 0

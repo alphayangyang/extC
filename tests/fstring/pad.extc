@@ -5,21 +5,21 @@ use std::io
 
 fn main() -> i32 {
     var o: io::ostream = io::cout
-    o = io::cout.padText("abc", i64(6), u8(46), io::LEFT)
+    o = io::cout.padText("abc", 6, u8(46), io::LEFT)
     io::cout << "|\n"
-    o = io::cout.padInt(i64(42), i64(5), u8(32), io::RIGHT)
+    o = io::cout.padInt(42, 5, u8(32), io::RIGHT)
     io::cout << "|\n"
-    o = io::cout.padInt(i64(42), i64(5), u8(48), io::RIGHT)
+    o = io::cout.padInt(42, 5, u8(48), io::RIGHT)
     io::cout << "|\n"
-    o = io::cout.padInt(i64(-5), i64(4), u8(48), io::RIGHT)
+    o = io::cout.padInt(-5, 4, u8(48), io::RIGHT)
     io::cout << "|\n"
-    o = io::cout.padF(f64(1.5), i64(0), i64(2), u8(32), io::LEFT)
+    o = io::cout.padF(f64(1.5), 0, 2, u8(32), io::LEFT)
     io::cout << "|\n"
-    o = io::cout.padF(f64(3.14159), i64(8), i64(2), u8(32), io::RIGHT)
+    o = io::cout.padF(f64(3.14159), 8, 2, u8(32), io::RIGHT)
     io::cout << "|\n"
-    o = io::cout.padF(f64(-2.0), i64(6), i64(1), u8(32), io::RIGHT)
+    o = io::cout.padF(f64(-2.0), 6, 1, u8(32), io::RIGHT)
     io::cout << "|\n"
-    o = io::cout.padText("中", i64(4), u8(45), io::CENTER)
+    o = io::cout.padText("中", 4, u8(45), io::CENTER)
     io::cout << "|\n"
     return 0
 }

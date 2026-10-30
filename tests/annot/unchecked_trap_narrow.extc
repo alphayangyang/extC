@@ -11,6 +11,6 @@ fn hazard(n: i64) -> i8 { return i8(n) }
 fn main() -> i32 {
     var n: i64 = 300
     let v: i8 = hazard(n)
-    if i64(v) == i64(44) { return 0 }
+    if i64(v) == 44 { return 0 }
     return 1
 }

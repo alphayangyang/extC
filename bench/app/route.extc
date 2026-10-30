@@ -15,23 +15,23 @@ use std::io
 use stl::map
 
 fn toInt(s: slice<u8>, dflt: i64) -> i64 {
-    if s.len == i64(0) { return dflt }
+    if s.len == 0 { return dflt }
     var v: i64 = 0
     var i: i64 = 0
     while i < s.len {
         let b = i64(s[i])
-        if b < i64(48) || b > i64(57) { return dflt }
-        v = v * i64(10) + (b - i64(48))
-        i = i + i64(1)
+        if b < 48 || b > 57 { return dflt }
+        v = v * 10 + (b - 48)
+        i = i + 1
     }
     return v
 }
 
 fn main(args: slice<slice<u8>>) -> i32 {
-    var ops: i64 = i64(2000000)
-    if args.len > i64(1) { ops = toInt(args[1], ops) }
+    var ops: i64 = 2000000
+    if args.len > 1 { ops = toInt(args[1], ops) }
 
-    var routes: map<i64, i32> = map<i64, i32>::withCap(i64(16))
+    var routes: map<i64, i32> = map<i64, i32>::withCap(16)
     var u: u64 = u64(12345)
     var i: i64 = 0
     var ins: i64 = 0
@@ -43,43 +43,43 @@ fn main(args: slice<slice<u8>>) -> i32 {
     while i < ops {
         u = u * u64(6364136223846793005) + u64(1442695040888963407)
         let key = i64(u & u64(4294967040))
-        if !routes.put(key, i32(key % i64(1024))) { ins = ins + i64(1) }
-        i = i + i64(1)
+        if !routes.put(key, i32(key % 1024)) { ins = ins + 1 }
+        i = i + 1
     }
 
     /* ② 前驱查找：`lowerBound(q+1) - 1` 是"最后一个 ≤ q 的前缀"的名次。
      * 找不到（q 比所有前缀都小）记 -1。 */
     u = u64(12345)
-    i = i64(0)
+    i = 0
     while i < ops {
         u = u * u64(6364136223846793005) + u64(1442695040888963407)
         let q = i64(u & u64(4294967295))
-        let rank = routes.lowerBound(q + i64(1)) - i64(1)
-        if rank >= i64(0) { lkp = lkp + i64(routes.valAt(rank)) } else { lkp = lkp - i64(1) }
-        i = i + i64(1)
+        let rank = routes.lowerBound(q + 1) - 1
+        if rank >= 0 { lkp = lkp + i64(routes.valAt(rank)) } else { lkp = lkp - 1 }
+        i = i + 1
     }
 
     /* ③ 区间扫描：数 [lo, lo+65536) 里有多少条路由（两次名次查询之差，O(log n)）。 */
     u = u64(12345)
-    i = i64(0)
-    while i < ops / i64(4) {
+    i = 0
+    while i < ops / 4 {
         u = u * u64(6364136223846793005) + u64(1442695040888963407)
         let lo = i64(u & u64(4294901760))
-        let hi = lo + i64(65536)
+        let hi = lo + 65536
         scan = scan + (routes.lowerBound(hi) - routes.lowerBound(lo))
-        i = i + i64(1)
+        i = i + 1
     }
 
     /* ④ 删除一半。 */
     u = u64(12345)
-    i = i64(0)
-    while i < ops / i64(2) {
+    i = 0
+    while i < ops / 2 {
         u = u * u64(6364136223846793005) + u64(1442695040888963407)
         let key = i64(u & u64(4294967040))
-        if routes.remove(key) { del = del + i64(1) }
-        i = i + i64(1)
+        if routes.remove(key) { del = del + 1 }
+        i = i + 1
     }
 
-    io::cout << "b.ins=" << ins << " b.lkp=" << (lkp % i64(1000000007)) << " b.scan=" << scan << " b.del=" << del << " b.len=" << routes.len() << "\n"
+    io::cout << "b.ins=" << ins << " b.lkp=" << (lkp % 1000000007) << " b.scan=" << scan << " b.del=" << del << " b.len=" << routes.len() << "\n"
     return 0
 }

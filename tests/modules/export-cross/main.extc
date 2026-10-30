@@ -4,6 +4,6 @@ use std::io
 use lib
 
 fn main() -> i32 {
-    io::cout << "got=" << lib::exported(i64(41)) << "\n"
+    io::cout << "got=" << lib::exported(41) << "\n"
     return 0
 }

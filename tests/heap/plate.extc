@@ -20,10 +20,10 @@ fn rssKB() -> i64 {
     i = i + 1
     var v: i64 = 0
     while i < n && buf[i] >= u8(48) && buf[i] <= u8(57) {
-        v = v * i64(10) + (i64(buf[i]) - i64(48))
+        v = v * 10 + (i64(buf[i]) - 48)
         i = i + 1
     }
-    return v * i64(4)
+    return v * 4
 }
 
 fn main() -> i32 {
@@ -33,7 +33,7 @@ fn main() -> i32 {
     var afterOpen: i64 = rssKB()
     io::cout << "reserve=" << i64(pl.reservedBytes() / (u64(1024) * u64(1024))) << "MB"
     var delta: i64 = afterOpen - before
-    if delta < i64(0) { delta = i64(0) }
+    if delta < 0 { delta = 0 }
     io::cout << " rss_delta=" << delta
 
     /* 第一笔分配：commit 一个 CHUNK（1 MiB），不是 4 GiB。 */
@@ -53,7 +53,7 @@ fn main() -> i32 {
     /* 板是 arena 之外的第二种寿命：下一笔分配接着上一笔（不搬家 ⇒ 老视图仍然有效）。 */
     var t: mut slice<u8> = pl.store("second")!
     s[0] = u8(72)                                   /* 'H' —— 第一笔仍然可写（地址没变） */
-    if t.len == i64(6) && pl.usedBytes() >= u64(17) { io::cout << " reuse=ok" }
+    if t.len == 6 && pl.usedBytes() >= u64(17) { io::cout << " reuse=ok" }
 
     io::cout << " closed=" << pl.close()
     io::cout << "\n"

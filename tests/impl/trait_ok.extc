@@ -16,8 +16,8 @@ impl Tag for point2 { fn tag(self: ref point2) -> i64 { return self.x + self.y }
 fn tagOf(v: box) -> i64 { return v.tag() }
 
 fn main() -> i32 {
-    let b = box { v: i64(7) }
-    let p = point2 { x: i64(4), y: i64(7) }
+    let b = box { v: 7 }
+    let p = point2 { x: 4, y: 7 }
     io::cout << "box=" << b.tag() << "|pt=" << p.tag() << "|via=" << tagOf(b) << "\n"
     return 0
 }

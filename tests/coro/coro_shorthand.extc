@@ -19,21 +19,21 @@ fn adderTwo(n: i64) -> coroutine<i64, i64> {
     yield got
 }
 fn main() -> i32 {
-    var a = adderOne(i64(3))
+    var a = adderOne(3)
     var ra: bool = a.next()
     var seenA: i64 = 0
     while ra {
         seenA = seenA + a.value()
-        ra = a.send(i64(7))
+        ra = a.send(7)
     }
     seenA = seenA + a.value()
 
-    var b = adderTwo(i64(3))
+    var b = adderTwo(3)
     var rb: bool = b.next()
     var seenB: i64 = 0
     while rb {
         seenB = seenB + b.value()
-        rb = b.send(i64(7))
+        rb = b.send(7)
     }
     seenB = seenB + b.value()
 

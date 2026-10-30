@@ -23,7 +23,7 @@ struct node {
  * （调用栈上其他帧的活引用不在表里）⇒ 不触发、只记欠收。 */
 fn build(n: i64) -> mut ref node {
     var keep: mut ref node = new node
-    keep.v = i64(0)
+    keep.v = 0
     keep.next = keep
     var i: i64 = 0
     while i < n {

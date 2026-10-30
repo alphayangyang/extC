@@ -27,7 +27,7 @@ fn sumWith(e: ref addEnv, xs: slice<i64>) -> i64 {
 /* `|acc, x| acc * 2 + x` 的显式形态：环境是空的，但形状完全一样 ✓ */
 struct foldEnv { dummy: i64 }
 
-fn foldWith(e: ref foldEnv, acc: i64, x: i64) -> i64 { return acc * i64(2) + x + e.dummy }
+fn foldWith(e: ref foldEnv, acc: i64, x: i64) -> i64 { return acc * 2 + x + e.dummy }
 
 fn runFold(e: ref foldEnv, xs: slice<i64>) -> i64 {
     var acc: i64 = 0
@@ -54,18 +54,18 @@ fn main() -> i32 {
     var xs: [4]i64 = [1, 2, 3, 4]
 
     /* ① 捕获 `base = 10`，对每个元素加 10 再求和：4*10 + (1+2+3+4) = 50 */
-    let e: addEnv = addEnv { base: i64(10) }
+    let e: addEnv = addEnv { base: 10 }
     io::cout << "sum=" << sumWith(ref e, xs[..]) << "\n"
 
     /* ② fold：acc = acc*2 + x，从 0 开始过 [1,2,3,4] ⇒ ((((0*2+1)*2+2)*2+3)*2+4) = 26 */
-    let f: foldEnv = foldEnv { dummy: i64(0) }
+    let f: foldEnv = foldEnv { dummy: 0 }
     io::cout << "fold=" << runFold(ref f, xs[..]) << "\n"
 
     /* ③ 同一个变量先后装两个不同的"闭包"：base=1 时 add 得 1+4=5、mul 得 1+4*2=9 ⇒ 14 */
-    var c: closure = closure { env: accEnv { base: i64(1), factor: i64(2) }, kind: i64(0) }
-    var total: i64 = callClosure(ref c, i64(4))
-    c.kind = i64(1)
-    total = total + callClosure(ref c, i64(4))
+    var c: closure = closure { env: accEnv { base: 1, factor: 2 }, kind: 0 }
+    var total: i64 = callClosure(ref c, 4)
+    c.kind = 1
+    total = total + callClosure(ref c, 4)
     io::cout << "two=" << total << "\n"
     return 0
 }

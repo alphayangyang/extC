@@ -11,7 +11,7 @@ fn worker(n: i64) -> coroutine<i64> {
 }
 
 fn main() -> i32 {
-    var fr = worker(i64(2))
+    var fr = worker(2)
     var h: coroutine<i64> = fr
     while h.next() { }
     return 0

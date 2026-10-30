@@ -21,7 +21,7 @@ fn main() -> i32 {
     var a = make()
     a.push(i32(7))
     io::cout << "live=" << syspool::extc_pool_live()
-    io::cout << " len=" << a.len() << " v0=" << i64(a.get(i64(0)) ?? i32(-1))
-    io::cout << " v2=" << i64(a.get(i64(2)) ?? i32(-1)) << "\n"
+    io::cout << " len=" << a.len() << " v0=" << i64(a.get(0) ?? i32(-1))
+    io::cout << " v2=" << i64(a.get(2) ?? i32(-1)) << "\n"
     return 0
 }

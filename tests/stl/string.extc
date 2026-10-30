@@ -4,7 +4,7 @@ use std::io
 use stl::string
 
 fn main() -> i32 {
-    var s = string::withCap(i64(16))
+    var s = string::withCap(16)
     s.append("hello")
     io::cout << "len=" << s.len() << " cap=" << s.capacity()
     s.append(", world! and more bytes to force growth")
@@ -13,7 +13,7 @@ fn main() -> i32 {
     io::cout << " shrink=" << s.capacity()
     io::cout << " text="
     io::cout << s.toSlice()
-    var t = string::withCap(i64(16))
+    var t = string::withCap(16)
     t.append("ab")
     t.push(u8(99))
     io::cout << " t=" << t.toSlice() << "(" << t.len() << ")"

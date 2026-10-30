@@ -17,28 +17,28 @@ fn bucketOf(m: ref hashMapI64<i32>, k: i64) -> i64 {
     var i: i64 = 0
     while i < m.capOf() {
         if m.liveAt(i) && m.keyAt(i) == k { return i }
-        i = i + i64(1)
+        i = i + 1
     }
-    return i64(-1)
+    return -1
 }
 
 /* 空表里插一只键 ⇒ 它一定落在自己的**初始槽**上（没有探测、没有重建）。 */
 fn initialSlot(k: i64) -> i64 {
-    var t = hashMapI64<i32>::withCap(i64(4))
+    var t = hashMapI64<i32>::withCap(4)
     t.put(k, i32(1))
     return bucketOf(ref t, k)
 }
 
 fn main() -> i32 {
-    var m = hashMapI64<i32>::withCap(i64(4))
+    var m = hashMapI64<i32>::withCap(4)
     println("cap = ", m.capOf())
 
-    let s0 = initialSlot(i64(0))
-    let s1 = initialSlot(i64(2))
-    let s2 = initialSlot(i64(7))
-    let s3 = initialSlot(i64(12))
-    let s4 = initialSlot(i64(14))
-    var same = s0 >= i64(0)
+    let s0 = initialSlot(0)
+    let s1 = initialSlot(2)
+    let s2 = initialSlot(7)
+    let s3 = initialSlot(12)
+    let s4 = initialSlot(14)
+    var same = s0 >= 0
     if s1 != s0 { same = false }
     if s2 != s0 { same = false }
     if s3 != s0 { same = false }
@@ -47,33 +47,33 @@ fn main() -> i32 {
 
     var keys: [5]i64 = [0, 2, 7, 12, 14]
     var i: i64 = 0
-    while i < i64(5) {
+    while i < 5 {
         m.put(keys[i], i32(i))
-        i = i + i64(1)
+        i = i + 1
     }
     var ok: bool = true
     i = 0
-    while i < i64(5) {
+    while i < 5 {
         let g = m.get(keys[i]) ?? i32(-1)
         if g != i32(i) { ok = false }
-        i = i + i64(1)
+        i = i + 1
     }
     println("全部找到 = ", ok)
 
-    m.remove(i64(7))                     /* 挖掉链条中间那个 */
+    m.remove(7)                     /* 挖掉链条中间那个 */
     ok = true
     i = 0
-    while i < i64(5) {
-        if i != i64(2) {
+    while i < 5 {
+        if i != 2 {
             let g = m.get(keys[i]) ?? i32(-1)
             if g != i32(i) { ok = false }
         }
-        i = i + i64(1)
+        i = i + 1
     }
-    println("删掉一半后仍全部找到 = ", ok && !m.contains(i64(7)))
+    println("删掉一半后仍全部找到 = ", ok && !m.contains(7))
 
-    let again = m.put(i64(7), i32(2))     /* 再插回去（复用墓碑槽）*/
-    let g7 = m.get(i64(7)) ?? i32(-1)
+    let again = m.put(7, i32(2))     /* 再插回去（复用墓碑槽）*/
+    let g7 = m.get(7) ?? i32(-1)
     println("重插 = ", !again && g7 == i32(2))
     return 0
 }

@@ -21,8 +21,8 @@ fn w(n: i64) -> coroutine<i64> { var i: i64 = 0  while i < n { yield i  i = i + 
 
 fn main() -> i32 {
     var t: table<i64> = { rows: vector<row>::new() }
-    var a: bool = t.add(w(i64(2)))
-    var b: bool = t.add(w(i64(3)))
+    var a: bool = t.add(w(2))
+    var b: bool = t.add(w(3))
     if !a || !b { return i32(90) }
     var s: i64 = 0
     var i: i64 = 0
@@ -30,5 +30,5 @@ fn main() -> i32 {
         if t.rows.vals[i].h.next() { s = s + t.rows.vals[i].h.value() }
         i = i + 1
     }
-    return i32(s + t.count() + i64(39))          /* 0 + 2 + 39 = 41 */
+    return i32(s + t.count() + 39)          /* 0 + 2 + 39 = 41 */
 }

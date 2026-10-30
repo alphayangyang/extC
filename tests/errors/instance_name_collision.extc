@@ -7,8 +7,8 @@ struct pair<T> { a: T }
 struct pair_i64 { a: i64 }
 fn main() -> i32 {
     var p: pair<i64>
-    p.a = i64(1)
+    p.a = 1
     var q: pair_i64
-    q.a = i64(2)
+    q.a = 2
     return i32(p.a + q.a)
 }

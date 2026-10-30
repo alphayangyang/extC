@@ -6,7 +6,7 @@ fn main() -> i32 {
     var a: [4]i32 = [1,2,3,4]
     var b: [4]i32 = [0,0,0,0]
     io::cout << "before\n"
-    let n = copyInto<i32>(b[..], a[..], i64(9))
+    let n = copyInto<i32>(b[..], a[..], 9)
     io::cout << "after " << n << "\n"
     return 0
 }

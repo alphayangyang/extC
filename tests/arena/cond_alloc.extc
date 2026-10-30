@@ -9,7 +9,7 @@ use std::io
 
 fn main() -> i32 {
     var n: i64 = 0
-    while (new u8[1000000])[0] == u8(0) { n = n + 1  if n >= i64(300) { break } }
+    while (new u8[1000000])[0] == u8(0) { n = n + 1  if n >= 300 { break } }
     io::cout << "rounds=" << n << "\n"
     return 0
 }

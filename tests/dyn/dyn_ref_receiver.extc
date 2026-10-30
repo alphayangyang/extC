@@ -16,14 +16,14 @@ struct box { v: i64 }
 
 impl Tag for box {
     fn tag(self: ref box) -> i64 { return self.v }
-    fn bump(self: mut ref box) -> i64 { self.v = self.v + i64(1)  return self.v }
+    fn bump(self: mut ref box) -> i64 { self.v = self.v + 1  return self.v }
 }
 
 fn viaRef(r: ref dyn Tag) -> i64 { return r.tag() }
 fn viaMutRef(r: mut ref dyn Tag) -> i64 { return r.bump() }
 
 fn main() -> i32 {
-    var b: box = box { v: i64(7) }
+    var b: box = box { v: 7 }
     var d: dyn Tag = dyn Tag(b)
     /* `<<` 链上的实参从左到右求值：生成器把每一步的接收者先物化成一条语句，所以
      * 「先读、后改」直接写在一个表达式里也是这个顺序（读发生在 bump 之前）。 */

@@ -12,7 +12,7 @@ use std::io
 fn worker(step: i64) -> coroutine<i64> {
     var i: i64 = 0
     var total: i64 = 0
-    while i < i64(3) {
+    while i < 3 {
         var got: i64 = yield step + i       /* 请求：等 step+i */
         total = total + got                 /* 调度器把请求送回来 ⇒ 累加 */
         i = i + 1
@@ -22,26 +22,26 @@ fn worker(step: i64) -> coroutine<i64> {
 
 fn main() -> i32 {
     var s: sched::loop
-    var tasks: sched::tasks<i64> = { rows: sched::newRows(), runq: sched::newQ(), rqHead: i64(0), freeq: sched::newQ(), acceptq: sched::newQ() }
-    tasks.add(ref s, worker(i64(10)))
-    tasks.add(ref s, worker(i64(100)))
+    var tasks: sched::tasks<i64> = { rows: sched::newRows(), runq: sched::newQ(), rqHead: 0, freeq: sched::newQ(), acceptq: sched::newQ() }
+    tasks.add(ref s, worker(10))
+    tasks.add(ref s, worker(100))
 
     var order: mut slice<i64> = new i64[12]
     var k: i64 = 0
-    while k < i64(12) { order[k] = k % i64(2)  k = k + 1 }   /* 0 1 0 1 … 交替 */
+    while k < 12 { order[k] = k % 2  k = k + 1 }   /* 0 1 0 1 … 交替 */
 
     /* 一边推一边**在活着的时候**把值读出来：`value()` 只在 `next()`/`step()` 返回 true 之后有效，
      * 任务跑完再读会大声 trap（帧已经随任务回收了 —— 规则②）。 */
     var last0: i64 = 0
     var last1: i64 = 0
     var k2: i64 = 0
-    while k2 < i64(12) {
+    while k2 < 12 {
         var i: i64 = order[k2]
         if tasks.step(ref s, i) {
-            if i == i64(0) { last0 = tasks.rows.vals[0].h.value() }
-            if i == i64(1) { last1 = tasks.rows.vals[1].h.value() }
+            if i == 0 { last0 = tasks.rows.vals[0].h.value() }
+            if i == 1 { last1 = tasks.rows.vals[1].h.value() }
         }
         k2 = k2 + 1
     }
-    return i32(s.live * i64(100) + (last0 + last1) % i64(100))
+    return i32(s.live * 100 + (last0 + last1) % 100)
 }

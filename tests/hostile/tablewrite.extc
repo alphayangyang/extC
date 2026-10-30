@@ -19,7 +19,7 @@ fn main() -> i32 {
     var t: tab = tab { slot0: realSlot, ctx: null }
     var a: api = api { rewrite: fn(mut ref tab) -> void(dl::sym(h, "rewrite")!) }
     a.rewrite(ref t)                     /* 模块在里面把 t.slot0 改掉了 */
-    var r: i64 = t.slot0(i64(42))        /* 宿主以为还是自己那个 ×2 ⇒ 取回 84 才对 */
+    var r: i64 = t.slot0(42)        /* 宿主以为还是自己那个 ×2 ⇒ 取回 84 才对 */
     io::cout << "slot-hijacked=" << r << "\n"
     dl::close(h)
     return 0

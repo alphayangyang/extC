@@ -25,7 +25,7 @@ fn main() -> i32 {
         return 1
     }
     let touched: i64 = a.touchNothing()          /* 隔离之后库照常能被调用 */
-    if got != i64(4096) || touched != i64(1) {
+    if got != 4096 || touched != 1 {
         io::cout << "contract=bad-result " << got << " " << touched << "\n"
         return 1
     }

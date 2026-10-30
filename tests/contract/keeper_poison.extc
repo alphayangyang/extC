@@ -24,7 +24,7 @@ fn main() -> i32 {
     let r: i64 = a.readLater()
     pl.close()
     dl::close(h)
-    if r == i64(42) {
+    if r == 42 {
         io::cout << "contract=unfalsified sum=" << s << "\n"
         return 1
     }

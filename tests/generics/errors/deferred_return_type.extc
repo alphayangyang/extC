@@ -11,7 +11,7 @@ struct pt {
 fn bad<T>(x: T) -> i8 { return x.hash() }
 
 fn main() -> i32 {
-    var p: pt = { v: i64(300) }
+    var p: pt = { v: 300 }
     var r: i8 = bad(p)
     io::cout << "r=" << i64(r) << "\n"
     return 0

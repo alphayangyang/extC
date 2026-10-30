@@ -9,7 +9,7 @@ fn main() -> i32 {
     var pl: heap::plate = heap::plate::open(heap::DEFAULT_RESERVE)!
     var v: mut slice<u8> = pl.alloc(u64(4096))!
     v[0] = u8(3)
-    let s: i64 = demo::extc_demo_take(v.data, i64(1))
+    let s: i64 = demo::extc_demo_take(v.data, 1)
     if !pl.quarantine(v.data, u64(4096)) {
         io::cout << "contract=setup-failed\n"
         io::flushCout()

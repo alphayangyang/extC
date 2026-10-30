@@ -10,12 +10,12 @@ use std::io
 use std::sys::pool as syspool
 
 fn main() -> i32 {
-    let home = syspool::extc_pool_zoneDepth() - i64(1)   /* 外层地方的 zone 下标 */
-    var kept: i64 = i64(-1)
-    var temporary: i64 = i64(-1)
+    let home = syspool::extc_pool_zoneDepth() - 1   /* 外层地方的 zone 下标 */
+    var kept: i64 = -1
+    var temporary: i64 = -1
     {
-        kept      = syspool::extc_pool_new_at(i64(-1), 9223372036854775807)
-        temporary = syspool::extc_pool_new(i64(-1))
+        kept      = syspool::extc_pool_new_at(-1, 9223372036854775807)
+        temporary = syspool::extc_pool_new(-1)
         io::cout << "in=" << syspool::extc_pool_live()
     }
     io::cout << " out=" << syspool::extc_pool_live()

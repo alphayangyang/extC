@@ -14,7 +14,7 @@ fn main() -> i32 {
     var a: api = api { ctx: null, scribble: fn(?ref u8, i64) -> i64(dl::sym(h, "scribble")!) }
     var pl: heap::plate = heap::plate::open(heap::DEFAULT_RESERVE)!
     var v: mut slice<u8> = pl.alloc(u64(64))!
-    var n: i64 = a.scribble(v.data, i64(64))
+    var n: i64 = a.scribble(v.data, 64)
     io::cout << "wrote=" << n
     if canary == 123456789 { io::cout << " canary=ok\n" } else { io::cout << " canary=smashed\n" }
     pl.close()

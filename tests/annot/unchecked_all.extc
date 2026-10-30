@@ -14,9 +14,9 @@ struct tape {
     fn total(self: ref tape, v: slice<u8>) -> i64 {
         var acc: i64 = 0
         var i: i64 = 0
-        while i < v.len { acc = acc + i64(v[i])  i = i + i64(1) }
+        while i < v.len { acc = acc + i64(v[i])  i = i + 1 }
         i = 0
-        while i < i64(8) { acc = acc + self.xs[i]  i = i + i64(1) }
+        while i < 8 { acc = acc + self.xs[i]  i = i + 1 }
         return acc
     }
 }
@@ -25,9 +25,9 @@ struct tape {
 fn sumFree(v: slice<u8>, a: ref [8]i64) -> i64 {
     var acc: i64 = 0
     var i: i64 = 0
-    while i < v.len { acc = acc + i64(v[i])  i = i + i64(1) }
+    while i < v.len { acc = acc + i64(v[i])  i = i + 1 }
     i = 0
-    while i < i64(8) { acc = acc + a[i]  i = i + i64(1) }
+    while i < 8 { acc = acc + a[i]  i = i + 1 }
     return acc
 }
 
@@ -38,6 +38,6 @@ fn main() -> i32 {
     /* "abc" 的字节和 = 294；`[1, ...]` 是 1 后面全零 ⇒ 数组和 = 1。
      * 两条已标注的路各算 294 + 1，一共 590（退出码只取低 8 位，0 = 算对了）。 */
     let r = sumFree(s, ref a) + t.total(s)
-    if r == i64(590) { return 0 }
+    if r == 590 { return 0 }
     return 1
 }

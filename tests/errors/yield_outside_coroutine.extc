@@ -6,8 +6,8 @@
  * 为什么要报错而不是宽容：`yield` 的实现是"存 pc 后返回"（无栈，CONCURRENCY.md 4.4），
  * 非协程函数没有帧可存 ⇒ 只能报错 ✓ */
 fn f() -> i64 {
-    yield i64(1)
-    return i64(0)
+    yield 1
+    return 0
 }
 
 fn main() -> i32 { return i32(f()) }

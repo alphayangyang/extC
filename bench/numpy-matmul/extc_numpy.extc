@@ -41,7 +41,7 @@ fn parseI64(s: slice<u8>) -> i64 {
     var v: i64 = 0
     var i: i64 = 0
     while i < s.len {
-        v = v * i64(10) + i64(s[i]) - i64(48)
+        v = v * 10 + i64(s[i]) - 48
         i = i + 1
     }
     return v
@@ -61,25 +61,25 @@ fn nowMs() -> f64 {
 
 /* `numpy.ones((n,n))`：元组套元组（`PyObject_CallFunction` 是变参 ✗ 今天不支持） */
 fn ones(n: i64) -> ?ref void {
-    var dims: ?ref void = PyTuple_New(i64(2))
+    var dims: ?ref void = PyTuple_New(2)
     if dims == null { return null }
     var dv: ref void = dims
-    PyTuple_SetItem(dv, i64(0), PyLong_FromLong(n)!)
-    PyTuple_SetItem(dv, i64(1), PyLong_FromLong(n)!)
+    PyTuple_SetItem(dv, 0, PyLong_FromLong(n)!)
+    PyTuple_SetItem(dv, 1, PyLong_FromLong(n)!)
     var np: ?ref void = PyImport_ImportModule(cs("numpy"))
     if np == null { return null }
     var npv: ref void = np
     var onesFn: ?ref void = PyObject_GetAttrString(npv, cs("ones"))
     if onesFn == null { return null }
     var fv: ref void = onesFn
-    var args: ref void = PyTuple_New(i64(1))!
-    PyTuple_SetItem(args, i64(0), dv)
+    var args: ref void = PyTuple_New(1)!
+    PyTuple_SetItem(args, 0, dv)
     return PyObject_CallObject(fv, args)
 }
 
 fn main(args: slice<slice<u8>>) -> i32 {
-    var n: i64 = argOr(args, i64(1), i64(256))
-    var reps: i64 = argOr(args, i64(2), i64(20))
+    var n: i64 = argOr(args, 1, 256)
+    var reps: i64 = argOr(args, 2, 20)
 
     var h: ref void = dl::open(PY_LIB)!
     Py_Initialize()
@@ -110,7 +110,7 @@ fn main(args: slice<slice<u8>>) -> i32 {
     if warm == null { io::cout << "matmul=failed\n"  return 1 }
     var best: f64 = 1.0e30
     var round: i64 = 0
-    while round < i64(3) {
+    while round < 3 {
         var t0: f64 = nowMs()
         var i: i64 = 0
         while i < reps {

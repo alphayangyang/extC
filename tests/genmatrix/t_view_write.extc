@@ -12,7 +12,7 @@ fn main() -> i32 {
     var i: i64 = 0
     h.setAt(i, "hi")
     var p: pair2<i64, slice<u8>> = { ks: new i64[2], xs: new slice<u8>[2] }
-    p.setV(i64(1), "yo")
-    println("v0 = ", h.xs[i], " · v1 = ", p.xs[i64(1)])
+    p.setV(1, "yo")
+    println("v0 = ", h.xs[i], " · v1 = ", p.xs[1])
     return 0
 }

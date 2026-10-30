@@ -17,9 +17,9 @@ fn bottomUp(depth: i64) -> ?ref tree {
 
 fn check(t: ?ref tree) -> i64 {
     var p = t
-    if p == null { return i64(0) }
-    if p.left == null { return i64(1) }
-    return i64(1) + check(p.left) + check(p.right)
+    if p == null { return 0 }
+    if p.left == null { return 1 }
+    return 1 + check(p.left) + check(p.right)
 }
 
 fn go() -> result<unit, io::ioError> {

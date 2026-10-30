@@ -37,7 +37,7 @@ fn main(args: slice<slice<u8>>) -> i32 {
     var i: i64 = 0
     while i < n {
         var s: mut ref node = new node
-        s.val = i64(-1)
+        s.val = -1
         s.next = null
         s.kids[0] = null
         s.kids[1] = null

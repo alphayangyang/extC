@@ -10,7 +10,7 @@ fn w(id: i64) -> coroutine<i64> {
 }
 
 fn main() -> i32 {
-    var n: i64 = i64(10000)
+    var n: i64 = 10000
     var hs: mut slice<coroutine<i64>> = new coroutine<i64>[10000]
     var k: i64 = 0
     while k < n {

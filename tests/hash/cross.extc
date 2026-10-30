@@ -10,7 +10,7 @@ fn main() -> i32 {
     var buf: mut slice<u8> = new u8[131072]
     var i: i64 = 0
     while i < buf.len {
-        buf[i] = u8((i * i64(31) + i64(7)) & i64(255))
+        buf[i] = u8((i * 31 + 7) & 255)
         i = i + 1
     }
     let lens: [16]i64 = [0, 1, 2, 3, 55, 56, 57, 63, 64, 65, 127, 128, 129, 1000, 4096, 100000]
@@ -18,7 +18,7 @@ fn main() -> i32 {
     var o20: [20]u8
     var hx: [80]u8
     i = 0
-    while i < i64(16) {
+    while i < 16 {
         let n: i64 = lens[i]
         if !sha256::sum(buf[0..n], o32[..]) { return 1 }
         sha256::hex(o32[..], hx[..])
@@ -30,7 +30,7 @@ fn main() -> i32 {
         c.init()
         var off: i64 = 0
         while off < n {
-            var take: i64 = i64(7)
+            var take: i64 = 7
             if n - off < take { take = n - off }
             c.update(buf[off..off + take])
             off = off + take

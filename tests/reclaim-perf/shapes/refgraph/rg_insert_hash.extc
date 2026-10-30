@@ -50,7 +50,7 @@ fn find(tab: mut ref table, key: i64) -> i64 {
         if (*cur).v == key { return probes }
         cur = (*cur).next
     }
-    return i64(-1)
+    return -1
 }
 
 fn main(args: slice<slice<u8>>) {

@@ -7,15 +7,15 @@ fn main() -> i32 {
     var v = vector<i32>::new()
     io::cout << "cap0=" << v.capacity()
     var i: i64 = 0
-    while i < i64(9) {
+    while i < 9 {
         v.push(i32(i))
-        i = i + i64(1)
+        i = i + 1
     }
     io::cout << " n=" << v.len() << " cap=" << v.capacity()
     let dv = v.toSlice()
     var sum: i64 = 0
     var k: i64 = 0
-    while k < dv.len { sum = sum + i64(dv[k])  k = k + i64(1) }
+    while k < dv.len { sum = sum + i64(dv[k])  k = k + 1 }
     io::cout << " sum=" << sum
     v.shrink()
     io::cout << " shrink=" << v.capacity()
@@ -23,6 +23,6 @@ fn main() -> i32 {
     io::cout << " pop=" << i64(top) << " n=" << v.len()
     v.clear()
     io::cout << " clear=" << v.len() << "/" << v.capacity()
-    io::cout << " tail=" << i64(v.get(i64(8)) ?? i32(-9)) << "\n"
+    io::cout << " tail=" << i64(v.get(8) ?? i32(-9)) << "\n"
     return 0
 }

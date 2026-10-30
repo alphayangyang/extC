@@ -56,8 +56,8 @@ fn main() -> i32 {
     var ar: ?ref void = PyObject_GetAttrString(npv, cs("arange"))
     if ar == null { io::cout << " arange=missing\n"  return 1 }
     var arv: ref void = ar
-    var args: ref void = PyTuple_New(i64(1))!
-    PyTuple_SetItem(args, i64(0), PyLong_FromLong(i64(5))!)
+    var args: ref void = PyTuple_New(1)!
+    PyTuple_SetItem(args, 0, PyLong_FromLong(5)!)
     var arr: ?ref void = PyObject_CallObject(arv, args)
     if arr == null { io::cout << " arange=failed\n"  return 1 }
     var arrv: ref void = arr
@@ -69,7 +69,7 @@ fn main() -> i32 {
     var sf: ?ref void = PyObject_GetAttrString(arrv, cs("sum"))
     if sf == null { io::cout << " sum=missing\n"  return 1 }
     var sfv: ref void = sf
-    var s: ?ref void = PyObject_CallObject(sfv, PyTuple_New(i64(0))!)
+    var s: ?ref void = PyObject_CallObject(sfv, PyTuple_New(0)!)
     if s == null { io::cout << " sum=failed\n"  return 1 }
     var sv: ref void = s
     var sc: ?ref void = PyObject_Str(sv)

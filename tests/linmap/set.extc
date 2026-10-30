@@ -7,18 +7,18 @@ struct pt { x: i64  y: i64
 }
 
 fn main() -> i32 {
-    var s: linSet<i64> = linSet<i64>::withCap(i64(2))
+    var s: linSet<i64> = linSet<i64>::withCap(2)
     var added: i64 = 0
-    if s.add(i64(7)) { added = i64(1) }
+    if s.add(7) { added = 1 }
     var dup: i64 = 0
-    if s.add(i64(7)) { dup = i64(1) }
-    s.remove(i64(7))
+    if s.add(7) { dup = 1 }
+    s.remove(7)
     var after: i64 = 0
-    if s.contains(i64(7)) { after = i64(1) }
+    if s.contains(7) { after = 1 }
     var k: i64 = 0
-    while k < i64(30) { s.add(k)  k = k + i64(1) }
-    var has29: bool = s.contains(i64(29))
-    var pset: linSet<pt> = linSet<pt>::withCap(i64(2))
+    while k < 30 { s.add(k)  k = k + 1 }
+    var has29: bool = s.contains(29)
+    var pset: linSet<pt> = linSet<pt>::withCap(2)
     var first = pset.add(pt { x: 1, y: 2 })
     var again = pset.add(pt { x: 1, y: 2 })
     var other = pset.add(pt { x: 3, y: 4 })

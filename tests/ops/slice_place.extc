@@ -11,5 +11,5 @@ fn main() -> i32 {
   if s[1..3] == s[1..3] { io::cout << "eq" } else { io::cout << "bad" }
   io::cout << "|"
   if s[1..3] == s[0..2] { io::cout << "bad" } else { io::cout << "ne" }
-  io::cout << "|" << s[1..3][i64(0)] - i64(2) << "\n"
+  io::cout << "|" << s[1..3][0] - i64(2) << "\n"
   return 0 }

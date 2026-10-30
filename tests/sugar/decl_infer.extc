@@ -11,7 +11,7 @@ fn main() -> i32 {
     io::cout << "a=" << a << " b=" << b << "\n"
     io::cout << "pin=" << wantI32(a) << " " << wantF64(b) << "\n"
 
-    var s, t = "hi", i64(9)
+    var s, t = "hi", 9
     io::cout << s << " " << t << "\n"
     return 0
 }

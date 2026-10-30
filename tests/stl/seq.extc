@@ -8,40 +8,40 @@ use std::io
 use stl::seq
 
 fn main() -> i32 {
-    var xs: mut slice<f64> = new f64[i64(4)]
+    var xs: mut slice<f64> = new f64[4]
     xs[0] = 1.0
     xs[1] = 2.0
     xs[2] = 3.0
     xs[3] = 4.5
 
-    var ys: mut slice<i64> = new i64[i64(4)]
+    var ys: mut slice<i64> = new i64[4]
     ys[0] = 3
     ys[1] = 5
     ys[2] = 7
     ys[3] = 5
 
-    var es: mut slice<f64> = new f64[i64(0)]
+    var es: mut slice<f64> = new f64[0]
 
     let fs = seq::sum(xs) ?? f64(0.0)
     let fm = seq::max(xs) ?? f64(0.0)
     let fn_ = seq::min(xs) ?? f64(0.0)
 
-    let is = seq::sum(ys) ?? i64(0)
-    let im = seq::max(ys) ?? i64(0)
-    let imn = seq::min(ys) ?? i64(0)
+    let is = seq::sum(ys) ?? 0
+    let im = seq::max(ys) ?? 0
+    let imn = seq::min(ys) ?? 0
     let c = seq::count(ys, i64(5))
 
-    var e: i64 = i64(0)
+    var e: i64 = 0
     match seq::sum(es) {
-        none => e = e + i64(1)
+        none => e = e + 1
         some(_) => {}
     }
     match seq::max(es) {
-        none => e = e + i64(2)
+        none => e = e + 2
         some(_) => {}
     }
     match seq::min(es) {
-        none => e = e + i64(4)
+        none => e = e + 4
         some(_) => {}
     }
 

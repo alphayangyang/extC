@@ -19,7 +19,7 @@ fn go() -> result<unit, io::ioError> {
     let a = r.nextInt()?
     let b = r.nextInt()?
     iohelper::closeIt(rfd)
-    if a == i64(100) && b == i64(200) { println("回读 = 100/200 ✓") } else { println("回读错了 ✗ ", a, "/", b) }
+    if a == 100 && b == 200 { println("回读 = 100/200 ✓") } else { println("回读错了 ✗ ", a, "/", b) }
     return success(unit {})
 }
 fn main() -> i32 { match go() { success(u) => { return 0 }  failure(e) => { return 1 } } }

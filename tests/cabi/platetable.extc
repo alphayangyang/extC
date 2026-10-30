@@ -50,7 +50,7 @@ fn doorAlloc(n: u64, pl: mut ref plate) -> ?ref u8 {
  * 带上隐藏的 arena 参数，于是这个函数的地址不再是 `fn` 值、放不进表槽（实测的报错说得很清楚）。
  * 门要的本来也就是"指针 + 长度"这一件事。 */
 fn doorCopyOut(p: ref u8, n: i64, pl: mut ref plate) -> i64 {
-    if !pl.holdsRange(p, n) { return i64(-1) }
+    if !pl.holdsRange(p, n) { return -1 }
     logged = logged + n
     return n
 }
@@ -80,7 +80,7 @@ fn main() -> i32 {
 
     var n: i64 = plug.init(ref api)
     io::cout << "init=" << n
-    if n != i64(16) {
+    if n != 16 {
         io::cout << "\n"
         pl.close()
         dl::close(h)

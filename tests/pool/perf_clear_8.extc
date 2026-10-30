@@ -7,21 +7,21 @@ use std::io
 use stl::pool
 
 fn main() -> i32 {
-    var p: pool<i32> = pool<i32>::withCap(i64(8))
-    var acc: i64 = i64(0)
-    var i: i64 = i64(0)
-    while i < i64(4000000) {
+    var p: pool<i32> = pool<i32>::withCap(8)
+    var acc: i64 = 0
+    var i: i64 = 0
+    while i < 4000000 {
         p.clear()
         let a = p.insert(i32(1))
         let b = p.insert(i32(2))
         let c = p.insert(i32(3))
         let d = p.insert(i32(4))
-        if p.contains(a) { acc = acc + i64(1) }
-        if p.contains(b) { acc = acc + i64(1) }
-        if p.contains(c) { acc = acc + i64(1) }
-        if p.contains(d) { acc = acc + i64(1) }
-        acc = acc + i64(p.atDense(i64(2)))
-        i = i + i64(1)
+        if p.contains(a) { acc = acc + 1 }
+        if p.contains(b) { acc = acc + 1 }
+        if p.contains(c) { acc = acc + 1 }
+        if p.contains(d) { acc = acc + 1 }
+        acc = acc + i64(p.atDense(2))
+        i = i + 1
     }
     io::cout << "cap=" << p.capacity() << " acc=" << acc << "\n"
     return 0

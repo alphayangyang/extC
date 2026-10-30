@@ -6,7 +6,7 @@
 type why = | negative(i64) | other
 struct box { v: i64
     fn new(n: i64) -> result<box, why> {
-        if n < i64(0) { return failure(why.negative(n)) }
+        if n < 0 { return failure(why.negative(n)) }
         return success(box { v: n })
     }
 }
@@ -16,7 +16,7 @@ fn main() -> i32 {
         failure(e) => { println("不该到这") }
     }
     var rejected: bool = false
-    match box(i64(0) - i64(1)) {
+    match box(0 - 1) {
         success(b) => { }
         failure(e) => { rejected = true }
     }

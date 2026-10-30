@@ -41,7 +41,7 @@ fn main(args: slice<slice<u8>>) -> i32 {
         i = i + 1
     }
     var q: ?mut ref node = g
-    var last: i64 = i64(-1)
+    var last: i64 = -1
     if q != null { last = (*q).v }
     io::cout << "n=" << n << " last=" << last << "\n"
     return 0

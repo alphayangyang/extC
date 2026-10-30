@@ -14,11 +14,11 @@ struct box { v: i64 }
 
 impl Both for box {
     fn zeta(self: ref box) -> i64 { return self.v }
-    fn alpha(self: ref box) -> i64 { return self.v + i64(1) }
+    fn alpha(self: ref box) -> i64 { return self.v + 1 }
 }
 
 fn main() -> i32 {
-    let b = box { v: i64(3) }
+    let b = box { v: 3 }
     io::cout << "zeta=" << dyn Both(b).zeta() << " alpha=" << dyn Both(b).alpha() << "\n"
     return 0
 }

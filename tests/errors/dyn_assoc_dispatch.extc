@@ -8,9 +8,9 @@ trait Tag {
 struct box { v: i64 }
 impl Tag for box {
     fn tag(self: ref box) -> i64 { return self.v }
-    fn zero() -> i64 { return i64(0) }
+    fn zero() -> i64 { return 0 }
 }
 fn main() -> i32 {
-    var b: box = box { v: i64(7) }
+    var b: box = box { v: 7 }
     return i32(dyn Tag(b).zero())
 }

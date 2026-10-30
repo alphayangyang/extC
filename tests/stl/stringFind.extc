@@ -14,8 +14,8 @@ fn mk(s: mut ref string, bits: i64, len: i64) {
     s.clear()
     var i: i64 = 0
     while i < len {
-        if ((bits >> i) & i64(1)) == i64(1) { s.push(u8(98)) } else { s.push(u8(97)) }
-        i = i + i64(1)
+        if ((bits >> i) & 1) == 1 { s.push(u8(98)) } else { s.push(u8(97)) }
+        i = i + 1
     }
 }
 
@@ -23,104 +23,104 @@ fn mk(s: mut ref string, bits: i64, len: i64) {
 fn naive(h: slice<u8>, nd: slice<u8>) -> i64 {
     let m = h.len
     let n = nd.len
-    if n == i64(0) { return i64(0) }
-    if n > m { return i64(-1) }
+    if n == 0 { return 0 }
+    if n > m { return -1 }
     var i: i64 = 0
     while i + n <= m {
         var j: i64 = 0
         var ok: i64 = 1
         while j < n {
-            if h[i + j] != nd[j] { ok = i64(0) }
-            j = j + i64(1)
+            if h[i + j] != nd[j] { ok = 0 }
+            j = j + 1
         }
-        if ok == i64(1) { return i }
-        i = i + i64(1)
+        if ok == 1 { return i }
+        i = i + 1
     }
-    return i64(-1)
+    return -1
 }
 
 /* 一个边界用例：既对**期望值**，也对**朴素实现**（两样都要对上才算过；返回 1 = 没过）。
  * 期望值写成字面量是有意的：只跟朴素实现对拍的话，两边一起错就看不出来了。 */
 fn checkOne(h: ref string, nd: ref string, want: i64) -> i64 {
-    let got = h.find(nd.toSlice()) ?? i64(-1)
-    if got != want { return i64(1) }
-    if got != naive(h.toSlice(), nd.toSlice()) { return i64(1) }
-    return i64(0)
+    let got = h.find(nd.toSlice()) ?? -1
+    if got != want { return 1 }
+    if got != naive(h.toSlice(), nd.toSlice()) { return 1 }
+    return 0
 }
 
 fn mkLit(s: mut ref string, text: slice<u8>) { s.clear()  s.append(text) }
 
 fn main() -> i32 {
-    var hay: string = string::withCap(i64(64))
-    var nd:  string = string::withCap(i64(64))
-    var bad: i64 = i64(0)
-    var checked: i64 = i64(0)
+    var hay: string = string::withCap(64)
+    var nd:  string = string::withCap(64)
+    var bad: i64 = 0
+    var checked: i64 = 0
     var nl: i64 = 1
-    while nl <= i64(4) {
+    while nl <= 4 {
         var nb: i64 = 0
         while nb < (i64(1) << nl) {
             mk(ref nd, nb, nl)
             var hl: i64 = 0
-            while hl <= i64(10) {
+            while hl <= 10 {
                 var hb: i64 = 0
                 while hb < (i64(1) << hl) {
                     mk(ref hay, hb, hl)
-                    let got  = hay.find(nd.toSlice()) ?? i64(-1)
+                    let got  = hay.find(nd.toSlice()) ?? -1
                     let want = naive(hay.toSlice(), nd.toSlice())
-                    if got != want { bad = bad + i64(1) }
-                    checked = checked + i64(1)
-                    hb = hb + i64(1)
+                    if got != want { bad = bad + 1 }
+                    checked = checked + 1
+                    hb = hb + 1
                 }
-                hl = hl + i64(1)
+                hl = hl + 1
             }
-            nb = nb + i64(1)
+            nb = nb + 1
         }
-        nl = nl + i64(1)
+        nl = nl + 1
     }
     /* 大输入与刁钻形状：最坏情况必须是线性的（周期型模式 + 全 a 长文本是最经典的那一档），
      * 同时验几个已知答案（周期性文本、匹配落在末尾附近）。 */
-    var big: string = string::withCap(i64(1024))
+    var big: string = string::withCap(1024)
     var i: i64 = 0
-    while i < i64(100000) {
+    while i < 100000 {
         big.push(u8(97))
-        i = i + i64(1)
+        i = i + 1
     }
-    var p1: string = string::withCap(i64(16))
+    var p1: string = string::withCap(16)
     p1.append("aaaaab")
-    if (big.find(p1.toSlice()) ?? i64(-1)) != i64(-1) { bad = bad + i64(1) }
+    if (big.find(p1.toSlice()) ?? -1) != -1 { bad = bad + 1 }
     big.push(u8(98))                                   /* 现在末尾是 b：aaa...ab 从 99995 开始 */
-    if (big.find(p1.toSlice()) ?? i64(-1)) != i64(99995) { bad = bad + i64(1) }
-    var cyc: string = string::withCap(i64(1024))
+    if (big.find(p1.toSlice()) ?? -1) != 99995 { bad = bad + 1 }
+    var cyc: string = string::withCap(1024)
     var j: i64 = 0
-    while j < i64(4096) {
+    while j < 4096 {
         cyc.append("ab")
-        j = j + i64(1)
+        j = j + 1
     }
-    var p2: string = string::withCap(i64(16))
+    var p2: string = string::withCap(16)
     p2.append("abababab")
-    if (cyc.find(p2.toSlice()) ?? i64(-1)) != i64(0) { bad = bad + i64(1) }
-    var p3: string = string::withCap(i64(16))
+    if (cyc.find(p2.toSlice()) ?? -1) != 0 { bad = bad + 1 }
+    var p3: string = string::withCap(16)
     p3.append("ba")
-    if (cyc.find(p3.toSlice()) ?? i64(-1)) != i64(1) { bad = bad + i64(1) }
+    if (cyc.find(p3.toSlice()) ?? -1) != 1 { bad = bad + 1 }
 
     /* 边界的**逐条点名**：穷举那一轮的 `nl` 从 1 起（空模式不在里面），这里把每一个都写成
      * 一行 —— 每个都同时与朴素实现对拍（`checkOne`），`edge` 是没过的条数，必须是 0。 */
-    var s4: string = string::withCap(i64(16))
-    var q:  string = string::withCap(i64(16))
+    var s4: string = string::withCap(16)
+    var q:  string = string::withCap(16)
     var edge: i64 = 0
     mkLit(ref s4, "aaaa")
-    mkLit(ref q, "")           ; edge = edge + checkOne(ref s4, ref q, i64(0))       /* 空模式 ⇒ 0 */
-    mkLit(ref q, "aaaaa")      ; edge = edge + checkOne(ref s4, ref q, i64(-1))      /* 模式比串长 ⇒ none */
-    mkLit(ref q, "aa")         ; edge = edge + checkOne(ref s4, ref q, i64(0))       /* 自重叠 ⇒ 最左 0 */
-    mkLit(ref q, "a")          ; edge = edge + checkOne(ref s4, ref q, i64(0))       /* 命中在开头 */
+    mkLit(ref q, "")           ; edge = edge + checkOne(ref s4, ref q, 0)       /* 空模式 ⇒ 0 */
+    mkLit(ref q, "aaaaa")      ; edge = edge + checkOne(ref s4, ref q, -1)      /* 模式比串长 ⇒ none */
+    mkLit(ref q, "aa")         ; edge = edge + checkOne(ref s4, ref q, 0)       /* 自重叠 ⇒ 最左 0 */
+    mkLit(ref q, "a")          ; edge = edge + checkOne(ref s4, ref q, 0)       /* 命中在开头 */
     mkLit(ref s4, "xyzzy")
-    mkLit(ref q, "zy")         ; edge = edge + checkOne(ref s4, ref q, i64(3))       /* 命中在结尾 */
-    mkLit(ref q, "xy")         ; edge = edge + checkOne(ref s4, ref q, i64(0))       /* 命中在开头 */
-    mkLit(ref q, "qq")         ; edge = edge + checkOne(ref s4, ref q, i64(-1))      /* 不命中 */
+    mkLit(ref q, "zy")         ; edge = edge + checkOne(ref s4, ref q, 3)       /* 命中在结尾 */
+    mkLit(ref q, "xy")         ; edge = edge + checkOne(ref s4, ref q, 0)       /* 命中在开头 */
+    mkLit(ref q, "qq")         ; edge = edge + checkOne(ref s4, ref q, -1)      /* 不命中 */
     mkLit(ref s4, "ababab")
-    mkLit(ref q, "abab")       ; edge = edge + checkOne(ref s4, ref q, i64(0))       /* 两处匹配 ⇒ 取最左 */
-    mkLit(ref q, "ba")         ; edge = edge + checkOne(ref s4, ref q, i64(1))       /* 偏移 1 */
-    mkLit(ref q, "abababab")   ; edge = edge + checkOne(ref s4, ref q, i64(-1))      /* 差一个字节就超长 */
+    mkLit(ref q, "abab")       ; edge = edge + checkOne(ref s4, ref q, 0)       /* 两处匹配 ⇒ 取最左 */
+    mkLit(ref q, "ba")         ; edge = edge + checkOne(ref s4, ref q, 1)       /* 偏移 1 */
+    mkLit(ref q, "abababab")   ; edge = edge + checkOne(ref s4, ref q, -1)      /* 差一个字节就超长 */
 
     io::cout << "checked=" << checked << "|edge=" << edge << "|bad=" << bad << "\n"
     return 0

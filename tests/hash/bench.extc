@@ -12,7 +12,7 @@ fn main() -> i32 {
     var buf: mut slice<u8> = new u8[MB]
     var i: i64 = 0
     while i < MB {
-        buf[i] = u8(i & i64(255))
+        buf[i] = u8(i & 255)
         i = i + 1
     }
     var out32: [32]u8
@@ -27,8 +27,8 @@ fn main() -> i32 {
         r = r + 1
     }
     var dt: i64 = time::now() - t0
-    let mbps: i64 = (rounds * MB * i64(1000)) / dt        /* ns → MB/s */
-    io::cout << "sha256   " << mbps << " MB/s（整块 1 MiB × " << rounds << "，dt=" << (dt / i64(1000000)) << "ms）\n"
+    let mbps: i64 = (rounds * MB * 1000) / dt        /* ns → MB/s */
+    io::cout << "sha256   " << mbps << " MB/s（整块 1 MiB × " << rounds << "，dt=" << (dt / 1000000) << "ms）\n"
 
     /* ---- SHA-256：流式 1 KiB 一片（同一条数据） ---- */
     t0 = time::now()
@@ -38,14 +38,14 @@ fn main() -> i32 {
         c.init()
         var off: i64 = 0
         while off < MB {
-            c.update(buf[off..off + i64(1024)])
-            off = off + i64(1024)
+            c.update(buf[off..off + 1024])
+            off = off + 1024
         }
         if !c.final(out32[..]) { return 2 }
         r = r + 1
     }
     dt = time::now() - t0
-    let mbps2: i64 = (rounds * MB * i64(1000)) / dt
+    let mbps2: i64 = (rounds * MB * 1000) / dt
     io::cout << "sha256   " << mbps2 << " MB/s（流式 1 KiB 片）\n"
 
     /* ---- SHA-1：整块 ---- */
@@ -56,8 +56,8 @@ fn main() -> i32 {
         r = r + 1
     }
     dt = time::now() - t0
-    let mbps3: i64 = (rounds * MB * i64(1000)) / dt
-    io::cout << "sha1     " << mbps3 << " MB/s（整块 1 MiB × " << rounds << "，dt=" << (dt / i64(1000000)) << "ms）\n"
+    let mbps3: i64 = (rounds * MB * 1000) / dt
+    io::cout << "sha1     " << mbps3 << " MB/s（整块 1 MiB × " << rounds << "，dt=" << (dt / 1000000) << "ms）\n"
     io::cout << "bench ok\n"
     return 0
 }

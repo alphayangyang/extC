@@ -11,33 +11,33 @@ use stl::pool
 
 /* 把 `args[1]` 当十进制数读（没给就用默认值）*/
 fn toInt(s: slice<u8>, dflt: i64) -> i64 {
-    if s.len == i64(0) { return dflt }
+    if s.len == 0 { return dflt }
     var v: i64 = 0
     var i: i64 = 0
     while i < s.len {
         let b = i64(s[i])
-        if b < i64(48) || b > i64(57) { return dflt }
-        v = v * i64(10) + (b - i64(48))
-        i = i + i64(1)
+        if b < 48 || b > 57 { return dflt }
+        v = v * 10 + (b - 48)
+        i = i + 1
     }
     return v
 }
 
 fn main(args: slice<slice<u8>>) -> i32 {
-    var n: i64 = i64(100000)
-    if args.len > i64(1) { n = toInt(args[1], n) }
+    var n: i64 = 100000
+    if args.len > 1 { n = toInt(args[1], n) }
     var p = pool<i32>::withCap(16)
     var i: i64 = 0
     var sum: i64 = 0
     while i < n {
-        let h = p.insert(i32(i % i64(1000)))
+        let h = p.insert(i32(i % 1000))
         if p.contains(h) { sum = sum + i64(p.get(h) ?? i32(0)) }
         /* 故意不 remove：泄漏（canary：判据必须在这里响 ✗）*/
         /* 再来一个，让"活跃数"有点起伏（仍然 ≤2）*/
-        let h2 = p.insert(i32(i % i64(7)))
+        let h2 = p.insert(i32(i % 7))
         if p.contains(h2) { sum = sum + i64(p.get(h2) ?? i32(0)) }
         /* 故意不 remove */
-        i = i + i64(1)
+        i = i + 1
     }
     println("结束：", n, " 轮，活跃 = ", p.len(), "，校验和 = ", sum)
     return 0

@@ -27,20 +27,20 @@ use stl::hashSet
 
 fn main() -> i32 {
     /* ① vector：改副本不影响原件 + 副本内容对 */
-    var a: vector<i32> = vector<i32>::withCap(i64(4))
+    var a: vector<i32> = vector<i32>::withCap(4)
     a.push(i32(1))
     a.push(i32(2))
     a.push(i32(3))
     var b = a.clone()
     b.push(i32(4))
     io::cout << "vec=" << a.len() << "/" << b.len()
-    var c0 = b.get(i64(0)) ?? i32(-1)
-    var c1 = b.get(i64(1)) ?? i32(-1)
-    var c2 = b.get(i64(2)) ?? i32(-1)
+    var c0 = b.get(0) ?? i32(-1)
+    var c1 = b.get(1) ?? i32(-1)
+    var c2 = b.get(2) ?? i32(-1)
     io::cout << " vecOk=" << i64(c0) << "," << i64(c1) << "," << i64(c2)
 
     /* ② string */
-    var s: string = string::withCap(i64(8))
+    var s: string = string::withCap(8)
     s.push(u8(104))
     s.push(u8(105))
     var t = s.clone()
@@ -48,42 +48,42 @@ fn main() -> i32 {
     io::cout << " str=" << s.len() << "/" << t.len()
 
     /* ③ map / hashMap */
-    var m: map<i64, i32> = map<i64, i32>::withCap(i64(8))
-    m.put(i64(1), i32(10))
-    m.put(i64(2), i32(20))
+    var m: map<i64, i32> = map<i64, i32>::withCap(8)
+    m.put(1, i32(10))
+    m.put(2, i32(20))
     var m2 = m.clone()
-    m2.put(i64(3), i32(30))
+    m2.put(3, i32(30))
     io::cout << " map=" << m.len() << "/" << m2.len()
 
-    var h: hashMapI64<i32> = hashMapI64<i32>::withCap(i64(8))
-    h.put(i64(7), i32(70))
+    var h: hashMapI64<i32> = hashMapI64<i32>::withCap(8)
+    h.put(7, i32(70))
     var h2 = h.clone()
-    h2.put(i64(8), i32(80))
+    h2.put(8, i32(80))
     io::cout << " hm=" << h.len() << "/" << h2.len()
 
     /* ④ set / linMap / linSet / hashSet */
-    var st: set<i64> = set<i64>::withCap(i64(8))
-    st.put(i64(1))
+    var st: set<i64> = set<i64>::withCap(8)
+    st.put(1)
     var st2 = st.clone()
-    st2.put(i64(2))
+    st2.put(2)
     io::cout << " set=" << st.len() << "/" << st2.len()
 
-    var lm: linMap<i64, i32> = linMap<i64, i32>::withCap(i64(8))
-    lm.put(i64(1), i32(10))
+    var lm: linMap<i64, i32> = linMap<i64, i32>::withCap(8)
+    lm.put(1, i32(10))
     var lm2 = lm.clone()
-    lm2.put(i64(2), i32(20))
+    lm2.put(2, i32(20))
     io::cout << " lin=" << lm.len() << "/" << lm2.len()
 
-    var lst: linSet<i64> = linSet<i64>::withCap(i64(8))
-    lst.add(i64(1))
+    var lst: linSet<i64> = linSet<i64>::withCap(8)
+    lst.add(1)
     var lst2 = lst.clone()
-    lst2.add(i64(2))
+    lst2.add(2)
     io::cout << " lset=" << lst.len() << "/" << lst2.len()
 
-    var hs: hashSetI64 = hashSetI64::withCap(i64(8))
-    hs.put(i64(5))
+    var hs: hashSetI64 = hashSetI64::withCap(8)
+    hs.put(5)
     var hs2 = hs.clone()
-    hs2.put(i64(6))
+    hs2.put(6)
     io::cout << " hset=" << hs.len() << "/" << hs2.len()
 
     /* ⑤ 原件 release 之后副本照旧可用（这才是"独立"的硬判据：共享的话副本会一起失效） */

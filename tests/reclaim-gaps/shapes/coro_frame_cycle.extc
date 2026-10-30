@@ -26,7 +26,7 @@ fn parseI64(s: slice<u8>) -> i64 {
 
 fn churn(n: i64) -> coroutine<i64> {
     var keep: mut ref node = new node
-    keep.v = i64(0)
+    keep.v = 0
     keep.next = keep
     var i: i64 = 0
     while i < n {
@@ -43,7 +43,7 @@ fn churn(n: i64) -> coroutine<i64> {
 fn main(args: slice<slice<u8>>) -> i32 {
     var n: i64 = parseI64(args[1])
     var c = churn(n)
-    var last: i64 = i64(-1)
+    var last: i64 = -1
     while c.next() { last = c.value() }
     io::cout << "n=" << n << " last=" << last << "\n"
     return 0

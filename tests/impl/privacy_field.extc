@@ -3,6 +3,6 @@
 use privmod
 
 fn main() -> i32 {
-    var c: privmod::counter = privmod::make(i64(5))
+    var c: privmod::counter = privmod::make(5)
     return i32(c.seen)
 }

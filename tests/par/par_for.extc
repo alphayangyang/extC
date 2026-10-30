@@ -2,7 +2,7 @@
 use std::io
 
 fn main() -> i32 {
-    let n: i64 = i64(1000)
+    let n: i64 = 1000
     var a: mut slice<f64> = new f64[n]
     var b: mut slice<f64> = new f64[n]
     for i in 0..n { a[i] = f64(i) * 2.0 }

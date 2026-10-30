@@ -4,7 +4,7 @@ use std::io
 fn parFill(rows: i64, cols: i64, dst: mut slice<f64>) {
     par r in 0..rows {
         par c in 0..cols {
-            dst[r * cols + c] = f64(r * i64(100) + c)
+            dst[r * cols + c] = f64(r * 100 + c)
         }
     }
 }
@@ -12,7 +12,7 @@ fn parFill(rows: i64, cols: i64, dst: mut slice<f64>) {
 fn seqFill(rows: i64, cols: i64, dst: mut slice<f64>) {
     for r in 0..rows {
         for c in 0..cols {
-            dst[r * cols + c] = f64(r * i64(100) + c)
+            dst[r * cols + c] = f64(r * 100 + c)
         }
     }
 }

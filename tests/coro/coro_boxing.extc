@@ -21,16 +21,16 @@ fn worker(n: i64) -> coroutine<i64> {
 
 fn main() -> i32 {
     var b: holder
-    b.h = worker(i64(2))            /* ① 字段 */
+    b.h = worker(2)            /* ① 字段 */
 
     var a: [2]coroutine<i64>
-    a[0] = worker(i64(1))           /* ② 元素 */
+    a[0] = worker(1)           /* ② 元素 */
     a[1] = b.h                      /* 句柄复制（规则④：内存安全）*/
 
-    var h: coroutine<i64> = worker(i64(2))
-    h = worker(i64(3))              /* ③ 变量已有句柄类型 ⇒ 重新装箱 */
+    var h: coroutine<i64> = worker(2)
+    h = worker(3)              /* ③ 变量已有句柄类型 ⇒ 重新装箱 */
 
-    var fr = worker(i64(1))         /* 帧类型（不外逃 ⇒ 生成物里不该有任务表）*/
+    var fr = worker(1)         /* 帧类型（不外逃 ⇒ 生成物里不该有任务表）*/
     var s: i64 = 0
     while b.h.next() { s = s + b.h.value() }
     while a[0].next() { s = s + a[0].value() }

@@ -8,13 +8,13 @@ use stl::map
 fn main() -> i32 {
     io::cout << "live=" << syspool::extc_pool_live()
     {
-        var m: map<i64, i32> = map<i64, i32>::withCap(i64(16))
-        m.put(i64(1), i32(10))
+        var m: map<i64, i32> = map<i64, i32>::withCap(16)
+        m.put(1, i32(10))
         io::cout << " made=" << syspool::extc_pool_live()
         m.release()
         io::cout << " closed=" << syspool::extc_pool_live()
-        var q: map<i64, i32> = map<i64, i32>::withCap(i64(16))
-        q.put(i64(2), i32(20))
+        var q: map<i64, i32> = map<i64, i32>::withCap(16)
+        q.put(2, i32(20))
         io::cout << " again=" << syspool::extc_pool_live()
         q.release()
     }

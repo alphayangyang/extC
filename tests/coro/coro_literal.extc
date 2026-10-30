@@ -13,25 +13,25 @@ fn worker(fd: i64, s: mut ref sched::loop) -> coroutine<i64> {
     var r: i64 = net::extc_epoll_new()                  /* 占位，避免"未使用" */
     yield fd                                            /* 挂起一次：字面量活着跨过去 */
     io::cout << greeting << "\n"
-    yield i64(-1) - r
+    yield -1 - r
 }
 
 fn main() -> i32 {
     var s: sched::loop
-    if !sched::init(ref s, i64(-1)) { return i32(90) }
-    var tasks: sched::tasks<i64> = { rows: sched::newRows(), runq: sched::newQ(), rqHead: i64(0), freeq: sched::newQ(), acceptq: sched::newQ() }
+    if !sched::init(ref s, -1) { return i32(90) }
+    var tasks: sched::tasks<i64> = { rows: sched::newRows(), runq: sched::newQ(), rqHead: 0, freeq: sched::newQ(), acceptq: sched::newQ() }
     var sp: [2]i64
-    if net::extc_sock_pair(sp[..].data) != i64(0) { return i32(91) }
+    if net::extc_sock_pair(sp[..].data) != 0 { return i32(91) }
     var one: [1]u8
     one[0] = u8(7)
-    if net::extc_sock_write(sp[1], one[..].data, i64(1)) != i64(1) { return i32(92) }
+    if net::extc_sock_write(sp[1], one[..].data, 1) != 1 { return i32(92) }
     tasks.add(ref s, worker(sp[0], ref s))
-    var rounds: i64 = i64(0)
-    while rounds < i64(20) && s.live > i64(0) {
-        var pr: i64 = tasks.pump(ref s, i64(50))
-        rounds = rounds + i64(1)
+    var rounds: i64 = 0
+    while rounds < 20 && s.live > 0 {
+        var pr: i64 = tasks.pump(ref s, 50)
+        rounds = rounds + 1
     }
-    if s.live > i64(0) { io::cout << "STUCK\n"  return i32(93) }
+    if s.live > 0 { io::cout << "STUCK\n"  return i32(93) }
     io::cout << "literal ok\n"
     return i32(0)
 }

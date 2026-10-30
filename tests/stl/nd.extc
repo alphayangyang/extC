@@ -3,33 +3,33 @@ use std::io
 use stl::nd
 
 fn main() -> i32 {
-    var a: ndarray<f64> = ndarray<f64>::zeros3(i64(2), i64(3), i64(4)) ?? ndarray<f64>::empty()
+    var a: ndarray<f64> = ndarray<f64>::zeros3(2, 3, 4) ?? ndarray<f64>::empty()
     var va: ndview<f64> = a.viewMut()
     let okf: bool = nd::filled(va, f64(1.0))
     let s1: f64 = nd::sumv(a.view()) ?? f64(0.0)
 
-    var b: ndarray<f64> = ndarray<f64>::zeros3(i64(2), i64(3), i64(4)) ?? ndarray<f64>::empty()
+    var b: ndarray<f64> = ndarray<f64>::zeros3(2, 3, 4) ?? ndarray<f64>::empty()
     let oks: bool = nd::scaleInto(b.viewMut(), a.view(), f64(3.0))
     let s2: f64 = nd::sumv(b.view()) ?? f64(0.0)
 
-    var c: ndarray<f64> = ndarray<f64>::zeros3(i64(2), i64(3), i64(4)) ?? ndarray<f64>::empty()
+    var c: ndarray<f64> = ndarray<f64>::zeros3(2, 3, 4) ?? ndarray<f64>::empty()
     let oka: bool = nd::addInto(c.viewMut(), a.view(), b.view())
     let s3: f64 = nd::sumv(c.view()) ?? f64(0.0)
 
-    var d: ndarray<f64> = ndarray<f64>::zeros3(i64(2), i64(3), i64(4)) ?? ndarray<f64>::empty()
+    var d: ndarray<f64> = ndarray<f64>::zeros3(2, 3, 4) ?? ndarray<f64>::empty()
     let okx: bool = nd::axpyInto(d.viewMut(), a.view(), b.view(), f64(2.0))
     let s4: f64 = nd::sumv(d.view()) ?? f64(0.0)
 
-    let t: ndview<f64> = nd::swapDims(a.view(), i64(0), i64(2)) ?? a.view()
+    let t: ndview<f64> = nd::swapDims(a.view(), 0, 2) ?? a.view()
     let st: f64 = nd::sumv(t) ?? f64(0.0)
-    let r2: ndview<f64> = nd::sub(a.view(), i64(1)) ?? a.view()
+    let r2: ndview<f64> = nd::sub(a.view(), 1) ?? a.view()
     let s5: f64 = nd::sumv(r2) ?? f64(0.0)
     let bad: bool = nd::addInto(c.viewMut(), a.view(), r2)
 
-    var e: ndarray<f64> = ndarray<f64>::zeros1(i64(0)) ?? ndarray<f64>::empty()
+    var e: ndarray<f64> = ndarray<f64>::zeros1(0) ?? ndarray<f64>::empty()
     let s6: f64 = nd::sumv(e.view()) ?? f64(-1.0)
 
-    var q: ndarray<f64> = ndarray<f64>::zeros4(i64(2), i64(2), i64(2), i64(2)) ?? ndarray<f64>::empty()
+    var q: ndarray<f64> = ndarray<f64>::zeros4(2, 2, 2, 2) ?? ndarray<f64>::empty()
     let cnt: i64 = q.view().count()
     let c3: i64 = va.count()
 

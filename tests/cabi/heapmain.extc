@@ -29,7 +29,7 @@ var plate: [256]u8
 var used: i64 = 0
 var logged: i64 = 0
 var api: heapapi = heapapi {
-    size: i64(3), ctx: null, alloc: hostAlloc, len: hostLen, log: hostLog
+    size: 3, ctx: null, alloc: hostAlloc, len: hostLen, log: hostLog
 }
 
 fn hostAlloc(n: i64, ctx: ?ref void) -> ref u8 {
@@ -55,8 +55,8 @@ fn plateBase() -> u64 {
 fn hostLog(p: ref u8, n: i64, ctx: ?ref void) -> i64 {
     var addr: u64 = u64(p)
     var base: u64 = plateBase()
-    if addr < base { return i64(-1) }
-    if addr + u64(n) > base + u64(PLATE_LEN) { return i64(-1) }
+    if addr < base { return -1 }
+    if addr + u64(n) > base + u64(PLATE_LEN) { return -1 }
     logged = logged + n
     return n
 }
@@ -74,7 +74,7 @@ fn main() -> i32 {
     /* 宿主自己再做一次同样的检查（模块也可能是坏的）。 */
     var addr: u64 = u64(p)
     var base: u64 = plateBase()
-    if !(addr >= base && addr < base + u64(PLATE_LEN) && logged == i64(2)) {
+    if !(addr >= base && addr < base + u64(PLATE_LEN) && logged == 2) {
         io::cout << "plate=bad\n"
         return 1
     }

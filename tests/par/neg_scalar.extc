@@ -5,8 +5,8 @@ struct point {
 }
 
 fn main() -> i32 {
-    let n: i64 = i64(8)
-    let p: point = point { x: i64(1), y: i64(2) }
+    let n: i64 = 8
+    let p: point = point { x: 1, y: 2 }
     var b: mut slice<f64> = new f64[n]
     par i in 0..n { b[i] = f64(i) + f64(p.x) }
     return 0

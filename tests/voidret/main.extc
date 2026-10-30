@@ -13,22 +13,22 @@ struct box {
     n: i64
 
     fn noRet(self: mut ref box) -> void {
-        if self.n > i64(1) { return }
-        self.n = self.n + i64(1)
+        if self.n > 1 { return }
+        self.n = self.n + 1
     }
 
     fn voidRet(self: mut ref box) -> void {
-        if self.n > i64(0) { return }
-        self.n = self.n + i64(10)
+        if self.n > 0 { return }
+        self.n = self.n + 10
     }
 
     fn implicitVoid(self: mut ref box) {
-        if self.n > i64(0) { return }
-        self.n = self.n + i64(100)
+        if self.n > 0 { return }
+        self.n = self.n + 100
     }
 
     fn hasRet(self: mut ref box) -> i64 {
-        if self.n > i64(5) { return i64(5) }
+        if self.n > 5 { return 5 }
         return self.n
     }
 }
@@ -39,13 +39,13 @@ fn freeVoid() -> void {
 
 fn main() -> i32 {
     var b: box
-    b.n = i64(0)
+    b.n = 0
     b.noRet()           /* n = 1 */
     b.voidRet()         /* n > 0 ⇒ 立刻 return ⇒ 仍是 1 */
     b.implicitVoid()    /* 同上 ⇒ 仍是 1 */
     freeVoid()
-    if b.n != i64(1) { return 1 }
-    if b.hasRet() != i64(1) { return 2 }
+    if b.n != 1 { return 1 }
+    if b.hasRet() != 1 { return 2 }
     io::cout << "voidret ok（方法/自由函数的裸 return 都合法，且语义正确）\n"
     return 0
 }

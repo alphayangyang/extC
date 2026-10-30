@@ -9,8 +9,8 @@
 // 生成器那边另加一句 params.len == 0 的防御（诊断留给检查器）。
 trait Bad { fn nope() -> i64 }
 struct s { v: i64 }
-impl Bad for s { fn nope() -> i64 { return i64(1) } }
+impl Bad for s { fn nope() -> i64 { return 1 } }
 fn main() -> i32 { var a: s
-  a.v = i64(0)
+  a.v = 0
   var d: dyn Bad = dyn Bad(a)
   return i32(d.nope()) }

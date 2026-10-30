@@ -6,7 +6,7 @@ struct bi { v: i64 }
 impl Codec<i64> for bi { fn enc(self: ref bi, v: i64) -> i64 { return self.v + v } }
 fn main() -> i32 {
   var a: bi
-  a.v = i64(4)
-  io::cout << "enc=" << a.enc(i64(3)) << "\n"
+  a.v = 4
+  io::cout << "enc=" << a.enc(3) << "\n"
   return 0
 }

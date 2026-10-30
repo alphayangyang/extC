@@ -6,7 +6,7 @@ trait Tag { fn tag(self: ref Self) -> i64 }
 struct box { v: i64 }
 impl Tag for box { fn tag(self: ref box) -> i64 { return self.v } }
 
-fn make() -> dyn Tag { return dyn Tag(box { v: i64(88) }) }
+fn make() -> dyn Tag { return dyn Tag(box { v: 88 }) }
 
 fn main() -> i32 {
     let d: dyn Tag = make()

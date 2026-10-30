@@ -13,27 +13,27 @@ fn main() -> i32 {
         u = u * u64(6364136223846793005) + u64(1442695040888963407)
         let k = i64(u & u64(2147483647))
         m.put(k, i32(k))
-        i = i + i64(1)
+        i = i + 1
     }
-    i = i64(0)
+    i = 0
     u = u64(12345)
     while i < N {
         u = u * u64(6364136223846793005) + u64(1442695040888963407)
         let k = i64(u & u64(2147483647))
         let v: i32 = m.get(k) ?? i32(-1)
         sum = sum + i64(v)
-        i = i + i64(1)
+        i = i + 1
     }
-    i = i64(0)
+    i = 0
     u = u64(12345)
     var removed: i64 = 0
     while i < N {
         u = u * u64(6364136223846793005) + u64(1442695040888963407)
         let k = i64(u & u64(2147483647))
-        if i % i64(2) == i64(0) {
-            if m.remove(k) { removed = removed + i64(1) }
+        if i % 2 == 0 {
+            if m.remove(k) { removed = removed + 1 }
         }
-        i = i + i64(1)
+        i = i + 1
     }
     io::cout << "len=" << m.len() << " sum=" << sum << " removed=" << removed << "\n"
     return 0

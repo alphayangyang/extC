@@ -5,10 +5,10 @@ use stl::pool
 use std::sys::pool as syspool
 
 fn main() -> i32 {
-    var a = pool<i32>::withCap(i64(4))
+    var a = pool<i32>::withCap(4)
     var b = a                       /* 值拷贝：b.pid == a.pid，pidGen 也相同 */
     a.release()                     /* 放掉：a.pid = -1 */
-    var c = pool<i32>::withCap(i64(4))   /* 运行期槽位被复用，c 拿到同一个 rid、世代 +1 */
+    var c = pool<i32>::withCap(4)   /* 运行期槽位被复用，c 拿到同一个 rid、世代 +1 */
     b.release()                     /* 陈旧拷贝：世代对不上 ⇒ 必须什么都不做 */
     io::cout << "live=" << syspool::extc_pool_live() << " c-len=" << c.len() << "\n"
     return 0

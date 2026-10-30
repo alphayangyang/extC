@@ -16,7 +16,7 @@ struct w2<V> {
 
 fn main() -> i32 {
     var x: w2<i64> = { xs: varArray<i64>::withCap(1) }
-    x.xs.push(i64(1))
-    println("has(0) = ", x.has(i64(0)), " · has(5) = ", x.has(i64(5)))
+    x.xs.push(1)
+    println("has(0) = ", x.has(0), " · has(5) = ", x.has(5))
     return 0
 }

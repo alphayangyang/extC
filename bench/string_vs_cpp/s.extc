@@ -24,7 +24,7 @@ use stl::string
  * 值域 [0,255]，i 最大 6400 万 ⇒ i * 1103515245 <= 7.1e16，不会溢出 i64。 */
 @inline
 fn lcgByte(i: i64) -> u8 {
-    return u8(((i * i64(1103515245) + i64(12345)) >> i64(16)) & i64(255))
+    return u8(((i * 1103515245 + 12345) >> i64(16)) & 255)
 }
 
 /* xorshift64：read_at 的随机下标用它（与 C++ 侧同一个常数、同一个顺序）。 */
@@ -50,11 +50,11 @@ fn sampleSum(s: ref string, step: i64) -> i64 {
 
 /* 头 / 中 / 尾三个字节，各配一个不同的权重（位置敏感）。 */
 fn triple(s: ref string) -> i64 {
-    if s.len() == i64(0) { return i64(0) }
-    let a = i64(s.at(i64(0)) ?? u8(0))
-    let b = i64(s.at(s.len() / i64(2)) ?? u8(0))
-    let c = i64(s.at(s.len() - i64(1)) ?? u8(0))
-    return a * i64(3) + b * i64(5) + c * i64(7)
+    if s.len() == 0 { return 0 }
+    let a = i64(s.at(0) ?? u8(0))
+    let b = i64(s.at(s.len() / 2) ?? u8(0))
+    let c = i64(s.at(s.len() - 1) ?? u8(0))
+    return a * 3 + b * 5 + c * 7
 }
 
 /* ================================================================ 1. short_many
@@ -64,13 +64,13 @@ fn triple(s: ref string) -> i64 {
 fn scene_short_many(salt: i64) -> i64 {
     var acc: i64 = 0
     var i: i64 = 0
-    while i < i64(1000000) {
+    while i < 1000000 {
         var s: string
-        s.push(u8((97 + (i % i64(26))) ^ salt))
-        s.push(u8(98 + (i % i64(24))))
+        s.push(u8((97 + (i % 26)) ^ salt))
+        s.push(u8(98 + (i % 24)))
         s.push(u8(99))
-        acc = acc + s.len() + i64(s.at(i64(2)) ?? u8(0))
-        i = i + i64(1)
+        acc = acc + s.len() + i64(s.at(2) ?? u8(0))
+        i = i + 1
     }
     return acc
 }
@@ -83,16 +83,16 @@ fn scene_short_many(salt: i64) -> i64 {
 fn scene_short_cross(salt: i64) -> i64 {
     var acc: i64 = 0
     var i: i64 = 0
-    while i < i64(1000000) {
+    while i < 1000000 {
         var s: string
         var k: i64 = 0
-        while k < i64(20) {
+        while k < 20 {
             s.push(u8((32 + k) ^ salt))
-            k = k + i64(1)
+            k = k + 1
         }
-        acc = acc + s.len() + i64(s.at(i64(19)) ?? u8(0))
+        acc = acc + s.len() + i64(s.at(19) ?? u8(0))
         s.release()
-        i = i + i64(1)
+        i = i + 1
     }
     return acc
 }
@@ -103,11 +103,11 @@ fn scene_short_cross(salt: i64) -> i64 {
 fn scene_long_build_byte() -> i64 {
     var s: string
     var i: i64 = 0
-    while i < i64(4000000) {
+    while i < 4000000 {
         s.push(lcgByte(i))
-        i = i + i64(1)
+        i = i + 1
     }
-    return s.len() + triple(ref s) + sampleSum(ref s, i64(4096))
+    return s.len() + triple(ref s) + sampleSum(ref s, 4096)
 }
 
 /* ================================================================ 4. long_build_chunk
@@ -123,12 +123,12 @@ fn scene_long_build_chunk() -> i64 {
         var k: i64 = 0
         while k < CH {
             buf[k] = lcgByte(done + k)
-            k = k + i64(1)
+            k = k + 1
         }
         s.append(buf[0..CH])
         done = done + CH
     }
-    return s.len() + triple(ref s) + sampleSum(ref s, i64(1048576))
+    return s.len() + triple(ref s) + sampleSum(ref s, 1048576)
 }
 
 /* ================================================================ 5. reserve_growth
@@ -140,9 +140,9 @@ fn scene_reserve_growth() -> i64 {
     var i: i64 = 0
     while i < TOT {
         s.push(lcgByte(i))
-        i = i + i64(1)
+        i = i + 1
     }
-    return s.len() + triple(ref s) + sampleSum(ref s, i64(1048576))
+    return s.len() + triple(ref s) + sampleSum(ref s, 1048576)
 }
 
 /* ================================================================ 6. read_at
@@ -155,16 +155,16 @@ fn scene_read_at() -> i64 {
     var i: i64 = 0
     while i < N {
         s.push(lcgByte(i))
-        i = i + i64(1)
+        i = i + 1
     }
     var st: u64 = u64(88172645463325252)
     var acc: i64 = 0
     i = 0
-    while i < i64(10000000) {
+    while i < 10000000 {
         st = xs(st)
         let idx = i64((st >> u64(16)) % u64(N))
         acc = acc + i64(s.at(idx) ?? u8(0))
-        i = i + i64(1)
+        i = i + 1
     }
     return acc + s.len()
 }
@@ -180,26 +180,26 @@ fn scene_find() -> i64 {
     var i: i64 = 0
     while i < N {
         s.push(lcgByte(i))
-        i = i + i64(1)
+        i = i + 1
     }
     var pat: [16]u8
     var acc: i64 = 0
     i = 0
-    while i < i64(10000) {
-        let L: i64 = i64(4) + (i % i64(12))
-        let pos: i64 = (i * i64(7919)) % (N - i64(32))
+    while i < 10000 {
+        let L: i64 = 4 + (i % 12)
+        let pos: i64 = (i * 7919) % (N - 32)
         var k: i64 = 0
         while k < L {
             var b: i64 = i64(lcgByte(pos + k))
-            if k == i64(0) {
-                if (i % i64(2)) == i64(0) { b = (b + i64(1)) & i64(255) }
+            if k == 0 {
+                if (i % 2) == 0 { b = (b + 1) & 255 }
             }
             pat[k] = u8(b)
-            k = k + i64(1)
+            k = k + 1
         }
-        let at = s.find(pat[i64(0)..L]) ?? i64(-1)
-        acc = acc + at + i64(1)
-        i = i + i64(1)
+        let at = s.find(pat[i64(0)..L]) ?? -1
+        acc = acc + at + 1
+        i = i + 1
     }
     return acc
 }
@@ -211,28 +211,28 @@ fn scene_find() -> i64 {
  * ② 内容每轮都变，编译器没法把比较提到循环外（那样这一格就没量到东西了）。
  * extC 的 `==`/`<` 是自己的逐字节循环；C++ 的是 memcmp。 */
 fn scene_compare() -> i64 {
-    var a: string = string::withCap(i64(64))
-    var b: string = string::withCap(i64(64))
+    var a: string = string::withCap(64)
+    var b: string = string::withCap(64)
     var i: i64 = 0
-    while i < i64(32) {
-        a.push(u8(97 + (i % i64(26))))
-        b.push(u8(97 + ((i + i64(13)) % i64(26))))
-        i = i + i64(1)
+    while i < 32 {
+        a.push(u8(97 + (i % 26)))
+        b.push(u8(97 + ((i + 13) % 26)))
+        i = i + 1
     }
     var eq: i64 = 0
     var lt: i64 = 0
     i = 0
-    while i < i64(1000000) {
-        let x: i64 = i & i64(255)
+    while i < 1000000 {
+        let x: i64 = i & 255
         a.push(u8(x))
-        a.removeFront(i64(1))
-        b.push(u8((x + i64(128)) & i64(255)))
-        b.removeFront(i64(1))
-        if a == b { eq = eq + i64(1) }
-        if a < b { lt = lt + i64(1) }
-        i = i + i64(1)
+        a.removeFront(1)
+        b.push(u8((x + 128) & 255))
+        b.removeFront(1)
+        if a == b { eq = eq + 1 }
+        if a < b { lt = lt + 1 }
+        i = i + 1
     }
-    return eq * i64(1000) + lt
+    return eq * 1000 + lt
 }
 
 /* ================================================================ 9. substr_copy
@@ -246,14 +246,14 @@ fn scene_substr_copy() -> i64 {
     var i: i64 = 0
     while i < N {
         s.push(lcgByte(i))
-        i = i + i64(1)
+        i = i + 1
     }
     var acc: i64 = 0
     i = 0
-    while i < i64(100000) {
-        var p = s.sub(i64(1000), i64(2000))
-        acc = acc + p.len + i64(p[i64(0)]) + i64(p[i64(999)])
-        i = i + i64(1)
+    while i < 100000 {
+        var p = s.sub(1000, 2000)
+        acc = acc + p.len + i64(p[0]) + i64(p[999])
+        i = i + 1
     }
     return acc
 }
@@ -262,19 +262,19 @@ fn scene_substr_copy() -> i64 {
  * 100 万次 clone 一条 32 字节串（深拷贝：模式串住在池里，所以 clone 会拿一块新板块）。
  * 每轮 `release()` 归还（C++ 那边是离开作用域时析构）。 */
 fn scene_clone_many() -> i64 {
-    var base: string = string::withCap(i64(64))
+    var base: string = string::withCap(64)
     var i: i64 = 0
-    while i < i64(32) {
-        base.push(u8(97 + (i % i64(26))))
-        i = i + i64(1)
+    while i < 32 {
+        base.push(u8(97 + (i % 26)))
+        i = i + 1
     }
     var acc: i64 = 0
     i = 0
-    while i < i64(1000000) {
+    while i < 1000000 {
         var c = base.clone()
-        acc = acc + c.len() + i64(c.at(i64(31)) ?? u8(0))
+        acc = acc + c.len() + i64(c.at(31) ?? u8(0))
         c.release()
-        i = i + i64(1)
+        i = i + 1
     }
     return acc
 }
@@ -290,22 +290,22 @@ fn scene_clear_shrink_cycle() -> i64 {
     var s: string
     var acc: i64 = 0
     var round: i64 = 0
-    while round < i64(10000) {
+    while round < 10000 {
         s.clear()
         var done: i64 = 0
         while done < TOT {
             var k: i64 = 0
             while k < CH {
                 buf[k] = lcgByte(round * TOT + done + k)
-                k = k + i64(1)
+                k = k + 1
             }
             s.append(buf[0..CH])
             done = done + CH
         }
-        acc = acc + s.len() + i64(s.at(i64(0)) ?? u8(0)) + i64(s.at(i64(65535)) ?? u8(0))
+        acc = acc + s.len() + i64(s.at(0) ?? u8(0)) + i64(s.at(65535) ?? u8(0))
         s.clear()
         s.shrink()
-        round = round + i64(1)
+        round = round + 1
     }
     return acc + s.len()
 }
@@ -321,17 +321,17 @@ fn scene_many_live_short() -> i64 {
     var i: i64 = 0
     while i < N {
         var k: i64 = 0
-        while k < i64(8) {
-            arr[i].push(u8(65 + ((i + k) % i64(26))))
-            k = k + i64(1)
+        while k < 8 {
+            arr[i].push(u8(65 + ((i + k) % 26)))
+            k = k + 1
         }
-        i = i + i64(1)
+        i = i + 1
     }
     var acc: i64 = 0
     i = 0
     while i < N {
-        acc = acc + arr[i].len() + i64(arr[i].at(i64(7)) ?? u8(0))
-        i = i + i64(1)
+        acc = acc + arr[i].len() + i64(arr[i].at(7) ?? u8(0))
+        i = i + 1
     }
     return acc
 }
@@ -362,10 +362,10 @@ fn main(args: slice<slice<u8>>) -> i32 {
      * `mov $0x6146580,%eax`），那样这一格量的就不是字符串而是"编译器会不会做算术"。
      * 默认 0 时推的字节与不加盐完全一样 ⇒ 两边的校验和照旧逐位相同。 */
     var salt: i64 = 0
-    if args.len > 2 { salt = i64(args[i64(2)][i64(0)]) & i64(255) }
+    if args.len > 2 { salt = i64(args[2][0]) & 255 }
     if args.len > 1 {
-        if !run(args[i64(1)], salt) {
-            io::cout << "unknown scenario: " << args[i64(1)] << "\n"
+        if !run(args[1], salt) {
+            io::cout << "unknown scenario: " << args[1] << "\n"
             return 2
         }
         return 0

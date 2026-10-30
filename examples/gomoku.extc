@@ -28,9 +28,9 @@ struct rng {
     }
 
     fn below(self: mut ref rng, n: i64) -> i64 {
-        self.s = self.s * i64(6364136223846793005) + i64(1442695040888963407)
-        var v: i64 = self.s / i64(65536)
-        if v < i64(0) { v = i64(0) - v }
+        self.s = self.s * 6364136223846793005 + 1442695040888963407
+        var v: i64 = self.s / 65536
+        if v < 0 { v = 0 - v }
         return v % n
     }
 }
@@ -44,14 +44,14 @@ struct board {
     }
 
     fn inside(self: ref board, x: i64, y: i64) -> bool {
-        return x >= i64(0) && x < N && y >= i64(0) && y < N
+        return x >= 0 && x < N && y >= 0 && y < N
     }
 
     fn place(self: mut ref board, x: i64, y: i64, p: i32) -> bool {
         if !self.inside(x, y) { return false }
         if self.cell[y][x] != EMPTY { return false }
         self.cell[y][x] = p
-        self.moves = self.moves + i64(1)
+        self.moves = self.moves + 1
         return true
     }
 
@@ -66,7 +66,7 @@ struct board {
         var cy: i64 = y + dy
         while self.inside(cx, cy) {
             if self.cell[cy][cx] != p { break }
-            n = n + i64(1)
+            n = n + 1
             cx = cx + dx
             cy = cy + dy
         }
@@ -77,30 +77,30 @@ struct board {
     fn wins(self: ref board, x: i64, y: i64) -> bool {
         let p: i32 = self.cell[y][x]
         if p == EMPTY { return false }
-        let dx: [4]i64 = [i64(1), i64(0), i64(1), i64(1)]
-        let dy: [4]i64 = [i64(0), i64(1), i64(1), i64(-1)]
+        let dx: [4]i64 = [1, 0, 1, 1]
+        let dy: [4]i64 = [0, 1, 1, -1]
         var d: i64 = 0
-        while d < i64(4) {
-            var n: i64 = i64(1) + self.run(x, y, dx[d], dy[d], p)
-            n = n + self.run(x, y, i64(0) - dx[d], i64(0) - dy[d], p)
-            if n >= i64(5) { return true }
-            d = d + i64(1)
+        while d < 4 {
+            var n: i64 = 1 + self.run(x, y, dx[d], dy[d], p)
+            n = n + self.run(x, y, 0 - dx[d], 0 - dy[d], p)
+            if n >= 5 { return true }
+            d = d + 1
         }
         return false
     }
 
     /* 候选点用：这一步周围 r 格内有没有子。 */
     fn near(self: ref board, x: i64, y: i64, r: i64) -> bool {
-        var dy: i64 = i64(0) - r
+        var dy: i64 = 0 - r
         while dy <= r {
-            var dx: i64 = i64(0) - r
+            var dx: i64 = 0 - r
             while dx <= r {
                 if self.inside(x + dx, y + dy) && self.cell[y + dy][x + dx] != EMPTY {
                     return true
                 }
-                dx = dx + i64(1)
+                dx = dx + 1
             }
-            dy = dy + i64(1)
+            dy = dy + 1
         }
         return false
     }
@@ -114,14 +114,14 @@ fn sideName(p: i32) -> slice<u8> {
 /* `H8`：列字母 + 行号（设计 D6：A–O，不跳 I）。`buf` 由调用者给，返回写了几字节。 */
 fn coordText(buf: mut slice<u8>, x: i64, y: i64) -> i64 {
     buf[0] = u8('A' + x)
-    var k: i64 = i64(1)
-    let v: i64 = y + i64(1)
-    if v >= i64(10) {
-        buf[k] = u8('0' + v / i64(10))
-        k = k + i64(1)
+    var k: i64 = 1
+    let v: i64 = y + 1
+    if v >= 10 {
+        buf[k] = u8('0' + v / 10)
+        k = k + 1
     }
-    buf[k] = u8('0' + v % i64(10))
-    return k + i64(1)
+    buf[k] = u8('0' + v % 10)
+    return k + 1
 }
 
 fn printMove(no: i64, p: i32, x: i64, y: i64) {
@@ -134,90 +134,90 @@ fn printBoard(b: ref board) {
     var head: [24]u8
     head[0] = ' '
     head[1] = ' '
-    var x: i64 = i64(0)
+    var x: i64 = 0
     while x < N {
-        head[i64(2) + x] = u8('A' + x)
-        x = x + i64(1)
+        head[2 + x] = u8('A' + x)
+        x = x + 1
     }
     io::cout << head[0..i64(2) + N] << "\n"
-    var y: i64 = i64(0)
+    var y: i64 = 0
     while y < N {
         var line: [24]u8
-        var k: i64 = i64(0)
-        let v: i64 = y + i64(1)
-        if v < i64(10) {
-            line[k] = ' '  k = k + i64(1)
-            line[k] = u8('0' + v)  k = k + i64(1)
+        var k: i64 = 0
+        let v: i64 = y + 1
+        if v < 10 {
+            line[k] = ' '  k = k + 1
+            line[k] = u8('0' + v)  k = k + 1
         } else {
-            line[k] = u8('0' + v / i64(10))  k = k + i64(1)
-            line[k] = u8('0' + v % i64(10))  k = k + i64(1)
+            line[k] = u8('0' + v / 10)  k = k + 1
+            line[k] = u8('0' + v % 10)  k = k + 1
         }
-        line[k] = ' '  k = k + i64(1)
-        var xx: i64 = i64(0)
+        line[k] = ' '  k = k + 1
+        var xx: i64 = 0
         while xx < N {
             let c: i32 = b.at(xx, y)
             if c == BLACK { line[k] = 'X' }        /* X */
             else if c == WHITE { line[k] = 'O' }   /* O */
             else { line[k] = '.' }                 /* . */
-            k = k + i64(1)
-            xx = xx + i64(1)
+            k = k + 1
+            xx = xx + 1
         }
         io::cout << line[0..k] << "\n"
-        y = y + i64(1)
+        y = y + 1
     }
 }
 
 /* 随机挑一个候选点：距已有子 ≤2 的空点里等概率；棋盘空时下天元；候选为空则退化成第一个空点。 */
 fn pick(b: ref board, r: mut ref rng) -> [2]i64 {
-    var out: [2]i64 = [i64(7), i64(7)]
-    if b.moves == i64(0) { return out }
+    var out: [2]i64 = [7, 7]
+    if b.moves == 0 { return out }
     var cand: [225][2]i64
-    var n: i64 = i64(0)
-    var y: i64 = i64(0)
+    var n: i64 = 0
+    var y: i64 = 0
     while y < N {
-        var x: i64 = i64(0)
+        var x: i64 = 0
         while x < N {
-            if b.at(x, y) == EMPTY && b.near(x, y, i64(2)) {
+            if b.at(x, y) == EMPTY && b.near(x, y, 2) {
                 cand[n][0] = x
                 cand[n][1] = y
-                n = n + i64(1)
+                n = n + 1
             }
-            x = x + i64(1)
+            x = x + 1
         }
-        y = y + i64(1)
+        y = y + 1
     }
-    if n > i64(0) {
+    if n > 0 {
         let k: i64 = r.below(n)
         out[0] = cand[k][0]
         out[1] = cand[k][1]
         return out
     }
-    y = i64(0)
+    y = 0
     while y < N {
-        var x: i64 = i64(0)
+        var x: i64 = 0
         while x < N {
             if b.at(x, y) == EMPTY {
                 out[0] = x  out[1] = y
                 return out
             }
-            x = x + i64(1)
+            x = x + 1
         }
-        y = y + i64(1)
+        y = y + 1
     }
     return out
 }
 
 fn main(args: slice<slice<u8>>) -> i32 {
-    var seed: i64 = i64(20260927)
-    if args.len > i64(1) && args[i64(1)].len > i64(0) {
-        seed = seed + i64(args[i64(1)][i64(0)])     /* 换个种子：用第一个参数的第一个字节 */
+    var seed: i64 = 20260927
+    if args.len > 1 && args[1].len > 0 {
+        seed = seed + i64(args[1][0])     /* 换个种子：用第一个参数的第一个字节 */
     }
     var r: rng = rng::make(seed)
     var b: board
     var turn: i32 = BLACK
     var winner: i32 = EMPTY
-    var wx: i64 = i64(-1)
-    var wy: i64 = i64(-1)
+    var wx: i64 = -1
+    var wy: i64 = -1
     io::cout << "五子棋（试水版 · 双方随机落子 · 15×15 · 种子 " << seed << "）\n"
     while winner == EMPTY && !b.full() {
         let pos: [2]i64 = pick(ref b, ref r)

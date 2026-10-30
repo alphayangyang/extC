@@ -6,9 +6,9 @@ use std::sys::pool
 fn main() -> i32 {
     io::cout << "depth=" << pool::extc_pool_zoneDepth() << " live=" << pool::extc_pool_live()
     {
-        let a = pool::extc_pool_new(i64(-1))       /* 同一个地方里的三个池 */
-        let b = pool::extc_pool_new(i64(-1))
-        let c = pool::extc_pool_new(i64(-1))
+        let a = pool::extc_pool_new(-1)       /* 同一个地方里的三个池 */
+        let b = pool::extc_pool_new(-1)
+        let c = pool::extc_pool_new(-1)
         let child = pool::extc_pool_new(a)         /* 嵌套：a 的子树 */
         io::cout << " in=" << pool::extc_pool_zoneDepth() << "/" << pool::extc_pool_live()
         pool::extc_pool_drop(b)                    /* 单独放掉一个：live 3 */

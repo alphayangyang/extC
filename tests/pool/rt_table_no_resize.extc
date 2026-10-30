@@ -7,10 +7,10 @@ use std::io
 use std::sys::pool as syspool
 
 fn main() -> i32 {
-    let rid = syspool::extc_pool_new_table(i64(-1))     /* 建对象表池（可以是第一只池） */
-    var s: mut slice<i64> = poolSlice<i64>(rid, i64(4))
+    let rid = syspool::extc_pool_new_table(-1)     /* 建对象表池（可以是第一只池） */
+    var s: mut slice<i64> = poolSlice<i64>(rid, 4)
     io::cout << "kind=" << syspool::extc_pool_kind(rid) << "\n"
-    s = poolResizeRaw<i64>(rid, s, i64(8))              /* 对象表：不许原地搬家 ⇒ trap */
+    s = poolResizeRaw<i64>(rid, s, 8)              /* 对象表：不许原地搬家 ⇒ trap */
     io::cout << "不应该执行到这里\n"
     return 0
 }

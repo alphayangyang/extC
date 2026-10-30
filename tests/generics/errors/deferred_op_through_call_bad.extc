@@ -9,9 +9,9 @@ fn lt<T>(a: T, b: T) -> bool { return a < b }
 fn minOf<T>(a: T, b: T) -> T { if lt(a, b) { return a }  return b }
 
 fn main() -> i32 {
-    var a: plain = { v: i64(1) }
-    var b: plain = { v: i64(2) }
+    var a: plain = { v: 1 }
+    var b: plain = { v: 2 }
     var m: plain = minOf(a, b)
-    if m.v > i64(0) { return 0 }
+    if m.v > 0 { return 0 }
     return 1
 }

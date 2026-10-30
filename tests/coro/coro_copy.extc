@@ -8,7 +8,7 @@ fn worker(n: i64) -> coroutine<i64> {
 }
 
 fn main() -> i32 {
-    var h: coroutine<i64> = worker(i64(3))
+    var h: coroutine<i64> = worker(3)
     var g: coroutine<i64> = h            /* 复制（24 字节值复制）*/
     var s: i64 = 0
     while h.next() {

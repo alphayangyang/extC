@@ -13,9 +13,9 @@ struct tape {
     fn checkedTotal(self: ref tape, v: slice<u8>) -> i64 {
         var acc: i64 = 0
         var i: i64 = 0
-        while i < v.len { acc = acc + i64(v[i])  i = i + i64(1) }
+        while i < v.len { acc = acc + i64(v[i])  i = i + 1 }
         i = 0
-        while i < i64(8) { acc = acc + self.xs[i]  i = i + i64(1) }
+        while i < 8 { acc = acc + self.xs[i]  i = i + 1 }
         return acc
     }
 
@@ -24,9 +24,9 @@ struct tape {
     fn freeTotal(self: ref tape, v: slice<u8>) -> i64 {
         var acc: i64 = 0
         var i: i64 = 0
-        while i < v.len { acc = acc + i64(v[i])  i = i + i64(1) }
+        while i < v.len { acc = acc + i64(v[i])  i = i + 1 }
         i = 0
-        while i < i64(8) { acc = acc + self.xs[i]  i = i + i64(1) }
+        while i < 8 { acc = acc + self.xs[i]  i = i + 1 }
         return acc
     }
 }
@@ -35,9 +35,9 @@ struct tape {
 fn sumChecked(v: slice<u8>, a: ref [8]i64) -> i64 {
     var acc: i64 = 0
     var i: i64 = 0
-    while i < v.len { acc = acc + i64(v[i])  i = i + i64(1) }
+    while i < v.len { acc = acc + i64(v[i])  i = i + 1 }
     i = 0
-    while i < i64(8) { acc = acc + a[i]  i = i + i64(1) }
+    while i < 8 { acc = acc + a[i]  i = i + 1 }
     return acc
 }
 
@@ -46,16 +46,16 @@ fn sumChecked(v: slice<u8>, a: ref [8]i64) -> i64 {
 fn sumFree(v: slice<u8>, a: ref [8]i64) -> i64 {
     var acc: i64 = 0
     var i: i64 = 0
-    while i < v.len { acc = acc + i64(v[i])  i = i + i64(1) }
+    while i < v.len { acc = acc + i64(v[i])  i = i + 1 }
     i = 0
-    while i < i64(8) { acc = acc + a[i]  i = i + i64(1) }
+    while i < 8 { acc = acc + a[i]  i = i + 1 }
     return acc
 }
 
 fn main() -> i32 {
     var a: [8]i64
     var i: i64 = 0
-    while i < i64(8) { a[i] = i * i64(7)  i = i + i64(1) }
+    while i < 8 { a[i] = i * 7  i = i + 1 }
     var t: tape = { xs: a }
     let s: slice<u8> = "abcdefgh"
     /* 四条路都算同一个数：加不加注解只该影响生成的 C，不该影响结果 */

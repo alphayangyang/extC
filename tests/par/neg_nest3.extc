@@ -2,8 +2,8 @@
 use std::io
 
 fn main() -> i32 {
-    let rows: i64 = i64(4)
-    let cols: i64 = i64(4)
+    let rows: i64 = 4
+    let cols: i64 = 4
     var out: mut slice<f64> = new f64[rows * cols]
     par r in 0..rows {
         par c in 0..cols {

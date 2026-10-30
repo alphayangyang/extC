@@ -23,30 +23,30 @@ use std::time
 
 /* `args[i]` 当十进制数读（没给就用默认值） */
 fn toInt(s: slice<u8>, dflt: i64) -> i64 {
-    if s.len == i64(0) { return dflt }
+    if s.len == 0 { return dflt }
     var v: i64 = 0
     var i: i64 = 0
     while i < s.len {
         let b = i64(s[i])
-        if b < i64(48) || b > i64(57) { return dflt }
-        v = v * i64(10) + (b - i64(48))
-        i = i + i64(1)
+        if b < 48 || b > 57 { return dflt }
+        v = v * 10 + (b - 48)
+        i = i + 1
     }
     return v
 }
 
 fn main(args: slice<slice<u8>>) -> i32 {
-    var m: i64 = i64(1000)
-    if args.len > i64(1) { m = toInt(args[1], m) }
+    var m: i64 = 1000
+    if args.len > 1 { m = toInt(args[1], m) }
     var mode: i64 = 0
-    if args.len > i64(2) { mode = toInt(args[2], mode) }
+    if args.len > 2 { mode = toInt(args[2], mode) }
 
-    let home = syspool::extc_pool_zoneDepth() - i64(1)   /* 外层地方（main 的帧）那个 zone */
-    let scratch = syspool::extc_pool_new_at(i64(-1), home)
-    if scratch < i64(0) { io::cout << "bad-home home=" << home << "\n"; return i32(1) }
+    let home = syspool::extc_pool_zoneDepth() - 1   /* 外层地方（main 的帧）那个 zone */
+    let scratch = syspool::extc_pool_new_at(-1, home)
+    if scratch < 0 { io::cout << "bad-home home=" << home << "\n"; return i32(1) }
     var ids: mut slice<i64> = poolSlice<i64>(scratch, m)
-    let parent = syspool::extc_pool_new_at(i64(-1), home)
-    if parent < i64(0) { io::cout << "bad-parent\n"; return i32(1) }
+    let parent = syspool::extc_pool_new_at(-1, home)
+    if parent < 0 { io::cout << "bad-parent\n"; return i32(1) }
 
     var i: i64 = 0
     while i < m {
@@ -54,18 +54,18 @@ fn main(args: slice<slice<u8>>) -> i32 {
         var s: mut slice<i32> = poolSlice<i32>(rid, 8)   /* 每只池一块真板块 */
         s[0] = i32(1)
         ids[i] = rid
-        i = i + i64(1)
+        i = i + 1
     }
     let built = syspool::extc_pool_live()
-    if built != m + i64(2) { io::cout << "build-bad live=" << built << "\n"; return i32(1) }
+    if built != m + 2 { io::cout << "build-bad live=" << built << "\n"; return i32(1) }
 
     var t = time::start()
-    if mode == i64(0) {
+    if mode == 0 {
         var j: i64 = 0
-        while j < m { syspool::extc_pool_drop(ids[j]); j = j + i64(1) }
+        while j < m { syspool::extc_pool_drop(ids[j]); j = j + 1 }
     } else {
-        var j: i64 = m - i64(1)
-        while j >= i64(0) { syspool::extc_pool_drop(ids[j]); j = j - i64(1) }
+        var j: i64 = m - 1
+        while j >= 0 { syspool::extc_pool_drop(ids[j]); j = j - 1 }
     }
     let ns = t.elapsedNs()
     io::cout << "m=" << m << " mode=" << mode << " dropns=" << ns << " live=" << syspool::extc_pool_live() << "\n"

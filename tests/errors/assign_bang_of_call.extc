@@ -8,6 +8,6 @@ struct cell {
 fn main() -> i32 {
     var arr: varArray<cell> = varArray<cell>::withCap(2)
     arr.push(cell { x: 1 })
-    arr.get(0)!.x = i64(9)
+    arr.get(0)!.x = 9
     return 0
 }

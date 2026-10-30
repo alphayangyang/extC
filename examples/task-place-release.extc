@@ -11,17 +11,17 @@ use std::sys::pool as syspool
 use stl::vector
 
 fn a() -> coroutine<i64> {
-    var v: vector<i32> = vector<i32>::withCap(i64(4))
+    var v: vector<i32> = vector<i32>::withCap(4)
     v.push(i32(1))
     yield i64(v.len())
-    yield i64(v.len() + i64(1))
+    yield i64(v.len() + 1)
 }
 
 fn b() -> coroutine<i64> {
-    var v: vector<i32> = vector<i32>::withCap(i64(4))
+    var v: vector<i32> = vector<i32>::withCap(4)
     v.push(i32(2))
     yield i64(v.len())
-    yield i64(v.len() + i64(2))
+    yield i64(v.len() + 2)
 }
 
 fn main() -> i32 {

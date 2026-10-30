@@ -24,7 +24,7 @@ fn main() -> i32 {
     var sum: i64 = g() + five()!
 
     var o: ?i64 = some(1)
-    o! = i64(9)
+    o! = 9
     var payload: i64 = o ?? -1
 
     io::cout << "evals=" << evals << " loops=" << loops << " calls=" << calls << " sum=" << sum << " payload=" << payload << "\n"

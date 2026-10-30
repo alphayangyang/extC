@@ -15,17 +15,17 @@ impl pt {
 }
 
 impl i64 {
-    fn twice(self: ref i64) -> i64 { return *self * i64(2) }
+    fn twice(self: ref i64) -> i64 { return *self * 2 }
 }
 
 fn main() -> i32 {
-    var a: pt = { x: i64(3) }
-    var b: pt = { x: i64(4) }
+    var a: pt = { x: 3 }
+    var b: pt = { x: 4 }
     io::cout << "sum=" << a.sum(b) << " twice=" << i64(21).twice()
-    var m: hashMap<i64, i32> = hashMap<i64, i32>::withCap(i64(8))
-    m.put(i64(7), i32(70))
-    let g: i32 = m.get(i64(7)) ?? i32(-1)
-    let miss: i32 = m.get(i64(8)) ?? i32(-7)
+    var m: hashMap<i64, i32> = hashMap<i64, i32>::withCap(8)
+    m.put(7, i32(70))
+    let g: i32 = m.get(7) ?? i32(-1)
+    let miss: i32 = m.get(8) ?? i32(-7)
     io::cout << "|g=" << i64(g) << " miss=" << i64(miss) << " len=" << m.len() << "\n"
     return 0
 }

@@ -36,22 +36,22 @@ let IDLE_TICKS: i64 = 1200
 /* 注意：extC 里**只有字段/下标**能透过引用写（`*p = …` 不给写）⇒ 这两个帮手返回新位置。 */
 fn appI64(buf: mut slice<u8>, at: i64, v0: i64) -> i64 {
     var v: i64 = v0
-    if v == i64(0) { buf[at] = u8(48)  return at + i64(1) }
+    if v == 0 { buf[at] = u8(48)  return at + 1 }
     var tmp: [24]u8
     var n: i64 = 0
-    var neg: bool = v < i64(0)
-    if neg { v = i64(0) - v }
-    while v > i64(0) {
-        tmp[n] = u8(48 + v % i64(10))
-        n = n + i64(1)
-        v = v / i64(10)
+    var neg: bool = v < 0
+    if neg { v = 0 - v }
+    while v > 0 {
+        tmp[n] = u8(48 + v % 10)
+        n = n + 1
+        v = v / 10
     }
-    if neg { buf[at] = u8(45)  at = at + i64(1) }
+    if neg { buf[at] = u8(45)  at = at + 1 }
     var i: i64 = n
-    while i > i64(0) {
-        i = i - i64(1)
+    while i > 0 {
+        i = i - 1
         buf[at] = tmp[i]
-        at = at + i64(1)
+        at = at + 1
     }
     return at
 }
@@ -60,26 +60,26 @@ fn appS(buf: mut slice<u8>, at: i64, s: slice<u8>) -> i64 {
     var i: i64 = 0
     while i < s.len {
         buf[at + i] = s[i]
-        i = i + i64(1)
+        i = i + 1
     }
     return at + s.len
 }
 
 /* 朴素的子串查找（请求头只有几 KB；`memmem` 那条路留给需要的人）*/
 fn findSub(hay: slice<u8>, from: i64, needle: slice<u8>) -> i64 {
-    if needle.len == i64(0) { return from }
+    if needle.len == 0 { return from }
     var i: i64 = from
     while i + needle.len <= hay.len {
-        var j: i64 = i64(0)
+        var j: i64 = 0
         var hit: bool = true
         while j < needle.len {
             if hay[i + j] != needle[j] { hit = false  break }
-            j = j + i64(1)
+            j = j + 1
         }
         if hit { return i }
-        i = i + i64(1)
+        i = i + 1
     }
-    return i64(-1)
+    return -1
 }
 
 fn lower(c: u8) -> u8 { if c >= u8(65) && c <= u8(90) { return c + u8(32) }  return c }
@@ -90,17 +90,17 @@ fn eqCI(a: slice<u8>, b: slice<u8>) -> bool {
     var i: i64 = 0
     while i < a.len {
         if lower(a[i]) != lower(b[i]) { return false }
-        i = i + i64(1)
+        i = i + 1
     }
     return true
 }
 
 fn mimeOf(p: slice<u8>) -> slice<u8> {
-    if p.len >= i64(5) && eqCI(p[p.len - i64(5)..], ".html") { return "text/html; charset=utf-8" }
-    if p.len >= i64(4) && eqCI(p[p.len - i64(4)..], ".css") { return "text/css" }
-    if p.len >= i64(3) && eqCI(p[p.len - i64(3)..], ".js") { return "application/javascript" }
-    if p.len >= i64(4) && eqCI(p[p.len - i64(4)..], ".png") { return "image/png" }
-    if p.len >= i64(4) && eqCI(p[p.len - i64(4)..], ".txt") { return "text/plain; charset=utf-8" }
+    if p.len >= 5 && eqCI(p[p.len - i64(5)..], ".html") { return "text/html; charset=utf-8" }
+    if p.len >= 4 && eqCI(p[p.len - i64(4)..], ".css") { return "text/css" }
+    if p.len >= 3 && eqCI(p[p.len - i64(3)..], ".js") { return "application/javascript" }
+    if p.len >= 4 && eqCI(p[p.len - i64(4)..], ".png") { return "image/png" }
+    if p.len >= 4 && eqCI(p[p.len - i64(4)..], ".txt") { return "text/plain; charset=utf-8" }
     return "application/octet-stream"
 }
 
@@ -112,27 +112,27 @@ fn decodePath(src: slice<u8>, dst: mut slice<u8>) -> i64 {
     while i < src.len {
         var c: u8 = src[i]
         if c == u8(37) {                       /* '%' */
-            if i + i64(2) >= src.len { return i64(-1) }
-            var hi: u8 = hexVal(src[i + i64(1)])
-            var lo: u8 = hexVal(src[i + i64(2)])
-            if hi == u8(255) || lo == u8(255) { return i64(-1) }
+            if i + 2 >= src.len { return -1 }
+            var hi: u8 = hexVal(src[i + 1])
+            var lo: u8 = hexVal(src[i + 2])
+            if hi == u8(255) || lo == u8(255) { return -1 }
             c = hi * u8(16) + lo
-            i = i + i64(3)
+            i = i + 3
         } else {
-            i = i + i64(1)
+            i = i + 1
         }
-        if c == u8(0) { return i64(-1) }       /* NUL 截断攻击 */
-        if o >= dst.len { return i64(-1) }
+        if c == u8(0) { return -1 }       /* NUL 截断攻击 */
+        if o >= dst.len { return -1 }
         dst[o] = c
-        o = o + i64(1)
+        o = o + 1
     }
     /* 逐段看：`..` 一律拒（本实现不做规范化，拒掉最省心也最安全）*/
-    var s: i64 = i64(0)
+    var s: i64 = 0
     while s < o {
         var e: i64 = s
-        while e < o && dst[e] != u8(47) { e = e + i64(1) }
-        if e - s == i64(2) && dst[s] == u8(46) && dst[s + i64(1)] == u8(46) { return i64(-1) }
-        s = e + i64(1)
+        while e < o && dst[e] != u8(47) { e = e + 1 }
+        if e - s == 2 && dst[s] == u8(46) && dst[s + 1] == u8(46) { return -1 }
+        s = e + 1
     }
     return o
 }
@@ -146,10 +146,10 @@ fn hexVal(c: u8) -> u8 {
 
 /* 把一片一次写完（非阻塞 ⇒ 部分写要补；v1 的协程只能等"可读"，所以这里自旋补齐）*/
 fn sendAll(fd: i64, buf: slice<u8>, n: i64) -> bool {
-    var off: i64 = i64(0)
+    var off: i64 = 0
     while off < n {
         var w: i64 = net::extc_sock_write_from(fd, buf.data, off, n - off)
-        if w > i64(0) { off = off + w }
+        if w > 0 { off = off + w }
     }
     return true
 }
@@ -157,7 +157,7 @@ fn sendAll(fd: i64, buf: slice<u8>, n: i64) -> bool {
 /* 响应头 + 可选 body。`body` 为 -1 表示没有 body（HEAD / 304）。 */
 fn respond(fd: i64, resp: mut slice<u8>, status: slice<u8>, mime: slice<u8>,
            size: i64, mtime: i64, withBody: bool, fileFd: i64, closeAfter: bool) -> bool {
-    var at: i64 = i64(0)
+    var at: i64 = 0
     at = appS(resp, at, "HTTP/1.1 ")
     at = appS(resp, at, status)
     at = appS(resp, at, "\r\nServer: extc-httpd/1\r\n")
@@ -168,12 +168,12 @@ fn respond(fd: i64, resp: mut slice<u8>, status: slice<u8>, mime: slice<u8>,
     }
     at = appS(resp, at, "Content-Length: ")
     at = appI64(resp, at, size)
-    if mtime > i64(0) {
+    if mtime > 0 {
         at = appS(resp, at, "\r\nLast-Modified: ")
         var d: [64]u8
         var dv: mut slice<u8> = d[..]
         var n: i64 = sysfile::extc_http_date(mtime, dv.data)
-        if n > i64(0) { at = appS(resp, at, d[..n]) }
+        if n > 0 { at = appS(resp, at, d[..n]) }
     }
     /* **关之前必须说出来**：撞上 keep-alive 上限（或客户端要求 close）时，最后一条响应要带
      * `Connection: close` —— 直接关 fd 会让客户端读到截断的流（实测：wrk 报 read error ✗，
@@ -181,43 +181,43 @@ fn respond(fd: i64, resp: mut slice<u8>, status: slice<u8>, mime: slice<u8>,
     if closeAfter { at = appS(resp, at, "\r\nConnection: close\r\n\r\n") }
     else          { at = appS(resp, at, "\r\nConnection: keep-alive\r\n\r\n") }
     if !sendAll(fd, resp, at) { return false }
-    if !withBody || size == i64(0) { return true }
-    var sent: i64 = i64(0)
+    if !withBody || size == 0 { return true }
+    var sent: i64 = 0
     while sent < size {
         var w: i64 = sysfile::extc_sendfile(fd, fileFd, sent, size - sent)
-        if w > i64(0) { sent = sent + w }
+        if w > 0 { sent = sent + w }
     }
     return true
 }
 
 fn respondErr(fd: i64, resp: mut slice<u8>, status: slice<u8>) -> bool {
-    return respond(fd, resp, status, "text/plain; charset=utf-8", i64(0), i64(0), false, i64(-1), false)
+    return respond(fd, resp, status, "text/plain; charset=utf-8", 0, 0, false, -1, false)
 }
 
 /* ---------------------------------------------------------------- 一条连接 = 一个协程*/
 
 fn conn(fd: i64, root: slice<u8>) -> coroutine<i64> {
     var req: mut slice<u8> = new u8[MAXREQ]   /* 只有它必须跨挂起（半截请求）⇒ 每连接 1 KB ✓ */
-    var have: i64 = i64(0)
-    var kept: i64 = i64(0)
+    var have: i64 = 0
+    var kept: i64 = 0
     while kept < MAXKEEP {
         /* 攒到一个完整的请求头（`\r\n\r\n`）。**先查缓冲区**再考虑等 —— 流水线时第二个请求
          * 的字节已经躺在 `req` 里了，无条件 `yield` 会一直等新数据（实测：第二条响应永不出现 ✗）。 */
-        var hdrEnd: i64 = findSub(req[..have], i64(0), "\r\n\r\n")
-        var idle: i64 = i64(0)
-        while hdrEnd < i64(0) {
+        var hdrEnd: i64 = findSub(req[..have], 0, "\r\n\r\n")
+        var idle: i64 = 0
+        while hdrEnd < 0 {
             var ready: i64 = yield fd
-            if have >= MAXREQ - i64(1) { respondErr(fd, gResp[..], "431 Request Header Fields Too Large")  sysio::close(i32(fd))  return }
+            if have >= MAXREQ - 1 { respondErr(fd, gResp[..], "431 Request Header Fields Too Large")  sysio::close(i32(fd))  return }
             var n: i64 = net::extc_sock_read(fd, req.data, MAXREQ - have)
-            if n > i64(0) {
+            if n > 0 {
                 var rv: slice<u8> = req[..have + n]
-                hdrEnd = findSub(rv, i64(0), "\r\n\r\n")
+                hdrEnd = findSub(rv, 0, "\r\n\r\n")
                 have = have + n
-            } else if n == i64(0) {
+            } else if n == 0 {
                 sysio::close(i32(fd))                         /* 对端关了 */
                 return
             } else {
-                idle = idle + i64(1)
+                idle = idle + 1
                 if idle > IDLE_TICKS { sysio::close(i32(fd))  return }   /* 超时：收摊 */
             }
         }
@@ -227,80 +227,80 @@ fn conn(fd: i64, root: slice<u8>) -> coroutine<i64> {
         /* **先把头拷出来、再把这条请求从缓冲里吃掉，然后才解析** —— 顺序很重要：
          * 早期返回（405/400/404…）如果没吃掉请求，下一条请求会被当成同一个（实测：
          * POST 之后所有请求都回 405 ✗）；而先吃掉 `req` 又会让 `head` 失效 ⇒ 拷一份。 */
-        if hdrEnd > MAXHDR - i64(1) { respondErr(fd, resp, "431 Request Header Fields Too Large")  sysio::close(i32(fd))  return }
-        var ci: i64 = i64(0)
-        while ci < hdrEnd { hdr[ci] = req[ci]  ci = ci + i64(1) }
-        var used: i64 = hdrEnd + i64(4)
+        if hdrEnd > MAXHDR - 1 { respondErr(fd, resp, "431 Request Header Fields Too Large")  sysio::close(i32(fd))  return }
+        var ci: i64 = 0
+        while ci < hdrEnd { hdr[ci] = req[ci]  ci = ci + 1 }
+        var used: i64 = hdrEnd + 4
         var rest: i64 = have - used
-        var k: i64 = i64(0)
-        while k < rest { req[k] = req[used + k]  k = k + i64(1) }
+        var k: i64 = 0
+        while k < rest { req[k] = req[used + k]  k = k + 1 }
         have = rest
         var head: slice<u8> = hdr[..hdrEnd]
         /* 请求行：`METHOD SP TARGET SP VERSION` */
-        var sp1: i64 = findSub(head, i64(0), " ")
-        if sp1 < i64(0) { respondErr(fd, resp, "400 Bad Request")  sysio::close(i32(fd))  return }
-        var sp2: i64 = findSub(head, sp1 + i64(1), " ")
-        if sp2 < i64(0) { respondErr(fd, resp, "400 Bad Request")  sysio::close(i32(fd))  return }
+        var sp1: i64 = findSub(head, 0, " ")
+        if sp1 < 0 { respondErr(fd, resp, "400 Bad Request")  sysio::close(i32(fd))  return }
+        var sp2: i64 = findSub(head, sp1 + 1, " ")
+        if sp2 < 0 { respondErr(fd, resp, "400 Bad Request")  sysio::close(i32(fd))  return }
         var method: slice<u8> = head[..sp1]
         var target: slice<u8> = head[sp1 + i64(1)..sp2]
         var isHead: bool = eqCI(method, "HEAD")
         if !isHead && !eqCI(method, "GET") { respondErr(fd, resp, "405 Method Not Allowed")  continue }
         /* 头的其余部分：`If-Modified-Since` 与 `Connection` */
-        var ifMod: i64 = i64(-1)
+        var ifMod: i64 = -1
         var wantClose: bool = false
         /* 到了 keep-alive 上限 ⇒ 这条响应要带 `Connection: close` 再收摊。直接关 fd 会让客户端
          * 读到截断的流：实测 wrk 每 1.27M 请求报 ~53 次 read error ✗（nginx 是体面关闭 ✓）。 */
-        if kept + i64(1) >= MAXKEEP { wantClose = true }
-        var p: i64 = sp2 + i64(1)
+        if kept + 1 >= MAXKEEP { wantClose = true }
+        var p: i64 = sp2 + 1
         while p < head.len {
             var eol: i64 = findSub(head, p, "\r\n")
             /* `head` 到**最后一个头行的 CRLF 之前**就结束了（那个 CRLF 属于 `\r\n\r\n` 定界符）
              * ⇒ 找不到下一个 CRLF 时，剩下的就是最后一行 ✓（这一条踩过一次：`If-Modified-Since`
              * 永远是最后一行，于是它从来没被解析到 ✗）*/
             var lineEnd: i64 = eol
-            if lineEnd < i64(0) { lineEnd = head.len }
-            var colon: i64 = findSub(head[p..lineEnd], i64(0), ":")
-            if colon > i64(0) {
+            if lineEnd < 0 { lineEnd = head.len }
+            var colon: i64 = findSub(head[p..lineEnd], 0, ":")
+            if colon > 0 {
                 var name: slice<u8> = head[p..p + colon]
                 var val: slice<u8> = head[p + colon + i64(1)..lineEnd]
-                while val.len > i64(0) && val[0] == u8(32) { val = val[i64(1)..] }
+                while val.len > 0 && val[0] == u8(32) { val = val[i64(1)..] }
                 if eqCI(name, "If-Modified-Since") { ifMod = sysfile::extc_http_parse_date(val.data, val.len) }
                 if eqCI(name, "Connection") && eqCI(val, "close") { wantClose = true }
             }
-            if eol < i64(0) { break }
-            p = eol + i64(2)
+            if eol < 0 { break }
+            p = eol + 2
         }
         /* 路由：目标 → 磁盘路径（`/` ⇒ `/index.html`；查串丢掉）*/
-        var q: i64 = findSub(target, i64(0), "?")
+        var q: i64 = findSub(target, 0, "?")
         var pathOnly: slice<u8> = target
-        if q >= i64(0) { pathOnly = target[..q] }
+        if q >= 0 { pathOnly = target[..q] }
         var rel: mut slice<u8> = gRel[..]
         var relLen: i64 = decodePath(pathOnly, rel)
         /* 能解析出边界的失败**保持 keep-alive**（nginx 也这样）；只有"框架不明"的失败才关连接 ✓ */
-        if relLen < i64(0) { respondErr(fd, resp, "400 Bad Request")  continue }
+        if relLen < 0 { respondErr(fd, resp, "400 Bad Request")  continue }
         var full: mut slice<u8> = gFull[..]
-        var at: i64 = i64(0)
+        var at: i64 = 0
         at = appS(full, at, root)
-        if relLen == i64(0) || rel[relLen - i64(1)] == u8(47) {
+        if relLen == 0 || rel[relLen - 1] == u8(47) {
             at = appS(full, at, rel[..relLen])
             at = appS(full, at, "index.html")
         } else {
             at = appS(full, at, rel[..relLen])
         }
-        var size: i64 = i64(0)
-        var mtime: i64 = i64(0)
-        var isdir: i64 = i64(0)
+        var size: i64 = 0
+        var mtime: i64 = 0
+        var isdir: i64 = 0
         var ffd: i64 = sysfile::extc_file_open(full[..at].data, at, ref size, ref mtime, ref isdir)
-        if ffd < i64(0) { respondErr(fd, resp, "404 Not Found")  continue }
-        if isdir != i64(0) {
+        if ffd < 0 { respondErr(fd, resp, "404 Not Found")  continue }
+        if isdir != 0 {
             sysfile::extc_file_close(ffd)
             respondErr(fd, resp, "403 Forbidden")
             continue
         }
         /* `If-Modified-Since`：秒级比较（HTTP 的粒度就是秒）*/
-        if ifMod >= i64(0) && mtime > i64(0) && mtime <= ifMod {
+        if ifMod >= 0 && mtime > 0 && mtime <= ifMod {
             sysfile::extc_file_close(ffd)
-            respond(fd, resp, "304 Not Modified", "", i64(0), mtime, false, i64(-1), wantClose)
+            respond(fd, resp, "304 Not Modified", "", 0, mtime, false, -1, wantClose)
         } else {
             if !respond(fd, resp, "200 OK", mimeOf(full[..at]), size, mtime, !isHead, ffd, wantClose) {
                 sysfile::extc_file_close(ffd)
@@ -310,29 +310,29 @@ fn conn(fd: i64, root: slice<u8>) -> coroutine<i64> {
             sysfile::extc_file_close(ffd)
         }
         if wantClose { sysio::close(i32(fd))  return }
-        kept = kept + i64(1)
+        kept = kept + 1
     }
     sysio::close(i32(fd))
     return
 }
 
 fn main(args: slice<slice<u8>>) -> i32 {
-    var port: i64 = i64(8080)
+    var port: i64 = 8080
     if args.len > 1 { port = parseI64(args[1]) }
     var root: slice<u8> = "bench/httpd/www"
     if args.len > 2 { root = args[2] }
     /* backlog 有两级：**应用传给 `listen()` 的这个数**，和内核的 `net.core.somaxconn`（取小的 ✓）。
      * 一直传 1024 ⇒ 突发建连时 `ok` 卡在 ~1029、`ListenOverflows` 一路涨 ✗（实测，即使
      * `somaxconn` 已抬到 65535 ✓）。两边都要大 ✓。 */
-    var srv: i64 = net::extc_tcp_listen_shared(port, i64(65535))
-    if srv < i64(0) { io::cout << "listen failed\n"  return 1 }
+    var srv: i64 = net::extc_tcp_listen_shared(port, 65535)
+    if srv < 0 { io::cout << "listen failed\n"  return 1 }
     var s: sched::loop
     if !sched::init(ref s, srv) { return 2 }
-    var tasks: sched::tasks<i64> = { rows: sched::newRows(), runq: sched::newQ(), rqHead: i64(0), freeq: sched::newQ(), acceptq: sched::newQ() }
+    var tasks: sched::tasks<i64> = { rows: sched::newRows(), runq: sched::newQ(), rqHead: 0, freeq: sched::newQ(), acceptq: sched::newQ() }
     while true {
-        var fd: i64 = tasks.pump(ref s, i64(50))
-        if fd >= i64(0) {
-            if net::extc_sock_nodelay(fd) != i64(0) { return 4 }
+        var fd: i64 = tasks.pump(ref s, 50)
+        if fd >= 0 {
+            if net::extc_sock_nodelay(fd) != 0 { return 4 }
             if !tasks.add(ref s, conn(fd, root)) { return 3 }
         }
     }
@@ -343,8 +343,8 @@ fn parseI64(s: slice<u8>) -> i64 {
     var v: i64 = 0
     var i: i64 = 0
     while i < s.len {
-        v = v * i64(10) + i64(s[i]) - i64(48)
-        i = i + i64(1)
+        v = v * 10 + i64(s[i]) - 48
+        i = i + 1
     }
     return v
 }

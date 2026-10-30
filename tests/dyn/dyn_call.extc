@@ -7,11 +7,11 @@ struct box { v: i64 }
 struct pt  { x: i64 }
 
 impl Tag for box { fn tag(self: ref box) -> i64 { return self.v } }
-impl Tag for pt  { fn tag(self: ref pt) -> i64 { return self.x + i64(1) } }
+impl Tag for pt  { fn tag(self: ref pt) -> i64 { return self.x + 1 } }
 
 fn main() -> i32 {
-    let b = box { v: i64(7) }
-    let p = pt  { x: i64(4) }
+    let b = box { v: 7 }
+    let p = pt  { x: 4 }
     io::cout << "dyn=" << dyn Tag(b).tag() << "," << dyn Tag(p).tag() << "\n"
     return 0
 }

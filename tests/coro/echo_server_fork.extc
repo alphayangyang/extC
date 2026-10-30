@@ -32,49 +32,49 @@ fn conn(fd: i64) -> coroutine<i64> {
      * 了才翻倍（上限 64 KB）。实测动机：急切分配 16 KB 时，1000 条**一个字节都没发**的连接要占
      * 16.4 MB（每条约 16.8 KB，其中 16 KB 就是这个缓冲）；惰性之后每条约 1.8 KB。
      * 旧块留在帧 arena 里（协程结束才回收）⇒ 峰值约为最终容量的两倍，这是标准的倍增代价。 */
-    var cap: i64 = i64(1024)
+    var cap: i64 = 1024
     var buf: mut slice<u8> = new u8[1024]
     var full: bool = false                    /* 上一轮是否读满 ⇒ 该长了 */
     var open: bool = true
     while open {
         var ready: i64 = yield fd
         if full {
-            let ncap: i64 = cap * i64(2)
-            if ncap <= i64(65536) {
+            let ncap: i64 = cap * 2
+            if ncap <= 65536 {
                 buf = new u8[ncap]            /* 上一轮的内容已经回写完了 ⇒ 不必拷贝 */
                 cap = ncap
             }
             full = false
         }
         var n: i64 = net::extc_sock_read(fd, buf.data, cap)
-        if n > i64(0) {
+        if n > 0 {
             if n == cap { full = true }
-            var off: i64 = i64(0)
+            var off: i64 = 0
             while off < n {
                 var w: i64 = net::extc_sock_write_from(fd, buf.data, off, n - off)
-                if w > i64(0) { off = off + w }
+                if w > 0 { off = off + w }
             }
-        } else if n == i64(0) {
+        } else if n == 0 {
             open = false
         }
     }
     var closed: i32 = io::close(i32(fd))
     if closed != i32(0) { closed = i32(0) }
-    yield i64(-1)
+    yield -1
 }
 
 /* 一个 worker：钉核、监听（共享端口）、跑到被 Ctrl-C。 */
 fn serve(core: i64) -> i32 {
     if proc::pin(core) != i32(0) { return i32(5) }
-    var srv: i64 = net::extc_tcp_listen_shared(i64(7654), i64(1024))
-    if srv < i64(0) { return i32(1) }
+    var srv: i64 = net::extc_tcp_listen_shared(7654, 1024)
+    if srv < 0 { return i32(1) }
     var s: sched::loop
     if !sched::init(ref s, srv) { return i32(2) }
-    var tasks: sched::tasks<i64> = { rows: sched::newRows(), runq: sched::newQ(), rqHead: i64(0), freeq: sched::newQ(), acceptq: sched::newQ() }
+    var tasks: sched::tasks<i64> = { rows: sched::newRows(), runq: sched::newQ(), rqHead: 0, freeq: sched::newQ(), acceptq: sched::newQ() }
     while true {
-        var fd: i64 = tasks.pump(ref s, i64(50))
-        if fd >= i64(0) {
-            if net::extc_sock_nodelay(fd) != i64(0) { return i32(4) }
+        var fd: i64 = tasks.pump(ref s, 50)
+        if fd >= 0 {
+            if net::extc_sock_nodelay(fd) != 0 { return i32(4) }
             if !tasks.add(ref s, conn(fd)) { return i32(3) }
         }
     }
@@ -83,12 +83,12 @@ fn serve(core: i64) -> i32 {
 
 fn main() -> i32 {
     let WORKERS: i64 = 8
-    var i: i64 = i64(1)
+    var i: i64 = 1
     while i < WORKERS {
         let pid: i32 = proc::spawn()
         if pid == i32(0) { proc::exit(serve(i)) }   /* 子进程：**当场 exit**，绝不回到循环里 */
         if pid < i32(0) { return i32(6) }
-        i = i + i64(1)
+        i = i + 1
     }
-    return serve(i64(0))                            /* 父进程也是 worker，钉核 0 */
+    return serve(0)                            /* 父进程也是 worker，钉核 0 */
 }

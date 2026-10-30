@@ -14,9 +14,9 @@ use std::io
 fn g() -> coroutine<i64> {
     var a: [4]i64 = [1, 2, 3, 4]
     var v: slice<i64> = a[0..2]
-    yield i64(1)
+    yield 1
     io::cout << v[0] << "\n"      /* ← 恢复之后还在用 v ⇒ v 跨挂起点存活 ⇒ 拒绝 */
-    yield i64(2)
+    yield 2
 }
 
 fn main() -> i32 { return 0 }

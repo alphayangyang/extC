@@ -5,7 +5,7 @@ fn go() -> result<unit, io::ioError> {
     var r = io::readerOf(io::STDIN_FD)
     var buf: [64]u8
     let n = r.nextLine(buf[..])?
-    if n == i64(0) { println("EOF ✓") } else { println("读到了 ", n, " 字节 ✗") }
+    if n == 0 { println("EOF ✓") } else { println("读到了 ", n, " 字节 ✗") }
     return success(unit {})
 }
 fn main() -> i32 { match go() { success(u) => { return 0 }  failure(e) => { return 1 } } }

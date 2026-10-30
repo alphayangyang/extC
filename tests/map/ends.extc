@@ -5,20 +5,20 @@ use stl::map
 use stl::set
 
 fn main() -> i32 {
-    var m: map<i64, i32> = map<i64, i32>::withCap(i64(16))
-    m.put(i64(3), i32(30))
-    m.put(i64(1), i32(10))
-    m.put(i64(5), i32(50))
-    var f: i64 = m.firstKey() ?? i64(-1)
-    var l: i64 = m.lastKey() ?? i64(-1)
-    var e: map<i64, i32> = map<i64, i32>::withCap(i64(4))
-    var ef: i64 = e.firstKey() ?? i64(-1)
-    var el: i64 = e.lastKey() ?? i64(-1)
-    var s: set<i64> = set<i64>::withCap(i64(4))
-    s.put(i64(4))
-    s.put(i64(2))
-    var sf: i64 = s.first() ?? i64(-1)
-    var sl: i64 = s.last() ?? i64(-1)
+    var m: map<i64, i32> = map<i64, i32>::withCap(16)
+    m.put(3, i32(30))
+    m.put(1, i32(10))
+    m.put(5, i32(50))
+    var f: i64 = m.firstKey() ?? -1
+    var l: i64 = m.lastKey() ?? -1
+    var e: map<i64, i32> = map<i64, i32>::withCap(4)
+    var ef: i64 = e.firstKey() ?? -1
+    var el: i64 = e.lastKey() ?? -1
+    var s: set<i64> = set<i64>::withCap(4)
+    s.put(4)
+    s.put(2)
+    var sf: i64 = s.first() ?? -1
+    var sl: i64 = s.last() ?? -1
     io::cout << "f=" << f << " l=" << l << " emptyF=" << ef << " emptyL=" << el
     io::cout << " sf=" << sf << " sl=" << sl << "\n"
     return 0

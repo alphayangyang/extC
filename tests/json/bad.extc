@@ -9,7 +9,7 @@ fn rejects(label: slice<u8>, body: slice<u8>, pool: mut slice<json::node>) -> i3
         io::cout << label << " ACCEPTED (should reject)\n"
         return 1
     }
-    if errAt(r) < i64(0) {
+    if errAt(r) < 0 {
         io::cout << label << " FAIL-WITHOUT-POSITION\n"
         return 1
     }
@@ -35,7 +35,7 @@ fn main() -> i32 {
     if !isOk(lone) { io::cout << "t10 SHOULD-PARSE\n"  return 10 }
     let lv: i64 = member("{\"a\":\"\\ud83d\"}", pool[..], rootOf(lone), "a")
     var out: [16]u8
-    if unescape("{\"a\":\"\\ud83d\"}", pool[..], lv, out[..]) >= i64(0) {
+    if unescape("{\"a\":\"\\ud83d\"}", pool[..], lv, out[..]) >= 0 {
         io::cout << "t10 LONE-SURROGATE-DECODED\n"
         return 10
     }
@@ -52,13 +52,13 @@ fn main() -> i32 {
     /* 深嵌套（500 层）⇒ 深度护栏挡住，不炸栈 */
     var deep: [1024]u8
     var i: i64 = 0
-    while i < i64(400) {
+    while i < 400 {
         deep[i] = u8(91)
         i = i + 1
     }
     deep[i] = u8(49)
     i = i + 1
-    while i < i64(800) {
+    while i < 800 {
         deep[i] = u8(93)
         i = i + 1
     }

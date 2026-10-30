@@ -19,7 +19,7 @@ fn g(n: i64) -> coroutine<i64> {
 }
 
 fn main() -> i32 {
-    var c = g(i64(4))
+    var c = g(4)
     var last: i64 = 0
     while c.next() { last = c.value() }  /* 活着的时候读 */
     return i32(last)

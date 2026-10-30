@@ -14,7 +14,7 @@ use stl::vector
 
 /* 任务 place 是**懒**建的：只有协程需要自己那块存储时才有任务 —— 所以这个判据里的协程要建池。 */
 fn counter(n: i64) -> coroutine<i64> {
-    var v: vector<i32> = vector<i32>::withCap(i64(4))
+    var v: vector<i32> = vector<i32>::withCap(4)
     var i: i64 = 0
     while i < n {
         v.push(i32(7))
@@ -25,7 +25,7 @@ fn counter(n: i64) -> coroutine<i64> {
 
 fn main() -> i32 {
     var before: i64 = syscoro::extc_task_live()
-    var c = counter(i64(3))
+    var c = counter(3)
     var mid: i64 = syscoro::extc_task_live()
     while c.next() { }
     var after: i64 = syscoro::extc_task_live()

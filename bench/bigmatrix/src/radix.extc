@@ -17,11 +17,11 @@ fn go() -> result<unit, io::ioError> {
     while pass < 4 {
         var cnt: mut slice<i64> = new i64[256]
         var k: i64 = 0
-        while k < 256 { cnt[k] = i64(0)  k = k + 1 }
+        while k < 256 { cnt[k] = 0  k = k + 1 }
         i = 0
         while i < n {
             let d = i64((u64(a[i]) >> u64(pass * 8)) & u64(255))
-            cnt[d] = cnt[d] + i64(1)
+            cnt[d] = cnt[d] + 1
             i = i + 1
         }
         var sum: i64 = 0
@@ -31,7 +31,7 @@ fn go() -> result<unit, io::ioError> {
         while i < n {
             let d = i64((u64(a[i]) >> u64(pass * 8)) & u64(255))
             b[cnt[d]] = a[i]
-            cnt[d] = cnt[d] + i64(1)
+            cnt[d] = cnt[d] + 1
             i = i + 1
         }
         i = 0

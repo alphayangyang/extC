@@ -3,7 +3,7 @@ use std::io
 fn main() -> i32 {
     var buf: [64]u8
     var i: i64 = 0
-    while i < i64(5) {
+    while i < 5 {
         buf[i] = u8(65) + u8(i)
         i = i + 1
     }

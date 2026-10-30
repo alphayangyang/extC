@@ -10,11 +10,11 @@ use std::io
 use stl::hashMap
 
 fn main() -> i32 {
-    var hm = hashMapI64<i32>::withCap(i64(16))
+    var hm = hashMapI64<i32>::withCap(16)
     var i: i64 = 0
-    while i < i64(1000000) {
+    while i < 1000000 {
         hm.put(i, i32(i))
-        i = i + i64(1)
+        i = i + 1
     }
     io::cout << "n=" << hm.len() << " cap=" << hm.capOf() << " bytes=" << hm.bytesOf() << "\n"
     return 0

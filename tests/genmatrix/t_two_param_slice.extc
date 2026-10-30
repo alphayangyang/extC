@@ -25,9 +25,9 @@ struct mapKV<K, V> {
     cap:  i64
 
     fn withCap(want: i64) -> mapKV<K, V> {
-        var c: i64 = i64(8)
-        while c < want { c = c * i64(2) }
-        return { keys: new K[c], vals: new V[c], n: i64(0), cap: c }
+        var c: i64 = 8
+        while c < want { c = c * 2 }
+        return { keys: new K[c], vals: new V[c], n: 0, cap: c }
     }
     fn find(self: ref mapKV<K, V>, k: K) -> i64 {
         var i: i64 = 0
@@ -35,15 +35,15 @@ struct mapKV<K, V> {
             if self.keys[i] == k { return i }
             i = i + 1
         }
-        return 0 - i64(1)
+        return 0 - 1
     }
     fn put(self: mut ref mapKV<K, V>, k: K, v: V) -> bool {
         let at = self.find(k)
-        if at >= i64(0) { self.vals[at] = v  return true }
+        if at >= 0 { self.vals[at] = v  return true }
         if self.n >= self.cap { return false }
         self.keys[self.n] = k
         self.vals[self.n] = v
-        self.n = self.n + i64(1)
+        self.n = self.n + 1
         return true
     }
     fn keyAt(self: ref mapKV<K, V>, k: K) -> i64 { return self.find(k) }
@@ -52,8 +52,8 @@ struct mapKV<K, V> {
 }
 
 fn main() -> i32 {
-    var m: mapKV<i64, slice<u8>> = mapKV<i64, slice<u8>>::withCap(i64(4))
-    m.put(i64(1), "one")
-    println("len = ", m.len(), " val = ", m.valAt(m.keyAt(i64(1))))
+    var m: mapKV<i64, slice<u8>> = mapKV<i64, slice<u8>>::withCap(4)
+    m.put(1, "one")
+    println("len = ", m.len(), " val = ", m.valAt(m.keyAt(1)))
     return 0
 }

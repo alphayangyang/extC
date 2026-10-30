@@ -4,7 +4,7 @@ use std::io
 use stl::pool
 
 fn main() -> i32 {
-    var p = pool<i32>::withCap(i64(1024))
+    var p = pool<i32>::withCap(1024)
     let a = p.insert(10)
     let b = p.insert(20)
     let c = p.insert(30)

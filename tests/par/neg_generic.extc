@@ -4,7 +4,7 @@ use std::io
 fn fill<T>(a: mut slice<T>) { par i in 0..a.len { a[i] = a[i] } }
 
 fn main() -> i32 {
-    var b: mut slice<f64> = new f64[i64(8)]
+    var b: mut slice<f64> = new f64[8]
     io::cout << f"s={b[0]}\n"
     return 0
 }

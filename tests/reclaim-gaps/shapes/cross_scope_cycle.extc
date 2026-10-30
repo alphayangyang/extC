@@ -33,7 +33,7 @@ fn main(args: slice<slice<u8>>) -> i32 {
         a.v = i
         {
             var b: mut ref node = new node    /* 内层块：被 a 指到 ⇒ 提权到 a 的房间 */
-            b.v = i + i64(1)
+            b.v = i + 1
             a.next = b
             b.next = a                        /* ← 跨作用域的圈 */
         }

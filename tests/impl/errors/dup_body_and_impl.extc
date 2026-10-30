@@ -9,4 +9,4 @@ struct pt {
 impl pt {
     fn sum(self: ref pt, o: pt) -> i64 { return self.x + o.x }
 }
-fn main() -> i32 { var p: pt = { x: i64(1) }  return i32(p.sum()) }
+fn main() -> i32 { var p: pt = { x: 1 }  return i32(p.sum()) }

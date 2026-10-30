@@ -6,7 +6,7 @@ fn parFill(a: mut slice<f64>) {
 }
 
 fn main() -> i32 {
-    let n: i64 = i64(1000)
+    let n: i64 = 1000
     var a: mut slice<f64> = new f64[n]
     parFill(a)
     var s: f64 = 0.0

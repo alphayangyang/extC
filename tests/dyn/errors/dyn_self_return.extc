@@ -4,7 +4,7 @@ trait Dup { fn dup(self: ref Self) -> Self }
 struct box { v: i64 }
 impl Dup for box { fn dup(self: ref box) -> box { return *self } }
 fn main() -> i32 {
-    let b = box { v: i64(1) }
+    let b = box { v: 1 }
     let c = dyn Dup(b).dup()          /* 编译期就该被拒 */
     return 0
 }

@@ -15,16 +15,16 @@ fn conn(fd: i64) -> coroutine<i64> {
     var open: bool = true
     while open {
         var ready: i64 = yield fd            /* 请求：等这个 fd 可读 */
-        var n: i64 = net::extc_sock_read(fd, buf.data, i64(64))
-        if n > i64(0) {
+        var n: i64 = net::extc_sock_read(fd, buf.data, 64)
+        if n > 0 {
             /* 读完**就地写完**再回去等：v1 的请求只能表达"等可读"，等不到"可写"事件
              * （见 §4.4 欠账：请求类型 / coroutine<A,B>）。小批量下 send 立刻成功 ✓ */
-            var off: i64 = i64(0)
+            var off: i64 = 0
             while off < n {
                 var w: i64 = net::extc_sock_write_from(fd, buf.data, off, n - off)
-                if w > i64(0) { off = off + w }
+                if w > 0 { off = off + w }
             }
-        } else if n == i64(0) {
+        } else if n == 0 {
             open = false                     /* 对端半关 ⇒ 收尾 */
         }
     }
@@ -32,14 +32,14 @@ fn conn(fd: i64) -> coroutine<i64> {
      * 这里读一下结果，顺便避免"声明了从不使用"的生成物警告。 */
     var closed: i32 = io::close(i32(fd))
     if closed != i32(0) { closed = i32(0) }
-    yield i64(-1)                            /* 别等，立刻再推我 ⇒ 下一推结束 */
+    yield -1                            /* 别等，立刻再推我 ⇒ 下一推结束 */
 }
 
 fn main() -> i32 {
-    var srv: i64 = net::extc_tcp_listen(i64(0), i64(64))
-    if srv < i64(0) { return i32(99) }
+    var srv: i64 = net::extc_tcp_listen(0, 64)
+    if srv < 0 { return i32(99) }
     var port: i64 = net::extc_sock_local_port(srv)
-    if port <= i64(0) { return i32(98) }
+    if port <= 0 { return i32(98) }
 
     var n: i64 = 4
     var cli: mut slice<i64> = new i64[16]
@@ -47,39 +47,39 @@ fn main() -> i32 {
     var i: i64 = 0
     while i < n {
         cli[i] = net::extc_tcp_connect(port)
-        if cli[i] < i64(0) { return i32(97) }
+        if cli[i] < 0 { return i32(97) }
         /* 客户端 fd 也要非阻塞：单线程循环里只要有一个阻塞读，整个调度器就停摆（实测死锁 ✗）*/
         var nb: i64 = net::extc_sock_nonblock(cli[i])
-        if nb != i64(0) { return i32(89) }
-        pay[0] = u8(i + i64(1))
-        pay[1] = u8(i + i64(1))
-        pay[2] = u8(i + i64(1))
-        if net::extc_sock_write(cli[i], pay.data, i64(3)) != i64(3) { return i32(96) }
-        if net::extc_sock_write(cli[i], pay.data, i64(2)) != i64(2) { return i32(95) }
-        if net::extc_sock_shutdown_wr(cli[i]) != i64(0) { return i32(94) }
+        if nb != 0 { return i32(89) }
+        pay[0] = u8(i + 1)
+        pay[1] = u8(i + 1)
+        pay[2] = u8(i + 1)
+        if net::extc_sock_write(cli[i], pay.data, 3) != 3 { return i32(96) }
+        if net::extc_sock_write(cli[i], pay.data, 2) != 2 { return i32(95) }
+        if net::extc_sock_shutdown_wr(cli[i]) != 0 { return i32(94) }
         i = i + 1
     }
 
     var s: sched::loop
     if !sched::init(ref s, srv) { return i32(93) }
-    var tasks: sched::tasks<i64> = { rows: sched::newRows(), runq: sched::newQ(), rqHead: i64(0), freeq: sched::newQ(), acceptq: sched::newQ() }
+    var tasks: sched::tasks<i64> = { rows: sched::newRows(), runq: sched::newQ(), rqHead: 0, freeq: sched::newQ(), acceptq: sched::newQ() }
 
     var got: mut slice<u8> = new u8[64]
     var seen: [16]i64
-    var left: i64 = n * i64(5)               /* 每个连接要收回 5 字节（两批）*/
+    var left: i64 = n * 5               /* 每个连接要收回 5 字节（两批）*/
     var sum: i64 = 0
     var spins: i64 = 0
-    while left > i64(0) && spins < i64(200000) {
-        var fd: i64 = tasks.pump(ref s, i64(0))
-        if fd >= i64(0) {
-            if net::extc_sock_nodelay(fd) != i64(0) { return i32(89) }
+    while left > 0 && spins < 200000 {
+        var fd: i64 = tasks.pump(ref s, 0)
+        if fd >= 0 {
+            if net::extc_sock_nodelay(fd) != 0 { return i32(89) }
             if !tasks.add(ref s, conn(fd)) { return i32(92) }
         }
         i = 0
         while i < n {
-            if seen[i] < i64(5) {
-                var rc: i64 = net::extc_sock_read(cli[i], got.data, i64(5) - seen[i])
-                if rc > i64(0) {
+            if seen[i] < 5 {
+                var rc: i64 = net::extc_sock_read(cli[i], got.data, 5 - seen[i])
+                if rc > 0 {
                     var k: i64 = 0
                     while k < rc { sum = sum + i64(got[k])  k = k + 1 }
                     seen[i] = seen[i] + rc
@@ -90,10 +90,10 @@ fn main() -> i32 {
         }
         spins = spins + 1
     }
-    if left != i64(0) { return i32(91) }
+    if left != 0 { return i32(91) }
     /* 所有连接都必须收尾：任务跑完、槽位还回来（半关 ⇒ 读到 0 ⇒ close ✓）*/
     var spins2: i64 = 0
-    while s.live > i64(0) && spins2 < i64(20000) { var r: i64 = tasks.pump(ref s, i64(0))  spins2 = spins2 + 1 }
-    if s.live != i64(0) { return i32(90) }
+    while s.live > 0 && spins2 < 20000 { var r: i64 = tasks.pump(ref s, 0)  spins2 = spins2 + 1 }
+    if s.live != 0 { return i32(90) }
     return i32(sum)                          /* 5 × (1+2+3+4) = 50 */
 }

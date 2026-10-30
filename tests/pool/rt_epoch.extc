@@ -11,7 +11,7 @@ use std::io
 use stl::pool
 
 fn main() -> i32 {
-    var p: pool<i32> = pool<i32>::withCap(i64(8))
+    var p: pool<i32> = pool<i32>::withCap(8)
     let a = p.insert(i32(1))
     let b = p.insert(i32(2))
     let c = p.insert(i32(3))
@@ -20,13 +20,13 @@ fn main() -> i32 {
     p.clear()
 
     /* ① 旧句柄三问：contains / get / remove 都必须否决 */
-    var stale: i64 = i64(0)
-    if p.contains(a) { stale = stale + i64(1) }
-    if p.contains(b) { stale = stale + i64(1) }
-    if p.contains(c) { stale = stale + i64(1) }
+    var stale: i64 = 0
+    if p.contains(a) { stale = stale + 1 }
+    if p.contains(b) { stale = stale + 1 }
+    if p.contains(c) { stale = stale + 1 }
     var got: i32 = p.get(a) ?? i32(-77)
-    if got != i32(-77) { stale = stale + i64(1) }
-    if p.remove(c) { stale = stale + i64(1) }
+    if got != i32(-77) { stale = stale + 1 }
+    if p.remove(c) { stale = stale + 1 }
     io::cout << " stale=" << stale << " len=" << p.len()
 
     /* ② 再插同样多：容量不许涨（clear 没把分配器搞乱，也没靠重写槽位做到） */
@@ -34,23 +34,23 @@ fn main() -> i32 {
     let d1 = p.insert(i32(8))
     let d2 = p.insert(i32(9))
     io::cout << " refill=" << p.len() << " cap2=" << p.capacity()
-    var live: i64 = i64(0)
-    if p.contains(d0) { live = live + i64(1) }
-    if p.contains(d1) { live = live + i64(1) }
-    if p.contains(d2) { live = live + i64(1) }
+    var live: i64 = 0
+    if p.contains(d0) { live = live + 1 }
+    if p.contains(d1) { live = live + 1 }
+    if p.contains(d2) { live = live + 1 }
     io::cout << " live=" << live
-    io::cout << " d=" << i64(p.atDense(i64(0))) << "," << i64(p.atDense(i64(1))) << "," << i64(p.atDense(i64(2)))
+    io::cout << " d=" << i64(p.atDense(0)) << "," << i64(p.atDense(1)) << "," << i64(p.atDense(2))
 
     /* ③ 同 epoch 内换掉一个：拿回句柄、删掉、再插 —— 新元素可能占同一个槽，旧句柄必须失配 */
-    let taken = p.handleAtDense(i64(0))
-    var removed: i64 = i64(0)
-    if p.remove(taken) { removed = i64(1) }
+    let taken = p.handleAtDense(0)
+    var removed: i64 = 0
+    if p.remove(taken) { removed = 1 }
     let fresh = p.insert(i32(99))
-    var reuse: i64 = i64(0)
-    if p.contains(taken) { reuse = i64(1) }
+    var reuse: i64 = 0
+    if p.contains(taken) { reuse = 1 }
     var fv: i32 = p.get(fresh) ?? i32(-1)
-    var freshOk: i64 = i64(0)
-    if fv == i32(99) { freshOk = i64(1) }
+    var freshOk: i64 = 0
+    if fv == i32(99) { freshOk = 1 }
     io::cout << " removed=" << removed << " reuse=" << reuse << " fresh=" << freshOk << "\n"
     return 0
 }

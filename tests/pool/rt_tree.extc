@@ -6,7 +6,7 @@ use std::io
 use std::sys::pool as syspool
 
 fn main() -> i32 {
-    let outer = syspool::extc_pool_new(i64(-1))
+    let outer = syspool::extc_pool_new(-1)
     io::cout << "live0=" << syspool::extc_pool_live()
     {
         let inner = syspool::extc_pool_new(outer)      /* 子池：挂父链 */

@@ -11,11 +11,11 @@ fn show(v: val) {
 }
 fn main() -> i32 {
     var xs: varArray<val> = varArray<val>::withCap(4)
-    xs.push(val.i(i64(42)))
+    xs.push(val.i(42))
     xs.push(val.s("hello"))
     xs.push(val.p(1.5))
-    xs.push(val.i(i64(7)))
+    xs.push(val.i(7))
     var k: i64 = 0
-    while k < xs.size() { show(xs.get(k) ?? val.i(i64(0)))  k = k + 1 }
+    while k < xs.size() { show(xs.get(k) ?? val.i(0))  k = k + 1 }
     return 0
 }

@@ -13,7 +13,7 @@ fn bad<T>(x: T) -> i64 {
 }
 
 fn main() -> i32 {
-    var p: pt = { v: i64(300) }
+    var p: pt = { v: 300 }
     io::cout << "h=" << bad(p) << "\n"
     return 0
 }

@@ -32,7 +32,7 @@ fn idxGet(x: mut ref idx, k: i64) -> i64 {
     var h: i64 = (k * 2654435761) & 1023
     var c: ?mut ref ent = x.buckets[h]
     while c != null { if c.k == k { x.hit = x.hit + 1  return c.v }  c = c.next }
-    return i64(-1)
+    return -1
 }
 fn main(args: slice<slice<u8>>) -> i32 {
     var ops: i64 = 300000

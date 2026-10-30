@@ -4,5 +4,5 @@ use std::sys::domain
 fn plain(n: i64) -> i64 { return n }
 fn main() -> i32 {
   let d = domain::single()
-  d.run { ext plain(i64(3)) }
+  d.run { ext plain(3) }
   return 0 }

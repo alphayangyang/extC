@@ -5,7 +5,7 @@
  *   协程的 step 每次恢复都重建 C 帧 ⇒ 它必须落在任务的地方，而不是帧上的临时层。） */
 fn g(n: i64) -> coroutine<i64> {
     var p: mut ref i64 = new i64
-    *p = i64(0)
+    *p = 0
     var i: i64 = 0
     while i < n {
         *p = *p + i
@@ -15,7 +15,7 @@ fn g(n: i64) -> coroutine<i64> {
 }
 
 fn main() -> i32 {
-    var c = g(i64(3))
+    var c = g(3)
     var s: i64 = 0
     while c.next() { s = s + c.value() }
     return i32(s)

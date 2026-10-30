@@ -14,7 +14,7 @@ fn main() -> i32 {
     w.key("items")
     w.beginArr()
     var i: i64 = 0
-    while i < i64(40) {
+    while i < 40 {
         w.beginObj()
         w.key("id"); w.int(i)
         w.key("name"); w.str("piano-room-号")
@@ -36,13 +36,13 @@ fn main() -> i32 {
     var sink: i64 = 0
     while r < rounds {
         var p: parsed = parse(big[0..n], pool[..])
-        if rootOf(p) < i64(0) { return 2 }
+        if rootOf(p) < 0 { return 2 }
         sink = sink + rootOf(p) + countOf(pool[..], rootOf(p))
         r = r + 1
     }
     var dt: i64 = time::now() - t0
-    let mbps: i64 = (rounds * n * i64(1000)) / dt
-    io::cout << "parse " << mbps << " MB/s（" << rounds << " 次 × " << n << " B，dt=" << (dt / i64(1000000)) << "ms，sink=" << sink << "）\n"
+    let mbps: i64 = (rounds * n * 1000) / dt
+    io::cout << "parse " << mbps << " MB/s（" << rounds << " 次 × " << n << " B，dt=" << (dt / 1000000) << "ms，sink=" << sink << "）\n"
 
     /* 写入：同样的消息 N 次 */
     t0 = time::now()
@@ -57,7 +57,7 @@ fn main() -> i32 {
         r = r + 1
     }
     dt = time::now() - t0
-    io::cout << "build " << ((rounds * i64(200) * i64(1000)) / dt) << " MB/s（粗算，dt=" << (dt / i64(1000000)) << "ms）\n"
+    io::cout << "build " << ((rounds * 200 * 1000) / dt) << " MB/s（粗算，dt=" << (dt / 1000000) << "ms）\n"
     io::cout << "bench ok\n"
     return 0
 }

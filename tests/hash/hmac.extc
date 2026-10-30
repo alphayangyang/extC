@@ -28,7 +28,7 @@ fn main() -> i32 {
     /* case 6：131 字节的键（> 64 ⇒ 先散列） */
     var longkey: mut slice<u8> = new u8[131]
     var i: i64 = 0
-    while i < i64(131) {
+    while i < 131 {
         longkey[i] = u8(0xaa)
         i = i + 1
     }

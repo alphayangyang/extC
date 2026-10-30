@@ -6,10 +6,10 @@
 use std::io
 
 fn main() -> i32 {
-    var n: i64 = i64(100000)
+    var n: i64 = 100000
     var s: i64 = 0
     for i in 0..n {
-        if i > i64(46341) { s = i * i; break }
+        if i > 46341 { s = i * i; break }
     }
     io::cout << s << "\n"
 

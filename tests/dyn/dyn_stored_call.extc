@@ -6,11 +6,11 @@ trait Tag { fn tag(self: ref Self) -> i64 }
 struct box { v: i64 }
 struct pt  { x: i64 }
 impl Tag for box { fn tag(self: ref box) -> i64 { return self.v } }
-impl Tag for pt  { fn tag(self: ref pt) -> i64 { return self.x + i64(100) } }
+impl Tag for pt  { fn tag(self: ref pt) -> i64 { return self.x + 100 } }
 
 fn main() -> i32 {
-    let a: dyn Tag = dyn Tag(box { v: i64(7) })
-    let b: dyn Tag = dyn Tag(pt { x: i64(5) })
+    let a: dyn Tag = dyn Tag(box { v: 7 })
+    let b: dyn Tag = dyn Tag(pt { x: 5 })
     io::cout << "calls=" << a.tag() << "," << b.tag() << "\n"
     return 0
 }

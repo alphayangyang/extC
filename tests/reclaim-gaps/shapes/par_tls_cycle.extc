@@ -35,7 +35,7 @@ fn parseI64(s: slice<u8>) -> i64 {
 
 fn w(id: i64, lo: i64, hi: i64, out: mut slice<u8>) -> i32 {
     var keep: mut ref node = new node
-    keep.v = i64(0)
+    keep.v = 0
     keep.next = keep
     var i: i64 = lo
     while i < hi {
@@ -45,7 +45,7 @@ fn w(id: i64, lo: i64, hi: i64, out: mut slice<u8>) -> i32 {
         keep = p
         i = i + 1
     }
-    out[0] = u8(keep.v & i64(255))
+    out[0] = u8(keep.v & 255)
     return 0
 }
 

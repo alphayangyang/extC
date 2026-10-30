@@ -8,7 +8,7 @@ struct box { v: i64 }
 impl Tag for box { fn tag(self: ref box) -> i64 { return self.v } }
 fn main() -> i32 {
     var xs: varArray<dyn Tag> = varArray<dyn Tag>::withCap(2)
-    xs.push(dyn Tag(box { v: i64(9) }))
+    xs.push(dyn Tag(box { v: 9 }))
     let d: dyn Tag = xs.get(0)!
     xs.clear()
     io::cout << "afterClear=" << d.tag() << "\n"

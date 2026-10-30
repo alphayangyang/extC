@@ -2,10 +2,10 @@
 use std::io
 
 fn main() -> i32 {
-    let n: i64 = i64(16)
+    let n: i64 = 16
     var b: mut slice<f64> = new f64[n]
     par i in 0..n {
-        var t: mut slice<f64> = new f64[i64(4)]
+        var t: mut slice<f64> = new f64[4]
         b[i] = f64(i)
     }
     io::cout << f"s={b[0]}\n"

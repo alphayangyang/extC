@@ -7,11 +7,11 @@ struct point {
     fn hash(self: ref point) -> i64 { return self.x }
 }
 
-fn bad<T>(v: T) -> i64 { return v.hash(i64(1)) }
+fn bad<T>(v: T) -> i64 { return v.hash(1) }
 
 fn main() -> i32 {
-    var p: point = { x: i64(1) }
+    var p: point = { x: 1 }
     let got: i64 = bad(p)
-    if got > i64(0) { return 0 }
+    if got > 0 { return 0 }
     return 1
 }

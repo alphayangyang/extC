@@ -16,14 +16,14 @@ fn main() -> i32 {
     var r: parsed = parse(body[0..src.len], pool[..])
     if !isOk(r) { return 1 }
     let v: i64 = find(body[0..src.len], pool[..], rootOf(r), "k")
-    if v < i64(0) { return 2 }
+    if v < 0 { return 2 }
     var sb: [16]u8
     let before: slice<u8> = strOf(body[0..src.len], pool[..], v, sb[..])
-    if before.len != i64(4) { return 3 }
+    if before.len != 4 { return 3 }
     let b0: u8 = before[0]                /* 先**快照**一个字节：视图会跟着输入变，这也正是要证明的 */
     body[6] = u8(90)                      /* 'a' → 'Z'：只动输入，不碰解析结果 */
     let after: slice<u8> = strOf(body[0..src.len], pool[..], v, sb[..])
-    if after.len != i64(4) { return 4 }
+    if after.len != 4 { return 4 }
     if b0 != u8(97) { return 5 }
     if before[0] != u8(90) { return 6 }   /* 同一个视图：输入变了，它跟着变 ⇒ 零拷贝 */
     if after[0] != u8(90) { return 7 }

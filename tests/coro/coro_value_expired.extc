@@ -11,7 +11,7 @@ fn worker(n: i64) -> coroutine<i64> {
 }
 
 fn main() -> i32 {
-    var h: coroutine<i64> = worker(i64(2))
+    var h: coroutine<i64> = worker(2)
     var g: coroutine<i64> = h
     while h.next() { }                  /* 跑完 ⇒ 任务结束 ⇒ g 过期 */
     return i32(g.value())               /* ← 读过期句柄：必须大声 trap */

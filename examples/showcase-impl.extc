@@ -9,12 +9,12 @@ impl vec {
 }
 
 impl i64 {
-    fn doubled(self: ref i64) -> i64 { return *self * i64(2) }
+    fn doubled(self: ref i64) -> i64 { return *self * 2 }
 }
 
 fn main() -> i32 {
-    let a = vec { x: i64(1), y: i64(2) }
-    let b = vec { x: i64(10), y: i64(20) }
+    let a = vec { x: 1, y: 2 }
+    let b = vec { x: 10, y: 20 }
     let c = a + b                       /* 运算符就是方法，按右操作数类型匹配 */
     io::cout << "c=(" << c.x << "," << c.y << ") norm2=" << c.norm2() << "\n"
     io::cout << "i64::doubled=" << i64(21).doubled() << "\n"

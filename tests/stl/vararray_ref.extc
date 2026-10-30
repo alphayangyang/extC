@@ -12,12 +12,12 @@ struct node {
 }
 
 fn main() -> i32 {
-    var a: node = { data: i32(1), refs: varArray<ref node>::withCap(i64(4)) }
-    var b: node = { data: i32(2), refs: varArray<ref node>::withCap(i64(4)) }
+    var a: node = { data: i32(1), refs: varArray<ref node>::withCap(4) }
+    var b: node = { data: i32(2), refs: varArray<ref node>::withCap(4) }
     a.refs.push(ref b)
     b.refs.push(ref a)
-    io::cout << "a_data=" << i64((*(a.refs.get(i64(0))!)).data)
-    io::cout << " b_data=" << i64((*(b.refs.get(i64(0))!)).data)
+    io::cout << "a_data=" << i64((*(a.refs.get(0)!)).data)
+    io::cout << " b_data=" << i64((*(b.refs.get(0)!)).data)
     io::cout << " n=" << a.refs.size() << "\n"
     return 0
 }

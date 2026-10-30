@@ -16,7 +16,7 @@ extern!("liveN") fn bench_rss_kb() -> i64
 
 fn worker(id: i64) -> coroutine<i64> {
     var i: i64 = 0
-    while i < i64(3) {
+    while i < 3 {
         yield id + i                  /* 挂在这里：任务活着 */
         i = i + 1
     }
@@ -39,7 +39,7 @@ fn run_batch(n: i64, out: mut slice<coroutine<i64>>) -> i64 {
 }
 
 fn main() -> i32 {
-    var n: i64 = i64(10000)
+    var n: i64 = 10000
     var b1: mut slice<coroutine<i64>> = new coroutine<i64>[10000]
     var b2: mut slice<coroutine<i64>> = new coroutine<i64>[10000]
 
@@ -54,6 +54,6 @@ fn main() -> i32 {
     var warm: i64 = bench_now_ns() - t0
     var r2: i64 = bench_rss_kb()
 
-    io::cout << "extC n=" << n << " live=" << coroutine::extc_task_live() << " cold_ns=" << (cold / n) << " warm_ns=" << (warm / n) << " cold_B=" << ((r1 - r0) * i64(1024) / n) << " warm_B=" << ((r2 - r1) * i64(1024) / n) << " sink=" << (s1 + s2) << "\n"
+    io::cout << "extC n=" << n << " live=" << coroutine::extc_task_live() << " cold_ns=" << (cold / n) << " warm_ns=" << (warm / n) << " cold_B=" << ((r1 - r0) * 1024 / n) << " warm_B=" << ((r2 - r1) * 1024 / n) << " sink=" << (s1 + s2) << "\n"
     return 0
 }

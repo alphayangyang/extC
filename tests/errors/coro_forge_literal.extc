@@ -8,7 +8,7 @@
  * 不是"句柄不能伪造" ✓）⇒ 诊断该改，但安全性已经成立，所以先钉住现状。
  *
  * // expect: is a type, not a value */
-fn g() -> coroutine<i64> { yield i64(1) }
+fn g() -> coroutine<i64> { yield 1 }
 
 fn main() -> i32 {
     var h: coroutine<i64> = coroutine<i64>{ unit: true }

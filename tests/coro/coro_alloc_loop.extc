@@ -19,7 +19,7 @@ fn churn(n: i64) -> coroutine<i64> {
 }
 
 fn main() -> i32 {
-    var c = churn(i64(20000))
+    var c = churn(20000)
     var last: i64 = 0
     while c.next() { last = c.value() }        /* 活着的时候读（规则②）*/
     return i32(last)                            /* 每轮 +1 ⇒ 20000 % 256 = 32 */

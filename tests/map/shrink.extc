@@ -6,56 +6,56 @@ use std::io
 use stl::map
 
 fn main() -> i32 {
-    var m: map<i64, i32> = map<i64, i32>::withCap(i64(16))
-    var i: i64 = i64(0)
-    while i < i64(20000) {
-        m.put(i, i32(i * i64(3)))
-        i = i + i64(1)
+    var m: map<i64, i32> = map<i64, i32>::withCap(16)
+    var i: i64 = 0
+    while i < 20000 {
+        m.put(i, i32(i * 3))
+        i = i + 1
     }
     var peak: i64 = m.nodeCount()
-    i = i64(0)
-    while i < i64(19900) {
+    i = 0
+    while i < 19900 {
         m.remove(i)
-        i = i + i64(1)
+        i = i + 1
     }
     var before: i64 = m.nodeCount()
     m.shrink()
     var after: i64 = m.nodeCount()
 
-    var bad: i64 = i64(0)
-    if m.len() != i64(100) { bad = bad + i64(1) }
-    i = i64(19900)
-    var r: i64 = i64(0)
-    while i < i64(20000) {
+    var bad: i64 = 0
+    if m.len() != 100 { bad = bad + 1 }
+    i = 19900
+    var r: i64 = 0
+    while i < 20000 {
         var v: i32 = m.get(i) ?? i32(-1)
-        if i64(v) != i * i64(3) { bad = bad + i64(1) }
-        if m.keyAt(r) != i { bad = bad + i64(1) }
-        if m.valAt(r) != i32(i * i64(3)) { bad = bad + i64(1) }
-        if m.lowerBound(i) != r { bad = bad + i64(1) }
-        i = i + i64(1)
-        r = r + i64(1)
+        if i64(v) != i * 3 { bad = bad + 1 }
+        if m.keyAt(r) != i { bad = bad + 1 }
+        if m.valAt(r) != i32(i * 3) { bad = bad + 1 }
+        if m.lowerBound(i) != r { bad = bad + 1 }
+        i = i + 1
+        r = r + 1
     }
-    if m.contains(i64(0)) { bad = bad + i64(1) }
-    if m.contains(i64(19899)) { bad = bad + i64(1) }
+    if m.contains(0) { bad = bad + 1 }
+    if m.contains(19899) { bad = bad + 1 }
 
     /* 压实之后继续插入：存储、视图与叶子链都被重建过，这一步才算真的验完 */
-    i = i64(20000)
-    while i < i64(20100) {
-        m.put(i, i32(i * i64(3)))
-        i = i + i64(1)
+    i = 20000
+    while i < 20100 {
+        m.put(i, i32(i * 3))
+        i = i + 1
     }
-    var grow: i64 = i64(1)
-    i = i64(19900)
-    while i < i64(20100) {
+    var grow: i64 = 1
+    i = 19900
+    while i < 20100 {
         var v: i32 = m.get(i) ?? i32(-1)
-        if i64(v) != i * i64(3) { grow = i64(0) }
-        i = i + i64(1)
+        if i64(v) != i * 3 { grow = 0 }
+        i = i + 1
     }
-    if m.len() != i64(200) { grow = i64(0) }
-    if grow == i64(0) { bad = bad + i64(1) }
+    if m.len() != 200 { grow = 0 }
+    if grow == 0 { bad = bad + 1 }
 
-    var small: i64 = i64(0)
-    if after * i64(8) <= peak { small = i64(1) }
+    var small: i64 = 0
+    if after * 8 <= peak { small = 1 }
     io::cout << "peak=" << peak << " before=" << before << " after=" << after
     io::cout << " len=" << m.len() << " bad=" << bad << " small=" << small << " grow=" << grow << "\n"
     return 0

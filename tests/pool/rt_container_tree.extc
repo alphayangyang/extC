@@ -9,11 +9,11 @@ use std::sys::pool as syspool
 use stl::hashMap
 
 fn main() -> i32 {
-    var hm = hashMapI64<i32>::withCap(i64(8))
+    var hm = hashMapI64<i32>::withCap(8)
     io::cout << "live=" << syspool::extc_pool_live()
-    hm.put(i64(1), i32(11))
-    hm.put(i64(2), i32(22))
-    io::cout << " len=" << hm.len() << " v=" << i64(hm.get(i64(2)) ?? i32(-1))
+    hm.put(1, i32(11))
+    hm.put(2, i32(22))
+    io::cout << " len=" << hm.len() << " v=" << i64(hm.get(2) ?? i32(-1))
     hm.release()
     io::cout << " after=" << syspool::extc_pool_live() << "\n"
     return 0

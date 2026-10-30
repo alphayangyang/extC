@@ -32,7 +32,7 @@ fn main() -> i32 {
     var h: ref void = dl::open("libc.so.6")!
     var p: ref void = symOrTrap(h, "getpid")
     var f: fn() -> i32 = fn() -> i32(p)
-    io::cout << "match-return=ok" << " narrowed=" << unwrapOr(some(i64(7)), i64(0))
+    io::cout << "match-return=ok" << " narrowed=" << unwrapOr(some(7), 0)
 
     /* ③ 同一片区域的第二处：一个 **depth 0 的实参**（全局内存的视图）不再把"目的地深度"压成 0
      * ⇒ `pl`（局部）不再被误判成"活得不够久" ✓；而**运行时**该拒的照样拒（区间检查 ✓） */

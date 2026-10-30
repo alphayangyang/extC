@@ -7,11 +7,11 @@ use std::sys::pool as syspool
 fn main() -> i32 {
     io::cout << "live=" << syspool::extc_pool_live()
     {
-        var p = pool<i32>::withCap(i64(4))          /* 池在这里诞生（随容器）*/
+        var p = pool<i32>::withCap(4)          /* 池在这里诞生（随容器）*/
         io::cout << " made=" << syspool::extc_pool_live()
         p.release()                                   /* 整批还：池没了 */
         io::cout << " closed=" << syspool::extc_pool_live()
-        var q = pool<i32>::withCap(i64(4))          /* 槽位复用：又是 1 */
+        var q = pool<i32>::withCap(4)          /* 槽位复用：又是 1 */
         io::cout << " again=" << syspool::extc_pool_live()
         q.release()                                   /* 有 close 就是资源类型：不写它会报"开了没关" */
     }

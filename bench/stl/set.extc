@@ -12,24 +12,24 @@ fn main() -> i32 {
     while i < N {
         u = u * u64(6364136223846793005) + u64(1442695040888963407)
         s.put(i64(u & u64(2147483647)))
-        i = i + i64(1)
+        i = i + 1
     }
     u = u64(12345)
-    i = i64(0)
+    i = 0
     while i < N {
         u = u * u64(6364136223846793005) + u64(1442695040888963407)
-        if s.contains(i64(u & u64(2147483647))) { hits = hits + i64(1) }
-        i = i + i64(1)
+        if s.contains(i64(u & u64(2147483647))) { hits = hits + 1 }
+        i = i + 1
     }
     u = u64(12345)
-    i = i64(0)
+    i = 0
     var removed: i64 = 0
     while i < N {
         u = u * u64(6364136223846793005) + u64(1442695040888963407)
-        if i % i64(2) == i64(0) {
-            if s.remove(i64(u & u64(2147483647))) { removed = removed + i64(1) }
+        if i % 2 == 0 {
+            if s.remove(i64(u & u64(2147483647))) { removed = removed + 1 }
         }
-        i = i + i64(1)
+        i = i + 1
     }
     io::cout << "len=" << s.len() << " hits=" << hits << " removed=" << removed << "\n"
     return 0

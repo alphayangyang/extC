@@ -9,11 +9,11 @@ use stl::linmap
 use stl::string
 
 fn main() -> i32 {
-    var m: linMap<i64, slice<u8>> = linMap<i64, slice<u8>>::withCap(i64(2))
-    m.put(i64(1), "one")
-    let got: slice<u8> = m.get(i64(1)) ?? "?"
+    var m: linMap<i64, slice<u8>> = linMap<i64, slice<u8>>::withCap(2)
+    m.put(1, "one")
+    let got: slice<u8> = m.get(1) ?? "?"
 
-    var s: string = string::withCap(i64(32))
+    var s: string = string::withCap(32)
     s.append("x")
 
     io::cout << "got=" << got << " len=" << m.len() << "\n"
