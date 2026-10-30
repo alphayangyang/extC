@@ -28,8 +28,8 @@ fn main(args: slice<slice<u8>>) -> i32 {
         return 2
     }
     if ra.body.len != 11 || ra.body != "plain text\n" { return 3 }
-    if rb.body.len != 58 || rb.body[..i64(9)] != "<!doctype" { return 4 }
-    if rc.body.len != 50 || rc.body[..i64(9)] != "<!doctype" { return 5 }
+    if rb.body.len != 58 || rb.body[..9] != "<!doctype" { return 4 }
+    if rc.body.len != 50 || rc.body[..9] != "<!doctype" { return 5 }
     var ct: slice<u8> = ra.header("Content-Type")!
     io::cout << "三条 session 同时活着 ✓ 各自 " << ra.status << "/" << rb.status << "/" << rc.status << "，body 逐字节正确（11/58/50），ct=[" << ct << "]\n"
     return 0

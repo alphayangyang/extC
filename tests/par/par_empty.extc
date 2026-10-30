@@ -4,7 +4,7 @@ use std::io
 fn main() -> i32 {
     var b: mut slice<f64> = new f64[4]
     b[0] = 7.0
-    par i in i64(5)..i64(5) { b[i] = 9.0 }
+    par i in 5..5 { b[i] = 9.0 }
     io::cout << f"b0={i64(b[0])}\n"
     return 0
 }

@@ -7,7 +7,7 @@ fn main() -> i32 {
     var out: mut slice<f64> = new f64[rows * cols]
     par r in 0..rows {
         par c in 0..cols {
-            par k in 0..i64(2) {
+            par k in 0..2 {
                 out[r * cols + c] = f64(r + c + k)
             }
         }

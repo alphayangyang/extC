@@ -587,7 +587,7 @@ struct ostream { fd: i32
         pairsReady()
         let st = fmtI64Fast(v)
         let n = 24 - st
-        extc_cout_put(FMT[st..i64(24)].data, n)
+        extc_cout_put(FMT[st..24].data, n)
         return { fd: self.fd }
     }
     @inline
@@ -639,13 +639,13 @@ struct ostream { fd: i32
             if FMT[st] == u8(45) {
                 extc_cout_put(FMT[st..st + 1].data, 1)
                 pFillBytes(width - n, fill)
-                extc_cout_put(FMT[st + i64(1)..i64(24)].data, n - 1)
+                extc_cout_put(FMT[st + 1..24].data, n - 1)
             } else {
                 pFillBytes(width - n, fill)
-                extc_cout_put(FMT[st..i64(24)].data, n)
+                extc_cout_put(FMT[st..24].data, n)
             }
         } else {
-            pPadText(FMT[st..i64(24)], width, fill, align)
+            pPadText(FMT[st..24], width, fill, align)
         }
         return { fd: self.fd }
     }
@@ -981,7 +981,7 @@ struct errStream {
     fn <<(self: ref errStream, v: i64) -> errStream {
         pairsReady()
         let st = fmtI64Fast(v)
-        errWrite(FMT[st..i64(24)])
+        errWrite(FMT[st..24])
         return { }
     }
     fn <<(self: ref errStream, v: bool) -> errStream {

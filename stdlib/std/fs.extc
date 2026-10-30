@@ -316,7 +316,7 @@ struct outStream {
         /* 热路径版：只碰定长数组（视图下标是函数调用 ✗ 见 `io::fmtI64Fast` 的注释）*/
         io::pairsReady()
         let st = io::fmtI64Fast(v)
-        outPut(io::FMT[st..i64(24)])
+        outPut(io::FMT[st..24])
         return { }
     }
     @inline

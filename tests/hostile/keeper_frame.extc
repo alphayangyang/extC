@@ -19,7 +19,7 @@ fn main() -> i32 {
                        useLater: fn() -> i64(dl::sym(h, "use_later")!) }
     give(a)
     var r: i64 = a.useLater()          /* 往已经还回去的栈帧里写 */
-    if r == i64(0x77) { io::cout << "keep=write-succeeded\n" } else { io::cout << "keep=blocked\n" }
+    if r == 0x77 { io::cout << "keep=write-succeeded\n" } else { io::cout << "keep=blocked\n" }
     dl::close(h)
     return 0
 }

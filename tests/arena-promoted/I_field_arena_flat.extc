@@ -16,6 +16,6 @@ fn make() -> holder {
 
 fn main() -> i32 {
     var h: holder = make()
-    io::cout << "I 字段装 new 容器: " << h.buf[..i64(1)] << "\n"
+    io::cout << "I 字段装 new 容器: " << h.buf[..1] << "\n"
     return 0
 }

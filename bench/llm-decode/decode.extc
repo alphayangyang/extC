@@ -78,7 +78,7 @@ fn f32At(buf: slice<u8>, off: i64) -> f32 {
     if (bits >> 31) != u32(0) { sgn = f32(-1.0) }
     var ex: i64 = i64((bits >> 23) & u32(255))
     var mant: i64 = i64(bits & u32(0x7FFFFF))
-    if ex == 0 { ex = 1 - 127 - 23 } else { mant = mant | i64(0x800000)  ex = ex - 127 - 23 }
+    if ex == 0 { ex = 1 - 127 - 23 } else { mant = mant | 0x800000  ex = ex - 127 - 23 }
     var v: f32 = f32(mant)
     var k: i64 = ex
     while k > 0 { v = v * 2.0  k = k - 1 }

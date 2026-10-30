@@ -197,7 +197,7 @@ fn scene_find() -> i64 {
             pat[k] = u8(b)
             k = k + 1
         }
-        let at = s.find(pat[i64(0)..L]) ?? -1
+        let at = s.find(pat[0..L]) ?? -1
         acc = acc + at + 1
         i = i + 1
     }

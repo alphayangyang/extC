@@ -33,7 +33,7 @@ fn narrow(n: i64) -> i8 { return i8(n) }
 fn shifty(n: i64, k: i64) -> i64 { return n << k }
 
 @unchecked
-fn rang(v: slice<u8>, lo: i64) -> slice<u8> { return v[lo..i64(8)] }
+fn rang(v: slice<u8>, lo: i64) -> slice<u8> { return v[lo..8] }
 
 @unchecked
 fn copy4(d: mut slice<i32>, s: slice<i32>) -> i64 { return copyInto<i32>(d, s, 4) }

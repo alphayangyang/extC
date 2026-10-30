@@ -8,7 +8,7 @@ fn main() -> i32 {
     {
         var arr: [8]u8
         arr[0] = u8(90)
-        h.v = arr[..i64(1)]
+        h.v = arr[..1]
     }
     return i32(h.v.len)
 }

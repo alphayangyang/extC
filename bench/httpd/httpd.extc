@@ -96,11 +96,11 @@ fn eqCI(a: slice<u8>, b: slice<u8>) -> bool {
 }
 
 fn mimeOf(p: slice<u8>) -> slice<u8> {
-    if p.len >= 5 && eqCI(p[p.len - i64(5)..], ".html") { return "text/html; charset=utf-8" }
-    if p.len >= 4 && eqCI(p[p.len - i64(4)..], ".css") { return "text/css" }
-    if p.len >= 3 && eqCI(p[p.len - i64(3)..], ".js") { return "application/javascript" }
-    if p.len >= 4 && eqCI(p[p.len - i64(4)..], ".png") { return "image/png" }
-    if p.len >= 4 && eqCI(p[p.len - i64(4)..], ".txt") { return "text/plain; charset=utf-8" }
+    if p.len >= 5 && eqCI(p[p.len - 5..], ".html") { return "text/html; charset=utf-8" }
+    if p.len >= 4 && eqCI(p[p.len - 4..], ".css") { return "text/css" }
+    if p.len >= 3 && eqCI(p[p.len - 3..], ".js") { return "application/javascript" }
+    if p.len >= 4 && eqCI(p[p.len - 4..], ".png") { return "image/png" }
+    if p.len >= 4 && eqCI(p[p.len - 4..], ".txt") { return "text/plain; charset=utf-8" }
     return "application/octet-stream"
 }
 
@@ -242,7 +242,7 @@ fn conn(fd: i64, root: slice<u8>) -> coroutine<i64> {
         var sp2: i64 = findSub(head, sp1 + 1, " ")
         if sp2 < 0 { respondErr(fd, resp, "400 Bad Request")  sysio::close(i32(fd))  return }
         var method: slice<u8> = head[..sp1]
-        var target: slice<u8> = head[sp1 + i64(1)..sp2]
+        var target: slice<u8> = head[sp1 + 1..sp2]
         var isHead: bool = eqCI(method, "HEAD")
         if !isHead && !eqCI(method, "GET") { respondErr(fd, resp, "405 Method Not Allowed")  continue }
         /* 头的其余部分：`If-Modified-Since` 与 `Connection` */
@@ -262,8 +262,8 @@ fn conn(fd: i64, root: slice<u8>) -> coroutine<i64> {
             var colon: i64 = findSub(head[p..lineEnd], 0, ":")
             if colon > 0 {
                 var name: slice<u8> = head[p..p + colon]
-                var val: slice<u8> = head[p + colon + i64(1)..lineEnd]
-                while val.len > 0 && val[0] == u8(32) { val = val[i64(1)..] }
+                var val: slice<u8> = head[p + colon + 1..lineEnd]
+                while val.len > 0 && val[0] == u8(32) { val = val[1..] }
                 if eqCI(name, "If-Modified-Since") { ifMod = sysfile::extc_http_parse_date(val.data, val.len) }
                 if eqCI(name, "Connection") && eqCI(val, "close") { wantClose = true }
             }

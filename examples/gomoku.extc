@@ -139,7 +139,7 @@ fn printBoard(b: ref board) {
         head[2 + x] = u8('A' + x)
         x = x + 1
     }
-    io::cout << head[0..i64(2) + N] << "\n"
+    io::cout << head[0..2 + N] << "\n"
     var y: i64 = 0
     while y < N {
         var line: [24]u8

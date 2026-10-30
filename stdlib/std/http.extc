@@ -99,8 +99,8 @@ fn headerBlockEnd(raw: slice<u8>) -> i64 { return findSub(raw, 0, "\r\n\r\n") }
 
 /* 解析一个请求。**只切视图，不校验语义**（状态码那类判断留给调用者 ✓）。 */
 fn parseRequest(raw: slice<u8>) -> request {
-    var r: request = request { method: raw[..i64(0)], target: raw[..i64(0)], version: raw[..i64(0)],
-                               headers: raw[..i64(0)], body: raw[..i64(0)], complete: false }
+    var r: request = request { method: raw[..0], target: raw[..0], version: raw[..0],
+                               headers: raw[..0], body: raw[..0], complete: false }
     var end: i64 = headerEnd(raw)
     if end < 0 { return r }                       /* 头还没齐 ⇒ complete = false ✓ */
     r.complete = true
@@ -111,9 +111,9 @@ fn parseRequest(raw: slice<u8>) -> request {
     var eol: i64 = findSub(raw, 0, "\r\n")
     if eol < 0 { eol = end }
     r.method = raw[..sp1]
-    r.target = raw[sp1 + i64(1)..sp2]
-    r.version = raw[sp2 + i64(1)..eol]
-    r.headers = raw[eol + i64(2)..headerBlockEnd(raw)]
+    r.target = raw[sp1 + 1..sp2]
+    r.version = raw[sp2 + 1..eol]
+    r.headers = raw[eol + 2..headerBlockEnd(raw)]
     r.body = raw[end..]
     return r
 }
@@ -177,7 +177,7 @@ fn queryOf(target: slice<u8>, name: slice<u8>) -> option<slice<u8>> {
         if amp < 0 { amp = target.len }
         var eq: i64 = findSub(target, p, "=")
         if eq > p && eq < amp {
-            if eqCI(target[p..eq], name) { return some(target[eq + i64(1)..amp]) }
+            if eqCI(target[p..eq], name) { return some(target[eq + 1..amp]) }
         }
         if amp >= target.len { break }
         p = amp + 1
@@ -264,8 +264,8 @@ fn reasonOf(status: i64) -> slice<u8> {
 
 /* 解析一个响应（**状态行 + 头**；body 是"头之后的全部字节" ✓ —— chunked 不做 ✗）。 */
 fn parseResponse(raw: slice<u8>) -> response {
-    var r: response = response { version: raw[..i64(0)], status: 0, reason: raw[..i64(0)],
-                                 headers: raw[..i64(0)], body: raw[..i64(0)], complete: false }
+    var r: response = response { version: raw[..0], status: 0, reason: raw[..0],
+                                 headers: raw[..0], body: raw[..0], complete: false }
     var end: i64 = headerEnd(raw)
     if end < 0 { return r }
     r.complete = true
@@ -284,8 +284,8 @@ fn parseResponse(raw: slice<u8>) -> response {
         i = i + 1
     }
     r.status = code
-    if i + 1 <= eol { r.reason = raw[i + i64(1)..eol] }
-    r.headers = raw[eol + i64(2)..headerBlockEnd(raw)]
+    if i + 1 <= eol { r.reason = raw[i + 1..eol] }
+    r.headers = raw[eol + 2..headerBlockEnd(raw)]
     r.body = raw[end..]
     return r
 }
@@ -486,8 +486,8 @@ struct conn {
                 extraHeaders: slice<u8>, body: slice<u8>, out: mut slice<u8>,
                 buf: mut slice<u8>, keepAlive: bool) -> response {
         var at: i64 = beginRequest(out, 0, method, host, path, extraHeaders, body.len, keepAlive)
-        if !self.send(out[..at]) { return parseResponse(buf[..i64(0)]) }
-        if body.len > 0 && !self.send(body) { return parseResponse(buf[..i64(0)]) }
+        if !self.send(out[..at]) { return parseResponse(buf[..0]) }
+        if body.len > 0 && !self.send(body) { return parseResponse(buf[..0]) }
         return self.readResponse(buf)
     }
 

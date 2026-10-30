@@ -334,7 +334,7 @@ struct string {
             let rp = syspool::extc_pool_new(-1)
             let rpg = syspool::extc_pool_generation(rp)
             var blk: mut slice<u8> = poolSliceRaw<u8>(rp, 32)
-            copyInto<u8>(blk, self.small[0..i64(16)], 16)
+            copyInto<u8>(blk, self.small[0..16], 16)
             self.big = some(blk)
             self.cap = 32
             self.pid = rp
@@ -401,14 +401,14 @@ struct string {
         if k > self.n { k = self.n }
         let keep: i64 = self.n - k
         if self.cap == 0 {
-            copyInto<u8>(self.small[i64(0)..keep], self.small[k..self.n], keep)
+            copyInto<u8>(self.small[0..keep], self.small[k..self.n], keep)
             self.n = keep
             return
         }
         match self.big {
             some(bk) => {
                 var w: mut slice<u8> = bk
-                copyInto<u8>(w[i64(0)..keep], w[k..self.n], keep)
+                copyInto<u8>(w[0..keep], w[k..self.n], keep)
             }
             none => { }
         }
