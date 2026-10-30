@@ -1,5 +1,7 @@
 /* 值位置的 f-string：`let s: string = f"…"` 展开成 `stl::string::from(文字段) + 槽 …`
- * 的 `+` 链（第一版不带格式说明符）。判据见 tests/fstring/run.sh 的 value-fstring 一项。 */
+ * 的 `+` 链；带格式说明符的槽展开成 `stl::stringio::padI64/padF64/padText` 调用
+ * （按槽的静态类型选，与 `<<` 右侧的说明符同一套语义）。判据见 tests/fstring/run.sh
+ * 的 value-fstring 一项。 */
 use std::io
 use stl::string
 use stl::stringio
@@ -13,6 +15,8 @@ fn main() -> i32 {
     let b = f"{n}"
     let c = f"expr {n * 2} flag {n > 3} float {1.5}"
     let d = f"none"
-    io::cout << a << "\n" << b << "\n" << c << "\n" << d << "\n" << tag(n) << "\n"
+    let x: f64 = 3.14159
+    let e = f"[{n:>4}][{n:<4}][{n:03}][{x:8.2f}][{x:.1f}]"
+    io::cout << a << "\n" << b << "\n" << c << "\n" << d << "\n" << tag(n) << "\n" << e << "\n"
     return 0
 }

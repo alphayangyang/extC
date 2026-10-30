@@ -552,6 +552,21 @@ Expr *exprMethodNew(Arena *a, Expr *recv, const char *name, int line);
 Expr *exprSliceNew(Arena *a, Expr *obj, Expr *lo, Expr *hi, int line);
 
 /**
+ * @brief 把一个表达式原地改成模块函数调用 `modPrefix::name(args…)`。
+ *
+ * 检查器按静态类型把解析器造的保留名调用重定向到具体模块函数时用（值 f-string 的
+ * 说明符槽 → `stl::stringio::padI64/padF64/padText`）。
+ *
+ * @param e         要改写的表达式节点（原地改）。
+ * @param typeName  类型名段。
+ * @param modPrefix 模块前缀。
+ * @param name      函数名（静态存储）。
+ * @param args      新的实参表；失败时节点保持原样。
+ */
+void exprRetargetAssoc(Arena *a, Expr *e, const char *typeName, const char *modPrefix,
+                       const char *name, Vec *args);
+
+/**
  * @brief 深拷贝一个表达式子树（融合降糖用：同一条右值要出现在多个位置）。
  *
  * 只复制表达式形状与源码位置；`type` / plan 侧的表在拷贝后清空，由检查器重新填 —— 拷贝

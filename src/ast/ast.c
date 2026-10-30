@@ -300,6 +300,33 @@ Expr *exprSliceNew(Arena *a, Expr *obj, Expr *lo, Expr *hi, int line) {
 }
 
 /**
+ * @brief 把一个表达式**原地**改成模块函数调用 `modPrefix::name(args…)`（`EX_ASSOC`）。
+ *
+ * 值 f-string 的说明符槽由解析器脱糖成保留名的调用，检查器按值的静态类型把它重定向到
+ * `stl::stringio` 的 `padI64` / `padF64` / `padText`：那一层同时知道值的类型和写下来的
+ * 说明符，也只有它能挑填充原语。重定向成 `EX_ASSOC` 之后，模块导入检查、mangling 与
+ * 计划侧记账都走自由函数调用的既有路径。
+ *
+ * @param a         分配用的 arena（空 targs 表用）。
+ * @param e         要改写的表达式节点（原地改）。
+ * @param typeName  类型名段（如 `"stl"`）。
+ * @param modPrefix 模块前缀（如 `"stl::stringio"`）。
+ * @param name      函数名（静态存储）。
+ * @param args      新的实参表（指针向量）。
+ */
+void exprRetargetAssoc(Arena *a, Expr *e, const char *typeName, const char *modPrefix,
+                       const char *name, Vec *args) {
+    e->kind = EX_ASSOC;
+    e->u.assoc.typeName = typeName;
+    e->u.assoc.modPrefix = modPrefix;
+    e->u.assoc.name = name;
+    e->u.assoc.args = *args;
+    vecInit(&e->u.assoc.targs, a, sizeof(Type *));
+    e->u.assoc.isCall = true;
+    e->type = NULL;
+}
+
+/**
  * @brief 深拷贝一个表达式子树（融合降糖用）。
  *
  * 见 `ast.h` 的同名声明：只保证纯表达式形状的子树被完整复制，其它形状退化为浅拷贝。

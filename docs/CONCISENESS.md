@@ -215,14 +215,17 @@ for line in io::lines() { ... }            // 逐行迭代，错误在迭代器�
 这两项让"用字符串拼一行"彻底不需要临时视图。
 
 **f-string 落在值位置**：`let s: string = f"{name}: {n}"` 展开成
-`stl::string::from("…") + 槽 + …` 的 `+` 链（要求 `stl::string` 被 import；第一版不带
-格式说明符，带 `:…` 的槽明确报错）。`let s = f"…"` 不写注解也能推成 `string`。
+`stl::string::from("…") + 槽 + …` 的 `+` 链（要求 `stl::string` 被 import）。
+`let s = f"…"` 不写注解也能推成 `string`。
+
+**值位置也吃格式说明符**：`let s = f"[{n:>4}][{x:8.2f}]"` 里的槽按**槽值的静态类型**落成
+`stl::stringio::padI64` / `padF64` / `padText` 调用（所以带说明符时还要 import `stl::stringio`），
+语义与 `<<` 右侧的说明符逐条相同 —— 报表/日志不需要再为排版退回 `<<`。
 
 本段又补：`io::eprint` / `io::eprintln`（诊断通道的一句版）、`stringio::fromF64(x, prec)`（定点浮点
 转字符串，复用 `io::pFmtF`；容器不认识"小数点后几位"，所以放 stringio 层）。
 
-还缺的（第 1 层 B 后续）：值位置的 f-string 还不吃格式说明符（补齐要先给"字符串目标"造
-pad 原语）。
+还缺的（第 1 层 B 后续）：`varArray`→`slice` 之外的容器转视图（`vector` 的 `toSlice` 仍是显式）。
 
 已补：`varArray` / 定长数组传给**只读视图参数**时，调用位置自动借出（`total(va)` 就是
 `total(va.asSlice())`、`total(a)` 就是 `total(a[..])`），借用与生命周期照常检查；写权限

@@ -750,6 +750,9 @@ stl::string	string	sub	method	public
 stl::string	string	subView	method	public
 stl::string	string	toSlice	method	public
 stl::stringio	-	fromF64	fn	public
+stl::stringio	-	padF64	fn	public
+stl::stringio	-	padI64	fn	public
+stl::stringio	-	padText	fn	public
 stl::stringio	-	readAll	fn	public
 stl::stringio	-	readLine	fn	public
 stl::stringio	string	appendF64	method	public

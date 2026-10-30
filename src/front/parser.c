@@ -3998,7 +3998,10 @@ static Expr *fmtValue(Parser *p, Token *ft) {
             ctxError(p->ctx, line, col + 1, NULL, "an f-string slot cannot be empty");
             return NULL;
         }
-        /* 顶层 `:` ⇒ 说明符：值形状第一版不支持（见函数注释）。 */
+        /* 顶层 `:`（且不是模块路径的 `::`）⇒ 说明符。脱糖成保留名的调用
+         * `__extc_fstr_pad(值, 宽度, 填充字节, 对齐, 精度, 类型码)`：选哪个填充原语要看值的
+         * **静态类型**，那一步只能放到检查器（与 `<<` 右侧的 `__extc_pad` 同一套说明符解析）。 */
+        size_t q = innerLen;
         {
             int d2 = 0; bool st = false;
             for (size_t t = i + 1; t < j; t++) {
@@ -4008,20 +4011,21 @@ static Expr *fmtValue(Parser *p, Token *ft) {
                 if (d == '(' || d == '[' || d == '{') d2 += 1;
                 else if (d == ')' || d == ']' || d == '}') d2 -= 1;
                 else if (d == ':' && d2 == 0) {
-                    /* `::` 是模块路径分隔符（`{nd::sumv(v)}`），不是说明符的开头。 */
                     if (t + 1 < j && src[t + 1] == ':') { t += 1; continue; }
-                    ctxError(p->ctx, line, col + (int)(t - i),
-                             "a value f-string takes no format specifiers yet -- drop the `:…`,"
-                             " or write this one through `io::cout << f\"…\"`",
-                             "an f-string slot has a format specifier, which a value f-string"
-                             " does not support yet");
-                    return NULL;
+                    q = t - (i + 1);
+                    break;
                 }
             }
         }
+        FmtSpec spec;
+        spec.width = 0; spec.fill = 32; spec.align = -1; spec.prec = -1; spec.code = -1;
+        if (q < innerLen &&
+            !fmtParseSpec(p, src + i + 1 + q + 1, innerLen - q - 1, line,
+                          col + (int)q + 1, &spec))
+            return NULL;
         Vec toks;
         vecInit(&toks, p->arena, sizeof(Token));
-        lexRange(p->ctx, src + i + 1, innerLen, line, col + 1, &toks);
+        lexRange(p->ctx, src + i + 1, q, line, col + 1, &toks);
         if (p->ctx->hasError) return NULL;
         Parser sub = *p;
         sub.toks = &toks;
@@ -4034,6 +4038,20 @@ static Expr *fmtValue(Parser *p, Token *ft) {
             ctxError(p->ctx, cur(&sub)->line, cur(&sub)->col, "one expression per slot",
                      "unexpected `%s` inside an f-string slot", cur(&sub)->text);
             return NULL;
+        }
+        if (q < innerLen) {
+            Vec args;
+            vecInit(&args, p->arena, sizeof(void *));
+            *(Expr **)vecPush(&args) = e;
+            *(Expr **)vecPush(&args) = forInt(p, spec.width, line);
+            *(Expr **)vecPush(&args) = forInt(p, spec.fill, line);
+            *(Expr **)vecPush(&args) = forInt(p, spec.align, line);
+            *(Expr **)vecPush(&args) = forInt(p, spec.prec, line);
+            *(Expr **)vecPush(&args) = forInt(p, spec.code, line);
+            Expr *c = exprNew(p->arena, EX_CALL, line);
+            c->u.call.callee = forIdent(p, "__extc_fstr_pad", line);
+            c->u.call.args = args;
+            e = c;
         }
         *(Expr **)vecPush(&parts) = e;
         col += (int)(j - i + 1);

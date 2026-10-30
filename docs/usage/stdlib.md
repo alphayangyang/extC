@@ -156,6 +156,9 @@ fn main() -> i32 {
 | `stringio::readLine()` | `fn readLine() -> ?string`：从控制台读一行（自带 `io::inSync` / `inSave` 的取还；行尾 CRLF 不算内容；空行是 `some("")`，**EOF 才给 `none`**）|
 | `stringio::readAll()` | `fn readAll() -> ?string`：把控制台剩下的输入一次读完（错误给 `none`）|
 | `stringio::fromF64` | `fn fromF64(x: f64, prec: i64) -> string`：定点格式化成字符串（`prec` 位小数、四舍五入；`prec` 上限 20）|
+| `stringio::padText` | `fn padText(v: slice<u8>, width: i64, fill: u8, align: i64) -> string`：按字节宽度排版（`align` 用 `io::LEFT`/`io::RIGHT`/`io::CENTER`；宽度不够不截断）—— 值 f-string 的 `{s:>8}` 走它 |
+| `stringio::padI64` | `fn padI64(v: i64, width: i64, fill: u8, align: i64) -> string`：整数排版；`0` 填充时符号在前（`-5` 宽 4 ⇒ `-005`）—— 值 f-string 的 `{n:>4}` / `{n:03}` 走它 |
+| `stringio::padF64` | `fn padF64(x: f64, width: i64, prec: i64, fill: u8, align: i64) -> string`：定点 + 排版（`prec` 上限 20）—— 值 f-string 的 `{x:8.2f}` 走它 |
 
 ```extc
 use std::io

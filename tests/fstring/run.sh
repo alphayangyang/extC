@@ -3,7 +3,7 @@
 #   ① 输出正确（多槽 / 转义 / 每槽求值一次 / 无文本段）
 #   ② **生成物与手写 `<<` 链逐字节相同** ← 零运行时成本 + "它就是语法糖"的最硬证据
 #   ③ 反例：空槽 · 未闭合 · 多余 `}` · 值位置也要 `string` 目标 · 格式说明符的 10 条语法/类型错误
-#      （值位置第一版不接受说明符，另有专门反例）
+#      （值位置的说明符还需要 `use stl::stringio`，另有专门反例）
 set -u
 cd "$(dirname "$0")/../.."
 EXTC=${EXTC:-./build/extc}
@@ -42,9 +42,9 @@ fi
 
 # ①d 值位置（`let s: string = f"…"`）：文字段起步 / 槽起步 / 表达式槽 / 无槽 / 函数返回
 "$EXTC" -w --run tests/fstring/value.extc > "$tmp/value" 2>&1
-printf 'hi extC, n=7\n7\nexpr 14 flag true float 1.500000\nnone\n<7>\n' > "$tmp/valuewant"
+printf 'hi extC, n=7\n7\nexpr 14 flag true float 1.500000\nnone\n<7>\n[   7][7   ][007][    3.14][3.1]\n' > "$tmp/valuewant"
 if diff -q "$tmp/value" "$tmp/valuewant" >/dev/null 2>&1; then
-    echo "  ok   value-fstring    ->  值位置展开成 \`from(文字段) + 槽\` 链（无说明符）"
+    echo "  ok   value-fstring    ->  值位置展开成 \`from(文字段) + 槽\` 链 · 说明符走 stringio 的 pad"
     pass=$((pass+1))
 else
     echo "  FAIL value-fstring    ->  $(tr '\n' '|' < "$tmp/value")"; fail=$((fail+1))
@@ -155,11 +155,20 @@ fn main() -> i32 {
     let s: slice<u8> = f\"x\"
     return 0
 }" "initializer expects"
-neg value-spec-unavailable "$H
+neg value-spec-needs-stringio "use std::io
+use stl::string
+fn main() -> i32 {
     let n: i64 = 5
     let s: string = f\"x={n:>4}\"
     return 0
-}" "does not support yet"
+}" "is needed for a format specifier"
+neg value-spec-bool "use std::io
+use stl::string
+fn main() -> i32 {
+    let b: bool = true
+    let s: string = f\"x={b:>4}\"
+    return 0
+}" "cannot take a format specifier"
 neg fstring-empty       "$H
     io::cout << f\"\"
     return 0

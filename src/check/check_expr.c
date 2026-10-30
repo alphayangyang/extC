@@ -1497,6 +1497,94 @@ static Type *checkPadCall(Checker *c, Expr *e) {
 }
 
 /**
+ * @brief 检查值 f-string 里带说明符的槽（解析器脱糖出的保留名 `__extc_fstr_pad` 调用）。
+ *
+ * 值位置要的是**返回 string** 的填充函数（流上的 `padInt`/`padF`/`padText` 写到 fd，不能
+ * 用在这里）。选哪个同样取决于槽值的静态类型：整数 → `stl::stringio::padI64`、浮点 →
+ * `padF64`、`slice<u8>` → `padText`。节点原地重写成 `EX_ASSOC` 之后走自由函数调用的常规
+ * 路径，模块导入检查与计划侧记账都不必重复。
+ *
+ * @param c  检查器。
+ * @param e  保留名的 `EX_CALL`；实参依次是槽值、宽度、填充字节、对齐、精度、类型码。
+ * @return   结果的类型（`string`）；值类型不支持说明符或说明符自相矛盾时返回错误类型。
+ */
+static Type *checkFstrPadCall(Checker *c, Expr *e) {
+    if (e->u.call.args.len != 6) return ttError(c->tt);   /* 解析器自己造的，不可能 */
+    Type *vt = checkExpr(c, *(Expr **)vecAt(&e->u.call.args, 0));
+    if (!vt || vt->kind == TY_ERROR) return ttError(c->tt);
+    const char *name = NULL;
+    PlanPadKind kind = PLAN_PAD_NONE;
+    if (ttIsInteger(vt)) { name = "padI64"; kind = PLAN_PAD_INT; }
+    else if (ttIsFloat(vt)) { name = "padF64"; kind = PLAN_PAD_FLOAT; }
+    else if (ttIsViewType(vt) && vt->targs.len == 1 &&
+             ttIs(*(Type **)vecAt(&vt->targs, 0), "u8")) {
+        name = "padText"; kind = PLAN_PAD_TEXT;
+    }
+    if (!name) {
+        ckError(c, e->line,
+                "A format specifier picks the integer, floating-point or text padder from the"
+                " value's type; anything else has to be converted first.",
+                "`%s` cannot take a format specifier", typeStr(c, vt));
+        return ttError(c->tt);
+    }
+    const long long code = (*(Expr **)vecAt(&e->u.call.args, 5))->u.ival;
+    const long long prec = (*(Expr **)vecAt(&e->u.call.args, 4))->u.ival;
+    if (code >= 0) {
+        const long long want = kind == PLAN_PAD_INT ? 0 : kind == PLAN_PAD_FLOAT ? 1 : 2;
+        if (code != want) {
+            const char wc = code == 0 ? 'd' : code == 1 ? 'f' : 's';
+            ckError(c, e->line,
+                    "The type code says how the value is written, so it has to match what the"
+                    " value is.",
+                    "`%c` says the value is %s, but it is %s", (int)wc,
+                    code == 0 ? "an integer" : code == 1 ? "a float" : "text",
+                    kind == PLAN_PAD_INT ? "an integer" : kind == PLAN_PAD_FLOAT ? "a float" : "text");
+            return ttError(c->tt);
+        }
+    }
+    if (prec >= 0 && kind != PLAN_PAD_FLOAT) {
+        ckError(c, e->line,
+                "Precision (`.N`) applies to floats, and this value is not one.",
+                "a precision (`.N`) applies to floats, and `%s` is not one", typeStr(c, vt));
+        return ttError(c->tt);
+    }
+    for (size_t i = 1; i < e->u.call.args.len; i++)
+        (void)checkExpr(c, *(Expr **)vecAt(&e->u.call.args, i));
+    Vec args;
+    vecInit(&args, c->arena, sizeof(void *));
+    *(Expr **)vecPush(&args) = *(Expr **)vecAt(&e->u.call.args, 0);
+    *(Expr **)vecPush(&args) = *(Expr **)vecAt(&e->u.call.args, 1);   /* 宽度 */
+    if (kind == PLAN_PAD_FLOAT) {
+        *(Expr **)vecPush(&args) = *(Expr **)vecAt(&e->u.call.args, 4);  /* 精度（没写 ⇒ 6） */
+        if (prec < 0) {
+            Expr *six = exprIntNew(c->arena, 6, e->line);
+            six->type = c->tI64;
+            *(Expr **)vecAt(&args, args.len - 1) = six;
+        }
+    }
+    *(Expr **)vecPush(&args) = *(Expr **)vecAt(&e->u.call.args, 2);   /* 填充字节 */
+    *(Expr **)vecPush(&args) = *(Expr **)vecAt(&e->u.call.args, 3);   /* 对齐 */
+    /* 解析器造的节点里 callee 是保留名；把它换成装配后的扁平名（`stringio$padI64`），
+     * 再交回普通的自由函数调用路径 —— 实参检查、arena/zone 记账、计划标记与生成 C
+     * 都走既有的那一条路。模块没导入时合并模块里就没有这个名字，这里给出可执行的提示。 */
+    char *flat = arenaPrintf(c->arena, "stringio$%s", name);
+    if (!findFunc(c, flat)) {
+        ckError(c, e->line,
+                "A value f-string's format specifier is filled in by `stl::stringio`, which has to"
+                " be imported: add `use stl::stringio`.",
+                "`use stl::stringio` is needed for a format specifier in a value f-string");
+        return ttError(c->tt);
+    }
+    e->u.call.args = args;
+    Expr *id = exprIdent(c->arena, flat, e->line);
+    id->u.ident.srcName = name;
+    e->u.call.callee = id;
+    /* 名字已经由检查器"限定"过（源码里并没有写 `stringio::`），别再要求写模块前缀。 */
+    anSetQualified(e, true);
+    return checkExprInner(c, e);
+}
+
+/**
  * @brief 检查一个表达式并返回它的类型：检查器里的递归核心。
  *
  * `checkExpr` 在它外面包了每个子表达式都需要的记账。检查过程中有些节点会被**原地**改写，所以调用
@@ -3015,6 +3103,11 @@ static Type *checkExprInner(Checker *c, Expr *e) {
         }
 
         case EX_CALL: {
+            /* 值 f-string 的说明符槽：解析器造的保留名调用，按槽值的静态类型重定向到
+             * `stl::stringio` 的填充函数（见 `checkFstrPadCall`）。 */
+            if (e->u.call.callee && e->u.call.callee->kind == EX_IDENT &&
+                strcmp(e->u.call.callee->u.ident.name, "__extc_fstr_pad") == 0)
+                return checkFstrPadCall(c, e);
             /* `f(x)` 里的 `f` 持有一个 lambda：节点**原地**改写成方法调用 `f.call(x)`，之后交给
              * 普通的方法路径 —— 与下面变体分支所做的原地改写相同。 */
             if (e->u.call.callee && e->u.call.callee->kind == EX_IDENT) {

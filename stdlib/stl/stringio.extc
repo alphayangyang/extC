@@ -246,6 +246,67 @@ fn fromF64(x: f64, prec: i64) -> string {
     return out
 }
 
+/* ---------------------------------------------------------------- 值 f-string 的填充原语
+ *
+ * `let s: string = f"{x:>8}"` 里带说明符的槽要一个**返回 string** 的填充函数：流上的
+ * `padInt`/`padF`/`padText` 是写到 fd 的，值位置不能借用。语义与流上的那三个逐条对齐
+ * （宽度按字节、`^` 左右各一半且左少右多、`0` 填充时符号在前）。
+ */
+
+/* 把 `v` 按宽度 `width`（字节）、填充字节 `fill`、对齐 `align` 排成一个新 string。
+ * `align` 用 `std::io` 的 `LEFT`/`RIGHT`/`CENTER`；宽度不够时不截断，原样拷一份。 */
+fn padText(v: slice<u8>, width: i64, fill: u8, align: i64) -> string {
+    let n: i64 = width - v.len
+    if n <= 0 { return stl::string::from(v) }
+    var out: string = stl::string::withCap(width)
+    if align == io::CENTER {
+        let l: i64 = n / 2
+        var i: i64 = 0
+        while i < l { out.push(fill)  i = i + 1 }
+        out.append(v)
+        i = 0
+        while i < n - l { out.push(fill)  i = i + 1 }
+    } else if align == io::LEFT {
+        out.append(v)
+        var i: i64 = 0
+        while i < n { out.push(fill)  i = i + 1 }
+    } else {
+        var i: i64 = 0
+        while i < n { out.push(fill)  i = i + 1 }
+        out.append(v)
+    }
+    return out
+}
+
+/* 整数：`{x:>4}` 走这个。零填充与流上 `padInt` 同一条特殊路径 —— `-5` 宽 4 得 `-005`，
+ * 不是 `0-5`。 */
+fn padI64(v: i64, width: i64, fill: u8, align: i64) -> string {
+    let t: string = stl::string::fromI64(v)
+    let digits: i64 = t.len()
+    if fill == u8(48) && align == io::RIGHT && width > digits {
+        let bytes = t.toSlice()
+        var out: string = stl::string::withCap(width)
+        if bytes[0] == u8(45) {
+            out.push(u8(45))
+            var i: i64 = 0
+            while i < width - digits { out.push(fill)  i = i + 1 }
+            out.append(bytes[1..digits])
+        } else {
+            var i: i64 = 0
+            while i < width - digits { out.push(fill)  i = i + 1 }
+            out.append(bytes)
+        }
+        return out
+    }
+    return padText(t.toSlice(), width, fill, align)
+}
+
+/* 浮点：`{x:8.2f}` 走这个。先按 `prec` 位小数定型，再按宽度排 —— 与流上 `padF` 同一顺序。 */
+fn padF64(x: f64, width: i64, prec: i64, fill: u8, align: i64) -> string {
+    let t: string = fromF64(x, prec)
+    return padText(t.toSlice(), width, fill, align)
+}
+
 /* ---------------------------------------------------------------- 从 stdin 读整块文本
  *
  * 用 `impl` 块里的 `readLineFrom` / `readAllFrom` 能做到，但每个调用点都要
