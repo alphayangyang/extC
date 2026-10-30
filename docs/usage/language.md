@@ -502,6 +502,46 @@ fn main() -> i32 {
 }
 ```
 
+### 7.4 整数组表达式 `out = a + b`
+
+赋值右边是**逐元素的运算**、左边是可写视图时，编译器把它降成一条写循环：
+
+- 写法：`out = a + b * k - 1`（`+ - * /`、一元 `+ -`、标量与字面量混合）。
+- 语义：`out[i] = a[i] + b[i] * k - 1`，`i` 从 0 到 `out.len`。**不隐式分配**：目标视图由
+  调用者提供；每个参与视图必须与目标等长，否则 trap（不静默截断）。
+- 别名是允许的：`out = out + a` 逐元素读写同一格，结果是新值。
+- 裸视图名不是表达式：`buf = t` 仍是**视图值赋值**（换指针与长度），不是逐元素拷贝。
+- 降糖产物就是手写循环的形状，所以边界检查消除、向量化与融合照常作用在它上面；实测与
+  手写 C 的 AXPY 循环同一量级。`par` 体里暂不支持这种写法，仍写显式 `out[i] = …`。
+
+```extc
+// 结果：out = 0 3 6 9 sum = 18
+use std::io
+
+fn axpy(a: slice<i64>, b: slice<i64>, out2: mut slice<i64>) {
+    out2 = a + b * 2
+}
+
+fn main() -> i32 {
+    var a: mut slice<i64> = new i64[i64(4)]
+    var b: mut slice<i64> = new i64[i64(4)]
+    var out: mut slice<i64> = new i64[i64(4)]
+    for i in 0..4 {
+        a[i] = i64(i)
+        b[i] = i64(i)
+    }
+    axpy(a, b, out)
+    var sum: i64 = 0
+    for i in 0..4 {
+        sum = sum + out[i]
+    }
+    io::cout << "out ="
+    for i in 0..4 { io::cout << " " << out[i] }
+    io::cout << " sum = " << sum << "\n"
+    return 0
+}
+```
+
 ---
 
 ## 8. 内存模型

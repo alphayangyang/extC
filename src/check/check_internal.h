@@ -1078,6 +1078,17 @@ Expr *extcRootLeaf(Expr *e, unsigned steps, int maxHops);
  */
  Type *sliceOf (Checker *c, Type *elem);
 /**
+ * @brief 整数组表达式语句的降糖（`out = a + b` → 逐元素写循环）；不适用时返回 NULL。
+ *
+ * 目标与右值都还没检查过：本函数只查名字表，命中就把语句换成"长度守卫 + 写循环"的块；
+ * 调用方负责写回语句表再检查替换后的语句。函数体与块体两条检查路径都要调用它。
+ *
+ * @param c 检查器。
+ * @param s 候选语句。
+ * @return  替换语句；不该降糖时 NULL（调用方原样检查）。
+ */
+Stmt *arrayAssignLower(Checker *c, Stmt *s);
+/**
  * @brief 把当前实例的类型实参替换进一个类型。
  *
  * @param c  检查器；替换上下文是它的参数表与实参表。

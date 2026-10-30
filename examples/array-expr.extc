@@ -1,0 +1,31 @@
+// expect: axpy = -1 2 5 8 neg = 0 -2 -4 -6
+// 整数组表达式：`out = a + b * 2 - 1` 由编译器降成一条逐元素写循环，
+// 目标视图由调用者提供（不隐式分配），各操作数长度不一致时 trap。
+use std::io
+
+fn axpy(a: slice<i64>, b: slice<i64>, out: mut slice<i64>) {
+    out = a + b * 2 - 1
+}
+
+fn negate(a: slice<i64>, out2: mut slice<i64>) {
+    out2 = -(a * 2)
+}
+
+fn main() -> i32 {
+    var a: mut slice<i64> = new i64[i64(4)]
+    var b: mut slice<i64> = new i64[i64(4)]
+    var out: mut slice<i64> = new i64[i64(4)]
+    var out2: mut slice<i64> = new i64[i64(4)]
+    for i in 0..4 {
+        a[i] = i64(i)
+        b[i] = i64(i)
+    }
+    axpy(a, b, out)
+    negate(a, out2)
+    io::cout << "axpy ="
+    for i in 0..4 { io::cout << " " << out[i] }
+    io::cout << " neg ="
+    for i in 0..4 { io::cout << " " << out2[i] }
+    io::cout << "\n"
+    return 0
+}

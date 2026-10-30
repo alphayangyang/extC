@@ -548,6 +548,93 @@ Expr *exprClone(Arena *a, Expr *src);
  * @param stmts 新语句表（`Stmt*` 的 `Vec`）。
  */
 void stmtBlockSetStmts(Stmt *s, Vec *stmts);
+/**
+ * @brief 造 `obj[index]` 下标节点（整数组表达式降糖用）。
+ *
+ * @param a     分配用的 arena。
+ * @param obj   被下标的表达式（通常是一个视图名）。
+ * @param index 下标表达式。
+ * @param line  挂到节点上的源码行。
+ * @return      新的 `EX_INDEX` 节点。
+ */
+Expr *exprIndexNew(Arena *a, Expr *obj, Expr *index, int line);
+/**
+ * @brief 造 `obj.name` 字段访问节点（降糖里读 `v.len` 用）。
+ *
+ * @param a    分配用的 arena。
+ * @param obj  被访问的表达式。
+ * @param name 字段名（源码里写的那一段文本，不拷贝）。
+ * @param line 挂到节点上的源码行。
+ * @return     新的 `EX_FIELD` 节点。
+ */
+Expr *exprFieldNew(Arena *a, Expr *obj, const char *name, int line);
+/**
+ * @brief 造字符串字面量节点，把文本拷进 arena。
+ *
+ * 降糖造出来的 trap 报文必须活过本模块的 arena：源码里的 token 文本可能属于临时缓冲，
+ * 所以这里按值拷贝。
+ *
+ * @param a    分配用的 arena。
+ * @param text 字符串内容（UTF-8，未转义）。
+ * @param line 挂到节点上的源码行。
+ * @return     新的 `EX_STR` 节点。
+ */
+Expr *exprStrNew(Arena *a, const char *text, int line);
+/**
+ * @brief 造一元表达式节点。
+ *
+ * @param a       分配用的 arena。
+ * @param op      运算符文本，例如 `"-"`；必须是不需要额外存储的静态字符串。
+ * @param operand 操作数。
+ * @param line    挂到节点上的源码行。
+ * @return        新的 `EX_UN` 节点。
+ */
+Expr *exprUnNew(Arena *a, const char *op, Expr *operand, int line);
+/**
+ * @brief 造赋值语句 `target op= value`（降糖里造循环步进与逐元素写入）。
+ *
+ * @param a      分配用的 arena。
+ * @param target 赋值目标。
+ * @param value  右值。
+ * @param op     复合赋值运算符（例如 `"+="`）；普通 `=` 传 NULL。
+ * @param line   挂到节点上的源码行。
+ * @return       新的 `ST_ASSIGN` 节点。
+ */
+Stmt *stmtAssignNew(Arena *a, Expr *target, Expr *value, const char *op, int line);
+/**
+ * @brief 造 `trap(msg)` 语句。
+ *
+ * @param a   分配用的 arena。
+ * @param msg 报文表达式（通常是 `exprStrNew` 造的字符串字面量）。
+ * @param line 挂到节点上的源码行。
+ * @return    新的 `ST_TRAP` 节点。
+ */
+Stmt *stmtTrapNew(Arena *a, Expr *msg, int line);
+/**
+ * @brief 造 `if cond { thenBody } else { elseBody }` 语句；`elseBody` 可为 NULL。
+ *
+ * @param a        分配用的 arena。
+ * @param cond     条件表达式。
+ * @param thenBody 条件为真时的语句。
+ * @param elseBody 条件为假时的语句；NULL 表示没有 `else`。
+ * @param line     挂到节点上的源码行。
+ * @return         新的 `ST_IF` 节点。
+ */
+Stmt *stmtIfNew(Arena *a, Expr *cond, Stmt *thenBody, Stmt *elseBody, int line);
+/**
+ * @brief 造 `for var in 0..hi { body }` 的脱糖块（整数组表达式降糖用）。
+ *
+ * 形状与解析器的区间 `for` 完全一致：`[循环变量声明, 上界声明, while]`，`while` 的体是
+ * `[body, 步进]` 并挂 `forStep` —— 检查器的区间放宽与降糖都按这个形状认。
+ *
+ * @param a    分配用的 arena。
+ * @param var  循环变量名（调用方保证是内部名，不撞用户名字）。
+ * @param hi   上界表达式（半开区间）。
+ * @param body 循环体（一个块）。
+ * @param line 挂到节点上的源码行。
+ * @return     外层块语句。
+ */
+Stmt *stmtRangeForNew(Arena *a, const char *var, Expr *hi, Stmt *body, int line);
 
 
 

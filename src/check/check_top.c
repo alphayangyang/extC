@@ -4323,8 +4323,12 @@ static void checkFunc(Checker *c, FuncDef *f) {
      * legal and becomes `a__2` in the generated C, while `var a = ...` declares a second
      * piece of storage and is rejected (see `declare`). */
     checkFuseFuncBody(c, f->body);
-    for (size_t i = 0; i < f->body->u.block.stmts.len; i++)
-        checkStmt(c, *(Stmt **)vecAt(&f->body->u.block.stmts, i));
+    for (size_t i = 0; i < f->body->u.block.stmts.len; i++) {
+        Stmt **slot = (Stmt **)vecAt(&f->body->u.block.stmts, i);
+        Stmt *lowered = arrayAssignLower(c, *slot);
+        if (lowered) *slot = lowered;
+        checkStmt(c, *slot);
+    }
 
     /* The types of the declarations are final by now, so this is where a coroutine's frame can be
      * laid out -- and where rule 2 is enforced on it. */

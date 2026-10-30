@@ -130,5 +130,6 @@ for i in 0..n {
 3. ~~S2 归约融合（升序、单累加器、`+`；`var acc = init` 与写循环相邻）与 S3（S1 + S2 串起来）~~
    （已完成：`tests/fuse/reduce.extc`、`stream.extc`；`bench/fusion` S3 6.5×）。
 4. ~~S2/S3 的 `bench/fusion` 三臂（未融合 vs 编译器融合 vs 手写融合）与数字~~（已完成，见判据）。
-5. 之后再看：`seq::sum(tmp)` 的跨函数识别、`c = a + b` 的整数组表达式写法（ARRAY.md M3 的语法面）、
+5. 之后再看：`seq::sum(tmp)` 的跨函数识别（`c = a + b` 的整数组表达式写法已按 rank-1 子集落地，
+   它降糖成同形循环，融合与向量化照常作用在上面）、
    跨 `par` 融合、非临时写。

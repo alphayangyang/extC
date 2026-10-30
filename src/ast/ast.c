@@ -338,6 +338,171 @@ void stmtBlockSetStmts(Stmt *s, Vec *stmts) {
     s->u.block.stmts = *stmts;
 }
 
+/**
+ * @brief 造 `obj[index]` 下标节点（整数组表达式降糖用）。
+ *
+ * @param a     分配用的 arena。
+ * @param obj   被下标的表达式。
+ * @param index 下标表达式。
+ * @param line  挂到节点上的源码行。
+ * @return      新的 `EX_INDEX` 节点。
+ */
+Expr *exprIndexNew(Arena *a, Expr *obj, Expr *index, int line) {
+    Expr *e = exprNew(a, EX_INDEX, line);
+    e->u.index.obj   = obj;
+    e->u.index.index = index;
+    return e;
+}
+
+/**
+ * @brief 造 `obj.name` 字段访问节点（降糖里读 `v.len` 用）。
+ *
+ * @param a    分配用的 arena。
+ * @param obj  被访问的表达式。
+ * @param name 字段名（不拷贝）。
+ * @param line 挂到节点上的源码行。
+ * @return     新的 `EX_FIELD` 节点。
+ */
+Expr *exprFieldNew(Arena *a, Expr *obj, const char *name, int line) {
+    Expr *e = exprNew(a, EX_FIELD, line);
+    e->u.field.obj  = obj;
+    e->u.field.name = name;
+    return e;
+}
+
+/**
+ * @brief 造字符串字面量节点，把文本拷进 arena。
+ *
+ * @param a    分配用的 arena。
+ * @param text 字符串内容。
+ * @param line 挂到节点上的源码行。
+ * @return     新的 `EX_STR` 节点。
+ */
+Expr *exprStrNew(Arena *a, const char *text, int line) {
+    Expr *e = exprNew(a, EX_STR, line);
+    size_t n = strlen(text);
+    char *copy = arenaAlloc(a, n + 1);
+    memcpy(copy, text, n + 1);
+    e->u.str.text = copy;
+    return e;
+}
+
+/**
+ * @brief 造一元表达式节点。
+ *
+ * @param a       分配用的 arena。
+ * @param op      运算符文本（静态存储）。
+ * @param operand 操作数。
+ * @param line    挂到节点上的源码行。
+ * @return        新的 `EX_UN` 节点。
+ */
+Expr *exprUnNew(Arena *a, const char *op, Expr *operand, int line) {
+    Expr *e = exprNew(a, EX_UN, line);
+    e->u.un.op      = op;
+    e->u.un.operand = operand;
+    return e;
+}
+
+/**
+ * @brief 造赋值语句 `target op= value`。
+ *
+ * @param a      分配用的 arena。
+ * @param target 赋值目标。
+ * @param value  右值。
+ * @param op     复合赋值运算符；普通 `=` 传 NULL。
+ * @param line   挂到节点上的源码行。
+ * @return       新的 `ST_ASSIGN` 节点。
+ */
+Stmt *stmtAssignNew(Arena *a, Expr *target, Expr *value, const char *op, int line) {
+    Stmt *s = stmtNew(a, ST_ASSIGN, line);
+    s->u.assign.target = target;
+    s->u.assign.value  = value;
+    s->u.assign.op     = op;
+    s->u.assign.opExpr = NULL;
+    return s;
+}
+
+/**
+ * @brief 造 `trap(msg)` 语句。
+ *
+ * @param a    分配用的 arena。
+ * @param msg  报文表达式。
+ * @param line 挂到节点上的源码行。
+ * @return     新的 `ST_TRAP` 节点。
+ */
+Stmt *stmtTrapNew(Arena *a, Expr *msg, int line) {
+    Stmt *s = stmtNew(a, ST_TRAP, line);
+    s->u.trap_.msg = msg;
+    return s;
+}
+
+/**
+ * @brief 造 `if cond { thenBody } else { elseBody }` 语句。
+ *
+ * @param a        分配用的 arena。
+ * @param cond     条件表达式。
+ * @param thenBody 条件为真时的语句。
+ * @param elseBody 条件为假时的语句；NULL 表示没有 `else`。
+ * @param line     挂到节点上的源码行。
+ * @return         新的 `ST_IF` 节点。
+ */
+Stmt *stmtIfNew(Arena *a, Expr *cond, Stmt *thenBody, Stmt *elseBody, int line) {
+    Stmt *s = stmtNew(a, ST_IF, line);
+    s->u.ifs.cond     = cond;
+    s->u.ifs.thenBody = thenBody;
+    s->u.ifs.elseBody = elseBody;
+    return s;
+}
+
+/**
+ * @brief 造 `for var in 0..hi { body }` 的脱糖块（整数组表达式降糖用）。
+ *
+ * 形状与解析器的区间 `for` 一致：`[循环变量声明, 上界声明, while]`，`while` 的体是
+ * `[body, 步进]` 并挂 `forStep`。检查器的区间变量放宽与 `par` 降糖都按这个形状认。
+ *
+ * @param a    分配用的 arena。
+ * @param var  循环变量名。
+ * @param hi   上界表达式（半开区间）。
+ * @param body 循环体（一个块）。
+ * @param line 挂到节点上的源码行。
+ * @return     外层块语句。
+ */
+Stmt *stmtRangeForNew(Arena *a, const char *var, Expr *hi, Stmt *body, int line) {
+    Stmt *decl = stmtNew(a, ST_VAR, line);
+    decl->u.var.name      = var;
+    decl->u.var.ann       = NULL;
+    decl->u.var.init      = exprIntNew(a, 0, line);
+    decl->u.var.mut       = true;      /* the loop itself writes it */
+    decl->u.var.overwrite = false;
+
+    Stmt *hiDecl = stmtNew(a, ST_VAR, line);
+    hiDecl->u.var.name      = "__extc_hi";
+    hiDecl->u.var.ann       = NULL;
+    hiDecl->u.var.init      = hi;
+    hiDecl->u.var.mut       = false;
+    hiDecl->u.var.overwrite = false;
+
+    Expr *cond = exprBinNew(a, "<", exprIdent(a, var, line), exprIdent(a, "__extc_hi", line), line);
+    Stmt *step = stmtAssignNew(a, exprIdent(a, var, line), exprIntNew(a, 1, line), "+=", line);
+
+    Stmt *loopBody = stmtNew(a, ST_BLOCK, line);
+    vecInit(&loopBody->u.block.stmts, a, sizeof(Stmt *));
+    *(Stmt **)vecPush(&loopBody->u.block.stmts) = body;
+    *(Stmt **)vecPush(&loopBody->u.block.stmts) = step;
+    loopBody->forStep = step;          /* label target for `continue` */
+
+    Stmt *w = stmtNew(a, ST_WHILE, line);
+    w->u.whiles.cond = cond;
+    w->u.whiles.body = loopBody;
+
+    Stmt *outer = stmtNew(a, ST_BLOCK, line);
+    vecInit(&outer->u.block.stmts, a, sizeof(Stmt *));
+    *(Stmt **)vecPush(&outer->u.block.stmts) = decl;
+    *(Stmt **)vecPush(&outer->u.block.stmts) = hiDecl;
+    *(Stmt **)vecPush(&outer->u.block.stmts) = w;
+    return outer;
+}
+
 /* ---------------------------------------------------------------- walking */
 
 /**

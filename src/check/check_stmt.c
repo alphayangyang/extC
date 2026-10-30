@@ -1792,6 +1792,187 @@ void checkFuseFuncBody(Checker *c, Stmt *body) {
     if (!fuseOff()) fuseElementChains(c, body);
 }
 
+/* ---------------------------------------------------- 整数组表达式降糖 */
+
+/**
+ * @brief 判断一个名字是不是可写的 rank-1 视图，返回它的元素类型。
+ *
+ * @param c    检查器。
+ * @param name 变量名。
+ * @return     元素类型（类型同时要求 `mut`）；不是可写视图时返回 NULL。
+ */
+static Type *arrayViewElem(Checker *c, const char *name) {
+    Sym *sym = lookup(c, name);
+    if (!sym || !sym->type) return NULL;
+    Type *t = ttBase(sym->type);
+    Type *elem = viewElemOf(t);
+    if (!elem || !t->mut) return NULL;
+    return elem;
+}
+
+/**
+ * @brief 检查整数组表达式的右值形状，并登记里面引用的视图名。
+ *
+ * 允许的形状刻意小：只读视图名（元素类型相同）、标量名、数字/布尔字面量、`+ - * /` 的
+ * 二元组合与一元 `+ -`。任何调用、`new`、下标、切片、字段、`?` 都不在范围内 —— 它们要么
+ * 不是逐元素运算，要么自己会分配，降糖后语义会变。
+ *
+ * @param c     检查器（查名字）。
+ * @param e     右值表达式。
+ * @param elem  目标视图的元素类型。
+ * @param views 输出：找到的视图名（`const char*`，按首次出现顺序，去重）。
+ * @return      形状可用返回 true；否则 false（调用方原样放过这条语句）。
+ */
+static bool arrayExprShapes(Checker *c, Expr *e, Type *elem, Vec *views) {
+    if (!e) return false;
+    switch (e->kind) {
+    case EX_IDENT: {
+        if (!e->u.ident.name) return false;
+        Sym *sym = lookup(c, e->u.ident.name);
+        if (!sym || !sym->type) return false;
+        Type *t = ttBase(sym->type);
+        Type *ve = viewElemOf(t);
+        if (ve) {
+            if (!ttEquals(ve, elem)) return false;
+            for (size_t i = 0; i < views->len; i++)
+                if (strcmp(*(const char **)vecAt(views, i), e->u.ident.name) == 0) return true;
+            *(const char **)vecPush(views) = e->u.ident.name;
+            return true;
+        }
+        /* 标量名：类型等到正常检查时判（不在这里猜字面量的适配）。 */
+        return true;
+    }
+    case EX_INT: case EX_FLOAT: case EX_BOOL:
+        return true;
+    case EX_BIN: {
+        const char *op = e->u.bin.op;
+        if (!op) return false;
+        if (strcmp(op, "+") != 0 && strcmp(op, "-") != 0 &&
+            strcmp(op, "*") != 0 && strcmp(op, "/") != 0) return false;
+        return arrayExprShapes(c, e->u.bin.left, elem, views) &&
+               arrayExprShapes(c, e->u.bin.right, elem, views);
+    }
+    case EX_UN: {
+        const char *op = e->u.un.op;
+        if (!op || (strcmp(op, "-") != 0 && strcmp(op, "+") != 0)) return false;
+        return arrayExprShapes(c, e->u.un.operand, elem, views);
+    }
+    default:
+        return false;
+    }
+}
+
+/**
+ * @brief 把整数组表达式的右值改写成逐元素形式：每个视图名 `v` 换成 `v[loop]`。
+ *
+ * @param c    检查器（取 arena）。
+ * @param e    已通过 arrayExprShapes 的右值。
+ * @param loop 循环变量名。
+ * @return     新的表达式子树。
+ */
+static Expr *arrayExprIndexed(Checker *c, Expr *e, const char *loop) {
+    Arena *a = c->arena;
+    switch (e->kind) {
+    case EX_IDENT: {
+        Sym *sym = lookup(c, e->u.ident.name);
+        if (sym && sym->type && viewElemOf(ttBase(sym->type))) {
+            return exprIndexNew(a, exprIdent(a, e->u.ident.name, e->line),
+                                exprIdent(a, loop, e->line), e->line);
+        }
+        return exprClone(a, e);
+    }
+    case EX_BIN:
+        return exprBinNew(a, e->u.bin.op, arrayExprIndexed(c, e->u.bin.left, loop),
+                          arrayExprIndexed(c, e->u.bin.right, loop), e->line);
+    case EX_UN:
+        return exprUnNew(a, e->u.un.op, arrayExprIndexed(c, e->u.un.operand, loop), e->line);
+    default:
+        return exprClone(a, e);
+    }
+}
+
+/**
+ * @brief 整数组表达式语句的降糖：`out = a + b` → `for i in 0..out.len { out[i] = a[i] + b[i] }`。
+ *
+ * 只认"目标是可写 rank-1 视图、右值是逐元素表达式"这一种赋值；命中就把语句换成一个块：
+ * 先是长度守卫（每个参与视图与目标等长，否则 trap），再是写循环。降糖产物与手写循环完全
+ * 同形，所以边界检查消除、向量化与融合都照常作用在它上面。
+ *
+ * @param c 检查器（此时目标与右值都还没检查过 —— 只做名字查表，不改作用域）。
+ * @param s 候选语句。
+ * @return  降糖后的替换语句；不该降糖时返回 NULL。
+ */
+Stmt *arrayAssignLower(Checker *c, Stmt *s) {
+    if (!s || s->kind != ST_ASSIGN) return NULL;
+    if (s->u.assign.op || !s->u.assign.target || !s->u.assign.value) return NULL;
+    Expr *tgt = s->u.assign.target;
+    if (tgt->kind != EX_IDENT || !tgt->u.ident.name) return NULL;
+    /* 裸视图名不是整数组表达式：`buf = t` 是**视图值**赋值（换掉指针与长度、别名关系照旧），
+     * 不是逐元素拷贝。降糖只接带运算的形状。 */
+    if (s->u.assign.value->kind == EX_IDENT) return NULL;
+    const char *outName = tgt->u.ident.name;
+    Type *elem = arrayViewElem(c, outName);
+    if (!elem) return NULL;
+
+    Vec views;
+    vecInit(&views, c->arena, sizeof(const char *));
+    if (!arrayExprShapes(c, s->u.assign.value, elem, &views) || views.len == 0) return NULL;
+
+    Arena *a = c->arena;
+    const int line = s->line;
+    const char *loop = "__extc_ae";
+    Vec out;
+    vecInit(&out, a, sizeof(Stmt *));
+
+    /* 长度守卫：`if out.len != v.len { trap }`。视图长度之一是目标自己的长度，跳过。 */
+    for (size_t i = 0; i < views.len; i++) {
+        const char *vn = *(const char **)vecAt(&views, i);
+        if (strcmp(vn, outName) == 0) continue;
+        Expr *lhsLen = exprFieldNew(a, exprIdent(a, outName, line), "len", line);
+        Expr *rhsLen = exprFieldNew(a, exprIdent(a, vn, line), "len", line);
+        Expr *cond = exprBinNew(a, "!=", lhsLen, rhsLen, line);
+        Stmt *die = stmtTrapNew(a, exprStrNew(a,
+            "array expression operands must have the same length as the destination", line), line);
+        /* `if` 的两个分支在解析器里都是块（`parseBlock` 造 ST_BLOCK），照同一个形状造。 */
+        Stmt *dieBlock = stmtNew(a, ST_BLOCK, line);
+        vecInit(&dieBlock->u.block.stmts, a, sizeof(Stmt *));
+        *(Stmt **)vecPush(&dieBlock->u.block.stmts) = die;
+        *(Stmt **)vecPush(&out) = stmtIfNew(a, cond, dieBlock, NULL, line);
+    }
+
+    Expr *slot = exprIndexNew(a, exprIdent(a, outName, line), exprIdent(a, loop, line), line);
+    Stmt *write = stmtAssignNew(a, slot, arrayExprIndexed(c, s->u.assign.value, loop), NULL, line);
+    Stmt *body = stmtNew(a, ST_BLOCK, line);
+    vecInit(&body->u.block.stmts, a, sizeof(Stmt *));
+    *(Stmt **)vecPush(&body->u.block.stmts) = write;
+    *(Stmt **)vecPush(&out) = stmtRangeForNew(a, loop,
+        exprFieldNew(a, exprIdent(a, outName, line), "len", line), body, line);
+
+    Stmt *wrap = stmtNew(a, ST_BLOCK, line);
+    vecInit(&wrap->u.block.stmts, a, sizeof(Stmt *));
+    for (size_t i = 0; i < out.len; i++)
+        *(Stmt **)vecPush(&wrap->u.block.stmts) = *(Stmt **)vecAt(&out, i);
+    return wrap;
+}
+
+/**
+ * @brief 判断一个块是不是区间 `for` 的脱糖块（`[循环变量, 上界, while]`）。
+ *
+ * `checkBlockBody` 在检查完前两条语句时对区间块做循环变量放宽、对 `par` 块做降糖；降糖
+ * 产物的外层块（"长度守卫 + 写循环"）也走同一条检查路径，形状不对时必须跳过，不能把守卫
+ * 语句当循环变量声明去改类型。
+ *
+ * @param block 候选块。
+ * @return      形状正好是 `[ST_VAR, ST_VAR, ST_WHILE]` 时返回 true。
+ */
+static bool rangeForBlockShape(Stmt *block) {
+    if (!block || block->kind != ST_BLOCK || block->u.block.stmts.len != 3) return false;
+    Stmt *a = *(Stmt **)vecAt(&block->u.block.stmts, 0);
+    Stmt *b = *(Stmt **)vecAt(&block->u.block.stmts, 1);
+    Stmt *d = *(Stmt **)vecAt(&block->u.block.stmts, 2);
+    return a && b && d && a->kind == ST_VAR && b->kind == ST_VAR && d->kind == ST_WHILE;
+}
+
 /**
  * @brief 在新作用域里检查一个块体，块结束时块内绑定随之出作用域。
  *
@@ -1809,13 +1990,16 @@ static void checkBlockBody(Checker *c, Stmt *block) {
 
     pushScope(c);
     for (size_t i = 0; i < block->u.block.stmts.len; i++) {
-        checkStmt(c, *(Stmt **)vecAt(&block->u.block.stmts, i));
+        Stmt **slot = (Stmt **)vecAt(&block->u.block.stmts, i);
+        Stmt *lowered = arrayAssignLower(c, *slot);
+        if (lowered) *slot = lowered;
+        checkStmt(c, *slot);
         /* 区间循环的外层块是 `[循环变量, __extc_hi, while]`：等两者都检查完、`while` 还没
          * 检查时把循环变量放宽，体里的使用才会拿到放宽后的类型（见 widenRangeForVar）。
          * `par` 块在同一个时机降糖：两端类型已定、名字可查（见 parLower）。 */
         if (i == 1) {
             if (block->parLoop) parLower(c, block);
-            else                widenRangeForVar(c, block);
+            else if (rangeForBlockShape(block)) widenRangeForVar(c, block);
         }
     }
     popScope(c);
