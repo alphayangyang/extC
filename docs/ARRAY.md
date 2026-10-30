@@ -119,3 +119,78 @@ b[1..rows - 1, 1..cols - 1] =
 - 可变性放在类型里（`mut view2<T>`）还是靠借用推断；前者简单，后者接口少一半。
 - 整数组表达式的归约写法：函数调用（`sum(a)`）还是方法（`a.sum()`）；`par` 禁调用，
   需要为归约算子开特例。
+
+## 库原型（第一步的落地设计）
+
+第一步只在 `stdlib/stl/` 里做：不改编译器、不进 `prelude`。目标是先拿到 API 的手感与
+"少拷贝"的收益数字，让第二步的取舍有据可依。
+
+### 模块与类型
+
+- `stl::nd`：`array2<T>`（拥有、行主序，`data/rows/cols`）、`view2<T>`（借用，
+  `data/off/rows/cols/rs/cs`）；一维沿用 `slice<T>` 与 `mut slice<T>`。
+- 构造走关联函数（与 `tensor2::fromFlat` 同形）：`array2<T>::zeros(rows, cols)`、
+  `array2<T>::fromFlat(s, rows, cols)`、`view2<T>::of(s, rows, cols, rs, cs)`；
+  失败返回 `?`，不 trap。
+- 访问：`rows` / `cols` / `rowStride` / `colStride`；`get(r, c) -> ?T`、`set(r, c, v) -> bool`；
+  `row(r) -> ?slice<T>`、`col(c) -> ?slice<T>`（零拷贝）；`sub(r0, r1, c0, c1) -> ?view2<T>`
+  （零拷贝）。`[]` 与 `[]=` 运算符方法第一步就给（`tensor2` 已有先例），`m[1][2]` 与行视图
+  `m[1]` 都走它。
+
+### 逐元素运算：按目标写入，不产生临时数组
+
+第一步没有融合，所以每个运算都写到调用者给的视图：
+
+- `addInto(dst, a, b)`、`subInto`、`mulInto`、`divInto`
+- `scaleInto(dst, a, k)`、`axpyInto(dst, a, b, k)`（`dst = a + k * b`）、
+  `mulAddInto(dst, a, b, c)`（`dst = a * b + c`）
+- 一元：`negInto`、`absInto`
+- 形状不匹配、空视图 → 返回 `false`，不 trap；同形时允许原地（`addInto(a, a, b)`），
+  逐元素先读后写。
+
+### 归约：流式，不落数组
+
+`sum` / `max` / `min` / `count` 直接遍历视图（复用 `seq` 的语义：空视图给 `none`，
+行主序固定顺序）；分块并行版本沿用 `parts: mut slice<T>` 的 `sumBlocks` / `maxBlocks` /
+`minBlocks` 形状。**泛型约束**：extC 的泛型函数不能调用另一个泛型函数，所以每个归约
+自带一个小循环，不转调 `stl::seq`——这也是第二步把归约下沉到"整数组表达式 + 降低成
+流式循环"的理由之一。
+
+### 卷积（第二步再展开）
+
+第一步只留两个形状：`stencil5Into(dst, src, c: slice<T>)`（五点模板，逐元素、不落中间平面）
+与 `conv1dInto(dst, src, kernel)`（可分离卷积的前半）。它们只验证"零拷贝 + 一遍流"的写法，
+不做性能承诺。
+
+### 零拷贝的来源（八条）
+
+1. 视图按值传（几个字），子视图构造是加法；2. 运算写进调用者给的 `dst`；3. 行/列视图零拷贝；
+4. 归约流式；5. 允许原地；6. 只有 `copyInto` 真正搬元素；7. 卷积不建中间平面；
+8. 库内部不持有元素数组。
+
+### 判据（第一阶段的验收）
+
+- 语义：每个运算与"朴素循环"参考实现逐字节相同（`f64` 同序 ⇒ 可按位比较）。
+- 零临时数组：大尺寸（≥ L3）下库 pipeline 的峰值 RSS 与单 `dst` 方案一致；`bench/stream`
+  加一条"库 pipeline"臂，与手写融合臂对比。
+- 泛型覆盖面：`f64` 与 `i64` 两套测试都过。
+- 错误模型：形状不匹配、越界、空视图一律 `false` / `none`，不 trap。
+- 闸门：doxygen / walkers / ast-freeze / 公开面清单照跑。
+
+### 第二步：把什么放进 prelude / 编译器
+
+- `view2<T>` 变内建类型（与 `slice<T>` 同族）：`a[r][c]`、`a[r0..r1, c0..c1]` 走语法；
+  `par` 输出 `mut view2<T>`，每维下标即该维循环变量——二维折叠的地址唯一性由此成为结构性质，
+  顺带修掉现行 `parIndexOverLoops` 的竞争。
+- 整数组表达式（`dst = a * 0.25 + b`）由编译器降低成融合循环；第一步的 `*Into` 函数退成薄壳。
+- 保留在 `stl` 的：需要具体算法的（卷积、可分离滤波、矩阵乘），避免 `prelude` 变成大库。
+
+### 落地顺序
+
+1. `view2<T>` / `array2<T>` + 构造、访问、子视图 + 测试。
+2. 逐元素 into 运算 + 原地 + 别名测试。
+3. 流式归约（含分块并行）+ 逐位测试。
+4. `stencil5Into` / `conv1dInto` + `bench` 一条臂量化"少拷贝"。
+5. `docs/usage/stdlib.md` 一节 + 公开面清单 + 闸门。
+
+每一步独立提交；prelude 化在第一步的 API 稳定后再谈。
