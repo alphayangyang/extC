@@ -2621,10 +2621,22 @@ static Stmt *parseStmt(Parser *p) {
         Expr *v = parseExpr(p);
         if (!v) return NULL;
         /* `v[i, j] = x`：两下标糖读出的是 `stl::nd::at2(...)` 调用，赋值目标不可能是调用，
-         * 所以在这里把它改写成 `stl::nd::set2(v, i, j, x)`（一条普通调用语句）。 */
-        if (strcmp(aop, "=") == 0 && e->kind == EX_ASSOC && e->u.assoc.modPrefix
+         * 所以在这里把它改写成 `stl::nd::set2(v, i, j, x)`（一条普通调用语句）。
+         * 复合形式同理：`v[i, j] += x` 改写成 `set2(v, i, j, at2(v, i, j) + x)` —— 元素只读一次，
+         * 与 `v[i] += x` 的形状一致。 */
+        if (e->kind == EX_ASSOC && e->u.assoc.modPrefix
             && strcmp(e->u.assoc.modPrefix, "stl::nd") == 0 && e->u.assoc.name
             && strcmp(e->u.assoc.name, "at2") == 0 && e->u.assoc.args.len == 3) {
+            if (strcmp(aop, "=") != 0) {
+                /* 运算符名要静态存储：`mkBin` 只记指针，指向栈上的数组会变成悬垂串
+                 * （生成的 C 里运算符会变成空白）。 */
+                const char *op = strcmp(aop, "+=") == 0 ? "+"
+                               : strcmp(aop, "-=") == 0 ? "-"
+                               : strcmp(aop, "*=") == 0 ? "*"
+                               : strcmp(aop, "/=") == 0 ? "/"
+                               : "%=";
+                v = mkBin(p, op, e, v, t->line);
+            }
             Vec args;
             vecInit(&args, p->arena, sizeof(void *));
             for (size_t i2 = 0; i2 < e->u.assoc.args.len; i2++)

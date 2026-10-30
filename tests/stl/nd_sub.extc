@@ -23,6 +23,10 @@ fn main() -> i32 {
     let z: f64 = t[2, 1]
     v[2, 3] = f64(-5.0)
     let w: f64 = v[2, 3]
-    io::cout << f"x={x} y={y} s={s} z={z} w={w}\n"
+    v[0, 1] += f64(2.0)
+    let q: f64 = v[0, 1]
+    v[2, 3] *= f64(2.0)
+    let r: f64 = v[2, 3]
+    io::cout << f"x={x} y={y} s={s} z={z} w={w} q={q} r={r}\n"
     return 0
 }
