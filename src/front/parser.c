@@ -3858,6 +3858,152 @@ static bool fmtSplice(Parser *p, Expr **lhs, Token *ft) {
 }
 
 /**
+ * @brief 造一个 `stl::string::from(bytes)` 调用节点（值 f-string 的起点）。
+ *
+ * 用**完整模块路径**而不是调用方 import 时起的别名：解析器看不到 import 列表，而
+ * `stl::string::from` 只要那个模块被 import 过（任意别名）就能由加载器解析出来。
+ *
+ * @param p     解析器。
+ * @param bytes 字节视图表达式（`slice<u8>`，通常是个字符串字面量）。
+ * @param line  挂到节点上的源码行。
+ * @return      新的 EX_ASSOC 节点（`isCall = true`）。
+ */
+static Expr *fstrFrom(Parser *p, Expr *bytes, int line) {
+    Vec args;
+    vecInit(&args, p->arena, sizeof(void *));
+    *(Expr **)vecPush(&args) = bytes;
+    Expr *f = exprNew(p->arena, EX_ASSOC, line);
+    f->u.assoc.typeName = "stl";
+    f->u.assoc.modPrefix = "stl::string";
+    f->u.assoc.name = "from";
+    vecInit(&f->u.assoc.targs, p->arena, sizeof(void *));   /* `from` 不是泛型，空表 */
+    f->u.assoc.args = args;
+    f->u.assoc.isCall = true;
+    return f;
+}
+
+/**
+ * @brief 把**值位置**的 f-string 展开成 `stl::string::from(文字段) + 槽 + …`。
+ *
+ * 与 `fmtSplice` 共用同一遍扫描（真实词法/解析器跑在每个槽的片段上），区别只在产物：
+ * 那边把部件接到已有的 `<<` 链上（流式输出），这边收成零件表再折成 `+` 链，结果是
+ * `string` 值。第一版**不接受格式说明符**（`padInt`/`padF`/`padText` 都挂在流失对象上，
+ * 字符串目标没有对应的原语），带 `:` 的槽会明确报错而不是静默错解析。
+ *
+ * @param p   解析器。
+ * @param ft  触发这次展开的 TK_FSTRING token。
+ * @return    新的表达式；出错时返回 `NULL`（已报告诊断）。
+ */
+static Expr *fmtValue(Parser *p, Token *ft) {
+    const char *src = ft->text;
+    const size_t n = ft->len;
+    const int line = ft->line;
+    char *txt = (char *)arenaAlloc(p->arena, n + 1);
+    size_t tl = 0;
+    int col = ft->col + 2;
+    size_t i = 0;
+    Vec parts;
+    vecInit(&parts, p->arena, sizeof(void *));
+    while (i < n) {
+        char c = src[i];
+        if (c == '{' && i + 1 < n && src[i + 1] == '{') { txt[tl++] = '{'; i += 2; col += 2; continue; }
+        if (c == '}' && i + 1 < n && src[i + 1] == '}') { txt[tl++] = '}'; i += 2; col += 2; continue; }
+        if (c == '}') {
+            ctxError(p->ctx, line, col, "write `}}` for a literal brace",
+                     "an f-string has a `}` with no matching `{`");
+            return NULL;
+        }
+        if (c != '{') { txt[tl++] = c; i += 1; col += 1; continue; }
+        if (tl > 0) {
+            *(Expr **)vecPush(&parts) = fmtStr(p, txt, tl, line);
+            tl = 0;
+        }
+        size_t j = i + 1;
+        int depth = 1;
+        bool inStr = false;
+        while (j < n) {
+            char d = src[j];
+            if (inStr) {
+                if (d == '\\') j += 1;
+                else if (d == '"') inStr = false;
+            } else if (d == '"') inStr = true;
+            else if (d == '{') depth += 1;
+            else if (d == '}') { depth -= 1; if (depth == 0) break; }
+            j += 1;
+        }
+        if (depth != 0) {
+            ctxError(p->ctx, line, col, "close the slot with `}`",
+                     "an f-string has a `{` with no matching `}`");
+            return NULL;
+        }
+        size_t innerLen = j - (i + 1);
+        if (innerLen == 0) {
+            ctxError(p->ctx, line, col + 1, NULL, "an f-string slot cannot be empty");
+            return NULL;
+        }
+        /* 顶层 `:` ⇒ 说明符：值形状第一版不支持（见函数注释）。 */
+        {
+            int d2 = 0; bool st = false;
+            for (size_t t = i + 1; t < j; t++) {
+                char d = src[t];
+                if (st) { if (d == '\\') t += 1; else if (d == '"') st = false; continue; }
+                if (d == '"') { st = true; continue; }
+                if (d == '(' || d == '[' || d == '{') d2 += 1;
+                else if (d == ')' || d == ']' || d == '}') d2 -= 1;
+                else if (d == ':' && d2 == 0) {
+                    ctxError(p->ctx, line, col + (int)(t - i),
+                             "a value f-string takes no format specifiers yet -- drop the `:…`,"
+                             " or write this one through `io::cout << f\"…\"`",
+                             "an f-string slot has a format specifier, which a value f-string"
+                             " does not support yet");
+                    return NULL;
+                }
+            }
+        }
+        Vec toks;
+        vecInit(&toks, p->arena, sizeof(Token));
+        lexRange(p->ctx, src + i + 1, innerLen, line, col + 1, &toks);
+        if (p->ctx->hasError) return NULL;
+        Parser sub = *p;
+        sub.toks = &toks;
+        sub.pos = 0;
+        sub.inCond = false;
+        Expr *e = parseExpr(&sub);
+        if (!e) return NULL;
+        skipNl(&sub);
+        if (cur(&sub)->kind != TK_EOF) {
+            ctxError(p->ctx, cur(&sub)->line, cur(&sub)->col, "one expression per slot",
+                     "unexpected `%s` inside an f-string slot", cur(&sub)->text);
+            return NULL;
+        }
+        *(Expr **)vecPush(&parts) = e;
+        col += (int)(j - i + 1);
+        i = j + 1;
+    }
+    if (tl > 0) *(Expr **)vecPush(&parts) = fmtStr(p, txt, tl, line);
+    if (parts.len == 0) {
+        ctxError(p->ctx, line, ft->col + 2, NULL,
+                 "an f-string with nothing in it has nothing to build");
+        return NULL;
+    }
+    /* 折成 `+` 链：文字段起步就 `from(段)`，槽起步就先 `from("")` 再 `+ 槽`。 */
+    Expr *acc = NULL;
+    for (size_t k = 0; k < parts.len; k++) {
+        Expr *x = *(Expr **)vecAt(&parts, k);
+        if (!acc) {
+            if (x->kind == EX_STR) acc = fstrFrom(p, x, line);
+            else {
+                acc = fstrFrom(p, fmtStr(p, "", 0, line), line);
+                acc = mkBin(p, "+", acc, x, line);
+            }
+        } else {
+            acc = mkBin(p, "+", acc, x, line);
+        }
+    }
+    return acc;
+}
+
+/**
  * @brief 解析 `<<` 与 `>>`：它们被认成两个相邻的 `<` / `>` token。
  *
  * @param p  解析器。
@@ -4402,13 +4548,9 @@ static Expr *parsePrimary(Parser *p) {
         e->u.str.text = t->text;
         return e;
     }
-    if (t->kind == TK_FSTRING) {
-        ctxError(p->ctx, t->line, t->col,
-                 "an f-string is expanded at compile time into a `<<` chain, so it has to be the"
-                 " right-hand side of `<<`: `io::cout << f\"…\"`",
-                 "an f-string is only valid as the right-hand side of `<<`");
-        return NULL;
-    }
+    /* 值位置的 f-string：展开成 `stl::string::from(文字段) + 槽 …` 的 `+` 链（结果是
+     * `string` 值）。需要那个模块被 import 过 —— 完整路径让任意别名都行。 */
+    if (t->kind == TK_FSTRING) return fmtValue(p, take(p));
     /* `null` 是上下文关键字，只在表达式位置识别，与 `ref`、`mut` 一样。它的类型完全来自
      * 上下文：`var p: ?ref node = null`、`if p != null`，或返回类型是 `?ref T` 时的
      * `return null`。 */

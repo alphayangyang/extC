@@ -214,11 +214,15 @@ for line in io::lines() { ... }            // 逐行迭代，错误在迭代器�
 小数、`bool` 给 `true`/`false`）；`io::cout << s` 也能直接吃 `string`，不用再写 `s.toSlice()`。
 这两项让"用字符串拼一行"彻底不需要临时视图。
 
+**f-string 落在值位置**：`let s: string = f"{name}: {n}"` 展开成
+`stl::string::from("…") + 槽 + …` 的 `+` 链（要求 `stl::string` 被 import；第一版不带
+格式说明符，带 `:…` 的槽明确报错）。`let s = f"…"` 不写注解也能推成 `string`。
+
 本段又补：`io::eprint` / `io::eprintln`（诊断通道的一句版）、`stringio::fromF64(x, prec)`（定点浮点
 转字符串，复用 `io::pFmtF`；容器不认识"小数点后几位"，所以放 stringio 层）。
 
-还缺的（第 1 层 B 后续）：f-string 只能作 `<<` 的右操作数（还不能直接当值用）；`varArray` 与
-`slice` 之间仍要显式 `asSlice()`。
+还缺的（第 1 层 B 后续）：值位置的 f-string 还不吃格式说明符（补齐要先给"字符串目标"造
+pad 原语）；`varArray` 与 `slice` 之间仍要显式 `asSlice()`。
 
 ## 第 2 层：整数组表达式与融合（结构调整）
 

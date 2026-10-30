@@ -2,7 +2,8 @@
 # tests/fstring/run.sh —— `f"…"` 的判据：
 #   ① 输出正确（多槽 / 转义 / 每槽求值一次 / 无文本段）
 #   ② **生成物与手写 `<<` 链逐字节相同** ← 零运行时成本 + "它就是语法糖"的最硬证据
-#   ③ 反例：空槽 · 未闭合 · 多余 `}` · 只在 `<<` 右侧合法 · 格式说明符的 10 条语法/类型错误
+#   ③ 反例：空槽 · 未闭合 · 多余 `}` · 值位置也要 `string` 目标 · 格式说明符的 10 条语法/类型错误
+#      （值位置第一版不接受说明符，另有专门反例）
 set -u
 cd "$(dirname "$0")/../.."
 EXTC=${EXTC:-./build/extc}
@@ -37,6 +38,16 @@ if diff -q "$tmp/spec" "$tmp/specwant" >/dev/null 2>&1; then
     pass=$((pass+1))
 else
     echo "  FAIL spec-output       ->  $(tr '\n' '|' < "$tmp/spec")"; fail=$((fail+1))
+fi
+
+# ①d 值位置（`let s: string = f"…"`）：文字段起步 / 槽起步 / 表达式槽 / 无槽 / 函数返回
+"$EXTC" -w --run tests/fstring/value.extc > "$tmp/value" 2>&1
+printf 'hi extC, n=7\n7\nexpr 14 flag true float 1.500000\nnone\n<7>\n' > "$tmp/valuewant"
+if diff -q "$tmp/value" "$tmp/valuewant" >/dev/null 2>&1; then
+    echo "  ok   value-fstring    ->  值位置展开成 \`from(文字段) + 槽\` 链（无说明符）"
+    pass=$((pass+1))
+else
+    echo "  FAIL value-fstring    ->  $(tr '\n' '|' < "$tmp/value")"; fail=$((fail+1))
 fi
 
 # ② 与手写链逐字节相同
@@ -124,10 +135,21 @@ neg spec-no-value      "$H
     io::cout << f\"{:>8}\"
     return 0
 }" "no value before its format specifier"
-neg fstring-not-shift   "$H
+neg value-needs-import "$H
+    let s: string = f\"x\"
+    return 0
+}" "is not imported here"
+neg value-needs-string "use std::io
+use stl::string
+fn main() -> i32 {
     let s: slice<u8> = f\"x\"
     return 0
-}" "only valid as the right-hand side"
+}" "initializer expects"
+neg value-spec-unavailable "$H
+    let n: i64 = 5
+    let s: string = f\"x={n:>4}\"
+    return 0
+}" "does not support yet"
 neg fstring-empty       "$H
     io::cout << f\"\"
     return 0
