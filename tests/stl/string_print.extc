@@ -1,0 +1,12 @@
+// `io::cout << s` 只需要 `use stl::string`（`<<` 重载挂在 string 模块，不再依赖 stringio）。
+// expect: hi 3|second
+use std::io
+use stl::string
+
+fn main() -> i32 {
+    let s: string = f"hi {3}"
+    io::cout << s << "\n"
+    var t: string = string::from("second")
+    io::cout << t << "\n"
+    return 0
+}

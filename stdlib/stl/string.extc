@@ -34,6 +34,7 @@
  * }
  * @endcode
  */
+use std::io
 use std::sys::pool as syspool
 use std::mem as sysmem
 
@@ -682,4 +683,11 @@ fn join(parts: slice<slice<u8>>, sep: slice<u8>) -> string {
         i = i + 1
     }
     return out
+}
+
+/* `io::cout << s`：把 `string` 直接交给输出流，打印它的字节。挂在 `string` 自己这里，所以
+ * `use stl::string` 就够了，不用再 import `stl::stringio`；`std::io` 不 import `stl`，
+ * 依赖方向是 `stl::string → std::io`，不成环。 */
+impl io::ostream {
+    fn <<(self: ref ostream, v: string) -> ostream { return self << v.toSlice() }
 }

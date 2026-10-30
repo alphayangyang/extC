@@ -537,6 +537,21 @@ typedef struct { bool (*takesHomeArena)(const FuncDef *); } HomeQ;
  */
 static bool reachesHomeArenaTaker(const FuncDef *f) { return f && anNeedsHome(f); }
 
+/**
+ * @brief 这个节点是不是一个"带被调者"的调用形状。
+ *
+ * 三种调用形状加两种运算符：运算符在检查通过后与方法调用同形（`planCallee` 指向被选中的
+ * 运算符方法），因此凡是"问被调者"的遍历都要认它们。
+ *
+ * @param e  表达式。
+ * @return   是调用形状则为 `true`。
+ */
+static bool exprCarriesCallee(const Expr *e) {
+    if (!e) return false;
+    return e->kind == EX_CALL || e->kind == EX_METHOD || e->kind == EX_ASSOC ||
+           e->kind == EX_BIN || e->kind == EX_UN;
+}
+
 static bool needsHomeInStmt(void *ctx, Stmt *s);
 
 /**
@@ -551,8 +566,11 @@ static bool needsHomeInStmt(void *ctx, Stmt *s);
  */
 static bool needsHomeInExpr(void *ctx, Expr *e) {
     HomeQ *q = (HomeQ *)ctx;
-    if ((e->kind == EX_CALL || e->kind == EX_METHOD || e->kind == EX_ASSOC) && planCallee(e) &&
-        q->takesHomeArena(planCallee(e)))
+    /* 运算符**就是**方法调用（`EX_BIN`/`EX_UN` 上带着 `planCallee`），所以这一组必须收它们：
+     * 漏掉时，一个只靠运算符调到"要 home arena 的被调者"的函数不会被标上 `needsHome`，
+     * 定义侧不发 `__extc_home`，而调用侧照样按家 arena 传 ⇒ 生成的 C 里 `__extc_a` /
+     * `__extc_home` 未声明。 */
+    if (exprCarriesCallee(e) && planCallee(e) && q->takesHomeArena(planCallee(e)))
         return false;                       /* found: stop the walk */
     AstVisit v = { needsHomeInExpr, needsHomeInStmt, ctx };
     return astWalkExprChildren(e, &v);
@@ -801,6 +819,19 @@ static void roundOverModule(CloseCtx *cx, ReachKind k, bool *changed, bool skipE
             FuncDef *f = *(FuncDef **)vecAt(&sd->methods, j);
             if (cx->c && cx->c->fxOn) cx->c->fxReachVisits++;
             if (getReach(f, k) || !f->body) continue;
+            if (bodyReaches(f, k)) { setReach(f, k, true); *changed = true; }
+        }
+    }
+    /* `impl` 块里**声明**的方法也要走一轮：它们住在 `m->impls`，不在 `m->funcs` 也不在
+     * 被扩展类型的 `methods` 里（块可以写在另一个模块）。漏掉它们的表现是：方法体里调用
+     * 一个需要 home arena 的被调者，`needsHome` 传不进来 ⇒ 定义侧不发 `__extc_home` 形参，
+     * 而调用侧仍按块层级发 `&__extc_a[0]` ⇒ 生成的 C 里 `__extc_a` 未声明。 */
+    for (size_t i = 0; i < m->impls.len; i++) {
+        ImplDef *im = *(ImplDef **)vecAt(&m->impls, i);
+        for (size_t j = 0; j < im->methods.len; j++) {
+            FuncDef *f = *(FuncDef **)vecAt(&im->methods, j);
+            if (cx->c && cx->c->fxOn) cx->c->fxReachVisits++;
+            if (getReach(f, k) || !f->body || (skipExtern && f->isExtern)) continue;
             if (bodyReaches(f, k)) { setReach(f, k, true); *changed = true; }
         }
     }

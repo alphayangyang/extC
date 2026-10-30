@@ -5,6 +5,7 @@ use addstr
 
 fn main() -> i32 {
   let s = string::from("hi")
-  io::cout << s << "\n"
+  let t: addstr::tag = addstr::tag { text: s }
+  io::cout << t << "\n"
   io::cout << "len=" << s.len() << "\n"
   return 0 }

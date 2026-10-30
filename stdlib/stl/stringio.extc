@@ -96,12 +96,6 @@ impl string {
     fn +(self: ref string, other: f32) -> string { return (*self) + f64(other) }
 }
 
-/* `io::cout << s`：把 `string` 直接交给输出流。`std::io` 不能 import `stl`（会成环），所以
- * 这个重载挂在这里，和上面 `>> string` 的理由一样。实现的语义就是"打印它的字节"。 */
-impl io::ostream {
-    fn <<(self: ref ostream, v: string) -> ostream { return self << v.toSlice() }
-}
-
 /* `>>` into a `string`: the operator overloads the I/O layer already has (`mut ref i64`,
  * `mut slice<u8>`, `mut ref u8`) live in `std::io` / `std::fs`, and a `string` overload has to
  * live where **both** sides are importable -- `std` cannot import `stl` (that would be an import
@@ -159,75 +153,10 @@ impl fs::ifstream {
     }
 }
 
-/* 打 `string` 走 `io::cout << s.toSlice()`：`impl ostream { fn <<(self: ref ostream, v: string) }`
- * 这条路今天走不通 —— 生成的 C 里那个函数被少传了实参
- * （`too few arguments to function 'io$ostream_shl_string$string'`），也就是"方法收一个
- * 按值结构体参数"在调用点漏了参数。已知缺陷，复现要点见下。
- */
-
-/* 已知缺陷（未修）：把这个形状装回来就会炸 ——
- *   impl ostream { fn <<(self: ref ostream, v: string) -> ostream { return self << v.toSlice() } }
- * 症状：生成的 C 里**定义**是三参（`..., string$string v, extc_arena *__extc_home`），
- * 而**调用点只传两个** ⇒ `too few arguments to function 'io$ostream_shl_string$string'`。
- * 也就是说：`usesHome` 为真的方法，调用点少补那个 home 隐式实参 ——
- * 方法调用走的是 `genMethodCall`（src/codegen.c:1756），而 assoc 那条路是有补的
- * （src/codegen.c 约 2387：`if (e->func->usesHome) { ", " + homeArg(...) }`）。
- * 对照实验：同模块里"方法收按值结构体参数"是好的（bisect 过）⇒ 触发点在 impl 声明的方法 +
- * 调用点的 home 参数，不在参数类型。
- */
-
-/* bug 2 定位（2026-09-28，未修）—— 装回下面这个形状就会炸：
- *   impl ostream { fn <<(self: ref ostream, v: string) -> ostream { return self << v.toSlice() } }
- *
- * **证据（生成的 C）**：定义/原型是**三参**
- *     static io$ostream io$ostream_shl_string$string(io$ostream * self, string$string v, extc_arena *__extc_home);
- * 而 `main` 里的调用只传两个 —— 内层那句长这样：
- *     io$ostream_shl_slice_u8((io$ostream[]){ io$ostream_shl_string$string(&(io$cout), s) }, (slice_u8){ … })
- * ⇒ extC 自己不报错，是 **gcc** 报 `too few arguments to function 'io$ostream_shl_string$string'`。
- *
- * **方向**：这里有两个不同的字段 —— `FuncDef.usesHome`（"体里真的用到了交给它的 home"）与
- * `FuncDef.needsHome`（"可达地需要 home"，可达性分析 `REACH_HOME` 置位）。`src/check_top.c:485`
- * 那句
- *     (q->precise ? e->func->usesHome : e->func->needsHome)
- * 说明同一个调用点会**按查询模式**落到两个不同字段上 ⇒ 定义侧（发 home 形参）与调用侧（决定补不补
- * 那个实参）各按一个，`impl` 里声明的方法正好落在两者不一致的那一格（同模块方法、跨模块 impl 且
- * 参数是 i64/普通结构体的情形都实测正常 ⇒ 触发点是"impl 声明 + home 形参"）。
- *
- * 下一步：让两侧问同一个字段（`check_top.c:5948` 那段"现在 usesHome 已定型，结算每个往下递 arena
- * 的调用点"就是现成的机械），然后用这条形状做判据。
- */
-
-/* bug 2 定位（2026-09-28，未修；已排掉两条猜测）—— 装回这个形状就炸：
- *   impl ostream { fn <<(self: ref ostream, v: string) -> ostream { return self << v.toSlice() } }
- * 定义是**三参**（`… string$string v, extc_arena *__extc_home`），`main` 里的调用只传两个
- * ⇒ extC 不报错，**gcc** 报 `too few arguments`。
- *
- * 已经量的东西（避免重复劳动）：
- *   · 作者的调试开关 `EXTC_DBG_HOME=1` 会打印每个函数的 `uses=/needs=/sites=` —— 用它看，**体内
- *     声明**的方法（`withCap`、`toSlice`）都在表里（`uses=1`），而 **`impl` 里声明**的那个不在；
- *   · 那些表由 `m->funcs` + 各 `sd->methods` 拼成（`check_top.c` 5719 / 6042 / 6218 三处），
- *     而 `impl` 块的方法存在 `m->impls[i].methods`（块常在与被扩展类型**不同的模块**里：
- *     `impl ostream` 在 `stl::stringio`，类型在 `std::io`）⇒ 那三份列表里看不到它们；
- *   · 但**只**把 `m->impls` 补进那三处**不够**（试过：补了 5 处、其中 2 处是无关联表，而且 `main`
- *     的调用点仍然少传 —— 说明那些列表是按**模块**建的，而块在另一个模块里）。
- * 下一步：找出 `usesHome` 真正的**种子**在哪（body 检查时置位？还是 closeReach 传播？），确认
- * `impl` 方法的 body 检查有没有走到种子那一步；结算遍只看 `site->func->usesHome`
- * 那几行，它是**消费者**。
- * 2026-09-28 第二轮实测（都不改代码，只量）：
- *   · **用户级复现成立**（不用碰库！）：一个用户模块 `addstr.extc` 里写
- *       use std::io / use stl::string
- *       impl ostream { fn <<(self: ref ostream, v: string) -> ostream { return self << v.toSlice() } }
- *     主程序 `io::cout << s` ⇒ extC 无诊断，gcc 报
- *       `too few arguments to function 'io\$ostream_shl_string\$string'; expected 3`。
- *   · `EXTC_DBG_HOME=1` 在复现上打出来：`[home] main uses=0 needs=1 sites=1 L0` 与
- *     `[home] toSlice uses=1 needs=1 sites=2` —— 而那个 `impl` 声明的方法**根本不在表里**。
- *   · 把 `m->impls[i].methods` 补进"arena 层级唯一权威"那段的列表（4 处 `all`/`allF`）**无效**：
- *     golden 仍 414/414（对现有产物中性），但方法依旧不在表里。加一行临时打印到那段列表的
- *     构建处 ⇒ **一次都没打** ⇒ 那段代码在这条路径上**根本没执行**：真正在跑的是 settle 区
- *     那份 `allF`（`[home]` 调试就长在那里）。
- *   · ⇒ 下一轮第一件事：在**会跑的那份** `allF` 构建处打 `m->impls.len` —— 如果它是 0，说明
- *     `impl` 块的方法在别的 `Module` 对象里（或 attach 时被搬进了目标类型的列表，而那个类型住在
- *     另一个模块）⇒ 修法就不是"补列表"，而是**让列表的来源与模块无关**（从类型表/所有模块取）。
+/* `io::cout << s` 的形状 = `impl ostream { fn <<(self: ref ostream, v: string) -> ostream }`：
+ * 现在挂在 `stl::string` 里（`use stl::string` 就够），`impl` 方法需要的 home 实参由运算符/
+ * 方法的 home 记账补齐。回归：`tests/stl/string_print.extc`（只 import `stl::string`，
+ * `io::cout << s` 逐字节正确）。
  */
 
 /* 浮点数转 `string`：`stringio::fromF64(x, prec)`（定点 `prec` 位小数，四舍五入）。
