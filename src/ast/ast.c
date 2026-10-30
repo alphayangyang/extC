@@ -259,6 +259,47 @@ void stmtSetParLoop(Stmt *s, bool parLoop) {
 }
 
 /**
+ * @brief 造一个方法调用节点 `recv.name(args…)`。
+ *
+ * 只填语法事实（接收者、名字、实参表）：方法解析、借用与 arena 记账都由检查器的 `EX_METHOD`
+ * 路径完成，所以检查器可以把它当成用户写的一样重新检查一遍。
+ *
+ * @param a     分配用的 arena。
+ * @param recv  接收者表达式。
+ * @param name  方法名（静态存储）。
+ * @param line  源码行号。
+ * @return      新节点，`args` 初始化为空表。
+ */
+Expr *exprMethodNew(Arena *a, Expr *recv, const char *name, int line) {
+    Expr *e = exprNew(a, EX_METHOD, line);
+    e->u.method.recv = recv;
+    e->u.method.name = name;
+    vecInit(&e->u.method.args, a, sizeof(void *));
+    return e;
+}
+
+/**
+ * @brief 造一个切片节点 `obj[lo..hi]`。
+ *
+ * `lo`/`hi` 可以为 `NULL`，表示这一端没写；固定数组的省略端点由检查器补成字面量
+ * （`a[..]` → `a[0..N]`），与解析器写出来的节点同形。
+ *
+ * @param a   分配用的 arena。
+ * @param obj 被切的表达式。
+ * @param lo  下界或 `NULL`。
+ * @param hi  上界或 `NULL`。
+ * @param line 源码行号。
+ * @return    新节点。
+ */
+Expr *exprSliceNew(Arena *a, Expr *obj, Expr *lo, Expr *hi, int line) {
+    Expr *e = exprNew(a, EX_SLICE, line);
+    e->u.slice.obj = obj;
+    e->u.slice.lo  = lo;
+    e->u.slice.hi  = hi;
+    return e;
+}
+
+/**
  * @brief 深拷贝一个表达式子树（融合降糖用）。
  *
  * 见 `ast.h` 的同名声明：只保证纯表达式形状的子树被完整复制，其它形状退化为浅拷贝。

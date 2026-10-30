@@ -529,6 +529,29 @@ void funcDefSetModName(FuncDef *f, const char *modName);
  */
 void stmtSetParLoop(Stmt *s, bool parLoop);
 /**
+ * @brief 造一个方法调用节点 `recv.name(args…)`（实参表为空，由调用方填）。
+ *
+ * @param a     分配用的 arena。
+ * @param recv  接收者表达式。
+ * @param name  方法名（静态存储）。
+ * @param line  源码行号。
+ * @return      新节点。
+ */
+Expr *exprMethodNew(Arena *a, Expr *recv, const char *name, int line);
+
+/**
+ * @brief 造一个切片节点 `obj[lo..hi]`；`lo`/`hi` 可以是 `NULL`（那一端没写）。
+ *
+ * @param a    分配用的 arena。
+ * @param obj  被切的表达式。
+ * @param lo   下界或 `NULL`。
+ * @param hi   上界或 `NULL`。
+ * @param line 源码行号。
+ * @return     新节点。
+ */
+Expr *exprSliceNew(Arena *a, Expr *obj, Expr *lo, Expr *hi, int line);
+
+/**
  * @brief 深拷贝一个表达式子树（融合降糖用：同一条右值要出现在多个位置）。
  *
  * 只复制表达式形状与源码位置；`type` / plan 侧的表在拷贝后清空，由检查器重新填 —— 拷贝

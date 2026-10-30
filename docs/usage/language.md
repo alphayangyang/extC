@@ -479,8 +479,11 @@ var g, h: i32               // 零初始化：两个都是 0
   `let v = a[1..3]` 得到 `slice<i32>`，写它报
   `` cannot write through `v`: it is a read-only view `slice<i32>` ``。
 - 编译器能证明的界不生成检查（`a[0..3]`）；界是变量时生成带检查的 helper。
-- **容器不隐式变视图**：`varArray<T>` 用 `v.asSlice()` 借出，定长数组 `[N]T` 用 `a[..]` 切片；
-  漏写时诊断会指出该写哪个（借出的视图带生命周期，悄悄替用户造一个会绕过借用检查）。
+- **容器在只读视图参数上自动借出**：`total(va)`（`varArray<T>`）等价于 `total(va.asSlice())`，
+  `total(a)`（`[N]T`）等价于 `total(a[..])`；方法实参同理（`s.append(bytes)` 的 `bytes`）。
+  编译器在调用位置造的就是这两个节点，借用与生命周期检查照常生效。写权限不自动借：
+  `mut slice<T>` 参数仍要自己写 `va.asMutSlice()` / `a[..]`。元素类型对不上时
+  （`varArray<i32>` 传给 `slice<i64>`）不借，诊断指出该写什么。
 
 ```extc
 // 结果：3 10 80 1059 / hello world 0

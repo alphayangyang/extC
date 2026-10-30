@@ -1298,6 +1298,51 @@ static Vec fnTypeParams(Checker *c, Type *ft) {
 }
 
 /**
+ * @brief 把"容器"实参就地借出成只读视图：`varArray<T>` 写成 `v.asSlice()`，定长数组写成 `a[..]`。
+ *
+ * 只读视图参数（`slice<T>`、非 `mut`）接受同一元素的容器实参，写法上的 `.asSlice()` / `[..]`
+ * 由这里补上：**造一个真的方法调用 / 切片节点再走一遍正常检查**，所以借用与生命周期记账跟用户
+ * 手写一样，不是绕过检查的隐式转换。可写视图（`mut slice<T>`）不在此列 —— 那是在索要写权限，
+ * 必须写出来。
+ *
+ * @param c      检查器。
+ * @param want   形参类型。
+ * @param pslot  实参槽位；命中时被替换成借出节点（已检查过）。
+ * @return       命中并替换返回 true；否则 false（调用方照常检查原实参）。
+ */
+static bool lendViewArg(Checker *c, Type *want, Expr **pslot) {
+    if (!c || !want || !pslot || !*pslot) return false;
+    Type *wb = ttBase(want);
+    if (!wb || ttIsError(wb) || !ttIsViewType(wb) || want->mut) return false;
+    Type *wantElem = viewElemOf(wb);
+    if (!wantElem) return false;
+    Expr *a = *pslot;
+    /* 这个位置还没检查过实参（`checkInto` 在后面），所以只认能直接查到类型的最常见形状：
+     * 一个标识符。其它表达式走普通检查，由诊断指出该写什么。 */
+    Type *got = a->type;
+    if (!got && a->kind == EX_IDENT && a->u.ident.name) {
+        Sym *sym = lookup(c, a->u.ident.name);
+        if (sym) got = sym->type;
+    }
+    if (!got || ttIsError(got) || got->kind == TY_REF) return false;
+    Expr *node = NULL;
+    /* 元素类型可以带类型参数（`sum<T>(v: slice<T>)` 的 `slice<T>`）：借出之后由推断
+     * 从借出节点的类型里读 `T`，所以这里只要"能对上"就借。 */
+    bool elemOk = wantElem && ttHasParam(wantElem);
+    if (got->kind == TY_ARRAY && got->inner &&
+        (elemOk || ttEquals(got->inner, wantElem)) && isPlace(a)) {
+        /* `a[..]`：省略端点，检查器按定长数组的长度补成字面量。 */
+        node = exprSliceNew(c->arena, a, NULL, NULL, a->line);
+    } else if (isProtoType(got, "varArray", 1) && got->targs.len == 1 &&
+               (elemOk || ttEquals(*(Type **)vecAt(&got->targs, 0), wantElem))) {
+        node = exprMethodNew(c->arena, a, "asSlice", a->line);
+    }
+    if (!node) return false;
+    *pslot = node;
+    return true;
+}
+
+/**
  * @brief 检查 `f(x)`，其中 `f` **持有函数类型的值**，而不是一个声明。
  *
  * 签名就是值自己的，所以每个实参都对着这个类型匹配。
@@ -3325,6 +3370,11 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                             name, f->params.len, e->u.call.args.len);
                     return f->ret ? f->ret : ttVoid(tt);
                 }
+                /* 推断之前先把容器实参借出：推断读的必须是将来真正检查的节点类型。 */
+                for (size_t i = 0; i < f->params.len; i++) {
+                    Param *p = *(Param **)vecAt(&f->params, i);
+                    lendViewArg(c, p->type, (Expr **)vecAt(&e->u.call.args, i));
+                }
                 Vec targs;
                 vecInit(&targs, c->arena, sizeof(void *));
                 Vec *written = NULL;
@@ -3440,6 +3490,13 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 ckError(c, e->line, NULL, "`%s` expects %zu argument(s), got %zu",
                         name, f->params.len, e->u.call.args.len);
                 return f->ret ? f->ret : ttVoid(tt);
+            }
+            /* 只读视图参数接受同元素的容器实参：先把 `va` / `a` 就地借出成真正的
+             * `va.asSlice()` / `a[..]` 节点，之后的推断与检查看到的都是这个节点。 */
+            for (size_t i = 0; i < f->params.len; i++) {
+                Param *p = *(Param **)vecAt(&f->params, i);
+                Expr **slot = (Expr **)vecAt(&e->u.call.args, i);
+                lendViewArg(c, p->type, slot);
             }
             /* The arena for this call comes from the shallowest `mut ref` argument. */
             anSetHomeDepth(e, callHomeDepth(c, &e->u.call.args, &f->params, e));
@@ -3965,6 +4022,9 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     Param *p = *(Param **)vecAt(&f->params, i + 1);
                     Expr  *arg = *(Expr **)vecAt(&e->u.method.args, i);
                     Type  *want = ttSubstitute(tt, p->type, sp, sa);
+                    /* 容器实参在推断之前就借出成只读视图（`s.append(va)` 的 `va`）。 */
+                    if (lendViewArg(c, want, (Expr **)vecAt(&e->u.method.args, i)))
+                        arg = *(Expr **)vecAt(&e->u.method.args, i);
                     Type  *got  = checkExprInner(c, arg);
                     (void)unifyTParams(tt, &f->typeParams, &mt, want, got);
                 }
@@ -4009,6 +4069,9 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 Expr  *a = *(Expr **)vecAt(&e->u.method.args, i);
                 Type *pt = ttSubstitute(tt, p->type, sp, sa);
 
+                /* 只读视图参数（`append(s: slice<u8>)`）接受同元素的容器实参。 */
+                lendViewArg(c, pt, (Expr **)vecAt(&e->u.method.args, i));
+                a = *(Expr **)vecAt(&e->u.method.args, i);
                 adoptContextType(a, pt);
                 Type *at = checkInto(c, pt, a);
                 if (pt->kind == TY_REF && at->kind != TY_REF && !ttIsError(at)) {

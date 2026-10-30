@@ -1,8 +1,9 @@
-// 回归：定长数组 `[N]T` 也不隐式转 `slice<T>` —— 切片 `a[..]` 才是"借出整块视图"的写法。
+// 回归：定长数组 `[N]T` 与只读视图参数元素类型不一致时不会自动切片 —— 同元素的数组会自动
+// 借成 `a[..]`（见 tests/ops/lend_view.extc），这里报错并指出写法。
 // expect: slice the array explicitly
 use std::io
-fn total(v: slice<i32>) -> i32 {
-    return 0
+fn total(v: slice<i64>) -> i64 {
+    return i64(0)
 }
 fn main() -> i32 {
     var a: [4]i32 = [1, 2, 3, 4]

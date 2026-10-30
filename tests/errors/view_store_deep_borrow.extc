@@ -1,0 +1,19 @@
+// 借用：把本帧"借来的"视图存进外层 `mut ref` 字段必须被拒绝 —— 数据出不了这一帧。
+// 栈上定长数组是最直白的借用：`a[..]` 指向本帧的存储，没法被搬到外层。
+// expect: carries a reference into a deeper scope
+use std::io
+struct box { v: slice<i64> }
+
+fn put(dst: mut ref box, v: slice<i64>) { dst.v = v }
+
+fn inner(bref: mut ref box) {
+    var a: [4]i64 = [1, 2, 3, 4]
+    put(bref, a[..])
+}
+
+fn main() -> i32 {
+    var b: box = { v: new i64[i64(1)] }
+    inner(ref b)
+    io::cout << f"k={b.v[0]}\n"
+    return 0
+}

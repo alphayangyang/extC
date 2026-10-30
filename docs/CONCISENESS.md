@@ -222,7 +222,11 @@ for line in io::lines() { ... }            // 逐行迭代，错误在迭代器�
 转字符串，复用 `io::pFmtF`；容器不认识"小数点后几位"，所以放 stringio 层）。
 
 还缺的（第 1 层 B 后续）：值位置的 f-string 还不吃格式说明符（补齐要先给"字符串目标"造
-pad 原语）；`varArray` 与 `slice` 之间仍要显式 `asSlice()`。
+pad 原语）。
+
+已补：`varArray` / 定长数组传给**只读视图参数**时，调用位置自动借出（`total(va)` 就是
+`total(va.asSlice())`、`total(a)` 就是 `total(a[..])`），借用与生命周期照常检查；写权限
+（`mut slice<T>`）仍要写在调用点。
 
 ## 第 1 层 C 的进展（多下标与切片糖）
 

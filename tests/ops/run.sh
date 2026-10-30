@@ -42,6 +42,8 @@ run_case fnptr
 run_case fn_callback_view
 run_case long_line
 run_case slice_place
+run_case lend_view
+run_case view_promote
 run_case conv_float
 run_case conv_int_float
 run_case concrete
