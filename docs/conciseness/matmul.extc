@@ -1,0 +1,31 @@
+// 语料 T2：3x3 整数矩阵乘法，输出对角线之和。
+use std::io
+
+fn main() -> i32 {
+    var a: mut slice<i64> = new i64[i64(9)]
+    var b: mut slice<i64> = new i64[i64(9)]
+    var i: i64 = i64(0)
+    while i < i64(9) {
+        a[i] = (i * i64(5) + i64(1)) % i64(7)
+        b[i] = (i * i64(3) + i64(2)) % i64(5)
+        i = i + i64(1)
+    }
+    var c: mut slice<i64> = new i64[i64(9)]
+    var r: i64 = i64(0)
+    while r < i64(3) {
+        var k: i64 = i64(0)
+        while k < i64(3) {
+            var s: i64 = i64(0)
+            var j: i64 = i64(0)
+            while j < i64(3) {
+                s = s + a[r * i64(3) + j] * b[j * i64(3) + k]
+                j = j + i64(1)
+            }
+            c[r * i64(3) + k] = s
+            k = k + i64(1)
+        }
+        r = r + i64(1)
+    }
+    io::cout << "diag=" << c[i64(0)] + c[i64(4)] + c[i64(8)] << "\n"
+    return 0
+}

@@ -1,0 +1,26 @@
+// 语料 T3：一维 3 点平滑迭代 10 轮，输出总和（整数除法，边界不动）。
+use std::io
+
+fn main() -> i32 {
+    var a: mut slice<i64> = new i64[i64(64)]
+    var b: mut slice<i64> = new i64[i64(64)]
+    var i: i64 = i64(0)
+    while i < i64(64) { a[i] = (i * i64(13) + i64(5)) % i64(17)  i = i + i64(1) }
+    var it: i64 = i64(0)
+    while it < i64(10) {
+        var k: i64 = i64(1)
+        while k < i64(63) {
+            b[k] = (a[k - i64(1)] + a[k] + a[k + i64(1)]) / i64(3)
+            k = k + i64(1)
+        }
+        var t: mut slice<i64> = a
+        a = b
+        b = t
+        it = it + i64(1)
+    }
+    var s: i64 = i64(0)
+    i = i64(0)
+    while i < i64(64) { s = s + a[i]  i = i + i64(1) }
+    io::cout << "sum=" << s << "\n"
+    return 0
+}

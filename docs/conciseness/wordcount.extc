@@ -1,0 +1,25 @@
+// 语料 T4：统计一段文本的行数/词数/字符数（词 = 非空白连续段）。
+use std::io
+
+fn main() -> i32 {
+    let text: slice<u8> = "the quick brown fox\njumps over the lazy dog\n\nand keeps running fast\n"
+    var chars: i64 = i64(0)
+    var lines: i64 = i64(0)
+    var words: i64 = i64(0)
+    var inWord: bool = false
+    var i: i64 = i64(0)
+    while i < text.len {
+        let c: u8 = text[i]
+        chars = chars + i64(1)
+        if c == u8(10) { lines = lines + i64(1) }
+        if c == u8(32) || c == u8(10) || c == u8(9) {
+            if inWord { words = words + i64(1)  inWord = false }
+        } else {
+            inWord = true
+        }
+        i = i + i64(1)
+    }
+    if inWord { words = words + i64(1) }
+    io::cout << "lines=" << lines << " words=" << words << " chars=" << chars << "\n"
+    return 0
+}
