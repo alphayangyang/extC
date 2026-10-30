@@ -596,6 +596,20 @@ struct ostream { fd: i32
     fn <<(self: ref ostream, v: i32) -> ostream {
       return self << i64(v)
     }
+    /* 其余整数宽度同理：位宽比 `i64` 窄的都无损加宽过去，一个字面量/窄变量都能直接打。
+     * `u64` 不在这里 —— 它加宽到 `i64` 会丢上界，得有独立的无符号格式化路径。 */
+    @inline
+    fn <<(self: ref ostream, v: i8) -> ostream { return self << i64(v) }
+    @inline
+    fn <<(self: ref ostream, v: i16) -> ostream { return self << i64(v) }
+    @inline
+    fn <<(self: ref ostream, v: u8) -> ostream { return self << i64(v) }
+    @inline
+    fn <<(self: ref ostream, v: u16) -> ostream { return self << i64(v) }
+    @inline
+    fn <<(self: ref ostream, v: u32) -> ostream { return self << i64(v) }
+    @inline
+    fn <<(self: ref ostream, v: f32) -> ostream { return self << f64(v) }
     fn <<(self: ref ostream, v: f64) -> ostream {
         /* 走**同一个缓冲**，和 i64 那条路一样：格式化由运行期的 `extc_cout_f64` 做
          * （两行 `snprintf("%g")`，与内建 `print` 同一个格式 ⇒ 输出逐字节不变 ✓）。

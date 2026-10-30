@@ -562,7 +562,7 @@ fn main() -> i32 {
 | `ioError` | `\| readFailed(i32) \| lineTooLong(i64) \| writeFailed(i32) \| notATerminal(i32) \| closed(i32) \| destFull(i64)` |
 | `cout` / `cerr` / `cin` | `ostream { fd: 1 }` / `errStream { }` / `istream { fd: 0 }` |
 | `endl` | `let endl: slice<u8> = "\n"` |
-| `ostream <<` | `i64` / `i32` / `f64` / `bool` / `slice<u8>` / `mut slice<u8>` |
+| `ostream <<` | `i64` / `i32` / `i16` / `i8` / `u32` / `u16` / `u8` / `f64` / `f32` / `bool` / `slice<u8>` / `mut slice<u8>` |
 | `padText` / `padInt` / `padF` | 宽度 + 填充字节 + `LEFT`/`RIGHT`/`CENTER` | ；常量 |
 | `writer` | `struct writer { fd, buf, len }`（`@noCopy`）；`write` / `flush` / `cap` |
 | `writerOf(fd)` | 造一个带 64 KiB 缓冲的 writer |
@@ -582,8 +582,10 @@ fn main() -> i32 {
 - `nextInt` 会**跳过非数字往前找**（`hello world 99` 读出 99）。
 - `cin >> line` / `fin >> line` **不跳过空白**、**不返回长度**。
 - 读全是阻塞式 `read(2)`：没有超时、没有非阻塞、没有 select/poll。
-- `ostream` **没有** `<< u8`（报 ``'io::ostream' does not define '<<' for 'u8'``），`cerr` 也没有 `f64`；
-  没有 `seek` / `tell` / `peek` / `unget`（`grep` 整个 `io.extc` 无这些名字）。
+- `ostream` 收所有比 `i64` 窄的整数（`i8`/`i16`/`u8`/`u16`/`u32`）与 `f32`：窄位宽无损加宽到
+  `i64`/`f64` 再打，调用点不用写 cast。**`u64` 还不在**（加宽到 `i64` 会丢上界，得有独立的无符号
+  格式化路径），`cerr` 也只收 `i64`/`bool`/`slice<u8>`，没有 `f64`；没有 `seek` / `tell` / `peek` /
+  `unget`（`grep` 整个 `io.extc` 无这些名字）。
 
 ```extc
 use std::io
