@@ -546,6 +546,26 @@ static bool isBitOp(const char *op) {
 }
 
 /**
+ * @brief 内建整数类型的位宽（`i32` -> 32）；不是带位宽的内建整数时给 0。
+ *
+ * 名字里唯一带数字的形态是 `[iu]\d+`，与代码生成读位宽的口径一致：移位量要在编译期就能
+ * 和它比。
+ *
+ * @param t  类型。
+ * @return   位宽；`bool`、浮点、非内建类型给 0。
+ */
+static int builtinIntBits(Type *t) {
+    if (!t || t->kind != TY_BUILTIN || !t->name) return 0;
+    const char *q = t->name;
+    if (*q != 'i' && *q != 'u') return 0;
+    q++;
+    if (*q < '0' || *q > '9') return 0;
+    int bits = 0;
+    while (*q >= '0' && *q <= '9') { bits = bits * 10 + (*q - '0'); q++; }
+    return *q == 0 ? bits : 0;
+}
+
+/**
  * @brief 判断一个类型是不是引用（可空与否都算）。
  *
  * @param t  类型；NULL 返回 false。
@@ -1777,6 +1797,24 @@ static Type *checkExprInner(Checker *c, Expr *e) {
              * `T`, so `p + 1` for `p: ref i64` would pass as arithmetic while the generated
              * C performs pointer arithmetic -- silently doing something else entirely. */
             if (isRef(lt) || isRef(rt)) return refNotANumber(c, e, lt, rt, op);
+            /* 移位量是**字面量**、又超出左操作数位宽 ⇒ 编译期报。
+             * 运行期 `extc_shiftCount` 会 trap（`1 << 32` 在 i32 上就是一个），但这一条在源码里
+             * 已经看得见：写 `i64(1) << 32` 或换个计数，比运行到那里才知道好。 */
+            if ((strcmp(op, "<<") == 0 || strcmp(op, ">>") == 0) &&
+                e->u.bin.right->kind == EX_INT && ttIsInteger(lt)) {
+                int bits = builtinIntBits(ttBase(lt));
+                long long cnt = e->u.bin.right->u.ival;
+                if (bits > 0 && (cnt < 0 || cnt >= bits)) {
+                    ckError(c, e->line,
+                            "The shift count has to stay below the left operand's width (the"
+                            " generated C checks it at run time and traps otherwise). Widen the"
+                            " left operand -- write `i64(1) << 32` instead of `1 << 32` -- or"
+                            " use a count below the width.",
+                            "shift count %lld does not fit in `%s` (width %d)",
+                            cnt, typeStr(c, lt), bits);
+                    return ttError(tt);
+                }
+            }
             /* The result type comes from the arithmetic rule, literal fitting included;
              * no second copy of that rule here. */
             return checkArith(c, e, lt, rt);
