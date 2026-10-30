@@ -549,6 +549,19 @@ fn at2<T>(v: ndview<T>, i: i64, j: i64) -> T {
     return v.data[v.off + i * v.strides[0] + j * v.strides[1]]
 }
 
+/** @brief 写二维视图的一个元素（`v[i, j] = x` 的赋值糖直译到这里）。
+ *  @param v 视图（rank 至少 2）。
+ *  @param i 第 0 维下标。
+ *  @param j 第 1 维下标。
+ *  @param x 新值。
+ */
+fn set2<T>(v: ndview<T>, i: i64, j: i64, x: T) {
+    if v.rank < 2 { trap("set2: the view has fewer than 2 dimensions") }
+    if i < 0 || i >= v.shape[0] { trap("set2: the first index is out of range") }
+    if j < 0 || j >= v.shape[1] { trap("set2: the second index is out of range") }
+    v.data[v.off + i * v.strides[0] + j * v.strides[1]] = x
+}
+
 /** @brief 取二维视图的一个子矩形（`v[r0..r1, c0..c1]` 的下标糖直译到这里）；零拷贝。
  *  @param v 视图（rank 至少 2）。
  *  @param r0 第 0 维起点。

@@ -21,6 +21,8 @@ fn main() -> i32 {
     let s: f64 = nd::sumv(sub) ?? f64(-1.0)
     let t: ndview<f64> = nd::swapDims(v, 0, 1) ?? v
     let z: f64 = t[2, 1]
-    io::cout << f"x={x} y={y} s={s} z={z}\n"
+    v[2, 3] = f64(-5.0)
+    let w: f64 = v[2, 3]
+    io::cout << f"x={x} y={y} s={s} z={z} w={w}\n"
     return 0
 }

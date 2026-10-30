@@ -338,6 +338,31 @@ static Expr *mkBin(Parser *p, const char *op, Expr *l, Expr *r, int line) {
     return e;
 }
 
+/**
+ * @brief 造一个模块函数的调用节点（如 `stl::nd::at2(...)`）。
+ *
+ * 与 `fstrFrom` 同一招：写**完整模块路径**，这样解析器不必知道调用方的 import 别名，
+ * 只要那个模块被 import 过就能被加载器解析出来。
+ *
+ * @param p         解析器。
+ * @param modPrefix 模块路径（`"stl::nd"`）。
+ * @param name      函数名。
+ * @param args      实参表（已填好，所有权转给节点）。
+ * @param line      挂到节点上的源码行。
+ * @return          新的 EX_ASSOC 节点（`isCall = true`）。
+ */
+static Expr *moduleCall(Parser *p, const char *modPrefix, const char *name, Vec *args, int line) {
+    Expr *f = exprNew(p->arena, EX_ASSOC, line);
+    f->u.assoc.typeName = "stl";
+    f->u.assoc.modPrefix = modPrefix;
+    f->u.assoc.name = name;
+    vecInit(&f->u.assoc.targs, p->arena, sizeof(void *));
+    f->u.assoc.args = *args;
+    f->u.assoc.isCall = true;
+    return f;
+}
+
+
 /* ================================================================ top level */
 
 /**
@@ -2595,6 +2620,21 @@ static Stmt *parseStmt(Parser *p) {
         }
         Expr *v = parseExpr(p);
         if (!v) return NULL;
+        /* `v[i, j] = x`：两下标糖读出的是 `stl::nd::at2(...)` 调用，赋值目标不可能是调用，
+         * 所以在这里把它改写成 `stl::nd::set2(v, i, j, x)`（一条普通调用语句）。 */
+        if (strcmp(aop, "=") == 0 && e->kind == EX_ASSOC && e->u.assoc.modPrefix
+            && strcmp(e->u.assoc.modPrefix, "stl::nd") == 0 && e->u.assoc.name
+            && strcmp(e->u.assoc.name, "at2") == 0 && e->u.assoc.args.len == 3) {
+            Vec args;
+            vecInit(&args, p->arena, sizeof(void *));
+            for (size_t i2 = 0; i2 < e->u.assoc.args.len; i2++)
+                *(Expr **)vecPush(&args) = *(Expr **)vecAt(&e->u.assoc.args, i2);
+            *(Expr **)vecPush(&args) = v;
+            Expr *call = moduleCall(p, "stl::nd", "set2", &args, t->line);
+            Stmt *ss = stmtNew(p->arena, ST_EXPR, t->line);
+            ss->u.expr.expr = call;
+            return ss;
+        }
         Stmt *s = stmtNew(p->arena, ST_ASSIGN, t->line);
         s->u.assign.target = e;
         s->u.assign.value = v;
@@ -3860,30 +3900,6 @@ static bool fmtSplice(Parser *p, Expr **lhs, Token *ft) {
         return false;
     }
     return true;
-}
-
-/**
- * @brief 造一个模块函数的调用节点（如 `stl::nd::at2(...)`）。
- *
- * 与 `fstrFrom` 同一招：写**完整模块路径**，这样解析器不必知道调用方的 import 别名，
- * 只要那个模块被 import 过就能被加载器解析出来。
- *
- * @param p         解析器。
- * @param modPrefix 模块路径（`"stl::nd"`）。
- * @param name      函数名。
- * @param args      实参表（已填好，所有权转给节点）。
- * @param line      挂到节点上的源码行。
- * @return          新的 EX_ASSOC 节点（`isCall = true`）。
- */
-static Expr *moduleCall(Parser *p, const char *modPrefix, const char *name, Vec *args, int line) {
-    Expr *f = exprNew(p->arena, EX_ASSOC, line);
-    f->u.assoc.typeName = "stl";
-    f->u.assoc.modPrefix = modPrefix;
-    f->u.assoc.name = name;
-    vecInit(&f->u.assoc.targs, p->arena, sizeof(void *));
-    f->u.assoc.args = *args;
-    f->u.assoc.isCall = true;
-    return f;
 }
 
 /**
