@@ -72,3 +72,7 @@ tests/escape-fuzz/recon/out/*.txt
 tests/reclaim-unified/out/C-prototype-raw.txt
 bench/gc/v2/pause/*/*.events
 bench/gc/v2/pause/*/*.hist
+
+# 我的分析构建（sanitizer / -fanalyzer）：只在本地用，能重新构建
+build-an/
+build-asan/

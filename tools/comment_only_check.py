@@ -8,12 +8,20 @@ code: not tokens, not line structure inside code.
     tools/comment_only_check.py src/base/base.c            # one file
     tools/comment_only_check.py --all src                  # every tracked C file under src
 
-Comparison rule: both versions are stripped of comments (string and character
-literals are respected, so `"/*"` inside a literal is not a comment), every line
-keeps its non-comment text with trailing whitespace removed, and lines that
-become empty are dropped. The stripped token lines must match exactly and in
-order. Exit status 0 means comment-only, 1 means code changed or a file is
-missing from HEAD.
+Comparison rule: both versions are stripped of comments, every line keeps its
+non-comment text with trailing whitespace removed, and lines that become empty
+are dropped. The stripped token lines must match exactly and in order.
+
+Comments are stripped in two places. Outside literals this is ordinary C comment
+stripping, with string and character literals respected so `"/*"` is not a comment.
+Inside string literals the tool also strips C comment text: some files build the
+C source they emit as adjacent string literals, so a generated program's comments
+appear as `"/* ... \n" " * ... */\n"` entries. A comment pass translates those
+too, and comparing them would otherwise report a code change. The flag that marks
+"inside an emitted comment" therefore carries across adjacent literals.
+
+Exit status 0 means comment-only, 1 means code changed or a file is missing from
+HEAD.
 
 The tool reads the committed version with `git show HEAD:<path>`; new files with
 no committed version are skipped with a note.
@@ -27,14 +35,20 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 
 def strip_comments(text):
-    """Return the code text with comments removed, preserving string literals."""
+    """Return the code text with comments removed.
+
+    Comments outside literals are removed as usual. Comments inside a string
+    literal are removed as well, because emitted C source is built from adjacent
+    string literals whose comment text a comment pass is allowed to translate.
+    The "inside an emitted comment" flag survives across adjacent literals.
+    """
     out = []
     i = 0
     n = len(text)
+    in_lit_comment = False
     while i < n:
         c = text[i]
         if c == "/" and i + 1 < n and text[i + 1] == "/":
-            # Line comment: skip to end of line (keep the newline itself).
             while i < n and text[i] != "\n":
                 i += 1
         elif c == "/" and i + 1 < n and text[i + 1] == "*":
@@ -47,6 +61,17 @@ def strip_comments(text):
             out.append(c)
             i += 1
             while i < n:
+                if in_lit_comment:
+                    if text[i] == "*" and i + 1 < n and text[i + 1] == "/":
+                        in_lit_comment = False
+                        i += 2
+                        continue
+                    i += 1
+                    continue
+                if text[i] == "/" and i + 1 < n and text[i + 1] == "*":
+                    in_lit_comment = True
+                    i += 2
+                    continue
                 if text[i] == "\\" and i + 1 < n:
                     out.append(text[i])
                     out.append(text[i + 1])
@@ -56,6 +81,13 @@ def strip_comments(text):
                 if text[i] == quote:
                     i += 1
                     break
+                i += 1
+        elif in_lit_comment:
+            # The emitted comment continues in code text (unbalanced literal).
+            if c == "*" and i + 1 < n and text[i + 1] == "/":
+                in_lit_comment = False
+                i += 2
+            else:
                 i += 1
         else:
             out.append(c)
