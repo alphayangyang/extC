@@ -1,0 +1,14 @@
+// 行填充写法的负例：`r * (cols - 1)` 覆盖不了内层整个区间 ⇒ 相邻两行会重叠，
+// 必须编译失败（返回同一句 "may write only its own output slot"）。
+fn bad(out: mut slice<i64>, rows: i64, cols: i64) {
+    par r in 0..rows {
+        par c in 0..cols {
+            out[r * (cols - 1) + c] = r
+        }
+    }
+}
+fn main() -> i32 {
+    var b: mut slice<i64> = new i64[i64(40)]
+    bad(b, i64(4), i64(5))
+    return 0
+}

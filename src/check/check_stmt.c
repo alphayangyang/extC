@@ -423,6 +423,64 @@ static bool parSameExpr(Expr *a, Expr *b) {
  * @param k 乘数表达式。
  * @return  能证明一格一槽则 `true`。
  */
+/**
+ * @brief 把表达式读成关于内层上下界的整系数仿射形 `A * hi + B * lo + C`。
+ *
+ * 只认 `+ - *`、整数字面量与内层的循环变量/上界这两个名字；乘法要求至少一边是纯常量。
+ * 其它形状（调用、下标、外层变量…）一律失败 —— 证明只接受看得懂的算术。
+ *
+ * @param w     扫描上下文，提供内层变量与上下界的名字。
+ * @param e     要读的表达式。
+ * @param coeff 输出的三个系数：`[0]` = hi、`[1]` = lo、`[2]` = 常数项。
+ * @return      读得出来 `true`，否则 `false`（此时 `coeff` 无意义）。
+ */
+static bool parAffineOf(ParLower *w, Expr *e, long long coeff[3]) {
+    coeff[0] = coeff[1] = coeff[2] = 0;
+    if (!e) return false;
+    while (e->kind == EX_CONV) e = e->u.conv.operand;
+    if (e->kind == EX_INT) { coeff[2] = (long long)e->u.ival; return true; }
+    if (e->kind == EX_IDENT && e->u.ident.name) {
+        if (w->innerHi && w->innerHi->kind == EX_IDENT && w->innerHi->u.ident.name &&
+            strcmp(e->u.ident.name, w->innerHi->u.ident.name) == 0) { coeff[0] = 1; return true; }
+        if (w->innerLo && w->innerLo->kind == EX_IDENT && w->innerLo->u.ident.name &&
+            strcmp(e->u.ident.name, w->innerLo->u.ident.name) == 0) { coeff[1] = 1; return true; }
+        return false;
+    }
+    if (e->kind != EX_BIN || !e->u.bin.op) return false;
+    long long l[3], r[3];
+    if (!parAffineOf(w, e->u.bin.left, l) || !parAffineOf(w, e->u.bin.right, r)) return false;
+    if (strcmp(e->u.bin.op, "+") == 0) {
+        for (int i = 0; i < 3; i++) coeff[i] = l[i] + r[i];
+        return true;
+    }
+    if (strcmp(e->u.bin.op, "-") == 0) {
+        for (int i = 0; i < 3; i++) coeff[i] = l[i] - r[i];
+        return true;
+    }
+    if (strcmp(e->u.bin.op, "*") == 0) {
+        bool lc = l[0] == 0 && l[1] == 0, rc = r[0] == 0 && r[1] == 0;
+        if (lc && rc) { coeff[2] = l[2] * r[2]; return true; }
+        if (lc) { for (int i = 0; i < 3; i++) coeff[i] = r[i] * l[2]; return true; }
+        if (rc) { for (int i = 0; i < 3; i++) coeff[i] = l[i] * r[2]; return true; }
+        return false;
+    }
+    return false;
+}
+
+/**
+ * @brief 判断二维折叠里"一行占多少格"的 `K` 至少等于内层迭代次数。
+ *
+ * 需要的证明是 `K >= hi - lo`（对一切 `hi >= lo` 成立）。做法：把 `K` 读成关于
+ * `hi`/`lo` 的仿射形 `A*hi + B*lo + C`，则
+ * `K - (hi - lo) = (A-1)*hi + (B+1)*lo + C`，只要 `A >= 1`、`A + B >= 0`、`C >= 0`
+ * 就恒非负（`hi >= lo >= 0` 时成立；`lo` 为负的情况由内层循环本身的检查兜底）。
+ * 于是 `cols`、`cols + 1`、`2 * cols`、`cols + rowPad` 这些都算得出证明。
+ * 另外保留"全是整数字面量就直接比较"这条更直白的路。
+ *
+ * @param w 扫描上下文（用内层循环变量与上下界作符号）。
+ * @param k 一行的格数。
+ * @return  能证明 `k` 覆盖内层整个区间就返回 `true`。
+ */
 static bool parFlattenConstOk(ParLower *w, Expr *k) {
     if (!k || !w->innerHi) return false;
     Expr *lo = w->innerLo, *hi = w->innerHi;
@@ -433,7 +491,9 @@ static bool parFlattenConstOk(ParLower *w, Expr *k) {
     while (kk && kk->kind == EX_CONV) kk = kk->u.conv.operand;
     if (kk && kk->kind == EX_INT && hi && hi->kind == EX_INT && lo && lo->kind == EX_INT)
         return kk->u.ival >= hi->u.ival - lo->u.ival;
-    return false;
+    long long c[3];
+    if (!parAffineOf(w, k, c)) return false;
+    return c[0] >= 1 && c[0] + c[1] >= 0 && c[2] >= 0;
 }
 
 /**

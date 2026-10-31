@@ -1,0 +1,39 @@
+// 二维折叠 + 行填充：每行 `cols` 个有效格、外加 1 格填充 ⇒ 一行占 `cols + 1` 格。
+// 判据：填充格不被写、有效格与串行结果逐位相同（`cols + 1` 覆盖整个内层区间，
+// 所以"一格一槽"仍成立 —— 这正是 `parFlattenConstOk` 的仿射证明要吃下的形状）。
+use std::io
+
+fn parFill(rows: i64, cols: i64, dst: mut slice<i64>) {
+    par r in 0..rows {
+        par c in 0..cols {
+            dst[r * (cols + 1) + c] = r * 10 + c
+        }
+    }
+}
+
+fn seqFill(rows: i64, cols: i64, dst: mut slice<i64>) {
+    for r in 0..rows {
+        for c in 0..cols {
+            dst[r * (cols + 1) + c] = r * 10 + c
+        }
+    }
+}
+
+fn main() -> i32 {
+    let rows: i64 = 7
+    let cols: i64 = 5
+    var a: mut slice<i64> = new i64[rows * (cols + 1)]
+    var b: mut slice<i64> = new i64[rows * (cols + 1)]
+    seqFill(rows, cols, a)
+    parFill(rows, cols, b)
+    var same: bool = true
+    var pad: i64 = 0
+    for r in 0..rows {
+        for c in 0..cols {
+            if a[r * (cols + 1) + c] != b[r * (cols + 1) + c] { same = false }
+        }
+        pad = pad + b[r * (cols + 1) + cols]
+    }
+    io::cout << f"same={same} pad={pad}\n"
+    return 0
+}

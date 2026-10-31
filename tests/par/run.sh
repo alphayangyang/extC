@@ -85,6 +85,8 @@ case_run par_scalar_t1 tests/par/par_scalar.extc "s=108" EXTC_PAR_THREADS=1
 case_run par_2d       tests/par/par_2d.extc     "same=true s=18090"
 case_run par_litargs   tests/par/par_run_literals.extc "rc=0 s=56"
 case_run par_2d_t1    tests/par/par_2d.extc     "same=true s=18090" EXTC_PAR_THREADS=1
+case_run par_2d_pad   tests/par/par_2d_pad.extc "same=true pad=0"
+case_run par_2d_pad_t1 tests/par/par_2d_pad.extc "same=true pad=0" EXTC_PAR_THREADS=1
 case_run par_reduce   tests/par/par_reduce.extc "same=true s=16773120"
 case_run par_reduce_t1 tests/par/par_reduce.extc "same=true s=16773120" EXTC_PAR_THREADS=1
 case_run par_blocks   tests/par/par_blocks.extc "sum=true max=true min=true s=-100"
@@ -102,6 +104,7 @@ case_neg neg_two_views tests/par/neg_two_views.extc "may write only its own outp
 case_neg neg_subscript tests/par/neg_subscript.extc "may write only its own output slot"
 case_neg neg_alias     tests/par/neg_alias.extc     "aliases a read-only view"
 case_neg neg_par2d_slot tests/par/neg_par2d_slot.extc "may write only its own output slot"
+case_neg neg_par2d_pad_small tests/par/neg_par2d_pad_small.extc "may write only its own output slot"
 case_neg neg_scalar    tests/par/neg_scalar.extc    "only read-only views and scalar values can be captured by a par loop"
 case_neg neg_nest3     tests/par/neg_nest3.extc     "cannot nest \`par\` more than two levels"
 case_neg neg_escape    tests/par/neg_escape.extc    "cannot escape a par loop"
