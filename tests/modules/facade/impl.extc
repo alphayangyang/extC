@@ -1,0 +1,8 @@
+// 实现模块：名字住在这里。
+fn twice(x: i64) -> i64 { return x * 2 }
+
+struct pair2 { a: i64  b: i64 }
+
+fn pair2Sum(p: pair2) -> i64 { return p.a + p.b }
+
+fn internalOnly(x: i64) -> i64 { return x + 1 }

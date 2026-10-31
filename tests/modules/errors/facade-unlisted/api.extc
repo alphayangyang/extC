@@ -1,0 +1,2 @@
+// 门面：只发布 `twice`。`internalOnly` 没有列进来。
+pub use impl::{twice}

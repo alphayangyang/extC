@@ -612,6 +612,57 @@ static ModUnit *importedAsPath(Loader *L, ModUnit *self, const char *qname) {
 }
 
 /**
+ * @brief 一个模块通过 `pub use` 对外提供的**名字**归谁所有。
+ *
+ * 门面模块自己不定义成员，只把实现模块的名字再导出：`std::io` 里
+ * `pub use std::io::fmt::{padText}` 之后，`io::padText` 属于 `std::io::fmt`。查询的是
+ * "这个名字最终由哪个模块声明"，因为裸名可见性、`@private` 与扁平名都按**所有者**
+ * 计算。
+ *
+ * @param L      加载器。
+ * @param u      被导入的那个模块（可能是门面）。
+ * @param name   要查的名字。
+ * @param depth  递归深度，上限 8（再导出链是有向无环的，但坏输入不配让编译器栈溢出）。
+ * @return       声明这个名字的模块；没有再导出它时返回 `NULL`。
+ */
+static ModUnit *pubNameOwner(Loader *L, ModUnit *u, const char *name, int depth) {
+    if (!u || !name || depth > 8) return NULL;
+    for (size_t i = 0; i < u->mod.uses.len; i++) {
+        UseDecl *pu = *(UseDecl **)vecAt(&u->mod.uses, i);
+        if (!pu->isPub || pu->wildcard || pu->names.len == 0 || !pu->file) continue;
+        for (size_t k = 0; k < pu->names.len; k++) {
+            if (strcmp(*(const char **)vecAt(&pu->names, k), name) != 0) continue;
+            ModUnit *owner = findUnit(L, pu->file);
+            if (owner) return owner;
+        }
+    }
+    return NULL;
+}
+
+/**
+ * @brief 一个模块通过 `pub use 模块路径` 再导出的**句柄**指向哪个模块。
+ *
+ * `pub use std::io::fmt` 让导入者也能写 `fmt::padText`。句柄再导出只认同一条完整路径
+ * （没有名字列表、没有星号），因为再导出的语义是"我替你把那个模块挂出来"，不是"我
+ * 重新发布它的名字"。
+ *
+ * @param L          加载器。
+ * @param u          被导入的模块。
+ * @param shortName  要查的句柄名。
+ * @param depth      递归深度（上限 8）。
+ * @return           句柄指向的模块；没有再导出它时返回 `NULL`。
+ */
+static ModUnit *pubHandleOwner(Loader *L, ModUnit *u, const char *shortName, int depth) {
+    if (!u || !shortName || depth > 8) return NULL;
+    for (size_t i = 0; i < u->mod.uses.len; i++) {
+        UseDecl *pu = *(UseDecl **)vecAt(&u->mod.uses, i);
+        if (!pu->isPub || pu->wildcard || pu->names.len != 0 || !pu->file) continue;
+        if (strcmp(pu->shortName, shortName) == 0) return findUnit(L, pu->file);
+    }
+    return NULL;
+}
+
+/**
  * @brief Find the module this unit imports under the short name `shortName`.
  *
  * @param L          loader.
@@ -625,6 +676,17 @@ static ModUnit *importedAs(Loader *L, ModUnit *self, const char *shortName) {
         UseDecl *u = *(UseDecl **)vecAt(&self->mod.uses, i);
         if (strcmp(u->shortName, shortName) == 0)
             return u->file ? findUnit(L, u->file) : NULL;
+    }
+    /* 导入的模块可以把另一个模块的句柄**再导出**（`pub use std::io::fmt`），
+     * `fmt::padText` 于是也能解析。一个模块一条再导出，不递归展开成"所有后代句柄"：
+     * 句柄是路径的简写，不是继承。 */
+    for (size_t i = 0; i < self->mod.uses.len; i++) {
+        UseDecl *u = *(UseDecl **)vecAt(&self->mod.uses, i);
+        if (!u->isPub || !u->file) continue;
+        ModUnit *t = findUnit(L, u->file);
+        if (!t || t == self) continue;
+        ModUnit *h = pubHandleOwner(L, t, shortName, 1);
+        if (h) return h;
     }
     return NULL;
 }
@@ -781,7 +843,24 @@ static bool rwQualifiedTypeName(Loader *L, ModUnit *self, const char *qname, con
     if (target == self) return false;              /* pointing at itself: leave it alone */
     StructDef *sd = unitStruct(target, rest);
     TypeDef   *td = sd ? NULL : unitType(target, rest);
-    if (!sd && !td) return false;                  /* not a type: leave the path alone */
+    if (!sd && !td) {
+        /* 门面模块没有自己的类型：`core::pair2` 可能来自它 `pub use` 的实现模块。 */
+        ModUnit *owner = pubNameOwner(L, target, rest, 0);
+        if (!owner || owner == target) return false;   /* not a type: leave the path alone */
+        sd = unitStruct(owner, rest);
+        td = sd ? NULL : unitType(owner, rest);
+        if (!sd && !td) return false;
+        if ((sd && sd->isPrivate) || (td && td->isPrivate)) {
+            ctxError(self->ctx, 0, 1,
+                     "`@private` means other modules must not name it. Drop the annotation if it is"
+                     " meant to be used from here.",
+                     "`%s::%s` is private to module `%s`", shortName, rest, shortName);
+            L->errors++;
+            return true;
+        }
+        *out = renOfTarget(owner, rest);
+        return true;
+    }
     if ((sd && sd->isPrivate) || (td && td->isPrivate)) {
         ctxError(self->ctx, 0, 1,
                  "`@private` means other modules must not name it. Drop the annotation if it is"
@@ -901,6 +980,11 @@ static void rwQualified(Loader *L, ModUnit *self, Expr *e) {
          * `modPrefix` and the type as the symbol; a short one (`fs::Type(...)`) arrives as
          * `typeName` = module, `name` = type. Both end up asking the same question. */
         if (!mowner && tn0 && !strstr(tn0, "::")) mowner = importedAs(L, self, tn0);
+        /* 门面模块的构造器：`core::pair2(...)` 里 `pair2` 是再导出的类型。 */
+        if (mowner && mowner != self && msym && !unitStruct(mowner, msym)) {
+            ModUnit *rowner = pubNameOwner(L, mowner, msym, 0);
+            if (rowner && rowner != mowner && unitStruct(rowner, msym)) mowner = rowner;
+        }
         if (mowner && mowner != self && msym && unitStruct(mowner, msym) &&
             !unitStruct(mowner, msym)->isPrivate) {
             StructDef *csd = unitStruct(mowner, msym);
@@ -963,8 +1047,20 @@ static void rwQualified(Loader *L, ModUnit *self, Expr *e) {
 
     const bool isCall = saveCall;
     const char *nm = symName;
+    /* 名字最终属于哪个模块：门面模块只是**发布**它，扁平名、裸名可见性与诊断都按
+     * 所有者算。`core::twice` 的实现在 `extra`（`core` 里 `pub use extra::{twice}`），
+     * 于是这里换成 `extra` 再查。 */
+    ModUnit   *owner = target;
     FuncDef   *f = unitFunc(target, nm);
     GlobalDef *g = f ? NULL : unitGlobal(target, nm);
+    if (!f && !g) {
+        ModUnit *rt = pubNameOwner(L, target, nm, 0);
+        if (rt && rt != target) {
+            owner = rt;
+            f = unitFunc(rt, nm);
+            g = f ? NULL : unitGlobal(rt, nm);
+        }
+    }
 
     if ((f && f->isPrivate) || (g && g->isPrivate)) {
         ctxError(self->ctx, e->line, 1,
@@ -999,7 +1095,7 @@ static void rwQualified(Loader *L, ModUnit *self, Expr *e) {
          * moved out first. */
         Vec  args = e->u.assoc.args;
         Expr *id  = exprNew(L->a, EX_IDENT, e->line);
-        id->u.ident.name = renOfTarget(target, nm);
+        id->u.ident.name = renOfTarget(owner, nm);
         /* The name is **finished**: it is the target module's declaration, and the
          * local-name rewrite must not touch it again. Without this flag the callee is
          * looked up in the *calling* module's rename table one pass later -- and when the
@@ -1031,7 +1127,12 @@ static void rwQualified(Loader *L, ModUnit *self, Expr *e) {
      * nor a `let`/`var` and reports the type as a missing export: `module `io` has nothing
      * named `ioError``. */
     if (!f && !g) {
+        ModUnit *towner = target;
         TypeDef *td = unitType(target, nm);
+        if (!td) {
+            ModUnit *rt = pubNameOwner(L, target, nm, 0);
+            if (rt && rt != target) { towner = rt; td = unitType(rt, nm); }
+        }
         if (td) {
             if (td->isPrivate) {
                 ctxError(self->ctx, e->line, 1,
@@ -1042,7 +1143,7 @@ static void rwQualified(Loader *L, ModUnit *self, Expr *e) {
                 return;
             }
             /* Read out before the union is written: `renOfTarget` does not touch `e`. */
-            const char *ren = renOfTarget(target, nm);
+            const char *ren = renOfTarget(towner, nm);
             e->kind = EX_IDENT;
             e->u.ident.name = ren;
             anSetQualified(e, true);            /* the source wrote a qualified name */
@@ -1881,6 +1982,53 @@ static ModUnit *loadUnit(Loader *L, const char *modPath, const char *importerFil
 /* ------------------------------------------------------------------- entry */
 
 /**
+ * @brief 把一条 `use` 记成 `Open` 条目（裸名可见性判据）。
+ *
+ * 名字列表里的名字若来自门面的再导出，`opened` 要写**所有者**模块：裸名可见性、
+ * `@private` 与扁平名都按所有者计算，写门面的名字会让 `use facade::{f}` 找不到 `f`
+ * 的声明。星号导入同理 —— 门面再导出的名字也要跟着进，否则 `use facade::*` 之后
+ * 裸名 `twice` 仍然不可见。
+ *
+ * @param L         加载器。
+ * @param out       正在拼的合并模块（`opens` 的宿主）。
+ * @param importer  做引用的模块名（根文件为 `NULL`）。
+ * @param u         那条 `use`；没有解析出文件或只是句柄导入时什么也不做。
+ */
+static void addOpensFor(Loader *L, Module *out, const char *importer, UseDecl *u) {
+    if (!u || !u->file || (!u->wildcard && u->names.len == 0)) return;
+    ModUnit *opened = findUnit(L, u->file);
+    if (!opened) return;
+    if (u->wildcard) {
+        Open *o = (Open *)vecPush(&out->opens);
+        o->importer = importer;
+        o->opened   = opened->modName;
+        o->name     = NULL;                    /* every public name */
+        /* 门面的再导出也要跟着进：`use facade::*` 之后裸名能用 `twice`。 */
+        for (size_t i = 0; i < opened->mod.uses.len; i++) {
+            UseDecl *pu = *(UseDecl **)vecAt(&opened->mod.uses, i);
+            if (!pu->isPub || pu->wildcard || pu->names.len == 0 || !pu->file) continue;
+            ModUnit *owner = findUnit(L, pu->file);
+            if (!owner) continue;
+            for (size_t k = 0; k < pu->names.len; k++) {
+                Open *o2 = (Open *)vecPush(&out->opens);
+                o2->importer = importer;
+                o2->opened   = owner->modName;
+                o2->name     = *(const char **)vecAt(&pu->names, k);
+            }
+        }
+        return;
+    }
+    for (size_t k = 0; k < u->names.len; k++) {
+        const char *nm = *(const char **)vecAt(&u->names, k);
+        ModUnit *owner = pubNameOwner(L, opened, nm, 0);
+        Open *o = (Open *)vecPush(&out->opens);
+        o->importer = importer;
+        o->opened   = owner ? owner->modName : opened->modName;
+        o->name     = nm;
+    }
+}
+
+/**
  * @brief Load every module the root file imports and merge them into `out`.
  *
  * `rootCtx` is stored by pointer, never copied: a copy would swallow the diagnostics
@@ -2005,48 +2153,42 @@ bool loadModules(Arena *a, Module *out, Module *rootm, Ctx *rootCtx,
     /* Collect every `use mod::*` as an (importer, opened) pair. It has to happen here,
      * where both the importing unit and the module it resolved to are known; the
      * checker only has the second one, in `FuncDef.modName`. */
+    /* `pub use x::*` 被拒绝：再导出**所有名字**会让公开面随实现文件漂移，而这正是
+     * 门面要对冲的那件事。整条路径（`pub use x::fmt`）可以，名字列表可以。 */
+    {
+        for (size_t i = 0; i < L.units.len; i++) {
+            ModUnit *u = *(ModUnit **)vecAt(&L.units, i);
+            for (size_t j = 0; j < u->mod.uses.len; j++) {
+                UseDecl *pu = *(UseDecl **)vecAt(&u->mod.uses, j);
+                if (!pu->isPub || !pu->wildcard) continue;
+                ctxError(u->ctx, pu->line, 1,
+                         "List the names a facade publishes: `pub use x::{a, b}` (or re-export the"
+                         " whole module with `pub use x::y`).",
+                         "`pub use %s::*` is not allowed -- a published name is a promise, and a"
+                         " star makes the promise depend on the implementation file", pu->path);
+                L.errors++;
+            }
+        }
+        for (size_t j = 0; j < rootm->uses.len; j++) {
+            UseDecl *pu = *(UseDecl **)vecAt(&rootm->uses, j);
+            if (!pu->isPub || !pu->wildcard) continue;
+            ctxError(rootCtx, pu->line, 1,
+                     "List the names a facade publishes: `pub use x::{a, b}` (or re-export the"
+                     " whole module with `pub use x::y`).",
+                     "`pub use %s::*` is not allowed -- a published name is a promise, and a"
+                     " star makes the promise depend on the implementation file", pu->path);
+            L.errors++;
+        }
+    }
+
     vecInit(&out->opens, a, sizeof(Open));
     for (size_t i = 0; i < L.order.len; i++) {
         ModUnit *dep = *(ModUnit **)vecAt(&L.order, i);
-        for (size_t j = 0; j < dep->mod.uses.len; j++) {
-            UseDecl *u = *(UseDecl **)vecAt(&dep->mod.uses, j);
-            if (!u->file || (!u->wildcard && u->names.len == 0)) continue;
-            ModUnit *opened = findUnit(&L, u->file);
-            if (!opened) continue;
-            if (u->wildcard) {
-                Open *o = (Open *)vecPush(&out->opens);
-                o->importer = dep->modName;
-                o->opened   = opened->modName;
-                o->name     = NULL;                /* every public name */
-            } else {
-                for (size_t k = 0; k < u->names.len; k++) {
-                    Open *o = (Open *)vecPush(&out->opens);
-                    o->importer = dep->modName;
-                    o->opened   = opened->modName;
-                    o->name     = *(const char **)vecAt(&u->names, k);
-                }
-            }
-        }
+        for (size_t j = 0; j < dep->mod.uses.len; j++)
+            addOpensFor(&L, out, dep->modName, *(UseDecl **)vecAt(&dep->mod.uses, j));
     }
-    for (size_t j = 0; j < rootm->uses.len; j++) {
-        UseDecl *u = *(UseDecl **)vecAt(&rootm->uses, j);
-        if (!u->file || (!u->wildcard && u->names.len == 0)) continue;
-        ModUnit *opened = findUnit(&L, u->file);
-        if (!opened) continue;
-        if (u->wildcard) {
-            Open *o = (Open *)vecPush(&out->opens);
-            o->importer = NULL;                 /* the root file */
-            o->opened   = opened->modName;
-            o->name     = NULL;
-        } else {
-            for (size_t k = 0; k < u->names.len; k++) {
-                Open *o = (Open *)vecPush(&out->opens);
-                o->importer = NULL;
-                o->opened   = opened->modName;
-                o->name     = *(const char **)vecAt(&u->names, k);
-            }
-        }
-    }
+    for (size_t j = 0; j < rootm->uses.len; j++)
+        addOpensFor(&L, out, NULL, *(UseDecl **)vecAt(&rootm->uses, j));
 
     /* The root file's declarations are merged last, and through the **same path** every other
      * unit takes. Its names are never renamed (`modName == NULL` makes `mangleUnitDecls` return

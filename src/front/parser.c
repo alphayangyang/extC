@@ -450,6 +450,29 @@ static UseDecl *parseUse(Parser *p) {
 }
 
 /**
+ * @brief 从当前位置往后数第 `skip` 个**非换行** token（只看不取）。
+ *
+ * 软关键字（`pub`、`global`、`par`）是普通标识符，识别它们要先看下一个词：`pub use`
+ * 才是一条再导出，`pub` 单独出现就是别的东西。换行在这里是空白，不是 token 边界。
+ *
+ * @param p     解析器。
+ * @param skip  跳过的非换行 token 数（1 = 下一个）。
+ * @return      那个 token；越界时返回 `NULL`。
+ */
+static Token *tokAfterNewlines(Parser *p, size_t skip) {
+    size_t i = p->pos;
+    while (i < p->toks->len) {
+        Token *t = (Token *)vecAt(p->toks, i);
+        if (t->kind != TK_NEWLINE) {
+            if (skip == 0) return t;
+            skip--;
+        }
+        i++;
+    }
+    return NULL;
+}
+
+/**
  * @brief 语法糖自带它的库模块：登记一条隐藏 `use`，除非该模块已经导入。
  *
  * 糖展开成的是**库调用**（值 f-string 的起点、多下标糖的内核），那些名字住在标准库里。
@@ -642,6 +665,19 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
     skipJunk(&p);
 
     while (!atKind(&p, TK_EOF) && !ctx->hasError) {
+        /* `pub use a::b`：把名字**再导出**给导入本模块的人（门面模块用它把实现拆开）。
+         * `pub` 只在这个位置有意义，别处的 `pub` 留给将来（现在直接报错，免得读成
+         * 一个没人管的修饰词）。 */
+        if (at(&p, "pub") && tokAfterNewlines(&p, 1) && strcmp(tokAfterNewlines(&p, 1)->text, "use") == 0) {
+            take(&p);
+            skipJunk(&p);
+            UseDecl *u = parseUse(&p);
+            if (!u) return false;
+            u->isPub = true;
+            *(UseDecl **)vecPush(&out->uses) = u;
+            skipJunk(&p);
+            continue;
+        }
         /* `use a::b` 是语义导入：找文件、查导入环、解析它引入的限定名都归加载器。 */
         if (at(&p, "use")) {
             UseDecl *u = parseUse(&p);

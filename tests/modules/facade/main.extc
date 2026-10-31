@@ -1,0 +1,9 @@
+// expect: t=8|s=7|n=9
+use std::io
+use api
+
+fn main() -> i32 {
+    io::println(f"t={api::twice(4)} s={api::pair2Sum(api::pair2 { a: 3, b: 4 })}")
+    io::println(f"n={api::twice(4) + 1}")
+    return 0
+}

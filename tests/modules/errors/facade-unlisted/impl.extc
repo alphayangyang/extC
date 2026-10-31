@@ -1,0 +1,3 @@
+// 实现模块：只有一个名字被门面发布，另一个留给自己。
+fn twice(x: i64) -> i64 { return x * 2 }
+fn internalOnly(x: i64) -> i64 { return x + 1 }

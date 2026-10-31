@@ -30,6 +30,7 @@
 | `use a::{b, c}` | 恰好列出的名字，**可以裸写** `b` |  |
 | `use a::*` | 该模块每一个**公开**名字 |  |
 | `use a as al` | 短名换成 `al`，之后写 `al::x` |  |
+| `pub use a::{b}` | **再导出**给导入本模块的人（门面）；`pub use a` 再导出句柄 |  |
 
 不支持的写法，以及编译器给出的替代：
 
@@ -49,6 +50,34 @@
 | `use alpha` + 裸 `box`（alpha 的公开 struct，用作类型） | **可以** |
 
 最后一行是现状里的一处**不对称**：`use a` 之后，`a` 的**结构体类型名**可以裸写，而它的函数/全局**不行**。
+一句话规则：**导入一个模块，带来它的句柄与类型名；值名（`fn` / `let` / `var`）要列出来。**
+类型名随模块来是因为签名里到处都是类型（`hashMap<string, i64>`），全要求 `use x::{Type}`
+会把简洁度吃回去；值名不随模块来是因为函数名太容易撞（`new`、`hash`、`push`），
+静默带进来会让两个模块的 `push` 悄悄选一个。
+
+### 1.2b 门面：`pub use` 再导出
+
+一个模块可以把自己导入的名字**再导出**给导入它的人：
+
+```
+// api.extc —— 门面：自己什么也不定义
+pub use impl::{pair2, pair2Sum, twice}
+```
+
+<!-- fragment -->
+```extc
+use api
+fn main() -> i32 {
+    io::println(f"t={api::twice(4)} s={api::pair2Sum(api::pair2 { a: 3, b: 4 })}")
+    return 0
+}
+```
+
+判据：`api::twice`、`api::pair2`（含**构造器** `api::pair2 { … }`）都能用；没被列进
+`pub use` 的名字仍然拿不到（`module `api` has nothing named `internalOnly``）。
+`pub use x::y` 还可以再导出一个**句柄**（`fmt::padText` 这种写法）。
+`pub use x::*` 被拒绝：公开面是一个承诺，星号会让承诺随实现文件漂移 —— 列表写出来，
+实现随便搬家。
 
 ### 1.3 `@private` 现在挡什么 / 不挡什么
 

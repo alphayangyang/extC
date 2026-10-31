@@ -1,0 +1,7 @@
+// 反例：门面**只**发布列出来的名字 —— `internalOnly` 在 impl 里，但没进 `pub use`。
+use api
+
+fn main() -> i32 {
+    let x: i64 = api::internalOnly(1)
+    return 0
+}

@@ -1258,6 +1258,11 @@ typedef struct {
     const char *shortName; /* "io": members are then referred to as `io::name` */
     const char *file;      /* filled in by the loader: the file it resolved to */
     int         line;
+    /* `pub use …`: 把这个名字**再导出**给导入本模块的人。门面模块靠它把实现拆开而
+     * 用户代码不动 —— `std::io` 可以 `pub use std::io::fmt::{padText, …}`，调用方
+     * 仍旧写 `io::padText(…)`。只有显式名字列表（或整条模块路径）可以再导出；
+     * `pub use x::*` 被拒绝，因为"再导出所有名字"会让公开面随实现文件漂移。 */
+    bool        isPub;
     /* `use std::io::*`: the module's **public names are in scope unqualified** as
      * well. Qualified names keep working (they always do), and a `@private` name is
      * still out of reach: opening a module is not a way around privacy.
