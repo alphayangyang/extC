@@ -1,0 +1,24 @@
+// 自递归 + `noArena`（体内不分配）的函数返回 `?T`：返回值的临时量必须按真实返回类型声明，
+// 落到末尾的出口也不能凭空 `return __extc_ret_v;`（那是带 arena 尾声的函数才有的槽）。
+// expect: c=5 sum=15
+use std::io
+use stl::string
+
+fn countdown(n: i64) -> ?i64 {
+    if n == 0 { return some(0) }
+    let v: i64 = countdown(n - 1) ?
+    return some(v + 1)
+}
+
+fn total(n: i64) -> ?i64 {
+    if n == 0 { return some(0) }
+    let v: i64 = total(n - 1) ?
+    return some(v + n)
+}
+
+fn main() -> i32 {
+    let c: i64 = countdown(5) ?? -1
+    let s: i64 = total(5) ?? -1
+    println(f"c={c} sum={s}")
+    return 0
+}

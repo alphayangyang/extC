@@ -39,6 +39,7 @@ check_err() {
 
 echo "== 正例：具体类型（比较 + 算术）· 有牙 · 泛型体 · 内建不改 =="
 run_case fnptr
+run_case rec_opt tests/ops/rec_opt.extc "c=5 sum=15"
 run_case fn_callback_view
 run_case for_rvalue
 run_case orbreak

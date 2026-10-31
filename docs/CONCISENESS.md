@@ -57,11 +57,16 @@ total         71/20   3.55x  63/16   3.94x   754/484    1.56x
 动的目标。语料改写法本身不改变编译器，只是把已经能写出来的短形状写出来 —— 比的是
 "extC 现在能写多短"，不是"编译器把旧写法变短了"。
 
-**一段能读完的示例**：`examples/concise-tour.extc`（`// expect:` 一行机判）把这几层糖放在
+**几段能读完的示例**：`examples/concise-tour.extc`（`// expect:` 一行机判）把这几层糖放在
 同一个五十来行的程序里 —— 视图遍历 + `trim`/`join`、两下标与子视图、整数组表达式
 `out = a + b * 2.0`、写临时视图 + `seq::sum(tmpv) ?? 0.0` 的融合、值 f-string 的说明符与槽里
 的 `?`。文件头把每一条都对着 Python 的等价写法写了一遍；`tests/run.sh` 的正例语料与
 `check.sh nobench` 的 ASan 语料都会编译并运行它。
+
+另外两段按不同口味写：`examples/tour-wordcount.extc`（文本处理：`for w in string::split(...)`
+的右值主语 + 自动借出、`w.len` 字段、值 f-string 的精度）与 `examples/tour-expr.extc`
+（一个小表达式求值器：`enum` 带载荷、`match`、`mut ref` 游标、`?` 传播与 `??` 兜底，没有
+继承/异常/装箱）。三者都带 `// expect:` 一行机判。
 
 ## 噪音测量：`i64(...)` 包字面量
 

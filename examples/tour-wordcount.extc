@@ -1,0 +1,26 @@
+// expect: words=12 lines=4 longest=7 first=the avg=4.00
+// 文本处理：几个视图的配合，没有一行仪式 —— `for w in string::split(...)` 右值主语
+// （编译器自动借出视图）、`w.len` 是视图字段、值 f-string 带精度说明符。
+use std::io
+use stl::string
+use stl::stringio
+
+fn main() -> i32 {
+    let text: slice<u8> = "the quick brown fox\njumps over the lazy dog\nthe end\nreally!"
+    var words: i64 = 0
+    var lines: i64 = 0
+    var chars: i64 = 0
+    var longest: i64 = 0
+    var first: string = string::withCap(16)
+    for line in string::split(text, "\n") {
+        lines = lines + 1
+        for w in string::split(line, " ") {
+            if words == 0 { first.append(w) }
+            if w.len > longest { longest = w.len }
+            chars = chars + w.len
+            words = words + 1
+        }
+    }
+    println(f"words={words} lines={lines} longest={longest} first={first} avg={f64(chars) / f64(words):.2f}")
+    return 0
+}

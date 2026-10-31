@@ -1,0 +1,100 @@
+// expect: 2*3+(4-1) = 9 | 1+2*3 = 7 | bad = true
+// 一个小表达式求值器：enum 带载荷、match、ref、`?` 传播、`??` 兜底 ——
+// 没有继承、没有异常、没有装箱；每个 match 都是跳转表，每个 `?` 都是两条分支。
+use std::io
+use stl::string
+use stl::stringio
+
+type tok = | num(i64) | plus | minus | star | lparen | rparen
+
+fn lex(s: slice<u8>) -> ?varArray<tok> {
+    var out: varArray<tok> = varArray<tok>::withCap(16)
+    var i: i64 = 0
+    while i < s.len {
+        let c: u8 = s[i]
+        if c == 32 { i = i + 1 }
+        else if c >= 48 && c <= 57 {
+            var v: i64 = 0
+            while i < s.len && s[i] >= 48 && s[i] <= 57 { v = v * 10 + i64(s[i] - 48)  i = i + 1 }
+            out.push(tok.num(v))
+        }
+        else if c == 43 { out.push(tok.plus)   i = i + 1 }
+        else if c == 45 { out.push(tok.minus)  i = i + 1 }
+        else if c == 42 { out.push(tok.star)   i = i + 1 }
+        else if c == 40 { out.push(tok.lparen) i = i + 1 }
+        else if c == 41 { out.push(tok.rparen) i = i + 1 }
+        else { return option<varArray<tok>>::none }
+    }
+    return option<varArray<tok>>::some(out)
+}
+
+fn atom(ts: slice<tok>, at: mut ref i64) -> ?i64 {
+    if (*at) >= ts.len { return option<i64>::none }
+    match ts[(*at)] {
+        num(n) => { (*at) = (*at) + 1  return option<i64>::some(n) }
+        lparen => {
+            (*at) = (*at) + 1
+            let v: i64 = expr(ts, at) ?
+            var close: bool = false
+            if (*at) < ts.len { match ts[(*at)] { rparen => { close = true }  _ => { close = false } } }
+            if close { (*at) = (*at) + 1  return option<i64>::some(v) }
+            return option<i64>::none
+        }
+        _ => { return option<i64>::none }
+    }
+}
+
+fn term(ts: slice<tok>, at: mut ref i64) -> ?i64 {
+    let head: i64 = atom(ts, at) ?
+    var v: i64 = head
+    while (*at) < ts.len {
+        match ts[(*at)] {
+            star => {
+                (*at) = (*at) + 1
+                let t: i64 = atom(ts, at) ?
+                v = v * t
+            }
+            _ => { break }
+        }
+    }
+    return option<i64>::some(v)
+}
+
+fn expr(ts: slice<tok>, at: mut ref i64) -> ?i64 {
+    let head: i64 = term(ts, at) ?
+    var v: i64 = head
+    while (*at) < ts.len {
+        match ts[(*at)] {
+            plus => {
+                (*at) = (*at) + 1
+                let t: i64 = term(ts, at) ?
+                v = v + t
+            }
+            minus => {
+                (*at) = (*at) + 1
+                let t: i64 = term(ts, at) ?
+                v = v - t
+            }
+            _ => { break }
+        }
+    }
+    return option<i64>::some(v)
+}
+
+fn eval(s: slice<u8>) -> ?i64 {
+    match lex(s) {
+        none => { return option<i64>::none }
+        some(ts) => {
+            var at: i64 = 0
+            return expr(ts.asSlice(), ref at)
+        }
+    }
+}
+
+fn main() -> i32 {
+    let a: i64 = eval("2*3+(4-1)") ?? -1
+    let b: i64 = eval("1+2*3") ?? -1
+    let bad: bool = (eval("2*$") ?? -1) == -1
+    println(f"2*3+(4-1) = {a} | 1+2*3 = {b} | bad = {bad}")
+    return 0
+}

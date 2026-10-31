@@ -4757,7 +4757,11 @@ static void cgReturn(CG *g, const char *val) {
     if (g->inMain && g->needCout) cgLine(g, "extc_cout_flush();");
     if (g->noArena) {
         if (g->isRecursive) {
-            if (val) cgLine(g, "{ int64_t __r = (int64_t)(%s); --__extc_rec_depth; return __r; }", val);
+            /* 返回值类型不一定是标量：自递归函数也可以返回 `option<T>` / 结构体。这里
+             * 用真实的返回类型声明临时量，并且**不加 cast**（C 不允许 cast 到结构体类型，
+             * 而标量的赋值本来就能隐式转换）。 */
+            if (val) cgLine(g, "{ %s __r = %s; --__extc_rec_depth; return __r; }",
+                            cType(g, g->curFunc->ret), val);
             else     cgLine(g, "{ --__extc_rec_depth; return; }");
         } else if (val) cgLine(g, "return %s;", val);
         else            cgLine(g, "return;");
@@ -8333,10 +8337,9 @@ static void genFunc(CG *g, FuncDef *f) {
          * function with `noArena` it would name `__extc_ret_v`, which is not
          * declared there, so gcc reported an error; in every other case it is
          * dead code and is left out. */
-        if (fallsOff && g->noArena) {
-            if (retVoid) cgLine(g, "return;");
-            else         cgLine(g, "return __extc_ret_v;");
-        }
+        if (fallsOff && g->noArena && retVoid) cgLine(g, "return;");
+        /* 非 void 的 `noArena` 函数落到末尾时，`__extc_ret_v` 在这里并不存在：交给下面
+         * 那条 `extc_trapMsg`（noreturn）收尾，不要凭空 `return __extc_ret_v;`。 */
     }
     /* A body that runs off its end must not fall through: a non-void one would return whatever
      * the register happened to hold, or -- with an arena -- the return slot that no return
