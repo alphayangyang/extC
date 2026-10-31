@@ -62,7 +62,6 @@ void desugarBareCtor(Checker *c, Expr *e, Type *want) {
     planSetAssocOwner(e, want);
 }
 
-
 /**
  * @brief 在不检查表达式的前提下推断 `for x in SUBJ` 里 SUBJ 的类型。
  *
@@ -1417,7 +1416,6 @@ static bool fuseLoopFrom(Checker *c, Stmt *blk, Stmt **whileOut, Stmt **bodyOut,
     return true;
 }
 
-
 /**
  * @brief 往一列表里加名字（去重，按出现顺序）。
  *
@@ -1646,6 +1644,13 @@ static bool fuseCheckBody(Stmt *body, const char *tmp, const char *var, Vec *wri
     return true;
 }
 
+/**
+ * @brief 通用遍历回调：语句里是否出现某个名字（`fuseStmtMentions` 的下半截）。
+ *
+ * @param raw 指向 `FuseMentionCtx`。
+ * @param s   要扫的语句。
+ * @return    总是 `false`（继续遍历，不剪枝）。
+ */
 static bool fuseMentionOnStmt(void *raw, Stmt *s);
 
 /** `fuseStmtMentions` 的走树上下文：要找的名字与是否已经找到。 */
@@ -2495,7 +2500,6 @@ static const char *arrayCompoundOp(const char *aop) {
     return NULL; /* `%=` 不在整数组表达式的形状里 */
 }
 
-
 /**
  * @brief 判断一个类型是不是模块里声明的泛型结构体实例（`ndview<T>`）。
  *
@@ -2768,6 +2772,175 @@ static bool rangeForBlockShape(Stmt *block) {
     return a && b && d && a->kind == ST_VAR && b->kind == ST_VAR && d->kind == ST_WHILE;
 }
 
+/* 提前段的内部助手（定义在下面）：先声明，`checkHoistStatementTrys` 要用它们。 */
+typedef struct { Checker *c; Vec *pre; int *seq; int line; } TryHoist;
+static void tryHoistExpr(TryHoist *h, Expr **slot);
+static size_t tryHoistStmt(Checker *c, Stmt *s, Vec *pre);
+
+/**
+ * @brief 把 `stmts[*pi]` 里的嵌套 `e?` 提前成若干条声明插在它前面。
+ *
+ * 插完之后 `*pi` 指向原来的那条语句（已经后移）。区间循环/`par` 块外层是 `[声明, 声明,
+ * while]` 的固定形状，检查器按位置认它，所以那两种块整块跳过提前。
+ *
+ * @param c     检查器。
+ * @param stmts 正在遍历的语句表。
+ * @param pi    当前下标（插入后改成原语句的新位置）。
+ */
+void checkHoistStatementTrys(Checker *c, Vec *stmts, size_t *pi) {
+    Stmt *s = *(Stmt **)vecAt(stmts, *pi);
+    if (!s) return;
+    Vec pre;
+    vecInit(&pre, c->arena, sizeof(Stmt *));
+    if (tryHoistStmt(c, s, &pre) == 0) return;
+    size_t n = pre.len;
+    for (size_t k = 0; k < n; k++) (void)vecPush(stmts);
+    size_t len = stmts->len;
+    memmove((Stmt **)vecAt(stmts, *pi + n), (Stmt **)vecAt(stmts, *pi),
+            (len - *pi - n) * sizeof(Stmt *));
+    for (size_t k = 0; k < n; k++)
+        *(Stmt **)vecAt(stmts, *pi + k) = *(Stmt **)vecAt(&pre, k);
+    /* 前插的声明要**先检查**：它们在循环的下一次迭代里不会再被访问（`*pi` 直接跳到原语句）。
+     * 声明本身是普通的 `var x = e?`，走的就是既有那条展开路径。 */
+    size_t first = *pi;
+    *pi += n;
+    for (size_t k = first; k < *pi; k++) checkStmt(c, *(Stmt **)vecAt(stmts, k));
+}
+
+/* ---------------------------------------------------------- 值位置里的 `?`
+ *
+ * `e?` 的展开是"求值一次、判空、失败就 `return`"，C 没有语句表达式，所以它原先只允许整条语句
+ * 能被重写的位置（`let x = e?` / `x = e?` / `return e?` / 语句级 `f()?`）。`f(g()? + 1)` 这类
+ * 嵌套用法报"只能出现在这四个位置"。
+ *
+ * 这里把**嵌套的** `e?` 提前成一条临时声明，插在该语句之前：临时声明的初始化式正是 `e?`，
+ * 走的是既有的展开路径（类型检查与代码生成都不用改）；语句本身随后按普通值位置检查，看见的
+ * 只是一个普通临时量。语义等价的条件是"提前不会改变求值时机与次数"：
+ *   · `&&` / `||` 的右侧不算（短路时不求值）；
+ *   · `??` 的右侧不算（左边有值时不求值）；
+ *   · lambda 体里不算（生命周期与求值时机都不在语句这一层）；
+ *   · `while` 条件不算（提前会只求值一次，而条件每轮都求值）。
+ * `if` 条件可以：临时声明插在 `if` 之前、按块的执行次数求值一次，与原来一致。
+ */
+
+/**
+ * @brief 值位置 `?` 提前的上下文。
+ *
+ * `pre` 收集要插在语句前面的临时声明；`seq` 是临时名字的编号（同一条语句内从左到右递增，
+ * 保证求值顺序与源码一致）；`line` 用来给生成的声明与标识符行号。
+ */
+
+/**
+ * @brief 递归地在表达式的子位置里把 `e?` 提前成临时声明。
+ *
+ * 左到右按求值顺序走；遇到 `e?` 就造一条 `var __extc_tq<N> = e?` 收进 `h->pre`，并把该位置
+ * 换成对临时量的引用。
+ *
+ * @param h    提前的上下文。
+ * @param slot 表达式槽位（会被原地改写）。
+ */
+static void tryHoistExpr(TryHoist *h, Expr **slot) {
+    Expr *e = *slot;
+    if (!e) return;
+    if (e->kind == EX_TRY) {
+        char buf[64];
+        snprintf(buf, sizeof buf, "__extc_tq%d", (*h->seq)++);
+        const char *name = arenaStrndup(h->c->arena, buf, strlen(buf));
+        *(Stmt **)vecPush(h->pre) = stmtVarNew(h->c->arena, name, NULL, e, true, h->line);
+        *slot = exprIdent(h->c->arena, name, h->line);
+        return;
+    }
+    switch (e->kind) {
+    case EX_BIN:
+        tryHoistExpr(h, &e->u.bin.left);
+        /* 短路运算符的右侧可能根本不求值，提前会改变次数。 */
+        if (strcmp(e->u.bin.op, "&&") != 0 && strcmp(e->u.bin.op, "||") != 0)
+            tryHoistExpr(h, &e->u.bin.right);
+        return;
+    case EX_COALESCE:
+        /* 兜底值只在左边是 `none` 时求值。 */
+        tryHoistExpr(h, &e->u.coalesce.main);
+        return;
+    case EX_UN: case EX_SIGN: case EX_REF: case EX_DEREF:
+        tryHoistExpr(h, &e->u.un.operand);
+        return;
+    case EX_CONV:
+        tryHoistExpr(h, &e->u.conv.operand);
+        return;
+    case EX_FIELD:
+        tryHoistExpr(h, &e->u.field.obj);
+        return;
+    case EX_INDEX:
+        tryHoistExpr(h, &e->u.index.obj);
+        tryHoistExpr(h, &e->u.index.index);
+        return;
+    case EX_SLICE:
+        tryHoistExpr(h, &e->u.slice.obj);
+        tryHoistExpr(h, &e->u.slice.lo);
+        tryHoistExpr(h, &e->u.slice.hi);
+        return;
+    case EX_CALL: {
+        Vec *args = &e->u.call.args;
+        for (size_t i = 0; i < args->len; i++) tryHoistExpr(h, (Expr **)vecAt(args, i));
+        return;
+    }
+    case EX_METHOD: {
+        tryHoistExpr(h, &e->u.method.recv);
+        Vec *args = &e->u.method.args;
+        for (size_t i = 0; i < args->len; i++) tryHoistExpr(h, (Expr **)vecAt(args, i));
+        return;
+    }
+    case EX_ASSOC: {
+        Vec *args = &e->u.assoc.args;
+        for (size_t i = 0; i < args->len; i++) tryHoistExpr(h, (Expr **)vecAt(args, i));
+        return;
+    }
+    default:
+        /* 其它形状（lambda、结构体字面量、`match` 里嵌的……）不提前：它们要么求值时机不同，
+         * 要么本来就不会含值位置 `?`。 */
+        return;
+    }
+}
+
+/**
+ * @brief 把一条语句值位置里的嵌套 `e?` 提前，收集成前插的声明。
+ *
+ * 语句根上恰好是 `e?` 的四种位置**不**提前（`let x = e?` / `x = e?` / `return e?` /
+ * 语句级 `f()?` 有专门的展开路径）。`while` 条件不做（提前会只求值一次）。
+ *
+ * @param c  检查器。
+ * @param s  语句。
+ * @param pre 收集前插声明的表。
+ * @return   收集到的声明条数。
+ */
+static size_t tryHoistStmt(Checker *c, Stmt *s, Vec *pre) {
+    int seq = 0;
+    TryHoist h = { c, pre, &seq, s->line };
+    switch (s->kind) {
+    case ST_VAR:
+        if (s->u.var.init && s->u.var.init->kind != EX_TRY) tryHoistExpr(&h, &s->u.var.init);
+        break;
+    case ST_ASSIGN:
+        if (s->u.assign.value && s->u.assign.value->kind != EX_TRY) tryHoistExpr(&h, &s->u.assign.value);
+        break;
+    case ST_EXPR:
+        if (s->u.expr.expr && s->u.expr.expr->kind != EX_TRY) tryHoistExpr(&h, &s->u.expr.expr);
+        break;
+    case ST_RETURN:
+        if (s->u.ret.value && s->u.ret.value->kind != EX_TRY) tryHoistExpr(&h, &s->u.ret.value);
+        break;
+    case ST_TRAP:
+        tryHoistExpr(&h, &s->u.trap_.msg);
+        break;
+    case ST_IF:
+        tryHoistExpr(&h, &s->u.ifs.cond);
+        break;
+    default:
+        break;
+    }
+    return pre->len;
+}
+
 /**
  * @brief 在新作用域里检查一个块体，块结束时块内绑定随之出作用域。
  *
@@ -2784,7 +2957,10 @@ static void checkBlockBody(Checker *c, Stmt *block) {
     if (boundary) c->placeBoundaryDepth++;
 
     pushScope(c);
+    const bool fixedShape = block->parLoop || rangeForBlockShape(block);
     for (size_t i = 0; i < block->u.block.stmts.len; i++) {
+        /* 固定形状的块（区间循环 / `par` 外层）按位置认声明，不能插语句。 */
+        if (!fixedShape) checkHoistStatementTrys(c, &block->u.block.stmts, &i);
         Stmt **slot = (Stmt **)vecAt(&block->u.block.stmts, i);
         Stmt *lowered = arrayAssignLower(c, *slot);
         if (lowered) *slot = lowered;

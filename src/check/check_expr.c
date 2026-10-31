@@ -2375,9 +2375,11 @@ static Type *checkExprInner(Checker *c, Expr *e) {
              * Anywhere else, say `f(e? + 1)`, it is reported clearly instead of producing C
              * that does not compile. */
             ckError(c, e->line,
-                    "`?` has to expand into statements (evaluate once, test, return), "
-                    "so it only fits where a whole statement can be rewritten.",
-                    "`?` may only be used as `f()?`, `let x = e?`, `x = e?` or `return e?`");
+                    "`?` expands into statements (evaluate once, test, return), so it needs a "
+                    "position that is evaluated exactly once and unconditionally.",
+                    "`?` cannot appear here: this position may be skipped (the right side of "
+                    "`&&` / `||` / `??`, a loop condition, a lambda body). Bind it first: "
+                    "`let v = e?`");
             return ttError(tt);
 
         case EX_ASSOC: {            /* `option<i64>::some(x)`. An associated function is a

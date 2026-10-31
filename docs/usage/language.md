@@ -771,16 +771,21 @@ fn main() -> i32 {
 `match`（穷尽）或 `?`（失败往上抛）。只关心一个变体时还可以用 `if let` / `while let`
 （第 11.7 节）—— 它们是 `match` + `_` 兜底臂的糖。
 
-`?` **只能**出现在这四个位置（整条语句可以重写的地方）：
+`?` 出现在**语句的值位置**里：整条语句（声明 / 赋值 / 返回 / 裸调用 / `if` 条件）会被重写，
+里面嵌套的每一个 `e?` 由检查器提前成一条 `var __extc_tqN = e?` 插在该语句之前 ——
+求值一次、空就立刻返回，所以求值次数与时机都不变：
 
-| 位置 | 写法 |
-|---|---|
-| 语句 | `place(b, x, y, p)?` |
-| 声明 | `let v = parse(n)?` / `var v = parse(n)?` |
-| 赋值 | `v = parse(n)?` |
-| 返回 | `return parse(n)?` |
+<!-- fragment -->
+```extc
+let v: i64 = parse(n)? + 1                  // 操作数里
+add(parse(n)?, parse(m)?)                   // 调用实参里
+if parse(n)? > i64(0) { … }                 // if 条件里
+return success(parse(n)? * i64(10))         // 返回值的表达式里
+```
 
-别处报 `` `?` may only be used as `f()?`, `let x = e?`, `x = e?` or `return e?` ``。
+**可能被跳过**的位置仍然拒绝（提前会改变求值次数/时机），报
+`` `?` cannot appear here: this position may be skipped (the right side of `&&` / `||` / `??`, a loop condition, a lambda body). Bind it first: `let v = e?` ``：
+`&&` / `||` 的右侧、`??` 的右侧、`while` 条件、lambda 体。
 外层函数必须返回同族类型，且**错误类型必须一样**（`?` 原样转发、不转换）：
 `` `?` on `option<i64>` needs the enclosing function to return `option<...>` ``、
 `` `?` here would change the error type from `a` to `b` ``。

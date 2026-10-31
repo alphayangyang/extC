@@ -1,0 +1,13 @@
+// expect: `?` cannot appear here
+// 循环条件每轮都求值：提前成语句会只求值一次，所以拒绝。
+type err = | bad
+fn parse(n: i64) -> result<i64, err> {
+    if n < 0 { return failure(err.bad) }
+    return success(n)
+}
+fn w(n: i64) -> result<i64, err> {
+    var i: i64 = 0
+    while parse(i)? > i64(0) { i = i + 1 }
+    return success(i)
+}
+fn main() -> i32 { return 0 }

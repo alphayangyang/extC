@@ -1,0 +1,12 @@
+// expect: `?` cannot appear here
+// 短路右侧可能根本不求值：提前成语句会改变求值次数，所以必须拒绝而不是悄悄提前。
+type err = | bad
+fn parse(n: i64) -> result<i64, err> {
+    if n < 0 { return failure(err.bad) }
+    return success(n)
+}
+fn sc(n: i64) -> result<i64, err> {
+    if n > i64(0) && parse(n)? > i64(0) { return success(i64(1)) }
+    return success(i64(0))
+}
+fn main() -> i32 { return 0 }

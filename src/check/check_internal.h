@@ -1452,6 +1452,18 @@ _Bool structLitNameMatches (const struct StructDef *sd, const char *written);
  * @param body 函数体块语句。
  */
 void checkFuseFuncBody (Checker *c, Stmt *body);
+/**
+ * @brief 把一条语句值位置里嵌套的 `?` 提前成临时声明，并让 `*pi` 指向原语句。
+ *
+ * `e?` 的展开是"求值、判空、失败就 return"，C 里没有语句表达式，所以只能落在值位置能被
+ * 重写的地方。这里把**一定被求值**的位置里的 `e?` 提前成 `var __extc_tqN = e?` 插在语句之前
+ * （失败语义与手写临时量相同），原位置换成对临时量的引用；会改变求值次数/时机的位置不碰。
+ *
+ * @param c     检查器。
+ * @param stmts 语句表（前插的声明会写进这张表）。
+ * @param pi    当前语句的下标；返回时指向原语句（前插声明在它之前）。
+ */
+void checkHoistStatementTrys (Checker *c, Vec *stmts, size_t *pi);
 
 /**
  * @brief 判断类型是否直接或间接提及类型参数。

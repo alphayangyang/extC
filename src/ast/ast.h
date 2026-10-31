@@ -659,6 +659,18 @@ Expr *exprUnNew(Arena *a, const char *op, Expr *operand, int line);
  */
 Stmt *stmtAssignNew(Arena *a, Expr *target, Expr *value, const char *op, int line);
 /**
+ * @brief 造局部变量声明（`let`/`var x: ann = init`），给编译器自造的临时量用。
+ *
+ * @param a    分配用的 arena。
+ * @param name 变量名，存活期必须覆盖本模块。
+ * @param ann  类型注解，可为 NULL（由初始化式推断）。
+ * @param init 初始化式，可为 NULL。
+ * @param mut  true = `var`，false = `let`。
+ * @param line 源码行。
+ * @return     新的 `ST_VAR` 节点。
+ */
+Stmt *stmtVarNew(Arena *a, const char *name, Type *ann, Expr *init, bool mut, int line);
+/**
  * @brief 换掉一条赋值语句的右值与运算符（降糖重写用）。
  *
  * 复合赋值（`dst += rhs`）先被重写成 `dst = dst <op> rhs` 再交给同一套降糖，重写时只动

@@ -40,6 +40,8 @@ check_err() {
 echo "== 正例：具体类型（比较 + 算术）· 有牙 · 泛型体 · 内建不改 =="
 run_case fnptr
 run_case fn_callback_view
+run_case try_expr
+run_case try_nested_option
 run_case long_line
 run_case slice_place
 run_case lend_custom tests/ops/lend_custom.extc "t=6 s=6"
@@ -135,6 +137,46 @@ if echo "$out" | grep -q 'C compiler failed'; then
 else
     echo "  ok   modulo_float  ->  检查器报的（不是 gcc 的 invalid operands ✓）"
 fi
+
+echo "== 值位置 \`?\` 是零开销：与手写临时量的生成 C 相同（临时名归一后逐字节）=="
+D=$(mktemp -d)
+cat >"$D/sugar.extc" <<'EOF'
+type err = | bad
+fn parse(n: i64) -> result<i64, err> {
+    if n < 0 { return failure(err.bad) }
+    return success(n * 2)
+}
+fn add(a: i64, b: i64) -> i64 { return a + b }
+fn go(n: i64, m: i64) -> result<i64, err> { return success(add(parse(n)?, parse(m)?)) }
+fn main() -> i32 { return 0 }
+EOF
+cat >"$D/manual.extc" <<'EOF'
+type err = | bad
+fn parse(n: i64) -> result<i64, err> {
+    if n < 0 { return failure(err.bad) }
+    return success(n * 2)
+}
+fn add(a: i64, b: i64) -> i64 { return a + b }
+fn go(n: i64, m: i64) -> result<i64, err> {
+    let t0: i64 = parse(n)?
+    let t1: i64 = parse(m)?
+    return success(add(t0, t1))
+}
+fn main() -> i32 { return 0 }
+EOF
+norm() { sed -E 's/__extc_tq[0-9]+/__extc_tqN/g; s/\/\*.*\*\///g; /^#line/d; /^$/d' "$1"; }
+if "$EXTC" -w --no-line-map -o "$D/sugar.c" "$D/sugar.extc" && "$EXTC" -w --no-line-map -o "$D/manual.c" "$D/manual.extc"; then
+    if diff <(norm "$D/sugar.c") <(norm "$D/manual.c") >"$D/diff.txt"; then
+        echo "  ok   try_hoist_zero_cost  ->  生成 C 相同，没有多余的求值/存储 ✓"
+    else
+        echo "  FAIL try_hoist_zero_cost  ->  生成 C 不同（提前不是零开销 ✗）"
+        head -8 "$D/diff.txt" | sed 's/^/        /'
+        fail=1
+    fi
+else
+    echo "  FAIL try_hoist_zero_cost  ->  编不过"; fail=1
+fi
+rm -rf "$D"
 
 echo "失败 $fail 个（0 = 全过）"
 [ "$fail" = 0 ]

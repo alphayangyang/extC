@@ -4355,6 +4355,7 @@ static void checkFunc(Checker *c, FuncDef *f) {
      * piece of storage and is rejected (see `declare`). */
     checkFuseFuncBody(c, f->body);
     for (size_t i = 0; i < f->body->u.block.stmts.len; i++) {
+        checkHoistStatementTrys(c, &f->body->u.block.stmts, &i);
         Stmt **slot = (Stmt **)vecAt(&f->body->u.block.stmts, i);
         Stmt *lowered = arrayAssignLower(c, *slot);
         if (lowered) *slot = lowered;

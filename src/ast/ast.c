@@ -500,6 +500,28 @@ Expr *exprUnNew(Arena *a, const char *op, Expr *operand, int line) {
 }
 
 /**
+ * @brief 造一条局部变量声明（`let`/`var x: ann = init`）。
+ *
+ * 类型注解可以是 `NULL`（由初始化式推断），与解析器写出来的声明同形。编译器自己造的临时量
+ * （值位置 `?` 的提前解包等）走这里，免得在 builder 之外写 `u.var`。
+ *
+ * @param a     分配用的 arena。
+ * @param name  变量名（存活期必须覆盖本模块）。
+ * @param ann   类型注解，可为 `NULL`。
+ * @param init  初始化式，可为 `NULL`（`var x: T`）。
+ * @param mut   `true` = `var`，`false` = `let`。
+ * @param line  行号。
+ * @return      新的声明语句。
+ */
+Stmt *stmtVarNew(Arena *a, const char *name, Type *ann, Expr *init, bool mut, int line) {
+    Stmt *s = stmtNew(a, ST_VAR, line);
+    s->u.var.name = name;
+    s->u.var.ann  = ann;
+    s->u.var.init = init;
+    s->u.var.mut  = mut;
+    return s;
+}
+/**
  * @brief 造一条赋值语句（`target = value`，`op` 为空表示普通赋值）。
  *
  * @param a      分配用的 arena。
