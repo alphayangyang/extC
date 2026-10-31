@@ -1314,6 +1314,36 @@ static Vec fnTypeParams(Checker *c, Type *ft) {
     return ps;
 }
 
+static bool lendViewArg (Checker *c, Type *want, Expr **pslot);
+
+/**
+ * @brief 检查一个实参，并在"形参要视图、给的是容器"时就地借出。
+ *
+ * 这是 `lendViewArg` 的后置版本：实参先按普通规则检查一遍，只有类型对不上、而形参恰好是
+ * （只读或可写）视图、实参类型又有 `asSlice()`/`asMutSlice()` 时才把实参节点换成借出调用，
+ * 再检查一次。于是 `io::println(f"total={n}")` 这种"值 f-string 直接当实参"的写法成立，
+ * 而诊断在真不能借时仍由调用点的 `checkAssignable` 给出。
+ *
+ * @param c     检查器。
+ * @param slot  实参槽（借出时就地替换）。
+ * @param want  形参声明的类型。
+ * @return      检查（必要时借出后再检查）得到的实参类型。
+ */
+static Type *checkBorrowArg(Checker *c, Expr **slot, Type *want) {
+    Expr *a = *slot;
+    if (!a) return ttError(c->tt);
+    adoptContextType(a, want);
+    Type *at = checkInto(c, want, a);
+    if (!want || !at || ttIsError(at)) return at ? at : ttError(c->tt);
+    Type *wb = ttBase(want);
+    if (!wb || !ttIsViewType(wb)) return at;
+    if (ttEquals(want, at) || ttCanWiden(at, want)) return at;
+    if (!lendViewArg(c, want, slot)) return at;
+    /* 新节点还没被检查过；内层实参已经检查完，不会重复报错（弃置警告会重说一遍，
+     * 第 (1) 项把内建 print/println 降糖之后就不存在了）。 */
+    return checkInto(c, want, *slot);
+}
+
 /**
  * @brief 把"容器"实参就地借出成只读视图：`varArray<T>` 写成 `v.asSlice()`，定长数组写成 `a[..]`。
  *
@@ -1405,9 +1435,9 @@ static Type *checkCallThroughFn(Checker *c, Expr *e, Type *ft) {
     }
     for (size_t i = 0; i < ps.len; i++) {
         Param *p = *(Param **)vecAt(&ps, i);
-        Expr  *a = *(Expr **)vecAt(&e->u.call.args, i);
-        adoptContextType(a, p->type);
-        Type *at = checkInto(c, p->type, a);
+        Expr **slot = (Expr **)vecAt(&e->u.call.args, i);
+        Type *at = checkBorrowArg(c, slot, p->type);
+        Expr  *a = *slot;
 
         /* The same spelling rule as an ordinary call: passing a reference to a `ref T` parameter is
          * written `ref ...` at the site, so a reader sees a reference and not a copy. */
@@ -2615,10 +2645,10 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             }
             for (size_t i = 0; i < f->params.len; i++) {
                 Param *p = *(Param **)vecAt(&f->params, i);
-                Expr  *a = *(Expr **)vecAt(&e->u.assoc.args, i);
+                Expr **slot = (Expr **)vecAt(&e->u.assoc.args, i);
                 Type *pt = ttSubstitute(tt, p->type, sp, sa);
-                adoptContextType(a, pt);
-                Type *at = checkInto(c, pt, a);
+                Type *at = checkBorrowArg(c, slot, pt);
+                Expr  *a = *slot;
                 if (pt->kind == TY_REF && at->kind != TY_REF && !ttIsError(at)) {
                     ckError(c, a->line,
                             "`.` means \"operate on this value\", so free functions need `ref` spelled out. ",
@@ -3293,17 +3323,24 @@ static Type *checkExprInner(Checker *c, Expr *e) {
              * 关闭，句柄的 `open` 标志让第二次 close 成为空操作；编译器能做的是在能证明的时候*证明*
              * 泄漏。 */
             if (strcmp(name, "print") == 0 || strcmp(name, "println") == 0) {
-                /* `print` / `println` 是按名字派发的内建，经由 C 的 stdio 写 —— 那是 `io::cout` 无法
-                 * 与之排序的第二个缓冲。`io::cout` 是唯一的控制台路径：它是 `fd` 上的流，以后能长成
-                 * 文件、管道或缓冲，内建名字则不能。这是警告而不是错误：存量调用点还很多，提示就是
-                 * 迁移办法：`println(a, b)` 变成 `io::cout << a << b << "\n"`。 */
-                ckWarn(c, e->line,
-                       "`io::cout` is the one console path -- `use std::io`, then"
-                       " `io::cout << x` (`println(x)` is `io::cout << x << \"\\n\"`)",
-                       "`%s` is deprecated", name);
+                /* `print` / `println` 是按名字派发的内建；它们与 `io::cout` 走**同一个缓冲**
+                 * （codegen 的 `genPrint` 生成 `extc_printf` / `extc_cout_put`，都写 cout 缓冲），
+                 * 所以混写顺序与源码一致，不需要 `flush`。结构化类型仍走描述符打印器，它同样写
+                 * 这个缓冲。 */
+
                 for (size_t i = 0; i < e->u.call.args.len; i++) {
-                    Expr *a = *(Expr **)vecAt(&e->u.call.args, i);
+                    Expr **slot = (Expr **)vecAt(&e->u.call.args, i);
+                    Expr *a = *slot;
                     Type *at = checkPrintArg(c, a); /* takes a value, so it dereferences */
+                    /* `string` 是带内联缓冲的结构体，描述符打印会按字段倒出来。它本身就是一段
+                     * 字节，交给 `asSlice()` 后走的就是 `slice<u8>` 的文本路径。 */
+                    if (at && at->kind == TY_STRUCT && at->sdef && at->sdef->name &&
+                        strstr(at->sdef->name, "string")) {
+                        Expr *m = exprMethodNew(c->arena, a, "asSlice", a->line);
+                        *slot = m;
+                        a = m;
+                        at = checkPrintArg(c, a);
+                    }
                     if (!isPrintable(at) || ttIs(at, "void")) {
                         ckError(c, a->line, NULL,
                                 "cannot print a value of type `%s`", typeStr(c, at));
@@ -3722,9 +3759,9 @@ static Type *checkExprInner(Checker *c, Expr *e) {
              * is at the end of this case. */
             for (size_t i = 0; i < f->params.len; i++) {
                 Param *p  = *(Param **)vecAt(&f->params, i);
-                Expr  *a  = *(Expr **)vecAt(&e->u.call.args, i);
-                adoptContextType(a, p->type);
-                Type *at = checkInto(c, p->type, a);
+                Expr **slot = (Expr **)vecAt(&e->u.call.args, i);
+                Type *at = checkBorrowArg(c, slot, p->type);
+                Expr  *a  = *slot;
 
                 /* When the parameter is a `ref T`, the call site has to spell `ref` out, so
                  * that a reader sees at a glance that a reference is passed and not a copy. An
@@ -4306,11 +4343,12 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 Expr  *a = *(Expr **)vecAt(&e->u.method.args, i);
                 Type *pt = ttSubstitute(tt, p->type, sp, sa);
 
-                /* 只读视图参数（`append(s: slice<u8>)`）接受同元素的容器实参。 */
-                lendViewArg(c, pt, (Expr **)vecAt(&e->u.method.args, i));
-                a = *(Expr **)vecAt(&e->u.method.args, i);
-                adoptContextType(a, pt);
-                Type *at = checkInto(c, pt, a);
+                /* 视图参数（`append(s: slice<u8>)`）接受同元素的容器实参，也接受
+                 * 值 f-string 一类"表达式结果"。 */
+                Expr **slot = (Expr **)vecAt(&e->u.method.args, i);
+                lendViewArg(c, pt, slot);
+                Type *at = checkBorrowArg(c, slot, pt);
+                a = *slot;
                 if (pt->kind == TY_REF && at->kind != TY_REF && !ttIsError(at)) {
                     ckError(c, a->line,
                             "`.` means \"operate on this value\", so free functions need `ref` spelled out. "

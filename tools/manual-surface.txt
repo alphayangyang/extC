@@ -704,6 +704,7 @@ stl::string	-	fromI64	fn	public
 stl::string	-	join	fn	public
 stl::string	-	new	fn	public
 stl::string	-	split	fn	public
+stl::string	-	toF64	fn	public
 stl::string	-	toI64	fn	public
 stl::string	-	trim	fn	public
 stl::string	-	trimEnd	fn	public

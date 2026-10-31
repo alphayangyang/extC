@@ -500,6 +500,20 @@ Expr *exprUnNew(Arena *a, const char *op, Expr *operand, int line) {
 }
 
 /**
+ * @brief 造 `e!` 节点（载荷由检查器定类型）。
+ *
+ * @param a        arena。
+ * @param operand  被签名的表达式。
+ * @param line     行号。
+ * @return         新的签名表达式。
+ */
+Expr *exprSignNew(Arena *a, Expr *operand, int line) {
+    Expr *e = exprNew(a, EX_SIGN, line);
+    e->u.sign.operand = operand;
+    return e;
+}
+
+/**
  * @brief 造一条局部变量声明（`let`/`var x: ann = init`）。
  *
  * 类型注解可以是 `NULL`（由初始化式推断），与解析器写出来的声明同形。编译器自己造的临时量

@@ -47,6 +47,7 @@ axpy=0,12 24
 pe=0,14 28"
 run_case split tests/stl/split.extc "n=4 total=6 e=0"
 run_case string_ops tests/stl/string_ops.extc "n=3 j=[ a | b | c ] t1=[hi] t2=[x ] t3=[ y] e=0"
+run_case string_tof64 tests/stl/string_tof64.extc "3.14 -0.5 42 1000 0.015 0.25 -1 -1 -1"
 run_case string_plus tests/stl/string_plus.extc "abcde ababcde x#7"
 run_case string_plus_num tests/stl/string_plus_num.extc "a=7 b=3 c=2.500000 d=0.500000 e=true
 x7!"

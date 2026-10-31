@@ -4802,6 +4802,16 @@ bool unifyTParams(TypeTable *tt, Vec *tp, Vec *targs, Type *want, Type *got) {
                               *(Type **)vecAt(&got->targs, i))) return false;
         return true;
     }
+    /* 泛型**枚举**实例（`option<T>`、`result<T,E>`）与泛型结构体一样要按实参逐个合一：
+     * 少了这一支，`fn f<T>(o: option<T>)` 这类签名就永远推不出 `T`（库里的
+     * `preludeIsNone` 正是这个形状）。 */
+    if (want->kind == TY_ENUM && got->kind == TY_ENUM) {
+        if (want->edef != got->edef || want->targs.len != got->targs.len) return false;
+        for (size_t i = 0; i < want->targs.len; i++)
+            if (!unifyTParams(tt, tp, targs, *(Type **)vecAt(&want->targs, i),
+                              *(Type **)vecAt(&got->targs, i))) return false;
+        return true;
+    }
     if (ttHasParam(want)) return false;   /* mentions T but the shapes disagree => cannot infer */
     return true;
 }
@@ -9537,21 +9547,28 @@ static bool exprMakesPool(Expr *e, bool descendBlocks) {
          * from spreading `makesPool` over half the library. Measured before this case
          * existed: `io::flushOut`, `io::writeBytesRaw` and `io::errWrite` were all marked,
          * purely because each of them calls `flush()`. */
+        bool builtinPrint = false;
         if (e->kind == EX_CALL && e->u.call.callee && e->u.call.callee->kind == EX_IDENT) {
             const char *bn = e->u.call.callee->u.ident.name;
             if (bn && (strcmp(bn, "flush") == 0 || strcmp(bn, "print") == 0 ||
                        strcmp(bn, "println") == 0))
-                return false;
+                builtinPrint = true;
         }
+        /* 内建本身不建池，但**实参**可能建（`println(f"…")` 里的值 f-string 会调
+         * `string::from`/`+`，它们要 zone）。早先这里直接 `return false` 连实参都不看，
+         * 于是这种 `println` 所在的帧不会被标成 makePool、不发 `extc_pool_zoneEnter()`，
+         * 而调用点仍按 zone 形参传了兜底的 `extc_zoneTop` ⇒ 运行期 `the view has no storage`。 */
+        if (!builtinPrint) {
         /* 这里问的是"**这一次调用能不能走到 `extc_pool_new`**"（zone 的决定，以及
          * `makesPool` 闭包本身），不是"结果会不会住在池上" —— 后者是 `calleeMakesPool`
          * 的问题（逃逸与提权那两处用它）。两者的差别见 `calleeCreatesPool`。
          *
          * 泛型体里对**类型参数**的协议方法（`k.hash()`）在节点上**故意没有 func**，
          * 所以这一侧还要问解析钩子（由 codegen / 闭包的实例那一轮装上）。 */
-        FuncDef *cf = planCallee(e);
-        if (!cf && e->kind == EX_METHOD && poolCalleeResolve) cf = poolCalleeResolve(e);
-        if (calleeCreatesPool(cf)) return true;
+            FuncDef *cf = planCallee(e);
+            if (!cf && e->kind == EX_METHOD && poolCalleeResolve) cf = poolCalleeResolve(e);
+            if (calleeCreatesPool(cf)) return true;
+        }
     }
     switch (e->kind) {
     case EX_BIN: return exprMakesPool(e->u.bin.left, descendBlocks) ||

@@ -2062,6 +2062,9 @@ static const char *genPrint(CG *g, Vec *args, bool newline) {
     bufInit(&b, g->arena);
     bufPutc(&b, '(');
 
+    /* 内建 `print`/`println` 与 `io::cout` 现在走**同一个缓冲**（`extc_printf` /
+     * `extc_cout_put`），所以混写顺序天然与源码一致，不需要 `fflush`。只有结构化类型
+     * （枚举/结构体/数组/非字节视图）仍交给描述符打印器，它同样写这个缓冲。 */
     for (size_t i = 0; i < args->len; i++) {
         Expr *a = *(Expr **)vecAt(args, i);
         Type *bt = ttBase(subst(g, a->type));
@@ -2070,10 +2073,36 @@ static const char *genPrint(CG *g, Vec *args, bool newline) {
         if (i) bufPuts(&b, ", ");
         if (!bt) { bufPuts(&b, "0"); continue; }
 
-        if (bt->kind == TY_ENUM || isByteView(bt) || bt->kind == TY_STRUCT ||
+        if (bt->kind == TY_BUILTIN) {
+            g->needCout = true;
+            if (strcmp(bt->name, "bool") == 0) {
+                bufPrintf(&b, "extc_printf(\"%%s\", (%s) ? \"true\" : \"false\")", code);
+                continue;
+            }
+            const PrintFmt *pf = NULL;
+            for (size_t k = 0; PRINT_FMT[k].extc; k++)
+                if (strcmp(PRINT_FMT[k].extc, bt->name) == 0) { pf = &PRINT_FMT[k]; break; }
+            if (!pf) { bufPuts(&b, "0"); continue; }
+            bufPrintf(&b, "extc_printf(\"%s\", %s(%s))", pf->fmt, pf->cast, code);
+            continue;
+        }
+
+        /* 字节视图（`slice<u8>` 与字符串字面量）：直接写这些字节，不走逐元素打印。 */
+        if (isByteView(bt)) {
+            g->needCout = true;
+            const char *tmp = arenaPrintf(g->arena, "__extc_p%d", g->tmpSeq++);
+            pfLine(g, "%s %s = %s;", cType(g, bt), tmp, code);
+            bufPrintf(&b, "extc_cout_put((uint8_t *)(%s).data, (%s).len)", tmp, tmp);
+            continue;
+        }
+
+        if (bt->kind == TY_ENUM || bt->kind == TY_STRUCT ||
             bt->kind == TY_GENERIC || bt->kind == TY_ARRAY) {
             g->needRuntime = true;
             g->needPrint   = true;
+            /* 描述符打印器也写 cout 缓冲（`extc_print` 里全是 `extc_printf`）⇒ 运行期
+             * 的那一段必须一起发出来，否则 `extc_printf` 没有定义。 */
+            g->needCout    = true;
             if (printArgIsPlace(a)) {
                 bufPrintf(&b, "extc_print(&(%s), %s)", code, descRef(g, bt));
             } else {
@@ -2083,24 +2112,15 @@ static const char *genPrint(CG *g, Vec *args, bool newline) {
             }
             continue;
         }
-        if (bt->kind != TY_BUILTIN) { bufPuts(&b, "0"); continue; }
-
-        if (strcmp(bt->name, "bool") == 0) {
-            bufPrintf(&b, "printf(\"%%s\", (%s) ? \"true\" : \"false\")", code);
-            continue;
-        }
-        const PrintFmt *pf = NULL;
-        for (size_t k = 0; PRINT_FMT[k].extc; k++)
-            if (strcmp(PRINT_FMT[k].extc, bt->name) == 0) { pf = &PRINT_FMT[k]; break; }
-        if (!pf) { bufPuts(&b, "0"); continue; }
-        bufPrintf(&b, "printf(\"%s\", %s(%s))", pf->fmt, pf->cast, code);
+        bufPuts(&b, "0");
     }
 
+    g->needCout = true;
     if (newline) {
         if (args->len) bufPuts(&b, ", ");
-        bufPuts(&b, "printf(\"\\n\")");
+        bufPuts(&b, "extc_cout_put((uint8_t *)\"\\n\", 1)");
     } else if (args->len == 0) {
-        bufPuts(&b, "printf(\"\")");
+        bufPuts(&b, "extc_cout_put((uint8_t *)\"\", 0)");
     }
 
     bufPutc(&b, ')');
@@ -2890,7 +2910,12 @@ static const char *exCall(CG *g, Expr *e) {
     if (strcmp(name, "println") == 0) return genPrint(g, &e->u.call.args, true);
     /* `flush()` becomes `fflush(NULL)`; <stdio.h> is already included
      * by the runtime. */
-    if (strcmp(name, "flush") == 0) return "fflush((void *)0)";
+    /* `flush()` 现在只需要把 cout 缓冲倒出去（内建打印也写在那个缓冲里）；
+     * `fflush` 仍然保留，兼容外部代码经由 stdio 写字节的情形。 */
+    if (strcmp(name, "flush") == 0) {
+        g->needCout = true;
+        return "(extc_cout_flush(), fflush((void *)0))";
+    }
     if (!planCallee(e)) return "0";
 
     /* Only `cSymName` is used, without the owner prefix: a call site names the callee itself,
@@ -4781,9 +4806,13 @@ static TryInfo genTryHead(CG *g, Expr *e) {
             Type *et = subst(g, *(Type **)vecAt(&ot->targs, 1));
             g->needRuntime = true;               /* the descriptor table ... */
             g->needPrint   = true;               /* ... and `extc_print`, called just below */
+            g->needCout    = true;               /* 描述符打印写控制台缓冲 */
             cgLine(g, "fprintf(stderr, \"%%s:%%d: trap: a step in `main` failed: \","
                       " \"%s\", %d);", g->path, e->line);
             cgLine(g, "extc_print(&(%s.u.%s._0), %s);", ti.tmp, ti.failVar, descRef(g, et));
+            /* 负载是经**控制台缓冲**写出的，而进程马上就要 `extc_die(1)`：这里必须把它推出去，
+             * 否则 trap 消息只剩前半句（`extc_die` 不走 `atexit` 登记的那个出口）。 */
+            cgLine(g, "extc_cout_flush();");
             cgLine(g, "fprintf(stderr, \"\\n\");");
         } else {
             cgLine(g, "extc_trapMsg(\"%s\", %d, \"a step in `main` returned `none`\");",
@@ -8320,8 +8349,13 @@ static void genFunc(CG *g, FuncDef *f) {
          * for it says as much ("the return type may be absent or `i32`"): trapping there would
          * kill a program every C programmer expects to exit 0. Still a trap everywhere else:
          * the value there is genuinely undefined. */
-        if (isEntry)
+        if (isEntry) {
+            /* `main` 落到末尾也算一次正常出口：控制台缓冲要在这里倒出去。这一步在
+             * **没有 arena** 的主函数里尤其重要 —— 那种形状不发尾声（`!g->noArena` 那一支），
+             * 少了它就是"程序什么都打印不出来"。 */
+            if (g->needCout) cgLine(g, "extc_cout_flush();");
             cgLine(g, "return 0;");
+        }
         else
             cgLine(g, "extc_trapMsg(\"%s\", %d, \"a non-void function reached its end without returning\");",
                    g->path, f->line);
@@ -8332,6 +8366,10 @@ static void genFunc(CG *g, FuncDef *f) {
      *
      * Every level is released, because a return may jump out of a deeper block;
      * releasing an already empty arena is a no-op. */
+    /* `noArena` 的主函数不发尾声，而"落到末尾"这条出口也得把控制台缓冲倒出去；
+     * 只有真的会落到末尾（`fallsOff`）时才发，否则这一行落在 `return` 之后是死代码。 */
+    if (g->noArena && isEntry && fallsOff && g->needCout)
+        cgLine(g, "extc_cout_flush();");
     if (!g->noArena) {
         /* The fall-through entry. A body that cannot run off its end reaches the label through
          * its own returns, so this line would be dead code - clang says `code will never be
@@ -10576,6 +10614,7 @@ static void emitPreamble(CG *g, Buf *out, Module *m) {
         "#include <stdbool.h>\n"
         "#include <stddef.h>\n"      /* offsetof, needed by the descriptor tables */
         "#include <stdio.h>\n"
+        "#include <stdarg.h>\n"   /* `extc_printf`（内建打印与描述符打印共用 cout 缓冲） */
         "#include <string.h>\n"
         "#include <stdlib.h>\n\n");
 
@@ -10807,39 +10846,39 @@ static void buildRuntimeText(CG *g) {
         * 所以属性可以摘 —— 没人调用的函数根本不进产物。 */
         "static void extc_print(const void *p, const ExtcDesc *d) {\n"
         "    switch (d->kind) {\n"
-        "    case EXTC_D_I8:   printf(\"%d\", (int)*(const int8_t *)p); return;\n"
-        "    case EXTC_D_I16:  printf(\"%d\", (int)*(const int16_t *)p); return;\n"
-        "    case EXTC_D_I32:  printf(\"%d\", (int)*(const int32_t *)p); return;\n"
-        "    case EXTC_D_I64:  printf(\"%lld\", (long long)*(const int64_t *)p); return;\n"
-        "    case EXTC_D_U8:   printf(\"%u\", (unsigned)*(const uint8_t *)p); return;\n"
-        "    case EXTC_D_U16:  printf(\"%u\", (unsigned)*(const uint16_t *)p); return;\n"
-        "    case EXTC_D_U32:  printf(\"%u\", (unsigned)*(const uint32_t *)p); return;\n"
-        "    case EXTC_D_U64:  printf(\"%llu\", (unsigned long long)*(const uint64_t *)p); return;\n"
-        "    case EXTC_D_F32:  printf(\"%g\", (double)*(const float *)p); return;\n"
-        "    case EXTC_D_F64:  printf(\"%g\", (double)*(const double *)p); return;\n"
-        "    case EXTC_D_BOOL: printf(\"%s\", *(const bool *)p ? \"true\" : \"false\"); return;\n"
-        "    case EXTC_D_REF:  printf(\"<ref>\"); return;\n"
+        "    case EXTC_D_I8:   extc_printf(\"%d\", (int)*(const int8_t *)p); return;\n"
+        "    case EXTC_D_I16:  extc_printf(\"%d\", (int)*(const int16_t *)p); return;\n"
+        "    case EXTC_D_I32:  extc_printf(\"%d\", (int)*(const int32_t *)p); return;\n"
+        "    case EXTC_D_I64:  extc_printf(\"%lld\", (long long)*(const int64_t *)p); return;\n"
+        "    case EXTC_D_U8:   extc_printf(\"%u\", (unsigned)*(const uint8_t *)p); return;\n"
+        "    case EXTC_D_U16:  extc_printf(\"%u\", (unsigned)*(const uint16_t *)p); return;\n"
+        "    case EXTC_D_U32:  extc_printf(\"%u\", (unsigned)*(const uint32_t *)p); return;\n"
+        "    case EXTC_D_U64:  extc_printf(\"%llu\", (unsigned long long)*(const uint64_t *)p); return;\n"
+        "    case EXTC_D_F32:  extc_printf(\"%g\", (double)*(const float *)p); return;\n"
+        "    case EXTC_D_F64:  extc_printf(\"%g\", (double)*(const double *)p); return;\n"
+        "    case EXTC_D_BOOL: extc_printf(\"%s\", *(const bool *)p ? \"true\" : \"false\"); return;\n"
+        "    case EXTC_D_REF:  extc_printf(\"<ref>\"); return;\n"
         "    case EXTC_D_TEXT: {\n"
         "        int64_t n = *(const int64_t *)((const char *)p + sizeof(void *));\n"
-        "        printf(\"%.*s\", (int)n, (const char *)*(const void *const *)p);\n"
+        "        extc_printf(\"%.*s\", (int)n, (const char *)*(const void *const *)p);\n"
         "        return;\n"
         "    }\n"
         "    case EXTC_D_ENUM: {\n"
         "        const char *const *names = (const char *const *)d->table;\n"
         "        int tag = *(const int *)p;\n"
-        "        if (tag < 0 || (size_t)tag >= d->count) printf(\"<%s>\", d->name);\n"
-        "        else                                    printf(\"%s\", names[tag]);\n"
+        "        if (tag < 0 || (size_t)tag >= d->count) extc_printf(\"<%s>\", d->name);\n"
+        "        else                                    extc_printf(\"%s\", names[tag]);\n"
         "        return;\n"
         "    }\n"
         "    case EXTC_D_STRUCT: {\n"
         "        const ExtcField *f = (const ExtcField *)d->table;\n"
-        "        printf(\"%s { \", d->name);\n"
+        "        extc_printf(\"%s { \", d->name);\n"
         "        for (size_t i = 0; i < d->count; i++) {\n"
-        "            if (i) printf(\", \");\n"
-        "            printf(\"%s: \", f[i].name);\n"
+        "            if (i) extc_printf(\", \");\n"
+        "            extc_printf(\"%s: \", f[i].name);\n"
         "            extc_print((const char *)p + f[i].off, f[i].desc);\n"
         "        }\n"
-        "        printf(\" }\");\n"
+        "        extc_printf(\" }\");\n"
         "        return;\n"
         "    }\n"
         "    case EXTC_D_ARRAY:\n"
@@ -10854,12 +10893,12 @@ static void buildRuntimeText(CG *g) {
         "            data = (const char *)p;\n"
         "            n = d->count;\n"
         "        }\n"
-        "        printf(\"[\");\n"
+        "        extc_printf(\"[\");\n"
         "        for (size_t i = 0; i < n; i++) {\n"
-        "            if (i) printf(\", \");\n"
+        "            if (i) extc_printf(\", \");\n"
         "            extc_print(data + i * d->size, d->elem);\n"
         "        }\n"
-        "        printf(\"]\");\n"
+        "        extc_printf(\"]\");\n"
         "        return;\n"
         "    }\n"
         "    }\n"
@@ -11821,6 +11860,20 @@ static void initRuntimeText(CG *g, Arena *arena) {
         "    if (extc_cout_len + n > (int64_t)sizeof extc_cout_buf) extc_cout_flush();\n"
         "    memcpy(extc_cout_buf + extc_cout_len, p, (size_t)n);\n"
         "    extc_cout_len += n;\n"
+        "}\n"
+        /* `printf` 的替身：把格式化结果**追加到同一个 cout 缓冲**，于是内建 `print`/`println`、
+         * 描述符打印与 `io::cout` 只有一条输出路径、一个缓冲，混写天然有序（不需要 `fflush`）。
+         * extC 自己没有变参，但生成的 C 可以有：这里只是编译器内部的实现细节。 */
+        "void extc_printf(const char *fmt, ...) {\n"
+        "    char b[256];\n"
+        "    va_list ap;\n"
+        "    int n;\n"
+        "    va_start(ap, fmt);\n"
+        "    n = vsnprintf(b, sizeof b, fmt, ap);\n"
+        "    va_end(ap);\n"
+        "    if (n <= 0) return;\n"
+        "    if ((size_t)n > sizeof b - 1) n = (int)(sizeof b - 1);\n"
+        "    extc_cout_put((uint8_t *)b, (int64_t)n);\n"
         "}\n");
     /* The one formatter the library cannot write itself: extC has no variadics,
      * so `snprintf` is unreachable and this is the fixed-arity door to it. `%g`
@@ -11872,6 +11925,50 @@ static void initRuntimeText(CG *g, Arena *arena) {
     g->tmpSeq = 0;
 }
 
+/** @brief 表达式回调：这个程序会不会用到控制台缓冲（内建打印或 `io::cout`）。 */
+static bool coutScanExpr(void *ctx, Expr *e) {
+    bool *hit = ctx;
+    if (!e) return true;
+    if (e->kind == EX_CALL && e->u.call.callee && e->u.call.callee->kind == EX_IDENT) {
+        const char *n = e->u.call.callee->u.ident.name;
+        if (n && (strcmp(n, "print") == 0 || strcmp(n, "println") == 0 ||
+                  strcmp(n, "flush") == 0))
+            *hit = true;
+    }
+    FuncDef *callee = planCallee(e);
+    if (callee && callee->name && strstr(callee->name, "ostream_shl")) *hit = true;
+    return true;
+}
+
+/** @brief 语句回调：先看自己，再让通用遍历走子节点。 */
+static bool coutScanStmt(void *ctx, Stmt *s) {
+    bool *hit = ctx;
+    if (!s || *hit) return !*hit;
+    AstVisit v = { coutScanExpr, coutScanStmt, ctx };
+    return astWalkStmtChildren(s, &v) || !*hit;
+}
+
+/**
+ * @brief 提前判断程序会不会写控制台缓冲。
+ *
+ * `main` 的序言里只有在**那一刻** `needCout` 为真才登记 `atexit(extc_cout_flush)`，而
+ * `needCout` 通常是发射语句时才置上的（`println(...)`、`io::cout <<`）。于是"写到一半就
+ * `exit(7)`"或"跑到 trap"的程序会丢掉缓冲里的字节。这里在发射函数体之前扫一遍将要发射的
+ * 函数体，把开关提前打开。
+ *
+ * @param g  代码生成状态；扫描结果只写 `g->needCout`。
+ */
+static void scanConsoleUse(CG *g) {
+    bool hit = false;
+    for (size_t i = 0; i < g->funcs.len && !hit; i++) {
+        FuncDef *f = *(FuncDef **)vecAt(&g->funcs, i);
+        if (!f || !f->body) continue;
+        AstVisit v = { coutScanExpr, coutScanStmt, &hit };
+        astWalkStmtChildren(f->body, &v);
+    }
+    if (hit) g->needCout = true;
+}
+
 /**
  * @brief 用可达性剪枝筛出真正要发射的结构体、方法与自由函数。
  *
@@ -11882,6 +11979,7 @@ static void initRuntimeText(CG *g, Arena *arena) {
  * @param g 代码生成上下文，筛选结果推进 `structs` 与 `funcs`。
  * @param m 当前模块，`structs` 与 `funcs` 是候选来源。
  */
+
 static void collectEmitted(CG *g, Module *m) {
     for (size_t i = 0; i < m->structs.len; i++) {
         StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
@@ -12389,8 +12487,10 @@ static void emitLateRuntime(CG *g, Buf *out, Module *m, Arena *arena) {
      * that exists at all (`descs`). `rtPrint` goes out only where `extc_print` is actually
      * called -- that separation is BG-1's fix. */
     if (g->needRuntime || g->eqNeed.len || g->descs.len) bufPuts(out, bufCstr(&g->rt));
+    /* `rtCout` 先出：`rtPrint` 里的 `extc_print` 现在通过 `extc_printf` 写同一个缓冲，
+     * 所以它需要先看到 `extc_cout_put` / `extc_printf` 的声明。 */
+    if (g->needCout || g->needPrint) bufPuts(out, bufCstr(&g->rtCout));
     if (g->needPrint)                                  bufPuts(out, bufCstr(&g->rtPrint));
-    if (g->needCout) bufPuts(out, bufCstr(&g->rtCout));
     if (g->needCoutF64) bufPuts(out, bufCstr(&g->rtCoutF64));
     if (g->needPool && !g->poolDone) poolsEmitRuntime(arena, out);
     if (g->needHttpFile) fileLayerEmitRuntime(arena, out);
@@ -12679,6 +12779,9 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     scanUnitNeeds(&g, m);
     initRuntimeText(&g, arena);
     collectEmitted(&g, m);
+    /* 先把"会写控制台"这条提前定下来：`main` 的序言要靠它登记 `atexit(extc_cout_flush)`，
+     * 否则写一半就 `exit`/trap 的程序会丢缓冲里的字节。 */
+    scanConsoleUse(&g);
     scanUnitReclaim(&g, m);
     /* 事件档（`EXTC_RC_SWEEPFREE` 的自动那一半）：整单元被证明"无环 + 引用只住在被计数的槽里"
      * ⇒ 每个不可达对象迟早会被计数归零当场释放 ⇒ 清扫无事可做。`EXTC_RC_SWEEPFREE=1` 仍然

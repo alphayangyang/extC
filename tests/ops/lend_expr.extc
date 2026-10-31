@@ -1,0 +1,15 @@
+// 表达式级自动借出：形参要视图时，任何"结果是容器"的实参（值 f-string、函数返回值）都就地
+// 借出成 `asSlice()`，不必手写 `.asSlice()`。
+// expect: v=hi, you n=5 x=hi
+use std::io
+use stl::string
+
+fn take(v: slice<u8>) -> i64 { return v.len }
+
+fn main() -> i32 {
+    let name: string = f"hi, you"
+    let n: i64 = take(f"seven")
+    let x: string = string::from("hi")
+    io::cout << "v=" << name << " n=" << n << " x=" << x << "\n"
+    return 0
+}

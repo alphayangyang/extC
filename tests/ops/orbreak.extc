@@ -1,0 +1,28 @@
+// `x ?? break` / `x ?? continue`：没有值就跳转，一行写完"求值一次 + 判空 + 跳出"。
+// expect: total=9 count=1
+use std::io
+
+fn maybe(i: i64) -> ?i64 {
+    if i % 2 == 0 { return none }
+    return some(i)
+}
+
+fn main() -> i32 {
+    var total: i64 = 0
+    var i: i64 = 0
+    while i < 6 {
+        i += 1
+        let v = maybe(i) ?? continue
+        total += v
+    }
+
+    var count: i64 = 0
+    var j: i64 = 0
+    while true {
+        j += 1
+        let w = maybe(j) ?? break
+        count += 1
+    }
+    io::cout << "total=" << total << " count=" << count << "\n"
+    return 0
+}

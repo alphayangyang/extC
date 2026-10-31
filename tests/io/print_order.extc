@@ -1,0 +1,10 @@
+// 内建 `println` 与 `io::cout` 写同一个控制台缓冲：混写顺序必须与源码一致。
+// 这里源码顺序是 b、a、c，因此输出也必须是 b、a、c（不是把两种缓冲分别撞运气）。
+use std::io
+
+fn main() -> i32 {
+    io::cout << "b\n"
+    println("a")
+    io::cout << "c\n"
+    return 0
+}

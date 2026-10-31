@@ -647,6 +647,18 @@ Expr *exprStrNew(Arena *a, const char *text, int line);
  * @return        新的 `EX_UN` 节点。
  */
 Expr *exprUnNew(Arena *a, const char *op, Expr *operand, int line);
+
+/**
+ * @brief 造 `e!`：用户的"我知道它有值"签名节点（载荷由检查器定类型）。
+ *
+ * 编译器自己展开 `x ?? break` 时用它取值：守卫已经证明有值，这个签名不会 trap。
+ *
+ * @param a         arena。
+ * @param operand   被签名的表达式（`option<T>` / `result<T,E>` / `?ref T`）。
+ * @param line      行号。
+ * @return          新的签名表达式。
+ */
+Expr *exprSignNew(Arena *a, Expr *operand, int line);
 /**
  * @brief 造赋值语句 `target op= value`（降糖里造循环步进与逐元素写入）。
  *

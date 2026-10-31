@@ -66,6 +66,14 @@ else
     echo "  FAIL file-eof  ->  跑不起来"; echo "$out" | sed 's/^/        /' | head -4; fail=1
 fi
 
+echo "== 内建 println 的值 f-string（帧要开池 zone）=="
+if out=$("$EXTC" --run tests/io/print_fstring.extc 2>&1) && [ "$out" = "n=7
+sum=42" ]; then
+    echo "  ok   print-fstring ->  println(值 f-string) 正常 ✓"
+else
+    echo "  FAIL print-fstring ->  $(echo "$out" | tr '\n' '|')"; fail=1
+fi
+
 echo "== eprint / eprintln（诊断通道的一句版）=="
 if "$EXTC" --run tests/io/eprint.extc >build/eprint-out.txt 2>build/eprint-err.txt; then
     if [ "$(cat build/eprint-out.txt)" = "out" ] && [ "$(cat build/eprint-err.txt)" = "diag1
@@ -414,5 +422,12 @@ else
     echo "  FAIL 巨型写：编译失败"; fail=1
 fi
 rm -rf "$f4dir"
+
+echo "== print/println 与 io::cout 混写：顺序与源码一致（同一个控制台缓冲）=="
+if out=$("$EXTC" --run tests/io/print_order.extc 2>&1) && [ "$out" = "$(printf 'b\na\nc')" ]; then
+    echo "  ok   print-order  ->  $(echo "$out" | tr '\n' '|')"
+else
+    echo "  FAIL print-order  ->  期望 b|a|c，得到「$(echo "$out" | tr '\n' '|')」"; fail=1
+fi
 
 exit $fail

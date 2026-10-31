@@ -93,7 +93,8 @@ struct string {
      * 调用者一拷贝/一移动就悬垂。所以这里两条路都是"新分配 + 搬字节"，
      * 实现上 `new u8[n]` 写在方法体里，但逃逸分析会把这次分配提到**调用者**选的地方
      *（arena 的 home 机制）⇒ 它活得比这一次调用长，可以存、可以返回。 */
-    /** 借出一个只读字节视图（**不拷贝**）：`string` 因此能直接出现在收 `slice<u8>` 的参数上
+    
+/** 借出一个只读字节视图（**不拷贝**）：`string` 因此能直接出现在收 `slice<u8>` 的参数上
      *  （自动借出看的就是这个名字与签名）。要一份独立的拷贝用 `toSlice`。 */
     fn asSlice(self: ref string) -> slice<u8> { return self.subView(0, self.n) }
 
@@ -532,6 +533,85 @@ struct string {
 fn withCap(c: i64) -> string { return string::create(c) }
 fn new() -> string { var s: string  return s }
 fn empty() -> string { var s: string  return s }
+
+/**
+ * @brief 把十进制文本解析成 `f64`：`[+-]digits[.digits][(e|E)[+-]digits]`。
+ *
+ * 与 `toI64` 同一条路：先在这里判定形状，不合形状一律 `none`（调用者用 `??` 兜底）。
+ * 不做 `inf`/`nan`/十六进制浮点，也不接受单独的小数点开头（`.5`）—— 要那样写就补个 `0`。
+ * 尾数逐位累进 `f64`，指数逐次乘/除 10（不调 `pow`）：常见输入上与 printf 解析一致，
+ * 极端位数会有末位差别，文档里写明。
+ *
+ * @param b  待解析的字节视图。
+ * @return   `some(v)`；形状不对或溢出时 `none`。
+ */
+fn toF64(b: slice<u8>) -> ?f64 {
+  if b.len == 0 { return none }
+  var i: i64 = 0
+  var neg: bool = false
+  if b[0] == u8(45) || b[0] == u8(43) {
+    neg = b[0] == u8(45)
+    i = 1
+    if i == b.len { return none }
+  }
+  var mant: f64 = 0.0
+  var scale: f64 = 1.0
+  var digits: i64 = 0
+  var seenDot: bool = false
+  while i < b.len {
+    let c: u8 = b[i]
+    if c == u8(46) {
+      if seenDot { return none }
+      seenDot = true
+      i = i + 1
+      continue
+    }
+    if c < u8(48) || c > u8(57) { break }
+    digits = digits + 1
+    if seenDot { scale = scale * 10.0 }
+    mant = mant * 10.0 + f64(c - u8(48))
+    i = i + 1
+  }
+  if digits == 0 { return none }
+  if scale != 1.0 { mant = mant / scale }
+  var exp: i64 = 0
+  if i < b.len && (b[i] == u8(101) || b[i] == u8(69)) {
+    i = i + 1
+    var eneg: bool = false
+    if i < b.len && (b[i] == u8(45) || b[i] == u8(43)) {
+      eneg = b[i] == u8(45)
+      i = i + 1
+    }
+    var ed: i64 = 0
+    var edigits: i64 = 0
+    while i < b.len {
+      let c: u8 = b[i]
+      if c < u8(48) || c > u8(57) { return none }
+      ed = ed * 10 + i64(c - u8(48))
+      if ed > 400 { return none }
+      edigits = edigits + 1
+      i = i + 1
+    }
+    if edigits == 0 { return none }
+    exp = ed
+    if eneg { exp = 0 - ed }
+  }
+  if i != b.len { return none }
+  var v: f64 = mant
+  if exp != 0 {
+    var e: i64 = exp
+    if e < 0 { e = 0 - e }
+    var k: i64 = 0
+    var p: f64 = 1.0
+    while k < e {
+      p = p * 10.0
+      k = k + 1
+    }
+    if exp < 0 { v = v / p } else { v = v * p }
+  }
+  if neg { v = 0.0 - v }
+  return some(v)
+}
 
 /* 从一段字节**拷贝**出一个 `string`：`string::from("abc")`。
  *

@@ -1,0 +1,11 @@
+// `println` 的实参是值 f-string 时，函数体仍要开池 zone：f-string 的 `string::from`/`+`
+// 需要 zone，缺了它调用点只能传兜底的 `extc_zoneTop`，运行期会 `the view has no storage`。
+use std::io
+use stl::string
+
+fn main() -> i32 {
+    let n: i64 = 7
+    println(f"n={n}")
+    println(f"sum={n * 6}")
+    return 0
+}

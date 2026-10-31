@@ -12,13 +12,12 @@
 use std::io
 use stl::seq
 use stl::string
+use stl::stringio
 use stl::nd
 
 fn regions(raw: slice<u8>) -> string {
-    let parts = string::split(raw, ",")
-    let view: slice<slice<u8>> = parts.asSlice()
-    var out: string = string::from("")
-    for p in view {
+    var out: string = string::empty()
+    for p in string::split(raw, ",") {
         let t: slice<u8> = string::trim(p)
         if out.len() > 0 { out.append(" · ") }
         out.append(t)
@@ -54,6 +53,6 @@ fn main() -> i32 {
     for i in 0..3 { tmpv[i] = out[i] * 2.0 + 1.0 }
     let fused: f64 = seq::sum(tmpv) ?? 0.0
 
-    io::cout << f"regions = {regions("north, south, east")} | rows = {r0:.2f} {r1:.2f} | fused = {fused:.2f} | half+1 = {halfPlus1(40)?}\n"
+    println(f"regions = {regions("north, south, east")} | rows = {r0:.2f} {r1:.2f} | fused = {fused:.2f} | half+1 = {halfPlus1(40)?}")
     return 0
 }

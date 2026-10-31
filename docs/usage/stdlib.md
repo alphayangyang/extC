@@ -43,8 +43,9 @@ prelude 是编译器在每个编译单元前先过一遍的一段 extC 源码。
 | `coroutine<A, B>` | 协程的**接口标记**（帧由编译器按协程函数合成，不要拿它当变量类型） |
 | `domain` | 域的**接口标记**，方法由编译器合成，库侧在 `std::sys::domain` |
 
-`print(x)` / `println(x)` 是内建，但**已经弃用**：编译器每次都会说
-``warning: `println` is deprecated``，并提示 `io::cout` 是唯一的控制台出口（见下面 `std::io` 一节）。
+`print(x)` / `println(x)` 是内建，可以随便用：任何可打印值都行（`string` 按字节写出），
+与 `io::cout` 共用同一个输出缓冲，混写顺序与源码一致。要"带条件的流"（`cerr`、`stringio`、
+自定义 `ostream`）时用 `io::cout` 那一套。
 
 ### `varArray<T>`：arena 底的动态数组
 
@@ -137,7 +138,7 @@ fn main() -> i32 {
 | 直接打印 | `io::cout << s`（`string` 的 `<<` 重载在 `stl::string` 里，`use stl::string` 就够，不用写 `s.toSlice()`） |
 | 查找 | `find(needle) -> ?i64`（无匹配 `none`）、`contains`、`startsWith`、`endsWith`、`hash()` |
 | 容量 | `grow()`（1.5 倍）、`shrink()`、`clear()`、`release()`、`removeFront(n)` |
-| 解析 | `string::toI64(b) -> ?i64` |
+| 解析 | `string::toI64(b) -> ?i64`；`string::toF64(b) -> ?f64`（整数/小数/指数写法，至少一位数字；不接受 `.5`、`inf`、`nan`、十六进制） |
 | 切分 | `string::split(s: slice<u8>, sep: slice<u8>) -> varArray<slice<u8>>`（每段是 `s` 的零拷贝视图；空 `sep` 返回空数组；末尾空段也入列 ⇒ 段数 = 出现次数 + 1）|
 | 拼接 | `string::join(parts: slice<slice<u8>>, sep: slice<u8>) -> string`（空数组给空串；`sep` 可以是空视图；一次按总长分配）|
 | 裁剪 | `string::trim(s)` / `trimStart(s)` / `trimEnd(s)`：去掉两端 ASCII 空白（空格、`\t`、`\n`、`\r`、`\v`、`\f`），返回**原缓冲视图**（零拷贝）|

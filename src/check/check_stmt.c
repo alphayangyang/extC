@@ -113,11 +113,19 @@ static Type *forSubjectType(Checker *c, Expr *e) {
  * @return       改指到迭代器则返回 true；形状不符或 SUBJ 可切片时返回 false。
  */
 static bool forRetargetToIterator(Checker *c, Stmt *block) {
-    if (block->u.block.stmts.len != 3) return false;
-    Stmt *bind = *(Stmt **)vecAt(&block->u.block.stmts, 0);
-    Stmt *w    = *(Stmt **)vecAt(&block->u.block.stmts, 2);
-    if (!bind || bind->kind != ST_VAR || !bind->u.var.init ||
-        bind->u.var.init->kind != EX_SLICE) return false;
+    /* 形状：`[<隐藏主语绑定>, var __extc_s = SUBJ[..], var __extc_i, while …]`。
+     * 主语绑定只在主语不是 place 时出现（`for d in split(s)`），所以长度是 3 或 4。 */
+    size_t bindIdx = (size_t)-1, wIdx = (size_t)-1;
+    for (size_t i = 0; i < block->u.block.stmts.len; i++) {
+        Stmt *s = *(Stmt **)vecAt(&block->u.block.stmts, i);
+        if (!s) continue;
+        if (bindIdx == (size_t)-1 && s->kind == ST_VAR && s->u.var.init &&
+            s->u.var.init->kind == EX_SLICE) { bindIdx = i; continue; }
+        if (bindIdx != (size_t)-1 && s->kind == ST_WHILE) { wIdx = i; break; }
+    }
+    if (bindIdx == (size_t)-1 || wIdx != bindIdx + 2) return false;
+    Stmt *bind = *(Stmt **)vecAt(&block->u.block.stmts, bindIdx);
+    Stmt *w    = *(Stmt **)vecAt(&block->u.block.stmts, wIdx);
     if (!w || w->kind != ST_WHILE || !w->u.whiles.body ||
         w->u.whiles.body->kind != ST_BLOCK || w->u.whiles.body->u.block.stmts.len != 3)
         return false;
@@ -141,8 +149,17 @@ static bool forRetargetToIterator(Checker *c, Stmt *block) {
             vl->u.method.name = "value";
             elemDecl0->u.var.init = vl;
             inner0->u.block.stmts.len = 2;       /* `[ var x = …value(); BODY ]`：步进语句已删 */
-            *(Stmt **)vecAt(&block->u.block.stmts, 0) = w;   /* 丢掉主语绑定 */
-            block->u.block.stmts.len = 1;
+            *(Stmt **)vecAt(&block->u.block.stmts, bindIdx) = w;   /* 丢掉视图绑定 */
+            block->u.block.stmts.len = bindIdx + 1;
+            return true;
+        }
+    }
+    /* 容器（`varArray<T>`、`vector<T>` 一类）：没有 `.len` 字段也没有 `[..]`，走它自己的
+     * `asSlice()`。于是 `for p in parts` 与 `for p in parts.asSlice()` 是同一条路。 */
+    {
+        Type *sbv = ttBase(tsub(c, st));
+        if (sbv && sbv->kind != TY_ARRAY && !viewElemOf(sbv) && findMethod(sbv, "asSlice")) {
+            bind->u.var.init = exprMethodNew(c->arena, subject, "asSlice", bind->line);
             return true;
         }
     }
@@ -162,7 +179,7 @@ static bool forRetargetToIterator(Checker *c, Stmt *block) {
     itDecl->u.var.name = "__extc_it";
     itDecl->u.var.init = iter;
     itDecl->u.var.mut = true;                    /* `next` 收 `mut ref Self` */
-    *(Stmt **)vecAt(&block->u.block.stmts, 1) = itDecl;
+    *(Stmt **)vecAt(&block->u.block.stmts, bindIdx + 1) = itDecl;
 
     Stmt *inner = w->u.whiles.body;
     Stmt *elemDecl = *(Stmt **)vecAt(&inner->u.block.stmts, 0);
@@ -2773,9 +2790,9 @@ static bool rangeForBlockShape(Stmt *block) {
 }
 
 /* 提前段的内部助手（定义在下面）：先声明，`checkHoistStatementTrys` 要用它们。 */
-typedef struct { Checker *c; Vec *pre; int *seq; int line; } TryHoist;
+typedef struct { Checker *c; Vec *pre; Vec *guards; int *seq; int line; } TryHoist;
 static void tryHoistExpr(TryHoist *h, Expr **slot);
-static size_t tryHoistStmt(Checker *c, Stmt *s, Vec *pre);
+static size_t tryHoistStmt(Checker *c, Stmt *s, Vec *pre, Vec *guards);
 
 /**
  * @brief 把 `stmts[*pi]` 里的嵌套 `e?` 提前成若干条声明插在它前面。
@@ -2792,14 +2809,18 @@ void checkHoistStatementTrys(Checker *c, Vec *stmts, size_t *pi) {
     if (!s) return;
     Vec pre;
     vecInit(&pre, c->arena, sizeof(Stmt *));
-    if (tryHoistStmt(c, s, &pre) == 0) return;
-    size_t n = pre.len;
+    Vec guards;
+    vecInit(&guards, c->arena, sizeof(Stmt *));
+    if (tryHoistStmt(c, s, &pre, &guards) == 0) return;
+    size_t n = pre.len + guards.len;
     for (size_t k = 0; k < n; k++) (void)vecPush(stmts);
     size_t len = stmts->len;
     memmove((Stmt **)vecAt(stmts, *pi + n), (Stmt **)vecAt(stmts, *pi),
             (len - *pi - n) * sizeof(Stmt *));
-    for (size_t k = 0; k < n; k++)
+    for (size_t k = 0; k < pre.len; k++)
         *(Stmt **)vecAt(stmts, *pi + k) = *(Stmt **)vecAt(&pre, k);
+    for (size_t k = 0; k < guards.len; k++)
+        *(Stmt **)vecAt(stmts, *pi + pre.len + k) = *(Stmt **)vecAt(&guards, k);
     /* 前插的声明要**先检查**：它们在循环的下一次迭代里不会再被访问（`*pi` 直接跳到原语句）。
      * 声明本身是普通的 `var x = e?`，走的就是既有那条展开路径。 */
     size_t first = *pi;
@@ -2842,6 +2863,33 @@ void checkHoistStatementTrys(Checker *c, Vec *stmts, size_t *pi) {
 static void tryHoistExpr(TryHoist *h, Expr **slot) {
     Expr *e = *slot;
     if (!e) return;
+    if (e->kind == EX_COALESCE && e->u.coalesce.fallback &&
+        e->u.coalesce.fallback->kind == EX_IDENT &&
+        e->u.coalesce.fallback->u.ident.name &&
+        (strcmp(e->u.coalesce.fallback->u.ident.name, "__extc_break") == 0 ||
+         strcmp(e->u.coalesce.fallback->u.ident.name, "__extc_continue") == 0)) {
+        /* `x ?? break`：求值一次 → 判 none → 跳转。守卫用 `preludeIsNone`（prelude 的泛型
+         * 函数，只问"有没有值"），取值用 `!`（守卫已证明有值，不会 trap）。 */
+        const bool isBreak =
+            strcmp(e->u.coalesce.fallback->u.ident.name, "__extc_break") == 0;
+        char buf[64];
+        snprintf(buf, sizeof buf, "__extc_tg%d", (*h->seq)++);
+        const char *name = arenaStrndup(h->c->arena, buf, strlen(buf));
+        *(Stmt **)vecPush(h->pre) =
+            stmtVarNew(h->c->arena, name, NULL, e->u.coalesce.main, false, h->line);
+        Expr *cond = exprCallNew(h->c->arena,
+                                 exprIdent(h->c->arena, "preludeIsNone", h->line), h->line);
+        *(Expr **)vecPush(&cond->u.call.args) = exprIdent(h->c->arena, name, h->line);
+        Stmt *jump = stmtNew(h->c->arena, isBreak ? ST_BREAK : ST_CONTINUE, h->line);
+        Vec body;
+        vecInit(&body, h->c->arena, sizeof(Stmt *));
+        *(Stmt **)vecPush(&body) = jump;
+        Stmt *blk = stmtNew(h->c->arena, ST_BLOCK, h->line);
+        stmtBlockSetStmts(blk, &body);
+        *(Stmt **)vecPush(h->guards) = stmtIfNew(h->c->arena, cond, blk, NULL, h->line);
+        *slot = exprSignNew(h->c->arena, exprIdent(h->c->arena, name, h->line), h->line);
+        return;
+    }
     if (e->kind == EX_TRY) {
         char buf[64];
         snprintf(buf, sizeof buf, "__extc_tq%d", (*h->seq)++);
@@ -2913,9 +2961,9 @@ static void tryHoistExpr(TryHoist *h, Expr **slot) {
  * @param pre 收集前插声明的表。
  * @return   收集到的声明条数。
  */
-static size_t tryHoistStmt(Checker *c, Stmt *s, Vec *pre) {
+static size_t tryHoistStmt(Checker *c, Stmt *s, Vec *pre, Vec *guards) {
     int seq = 0;
-    TryHoist h = { c, pre, &seq, s->line };
+    TryHoist h = { c, pre, guards, &seq, s->line };
     switch (s->kind) {
     case ST_VAR:
         if (s->u.var.init && s->u.var.init->kind != EX_TRY) tryHoistExpr(&h, &s->u.var.init);
@@ -2942,6 +2990,25 @@ static size_t tryHoistStmt(Checker *c, Stmt *s, Vec *pre) {
 }
 
 /**
+ * @brief 找容器 `for` 外层块里"主语绑定"的下标（投给 `forRetargetToIterator` 用）。
+ *
+ * 主语不是 place 时（`for d in split(s)`）解析器会在视图绑定之前插一条隐藏的主语声明；
+ * 重定向要等这条声明检查完（符号表里才有名字）再跑，所以先在这里算出它的位置。
+ *
+ * @param block  `forDesugar` 外层块。
+ * @return       主语绑定的下标；没有隐藏主语时返回 0，形状不认识时返回 `(size_t)-1`。
+ */
+static size_t forDesugarBindIndex(Stmt *block) {
+    for (size_t i = 0; i < block->u.block.stmts.len; i++) {
+        Stmt *s = *(Stmt **)vecAt(&block->u.block.stmts, i);
+        if (!s) continue;
+        if (s->kind == ST_VAR && s->u.var.init && s->u.var.init->kind == EX_SLICE)
+            return i == 0 ? 0 : i;   /* 视图绑定之前只可能有隐藏主语 */
+    }
+    return (size_t)-1;
+}
+
+/**
  * @brief 在新作用域里检查一个块体，块结束时块内绑定随之出作用域。
  *
  * 会自行回收存储的块是 place 边界：其中不许挂起（规则 3），通过 `c->placeBoundaryDepth`
@@ -2951,7 +3018,9 @@ static size_t tryHoistStmt(Checker *c, Stmt *s, Vec *pre) {
  * @param block  要检查的块语句。
  */
 static void checkBlockBody(Checker *c, Stmt *block) {
-    if (block->forDesugar) forRetargetToIterator(c, block);
+    /* `forDesugar` 块的重定向推到"主语声明检查完"之后（见循环里的钩子）：主语不是 place 时
+     * 解析器插了一条隐藏绑定，`forSubjectType` 要能从符号表读到它的类型。 */
+    const size_t forBind = block->forDesugar ? forDesugarBindIndex(block) : (size_t)-1;
     if (!fuseOff()) fuseElementChains(c, block);
     const bool boundary = stmtNeedsPlaceBoundary(block, c->curFunc && planIsCoro(c->curFunc));
     if (boundary) c->placeBoundaryDepth++;
@@ -2961,6 +3030,7 @@ static void checkBlockBody(Checker *c, Stmt *block) {
     for (size_t i = 0; i < block->u.block.stmts.len; i++) {
         /* 固定形状的块（区间循环 / `par` 外层）按位置认声明，不能插语句。 */
         if (!fixedShape) checkHoistStatementTrys(c, &block->u.block.stmts, &i);
+        if (forBind != (size_t)-1 && i == forBind) forRetargetToIterator(c, block);
         Stmt **slot = (Stmt **)vecAt(&block->u.block.stmts, i);
         Stmt *lowered = arrayAssignLower(c, *slot);
         if (lowered) *slot = lowered;

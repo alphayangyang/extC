@@ -48,6 +48,15 @@ struct coroutine<A, B> { unit: bool }   /* A = `send` 进去的（请求），B 
 
 type option<T> = | none | some(T)
 
+/* `x ?? break` / `x ?? continue` 的检查器展开用：只问"有没有值"，不取值。
+ * 这是给编译器展开用的（用户写 `x ?? break` 即可）；名字避开 `__` 前缀，语言保留那个前缀。 */
+fn preludeIsNone<T>(o: option<T>) -> bool {
+    match o {
+        some(_) => { return false }
+        none    => { return true  }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // result<T, E> -- "either it succeeds and gives you a value, or it fails with an error"
 //

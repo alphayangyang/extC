@@ -18,7 +18,7 @@
 | 入口 | `fn main() -> i32 { ... }` 或 `fn main() { ... }`（无返回类型 = `void`，退出码 0） |
 | 导入 | `use a::b` · `use a::b::*` · `use a::b::{x, y}` · `use a::b as c` |
 | 预置 | `option` / `result` / `slice` / `varArray` / `unit` / `pcg32` / `coroutine` / `domain` 无需导入（prelude 里就有） |
-| 控制台 | `use std::io` 后写 `io::cout << x << "\n"`；`io::cin >> x` 读 |
+| 控制台 | 写：`println(x)` 内建，或 `use std::io` 后 `io::cout << x << "\n"`；读：默认"读一行再解析"——`use stl::stringio` 的 `stringio::readLine()` + `string::toI64`/`toF64`（`io::cin >> x` 是 token 快路，见 §7.5） |
 | 语句 | 不需要分号；写了分号会被忽略。换行只是**空白**，表达式在下一个记号接不下去时结束 |
 | 续行 | 接不下去的记号**不能**起新行：`io::cout << a` 后换行再写 `<< b` 是错的（`<<` 不能续行）|
 | 注释 | `// 行注释` · `/* 块注释 */`（**不嵌套**，遇到第一个 `*/` 就结束） |
@@ -69,8 +69,9 @@ fn main() -> i32 {
 
 - `use` 可以写在文件里的任何位置（整个模块一起解析，实测把 `use std::io` 放在 `main` 之后照样跑）；名字是否解析得到由模块搜索路径（`-I <dir>`）决定。
 - 顶层再写 `global` 是冗余但合法的自文档化：`global var x: i64` ≡ `var x: i64`。
-- `println` / `print` 是**内建且已废弃**的函数：编译会报
-  `warning: 'println' is deprecated`。控制台只有 `io::cout` 这一条路。
+- `println` / `print` 是内建：`println(x, y)` 等价于把各值按序写出再换行，任何可打印值都行
+  （含 `string`，按字节写出）。它们和 `io::cout` 写**同一个缓冲**（`extc_cout_put`），所以混写
+  顺序与源码一致，不需要 `flush`；程序退出时缓冲会被倒出去。
 
 ---
 
@@ -495,8 +496,8 @@ var g, h: i32               // 零初始化：两个都是 0
   `total(va.asSlice())`、`total(a)`（`[N]T`）等价于 `total(a[..])`；可写参数
   （`mut slice<T>`）上 `fill(va)` 等价于 `fill(va.asMutSlice())`、`fill(a)` 等价于
   `fill(a[..])`，后者要求容器本身是可写的地方（`var` 绑定），借用检查照常把关。
-  方法实参同理（`s.append(bytes)` 的 `bytes`）。编译器在调用位置造的就是这些节点，
-  借用与生命周期检查照常生效。元素类型对不上时（`varArray<i32>` 传给 `slice<i64>`）不借，
+  方法实参同理（`s.append(bytes)` 的 `bytes`）；**表达式位置也借**（`println(f"…")`、
+  `take(f"seven")` 这类右值直接过）。编译器在调用位置造的就是这些节点，借用与生命周期检查照常生效。元素类型对不上时（`varArray<i32>` 传给 `slice<i64>`）不借，
   诊断指出该写什么。
 - **借出不是内建名单**：任何类型只要方法 `asSlice() -> slice<T>`（只读）或
   `asMutSlice() -> mut slice<T>`（可写）的**返回类型**对得上，就能出现在这类参数上 ——
@@ -574,6 +575,32 @@ fn main() -> i32 {
     return 0
 }
 ```
+
+### 7.5 输入：默认"读一行再解析"
+
+命令行程序的输入主路径是 `stl::stringio` 的 `readLine()`（每次读一行、`?string`，EOF 给
+`none`）加 `string::toI64` / `string::toF64`（`?i64` / `?f64`）。这样错误能指明是哪一行、
+解析器可以单独测，循环也短：
+
+<!-- fragment -->
+```extc
+use stl::stringio
+use stl::string
+use std::io
+
+fn main() -> i32 {
+    var sum: i64 = 0
+    while true {
+        let line = stringio::readLine() ?? break
+        if line.len() > 0 { sum = sum + (string::toI64(line) ?? 0) }
+    }
+    println(f"sum={sum}")
+    return 0
+}
+```
+
+`io::cin >> x` 仍在，但它只适合"一遍扫过成千上万个 token、不想每行分配"的快路：它按空白
+切 token、没有行号，遇到坏输入只能拿到 `cin.bad`。要在两种之间选时，默认选上一段那种。
 
 ---
 
@@ -796,6 +823,8 @@ return success(parse(n)? * i64(10))         // 返回值的表达式里
 - 左边可以是 `option` / `result` / `?ref`；右边类型必须对得上
   （`left of '??' is 'i64', which always has a value` 是对普通值用 `??` 的报错）。
 - 右结合；**只算一边**（生成 C 的三元）；主体是调用时编译器先装进临时变量，只求值一次。
+- 右边可以写 `break` / `continue`：`let v = maybe(i) ?? continue` 一行就是"求值一次、没有就
+  跳转"，语义是 `if isNone(主体) { continue }`（`break` 同理），只允许出现在循环体里。
 - 两个位置拒绝：`while` 条件（`?? here cannot be evaluated ahead of time`）和全局初始化式
   （`the global 'g' must be initialized with a constant`）。
 
@@ -890,15 +919,16 @@ parser 把 `for` 脱糖成 `var` + `while`，共有三种脱糖形状；
 | 形状 | 写法 | 说明 |
 |---|---|---|
 | 区间 | `for i in lo..hi { … }` | 半开区间；`i` 的类型取两端的**较宽者**（`hi` 能无损容纳 `lo` 时，`for i in 0..n` 且 `n: i64` ⇒ `i: i64`；反之 `for i in 0..k` 且 `k: i32` ⇒ `i: i32`）；**上界只求值一次** |
-| 容器 | `for d in subj { … }` | `subj` 只能是名字、字段或 `*p`；元素是**拷贝**，改 `d` 不写回 |
+| 容器 | `for d in subj { … }` | `subj` 可以是任意表达式（不是 place 时编译器先收进隐藏绑定，求值一次）；元素是**拷贝**，改 `d` 不写回 |
 | C 风格 | `for (init; cond; step) { … }` | 三段都是普通语句/表达式；`continue` 跳到 step |
 | 并行 | `par i in lo..hi { … }` | 数据并行（多线程跑同一个循环体），形状与区间 for 相同；见 11.8 |
 
 容器形状覆盖：定长数组、`slice<T>`（含字符串字面量）、协程帧，
 以及任何声明了 `iter` / `next` / `value` 三个方法的用户类型
 （`fn iter(self: ref Self) -> It`、`fn next(self: mut ref It) -> bool`、`fn value(self: ref It) -> T`）。
-`varArray` **没有**这三个方法，直接迭它会报
-`` no method `iter` on `varArray<i64>` ``——用 `v.asSlice()` 借出视图再迭。
+`varArray` / `string` 这类**有 `asSlice()` 的容器会被自动借出**：`for d in va` 等价于
+`for d in va.asSlice()`，不用手写 `.asSlice()`。`vector<T>` 故意不提供零拷贝视图（`toSlice` 拷贝），
+迭它要显式写 `for d in v.toSlice()`。
 
 ```extc
 // 结果：10 60 12 60

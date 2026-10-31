@@ -1,0 +1,33 @@
+// `for` 的主语不必是 place：容器只在循环开头读一次，不是 place 就先收进隐藏绑定。
+// 三种形状：函数返回的数组、string（自动 `asSlice()`）、vector（库故意没有零拷贝视图，
+// 得显式 `.toSlice()`）。
+// expect: total=6 parts=a|b|c vsum=15 bytes=hi
+use std::io
+use stl::string
+use stl::vector
+
+fn nums() -> [3]i64 { return [1, 2, 3] }
+
+fn main() -> i32 {
+    var total: i64 = 0
+    for d in nums() { total += d }
+
+    var parts: string = string::from("")
+    for part in string::split("a,b,c", ",") {
+        if parts.len() > 0 { parts.append("|") }
+        parts.append(part)
+    }
+
+    var v: vector<i64> = vector<i64>::withCap(4)
+    v.push(7)
+    v.push(8)
+    var vsum: i64 = 0
+    for x in v.toSlice() { vsum += x }
+
+    var bytes: string = string::from("")
+    for b in string::from("hi") { bytes.push(b) }
+
+    io::cout << "total=" << total << " parts=" << parts << " vsum=" << vsum
+    io::cout << " bytes=" << bytes << "\n"
+    return 0
+}

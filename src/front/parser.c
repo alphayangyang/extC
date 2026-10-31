@@ -3078,23 +3078,6 @@ static Stmt *forBlock(Parser *p, Stmt **stmts, size_t n, int line) {
     return b;
 }
 
-/**
- * @brief 判断一个表达式能否每轮迭代都重新求值而又不做任何事情。
- *
- * 只有标识符、字段访问与解引用可以：它们读的是同一处存储，循环每轮重新读它即可。
- *
- * @param e  要判断的表达式。
- * @return   可以重复求值为 `true`；`NULL` 或别的形状为 `false`。
- */
-static bool forRepeatable(Expr *e) {
-    if (!e) return false;
-    switch (e->kind) {
-    case EX_IDENT: return true;
-    case EX_FIELD: return forRepeatable(e->u.field.obj);
-    case EX_DEREF: return forRepeatable(e->u.deref.operand);
-    default:       return false;
-    }
-}
 
 /**
  * @brief 把 `i in lo..hi { B }` 脱糖成 `[var i = lo, var __extc_hi = hi, while i < __extc_hi { B; i += 1 }]`。
@@ -3190,6 +3173,25 @@ static Stmt *parsePar(Parser *p) {
 }
 
 /**
+ * @brief 判断 `for d in SUBJ` 的主语能否直接重复求值。
+ *
+ * 名字、字段、`*p` 之外的主语（`split(s)`、`v.asSlice()`）先被收进一个隐藏绑定：容器只在
+ * 循环开头求值一次，循环体里反复用的是那个绑定。
+ *
+ * @param e  主语表达式。
+ * @return   是 place 时返回 true。
+ */
+static bool forRepeatable(Expr *e) {
+    if (!e) return false;
+    switch (e->kind) {
+    case EX_IDENT: return true;
+    case EX_FIELD: return forRepeatable(e->u.field.obj);
+    case EX_DEREF: return forRepeatable(e->u.deref.operand);
+    default:       return false;
+    }
+}
+
+/**
  * @brief 解析 `for` 的四种形式，并在这里脱糖成 `var` + `while`。
  *
  * @param p  解析器。
@@ -3278,13 +3280,22 @@ static Stmt *parseFor(Parser *p) {
 
     if (hi) return forRangeFrom(p, vn, head, hi, body, line);
 
-    /* ---- form one: `for d in c { B }` ---- */
+    /* ---- form one: `for d in c { B }` ----
+     *
+     * 主语不必是 place：`for d in split(s)`、`for d in v.asSlice()` 都成立。容器只在循环
+     * 开头读一次，所以非 place 的主语先收进一个隐藏绑定，循环里再指回来。这个绑定对检查器
+     * 是普通 `var`，于是 `forSubjectType` 照常能从符号表读出类型。
+     */
+    Stmt *hoist = NULL;
     if (!forRepeatable(head)) {
-        ctxError(p->ctx, head->line, 1,
-                 "the loop reads the container once per iteration, so bind it first:"
-                 " `var xs = ...` and then `for d in xs`",
-                 "`for d in ...` needs a name, a field or `*p` on the right");
-        return NULL;
+        const char *nm = arenaPrintf(p->arena, "__extc_c%d", p->sugarSeq++);
+        hoist = stmtNew(p->arena, ST_VAR, line);
+        hoist->u.var.name = nm;
+        hoist->u.var.ann  = NULL;
+        hoist->u.var.init = head;
+        hoist->u.var.mut  = false;
+        hoist->u.var.overwrite = false;
+        head = forIdent(p, nm, line);
     }
 
     /* `var __extc_s = c[..]`: one view, which is what gives an array a `.len` too. */
@@ -3340,8 +3351,13 @@ static Stmt *parseFor(Parser *p) {
     Stmt *w = stmtNew(p->arena, ST_WHILE, line);
     w->u.whiles.cond = cond;
     w->u.whiles.body = loopBody;
-    Stmt *outer[3] = { viewDecl, idxDecl, w };
-    Stmt *desugared = forBlock(p, outer, 3, line);
+    Stmt *outer[4];
+    size_t n = 0;
+    if (hoist) outer[n++] = hoist;
+    outer[n++] = viewDecl;
+    outer[n++] = idxDecl;
+    outer[n++] = w;
+    Stmt *desugared = forBlock(p, outer, n, line);
     /* 被遍历的东西未必能切片：解析器不查符号表，判断不了，所以留给检查器把它改成迭代器
      * 循环的机会。 */
     desugared->forDesugar = true;
@@ -3452,7 +3468,17 @@ static Expr *parseCoalesce(Parser *p) {
     while (at(p, "??")) {
         Token *op = take(p);
         skipNl(p);
-        Expr *r = parseCoalesce(p);        /* right-associative */
+        /* `x ?? break` / `x ?? continue`：让"没有值就跳出循环"成为一行。检查器会把这两个
+         * 保留名认出来，并在语句层展开成"求值一次 → 判 none → 跳转"（见 check_stmt.c 的
+         * 提前段）。名字带 `__`，用户写不出来。 */
+        Expr *r = NULL;
+        if (at(p, "break") || at(p, "continue")) {
+            const bool isBreak = at(p, "break");
+            Token *kw = take(p);
+            r = exprIdent(p->arena, isBreak ? "__extc_break" : "__extc_continue", kw->line);
+        } else {
+            r = parseCoalesce(p);          /* right-associative */
+        }
         if (!r) return NULL;
         Expr *e = exprNew(p->arena, EX_COALESCE, op->line);
         e->u.coalesce.main = l;
