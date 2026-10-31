@@ -636,7 +636,7 @@ static const char *const RECLAIM_RT[] = {
     " * so changing one and forgetting the other turns the battery red. */\n",
     "__attribute__((unused)) static inline __attribute__((always_inline)) ExtcRcSlab *extc_rc_ownSlabMark(void *p) {\n",
     "    /* A null pointer is not checked separately: p == 0 means base == 0, and no key 0 exists in the map cell, registry or huge-block table\n",
-    "     * (neither a slab base nor a huge-block payload address can be 0), so every probe level misses and ownBig returns 0 too,\n",
+    "     * (neither a slab base nor a huge-block payload address can be 0), so every probe level misses and ownBig returns 0 too;\n",
     "     * the result is identical byte for byte to an explicit check, minus one comparison per call (2 Ir on the hot path). */\n",
     "    void *base = (void *)((uintptr_t)p & ~(uintptr_t)(EXTC_RC_SLAB_SIZE - 1));\n",
     "    ExtcRcSlab *hot = extc_rc_ownHot;\n",

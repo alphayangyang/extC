@@ -43,7 +43,7 @@ INJECTIONS = {
         "gate": "reclaim-unit",
         # 打的是 releaseOld（覆盖点定点释放）那条失效路径，不是 begin/sweepBegin 的；
         # 后两条各有代际++ 兜底，只有这条是承重的（去掉它探针就漏标，见 changelog）。
-        "patches": [(SRC, '    "    extc_rc_shadeNextGen();   /* 收窄清扫在下面清整片 mark：黑记录作废 */\\n",\n', "")],
+        "patches": [(SRC, '    "        freed++;\\n",\n    "    }\\n",\n    "    extc_rc_shadeNextGen();   /* the narrowed sweep clears the whole mark span below: black records are void */\\n",\n', "")],
     },
     "thr-stale": {
         "why": "拿掉 `collect` 末尾的 `thrUpd` ⇒ 压力阈值过期，触发语义坏掉",
@@ -376,6 +376,45 @@ def run_gate(name: str):
     return p.returncode, p.stdout
 
 
+def strip_c_comments(text):
+    """→ (去注释文本, 每个字符在原文里的下标)。
+
+    只按字符扫：`/* … */` 与 `// …` 一律剥掉，**不区分**它落在 C 代码里还是发射文本的
+    字符串字面量里 —— 锚点要匹配的正是"代码形状"，注释怎么写都不该让它漂。
+    这样注释改写（这一轮整仓英文化）不会一次弄陈十几条锚点。"""
+    out, idx, i, n = [], [], 0, len(text)
+    while i < n:
+        if text.startswith("/*", i):
+            k = text.find("*/", i + 2)
+            i = n if k < 0 else k + 2
+        elif text.startswith("//", i):
+            k = text.find("\n", i)
+            i = n if k < 0 else k
+        else:
+            out.append(text[i]); idx.append(i); i += 1
+    return "".join(out), idx
+
+
+def anchor_spans(text, anchor):
+    """锚点在 `text` 里按"去注释后"匹配到的所有 (start, end) 原文区间。"""
+    hay, idx = strip_c_comments(text)
+    needle, _ = strip_c_comments(anchor)
+    spans = []
+    start = hay.find(needle)
+    while start >= 0:
+        spans.append((idx[start], idx[start + len(needle) - 1] + 1))
+        start = hay.find(needle, start + 1)
+    return spans
+
+
+def apply_patch(text, old, new):
+    """按去注释后的锚点定位、按原文区间替换；返回 (新文本, 命中次数)。"""
+    spans = anchor_spans(text, old)
+    if len(spans) != 1:
+        return text, len(spans)
+    s, e = spans[0]
+    return text[:s] + new + text[e:], 1
+
 def check_anchors() -> int:
     # 便宜的自检：锚点是**逐字**匹配源码的，发射文本一改行/一加注释锚点就漂。
     # 漂了之后 inject.py 只会在真去跑那条注入时才报错，而它不在 `check.sh` 电池里
@@ -390,9 +429,9 @@ def check_anchors() -> int:
                 print(f"  STALE {nm}[{i}]  目标文件不存在：{rel}", file=sys.stderr)
                 bad += 1
                 continue
-            n = p.read_text().count(old)
+            n = len(anchor_spans(p.read_text(), old))
             if n != 1:
-                print(f"  STALE {nm}[{i}]  原文在 {rel} 里出现 {n} 次（要求恰好 1 次）", file=sys.stderr)
+                print(f"  STALE {nm}[{i}]  锚点在 {rel} 里命中 {n} 次（去注释后要求恰好 1 次）", file=sys.stderr)
                 bad += 1
             elif old == new:
                 print(f"  NOOP  {nm}[{i}]  原文与替换文相同 ⇒ 注入什么也没做（{rel}）", file=sys.stderr)
@@ -495,8 +534,9 @@ def main() -> int:
     backup = {}
     for rel, old, _new in spec["patches"]:
         text = read(rel)
-        if text.count(old) != 1:
-            print(f"注入原文在 {rel} 里出现 {text.count(old)} 次（要求恰好 1 次）—— 判据/源码漂了？",
+        n = len(anchor_spans(text, old))
+        if n != 1:
+            print(f"注入锚点在 {rel} 里命中 {n} 次（去注释后要求恰好 1 次）—— 判据/源码漂了？",
                   file=sys.stderr)
             return 2
         backup[rel] = text
@@ -504,7 +544,9 @@ def main() -> int:
     status = {"rc": 0, "note": ""}
     try:
         for rel, old, new in spec["patches"]:
-            write(rel, read(rel).replace(old, new, 1))
+            text, hits = apply_patch(read(rel), old, new)
+            assert hits == 1
+            write(rel, text)
             print(f"   打补丁 {rel}")
         okb, bout = build()
         if not okb:

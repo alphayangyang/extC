@@ -27,8 +27,20 @@ if ! grep -q '^#define EXTC_RC_NOCOUNT' "$TMP/rt.c"; then
     bad "挑的源没发射回收运行期（$SRC）⇒ 判据会瞎"; exit 1
 fi
 
-# 注释里的声称值：`默认 \`VAR=值\``；`[`]` 的写法避免在双引号里跟命令替换撞。
-claimed() { grep -oE '默认 `?'"$1"'=[0-9]+' "$TMP/rt.c" | head -1 | grep -oE '[0-9]+$'; }
+# 注释里的声称值，两种写法都认：
+#   * 中文旧写法 `默认 \`VAR=值\``；
+#   * 英文写法 "\`VAR=值\` is the default"（运行期注释改成英文后只有这一种）。
+# 判据只看"注释是否声称了这个变量、声称的值与产物里的 `#define` 是否相同"，
+# 跟注释用哪种语言写无关 —— 否则注释翻译一次就红一次。
+claimed() {
+    local val
+    val=$(grep -oE '默认 `?'"$1"'=[0-9]+' "$TMP/rt.c" | head -1 | grep -oE '[0-9]+$')
+    if [ -z "$val" ]; then
+        val=$(grep -oE '`'"$1"'=[0-9]+`[^`]{0,60}is the default' "$TMP/rt.c" |
+              head -1 | sed -E 's/.*'"$1"'=([0-9]+).*/\1/')
+    fi
+    printf '%s' "$val"
+}
 actual()  { grep -oE "^#define $1 [0-9]+" "$TMP/rt.c" | head -1 | awk '{print $3}'; }
 
 echo "== 默认档生成物：$SRC（只编译不跑）=="
