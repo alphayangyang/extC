@@ -1,0 +1,59 @@
+// expect: regions = north · south · east | rows = 120.00 84.50 | fused = 129.00 | half+1 = 21
+// 一段能把"现在的 extC"读完的示例：这里的每一行都对应 Python 里的一行（或更短），
+// 而且全是零开销的糖 —— 没有隐式分配、没有隐藏的所有权仪式：
+//   * `for p in view` 遍历视图（`split` 的段先 `trim` 再 `join`）；
+//   * `g[r, c]` 两下标读写视图、`g[r0..r1, c0..c1]` 取子视图（直译成 `nd::at2`/`slice2`）；
+//   * `out = a + b * 2.0` 整数组表达式（直译成一条写循环，不分配临时数组）；
+//   * 写临时视图 + `seq::sum(tmpv) ?? 0.0` 由编译器融合成一条循环（临时视图不落内存）；
+//   * 值 f-string 带对齐/精度说明符，槽里还能直接写 `?`（`halfPlus1(40)?`）。
+// 对照 Python（同义）：`" · ".join(p.strip() for p in raw.split(","))`、
+// `sum(r)`、`[av[i] + 2*bv[i] for i in range(n)]`、`sum(2*x+1 for x in out)`。
+use std::io
+use stl::seq
+use stl::string
+use stl::nd
+
+fn regions(raw: slice<u8>) -> string {
+    let parts = string::split(raw, ",")
+    let view: slice<slice<u8>> = parts.asSlice()
+    var out: string = string::from("")
+    for p in view {
+        let t: slice<u8> = string::trim(p)
+        if out.len() > 0 { out.append(" · ") }
+        out.append(t)
+    }
+    return out
+}
+
+fn halfPlus1(n: i32) -> ?i32 {
+    if n % 2 != 0 { return none }
+    return some(n / 2 + 1)
+}
+
+fn main() -> i32 {
+    var grid: ndarray<f64> = ndarray<f64>::zeros2(2, 3) ?? ndarray<f64>::empty()
+    var g: ndview<f64> = grid.viewMut()
+    g[0, 0] = 40.0
+    g[0, 1] = 50.0
+    g[0, 2] = 30.0
+    g[1, 0] = 20.0
+    g[1, 1] = 64.5
+    let r0: f64 = nd::sumv(g[0..1, 0..3] ?? g) ?? 0.0
+    let r1: f64 = nd::sumv(g[1..2, 0..3] ?? g) ?? 0.0
+
+    var a: mut slice<f64> = new f64[3]
+    var b: mut slice<f64> = new f64[3]
+    var out: mut slice<f64> = new f64[3]
+    for i in 0..3 {
+        a[i] = f64(i)
+        b[i] = f64(i) * 10.0
+    }
+    out = a + b * 2.0
+
+    var tmpv: mut slice<f64> = new f64[3]
+    for i in 0..3 { tmpv[i] = out[i] * 2.0 + 1.0 }
+    let fused: f64 = seq::sum(tmpv) ?? 0.0
+
+    io::cout << f"regions = {regions("north, south, east")} | rows = {r0:.2f} {r1:.2f} | fused = {fused:.2f} | half+1 = {halfPlus1(40)?}\n"
+    return 0
+}
