@@ -71,6 +71,7 @@ fn main() -> i32 {
 | 类型自己的模块里写 `@ext impl far` | 拒绝：`` `@ext` on an impl block of the type's own module `` |
 | `impl i64 { fn hash … }`（内建标量） | 放行 —— 内建类型没有声明者，方法天然由写块的人提供 |
 | trait impl | 走 orphan 规则（块必须在 trait 或类型的家），与 `@ext` 无关 |
+| 两个模块各写一份同名方法 | 拒绝：`` struct `lib::far` has duplicate method `dup` ``，报在**第二份声明所在的文件**，note 指出第一份在哪 |
 
 位置报在**块所在的那个文件**：模块体内的诊断与函数体一样，归它自己的文件。
 标准库自己遵守这条规则；`stdlib/INDEX` 的 `method` 行里，模块列是**提供者**

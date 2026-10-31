@@ -94,6 +94,7 @@ check_err module-root         "in the entry file"
 # `@ext`：扩展别的模块的类型必须写出提供者；块在自己模块里时反过来不许写 ✓
 check_err ext-missing         "extends a type of module"
 check_err ext-own-module      "impl block of the type's own module"
+check_err ext-duplicate       "has duplicate method"
 
 # ⭐ **判据③：诊断里不许出现 mangle 名**（`$` 在 extC 标识符里不合法 ⇒
 #    消息里出现 `$` 就一定是把内部编码漏给了用户 ✗）

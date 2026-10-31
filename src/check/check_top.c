@@ -196,11 +196,16 @@ static void checkDeclarations(Checker *c) {
                 Buf note;
                 bufInit(&note, c->arena);
                 bufPrintf(&note, "a type has one method set and `impl` adds to it, it does not"
-                                 " replace it: the first declaration is at line %d%s",
-                          (ma->body && ma->body->line > 0) ? ma->body->line : 0,
-                          ma->modName ? " of the module that declared it" : "");
+                                 " replace it: the first declaration is at %s:%d",
+                          ma->ctx ? ma->ctx->path : "this file",
+                          (ma->body && ma->body->line > 0) ? ma->body->line : ma->line);
+                /* 报在**第二份声明所在的文件**：一个类型的方法集跨模块合并之后，
+                 * 只写入口文件的行号会把读者带到与这条规则无关的一行。 */
+                Ctx *savedCtx = c->ctx;
+                if (mb->ctx) c->ctx = mb->ctx;
                 ckError(c, mb->line, bufCstr(&note), "struct `%s` has duplicate method `%s`",
                         DN(sd), mb->name);
+                c->ctx = savedCtx;
             }
         }
     }

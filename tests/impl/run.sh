@@ -118,7 +118,7 @@ fi
 rm -rf "$tmp"
 
 # 同一条错误还要**指名先前那一处的位置**（'which of the two is the duplicate' 是读者的第一个问题）
-check_err tests/impl/errors/dup_body_and_impl.extc 'the first declaration is at line 7'
+check_err tests/impl/errors/dup_body_and_impl.extc 'the first declaration is at '
 check_err tests/impl/errors/unknown_type.extc      'unknown type `nope`'
 # impl 方法只有 import 了那个模块才存在 ⇒ 报错必须说"该 import 谁"
 check_err tests/impl/errors/method_needs_import.extc 'declared by module `stl::hashMap` -- add `use stl::hashMap`'

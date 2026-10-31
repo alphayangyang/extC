@@ -1,0 +1,3 @@
+use lib
+@ext
+impl far { fn dup(self: ref far) -> i64 { return 2 } }
