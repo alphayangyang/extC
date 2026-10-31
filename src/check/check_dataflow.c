@@ -43,6 +43,11 @@ static void dfReg(void) { static int done; if (!done) { done = 1; atexit(dfRepor
 #define DFA_MAX_VARS 256     /* bindings tracked per function */
 #define DFA_MAX_FIELDS 4     /* fields tracked per binding, as in the field table */
 #define DFA_ROUNDS 64        /* fixed-point iteration limit for loops */
+/* The walk below is recursive, and every `if` / `while` / `match` frame needs a fact table.
+ * Block nesting is already capped in the parser, but an `else if` chain adds one frame per
+ * arm without adding a block, so this is the bound that keeps a pathological source file
+ * from exhausting the compiler's own stack. */
+#define DFA_MAX_NEST 256     /* deepest statement nesting the analysis walks */
 
 /* One binding's facts. A binding not present in the table has depth 0. */
 typedef struct {
@@ -382,6 +387,19 @@ static bool dfCarriesRef(Checker *c, Expr *e) {
 static void dfStmt(Checker *c, Stmt *s, Facts *f, int depth);
 
 /**
+ * @brief Allocate a zeroed fact table in the checker's arena.
+ *
+ * A `Facts` holds 256 `VarFact` rows and is far too large for a recursive frame, so the
+ * tables a branch or loop needs live in the arena and are released with it.
+ *
+ * @param c  Checker, for the arena.
+ * @return   A zeroed fact table; never NULL.
+ */
+static Facts *dfFactsNew(Checker *c) {
+    return (Facts *)arenaAllocZero(c->arena, sizeof(Facts));
+}
+
+/**
  * @brief Return the binding at the root of a place expression, preferring the one the
  *        checker pinned on the node.
  *
@@ -408,17 +426,19 @@ static Sym *dfRootOf(Checker *c, Expr *e) {
 }
 
 /**
- * @brief Walk the statements of a block in order, passing one plus the block depth.
+ * @brief Walk the statements of a block in order, one nesting level deeper.
  *
- * A non-block statement (NULL or another kind) is handed to `dfStmt` directly.
+ * A non-block statement (NULL or another kind) is handed to `dfStmt` directly, also one
+ * level deeper: `else if` chains produce exactly that shape, and the nesting budget has to
+ * see them.
  *
  * @param c      Checker.
  * @param block  Block to walk; NULL or a non-block degrades to a single statement.
  * @param f      Fact table, updated in place.
- * @param depth  Current block depth; statements inside are walked at `depth + 1`.
+ * @param depth  Current nesting level; statements inside are walked at `depth + 1`.
  */
 static void dfBlock(Checker *c, Stmt *block, Facts *f, int depth) {
-    if (!block || block->kind != ST_BLOCK) { dfStmt(c, block, f, depth); return; }
+    if (!block || block->kind != ST_BLOCK) { dfStmt(c, block, f, depth + 1); return; }
     for (size_t i = 0; i < block->u.block.stmts.len; i++)
         dfStmt(c, *(Stmt **)vecAt(&block->u.block.stmts, i), f, depth + 1);
 }
@@ -434,10 +454,25 @@ static void dfBlock(Checker *c, Stmt *block, Facts *f, int depth) {
  * @param c      Checker.
  * @param s      Statement; NULL does nothing.
  * @param f      Fact table, updated in place.
- * @param depth  Current block depth; incremented when entering a nested block.
+ * @param depth  Current nesting level; one more than the enclosing statement.
  */
 static void dfStmt(Checker *c, Stmt *s, Facts *f, int depth) {
     if (!s) return;
+    /* The walk is recursive and every branch frame owns a fact table, so a source file
+     * nested beyond `DFA_MAX_NEST` is refused here instead of letting the C stack go.
+     * Block nesting is capped in the parser, but an `else if` chain adds a frame per arm
+     * while adding no block. */
+    if (depth > DFA_MAX_NEST) {
+        if (!f->overflow) {
+            f->overflow = true;
+            ctxError(c->ctx, s->line, 1,
+                     "Deeply nested syntax comes from a machine, and the compiler stops at a"
+                     " fixed depth rather than letting its own recursion overflow the C stack.",
+                     "nesting too deep in a block (the compiler's limit is %d levels)",
+                     DFA_MAX_NEST);
+        }
+        return;
+    }
     /*@@all-kinds*/  /* tagged for the walker gate: `dfStmt` is mutually recursive with
                       * `dfBlock`, so the gate's "mentions its own name" test does not
                       * recognise it as a walker. */
@@ -491,32 +526,34 @@ static void dfStmt(Checker *c, Stmt *s, Facts *f, int depth) {
         break;
     }
     case ST_IF: {
-        Facts thenF, elseF;
-        copyFacts(&thenF, f);
-        copyFacts(&elseF, f);
-        dfBlock(c, s->u.ifs.thenBody, &thenF, depth);
-        if (s->u.ifs.elseBody) dfBlock(c, s->u.ifs.elseBody, &elseF, depth);
+        Facts *thenF = dfFactsNew(c);
+        Facts *elseF = dfFactsNew(c);
+        copyFacts(thenF, f);
+        copyFacts(elseF, f);
+        dfBlock(c, s->u.ifs.thenBody, thenF, depth);
+        if (s->u.ifs.elseBody) dfBlock(c, s->u.ifs.elseBody, elseF, depth);
         /* The join: both arms start from the same input facts, so the result is their
          * maximum, not whichever arm was walked last. */
-        joinInto(f, &thenF);
-        joinInto(f, &elseF);
+        joinInto(f, thenF);
+        joinInto(f, elseF);
         break;
     }
     case ST_WHILE: {
         /* Iterate the body until the facts stop growing. Monotone transfer functions
          * over a lattice of finite height guarantee termination; the round limit is a
          * belt-and-braces bound, and reaching it marks the result as incomplete. */
-        Facts saved, body;
+        Facts *saved = dfFactsNew(c);
+        Facts *body = dfFactsNew(c);
         int rounds = 0;
         for (;;) {
-            copyFacts(&saved, f);
-            copyFacts(&body, f);
-            dfBlock(c, s->u.whiles.body, &body, depth);
-            joinInto(f, &body);
+            copyFacts(saved, f);
+            copyFacts(body, f);
+            dfBlock(c, s->u.whiles.body, body, depth);
+            joinInto(f, body);
             rounds++;
             g_dfRounds++;
             if ((long)rounds > g_dfMax) g_dfMax = (long)rounds;
-            if (sameFacts(&saved, f)) break;
+            if (sameFacts(saved, f)) break;
             if (rounds >= DFA_ROUNDS) { f->overflow = true; break; }
         }
         break;
@@ -525,8 +562,9 @@ static void dfStmt(Checker *c, Stmt *s, Facts *f, int depth) {
         dfBlock(c, s, f, depth);
         break;
     case ST_MATCH: {
-        Facts acc, arm;
-        copyFacts(&acc, f);
+        Facts *acc = dfFactsNew(c);
+        Facts *arm = dfFactsNew(c);
+        copyFacts(acc, f);
         for (size_t i = 0; i < s->u.match.arms.len; i++) {
             MatchArm *a = *(MatchArm **)vecAt(&s->u.match.arms, i);
             /* A payload binding holds part of the scrutinee, so give it the depth the
@@ -541,11 +579,11 @@ static void dfStmt(Checker *c, Stmt *s, Facts *f, int depth) {
                 const char *bn = *(const char **)vecAt(&a->binds, k);
                 if (bn) raiseTo(f, bn, sd);
             }
-            copyFacts(&arm, f);
-            dfBlock(c, a->body, &arm, depth);
-            joinInto(&acc, &arm);
+            copyFacts(arm, f);
+            dfBlock(c, a->body, arm, depth);
+            joinInto(acc, arm);
         }
-        joinInto(f, &acc);
+        joinInto(f, acc);
         break;
     }
     case ST_DOMAIN:

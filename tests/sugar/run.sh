@@ -68,7 +68,10 @@ for f in tests/sugar/assign_*.extc; do run_case "$f"; done
 echo "== 3 糖在 match 臂体与 for 头里 =="
 for f in tests/sugar/sugar_*.extc; do run_case "$f"; done
 
-echo "== 4 反例（都必须编译期挡住）=="
+echo "== 4 长 else-if 链：超预算的编译期挡住（合法的长链在 §3 的 sugar_* 里）=="
+check_err tests/errors/elseif_chain_too_deep.extc
+
+echo "== 5 反例（都必须编译期挡住）=="
 for f in tests/errors/multi_*.extc; do check_err "$f"; done
 
 echo "通过 $pass，失败 $fail"
