@@ -466,6 +466,15 @@ typedef struct Checker {
      * the line. Only calls count, because the relative order of allocations, literals
      * and conversions is not observable. */
     int        stmtFx;
+    /* Depth of the expression walk right now, for the "expression too deep" guard.
+     *
+     * The parser bounds *syntactic* nesting (`PARSE_DEPTH_LIMIT` levels of parentheses), but a
+     * flat left-associative chain (`1 + 1 + ... + 1`) builds an AST just as deep without any
+     * nesting in the source, and every recursive pass over that AST -- the checker, the escape
+     * side, the level pass, the code generator -- then descends once per operand. Counting the
+     * walk bounds the depth of whatever the AST turns out to be, so the compiler reports a
+     * diagnostic instead of overflowing the C stack. */
+    int        exprDepth;
     /* Nodes in the current function body whose arena assignment has to be decided again
      * once every effect summary is closed: `new` sites, and the call sites whose
      * allocation arena is still open. After the body has been checked they move to

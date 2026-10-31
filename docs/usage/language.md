@@ -1225,6 +1225,7 @@ fn main() -> i32 {
 | `i8(300)` | 编译通过；运行时 trap `value does not fit in the target type` |
 | `var v: varArray<T>` 上 `v[i]` | `cannot index a value of type 'varArray<i32>'`（用 `get`/`set`/`asSlice`） |
 | 嵌套超过 64 层块 | `nesting too deep in a block (the compiler's limit is 64 levels)` |
+| 表达式树超过 2048 层（`a + a + …` 的长链，或机器生成的表达式） | `expression too deep to check (the compiler's limit is 2048 levels)` |
 
 能写但值得记住的两条：
 

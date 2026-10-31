@@ -17,6 +17,19 @@
 static const char *stdDirSeen = NULL;
 
 /**
+ * @brief Deepest expression tree the checker will walk, in levels.
+ *
+ * The parser bounds nesting in the source, not the depth of the tree it produces: `a + b + c + ...`
+ * is flat to read and a chain of `EX_BIN` nodes one operand long to walk. Every recursive pass over
+ * the tree descends once per level, so past this depth the compile would die of a stack overflow
+ * instead of reporting that the program is too big -- the same reasoning as `PARSE_DEPTH_LIMIT`,
+ * with a larger number because a chain of operations is easier to produce by machine than a chain of
+ * parentheses. 2000 nested operations already fit in the stack of a sanitizer build with room to
+ * spare; this limit leaves that margin.
+ */
+#define EXPR_DEPTH_LIMIT 2048
+
+/**
  * @brief Hand the stdlib directory to the checker, for reading "no such method" hints from `INDEX`.
  *
  * @param stdDir  stdlib directory; the hint reads it on the first miss, on the error path only.
@@ -4932,6 +4945,30 @@ static bool exprHasCall(Checker *c, Expr *e) {
 }
 
 /**
+ * @brief Spend one level of the expression-depth budget.
+ *
+ * A left-associative chain of `n` operands is an AST `n` levels deep, and the passes that follow the
+ * checker (the escape side, the data flow, the level pass, the code generator) descend the same tree.
+ * Bounding the walk here therefore keeps all of them inside the C stack, and the diagnostic names the
+ * constructor the user can act on: splitting the chain.
+ *
+ * @param c  Checker.
+ * @param e  Expression about to be checked, for the diagnostic's line.
+ * @return   `true` when `EXPR_DEPTH_LIMIT` is exceeded (the diagnostic has been reported and this
+ *           level has been given back); `false` otherwise.
+ */
+static bool exprTooDeep(Checker *c, Expr *e) {
+    if (++c->exprDepth <= EXPR_DEPTH_LIMIT) return false;
+    c->exprDepth--;
+    ckError(c, e->line,
+            "An expression tree this deep comes from a machine, and every pass over it is"
+            " recursive: the checker, the escape analysis and the code generator would each"
+            " overflow the C stack. Split the chain with intermediate bindings.",
+            "expression too deep to check (the compiler's limit is %d levels)", EXPR_DEPTH_LIMIT);
+    return true;
+}
+
+/**
  * @brief Check an expression and write its type back onto the node, without dereferencing references.
  *
  * This is the entry point the rest of the checker uses; the result is also left on `e->type`. When the
@@ -4947,7 +4984,9 @@ static bool exprHasCall(Checker *c, Expr *e) {
  */
 Type *checkExpr(Checker *c, Expr *e) {
     if (!e) return ttError(c->tt);
+    if (exprTooDeep(c, e)) return ttError(c->tt);
     Type *t = checkExprInner(c, e);
+    c->exprDepth--;
     /* `!` is deliberately not included here: its operand is an argument to an unwrap helper, the calls inside
      * it execute in place, and the flag is raised as usual. */
     if (exprHasCall(c, e) &&
