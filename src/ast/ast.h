@@ -1391,6 +1391,11 @@ typedef struct {
                                   * checker (each module attaches its own; the *effect* on a
                                   * type is global, which is what enforces coherence) */
     Vec uses;                    /* UseDecl* */
+    /* `module a::b` 写在文件开头时，模块**叫什么**由它决定，文件路径退回物理层：
+     * `stdlib/std/io/fmt.extc` 可以声明 `module std::io::fmt`，于是拆库/搬家不再受
+     * "文件名就是模块名"的约束。没有声明时为 NULL，沿用"路径=模块名"。 */
+    const char *declName;
+    int         declLine;     /* `module` 声明所在行（诊断位置）。 */
     /* Entries mapping a bare name back to its mangled module name (`pair` to
      * `liba$pair`); the loader fills them in and `ttResolve` looks them up. */
     Vec aliases;                 /* Alias* */

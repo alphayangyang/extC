@@ -12,6 +12,8 @@
 #   ⑤ 正例 `qn-array`：**限定名出现在复合类型里**（`[N]a::point`、嵌套数组、`?a::point`、
 #      `ref a::point`、`fn` 参数）也必须解析 —— 修复前 `rwType` 漏了 `inner`，
 #      只有走 `targs` 的那几种能过（发现于写 `std::json`：`var pool: [256]json::node`）
+#   ⑦ 正例 `moddecl`：文件开头 `module fancy::core` 决定模块**叫什么**（生成 C 前缀
+#      `fancy$core`），路径只负责找文件；两条反例：同名声明、入口文件声明 ✓
 #   ⑥ 正例 `facade`：门面模块 `pub use impl::{…}` 再导出后，`api::twice` / `api::pair2`
 #      与 `api::pair2 { … }` 构造照常工作；没被再导出的名字仍不可达（`facade-unlisted` 反例）✓
 #   ④ 正例 `qn-local`：本模块声明了同名函数时，`a::who()` 仍必须调到 **a 的**那个
@@ -23,7 +25,7 @@ EXTC=./build/extc
 fail=0
 
 echo "== 正例（多文件程序：一个模块 = 一个文件）=="
-for d in tests/modules/manydecls tests/modules/impl-stdlib tests/modules/hello tests/modules/chain tests/modules/samenames tests/modules/crossmod tests/modules/namedlit tests/modules/qn-local tests/modules/open tests/modules/selective tests/modules/qn-array tests/modules/export-cross tests/modules/facade; do
+for d in tests/modules/manydecls tests/modules/impl-stdlib tests/modules/hello tests/modules/chain tests/modules/samenames tests/modules/crossmod tests/modules/namedlit tests/modules/qn-local tests/modules/open tests/modules/selective tests/modules/qn-array tests/modules/export-cross tests/modules/facade tests/modules/moddecl; do
     name=$(basename "$d")
     if ! out=$("$EXTC" --run "$d/main.extc" 2>&1); then
         echo "  FAIL $name  ->  编译/运行失败"; echo "$out" | sed 's/^/        /' | head -6; fail=1; continue
@@ -87,6 +89,8 @@ check_err selective-private  "is private to module"
 check_err selective-bare     "is a **name**, not a module"
 # 门面的**边界**：只再导出列出来的名字 —— 实现模块里没被 `pub use` 的名字仍然拿不到 ✓
 check_err facade-unlisted    "has nothing named"
+check_err module-dup          "is also declared by"
+check_err module-root         "in the entry file"
 
 # ⭐ **判据③：诊断里不许出现 mangle 名**（`$` 在 extC 标识符里不合法 ⇒
 #    消息里出现 `$` 就一定是把内部编码漏给了用户 ✗）
@@ -106,7 +110,7 @@ for d in tests/modules/errors/*/ tests/modules/samenames/; do
     fi
 done
 # 正例也不能漏（含跨模块的类型/枚举/泛型实例 —— 那几种最容易漏 ✓）
-for d in tests/modules/manydecls tests/modules/impl-stdlib tests/modules/hello tests/modules/chain tests/modules/samenames tests/modules/crossmod tests/modules/namedlit tests/modules/qn-local tests/modules/open tests/modules/selective tests/modules/qn-array tests/modules/export-cross tests/modules/facade; do
+for d in tests/modules/manydecls tests/modules/impl-stdlib tests/modules/hello tests/modules/chain tests/modules/samenames tests/modules/crossmod tests/modules/namedlit tests/modules/qn-local tests/modules/open tests/modules/selective tests/modules/qn-array tests/modules/export-cross tests/modules/facade tests/modules/moddecl; do
     out=$("$EXTC" "$d/main.extc" -o /dev/null 2>&1 || true)
     if echo "$out" | grep -qE '[A-Za-z0-9_]\$[A-Za-z0-9_]'; then
         echo "  FAIL $(basename "$d")(正例)  ->  输出里出现了 mangle 名（\$）"

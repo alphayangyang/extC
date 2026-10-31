@@ -1,0 +1,6 @@
+// 文件路径是 `moddecl/path_with_decl.extc`，但模块**叫什么**由这条声明决定：
+// 诊断里出现的是 `fancy::core`，生成 C 里的前缀是 `fancy$core`。
+module fancy::core
+
+fn who() -> i64 { return 42 }
+struct point { x: i64  y: i64 }

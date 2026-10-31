@@ -459,6 +459,25 @@ static UseDecl *parseUse(Parser *p) {
  * @param skip  跳过的非换行 token 数（1 = 下一个）。
  * @return      那个 token；越界时返回 `NULL`。
  */
+static Token *takeAfterNewlines(Parser *p) {
+    while (p->pos < p->toks->len) {
+        Token *t = (Token *)vecAt(p->toks, p->pos);
+        if (t->kind != TK_NEWLINE) { p->pos++; return t; }
+        p->pos++;
+    }
+    return NULL;
+}
+
+/**
+ * @brief 从当前位置往后数第 `skip` 个**非换行** token（只看不取）。
+ *
+ * 软关键字（`pub`、`global`、`par`）是普通标识符，识别它们要先看下一个词：`pub use`
+ * 才是一条再导出，`pub` 单独出现就是别的东西。换行在这里是空白，不是 token 边界。
+ *
+ * @param p     解析器。
+ * @param skip  跳过的非换行 token 数（1 = 下一个）。
+ * @return      那个 token；越界时返回 `NULL`。
+ */
 static Token *tokAfterNewlines(Parser *p, size_t skip) {
     size_t i = p->pos;
     while (i < p->toks->len) {
@@ -664,6 +683,32 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
     vecInit(&p.pendingGlobals, arena, sizeof(GlobalDef *));
     skipJunk(&p);
 
+    /* `module a::b`：文件开头的可选声明，决定模块**叫什么**。没有它时沿用"路径=模块名"，
+     * 所以这一步是渐进的 —— 老文件不用动，想要"一个概念一个模块、文件随便怎么摆"的库
+     * 才写它。它必须是文件的第一条声明（`out->declName` 只设一次）。 */
+    if (tokAfterNewlines(&p, 0) && strcmp(tokAfterNewlines(&p, 0)->text, "module") == 0 &&
+        tokAfterNewlines(&p, 1) && tokAfterNewlines(&p, 1)->kind == TK_IDENT) {
+        Token *kw = takeAfterNewlines(&p);
+        Buf path;
+        bufInit(&path, p.arena);
+        Token *seg = take(&p);
+        bufPuts(&path, seg->text);
+        while (at(&p, "::")) {
+            take(&p);
+            Token *nseg = expectTypeName(&p, "a module path segment");
+            if (!nseg) return false;
+            bufPuts(&path, "::");
+            bufPuts(&path, nseg->text);
+        }
+        out->declName = bufCstr(&path);
+        out->declLine = kw->line;
+        skipJunk(&p);
+        if (at(&p, "module")) {
+            ctxError(p.ctx, kw->line, 1, "A file declares its module name once, on its first line.",
+                     "second `module` declaration");
+            return false;
+        }
+    }
     while (!atKind(&p, TK_EOF) && !ctx->hasError) {
         /* `pub use a::b`：把名字**再导出**给导入本模块的人（门面模块用它把实现拆开）。
          * `pub` 只在这个位置有意义，别处的 `pub` 留给将来（现在直接报错，免得读成

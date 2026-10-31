@@ -189,7 +189,10 @@ typedef struct { const char *from; const char *to; } Ren;
 /* One loaded module together with the state of its loading. */
 typedef struct {
     const char *file;       /* resolved path; the unique key for this module */
-    const char *modName;    /* short name (the file name without `.extc`); NULL for the root */
+    const char *modName;    /* 模块**叫什么**：文件里 `module a::b` 声明的名字，或（没有声明时）
+                             * 文件名的最后一段。诊断与裸名可见性用它，NULL 表示根文件。 */
+    const char *flatName;   /* 生成 C 名字用的前缀：`std::io::fmt` -> `std$io$fmt`；
+                             * 与 `modName` 分开是因为 `::` 不是 C 标识符的一部分。 */
     Module      mod;        /* its own parsed declarations, before merging */
     Ctx        *ctx;        /* its own source context, so a diagnostic names the right
                              * file and line. The root unit points at the context the
@@ -287,8 +290,8 @@ static const char *suggestImportPath(Loader *L, const char *spelled) {
  * @return      the prefixed name, or `name` unchanged for the root module.
  */
 static const char *mangleName(Loader *L, ModUnit *u, const char *name) {
-    if (!u->modName || !*u->modName) return name;
-    return arenaPrintf(L->a, "%s$%s", u->modName, name);
+    if (!u->flatName || !*u->flatName) return name;
+    return arenaPrintf(L->a, "%s$%s", u->flatName, name);
 }
 
 /**
@@ -1905,6 +1908,7 @@ static ModUnit *loadUnit(Loader *L, const char *modPath, const char *importerFil
     u = (ModUnit *)arenaAllocZero(L->a, sizeof(ModUnit));
     u->file    = file;
     u->modName = baseNameNoExt(L->a, file);
+    u->flatName = u->modName;
     vecInit(&u->ren, L->a, sizeof(Ren));
     u->state   = 1;                                /* loading */
     moduleInit(&u->mod, L->a);
@@ -1917,6 +1921,22 @@ static ModUnit *loadUnit(Loader *L, const char *modPath, const char *importerFil
     vecInit(&toks, L->a, sizeof(Token));
     lexAll(u->ctx, &toks);
     if (!u->ctx->hasError) parseModule(u->ctx, L->a, &toks, &u->mod);
+    /* `module a::b` 声明了模块**叫什么**：身份（诊断、裸名可见性）用它，生成 C 名字用
+     * 把 `::` 换成 `$` 的扁平形。没有声明时就沿用文件名的最后一段。 */
+    if (!u->ctx->hasError && u->mod.declName) {
+        u->modName  = u->mod.declName;
+        {
+            size_t n = strlen(u->mod.declName);
+            char *fl = (char *)arenaAlloc(L->a, n + 1);
+            size_t w = 0;
+            for (size_t i = 0; i < n; i++) {
+                if (u->mod.declName[i] == ':') { fl[w++] = '$'; if (i + 1 < n && u->mod.declName[i + 1] == ':') i++; }
+                else fl[w++] = u->mod.declName[i];
+            }
+            fl[w] = 0;
+            u->flatName = fl;
+        }
+    }
     if (dbgOn("EXTC_DBG_MOD"))
         fprintf(stderr, "[mod] loaded %s: %zu tokens, %zu funcs, %zu globals\n",
                 file, toks.len, u->mod.funcs.len, u->mod.globals.len);
@@ -2147,6 +2167,33 @@ bool loadModules(Arena *a, Module *out, Module *rootm, Ctx *rootCtx,
             if (same) continue;                /* the same entry, from importing one module twice */
             Alias *al = (Alias *)vecPush(&out->aliases);
             al->from = r->from;  al->to = r->to;
+        }
+    }
+
+    /* `module` 声明的两条边界：
+     *   ① 入口文件是**调用者**，不属于它导入的任何模块 —— 给它起名字没有意义，静默忽略
+     *      更糟（读者会以为生效了）；
+     *   ② 两个文件声明同一个模块名必须报错：模块名是身份，撞名会让裸名可见性与扁平名
+     *      混在一起，而这是编译期就该拦住的事。 */
+    if (rootm->declName) {
+        ctxError(rootCtx, rootm->declLine, 1,
+                 "The entry file is not a module of its own -- it is the program. Move the"
+                 " declaration into a library file.",
+                 "`module %s` in the entry file", rootm->declName);
+        L.errors++;
+    }
+    for (size_t i = 0; i < L.units.len; i++) {
+        ModUnit *a = *(ModUnit **)vecAt(&L.units, i);
+        if (!a->mod.declName) continue;
+        for (size_t j = 0; j < i; j++) {
+            ModUnit *b = *(ModUnit **)vecAt(&L.units, j);
+            if (!b->mod.declName || strcmp(a->mod.declName, b->mod.declName) != 0) continue;
+            ctxError(a->ctx, a->mod.declLine, 1,
+                     "Two files cannot declare the same module name: a module is one file, and"
+                     " its name is its identity.",
+                     "`module %s` is also declared by %s", a->mod.declName, b->file);
+            L.errors++;
+            break;
         }
     }
 

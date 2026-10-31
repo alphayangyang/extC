@@ -1,0 +1,2 @@
+module shared::name
+fn a() -> i64 { return 1 }

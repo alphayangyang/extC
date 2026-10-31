@@ -1,0 +1,10 @@
+// expect: who=42|sum=7
+use std::io
+use path_with_decl as api
+
+fn main() -> i32 {
+    io::println(f"who={api::who()}")
+    let p: api::point = api::point { x: 3, y: 4 }
+    io::println(f"sum={api::who() - 35}")
+    return 0
+}
