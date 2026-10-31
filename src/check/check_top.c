@@ -10,8 +10,8 @@
 #include "dbg.h"
 #include "check_internal.h"
 #include "typelayer.h"   /* the pool questions below are shared with codegen */
-#include "plan.h"          /* 计划/分析产物：写入经 setter，读取经访问器（X2）*/
-/* Defined further down; the call-site publication needs it (INV-K / ). */
+#include "plan.h"          /* plan/analysis products: written through setters, read through accessors */
+/* Defined further down; the call-site publication needs it (INV-K). */
 static void noteFieldSrc(Checker *c, Sym *root, const char *field, int d2, Expr *src);
 #include "dataflow.h"
 #include <stdlib.h>
@@ -23,34 +23,37 @@ static void noteFieldSrc(Checker *c, Sym *root, const char *field, int d2, Expr 
 #include <time.h>
 
 /**
- * @brief 计时开关是否打开（环境变量 `EXTC_DBG_TIME`），只读一次环境。
+ * @brief Whether phase timing is enabled (environment variable `EXTC_DBG_TIME`).
  *
- * @return  打开时为 1，关闭时为 0。
+ * The environment is read only once.
+ *
+ * @return  1 when enabled; 0 otherwise.
  */
 static int ctOn(void) { static int v = -1; if (v < 0) v = getenv("EXTC_DBG_TIME") != NULL; return v; }
 
 /**
- * @brief 进程 CPU 时间，秒。
+ * @brief Process CPU time in seconds.
  *
- * @return  自进程启动以来消耗的 CPU 秒数。
+ * @return  CPU seconds consumed since process start.
  */
 static double ctNow(void) { return (double)clock() / (double)CLOCKS_PER_SEC; }
 
 /**
- * @brief 打一行阶段耗时；开关关着时什么都不做。
+ * @brief Print one phase's elapsed time; does nothing while the switch is off.
  *
- * @param n   阶段名。
- * @param t0  阶段开始时的 CPU 秒数。
+ * @param n   Phase name.
+ * @param t0  CPU seconds at the start of the phase.
  */
 static void ctPhase(const char *n, double t0) { if (ctOn()) fprintf(stderr, "[time] %-9s %.3f s\n", n, ctNow() - t0); }
 
 /**
- * @brief 取一个函数或方法可见的类型参数列表。
+ * @brief Fetch the type parameter list visible to a function or method.
  *
- * 方法看它所在 struct 的类型参数，自由函数看自己的；函数体里解析类型的地方都只问这一处。
+ * A method sees its owning struct's type parameters, a free function its own; every place in a
+ * function body that resolves a type asks only here.
  *
- * @param f  函数或方法；NULL 允许。
- * @return   要实例化的参数表；不是泛型时返回 NULL。
+ * @param f  Function or method; NULL allowed.
+ * @return   The parameter table to instantiate; NULL when not generic.
  */
 Vec *funcTParams(FuncDef *f) {
     if (!f) return NULL;
@@ -62,11 +65,11 @@ Vec *funcTParams(FuncDef *f) {
 /* Forward declarations: the effect-summary walk and the escape analysis call each
  * other, so one of them has to be declared ahead of its definition. */
 /**
- * @brief 判断两个声明是否来自同一个模块。
+ * @brief Tell whether two declarations come from the same module.
  *
- * @param a  模块名；NULL 表示根文件（或 prelude）。
- * @param b  模块名；NULL 表示根文件（或 prelude）。
- * @return   两个都为 NULL、或名字相同时返回 true；否则 false。
+ * @param a  Module name; NULL means the root file (or the prelude).
+ * @param b  Module name; NULL means the root file (or the prelude).
+ * @return   True when both are NULL or the names are equal; false otherwise.
  */
 static bool sameModule(const char *a, const char *b) {
     if (a == b) return true;
@@ -74,19 +77,20 @@ static bool sameModule(const char *a, const char *b) {
     return strcmp(a, b) == 0;
 }
 
-static int  paramIndexByName(FuncDef *f, const char *name);   /* 只在只有名字时用；有表达式用 paramIndexOfExpr */
+static int  paramIndexByName(FuncDef *f, const char *name);   /* only used when only a name is available; use `paramIndexOfExpr` when an expression is available */
 static bool exprIsFresh(Expr *e);   /* used by the call-site publication (INV-K) */
 
 /* ------------------------------------------------------------------- top level */
 
 /**
- * @brief 就地解析一个签名里写到的所有类型。
+ * @brief Resolve every type named in a signature, in place.
  *
- * 在任何函数体被检查之前跑完，之后的检查不必再解析类型名。签名里的类型名属于声明它的文件，
- * 因此在那个文件的上下文（`FuncDef.ctx`）下解析。
+ * Runs before any function body is checked, so later checking does not have to resolve type names.
+ * The type names in a signature belong to the file that declares it, so they are resolved under
+ * that file's context (`FuncDef.ctx`).
  *
- * @param c  checker（类型表与解析用的模块上下文）。
- * @param f  参数与返回类型就地解析的函数。
+ * @param c  Checker (type table and the module context used for resolution).
+ * @param f  Function whose parameter and return types are resolved in place.
  */
 void resolveSignature(Checker *c, FuncDef *f) {
     /* A method sees the type parameters of the struct it belongs to; a free function
@@ -107,12 +111,14 @@ void resolveSignature(Checker *c, FuncDef *f) {
 }
 
 /**
- * @brief 拒绝模块声明之间的重名。
+ * @brief Reject duplicate names among module-level declarations.
  *
- * 名字在作用域表里按字符串查找，重名会静默遮蔽另一条定义而不是被报告；每类声明各自比较，
- * 诊断才能点出冲突的那一对。错误报在较晚那条声明的行上。
+ * Names are looked up in the scope table by string, so a duplicate silently shadows the other
+ * definition instead of being reported; each declaration kind is compared separately so the
+ * diagnostic can name the conflicting pair. The error is reported at the line of the later
+ * declaration.
  *
- * @param c  checker。
+ * @param c  Checker.
  */
 static void checkDeclarations(Checker *c) {
     Module *m = c->m;
@@ -199,8 +205,8 @@ static void checkDeclarations(Checker *c) {
                                  " replace it: the first declaration is at %s:%d",
                           ma->ctx ? ma->ctx->path : "this file",
                           (ma->body && ma->body->line > 0) ? ma->body->line : ma->line);
-                /* 报在**第二份声明所在的文件**：一个类型的方法集跨模块合并之后，
-                 * 只写入口文件的行号会把读者带到与这条规则无关的一行。 */
+                /* Reported at the file of the **second declaration**: after a type's method set is merged across
+ * modules, using the entry file's line would point the reader at a line unrelated to this rule. */
                 Ctx *savedCtx = c->ctx;
                 if (mb->ctx) c->ctx = mb->ctx;
                 ckError(c, mb->line, bufCstr(&note), "struct `%s` has duplicate method `%s`",
@@ -327,13 +333,14 @@ static void checkDeclarations(Checker *c) {
 }
 
 /**
- * @brief 检查方法的形状：声明在哪里、`self` 是什么。
+ * @brief Check the shape of a method: where it is declared and what `self` is.
  *
- * 作用于值的函数必须声明在 struct 里；`==` 这类运算符就是这种函数，写在 struct 外是错误，
- * 而不是一个恰好叫 `==` 的自由函数。
+ * A function that operates on a value must be declared inside a struct; operators such as `==` are
+ * such functions, so writing one outside a struct is an error rather than a free function that
+ * happens to be named `==`.
  *
- * @param c  checker。
- * @param f  要检查的函数；自由函数的 `f->owner` 为 NULL。
+ * @param c  Checker.
+ * @param f  Function to check; `f->owner` is NULL for a free function.
  */
 static void checkMethodShape(Checker *c, FuncDef *f) {
     if (!f->owner) {
@@ -422,13 +429,14 @@ typedef struct {
 
 static bool hasNewInStmt(void *ctx, Stmt *s);
 /**
- * @brief 判断表达式里是否含 `new` 或 `alloc<T>(n)`。
+ * @brief Tell whether an expression contains `new` or `alloc<T>(n)`.
  *
- * 遍历走 `astWalkExprChildren` / `astWalkStmtChildren`，AST 种类只在那里列一次。
+ * The walk goes through `astWalkExprChildren` / `astWalkStmtChildren`, so AST kinds are listed only
+ * there.
  *
- * @param ctx  未使用。
- * @param e    表达式。
- * @return     回调语义：找到返回 false 以停止遍历，否则返回 true。
+ * @param ctx  Unused.
+ * @param e    Expression.
+ * @return     Callback convention: false to stop the walk when found, true otherwise.
  */
 static bool hasNewInExpr(void *ctx, Expr *e) {
     (void)ctx;
@@ -438,11 +446,11 @@ static bool hasNewInExpr(void *ctx, Expr *e) {
 }
 
 /**
- * @brief `hasNewInExpr` 的语句版遍历回调。
+ * @brief Statement-side walk callback for `hasNewInExpr`.
  *
- * @param ctx  未使用；本问题不需要上下文。
- * @param s    语句。
- * @return     回调语义：找到返回 false 以停止遍历，否则返回 true。
+ * @param ctx  Unused; this question needs no context.
+ * @param s    Statement.
+ * @return     Callback convention: false to stop the walk when found, true otherwise.
  */
 static bool hasNewInStmt(void *ctx, Stmt *s) {
     (void)ctx;                              /* this question needs no context */
@@ -451,10 +459,10 @@ static bool hasNewInStmt(void *ctx, Stmt *s) {
 }
 
 /**
- * @brief 判断表达式里是否含 `new` 或 `alloc<T>(n)`。
+ * @brief Tell whether an expression contains `new` or `alloc<T>(n)`.
  *
- * @param e  表达式；NULL 返回 false。
- * @return   含则 true。
+ * @param e  Expression; NULL returns false.
+ * @return   True when it does.
  */
 static bool exprHasNew(Expr *e) {
     if (!e) return false;
@@ -462,10 +470,10 @@ static bool exprHasNew(Expr *e) {
 }
 
 /**
- * @brief 判断语句里是否含 `new` 或 `alloc<T>(n)`。
+ * @brief Tell whether a statement contains `new` or `alloc<T>(n)`.
  *
- * @param s  语句；NULL 返回 false。
- * @return   含则 true。
+ * @param s  Statement; NULL returns false.
+ * @return   True when it does.
  */
 static bool stmtHasNew(Stmt *s) {
     if (!s) return false;
@@ -533,23 +541,24 @@ static bool stmtHasNew(Stmt *s) {
 typedef struct { bool (*takesHomeArena)(const FuncDef *); } HomeQ;
 
 /**
- * @brief 这个函数是否会（传递地）走到某个接收 home arena 的被调者。
+ * @brief Whether this function reaches, transitively, a callee that takes a home arena.
  *
- * 保守的那一问，决定本函数体是否需要自己的 home arena。
+ * The conservative question that decides whether this function body needs a home arena of its own.
  *
- * @param f  函数定义。
- * @return   需要时为 `true`；`f` 为 NULL 时为 `false`。
+ * @param f  Function definition.
+ * @return   True when needed; false when `f` is NULL.
  */
 static bool reachesHomeArenaTaker(const FuncDef *f) { return f && anNeedsHome(f); }
 
 /**
- * @brief 这个节点是不是一个"带被调者"的调用形状。
+ * @brief Whether this node is a call shape that carries a callee.
  *
- * 三种调用形状加两种运算符：运算符在检查通过后与方法调用同形（`planCallee` 指向被选中的
- * 运算符方法），因此凡是"问被调者"的遍历都要认它们。
+ * Three call shapes plus two operators: after checking passes, an operator has the same shape as a
+ * method call (`planCallee` points at the selected operator method), so every walk that asks for
+ * the callee must accept them.
  *
- * @param e  表达式。
- * @return   是调用形状则为 `true`。
+ * @param e  Expression.
+ * @return   True when it is a call shape.
  */
 static bool exprCarriesCallee(const Expr *e) {
     if (!e) return false;
@@ -560,21 +569,21 @@ static bool exprCarriesCallee(const Expr *e) {
 static bool needsHomeInStmt(void *ctx, Stmt *s);
 
 /**
- * @brief 判断表达式是否调用到满足给定谓词的被调者。
+ * @brief Tell whether an expression calls a callee that satisfies the given predicate.
  *
- * 谓词由调用方给出：`reachesHomeArenaTaker` 问“能否到达需要 home arena 的被调者”，
- * `funcTakesHomeArena` 问“被调者自己是否收 home arena”。
+ * The predicate comes from the caller: `reachesHomeArenaTaker` asks "can a callee that needs a home
+ * arena be reached", `funcTakesHomeArena` asks "does the callee itself take a home arena".
  *
- * @param ctx  `HomeQ *`，携带被调者谓词。
- * @param e    表达式。
- * @return     回调语义：找到返回 false 以停止遍历，否则返回 true。
+ * @param ctx  `HomeQ *`, carrying the callee predicate.
+ * @param e    Expression.
+ * @return     Callback convention: false to stop the walk when found, true otherwise.
  */
 static bool needsHomeInExpr(void *ctx, Expr *e) {
     HomeQ *q = (HomeQ *)ctx;
-    /* 运算符**就是**方法调用（`EX_BIN`/`EX_UN` 上带着 `planCallee`），所以这一组必须收它们：
-     * 漏掉时，一个只靠运算符调到"要 home arena 的被调者"的函数不会被标上 `needsHome`，
-     * 定义侧不发 `__extc_home`，而调用侧照样按家 arena 传 ⇒ 生成的 C 里 `__extc_a` /
-     * `__extc_home` 未声明。 */
+    /* Operators ARE method calls (`planCallee` sits on `EX_BIN`/`EX_UN`), so this group must accept
+ * them: otherwise a function that only reaches a home-arena-taking callee through an operator is not
+ * marked `needsHome`, the definition does not emit `__extc_home`, while the call site still passes
+ * the home arena ⇒ the generated C has an undeclared `__extc_a` / `__extc_home`. */
     if (exprCarriesCallee(e) && planCallee(e) && q->takesHomeArena(planCallee(e)))
         return false;                       /* found: stop the walk */
     AstVisit v = { needsHomeInExpr, needsHomeInStmt, ctx };
@@ -582,11 +591,11 @@ static bool needsHomeInExpr(void *ctx, Expr *e) {
 }
 
 /**
- * @brief `needsHomeInExpr` 的语句版遍历回调。
+ * @brief Statement-side walk callback for `needsHomeInExpr`.
  *
- * @param ctx  `HomeQ *`，携带被调者谓词。
- * @param s    语句。
- * @return     回调语义：找到返回 false 以停止遍历，否则返回 true。
+ * @param ctx  `HomeQ *`, carrying the callee predicate.
+ * @param s    Statement.
+ * @return     Callback convention: false to stop the walk when found, true otherwise.
  */
 static bool needsHomeInStmt(void *ctx, Stmt *s) {
     AstVisit v = { needsHomeInExpr, needsHomeInStmt, ctx };
@@ -594,13 +603,14 @@ static bool needsHomeInStmt(void *ctx, Stmt *s) {
 }
 
 /**
- * @brief 判断语句里是否有调用满足给定的 `takesHomeArena` 谓词。
+ * @brief Tell whether a statement has a call that satisfies the given `takesHomeArena` predicate.
  *
- * 只在调用已解析后有效：遍历读 `planCallee(e)`，由 checker 在解析调用时填入。
+ * Only valid after calls have been resolved: the walk reads `planCallee(e)`, which the checker fills
+ * in when it resolves a call.
  *
- * @param s               语句；NULL 返回 false。
- * @param takesHomeArena  被调者谓词。
- * @return                找到则 true。
+ * @param s               Statement; NULL returns false.
+ * @param takesHomeArena  Callee predicate.
+ * @return                True when found.
  */
 static bool stmtCallsNeedsHome(Stmt *s, bool (*takesHomeArena)(const FuncDef *)) {
     if (!s) return false;
@@ -629,11 +639,11 @@ typedef struct { const char *cname; } CnameCtx;
 static bool cnameInStmt(void *ctx, Stmt *s);
 
 /**
- * @brief 判断表达式是否引用生成名为 `cname` 的绑定。
+ * @brief Tell whether an expression references the binding whose generated name is `cname`.
  *
- * @param ctx  `CnameCtx *`，携带要比较的生成名。
- * @param e    表达式。
- * @return     回调语义：命中返回 false 以停止遍历，否则返回 true。
+ * @param ctx  `CnameCtx *`, carrying the generated name to compare.
+ * @param e    Expression.
+ * @return     Callback convention: false to stop the walk on a hit, true otherwise.
  */
 static bool cnameInExpr(void *ctx, Expr *e) {
     CnameCtx *c = (CnameCtx *)ctx;
@@ -644,11 +654,11 @@ static bool cnameInExpr(void *ctx, Expr *e) {
 }
 
 /**
- * @brief `cnameInExpr` 的语句版遍历回调。
+ * @brief Statement-side walk callback for `cnameInExpr`.
  *
- * @param ctx  `CnameCtx *`，携带要比较的生成名。
- * @param s    语句。
- * @return     回调语义：命中返回 false 以停止遍历，否则返回 true。
+ * @param ctx  `CnameCtx *`, carrying the generated name to compare.
+ * @param s    Statement.
+ * @return     Callback convention: false to stop the walk on a hit, true otherwise.
  */
 static bool cnameInStmt(void *ctx, Stmt *s) {
     AstVisit v = { cnameInExpr, cnameInStmt, ctx };
@@ -656,14 +666,15 @@ static bool cnameInStmt(void *ctx, Stmt *s) {
 }
 
 /**
- * @brief 判断语句是否读取了生成名为 `cname` 的绑定。
+ * @brief Tell whether a statement reads the binding whose generated name is `cname`.
  *
- * 只用于一个问题：某个参数是否被读过。比较的是**生成名**，因此遮蔽参数的同名局部
- * （生成名带 `__2` 后缀）不会被误认。
+ * Used for one question only: whether a parameter is read at all. The comparison is on the
+ * **generated** name, so a shadowing local of the same source name (whose generated name carries the
+ * `__2` suffix) is not mistaken for the parameter.
  *
- * @param s      语句；NULL 返回 false。
- * @param cname  生成 C 名。
- * @return       读取过则 true。
+ * @param s      Statement; NULL returns false.
+ * @param cname  Generated C name.
+ * @return       True when it is read.
  */
 static bool stmtUsesCname(Stmt *s, const char *cname) {
     if (!s) return false;
@@ -672,20 +683,21 @@ static bool stmtUsesCname(Stmt *s, const char *cname) {
 }
 
 /**
- * @brief 这条语句里是否有调用会（传递地）走到接收 home arena 的被调者。
+ * @brief Whether a statement has a call that reaches, transitively, a callee taking a home arena.
  *
- * @param body  语句。
- * @return      有则 `true`。
+ * @param body  Statement.
+ * @return      True when there is one.
  */
 static bool callsNeedsHome(Stmt *body) { return stmtCallsNeedsHome(body, reachesHomeArenaTaker); }
 
 /**
- * @brief 精确那一问：这条语句里是否**直接**调用接收 home arena 的函数。
+ * @brief The exact question: whether this statement **directly** calls a function that takes a home
+ *        arena.
  *
- * 用的是共享 accessor `funcTakesHomeArena`，与代码生成问的是同一处拼写。
+ * Uses the shared accessor `funcTakesHomeArena`, the same spelling codegen asks.
  *
- * @param body  语句。
- * @return      有则 `true`。
+ * @param body  Statement.
+ * @return      True when there is one.
  */
 static bool callsUsesHome(Stmt *body)  { return stmtCallsNeedsHome(body, funcTakesHomeArena); }
 
@@ -721,11 +733,11 @@ typedef enum {
 typedef struct { Module *m; TypeTable *tt; Checker *c; } CloseCtx;
 
 /**
- * @brief 读取一个函数在给定 reach 性质上的标志。
+ * @brief Read a function's flag for the given reach property.
  *
- * @param f  函数定义。
- * @param k  要读的性质。
- * @return   该性质当前的值。
+ * @param f  Function definition.
+ * @param k  Property to read.
+ * @return   Current value of that property.
  */
 static bool getReach(const FuncDef *f, ReachKind k) {
     switch (k) {
@@ -738,11 +750,11 @@ static bool getReach(const FuncDef *f, ReachKind k) {
 }
 
 /**
- * @brief 写入一个函数在给定 reach 性质上的标志。
+ * @brief Write a function's flag for the given reach property.
  *
- * @param f  函数定义。
- * @param k  要写的性质。
- * @param v  新值。
+ * @param f  Function definition.
+ * @param k  Property to write.
+ * @param v  New value.
  */
 static void setReach(FuncDef *f, ReachKind k, bool v) {
     switch (k) {
@@ -754,13 +766,13 @@ static void setReach(FuncDef *f, ReachKind k, bool v) {
 }
 
 /**
- * @brief 判断函数体是否**直接**触达给定性质的被调者。
+ * @brief Tell whether a function body **directly** reaches a callee with the given property.
  *
- * 传递部分由 `closeReach` 的固定点负责。
+ * The transitive part is left to the fixed point in `closeReach`.
  *
- * @param f  函数定义。
- * @param k  要问的性质。
- * @return   直接触达则 true。
+ * @param f  Function definition.
+ * @param k  Property to ask about.
+ * @return   True when it reaches one directly.
  */
 static bool bodyReaches(FuncDef *f, ReachKind k) {
     switch (k) {
@@ -785,13 +797,14 @@ static bool bodyReaches(FuncDef *f, ReachKind k) {
 }
 
 /**
- * @brief 反复跑同一轮闭包，直到某一轮什么都没改。
+ * @brief Re-run the same closure round until one round changes nothing.
  *
- * 规则单调、格有限，所以得到的是**最小**不动点，而不只是某个一致解。
+ * The rule is monotone and the lattice is finite, so the result is the **least** fixed point, not
+ * merely some consistent solution.
  *
- * @param cx     闭包上下文。
- * @param k      要闭合的属性。
- * @param round  跑一轮的函数；这一轮有变化就由它把 `*changed` 置真。
+ * @param cx     Closure context.
+ * @param k      Property to close.
+ * @param round  Function that runs one round; it sets `*changed` when the round changed anything.
  */
 static void closeReach(CloseCtx *cx, ReachKind k,
                        void (*round)(CloseCtx *cx, ReachKind k, bool *changed)) {
@@ -803,12 +816,13 @@ static void closeReach(CloseCtx *cx, ReachKind k,
 }
 
 /**
- * @brief 对模块的自由函数与各 struct 的方法做一轮 reach 传播。
+ * @brief Run one round of reach propagation over a module's free functions and each struct's
+ *        methods.
  *
- * @param cx          关闭上下文。
- * @param k           要传播的性质。
- * @param changed     本轮有改动时置 true。
- * @param skipExtern  跳过 `extern!`：它没有函数体可走。
+ * @param cx          Closure context.
+ * @param k           Property to propagate.
+ * @param changed     Set to true when this round changed anything.
+ * @param skipExtern  Skip `extern!`, which has no body to walk.
  */
 static void roundOverModule(CloseCtx *cx, ReachKind k, bool *changed, bool skipExtern) {
     Module *m = cx->m;
@@ -827,10 +841,12 @@ static void roundOverModule(CloseCtx *cx, ReachKind k, bool *changed, bool skipE
             if (bodyReaches(f, k)) { setReach(f, k, true); *changed = true; }
         }
     }
-    /* `impl` 块里**声明**的方法也要走一轮：它们住在 `m->impls`，不在 `m->funcs` 也不在
-     * 被扩展类型的 `methods` 里（块可以写在另一个模块）。漏掉它们的表现是：方法体里调用
-     * 一个需要 home arena 的被调者，`needsHome` 传不进来 ⇒ 定义侧不发 `__extc_home` 形参，
-     * 而调用侧仍按块层级发 `&__extc_a[0]` ⇒ 生成的 C 里 `__extc_a` 未声明。 */
+    /* Methods **declared** in an `impl` block need a round too: they live in `m->impls`, not in
+ * `m->funcs` and not in the extended type's `methods` (the block may sit in another module).
+ * Missing them shows up as: a method body calls a callee that needs a home arena but `needsHome`
+ * does not propagate in ⇒ the definition side does not emit the `__extc_home` parameter, while the
+ * call site still passes `&__extc_a[0]` for the block level ⇒ the generated C has an undeclared
+ * `__extc_a`. */
     for (size_t i = 0; i < m->impls.len; i++) {
         ImplDef *im = *(ImplDef **)vecAt(&m->impls, i);
         for (size_t j = 0; j < im->methods.len; j++) {
@@ -843,22 +859,22 @@ static void roundOverModule(CloseCtx *cx, ReachKind k, bool *changed, bool skipE
 }
 
 /**
- * @brief `needsHome` 的一轮传播：走模块的自由函数与方法，跳过 extern。
+ * @brief One `needsHome` round: walk the module's free functions and methods, skipping extern.
  *
- * @param cx       关闭上下文。
- * @param k        性质（`REACH_HOME`）。
- * @param changed  本轮有改动时置 true。
+ * @param cx       Closure context.
+ * @param k        Property (`REACH_HOME`).
+ * @param changed  Set to true when this round changed anything.
  */
 static void roundNeedsHome(CloseCtx *cx, ReachKind k, bool *changed) {
     roundOverModule(cx, k, changed, true);      /* an extern has no body to walk */
 }
 
 /**
- * @brief `usesHome` 的一轮传播：走模块的自由函数与方法，跳过 extern。
+ * @brief One `usesHome` round: walk the module's free functions and methods, skipping extern.
  *
- * @param cx       关闭上下文。
- * @param k        性质（`REACH_USES_HOME`）。
- * @param changed  本轮有改动时置 true。
+ * @param cx       Closure context.
+ * @param k        Property (`REACH_USES_HOME`).
+ * @param changed  Set to true when this round changed anything.
  */
 static void roundUsesHome(CloseCtx *cx, ReachKind k, bool *changed) {
     roundOverModule(cx, k, changed, true);
@@ -878,13 +894,13 @@ static void roundMakesPool(CloseCtx *cx, ReachKind k, bool *changed);   /* defin
  *     pool at all?"), and walks nested blocks, which each have a zone of their own;
  */
 /**
- * @brief 数一个函数体里 `@overwrite` 站点的个数。
+ * @brief Count the `@overwrite` sites in a function body.
  *
- * 顺序必须与 codegen 的 `collectOwSites` 一致：两边按源码序遍历同一棵树，第 n 个站点对应
- * 第 n 个格子。
+ * The order must match codegen's `collectOwSites`: both walk the same tree in source order, so site
+ * n maps to slot n.
  *
- * @param s  函数体。
- * @return   `@overwrite` 绑定的个数。
+ * @param s  Function body.
+ * @return   Number of `@overwrite` bindings.
  */
 static int countOwSites(Stmt *s) {
 
@@ -910,16 +926,17 @@ static int countOwSites(Stmt *s) {
 }
 
 /**
- * @brief 判断函数是否能通过被调者回到自身。
+ * @brief Tell whether a function can reach itself through its callees.
  *
- * 能重入自身的函数需要每个激活一个 `@overwrite` 格子：共用一个格子时，嵌套调用会覆盖仍在
- * 运行的那个激活的存储。保守方向是“是”：被调者记录为 NULL 也答 true，代价只是每个激活多
- * 一个格子；走超过 64 跳即停并答 true，环不会溢出栈。
+ * A function that can re-enter itself needs one `@overwrite` slot per activation: with a shared slot
+ * a nested call overwrites the storage of the activation that is still running. The conservative
+ * direction is "yes": a callee recorded as NULL answers true too, at the cost of one more slot per
+ * activation; the walk stops after 64 hops and answers true, so a cycle cannot overflow the stack.
  *
- * @param c      未使用；遍历只读 `FuncDef` 里记录的调用图。
- * @param f      要测的函数。
- * @param depth  已走过的调用图跳数，用于环守卫。
- * @return       能回到自身或无法判定时 true。
+ * @param c      Unused; the walk only reads the call graph recorded on `FuncDef`.
+ * @param f      Function to test.
+ * @param depth  Call-graph hops already taken, for the cycle guard.
+ * @return       True when it can reach itself or the answer cannot be decided.
  */
 static bool funcReachesItself(Checker *c, FuncDef *f, int depth) {
     if (depth > 64) return true;                      /* guard against a cycle: assume re-entrant */
@@ -933,26 +950,28 @@ static bool funcReachesItself(Checker *c, FuncDef *f, int depth) {
 }
 
 /**
- * @brief 取一个 place 表达式根标识符的名字。
+ * @brief Fetch the name of a place expression's root identifier.
  *
- * 需要它才能判定 `*head = cell`、`l.head = cell`、`l.buf[i] = cell` 是否落在参数侧。
- * 引用型绑定（`?ref node`）不能再借出，所以出参约定上包一层 struct。
+ * Needed to decide whether `*head = cell`, `l.head = cell` or `l.buf[i] = cell` lands on the
+ * parameter side. A reference-typed binding (`?ref node`) cannot be lent out, so the out
+ * parameter convention wraps it in a struct.
  *
- * @param e  place 表达式；NULL 允许。
- * @return   根标识符的名字；不是 place（字面量、调用等）时 NULL。
+ * @param e  Place expression; NULL allowed.
+ * @return   The root identifier's name; NULL when it is not a place (a literal, a call, ...).
  */
 const char *placeRootName(Expr *e) {
-    /* 问题④：根的**语法名字**（诊断与老接口）。掩码 = FIELD|INDEX|DEREF，不解析 ——
-     * 所以它对未解析的节点也能用，这正是它与 `placeRoot` 的关键差别。*/
+    /* Question 4: the root's **syntactic name**, for diagnostics and simple callers. The mask is
+ * FIELD|INDEX|DEREF and nothing is resolved -- so it also works on unresolved nodes, which is the key
+ * difference from `placeRoot`. */
     Expr *leaf = extcRootLeaf(e, EXTC_ROOT_FIELD | EXTC_ROOT_INDEX | EXTC_ROOT_DEREF, 0);
     return leaf ? leaf->u.ident.name : NULL;
 }
 /**
- * @brief 判断名字 `n` 是否为 `f` 的参数。
+ * @brief Tell whether the name `n` is a parameter of `f`.
  *
- * @param f  要搜索的函数。
- * @param n  要查找的名字。
- * @return   有同名参数则 true。
+ * @param f  Function to search.
+ * @param n  Name to look for.
+ * @return   True when a parameter has that name.
  */
 static bool isParamName(FuncDef *f, const char *n) {
     for (size_t i = 0; i < f->params.len; i++)
@@ -961,14 +980,16 @@ static bool isParamName(FuncDef *f, const char *n) {
 }
 
 /**
- * @brief 判断一个值表达式是否可能携带引用。
+ * @brief Tell whether a value expression may carry a reference.
  *
- * 不要写成两个互相调用的函数：两个问题（类型能否带引用 / 表达式的结果能否带引用）都由这
- * 一个递归函数回答，每种表达式只在自己的分支里递归。
+ * Do not split this into two mutually recursive functions: both questions (whether a type can carry
+ * a reference, and whether an expression's result can carry one) are answered by this one recursive
+ * function, and each expression kind recurses only in its own branch.
  *
- * @param v  值表达式；NULL 答 false。
- * @return   可能携带活引用时 true。答案过近似：不透明形状答 true，最多多要一个 home arena，
- *           但不会漏掉真正存在的引用。
+ * @param v  Value expression; NULL answers false.
+ * @return   True when it may carry a live reference. The answer over-approximates: an opaque shape
+ *           answers true, which may ask for one more home arena but never misses a reference that
+ *           really exists.
  */
 static bool valueMayCarryRef(Expr *v) {
     if (!v) return false;
@@ -1016,15 +1037,17 @@ static bool valueMayCarryRef(Expr *v) {
 }
 
 /**
- * @brief 判断函数体是否向经由参数到达的地方写入。
+ * @brief Tell whether a function body writes into a place reachable through its parameters.
  *
- * 与 `valueMayCarryRef` 一起决定函数是否需要 home arena：经由出参的写入
- * （`fn push(head: mut ref ?ref node) { *head = cell }`）必须把分配放进调用者的 arena。
+ * Together with `valueMayCarryRef` this decides whether the function needs a home arena: a write
+ * through an out parameter (`fn push(head: mut ref ?ref node) { *head = cell }`) must allocate in
+ * the caller's arena.
  *
- * @param c  checker。
- * @param s  要遍历的语句；可为 NULL。
- * @param f  其参数名界定写入目标的函数。
- * @return   有赋值命中以参数为根的地方、且存入值可能携带引用时 true。
+ * @param c  Checker.
+ * @param s  Statement to walk; may be NULL.
+ * @param f  Function whose parameter names delimit the write targets.
+ * @return   True when an assignment hits a place rooted at a parameter and the stored value may
+ *           carry a reference.
  */
 static bool stmtStoresThroughDeref(Checker *c, Stmt *s, FuncDef *f) {
     if (!s) return false;
@@ -1067,15 +1090,16 @@ static bool stmtStoresThroughDeref(Checker *c, Stmt *s, FuncDef *f) {
  */
 
 /**
- * @brief 闭合并缓存一个函数的效应摘要。
+ * @brief Close and cache a function's effect summary.
  *
- * 三条纪律：惰性 + 记忆化（`effState`）；环守卫（`EFF_IN_PROGRESS` 视为环，标为不完整）；
- * 未解析的调用（`effUnknown`）同样标为不完整。只有本函数返回 true，才允许据摘要放宽检查。
+ * Three disciplines: lazy + memoized (`effState`); a cycle guard (`EFF_IN_PROGRESS` counts as a
+ * cycle and is marked incomplete); an unresolved call (`effUnknown`) is also marked incomplete. Only
+ * when this function returns true may a caller relax a check based on the summary.
  *
- * @param c  checker。
- * @param f  摘要被闭合并缓存的函数；NULL 不可用。
- * @return   摘要完整时 true；有环、未解析调用或不完整的被调者时 false，此时被调者必须当作
- *           可能存下任何东西。
+ * @param c  Checker.
+ * @param f  Function whose summary is closed and cached; NULL is not allowed.
+ * @return   True when the summary is complete; false on a cycle, an unresolved call or an incomplete
+ *           callee, in which case the callee must be assumed to be able to store anything.
  */
 bool computeEffectsTransitive(Checker *c, FuncDef *f) {
     if (!f) return false;
@@ -1115,20 +1139,25 @@ bool computeEffectsTransitive(Checker *c, FuncDef *f) {
 }
 
 /**
- * @brief 检查一次调用的引用实参能否活过这次调用，并据此定下 arena 的层。
+ * @brief Check that a call's reference arguments outlive the call, and set the arena level from it.
  *
- * 实参与形参个数不一致时直接返回。extern 被调者是 C 侧的黑盒：按签名里的 effects 位
- * 逐位判断哪个参数可能被保存，被保存的引用实参必须活到层 0。有函数体的被调者先做效果
- * 闭包，再分别判地址流与内容流，两个判据各自决定是否运行；可提升的值先尝试提升，提不动
- * 才报错。`mut ref` 实参是写权限，其非空证明在这里作废。
+ * Returns at once when the argument count does not match the parameter count. An extern callee is a
+ * black box on the C side: the effects bits in its signature decide bit by bit which argument may be
+ * stored, and a stored reference argument must live until level 0. A callee with a body is first
+ * effect-closed, then the address flow and the content flow are judged separately, each criterion
+ * deciding on its own whether to run; a promotable value is promoted first and only reported when it
+ * cannot be promoted. A `mut ref` argument carries write permission, so its non-null proof is
+ * invalidated here.
  *
- * @param c          检查器。
- * @param callee     被调函数定义；NULL 表示被调者未解析，按保守处理。
- * @param args       实参表达式表。
- * @param params     被调函数的形参表，顺序与 `args` 一致。
- * @param homeDepth  被调者声明的 arena 层；小于等于 0 表示没有显式声明。
- * @param line       报错用的源码行。
- * @param fname      被调者的名字，用于诊断。
+ * @param c          Checker.
+ * @param callee     Callee definition; NULL means the callee is unresolved and the conservative
+ *                   treatment applies.
+ * @param args       Argument expressions.
+ * @param params     Callee parameter list, in the same order as `args`.
+ * @param homeDepth  Arena level declared by the callee; less than or equal to 0 means no explicit
+ *                   declaration.
+ * @param line       Source line for diagnostics.
+ * @param fname      Callee name, for diagnostics.
  */
 void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int homeDepth,
                        int line, const char *fname) {
@@ -1317,12 +1346,14 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
             Expr *a = *(Expr **)vecAt(args, j);
             if (mentionsParam(a->type)) continue;                  /* generic: defer */
             if (!typeContainsRef(c->tt, tsub(c, a->type))) continue; /* no reference: always true */
-            /* 先把"它得活到 h"这件事记成事实，**不管当下算出来的 d 是多少**：
-             * `d` 是现场算的，而"这个值是不是建池的调用"（`makesPool`）要到所有函数体检查完
-             * 才算得出来 —— 现场它还是 0，于是深度查询给出 0，提权那条路根本不会被走到。
-             * 末轮重放（`c->lvlFacts`）在闭包之后跑，那时 `makesPool` 已经为真，
-             * `promoteInto` 就能把建池的站点提到 h 那一层。重放忽略返回值，所以多记事实
-             * 不会引入新报错（"提不动"的那些照旧由下面的深度判据负责）。 */
+            /* Record "it must outlive h" as a fact first, **regardless of the d computed right now**:
+ * `d` is computed on the spot, while whether this value is a pool-constructing call
+ * (`makesPool`) is only known after all function bodies have been checked -- here it is still 0,
+ * so the depth query answers 0 and the promotion path would never be taken. The last-round replay
+ * (`c->lvlFacts`) runs after the closure, when `makesPool` is already true, so `promoteInto` can
+ * raise the pool-constructing site to level h. The replay ignores the return value, so recording
+ * extra facts introduces no new errors (the values that cannot be promoted are still handled by the
+ * depth criteria below). */
             recordLvlFact(c, a, h);
             int d = targetDepth(c, a);
             if (d != 0 && d > h && promoteInto(c, a, h)) d = targetDepth(c, a);
@@ -1354,7 +1385,7 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
             Expr *a = *(Expr **)vecAt(args, j);
             if (mentionsParam(a->type)) continue;
             if (!typeContainsRef(c->tt, tsub(c, a->type))) continue;
-            recordLvlFact(c, a, h);         /* 同上：先记事实，末轮重放时再提 */
+            recordLvlFact(c, a, h);         /* same as above: record the fact first, promote on the last-round replay */
             int d = targetDepth(c, a);
             /* PROMOTE BEFORE REJECTING -- the same half the incomplete-summary branch above
              * has always had, and the reason a container can be handed to something that
@@ -1401,18 +1432,17 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
     }
 
     /* ---- INV-K: the other half of a store, on the caller's side ---------------------------
-     * A store has two halves and the second one was missing: the **destination** has to learn that
-     * something was written into it, or the caller's binding goes on looking like a record with no
-     * live references. `fn stash(out: mut ref box, v: ?ref node) { out.p = v }` called as
-     * `stash(ref b, ref n)` and then `return b` was accepted, and the generated program read a
-     * local of the returning frame after it died (ASan heap-use-after-free).
-     *
-     * The summary says *which argument* was stored, never into which field, so the write goes to
-     * the binding's whole-object slot (`field == NULL`). The destination is normally **addressed**
-     * here -- `ref b` is what takes its address -- which is not a reason to skip it: the depth
-     * update is a weak max, and `promoteFieldsAt` now promotes for an addressed root while refusing
-     * to lower it. No `recordStore` here: it constrains the level solver and was the suspected
-     * source of two false rejections (R1R3-LOG 补8/补9). */
+ * A store has two halves: the **destination** has to learn that something was written into it, or
+ * the caller's binding goes on looking like a record with no live references.
+ * `fn stash(out: mut ref box, v: ?ref node) { out.p = v }` called as `stash(ref b, ref n)` and then
+ * `return b` would be accepted, and the generated program would read a local of the returning frame
+ * after it died (ASan heap-use-after-free).
+ *
+ * The summary says *which argument* was stored, never into which field, so the write goes to the
+ * binding's whole-object slot (`field == NULL`). The destination is normally **addressed** here --
+ * `ref b` is what takes its address -- which is not a reason to skip it: the depth update is a weak
+ * max, and `promoteFieldsAt` promotes for an addressed root while refusing to lower it. No
+ * `recordStore` here: it constrains the level solver, which then rejects valid shapes. */
     if (callee && (addrMaybe || contMaybe)) {
         uint64_t stored = anAddrMask(callee) | anHomeAddrMask(callee)
                         | anContMask(callee) | anHomeContMask(callee);
@@ -1433,16 +1463,17 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
                 Sym *dsym = placeRoot(c, place);
                 if (!dsym) continue;
                 if (dj != 0) {
-                    /* 不给 `dsym` 记 `otherSrc`：这里只知道"哪个实参被存了"，不知道存进哪个
-                     * 字段；记下的来源没有对应的目的地要求（`otherMinReq` 会停在 0 = 必须活过
-                     * 本帧），于是 `promoteInto` 在 `at > 0` 时反而失败、把正常形状误拒。
-                     * 这里只发布 `callSrc`（它有自己的深度），要提权时沿它走。 */
+                    /* No `otherSrc` for `dsym` here: only *which argument* was stored is known, not which field it
+ * went into; the recorded source would have no matching destination requirement (`otherMinReq`
+ * would stop at 0 = must outlive this frame), so `promoteInto` would fail when `at > 0` and
+ * reject a normal shape. Only `callSrc` is published here (it carries its own depth), and
+ * promotion follows it. */
                     Expr *saveCsv = c->curStoreVal;
-                    c->curStoreVal = NULL;   /* 只更新深度，不要顺带记来源 */
+                    c->curStoreVal = NULL;   /* update the depth only; do not record the source along the way */
                     noteFieldDepthWrite(c, dsym, NULL, dj);
                     c->curStoreVal = saveCsv;
                 }
-                /* The dedicated slot (). No `recordLvlFact` here: constraining the level
+                /* The dedicated slot. No `recordLvlFact` here: constraining the level
                  * for *every* `mut ref` call was the first suspect for the three false rejections the
                  * full version produced (`tests/pool` rt_nest/rt_rett, `tests/stl` custom). */
                 /* Publish the dedicated slot when the level is known, **or** when the source is a
@@ -1453,8 +1484,9 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
                  * rt_nest/rt_rett and `tests/stl`'s custom when the publication was unconditional. */
                 Sym *ss = placeRoot(c, splace);
                 bool promotable = ss && ss->origin && exprIsFresh(ss->origin);
-                /* `callSrc` 也存**压平后的根**：容器元素在别的作用域里被取出、提权时那个
-                 * 中间绑定（`p`）早就出了作用域，`lookup` 查不到，站点就提不动。 */
+                /* `callSrc` also stores the **flattened root**: when a container element is taken out in another
+ * scope and promoted, the intermediate binding (`p`) is long out of scope and `lookup` cannot find
+ * it, so the site cannot be promoted. */
                 Expr *csrc = splace;
                 if (splace && splace->kind == EX_IDENT) {
                     Expr *r = originOf(c, splace, 0);
@@ -1463,10 +1495,10 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
                 if (dj != 0 || promotable) {
                     if (!dsym->callSrc) {
                         dsym->callSrc = csrc;
-                        /* 门槛从来源现在的深度起步，不是 0（"必须活过本帧"）：来源现在至少
-                         * 活到 `dj`，之后 `promoteFieldsAt` 只会收得更紧。从 0 起步会让
-                         * `link(prev, n)` 之后的 `prev = n` 去提一个不需要提到 home 的站点、
-                         * 答 false，把正常形状误拒。 */
+                        /* The threshold starts from the source's current depth, not 0 ("must outlive this frame"): the
+ * source already lives at least until `dj`, and `promoteFieldsAt` only tightens from there.
+ * Starting from 0 would make `prev = n` after `link(prev, n)` promote a site that never needs to
+ * reach the home level, answer false, and reject a normal shape. */
                         dsym->callMinReq = dj;
                     }
                     if (dj > dsym->callSrcDepth) dsym->callSrcDepth = dj;
@@ -1478,15 +1510,17 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
 }
 
 /**
- * @brief 按调用结果是否离开本块来为该调用选定 arena。
+ * @brief Pick the arena for a call from whether its result escapes the current block.
  *
- * 结果存在当前块里传当前块的 arena，每轮随块回收、峰值恒定；存在更浅的地方或返回时传本函数
- * 的 home arena；实参位置刻意不标记，回落到 home arena。`homeDepth` 与 `arenaArg` 必须一起
- * 更新：codegen 只读 `arenaArg`。
+ * A result stored in the current block uses the current block's arena, reclaimed every round with a
+ * constant peak; a result stored further out, or returned, uses this function's home arena; the
+ * argument position is deliberately left unmarked so it falls back to the home arena. `homeDepth`
+ * and `arenaArg` must be updated together: codegen only reads `arenaArg`.
  *
- * @param c   checker（作用域栈）。
- * @param v   结果被存下的调用表达式；其它形状忽略。
- * @param at  接收结果的 place 的作用域深度；0 表示结果被返回，必须活过本帧。
+ * @param c   Checker (scope stack).
+ * @param v   Call expression whose result is stored; other shapes are ignored.
+ * @param at  Scope depth of the place receiving the result; 0 means the result is returned and must
+ *            outlive this frame.
  */
 void markCallHomeIfEscaping(Checker *c, Expr *v, int at) {
     if (!v) return;
@@ -1497,41 +1531,47 @@ void markCallHomeIfEscaping(Checker *c, Expr *v, int at) {
 }
 
 /**
- * @brief 判断一个被调者会不会创建池（读取处统一走这里）。
+ * @brief Tell whether a callee can create a pool (every read site goes through here).
  *
- * 泛型方法的模板与实例是两份 `FuncDef`，闭包只走到模板那一份，而调用点上 `e->func` 可能是
- * 模板。`@poolObject` 声明优先于推断；结构体的 `makesPoolAny` 只对关联函数（`new` /
- * `withCap` / `withParent` 那一族）放宽，别的库方法不进这一族，免得把不可提权的值误判成站点。
+ * A generic method's template and instance are two `FuncDef`s; the closure only reaches the
+ * template, while at a call site `e->func` may be the template. A `@poolObject` declaration wins
+ * over inference; a struct's `makesPoolAny` only relaxes for associated functions (the `new` /
+ * `withCap` / `withParent` family), and other library methods do not join that family, so a value
+ * that cannot be promoted is not misjudged as a site.
  *
- * @param f  被调者；NULL 返回 false。
- * @return   可能创建池时 true。
+ * @param f  Callee; NULL returns false.
+ * @return   True when it may create a pool.
  */
 bool calleeMakesPool(FuncDef *f) {
     if (!f) return false;
-    /* **声明优先**：`@poolObject` 标在 struct 上，说"这个类型拥有一个池"。它比推断可靠：
-     * 看有没有 `pid` 字段是魔数，看方法建不建池要等闭包。 */
+    /* **Declaration wins**: `@poolObject` marks a struct as owning a pool. It is more reliable than
+ * inference: looking for a `pid` field is magic, and looking at whether methods create pools has to
+ * wait for the closure. */
     if (f->owner && f->owner->poolObject) return true;
     if (planMakesPool(f)) return true;
-    /* 运行期那一句**本身**就是池站点：`extc_pool_new`（extern，没有函数体 ⇒ 闭包标不到它，
-     * 所以它按名字认，与 codegen 里把 `extc_pool_new` 改写成 `_at` 的那处同一个名字）。
-     *
-     * 少了这一条的后果：用户**在自己文件里**写一个池底容器时，构造器里的这一次
-     * `extc_pool_new` 提不了权 ⇒ 池生进构造器自己的帧 ⇒ 返回时被回收 ⇒ 段错误。
-     * 库里的容器没这个毛病，只因为库函数"对地方透明"；用户的文件不是库，
-     * 于是那条隐藏的差别就露出来了。 */
+    /* The runtime call **itself** is a pool site: `extc_pool_new` (extern, no body ⇒ the closure
+ * cannot mark it, so it is recognized by name, the same name codegen uses when rewriting
+ * `extc_pool_new` to `_at`).
+ *
+ * Without this case: when a user writes a pool-backed container **in their own file**, the
+ * `extc_pool_new` in the constructor cannot be promoted ⇒ the pool goes into the constructor's own
+ * frame ⇒ reclaimed on return ⇒ segfault. The library's containers lack this flaw only because
+ * library functions are "transparent about place"; a user's file is not the library, so that hidden
+ * difference shows. */
     if (f->body == NULL && isPoolCtorName(f->name)) return true;
     return anIsAssoc(f) && f->owner && anMakesPoolAny(f->owner);
 }
 
-/* 闭包实例那一轮的代入上下文。 */
+/* Substitution context for the instance-closure round. */
 static TypeTable *instResTT = NULL;
 static Vec *instResParams = NULL;
 static Vec *instResTargs = NULL;
 /**
- * @brief 在闭包实例那一轮的代入上下文里重新解析一个方法调用点。
+ * @brief Re-resolve a method call site under the instance-closure substitution context.
  *
- * @param e  调用表达式。
- * @return   代入后找到的方法定义；没有实例上下文、或不是带接收者的方法调用时返回 NULL。
+ * @param e  Call expression.
+ * @return   The method definition found after substitution; NULL when there is no instance context
+ *           or the expression is not a method call with a receiver.
  */
 static FuncDef *resolveOnInstance(Expr *e) {
     if (!instResTT || !instResParams || !instResTargs) return NULL;
@@ -1544,33 +1584,37 @@ static FuncDef *resolveOnInstance(Expr *e) {
 static bool exprMakesPool(Expr *e, bool descendBlocks);   /* defined with the pool questions at the end */
 
 /**
- * @brief 确定一个建池调用点所在的 zone 层。
+ * @brief Fix the zone level of a pool-constructing call site.
  *
- * 库函数（`modName` 非空）对“地方”透明，没有自己的地方可言，把选择权交给调用者
- * （`ZONE_HOME`）；否则默认当前块。只往下调、不往上抬：同一节点可能被检查多次，而提权已经
- * 把它改小，再按当前块覆盖就会抹掉提权（越小越长寿）。
+ * A library function (non-empty `modName`) is transparent about place: it has no place of its own,
+ * so the choice goes to the caller (`ZONE_HOME`); otherwise the current block is the default. Only
+ * lowers, never raises: the same node may be checked more than once, and promotion has already made
+ * this level smaller; overwriting it from the current block would erase that promotion (smaller
+ * means longer-lived).
  *
- * @param c  checker（作用域栈）。
- * @param e  调用表达式；NULL 忽略。
+ * @param c  Checker (scope stack).
+ * @param e  Call expression; NULL is ignored.
  */
 void setCallZoneArg(Checker *c, Expr *e) {
     if (!e) return;
     int lvl = (c->curFunc && c->curFunc->modName && *c->curFunc->modName)
                   ? ZONE_HOME : (int)c->scopes.len;
-    /* **只往下调，不往上抬**：同一个节点可能被检查不止一次（泛型实例、末轮那一类重走），
-     * 而提权已经把这一格改小了；再按"当前块"覆盖一遍就等于把提权抹掉。
-     * 越小越长寿，所以取更小的那个。 */
+    /* **Only lower, never raise**: the same node may be checked more than once (generic instances,
+ * the last-round re-walk of that family), and promotion has already made this level smaller;
+ * overwriting it from the current block would erase the promotion. Smaller means longer-lived, so
+ * keep the smaller value. */
     if (planZoneLevel(e) == 0 || lvl < planZoneLevel(e)) planSetZoneLevel(e, lvl);
 }
 
 /**
- * @brief 把 `homeDepth` 解成调用实际传入的 arena（`Expr.arenaArg`）。
+ * @brief Resolve `homeDepth` into the arena actually passed at the call (`Expr.arenaArg`).
  *
- * 决策只在这里做，codegen 只打印，不得回落到按函数计的 home 标志。没有 `mut ref` 实参给出
- * 理由时，把该站点按当前块记下并置 `arenaArgPending`，由末轮落定。
+ * The decision is made only here; codegen just prints it, and must not fall back to the
+ * per-function home flag. When no `mut ref` argument gives a reason, the site is recorded with the
+ * current block and `arenaArgPending` is set, to be settled by the last round.
  *
- * @param c  checker（作用域栈）。
- * @param e  已设好 `homeDepth` 的调用表达式；NULL 忽略。
+ * @param c  Checker (scope stack).
+ * @param e  Call expression with `homeDepth` already set; NULL is ignored.
  */
 void setCallArenaArg(Checker *c, Expr *e) {
     if (!e) return;
@@ -1598,16 +1642,19 @@ void setCallArenaArg(Checker *c, Expr *e) {
 }
 
 /**
- * @brief 从 `mut ref` 实参读出调用要传的 arena 深度。
+ * @brief Read the arena depth to pass at a call from its `mut ref` arguments.
  *
- * 被调者的分配至少要活过它能存进去的任何东西，所以最浅的 `mut ref` 实参所指对象决定 arena。
- * 实参是自身参数或全局时已经活过本帧，改传调用者的 home arena。
+ * The callee's allocations must outlive anything it can store, so the shallowest `mut ref`
+ * argument's object decides the arena. When the argument is a parameter of this function or a
+ * global it already outlives this frame, so the caller's home arena is passed instead.
  *
- * @param c         checker。
- * @param args      按调用顺序排列的实参表达式。
- * @param params    被调者的声明参数，顺序相同。
- * @param callNode  调用表达式；答案依赖逃逸分析时记录它，可为 NULL（不记录）。
- * @return          要传的 arena 深度；没有 `mut ref` 实参时 0，必须传调用者 home arena 时 -1。
+ * @param c         Checker.
+ * @param args      Argument expressions, in call order.
+ * @param params    Callee's declared parameters, in the same order.
+ * @param callNode  Call expression; recorded when the answer depends on escape analysis; may be
+ *                  NULL (then it is not recorded).
+ * @return          Arena depth to pass; 0 when there is no `mut ref` argument, -1 when the caller's
+ *                  home arena must be passed.
  */
 int callHomeDepth(Checker *c, Vec *args, Vec *params, Expr *callNode) {
     int best = 0;                       /* 0 = no `mut ref` argument was found */
@@ -1657,11 +1704,11 @@ int callHomeDepth(Checker *c, Vec *args, Vec *params, Expr *callNode) {
 
 
 /**
- * @brief 判断名字向量里是否有某个名字。
+ * @brief Tell whether a vector of names contains a name.
  *
- * @param v  `const char *` 向量。
- * @param n  要查找的名字。
- * @return   任一元素与之相等时 true。
+ * @param v  Vector of `const char *`.
+ * @param n  Name to look for.
+ * @return   True when any element is equal to it.
  */
 static bool vecHasName(Vec *v, const char *n) {
     for (size_t i = 0; i < v->len; i++)
@@ -1669,14 +1716,15 @@ static bool vecHasName(Vec *v, const char *n) {
     return false;
 }
 /**
- * @brief 判断表达式是否为池 plate 切出的块。
+ * @brief Tell whether an expression is a block carved out of a pool plate.
  *
- * `poolSlice` / `poolSliceRaw` 取新块，`poolResize` / `poolResizeRaw` 调整已有块，内存都属于
- * 容器自己拥有的池，不发布调用者的引用；SSO `string` 的 `grow` 依赖这条豁免，否则整条
- * `push`/`append` 链都会背上 `otherMask`。
+ * `poolSlice` / `poolSliceRaw` take a new block, `poolResize` / `poolResizeRaw` adjust an existing
+ * one; the memory belongs to the pool the container owns, and no reference of the caller is
+ * published. The SSO `string`'s `grow` depends on this exemption, or the whole `push`/`append` chain
+ * would carry `otherMask`.
  *
- * @param e  表达式；可为 NULL。
- * @return   是池 plate 块时 true。
+ * @param e  Expression; may be NULL.
+ * @return   True when it is a pool plate block.
  */
 static bool exprIsPoolBlock(Expr *e) {
     if (!e || e->kind != EX_GENCALL || !e->u.gencall.name) return false;
@@ -1686,13 +1734,13 @@ static bool exprIsPoolBlock(Expr *e) {
 }
 
 /**
- * @brief 判断初始值是否本帧新分配。
+ * @brief Tell whether an initial value is freshly allocated in this frame.
  *
- * `new` 算、池 plate 块算（见 `exprIsPoolBlock`），每个字段本身是新的或标量的 struct 字面量
- * 也算。
+ * `new` counts, a pool plate block counts (see `exprIsPoolBlock`), and a struct literal whose every
+ * field is itself fresh or scalar counts too.
  *
- * @param e  初始化表达式；可为 NULL。
- * @return   是新分配、或只由这类值构成的字面量时 true。
+ * @param e  Initializer expression; may be NULL.
+ * @return   True when it is a fresh allocation, or a literal built only from such values.
  */
 static bool exprIsFresh(Expr *e) {
     if (!e) return false;
@@ -1706,16 +1754,18 @@ static bool exprIsFresh(Expr *e) {
     return false;
 }
 /**
- * @brief 记录每个分配行所在的最近循环与循环体的块层级。
+ * @brief Record the innermost loop and the block level of each allocation line.
  *
- * 层级必须取**循环体**的层级，而不是 `new` 恰好写在哪一层块里：分配落在循环体 arena 或更深
- * 才每轮回收，更浅的会跨轮存活、随迭代增长。循环体的层级取该循环内站点的最小
- * `lexicalLevel`，因为嵌套块只会报告更深的值。
+ * The level must be the **loop body**'s level, not the block the `new` happens to be written in: an
+ * allocation is reclaimed every iteration only when it lands in the loop body's arena or deeper; a
+ * shallower one survives across iterations and grows with them. The loop body's level is the
+ * smallest `lexicalLevel` of the sites in that loop, because nested blocks only report deeper
+ * values.
  *
- * @param s         要遍历的语句。
- * @param loopId    当前循环 id；0 表示不在循环里，此时不记录。
- * @param nextLoop  下一个可用的循环 id。
- * @param sites     输出：追加 `(line, loopId, lexicalLevel)` 三元组。
+ * @param s         Statement to walk.
+ * @param loopId    Current loop id; 0 means not inside a loop, and nothing is recorded.
+ * @param nextLoop  Next free loop id.
+ * @param sites     Output: `(line, loopId, lexicalLevel)` triples are appended.
  */
 static void collectLoopSites(Stmt *s, int loopId, int *nextLoop, Vec *sites) {
     if (!s) return;
@@ -1791,11 +1841,11 @@ static void collectLoopSites(Stmt *s, int loopId, int *nextLoop, Vec *sites) {
 }
 
 /**
- * @brief 取含该行的循环 id。
+ * @brief Fetch the id of the loop containing a line.
  *
- * @param sites  `(line, loopId, lexicalLevel)` 三元组表。
- * @param line   源码行号。
- * @return       包含该行的循环 id；没有循环时为 0。
+ * @param sites  Table of `(line, loopId, lexicalLevel)` triples.
+ * @param line   Source line number.
+ * @return       Id of the loop containing that line; 0 when there is none.
  */
 static int loopIdOf(const Vec *sites, int line) {
     for (size_t i = 0; i + 2 < sites->len; i += 3)
@@ -1804,14 +1854,18 @@ static int loopIdOf(const Vec *sites, int line) {
 }
 
 /**
- * @brief 打印 `--explain-memory` 报告：每个分配站点一行，附决策用的数字。
+ * @brief Print the `--explain-memory` report: one line per allocation site, with the numbers used
+ *        for the decision.
  *
- * 层级用的是 checker 决策时的同一批数字，把它们说出来正是报告的意义。站点按落到的层级、曾被
- * 发布到的最浅层级、是否在循环里列出。`minAt == 0` 表示站点被存进活过本帧的东西，这是数字
- * 自身唯一能支撑的结论；站点落到的层级与块释放点由不同规则决定，报告不对增长下结论。
+ * The levels are the same numbers the checker decided on; stating them is the point of the report.
+ * Sites are listed by the level they landed in, the shallowest level they were ever published to,
+ * and whether they sit in a loop. `minAt == 0` means the site was stored into something that
+ * outlives this frame, the only conclusion the numbers alone support; the level a site lands in and
+ * the block release points are decided by different rules, so the report does not conclude anything
+ * about growth.
  *
- * @param c    checker。
- * @param all  全部分配站点。
+ * @param c    Checker.
+ * @param all  All allocation sites.
  */
 static void reportMemory(Checker *c, Vec *all) {
     int nSite = 0, nLoop = 0;
@@ -1860,12 +1914,13 @@ static void reportMemory(Checker *c, Vec *all) {
 }
 
 /**
- * @brief 从 fresh 集合里删掉一个名字。
+ * @brief Drop one name from the fresh set.
  *
- * 集合是普通名字向量且始终很小（一个函数的局部），压缩比任何索引都便宜。
+ * The set is a plain name vector and is always small (one function's locals), so compaction is
+ * cheaper than any index.
  *
- * @param fresh  名字向量。
- * @param name   要删的名字。
+ * @param fresh  Name vector.
+ * @param name   Name to drop.
  */
 static void freshDrop(Vec *fresh, const char *name) {
     if (!fresh || !name) return;
@@ -1879,14 +1934,14 @@ static void freshDrop(Vec *fresh, const char *name) {
 }
 
 /**
- * @brief 收集初始值是新分配的本帧局部名。
+ * @brief Collect this frame's local names whose initial value is a fresh allocation.
  *
- * 只认 `var x = new ...` 的直接形式；别名传播刻意不做，缺名字只会保留本可去掉的要求，这是
- * 保守方向。
+ * Only the direct form `var x = new ...` counts; alias propagation is deliberately not done, and a
+ * missing name only keeps a requirement that could be dropped, which is the conservative direction.
  *
- * @param a      未使用，只转发给递归调用。
- * @param fresh  输出：收集到的名字追加到这里。
- * @param s      要遍历的语句；块、if/else、while、match 分支都会跟进。
+ * @param a      Unused; only forwarded to recursive calls.
+ * @param fresh  Output: collected names are appended here.
+ * @param s      Statement to walk; blocks, if/else, while and match arms are followed.
  */
 static void collectFreshLocals(Arena *a, Vec *fresh, Stmt *s) {
     if (!s) return;
@@ -1901,7 +1956,7 @@ static void collectFreshLocals(Arena *a, Vec *fresh, Stmt *s) {
          * the name made `classifyStoredValue` answer "freshly allocated, so trivially safe" for a
          * value that now points into the caller's frame, so `stash`'s summary recorded nothing,
          * `effComplete` stayed true, and the whole call-site lifetime check was skipped -- a real
-         * stack-use-after-scope (). This is the write-point invalidation of the fresh
+         * stack-use-after-scope. This is the write-point invalidation of the fresh
          * set; the fresh-value case keeps the name, so `p = new i32` does not lose it. */
         /* Only a binding that is **retargeted** stops being fresh. A field write such as
          * `n.value = v` writes *through* the binding: `n` still points at the object its
@@ -1931,14 +1986,15 @@ static void collectFreshLocals(Arena *a, Vec *fresh, Stmt *s) {
 
 
 /**
- * @brief 判断一个名字是否在逃逸集合 E 里。
+ * @brief Tell whether a name is in the escape set E.
  *
- * 规则（过近似：多一个名字只多花内存，少一个名字会留下悬空指针）：`return e` 里出现过的名字
- * 进 E；赋给已在 E 的绑定、或存进参数指向的容器的名字进 E。E 按不动点闭合。
+ * The rule (over-approximating: one extra name costs memory, one missing name leaves a dangling
+ * pointer): a name that appears in `return e` enters E; a name assigned to a binding already in E,
+ * or stored into a container a parameter points at, enters E. E is closed by a fixed point.
  *
- * @param c  checker；E 存在 `c->escapees`。
- * @param n  绑定名。
- * @return   在 E 里（其内容可能离开本帧）时 true。
+ * @param c  Checker; E lives in `c->escapees`.
+ * @param n  Binding name.
+ * @return   True when it is in E (its contents may leave this frame).
  */
 bool isEscapeeName(Checker *c, const char *n) {
     if (!n) return false;
@@ -1947,11 +2003,11 @@ bool isEscapeeName(Checker *c, const char *n) {
     return false;
 }
 /**
- * @brief 把一个名字加进逃逸集合。
+ * @brief Add a name to the escape set.
  *
- * @param c  checker。
- * @param n  要加的名字；可为 NULL。
- * @return   之前不在集合里时 true，用于驱动不动点迭代。
+ * @param c  Checker.
+ * @param n  Name to add; may be NULL.
+ * @return   True when it was not in the set, which drives the fixed-point iteration.
  */
 static bool addEscapee(Checker *c, const char *n) {
     if (!n || isEscapeeName(c, n)) return false;
@@ -1963,12 +2019,12 @@ static bool addEscapee(Checker *c, const char *n) {
  * which is what the fixpoint loop uses. */
 static bool markNamesInExpr(Checker *c, Expr *e);
 /**
- * @brief 把一条语句里出现的名字加进逃逸集合。
+ * @brief Add the names appearing in a statement to the escape set.
  *
- * @param c  checker。
- * @param f  正在算逃逸集合的函数。
- * @param s  语句；可为 NULL。
- * @return   至少加进一个新名字时 true。
+ * @param c  Checker.
+ * @param f  Function whose escape set is being computed.
+ * @param s  Statement; may be NULL.
+ * @return   True when at least one new name was added.
  */
 static bool markNamesInStmt(Checker *c, FuncDef *f, Stmt *s) {
     if (!s) return false;
@@ -2083,11 +2139,11 @@ static bool markNamesInStmt(Checker *c, FuncDef *f, Stmt *s) {
     }
 }
 /**
- * @brief 把表达式里出现的名字加进逃逸集合。
+ * @brief Add the names appearing in an expression to the escape set.
  *
- * @param c  checker。
- * @param e  表达式；可为 NULL。
- * @return   至少加进一个新名字时 true。
+ * @param c  Checker.
+ * @param e  Expression; may be NULL.
+ * @return   True when at least one new name was added.
  */
 static bool markNamesInExpr(Checker *c, Expr *e) {
     if (!e) return false;
@@ -2159,11 +2215,11 @@ static bool markNamesInExpr(Checker *c, Expr *e) {
 /* Fixpoint closure: whatever is moved out takes its contents with it. */
 static void computeEscapes(Checker *c, FuncDef *f);
 /**
- * @brief 以求不动点的方式算出函数体的逃逸集合。
+ * @brief Compute a function body's escape set by fixed point.
  *
- * @param c          checker；集合存在 `c->escapees`。
- * @param f          要分析的函数。
- * @param unionMode  true 时保留已收集的名字（并集），false 先清空。
+ * @param c          Checker; the set lives in `c->escapees`.
+ * @param f          Function to analyze.
+ * @param unionMode  Keep the names already collected (union) when true; clear first when false.
  */
 static void computeEscapesMode(Checker *c, FuncDef *f, bool unionMode) {
     if (!c->escapees.arena) vecInit(&c->escapees, c->arena, sizeof(const char *));
@@ -2187,35 +2243,35 @@ static void computeEscapesMode(Checker *c, FuncDef *f, bool unionMode) {
 }
 
 /**
- * @brief 算出函数体会转义出哪些绑定（非静默模式）。
+ * @brief Compute which bindings escape the function body (non-silent mode).
  *
- * @param c  检查器。
- * @param f  函数定义。
+ * @param c  Checker.
+ * @param f  Function definition.
  */
 static void computeEscapes(Checker *c, FuncDef *f) { computeEscapesMode(c, f, false); }
 
 /**
- * @brief 字段表按需增长（翻倍，起步 4），返回增长后的表。
+ * @brief Grow the field table on demand (doubling, starting at 4) and return the grown table.
  *
- * 拷贝进 checker 的 arena：`Sym` 里的指针只增不减，旧数组留给 arena 整片回收，没有 free
- * 路径要管。**没有上限** —— 上限会改变提升决策（语料实测 63 次撞上限）。
+ * The new array is allocated in the checker's arena: pointers inside `Sym` only ever grow, the old
+ * array is left to the arena's bulk reclamation, and there is no free path to maintain. **No cap**:
+ * a cap would change promotion decisions.
  *
- * @param c    checker。
- * @param s    要增长的绑定。
- * @param need 至少要能放下的格数。
- * @return     增长后的表（调用方通常不用，`s->fields` 已更新）。
+ * @param c     Checker.
+ * @param s     Binding to grow.
+ * @param need  Minimum number of slots the table must hold.
+ * @return      The grown table (callers usually ignore it; `s->fields` is already updated).
  */
 static SymField *symFieldsGrow(Checker *c, Sym *s, int need) {
     if (s->fieldsCap >= need) return s->fields;
     int cap = s->fieldsCap ? s->fieldsCap : 4;
     while (cap < need) cap *= 2;
-    /* **必须置零**：新表里 `nfields` 之后那些格的 `.src`/`.srcSym`/`.minReq` 没人写
-     * （`fieldDepthEntry` 只写 `.name`/`.depth`），而 `promoteFieldsAt` 会对每个下标 < `nfields`
-     * 的格读 `.src` 并当 `Expr *` 解引用。用 `arenaAlloc` 的话那是个未初始化堆指针 —— 实测
-     * `MALLOC_PERTURB_=165 ./build/extc --run tests/stl/clone.extc` 100% 段错误
-     * （`promoteInto2` 解引用 `val=0x211940`）；不扰动堆时也有 1–4% 的偶发崩溃。
-     * 置零把没来源的槽变成 `src == NULL`（`promoteFieldsAt` 直接 `continue`）、`.minReq == 0`
-     * （"必须活过本帧"，保守方向）。 */
+    /* **Must be zeroed**: in the new table, slots past `nfields` have no writer for
+ * `.src`/`.srcSym`/`.minReq` (`fieldDepthEntry` only writes `.name`/`.depth`), while
+ * `promoteFieldsAt` reads `.src` for every index < `nfields` and dereferences it as an `Expr *`.
+ * With `arenaAlloc` that is an uninitialized heap pointer, and `promoteInto2` crashes when it
+ * dereferences it. Zeroing turns a slot with no source into `src == NULL` (`promoteFieldsAt` just
+ * continues) and `.minReq == 0` ("must outlive this frame", the conservative direction). */
     SymField *nf = (SymField *)arenaAllocZero(c->arena, (size_t)cap * sizeof *nf);
     for (int i = 0; i < s->nfields; i++) nf[i] = s->fields[i];
     s->fields = nf;
@@ -2223,26 +2279,15 @@ static SymField *symFieldsGrow(Checker *c, Sym *s, int need) {
     return nf;
 }
 
+
 /**
- * @brief 取绑定字段级深度表里某字段的槽，必要时新建。
+ * @brief Find, or create on demand, the depth slot of one reference field.
  *
- * 表最多 4 槽，放不下的记进 `otherDepth` 作保守兜底；根的有效深度是 `otherDepth` 与各字段槽
- * 的最大值。槽里的名字来自 AST，活得比绑定记录久，因此不会悬空。
- *
- * @param c      未使用；保留以符合 checker 参数的惯例。
- * @param s      要查字段表的绑定。
- * @param field  要查或新建的字段名。
- * @param create 表里还没有该字段时是否新建槽。
- * @return       该字段的深度槽指针；没有槽且 `create` 为 false、或表已满时返回 NULL。
- */
-/**
- * @brief 找到（或按需新建）某个引用字段的深度槽。
- *
- * @param c      checker。
- * @param s      绑定的引用字段表。
- * @param field  字段名（AST 里 intern 过，不会悬垂）。
- * @param create 表里还没有该字段时是否新建槽。
- * @return       该字段的深度槽指针；`create` 为 false 且没有槽时返回 NULL。
+ * @param c      Checker.
+ * @param s      Binding's reference field table.
+ * @param field  Field name (interned in the AST, so it cannot dangle).
+ * @param create Whether to create a slot when the field is not in the table yet.
+ * @return       Pointer to the field's depth slot; NULL when `create` is false and there is no slot.
  */
 int *fieldDepthEntry(Checker *c, Sym *s, const char *field, bool create) {
     if (!s || !field) return NULL;
@@ -2256,11 +2301,12 @@ int *fieldDepthEntry(Checker *c, Sym *s, const char *field, bool create) {
 }
 
 /**
- * @brief 字段槽变化后重算绑定的有效深度。
+ * @brief Recompute a binding's effective depth after its field table changed.
  *
- * 读到的是绑定仍可能携带的最深引用，即兜底槽与所有字段槽的最大值；它是上界，只能变大。
+ * What is read is the deepest reference the binding may still carry, i.e. the maximum of the
+ * fallback slot and all field slots; it is an upper bound and may only grow.
  *
- * @param s  刚更新过字段表的绑定；NULL 允许且忽略。
+ * @param s  Binding whose field table was just updated; NULL is allowed and ignored.
  */
 static void refreshRootDepth(Sym *s) {
     if (!s) return;
@@ -2278,51 +2324,58 @@ static void refreshRootDepth(Sym *s) {
 }
 
 /**
- * @brief 保留下写入某个字段槽的来源表达式。
+ * @brief Remember the source expression last written into a field slot.
  *
- * 只对能指向站点的形状记录：`null` 与字面量不记录，记录会顶掉先前真正的来源。比较基准是本
- * 次写入的深度 `srcDepth`，而不是做弱更新的 `depth`（后者取最大值，晚来的 `null` 会显得更
- * 深并清掉来源）。
+ * Only shapes that can point at a site are recorded: `null` and literals are not, since recording
+ * them would evict the real source. The comparison base is this write's depth `srcDepth`, not the
+ * weakly updated `depth` (which takes the maximum, so a later `null` would look deeper and clear the
+ * source).
  *
- * @param root   要更新字段表的绑定；可为 NULL。
- * @param field  字段名；整个对象或元素写入时为 NULL。
- * @param d2     本次写入的深度。
- * @param src    存下的表达式；可为 NULL。
+ * @param root   Binding whose field table is updated; may be NULL.
+ * @param field  Field name; NULL for a whole-object or element write.
+ * @param d2     Depth of this write.
+ * @param src    Stored expression; may be NULL.
  */
 static void noteFieldSrc(Checker *c, Sym *root, const char *field, int d2, Expr *src) {
     if (!root || !src) return;
     if (src->kind != EX_IDENT && src->kind != EX_FIELD && src->kind != EX_INDEX &&
         src->kind != EX_NEW   && src->kind != EX_GENCALL) return;
-    /* 只有**能携带引用**的值才值得记。`n.val = m`（i64）也会走到这里（根类型的字段里可能有
-     * 引用），把它记成来源只会在提权时去提一个提不动的表达式，把正常形状误拒。 */
+    /* Only a value that **can carry a reference** is worth recording. `n.val = m` (i64) reaches here
+ * too (a root type's field may hold a reference); recording it as a source only makes promotion try
+ * to promote an expression it cannot promote and reject a normal shape. */
     if (!src->type || !typeContainsRef(c->tt, tsub(c, src->type))) return;
-    /* 来源压平到根表达式再存：中间绑定（`p`、`pt`、`q`）到提权那一刻可能已经出了作用域，
-     * 那时 `lookup` 查不到它，`promoteInto2` 就在"没有来源"处停下 —— 站点于是停在词法层，
-     * 而返回出去的链已经指向它。根表达式（`new` 之类）没有这个问题。
-     *
-     * 根是零值/字面量或一个没有来源的绑定（`p.next = saved`，saved 的根是 `null`）时**不记**：
-     * 那样的来源提不动，记下来只会让 `promoteFieldsAt` 答 false，把 `saved = p` 这种正常形状
-     * 误拒。来源的唯一用途是提权，提不动的来源没有价值。 */
-    /* 来源展平到根表达式存（末轮重放没有作用域，`lookup` 查不到中间绑定），同时把那个绑定
-     * 另存一格 `srcSym`：展平会丢掉它的**字段表**（`b.next = ca` 记在 `b` 上），环/链的提权
-     * 必须能走到那里。Sym 住在 checker 的 arena 里，出了作用域照样能用。 */
+    /* Store the source flattened to its root expression: an intermediate binding (`p`, `pt`, `q`) may
+ * already be out of scope by promotion time, when `lookup` cannot find it and `promoteInto2` stops
+ * at "no source" -- the site then stays at the lexical level while the returned chain already points
+ * at it. A root expression (such as `new`) has no such problem.
+ *
+ * Do **not** record when the root is a zero value/literal or a binding without a source
+ * (`p.next = saved`, whose root is `null`): such a source cannot be promoted, and recording it only
+ * makes `promoteFieldsAt` answer false and reject a normal shape such as `saved = p`. The only use of
+ * a source is promotion, so an unpromotable source has no value. */
+    /* Store the source flattened to its root expression (the last-round replay has no scopes, so
+ * `lookup` cannot find intermediate bindings), and keep that binding in the separate `srcSym` slot:
+ * flattening loses its **field table** (`b.next = ca` is recorded on `b`), which cycle/chain
+ * promotion must be able to reach. A `Sym` lives in the checker's arena and stays usable after its
+ * scope ends. */
     Sym *srcSym = (src->kind == EX_IDENT) ? lookup(c, src->u.ident.name) : NULL;
     {
         Expr *r = originOf(c, src, 0);
         if (!r) return;
         if (r->kind == EX_NULL || r->kind == EX_INT || r->kind == EX_FLOAT ||
             r->kind == EX_BOOL || r->kind == EX_STR) return;
-        if (r->kind == EX_IDENT) return;      /* 追不到站点（参数、无来源的绑定） */
+        if (r->kind == EX_IDENT) return;      /* cannot trace back to a site (a parameter, a binding with no source) */
         src = r;
     }
     if (!field) {
-        /* 没有单一字段的写 —— 整值拷贝、元素写、经 `mut ref` 的调用 —— 进 `otherSrc` 那一格。
-         * 更新规则与字段槽相同：比较本次写入的 `d2` 而不是弱更新的 `depth`，否则晚来的 `null`
-         * 会显得更深并把真来源顶掉。 */
+        /* A write with no single field -- whole-value copy, element write, a call through `mut ref` -- goes
+ * into the `otherSrc` slot. The update rule is the same as for a field slot: compare this write's
+ * `d2`, not the weakly updated `depth`, or a later `null` would look deeper and evict the real
+ * source. */
         if (d2 >= root->otherSrcDepth) {
-            /* 第一次记来源时把 `otherMinReq` 定在这次写入的深度：0 是"必须活过本帧"这句很强的
-             * 断言，当缺省用会让每次提权都去提一个不需要提的站点并失败。之后
-             * `promoteFieldsAt` 只会把它收得更紧。 */
+            /* On the first recorded source, set `otherMinReq` to this write's depth: 0 means "must outlive this
+ * frame", a very strong assertion that, used as the default, makes every promotion try to promote a
+ * site that does not need it and fail. Afterwards `promoteFieldsAt` only tightens it. */
             if (!root->otherSrc) root->otherMinReq = d2;
             root->otherSrc = src;
             root->otherSrcSym = srcSym;
@@ -2334,9 +2387,10 @@ static void noteFieldSrc(Checker *c, Sym *root, const char *field, int d2, Expr 
     for (int i = 0; i < root->nfields; i++)
         if (root->fields[i].name && strcmp(root->fields[i].name, field) == 0) { n = i; break; }
     if (n < 0) {
-        /* 槽不存在就**建**。只写已存在的槽会让 `bx.mid.next = p` 这类两层投影永远没有槽：
-         * 声明 `{ mid: { next: null } }` 只建了 `mid`，来源于是没人记，返回值的检查也就够不着
-         * 那个分配站点。表满时退化到 `otherSrc`：来源仍在，只是粒度更粗（保守方向）。 */
+        /* **Create** a slot when it does not exist. Writing only existing slots would leave two-level
+ * projections such as `bx.mid.next = p` without a slot forever: declaring `{ mid: { next: null } }`
+ * creates only `mid`, so nobody records the source and the return-value check cannot reach that
+ * allocation site. */
         symFieldsGrow(c, root, root->nfields + 1);
         n = root->nfields++;
         root->fields[n].name     = field;   /* interned in the checker's arena, so it cannot dangle */
@@ -2344,13 +2398,14 @@ static void noteFieldSrc(Checker *c, Sym *root, const char *field, int d2, Expr 
         root->fields[n].src      = NULL;
         root->fields[n].srcSym   = NULL;
         root->fields[n].srcDepth = 0;
-        /* 门槛从这次写入的深度起步，不是 0（0 是"必须活过本帧"这句很强的断言）：新槽的来源
-         * 现在至少活到 `d2`，之后 `promoteFieldsAt` 只会把它收得更紧。从 0 起步会让
-         * `head = b`（b 的 `next` 里存着上一层的 head）这种正常提权去提一个不需要提到 home
-         * 的站点、答 false 而误拒。 */
+        /* The threshold starts at this write's depth, not 0 (0 means "must outlive this frame", a very
+ * strong assertion): a new slot's source now lives at least until `d2`, and afterwards
+ * `promoteFieldsAt` only tightens it. Starting at 0 would make a normal promotion such as
+ * `head = b` (whose `next` holds the previous head) promote a site that never needs to reach the
+ * home level, answer false and reject it. */
         root->fields[n].minReq   = d2;
     } else if (!root->fields[n].src) {
-        root->fields[n].minReq = d2;        /* 第一次给这个已存在的槽记来源 */
+        root->fields[n].minReq = d2;        /* first source recorded for this existing slot */
     }
     if (dbgOn("EXTC_DBG_FS"))
         fprintf(stderr, "[fs] %s.%s d2=%d oldSrcDepth=%d srckind=%d\n", root->name,
@@ -2363,15 +2418,16 @@ static void noteFieldSrc(Checker *c, Sym *root, const char *field, int d2, Expr 
 }
 
 /**
- * @brief 记录一次经由绑定到达的写入的深度。
+ * @brief Record the depth of a write that reaches a binding.
  *
- * 引用型绑定（`n: mut ref node`）的 `refDepth` 只能升、不能降：降会把“指向谁”覆盖成“所指
- * 对象含什么”，让悬空指针被接受。普通 struct 绑定可以降，字段槽的强更新需要这一点。
+ * A reference-typed binding's `refDepth` (`n: mut ref node`) may only rise, never fall: lowering it
+ * would overwrite "what I point at" with "what the pointee contains", and let a dangling pointer be
+ * accepted. An ordinary struct binding may fall, which the strong field-slot update needs.
  *
- * @param c      checker；`c->curStoreVal` 是存入的表达式。
- * @param root   要更新字段表的绑定；可为 NULL。
- * @param field  字段名；整个对象或元素写入时为 NULL。
- * @param d2     存入值的深度。
+ * @param c      Checker; `c->curStoreVal` is the stored expression.
+ * @param root   Binding whose field table is updated; may be NULL.
+ * @param field  Field name; NULL for a whole-object or element write.
+ * @param d2     Depth of the stored value.
  */
 void noteFieldDepthWrite(Checker *c, Sym *root, const char *field, int d2) {
     if (!root) return;
@@ -2432,15 +2488,16 @@ void noteFieldDepthWrite(Checker *c, Sym *root, const char *field, int d2) {
 }
 
 /**
- * @brief 记录整聚合赋值，同时保留逐字段来源。
+ * @brief Record a whole-aggregate assignment while keeping per-field sources.
  *
- * 只记 `h.otherDepth = depth(t)` 会丢掉 `t` 的逐字段分配站点，之后安全的 `return h` 会被拒。
- * 来源表完整时精确复制；目标已暴露或来源不完整时退回保守的聚合更新。
+ * Recording only `h.otherDepth = depth(t)` would lose `t`'s per-field allocation sites, and a later
+ * safe `return h` would be rejected. Copied exactly when the source table is complete; falls back to
+ * the conservative aggregate update when the destination is exposed or the source is incomplete.
  *
- * @param c      checker。
- * @param dst    赋值目标绑定。
- * @param value  被赋的聚合值。
- * @param d2     该值的深度。
+ * @param c      Checker.
+ * @param dst    Assignment destination binding.
+ * @param value  Assigned aggregate value.
+ * @param d2     Depth of that value.
  */
 void noteWholeValueDepthWrite(Checker *c, Sym *dst, Expr *value, int d2) {
     if (!dst) return;
@@ -2463,14 +2520,14 @@ void noteWholeValueDepthWrite(Checker *c, Sym *dst, Expr *value, int d2) {
     noteFieldDepthWrite(c, dst, NULL, d2);
 }
 /**
- * @brief 按名字取参数位置。
+ * @brief Look up a parameter position by name.
  *
- * 参数遮蔽是合法语言特性，按名字匹配会认错人；手上已有表达式时应改用 `paramIndexOfExpr`
- * （按符号判断）。
+ * Parameter shadowing is a legal language feature, so matching by name can pick the wrong one; when
+ * an expression is at hand, use `paramIndexOfExpr` (which compares symbols).
  *
- * @param f     要搜索的函数；可为 NULL。
- * @param name  参数名；可为 NULL。
- * @return      从 0 开始的参数下标；不是参数时 -1。
+ * @param f     Function to search; may be NULL.
+ * @param name  Parameter name; may be NULL.
+ * @return      Zero-based parameter index; -1 when it is not a parameter.
  */
 static int paramIndexByName(FuncDef *f, const char *name) {
     if (!name) return -1;
@@ -2480,31 +2537,33 @@ static int paramIndexByName(FuncDef *f, const char *name) {
 }
 
 /**
- * @brief 不经作用域查找，取表达式根解析到的绑定。
+ * @brief Fetch the binding an expression root resolves to, without a scope lookup.
  *
- * `placeRoot` 也回答同一个问题，但它走 checker 的作用域，而作用域只在检查函数体时存在；
- * 效应摘要在那之后才跑。`Sym` 已由解析挂在 `EX_IDENT` 节点上，所以这里不需要作用域。
+ * `placeRoot` answers the same question, but it goes through the checker's scopes, and scopes exist
+ * only while a function body is being checked; effect summaries run after that. The resolver already
+ * attaches a `Sym` to `EX_IDENT` nodes, so no scope is needed here.
  *
- * @param e  表达式。
- * @return   根标识符的绑定；不是标识符或未解析时 NULL。
+ * @param e  Expression.
+ * @return   The root identifier's binding; NULL when it is not an identifier or is unresolved.
  */
 static Sym *rootSymNoScope(Expr *e) {
-    /* 问题③的**无作用域**版本（摘要 pass 在所有函数体检查完之后才跑，那时没有作用域可查，
-     * 这是  的根因）。掩码含 `SIGN`、保留 16 跳上限 —— 差异来自历史，现在写在掩码里。*/
+    /* The **scope-free** version of question 3 (the summary pass runs after all function bodies are
+ * checked, when no scope can be looked up -- the root cause). The mask includes `SIGN` and keeps the
+ * 16-hop limit; that difference is now expressed in the mask. */
     Expr *leaf = extcRootLeaf(e, EXTC_ROOT_FIELD | EXTC_ROOT_INDEX | EXTC_ROOT_DEREF | EXTC_ROOT_SIGN, 16);
     return leaf ? identBindOf(leaf) : NULL;
 }
 
 /**
- * @brief 按符号（而不是拼写）判断值 `e` 来自 `f` 的哪个参数。
+ * @brief Tell which parameter of `f` a value `e` comes from, by symbol rather than by spelling.
  *
- * 摘要记录“第 j 个实参被存下”，调用点据此只检查该实参，所以答案必须经得起遮蔽；只有名字的
- * 调用方用 `paramIndexByName`。
+ * The summary records "argument j was stored", and the call site checks only that argument, so the
+ * answer has to survive shadowing; callers that have only a name use `paramIndexByName`.
  *
- * @param c  checker。
- * @param f  函数。
- * @param e  值表达式。
- * @return   参数下标；不来自参数时 -1。
+ * @param c  Checker.
+ * @param f  Function.
+ * @param e  Value expression.
+ * @return   Parameter index; -1 when it does not come from a parameter.
  */
 static int paramIndexOfExpr(Checker *c, FuncDef *f, Expr *e) {
     (void)c;
@@ -2518,18 +2577,22 @@ static int paramIndexOfExpr(Checker *c, FuncDef *f, Expr *e) {
 }
 
 /**
- * @brief 记录存入值 `e` 为 `f` 置上的效应摘要位。
+ * @brief Record the summary bits set by storing value `e` into an object `f` owns.
  *
- * 经由 `mut ref` 参数、或存进本帧新分配对象的赋值，可能把指针交给调用者。摘要按参数分别
- * 记录：存进来自实参的地址（地址流）还是从实参内容里读出的指针（内容流），调用点只检查被置
- * 上的位。
+ * An assignment through a `mut ref` parameter, or into an object freshly allocated in this frame,
+ * may hand a pointer to the caller. The summary is recorded per parameter: whether the address came
+ * from the argument (address flow) or a pointer read out of the argument's contents (content flow);
+ * the call site only checks the bits that were set.
  *
- * @param c         checker；NULL 时跳过类型判断。
- * @param f         正在填摘要的函数。
- * @param e         被存入的值。
- * @param i         目标容器参数的下标；目标不是 `f` 的参数时 -1。
- * @param intoHome  目标为本帧新分配对象时为 true，目标为 `mut ref` 参数时为 false。
- * @param fresh     本帧分配的名字；来自它们的值在调用点不需要约束。
+ * @param c        Checker; the type judgement is skipped when NULL.
+ * @param f        Function whose summary is being filled in.
+ * @param e        Value being stored.
+ * @param i        Index of the destination container parameter; -1 when the destination is not a
+ *                 parameter of `f`.
+ * @param intoHome True when the destination is an object freshly allocated in this frame, false
+ *                 when it is a `mut ref` parameter.
+ * @param fresh    Names allocated in this frame; values from them need no constraint at the call
+ *                 site.
  */
 static void classifyStoredValue(Checker *c, FuncDef *f, Expr *e, int i, bool intoHome, Vec *fresh) {
     if (!e || !f) return;
@@ -2610,14 +2673,15 @@ static void classifyStoredValue(Checker *c, FuncDef *f, Expr *e, int i, bool int
 static void collectEffectsExpr(Checker *c, FuncDef *f, Expr *e);
 
 /**
- * @brief 记录一条语句可能执行的全部“存入”。
+ * @brief Record every "store" a statement may perform.
  *
- * 摘要按参数记录：哪个参数收到地址、哪个收到从另一参数读出的指针、哪个未知。
+ * The summary is per parameter: which parameter receives an address, which receives a pointer read
+ * out of another parameter, and which one is unknown.
  *
- * @param c      checker。
- * @param f      正在填摘要的函数。
- * @param s      要遍历的语句；NULL 允许。
- * @param fresh  本帧分配的名字；来自它们的值安全，不记录。
+ * @param c      Checker.
+ * @param f      Function whose summary is being filled in.
+ * @param s      Statement to walk; NULL allowed.
+ * @param fresh  Names allocated in this frame; values from them are safe and not recorded.
  */
 static void collectEffectsStmt(Checker *c, FuncDef *f, Stmt *s, Vec *fresh) {
     if (!s) return;
@@ -2678,15 +2742,18 @@ static void collectEffectsStmt(Checker *c, FuncDef *f, Stmt *s, Vec *fresh) {
 }
 
 /**
- * @brief 判断一个函数类型是否"既拿不到引用、也交不出引用"。
+ * @brief Tell whether a function type can neither take nor hand out a reference.
  *
- * 只看签名：每个形参类型都不含引用、返回类型也不含引用。这样的 `fn` 值被间接调用时，
- * 调用方没有任何引用能通过它流进去，它也没有引用能流出来 —— 所以这个间接调用**不可能**
- * 把调用方的引用发布到别处，摘要不必因此判成不完整（见 `collectEffectsExpr`）。
+ * Only the signature is inspected: no parameter type contains a reference and the return type does
+ * not either. When such a `fn` value is called indirectly, the caller has no reference that can flow
+ * in through it and the callee has none that can flow out -- so that indirect call **cannot**
+ * publish a caller's reference elsewhere, and the summary need not be marked incomplete for it (see
+ * `collectEffectsExpr`).
  *
- * @param tt 类型表（解释泛型实参用）。
- * @param t  类型；不是 `fn(...) -> ...` 时返回 false（保守：不认识的形状不享受这条豁免）。
- * @return   签名里完全没有引用时 true。
+ * @param tt  Type table (interprets generic arguments).
+ * @param t   Type; returns false when it is not `fn(...) -> ...` (conservative: an unknown shape does
+ *            not get this exemption).
+ * @return    True when the signature contains no reference at all.
  */
 static bool fnTypeCarriesNoRef(TypeTable *tt, Type *t) {
     if (!t || t->kind != TY_FN) return false;
@@ -2697,14 +2764,15 @@ static bool fnTypeCarriesNoRef(TypeTable *tt, Type *t) {
 }
 
 /**
- * @brief 记录表达式里的调用及其到达的被调者。
+ * @brief Record the calls in an expression and the callees they reach.
  *
- * 解析不了的调用会置 `anEffUnknown(f)`，摘要永久不完整，不能据此放宽任何检查；记录的边就是
- * 该函数的调用图，`computeEffectsTransitive` 之后在它上面闭合。
+ * A call that cannot be resolved sets `anEffUnknown(f)`, and the summary stays incomplete forever;
+ * no check may then be relaxed on its strength. The edges recorded are the function's call graph,
+ * closed afterwards by `computeEffectsTransitive`.
  *
- * @param c  checker。
- * @param f  正在填被调者表与摘要的函数。
- * @param e  要遍历的表达式；NULL 允许。
+ * @param c  Checker.
+ * @param f  Function whose callee table and summary are being filled in.
+ * @param e  Expression to walk; NULL allowed.
  */
 static void collectEffectsExpr(Checker *c, FuncDef *f, Expr *e) {
     if (!e) return;
@@ -2754,10 +2822,11 @@ static void collectEffectsExpr(Checker *c, FuncDef *f, Expr *e) {
             }
         } else if (e->kind == EX_CALL && e->u.call.callee
                    && fnTypeCarriesNoRef(c->tt, tsub(c, e->u.call.callee->type))) {
-            /* 走 `fn` 值的间接调用，但签名里既没有引用形参也没有引用返回值：
-             * 调用方传不进引用、被调者也交不出引用，所以它不可能把调用方的引用发布出去。
-             * 摘要保持完整（否则每一个"收回调"的库函数都会把它的调用方拖进最坏情况：
-             * `apply(buf, inc)` 会报"effects could not be fully analyzed"）。 */
+            /* An indirect call through a `fn` value whose signature has neither reference parameters nor a
+ * reference return: the caller cannot pass a reference in and the callee cannot hand one out, so it
+ * cannot publish the caller's reference. The summary stays complete (otherwise every library
+ * function taking a callback would drag its caller into the worst case: `apply(buf, inc)` would
+ * report "effects could not be fully analyzed"). */
         } else {
             anSetEffUnknown(f, true);   /* nothing to go on -> incomplete, conservatively */
         }
@@ -2836,13 +2905,14 @@ static void collectEffectsExpr(Checker *c, FuncDef *f, Expr *e) {
 }
 
 /**
- * @brief 算出一个函数的效应摘要：它往被交到手里的容器里存了什么。
+ * @brief Compute a function's effect summary: what it stores into the containers handed to it.
  *
- * 只有地址流 `Addr(j)` 与内容流 `Cont(j)` 会约束实参；`new`、字面量、标量不约束。
- * `extern!` 声明按 `effects` 子句总结：没有子句时 32 以下每个参数都记为“已存”（安全默认）。
+ * Only the address flow `Addr(j)` and the content flow `Cont(j)` constrain arguments; `new`,
+ * literals and scalars do not. An `extern!` declaration is summarized from its `effects` clause: with
+ * no clause, every parameter below 32 is recorded as "stored" (the safe default).
  *
- * @param c  checker。
- * @param f  要总结的函数。
+ * @param c  Checker.
+ * @param f  Function to summarize.
  */
 static void collectEffects(Checker *c, FuncDef *f) {
     /* An extern declaration has no body, so the summary comes from the signed clause or
@@ -2871,9 +2941,10 @@ static void collectEffects(Checker *c, FuncDef *f) {
     /* The escape set decides which arena the calls in this body pass, so it has to be
      * known before the body is walked. */
     computeEscapes(c, f);
-    /* 这里不写 `c->escapeesFor = (int)(size_t)f;` —— 把指针截断成 `int` 当"已算过"的键，
-     * 而那个字段**只写不读**（死字段 + 指针截断，一并删掉）。将来若真需要记忆化，
-     * 用 `FuncDef *` 或 `Sym *` 字段，而不是把地址塞进整数。*/
+    /* Do not write `c->escapeesFor = (int)(size_t)f;` here -- that truncates a pointer to `int` as the
+ * "already computed" key, and the field would be write-only (a dead field plus pointer truncation).
+ * If memoization is really needed later, use a `FuncDef *` or `Sym *` field, not an address packed
+ * into an integer. */
     if (getenv("EXTC_DUMP_EFFECTS")) fprintf(stderr, "[escapes-for] %s\n", FN(f));
     Vec fresh; vecInit(&fresh, c->arena, sizeof(const char *));
     collectFreshLocals(c->arena, &fresh, f->body);
@@ -2888,17 +2959,19 @@ static void collectEffects(Checker *c, FuncDef *f) {
 }
 
 /**
- * @brief 判断一个值的深度是否由分配站点决定。
+ * @brief Tell whether a value's depth is decided by an allocation site.
  *
- * 只有这类形状允许重算深度：模板期记录的是快照，电平求解器之后可能把站点从 home arena 移回
- * 块层级。重算只能调小 `rc->depth`（放宽检查），所以绑定、调用结果、来自参数的值一律按记录
- * 值处理（偏拒绝）。`targetDepth` 不能替代它：它为绑定调用 `lookup`，而 `runRefCheck` 在别
- * 的模块作用域里跑，找到的不是原来那条绑定。
+ * Only such shapes may have their depth recomputed: the template-time record is a snapshot, and the
+ * level solver may afterwards move the site from the home arena back to a block level. Recomputing
+ * may only lower `rc->depth` (relax a check), so bindings, call results and values coming from
+ * parameters are all treated by their recorded value (leaning to rejection). `targetDepth` cannot
+ * replace this: it calls `lookup` for a binding, and `runRefCheck` runs in another module's scope and
+ * would find a different binding.
  *
- * @param c     checker。
- * @param e     要分类的表达式；可为 NULL。
- * @param hops  已跟随的间接层数；走超过 32 即停。
- * @return      值可追溯到 `new` 或内建泛型分配时 true。
+ * @param c     Checker.
+ * @param e     Expression to classify; may be NULL.
+ * @param hops  Indirect levels already followed; the walk stops past 32.
+ * @return      True when the value traces back to `new` or a builtin generic allocation.
  */
 static bool depthComesFromAlloc2(Checker *c, Expr *e, int hops) {
     if (!e || hops > 32) return false;
@@ -2945,13 +3018,14 @@ static bool depthComesFromAlloc2(Checker *c, Expr *e, int hops) {
 
 
 /**
- * @brief 读取一个值最终定下的深度。
+ * @brief Read the depth a value finally settled on.
  *
- * 分配站点读 `planArenaLevel`（不要回落到 `refDepth`，那个数可能已过期并跟 arena 层级矛盾）；
- * 绑定、字段、下标读 `refDepth`；`dyn` 载荷与容器形状取所含值的最大深度。
+ * An allocation site reads `planArenaLevel` (do not fall back to `refDepth`, that number can be
+ * stale and would then contradict the arena level); a binding, field or index reads `refDepth`; a
+ * `dyn` payload and a container shape take the maximum depth of the values they hold.
  *
- * @param e  表达式；NULL 返回 0。
- * @return   该值的深度；无要求时为 0。
+ * @param e  Expression; NULL returns 0.
+ * @return   Depth of the value; 0 when there is no requirement.
  */
 static int solvedDepth(Expr *e) {
     if (!e) return 0;
@@ -3005,14 +3079,13 @@ static int solvedDepth(Expr *e) {
         return d;
     }
     default:
-        /* 走到这里的只有两种形状：`EX_INT` 与 `EX_CONV`。两种都**不可能携带引用**：
-         * 字面量没有引用；`EX_CONV` 的源类型被刻意收窄（只有 `ref void` 这一种指针来源，
-         * 不做一般指针转换）⇒ **答 0 是语义，不是兜底**。
-         *
-         * 那为什么还留着这个 NOTE：它是**计数哨兵** —— 将来若有新的 `ExprKind` 走到这里，
-         * 计数会变，那才是要查的信号（与 walker 预算的关系：本仓库限制 23 个手写遍历
-         * `tools/check_walkers.py`，把这些 kind 逐个列出来会让它变成第 24 个，
-         * 而"列全"在这里买不到任何正确性）。*/
+        /* Only two shapes reach here: `EX_INT` and `EX_CONV`. Neither can **carry a reference**: a literal
+ * has none; `EX_CONV`'s source type is deliberately narrowed (only `ref void` is a pointer source,
+ * no general pointer conversion) ⇒ **answering 0 is semantics, not a fallback**.
+ *
+ * The NOTE stays as a **counting sentinel**: a new `ExprKind` reaching here would change the count,
+ * and that change is the signal to investigate (related to the walker budget: the repository limits
+ * the number of hand-written traversals, and listing every kind here would buy no correctness). */
         EXTC_DBG_NOTEF("solvedDepth: kind=%d answered 0 (INT/CONV only, both carry no reference)", (int)e->kind);
         return 0;
     }
@@ -3117,17 +3190,19 @@ static int  valueLevel(Checker *c, LvlState *ls, Expr *val, int hops);
 static int levelOfValue2(Checker *c, LvlState *ls, Expr *val, int target, int hops);
 
 /**
- * @brief 走一层值到分配站点的层级求解，带环切与步数预算。
+ * @brief One step of the level solver from a value down to its allocation sites, with cycle cutting
+ *        and a step budget.
  *
- * 体内每条递归边都经过这个包装，所以它维护的路径就是正在走的链，预算统计到达的每一对
- * （包括重复到达的，那正是环切存在的理由）。
+ * Every recursive edge inside the body goes through this wrapper, so the path it maintains is
+ * exactly the chain being walked, and the budget counts every pair it reaches (reached pairs
+ * included -- that is the reason cycle cutting exists).
  *
- * @param c       checker。
- * @param ls      电平求解状态（路径与步数预算）。
- * @param val     要解的值。
- * @param target  目的地要求的层级。
- * @param hops    已跟随的跳数；超过 32 返回 `LEVEL_INF`。
- * @return        值需要活到的层级；无要求时为 `LEVEL_INF`。
+ * @param c       Checker.
+ * @param ls      Level-solver state (path and step budget).
+ * @param val     Value to solve.
+ * @param target  Level required by the destination.
+ * @param hops    Hops already followed; past 32 returns `LEVEL_INF`.
+ * @return        Level the value must live to; `LEVEL_INF` when there is no requirement.
  */
 static int levelOfValue(Checker *c, LvlState *ls, Expr *val, int target, int hops) {
     if (!val || hops > 32) return LEVEL_INF;
@@ -3156,19 +3231,22 @@ static int levelOfValue(Checker *c, LvlState *ls, Expr *val, int target, int hop
 }
 
 /**
- * @brief 电平求解的主体：沿载体把一次发布追到它能触及的分配站点。
+ * @brief The main body of the level solver: follow one publication along carriers to the allocation
+ *        sites it can reach.
  *
- * 一次发布 `(value, at)` 说“这个值会落进活 `at` 层深的地方”，沿值能到达的每个分配站点也被
- * 要求活到 `at`。跟随关系：绑定走 `Sym.origin`；`ref` / `*` / `!` 走同一份存储；
- * slice/deref/sign 认对象的一部分；字段与下标住在对象/数组里；聚合走每个元素；调用不跟随
- * （被调者发布什么是它自己的事）。这是一个对数据的折叠，与顺序无关。
+ * A publication `(value, at)` says "this value lands somewhere that lives `at` levels deep"; every
+ * allocation site the value can reach is then also required to live to `at`. Followed relations: a
+ * binding follows `Sym.origin`; `ref` / `*` / `!` follow the same storage; slice/deref/sign are part
+ * of an object; fields and indexes live inside an object/array; an aggregate follows every element;
+ * a call is not followed (what its callee publishes is the callee's business). This is a fold over
+ * the data, independent of order.
  *
- * @param c       checker。
- * @param ls      电平求解状态。
- * @param val     被发布的值。
- * @param target  目的地所在的 arena 层级；0 = 本帧之外。
- * @param hops    递归守卫：绑定可能成环（`a = b  b = a`）。
- * @return        值需要活到的层级。
+ * @param c       Checker.
+ * @param ls      Level-solver state.
+ * @param val     Published value.
+ * @param target  Arena level of the destination; 0 = outside this frame.
+ * @param hops    Recursion guard: bindings can form cycles (`a = b  b = a`).
+ * @return        Level the value must live to.
  */
 static int levelOfValue2(Checker *c, LvlState *ls, Expr *val, int target, int hops) {
     if (!val || hops > 32) return LEVEL_INF;
@@ -3382,14 +3460,15 @@ static int levelOfValue2(Checker *c, LvlState *ls, Expr *val, int target, int ho
 }
 
 /**
- * @brief 读取一个绑定当前已知需要活到的层级。
+ * @brief Read the level a binding is currently known to need.
  *
- * 绑定的层级不是单条语句决定的：它现在持有的值可能来自多条语句，它被发布到哪里也可能要求比
- * 值本身更长的寿命。两者都是发布记录之间的边，这张表就是它们相遇的地方。
+ * A binding's level is not decided by a single statement: the value it holds now may come from
+ * several statements, and where it is published may require a longer lifetime than the value itself.
+ * Both are edges between publication records, and this table is where they meet.
  *
- * @param ls  电平求解状态。
- * @param sy  绑定。
- * @return    该绑定的层级。
+ * @param ls  Level-solver state.
+ * @param sy  Binding.
+ * @return    Level of that binding.
  */
 static int symLevel(LvlState *ls, Sym *sy) {
     if (!ls || !sy) return LEVEL_INF;
@@ -3403,14 +3482,14 @@ static int symLevel(LvlState *ls, Sym *sy) {
 }
 
 /**
- * @brief 调低一个绑定的层级，并报告是否真的动了。
+ * @brief Lower a binding's level, reporting whether it actually moved.
  *
- * 只有调低这一个方向：层级是要求，要求只会累积。
+ * There is only the lowering direction: a level is a requirement, and requirements only accumulate.
  *
- * @param ls  电平求解状态。
- * @param sy  绑定。
- * @param lv  新层级。
- * @return    层级因此变小时 true。
+ * @param ls  Level-solver state.
+ * @param sy  Binding.
+ * @param lv  New level.
+ * @return    True when the level got smaller.
  */
 static bool setSymLevel(LvlState *ls, Sym *sy, int lv) {
     if (!ls || !sy || lv >= LEVEL_INF) return false;
@@ -3431,16 +3510,17 @@ static bool setSymLevel(LvlState *ls, Sym *sy, int lv) {
 }
 
 /**
- * @brief 读取一个被存值从它命名的绑定上带来的层级。
+ * @brief Read the level a stored value brings from the binding it names.
  *
- * 这是 `levelOfValue` 的另一半：那一个把值往下走到它里面的分配站点，这一个把值往上走到构成
- * 它的绑定；两者一起迭代到数字不再移动。
+ * This is the other half of `levelOfValue`: that one walks a value down to the allocation sites
+ * inside it, this one walks it up to the bindings that make it up; both are iterated together until
+ * the numbers stop moving.
  *
- * @param c     checker。
- * @param ls    电平求解状态。
- * @param val   值表达式。
- * @param hops  递归守卫跳数。
- * @return      该值携带的层级；无要求时为 `LEVEL_INF`。
+ * @param c     Checker.
+ * @param ls    Level-solver state.
+ * @param val   Value expression.
+ * @param hops  Recursion-guard hops.
+ * @return      Level carried by the value; `LEVEL_INF` when there is no requirement.
  */
 static int valueLevel(Checker *c, LvlState *ls, Expr *val, int hops) {
     if (!val || hops > 32) return LEVEL_INF;
@@ -3509,13 +3589,14 @@ static int valueLevel(Checker *c, LvlState *ls, Expr *val, int hops) {
 }
 
 /**
- * @brief 跑电平遍历：折叠检查函数体时记录的发布。
+ * @brief Run the level pass: fold the publications recorded while checking function bodies.
  *
- * 它**不**取数据流的不动点：电平求解读自己的表（由函数体遍历时的发布播种），并在 DFA 的数字
- * 被写回 `Sym.refDepth` **之前**跑。
+ * It does **not** take a data-flow fixed point: the level solver reads its own table (seeded by the
+ * publications made during the body walk) and runs **before** the DFA's numbers are written back to
+ * `Sym.refDepth`.
  *
- * @param c  checker。
- * @param f  要跑电平遍历的函数。
+ * @param c  Checker.
+ * @param f  Function to run the level pass on.
  */
 static void levelPass(Checker *c, FuncDef *f) {
     LvlState ls;
@@ -3672,10 +3753,10 @@ typedef struct {
 } FdOblig;
 
 /**
- * @brief 判断类型是否声明了 `close` 方法（资源协议）。
+ * @brief Tell whether a type declares a `close` method (resource protocol).
  *
- * @param t  类型。
- * @return   其 struct 上声明了 `close` 时 true。
+ * @param t  Type.
+ * @return   True when its struct declares `close`.
  */
 static bool typeIsResource(Type *t) {
     Type *b = t ? ttBase(t) : NULL;
@@ -3688,11 +3769,11 @@ static bool typeIsResource(Type *t) {
 }
 
 /**
- * @brief 在资源义务表里按生成名找义务（别名也算）。
+ * @brief Find an obligation in the resource-obligation table by generated name (aliases included).
  *
- * @param obs    义务表（`FdOblig *`）。
- * @param cname  生成 C 名；NULL 返回 NULL。
- * @return       找到的义务；没有则 NULL。
+ * @param obs    Obligation table (`FdOblig *`).
+ * @param cname  Generated C name; NULL returns NULL.
+ * @return       The obligation found; NULL when there is none.
  */
 static FdOblig *obligFind(Vec *obs, const char *cname) {
     if (!cname) return NULL;
@@ -3706,25 +3787,27 @@ static FdOblig *obligFind(Vec *obs, const char *cname) {
 }
 
 /**
- * @brief 把所有义务标成“已交出”。
+ * @brief Mark every obligation "handed out".
  *
- * 用于本遍历不认识的形状：漏报只是少一条诊断，误报会拒绝正确程序，所以未知方向选择沉默。
+ * Used for shapes this walk does not recognize: a missed report is only one diagnostic fewer, while
+ * a false report would reject a correct program, so an unknown direction stays silent.
  *
- * @param obs  义务表。
+ * @param obs  Obligation table.
  */
 static void obligEscapeAll(Vec *obs) {
     for (size_t i = 0; i < obs->len; i++) (*(FdOblig **)vecAt(obs, i))->escaped = true;
 }
 
 /**
- * @brief 在表达式里追踪资源义务：被关闭还是被交出。
+ * @brief Track resource obligations in an expression: closed or handed out.
  *
- * `f.close()` 是履行；接收者本身不算交出（`f.put(x)` 只是通过句柄写入）。
+ * `f.close()` fulfils the obligation; the receiver itself is not a hand-out (`f.put(x)` only writes
+ * through the handle).
  *
- * @param c       checker。
- * @param e       表达式；NULL 忽略。
- * @param obs     义务表。
- * @param escape  该位置的值离开本函数时为 true。
+ * @param c       Checker.
+ * @param e       Expression; NULL is ignored.
+ * @param obs     Obligation table.
+ * @param escape  True when the value at this position leaves the function.
  */
 static void obligExpr(Checker *c, Expr *e, Vec *obs, bool escape) {
     if (!e) return;
@@ -3814,11 +3897,11 @@ static void obligExpr(Checker *c, Expr *e, Vec *obs, bool escape) {
 }
 
 /**
- * @brief 在语句里追踪资源义务，走遍其表达式。
+ * @brief Track resource obligations in a statement by walking its expressions.
  *
- * @param c    checker。
- * @param s    语句；NULL 忽略。
- * @param obs  义务表。
+ * @param c    Checker.
+ * @param s    Statement; NULL is ignored.
+ * @param obs  Obligation table.
  */
 static void obligStmt(Checker *c, Stmt *s, Vec *obs) {
     if (!s) return;
@@ -3887,14 +3970,15 @@ static void obligStmt(Checker *c, Stmt *s, Vec *obs) {
 }
 
 /**
- * @brief 警告函数里打开却从未关闭的每个描述符。
+ * @brief Warn about every descriptor opened in a function that is never closed.
  *
- * 刻意做成流不敏感：函数里任何一处 `close` 都算数。要证明某条**路径**会关闭需要路径敏感分析，
- * 而拒绝一个在两条路径之一关闭文件的程序是误报。第二次 `close` 在库里是空操作，所以接受的
- * 形状在运行期确实已关闭。
+ * Deliberately flow-insensitive: any `close` anywhere in the function counts. Proving that a
+ * **path** closes requires path-sensitive analysis, and rejecting a program that closes the file on
+ * one of two paths would be a false report. A second `close` is a no-op in the library, so accepted
+ * shapes really are closed at run time.
  *
- * @param c  checker。
- * @param f  要检查的函数。
+ * @param c  Checker.
+ * @param f  Function to check.
  */
 static void checkOpenHandles(Checker *c, FuncDef *f) {
     if (!f || !f->body || f->isExtern) return;
@@ -3935,10 +4019,10 @@ static const Sym *g_sbFirst;
 static int g_sbBad;
 
 /**
- * @brief 用 FNV-1a 哈希一个 C 名字。
+ * @brief Hash a C name with FNV-1a.
  *
- * @param p  以 NUL 结尾的名字。
- * @return   哈希值。
+ * @param p  NUL-terminated name.
+ * @return   Hash value.
  */
 static size_t sgHash(const char *p) {
     size_t h = 1469598103934665603u;
@@ -3946,11 +4030,12 @@ static size_t sgHash(const char *p) {
     return h;
 }
 /**
- * @brief 在符号索引里找一个桶，必要时新建。
+ * @brief Find a bucket in the symbol index, creating one when needed.
  *
- * @param name    要查找的生成名。
- * @param create  没有时是否新建。
- * @return        桶；16 步线性探测内没有空位时 NULL，调用方退回线性查找。
+ * @param name    Generated name to find.
+ * @param create  Whether to create it when missing.
+ * @return        Bucket; NULL when no slot is free within 16 linear probes, and the caller falls
+ *                back to a linear search.
  */
 static SymBucket *symBucket(const char *name, int create) {
     size_t h = sgHash(name) & (g_sbCap - 1);
@@ -3968,12 +4053,13 @@ static SymBucket *symBucket(const char *name, int create) {
     return NULL;                                   /* window full: caller falls back */
 }
 /**
- * @brief 把自上次以来新增的符号追加进符号索引。
+ * @brief Append symbols added since the last call to the symbol index.
  *
- * 只增量追加（每次摊还 O(1)）。一旦发现索引不再与 `c->allSyms` 完全一致（表窗口满、列表缩小、
- * arena 或首符号不同），就把 `g_sbBad` 置位，此后整轮永久退回线性查找。
+ * Append-only (amortized O(1) per symbol). As soon as the index is found to disagree with
+ * `c->allSyms` (table window full, list shrank, different arena or first symbol), `g_sbBad` is set
+ * and every later call falls back to the linear search for good.
  *
- * @param c  checker。
+ * @param c  Checker.
  */
 static void symIdxSync(Checker *c) {
     const Sym *first = c->allSyms.len ? *(Sym **)vecAt(&c->allSyms, 0) : NULL;
@@ -3995,13 +4081,15 @@ static void symIdxSync(Checker *c) {
 }
 
 /**
- * @brief 为一个函数做协程设置：句柄协议（每程序一次），以及该函数调用会产生的帧类型及其协议方法。
+ * @brief Set up coroutine support for a function: the handle protocol (once per program) plus the
+ *        frame type its calls produce and that type's protocol methods.
  *
- * 对**迟到创建的实例**也要跑：泛型体里的调用会被推迟，实例的设置在函数体检查之后才发生。
- * 为那个实例跑一遍，`<name>$frame` 才会被定义，`value()` 也才落在代入后的 `T` 上。
+ * Must also run for **late-created instances**: calls inside a generic body are deferred, and an
+ * instance is set up only after the body has been checked. Running it for that instance is what
+ * defines `<name>$frame` and makes `value()` land on the substituted `T`.
  *
- * @param c  checker。
- * @param f  函数定义。
+ * @param c  Checker.
+ * @param f  Function definition.
  */
 static void coroSetup(Checker *c, FuncDef *f) {
 
@@ -4128,20 +4216,23 @@ static void coroSetup(Checker *c, FuncDef *f) {
 }
 
 /**
- * @brief 检查一个函数：签名、home arena 需求与函数体。
+ * @brief Check a function: signature, home-arena need, and body.
  *
- * 既分配又交回有用东西（引用、view、经出参的写入）的函数需要 home arena；只返回 `i32` 的不
- * 需要。逃逸集合必须在遍历函数体之前算出，因为遍历用它选择每个调用的 arena。`extern!` 只查
- * 形状：C 函数收标量与单指针，`slice<T>` 会变成两个 C 实参，struct 没有冻结布局。
+ * A function that both allocates and hands back something useful (a reference, a view, a write
+ * through an out parameter) needs a home arena; one returning only `i32` does not. The escape set
+ * must be computed before the body is walked, because the walk uses it to pick the arena of each
+ * call. `extern!` is shape-checked only: C functions take scalars and single pointers, `slice<T>`
+ * becomes two C arguments, and structs have no frozen layout.
  *
- * @param c  checker。
- * @param f  要检查的函数。
+ * @param c  Checker.
+ * @param f  Function to check.
  */
 static void checkFunc(Checker *c, FuncDef *f) {
-    /* `@builtin` 声明只有签名、没有函数体（与 `extern!` 同款），而这条路后面会直接遍历
-     * `f->body` ⇒ 无体声明一进来就段错误。
-     * 内建的实现由编译器在**调用点**给出，所以这里什么都不用查；对它的调用由 check_expr 里的
-     * "尚未实现" 守卫负责拒绝。只挡内建，不动 extern 的既有行为。 */
+    /* A `@builtin` declaration has a signature but no body (same shape as `extern!`), and this path
+ * walks `f->body` shortly below ⇒ a bodyless declaration would segfault on entry. Builtins are
+ * implemented by the compiler **at the call site**, so there is nothing to check here; calls to them
+ * are rejected by the "not yet implemented" guard in check_expr. Only builtins are skipped, and
+ * `extern` behavior is left unchanged. */
     if (f->isBuiltin && !f->body) return;
     /* A lambda's `call` method: its body was checked where the lambda was written, because that is
      * where the capture set comes from (check_expr.c, checkLambda). */
@@ -4230,8 +4321,9 @@ static void checkFunc(Checker *c, FuncDef *f) {
     bool isEntryFn = !f->owner &&
                      (f->isModuleEntry || strcmp(f->name, "main") == 0);
     if (isEntryFn) {
-        /* 一个 `@module` 入口与 `main` 过同一道门：分发器把命令行原样交给它，所以返回值
-         * 与参数形状的要求一模一样。消息里叫它用户写的那个名字，不叫 `main`。 */
+        /* An `@module` entry goes through the same gate as `main`: the dispatcher hands it the command line
+ * verbatim, so the requirements on its return value and parameter shapes are identical. The message
+ * names it the way the user wrote it, not `main`. */
         const char *what = f->isModuleEntry ? "an `@module` entry" : "`main`";
         Type *r = f->ret ? ttBase(f->ret) : NULL;
         bool retOk = !r || r->kind == TY_VOID ||
@@ -4285,13 +4377,14 @@ static void checkFunc(Checker *c, FuncDef *f) {
     /* A coroutine: the declared return type is `coroutine<T>` (a prototype in the prelude). The
      * declaration is the marker -- `yield` is legal only here, and the frame the checker lays out
      * for this function is a value. */
-    /* `coroutine<T>`（简写：请求与应答同型）与 `coroutine<A, B>` 都算协程：前者一个类型参数，
-     * 后者两个。协议方法各自取哪个参数见下面合成那段。 */
+    /* Both `coroutine<T>` (shorthand: request and reply share a type) and `coroutine<A, B>` count as
+ * coroutines: one type parameter and two respectively. Which parameter each protocol method takes is
+ * set in the synthesis below. */
     planSetIsCoro(f, f->ret && (isProtoType(f->ret, "coroutine", 1)
                            || isProtoType(f->ret, "coroutine", 2)));
     planSetCoroRetProto(f, planIsCoro(f) ? f->ret : NULL);
-    /* `coroutine<A, B>`：`B`（最后一个参数）是 yield 出来的类型。简写 `coroutine<T>` 只有一个
-     * 参数，那个就是它。 */
+    /* `coroutine<A, B>`: `B` (the last parameter) is the yielded type. The shorthand `coroutine<T>` has a
+ * single parameter, and that one is it. */
     planSetYieldType(f, planIsCoro(f)
         ? *(Type **)vecAt(&f->ret->targs, f->ret->targs.len - 1) : NULL);
     /* What a coroutine yields is a **value**. Its frame is released when the task ends, so a
@@ -4343,8 +4436,9 @@ static void checkFunc(Checker *c, FuncDef *f) {
          * so `ref real` is allowed inside `fn f(real: Board)`. */
         Sym *sym = declare(c, p->name, p->type, true, false, p->line, 0);
         p->cname = sym->cname;
-        /* 引用型形参指向的存储是**调用方的**（借用）：`(*p).f = v` 的目的地要按可能被指物的
-         * 最浅深度算，参数就是 0（活过本帧）。 */
+        /* The storage a reference parameter points at is **the caller's** (a borrow): the destination of
+ * `(*p).f = v` is computed from the shallowest depth of the possible referents, and for a parameter
+ * that is 0 (it lives past this frame). */
         if (p->type && tsub(c, p->type)->kind == TY_REF) sym->minPointee = 0;
         /* Record the binding now, while the scope exists: the effect summary runs later, with no
          * scope at all, and needs the identity to attribute a store to the right parameter. */
@@ -4375,8 +4469,9 @@ static void checkFunc(Checker *c, FuncDef *f) {
      * whether every handle the function opened also gets closed. */
     checkOpenHandles(c, f);
 
-    /* `par` 合成的 worker 体照普通函数检查，但 worker 的签名有运行期约定（`id` 就是给
-     * trampoline 的），这里在体检查完之后把它按解析好的形状复查一遍。 */
+    /* A `par` worker body is checked like an ordinary function, but a worker signature has a run-time
+ * convention (its `id` is for the trampoline), so it is re-audited against the resolved shape once
+ * the body has been checked. */
     if (planIsParWorker(f)) parWorkerAudit(c, f);
 
     /* A parameter the body never reads. extC lets the program keep it and the generated C marks it
@@ -4476,8 +4571,9 @@ static void checkFunc(Checker *c, FuncDef *f) {
                 }
             }
         }
-        /* 目的地深度现在定了：DFA 已写回，`Sym.minPointee` 也在 walk 里收全了所有改指。
-         * 复判 walk 里推迟的 `(*cur).f = v` —— 词序不再影响答案（作用域还开着，`lookup` 能用）。 */
+        /* The destination depth is fixed now: the DFA has written back, and `Sym.minPointee` has collected
+ * every retarget during the walk. Re-judge the `(*cur).f = v` stores the walk deferred -- word order
+ * does not affect the answer (the scope is still open, so `lookup` works). */
         recheckPendingRefStores(c, !dfr.overflow);
     }
     popScope(c);
@@ -4489,13 +4585,13 @@ static void checkFunc(Checker *c, FuncDef *f) {
 }
 
 /**
- * @brief 判断初始化表达式是否为常量表达式。
+ * @brief Tell whether an initializer expression is a constant expression.
  *
- * 没有常量折叠器，所以看形状：字面量、取负的字面量、枚举常量、以及它们之间的算术；调用一律
- * 拒绝。
+ * There is no constant folder, so the shape is inspected instead: literals, negated literals, enum
+ * constants, and arithmetic over them; every call is rejected.
  *
- * @param e  初始化表达式；可为 NULL。
- * @return   是常量表达式时 true。
+ * @param e  Initializer expression; may be NULL.
+ * @return   True when it is a constant expression.
  */
 bool isConstInit(Expr *e) {
     if (!e) return false;
@@ -4546,13 +4642,14 @@ bool isConstInit(Expr *e) {
     }
 }
 /**
- * @brief 检查顶层的 `let` 与 `var` 声明。
+ * @brief Check top-level `let` and `var` declarations.
  *
- * 全局量是深度 0，活过每一帧；由此不需要任何专门规则就有两个后果：逃逸规则已经拒绝把局部量
- * 存进全局量，固定大小的全局量是 C 静态对象、不需要 arena。初始化式必须是常量，因为 C 的静态
- * 初始化式只能含常量表达式。
+ * A global lives at depth 0 and outlives every frame; two consequences then follow with no special
+ * rule: the escape rule already rejects storing a local into a global, and a fixed-size global is a C
+ * static object that needs no arena. The initializer must be constant, because a C static initializer
+ * may contain constant expressions only.
  *
- * @param c  checker。
+ * @param c  Checker.
  */
 static void checkGlobals(Checker *c) {
     Module *m = c->m;
@@ -4665,12 +4762,12 @@ static void checkGlobals(Checker *c) {
 #define TYPE_DEPTH_LIMIT 64
 
 /**
- * @brief 数类型实例化参数的嵌套深度（普通类型为 0）。
+ * @brief Count the nesting depth of type-instantiation arguments (0 for an ordinary type).
  *
- * 递归防御性截断：它跑在编译器自己造出来的类型上。
+ * Recursion is truncated defensively: it runs on types the compiler itself built.
  *
- * @param t  类型。
- * @return   嵌套深度。
+ * @param t  Type.
+ * @return   Nesting depth.
  */
 static int typeDepth(Type *t) {
     if (!t) return 0;
@@ -4683,17 +4780,19 @@ static int typeDepth(Type *t) {
 }
 
 /**
- * @brief 创建或找到自由泛型函数的具体实例。
+ * @brief Create or find a concrete instance of a free generic function.
  *
- * 类型实例（`varArray<i32>`）由类型决定，而自由函数的类型实参是从调用点读出来的，所以实例
- * 只能在那里创建。同一个 `targs` 列表总是映射到同一个实例。
+ * A type instance (`varArray<i32>`) is decided by the type, while a free function's type arguments are
+ * read off the call site, so an instance can only be created there. The same `targs` list always maps
+ * to the same instance.
  *
- * @param c      checker；实例追加进 `c->funcInsts` 与模块。
- * @param tmpl   泛型模板；NULL 得到 NULL。
- * @param targs  具体类型实参。
- * @param line   调用的源码行；未使用，保持调用形状。
- * @return       独立的 `FuncDef`：`tmpl` 指回模板，`targs` 与 `instName` 填好，参数与返回
- *               类型已代入；codegen 像普通函数一样发出它。
+ * @param c      Checker; the instance is appended to `c->funcInsts` and to the module.
+ * @param tmpl   Generic template; NULL yields NULL.
+ * @param targs  Concrete type arguments.
+ * @param line   Source line of the call; unused, kept for the call shape.
+ * @return       Stand-alone `FuncDef`: `tmpl` points back at the template, `targs` and `instName` are
+ *               filled in, and parameter and return types are substituted; codegen emits it like an
+ *               ordinary function.
  */
 FuncDef *funcInstance(Checker *c, FuncDef *tmpl, Vec *targs, int line) {
     if (!tmpl) return NULL;
@@ -4775,16 +4874,19 @@ FuncDef *funcInstance(Checker *c, FuncDef *tmpl, Vec *targs, int line) {
 }
 
 /**
- * @brief 从实参类型反推并填入类型参数。
+ * @brief Infer and fill type parameters from argument types.
  *
- * 对 `f<T>(x)` 这样的调用，从实参类型推断 `T`，就是把 `slice<T>` 与 `slice<u8>` 匹配起来。
+ * For a call like `f<T>(x)`, inferring `T` from the argument type means matching `slice<T>` against
+ * `slice<u8>`.
  *
- * @param tt     类型表。
- * @param tp     类型参数名，顺序与 `targs` 一致。
- * @param targs  每个类型参数一格，推断过程中填入；已填的格必须与新类型一致。
- * @param want   参数类型，可以提到类型参数。
- * @param got    实参的类型。
- * @return       推断不出时为 false（例如 `T` 只出现在返回类型里），此时调用必须写明 `f<i32>`。
+ * @param tt     Type table.
+ * @param tp     Type-parameter names, in the same order as `targs`.
+ * @param targs  One cell per type parameter, filled in during inference; an already filled cell must
+ *               agree with the new type.
+ * @param want   Parameter type, may mention type parameters.
+ * @param got    Type of the argument.
+ * @return       False when it cannot be inferred (e.g. `T` appears only in the return type), in which
+ *               case the call must spell it out: `f<i32>`.
  */
 bool unifyTParams(TypeTable *tt, Vec *tp, Vec *targs, Type *want, Type *got) {
     if (!want || !got) return true;
@@ -4807,9 +4909,9 @@ bool unifyTParams(TypeTable *tt, Vec *tp, Vec *targs, Type *want, Type *got) {
                               *(Type **)vecAt(&got->targs, i))) return false;
         return true;
     }
-    /* 泛型**枚举**实例（`option<T>`、`result<T,E>`）与泛型结构体一样要按实参逐个合一：
-     * 少了这一支，`fn f<T>(o: option<T>)` 这类签名就永远推不出 `T`（库里的
-     * `preludeIsNone` 正是这个形状）。 */
+    /* Generic **enum** instances (`option<T>`, `result<T,E>`) unify per argument exactly like generic
+ * structs: without this arm, a signature such as `fn f<T>(o: option<T>)` could never infer `T` (the
+ * library's `preludeIsNone` has precisely this shape). */
     if (want->kind == TY_ENUM && got->kind == TY_ENUM) {
         if (want->edef != got->edef || want->targs.len != got->targs.len) return false;
         for (size_t i = 0; i < want->targs.len; i++)
@@ -4822,20 +4924,21 @@ bool unifyTParams(TypeTable *tt, Vec *tp, Vec *targs, Type *want, Type *got) {
 }
 
 /**
- * @brief 实例使用闭包的一趟回调：把方法体里调到的同属主方法记成同一实例用过。
+ * @brief Callback context for the instance-use closure: methods of the same owner reached from a
+ *        method body are recorded as used by the same instance.
  */
 typedef struct {
-    Checker *c;     /* 检查器：代换接收者类型要用它的类型表 */
-    Vec *params;    /* 当前实例的类型参数名（结构体或自由函数模板的） */
-    Vec *targs;     /* 对应的类型实参 */
+    Checker *c;     /* Checker: its type table is needed to substitute the receiver type */
+    Vec *params;    /* Current instance's type-parameter names (struct or free-function template) */
+    Vec *targs;     /* Corresponding type arguments */
 } InstUseCtx;
 
 /**
- * @brief `instUseClosure` 的表达式回调：命中解析结果就补记，然后继续往下走整棵树。
+ * @brief `instUseClosure`'s expression callback: record a hit and keep walking the whole tree.
  *
- * @param raw  `InstUseCtx *`。
- * @param e    当前表达式。
- * @return     永远 true（闭包只增不减，不需要提前停）。
+ * @param raw  `InstUseCtx *`.
+ * @param e    Current expression.
+ * @return     Always true (the closure only grows, so there is no reason to stop early).
  */
 static bool instUseOnExpr(void *raw, Expr *e) {
     InstUseCtx *ctx = raw;
@@ -4843,8 +4946,9 @@ static bool instUseOnExpr(void *raw, Expr *e) {
         FuncDef *callee = planCallee(e);
         if (callee && callee->owner && callee->owner->typeParams.len > 0 &&
             ctx->params && ctx->targs) {
-            /* 接收者类型可能是另一个泛型结构体的实例（`ndarray<T>::viewMut` 调
-             * `ndview<T>::rowMajor`）：先用当前实例的类型实参代换，再取实例名。 */
+            /* The receiver type may be an instance of another generic struct (`ndarray<T>::viewMut` calls
+ * `ndview<T>::rowMajor`): substitute with the current instance's type arguments first, then take the
+ * instance name. */
             Type *recvType = NULL;
             switch (e->kind) {
             case EX_METHOD: recvType = e->u.method.recv->type; break;
@@ -4865,24 +4969,28 @@ static bool instUseOnExpr(void *raw, Expr *e) {
 }
 
 /**
- * @brief `instUseClosure` 的表达式回调：命中解析结果就补记，然后继续往下走。
+ * @brief `instUseClosure`'s expression callback: record a hit and keep walking.
  *
- * @param raw  `InstUseCtx *`。
- * @param e    当前表达式。
- * @return     永远 true（继续走完整棵树；闭包只增不减）。
+ * @param raw  `InstUseCtx *`.
+ * @param e    Current expression.
+ * @return     Always true (walk the whole tree; the closure only grows).
  */
 static bool instUseOnExpr(void *raw, Expr *e);
 
 /**
- * @brief 把一个实例方法体里调到的**同结构体**方法也记成"这个实例用过"。
+ * @brief Record the methods of the **same struct** reached from an instance method body as used by
+ *        this instance.
  *
- * 方法体由所有实例共享：模板上解析出的 `self.grow()` 只带方法模板、不带实例，于是按实例
- * 决定"发不发这具方法体"时，`vector<i64>::push` 会被发出而它的 `grow` 不会。这里顺着
- * 解析结果（`planCallee`）把同属主的方法补记上，只增不减、必停。
+ * A method body is shared by all instances: `self.grow()` resolved on the template carries the method
+ * template but no instance, so when deciding per instance whether to emit a body,
+ * `vector<i64>::push` would be emitted while its `grow` would not. Following the resolution
+ * (`planCallee`), methods of the same owner are recorded here too; the set only grows, so this
+ * terminates.
  *
- * @param c   检查器（用它的 arena 走 AST）。
- * @param md  已经确认在这个实例上用过的方法模板。
- * @param inst 接收者类型实例。
+ * @param c       Checker (its arena walks the AST).
+ * @param body    Method body to walk.
+ * @param params  Instance's type-parameter names.
+ * @param targs   Corresponding type arguments.
  */
 static void instUseClosure(Checker *c, Stmt *body, Vec *params, Vec *targs) {
     InstUseCtx ctx;
@@ -4894,19 +5002,20 @@ static void instUseClosure(Checker *c, Stmt *body, Vec *params, Vec *targs) {
 }
 
 /**
- * @brief 为一个具体实例重查一条被推迟的运算符使用。
+ * @brief Re-check a deferred operator use for one concrete instance.
  *
- * 推迟到实例化的两批检查（本运算符批与引用规则批）对类型实例和自由函数实例走同一条路，所以
- * 共用辅助函数，而不是为 `fn f<T>` 再写一份。
+ * The two batches deferred to instantiation (this operator batch and the reference-rule batch) take
+ * the same path for type instances and free-function instances, so they share one helper instead of a
+ * second copy for `fn f<T>`.
  *
- * @param c         checker。
- * @param ec        记录下来的检查，其操作数类型仍提到类型参数。
- * @param params    实例的类型参数。
- * @param targs     实例的类型实参，与 `params` 位置对应。
- * @param instName  诊断里用的实例名。
+ * @param c         Checker.
+ * @param ec        Recorded check whose operand types still mention type parameters.
+ * @param params    Instance's type parameters.
+ * @param targs     Instance's type arguments, positionally matching `params`.
+ * @param instName  Instance name used in diagnostics.
  *
- * 调用方必须先把 `c.substParams` / `c.substArgs` 设为该实例（`runRefCheck` 经 `tsub` 读它们）。
- * 诊断报的是记录下来的运算符，不是固定的 `==`。
+ * The caller must first set `c.substParams` / `c.substArgs` to this instance (`runRefCheck` reads
+ * them through `tsub`). The diagnostic names the recorded operator, not a hard-coded `==`.
  */
 
 static void runOpCheck(Checker *c, OpCheck *ec, Vec *params, Vec *targs, const char *instName) {
@@ -4972,24 +5081,27 @@ static void runOpCheck(Checker *c, OpCheck *ec, Vec *params, Vec *targs, const c
 }
 
 /**
- * @brief 复核一条延迟调用结果的 USE 记录。
+ * @brief Re-judge a deferred call result's USE record.
  *
- * 模板当时接受它，是因为值的类型就是错误类型；这里接收者类型已经具体，方法真正的返回类型
- * 可知，记录在使用点上的期望类型终于能落实。`instName` 是实例名，诊断因此读作
- * “`f_i32` expects `i8`, found `i64`”——在实例化时做、而不是在模板上做，意义就在这里。
+ * The template accepted it because the value's type was the error type at the time; here the receiver
+ * type is concrete, the method's real return type is known, and the expected type recorded at the use
+ * site can finally be enforced. `instName` is the instance name, so the diagnostic reads
+ * "`f_i32` expects `i8`, found `i64`" -- doing this at instantiation rather than on the template is
+ * the point.
  *
- * @param c         检查器。
- * @param du        记录下来的使用点。
- * @param params    实例的类型参数名。
- * @param targs     实例的类型实参。
- * @param instName  实例名，进诊断。
+ * @param c         Checker.
+ * @param du        Recorded use site.
+ * @param params    Instance's type-parameter names.
+ * @param targs     Instance's type arguments.
+ * @param instName  Instance name, used in diagnostics.
  */
 static void runDeferredUse(Checker *c, DeferredUse *du, Vec *params, Vec *targs,
                            const char *instName) {
     TypeTable *tt = c->tt;
-    /* 不是延迟方法的节点自带类型：把表达式类型代换后比较。类型参数类型的值走的就是这条路
-     * （`fn run<T>` 里的 `s = s + c.value()` 记下的是和，它在模板上的类型是 `T`）。这种节点上
-     * 读 `u.method.recv` 会读错：那个 union 成员不是 `EX_METHOD`。 */
+    /* Nodes that are not deferred method nodes carry their own type: compare the substituted expression
+ * type. Values of type-parameter type come this way (`s = s + c.value()` inside `fn run<T>` records a
+ * sum whose type on the template is `T`). Reading `u.method.recv` on such a node is wrong: that union
+ * member is not `EX_METHOD`. */
     if (du->call->kind != EX_METHOD || planCallee(du->call)) {
         Type *vt = ttSubstitute(tt, du->call->type, params, targs);
         /* **Both** sides: `want` is very often the template's own parameter too (an argument checked
@@ -5012,21 +5124,24 @@ static void runDeferredUse(Checker *c, DeferredUse *du, Vec *params, Vec *targs,
 }
 
 /**
- * @brief 为一个具体实例重新检查一条延迟的方法调用。
+ * @brief Re-check a deferred method call for one concrete instance.
  *
- * 模板上接收者类型是类型参数，找不到方法，于是把这次调用记下来；这里接收者类型已经具体：
- * 方法存在就标成已用，好让代码生成发出它；不存在就是这次延迟存在的意义——报出该实例
- * 不支持这次调用。
+ * On the template the receiver type is a type parameter and no method is found, so the call is
+ * recorded; here the receiver type is concrete: when the method exists it is marked used so codegen
+ * emits it, and when it does not exist that is exactly why the deferral exists -- report that this
+ * instance does not support the call.
  *
- * 节点**故意不记 `func`**：一个模板体有多个实例，记下的 `func` 对其它实例都是错的方法；
- * 代码生成会在代换后的接收者类型上重新解析，和解析运算符一样。实参个数在这里查，因为
- * 别处看不见它：模板没有签名可比，放过去只会在生成的 C 里炸开。
+ * The node deliberately **records no `func`**: a template body has several instances, and a recorded
+ * `func` would be the wrong method for all the others; codegen re-resolves on the substituted receiver
+ * type, just as it does for operators. The argument count is checked here because nothing else can see
+ * it: the template has no signature to compare against, and letting it through would only blow up in
+ * the generated C.
  *
- * @param c         检查器。
- * @param mc        延迟的调用：节点、方法名、实参个数。
- * @param params    实例的类型参数名。
- * @param targs     实例的类型实参。
- * @param instName  实例名，进诊断。
+ * @param c         Checker.
+ * @param mc        Deferred call: node, method name, argument count.
+ * @param params    Instance's type-parameter names.
+ * @param targs     Instance's type arguments.
+ * @param instName  Instance name, used in diagnostics.
  */
 static void runMethodCheck(Checker *c, MethodCheck *mc, Vec *params, Vec *targs,
                            const char *instName) {
@@ -5057,12 +5172,12 @@ static void runMethodCheck(Checker *c, MethodCheck *mc, Vec *params, Vec *targs,
 }
 
 /**
- * @brief 判断一条被推迟的引用检查是否属于这个自由函数实例。
+ * @brief Tell whether a deferred reference check belongs to this free-function instance.
  *
- * @param rc  从模板体推迟下来的检查。
- * @param fi  正在重放的实例。
- * @return    该检查来自本实例自己的模板、且模板是泛型时 true；方法走类型实例那条路，返回
- *            false。
+ * @param rc  A check deferred from a template body.
+ * @param fi  Instance being replayed.
+ * @return    True when the check came from this instance's own template and the template is generic;
+ *            methods take the type-instance path and answer false.
  */
 static bool refCheckApplies(RefCheck *rc, FuncDef *fi) {
     FuncDef *tmpl = planTemplate(fi);
@@ -5072,16 +5187,20 @@ static bool refCheckApplies(RefCheck *rc, FuncDef *fi) {
 }
 
 /**
- * @brief 为一个具体实例重查一条被推迟的引用规则。
+ * @brief Re-check one deferred reference rule for a concrete instance.
  *
- * 泛型体在模板上只检查一次，那时 `T` 不透明，所以结果依赖 `T` 的规则都推迟到这里按实例重放。
+ * A generic body is checked once on the template, where `T` is opaque, so every rule whose outcome
+ * depends on `T` is replayed here per instance.
  *
- * @param c         checker。
- * @param rc        推迟的检查：值、它的深度、它必须装进多深、以及引用规则作用于什么。
- * @param instName  实例名，用于诊断。
+ * @param c         Checker.
+ * @param rc        Deferred check: the value, its depth, the depth it must fit into, and what the
+ *                  reference rule applies to.
+ * @param instName  Instance name, used in diagnostics.
  *
- * 模板期记录的深度是电平求解器之后会改变的世界快照，所以对**分配站点决定深度**的形状在这里
- * 重算，且只往下调；重算绑定不允许——它的站点还没定，答 0 会接受真正的悬空指针。
+ * The depth recorded at template time is a snapshot of a world the level solver changes afterwards, so
+ * shapes whose depth is **decided by an allocation site** are recomputed here, lowering only;
+ * recomputation is not allowed for bindings -- their site is not fixed yet, and answering 0 would
+ * accept a truly dangling pointer.
  */
 static void runRefCheck(Checker *c, RefCheck *rc, const char *instName) {
     TypeTable *tt = c->tt;
@@ -5157,13 +5276,13 @@ static void runRefCheck(Checker *c, RefCheck *rc, const char *instName) {
 }
 
 /**
- * @brief 把函数体里作为**局部声明类型**出现的类型实例 intern 一遍。
+ * @brief Intern the type instances that appear as **local declaration types** inside a body.
  *
- * 只需语句遍历：出问题的形状是泛型函数里的 `var p: pair<T>`，而 interning 是代入本身的副
- * 作用。
+ * A statement walk suffices: the failing shape is `var p: pair<T>` in a generic function, and
+ * interning is a side effect of substitution itself.
  *
- * @param c  checker。
- * @param f  函数定义。
+ * @param c  Checker.
+ * @param f  Function definition.
  */
 static void internLocalTypes(Checker *c, FuncDef *f) {
     if (!f || !f->body) return;
@@ -5210,15 +5329,16 @@ static void internLocalTypes(Checker *c, FuncDef *f) {
 }
 
 /**
- * @brief 判断一个实例是**临时占位**还是真实实例。
+ * @brief Tell whether an instance is a **temporary placeholder** rather than a real instance.
  *
- * 泛型体里的泛型调用必须造一个占位，外层模板体才能继续类型检查（`T` 在那里不透明）。实例化
- * 时每个真实调用点都会重指到具体实例，占位是 checker 自己拥有的东西，codegen 从不发出它；
- * 被推迟的重查也要跳过它——向占位问“这个类型有 `<` 吗”正是模板上答不了的那个问题，由具体
- * 实例来答。
+ * A generic call inside a generic body must create a placeholder so the enclosing template body can
+ * keep type-checking (`T` is opaque there). At instantiation every real call site retargets to a
+ * concrete instance; a placeholder is owned by the checker and codegen never emits it, and deferred
+ * re-checks skip it too -- asking a placeholder "does this type have `<`" is exactly the question the
+ * template cannot answer, and a concrete instance answers it.
  *
- * @param targs  类型实参。
- * @return       任一实参仍提到类型参数时 true。
+ * @param targs  Type arguments.
+ * @return       True when any argument still mentions a type parameter.
  */
 static bool provisionalInstance(Vec *targs) {
     for (size_t i = 0; i < targs->len; i++)
@@ -5227,17 +5347,20 @@ static bool provisionalInstance(Vec *targs) {
 }
 
 /**
- * @brief 在外层实例的代换下，把一条延迟调用点重新解析成具体实例。
+ * @brief Re-resolve a deferred call site into a concrete instance under the enclosing instance's
+ *        substitution.
  *
- * 三步：代换类型实参、把那个具体实例驻留（或创建）出来、把调用表达式的 `func` 指向它
- * （`cc->node->func`）。实例是驻留的（`funcInstance` 去重），所以一种实参组合只有一个实例。
+ * Three steps: substitute the type arguments, intern (or create) that concrete instance, and point the
+ * call expression's `func` at it (`cc->node->func`). Instances are interned (`funcInstance`
+ * deduplicates), so one argument combination has exactly one instance.
  *
- * @param c             检查器。
- * @param cc            记录下来的调用点，其类型实参里还带着类型参数。
- * @param enclosing     外层实例的函数定义。
- * @param enclosingInst 外层实例的类型；作为代替解析结果回落到指针。
- * @param params        外层实例的类型参数名。
- * @param targs         外层实例的类型实参，与 `params` 按位置对应。
+ * @param c              Checker.
+ * @param cc             Recorded call site whose type arguments still mention type parameters.
+ * @param enclosing      Enclosing instance's function definition.
+ * @param enclosingInst  Enclosing instance's type; the fallback answer for a site that belongs to no
+ *                       instance.
+ * @param params         Enclosing instance's type-parameter names.
+ * @param targs          Enclosing instance's type arguments, positionally matching `params`.
  */
 static void resolveDeferredCall(Checker *c, CallCheck *cc, FuncDef *enclosing,
                                 const Type *enclosingInst, Vec *params, Vec *targs) {
@@ -5267,15 +5390,16 @@ static void resolveDeferredCall(Checker *c, CallCheck *cc, FuncDef *enclosing,
 }
 
 /**
- * @brief `makesPool` 闭包的一轮。
+ * @brief One round of the `makesPool` closure.
  *
- * 泛型 struct 的**模板**那一轮刻意跳过：模板与实例共用同一份 `FuncDef`，模板被检查时
- * `k.hash()` 还解析不出来，在那里标 true 会被冻结，实例那一轮再也改不回来。extern 没有函数
- * 体可走——`stmtMakesPool` 在调用点找被调者，`extc_pool_new` 正是这种情况。
+ * The **template** round of a generic struct is deliberately skipped: template and instance share one
+ * `FuncDef`, `k.hash()` cannot be resolved while the template is being checked, and marking true there
+ * would be frozen in and the instance round could never take it back. An `extern` has no body to walk
+ * -- `stmtMakesPool` finds the callee at the call site, and `extc_pool_new` is exactly that case.
  *
- * @param cx       关闭上下文。
- * @param k        性质（`REACH_POOL`）。
- * @param changed  本轮有改动时置 true。
+ * @param cx       Closure context.
+ * @param k        Property (`REACH_POOL`).
+ * @param changed  Set true when this round changed something.
  */
 static void roundMakesPool(CloseCtx *cx, ReachKind k, bool *changed) {
     Module *m = cx->m;
@@ -5289,13 +5413,15 @@ static void roundMakesPool(CloseCtx *cx, ReachKind k, bool *changed) {
              * site (`extc_pool_new` itself is declared extern and is exactly that case). */
             if (bodyReaches(f, k)) { setReach(f, k, true); *changed = true; }
         }
-        /* **泛型 struct 的模板轮要跳过**：模板与实例**共用同一批 FuncDef**
-         * （`template find` 与 `hashMap$hashMap.find` 就是同一个指针），而模板轮的
-         * `k.hash()` 解析不出来 ⇒ 只能保守标真，一旦标上，实例轮 `if (getReach(f, k)) continue`
-         * 就永远跳过它，精确解析**没机会生效**。泛型结构体的方法体本来就只在实例上跑，
-         * 所以交给下面那一轮按实例解析：解析不出来时那一轮仍旧保守（`resolveOnInstance`
-         * 返回 NULL ⇒ 视为会建池），多个实例之间是**取或**（任何一个实例要建池 ⇒ 整条链
-         * 保守标真），方向仍然是安全的。非泛型结构体没有这个问题，照旧。 */
+        /* **Skip the template round of generic structs**: template and instance **share the same FuncDefs**
+ * (`template find` and `hashMap$hashMap.find` are the same pointer), and `k.hash()` cannot be resolved
+ * in the template round ⇒ it can only be marked true conservatively, and once marked, the instance
+ * round's `if (getReach(f, k)) continue` skips it forever, so precise resolution **never gets a chance**.
+ * A generic struct's method bodies only run on instances anyway, so they are left to the round below,
+ * which resolves per instance; when it cannot resolve that round stays conservative too
+ * (`resolveOnInstance` returns NULL ⇒ treated as making a pool), and multiple instances are **OR-ed**
+ * (any instance making a pool ⇒ the whole chain is conservatively marked true), which keeps the
+ * direction safe. Non-generic structs have no such problem and go through the ordinary path. */
         for (size_t i = 0; i < m->structs.len; i++) {
             StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
             if (sd->typeParams.len > 0) continue;
@@ -5305,9 +5431,9 @@ static void roundMakesPool(CloseCtx *cx, ReachKind k, bool *changed) {
                 if (bodyReaches(f, k)) { setReach(f, k, true); *changed = true; }
             }
         }
-        /* 实例那一轮：泛型方法的实例是模板的浅拷贝（共享 body），不在 `m->structs` 里，
-         * 而在类型表的 `tt->instances` 上。这一轮**按实例解析**协议方法，
-         * 代入方式与 `runMethodCheck` 完全一致。 */
+        /* The instance round: an instance of a generic method is a shallow copy of the template (sharing its
+ * body), so it is not in `m->structs` but in the type table's `tt->instances`. This round resolves
+ * protocol methods **per instance**, substituting exactly as `runMethodCheck` does. */
         for (size_t i = 0; i < tt->instances.len; i++) {
             Type *inst = *(Type **)vecAt(&tt->instances, i);
             StructDef *sd = inst ? inst->sdef : NULL;
@@ -5328,14 +5454,16 @@ static void roundMakesPool(CloseCtx *cx, ReachKind k, bool *changed) {
 
 
 /**
- * @brief 收集 arena 分析要走的函数名单：自由函数、各 struct 的方法、以及 `impl` 块挂上的方法。
+ * @brief Collect the function list the arena analysis walks: free functions, each struct's methods,
+ *        and methods attached by `impl` blocks.
  *
- * `impl` 组也算在内，即便 `impl` 块通常住在与被扩展类型**不同**的模块（`impl ostream` 在
- * `stl::stringio`，类型在 `std::io`）：携带该块的模块才是入口模块。名单只在这一处拼写。
+ * `impl` groups are included even though an `impl` block usually lives in a module **different** from
+ * the type it extends (`impl ostream` is in `stl::stringio`, the type in `std::io`): the module that
+ * carries the block is the entry module. The list is spelled out only here.
  *
- * @param arena  分配用的 arena。
- * @param m      模块。
- * @param out    输出：追加各 `FuncDef *`。
+ * @param arena  Arena to allocate from.
+ * @param m      Module.
+ * @param out    Output: appended `FuncDef *`s.
  */
 static void allFunctions(Arena *arena, Module *m, Vec *out) {
     vecInit(out, arena, sizeof(FuncDef *));
@@ -5354,64 +5482,73 @@ static void allFunctions(Arena *arena, Module *m, Vec *out) {
 }
 
 /* ------------------------------------------------------------------
- * 「本帧不会销账」：整张调用图的**最小不动点**（`planRcNoDec`）。
+ * "This frame does not decrement": the **least fixed point** over the whole call graph
+ * (`planRcNoDec`).
  *
- * 省掉局部引用绑定（`var p = t`）的 `inc` 只在一种情况下不健全：`p` 活着时某个 `dec`
- * 把这个对象的 `hold` 打到 0 —— `reclaim.c` 的 `freeSlot` 当场释放，`p` 悬垂。而 `dec` 全部
- * 来自**引用槽的存储**（`storeRefOwned` / `storeRef` / 覆盖赋值）。所以：
+ * Eliding the `inc` of a local reference binding (`var p = t`) is unsound in one case only: while `p`
+ * is alive some `dec` drives the object's `hold` to 0 -- `reclaim.c`'s `freeSlot` frees on the spot and
+ * `p` dangles. Every `dec` comes from a **store into a reference slot** (`storeRefOwned` / `storeRef` /
+ * an overwriting assignment). Hence:
  *
- *     rcNoDec(F) = ¬写引用槽(F) ∧ ¬外部/未知调用(F) ∧ ¬并发(F) ∧ ∀g∈callees(F): rcNoDec(g)
+ *     rcNoDec(F) = ¬writesRefSlot(F) ∧ ¬externOrUnknownCall(F) ∧ ¬concurrent(F)
+ *                  ∧ ∀g∈callees(F): rcNoDec(g)
  *
- * 这是最小不动点（从"全部成立"往下收紧）：**互相递归的一组纯读函数仍然成立** —— 这正是
- * `bt` 的 `check` 需要的形状（它只读、只调自己）。自环在这里不构成保守理由：只要环里没有
- * 谁写引用槽，环上就没有 `dec`。
+ * This is a least fixed point (tightened down from "everything holds"): **a mutually recursive set of
+ * pure-reading functions still holds** -- exactly the shape `bt`'s `check` needs (it only reads and
+ * calls itself). A self-loop is no reason to be conservative here: as long as nobody in the cycle
+ * writes a reference slot, the cycle contains no `dec`.
  *
- * 不置位的两类：泛型模板/实例（一个 AST 槽被所有实例共享，一个实例成立不代表另一个）、
- * 以及任何没被标上的函数（默认 `false` = 照常计数，安全方向）。
+ * Two things are never marked: generic templates/instances (one AST slot is shared by all instances, so
+ * holding for one instance proves nothing for the next), and any function not marked at all (default
+ * `false` = counted as usual, the safe direction).
  *
- * **依赖的一条语言规则（协程）**：本扫描只看 AST。协程帧字段的初始化在 resume 时以**覆盖语义**
- * （`extc_rc_storeRef`，含 `dec`）重跑，那是扫描看不见的写 —— 但它要求"引用跨 `yield` 活着"，
- * 而那是**编译期拒绝**的（`p lives across a yield and carries a reference`）。所以协程帧字段里
- * 不会有引用 ⇒ 不存在看不见的 `dec`。按此扫过 78 个程序（37 个协程形状 + 全部回收语料）：
- * 没有一个函数同时出现 `initRefNoHold` 与覆盖语义的 `storeRef`。
- * **若那条语言规则哪天放松，这里必须显式排除协程函数。**
+ * **One language rule it depends on (coroutines)**: this scan sees the AST only. Coroutine frame-field
+ * initialization reruns on resume with **overwrite semantics** (`extc_rc_storeRef`, `dec` included), a
+ * write the scan cannot see -- but it requires "a reference lives across a `yield`", which the compiler
+ * **rejects** (`p lives across a yield and carries a reference`). So a coroutine frame field can hold
+ * no reference ⇒ no invisible `dec` exists. No function in the repository corpus combines
+ * `initRefNoHold` with an overwriting `storeRef`.
+ * **If that language rule is ever relaxed, coroutine functions must be excluded here explicitly.**
  */
 /**
- * @brief `rcNoDec` 扫描的上下文：检查器 + "已经确定不合格"的旗标。
+ * @brief Context of the `rcNoDec` scan: the checker plus a "definitely disqualified" flag.
  *
- * 两个人一起看这个 typedef 与下面两条前置声明：`rcScanStmt` 与 `rcScanExpr` 互相递归
- * （语句里含表达式、表达式里含语句），所以至少要一条前置声明。
+ * Read this typedef together with the two forward declarations below: `rcScanStmt` and `rcScanExpr`
+ * are mutually recursive (a statement contains expressions, an expression contains statements), so at
+ * least one forward declaration is needed.
  */
 typedef struct {
-    Checker *c;      /**< 检查器（读类型表、读调用点解析结果）。 */
-    bool     bad;    /**< 已经发现"会销账"的来源 ⇒ 这个函数不置位。 */
+    Checker *c;      /**< Checker (reads the type table and call-site resolutions). */
+    bool     bad;    /**< A "will decrement" source was already found ⇒ this function is not marked. */
 } RcScan;
 
 /**
- * @brief 语句回调：这个语句会不会造成一次 `dec`（写引用槽 / 静态引用槽 / 并发域）。
+ * @brief Statement callback: can this statement cause a `dec` (write a reference slot, a static
+ *        reference slot, a concurrency domain)?
  *
- * @param ctx  扫描上下文（`RcScan *`）。
- * @param s    被访问的子语句。
- * @return     `false` 停下整趟走。
+ * @param ctx  Scan context (`RcScan *`).
+ * @param s    Visited sub-statement.
+ * @return     `false` stops the whole walk.
  */
 static bool rcScanStmt(void *ctx, Stmt *s);
 
 /**
- * @brief 表达式回调：这里有没有解析不到的被调者 / extern / 起并发任务。
+ * @brief Expression callback: is there an unresolved callee, an `extern`, or a concurrency start here?
  *
- * @param ctx  扫描上下文（`RcScan *`）。
- * @param e    被访问的子表达式。
- * @return     `false` 停下整趟走。
+ * @param ctx  Scan context (`RcScan *`).
+ * @param e    Visited sub-expression.
+ * @return     `false` stops the whole walk.
  */
 static bool rcScanExpr(void *ctx, Expr *e);
 
 /**
- * @brief 走一层子节点：只给语句时走语句子节点，只给表达式时走表达式子节点。
+ * @brief Walk one level of children: statement children when given a statement, expression children
+ *        when given an expression.
  *
- * @param s   语句；为 NULL 时改用 `e`。
- * @param e   表达式；`s` 非 NULL 时忽略。
- * @param sc  扫描上下文（命中即把 `bad` 置位）。
- * @return    走完了返回 true；被回调提前停下返回 false。
+ * @param s   Statement; when NULL, `e` is used instead.
+ * @param e   Expression; ignored when `s` is non-NULL.
+ * @param sc  Scan context (a hit sets `bad`).
+ * @return    True when the walk finished; false when a callback stopped it early.
  */
 static bool rcScanChildren(Stmt *s, Expr *e, RcScan *sc) {
     AstVisit v = { rcScanExpr, rcScanStmt, sc };
@@ -5419,29 +5556,32 @@ static bool rcScanChildren(Stmt *s, Expr *e, RcScan *sc) {
 }
 
 /**
- * @brief 语句回调：这个语句会不会造成一次 `dec`（写引用槽 / 静态引用槽 / 并发域）。
+ * @brief Statement callback: can this statement cause a `dec` (write a reference slot, a static
+ *        reference slot, a concurrency domain)?
  *
- * @param ctx  扫描上下文（`RcScan *`）。
- * @param s    被访问的子语句。
- * @return     `false` 停下整趟走（已经确定这个函数不合格）。
+ * @param ctx  Scan context (`RcScan *`).
+ * @param s    Visited sub-statement.
+ * @return     `false` stops the whole walk (the function is already disqualified).
  */
 static bool rcScanStmt(void *ctx, Stmt *s) {
     RcScan *sc = ctx;
     if (!s) return true;
     switch (s->kind) {
     case ST_ASSIGN:
-        /* 往"含引用"的槽里写 = 一次可能的 dec（覆盖旧值）。类型不明也当坏。 */
+        /* Writing a slot that may contain a reference = a possible dec (it overwrites the old value).
+ * An unknown type counts as bad too. */
         if (!s->u.assign.target || !s->u.assign.target->type
             || typeContainsRef(sc->c->tt, s->u.assign.target->type))
             sc->bad = true;
         break;
     case ST_VAR:
-        /* 静态存储里的引用槽：别处（含被调者）随时可以写它 ⇒ 保守当坏。 */
+        /* A reference slot in static storage: anything, callees included, can write it at any time
+ * ⇒ conservatively bad. */
         if (s->u.var.isGlobal && (!s->type || typeContainsRef(sc->c->tt, s->type)))
             sc->bad = true;
         break;
     case ST_DOMAIN:
-        sc->bad = true;                       /* 调度域：并发/交错 */
+        sc->bad = true;                       /* scheduling domain: concurrency / interleaving */
         break;
     default:
         break;
@@ -5451,36 +5591,39 @@ static bool rcScanStmt(void *ctx, Stmt *s) {
 }
 
 /**
- * @brief 表达式回调：这里有没有**解析不到**的被调者 / extern / 起并发任务。
+ * @brief Expression callback: is there an **unresolved** callee, an `extern`, or a concurrency start
+ *        here?
  *
- * @param ctx  扫描上下文（`RcScan *`）。
- * @param e    被访问的子表达式。
- * @return     `false` 停下整趟走。
+ * @param ctx  Scan context (`RcScan *`).
+ * @param e    Visited sub-expression.
+ * @return     `false` stops the whole walk.
  */
 static bool rcScanExpr(void *ctx, Expr *e) {
     RcScan *sc = ctx;
     if (!e) return true;
-    if (e->kind == EX_EXT) { sc->bad = true; return false; }      /* 起并发任务 */
-    if (e->kind == EX_DYN) { sc->bad = true; return false; }      /* vtable 派发：被调者解析不到 */
+    if (e->kind == EX_EXT) { sc->bad = true; return false; }      /* starts a concurrent task */
+    if (e->kind == EX_DYN) { sc->bad = true; return false; }      /* vtable dispatch: callee unresolved */
     if (e->kind == EX_CALL || e->kind == EX_METHOD) {
         FuncDef *g = planCallee(e);
-        if (!g || g->isExtern) { sc->bad = true; return false; }  /* 未知 / C 黑盒 */
+        if (!g || g->isExtern) { sc->bad = true; return false; }  /* unknown / C black box */
     }
     return rcScanChildren(NULL, e, sc);
 }
 
 /**
- * @brief 求整张调用图的 `rcNoDec` 最小不动点，并把结论写进计划侧。
+ * @brief Compute the least fixed point of `rcNoDec` over the whole call graph and store the result on
+ *        the plan side.
  *
- * 必须**在所有函数体检查完之后**调用：`FuncDef.callees` 那时才填好。泛型模板/实例不置位
- * （一个 AST 槽被所有实例共享，一个实例成立不代表另一个），默认 `false` = 照常计数。
+ * Must be called **after all function bodies are checked**: `FuncDef.callees` is only filled in by
+ * then. Generic templates/instances are never marked (one AST slot is shared by all instances, so
+ * holding for one proves nothing for another); default `false` = counted as usual.
  *
- * @param c  检查器。
+ * @param c  Checker.
  */
 static void computeRcNoDec(Checker *c) {
     Module *m = c->m;
     if (!m || m->funcs.len == 0) return;
-    /* ① 自判：写引用槽 / 未知调用 / 并发 / 泛型 ⇒ 不置位 */
+        /* (1) Self-judgement: writes a reference slot / unknown call / concurrency / generic ⇒ not marked */
     for (size_t i = 0; i < m->funcs.len; i++) {
         FuncDef *f = *(FuncDef **)vecAt(&m->funcs, i);
         bool ok = f && f->body && !planTemplate(f) && f->typeParams.len == 0 && !f->isExtern;
@@ -5491,7 +5634,8 @@ static void computeRcNoDec(Checker *c) {
         }
         planSetRcNoDec(f, ok);
     }
-    /* ② 被调者不成立 ⇒ 自己也不成立；迭代到不动点（互相递归自动收敛） */
+        /* (2) A callee that does not hold makes the caller not hold either; iterate to the fixed point
+     * (mutual recursion converges on its own) */
     for (bool changed = true; changed; ) {
         changed = false;
         for (size_t i = 0; i < m->funcs.len; i++) {
@@ -5509,133 +5653,163 @@ static void computeRcNoDec(Checker *c) {
 }
 
 /* ------------------------------------------------------------------
- * 区域无环判定：`planFnAcyclic` / `planFnRefsCounted`（整张调用图上的两个不动点）。
+ * Region acyclicity: `planFnAcyclic` / `planFnRefsCounted` (two fixed points over the whole call
+ * graph).
  *
- * 目的：给"事件档（计数）可以取代清扫"一个**静态前提**。判据 v1（健全优先，宁保守勿漏）：
+ * Purpose: give "the event tier (counting) can replace sweeping" a **static premise**. Criterion v1
+ * (soundness first: prefer conservative over a miss):
  *
- *   (i)   每个 ref 类型字段的 store，值是**本帧新分配对象**：直接 `new T` / `alloc<T>(n)`，
- *         或经一次调用返回、且被调函数**无环**且其返回值可证是**新分配**的（`retFresh`）；
- *   (ii)  值是 `null`；
- *   (iii) 值的层**严格大于**宿主的层（值活得更短 ⇒ 这一条边不可能是回边）。只对层下界可靠的
- *         形状下这个结论（`noteAcyclicStore` 里判）：拿偏大的上界去放行是判据的反方向；
- *   (iv)  所有"能丢引用"的位置都是**被计数的 rc 槽**：函数里没有对引用型局部量/参数的非声明
- *         初始化赋值（引用只住在堆对象的 ref 字段里），也没有看不清的调用（黑盒调用涉及引用
- *         ⇒ 判否）。这一条是必须的 —— 只有 (i)(ii)(iii) 而无 (iv) 时，引用住在局部量里，
- *         对象的 `hold` 永远不归零，事件档不会释放任何东西。
+ *   (i)   every store into a ref-typed field has a value that is an object **freshly allocated in this
+ *         frame**: directly `new T` / `alloc<T>(n)`, or returned from one call whose callee is
+ *         **acyclic** and whose return value is provably **freshly allocated** (`retFresh`);
+ *   (ii)  the value is `null`;
+ *   (iii) the value's level is **strictly greater** than its host's level (the value lives shorter ⇒
+ *         this edge cannot be a back edge). Only shapes whose level lower bound is reliable get this
+ *         conclusion (decided in `noteAcyclicStore`): using an over-large upper bound to let it through
+ *         would be the criterion's opposite direction;
+ *   (iv)  every place that can **drop a reference** is a **counted rc slot**: the function makes no
+ *         non-declaration-initializing assignment to a reference-typed local or parameter (references
+ *         live only in heap objects' ref fields), and it has no opaque call (an opaque call involving
+ *         references ⇒ not qualified). This one is necessary -- with (i)(ii)(iii) but not (iv) a
+ *         reference lives in a local, the object's `hold` never reaches zero, and the event tier frees
+ *         nothing.
  *
- * (i)(ii)(iii) 的逐站点分类在查体时做（`noteAcyclicStore`：层号比较需要作用域）；这里只做
- * 语法层扫描（找 (iv) 的违反、收集调用依赖）与两个不动点：
- *   · `retFresh(F)`：F 的每个 `return` 都交付一个新分配的对象；
- *   · `acyc` / `iv` 沿调用图向下收紧（互相递归的一组函数可以同时成立）。
- * 泛型模板与实例、extern、没有函数体的函数一律不置位（默认 false = 保留清扫，安全方向）。
+ * The per-site classification of (i)(ii)(iii) happens during body checking (`noteAcyclicStore`: the
+ * level comparison needs a scope); here only a syntax-level scan (finding (iv) violations, collecting
+ * call dependencies) and the two fixed points are done:
+ *   · `retFresh(F)`: every `return` in F hands out a freshly allocated object;
+ *   · `acyc` / `iv` are tightened down the call graph (a mutually recursive set of functions can hold
+ *     at the same time).
+ * Generic templates and instances, externs and bodyless functions are never marked (default false =
+ * keep sweeping, the safe direction).
  */
 
-/* 一条调用依赖：被调者（NULL = 解析不到）与它在源码里的行，诊断用。 */
+/* One call dependency: the callee (NULL = unresolved) and its source line, for diagnostics. */
 typedef struct { FuncDef *fn; int line; } AcDep;
 
-/* 一个函数这一趟扫出来的东西。 */
+/* What one function's scan produced in this pass. */
 typedef struct {
     Arena      *a;
-    Vec         acycDeps;   /* AcDep*：SR_CALL 站点（(i') 要看被调者无环且返回新分配） */
-    Vec         ivDeps;     /* AcDep*：能看见函数体的调用点（(iv) 要看被调者也成立） */
-    Vec         retDeps;    /* AcDep*：`return <调用>` 的被调者（retFresh 的闭包） */
-    bool        acycBad;    /* 出现了 (i)(ii)(iii)(i') 站不住的站点 */
-    bool        ivBad;      /* (iv) 的本地部分站不住 */
-    const char *acycWhy;    /* 第一条 (i)(ii)(iii)(i') 的理由 */
-    const char *ivWhy;      /* 第一条 (iv) 的理由 */
-    /* ---- ②「回收无事可做」的另一趟扫描（判据 (a)(b)(c)） ----------------------------
-     *
-     * 与上面那两趟**独立**：无环判据问的是"引用图有没有回边"，这一趟问"有没有活引用被提前
-     * 丢掉"。两者互不蕴含（见 `idleNote` 的说明），所以分开存、分开判。 */
-    bool        idleBad;    /* 出现了 (a)(b)(c) 站不住的站点 */
-    const char *idleWhy;    /* 第一条理由（`EXTC_DBG_RCIDLE=1` 直接打） */
-    Vec         idleFresh;  /* IdleFresh*：`var x = new T` 的 C 名 + 分配点循环深度/arena 层 */
-    Vec         idleAsgn;   /* const char*：被赋值的标识符 C 名（宿主不许在里面） */
-    Vec         idleAsgnLoop; /* int：与 idleAsgn 平行 —— 该赋值所在的**最内层循环体作用域**（0 = 循环外）*/
-    Vec         idleWrites; /* IdleWrite*：每一次往引用槽写值 —— 判据的唯一事实来源 */
-    Vec         idleBindLvl;   /* IdleLvl*：绑定 -> 它所指存储的 arena 层（(b′) 的同尺事实） */
-    Vec         idleFieldLvl;  /* IdleLvl*：字段名 -> 写进该字段的值的 arena 层（取最浅） */
-    Vec         idleFieldStores; /* IdleFieldStore*：字段写的原始值（固定点求解的输入） */
-    Vec         idleOrig;    /* IdleOrig*：`name` 的取值都是 `origin` 的投影（flavor ii） */
-    Vec         idleKeep;    /* const char*：保留根（历次持有的对象都还可达） */
-    Vec         idleFreshSet; /* const char*：每个取值都是本帧新分配（或 null）的绑定 */
-    int         idleSeq;    /* 走查里的语句序号（1 起）：判"分配点在站点之前" */
+    Vec         acycDeps;   /* AcDep*: SR_CALL sites ((i') needs the callee acyclic and returning fresh) */
+    Vec         ivDeps;     /* AcDep*: call sites whose body is visible ((iv) requires the callee to hold too) */
+    Vec         retDeps;    /* AcDep*: callees of `return <call>` (the retFresh closure) */
+    bool        acycBad;    /* A site that (i)(ii)(iii)(i') does not support was found */
+    bool        ivBad;      /* The local part of (iv) does not hold */
+    const char *acycWhy;    /* Reason for the first (i)(ii)(iii)(i') failure */
+    const char *ivWhy;      /* Reason for the first (iv) failure */
+    /* ---- (2) The other pass: "reclaim has nothing to do" (criteria (a)(b)(c)) --------------
+ *
+ * **Independent** of the two passes above: the acyclicity criterion asks "does the reference graph
+ * have a back edge", this one asks "is a live reference dropped early". Neither implies the other
+ * (see `idleNote`), so the facts are stored and judged separately. */
+    bool        idleBad;    /* A site that (a)(b)(c) does not support was found */
+    const char *idleWhy;    /* First reason (`EXTC_DBG_RCIDLE=1` prints it directly) */
+    Vec         idleFresh;  /* IdleFresh*: C name of `var x = new T` plus the allocation point's loop depth / arena level */
+    Vec         idleAsgn;   /* const char*: C name of an assigned identifier (the host must not be among them) */
+    Vec         idleAsgnLoop; /* int: parallel to idleAsgn -- the **innermost loop-body scope** of that assignment (0 = no loop) */
+    Vec         idleWrites; /* IdleWrite*: every write of a value into a reference slot -- the criterion's only source of facts */
+    Vec         idleBindLvl;   /* IdleLvl*: binding -> arena level of the storage it points to (the same-scale fact for (b')) */
+    Vec         idleFieldLvl;  /* IdleLvl*: field name -> arena level of the value written into that field (shallowest wins) */
+    Vec         idleFieldStores; /* IdleFieldStore*: raw values of field writes (input to the fixed-point solve) */
+    Vec         idleOrig;    /* IdleOrig*: every value of `name` is a projection of `origin` (flavor ii) */
+    Vec         idleKeep;    /* const char*: a kept root (objects held in earlier iterations are still reachable) */
+    Vec         idleFreshSet; /* const char*: bindings whose every value is freshly allocated in this frame (or null) */
+    int         idleSeq;    /* Statement number in the walk (from 1): decides "the allocation point precedes the site" */
 } AcInfo;
 
-/* 一个引用槽的种类。判据只看这几种：别的形状不存在"覆盖丢根"的问题。 */
+/* The kinds of reference slot. The criterion looks only at these: no other shape has the
+ * "overwrite drops a root" problem. */
 typedef enum {
-    IDLE_DEST_COMPOUND,     /* 复合赋值（`x += …`）：不是"覆盖"，但同样会丢引用 */
-    IDLE_DEST_SLOT_NAMED,   /* 栈上具名 ref 槽（局部量/参数）：推迟到 (b′) 的合取 */
-    IDLE_DEST_SLOT_OTHER,   /* 栈上其它位置（局部聚合的字段等）：直接判否 */
-    IDLE_DEST_HEAP_FIELD,   /* 具名对象的具名字段：(a) 的逐站点判据 */
+    IDLE_DEST_COMPOUND,     /* Compound assignment (`x += ...`): not an overwrite, but it drops a reference just the same */
+    IDLE_DEST_SLOT_NAMED,   /* A named ref slot on the stack (local in scope): deferred to the (b') conjunction */
+    IDLE_DEST_SLOT_OTHER,   /* Any other stack location (a field of a local aggregate, etc.): rejected outright */
+    IDLE_DEST_HEAP_FIELD,   /* A named field of a named object: the per-site criterion for (a) */
 } IdleDestKind;
 
-/* 一次"往引用槽写值"的规范化描述 —— 判据的**唯一**输入。
+/* Normalized description of one "write a value into a reference slot" -- the criterion's **only**
+ * input.
  *
- * 三种槽（具名栈槽、其它栈位置、堆字段）过去各有自己的结构与台账；现在合成一份，
- * 于是"加规则"改的是判据那一处，而不是再添一个台账。
+ * The three slot kinds (named stack slot, other stack location, heap field) each had their own
+ * structure and ledger; they are merged into one, so adding a rule changes the criterion in one place
+ * instead of adding another ledger.
  *
- * 字段名用 `fname` 不用 `field`：`field` 是 AST 节点的成员名，`tools/check_ast_freeze.py`
- * 是文本扫描，会把这个描述符成员赋值误报成"parser 之外写 AST"。
+ * The field name is `fname`, not `field`: `field` is an AST node member name, and the AST-freeze
+ * check is a text scan that would mistake this descriptor member assignment for "writing the AST
+ * outside the parser".
  *
- * `host` 一词两用：`HEAP_FIELD` 是宿主名，`SLOT_NAMED` 是槽名（两者判据里都按名字比）。
- * `isAssign` 区分"赋值站点"与"声明初始化"：(b′) 的合取两种都看，候选站点只取赋值那一半。
- * `allocDepth` 只在堆字段站点上有意义（宿主那条 `new` 的 arena 层，诊断用）。 */
+ * `host` is dual-purpose: for `HEAP_FIELD` it is the host name, for `SLOT_NAMED` the slot name (both
+ * are compared by name in the criterion). `isAssign` separates "assignment site" from "declaration
+ * initializer": the (b') conjunction looks at both, but candidate sites take only the assignment
+ * half. `allocDepth` is meaningful only on heap-field sites (the arena level of the host's `new`,
+ * for diagnostics). */
 typedef struct {
     IdleDestKind kind;
     Expr        *value;
-    const char  *host;       /* HEAP_FIELD：宿主名；SLOT_NAMED：槽名 */
-    const char  *fname;      /* HEAP_FIELD：字段名 */
+    const char  *host;       /* HEAP_FIELD: host name; SLOT_NAMED: slot name */
+    const char  *fname;      /* HEAP_FIELD: field name */
     int          line;
-    int          depth;      /* 站点所在循环深度 */
-    int          allocDepth; /* 宿主那条 `new` 的 arena 层（诊断用） */
-    int          loopScope;  /* 最内层循环体作用域层（(b′) 的阈值） */
-    int          seq;        /* 走查序号（判"分配点在站点之前"） */
-    int          condDepth;  /* 这个写入点被几层条件语句包住（0 = 本迭代必然执行） */
-    bool         seqElem;    /* 最外一层是元素槽、且下标是本循环体里被赋值的标识符 */
-    bool         isAssign;   /* 是赋值站点（不是声明初始化） */
+    int          depth;      /* Loop depth of the site */
+    int          allocDepth; /* Arena level of the host's `new` (for diagnostics) */
+    int          loopScope;  /* Innermost loop-body scope level (threshold for (b')) */
+    int          seq;        /* Walk sequence number (decides "the allocation point precedes the site") */
+    int          condDepth;  /* How many conditional statements enclose this write (0 = it always runs this iteration) */
+    bool         seqElem;    /* The outermost level is an element slot, and the index is an identifier assigned in this loop body */
+    bool         isAssign;   /* This is an assignment site (not a declaration initializer) */
 } IdleWrite;
 
-/* 判据的结论：`IDLE_DEFER` = 这一期答不了（事实还没齐），换一期再判。 */
+/* The criterion's verdict: `IDLE_DEFER` = cannot answer at this stage (the facts are not complete
+ * yet), judge again in the next stage. */
 typedef enum { IDLE_ACC, IDLE_REJ, IDLE_DEFER } IdleJudgment;
 
-/* 判据的两期：走查期（只有语法与已走查到的声明）与后处理期（台账与不动点都齐了）。 */
+/* The criterion's two stages: the walk stage (only syntax and declarations seen so far) and the
+ * post-processing stage (the ledgers and the fixed point are complete). */
 enum { IDLE_STAGE_WALK = 0, IDLE_STAGE_POST = 1 };
 
-/* 一条"本帧新局部量"台账：(a) 的候选宿主，也是 (a′) 的"宿主是本轮新建"依据。
+/* Ledger of "a local newly created in this frame": the candidate host for (a), and the basis for
+ * (a')'s "the host is new this iteration".
  *
- * `depth` 是**分配点**所在的循环深度 + 1（1 起：0 留给"不在台账里"）；`arenaLevel` 是那条
- * `new` 的存储**最后被放**在哪一层 arena（`arenaDepthOf(planArenaLevel)`，逃逸提权之后的值）。
- * 两者都要 ≥ 站点所在循环深度：(a) 问的是"每对象最多写一次"，所以循环嵌套（`depth`）是主判据；
- * arena 层是收窄（宿主被提到更长寿的层时更保守）。`seq` 保证分配在站点之前。 */
+ * `depth` is the allocation point's loop depth + 1 (from 1: 0 is reserved for "not in the ledger");
+ * `arenaLevel` is the arena level the storage of that `new` **finally lands in**
+ * (`arenaDepthOf(planArenaLevel)`, after escape promotion). Both must be >= the site's loop depth:
+ * (a) asks "at most one write per object", so loop nesting (`depth`) is the primary criterion; the
+ * arena level narrows it (a host promoted to a longer-lived level is more conservative). `seq`
+ * ensures the allocation precedes the site. */
 typedef struct { const char *name; int depth; int arenaLevel; int seq; } IdleFresh;
 
-/* 一条"这个名字所指的存储落在哪一层 arena"的台账（细化 (b′) 的"同尺事实"）。
+/* Ledger of "which arena level the storage a name points to falls in" (refines (b')'s "same-scale
+ * fact").
  *
- * 层号与 (a′) 侧的 `arenaDepthOf(planArenaLevel(new))` 是**同一把尺**（越小 = 活得越久；
- * 0 = 本帧家区域 / 证不出）。同一名字多条时取**最浅**（活得最久）的那条，方向保守。
- * `null` 不进台账：它不指任何对象，覆盖掉它不丢东西（见 `IDLE_LVL_NULL`）。 */
+ * The level number uses the **same scale** as `arenaDepthOf(planArenaLevel(new))` on the (a') side
+ * (smaller = lives longer; 0 = this frame's home region / undecidable). When one name has several
+ * entries, the **shallowest** (longest-lived) one wins, which is the conservative direction. `null`
+ * never enters the ledger: it points at no object, so overwriting it loses nothing (see
+ * `IDLE_LVL_NULL`). */
 typedef struct { const char *name; int lvl; } IdleLvl;
 
-/* 一次"把引用写进某个具名对象字段"：字段读（`p.next`）沿它取"这个字段里可能是什么层"。
- * 同一字段名取最浅（活得最久），方向保守。
- * `seq` 是走查序号：细化 P 要问"这次字段写发生在槽覆盖之**前**、且中间没人动过那个槽"。 */
+/* One "write a reference into a named object's field": field reads (`p.next`) take from it "which
+ * level this field may hold". One field name takes the shallowest (longest-lived) level, the
+ * conservative direction. `seq` is the walk sequence number: refinement P must ask whether this field
+ * write happens **before** the slot overwrite and nobody touched that slot in between. */
 typedef struct { const char *fname; const char *host; Expr *value; int seq; } IdleFieldStore;
 
-/* "这次写入丢的东西是 null（没有对象）"的哨兵层号：它比任何真实 arena 层都"长寿",
- * 但按语义它不丢对象，所以 `idleStoreQualified` 直接算合格。 */
+/* Sentinel level for "what this write drops is null (no object)": it is "longer-lived" than any real
+ * arena level, yet by semantics it drops no object, so `idleStoreQualified` treats it as qualified
+ * outright. */
 #define IDLE_LVL_NULL 0x3fffffff
 
-/* ② 那一趟的遍历上下文：多带**循环嵌套深度**、**作用域深度**与**最内层循环体的作用域层**。
+/* Walk context of pass (2): it carries the **loop nesting depth**, the **scope depth** and the
+ * **scope level of the innermost loop body**.
  *
- * `depth` 是判据 (a)/(a′) 的词法状态：站点在深度 d 的循环里时，只有"本迭代新建"的宿主才能
- * 满足"每对象最多写一次"。`scope` 是块嵌套深度（函数体 1、每进一个块加一，循环体那个块也加
- * 一）—— 与 arena 层同一把尺（都是 checker 的作用域栈深度）。`minLoopScope` 是**当前所在的
- * 所有循环体中作用域层最浅的那个**（b′ 用它当"本迭代随哪一次释放一起死"的阈值；0 = 不在任何
- * 循环里）。语句回调只拿到子节点，三个数都由回调自己往下传。 */
+ * `depth` is the lexical state for criteria (a)/(a'): when a site is in a loop of depth d, only a
+ * host created in this iteration satisfies "at most one write per object". `scope` is block nesting
+ * depth (function body 1, +1 per block entered, including the loop body's block) -- the same scale as
+ * arena levels (both are the checker's scope-stack depth). `minLoopScope` is **the shallowest scope
+ * level among the loop bodies currently enclosing the site** (b' uses it as the threshold for "dies
+ * with which release this iteration"); 0 = not inside any loop. The statement callback only receives
+ * the child node, so all three numbers are passed down by the callbacks themselves. */
 typedef struct { Checker *c; AcInfo *ac; int depth; int scope; int minLoopScope; int condDepth; } IdleWalk;
 
-/* 扫描上下文：检查器（类型表）与这个函数的记录。 */
+/* Scan context: the checker (type table) and this function's record. */
 typedef struct { Checker *c; AcInfo *ac; } AcScan;
 
 static bool acScanStmt(void *ctx, Stmt *s);
@@ -5648,14 +5822,16 @@ static bool idleWalkExprFlag(Checker *c, AcInfo *ac, Expr *e, int depth, bool bo
 
 
 /**
- * @brief 这个函数算得出区域无环结论吗（有函数体、不是泛型体/实例、不是 extern）。
+ * @brief Can this function yield a region-acyclicity verdict (it has a body, is not a generic body or
+ *        instance, is not an extern)?
  *
- * 泛型体（含**属主结构体带类型参数**的方法，如 `vector<T>::grow`）不置位：一个 AST 槽被所有
- * 实例共享，模板这一趟的类型是不透明的。算不出结论 ≠ 判否：调用点按参数敏感规则处理
- * （实参不带引用 ⇒ 它拿不到我们的引用）。
+ * A generic body (including methods whose **owner struct has type parameters**, such as
+ * `vector<T>::grow`) is never marked: one AST slot is shared by all instances, and the template's
+ * types are opaque here. "Cannot decide" is not "rejected": the call site applies the
+ * parameter-sensitive rule (an argument carrying no reference ⇒ it cannot get our reference).
  *
- * @param g  函数定义。
- * @return   算得出则 true。
+ * @param g  Function definition.
+ * @return   True when a verdict can be computed.
  */
 static bool acAnalyzable(const FuncDef *g) {
     if (!g || !g->body || g->isExtern || planTemplate(g)) return false;
@@ -5665,15 +5841,16 @@ static bool acAnalyzable(const FuncDef *g) {
 }
 
 /**
- * @brief 这个函数是不是某个 `impl Trait for T` 的方法（代码生成会为 vtable 发射它）。
+ * @brief Is this function a method of some `impl Trait for T` (codegen emits it for the vtable)?
  *
- * `codegen.c` 的 `inTraitTable` 的镜像：一个方法**没被点名调用**也可能因为出现在
- * `impl Trait` 里而被发射，于是 `unitAllAcyclic` 会要求它被判过。诊断要能解释
- * "为什么没生效"，就得按同一张表算"哪些函数会被发射"。
+ * The mirror of `inTraitTable` in codegen: a method may be emitted because it appears in an
+ * `impl Trait` even when nothing calls it by name, so `unitAllAcyclic` requires it to be judged. A
+ * diagnostic must explain "why it did not take effect", so "which functions get emitted" is computed
+ * from the same table.
  *
- * @param m  模块。
- * @param f  函数定义。
- * @return   在 trait 表里则 true。
+ * @param m  Module.
+ * @param f  Function definition.
+ * @return   True when it is in the trait table.
  */
 static bool acTraitTable(const Module *m, const FuncDef *f) {
     if (!f || !f->owner) return false;
@@ -5690,30 +5867,33 @@ static bool acTraitTable(const Module *m, const FuncDef *f) {
 }
 
 /**
- * @brief 代码生成会把这个函数发出去吗（`collectEmitted` 的口径，诊断对齐 `unitAllAcyclic`）。
+ * @brief Will the code generator emit this function (the `collectEmitted` rule, so diagnostics line
+ *        up with `unitAllAcyclic`)?
  *
- * `unitAllAcyclic` 要求的是**被发射的每个函数**都 `planFnAcyclic`，而"被发射"比"被调用"宽：
- * extern 声明（`planUsed` 即发射）与 `impl Trait` 的方法都算。泛型模板本身不发射（`T` 还是
- * 形参，发出来编不过）；泛型结构体的模板方法只有它的**实例**被发射时才算。
+ * `unitAllAcyclic` asks that **every emitted function** satisfy `planFnAcyclic`, and "emitted" is
+ * wider than "called": extern declarations (a declaration in `planUsed` is emitted) and `impl Trait`
+ * methods both count. A generic template is not emitted (its `T` is still a parameter, the generated
+ * C would not compile); a template method of a generic struct counts only when one of its
+ * **instances** is emitted.
  *
- * @param m  模块。
- * @param f  函数定义。
- * @return   会被发射则 true。
+ * @param m  Module.
+ * @param f  Function definition.
+ * @return   True when it gets emitted.
  */
 static bool acRequired(const Module *m, const FuncDef *f) {
     if (!f) return false;
     bool isMain = f->name && strcmp(f->name, "main") == 0;
     if (!planUsed(f) && !isMain && !f->isExport && !acTraitTable(m, f)) return false;
-    if (f->typeParams.len > 0) return false;                 /* 模板不发射 */
-    if (!planTemplate(f) && f->owner && f->owner->typeParams.len > 0) return false;  /* 泛型结构体的模板方法 */
+    if (f->typeParams.len > 0) return false;                 /* template: not emitted */
+    if (!planTemplate(f) && f->owner && f->owner->typeParams.len > 0) return false;  /* template method of a generic struct */
     return true;
 }
 
 /**
- * @brief 一个"会被发射、但没算过"的函数的原因（`unproven` 行用）。
+ * @brief Why an emitted function has no recorded acyclicity verdict (the `unproven` line).
  *
- * @param g  函数定义。
- * @return   原因串（静态字符串）。
+ * @param g  Function definition.
+ * @return   Static reason string.
  */
 static const char *acUnprovenWhy(const FuncDef *g) {
     if (planTemplate(g)) return "a generic instance (not analysed)";
@@ -5724,14 +5904,15 @@ static const char *acUnprovenWhy(const FuncDef *g) {
 
 
 /**
- * @brief 一个**栈槽**（局部量/参数/局部聚合的字段）持有被计数的 rc 引用吗。
+ * @brief Does a **stack slot** (local, parameter, field of a local aggregate) hold a counted rc
+ *        reference?
  *
- * 任何 `ref` 都算：`ref i64` 也可能指向 `new i64` 这种 rc 对象，局部量丢它就没人销账。
- * 视图句柄不算（`typeHoldsCountedRef`）。
+ * Any `ref` counts: `ref i64` may point at a `new i64` rc object, and a local that drops it leaves
+ * the object uncounted. A view handle does not count (`typeHoldsCountedRef`).
  *
- * @param c  检查器（类型表）。
- * @param t  槽的类型；NULL 按不持有算。
- * @return   持有则 true。
+ * @param c  Checker (type table).
+ * @param t  Slot type; NULL counts as not holding.
+ * @return   True when it holds one.
  */
 static bool acSlotHoldsCountedRef(Checker *c, Type *t) {
     if (!t) return false;
@@ -5740,16 +5921,19 @@ static bool acSlotHoldsCountedRef(Checker *c, Type *t) {
 }
 
 /**
- * @brief 一个**实参/接收者**把引用交给黑盒了吗（黑盒测试专用，比槽判据宽一档）。
+ * @brief Does an **argument or receiver** hand a reference to a black box (black-box test only, one
+ *        notch wider than the slot test)?
  *
- * 只有"牵得住一个 rc 对象"的引用才算：`ref X` 且 `X` 自己还能装引用（黑盒可能把它存进堆槽，
- * 而那个对象还可能牵住别的对象）。`ref i64` / `ref bool` 这种指向标量的引用**不算** —— 调用点
- * 的逃逸规则本来就不许黑盒留住它，它也不牵住任何 rc 对象；`fill(buf)` / `flush()` 这类 I/O
- * 助手的签名里全是这种（`mut slice<u8>` + `mut ref i64`），拿它们判否会把整程序钉成有环。
+ * Only a reference that can "hold" an rc object counts: `ref X` where `X` itself can hold references
+ * (the black box may store it into a heap slot, and that object may hold further objects). A
+ * reference to a scalar such as `ref i64` / `ref bool` does **not** count -- the call-site escape rule
+ * already forbids the black box from keeping it, and it holds no rc object; I/O helpers such as
+ * `fill(buf)` / `flush()` have exactly these in their signatures (`mut slice<u8>` + `mut ref i64`),
+ * and judging them as failure would pin the whole program as cyclic.
  *
- * @param c  检查器（类型表）。
- * @param t  实参或接收者的类型；NULL 按不带引用算。
- * @return   可能把 rc 引用交给黑盒则 true。
+ * @param c  Checker (type table).
+ * @param t  Argument or receiver type; NULL counts as carrying no reference.
+ * @return   True when it may hand an rc reference to a black box.
  */
 static bool acTypeMaybeRef(Checker *c, Type *t) {
     if (!t) return false;
@@ -5760,14 +5944,16 @@ static bool acTypeMaybeRef(Checker *c, Type *t) {
 }
 
 /**
- * @brief 一个投影的基表达式命名的是**堆对象**吗。
+ * @brief Does a projection's base expression name a **heap object**?
  *
- * 只看语法与节点上的类型（后一趟没有作用域，不能 `lookup`）：引用型绑定作基 ⇒ 宿主是被指物；
- * 解引用 ⇒ 宿主是被指物；普通绑定作基 ⇒ 宿主在栈上。(iv) 判的就是"槽在不在堆上"。
+ * Judged from syntax and the node's type only (the later pass has no scope and cannot `lookup`): a
+ * reference-typed binding as base ⇒ the host is the referent; a dereference ⇒ the host is the
+ * referent; a plain binding as base ⇒ the host is on the stack. Criterion (iv) asks exactly "is the
+ * slot on the heap".
  *
- * @param c    检查器（类型表）。
- * @param obj  投影的基表达式。
- * @return     基是堆对象则 true。
+ * @param c    Checker (type table).
+ * @param obj  Base expression of the projection.
+ * @return     True when the base is a heap object.
  */
 static bool acBaseIsHeap(Checker *c, Expr *obj) {
     if (!obj) return false;
@@ -5785,13 +5971,14 @@ static bool acBaseIsHeap(Checker *c, Expr *obj) {
 }
 
 /**
- * @brief 赋值的写目标命名的引用槽在堆对象里吗。
+ * @brief Does the reference slot named by an assignment's destination live in a heap object?
  *
- * `EX_IDENT`（改指本帧的绑定）与"根是普通绑定的投影"都在栈上：判据 (iv) 判否的那一栏。
+ * `EX_IDENT` (retargeting a binding of this frame) and "a projection whose root is a plain binding"
+ * are both on the stack: the column where criterion (iv) fails.
  *
- * @param c  检查器（类型表）。
- * @param t  写目标。
- * @return   槽在堆对象里则 true。
+ * @param c  Checker (type table).
+ * @param t  Write target.
+ * @return   True when the slot lives in a heap object.
  */
 static bool acTargetSlotIsHeap(Checker *c, Expr *t) {
     if (!t) return false;
@@ -5805,14 +5992,14 @@ static bool acTargetSlotIsHeap(Checker *c, Expr *t) {
 }
 
 /**
- * @brief 一个调用点会不会把引用送进黑盒（看不清的被调者）。
+ * @brief Can a call site send a reference into a black box (an unanalyzable callee)?
  *
- * 参数或接收者可能携带引用时算"涉及引用"：黑盒可能把它存进任何地方，这就不再是"引用只住在
- * 被计数的堆槽里"。
+ * The call counts as "touching a reference" when an argument or the receiver may carry one: the
+ * black box may store it anywhere, so "references live only in counted heap slots" does not hold.
  *
- * @param c  检查器（类型表）。
- * @param e  调用表达式。
- * @return   涉及引用则 true。
+ * @param c  Checker (type table).
+ * @param e  Call expression.
+ * @return   True when a reference is involved.
  */
 static bool acCallTouchesRef(Checker *c, Expr *e) {
     switch (e->kind) {
@@ -5833,73 +6020,84 @@ static bool acCallTouchesRef(Checker *c, Expr *e) {
     }
 }
 
-/* ---- ② 「回收无事可做」：判据 (a)(b)(c) 的逐站点扫描 --------------------------------
+/* ---- (2) "Reclaim has nothing to do": per-site scan for criteria (a)(b)(c) --------------
  *
- * 目的：给「整段不发射 rc 运行期」一个静态前提。一个**区域**
- * （= 一个 arena 层）不需要回收，当且仅当它里面不会有对象**在原地还没死的时候失去最后一个
- * 根**。静态上可判的三条：
+ * Purpose: a static premise for not emitting the rc runtime at all. A **region** (= one arena level)
+ * needs no reclaim iff no object inside it can **lose its last root while it is still alive**. Three
+ * statically decidable conditions:
  *
- *   (a) 每个堆对象的每个 ref 字段**每对象最多被写一次**（初始化，不是覆盖）。这里按形状判：
- *       该写站点的宿主是本帧 `var x = new T` 出来的局部量、这个绑定在整具函数体里从不被重新
- *       赋值、站点**不在任何循环里**，且同一个（宿主声明, 字段）在这个函数里只有**一处**站点。
- *       前两条把"宿主对象"钉死在这条 `new` 上（递归的每层调用各有自己的 `x` ⇒ 各有自己的动态
- *       对象），第三条保证那一处站点每对象只执行一次。
- *   (b) **ref 类型的局部量 / 参数不被重新赋值**：写进栈上槽（标识符、局部聚合的字段）的引用
- *       赋值都是丢引用。嵌套块里**声明**一个 ref 局部量不算 —— 它的对象随块 arena 整片释放
- *       （`bt` 的 `let t = bottomUp(d)` 正是这一档）。
- *   (c) 没有丢引用的操作：`@overwrite` 复用同一格、`domain` 块、`ext` / `dyn`（看不清的并发与
- *       派发）、以及**看不清的被调者**带着引用（黑盒可能把它丢掉）。看得清的被调者不在这里
- *       追 —— 判定按**整单元合取**（`codegen.c` 的 `unitReclaimIdle`），被调者自己会被判一遍。
+ *   (a) each ref field of each heap object is **written at most once per object** (an initialization,
+ *       not an overwrite). Judged by shape: the site's host is a local from `var x = new T` in this
+ *       frame, that binding is never reassigned anywhere in the body, the site is **not inside any
+ *       loop**, and the same (host declaration, field) has only **one** site in this function. The
+ *       first two pin the host object to that `new` (each recursive activation has its own `x`, hence
+ *       its own dynamic object); the third guarantees that site runs once per object.
+ *   (b) a **local or parameter of reference type is not reassigned**: an assignment writing a
+ *       reference into a stack slot (an identifier, a field of a local aggregate) drops a reference.
+ *       **Declaring** a ref local in a nested block does not count -- its objects are freed wholesale
+ *       with the block's arena (the `let t = bottomUp(d)` in `bt` is this case).
+ *   (c) no operation drops a reference: `@overwrite` reuses the same slot, `domain` blocks, `ext` /
+ *       `dyn` (unanalyzable concurrency and dispatch), and an **unanalyzable callee** carrying a
+ *       reference (a black box may drop it). An analyzable callee is not followed here -- the verdict
+ *       is conjoined over the whole unit (codegen's `unitReclaimIdle`), and each callee is judged on
+ *       its own.
  *
- * **与无环判据 (i)(ii)(iii)(iv) 的关系**：互不蕴含。②允许回边（`a.next = b  b.next = a`
- * 两条站点各自满足 (a)），而无环判据允许"每对象写一次"以外的丢引用（计数能兜住）。两条判据
- * 服务两个不同的机制：无环 → 事件档（计数代替清扫），② → 干脆不发射 rc。②的安全网是**峰值
- * RSS 有界**（判错 = 少收 ⇒ 内存涨，不是悬垂）。
+ * **Relation to the acyclicity criteria (i)(ii)(iii)(iv)**: neither implies the other. (2) allows back
+ * edges (`a.next = b  b.next = a` -- each site satisfies (a) on its own), while acyclicity allows
+ * reference drops other than "one write per object" (the counts absorb them). The two criteria serve
+ * two different mechanisms: acyclic → the event tier (counts replace sweeping); (2) → rc is never
+ * emitted at all. (2)'s safety net is **bounded peak RSS** (a wrong verdict reclaims less ⇒ memory
+ * grows, it does not dangle).
  *
- * **失败方向**：任何一条站不住 ⇒ 整具函数判否 ⇒ 整单元判否 ⇒ 照常发射 rc（保守）。
+ * **Failure direction**: any one condition failing ⇒ the function is rejected ⇒ the unit is rejected
+ * ⇒ rc is emitted as usual (conservative).
  */
 
-/** @brief 记下 ② 的第一个判否理由（只记第一条，与 (iv) 同一约定）。 */
+/** @brief Record (2)'s first rejection reason (only the first, same convention as (iv)). */
 static void idleNote(AcInfo *ac, const char *why) {
     if (ac->idleBad) return;
     ac->idleBad = true;
     ac->idleWhy = why;
 }
 
-/** @brief `planCName` 的首选写法：它答不出时退回源码里的名字。 */
+/** @brief The preferred spelling of `planCName`: fall back to the source name when it has no answer. */
 static const char *idleBindName(const void *node, const char *fallback) {
     const char *n = planCName(node);
     return n ? n : fallback;
 }
 
 /**
- * @brief 一个类型里有没有**回收管辖的引用槽**（② 的"带引用的值聚合"那一问）。
+ * @brief Does a type contain a **reclaim-managed reference slot** (the "aggregate carrying references"
+ *        question of (2))?
  *
- * 与 `codegen.c` 的 `rcScanType` 同一条口径：**视图**（`slice<T>`，包括嵌套在结构体字段里的）
- * 不是 rc 对象——它指向 arena/板的内存，丢弃它不释放任何 rc 对象；枚举载荷静态展不开 ⇒ 保守；
- * 泛型实参里有引用槽 ⇒ 枚举不出来 ⇒ 保守；新 kind 可能藏着引用 ⇒ 保守。
+ * Same rule as `rcScanType` in codegen: a **view** (`slice<T>`, including nested in struct fields) is
+ * not an rc object -- it points into arena/slab memory, dropping it frees no rc object; an enum
+ * payload cannot be expanded statically ⇒ conservative; a generic argument containing a reference
+ * slot ⇒ cannot enumerate ⇒ conservative; an unknown kind may hide references ⇒ conservative.
  *
- * 不直接用 `typeHoldsCountedRef`：它在**结构体字段递归**那一层不套视图规则，于是
- * `reader` / `writer` 这类"只装一个视图"的值类型会被误判成带引用（实测把 stdlib 的
- * `readerOf` / `writerOf` / `inSync` 判否，进而整单元判否）。口径必须与 rc 记账那一侧一致：
- * 只有**会被 `storeRef*` 记账**的槽才算。
+ * `typeHoldsCountedRef` is not used directly: at the **struct field recursion** level it does not
+ * apply the view rule, so value types that hold only a view, such as `reader` / `writer`, would be
+ * misjudged as carrying references (that rejected stdlib's `readerOf` / `writerOf` / `inSync`, and
+ * then the whole unit). The rule must match the rc accounting side: only slots that get **recorded by
+ * `storeRef*`** count.
  *
- * @param tt     类型表。
- * @param t      要问的类型；NULL 保守答有。
- * @param depth  递归深度，防类型环。
- * @return       有（或展不开）则 true。
+ * @param tt     Type table.
+ * @param t      Type to ask about; NULL is conservatively "yes".
+ * @param depth  Recursion depth, guards type cycles.
+ * @return       True when it has one (or cannot be expanded).
  */
 static bool idleCarriesRef(TypeTable *tt, Type *t, int depth) {
-    if (!t || depth > 16) return true;                       /* 保守 */
-    if (ttIsViewType(t)) return false;                       /* 视图不是 rc 对象 */
+    if (!t || depth > 16) return true;                       /* conservative */
+    if (ttIsViewType(t)) return false;                       /* a view is not an rc object */
     switch (t->kind) {
     case TY_REF: return true;
     case TY_VOID: case TY_BUILTIN: case TY_FN: case TY_DYN:
     case TY_PARAM: case TY_ERROR: case TY_UNRESOLVED:
         return false;
     case TY_ENUM:
-        /* 变体载荷逐个看：**这里问的是"丢了这个值会不会松开一个 rc 对象"**，所以按载荷精确
-         * 回答（`rcScanType` 那一侧要的是"能不能枚举出根表"，才必须保守）。 */
+                /* Look at variant payloads one by one: **the question here is "does dropping this value
+         * release an rc object"**, so answer per payload (the `rcScanType` side needs "can root
+         * tables be enumerated", which forces conservatism). */
         if (!t->edef) return true;
         for (size_t v = 0; v < t->edef->variants.len; v++) {
             Variant *va = *(Variant **)vecAt(&t->edef->variants, v);
@@ -5929,11 +6127,11 @@ static bool idleCarriesRef(TypeTable *tt, Type *t, int depth) {
                 return true;
         return false;
     }
-    default: return true;                                    /* 新 kind 可能藏着引用 */
+    default: return true;                                    /* an unknown kind may hide references */
     }
 }
 
-/** @brief 名字在不在那个向量里（小向量，线性查）。 */
+/** @brief Is the name in that vector (small vector, linear search)? */
 static bool idleNameIn(Vec *v, const char *nm) {
     if (!nm) return false;
     for (size_t i = 0; i < v->len; i++)
@@ -5942,14 +6140,16 @@ static bool idleNameIn(Vec *v, const char *nm) {
 }
 
 /**
- * @brief 写目标的最外宿主绑定（`t.f` / `(*p).f` / `h.a.f` / `(*p).a.f` → `t` / `p` / `h` / `p`）。
+ * @brief Outermost host binding of a write target (`t.f` / `(*p).f` / `h.a.f` / `(*p).a.f` → `t` /
+ *        `p` / `h` / `p`).
  *
- * 只沿**具名**的一路往外走：字段取它的基，解引用取它的操作数（必须是标识符）。元素、切片、
- * 调用结果作基一律答 NULL ⇒ 站点判否（保守）。判据 (a) 要的正是"这个对象是哪条 `new` 出来的"，
- * 所以宿主必须是一个绑定。
+ * Walk outward along the **named** path only: a field takes its base, a dereference takes its operand
+ * (which must be an identifier). An element, a slice, or a call result as base all answer NULL ⇒ the
+ * site is rejected (conservative). Criterion (a) asks exactly "which `new` created this object", so
+ * the host must be a binding.
  *
- * @param t  写目标表达式。
- * @return   绑定表达式（`EX_IDENT`），或 NULL。
+ * @param t  Write-target expression.
+ * @return   Binding expression (`EX_IDENT`), or NULL.
  */
 static Expr *idleHostIdent(Expr *t) {
     if (!t) return NULL;
@@ -5966,41 +6166,44 @@ static Expr *idleHostIdent(Expr *t) {
 }
 
 /**
- * @brief 一条语句是不是**循环**（循环深度要加一）。
+ * @brief Is the statement a **loop** (loop depth increments)?
  *
- * extC 的四种循环写法（`while`、`loop`、`for (init; cond; step)`、`for x in …`）在解析器里
- * **全部落成 `ST_WHILE`**（见 `src/front/parser.c` 的 `parseFor` / `parseWhile`），`StmtKind` 里
- * 没有 `ST_FOR` ⇒ 这里只需要认这一个 kind。写成函数是为了让"哪些 kind 算循环"只有一个来源。
+ * All four loop spellings of extC (`while`, `loop`, `for (init; cond; step)`, `for x in …`) become
+ * `ST_WHILE` in the parser (see `parseFor` / `parseWhile`), and `StmtKind` has no `ST_FOR` ⇒ only
+ * this one kind has to be recognized here. It is a function so that "which kinds are loops" has a
+ * single source.
  *
- * @param s  语句。
- * @return   是循环则 true。
+ * @param s  Statement.
+ * @return   True when it is a loop.
  */
 static bool idleLoopStmt(Stmt *s) {
     return s && s->kind == ST_WHILE;
 }
 
 /**
- * @brief 一条语句是不是**开新词法作用域**的语句（作用域深度要加一）。
+ * @brief Does the statement **open a new lexical scope** (scope depth increments)?
  *
- * 只有块。循环体在 extC 里就是一个 `ST_BLOCK`，所以它由这一条覆盖，不需要另加。
+ * Blocks only. A loop body is an `ST_BLOCK` in extC, so this covers it; no separate case is needed.
  *
- * @param s  语句。
- * @return   是块则 true。
+ * @param s  Statement.
+ * @return   True when it is a block.
  */
 static bool idleScopedStmt(Stmt *s) {
     return s && s->kind == ST_BLOCK;
 }
 
 /**
- * @brief 细化 E：这个名字是不是在**当前循环体内**被赋过值。
+ * @brief Refinement E: is this name assigned **inside the current loop body**?
  *
- * 元素槽序列（`(*root)[i] = …`）能放行的理由是"每轮写的是**不同叶槽**"。这只在下标**随循环推进**
- * 时成立，所以要求下标的绑定**在本循环体内被赋值**（`i = i + 1`）；循环外赋一次就固定的下标
- * （`j = 0` 之后 `arr[j] = x`）会被这条挡住 —— 那才是"同一个槽被每轮改写"。
+ * Element-slot sequences (`(*root)[i] = …`) are allowed because each iteration writes a **different
+ * leaf slot**. That only holds when the index **advances with the loop**, so the index binding must be
+ * assigned **in this loop body** (`i = i + 1`); an index fixed once outside the loop (`j = 0` then
+ * `arr[j] = x`) is rejected here -- that is the case where the same slot is rewritten every iteration.
  *
- * @param ac          当前函数的 ② 事实。
- * @param name        下标绑定的 C 名。
- * @param minLoopScope 站点所在的最内层循环体作用域。
+ * @param ac           (2)'s facts for the current function.
+ * @param name         C name of the index binding.
+ * @param minLoopScope Innermost loop-body scope of the site.
+ * @return             True when the name is assigned in that loop body.
  */
 static bool idleNameAssignedInLoop(AcInfo *ac, const char *name, int minLoopScope) {
     if (!name || minLoopScope == 0) return false;
@@ -6013,18 +6216,22 @@ static bool idleNameAssignedInLoop(AcInfo *ac, const char *name, int minLoopScop
 }
 
 /**
- * @brief 细化 A：被覆盖的旧值是否"**另有根**"。
+ * @brief Refinement A: does the overwritten old value have **another root**?
  *
- * 同一个（宿主, 叶路径）被写两处时，原来一律判否（怕旧值被丢成垃圾）。但如果旧值是 **一个形参的
- * 投影**（`prev.l` / `*p` / `q[i]`），而且本帧**没有写那个宿主的任何字段**（写了就可能把那条根
- * 改掉），那么旧值在覆盖之后**仍然从那个形参可达** ⇒ 覆盖没有丢根，放行。
+ * When the same (host, leaf path) is written at two sites, the base rule rejects outright (fearing the
+ * old value becomes garbage). But if the old value is **a projection of a parameter** (`prev.l` /
+ * `*p` / `q[i]`) and this frame **writes no field of that host** (which could change that root), the
+ * old value **stays reachable through that parameter** after the overwrite ⇒ the overwrite drops no
+ * root, allow it.
  *
- * 窄在哪里：只认"形参的投影 + 本帧不写该宿主"；不是"两处写互斥"（那是另一条，语料里兑现 0），
- * 也不是"旧值一定还活着"的通用证明 —— 后者要跨过程/别名分析，本帧给不了。
+ * Where it is narrow: only "a projection of a parameter + this frame does not write that host"; not
+ * "the two writes are mutually exclusive" (a separate rule, none in the corpus), nor a general proof
+ * that "the old value is still alive" -- that needs interprocedural/alias analysis, which this frame
+ * cannot provide.
  *
- * @param ac 当前函数的 ② 事实。
- * @param v  被覆盖那处站点写入的值表达式。
- * @return   true = 旧值另有根（放行）；false = 证不出（仍判否）。
+ * @param ac  (2)'s facts for the current function.
+ * @param v   Value expression written by the overwritten site.
+ * @return    True = the old value has another root (allow); false = cannot be proven (still reject).
  */
 static bool idleValueOtherRoot(AcInfo *ac, Expr *v) {
     int guard = 0;
@@ -6033,7 +6240,7 @@ static bool idleValueOtherRoot(AcInfo *ac, Expr *v) {
           : (v->kind == EX_DEREF ? v->u.deref.operand : v->u.index.obj);
     if (!v || v->kind != EX_IDENT) return false;
     Sym *b = identBindOf(v);
-    if (!b || b->depth != 0) return false;      /* 只认形参（depth 0） */
+    if (!b || b->depth != 0) return false;      /* parameters only (depth 0) */
     for (size_t j = 0; j < ac->idleFieldStores.len; j++) {
         IdleFieldStore *fs = *(IdleFieldStore **)vecAt(&ac->idleFieldStores, j);
         if (fs->host && strcmp(fs->host, v->u.ident.name) == 0) return false;
@@ -6042,18 +6249,24 @@ static bool idleValueOtherRoot(AcInfo *ac, Expr *v) {
 }
 
 /**
- * @brief 细化 B：写目的地的**逐叶路径**（`s.kids[0]` → `kids[0]`、`(*root)[i]` → `[i]`）。
+ * @brief Refinement B: the **leaf path** of a write destination (`s.kids[0]` → `kids[0]`,
+ *        `(*root)[i]` → `[i]`).
  *
- * 原来的 B 只认 `EX_FIELD`（具名对象的具名字段）。这里把目的地**求值一次**、逐叶落账：路径当站点键，
- * 下标只认**整数字面量**（`kids[0]` 与 `kids[1]` 是不同叶槽）；**非字面量下标也收**（键记成 `base[]`），
- * 因为同叶槽两处写仍然由 A（含细化 A）判 —— 收下标不放过"同一个槽被写两次"。
+ * The B rule recognizes `EX_FIELD` (a named field of a named object). Here the destination is
+ * evaluated **once** and recorded leaf by leaf: the path is the site key, and an index is accepted
+ * only as an **integer literal** (`kids[0]` and `kids[1]` are different leaf slots); **non-literal
+ * indices are accepted too** (the key is recorded as `base[]`) because two writes to the same leaf
+ * slot are still judged by A (including refinement A) -- accepting an index does not let "the same
+ * slot written twice" through.
  *
- * **根上的字段用裸字段名**（`(*p).f` → `f`）：字段台账的读一侧（`idleValueLvl` 的 EX_FIELD 分支）
- * 按 `field.name` 查，键必须对得上；早期版本在这里加了前导点，把已 idle 的 `rebuild` 家族打了回去。
+ * **A field at the root uses the bare field name** (`(*p).f` → `f`): the read side of the field
+ * ledger (the `EX_FIELD` arm of `idleValueLvl`) looks up `field.name`, so the key must match; a
+ * leading dot would not match and would reject the already-idle `rebuild` family.
  *
- * @param a  分配路径字符串的 arena。
- * @param t  写目标表达式。
- * @return   路径；说不清叶槽（带调用的基、切片等）时 NULL（调用方判否）。
+ * @param a  Arena for the path string.
+ * @param t  Write-target expression.
+ * @return   The path; NULL when the leaf slot cannot be determined (a base with a call, a slice, …)
+ *           (the caller rejects).
  */
 static const char *idleDestPath(Arena *a, Expr *t) {
     if (!t) return NULL;
@@ -6080,37 +6293,40 @@ static const char *idleDestPath(Arena *a, Expr *t) {
 }
 
 /**
- * @brief 语句回调：把子节点按当前深度继续往下走。
+ * @brief Statement callback: continue down through the children at the current depths.
  *
- * `astWalkStmtChildren` 的回调看的是**子**节点，两个深度由回调自己往下传：进循环体时循环深度
- * +1（见 `idleLoopStmt`），进块时作用域深度 +1（见 `idleScopedStmt`）。
+ * The `astWalkStmtChildren` callback sees the **child** nodes, and the two depths are passed down by
+ * the callback itself: entering a loop body increments loop depth (`idleLoopStmt`), entering a block
+ * increments scope depth (`idleScopedStmt`).
  *
- * @param ctx  `IdleWalk *`，其 `depth` / `scope` 是**子**节点所在的深度。
- * @param s    被访问的子语句。
- * @return     总是 true。
+ * @param ctx  `IdleWalk *`; its `depth` / `scope` are the depths of the **child** node.
+ * @param s    Child statement being visited.
+ * @return     Always true.
  */
 static bool idleWalkStmtCb(void *ctx, Stmt *s) {
     IdleWalk *w = ctx;
     return idleWalkStmt(w->c, w->ac, s, w->depth, w->scope, w->minLoopScope, w->condDepth);
 }
 
-/** @brief 表达式回调：表达式不改变循环深度，原样往下走。 */
+/** @brief Expression callback: expressions do not change loop depth, descend unchanged. */
 static bool idleWalkExprCb(void *ctx, Expr *e) {
     IdleWalk *w = ctx;
     return idleWalkExpr(w->c, w->ac, e, w->depth, w->minLoopScope);
 }
 
 /**
- * @brief 在"本帧新局部量"台账里找一个名字（(a) 的候选宿主）。
+ * @brief Find a name in the "new locals of this frame" ledger (the candidate host for (a)).
  *
- * 台账是函数级的线性表，同名可能有多条（不同分支里的同名绑定由 C 名区分）。`seq` 保证分配在
- * 站点**之前**（写站点不可能先于它宿主的那条 `new`）。同一名字取**循环最深**的那条（最有利
- * 的一条），但仍然要求它自己满足顺序。不在台账里返回 NULL。
+ * The ledger is a function-level linear list, and one name may have several entries (same-name
+ * bindings in different branches are distinguished by their C names). `seq` guarantees the allocation
+ * is **before** the site (a write cannot precede the `new` of its host). For one name take the entry
+ * with the **deepest loop** (the most favorable one), but it must still satisfy the ordering itself.
+ * Returns NULL when absent.
  *
- * @param ac    这个函数的记录。
- * @param name  宿主的 C 名。
- * @param seq   站点的走查序号。
- * @return      台账里最有利的一条；没有则 NULL。
+ * @param ac    This function's record.
+ * @param name  C name of the host.
+ * @param seq   Walk sequence number of the site.
+ * @return      The most favorable ledger entry, or NULL.
  */
 static IdleFresh *idleFreshAt(AcInfo *ac, const char *name, int seq) {
     if (!name) return NULL;
@@ -6118,18 +6334,19 @@ static IdleFresh *idleFreshAt(AcInfo *ac, const char *name, int seq) {
     for (size_t i = 0; i < ac->idleFresh.len; i++) {
         IdleFresh *fr = *(IdleFresh **)vecAt(&ac->idleFresh, i);
         if (strcmp(fr->name, name) != 0) continue;
-        if (fr->seq >= seq) continue;                  /* 分配点必须在站点之前 */
+        if (fr->seq >= seq) continue;                  /* the allocation must precede the site */
         if (!best || fr->depth > best->depth) best = fr;
     }
     return best;
 }
 
 /**
- * @brief 台账里某个名字的 arena 层（同名的多条取**最浅** = 活得最久的那条，方向保守）。
+ * @brief Arena level recorded for a name (several entries for one name take the **shallowest** =
+ *        longest-lived one, the conservative direction).
  *
- * @param v     台账（`IdleLvl*` 的向量）。
- * @param name  名字。
- * @return      层号；没有记录或"不可知"返回 -1。
+ * @param v     Ledger (a vector of `IdleLvl *`).
+ * @param name  Name.
+ * @return      Level number; -1 when unrecorded or unknown.
  */
 static int idleLvlName(Vec *v, const char *name) {
     if (!name) return -1;
@@ -6137,21 +6354,22 @@ static int idleLvlName(Vec *v, const char *name) {
     for (size_t i = 0; i < v->len; i++) {
         IdleLvl *e = *(IdleLvl **)vecAt(v, i);
         if (strcmp(e->name, name) != 0) continue;
-        if (e->lvl < 0) return -1;                 /* 不可知优先（保守） */
+        if (e->lvl < 0) return -1;                 /* unknown wins (conservative) */
         if (best < 0 || e->lvl < best) best = e->lvl;
     }
     return best;
 }
 
 /**
- * @brief 往台账里并一条"这个名字的存储在某层"。同名取最浅；有一条不可知 ⇒ 不可知。
+ * @brief Merge one "the storage this name points to is at that level" entry into the ledger.
+ *        Several entries for one name take the shallowest; any unknown ⇒ unknown.
  *
- * `null`（`IDLE_LVL_NULL`）不进台账：它不指对象。
+ * `null` (`IDLE_LVL_NULL`) never enters the ledger: it points at no object.
  *
- * @param v     台账。
- * @param a     分配用的 arena。
- * @param name  名字。
- * @param lvl   层号（-1 = 不可知）。
+ * @param v     Ledger.
+ * @param a     Arena for allocation.
+ * @param name  Name.
+ * @param lvl   Level (-1 = unknown).
  */
 static void idleLvlMerge(Vec *v, Arena *a, const char *name, int lvl) {
     if (!name) return;
@@ -6160,7 +6378,7 @@ static void idleLvlMerge(Vec *v, Arena *a, const char *name, int lvl) {
         IdleLvl *e = *(IdleLvl **)vecAt(v, i);
         if (strcmp(e->name, name) != 0) continue;
         if (lvl < 0) { e->lvl = -1; return; }
-        if (e->lvl < 0) return;                    /* 不可知优先 */
+        if (e->lvl < 0) return;                    /* unknown wins */
         if (lvl < e->lvl) e->lvl = lvl;
         return;
     }
@@ -6171,23 +6389,28 @@ static void idleLvlMerge(Vec *v, Arena *a, const char *name, int lvl) {
 }
 
 /**
- * @brief 一个被写的引用值落在**哪一层 arena**（细化 (b′) 的同尺事实）。
+ * @brief Which arena level the written reference value lands in (the same-scale fact for refinement
+ *        (b')).
  *
- * 只用一条尺：`arenaDepthOf(planArenaLevel(...))` —— 与 (a′) 侧、与逃逸分析自己的 placement
- * 同一个数（越小 = 活得越久，0 = 本帧家区域 / 证不出）。
- *   · `null`：`IDLE_LVL_NULL`（不指对象）；
- *   · `new`/`alloc`：这条分配点最后被放在哪一层（逃逸提权之后的值）；
- *   · 标识符：查**绑定台账**（由 `idleSolveLvls` 从本函数所有写入求出来）；
- *   · 字段读：查**字段台账**（同一函数里写进该字段的所有值的层，取最浅）。
- * 其余形状（调用结果、`*p`、下标、聚合字面量……）答 -1 ⇒ 调用方判否。
+ * One scale only: `arenaDepthOf(planArenaLevel(...))` -- the same number as on the (a') side and as
+ * the escape analysis' own placement (smaller = lives longer, 0 = this frame's home region /
+ * undecidable).
+ *   · `null`: `IDLE_LVL_NULL` (points at no object);
+ *   · `new`/`alloc`: the level that allocation site finally lands in (after escape promotion);
+ *   · identifier: look up the **binding ledger** (computed by `idleSolveLvls` from all writes in
+ *     this function);
+ *   · field read: look up the **field ledger** (the shallowest level among all values written into
+ *     that field in this function).
+ * Other shapes (call results, `*p`, indices, aggregate literals, …) answer -1 ⇒ the caller rejects.
  *
- * **不用** `anRefDepth` / `Sym.fields[].depth` / 词法嵌套计数 / `lookup()->depth` —— 那几把尺
- * 与 arena 层互不一致（实测 `rebuild` 的 `h = c` 上它们分别给出 1 / 3 / 6 / 4，arena 层是 3）。
+ * **Not used**: `anRefDepth` / `Sym.fields[].depth` / lexical nesting counts / `lookup()->depth` --
+ * those scales disagree with arena levels (for `rebuild`'s `h = c` they would give 1 / 3 / 6 / 4
+ * while the arena level is 3).
  *
- * @param bind   绑定台账。
- * @param field  字段台账。
- * @param v      被写的值。
- * @return       层号（`IDLE_LVL_NULL` 表示 null）；证不出返回 -1。
+ * @param bind   Binding ledger.
+ * @param field  Field ledger.
+ * @param v      Written value.
+ * @return       Level number (`IDLE_LVL_NULL` for null); -1 when undecidable.
  */
 static int idleValueLvl(Vec *bind, Vec *field, Expr *v) {
     if (!v) return -1;
@@ -6202,16 +6425,18 @@ static int idleValueLvl(Vec *bind, Vec *field, Expr *v) {
 }
 
 /**
- * @brief 一次写入"丢的东西"是不是**随本迭代的 arena 一起死**（细化 (b′) 的唯一门槛）。
+ * @brief Does one write's "dropped thing" **die with this iteration's arena** (the only threshold of
+ *        refinement (b'))?
  *
- * 真条件是：写进去的是 `null`（不丢对象），或者它的存储层不比**本次写入所在的最内层循环体**
- * 更长寿（`lvl >= loopScope`）。后者说的是"这个对象的 arena 就是/就在这次迭代里释放的"，所以
- * 之后覆盖掉这个槽只是少一个根，不会攒下界随轮数涨的垃圾。不在任何循环里（`loopScope == 0`）
- * 或层证不出（`lvl < 0`）⇒ 判否（保守）。
+ * The real condition: what is written is `null` (drops no object), or its storage level is not
+ * longer-lived than **the innermost loop body containing this write** (`lvl >= loopScope`). The latter
+ * says "this object's arena is freed in or at this iteration", so overwriting the slot later just
+ * loses one root and accumulates no garbage whose bound grows with the iteration count. Outside any
+ * loop (`loopScope == 0`) or an undecidable level (`lvl < 0`) ⇒ reject (conservative).
  *
- * @param lvl        被写值的 arena 层。
- * @param loopScope  写入点所在的最内层循环体作用域层。
- * @return           合格则 true。
+ * @param lvl        Arena level of the written value.
+ * @param loopScope  Innermost loop-body scope level of the write site.
+ * @return           True when qualified.
  */
 static bool idleStoreQualified(int lvl, int loopScope) {
     if (lvl == IDLE_LVL_NULL) return true;
@@ -6219,7 +6444,7 @@ static bool idleStoreQualified(int lvl, int loopScope) {
     return loopScope > 0 && lvl >= loopScope;
 }
 
-/** @brief 两个台账是不是逐条相同（名字 + 层号），用于固定点的收敛判断。 */
+/** @brief Are two ledgers identical entry by entry (name + level)? Used for fixed-point convergence. */
 static bool idleLvlSame(Vec *x, Vec *y) {
     if (x->len != y->len) return false;
     for (size_t i = 0; i < x->len; i++) {
@@ -6231,17 +6456,21 @@ static bool idleLvlSame(Vec *x, Vec *y) {
 }
 
 /**
- * @brief 求"每个绑定/字段所指的存储落在哪一层 arena"的**最小不动点**（细化 (b′) 的事实）。
+ * @brief Compute the **least fixed point** of "which arena level the storage a binding/field points
+ *        to falls in" (the facts behind refinement (b')).
  *
- * 为什么要迭代：写入的值可以依赖别的绑定/字段的层，而走查顺序不保证"先定义后使用" ——
- * `rebuild` 的 `c.next = h` 就在 `h = c` **之前**，`p = p.next` 更在两个循环之后。按走查顺序
- * 记一次会得到"不可知"，进而把该 idle 的形状判否（实测）。
+ * Why iterate: a written value may depend on the levels of other bindings/fields, and the walk order
+ * does not guarantee "defined before used" -- `rebuild`'s `c.next = h` comes **before** `h = c`, and
+ * `p = p.next` comes after two loops. Recording once in walk order would yield "undecidable" and
+ * reject an idle shape.
  *
- * 怎么迭代：每一轮从**上一轮**的台账重算一遍（`idleValueLvl` 只读上一轮的结果），直到台账逐条
- * 相同或到轮数上限。方向单调：不可知只可能变已知、已知层只取更小 ⇒ 只会更保守。上限 8 轮
- * （普通链两三轮回合；到上限仍不可知 ⇒ 读的一方答 -1 ⇒ 判否）。
+ * How: each round recomputes from the **previous** round's ledgers (`idleValueLvl` reads only the
+ * previous round), until the ledgers match entry by entry or the round limit is reached. The direction
+ * is monotone: undecidable can only become known, and a known level only takes smaller values ⇒ only
+ * more conservative. The limit is 8 rounds (an ordinary chain converges in two or three); still
+ * undecidable at the limit ⇒ the reading side answers -1 ⇒ reject.
  *
- * @param ac  这个函数的记录；结果写回 `idleBindLvl` / `idleFieldLvl`。
+ * @param ac  This function's record; results are written back to `idleBindLvl` / `idleFieldLvl`.
  */
 static void idleSolveLvls(AcInfo *ac) {
     for (int round = 0; round < 8; round++) {
@@ -6265,32 +6494,37 @@ static void idleSolveLvls(AcInfo *ac) {
     }
 }
 
-/* flavor (ii) 的来源事实：`name` 的每个取值都是 `origin` 沿**稳定字段**的投影。
- * 最大不动点求（只删不增）：初始化时所有对都在，被"某次写入不是投影"否掉的对才删掉。 */
+/* Source fact of flavor (ii): every value of `name` is a projection of `origin` along **stable
+ * fields**. Solved as a greatest fixed point (deletion only): all pairs start in the table, and only
+ * those refuted by "one of the writes is not a projection" are removed. */
 typedef struct { const char *name; const char *origin; } IdleOrig;
 
-/** @brief 细化 P（flavor i）的声明（定义在下面）。 */
+/** @brief Declaration of refinement P (flavor i) (defined below). */
 static bool idleLinksOld(AcInfo *ac, const IdleWrite *w);
 
 /**
- * @brief 细化 P（flavor ii）：这次槽覆盖**没丢根** —— 槽里的取值都是某个"保留根"的投影。
+ * @brief Refinement P (flavor ii): this slot overwrite **drops no root** -- every value the slot can
+ *        hold is a projection of some "kept root".
  *
- * 语义：`cur = (*cur).next` 这类**游标**。旧的值并没有被丢掉：它仍然是 `head`（或别的保留根）
- * 沿 `next` 这条**只会被初始化、不会被改指**的链上的一个结点。要成立需要三件事：
+ * Semantics: cursors such as `cur = (*cur).next`. The old value is not dropped: it is still a node of
+ * `head` (or another kept root) along the `next` chain, which is **only initialized, never
+ * retargeted**. Three things must hold:
  *
- *   1. **槽里的每个取值都是同一个根 `origin` 的投影**（表 `ac->idleOrig`：由"这个名字的每次写入
- *      都是 `origin` 的投影"这个合取按最大不动点算出来）；
- *   2. `origin` 是**保留根**（`ac->idleKeep`：它自己历次持有的对象都还可达 —— 每次非空写入要么
- *      被新值链住（细化 P），要么是它自己的投影，要么是唯一一次 `new` 初始化且此后不再赋值）；
- *   3. 投影沿途的字段都是**稳定字段**（`idleFieldStable`：写它的宿主全是本帧 fresh 分配 ⇒ 只会
- *      被创建，不会被改指）。
+ *   1. **every value in the slot is a projection of the same root `origin`** (table `ac->idleOrig`,
+ *      computed by greatest fixed point over "every write of this name is a projection of `origin`");
+ *   2. `origin` is a **kept root** (`ac->idleKeep`: the objects it has held over all iterations are
+ *      still reachable -- every non-null write either gets chained by the new value (refinement P), or
+ *      is its own projection, or is the single `new` initialization that is never assigned again);
+ *   3. the fields along the projection are **stable fields** (`idleFieldStable`: every host writing
+ *      one is a fresh allocation of this frame ⇒ it can only be created, never retargeted).
  *
- * 三条合起来：旧值从 `origin` 沿一条不会被断开的路径仍然可达 ⇒ 覆盖这个槽不丢根。
- * 方向保守：任何一条证不出 ⇒ 不成立（判否）。
+ * The three together: the old value is still reachable from `origin` along a path that is never cut ⇒
+ * overwriting this slot drops no root. Conservative direction: failing any one ⇒ does not hold
+ * (reject).
  *
- * @param ac 这个函数的记录。
- * @param w  这次槽写入。
- * @return   成立则 true。
+ * @param ac  This function's record.
+ * @param w   This slot write.
+ * @return    True when it holds.
  */
 static bool idleProjRetained(AcInfo *ac, const IdleWrite *w) {
     if (!w->host) return false;
@@ -6305,8 +6539,8 @@ static bool idleProjRetained(AcInfo *ac, const IdleWrite *w) {
     return false;
 }
 
-/* 表里有没有 (name, origin) 这对。 */
-/** @brief 表里有没有 (name, origin) 这对投影。 */
+
+/** @brief Does the table contain this (name, origin) projection pair? */
 static bool idleOrigHas(Vec *orig, const char *name, const char *origin) {
     for (size_t i = 0; i < orig->len; i++) {
         IdleOrig *o = *(IdleOrig **)vecAt(orig, i);
@@ -6316,7 +6550,7 @@ static bool idleOrigHas(Vec *orig, const char *name, const char *origin) {
     return false;
 }
 
-/** @brief 名字在不在保留根集合里。 */
+/** @brief Is the name in the kept-root set? */
 static bool idleKeepHas(Vec *keep, const char *name) {
     for (size_t i = 0; i < keep->len; i++) {
         const char *k = *(const char **)vecAt(keep, i);
@@ -6325,16 +6559,17 @@ static bool idleKeepHas(Vec *keep, const char *name) {
     return false;
 }
 
-/* 字段 fname 是不是稳定：写它的宿主全是本帧 fresh 分配（没写过 ⇒ 也稳定：没人能改指）。 */
-/** @brief 宿主在站点所在的循环里被**推进**过：有一次写入发生在同一循环深度或更深、且写进去的是
- *  本帧新分配的对象。没有它，"宿主对象是新的"只说明它在循环**外**建过一次 —— 循环里反复写的是
- *  **同一个**对象（`fixed_slot_overwrite`：峰值随轮数涨，实测 2.99 → 7.85 MB）。 */
+
+/** @brief The host was **advanced** in the loop of the site: one write happens at the same loop depth
+ *  or deeper and stores an object newly allocated in this frame. Without it, "the host object is new"
+ *  only means it was created once **outside** the loop -- the loop then keeps writing the **same**
+ *  object (`fixed_slot_overwrite`: peak RSS grows with the iteration count). */
 static bool idleAdvancesInLoop(AcInfo *ac, const IdleWrite *w) {
     if (!w->host) return false;
     for (size_t i = 0; i < ac->idleWrites.len; i++) {
         IdleWrite *o = *(IdleWrite **)vecAt(&ac->idleWrites, i);
         if (o->kind != IDLE_DEST_SLOT_NAMED || !o->host || strcmp(o->host, w->host) != 0) continue;
-        if (o->depth < w->depth) continue;                       /* 要在同一循环里或更深 */
+        if (o->depth < w->depth) continue;                       /* must be in the same loop or deeper */
         if (!o->value) continue;
         if (o->value->kind == EX_NEW && !o->value->u.new_.count) return true;
         if (o->value->kind == EX_IDENT) {
@@ -6345,9 +6580,9 @@ static bool idleAdvancesInLoop(AcInfo *ac, const IdleWrite *w) {
     return false;
 }
 
-/** @brief 这个字段名在本函数里只有一处写站点。
- *  细化 P 的宿主事实要它：两个**不同名字**的游标（`tail`/`prev2`）可能是同一个对象，
- *  只按名字查"同（宿主, 字段）两处站点"（规则 A）看不出来。 */
+/** @brief This field name has only one write site in this function.
+ *  The host facts of refinement P need it: two cursors with **different names** (`tail` / `prev2`) may
+ *  be the same object, which "same (host, field) at two sites" (rule A) cannot see by name. */
 static bool idleLoneFieldSite(AcInfo *ac, const char *fname) {
     if (!fname) return false;
     size_t n = 0;
@@ -6358,8 +6593,9 @@ static bool idleLoneFieldSite(AcInfo *ac, const char *fname) {
     return n == 1;
 }
 
-/** @brief 字段是否稳定：写它的宿主对象都是**本帧新分配**的（只会被创建、不会被改指）。
- *  判"宿主对象是新的"与 E/C/B 三条宿主条款用的是**同一条事实**（见 `idleHostFresh`）。 */
+/** @brief Is the field stable: every host object writing it is **freshly allocated in this frame**
+ *  (it can only be created, never retargeted). "The host object is new" uses the **same fact** as the
+ *  E/C/B host clauses (see `idleHostFresh`). */
 static bool idleFieldStable(AcInfo *ac, const char *fname) {
     if (!fname) return false;
     for (size_t i = 0; i < ac->idleFieldStores.len; i++) {
@@ -6372,11 +6608,13 @@ static bool idleFieldStable(AcInfo *ac, const char *fname) {
     return true;
 }
 
-/** @brief L1「链接入结构」：`vname` 指向的那个对象，是否被某次字段写**链进了 `origin` 的结构**。
+/** @brief L1 "linked into the structure": is the object `vname` points to **linked into `origin`'s
+ *  structure** by some field write.
  *
- * 形式规格 §3 的那条传递：对 `h.f := v`，若 `h` 是 `origin` 的投影且字段 `f` 稳定
- * ⇒ `v` 这个对象从 `origin` 可达 ⇒ 它成为 `origin` 的投影。缺了它，不动点就比 `A*` 小
- * （`rg_grow_tail` 的 `tail = p` 正是这一条）。 */
+ * The transitivity rule from the formal specification §3: for `h.f := v`, if `h` is a projection of
+ * `origin` and field `f` is stable ⇒ the object `v` is reachable from `origin` ⇒ it becomes a
+ * projection of `origin`. Without it the fixed point is smaller than `A*` (`rg_grow_tail`'s
+ * `tail = p` is this rule). */
 static bool idleLinkedInto(AcInfo *ac, Vec *orig, const char *vname, const char *origin,
                            int seq) {
     for (size_t i = 0; i < ac->idleFieldStores.len; i++) {
@@ -6384,28 +6622,28 @@ static bool idleLinkedInto(AcInfo *ac, Vec *orig, const char *vname, const char 
         if (!fs->value || fs->value->kind != EX_IDENT) continue;
         const char *vn = idleBindName(fs->value, fs->value->u.ident.name);
         if (!vn || strcmp(vn, vname) != 0) continue;
-        if (seq > 0 && fs->seq >= seq) continue;                 /* 链入发生在这条写之前 */
+        if (seq > 0 && fs->seq >= seq) continue;                 /* the link happens before this write */
         if (!idleFieldStable(ac, fs->fname)) continue;
         if (fs->host && idleOrigHas(orig, fs->host, origin)) return true;
     }
     return false;
 }
 
-/* `v` 是不是 `origin` 沿稳定字段的投影（`self` 是正在判的那个名字：自引用按"假设成立"处理，
- * 这是最大不动点的常规做法）。 */
-/** @brief `v` 是不是 `origin` 沿稳定字段的投影（自引用按假设成立，配合最大不动点）。
- *  `seq` = 这条写的走查序号（判 L1 的"链入在前"；0 = 不要求顺序）。 */
+
+/** @brief Is `v` a projection of `origin` along stable fields (a self reference is assumed to hold,
+ *  for the greatest fixed point)? `seq` = walk sequence number of this write (for L1's "the link
+ *  happens first"; 0 = no ordering required). */
 static bool idleProjOf(AcInfo *ac, Vec *orig, Vec *keep, Expr *v, const char *origin,
                        const char *self, int seq) {
     if (!v) return false;
-    if (v->kind == EX_NULL) return true;                    /* 不指对象 ⇒ 不破坏投影这条不变量 */
+    if (v->kind == EX_NULL) return true;                    /* points at no object ⇒ breaks no projection invariant */
     if (v->kind == EX_IDENT) {
         const char *n = idleBindName(v, v->u.ident.name);
         if (!n) return false;
         if (strcmp(n, origin) == 0) return idleKeepHas(keep, origin);
-        if (self && strcmp(n, self) == 0) return true;      /* 自引用：假设成立 */
+        if (self && strcmp(n, self) == 0) return true;      /* self reference: assume it holds */
         if (idleOrigHas(orig, n, origin)) return true;
-        return idleLinkedInto(ac, orig, n, origin, seq);     /* L1：被链进 origin 的结构 */
+        return idleLinkedInto(ac, orig, n, origin, seq);     /* L1: linked into origin's structure */
     }
     if (v->kind == EX_FIELD || v->kind == EX_DEREF) {
         Expr *base = (v->kind == EX_FIELD) ? v->u.field.obj : v->u.deref.operand;
@@ -6413,11 +6651,11 @@ static bool idleProjOf(AcInfo *ac, Vec *orig, Vec *keep, Expr *v, const char *or
         if (!idleFieldStable(ac, fld)) return false;
         return idleProjOf(ac, orig, keep, base, origin, self, seq);
     }
-    return false;                                           /* `new`/调用结果/下标：不是谁的投影 */
+    return false;                                           /* `new`/call result/index: a projection of nothing */
 }
 
-/* `r` 是不是保留根：它历次持有的对象都还可达。 */
-/** @brief `r` 是不是保留根（历次持有的对象都还可达）。 */
+
+/** @brief Is `r` a kept root (the objects it has held over all iterations are still reachable)? */
 static bool idleRetains(AcInfo *ac, Vec *orig, Vec *keep, const char *r) {
     size_t nonzero = 0;
     bool loneNew = false;
@@ -6430,29 +6668,32 @@ static bool idleRetains(AcInfo *ac, Vec *orig, Vec *keep, const char *r) {
         loneNew = (nonzero == 1) && (o->value->kind == EX_NEW) && !o->isAssign;
         declDepth = o->depth;
     }
-    if (nonzero == 0) return false;                         /* 从没被赋过值：不是可依赖的根 */
-    /* 只有一次 `new` 声明初始化 ⇒ 它持有的那个对象一直有根。**但必须不在任何循环里**：
-     * 循环内每轮新建的绑定，旧实例在作用域退出后无人持有（存储还可能被提升）⇒ 会累积。 */
+    if (nonzero == 0) return false;                         /* never assigned: not a dependable root */
+    /* Only one `new` declaration initializer ⇒ the object it holds always has a root. **But it must not
+ * be in any loop**: a binding created per iteration leaves the old instance held by nobody after its
+ * scope exits (its storage may even be promoted) ⇒ it accumulates. */
     if (nonzero == 1 && loneNew && declDepth == 0) return true;
     for (size_t i = 0; i < ac->idleWrites.len; i++) {
         IdleWrite *o = *(IdleWrite **)vecAt(&ac->idleWrites, i);
         if (o->kind != IDLE_DEST_SLOT_NAMED || !o->host || strcmp(o->host, r) != 0) continue;
         if (!o->value || o->value->kind == EX_NULL) continue;
-        if (idleLinksOld(ac, o)) continue;                  /* 被新值链住 ⇒ 旧值仍可达 */
-        if (idleProjOf(ac, orig, keep, o->value, r, r, o->seq)) continue;   /* 还在自己的结构上 */
+        if (idleLinksOld(ac, o)) continue;                  /* chained by the new value ⇒ the old value is still reachable */
+        if (idleProjOf(ac, orig, keep, o->value, r, r, o->seq)) continue;   /* still on its own structure */
         return false;
     }
     return true;
 }
 
 /**
- * @brief 求 flavor (ii) 的两张表（`idleOrig` / `idleKeep`）的**最大不动点**。
+ * @brief Compute the **greatest fixed point** of flavor (ii)'s two tables (`idleOrig` / `idleKeep`).
  *
- * 单调收紧（只删）：初始化时所有候选对与所有候选根都在，然后每一轮把"被某次写入否掉"的对与
- * "不再保留"的根删掉，直到不动点。轮数上限 8（普通链两三轮回合）。表建在 `idleWrites` 与
- * `idleFieldStores` 上，规模是函数级的（名字数 × 名字数），不做跨函数外推。
+ * Monotone tightening (deletion only): all candidate pairs and candidate roots start in place, then
+ * each round removes pairs refuted by some write and roots that are not retained, until the
+ * fixed point is reached. Round limit 8 (an ordinary chain converges in two or three). The tables are
+ * built from `idleWrites` and `idleFieldStores` at function scale (names × names); nothing is
+ * extrapolated across functions.
  *
- * @param ac 这个函数的记录；结果写回 `idleOrig` / `idleKeep`。
+ * @param ac  This function's record; results are written back to `idleOrig` / `idleKeep`.
  */
 static void idleSolveProj(AcInfo *ac) {
     Vec names;
@@ -6508,24 +6749,28 @@ static void idleSolveProj(AcInfo *ac) {
 }
 
 /**
- * @brief 细化 P（flavor i）：这次槽覆盖**没丢根** —— 写进去的新值已经把旧值链住了。
+ * @brief Refinement P (flavor i): this slot overwrite **drops no root** -- the new value written in
+ *        already chains the old one.
  *
- * 形状（头插/尾插/桶插入）：`v.f = <这个槽此刻的值>` 先发生，随后 `槽 = v`。旧值由 `v.f` 可达，
- * 而 `v` 又被写进了槽 ⇒ 覆盖没有切断任何路径。与槽的种类无关（栈槽与字段写都成立），
- * 与 (b′) 的"值随本迭代死"是**两条独立的**合格路径。
+ * Shape (head insert / tail insert / bucket insert): `v.f = <the value the slot holds right now>`
+ * happens first, then `slot = v`. The old value is reachable via `v.f` and `v` is written into the
+ * slot ⇒ the overwrite cuts no path. Independent of the slot kind (it holds for stack slots and field
+ * writes) and an **independent** qualification path from (b')'s "the value dies with this iteration".
  *
- * **B 维的条件不能少**（第一版就是漏了它而不健全）：这次存储必须**本迭代必然执行**
- * （`condDepth == 0`）。否则会有"只有部分轮次把新值存下来"的形状 —— `scale_growth` 的
- * `if i == n-1 { saved = p }`：那些没被存下来的实例被提升到家区域、在作用域退出时丢下，
- * 峰值随轮数涨（实测关档峰值比 3.0×）。**A 维（旧值还有根）不能替代 B 维。**
+ * **The B dimension is required** (omitting it makes the rule unsound): this store must **always run
+ * in this iteration** (`condDepth == 0`). Otherwise there are shapes where "only some iterations
+ * store the new value" -- `scale_growth`'s `if i == n-1 { saved = p }`: the instances not stored are
+ * promoted to the home region and dropped when the scope exits, so peak RSS grows with the iteration
+ * count. **The A dimension (the old value still has a root) cannot replace the B dimension.**
  *
- * 其余条件：被写的是**标识符** `v`（不是字段读、调用结果等看不清的来源）；台账里存在一次字段
- * 写，宿主正是 `v`，写进去的值是**同一个槽名**；该字段写先于这次覆盖；两者之间这个槽
- * 没被写过（否则链住的是更早的值，不是这次覆盖掉的旧值）。
+ * Other conditions: the written thing is an **identifier** `v` (not a field read, a call result, or
+ * another unclear source); the ledger has a field write whose host is `v` and whose value is **this
+ * same slot name**; that field write precedes the overwrite; and the slot was not written in between
+ * (otherwise what got chained is an earlier value, not the one this overwrite drops).
  *
- * @param ac 这个函数的记录。
- * @param w  这次槽写入。
- * @return   成立则 true。
+ * @param ac  This function's record.
+ * @param w   This slot write.
+ * @return    True when it holds.
  */
 static bool idleLinksOld(AcInfo *ac, const IdleWrite *w) {
     if (w->condDepth != 0) return false;
@@ -6534,12 +6779,12 @@ static bool idleLinksOld(AcInfo *ac, const IdleWrite *w) {
     if (!v) return false;
     for (size_t i = 0; i < ac->idleFieldStores.len; i++) {
         IdleFieldStore *fs = *(IdleFieldStore **)vecAt(&ac->idleFieldStores, i);
-        if (!fs->host || strcmp(fs->host, v) != 0) continue;      /* 宿主就是那个新值 */
-        if (fs->seq >= w->seq) continue;                          /* 字段写在覆盖之前 */
+        if (!fs->host || strcmp(fs->host, v) != 0) continue;      /* the host is that new value */
+        if (fs->seq >= w->seq) continue;                          /* the field write precedes the overwrite */
         if (!fs->value || fs->value->kind != EX_IDENT) continue;
         const char *held = idleBindName(fs->value, fs->value->u.ident.name);
-        if (!held || strcmp(held, w->host) != 0) continue;        /* 链住的正是这个槽 */
-        bool clean = true;                                        /* 中间没人写过这个槽 */
+        if (!held || strcmp(held, w->host) != 0) continue;        /* exactly this slot is chained */
+        bool clean = true;                                        /* nobody wrote this slot in between */
         for (size_t j = 0; j < ac->idleWrites.len && clean; j++) {
             IdleWrite *o = *(IdleWrite **)vecAt(&ac->idleWrites, j);
             if (o->kind != IDLE_DEST_SLOT_NAMED || !o->host) continue;
@@ -6552,16 +6797,19 @@ static bool idleLinksOld(AcInfo *ac, const IdleWrite *w) {
 }
 
 /**
- * @brief 求"哪些绑定的每个取值都是**本帧新分配**（或 `null`）"的最大不动点。
+ * @brief Compute the greatest fixed point of "every value of which bindings is **freshly allocated in
+ *        this frame** (or `null`)".
  *
- * 这是细化 P 的**宿主事实**：E/C/B 三条宿主条款与"字段稳定"都问同一个问题 ——
- * "这次写的那个对象是不是本帧刚建出来的"。字段没被写过 ⇒ 写它不丢根、也不留旧值。
+ * This is refinement P's **host fact**: the E/C/B host clauses and "field stable" all ask the same
+ * question -- "is the object this write stores one just created in this frame". A field that was
+ * never written ⇒ writing it drops no root and leaves no old value either.
  *
- * 关系是传递的（`prev2 = tail`，而 `tail` 的取值都是新建的）⇒ 迭代到不动点。只删不增：
- * 初始化时所有候选都在，被某次写入否掉的名字才删掉。候选 = 作为具名槽被写过的名字 ∪ 本帧
- * fresh 的名字。轮数上限 8（与别的台账同一约定）。
+ * The relation is transitive (`prev2 = tail`, and every value of `tail` is a fresh allocation) ⇒
+ * iterate to the fixed point. Deletion only: all candidates start in place, and only names refuted by
+ * some write are removed. Candidates = names ever written as a named slot ∪ names fresh in this
+ * frame. Round limit 8 (same convention as the other ledgers).
  *
- * @param ac 这个函数的记录；结果写回 `idleFreshSet`。
+ * @param ac  This function's record; results are written back to `idleFreshSet`.
  */
 static void idleSolveFreshSet(AcInfo *ac) {
     Vec cand;
@@ -6590,7 +6838,7 @@ static void idleSolveFreshSet(AcInfo *ac) {
                 if (!o->value || o->value->kind == EX_NULL) continue;
                 if (o->value->kind == EX_GENCALL) continue;
                 if (o->value->kind == EX_NEW) {
-                    if (o->value->u.new_.count) { ok = false; break; }   /* 带长度＝视图/数组 */
+                    if (o->value->u.new_.count) { ok = false; break; }   /* with a count = view/array */
                     continue;
                 }
                 if (o->value->kind == EX_IDENT) {
@@ -6611,40 +6859,53 @@ static void idleSolveFreshSet(AcInfo *ac) {
 
 
 /**
- * @brief ② 的**唯一判据**：这一次往引用槽写值，会不会让垃圾不再有界。
+ * @brief (2)'s **single criterion**: does writing a value into a reference slot here make garbage
+ *        unbounded?
  *
- * **判据其实算两维**（flavor (i) 的负结果把这一点钉死了：只算第一维会在
- * `if i == n-1 { slot = p }` 这类形状上把累积判掉）：
+ * **The criterion has two dimensions** (a negative result for flavor (i) pins this down: judging only
+ * the first dimension rejects accumulation in shapes such as `if i == n-1 { slot = p }`):
  *
- *   · **A 维（不丢根）** —— 覆盖一个槽不丢根 ⟺ 旧值还能从**别的**活根到达；
- *   · **B 维（不累积）** —— 写进槽 / 被覆盖掉的值，其**存储**不会在后续轮次里无主地留下。
+ *   · **dimension A (drops no root)** -- overwriting a slot drops no root iff the old value is still
+ *     reachable from **another** live root;
+ *   · **dimension B (does not accumulate)** -- the **storage** of the value written into the slot or
+ *     of the overwritten value is not left ownerless in later iterations.
  *
- * 下面这组规则是这两维的可靠充分条件（近似），按顺序逐条判 —— 顺序就是"第一条命中的理由"，
- * 所以顺序也是行为的一部分。
+ * The rules below are a sound sufficient approximation of the two dimensions, judged in order -- the
+ * order is the "first matching reason", so the order is part of the behavior.
  *
- * 走查期（`IDLE_STAGE_WALK`，只有语法与已走查到的声明）：
- *   1. 复合赋值 ⇒ 判否（**A**：旧值被就地改写）；
- *   2. 具名栈槽 ⇒ 推迟：`(b′)` 要"写进这个槽的**全部**值都合格"，整趟走完才看得全；
- *   3. 其它栈位置 ⇒ 判否（**A**：引用写进了一个没人追踪的栈位置）；
- *   4. 堆字段：目标不是"具名对象的具名字段" ⇒ 判否；
- *   5. 堆字段：站点在循环里、宿主不是本迭代新建、也不是本循环体内被赋值的元素槽 ⇒ 判否
- *      （细化 E；**B**：非本迭代的宿主会被反复覆盖）；
- *   6. 其余堆字段 ⇒ 推迟到后处理（`(a)` 的逐站点部分）。
- * 后处理期（`IDLE_STAGE_POST`，台账与不动点都齐了）：
- *   7. 堆字段站点：宿主不是本帧 `new` ⇒ 判否（**B**：写进别的对象会累积）；宿主被重新赋值
- *      ⇒ 判否（**B**：宿主可能被换成另一个对象，"每对象写一次"论证失效）；同一（宿主, 字段）
- *      的**更早**站点存在且旧值没有别的根 ⇒ 判否（细化 A；**A**：旧值被第二次覆盖掉）；
- *   8. 具名栈槽站点：`(b′)` 合取 —— 写进这个槽的全部值（含声明初始化）都必须合格
- *      （**B**：值随本迭代的 arena 一起死 ⇒ 不留累积）。
+ * Walk stage (`IDLE_STAGE_WALK`, only syntax and declarations seen so far):
+ *   1. compound assignment ⇒ reject (**A**: the old value is rewritten in place);
+ *   2. named stack slot ⇒ defer: (b') wants "**every** value written into this slot qualifies", which
+ *      is only fully visible once the whole walk is done;
+ *   3. another stack location ⇒ reject (**A**: a reference is written into an untracked stack
+ *      location);
+ *   4. heap field: the target is not "a named field of a named object" ⇒ reject;
+ *   5. heap field: the site is in a loop and the host is not created in this iteration and is not an
+ *      element slot assigned in this loop body ⇒ reject (refinement E; **B**: a host from an earlier
+ *      iteration gets overwritten repeatedly);
+ *   6. another heap field ⇒ defer to post-processing (the per-site part of (a)).
+ * Post-processing stage (`IDLE_STAGE_POST`, the ledgers and fixed points are complete):
+ *   7. heap-field site: the host is not a `new` of this frame ⇒ reject (**B**: writing into another
+ *      object accumulates); the host is reassigned ⇒ reject (**B**: the host may be swapped for
+ *      another object, defeating the "one write per object" argument); an **earlier** site for the
+ *      same (host, field) exists and the old value has no other root ⇒ reject (refinement A; **A**:
+ *      the old value was overwritten a second time);
+ *   8. named-stack-slot site: the (b') conjunction -- every value written into this slot (including
+ *      the declaration initializer) must qualify (**B**: the value dies with this iteration's arena ⇒
+ *      nothing accumulates).
  *
- * 失败方向：任何一条判否 ⇒ 整具函数判否 ⇒ 整单元判否 ⇒ 照常发射回收运行期（保守）。
+ * Failure direction: any rejection ⇒ the function is rejected ⇒ the unit is rejected ⇒ the reclaim
+ * runtime is emitted as usual (conservative).
  *
- * @param ac    这个函数的记录（判据的全部事实来源）。
- * @param w     这次写入的规范化描述。
- * @param idx   `w` 在 `ac->idleWrites` 里的下标（后处理期判"更早站点"用；走查期传 0）。
- * @param why   判否时的理由。**文案与合并前逐字相同**：挡路者分类工具按它认规则。
- * @param stage `IDLE_STAGE_WALK` / `IDLE_STAGE_POST`。
- * @return      `IDLE_ACC` 合格；`IDLE_REJ` 判否（`*why` 已填）；`IDLE_DEFER` 换一期再判。
+ * @param ac     This function's record (the only source of facts for the criterion).
+ * @param w      Normalized description of this write.
+ * @param idx    Index of `w` in `ac->idleWrites` (for "earlier site" in post-processing; 0 in the
+ *               walk stage).
+ * @param why    Rejection reason. The wording is fixed: the blocker-classification tool keys rules
+ *               off it.
+ * @param stage  `IDLE_STAGE_WALK` / `IDLE_STAGE_POST`.
+ * @return       `IDLE_ACC` qualifies; `IDLE_REJ` rejected (`*why` filled); `IDLE_DEFER` judge in the
+ *               other stage.
  */
 static IdleJudgment idleWriteOk(AcInfo *ac, const IdleWrite *w, size_t idx,
                                 const char **why, int stage) {
@@ -6666,14 +6927,18 @@ static IdleJudgment idleWriteOk(AcInfo *ac, const IdleWrite *w, size_t idx,
                 "line %d: the destination is not a named field of a named object", w->line);
             return IDLE_REJ;
         }
-        /* 宿主是不是"本帧新建的对象"要等整趟走完才判得全（`idleFreshSet` 是不动点）⇒ 这里只筛
-         * 语法，E（循环里写字段）与 C（宿主不是本帧新建）都推迟到后处理期，按同一条事实判。 */
+                /* Whether the host is "an object created in this frame" is only fully decidable after the
+         * whole walk (`idleFreshSet` is a fixed point) ⇒ only syntax is filtered here; E (a field
+         * write inside a loop) and C (the host is not created in this frame) are deferred to
+         * post-processing and judged from the same fact. */
         return IDLE_DEFER;
     }
     if (w->kind == IDLE_DEST_SLOT_NAMED) {
-        /* (b′)：写进这个槽的**全部**值都得合格 —— 同一名字可能有多处写入，任一处不合格 ⇒
-         * 这个槽的每一次覆盖都判否（保守）。合格有**两条独立路径**：值随本迭代死（(b′)，B 维），
-         * 或这次覆盖被新值链住且本迭代必然执行（细化 P / flavor i，A 维 + B 维）。 */
+                /* (b'): **every** value written into this slot must qualify -- one name may have several
+         * writes, and one bad write rejects every overwrite of this slot (conservative). Two
+         * **independent** qualification paths: the value dies with this iteration ((b'), dimension B),
+         * or this overwrite is chained by the new value and always runs in this iteration
+         * (refinement P / flavor i, dimensions A + B). */
         if (idleStoreQualified(idleValueLvl(&ac->idleBindLvl, &ac->idleFieldLvl, w->value),
                                w->loopScope)
             || idleLinksOld(ac, w)) {
@@ -6688,20 +6953,22 @@ static IdleJudgment idleWriteOk(AcInfo *ac, const IdleWrite *w, size_t idx,
             }
             if (ok) return IDLE_ACC;
         }
-        if (idleProjRetained(ac, w)) return IDLE_ACC;   /* flavor (ii)：整槽取值都是保留根的投影 */
+        if (idleProjRetained(ac, w)) return IDLE_ACC;   /* flavor (ii): every slot value is a projection of a kept root */
         *why = arenaPrintf(ac->a,
             "line %d: a reference is assigned to a stack slot (a local/parameter, or a field of one)",
             w->line);
         return IDLE_REJ;
     }
-    /* 堆字段站点的后处理：(E)/(C)/(B)/(A)。四问都落在**同一条事实**上 ——
-     * "这次写的那个宿主对象是不是本帧刚建出来的"（`idleHostFresh`）：
-     *   · E：(a′)——**本迭代**新建（分配深度/arena 层两个条件）；细化 P 的宿主事实另加一条路
-     *     （宿主绑定的每个取值都是本帧新分配 + 该字段只有一处站点）；
-     *   · C：放宽到"本帧"（台账里有这个名字，或细化 P 的宿主事实）；
-     *   · B：宿主绑定被重新赋值 ⇒ 只按名字判"每对象写一次"失效；但若走细化 P 那条路（宿主对象
-     *     每次都是新的），重赋值本身不构成问题。
-     * 规则 A 只看**更早**的站点，所以按记录顺序判。 */
+        /* Post-processing of a heap-field site: (E)/(C)/(B)/(A). All four questions rest on the **same
+     * fact** -- "is the host object of this write one just created in this frame" (`idleHostFresh`):
+     *   · E: (a') -- created in **this iteration** (allocation depth and arena level both); the host
+     *     fact of refinement P adds another path (every value of the host binding is fresh in this
+     *     frame + this field has a single site);
+     *   · C: relaxed to "this frame" (the name is in the ledger, or the host fact of refinement P);
+     *   · B: the host binding is reassigned ⇒ "one write per object" does not hold by name alone;
+     *     but if the refinement-P path applies (the host object is new every time), the reassignment
+     *     itself is not a problem.
+     * Rule A only looks at **earlier** sites, so this is judged in record order. */
     IdleFresh *fr = idleFreshAt(ac, w->host, w->seq);
     bool hostThisIter = fr && fr->depth - 1 >= w->depth && fr->arenaLevel >= w->depth;
     bool hostCursor = idleNameIn(&ac->idleFreshSet, w->host) && idleLoneFieldSite(ac, w->fname)
@@ -6726,7 +6993,7 @@ static IdleJudgment idleWriteOk(AcInfo *ac, const IdleWrite *w, size_t idx,
         IdleWrite *o = *(IdleWrite **)vecAt(&ac->idleWrites, j);
         if (o->kind != IDLE_DEST_HEAP_FIELD) continue;
         if (o->host == w->host && o->fname && w->fname && strcmp(o->fname, w->fname) == 0) {
-            /* 细化 A：旧值另有根 ⇒ 覆盖没丢根 ⇒ 不是冲突。 */
+                        /* refinement A: the old value has another root ⇒ the overwrite drops no root ⇒ no conflict */
             if (!(o->value && idleValueOtherRoot(ac, o->value))) {
                 *why = arenaPrintf(ac->a,
                     "line %d: the same field of the same host is written at two sites", w->line);
@@ -6739,19 +7006,23 @@ static IdleJudgment idleWriteOk(AcInfo *ac, const IdleWrite *w, size_t idx,
 }
 
 /**
- * @brief ② 的语句访问：判 (a)(b)(c) 的语句那一半，并收集 (a) 需要的局部事实。
+ * @brief (2)'s statement visit: judge the statement half of criteria (a)(b)(c) and collect the local
+ *        facts (a) needs.
  *
- * 这里**不用** `switch (s->kind)`：本函数不是一趟"手写的 kind 遍历"（`tools/check_walkers.py`
- * 的棘轮针对的正是那种），下降一律交给 `astWalkStmtChildren`，所以不存在漏掉新 kind 的盲区。
+ * There is deliberately **no** `switch (s->kind)` here: this is not a hand-written kind traversal (the
+ * walker ratchet targets exactly those), descent always goes through `astWalkStmtChildren`, so there is
+ * no blind spot for a new kind.
  *
- * @param c            检查器（类型表）。
- * @param ac           这个函数的记录。
- * @param s            当前语句。
- * @param depth        当前的循环嵌套深度（0 = 不在任何循环里）。
- * @param scope        当前的作用域深度（函数体 1，每进一个块 +1）。
- * @param minLoopScope 当前所在的所有循环体中**作用域层最浅**的那个（0 = 不在任何循环里）；
- *                     细化 (b′) 用它当"这次写入丢的东西是否随本迭代释放"的阈值。
- * @return             总是 true。
+ * @param c            Checker (type table).
+ * @param ac           This function's record.
+ * @param s            Current statement.
+ * @param depth        Current loop nesting depth (0 = not in any loop).
+ * @param scope        Current scope depth (function body 1, +1 per block entered).
+ * @param minLoopScope The **shallowest scope level** among all loop bodies enclosing this point
+ *                     (0 = not in any loop); refinement (b') uses it as the threshold for "what this
+ *                     write drops dies with this iteration".
+ * @param condDepth    How many conditional statements enclose this statement.
+ * @return             Always true.
  */
 static bool idleWalkStmt(Checker *c, AcInfo *ac, Stmt *s, int depth, int scope, int minLoopScope,
                          int condDepth) {
@@ -6766,15 +7037,16 @@ static bool idleWalkStmt(Checker *c, AcInfo *ac, Stmt *s, int depth, int scope, 
     }
     if (s->kind == ST_VAR && !s->u.var.overwrite) {
         Expr *ini = s->u.var.init;
-        /* (a) 的候选宿主：**单个** `new T`（不带长度；带长度的是视图）初始化出来的局部量。
-         * 记下分配点的循环深度与 arena 层（细化 (a′) 用）。是不是"从不被重新赋值"要等整趟
-         * 走完（赋值可能在声明之后、也可能在分支里）。 */
+                /* Candidate host for (a): a local initialized by a **single** `new T` (no count; a count
+         * makes it a view). Record the allocation point's loop depth and arena level (for refinement
+         * (a')). Whether it is "never reassigned" is only known after the whole walk (an assignment
+         * may follow the declaration or sit in a branch). */
         if (ini && ini->kind == EX_NEW && !ini->u.new_.count) {
             const char *nm = idleBindName(s, NULL);
             if (nm) {
                 IdleFresh *fr = arenaAllocZero(ac->a, sizeof *fr);
                 fr->name = nm;
-                fr->depth = depth + 1;   /* 1 起：0 要留给"不在台账里" */
+                fr->depth = depth + 1;   /* from 1: 0 is reserved for "not in the ledger" */
                 fr->arenaLevel = arenaDepthOf(planArenaLevel(ini));
                 fr->seq = ac->idleSeq;
                 *(IdleFresh **)vecPush(&ac->idleFresh) = fr;
@@ -6784,8 +7056,9 @@ static bool idleWalkStmt(Checker *c, AcInfo *ac, Stmt *s, int depth, int scope, 
     if (s->kind == ST_ASSIGN) {
         Expr *t = s->u.assign.target;
         if (t && t->type && acSlotHoldsCountedRef(c, t->type)) {
-            /* 把这次写入规范化成一个 case，交给**唯一判据**。事实（哪些名字是 fresh、哪些被重新
-             * 赋值、各值的 arena 层）由走查就地收集；判据只看 case。 */
+                        /* Normalize this write into a case and hand it to the **single criterion**. The facts
+             * (which names are fresh, which are reassigned, each value's arena level) are collected
+             * in place during the walk; the criterion only looks at the case. */
             IdleWrite w;
             memset(&w, 0, sizeof w);
             w.value     = s->u.assign.value;
@@ -6798,18 +7071,22 @@ static bool idleWalkStmt(Checker *c, AcInfo *ac, Stmt *s, int depth, int scope, 
             if (s->u.assign.op) {
                 w.kind = IDLE_DEST_COMPOUND;
             } else if (!acTargetSlotIsHeap(c, t)) {
-                /* (b)：引用写进了栈上的槽（局部量/参数/局部聚合的字段）—— 那是丢引用。
-                 * 细化 (b′)：**ref 标识符槽**可以覆盖，只要写进这个槽的**全部**值都随本迭代的
-                 * arena 一起死（`idleStoreQualified`）；`null` 也算合格（它不丢对象）。
-                 * 参数走同一套判据：要存进参数的值得活过这次调用 ⇒ 逃逸分析把它放到家区域
-                 * （层 0）⇒ 层判据自然判否。局部聚合的字段与别的目的地不在这条里，仍旧判否。 */
+                                /* (b): a reference is written into a stack slot (a local/parameter, or a field of
+                 * one) -- that drops a reference.
+                 * Refinement (b'): a **ref identifier slot** may be overwritten as long as **every**
+                 * value written into it dies with this iteration's arena (`idleStoreQualified`);
+                 * `null` also qualifies (it drops no object).
+                 * Parameters go through the same criterion: a value stored into a parameter must
+                 * outlive this call ⇒ escape analysis places it in the home region (level 0) ⇒ the
+                 * level test rejects naturally. Fields of local aggregates and other destinations are
+                 * not this case and are still rejected. */
                 w.kind = (t->kind == EX_IDENT) ? IDLE_DEST_SLOT_NAMED : IDLE_DEST_SLOT_OTHER;
                 if (t->kind == EX_IDENT) w.host = idleBindName(t, t->u.ident.name);
             } else {
                 Expr *host = idleHostIdent(t);
                 w.kind  = IDLE_DEST_HEAP_FIELD;
                 w.fname = idleDestPath(ac->a, t);
-                /* 细化 E：最外一层是**元素槽**且下标是"本循环体内被赋值"的标识符。 */
+                                /* refinement E: the outermost level is an **element slot** and its index is an identifier assigned in this loop body */
                 if (t->kind == EX_INDEX && t->u.index.index
                     && t->u.index.index->kind == EX_IDENT)
                     w.seqElem = idleNameAssignedInLoop(ac, idleBindName(t->u.index.index,
@@ -6822,8 +7099,9 @@ static bool idleWalkStmt(Checker *c, AcInfo *ac, Stmt *s, int depth, int scope, 
                 idleNote(ac, why);
             } else if (v == IDLE_DEFER) {
                 if (w.kind == IDLE_DEST_HEAP_FIELD) {
-                    /* 字段写记原始值：(b′) 的"字段读沿根取"由 `idleSolveLvls` 的固定点算 ——
-                     * 写进去的值可能依赖别的绑定（`c.next = h` 在 `h = c` 之前）。 */
+                                        /* Record field writes with their raw value: (b')'s "a field read takes along the
+                     * root" is computed by `idleSolveLvls`'s fixed point -- the written value may
+                     * depend on another binding (`c.next = h` comes before `h = c`). */
                     IdleFieldStore *fs = arenaAllocZero(ac->a, sizeof *fs);
                     fs->fname = w.fname;
                     fs->host  = w.host;
@@ -6839,7 +7117,7 @@ static bool idleWalkStmt(Checker *c, AcInfo *ac, Stmt *s, int depth, int scope, 
             }
         }
         if (t && t->kind == EX_IDENT) {
-            /* 宿主候选的"反面"：这个名字在本函数里被赋过值（不管类型）。 */
+                        /* the flip side of the host candidates: this name is assigned somewhere in this function */
             const char *nm = idleBindName(t, t->u.ident.name);
             if (nm) {
                 *(const char **)vecPush(&ac->idleAsgn) = nm;
@@ -6847,11 +7125,13 @@ static bool idleWalkStmt(Checker *c, AcInfo *ac, Stmt *s, int depth, int scope, 
             }
         }
     }
-    /* 声明初始化式是**有界的**那一支：值落进具名槽，槽的 arena 层由它的块深度给出；所以
-     * 根本身不按"临时量"判（见 `idleWalkExprFlag` 的 `bound`）。它的子表达式照常判。
-     * `ST_VAR` 唯一的子节点就是初始化式，所以这里替掉通用子遍历。
+        /* A declaration initializer is the **bounded** branch: the value lands in a named slot whose
+     * arena level is given by its block depth; so the root itself is not judged as a temporary (see
+     * `bound` in `idleWalkExprFlag`). Its subexpressions are judged as usual. `ST_VAR`'s only child is
+     * the initializer, so this replaces the generic child traversal.
      *
-     * 同时记下"这个 ref 槽里被写进去的值"（声明初始化算一次写入）—— (b′) 的合取要它。 */
+     * It also records "the value written into this ref slot" (a declaration initializer counts as one
+     * write) -- (b')'s conjunction needs it. */
     if (s->kind == ST_VAR) {
         const char *nm = idleBindName(s, NULL);
         if (!s->u.var.overwrite) {
@@ -6877,15 +7157,16 @@ static bool idleWalkStmt(Checker *c, AcInfo *ac, Stmt *s, int depth, int scope, 
         }
         return idleWalkExprFlag(c, ac, s->u.var.init, depth, true, minLoopScope);
     }
-    /* 进循环体：那个块的作用域层就是"本迭代 arena"的层，取所有在册循环里最浅的一个。
-     * `condDepth` 进循环体**归零**：问的是"这一轮的迭代里这次存储会不会发生"，上一层的条件
-     * 包不包住这个循环与"每轮都存"无关。 */
+        /* Entering a loop body: that block's scope level is the "this iteration's arena" level; take the
+     * shallowest among all loops in the context. `condDepth` **resets** inside a loop body: the
+     * question is "does this store happen in this round of the iteration", and whether an enclosing
+     * condition covers the loop has nothing to do with "stores every round". */
     IdleWalk inner = { c, ac, depth + (idleLoopStmt(s) ? 1 : 0),
                        scope + (idleScopedStmt(s) ? 1 : 0), minLoopScope,
                        idleLoopStmt(s) ? 0
                                        : condDepth + ((s->kind == ST_IF || s->kind == ST_MATCH) ? 1 : 0) };
     if (idleLoopStmt(s)) {
-        int bodyScope = scope + 1;                  /* 循环体在 extC 里恒是一个块 */
+        int bodyScope = scope + 1;                  /* a loop body is always a block in extC */
         if (inner.minLoopScope == 0 || bodyScope < inner.minLoopScope)
             inner.minLoopScope = bodyScope;
     }
@@ -6894,13 +7175,16 @@ static bool idleWalkStmt(Checker *c, AcInfo *ac, Stmt *s, int depth, int scope, 
 }
 
 /**
- * @brief ② 的表达式访问：判 (c) 那一半（并发、派发、看不清的被调者带引用）。
+ * @brief (2)'s expression visit: judge the (c) half (concurrency, dispatch, an unanalyzable callee
+ *        carrying a reference).
  *
- * @param c      检查器（类型表）。
- * @param ac     这个函数的记录。
- * @param e      当前表达式。
- * @param depth  当前的循环嵌套深度（表达式不改变它，原样传下去）。
- * @return       总是 true。
+ * @param c            Checker (type table).
+ * @param ac           This function's record.
+ * @param e            Current expression.
+ * @param depth        Current loop nesting depth (expressions do not change it; passed down).
+ * @param bound        This expression is a declaration initializer (its value lands in a bounded slot).
+ * @param minLoopScope Innermost loop-body scope of the site.
+ * @return             Always true.
  */
 static bool idleWalkExprFlag(Checker *c, AcInfo *ac, Expr *e, int depth, bool bound, int minLoopScope) {
     if (!e) return true;
@@ -6908,22 +7192,29 @@ static bool idleWalkExprFlag(Checker *c, AcInfo *ac, Expr *e, int depth, bool bo
         idleNote(ac, "a spawned task (`ext`): the callee frame's drops are not visible");
     if (e->kind == EX_DYN)
         idleNote(ac, "a `dyn` call: the callee is not resolved");
-    /* (c)：**带引用的值聚合**（结构体/数组/枚举载荷/按值返回的调用结果）被产生成一颗
-     * **临时量**时，它一死，里面的引用在那个时刻失去这个根 —— 而临时量的存储属于哪一层 arena
-     * 由逃逸分析定，可能的形态是"本帧的家房间"（活得比块长）⇒ 界随轮数涨。
+        /* (c): a **value aggregate carrying references** (a struct, array, enum payload, or a by-value
+     * call result) produced as a **temporary** loses that root the moment it dies -- and which arena
+     * level the temporary's storage belongs to is decided by escape analysis; the possible shape is
+     * "this frame's home region" (longer-lived than the block) ⇒ the bound grows with iteration count.
      *
-     * `bound` 为真表示这个表达式是**一条声明的初始化式**：值落进一个具名槽，槽的 arena 层
-     * 由它的块深度给出（循环体内声明 ⇒ 每轮整片释放）⇒ 有界，不按临时量判。它的**子**表达式
-     * 照常判（`wrap { n: mk(i) }` 里的 `mk(i)` 仍是一颗会被丢掉的临时量）。
+     * `bound` true means this expression is **a declaration initializer**: the value lands in a named
+     * slot whose arena level is given by its block depth (declared in a loop body ⇒ freed wholesale
+     * every iteration) ⇒ bounded, not judged as a temporary. Its **sub**expressions are still judged
+     * as usual (`mk(i)` inside `wrap { n: mk(i) }` is still a temporary that gets dropped).
      *
-     * `ref T` 自己不是聚合，不在这一条里（`t.left = bottomUp(...)` 的值是 `?ref tree`）。
+     * `ref T` is not itself an aggregate and is not this case (the value of
+     * `t.left = bottomUp(...)` is `?ref tree`).
      *
-     * **细化 F**：站点**不在任何循环里**（`minLoopScope == 0`）时放行。理由是失效方向：②的坏
-     * 形态是"**每轮**丢一份、攒在活得比迭代长的 arena 里"，而循环外的临时量每次调用只产生/丢一次，
-     * 它的存储最坏落在**调用方当前块**（`arenaArg` 默认就是调用点的块）—— 调用方在循环里时那块
-     * 每轮归还，调用方不在循环里时也就丢一次。真正会让它变成"家房间垃圾"的路（把聚合体存进比
-     * 迭代长的槽）由 (a)/(b) 那两条判据挡着（实测：`byval_temp` 的 `take(mk(i))` 在**循环里**，
-     * 仍判否；`struct_copy_ret_home` 的站点在 `mk` 里、循环外，判 idle 后 N vs 4N = 1.00×）。 */
+     * **Refinement F**: allow when the site is **not inside any loop** (`minLoopScope == 0`). The
+     * reason is the failure direction: (2)'s bad shape is "**every iteration** drops one copy that
+     * accumulates in an arena longer-lived than the iteration", while a temporary outside a loop is
+     * produced and dropped once per call, and its storage falls at worst in the **caller's current
+     * block** (`arenaArg` defaults to the call site's block) -- the caller's block is reclaimed every
+     * iteration when the caller is in a loop, and outside a loop it is dropped once. The path that
+     * would really turn it into "home-region garbage" (storing the aggregate into a slot longer-lived
+     * than the iteration) is blocked by the (a)/(b) criteria (`byval_temp`'s `take(mk(i))` is inside
+     * a **loop** and is still rejected; `struct_copy_ret_home`'s site is inside `mk`, outside loops,
+     * and goes idle with memory flat over 4N iterations). */
     if (!bound && e->type && e->kind != EX_IDENT && e->kind != EX_FIELD && e->kind != EX_INDEX
         && e->kind != EX_DEREF && e->kind != EX_SLICE && e->kind != EX_NEW
         && e->kind != EX_REF) {
@@ -6935,8 +7226,10 @@ static bool idleWalkExprFlag(Checker *c, AcInfo *ac, Expr *e, int depth, bool bo
     }
     if (e->kind == EX_CALL || e->kind == EX_METHOD || e->kind == EX_ASSOC) {
         FuncDef *g = planCallee(e);
-        /* 看得清的被调者不在本地判：整单元合取会把它判一遍（见本节的说明）。看不清的按
-         * **参数敏感**处理 —— 接收者与实参都不带 rc 引用时它拿不到我们的引用，不构成反例。 */
+                /* An analyzable callee is not judged locally: the unit-wide conjunction judges it (see the
+         * section note). An unanalyzable one is handled **parameter-sensitively** -- when neither the
+         * receiver nor any argument carries an rc reference, it cannot receive our reference and is
+         * not a counterexample. */
         if ((!acAnalyzable(g) || planCallViaFn(e)) && acCallTouchesRef(c, e)) {
             const char *nm = (g && g->name) ? g->name
                            : (e->kind == EX_METHOD ? e->u.method.name
@@ -6947,25 +7240,27 @@ static bool idleWalkExprFlag(Checker *c, AcInfo *ac, Expr *e, int depth, bool bo
                 e->line, nm ? nm : "?"));
         }
     }
-    /* 表达式走查不改变三个深度：这里给的 0 只为了让聚合初始化完整（表达式不会走到
-     * `idleWalkStmt` 里用它们的那些分支上；真走下去也只会更保守）。 */
+        /* The expression walk does not change the three depths: the 0 passed here only keeps aggregate
+     * initialization complete (expressions never reach the `idleWalkStmt` branches that use them;
+     * descending further would only be more conservative). */
     IdleWalk inner = { c, ac, depth, 0, minLoopScope, 1 };
     AstVisit v = { idleWalkExprCb, idleWalkStmtCb, &inner };
     return astWalkExprChildren(e, &v);
 }
 
-/** @brief 一般位置的表达式访问（不豁免"带引用的值聚合"那条）。 */
+/** @brief Expression visit in a general position (does not exempt the "value aggregate carrying references" rule). */
 static bool idleWalkExpr(Checker *c, AcInfo *ac, Expr *e, int depth, int minLoopScope) {
     return idleWalkExprFlag(c, ac, e, depth, false, minLoopScope);
 }
 
 /**
- * @brief 把一个调用依赖记进一个向量（`AcDep*`，建在 arena 里）。
+ * @brief Record one call dependency into a vector (`AcDep *`, arena-allocated).
  *
- * @param dep   依赖向量。
- * @param f     被调函数；NULL 也记（"解析不到"是一条依赖，闭包按不成立处理）。
- * @param line  调用点行号。
- * @param a     分配依赖用的 arena。
+ * @param dep   Dependency vector.
+ * @param f     Callee; NULL is recorded too ("cannot resolve" is a dependency, and the closure treats
+ *              it as not holding).
+ * @param line  Call-site line.
+ * @param a     Arena for the allocation.
  */
 static void acPushDep(Vec *dep, FuncDef *f, int line, Arena *a) {
     AcDep *d = arenaAllocZero(a, sizeof *d);
@@ -6975,11 +7270,12 @@ static void acPushDep(Vec *dep, FuncDef *f, int line, Arena *a) {
 }
 
 /**
- * @brief 表达式回调：收集 (iv) 的调用依赖、黑盒调用与并发形式。
+ * @brief Expression callback: collect (iv)'s call dependencies, black-box calls, and concurrency
+ *        forms.
  *
- * @param ctx  扫描上下文（`AcScan *`）。
- * @param e    被访问的子表达式。
- * @return     总是 true（走完整趟；理由只记第一条）。
+ * @param ctx  Scan context (`AcScan *`).
+ * @param e    Child expression being visited.
+ * @return     Always true (walk the whole body; only the first reason is kept).
  */
 static bool acScanExpr(void *ctx, Expr *e) {
     AcScan *sc = ctx;
@@ -6994,9 +7290,11 @@ static bool acScanExpr(void *ctx, Expr *e) {
         break;
     case EX_CALL: case EX_METHOD: case EX_ASSOC: {
         FuncDef *g = planCallee(e);
-        /* 算得出结论的被调者走调用图闭包（(iv) 也必须成立）；算不出的（黑盒 / extern /
-         * 泛型体）按**参数敏感**处理：实参与接收者都不带 rc 对象引用时它拿不到我们的引用，
-         * 不构成 (iv) 的反例。`ref i64` 这种指向标量的引用也不算（见 `acTypeMaybeRef`）。 */
+                /* An analyzable callee goes through the call-graph closure ((iv) must hold for it too); an
+         * unanalyzable one (black box / extern / generic body) is handled **parameter-sensitively**:
+         * when neither the arguments nor the receiver carry an rc object reference, it cannot receive
+         * our reference and is no counterexample to (iv). A reference to a scalar such as `ref i64`
+         * does not count either (see `acTypeMaybeRef`). */
         if (!acAnalyzable(g) || planCallViaFn(e)) {
             if (!ac->ivBad && acCallTouchesRef(sc->c, e)) {
                 const char *nm = g && g->name ? g->name
@@ -7021,11 +7319,11 @@ static bool acScanExpr(void *ctx, Expr *e) {
 }
 
 /**
- * @brief 语句回调：找 (iv) 的违反与 (i') 的依赖。
+ * @brief Statement callback: find (iv) violations and (i') dependencies.
  *
- * @param ctx  扫描上下文（`AcScan *`）。
- * @param s    被访问的子语句。
- * @return     总是 true（走完整趟；理由只记第一条）。
+ * @param ctx  Scan context (`AcScan *`).
+ * @param s    Child statement being visited.
+ * @return     Always true (walk the whole body; only the first reason is kept).
  */
 static bool acScanStmt(void *ctx, Stmt *s) {
     AcScan *sc = ctx;
@@ -7036,7 +7334,8 @@ static bool acScanStmt(void *ctx, Stmt *s) {
         ac->ivWhy = "a domain block: the interleaving of reference drops is unprovable";
     }
     if (s->kind == ST_VAR && anStoreRefKind(s) == SR_LOCAL && !ac->ivBad) {
-        /* 检查器在作用域还活着时标下的：嵌套块里的引用型局部量，块退出时丢掉引用而不销账。 */
+                /* Marked by the checker while the scope is still alive: a reference-typed local in a nested
+         * block drops its reference at block exit without settling the count. */
         ac->ivBad = true;
         ac->ivWhy = arenaPrintf(ac->a,
             "line %d: a reference local is declared in a nested block; its reference is dropped without a counted slot",
@@ -7044,11 +7343,11 @@ static bool acScanStmt(void *ctx, Stmt *s) {
     }
     if (s->kind == ST_ASSIGN) {
         Expr *t = s->u.assign.target;
-        /* 带类型判：槽装**被计数的**引用时才算一次引用槽存储。`i = i + 1` 不是，视图句柄
-         * （`s = otherSlice`）也不是。 */
+                /* Type-aware: it counts as a reference-slot store only when the slot holds a **counted**
+         * reference. `i = i + 1` is not one, and neither is a view handle (`s = otherSlice`). */
         if (t && t->type && acSlotHoldsCountedRef(sc->c, t->type)) {
             if (!acTargetSlotIsHeap(sc->c, t)) {
-                /* (iv)：引用写进了栈上的槽（局部量/参数/局部聚合的字段），不是被计数的 rc 槽。 */
+                                /* (iv): a reference is written into a stack slot (a local/parameter, or a field of one), not a counted rc slot. */
                 if (!ac->ivBad) {
                     ac->ivBad = true;
                     ac->ivWhy = arenaPrintf(ac->a,
@@ -7074,34 +7373,36 @@ static bool acScanStmt(void *ctx, Stmt *s) {
     return astWalkStmtChildren(s, &v);
 }
 
-/* ---- `retFresh`：这个函数的每个 `return` 都交付一个新分配的对象吗 ------------------
+/* ---- `retFresh`: does every `return` of this function deliver a newly allocated object? ----
  *
- * 判据 (i') 允许"值经一次调用返回"。要让这条**健全**，被调者只无环还不够：它可能原样返回一个
- * 参数（`fn id(p: ref T) -> ref T { return p }`），那样存进去的就是比宿主更老的对象。所以这里
- * 另问一个问题：F 的每个 `return` 交付的是新分配吗 —— 直接 `new`、调用另一个 `retFresh` 函数、
- * 或者一个**只被初始化过一次、之后没被改过也没取过地址**的局部绑定（`var n = new T; return n`）。
- * 名字按"整具函数体里只声明一次"对齐，避免遮蔽造成张冠李戴。
+ * Criterion (i') allows "a value returned by one call". For that to be **sound**, the callee being
+ * acyclic is not enough: it may return a parameter unchanged (`fn id(p: ref T) -> ref T { return p }`),
+ * and then what gets stored is an object older than the host. So ask a second question: does every
+ * `return` of F deliver a fresh allocation -- a direct `new`, a call to another `retFresh` function,
+ * or a local binding that is **initialized exactly once and never reassigned, with its address never
+ * taken** (`var n = new T; return n`). Names are matched as "declared exactly once in the whole body"
+ * so shadowing cannot mix them up.
  */
 typedef struct { const char *name; Expr *init; } AcDecl;
 
 typedef struct {
     Checker *c;
     AcInfo  *ac;
-    Vec      rets;      /* Expr*：非 void 的 `return` 值 */
-    Vec      decls;     /* AcDecl*：`ST_VAR` 声明 */
-    Vec      mutated;   /* const char*：直接作为 `=` 左侧的名字 */
-    Vec      addressed; /* const char*：出现在 `ref x` 里的名字 */
+    Vec      rets;      /* Expr*: non-void `return` values */
+    Vec      decls;     /* AcDecl*: `ST_VAR` declarations */
+    Vec      mutated;   /* const char*: names directly on the left of `=` */
+    Vec      addressed; /* const char*: names appearing in `ref x` */
 } FreshScan;
 
 static bool freshStmt(void *ctx, Stmt *s);
 static bool freshExpr(void *ctx, Expr *e);
 
 /**
- * @brief 一个表达式交付的是新分配对象吗（`retFresh` 的递归判定）。
+ * @brief Does an expression deliver a newly allocated object (the recursive test of `retFresh`)?
  *
- * @param fs  扫描结果（声明表、被改/取址的名字表）。
- * @param e   被交付的值。
- * @return    可证是新分配则 true。
+ * @param fs  Scan result (declaration table, mutated/addressed name tables).
+ * @param e   Delivered value.
+ * @return    True when it provably is a fresh allocation.
  */
 static bool freshValue(FreshScan *fs, Expr *e) {
     if (!e) return false;
@@ -7115,7 +7416,7 @@ static bool freshValue(FreshScan *fs, Expr *e) {
         FuncDef *g = planCallee(e);
         if (!g || g->isExtern || planCallViaFn(e)) return false;
         acPushDep(&fs->ac->retDeps, g, e->line, fs->ac->a);
-        return true;                      /* 依赖由不动点收紧 */
+        return true;                      /* the dependency is tightened by the fixed point */
     }
     case EX_IDENT: {
         const char *nm = e->u.ident.name;
@@ -7138,11 +7439,12 @@ static bool freshValue(FreshScan *fs, Expr *e) {
 }
 
 /**
- * @brief 语句回调：收集 `return` 值、声明，以及被改过/取过地址的名字。
+ * @brief Statement callback: collect `return` values, declarations, and names that were mutated or
+ *        had their address taken.
  *
- * @param ctx  扫描上下文（`FreshScan *`）。
- * @param s    被访问的子语句。
- * @return     总是 true。
+ * @param ctx  Scan context (`FreshScan *`).
+ * @param s    Child statement being visited.
+ * @return     Always true.
  */
 static bool freshStmt(void *ctx, Stmt *s) {
     FreshScan *fs = ctx;
@@ -7163,11 +7465,12 @@ static bool freshStmt(void *ctx, Stmt *s) {
 }
 
 /**
- * @brief 表达式回调：记下取过地址的名字（`ref x` 的别名可能改掉那个绑定）。
+ * @brief Expression callback: record names that had their address taken (an alias through `ref x` may
+ *        modify that binding).
  *
- * @param ctx  扫描上下文（`FreshScan *`）。
- * @param e    被访问的子表达式。
- * @return     总是 true。
+ * @param ctx  Scan context (`FreshScan *`).
+ * @param e    Child expression being visited.
+ * @return     Always true.
  */
 static bool freshExpr(void *ctx, Expr *e) {
     FreshScan *fs = ctx;
@@ -7180,12 +7483,12 @@ static bool freshExpr(void *ctx, Expr *e) {
 }
 
 /**
- * @brief 静态判定（不看被调者）：「F 的每个 `return` 都交付新分配对象」。
+ * @brief Static test (ignoring callees): "every `return` of F delivers a freshly allocated object".
  *
- * @param f   函数（有函数体）。
- * @param c   检查器（arena 与类型表）。
- * @param ac  记录（retDeps 收在这里）。
- * @return    静态部分成立则 true；`return` 为空（void 函数）时 false。
+ * @param f   Function (with a body).
+ * @param c   Checker (arena and type table).
+ * @param ac  Record (`retDeps` is collected here).
+ * @return    True when the static part holds; false when there is no `return` value (a void function).
  */
 static bool retFreshLocal(FuncDef *f, Checker *c, AcInfo *ac) {
     FreshScan fs;
@@ -7205,11 +7508,11 @@ static bool retFreshLocal(FuncDef *f, Checker *c, AcInfo *ac) {
 }
 
 /**
- * @brief 函数在名单里的下标。
+ * @brief Index of a function in the list.
  *
- * @param all  函数名单（`FuncDef *`）。
- * @param g    要找的函数。
- * @return     下标；不在名单里（含 NULL）时 -1。
+ * @param all  Function list (`FuncDef *`).
+ * @param g    Function to find.
+ * @return     Index; -1 when absent (including NULL).
  */
 static long acIndex(Vec *all, FuncDef *g) {
     if (!g) return -1;
@@ -7219,13 +7522,13 @@ static long acIndex(Vec *all, FuncDef *g) {
 }
 
 /**
- * @brief 被调者是不是"被算过且结论为真"。
+ * @brief Is the callee "judged and true"?
  *
- * @param all         函数名单。
- * @param considered  每一个下标是不是被算过的函数。
- * @param flags       结论数组。
- * @param g           被调者。
- * @return            算过且为真时 true。
+ * @param all         Function list.
+ * @param considered  Whether each index was judged.
+ * @param flags       Conclusion array.
+ * @param g           Callee.
+ * @return            True when judged and true.
  */
 static bool acFlagAt(Vec *all, const bool *considered, const bool *flags, FuncDef *g) {
     long i = acIndex(all, g);
@@ -7233,12 +7536,13 @@ static bool acFlagAt(Vec *all, const bool *considered, const bool *flags, FuncDe
 }
 
 /**
- * @brief 求 `planFnAcyclic` / `planFnRefsCounted`：整张调用图上的两个不动点。
+ * @brief Compute `planFnAcyclic` / `planFnRefsCounted`: two fixed points over the whole call graph.
  *
- * 必须在所有函数体检查完、且延迟调用点解析完之后调用（`planCallee` 那时才完整）。诊断
- * `EXTC_DBG_ACYCLIC=1`：每个被用函数一行，加一行程序级总结。
+ * Must run after every body is checked and every deferred call site is resolved (`planCallee` is only
+ * complete then). Diagnostic `EXTC_DBG_ACYCLIC=1`: one line per used function plus one program-level
+ * summary.
  *
- * @param c  检查器。
+ * @param c  Checker.
  */
 void computeFnAcyclic(Checker *c) {
     Module *m = c->m;
@@ -7273,7 +7577,7 @@ void computeFnAcyclic(Checker *c) {
         acWhy[i] = info[i].acycWhy;
         ivWhy[i] = info[i].ivWhy;
 
-        /* ---- ②「回收无事可做」：判据 (a)(b)(c) 的本地那一半（见 `idleWalkStmt`）------ */
+                /* ---- (2) "reclaim has nothing to do": the local half of criteria (a)(b)(c) (see `idleWalkStmt`) ---- */
         vecInit(&info[i].idleFresh, a, sizeof(void *));
         vecInit(&info[i].idleAsgn, a, sizeof(void *));
         vecInit(&info[i].idleAsgnLoop, a, sizeof(int));
@@ -7995,7 +8299,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
      * `fn m<T> { g(x) }` **declared in that order** generated a call to `f_T` that was never
      * emitted, so the C did not compile -- while the same program with the declarations reversed
      * compiled, which is what made this look like a declaration-order oddity instead of a missing
-     * round (). `resolveDeferredCall` is idempotent (interning the same argument
+     * round. `resolveDeferredCall` is idempotent (interning the same argument
      * combination gives the same instance), so repeating the pass is free; the loop stops as soon
      * as a round creates no new instance. The bound mirrors the other fixpoints here and is high
      * enough that a real program never reaches it (each round strictly grows one of the two
@@ -8486,13 +8790,14 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
              * been released (heap-use-after-free). Two separate representations remove
              * the ambiguity -- no argument recorded leaves `nd` at 0, which still means "home
              * arena", the conservative answer. */
-            /* 目的地有多浅：与 zone 通道**共用一份**实现（U4； 的哨兵 bug 曾在这里
-             * 与 zone 通道各有一份）。`overflow` 已在上面的分支里 `continue` 处理掉了。*/
+                        /* How shallow the destination is: one shared implementation with the zone channel.
+             * `rec->overflow` was already handled by the `continue` in the branch above. */
             int nd = callSiteMinDestDepth(&c, rec);
             /* Write the new homeDepth onto `arenaArg`, by the same rules as `setCallArenaArg`. */
             int want = (nd <= 0) ? ARENA_HOME : nd;
-            /* 提权（`promoteInto2` 的调用结果那一格）可能已经把 arena 挪到**更长寿**的一侧：
-             * 两边的要求取 min，别把它抬回来。`ARENA_HOME`(-1) 就是最长寿的一侧。 */
+                        /* Promotion (the call-result cell of `promoteInto2`) may already have moved the arena to
+             * the **longer-lived** side: take the min of both requirements, do not raise it back.
+             * `ARENA_HOME` (-1) is the longest-lived side. */
             {
                 int cur = planArenaArg(rec->call);
                 if (cur == ARENA_HOME || (cur >= 1 && cur < want)) want = cur;
@@ -8533,11 +8838,12 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             fprintf(stderr, "[lvl] %zu level facts, converged after %d round(s)\n",
                     c.lvlFacts.len, solveRounds);
 
-        /* 路线 C：把「可能的环」的候选区域并到最浅的那一层。
+                /* Route C: merge the candidate regions of a "possible cycle" into the shallowest layer.
          *
-         * 必须在**求解之后、placement 之前**：求解给出每个站点最终的 `anMinAt`（合并的输入），
-         * placement 再据此写 `arenaLevel`/`refDepth`（合并的输出）。作用域这时已全部关闭，所以
-         * 这里只读站点指针、不再查名字。见 `CycleMerge` / `applyCycleMerges`。 */
+         * Must run **after the solve and before placement**: the solve produces each site's final
+         * `anMinAt` (merge input), and placement then writes `arenaLevel`/`refDepth` from it (merge
+         * output). Scopes are all closed by then, so this only reads site pointers and never
+         * resolves names. See `CycleMerge` / `applyCycleMerges`. */
         applyCycleMerges(&c);
 
         int fixed = 0, keptBlock = 0;
@@ -8775,7 +9081,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
      * functions a round visits is spelled here. */
     closeReach(&closeCtx, REACH_POOL, roundMakesPool);
     coroCheckDeferred(&c, m);
-    /* 顺手把"这个结构体的某个方法建池"记到结构体上（见 StructDef.makesPoolAny）。 */
+        /* Also record on the struct "one of its methods creates a pool" (see `StructDef.makesPoolAny`). */
     for (size_t i = 0; i < m->structs.len; i++) {
         StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
         for (size_t j = 0; j < sd->methods.len; j++) {
@@ -8783,28 +9089,32 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             if (f && planMakesPool(f)) { anSetMakesPoolAny(sd, true); break; }
         }
     }
-    /* ---- 调用点的 zone 层级：也要在 `makesPool` 闭包之后才能定 ----
+        /* ---- zone level at call sites: also decided only after the `makesPool` closure ----
      *
-     * 与上面"电平求解再跑一遍"同一个病根、同一剂药：`zoneLevel` 决定"被调者的池分配活到
-     * 第几层"，而**只有建池的被调者才会收到这个实参**；`makesPool` 是闭包 ⇒ 闭包之前它一律
-     * 读作假，于是调用点停在临时层级上，跨两跳的链就会把自己的 place 传下去：
+     * Same root cause as the second level solve above. `zoneLevel` decides which layer the callee's
+     * pool allocations live to, and **only a pool-creating callee receives that argument**;
+     * `makesPool` is a closure ⇒ before the closure it reads false everywhere, so the call site stays
+     * at a temporary level and a chain two hops long passes its own place down:
      *
      *     main → wrap → put → newString
      *
-     * `wrap` 把**自己的** zone 传给了 `put`，`newString` 的缓冲因此生在 `wrap` 的 place 里，
-     * `wrap` 一返回就被释放、下一次分配复用它 ⇒ ASan `heap-use-after-free`
-     * （`tests/arena-soundness/H2_home_zone_two_hops.extc`）。
+     * `wrap` passes **its own** zone to `put`, so `newString`'s buffer is born in `wrap`'s place, is
+     * freed as soon as `wrap` returns, and the next allocation reuses it ⇒ ASan
+     * `heap-use-after-free` (`tests/arena-soundness/H2_home_zone_two_hops.extc`).
      *
-     * 判据与 arena 完全同一个问题、同一个量：`nd` = 那个地方必须比被调者能存进去的每个
-     * `mut ref` 实参（含接收者）活得更久；参数/全局算"本帧之外"（0），逃逸的局部量也算
-     * （-1）。`ZONE_HOME` = "把我收到的 zone 一路传下去"。
-     * 只往长里改（`<`），不往短里改：`zoneLevel` 从 `ZONE_HOME`（最长）向上是各层块号。 */
+     * The criterion is the same question and the same quantity as for the arena channel: `nd` = that
+     * place must outlive every `mut ref` argument (receiver included) the callee can store into;
+     * parameters and globals count as "outside this frame" (0), an escaping local counts as (-1).
+     * `ZONE_HOME` = "pass the zone I received all the way down".
+     * Only raise, never lower: from `ZONE_HOME` (longest-lived) upward, `zoneLevel` is the block
+     * number of the layer. */
     for (size_t i = 0; i < c.eSites.len; i++) {
         EArenaSite *rec = *(EArenaSite **)vecAt(&c.eSites, i);
         if (!rec || !rec->call || !planCallee(rec->call)) continue;
         if (!planMakesPool(planCallee(rec->call)) || planZoneLevel(rec->call) == 0) continue;
-        /* 目的地有多浅：与 arena 通道**共用一份**实现（U4）；`overflow` 由它在内部按
-         * "活得最久"处理（两条通道的差别只剩这一点，现在写在共享函数里而不是两处代码里）。*/
+                /* How shallow the destination is: one shared implementation with the arena channel;
+         * `overflow` is handled inside it as "lives longest" -- the only difference between the two
+         * channels, so it lives in the shared function instead of in two copies. */
         int nd = callSiteMinDestDepth(&c, rec);
         int zwant = (nd <= 0) ? ZONE_HOME : nd;
         if (getenv("EXTC_DBG_ZONE"))
@@ -8814,12 +9124,13 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         if (zwant < planZoneLevel(rec->call)) planSetZoneLevel(rec->call, zwant);
     }
 
-    /* ---- 电平求解要再跑一遍 ----
+        /* ---- the level solve runs a second time ----
      *
-     * 第一遍跑在 `makesPool` 闭包**之前**（见上面那段求解），那时 `calleeMakesPool` 对所有
-     * 调用点都还是假 ⇒ **池站点的提权一次都没落地**。
-     * 闭包之后重放一次事实表，这次闸门读到的标志是真的；`promoteInto` 只把层级往小改，
-     * 重放是单调的，所以多跑一遍不会引入新东西，只是把该落的提权落下去。 */
+     * The first pass ran **before** the `makesPool` closure (see the solve above); at that point
+     * `calleeMakesPool` still reads false for every call site, so **no pool-site promotion ever
+     * landed**. Replaying the fact table after the closure makes the gate read the real flag;
+     * `promoteInto` only lowers levels and the replay is monotone, so the extra pass adds nothing new
+     * -- it just lands the promotions that should have landed. */
     c.lvlSolving = true;
     for (int round = 0; round < 32; round++) {
         bool changed2 = false;
@@ -8956,8 +9267,9 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
                 c.fxDedupSteps, c.fxPreBodyStores);
     }
 
-    /* 区域无环判定：所有函数体与延迟调用点都落定之后才算，`planCallee` 那时才完整。
-     * `EXTC_DBG_ACYCLIC=1` 时它自己打诊断。 */
+        /* Region-acyclicity decision: must run after all function bodies and deferred call sites have
+     * settled, because `planCallee` is complete only then. Prints its own diagnostics under
+     * `EXTC_DBG_ACYCLIC=1`. */
     computeFnAcyclic(&c);
 
     return !ctx->hasError;
@@ -8966,16 +9278,18 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
 static bool stmtCallsAllocator(Checker *c, Stmt *s);   /* defined below; mutually recursive */
 static bool allocInStmt(void *ctx, Stmt *s);
 /**
- * @brief 判断函数是否直接或经由被调者分配。
+ * @brief Does a function allocate, directly or through its callees?
  *
- * 与 `needsHome` 传递闭包问的是同一个问题，但必须惰性回答：闭包只在每个函数都检查完之后才跑，
- * 而检查自身函数体的调用方已经需要知道眼前这个调用会不会往容器里放新存储（`varArray::push`
- * 自己不分配，它调的 `grow` 分配）。结果缓存在 `FuncDef.allocState`；正在计算中的函数算作会
- * 分配，这是保守方向也是打破环的办法。
+ * This is the same question as the `needsHome` transitive closure, but it must be answered lazily:
+ * the closure only runs after every function has been checked, while a caller checking its own body
+ * already needs to know whether a call in front of it can put new storage into a container
+ * (`varArray::push` does not allocate itself, its `grow` does). Results are cached in
+ * `FuncDef.allocState`; a function currently being computed counts as allocating -- that is the
+ * conservative direction and also how cycles are broken.
  *
- * @param c  checker。
- * @param f  要分类的函数；NULL 表示未知。
- * @return   函数体有 `new`、或被调者会分配时 true。
+ * @param c  Checker.
+ * @param f  Function to classify; NULL means unknown.
+ * @return   True when the body contains a `new` or a callee allocates.
  */
 static bool funcAllocates(Checker *c, FuncDef *f) {
     if (!f) return true;                     /* unknown, so assume it allocates */
@@ -8996,14 +9310,15 @@ static bool funcAllocates(Checker *c, FuncDef *f) {
 typedef struct { Checker *c; } AllocCtx;
 
 /**
- * @brief 判断求值这个表达式是否能到达分配器。
+ * @brief Does evaluating this expression reach the allocator?
  *
- * `alloc<T>(n)` 与 `new` 一样是分配；调用按被调者是否可能分配算（`funcAllocates`，带记忆化，
- * 因为要递归调用图）；其余交给子节点。遍历走 `astWalkExprChildren`。
+ * `alloc<T>(n)` allocates like `new`; a call counts by whether its callee may allocate
+ * (`funcAllocates`, memoized because it recurses through the call graph); everything else is left to
+ * the child nodes. Traversal goes through `astWalkExprChildren`.
  *
- * @param ctx  `AllocCtx *`，携带 checker。
- * @param e    表达式。
- * @return     回调语义：找到返回 false 以停止遍历，否则返回 true。
+ * @param ctx  `AllocCtx *`, carrying the checker.
+ * @param e    Expression.
+ * @return     Callback semantics: false stops the traversal (found), true continues.
  */
 static bool allocInExpr(void *ctx, Expr *e) {
     AllocCtx *a = (AllocCtx *)ctx;
@@ -9015,11 +9330,11 @@ static bool allocInExpr(void *ctx, Expr *e) {
 }
 
 /**
- * @brief `allocInExpr` 的语句版遍历回调。
+ * @brief Statement callback for the `allocInExpr` traversal.
  *
- * @param ctx  `AllocCtx *`，携带 checker。
- * @param s    语句。
- * @return     回调语义：找到返回 false 以停止遍历，否则返回 true。
+ * @param ctx  `AllocCtx *`, carrying the checker.
+ * @param s    Statement.
+ * @return     Callback semantics: false stops the traversal (found), true continues.
  */
 static bool allocInStmt(void *ctx, Stmt *s) {
     AstVisit v = { allocInExpr, allocInStmt, ctx };
@@ -9027,13 +9342,14 @@ static bool allocInStmt(void *ctx, Stmt *s) {
 }
 
 /**
- * @brief 判断语句里是否有调用可能到达分配器。
+ * @brief Does any call in this statement possibly reach the allocator?
  *
- * 两个遍历函数互相递归并共用按函数的缓存，所以只有被调者检查过之后才有意义。
+ * The two traversal functions recurse into each other and share the per-function cache, so the answer
+ * is only meaningful after the callee has been checked.
  *
- * @param c  checker。
- * @param s  语句；NULL 返回 false。
- * @return   会分配则 true。
+ * @param c  Checker.
+ * @param s  Statement; NULL returns false.
+ * @return   True when something allocates.
  */
 static bool stmtCallsAllocator(Checker *c, Stmt *s) {
     if (!s) return false;
@@ -9042,13 +9358,15 @@ static bool stmtCallsAllocator(Checker *c, Stmt *s) {
 }
 
 /**
- * @brief 为协程收尾：算出哪些协程需要自己的 place，并拒绝活过 `yield` 却携带外部存储的局部。
+ * @brief Finish coroutine handling: decide which coroutines need their own place, and reject locals
+ *        that outlive a `yield` while carrying external storage.
  *
- * 模板与实例都要算 `coroNeedsZone`：实例与模板共用函数体，漏算会让泛型协程的分配落进**调用
- * 者**的 zone，任务永不释放。
+ * `coroNeedsZone` must be computed for templates and instances alike: an instance shares the
+ * template's body, so missing it makes a generic coroutine's allocations land in the **caller's** zone
+ * and the task is never freed.
  *
- * @param c  checker。
- * @param m  模块。
+ * @param c  Checker.
+ * @param m  Module.
  */
 static void coroCheckDeferred(Checker *c, Module *m) {
     for (size_t i = 0; i < m->funcs.len; i++) {
@@ -9096,15 +9414,16 @@ static void coroCheckDeferred(Checker *c, Module *m) {
 }
 
 /**
- * @brief 判断 codegen 是否会用 place 把这条语句包起来
- *        （`zoneEnter`/`zoneLeaveTo` + `arena_release`）。
+ * @brief Will codegen wrap this statement in a place boundary
+ *        (`zoneEnter`/`zoneLeaveTo` + `arena_release`)?
  *
- * checker 需要的是**保守超集**：对会被 codegen 包起来的块答“否”，会让 `yield` 落在已回收的块
- * 里，所以它只问手上已有的两个谓词；codegen 自己的判断更细，更细在这里是安全的。
+ * The checker needs a **conservative superset**: answering "no" for a block that codegen does wrap
+ * would let a `yield` land in an already-reclaimed block, so it only asks the two predicates it
+ * already has; codegen's own decision is finer, and being finer here is safe.
  *
- * @param s       语句；NULL 返回 false。
- * @param inCoro  语句在协程体内时为 true，此时恒返回 false。
- * @return        需要 place 边界时 true。
+ * @param s       Statement; NULL returns false.
+ * @param inCoro  True when the statement is inside a coroutine body, which always returns false.
+ * @return        True when a place boundary is needed.
  */
 bool stmtNeedsPlaceBoundary(Stmt *s, bool inCoro) {
     if (!s) return false;
@@ -9183,47 +9502,47 @@ typedef struct {
 } CoroScan;
 
 /**
- * @brief 把循环 id 压进当前循环链。
+ * @brief Push a loop id onto the current loop chain.
  *
- * 链条过深时置哨兵值，`coroSharesLoop` 便答“共享”。
+ * When the chain gets too deep, set the sentinel: `coroSharesLoop` then answers "shared".
  *
- * @param s   扫描状态。
- * @param id  循环 id。
+ * @param s   Scan state.
+ * @param id  Loop id.
  */
 static void coroPushLoop(CoroScan *s, int id) {
     if (s->nchain < CORO_CHAIN_MAX) s->chain[s->nchain++] = id;
     else s->nchain = CORO_CHAIN_MAX + 1;      /* too deep: `coroSharesLoop` then says yes */
 }
 /**
- * @brief 弹出当前循环链的栈顶。
+ * @brief Pop the top of the current loop chain.
  *
- * @param s  扫描状态。
+ * @param s  Scan state.
  */
 static void coroPopLoop(CoroScan *s) {
     if (s->nchain == CORO_CHAIN_MAX + 1) s->nchain = CORO_CHAIN_MAX;
     else if (s->nchain > 0) s->nchain--;
 }
 /**
- * @brief 复制当前的循环链。
+ * @brief Copy the current loop chain.
  *
- * @param s      扫描状态。
- * @param chain  输出缓冲，至少 `CORO_CHAIN_MAX` 个 int。
- * @param n      输出：实际复制了多少个。
+ * @param s      Scan state.
+ * @param chain  Output buffer, at least `CORO_CHAIN_MAX` ints.
+ * @param n      Output: how many entries were copied.
  */
 static void coroCopyChain(CoroScan *s, int *chain, int *n) {
     *n = s->nchain > CORO_CHAIN_MAX ? CORO_CHAIN_MAX : s->nchain;
     for (int i = 0; i < *n; i++) chain[i] = s->chain[i];
 }
 /**
- * @brief 判断两个节点是否共享外层循环。
+ * @brief Do two nodes share an enclosing loop?
  *
- * 链长超过 `CORO_CHAIN_MAX` 表示“假定共享”。
+ * A chain longer than `CORO_CHAIN_MAX` means "assume shared".
  *
- * @param ac  第一个节点的循环链。
- * @param an  第一个节点链长。
- * @param bc  第二个节点的循环链。
- * @param bn  第二个节点链长。
- * @return    有共同循环 id 时 true。
+ * @param ac  First node's loop chain.
+ * @param an  First chain length.
+ * @param bc  Second node's loop chain.
+ * @param bn  Second chain length.
+ * @return    True when they share a loop id.
  */
 static bool coroSharesLoop(const int *ac, int an, const int *bc, int bn) {
     for (int i = 0; i < an; i++)
@@ -9236,11 +9555,11 @@ static bool coroScanStmt(void *ctx, Stmt *s);
 static bool coroScanExpr(void *ctx, Expr *e);
 
 /**
- * @brief 扫描回调：记录表达式里对绑定的读取及其循环链。
+ * @brief Scan callback: record reads of bindings in an expression along with their loop chains.
  *
- * @param ctx  `CoroScan *`。
- * @param e    表达式。
- * @return     继续遍历返回 true。
+ * @param ctx  `CoroScan *`.
+ * @param e    Expression.
+ * @return     True to continue the traversal.
  */
 static bool coroScanExpr(void *ctx, Expr *e) {
     CoroScan *s = (CoroScan *)ctx;
@@ -9257,11 +9576,11 @@ static bool coroScanExpr(void *ctx, Expr *e) {
 }
 
 /**
- * @brief 扫描回调：记录局部声明与 `yield`，并维护循环链。
+ * @brief Scan callback: record local declarations and `yield` sites, and maintain the loop chain.
  *
- * @param ctx  `CoroScan *`。
- * @param s    语句。
- * @return     继续遍历返回 true。
+ * @param ctx  `CoroScan *`.
+ * @param s    Statement.
+ * @return     True to continue the traversal.
  */
 static bool coroScanStmt(void *ctx, Stmt *s) {
     CoroScan *sc = (CoroScan *)ctx;
@@ -9289,12 +9608,12 @@ static bool coroScanStmt(void *ctx, Stmt *s) {
 }
 
 /**
- * @brief 判断声明 `d` 是否活过 yield `y`。
+ * @brief Does declaration `d` live across yield `y`?
  *
- * @param s  扫描状态。
- * @param d  局部声明。
- * @param y  yield 站点。
- * @return   在 `y` 之后被使用、或与它共享循环时 true。
+ * @param s  Scan state.
+ * @param d  Local declaration.
+ * @param y  Yield site.
+ * @return   True when used after `y` or sharing a loop with it.
  */
 static bool coroLiveAcross(const CoroScan *s, const CoroDecl *d, const CoroYield *y) {
     for (size_t i = 0; i < s->uses.len; i++) {
@@ -9308,13 +9627,14 @@ static bool coroLiveAcross(const CoroScan *s, const CoroDecl *d, const CoroYield
 }
 
 /**
- * @brief 排出协程的帧，并拒绝不能放进帧里的东西。
+ * @brief Lay out a coroutine's frame and reject what cannot go into it.
  *
- * 在函数体检查完之后跑，此时每个声明的类型都已定稿。扫描结果按值存进向量：向量在填充过程中
- * 会增长，持有元素指针会立刻悬空。
+ * Runs after the body is checked, when every declaration's type is final. Scan results are stored
+ * **by value** in vectors: those vectors grow while being filled, so a pointer to an element would
+ * dangle immediately.
  *
- * @param c  checker。
- * @param f  协程函数；不是协程或没有函数体时直接返回。
+ * @param c  Checker.
+ * @param f  Coroutine function; returns immediately when it is not a coroutine or has no body.
  */
 static void coroFrameLay(Checker *c, FuncDef *f) {
     if (!f || !planIsCoro(f) || !f->body) return;
