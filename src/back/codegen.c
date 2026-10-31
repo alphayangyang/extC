@@ -11,6 +11,7 @@
  */
 
 #include "codegen.h"
+#include "dbg.h"         /* EXTC_DBG_ASSERT: contract violations are compiler bugs */
 #include "plan.h"          /* the one read port for the plan: the side table the analysis passes record into */
 #include "pools.h"
 #include "coroutine.h"
@@ -2919,6 +2920,10 @@ static const char *exCall(CG *g, Expr *e) {
          * a scalar captured by value (only `par` desugaring produces scalars; hand-written workers
          * are all views); the output is the **only** `mut` view among them and is not necessarily
          * last (a hand-written worker may put it between captures). */
+        /* Invariant: only the desugared `(id, lo, hi, captures..., out)` shape reaches this
+         * branch, so there are at least four parameters. An underflow would walk the parameter
+         * vector off its end, so the shape is asserted instead of assumed. */
+        EXTC_DBG_ASSERT(wf->params.len >= 4);
         size_t nCaps = wf->params.len - 4, outIdx = 0;
         for (size_t i = 0; i <= nCaps; i++)
             if ((*(Param **)vecAt(&wf->params, 3 + i))->type->mut) outIdx = i;
@@ -5996,7 +6001,9 @@ static void genBlockBody(CG *g, Stmt *block) {
         }
     }
     if (probe) {   /* The body is emitted into a temporary buffer first and moved back to the output after the
-     * scan: all three enter/exit lines sit outside the body. */
+     * scan: all three enter/exit lines sit outside the body. `g->out` points at the **local**
+     * `scratch` only inside this window and is restored to `savedOut` before the function returns,
+     * so the pointer never outlives the object it names. */
         bufInit(&scratch, g->arena);
         g->out = &scratch;
     }
@@ -7697,6 +7704,9 @@ static void genStmtInner(CG *g, Stmt *s) {
              * (`EX_EXT`), so running after the closing brace would hand the domain pointers to
              * stack slots that are already out of scope. */
             Stmt *body = s->u.domain_.body;
+            /* The surface syntax is always a braced block (`d.run { ... }`), and the checker keeps
+             * that shape, so `body` is a block here. */
+            EXTC_DBG_ASSERT(body != NULL && body->kind == ST_BLOCK);
             if (body && body->kind == ST_BLOCK) {
                 cgLine(g, "{");
                 g->indent++;

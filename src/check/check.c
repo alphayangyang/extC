@@ -18,6 +18,7 @@
 
 
 #include "check_internal.h"
+#include "dbg.h"            /* EXTC_DBG_ASSERT: contract violations are compiler bugs */
 #include "plan.h"          /* Plan: read only through accessors */
 /* ---------------------------------------------------------------- errors */
 
@@ -401,6 +402,9 @@ void adoptContextType(Expr *e, Type *want) {
  *              and false is returned.
  */
 bool checkAssignable(Checker *c, Type *want, Type *got, Expr *node, const char *what) {
+    /* Contract: both types are real. `ttIsError` below treats NULL as "not an error", so a missing
+     * type would be dereferenced instead of reported -- a bug in the caller, not in a program. */
+    EXTC_DBG_ASSERT(want != NULL && got != NULL);
     /* Two kinds of value are deferred: method calls whose resolution was deferred to
      * instantiation (there `got` is the error type), and **any** expression whose type mentions a
      * type parameter -- e.g. `s = s + c.value()` inside `fn run<T>`, where the sum's type is `T`

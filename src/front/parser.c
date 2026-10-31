@@ -1398,7 +1398,7 @@ static StructDef *parseStruct(Parser *p) {
          * `FuncDef`, and only the masks are kept: one parser for one syntax. It goes on the field's
          * own line, like every other part of a declaration here. */
         if (at(p, "effects")) {
-            if (!ft || ft->kind != TY_FN) {
+            if (ft->kind != TY_FN) {
                 Token *e = cur(p);
                 ctxError(p->ctx, e->line, e->col,
                          "An `effects` clause describes what the callee does with the pointers it is"

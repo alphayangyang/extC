@@ -2288,6 +2288,8 @@ static SymField *symFieldsGrow(Checker *c, Sym *s, int need) {
  * @param field  Field name (interned in the AST, so it cannot dangle).
  * @param create Whether to create a slot when the field is not in the table yet.
  * @return       Pointer to the field's depth slot; NULL when `create` is false and there is no slot.
+ *               The pointer is valid only until the next `symFieldsGrow` on this binding: growing
+ *               the table copies it, so callers must use the slot before touching the table again.
  */
 int *fieldDepthEntry(Checker *c, Sym *s, const char *field, bool create) {
     if (!s || !field) return NULL;
@@ -2955,7 +2957,7 @@ static void collectEffects(Checker *c, FuncDef *f) {
                 FN(f), (unsigned long long)anAddrMask(f), (unsigned long long)anContMask(f),
                 (unsigned long long)anOtherMask(f),
                 (unsigned long long)anHomeAddrMask(f), (unsigned long long)anHomeContMask(f),
-                (int)anAddrFromLocal(f), anFreshCount(f), f->callees.len);
+                (int)anAddrFromLocal(f), (unsigned)anFreshCount(f), f->callees.len);
 }
 
 /**
@@ -2976,6 +2978,10 @@ static void collectEffects(Checker *c, FuncDef *f) {
 static bool depthComesFromAlloc2(Checker *c, Expr *e, int hops) {
     if (!e || hops > 32) return false;
     switch (e->kind) {
+    /* `EX_GENCALL` is over-approximated: a generic instance may hand back memory it allocated
+     * (`stl::make`, `vec::withCapacity`, ...) and its body is not visible here. The cost of the
+     * guess being wrong is a **relaxed** (lower) depth bound, never a crash: the walk only ever
+     * lowers `rc->depth`, and call results whose origin is a parameter keep their recorded value. */
     case EX_NEW: case EX_GENCALL: return true;
     /* A `dyn` value's depth comes from its payload, which is copied into the pool. */
     case EX_DYN: return depthComesFromAlloc2(c, e->u.dynv.payload, hops + 1);
