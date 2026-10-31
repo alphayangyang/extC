@@ -1,0 +1,17 @@
+// 反例：实参是 `tmpv[..]` 视图而不是裸名字 ⇒ 认不出是哪个临时视图，不折。
+use std::io
+use stl::seq
+
+fn run(n: i64) -> i32 {
+    var a: [3]f64 = [1.0, 2.0, 3.0]
+    var tmpv: mut slice<f64> = new f64[n]
+    for i in 0..n { tmpv[i] = a[i] * 2.0 }
+    let mx: f64 = seq::max(tmpv[..]) ?? 0.0
+    io::cout << "mx=" << mx << "\n"
+    return 0
+}
+
+fn main() -> i32 {
+    run(i64(3))
+    return 0
+}

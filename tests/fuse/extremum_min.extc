@@ -1,0 +1,17 @@
+// `seq::min` + `var` 绑定的形状（与 max 同一条代换，比较方向相反）。
+use std::io
+use stl::seq
+
+fn run(n: i64) -> i32 {
+    var a: [4]f64 = [-9.0, 3.5, -1.25, 4.0]
+    var tmpv: mut slice<f64> = new f64[n]
+    for i in 0..n { tmpv[i] = a[i] * 2.0 }
+    var mn: f64 = seq::min(tmpv) ?? 1000.0
+    io::cout << "mn=" << mn << "\n"
+    return 0
+}
+
+fn main() -> i32 {
+    run(i64(4))
+    return 0
+}

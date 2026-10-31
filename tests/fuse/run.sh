@@ -56,6 +56,9 @@ check_pos fuse/stream tests/fuse/stream.extc "cs=38.000" tmpv tv2
 check_pos fuse/stream_ext tests/fuse/stream_ext.extc "cs=64" tv1 tv2
 check_pos fuse/sum_call tests/fuse/sum_call.extc "s=22" tmp
 check_pos fuse/sum_call_i64 tests/fuse/sum_call_i64.extc "s=16" tmp
+check_pos fuse/extremum_max tests/fuse/extremum_max.extc "mx=-2" tmp
+check_pos fuse/extremum_min tests/fuse/extremum_min.extc "mn=-18" tmpv
+check_pos fuse/extremum_empty tests/fuse/extremum_empty.extc "empty=-6" tmpv
 
 echo "== 反例：不满足资格时不许融合（临时视图仍在）且输出正确 =="
 check_neg() {   # check_neg <名字> <文件> <期望输出>
@@ -73,6 +76,8 @@ check_neg fuse/neg_reduce_order tests/fuse/neg_reduce_order.extc "cs=5.000"
 check_neg neg_reduce_order tests/fuse/neg_reduce_order.extc "cs=5.000"
 check_neg neg_container_expr tests/fuse/neg_container_expr.extc "acc=20"
 check_neg neg_sum_fallback tests/fuse/neg_sum_fallback.extc "s=-1"
+check_neg neg_extremum_slice_arg tests/fuse/neg_extremum_slice_arg.extc "mx=6"
+check_neg neg_extremum_two_consumers tests/fuse/neg_extremum_two_consumers.extc "mx=6 mn=2"
 
 rm -rf "$tmp"
 [ "$fail" -eq 0 ]

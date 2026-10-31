@@ -494,6 +494,16 @@ Expr *exprBinNew(Arena *a, const char *op, Expr *left, Expr *right, int line);
  * @return      新 `EX_INT` 节点；`type` 留给调用方填。
  */
 Expr *exprIntNew(Arena *a, long long value, int line);
+
+/**
+ * @brief 造一个布尔字面量节点（`true` / `false`）。
+ *
+ * @param a     拥有节点的 arena。
+ * @param value 字面量的值。
+ * @param line  源码行号（1 起）。
+ * @return      新 `EX_BOOL` 节点。
+ */
+Expr *exprBoolNew(Arena *a, bool value, int line);
 /**
  * @brief 造一个浮点字面量节点。
  *

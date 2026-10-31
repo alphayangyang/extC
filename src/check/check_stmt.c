@@ -1947,6 +1947,170 @@ static bool fuseTryReduceContainer(Checker *c, Stmt *block, size_t i) {
 }
 
 /**
+ * @brief 把 `let m = seq::max(tmp) ?? fb` / `seq::min` 折进写临时视图的循环。
+ *
+ * 形状：`var tmp = new T[len]` + 写循环 A + `let m[: T] = seq::max/min(tmp) ?? <兜底>`。
+ * 折叠后不再落下临时视图，也不再有一趟读：A 的体里多一个标志与一条比较，
+ * 空输入仍然得到用户写的兜底值（不是 `T` 的极值），所以语义与库函数版本逐位相同。
+ *
+ * 与 `seq::sum` 那一版的差别只有"兜底值可以是任意纯表达式"—— 空输入时直接用兜底值、
+ * 非空输入时用极值，两段互不影响；`sum` 折的是"零 + …"，所以兜底必须也是零。
+ *
+ * @param c     检查器。
+ * @param block 当前块。
+ * @param i     候选的 `var tmp = new T[len]` 语句下标。
+ * @return      折掉了返回 `true`（调用方会重新扫这一块）。
+ */
+static bool fuseTryReduceExtremumCall(Checker *c, Stmt *block, size_t i) {
+    Vec *v = &block->u.block.stmts;
+    Stmt *decl = *(Stmt **)vecAt(v, i);
+    if (!decl || decl->kind != ST_VAR || !decl->u.var.ann || !decl->u.var.init) return false;
+    if (decl->u.var.init->kind != EX_NEW) return false;
+    Expr *lenExpr = decl->u.var.init->u.new_.count;
+    Type *elemNode = decl->u.var.init->u.new_.type;
+    if (!lenExpr || !elemNode || !elemNode->name) return false;
+    Type *elem = elemNode->kind == TY_BUILTIN ? elemNode : ttFromName(c->tt, elemNode->name);
+    if (!elem || !elem->name) return false;
+    if (elem->name[0] != 'i' && elem->name[0] != 'u' && elem->name[0] != 'f') return false;
+    const char *tmp = decl->u.var.name;
+    size_t n = v->len;
+    if (i + 2 >= n) return false;
+    Stmt *aW, *aBody;
+    const char *aVar;
+    Expr *aLo, *aHi;
+    if (!fuseLoopFrom(c, *(Stmt **)vecAt(v, i + 1), &aW, &aBody, &aVar, &aLo, &aHi)) return false;
+    (void)aW;
+    if (fuseMentions(aLo, tmp) || fuseMentions(aHi, tmp)) return false;
+    if (!fuseExprSame(aHi, lenExpr)) return false;
+    Expr *rhs = NULL;
+    {
+        size_t seen = 0;
+        for (size_t k = 0; k < aBody->u.block.stmts.len; k++) {
+            Stmt *st = *(Stmt **)vecAt(&aBody->u.block.stmts, k);
+            if (st == aBody->forStep) continue;
+            if (++seen > 1) break;
+            if (st->kind != ST_ASSIGN || st->u.assign.op) break;
+            Expr *t = st->u.assign.target;
+            if (!t || t->kind != EX_INDEX || !t->u.index.obj || t->u.index.obj->kind != EX_IDENT
+                || strcmp(t->u.index.obj->u.ident.name, tmp) != 0
+                || !t->u.index.index || t->u.index.index->kind != EX_IDENT
+                || strcmp(t->u.index.index->u.ident.name, aVar) != 0) break;
+            if (!fusePureExpr(st->u.assign.value)) break;
+            if (fuseMentions(st->u.assign.value, tmp)) break;
+            rhs = st->u.assign.value;
+        }
+        if (!rhs || seen != 1) return false;
+    }
+    Stmt *bind = *(Stmt **)vecAt(v, i + 2);
+    if (!bind || bind->kind != ST_VAR || !bind->u.var.init) return false;
+    if (bind->u.var.ann) {
+        Type *ann = bind->u.var.ann;
+        if (!ann->name || strcmp(ann->name, elem->name) != 0) return false;
+    }
+    Expr *co = bind->u.var.init;
+    if (co->kind != EX_COALESCE || !co->u.coalesce.main || !co->u.coalesce.fallback) return false;
+    Expr *opt = co->u.coalesce.main, *fb = co->u.coalesce.fallback;
+    const char *fn = NULL;
+    Expr *arg = NULL;
+    if (opt->kind == EX_ASSOC) {
+        const char *p = opt->u.assoc.modPrefix, *nm = opt->u.assoc.name;
+        if (!p || !nm || opt->u.assoc.args.len != 1) return false;
+        size_t pl = strlen(p);
+        if (pl < 3 || strcmp(p + pl - 3, "seq") != 0) return false;
+        fn = nm;
+        arg = *(Expr **)vecAt(&opt->u.assoc.args, 0);
+    } else if (opt->kind == EX_CALL && opt->u.call.callee && opt->u.call.callee->kind == EX_IDENT
+               && opt->u.call.args.len == 1) {
+        const char *nm = opt->u.call.callee->u.ident.name;
+        const char *dollar = nm ? strrchr(nm, '$') : NULL;
+        if (!dollar) return false;
+        size_t ml = (size_t)(dollar - nm);
+        if (ml < 3 || strncmp(nm + ml - 3, "seq", 3) != 0) return false;
+        fn = dollar + 1;
+        arg = *(Expr **)vecAt(&opt->u.call.args, 0);
+    } else {
+        return false;
+    }
+    bool isMax;
+    if (strcmp(fn, "max") == 0) isMax = true;
+    else if (strcmp(fn, "min") == 0) isMax = false;
+    else return false;
+    if (!arg || arg->kind != EX_IDENT || strcmp(arg->u.ident.name, tmp) != 0) return false;
+    if (!fusePureExpr(fb) || fuseMentions(fb, tmp)) return false;
+    const char *mname = bind->u.var.name;
+    if (!mname || strcmp(mname, tmp) == 0 || strcmp(mname, aVar) == 0) return false;
+    if (fuseMentions(rhs, mname)) return false;
+    for (size_t k = 0; k < n; k++) {
+        if (k == i || k == i + 1 || k == i + 2) continue;
+        if (fuseStmtMentions(*(Stmt **)vecAt(v, k), tmp)) return false;
+    }
+    int line = bind->line;
+    char buf[64];
+    snprintf(buf, sizeof buf, "__extc_found%zu", c->m->funcs.len + n);
+    const char *found = arenaStrndup(c->arena, buf, strlen(buf));
+    snprintf(buf, sizeof buf, "__extc_acc%zu", c->m->funcs.len + n);
+    const char *acc = arenaStrndup(c->arena, buf, strlen(buf));
+    snprintf(buf, sizeof buf, "__extc_val%zu", c->m->funcs.len + n);
+    const char *val = arenaStrndup(c->arena, buf, strlen(buf));
+    Stmt *foundDecl = stmtNew(c->arena, ST_VAR, line);
+    foundDecl->u.var.name = found;
+    foundDecl->u.var.ann  = c->tBool;
+    foundDecl->u.var.init = exprBoolNew(c->arena, false, line);
+    foundDecl->u.var.mut  = true;
+    Stmt *accDecl = stmtNew(c->arena, ST_VAR, line);
+    accDecl->u.var.name = acc;
+    accDecl->u.var.ann  = elem;
+    accDecl->u.var.init = elem->name[0] == 'f' ? exprFloatNew(c->arena, 0.0, line)
+                                                : exprIntNew(c->arena, 0, line);
+    accDecl->u.var.mut  = true;
+    Expr *isFirst = exprBinNew(c->arena, "==", exprIdent(c->arena, found, line),
+                               exprBoolNew(c->arena, false, line), line);
+    Expr *better = exprBinNew(c->arena, isMax ? ">" : "<", rhs,
+                              exprIdent(c->arena, acc, line), line);
+    Expr *cond = exprBinNew(c->arena, "||", isFirst, better, line);
+    Vec thenStmts;
+    vecInit(&thenStmts, c->arena, sizeof(Stmt *));
+    *(Stmt **)vecPush(&thenStmts) =
+        stmtAssignNew(c->arena, exprIdent(c->arena, acc, line), exprClone(c->arena, rhs), NULL, line);
+    *(Stmt **)vecPush(&thenStmts) =
+        stmtAssignNew(c->arena, exprIdent(c->arena, found, line), exprBoolNew(c->arena, true, line),
+                      NULL, line);
+    Stmt *thenBlk = stmtNew(c->arena, ST_BLOCK, line);
+    stmtBlockSetStmts(thenBlk, &thenStmts);
+    Stmt *takeStmt = stmtIfNew(c->arena, cond, thenBlk, NULL, line);
+    *(Stmt **)vecAt(&aBody->u.block.stmts, 0) = takeStmt;
+    /* `var __extc_val: T = <兜底>` —— 用户在 `let` 上也不能被我们改写成可写绑定，
+     * 所以结果先落在自己的临时标量上，绑定语句再读它。 */
+    Stmt *valDecl = stmtNew(c->arena, ST_VAR, line);
+    valDecl->u.var.name = val;
+    valDecl->u.var.ann  = elem;
+    valDecl->u.var.init = exprClone(c->arena, fb);
+    valDecl->u.var.mut  = true;
+    bind->u.var.ann  = elem;
+    bind->u.var.init = exprIdent(c->arena, val, line);
+    Vec setStmts;
+    vecInit(&setStmts, c->arena, sizeof(Stmt *));
+    *(Stmt **)vecPush(&setStmts) =
+        stmtAssignNew(c->arena, exprIdent(c->arena, val, line),
+                      exprIdent(c->arena, acc, line), NULL, line);
+    Stmt *setBlk = stmtNew(c->arena, ST_BLOCK, line);
+    stmtBlockSetStmts(setBlk, &setStmts);
+    Stmt *setM = stmtIfNew(c->arena, exprIdent(c->arena, found, line), setBlk, NULL, line);
+    Vec nv;
+    vecInit(&nv, c->arena, sizeof(Stmt *));
+    for (size_t k = 0; k < i; k++) *(Stmt **)vecPush(&nv) = *(Stmt **)vecAt(v, k);
+    *(Stmt **)vecPush(&nv) = foundDecl;
+    *(Stmt **)vecPush(&nv) = accDecl;
+    *(Stmt **)vecPush(&nv) = valDecl;
+    *(Stmt **)vecPush(&nv) = *(Stmt **)vecAt(v, i + 1);
+    *(Stmt **)vecPush(&nv) = setM;
+    *(Stmt **)vecPush(&nv) = bind;
+    for (size_t k = i + 3; k < n; k++) *(Stmt **)vecPush(&nv) = *(Stmt **)vecAt(v, k);
+    stmtBlockSetStmts(block, &nv);
+    return true;
+}
+
+/**
  * @brief 认 `var s = seq::sum(tmp) ?? 0`（`tmp` 是紧邻上面那个写循环的输出）。
  *
  * 形状：`tmp` 的声明 + 写循环 A + 绑定 `s`（无注解，初值是 `seq::sum(tmp) ?? <零字面量>`）。
@@ -2114,7 +2278,8 @@ static bool fuseOnePass(Checker *c, Stmt *block) {
         if (!fuseLoopFrom(c, a, &aW, &aBody, &aVar, &aLo, &aHi)) continue;
         if (!fuseLoopFrom(c, b, &bW, &bBody, &bVar, &bLo, &bHi)) {
             if (fuseTryReduce(c, block, i) || fuseTryReduceContainer(c, block, i)
-                || fuseTryReduceSumCall(c, block, i)) return true;
+                || fuseTryReduceSumCall(c, block, i)
+                || fuseTryReduceExtremumCall(c, block, i)) return true;
             continue;
         }
         (void)aW;

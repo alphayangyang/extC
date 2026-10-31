@@ -313,7 +313,19 @@ for i in 0..n { out[i] = tmpv[i] + 10.0 }      // B：相邻、同下标读 ⇒ 
 写 `let s = seq::sum(tmp) ?? 0` 时，编译器认出这是"对刚写出的临时视图求和"，把它改写成
 `var acc: T = 零` + 索引形式的归约循环，再交给 S2 折进写循环：临时视图不落内存，热路径是一条
 循环里累加。资格比 S2 多一条 —— **兜底值必须是零**（`?? 0` / `?? 0.0`），否则空输入上的语义
-与"零累加"不同。`?? -1`、`max`/`min` 一类还不在里面。
+与"零累加"不同。
+
+#### 第 2 层的进展（四）：跨函数的 `seq::max` / `seq::min`
+
+写 `let mx = seq::max(tmp) ?? fb` 时同样是"对刚写出的临时视图取极值"，改写成写循环里顺手维护的
+`found`/`acc`（第一次赋值、之后按 `>` 或 `<` 比较），循环结束后 `found` 决定取极值还是取 `fb`。
+**兜底值不再是零特例**（两段互不影响），所以 `?? -1`、`?? (0.0 - 6.0)` 都行。实参必须是裸名字
+`seq::max(tmp)`；`seq::max(tmp[..])` 与"同一临时视图有两个消费者"都不折。
+
+- **判据**：`tests/fuse/extremum_max.extc`（`mx=-2`）、`extremum_min.extc`（`mn=-18`）、
+  `extremum_empty.extc`（空输入走兜底，`empty=-6`）与两条反例（`tmp[..]` 实参、两个消费者）；
+  正例要求生成 C 里没有临时视图。
+- **还没做**：跨 `par` 融合、`ndview` 上的归约（`seq::sum`/`max`/`min` 只认 `slice<T>`）。
 
 ## 第 2 层的进展（二）：S2 归约融合与 S3 流式归约（已落地）
 
@@ -366,7 +378,10 @@ out = a + b * k
 - **判据**：`examples/array-expr.extc`（两种形状的期望输出）、`tests/traps/arrexpr_len.extc`
   （长度不一致必须 trap）、`docs/usage/language.md` §7.4 的完整程序；实测 AXPY 与手写 C 同量级
   （1M 元素 ×200 轮：extC 0.97–1.01 s vs C 1.06–1.07 s）。
-- 还没做：跨函数 `seq::sum(tmp)` 的识别、跨 `par` 融合、多下标/`ndview` 形状的整数组表达式。
+- 跨函数 `seq::sum` / `seq::max` / `seq::min` 的识别已落地（见进展（三）（四））；多下标与
+  `ndview` 形状的整数组表达式也已落地（rank-2/rank-3 直译成 `nd::*Into` 内核）。
+- 还没做：跨 `par` 融合、`ndview` 上的归约（`seq::sum` 只认 `slice<T>`）、`vector::toSlice` 仍是
+  显式拷贝（故意如此：它是拷贝，不是借出）。
 
 ## 不做的
 

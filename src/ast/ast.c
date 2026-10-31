@@ -220,6 +220,20 @@ Expr *exprIntNew(Arena *a, long long value, int line) {
 }
 
 /**
+ * @brief 造一个布尔字面量节点（`true` / `false`）。
+ *
+ * @param a    拥有节点的 arena。
+ * @param value 字面量的值。
+ * @param line 源码行号（1 起）。
+ * @return     新 `EX_BOOL` 节点。
+ */
+Expr *exprBoolNew(Arena *a, bool value, int line) {
+    Expr *e = exprNew(a, EX_BOOL, line);
+    e->u.bval = value;
+    return e;
+}
+
+/**
  * @brief 造一个 `EX_CALL` 节点：被调者填好、实参表初始化成空。
  *
  * @param a      拥有节点的 arena。
