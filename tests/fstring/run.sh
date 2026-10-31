@@ -3,7 +3,7 @@
 #   ① 输出正确（多槽 / 转义 / 每槽求值一次 / 无文本段）
 #   ② **生成物与手写 `<<` 链逐字节相同** ← 零运行时成本 + "它就是语法糖"的最硬证据
 #   ③ 反例：空槽 · 未闭合 · 多余 `}` · 值位置也要 `string` 目标 · 格式说明符的 10 条语法/类型错误
-#      （值位置的说明符还需要 `use stl::stringio`，另有专门反例）
+#   ④ 糖自带模块：值 f-string 的 `stl::string` / `stl::stringio` 由糖登记，用户不写 `use`
 set -u
 cd "$(dirname "$0")/../.."
 EXTC=${EXTC:-./build/extc}
@@ -68,6 +68,16 @@ if diff -q "$tmp/quotes" "$tmp/quoteswant" >/dev/null 2>&1; then
     pass=$((pass+1))
 else
     echo "  FAIL nested-literals   ->  $(tr '\n' '|' < "$tmp/quotes")"; fail=$((fail+1))
+fi
+
+# ①g 糖自带模块：整个文件没有 `use`，值位置的文字段与说明符都由糖登记
+"$EXTC" -w --run tests/fstring/no_import.extc > "$tmp/noimp" 2>&1
+printf 'n=  7 half=3\n' > "$tmp/noimpwant"
+if diff -q "$tmp/noimp" "$tmp/noimpwant" >/dev/null 2>&1; then
+    echo "  ok   self-importing    ->  值 f-string 不需要用户 \`use stl::string\` / \`use stl::stringio\`"
+    pass=$((pass+1))
+else
+    echo "  FAIL self-importing    ->  $(tr '\n' '|' < "$tmp/noimp")"; fail=$((fail+1))
 fi
 
 # ② 与手写链逐字节相同
@@ -155,23 +165,12 @@ neg spec-no-value      "$H
     io::cout << f\"{:>8}\"
     return 0
 }" "no value before its format specifier"
-neg value-needs-import "$H
-    let s: string = f\"x\"
-    return 0
-}" "is not imported here"
 neg value-needs-string "use std::io
 use stl::string
 fn main() -> i32 {
     let s: slice<u8> = f\"x\"
     return 0
 }" "initializer expects"
-neg value-spec-needs-stringio "use std::io
-use stl::string
-fn main() -> i32 {
-    let n: i64 = 5
-    let s: string = f\"x={n:>4}\"
-    return 0
-}" "is needed for a format specifier"
 neg value-spec-bool "use std::io
 use stl::string
 fn main() -> i32 {

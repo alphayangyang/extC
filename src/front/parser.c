@@ -42,6 +42,10 @@ typedef struct {
     Vec    pendingGlobals;
     /* 合成名字 `__extc_t<N>` 的计数器：同一个块里可以有多次并行赋值，名字不能撞。 */
     int    sugarSeq;
+    /* 正在解析的模块。语法糖展开成库调用时（值 f-string 走 `stl::string`、多下标走
+     * `stl::nd`），它要的模块由**这里**登记成一条隐藏 `use`：糖自己带着模块，
+     * 用户不必为了 `f"…"` 记住哪个文件定义了 `from`。 */
+    Module *mod;
 } Parser;
 
 /* The compiler's nesting budget for blocks and expressions.
@@ -446,6 +450,34 @@ static UseDecl *parseUse(Parser *p) {
 }
 
 /**
+ * @brief 语法糖自带它的库模块：登记一条隐藏 `use`，除非该模块已经导入。
+ *
+ * 糖展开成的是**库调用**（值 f-string 的起点、多下标糖的内核），那些名字住在标准库里。
+ * 让用户为了一个 `f"…"` 去记住"起点在 `stl::string`、说明符在 `stl::stringio`"是把实现
+ * 细节写进语法；模块由糖自己登记，用户只看见糖。已经导入（含别名导入）时不重复登记：
+ * 一个模块只该被 `use` 一次。
+ *
+ * @param p    解析器，`p->mod` 是**正在解析的模块**（`parseModule` 设好）。
+ * @param path 完整模块路径，例如 `stl::string`。
+ * @param line 触发糖的那一行的行号，诊断与 `use` 的行号语义一致。
+ */
+static void sugarNeedModule(Parser *p, const char *path, int line) {
+    if (!p->mod) return;
+    for (size_t i = 0; i < p->mod->uses.len; i++) {
+        UseDecl *u = *(UseDecl **)vecAt(&p->mod->uses, i);
+        if (strcmp(u->path, path) == 0) return;
+    }
+    UseDecl *u = (UseDecl *)arenaAllocZero(p->arena, sizeof(UseDecl));
+    u->path = arenaStrndup(p->arena, path, strlen(path));
+    const char *colon = strrchr(path, ':');
+    u->shortName = arenaStrndup(p->arena, colon ? colon + 1 : path,
+                                strlen(colon ? colon + 1 : path));
+    u->line = line;
+    vecInit(&u->names, p->arena, sizeof(const char *));
+    *(UseDecl **)vecPush(&p->mod->uses) = u;
+}
+
+/**
  * @brief 解析 `effects Addr=… Cont=… Thread=…` 子句。
  *
  * 写在**任何没有函数体的声明**上：`extern!("libc")` 与 `@builtin` 都算，因为编译器
@@ -604,6 +636,7 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
     p.ctx   = ctx;
     p.arena = arena;
     p.toks  = toks;
+    p.mod   = out;
     vecInit(&p.pending, arena, sizeof(Stmt *));
     vecInit(&p.pendingGlobals, arena, sizeof(GlobalDef *));
     skipJunk(&p);
@@ -2652,6 +2685,7 @@ static Stmt *parseStmt(Parser *p) {
             for (size_t i2 = 0; i2 < e->u.assoc.args.len; i2++)
                 *(Expr **)vecPush(&args) = *(Expr **)vecAt(&e->u.assoc.args, i2);
             *(Expr **)vecPush(&args) = v;
+            sugarNeedModule(p, "stl::nd", t->line);
             Expr *call = moduleCall(p, "stl::nd", setName, &args, t->line);
             Stmt *ss = stmtNew(p->arena, ST_EXPR, t->line);
             ss->u.expr.expr = call;
@@ -3988,6 +4022,8 @@ static Expr *fstrFrom(Parser *p, Expr *bytes, int line) {
  * @return    新的表达式；出错时返回 `NULL`（已报告诊断）。
  */
 static Expr *fmtValue(Parser *p, Token *ft) {
+    /* 值 f-string 的起点是 `stl::string::from`：模块由糖自己登记。 */
+    sugarNeedModule(p, "stl::string", ft->line);
     const char *src = ft->text;
     const size_t n = ft->len;
     const int line = ft->line;
@@ -4076,6 +4112,8 @@ static Expr *fmtValue(Parser *p, Token *ft) {
             return NULL;
         }
         if (q < innerLen) {
+            /* 说明符落到 `stl::stringio` 的 pad 原语上：同样由糖自己登记。 */
+            sugarNeedModule(p, "stl::stringio", line);
             Vec args;
             vecInit(&args, p->arena, sizeof(void *));
             *(Expr **)vecPush(&args) = e;
@@ -4434,6 +4472,7 @@ static Expr *parsePostfix(Parser *p) {
                                  "a subscript list holds at most three indices");
                         return NULL;
                     }
+                    sugarNeedModule(p, "stl::nd", br->line);
                     e = moduleCall(p, "stl::nd", atNames[items.len - 2], &args, br->line);
                 } else if (items.len != 2) {
                     ctxError(p->ctx, br->line, br->col,
@@ -4452,6 +4491,7 @@ static Expr *parsePostfix(Parser *p) {
                     *(Expr **)vecPush(&args) = a0->hi;
                     *(Expr **)vecPush(&args) = a1->lo;
                     *(Expr **)vecPush(&args) = a1->hi;
+                    sugarNeedModule(p, "stl::nd", br->line);
                     e = moduleCall(p, "stl::nd", "slice2", &args, br->line);
                 } else {
                     ctxError(p->ctx, br->line, br->col,

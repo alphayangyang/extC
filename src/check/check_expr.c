@@ -1648,9 +1648,10 @@ static Type *checkFstrPadCall(Checker *c, Expr *e) {
     char *flat = arenaPrintf(c->arena, "stringio$%s", name);
     if (!findFunc(c, flat)) {
         ckError(c, e->line,
-                "A value f-string's format specifier is filled in by `stl::stringio`, which has to"
-                " be imported: add `use stl::stringio`.",
-                "`use stl::stringio` is needed for a format specifier in a value f-string");
+                "A value f-string's format specifier needs `stl::stringio`, which is missing from"
+                " this standard library.",
+                "the sugar imports `stl::stringio` on its own, so a miss here means the standard"
+                " library is incomplete, not that a `use` line is missing");
         return ttError(c->tt);
     }
     e->u.call.args = args;

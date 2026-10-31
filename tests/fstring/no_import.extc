@@ -1,0 +1,8 @@
+// 值 f-string 自己带着它的模块：这个文件**没有任何 `use`**，值位置的文字段（stl::string）
+// 与说明符（stl::stringio）由糖登记成隐藏导入。用户不该为了 `f"…"` 记住标准库的文件布局。
+fn main() -> i32 {
+    let n: i64 = 7
+    let s: string = f"n={n:>3} half={n / 2}"
+    println(s)
+    return 0
+}
