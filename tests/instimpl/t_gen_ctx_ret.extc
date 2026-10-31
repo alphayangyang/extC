@@ -1,0 +1,23 @@
+use std::io
+/* 类型参数只在返回类型里出现时，用**上下文期望的返回类型**把它们推出来：
+ * `let p: pair<i64, u8> = dup(3, u8(4))` 里 `3` 是裸字面量、两个实参都不带 `A`，
+ * 唯一的信息来自左边的注解。同一个机制要覆盖 `let` / `var` / 实参位置 / 返回位置。 */
+struct pair<A, B> { a: A  b: B }
+fn dup<A, B>(x: A, y: B) -> pair<A, B> {
+  var p: pair<A, B>
+  p.a = x
+  p.b = y
+  return p
+}
+fn show(p: pair<i64, u8>) -> i64 { return p.a + i64(p.b) }
+fn make() -> pair<i16, u8> { return dup(7, 9) }
+fn main() -> i32 {
+  let p: pair<i64, u8> = dup(3, u8(4))
+  var q: pair<i16, u16> = dup(2, 5)
+  let r: pair<i32, i32> = dup(11, 12)
+  io::cout << "p=" << p.a << "," << i64(p.b) << " q=" << i64(q.a) << "," << i64(q.b)
+  io::cout << " r=" << r.a << "," << r.b << " s=" << show(dup(1, u8(2))) << "\n"
+  let m: pair<i16, u8> = make()
+  io::cout << "m=" << i64(m.a) << "," << i64(m.b) << "\n"
+  return 0
+}

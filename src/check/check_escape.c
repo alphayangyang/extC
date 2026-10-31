@@ -2458,7 +2458,12 @@ Type *checkInto(Checker *c, Type *want, Expr *e) {
     /* 期望类型是 `option<...>` / `result<...>` 时也接受裸构造器，于是 `f(some(3))` 与
      * `var x: ?i32 = some(3)` 都能写：类型从上下文来，不必写全名。 */
     if (want) desugarBareCtor(c, e, want);
+    /* 调用表达式可能需要上下文才能补出类型参数（`dup(3, u8(4))` 的 `A` 只出现在返回类型里）。
+     * 把期望类型放进去，调用自己在检查实参之前就把它取走；子表达式的检查自然看不到它。 */
+    Type *savedExpect = c->expectRet;
+    c->expectRet = want;
     Type *got = checkExpr(c, e);
+    c->expectRet = savedExpect;
     rejectStreamBorrow(c, e);
     /* 只在**要值**时拒绝拷贝：`f(ref s)` 与 `-> mut ref T` 传的是对象本身，那正是 `@noCopy` 的用途。 */
     if (!want || want->kind != TY_REF) rejectNoCopy(c, e, got);

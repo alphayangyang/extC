@@ -298,11 +298,15 @@ fn main() -> i32 {
 | 泛型自由函数 | `fn indexOf<T>(a: slice<T>, x: T) -> i64` |
 | 显式实参 | `indexOf<i32>(v[..], 30)`、`maybe<i64>::just(42)` |
 | 从实参推断 | `indexOf(v[..], 30)` |
+| 从上下文推断 | `let p: pair<i64, u8> = dup(3, u8(4))`（`3` 不带 `A`，左边的注解补上） |
 
 - 类型参数名**必须大写开头**（`type parameter 't' must start with an uppercase letter`），
   类型名必须小写开头，两套名字不会撞。
 - **单态化**：每个实例生成一份独立的 C 函数/结构体。`f<i32>` 与 `f<i64>` 是两个 C 符号。
-- `T` 只出现在返回类型时推断不出来，必须写显式实参（`cannot infer type parameter 'T' of …`）。
+- 推断先看**实参**；实参带不出的类型参数，用**上下文期望的（返回）类型**补
+  （`let p: pair<i64, u8> = dup(3, u8(4))`、`return`/实参/初始化位置同理）。两边都没有见证
+  才报 `cannot infer type parameter 'T' of …`，此时写显式实参 `f<i32>(...)`。
+  实参与上下文对不上的时候，仍由赋值/返回那一步报"期望什么、实得什么"。
 - 类型参数上的运算符与方法**推迟到实例化再查**：`a == b` / `a != b` / `a.hash()` 在
   `T` 具体之后检查，缺了报 `` `indexOf_pt` needs `pt` to define `==` ``。
   `<` / `>` 同样推迟（`lt_plain needs plain to define <`）。

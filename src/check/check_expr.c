@@ -3157,6 +3157,10 @@ static Type *checkExprInner(Checker *c, Expr *e) {
         }
 
         case EX_CALL: {
+            /* 上下文期望的返回类型只给**这一次**调用的推断用：进实参之前就清掉，
+             * 否则 `f(g(x))` 里 `g` 会误拿到 `f` 的返回类型。 */
+            Type *wantRet = c->expectRet;
+            c->expectRet = NULL;
             /* 值 f-string 的说明符槽：解析器造的保留名调用，按槽值的静态类型重定向到
              * `stl::stringio` 的填充函数（见 `checkFstrPadCall`）。 */
             if (e->u.call.callee && e->u.call.callee->kind == EX_IDENT &&
@@ -3539,6 +3543,18 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                                    ? *(Type **)vecAt(written, i) : NULL;
                     *(Type **)vecPush(&targs) = ex;
                 }
+                /* 类型参数只在返回类型里出现时（`dup<A, B>(x, y) -> pair<A, B>`），上下文
+                 * 期望的返回类型是唯一的见证：`let p: pair<i64, u8> = dup(3, u8(4))`。
+                 * 期望只做**提示**：实参先推断，实参推不出的才用它补（最后一步合并），所以
+                 * `dup(u8(2), u8(5))` 在期望 `pair<i16, u16>` 处仍按实参得到 `u8`，由外层的
+                 * `checkAssignable` 报出清楚的"期望对不上"，而不是在这里改口或报"推不出来"。
+                 * 只接受不含类型参数的期望（模板体里的期望还是 `T`，那说明不了什么）。 */
+                Vec hintTargs;
+                vecInit(&hintTargs, c->arena, sizeof(void *));
+                for (size_t i = 0; i < f->typeParams.len; i++)
+                    *(Type **)vecPush(&hintTargs) = NULL;
+                if (wantRet && !mentionsParam(wantRet) && f->ret)
+                    (void)unifyTParams(c->tt, &f->typeParams, &hintTargs, f->ret, wantRet);
                 /* Literal arguments are set aside: a literal has no type of its own before the
                  * context decides one, so it must not *decide* a type parameter that another
                  * argument can decide. `seq::count(xs, 5)` with `xs: slice<i64>` infers `T = i64`
@@ -3573,6 +3589,13 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                                 "cannot infer type parameter(s) of `%s` from the arguments", name);
                         return f->ret ? f->ret : ttVoid(tt);
                     }
+                }
+                /* 实参推不出的类型参数，用上下文期望的返回类型补上（只有返回类型提到它时
+                 * 才可能有提示，见上面 `hintTargs`）。放在字面量实参之前：`dup(7, 9)` 的
+                 * 两个字面量要对着提示的类型检查，否则它们会一起落成 i32。 */
+                for (size_t i = 0; i < f->typeParams.len; i++) {
+                    if (*(Type **)vecAt(&targs, i)) continue;
+                    *(Type **)vecAt(&targs, i) = *(Type **)vecAt(&hintTargs, i);
                 }
                 for (size_t k = 0; k < lateArgs.len; k++) {
                     size_t i = *(size_t *)vecAt(&lateArgs, k);

@@ -537,6 +537,11 @@ typedef struct Checker {
     /* How many lambda environments this compilation has generated, for unique names. */
     int        lamSeq;
 
+    /* 当前正在检查的表达式所在的上下文期望的**返回**类型（`var p: pair<i64, u8> = dup(3, u8(4))`
+     * 里的 `pair<i64, u8>`）。只给"类型参数只在返回类型里出现"的泛型调用补推断用，进到被检查
+     * 表达式的实参/子表达式时会被 `checkInto` 换掉。NULL 表示没有上下文。 */
+    Type      *expectRet;
+
     Type *tI32, *tI64, *tF64, *tBool;  /* cached primitive types */
     StructDef *sliceDef;/* declaration of `slice<T>` from the prelude, which is the view
                          * protocol */

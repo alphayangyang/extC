@@ -1,0 +1,13 @@
+use std::io
+/* 没有上下文、实参也带不出类型参数时，仍然必须报"推不出来"（不能瞎猜）。
+ * `mk<A>()` 的 `A` 只在返回类型里出现、又没有实参，`let x = mk()` 就没有见证。 */
+struct box<T> { v: T }
+fn mk<T>() -> box<T> {
+  var b: box<T>
+  return b
+}
+fn main() -> i32 {
+  let x = mk()
+  io::cout << x.v << "\n"
+  return 0
+}
