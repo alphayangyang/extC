@@ -1633,6 +1633,42 @@ static Type *checkFstrPadCall(Checker *c, Expr *e) {
 }
 
 /**
+ * @brief 两/三下标糖作用在 `ndarray` 上时，自动借出一个视图实参。
+ *
+ * `v[i, j]` 解析器无条件脱糖成 `nd::$at2(v, i, j)`；`at2`/`set2`/`slice2` 的形参是
+ * `ndview<T>`，而 `ndarray<T>` 不是视图（它持有数据）——直接传会在推断阶段就报
+ * "cannot infer type parameter(s)"。这里在检查实参之前，把 `ndarray` 实参改写成
+ * `v.view()` / `v.viewMut()`（写函数用后者）；可写性由借用检查把关，`let` 的 ndarray
+ * 仍会拒绝 `viewMut()`。
+ *
+ * @param c 检查器。
+ * @param e 正在检查的调用节点（`EX_CALL`）。
+ */
+static void sugarNdViewArg(Checker *c, Expr *e) {
+    if (!e->u.call.callee || e->u.call.callee->kind != EX_IDENT || e->u.call.args.len == 0) return;
+    const char *name = e->u.call.callee->u.ident.name;
+    const char *how = NULL;
+    if (strcmp(name, "nd$set2") == 0 || strcmp(name, "nd$set3") == 0) how = "viewMut";
+    else if (strcmp(name, "nd$at2") == 0 || strcmp(name, "nd$at3") == 0 ||
+             strcmp(name, "nd$slice2") == 0) how = "view";
+    if (!how) return;
+    Expr **slot = (Expr **)vecAt(&e->u.call.args, 0);
+    Expr *a = *slot;
+    Type *t = a->type;
+    if (!t && a->kind == EX_IDENT) {
+        Sym *sy = lookup(c, a->u.ident.name);
+        if (sy) t = sy->type;
+    }
+    if (!t) return;
+    Type *b = ttBase(t);
+    const char *nm = b ? b->name : NULL;
+    if (!nm && b && b->sdef) nm = b->sdef->name;
+    /* 只认 `ndarray`：`ndview` 本身就是视图，不用再借。 */
+    if (!nm || !strstr(nm, "ndarray")) return;
+    *slot = exprMethodNew(c->arena, a, how, e->line);
+}
+
+/**
  * @brief 检查一个表达式并返回它的类型：检查器里的递归核心。
  *
  * `checkExpr` 在它外面包了每个子表达式都需要的记账。检查过程中有些节点会被**原地**改写，所以调用
@@ -3158,6 +3194,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             return et;
         }
 
+
         case EX_CALL: {
             /* 上下文期望的返回类型只给**这一次**调用的推断用：进实参之前就清掉，
              * 否则 `f(g(x))` 里 `g` 会误拿到 `f` 的返回类型。 */
@@ -3168,6 +3205,8 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             if (e->u.call.callee && e->u.call.callee->kind == EX_IDENT &&
                 strcmp(e->u.call.callee->u.ident.name, "__extc_fstr_pad") == 0)
                 return checkFstrPadCall(c, e);
+            /* 两/三下标糖直接写在 `ndarray` 上：先借出视图实参再检查。 */
+            sugarNdViewArg(c, e);
             /* `f(x)` 里的 `f` 持有一个 lambda：节点**原地**改写成方法调用 `f.call(x)`，之后交给
              * 普通的方法路径 —— 与下面变体分支所做的原地改写相同。 */
             if (e->u.call.callee && e->u.call.callee->kind == EX_IDENT) {

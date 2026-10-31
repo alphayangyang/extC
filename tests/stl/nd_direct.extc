@@ -1,0 +1,21 @@
+// 两/三下标糖直接写在 `ndarray` 上：编译器按需借出 `view()` / `viewMut()`，不用先写
+// `var g: ndview<f64> = grid.viewMut()` 那一行。可写性仍由借用检查把关（`let` 的 ndarray
+// 会拒绝 `viewMut()`）。
+use std::io
+use stl::nd
+
+fn main() -> i32 {
+    var grid: ndarray<f64> = ndarray<f64>::zeros2(2, 3) ?? ndarray<f64>::empty()
+    grid[0, 0] = 40.0
+    grid[0, 1] = 50.0
+    grid[0, 2] = 30.0
+    grid[1, 0] = 20.0
+    grid[1, 1] = 64.5
+    let q: f64 = grid[0, 1]
+    grid[0, 1] += 2.0
+    let s: f64 = nd::sumv(grid[0..1, 0..3] ?? grid.view()) ?? f64(-1.0)
+    var cube: ndarray<f64> = ndarray<f64>::zeros3(2, 2, 2) ?? ndarray<f64>::empty()
+    cube[1, 1, 1] = 9.0
+    io::cout << f"q={q} r={grid[0, 1]} s={s} z={cube[1, 1, 1]}\n"
+    return 0
+}

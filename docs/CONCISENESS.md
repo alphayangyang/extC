@@ -168,6 +168,8 @@ s = s + 1.0             // 另一侧是 f64
 的右侧、`while` 条件、lambda 体仍拒绝（见 `docs/usage/language.md` §9.5、`tests/ops/try_expr.extc`
 与 `tests/errors/try_{short_circuit,while_cond}.extc`）。零开销有闸门：
 `tests/ops/run.sh` 的 `try_hoist_zero_cost` 拿"糖写法"与"手写临时量"的生成 C 逐字节对比。
+两/三下标糖的接收者也可以直接是 `ndarray<T>`（编译器按需借出 `view()`/`viewMut()`），
+不必先写一行 `var g: ndview<T> = grid.viewMut()`；判据是 `tests/stl/nd_direct.extc`。
 
 
 ## 第 1 层：真缺的糖（每项一项一项做，各带验收）

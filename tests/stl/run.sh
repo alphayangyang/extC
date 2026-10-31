@@ -38,6 +38,7 @@ run_case tensor  tests/stl/tensor.extc  "g=6 w=true g2=99 s=159 ts=159 rs=1 ss=1
 run_case nd      tests/stl/nd.extc      "f=true s=true a=true x=true s1=24 s2=72 s3=96 s4=168 st=24 s5=12 bad=false s6=-1 cnt=16 c3=24"
 run_case nd_sub  tests/stl/nd_sub.extc  "x=12 y=23 s=66 z=12 w=-5 q=3 r=-10"
 run_case nd_sub3 tests/stl/nd_sub3.extc "r=120 w=4 p=123"
+run_case nd_direct tests/stl/nd_direct.extc "q=50 r=52 s=122 z=9"
 run_case nd_expr tests/stl/nd_expr.extc "add=0,22 44
 sub=0,-18 -36
 mul=0,40 160

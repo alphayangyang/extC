@@ -544,7 +544,8 @@ fn main() -> i32 {
   `addInto(dst, dst, a)`）。形状在运行期才知道，所以内核返回 `bool`，编译器在外面补一条
   `if !… { trap("…same shape as the destination") }`。写出来的 C 就是一次内核调用加一次
   失败分支（形状不匹配才走 trap），热路径没有额外指令；`v[i, j]` 读写照旧是 `nd::at2` /
-  `nd::set2`。
+  `nd::set2`。接收者可以直接是 `ndarray<T>`：`grid[r, c] = x` 由编译器借出 `viewMut()`
+  （读借 `view()`），不必先自己拿一份视图；`let` 的 ndarray 写仍被借用检查拒绝。
 
 ```extc
 // 结果：out = 0 3 6 9 sum = 18
