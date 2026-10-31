@@ -1,0 +1,18 @@
+// `string` 有 `asSlice()`，因此能直接出现在收 `slice<u8>` 的参数上（不拷贝）；
+// 需要独立拷贝时仍写 `toSlice()`。
+// expect: first=97 via=abc same=true
+use std::io
+use stl::string
+
+fn firstByte(v: slice<u8>) -> i64 { return i64(v[0]) }
+
+fn echoVia(v: slice<u8>) -> string { return string::from(v) }
+
+fn main() -> i32 {
+    let s: string = f"abc"
+    let copy: slice<u8> = s.toSlice()
+    let same: bool = copy.len == s.len()
+    let parts: i64 = firstByte(s)
+    io::cout << "first=" << parts << " via=" << echoVia(s) << " same=" << same << "\n"
+    return 0
+}

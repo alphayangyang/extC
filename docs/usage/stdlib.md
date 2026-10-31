@@ -133,6 +133,7 @@ fn main() -> i32 {
 | 拼接 | `concat(other) -> string`、`concatBytes(slice<u8>)`、就地 `append(slice<u8>)`、`push(u8)`、`appendByte` |
 | 运算符 | `a + b`：返回**新值**的拼接。右操作数可以是 `slice<u8>`、`string`、整数（按十进制）、`f64`/`f32`（6 位小数，`stringio` 里）或 `bool`；要求 `a` 是 `string`。分配落在调用点的 arena 上，可以在函数里拼完返回 |
 | 追加数字 | `appendI64(v)`；`appendF64(x, prec)`（在 `stringio` 里，定点 `prec` 位小数，上限 20）。拼一行报表少一次临时 `string` |
+| 借出视图 | `asSlice()`：只读字节视图，**不拷贝**；收 `slice<u8>` 的形参因此可以直接传 `string`（自动借出）。要独立拷贝仍写 `toSlice()` |
 | 直接打印 | `io::cout << s`（`string` 的 `<<` 重载在 `stl::string` 里，`use stl::string` 就够，不用写 `s.toSlice()`） |
 | 查找 | `find(needle) -> ?i64`（无匹配 `none`）、`contains`、`startsWith`、`endsWith`、`hash()` |
 | 容量 | `grow()`（1.5 倍）、`shrink()`、`clear()`、`release()`、`removeFront(n)` |

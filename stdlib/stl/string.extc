@@ -93,6 +93,10 @@ struct string {
      * 调用者一拷贝/一移动就悬垂。所以这里两条路都是"新分配 + 搬字节"，
      * 实现上 `new u8[n]` 写在方法体里，但逃逸分析会把这次分配提到**调用者**选的地方
      *（arena 的 home 机制）⇒ 它活得比这一次调用长，可以存、可以返回。 */
+    /** 借出一个只读字节视图（**不拷贝**）：`string` 因此能直接出现在收 `slice<u8>` 的参数上
+     *  （自动借出看的就是这个名字与签名）。要一份独立的拷贝用 `toSlice`。 */
+    fn asSlice(self: ref string) -> slice<u8> { return self.subView(0, self.n) }
+
     fn toSlice(self: ref string) -> slice<u8> {
         var out: mut slice<u8> = new u8[self.n]
         copyInto<u8>(out, self.subView(0, self.n), self.n)
