@@ -2780,16 +2780,9 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                             typeStr(c, pt));
                     continue;
                 }
-                /* `coroutine<T>` is a uniform handle, a plain 24-byte value. */
-                if (0 && typeContainsProto(c->tt, at, "coroutine")) {
-                    ckError(c, a->line,
-                            "A coroutine value stays where it was spawned: today it cannot be passed"
-                            " to a function, stored in a container or returned. Keep driving it in"
-                            " the function that created it",
-                            "a coroutine cannot be passed as an argument");
-                } else {
-                    checkAssignable(c, pt, at, a, "argument");
-                }
+                /* `coroutine<T>` is a uniform handle, a plain 24-byte value, so any place
+                 * that takes a value takes it. */
+                checkAssignable(c, pt, at, a, "argument");
             }
             /* The reference check applies to an associated function as well, once its
              * arguments have been checked. */
@@ -3942,16 +3935,9 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                             typeStr(c, p->type));
                     continue;
                 }
-                /* `coroutine<T>` is a uniform handle, a plain 24-byte value. */
-                if (0 && typeContainsProto(c->tt, at, "coroutine")) {
-                    ckError(c, a->line,
-                            "A coroutine value stays where it was spawned: today it cannot be passed"
-                            " to a function, stored in a container or returned. Keep driving it in"
-                            " the function that created it",
-                            "a coroutine cannot be passed as an argument");
-                } else {
-                    checkAssignable(c, p->type, at, a, "argument");
-                }
+                /* `coroutine<T>` is a uniform handle, a plain 24-byte value, so any place
+                 * that takes a value takes it. */
+                checkAssignable(c, p->type, at, a, "argument");
             }
             /* Every call site is checked, not only the ones with a home arena: what matters is
              * that the callee may store into a container the argument points at, which has
@@ -4547,16 +4533,9 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                             typeStr(c, pt));
                     continue;
                 }
-                /* `coroutine<T>` is a uniform handle, a plain 24-byte value. */
-                if (0 && typeContainsProto(c->tt, at, "coroutine")) {
-                    ckError(c, a->line,
-                            "A coroutine value stays where it was spawned: today it cannot be passed"
-                            " to a function, stored in a container or returned. Keep driving it in"
-                            " the function that created it",
-                            "a coroutine cannot be passed as an argument");
-                } else {
-                    checkAssignable(c, pt, at, a, "argument");
-                }
+                /* `coroutine<T>` is a uniform handle, a plain 24-byte value, so any place
+                 * that takes a value takes it. */
+                checkAssignable(c, pt, at, a, "argument");
             }
             /* The rule is checked only after the arguments have been checked: before that `a->type` is not filled
              * in yet and `typeContainsRef` says "no" to everything, so violations would slip through silently.

@@ -215,11 +215,14 @@ Sym *destDerefSym(Checker *c, Expr *e) {
  *
  * @param c     Checker.
  * @param sy    Reference binding.
- * @param hops  Alias-chain hops so far; stops after 16.
- * @return      The shallowest depth; -1 when nothing was ever recorded.
+ * @param hops  Alias-chain hops so far; bounded by `EXTC_PROMOTE_MAX_HOPS`.
+ * @return      The shallowest depth; -1 when nothing was ever recorded. Running out of hops
+ *              answers 0 ("must outlive this frame"), the shallowest possibility, because the
+ *              minimum is the safe direction and stopping early would enlarge the answer.
  */
 static int symMinPointee(Checker *c, Sym *sy, int hops) {
-    if (!sy || hops > 16) return -1;
+    if (!sy) return -1;
+    if (hops > EXTC_PROMOTE_MAX_HOPS) { EXTC_DBG_FALLBACK("symMinPointee: hop budget exhausted"); return 0; }
     int m = sy->minPointee;
     if (sy->initSrc && sy->initSrc->kind == EX_IDENT) {
         Sym *src = lookup(c, sy->initSrc->u.ident.name);

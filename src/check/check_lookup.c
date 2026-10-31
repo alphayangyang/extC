@@ -6,6 +6,7 @@
  * null establishes and the small predicates the rest of the checker is built from.
  */
 
+#include <stdint.h>
 #include <string.h>
 #include "dbg.h"
 #include "check_internal.h"
@@ -731,11 +732,12 @@ bool repeatablePure(Expr *e) {
 /**
  * @brief Tell whether the address of this expression can be taken.
  *
- * @param e  Expression.
+ * @param e  Expression; NULL is not a place.
  * @return   True when the expression is a binding, a field, or `*p` (the place `p` points
  *           at).
  */
 bool isLvalue(Expr *e) {
+    if (!e) return false;
     return e->kind == EX_IDENT || e->kind == EX_FIELD || e->kind == EX_DEREF;
 }
 
@@ -757,8 +759,10 @@ Type *sliceOf(Checker *c, Type *elem) {
 /**
  * @brief Make an integer literal expression node.
  *
- * The type is always `i32`; the compiler uses it to fill in slice bounds the user omitted, so
- * that codegen sees two literal bounds and knows the range needs no run-time check.
+ * The compiler uses this to fill in slice bounds the user omitted, so that codegen sees two
+ * literal bounds and knows the range needs no run-time check. The type follows the value:
+ * `i32` while it fits, `i64` otherwise, because a length such as an array's `asize` can
+ * exceed `INT32_MAX` and a literal typed `i32` would then have an out-of-range payload.
  *
  * @param c     Checker; the node is allocated from its arena.
  * @param v     Literal value.
@@ -768,7 +772,7 @@ Type *sliceOf(Checker *c, Type *elem) {
 Expr *intLit(Checker *c, long long v, int line) {
     Expr *e = exprNew(c->arena, EX_INT, line);
     e->u.ival = v;
-    e->type = c->tI32;
+    e->type = (v > INT32_MAX || v < INT32_MIN) ? c->tI64 : c->tI32;
     return e;
 }
 

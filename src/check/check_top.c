@@ -2530,7 +2530,7 @@ void noteWholeValueDepthWrite(Checker *c, Sym *dst, Expr *value, int d2) {
  * @return      Zero-based parameter index; -1 when it is not a parameter.
  */
 static int paramIndexByName(FuncDef *f, const char *name) {
-    if (!name) return -1;
+    if (!f || !name) return -1;
     for (size_t i = 0; i < f->params.len; i++)
         if (strcmp((*(Param **)vecAt(&f->params, i))->name, name) == 0) return (int)i;
     return -1;
@@ -4250,8 +4250,8 @@ static void checkFunc(Checker *c, FuncDef *f) {
     if (f->params.len > EFF_MAX_PARAMS) {
         ckError(c, f->line,
                 "The effect summary indexes parameters by position in a 64-bit mask, so the"
-                " compiler refuses more than 64 of them instead of silently ignoring the rest"
-                " (). Split the function.",
+                " compiler refuses more than 64 of them instead of silently ignoring the rest."
+                " Split the function.",
                 "`%s` has %zu parameters; the compiler's limit is %d",
                 f->name ? f->name : "this function", f->params.len, (int)EFF_MAX_PARAMS);
         return;
