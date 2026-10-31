@@ -1,4 +1,6 @@
-/* Forward, monotone data-flow analysis for reference depths.
+/**
+ * @file check_dataflow.c
+ * @brief Forward, monotone data-flow analysis for reference depths.
  *
  * Rather than materialise a control-flow graph and iterate over blocks, this walks the
  * structured statement tree directly and computes, for every statement, the facts that
@@ -25,16 +27,16 @@
 
 long g_dfRounds, g_dfMax, g_dfCalls;
 /**
- * @brief 按需把数据流分析的调用次数与不动点轮数打到 stderr。
+ * @brief Write the analysis call count and fixed-point round count to stderr.
  *
- * 只有设置 `EXTC_DBG_TIME` 时才输出。
+ * Only active when `EXTC_DBG_TIME` is set in the environment.
  */
 static void dfReport(void) {
     if (getenv("EXTC_DBG_TIME"))
         fprintf(stderr, "[df] analyze=%ld rounds=%ld maxRounds=%ld\n", g_dfCalls, g_dfRounds, g_dfMax);
 }
 /**
- * @brief 保证 `dfReport` 只注册一次，供 `atexit` 在进程退出时调用。
+ * @brief Register `dfReport` with `atexit`, exactly once.
  */
 static void dfReg(void) { static int done; if (!done) { done = 1; atexit(dfReport); } }
 
@@ -59,15 +61,17 @@ typedef struct {
 static Sym *dfRootOf(Checker *c, Expr *e);
 
 /**
- * @brief 判断两个 C 名是否指同一个绑定。
+ * @brief Tell whether two C names denote the same binding.
  *
- * 并非每个绑定都有 C 名：从别的模块导入的模块级常量绑到尚未改名的符号，那里 `cname`
- * 为 NULL。任一方为 NULL 时比较指针就返回，因此 `strcmp` 不会收到 NULL；没有 C 名的绑定
- * 不是本分析追踪的局部量，不匹配任何名字。
+ * Not every binding has a C name: a module-level constant imported from another module
+ * is bound to a symbol that has not been renamed, so its `cname` is NULL. Comparing the
+ * pointers when either side is NULL means `strcmp` never receives NULL; a binding with
+ * no C name is not a local this analysis tracks and matches no name.
  *
- * @param a  一个绑定的 C 名，可为 NULL。
- * @param b  另一个绑定的 C 名，可为 NULL。
- * @return   同名返回 true；两者都为 NULL 也算同名；恰有一个为 NULL 返回 false。
+ * @param a  C name of one binding; may be NULL.
+ * @param b  C name of the other binding; may be NULL.
+ * @return   True when the names are equal; two NULLs count as equal; false when exactly
+ *           one is NULL.
  */
 static bool cnameEq(const char *a, const char *b) {
     if (!a || !b) return a == b;
@@ -75,11 +79,13 @@ static bool cnameEq(const char *a, const char *b) {
 }
 
 /**
- * @brief 取一个绑定的事实行，没有就新建一行。
+ * @brief Return the fact row of a binding, creating it when absent.
  *
- * @param f      事实表。
- * @param cname  绑定的 C 名；为 NULL 时返回 NULL（没有 C 名的绑定不追踪）。
- * @return       该绑定的行；表已满时返回 NULL 并置 `f->overflow`。
+ * @param f      Fact table.
+ * @param cname  C name of the binding; NULL returns NULL, because a binding without a
+ *               C name is not tracked.
+ * @return       The binding's row; NULL when the table is full, in which case
+ *               `f->overflow` is set.
  */
 static VarFact *factOf(Facts *f, const char *cname) {
     if (!cname) return NULL;
@@ -94,13 +100,13 @@ static VarFact *factOf(Facts *f, const char *cname) {
 }
 
 /**
- * @brief 抬高一个绑定的深度，只升不降。
+ * @brief Raise a binding's depth; depths only grow.
  *
- * 深度是上界，只许变大；`depth <= 0` 不留下记录。
+ * The depth is an upper bound, so it may only increase; `depth <= 0` records nothing.
  *
- * @param f      事实表。
- * @param cname  绑定的 C 名。
- * @param depth  要抬到的深度。
+ * @param f      Fact table.
+ * @param cname  C name of the binding.
+ * @param depth  Depth to raise to.
  */
 static void raiseTo(Facts *f, const char *cname, int depth) {
     if (depth <= 0) return;
@@ -109,15 +115,16 @@ static void raiseTo(Facts *f, const char *cname, int depth) {
 }
 
 /**
- * @brief 抬高一个绑定某个字段的深度，只升不降。
+ * @brief Raise the depth of one field of a binding; depths only grow.
  *
- * 字段表满了就把这个深度折进绑定自身的深度，并置 `overflow`：字段的深度算到绑定上只会让
- * 上界更大，也就是更安全的方向。
+ * When the field table is full, the depth is folded into the binding's own depth and
+ * `overflow` is set: attributing a field's depth to the binding only enlarges the upper
+ * bound, which is the safe direction.
  *
- * @param f      事实表。
- * @param cname  绑定根的名字；为 NULL 时忽略。
- * @param field  字段名；为 NULL 时忽略。
- * @param depth  要抬到的深度。
+ * @param f      Fact table.
+ * @param cname  C name of the binding root; NULL is ignored.
+ * @param field  Field name; NULL is ignored.
+ * @param depth  Depth to raise to.
  */
 static void raiseField(Facts *f, const char *cname, const char *field, int depth) {
     if (!cname || !field) return;
@@ -142,10 +149,10 @@ static void raiseField(Facts *f, const char *cname, const char *field, int depth
 }
 
 /**
- * @brief 把一个事实表并进另一个，取两者的最大值，字段逐个并。
+ * @brief Join one fact table into another, taking the maximum of both, field by field.
  *
- * @param dst  目标事实表，被就地抬高。
- * @param src  源事实表。
+ * @param dst  Destination fact table, raised in place.
+ * @param src  Source fact table.
  */
 static void joinInto(Facts *dst, const Facts *src) {
     for (int i = 0; i < src->n; i++) {
@@ -158,14 +165,15 @@ static void joinInto(Facts *dst, const Facts *src) {
 }
 
 /**
- * @brief 判断两张事实表是否相同，用来检出不动的点。
+ * @brief Tell whether two fact tables are equal, for detecting the fixed point.
  *
- * 只逐位置比较绑定个数与各深度（含字段深度），不比名字：两张表来自同一次遍历、按同样次序
- * 增长，所以位置可比。
+ * Compares only the binding count and the depths by position (field depths included),
+ * not the names: both tables come from the same walk and grow in the same order, so
+ * positions are comparable.
  *
- * @param a  一张事实表。
- * @param b  另一张事实表。
- * @return   个数与所有深度都相同则返回 true。
+ * @param a  One fact table.
+ * @param b  The other fact table.
+ * @return   True when the count and every depth are equal.
  */
 static bool sameFacts(const Facts *a, const Facts *b) {
     if (a->n != b->n) return false;
@@ -179,22 +187,23 @@ static bool sameFacts(const Facts *a, const Facts *b) {
 }
 
 /**
- * @brief 整表复制事实。
+ * @brief Copy a whole fact table.
  *
- * @param to    目标事实表。
- * @param from  源事实表。
+ * @param to    Destination fact table.
+ * @param from  Source fact table.
  */
 static void copyFacts(Facts *to, const Facts *from) { *to = *from; }
 
 /**
- * @brief 取一个变量在不动点下的深度。
+ * @brief Look up a binding's depth at the fixed point.
  *
- * 变量自身的深度是其各字段深度的最大值，所以对聚合体与单个引用都成立；分析里没有这个绑定
- * 的事实时返回 0。
+ * A binding's own depth is the maximum over its fields, so the answer holds for
+ * aggregates and single references alike; 0 is returned when the analysis has no fact
+ * for the binding.
  *
- * @param f      事实表；为 NULL 时返回 0。
- * @param cname  绑定的 C 名；为 NULL 时返回 0。
- * @return       该绑定的深度；没有记录时返回 0。
+ * @param f      Fact table; NULL returns 0.
+ * @param cname  C name of the binding; NULL returns 0.
+ * @return       The binding's depth; 0 when there is no fact.
  */
 static int factDepthOf(const Facts *f, const char *cname) {
     if (!f || !cname) return 0;
@@ -205,16 +214,20 @@ static int factDepthOf(const Facts *f, const char *cname) {
 }
 
 /**
- * @brief 算一个值里所携带引用的深度上界，读表达式树与现有事实。
+ * @brief Compute an upper bound on the reference depth carried by a value, from the
+ *        expression tree and the current facts.
  *
- * 它照着转移规则回答，而不是照 checker 的 `targetDepth`：分析期间 arena 层级尚未定稿，
- * 所以这里从不读它；绑定深度也取自本分析算出的事实，而不是遍历时顺手写在某个字段上的数。
+ * It answers from the transfer rules rather than from the checker's `targetDepth`: the
+ * arena levels are not final while the analysis runs, so it never reads them, and
+ * binding depths come from the facts this analysis computes, not from a number written
+ * onto a field during the walk.
  *
- * @param c     checker，用于名字解析与类型表。
- * @param f     当前事实。
- * @param e     表达式；为 NULL 时返回 0。
- * @param hops  递归深度；超过 32 时直接返回 0。
- * @return      该表达式可携带的引用深度上界；不含引用时返回 0。
+ * @param c     Checker, for name resolution and the type table.
+ * @param f     Current facts.
+ * @param e     Expression; NULL returns 0.
+ * @param hops  Recursion depth; anything above 32 returns 0.
+ * @return      Upper bound on the reference depth the expression can carry; 0 when it
+ *              carries none.
  */
 static int dfExprDepth(Checker *c, const Facts *f, Expr *e, int hops) {
     if (!e || hops > 32) return 0;
@@ -351,13 +364,14 @@ static int dfExprDepth(Checker *c, const Facts *f, Expr *e, int hops) {
 }
 
 /**
- * @brief 判断一个表达式是否可能持有指向存储的东西。
+ * @brief Tell whether an expression may carry something that points to storage.
  *
- * 参数可能携带引用，所以 `mentionsParam` 的答案先算数；其余按类型表的引用包含关系回答。
+ * A parameter may carry a reference, so `mentionsParam` answers first; everything else
+ * is answered by the type table's reference containment.
  *
- * @param c  checker，用于类型表。
- * @param e  表达式；为 NULL 时返回 false。
- * @return   可能携带引用则返回 true。
+ * @param c  Checker, for the type table.
+ * @param e  Expression; NULL returns false.
+ * @return   True when it may carry a reference.
  */
 static bool dfCarriesRef(Checker *c, Expr *e) {
     if (!e) return false;
@@ -368,13 +382,16 @@ static bool dfCarriesRef(Checker *c, Expr *e) {
 static void dfStmt(Checker *c, Stmt *s, Facts *f, int depth);
 
 /**
- * @brief 取一个位置表达式根上的绑定，优先用 checker 钉在节点上的那个。
+ * @brief Return the binding at the root of a place expression, preferring the one the
+ *        checker pinned on the node.
  *
- * `placeRoot` 走作用域栈按名字解析，而本分析在函数体检查完之后才跑，那时按名字解析是错的。
+ * `placeRoot` resolves by name through the scope stack, and this analysis runs after the
+ * function body has been checked, when resolving by name is wrong.
  *
- * @param c  checker。
- * @param e  位置表达式（名字、字段、下标或切片）。
- * @return   根绑定；表达式不是位置或找不到绑定时返回 NULL。
+ * @param c  Checker.
+ * @param e  Place expression: a name, field, index, or slice.
+ * @return   The root binding; NULL when the expression is not a place or no binding is
+ *           found.
  */
 static Sym *dfRootOf(Checker *c, Expr *e) {
     for (Expr *x = e; x; ) {
@@ -391,14 +408,14 @@ static Sym *dfRootOf(Checker *c, Expr *e) {
 }
 
 /**
- * @brief 按顺序遍历一个块里的语句，把块深度加一传下去。
+ * @brief Walk the statements of a block in order, passing one plus the block depth.
  *
- * 不是块的语句（NULL 或另一种语句）直接交给 `dfStmt` 处理。
+ * A non-block statement (NULL or another kind) is handed to `dfStmt` directly.
  *
- * @param c      checker。
- * @param block  要遍历的块；NULL 或非块时退化为对单条语句的处理。
- * @param f      就地更新的事实表。
- * @param depth  当前块深度；块内语句按 `depth + 1` 遍历。
+ * @param c      Checker.
+ * @param block  Block to walk; NULL or a non-block degrades to a single statement.
+ * @param f      Fact table, updated in place.
+ * @param depth  Current block depth; statements inside are walked at `depth + 1`.
  */
 static void dfBlock(Checker *c, Stmt *block, Facts *f, int depth) {
     if (!block || block->kind != ST_BLOCK) { dfStmt(c, block, f, depth); return; }
@@ -407,15 +424,17 @@ static void dfBlock(Checker *c, Stmt *block, Facts *f, int depth) {
 }
 
 /**
- * @brief 把一条语句的转移规则作用到事实表上，就地抬高各绑定的深度。
+ * @brief Apply one statement's transfer rule to the fact table, raising each binding's
+ *        depth in place.
  *
- * 走的是结构化的语句树而不是控制流图：顺序语句首尾相接，分支各自从同一起点算再取最大值
- * 汇合，循环迭代到事实不再增长。
+ * It follows the structured statement tree rather than a control-flow graph: sequential
+ * statements chain end to end, branches are analyzed from the same input facts and joined
+ * by taking the maximum, and loops iterate until the facts stop growing.
  *
- * @param c      checker。
- * @param s      语句；为 NULL 时不做任何事。
- * @param f      就地更新的事实表。
- * @param depth  当前块深度；进入嵌套块时加一。
+ * @param c      Checker.
+ * @param s      Statement; NULL does nothing.
+ * @param f      Fact table, updated in place.
+ * @param depth  Current block depth; incremented when entering a nested block.
  */
 static void dfStmt(Checker *c, Stmt *s, Facts *f, int depth) {
     if (!s) return;
@@ -514,10 +533,11 @@ static void dfStmt(Checker *c, Stmt *s, Facts *f, int depth) {
              * scrutinee is known to have. */
             int sd = dfExprDepth(c, f, s->u.match.scrutinee, 0);
             for (size_t k = 0; k < a->binds.len; k++) {
-                /* 元素类型是 `const char *`——**绑定的名字本身**（见 `ast.h` 的 `MatchArm.binds`），
-                 * `codegen.c` 与 `check_stmt.c` 都是这么读的。按 `Sym *` 读会把那个名字指针当成
-                 * 结构体，`bs->cname` 于是变成"字符串头几个字节"当地址 ⇒ 事实表里落进一个垃圾名字，
-                 * 之后 `cnameEq` / `symBucket` 的 `strcmp` 就走进未映射内存。 */
+                /* The element type is `const char *`: the binding name itself (see
+                 * `MatchArm.binds`). Reading it as `Sym *` would treat that name pointer as
+                 * a struct, so `bs->cname` would become an address formed from the first
+                 * bytes of the string: a garbage name lands in the fact table, and later
+                 * `cnameEq` / `symBucket` `strcmp` calls walk into unmapped memory. */
                 const char *bn = *(const char **)vecAt(&a->binds, k);
                 if (bn) raiseTo(f, bn, sd);
             }
@@ -543,13 +563,15 @@ static void dfStmt(Checker *c, Stmt *s, Facts *f, int depth) {
 }
 
 /**
- * @brief 分析一个函数体并填 `out`。
+ * @brief Analyze one function body and fill `out`.
  *
- * 在函数体检查完之后跑，此时表达式类型与解析好的名字都在树上；只读 AST，从不写它。
+ * Runs after the function body has been checked, when expression types and resolved names
+ * are on the tree; it only reads the AST and never writes it.
  *
- * @param c    checker，用于名字解析与类型表；为 NULL 时 `out` 全零。
- * @param f    要分析其函数体的函数；为 NULL 或没有函数体时 `out` 全零。
- * @param out  填入最终事实；它们不完整时置 `overflow`。
+ * @param c    Checker, for name resolution and the type table; NULL leaves `out` zeroed.
+ * @param f    Function whose body is analyzed; NULL or a body-less function leaves `out`
+ *             zeroed.
+ * @param out  Receives the final facts; `overflow` is set when they are incomplete.
  */
 void dfAnalyze(Checker *c, FuncDef *f, DfResult *out) {
     memset(out, 0, sizeof *out);
@@ -579,10 +601,11 @@ void dfAnalyze(Checker *c, FuncDef *f, DfResult *out) {
 }
 
 /**
- * @brief 把结果表还原成转移函数用的 `Facts`，以便在不动点上复用 `dfExprDepth`。
+ * @brief Rebuild the `Facts` a transfer function uses from a result table, so
+ *        `dfExprDepth` can be reused at the fixed point.
  *
- * @param r  分析结果。
- * @param f  填好的事实表。
+ * @param r  Analysis result.
+ * @param f  Fact table to fill.
  */
 static void factsFromResult(const DfResult *r, Facts *f) {
     memset(f, 0, sizeof *f);
@@ -600,12 +623,13 @@ static void factsFromResult(const DfResult *r, Facts *f) {
 }
 
 /**
- * @brief 在 `r` 的不动点下算表达式 `e` 的深度。
+ * @brief Compute the depth of an expression under the fixed point in `r`.
  *
- * @param c  checker，用于名字解析。
- * @param r  分析结果；为 NULL 或 `overflow` 时返回 0。
- * @param e  要度量的表达式。
- * @return   `e` 能携带的引用深度的上界；没有可用的分析结果时返回 0。
+ * @param c  Checker, for name resolution.
+ * @param r  Analysis result; NULL or `overflow` returns 0.
+ * @param e  Expression to measure.
+ * @return   Upper bound on the reference depth `e` can carry; 0 when no usable result
+ *           exists.
  */
 int dfValueDepth(Checker *c, const DfResult *r, Expr *e) {
     if (!c || !r || r->overflow || !e) return 0;
@@ -615,11 +639,11 @@ int dfValueDepth(Checker *c, const DfResult *r, Expr *e) {
 }
 
 /**
- * @brief 取一个绑定记录下来的深度。
+ * @brief Return the depth recorded for a binding.
  *
- * @param r      分析结果；为 NULL 或 `overflow` 时返回 -1。
- * @param cname  绑定的 C 名；为 NULL 时返回 -1。
- * @return       深度；分析结果里没有这一条时返回 -1。
+ * @param r      Analysis result; NULL or `overflow` returns -1.
+ * @param cname  C name of the binding; NULL returns -1.
+ * @return       The depth; -1 when the result has no entry for the binding.
  */
 int dfLookup(const DfResult *r, const char *cname) {
     if (!r || !cname || r->overflow) return -1;
