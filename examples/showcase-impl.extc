@@ -17,6 +17,6 @@ fn main() -> i32 {
     let b = vec { x: 10, y: 20 }
     let c = a + b                       /* 运算符就是方法，按右操作数类型匹配 */
     io::cout << "c=(" << c.x << "," << c.y << ") norm2=" << c.norm2() << "\n"
-    io::cout << "i64::doubled=" << i64(21).doubled() << "\n"
+    io::cout << "i64::doubled=" << 21.doubled() << "\n"
     return 0
 }

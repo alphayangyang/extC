@@ -16,7 +16,7 @@ fn main() -> i32 {
     var x: i64 = 0
     var y: i64 = 0
 
-    cout << "控制台：x = " << i64(1) << " · pi = " << 3.5 << " · 对 = " << true << endl
+    cout << "控制台：x = " << 1 << " · pi = " << 3.5 << " · 对 = " << true << endl
 
     cin >> x >> y
     cout << "读到 x = " << x << " y = " << y << " 和 = " << x + y << endl

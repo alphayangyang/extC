@@ -1,0 +1,13 @@
+use std::io
+/* 字面量当方法接收者：i32 上没有这个方法时，按"字面量能放进哪些宽度"去找
+ * （与运算符找重载同一条规则）。默认宽度 i32 上有方法时仍优先 i32。 */
+impl u32 {
+    fn triple(self: ref u32) -> u32 { return *self * 3 }
+}
+impl i32 {
+    fn base(self: ref i32) -> i32 { return *self + 1 }
+}
+fn main() -> i32 {
+    io::cout << "t=" << 5.triple() << " b=" << 41.base() << "\n"
+    return 0
+}

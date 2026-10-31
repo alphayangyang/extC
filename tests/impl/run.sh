@@ -24,6 +24,7 @@ check_pos() {
 
 echo "== 正例：struct 的 impl + **内建标量**的 impl + hashMap<i64, V> 直接可用 =="
 check_pos impl_basic tests/impl/basic.extc
+check_pos impl_literal_recv tests/impl/literal_recv.extc
 
 # 试水：跨模块 `impl`（impl 块在 stl/stringio.extc，类型 string 在 stl/string.extc）
 check_pos impl_stream_string tests/impl/stream_string.extc

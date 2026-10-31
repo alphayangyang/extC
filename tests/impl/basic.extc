@@ -21,7 +21,7 @@ impl i64 {
 fn main() -> i32 {
     var a: pt = { x: 3 }
     var b: pt = { x: 4 }
-    io::cout << "sum=" << a.sum(b) << " twice=" << i64(21).twice()
+    io::cout << "sum=" << a.sum(b) << " twice=" << 21.twice()
     var m: hashMap<i64, i32> = hashMap<i64, i32>::withCap(8)
     m.put(7, i32(70))
     let g: i32 = m.get(7) ?? i32(-1)

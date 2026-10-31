@@ -3848,6 +3848,23 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             Type *rb = ttBase(recvT);
 
             FuncDef *f = findMethod(rb, e->u.method.name);
+            /* 整数字面量当方法接收者：`21.doubled()` 里的 `21` 还没有自己的类型，若默认宽度
+             * （i32）上没有这个方法，就按"能放进哪些宽度"去试（与运算符找重载同一条规则，
+             * `findOpLiteral`）。命中哪个宽度，字面量就取哪个类型。 */
+            if (!f && e->u.method.recv->kind == EX_INT && ttIsInteger(rb)) {
+                static const char *methodRecvCands[] = {"i64", "u32", "i16", "u16", "i8", "u8"};
+                for (size_t ci = 0; ci < sizeof methodRecvCands / sizeof methodRecvCands[0]; ci++) {
+                    Type *cand = ttFromName(tt, methodRecvCands[ci]);
+                    if (!cand || ttIsError(cand)) continue;
+                    FuncDef *m = findMethod(cand, e->u.method.name);
+                    if (!m) continue;
+                    f = m;
+                    rb = cand;
+                    recvT = cand;
+                    e->u.method.recv->type = cand;
+                    break;
+                }
+            }
             if (f && f->isPrivate) {
                 const char *home = c->curFunc ? c->curFunc->modName : NULL;
                 if (f->modName != home) {

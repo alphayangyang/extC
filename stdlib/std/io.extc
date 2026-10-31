@@ -1035,6 +1035,19 @@ struct errStream {
         if v { errWrite("true") } else { errWrite("false") }
         return { }
     }
+    /* 与 `cout` 同一套收窄整数/浮点重载：`cerr << -42` 不该要求先写成 i64。 */
+    fn <<(self: ref errStream, v: i8)  -> errStream { return (*self) << i64(v) }
+    fn <<(self: ref errStream, v: i16) -> errStream { return (*self) << i64(v) }
+    fn <<(self: ref errStream, v: i32) -> errStream { return (*self) << i64(v) }
+    fn <<(self: ref errStream, v: u8)  -> errStream { return (*self) << i64(v) }
+    fn <<(self: ref errStream, v: u16) -> errStream { return (*self) << i64(v) }
+    fn <<(self: ref errStream, v: u32) -> errStream { return (*self) << i64(v) }
+    fn <<(self: ref errStream, v: u64) -> errStream {
+        pairsReady()
+        let st = fmtU64Fast(v)
+        errWrite(FMT[st..24])
+        return { }
+    }
 }
 
 let cerr: errStream = errStream { }
