@@ -941,13 +941,18 @@ static void rwQualified(Loader *L, ModUnit *self, Expr *e) {
              * full path `std::sys::io`, so it would find nothing and report the module
              * as not imported right after finding it. */
             e->u.assoc.typeName = modPrefix;
-        } else if (rwQualifiedTypeName(L, self, modPrefix, &mangledType) && mangledType) {
+        } else if (rwQualifiedTypeName(L, self, modPrefix, &mangledType)) {
             /* `fs::ofstream::new(...)`: the middle of the path is a **type**, not a
              * module, so the deep-path lookup above found nothing. The type name is what
              * the checker needs; the symbol after it (`new`) is resolved from there.
              * Without this the error is "`fs::ofstream` is not imported here -- add
-             * `use fs::ofstream`", which is about a module that does not exist. */
-            e->u.assoc.typeName = mangledType;
+             * `use fs::ofstream`", which is about a module that does not exist.
+             *
+             * `true` with an empty result is the one other outcome: the middle of the path
+             * names a `@private` type, and `rwQualifiedTypeName` has reported that already.
+             * Falling through would add a second "not imported" error blaming the wrong
+             * thing. */
+            if (mangledType) e->u.assoc.typeName = mangledType;
             return;
         } else {
             /* Report the full path with an instruction the user can follow, and name only
@@ -1534,21 +1539,18 @@ static bool unitOwns(ModUnit *u, const char *name) {
     if (memo && memo->done && memo->n0 == m->structs.len && memo->n1 == m->types.len &&
         memo->n2 == m->globals.len && memo->n3 == m->funcs.len)
         return memo->val != 0;
-    for (size_t i = 0; i < m->structs.len; i++)
-        if (strcmp((*(StructDef **)vecAt(&m->structs, i))->name, name) == 0) return true;
-    for (size_t i = 0; i < m->types.len; i++)
-        if (strcmp((*(TypeDef **)vecAt(&m->types, i))->name, name) == 0) return true;
-    for (size_t i = 0; i < m->globals.len; i++)
-        if (strcmp((*(GlobalDef **)vecAt(&m->globals, i))->name, name) == 0) return true;
-    for (size_t i = 0; i < m->funcs.len; i++)
-        if (strcmp((*(FuncDef **)vecAt(&m->funcs, i))->name, name) == 0) {
-            if (memo) { memo->n0 = m->structs.len; memo->n1 = m->types.len; memo->n2 = m->globals.len;
-                        memo->n3 = m->funcs.len; memo->val = 1; memo->done = 1; }
-            return true;
-        }
+    bool hit = false;
+    for (size_t i = 0; i < m->structs.len && !hit; i++)
+        hit = strcmp((*(StructDef **)vecAt(&m->structs, i))->name, name) == 0;
+    for (size_t i = 0; i < m->types.len && !hit; i++)
+        hit = strcmp((*(TypeDef **)vecAt(&m->types, i))->name, name) == 0;
+    for (size_t i = 0; i < m->globals.len && !hit; i++)
+        hit = strcmp((*(GlobalDef **)vecAt(&m->globals, i))->name, name) == 0;
+    for (size_t i = 0; i < m->funcs.len && !hit; i++)
+        hit = strcmp((*(FuncDef **)vecAt(&m->funcs, i))->name, name) == 0;
     if (memo) { memo->n0 = m->structs.len; memo->n1 = m->types.len; memo->n2 = m->globals.len;
-                memo->n3 = m->funcs.len; memo->val = 0; memo->done = 1; }
-    return false;
+                memo->n3 = m->funcs.len; memo->val = hit ? 1 : 0; memo->done = 1; }
+    return hit;
 }
 
 /**
@@ -1596,7 +1598,8 @@ static const char *openLookup(ModUnit *self, const char *name, int line) {
             ctxError(self->ctx, line, 1,
                      "`@private` means other modules must not name it. Drop the annotation if it is"
                      " meant to be used from here.",
-                     "`%s::%s` is private to module `%s`", u->path, name, u->path);
+                     "`%s::%s` is private to module `%s`", u->path, name,
+                     dep->modName ? dep->modName : u->path);
             return NULL;
         }
         if (found && strcmp(found, flat) != 0) {
@@ -2101,11 +2104,18 @@ bool loadModules(Arena *a, Module *out, Module *rootm, Ctx *rootCtx,
         else {
             char buf[4096];
             ssize_t n = readlink("/proc/self/exe", buf, sizeof buf - 1);
-            if (n > 0) {
+            /* A negative result means the path is unavailable, and a result of exactly
+             * `sizeof buf - 1` means it was truncated: either way the directory is unknown and
+             * must not be guessed from a partial path. Module loading then reports the missing
+             * directory itself, listing the paths it tried. */
+            if (n > 0 && (size_t)n < sizeof buf - 1) {
                 buf[n] = '\0';
                 char *slash = strrchr(buf, '/');
-                if (slash) { *slash = '\0'; L.stdDir = arenaPrintf(a, "%s/../stdlib", buf); }
+                if (slash) {
+                    *slash = '\0';
+                    L.stdDir = arenaPrintf(a, "%s/../stdlib", buf);
                     hintIndexSetStdDir(L.stdDir);   /* the checker's hint reads INDEX from here */
+                }
             }
         }
     }

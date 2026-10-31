@@ -1681,7 +1681,10 @@ bool checkStoreEscape(Checker *c, Expr *val, Expr *target, int line) {
  * @param line  Source line for the diagnostic.
  */
 void recordNewSizeCheck(Checker *c, Type *t, int line) {
-    if (!c->curFunc || !c->curFunc->owner) return;
+    /* A free generic function needs this record just as a generic method does: the replay loop
+     * walks `c.funcInsts` and the rule is the same. Gating on `owner` would drop the `new T[n]`
+     * size check in `fn f<T>(n: i64) -> mut slice<T>`. */
+    if (!c->curFunc) return;
     if (!funcTParams(c->curFunc) || funcTParams(c->curFunc)->len == 0) return;
     RefCheck *rc = (RefCheck *)arenaAllocZero(c->arena, sizeof(RefCheck));
     rc->isNewSize = true;
@@ -1736,7 +1739,9 @@ void recordZeroCheck(Checker *c, Type *t, int line, const char *name) {
  */
 static void recordRefCheck(Checker *c, Expr *val, Expr *target, int at,
                            int line, const char *what) {
-    if (!c->curFunc || !c->curFunc->owner) return;
+    /* Same rule as `recordZeroCheck`: a free generic function stores references too, and at
+     * instantiation the scope is gone, so the check has to be recorded now or never. */
+    if (!c->curFunc) return;
     if (!funcTParams(c->curFunc) || funcTParams(c->curFunc)->len == 0) return;
     RefCheck *rc = (RefCheck *)arenaAllocZero(c->arena, sizeof(RefCheck));
     rc->val    = val;
@@ -1964,7 +1969,7 @@ void recheckPendingRefStores(Checker *c, bool dfaSettled) {
  * @param site  Allocation site expression.
  */
 static void cycleSitePush(Vec *out, Expr *site) {
-    if (!site || out->len > 256) return;
+    if (!site || out->len >= 256) return;
     for (size_t i = 0; i < out->len; i++)
         if (*(Expr **)vecAt(out, i) == site) return;
     *(Expr **)vecPush(out) = site;
@@ -1993,7 +1998,7 @@ static void cycleSitePush(Vec *out, Expr *site) {
  * @param hops  Hop limit (guards against cycles).
  */
 static void cycleCollectSites(Checker *c, Expr *e, Vec *out, int hops) {
-    if (!e || hops > 32 || out->len > 256) return;
+    if (!e || hops > 32 || out->len >= 256) return;
     switch (e->kind) {
     case EX_NEW: case EX_GENCALL:
         cycleSitePush(out, e);
@@ -2917,7 +2922,13 @@ static int targetDepthPure(Checker *c, Expr *e, int hops, Expr **seen) {
         /* `!sy` means "this ident was never resolved", which should not happen inside the
          * checker (reaching here means another bug), while "no origin" is **legal**: a
          * parameter's origin is empty and its depth is 0 by construction. */
-        if (!sy) { EXTC_DBG_FALLBACK("targetDepthPure: unresolved ident"); return 0; }
+        if (!sy) {
+            /* Optimistic here would claim the value lives as long as a parameter, which is the
+             * direction that hides a dangling reference; every other unprovable shape answers
+             * `DEPTH_UNKNOWN`, and this one must too. */
+            EXTC_DBG_FALLBACK("targetDepthPure: unresolved ident");
+            return DEPTH_UNKNOWN;
+        }
         if (!sy->origin) return 0;
         return targetDepthPure(c, sy->origin, hops + 1, seen);
     }
