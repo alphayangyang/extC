@@ -1,43 +1,50 @@
 /**
  * @file plate.h
- * @brief 板（Heap）运行期的按需发射口：`extc_viewOf` 与 `extc_memCopy`。
+ * @brief On-demand emission for the plate (heap) runtime: `extc_viewOf` and
+ * `extc_memCopy`.
  *
- * 形状与 pools.h / memfind.h 那两扇门一致：codegen 里一个标志（`CG.needPlate`），
- * 按需把这段 C 追加进同一个编译单元。触发点是**声明**：`extern!("extc-heap")` 只出现在
- * 特权层 `stdlib/std/sys/heap.extc` 里。
+ * It has the same shape as the gates in pools.h and memfind.h: one flag in codegen
+ * (`CG.needPlate`), and this C block is appended to the same translation unit on demand.
+ * The trigger is the **declaration**: `extern!("extc-heap")` appears only in the
+ * privileged layer `stdlib/std/sys/heap.extc`.
  *
- * 视图必须由编译器给，因为**视图在 extC 里造不出来**：视图类型是泛型实例（`slice<u8>`），
- * 结构体字面量写不出（`slice<u8> { … }` 会被当成类型出现在表达式位置而拒绝）；而且它得从
- * 一个 `ref u8` 造，而 `ref void` -> `ref T` 这条回路故意不开。所以
- * "把指针 + 长度重新解释成一个视图"落在特权层，一次。
+ * The view has to come from the compiler because **a view cannot be built in extC**: a
+ * view type is a generic instance (`slice<u8>`), and a struct literal cannot express it
+ * (`slice<u8> { … }` is rejected when a type appears in expression position); and it has
+ * to be built from a `ref u8`, while the `ref void` -> `ref T` loop is deliberately
+ * closed. So "reinterpret a pointer plus a length as a view" lives in the privileged
+ * layer, once.
  */
 #ifndef EXTC_PLATE_H
 #define EXTC_PLATE_H
 
 #include "base.h"
-#include "typelayer.h"   /* 下面的名字判据在那里（它们是纯名字问题） */
+#include "typelayer.h"   /* the name predicates below live there (they are pure name questions) */
 #include <string.h>
 
 /**
- * @brief 把 `extc_viewOf` 追加到 `out`。
+ * @brief Append `extc_viewOf` to `out`.
  *
- * **一个声明一个标志**：触发条件是"程序声明了这个名字"，所以只声明了拷贝的程序不带视图
- * （反过来也一样）。与 `memfindEmitRuntime` 同一条纪律，只是更细一格。
+ * **One declaration, one flag**: the trigger is "the program declared this name", so a
+ * program that only declares the copy does not carry the view (and the converse holds
+ * too). The same discipline as `memfindEmitRuntime`, one notch finer.
  *
- * @param a    arena（本函数不用，为与其他发射口同形保留）。
- * @param out  正在写的生成 C。
+ * @param a    Arena (unused here; kept to match the other emission entry points).
+ * @param out  Generated C being written.
  */
 void plateEmitViewOf(Arena *a, Buf *out);
 
 /**
- * @brief 把整块拷贝 `extc_memCopy` 追加到 `out`。
+ * @brief Append the whole-block copy `extc_memCopy` to `out`.
  *
- * 它是同一扇门里的第二件：`memcpy` 的声明会与 `<string.h>` 撞（生成文件 include 了它），
- * 所以它也只能从这条出口走。它挂在**板的运行期块**里而不是字节搜索那一块：那块的触发点是
- * `extern!("extc-mem")` 的声明，而 `std::string` 的用户全都声明它。
+ * It is the second item behind the same gate: the declaration of `memcpy` would clash
+ * with `<string.h>` (the generated file includes it), so this is the only way out for it
+ * as well. It hangs off the **plate runtime block**, not the byte-search block: that
+ * block's trigger is the declaration of `extern!("extc-mem")`, and every user of
+ * `std::string` declares it.
  *
- * @param a    arena（本函数不用，为与其他发射口同形保留）。
- * @param out  正在写的生成 C。
+ * @param a    Arena (unused here; kept to match the other emission entry points).
+ * @param out  Generated C being written.
  */
 void plateEmitMemCopy(Arena *a, Buf *out);
 

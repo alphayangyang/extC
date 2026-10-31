@@ -1,12 +1,14 @@
 /**
  * @file pools.h
- * @brief 池注册表：ECS 风格池的运行期那一半。
+ * @brief Pool registry: the runtime half of ECS-style pools.
  *
- * 这个子系统单独成文件：池牵动好几遍，把它们摊到 `codegen.c` / `check_expr.c` 里会重演
- * "每个文件里都有一点，哪个文件里都不完整"（逃逸那一遍正是这样）。所有池形状的东西从这里
- * 开始，各遍只留一两个调用点。
+ * The subsystem has a file of its own: pools touch several passes, and spreading them
+ * through `codegen.c` / `check_expr.c` would repeat the pattern of "a little in every
+ * file, complete in none" (which is exactly how the escape pass is not written). Every
+ * pool-shaped thing starts here, and each pass keeps only one or two call sites.
  *
- * 运行期按需发射 —— 从不提到池的程序一个字节都不带 —— 走的是 `extc_raw_enter` 同一条路。
+ * The runtime is emitted on demand -- a program that never mentions a pool carries not one
+ * byte of it -- through the same path as `extc_raw_enter`.
  */
 
 #ifndef EXTC_POOLS_H
@@ -15,23 +17,25 @@
 #include "base.h"
 
 /**
- * @brief 把注册表的 C 文本追加到 `out`。
+ * @brief Append the registry's C text to `out`.
  *
- * 只在程序声明了池的 extern 时调用，所以不用池的程序不付这份文本。
- * 名字全是 `extc_pool_*`：库经由 `extern!` 够到它们，因此它们不能是 `static`。
+ * It is called only when the program declared the pool extern, so a program without pools
+ * does not pay for this text. Every name is `extc_pool_*`: the library reaches them
+ * through `extern!`, so they cannot be `static`.
  *
- * @param a    arena，给临时缓冲区用。
- * @param out  正在写的生成 C。
+ * @param a    Arena for temporary buffers.
+ * @param out  Generated C being written.
  */
 void poolsEmitRuntime(Arena *a, Buf *out);
 
 /**
- * @brief 追加 `dyn` 那一半运行期。
+ * @brief Append the `dyn` half of the runtime.
  *
- * 单独发射，使只用池的程序产物不变。
+ * It is emitted separately so that a program using pools only keeps its artifact
+ * unchanged.
  *
- * @param a    arena，给临时缓冲区用。
- * @param out  正在写的生成 C。
+ * @param a    Arena for temporary buffers.
+ * @param out  Generated C being written.
  */
 void poolsEmitDynRuntime(Arena *a, Buf *out);
 

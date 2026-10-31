@@ -1,23 +1,31 @@
-/* plate.c —— `extc_viewOf`：把"一个字节指针 + 长度"变成 `mut slice<u8>`。
+/**
+ * @file plate.c
+ * @brief `extc_viewOf`: turns "a byte pointer + a length" into `mut slice<u8>`.
  *
- * 一道门存在的三个理由：视图造不出来、泛型类型没有字面量、`ref void` → `ref T` 不开。
- * 语义上它就是那个两词的结构体；**没有任何检查** —— 谁给的指针、它指向哪里、长度多大，
- * 由调用它的那层负责（板：`plate::holds` 一次区间检查；C 边界：声明处的签字）。 */
+ * The door exists for three reasons: a view cannot be built, a generic type has no
+ * literal, and `ref void` -> `ref T` is not opened. Semantically it is exactly that
+ * two-word struct, with **no check**: who supplied the pointer, where it points, and how
+ * large the length is are the business of the calling layer (the plate: one range check in
+ * `plate::holds`; the C boundary: the signature at the declaration).
+ */
 #include "plate.h"
 
 /**
- * @brief 发出把「字节指针 + 长度」变成 `mut slice<u8>` 的那道门（`extc_viewOf`）。
+ * @brief Emit `extc_viewOf`, the door that turns "byte pointer + length" into
+ * `mut slice<u8>`.
  *
- * 语义上它就是那个两词的结构体，**没有任何检查**：指针是谁给的、指向哪里、长度多大，
- * 由调用它的那层负责（板做一次区间检查，C 边界看声明处的签字）。
+ * Semantically it is that two-word struct, with **no check**: who supplied the pointer,
+ * where it points, and how large the length is are the business of the calling layer (the
+ * plate does one range check; the C boundary trusts the signature at the declaration).
  *
- * @param a    未使用：运行时是纯文本，没有需要 arena 的状态。
- * @param out  追加生成代码的输出缓冲。
+ * @param a    Unused: the runtime is plain text and has no state that needs an arena.
+ * @param out  Output buffer the generated code is appended to.
  */
 void plateEmitViewOf(Arena *a, Buf *out) {
     (void)a;
-    /* `slice_u8` 的字段名与 prelude 里 `struct slice<T> { data, len }` 一致；类型的定义在
-     * 结构体那一段（本段发射在原型池之后、函数体之前），所以这里能直接用。 */
+    /* The field names of `slice_u8` match `struct slice<T> { data, len }` in the prelude;
+     * the type is defined in the struct section (this block is emitted after the prototype
+     * pool and before the function bodies), so it can be used directly here. */
     bufPuts(out,
         "\n/* ---- plate (`std::sys::heap`) ----\n"
         " * A view over a pointer and a length. The language cannot build one -- a view's type is a\n"
@@ -31,27 +39,33 @@ void plateEmitViewOf(Arena *a, Buf *out) {
 }
 
 /**
- * @brief 发出整块拷贝的那道门（`extc_memCopy`）：返回实际拷贝的字节数，`n <= 0` 拷 0 字节。
+ * @brief Emit the bulk-copy door (`extc_memCopy`): returns the number of bytes actually
+ * copied, and `n <= 0` copies nothing.
  *
- * `memcpy` 的声明会与 `<string.h>` 撞（生成文件 include 了它），所以它也只能从整数出口走。
- * 放在**板的运行期块**里：这一块只由板自己的声明触发，不会牵动声明字节搜索门的那些产物。
+ * A `memcpy` declaration would clash with `<string.h>` (the generated file includes it),
+ * so it too has to leave through this integer door. It lives in the **plate runtime
+ * block**: that block is triggered only by the plate's own declaration, so it cannot pull
+ * along the artifacts of programs that declare the byte-search door only.
  *
- * @param a    未使用：运行时是纯文本，没有需要 arena 的状态。
- * @param out  追加生成代码的输出缓冲。
+ * @param a    Unused: the runtime is plain text and has no state that needs an arena.
+ * @param out  Output buffer the generated code is appended to.
  */
 void plateEmitMemCopy(Arena *a, Buf *out) {
     (void)a;
-    /* 同一个门里的第二件：**整块拷贝**。`memcpy` 的声明会与 `<string.h>` 撞（生成文件 include 了
-     * 它），所以它也只能从这条出口走。
-     * 放在**板的运行期块**里而不是字节搜索那一块：那块的触发点是 `extern!("extc-mem")` 的声明，
-     * 而 `std::string` 的用户全都声明它 ⇒ 加进那一块会改动大量无关产物；板的触发点是自己的
-     * 声明，加什么都不会动到别人。 */
+    /* The second item behind the same door: the **bulk copy**. A `memcpy` declaration would
+     * clash with `<string.h>` (the generated file includes it), so it too has to leave
+     * through this door. It lives in the **plate runtime block** rather than the byte-search
+     * block: that block's trigger is the declaration of `extern!("extc-mem")`, and every user
+     * of `std::string` declares it, so adding anything there would change a large amount of
+     * unrelated output; the plate's trigger is its own declaration, so anything added here
+     * leaves other programs untouched. */
     bufPuts(out,
         "/* Bulk copy (`memcpy` behind a door extC can declare). Returns how many bytes it copied;\n"
         " * `n <= 0` copies nothing. The plate\'s `copyIn`/`copyOut` want a **bulk** copy: a byte loop\n"
         " * would pay one bounds check per byte, which is the thing this door exists to avoid. */\n"
-        /* **非 static**：它的 `extern!` 声明会发一份非 static 的原型（`extc_memEq` 同理），
-         * 两边不一致 gcc 直接报 "static declaration follows non-static declaration"。 */
+        /* **Not static**: its `extern!` declaration emits a non-static prototype (`extc_memEq`
+         * is the same), and gcc reports "static declaration follows non-static declaration"
+         * when the two sides disagree. */
         "int64_t extc_memCopy(uint8_t *dst, uint8_t *src, int64_t n) {\n"
         "    if (n <= 0) return 0;\n"
         "    memcpy((void *)dst, (const void *)src, (size_t)n);\n"

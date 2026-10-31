@@ -1,36 +1,49 @@
-/* memfind.c —— `extc_memFind` 与 `extc_memEq`：字节搜索/整块比较的运行期。
+/**
+ * @file memfind.c
+ * @brief The byte-search and whole-block-compare runtime: `extc_memFind` and
+ * `extc_memEq`.
  *
- * 为什么要有这一层：纯 extC 的 `string::find` 是逐字节走 `hay[i]` 的 Two-Way，
- * 而每一次下标都要过一次边界检查 —— 算法没错，输在"每个字节一次检查"；
- * libc 的 `memchr`/`memcmp` 是向量化的、且没有逐字节检查。
+ * Why this layer exists: a pure extC `string::find` is a Two-Way search that walks
+ * `hay[i]` byte by byte, and every indexing operation goes through a bounds check -- the
+ * algorithm is fine, it loses on "one check per byte"; libc's `memchr`/`memcmp` are
+ * vectorized and have no per-byte check.
  *
- * `memmem` 是 libc 里的 Two-Way（glibc 走 `__memmem`，短模式先 `memchr` 找首字节、
- * 长模式用周期位移），语义与纯 extC 的实现一致：返回**最左**匹配。
+ * `memmem` is libc's Two-Way (glibc goes through `__memmem`: a short pattern first uses
+ * `memchr` to find the first byte, a long one uses a period shift), with the same semantics
+ * as the pure extC implementation: it returns the **leftmost** match.
  *
- * 两条纪律：
- *   ① 判据不变 —— 偏移、`-1`、空模式 `0`，一条不少；自重叠模式（`aa` 在 `aaaa` 里）必须是 0。
- *   ② 可移植 —— `memmem` 是 GNU/BSD 扩展，非 GNU 平台走下面 `#else` 的 `memchr` + `memcmp`
- *      朴素兜底（慢，但语义相同）。
+ * ## Two disciplines
  *
- * `extc_memEq` 是同一扇门的第二个出口：C 的 `memcmp` 签名里 `const void *` 与 `size_t`
- * extC 都写不出来，而**手写声明会与 `<string.h>` 撞车**（生成文件里 include 了它，
- * gcc 报 `conflicting types for 'memcmp'`）。所以它被封在这个整数出口后面。 */
+ * 1. The criteria do not change -- offset, `-1`, and empty pattern `0`, none missing; a
+ *    self-overlapping pattern (`aa` in `aaaa`) must be 0.
+ * 2. Keep it portable -- `memmem` is a GNU/BSD extension, so non-GNU platforms take the
+ *    naive `memchr` + `memcmp` fallback under `#else` below (slower, same semantics).
+ *
+ * ## Why the compare is behind the same door
+ *
+ * `extc_memEq` is the second exit of the same door: extC can write neither the `const void
+ * *` nor the `size_t` of C's `memcmp` signature, and **a hand-written declaration would
+ * collide with `<string.h>`** (the generated file includes it and gcc reports
+ * `conflicting types for 'memcmp'`). So it is sealed behind this integer exit.
+ */
 
 #include "memfind.h"
 
 /**
- * @brief 发出字节搜索与整块比较的运行时代码（`extc_memFind` / `extc_memEq`）。
+ * @brief Emit the byte-search and block-compare runtime (`extc_memFind` /
+ * `extc_memEq`).
  *
- * 走 libc 的 `memmem`/`memcmp`，而不是逐字节的 extC 实现：语义不变（最左匹配、空模式
- * 返回 0、偏移返回 -1），但每个字节少过一次边界检查。
+ * Goes through libc's `memmem`/`memcmp` instead of a byte-by-byte extC implementation: the
+ * semantics are unchanged (leftmost match, empty pattern returns 0, offset returns -1), but
+ * each byte saves a bounds check.
  *
- * @param a    未使用：运行时是纯文本，没有需要 arena 的状态。
- * @param out  追加生成代码的输出缓冲。
+ * @param a    Unused: the runtime is plain text and has no state that needs an arena.
+ * @param out  Output buffer the generated code is appended to.
  */
 void memfindEmitRuntime(Arena *a, Buf *out) {
     (void)a;
-    /* 第一个字面量：头部注释 + `extc_memFind`。分开写是因为 C99 只保证 4095 字符的
-     * 字面量（`-Woverlength-strings`）。 */
+    /* First literal: the header comment plus `extc_memFind`. Kept separate because C99
+     * only guarantees 4095-character literals (`-Woverlength-strings`). */
     bufPuts(out,
         "\n/* ---- byte search (`std::sys::mem`) ----\n"
         " * `memmem` under a door the language can declare: extC has no `const` and no `size_t`,\n"
@@ -83,7 +96,7 @@ void memfindEmitRuntime(Arena *a, Buf *out) {
         "    }\n"
         "#endif\n"
         "}\n");
-    /* 第二个字面量：`extc_memEq`。 */
+    /* Second literal: `extc_memEq`. */
     bufPuts(out,
         "/* `memcmp` behind the same door: 1 = the `n` bytes are equal, 0 = they differ. `n <= 0`\n"
         " * is equal by definition, so a caller may pass a zero-length slice's payload. */\n"

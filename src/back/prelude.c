@@ -1,7 +1,9 @@
-/* Access to the prelude text that tools/embed.c linked into the compiler.
+/**
+ * @file prelude.c
+ * @brief Access to the prelude text that tools/embed.c linked into the compiler.
  *
- * Nothing here knows what the prelude contains: this file only hands the byte array
- * to the loader.
+ * Nothing here knows what the prelude contains: this file only hands the byte array to
+ * the loader.
  */
 
 #include "prelude.h"
@@ -11,10 +13,11 @@ extern const unsigned char extc_prelude[];
 extern const unsigned long extc_prelude_len;
 
 /**
- * @brief 返回编译进二进制的 prelude 文本。
+ * @brief Return the prelude text compiled into the binary.
  *
- * @param len  接收字节数（必须非 NULL）；文本不以 NUL 结尾。
- * @return     指向链接进来的字节数组；它活在整个运行期间，调用方不要释放，也不要指望结尾 NUL。
+ * @param len  Receives the byte count (must be non-NULL); the text is not NUL-terminated.
+ * @return     The linked-in byte array; it lives for the whole run, so the caller must not
+ *             free it and must not expect a trailing NUL.
  */
 const char *preludeSource(size_t *len) {
     *len = (size_t)extc_prelude_len;

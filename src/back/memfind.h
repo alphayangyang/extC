@@ -1,16 +1,20 @@
 /**
  * @file memfind.h
- * @brief 字节搜索运行期的按需发射口（`extc_memFind` / `extc_memEq`）。
+ * @brief On-demand emission entry point for the byte-search runtime (`extc_memFind` /
+ * `extc_memEq`).
  *
- * 形状与 pools.h / coroutine.h 的那两扇门一致：codegen 里一个标志（`CG.needMemFind`），
- * 函数体全部发完之后按需把这段 C 追加到同一个编译单元里。
+ * It has the same shape as the two gates in pools.h and coroutine.h: one flag in codegen
+ * (`CG.needMemFind`), and after every function body has been emitted this C block is
+ * appended to the same translation unit on demand.
  *
- * 发射的触发点是**声明**而不是调用：`extern!("extc-mem")` 只出现在特权层
- * `stdlib/std/sys/mem.extc` 里，程序 `use` 到它说明它要这条运行期；没声明的程序一个字节
- * 都不多（和其他运行期块同一条纪律）。
+ * The trigger is the **declaration**, not a call: `extern!("extc-mem")` appears only in
+ * the privileged layer `stdlib/std/sys/mem.extc`, so a program that `use`s it is asking
+ * for this runtime; a program without the declaration carries not one extra byte (the
+ * same discipline as the other runtime blocks).
  *
- * 这段文本自带 `memmem` 的声明：它不在 ISO C 里，而 `<string.h>` 早在它之前被读过，所以
- * 不开 `_GNU_SOURCE`（为一个函数改变整个翻译单元的编译方式是错的价钱）。
+ * The text declares `memmem` itself: it is not ISO C, and `<string.h>` has already been
+ * read by the time this block appears, so `_GNU_SOURCE` is not enabled (changing the
+ * compilation mode of the whole translation unit for one function is the wrong price).
  */
 #ifndef EXTC_MEMFIND_H
 #define EXTC_MEMFIND_H
@@ -18,10 +22,11 @@
 #include "base.h"
 
 /**
- * @brief 把字节搜索运行期（`extc_memFind`、`extc_memEq`）追加到 `out`。
+ * @brief Append the byte-search runtime (`extc_memFind`, `extc_memEq`) to `out`.
  *
- * @param a    arena，发射的文本从它拷出（现在不用，为与其他发射口同形保留）。
- * @param out  生成的 C，写在每个函数体之后。
+ * @param a    Arena the emitted text is copied from (unused now; kept to match the other
+ *             emission entry points).
+ * @param out  Generated C, written after every function body.
  */
 void memfindEmitRuntime(Arena *a, Buf *out);
 

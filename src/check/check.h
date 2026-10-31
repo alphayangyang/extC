@@ -1,8 +1,9 @@
 /**
  * @file check.h
- * @brief 类型检查器：解析名字、推导类型、执行借用与逃逸规则。
+ * @brief Type checker: resolves names, infers types, and enforces the borrow and escape
+ * rules.
  *
- * 每个结果都写回 ast.h 那棵树，代码生成因此不必做任何类型推导。
+ * Every result is written back into the AST, so code generation never has to infer a type.
  */
 #ifndef EXTC_CHECK_H
 #define EXTC_CHECK_H
@@ -12,33 +13,39 @@
 #include "types.h"
 
 /**
- * @brief 检查一个模块并原地标注它。
+ * @brief Check one module and annotate it in place.
  *
- * 结果写在节点上：`Expr.type`、`Expr.func`、`Expr.field`、`Stmt.type`。代码生成因此完全
- * 不需要类型推导 —— 每加一个语言特性不必实现两遍，一遍在检查器、一遍在生成器。
+ * Results are written onto the nodes: `Expr.type`, `Expr.func`, `Expr.field`, and
+ * `Stmt.type`. Code generation therefore needs no type inference at all, so each language
+ * feature is implemented once, in the checker, instead of twice, once here and once in the
+ * generator.
  *
- * @param ctx    被检查文件的诊断上下文。
- * @param arena  这一遍分配的一切所用的 arena。
- * @param tt     prelude 与每个模块共用的类型表。
- * @param m      要检查的模块，已加载并注册进 `tt`。
- * @return       在 `ctx` 里记下错误则返回 `false`。
+ * @param ctx    Diagnostic context of the file being checked.
+ * @param arena  Arena that owns everything this pass allocates.
+ * @param tt     Type table shared by the prelude and every module.
+ * @param m      Module to check; it is already loaded and registered in `tt`.
+ * @return       `false` when an error was recorded in `ctx`.
  */
 bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m);
 
 /**
- * @brief 关掉 S1 元素链融合（驱动层的 `--no-fuse` 用）。
+ * @brief Turn off S1 element-chain fusion (the `--no-fuse` driver switch).
  *
- * @param off 为 `true` 时不融合。
+ * @param off  `true` disables fusion.
  */
 void checkSetNoFuse(bool off);
 
 /**
- * @brief 把 stdlib 目录交给检查器，用于从 `INDEX` 读"没有这个方法"的提示。
+ * @brief Give the checker the stdlib directory, so the "no such method" hint can be read
+ * from `INDEX`.
  *
- * 加载器（更后的一层）解析这个目录，而提示本身住在检查器这一侧、紧挨着用它的诊断，所以
- * 这次调用是**向下**的：加载器经由这个公开入口调进来，检查器不去够模块层的头文件。
+ * The loader (a later layer) resolves that directory, but the hint lives on the checker
+ * side next to the diagnostic that uses it, so this call goes **downward**: the loader
+ * calls in through this public entry point, and the checker does not reach for the module
+ * layer's header.
  *
- * @param stdDir  stdlib 目录；提示在首次未命中、只走错误路径时读它。
+ * @param stdDir  stdlib directory; the hint is read from it on the first miss, on the error
+ *                path only.
  */
 void hintIndexSetStdDir(const char *stdDir);
 

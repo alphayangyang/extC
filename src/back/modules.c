@@ -1,4 +1,6 @@
-/* Module loading: semantic imports into a single translation unit.
+/**
+ * @file modules.c
+ * @brief Module loading: semantic imports merged into a single translation unit.
  *
  * One file is one module. `use std::io` is a semantic import, not a textual include:
  * the file is parsed on its own, its declarations are merged into the program, and
@@ -14,8 +16,8 @@
  *   2. Modules load recursively. A state flag on each unit detects cycles: a module
  *      that is asked for while it is still loading is a cycle, and that is an error.
  *   3. Each module's declarations are merged into the main Module in post-order, so
- *      a dependency is merged before the declarations that need it - the very path
- *      the prelude takes.
+ *      a dependency is merged before the declarations that need it: the path the
+ *      prelude takes.
  *   4. Qualified names are resolved before the checker runs:
  *        `io::readLine(...)`    -> flat name, rewritten into EX_CALL
  *        `io::STDIN`            -> flat name, rewritten into EX_IDENT
@@ -23,12 +25,12 @@
  *      The checker therefore still sees the flat table it was written against and
  *      needs no change at all.
  *
- * Limits of the current implementation, stated plainly:
- *   - Top-level names must be globally unique. Two modules that each declare a
- *     private `helper` are rejected as a duplicate name today, and the message says
- *     that the clash is between modules. A real per-module namespace is future work.
- *   - Referring to another module's function or global *without* a qualifier still
- *     works, because the checker sees one flat table. So `@private` currently blocks
+ * Three properties bound the implementation:
+ *   - Top-level names are globally unique. Two modules that each declare a private
+ *     `helper` are rejected as a duplicate name, and the message says that the clash
+ *     is between modules: there is no per-module namespace.
+ *   - Referring to another module's function or global *without* a qualifier also
+ *     resolves, because the checker sees one flat table. `@private` therefore blocks
  *     only the qualified form, and blocking the unqualified form belongs in name
  *     resolution.
  *   - Two imports whose last path segment is the same (`a::util`, `b::util`) cannot
@@ -48,9 +50,7 @@
 #include <unistd.h>   /* readlink: locate `<extc>/../stdlib` */
 #include <time.h>
 
-/* Time-based split of the loader: it is the steepest phase (x5.8 per doubling) and callgrind's
- * instruction ranking does not explain it (strstr is 71% of instructions but SIMD-cheap, getenv
- * 1.6% and free in time). So measure time: mergeUnit per unit against everything else. */
+/* Loader phase timings: the split `EXTC_DBG_TIME` reports. */
 /**
  * @brief Report whether `EXTC_DBG_TIME` is set, reading the environment once and caching it.
  *
@@ -189,17 +189,20 @@ typedef struct { const char *from; const char *to; } Ren;
 /* One loaded module together with the state of its loading. */
 typedef struct {
     const char *file;       /* resolved path; the unique key for this module */
-    const char *modName;    /* 模块**叫什么**：文件里 `module a::b` 声明的名字，或（没有声明时）
-                             * 文件名的最后一段。诊断与裸名可见性用它，NULL 表示根文件。 */
-    const char *flatName;   /* 生成 C 名字用的前缀：`std::io::fmt` -> `std$io$fmt`；
-                             * 与 `modName` 分开是因为 `::` 不是 C 标识符的一部分。 */
+    const char *modName;    /* what the module is **called**: the name its file declares
+                             * with `module a::b`, or without a declaration the last segment
+                             * of the file name. Diagnostics and bare-name visibility use it;
+                             * NULL for the root file. */
+    const char *flatName;   /* prefix for generated C names: `std::io::fmt` -> `std$io$fmt`;
+                             * kept separate from `modName` because `::` is not part of a C
+                             * identifier. */
     Module      mod;        /* its own parsed declarations, before merging */
     Ctx        *ctx;        /* its own source context, so a diagnostic names the right
                              * file and line. The root unit points at the context the
                              * caller passed in, by pointer: a copy would swallow the
                              * diagnostics reported through it. */
-    int         state;      /* 0 = not started, 1 = loading (this detects a cycle),
-                             * 2 = done */
+    int         state;      /* 0 = not started, 1 = loading (a unit asked for in this
+                             * state is a cycle), 2 = done */
     /* Source name -> generated name for every declaration of this module, so that a
      * reference written in this module can be mapped to the name that was emitted
      * (`pair` -> `liba$pair`). */
@@ -279,9 +282,8 @@ static const char *suggestImportPath(Loader *L, const char *spelled) {
  * @brief Prefix a declaration name with its module name: `readLine` -> `io$readLine`.
  *
  * `$` is legal in a C identifier and illegal in an extC identifier, so a generated name can
- * never collide with a name the user wrote. The result lives in the arena, and another
- * `arenaPrintf` may reuse that buffer: compute every name first and only then store the
- * pointers (see `mangleUnitDecls`).
+ * never collide with a name the user wrote. The result is arena-owned and stable: every call
+ * allocates its own bytes and the arena never recycles them, so a recorded name stays valid.
  *
  * @param L     loader whose arena owns the built string.
  * @param u     the declaration's unit; a NULL or empty module name leaves `name` alone,
@@ -615,18 +617,20 @@ static ModUnit *importedAsPath(Loader *L, ModUnit *self, const char *qname) {
 }
 
 /**
- * @brief 一个模块通过 `pub use` 对外提供的**名字**归谁所有。
+ * @brief Which module owns a **name** that a module publishes through `pub use`.
  *
- * 门面模块自己不定义成员，只把实现模块的名字再导出：`std::io` 里
- * `pub use std::io::fmt::{padText}` 之后，`io::padText` 属于 `std::io::fmt`。查询的是
- * "这个名字最终由哪个模块声明"，因为裸名可见性、`@private` 与扁平名都按**所有者**
- * 计算。
+ * A facade module declares no members of its own; it re-exports the names of an
+ * implementation module. After `pub use std::io::fmt::{padText}` inside `std::io`,
+ * `io::padText` belongs to `std::io::fmt`. The query is which module ultimately declares the
+ * name, because bare-name visibility, `@private` and the flat name are all computed from the
+ * **owner**.
  *
- * @param L      加载器。
- * @param u      被导入的那个模块（可能是门面）。
- * @param name   要查的名字。
- * @param depth  递归深度，上限 8（再导出链是有向无环的，但坏输入不配让编译器栈溢出）。
- * @return       声明这个名字的模块；没有再导出它时返回 `NULL`。
+ * @param L      loader.
+ * @param u      the imported module, which may be a facade.
+ * @param name   the name to look up.
+ * @param depth  recursion depth, at most 8 (the re-export chain is acyclic, but malformed
+ *               input must not overflow the compiler stack).
+ * @return       the module declaring the name, or `NULL` when no `pub use` re-exports it.
  */
 static ModUnit *pubNameOwner(Loader *L, ModUnit *u, const char *name, int depth) {
     if (!u || !name || depth > 8) return NULL;
@@ -643,17 +647,17 @@ static ModUnit *pubNameOwner(Loader *L, ModUnit *u, const char *name, int depth)
 }
 
 /**
- * @brief 一个模块通过 `pub use 模块路径` 再导出的**句柄**指向哪个模块。
+ * @brief Which module the **handle** re-exported by `pub use module::path` points at.
  *
- * `pub use std::io::fmt` 让导入者也能写 `fmt::padText`。句柄再导出只认同一条完整路径
- * （没有名字列表、没有星号），因为再导出的语义是"我替你把那个模块挂出来"，不是"我
- * 重新发布它的名字"。
+ * `pub use std::io::fmt` lets importers write `fmt::padText` too. A handle re-export accepts
+ * only one full path (no name list, no wildcard): its meaning is "I hang that module out for
+ * you", not "I republish its names".
  *
- * @param L          加载器。
- * @param u          被导入的模块。
- * @param shortName  要查的句柄名。
- * @param depth      递归深度（上限 8）。
- * @return           句柄指向的模块；没有再导出它时返回 `NULL`。
+ * @param L          loader.
+ * @param u          the imported module.
+ * @param shortName  the handle name to look up.
+ * @param depth      recursion depth (at most 8).
+ * @return           the module the handle points at, or `NULL` when it is not re-exported.
  */
 static ModUnit *pubHandleOwner(Loader *L, ModUnit *u, const char *shortName, int depth) {
     if (!u || !shortName || depth > 8) return NULL;
@@ -680,9 +684,9 @@ static ModUnit *importedAs(Loader *L, ModUnit *self, const char *shortName) {
         if (strcmp(u->shortName, shortName) == 0)
             return u->file ? findUnit(L, u->file) : NULL;
     }
-    /* 导入的模块可以把另一个模块的句柄**再导出**（`pub use std::io::fmt`），
-     * `fmt::padText` 于是也能解析。一个模块一条再导出，不递归展开成"所有后代句柄"：
-     * 句柄是路径的简写，不是继承。 */
+    /* An imported module can re-export another module's handle (`pub use std::io::fmt`),
+     * so `fmt::padText` resolves too. One re-export per module, not expanded recursively into
+     * "all descendant handles": a handle is shorthand for a path, not inheritance. */
     for (size_t i = 0; i < self->mod.uses.len; i++) {
         UseDecl *u = *(UseDecl **)vecAt(&self->mod.uses, i);
         if (!u->isPub || !u->file) continue;
@@ -838,16 +842,16 @@ static bool rwQualifiedTypeName(Loader *L, ModUnit *self, const char *qname, con
     if (strstr(rest, "::")) return false;          /* `a::b::c` is not supported here */
     ModUnit *target = importedAs(L, self, shortName);
     if (!target) return false;
-    /* A qualified name that points at this very unit is never rewritten (see above): the
-     * prelude writes `pcg32::withStream(...)` for a struct of its own file, and `pcg32` is
-     * registered before module loading, so a rewritten `prelude$pcg32` names nothing.
-     * `rwQualified` guards the same case by letting a name that equals this file's own
-     * name through. */
+    /* Pointing at the unit itself: leave the name alone. The prelude writes
+     * `pcg32::withStream(...)` for a struct of its own file, and `pcg32` is registered before
+     * module loading, so a rewritten `prelude$pcg32` names nothing. `rwQualified` guards the
+     * same case by letting a name that equals this file's own name through. */
     if (target == self) return false;              /* pointing at itself: leave it alone */
     StructDef *sd = unitStruct(target, rest);
     TypeDef   *td = sd ? NULL : unitType(target, rest);
     if (!sd && !td) {
-        /* 门面模块没有自己的类型：`core::pair2` 可能来自它 `pub use` 的实现模块。 */
+        /* A facade module declares no types of its own: `core::pair2` may come from the
+         * implementation module it `pub use`s. */
         ModUnit *owner = pubNameOwner(L, target, rest, 0);
         if (!owner || owner == target) return false;   /* not a type: leave the path alone */
         sd = unitStruct(owner, rest);
@@ -983,7 +987,7 @@ static void rwQualified(Loader *L, ModUnit *self, Expr *e) {
          * `modPrefix` and the type as the symbol; a short one (`fs::Type(...)`) arrives as
          * `typeName` = module, `name` = type. Both end up asking the same question. */
         if (!mowner && tn0 && !strstr(tn0, "::")) mowner = importedAs(L, self, tn0);
-        /* 门面模块的构造器：`core::pair2(...)` 里 `pair2` 是再导出的类型。 */
+        /* A facade's constructor: in `core::pair2(...)`, `pair2` is a re-exported type. */
         if (mowner && mowner != self && msym && !unitStruct(mowner, msym)) {
             ModUnit *rowner = pubNameOwner(L, mowner, msym, 0);
             if (rowner && rowner != mowner && unitStruct(rowner, msym)) mowner = rowner;
@@ -1050,9 +1054,10 @@ static void rwQualified(Loader *L, ModUnit *self, Expr *e) {
 
     const bool isCall = saveCall;
     const char *nm = symName;
-    /* 名字最终属于哪个模块：门面模块只是**发布**它，扁平名、裸名可见性与诊断都按
-     * 所有者算。`core::twice` 的实现在 `extra`（`core` 里 `pub use extra::{twice}`），
-     * 于是这里换成 `extra` 再查。 */
+    /* Which module the name ultimately belongs to: a facade only **publishes** it, and the
+     * flat name, bare-name visibility and diagnostics are all computed from the owner. The
+     * implementation of `core::twice` lives in `extra` (`core` has `pub use extra::{twice}`),
+     * so the lookup switches to `extra` here. */
     ModUnit   *owner = target;
     FuncDef   *f = unitFunc(target, nm);
     GlobalDef *g = f ? NULL : unitGlobal(target, nm);
@@ -1268,12 +1273,12 @@ static void rwExpr(Loader *L, ModUnit *self, Expr *e) {
         for (size_t i = 0; i < e->u.lit.inits.len; i++)
             rwExpr(L, self, (*(FieldInit **)vecAt(&e->u.lit.inits, i))->value);
         break;
-    /* A lambda is the one node where a **rewriting** pass must go further than an analysis pass:
-     * its body is emitted as the generated `call` method's source, so every name and type in it has
-     * to be rewritten by the module it was written in. Skipping the body leaves the unmangled name
-     * of a module-local function and makes the `call` method an empty body that silently
-     * returns 0 (a module file then reports `make=0` with no diagnostic). The field values are walked
-     * as well -- they are the reads that happen where the lambda is written. */
+    /* A lambda needs the **rewrite** pass, not just analysis: its body is emitted as the
+     * generated `call` method's source, so every name and type in it must be rewritten by the
+     * module it was written in. Skipping the body leaves a module-local function unmangled and
+     * makes the `call` method an empty body that silently returns 0 (a module file then reports
+     * `make=0` with no diagnostic). The field initializers are walked as well: they are the
+     * reads that happen where the lambda is written. */
     case EX_LAMBDA:
         for (size_t i = 0; i < e->u.lambda.params.len; i++)
             rwType(L, self, (*(Param **)vecAt(&e->u.lambda.params, i))->type);
@@ -1304,10 +1309,10 @@ static void rwStmt(Loader *L, ModUnit *self, Stmt *s) {
     case ST_YIELD:
         rwExpr(L, self, s->u.yield_.value);
         break;
-    case ST_TRAP:     /* `trap(msg)`：消息也是一条表达式（可能带模块限定的名字）。 */
+    case ST_TRAP:     /* `trap(msg)`: the message is an expression too, possibly qualified. */
         rwExpr(L, self, s->u.trap_.msg);
         break;
-    case ST_DOMAIN:   /* `d.run { … }`: 域块 —— 接收者与块体都要改写（和 ST_IF 同一形状）。 */
+    case ST_DOMAIN:   /* `d.run { ... }`: domain block -- receiver and body are rewritten (like ST_IF). */
         rwExpr(L, self, s->u.domain_.callee);
         rwStmt(L, self, s->u.domain_.body);
         break;
@@ -1462,15 +1467,15 @@ static bool useListHas(UseDecl *u, const char *name) {
     return false;
 }
 
-/* Memo for the ownership test below. `unitOwns` is asked 102,383,988 times at N=3200 (call-site
- * histogram of strcmp/strstr via LD_PRELOAD + addr2line) and each call scans all four declaration
- * lists of the unit -- for the root unit that is the whole program, so the rewrite walk is O(N^2)
- * (the load phase x5.8 per doubling, and the source of the 63% of instructions inside strcmp).
+/* Memo for the ownership test below. `unitOwns` is asked once per name per candidate
+ * declaration while the rewrite walk runs, and every call scans all four declaration lists of
+ * the unit; for the root unit that is the whole program, so the walk is O(N^2) without the
+ * memo.
  *
  * The answer depends on the four list lengths: they grow while a unit is being merged, and an
- * unguarded memo changes the generated C. Every entry therefore records all four and is re-scanned
- * the moment one of them moves, and a miss -- empty slot, evicted entry, or a full probe window --
- * falls back to the original scan. Fixed size: nothing to allocate. */
+ * unguarded memo changes the generated C. Every entry therefore records all four and is
+ * re-scanned the moment one of them moves, and a miss -- empty slot or a full probe window --
+ * falls back to the scan. Fixed size: nothing to allocate. */
 typedef struct {
     const ModUnit *u; const char *name; size_t n0, n1, n2, n3; char val; int filled, done;
 } OwnMemo;
@@ -1573,9 +1578,10 @@ static const char *openLookup(ModUnit *self, const char *name, int line) {
         ModUnit *dep = (ModUnit *)u->unit;
         const char *flat = renLookup(dep, name);
         ModUnit *owner;
-        /* 门面模块自己不声明成员，只 `pub use` 实现模块的名字：`use std::io::{cerr}` 里
-         * `cerr` 的所有者是 `std::io::err`。与限定名那条路一样，这里也要走到所有者再查表，
-         * 否则裸名会「导入了一个再导出的名字却仍然未定义」。 */
+        /* A facade declares no members of its own; it only `pub use`s the names of an
+         * implementation module: in `use std::io::{cerr}`, `cerr` is owned by `std::io::err`.
+         * As on the qualified path, the lookup goes to the owner first, or a bare name would
+         * stay undefined even though a re-exported name was imported. */
         if (!flat) {
             owner = pubNameOwner(NULL, dep, name, 0);
             if (owner) flat = renLookup(owner, name);
@@ -1715,9 +1721,8 @@ static void mergeUnit(Loader *L, ModUnit *u) {
      * itself. The attachment itself happens in the checker, where the type table exists. */
     /* Traits travel like types: their method signatures are rewritten through this unit's
      * table, so a qualified type name inside a signature resolves exactly as it would in a
-     * struct body. The **name** is not mangled: like every other top-level name, a trait is
-     * program-global today, and two modules declaring `trait Codec` is a duplicate (the
-     * checker reports it). */
+     * struct body. The **name** is not mangled: a trait name is program-global, and two
+     * modules declaring `trait Codec` is a duplicate the checker reports. */
     for (size_t i = 0; i < src->traits.len; i++) {
         TraitDef *tr = *(TraitDef **)vecAt(&src->traits, i);
         tr->modName = u->modName;
@@ -1930,8 +1935,9 @@ static ModUnit *loadUnit(Loader *L, const char *modPath, const char *importerFil
     vecInit(&toks, L->a, sizeof(Token));
     lexAll(u->ctx, &toks);
     if (!u->ctx->hasError) parseModule(u->ctx, L->a, &toks, &u->mod);
-    /* `module a::b` 声明了模块**叫什么**：身份（诊断、裸名可见性）用它，生成 C 名字用
-     * 把 `::` 换成 `$` 的扁平形。没有声明时就沿用文件名的最后一段。 */
+    /* `module a::b` declares what the module is **called**: identity (diagnostics, bare-name
+     * visibility) uses that name, and generated C names use its flat form with `::` replaced
+     * by `$`. Without a declaration, the last segment of the file name is used. */
     if (!u->ctx->hasError && u->mod.declName) {
         u->modName  = u->mod.declName;
         {
@@ -2011,17 +2017,19 @@ static ModUnit *loadUnit(Loader *L, const char *modPath, const char *importerFil
 /* ------------------------------------------------------------------- entry */
 
 /**
- * @brief 把一条 `use` 记成 `Open` 条目（裸名可见性判据）。
+ * @brief Record one `use` as an `Open` entry (the bare-name visibility criterion).
  *
- * 名字列表里的名字若来自门面的再导出，`opened` 要写**所有者**模块：裸名可见性、
- * `@private` 与扁平名都按所有者计算，写门面的名字会让 `use facade::{f}` 找不到 `f`
- * 的声明。星号导入同理 —— 门面再导出的名字也要跟着进，否则 `use facade::*` 之后
- * 裸名 `twice` 仍然不可见。
+ * When a name in the list comes from a facade's re-export, `opened` must name the **owner**
+ * module: bare-name visibility, `@private` and the flat name are all computed from the owner,
+ * and naming the facade would leave `use facade::{f}` unable to find `f`'s declaration. The
+ * same holds for a wildcard import: the names a facade re-exports enter too, or a bare `twice`
+ * would still be invisible after `use facade::*`.
  *
- * @param L         加载器。
- * @param out       正在拼的合并模块（`opens` 的宿主）。
- * @param importer  做引用的模块名（根文件为 `NULL`）。
- * @param u         那条 `use`；没有解析出文件或只是句柄导入时什么也不做。
+ * @param L        loader.
+ * @param out      the merged module being built (the host of `opens`).
+ * @param importer the module doing the import (`NULL` for the root file).
+ * @param u        the `use`; nothing is recorded when it resolved no file or is only a handle
+ *                 import.
  */
 static void addOpensFor(Loader *L, Module *out, const char *importer, UseDecl *u) {
     if (!u || !u->file || (!u->wildcard && u->names.len == 0)) return;
@@ -2032,7 +2040,8 @@ static void addOpensFor(Loader *L, Module *out, const char *importer, UseDecl *u
         o->importer = importer;
         o->opened   = opened->modName;
         o->name     = NULL;                    /* every public name */
-        /* 门面的再导出也要跟着进：`use facade::*` 之后裸名能用 `twice`。 */
+        /* the facade's re-exports enter too: after `use facade::*`, the bare name
+         * `twice` is visible. */
         for (size_t i = 0; i < opened->mod.uses.len; i++) {
             UseDecl *pu = *(UseDecl **)vecAt(&opened->mod.uses, i);
             if (!pu->isPub || pu->wildcard || pu->names.len == 0 || !pu->file) continue;
@@ -2179,11 +2188,13 @@ bool loadModules(Arena *a, Module *out, Module *rootm, Ctx *rootCtx,
         }
     }
 
-    /* `module` 声明的两条边界：
-     *   ① 入口文件是**调用者**，不属于它导入的任何模块 —— 给它起名字没有意义，静默忽略
-     *      更糟（读者会以为生效了）；
-     *   ② 两个文件声明同一个模块名必须报错：模块名是身份，撞名会让裸名可见性与扁平名
-     *      混在一起，而这是编译期就该拦住的事。 */
+    /* Two boundaries of the `module` declaration:
+     *   1. The entry file is the **caller**, not part of any module it imports: naming it has
+     *      no meaning, and silently ignoring the declaration is worse (the reader would think
+     *      it took effect).
+     *   2. Two files declaring the same module name must be an error: the module name is
+     *      identity, and a clash would mix bare-name visibility and flat names together; that
+     *      has to be stopped at compile time. */
     if (rootm->declName) {
         ctxError(rootCtx, rootm->declLine, 1,
                  "The entry file is not a module of its own -- it is the program. Move the"
@@ -2209,8 +2220,9 @@ bool loadModules(Arena *a, Module *out, Module *rootm, Ctx *rootCtx,
     /* Collect every `use mod::*` as an (importer, opened) pair. It has to happen here,
      * where both the importing unit and the module it resolved to are known; the
      * checker only has the second one, in `FuncDef.modName`. */
-    /* `pub use x::*` 被拒绝：再导出**所有名字**会让公开面随实现文件漂移，而这正是
-     * 门面要对冲的那件事。整条路径（`pub use x::fmt`）可以，名字列表可以。 */
+    /* `pub use x::*` is rejected: re-exporting **every name** would let the public surface
+     * drift with the implementation file, which is exactly what a facade is meant to prevent.
+     * A whole path (`pub use x::fmt`) is allowed, and so is a name list. */
     {
         for (size_t i = 0; i < L.units.len; i++) {
             ModUnit *u = *(ModUnit **)vecAt(&L.units, i);
@@ -2263,7 +2275,7 @@ bool loadModules(Arena *a, Module *out, Module *rootm, Ctx *rootCtx,
         root.modName = NULL;      /* the root module: never renamed */
         mergeUnit(&L, &root);
     }
-    ldPhase("ld-root", t_root);   /* the root unit's own merge: where the loader's time is */
+    ldPhase("ld-root", t_root);   /* the root unit's own merge */
     ldCount();
     if (dbgOn("EXTC_DBG_MOD")) fprintf(stderr, "[mod] merge done: errors=%d declarations funcs=%zu globals=%zu\n",
                                          L.errors, out->funcs.len, out->globals.len);

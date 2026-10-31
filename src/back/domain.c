@@ -1,29 +1,33 @@
-/* The domain runtime.
+/**
+ * @file domain.c
+ * @brief The domain runtime.
  *
- * A **domain** is the thing a task is handed to: it owns the tasks started inside its block and it
- * is what makes the block *structured* -- the block cannot end while a task it started is still
- * unfinished, because ending the block runs them (`extc_dom_run`).
+ * A **domain** is what a task is handed to: it owns the tasks started inside its block and
+ * it is what makes the block *structured* -- the block cannot end while a task it started
+ * is still unfinished, because ending the block runs them (`extc_dom_run`).
  *
- * A task is `(frame, step)`: the frame is the coroutine's own storage and `step` is the generated
- * `$next` that advances it one suspension at a time. This layer therefore never looks inside a
- * frame; it only knows how to hold a pair and how to drive it to completion.
+ * A task is `(frame, step)`: the frame is the coroutine's own storage and `step` is the
+ * generated `$next` that advances it one suspension at a time. This layer therefore never
+ * looks inside a frame; it only knows how to hold a pair and how to drive it to completion.
  *
  * Emitted on demand (`CG.needDomain`): a program that starts no task carries none of this.
  *
- * The domain is a pointer, and the extC side sees it as an `i64` -- the same convention the rest of
- * the runtime uses to hand opaque handles across the boundary (`extc_par_run` gets its worker that
- * way too).
+ * The domain is a pointer, and the extC side sees it as an `i64` -- the same convention the
+ * rest of the runtime uses to hand opaque handles across the boundary (`extc_par_run` gets
+ * its worker that way too).
  */
 #include "domain.h"
 
 /**
- * @brief 发出调度域运行时的 C 代码：域拥有块内启动的任务，并把它们驱动到完成。
+ * @brief Emit the scheduling-domain runtime: the domain owns the tasks started in its
+ * block and drives them to completion.
  *
- * 任务是一对（帧，推进它的 `step`）；这一层从不看进帧里，只管住这一对并驱动它。
- * 程序里没有启动任务时这段运行时不出现。
+ * A task is a pair (frame, the `step` that advances it); this layer never looks inside a
+ * frame, it only holds the pair and drives it. When a program starts no task this runtime
+ * does not appear.
  *
- * @param a    未使用：运行时是纯文本，没有需要 arena 的状态。
- * @param out  追加生成代码的输出缓冲。
+ * @param a    Unused: the runtime is plain text and has no state that needs an arena.
+ * @param out  Output buffer the generated code is appended to.
  */
 void domainEmitRuntime(Arena *a, Buf *out) {
     (void)a;
