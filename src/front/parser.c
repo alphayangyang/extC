@@ -2624,9 +2624,19 @@ static Stmt *parseStmt(Parser *p) {
          * 所以在这里把它改写成 `stl::nd::set2(v, i, j, x)`（一条普通调用语句）。
          * 复合形式同理：`v[i, j] += x` 改写成 `set2(v, i, j, at2(v, i, j) + x)` —— 元素只读一次，
          * 与 `v[i] += x` 的形状一致。 */
+        bool ndIdxTarget = false;
+        const char *setName = NULL;
         if (e->kind == EX_ASSOC && e->u.assoc.modPrefix
-            && strcmp(e->u.assoc.modPrefix, "stl::nd") == 0 && e->u.assoc.name
-            && strcmp(e->u.assoc.name, "at2") == 0 && e->u.assoc.args.len == 3) {
+            && strcmp(e->u.assoc.modPrefix, "stl::nd") == 0 && e->u.assoc.name) {
+            if (strcmp(e->u.assoc.name, "at2") == 0 && e->u.assoc.args.len == 3) {
+                ndIdxTarget = true;
+                setName = "set2";
+            } else if (strcmp(e->u.assoc.name, "at3") == 0 && e->u.assoc.args.len == 4) {
+                ndIdxTarget = true;
+                setName = "set3";
+            }
+        }
+        if (ndIdxTarget) {
             if (strcmp(aop, "=") != 0) {
                 /* 运算符名要静态存储：`mkBin` 只记指针，指向栈上的数组会变成悬垂串
                  * （生成的 C 里运算符会变成空白）。 */
@@ -2642,7 +2652,7 @@ static Stmt *parseStmt(Parser *p) {
             for (size_t i2 = 0; i2 < e->u.assoc.args.len; i2++)
                 *(Expr **)vecPush(&args) = *(Expr **)vecAt(&e->u.assoc.args, i2);
             *(Expr **)vecPush(&args) = v;
-            Expr *call = moduleCall(p, "stl::nd", "set2", &args, t->line);
+            Expr *call = moduleCall(p, "stl::nd", setName, &args, t->line);
             Stmt *ss = stmtNew(p->arena, ST_EXPR, t->line);
             ss->u.expr.expr = call;
             return ss;
@@ -4376,16 +4386,34 @@ static Expr *parsePostfix(Parser *p) {
                     ix->u.index.index = it->lo;
                     e = ix;
                 }
-            } else if (items.len == 2) {
+            } else if (items.len >= 2) {
                 SubItem *a0 = (SubItem *)vecAt(&items, 0);
                 SubItem *a1 = (SubItem *)vecAt(&items, 1);
                 Vec args;
                 vecInit(&args, p->arena, sizeof(void *));
                 *(Expr **)vecPush(&args) = e;
-                if (!a0->isRange && !a1->isRange) {
-                    *(Expr **)vecPush(&args) = a0->lo;
-                    *(Expr **)vecPush(&args) = a1->lo;
-                    e = moduleCall(p, "stl::nd", "at2", &args, br->line);
+                bool allIdx = true;
+                for (size_t k = 0; k < items.len; k++) {
+                    SubItem *it = (SubItem *)vecAt(&items, k);
+                    if (it->isRange) allIdx = false;
+                }
+                if (allIdx) {
+                    for (size_t k = 0; k < items.len; k++)
+                        *(Expr **)vecPush(&args) = ((SubItem *)vecAt(&items, k))->lo;
+                    static const char *atNames[] = {"at2", "at3"};
+                    if (items.len > 3) {
+                        ctxError(p->ctx, br->line, br->col,
+                                 "up to three indices are supported (`v[i, j]`, `v[i, j, k]`);"
+                                 " for higher ranks take a slice first",
+                                 "a subscript list holds at most three indices");
+                        return NULL;
+                    }
+                    e = moduleCall(p, "stl::nd", atNames[items.len - 2], &args, br->line);
+                } else if (items.len != 2) {
+                    ctxError(p->ctx, br->line, br->col,
+                             "range subscripts come in pairs: `v[r0..r1, c0..c1]`",
+                             "a range in a subscript list needs two items");
+                    return NULL;
                 } else if (a0->isRange && a1->isRange) {
                     if (!a0->lo || !a0->hi || !a1->lo || !a1->hi) {
                         ctxError(p->ctx, br->line, br->col,
@@ -4406,12 +4434,6 @@ static Expr *parsePostfix(Parser *p) {
                              "a two-subscript expression mixes an index and a range");
                     return NULL;
                 }
-            } else {
-                ctxError(p->ctx, br->line, br->col,
-                         "two subscripts are supported for now (rank-2 views); for higher ranks"
-                         " use `stl::nd`'s view constructors",
-                         "a subscript list holds at most two items");
-                return NULL;
             }
         } else if (at(p, "(")) {
             Vec args;

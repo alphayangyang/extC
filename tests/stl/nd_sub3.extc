@@ -1,0 +1,36 @@
+// 三维视图的下标糖：`v[i, j, k]` 读、`= x` 写、`+= x` 复合写都直译成
+// `stl::nd::at3` / `set3`（与 rank-2 的 at2/set2 同一条路），rank-3 的逐元素
+// 整数组表达式也照常落在 `nd::addInto`/`mulInto`/`scaleInto` 上。
+use std::io
+use stl::nd
+
+fn fill3(v: ndview<f64>) {
+    var i: i64 = 0
+    while i < v.shape[0] {
+        var j: i64 = 0
+        while j < v.shape[1] {
+            var k: i64 = 0
+            while k < v.shape[2] {
+                v[i, j, k] = f64(i * 100 + j * 10 + k)
+                k = k + 1
+            }
+            j = j + 1
+        }
+        i = i + 1
+    }
+}
+
+fn main() -> i32 {
+    var a: ndarray<f64> = ndarray<f64>::zeros3(i64(2), i64(3), i64(4)) ?? ndarray<f64>::empty()
+    var b: ndarray<f64> = ndarray<f64>::zeros3(i64(2), i64(3), i64(4)) ?? ndarray<f64>::empty()
+    var c: ndarray<f64> = ndarray<f64>::zeros3(i64(2), i64(3), i64(4)) ?? ndarray<f64>::empty()
+    var av: ndview<f64> = a.viewMut()
+    var bv: ndview<f64> = b.viewMut()
+    var cv: ndview<f64> = c.viewMut()
+    fill3(av)
+    bv[1, 2, 3] = f64(-1.5)
+    bv[0, 0, 0] += f64(2.0)
+    cv = av + bv * 2.0
+    io::cout << f"r={i64(cv[1, 2, 3])} w={i64(cv[0, 0, 0])} p={i64(av[1, 2, 3])}\n"
+    return 0
+}

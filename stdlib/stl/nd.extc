@@ -562,6 +562,36 @@ fn set2<T>(v: ndview<T>, i: i64, j: i64, x: T) {
     v.data[v.off + i * v.strides[0] + j * v.strides[1]] = x
 }
 
+/** @brief 读三维视图的一个元素（`v[i, j, k]` 的下标糖直译到这里）。
+ *  @param v 视图（rank 至少 3）。
+ *  @param i 第 0 维下标。
+ *  @param j 第 1 维下标。
+ *  @param k 第 2 维下标。
+ *  @return 该元素；维度不足或下标越界直接 `trap`。
+ */
+fn at3<T>(v: ndview<T>, i: i64, j: i64, k: i64) -> T {
+    if v.rank < 3 { trap("at3: the view has fewer than 3 dimensions") }
+    if i < 0 || i >= v.shape[0] { trap("at3: the first index is out of range") }
+    if j < 0 || j >= v.shape[1] { trap("at3: the second index is out of range") }
+    if k < 0 || k >= v.shape[2] { trap("at3: the third index is out of range") }
+    return v.data[v.off + i * v.strides[0] + j * v.strides[1] + k * v.strides[2]]
+}
+
+/** @brief 写三维视图的一个元素（`v[i, j, k] = x` 的赋值糖直译到这里）。
+ *  @param v 视图（rank 至少 3）。
+ *  @param i 第 0 维下标。
+ *  @param j 第 1 维下标。
+ *  @param k 第 2 维下标。
+ *  @param x 新值。
+ */
+fn set3<T>(v: ndview<T>, i: i64, j: i64, k: i64, x: T) {
+    if v.rank < 3 { trap("set3: the view has fewer than 3 dimensions") }
+    if i < 0 || i >= v.shape[0] { trap("set3: the first index is out of range") }
+    if j < 0 || j >= v.shape[1] { trap("set3: the second index is out of range") }
+    if k < 0 || k >= v.shape[2] { trap("set3: the third index is out of range") }
+    v.data[v.off + i * v.strides[0] + j * v.strides[1] + k * v.strides[2]] = x
+}
+
 /** @brief 取二维视图的一个子矩形（`v[r0..r1, c0..c1]` 的下标糖直译到这里）；零拷贝。
  *  @param v 视图（rank 至少 2）。
  *  @param r0 第 0 维起点。
