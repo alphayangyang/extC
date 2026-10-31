@@ -1,17 +1,19 @@
-/* The coroutine task table.
+/**
+ * @file coroutine.c
+ * @brief The coroutine task table.
  *
  * What a task is: the **place** a coroutine's storage hangs off. `spawn` enters that place
  * lazily and records it here; every step makes it current; the task's end releases the whole
  * place in one go.
  *
- * Why a table and not just the frame's mark: the author's decision for slice C is that the task
- * is **owned** rather than merely scoped. Keeping the record here is what makes
+ * Why a table and not just the frame's mark: the task is **owned** rather than merely
+ * scoped. Keeping the record here is what makes
  *
  *   - running to completion and an explicit drop the *same* release (`extc_task_end`),
  *   - a scheduler able to enumerate what is still live (`extc_task_live`), and
- *   - the frame able to hold only its own id (`task`), with the zone read once at the spawn and
- *     stored beside it for the step to use -- a resume never re-derives the place from the
- *     environment (rule 1).
+ *   - the frame able to hold only its own id (`task`), with the zone read once at the spawn
+ *     and stored beside it for the step to use -- a resume never re-derives the place from
+ *     the environment (rule 1).
  *
  * The frame still carries the zone itself: a step reads it from there, which is what the J1
  * check in `tools/check_concurrency_guards.py` enforces (no `extc_zoneTop` inside a `$step`).
@@ -19,14 +21,16 @@
 #include "coroutine.h"
 
 /**
- * @brief 把任务表追加到生成的编译单元。
+ * @brief Append the task table to the generated translation unit.
  *
- * 任务是协程存储所挂靠的那个**位置**：`spawn` 惰性进入它并在这里登记，每个 step 把它设为
- * 当前，任务结束时整块释放。记在本表里使任务成为**拥有**而非仅受作用域约束：运行到完成与
- * 显式 drop 是同一次释放（`extc_task_end`），调度器也能枚举还活着的东西（`extc_task_live`）。
+ * A task is the **place** the coroutine's storage hangs off: `spawn` enters it lazily and
+ * records it here, every step makes it current, and the task's end releases the whole place
+ * in one go. Keeping the record in this table is what makes the task **owned** rather than
+ * merely scoped: running to completion and an explicit drop are the same release
+ * (`extc_task_end`), and a scheduler can enumerate what is still live (`extc_task_live`).
  *
- * @param a    arena（本函数不用，为与其他发射口同形保留）。
- * @param out  正在写的生成 C。
+ * @param a    Arena (unused here; kept to match the other emission entry points).
+ * @param out  Generated C being written.
  */
 void coroutineEmitRuntime(Arena *a, Buf *out) {
     (void)a;
@@ -122,14 +126,15 @@ void coroutineEmitRuntime(Arena *a, Buf *out) {
 }
 
 /**
- * @brief 追加事件层（epoll + AF_UNIX socket）。
+ * @brief Append the event layer (epoll + AF_UNIX sockets).
  *
- * 只有标量与一个指针过边界：`epoll_event` 缓冲区留在这边，平台结构体不跨进 extC。它是
- * 调度器真正的事件来源（the scheduler's real event source），独立发射（不跟着任务表），
- * 因为程序可以只驱动 fd、从不孵化协程。
+ * Only scalars and one pointer cross the boundary: the `epoll_event` buffers stay on this
+ * side, and the platform struct never enters extC. It is the scheduler's real event source,
+ * and it is emitted independently of the task table, because a program may drive fds without
+ * ever spawning a coroutine.
  *
- * @param arena  arena，给临时缓冲区用。
- * @param out    正在写的生成 C。
+ * @param arena  Arena for temporary buffers.
+ * @param out    Generated C being written.
  */
 void eventEmitRuntime(Arena *arena, Buf *out) {
     (void)arena;
@@ -144,6 +149,9 @@ void eventEmitRuntime(Arena *arena, Buf *out) {
         "#include <netinet/tcp.h>\n"
         "#include <fcntl.h>\n"
         "#include <errno.h>\n\n"
+        "/* Declared here instead of including <unistd.h>: that header collides with the program's\n"
+        " * own read/write prototypes. The ABI is the same `int close(int)`. */\n"
+        "extern int close(int);\n\n"
         "int64_t extc_epoll_new(void) { return (int64_t)epoll_create1(0); }\n\n"
         "/* `tag` 跟着事件一起回来（epoll 的 user-data）—— 调度器把**任务行号**放进来，\n"
         " * 于是一个事件就是一次 O(1) 的定位，不必再扫任务表 ✗（这正是 10k 空闲连接\n"
@@ -194,7 +202,12 @@ void eventEmitRuntime(Arena *arena, Buf *out) {
         "    if (r >= 0) return (int64_t)r;\n"
         "    if (errno == EAGAIN || errno == EWOULDBLOCK) return -1000;\n"
         "    return -1001;\n"
-        "}\n\n"        "int64_t extc_sock_pair(int64_t *out) {\n"
+        "}\n\n"
+        "/* One connected AF_UNIX socket pair; its two fds are written to out[0] and out[1].\n"
+        " * Contract: `out` points to two int64_t slots -- extC's `sockPair(out)` passes a\n"
+        " * non-empty slice. A NULL is rejected with -1 instead of dereferenced. */\n"
+        "int64_t extc_sock_pair(int64_t *out) {\n"
+        "    if (!out) return -1;   /* no slots to receive the two fds */\n"
         "    int sv[2];\n"
         "    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) return -1;\n");
     bufPuts(out,
@@ -227,12 +240,14 @@ void eventEmitRuntime(Arena *arena, Buf *out) {
         "int64_t extc_unix_listen(uint8_t *path, int64_t len, int64_t backlog) {\n"
         "    struct sockaddr_un sa;\n"
         "    int fd = socket(AF_UNIX, SOCK_STREAM, 0);\n"
-        "    if (fd < 0 || len <= 0 || len > (int64_t)sizeof sa.sun_path) return -1;\n"
+        "    if (fd < 0) return -1;\n"
+        "    if (len <= 0 || len > (int64_t)sizeof sa.sun_path) { close(fd); return -1; }\n"
         "    memset(&sa, 0, sizeof sa);\n"
         "    sa.sun_family = AF_UNIX;\n"
         "    memcpy(sa.sun_path, path, (size_t)len);\n"
-        "    if (bind(fd, (struct sockaddr *)&sa, (socklen_t)sizeof sa) != 0) return -1;\n"
-        "    if (listen(fd, (int)backlog) != 0) return -1;\n"
+        "    /* Every failure below has to release the socket: the caller only sees -1. */\n"
+        "    if (bind(fd, (struct sockaddr *)&sa, (socklen_t)sizeof sa) != 0) { close(fd); return -1; }\n"
+        "    if (listen(fd, (int)backlog) != 0) { close(fd); return -1; }\n"
         "    /* **listener 必须非阻塞**：批量 `accept` 要一直抽到 EAGAIN；阻塞的 listener 会在\n"
         "     * backlog 抽干的瞬间把整个事件循环卡死（实测：50k 忙连接全部 ESTAB、却零响应 ✗）。 */\n"
         "    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);\n"
@@ -242,11 +257,12 @@ void eventEmitRuntime(Arena *arena, Buf *out) {
         "int64_t extc_unix_connect(uint8_t *path, int64_t len) {\n"
         "    struct sockaddr_un sa;\n"
         "    int fd = socket(AF_UNIX, SOCK_STREAM, 0);\n"
-        "    if (fd < 0 || len <= 0 || len > (int64_t)sizeof sa.sun_path) return -1;\n"
+        "    if (fd < 0) return -1;\n"
+        "    if (len <= 0 || len > (int64_t)sizeof sa.sun_path) { close(fd); return -1; }\n"
         "    memset(&sa, 0, sizeof sa);\n"
         "    sa.sun_family = AF_UNIX;\n"
         "    memcpy(sa.sun_path, path, (size_t)len);\n"
-        "    if (connect(fd, (struct sockaddr *)&sa, (socklen_t)sizeof sa) != 0) return -1;\n"
+        "    if (connect(fd, (struct sockaddr *)&sa, (socklen_t)sizeof sa) != 0) { close(fd); return -1; }\n"
         "    return (int64_t)fd;\n"
         "}\n\n"
         "/* Non-blocking accept: -1 with EAGAIN when the backlog is empty. */\n"
@@ -262,8 +278,6 @@ void eventEmitRuntime(Arena *arena, Buf *out) {
         " * scalars, exactly like the AF_UNIX side. Port 0 lets the kernel choose; read it back with\n"
         " * `extc_sock_local_port`. */\n"
         "/* 客户端：连到**给定 IP**（域名先走 `extc_dns_lookup` ✓）。返回 fd，失败 -1。 */\n"
-        "/* 不 include <unistd.h>：会跟程序自己的 read/write 原型打架（老账 ✓）⇒ 就地声明 close ✓ */\n"
-        "extern int close(int);\n\n"
         "int64_t extc_tcp_connect_to(uint8_t *ip, int64_t iplen, int64_t port) {\n"
         "    char name[64];\n"
         "    if (iplen <= 0 || iplen >= (int64_t)sizeof name) return -1;\n"
@@ -371,13 +385,14 @@ void eventEmitRuntime(Arena *arena, Buf *out) {
 }
 
 /**
- * @brief 追加 DNS 那一小块（同步 `getaddrinfo`）。
+ * @brief Append the small DNS block (synchronous `getaddrinfo`).
  *
- * 它跟协程 / epoll 没关系，而运行期是按需发射的，所以放进协程块会让"只想解析域名"的程序
- * 链接失败。这一块单独发射。
+ * It has nothing to do with coroutines or epoll, and the runtime is emitted on demand, so
+ * putting it in the coroutine block would break linking for a program that only wants to
+ * resolve names. It is emitted on its own.
  *
- * @param a    arena（本函数不用，为与其他发射口同形保留）。
- * @param out  正在写的生成 C。
+ * @param a    Arena (unused here; kept to match the other emission entry points).
+ * @param out  Generated C being written.
  */
 void dnsEmitRuntime(Arena *a, Buf *out) {
     (void)a;
@@ -412,17 +427,19 @@ void dnsEmitRuntime(Arena *a, Buf *out) {
 }
 
 /**
- * @brief 追加文件层的 shim。
+ * @brief Append the file-layer shim.
  *
- * `struct stat`、`off_t` 与路径的 NUL 终止都留在 C 侧，extC 只拿标量。它独立发射（按需，
- * 跟着声明走），不搭协程表的车：协程表的最终发射还被别的条件门着，拉不动这一块。
+ * `struct stat`, `off_t`, and NUL termination of paths all stay on the C side; extC only
+ * sees scalars. It is emitted independently (on demand, following its declaration) instead
+ * of riding on the coroutine table: that table's final emission is gated by other conditions
+ * and cannot carry this block.
  *
- * @param a    arena（本函数不用，为与其他发射口同形保留）。
- * @param out  正在写的生成 C。
+ * @param a    Arena (unused here; kept to match the other emission entry points).
+ * @param out  Generated C being written.
  */
 void fileLayerEmitRuntime(Arena *a, Buf *out) {
     (void)a;
-    /* 一个 `bufPuts` 字符串不许超 4095 字节（C99 保证）⇒ 分块。 */
+    /* One `bufPuts` string may not exceed the 4095 bytes C99 guarantees, so it is split. */
     bufPuts(out,
         "/* ---- 文件层（最小 HTTP 服务器要的那几个）：`struct stat`、`off_t`、路径的 NUL 终止\n"
         " * 全都留在 C 侧 —— extC 只拿标量。理由是一条实测教训：把 `struct rusage` 镜像成前 5 个字段\n"

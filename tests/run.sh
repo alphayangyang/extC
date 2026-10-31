@@ -36,6 +36,17 @@ if [ -x tests/arena/run.sh ]; then
     fi
 fi
 
+echo "== 生成物的运行期文本：四个曾经致命/静默的 bug（桩注入 + fd 计数 + NULL 槽）=="
+if [ -x tests/runtime-bugs/run.sh ]; then
+    if out=$(tests/runtime-bugs/run.sh 2>&1); then
+        printf '%s\n' "$out" | grep -E "^  ok |passed"
+        pass=$((pass + 1))
+    else
+        echo "$out"
+        bad "运行期文本用例"
+    fi
+fi
+
 echo "== 警告：该响的响、正例语料上**零误报**、\`-w\` 能关 =="
 if [ -x tests/warnings/run.sh ]; then
     if out=$(tests/warnings/run.sh 2>&1); then

@@ -1,29 +1,41 @@
 /**
  * @file reclaim.c
- * @brief 回收运行期的发射器：把位图 slab + 计数归零 + 区域清扫的 C 文本拼进生成文件。
+ * @brief Emits the reclaim runtime: splices the bitmap-slab, zero-the-counts and
+ *        regional-sweep C text into the generated file.
  *
- * 文本的每一行都是 `RECLAIM_RT` 里的一条，按发射顺序拼接；拼接的结果就是生成文件里真正跑的
- * 那份运行期。逐行切开有两个理由：单个字面量超过 4095 字符会触发 `-Woverlength-strings`
- * （相邻字面量拼接起来同样算一个，所以不能靠拼接），以及这段运行期是**可读的生成物** ——
- * 一行一条比一整块转义文本好审。
+ * Every line of the text is one entry of `RECLAIM_RT`, concatenated in emission order; the
+ * concatenation is the runtime that really runs in the generated file. The text is cut per line
+ * for two reasons: one literal above 4095 characters trips `-Woverlength-strings` (adjacent
+ * literals are concatenated and count as one, so concatenating does not help), and this runtime
+ * is readable generated output, where one line per entry reviews better than one escaped block.
  *
- * 文本自身的形状与健全性义务写在文本开头的块注释里：它们是判据，不是优化。
+ * The shape and soundness obligations of the text itself are stated in the block comment at the
+ * head of the text: they are criteria, not optimization.
  *
- * 发射是**分档**的：每一节的标题行里带一个稳定的标签 `[rt:名字]`，发射时按本次编译的档位
- * 决定整节发不发（没有帧根链就没有压链的代码，不发计数就没有计数数组）。跳过的文本与让
- * 预处理器丢掉它逐字等价，只是生成物里不再留着"这一档根本走不到"的代码。
+ * Emission is tiered: the title line of every section carries a stable label `[rt:name]`, and
+ * this compile's tier decides whether the section is emitted at all (no frame-root chain means
+ * no chain-pushing code; no counting means no counter arrays). Dropping a section is equivalent
+ * to letting the preprocessor drop it, except that the generated file keeps no code this tier
+ * can never reach.
  */
 
 #include "reclaim.h"
 
-#include <stdio.h>    /* snprintf：拼档位宏名 */
-#include <stdlib.h>   /* getenv：差分判据的开关 */
-#include <string.h>   /* strcmp：同上 */
+#include <stdio.h>    /* snprintf: builds the tier macro names */
+#include <stdlib.h>   /* getenv: called by the emitted runtime, not by this file */
+#include <string.h>   /* strncmp/strstr/strchr/memcmp: tier scan and labels */
 
-/** @brief 这一节的标签在本次编译的档位下该不该发。
+/** @brief Whether a section's label is emitted at this compile's tier.
  *
- * 带 `[rt:counters]` 的节只在计数档发，`[rt:chain]` 只在帧根链接线后发，其余节恒发。
- * 跳掉一节不改变语义：那一档本来就走不到那些代码，发出来只是让人多翻几页。
+ * A section labelled `[rt:counters]` is emitted only in the counting tier and `[rt:chain]` only
+ * once the frame-root chain is wired; every other section is always emitted. Dropping a section
+ * leaves the semantics unchanged: that tier never reaches the code, so emitting it would only
+ * add pages to read.
+ *
+ * @param line    one line of the runtime text.
+ * @param timeOn  the counting tier is on.
+ * @param chainOn the frame-root chain is emitted.
+ * @return 1 to emit the section, 0 to drop it.
  */
 static int rtSectionOn(const char *line, int timeOn, int chainOn) {
     const char *p = strstr(line, "[rt:");
@@ -32,23 +44,25 @@ static int rtSectionOn(const char *line, int timeOn, int chainOn) {
     const char *e = strchr(p, ']');
     if (e == NULL) return 1;
     size_t n = (size_t)(e - p);
-    if (n == 8 && memcmp(p, "counters", 8) == 0) return timeOn;   /* 计数数组只在计数档有用 */
-    if (n == 5 && memcmp(p, "chain", 5) == 0) return chainOn;     /* 帧根链还没有发射方 */
+    if (n == 8 && memcmp(p, "counters", 8) == 0) return timeOn;   /* counter arrays exist only in the counting tier */
+    if (n == 5 && memcmp(p, "chain", 5) == 0) return chainOn;     /* the frame-root chain has no emitter pushing onto it */
     return 1;
 }
 
-/** @brief 认一条「档位开关」#if：条件只有一个宏名、可选一个 `!`，取值本次编译已知。
+/** @brief Match a tier-switch `#if`: one macro name, optionally negated, known at this
+ *         compile.
  *
- * 解得开返回 1（*val = 条件真假），发射器据此连 #if 指令一起不发；解不开的
- * （#ifndef、#if X > N、组合条件）返回 0，原样发出去仍由编译器和 -D 决定 ——
- * 那些旋钮就是靠 -D 覆写来切换行为或跑对照的。
+ * Returns 1 when the condition resolves (*val holds its truth value); the emitter then drops the
+ * `#if` directive along with the branch it rules out. Conditions that do not resolve
+ * (`#ifndef`, `#if X > N`, combinations) return 0 and are emitted verbatim, so the compiler and
+ * -D still decide — those knobs switch behavior or run comparisons through -D overrides.
  *
- * @param p         条件文本（已剥掉行首的 `#if`）。
- * @param noCount   EXTC_RC_NOCOUNT 的取值。
- * @param timeOn    EXTC_RC_TIME 的取值。
- * @param sweepFree EXTC_RC_SWEEP_FREE 的取值。
- * @param[out] val  解出来时写入条件真假。
- * @return 1 = 解得开；0 = 这个条件留给预处理器。
+ * @param p         condition text, with the leading `#if` already stripped.
+ * @param noCount   value of EXTC_RC_NOCOUNT.
+ * @param timeOn    value of EXTC_RC_TIME.
+ * @param sweepFree value of EXTC_RC_SWEEP_FREE.
+ * @param[out] val  receives the truth value of the condition when it resolves.
+ * @return 1 if the condition resolves, 0 if it is left to the preprocessor.
  */
 static int rtCfgIf(const char *p, int noCount, int timeOn, int sweepFree, int *val) {
     static const char *const suffixes[3] = { "NOCOUNT", "TIME", "SWEEP_FREE" };
@@ -57,8 +71,9 @@ static int rtCfgIf(const char *p, int noCount, int timeOn, int sweepFree, int *v
     int neg = 0;
     if (*p == '!') { neg = 1; p++; while (*p == ' ') p++; }
     for (int k = 0; k < 3; k++) {
-        /* 宏名由前缀 + 后缀拼出来，不写成整串字面量：这三个是**发射进生成物**的宏，
-         * 不是编译器自己的开关（整串字面量会被开关表的静态扫描当成新开关）。 */
+        /* The macro name is built from prefix + suffix instead of one whole literal: these are
+         * macros the generated file defines, not switches of the compiler itself (a whole literal
+         * would be taken for a new switch by the static scan of the switch table). */
         char name[32];
         int n = snprintf(name, sizeof name, "EXTC_RC_%s", suffixes[k]);
         if (n <= 0 || (size_t)n >= sizeof name) continue;
@@ -71,7 +86,8 @@ static int rtCfgIf(const char *p, int noCount, int timeOn, int sweepFree, int *v
     }
     return 0;
 }
-/* 发射文本，按行切开。每行自带换行符，拼接后与源文本逐字节一致。 */
+/* The emitted text, one line per entry. Every line carries its own newline, so the
+ * concatenation is byte-identical to the source text. */
 static const char *const RECLAIM_RT[] = {
     "/* ---- reclaim runtime: bitmap slab + holder counts + regional sweep [rt:head] ----\n",
     " *\n",
@@ -1477,6 +1493,7 @@ static const char *const RECLAIM_RT[] = {
     "\n",
     "/* 覆盖旧值：读旧 + 写 + 目标加一 + 旧值减一。同值赋值也走这条路，净变化为零。 */\n",
     "__attribute__((unused)) static void extc_rc_storeRef(void **slot, void *v) {\n",
+    "    if (!slot) return;   /* NULL slot: there is no slot to update */\n",
     "    extc_rc_shade(v);\n",
     "    void *old = *slot;\n",
     "    extc_rc_shadeOld(slot);   /* 删除屏障：覆盖＝删掉旧边 */\n",
@@ -1494,8 +1511,10 @@ static const char *const RECLAIM_RT[] = {
     " * 只在无计数档发射并调用：有计数时 `storeRefOwnedReg` 仍要那两个查询来做持有者计数。 */\n",
     "#if EXTC_RC_NOCOUNT\n",
     "__attribute__((unused)) static inline void extc_rc_storeRefSameRegion(void **slot, void *v) {   /* skip:same-region */\n",
-    "    if (slot) { extc_rc_shadeOld(slot); extc_rc_shade(v); *slot = v; return; }\n",
-    "    extc_rc_storeRef(slot, v);\n",
+    "    if (!slot) return;   /* NULL slot: there is no slot to update */\n",
+    "    extc_rc_shadeOld(slot);\n",
+    "    extc_rc_shade(v);\n",
+    "    *slot = v;\n",
     "}\n",
     "#endif\n",
     "__attribute__((unused)) static inline void extc_rc_storeRefOwnedReg(void **slot, void *v,\n",
@@ -1536,7 +1555,7 @@ static const char *const RECLAIM_RT[] = {
     "#endif\n",
     "        return;\n",
     "    }\n",
-    "    extc_rc_storeRef(slot, v);\n",
+    "    /* NULL slot: there is no slot to update. */\n",
     "}\n",
     "\n",
     "/* ---- 跨区边的来源侧记账入口 + 计数统计 [rt:xentry] ----\n",
@@ -1606,7 +1625,7 @@ static const char *const RECLAIM_RT[] = {
     "#endif\n",
     "        return;\n",
     "    }\n",
-    "    extc_rc_storeRef(slot, v);\n",
+    "    /* NULL slot: there is no slot to update. */\n",
     "}\n",
     "\n",
         "/* ---- 宿主证不出来的槽：把值本身钉成根 [rt:pin] ---------------------------------------\n",
@@ -1733,6 +1752,7 @@ static const char *const RECLAIM_RT[] = {
     " * 不知道），静态根表里也没有这条槽。把值钉成根（见上）；钉不住才让**目标所在的区域**\n",
     " * 整个退出清扫：宁可少收，也不能在种子不完整时把还被指着的对象放掉。 */\n",
     "__attribute__((unused)) static void extc_rc_storeRefUnknown(void **slot, void *v) {\n",
+    "    if (!slot) return;   /* NULL slot: there is no slot to update */\n",
     "    extc_rc_shade(v);\n",
     "    void *old = *slot;\n",
     "    if (old) extc_rc_pinSub(old);   /* 覆盖 = 删掉旧边：旧值不再有这条槽指着 */\n",
@@ -1769,6 +1789,7 @@ static const char *const RECLAIM_RT[] = {
     " * 不必让目标区域整个退出清扫。只有槽也不在 rc slab 里（视图数据、C/池缓冲）才回落\n",
     " * `storeRefUnknown` 的保守方向。代价与回落路径同量级：那条路本来也要查一次 `ownSlab`。 */\n",
     "__attribute__((unused)) static inline void extc_rc_storeRefSlot(void **slot, void *v) {\n",
+    "    if (!slot) return;   /* NULL slot: there is no slot to update */\n",
     "    ExtcRcSlab *ss = (slot ? extc_rc_slabOfInterior((void *)slot) : (ExtcRcSlab *)0);\n",
     "    if (ss && ss->region) { extc_rc_storeRefOwnedReg(slot, v, ss->region); return; }\n",
     "    extc_rc_storeRefUnknown(slot, v);\n",
@@ -2087,11 +2108,15 @@ static const char *const RECLAIM_RT[] = {
     "    r->seedsDone = (r->slabs == NULL) || !r->seedAny;   /* 从未登记过种子 ⇒ 没有可压的种子，整段跳过扫描 */\n",
     "}\n",
     "/** @brief 分步标记：最多扫 budget 个对象；返回本轮扫过多少（栈空 = 标记完成）。 */\n",
-    /* 子对象的同块去重只按「包含该地址的槽」查 **mark 位**，不再验槽首、也不查 occ：
-       mark 立着 ⇒ 这个槽本轮已经黑过（走过，或标记期分配时由 alloc 标黑），弹栈端会用同一道
-       mark 位挡下 ⇒ 提前 continue 不丢可达；occ 位不查也不会错 —— 槽空而 mark 立着时旧写法的
-       压栈同样只会被弹栈端的 occ 检查丢掉，可达集相同。非槽首指针在弹栈端会被 ownSlab 判成
-       非对象（当区域外跳过），提前去重同样不改变可达集，还省掉每个同块子对象的乘法校验。 */
+    /* Same-slab dedupe of a sub-object looks only at the **mark bit** of the slot containing
+       the address; it does not validate the slot start and does not check occ. A set mark means
+       the slot was already blackened this round (walked, or blackened by alloc when allocated
+       during marking), and the pop side rejects it on the same mark bit, so the early continue
+       loses no reachability. Skipping the occ check is sound as well: with an empty slot whose
+       mark is set, the push would be dropped by the pop side's occ check anyway, so the
+       reachable set is the same. A non-slot-start pointer is judged a non-object by ownSlab on
+       the pop side (skipped as out of region); deduping it early leaves the reachable set
+       unchanged and saves the multiply-check per same-slab sub-object. */
     "/* 对象处理体做成宏：批量路径（深栈）与浅栈快路共用同一份体。批装（数组、上限四取 min、\n",
     " * fill 循环、扫批循环）只有栈里攒得出足够多对象时才摊得薄；栈深不超过\n",
     " * EXTC_RC_MARK_SHALLOW 时它只剩固定开销，所以浅栈直接弹一个扫。宏不参与性能决策，\n",
@@ -2297,9 +2322,11 @@ static const char *const RECLAIM_RT[] = {
     "     * 一条 cache miss 的延迟全摊在一个对象上；先攒一批再扫，让这一批对象的载荷缺失\n",
     "     * 同时在飞 ⇒ 延迟被摊薄。弹出的**顺序不变**（先弹的先扫），只是把「扫」推后到整批弹完。 */\n",
     "    while (EXTC_RC_MS_WALK && budget > 0 && !_split) {\n",
-    /* 浅栈：不装批，而且一次把浅栈排空。批装的固定开销（数组/四取 min/fill/扫批）
-     * 在栈深≈1 时纯亏；批的本意是给载荷缺失留预取提前量，只有攒得出足够多对象时
-     * 才摊得薄。排空循环还免掉「每弹一个就回外层重判 while 与浅栈条件」的摊派。 */
+    /* Shallow stack: no batching, and the shallow stack is drained in one pass. The fixed cost
+     * of batching (array, four-way min, fill, batch scan) is pure loss at stack depth about 1;
+     * batching exists to give payload misses prefetch lead time, which only pays off once enough
+     * objects accumulate. Draining in the loop also avoids re-evaluating the while and
+     * shallow-stack conditions in the outer loop after every pop. */
     "        if ((size_t)r->msp <= (size_t)EXTC_RC_MARK_SHALLOW && budget > 0\n",
     "#if EXTC_RC_WORK_BUDGET > 0\n",
     "            && wleft > 0\n",
@@ -2843,49 +2870,85 @@ static const char *const RECLAIM_RT[] = {
 };
 
 /**
- * @brief 把回收运行期的 C 文本追加到 out。
+ * @brief Report a malformed directive in the bundled runtime text and stop.
  *
- * 按本次编译的档位切开发射：先在 out 里立三个开关宏（文本里那些 #if 与生成物后面的代码都按
- * 它们取舍），再逐行拼。整节用不到的段（计数、帧根链）与只可能走一支的 #if，另一支直接不发 ——
- * 与让预处理器丢掉逐字等价，只是生成物里不再留着这一档根本走不到的代码。
+ * The text is a constant of this file, so a conditional it cannot balance is a generator
+ * bug, never something the program under compilation caused. Emitting the text as-is would
+ * hand the C compiler a file this generator never checked.
  *
- * @param a          未使用：运行时是纯文本。
- * @param out        追加生成代码的输出缓冲。
- * @param noCount    EXTC_RC_NOCOUNT：计数入口编译成空操作。
- * @param timeOn     EXTC_RC_TIME：运行期分项计数。
- * @param sweepFree  EXTC_RC_SWEEP_FREE：事件档，shouldSweep 恒 0。
- * @param localStore EXTC_RC_LOCALSTORE：本地槽的只写存储入口（只在无计数档有意义）。
- * @param frameRoots 帧根链：1 = 发压链/查链的代码；还没有发射方往链里 push，所以传 0。
+ * @param lineNo 1-based entry index in RECLAIM_RT.
+ * @param what   the malformed directive, for the message.
+ * @return       never returns.
+ */
+static void rtTextBug(size_t lineNo, const char *what) {
+    fprintf(stderr, "extc: internal error -- reclaim runtime text: %s (line %zu)\n", what, lineNo);
+    exit(1);
+}
+
+/**
+ * @brief Append the reclaim runtime's C text to `out`.
+ *
+ * Emission is split by this compile's tier: the three switch macros are defined first (the
+ * `#if`s in the text and the code after the generated file are chosen by them), then the text is
+ * concatenated line by line. Sections this tier does not use (counters, frame-root chain) and
+ * `#if`s whose branch is fixed are dropped instead of emitted; dropping equals letting the
+ * preprocessor discard them, except that the generated file keeps no code this tier can never
+ * reach.
+ *
+ * @param a          unused: the runtime is pure text.
+ * @param out        output buffer receiving the generated code.
+ * @param noCount    EXTC_RC_NOCOUNT: counting entry points compile to no-ops.
+ * @param timeOn     EXTC_RC_TIME: per-operation counters in the runtime.
+ * @param sweepFree  EXTC_RC_SWEEP_FREE: event tier, shouldSweep is always 0.
+ * @param localStore EXTC_RC_LOCALSTORE: store-only entry for local slots (meaningful only in the
+ *                   no-count tier).
+ * @param frameRoots frame-root chain: 1 emits chain push/lookup code; no emitter pushes onto the
+ *                   chain, so callers pass 0.
  */
 void reclaimEmitRuntime(Arena *a, Buf *out, int noCount, int timeOn, int sweepFree,
                         int localStore, int frameRoots) {
     (void)a;
-    /* 先立宏：下面那些 #if EXTC_RC_NOCOUNT / #if EXTC_RC_TIME 走哪一支由它们定。默认
-     * EXTC_RC_NOCOUNT=1 —— 计数入口整体编成空操作，回收只靠区域清扫。 */
+    /* Define the macros first: which branch of #if EXTC_RC_NOCOUNT / #if EXTC_RC_TIME below is
+     * taken is decided by them. EXTC_RC_NOCOUNT is normally 1 — counting entry points compile to
+     * no-ops and reclaim relies on regional sweep alone. */
     bufPuts(out, noCount ? "#define EXTC_RC_NOCOUNT 1\n" : "#define EXTC_RC_NOCOUNT 0\n");
     bufPuts(out, timeOn ? "#define EXTC_RC_TIME 1\n" : "#define EXTC_RC_TIME 0\n");
     bufPuts(out, sweepFree ? "#define EXTC_RC_SWEEP_FREE 1\n" : "#define EXTC_RC_SWEEP_FREE 0\n");
-    int skipSec = 0;        /* 当前这一节整节不发 */
-    int sup = 0;            /* 未发出去的 #if 层里，眼下这一支要不要发 */
+    enum { RT_CFG_MAX_DEPTH = 16 };   /* #if nesting the tables below can track */
+    int skipSec = 0;        /* drop the current section whole */
+    int sup = 0;            /* inside a dropped #if layer: emit the current branch */
     int depth = 0;
-    int resolvable[16];     /* 这一层 #if 的档位是否已知（已知 ⇒ 整条指令都不发） */
-    int skipped[16];        /* 已知层：当前这一支是不是被丢掉的那一支 */
-    for (size_t i = 0; i < sizeof RECLAIM_RT / sizeof RECLAIM_RT[0]; i++) {
+    int resolvable[RT_CFG_MAX_DEPTH];     /* this #if layer's tier is known (known => the whole directive is dropped) */
+    int skipped[RT_CFG_MAX_DEPTH];        /* known layer: is the current branch the dropped one */
+    size_t nlines = sizeof RECLAIM_RT / sizeof RECLAIM_RT[0];
+    for (size_t i = 0; i < nlines; i++) {
         const char *line = RECLAIM_RT[i];
         if (strstr(line, "[rt:") != NULL) skipSec = !rtSectionOn(line, timeOn, frameRoots);
         if (skipSec) continue;
-        if (strncmp(line, "#if ", 4) == 0) {
+        if (strncmp(line, "#if", 3) == 0) {
+            if (depth == RT_CFG_MAX_DEPTH) {
+                char msg[80];
+                snprintf(msg, sizeof msg, "#if nesting deeper than the %d-layer table",
+                         RT_CFG_MAX_DEPTH);
+                rtTextBug(i + 1, msg);
+            }
+            /* `#ifdef`/`#ifndef` and conditions rtCfgIf cannot resolve are left to the
+             * preprocessor: the layer is tracked (so its #else/#endif still pair up) but
+             * emitted verbatim, marked by `known = -1`. */
+            int known = -1;
             int v = 0;
-            int known = rtCfgIf(line + 4, noCount, timeOn, sweepFree, &v);
+            if (strncmp(line, "#ifdef", 6) != 0 && strncmp(line, "#ifndef", 7) != 0)
+                known = rtCfgIf(line + 3, noCount, timeOn, sweepFree, &v);
             resolvable[depth] = known;
-            skipped[depth] = known && !v;
+            skipped[depth] = known == 1 && !v;
             if (skipped[depth]) sup++;
             depth++;
-            if (!known && !sup) bufPuts(out, line);
+            if (known != 1 && !sup) bufPuts(out, line);
             continue;
         }
         if (strncmp(line, "#else", 5) == 0) {
-            if (depth > 0 && resolvable[depth - 1]) {
+            if (depth == 0) rtTextBug(i + 1, "unbalanced #else");
+            if (resolvable[depth - 1] == 1) {
                 sup += skipped[depth - 1] ? -1 : 1;
                 skipped[depth - 1] = !skipped[depth - 1];
                 continue;
@@ -2894,28 +2957,32 @@ void reclaimEmitRuntime(Arena *a, Buf *out, int noCount, int timeOn, int sweepFr
             continue;
         }
         if (strncmp(line, "#endif", 6) == 0) {
-            if (depth > 0) {
-                depth--;
-                if (resolvable[depth]) {
-                    if (skipped[depth]) sup--;
-                    continue;
-                }
+            if (depth == 0) rtTextBug(i + 1, "unbalanced #endif");
+            depth--;
+            if (resolvable[depth] == 1) {
+                if (skipped[depth]) sup--;
+                continue;
             }
             if (!sup) bufPuts(out, line);
             continue;
         }
         if (!sup) bufPuts(out, line);
     }
-    /* EXTC_RC_LOCALSTORE（编译期，默认关）：本地/形参槽的存储专用入口。
-     * storeRefOwned(slot, v, owner=0) 在无计数档下先做两次 ownSlab，再因为 so == 0 什么都不做
-     * ⇒ 那两次查询是白费的。这条入口省掉它们；只在无计数档有意义。 */
+    /* A leftover layer means the text ends inside a conditional: the emitted file would
+     * silently keep whatever a missing #endif swallowed, so stop instead. */
+    if (depth != 0) rtTextBug(nlines, "unterminated #if");
+    /* EXTC_RC_LOCALSTORE (compile-time, off by default): store-only entry for local and
+     * parameter slots. In the no-count tier, storeRefOwned(slot, v, owner=0) does two ownSlab
+     * checks and then does nothing because so == 0, so those two lookups are wasted. This entry
+     * skips them; it is meaningful only in the no-count tier. */
     if (localStore && noCount) {
         bufPuts(out,
-            "/* 本地/形参槽的只写存储入口：无计数档下先查两次所有权、再发现拿不到宿主，等于白查。\n"
-            " * 只写、不设屏障：本地槽换掉旧值时，旧边由 shadeOld 管。 */\n"
+            "/* Write-only store entry for a local/param slot: in the no-count tier the two\n"
+            " * ownSlab probes would find no owner, so skip them (the slot is not an rc slot).\n"
+            " * No barrier: shadeOld covers the old edge that the overwrite deletes. */\n"
             "__attribute__((unused)) static inline void extc_rc_storeRefLocal(void **slot, void *v) {\n"
-            "    if (slot) { *slot = v; return; }\n"
-            "    extc_rc_storeRef(slot, v);\n"
+            "    if (!slot) return;   /* NULL slot: there is no slot to update */\n"
+            "    *slot = v;\n"
             "}\n");
     }
 }
