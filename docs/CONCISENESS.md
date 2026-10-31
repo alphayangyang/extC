@@ -391,6 +391,22 @@ out = a + b * k
 - 还没做：跨 `par` 融合、`ndview` 上的归约（`seq::sum` 只认 `slice<T>`）、`vector::toSlice` 仍是
   显式拷贝（故意如此：它是拷贝，不是借出）。
 
+## 三层路线的现状（第 29 轮收口）
+
+| 层 | 项 | 状态 | 判据 / 出处 |
+|---|---|---|---|
+| 0 | `i64(<字面量>)` 自己写出来的仪式 | 已清到 6 处残留（都是语义必需：移位左操作数、`i64` 边界值、只定义 `<<(i64)` 的自定义流） | 本页「噪音测量」+ `tests/sugar/`、`tests/ops/stream*.extc` |
+| 1A | 字面量不替类型参数作主（六条规则） | 已落地 | 本页「第 1 层 A 的进展」 |
+| 1B | 值 f-string（含说明符）、`split`/`join`/`trim`、控制台读、`string + 数字`、`asSlice` 借出 | 已落地 | 本页「第 1 层 B 的进展」、`tests/fstring/`、`tests/stl/` |
+| 1C | 两下标 / 三下标 / 区间下标 / 复合赋值；`?` 落在语句值位置 | 已落地（零开销有闸门） | 本页「第 1 层 C 的进展」、`tests/stl/nd_sub*.extc`、`tests/ops/try_expr.extc` |
+| 1D | `fn` 形参的效果摘要（回调可写） | 已落地 | 本页「第 1 层 D 的进展」、`tests/ops/fn_callback_view.extc` |
+| 2 | S1 元素链 / S2 归约 / S3 流式 / 容器形式 / 跨函数 `seq::sum`、`seq::max`、`seq::min` | 已落地 | 本页 S1/S2/S3 与（三）（四）、`tests/fuse/`、`bench/fusion/` |
+| 2 | 整数组表达式 `out = a + b`（rank-1 / rank-2 / rank-3，含复合赋值） | 已落地 | 本页「第 2 层的进展（三）」、`tests/stl/nd_expr.extc`、`tests/traps/arrexpr_*.extc` |
+
+**下一里程碑（不在这一轮的范围里）**：跨 `par` 融合（`par` 写临时视图 + 归约合成两次遍历）、
+`ndview` 上的归约（`seq::sum`/`max`/`min` 只认 `slice<T>`，`nd::sumv` 还没有跨函数识别）、
+`vector::toSlice` 是**故意**显式（拷贝语义要写出来，不做隐式转换）。
+
 ## 不做的
 
 - 不追隐式分配、GC、惰性求值：`c = a + b` 的"顺手分配"不进入语言，只做"降低成循环"；
