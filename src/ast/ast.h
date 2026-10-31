@@ -1359,6 +1359,12 @@ typedef struct {
                              * an unbound parameter (`impl pair<T>`) is rejected by the checker,
                              * which is where the type table can tell the two apart. */
     Vec         methods;    /* FuncDef*: `owner` is filled in when the block is attached */
+    Ctx        *ctx;       /* the file the block was written in, so a diagnostic about the
+                            * block blames that file (module bodies are checked under their
+                            * own Ctx; a location rule is no different). */
+    bool        isExt;      /* `@ext`: the block extends a type declared by another module.
+                             * The checker requires it exactly when the modules differ, so the
+                             * provider of a method set is written down where it is added. */
 } ImplDef;
 
 /* A `trait` declaration: method **signatures** only -- no bodies, no storage, no runtime

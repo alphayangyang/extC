@@ -25,7 +25,7 @@ EXTC=./build/extc
 fail=0
 
 echo "== 正例（多文件程序：一个模块 = 一个文件）=="
-for d in tests/modules/manydecls tests/modules/impl-stdlib tests/modules/hello tests/modules/chain tests/modules/samenames tests/modules/crossmod tests/modules/namedlit tests/modules/qn-local tests/modules/open tests/modules/selective tests/modules/qn-array tests/modules/export-cross tests/modules/facade tests/modules/moddecl tests/modules/io-split; do
+for d in tests/modules/manydecls tests/modules/impl-stdlib tests/modules/hello tests/modules/chain tests/modules/samenames tests/modules/crossmod tests/modules/namedlit tests/modules/qn-local tests/modules/open tests/modules/selective tests/modules/qn-array tests/modules/export-cross tests/modules/facade tests/modules/moddecl tests/modules/io-split tests/modules/ext-impl; do
     name=$(basename "$d")
     if ! out=$("$EXTC" --run "$d/main.extc" 2>&1); then
         echo "  FAIL $name  ->  编译/运行失败"; echo "$out" | sed 's/^/        /' | head -6; fail=1; continue
@@ -91,6 +91,9 @@ check_err selective-bare     "is a **name**, not a module"
 check_err facade-unlisted    "has nothing named"
 check_err module-dup          "is also declared by"
 check_err module-root         "in the entry file"
+# `@ext`：扩展别的模块的类型必须写出提供者；块在自己模块里时反过来不许写 ✓
+check_err ext-missing         "extends a type of module"
+check_err ext-own-module      "impl block of the type's own module"
 
 # ⭐ **判据③：诊断里不许出现 mangle 名**（`$` 在 extC 标识符里不合法 ⇒
 #    消息里出现 `$` 就一定是把内部编码漏给了用户 ✗）

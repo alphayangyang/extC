@@ -10,6 +10,7 @@ use stl::string
 
 struct tag { text: string }
 
+@ext
 impl ostream {
   fn <<(self: ref ostream, v: tag) -> ostream {
     return self << v.text

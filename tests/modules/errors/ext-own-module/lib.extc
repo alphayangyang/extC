@@ -1,0 +1,7 @@
+// 反例：块就住在类型自己的模块里，`@ext` 什么也没说清 —— 写出来要报错。
+struct far { v: i64 }
+
+@ext
+impl far {
+    fn nope(self: ref far) -> i64 { return self.v }
+}

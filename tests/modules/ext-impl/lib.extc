@@ -1,0 +1,4 @@
+// 一个普通的库模块：类型 `far` 由**它**声明。
+struct far { v: i64 }
+
+fn make(n: i64) -> far { return far { v: n } }

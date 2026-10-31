@@ -1,0 +1,20 @@
+// 正例：`@ext` 在**别的模块**里给 `far` 补一个方法。
+//
+// 一个类型只有一套方法，所以"这些方法由谁提供"必须写在块上 —— 只让编译器从文件位置
+// 推断的话，读代码的人得跳一遍 import 才能知道 `bump` 从哪来。
+use std::io
+use lib
+
+@ext
+impl far {
+    fn bump(self: mut ref far) { self.v = self.v + 1 }
+}
+
+fn main() -> i32 {
+    var f: far = lib::make(i64(1))
+    f.bump()
+    f.bump()
+    io::println(f"v={f.v}")
+    return 0
+}
+// expect: v=3

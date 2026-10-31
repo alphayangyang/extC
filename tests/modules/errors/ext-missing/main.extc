@@ -1,0 +1,4 @@
+// 反例：扩展别的模块的类型却忘了 `@ext`。
+use lib
+impl far { fn bump(self: mut ref far) { self.v = self.v + 1 } }
+fn main() -> i32 { return 0 }

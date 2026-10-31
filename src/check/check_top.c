@@ -7813,6 +7813,35 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
              * declared. Anywhere else it has no home -- and because a type has exactly one method
              * set, a competing implementation from a third module would surface as an unrelated
              * duplicate-method error far from its cause. */
+            /* 所有权写在块上：一个类型只有一套方法，读者要在一行里看出"这些方法由谁
+             * 提供"。所以扩展**别的模块**的类型必须写 `@ext`；块就在类型自己的模块里时
+             * 反过来不许写（那一行什么也没说清）。内建标量（`i64` 的 holder）没有声明者，
+             * 两条都放行：它的方法天然由写块的人提供。 */
+            if (!planImplTrait(im) && sd && sd->modName) {
+                bool own = sameModule(im->modName, sd->modName);
+                /* 位置报在**块所在的那个文件**：模块体内的诊断都走它自己的 `Ctx`
+                 * （与函数体同一套），所有权规则没有理由例外。 */
+                Ctx *savedCtx = c.ctx;
+                if (im->ctx) c.ctx = im->ctx;
+                if (own && im->isExt) {
+                    ckError(&c, im->line,
+                            "Drop `@ext`: the block already lives in the module that declares the"
+                            " type, so the annotation says nothing.",
+                            "`@ext` on an impl block of the type's own module");
+                    c.ctx = savedCtx;
+                    continue;
+                }
+                if (!own && !im->isExt) {
+                    ckError(&c, im->line,
+                            "An `impl` block for another module's type is an extension: mark it"
+                            " `@ext` so the method set has a written-down provider.",
+                            "`impl %s` extends a type of module `%s`: write `@ext`",
+                            im->typeName, sd->modName);
+                    c.ctx = savedCtx;
+                    continue;
+                }
+                c.ctx = savedCtx;
+            }
             if (planImplTrait(im) && !sameModule(im->modName, planImplTrait(im)->modName) &&
                               !sameModule(im->modName, sd ? sd->modName : NULL)) {
                 ctxError(ctx, im->line, 1,

@@ -742,6 +742,7 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
         bool frozen     = false;   /* @frozen：作者签字"布局就是 C 的布局"（按值过界的门票） */
         bool exported   = false;   /* @export：这个函数的 C 符号给外面用（extern! 的另一面） */
         bool moduleEntry = false;  /* @module：这个自由函数是本模块的入口（分发器按名字调它） */
+        bool implExt    = false;  /* @ext：这个 impl 块扩展**别的模块**声明的类型 */
         const char *moduleName = NULL;  /* @module("name") 里写的显示名，没写就是模块名 */
         const char *moduleDesc = NULL;  /* @module("name", "what it does") 的第二个串 */
         /* `@private` 隐藏声明，`@inline` 要求内联：两者可以出现在同一声明前、顺序无意义，
@@ -873,6 +874,18 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
                 skipJunk(&p);
                 continue;
             }
+            /* `@ext`：这个 `impl` 块扩展的类型住在**别的模块**。所有权必须写出来，因为
+             * 一个类型只有一套方法，读者要能在一行里看出"这些方法由谁提供"；块放进
+             * 类型自己的模块时反而**不许**写它。 */
+            if (strcmp(nm->text, "ext") == 0) {
+                if (implExt) {
+                    ctxError(ctx, a->line, a->col, NULL, "`@ext` appears twice");
+                    return false;
+                }
+                implExt = true;
+                skipJunk(&p);
+                continue;
+            }
             if (strcmp(nm->text, "recursive") == 0 || strcmp(nm->text, "main") == 0) {
                 ctxError(ctx, a->line, a->col,
                          "The annotation is designed but not implemented yet, and accepting"
@@ -889,10 +902,19 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
                      " a pool), `@sharesStorage` (on a struct: a by-value copy shares storage) and"
                      " `@frozen` (on a struct: its layout is the C layout, so it may cross the C"
                      " boundary by value), `@export` (on a function: it becomes a C symbol that"
-                     " C can call) and `@module` (on a free function: it becomes this module's"
-                     " entry point, run by `./a -m <name>`). `@overwrite` is for"
-                     " locals.",
+                     " C can call), `@module` (on a free function: it becomes this module's"
+                     " entry point, run by `./a -m <name>`), and `@ext` (on an `impl` block"
+                     " that extends a type of another module). `@overwrite` is for locals.",
                      "unknown top-level annotation `@%s`", nm->text);
+            return false;
+        }
+        /* `@ext` 只描述 `impl` 块：别的声明用它说明不了任何事情，忽略它会让读者以为
+         * "这个类型/函数由别的模块拥有"。 */
+        if (implExt && !at(&p, "impl")) {
+            Token *t = cur(&p);
+            ctxError(p.ctx, t->line, t->col, NULL,
+                     "Only an `impl` block extends a type owned by another module; a declaration"
+                     " is owned by the file that writes it.");
             return false;
         }
         if (at(&p, "struct")) {
@@ -928,19 +950,22 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
             *(StructDef **)vecPush(&out->structs) = s;
         } else if (at(&p, "impl")) {
             /* `impl` 块不声明任何东西：`@private`/`@noCopy` 描述声明，`@poolObject`/
-             * `@sharesStorage` 描述存储，`@inline`/`@unchecked` 描述函数体。与其静默忽略，
-             * 不如直接说清楚。 */
+             * `@sharesStorage` 描述存储，`@inline`/`@unchecked` 描述函数体。唯一适用的是
+             * `@ext`（已经在上面读掉了），其余与其静默忽略，不如直接说清楚。 */
             if (isPrivate || noCopy || sharesStorage || poolObject || fnInline || fnUnchecked || frozen
                 || exported || moduleEntry) {
                 Token *t = cur(&p);
                 ctxError(ctx, t->line, t->col,
                          "An `impl` block adds methods to a type that is declared elsewhere, so it "
-                         "declares no storage and no visibility of its own.",
+                         "declares no storage and no visibility of its own; `@ext` is the one"
+                         " annotation it takes.",
                          "no annotation applies to an `impl` block");
                 return false;
             }
             ImplDef *im = parseImpl(&p);
             if (!im) return false;
+            im->ctx = p.ctx;
+            im->isExt = implExt;
             *(ImplDef **)vecPush(&out->impls) = im;
         } else if (at(&p, "trait")) {
             /* 与 `impl` 块一样，trait 只声明行为，任何注解都不适用。 */

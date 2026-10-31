@@ -16,6 +16,7 @@ use std::io
 use std::fs
 use stl::string
 
+@ext
 impl string {
     /* Read one line and append it -- **the line as `>>` defines it**: the trailing '\n' is not
      * part of it, and neither is the '\r' of a CRLF (`io::reader::nextLine` settled that
@@ -103,6 +104,7 @@ impl string {
  * module, which is exactly what `impl` was added for.
  *
  * Semantics match `>> slice<u8>`: one line, newline stripped, destination **replaced**. */
+@ext
 impl io::istream {
     fn >>(self: ref istream, v: mut ref string) -> istream {
         v.clear()
@@ -134,6 +136,7 @@ impl io::istream {
  * `string::readLineFrom`. `std::fs` already writes its three built-in `>>` overloads out twice
  * for the same reason (`ifstream` and `inStream`), so this follows the established shape rather
  * than inventing a second one. */
+@ext
 impl fs::ifstream {
     fn >>(self: mut ref ifstream, v: mut ref string) -> mut ref ifstream {
         v.clear()

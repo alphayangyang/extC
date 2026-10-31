@@ -871,9 +871,10 @@ fn main() -> i32 {
 | `@export` | **自由函数** | 生成 C 可见符号（非 `static`），C 可以直接调 | `@export goes on a function`（方法 / 泛型 / 协程 / `extern!` / 结构体 / 枚举 / 全局都拒） |
 | `@builtin` | 函数（**没有函数体**） | 声明由编译器实现（stdlib 用：`parallel::run`、域、`extc_viewOf`） | `appears twice` |
 | `@overwrite` | 局部 `var` 声明 | 复用同一块存储；初始式必须恰好是 `new` | `` `@overwrite` needs `var` `` / `` `@overwrite` only applies to `new` `` |
+| `@ext` | `impl` 块 | 块扩展的是**别的模块**声明的类型（见 [`modules-cabi.md`](modules-cabi.md) 的 §1.4b） | `` `@ext` applies to an `impl` block `` / `` `@ext` on an impl block of the type's own module `` |
 | `@recursive` / `@main` | — | 现在会被拒绝，编译器直说没有实现 | `` `@recursive` is not implemented yet ``（见 [`../TODO.md`](../TODO.md)） |
 
-`impl` 块和 `trait` 声明身上**没有任何注解适用**（`no annotation applies to an impl block`）。
+`trait` 声明身上**没有注解适用**；`impl` 块只接受 `@ext`（其余注解报 `no annotation applies to an impl block`）。
 
 ```extc
 // 结果：编译通过、退出码 9

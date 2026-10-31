@@ -150,6 +150,25 @@ $ extc --run main.extc
 
 `$`（改名后的内部名字）**不许**出现在诊断、普通输出与调试开关里（`tests/modules/run.sh` 的判据③）。
 
+### 1.4b `@ext`：扩展别的模块的类型要写出提供者
+
+一个类型只有**一套**方法。所以给别的模块声明的类型加 `impl` 块时，得在块上写 `@ext`
+—— 读代码的人一眼就能看出"这些方法由谁提供"，不必跳一遍 import 去猜。
+块本来就住在类型自己的模块里时，反过来**不许**写：那一行什么也没说清。
+
+| 形状 | 现象 |
+|---|---|
+| 另一个模块里给 `far` 写 `@ext impl far { … }` | **编得过**，方法可调用（`tests/modules/ext-impl/`） |
+| 另一个模块里写 `impl far { … }`（漏 `@ext`） | `` error: `impl far` extends a type of module `lib`: write `@ext` ``（`errors/ext-missing`） |
+| 类型自己的模块里写 `@ext impl far` | `` error: `@ext` on an impl block of the type's own module ``（`errors/ext-own-module`） |
+| 内建标量（`impl i64 { fn hash … }`） | 没有声明者，两条都放行 —— 方法天然由写块的人提供 |
+| trait impl（`impl Trait for X`） | 走既有的 orphan 规则（块必须在 trait 或类型的家），与 `@ext` 无关 |
+
+位置报在**块所在的那个文件**（模块体内的诊断都走它自己的上下文，与函数体同一套）。
+标准库自己也遵守：`stl/string.extc` 的 `@ext impl io::ostream`、`stl/stringio.extc` 的
+`@ext impl string` / `impl io::istream` / `impl fs::ifstream`。
+`stdlib/INDEX` 的 `method` 行里，模块列写的是**提供者**（`impl` 块所在模块），不是类型的属主。
+
 ### 1.5 环检测
 
 一个模块在**还在加载**时又被要求加载 = 环，直接拒绝（`tests/modules/run.sh` 的 `cycle` 反例）：
