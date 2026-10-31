@@ -1,4 +1,6 @@
-/* The extC compiler driver: command line, pipeline, and the `--run` shortcut.
+/**
+ * @file main.c
+ * @brief The extC compiler driver: command line, pipeline, and the `--run` shortcut.
  *
  *   extc --dump-tokens foo.extc        lex only
  *   extc foo.extc                      print the generated C to stdout
@@ -31,26 +33,28 @@
 #include "prelude.h"
 #include <time.h>
 
-/* PHASE(name, call)：计时变量关在自己的 `do { } while (0)` 作用域里，不与邻居相撞。 */
+/* PHASE(name, call): the timing variable lives in its own `do { } while (0)` scope, so
+ * it cannot collide with a neighbour. */
 /**
- * @brief 阶段计时开关是否打开（环境变量 `EXTC_DBG_TIME`），只读一次环境。
+ * @brief Whether stage timing is on (environment variable `EXTC_DBG_TIME`); the
+ *        environment is read once.
  *
- * @return  打开时为 1，关闭时为 0。
+ * @return  1 when on, 0 when off.
  */
 static int timeOn(void) { static int v = -1; if (v < 0) v = getenv("EXTC_DBG_TIME") != NULL; return v; }
 
 /**
- * @brief 进程 CPU 时间，秒。
+ * @brief Process CPU time, in seconds.
  *
- * @return  自进程启动以来消耗的 CPU 秒数。
+ * @return  CPU seconds consumed since the process started.
  */
 static double nowSec(void) { return (double)clock() / (double)CLOCKS_PER_SEC; }
 
 /**
- * @brief 打一行阶段耗时；开关关着时什么都不做。
+ * @brief Print one line of stage timing; does nothing while the switch is off.
  *
- * @param name  阶段名。
- * @param t0    阶段开始时的 CPU 秒数。
+ * @param name  Stage name.
+ * @param t0    CPU seconds when the stage started.
  */
 static void phase(const char *name, double t0) { if (timeOn()) fprintf(stderr, "[time] %-9s %.3f s\n", name, nowSec() - t0); }
 #define PHASE(name, call) do { double t_ = nowSec(); call; phase((name), t_); } while (0)
@@ -65,12 +69,13 @@ static void phase(const char *name, double t0) { if (timeOn()) fprintf(stderr, "
 static bool g_explainRoot = false;
 
 /**
- * @brief 把一段字节写进文件，覆盖原有内容。
+ * @brief Write a run of bytes to a file, overwriting its contents.
  *
- * @param path  要写入的文件路径。
- * @param data  要写入的字节。
- * @param len   字节数。
- * @return      每个字节都写成功时为 true；文件打不开或出现短写时为 false。
+ * @param path  Path of the file to write.
+ * @param data  Bytes to write.
+ * @param len   Byte count.
+ * @return      `true` when every byte was written; `false` when the file cannot be
+ *              opened or the write is short.
  */
 static bool writeFile(const char *path, const char *data, size_t len) {
     FILE *f = fopen(path, "wb");
@@ -81,13 +86,15 @@ static bool writeFile(const char *path, const char *data, size_t len) {
 }
 
 /**
- * @brief 取出路径里的文件名并去掉扩展名：`examples/hello.extc` 得到 `hello`。
+ * @brief Take the file name out of a path and drop the extension:
+ *        `examples/hello.extc` gives `hello`.
  *
- * 只有 `/` 算目录分隔符；扩展名是名字里最后一个点之后的部分，所以目录名里带点不影响结果。
+ * Only `/` counts as a directory separator; the extension is whatever follows the last
+ * dot in the name, so a dot in a directory name does not affect the result.
  *
- * @param a     arena，返回的字符串由它持有。
- * @param path  文件路径；入参字符串不被修改。
- * @return      文件名的 arena 副本。
+ * @param a     Arena; it holds the returned string.
+ * @param path  File path; the argument string is not modified.
+ * @return      Arena copy of the file name.
  */
 static const char *baseName(Arena *a, const char *path) {
     const char *slash = strrchr(path, '/');
@@ -98,13 +105,16 @@ static const char *baseName(Arena *a, const char *path) {
 }
 
 /**
- * @brief 运行一个程序并等它结束。
+ * @brief Run a program and wait for it to finish.
  *
- * 子进程继承三个标准流，所以它的输出就地出现，被编译的程序仍能从 stdin 读。exec 失败由
- * 子进程自己报告，并转成退出码 127，父进程看到的是一次普通退出。
+ * The child inherits the three standard streams, so its output appears in place and the
+ * compiled program can still read stdin. A failed exec is reported by the child itself
+ * and turns into exit code 127; the parent sees an ordinary exit.
  *
- * @param argv  NULL 结尾的参数向量；argv[0] 是程序名，按 PATH 查找。
- * @return      程序的退出码；启动失败、回收失败或被信号杀死时返回 -1。
+ * @param argv  NULL-terminated argument vector; argv[0] is the program name, looked up
+ *              along PATH.
+ * @return      The program's exit code; -1 when it cannot be started, cannot be reaped,
+ *              or is killed by a signal.
  */
 static int runCmd(char *const argv[]) {
     pid_t pid = fork();
@@ -124,14 +134,16 @@ static int runCmd(char *const argv[]) {
 }
 
 /**
- * @brief 运行一个程序并捕获它的标准输出。
+ * @brief Run a program and capture its standard output.
  *
- * 管道要读到 EOF **之后**才回收子进程：先等子进程，会在它写满一个管道缓冲区时死锁。
- * 子进程的标准错误不动，所以它自己的抱怨会到用户眼前，而不是被吞掉。
+ * The pipe has to be read to EOF **before** the child is reaped: waiting for the child
+ * first deadlocks once it has filled one pipe buffer. The child's standard error is left
+ * alone, so its own complaints reach the user instead of being swallowed.
  *
- * @param argv  NULL 结尾的参数向量，与 `runCmd` 接受的形式相同。
- * @param out   子进程标准输出追加到的缓冲区。
- * @return      程序的退出码（成功为 0）；启动失败、被信号杀死或管道读失败时返回 -1。
+ * @param argv  NULL-terminated argument vector, in the shape `runCmd` accepts.
+ * @param out   Buffer the child's standard output is appended to.
+ * @return      The program's exit code (0 on success); -1 when it cannot be started, is
+ *              killed by a signal, or the pipe read fails.
  */
 static int runCapture(char *const argv[], Buf *out) {
     int fds[2];
@@ -199,24 +211,29 @@ static bool appendPkgConfig(Arena *a, Vec *args, const char *name) {
 }
 
 /**
- * @brief 读取程序实际加载的每个模块自己的链接需求（`<module>.link`）。
+ * @brief Read each loaded module's own link requirements (`<module>.link`).
  *
- * 包装 C 库的模块知道自己需要哪个库，用它的程序不该在命令行上重复一遍。需求写在
- * `<module>.extc` 旁边的 `<module>.link` 里，并且**只**为程序加载过（直接或传递 `use`）
- * 的模块读取：不会误链，也不会下载什么 —— 没装的库在链接期由 C 编译器自己报错。
+ * A module that wraps a C library knows which library it needs, and a program using it
+ * should not have to repeat that on the command line. The requirements live in
+ * `<module>.link` next to `<module>.extc`, and are read **only** for modules the program
+ * loaded (directly or through a transitive `use`): nothing is linked by mistake, and
+ * nothing is downloaded -- a library that is not installed is reported by the C compiler
+ * itself at link time.
  *
- * 语法（一行一条；空行与 `#` 注释忽略）：
- *   lib <name>        追加 `-l<name>`；`lib :libsqlite3.so.0` 可以写 soname
- *   pkgconfig <name>  追加 `pkg-config --cflags --libs <name>` 的词元
- *   ccflag <flag>     追加一个原样 flag（逃生口，包作者自己负责）
- * 未知指令是错误：被静默忽略的需求正是这里要防的失败。
+ * Syntax (one directive per line; blank lines and `#` comments are ignored):
+ *   lib <name>        append `-l<name>`; `lib :libsqlite3.so.0` may spell a soname
+ *   pkgconfig <name>  append the tokens of `pkg-config --cflags --libs <name>`
+ *   ccflag <flag>     append one raw flag (an escape hatch; the package author owns it)
+ * An unknown directive is an error: a requirement silently ignored is exactly the failure
+ * this function exists to prevent.
  *
- * @param a         arena，存放路径、词元与文件内容。
- * @param ctxs      每个已加载模块的 Ctx，即 `loadModules` 填好的那一份。
- * @param args      cc 参数表，flag 追加到它末尾。
- * @param libNames  接收 `lib` 名字，供产物的 `extc-libs:` 行使用。
- * @param pkgNames  接收 `pkgconfig` 名字，供产物的 `extc-pkg-config:` 行使用。
- * @return          成功为 true；出错（坏指令、空参数、pkg-config 失败）时已报告并返回 false。
+ * @param a         Arena holding paths, tokens, and file contents.
+ * @param ctxs      Each loaded module's Ctx, the vector `loadModules` filled in.
+ * @param args      cc argument list; flags are appended to its end.
+ * @param libNames  Receives `lib` names, for the artifact's `extc-libs:` line.
+ * @param pkgNames  Receives `pkgconfig` names, for the artifact's `extc-pkg-config:` line.
+ * @return          `true` on success; on error (bad directive, empty argument, pkg-config
+ *                  failure) the problem has been reported and `false` is returned.
  */
 static bool loadModuleLinks(Arena *a, Vec *ctxs, Vec *args, Vec *libNames, Vec *pkgNames) {
     for (size_t i = 0; i < vecLen(ctxs); i++) {
@@ -291,12 +308,13 @@ static bool loadModuleLinks(Arena *a, Vec *ctxs, Vec *args, Vec *libNames, Vec *
 }
 
 /**
- * @brief 把命令行摘要打印到 stderr。
+ * @brief Print a summary of the command line to stderr.
  *
- * 这段文字列出所有接受的开关以及调试环境变量，因为它是编译器驱动唯一的说明文档。
- * 写 stderr 是为了把 stdout 留给生成的 C —— `extc foo.extc` 打印的正是它。
+ * This text lists every accepted switch and every debug environment variable, because it
+ * is the compiler driver's only documentation. It goes to stderr so that stdout stays
+ * reserved for the generated C -- which is exactly what `extc foo.extc` prints.
  *
- * @param argv0  编译器被调用时的名字，作为程序名回显。
+ * @param argv0  The name the compiler was invoked under, echoed as the program name.
  */
 static void usage(const char *argv0) {
     fprintf(stderr,
@@ -326,9 +344,10 @@ static void usage(const char *argv0) {
         "  --no-line-map    do not emit `#line` directives (default: emit them)\n"
         "  --no-fuse        keep adjacent element loops separate\n"
         "\n"
-        /* 下面两个开关会改变输出，所以这段文字不能声称它们都只是诊断：`EXTC_SELFCHECK`
-         * 能让一次好构建变红，`EXTC_NO_LEVELPASS` 会改动生成物。声称与代码矛盾比不声称更糟，
-         * 所以两个例外在这里点名。 */
+        /* The two switches named below change the output, so this text cannot claim that
+         * they are all diagnostics only: `EXTC_SELFCHECK` can turn a good build red, and
+         * `EXTC_NO_LEVELPASS` changes the generated program. Claiming something the code
+         * contradicts is worse than claiming nothing, so both exceptions are named here. */
         "debug switches -- diagnostics only, **except the marked below**:\n"
         "  EXTC_DBG_ARENA=1     check the arena level the checker computed vs codegen\n"
         "  EXTC_DBG_QN=1        trace how a qualified name (a::b::c) is parsed/resolved\n"
@@ -363,8 +382,8 @@ static void usage(const char *argv0) {
         "\n"
         "  -h, --help       show this help\n",
         argv0);
-    /* 本会话新加的诊断开关：与上面那张大表**分开打印** —— 那张表的行为反复误判过（见 CHANGELOG），
-     * 独立一条 fprintf 显然正确，且不再被它的结构牵着走。 */
+    /* These further diagnostic switches are printed **separately** from the big table
+     * above: one independent fprintf keeps them out of that table's layout. */
     fprintf(stderr,
         "  EXTC_RC_NOCOUNT=0    re-enable holder counting (it is **off by default**): the default\n"
         "                       rests on region sweeps alone -- **CHANGES THE OUTPUT**.\n"
@@ -393,16 +412,18 @@ static void usage(const char *argv0) {
 /* ---------------------------------------------------------------- prelude */
 
 /**
- * @brief 判断模块里声明的 `slice` 是不是编译器期望的形状。
+ * @brief Tell whether the `slice` declared in a module has the shape the compiler expects.
  *
- * 视图靠协议而不是靠类型识别：结构体名叫 `slice`，恰好一个类型参数，前两个字段依次是
- * `data: ref T` 与 `len`。语言知道这个协议，方法由库提供。
+ * A view is recognised by protocol, not by type: a struct named `slice`, exactly one type
+ * parameter, and first two fields `data: ref T` and `len` in that order. The language
+ * knows this protocol; the methods come from the library.
  *
- * 在这里查形状，是把一个隐式契约变成显式的：否则 prelude 里某个字段被改名，要到生成的 C
- * 编不过的时候才暴露。
+ * Checking the shape here makes an implicit contract explicit: otherwise renaming one
+ * field in the prelude would surface only when the generated C fails to compile.
  *
- * @param m  要检查的模块。
- * @return   存在合规的 `slice` 时为 true；缺失或形状不对时为 false。
+ * @param m  Module to check.
+ * @return   `true` when a conforming `slice` exists; `false` when it is missing or has
+ *           the wrong shape.
  */
 static bool viewContractOk(Module *m) {
     for (size_t i = 0; i < m->structs.len; i++) {
@@ -483,14 +504,16 @@ static bool loadPrelude(Arena *arena, TypeTable *tt, Module *m) {
     for (size_t i = 0; i < pm.funcs.len; i++)
         (*(FuncDef **)vecAt(&pm.funcs, i))->reserved = true;
 
-    /* `s[i]` 是作用在 `slice` 上的语法，所以 prelude 必须保持编译器依赖的形状。 */
+    /* `s[i]` is syntax applied to `slice`, so the prelude has to keep the shape the
+     * compiler depends on. */
     if (!viewContractOk(&pm)) {
         fputs("extc: internal error -- the prelude's `slice` does not have the shape "
               "the compiler expects (`data: ref T` then `len`)\n", stderr);
         return false;
     }
 
-    /* 并入主模块：prelude 声明排在最前，用户声明跟在后面。 */
+    /* Merge into the main module: the prelude declarations come first, the user's
+     * follow. */
     for (size_t i = 0; i < pm.structs.len; i++)
         *(StructDef **)vecPush(&m->structs) = *(StructDef **)vecAt(&pm.structs, i);
     for (size_t i = 0; i < pm.types.len; i++)
@@ -503,12 +526,14 @@ static bool loadPrelude(Arena *arena, TypeTable *tt, Module *m) {
 /* ---------------------------------------------------------------- main */
 
 /**
- * @brief 跑一次编译：解析命令行，加载、检查、生成，并按请求编译和运行结果。
+ * @brief Run one compilation: parse the command line, load, check, generate, and compile
+ *        and run the result as requested.
  *
- * @param argc  参数个数。
- * @param argv  参数向量；argv[0] 是程序名。
- * @return      成功返回 0；程序编不过返回 1；命令行本身有错返回 2。`--run` 下返回的是被
- *              编译程序自己的退出码。
+ * @param argc  Argument count.
+ * @param argv  Argument vector; argv[0] is the program name.
+ * @return      0 on success; 1 when the program does not compile; 2 when the command
+ *              line itself is wrong. Under `--run` it is the compiled program's own
+ *              exit code.
  */
 int main(int argc, char **argv) {
     const char *path = NULL;
@@ -524,11 +549,12 @@ int main(int argc, char **argv) {
      * this -- the same flag handling as `--run` (including each module's `<module>.link`)
      * without running the program. */
     bool doBuild = false;
-    /* `--check-c`：交出去之前先对生成的 C 做语法检查。生成的 C 编不过，是编译器最严重的
-     * 一类 bug —— 它的承诺就是类型检查通过的程序必然能构建。 */
+    /* `--check-c`: syntax-check the generated C before handing it out. Generated C that
+     * does not compile is the worst class of compiler bug -- the compiler's promise is
+     * that a program which type-checks can always be built. */
     bool doCheckC = false;
     bool lineMap = true;
-    bool noFuse = false;       /* `--no-fuse`：关掉 S1 元素链融合 */
+    bool noFuse = false;       /* `--no-fuse`: turn off S1 element-chain fusion */
     /* `-I <dir>` module search directories. The command line is parsed before
      * `arenaInit` runs, so the names are collected in a fixed-size array here and
      * copied into a Vec afterwards; pushing into a Vec that has never been
@@ -549,7 +575,8 @@ int main(int argc, char **argv) {
     int         nPkgConfigArgs = 0;
 
     for (int i = 1; i < argc; i++) {
-        /* 优化开关：默认 `-O2`；`-march=native` 用可移植性换速度，所以只在用户明确要求时打开。 */
+        /* Optimisation switch: the default is `-O2`; `-march=native` trades portability
+         * for speed, so it is enabled only when the user asks for it explicitly. */
         if (strncmp(argv[i], "-O", 2) == 0 && argv[i][2] >= '0' && argv[i][2] <= '3'
             && argv[i][3] == 0) {
             optLevel = argv[i];
@@ -561,12 +588,14 @@ int main(int argc, char **argv) {
         if (strcmp(argv[i], "--dump-tokens") == 0) {
             dumpTokens = true;
         } else if (strcmp(argv[i], "--dump-effects") == 0) {
-            /* 调试开关：打印每个函数的 Addr/Cont 效应摘要。在这里设环境变量，驱动的其余部分
-             * 不必知道这个 flag。 */
+            /* Debug switch: print each function's Addr/Cont effect summary. The
+             * environment variable is set here, so the rest of the driver does not have
+             * to know about this flag. */
             setenv("EXTC_DUMP_EFFECTS", "1", 1);
         } else if (strcmp(argv[i], "--explain-memory") == 0) {
-            /* 每个分配点一行：它落在哪个层，以及它所在循环的每一轮是否释放。检查结束后打印，
-             * 那时每个层级都已定稿。 */
+            /* One line per allocation site: which level it lands in, and whether each
+             * iteration of the loop it sits in frees it. Printed after checking, when
+             * every level is final. */
             setenv("EXTC_EXPLAIN_MEMORY", "1", 1);
         } else if (strcmp(argv[i], "--check-c") == 0) {
             doCheckC = true;
@@ -575,8 +604,9 @@ int main(int argc, char **argv) {
         } else if (strcmp(argv[i], "--build") == 0) {
             doBuild = true;
         } else if (strcmp(argv[i], "--no-fuse") == 0) {
-            /* 融合（第 2 层的 S1 元素链）默认开；这个开关是给对拍与调试用的：关掉之后
-             * 同一份源码走未融合的路径。 */
+            /* Fusion (the level-2 S1 element chain) is on by default; this switch is for
+             * differential testing and debugging: with it off, the same source takes the
+             * unfused path. */
             noFuse = true;
         } else if (strcmp(argv[i], "--no-line-map") == 0) {
             lineMap = false;
@@ -710,7 +740,8 @@ int main(int argc, char **argv) {
     vecInit(&moduleCtxs, &arena, sizeof(Ctx *));
     bool modsOk = true;
     if (!ctx.hasError) {
-        /* 加载器（以及它驱动的 AST 改写）夹在 parse 与 check 之间，这里单独给它计时。 */
+        /* The loader (and the AST rewrites it drives) sits between parse and check; it
+         * is timed separately here. */
         double t_ld = nowSec();
         modsOk = loadModules(&arena, &m, &rootm, &ctx, path, &searchDirs, &moduleCtxs);
         phase("load", t_ld);
@@ -809,14 +840,19 @@ int main(int argc, char **argv) {
     }
     if (bodyDiag) return 1;      /* the module files' errors are already rendered above */
 
-    /* 把链接需求记录进产物：生成的 C 需要 `-lz` 却不说出来就是个构建陷阱 —— 手工编译时
-     * 失败是一堵未定义引用的墙，离引起它的 extC 声明很远。注释刻意机器可读（`extc-libs:`），
-     * 构建系统可以从产物里读回来。
+    /* Record the link requirements in the artifact: generated C that needs `-lz` without
+     * saying so is a build trap -- compiled by hand it fails with a wall of undefined
+     * references, far from the extC declaration that caused it. The comment is
+     * deliberately machine-readable (`extc-libs:`), so a build system can read the
+     * requirements back out of the artifact.
      *
-     * 两个来源都算：已加载模块各自的 `<module>.link` 与命令行上的 flag。注释里的名字排序并
-     * 去重 —— 它描述一个集合，两次构建以不同顺序要同样的库必须产出相同的字节；**链接行**
-     * 保持声明顺序：静态库从左到右解析符号，重排不是编译器驱动的事。没有可说的内容时这行
-     * 不发，什么也不链的程序保持字节相同。 */
+     * Both sources count: each loaded module's `<module>.link` and the command line's
+     * flags. The names in the comment are sorted and de-duplicated -- it describes a set,
+     * and two builds that need the same libraries in a different order must produce the
+     * same bytes; the **link line** keeps declaration order: a static library resolves
+     * symbols left to right, so reordering is not the compiler driver's business. The
+     * line is not emitted when there is nothing to say, so a program that links nothing
+     * stays byte-identical. */
     Vec allLibs;
     vecInit(&allLibs, &arena, sizeof(const char *));
     for (size_t k = 0; k < vecLen(&modLibs); k++)
@@ -965,13 +1001,15 @@ int main(int argc, char **argv) {
     const char *cc = getenv("CC") ? getenv("CC") : "cc";
 
 
-    /* `-fwrapv` 让有符号溢出回绕，并且让这次回绕成为定义好的行为。
+    /* `-fwrapv` makes signed overflow wrap, and makes that wrap defined behaviour.
      *
-     * 没有它，i32 的最大值加 1 就是有符号溢出，即未定义行为：`-O1` 下碰巧回绕，但 C 标准
-     * 不承诺这件事，而 `-O2` 的严格溢出假设可以把 `if (x + 1 > x)` 这样的判断整个删掉。
-     * extC 承诺不把未定义行为交给程序员，所以生成的代码里不许有。这个 flag 把那一类情况
-     * 变成定义好的回绕：最小的一步，与 gcc 的实际行为一致，把 "happens to" 变成
-     * "is guaranteed to"。 */
+     * Without it, the maximum i32 plus 1 is signed overflow, which is undefined
+     * behaviour: under `-O1` it happens to wrap, but the C standard does not promise
+     * that, and `-O2`'s strict-overflow assumptions can delete a test such as
+     * `if (x + 1 > x)` entirely. extC promises not to hand undefined behaviour to the
+     * programmer, so the generated code may not contain any. This flag turns that class
+     * of case into defined wrap: the smallest step, matching what gcc actually does,
+     * turning "happens to" into "is guaranteed to". */
     Vec ccArgv;
     vecInit(&ccArgv, &arena, sizeof(char *));
     *(char **)vecPush(&ccArgv) = (char *)cc;
@@ -979,9 +1017,10 @@ int main(int argc, char **argv) {
     *(char **)vecPush(&ccArgv) = (char *)(optLevel ? optLevel : "-O2");
     *(char **)vecPush(&ccArgv) = (char *)"-fwrapv";
     if (marchNative) *(char **)vecPush(&ccArgv) = (char *)"-march=native";
-                       /* 编译器会为程序用到的每个类型派生 `_debug`、`_eq`、`_find` 等辅助
-                        * 函数，没人调用的那些否则会留在二进制里；让链接器丢掉没人引用的段，
-                        * 语义不变。 */
+                       /* The compiler derives helpers such as `_debug`, `_eq`, and
+                        * `_find` for every type the program uses; the ones nobody calls
+                        * would otherwise stay in the binary. Letting the linker drop
+                        * unreferenced sections does not change semantics. */
     *(char **)vecPush(&ccArgv) = (char *)"-ffunction-sections";
     *(char **)vecPush(&ccArgv) = (char *)"-fdata-sections";
     *(char **)vecPush(&ccArgv) = (char *)"-Wl,--gc-sections";

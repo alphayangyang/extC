@@ -1,10 +1,11 @@
 /**
  * @file lexer.h
- * @brief extC 语法流水线的第一段：词法。
+ * @brief First stage of the extC pipeline: lexical analysis.
  *
- * `lexAll` 把源文本变成扁平的 token 向量：数字、标识符、关键字、内建类型名、字符串字面量
- * 与标点，每个 token 的文本都拷进上下文 arena。换行自成一种 token，因为语句在换行处结束，
- * 只有解析器能说它在哪里算数。
+ * `lexAll` turns source text into a flat token vector: numbers, identifiers, keywords,
+ * builtin type names, string literals, and punctuation, with the text of every token
+ * copied into the context arena. A newline is a token of its own, because a statement
+ * ends at a newline and only the parser can say where that counts.
  */
 #ifndef EXTC_LEXER_H
 #define EXTC_LEXER_H
@@ -18,8 +19,9 @@ typedef enum {
     TK_INT,
     TK_FLOAT,
     TK_STRING,
-    /* `f"…"`：**编译期格式拼接**（见 docs/topics/…）。词法上它就是一个字符串，
-     * 区别只在解析器会把它展开成 `<<` 链 —— 所以没有运行时成本。 */
+    /* `f"..."`: **compile-time format interpolation**. Lexically it is a string like
+     * any other; the difference is that the parser expands it into a `<<` chain, so it
+     * costs nothing at run time. */
     TK_FSTRING,
     TK_KEYWORD,
     TK_TYPE,
@@ -37,75 +39,83 @@ typedef struct {
 } Token;
 
 /**
- * @brief 判断一个拼法是不是语言的标点 token 之一。
+ * @brief Tell whether a spelling is one of the language's punctuation tokens.
  *
- * 解析器的 `at()` 在比较 token 文本之前必须先问它：字符串 token 存的是去掉引号后的内容，
- * 所以源码里的 `")"` 产出的 token，其文本与标点 `)` 相等。缺了这一问，`println(")")` 会报
- * "expected an expression, found `)`"，而 `println("x)")` 没事 —— 差别只是一个字节。
+ * The parser's `at()` must ask this before comparing token text: a string token stores
+ * its contents without the quotes, so a `")"` in the source produces a token whose text
+ * equals the punctuation `)`. Without this test, `println(")")` reports "expected an
+ * expression, found `)`" while `println("x)")` is fine -- the difference is one byte.
  *
- * @param value  要测的拼法，例如 `")"` 或 `"=>"`；NULL 与 `""` 不是标点。
- * @return       `value` 出现在 PUNCTS 里则 `true`。
+ * @param value  Spelling to test, e.g. `")"` or `"=>"`; NULL and `""` are not punctuation.
+ * @return       `true` when `value` appears in PUNCTS.
  */
 bool lexIsPunct(const char *value);
 
 /**
- * @brief 把 `ctx->src` 切成 token 追加到 `out`（元素是 `Token`），末尾是 TK_EOF。
+ * @brief Scan `ctx->src` into tokens appended to `out` (elements are `Token`), ending
+ *        with TK_EOF.
  *
- * 换行是真的 token 而不是空白：语句在换行处结束，只有解析器能说它在哪里有意义。连续的换行
- * 折成一个 TK_NEWLINE，末尾总有一个。行注释与块注释在这里跳过，从不进解析器。词法出错时经
- * `ctxError` 报告并返回，`out` 里留的是出错前切出的 token。
+ * A newline is a real token rather than whitespace: statements end at a newline, and only
+ * the parser can say where that matters. A run of newlines collapses into one TK_NEWLINE,
+ * and the stream always ends with one. Line and block comments are skipped here and never
+ * reach the parser. A lexical error is reported through `ctxError` and the scan returns,
+ * leaving in `out` the tokens scanned before the error.
  *
- * @param ctx  提供源文本，以及每个 token 文本都拷进去的 arena。
- * @param out  追加到的向量；初始化由调用方负责。
+ * @param ctx  Supplies the source text and the arena every token text is copied into.
+ * @param out  Vector to append to; the caller initializes it.
  */
 void lexAll(Ctx *ctx, Vec *out);
 
 /**
- * @brief 同一个扫描器，扫**子区间**，从给定的行/列开始。
+ * @brief The same scanner over a **sub-range**, starting at the given line and column.
  *
- * `f"…"` 需要它：花括号里的表达式是拿真解析器跑片段解析的，位置必须与文件对得上（槽位里的
- * 诊断要指向文件，而不是片段的偏移 0）。
+ * `f"..."` needs it: the expression inside a brace slot is parsed as a fragment with the
+ * real parser, and its positions must line up with the file (a diagnostic in the slot has
+ * to point into the file, not at offset 0 of the fragment).
  *
- * @param ctx   提供 arena 与错误报告。
- * @param src   子区间的起点。
- * @param len   子区间的字节数。
- * @param line  起点行号（1 起）。
- * @param col   起点列号（1 起）。
- * @param out   追加到的向量。
+ * @param ctx    Supplies the arena and the error channel.
+ * @param src    Start of the sub-range.
+ * @param len    Byte count of the sub-range.
+ * @param line   Starting line number (1-based).
+ * @param col    Starting column number (1-based).
+ * @param out    Vector to append to.
  */
 void lexRange(Ctx *ctx, const char *src, size_t len, int line, int col, Vec *out);
 
 /**
- * @brief 给出 token 种类的拼法，供诊断与 `--dump-tokens` 用，例如 TK_IDENT -> `"IDENT"`。
+ * @brief Spelling of a token kind, for diagnostics and `--dump-tokens`, e.g.
+ *        TK_IDENT -> `"IDENT"`.
  *
- * @param k  token 种类。
- * @return   它的名字；未知种类返回 `"?"`。
+ * @param k  Token kind.
+ * @return   Its name; `"?"` for an unknown kind.
  */
 const char *tokenKindName(TokenKind k);
 
 /**
- * @brief 追加一行描述 `t` 的可读文本到 `out`，供 `--dump-tokens` 用。
+ * @brief Append one readable line describing `t` to `out`, for `--dump-tokens`.
  *
- * 数值按 token 种类打印（TK_INT 打 `ival` 而不是源码拼法），打出来的就是解析器看到的 token 流。
+ * Values are printed by token kind (TK_INT prints `ival` rather than the source
+ * spelling), so the output is the token stream the parser sees.
  *
- * @param t    要描述的 token。
- * @param out  接收文本的缓冲区。
+ * @param t    Token to describe.
+ * @param out  Buffer that receives the text.
  */
 void tokenDescribe(const Token *t, Buf *out);
 
 /**
- * @brief 判断 `s` 是不是保留字（`fn`、`let`、`if` …）。
+ * @brief Tell whether `s` is a reserved word (`fn`, `let`, `if`, ...).
  *
- * @param s  要测的拼法。
- * @return   是保留字则 `true`（保留字是 TK_KEYWORD）。
+ * @param s  Spelling to test.
+ * @return   `true` when it is a reserved word (reserved words are TK_KEYWORD).
  */
 bool isKeyword(const char *s);
 
 /**
- * @brief 判断 `s` 是不是内建标量类型名（`i32`、`f64`、`bool`、`void` …）。
+ * @brief Tell whether `s` is a builtin scalar type name (`i32`, `f64`, `bool`, `void`,
+ *        ...).
  *
- * @param s  要测的拼法。
- * @return   是内建类型名则 `true`。
+ * @param s  Spelling to test.
+ * @return   `true` when it is a builtin type name.
  */
 bool isBuiltinType(const char *s);
 

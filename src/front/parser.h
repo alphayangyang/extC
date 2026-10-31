@@ -1,10 +1,11 @@
 /**
  * @file parser.h
- * @brief extC 语法流水线的第二段：递归下降解析。
+ * @brief Second stage of the extC pipeline: recursive-descent parsing.
  *
- * 消费 `lexAll` 的 token 向量，建出 ast.h 的 `Module`。它什么都不解析：名字、模块路径与
- * 泛型实参都按写出来的样子传下去，交给加载器与类型检查器解释。语句在换行处结束，换行后可能
- * 跟的分号是可选的、会被忽略。
+ * Consumes the token vector from `lexAll` and builds the ast.h `Module`. It resolves
+ * nothing: names, module paths, and generic arguments are passed through as written, for
+ * the loader and the type checker to interpret. A statement ends at a newline; a semicolon
+ * after a newline is optional and ignored.
  */
 #ifndef EXTC_PARSER_H
 #define EXTC_PARSER_H
@@ -13,25 +14,26 @@
 #include "base.h"
 
 /**
- * @brief 把一个文件的 token 解析进 `out`。
+ * @brief Parse one file's tokens into `out`.
  *
- * `out` 是**追加**到的 Module：调用方初始化一次，prelude 与用户文件因此落在同一个模块里。
- * 接受的语法：
+ * `out` is the Module that gets **appended to**: the caller initializes it once, so the
+ * prelude and the user file end up in the same module. Accepted syntax:
  *
- *     fn name(p: T, q: T2) -> T { ... }   // 没有 `->` 就是 void
+ *     fn name(p: T, q: T2) -> T { ... }   // no `->` means void
  *     struct Name { field: T <newline> field: T }
- *     let x: T = e / var x: T = e         // 类型可以省略
+ *     let x: T = e / var x: T = e         // the type may be omitted
  *     if / else if / else / while / return / break / continue / match
- *     a.f(x)  就是  f(a, x)               // 方法的第一个参数是 self
+ *     a.f(x)  is  f(a, x)                 // a method's first parameter is self
  *
- * token 向量必须以 TK_EOF 收尾（`lexAll` 总会补一个）。
+ * The token vector must end with TK_EOF (`lexAll` always appends one).
  *
- * @param ctx    报告第一个语法错误；一旦置位就停止解析。
- * @param arena  拥有每个 AST 节点与每个拷贝的名字。
- * @param toks   `lexAll` 产出的 token 向量。
- * @param out    追加到的 Module。
- * @return       整个 token 向量被消费完则 `true`；`ctx->hasError` 置位则 `false`，此时
- *               `out` 里留的是已经解析出来的声明。
+ * @param ctx    Reports the first syntax error; parsing stops once it is set.
+ * @param arena  Owns every AST node and every copied name.
+ * @param toks   Token vector produced by `lexAll`.
+ * @param out    Module to append to.
+ * @return       `true` when the whole token vector was consumed; `false` when
+ *               `ctx->hasError` is set, in which case `out` holds the declarations parsed
+ *               so far.
  */
 bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out);
 
