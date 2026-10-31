@@ -1,13 +1,15 @@
 /**
  * @file base.h
- * @brief 编译器的基础设施：arena、可增长缓冲、向量、以及每个 pass 都收的诊断上下文。
+ * @brief Compiler infrastructure: arena, growable buffer, vector, and the diagnostic
+ * context every pass receives.
  *
- * 这是流水线的最底层，词法、解析、检查、代码生成都包含这个头文件。
+ * This is the bottom layer of the pipeline; the lexer, parser, checker, and code
+ * generator all include this header.
  *
- * 这份 C 代码遵守的规矩，就是 extC 自己要强制的规矩：
- *   1. 没有手动释放——一切都来自 Arena，在进程退出时整体归还；
- *   2. 没有可变全局变量——所有状态都挂在显式传进来的 Ctx 上；
- *   3. 命名：函数 camelCase，类型 PascalCase。
+ * The C code here follows the rules extC itself enforces:
+ *   1. no manual free -- everything comes from an arena and is returned at process exit;
+ *   2. no mutable globals -- all state hangs off an explicitly passed Ctx;
+ *   3. naming: functions are camelCase, types are PascalCase.
  */
 #ifndef EXTC_BASE_H
 #define EXTC_BASE_H
@@ -18,15 +20,16 @@
 #include <stdint.h>
 
 /**
- * @brief 判断某个 `EXTC_DBG_*` 开关是否打开。
+ * @brief Tell whether an `EXTC_DBG_*` switch is set in the environment.
  *
- * @param name  开关名（环境变量名，例如 `EXTC_DBG_ARENA`）。
- * @return      开关打开时为 `true`。
+ * @param name  Switch name (the environment variable, e.g. `EXTC_DBG_ARENA`).
+ * @return      `true` when the variable is set.
  */
 bool dbgOn(const char *name);
 
 /* ---------------------------------------------------------------- Arena
- * 只向前推进、从不回收的 bump 分配器。对"跑一次就退出"的编译器这是最优的。
+ * A forward-only bump allocator that never reclaims. For a compiler that runs
+ * once and exits this is the cheapest possible policy.
  */
 
 typedef struct ArenaBlock ArenaBlock;
@@ -37,58 +40,58 @@ typedef struct {
 } Arena;
 
 /**
- * @brief 初始化一只 arena。
- * @param a          要初始化的 arena。
- * @param blockSize  每次向系统要的块大小（字节）。
+ * @brief Initialize an arena; it owns no block yet.
+ * @param a          Arena to initialize.
+ * @param blockSize  Size of each block requested from the system, in bytes.
  */
 void  arenaInit(Arena *a, size_t blockSize);
 
 /**
- * @brief 从 arena 分配 `n` 字节，**不清零**。
- * @param a  arena。
- * @param n  字节数。
- * @return   指向 `n` 字节的指针。
+ * @brief Allocate `n` bytes from the arena, **without** zeroing.
+ * @param a  Arena.
+ * @param n  Byte count.
+ * @return   Pointer to `n` usable bytes.
  */
 void *arenaAlloc(Arena *a, size_t n);
 
 /**
- * @brief 从 arena 分配 `n` 字节并清零。
- * @param a  arena。
- * @param n  字节数。
- * @return   指向已清零的 `n` 字节的指针。
+ * @brief Allocate `n` bytes from the arena and zero them.
+ * @param a  Arena.
+ * @param n  Byte count.
+ * @return   Pointer to `n` zeroed bytes.
  */
 void *arenaAllocZero(Arena *a, size_t n);
 
 /**
- * @brief 把 `s` 的前 `n` 个字节拷进 arena，并补一个 NUL 结尾。
- * @param a  arena。
- * @param s  源字节串（不必以 NUL 结尾）。
- * @param n  拷贝的字节数。
- * @return   以 NUL 结尾的副本。
+ * @brief Copy the first `n` bytes of `s` into the arena and append a NUL.
+ * @param a  Arena.
+ * @param s  Source bytes (need not be NUL-terminated).
+ * @param n  Number of bytes to copy.
+ * @return   NUL-terminated copy.
  */
 char *arenaStrndup(Arena *a, const char *s, size_t n);
 
 /**
- * @brief 把一个文件整份读进 arena，并以 NUL 结尾。
+ * @brief Read a whole file into the arena and NUL-terminate it.
  *
- * @param a      提供内存的 arena。
- * @param path    要读的文件。
- * @param outLen  接收读到的字节数（不含结尾的 NUL）；可以传 `NULL`。
- * @return        缓冲区；文件打不开、定位不了或量不出长度时返回 `NULL`。
+ * @param a       Arena that provides the memory.
+ * @param path    File to read.
+ * @param outLen  Receives the byte count, excluding the final NUL; may be `NULL`.
+ * @return        The buffer, or `NULL` when the file cannot be opened, sought, or sized.
  */
 char *readWholeFile(Arena *a, const char *path, size_t *outLen);
 
 /**
- * @brief 按格式串在 arena 里拼一个字符串（与 `printf` 同族的格式）。
- * @param a    arena。
- * @param fmt  格式串。
- * @return      拼接结果，以 NUL 结尾。
+ * @brief Format a string into the arena (`printf`-family formats).
+ * @param a    Arena.
+ * @param fmt  Format string.
+ * @return     The formatted text, NUL-terminated.
  */
 char *arenaPrintf(Arena *a, const char *fmt, ...);
 
 /* ---------------------------------------------------------------- Buf
- * 可增长的字节缓冲，用来累积输出文本（生成的 C）。
- * 增长时不归还旧块——旧块归 arena 所有。
+ * A growable byte buffer that accumulates output text (the generated C).
+ * Growth never returns the old block: the arena owns it.
  */
 
 typedef struct {
@@ -98,50 +101,50 @@ typedef struct {
 } Buf;
 
 /**
- * @brief 用一只 arena 初始化一个缓冲。
- * @param b  要初始化的缓冲。
- * @param a  提供内存的 arena。
+ * @brief Initialize a buffer backed by an arena.
+ * @param b  Buffer to initialize.
+ * @param a  Arena that provides the memory.
  */
 void  bufInit(Buf *b, Arena *a);
 
 /**
- * @brief 追加一个字节。
- * @param b  缓冲。
- * @param c  要追加的字节。
+ * @brief Append one byte.
+ * @param b  Buffer.
+ * @param c  Byte to append.
  */
 void  bufPutc(Buf *b, char c);
 
 /**
- * @brief 追加一个以 NUL 结尾的字符串（不含结尾的 NUL）。
- * @param b  缓冲。
- * @param s  源字符串。
+ * @brief Append a NUL-terminated string (the terminator itself is not stored).
+ * @param b  Buffer.
+ * @param s  Source string.
  */
 void  bufPuts(Buf *b, const char *s);
 
 /**
- * @brief 追加 `s` 的前 `n` 个字节。
- * @param b  缓冲。
- * @param s  源字节串。
- * @param n  字节数。
+ * @brief Append the first `n` bytes of `s`.
+ * @param b  Buffer.
+ * @param s  Source bytes.
+ * @param n  Byte count.
  */
 void  bufPutn(Buf *b, const char *s, size_t n);
 
 /**
- * @brief 按格式串把内容追加进缓冲。
- * @param b    缓冲。
- * @param fmt  格式串。
+ * @brief Append formatted text to the buffer.
+ * @param b    Buffer.
+ * @param fmt  Format string.
  */
 void  bufPrintf(Buf *b, const char *fmt, ...);
 
 /**
- * @brief 把缓冲内容当作 C 字符串：确保以 NUL 结尾，并返回首地址。
- * @param b  缓冲。
- * @return    以 NUL 结尾的内容首地址。
+ * @brief Treat the buffer as a C string: NUL-terminate it and return the first byte.
+ * @param b  Buffer.
+ * @return   Pointer to the NUL-terminated contents.
  */
 char *bufCstr(Buf *b);
 
 /* ---------------------------------------------------------------- Vec
- * 定长元素的动态数组（结构体的数组）。
+ * A dynamic array of fixed-size elements (arrays of structs).
  */
 
 typedef struct {
@@ -151,38 +154,39 @@ typedef struct {
 } Vec;
 
 /**
- * @brief 初始化一个向量。
- * @param v         要初始化的向量。
- * @param a         提供内存的 arena。
- * @param elemSize  单个元素的字节数。
+ * @brief Initialize a vector.
+ * @param v         Vector to initialize.
+ * @param a         Arena that provides the memory.
+ * @param elemSize  Size of one element in bytes.
  */
 void  vecInit(Vec *v, Arena *a, size_t elemSize);
 
 /**
- * @brief 追加一个**未初始化**的元素并返回它的地址。
- * @param v  向量。
- * @return   新元素的地址；调用者负责写满 `elemSize` 个字节。
+ * @brief Append one **uninitialized** element and return its address.
+ * @param v  Vector.
+ * @return   Address of the new element; the caller must write all `elemSize` bytes.
  */
 void *vecPush(Vec *v);
 
 /**
- * @brief 取第 `i` 个元素的地址。
- * @param v  向量。
- * @param i  下标（从 0 起，必须小于当前长度）。
- * @return   元素地址。
+ * @brief Return the address of element `i`.
+ * @param v  Vector.
+ * @param i  Index (zero-based, must be below the current length).
+ * @return   Element address.
  */
 void *vecAt(Vec *v, size_t i);
 
 /**
- * @brief 当前元素个数。
- * @param v  向量。
- * @return   元素个数。
+ * @brief Current element count.
+ * @param v  Vector.
+ * @return   Number of elements.
  */
 size_t vecLen(const Vec *v);
 
 /* ---------------------------------------------------------------- Ctx
- * 所有可变状态都挂在这里，并显式传递：编译器没有全局变量。
- * 诊断被**记录**下来而不是当场打印，于是发现问题的那个 pass 不决定文本最终去哪。
+ * All mutable state lives here and is passed explicitly: the compiler has no globals.
+ * Diagnostics are **recorded** rather than printed on the spot, so the pass that
+ * finds a problem does not decide where the text finally goes.
  */
 
 #define EXTC_MAXERR 512
@@ -194,62 +198,62 @@ typedef struct {
     size_t      srcLen;
 
     bool hasError;
-    /* 警告通道：不改变退出码的诊断。 */
+    /* Warning channel: diagnostics that do not change the exit code. */
     int  warnCount;
-    bool noWarn;      /* `-w`：一条警告都不打印 */
+    bool noWarn;      /* `-w`: do not print any warning */
     int  errLine, errCol;
     char errMsg[EXTC_MAXERR];
     char errNote[EXTC_MAXERR];
 } Ctx;
 
 /**
- * @brief 这个标识符是不是 C 关键字？
+ * @brief Is this identifier a C keyword, or a keyword-like name the generated C rejects?
  *
- * extC 的名字要能当作 C 名用，所以必须避开它们。规则：extC 源码里的名字从不改写，
- * 只有生成的 C 里的名字会加后缀。
+ * extC names must work as C names, so they have to avoid the C vocabulary. Rule: a
+ * name in extC source is never rewritten; only names in the generated C get a suffix.
  *
- * @param name  要判断的标识符。
- * @return      是 C 关键字时为 `true`。
+ * @param name  Identifier to test.
+ * @return      `true` when the generated C needs a renamed form.
  */
 bool cIdentIsKeyword(const char *name);
 
 /**
- * @brief 初始化诊断上下文。
- * @param c       要初始化的上下文。
- * @param a       arena。
- * @param path    源文件路径（出现在诊断里）。
- * @param src     源文本。
- * @param srcLen  源文本字节数。
+ * @brief Initialize the diagnostic context.
+ * @param c       Context to initialize.
+ * @param a       Arena.
+ * @param path    Source path (appears in diagnostics).
+ * @param src     Source text.
+ * @param srcLen  Source length in bytes.
  */
 void ctxInit(Ctx *c, Arena *a, const char *path, const char *src, size_t srcLen);
 
 /**
- * @brief 记一条错误（会置 `hasError`，编译最终失败）。
- * @param c     上下文。
- * @param line  源行号。
- * @param col   源列号。
- * @param note  补充说明，可以传 `NULL`。
- * @param fmt   消息格式串。
+ * @brief Record an error (sets `hasError`; the compilation ultimately fails).
+ * @param c     Context.
+ * @param line  Source line.
+ * @param col   Source column.
+ * @param note  Extra note, or `NULL`.
+ * @param fmt   Message format.
  */
 void ctxError(Ctx *c, int line, int col, const char *note, const char *fmt, ...);
 
 /**
- * @brief 记一条警告：**不置** `hasError`，编译继续。
+ * @brief Record a warning: **does not** set `hasError`, compilation continues.
  *
- * 与错误同样的格式，立刻打到 stderr。
+ * Same shape as an error, but printed to stderr immediately.
  *
- * @param c     上下文。
- * @param line  源行号。
- * @param col   源列号。
- * @param note  补充说明，可以传 `NULL`。
- * @param fmt   消息格式串。
+ * @param c     Context.
+ * @param line  Source line.
+ * @param col   Source column.
+ * @param note  Extra note, or `NULL`.
+ * @param fmt   Message format.
  */
 void ctxWarn(Ctx *c, int line, int col, const char *note, const char *fmt, ...);
 
 /**
- * @brief 把记录下来的诊断渲染成文本。
- * @param c    上下文。
- * @param out  接收文本的缓冲。
+ * @brief Render the recorded diagnostic to text.
+ * @param c    Context.
+ * @param out  Buffer that receives the text.
  */
 void ctxRenderDiag(Ctx *c, Buf *out);
 

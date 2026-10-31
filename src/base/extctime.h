@@ -1,11 +1,12 @@
 /**
  * @file extctime.h
- * @brief 时间运行期：一只钟与一个睡眠，都是 **i64 纳秒**。
+ * @brief The time runtime: one clock and one sleep, both **i64 nanoseconds**.
  *
- * `clock_gettime` 要 `struct timespec`，而平台结构体的布局不进 extC 这一侧：
- * 布局留在这里（生成的 C 里），extC 只看见一个标量。
+ * `clock_gettime` needs a `struct timespec`, and the layout of that platform struct
+ * never crosses into the extC side: the layout stays here (in the generated C) and
+ * extC sees only a scalar.
  *
- * 按需发射：程序不问时间就不会带上它。
+ * Emitted on demand: a program that never asks for time does not carry it.
  */
 #ifndef EXTC_TIME_H
 #define EXTC_TIME_H
@@ -13,9 +14,9 @@
 #include "base.h"
 
 /**
- * @brief 发射时间运行期（钟与睡眠）。
- * @param a    arena。
- * @param out  接收生成文本的缓冲。
+ * @brief Emit the time runtime (clocks and sleep).
+ * @param a    Arena.
+ * @param out  Buffer that receives the generated text.
  */
 void timeEmitRuntime(Arena *a, Buf *out);
 

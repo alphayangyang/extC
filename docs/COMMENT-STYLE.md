@@ -75,3 +75,37 @@ extC 用**同一形状**（`/** ... */` + `@brief` / `@param` / `@return` / `@co
   链条要写在一行里，或者拆成多条语句。
 - **片段包一层 `fn main` 也要能编**：`var x: [8]u8` 这类声明可以，但引用未定义的变量不行 ——
   那就得写成完整程序，或者标 `!skip` 并说明它只是签名示意。
+
+## English comment pass (src/)
+
+`src/` comments are written in English. The shape of the API comments is unchanged
+(`/** @brief ... @param ... @return ... */`); this section fixes the register and the
+working vocabulary so that a reader moving between files sees one voice.
+
+- Short declarative sentences, one idea per line. State what the code does, what it
+  assumes, and what it guarantees; leave the "why we chose this" to the changelog.
+- File headers use `@file` plus one or two sentences on the module's role.
+- Public declarations get `@brief` and, when they take arguments or return a value,
+  `@param` / `@return`; one line per parameter, in declaration order.
+- Static helpers may use a single-line `/** @brief ... */` when the name already says
+  most of it; add a body line only for an invariant the reader cannot see (aliasing,
+  ownership, buffer lifetime, laziness, "pointer invalid after the next push").
+- Inside a function, comment only the non-obvious: a non-local invariant, a pointer
+  that must not outlive a call, an ordering constraint, a deliberate omission.
+  Never restate the code, never write `i++ /* increment i */`.
+- No history and no self-reference: the banned word list lives in the RULES table of
+  `tools/check_no_history.py`,
+  no `PLAN #N`, no `CHANGELOG` pointers, no line numbers in other files.
+- Do not translate identifiers, string literals, format strings, or code.
+- Keep the existing banner layout (`/* ==== Section` blocks) and the two-space
+  indentation of `@param` continuations.
+- English uses the same glossary:
+  arena (bump allocator), block, buffer, vector, context (`Ctx`), region, slab, view,
+  root table, promotion, escape analysis, plan (the side table a pass records into),
+  walker (the gated recursive traversal over the AST), gate (a self-check target).
+
+Verification for a comment-only change:
+
+    tools/comment_only_check.py --all src     # HEAD vs worktree, comments stripped
+    make -j8 && ./check.sh smoke -j8
+    tools/check_doxygen.py --gate

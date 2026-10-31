@@ -1,21 +1,26 @@
-/* 调试断言的实现。
+/* Implementation of the debug assertions.
  *
- * 开关是环境变量 `EXTC_DBG`：设成任何非空且非 `0` 的值就打开。第一次使用时读一次，
- * 之后只看一个静态变量 —— 关掉时每个断言点只花一次分支，发布构建不需要重新编译。*/
+ * The switch is the environment variable `EXTC_DBG`: any non-empty value other than
+ * `0` turns it on. It is read once on first use and only a static variable is
+ * consulted afterwards, so when it is off every assertion site costs one branch and
+ * a release build needs no recompilation. */
 #include "dbg.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
 
-static int g_on = -1;    /* -1 = 还没判断过；0 = 关；1 = 开 */
+static int g_on = -1;    /* -1 = not decided yet; 0 = off; 1 = on */
 
 /**
- * @brief 调试开关是否打开；第一次调用读环境变量，之后只看静态变量。
+ * @brief Whether the debug switch is on; the first call reads the environment and
+ * later calls only consult the static variable.
  *
- * 开关是环境变量 `EXTC_DBG`：非空、且首字符不是 `0` 即打开。关掉时每个断言点只花一次分支。
+ * The switch is the environment variable `EXTC_DBG`: non-empty with a first
+ * character other than `0` turns it on. When it is off every assertion site costs
+ * one branch.
  *
- * @return  打开时为 1，关闭时为 0。
+ * @return  1 when on, 0 when off.
  */
 static int dbgEnabled(void) {
     if (g_on < 0) {
@@ -26,11 +31,12 @@ static int dbgEnabled(void) {
 }
 
 /**
- * @brief 同 `extcDbgNote`，但带格式化细节（哪个绑定、哪个数值）。
+ * @brief Like `extcDbgNote`, but with formatted detail (which binding, which
+ * value).
  *
- * @param file  调用点的源文件；传 `NULL` 打 `?`。
- * @param line  调用点的行号。
- * @param fmt   细节的格式串。
+ * @param file  Source file of the call site; `NULL` prints `?`.
+ * @param line  Line of the call site.
+ * @param fmt   Format string for the detail.
  */
 void extcDbgNoteF(const char *file, int line, const char *fmt, ...) {
     va_list ap;
@@ -43,11 +49,12 @@ void extcDbgNoteF(const char *file, int line, const char *fmt, ...) {
 }
 
 /**
- * @brief 报一条**已知会被走到**的保守路径；只报告，不 abort。
+ * @brief Report a conservative path that is **known to be reached**; report only,
+ * never abort.
  *
- * @param what  说明；传 `NULL` 打 `?`。
- * @param file  调用点的源文件；传 `NULL` 打 `?`。
- * @param line  调用点的行号。
+ * @param what  Description; `NULL` prints `?`.
+ * @param file  Source file of the call site; `NULL` prints `?`.
+ * @param line  Line of the call site.
  */
 void extcDbgNote(const char *what, const char *file, int line) {
     if (!dbgEnabled()) return;
@@ -55,12 +62,13 @@ void extcDbgNote(const char *what, const char *file, int line) {
 }
 
 /**
- * @brief 同 `extcDbgHit`，但带格式化细节；开关关着时立即返回，开着时打印并 abort。
+ * @brief Like `extcDbgHit`, but with formatted detail; when the switch is off
+ * return at once, and when it is on print and abort.
  *
- * @param kind  是 `"assert"` 还是 `"fallback"`；传 `NULL` 打 `dbg`。
- * @param file  调用点的源文件；传 `NULL` 打 `?`。
- * @param line  调用点的行号。
- * @param fmt   细节的格式串。
+ * @param kind  Either `"assert"` or `"fallback"`; `NULL` prints `dbg`.
+ * @param file  Source file of the call site; `NULL` prints `?`.
+ * @param line  Line of the call site.
+ * @param fmt   Format string for the detail.
  */
 void extcDbgHitF(const char *kind, const char *file, int line, const char *fmt, ...) {
     va_list ap;
@@ -75,24 +83,27 @@ void extcDbgHitF(const char *kind, const char *file, int line, const char *fmt, 
 }
 
 /**
- * @brief 调试开关是否打开（`EXTC_DBG=1`）。
+ * @brief Whether the debug switch is on (`EXTC_DBG=1`).
  *
- * @return  打开时为 `true`。
+ * @return  `true` when it is on.
  */
 bool extcDbgOn(void) { return dbgEnabled(); }
 
 /**
- * @brief 报一次断言/兜底命中；开关关着时立即返回，开着时打印并 abort。
+ * @brief Report one assertion or fallback hit; when the switch is off return at
+ * once, and when it is on print and abort.
  *
- * @param kind  是 `"assert"` 还是 `"fallback"`；传 `NULL` 打 `dbg`。
- * @param what  断言式，或"哪条兜底被走到了"的说明；传 `NULL` 打 `?`。
- * @param file  调用点的源文件；传 `NULL` 打 `?`。
- * @param line  调用点的行号。
+ * @param kind  Either `"assert"` or `"fallback"`; `NULL` prints `dbg`.
+ * @param what  The asserted expression, or a description of which fallback was
+ *              reached; `NULL` prints `?`.
+ * @param file  Source file of the call site; `NULL` prints `?`.
+ * @param line  Line of the call site.
  */
 void extcDbgHit(const char *kind, const char *what, const char *file, int line) {
     if (!dbgEnabled()) return;
-    /* `[assert]` / `[fallback]` 前缀是给闸门与 `check.sh` 抓的：一节红不靠"输出里有字样"，
-     * 而靠这只编译器**在这里 abort** —— 走到兜底本身就是信号。 */
+    /* The `[assert]` / `[fallback]` prefix is what the gates and `check.sh` look
+     * for: a red section comes from this compiler **aborting here**, not from some
+     * string appearing in the output. Reaching a fallback is itself the signal. */
     fprintf(stderr, "[%s] %s:%d: %s\n", kind ? kind : "dbg", file ? file : "?", line, what ? what : "?");
     fflush(stderr);
     abort();

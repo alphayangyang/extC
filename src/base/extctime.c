@@ -1,20 +1,27 @@
-/* The time runtime: `clock_gettime` needs a platform struct whose layout the extC side never sees.
+/* The time runtime: `clock_gettime` needs a platform struct whose layout the extC
+ * side never sees.
  *
- * Two clocks, because they answer different questions and mixing them up is a classic bug:
- *   - `extc_time_mono_ns`  == CLOCK_MONOTONIC : never goes backwards, immune to wall-clock jumps.
- *                                              The one to measure elapsed time with.
- *   - `extc_time_real_ns`  == CLOCK_REALTIME  : "what time is it", can jump (NTP, DST, admin).
+ * Two clocks, because they answer different questions and mixing them up is a
+ * classic bug:
+ *   - `extc_time_mono_ns`  == CLOCK_MONOTONIC : never goes backwards, immune to
+ *                                              wall-clock jumps. The one to measure
+ *                                              elapsed time with.
+ *   - `extc_time_real_ns`  == CLOCK_REALTIME  : "what time is it", can jump (NTP,
+ *                                              DST, admin).
  *
- * A failed `clock_gettime` returns -1 rather than 0: 0 is a legitimate value for "the epoch" on the
- * realtime clock, and a wrong 0 would look like a valid timestamp.
+ * A failed `clock_gettime` returns -1 rather than 0: 0 is a legitimate value for
+ * "the epoch" on the realtime clock, and a wrong 0 would look like a valid
+ * timestamp.
  */
 #include "extctime.h"
 
 /**
- * @brief 发出时间运行时的 C 代码：单调钟、墙上钟与睡眠，都用 i64 纳秒表示。
+ * @brief Emit the C code of the time runtime: a monotonic clock, a wall clock and a
+ * sleep, all represented as i64 nanoseconds.
  *
- * @param a    未使用：运行时是纯文本，没有需要 arena 的状态。
- * @param out  追加生成代码的输出缓冲。
+ * @param a    Unused: the runtime is plain text and holds no state that needs the
+ *             arena.
+ * @param out  Output buffer that receives the generated code.
  */
 void timeEmitRuntime(Arena *a, Buf *out) {
     (void)a;
