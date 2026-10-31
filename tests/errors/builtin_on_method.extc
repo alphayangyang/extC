@@ -1,0 +1,6 @@
+// `@builtin` marks a free function the compiler implements; a method always has a body.
+struct box {
+    v: i64
+    @builtin fn get(self: ref box) -> i64
+}
+fn main() -> i32 { return 0 }

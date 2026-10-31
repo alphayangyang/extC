@@ -1340,7 +1340,17 @@ static StructDef *parseStruct(Parser *p) {
         bool inl = false;
         bool priv = false;
         bool unchk = false;
+        p->sawBuiltin = false;      /* reset per member: the flag is sticky otherwise */
         if (at(p, "@") && !parseFuncAnnotations(p, &inl, &priv, &unchk)) return NULL;
+        if (p->sawBuiltin) {
+            Token *b = cur(p);
+            ctxError(p->ctx, b->line, b->col,
+                     "A method is a function with a body, so nothing has to be supplied by the"
+                     " compiler. `@builtin` is for the primitives a library declares and the"
+                     " compiler implements (`std::sys::heap::extc_viewOf`).",
+                     "`@builtin` applies to a free function, not to a method");
+            return NULL;
+        }
         if (at(p, "fn")) {
             FuncDef *m = parseFunc(p);
             if (!m) return NULL;
@@ -1667,7 +1677,17 @@ static ImplDef *parseImpl(Parser *p) {
             bool inl = false;
             bool priv = false;
             bool unchk = false;
+            p->sawBuiltin = false;  /* reset per member: the flag is sticky otherwise */
             if (!parseFuncAnnotations(p, &inl, &priv, &unchk)) return NULL;
+            if (p->sawBuiltin) {
+                Token *b = cur(p);
+                ctxError(p->ctx, b->line, b->col,
+                         "A method is a function with a body, so nothing has to be supplied by"
+                         " the compiler. `@builtin` is for the primitives a library declares and"
+                         " the compiler implements (`std::sys::heap::extc_viewOf`).",
+                         "`@builtin` applies to a free function, not to a method");
+                return NULL;
+            }
             if (!at(p, "fn")) {
                 Token *t = cur(p);
                 ctxError(p->ctx, t->line, t->col, NULL,
@@ -2717,7 +2737,18 @@ static Stmt *parseStmt(Parser *p) {
      * code that uses it as a name). The semantics: the storage is global (depth 0), while the
      * name stays in this block. */
     if (at(p, "global")) {
+        Token *g = cur(p);
         if (!accept(p, "global")) return NULL;
+        /* `global` is a prefix on a declaration, not an annotation on a statement: without this
+         * check `global if c { }` or `global f()` would leave the flag set and turn the next
+         * `var` in the same block into static storage. */
+        if (!at(p, "let") && !at(p, "var")) {
+            ctxError(p->ctx, g->line, g->col,
+                     "`global` gives a binding static storage; the declaration after it is what the"
+                     " storage belongs to.",
+                     "`global` must be followed by `let` or `var`");
+            return NULL;
+        }
         p->sawGlobal = true;
     }
     if (at(p, "let") || at(p, "var"))  return parseVarDecl(p);
@@ -3958,8 +3989,10 @@ static Expr *parseComparison(Parser *p) {
  * @return    `true` when two adjacent tokens are both spelled `ch`.
  */
 static bool atShift(Parser *p, const char *ch, const char **op) {
+    /* Both halves have to be punctuation: the text of a string literal can also be `<` or `>`,
+     * and only the kind tells the two apart (`at` checks the same thing for one token). */
+    if (pk(p, 0)->kind != TK_PUNCT || pk(p, 1)->kind != TK_PUNCT) return false;
     if (strcmp(pk(p, 0)->text, ch) != 0 || strcmp(pk(p, 1)->text, ch) != 0) return false;
-    if (pk(p, 1)->kind != TK_PUNCT) return false;
     *op = strcmp(ch, "<") == 0 ? "<<" : ">>";
     return true;
 }

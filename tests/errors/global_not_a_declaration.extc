@@ -1,0 +1,6 @@
+// `global` is a prefix on a declaration; it must not silently apply to the next statement.
+fn main() -> i32 {
+    global println("x")
+    var v: i64 = 1
+    return 0
+}
