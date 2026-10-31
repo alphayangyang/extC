@@ -1339,6 +1339,23 @@ static bool lendViewArg(Checker *c, Type *want, Expr **pslot) {
     } else if (isProtoType(got, "varArray", 1) && got->targs.len == 1 &&
                (elemOk || ttEquals(*(Type **)vecAt(&got->targs, 0), wantElem))) {
         node = exprMethodNew(c->arena, a, wantMut ? "asMutSlice" : "asSlice", a->line);
+    } else {
+        /* 任何类型都可以自己声明借出方法：`asSlice() -> slice<T>`（只读）与
+         * `asMutSlice() -> mut slice<T>`（可写）。判据是"方法真的存在、返回类型是元素能对上的
+         * 视图"—— 名字约定不是契约，签名才是。这样用户写的容器不必内建到检查器里。 */
+        FuncDef *borrow = structOf(ttBase(got))
+                              ? findMethod(ttBase(got), wantMut ? "asMutSlice" : "asSlice")
+                              : NULL;
+        if (borrow && borrow->ret) {
+            Type *rb = borrow->ret;
+            /* 方法声明在模板上时返回类型里是 `T`：用接收者实例的类型实参代换。 */
+            if (got->kind == TY_GENERIC && borrow->owner == got->sdef)
+                rb = ttSubstitute(c->tt, rb, &borrow->owner->typeParams, &got->targs);
+            Type *rbBase = ttBase(rb);
+            Type *be = rbBase && ttIsViewType(rbBase) ? viewElemOf(rbBase) : NULL;
+            if (be && (elemOk || ttEquals(be, wantElem)) && (!wantMut || rb->mut))
+                node = exprMethodNew(c->arena, a, wantMut ? "asMutSlice" : "asSlice", a->line);
+        }
     }
     if (!node) return false;
     *pslot = node;

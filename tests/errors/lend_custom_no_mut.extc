@@ -1,0 +1,16 @@
+// 只有 `asSlice` 的类型不会被偷偷借成可写视图：诊断仍指向"参数要 mut slice"。
+// expect: expects
+struct ro<T> {
+    items: varArray<T>
+    fn asSlice(self: ref ro<T>) -> slice<T> { return self.items.asSlice() }
+}
+
+fn fillAll(v: mut slice<i64>) {
+    for i in 0..v.len { v[i] = i }
+}
+
+fn main() -> i32 {
+    var r: ro<i64> = ro { items: varArray<i64>::withCap(2) }
+    fillAll(r)
+    return 0
+}

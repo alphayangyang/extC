@@ -1,0 +1,31 @@
+// 自动借出不是内建给某几个容器的：任何类型只要给出 `asSlice` / `asMutSlice`
+// （返回元素能对上的视图），就能出现在只读/可写视图参数上。
+// expect: t=6 s=6
+use std::io
+
+struct bag<T> {
+    items: varArray<T>
+    fn asSlice(self: ref bag<T>) -> slice<T> { return self.items.asSlice() }
+    fn asMutSlice(self: mut ref bag<T>) -> mut slice<T> { return self.items.asMutSlice() }
+}
+
+fn total(v: slice<i64>) -> i64 {
+    var s: i64 = 0
+    for x in v { s = s + x }
+    return s
+}
+
+fn fillAll(v: mut slice<i64>) {
+    for i in 0..v.len { v[i] = i + 1 }
+}
+
+fn main() -> i32 {
+    var b: bag<i64> = bag { items: varArray<i64>::withCap(4) }
+    b.items.push(0)
+    b.items.push(0)
+    b.items.push(0)
+    fillAll(b)
+    let t: i64 = total(b)
+    io::cout << "t=" << t << " s=" << total(b.items.asSlice()) << "\n"
+    return 0
+}

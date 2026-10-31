@@ -42,6 +42,7 @@ run_case fnptr
 run_case fn_callback_view
 run_case long_line
 run_case slice_place
+run_case lend_custom tests/ops/lend_custom.extc "t=6 s=6"
 run_case lend_view
 run_case lend_mutview
 run_case view_promote
