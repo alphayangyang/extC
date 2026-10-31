@@ -11,12 +11,13 @@
 #include <string.h>
 
 /**
- * @brief 造一个未解析的类型名（TY_UNRESOLVED）。
+ * @brief Build an unresolved type name (TY_UNRESOLVED).
  *
- * @param a     拥有节点的 arena。
- * @param name  源码里写的类型名；指针原样保留，文本不拷贝。
- * @return      一个 TY_UNRESOLVED 类型。把它连同解析器随后挂上的类型实参一起解析成驻留类型
- *              是检查器的事。
+ * @param a     Arena that owns the node.
+ * @param name  The type name as written in the source; the pointer is kept as is, the text
+ *              is not copied.
+ * @return      A TY_UNRESOLVED type. Resolving it, together with the type arguments the
+ *              parser attaches afterwards, into an interned type is the checker's job.
  */
 Type *typeNamed(Arena *a, const char *name) {
     Type *t = (Type *)arenaAllocZero(a, sizeof(Type));
@@ -26,12 +27,12 @@ Type *typeNamed(Arena *a, const char *name) {
 }
 
 /**
- * @brief 造 `ref inner`，普通的引用类型。
+ * @brief Build `ref inner`, the ordinary reference type.
  *
- * @param a      拥有节点的 arena。
- * @param inner  被引用的类型。
- * @return       既不 writable 也不 nullable 的 TY_REF；源码写 `mut ref` / `?ref` 时由解析器
- *               设置 `mut` / `nullable`。
+ * @param a      Arena that owns the node.
+ * @param inner  The referenced type.
+ * @return       A TY_REF that is neither writable nor nullable; the parser sets `mut` /
+ *               `nullable` when the source writes `mut ref` / `?ref`.
  */
 Type *typeRef(Arena *a, Type *inner) {
     Type *t = (Type *)arenaAllocZero(a, sizeof(Type));
@@ -41,14 +42,15 @@ Type *typeRef(Arena *a, Type *inner) {
 }
 
 /**
- * @brief 造定长数组类型 `[n]elem`（TY_ARRAY）。
+ * @brief Build a fixed-length array type `[n]elem` (TY_ARRAY).
  *
- * 长度是编译期常量，也是类型的一部分，所以 `[3]i32` 与 `[4]i32` 是两个不同的类型。
+ * The length is a compile-time constant and part of the type, so `[3]i32` and `[4]i32` are
+ * two different types.
  *
- * @param a     拥有节点的 arena。
- * @param n     元素个数。
- * @param elem  元素类型。
- * @return      一个 TY_ARRAY 类型。
+ * @param a     Arena that owns the node.
+ * @param n     Number of elements.
+ * @param elem  Element type.
+ * @return      A TY_ARRAY type.
  */
 Type *typeArray(Arena *a, int64_t n, Type *elem) {
     Type *t = (Type *)arenaAllocZero(a, sizeof(Type));
@@ -59,15 +61,17 @@ Type *typeArray(Arena *a, int64_t n, Type *elem) {
 }
 
 /**
- * @brief 按解析器给的碎片造函数类型 `fn(params...) -> ret`（TY_FN）。
+ * @brief Build a function type `fn(params...) -> ret` (TY_FN) from the pieces the parser
+ * hands over.
  *
- * 参数与返回类型可能还是 `TY_UNRESOLVED` 名字，所以这里只搭形状：驻留发生在 `ttResolve` /
- * `ttFn` 里（the split that keeps `ast.c`'s constructors out of the type table）。
+ * The parameter and return types may still be TY_UNRESOLVED names, so this only builds the
+ * shape: interning happens in `ttResolve` / `ttFn` (the split that keeps `ast.c`'s
+ * constructors out of the type table).
  *
- * @param a       拥有节点与参数向量的 arena。
- * @param params  参数类型，按顺序（`Type *` 元素）；向量会被复制。
- * @param ret     返回类型；不能是 NULL，`void` 也要传一个真正的类型。
- * @return        一个 TY_FN 类型，它的各部分可能仍是未解析的名字。
+ * @param a       Arena that owns the node and the parameter vector.
+ * @param params  Parameter types, in order (`Type *` elements); the vector is copied.
+ * @param ret     Return type; must not be NULL, and `void` is passed as a real type too.
+ * @return        A TY_FN type whose parts may still be unresolved names.
  */
 Type *typeFn(Arena *a, Vec *params, Type *ret) {
     Type *t = (Type *)arenaAllocZero(a, sizeof(Type));
@@ -80,14 +84,15 @@ Type *typeFn(Arena *a, Vec *params, Type *ret) {
 }
 
 /**
- * @brief 造一个类型参数（TY_PARAM）。
+ * @brief Build a type parameter (TY_PARAM).
  *
- * `param` 与 `name` 都记这个名字；判类型相等、打印类型都按 `param` 认它。
+ * Both `param` and `name` record this name; type equality and type printing identify it by
+ * `param`.
  *
- * @param a     拥有节点的 arena。
- * @param name  参数名，例如 `"T"`。
- * @param idx   它在所在参数表里的位置。
- * @return      一个 TY_PARAM 类型。
+ * @param a     Arena that owns the node.
+ * @param name  Parameter name, such as `"T"`.
+ * @param idx   Its position in the parameter list that declares it.
+ * @return      A TY_PARAM type.
  */
 Type *typeParam(Arena *a, const char *name, int idx) {
     Type *t = (Type *)arenaAllocZero(a, sizeof(Type));
@@ -99,15 +104,17 @@ Type *typeParam(Arena *a, const char *name, int idx) {
 }
 
 /**
- * @brief 造一个表达式节点。
+ * @brief Build an expression node.
  *
- * 节点取自 arena 且已清零，只设 `kind` 与行号，所以解析器没填的字段是零而不是未定值。解析的
- * 结果（`type`、`func`、`field`，以及逃逸分析的深度）随后由检查器填。
+ * The node comes from the arena already zeroed; only `kind` and the line number are set, so
+ * a field the parser does not fill is zero rather than indeterminate. The results of
+ * resolution (`type`, `func`, `field`, and the escape-analysis depth) are filled in later by
+ * the checker.
  *
- * @param a     拥有节点的 arena。
- * @param kind  表达式种类；联合体只有对应那个成员可用。
- * @param line  源码行号（1 起），留给诊断。
- * @return      清零的 Expr。
+ * @param a     Arena that owns the node.
+ * @param kind  Expression kind; only the corresponding union member is usable.
+ * @param line  Source line number (1-based), kept for diagnostics.
+ * @return      The zeroed Expr.
  */
 Expr *exprNew(Arena *a, ExprKind kind, int line) {
     Expr *e = (Expr *)arenaAllocZero(a, sizeof(Expr));
@@ -117,14 +124,14 @@ Expr *exprNew(Arena *a, ExprKind kind, int line) {
 }
 
 /**
- * @brief 造一个语句节点。
+ * @brief Build a statement node.
  *
- * 节点取自 arena 且已清零，只设 `kind` 与行号。
+ * The node comes from the arena already zeroed; only `kind` and the line number are set.
  *
- * @param a     拥有节点的 arena。
- * @param kind  语句种类；联合体只有对应那个成员可用。
- * @param line  源码行号（1 起），留给诊断。
- * @return      清零的 Stmt。
+ * @param a     Arena that owns the node.
+ * @param kind  Statement kind; only the corresponding union member is usable.
+ * @param line  Source line number (1-based), kept for diagnostics.
+ * @return      The zeroed Stmt.
  */
 Stmt *stmtNew(Arena *a, StmtKind kind, int line) {
     Stmt *s = (Stmt *)arenaAllocZero(a, sizeof(Stmt));
@@ -134,13 +141,13 @@ Stmt *stmtNew(Arena *a, StmtKind kind, int line) {
 }
 
 /**
- * @brief 准备一个空模块。
+ * @brief Prepare an empty module.
  *
- * 声明随着解析器与加载器发现它们而追加，所以一个 Module 最终可以按序装着 prelude、用户的
- * 文件、然后是该文件导入的每个模块。
+ * Declarations are appended as the parser and loader discover them, so a Module can end up
+ * holding, in order, the prelude, the user's file, and then every module that file imports.
  *
- * @param m  要初始化的模块；存储由调用方拥有。
- * @param a  向量分配所用的 arena。
+ * @param m  Module to initialize; the caller owns the storage.
+ * @param a  Arena the vectors allocate from.
  */
 void moduleInit(Module *m, Arena *a) {
     vecInit(&m->structs, a, sizeof(void *));
@@ -154,14 +161,15 @@ void moduleInit(Module *m, Arena *a) {
 }
 
 /**
- * @brief 造一个 `EX_IDENT`：标识符写出来是什么就记什么。
+ * @brief Build an `EX_IDENT`: the identifier records the name exactly as it was written.
  *
- * `name` 与 `srcName` 一起设，此刻两者是同一个指针；改名发生在解析器之后。
+ * `name` and `srcName` are set together and are the same pointer at this point; renaming
+ * happens after the parser.
  *
- * @param a     拥有节点的 arena。
- * @param name  写出来的名字。
- * @param line  源码行号（1 起）。
- * @return      清零并填好两个名字的标识符节点。
+ * @param a     Arena that owns the node.
+ * @param name  The name as written.
+ * @param line  Source line number (1-based).
+ * @return      The zeroed identifier node with both names filled in.
  */
 Expr *exprIdent(Arena *a, const char *name, int line) {
     Expr *e = exprNew(a, EX_IDENT, line);
@@ -171,17 +179,18 @@ Expr *exprIdent(Arena *a, const char *name, int line) {
 }
 
 /**
- * @brief 造一个二元运算节点：`op`、左右操作数一次填好。
+ * @brief Build a binary operation node with `op` and both operands filled in at once.
  *
- * 解析器的 `mkBin` 与检查器的降糖都走这里，免得「构造 Bin 节点」这件事散成七八处手写。
- * `type` 留给检查器填（降糖自己知道类型时在调用点补）。
+ * Both the parser's `mkBin` and the checker's lowering go through here, so "build a Bin node"
+ * does not end up hand-written in seven or eight places. `type` is left for the checker to
+ * fill (lowering that already knows the type fills it at the call site).
  *
- * @param a     拥有节点的 arena。
- * @param op    运算符文本（`"+"`、`"<"`、`"-"` 等），生命周期与 arena 一致。
- * @param left  左操作数。
- * @param right 右操作数。
- * @param line  源码行号（1 起）。
- * @return      新 `EX_BIN` 节点。
+ * @param a      Arena that owns the node.
+ * @param op     Operator text (`"+"`, `"<"`, `"-"`, ...), with the arena's lifetime.
+ * @param left   Left operand.
+ * @param right  Right operand.
+ * @param line   Source line number (1-based).
+ * @return       The new `EX_BIN` node.
  */
 Expr *exprBinNew(Arena *a, const char *op, Expr *left, Expr *right, int line) {
     Expr *e = exprNew(a, EX_BIN, line);
@@ -192,12 +201,12 @@ Expr *exprBinNew(Arena *a, const char *op, Expr *left, Expr *right, int line) {
 }
 
 /**
- * @brief 造一个浮点字面量节点。
+ * @brief Build a floating-point literal node.
  *
- * @param a     拥有节点的 arena。
- * @param value 字面量值（同时存进 `u.fval`，`f64`）。
- * @param line  源码行号（1 起）。
- * @return      新 `EX_FLOAT` 节点；`type` 留给调用方填。
+ * @param a      Arena that owns the node.
+ * @param value  Literal value (also stored into `u.fval`, `f64`).
+ * @param line   Source line number (1-based).
+ * @return       The new `EX_FLOAT` node; `type` is left for the caller to fill.
  */
 Expr *exprFloatNew(Arena *a, double value, int line) {
     Expr *e = exprNew(a, EX_FLOAT, line);
@@ -206,12 +215,12 @@ Expr *exprFloatNew(Arena *a, double value, int line) {
 }
 
 /**
- * @brief 造一个整数字面量节点。
+ * @brief Build an integer literal node.
  *
- * @param a     拥有节点的 arena。
- * @param value 字面量值（同时存进 `u.ival`）。
- * @param line  源码行号（1 起）。
- * @return      新 `EX_INT` 节点；`type` 留给调用方填。
+ * @param a      Arena that owns the node.
+ * @param value  Literal value (also stored into `u.ival`).
+ * @param line   Source line number (1-based).
+ * @return       The new `EX_INT` node; `type` is left for the caller to fill.
  */
 Expr *exprIntNew(Arena *a, long long value, int line) {
     Expr *e = exprNew(a, EX_INT, line);
@@ -220,12 +229,12 @@ Expr *exprIntNew(Arena *a, long long value, int line) {
 }
 
 /**
- * @brief 造一个布尔字面量节点（`true` / `false`）。
+ * @brief Build a boolean literal node (`true` / `false`).
  *
- * @param a    拥有节点的 arena。
- * @param value 字面量的值。
- * @param line 源码行号（1 起）。
- * @return     新 `EX_BOOL` 节点。
+ * @param a      Arena that owns the node.
+ * @param value  The literal's value.
+ * @param line   Source line number (1-based).
+ * @return       The new `EX_BOOL` node.
  */
 Expr *exprBoolNew(Arena *a, bool value, int line) {
     Expr *e = exprNew(a, EX_BOOL, line);
@@ -234,12 +243,13 @@ Expr *exprBoolNew(Arena *a, bool value, int line) {
 }
 
 /**
- * @brief 造一个 `EX_CALL` 节点：被调者填好、实参表初始化成空。
+ * @brief Build an `EX_CALL` node with the callee filled in and the argument list initialized
+ * empty.
  *
- * @param a      拥有节点的 arena。
- * @param callee 被调者表达式。
- * @param line   源码行号（1 起）。
- * @return       新 `EX_CALL` 节点，`u.call.args` 可用 `vecPush` 追加。
+ * @param a       Arena that owns the node.
+ * @param callee  Callee expression.
+ * @param line    Source line number (1-based).
+ * @return        The new `EX_CALL` node; `u.call.args` can be appended to with `vecPush`.
  */
 Expr *exprCallNew(Arena *a, Expr *callee, int line) {
     Expr *e = exprNew(a, EX_CALL, line);
@@ -249,54 +259,57 @@ Expr *exprCallNew(Arena *a, Expr *callee, int line) {
 }
 
 /**
- * @brief 把一个下标表达式节点里的下标换掉（降糖用：`out[i]` → `out[i - lo]`）。
+ * @brief Replace the index of an index expression in place (used by lowering: `out[i]` ->
+ * `out[i - lo]`).
  *
- * 只改下标槽，不动 `obj`、`type` 与其他字段；调用方负责新下标已经检查过。
+ * Only the index slot is written; `obj`, `type`, and the other fields are untouched. The
+ * caller is responsible for the new index having been checked.
  *
- * @param e     必须是 `EX_INDEX` 节点。
- * @param index 新下标表达式。
+ * @param e      Must be an `EX_INDEX` node.
+ * @param index  The new index expression.
  */
 void exprIndexRetarget(Expr *e, Expr *index) {
     e->u.index.index = index;
 }
 
 /**
- * @brief 给 `FuncDef` 记下它所属模块的名字。
+ * @brief Record the name of the module a `FuncDef` belongs to.
  *
- * 检查器合成的函数（`par` 的 worker）没有解析期的模块上下文，靠这条把后续诊断与发射需要的
- * 名字补齐。
+ * Functions the checker synthesizes (the `par` worker) have no module context from parsing,
+ * and this fills in the name that later diagnostics and emission need.
  *
- * @param f       要写的函数定义。
- * @param modName 模块名；生命周期与 arena 一致，可为 NULL。
+ * @param f        Function definition to write.
+ * @param modName  Module name, with the arena's lifetime; may be NULL.
  */
 void funcDefSetModName(FuncDef *f, const char *modName) {
     f->modName = modName;
 }
 
 /**
- * @brief 把语句标记/取消「并行循环块」标记。
+ * @brief Mark or clear a statement's "parallel loop block" flag.
  *
- * 标记只由解析器造，检查器在降糖之后清掉；不新增 `StmtKind` 的代价就是这一个可由两侧设置的
- * 布尔值。
+ * Only the parser sets the flag; the checker clears it after lowering. The price of not
+ * adding a `StmtKind` is this one boolean, which either side can write.
  *
- * @param s       要写的语句节点。
- * @param parLoop 新值。
+ * @param s        Statement node to write.
+ * @param parLoop  The new value.
  */
 void stmtSetParLoop(Stmt *s, bool parLoop) {
     s->parLoop = parLoop;
 }
 
 /**
- * @brief 造一个方法调用节点 `recv.name(args…)`。
+ * @brief Build a method call node `recv.name(args...)`.
  *
- * 只填语法事实（接收者、名字、实参表）：方法解析、借用与 arena 记账都由检查器的 `EX_METHOD`
- * 路径完成，所以检查器可以把它当成用户写的一样重新检查一遍。
+ * Only syntax facts are filled in (receiver, name, argument list): method resolution,
+ * borrow checks, and arena bookkeeping all happen on the checker's `EX_METHOD` path, so the
+ * checker can re-examine this node as if the user had written it.
  *
- * @param a     分配用的 arena。
- * @param recv  接收者表达式。
- * @param name  方法名（静态存储）。
- * @param line  源码行号。
- * @return      新节点，`args` 初始化为空表。
+ * @param a     Arena to allocate from.
+ * @param recv  Receiver expression.
+ * @param name  Method name (statically stored).
+ * @param line  Source line number.
+ * @return      The new node, with `args` initialized empty.
  */
 Expr *exprMethodNew(Arena *a, Expr *recv, const char *name, int line) {
     Expr *e = exprNew(a, EX_METHOD, line);
@@ -307,17 +320,18 @@ Expr *exprMethodNew(Arena *a, Expr *recv, const char *name, int line) {
 }
 
 /**
- * @brief 造一个切片节点 `obj[lo..hi]`。
+ * @brief Build a slice node `obj[lo..hi]`.
  *
- * `lo`/`hi` 可以为 `NULL`，表示这一端没写；固定数组的省略端点由检查器补成字面量
- * （`a[..]` → `a[0..N]`），与解析器写出来的节点同形。
+ * `lo` / `hi` may be `NULL`, meaning that end was not written; for a fixed array the checker
+ * fills an omitted end with a literal (`a[..]` -> `a[0..N]`), so the node has the same shape
+ * as one the parser produced.
  *
- * @param a   分配用的 arena。
- * @param obj 被切的表达式。
- * @param lo  下界或 `NULL`。
- * @param hi  上界或 `NULL`。
- * @param line 源码行号。
- * @return    新节点。
+ * @param a     Arena to allocate from.
+ * @param obj   Expression being sliced.
+ * @param lo    Lower bound, or `NULL`.
+ * @param hi    Upper bound, or `NULL`.
+ * @param line  Source line number.
+ * @return      The new node.
  */
 Expr *exprSliceNew(Arena *a, Expr *obj, Expr *lo, Expr *hi, int line) {
     Expr *e = exprNew(a, EX_SLICE, line);
@@ -328,19 +342,22 @@ Expr *exprSliceNew(Arena *a, Expr *obj, Expr *lo, Expr *hi, int line) {
 }
 
 /**
- * @brief 把一个表达式**原地**改成模块函数调用 `modPrefix::name(args…)`（`EX_ASSOC`）。
+ * @brief Rewrite an expression **in place** into a module function call
+ * `modPrefix::name(args...)` (`EX_ASSOC`).
  *
- * 值 f-string 的说明符槽由解析器脱糖成保留名的调用，检查器按值的静态类型把它重定向到
- * `stl::stringio` 的 `padI64` / `padF64` / `padText`：那一层同时知道值的类型和写下来的
- * 说明符，也只有它能挑填充原语。重定向成 `EX_ASSOC` 之后，模块导入检查、mangling 与
- * 计划侧记账都走自由函数调用的既有路径。
+ * The value f-string's specifier slot is desugared by the parser into a call to a reserved
+ * name, and the checker redirects it to `stl::stringio`'s `padI64` / `padF64` / `padText`
+ * according to the value's static type: that layer knows both the value's type and the
+ * specifier as written, and it is the only one that can pick the padding primitive. Once
+ * redirected to an `EX_ASSOC`, module import checking, mangling, and plan-side bookkeeping
+ * all take the existing free-function-call path.
  *
- * @param a         分配用的 arena（空 targs 表用）。
- * @param e         要改写的表达式节点（原地改）。
- * @param typeName  类型名段（如 `"stl"`）。
- * @param modPrefix 模块前缀（如 `"stl::stringio"`）。
- * @param name      函数名（静态存储）。
- * @param args      新的实参表（指针向量）。
+ * @param a          Arena to allocate from (for the empty targs table).
+ * @param e          Expression node to rewrite (in place).
+ * @param typeName   The type-name segment (such as `"stl"`).
+ * @param modPrefix  Module prefix (such as `"stl::stringio"`).
+ * @param name       Function name (statically stored).
+ * @param args       The new argument list (a vector of pointers).
  */
 void exprRetargetAssoc(Arena *a, Expr *e, const char *typeName, const char *modPrefix,
                        const char *name, Vec *args) {
@@ -355,13 +372,14 @@ void exprRetargetAssoc(Arena *a, Expr *e, const char *typeName, const char *modP
 }
 
 /**
- * @brief 深拷贝一个表达式子树（融合降糖用）。
+ * @brief Deep-copy an expression subtree (used by fusion lowering).
  *
- * 见 `ast.h` 的同名声明：只保证纯表达式形状的子树被完整复制，其它形状退化为浅拷贝。
+ * See the declaration of the same name in `ast.h`: only subtrees of a pure expression shape
+ * are fully copied, and other shapes degrade to a shallow copy.
  *
- * @param a   分配用的 arena。
- * @param src 源表达式；NULL 时返回 NULL。
- * @return    新子树。
+ * @param a    Arena to allocate from.
+ * @param src  Source expression; NULL returns NULL.
+ * @return     The new subtree.
  */
 Expr *exprClone(Arena *a, Expr *src) {
     if (!src) return NULL;
@@ -404,44 +422,46 @@ Expr *exprClone(Arena *a, Expr *src) {
         n->u.deref.operand = exprClone(a, src->u.deref.operand);
         break;
     default:
-        break;   /* 叶子与"不该融合"的形状：浅拷贝已经足够 */
+        break;   /* leaves and "must not fuse" shapes: a shallow copy is enough */
     }
     return n;
 }
 
 /**
- * @brief 判断一个函数是不是方法。
+ * @brief Tell whether a function is a method.
  *
- * 规则就是名字：第一个参数名为 `self` 就是方法，声明里没有别的东西区分方法与自由函数。
+ * The rule is the name: a first parameter named `self` makes it a method; nothing else in a
+ * declaration distinguishes a method from a free function.
  *
- * @param f  要看的函数。
- * @return   第一个参数名为 `self` 则 `true`；`f` 为 NULL 或没有参数时 `false`。
+ * @param f  Function to inspect.
+ * @return   `true` when the first parameter is named `self`; `false` when `f` is NULL or has
+ *           no parameters.
  */
 bool funcIsMethod(const FuncDef *f) {
     if (!f || f->params.len == 0) return false;
-    /* vecAt 取非 const 的 Vec；这里只读元素，不写它。 */
+    /* vecAt takes a non-const Vec; here the elements are only read, never written. */
     Param *p0 = *(Param **)vecAt((Vec *)&f->params, 0);
     return strcmp(p0->name, "self") == 0;
 }
 
 /**
- * @brief 换掉一个块语句的语句表（融合降糖用）。
+ * @brief Replace the statement list of a block statement (used by fusion lowering).
  *
- * @param s     必须是 `ST_BLOCK` 节点。
- * @param stmts 新语句表（`Stmt*` 的 `Vec`，按值拷进去）。
+ * @param s      Must be an `ST_BLOCK` node.
+ * @param stmts  The new statement list (a `Vec` of `Stmt*`, copied in by value).
  */
 void stmtBlockSetStmts(Stmt *s, Vec *stmts) {
     s->u.block.stmts = *stmts;
 }
 
 /**
- * @brief 造 `obj[index]` 下标节点（整数组表达式降糖用）。
+ * @brief Build an `obj[index]` index node (used by lowering of whole-array expressions).
  *
- * @param a     分配用的 arena。
- * @param obj   被下标的表达式。
- * @param index 下标表达式。
- * @param line  挂到节点上的源码行。
- * @return      新的 `EX_INDEX` 节点。
+ * @param a      Arena to allocate from.
+ * @param obj    Expression being indexed.
+ * @param index  Index expression.
+ * @param line   Source line attached to the node.
+ * @return       The new `EX_INDEX` node.
  */
 Expr *exprIndexNew(Arena *a, Expr *obj, Expr *index, int line) {
     Expr *e = exprNew(a, EX_INDEX, line);
@@ -451,13 +471,13 @@ Expr *exprIndexNew(Arena *a, Expr *obj, Expr *index, int line) {
 }
 
 /**
- * @brief 造 `obj.name` 字段访问节点（降糖里读 `v.len` 用）。
+ * @brief Build an `obj.name` field access node (used by lowering to read `v.len`).
  *
- * @param a    分配用的 arena。
- * @param obj  被访问的表达式。
- * @param name 字段名（不拷贝）。
- * @param line 挂到节点上的源码行。
- * @return     新的 `EX_FIELD` 节点。
+ * @param a     Arena to allocate from.
+ * @param obj   Expression being accessed.
+ * @param name  Field name (not copied).
+ * @param line  Source line attached to the node.
+ * @return      The new `EX_FIELD` node.
  */
 Expr *exprFieldNew(Arena *a, Expr *obj, const char *name, int line) {
     Expr *e = exprNew(a, EX_FIELD, line);
@@ -467,12 +487,12 @@ Expr *exprFieldNew(Arena *a, Expr *obj, const char *name, int line) {
 }
 
 /**
- * @brief 造字符串字面量节点，把文本拷进 arena。
+ * @brief Build a string literal node, copying the text into the arena.
  *
- * @param a    分配用的 arena。
- * @param text 字符串内容。
- * @param line 挂到节点上的源码行。
- * @return     新的 `EX_STR` 节点。
+ * @param a     Arena to allocate from.
+ * @param text  String contents.
+ * @param line  Source line attached to the node.
+ * @return      The new `EX_STR` node.
  */
 Expr *exprStrNew(Arena *a, const char *text, int line) {
     Expr *e = exprNew(a, EX_STR, line);
@@ -484,13 +504,13 @@ Expr *exprStrNew(Arena *a, const char *text, int line) {
 }
 
 /**
- * @brief 造一元表达式节点。
+ * @brief Build a unary expression node.
  *
- * @param a       分配用的 arena。
- * @param op      运算符文本（静态存储）。
- * @param operand 操作数。
- * @param line    挂到节点上的源码行。
- * @return        新的 `EX_UN` 节点。
+ * @param a        Arena to allocate from.
+ * @param op       Operator text (statically stored).
+ * @param operand  Operand.
+ * @param line     Source line attached to the node.
+ * @return         The new `EX_UN` node.
  */
 Expr *exprUnNew(Arena *a, const char *op, Expr *operand, int line) {
     Expr *e = exprNew(a, EX_UN, line);
@@ -500,12 +520,12 @@ Expr *exprUnNew(Arena *a, const char *op, Expr *operand, int line) {
 }
 
 /**
- * @brief 造 `e!` 节点（载荷由检查器定类型）。
+ * @brief Build an `e!` node (the checker assigns the payload's type).
  *
- * @param a        arena。
- * @param operand  被签名的表达式。
- * @param line     行号。
- * @return         新的签名表达式。
+ * @param a        Arena.
+ * @param operand  Expression being signed.
+ * @param line     Line number.
+ * @return         The new signature expression.
  */
 Expr *exprSignNew(Arena *a, Expr *operand, int line) {
     Expr *e = exprNew(a, EX_SIGN, line);
@@ -514,18 +534,20 @@ Expr *exprSignNew(Arena *a, Expr *operand, int line) {
 }
 
 /**
- * @brief 造一条局部变量声明（`let`/`var x: ann = init`）。
+ * @brief Build a local variable declaration (`let`/`var x: ann = init`).
  *
- * 类型注解可以是 `NULL`（由初始化式推断），与解析器写出来的声明同形。编译器自己造的临时量
- * （值位置 `?` 的提前解包等）走这里，免得在 builder 之外写 `u.var`。
+ * The type annotation may be `NULL` (inferred from the initializer), giving the same shape as
+ * a declaration the parser produced. Temporaries the compiler creates itself (the early
+ * unwrapping of a value-position `?`, and so on) go through here, so `u.var` is not written
+ * outside the builder.
  *
- * @param a     分配用的 arena。
- * @param name  变量名（存活期必须覆盖本模块）。
- * @param ann   类型注解，可为 `NULL`。
- * @param init  初始化式，可为 `NULL`（`var x: T`）。
- * @param mut   `true` = `var`，`false` = `let`。
- * @param line  行号。
- * @return      新的声明语句。
+ * @param a     Arena to allocate from.
+ * @param name  Variable name; must live at least as long as this module.
+ * @param ann   Type annotation; may be `NULL`.
+ * @param init  Initializer; may be `NULL` (`var x: T`).
+ * @param mut   `true` = `var`, `false` = `let`.
+ * @param line  Line number.
+ * @return      The new declaration statement.
  */
 Stmt *stmtVarNew(Arena *a, const char *name, Type *ann, Expr *init, bool mut, int line) {
     Stmt *s = stmtNew(a, ST_VAR, line);
@@ -536,14 +558,16 @@ Stmt *stmtVarNew(Arena *a, const char *name, Type *ann, Expr *init, bool mut, in
     return s;
 }
 /**
- * @brief 造一条赋值语句（`target = value`，`op` 为空表示普通赋值）。
+ * @brief Build an assignment statement (`target = value`; an empty `op` is a plain
+ * assignment).
  *
- * @param a      分配用的 arena。
- * @param target 赋值目标。
- * @param value  右值。
- * @param op     复合赋值的运算符文本（`"+="` 等）；普通赋值传 `NULL`。
- * @param line   挂到节点上的源码行。
- * @return       新的 `ST_ASSIGN` 节点，`opExpr` 留给检查器。
+ * @param a       Arena to allocate from.
+ * @param target  Assignment target.
+ * @param value   Right-hand side.
+ * @param op      The compound assignment's operator text (such as `"+="`); `NULL` for a plain
+ *                assignment.
+ * @param line    Source line attached to the node.
+ * @return        The new `ST_ASSIGN` node; `opExpr` is left for the checker.
  */
 Stmt *stmtAssignNew(Arena *a, Expr *target, Expr *value, const char *op, int line) {
     Stmt *s = stmtNew(a, ST_ASSIGN, line);
@@ -554,11 +578,12 @@ Stmt *stmtAssignNew(Arena *a, Expr *target, Expr *value, const char *op, int lin
     return s;
 }
 /**
- * @brief 换掉一条赋值语句的右值与运算符（降糖重写用）。
+ * @brief Replace an assignment statement's right-hand side and operator (used by lowering
+ * rewrites).
  *
- * @param s     赋值语句（`ST_ASSIGN`）。
- * @param value 新的右值。
- * @param op    新的复合运算符；普通 `=` 传 NULL。
+ * @param s      The assignment statement (`ST_ASSIGN`).
+ * @param value  The new right-hand side.
+ * @param op     The new compound operator; NULL for a plain `=`.
  */
 void stmtAssignSetValue(Stmt *s, Expr *value, const char *op) {
     if (!s || s->kind != ST_ASSIGN) return;
@@ -568,12 +593,12 @@ void stmtAssignSetValue(Stmt *s, Expr *value, const char *op) {
 
 
 /**
- * @brief 造 `trap(msg)` 语句。
+ * @brief Build a `trap(msg)` statement.
  *
- * @param a    分配用的 arena。
- * @param msg  报文表达式。
- * @param line 挂到节点上的源码行。
- * @return     新的 `ST_TRAP` 节点。
+ * @param a     Arena to allocate from.
+ * @param msg   Message expression.
+ * @param line  Source line attached to the node.
+ * @return      The new `ST_TRAP` node.
  */
 Stmt *stmtTrapNew(Arena *a, Expr *msg, int line) {
     Stmt *s = stmtNew(a, ST_TRAP, line);
@@ -582,14 +607,14 @@ Stmt *stmtTrapNew(Arena *a, Expr *msg, int line) {
 }
 
 /**
- * @brief 造 `if cond { thenBody } else { elseBody }` 语句。
+ * @brief Build an `if cond { thenBody } else { elseBody }` statement.
  *
- * @param a        分配用的 arena。
- * @param cond     条件表达式。
- * @param thenBody 条件为真时的语句。
- * @param elseBody 条件为假时的语句；NULL 表示没有 `else`。
- * @param line     挂到节点上的源码行。
- * @return         新的 `ST_IF` 节点。
+ * @param a         Arena to allocate from.
+ * @param cond      Condition expression.
+ * @param thenBody  Statements run when the condition holds.
+ * @param elseBody  Statements run when it does not; NULL means there is no `else`.
+ * @param line      Source line attached to the node.
+ * @return          The new `ST_IF` node.
  */
 Stmt *stmtIfNew(Arena *a, Expr *cond, Stmt *thenBody, Stmt *elseBody, int line) {
     Stmt *s = stmtNew(a, ST_IF, line);
@@ -600,17 +625,19 @@ Stmt *stmtIfNew(Arena *a, Expr *cond, Stmt *thenBody, Stmt *elseBody, int line) 
 }
 
 /**
- * @brief 造 `for var in 0..hi { body }` 的脱糖块（整数组表达式降糖用）。
+ * @brief Build the desugared block of a `for var in 0..hi { body }` (used by lowering of
+ * whole-array expressions).
  *
- * 形状与解析器的区间 `for` 一致：`[循环变量声明, 上界声明, while]`，`while` 的体是
- * `[body, 步进]` 并挂 `forStep`。检查器的区间变量放宽与 `par` 降糖都按这个形状认。
+ * The shape matches the parser's range `for`: `[loop variable declaration, upper bound
+ * declaration, while]`, where the `while` body is `[body, step]` with `forStep` attached.
+ * The checker's range-variable widening and the `par` lowering both recognise this shape.
  *
- * @param a    分配用的 arena。
- * @param var  循环变量名。
- * @param hi   上界表达式（半开区间）。
- * @param body 循环体（一个块）。
- * @param line 挂到节点上的源码行。
- * @return     外层块语句。
+ * @param a     Arena to allocate from.
+ * @param var   Loop variable name.
+ * @param hi    Upper bound expression (half-open range).
+ * @param body  Loop body (a block).
+ * @param line  Source line attached to the node.
+ * @return      The outer block statement.
  */
 Stmt *stmtRangeForNew(Arena *a, const char *var, Expr *hi, Stmt *body, int line) {
     Stmt *decl = stmtNew(a, ST_VAR, line);
@@ -651,22 +678,25 @@ Stmt *stmtRangeForNew(Arena *a, const char *var, Expr *hi, Stmt *body, int line)
 /* ---------------------------------------------------------------- walking */
 
 /**
- * @brief 对一个子表达式调用表达式回调；没有回调或子表达式为空时视为通过。
+ * @brief Call the expression callback on one subexpression; no callback or a NULL
+ * subexpression counts as passing.
  *
- * @param v  回调与它的上下文。
- * @param e  要访问的子表达式；NULL 或没设表达式回调时直接返回 `true`。
- * @return   回调的结果；`false` 表示停下整趟走。
+ * @param v  The callback and its context.
+ * @param e  Subexpression to visit; NULL, or no expression callback set, returns `true`
+ *           directly.
+ * @return   The callback's result; `false` stops the whole walk.
  */
 static bool visitExpr(const AstVisit *v, Expr *e) {
     if (!e || !v->expr) return true;
     return v->expr(v->ctx, e);
 }
 /**
- * @brief 对一个子语句调用语句回调；没设语句回调时继续往下走它的子节点。
+ * @brief Call the statement callback on one substatement; with no statement callback set it
+ * keeps going down into that node's children.
  *
- * @param v  回调与它的上下文。
- * @param s  要访问的子语句；NULL 时直接返回 `true`。
- * @return   回调的结果；`false` 表示停下整趟走。
+ * @param v  The callback and its context.
+ * @param s  Substation to visit; NULL returns `true` directly.
+ * @return   The callback's result; `false` stops the whole walk.
  */
 static bool visitStmt(const AstVisit *v, Stmt *s) {
     if (!s) return true;
@@ -674,11 +704,12 @@ static bool visitStmt(const AstVisit *v, Stmt *s) {
     return astWalkStmtChildren(s, v);
 }
 /**
- * @brief 按顺序对一个表达式向量里的每个元素调用表达式回调。
+ * @brief Call the expression callback on every element of an expression vector, in order.
  *
- * @param v   回调与它的上下文。
- * @param xs  表达式向量（`Expr *` 元素）。
- * @return    全部走完返回 `true`；某个回调返回 `false` 时立刻返回 `false`。
+ * @param v   The callback and its context.
+ * @param xs  Expression vector (`Expr *` elements).
+ * @return    `true` when everything was visited; `false` as soon as some callback returns
+ *            `false`.
  */
 static bool visitExprList(const AstVisit *v, Vec *xs) {
     for (size_t i = 0; i < xs->len; i++)
@@ -687,14 +718,15 @@ static bool visitExprList(const AstVisit *v, Vec *xs) {
 }
 
 /**
- * @brief 访问表达式 `e` 的直接子节点。
+ * @brief Visit the direct children of expression `e`.
  *
- * 回调访问的是**子**节点，从不访问被调用它的那个节点；回调返回 false 表示停下整趟走。没有
- * 设表达式回调时直接返回 `true`（跳过）。
+ * The callback visits a **child** and never the node it was called for; returning false from
+ * the callback stops the whole walk. With no expression callback set it returns `true`
+ * immediately (skipped).
  *
- * @param e  要走的表达式；NULL 直接返回 `true`。
- * @param v  回调与它的上下文。
- * @return   走完了返回 `true`；某个回调返回 false 时返回 `false`。
+ * @param e  Expression to walk; NULL returns `true` directly.
+ * @param v  The callbacks and their context.
+ * @return   `true` when the walk completed; `false` when a callback returned false.
  */
 /*@@all-kinds*/   bool astWalkExprChildren(Expr *e, const AstVisit *v) {
     if (!e) return true;
@@ -715,14 +747,16 @@ static bool visitExprList(const AstVisit *v, Vec *xs) {
     case EX_NEW:   return visitExpr(v, e->u.new_.count);
     case EX_DYN:   return visitExpr(v, e->u.dynv.payload);
     case EX_EXT:   return visitExpr(v, e->u.ext_.call);
-    case EX_LAMBDA:   /* 体，加上环境字段值：那些读发生在 lambda 写出来的地方 */
+    case EX_LAMBDA:   /* the body, plus the env field values: those reads happen where the lambda is written */
         for (size_t i = 0; i < e->u.lambda.inits.len; i++)
             if (!visitExpr(v, (*(FieldInit **)vecAt(&e->u.lambda.inits, i))->value)) return false;
         return visitStmt(v, e->u.lambda.body);
     /* a receiver, or a list */
     case EX_METHOD:  return visitExpr(v, e->u.method.recv) && visitExprList(v, &e->u.method.args);
-    /* 被调方只在不是**声明名**时才是子节点：直接调用 `g(x)` 走进去会把函数报成"当值用"；
-     * 通过值调用 `f(x)`（`f` 持有一个 `fn`）读了这个绑定，必须像别的子节点一样走。 */
+    /* The callee counts as a child only when it is not a **declaration name**: walking into a
+     * direct call `g(x)` would report the function as "used as a value"; calling through a
+     * value `f(x)` (`f` holds a `fn`) reads that binding, and must be walked like any other
+     * child. */
     case EX_CALL:
         return (!e->u.call.callee || e->u.call.callee->kind != EX_IDENT ||
                 visitExpr(v, e->u.call.callee)) &&
@@ -745,14 +779,15 @@ static bool visitExprList(const AstVisit *v, Vec *xs) {
 }
 
 /**
- * @brief 访问语句 `s` 的直接子节点。
+ * @brief Visit the direct children of statement `s`.
  *
- * 与 `astWalkExprChildren` 同一条约定：回调访问子节点，返回 false 停下整趟走。没有设语句
- * 回调时继续往下走它的子节点。
+ * Same convention as `astWalkExprChildren`: the callback visits a child, and returning false
+ * stops the whole walk. With no statement callback set it keeps going down into the node's
+ * children.
  *
- * @param s  要走的语句；NULL 直接返回 `true`。
- * @param v  回调与它的上下文。
- * @return   走完了返回 `true`；某个回调返回 false 时返回 `false`。
+ * @param s  Statement to walk; NULL returns `true` directly.
+ * @param v  The callbacks and their context.
+ * @return   `true` when the walk completed; `false` when a callback returned false.
  */
 /*@@all-kinds*/   bool astWalkStmtChildren(Stmt *s, const AstVisit *v) {
     if (!s) return true;

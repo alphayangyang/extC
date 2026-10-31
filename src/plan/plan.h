@@ -1,17 +1,23 @@
 /**
  * @file plan.h
- * @brief 编译计划：代码生成读取"检查器决定了什么"的唯一读口。
+ * @brief The compilation plan: the one read port through which code generation learns what the
+ * checker decided.
  *
- * 计划存在按节点寻址的侧表里，所有读写都经过下面的访问器与 setter。
- * 每个字段的注释写明：谁写它、什么时候有效、它过期时生成物会怎样。
+ * The plan lives in side tables addressed by node, and every read and write goes through the
+ * accessors and setters below. Each field's comment states who writes it, when it is valid, and
+ * what goes wrong in the emitted output when it is stale.
  *
- * 分层契约与不变量：
- *   - 检查器只通过 setter 写计划字段，代码生成只通过访问器读。codegen 直读计划字段会被
- *     `tools/check_plan_seam.py` 挡下。
- *   - 新增计划字段进侧表（配 setter 与访问器），不要加到 AST 节点上。
- *   - 少数字段仍读 AST 节点：解析后的被调用者（`Expr.func`，`planCallee`）与 `for` 的步进
- *     （`Stmt.forStep`，`planForStep`）。`Expr.func` 的指针由实例物化本身产生，搬进侧表要等
- *     实例集合变成显式的；`forStep` 有一半是语法（解析器拥有另一半），留在节点上是分工。
+ * Layering contract and invariants:
+ *   - The checker writes plan fields only through setters; code generation reads them only
+ *     through accessors. codegen reading a plan field directly is caught by
+ *     `tools/check_plan_seam.py`.
+ *   - A new plan field goes into the side table (with a setter and an accessor); do not add it to
+ *     an AST node.
+ *   - A few fields still read AST nodes: the resolved callee (`Expr.func`, `planCallee`) and the
+ *     `for` step (`Stmt.forStep`, `planForStep`). The pointer in `Expr.func` is produced by
+ *     instance materialisation itself, and moving it into the side table waits for the instance
+ *     set to become explicit; `forStep` is half syntax (the parser owns the other half), so
+ *     leaving it on the node is a division of labour.
  */
 #ifndef EXTC_PLAN_H
 #define EXTC_PLAN_H
@@ -22,1006 +28,1092 @@
 /* ---- identity and instances ------------------------------------------------------- */
 
 /**
- * @brief 取一个调用点当前解析到的被调函数。
+ * @brief Get the callee a call site currently resolves to.
  *
- * 泛型体里的一个调用点会被该体的每个实例共享；代码生成用 `planEnterFunc` / `planEnterInst`
- * 框出正在生成的那具函数体或类型实例，本函数优先返回为该体记录的那一份解析结果。
- * 不属于任何实例的调用点返回记录在节点上的那一份。
+ * One call site inside a generic body is shared by every instance of that body; code generation
+ * uses `planEnterFunc` / `planEnterInst` to bracket the function body or type instance it is
+ * emitting, and this function prefers the resolution recorded for that body. A call site that
+ * belongs to no instance returns the one recorded on the node.
  *
- * @param e  调用点（或函数值）表达式。
- * @return   解析到的函数定义；内建、运算符、尚未解析以及没有记录时返回 NULL。
+ * @param e  The call-site (or function-value) expression.
+ * @return   The resolved function definition; NULL for a builtin, an operator, a call that is not
+ *           resolved yet, and a call with no recorded resolution.
  */
 FuncDef *planCallee(const Expr *e);
 
 /**
- * @brief 判断一个函数是否被调用过。
+ * @brief Tell whether a function is ever called.
  *
- * 代码生成只发出被调用过的函数，外加 `main`、`@export` 与 `dyn` 表项这些根。
- * 没有记录过调用时读作未使用，这正是安全方向：漏掉的调用点不会让产物里多出一具没人引用的函数体。
+ * Code generation emits only the functions that are called, plus the roots: `main`, `@export`
+ * entries, and `dyn` table entries. A function with no recorded call reads as unused, which is the
+ * safe direction: a missed call site cannot leave an unreferenced function body in the output.
  *
- * @param f  函数定义。
- * @return   记录过调用则返回 true；没有记录时返回 false。
+ * @param f  The function definition.
+ * @return   true when a call is recorded; false when there is none.
  */
 bool planUsed(const FuncDef *f);
 
 /**
- * @brief 记录一个函数是否被调用过。
+ * @brief Record whether a function is ever called.
  *
- * @param f  函数定义；为 NULL 时忽略本次写入。
- * @param v  是否被调用。
+ * @param f  The function definition; NULL ignores this write.
+ * @param v  Whether it is called.
  */
 void planSetUsed(FuncDef *f, bool v);
 
 /**
- * @brief 记下"方法 `m` 在这个接收者**类型实例**上被用过"。
+ * @brief Record that method `m` was used on this receiver **type instance**.
  *
- * 泛型结构体的方法体由所有实例共享，模板级的 `planUsed` 只有一位；而检查器的实例重放与
- * 代码生成都按实例展开。少了这一位，任何一处 `slice<u8> == ...` 都会要求
- * `slice<map::bnode<...>>` 的元素类型也定义 `!=`。
+ * The method bodies of a generic struct are shared by all instances, so the template-level
+ * `planUsed` has a single bit; but the checker's instance replay and code generation both expand
+ * per instance. Without this bit, one `slice<u8> == ...` anywhere would require the element type
+ * of `slice<map::bnode<...>>` to define `!=` as well.
  *
- * 键是类型实例的名字（`ttGeneric` 放进去的那个 mangled 名），只比较字符串，不依赖类型层。
+ * The key is the type instance's name (the mangled name `ttGeneric` puts in), compared as a string
+ * only, without depending on the type layer.
  *
- * @param m         方法/运算符的模板定义；为 NULL 时忽略。
- * @param recvName  接收者类型实例的名字；为 NULL 时忽略。
+ * @param m         The method/operator template definition; NULL ignores this write.
+ * @param recvName  The receiver type instance's name; NULL ignores this write.
  */
 void planSetInstUsed (const FuncDef *m, const char *recvName);
 
 /**
- * @brief 方法 `m` 在这个接收者类型实例上被用过吗。
+ * @brief Was method `m` used on this receiver type instance.
  *
- * @param m         方法/运算符的模板定义。
- * @param recvName  接收者类型实例的名字。
- * @return          记录过则 true；没有记录时读作 false（保守：不发多余的实例体）。
+ * @param m         The method/operator template definition.
+ * @param recvName  The receiver type instance's name.
+ * @return          true when recorded; false when there is no record (conservative: no redundant
+ *                  instance body is emitted).
  */
 bool planInstUsed (const FuncDef *m, const char *recvName);
 
 /**
- * @brief 已经记下多少条"(方法, 实例) 用过"（实例使用闭包用它判增长）。
+ * @brief How many "(method, instance) used" records exist (the instance-use closure reads it to
+ * detect growth).
  *
- * @return  记录条数。
+ * @return  The number of records.
  */
 size_t planInstUseCount (void);
 
 
 /**
- * @brief 这个函数的动态执行区间里会不会有 `dec`（`false` = 不会 ⇒ 可省 `initRef` 的 `+1`）。
+ * @brief Will there be any `dec` in this function's dynamic execution range (`false` = none, so
+ * the `+1` of `initRef` can be dropped)?
  *
- * 默认 `false`（不认识 ⇒ 照常计数），只有 check 侧的调用图不动点会置 `true`。
+ * The default is `false` (unknown => count as usual); only the check side's call-graph fixpoint
+ * sets it to `true`.
  *
- * @param f  函数定义。
- * @return   可以省则 `true`。
+ * @param f  The function definition.
+ * @return   `true` when the `+1` can be dropped.
  */
 bool planRcNoDec(const FuncDef *f);
 
 /**
- * @brief 记录上面那个结论。
+ * @brief Record the conclusion above.
  *
- * @param f  函数定义；NULL 忽略。
- * @param v  结论。
+ * @param f  The function definition; NULL ignores this write.
+ * @param v  The conclusion.
  */
 void planSetRcNoDec(FuncDef *f, bool v);
 
 /**
- * @brief 「这个函数建立的堆引用图没有回边，而且引用只住在被计数的 rc 槽里」。
+ * @brief "The heap reference graph this function builds has no back edges, and references live
+ * only in counted rc slots".
  *
- * 本判据的静态前提：成立时事件档（计数）完备、不需要清扫。判据 (i)(ii)(iii)（无环）与 (iv)
- * （引用只落在被计数的堆槽里）都成立才答真；默认 `false`（没算过 / 不成立 ⇒ 保留清扫）。
+ * This is the static precondition of the criterion: when it holds, the event band (counting) is
+ * complete and needs no sweep. It answers true only when criteria (i)(ii)(iii) (acyclic) and (iv)
+ * (references land only in counted heap slots) both hold; the default is `false` (not computed /
+ * does not hold => keep sweeping).
  *
- * @param f  函数定义。
- * @return   成立则 `true`；没有记录时 `false`。
+ * @param f  The function definition.
+ * @return   `true` when it holds; `false` when there is no record.
  */
 bool planFnAcyclic(FuncDef *f);
 
 /**
- * @brief 记下「这个函数建立的堆引用图没有回边」（判据 (i)(ii)(iii)）。
+ * @brief Record that "the heap reference graph this function builds has no back edges"
+ * (criteria (i)(ii)(iii)).
  *
- * @param f  函数定义；NULL 忽略。
- * @param v  结论。
+ * @param f  The function definition; NULL ignores this write.
+ * @param v  The conclusion.
  */
 void planSetFnAcyclic(FuncDef *f, bool v);
 
 /**
- * @brief 「这个函数里引用只住在被计数的 rc 槽里」（判据 (iv)）。
+ * @brief "References in this function live only in counted rc slots" (criterion (iv)).
  *
- * 与 `planSetFnAcyclic` 分开：调用图上的闭包不同（(i') 要求被调者整体无环，(iv) 只看被调者
- * 的 (iv)）。
+ * Separate from `planSetFnAcyclic` because the closures over the call graph differ ((i') requires
+ * the callees to be acyclic as a whole, (iv) looks only at the callees' (iv)).
  *
- * @param f  函数定义。
- * @return   成立则 `true`；没有记录时 `false`。
+ * @param f  The function definition.
+ * @return   `true` when it holds; `false` when there is no record.
  */
 bool planFnRefsCounted(FuncDef *f);
 
 /**
- * @brief 记下「这个函数里引用只住在被计数的 rc 槽里」（判据 (iv)）。
+ * @brief Record that "references in this function live only in counted rc slots" (criterion
+ * (iv)).
  *
- * @param f  函数定义；NULL 忽略。
- * @param v  结论。
+ * @param f  The function definition; NULL ignores this write.
+ * @param v  The conclusion.
  */
 void planSetFnRefsCounted(FuncDef *f, bool v);
 
 /**
- * @brief 「这个函数里不会丢掉任何活引用」：判据 (a) 每个 ref 字段每对象最多写一次、
- * (b) ref 类型的局部量/参数不被重新赋值、(c) 没有丢引用的操作（容器删除/替换、`@overwrite`
- * 复用同一格、free 类内建，以及传递地违反 (a)/(b)/(c) 的被调者）。
+ * @brief "No live reference is dropped in this function": criteria (a) each ref field is written at
+ * most once per object, (b) ref-typed locals and parameters are not reassigned, (c) no
+ * reference-dropping operation (container delete/replace, `@overwrite` reusing the same cell,
+ * free-class builtins, and callees that transitively violate (a)/(b)/(c)).
  *
- * 整单元合取成立（`codegen.c` 的 `unitReclaimIdle`）⇒ 回收无事可做 ⇒ 不发射 rc 运行期。
- * 默认 `false`（没算过 / 不成立 ⇒ 照常发射），这是安全方向。
+ * The conjunction holds for the whole unit (`unitReclaimIdle` in codegen.c) => reclaim has nothing
+ * to do => emit no rc runtime. The default is `false` (not computed / does not hold => emit as
+ * usual), which is the safe direction.
  *
- * @param f  函数定义。
- * @return   成立则 `true`；没有记录时 `false`。
+ * @param f  The function definition.
+ * @return   `true` when it holds; `false` when there is no record.
  */
 bool planFnReclaimIdle(FuncDef *f);
 
 /**
- * @brief 记下「这个函数里不会丢掉任何活引用」（判据 (a)(b)(c)，同上一条）。
+ * @brief Record that "no live reference is dropped in this function" (criteria (a)(b)(c), as
+ * above).
  *
- * @param f  函数定义；NULL 忽略。
- * @param v  结论。
+ * @param f  The function definition; NULL ignores this write.
+ * @param v  The conclusion.
  */
 void planSetFnReclaimIdle(FuncDef *f, bool v);
 
 /**
- * @brief 分配站点所属的「可能成环」组号；0 表示不属于跨站点的可能环。
+ * @brief The "may form a cycle" group number of an allocation site; 0 means it belongs to no
+ * cross-site possible cycle.
  *
- * 由 `check_escape.c` 的 `applyCycleMerges` 写（站点并查集），`codegen.c` 的片号选择读。
+ * Written by `applyCycleMerges` in check_escape.c (the site union-find) and read by the shard
+ * selection in codegen.c.
  *
- * @param e  分配站点表达式。
- * @return   组号（1 起）；没记录或不属于任何跨站点环时 0。
+ * @param e  The allocation-site expression.
+ * @return   The group number (from 1); 0 when there is no record or it belongs to no cross-site
+ *           cycle.
  */
 int planSiteCycleGroup(const Expr *e);
 
 /**
- * @brief 记下一个分配站点的「可能成环」组号（同上一条）。
+ * @brief Record an allocation site's "may form a cycle" group number (as above).
  *
- * @param e  分配站点表达式；NULL 忽略。
- * @param g  组号（1 起）。
+ * @param e  The allocation-site expression; NULL ignores this write.
+ * @param g  The group number (from 1).
  */
 void planSetSiteCycleGroup(Expr *e, int g);
 
 /**
- * @brief 这个函数所在单元是否有**跨站点**的可能环（有 ⇒ 该单元拒绝分片）。
+ * @brief Does the unit this function belongs to have a **cross-site** possible cycle (when it does,
+ * that unit refuses sharding)?
  *
- * 由 `check_escape.c` 的 `applyCycleMerges` 写，`codegen.c` 的 `scanUnitReclaim` 读。
+ * Written by `applyCycleMerges` in check_escape.c and read by `scanUnitReclaim` in codegen.c.
  *
- * @param f  函数定义。
- * @return   有跨站点可能环时 `true`；没记录时 `false`。
+ * @param f  The function definition.
+ * @return   `true` when a cross-site possible cycle exists; `false` when there is no record.
  */
 bool planFnCrossSiteCycle(const FuncDef *f);
 
 /**
- * @brief 记下「这个函数所在单元有跨站点的可能环」（同上一条）。
+ * @brief Record that "the unit this function belongs to has a cross-site possible cycle" (as
+ * above).
  *
- * @param f  函数定义；NULL 忽略。
- * @param v  结论。
+ * @param f  The function definition; NULL ignores this write.
+ * @param v  The conclusion.
  */
 void planSetFnCrossSiteCycle(FuncDef *f, bool v);
 
 /**
- * @brief 一个赋值站点上「往引用槽里写」的分类（`SR_*`，见 `check_stmt.c`）。
+ * @brief The classification of "write into a reference slot" at an assignment site (`SR_*`; see
+ * check_stmt.c).
  *
- * 由检查器在作用域还在时记下，`check_top.c` 的 `computeFnAcyclic` 在查体之后读它。
+ * The checker records it while the scope is still alive, and `computeFnAcyclic` in check_top.c
+ * reads it after the body has been checked.
  *
- * @param s  赋值语句。
- * @return   分类；没有记录时 `0`。
+ * @param s  The assignment statement.
+ * @return   The classification; `0` when there is no record.
  */
 int anStoreRefKind(const Stmt *s);
 
 /**
- * @brief 记下一个赋值站点的引用槽存储分类。
+ * @brief Record the reference-slot store classification of an assignment site.
  *
- * @param s  赋值语句；NULL 忽略。
- * @param v  `SR_*` 分类。
+ * @param s  The assignment statement; NULL ignores this write.
+ * @param v  The `SR_*` classification.
  */
 void anSetStoreRefKind(Stmt *s, int v);
 
 /**
- * @brief 这个函数被判否的理由串（`EXTC_DBG_ACYCLIC=1` 的 `reason=`）。
+ * @brief The reason string for this function being rejected (`reason=` of `EXTC_DBG_ACYCLIC=1`).
  *
- * @param f  函数定义。
- * @return   理由串；判成真或还没算过时 NULL。
+ * @param f  The function definition.
+ * @return   The reason string; NULL when it was judged true or not computed yet.
  */
 const char *anAcyclicWhy(const FuncDef *f);
 
 /**
- * @brief 记下这个函数被判否的理由串。
+ * @brief Record the reason string for this function being rejected.
  *
- * @param f    函数定义；NULL 忽略。
- * @param why  理由串（arena 里的常量串）。
+ * @param f    The function definition; NULL ignores this write.
+ * @param why  The reason string (a constant string in the arena).
  */
 void anSetAcyclicWhy(FuncDef *f, const char *why);
 
 /**
- * @brief 取一个绑定或变量语句生成时使用的 C 名。
+ * @brief Get the C name used when emitting a binding or a variable statement.
  *
- * 参数不在这里：参数按值存储、自带字段，所以本函数不接受参数节点。
+ * Parameters are not here: they are stored by value and carry their own field, so this function
+ * does not accept a parameter node.
  *
- * @param node  绑定表达式或变量声明语句节点。
- * @return      记录下来的 C 名；没有记录或记录为空串时返回 NULL，调用方应回落到声明自己的名字。
+ * @param node  A binding expression or variable declaration statement node.
+ * @return      The recorded C name; NULL when there is no record or the record is the empty
+ *              string, in which case the caller should fall back to the declaration's own name.
  */
 const char *planCName(const void *node);
 
 /**
- * @brief 记录一个绑定或变量语句生成时使用的 C 名。
+ * @brief Record the C name used when emitting a binding or a variable statement.
  *
- * @param node  绑定表达式或变量声明语句节点；为 NULL 时忽略本次写入。
- * @param name  C 名。
- * @param kind  该节点的种类（`RKIND_EXPR` 或 `RKIND_STMT`），用于结果槽的类型检查。
+ * @param node  A binding expression or variable declaration statement node; NULL ignores this
+ *              write.
+ * @param name  The C name.
+ * @param kind  The node's kind (`RKIND_EXPR` or `RKIND_STMT`), used for the result slot's type
+ *              check.
  */
 void planSetCName(void *node, const char *name, ResultKind kind);
 
 /* ---- struct-definition facts -------------------------------------------------------
  *
- * `builtinHolder` / `coroOf` 由代码生成读取，所以是计划事实；两个 `anXxx` 是检查器自己的
- * 工作状态，没有更晚的阶段读它们。两者共用同一个槽，但读者不同（分析侧清单是
- * `planAnalysisFields`）。 */
+ * `builtinHolder` / `coroOf` are plan facts because code generation reads them; the two `anXxx`
+ * fields are the checker's own working state, with no later stage reading them. They share one
+ * slot but have different readers (the analysis-side list is `planAnalysisFields`). */
 
 /**
- * @brief 判断这个结构体定义是不是某个内建类型的合成占位结构体。
+ * @brief Tell whether this struct definition is the synthetic placeholder struct of a builtin type.
  *
- * 这种占位结构体没有字段也没有布局，生成 C 时不为它声明结构体；它的方法照常按普通函数发出。
+ * Such a placeholder has no fields and no layout, so no struct is declared for it when emitting C;
+ * its methods are emitted as ordinary functions as usual.
  *
- * @param sd  结构体定义。
- * @return    是内建占位结构体则返回 true；否则返回 false。
+ * @param sd  The struct definition.
+ * @return    true for a builtin placeholder struct; false otherwise.
  */
 bool     planBuiltinHolder(const StructDef *sd);
 
 /**
- * @brief 记录一个结构体定义是不是内建类型的合成占位结构体。
+ * @brief Record whether a struct definition is the synthetic placeholder struct of a builtin type.
  *
- * @param sd  结构体定义；为 NULL 时忽略本次写入。
- * @param v   是否为内建占位结构体。
+ * @param sd  The struct definition; NULL ignores this write.
+ * @param v   Whether it is a builtin placeholder struct.
  */
 void     planSetBuiltinHolder(StructDef *sd, bool v);
 
 /**
- * @brief 取一个协程帧结构体所属的协程函数。
+ * @brief Get the coroutine function a coroutine frame struct belongs to.
  *
- * 帧结构体由检查器为每个协程合成；生成 C 时用这里记下的函数名把帧类型与 `$step` / `$next`
- * 函数拼在一起。
+ * The frame struct is synthesised by the checker for each coroutine; when emitting C, the function
+ * name recorded here joins the frame type to the `$step` / `$next` functions.
  *
- * @param sd  结构体定义（合成的帧结构体）。
- * @return    所属的协程函数；该结构体不是协程帧时返回 NULL。
+ * @param sd  The struct definition (a synthesised frame struct).
+ * @return    The owning coroutine function; NULL when this struct is not a coroutine frame.
  */
 FuncDef *planCoroOf(const StructDef *sd);
 
 /**
- * @brief 记录一个协程帧结构体所属的协程函数。
+ * @brief Record the coroutine function a coroutine frame struct belongs to.
  *
- * @param sd  合成的帧结构体；为 NULL 时忽略本次写入。
- * @param f   所属的协程函数。
+ * @param sd  The synthesised frame struct; NULL ignores this write.
+ * @param f   The owning coroutine function.
  */
 void     planSetCoroOf(StructDef *sd, FuncDef *f);
 
 /**
- * @brief 取 lambda 环境结构体上记下的用户所写签名。
+ * @brief Get the user-written signature recorded on a lambda's environment struct.
  *
- * 环境结构体是编译器合成的；诊断里显示这个字符串，于是用户看到的是自己写的
- * `fn(i64) -> i64`，而不是生成的类型名。
+ * The environment struct is compiler-synthesised; diagnostics show this string, so the user sees
+ * the `fn(i64) -> i64` they wrote rather than the generated type name.
  *
- * @param sd  结构体定义（lambda 的环境结构体）。
- * @return    记下的签名字符串；不是 lambda 环境结构体或没有记录时返回 NULL。
+ * @param sd  The struct definition (the lambda's environment struct).
+ * @return    The recorded signature string; NULL when it is not a lambda environment struct or
+ *            there is no record.
  */
 const char *anLamSig(const StructDef *sd);
 
 /**
- * @brief 记下 lambda 环境结构体上用户所写的签名。
+ * @brief Record the user-written signature on a lambda's environment struct.
  *
- * @param sd    lambda 的环境结构体；为 NULL 时忽略本次写入。
- * @param sig   用户写的签名字符串。
+ * @param sd   The lambda's environment struct; NULL ignores this write.
+ * @param sig  The signature string the user wrote.
  */
 void        anSetLamSig(StructDef *sd, const char *sig);
 
 /**
- * @brief 判断这个结构体是否有方法会建池。
+ * @brief Tell whether this struct has a method that creates a pool.
  *
- * 这是结构体一级的汇总：某个方法建池，则它的关联函数（构造器一族）也可能建池，
- * 池层级与隐藏 zone 参数的判断要算上这一层。
+ * This is the struct-level summary: when one method creates a pool, its associated functions (the
+ * constructor family) may create pools too, and pool hierarchy and hidden zone-parameter decisions
+ * have to take this layer into account.
  *
- * @param sd  结构体定义。
- * @return    有方法建池则返回 true；没有记录时返回 false。
+ * @param sd  The struct definition.
+ * @return    true when a method creates a pool; false when there is no record.
  */
 bool        anMakesPoolAny(const StructDef *sd);
 
 /**
- * @brief 记录这个结构体是否有方法会建池。
+ * @brief Record whether this struct has a method that creates a pool.
  *
- * @param sd  结构体定义；为 NULL 时忽略本次写入。
- * @param v   是否有方法建池。
+ * @param sd  The struct definition; NULL ignores this write.
+ * @param v   Whether a method creates a pool.
  */
 void        anSetMakesPoolAny(StructDef *sd, bool v);
 
 /* ---- the effect closure's state ----------------------------------------------------
  *
- * `effState` 是闭包的工作状态（`EFF_NONE` = 未计算，`EFF_DONE` = 完成，
- * `EFF_IN_PROGRESS` = 计算中）；`effComplete` /
- * `effUnknown` 是结果（"这份摘要可信吗"）。三者都不被代码生成读取，属于分析侧。 */
+ * `effState` is the closure's working state (`EFF_NONE` = not computed, `EFF_DONE` = finished,
+ * `EFF_IN_PROGRESS` = being computed); `effComplete` / `effUnknown` are the results ("is this
+ * summary trustworthy"). Code generation reads none of the three; they belong to the analysis
+ * side. */
 
 /**
- * @brief 取效应闭包的计算状态。
+ * @brief Get the effect closure's computation state.
  *
- * 取值是 `EFF_NONE`（还没算）、`EFF_DONE`（算完了，可不可信看 `anEffComplete`）或
- * `EFF_IN_PROGRESS`（正在算——递归时再遇到就是环，摘要按不完整处理）。
- * 只有效应闭包自己读写这个值。
+ * The value is `EFF_NONE` (not computed yet), `EFF_DONE` (computed; see `anEffComplete` for
+ * whether it is trustworthy), or `EFF_IN_PROGRESS` (being computed -- meeting it again during
+ * recursion is a cycle, and the summary is treated as incomplete). Only the effect closure itself
+ * reads and writes this value.
  *
- * @param f  函数定义。
- * @return   状态值；没有记录时返回 `EFF_NONE`。
+ * @param f  The function definition.
+ * @return   The state value; `EFF_NONE` when there is no record.
  */
 int  anEffState(const FuncDef *f);
 
 /**
- * @brief 记录效应闭包的计算状态。
+ * @brief Record the effect closure's computation state.
  *
- * @param f  函数定义；为 NULL 时忽略本次写入。
- * @param v  状态值：`EFF_NONE`、`EFF_DONE` 或 `EFF_IN_PROGRESS`。
+ * @param f  The function definition; NULL ignores this write.
+ * @param v  The state value: `EFF_NONE`, `EFF_DONE`, or `EFF_IN_PROGRESS`.
  */
 void anSetEffState(FuncDef *f, int v);
 
 /**
- * @brief 判断一个函数的效应摘要是否可信。
+ * @brief Tell whether a function's effect summary is trustworthy.
  *
- * 闭包合并被调者摘要时，只要有一个被调者算不完（在环上、或调用了没解析出来的东西），
- * 就把这里置为假；调用点据此走最保守的一档检查。
+ * When the closure merges its callees' summaries, a single callee that cannot be finished (it is
+ * on a cycle, or calls something that was never resolved) sets this to false; call sites then take
+ * the most conservative check.
  *
- * @param f  函数定义。
- * @return   摘要可信则返回 true；没有记录时返回 false。
+ * @param f  The function definition.
+ * @return   true when the summary is trustworthy; false when there is no record.
  */
 bool anEffComplete(const FuncDef *f);
 
 /**
- * @brief 记录一个函数的效应摘要是否可信。
+ * @brief Record whether a function's effect summary is trustworthy.
  *
- * @param f  函数定义；为 NULL 时忽略本次写入。
- * @param v  摘要是否可信。
+ * @param f  The function definition; NULL ignores this write.
+ * @param v  Whether the summary is trustworthy.
  */
 void anSetEffComplete(FuncDef *f, bool v);
 
 /**
- * @brief 判断一个函数的效应摘要里是否有没能解析的调用。
+ * @brief Tell whether a function's effect summary contains an unresolved call.
  *
- * 有的话摘要永远不算完成，调用点按最保守的一档处理。
+ * When it does, the summary never completes and call sites are treated at the most conservative
+ * level.
  *
- * @param f  函数定义。
- * @return   有未解析的调用则返回 true；没有记录时返回 false。
+ * @param f  The function definition.
+ * @return   true when an unresolved call exists; false when there is no record.
  */
 bool anEffUnknown(const FuncDef *f);
 
 /**
- * @brief 记录一个函数的效应摘要里是否有没能解析的调用。
+ * @brief Record whether a function's effect summary contains an unresolved call.
  *
- * @param f  函数定义；为 NULL 时忽略本次写入。
- * @param v  是否有未解析的调用。
+ * @param f  The function definition; NULL ignores this write.
+ * @param v  Whether an unresolved call exists.
  */
 void anSetEffUnknown(FuncDef *f, bool v);
 
 /* ---- effect summary ----------------------------------------------------------------
  *
- * 传递闭包后的掩码：一次对某函数的调用可能把那个参数的地址/内容存进调用者的帧
- * （`Addr`/`Cont`）、存进这个函数自己的 home arena（`home…`），或存到别处（`otherMask`）。
- * 只有检查器读它们。闭包自己的状态与它走的调用图（`callees`）是另一件事，属于 pass 状态。 */
+ * The masks after the transitive closure: one call to some function may store a parameter's
+ * address/contents into the caller's frame (`Addr`/`Cont`), into this function's own home arena
+ * (`home…`), or elsewhere (`otherMask`). Only the checker reads them. The closure's own state and
+ * the call graph it walks (`callees`) are a different matter, belonging to pass state. */
 
 /**
- * @brief 取「可能把参数的地址存进调用方帧」的参数位掩码。
+ * @brief Get the parameter bit mask for "may store a parameter's address into the caller's frame".
  *
- * 第 i 位表示第 i 个参数的地址（或经它可达的字段的地址）可能被存进调用方的帧，
- * 因此该实参指向的存储必须活到目的地那么久。只有检查器读它。
+ * Bit i means the address of parameter i (or of a field reachable through it) may be stored into
+ * the caller's frame, so the storage that argument points at must outlive the destination. Only
+ * the checker reads it.
  *
- * @param f  函数定义。
- * @return   位掩码；没有记录时返回 0。
+ * @param f  The function definition.
+ * @return   The bit mask; 0 when there is no record.
  */
 uint64_t anAddrMask(const FuncDef *f);
 
 /**
- * @brief 记录「可能把参数的地址存进调用方帧」的参数位掩码。
+ * @brief Record the parameter bit mask for "may store a parameter's address into the caller's
+ * frame".
  *
- * @param f  函数定义；为 NULL 时忽略本次写入。
- * @param v  位掩码。
+ * @param f  The function definition; NULL ignores this write.
+ * @param v  The bit mask.
  */
 void anSetAddrMask(FuncDef *f, uint64_t v);
 
 /**
- * @brief 取「可能把从参数里读出的指针存进调用方帧」的参数位掩码。
+ * @brief Get the parameter bit mask for "may store a pointer read out of a parameter into the
+ * caller's frame".
  *
- * 第 i 位表示从第 i 个参数里读出的指针可能被存进调用方的帧，因而它指向的存储必须活到
- * 目的地那么久。只有检查器读它。
+ * Bit i means a pointer read out of parameter i may be stored into the caller's frame, so the
+ * storage it points at must outlive the destination. Only the checker reads it.
  *
- * @param f  函数定义。
- * @return   位掩码；没有记录时返回 0。
+ * @param f  The function definition.
+ * @return   The bit mask; 0 when there is no record.
  */
 uint64_t anContMask(const FuncDef *f);
 
 /**
- * @brief 记录「可能把从参数里读出的指针存进调用方帧」的参数位掩码。
+ * @brief Record the parameter bit mask for "may store a pointer read out of a parameter into the
+ * caller's frame".
  *
- * @param f  函数定义；为 NULL 时忽略本次写入。
- * @param v  位掩码。
+ * @param f  The function definition; NULL ignores this write.
+ * @param v  The bit mask.
  */
 void anSetContMask(FuncDef *f, uint64_t v);
 
 /**
- * @brief 取「流向无法归属到某个参数」的位掩码。
+ * @brief Get the bit mask for "flows that cannot be attributed to a parameter".
  *
- * 任何说不清的存储都记在这里；调用点读到非零就按最严格的一档处理。只有检查器读它。
+ * Anything unclear is recorded here; a call site that reads a non-zero value takes the strictest
+ * level. Only the checker reads it.
  *
- * @param f  函数定义。
- * @return   位掩码；没有记录时返回 0。
+ * @param f  The function definition.
+ * @return   The bit mask; 0 when there is no record.
  */
 uint64_t anOtherMask(const FuncDef *f);
 
 /**
- * @brief 记录「流向无法归属到某个参数」的位掩码。
+ * @brief Record the bit mask for "flows that cannot be attributed to a parameter".
  *
- * @param f  函数定义；为 NULL 时忽略本次写入。
- * @param v  位掩码。
+ * @param f  The function definition; NULL ignores this write.
+ * @param v  The bit mask.
  */
 void anSetOtherMask(FuncDef *f, uint64_t v);
 
 /**
- * @brief 取「可能把参数的地址存进本函数 home arena」的参数位掩码。
+ * @brief Get the parameter bit mask for "may store a parameter's address into this function's own
+ * home arena".
  *
- * 第 i 位表示第 i 个参数的地址（或经它可达的字段的地址）可能被存进本函数自己的 home arena。
- * 只有检查器读它。
+ * Bit i means the address of parameter i (or of a field reachable through it) may be stored into
+ * this function's own home arena. Only the checker reads it.
  *
- * @param f  函数定义。
- * @return   位掩码；没有记录时返回 0。
+ * @param f  The function definition.
+ * @return   The bit mask; 0 when there is no record.
  */
 uint64_t anHomeAddrMask(const FuncDef *f);
 
 /**
- * @brief 记录「可能把参数的地址存进本函数 home arena」的参数位掩码。
+ * @brief Record the parameter bit mask for "may store a parameter's address into this function's
+ * own home arena".
  *
- * @param f  函数定义；为 NULL 时忽略本次写入。
- * @param v  位掩码。
+ * @param f  The function definition; NULL ignores this write.
+ * @param v  The bit mask.
  */
 void anSetHomeAddrMask(FuncDef *f, uint64_t v);
 
 /**
- * @brief 取「可能把从参数里读出的指针存进本函数 home arena」的参数位掩码。
+ * @brief Get the parameter bit mask for "may store a pointer read out of a parameter into this
+ * function's own home arena".
  *
- * 第 i 位表示从第 i 个参数里读出的指针可能被存进本函数自己的 home arena。只有检查器读它。
+ * Bit i means a pointer read out of parameter i may be stored into this function's own home arena.
+ * Only the checker reads it.
  *
- * @param f  函数定义。
- * @return   位掩码；没有记录时返回 0。
+ * @param f  The function definition.
+ * @return   The bit mask; 0 when there is no record.
  */
 uint64_t anHomeContMask(const FuncDef *f);
 
 /**
- * @brief 记录「可能把从参数里读出的指针存进本函数 home arena」的参数位掩码。
+ * @brief Record the parameter bit mask for "may store a pointer read out of a parameter into this
+ * function's own home arena".
  *
- * @param f  函数定义；为 NULL 时忽略本次写入。
- * @param v  位掩码。
+ * @param f  The function definition; NULL ignores this write.
+ * @param v  The bit mask.
  */
 void anSetHomeContMask(FuncDef *f, uint64_t v);
 
 /**
- * @brief 判断一个函数是否把本帧某个局部变量的地址存了出去。
+ * @brief Tell whether a function stores the address of one of its frame's locals somewhere.
  *
- * 这样的调用是调用点必须拒绝的：局部变量的存储活不过本帧，而被存下的地址会活得更久。
+ * Such a call is one the call site must reject: a local's storage does not outlive this frame,
+ * while the stored address does.
  *
- * @param f  函数定义。
- * @return   存过本帧局部的地址则返回 true；没有记录时返回 false。
+ * @param f  The function definition.
+ * @return   true when it stores a frame-local address; false when there is no record.
  */
 bool     anAddrFromLocal(const FuncDef *f);
 
 /**
- * @brief 记录一个函数是否把本帧某个局部变量的地址存了出去。
+ * @brief Record whether a function stores the address of one of its frame's locals somewhere.
  *
- * @param f  函数定义；为 NULL 时忽略本次写入。
- * @param v  是否存过本帧局部的地址。
+ * @param f  The function definition; NULL ignores this write.
+ * @param v  Whether it stores a frame-local address.
  */
 void anSetAddrFromLocal(FuncDef *f, bool v);
 
 /**
- * @brief 取代码生成前导阶段分配给这个协程的编号。
+ * @brief Get the number code generation's prelude assigns to this coroutine.
  *
- * 句柄里的 kind 字段与调度域的任务表都用这个编号来分派到对应的 `$step` / `$next`。
+ * The `kind` field of the handle and the scheduling domain's task table both use this number to
+ * dispatch to the matching `$step` / `$next`.
  *
- * @param f  协程函数定义。
- * @return   编号；没有记录时返回 0。
+ * @param f  The coroutine function definition.
+ * @return   The number; 0 when there is no record.
  */
 int      planCoroKind(const FuncDef *f);
 
 /**
- * @brief 记录代码生成前导阶段分配给这个协程的编号。
+ * @brief Record the number code generation's prelude assigns to this coroutine.
  *
- * @param f  协程函数定义；为 NULL 时忽略本次写入。
- * @param v  编号。
+ * @param f  The coroutine function definition; NULL ignores this write.
+ * @param v  The number.
  */
 void planSetCoroKind(FuncDef *f, int v);
 
 /**
- * @brief 判断这个函数的函数体是否被 `dyn` 虚表 thunk 从外部点名。
+ * @brief Tell whether this function's body is named from outside by a `dyn` vtable thunk.
  *
- * 这种引用在「没有任何名字提到就不发出」的裁剪里看不见，因此要把它记下来，函数体必须保留。
+ * Such a reference is invisible to the trimming rule "emit only what some name mentions", so it
+ * has to be recorded here and the function body has to be kept.
  *
- * @param f  函数定义。
- * @return   被 `dyn` 虚表点名则返回 true；没有记录时返回 false。
+ * @param f  The function definition.
+ * @return   true when a `dyn` vtable names it; false when there is no record.
  */
 bool     planDynTable(const FuncDef *f);
 
 /**
- * @brief 记录这个函数的函数体是否被 `dyn` 虚表 thunk 从外部点名。
+ * @brief Record whether this function's body is named from outside by a `dyn` vtable thunk.
  *
- * @param f  函数定义；为 NULL 时忽略本次写入。
- * @param v  是否被 `dyn` 虚表点名。
+ * @param f  The function definition; NULL ignores this write.
+ * @param v  Whether a `dyn` vtable names it.
  */
 void planSetDynTable(FuncDef *f, bool v);
 
 /**
- * @brief 取这个函数体里 `@overwrite` 复用站点的个数。
+ * @brief Get the number of `@overwrite` reuse sites in this function body.
  *
- * 生成 C 时用这个计数决定要不要为复用站点准备隐藏的存储并传递它。只有检查器写它。
+ * When emitting C, the count decides whether hidden storage has to be prepared for the reuse sites
+ * and passed along. Only the checker writes it.
  *
- * @param f  函数定义。
- * @return   站点个数；没有记录时返回 0。
+ * @param f  The function definition.
+ * @return   The number of sites; 0 when there is no record.
  */
 int      planOwSites(const FuncDef *f);
 
 /**
- * @brief 记录这个函数体里 `@overwrite` 复用站点的个数。
+ * @brief Record the number of `@overwrite` reuse sites in this function body.
  *
- * @param f  函数定义；为 NULL 时忽略本次写入。
- * @param v  站点个数。
+ * @param f  The function definition; NULL ignores this write.
+ * @param v  The number of sites.
  */
 void planSetOwSites(FuncDef *f, int v);
 
 /**
- * @brief 判断 `@overwrite` 复用站点的存储是否放在本函数自己的帧里。
+ * @brief Tell whether the storage of `@overwrite` reuse sites lives in this function's own frame.
  *
- * 为真表示每次调用各有自己的一块存储（`main`，或者会递归到自己的函数）；
- * 为假表示存储由调用点的帧持有，并作为不透明的隐藏参数传进来。
+ * True means each call has its own storage (for `main`, or for a function that recurses into
+ * itself); false means the storage is held by the call site's frame and passed in as an opaque
+ * hidden parameter.
  *
- * @param f  函数定义。
- * @return   存储在本函数帧里则返回 true；没有记录时返回 false。
+ * @param f  The function definition.
+ * @return   true when the storage lives in this function's frame; false when there is no record.
  */
 bool     planOwLocal(const FuncDef *f);
 
 /**
- * @brief 记录 `@overwrite` 复用站点的存储是否放在本函数自己的帧里。
+ * @brief Record whether the storage of `@overwrite` reuse sites lives in this function's own frame.
  *
- * @param f  函数定义；为 NULL 时忽略本次写入。
- * @param v  是否放在本函数帧里。
+ * @param f  The function definition; NULL ignores this write.
+ * @param v  Whether the storage lives in this function's frame.
  */
 void planSetOwLocal(FuncDef *f, bool v);
 
 /**
- * @brief 取协程声明的返回类型（尚未代入类型实参的那一份）。
+ * @brief Get a coroutine declaration's return type (the one not yet substituted with type
+ * arguments).
  *
- * 物化泛型实例时用它按类型实参替换出实例真正的返回类型。
+ * Materialising a generic instance uses it to substitute the type arguments into the instance's
+ * real return type.
  *
- * @param f  协程函数定义（模板）。
- * @return   声明的返回类型；不是协程或没有记录时返回 NULL。
+ * @param f  The coroutine function definition (the template).
+ * @return   The declared return type; NULL when it is not a coroutine or there is no record.
  */
 Type    *planCoroRetProto(const FuncDef *f);
 
 /**
- * @brief 记录协程声明的返回类型（尚未代入类型实参的那一份）。
+ * @brief Record a coroutine declaration's return type (the one not yet substituted with type
+ * arguments).
  *
- * @param f  协程函数定义；为 NULL 时忽略本次写入。
- * @param t  声明的返回类型；不是协程时传 NULL。
+ * @param f  The coroutine function definition; NULL ignores this write.
+ * @param t  The declared return type; NULL when it is not a coroutine.
  */
 void     planSetCoroRetProto(FuncDef *f, Type *t);
 
 /**
- * @brief 判断这个表达式在生成时是否要套一层解引用。
+ * @brief Tell whether this expression needs one dereference layer when emitted.
  *
- * 值的类型是 `ref T` 而它所在的位置需要一个 `T`，生成 C 时就写成 `*(...)`。
+ * The value's type is `ref T` while its position needs a `T`, so the generated C writes `*(...)`.
  *
- * @param e  表达式。
- * @return   需要解引用则返回 true；没有记录时返回 false。
+ * @param e  The expression.
+ * @return   true when a dereference is needed; false when there is no record.
  */
 bool     planDeref(const Expr *e);
 
 /**
- * @brief 记录这个表达式在生成时是否需要套一层解引用。
+ * @brief Record whether this expression needs one dereference layer when emitted.
  *
- * @param e  表达式；为 NULL 时忽略本次写入。
- * @param v  是否需要解引用。
+ * @param e  The expression; NULL ignores this write.
+ * @param v  Whether a dereference is needed.
  */
 void planSetDeref(Expr *e, bool v);
 
 /**
- * @brief 判断这个协程调用是否要装箱成句柄来存储。
+ * @brief Tell whether this coroutine call has to be boxed into a handle for storage.
  *
- * 为真表示协程的值要存到活过当前 C 作用域的地方：生成 C 时把帧放进任务自己的 place，
- * 并把值做成 `{frame, kind, task}` 句柄。
+ * True means the coroutine's value is stored somewhere that outlives the current C scope: the
+ * generated C puts the frame into the task's own place and makes the value a `{frame, kind, task}`
+ * handle.
  *
- * @param e  协程调用表达式。
- * @return   需要装箱则返回 true；没有记录时返回 false。
+ * @param e  The coroutine call expression.
+ * @return   true when boxing is needed; false when there is no record.
  */
 bool     planBoxedCoro(const Expr *e);
 
 /**
- * @brief 记录这个协程调用是否要装箱成句柄来存储。
+ * @brief Record whether this coroutine call has to be boxed into a handle for storage.
  *
- * @param e  协程调用表达式；为 NULL 时忽略本次写入。
- * @param v  是否需要装箱。
+ * @param e  The coroutine call expression; NULL ignores this write.
+ * @param v  Whether boxing is needed.
  */
 void planSetBoxedCoro(Expr *e, bool v);
 
 /**
- * @brief 判断这个函数是否被 `ext` 当成任务启动。
+ * @brief Tell whether this function is started as a task by `ext`.
  *
- * 生成 C 时只为这样的协程发出调度域需要的适配器，以及 `$step` / `$next` 的前置声明。
+ * When emitting C, only such a coroutine gets the adapter the scheduling domain needs, plus the
+ * forward declarations of `$step` / `$next`.
  *
- * @param f  函数定义。
- * @return   是 `ext` 的目标则返回 true；没有记录时返回 false。
+ * @param f  The function definition.
+ * @return   true when it is an `ext` target; false when there is no record.
  */
 bool     planIsExtTarget(const FuncDef *f);
 
 /**
- * @brief 记录这个函数是否被 `ext` 当成任务启动。
+ * @brief Record whether this function is started as a task by `ext`.
  *
- * @param f  函数定义；为 NULL 时忽略本次写入。
- * @param v  是否是 `ext` 的目标。
+ * @param f  The function definition; NULL ignores this write.
+ * @param v  Whether it is an `ext` target.
  */
 void planSetIsExtTarget(FuncDef *f, bool v);
 
 /**
- * @brief 判断这个函数是否被 `parallel::run` 用作 worker。
+ * @brief Tell whether this function is used as a worker by `parallel::run`.
  *
- * 语言层没有函数指针，生成 C 时只为这样的函数写一个 static trampoline 来取它的地址。
+ * The language layer has no function pointers, so when emitting C only such a function gets a
+ * static trampoline whose address is taken.
  *
- * @param f  函数定义。
- * @return   用作 worker 则返回 true；没有记录时返回 false。
+ * @param f  The function definition.
+ * @return   true when it is used as a worker; false when there is no record.
  */
 bool     planIsParWorker(const FuncDef *f);
 
 /**
- * @brief 记录这个函数是否被 `parallel::run` 用作 worker。
+ * @brief Record whether this function is used as a worker by `parallel::run`.
  *
- * @param f  函数定义；为 NULL 时忽略本次写入。
- * @param v  是否用作 worker。
+ * @param f  The function definition; NULL ignores this write.
+ * @param v  Whether it is used as a worker.
  */
 void planSetIsParWorker(FuncDef *f, bool v);
 
 /**
- * @brief 判断这个函数里的 `new` 是否要用线程本地 arena。
+ * @brief Tell whether `new` inside this function has to use a thread-local arena.
  *
- * worker 的签名固定、分配逃不出去，所以线程本地是安全的；而帧 arena 是主线程的，
- * 两个 worker 同时用就是数据竞争。这条调用链上的函数都记这个标记。
+ * A worker's signature is fixed and its allocations cannot escape, so thread-local is safe; the
+ * frame arena, by contrast, belongs to the main thread, and two workers using it at once would be a
+ * data race. Every function on this call chain records the flag.
  *
- * @param f  函数定义。
- * @return   用线程本地 arena 则返回 true；没有记录时返回 false。
+ * @param f  The function definition.
+ * @return   true when the thread-local arena is used; false when there is no record.
  */
 bool     planParTlsArena(const FuncDef *f);
 
 /**
- * @brief 记录这个函数里的 `new` 是否要用线程本地 arena。
+ * @brief Record whether `new` inside this function has to use a thread-local arena.
  *
- * @param f  函数定义；为 NULL 时忽略本次写入。
- * @param v  是否用线程本地 arena。
+ * @param f  The function definition; NULL ignores this write.
+ * @param v  Whether the thread-local arena is used.
  */
 void planSetParTlsArena(FuncDef *f, bool v);
 
 /**
- * @brief 判断这个 worker 拿到的输出视图是不是整份（而不是 `[lo, hi)` 切段）。
+ * @brief Tell whether the output view this worker receives is the whole one (rather than the
+ * `[lo, hi)` slice).
  *
- * 一维 `par` 把输出视图按 worker 的行区间切段，worker 写 `out[i - lo]`；二维折叠的
- * worker 要按 `out[r * cols + c]` 写绝对槽位，切段就对不上行号了，所以那一形状改传整份视图。
+ * The one-dimensional `par` slices the output view by the worker's row range, and the worker writes
+ * `out[i - lo]`; a worker of a two-dimensional fold has to write absolute slots
+ * `out[r * cols + c]`, where a slice does not line up with the row numbers, so that shape passes
+ * the whole view instead.
  *
- * @param f  函数定义。
- * @return   传整份输出视图则返回 true；没有记录时返回 false。
+ * @param f  The function definition.
+ * @return   true when the whole output view is passed; false when there is no record.
  */
 bool     planParFullOut(const FuncDef *f);
 
 /**
- * @brief 记录这个 worker 的输出视图是否整份传过去。
+ * @brief Record whether this worker's output view is passed whole.
  *
- * @param f  函数定义；为 NULL 时忽略本次写入。
- * @param v  是否传整份输出视图。
+ * @param f  The function definition; NULL ignores this write.
+ * @param v  Whether the whole output view is passed.
  */
 void planSetParFullOut(FuncDef *f, bool v);
 
 /* ---- per-function analysis facts ---------------------------------------------------
  *
- * 这些事实按节点槽存储。`funcInstance` 用 `*in = *tmpl` 做浅拷贝，槽不随拷贝走，所以
- * `planInheritFuncFacts` 必须在拷贝后立刻把它们继承到实例上。 */
+ * These facts are stored in node slots. `funcInstance` shallow-copies with `*in = *tmpl`, and slots
+ * do not travel with the copy, so `planInheritFuncFacts` must inherit them onto the instance
+ * immediately after the copy. */
 
 /**
- * @brief 把模板函数的每函数分析事实搬到新物化的实例上。
+ * @brief Carry a template function's per-function analysis facts onto a newly materialised
+ * instance.
  *
- * 实例是模板的浅拷贝（`*in = *tmpl`），而结果槽按节点指针索引，不会被这次拷贝带过来；
- * 所以拷贝之后必须立刻调用本函数，把模板的分析块与已写位掩码并到实例的槽里。
+ * The instance is a shallow copy of the template (`*in = *tmpl`), and result slots are indexed by
+ * node pointer, so the copy does not bring them along; this function must therefore be called
+ * right after the copy to merge the template's analysis block and written-bit masks into the
+ * instance's slot.
  *
- * @param in    通过浅拷贝新建的实例。
- * @param tmpl  模板函数。
+ * @param in    The instance created by the shallow copy.
+ * @param tmpl  The template function.
  */
 void planInheritFuncFacts(FuncDef *in, const FuncDef *tmpl);
 
 /**
- * @brief 判断这个函数是不是关联函数。
+ * @brief Tell whether this function is an associated function.
  *
- * 没有 `self` 参数的函数属于类型但不作用于某个值（`point::origin()`），调用点必须写全类型名。
+ * A function without a `self` parameter belongs to a type but does not act on a value
+ * (`point::origin()`), so a call site has to write the full type name.
  *
- * @param f  函数定义。
- * @return   是关联函数则返回 true；没有记录时返回 false。
+ * @param f  The function definition.
+ * @return   true when it is an associated function; false when there is no record.
  */
 bool anIsAssoc(const FuncDef *f);
 
 /**
- * @brief 记录这个函数是不是关联函数。
+ * @brief Record whether this function is an associated function.
  *
- * @param f  函数定义；为 NULL 时忽略本次写入。
- * @param v  是否是关联函数。
+ * @param f  The function definition; NULL ignores this write.
+ * @param v  Whether it is an associated function.
  */
 void anSetIsAssoc(FuncDef *f, bool v);
 
 /**
- * @brief 判断这个函数体是否已经在写 lambda 的那个作用域里检查过。
+ * @brief Tell whether this function body was already checked in the scope where the lambda is
+ * written.
  *
- * lambda 合成的 `call` 方法体在捕获集所在的作用域就地检查过，检查结构体方法的这一遍必须跳过它。
+ * The `call` method body a lambda synthesises is checked in place, in the scope holding the capture
+ * set, so this pass over struct methods must skip it.
  *
- * @param f  函数定义（lambda 的 `call` 方法）。
- * @return   已检查过则返回 true；没有记录时返回 false。
+ * @param f  The function definition (the lambda's `call` method).
+ * @return   true when it was already checked; false when there is no record.
  */
 bool anLamChecked(const FuncDef *f);
 
 /**
- * @brief 记录这个函数体是否已经在写 lambda 的那个作用域里检查过。
+ * @brief Record whether this function body was already checked in the scope where the lambda is
+ * written.
  *
- * @param f  函数定义；为 NULL 时忽略本次写入。
- * @param v  是否已检查过。
+ * @param f  The function definition; NULL ignores this write.
+ * @param v  Whether it was already checked.
  */
 void anSetLamChecked(FuncDef *f, bool v);
 
 /**
- * @brief 判断这个 lambda 的返回类型是否还没写、要由第一个 `return` 决定。
+ * @brief Tell whether this lambda's return type is still unwritten and has to be decided by the
+ * first `return`.
  *
- * 为真时，第一个带值的 `return` 会把它的类型填进去；填好之后这个标记就置回假。
+ * While true, the first `return` carrying a value fills its type in; once filled, the flag is set
+ * back to false.
  *
- * @param f  函数定义（lambda 的 `call` 方法）。
- * @return   要推断返回类型则返回 true；没有记录时返回 false。
+ * @param f  The function definition (the lambda's `call` method).
+ * @return   true when the return type is to be inferred; false when there is no record.
  */
 bool anLamInferRet(const FuncDef *f);
 
 /**
- * @brief 记录这个 lambda 的返回类型是否还没写、要由第一个 `return` 决定。
+ * @brief Record whether this lambda's return type is still unwritten and has to be decided by the
+ * first `return`.
  *
- * @param f  函数定义；为 NULL 时忽略本次写入。
- * @param v  是否要推断返回类型。
+ * @param f  The function definition; NULL ignores this write.
+ * @param v  Whether the return type is to be inferred.
  */
 void anSetLamInferRet(FuncDef *f, bool v);
 
 /**
- * @brief 判断这个函数是否需要自己的 home arena。
+ * @brief Tell whether this function needs a home arena of its own.
  *
- * 函数体里有 `new`，并且返回类型里含引用或视图，或者会通过出参往外存：这样的函数多收一个
- * 隐藏的 home arena 参数。这个问题沿调用图做闭包，所以「需要」是传递的。
+ * The body contains `new`, and the return type contains a reference or a view, or the function
+ * stores outward through an out-parameter: such a function takes one more hidden home arena
+ * parameter. The question is closed over the call graph, so "needs" is transitive.
  *
- * @param f  函数定义。
- * @return   需要自己的 home arena 则返回 true；没有记录时返回 false。
+ * @param f  The function definition.
+ * @return   true when it needs its own home arena; false when there is no record.
  */
 bool anNeedsHome(const FuncDef *f);
 
 /**
- * @brief 记录这个函数是否需要自己的 home arena。
+ * @brief Record whether this function needs a home arena of its own.
  *
- * @param f  函数定义；为 NULL 时忽略本次写入。
- * @param v  是否需要自己的 home arena。
+ * @param f  The function definition; NULL ignores this write.
+ * @param v  Whether it needs its own home arena.
  */
 void anSetNeedsHome(FuncDef *f, bool v);
 
 /**
- * @brief 取「这个函数会不会分配」的备忘状态。
+ * @brief Get the memo state of "does this function allocate".
  *
- * 0 表示还没算，1 表示会分配（直接有 `new`，或经被调者分配），2 表示不会，
- * 3 表示正在算——在环上按会分配处理，这是保守方向。
+ * 0 means not computed, 1 that it allocates (it has `new` directly, or a callee allocates), 2 that
+ * it does not, and 3 that it is being computed -- on a cycle it is treated as allocating, which is
+ * the conservative direction.
  *
- * @param f  函数定义。
- * @return   状态值；没有记录时返回 0。
+ * @param f  The function definition.
+ * @return   The state value; 0 when there is no record.
  */
 int  anAllocState(const FuncDef *f);
 
 /**
- * @brief 记录「这个函数会不会分配」的备忘状态。
+ * @brief Record the memo state of "does this function allocate".
  *
- * @param f  函数定义；为 NULL 时忽略本次写入。
- * @param v  状态值：0 未算、1 会、2 不会、3 正在算。
+ * @param f  The function definition; NULL ignores this write.
+ * @param v  The state value: 0 not computed, 1 yes, 2 no, 3 being computed.
  */
 void anSetAllocState(FuncDef *f, int v);
 
 /**
- * @brief 取「这个函数会不会打印」的备忘状态。
+ * @brief Get the memo state of "does this function print".
  *
- * 0 表示还没算，1 表示会打印（直接有 `print` / `println`，或经被调者打印），2 表示不会，
- * 3 表示正在算——在环上按会打印处理。
+ * 0 means not computed, 1 that it prints (it has `print` / `println` directly, or a callee prints),
+ * 2 that it does not, and 3 that it is being computed -- on a cycle it is treated as printing.
  *
- * @param f  函数定义。
- * @return   状态值；没有记录时返回 0。
+ * @param f  The function definition.
+ * @return   The state value; 0 when there is no record.
  */
 int  anMayPrintState(const FuncDef *f);
 
 /**
- * @brief 记录「这个函数会不会打印」的备忘状态。
+ * @brief Record the memo state of "does this function print".
  *
- * @param f  函数定义；为 NULL 时忽略本次写入。
- * @param v  状态值：0 未算、1 会、2 不会、3 正在算。
+ * @param f  The function definition; NULL ignores this write.
+ * @param v  The state value: 0 not computed, 1 yes, 2 no, 3 being computed.
  */
 void anSetMayPrintState(FuncDef *f, int v);
 
 /**
- * @brief 取收集这个函数效应时记下的新鲜局部名的个数。
+ * @brief Get the number of fresh local names recorded while collecting this function's effects.
  *
- * 「新鲜」指这个名字当时绑定的对象由 `new` 产生；往容器里存这样的值时不需要寿命约束。
+ * "Fresh" means the object the name was bound to at the time was produced by `new`; storing such a
+ * value into a container needs no lifetime constraint.
  *
- * @param f  函数定义。
- * @return   记下的名字个数；没有记录时返回 0。
+ * @param f  The function definition.
+ * @return   The number of names recorded; 0 when there is no record.
  */
 int  anFreshCount(const FuncDef *f);
 
 /**
- * @brief 记录收集这个函数效应时记下的新鲜局部名的个数。
+ * @brief Record the number of fresh local names recorded while collecting this function's effects.
  *
- * @param f  函数定义；为 NULL 时忽略本次写入。
- * @param v  名字个数。
+ * @param f  The function definition; NULL ignores this write.
+ * @param v  The number of names.
  */
 void anSetFreshCount(FuncDef *f, int v);
 
 /**
- * @brief 取一个函数记录下来的分配站点列表。
+ * @brief Get the list of allocation sites recorded for a function.
  *
- * 列表里是函数体里每个可能分配的表达式：`new`，以及可能分配存储的调用。分配放置阶段按它逐站点
- * 决定 arena 层级；这是检查器自己的工作状态，后续阶段不读。泛型实例不单独收集，直接指向其模板的
- * 那一份列表。
+ * The list holds every expression in the body that may allocate: `new`, plus calls that may
+ * allocate storage. The allocation-placement stage decides the arena level per site from it; this
+ * is the checker's own working state, and later stages do not read it. A generic instance does not
+ * collect its own list and points at its template's directly.
  *
- * @param f  函数定义。
- * @return   分配站点向量；没有记录或 `f` 为 NULL 时返回空向量。
+ * @param f  The function definition.
+ * @return   The allocation-site vector; an empty vector when `f` is NULL or there is no record.
  */
 Vec  anArenaSites(const FuncDef *f);
 
 /**
- * @brief 记下一个函数的 arena 待决站点清单。
+ * @brief Record a function's list of pending arena sites.
  *
- * 清单里既有分配点表达式，也有 arena 实参还没定的调用点，交给分析收尾之后的 pass 逐站决定
- * 层级。实例化出来的函数从它的模板抄走同一份清单。
+ * The list holds both allocation-point expressions and call sites whose arena argument is not
+ * decided yet; it is handed to a pass after the analysis finishes so that the level can be decided
+ * per site. An instantiated function copies the same list over from its template.
  *
- * @param f  目标函数。
- * @param v  站点向量，元素为 `Expr *`。
+ * @param f  The target function.
+ * @param v  The site vector, with `Expr *` elements.
  */
 void anSetArenaSites(FuncDef *f, Vec v);
 
 /**
- * @brief 取一个函数已登记的形参符号个数。
+ * @brief Get the number of parameter symbols registered for a function.
  *
- * @param f  目标函数。
- * @return   已登记的个数；没有记录时为 0，上限为 `EFF_MAX_PARAMS`。
+ * @param f  The target function.
+ * @return   The registered count; 0 when there is no record, capped at `EFF_MAX_PARAMS`.
  */
 int  anParamSymCount(const FuncDef *f);
 
 /**
- * @brief 设置一个函数已登记的形参符号个数。
+ * @brief Set the number of parameter symbols registered for a function.
  *
- * @param f  目标函数。
- * @param v  新的个数。
+ * @param f  The target function.
+ * @param v  The new count.
  */
 void anSetParamSymCount(FuncDef *f, int v);
 
 /**
- * @brief 取一个函数存放形参符号的可写数组。
+ * @brief Get the writable array a function stores its parameter symbols in.
  *
- * 数组容量固定，前 `anParamSymCount` 个元素有效；调用会顺带建好结果槽。
+ * The array has a fixed capacity; the first `anParamSymCount` elements are live. The call also
+ * builds the result slot on the way.
  *
- * @param f  目标函数。
- * @return   数组首地址；`f` 为 NULL 或建槽失败时为 NULL。
+ * @param f  The target function.
+ * @return   The array's first address; NULL when `f` is NULL or the slot cannot be built.
  */
 void **anParamSyms(FuncDef *f);
 
 /* ---- operator / comparison facts ---------------------------------------------------
  *
- * `planConvCheck` / `planNeedOp` 由代码生成读取（据此知道还有延迟的运算符要重新解析、
- * 一次窄化转换要带运行期检查）；其余 `anXxx` 是检查器自己的状态。 */
+ * `planConvCheck` / `planNeedOp` are read by code generation (to know that there are still
+ * deferred operators to re-resolve, and that a narrowing conversion needs a runtime check); the
+ * remaining `anXxx` fields are the checker's own state. */
 
 /**
- * @brief 取一个值必须活到的最浅层级。
+ * @brief Get the shallowest level a value must live to.
  *
- * `-1` 表示还没有任何约束落到这个节点上；数值越小寿命要求越长。
+ * `-1` means no constraint has landed on this node yet; the smaller the number, the longer the
+ * required lifetime.
  *
- * @param node  要查的节点。
- * @return      已记录的层级；该字段没写过时为 0。
+ * @param node  The node to look up.
+ * @return      The recorded level; 0 when this field has never been written.
  */
 int  anMinAt(const void *node);
 
 /**
- * @brief 记下一个值必须活到的最浅层级。
+ * @brief Record the shallowest level a value must live to.
  *
- * @param node  目标节点。
- * @param v     层级；`-1` 表示尚无约束。
+ * @param node  The target node.
+ * @param v     The level; `-1` means no constraint yet.
  */
 void anSetMinAt(void *node, int v);
 
 /**
- * @brief 判断一个值所在存储是不是被逐轮复用（`@overwrite` 的初始化式）。
+ * @brief Tell whether a value's storage is reused round after round (an `@overwrite` initialiser).
  *
- * @param node  要查的节点。
- * @return      是则 `true`；没有记录时为 `false`。
+ * @param node  The node to look up.
+ * @return      `true` when it is; `false` when there is no record.
  */
 bool anReuse(const void *node);
 
 /**
- * @brief 标记一个值所在存储会被逐轮复用。
+ * @brief Mark a value's storage as reused round after round.
  *
- * @param node  目标节点。
- * @param v     为 `true` 表示它的层级固定在本帧第 1 层。
+ * @param node  The target node.
+ * @param v     `true` pins its level to layer 1 of the current frame.
  */
 void anSetReuse(void *node, bool v);
 
 /**
- * @brief 判断一个值是不是从别处借来的引用。
+ * @brief Tell whether a value is a reference borrowed from somewhere else.
  *
- * @param node  要查的节点。
- * @return      是借来的引用则 `true`；没有记录时为 `false`。
+ * @param node  The node to look up.
+ * @return      `true` when it is a borrowed reference; `false` when there is no record.
  */
 bool anBorrowed(const void *node);
 
 /**
- * @brief 记下一个值是不是从别处借来的引用。
+ * @brief Record whether a value is a reference borrowed from somewhere else.
  *
- * @param node  目标节点。
- * @param v     借来的引用为 `true`。
+ * @param node  The target node.
+ * @param v     `true` for a borrowed reference.
  */
 void anSetBorrowed(void *node, bool v);
 
 /**
- * @brief 判断一个名字是不是已按限定名解析过（源码写了 `a::b`，或已由限定名 pass 定下）。
+ * @brief Tell whether a name has been resolved as qualified (the source wrote `a::b`, or the
+ * qualified-name pass already fixed it).
  *
- * @param node  要查的节点。
- * @return      已限定则 `true`；没有记录时为 `false`。
+ * @param node  The node to look up.
+ * @return      `true` when it is qualified; `false` when there is no record.
  */
 bool anQualified(const void *node);
 
 /**
- * @brief 标记一个名字已按限定名解析，后续 pass 不要再按本模块的名字表改写它。
+ * @brief Mark a name as resolved by qualified name, so later passes do not rewrite it through this
+ * module's name table.
  *
- * @param node  目标节点。
- * @param v     已限定为 `true`。
+ * @param node  The target node.
+ * @param v     `true` for qualified.
  */
 void anSetQualified(void *node, bool v);
 
 /**
- * @brief 判断一次显式转换要不要在运行期做范围检查。
+ * @brief Tell whether an explicit conversion needs a range check at run time.
  *
- * 整数加宽、浮点到浮点，以及引用转 64 位整数都不需要检查；其余收窄、变号与浮点转整数
- * 都要。
+ * An integer widening, a float-to-float conversion, and a reference to a 64-bit integer need no
+ * check; every other narrowing, sign change, and float-to-integer conversion does.
  *
- * @param e  转换表达式。
- * @return   要生成运行期检查则 `true`；没有记录时为 `false`。
+ * @param e  The conversion expression.
+ * @return   `true` when a runtime check has to be emitted; `false` when there is no record.
  */
 bool planConvCheck(const Expr *e);
 
 /**
- * @brief 记下一次显式转换要不要在运行期做范围检查。
+ * @brief Record whether an explicit conversion needs a range check at run time.
  *
- * @param e  转换表达式。
- * @param v  要检查为 `true`。
+ * @param e  The conversion expression.
+ * @param v  `true` when a check is needed.
  */
 void planSetConvCheck(Expr *e, bool v);
 
 /**
- * @brief 判断一次二元运算是不是因为操作数是类型参数而推迟到实例化再解析。
+ * @brief Tell whether a binary operation is deferred to instantiation because an operand is a type
+ * parameter.
  *
- * @param e  二元表达式。
- * @return   需要重新解析则 `true`；没有记录时为 `false`。
+ * @param e  The binary expression.
+ * @return   `true` when it has to be re-resolved; `false` when there is no record.
  */
 bool planNeedOp(const Expr *e);
 
 /**
- * @brief 记下一次二元运算需要推迟到实例化再解析。
+ * @brief Record that a binary operation has to be deferred to instantiation for re-resolution.
  *
- * @param e  二元表达式。
- * @param v  需要重新解析为 `true`。
+ * @param e  The binary expression.
+ * @param v  `true` when re-resolution is needed.
  */
 void planSetNeedOp(Expr *e, bool v);
 
 /* ---- call / receiver facts ---------------------------------------------------------
  *
- * 全部由代码生成读取：任务交给谁（`EX_EXT`）、一个 `EX_FIELD` 解析到了哪个字段、
- * 一个 `EX_ASSOC` 解析到了哪个实例类型、以及 `dyn` 调用怎么到达接收者。 */
+ * All read by code generation: whom a task is handed to (`EX_EXT`), which field an `EX_FIELD`
+ * resolved to, which instance type an `EX_ASSOC` resolved to, and how a `dyn` call reaches its
+ * receiver. */
 
 /**
- * @brief f-string 格式说明符会选中的填充原语。
+ * @brief The pad primitive an f-string format specifier selects.
  *
- * 说明符本身不带类型，选哪个原语由槽里那个值的**静态类型**决定：整数走 `padInt`，浮点走
- * `padF`，文本（`slice<u8>`）走 `padText`。检查器把这个选择记在节点上，代码生成按它发调用。
+ * The specifier itself carries no type; which primitive is selected follows from the **static**
+ * type of the value in the slot: integers go through `padInt`, floats through `padF`, and text
+ * (`slice<u8>`) through `padText`. The checker records the choice on the node and code generation
+ * emits the call accordingly.
  */
 typedef enum {
     PLAN_PAD_NONE = 0,
@@ -1031,714 +1123,755 @@ typedef enum {
 } PlanPadKind;
 
 /**
- * @brief 取 `ext` 任务被交给的那个域表达式。
+ * @brief Get the domain expression an `ext` task is handed to.
  *
- * @param e  `ext` 调用节点。
- * @return   域表达式；没有记录时为 NULL。
+ * @param e  The `ext` call node.
+ * @return   The domain expression; NULL when there is no record.
  */
 Expr     *planExtDom(const Expr *e);
 
 /**
- * @brief 记下 `ext` 任务被交给的域表达式。
+ * @brief Record the domain expression an `ext` task is handed to.
  *
- * @param e  `ext` 调用节点。
- * @param v  域表达式。
+ * @param e  The `ext` call node.
+ * @param v  The domain expression.
  */
 void planSetExtDom(Expr *e, Expr *v);
 
 /**
- * @brief 取字段访问节点解析到的字段定义。
+ * @brief Get the field definition a field-access node resolves to.
  *
- * 表字段上的 `fn` 值也走这一格，调用点靠它拿到槽位的 effect 子句。
+ * An `fn` value stored in a table field goes through this same slot, so a call site can obtain the
+ * slot's effect clause from it.
  *
- * @param e  字段访问节点。
- * @return   命中的字段定义；没有记录时为 NULL。
+ * @param e  The field-access node.
+ * @return   The matching field definition; NULL when there is no record.
  */
 FieldDef *planField(const Expr *e);
 
 /**
- * @brief 记下字段访问节点解析到的字段定义。
+ * @brief Record the field definition a field-access node resolves to.
  *
- * @param e   字段访问节点。
- * @param fd  命中的字段定义。
+ * @param e   The field-access node.
+ * @param fd  The matching field definition.
  */
 void planSetField(Expr *e, FieldDef *fd);
 
 /**
- * @brief 取关联项调用或枚举值节点解析到的具体类型。
+ * @brief Get the concrete type an associated-item call or an enum-value node resolves to.
  *
- * 代码生成用它取实例化之后的类型名。
+ * Code generation uses it to obtain the type name after instantiation.
  *
- * @param e  关联项调用或枚举值节点。
- * @return   解析到的类型；没有记录时为 NULL。
+ * @param e  The associated-item call or enum-value node.
+ * @return   The resolved type; NULL when there is no record.
  */
 Type     *planAssocOwner(const Expr *e);
 
 /**
- * @brief 记下关联项调用或枚举值节点解析到的具体类型。
+ * @brief Record the concrete type an associated-item call or an enum-value node resolves to.
  *
- * @param e  关联项调用或枚举值节点。
- * @param t  解析到的类型。
+ * @param e  The associated-item call or enum-value node.
+ * @param t  The resolved type.
  */
 void planSetAssocOwner(Expr *e, Type *t);
 
 /**
- * @brief 判断一次 `dyn` 方法调用的接收者是不是经由引用拿到的。
+ * @brief Tell whether a `dyn` method call's receiver is reached through a reference.
  *
- * @param e  方法调用节点。
- * @return   接收者经引用到达则 `true`；没有记录时为 `false`。
+ * @param e  The method-call node.
+ * @return   `true` when the receiver arrives through a reference; `false` when there is no record.
  */
 bool     planDynRecvViaRef(const Expr *e);
 
 /**
- * @brief 记下一次 `dyn` 方法调用的接收者是不是经由引用拿到的。
+ * @brief Record whether a `dyn` method call's receiver is reached through a reference.
  *
- * @param e  方法调用节点。
- * @param v  经引用到达为 `true`。
+ * @param e  The method-call node.
+ * @param v  `true` when it arrives through a reference.
  */
 void planSetDynRecvViaRef(Expr *e, bool v);
 
 /**
- * @brief 判断一次调用是不是通过函数值发起，而不是通过具名声明。
+ * @brief Tell whether a call is made through a function value rather than a named declaration.
  *
- * @param e  调用节点。
- * @return   经函数值调用则 `true`；没有记录时为 `false`。
+ * @param e  The call node.
+ * @return   `true` when it goes through a function value; `false` when there is no record.
  */
 bool     planCallViaFn(const Expr *e);
 
 /**
- * @brief 记下一次调用是通过函数值发起的。
+ * @brief Record that a call is made through a function value.
  *
- * @param e  调用节点。
- * @param v  经函数值调用为 `true`。
+ * @param e  The call node.
+ * @param v  `true` when it goes through a function value.
  */
 void planSetCallViaFn(Expr *e, bool v);
 
 /**
- * @brief 取 f-string 格式说明符槽选中的填充原语。
+ * @brief Get the pad primitive an f-string format-specifier slot selects.
  *
- * @param e  方法调用节点（`__extc_pad`）。
- * @return   选中的原语；没有记录时为 `PLAN_PAD_NONE`。
+ * @param e  The method-call node (`__extc_pad`).
+ * @return   The selected primitive; `PLAN_PAD_NONE` when there is no record.
  */
 PlanPadKind planPadKind(const Expr *e);
 
 /**
- * @brief 记下 f-string 格式说明符槽选中的填充原语。
+ * @brief Record the pad primitive an f-string format-specifier slot selects.
  *
- * @param e  方法调用节点（`__extc_pad`）。
- * @param v  选中的原语。
+ * @param e  The method-call node (`__extc_pad`).
+ * @param v  The selected primitive.
  */
 void planSetPadKind(Expr *e, PlanPadKind v);
 
 /* ---- depth and origin facts --------------------------------------------------------
  *
- * 参数写成 `void *`：`refDepth` 既在 `Expr` 上也在检查器的 `Sym` 上，一个访问器同时回答两者。 */
+ * The parameter is `void *`: `refDepth` lives both on an `Expr` and on the checker's `Sym`, and one
+ * accessor answers for both. */
 
 /**
- * @brief 取一个节点上记录的引用/逃逸深度。
+ * @brief Get the reference/escape depth recorded on a node.
  *
- * 数值越大表示所在的块越深、寿命越短；`0` 表示本帧之外那一层，即调用者选定的寿命，同时也是
- * 没有记录时的默认值。同一个存取器既服务表达式，也服务检查器的绑定，所以参数是 `void *`。
+ * A larger number means a deeper block and therefore a shorter lifetime; `0` means the layer
+ * outside this frame, i.e. the lifetime the caller chose, and is also the default when there is no
+ * record. The same accessor serves expressions and the checker's bindings, hence the `void *`
+ * parameter.
  *
- * @param node  要查的节点。
- * @return      已记录的深度；没有记录时为 0。
+ * @param node  The node to look up.
+ * @return      The recorded depth; 0 when there is no record.
  */
 int  anRefDepth(const void *node);
 
 /**
- * @brief 记下一个节点的引用/逃逸深度。
+ * @brief Record a node's reference/escape depth.
  *
- * @param node  目标节点。
- * @param v     深度；0 表示本帧之外那一层。
+ * @param node  The target node.
+ * @param v     The depth; 0 means the layer outside this frame.
  */
 void anSetRefDepth(void *node, int v);
 
 /**
- * @brief 取一次调用的结果留在哪一层。
+ * @brief Get the layer a call's result stays in.
  *
- * `-1` 表示结果活得比本帧久，调用要把自己的 home arena 交出去；`>= 1` 表示结果留在那个显式
- * 块层级上；`0` 表示没有 `mut ref` 实参给出理由，交给最终 pass 按当前块定。
+ * `-1` means the result outlives this frame and the call has to hand out its own home arena;
+ * `>= 1` means the result stays at that explicit block level; `0` means no `mut ref` argument gave
+ * a reason and the final pass decides from the current block.
  *
- * @param node  调用节点。
- * @return      已记录的深度；没有记录时为 0。
+ * @param node  The call node.
+ * @return      The recorded depth; 0 when there is no record.
  */
 int  anHomeDepth(const void *node);
 
 /**
- * @brief 记下一次调用的结果留在哪一层。
+ * @brief Record the layer a call's result stays in.
  *
- * 它与该调用实际往下传的 arena 实参必须一起更新，两者不能各说一套。
+ * It must be updated together with the arena argument the call actually passes down; the two may
+ * not disagree.
  *
- * @param node  调用节点。
- * @param v     结果所在层级；`-1` 表示比本帧久。
+ * @param node  The call node.
+ * @param v     The layer the result is in; `-1` means longer than this frame.
  */
 void anSetHomeDepth(void *node, int v);
 
 /**
- * @brief 取一个分配点最初所在的块层级。
+ * @brief Get the lexical block level an allocation point sits in.
  *
- * arena 层级可能被改写成 home 哨兵，词法层级因此单独留一格。
+ * The arena level may be rewritten to the home sentinel, so the lexical level keeps a slot of its
+ * own.
  *
- * @param node  分配点节点。
- * @return      已记录的层级；没有记录时为 0。
+ * @param node  The allocation-point node.
+ * @return      The recorded level; 0 when there is no record.
  */
 int  anLexicalLevel(const void *node);
 
 /**
- * @brief 记下一个分配点最初所在的块层级。
+ * @brief Record the lexical block level an allocation point sits in.
  *
- * @param node  分配点节点。
- * @param v     块层级。
+ * @param node  The allocation-point node.
+ * @param v     The block level.
  */
 void anSetLexicalLevel(void *node, int v);
 
 /**
- * @brief 查一个值最近一次被发布到哪个层级。
+ * @brief Look up the level a value was last published to.
  *
- * `-1` 表示还没见过它被发布；`0` 也是真实答案，表示发布到本帧之外。
+ * `-1` means it was never seen being published; `0` is also a real answer, meaning it was
+ * published outside this frame.
  *
- * @param node  要查的值节点。
- * @return      发布层级；没有记录时为 -1。
+ * @param node  The value node to look up.
+ * @return      The publication level; -1 when there is no record.
  */
 int  anStoredAt(const void *node);
 
 /**
- * @brief 记下一个值被发布到的层级。
+ * @brief Record the level a value is published to.
  *
- * @param node  目标值节点。
- * @param v     发布层级。
+ * @param node  The target value node.
+ * @param v     The publication level.
  */
 void anSetStoredAt(void *node, int v);
 
 /* ---- call-site markers for builtin forms -------------------------------------------
  *
- * 内建形式没有可用来识别它的被调用者，所以检查器给**调用节点**打标记，代码生成按标记识别。 */
+ * A builtin form has no callee pointer to recognise it by, so the checker marks the **call node**
+ * and code generation recognises it by the mark. */
 
 /**
- * @brief 取 `parallel::run(worker, ...)` 调用里的 worker 函数。
+ * @brief Get the worker function in a `parallel::run(worker, ...)` call.
  *
- * @param e  调用节点。
- * @return   worker 函数；不是这种调用时为 NULL。
+ * @param e  The call node.
+ * @return   The worker function; NULL when it is not such a call.
  */
 FuncDef *planParWorker(const Expr *e);
 
 /**
- * @brief 记下 `parallel::run(worker, ...)` 调用里的 worker 函数。
+ * @brief Record the worker function in a `parallel::run(worker, ...)` call.
  *
- * @param e   调用节点。
- * @param wf  worker 函数。
+ * @param e   The call node.
+ * @param wf  The worker function.
  */
 void     planSetParWorker(Expr *e, FuncDef *wf);
 
 /**
- * @brief 判断这个调用是不是构造一个域的 builtin 形式。
+ * @brief Tell whether this call is the builtin form that builds a domain.
  *
- * 这种形式没有可依赖的被调者指针，所以由调用节点上的标记识别。
+ * Such a form has no callee pointer to rely on, so it is recognised by a mark on the call node.
  *
- * @param e  调用节点。
- * @return   是则 `true`；没有记录时为 `false`。
+ * @param e  The call node.
+ * @return   `true` when it is; `false` when there is no record.
  */
 bool     planDomNew(const Expr *e);
 
 /**
- * @brief 标记这个调用是构造一个域的 builtin 形式。
+ * @brief Mark this call as the builtin form that builds a domain.
  *
- * @param e  调用节点。
- * @param v  是则为 `true`。
+ * @param e  The call node.
+ * @param v  `true` when it is.
  */
 void     planSetDomNew(Expr *e, bool v);
 
 /**
- * @brief 判断这个调用是不是 `extc_viewOf` 这个没有函数体的 builtin 形式。
+ * @brief Tell whether this call is the `extc_viewOf` builtin form, which has no function body.
  *
- * 声明没有函数体，没有可依赖的被调者指针，所以由调用节点上的标记识别。
+ * The declaration has no body and therefore no callee pointer to rely on, so the call is recognised
+ * by a mark on the call node.
  *
- * @param e  调用节点。
- * @return   是则 `true`；没有记录时为 `false`。
+ * @param e  The call node.
+ * @return   `true` when it is; `false` when there is no record.
  */
 bool     planViewOf(const Expr *e);
 
 /**
- * @brief 标记这个调用是 `extc_viewOf` 这个 builtin 形式。
+ * @brief Mark this call as the `extc_viewOf` builtin form.
  *
- * @param e  调用节点。
- * @param v  是则为 `true`。
+ * @param e  The call node.
+ * @param v  `true` when it is.
  */
 void     planSetViewOf(Expr *e, bool v);
 
 /* ---- impl / trait / module facts ---------------------------------------------------
  *
- * 四项都由代码生成读取。`trait` / `target` 在检查器 intern 类型名时解析；`usedDyn` /
- * `usesDyn` 在见到 `dyn` 形式的那一刻设置，决定是否发出 dyn 运行期。 */
+ * All four are read by code generation. `trait` / `target` are resolved while the checker interns
+ * type names; `usedDyn` / `usesDyn` are set at the moment a `dyn` form is seen and decide whether
+ * the dyn runtime is emitted. */
 
 /**
- * @brief 取一个 `impl` 块实现的 trait。
+ * @brief Get the trait an `impl` block implements.
  *
- * @param im  `impl` 块定义。
- * @return   实现的 trait；固有 `impl` 或尚未解析时为 NULL。
+ * @param im  The `impl` block definition.
+ * @return    The implemented trait; NULL for an inherent `impl` or before resolution.
  */
 TraitDef *planImplTrait(const ImplDef *im);
 
 /**
- * @brief 记下一个 `impl` 块实现的 trait。
+ * @brief Record the trait an `impl` block implements.
  *
- * @param im  `impl` 块定义。
- * @param tr  实现的 trait。
+ * @param im  The `impl` block definition.
+ * @param tr  The implemented trait.
  */
 void      planSetImplTrait(ImplDef *im, TraitDef *tr);
 
 /**
- * @brief 取一个 `impl` 块解析到的具体类型。
+ * @brief Get the concrete type an `impl` block resolves to.
  *
- * @param im  `impl` 块定义。
- * @return   目标类型；没有记录时为 NULL。
+ * @param im  The `impl` block definition.
+ * @return    The target type; NULL when there is no record.
  */
 Type     *planImplTarget(const ImplDef *im);
 
 /**
- * @brief 记下一个 `impl` 块解析到的具体类型。
+ * @brief Record the concrete type an `impl` block resolves to.
  *
- * @param im  `impl` 块定义。
- * @param t   目标类型。
+ * @param im  The `impl` block definition.
+ * @param t   The target type.
  */
 void      planSetImplTarget(ImplDef *im, Type *t);
 
 /**
- * @brief 判断一个 trait 是否被 `dyn` 形式用到过。
+ * @brief Tell whether a trait is used by a `dyn` form.
  *
- * 只有用到过，它的虚表才会被生成。
+ * Only when it is is its vtable generated.
  *
- * @param tr  目标 trait。
- * @return    用到过则 `true`；没有记录时为 `false`。
+ * @param tr  The target trait.
+ * @return    `true` when it is used; `false` when there is no record.
  */
 bool      planUsedDyn(const TraitDef *tr);
 
 /**
- * @brief 记下一个 trait 被 `dyn` 形式用到过。
+ * @brief Record that a trait is used by a `dyn` form.
  *
- * @param tr  目标 trait。
- * @param v   用到过为 `true`。
+ * @param tr  The target trait.
+ * @param v   `true` when it is used.
  */
 void      planSetUsedDyn(TraitDef *tr, bool v);
 
 /**
- * @brief 判断一个模块里是否出现过 `dyn` 形式。
+ * @brief Tell whether a `dyn` form appears in a module.
  *
- * 出现过才需要生成 `dyn` 运行期。
+ * The dyn runtime is generated only when one does.
  *
- * @param m  目标模块。
- * @return   出现过则 `true`；没有记录时为 `false`。
+ * @param m  The target module.
+ * @return   `true` when one appears; `false` when there is no record.
  */
 bool      planUsesDyn(const Module *m);
 
 /**
- * @brief 记下一个模块里出现过 `dyn` 形式。
+ * @brief Record that a `dyn` form appears in a module.
  *
- * @param m  目标模块。
- * @param v  出现过为 `true`。
+ * @param m  The target module.
+ * @param v  `true` when one appears.
  */
 void      planSetUsesDyn(Module *m, bool v);
 
 /**
- * @brief 取一个实例是由哪个模板生成的。
+ * @brief Get the template a function instance was generated from.
  *
- * @param f  目标函数。
- * @return   模板函数；`f` 不是实例时为 NULL。
+ * @param f  The target function.
+ * @return   The template function; NULL when `f` is not an instance.
  */
 FuncDef *planTemplate(const FuncDef *f);
 
 /**
- * @brief 取一个实例的 C 名字。
+ * @brief Get an instance's C name.
  *
- * @param f  目标函数。
- * @return   C 名字；没有记录时为 NULL。
+ * @param f  The target function.
+ * @return   The C name; NULL when there is no record.
  */
 const char *planInstName(const FuncDef *f);
 
 /* ---- arena and zone plan ----------------------------------------------------------- */
 
 /**
- * @brief 取一个分配点该用的 arena 层级。
+ * @brief Get the arena level an allocation point should use.
  *
- * `ARENA_HOME` 哨兵表示用调用者给的 home arena；数值越大寿命越短。
+ * The `ARENA_HOME` sentinel means "use the home arena the caller passed"; a larger number means a
+ * shorter lifetime.
  *
- * @param e  分配点表达式。
- * @return   已记录的层级；没有记录时为 0。
+ * @param e  The allocation-point expression.
+ * @return   The recorded level; 0 when there is no record.
  */
 int  planArenaLevel(const Expr *e);
 /**
- * @brief 取一次调用往下传的 arena 实参。
+ * @brief Get the arena argument a call passes down.
  *
- * `-1` 表示调用者自己的 home arena，`>= 1` 表示那个块层级，`0` 表示当前块。
+ * `-1` means the caller's own home arena, `>= 1` that block level, and `0` the current block.
  *
- * @param e  调用节点。
- * @return   已记录的实参；没有记录时为 0。
+ * @param e  The call node.
+ * @return   The recorded argument; 0 when there is no record.
  */
 int  planArenaArg(const Expr *e);
 /**
- * @brief 取一个池站点记录下来的 zone 层级。
+ * @brief Get the zone level recorded for a pool site.
  *
- * ZONE_HOME 表示用调用者收到的家 zone（库函数对地方透明，把选择权交给调用者），k >= 1 表示
- * 第 k 层块的 zone；站点没记录时返回 0。
+ * ZONE_HOME means "use the home zone the caller received" (library functions are transparent about
+ * place and pass the choice to the caller); k >= 1 means the zone of the block at level k. When the
+ * site has no record, 0 is returned.
  *
- * @param e  要查询的表达式（建池的调用点）。
- * @return   记录下来的 zone 层级；没记录时返回 0。
+ * @param e  The expression to query (the call site that creates the pool).
+ * @return   The recorded zone level; 0 when there is no record.
  */
 int  planZoneLevel(const Expr *e);
 /**
- * @brief 判断一个函数是否接收调用者的家 arena 作隐藏参数。
+ * @brief Tell whether a function receives the caller's home arena as a hidden parameter.
  *
- * 以「函数体真的读到了传入的家 arena，或把家 arena 往下交给被调者」为准；该值要等汇总闭包
- * 跑完才最终确定。
+ * The answer rests on "the body really reads the home arena it was given, or passes the home arena
+ * down to a callee", and its value is only final once the summary closure has run.
  *
- * @param f  要查询的函数。
- * @return   需要隐藏的家 arena 参数则为 true；没记录时返回 false。
+ * @param f  The function to query.
+ * @return   true when the hidden home arena parameter is needed; false when there is no record.
  */
 bool planUsesHome(const FuncDef *f);
 
 /**
- * @brief 判断一个函数体自己会不会分配存储。
+ * @brief Tell whether a function body allocates storage itself.
  *
- * 为 false 时函数体不分配任何东西，代码生成就不为它声明 arena 数组、也不发释放调用。
+ * When false the body allocates nothing, so code generation declares neither an arena array for it
+ * nor a release call.
  *
- * @param f  要查询的函数。
- * @return   可能分配则为 true；没记录时返回 false。
+ * @param f  The function to query.
+ * @return   true when it may allocate; false when there is no record.
  */
 bool planMayUseArena(const FuncDef *f);
 
 /**
- * @brief 判断一个函数会不会建池，直接建或经由被调者到达都算。
+ * @brief Tell whether a function creates a pool, either directly or through a callee.
  *
- * 该值要等调用图闭包跑完才最终确定。
+ * The value is only final once the call-graph closure has run.
  *
- * @param f  要查询的函数。
- * @return   会建池则为 true；没记录时返回 false。
+ * @param f  The function to query.
+ * @return   true when it creates a pool; false when there is no record.
  */
 bool planMakesPool(const FuncDef *f);
 /**
- * @brief 判断一个循环的条件里会不会分配存储。
+ * @brief Tell whether a loop's condition allocates storage.
  *
- * 为 true 时代码生成给循环包一层每轮回收的 arena，让条件里的分配在轮末归还。
+ * When true, code generation wraps the loop in an arena reclaimed every round, so allocations in
+ * the condition return at the end of the round.
  *
- * @param s  要查询的循环语句。
- * @return   条件里分配则为 true；没记录时返回 false。
+ * @param s  The loop statement to query.
+ * @return   true when the condition allocates; false when there is no record.
  */
 bool planCondAllocs(const Stmt *s);
 /**
- * @brief 记录一个声明的初始化式是否指向帧外存储。
+ * @brief Record whether a declaration's initialiser points at storage outside the frame.
  *
- * 帧外存储包括全局、`global` 声明、`effects Ret=0` 的结果与字符串字面量；这条结果在作用域
- * 还活着时写下，供函数体检查完之后再问。
+ * Storage outside the frame covers globals, `global` declarations, the results of
+ * `effects Ret=0`, and string literals; this result is written while the scope is still alive so it
+ * can be asked about after the function body has been checked.
  *
- * @param s  变量声明语句。
- * @param v  初始化式指向帧外存储则为 true。
+ * @param s  The variable declaration statement.
+ * @param v  true when the initialiser points outside the frame.
  */
 void planSetVarInitOutOfFrame(Stmt *s, bool v);
 
 /**
- * @brief 读回一个声明的初始化式是否指向帧外存储。
+ * @brief Read back whether a declaration's initialiser points at storage outside the frame.
  *
- * @param s  要查询的变量声明语句。
- * @return   初始化式指向帧外存储则为 true；没记录时返回 false。
+ * @param s  The variable declaration statement to query.
+ * @return   true when the initialiser points outside the frame; false when there is no record.
  */
 bool planVarInitOutOfFrame(const Stmt *s);
 /**
- * @brief 取脱糖 `for` 的步进语句。
+ * @brief Get the step statement of a desugared `for`.
  *
- * 步进语句是语法，写在循环体上，因为 `continue` 必须能走到它；循环被改写成迭代器之后步进
- * 不再存在，这一处返回 NULL。
+ * The step statement is syntax and is stored on the loop body, because `continue` must reach it;
+ * once the loop is rewritten into an iterator there is no step any more, and this returns NULL.
  *
- * @param s  要查询的循环体语句。
- * @return   步进语句；步进已被丢弃、`s` 为空或没有步进时返回 NULL。
+ * @param s  The loop-body statement to query.
+ * @return   The step statement; NULL when the step has been dropped, `s` is NULL, or there is no
+ *           step.
  */
 Stmt *planForStep(const Stmt *s);
 /**
- * @brief 判断一个表达式是否要先把某部分算进临时变量。
+ * @brief Tell whether an expression must first evaluate some part into a temporary.
  *
- * 该表达式（或其参数、元素计数）在生成的 C 里会出现不止一次，或需要在循环外只求值一次时
- * 记为 true，代码生成据此先发一条临时变量声明。
+ * The expression (or its arguments, or its element count) appears more than once in the generated
+ * C, or has to be evaluated only once outside a loop, so it is recorded as true and code generation
+ * emits a temporary declaration first.
  *
- * @param e  要查询的表达式。
- * @return   需要临时变量则为 true；没记录时返回 false。
+ * @param e  The expression to query.
+ * @return   true when a temporary is needed; false when there is no record.
  */
 bool planNeedTemp(const Expr *e);
 
 /* ---- coroutine family -------------------------------------------------------------- */
 
 /**
- * @brief 判断一个函数是不是协程。
+ * @brief Tell whether a function is a coroutine.
  *
- * 协程的值是一个帧句柄，而不是一个普通 C 函数。
+ * A coroutine's value is a frame handle rather than an ordinary C function.
  *
- * @param f  要查询的函数。
- * @return   是协程则为 true；没记录时返回 false。
+ * @param f  The function to query.
+ * @return   true when it is a coroutine; false when there is no record.
  */
 bool   planIsCoro(const FuncDef *f);
 /**
- * @brief 取协程 `yield` 交出的值类型。
+ * @brief Get the type of the value a coroutine `yield`s.
  *
- * 对 `coroutine<A, B>` 取最后一个类型参数，对单参数的 `coroutine<T>` 取那一个参数。
+ * For `coroutine<A, B>` this is the last type argument; for the single-argument `coroutine<T>` it is
+ * that one argument.
  *
- * @param f  要查询的函数。
- * @return   yield 值的类型；不是协程或没记录时返回 NULL。
+ * @param f  The function to query.
+ * @return   The yielded value's type; NULL when it is not a coroutine or there is no record.
  */
 Type  *planYieldType(const FuncDef *f);
 /**
- * @brief 取协程帧的 C 结构体类型。
+ * @brief Get the C struct type of a coroutine frame.
  *
- * 帧结构体的字段布局与代码生成发出来的字段一致，驱动协程的协议方法挂在它上面。
+ * The frame struct's field layout matches the fields code generation emits, and the protocol
+ * methods driving the coroutine hang off it.
  *
- * @param f  要查询的函数。
- * @return   帧结构体类型；不是协程或还没建立帧时返回 NULL。
+ * @param f  The function to query.
+ * @return   The frame struct type; NULL when it is not a coroutine or the frame is not set up yet.
  */
 Type  *planCoroFrameType(const FuncDef *f);
 /**
- * @brief 判断一个协程是否需要属于自己的地方（zone）。
+ * @brief Tell whether a coroutine needs a place (zone) of its own.
  *
- * 会建池、或帧曾被装箱成句柄的协程总要有一个任务，它的地方由任务持有；不需要时直接驱动
- * 步进函数。
+ * A coroutine that creates a pool, or whose frame was ever boxed into a handle, always has a task,
+ * and its place is held by the task; when it does not, the step function is driven directly.
  *
- * @param f  要查询的函数。
- * @return   需要自己的 zone 则为 true；没记录时返回 false。
+ * @param f  The function to query.
+ * @return   true when it needs its own zone; false when there is no record.
  */
 bool   planCoroNeedsZone(const FuncDef *f);
 /**
- * @brief 取一个合成协议方法的协议编号。
+ * @brief Get the protocol number of a synthesised protocol method.
  *
- * 协议方法没有函数体，代码生成在调用点内联展开，编号说明它是哪一个方法：帧上的
- * next/value/send 记为 1/2/5，句柄上的记为 3/4/6。
+ * A protocol method has no body and is expanded inline at the call site by code generation; the
+ * number says which method it is: next/value/send on the frame are 1/2/5, and on the handle they are
+ * 3/4/6.
  *
- * @param f  要查询的函数。
- * @return   协议编号；普通函数返回 0。
+ * @param f  The function to query.
+ * @return   The protocol number; 0 for an ordinary function.
  */
 int planCoroProto(const FuncDef *f);
 /**
- * @brief 判断一个协程的帧是否在某个赋值处被转换成过句柄。
+ * @brief Tell whether a coroutine's frame is ever converted into a handle at an assignment.
  *
- * 装箱后的协程总会得到一个任务，所以它算作需要自己的 zone；这条事实在发生转换的地方写下。
+ * A boxed coroutine always gets a task, so it counts as needing a zone of its own; this fact is
+ * written wherever the conversion happens.
  *
- * @param f  要查询的函数。
- * @return   帧曾被装箱成句柄则为 true；没记录时返回 false。
+ * @param f  The function to query.
+ * @return   true when the frame was ever boxed into a handle; false when there is no record.
  */
 bool   planCoroBoxed(const FuncDef *f);
 
 /* ---- setters (written by the checker) ----------------------------------------------
  *
- * 每次写都经过 setter，写点因此是唯一能统一加断言或换存储的地方。节点为 NULL 的 setter 是
- * 空操作：有些计划问题是针对不存在的节点问的。 */
+ * Every write goes through a setter, so the write sites are the single place where assertions can be
+ * added or the storage swapped uniformly. A setter with a NULL node is a no-op: some plan questions
+ * are asked about nodes that do not exist. */
 
 /**
- * @brief 记录一个分配站点要用的 arena 层级。
+ * @brief Record the arena level an allocation site should use.
  *
- * @param e  分配站点表达式（`new` 或可能分配的调用）。
- * @param v  arena 层级：ARENA_HOME 表示家 arena，k >= 1 表示第 k 层块的 arena。
+ * @param e  The allocation-site expression (`new`, or a call that may allocate).
+ * @param v  The arena level: ARENA_HOME means the home arena, k >= 1 the arena of the block at
+ *           level k.
  */
 void planSetArenaLevel(Expr *e, int v);
 
 /**
- * @brief 记录一个池站点要用的 zone 层级。
+ * @brief Record the zone level a pool site should use.
  *
- * 只往下调：同一个节点可能被检查不止一次，而层级越小越长寿，所以取更小的那个。
+ * Only ever lowered: one node may be checked more than once, and a smaller level means a longer
+ * lifetime, so the smaller one wins.
  *
- * @param e  池站点表达式。
- * @param v  zone 层级：ZONE_HOME 表示用调用者收到的家 zone，k >= 1 表示第 k 层块的 zone。
+ * @param e  The pool-site expression.
+ * @param v  The zone level: ZONE_HOME means "use the home zone the caller received", k >= 1 the
+ *           zone of the block at level k.
  */
 void planSetZoneLevel(Expr *e, int v);
 
 /**
- * @brief 记录一个调用往下传的 arena 参数。
+ * @brief Record the arena argument a call passes down.
  *
- * @param e  调用点表达式。
- * @param v  arena 参数：ARENA_HOME 表示调用者自己的家 arena，k >= 1 表示第 k 层块的 arena。
+ * @param e  The call-site expression.
+ * @param v  The arena argument: ARENA_HOME means the caller's own home arena, k >= 1 the arena of
+ *           the block at level k.
  */
 void planSetArenaArg(Expr *e, int v);
 
 /**
- * @brief 记录一个调用点的 arena 参数是否还等末轮落定。
+ * @brief Record whether a call site's arena argument still waits for the final round.
  *
- * @param e  调用点表达式；NULL 时忽略。
- * @param v  还等末轮落定时为 true。
+ * @param e  The call-site expression; NULL ignores this write.
+ * @param v  true when it still waits for the final round.
  */
 void planSetArenaArgPending(Expr *e, bool v);
 
 /**
- * @brief 记录一个表达式需要临时变量。
+ * @brief Record that an expression needs a temporary.
  *
- * @param e  表达式。
- * @param v  需要临时变量则为 true。
+ * @param e  The expression.
+ * @param v  true when a temporary is needed.
  */
 void planSetNeedTemp(Expr *e, bool v);
 /**
- * @brief 记录一个函数是否接收调用者的家 arena 作隐藏参数。
+ * @brief Record whether a function receives the caller's home arena as a hidden parameter.
  *
- * @param f  函数。
- * @param v  需要隐藏的家 arena 参数则为 true。
+ * @param f  The function.
+ * @param v  true when the hidden home arena parameter is needed.
  */
 void planSetUsesHome(FuncDef *f, bool v);
 
 /**
- * @brief 记录一个函数体自己会不会分配存储。
+ * @brief Record whether a function body allocates storage itself.
  *
- * @param f  函数。
- * @param v  可能分配则为 true。
+ * @param f  The function.
+ * @param v  true when it may allocate.
  */
 void planSetMayUseArena(FuncDef *f, bool v);
 
 /**
- * @brief 记录一个函数会不会建池，直接建或经由被调者到达都算。
+ * @brief Record whether a function creates a pool, either directly or through a callee.
  *
- * @param f  函数。
- * @param v  会建池则为 true。
+ * @param f  The function.
+ * @param v  true when it creates a pool.
  */
 void planSetMakesPool(FuncDef *f, bool v);
 /**
- * @brief 记录一个循环的条件里会不会分配存储。
+ * @brief Record whether a loop's condition allocates storage.
  *
- * @param st  循环语句。
- * @param v   条件里分配则为 true。
+ * @param st  The loop statement.
+ * @param v   true when the condition allocates.
  */
 void planSetCondAllocs(Stmt *st, bool v);
 /**
- * @brief 记录一个脱糖 `for` 的步进语句已不再存在。
+ * @brief Record that the step statement of a desugared `for` is dropped.
  *
- * 循环被改写成迭代器之后由迭代器的 `next()` 推进，`continue` 不再需要跳到步进标签，该标签
- * 也就不再发出。
+ * Once the loop is rewritten into an iterator it is advanced by the iterator's `next()`, `continue`
+ * does not have to jump to the step label, and the label is not emitted either.
  *
- * @param st  承载步进语句的循环体语句。
+ * @param st  The loop-body statement that carried the step statement.
  */
 void planSetForStepDropped(Stmt *st);
 
 /**
- * @brief 记录一个函数是不是协程。
+ * @brief Record whether a function is a coroutine.
  *
- * @param f  函数。
- * @param v  是协程则为 true。
+ * @param f  The function.
+ * @param v  true when it is a coroutine.
  */
 void planSetIsCoro(FuncDef *f, bool v);
 
 /**
- * @brief 记录一个协程 `yield` 交出的值类型。
+ * @brief Record the type of the value a coroutine `yield`s.
  *
- * @param f  协程函数。
- * @param v  yield 值的类型。
+ * @param f  The coroutine function.
+ * @param v  The yielded value's type.
  */
 void planSetYieldType(FuncDef *f, Type *v);
 
 /**
- * @brief 记录一个协程帧的 C 结构体类型。
+ * @brief Record the C struct type of a coroutine frame.
  *
- * @param f  协程函数。
- * @param v  帧结构体类型。
+ * @param f  The coroutine function.
+ * @param v  The frame struct type.
  */
 void planSetCoroFrameType(FuncDef *f, Type *v);
 
 /**
- * @brief 记录一个协程是否需要属于自己的地方（zone）。
+ * @brief Record whether a coroutine needs a place (zone) of its own.
  *
- * @param f  协程函数。
- * @param v  需要自己的 zone 则为 true。
+ * @param f  The coroutine function.
+ * @param v  true when it needs its own zone.
  */
 void planSetCoroNeedsZone(FuncDef *f, bool v);
 
 /**
- * @brief 记录一个合成协议方法的协议编号。
+ * @brief Record the protocol number of a synthesised protocol method.
  *
- * @param f  合成的协议方法。
- * @param v  协议编号：帧上的 next/value/send 为 1/2/5，句柄上的为 3/4/6。
+ * @param f  The synthesised protocol method.
+ * @param v  The protocol number: next/value/send on the frame are 1/2/5, and on the handle 3/4/6.
  */
 void planSetCoroProto(FuncDef *f, int v);
 /**
- * @brief 记录一个协程有没有被装箱成句柄。
+ * @brief Record whether a coroutine was ever boxed into a handle.
  *
- * 帧值被强制转换成 `coroutine<T>` 句柄的地方写下这一位；记下之后这个协程总会得到任务，即使没有
- * 被显式 spawn，因而算作需要 zone。
+ * This bit is written where a frame value is forced into a `coroutine<T>` handle; once set, the
+ * coroutine always gets a task, even without an explicit spawn, and therefore counts as needing a
+ * zone.
  *
- * @param f  协程函数定义；为 NULL 时忽略本次写入。
- * @param v  曾被装箱成句柄则为 true。
+ * @param f  The coroutine function definition; NULL ignores this write.
+ * @param v  true when it was ever boxed into a handle.
  */
 void planSetCoroBoxed(FuncDef *f, bool v);
 /**
- * @brief 记录一个实例生成时使用的 C 名。
+ * @brief Record the C name used when emitting an instance.
  *
- * 名字由模板名接上各类型实参的改写串拼成，实例化时写一次，代码生成发定义和调用点都用它。只保存
- * 指针，字符串要在后续读取之前一直有效。
+ * The name is built from the template name followed by each type argument's rewritten string, is
+ * written once at instantiation, and is used both for the emitted definition and for the call sites.
+ * Only the pointer is stored, so the string must stay valid until it is read later.
  *
- * @param f     实例函数定义；为 NULL 时忽略本次写入。
- * @param name  C 名。
+ * @param f     The instance function definition; NULL ignores this write.
+ * @param name  The C name.
  */
 void planSetInstName(FuncDef *f, const char *name);
 
 /* ---- writing the resolved callee (the checker) ------------------------------------- */
 
 /**
- * @brief 记录一个调用点解析出的被调函数，作为默认答案。
+ * @brief Record the callee a call site resolves to, as the default answer.
  *
- * 泛型体里的调用点被该体的所有实例共享，各实例的答案由 `planSetAltCallee` 按体记录；本函数写的
- * 是站点不属于任何实例时读到的那一份，没有发射上下文时 `planCallee` 返回它。
+ * A call site inside a generic body is shared by all instances of that body, and each instance's
+ * answer is recorded per body by `planSetAltCallee`; this function writes the one read when the site
+ * belongs to no instance, and `planCallee` returns it when there is no emission context.
  *
- * @param e       调用点（或函数值）表达式；为 NULL 时忽略本次写入。
- * @param callee  解析到的函数定义；没有解析结果时可以为 NULL。
+ * @param e       The call-site (or function-value) expression; NULL ignores this write.
+ * @param callee  The resolved function definition; may be NULL when there is no resolution.
  */
 void planSetCallee(Expr *e, FuncDef *callee);
 /**
- * @brief 按包含它的那具函数体或类型实例，记录一个调用点解析出的被调函数。
+ * @brief Record the callee a call site resolves to, per enclosing function body or type instance.
  *
- * 泛型体里的一个调用点被该体的所有实例共享，各实例可以解析到不同的函数（`wrap<i32>` 调
- * `pick_i32`，`wrap<meter>` 调 `pick_meter`），所以答案按（调用点，包含体）成对记录，`enclosing`
- * 与 `inst` 至少要给一个。同一对重复写入只覆盖被调函数，因为延迟调用闭包会重放多轮。
+ * One call site inside a generic body is shared by all instances of that body, and each instance may
+ * resolve to a different function (`wrap<i32>` calls `pick_i32`, `wrap<meter>` calls `pick_meter`),
+ * so the answer is recorded per (call site, enclosing body) pair and at least one of `enclosing` and
+ * `inst` has to be given. Repeating the write for the same pair only overwrites the callee, because
+ * the deferred-call closure replays several rounds.
  *
- * @param e          调用点表达式；为 NULL 时忽略本次写入。
- * @param enclosing  包含该调用点的函数实例；在方法体里解析时传 NULL。
- * @param inst       包含该调用点的类型实例；在自由函数体里解析时传 NULL。
- * @param callee     该包含体内解析到的函数定义。
+ * @param e          The call-site expression; NULL ignores this write.
+ * @param enclosing  The function instance containing the call site; NULL when resolving inside a
+ *                   method body.
+ * @param inst       The type instance containing the call site; NULL when resolving inside a free
+ *                   function body.
+ * @param callee     The function definition resolved inside that enclosing body.
  */
 void planSetAltCallee(Expr *e, FuncDef *enclosing, const Type *inst, FuncDef *callee);
 
 /* ---- the emission context (code generation) ----------------------------------------
  *
- * 代码生成用这一对函数给"正在发出哪个函数"加括号，`planCallee` 才能回答"在这个实例的函数体里，
- * 这个调用点解析到谁"。离开不是可选项：不离开，下一个函数的发出会继续看到上一个实例的答案。 */
+ * Code generation brackets "which function is being emitted" with this pair of functions, so that
+ * `planCallee` can answer "inside this instance's body, what does this call site resolve to". Leaving
+ * is not optional: without leaving, emitting the next function keeps seeing the previous instance's
+ * answers. */
 
 /**
- * @brief 记下代码生成正在发出的函数。
+ * @brief Record the function code generation is emitting.
  *
- * 设置之后，`planCallee` 优先返回为该函数体记录的那份调用点解析结果；发完一具函数体要调用
- * `planLeaveFunc` 清掉，否则下一具函数体会读到上一个实例的答案。
+ * Once set, `planCallee` prefers the callee resolution recorded for that body; after emitting one
+ * body `planLeaveFunc` has to be called to clear it, otherwise the next body reads the previous
+ * instance's answers.
  *
- * @param f  正在发出的函数定义。
+ * @param f  The function definition being emitted.
  */
 void planEnterFunc(const FuncDef *f);
 
 /**
- * @brief 清除代码生成正在发出的函数。
+ * @brief Clear the function code generation is emitting.
  *
- * 与 `planEnterFunc` 成对使用：发完一具函数体后清掉，`planCallee` 才不再按上一个函数实例作答。
+ * Used as a pair with `planEnterFunc`: clear it after emitting a body so that `planCallee` stops
+ * answering for the previous instance.
  */
 void planLeaveFunc(void);
 /**
- * @brief 记下代码生成正在发出方法体的类型实例。
+ * @brief Record the type instance whose method body code generation is emitting.
  *
- * 泛型结构体的方法体被该结构体的每个类型实例共享，方法体里的调用点因此按类型实例记录，
- * `planCallee` 据此作答。要与 `planLeaveInst` 成对使用。
+ * A generic struct's method bodies are shared by every type instance of that struct, so call sites
+ * inside a method body are recorded per type instance and `planCallee` answers from that. Use it as
+ * a pair with `planLeaveInst`.
  *
- * @param t  正在发出其方法体的类型实例。
+ * @param t  The type instance whose method body is being emitted.
  */
 void planEnterInst(const Type *t);
 
 /**
- * @brief 清除代码生成正在发出的类型实例。
+ * @brief Clear the type instance whose method body code generation is emitting.
  *
- * 与 `planEnterInst` 成对使用；清掉后 `planCallee` 不再按该类型实例作答。
+ * Used as a pair with `planEnterInst`; after clearing, `planCallee` stops answering for that type
+ * instance.
  */
 void planLeaveInst(void);
 /**
- * @brief 记录一个实例由哪个模板函数实例化而来。
+ * @brief Record which template function an instance was instantiated from.
  *
- * 模板指针存在 plan 侧表、不放在节点字段上：同一个指针决定实例的名字、类型实参与共享哪具函数体。
- * 实例化在给实例做完浅拷贝之后写下它，因为浅拷贝带不上这个指针。
+ * The template pointer is kept in a plan side table rather than in a node field: the same pointer
+ * decides the instance's name, its type arguments, and which body it shares. Instantiation writes it
+ * after the shallow copy of the instance, because the shallow copy cannot carry this pointer.
  *
- * @param f     实例函数定义；为 NULL 时忽略本次写入。
- * @param tmpl  实例化所用的模板函数定义。
+ * @param f     The instance function definition; NULL ignores this write.
+ * @param tmpl  The template function definition used for the instantiation.
  */
 void planSetTemplate(FuncDef *f, FuncDef *tmpl);
 
