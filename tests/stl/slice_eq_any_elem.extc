@@ -1,0 +1,15 @@
+// `slice<u8> ==` 不该要求同一个程序里所有 `slice<T>` 的元素类型都定义 `!=`：
+// 这里同时实例化了 `map<string, i64>`（它的内部节点用的是 `slice<bnode<...>>`）。
+// expect: eq=true got=1
+use std::io
+use stl::string
+use stl::map
+
+fn main() -> i32 {
+    let a: slice<u8> = "abc"
+    let b: slice<u8> = "abc"
+    var m: map<string, i64> = map<string, i64>::new()
+    m.put(string::from("k"), 1)
+    io::cout << "eq=" << (a == b) << " got=" << (m.get(string::from("k")) ?? i64(-1)) << "\n"
+    return 0
+}

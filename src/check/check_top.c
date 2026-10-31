@@ -4806,6 +4806,78 @@ bool unifyTParams(TypeTable *tt, Vec *tp, Vec *targs, Type *want, Type *got) {
 }
 
 /**
+ * @brief 实例使用闭包的一趟回调：把方法体里调到的同属主方法记成同一实例用过。
+ */
+typedef struct {
+    Checker *c;     /* 检查器：代换接收者类型要用它的类型表 */
+    Vec *params;    /* 当前实例的类型参数名（结构体或自由函数模板的） */
+    Vec *targs;     /* 对应的类型实参 */
+} InstUseCtx;
+
+/**
+ * @brief `instUseClosure` 的表达式回调：命中解析结果就补记，然后继续往下走整棵树。
+ *
+ * @param raw  `InstUseCtx *`。
+ * @param e    当前表达式。
+ * @return     永远 true（闭包只增不减，不需要提前停）。
+ */
+static bool instUseOnExpr(void *raw, Expr *e) {
+    InstUseCtx *ctx = raw;
+    if (e) {
+        FuncDef *callee = planCallee(e);
+        if (callee && callee->owner && callee->owner->typeParams.len > 0 &&
+            ctx->params && ctx->targs) {
+            /* 接收者类型可能是另一个泛型结构体的实例（`ndarray<T>::viewMut` 调
+             * `ndview<T>::rowMajor`）：先用当前实例的类型实参代换，再取实例名。 */
+            Type *recvType = NULL;
+            switch (e->kind) {
+            case EX_METHOD: recvType = e->u.method.recv->type; break;
+            case EX_ASSOC:  recvType = planAssocOwner(e); break;
+            case EX_BIN:    recvType = e->u.bin.left->type; break;
+            case EX_UN:     recvType = e->u.un.operand->type; break;
+            default: break;
+            }
+            Type *t = recvType ? ttSubstitute(ctx->c->tt, recvType, ctx->params, ctx->targs) : NULL;
+            Type *b = t ? ttBase(t) : NULL;
+            if (b && b->kind == TY_GENERIC && b->sdef == callee->owner && b->name &&
+                !ttHasParam(b))
+                planSetInstUsed(callee, b->name);
+        }
+    }
+    AstVisit v = { instUseOnExpr, NULL, ctx };
+    return astWalkExprChildren(e, &v);
+}
+
+/**
+ * @brief `instUseClosure` 的表达式回调：命中解析结果就补记，然后继续往下走。
+ *
+ * @param raw  `InstUseCtx *`。
+ * @param e    当前表达式。
+ * @return     永远 true（继续走完整棵树；闭包只增不减）。
+ */
+static bool instUseOnExpr(void *raw, Expr *e);
+
+/**
+ * @brief 把一个实例方法体里调到的**同结构体**方法也记成"这个实例用过"。
+ *
+ * 方法体由所有实例共享：模板上解析出的 `self.grow()` 只带方法模板、不带实例，于是按实例
+ * 决定"发不发这具方法体"时，`vector<i64>::push` 会被发出而它的 `grow` 不会。这里顺着
+ * 解析结果（`planCallee`）把同属主的方法补记上，只增不减、必停。
+ *
+ * @param c   检查器（用它的 arena 走 AST）。
+ * @param md  已经确认在这个实例上用过的方法模板。
+ * @param inst 接收者类型实例。
+ */
+static void instUseClosure(Checker *c, Stmt *body, Vec *params, Vec *targs) {
+    InstUseCtx ctx;
+    ctx.c = c;
+    ctx.params = params;
+    ctx.targs = targs;
+    AstVisit v = { instUseOnExpr, NULL, &ctx };
+    if (body) (void)astWalkStmtChildren(body, &v);
+}
+
+/**
  * @brief 为一个具体实例重查一条被推迟的运算符使用。
  *
  * 推迟到实例化的两批检查（本运算符批与引用规则批）对类型实例和自由函数实例走同一条路，所以
@@ -4820,6 +4892,7 @@ bool unifyTParams(TypeTable *tt, Vec *tp, Vec *targs, Type *want, Type *got) {
  * 调用方必须先把 `c.substParams` / `c.substArgs` 设为该实例（`runRefCheck` 经 `tsub` 读它们）。
  * 诊断报的是记录下来的运算符，不是固定的 `==`。
  */
+
 static void runOpCheck(Checker *c, OpCheck *ec, Vec *params, Vec *targs, const char *instName) {
     TypeTable *tt = c->tt;
     Type *lt = ttSubstitute(tt, ec->node->u.bin.left->type, params, targs);
@@ -4879,6 +4952,7 @@ static void runOpCheck(Checker *c, OpCheck *ec, Vec *params, Vec *targs, const c
     FuncDef *m = findOp(tt, ttBase(lt), ec->op, rt2,
                         strcmp(ec->op, "!=") == 0 ? "==" : NULL);
     if (m) planSetUsed(m, true);
+    if (m) ckNoteInstUse(m, lt);
 }
 
 /**
@@ -4963,6 +5037,7 @@ static void runMethodCheck(Checker *c, MethodCheck *mc, Vec *params, Vec *targs,
         return;
     }
     planSetUsed(f, true);
+    ckNoteInstUse(f, rb);
 }
 
 /**
@@ -7910,6 +7985,38 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     }
 
 
+
+    /* Per-instance method-use closure: a method body is emitted for one type instance only
+     * when that instance really used it (see the gates in the replay loops above). A body that
+     * is emitted calls other methods of the **same** generic struct -- `vector<T>::push` calls
+     * `grow` -- and those calls were resolved on the template, so they carry no instance. Close
+     * the set here: for every used (method, instance) pair, mark the callees of its body that
+     * belong to the same struct, until it stops growing. Monotone, so it terminates. */
+    for (;;) {
+        size_t before = planInstUseCount();
+        for (size_t j = 0; j < tt->instances.len; j++) {
+            Type *inst = *(Type **)vecAt(&tt->instances, j);
+            if (!inst || inst->kind != TY_GENERIC || !inst->sdef) continue;
+            if (provisionalInstance(&inst->targs)) continue;
+            for (size_t k = 0; k < inst->sdef->methods.len; k++) {
+                FuncDef *md = *(FuncDef **)vecAt(&inst->sdef->methods, k);
+                if (!md || !md->body || !planUsed(md)) continue;
+                if (!planInstUsed(md, inst->name)) continue;
+                instUseClosure(&c, md->body, &inst->sdef->typeParams, &inst->targs);
+            }
+        }
+        /* 自由泛型函数的实例体：里面写的是 `ndview<T>::rowMajor(...)` 这类关联调用，
+         * 接收者类型同样按实例的类型实参代换。 */
+        for (size_t j = 0; j < c.funcInsts.len; j++) {
+            FuncDef *fi = *(FuncDef **)vecAt(&c.funcInsts, j);
+            FuncDef *tmpl = fi ? planTemplate(fi) : NULL;
+            if (!fi || !tmpl || !planUsed(tmpl) || !fi->body) continue;
+            if (provisionalInstance(&fi->targs)) continue;
+            instUseClosure(&c, fi->body, &tmpl->typeParams, &fi->targs);
+        }
+        if (planInstUseCount() == before) break;   /* 不动点：只增不减，必停 */
+    }
+
     /* Deferred operator checks: re-check each recorded use for every concrete instance.
      * This is the price of having no traits. The error surfaces late, here, so the
      * message has to name the instance it came from. */
@@ -7931,6 +8038,9 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
                 Type *inst = *(Type **)vecAt(&tt->instances, j);
                 if (inst->sdef != ec->owner) continue;
                 if (provisionalInstance(&inst->targs)) continue;
+                /* Only instances that really used this method: a shared body must not
+                 * force every element type of the container to define the operator. */
+                if (ec->func && !planInstUsed(ec->func, inst->name)) continue;
                 runOpCheck(&c, ec, &ec->owner->typeParams, &inst->targs, inst->name);
             }
         }
@@ -7961,6 +8071,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
                 Type *inst = *(Type **)vecAt(&tt->instances, j);
                 if (inst->sdef != mc->owner) continue;
                 if (provisionalInstance(&inst->targs)) continue;
+                if (mc->func && !planInstUsed(mc->func, inst->name)) continue;
                 runMethodCheck(&c, mc, &mc->owner->typeParams, &inst->targs, inst->name);
             }
         }
@@ -8013,6 +8124,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
                 Type *inst = *(Type **)vecAt(&tt->instances, j);
                 if (inst->sdef != du->owner) continue;
                 if (provisionalInstance(&inst->targs)) continue;
+                if (du->func && !planInstUsed(du->func, inst->name)) continue;
                 runDeferredUse(&c, du, &du->owner->typeParams, &inst->targs, inst->name);
             }
         }
@@ -8023,6 +8135,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             runDeferredUse(&c, du, &planTemplate(fi)->typeParams, &fi->targs, planInstName(fi));
         }
     }
+
 
     /* Materialise every concrete instance's field types.
      *

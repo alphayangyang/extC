@@ -48,6 +48,7 @@ run_case string_ops tests/stl/string_ops.extc "n=3 j=[ a | b | c ] t1=[hi] t2=[x
 run_case string_plus tests/stl/string_plus.extc "abcde ababcde x#7"
 run_case string_plus_num tests/stl/string_plus_num.extc "a=7 b=3 c=2.500000 d=0.500000 e=true
 x7!"
+run_case slice_eq_any_elem tests/stl/slice_eq_any_elem.extc "eq=true got=1"
 run_case string_borrow tests/stl/string_borrow.extc "first=97 via=abc same=true"
 run_case string_print tests/stl/string_print.extc "hi 3
 second"

@@ -11314,6 +11314,10 @@ static void emitProtos(CG *g, Module *m, Arena *arena) {
              * emitting too much is the safe direction. */
             if (planCoroProto(md)) continue;   /* emitted inline at the call site */
             if (!planUsed(md)) continue;
+            if (md->owner && md->owner->typeParams.len > 0 &&
+                !planInstUsed(md, inst->name) && !planDynTable(md))
+                continue;   /* 别的实例没用过它：它的元素类型可能没有这个方法要的运算符 */
+
             /* Instance methods are candidates too: a library method of a generic
              * instance is marked used even when only dead code mentions it, and
              * without an entry here nothing takes it back out. The pairing is by
@@ -11938,6 +11942,10 @@ static void emitInstanceBodies(CG *g) {
             FuncDef *md = *(FuncDef **)vecAt(&inst->sdef->methods, j);
             if (planCoroProto(md)) continue;   /* emitted inline at the call site */
             if (!planUsed(md)) continue;      /* called methods only */
+            if (md->owner && md->owner->typeParams.len > 0 &&
+                !planInstUsed(md, inst->name) && !planDynTable(md))
+                continue;   /* 别的实例没用过它：它的元素类型可能没有这个方法要的运算符 */
+
             planEnterInst(inst);          /* a method body is shared by every type instance */
             size_t fb = g->out->len;
             CGACC("cg-emit", genFunc(g, md));

@@ -15,6 +15,7 @@
 #include "plan.h"
 #include "results.h"
 #include <stdlib.h>
+#include <string.h>
 
 /* One bit per stored field. Macros, not an enum: a pedantic C11 compiler rejects
  * enumerator values above 31, and the analysis side has already grown past 32. */
@@ -1342,6 +1343,72 @@ void planSetUsed(FuncDef *f, bool v) {
         r->used = v;
         resultsSetBit(r, PLAN_USED);
     }
+}
+
+/* One entry per (method template, receiver type instance) that was really used. A linear
+ * table on purpose: the counts are tiny (a handful of methods times the instances a program
+ * actually mentions), and the lookup happens in the replay loops, not in a hot path. Keys are
+ * copied because a call site's type name may live in a different arena than the next one. */
+typedef struct { const FuncDef *m; char *recv; } PlanInstUse;
+static PlanInstUse *gInstUses;
+static size_t gInstUsesLen;
+static size_t gInstUsesCap;
+
+/**
+ * @brief 记下"方法 `m` 在这个接收者类型实例上被用过"（幂等，重复记录只留一份）。
+ *
+ * @param m         方法/运算符的模板定义；为 NULL 时忽略。
+ * @param recvName  接收者类型实例的名字；为 NULL 时忽略。
+ */
+void planSetInstUsed(const FuncDef *m, const char *recvName) {
+    if (!m || !recvName) return;
+    for (size_t i = 0; i < gInstUsesLen; i++)
+        if (gInstUses[i].m == m && strcmp(gInstUses[i].recv, recvName) == 0) return;
+    if (gInstUsesLen == gInstUsesCap) {
+        size_t cap = gInstUsesCap ? gInstUsesCap * 2 : 16;
+        PlanInstUse *grown = realloc(gInstUses, cap * sizeof *grown);
+        if (!grown) return;                       /* 记录失败只会多发实例体，不会发错 */
+        gInstUses = grown;
+        gInstUsesCap = cap;
+    }
+    size_t n = strlen(recvName) + 1;
+    char *copy = malloc(n);
+    if (!copy) return;
+    memcpy(copy, recvName, n);
+    gInstUses[gInstUsesLen].m = m;
+    gInstUses[gInstUsesLen].recv = copy;
+    gInstUsesLen++;
+}
+
+/**
+ * @brief 方法 `m` 在这个接收者类型实例上被用过吗（没有记录时读作 false）。
+ *
+ * @param m         方法/运算符的模板定义。
+ * @param recvName  接收者类型实例的名字。
+ * @return          记录过则 true。
+ */
+/**
+ * @brief 已经记下多少条"(方法, 实例) 用过"——调用方用它判断闭包是否还在增长。
+ *
+ * @return  记录条数。
+ */
+size_t planInstUseCount(void) { return gInstUsesLen; }
+
+/**
+ * @brief 这个"(方法模板, 接收者实例)"是否被真正使用过。
+ *
+ * 检查器在具体使用点与实例重放里记，实例重放与代码生成用它决定要不要为某个类型实例
+ * 重查/发出方法体：`slice<u8> ==` 不该连累 `slice<map::bnode<…>>`。
+ *
+ * @param m         方法/运算符的模板定义；为 NULL 时返回 false。
+ * @param recvName  接收者类型实例的名字；为 NULL 时返回 false。
+ * @return          用过返回 true。
+ */
+bool planInstUsed(const FuncDef *m, const char *recvName) {
+    if (!m || !recvName) return false;
+    for (size_t i = 0; i < gInstUsesLen; i++)
+        if (gInstUses[i].m == m && strcmp(gInstUses[i].recv, recvName) == 0) return true;
+    return false;
 }
 
 /**

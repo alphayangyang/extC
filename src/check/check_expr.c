@@ -359,6 +359,22 @@ static FuncDef *findOpLiteral(Checker *c, Type *st, const char *op, const char *
 }
 
 /**
+ * @brief 记下"方法/运算符 `m` 在这个接收者类型上被用过"。
+ *
+ * 只有接收者是那个泛型结构体的**具体实例**时才记：模板方法体由所有实例共享，而检查器的
+ * 实例重放与代码生成都按实例展开，模板级的使用位分不出"哪个实例真的用过"。
+ *
+ * @param m  方法/运算符的模板定义。
+ * @param t  接收者的类型。
+ */
+void ckNoteInstUse(FuncDef *m, Type *t) {
+    if (!m || !m->owner || m->owner->typeParams.len == 0) return;
+    Type *b = t ? ttBase(t) : NULL;
+    if (!b || b->kind != TY_GENERIC || b->sdef != m->owner || !b->name) return;
+    planSetInstUsed(m, b->name);
+}
+
+/**
  * @brief 算一个二元算术运算符的结果类型。
  *
  * 结果规则只住在这里：位运算符也用这一份，抄第二份就会漂移。
@@ -372,6 +388,7 @@ static FuncDef *findOpLiteral(Checker *c, Type *st, const char *op, const char *
  * 字面量操作数向另一侧适配，所以 `u32 + 1` 的类型是 `u32`；`%` 在这里限定为整数。引用类型的
  * 操作数不会进来，调用方先报它们。
  */
+
 static Type *checkArith(Checker *c, Expr *e, Type *lt, Type *rt) {
     Type *err = ttError(c->tt);
     if (ttIsError(lt) || ttIsError(rt)) return err;
@@ -399,6 +416,7 @@ static Type *checkArith(Checker *c, Expr *e, Type *lt, Type *rt) {
             }
             planSetCallee(e, m);
             planSetUsed(m, true);
+            ckNoteInstUse(m, lt);
             setOpCallArgs(c, e, m);
             return lt;
         }
@@ -530,7 +548,6 @@ Type *checkCompoundOp(Checker *c, const char *op, Expr *target, Expr *value,
     }
     return rt;
 }
-
 
 /**
  * @brief 判断 `op` 是不是位运算符 `&`、`|`、`^`、`<<`、`>>` 之一。
@@ -1860,6 +1877,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     }
 
                     planSetCallee(e, m);  planSetUsed(m, true);
+                    ckNoteInstUse(m, lt);
                     setOpCallArgs(c, e, m);
                     return c->tBool;
                 }
@@ -1946,6 +1964,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                         if (b->kind == TY_GENERIC) { sp = &sd->typeParams; sa = &b->targs; }
                         planSetCallee(e, m);
                         planSetUsed(m, true);
+                        ckNoteInstUse(m, lt);
                         setOpCallArgs(c, e, m);
                         return m->ret ? ttSubstitute(tt, m->ret, sp, sa) : ttVoid(tt);
                     }
@@ -2536,6 +2555,10 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 return c->tI32;
             }
             planSetCallee(e, f);  planSetUsed(f, true);
+            /* 方法/关联函数按实例记：泛型结构体的方法体由所有实例共享，但只该在真正用过它
+             * 的实例上重查与发出（`slice<u8> ==` 不该逼 `slice<map::bnode<…>>` 定义 `!=`）。 */
+            if (e->kind == EX_METHOD) ckNoteInstUse(f, e->u.method.recv->type);
+            else if (t) ckNoteInstUse(f, t);
 
             Vec *sp = NULL, *sa = NULL;
             if (t->kind == TY_GENERIC && sd) { sp = &sd->typeParams; sa = &t->targs; }
@@ -3481,6 +3504,9 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 return c->tI32;
             }
             planSetCallee(e, f);  planSetUsed(f, true);
+            /* 方法调用的人也是按实例记的（自由函数没有 owner，helper 自己会跳过）。 */
+            if (e->kind == EX_METHOD)
+                ckNoteInstUse(f, e->u.method.recv->type);
 
             /* A generic free function: `T` can be inferred from an argument only, because an
              * instance of a type is decided by the type while a call to a free function has
@@ -4023,6 +4049,9 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 return c->tI32;
             }
             planSetCallee(e, f);  planSetUsed(f, true);
+            /* 方法调用的人也是按实例记的（自由函数没有 owner，helper 自己会跳过）。 */
+            if (e->kind == EX_METHOD)
+                ckNoteInstUse(f, e->u.method.recv->type);
             /* `dyn Trait(x).m(...)`：**对象安全**。
              *
              * 不是每个方法都能经由表派发，规则在 `dyn` 的**使用点**执行，而不是在 trait 声明上：

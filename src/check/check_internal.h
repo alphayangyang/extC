@@ -1105,6 +1105,17 @@ Stmt *arrayAssignLower(Checker *c, Stmt *s);
  * @return   元素类型；t 不是单实参的 slice 实例时返回 NULL。
  */
  Type *viewElemOf (Type *t);
+
+/**
+ * @brief 记下"方法/运算符 `m` 在这个接收者类型上被用过"（只有泛型结构体的接收者需要）。
+ *
+ * 泛型方法体由所有实例共享，模板级的使用位分不出"哪个实例真的用过"；检查器的实例重放与
+ * 代码生成都按实例展开，所以要在这里把具体实例记下来。
+ *
+ * @param m  方法/运算符的模板定义。
+ * @param t  接收者的类型（会取 `ttBase`，只在它是那个结构体的具体实例时记录）。
+ */
+void ckNoteInstUse (FuncDef *m, Type *t);
 /**
  * @brief 按名字在枚举定义里查一个变体。
  *

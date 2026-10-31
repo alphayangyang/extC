@@ -53,6 +53,37 @@ bool planUsed(const FuncDef *f);
 void planSetUsed(FuncDef *f, bool v);
 
 /**
+ * @brief 记下"方法 `m` 在这个接收者**类型实例**上被用过"。
+ *
+ * 泛型结构体的方法体由所有实例共享，模板级的 `planUsed` 只有一位；而检查器的实例重放与
+ * 代码生成都按实例展开。少了这一位，任何一处 `slice<u8> == ...` 都会要求
+ * `slice<map::bnode<...>>` 的元素类型也定义 `!=`。
+ *
+ * 键是类型实例的名字（`ttGeneric` 放进去的那个 mangled 名），只比较字符串，不依赖类型层。
+ *
+ * @param m         方法/运算符的模板定义；为 NULL 时忽略。
+ * @param recvName  接收者类型实例的名字；为 NULL 时忽略。
+ */
+void planSetInstUsed (const FuncDef *m, const char *recvName);
+
+/**
+ * @brief 方法 `m` 在这个接收者类型实例上被用过吗。
+ *
+ * @param m         方法/运算符的模板定义。
+ * @param recvName  接收者类型实例的名字。
+ * @return          记录过则 true；没有记录时读作 false（保守：不发多余的实例体）。
+ */
+bool planInstUsed (const FuncDef *m, const char *recvName);
+
+/**
+ * @brief 已经记下多少条"(方法, 实例) 用过"（实例使用闭包用它判增长）。
+ *
+ * @return  记录条数。
+ */
+size_t planInstUseCount (void);
+
+
+/**
  * @brief 这个函数的动态执行区间里会不会有 `dec`（`false` = 不会 ⇒ 可省 `initRef` 的 `+1`）。
  *
  * 默认 `false`（不认识 ⇒ 照常计数），只有 check 侧的调用图不动点会置 `true`。

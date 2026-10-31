@@ -580,8 +580,8 @@ fn fromI64(n: i64) -> string {
  * 空分隔符没有可切的边界 ⇒ 返回空数组（不把每个字节切出来）。
  * 末尾那一段总是入列（可以为空视图）⇒ 段数 = 出现次数 + 1，`"a,b,"` 切出 3 段。
  *
- * 比较走 `string::bytesEq`（`==` 在泛型方法上的实例化在本模块里有坑，见下；
- * 而且字节比较本来就是它的专长：长度对上后循环跳过边界检查）。 */
+ * 比较走 `string::bytesEq`：字节比较是它的专长（长度对上后循环跳过边界检查）；
+ * `slice<T>::==` 现在按实例发射，写 `==` 也不会牵连别的 `T`，这里留在 bytesEq 只是为了少一层调用。 */
 fn split(s: slice<u8>, sep: slice<u8>) -> varArray<slice<u8>> {
     var out: varArray<slice<u8>> = varArray<slice<u8>>::withCap(4)
     if sep.len == 0 { return out }
