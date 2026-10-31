@@ -7592,10 +7592,12 @@ void computeFnAcyclic(Checker *c) {
         AstVisit iv = { idleWalkExprCb, idleWalkStmtCb, &iw };
         astWalkStmtChildren(f->body, &iv);
         idleSolveLvls(&info[i]);
-        idleSolveFreshSet(&info[i]);   /* 细化 P 的宿主事实：哪些绑定的取值都是本帧新分配 */
-        idleSolveProj(&info[i]);       /* flavor (ii) 的两张表（最大不动点） */
-        /* (a)/(a′) 剩下的两半与细化 A：判据的**后处理期**（走查期只筛掉了"循环里写非本迭代
-         * 宿主"；这里用完整台账再判 C/B/A）。站点顺序就是记录顺序 —— 细化 A 只看更早的站点。 */
+        idleSolveFreshSet(&info[i]);   /* refinement P, host facts: which bindings hold only fresh values */
+        idleSolveProj(&info[i]);       /* the two tables of flavor (ii) (greatest fixed point) */
+        /* The remaining halves of (a)/(a') plus refinement A form the **post-walk** stage of the
+         * criteria: the walk only filtered out "a write to a host that is not this iteration's";
+         * the full ledger decides C/B/A here. Site order is record order, and refinement A only
+         * looks at earlier sites. */
         for (size_t k = 0; k < info[i].idleWrites.len && !info[i].idleBad; k++) {
             IdleWrite *w = *(IdleWrite **)vecAt(&info[i].idleWrites, k);
             if (w->kind != IDLE_DEST_HEAP_FIELD) continue;
@@ -7603,9 +7605,11 @@ void computeFnAcyclic(Checker *c) {
             if (idleWriteOk(&info[i], w, k, &why, IDLE_STAGE_POST) == IDLE_REJ)
                 idleNote(&info[i], why);
         }
-        /* 细化 (b′)：栈上 ref 槽的赋值站点推迟到这里判 —— 条件是"写进这个槽的**全部**值都随
-         * 本迭代的 arena 一起死"（`idleStoreQualified`）。因为同一名字可能有多处写入，只有整趟
-         * 走完才看得全；任一处不合格 ⇒ 这个槽的每一次覆盖都判否（保守）。 */
+        /* Refinement (b'): assignments into an on-stack ref slot are judged here. The condition
+         * is "**every** value written into this slot dies with this iteration's arena"
+         * (`idleStoreQualified`). One name can be written at several sites, so only the whole walk
+         * sees them all; if any one site fails, every overwrite of that slot is rejected
+         * (conservative). */
         for (size_t k = 0; k < info[i].idleWrites.len && !info[i].idleBad; k++) {
             IdleWrite *w = *(IdleWrite **)vecAt(&info[i].idleWrites, k);
             if (w->kind != IDLE_DEST_SLOT_NAMED || !w->isAssign) continue;
@@ -7615,7 +7619,7 @@ void computeFnAcyclic(Checker *c) {
         }
     }
 
-    /* retFresh 闭包：被调者不成立 ⇒ 自己也不成立。 */
+    /* retFresh closure: if the callee does not hold, neither does the caller. */
     for (bool changed = true; changed; ) {
         changed = false;
         for (size_t i = 0; i < n; i++) {
@@ -7626,7 +7630,8 @@ void computeFnAcyclic(Checker *c) {
             }
         }
     }
-    /* acyc 闭包：(i') 的每个站点要求被调者「无环**且**返回新分配」。 */
+    /* acyclic closure: every site of (i') requires the callee to be **both** acyclic and to
+     * return a fresh allocation. */
     for (bool changed = true; changed; ) {
         changed = false;
         for (size_t i = 0; i < n; i++) {
@@ -7653,7 +7658,8 @@ void computeFnAcyclic(Checker *c) {
             }
         }
     }
-    /* iv 闭包：看清的被调者也必须成立（引用只住在被计数的堆槽里）。 */
+    /* iv closure: every callee in sight must hold too (references live only in counted heap
+     * slots). */
     for (bool changed = true; changed; ) {
         changed = false;
         for (size_t i = 0; i < n; i++) {
@@ -7672,8 +7678,9 @@ void computeFnAcyclic(Checker *c) {
         }
     }
 
-    /* 写回计划侧：`fnAcyclic` 是 (i)(ii)(iii)(i') 与 (iv) 的合取，`fnRefsCounted` 单存 (iv)，
-     * `fnReclaimIdle` 是另一条判据 (a)(b)(c)（见 `idleWalkStmt` 的说明：两者互不蕴含）。 */
+    /* Write the plan side back: `fnAcyclic` is the conjunction of (i)(ii)(iii)(i') and (iv),
+     * `fnRefsCounted` carries (iv) alone, and `fnReclaimIdle` is the separate criteria (a)(b)(c)
+     * (see `idleWalkStmt`: neither implies the other). */
     for (size_t i = 0; i < n; i++) {
         if (!considered[i]) continue;
         FuncDef *f = *(FuncDef **)vecAt(&all, i);
@@ -7694,9 +7701,11 @@ void computeFnAcyclic(Checker *c) {
                 ivWhy[i] ? ivWhy[i] : "references do not live only in counted heap slots"));
     }
 
-    /* `EXTC_DBG_ACYCLIC=1`：每个算过的被用函数一行 `[acyclic] <函数名> fn=<0|1> reason=<...>`；
-     * 没算过的每个一行 `skipped`（extern/只有声明：后端不需要它）或 `unproven`（泛型体：被用到就
-     * 挡着清扫）；最后一行程序级总结。 */
+    /* `EXTC_DBG_ACYCLIC=1`: one `[acyclic] <name> fn=<0|1> reason=<...>` line per considered
+     * function that is used; every function not considered gets one line, either `skipped` (an
+     * extern or a declaration only, which the backend does not need) or `unproven` (a generic
+     * body, which blocks the sweep while it is used); the last line is the program-level
+     * summary. */
     if (getenv("EXTC_DBG_ACYCLIC")) {
         size_t nf = 0, na = 0, nskip = 0, nunproof = 0;
         bool hasMain = false;
@@ -7708,14 +7717,16 @@ void computeFnAcyclic(Checker *c) {
             FuncDef *f = *(FuncDef **)vecAt(&all, i);
             if (!f) continue;
             if (!acRequired(c->m, f)) {
-                /* 不会被发射（泛型模板 / 泛型结构体的模板方法）⇒ 不挡"关清扫"，只计数（一个程序
-                 * 里可能有几十个模板方法，逐个打会把真正的原因埋掉）。 */
+                /* Not emitted (a generic template, or a template method of a generic struct),
+                 * so it does not block "sweep off"; it only counts. A program can hold dozens of
+                 * template methods, and printing each one would bury the real reason. */
                 if (planUsed(f) || (f->name && strcmp(f->name, "main") == 0)) nskip++;
                 continue;
             }
             if (!considered[i]) {
-                /* 会被发射、但检查器没结论（extern / 泛型实例）⇒ `planFnAcyclic` 恒 false，
-                 * `unitAllAcyclic` 会因此拒绝。列出来，"为什么没生效"一眼可见。 */
+                /* Emitted, but the checker has no verdict (an extern, or a generic instance),
+                 * so `planFnAcyclic` is always false and `unitAllAcyclic` refuses. Listed so that
+                 * "why did it not apply" is visible at a glance. */
                 nunproof++;
                 fprintf(stderr, "[acyclic] unproven %s (%s)\n",
                         f->name ? f->name : "?", acUnprovenWhy(f));
@@ -7731,13 +7742,16 @@ void computeFnAcyclic(Checker *c) {
             fprintf(stderr, "[acyclic] %s fn=0 reason=%s\n",
                     f->name ? f->name : "?", why ? why : "not computed");
         }
-        /* 程序级总结只打一次：定义 `main` 的那个模块就是程序本身；`use` 进来的模块各打各的函数
-         * 行，但不重复"程序"总结。
+        /* The program-level summary prints once: the module that defines `main` is the program
+         * itself, and modules pulled in by `use` print their own function lines without repeating
+         * the "program" summary.
          *
-         * `all=1` 的含义是**可用于关清扫**：`unitAllAcyclic` 会发的每个函数都有结论且为真
-         * （算过的 `acyclic/funcs`，没算过的见 `unproven` ⇒ 直接挡）。`skipped`（泛型模板）不挡：
-         * 它本身不发射。**近似之处**：`unitAllAcyclic` 还会要求"被实例化过的类型"的模板方法，
-         * 而实例是 codegen 惰性造的、检查器看不见 ⇒ `skipped` 的模板方法在那种情况下会漏算。 */
+         * `all=1` means **usable for turning the sweep off**: every function `unitAllAcyclic`
+         * emits has a true verdict (considered ones through `acyclic/funcs`, unconsidered ones
+         * through `unproven`, which blocks outright). `skipped` (generic templates) does not
+         * block, because a template is not emitted. Approximation: `unitAllAcyclic` also requires
+         * the template methods of instantiated types, and instances are built lazily by codegen,
+         * invisible to the checker, so `skipped` template methods are undercounted there. */
         if (hasMain) {
             if (nskip)
                 fprintf(stderr, "[acyclic] skipped %zu generic template method(s) (not emitted)\n", nskip);
@@ -7748,14 +7762,15 @@ void computeFnAcyclic(Checker *c) {
 }
 
 /**
- * @brief 调用点的“目的地有多浅”决策，arena 与 zone 两条通道共用这一份。
+ * @brief How shallow a call site's destination is; the arena and zone paths share this.
  *
- * 返回的是**深度**，数越小活得越久；调用方看到 `<= 0` 就取自己的 HOME。`rec->overflow`
- * （实参没记全）按活得最久（-1）算；深度 0 的实参本身就是 0；命中逃逸集合的实参按 -1 算。
+ * The result is a **depth**, and a smaller number lives longer. A caller that sees `<= 0` uses
+ * its own HOME. `rec->overflow` (arguments not all recorded) counts as longest-lived (-1); an
+ * argument at depth 0 counts as 0; an argument in the escape set counts as -1.
  *
- * @param c    checker。
- * @param rec  记录的调用点信息。
- * @return     目的地深度。
+ * @param c    The checker.
+ * @param rec  Recorded call-site information.
+ * @return     The destination depth.
  */
 
 static int callSiteMinDestDepth(Checker *c, EArenaSite *rec) {
@@ -7774,25 +7789,29 @@ static int callSiteMinDestDepth(Checker *c, EArenaSite *rec) {
 }
 
 /**
- * @brief 检查整个模块，是本趟的入口。
+ * @brief Check one whole module: the entry point of this pass.
  *
- * 按固定顺序分阶段跑：intern 名字 → 解析签名、字段与枚举载荷里的类型 → 查声明重名 → 查全局
- * 量 → 查每个函数体 → 按具体实例重放被推迟的检查 → 关闭各分析（`needsHome` 传递闭包、逃逸
- * 集合、效应摘要、电平求解、每个调用传的 arena）→ 把决定交给 codegen。
+ * Runs its stages in a fixed order: intern names -> resolve signatures and the types in fields
+ * and enum payloads -> check for duplicate declarations -> check globals -> check each function
+ * body -> replay the deferred checks per concrete instance -> close the analyses (`needsHome`
+ * transitive closure, the escape set, effect summaries, the level solver, the arena passed at each
+ * call) -> hand the decisions to codegen.
  *
- * 顺序不自由：实例在检查函数体时创建，闭包必须在查体之后；`needsHome` 在闭包之后才定稿；
- * 逃逸集合必须在选择每个调用的 arena 之前已知，所以关闭阶段重算而不是复用按函数的结果。
- * `refDepth` 与 `arenaLevel` 描述同一件事，求解器跑完后每个站点的 `refDepth` 都要从最终的
- * `arenaLevel` 重新同步，否则两个字段会互相矛盾。
+ * The order is not free. Instances are created while function bodies are checked, so the closure
+ * has to run after the bodies; `needsHome` is only final after the closure; and the escape set has
+ * to be known before each call's arena is chosen, so the closing stage recomputes it instead of
+ * reusing per-function results. `refDepth` and `arenaLevel` describe the same thing, and after the
+ * solver runs every site's `refDepth` must be resynchronised from the final `arenaLevel`, or the two
+ * fields contradict each other.
  *
- * @param ctx   编译上下文；有诊断时 `hasError` 被置位。
- * @param arena 本趟分配用的 arena。
- * @param tt    类型表。
- * @param m     要检查的模块。
- * @return      模块没有错误时 true。
+ * @param ctx    Compile context; `hasError` is set when a diagnostic is emitted.
+ * @param arena  Arena used for this pass's allocations.
+ * @param tt     Type table.
+ * @param m      Module to check.
+ * @return       true when the module has no errors.
  */
 bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
-    /* 阶段 = 显式状态（阶段契约）。*/
+    /* The phase is explicit state (the phase contract). */
 
     double tB0=0,tB1=0,tB2=0,tB3=0,tB4=0,tB5=0,tB6=0,tB7=0,tB8=0;
     Checker c;    memset(&c, 0, sizeof c);
@@ -7817,8 +7836,8 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     vecInit(&c.narrow, arena, sizeof(void *));
     vecInit(&c.refChecks, arena, sizeof(void *));
     vecInit(&c.lvlRejects, arena, sizeof(void *));
-    vecInit(&c.pendingRefStores, arena, sizeof(void *));   /* 推迟的 `(*cur).f = v` 判定 */
-    vecInit(&c.cycleMerges, arena, sizeof(void *));        /* 可能闭环的写的候选区域合并 */
+    vecInit(&c.pendingRefStores, arena, sizeof(void *));   /* deferred `(*cur).f = v` verdicts */
+    vecInit(&c.cycleMerges, arena, sizeof(void *));        /* regions merged as candidates for writes that may close a cycle */
     vecInit(&c.callChecks, arena, sizeof(void *));   /* deferred call sites */
     vecInit(&c.narrowMarks, arena, sizeof(size_t));
     vecInit(&c.eSites, arena, sizeof(EArenaSite *));   /* arena decisions that depend on escapes */
@@ -7833,8 +7852,10 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         Checker   *cc  = &c;
         if (!hsd || !hsd->name || strcmp(hsd->name, "coroutine") != 0) continue;
         if (hsd->methods.len) continue;                 /* synthesized (pre-pass or on demand) */
-        /* 与按需合成那条一致：用**标记自己的类型参数名**，因为替换是按名字（`param`）匹配的。
-         * `A` 由 `send` 送进去，`B` 由 `value` 交出来；只写一个参数的 `coroutine<T>` 在替换处回落。 */
+        /* Same as the on-demand synthesis path: use **the type parameter names of the marker
+         * itself**, because substitution matches by name (`param`). `A` comes in from `send` and
+         * `B` goes out through `value`; a `coroutine<T>` that names only one parameter falls back
+         * at the substitution. */
         const char *an = hsd->typeParams.len > 0
             ? *(const char **)vecAt(&hsd->typeParams, 0) : "A";
         const char *bn = hsd->typeParams.len > 1
@@ -8122,14 +8143,17 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
              * declared. Anywhere else it has no home -- and because a type has exactly one method
              * set, a competing implementation from a third module would surface as an unrelated
              * duplicate-method error far from its cause. */
-            /* 所有权写在块上：一个类型只有一套方法，读者要在一行里看出"这些方法由谁
-             * 提供"。所以扩展**别的模块**的类型必须写 `@ext`；块就在类型自己的模块里时
-             * 反过来不许写（那一行什么也没说清）。内建标量（`i64` 的 holder）没有声明者，
-             * 两条都放行：它的方法天然由写块的人提供。 */
+            /* Ownership is written on the block: a type has exactly one method set, and a reader
+             * has to see from one line who provides it. Extending a type from **another module**
+             * therefore requires `@ext`; when the block already lives in the type's own module the
+             * annotation is forbidden instead, since it would say nothing. A builtin scalar (the
+             * holder of `i64`) has no declaring module, so both forms pass: its methods come from
+             * whoever writes the block. */
             if (!planImplTrait(im) && sd && sd->modName) {
                 bool own = sameModule(im->modName, sd->modName);
-                /* 位置报在**块所在的那个文件**：模块体内的诊断都走它自己的 `Ctx`
-                 * （与函数体同一套），所有权规则没有理由例外。 */
+                /* The location is reported in **the block's own file**: diagnostics inside a
+                 * module body go through that module's `Ctx` (the same one function bodies use),
+                 * and the ownership rule has no reason to be the exception. */
                 Ctx *savedCtx = c.ctx;
                 if (im->ctx) c.ctx = im->ctx;
                 if (own && im->isExt) {
@@ -8247,7 +8271,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     }
 
     /* Second pass: check function bodies. */
-    c.phase = PHASE_BODIES;   /* 从这一刻起有作用域（阶段契约）*/
+    c.phase = PHASE_BODIES;   /* from here on scopes exist (the phase contract) */
     ctPhase("ckB6", tB6); tB7 = ctNow();
     for (size_t i = 0; i < m->structs.len; i++) {
         StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
@@ -8264,8 +8288,9 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         checkFunc(&c, fx);
     }
 
-    /* 调用图不动点：必须在**所有函数体检查完之后**（`callees` 那时才填好），
-     * 且要在下面这些批次改调用点之前 —— 它们不会新增“写引用槽”的来源。 */
+    /* Call-graph fixpoint: it runs **after every function body is checked** (`callees` is only
+     * filled by then) and before the batches below rewrite call sites -- none of them adds a new
+     * source of "writes a reference slot". */
     computeRcNoDec(&c);
 
     /* This batch has to run **before** the requirement batches below.
@@ -8289,7 +8314,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
      * then point the call expression's `func` at it. Static instances are interned
      * (`funcInstance` de-duplicates), so one argument combination has exactly one
      * instance. */
-    c.phase = PHASE_POST;    /* 之后**没有作用域**：只能读表与记在节点/符号上的身份 */
+    c.phase = PHASE_POST;    /* **no scopes** after this: only tables and the identity recorded on nodes and symbols */
     ctPhase("ckB8", tB8);   /* after the last of the eight: the rest of checkModule */
     /* **To a fixpoint**, not in a single pass.
      *
@@ -8354,8 +8379,9 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
                 instUseClosure(&c, md->body, &inst->sdef->typeParams, &inst->targs);
             }
         }
-        /* 自由泛型函数的实例体：里面写的是 `ndview<T>::rowMajor(...)` 这类关联调用，
-         * 接收者类型同样按实例的类型实参代换。 */
+        /* The instance body of a free generic function: it mentions associated calls such as
+         * `ndview<T>::rowMajor(...)`, and the receiver type is substituted with the instance's type
+         * arguments the same way. */
         for (size_t j = 0; j < c.funcInsts.len; j++) {
             FuncDef *fi = *(FuncDef **)vecAt(&c.funcInsts, j);
             FuncDef *tmpl = fi ? planTemplate(fi) : NULL;
@@ -8363,7 +8389,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             if (provisionalInstance(&fi->targs)) continue;
             instUseClosure(&c, fi->body, &tmpl->typeParams, &fi->targs);
         }
-        if (planInstUseCount() == before) break;   /* 不动点：只增不减，必停 */
+        if (planInstUseCount() == before) break;   /* fixpoint: the count only grows, so it stops */
     }
 
     /* Deferred operator checks: re-check each recorded use for every concrete instance.
@@ -9800,27 +9826,30 @@ static void coroFrameLay(Checker *c, FuncDef *f) {
  * while the conservative answer is "yes". The checker installs a resolver that substitutes
  * the instance's type arguments; codegen gets the resolved callee from `planCallee`. With no
  * resolver installed the answer stays conservative. */
-/* 解析钩子；默认没有，判定保持保守。 */
+/* The resolver hook; there is none by default, which keeps the verdict conservative. */
 static FuncDef *(*poolCalleeResolve)(Expr *e) = NULL;
 /**
- * @brief 装一个被调用者解析钩子：让池新建判定在模板实例上问到具体被调者。
+ * @brief Install a callee resolver so the pool-creation verdict can name the real callee of a
+ *        template instance.
  *
- * checker 这一侧问不到“某个实例的具体方法是谁”：一个模板体、多个实例，纯 AST 答案永远是
- * “否”，而保守答案是“是”。装上钩子后按实例的类型实参代换；没装时保持保守。
+ * The checker cannot answer "which concrete method is this instance's". One template body with
+ * several instances leaves the pure AST answer at "no" while the conservative answer is "yes". With
+ * a resolver installed the answer is substituted through the instance's type arguments; without one
+ * it stays conservative.
  *
- * @param fn  解析函数；传 `NULL` 回到保守行为。
+ * @param fn  Resolver; `NULL` restores the conservative behaviour.
  */
 void setPoolCalleeResolver(FuncDef *(*fn)(Expr *e)) { poolCalleeResolve = fn; }
 
 /**
- * @brief 判断“这一次调用能不能走到 `extc_pool_new`”。
+ * @brief Can this call reach `extc_pool_new`?
  *
- * 与 `calleeMakesPool` 问的不是同一个问题：那一个问“结果会不会住在池上”（逃逸与提权），对
- * `@poolObject` 类型一律放宽；块级的 zone 钩子只需要“这次会不会建池”。未解析的被调者保守为
- * 真。
+ * It is not the question `calleeMakesPool` asks: that one asks whether the result may live in a
+ * pool (escape and promotion) and relaxes for `@poolObject` types, while the block-level zone hook
+ * only needs "may this call create a pool". An unresolved callee counts as yes.
  *
- * @param f  被调者；NULL（未解析）返回 true。
- * @return   这次调用可能建池时 true。
+ * @param f  Callee; NULL (unresolved) returns true.
+ * @return   true when the call may create a pool.
  */
 bool calleeCreatesPool(FuncDef *f) {
     if (!f) return true;                       /* unresolved => conservative */
@@ -9833,12 +9862,12 @@ bool calleeCreatesPool(FuncDef *f) {
 static bool exprMakesPool(Expr *e, bool descendBlocks);
 
 /**
- * @brief 判断语句里是否有表达式可能创建池。
+ * @brief Does any expression in this statement possibly create a pool?
  *
- * @param s              语句；NULL 返回 false。
- * @param descendBlocks  是否走进嵌套块与 domain：它们是独立的 place、有自己的 zone，块级问题
- *                       在那里停止。
- * @return               可能创建池时 true。
+ * @param s              Statement; NULL returns false.
+ * @param descendBlocks  Whether to descend into nested blocks and domains: they are places of
+ *                       their own with their own zone, so the block-level question stops there.
+ * @return               true when a pool may be created.
  */
 bool stmtMakesPool(Stmt *s, bool descendBlocks) {
     if (!s) return false;
@@ -9879,15 +9908,15 @@ bool stmtMakesPool(Stmt *s, bool descendBlocks) {
 }
 
 /**
- * @brief 判断表达式是否可能创建池。
+ * @brief May this expression create a pool?
  *
- * 解析后的三种调用形状都要查（含 `EX_ASSOC`）。`flush` / `print` / `println` 是按名字分派的
- * 内建，checker 没有为它们解析被调者，必须在这里点名排除，否则保守分支会把 `makesPool` 扩散
- * 到半个库。
+ * All three resolved call shapes are checked, `EX_ASSOC` included. `flush` / `print` / `println`
+ * are builtins dispatched by name, and the checker resolves no callee for them, so they have to be
+ * named here; otherwise the conservative branch spreads `makesPool` over half the library.
  *
- * @param e              表达式；NULL 返回 false。
- * @param descendBlocks  是否走进嵌套块与 domain。
- * @return               可能创建池时 true。
+ * @param e              Expression; NULL returns false.
+ * @param descendBlocks  Whether to descend into nested blocks and domains.
+ * @return               true when a pool may be created.
  */
 static bool exprMakesPool(Expr *e, bool descendBlocks) {
     if (!e) return false;
@@ -9908,17 +9937,21 @@ static bool exprMakesPool(Expr *e, bool descendBlocks) {
                        strcmp(bn, "println") == 0))
                 builtinPrint = true;
         }
-        /* 内建本身不建池，但**实参**可能建（`println(f"…")` 里的值 f-string 会调
-         * `string::from`/`+`，它们要 zone）。早先这里直接 `return false` 连实参都不看，
-         * 于是这种 `println` 所在的帧不会被标成 makePool、不发 `extc_pool_zoneEnter()`，
-         * 而调用点仍按 zone 形参传了兜底的 `extc_zoneTop` ⇒ 运行期 `the view has no storage`。 */
+        /* The builtin creates no pool itself, but its **arguments** may (`println(f"...")` runs a
+         * value f-string, which calls `string::from` / `+`, and those need a zone). An earlier
+         * version returned false here without looking at the arguments, so a frame holding such a
+         * `println` was not marked makePool and emitted no `extc_pool_zoneEnter()`, while the call
+         * site still passed the fallback `extc_zoneTop` for the zone parameter -- giving the runtime
+         * error `the view has no storage`. */
         if (!builtinPrint) {
-        /* 这里问的是"**这一次调用能不能走到 `extc_pool_new`**"（zone 的决定，以及
-         * `makesPool` 闭包本身），不是"结果会不会住在池上" —— 后者是 `calleeMakesPool`
-         * 的问题（逃逸与提权那两处用它）。两者的差别见 `calleeCreatesPool`。
+        /* The question here is "**may this call reach `extc_pool_new`**" (the zone decision, and
+         * the `makesPool` closure itself), not "may the result live in a pool" -- that is
+         * `calleeMakesPool`'s question (escape and promotion use it), and `calleeCreatesPool`
+         * documents the difference.
          *
-         * 泛型体里对**类型参数**的协议方法（`k.hash()`）在节点上**故意没有 func**，
-         * 所以这一侧还要问解析钩子（由 codegen / 闭包的实例那一轮装上）。 */
+         * A protocol method on a **type parameter** inside a generic body (`k.hash()`) has
+         * **deliberately no func** recorded on the node, so this side also asks the resolver hook,
+         * which codegen and the closure's instance round install. */
             FuncDef *cf = planCallee(e);
             if (!cf && e->kind == EX_METHOD && poolCalleeResolve) cf = poolCalleeResolve(e);
             if (calleeCreatesPool(cf)) return true;

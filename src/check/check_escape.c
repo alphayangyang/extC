@@ -2215,7 +2215,7 @@ void applyCycleMerges(Checker *c) {
             }
         }
         if (dbgOn("EXTC_DBG_ZONE"))
-            fprintf(stderr, "[cycle-group] 站点 %zu 个 -> %d 组\n", u.n, next);
+            fprintf(stderr, "[cycle-group] %zu sites -> %d groups\n", u.n, next);
     }
     for (size_t i = 0; i < c->cycleMerges.len; i++) {
         CycleMerge *r = *(CycleMerge **)vecAt(&c->cycleMerges, i);
