@@ -7,7 +7,7 @@ fn fill(dst: mut slice<i64>) {
 }
 
 fn main() -> i32 {
-    let vb: varArray<i64> = varArray<i64>::withCap(i64(2))
+    let vb: varArray<i64> = varArray<i64>::withCap(2)
     fill(vb)
     io::cout << "ok\n"
     return 0

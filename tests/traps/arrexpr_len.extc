@@ -4,9 +4,9 @@ fn add2(a: slice<f64>, b: slice<f64>, out: mut slice<f64>) {
     out = a + b
 }
 fn main() -> i32 {
-    var a: mut slice<f64> = new f64[i64(3)]
-    var b: mut slice<f64> = new f64[i64(4)]
-    var out: mut slice<f64> = new f64[i64(4)]
+    var a: mut slice<f64> = new f64[3]
+    var b: mut slice<f64> = new f64[4]
+    var out: mut slice<f64> = new f64[4]
     add2(a, b, out)
     io::cout << "unreachable\n"
     return 0

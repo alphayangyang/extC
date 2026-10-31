@@ -3891,13 +3891,16 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     }
                     for (size_t i = 0; i < e->u.method.args.len; i++) {
                         Expr *a = *(Expr **)vecAt(&e->u.method.args, i);
-                        Type *at = checkExprInner(c, a);
                         Param *wp = *(Param **)vecAt(&want->params, i + 1);
-                        if (!mentionsParam(wp->type) && !ttEquals(ttBase(wp->type), ttBase(at)))
-                            ckError(c, a->line,
-                                    "Argument types must match the trait's declaration.",
-                                    "argument %zu expects `%s`, found `%s`", i + 1,
-                                    typeStr(c, ttBase(wp->type)), typeStr(c, ttBase(at)));
+                        /* trait 声明给出的形参类型就是上下文：字面量实参（`d.bump(10)`）按它定
+                         * 类型，`checkInto` 负责"只隐式加宽"那一半检查。 */
+                        Type *wantT = mentionsParam(wp->type) ? NULL : wp->type;
+                        if (wantT) adoptContextType(a, wantT);
+                        Type *at = wantT ? checkInto(c, wantT, a) : checkExprInner(c, a);
+                        /* 与普通调用同一条规则：字面量实参可以落进声明的类型（`d.bump(10)`），
+                         * 其它只允许无损转换 —— 而不是要求类型逐字相等。 */
+                        if (!mentionsParam(wp->type))
+                            (void)checkAssignable(c, ttBase(wp->type), ttBase(at), a, "argument");
                     }
                     if (c->curFunc) planSetMakesPool(c->curFunc, true);
                     e->u.method.recv->type = ttBase(recvT);

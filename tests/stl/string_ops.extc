@@ -4,7 +4,7 @@ use std::io
 use stl::string as str
 
 fn main(args: slice<slice<u8>>) -> i32 {
-    if args.len > i64(2) { return 1 }
+    if args.len > 2 { return 1 }
     let parts = str::split(" a , b , c ", ",")
     /* join 要 slice<slice<u8>>：varArray 先 asSlice()（容器自己的视图） */
     let j = str::join(parts.asSlice(), "|")

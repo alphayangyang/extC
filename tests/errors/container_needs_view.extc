@@ -3,10 +3,10 @@
 // expect: lend a read-only view explicitly
 use std::io
 fn total(v: slice<i64>) -> i64 {
-    return i64(0)
+    return 0
 }
 fn main() -> i32 {
-    var va: varArray<i32> = varArray<i32>::withCap(i64(2))
+    var va: varArray<i32> = varArray<i32>::withCap(2)
     io::cout << f"t={total(va)}\n"
     return 0
 }

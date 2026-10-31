@@ -13,5 +13,5 @@ fn indexOf<T>(a: slice<T>, x: T) -> i64 {
 }
 fn main() -> i32 {
     var a: [1]i64 = [1]
-    return i32(indexOf(a[..], i64(1)))
+    return i32(indexOf(a[..], 1))
 }

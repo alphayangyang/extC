@@ -5,7 +5,7 @@ use stl::string as str
 use stl::stringio as sio
 
 fn main(args: slice<slice<u8>>) -> i32 {
-    if args.len > i64(2) { return 1 }
+    if args.len > 2 { return 1 }
     var s: string
     s.append("n=")
     s.appendI64(-42)

@@ -10,6 +10,6 @@ fn main() -> i32 {
     let b: slice<u8> = "abc"
     var m: map<string, i64> = map<string, i64>::new()
     m.put(string::from("k"), 1)
-    io::cout << "eq=" << (a == b) << " got=" << (m.get(string::from("k")) ?? i64(-1)) << "\n"
+    io::cout << "eq=" << (a == b) << " got=" << (m.get(string::from("k")) ?? -1) << "\n"
     return 0
 }

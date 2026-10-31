@@ -8,12 +8,12 @@ use std::io
 fn main() {
     /* ① `0..n`：半开区间，和切片范围一个口径（下界的类型就是 i 的类型 ✓） */
     var sum: i64 = 0
-    for i in i64(0)..i64(5) { sum += i }
+    for i in 0..5 { sum += i }
     io::cout << sum << " "
 
     /* ② 下界可以是负数，类型照样从下界来 ✓ */
     var neg: i64 = 0
-    for dy in i64(-2)..i64(3) { neg += dy }
+    for dy in -2..3 { neg += dy }
     io::cout << neg << " "
 
     /* ③ 容器：`c[..]` 先变成视图 ⇒ **定长数组也能直接迭**（视图才有 `.len`）

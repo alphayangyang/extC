@@ -16,17 +16,17 @@ fn accumulate(out3: mut slice<i64>, a: slice<i64>) {
 }
 
 fn main() -> i32 {
-    var a: mut slice<i64> = new i64[i64(4)]
-    var b: mut slice<i64> = new i64[i64(4)]
-    var out: mut slice<i64> = new i64[i64(4)]
-    var out2: mut slice<i64> = new i64[i64(4)]
+    var a: mut slice<i64> = new i64[4]
+    var b: mut slice<i64> = new i64[4]
+    var out: mut slice<i64> = new i64[4]
+    var out2: mut slice<i64> = new i64[4]
     for i in 0..4 {
         a[i] = i64(i)
         b[i] = i64(i)
     }
     axpy(a, b, out)
     negate(a, out2)
-    var out3: mut slice<i64> = new i64[i64(4)]
+    var out3: mut slice<i64> = new i64[4]
     for i in 0..4 { out3[i] = i64(i) + 1 }
     accumulate(out3, a)
     io::cout << "axpy ="

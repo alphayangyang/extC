@@ -9,7 +9,7 @@ use std::io::{cerr, cout, endl}
 
 fn main() -> i32 {
     cout << "正常输出 1" << endl
-    cerr << "诊断 1：n = " << i64(0) - i64(42) << endl
+    cerr << "诊断 1：n = " << 0 - i64(42) << endl
     cout << "正常输出 2" << endl
     cerr << "诊断 2：对 = " << true << endl
     return 0

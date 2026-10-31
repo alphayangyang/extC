@@ -3,7 +3,7 @@
 // expect: slice the array explicitly
 use std::io
 fn total(v: slice<i64>) -> i64 {
-    return i64(0)
+    return 0
 }
 fn main() -> i32 {
     var a: [4]i32 = [1, 2, 3, 4]

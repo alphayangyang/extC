@@ -12,7 +12,7 @@ fn inner(bref: mut ref box) {
 }
 
 fn main() -> i32 {
-    var b: box = { v: new i64[i64(1)] }
+    var b: box = { v: new i64[1] }
     inner(ref b)
     io::cout << f"k={b.v[0]}\n"
     return 0

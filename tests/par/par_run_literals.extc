@@ -19,7 +19,7 @@ fn main(args: slice<slice<u8>>) -> i32 {
     while i < n { a[i] = i; i = i + 1 }
     let rc: i32 = parallel::run(twice, a, out, n, 2)
     var s: i64 = 0
-    i = i64(0)
+    i = 0
     while i < n { s = s + out[i]; i = i + 1 }
     io::cout << f"rc={rc} s={s}\n"
     return 0

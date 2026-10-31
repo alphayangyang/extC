@@ -18,7 +18,7 @@ struct w<T> {
 
 fn main() -> i32 {
     var a: w<i32> = { v: 5 }
-    var b: w<i64> = { v: i64(5) }
-    io::cout << "i32eq=" << (a == 5) << " u8eq=" << (a == u8(5)) << " i64eq=" << (b == i64(5)) << "\n"
+    var b: w<i64> = { v: 5 }
+    io::cout << "i32eq=" << (a == 5) << " u8eq=" << (a == u8(5)) << " i64eq=" << (b == 5) << "\n"
     return 0
 }

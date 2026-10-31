@@ -136,7 +136,7 @@ struct pool<T> {
 
     /* --- the pool epoch, in one place: width lives in HANDLE_EPOCH_BITS --- */
     @inline
-    fn pEpMask() -> i64 { return (i64(1) << HANDLE_EPOCH_BITS) - i64(1) }
+    fn pEpMask() -> i64 { return (i64(1) << HANDLE_EPOCH_BITS) - 1 }
     @inline
     fn pEp(v: i64) -> i64 { return v & pool<T>::pEpMask() }
 

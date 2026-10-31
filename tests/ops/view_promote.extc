@@ -9,13 +9,13 @@ struct box { v: slice<i64> }
 fn put(dst: mut ref box, v: slice<i64>) { dst.v = v }
 
 fn inner(bref: mut ref box) {
-    var va: varArray<i64> = varArray<i64>::withCap(i64(2))
+    var va: varArray<i64> = varArray<i64>::withCap(2)
     va.push(9)
     put(bref, va)
 }
 
 fn main() -> i32 {
-    var b: box = { v: new i64[i64(1)] }
+    var b: box = { v: new i64[1] }
     inner(ref b)
     io::cout << f"k={b.v[0]} after={b.v[0]}\n"
     return 0

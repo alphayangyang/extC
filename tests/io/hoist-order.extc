@@ -7,7 +7,7 @@ use std::io
 fn main() -> i32 {
   var v: mut slice<f64> = new f64[2]
   var s: f64 = 0.0
-  for k in i64(0)..i64(4) {
+  for k in 0..4 {
     io::cout << f"k={k}\n"
     s = s + v[k]
   }

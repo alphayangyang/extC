@@ -13,13 +13,13 @@ fn total(v: slice<i64>) -> i64 {
 }
 
 fn main() -> i32 {
-    var va: varArray<i64> = varArray<i64>::withCap(i64(4))
+    var va: varArray<i64> = varArray<i64>::withCap(4)
     va.push(1)
     va.push(2)
     va.push(3)
     var a: [4]i64 = [10, 20, 30, 40]
     let s = seq::sum(va) ?? 0
-    var bytes: varArray<u8> = varArray<u8>::withCap(i64(4))
+    var bytes: varArray<u8> = varArray<u8>::withCap(4)
     bytes.push(u8(104))
     bytes.push(u8(105))
     var b: string = string::from("x=")

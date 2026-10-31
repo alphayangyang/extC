@@ -4,11 +4,11 @@ use stl::string as str
 use stl::stringio as sio
 
 fn main(args: slice<slice<u8>>) -> i32 {
-    if args.len > i64(2) { return 1 }
+    if args.len > 2 { return 1 }
     let pi = sio::fromF64(3.14159, 2)
     let neg = sio::fromF64(-0.5, 3)
     let big = sio::fromF64(1234.5, 1)
-    let i = str::fromI64(i64(-42))
+    let i = str::fromI64(-42)
     io::cout << f"pi=[{pi.toSlice()}] neg=[{neg.toSlice()}] big=[{big.toSlice()}] i=[{i.toSlice()}]\n"
     return 0
 }

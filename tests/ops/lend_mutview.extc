@@ -9,15 +9,15 @@ fn fill(dst: mut slice<i64>) {
 }
 
 fn main() -> i32 {
-    var va: varArray<i64> = varArray<i64>::withCap(i64(4))
-    va.push(i64(0))
-    va.push(i64(0))
-    va.push(i64(0))
+    var va: varArray<i64> = varArray<i64>::withCap(4)
+    va.push(0)
+    va.push(0)
+    va.push(0)
     fill(va)
     var a: [3]i64 = [0, 0, 0]
     fill(a)
-    let s1: i64 = seq::sum(va) ?? i64(0)
-    let s2: i64 = seq::sum(a[..]) ?? i64(0)
+    let s1: i64 = seq::sum(va) ?? 0
+    let s2: i64 = seq::sum(a[..]) ?? 0
     io::cout << "s1=" << s1 << " s2=" << s2 << "\n"
     return 0
 }

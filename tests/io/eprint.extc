@@ -2,7 +2,7 @@
 use std::io
 
 fn main(args: slice<slice<u8>>) -> i32 {
-    if args.len > i64(2) { return 1 }
+    if args.len > 2 { return 1 }
     io::eprint("diag1")
     io::eprintln("")
     io::eprintln("diag2")

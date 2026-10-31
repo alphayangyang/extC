@@ -102,5 +102,5 @@ fn main(args: slice<slice<u8>>) -> i32 {
 
 /* 把两个 i32 拼成一个 i64（只为让 ents 看起来像一张真的槽表） */
 fn poolPack(hi: i64, lo: i64) -> i64 {
-    return (hi << i64(32)) | lo
+    return (hi << 32) | lo
 }

@@ -11,7 +11,7 @@ use stl::tensor
 
 fn main() -> i32 {
     var buf: mut slice<i64> = new i64[12]
-    for i in 0..i64(12) { buf[i] = i }
+    for i in 0..12 { buf[i] = i }
 
     var m: tensor2<i64> = tensor2<i64>::fromFlat(buf, 3, 4) ?? tensor2<i64>::empty(buf)
     // 步长视图：元素 (r,c) = buf[r*4 + c*2]，2x2
@@ -40,7 +40,7 @@ fn main() -> i32 {
     let fs = f.sum() ?? -1
 
     var onesBuf: mut slice<i64> = new i64[12]
-    for i in 0..i64(12) { onesBuf[i] = 1 }
+    for i in 0..12 { onesBuf[i] = 1 }
     var ones: tensor2<i64> = tensor2<i64>::fromFlat(onesBuf, 3, 4) ?? tensor2<i64>::empty(onesBuf)
     let _add = m.addScaled(ones, 2)
     let asum = m.sum() ?? -1
