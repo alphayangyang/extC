@@ -35,26 +35,28 @@
 #define ID_BLOCK 1024
 
 /**
- * @brief 读掩码里的第 `bit` 位。
+ * @brief Read bit `bit` of the mask.
  *
- * 位是 `(hi << 6) | lo`：`bit < 64` 落在 `loMask`，其余落在 `hiMask`，调用方不必知道
- * 自己落在哪个字里。
+ * The bit is `(hi << 6) | lo`: `bit < 64` lands in `loMask` and the rest in `hiMask`, so callers
+ * need not know which word they land in.
  *
- * @param r    结果槽。
- * @param bit  位号，与 setter 用的是同一批常量。
- * @return     该位为 1 则 `true`。
+ * @param r    The result slot.
+ * @param bit  Bit number, using the same constants as the setter.
+ * @return     `true` when the bit is 1.
  */
 bool resultsBit(const NodeResults *r, uint64_t bit) {
+    if (!r) return false;
     return bit < 64 ? (r->loMask >> bit) & 1u : (r->hiMask >> (bit - 64)) & 1u;
 }
 
 /**
- * @brief 置掩码里的第 `bit` 位。
+ * @brief Set bit `bit` of the mask.
  *
- * @param r    结果槽。
- * @param bit  位号。
+ * @param r    The result slot.
+ * @param bit  Bit number.
  */
 void resultsSetBit(NodeResults *r, uint64_t bit) {
+    if (!r) return;
     if (bit < 64) r->loMask |= 1ull << bit;
     else          r->hiMask |= 1ull << (bit - 64);
 }
@@ -69,10 +71,11 @@ static NodeId      *h_vals;
 static size_t       h_cap, h_len;
 
 /**
- * @brief 把一个节点指针散列成桶下标用的整数。
+ * @brief Hash a node pointer into a bucket index.
  *
- * @param p  节点指针；非 NULL，节点按指针对齐，所以低位没有信息。
- * @return   散列值；调用方再与容量掩码与。
+ * @param p  The node pointer; non-NULL. Nodes are pointer-aligned, so the low bits carry no
+ *           information.
+ * @return   The hash value; the caller then ANDs it with the capacity mask.
  */
 static size_t hashPtr(const void *p) {
     size_t h = (size_t)p >> 4;              /* nodes are aligned: low bits carry nothing */
@@ -84,9 +87,10 @@ static size_t hashPtr(const void *p) {
 #define SLOT_AT(id) (g_results[(id) / ID_BLOCK][(id) % ID_BLOCK])
 
 /**
- * @brief 追加一块 id 表，把容量扩到下一块边界。
+ * @brief Append one more id-table block, growing the capacity to the next block boundary.
  *
- * 只移动块指针表本身，已发放的块不搬，所以交给调用方的 `NodeResults *` 不会失效。
+ * Only the block pointer table itself moves; blocks already handed out are not relocated, so the
+ * `NodeResults *` given to callers does not become stale.
  */
 static void growIds(void) {
     size_t nblocks = (g_cap ? g_cap / ID_BLOCK : 0) + 1;
@@ -102,7 +106,7 @@ static void growIds(void) {
 }
 
 /**
- * @brief 把指针→id 哈希表容量翻倍，并把旧条目重新插入。
+ * @brief Double the capacity of the pointer-to-id hash table and reinsert the old entries.
  */
 static void growHash(void) {
     size_t ncap = h_cap ? h_cap * 2 : 256;
@@ -124,11 +128,11 @@ static void growHash(void) {
 }
 
 /**
- * @brief 取 `node` 的 id，`create` 为 true 时给它分配一个。
+ * @brief Get `node`'s id, allocating one for it when `create` is true.
  *
- * @param node    节点；NULL 没有 id。
- * @param create  为 true 时，没有 id 就分配一个（稠密、从 1 开始）。
- * @return        节点的 id；`node` 为 NULL 或没有 id 且不创建时返回 0。
+ * @param node    The node; NULL has no id.
+ * @param create  When true, allocate one if the node has no id yet (dense, starting at 1).
+ * @return        The node's id; 0 when `node` is NULL, or when it has no id and none is created.
  */
 NodeId nodeIdOf(const void *node, bool create) {
     if (!node) return 0;
@@ -155,42 +159,46 @@ static const FuncDef *g_owner;          /* the body whose results are being reco
 static size_t        g_ownerMismatch;   /* accesses from a body other than the one that owns the slot */
 
 /**
- * @brief 进入一具函数体；之后新建的结果槽都盖它的主人戳。
+ * @brief Enter a function body; result slots created afterwards carry its owner stamp.
  *
- * @param owner  当前正在检查的函数体；NULL 表示"不在任何函数体里"（模块级工作），
- *               那里建的槽没有主人，对它的任何访问都不会不匹配。
+ * @param owner  The function body being checked now; NULL means "in no function body"
+ *               (module-level work), where slots have no owner and no access to them ever
+ *               mismatches.
  */
 void resultsEnterOwner(const FuncDef *owner) { g_owner = owner; }
 
 /**
- * @brief 离开当前函数体，回到模块级工作。
+ * @brief Leave the current function body and go back to module-level work.
  */
 void resultsLeaveOwner(void) { g_owner = NULL; }
 
 /**
- * @brief 取当前的主人。
- * @return  正在检查的函数体；模块级工作时返回 `NULL`。
+ * @brief Get the current owner.
+ * @return  The function body being checked; `NULL` for module-level work.
  */
 const FuncDef *resultsCurrentOwner(void) { return g_owner; }
 
 /**
- * @brief 有多少次访问来自建立该槽的函数体之外。
+ * @brief How many accesses came from outside the function body that created the slot.
  *
- * 每次都计（一次分支），编译期可以拿它当信号。第一次跨界就把槽标成 `shared` 并计数，
- * 之后不再报：泛型体里的一个节点会被该体的每个实例够到，那是设计如此 —— 树是共享的，
- * 所以答案住在树旁边。检查仍然抓得住危险的那一种：只有一个体会够到的槽被第二个碰了。
+ * Every one is counted (one branch) so the compiler can use it as a compile-time signal. The
+ * first crossing marks the slot `shared` and counts it; afterwards nothing is reported any more: a
+ * node inside a generic body is reached by every instance of that body, which is by design -- the
+ * tree is shared, so the answers live beside the tree. The check still catches the dangerous
+ * variety: a slot only one body would reach, touched by a second one.
  *
- * @return  首次跨界访问的累计次数。
+ * @return  The cumulative number of first-crossing accesses.
  */
 size_t resultsOwnerMismatches(void) { return g_ownerMismatch; }
 
 /**
- * @brief 主人不匹配是否值得报告。
+ * @brief Whether an owner mismatch is worth reporting.
  *
- * `EXTC_DBG_OWNER=1` 时计数并打印；`EXTC_DBG=1` 遇不匹配直接中止（不匹配是编译器 bug）。
- * 环境变量只读一次并缓存，进程中途改它不改变本函数的结果。
+ * `EXTC_DBG_OWNER=1` counts and prints it; `EXTC_DBG=1` aborts outright on a mismatch (a mismatch
+ * is a compiler bug). The environment variable is read once and then cached, so changing it in the
+ * middle of the process does not change this function's result.
  *
- * @return  环境变量非空且首字符不是 `0` 时为 true。
+ * @return  true when the environment variable is non-empty and its first character is not `0`.
  */
 static bool ownerReportOn(void) {
     static int on = -1;
@@ -202,9 +210,9 @@ static bool ownerReportOn(void) {
 }
 
 /**
- * @brief 按 id 取结果槽。
- * @param id  节点 id。
- * @return    结果槽；id 为 0 或超出已发放范围时返回 `NULL`。
+ * @brief Get a result slot by id.
+ * @param id  The node id.
+ * @return    The result slot; `NULL` when `id` is 0 or beyond the range handed out so far.
  */
 NodeResults *resultsById(NodeId id) {
     if (id == 0 || id > g_len) return NULL;
@@ -212,11 +220,11 @@ NodeResults *resultsById(NodeId id) {
 }
 
 /**
- * @brief 取 `node` 的结果槽。
+ * @brief Get `node`'s result slot.
  *
- * @param node    节点。
- * @param create  为 true 时没有槽就建一个。
- * @return        结果槽；没有槽且不创建时返回 `NULL`。
+ * @param node    The node.
+ * @param create  When true, create a slot if there is none.
+ * @return        The result slot; `NULL` when there is none and none is created.
  */
 NodeResults *resultsOf(const void *node, bool create) {
     NodeId id = nodeIdOf(node, create);
@@ -224,10 +232,10 @@ NodeResults *resultsOf(const void *node, bool create) {
 }
 
 /**
- * @brief 取结果种类的诊断名。
+ * @brief Get the diagnostic name of a result kind.
  *
- * @param k  结果种类。
- * @return   静态字符串；`RKIND_NONE` 与未知值返回 `"none"`。
+ * @param k  Result kind.
+ * @return   A static string; `RKIND_NONE` and unknown values return `"none"`.
  */
 static const char *kindName(ResultKind k) {
     switch (k) {
@@ -240,20 +248,23 @@ static const char *kindName(ResultKind k) {
 }
 
 /**
- * @brief 取 `node` 的结果槽，并声明调用方认为它是哪种节点。
+ * @brief Get `node`'s result slot and declare which node kind the caller believes it is.
  *
- * 首次写入把 `kind` 与当时的 `owner` 盖在槽上，之后每次访问都检查：一个槽装成另一种
- * 节点，或槽的主人与当前函数体不同，都是编译器 bug 而不是程序错误 —— `EXTC_DBG=1` 下
- * 中止，发布构建里忽略（值照旧返回，行为不变）。
+ * The first write stamps `kind` and the then-current `owner` onto the slot, and every later
+ * access checks them: a slot dressed as another node kind, or a slot whose owner differs from the
+ * current function body, are compiler bugs rather than program errors -- abort under
+ * `EXTC_DBG=1`, ignore in release builds (the value is returned as usual, behaviour unchanged).
  *
- * 跨界是**一等结果而非失败**：泛型体里的节点会被该体的每个实例够到，第一次跨界把槽标成
- * `shared` 并计数，此后不再报 —— 同一份源码产生同一组共享槽，是确定性的。
+ * A crossing is a **first-class result, not a failure**: a node inside a generic body is reached
+ * by every instance of that body, so the first crossing marks the slot `shared` and counts it and
+ * nothing is reported afterwards -- the same source produces the same set of shared slots, which
+ * is deterministic.
  *
- * @param node    节点。
- * @param create  为 true 时没有槽就建一个。
- * @param kind    调用方认为的节点种类；`RKIND_NONE` 跳过检查。
- * @param line    首次写入的位置，用于守卫的消息。
- * @return        结果槽；没有槽且不创建时返回 `NULL`。
+ * @param node    The node.
+ * @param create  When true, create a slot if there is none.
+ * @param kind    The node kind the caller assumes; `RKIND_NONE` skips the check.
+ * @param line    Where the first write happened, for the guard's message.
+ * @return        The result slot; `NULL` when there is none and none is created.
  */
 NodeResults *resultsAs(const void *node, bool create, ResultKind kind, int line) {
     NodeResults *r = resultsOf(node, create);
@@ -297,10 +308,10 @@ NodeResults *resultsAs(const void *node, bool create, ResultKind kind, int line)
 }
 
 /**
- * @brief 已经发出去多少个 id（稠密区间的长度）。
+ * @brief How many ids have been handed out (the length of the dense range).
  *
- * 诊断与按主人划分的工作读它；编译器里没有东西依赖这个数。
+ * Diagnostics and owner-partitioned work read it; nothing in the compiler depends on this number.
  *
- * @return  已发放的 id 个数。
+ * @return  The number of ids handed out.
  */
 size_t resultsCount(void) { return g_len; }

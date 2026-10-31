@@ -1,24 +1,28 @@
 /**
  * @file results.h
- * @brief 结果侧：分析结果住在这里，按稠密的节点 id 寻址。
+ * @brief The result side: analysis results live here, addressed by a dense node id.
  *
- * 单独一层的原因：语法树在解析器建完之后必须冻结，所以
- * 后续阶段关于它算出的一切都住在树**旁边**，而不是树上。形状：
+ * It is a separate layer because the syntax tree must be frozen once the parser has built it, so
+ * everything later stages compute about it lives **beside** the tree, not on it. Shape:
  *
- *   - 每个主人一个结果槽，而不是每个节点 N 个字段；
- *   - 按**稠密整数 id** 寻址，每个节点分配一次，于是查找是数组下标而不是指针哈希；
- *   - 节点可能消失之后，指针不能再当缓存键 —— 所以结果存的名字是 id，不是指针。
+ *   - one result slot per owner, not N fields per node;
+ *   - addressed by a **dense integer id**, allocated once per node, so a lookup is an array index
+ *     instead of a pointer hash;
+ *   - pointers cannot serve as cache keys once a node may disappear -- so a result stores the
+ *     name as an id, not a pointer.
  *
- * id 在节点第一次需要结果时分配，之后永不移动。`NodeId` 故意是普通整数：它能被存下、
- * 比较、记日志，不用拖着一个指针。
+ * The id is allocated the first time a node needs a result and never moves afterwards. `NodeId`
+ * is deliberately a plain integer: it can be stored, compared, and logged without dragging a
+ * pointer along.
  *
- * 三个入口：
+ * Three entry points:
  *
- *   nodeIdOf(node, create)   - 节点的 id（create = 新节点就分配一个）
- *   resultsOf(node, create)  - 节点的结果槽，按指针
- *   resultsById(id)          - 节点的结果槽，按 id
+ *   nodeIdOf(node, create)   - the node's id (create = allocate one for a new node)
+ *   resultsOf(node, create)  - the node's result slot, by pointer
+ *   resultsById(id)          - the node's result slot, by id
  *
- * 不创建时，还没有结果的节点查到 NULL，而 `plan.c` 里每个访问器都把 NULL 读作"默认值"。
+ * When not creating, a node that has no result yet is looked up as NULL, and every accessor in
+ * `plan.c` reads NULL as "the default value".
  */
 #ifndef EXTC_RESULTS_H
 #define EXTC_RESULTS_H
@@ -67,32 +71,43 @@ typedef struct {
     FuncDef    *tmpl;          /* instance -> template */
     FuncDef    *func;          /* the callee a call site / function value resolves to */
     bool        used;          /* was this function called? the emission gate reads it */
-    /* 「本帧不会销账」：本函数及其所有被调者都不写引用槽、没有解析不到的被调者、
-     * 没有 extern/并发 ⇒ 这个函数的动态执行区间里**不会执行任何 `dec`**。
-     * 于是它里面的局部引用绑定（`var p = t`）那一次 `+1` 可以省掉 —— 省 `+1` 只让 hold 更小，
-     * 而只有 `dec` 把 hold 打到 0 才会当场释放（`reclaim.c` 的 `freeSlot`）。
-     * 默认 **false**（不认识 ⇒ 照常计数）；只有 check 侧的整个调用图不动点会把它置 true。 */
+    /* "This frame never settles the account": this function and all of its callees write no
+     * reference slot, have no unresolved callees, no extern, and no concurrency => **no `dec`
+     * executes** anywhere in this function's dynamic execution range. Therefore its local
+     * reference bindings (`var p = t`) can drop that `+1` -- dropping `+1` only makes hold
+     * smaller, and only a `dec` that drives hold to 0 frees on the spot (`freeSlot` in
+     * reclaim.c). Default **false** (unknown => count as usual); only the whole-call-graph
+     * fixpoint on the check side sets it true. */
     bool        rcNoDec;
-    /* 「这个函数建立的堆引用图没有回边（无环）」与「这个函数里引用只住在被计数的 rc 槽里」。
-     * 两条合起来是「事件档（计数）可以不要清扫」的静态前提：前者是 (i)(ii)(iii)、
-     * 后者是 (iv)，`planFnAcyclic` 只在两者都成立时答真。分开存是因为调用图上的闭包不同
-     * （(i') 要求被调者整体无环，(iv) 只要求被调者的 (iv) 成立）。默认 false（不认识 ⇒ 保留清扫）。*/
+    /* "The heap reference graph this function builds has no back edges (no cycles)" and
+     * "references in this function live only in counted rc slots". Together these are the static
+     * precondition for "the event band (counting) needs no sweep": the first is (i)(ii)(iii), the
+     * second is (iv), and `planFnAcyclic` answers true only when both hold. They are stored
+     * separately because the closures over the call graph differ ((i') requires the callees to be
+     * acyclic as a whole, (iv) only requires the callees' (iv)). Default false (unknown => keep
+     * sweeping). */
     bool        fnAcyclic;
     bool        fnRefsCounted;
-    /* 「这个函数里不会丢掉任何活引用」：判据 (a) 每个 ref 字段每对象最多写一次、(b) ref 类型的
-     * 局部量/参数不被重新赋值、(c) 没有丢引用的操作（容器删除/替换、`@overwrite` 复用同一格、
-     * free 类内建，以及传递地违反 (a)/(b)/(c) 的被调者）。整单元合取成立 ⇒ 回收无事可做 ⇒
-     * 不发射 rc 运行期（`codegen.c` 的 `unitReclaimIdle`）。
-     * 默认 false（没算过 / 不成立 ⇒ 保留回收），这是安全方向。 */
+    /* "No live reference is dropped in this function": criteria (a) each ref field is written at
+     * most once per object, (b) ref-typed locals and parameters are not reassigned, (c) no
+     * reference-dropping operation (container delete/replace, `@overwrite` reusing the same cell,
+     * free-class builtins, and callees that transitively violate (a)/(b)/(c)). The conjunction
+     * holds for the whole unit => reclaim has nothing to do => emit no rc runtime
+     * (`unitReclaimIdle` in codegen.c). Default false (not computed / does not hold => keep
+     * reclaim), which is the safe direction. */
     bool        fnReclaimIdle;
     const char *cname;         /* the C name a binding is emitted under */
-    /* 这个分配站点所属的「可能成环」组（`CycleMerge` 的站点并查集连通分量）；0 = 不属于跨站点
-     * 的可能环。`codegen.c` 用它把同组站点钉进同一个回收片：片边界必须与结构边界对齐，把一条
-     * 环切开会让跨片登记位变成环垃圾的种子，界随轮数涨。 */
+    /* The "may form a cycle" group this allocation site belongs to (`CycleMerge`'s site
+     * union-find connected component); 0 = not part of a cross-site possible cycle. codegen.c
+     * uses it to pin the sites of one group into the same reclaim shard: shard boundaries must
+     * line up with structural boundaries, cutting a cycle leaves the cross-shard registration bit
+     * as a seed for cyclic garbage, and the bound grows with each round. */
     int         cycleGroup;
-    /* 这个函数所在单元里有**跨站点**的可能环（分量含 ≥2 个分配站点）⇒ 分片会把一条环切开，
-     * 跨片登记位成为环垃圾的种子 ⇒ 整单元拒绝分片（`codegen.c` 的 `scanUnitReclaim`）。
-     * 单站点自环（`shard_bands` 的每条链）不置这一位：那个站点本来就在一片里。 */
+    /* The unit this function belongs to has a **cross-site** possible cycle (the component
+     * contains >= 2 allocation sites) => sharding would cut a cycle, the cross-shard registration
+     * bit becomes a seed for cyclic garbage => the whole unit refuses sharding (`scanUnitReclaim`
+     * in codegen.c). A single-site self-loop (each chain of `shard_bands`) does not set this bit:
+     * that site is in one shard to begin with. */
     bool        fnCrossSiteCycle;
     /* ---- plan facts about a struct definition ---- */
     bool        builtinHolder; /* the struct behind a builtin name needs no C definition */
@@ -147,7 +162,8 @@ typedef struct {
         /* per-function facts (staged: call sites still use the fields) */
         bool isAssoc; bool lamChecked; bool lamInferRet; bool needsHome;
         int  allocState; int mayPrintState; int freshCount;
-        Vec  arenaSites; int nParamSyms; void *paramSyms[64];
+        Vec  arenaSites; int nParamSyms; void *paramSyms[64]; /* capacity 64: see the
+                                                            * static assertion below */
         /* The effect summary itself: one bit per parameter, "a call to
          * this function may store that parameter's address / contents into the caller's
          * frames (`…Addr` / `…Cont`), into this function's home arena (`home…`), or
@@ -168,11 +184,13 @@ typedef struct {
         int  effState;
         bool effComplete;
         bool effUnknown;
-        /* 一个 `ST_ASSIGN` 站点上「往引用槽里写」的分类（`SR_*`，定义与判据在
-         * `check_stmt.c` 的 `noteAcyclicStore`）。0 = 不是引用槽存储、或还没记过。 */
+        /* At an `ST_ASSIGN` site, how the "write into a reference slot" is classified (`SR_*`;
+         * the definition and the criteria live in `noteAcyclicStore` in check_stmt.c). 0 = not a
+         * reference-slot store, or not recorded yet. */
         int  storeRefKind;
-        /* 这个函数被判成「有环 / 引用不只住在堆槽里」的**理由串**（arena 里，活得比
-         * 本趟久），`EXTC_DBG_ACYCLIC=1` 直接打它。NULL = 没有理由（判成了真）。 */
+        /* The **reason string** for this function being judged "has a cycle / references do not
+         * live only in heap slots" (in the arena, outliving this pass); `EXTC_DBG_ACYCLIC=1`
+         * prints it verbatim. NULL = no reason (it was judged true). */
         const char *acyclicWhy;
     } an;
     /* which of the fields above were written; an unset field reads as its default */
@@ -187,111 +205,122 @@ typedef struct {
     int line;                  /* where the first write happened, for the guard's message */
 } NodeResults;
 
+/* `paramSyms` in a function's result slot is a fixed array; the effect summary caps the number of
+ * parameters at `EFF_MAX_PARAMS` when the function is declared. Keep the two in step at compile
+ * time: raising the macro without resizing the array would overrun it. */
+_Static_assert(EFF_MAX_PARAMS <= 64, "NodeResults.paramSyms has room for 64 parameters");
+
 /**
- * @brief 取 `node` 的 id，`create` 为 true 时给它分配一个。
+ * @brief Get `node`'s id, allocating one for it when `create` is true.
  *
- * @param node    节点；NULL 没有 id。
- * @param create  为 true 时，没有 id 就分配一个（稠密、从 1 开始）。
- * @return        节点的 id；`node` 为 NULL 或没有 id 且不创建时返回 0。
+ * @param node    The node; NULL has no id.
+ * @param create  When true, allocate one if the node has no id yet (dense, starting at 1).
+ * @return        The node's id; 0 when `node` is NULL, or when it has no id and none is created.
  */
 NodeId nodeIdOf(const void *node, bool create);
 
-/* ---- 主人：结果空间的分区 ----------------------------------------------------------
+/* ---- Owners: partitioning the result space ------------------------------------------
  *
- * id 是稠密的，而稠密 id 只有在作用域是结构化的时候才有用：一个 id 属于一具函数体
- * （"主人"），跨体访问是编译器 bug，不是程序错误。
+ * Ids are dense, and a dense id is only useful when the scope is structured: an id belongs to one
+ * function body (its "owner"), and access across bodies is a compiler bug, not a program error.
  */
 
 /**
- * @brief 进入一具函数体；之后新建的结果槽都盖它的主人戳。
+ * @brief Enter a function body; result slots created afterwards carry its owner stamp.
  *
- * @param owner  当前正在检查的函数体；NULL 表示"不在任何函数体里"（模块级工作），
- *               那里建的槽没有主人，对它的任何访问都不会不匹配。
+ * @param owner  The function body being checked now; NULL means "in no function body"
+ *               (module-level work), where slots have no owner and no access to them ever
+ *               mismatches.
  */
 void resultsEnterOwner(const FuncDef *owner);
 
 /**
- * @brief 离开当前函数体，回到模块级工作。
+ * @brief Leave the current function body and go back to module-level work.
  */
 void resultsLeaveOwner(void);
 
 /**
- * @brief 取当前的主人。
- * @return  正在检查的函数体；模块级工作时返回 `NULL`。
+ * @brief Get the current owner.
+ * @return  The function body being checked; `NULL` for module-level work.
  */
 const FuncDef *resultsCurrentOwner(void);
 
 /**
- * @brief 有多少次访问来自建立该槽的函数体之外。
+ * @brief How many accesses came from outside the function body that created the slot.
  *
- * 每次都计（一次分支），编译期可以拿它当信号。第一次跨界就把槽标成 `shared` 并计数，
- * 之后不再报：泛型体里的一个节点会被该体的每个实例够到，那是设计如此 —— 树是共享的，
- * 所以答案住在树旁边。检查仍然抓得住危险的那一种：只有一个体会够到的槽被第二个碰了。
+ * Every one is counted (one branch) so the compiler can use it as a compile-time signal. The
+ * first crossing marks the slot `shared` and counts it; afterwards nothing is reported any more: a
+ * node inside a generic body is reached by every instance of that body, which is by design -- the
+ * tree is shared, so the answers live beside the tree. The check still catches the dangerous
+ * variety: a slot only one body would reach, touched by a second one.
  *
- * @return  首次跨界访问的累计次数。
+ * @return  The cumulative number of first-crossing accesses.
  */
 size_t resultsOwnerMismatches(void);
 
 /**
- * @brief 取 `node` 的结果槽。
+ * @brief Get `node`'s result slot.
  *
- * @param node    节点。
- * @param create  为 true 时没有槽就建一个。
- * @return        结果槽；没有槽且不创建时返回 `NULL`。
+ * @param node    The node.
+ * @param create  When true, create a slot if there is none.
+ * @return        The result slot; `NULL` when there is none and none is created.
  */
 NodeResults *resultsOf(const void *node, bool create);
 
 /**
- * @brief 取 `node` 的结果槽，并声明调用方认为它是哪种节点。
+ * @brief Get `node`'s result slot and declare which node kind the caller believes it is.
  *
- * 首次写入把 `kind` 与当时的 `owner` 盖在槽上，之后每次访问都检查：一个槽装成另一种
- * 节点，或槽的主人与当前函数体不同，都是编译器 bug 而不是程序错误 —— `EXTC_DBG=1` 下
- * 中止，发布构建里忽略（值照旧返回，行为不变）。
+ * The first write stamps `kind` and the then-current `owner` onto the slot, and every later
+ * access checks them: a slot dressed as another node kind, or a slot whose owner differs from the
+ * current function body, are compiler bugs rather than program errors -- abort under
+ * `EXTC_DBG=1`, ignore in release builds (the value is returned as usual, behaviour unchanged).
  *
- * 跨界是**一等结果而非失败**：泛型体里的节点会被该体的每个实例够到，第一次跨界把槽标成
- * `shared` 并计数，此后不再报 —— 同一份源码产生同一组共享槽，是确定性的。
+ * A crossing is a **first-class result, not a failure**: a node inside a generic body is reached
+ * by every instance of that body, so the first crossing marks the slot `shared` and counts it and
+ * nothing is reported afterwards -- the same source produces the same set of shared slots, which
+ * is deterministic.
  *
- * @param node    节点。
- * @param create  为 true 时没有槽就建一个。
- * @param kind    调用方认为的节点种类；`RKIND_NONE` 跳过检查。
- * @param line    首次写入的位置，用于守卫的消息。
- * @return        结果槽；没有槽且不创建时返回 `NULL`。
+ * @param node    The node.
+ * @param create  When true, create a slot if there is none.
+ * @param kind    The node kind the caller assumes; `RKIND_NONE` skips the check.
+ * @param line    Where the first write happened, for the guard's message.
+ * @return        The result slot; `NULL` when there is none and none is created.
  */
 NodeResults *resultsAs(const void *node, bool create, ResultKind kind, int line);
 
 /**
- * @brief 读掩码里的第 `bit` 位。
+ * @brief Read bit `bit` of the mask.
  *
- * 位是 `(hi << 6) | lo`：`bit < 64` 落在 `loMask`，其余落在 `hiMask`，调用方不必知道
- * 自己落在哪个字里。
+ * The bit is `(hi << 6) | lo`: `bit < 64` lands in `loMask` and the rest in `hiMask`, so callers
+ * need not know which word they land in.
  *
- * @param r    结果槽。
- * @param bit  位号，与 setter 用的是同一批常量。
- * @return     该位为 1 则 `true`。
+ * @param r    The result slot; `NULL` counts as "no record", so every bit reads as 0.
+ * @param bit  Bit number, using the same constants as the setter.
+ * @return     `true` when the bit is 1.
  */
 bool resultsBit(const NodeResults *r, uint64_t bit);
 
 /**
- * @brief 置掩码里的第 `bit` 位。
+ * @brief Set bit `bit` of the mask.
  *
- * @param r    结果槽。
- * @param bit  位号。
+ * @param r    The result slot; a `NULL` slot has no record to set, so the call does nothing.
+ * @param bit  Bit number.
  */
 void resultsSetBit(NodeResults *r, uint64_t bit);
 
 /**
- * @brief 按 id 取结果槽。
- * @param id  节点 id。
- * @return    结果槽；id 为 0 或超出已发放范围时返回 `NULL`。
+ * @brief Get a result slot by id.
+ * @param id  The node id.
+ * @return    The result slot; `NULL` when `id` is 0 or beyond the range handed out so far.
  */
 NodeResults *resultsById(NodeId id);
 
 /**
- * @brief 已经发出去多少个 id（稠密区间的长度）。
+ * @brief How many ids have been handed out (the length of the dense range).
  *
- * 诊断与按主人划分的工作读它；编译器里没有东西依赖这个数。
+ * Diagnostics and owner-partitioned work read it; nothing in the compiler depends on this number.
  *
- * @return  已发放的 id 个数。
+ * @return  The number of ids handed out.
  */
 size_t resultsCount(void);
 

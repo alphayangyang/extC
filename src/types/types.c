@@ -24,9 +24,10 @@ static const char *BUILTIN_NAMES[] = {
 };
 
 /**
- * @brief 判断 `name` 是不是内建类型名。
- * @param name  类型名。
- * @return      是内建类型名则 `true`。
+ * @brief Tell whether `name` is a builtin type name.
+ *
+ * @param name  Type name.
+ * @return      `true` when it is a builtin type name.
  */
 bool ttIsBuiltinName(const char *name) {
     for (size_t i = 0; BUILTIN_NAMES[i]; i++)
@@ -39,12 +40,13 @@ bool ttIsBuiltinName(const char *name) {
 static const char *ttShow(TypeTable *tt, Type *t);
 
 /**
- * @brief 分配一个零初始化的类型节点，记下种类与名字。
+ * @brief Allocate a zero-initialized type node and record its kind and name.
  *
- * @param a     拥有新节点的 arena。
- * @param kind  类型种类。
- * @param name  节点的名字：内建类型是源码名，构造出来的类型是 mangle 名。
- * @return      新节点；除种类与名字外的字段全为零。
+ * @param a     Arena that owns the new node.
+ * @param kind  Type kind.
+ * @param name  The node's name: the source name for a builtin type, the mangled name for a
+ *              constructed type.
+ * @return      The new node; every field other than the kind and the name is zero.
  */
 static Type *mkType(Arena *a, TypeKind kind, const char *name) {
     Type *t = (Type *)arenaAllocZero(a, sizeof(Type));
@@ -54,11 +56,11 @@ static Type *mkType(Arena *a, TypeKind kind, const char *name) {
 }
 
 /**
- * @brief 建类型表，并把内建类型、`void` 与错误类型驻留进去。
+ * @brief Build a type table and intern the builtin types, `void`, and the error type into it.
  *
- * @param a  arena：拥有这张表与它里面每一个类型。
- * @param m  立刻注册其声明的模块；NULL 表示不注册。
- * @return   新表，可以直接交给 `ttRegister` 或 `ttResolve`。
+ * @param a  Arena: owns this table and every type in it.
+ * @param m  Module whose declarations are registered immediately; NULL registers nothing.
+ * @return   The new table, ready to hand to `ttRegister` or `ttResolve`.
  */
 TypeTable *ttNew(Arena *a, Module *m) {
     TypeTable *tt = (TypeTable *)arenaAllocZero(a, sizeof(TypeTable));
@@ -83,14 +85,16 @@ TypeTable *ttNew(Arena *a, Module *m) {
 }
 
 /**
- * @brief 注册一个模块的结构体与枚举声明，已存在的名字跳过。
+ * @brief Register one module's struct and enum declarations; names that already exist are
+ * skipped.
  *
- * The prelude's declarations and the user files must land in one table：类型靠驻留、相等靠
- * 指针，两张表会让同一个 `bool` 有两个指针，于是每次检查都报"bool 不是 bool"，
- * ttEquals's 指针比较正是靠这一点成立。重复调用是预期内的，且无副作用。
+ * The prelude's declarations and the user files must land in one table: types are interned and
+ * compared by pointer, and two tables would give the same `bool` two pointers, so every check
+ * would report "bool is not bool"; `ttEquals`'s pointer comparison rests on exactly this.
+ * Repeated calls are expected and have no side effects.
  *
- * @param tt  要注册进去的类型表。
- * @param m   要读的模块；NULL 忽略。
+ * @param tt  The type table to register into.
+ * @param m   Module to read; NULL is ignored.
  */
 void ttRegister(TypeTable *tt, Module *m) {
     if (!m) return;
@@ -112,28 +116,32 @@ void ttRegister(TypeTable *tt, Module *m) {
 }
 
 /**
- * @brief 取那唯一的 `void` 类型。
- * @param tt  类型表。
- * @return    表里的 `void` 类型。
+ * @brief Get the one `void` type.
+ *
+ * @param tt  Type table.
+ * @return    The table's `void` type.
  */
 Type *ttVoid(TypeTable *tt)  { return tt->tVoid; }
 
 /**
- * @brief 取错误类型：解析失败后的结果，用来压住连锁诊断。
- * @param tt  类型表。
- * @return    错误类型。
+ * @brief Get the error type: the result of a failed parse; it suppresses cascading
+ * diagnostics.
+ *
+ * @param tt  Type table.
+ * @return    The error type.
  */
 Type *ttError(TypeTable *tt) { return tt->tError; }
 
 /**
- * @brief 造（或复用）定长数组类型 `[n]elem`。
+ * @brief Build (or reuse) a fixed-length array type `[n]elem`.
  *
- * 数组类型与泛型实例一起存在实例表里：两者都需要发 C 结构体，代码生成一样对待。
+ * Array types live in the instance table together with generic instances: both need a C struct
+ * emitted, and codegen treats them the same way.
  *
- * @param tt    类型表。
- * @param n     元素个数，编译期常量。
- * @param elem  元素类型。
- * @return      驻留的数组类型：长度与元素类型都相等就给同一个指针。
+ * @param tt    Type table.
+ * @param n     Number of elements, a compile-time constant.
+ * @param elem  Element type.
+ * @return      The interned array type: equal length and element type yield the same pointer.
  */
 Type *ttArray(TypeTable *tt, int64_t n, Type *elem) {
     for (size_t i = 0; i < tt->instances.len; i++) {
@@ -150,14 +158,14 @@ Type *ttArray(TypeTable *tt, int64_t n, Type *elem) {
 }
 
 /**
- * @brief 造一个 `ref T` 类型。
+ * @brief Build a `ref T` type.
  *
- * 引用**故意不驻留**：它很少见，而且调用方随后会设 `mut` / `nullable`，所以 `ttEquals`
- * 对它们按字段比较。
+ * A reference is **deliberately not interned**: it is rare, and the caller sets `mut` /
+ * `nullable` on it afterwards, so `ttEquals` compares them field by field instead.
  *
- * @param tt     拥有新类型的类型表。
- * @param inner  被引用的类型。
- * @return       一个新的、只读、不可空的引用。
+ * @param tt     Type table that owns the new type.
+ * @param inner  The referenced type.
+ * @return       A new read-only, non-nullable reference.
  */
 Type *ttRef(TypeTable *tt, Type *inner) {
     Type *t = (Type *)arenaAllocZero(tt->arena, sizeof(Type));
@@ -167,14 +175,15 @@ Type *ttRef(TypeTable *tt, Type *inner) {
 }
 
 /**
- * @brief 造一个引用，复制 `src` 的许可标志。
+ * @brief Build a reference that copies `src`'s permission flags.
  *
- * `mut` 与 `nullable` 都是类型的一部分，所以解析或替换一个引用时不能把它们丢掉。
+ * Both `mut` and `nullable` are part of the type, so they must not be lost when a reference is
+ * resolved or substituted.
  *
- * @param tt     类型表。
- * @param src    提供标志的引用类型。
- * @param inner  新引用指向的类型。
- * @return       带上 `src` 的 `mut` 与 `nullable` 的引用。
+ * @param tt     Type table.
+ * @param src    The reference type that provides the flags.
+ * @param inner  The type the new reference points to.
+ * @return       A reference carrying `src`'s `mut` and `nullable`.
  */
 static Type *refLike(TypeTable *tt, Type *src, Type *inner) {
     Type *t = ttRef(tt, inner);
@@ -184,15 +193,16 @@ static Type *refLike(TypeTable *tt, Type *src, Type *inner) {
 }
 
 /**
- * @brief 按名字查已注册的类型：先内建，再结构体，最后枚举。
+ * @brief Look up a registered type by name: builtins first, then structs, then enums.
  *
- * 只做**裸名**查找：两个模块导出同一个名字时两个都命中，不能随便选一个的调用方得自己
- * 数命中数（见 `ttResolve`）。
+ * Only a **bare name** is looked up: when two modules export the same name both matches are
+ * returned, and a caller that may not pick one has to count the matches itself (see
+ * `ttResolve`).
  *
- * @param tt    类型表。
- * @param name  源码里的名字，不是模块改名后的名字。
- * @return      那个类型；没有注册过则 `NULL`。结构体 / 枚举的类型节点在首次用到时建好，
- *              并缓存在它的声明上。
+ * @param tt    Type table.
+ * @param name  The name as written in the source, not the module-renamed name.
+ * @return      That type; `NULL` when it was never registered. A struct's / enum's type node is
+ *              built on first use and cached on its declaration.
  */
 Type *ttFromName(TypeTable *tt, const char *name) {
     if (strcmp(name, "void") == 0) return tt->tVoid;
@@ -225,21 +235,25 @@ Type *ttFromName(TypeTable *tt, const char *name) {
 }
 
 /**
- * @brief 把解析器造的类型解析成驻留类型。
+ * @brief Resolve a type the parser built into an interned type.
  *
- * `TY_UNRESOLVED` 名字先与作用域里的类型参数比，再与已注册的声明比；`TY_REF` 保留自己的
- * 标志；带类型实参的泛型名变成对应的实例。
+ * A `TY_UNRESOLVED` name is first compared against the type parameters in scope, then against
+ * the registered declarations; `TY_REF` keeps its own flags; a generic name with type arguments
+ * becomes the corresponding instance.
  *
- * 两个导入模块导出同一个裸名时，这是错误而绝不挑一个：所有命中都被数出来，诊断要求写
- * `module::Name`。挑第一个会悄悄绑错类型 —— 程序编过、类型是错的，比拒绝更糟。
+ * When two imported modules export the same bare name this is an error and never a pick: all
+ * matches are counted and the diagnostic asks for `module::Name`. Picking the first would
+ * silently bind the wrong type -- a program that compiles with the wrong type is worse than a
+ * rejection.
  *
- * @param tt      类型表。
- * @param ctx     接收诊断的上下文。
- * @param t       解析器造的类型节点。
- * @param line    诊断归到哪一行。
- * @param params  作用域里的类型参数名；NULL 或空表示不在泛型声明里。
- * @return        驻留后的类型。失败时报告错误并返回错误类型，让调用方继续查下去而不产生
- *                连锁错误。
+ * @param tt      Type table.
+ * @param ctx     Context that receives diagnostics.
+ * @param t       The type node the parser built.
+ * @param line    Which line the diagnostic is attributed to.
+ * @param params  Type parameter names in scope; NULL or empty means "not in a generic
+ *                declaration".
+ * @return        The interned type. On failure an error is reported and the error type is
+ *                returned, so the caller keeps checking without producing cascading errors.
  */
 Type *ttResolve(TypeTable *tt, Ctx *ctx, Type *t, int line, Vec *params) {
     if (!t) return NULL;
@@ -308,10 +322,12 @@ Type *ttResolve(TypeTable *tt, Ctx *ctx, Type *t, int line, Vec *params) {
                              t->name);
                     return tt->tError;
                 }
-                /* `coroutine<T>` 是**同型两遍**的简写：请求类型与应答类型都是 T；
-                 * `coroutine<A, B>` 才是一般形态，`A` 送给它、`B` 是它 yield 出来的。
-                 * 这里**不**把参数补成两个：实例化的 C 名是从写出来的参数算的，补了就会
-                 * 让产物改名。读参数的地方按"最后一个参数是应答类型"取值。 */
+                /* `coroutine<T>` is shorthand for "request and response are the same type";
+                 * `coroutine<A, B>` is the general form, where `A` is sent to it and `B` is
+                 * what it yields. The parameter is **not** padded to two here: an instance's C
+                 * name is computed from the arguments as written, and padding would rename the
+                 * product. The parameter reader takes "the last argument is the response
+                 * type". */
                 bool coroMarker = base->sdef->name && strcmp(base->sdef->name, "coroutine") == 0;
                 if (base->sdef->typeParams.len != t->targs.len
                     && !(coroMarker && base->sdef->typeParams.len == 2 && t->targs.len == 1)) {
@@ -421,33 +437,36 @@ default:
 /* ------------------------------------------------------------------- generics */
 
 /**
- * @brief 判断 `t` 是不是名为 `name` 的类型参数。
- * @param t     要看的类型。
- * @param name  类型参数名。
- * @return      是则 `true`。
+ * @brief Tell whether `t` is the type parameter named `name`.
+ *
+ * @param t     The type to inspect.
+ * @param name  Type parameter name.
+ * @return      `true` when it is.
  */
 bool ttIsParam(Type *t, const char *name) {
-    return t && t->kind == TY_PARAM && strcmp(t->param, name) == 0;
+    return t && t->kind == TY_PARAM && t->param && name && strcmp(t->param, name) == 0;
 }
 
 /**
- * @brief 按用户写的方式命名类型（`io::reader`），而不是按改名后的 C 名（`io$reader`）。
+ * @brief Name a type the way the user writes it (`io::reader`), not by its renamed C name
+ * (`io$reader`).
  *
- * @param srcName  模块声明记下的源码限定名；根文件的声明传 NULL 或空串。
- * @param name     没有记下源码名时显示的名字。
- * @return         `srcName` 有值就是它，否则 `name`，再否则 `"?"` —— 永不返回 NULL。
+ * @param srcName  The source qualified name the module declaration recorded; NULL or empty for a
+ *                 root file declaration.
+ * @param name     The name to show when no source name was recorded.
+ * @return         `srcName` when set, else `name`, else `"?"` -- never NULL.
  */
 const char *ttDispName(const char *srcName, const char *name) {
     return (srcName && *srcName) ? srcName : (name ? name : "?");
 }
 
 /**
- * @brief 把一个类型递归渲染成 C 标识符。
+ * @brief Render a type recursively into a C identifier.
  *
- * @param tt  类型表，兼作生成字符串的 arena。
- * @param t   要渲染的类型；NULL 渲染成 `void`。
- * @return     C 标识符：`Pair<i32, u8>` 变 `Pair_i32_u8`；引用、数组与函数类型各有前缀，
- *             使不同的类型不会撞名。
+ * @param tt  Type table, also used as the arena for the generated string.
+ * @param t   The type to render; NULL renders as `void`.
+ * @return    The C identifier: `Pair<i32, u8>` becomes `Pair_i32_u8`; references, arrays, and
+ *            function types each get their own prefix, so different types cannot collide.
  */
 const char *ttMangle(TypeTable *tt, Type *t) {
     if (!t) return "void";
@@ -497,14 +516,15 @@ default:       return t->name ? t->name : "?";
 }
 
 /**
- * @brief 判断类型在任意深度上有没有提到类型参数。
+ * @brief Tell whether a type mentions a type parameter at any depth.
  *
- * 依赖参数的规则在泛型体内无法判定，要等函数体实例化后再查；这里漏一个 `true` 会让模板被
- * 当成具体类型检查。
+ * Rules that depend on a parameter cannot be decided inside a generic body and have to wait
+ * until the function body is instantiated; missing one `true` here makes a template be checked
+ * as a concrete type.
  *
- * @param t  要看的类型。
- * @return   `t` 是类型参数，或在引用、数组、泛型实参、函数签名、枚举实例里含有一个，
- *           则 `true`。
+ * @param t  The type to inspect.
+ * @return   `true` when `t` is a type parameter, or contains one inside a reference, array,
+ *           generic argument, function signature, or enum instance.
  */
 bool ttHasParam(Type *t) {
     if (!t) return false;
@@ -532,15 +552,17 @@ bool ttHasParam(Type *t) {
 }
 
 /**
- * @brief 造（或复用）泛型结构体实例 `sd<args...>`。
+ * @brief Build (or reuse) a generic struct instance `sd<args...>`.
  *
- * 只有**完全具体**的实例才驻留，也只有它需要发 C：检查模板时造出来的 `Pair<A, B>` 里是
- * 类型参数，那个实例只用来比类型，驻留它会让代码生成给 `Box_T_set` 发 C。
+ * Only a **fully concrete** instance is interned, and only such an instance needs C emitted: the
+ * `Pair<A, B>` built while checking a template holds type parameters, that instance only serves
+ * type comparison, and interning it would make codegen emit C for `Box_T_set`.
  *
- * @param tt    类型表。
- * @param sd    泛型结构体声明。
- * @param args  解析好的类型实参，每个声明参数一个。
- * @return      驻留的实例：同一个声明加相等的实参永远给同一个指针。
+ * @param tt    Type table.
+ * @param sd    Generic struct declaration.
+ * @param args  Resolved type arguments, one per declared parameter.
+ * @return      The interned instance: the same declaration plus equal arguments always yields
+ *              the same pointer.
  */
 Type *ttGeneric(TypeTable *tt, StructDef *sd, Vec *args) {
     bool concrete = true;
@@ -575,19 +597,20 @@ Type *ttGeneric(TypeTable *tt, StructDef *sd, Vec *args) {
 }
 
 /**
- * @brief 造（或复用）函数类型 `fn(params...) -> ret`。
+ * @brief Build (or reuse) a function type `fn(params...) -> ret`.
  *
- * 只有每一部分都具体时才驻留，规则与 `ttGeneric` 相同：检查模板会造出 `fn(T) -> T`，它只
- * 用来比类型，不能发成 C。
+ * It is interned only when every part is concrete, by the same rule as `ttGeneric`: checking a
+ * template builds `fn(T) -> T`, which only serves type comparison and must not be emitted as C.
  *
- * 函数类型的 C 拼法是**typedef 名**而不是声明符：本编译器把类型写成声明的前缀，而 C 的
- * 函数指针把名字包在里面（`int64_t (*)(int64_t)` 是类型，`int64_t (*f)(int64_t)` 不是
- * “类型加名字”）。名字由 `ttMangle` 产生，typedef 由代码生成发射。
+ * A function type's C spelling is a **typedef name**, not a declarator: this compiler writes
+ * types as declaration prefixes, while C function pointers wrap the name inside
+ * (`int64_t (*)(int64_t)` is a type, `int64_t (*f)(int64_t)` is not "a type plus a name"). The
+ * name comes from `ttMangle` and codegen emits the typedef.
  *
- * @param tt      类型表。
- * @param params  解析好的参数类型，按顺序（`Type *` 元素）；向量会被复制。
- * @param ret     解析好的返回类型；NULL 读作 `void`。
- * @return        驻留的函数类型：同一个签名永远给同一个指针。
+ * @param tt      Type table.
+ * @param params  Resolved parameter types, in order (`Type *` elements); the vector is copied.
+ * @param ret     Resolved return type; NULL reads as `void`.
+ * @return        The interned function type: the same signature always yields the same pointer.
  */
 Type *ttFn(TypeTable *tt, Vec *params, Type *ret) {
     if (!ret) ret = tt->tVoid;
@@ -619,19 +642,22 @@ Type *ttFn(TypeTable *tt, Vec *params, Type *ret) {
 }
 
 /**
- * @brief 造（或复用）泛型枚举实例 `td<args...>`（`option<i64>`）。
+ * @brief Build (or reuse) a generic enum instance `td<args...>` (`option<i64>`).
  *
- * 与 `ttGeneric` 同形，两处不同：
- *   1. 主人是 `TypeDef`（`edef`）而不是 `StructDef`，所以实例驻留在自己的
- *      `enumInstances` 表里。
- *   2. 载荷类型**不**在这里替换。变体载荷写在 `TypeDef` 上（`some(T)`），在每个使用处用
- *      `t->targs` 对着 `edef->typeParams` 替换，于是一个 `TypeDef` 服务每个实例，而实例
- *      只是"名字加实参"。代码生成把实例压成替换上下文，载荷的 C 类型自己就解析出来了。
+ * Same shape as `ttGeneric`, with two differences:
+ *   1. The owner is a `TypeDef` (`edef`) rather than a `StructDef`, so instances are interned in
+ *      their own `enumInstances` table.
+ *   2. Payload types are **not** substituted here. Variant payloads are written on the
+ *      `TypeDef` (`some(T)`), and at each use site `t->targs` is substituted against
+ *      `edef->typeParams`, so one `TypeDef` serves every instance and an instance is only "a
+ *      name plus arguments". Codegen turns the instance into a substitution context, and the
+ *      payload's C type falls out by itself.
  *
- * @param tt    类型表。
- * @param td    泛型枚举声明。
- * @param args  解析好的类型实参，每个声明参数一个。
- * @return      驻留的实例；实参里提到类型参数时返回只在模板里用的实例（那个不驻留）。
+ * @param tt    Type table.
+ * @param td    Generic enum declaration.
+ * @param args  Resolved type arguments, one per declared parameter.
+ * @return      The interned instance; when the arguments mention type parameters, an instance
+ *              used only inside templates (that one is not interned).
  */
 Type *ttEnumGeneric(TypeTable *tt, TypeDef *td, Vec *args) {
     bool concrete = true;
@@ -670,17 +696,19 @@ Type *ttEnumGeneric(TypeTable *tt, TypeDef *td, Vec *args) {
 }
 
 /**
- * @brief 取视图实例的可写影子（`mut slice<T>`）。
+ * @brief Get a view instance's writable shadow (`mut slice<T>`).
  *
- * 影子代替第二个实例，是因为可写视图与只读视图是**同一个 C 结构体** —— 同布局、同名、同
- * 方法集，只差检查器看到的许可。影子因此共用 `base` 的 C 名，也不进实例表，代码生成对两者
- * 只发一个结构体。`mut` 就是这样留成一个限定符，而不是第二个类型。
+ * A shadow replaces a second instance because the writable view and the read-only view are
+ * **the same C struct** -- same layout, same name, same method set, differing only in the
+ * permission the checker sees. The shadow therefore shares `base`'s C name and does not enter
+ * the instance table, and codegen emits one struct for both. That is how `mut` stays a
+ * qualifier instead of becoming a second type.
  *
- * @param tt    类型表。
- * @param base  只读视图实例。
- * @param mut   false 时原样返回 `base`。
- * @return      `base` 的影子实例，首次用到时建、之后复用；不是泛型实例（因而不是视图）的
- *              类型原样返回。
+ * @param tt    Type table.
+ * @param base  The read-only view instance.
+ * @param mut   When false, `base` is returned unchanged.
+ * @return      `base`'s shadow instance, built on first use and reused afterwards; a type that
+ *              is not a generic instance (and therefore not a view) is returned unchanged.
  */
 Type *ttViewMut(TypeTable *tt, Type *base, bool mut) {
     if (!mut || !base || base->kind != TY_GENERIC) return base;
@@ -701,19 +729,20 @@ Type *ttViewMut(TypeTable *tt, Type *base, bool mut) {
 }
 
 /**
- * @brief 去掉视图类型上的 `mut`：可写视图 -> 只读视图。
+ * @brief Drop `mut` from a view type: writable view -> read-only view.
  *
- * 递归是重点：元素类型也一起去掉 `mut`，所以 `mut slice<mut slice<T>>` 在任何期待只读
- * `slice<slice<T>>` 的地方都能用。递归是安全的，因为 `mut` 是许可而不是布局：
- * `slice<mut slice<i32>>` 与 `slice<slice<i32>>` 是同一个 C 结构体（都叫
- * `slice_slice_i32`，`mut` 从不出现在 C 类型里），把其中一个传去当另一个用，移动的字节
- * 没有不同。
+ * The recursion is the point: the element type loses `mut` as well, so
+ * `mut slice<mut slice<T>>` can be used wherever a read-only `slice<slice<T>>` is expected. The
+ * recursion is safe because `mut` is a permission and not layout: `slice<mut slice<i32>>` and
+ * `slice<slice<i32>>` are the same C struct (both called `slice_slice_i32`, `mut` never appears
+ * in a C type), and moving bytes between them makes no difference.
  *
- * 反方向（只读 -> 可写）永远不允许：没有代码可以凭空造一个许可。
+ * The other direction (read-only -> writable) is never allowed: no code can conjure a permission
+ * out of nothing.
  *
- * @param tt  类型表。
- * @param t   要剥的类型。
- * @return    `t` 的只读形式；什么都没变时返回 `t` 自己。
+ * @param tt  Type table.
+ * @param t   The type to strip.
+ * @return    The read-only form of `t`; `t` itself when nothing changed.
  */
 Type *ttViewReadonly(TypeTable *tt, Type *t) {
     if (!t || t->kind != TY_GENERIC || !t->sdef) return t;
@@ -736,18 +765,20 @@ Type *ttViewReadonly(TypeTable *tt, Type *t) {
 }
 
 /**
- * @brief 把 `t` 里的类型参数换成具体类型。
+ * @brief Substitute concrete types for the type parameters in `t`.
  *
- * 用于单态化：`t` 里出现的每个 `params[i]` 都变 `args[i]`，递归穿过引用、数组、泛型实参、
- * 函数签名与枚举实例。这样重建出来的引用保留 `mut` 与 `nullable` 标志，因为它们是类型的一
- * 部分。
+ * Used by monomorphization: every `params[i]` occurring in `t` becomes `args[i]`, recursing
+ * through references, arrays, generic arguments, function signatures, and enum instances. The
+ * references rebuilt this way keep their `mut` and `nullable` flags, because they are part of
+ * the type.
  *
- * @param tt      类型表。
- * @param t       要替换进去的类型。
- * @param params  类型参数名，按位置（`const char *` 元素）。
- * @param args    每个名字的具体类型，位置一一对应（`Type *` 元素）。
- * @return        `t` 换掉参数后的类型；无事可做时（没有参数、没有实参，或 `params` 里没有
- *                这个名字）原样返回 `t`。
+ * @param tt      Type table.
+ * @param t       The type to substitute into.
+ * @param params  Type parameter names, by position (`const char *` elements).
+ * @param args    The concrete type for each name, positionally corresponding to `params`
+ *                (`Type *` elements).
+ * @return        `t` with the parameters replaced; when there is nothing to do (no parameters,
+ *                no arguments, or `params` does not contain the name) `t` is returned unchanged.
  */
 Type *ttSubstitute(TypeTable *tt, Type *t, Vec *params, Vec *args) {
     if (!t || !params || params->len == 0 || !args) return t;
@@ -758,9 +789,11 @@ Type *ttSubstitute(TypeTable *tt, Type *t, Vec *params, Vec *args) {
                 if (strcmp(*(const char **)vecAt(params, i), t->param) == 0)
                     return *(Type **)vecAt(args, i);
             }
-            /* `coroutine<T>` 是"请求与应答同型"的**简写**：标记声明了两个类型参数，实例只给了一个
-             * （这是个数检查唯一放行的"少给参数"情形），于是应答类型 B 回落到 A。其余泛型的参数
-             * 个数不匹配在类型解析处就被拒了，所以这一条不会替别的类型兜底。 */
+            /* `coroutine<T>` is **shorthand** for "request and response are the same type": the
+             * marker declares two type parameters and the instance supplies only one (the only
+             * "too few arguments" case the count check lets through), so the response type B
+             * falls back to A. Every other generic's argument count mismatch is rejected during
+             * type resolution, so this does not paper over any other type. */
             if (params->len == 2 && args->len == 1) return *(Type **)vecAt(args, 0);
             return t;
         case TY_REF:
@@ -813,14 +846,16 @@ default:
 /* ------------------------------------------------------------------ equality */
 
 /**
- * @brief 判断两个类型是不是同一个类型。
+ * @brief Tell whether two types are the same type.
  *
- * 驻留的种类由指针比较结清，只有按需构建的种类才逐字段比较。泛型实例的 `mut` 是身份的一部
- * 分：可写视图不是只读视图。"能不能当那个用"是另一个问题，由 `ttViewDowngradable` 回答。
+ * Interned kinds settle by pointer comparison; only the kinds built on demand compare field by
+ * field. A generic instance's `mut` is part of its identity: a writable view is not the
+ * read-only view. "May it be used as that" is a different question, answered by
+ * `ttViewDowngradable`.
  *
- * @param a  一个类型；NULL 与任何类型都不相等。
- * @param b  另一个类型。
- * @return   两者描述同一个类型则 `true`。
+ * @param a  One type; NULL is equal to no type.
+ * @param b  The other type.
+ * @return   `true` when the two describe the same type.
  */
 bool ttEquals(Type *a, Type *b) {
     if (a == b) return true;
@@ -882,10 +917,11 @@ bool ttEquals(Type *a, Type *b) {
 }
 
 /**
- * @brief 判断 `t` 是不是内建类型 `builtinName`，忽略引用。
- * @param t            要看的类型。
- * @param builtinName  内建类型名。
- * @return             剥掉引用后是那个内建类型则 `true`。
+ * @brief Tell whether `t` is the builtin type `builtinName`, ignoring references.
+ *
+ * @param t            The type to inspect.
+ * @param builtinName  Builtin type name.
+ * @return             `true` when it is that builtin type after stripping references.
  */
 bool ttIs(Type *t, const char *builtinName) {
     Type *b = ttBase(t);
@@ -893,18 +929,20 @@ bool ttIs(Type *t, const char *builtinName) {
 }
 
 /**
- * @brief 判断 `t` 是不是解析失败产生的错误类型。
- * @param t  要看的类型。
- * @return   是错误类型则 `true`。
+ * @brief Tell whether `t` is the error type produced by a failed parse.
+ *
+ * @param t  The type to inspect.
+ * @return   `true` when it is the error type.
  */
 bool ttIsError(Type *t) {
     return t && t->kind == TY_ERROR;
 }
 
 /**
- * @brief 剥掉所有引用：`ref ref T` -> `T`。
- * @param t  要剥的类型。
- * @return   最里层的非引用类型；`t` 为 NULL 时返回 NULL。
+ * @brief Strip all references: `ref ref T` -> `T`.
+ *
+ * @param t  The type to strip.
+ * @return   The innermost non-reference type; NULL when `t` is NULL.
  */
 Type *ttBase(Type *t) {
     while (t && t->kind == TY_REF) t = t->inner;
@@ -923,11 +961,11 @@ static const IntInfo INTS[] = {
 };
 
 /**
- * @brief 查一个类型的整数描述符，先剥掉引用。
+ * @brief Look up a type's integer descriptor, stripping references first.
  *
- * @param t  要分类的类型。
- * @return   内建整数类型的描述符；其余情况返回 NULL（先剥引用，所以 `ref i32` 按 `i32`
- *           分类）。
+ * @param t  The type to classify.
+ * @return   The builtin integer type's descriptor; NULL in every other case (references are
+ *           stripped first, so `ref i32` classifies as `i32`).
  */
 static const IntInfo *intInfo(Type *t) {
     Type *b = ttBase(t);
@@ -938,16 +976,18 @@ static const IntInfo *intInfo(Type *t) {
 }
 
 /**
- * @brief 判断 `t` 是不是某个内建整数类型。
- * @param t  要看的类型。
- * @return   剥掉引用后是整数则 `true`。
+ * @brief Tell whether `t` is some builtin integer type.
+ *
+ * @param t  The type to inspect.
+ * @return   `true` when it is an integer after stripping references.
  */
 bool ttIsInteger(Type *t) { return intInfo(t) != NULL; }
 
 /**
- * @brief 判断 `t` 是不是 `f32` 或 `f64`。
- * @param t  要看的类型。
- * @return   剥掉引用后是浮点则 `true`。
+ * @brief Tell whether `t` is `f32` or `f64`.
+ *
+ * @param t  The type to inspect.
+ * @return   `true` when it is a float after stripping references.
  */
 bool ttIsFloat(Type *t) {
     Type *b = ttBase(t);
@@ -956,16 +996,18 @@ bool ttIsFloat(Type *t) {
 }
 
 /**
- * @brief 判断 `t` 是不是整数或浮点。
- * @param t  要看的类型。
- * @return   剥掉引用后是数值类型则 `true`。
+ * @brief Tell whether `t` is an integer or a float.
+ *
+ * @param t  The type to inspect.
+ * @return   `true` when it is a numeric type after stripping references.
  */
 bool ttIsNumeric(Type *t) { return ttIsInteger(t) || ttIsFloat(t); }
 
 /**
- * @brief 整数类型的位宽。
- * @param t  要看的类型。
- * @return   位宽；剥掉引用后不是整数则返回 0。
+ * @brief The bit width of an integer type.
+ *
+ * @param t  The type to inspect.
+ * @return   The bit width; 0 when it is not an integer after stripping references.
  */
 int ttIntBits(Type *t) {
     const IntInfo *i = intInfo(t);
@@ -973,9 +1015,10 @@ int ttIntBits(Type *t) {
 }
 
 /**
- * @brief 判断整数类型有没有符号。
- * @param t  要看的类型。
- * @return   有符号则 `true`；非整数类型返回 `false`。
+ * @brief Tell whether an integer type is signed.
+ *
+ * @param t  The type to inspect.
+ * @return   `true` when it is signed; `false` for a non-integer type.
  */
 bool ttIntSigned(Type *t) {
     const IntInfo *i = intInfo(t);
@@ -995,17 +1038,21 @@ bool ttIntSigned(Type *t) {
  */
 
 /**
- * @brief 判断 `from` 类型的值能不能用在期待 `to` 的地方（隐式加宽）。
+ * @brief Tell whether a value of type `from` may be used where `to` is expected (implicit
+ * widening).
  *
- * 只有无损转换才允许隐式发生。引用从不加宽：`ref T` 与 `mut ref T` 是两种许可，只能单向
- * 降级，那在赋值检查处处理。引用测试必须排在整数助手之前，因为那些助手会剥引用：少了它，
- * `ref i32` 到 `mut ref i32` 看起来像"i32 加宽到 i32"，于是被接受。
+ * Only lossless conversions may happen implicitly. References never widen: `ref T` and
+ * `mut ref T` are two permissions that only downgrade in one direction, and that is handled at
+ * the assignment check. The reference test must come before the integer helpers, because those
+ * helpers strip references: without it, `ref i32` to `mut ref i32` would look like "i32 widens to
+ * i32" and be accepted.
  *
- * 错误类型与一切互相加宽，于是一次失败的类型不会产生连锁诊断。
+ * The error type widens to and from everything, so one failed type does not produce cascading
+ * diagnostics.
  *
- * @param from  值的类型。
- * @param to    会被转换成的类型。
- * @return      转换无损、因而允许隐式发生则 `true`。
+ * @param from  The value's type.
+ * @param to    The type it will be converted to.
+ * @return      `true` when the conversion is lossless and may therefore happen implicitly.
  */
 bool ttCanWiden(Type *from, Type *to) {
     if (!from || !to) return false;
@@ -1041,14 +1088,15 @@ bool ttCanWiden(Type *from, Type *to) {
 /* ----------------------------------------------------------------- rendering */
 
 /**
- * @brief 把 `t` 面向用户的拼法追加到 `out`，递归进入它的各部分。
+ * @brief Append the user-facing spelling of `t` to `out`, recursing into its parts.
  *
- * 可写视图必须打出开头的 `mut`，否则消息读起来是"expects `slice<i32>`, found
- * `slice<i32>`"，什么也没告诉用户。声明名走 `ttDispName`，所以模块类型打印成
- * `io::reader`，绝不是改名后的 `io$reader`；暴露内部编码等于说出用户没写过的词。
+ * A writable view must print its leading `mut`, otherwise the message reads "expects
+ * `slice<i32>`, found `slice<i32>`" and tells the user nothing. Declaration names go through
+ * `ttDispName`, so a module type prints as `io::reader`, never as the renamed `io$reader`;
+ * exposing the internal encoding means naming a word the user never wrote.
  *
- * @param t    要渲染的类型；NULL 渲染成 `void`。
- * @param out  接收文本的缓冲区。
+ * @param t    The type to render; NULL renders as `void`.
+ * @param out  Buffer that receives the text.
  */
 void ttRender(Type *t, Buf *out) {
     if (!t) { bufPuts(out, "void"); return; }
@@ -1118,11 +1166,11 @@ default: {
 }
 
 /**
- * @brief 把类型渲染进诊断用的 arena 字符串。
+ * @brief Render a type into an arena string for diagnostics.
  *
- * @param tt  类型表，兼作 arena。
- * @param t   要渲染的类型。
- * @return    渲染结果，存放在 `tt` 的 arena 里。
+ * @param tt  Type table, also used as the arena.
+ * @param t   The type to render.
+ * @return    The rendered result, stored in `tt`'s arena.
  */
 static const char *ttShow(TypeTable *tt, Type *t) {
     Buf b;
@@ -1132,23 +1180,27 @@ static const char *ttShow(TypeTable *tt, Type *t) {
 }
 
 /**
- * @brief 判断一个类型的值过 C 边界时是不是**一个** C 参数。
+ * @brief Tell whether a value of this type is **one** C parameter when it crosses the C
+ * boundary.
  *
- * 一个拼写给两个问的人：`extern!` 签名与函数类型（`fn(A) -> R`），这是够到 C 函数的两条
- * 路。两条路各写一份判断，边界就会漂移，漂移的形状是：`fn(slice<u8>) -> void` 声明一个
- * 实参，而 C 函数收两个，于是每个调用点都编得过、都调错。
+ * One spelling for two askers: `extern!` signatures and function types (`fn(A) -> R`), the two
+ * roads to a C function. Writing the test once per road makes the boundary drift, and the drift
+ * looks like this: `fn(slice<u8>) -> void` declares one argument while the C function takes two,
+ * so every call site compiles and calls it wrong.
  *
- * **指向任何东西的指针**都过一个参数：平台 ABI 传所有对象指针的方式一样，所以指向什么只
- * 影响声明读起来清不清楚，不影响调用对不对 —— `ref point`、`ref Pair<i64, u8>` 与
- * `ref void` 各是一个机器字。按值的聚合体只有标了 `@frozen` 才过：that is the author's
- * promise that this struct's bytes are laid out the way C lays out this field list，不是
- * 编译器自己保证的。`slice<T>` 是两个 C 参数（data + len，调用方自己写出 `s.data` 与
- * `s.len`）；`void` 按值不是一个值，只做返回类型。
+ * **A pointer to anything** is one parameter: the platform ABI passes all object pointers the
+ * same way, so what it points to only affects how readable the declaration is, not whether the
+ * call is right -- `ref point`, `ref Pair<i64, u8>`, and `ref void` are one machine word each. A
+ * by-value aggregate passes only when marked `@frozen`: that is the author's promise that this
+ * struct's bytes are laid out the way C lays out this field list, not something the compiler
+ * guarantees on its own. `slice<T>` is two C parameters (data + len, with the caller writing
+ * `s.data` and `s.len` explicitly); `void` by value is not a value at all, and is a return type
+ * only.
  *
- * @param t         实参的类型，或返回值的类型。
- * @param isReturn  返回类型时为 true，那里 `void` 合法。
- * @return          是一个 C 参数则 `true`：标量，或**指向任何东西的指针**（`ref T` /
- *                  `mut ref T` / `?ref T` / `ref void`），或函数类型。
+ * @param t         The type of the argument, or of the return value.
+ * @param isReturn  True for a return type, where `void` is legal.
+ * @return          `true` when it is one C parameter: a scalar, or **a pointer to anything**
+ *                  (`ref T` / `mut ref T` / `?ref T` / `ref void`), or a function type.
  */
 bool ttCrossesC(Type *t, bool isReturn) {
     if (!t) return false;
@@ -1171,13 +1223,14 @@ bool ttCrossesC(Type *t, bool isReturn) {
 }
 
 /**
- * @brief 判断 `t` 是不是视图类型。
+ * @brief Tell whether `t` is a view type.
  *
- * 视图按形状认：名字是 `slice`、正好带一个类型实参 —— 与编译器认 `data` + `len` 那个形状
- * （`s[i]` 的定义所在）是同一种做法。
+ * A view is recognised by shape: its name is `slice` and it carries exactly one type argument --
+ * the same approach as the compiler recognising the `data` + `len` shape (where `s[i]` is
+ * defined).
  *
- * @param t  要看的类型。
- * @return   是视图则 `true`。
+ * @param t  The type to inspect.
+ * @return   `true` when it is a view.
  */
 bool ttIsViewType(Type *t) {
     return t && t->kind == TY_GENERIC && t->sdef && t->targs.len == 1 &&
@@ -1185,18 +1238,20 @@ bool ttIsViewType(Type *t) {
 }
 
 /**
- * @brief 判断 `got` 类型的值能不能用在期待 `want` 的地方，允许在任意深度去掉 `mut`。
+ * @brief Tell whether a value of type `got` may be used where `want` is expected, allowing `mut`
+ * to be dropped at any depth.
  *
- * `mut` 只能去掉、不能加上：它是**许可**而不是布局 —— `slice<mut slice<i32>>` 与
- * `slice<slice<i32>>` 是同一个 C 结构体（都叫 `slice_slice_i32`），少一层许可不改变任何
- * 字节；反方向是在**要**一个许可，所以源码必须自己写出 `mut`。
+ * `mut` can only be dropped, never added: it is a **permission** and not layout --
+ * `slice<mut slice<i32>>` and `slice<slice<i32>>` are the same C struct (both called
+ * `slice_slice_i32`), and losing one permission changes no byte; the other direction is **asking
+ * for** a permission, so the source has to write the `mut` itself.
  *
- * 这不是 `ttEquals`：相等问"是不是同一个类型"（那里 `mut` 是身份的一部分），这里问
- * "能不能当那个用"（`mut` 只是许可）。
+ * This is not `ttEquals`: equality asks "is it the same type" (there `mut` is part of identity),
+ * this asks "may it be used as that" (`mut` is only a permission).
  *
- * @param want  上下文期待的类型。
- * @param got   值的类型。
- * @return      `got` 可以当 `want` 用则 `true`。
+ * @param want  The type the context expects.
+ * @param got   The value's type.
+ * @return      `true` when `got` may be used as `want`.
  */
 bool ttViewDowngradable(Type *want, Type *got) {
     if (!want || !got) return false;
