@@ -1,0 +1,15 @@
+// `let s = seq::sum(tmp) ?? 0` 也折进写循环：临时视图不落内存（与 --no-fuse 逐字节相同）。
+// expect: s=22
+use std::io
+use stl::seq
+
+fn main() -> i32 {
+    let n: i64 = 4
+    var a: mut slice<f64> = new f64[n]
+    for i in 0..n { a[i] = f64(i) * 1.5 }
+    var tmp: mut slice<f64> = new f64[n]
+    for i in 0..n { tmp[i] = a[i] * 2.0 + 1.0 }
+    let s = seq::sum(tmp) ?? 0.0
+    io::cout << "s=" << s << "\n"
+    return 0
+}

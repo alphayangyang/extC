@@ -1887,6 +1887,148 @@ static bool fuseTryReduceContainer(Checker *c, Stmt *block, size_t i) {
 }
 
 /**
+ * @brief 认 `var s = seq::sum(tmp) ?? 0`（`tmp` 是紧邻上面那个写循环的输出）。
+ *
+ * 形状：`tmp` 的声明 + 写循环 A + 绑定 `s`（无注解，初值是 `seq::sum(tmp) ?? <零字面量>`）。
+ * 命中时把绑定改写成 S2 认识的三句 —— `var acc: T = T(0)`、索引形式的归约循环、
+ * `var s = acc` —— 下一遍不动点扫描就会把归约折进 A（`tmp` 随之消失）。
+ *
+ * 为什么要求 `?? <零字面量>`：折进 A 之后空输入得到的是"零"，只有兜底值也是零时才与
+ * `seq::sum` 在空输入上的 `none ?? 兜底值` 逐位相同。非零兜底（`?? -1`）因此不折。
+ *
+ * @param c     检查器。
+ * @param block 块语句。
+ * @param i     临时视图声明的位置。
+ * @return 改写成功时为 `true`。
+ */
+static bool fuseTryReduceSumCall(Checker *c, Stmt *block, size_t i) {
+    Vec *v = &block->u.block.stmts;
+    Stmt *decl = *(Stmt **)vecAt(v, i);
+    if (!decl || decl->kind != ST_VAR || !decl->u.var.ann || !decl->u.var.init) return false;
+    if (decl->u.var.init->kind != EX_NEW) return false;
+    Expr *lenExpr = decl->u.var.init->u.new_.count;
+    /* 解析器把 `new f64[n]` 的类型写成裸名（`TY_UNRESOLVED`），内建标量在这里按名字解析；
+     * 解析不出来（用户结构体）就不折 —— 零值的形状不能猜。 */
+    Type *elemNode = decl->u.var.init->u.new_.type;
+    if (!lenExpr || !elemNode || !elemNode->name) return false;
+    Type *elem = elemNode->kind == TY_BUILTIN ? elemNode : ttFromName(c->tt, elemNode->name);
+    if (!elem || !elem->name) return false;
+    if (elem->name[0] != 'i' && elem->name[0] != 'u' && elem->name[0] != 'f') return false;
+    const char *tmp = decl->u.var.name;
+    size_t n = v->len;
+    if (i + 2 >= n) return false;
+    /* A：写循环，迭代空间与 `new T[len]` 相同。 */
+    Stmt *aW, *aBody;
+    const char *aVar;
+    Expr *aLo, *aHi;
+    if (!fuseLoopFrom(c, *(Stmt **)vecAt(v, i + 1), &aW, &aBody, &aVar, &aLo, &aHi)) return false;
+    (void)aW;
+    if (fuseMentions(aLo, tmp) || fuseMentions(aHi, tmp)) return false;
+    if (!fuseExprSame(aHi, lenExpr)) return false;
+    /* A 的体：恰好 `tmp[aVar] = <纯 rhs>`。 */
+    Expr *rhs = NULL;
+    {
+        size_t seen = 0;
+        for (size_t k = 0; k < aBody->u.block.stmts.len; k++) {
+            Stmt *st = *(Stmt **)vecAt(&aBody->u.block.stmts, k);
+            if (st == aBody->forStep) continue;
+            if (++seen > 1) break;
+            if (st->kind != ST_ASSIGN || st->u.assign.op) break;
+            Expr *t = st->u.assign.target;
+            if (!t || t->kind != EX_INDEX || !t->u.index.obj || t->u.index.obj->kind != EX_IDENT
+                || strcmp(t->u.index.obj->u.ident.name, tmp) != 0
+                || !t->u.index.index || t->u.index.index->kind != EX_IDENT
+                || strcmp(t->u.index.index->u.ident.name, aVar) != 0) break;
+            if (!fusePureExpr(st->u.assign.value)) break;
+            if (fuseMentions(st->u.assign.value, tmp)) break;
+            rhs = st->u.assign.value;
+        }
+        if (!rhs || seen != 1) return false;
+    }
+    /* 绑定：`var s = seq::sum(tmp) ?? <零字面量>`，无注解（类型由元素类型决定）。 */
+    Stmt *bind = *(Stmt **)vecAt(v, i + 2);
+    if (!bind || bind->kind != ST_VAR || !bind->u.var.init) return false;
+    /* 绑定可以写注解，但必须在名字上与元素类型一致（`f64` 元素配 `let s: f64`）：
+     * 累加器沿用元素类型，`seq::sum` 的返回类型也是它，注解更宽的类型交给隐式加宽即可，但
+     * 这里先只收"同名"这一种，免得替用户的转换猜语义。 */
+    if (bind->u.var.ann) {
+        Type *ann = bind->u.var.ann;
+        if (!ann->name || strcmp(ann->name, elem->name) != 0) return false;
+    }
+    Expr *co = bind->u.var.init;
+    if (co->kind != EX_COALESCE || !co->u.coalesce.main || !co->u.coalesce.fallback) return false;
+    Expr *opt = co->u.coalesce.main, *fb = co->u.coalesce.fallback;
+    /* `seq::sum(tmp)` 在这一遍之前已经被限定名改写成扁平调用：`EX_CALL` 的 callee 是
+     * `EX_IDENT "seq$sum"`（`EX_ASSOC` 的形式也认，两个入口都出现过）。只收"模块名以
+     * `seq` 结尾、函数名 `sum`、恰好一个实参"这一种。 */
+    Expr *sumArg = NULL;
+    if (opt->kind == EX_ASSOC) {
+        const char *p = opt->u.assoc.modPrefix, *nm = opt->u.assoc.name;
+        if (!p || !nm || strcmp(nm, "sum") != 0 || opt->u.assoc.args.len != 1) return false;
+        size_t pl = strlen(p);
+        if (pl < 3 || strcmp(p + pl - 3, "seq") != 0) return false;
+        sumArg = *(Expr **)vecAt(&opt->u.assoc.args, 0);
+    } else if (opt->kind == EX_CALL && opt->u.call.callee && opt->u.call.callee->kind == EX_IDENT
+               && opt->u.call.args.len == 1) {
+        const char *nm = opt->u.call.callee->u.ident.name;
+        const char *dollar = nm ? strrchr(nm, '$') : NULL;
+        if (!dollar || strcmp(dollar + 1, "sum") != 0) return false;
+        size_t ml = (size_t)(dollar - nm);
+        if (ml < 3 || strncmp(nm + ml - 3, "seq", 3) != 0) return false;
+        sumArg = *(Expr **)vecAt(&opt->u.call.args, 0);
+    } else {
+        return false;
+    }
+    if (!sumArg || sumArg->kind != EX_IDENT || strcmp(sumArg->u.ident.name, tmp) != 0) return false;
+    bool zero = false;
+    if (fb->kind == EX_INT && fb->u.ival == 0) zero = true;
+    if (fb->kind == EX_FLOAT && fb->u.fval == 0.0) zero = true;
+    if (!zero) return false;
+    const char *sname = bind->u.var.name;
+    if (strcmp(sname, tmp) == 0 || strcmp(sname, aVar) == 0) return false;
+    if (fuseMentions(rhs, sname)) return false;
+    /* `tmp` 在这一块的其它语句里没有别处用。 */
+    for (size_t k = 0; k < n; k++) {
+        if (k == i || k == i + 1 || k == i + 2) continue;
+        if (fuseStmtMentions(*(Stmt **)vecAt(v, k), tmp)) return false;
+    }
+    int line = bind->line;
+    char accName[32];
+    snprintf(accName, sizeof accName, "__extc_facc%zu", c->m->funcs.len + n);
+    const char *acc = arenaStrndup(c->arena, accName, strlen(accName));
+    /* `var acc: T = T(0)` */
+    Stmt *accDecl = stmtNew(c->arena, ST_VAR, line);
+    accDecl->u.var.name = acc;
+    accDecl->u.var.ann  = elem;
+    accDecl->u.var.init = elem->name[0] == 'f' ? exprFloatNew(c->arena, 0.0, line)
+                                                : exprIntNew(c->arena, 0, line);
+    accDecl->u.var.mut  = true;
+    /* `for aVar in aHi { acc = acc + tmp[aVar] }`（交给 S2 折进 A）。 */
+    Expr *sumOp = exprBinNew(c->arena, "+", exprIdent(c->arena, acc, line),
+                             exprIndexNew(c->arena, exprIdent(c->arena, tmp, line),
+                                          exprIdent(c->arena, aVar, line), line), line);
+    Vec redStmts;
+    vecInit(&redStmts, c->arena, sizeof(Stmt *));
+    *(Stmt **)vecPush(&redStmts) =
+        stmtAssignNew(c->arena, exprIdent(c->arena, acc, line), sumOp, NULL, line);
+    Stmt *redBody = stmtNew(c->arena, ST_BLOCK, line);
+    stmtBlockSetStmts(redBody, &redStmts);
+    Stmt *redLoop = stmtRangeForNew(c->arena, aVar, exprClone(c->arena, aHi), redBody, line);
+    /* `var s = acc`（原来那句绑定的名字与行号都不变）。 */
+    bind->u.var.init = exprIdent(c->arena, acc, line);
+    /* 把一句换成三句：accDecl、redLoop、bind。 */
+    vecPush(v);
+    vecPush(v);
+    Stmt **base = (Stmt **)vecAt(v, 0);
+    size_t oldLen = v->len - 2;
+    memmove(&base[i + 4], &base[i + 2], (oldLen - (i + 2)) * sizeof(Stmt *));
+    base[i + 2] = accDecl;
+    base[i + 3] = redLoop;
+    base[i + 4] = bind;
+    return true;
+}
+
+/**
  * @brief 在块里找**一处**可融合的元素链并改写它（找到就返回，一次只动一处）。
  *
  * 从前往后扫"临时视图声明"，先试 S1（声明后是写它的循环 A，再紧跟读它的循环 B），不成立
@@ -1911,7 +2053,8 @@ static bool fuseOnePass(Checker *c, Stmt *block) {
         Expr *aLo, *aHi, *bLo, *bHi;
         if (!fuseLoopFrom(c, a, &aW, &aBody, &aVar, &aLo, &aHi)) continue;
         if (!fuseLoopFrom(c, b, &bW, &bBody, &bVar, &bLo, &bHi)) {
-            if (fuseTryReduce(c, block, i) || fuseTryReduceContainer(c, block, i)) return true;
+            if (fuseTryReduce(c, block, i) || fuseTryReduceContainer(c, block, i)
+                || fuseTryReduceSumCall(c, block, i)) return true;
             continue;
         }
         (void)aW;

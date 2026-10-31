@@ -1,0 +1,13 @@
+// 反例：回退值不是零（`?? -1`）时不折 —— 空输入上 `none ?? -1` 与"零累加"不是一回事。
+// expect: s=-1
+use std::io
+use stl::seq
+
+fn main() -> i32 {
+    let n: i64 = 0
+    var tmpv: mut slice<f64> = new f64[n]
+    for i in 0..n { tmpv[i] = f64(i) }
+    let s = seq::sum(tmpv) ?? -1.0
+    io::cout << "s=" << s << "\n"
+    return 0
+}

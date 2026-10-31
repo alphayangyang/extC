@@ -494,6 +494,15 @@ Expr *exprBinNew(Arena *a, const char *op, Expr *left, Expr *right, int line);
  * @return      新 `EX_INT` 节点；`type` 留给调用方填。
  */
 Expr *exprIntNew(Arena *a, long long value, int line);
+/**
+ * @brief 造一个浮点字面量节点。
+ *
+ * @param a     拥有节点的 arena。
+ * @param value 字面量的值（`f64`）。
+ * @param line  行号。
+ * @return      一个 `EX_FLOAT` 节点，类型由检查器按上下文决定。
+ */
+Expr *exprFloatNew (Arena *a, double value, int line);
 
 /**
  * @brief 造一个 `EX_CALL` 节点：被调者填好、实参表初始化成空。

@@ -1,0 +1,13 @@
+// 整数元素同样折：注解 `i64` 与元素类型同名时保留（累加器就是元素类型）。
+// expect: s=16
+use std::io
+use stl::seq
+
+fn main() -> i32 {
+    let n: i64 = 4
+    var tmp: mut slice<i64> = new i64[n]
+    for i in 0..n { tmp[i] = i * 2 + 1 }
+    let s: i64 = seq::sum(tmp) ?? 0
+    io::cout << "s=" << s << "\n"
+    return 0
+}

@@ -192,6 +192,20 @@ Expr *exprBinNew(Arena *a, const char *op, Expr *left, Expr *right, int line) {
 }
 
 /**
+ * @brief 造一个浮点字面量节点。
+ *
+ * @param a     拥有节点的 arena。
+ * @param value 字面量值（同时存进 `u.fval`，`f64`）。
+ * @param line  源码行号（1 起）。
+ * @return      新 `EX_FLOAT` 节点；`type` 留给调用方填。
+ */
+Expr *exprFloatNew(Arena *a, double value, int line) {
+    Expr *e = exprNew(a, EX_FLOAT, line);
+    e->u.fval = value;
+    return e;
+}
+
+/**
  * @brief 造一个整数字面量节点。
  *
  * @param a     拥有节点的 arena。
@@ -472,14 +486,14 @@ Expr *exprUnNew(Arena *a, const char *op, Expr *operand, int line) {
 }
 
 /**
- * @brief 造赋值语句 `target op= value`。
+ * @brief 造一条赋值语句（`target = value`，`op` 为空表示普通赋值）。
  *
  * @param a      分配用的 arena。
  * @param target 赋值目标。
  * @param value  右值。
- * @param op     复合赋值运算符；普通 `=` 传 NULL。
+ * @param op     复合赋值的运算符文本（`"+="` 等）；普通赋值传 `NULL`。
  * @param line   挂到节点上的源码行。
- * @return       新的 `ST_ASSIGN` 节点。
+ * @return       新的 `ST_ASSIGN` 节点，`opExpr` 留给检查器。
  */
 Stmt *stmtAssignNew(Arena *a, Expr *target, Expr *value, const char *op, int line) {
     Stmt *s = stmtNew(a, ST_ASSIGN, line);

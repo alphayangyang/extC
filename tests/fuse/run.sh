@@ -45,7 +45,7 @@ check_pos() {
     gen_c "$f" "$tmp/pos.c" || return
     local gone=1
     for view in "$@"; do
-        if grep -q "slice_f64 $view" "$tmp/pos.c"; then bad "$name：融合后 $view 还在"; gone=0; fi
+        if grep -qE "slice_[a-z0-9]+ $view\b" "$tmp/pos.c"; then bad "$name：融合后 $view 还在"; gone=0; fi
     done
     [ "$gone" -eq 1 ] && ok "$name 融合后临时视图已消失"
 }
@@ -54,6 +54,8 @@ echo "== 正例：S2 归约融合（写循环 + 累加器循环）与 S3（两�
 check_pos fuse/reduce tests/fuse/reduce.extc "cs=38.000" tmpv
 check_pos fuse/stream tests/fuse/stream.extc "cs=38.000" tmpv tv2
 check_pos fuse/stream_ext tests/fuse/stream_ext.extc "cs=64" tv1 tv2
+check_pos fuse/sum_call tests/fuse/sum_call.extc "s=22" tmp
+check_pos fuse/sum_call_i64 tests/fuse/sum_call_i64.extc "s=16" tmp
 
 echo "== 反例：不满足资格时不许融合（临时视图仍在）且输出正确 =="
 check_neg() {   # check_neg <名字> <文件> <期望输出>
@@ -70,6 +72,7 @@ check_neg fuse/neg_reduce_mul   tests/fuse/neg_reduce_mul.extc   "p=1.5000"
 check_neg fuse/neg_reduce_order tests/fuse/neg_reduce_order.extc "cs=5.000"
 check_neg neg_reduce_order tests/fuse/neg_reduce_order.extc "cs=5.000"
 check_neg neg_container_expr tests/fuse/neg_container_expr.extc "acc=20"
+check_neg neg_sum_fallback tests/fuse/neg_sum_fallback.extc "s=-1"
 
 rm -rf "$tmp"
 [ "$fail" -eq 0 ]
