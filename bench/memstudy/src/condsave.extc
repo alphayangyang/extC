@@ -1,0 +1,29 @@
+// 条件保存：每轮新建节点、写进同一个长命槽 —— 真正的活集永远是 1 个。
+// 判据：峰值内存有界且与轮数无关（没有回收时随轮数线性增长）。
+use std::io
+
+struct node { value: i64  next: ?ref node }
+
+fn parseI64(s: slice<u8>) -> i64 {
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len { var c: u8 = s[i]  if c < u8(48) { break }  if c > u8(57) { break }  v = v * 10 + i64(c) - 48  i = i + 1 }
+    return v
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var n: i64 = 1000000
+    if args.len > 1 { n = parseI64(args[1]) }
+    var saved: ?ref node = null
+    var i: i64 = 0
+    while i < n {
+        var p = new node
+        p.value = i
+        if i % 3 == 0 { saved = p }
+        i = i + 1
+    }
+    var last: i64 = 0
+    if saved != null { last = saved.value }
+    io::cout << "n=" << n << " last=" << last << "\n"
+    return 0
+}

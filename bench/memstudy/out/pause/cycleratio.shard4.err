@@ -1,0 +1,8 @@
+[pause] collects=162 max_us=4.2 total_us=97.0
+[step] n=5346 max_us=35.3 total_us=7303.1 over16=4 over64=0 over256=0 over1ms=0
+[work] n=972 walk_max=256 scan_max=178 push_max=256 walk_gt16=810 walk_gt64=810 walk_gt256=0 scan_gt16=324 scan_gt64=244 scan_gt256=0 push_gt16=162 push_gt64=162 push_gt256=0
+[wbudget] W=0 tot_max=430 assist_max=15 mscap_max=1024 msp_max=272
+[worst] kind=sweep why=alloc budget=8 dur_us=35.3 pops=-1 marked=-1 words=-1 pushes=-1 sweep_words=8 freed=512
+[ubwork] mark_n=0 walk_max=0 scan_max=0 push_max=0 sweep_n=0 sw_words_max=0 sw_freed_max=0 settle_n=0 collect_n=0 release_n=0 other_n=0
+[guard] r4_wb_open=0
+extc_rc_stats rs_inc=400000 rs_dec=399744 rs_live=256 rs_hwm=257 releases=0 release_slots=0

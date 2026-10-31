@@ -1,0 +1,34 @@
+// 写密集（纯指针赋值）：两个长命节点互指，循环里每轮写两次引用字段。
+// 活集恒为 2 个对象 ⇒ 分配与清扫可忽略，量到的是"指向关系改变"这条热路。
+use std::io
+
+struct node { value: i64  next: ?ref node }
+
+fn parseI64(s: slice<u8>) -> i64 {
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len { var c: u8 = s[i]  if c < u8(48) { break }  if c > u8(57) { break }  v = v * 10 + i64(c) - 48  i = i + 1 }
+    return v
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var m: i64 = 40000000
+    if args.len > 1 { m = parseI64(args[1]) }
+    var a: mut ref node = new node
+    var b: mut ref node = new node
+    a.value = 1
+    b.value = 2
+    var sum: i64 = 0
+    var j: i64 = 0
+    while j < m {
+        a.next = b
+        b.next = a
+        sum = (sum + a.value) & 4611686018427387903
+        j = j + 1
+    }
+    let back: ?ref node = a.next
+    var hit: i64 = 0
+    if back != null { hit = back.value }
+    io::cout << "m=" << m << " sum=" << sum << " hit=" << hit << "\n"
+    return 0
+}
