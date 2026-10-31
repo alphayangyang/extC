@@ -345,13 +345,13 @@ Type *ttResolve(TypeTable *tt, Ctx *ctx, Type *t, int line, Vec *params) {
 
             if (base->kind == TY_STRUCT && base->sdef && base->sdef->typeParams.len > 0) {
                 ctxError(ctx, line, 1,
-                         "a generic needs explicit type arguments, e.g. `%s<i32>`",
+                         "a generic needs explicit type arguments, e.g. `Pair<i32, i32>`",
                          "`%s` is generic and needs type arguments", t->name);
                 return tt->tError;
             }
             if (base->kind == TY_ENUM && base->edef && base->edef->typeParams.len > 0) {
                 ctxError(ctx, line, 1,
-                         "a generic needs explicit type arguments, e.g. `%s<i32>`",
+                         "a generic needs explicit type arguments, e.g. `Pair<i32, i32>`",
                          "`%s` is generic and needs type arguments", t->name);
                 return tt->tError;
             }

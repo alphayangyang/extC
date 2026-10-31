@@ -4,9 +4,9 @@ use stl::seq
 use stl::string
 
 fn main() -> i32 {
-    var v: mut slice<i64> = new i64[16]
+    var v = new i64[16]
     for i in 0..16 { v[i] = (i * 7 + 3) % 23 }
-    let sum: i64 = seq::sum(v) ?? 0
+    let sum = seq::sum(v) ?? 0
     println(f"sum={sum} min={seq::min(v) ?? 0} max={seq::max(v) ?? 0} avg={sum / 16}")
     return 0
 }

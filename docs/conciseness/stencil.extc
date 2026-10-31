@@ -2,8 +2,8 @@
 use std::io
 
 fn main() -> i32 {
-    var a: mut slice<i64> = new i64[64]
-    var b: mut slice<i64> = new i64[64]
+    var a = new i64[64]
+    var b = new i64[64]
     for i in 0..64 { a[i] = (i * 13 + 5) % 17 }
     for _ in 0..10 {
         for k in 1..63 { b[k] = (a[k - 1] + a[k] + a[k + 1]) / 3 }
