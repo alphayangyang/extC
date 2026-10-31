@@ -1,0 +1,20 @@
+// expect: p=hi|c=7|done
+//
+// `std::io` 的门面验收：公开面仍然只是一扇门，实现却分在三个文件里
+// （`std/io.extc` 流本体、`std/io/fmt.extc` 格式化、`std/io/err.extc` 诊断）。
+// 这里只 `use std::io::{…}`（值名要列出来）：`fmtI64Fast` / `FMT` / `cerr` / `eprintln`
+// 都是门面再导出的名字，必须照常可用
+// —— 用户代码不因为实现搬家而改一行。
+use std::io::{FMT, cerr, eprintln, fmtI64Fast, println}
+
+fn main() -> i32 {
+    print("p=hi\n")
+    let st: i64 = fmtI64Fast(i64(7))
+    print("c=")
+    print(FMT[st..24])
+    print("\n")
+    cerr << "e=diag\n"
+    eprintln("e2")
+    println("done")
+    return 0
+}

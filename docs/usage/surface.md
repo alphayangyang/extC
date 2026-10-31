@@ -50,21 +50,27 @@
 ## std::io
 
 - `-.accDigit`（方法）
-- `-.errWrite`（方法）
 - `-.fillState`（方法）
-- `-.flushCout`（方法）
-- `-.fmtI64`（方法）
-- `-.fmtI64Fast`（方法）
 - `-.isSpaceByte`（方法）
 - `-.nextI64State`（方法）
-- `-.pFillBytes`（方法）
-- `-.pFmtF`（方法）
-- `-.pPadText`（方法）
-- `-.pairsReady`（方法）
 - `reader.chunk`（字段）
 - `reader.newlineAfter`（方法）
 - `writer.buf`（字段）
 - `writer.cap`（方法）
+
+## std::io::err
+
+- `-.errWrite`（方法）
+
+## std::io::fmt
+
+- `-.flushCout`（方法）
+- `-.fmtI64`（方法）
+- `-.fmtI64Fast`（方法）
+- `-.pFillBytes`（方法）
+- `-.pFmtF`（方法）
+- `-.pPadText`（方法）
+- `-.pairsReady`（方法）
 
 ## std::json
 

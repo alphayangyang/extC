@@ -1,9 +1,12 @@
-// expect: t=8|s=7|n=9
+// expect: t=8|s=7|n=9|g=15
 use std::io
 use api
+// 裸名：门面再导出的值名也要能直接写（全局量走同一条所有者解析）
+use api::{scale, twice}
 
 fn main() -> i32 {
     io::println(f"t={api::twice(4)} s={api::pair2Sum(api::pair2 { a: 3, b: 4 })}")
     io::println(f"n={api::twice(4) + 1}")
+    io::println(f"g={twice(scale) + scale}")
     return 0
 }

@@ -635,7 +635,7 @@ static ModUnit *pubNameOwner(Loader *L, ModUnit *u, const char *name, int depth)
         if (!pu->isPub || pu->wildcard || pu->names.len == 0 || !pu->file) continue;
         for (size_t k = 0; k < pu->names.len; k++) {
             if (strcmp(*(const char **)vecAt(&pu->names, k), name) != 0) continue;
-            ModUnit *owner = findUnit(L, pu->file);
+            ModUnit *owner = pu->unit ? (ModUnit *)pu->unit : findUnit(L, pu->file);
             if (owner) return owner;
         }
     }
@@ -1572,6 +1572,15 @@ static const char *openLookup(ModUnit *self, const char *name, int line) {
         if (!u->wildcard && !useListHas(u, name)) continue;
         ModUnit *dep = (ModUnit *)u->unit;
         const char *flat = renLookup(dep, name);
+        ModUnit *owner;
+        /* 门面模块自己不声明成员，只 `pub use` 实现模块的名字：`use std::io::{cerr}` 里
+         * `cerr` 的所有者是 `std::io::err`。与限定名那条路一样，这里也要走到所有者再查表，
+         * 否则裸名会「导入了一个再导出的名字却仍然未定义」。 */
+        if (!flat) {
+            owner = pubNameOwner(NULL, dep, name, 0);
+            if (owner) flat = renLookup(owner, name);
+            if (owner && flat) dep = owner;
+        }
         if (!flat) continue;
         if (!unitExports(dep, flat)) {
             /* The name is there, but `@private`. Saying "undefined" here would send the

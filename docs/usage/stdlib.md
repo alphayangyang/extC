@@ -7,7 +7,7 @@
 
 | 你写 | 得到什么 |
 |---|---|
-| `use std::io` | 控制台与文件 I/O |
+| `use std::io` | 控制台与文件 I/O（**门面**：实现分在 `std/io.extc`、`std/io/fmt.extc`、`std/io/err.extc`） |
 | `use stl::map` | 有序映射容器 |
 | `use std::hash::sha256` | SHA-256 |
 | `use std::coro::scheduler` | 协程调度器 |
@@ -16,7 +16,8 @@
 （标准库目录 = `$EXTC_STD`，没设就是 `extc` 可执行文件旁边的 `../stdlib`）。
 出错时编译器把这些候选原样列出来。
 
-**一个文件 = 一个模块**，目录本身不是模块：
+**一个文件一个模块**：文件名默认就是模块名，文件第一行可以写 `module a::b` 改它的
+**身份**（生成 C 的前缀随之变），路径仍只负责找文件。目录本身不是模块：
 
 ```text
 $ extc --build -o /dev/null std-d-e6.extc        # 文件里写 `use alpha2`，磁盘上只有 alpha2/inner.extc

@@ -72,6 +72,16 @@ module std::io::fmt
 会把简洁度吃回去；值名不随模块来是因为函数名太容易撞（`new`、`hash`、`push`），
 静默带进来会让两个模块的 `push` 悄悄选一个。
 
+### 1.2c 裸名也从门面走：值名、全局量、类型一视同仁
+
+`use api::{name}` 与 `use api::*` 的裸名解析沿**所有者**走：`api` 只是发布名字的门面时，
+`name` 按其真正的声明者查表：限定名与裸名共用同一张所有者表。
+裸名因此不会停在门面上 —— 门面只是发布名字，不是声明的家。
+
+判据：`tests/modules/facade/` 里 `use api::{scale, twice}` 后裸名可直接调用
+（`scale` 是全局量、`twice` 是函数），`tests/modules/io-split/` 里
+`use std::io::{fmtI64Fast, FMT, cerr}` 同样成立。
+
 ### 1.2b 门面：`pub use` 再导出
 
 一个模块可以把自己导入的名字**再导出**给导入它的人：
