@@ -492,6 +492,9 @@ var g, h: i32               // 零初始化：两个都是 0
   `let v = a[1..3]` 得到 `slice<i32>`，写它报
   `` cannot write through `v`: it is a read-only view `slice<i32>` ``。
 - 编译器能证明的界不生成检查（`a[0..3]`）；界是变量时生成带检查的 helper。
+- **字面量切片的深度是 0**：`let k: slice<u8> = "…"` 的存储是静态存储期（与全局同寿），
+  所以绑成 `let` 之后可以跨 `yield` / `ext` 使用；局部数组的视图跨 `yield` 仍然被拒
+  （那才是"指向别人栈帧"）。
 - **容器在视图参数上自动借出**：只读参数上 `total(va)`（`varArray<T>`）等价于
   `total(va.asSlice())`、`total(a)`（`[N]T`）等价于 `total(a[..])`；可写参数
   （`mut slice<T>`）上 `fill(va)` 等价于 `fill(va.asMutSlice())`、`fill(a)` 等价于
@@ -603,6 +606,33 @@ fn main() -> i32 {
 切 token、没有行号，遇到坏输入只能拿到 `cin.bad`。要在两种之间选时，默认选上一段那种。
 
 ---
+
+### 7.6 相邻循环的融合（临时视图消失）
+
+写法和没有融合时**一字不差**，只是编译器把"写进临时视图、下一段再整块读"的两段合并成一个循环：
+
+<!-- fragment -->
+```extc
+use std:io
+
+fn pipeline(a: slice<f64>, b: slice<f64>, out: mut slice<f64>) {
+    var tmpv = new f64[a.len]
+    for i in 0..a.len { tmpv[i] = a[i] * 2.0 + b[i] }
+    for i in 0..out.len { out[i] = tmpv[i] * 0.5 }
+}
+```
+
+- **形状**：第一段只写 `tmpv[i] = <纯表达式>`；第二段与它**相邻**、同一迭代空间（变量名与
+  上下界相同）；`tmpv` 在第二段里只以 `tmpv[i]` 的形式读、第二段写的是别的视图；`tmpv` 在本块
+  其它地方没被用到。命中就合成一个循环，临时视图连分配一起消失。
+- **归约也折得进去**：第二段是 `let s = seq::sum(tmpv) ?? 0`（或 `seq::max/min`、或
+  `for v in tmpv { acc = acc + v }`）时，累加直接进写循环，读一遍、不留临时数组。
+- **判据**：两臂输出逐字节相同（`--no-fuse` 关掉融合做对照）；融合臂生成 C 里查不到那个临时视图；
+  反例（`tmpv` 在别处被用、读的下标不同、右值里有调用）必须**不**融合。
+- **边界**：只看同一个块里**相邻**的语句；不跨函数调用、不跨 `par`；容器形式只认 `+` 与"元素本身"。
+
+`bench/fusion`（n=1048576、iters=8，`-O2`）实测：元素链 `fused/unfused` 0.54（快 1.86×），
+流式归约 0.16（快 6.03×），与手写融合的差在两个百分点内。
 
 ## 8. 内存模型
 
