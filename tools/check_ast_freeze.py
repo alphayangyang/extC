@@ -73,10 +73,12 @@ def main():
     members = node_members() - AMBIGUOUS_NAMES
     violations = collections.Counter()
     detail = collections.defaultdict(list)
+    scanned = 0
     for path in cscan.src_files(ROOT, (".c",)):
         name = os.path.basename(path)
         if name in BUILDERS:
             continue
+        scanned += 1
         rel = cscan.rel(ROOT, path)
         code = cscan.strip(open(path, encoding="utf-8").read())
         for m in re.finditer(r"(?:->|\.)\s*([A-Za-z_]\w*)\b", code):
@@ -97,7 +99,7 @@ def main():
         return 0
     if a.verbose:
         print("AST 节点专属成员 %d 个；parser/plan/types 之外的文件 %d 个；直接写 AST 的处数："
-              % (len(members), len(files)))
+              % (len(members), scanned))
         for k, n in violations.most_common():
             print("   %-40s %d" % (k, n))
     return ratchet.check(fails, "ast-freeze")
