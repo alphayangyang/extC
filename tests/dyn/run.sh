@@ -31,6 +31,28 @@ out=$("$EXTC" -w --run tests/dyn/dyn_in_field.extc 2>&1)
 out=$("$EXTC" -w --run tests/dyn/dyn_in_array.extc 2>&1)
 [ "$out" = "arr=106" ] && ok dyn_in_array "dyn 进定长数组，两种实现混存（$out）" || bad dyn_in_array "期望 arr=106，实得：$out"
 
+# `dyn` payload 的池诞生在**写下这个值的地方**：直接写在循环体里交给容器 ⇒ 块退出即归还，
+# 句柄陈旧（运行期 trap，不是静默错值）；赋给外层声明的变量再交出去 ⇒ 池被提升，正确。
+out=$("$EXTC" -w --run tests/dyn/dyn_payload_inline_block.extc 2>&1)
+[ "$out" = "inline-sum=6" ] && ok dyn_payload_inline_block "循环里先赋给外层变量再 push（池提升）" \
+                            || bad dyn_payload_inline_block "期望 inline-sum=6，实得：$out"
+tmp=$(mktemp -d)
+if "$EXTC" -w --no-line-map -o "$tmp/s.c" tests/dyn/dyn_payload_inline_stale.extc >"$tmp/cc" 2>&1; then
+    if ${CC:-cc} -O1 -std=c11 "$tmp/s.c" -o "$tmp/s" >"$tmp/cc2" 2>&1; then
+        "$tmp/s" >"$tmp/out" 2>"$tmp/err"; rc=$?
+        if [ "$rc" -ne 0 ] && grep -q 'stale `dyn` value' "$tmp/err"; then
+            ok dyn_payload_inline_stale "直接写在循环体里交给容器 ⇒ 运行期 trap（rc=$rc）"
+        else
+            bad dyn_payload_inline_stale "rc=$rc out=[$(tr '\n' ' ' <"$tmp/out")] err=[$(head -1 "$tmp/err")]"
+        fi
+    else
+        bad dyn_payload_inline_stale "C 编译失败：$(head -2 "$tmp/cc2" | tr '\n' ' ')"
+    fi
+else
+    bad dyn_payload_inline_stale "extC 编译失败：$(head -2 "$tmp/cc" | tr '\n' ' ')"
+fi
+rm -rf "$tmp"
+
 # 值逃出 place 的**正确**处置：能提升就提升（home-zone 提升），提升不了才在派发时 trap
 out=$("$EXTC" -w --run tests/dyn/dyn_promoted_return.extc 2>&1)
 [ "$out" = "escaped=88" ] && ok dyn_promoted_return "函数返回的 dyn 值被提升进调用者的 place（$out）" \
