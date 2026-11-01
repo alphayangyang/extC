@@ -752,7 +752,7 @@ bool exprIsFrameStorage(Checker *c, Expr *e) {
         return exprIsFrameStorage(c, e->u.index.obj);
     case EX_IDENT: {
         Sym *s = lookup(c, e->u.ident.name);
-        return s && s->frameStore;
+        return s && (s->frameStore || s->stableView);
     }
     default:
         return false;

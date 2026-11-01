@@ -49,9 +49,13 @@ run_case basic
 run_case loop
 run_case slice_new
 
-echo "== 判据有牙：越界在取引用处 trap；跨帧返回、容器视图被拒 =="
-trap_case oob
+echo "== 正例：借用窗口里的元素引用 =="
+run_case borrow
+
+echo "== 判据有牙：窗口内不许 resize；越界在取引用处 trap；跨帧返回、容器视图被拒 =="
+check_err borrow_no_resize "no method"
 check_err escape_unsupported "this return value would hold a reference to a local variable that dies first"
+trap_case oob
 check_err view_unsupported "cannot take a reference to an element of this view"
 
 echo

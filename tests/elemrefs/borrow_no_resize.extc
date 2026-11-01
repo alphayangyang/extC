@@ -1,0 +1,13 @@
+// The shadowed name inside a `borrow` window is a read-only view, so a resize is an ordinary
+// "no such method" error: the storage must not move while a reference points into it.
+use std::io
+
+fn main() -> i32 {
+    var v: varArray<i64> = varArray<i64>::withCap(4)
+    v.push(1)
+    borrow v as e {
+        v.push(2)
+        io::println(f"e0={e[0]}")
+    }
+    return 0
+}
