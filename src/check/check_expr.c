@@ -842,6 +842,44 @@ static FuncDef *lambdaCallMethod(Type *pt) {
 }
 
 /**
+ * @brief Whether a value of this type is a self-contained copy -- no pointer into anyone's storage.
+ *
+ * The payload of a `dyn` value lives in a slot on a plate; nothing about it is region-checked, so a
+ * pointer inside it would outlive whatever it points at without the analysis noticing. Only plain
+ * scalars, `fn` pointers (code, not storage), fixed arrays of those, and structs whose fields are all
+ * of those qualify; references, views, `dyn` handles, enums with payloads and generic instances are
+ * refused. The recursion is capped: a struct nested deeper than the cap is refused rather than
+ * examined further, since the conservative answer is the safe one.
+ *
+ * @param t      The captured value's type.
+ * @param depth  Recursion depth (refused past four levels of struct nesting).
+ * @return       true when every byte of the value is the value's own.
+ */
+static bool captureOwnsItsBytes(Type *t, int depth) {
+    if (!t || depth > 4) return false;
+    if (t->kind == TY_REF || t->kind == TY_DYN) return false;
+    if (ttIsViewType(t)) return false;
+    switch (t->kind) {
+    case TY_BUILTIN: return !ttIsViewType(t);
+    case TY_FN:      return true;
+    case TY_ARRAY:   return captureOwnsItsBytes(t->inner, depth + 1);
+    case TY_STRUCT: {
+        if (!t->sdef) return false;
+        for (size_t i = 0; i < t->sdef->fields.len; i++) {
+            FieldDef *fd = *(FieldDef **)vecAt(&t->sdef->fields, i);
+            if (!captureOwnsItsBytes(fd->type, depth + 1)) return false;
+        }
+        return true;
+    }
+    default:
+        /* kind-default: every other kind -- a `ref`, a `dyn` handle, an enum with a payload, a generic
+         * instance -- either points outside the value or is refused above; only a self-contained copy
+         * may be a `dyn` payload, and the conservative answer for a shape nobody listed is "no". */
+        return false;
+    }
+}
+
+/**
  * @brief Whether a lambda can be a `dyn` payload for a callable trait -- signature and captures.
  *
  * Reported diagnostics: a capture that is not a plain value (the payload would point at a frame),
@@ -857,17 +895,18 @@ static bool lambdaCallMatches(Checker *c, TraitDef *tr, Type *pt, int line) {
     StructDef *sd = pt->sdef;
     for (size_t i = 0; i < sd->fields.len; i++) {
         FieldDef *fd = *(FieldDef **)vecAt(&sd->fields, i);
-        /* The **unwrapped** type matters here: `ttBase` strips a `ref`, and a captured reference is
-         * exactly the shape that must be refused. */
-        Type *raw = fd->type;
-        if (!raw || raw->kind == TY_REF || raw->kind == TY_DYN || ttIsViewType(raw)) {
+        if (!captureOwnsItsBytes(fd->type, 0)) {
             ckError(c, line,
                     "A `dyn` value is a `{pool, slot, generation}` handle; it cannot describe a"
                     " lifetime, so the payload has to own everything it reads. A closure that"
-                    " captures a reference or a view would leave the payload pointing into a frame.",
+                    " captures a reference, a view, or a value containing one would leave the"
+                    " payload pointing into a frame.",
                     "this closure captures %s, so it cannot be kept in a `dyn` value",
-                    raw->kind == TY_REF || ttIsViewType(raw)
-                        ? "a reference" : "a dynamically dispatched value");
+                    (fd->type && fd->type->kind == TY_REF) || (fd->type && ttIsViewType(fd->type))
+                        ? "a reference"
+                        : (fd->type && fd->type->kind == TY_DYN
+                               ? "a dynamically dispatched value"
+                               : "a value that contains a reference"));
             return false;
         }
     }

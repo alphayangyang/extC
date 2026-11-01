@@ -65,6 +65,7 @@ neg dyn-callable-view      "$(src dyn_callable_view.extc)" "this closure capture
 one dyn-callable-safety    "$(src dyn_callable_safety.extc)" "12 1 3"
 one generic-thunk          "$(src generic_thunk.extc)"      "3 4 4 20"
 neg dyn-callable-dyncap    "$(src dyn_callable_dyncap.extc)" "this closure captures a dynamically dispatched value"
+neg dyn-callable-nested    "$(src dyn_callable_nested.extc)" "a value that contains a reference"
 
 # 跨模块：**模块文件**里的闭包，体内调用同模块函数（曾经静默返回 0，无诊断）
 modcase() { # name dir want

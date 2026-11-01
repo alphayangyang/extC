@@ -1,0 +1,17 @@
+// 结构体按值捕获本来可以进 `dyn`，但当结构体里**含有视图/引用**时不行：拷贝的只是结构体的
+// 字节，视图指针仍指向某个帧，载荷离开那个帧就是悬垂读。这类传递性的“含有引用”也要拒。
+// expect: error: this closure captures a value that contains a reference, so it cannot be kept in a `dyn` value
+use std::io
+
+trait IntFn { fn call(self: ref Self, a: i64) -> i64 }
+
+struct holder { v: slice<i64>  n: i64 }
+
+fn main() -> i32 {
+    var buf: [4]i64 = [1, 2, 3, 4]
+    var h: holder = holder { v: buf[..], n: 7 }
+    let f = fn(x: i64) -> i64 { return x + h.n }
+    var d: dyn IntFn = dyn IntFn(f)
+    io::cout << d.call(1) << "\n"
+    return 0
+}
