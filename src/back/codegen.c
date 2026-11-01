@@ -10238,7 +10238,7 @@ static void deadFuncBody(CG *g, FuncDef *f, size_t off, size_t len) {
          * complete. */
         df->off = off;
         df->len = len;
-        df->namedByDynTable = planDynTable(f);   /* see the field */
+        df->namedByDynTable = df->namedByDynTable || planDynTable(f);   /* see the field */
         return;
     }
 }
@@ -12520,10 +12520,17 @@ static void emitProtos(CG *g, Module *m, Arena *arena) {
         /* An exported function is registered like `main`: nowhere. The pruners drop a definition
          * only when its name occurs nowhere but its own declaration and definition, and a symbol
          * C calls is mentioned by nobody in this file -- so registering it would delete it. */
-        if (!entry && !f->isExtern && !f->isExport && !inTraitTable(m, f)) {
+        if (!entry && !f->isExtern && !f->isExport) {
             DeadFunc *df = arenaAllocZero(g->arena, sizeof *df);
             df->name  = cFuncName(g, f);
             df->proto = bufCstr(&sig);
+            /* A method a `dyn` table names is still registered: the table is spliced in after the
+             * "definitions nothing names" pass, so that pass cannot see the reference, and
+             * `namedByDynTable` is how it is told to keep the body. Registering it also matters for
+             * the parameter pass -- an entry with no body is skipped there, and then a method that
+             * ignores `self` (the ordinary shape of a trait implementation) fails the generated C
+             * with `-Werror=unused-parameter`. */
+            df->namedByDynTable = planDynTable(f) || inTraitTable(m, f);
             *(DeadFunc **)vecPush(&g->deadFuncs) = df;
         }
         substLeave(g, sv);

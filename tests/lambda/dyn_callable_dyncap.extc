@@ -1,0 +1,14 @@
+// 捕获一个 `dyn` 值再塞进另一个 `dyn`：载荷里就带了一个池句柄，同样表达不了生命周期，
+// 与捕获引用一样被拒。
+// expect: error: this closure captures a dynamically dispatched value, so it cannot be kept in a `dyn` value
+use std::io
+
+trait IntFn { fn call(self: ref Self, a: i64) -> i64 }
+
+fn main() -> i32 {
+    var inner: dyn IntFn = dyn IntFn(fn(x: i64) -> i64 { return x + 1 })
+    let f = fn(x: i64) -> i64 { return inner.call(x) + 1 }
+    var outer: dyn IntFn = dyn IntFn(f)
+    io::cout << outer.call(1) << "\n"
+    return 0
+}

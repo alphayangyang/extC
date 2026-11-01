@@ -1,0 +1,15 @@
+// 捕获视图的闭包同样不能进 `dyn`：视图是帧内缓冲区的指针，载荷一旦存进 dyn，
+// 帧退出后派发就是悬垂读。
+// expect: error: this closure captures a reference, so it cannot be kept in a `dyn` value
+use std::io
+
+trait SliceFn { fn call(self: ref Self, a: i64) -> i64 }
+
+fn main() -> i32 {
+    var buf: [4]i64 = [1, 2, 3, 4]
+    var v: slice<i64> = buf[..]
+    let f = fn(x: i64) -> i64 { return x + v[0] }
+    var d: dyn SliceFn = dyn SliceFn(f)
+    io::cout << d.call(1) << "\n"
+    return 0
+}

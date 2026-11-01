@@ -44,12 +44,11 @@ neg "没有上下文也没有实参见证时仍然报推不出来" "$(src t_gen_
 one "main 掉出末尾 = C 的隐式 return 0（不许 trap）" "$(src t_main_falls_off.extc)" "sum=6"
 one "显式类型实参喂推断（T 只在返回类型 / 实参不提 T）" "$(src t_explicit_targs.extc)" "a=0 b=2 c=4"
 one "泛型协程：实例有自己的帧、协议方法按实例替换（B7+F4）" "$(src t_generic_coro.extc)" "sum=8"
-# 反向金丝雀：实现体不读 `self` 时，dyn 表保住的实现不会被"未用参数"那趟看到
-# （markUnusedParams 只遍历 g.deadFuncs）⇒ 今天**必须**失败。修好那天它会变绿，这条就会报出来。
-if "$EXTC" -w --no-line-map -o "$tmp/m.c" "$(src t_dyn_multi.extc)" 2>/dev/null &&
-   gcc -O2 -std=c11 -fwrapv -Wall -Wextra -Werror -o "$tmp/m" "$tmp/m.c" 2>/dev/null; then
-  bad "dyn 多方法（金丝雀）" "已经能编过了 ⇒ 该把这条改成 one 用例（L 债已修）"
-else ok "dyn 多方法（金丝雀）" "如预期仍失败（L 债：未用 self 触发 -Werror）"; fi
+# 金丝雀转正：实现体不读 `self` 时，dyn 表保住的实现过去不会被"未用参数"那趟看到
+# （markUnusedParams 只遍历 g.deadFuncs，而被 dyn 表命名的实现没有登记）⇒ `-Werror=unused-parameter`
+# 会让产物编不过。现在这类实现也登记进 deadFuncs（并标 `namedByDynTable` 让剪枝留住），
+# 所以它是一条正常的 one 用例。
+one "dyn 多方法（未用 self 也必须能编过）" "$(src t_dyn_multi.extc)" "36 7"
 neg "slice<i64> 上没有 u8 的方法" "$(src t_isolate.extc)"   "no method"
 neg "未绑定参数仍被拒"             "$(src t_unbound.extc)"   "unknown type"
 neg "块级参数名与声明不一致要报清楚" "$(src t_gen_badname.extc)" "type parameters must match"

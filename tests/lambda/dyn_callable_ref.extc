@@ -1,0 +1,14 @@
+// 捕获引用的闭包不能放进 `dyn`：`dyn` 值只有 {pool, slot, generation}，表达不了生命周期，
+// 载荷一旦指向某个帧，帧退出后派发就会读到悬垂的指针。
+// expect: error: this closure captures a reference, so it cannot be kept in a `dyn` value
+use std::io
+
+trait IntFn { fn call(self: ref Self, a: i64) -> i64 }
+
+fn main() -> i32 {
+    var hits: i64 = 0
+    let f = fn(x: i64) [mut ref hits] -> i64 { hits = hits + 1  return x + hits }
+    var d: dyn IntFn = dyn IntFn(f)
+    io::cout << d.call(1) << "\n"
+    return 0
+}

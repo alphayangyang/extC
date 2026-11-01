@@ -326,6 +326,37 @@ fn apply<F>(f: F, v: i64) -> i64 { return f.call(v) }
 
 `apply(add, 1)` 得到 `4`。这条路径按实例静态分发，没有间接跳转；`fn(...)` 那条只有一个代码指针，调用是一次间接跳转。
 
+**同一个容器装不同的闭包**：声明一个只有 `call` 方法的 trait，然后把闭包放进 `dyn`。闭包的环境类型由编译器合成、用户写不出 `impl`，所以这种 trait 的实现由编译器补上（前提是环境里没有引用/视图，那些捕获会被单独拒掉）：
+
+```extc
+// 结果：6 7 85
+use std::io
+
+trait IntFn { fn call(self: ref Self, a: i64) -> i64 }
+
+fn main() -> i32 {
+    var bias: i64 = 5
+    var d: dyn IntFn = dyn IntFn(fn(x: i64) -> i64 { return x + bias })
+
+    var k: i64 = 2
+    var fns: varArray<dyn IntFn> = varArray<dyn IntFn>::withCap(4)
+    fns.push(dyn IntFn(fn(x: i64) -> i64 { return x + k }))
+    fns.push(dyn IntFn(fn(x: i64) -> i64 { return x * 10 }))
+    fns.push(dyn IntFn(fn(x: i64) -> i64 { return x - 1 }))
+
+    var sum: i64 = 0
+    var i: i64 = 0
+    while i < i64(fns.size()) {
+        sum = sum + (fns.get(i)!).call(7)
+        i = i + 1
+    }
+    io::cout << d.call(1) << " " << d.call(2) << " " << sum << "\n"
+    return 0
+}
+```
+
+编译器替闭包补 `impl` 的条件：trait 的整个接口就是一个 `call`（参数个数与类型、返回类型都要与闭包一致），并且闭包的捕获**全是普通值**。捕获了引用或视图的闭包会被拒 —— `dyn` 值是 `{pool, slot, generation}` 句柄，它表达不了"载荷指向某个帧"这件事，存下来就是悬垂指针。
+
 ## 4. 泛型
 
 | 能写 | 例子 |

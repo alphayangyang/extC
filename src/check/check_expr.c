@@ -810,6 +810,98 @@ static Type *checkPoolPrim(Checker *c, Expr *e, Type *elem) {
 }
 
 /**
+ * @brief Whether a trait's whole interface is one `call` method (the shape a closure can satisfy).
+ *
+ * A closure has exactly one method, `call`; a trait with any other name or with a second method
+ * asks for something the compiler cannot synthesise from an environment struct.
+ *
+ * @param c   The checker.
+ * @param tr  The trait.
+ * @return    true when the trait is a one-method `call` interface.
+ */
+static bool traitIsCallable(Checker *c, TraitDef *tr) {
+    (void)c;
+    if (!tr || tr->methods.len != 1) return false;
+    FuncDef *m = *(FuncDef **)vecAt(&tr->methods, 0);
+    return m && m->name && strcmp(m->name, "call") == 0 && m->params.len >= 1;
+}
+
+/**
+ * @brief The synthesised `call` method of a lambda's environment type, or NULL.
+ *
+ * @param pt  The environment type.
+ * @return    The `call` method.
+ */
+static FuncDef *lambdaCallMethod(Type *pt) {
+    if (!pt || !pt->sdef) return NULL;
+    for (size_t i = 0; i < pt->sdef->methods.len; i++) {
+        FuncDef *m = *(FuncDef **)vecAt(&pt->sdef->methods, i);
+        if (m->name && strcmp(m->name, "call") == 0) return m;
+    }
+    return NULL;
+}
+
+/**
+ * @brief Whether a lambda can be a `dyn` payload for a callable trait -- signature and captures.
+ *
+ * Reported diagnostics: a capture that is not a plain value (the payload would point at a frame),
+ * and a signature that does not match the trait's `call`.
+ *
+ * @param c     The checker.
+ * @param tr    The trait (already known to be a one-method `call` interface).
+ * @param pt    The environment type.
+ * @param line  Source line for the diagnostics.
+ * @return      true when the compiler may write `impl tr for pt` itself.
+ */
+static bool lambdaCallMatches(Checker *c, TraitDef *tr, Type *pt, int line) {
+    StructDef *sd = pt->sdef;
+    for (size_t i = 0; i < sd->fields.len; i++) {
+        FieldDef *fd = *(FieldDef **)vecAt(&sd->fields, i);
+        /* The **unwrapped** type matters here: `ttBase` strips a `ref`, and a captured reference is
+         * exactly the shape that must be refused. */
+        Type *raw = fd->type;
+        if (!raw || raw->kind == TY_REF || raw->kind == TY_DYN || ttIsViewType(raw)) {
+            ckError(c, line,
+                    "A `dyn` value is a `{pool, slot, generation}` handle; it cannot describe a"
+                    " lifetime, so the payload has to own everything it reads. A closure that"
+                    " captures a reference or a view would leave the payload pointing into a frame.",
+                    "this closure captures %s, so it cannot be kept in a `dyn` value",
+                    raw->kind == TY_REF || ttIsViewType(raw)
+                        ? "a reference" : "a dynamically dispatched value");
+            return false;
+        }
+    }
+    FuncDef *want = *(FuncDef **)vecAt(&tr->methods, 0);
+    FuncDef *have = lambdaCallMethod(pt);
+    if (!have) return false;
+    if (have->params.len != want->params.len) {
+        ckError(c, line, NULL, "`%s` takes %zu argument%s, but this closure takes %zu",
+                want->name, want->params.len - 1, want->params.len == 2 ? "" : "s",
+                have->params.len - 1);
+        return false;
+    }
+    for (size_t i = 1; i < want->params.len; i++) {
+        Param *wp = *(Param **)vecAt(&want->params, i);
+        Param *hp = *(Param **)vecAt(&have->params, i);
+        if (!wp->type || !hp->type || !ttEquals(ttBase(wp->type), ttBase(hp->type))) {
+            ckError(c, line, NULL,
+                    "the closure is kept in `dyn %s`, so its `call` has to take the types the"
+                    " trait writes", tr->name);
+            return false;
+        }
+    }
+    Type *wr = want->ret ? ttBase(want->ret) : NULL;
+    Type *hr = have->ret ? ttBase(have->ret) : NULL;
+    if (wr && hr && !ttEquals(wr, hr)) {
+        ckError(c, line, NULL,
+                "the closure is kept in `dyn %s`, so its `call` has to return the type the trait"
+                " writes", tr->name);
+        return false;
+    }
+    return true;
+}
+
+/**
  * @brief Resolve the trait named by a `dyn` form and require that the payload implements it.
  *
  * `dyn Trait(x)` (a value) and `dyn Trait(x).m(...)` (the immediate form) share this one helper, because
@@ -856,6 +948,36 @@ static TraitDef *dynTraitOf(Checker *c, const char *traitName, Type *payT, int l
                 planSetUsed(mf, true);
                 planSetDynTable(mf, true);   /* its body is named by the vt thunk, from outside */
             }
+    }
+    /* A **closure** used as a `dyn` payload: its environment type is synthesised by the compiler,
+     * so the user cannot write `impl` for it. There is exactly one shape where the compiler can
+     * write the block itself -- a trait whose whole interface is one `call` method, and a closure
+     * whose synthesised `call` has the same signature. That is the heterogeneous-container case:
+     * `var fns: varArray<dyn IntFn> = ...` holding two different lambdas.
+     *
+     * The capture set has to be **plain values**: a by-value capture of a scalar is a copy, so the
+     * dyn value stays valid wherever it goes. A capture that is a reference or a view would make
+     * the payload point at a frame, and `dyn` values have no way to express that lifetime (they are
+     * `{pool, slot, generation}` handles), so that shape is refused with its own sentence instead
+     * of being left to a runtime accident. */
+    if (!impl && pt && pt->sdef && anLamSig(pt->sdef) && traitIsCallable(c, tr) &&
+        lambdaCallMatches(c, tr, pt, line)) {
+        ImplDef *im = (ImplDef *)arenaAllocZero(c->arena, sizeof *im);
+        im->line = line;
+        im->ctx = c->ctx;
+        im->modName = pt->sdef->modName;
+        vecInit(&im->typeParams, c->arena, sizeof(const char *));
+        vecInit(&im->traitArgs, c->arena, sizeof(Type *));
+        vecInit(&im->typeArgs, c->arena, sizeof(Type *));
+        vecInit(&im->methods, c->arena, sizeof(FuncDef *));
+        planSetImplTrait(im, tr);
+        planSetImplTarget(im, pt);
+        FuncDef *cf = lambdaCallMethod(pt);
+        *(FuncDef **)vecPush(&im->methods) = cf;
+        planSetUsed(cf, true);
+        planSetDynTable(cf, true);
+        *(ImplDef **)vecPush(&c->m->impls) = im;
+        impl = true;
     }
     if (pt && pt->sdef && !impl)
         ckError(c, line, "A `dyn` value names a trait its payload implements, because the"
