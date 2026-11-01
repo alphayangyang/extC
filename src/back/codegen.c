@@ -5526,33 +5526,104 @@ static void arenaDriftCheck(CG *g, Expr *e, const char *what) {
 }
 
 /**
- * @brief Decide whether a block needs a zone of its own.
- *
- * A zone is the side-chain head of the pools created in one `place`. The only thing that needs
- * one is `extc_pool_new`: it registers the new pool on the zone current at the call, and without
- * a zone it returns -1 -- and an unregistered pool is never discarded, its slots are never
- * reused, and `extc_pool_live()` keeps counting a record nobody can reach. So the question is
- * simply "can the code in this block reach `extc_pool_new`?".
- *
- * Only the block's own statements are asked; nested blocks are not entered, because a nested
- * block is itself a place with its own zone and answers for itself. A loop body is such a block,
- * and that is the benefit here -- a loop body that only calls `v.push` does not need a zone per
- * iteration.
- *
- * The answer is transitive through callees (`FuncDef.makesPool`, computed by the checker as a
- * least fixed point): library functions are transparent with respect to `place` -- the one
- * calling `extc_pool_new` is `vector<i32>::withCap`, which registers the pool on the zone of the
- * block that calls *it*.
- *
- * Answering true too often is the safe direction; answering too seldom is not.
- *
- * @param b  The block statement about to be emitted; false when it is NULL or not `ST_BLOCK`.
- * @return   true means this block must be wrapped in a `zoneEnter` / `zoneLeaveTo` pair.
+ * @brief The scan state for "would this expression create its pool in a given place?".
  */
-static bool blockMakesPool(Stmt *b) {
+typedef struct {
+    int  lvl;   /**< The block level whose zone is being questioned. */
+    bool hit;   /**< Some call inside the expression names that place (or names none at all). */
+} ZoneUse;
+
+static bool zoneUseExpr(ZoneUse *u, Expr *e);
+
+/** @brief Child-expression callback that keeps walking until the answer is known. */
+static bool zoneUseChild(void *ctx, Expr *e) {
+    return !zoneUseExpr((ZoneUse *)ctx, e);
+}
+
+/**
+ * @brief Would any call inside this expression create a pool in zone @p u->lvl ?
+ *
+ * `planZoneLevel` is the checker's answer to "which place this call's pool is born in": a level
+ * of `k >= 1` names `__extc_zm<k>`, `ZONE_HOME` names the place this function received, and 0
+ * means the checker recorded nothing -- `zoneArgRef` then passes the innermost zone that is
+ * actually pushed, which is never the block that would skip its own push. Only `u->lvl` asks for
+ * this block's zone.
+ *
+ * @param u  Scan state; `u->hit` is set when the answer is yes.
+ * @param e  Expression to walk; NULL leaves the answer alone.
+ * @return   `u->hit` after the walk.
+ */
+static bool zoneUseExpr(ZoneUse *u, Expr *e) {
+    if (!e) return u->hit;
+    if (e->kind == EX_DYN) {
+        /* A `dyn Trait(x)` construction registers the payload pool on the place the checker
+         * recorded for the site (`setCallZoneArg`), and the emission passes that same zone to
+         * `extc_dyn_put`. When it is this block, the block has to push it. */
+        if (planZoneLevel(e) == u->lvl) u->hit = true;
+    }
+    if (e->kind == EX_CALL || e->kind == EX_METHOD || e->kind == EX_ASSOC) {
+        /* Only an explicit "this block" needs this block's zone. A site that recorded no level
+         * resolves through `zoneArgRef`'s fallback to the innermost zone that **is** pushed -- the
+         * function body or an enclosing block -- so its pool outlives us anyway.
+         *
+         * The level alone is not enough: every call in the block carries one (`recByte` does), and
+         * counting those would keep the zone for exactly the loops this scan exists to skip. It
+         * has to be a call that **creates** a pool, which is the same question `stmtMakesPool`
+         * asks -- an unresolved callee stays conservative here. */
+        FuncDef *f = planCallee(e);
+        const char *nm = (f && f->name) ? f->name : NULL;
+        /* `extc_pool_new` / `extc_pool_new_table` read the place they run in from the runtime
+         * (`extc_zoneTop`), so they need whichever block the call sits in to have pushed its
+         * zone. The `_at` variant carries its own place and does not. */
+        if (poolCtorNeedsZone(nm)) u->hit = true;
+        else if (f && calleeCreatesPool(f) && (planZoneLevel(e) == u->lvl || planZoneLevel(e) == 0))
+            u->hit = true;
+    }
+    AstVisit v = { zoneUseChild, NULL, u };
+    astWalkExprChildren(e, &v);
+    return u->hit;
+}
+
+/**
+ * @brief May this block create a pool **in its own zone**?
+ *
+ * The block-level question, and the only one `genBlockBody` asks: a block pushes
+ * `extc_pool_zoneEnter()` so that pools created in it are released when it ends. But a call whose
+ * pool is born elsewhere -- `ZONE_HOME`, that is, the place the caller received -- does not need
+ * it: `string::push` upgrades its receiver's SSO buffer through `grow`, which asks for the
+ * **home** zone, so in a loop body of `s.push(c)` the place would guard pools that never land in
+ * it: one push and one pop per byte, both wasted.
+ *
+ * Only the statements' own expressions count: a nested block is a place of its own and decides
+ * for itself when it is generated.
+ *
+ * @param b    Block statement; anything else answers false.
+ * @param lvl  The block level (= the level of the zone the body would push).
+ * @return     true when the block must be wrapped in a zone enter / leave pair.
+ */
+static bool blockMakesPoolAtLevel(Stmt *b, int lvl) {
     if (!b || b->kind != ST_BLOCK) return false;
-    for (size_t i = 0; i < b->u.block.stmts.len; i++)
-        if (stmtMakesPool(*(Stmt **)vecAt(&b->u.block.stmts, i), false)) return true;
+    for (size_t i = 0; i < b->u.block.stmts.len; i++) {
+        Stmt *st = *(Stmt **)vecAt(&b->u.block.stmts, i);
+        /* The conservative "may reach extc_pool_new" answer first: only a statement that can
+         * create a pool at all is worth scanning for where it would be created. */
+        if (!stmtMakesPool(st, false)) continue;
+        ZoneUse u = { lvl, false };
+        bool hit = false;
+        switch (st->kind) {
+        case ST_VAR:    hit = zoneUseExpr(&u, st->u.var.init); break;
+        case ST_ASSIGN: hit = zoneUseExpr(&u, st->u.assign.value) || zoneUseExpr(&u, st->u.assign.target); break;
+        case ST_EXPR:   hit = zoneUseExpr(&u, st->u.expr.expr); break;
+        case ST_RETURN: hit = zoneUseExpr(&u, st->u.ret.value); break;
+        case ST_YIELD:  hit = zoneUseExpr(&u, st->u.yield_.value); break;
+        case ST_TRAP:   hit = zoneUseExpr(&u, st->u.trap_.msg); break;
+        case ST_IF:     hit = zoneUseExpr(&u, st->u.ifs.cond); break;
+        case ST_WHILE:  hit = zoneUseExpr(&u, st->u.whiles.cond); break;
+        case ST_MATCH:  hit = zoneUseExpr(&u, st->u.match.scrutinee); break;
+        default:        hit = false; break;
+        }
+        if (hit) return true;
+    }
     return false;
 }
 
@@ -6057,12 +6128,13 @@ static void genBlockBody(CG *g, Stmt *block) {
     if (!g->noArena) {
         /* Entering a place: push a zone, and the mark is named by level number (blocks at one level do
          * not nest, so the names cannot collide). It is only pushed when this block **may create a
-         * pool** (`blockMakesPool`): a loop body that only calls non-pool-creating library functions
-         * such as `v.push` needs no zone of its own, saving one push/pop per iteration. Whether a
+         * pool in this place** (`blockMakesPoolAtLevel`): a loop body whose pools are born in the
+         * caller's place (the SSO upgrade in `string::push` is one) needs no zone of its own,
+         * saving two calls per iteration. Whether a
          * pop is emitted is recorded in `zoneMark`, which `cgReleaseLevel` reads from the same
          * table. */
         g->zoneMark[g->blkLevel] = false;
-        if (g->zoneHere && g->blkLevel > 1 && blockMakesPool(block)) {
+        if (g->zoneHere && g->blkLevel > 1 && blockMakesPoolAtLevel(block, g->blkLevel)) {
             g->zoneMark[g->blkLevel] = true;
             zoneHere = true;
         }

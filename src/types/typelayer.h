@@ -216,6 +216,18 @@ static inline bool plateIsMemCopyName(const char *name) {
  */
 bool stmtMakesPool(Stmt *s, bool descendBlocks);
 
+/**
+ * @brief May this callee create a pool at run time?
+ *
+ * The read-only port of the checker's own answer, for the pass that decides which places need a
+ * zone: a call whose pool is born in **this** place has to be wrapped in a zone enter/leave pair,
+ * while one that names an outer place does not.
+ *
+ * @param f  Callee definition; NULL answers false.
+ * @return   `true` when the callee can reach `extc_pool_new`.
+ */
+bool calleeCreatesPool(FuncDef *f);
+
 /* ---- Pool names (one list, one spelling) ---------------------------------------------- */
 
 /**
