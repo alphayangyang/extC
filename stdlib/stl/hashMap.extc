@@ -155,7 +155,13 @@ struct hashMap<K, V> {
      * 若旧列还留着，它会大一整代（见 tests/hashmap/run.sh）。 */
     fn bytesOf(self: ref hashMap<K, V>) -> i64 { return syspool::extc_pool_bytes(self.pid) }
 
-    /* Find the bucket holding `k`: live bucket index, or -1 when absent. */
+    /* Find the bucket holding `k`: live bucket index, or -1 when absent.
+     *
+     * The two indexings below are unchecked: `i` is always masked by `cap - 1` before it is used, and
+     * the loop runs at most `cap` steps, so both stay inside the three columns by construction. This
+     * is the probe loop of every lookup, so the per-step bounds checks are what the decoration buys
+     * (the signature that goes with it is the same one `sha256` and `string::eq` use). */
+    @unchecked
     fn find(self: ref hashMap<K, V>, k: K) -> i64 {
         var i = k.hash() & (self.cap - 1)
         var steps: i64 = 0
