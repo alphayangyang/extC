@@ -1,0 +1,37 @@
+// **`dyn` 的 payload 字节随位置归还** —— 常设判据。
+//
+// 对象表的槽与 payload 都是"位置"的：被调函数里造出来的 `dyn` 值，它的对象表生在这个函数的
+// 位置里，函数返回时整块还掉。所以"每轮造一个、用完就丢"的循环，内存是**常数**而不是
+// 累计创建数（两百万次构造实测峰值 1.8 MB；同一形状写到长命位置里是历史高水位，见内存模型
+// 第四节第四条）。
+//
+// 判据：`sum=14000 live_ok=true bytes=0` —— 两千轮之后仍然存活的槽是小数（< 64），
+// 而对象表里的 payload 字节归零（位置退出时整块还给了系统）。
+// expect: sum=14000 live_ok=true bytes=0
+use std::io
+use std::sys::pool as syspool
+
+trait Tag { fn tag(self: ref Self) -> i64 }
+struct box { big: i64  v: i64 }
+impl Tag for box { fn tag(self: ref box) -> i64 { return self.v } }
+
+extern!("extc") fn extc_dyn_liveSlots() -> i64
+    effects Addr=0 Cont=0
+
+fn one() -> i64 {
+    let d: dyn Tag = dyn Tag(box { big: 1, v: 7 })
+    return d.tag()
+}
+
+fn main() -> i32 {
+    var i: i64 = 0
+    var sum: i64 = 0
+    while i < 2000 {
+        sum = sum + one()
+        i = i + 1
+    }
+    let live: i64 = extc_dyn_liveSlots()
+    let bytes: i64 = syspool::extc_pool_bytesLive()
+    io::cout << "sum=" << sum << " live_ok=" << (live < 64) << " bytes=" << bytes << "\n"
+    return 0
+}

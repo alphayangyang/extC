@@ -95,6 +95,12 @@ else
     bad dyn_slot_reclaim "期望 sum=14000 且 live<=32，实得：$out"
 fi
 
+# payload 字节随位置归还：两千轮"造一个、用掉、丢"之后，对象表里的字节必须归零。
+out=$("$EXTC" -w --run tests/dyn/dyn_payload_scope.extc 2>&1)
+[ "$out" = "sum=14000 live_ok=true bytes=0" ] \
+    && ok dyn_payload_scope "payload 字节随位置归还（$out）" \
+    || bad dyn_payload_scope "期望 sum=14000 live_ok=true bytes=0，实得：$out"
+
 # 阶段 3 核心：**存储值**派发 —— 两个不同具体类型走同一张统一签名的表（thunk 的回报）
 out=$("$EXTC" -w --run tests/dyn/dyn_stored_call.extc 2>&1)
 [ "$out" = "calls=7,105" ] && ok dyn_stored_call "存储值派发：box 与 pt 经同一张表（$out）" \
