@@ -93,6 +93,21 @@ else
     echo "  FAIL closed-use     ->  $(echo "$out" | tr '\n' '|')"; fail=1
 fi
 
+echo "== 与协程运行期共存：<fcntl.h> 的 open 与库的 open 不再冲突 =="
+# 协程运行期 include <fcntl.h>（其 open 是变参），而 `std::fs` 曾经用一个定参 libc extern
+# 声明 open ⇒ 产物里两条声明类型冲突，**程序根本编不过**。现在 open 是运行期 shim。
+tmpc=build/coro-import.c
+if "$EXTC" -w --no-line-map tests/fs/coro-import.extc -o "$tmpc" >/dev/null 2>&1 \
+   && ${CC:-cc} -O2 -std=c11 -pthread -o build/coro-import "$tmpc" >/dev/null 2>&1; then
+    if out=$(./build/coro-import 2>&1) && echo "$out" | grep -qF "coro-fs n="; then
+        echo "  ok   coro-import    ->  $(echo "$out" | tr '\n' '|')"
+    else
+        echo "  FAIL coro-import    ->  跑不起来：$(echo "$out" | head -3 | tr '\n' '|')"; fail=1
+    fi
+else
+    echo "  FAIL coro-import    ->  C 产物编不过（open 冲突回归）"; fail=1
+fi
+
 echo "== ASan：库那几条路径必须干净 =="
 TMP=$(mktemp -d)
 printf 'int main(void){return 0;}\n' > "$TMP/probe.c"

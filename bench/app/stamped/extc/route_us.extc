@@ -16,6 +16,7 @@ use stl::map
 
 use std::time
 use std::sys::io as sysio
+use std::sys::file as sysfile
 
 /* ================ 应用侧逐单位时间戳（USER-STALL / bench/app） ================
  * 只写**戳文件**（路径来自 argv 最后一项）；stdout 一个字节都不动。
@@ -79,7 +80,7 @@ fn usDump() {
     usSet64(24, u64(USNEG))
     usSet64(32, u64(USOVF))
     if USPL == 0 { return }
-    let fd = sysio::open(USPB[..USPL].data, sysio::O_WRONLY | sysio::O_CREAT | sysio::O_TRUNC, i32(420))
+    let fd = sysfile::open(USPB[..USPL].data, sysio::O_WRONLY | sysio::O_CREAT | sysio::O_TRUNC, i32(420))
     if fd < i32(0) { io::cerr << "USAPP: open stamp file failed\n"  return }
     var done: i64 = 0
     while done < USBL {

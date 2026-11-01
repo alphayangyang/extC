@@ -1,0 +1,21 @@
+/* A program that imports the coroutine scheduler and `std::fs` together and opens a file.
+ *
+ * The scheduler's runtime includes <fcntl.h>, whose `open` is variadic. The program's own
+ * `open` used to be a plain libc extern, so the product declared it with a fixed arity and
+ * the two declarations were a conflicting type: the program did not compile at all.
+ *
+ * @return 0 on success.
+ */
+use std::io
+use std::fs
+use std::coro::scheduler
+
+fn main() -> i32 {
+    var path: slice<u8> = "./tests/fs/data.txt"
+    var r = fs::openRead(path)!
+    var buf: [64]u8
+    let n = r.readAll(buf[..])!
+    r.close()!
+    io::println(f"coro-fs n={n}")
+    return 0
+}

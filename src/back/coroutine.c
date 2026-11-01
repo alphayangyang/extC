@@ -493,5 +493,21 @@ void fileLayerEmitRuntime(Arena *a, Buf *out) {
         "    if (!strptime(buf, \"%a, %d %b %Y %H:%M:%S GMT\", &tm)) return -1;\n"
         "    return (int64_t)timegm(&tm);\n"
         "}\n\n"
-        "int64_t extc_file_close(int64_t fd) { return (int64_t)close((int)fd); }\n");
+        "int64_t extc_file_close(int64_t fd) { return (int64_t)close((int)fd); }\n"
+        "/* Open with caller-chosen flags: `std::fs` needs O_WRONLY/O_CREAT/O_TRUNC/O_APPEND and a mode.\n"
+        " * The path is copied and NUL-terminated here, so `open` is called from C code that already\n"
+        " * includes <fcntl.h> and no extC-side prototype of `open` has to exist (glibc declares it\n"
+        " * variadic, which a fixed-arity prototype would contradict). */\n"
+        "int64_t extc_file_open_at(uint8_t *path, int64_t len, int64_t flags, int64_t mode) {\n"
+        "    char p[4096];\n"
+        "    if (len <= 0 || len >= (int64_t)sizeof p) return -1;\n"
+        "    memcpy(p, path, (size_t)len);\n"
+        "    p[len] = 0;\n"
+        "    return (int64_t)open(p, (int)flags, (mode_t)mode);\n"
+        "}\n"
+        "/* The same for a NUL-terminated path: `strlen` stays on the C side, where a pointer is\n"
+        " * a pointer and no extC view has to be built just to measure a string. */\n"
+        "int64_t extc_file_open_cstr(uint8_t *path, int64_t flags, int64_t mode) {\n"
+        "    return (int64_t)open((const char *)path, (int)flags, (mode_t)mode);\n"
+        "}\n");
 }

@@ -48,6 +48,7 @@
  */
 use std::io
 use std::sys::io as sysio
+use std::sys::file as sysfile
 
 /* ---------------------------------------------------------------- 读型 */
 
@@ -258,7 +259,7 @@ struct ofstream {
  * full descriptor table (EMFILE) are normal runtime conditions. The number the call
  * returned travels in the error, so the caller can tell them apart. */
 fn openRead(path: slice<u8>) -> result<ifstream, io::ioError> {
-    let fd = sysio::open(path.data, sysio::O_RDONLY, i32(0))
+    let fd = sysfile::openAt(path.data, i64(path.len), sysio::O_RDONLY, i32(0))
     if fd < i32(0) { return failure(io::ioError.readFailed(fd)) }
     /* A named literal, resolved through the module context exactly the way a type
      * annotation is (no `var f: ifstream = { .. }` needed). */
@@ -266,13 +267,13 @@ fn openRead(path: slice<u8>) -> result<ifstream, io::ioError> {
 }
 
 fn openWrite(path: slice<u8>) -> result<ofstream, io::ioError> {
-    let fd = sysio::open(path.data, sysio::O_WRONLY | sysio::O_CREAT | sysio::O_TRUNC, i32(420))
+    let fd = sysfile::openAt(path.data, i64(path.len), sysio::O_WRONLY | sysio::O_CREAT | sysio::O_TRUNC, i32(420))
     if fd < i32(0) { return failure(io::ioError.writeFailed(fd)) }
     return success(ofstream { fd: fd, open: true })
 }
 
 fn openAppend(path: slice<u8>) -> result<ofstream, io::ioError> {
-    let fd = sysio::open(path.data, sysio::O_WRONLY | sysio::O_CREAT | sysio::O_APPEND, i32(420))
+    let fd = sysfile::openAt(path.data, i64(path.len), sysio::O_WRONLY | sysio::O_CREAT | sysio::O_APPEND, i32(420))
     if fd < i32(0) { return failure(io::ioError.writeFailed(fd)) }
     return success(ofstream { fd: fd, open: true })
 }
@@ -334,7 +335,7 @@ let fout: outStream = outStream { }
 /* 打开（或重开）程序级输出流。旧的那个**必须先 close**（不然那个 fd 就漏了 ✓）*/
 fn openOut(path: slice<u8>) -> result<unit, io::ioError> {
     if OUT_FD >= i32(0) { return failure(io::ioError.writeFailed(OUT_FD)) }   /* 已经开着 */
-    let fd = sysio::open(path.data, sysio::O_WRONLY | sysio::O_CREAT | sysio::O_TRUNC, i32(420))
+    let fd = sysfile::openAt(path.data, i64(path.len), sysio::O_WRONLY | sysio::O_CREAT | sysio::O_TRUNC, i32(420))
     if fd < i32(0) { return failure(io::ioError.writeFailed(fd)) }
     OUT_FD = fd
     OUT_LEN = 0
@@ -463,7 +464,7 @@ let fin: inStream = inStream { }
 
 fn openIn(path: slice<u8>) -> result<unit, io::ioError> {
     if IN_FD >= i32(0) { return failure(io::ioError.readFailed(IN_FD)) }     /* 已经开着 */
-    let fd = sysio::open(path.data, sysio::O_RDONLY, i32(0))
+    let fd = sysfile::openAt(path.data, i64(path.len), sysio::O_RDONLY, i32(0))
     if fd < i32(0) { return failure(io::ioError.readFailed(fd)) }
     IN_FD = fd
     IN_LEN = 0

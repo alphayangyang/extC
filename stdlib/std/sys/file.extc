@@ -12,6 +12,28 @@ use std::io
 extern!("extc-runtime") fn extc_file_open(path: ref u8, len: i64, outSize: ref i64,
                                          outMtime: ref i64, outIsDir: ref i64) -> i64
     effects Addr=0 Cont=0      /* 拷进自己的缓冲就扔：不留路径，也不留那几个出参的地址 */
+/* Flags-and-mode open: `std::fs` builds on it. The variant that also reports `struct stat`
+ * is the one above; this one exists so the extC side never declares `open` itself -- glibc
+ * declares it `open(const char *, int, ...)`, which a fixed-arity prototype contradicts
+ * (`conflicting types for 'open'`) as soon as the product includes <fcntl.h>. */
+extern!("extc-runtime") fn extc_file_open_at(path: ref u8, len: i64, flags: i64, mode: i64) -> i64
+    effects Addr=0 Cont=0      /* copies the path into its own buffer: keeps no pointer */
+
+/* `strlen` stays on the C side; extC only sees the fd. */
+extern!("extc-runtime") fn extc_file_open_cstr(path: ref u8, flags: i64, mode: i64) -> i64
+    effects Addr=0 Cont=0
+
+/* `open(path, len, flags, mode)` -- what `std::fs` calls, with the length it already knows. */
+fn openAt(path: ref u8, len: i64, flags: i32, mode: i32) -> i32 {
+    return i32(extc_file_open_at(path, len, i64(flags), i64(mode)))
+}
+
+/* `open(path, flags, mode)` for a NUL-terminated path -- the C shape, kept for callers that
+ * hand over `slice.data` of a NUL-terminated buffer. */
+fn open(path: ref u8, flags: i32, mode: i32) -> i32 {
+    return i32(extc_file_open_cstr(path, i64(flags), i64(mode)))
+}
+
 extern!("extc-runtime") fn extc_file_close(fd: i64) -> i64
 /* 非阻塞 socket 上的 `sendfile`：返回**这次**送出去多少（可能少于 n ⇒ 调用方补）。 */
 extern!("extc-runtime") fn extc_sendfile(outFd: i64, inFd: i64, off: i64, n: i64) -> i64

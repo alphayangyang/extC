@@ -1143,10 +1143,15 @@ note:  what a program normally needs is `std::heap`: `plate::open` / `alloc` / `
 
 | 特权层文件 | 装的是 | 用户面对应的公开层 |
 |---|---|
-|  | `read` / `write` / `open` / `close`、`O_*`、`STDIN/STDOUT/STDERR`、cout 运行期 | `std::io`、`std::fs` |
+|  | `read` / `write` / `close`、`O_*`、`STDIN/STDOUT/STDERR`、cout 运行期 | `std::io`、`std::fs` |
+
+> **为什么 `open` 不在这儿**：glibc 把 `open` 声明成变参（`open(const char *, int, ...)`）。协程运行期
+> 会 `#include <fcntl.h>`，所以只要程序同时 import 了协程调度器与 `std::fs`，产物里那条定参原型就是
+> `conflicting types for 'open'` —— **编译期直接失败**（实测：只 import 都编不过）。现在 `open` 是运行期
+> shim（`extc_file_open_at` / `extc_file_open_cstr`，`stdlib/std/sys/file.extc`），extC 侧不再声明它。
 |  | `tcgetattr` / `tcsetattr` / `cfmakeraw` / `TCSANOW` / raw 钩子 | `std::term` |
 |  | `extc_time_mono_ns` / `extc_time_real_ns` / `extc_time_sleep_ns` | `std::time` |
-|  | `extc_file_open` / `extc_file_close` / `extc_sendfile` | `std::fs`（`struct stat` 不过界） |
+|  | `extc_file_open` / `extc_file_open_at` / `extc_file_open_cstr` / `extc_file_close` / `extc_sendfile`、`open` / `openAt` | `std::fs`（`struct stat` 不过界）；`open` / `openAt` 是这一层的 shim，不是 libc extern —— 见下条 |
 |  | 裸 fd、epoll、socket、DNS 运行期 | `std::net`、`std::loop`、`std::coro::scheduler` |
 |  | `mmap` / `mprotect` / `munmap`、`extc_viewOf`、`extc_memCopy` | `std::heap` |
 |  | `fork` / `waitpid` / `getpid` / `sched_setaffinity` / `exit` | `std::proc` |

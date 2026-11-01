@@ -31,13 +31,11 @@ extern!("libc") fn read(fd: i32, buf: ref u8, n: i64) -> i64
 extern!("libc") fn write(fd: i32, buf: ref u8, n: i64) -> i64
     effects Addr=0 Cont=0
 
-/* open / close -- the layer `std::fs` is built on.
- * NOTE: C wants the first argument of `open` to be a NUL-terminated path. An extC
- * string literal already has that shape in C (a static array followed by NUL), so
- * passing a literal works as is; a slice assembled at run time has to guarantee the
- * terminator itself. */
-extern!("libc") fn open(path: ref u8, flags: i32, mode: i32) -> i32
-    effects Addr=0 Cont=0
+/* `open` lives in `std::sys::file` (as `sysfile::open`), not here: it has to be a runtime
+ * shim rather than a plain libc extern. glibc declares `open` variadic
+ * (`open(const char *, int, ...)`), so a fixed-arity prototype in the product is a
+ * conflicting type the moment <fcntl.h> is included. The O_* flags below stay here -- both
+ * the shim and every caller want them. */
 extern!("libc") fn close(fd: i32) -> i32
 
 /* 控制台**缓冲**输出：格式化在库里、缓冲在运行期。
