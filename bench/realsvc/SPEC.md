@@ -102,16 +102,16 @@ record has been folded into that session.
 | C++ | `new Record{…}` / `delete` | `unordered_map<i64, Session>` | `erase` per expired entry |
 | Rust | `Box<Record>` / drop | `HashMap<i64, Session>` | `remove` per expired entry |
 | Go | `&Record{…}` (heap) | `map[i64]*session` | `delete` per expired entry |
-| extC | arena bump (`new rec[1]` in a block) | `hashMapI64<session>` (`stl::hashMap`) | compact survivors into a fresh table |
+| extC | struct value in the loop body (frame, no allocation) | `hashMapI64<session>` (`stl::hashMap`) | compact survivors into a fresh table |
 
 Two extC notes, both about this axis rather than about the benchmark:
 
-* The per-record object is an arena allocation. The arena keeps it in the
-  function's region: the object is dead once the record has been folded into its
-  session, but the region is released at function exit, so peak RSS grows with the
-  record count (2,000,000 objects of 56 bytes become a high-water mark rather than
-  being reused). That is what "one object per record, no per-object free" costs,
-  and the peak-RSS column is where it shows.
+* The per-record object is a struct value in the loop body: extC values live in the
+  frame, so "build the record, fold it into the session, forget it" costs no
+  allocation at all. This is the same lifetime the Go arm gets, where `&Event{}` does
+  not escape and the collector never sees it; making the extC version an arena
+  allocation instead made peak RSS grow with the record count without measuring
+  anything the other arms do.
 * extC's eviction *compacts* instead of erasing in place: `hashMapI64::remove`
   cannot be called today from a function that also takes a view. `hashMap::find`
   calls `k.hash()` on the table's type parameter; while the parameter is opaque

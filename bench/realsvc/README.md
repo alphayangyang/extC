@@ -77,21 +77,21 @@ checksums (`RESULTS.md` has the tables; ratios are to C++):
 
 - **conventional**: `etl` extC 67.9 ms vs C++ 67.7 ms (1.00x), Go 92.7 (1.37x),
   Rust 73.8 (1.09x).
-- **reclamation**: `sessions` extC 246.4 ms vs C++ 121.3 ms (2.03x, i.e. extC takes
-  about twice the time), Go 169.8 (1.40x), Rust 192.2 (1.58x) -- and peak RSS is 199 MB
-  against 86 MB. With the same shape in every arm (a message object per record plus a
-  hash table of sessions) the cost is visible: two hash lookups per record (extC's map
-  API returns values, so read-modify-write is `get` + `put`) and an arena object per
-  record that lives until the function's region is released. The earlier 0.52x came
-  from not doing that work at all: a flat array indexed by user id, one reused object,
-  no reclamation -- the number measured a different program. It is reported here as the
-  measurement it is, not as a reclamation win.
-- **parallel**: extC 309.9 / 87.5 / 61.8 ms at 1 / 8 / 24 threads (3.54x and
-  5.01x self-speedup) against C++ 321.9 / 82.4 / 66.0. Single-threaded the byte
+- **reclamation**: `sessions` extC 178.9 ms vs C++ 121.3 ms (1.47x), Go 170.7 (1.41x),
+  Rust 215.2 (1.77x) -- peak RSS 91 MB against 86 MB. All four arms now build one object
+  per record and keep a hash table of sessions; extC's record is a frame value (the same
+  lifetime Go gets when `&Event{}` does not escape) and its map API returns *values*, so
+  a read-modify-write costs two probes (`get` + `put`) where C++'s `operator[]` costs one.
+  That gap is the whole difference, and it is an API-shaped gap: exposing the pool handle
+  (`slotOf` / `at` / `setAt` / `entry`) would make it one probe per record. The earlier
+  0.52x came from not doing this work at all -- a flat array indexed by user id, one
+  reused object, no reclamation -- so it measured a different program and is withdrawn.
+- **parallel**: extC 306.7 / 76.8 / 62.1 ms at 1 / 8 / 24 threads (self-speedup
+  4.0x / 4.94x) against C++ 327.0 / 106.5 / 68.9. Single-threaded the byte
   scan is dominated by the sequential record table, which is why the curve
   flattens; the arm builds that table in one pass, like the C++ arm.
 - **concurrency**: 200,000 requests over 64 connections, every reply verified,
-  `bad=0` for all four arms: extC 546k req/s, C++ 553k, Go 600k, Rust 589k (the
+  `bad=0` for all four arms: extC 541k req/s, C++ 567k, Go 575k, Rust 479k (the
   four are within run-to-run noise of each other on this host). The first run of
   this arm was 430k: it called `send` once per reply, and the arm now flushes one
   write per read burst like the other three (the profiled difference, and the

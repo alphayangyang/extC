@@ -1,5 +1,5 @@
-serve	extc	1	368.9	bad=0	reqps=542171	server_cs=620352923810747373
-serve	extc	2	366.1	bad=0	reqps=546299	server_cs=620352923810747373
-serve	extc	3	325.6	bad=0	reqps=614336	server_cs=620352923810747373
-serve	extc	4	340.5	bad=0	reqps=587443	server_cs=620352923810747373
-serve	extc	5	385.2	bad=0	reqps=519221	server_cs=620352923810747373
+serve	extc	1	337.3	bad=0	reqps=592988	server_cs=620352923810747373
+serve	extc	2	369.6	bad=0	reqps=541161	server_cs=620352923810747373
+serve	extc	3	352.1	bad=0	reqps=567979	server_cs=620352923810747373
+serve	extc	4	385.5	bad=0	reqps=518835	server_cs=620352923810747373
+serve	extc	5	413.3	bad=0	reqps=483894	server_cs=620352923810747373

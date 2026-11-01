@@ -1,5 +1,5 @@
-serve	rust	1	346.8	bad=0	reqps=576743	server_cs=620352923810747373
-serve	rust	2	318.3	bad=0	reqps=628261	server_cs=620352923810747373
-serve	rust	3	339.7	bad=0	reqps=588791	server_cs=620352923810747373
-serve	rust	4	365.6	bad=0	reqps=547075	server_cs=620352923810747373
-serve	rust	5	331.3	bad=0	reqps=603702	server_cs=620352923810747373
+serve	rust	1	403.8	bad=0	reqps=495351	server_cs=620352923810747373
+serve	rust	2	428.8	bad=0	reqps=466464	server_cs=620352923810747373
+serve	rust	3	479.5	bad=0	reqps=417076	server_cs=620352923810747373
+serve	rust	4	387.0	bad=0	reqps=516841	server_cs=620352923810747373
+serve	rust	5	417.3	bad=0	reqps=479231	server_cs=620352923810747373

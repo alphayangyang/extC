@@ -246,31 +246,22 @@ fn modeSessions(buf: slice<u8>, readNs: i64) -> i32 {
         let c: u8 = buf[i]
         if c == u8(10) {
             v6 = cur
-            /* One message object per record, the extC spelling of the C++ arm's
-             * `new Record()` / `delete ev` pair. The arena holds it in the function's
-             * region: the record is dead after this block, but the region is released at
-             * function exit, so peak RSS grows with the record count (2,000,000 objects
-             * of 56 bytes reach a high-water mark instead of being reused). That is the
-             * honest cost of "one object per record" without a per-object free, and the
-             * peak-RSS column is where it shows up. */
+            /* One message object per record, built and dropped in the loop body. A
+             * value of a struct type lives in the frame, which is extC's natural spelling
+             * for "materialise the record, use it, forget it" -- the same lifetime the
+             * Go arm gets from `&Event{}` not escaping (the compiler keeps it on the
+             * stack), so all four arms really do build one object per record. */
             {
-                var ev: mut slice<rec> = new rec[1]
-                ev[0].ts = v0
-                ev[0].uid = v1
-                ev[0].site = v2
-                ev[0].path = v3
-                ev[0].status = v4
-                ev[0].lat = v5
-                ev[0].bytes = v6
-                let uid: i64 = ev[0].uid
+                var ev: rec = { ts: v0, uid: v1, site: v2, path: v3, status: v4, lat: v5, bytes: v6 }
+                let uid: i64 = ev.uid
                 var s: session = zeroSession()
                 if let some(prev) = sessions.get(uid) { s = prev }
                 s.count = s.count + 1
                 s.sumIdx = s.sumIdx + lines
-                s.sumLat = s.sumLat + ev[0].lat
-                s.last = ev[0].ts
+                s.sumLat = s.sumLat + ev.lat
+                s.last = ev.ts
                 sessions.put(uid, s)
-                if ev[0].ts > newest { newest = ev[0].ts }
+                if ev.ts > newest { newest = ev.ts }
             }
             lines = lines + 1
             f = 0

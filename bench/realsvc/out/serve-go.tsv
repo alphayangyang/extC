@@ -1,5 +1,5 @@
-serve	go	1	330.6	bad=0	reqps=605026	server_cs=620352923810747373
-serve	go	2	369.7	bad=0	reqps=540962	server_cs=620352923810747373
-serve	go	3	333.5	bad=0	reqps=599700	server_cs=620352923810747373
-serve	go	4	321.9	bad=0	reqps=621363	server_cs=620352923810747373
-serve	go	5	338.6	bad=0	reqps=590733	server_cs=620352923810747373
+serve	go	1	355.2	bad=0	reqps=563034	server_cs=620352923810747373
+serve	go	2	348.0	bad=0	reqps=574735	server_cs=620352923810747373
+serve	go	3	370.1	bad=0	reqps=540361	server_cs=620352923810747373
+serve	go	4	343.8	bad=0	reqps=581787	server_cs=620352923810747373
+serve	go	5	334.2	bad=0	reqps=598498	server_cs=620352923810747373
