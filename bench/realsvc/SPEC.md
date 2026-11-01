@@ -102,7 +102,7 @@ record has been folded into that session.
 | C++ | `new Record{…}` / `delete` | `unordered_map<i64, Session>` | `erase` per expired entry |
 | Rust | `Box<Record>` / drop | `HashMap<i64, Session>` | `remove` per expired entry |
 | Go | `&Record{…}` (heap) | `map[i64]*session` | `delete` per expired entry |
-| extC | struct value in the loop body (frame, no allocation) | `hashMapI64<session>` (`stl::hashMap`), updated through the value-pool handle | compact survivors into a fresh table |
+| extC | struct value in the loop body (frame, no allocation) | `hashMapI64<session>` (`stl::hashMap`), read and written through the table's dense value column | compact survivors into a fresh table |
 
 Two extC notes, both about this axis rather than about the benchmark:
 
@@ -112,12 +112,14 @@ Two extC notes, both about this axis rather than about the benchmark:
   not escape and the collector never sees it; making the extC version an arena
   allocation instead made peak RSS grow with the record count without measuring
   anything the other arms do.
-* The registry is read and written through the value-pool handle: `entry(uid, zero)`
-  finds the session's slot (inserting one on first sight), `at`/`setAt` read and write
-  that slot. The record therefore costs one hash probe rather than the two a
-  `get` + `put` pair would. On this shape that saving is inside the noise — the cost
-  is the 32-byte value copied in and out of the slot plus the pool indirection, where
-  the C++ arm writes fields in place through a reference.
+* The registry is read and written through the table's **dense value column**: `get`
+  probes once and then indexes the values, `put` overwrites at the index the probe
+  returned. The first version of this arm carried the value-pool handle out of the probe
+  (`entry` + `at` + `setAt`) on the theory that one probe beats two; it measured 176.3 ms
+  against 141.9 ms for the dense path, because a handle access re-reads the slot array
+  and re-checks a generation and an epoch on every touch, then copies the 32-byte value
+  in and out. Handles are for identities that escape the loop. What still separates this
+  arm from C++ is that `operator[]` yields a reference and fields are written in place.
 * extC's eviction *compacts* instead of erasing in place: inserting the 48k survivors
   costs less than erasing the 152k expired entries one probe at a time (measured
   207–238 ms for the erase loop against ~180 ms for compaction). Both are the same

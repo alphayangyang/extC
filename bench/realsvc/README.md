@@ -75,27 +75,29 @@ best". No language was given a strategy it would not write by itself.
 Medians of five repetitions on one 24-core WSL2 host, all arms printing the same
 checksums (`RESULTS.md` has the tables; ratios are to C++):
 
-- **conventional**: `etl` extC 67.9 ms vs C++ 67.7 ms (1.00x), Go 92.7 (1.37x),
-  Rust 73.8 (1.09x).
-- **reclamation**: `sessions` extC 202.2 ms vs C++ 132.7 ms (1.52x), Go 166.7 (1.26x),
-  Rust 199.7 (1.50x) -- peak RSS 91 MB against 86 MB. All four arms now build one object
-  per record and keep a hash table of sessions; extC's record is a frame value (the same
-  lifetime Go gets when `&Event{}` does not escape). The remaining gap is not the probe
-  count: the arm already reaches the slot through the value-pool handle (`entry` /
-  `at` / `setAt`), and measuring that against the `get` + `put` spelling moved the number
-  by less than the noise -- the cost is the 32-byte value in and out of the slot plus the
-  pool indirection, where C++'s `operator[]` hands out a reference and the fields are
-  written in place. Closing it needs an in-place update entry point (a block that lends
-  `mut ref V` and may not touch the map inside it) or a struct-of-arrays layout, not
-  another handle accessor. The earlier 0.52x came from not doing this work at all -- a
-  flat array indexed by user id, one reused object, no reclamation -- so it measured a
-  different program and is withdrawn.
-- **parallel**: extC 306.7 / 76.8 / 62.1 ms at 1 / 8 / 24 threads (self-speedup
-  4.0x / 4.94x) against C++ 327.0 / 106.5 / 68.9. Single-threaded the byte
+- **conventional**: `etl` extC 69.0 ms vs C++ 70.2 ms (0.98x), Go 95.4 (1.36x),
+  Rust 74.9 (1.07x).
+- **reclamation**: `sessions` extC 142.1 ms vs C++ 131.5 ms (1.08x), Go 178.8 (1.36x),
+  Rust 223.5 (1.70x) -- peak RSS 91 MB against 86 MB. All four arms build one object per
+  record and keep a hash table of sessions; extC's record is a frame value (the same
+  lifetime Go gets when `&Event{}` does not escape). This axis took two steps: first the
+  arm was rewritten to the other arms' shape (an earlier run measured 0.52x by not doing
+  that work at all -- a flat array indexed by user id, no per-record object, no table --
+  and that number is withdrawn), then the table's own value access moved off the value-pool
+  handle onto its dense column. `hashMap` was routing every `get`/`put` through
+  `handleAtDense` + `vals.get`, i.e. a slot-array load plus a generation and epoch check,
+  to re-derive a dense index the probe had already produced. Reading and writing the dense
+  column directly measured 141.9 ms against 176.3 ms for the handle spelling and 185 ms
+  before either change. Handles remain for identities that outlive the loop; a loop should
+  use the index its own probe handed it. The residual 1.08x is C++'s `operator[]` returning
+  a reference: no 32-byte value in and out of the slot. Closing that needs an in-place
+  update entry point (a block that lends `mut ref V`) or a struct-of-arrays layout.
+- **parallel**: extC 313.4 / 80.8 / 63.5 ms at 1 / 8 / 24 threads (self-speedup
+  3.9x / 4.9x) against C++ 329.7 / 83.2 / 69.5. Single-threaded the byte
   scan is dominated by the sequential record table, which is why the curve
   flattens; the arm builds that table in one pass, like the C++ arm.
 - **concurrency**: 200,000 requests over 64 connections, every reply verified,
-  `bad=0` for all four arms: extC 559k req/s, C++ 578k, Go 558k, Rust 572k (the
+  `bad=0` for all four arms: extC 603k req/s, C++ 582k, Go 583k, Rust 551k (the
   four are within run-to-run noise of each other on this host). The first run of
   this arm was 430k: it called `send` once per reply, and the arm now flushes one
   write per read burst like the other three (the profiled difference, and the
@@ -109,8 +111,9 @@ condition's subscripts were not covered at all. `parmix` went from 1,705 to
 porting `sessions` to the shape the other three arms use: a deferred protocol call on
 a type parameter (`k.hash()` inside `hashMap::find`) left the method's effect summary
 incomplete for good, so any function that took a view *and* called
-`hashMapI64::remove` was rejected at its call site. Fixing it (instance-time effect
-summaries) is what made the handle API usable; see the changelog.
+`hashMapI64::remove` was rejected at its call site. The arm still evicts by compacting
+the survivors into a fresh table, but now for speed, not because `remove` is
+unavailable: 152k swap-removes measured 207-238 ms against ~180 ms for the compaction.
 
 ## Caveats
 

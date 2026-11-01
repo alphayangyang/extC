@@ -255,19 +255,22 @@ fn modeSessions(buf: slice<u8>, readNs: i64) -> i32 {
                 var ev: rec = { ts: v0, uid: v1, site: v2, path: v3, status: v4, lat: v5, bytes: v6 }
                 let uid: i64 = ev.uid
                 /* One probe for the record: `entry` finds the session's slot (inserting a
-                 * zeroed one on first sight), and `at`/`setAt` read and write that slot
-                 * instead of hashing again. Measured on this shape the saving is in the
-                 * noise (the 32-byte copies into and out of the slot cost more than the
-                 * second probe did), so the reason to write it this way is that it is the
-                 * API's honest shape -- see docs/usage/stdlib.md -- not a speed claim. */
-                let slot: handle = sessions.entry(uid, zeroSession())
+                 * zeroed one on first sight), `at`/`setAt` read and write it in place. The
+                 * `get` + `put` spelling would hash and probe twice, which is exactly the
+                 * API shape the C++ arm's `operator[]` avoids. */
+                /* `get` + `put` reads and writes the table's **dense prefix** (no handle, no
+                 * generation check): `slot[b]` already names the storage. Going through the
+                 * value-pool handle instead -- `entry` + `at` + `setAt` -- costs a slot array
+                 * load plus the generation/epoch compares on every access, and measured
+                 * 157-207 ms against 135-156 ms here. Handles are for identities that escape
+                 * the loop, not for the loop itself. */
                 var s: session = zeroSession()
-                if let some(prev) = sessions.at(slot) { s = prev }
+                if let some(prev) = sessions.get(uid) { s = prev }
                 s.count = s.count + 1
                 s.sumIdx = s.sumIdx + lines
                 s.sumLat = s.sumLat + ev.lat
                 s.last = ev.ts
-                sessions.setAt(slot, s)
+                sessions.put(uid, s)
                 if ev.ts > newest { newest = ev.ts }
             }
             lines = lines + 1
