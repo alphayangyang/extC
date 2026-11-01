@@ -1,0 +1,41 @@
+/* tests/generics/effects_deferred_method.extc —— 泛型方法里对类型参数的**协议方法**调用，
+ * 不许把效果摘要永久标成"不可判定"。
+ *
+ * 由来：`stl::hashMap` 的 `find` 写 `k.hash()`（`k: K`）。模板期这条调用解析不了，
+ * `collectEffectsExpr` 于是把 `find` 的摘要标成 incomplete；而 `find` 又被 `contains`/`remove`
+ * 继承，于是**任何调用 `remove` 的函数都不能再接收视图参数**——
+ *   `error: argument 1 of `probe` carries a reference into a deeper scope (depth 1) than
+ *    the place the callee may store it (depth 0); the callee's effects could not be fully analyzed`
+ * 实例轮会用类型实参把同一处调用解析出来（`key::hash`），所以模板期这一位不该落下：
+ * 保守性由 `mentionsParam` 那一族规则提供（`T` 可能带引用），与这个 bit 无关。
+ *
+ * 判据：`probe` 收 `slice<u8>`、经 `dict<key>::look -> hsh -> k.hash()` 两层，编得过并算出 3。
+ *
+ * expect: h=3 n=3
+ */
+use std::io
+
+struct key {
+    v: i64
+    fn hash(self: ref key) -> i64 { return self.v }
+}
+
+struct dict<K> {
+    n: i64
+    fn hsh(self: ref dict<K>, k: K) -> i64 { return k.hash() + self.n }
+    fn look(self: ref dict<K>, k: K) -> i64 { return self.hsh(k) }
+}
+
+fn probe(buf: slice<u8>) -> i64 {
+    var d: dict<key> = { n: i64(1) }
+    let h: i64 = d.look(key { v: i64(2) })
+    io::cout << f"h={h} n={i64(buf.len)}\n"
+    return h
+}
+
+fn main() -> i32 {
+    var a: mut slice<u8> = new u8[3]
+    a[0] = u8(7)
+    probe(a[..])
+    return 0
+}

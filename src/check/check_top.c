@@ -2766,6 +2766,32 @@ static bool fnTypeCarriesNoRef(TypeTable *tt, Type *t) {
 }
 
 /**
+ * @brief Is this call deferred because its subject is a type parameter?
+ *
+ * `k.hash()` inside `hashMap<K,V>` (`k: K`), `T == T`, or an indirect call through a `fn` value whose
+ * signature mentions `T` cannot be resolved while the template is being checked: there is no struct
+ * behind `T` yet. The instance round resolves the same call site once the type argument is known, so a
+ * template summary must not be poisoned by it -- see the caller.
+ *
+ * @param e  Call expression.
+ * @return   True when the subject (receiver, explicit type arguments or callee type) mentions a type
+ *           parameter.
+ */
+static bool callSubjectMentionsParam(Expr *e) {
+    if (!e) return false;
+    if (e->kind == EX_METHOD && e->u.method.recv) return mentionsParam(e->u.method.recv->type);
+    if (e->kind == EX_ASSOC) {
+        for (size_t i = 0; i < e->u.assoc.targs.len; i++)
+            if (mentionsParam(*(Type **)vecAt(&e->u.assoc.targs, i))) return true;
+        for (size_t i = 0; i < e->u.assoc.args.len; i++)
+            if (mentionsParam(((Expr *)vecAt(&e->u.assoc.args, i))->type)) return true;
+        return false;
+    }
+    if (e->kind == EX_CALL && e->u.call.callee) return mentionsParam(e->u.call.callee->type);
+    return false;
+}
+
+/**
  * @brief Record the calls in an expression and the callees they reach.
  *
  * A call that cannot be resolved sets `anEffUnknown(f)`, and the summary stays incomplete forever;
@@ -2822,6 +2848,25 @@ static void collectEffectsExpr(Checker *c, FuncDef *f, Expr *e) {
                     anSetOtherMask(f, anOtherMask(f) | (1u));
                 }
             }
+        } else if (c->substParams && c->substArgs && c->substParams->len > 0
+                   && e->kind == EX_METHOD && e->u.method.recv) {
+            /* **Instance context**: the receiver's type is concrete now, so a method call that could
+             * not be resolved on the template (`k.hash()` inside `hashMap<K,V>`, where `k: K`) resolves
+             * here. Recording the edge is what lets this instance's summary come out complete; without
+             * it the unknown set on the template survives and every caller of `remove`/`contains` --
+             * which reach `find` -- pays the worst case, so it cannot pass a view argument at all.
+             * Only the summary of the *current* collection is affected: the conservative template
+             * answer (`tests/errors/generic_borrowed_store.extc` relies on it) stays as it is. */
+            Type *rt = tsub(c, e->u.method.recv->type);
+            FuncDef *md = rt ? findMethod(ttBase(rt), e->u.method.name) : NULL;
+            if (md) {
+                bool seen = false;
+                for (size_t k = 0; k < f->callees.len; k++)
+                    if (*(FuncDef **)vecAt(&f->callees, k) == md) { seen = true; break; }
+                if (!seen) *(FuncDef **)vecPush(&f->callees) = md;
+            } else {
+                anSetEffUnknown(f, true);
+            }
         } else if (e->kind == EX_CALL && e->u.call.callee
                    && fnTypeCarriesNoRef(c->tt, tsub(c, e->u.call.callee->type))) {
             /* An indirect call through a `fn` value whose signature has neither reference parameters nor a
@@ -2830,7 +2875,18 @@ static void collectEffectsExpr(Checker *c, FuncDef *f, Expr *e) {
  * function taking a callback would drag its caller into the worst case: `apply(buf, inc)` would
  * report "effects could not be fully analyzed"). */
         } else {
-            anSetEffUnknown(f, true);   /* nothing to go on -> incomplete, conservatively */
+            /* A call on a **type parameter** is deferred, not unknown: `k.hash()` inside
+             * `hashMap<K,V>` cannot be resolved while the template is checked, but the instance round
+             * below resolves the same call site with the type argument in place and records the real
+             * edge. Poisoning the template summary here is permanent, and it is load-bearing in the
+             * wrong direction: `hashMap::remove` reaches `find`, so every caller of `remove` (or
+             * `contains`, or anything built on them) is told "effects could not be fully analyzed"
+             * and cannot pass a view argument -- even though the instantiated call is perfectly
+             * decidable. The template's own conservatism lives in the `mentionsParam` rules
+             * (a `T` may carry a reference), which is where `tests/errors/generic_borrowed_store.extc`
+             * gets its rejection from; it does not depend on this bit. */
+            if (!callSubjectMentionsParam(e))
+                anSetEffUnknown(f, true);   /* nothing to go on -> incomplete, conservatively */
         }
     }
     if ((e->kind == EX_CALL || e->kind == EX_METHOD || e->kind == EX_ASSOC) && planCallee(e)) {
@@ -8645,6 +8701,31 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     }
     c.substParams = NULL;
     c.substArgs   = NULL;
+
+    /* The instance recompute just above makes summaries complete that a caller may already have
+     * been closed against in an earlier, incomplete state: `hashMapI64::remove` is a method of a
+     * *different* type instance than `hashMap::find`, and the instance lists are not in call order,
+     * so the facade could have merged the template's incomplete summary and cached "incomplete".
+     * Dropping the cached closure makes the next query recompute it from the summaries as they
+     * stand now. Masks are only merged upward by a closure, so recomputing cannot lose a bit; it
+     * can only keep one that is freshly attributable. */
+    {
+        Vec all; vecInit(&all, arena, sizeof(FuncDef *));
+        for (size_t i = 0; i < m->funcs.len; i++)
+            *(FuncDef **)vecPush(&all) = *(FuncDef **)vecAt(&m->funcs, i);
+        for (size_t i = 0; i < m->structs.len; i++) {
+            StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
+            if (!sd) continue;
+            for (size_t k = 0; k < sd->methods.len; k++)
+                *(FuncDef **)vecPush(&all) = *(FuncDef **)vecAt(&sd->methods, k);
+        }
+        for (size_t i = 0; i < all.len; i++) {
+            FuncDef *f = *(FuncDef **)vecAt(&all, i);
+            if (!f || !f->body || f->isExtern) continue;
+            anSetEffState(f, EFF_NONE);
+            anSetEffComplete(f, false);
+        }
+    }
 
     /* `@inline` is a requirement, not a hint, so a request that cannot be honoured has to
      * be refused here -- before code generation, and at the line the request was written on.

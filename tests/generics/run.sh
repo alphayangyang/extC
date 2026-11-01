@@ -31,6 +31,7 @@ check_pos() {
     else echo "  FAIL $name  ->  输出对不上（期望「$want」）"; fail=1; fi
 }
 check_pos method_on_t tests/generics/method_on_t.extc
+check_pos effects-deferred-method tests/generics/effects_deferred_method.extc   # 协议方法在 T 上：摘要不许被模板期误判
 
 echo "== 正例：泛型调泛型，内层的 \`<\` / \`==\` / 协议方法由外层实例兑现（要求上抛）=="
 check_pos deferred_op_through_call tests/generics/deferred_op_through_call.extc
