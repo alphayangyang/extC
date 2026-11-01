@@ -3954,6 +3954,26 @@ void checkStmt(Checker *c, Stmt *s) {
                     return;
                 }
             }
+            /* A fresh buffer written into a binding declared in an enclosing block is not released
+             * by the iteration: the loop body's arena is per round, so a `new` whose result lands in
+             * the outer binding's place outlives every round, and the buffers pile up until that
+             * block exits. That is invisible at run time (memory only) and shows up as "the peak
+             * grows with the round count", so it gets a warning. The storage answer is the binding's
+             * lexical depth, not the shape of the statement: a `var` written inside the loop body is
+             * released every round and stays silent. */
+            if (c->loopBodyDepth > 0 && tgt0 && tgt0->kind == EX_IDENT &&
+                s->u.assign.value && exprContainsNew(s->u.assign.value)) {
+                Sym *slot = lookup(c, tgt0->u.ident.name);
+                if (slot && slot->depth < c->loopBodyDepth)
+                    ckWarn(c, s->line,
+                           "Declare the buffer inside the loop so that each round releases the one"
+                           " before it, or keep the storage in a container that owns it (`vector`,"
+                           " `string`, `hashMap`), which grows in place. (`-w` turns this warning"
+                           " off.)",
+                           "the buffer written into `%s` outlives the loop: every round adds an"
+                           " allocation that is released only when the enclosing block exits",
+                           slot->name);
+            }
             /* `x += y` is `x = x + y`: which operator it is and whether it applies to these two types
              * is decided by the same function that checks a written `x + y`, so the rules cannot
              * diverge; only the assignment half is left here -- the target is writable and the result
@@ -4284,7 +4304,14 @@ void checkStmt(Checker *c, Stmt *s) {
             const char *tg = narrowTarget(c, s->u.whiles.cond, &whenTrue);
             const size_t mark = c->narrow.len;
             if (tg && whenTrue) narrowFactsOf(c, s->u.whiles.cond);
+            /* `checkBlockBody` pushes exactly one scope for the body, so declarations written
+             * directly in it land at `scopes.len + 1`. Bindings at a smaller depth belong to an
+             * enclosing block and outlive the loop; the assignment case reads this number to tell
+             * "released every round" from "kept across rounds". */
+            const int enclosingLoop = c->loopBodyDepth;
+            c->loopBodyDepth = (int)c->scopes.len + 1;
             checkBlockBody(c, s->u.whiles.body);
+            c->loopBodyDepth = enclosingLoop;
             c->narrow.len = mark;
             return;
         }

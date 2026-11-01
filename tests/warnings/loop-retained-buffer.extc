@@ -1,0 +1,28 @@
+// expect-warning: the buffer written into `buf` outlives the loop
+/* 「循环里把新 buffer 写进循环外的变量」⇒ 保留陷阱（2026-11-04）
+
+ * 为什么响：帧的存储按块归还，循环体里 `new` 出来的东西每轮都还 —— 前提是它**落在循环体那块
+ * 存储里**。写进循环外声明的变量，存储属于外层块，于是每轮新分配的那份都活到外层块退出，峰值
+ * 随轮数线性涨（一百轮各 1 MiB 实测 103.8 MB，同一行写进循环体是 2.4 MB）✗
+ *
+ * 为什么只警告不拦：行为完全正确，只是内存；而且"跨轮复用一块缓冲"是合法意图，改法是搬声明、
+ * 用 @overwrite，或换成自带板块的容器 ✓（`-w` 照常能关 ✓）
+ *
+ * 反例（必须静默，见 silent/loop-local-buffer.extc）：
+ *   · buffer 声明在循环体内 ⇒ 每轮归还 ✓
+ *   · `poolSlice` 再取一次 ⇒ 借已有的板块，不是新分配 ✓
+ *   · `x = y`（值不是 `new`）⇒ 不产生新存储 ✓
+ */
+use std::io
+
+fn main() -> i32 {
+    var buf: mut slice<u8> = new u8[1]
+    var i: i64 = 0
+    while i < 4 {
+        buf = new u8[64]        /* ← 这一行响警告 */
+        buf[0] = u8(i)
+        i = i + 1
+    }
+    io::cout << i64(buf[0]) << "\n"
+    return 0
+}

@@ -1,0 +1,33 @@
+/* 「循环里分配，但存储活不过这一轮」⇒ 一条警告都不许吐（2026-11-04）
+
+ * 这一格守的是上面那条警告的**精度**：循环里 `new` 完全合法，只要它落在循环体的存储里，
+ * 每轮结束就整块归还 —— 这正是"循环里分配不会涨"的常态，响一声就是噪音 ✗
+ *
+ * 覆盖三种静默形状：
+ *   ① 声明在循环体内（每轮归还）
+ *   ② `@overwrite`：明说要跨轮复用同一块存储
+ *   ③ 赋值右边不是 `new`（只搬已有存储）
+ */
+use std::io
+
+fn main() -> i32 {
+    var total: i64 = 0
+    var i: i64 = 0
+    var keep: mut slice<u8> = new u8[8]
+    while i < 16 {
+        /* ① 声明在循环体内 */
+        var scratch: mut slice<u8> = new u8[32]
+        scratch[0] = u8(i)
+        total = total + i64(scratch[0])
+
+        /* ② 跨轮复用同一块存储 */
+        @overwrite var reused = new [4]u8
+        (*reused)[0] = u8(i)
+
+        /* ③ 右边不是 `new`：只搬已有存储 */
+        keep = scratch
+        i = i + 1
+    }
+    io::cout << total << " " << keep.len << "\n"
+    return 0
+}

@@ -475,6 +475,15 @@ typedef struct Checker {
      * walk bounds the depth of whatever the AST turns out to be, so the compiler reports a
      * diagnostic instead of overflowing the C stack. */
     int        exprDepth;
+    /* Lexical depth of the innermost loop body, or 0 when the walk is not inside a loop.
+     *
+     * A binding whose `depth` is at least this number was declared inside that loop body,
+     * so its storage is released when the iteration ends. A binding with a smaller depth
+     * belongs to an enclosing block and outlives the whole loop: writing a fresh `new`
+     * into it inside the loop keeps every buffer alive until that block exits, which is
+     * the shape the "buffer kept across iterations" warning points at (see the `ST_ASSIGN`
+     * case in `checkStmt`). */
+    int        loopBodyDepth;
     /* Nodes in the current function body whose arena assignment has to be decided again
      * once every effect summary is closed: `new` sites, and the call sites whose
      * allocation arena is still open. After the body has been checked they move to
@@ -1348,6 +1357,19 @@ void ckNoteInstUse (FuncDef *m, Type *t);
  * @return        True when the verdict is a rejection.
  */
 bool checkEscapeDefer(Checker *c, Expr *val, int at, int line, const char *what, Expr *target);
+
+/**
+ * @brief Tell whether an expression contains `new` (or a generic `alloc<T>(n)`).
+ *
+ * The question the "buffer kept across iterations" warning asks: an assignment whose value
+ * allocates is the one that can leave a buffer behind, while an assignment of an existing value
+ * cannot. The walk shares the AST traversal with the allocation analyses, so a new expression
+ * kind is covered in one place.
+ *
+ * @param e  Expression; NULL returns false.
+ * @return   True when some node in the tree is `new` or `EX_GENCALL`.
+ */
+bool exprContainsNew(Expr *e);
 
 /**
  * @brief Tell whether the write target is reached **through a named reference** (`(*a).f` / `*a`)

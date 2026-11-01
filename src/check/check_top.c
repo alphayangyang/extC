@@ -428,33 +428,45 @@ typedef struct {
 } CoroDeferred;
 
 static bool hasNewInStmt(void *ctx, Stmt *s);
+/** How the "does this contain an allocation" walk treats a generic allocation call.
+ *
+ * `alloc<T>(n)` and `new T[n]` both reserve fresh storage, but `poolSlice`-style calls only borrow
+ * a slice of a plate that already exists: repeating one per round reuses the same memory, so a
+ * question about retained storage must not count it as an allocation. */
+typedef struct {
+    bool skipPoolSlices;    /* after `poolSlice` / `poolResize`: borrows, does not allocate */
+} NewScan;
+
+static bool exprIsPoolBlock(Expr *e);
+
 /**
  * @brief Tell whether an expression contains `new` or `alloc<T>(n)`.
  *
  * The walk goes through `astWalkExprChildren` / `astWalkStmtChildren`, so AST kinds are listed only
  * there.
  *
- * @param ctx  Unused.
+ * @param ctx  `NewScan` options, or NULL for "count every `EX_GENCALL` as an allocation".
  * @param e    Expression.
  * @return     Callback convention: false to stop the walk when found, true otherwise.
  */
 static bool hasNewInExpr(void *ctx, Expr *e) {
-    (void)ctx;
-    if (e->kind == EX_NEW || e->kind == EX_GENCALL) return false;   /* found */
-    AstVisit v = { hasNewInExpr, hasNewInStmt, NULL };
+    const NewScan *sc = ctx;
+    if (e->kind == EX_NEW) return false;                            /* found */
+    if (e->kind == EX_GENCALL &&
+        !(sc && sc->skipPoolSlices && exprIsPoolBlock(e))) return false; /* found */
+    AstVisit v = { hasNewInExpr, hasNewInStmt, ctx };
     return astWalkExprChildren(e, &v);
 }
 
 /**
  * @brief Statement-side walk callback for `hasNewInExpr`.
  *
- * @param ctx  Unused; this question needs no context.
+ * @param ctx  Walk options, passed through to the expression side.
  * @param s    Statement.
  * @return     Callback convention: false to stop the walk when found, true otherwise.
  */
 static bool hasNewInStmt(void *ctx, Stmt *s) {
-    (void)ctx;                              /* this question needs no context */
-    AstVisit v = { hasNewInExpr, hasNewInStmt, NULL };
+    AstVisit v = { hasNewInExpr, hasNewInStmt, ctx };
     return astWalkStmtChildren(s, &v);
 }
 
@@ -467,6 +479,23 @@ static bool hasNewInStmt(void *ctx, Stmt *s) {
 static bool exprHasNew(Expr *e) {
     if (!e) return false;
     return !hasNewInExpr(NULL, e);
+}
+
+/**
+ * @brief Tell whether an expression **allocates fresh storage**.
+ *
+ * Same walk as `exprHasNew`, with one difference: a `poolSlice`-family call is a borrow of a plate
+ * that already exists, not an allocation, so repeating it each round does not pile anything up. The
+ * "buffer written into a binding from an enclosing block" warning asks this narrower question --
+ * counting borrows there would flag the ordinary "reset the pool, take the slice again" loop.
+ *
+ * @param e  Expression; NULL returns false.
+ * @return   True when some node allocates (`new` or `alloc<T>(n)` that is not a plate borrow).
+ */
+bool exprContainsNew(Expr *e) {
+    if (!e) return false;
+    const NewScan sc = { true };
+    return !hasNewInExpr((void *)&sc, e);
 }
 
 /**
