@@ -11139,6 +11139,23 @@ static char *funcDefStart(char *text, DeadFunc *df, size_t *lenOut) {
 }
 
 /**
+ * @brief Order insertion points from the end of the unit to its start.
+ *
+ * One inserted attribute moves every later offset, so insertion has to run backwards. The points are
+ * collected function by function, which is not their order in the text (a prototype emitted early
+ * can describe a body emitted late).
+ *
+ * @param a  A `size_t` offset.
+ * @param b  Another `size_t` offset.
+ * @return   Negative when `a` comes later in the text.
+ */
+static int cmpInsertDesc(const void *a, const void *b) {
+    size_t x = *(const size_t *)a;
+    size_t y = *(const size_t *)b;
+    return x < y ? 1 : (x > y ? -1 : 0);
+}
+
+/**
  * @brief Add `EXTC_UNUSED` to the declaration of a function that has no call site at all.
  *
  * The attribute asserts "nobody calls this", and on a function that is called clang reports
@@ -11195,7 +11212,8 @@ static void markUncalledFunctions(CG *g, Buf *out) {
     Buf nb;
     bufInit(&nb, g->arena);
     bufPutn(&nb, text, len);
-    for (size_t k = at.len; k-- > 0; ) {
+    qsort(at.data, at.len, sizeof(size_t), cmpInsertDesc);
+    for (size_t k = 0; k < at.len; k++) {
         size_t off = *(size_t *)vecAt(&at, k);
         Buf tmp;
         bufInit(&tmp, g->arena);
@@ -11284,7 +11302,8 @@ static void markUnusedParams(CG *g, Buf *out) {
     Buf nb;
     bufInit(&nb, g->arena);
     bufPutn(&nb, text, len);
-    for (size_t k = at.len; k-- > 0; ) {
+    qsort(at.data, at.len, sizeof(size_t), cmpInsertDesc);
+    for (size_t k = 0; k < at.len; k++) {
         size_t off = *(size_t *)vecAt(&at, k);
         Buf tmp;
         bufInit(&tmp, g->arena);
