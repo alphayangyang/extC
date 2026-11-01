@@ -55,6 +55,10 @@ neg nested_lambda          "$(src nested_lambda.extc)"  "a lambda inside a lambd
 neg new_in_body            "$(src new_in_body.extc)"  "a lambda body may not allocate yet"
 neg ret_no_value           "$(src ret_no_value.extc)"  "this lambda returns no value"
 neg cannot_infer           "$(src cannot_infer.extc)"  "cannot infer the result type of this lambda"
+one fn_ptr_basic           "$(src fn_ptr_basic.extc)"  "42 7 9 8"
+one fn_ptr_no_param        "$(src fn_ptr_no_param.extc)"  "11"
+one fn_ptr_value_forms     "$(src fn_ptr_value_forms.extc)"  "6 6 12 15 18 30 9"
+neg fn_ptr_capture         "$(src fn_ptr_capture.extc)"  "but this lambda captures"
 
 # 跨模块：**模块文件**里的闭包，体内调用同模块函数（曾经静默返回 0，无诊断）
 modcase() { # name dir want

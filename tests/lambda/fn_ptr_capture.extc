@@ -1,0 +1,7 @@
+// 捕获了状态的 lambda **不是**一个指针：环境要跟代码一起走，所以这里必须被拒。
+fn take(f: fn(i64) -> i64, v: i64) -> i64 { return f(v) }
+
+fn main() -> i32 {
+    var k: i64 = 3
+    return i32(take(fn(x: i64) -> i64 { return x + k }, i64(1)))
+}

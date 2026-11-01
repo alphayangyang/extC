@@ -5299,6 +5299,18 @@ static void runMethodCheck(Checker *c, MethodCheck *mc, Vec *params, Vec *targs,
     TypeTable *tt = c->tt;
     Type *rt = ttSubstitute(tt, mc->node->u.method.recv->type, params, targs);
     Type *rb = ttBase(rt);
+    /* The instance's type is a **bare `fn(...)` pointer**: `f.call(x)` on such a value is a call
+     * through the pointer, not a method of the type. The template recorded the call as deferred
+     * because `F` was opaque; the signature the call has to match is the pointer's own. */
+    if (rb && rb->kind == TY_FN && mc->name && strcmp(mc->name, "call") == 0) {
+        if (mc->nargs != rb->params.len) {
+            ckError(c, mc->node->line, NULL,
+                    "`%s` takes %zu argument%s, but %zu %s written",
+                    mc->name, rb->params.len, rb->params.len == 1 ? "" : "s", mc->nargs,
+                    mc->nargs == 1 ? "was" : "were");
+        }
+        return;
+    }
     FuncDef *f = findMethod(rb, mc->name);
     if (!f) {
         Buf note;

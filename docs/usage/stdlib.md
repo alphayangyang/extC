@@ -803,7 +803,7 @@ fn main() -> i32 {
 | `sleepNs` / `sleepUs` / `sleepMs` | 阻塞当前线程 |
 | `timer` + `start()` | `elapsedNs` / `elapsedUs` / `elapsedMs` / `elapsedSecs`；`t0` 是 `@private` |
 
-没有 `perf(fn)`：闭包不能当参数。
+`time` 里没有收回调的计时器：把行为当参数有两种写法 —— 不捕获的 lambda 直接当 `fn(...)` 传（[可调用的值](language.md#35-可调用的值fn-与闭包)），带状态的闭包交给泛型参数并在体内调 `call`。
 
 ```extc
 use std::io

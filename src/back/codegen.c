@@ -527,6 +527,10 @@ typedef struct {
      * `loopHoistRangeFor`). The elements are node identities: when `exIndex` finds one it emits a
      * bare pointer access and skips the per-iteration branch. */
     Vec         hoistedIdx;
+    /* StructDef*: lambda environments that are used as **bare `fn(...)` pointers**. Each gets a
+     * thunk with the lambda's own signature that calls the synthesised `call` method with an empty
+     * environment (see `emitLamThunk`). Collected before the prototypes are emitted. */
+    Vec         lamThunks;
     Vec         rcGlobalRoots;   /* const char *: global reference slots */
     bool        rcGlobalsUnreliable; /* a global holds reference stores that cannot be enumerated => turn triggers off in every function */
     bool        rcRootsUnreliable;
@@ -2513,6 +2517,20 @@ static const char *genMethodCall(CG *g, Expr *e) {
      * ordinary method resolution. */
     if (e->u.method.name && strcmp(e->u.method.name, "__extc_pad") == 0)
         return genPadCall(g, e);
+    /* `f.call(x)` where `f` holds a `fn(...)` pointer: a deferred call whose instance turned out to
+     * be a bare code pointer. There is no method to name -- C calls through the pointer. The
+     * parentheses keep a compound receiver from binding to the argument list. */
+    if (e->u.method.name && strcmp(e->u.method.name, "call") == 0 && ttBase(recvT) &&
+        ttBase(recvT)->kind == TY_FN) {
+        Buf fb;
+        bufInit(&fb, g->arena);
+        bufPrintf(&fb, "(%s)(", genExpr(g, e->u.method.recv));
+        for (size_t i = 0; i < e->u.method.args.len; i++)
+            bufPrintf(&fb, "%s%s", i ? ", " : "",
+                      genExpr(g, *(Expr **)vecAt(&e->u.method.args, i)));
+        bufPuts(&fb, ")");
+        return bufCstr(&fb);
+    }
     FuncDef *f = planCallee(e);
     if (!f) f = findMethod(ttBase(recvT), e->u.method.name);
     /* The **handle** protocol: the receiver is a `coroutine<T>` (the marker type, whatever the
@@ -4671,6 +4689,79 @@ static const char *exEnumval(CG *g, Expr *e) {
     return bufCstr(&b);
 }
 
+/* ------------------------------------------------------- lambda function pointers ----
+ * `fn(...)` is a bare code pointer. A lambda that captures nothing has an empty environment, so its
+ * value can be that pointer; the environment's `call` method cannot be used directly, because its
+ * first parameter is `self`. Each such literal therefore gets a **thunk**: a static function with
+ * the lambda's own signature that calls `call` with a static empty environment. `cc -O2` inlines the
+ * thunk, so the only cost left is the indirect jump every function-pointer call already has.
+ *
+ * The environment is empty by construction (the checker only accepts the conversion when no capture
+ * was made), so the dummy is never read; it exists so that the callee is not handed a null pointer.
+ * --------------------------------------------------------------------------------------- */
+
+/**
+ * @brief The C name of the thunk that turns a lambda's `call` method into a bare function pointer.
+ *
+ * @param g   The generator state (names are arena-allocated).
+ * @param sd  The lambda's environment struct; it must have exactly one method.
+ * @return    The thunk's C identifier, owned by `g->arena`.
+ */
+static const char *lamThunkName(CG *g, StructDef *sd) {
+    FuncDef *md = *(FuncDef **)vecAt(&sd->methods, 0);
+    return arenaPrintf(g->arena, "%s$fn", cFuncName(g, md));
+}
+
+/**
+ * @brief Print a thunk's parameter list: the lambda's own parameters, without the receiver.
+ *
+ * @param g   The generator state.
+ * @param md  The lambda's `call` method (its first parameter is the environment).
+ * @param b   The buffer to append to.
+ */
+static void lamThunkParams(CG *g, FuncDef *md, Buf *b) {
+    if (md->params.len <= 1) { bufPuts(b, "void"); return; }
+    for (size_t i = 1; i < md->params.len; i++) {
+        Param *p = *(Param **)vecAt(&md->params, i);
+        bufPrintf(b, "%s%s %s", i > 1 ? ", " : "", cType(g, p->type), p->cname);
+    }
+}
+
+/**
+ * @brief Emit one thunk definition.
+ *
+ * @param g   The generator state; output goes to the current buffer.
+ * @param sd  The lambda's environment struct.
+ */
+static void emitLamThunk(CG *g, StructDef *sd) {
+    FuncDef *md = *(FuncDef **)vecAt(&sd->methods, 0);
+    Buf ps;
+    bufInit(&ps, g->arena);
+    lamThunkParams(g, md, &ps);
+    bool vret = !md->ret || md->ret->kind == TY_VOID;
+    cgLine(g, "");
+    cgLine(g, "/* A `fn(...)` value for a lambda that captures nothing: the empty environment is a");
+    cgLine(g, " * static dummy, so a call site never has to invent one. */");
+    cgLine(g, "static %s %s(%s) {", vret ? "void" : cType(g, md->ret), lamThunkName(g, sd),
+           bufCstr(&ps));
+    {
+        Param *selfP = *(Param **)vecAt(&md->params, 0);
+        cgLine(g, "    static %s __env;", cType(g, selfP->type->inner));
+    }
+    Buf args;
+    bufInit(&args, g->arena);
+    for (size_t i = 1; i < md->params.len; i++) {
+        Param *p = *(Param **)vecAt(&md->params, i);
+        bufPrintf(&args, "%s%s", i > 1 ? ", " : "", p->cname);
+    }
+    if (vret)
+        cgLine(g, "    %s(&__env%s%s);", cFuncName(g, md), args.len ? ", " : "", bufCstr(&args));
+    else
+        cgLine(g, "    return %s(&__env%s%s);", cFuncName(g, md), args.len ? ", " : "",
+               bufCstr(&args));
+    cgLine(g, "}");
+}
+
 /**
  * @brief Dispatch on the expression node and generate the C expression text for it.
  *
@@ -4685,6 +4776,11 @@ static const char *genExprInner(CG *g, Expr *e) {
     switch (e->kind) {
         case EX_EXT: return exExt(g, e);
         case EX_LAMBDA: {
+            /* Used as a bare `fn(...)` value: the value is the code pointer of the thunk that wraps
+             * the synthesised `call` method (the checker accepted this only for a lambda that
+             * captures nothing, so the environment is empty). */
+            if (planLamFnPtr(e) && e->u.lambda.sdef && e->u.lambda.sdef->methods.len == 1)
+                return lamThunkName(g, e->u.lambda.sdef);
             /* The environment, built where the lambda is written: the checker puts the field values on the
              * node, so a struct literal is written by hand here. The by-name literal path is
              * unusable -- the lambda's type has no name in the source to look up. */
@@ -12251,6 +12347,81 @@ static void emitGlobals(CG *g, Module *m) {
     if (m->globals.len) cgLine(g, "");
 }
 
+/* The scan state: the generator plus the visitor, so the callbacks can recurse (the `astWalk*`
+ * helpers visit one level of children, and a function-pointer use can sit any number of levels
+ * down). */
+typedef struct {
+    CG       *g;
+    AstVisit  v;
+} LamThunkScan;
+
+static bool lamThunkScanExpr(void *ctx, Expr *e);
+static bool lamThunkScanStmt(void *ctx, Stmt *s);
+
+/**
+ * @brief Inspect one expression and recurse into its children.
+ *
+ * @param ctx  The scan state.
+ * @param e    The expression to inspect.
+ * @return     Always true: the walk never stops early.
+ */
+static bool lamThunkScanExpr(void *ctx, Expr *e) {
+    LamThunkScan *sc = (LamThunkScan *)ctx;
+    if (e && e->kind == EX_LAMBDA && planLamFnPtr(e)) {
+        StructDef *sd = e->u.lambda.sdef;
+        if (sd && sd->methods.len == 1) {
+            bool seen = false;
+            for (size_t i = 0; i < sc->g->lamThunks.len && !seen; i++)
+                seen = *(StructDef **)vecAt(&sc->g->lamThunks, i) == sd;
+            if (!seen) *(StructDef **)vecPush(&sc->g->lamThunks) = sd;
+        }
+    }
+    return astWalkExprChildren(e, &sc->v);
+}
+
+/**
+ * @brief Inspect one statement's children.
+ *
+ * @param ctx  The scan state.
+ * @param s    The statement to walk.
+ * @return     Always true: the walk never stops early.
+ */
+static bool lamThunkScanStmt(void *ctx, Stmt *s) {
+    LamThunkScan *sc = (LamThunkScan *)ctx;
+    return astWalkStmtChildren(s, &sc->v);
+}
+
+/**
+ * @brief Collect the lambda environments that need a function-pointer thunk.
+ *
+ * The prototypes have to be emitted before any body is generated, and a use site can sit in any
+ * body, so the whole unit is scanned first. `g->funcs` is the set that will be emitted, which is
+ * exactly the set whose bodies can mention a thunk.
+ *
+ * @param g  The generator state; `lamThunks` is filled in.
+ */
+static void collectLamThunks(CG *g) {
+    LamThunkScan sc;
+    sc.g = g;
+    sc.v.expr = lamThunkScanExpr;
+    sc.v.stmt = lamThunkScanStmt;
+    sc.v.ctx  = &sc;
+    for (size_t i = 0; i < g->funcs.len; i++) {
+        FuncDef *f = *(FuncDef **)vecAt(&g->funcs, i);
+        if (f && f->body) astWalkStmtChildren(f->body, &sc.v);
+    }
+}
+
+/**
+ * @brief Emit every collected lambda thunk (prototypes were already emitted).
+ *
+ * @param g  The generator state; output goes to the current buffer.
+ */
+static void emitLamThunks(CG *g) {
+    for (size_t i = 0; i < g->lamThunks.len; i++)
+        emitLamThunk(g, *(StructDef **)vecAt(&g->lamThunks, i));
+}
+
 /**
  * @brief Emit the unit-wide prototype pool: before every function body, and prototypes only.
  *
@@ -12267,6 +12438,18 @@ static void emitGlobals(CG *g, Module *m) {
  * @param arena The scratch allocator for assembling signature text.
  */
 static void emitProtos(CG *g, Module *m, Arena *arena) {
+    /* The thunks that turn a lambda that captures nothing into a bare function pointer. They are
+     * declared with everything else: a use site may precede any definition. */
+    for (size_t i = 0; i < g->lamThunks.len; i++) {
+        StructDef *sd = *(StructDef **)vecAt(&g->lamThunks, i);
+        FuncDef *md = *(FuncDef **)vecAt(&sd->methods, 0);
+        Buf ps;
+        bufInit(&ps, g->arena);
+        lamThunkParams(g, md, &ps);
+        bool vret = !md->ret || md->ret->kind == TY_VOID;
+        cgLine(g, "static %s %s(%s);", vret ? "void" : cType(g, md->ret), lamThunkName(g, sd),
+               bufCstr(&ps));
+    }
     /* The prototype pool: every function is declared before any body, and only
      * a prototype may appear here. A definition emitted before the prototype of
      * a function it calls makes C take that function as implicitly declared
@@ -12807,6 +12990,7 @@ static void initRuntimeText(CG *g, Arena *arena) {
     vecInit(&g->deadFuncs, arena, sizeof(DeadFunc *));
     vecInit(&g->deadLocals, arena, sizeof(DeadLocal *));
     vecInit(&g->primEnts, arena, sizeof(PrimEnt *));
+    vecInit(&g->lamThunks, arena, sizeof(StructDef *));
     bufInit(&g->desc, arena);
     bufInit(&g->rcDesc, arena);
     vecInit(&g->rcDescKeys, arena, sizeof(const char *));
@@ -13816,6 +14000,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     scanUnitNeeds(&g, m);
     initRuntimeText(&g, arena);
     collectEmitted(&g, m);
+    collectLamThunks(&g);
     /* Settle "this program writes the console" first: main's prologue registers
      * `atexit(extc_cout_flush)` from it, and without it a program that exits or traps halfway loses the
      * bytes in the buffer. */
@@ -13860,6 +14045,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     emitVtTables(&g, out, m, arena);
     emitParTramps(&g);
     emitFuncBodies(&g);
+    emitLamThunks(&g);
     dbgRcCostReport(&g);
     /* Final assembly: the pieces whose need is discovered during generation are
      * spliced in ahead of the bodies - the print runtime and the descriptor

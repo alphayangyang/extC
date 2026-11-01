@@ -1208,6 +1208,27 @@ bool     planCallViaFn(const Expr *e);
 void planSetCallViaFn(Expr *e, bool v);
 
 /**
+ * @brief Record that a lambda literal is used as a bare `fn(...)` function pointer.
+ *
+ * A lambda that captures nothing has an empty environment, so its value is the code pointer and
+ * nothing else -- exactly what a `fn(...)` type is. The checker accepts that conversion where a
+ * `fn` value is expected and records the decision here; code generation then emits the function
+ * itself instead of the (empty) environment literal.
+ *
+ * @param e  The `EX_LAMBDA` node.
+ * @param v  `true` when the literal's value is the code pointer.
+ */
+void planSetLamFnPtr(Expr *e, bool v);
+
+/**
+ * @brief Get whether a lambda literal is used as a bare `fn(...)` function pointer.
+ *
+ * @param e  The `EX_LAMBDA` node.
+ * @return   `true` when the checker accepted the conversion for this literal.
+ */
+bool planLamFnPtr(const Expr *e);
+
+/**
  * @brief Get the pad primitive an f-string format-specifier slot selects.
  *
  * @param e  The method-call node (`__extc_pad`).

@@ -1,0 +1,24 @@
+// 函数指针作为值的各种调用写法：泛型参数上的调用、结构体字段、数组元素、显式 `.call`。
+// 期望输出：6 6 12 15 18 30 9
+use std::io
+
+struct box { f: fn(i64) -> i64 }
+
+fn apply<F>(g: F, v: i64) -> i64 { return g(v) }
+
+fn main() -> i32 {
+    var bias: i64 = 5
+    let add = fn(x: i64) -> i64 { return x + bias }
+    var g: fn(i64) -> i64 = fn(x: i64) -> i64 { return x * 3 }
+    var bx: box = box { f: g }
+    var fs: [2]fn(i64) -> i64 = [g, fn(x: i64) -> i64 { return x - 1 }]
+    let a: i64 = apply(add, 1)
+    let b: i64 = apply(g, 2)
+    let c: i64 = g.call(4)
+    let d: i64 = bx.f(5)
+    let e: i64 = bx.f.call(6)
+    let f1: i64 = fs[0](10)
+    let f2: i64 = fs[1](10)
+    io::cout << a << " " << b << " " << c << " " << d << " " << e << " " << f1 << " " << f2 << "\n"
+    return 0
+}

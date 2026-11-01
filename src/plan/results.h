@@ -126,6 +126,10 @@ typedef struct {
     bool        dynTable;      /* its body is named by a `dyn` vtable thunk, from outside */
     Type       *coroRetProto;  /* the declared return type of a coroutine, before substitution */
     bool        boxedCoro;     /* a coroutine call stored as a handle: codegen boxes it */
+    /* A lambda literal whose environment is empty and that is used where a `fn(...)` value is
+     * expected: the value is the code pointer, so codegen emits a plain function and not the
+     * (empty) environment literal. Set by the checker when it accepts the conversion. */
+    bool        lamFnPtr;
     uint64_t    addrMask;
     /* ---- call / receiver facts ---- */
     Expr       *extDom;        /* `EX_EXT`: the domain this task is handed to */

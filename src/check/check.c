@@ -380,6 +380,44 @@ void adoptContextType(Expr *e, Type *want) {
 }
 
 /**
+ * @brief Accept a lambda that captures nothing where a `fn(...)` value is expected.
+ *
+ * A lambda whose capture set is empty has an empty environment: the value is a code pointer and
+ * nothing else, which is exactly what a `fn(...)` type is. The conversion is recorded on the node
+ * (`planSetLamFnPtr`) rather than rewriting its type, so a literal that is *also* kept as a closure
+ * value elsewhere keeps the environment; code generation emits the pointer form only here.
+ *
+ * The signature has to match exactly: same parameter count and types, same result. A lambda that
+ * captures state is left alone -- its environment has to travel with the code, and the diagnostic
+ * for that case names the reason.
+ *
+ * @param c     The checker.
+ * @param want  The expected type.
+ * @param node  The expected expression (an initializer, an argument, a return value).
+ * @return      `true` when the conversion was accepted and recorded.
+ */
+static bool lambdaBecomesFnPtr(Checker *c, Type *want, Expr *node) {
+    if (!want || want->kind != TY_FN || !node || node->kind != EX_LAMBDA) return false;
+    StructDef *sd = node->u.lambda.sdef;
+    if (!sd || sd->fields.len != 0 || sd->methods.len != 1) return false;
+    FuncDef *md = *(FuncDef **)vecAt(&sd->methods, 0);
+    if (md->params.len == 0) return false;                    /* the receiver is the first one */
+    if (md->params.len - 1 != want->params.len) return false;
+    if (!md->ret || !want->ret || !ttEquals(tsub(c, md->ret), want->ret)) return false;
+    for (size_t i = 0; i < want->params.len; i++) {
+        Param *p = *(Param **)vecAt(&md->params, i + 1);
+        Type *pt = p ? tsub(c, p->type) : NULL;
+        Type *wt = *(Type **)vecAt(&want->params, i);
+        if (!pt || !wt || !ttEquals(pt, wt)) return false;
+    }
+    /* The thunk calls the synthesised `call` method, so that method has to be emitted: the
+     * reachability pruning would otherwise drop it (nothing on the extC side names it). */
+    planSetUsed(md, true);
+    planSetLamFnPtr(node, true);
+    return true;
+}
+
+/**
  * @brief Check whether a value of type `got` may be assigned where `want` is expected.
  *
  * Only lossless conversions are implicit: widening, non-null reference to nullable reference,
@@ -442,6 +480,25 @@ bool checkAssignable(Checker *c, Type *want, Type *got, Expr *node, const char *
             planSetCoroBoxed(planCoroOf(got->sdef), true);
             return true;
         }
+    }
+
+    /* A lambda that captures nothing has no environment, so its value is a code pointer -- what a
+     * `fn(...)` type is. Accepting the conversion here keeps the syntax plain (`take(fn(x) ...)`)
+     * while leaving the closure path (environment struct, `.call`) untouched. */
+    if (lambdaBecomesFnPtr(c, want, node)) return true;
+
+    /* The same shape with a capture set: the state has to travel with the code, so the value is a
+     * closure and not a single pointer. Saying that beats "expects `fn(i64) -> i64`, found
+     * `fn(i64) -> i64`", which names the same type twice. */
+    if (want && want->kind == TY_FN && node && node->kind == EX_LAMBDA && node->u.lambda.sdef &&
+        node->u.lambda.sdef->fields.len > 0) {
+        ckError(c, node->line,
+                "the state a lambda captures travels with its code, so its value is a closure and"
+                " not one pointer; pass that state as a parameter, or give the closure a name to"
+                " keep it as a value",
+                "%s expects `%s`, but this lambda captures %zu variable(s)",
+                what, typeStr(c, want), node->u.lambda.sdef->fields.len);
+        return false;
     }
 
     /* Both sides of `ref T` must be references.

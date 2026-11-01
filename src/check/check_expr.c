@@ -1513,6 +1513,31 @@ static bool lendViewArg(Checker *c, Type *want, Expr **pslot) {
 }
 
 /**
+ * @brief The `fn(...)` type a `.call(...)` receiver holds, without checking the receiver.
+ *
+ * Only the shapes whose type is known without walking them: a name (its binding's type) and a field
+ * access (the field's declared type). Anything else returns NULL and takes the ordinary method path,
+ * which reports the usual diagnostic.
+ *
+ * @param c  The checker.
+ * @param e  The receiver expression.
+ * @return   Its `fn` type, or NULL.
+ */
+static Type *peekCallableType(Checker *c, Expr *e) {
+    if (!e) return NULL;
+    Type *t = NULL;
+    if (e->kind == EX_IDENT) {
+        Sym *sy = lookup(c, e->u.ident.name);
+        t = sy ? sy->type : NULL;
+    } else if (e->kind == EX_FIELD) {
+        t = peekFieldType(c, e);
+    }
+    if (!t) return NULL;
+    t = tsub(c, t);
+    return (t && ttBase(t) && ttBase(t)->kind == TY_FN) ? ttBase(t) : NULL;
+}
+
+/**
  * @brief Check `f(x)` where `f` **holds a value of function type** rather than a declaration.
  *
  * The signature is the value's own, so every argument is matched against that type.
@@ -3420,6 +3445,22 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     return checkExprInner(c, e);
                 }
             }
+            /* The `f` in `f(x)` is a value whose type mentions a **type parameter** (`F`): which method
+             * this is only becomes known per instance, exactly like `f.call(x)` on a type parameter.
+             * Rewritten in place into that call so the deferred path decides it once the instance is
+             * known; a type that turns out not to be callable then reports "no method `call`". */
+            if (e->u.call.callee && e->u.call.callee->kind == EX_IDENT) {
+                Sym *sy = lookup(c, e->u.call.callee->u.ident.name);
+                if (sy && sy->type && mentionsParam(tsub(c, sy->type))) {
+                    Expr *recv = e->u.call.callee;      /* read before `u.method` overwrites them */
+                    Vec   args = e->u.call.args;
+                    e->kind = EX_METHOD;
+                    e->u.method.recv = recv;
+                    e->u.method.name = "call";
+                    e->u.method.args = args;
+                    return checkExprInner(c, e);
+                }
+            }
             /* The `f` in `f(x)` **holds a value of function type** rather than naming a declaration: the call
              * goes through a code pointer and the signature comes from the type. This branch comes before all
              * the by-name branches below, because they all describe a declaration this call does not have. */
@@ -3468,6 +3509,12 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             }
 
             if (e->u.call.callee->kind != EX_IDENT) {
+                /* A callee that is not a name: `fs[i](x)`, `(*p)(x)`, `box.f(x)` written as a bare
+                 * call. When its type is a `fn(...)` the call goes through that code pointer; any
+                 * other callee type has no meaning here. */
+                Type *ct = checkExpr(c, e->u.call.callee);
+                if (ct && ttBase(ct) && ttBase(ct)->kind == TY_FN)
+                    return checkCallThroughFn(c, e, ttBase(ct));
                 ckError(c, e->line, "only direct calls to a function name are supported for now",
                         "only direct function calls are supported");
                 return ttError(tt);
@@ -4105,6 +4152,21 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 }
             }
 
+            /* `f.call(x)` where `f` holds a `fn(...)` pointer: `.call` is the spelling a closure
+             * uses, so it is accepted here too and means the same thing -- a call through the
+             * pointer. Recognised *before* the receiver is checked, so the call path owns the one
+             * and only check of it. */
+            if (e->u.method.name && strcmp(e->u.method.name, "call") == 0) {
+                Type *ct = peekCallableType(c, e->u.method.recv);
+                if (ct) {
+                    Expr *recv = e->u.method.recv;      /* read before `u.call` overwrites them */
+                    Vec   args = e->u.method.args;
+                    e->kind = EX_CALL;
+                    e->u.call.callee = recv;
+                    e->u.call.args   = args;
+                    return checkExprInner(c, e);
+                }
+            }
             /* Methods live inside a `struct` body only, so they are found by the type of the
              * receiver. */
             Type *recvT = checkExpr(c, e->u.method.recv);
@@ -4225,6 +4287,13 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                  * value of its element type -- `hashMap<K, V>` is stuck exactly here: hashing a `K` means calling
                  * `hash()` on a type parameter. */
                 if (c->curFunc && mentionsParam(recvT)) {
+                    /* The arguments are checked here even though the callee is not known yet: what
+                     * they mean does not depend on the instance, and the rest of the pass walks this
+                     * tree afterwards (unused parameters, escapes, the arena sites), so their C names
+                     * have to exist. Checking them again per instance is the same double work the
+                     * deferred operators already cost. */
+                    for (size_t i = 0; i < e->u.method.args.len; i++)
+                        (void)checkExprInner(c, *(Expr **)vecAt(&e->u.method.args, i));
                     MethodCheck *mc = (MethodCheck *)arenaAllocZero(c->arena, sizeof(MethodCheck));
                     mc->node  = e;
                     mc->owner = c->curFunc->owner;

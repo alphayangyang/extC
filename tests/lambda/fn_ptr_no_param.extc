@@ -1,0 +1,10 @@
+// 零参数的非捕获 lambda 同样能当指针用：形参表为空，thunk 只有一个静态环境。
+// 期望输出：11
+use std::io
+
+fn run0(f: fn() -> i64) -> i64 { return f() }
+
+fn main() -> i32 {
+    io::cout << run0(fn() -> i64 { return 11 }) << "\n"
+    return 0
+}

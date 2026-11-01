@@ -1,0 +1,15 @@
+// 非捕获 lambda 可以当裸 `fn(...)` 指针用：环境为空 ⇒ 值就是代码指针。
+// 期望输出：42 7 9 8（take=42、twice=7、指针变量 f(10)=9、拷贝后的指针 g(9)=8）。
+use std::io
+
+fn take(f: fn(i64) -> i64, v: i64) -> i64 { return f(v) }
+fn twice(f: fn(i64) -> i64, v: i64) -> i64 { return f(f(v)) }
+
+fn main() -> i32 {
+    var f: fn(i64) -> i64 = fn(x: i64) -> i64 { return x - 1 }
+    var g: fn(i64) -> i64 = f
+    let a: i64 = take(fn(x: i64) -> i64 { return x * 2 }, 21)
+    let b: i64 = twice(fn(x: i64) -> i64 { return x + 1 }, 5)
+    io::cout << a << " " << b << " " << f(10) << " " << g(9) << "\n"
+    return 0
+}
