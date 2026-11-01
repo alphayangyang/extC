@@ -182,6 +182,32 @@ struct hashMap<K, V> {
         return self.vals.get(self.vals.handleAtDense(i64(self.slot[b])))
     }
 
+    /* `k` 的值槽：一次探测拿 handle，之后 `at`/`setAt` 不再探测。读-改-写一个已有键因此只要
+     * 一次探测（`get` + `put` 要两次），这是"取出来改一下写回去"该有的形状。
+     * handle 是池的**值**，不是指针：值池扩容/搬动不会让它悬垂，过期了 `at` 会还 `none`。 */
+    fn slotOf(self: ref hashMap<K, V>, k: K) -> ?handle {
+        let b = self.find(k)
+        if b < 0 { return none }
+        return some(self.vals.handleAtDense(i64(self.slot[b])))
+    }
+
+    /* handle 指向的值；handle 过期（被 remove 搬走、或池清了）时 `none`。 */
+    fn at(self: ref hashMap<K, V>, h: handle) -> ?V { return self.vals.get(h) }
+
+    /* 用 handle 就地写回：一次池访问，不探测。 */
+    fn setAt(self: mut ref hashMap<K, V>, h: handle, v: V) -> bool { return self.vals.set(h, v) }
+
+    /* `k` 的 handle，缺失时插入 `dflt`。命中只探测一次；新键多一次（`put` 内部再探），
+     * 所以"每记录一次哈希探测"的循环就写这一句。 */
+    fn entry(self: mut ref hashMap<K, V>, k: K, dflt: V) -> handle {
+        if self.pStale() { self.pPoison() }
+        let had = self.find(k)
+        if had >= 0 { return self.vals.handleAtDense(i64(self.slot[had])) }
+        self.put(k, dflt)
+        let b = self.find(k)
+        return self.vals.handleAtDense(i64(self.slot[b]))
+    }
+
     /* Insert or overwrite. Returns true when the key was already there. */
     /* `hm[k] = v` -- the write side (`[]` and `[]=` are independent names). Same semantics as
      * `put`: insert when absent, overwrite when present. */
@@ -424,6 +450,14 @@ struct hashMapI64<V> {
     }
 
     fn remove(self: mut ref hashMapI64<V>, k: i64) -> bool { return self.m.remove(i64Key { v: k }) }
+
+    /* handle 走的是值池里的稳定槽位，不是指针：值池扩容搬动数据时不会悬垂。 */
+    fn slotOf(self: ref hashMapI64<V>, k: i64) -> ?handle { return self.m.slotOf(i64Key { v: k }) }
+    fn at(self: ref hashMapI64<V>, h: handle) -> ?V { return self.m.at(h) }
+    fn setAt(self: mut ref hashMapI64<V>, h: handle, v: V) -> bool { return self.m.setAt(h, v) }
+    fn entry(self: mut ref hashMapI64<V>, k: i64, dflt: V) -> handle {
+        return self.m.entry(i64Key { v: k }, dflt)
+    }
 
     fn clear(self: mut ref hashMapI64<V>) { self.m.clear() }
 

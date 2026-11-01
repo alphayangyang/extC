@@ -253,10 +253,27 @@ fn main() -> i32 {
 | `remove` / `clear` / `release` | 删、清、整批还池 |
 | 按桶扫 | `keyAt(i)` / `valAt(i)` / `liveAt(i)`（表位置；**不是插入序**） |
 | 按 dense 扫 | `denseLen()` / `keyAtDense(d)` / `valAtDense(d)` |
+| 按槽读写 | `slotOf(k) -> ?handle`（一次探测）/ `at(h) -> ?V` / `setAt(h, v)` / `entry(k, dflt) -> handle` |
 | `clone` | 深拷贝 |
 | `rebuild(ncap)` | 换一张 `ncap` 容量（2 的幂）的表，旧块当场还池 |
 
 重建有**两条触发线**：装载（`n + dead` 到 70% 容量）与墓碑密度（`dead` 到 25% 容量）。
+
+**槽（handle）是这张表的一等货币**，读-改-写一条记录用它：`get` + `put` 要探测两次，而
+`entry` 命中时只探测一次、`at`/`setAt` 直接按槽读写。handle 是池的**值**（槽号 + 换代号 + 纪），
+不是指针：值池扩容搬数据不会让它悬垂，过期（键被 `remove` 掉、或池清了）时 `at` 还 `none`。
+
+<!-- fragment -->
+```extc
+use std::io
+use stl::hashMap
+fn bump(m: mut ref hashMapI64<i64>, k: i64) -> i64 {
+    let h: handle = m.entry(k, i64(0))     // 命中：一次探测；缺失：插入 0
+    let v: i64 = m.at(h) ?? i64(0)
+    m.setAt(h, v + i64(1))                 // 按槽写回，不再探测
+    return v + i64(1)
+}
+```
 
 `hashSetI64` 是"没有值的 map"（值是一格 `u8`），面与 `hashMap` 对齐，
 **唯一差别**：`put` 返回 true 表示**新元素**。`withCap` · `len` ·

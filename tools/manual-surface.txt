@@ -416,6 +416,7 @@ std::ws	-	pPow2	fn	internal
 std::ws	-	requestInto	fn	public
 std::ws	-	unmask	fn	public
 stl::hashMap	-	hashI64	fn	public
+stl::hashMap	hashMap	at	method	public
 stl::hashMap	hashMap	bucketOfDense	field	internal
 stl::hashMap	hashMap	bucketOfDense	field	internal
 stl::hashMap	hashMap	bytesOf	method	public
@@ -429,6 +430,7 @@ stl::hashMap	hashMap	dead	field	internal
 stl::hashMap	hashMap	dead	field	internal
 stl::hashMap	hashMap	deadOf	method	internal
 stl::hashMap	hashMap	denseLen	method	internal
+stl::hashMap	hashMap	entry	method	public
 stl::hashMap	hashMap	find	method	public
 stl::hashMap	hashMap	get	method	public
 stl::hashMap	hashMap	keyAt	method	public
@@ -450,8 +452,10 @@ stl::hashMap	hashMap	put	method	public
 stl::hashMap	hashMap	rebuild	method	public
 stl::hashMap	hashMap	release	method	public
 stl::hashMap	hashMap	remove	method	public
+stl::hashMap	hashMap	setAt	method	public
 stl::hashMap	hashMap	slot	field	public
 stl::hashMap	hashMap	slot	field	public
+stl::hashMap	hashMap	slotOf	method	public
 stl::hashMap	hashMap	tag	field	public
 stl::hashMap	hashMap	tag	field	public
 stl::hashMap	hashMap	tagCensus	method	internal
@@ -460,6 +464,7 @@ stl::hashMap	hashMap	valAtDense	method	internal
 stl::hashMap	hashMap	vals	field	internal
 stl::hashMap	hashMap	vals	field	internal
 stl::hashMap	hashMap	withCap	method	public
+stl::hashMap	hashMapI64	at	method	public
 stl::hashMap	hashMapI64	bytesOf	method	public
 stl::hashMap	hashMapI64	capOf	method	public
 stl::hashMap	hashMapI64	clear	method	public
@@ -467,6 +472,7 @@ stl::hashMap	hashMapI64	clone	method	public
 stl::hashMap	hashMapI64	contains	method	public
 stl::hashMap	hashMapI64	deadOf	method	internal
 stl::hashMap	hashMapI64	denseLen	method	internal
+stl::hashMap	hashMapI64	entry	method	public
 stl::hashMap	hashMapI64	get	method	public
 stl::hashMap	hashMapI64	keyAt	method	public
 stl::hashMap	hashMapI64	keyAtDense	method	internal
@@ -477,6 +483,8 @@ stl::hashMap	hashMapI64	pidOf	method	internal
 stl::hashMap	hashMapI64	put	method	public
 stl::hashMap	hashMapI64	release	method	public
 stl::hashMap	hashMapI64	remove	method	public
+stl::hashMap	hashMapI64	setAt	method	public
+stl::hashMap	hashMapI64	slotOf	method	public
 stl::hashMap	hashMapI64	tagCensus	method	internal
 stl::hashMap	hashMapI64	valAt	method	public
 stl::hashMap	hashMapI64	valAtDense	method	internal

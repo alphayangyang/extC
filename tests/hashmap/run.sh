@@ -33,6 +33,8 @@ run_case basic
 run_case structkey tests/hashmap/structkey.extc
 run_case dense     tests/hashmap/dense.extc
 run_case index     tests/hashmap/index.extc
+echo "== handle 一等货币：一次探测拿槽 + at/setAt 读写 + 跨插入稳定 + remove 后过期 =="
+run_case handle
 echo "== 碰撞：线性探测 + 墓碑 + 复用墓碑槽 =="
 run_case collide
 
