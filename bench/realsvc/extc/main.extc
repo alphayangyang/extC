@@ -254,13 +254,20 @@ fn modeSessions(buf: slice<u8>, readNs: i64) -> i32 {
             {
                 var ev: rec = { ts: v0, uid: v1, site: v2, path: v3, status: v4, lat: v5, bytes: v6 }
                 let uid: i64 = ev.uid
+                /* One probe for the record: `entry` finds the session's slot (inserting a
+                 * zeroed one on first sight), and `at`/`setAt` read and write that slot
+                 * instead of hashing again. Measured on this shape the saving is in the
+                 * noise (the 32-byte copies into and out of the slot cost more than the
+                 * second probe did), so the reason to write it this way is that it is the
+                 * API's honest shape -- see docs/usage/stdlib.md -- not a speed claim. */
+                let slot: handle = sessions.entry(uid, zeroSession())
                 var s: session = zeroSession()
-                if let some(prev) = sessions.get(uid) { s = prev }
+                if let some(prev) = sessions.at(slot) { s = prev }
                 s.count = s.count + 1
                 s.sumIdx = s.sumIdx + lines
                 s.sumLat = s.sumLat + ev.lat
                 s.last = ev.ts
-                sessions.put(uid, s)
+                sessions.setAt(slot, s)
                 if ev.ts > newest { newest = ev.ts }
             }
             lines = lines + 1
@@ -291,15 +298,11 @@ fn modeSessions(buf: slice<u8>, readNs: i64) -> i32 {
         }
         d = d + 1
     }
-    /* Eviction. The C++ arm erases each expired entry in place (`delete` + `erase`).
-     * extC cannot call `hashMapI64::remove` from a function that also takes a view:
-     * `hashMap::find` calls `k.hash()` on the table's type parameter, that call is
-     * unresolvable while the parameter is opaque, and the resulting incomplete effect
-     * summary propagates out of `remove` and then out of any function that calls it
-     * (`argument 1 ... carries a reference into a deeper scope`). So the survivors are
-     * compacted into a fresh table instead: one insert per retained session, which is the
-     * same order of work as the erase loop it replaces, and the old table (with the
-     * expired sessions in it) is released with the frame. */
+    /* Eviction: compact the survivors into a fresh table. `remove` is available again (the
+     * effect-summary fix in the checker lets it be called from a function that takes a
+     * view), but erasing 152k entries one probe at a time costs more than inserting the 48k
+     * survivors, and both are the same order of work as the C++ arm's `delete` + `erase`
+     * loop. The old table is released with the frame. */
     var live: hashMapI64<session> = hashMapI64<session>::withCap(UIDS)
     var ci: i64 = 0
     while ci < nkeep {

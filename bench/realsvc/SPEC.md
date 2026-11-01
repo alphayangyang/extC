@@ -102,7 +102,7 @@ record has been folded into that session.
 | C++ | `new Record{…}` / `delete` | `unordered_map<i64, Session>` | `erase` per expired entry |
 | Rust | `Box<Record>` / drop | `HashMap<i64, Session>` | `remove` per expired entry |
 | Go | `&Record{…}` (heap) | `map[i64]*session` | `delete` per expired entry |
-| extC | struct value in the loop body (frame, no allocation) | `hashMapI64<session>` (`stl::hashMap`) | compact survivors into a fresh table |
+| extC | struct value in the loop body (frame, no allocation) | `hashMapI64<session>` (`stl::hashMap`), updated through the value-pool handle | compact survivors into a fresh table |
 
 Two extC notes, both about this axis rather than about the benchmark:
 
@@ -112,17 +112,19 @@ Two extC notes, both about this axis rather than about the benchmark:
   not escape and the collector never sees it; making the extC version an arena
   allocation instead made peak RSS grow with the record count without measuring
   anything the other arms do.
-* extC's eviction *compacts* instead of erasing in place: `hashMapI64::remove`
-  cannot be called today from a function that also takes a view. `hashMap::find`
-  calls `k.hash()` on the table's type parameter; while the parameter is opaque
-  that call cannot be resolved, the resulting effect summary stays incomplete,
-  and incompleteness propagates out of `remove` into every caller, which then
-  fails to pass its own view arguments (`argument 1 ... carries a reference into a
-  deeper scope ... the callee's effects could not be fully analyzed`). Compacting
-  into a fresh table costs one insert per *retained* session — the same order as
-  the erase loop it stands in for — and drops the expired sessions with the old
-  table when the frame ends. This is a compiler limitation, not a design choice;
-  it is reported separately.
+* The registry is read and written through the value-pool handle: `entry(uid, zero)`
+  finds the session's slot (inserting one on first sight), `at`/`setAt` read and write
+  that slot. The record therefore costs one hash probe rather than the two a
+  `get` + `put` pair would. On this shape that saving is inside the noise — the cost
+  is the 32-byte value copied in and out of the slot plus the pool indirection, where
+  the C++ arm writes fields in place through a reference.
+* extC's eviction *compacts* instead of erasing in place: inserting the 48k survivors
+  costs less than erasing the 152k expired entries one probe at a time (measured
+  207–238 ms for the erase loop against ~180 ms for compaction). Both are the same
+  order of work as the erase loop the other three arms run, and the expired sessions
+  go away with the old table when the frame ends. `hashMapI64::remove` is usable here
+  now — a checker bug that made it uncallable from a function taking a view was fixed
+  while porting this arm — the compaction is simply the faster spelling.
 
 The checksum is identical because the retained set and its folded values are the
 same.

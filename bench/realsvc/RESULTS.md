@@ -29,14 +29,14 @@ on one core with the client on three others.
 
 | workload | language | work_ms (median) | vs C++ | peak RSS |
 | --- | --- | ---: | ---: | ---: |
-| etl | C++ | 68.6 | 1.00x | 72 MB |
-| etl | extC | 68.2 | 0.99x | 69 MB |
-| etl | Go | 91.6 | 1.34x | 72 MB |
-| etl | Rust | 73.5 | 1.07x | 70 MB |
-| sessions | C++ | 121.3 | 1.00x | 86 MB |
-| sessions | extC | 178.9 | 1.47x | 91 MB |
-| sessions | Go | 170.7 | 1.41x | 86 MB |
-| sessions | Rust | 215.2 | 1.77x | 85 MB |
+| etl | C++ | 69.7 | 1.00x | 72 MB |
+| etl | extC | 69.6 | 1.00x | 69 MB |
+| etl | Go | 94.0 | 1.35x | 72 MB |
+| etl | Rust | 75.5 | 1.08x | 70 MB |
+| sessions | C++ | 132.7 | 1.00x | 86 MB |
+| sessions | extC | 202.2 | 1.52x | 91 MB |
+| sessions | Go | 166.7 | 1.26x | 86 MB |
+| sessions | Rust | 199.7 | 1.50x | 85 MB |
 
 `work_ms` is the workload only; peak RSS is the maximum resident set of the whole
 process. Lower is better in both columns.
@@ -45,26 +45,26 @@ process. Lower is better in both columns.
 
 | threads | C++ | extC | Go | Rust | extC vs C++ |
 | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 | 327.0 | 306.7 | 354.0 | 322.3 | 0.94x |
-| 8 | 106.5 | 76.8 | 77.4 | 72.4 | 0.72x |
-| 24 | 68.9 | 62.1 | 72.4 | 60.2 | 0.90x |
+| 1 | 323.5 | 311.6 | 352.7 | 323.3 | 0.96x |
+| 8 | 101.3 | 79.6 | 76.1 | 70.7 | 0.79x |
+| 24 | 60.1 | 58.5 | 65.1 | 51.7 | 0.97x |
 
 Scaling of each arm against its own single-threaded run:
 
 | threads | C++ | extC | Go | Rust |
 | ---: | ---: | ---: | ---: | ---: |
 | 1 | 1.00x | 1.00x | 1.00x | 1.00x |
-| 8 | 3.07x | 3.99x | 4.57x | 4.45x |
-| 24 | 4.75x | 4.94x | 4.89x | 5.35x |
+| 8 | 3.19x | 3.91x | 4.63x | 4.57x |
+| 24 | 5.38x | 5.33x | 5.42x | 6.25x |
 
 ## Concurrency axis
 
 | language | completion (ms) | throughput (req/s) | bad replies | server checksum | vs C++ throughput |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| C++ | 352.7 | 566,982 | 0 | 620352923810747373 | 1.00x |
-| extC | 369.6 | 541,161 | 0 | 620352923810747373 | 1.05x |
-| Go | 348.0 | 574,735 | 0 | 620352923810747373 | 0.99x |
-| Rust | 417.3 | 479,231 | 0 | 620352923810747373 | 1.18x |
+| C++ | 346.1 | 577,863 | 0 | 620352923810747373 | 1.00x |
+| extC | 358.1 | 558,551 | 0 | 620352923810747373 | 1.03x |
+| Go | 358.3 | 558,165 | 0 | 620352923810747373 | 1.04x |
+| Rust | 349.4 | 572,347 | 0 | 620352923810747373 | 1.01x |
 
 ## What each arm does differently
 
@@ -73,10 +73,11 @@ Scaling of each arm against its own single-threaded run:
   session pointers; epoll for the server; `std::thread` over fixed offsets for `parmix`.
 - **extC** (`extc/main.extc`): the same state machine; the record is a struct value in
   the loop body (a frame object, the same lifetime Go gets when `&Event{}` does not
-  escape) and the registry is a `hashMapI64<session>`; eviction
-  compacts the survivors into a fresh table because `hashMapI64::remove` cannot be called
-  from a function that also takes a view today (the generic `k.hash()` leaves the effect
-  summary incomplete); `par` for `parmix`; one
+  escape) and the registry is a `hashMapI64<session>`, updated through the value-pool
+  handle (`entry` finds the slot, `at`/`setAt` read and write it, so the record costs one
+  probe instead of the two a `get` + `put` pair would); eviction compacts the survivors
+  into a fresh table (inserting the 48k survivors costs less than erasing the 152k
+  expired entries one probe at a time); `par` for `parmix`; one
   coroutine per connection on the `std::coro` scheduler for the server; replies of one
   read burst are buffered per connection and flushed with one `send` before the
   coroutine waits for more input, which is the same flush-per-burst shape as the

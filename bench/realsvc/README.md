@@ -62,10 +62,10 @@ is each language's ordinary discipline on the same workload:
 - C++: `new`/`delete` for the message object, `unordered_map` of session pointers.
 - Rust: `Box` dropped immediately, `HashMap` of owned sessions.
 - Go: `&event{}` and a `map` of session pointers, so the GC decides.
-- extC: the message object is an arena allocation (it stays in the function's region, so
-  peak RSS grows with the record count rather than being reused) and the session table is
-  `hashMapI64<session>`; eviction compacts the survivors into a fresh table, because
-  `hashMapI64::remove` cannot be called from a function that also takes a view today.
+- extC: the message object is a frame value (a struct value in the loop body, the same
+  lifetime Go gets when `&Event{}` does not escape) and the session table is
+  `hashMapI64<session>` updated through the value-pool handle; eviction compacts the
+  survivors into a fresh table (cheaper than erasing the expires one probe at a time).
 
 So the table answers "what does the natural thing cost", not "which allocator is
 best". No language was given a strategy it would not write by itself.
@@ -77,21 +77,25 @@ checksums (`RESULTS.md` has the tables; ratios are to C++):
 
 - **conventional**: `etl` extC 67.9 ms vs C++ 67.7 ms (1.00x), Go 92.7 (1.37x),
   Rust 73.8 (1.09x).
-- **reclamation**: `sessions` extC 178.9 ms vs C++ 121.3 ms (1.47x), Go 170.7 (1.41x),
-  Rust 215.2 (1.77x) -- peak RSS 91 MB against 86 MB. All four arms now build one object
+- **reclamation**: `sessions` extC 202.2 ms vs C++ 132.7 ms (1.52x), Go 166.7 (1.26x),
+  Rust 199.7 (1.50x) -- peak RSS 91 MB against 86 MB. All four arms now build one object
   per record and keep a hash table of sessions; extC's record is a frame value (the same
-  lifetime Go gets when `&Event{}` does not escape) and its map API returns *values*, so
-  a read-modify-write costs two probes (`get` + `put`) where C++'s `operator[]` costs one.
-  That gap is the whole difference, and it is an API-shaped gap: exposing the pool handle
-  (`slotOf` / `at` / `setAt` / `entry`) would make it one probe per record. The earlier
-  0.52x came from not doing this work at all -- a flat array indexed by user id, one
-  reused object, no reclamation -- so it measured a different program and is withdrawn.
+  lifetime Go gets when `&Event{}` does not escape). The remaining gap is not the probe
+  count: the arm already reaches the slot through the value-pool handle (`entry` /
+  `at` / `setAt`), and measuring that against the `get` + `put` spelling moved the number
+  by less than the noise -- the cost is the 32-byte value in and out of the slot plus the
+  pool indirection, where C++'s `operator[]` hands out a reference and the fields are
+  written in place. Closing it needs an in-place update entry point (a block that lends
+  `mut ref V` and may not touch the map inside it) or a struct-of-arrays layout, not
+  another handle accessor. The earlier 0.52x came from not doing this work at all -- a
+  flat array indexed by user id, one reused object, no reclamation -- so it measured a
+  different program and is withdrawn.
 - **parallel**: extC 306.7 / 76.8 / 62.1 ms at 1 / 8 / 24 threads (self-speedup
   4.0x / 4.94x) against C++ 327.0 / 106.5 / 68.9. Single-threaded the byte
   scan is dominated by the sequential record table, which is why the curve
   flattens; the arm builds that table in one pass, like the C++ arm.
 - **concurrency**: 200,000 requests over 64 connections, every reply verified,
-  `bad=0` for all four arms: extC 541k req/s, C++ 567k, Go 575k, Rust 479k (the
+  `bad=0` for all four arms: extC 559k req/s, C++ 578k, Go 558k, Rust 572k (the
   four are within run-to-run noise of each other on this host). The first run of
   this arm was 430k: it called `send` once per reply, and the arm now flushes one
   write per read burst like the other three (the profiled difference, and the
@@ -101,7 +105,12 @@ Two compiler bugs surfaced while measuring, and fixing them moved the parallel
 axis: the bounds test of a subscript was never hoisted out of a loop when the
 subscript was converted (`i64(v[i])` read as a side effect), and an `if`
 condition's subscripts were not covered at all. `parmix` went from 1,705 to
-1,351 instructions per record; see the changelog entry.
+1,351 instructions per record; see the changelog entry. A third one surfaced while
+porting `sessions` to the shape the other three arms use: a deferred protocol call on
+a type parameter (`k.hash()` inside `hashMap::find`) left the method's effect summary
+incomplete for good, so any function that took a view *and* called
+`hashMapI64::remove` was rejected at its call site. Fixing it (instance-time effect
+summaries) is what made the handle API usable; see the changelog.
 
 ## Caveats
 
