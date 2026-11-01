@@ -119,6 +119,11 @@ typedef struct Sym {
      * outright, which removes the false rejections where writing null or a shallower
      * value could not lower the recorded depth. */
     bool        addressed;
+    /* True when this binding holds a view whose storage this frame owns: `new T[n]` was taken
+     * for it here, or it is a slice of such a view. Only such a view may be indexed for a
+     * reference, because a plate behind a container can be resized out from under the view.
+     * Recomputed on every assignment to the binding. */
+    bool        frameStore;
     /* Per-field depths, at most four entries. To be read as one field block, not as
      * four independent ones.
      *
@@ -1522,11 +1527,23 @@ void applyCycleMerges(Checker *c);
 /**
  * @brief Tell whether the address of this expression may be taken.
  *
+ * A place is a binding, a field, `*p`, an element of a fixed-size array, or an element of a view
+ * whose storage the current frame owns (`new T[n]` taken here). A container-owned view is refused:
+ * growing the container resizes or replaces the plate behind it.
+ *
+ * @param c  Checker; storage provenance is looked up through it.
  * @param e  Expression.
- * @return   True when the expression is a binding, a field, or `*p` (that is, the place `p` points
- *           at).
+ * @return   True when the expression is a place a reference may point at.
  */
- _Bool isLvalue (Expr *e);
+ _Bool isLvalue (Checker *c, Expr *e);
+/**
+ * @brief Tell whether this expression names storage the current frame owns.
+ *
+ * @param c  Checker.
+ * @param e  Expression.
+ * @return   True for `new T[n]`, a slice of such a block, and a binding that holds one.
+ */
+ _Bool exprIsFrameStorage (Checker *c, Expr *e);
 /**
  * @brief Tell whether a generated name is proven non-null at the current position.
  *

@@ -730,27 +730,60 @@ bool repeatablePure(Expr *e) {
 }
 
 /**
+ * @brief Tell whether the storage behind this binding was taken in the current frame.
+ *
+ * The answer decides whether a reference may point into a view: a block allocated with
+ * `new T[n]` here, or a slice of such a block, cannot be moved by anybody, so an element
+ * reference into it is as safe as one into a fixed-size array. A view of a container's plate
+ * is refused, because growing the container resizes or replaces that plate.
+ *
+ * @param c  Checker; bindings are looked up through it.
+ * @param e  Expression; NULL is not frame storage.
+ * @return   True when the expression names storage this frame owns.
+ */
+bool exprIsFrameStorage(Checker *c, Expr *e) {
+    if (!e) return false;
+    switch (e->kind) {
+    case EX_NEW:
+        return e->u.new_.count != NULL;   /* `new T[n]`: the block lives in this frame */
+    case EX_SLICE:
+        return exprIsFrameStorage(c, e->u.slice.obj);
+    case EX_INDEX:
+        return exprIsFrameStorage(c, e->u.index.obj);
+    case EX_IDENT: {
+        Sym *s = lookup(c, e->u.ident.name);
+        return s && s->frameStore;
+    }
+    default:
+        return false;
+    }
+}
+
+/**
  * @brief Tell whether the address of this expression can be taken.
  *
- * A place is storage the compiler can name: a binding, a field, `*p`, or an element of a
- * fixed-size array. An array lives in its frame and its storage never moves, so a reference
- * into one stays valid for as long as the frame does -- which is exactly the lifetime the
- * depth check already enforces for bindings.
+ * A place is storage the compiler can name: a binding, a field, `*p`, an element of a
+ * fixed-size array, or an element of a view whose storage this frame owns. Those three kinds
+ * of storage share the property the depth check is built on: they cannot be moved while the
+ * frame lives, so a reference into them cannot be invalidated.
  *
- * Elements of views and of the growable containers are deliberately absent. A view may name
- * storage that a container moves when it grows, and the containers hand out values rather
- * than addresses for that same reason.
+ * Elements of container-owned views are refused: the plate behind a view is resized when the
+ * container grows, so the address would go stale. The containers hand out values, not
+ * addresses, for that same reason.
  *
+ * @param c  Checker; bindings and their storage provenance are looked up through it.
  * @param e  Expression; NULL is not a place.
- * @return   True when the expression is a binding, a field, `*p`, or a fixed-size array
- *           element.
+ * @return   True when the expression is a place that a reference may point at.
  */
-bool isLvalue(Expr *e) {
+bool isLvalue(Checker *c, Expr *e) {
     if (!e) return false;
     if (e->kind == EX_IDENT || e->kind == EX_FIELD || e->kind == EX_DEREF) return true;
     if (e->kind == EX_INDEX) {
         Expr *obj = e->u.index.obj;
-        return obj && obj->type && obj->type->kind == TY_ARRAY && isLvalue(obj);
+        if (!obj || !obj->type) return false;
+        if (obj->type->kind == TY_ARRAY) return isLvalue(c, obj);
+        if (ttIsViewType(obj->type)) return exprIsFrameStorage(c, obj);
+        return false;
     }
     return false;
 }

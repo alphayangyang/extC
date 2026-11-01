@@ -1,0 +1,15 @@
+// A view whose storage this frame owns is a place too: `new T[n]` taken here cannot be moved by
+// anybody, so its elements may be referenced. A window over it inherits that.
+use std::io
+
+fn main() -> i32 {
+    var buf: mut slice<u8> = new u8[8]
+    var p: mut ref u8 = ref buf[3]
+    *p = u8(9)
+    var win: mut slice<u8> = buf[0..4]
+    var q: mut ref u8 = ref win[0]
+    *q = u8(5)
+    io::println(f"b3={buf[3]} b0={buf[0]}")
+    return 0
+}
+// expect: b3=9 b0=5

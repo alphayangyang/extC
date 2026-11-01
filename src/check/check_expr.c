@@ -2548,19 +2548,21 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                         "`ref` applied to a value that is already a reference");
                 return ot;
             }
-            if (!isLvalue(op)) {
-                /* An element of a view is a value, not a place: the storage behind the view
-                 * belongs to whichever container it came from, and growing that container may
-                 * move it. Saying so is more useful than repeating the general rule. */
+            if (!isLvalue(c, op)) {
+                /* An element of a container-owned view is a value, not a place: growing the
+                 * container resizes or replaces the plate behind the view. Saying so is more
+                 * useful than repeating the general rule; a view into storage this frame owns
+                 * (`new T[n]`) is a place and never reaches this branch. */
                 if (op->kind == EX_INDEX)
                     ckError(c, e->line,
-                            "an element of a view has no stable address -- the storage behind "
-                            "the view may be moved when its container grows",
-                            "cannot take a reference to an element of a view");
+                            "an element of a view has no stable address unless the storage is "
+                            "allocated in this frame (`new T[n]`); a container may grow and move "
+                            "the storage behind the view",
+                            "cannot take a reference to an element of this view");
                 else
                     ckError(c, e->line,
-                            "only variables, fields and fixed-size array elements can be "
-                            "referenced",
+                            "only variables, fields, fixed-size array elements and elements of a "
+                            "frame-allocated view can be referenced",
                             "cannot take a reference to this expression");
                 return ttError(tt);
             }

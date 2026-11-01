@@ -44,14 +44,15 @@ check_err() {
     echo "  ok   $t  ->  $(echo "$out" | grep -m1 'error:' | cut -c1-84)"
 }
 
-echo "== 正例：读、写、别名、传参、循环里重取 =="
+echo "== 正例：读、写、别名、传参、循环里重取、本帧 new 的视图 =="
 run_case basic
 run_case loop
+run_case slice_new
 
-echo "== 判据有牙：越界在取引用处 trap；跨帧返回与视图元素被拒 =="
+echo "== 判据有牙：越界在取引用处 trap；跨帧返回、容器视图被拒 =="
 trap_case oob
 check_err escape_unsupported "this return value would hold a reference to a local variable that dies first"
-check_err slice_unsupported "cannot take a reference to an element of a view"
+check_err view_unsupported "cannot take a reference to an element of this view"
 
 echo
 if [ "$fail" = 0 ]; then echo "elemrefs: ok"; else echo "elemrefs: FAIL"; exit 1; fi

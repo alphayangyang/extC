@@ -1,0 +1,12 @@
+// A view that names a container's plate is refused: growing the container may move the plate,
+// so the address would go stale. `asSlice()` on a string is exactly that shape.
+use std::io
+use stl::string
+
+fn main() -> i32 {
+    let s: string = f"hello"
+    let b: slice<u8> = s.asSlice()
+    let p: ref u8 = ref b[0]
+    io::println(f"p={*p}")
+    return 0
+}

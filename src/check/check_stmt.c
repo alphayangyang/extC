@@ -3761,6 +3761,11 @@ void checkStmt(Checker *c, Stmt *s) {
             Sym *sym = declare(c, s->u.var.name, s->type, s->u.var.mut,
                                !s->u.var.mut, s->line, c->scopes.len);
             planSetCName(s, sym->cname, RKIND_STMT);
+            /* Record where a view's storage lives: only storage this frame owns may be indexed
+             * for a reference, because a container may grow and move the plate behind a view.
+             * A plain `let`/`var` of a view type keeps the flag false. */
+            sym->frameStore = s->type && ttIsViewType(s->type) &&
+                              exprIsFrameStorage(c, s->u.var.init);
             noteAcyclicNestedLocal(c, s);   /* criterion (iv): reference-typed local in a nested block */
             /* Record where this binding's value comes from (its initializer). Promotion walks the
              * chain back: after `var n = new node`, `head = n` follows `n` to the `new` site and raises
@@ -3914,7 +3919,14 @@ void checkStmt(Checker *c, Stmt *s) {
              * falls back to the slot depth, which is conservative on purpose. */
             if (tgt0 && tgt0->kind == EX_IDENT) {
                 Sym *tsy = lookup(c, tgt0->u.ident.name);
-                if (tsy) tsy->outOfFrame = false;
+                if (tsy) {
+                    tsy->outOfFrame = false;
+                    /* A reassigned view loses its storage provenance: the new value may name a
+                     * container's plate, and deciding from the shape of one branch would let the
+                     * other branch's plate flow through. Conservative on purpose -- declare a
+                     * fresh binding when a slice of frame storage is wanted. */
+                    tsy->frameStore = false;
+                }
             }
             Type *idxBaseT = NULL;    /* base type of an index target, filled in once resolved */
             if (!assignTargetWritable(tgt0)) {
