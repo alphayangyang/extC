@@ -1,0 +1,5 @@
+serve	rust	1	358.7	bad=0	reqps=557578	server_cs=620352923810747373
+serve	rust	2	347.7	bad=0	reqps=575237	server_cs=620352923810747373
+serve	rust	3	376.7	bad=0	reqps=530992	server_cs=620352923810747373
+serve	rust	4	354.3	bad=0	reqps=564561	server_cs=620352923810747373
+serve	rust	5	302.0	bad=0	reqps=662270	server_cs=620352923810747373

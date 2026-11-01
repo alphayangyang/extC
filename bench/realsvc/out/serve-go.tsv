@@ -1,0 +1,5 @@
+serve	go	1	359.3	bad=0	reqps=556635	server_cs=620352923810747373
+serve	go	2	346.1	bad=0	reqps=577840	server_cs=620352923810747373
+serve	go	3	333.1	bad=0	reqps=600408	server_cs=620352923810747373
+serve	go	4	328.1	bad=0	reqps=609600	server_cs=620352923810747373
+serve	go	5	358.7	bad=0	reqps=557560	server_cs=620352923810747373

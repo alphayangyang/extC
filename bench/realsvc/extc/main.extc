@@ -1,0 +1,605 @@
+/* bench/realsvc/extc/main.extc — the extC arm of the realsvc benchmark.
+ *
+ * Four workloads over one dataset (see ../SPEC.md):
+ *
+ *   etl       single-threaded parse + aggregate
+ *   sessions  message objects plus a session registry with a TTL
+ *   serve     one coroutine per connection, epoll scheduler, loopback queries
+ *   parmix    parallel scoring pass, `par` over the records
+ *
+ * Build:
+ *   ./build/extc -w --no-line-map -o build/main.c bench/realsvc/extc/main.extc
+ *   cc -O2 -std=c11 -fwrapv -pthread -o build/realsvc_extc build/main.c
+ *
+ * Every mode prints one result line with the same fields and the same checksum the
+ * other arms print. `read_ms` is the ingest and is reported separately from
+ * `work_ms`, which is the number the comparison uses.
+ *
+ * Shape note: the TSV scan is one `for i in 0..buf.len` pass with a small state
+ * machine, which is what lets the compiler hoist the slice bounds test out of the
+ * loop so `buf[i]` becomes a bare load. A helper taking the cursor through a slice
+ * is the other natural way to write this scanner and is about fifteen times slower
+ * per byte; README.md records that number next to the ones below.
+ */
+use std::io
+use std::time
+use std::sys::file as sysfile
+use std::sys::io as sysio
+use std::sys::net
+use std::coro::scheduler as sched
+
+let SITES: i64 = 16
+let STATUSES: i64 = 9
+let UIDS: i64 = 200000
+let FNV_PRIME: u64 = 1099511628211
+
+/* The FNV-1a basis does not fit an i64 literal (literals are range checked), so a
+ * checksum starts from `u64(0) - u64(3750763034362895579)` = 0xcbf29ce484222325.
+ * A global `let` may only hold a constant, and that subtraction is not folded into
+ * one, so the basis is a function. */
+var gStatus: [9]i32
+var gOut: [64]u8
+var gSiteCnt: [16]i64
+var gSiteLat: [16]i64
+var gSiteMax: [16]i64
+var gSiteBytes: [16]i64
+var gStatusCnt: [9]i64
+var gServed: i64 = 0
+var gFirstNs: i64 = 0
+
+/* ------------------------------------------------------------------ helpers */
+
+fn initStatus() {
+    gStatus[0] = 200
+    gStatus[1] = 201
+    gStatus[2] = 204
+    gStatus[3] = 301
+    gStatus[4] = 400
+    gStatus[5] = 403
+    gStatus[6] = 404
+    gStatus[7] = 500
+    gStatus[8] = 502
+}
+
+fn basis() -> u64 { return u64(0) - u64(3750763034362895579) }
+
+fn eq(a: slice<u8>, b: slice<u8>) -> bool {
+    if a.len != b.len { return false }
+    var i: i64 = 0
+    while i < a.len {
+        if a[i] != b[i] { return false }
+        i = i + 1
+    }
+    return true
+}
+
+fn argI64(args: slice<slice<u8>>, at: i64, dflt: i64) -> i64 {
+    if args.len <= at { return dflt }
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < args[at].len {
+        let c: u8 = args[at][i]
+        if c >= u8(48) && c <= u8(57) { v = v * 10 + i64(c) - 48 }
+        i = i + 1
+    }
+    return v
+}
+
+/* Read the whole file: `stat` first for the size, then plain read(2) until it is in.
+ * No buffered layer, so the ingest is one syscall per megabyte. */
+fn readWhole(path: slice<u8>) -> mut slice<u8> {
+    var size: i64 = 0
+    var mtime: i64 = 0
+    var isdir: i64 = 0
+    let fd: i64 = sysfile::extc_file_open(path.data, path.len, ref size, ref mtime, ref isdir)
+    if fd < 0 {
+        io::cout << "open failed\n"
+        var empty: mut slice<u8> = new u8[1]
+        empty[0] = u8(0)
+        return empty
+    }
+    var buf: mut slice<u8> = new u8[size + 1]
+    var got: i64 = 0
+    while got < size {
+        let n: i64 = sysio::read(i32(fd), buf[got..].data, size - got)
+        if n <= 0 { break }
+        got = got + n
+    }
+    sysfile::extc_file_close(fd)
+    if got != size { io::cout << "short read\n" }
+    buf[size] = u8(0)
+    return buf
+}
+
+fn fnv(h: u64, v: u64) -> u64 { return (h ^ v) * FNV_PRIME }
+
+/* Integer nanoseconds to tenths of a millisecond, and the two halves of a decimal
+ * print: an f-string slot takes a name, not an expression. */
+fn ms10(ns: i64) -> i64 { return ns / 100000 }
+
+/* ---------------------------------------------------------------------- etl */
+
+/* The per-site tables are fixed-size globals: `SITES` is a compile-time constant,
+ * and indexing a fixed-size array inlines its bounds test instead of calling the
+ * slice helper. With the loop body call-free the compiler hoists the test on
+ * `buf[i]` as well, which is what makes this scan a byte per load. */
+fn modeEtl(buf: slice<u8>, readNs: i64) -> i32 {
+    let t0: i64 = time::now()
+    var v0: i64 = 0
+    var v1: i64 = 0
+    var v2: i64 = 0
+    var v3: i64 = 0
+    var v4: i64 = 0
+    var v5: i64 = 0
+    var v6: i64 = 0
+    var f: i64 = 0
+    var cur: i64 = 0
+    var lines: i64 = 0
+    for i in 0..buf.len {
+        let c: u8 = buf[i]
+        if c == u8(10) {
+            v6 = cur
+            gSiteCnt[v2] = gSiteCnt[v2] + 1
+            gSiteLat[v2] = gSiteLat[v2] + v5
+            if v5 > gSiteMax[v2] { gSiteMax[v2] = v5 }
+            gSiteBytes[v2] = gSiteBytes[v2] + v6
+            var k: i64 = 0
+            while k < STATUSES {
+                if gStatus[k] == i32(v4) {
+                    gStatusCnt[k] = gStatusCnt[k] + 1
+                    break
+                }
+                k = k + 1
+            }
+            lines = lines + 1
+            f = 0
+            cur = 0
+        } else if c == u8(9) {
+            if f == 0 { v0 = cur } else if f == 1 { v1 = cur } else if f == 2 { v2 = cur } else if f == 3 { v3 = cur } else if f == 4 { v4 = cur } else if f == 5 { v5 = cur }
+            f = f + 1
+            cur = 0
+        } else {
+            cur = cur * 10 + i64(c) - 48
+        }
+    }
+    var h: u64 = basis()
+    var total: i64 = 0
+    var totalLat: i64 = 0
+    var maxAll: i64 = 0
+    var totalBytes: i64 = 0
+    var s: i64 = 0
+    while s < SITES {
+        h = fnv(h, u64(gSiteCnt[s]))
+        h = fnv(h, u64(gSiteLat[s]))
+        h = fnv(h, u64(gSiteMax[s]))
+        h = fnv(h, u64(gSiteBytes[s]))
+        total = total + gSiteCnt[s]
+        totalLat = totalLat + gSiteLat[s]
+        if gSiteMax[s] > maxAll { maxAll = gSiteMax[s] }
+        totalBytes = totalBytes + gSiteBytes[s]
+        s = s + 1
+    }
+    var k: i64 = 0
+    while k < STATUSES {
+        h = fnv(h, u64(gStatusCnt[k]))
+        k = k + 1
+    }
+    h = fnv(h, u64(lines))
+    let t1: i64 = time::now()
+    let r10: i64 = ms10(readNs)
+    let w10: i64 = ms10(t1 - t0)
+    let rw: i64 = r10 / 10
+    let rf: i64 = r10 % 10
+    let ww: i64 = w10 / 10
+    let wf: i64 = w10 % 10
+    io::cout << f"etl n={lines} read_ms={rw}.{rf} work_ms={ww}.{wf} cs={h} count={total} sumlat={totalLat} maxlat={maxAll} sumbytes={totalBytes}\n"
+    return 0
+}
+
+/* ----------------------------------------------------------------- sessions */
+
+struct rec {
+    ts: i64
+    uid: i64
+    site: i64
+    path: i64
+    status: i64
+    lat: i64
+    bytes: i64
+}
+
+struct session {
+    last: i64
+    count: i64
+    sumIdx: i64
+    sumLat: i64
+}
+
+fn modeSessions(buf: slice<u8>, readNs: i64) -> i32 {
+    let t0: i64 = time::now()
+    /* extC has no per-object free: the sessions live in one arena array and a
+     * liveness byte records which ones the TTL keeps. The region releases them all
+     * at block exit instead of one by one; SPEC.md calls this the asymmetrical part
+     * of workload B. */
+    var sess: mut slice<session> = new session[UIDS]
+    var alive: mut slice<u8> = new u8[UIDS]
+    var recs: mut slice<rec> = new rec[1]
+    var v0: i64 = 0
+    var v1: i64 = 0
+    var v2: i64 = 0
+    var v3: i64 = 0
+    var v4: i64 = 0
+    var v5: i64 = 0
+    var v6: i64 = 0
+    var f: i64 = 0
+    var cur: i64 = 0
+    var lines: i64 = 0
+    var newest: i64 = 0
+    for i in 0..buf.len {
+        let c: u8 = buf[i]
+        if c == u8(10) {
+            v6 = cur
+            /* One message object per record, as the other arms allocate one. */
+            recs[0].ts = v0
+            recs[0].uid = v1
+            recs[0].site = v2
+            recs[0].path = v3
+            recs[0].status = v4
+            recs[0].lat = v5
+            recs[0].bytes = v6
+            let uid: i64 = recs[0].uid
+            var s: session = sess[uid]
+            if alive[uid] == u8(0) {
+                alive[uid] = u8(1)
+                s.count = 0
+                s.sumIdx = 0
+                s.sumLat = 0
+            }
+            s.count = s.count + 1
+            s.sumIdx = s.sumIdx + lines
+            s.sumLat = s.sumLat + recs[0].lat
+            s.last = recs[0].ts
+            sess[uid] = s
+            if recs[0].ts > newest { newest = recs[0].ts }
+            lines = lines + 1
+            f = 0
+            cur = 0
+        } else if c == u8(9) {
+            if f == 0 { v0 = cur } else if f == 1 { v1 = cur } else if f == 2 { v2 = cur } else if f == 3 { v3 = cur } else if f == 4 { v4 = cur } else if f == 5 { v5 = cur }
+            f = f + 1
+            cur = 0
+        } else {
+            cur = cur * 10 + i64(c) - 48
+        }
+    }
+    let cutoff: i64 = newest - 300
+    var h: u64 = basis()
+    var retained: i64 = 0
+    var liveoff: i64 = 0
+    var uid: i64 = 0
+    while uid < UIDS {
+        if alive[uid] != u8(0) {
+            let s: session = sess[uid]
+            if s.last >= cutoff {
+                retained = retained + 1
+                liveoff = liveoff + s.count
+                h = fnv(h, u64(uid))
+                h = fnv(h, u64(s.count))
+                h = fnv(h, u64(s.sumIdx))
+                h = fnv(h, u64(s.sumLat))
+            } else {
+                alive[uid] = u8(0)
+            }
+        }
+        uid = uid + 1
+    }
+    let t1: i64 = time::now()
+    let r10: i64 = ms10(readNs)
+    let w10: i64 = ms10(t1 - t0)
+    let rw: i64 = r10 / 10
+    let rf: i64 = r10 % 10
+    let ww: i64 = w10 / 10
+    let wf: i64 = w10 % 10
+    io::cout << f"sessions n={lines} read_ms={rw}.{rf} work_ms={ww}.{wf} cs={h} retained={retained} liveoff={liveoff}\n"
+    return 0
+}
+
+/* ------------------------------------------------------------------- parmix */
+
+/* Record offsets and lengths: one sequential pass over the bytes, then the `par`
+ * body needs no bounds scan of its own. */
+fn modeParmix(buf: slice<u8>, readNs: i64, threads: i64) -> i32 {
+    let t0: i64 = time::now()
+    var spans: i64 = 1
+    var i: i64 = 0
+    while i < buf.len {
+        if buf[i] == u8(10) { spans = spans + 1 }
+        i = i + 1
+    }
+    var starts: mut slice<i64> = new i64[spans]
+    var lens: mut slice<i64> = new i64[spans]
+    var n: i64 = 0
+    var start: i64 = 0
+    for i in 0..buf.len {
+        if buf[i] == u8(10) {
+            starts[n] = start
+            lens[n] = i - start
+            n = n + 1
+            start = i + 1
+        }
+    }
+    var out: mut slice<u64> = new u64[n]
+    /* A `par` body may not call a helper or take a sub-view, so the seven fields are
+     * locals and the bytes are indexed as `buf[starts[i] + j]`: `i` is the par
+     * variable and `j` the inner loop variable, so the bounds test hoists. */
+    par i in 0..n {
+        let base: i64 = starts[i]
+        let len: i64 = lens[i]
+        var v0: i64 = 0
+        var v1: i64 = 0
+        var v2: i64 = 0
+        var v3: i64 = 0
+        var v4: i64 = 0
+        var v5: i64 = 0
+        var v6: i64 = 0
+        var f: i64 = 0
+        var cur: i64 = 0
+        for j in 0..len {
+            let c: u8 = buf[base + j]
+            if c == u8(9) {
+                if f == 0 { v0 = cur } else if f == 1 { v1 = cur } else if f == 2 { v2 = cur } else if f == 3 { v3 = cur } else if f == 4 { v4 = cur } else if f == 5 { v5 = cur }
+                f = f + 1
+                cur = 0
+            } else {
+                cur = cur * 10 + i64(c) - 48
+            }
+        }
+        v6 = cur
+        var x: u64 = u64(v0) ^ (u64(v1) << 17) ^ (u64(v5) << 33) ^ u64(v6)
+        var k: i64 = 0
+        while k < 64 {
+            x = x ^ (x >> 33)
+            x = x * (u64(0) - u64(49064778989728563))
+            x = x ^ (x >> 29)
+            x = x * (u64(0) - u64(4265267296055464877))
+            k = k + 1
+        }
+        out[i] = x
+    }
+    var h: u64 = basis()
+    var sum: u64 = u64(0)
+    var m: i64 = 0
+    while m < n {
+        sum = sum + out[m]
+        h = fnv(h, out[m])
+        m = m + 1
+    }
+    h = fnv(h, u64(n))
+    let t1: i64 = time::now()
+    let r10: i64 = ms10(readNs)
+    let w10: i64 = ms10(t1 - t0)
+    let rw: i64 = r10 / 10
+    let rf: i64 = r10 % 10
+    let ww: i64 = w10 / 10
+    let wf: i64 = w10 % 10
+    io::cout << f"parmix n={n} t={threads} read_ms={rw}.{rf} work_ms={ww}.{wf} cs={h} sum={sum}\n"
+    return 0
+}
+
+/* -------------------------------------------------------------------- serve */
+
+fn findNl(buf: slice<u8>, from: i64) -> i64 {
+    var i: i64 = from
+    while i < buf.len {
+        if buf[i] == u8(10) { return i }
+        i = i + 1
+    }
+    return -1
+}
+
+fn putI64(out: mut slice<u8>, at: i64, v0: i64) -> i64 {
+    var v: i64 = v0
+    if v == 0 {
+        out[at] = u8(48)
+        return at + 1
+    }
+    var tmp: [24]u8 = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    var n: i64 = 0
+    while v > 0 {
+        tmp[n] = u8(48 + v % 10)
+        n = n + 1
+        v = v / 10
+    }
+    var i: i64 = n
+    while i > 0 {
+        i = i - 1
+        out[at] = tmp[i]
+        at = at + 1
+    }
+    return at
+}
+
+/* Build "count sumLat maxLat sumBytes\n" and return its length. */
+fn putReply(out: mut slice<u8>, site: i64) -> i64 {
+    var at: i64 = 0
+    at = putI64(out, at, gSiteCnt[site])
+    out[at] = u8(32)
+    at = at + 1
+    at = putI64(out, at, gSiteLat[site])
+    out[at] = u8(32)
+    at = at + 1
+    at = putI64(out, at, gSiteMax[site])
+    out[at] = u8(32)
+    at = at + 1
+    at = putI64(out, at, gSiteBytes[site])
+    out[at] = u8(10)
+    return at + 1
+}
+
+/* A request line is "G <site>\n": the site number is the digits after the space. */
+fn parseSite(line: slice<u8>) -> i64 {
+    var i: i64 = 0
+    while i < line.len && line[i] != u8(32) { i = i + 1 }
+    var site: i64 = 0
+    i = i + 1
+    while i < line.len {
+        let c: u8 = line[i]
+        if c < u8(48) || c > u8(57) { break }
+        site = site * 10 + i64(c) - 48
+        i = i + 1
+    }
+    return site
+}
+
+fn sendAll(fd: i64, buf: slice<u8>, n: i64) {
+    var off: i64 = 0
+    while off < n {
+        let w: i64 = net::extc_sock_write_from(fd, buf.data, off, n - off)
+        if w > 0 { off = off + w }
+    }
+}
+
+/* One coroutine per connection: read whatever arrived, answer every complete request
+ * line, yield until the socket is readable again. Views of `buf` are created and
+ * dropped inside one run of the loop, never across the `yield`. */
+fn conn(fd: i64) -> coroutine<i64> {
+    var buf: mut slice<u8> = new u8[65536]
+    var have: i64 = 0
+    while true {
+        var start: i64 = 0
+        var answer: bool = false
+        while true {
+            let nl: i64 = findNl(buf[..have], start)
+            if nl < 0 { break }
+            answer = true
+            if gFirstNs == 0 { gFirstNs = time::now() }
+            let site: i64 = parseSite(buf[..nl])
+            let n: i64 = putReply(gOut[..], site)
+            sendAll(fd, gOut[..n], n)
+            gServed = gServed + 1
+            start = nl + 1
+        }
+        if answer {
+            var rest: i64 = have - start
+            var k: i64 = 0
+            while k < rest {
+                buf[k] = buf[start + k]
+                k = k + 1
+            }
+            have = rest
+        }
+        let ready: i64 = yield fd
+        let r: i64 = net::extc_sock_read(fd, buf[have..].data, 65536 - have)
+        if r <= 0 {
+            sysio::close(i32(fd))
+            return
+        }
+        have = have + r
+    }
+}
+
+fn modeServe(path: slice<u8>, port: i64, want: i64) -> i32 {
+    let t0: i64 = time::now()
+    var full: mut slice<u8> = readWhole(path)
+    let buf: slice<u8> = full[..full.len - 1]
+    let t1: i64 = time::now()
+    /* The answers are precomputed before the first connection: this axis measures the
+     * request path, not the ingest. */
+    var cnt: mut slice<i64> = new i64[SITES]
+    var sumlat: mut slice<i64> = new i64[SITES]
+    var maxlat: mut slice<i64> = new i64[SITES]
+    var sumbytes: mut slice<i64> = new i64[SITES]
+    var v0: i64 = 0
+    var v1: i64 = 0
+    var v2: i64 = 0
+    var v3: i64 = 0
+    var v4: i64 = 0
+    var v5: i64 = 0
+    var v6: i64 = 0
+    var f: i64 = 0
+    var cur: i64 = 0
+    for i in 0..buf.len {
+        let c: u8 = buf[i]
+        if c == u8(10) {
+            v6 = cur
+            cnt[v2] = cnt[v2] + 1
+            sumlat[v2] = sumlat[v2] + v5
+            if v5 > maxlat[v2] { maxlat[v2] = v5 }
+            sumbytes[v2] = sumbytes[v2] + v6
+            f = 0
+            cur = 0
+        } else if c == u8(9) {
+            if f == 0 { v0 = cur } else if f == 1 { v1 = cur } else if f == 2 { v2 = cur } else if f == 3 { v3 = cur } else if f == 4 { v4 = cur } else if f == 5 { v5 = cur }
+            f = f + 1
+            cur = 0
+        } else {
+            cur = cur * 10 + i64(c) - 48
+        }
+    }
+    var s: i64 = 0
+    while s < SITES {
+        gSiteCnt[s] = cnt[s]
+        gSiteLat[s] = sumlat[s]
+        gSiteMax[s] = maxlat[s]
+        gSiteBytes[s] = sumbytes[s]
+        s = s + 1
+    }
+    let srv: i64 = net::extc_tcp_listen_shared(port, 65535)
+    if srv < 0 {
+        io::cout << "listen failed\n"
+        return 1
+    }
+    var sp: sched::loop
+    if !sched::init(ref sp, srv) { return 2 }
+    var tasks: sched::tasks<i64> = { rows: sched::newRows(), runq: sched::newQ(), rqHead: 0, freeq: sched::newQ(), acceptq: sched::newQ() }
+    io::cout << "serve_ready\n"
+    while gServed < want {
+        let fd: i64 = tasks.pump(ref sp, 50)
+        if fd >= 0 {
+            if net::extc_sock_nodelay(fd) != 0 { return 4 }
+            if !tasks.add(ref sp, conn(fd)) { return 3 }
+        }
+    }
+    let elapsed: i64 = time::now() - gFirstNs
+    var h: u64 = basis()
+    var i: i64 = 0
+    while i < SITES {
+        h = fnv(h, u64(i))
+        h = fnv(h, u64(gSiteCnt[i]))
+        h = fnv(h, u64(gSiteLat[i]))
+        h = fnv(h, u64(gSiteMax[i]))
+        h = fnv(h, u64(gSiteBytes[i]))
+        i = i + 1
+    }
+    let e10: i64 = ms10(elapsed)
+    let r10: i64 = ms10(t1 - t0)
+    let ew: i64 = e10 / 10
+    let ef: i64 = e10 % 10
+    let rw: i64 = r10 / 10
+    let rf: i64 = r10 % 10
+    io::cout << f"serve n={buf.len} read_ms={rw}.{rf} req={gServed} secs={ew}.{ef} cs={h}\n"
+    return 0
+}
+
+/* --------------------------------------------------------------------- main */
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    if args.len < 3 {
+        io::cout << "usage: realsvc_extc <etl|sessions|serve|parmix> <log.tsv> [args]\n"
+        return 2
+    }
+    initStatus()
+    let t0: i64 = time::now()
+    if eq(args[1], "serve") {
+        return modeServe(args[2], argI64(args, 3, 9100), argI64(args, 4, 600000))
+    }
+    var full: mut slice<u8> = readWhole(args[2])
+    let buf: slice<u8> = full[..full.len - 1]
+    let t1: i64 = time::now()
+    let readNs: i64 = t1 - t0
+    if eq(args[1], "etl") { return modeEtl(buf, readNs) }
+    if eq(args[1], "sessions") { return modeSessions(buf, readNs) }
+    if eq(args[1], "parmix") { return modeParmix(buf, readNs, argI64(args, 3, 8)) }
+    io::cout << "unknown mode\n"
+    return 2
+}
