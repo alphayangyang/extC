@@ -1225,6 +1225,27 @@ static bool lamRwStmt(void *ctx, Stmt *s) {
 static Type *checkExprInner(Checker *c, Expr *e);   /* the struct-literal path is re-entered below */
 
 /**
+ * @brief Whether a lambda's environment can be shared between checks of the same literal.
+ *
+ * Sharing is only sound when the environment's layout does not depend on a type parameter: a
+ * literal inside a generic body is checked once per instance, and an environment field declared
+ * from the template's `T` would stay `T` when the instance needs its concrete type (the generated
+ * C then writes a `key` into an `int` field). An environment whose fields are all concrete is the
+ * same type in every instance, so one copy serves all of them.
+ *
+ * @param sd  The lambda's synthesized environment struct.
+ * @return    true when no field's type mentions a type parameter.
+ */
+static bool lamEnvMentionsNoParam(const StructDef *sd) {
+    if (!sd) return true;
+    for (size_t i = 0; i < sd->fields.len; i++) {
+        FieldDef *fd = *(FieldDef **)vecAt((Vec *)&sd->fields, i);
+        if (fd && fd->type && ttHasParam(fd->type)) return false;
+    }
+    return true;
+}
+
+/**
  * @brief Check a literal lambda, synthesizing its environment struct and `call` method when needed.
  *
  * Order: build the environment type first (its fields are filled in later, because the capture set is
@@ -1248,7 +1269,8 @@ static Type *checkLambda(Checker *c, Expr *e) {
      * an argument that is a bare lambda would then compare unequal to the parameter it was inferred
      * from. Memoising is only valid outside a generic body: inside one, the second instance of a
      * template has different type arguments, so its lambdas really are different types. */
-    if (!c->substParams && e->type && e->u.lambda.sdef && !ttIsError(e->type)) return e->type;
+    if (e->type && e->u.lambda.sdef && !ttIsError(e->type) && lamEnvMentionsNoParam(e->u.lambda.sdef))
+        return e->type;
 
     if (c->lamDepth > 0) {
         ckError(c, e->line,
@@ -1414,6 +1436,18 @@ static Type *checkLambda(Checker *c, Expr *e) {
             fd->type = rt;
         } else {
             fd->type = sy->type;             /* a copy: the closure sees the value it was made with */
+            /* The environment is emitted once, from the template, so a field whose type mentions a
+             * type parameter would reach the C emission as `T` and be written with the instance's
+             * concrete type -- a C type error, not a diagnostic. Reject the shape instead: laying
+             * the environment out per instance is a separate feature. */
+            if (sy->type && ttHasParam(sy->type))
+                ckError(c, e->line,
+                        "The environment of a lambda is laid out once, from the generic body it is"
+                        " written in; a capture whose type depends on a type parameter would need a"
+                        " different layout per instance. Copy the value into a local of a concrete"
+                        " type, or pass it as a parameter.",
+                        "a lambda in a generic function cannot capture `%s`: its type `%s` depends on"
+                        " a type parameter", sy->name, typeStr(c, sy->type));
         }
         *(FieldDef **)vecPush(&sd->fields) = fd;
         *(const char **)vecPush(&fields) = fd->name;

@@ -605,6 +605,19 @@ bool checkAssignable(Checker *c, Type *want, Type *got, Expr *node, const char *
         }
     }
 
+    /* A closure value and a bare `fn` pointer both *print* as the signature the user wrote, so the
+     * generic message would read "expects `fn(i64) -> i64`, found `fn(i64) -> i64`" -- two identical
+     * strings. Say what the difference actually is. */
+    if (want->kind == TY_FN && got->kind == TY_STRUCT && got->sdef && anLamSig(got->sdef)) {
+        ckError(c, node ? node->line : 0,
+                "A `fn(...)` value is one code pointer; a closure carries its captured state too, so"
+                " its value is the state plus a code pointer. Pass the closure where a type parameter"
+                " is expected and call it, or keep the state out of the lambda.",
+                "%s expects `%s`, but this value is a closure that captures state", what,
+                typeStr(c, want));
+        return false;
+    }
+
     ckError(c, node ? node->line : 0,
             "extC only widens implicitly (lossless); a lossy conversion must be written out",
             "%s expects `%s`, found `%s`", what, typeStr(c, want), typeStr(c, got));

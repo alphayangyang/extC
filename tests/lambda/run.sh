@@ -67,6 +67,8 @@ one generic-thunk          "$(src generic_thunk.extc)"      "3 4 4 20 6 11 9"
 one fn-ptr-generic-arg     "$(src fn_ptr_generic_arg.extc)" "1 100 42"
 neg dyn-callable-dyncap    "$(src dyn_callable_dyncap.extc)" "this closure captures a dynamically dispatched value"
 neg dyn-callable-nested    "$(src dyn_callable_nested.extc)" "a value that contains a reference"
+neg lambda-generic-cap     "$(src lambda_generic_capture.extc)" "cannot capture"
+neg closure-to-ptr         "$(src closure_to_ptr.extc)" "is a closure that captures state"
 
 # 跨模块：**模块文件**里的闭包，体内调用同模块函数（曾经静默返回 0，无诊断）
 modcase() { # name dir want

@@ -1,0 +1,12 @@
+// 捕获了状态的闭包值不能当 `fn(...)` 指针用：两者在诊断里都渲染成同一段签名，所以这里必须
+// 说清楚差别（"is a closure that captures state"）。
+// expect: error: initializer expects `fn(i64) -> i64`, but this value is a closure that captures state
+use std::io
+
+fn main() -> i32 {
+    var k: i64 = 2
+    let f = fn(v: i64) -> i64 { return v + k }
+    let g: fn(i64) -> i64 = f
+    io::cout << g(1) << "\n"
+    return 0
+}
