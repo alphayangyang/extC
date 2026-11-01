@@ -69,26 +69,33 @@ is each language's ordinary discipline on the same workload:
 So the table answers "what does the natural thing cost", not "which allocator is
 best". No language was given a strategy it would not write by itself.
 
-## What the first full run says
+## What the full run says
 
-Medians of five repetitions on one 24-core WSL2 host, all arms printing the same
+Medians of eleven repetitions on one 24-core WSL2 host, all arms printing the same
 checksums (`RESULTS.md` has the tables; ratios are to C++):
 
-- **conventional**: `etl` extC 67.2 ms vs C++ 70.1 ms (0.96x), Go 92.0 (1.31x),
-  Rust 73.5 (1.08x).
-- **reclamation**: `sessions` extC 62.2 ms vs C++ 107.3 ms (0.58x), Go 138.4
-  (1.29x), Rust 168.8 (1.57x) -- and peak RSS is 76 MB against 85-86 MB. The
+- **conventional**: `etl` extC 69.2 ms vs C++ 69.8 ms (0.99x), Go 91.7 (1.31x),
+  Rust 74.9 (1.07x).
+- **reclamation**: `sessions` extC 71.4 ms vs C++ 137.4 ms (0.52x), Go 170.6
+  (1.24x), Rust 179.7 (1.31x) -- and peak RSS is 76 MB against 85-86 MB. The
   gap is the axis, not a trick: the other three create and destroy an object per
   record, extC moves an arena pointer and reclaims the frame as a block.
-- **parallel**: extC 344.4 / 94.5 / 74.3 ms at 1 / 8 / 24 threads (3.6x and
-  4.8x self-speedup), within 10-13% of C++ at each width.
+- **parallel**: extC 309.7 / 78.5 / 65.1 ms at 1 / 8 / 24 threads (3.95x and
+  4.76x self-speedup) against C++ 322.6 / 100.8 / 64.3. Single-threaded the byte
+  scan is dominated by the sequential record table, which is why the curve
+  flattens; the arm builds that table in one pass, like the C++ arm.
 - **concurrency**: 200,000 requests over 64 connections, every reply verified,
-  `bad=0` for all four arms: extC 559k req/s, C++ 558k, Go 558k, Rust 568k (the four
-  are within run-to-run noise of each other on this host: extC and C++ sit on the same
-  number, Rust is 2% ahead). The
-  first run of this arm was 430k: it called `send` once per reply, and the arm
-  now flushes one write per read burst like the other three (the profiled
-  difference, and the syscall counts behind it, are in the changelog entry).
+  `bad=0` for all four arms: extC 579k req/s, C++ 576k, Go 605k, Rust 571k (the
+  four are within run-to-run noise of each other on this host). The first run of
+  this arm was 430k: it called `send` once per reply, and the arm now flushes one
+  write per read burst like the other three (the profiled difference, and the
+  syscall counts behind it, are in the changelog entry).
+
+Two compiler bugs surfaced while measuring, and fixing them moved the parallel
+axis: the bounds test of a subscript was never hoisted out of a loop when the
+subscript was converted (`i64(v[i])` read as a side effect), and an `if`
+condition's subscripts were not covered at all. `parmix` went from 1,705 to
+1,351 instructions per record; see the changelog entry.
 
 ## Caveats
 

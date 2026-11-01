@@ -156,9 +156,10 @@ out[i] = x
 ```
 
 Then fold in ascending `i`: `sum += out[i]`, `h = (h ^ out[i]) * 1099511628211`,
-and fold `n`. Threads come from argv (`t=1..16`, default 8). The parse itself is
-part of the measured work and happens inside the parallel loop; record offsets
-are precomputed sequentially so each worker parses only its own records.
+and fold `n`. Threads come from argv (`t=1`, `8`, `24`; default 8). The parse
+itself is part of the measured work and happens inside the parallel loop; the
+record offset table is built in one sequential pass so each worker parses only its
+own records and the bytes are touched once before the parallel pass.
 
 ```
 parmix n=<lines> t=<t> read_ms=<m> work_ms=<m> cs=<cs> sum=<sum>

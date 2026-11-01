@@ -29,14 +29,14 @@ on one core with the client on three others.
 
 | workload | language | work_ms (median) | vs C++ | peak RSS |
 | --- | --- | ---: | ---: | ---: |
-| etl | C++ | 70.1 | 1.00x | 72 MB |
-| etl | extC | 67.2 | 0.96x | 69 MB |
-| etl | Go | 92.0 | 1.31x | 72 MB |
-| etl | Rust | 74.8 | 1.07x | 70 MB |
-| sessions | C++ | 134.7 | 1.00x | 86 MB |
-| sessions | extC | 68.0 | 0.50x | 76 MB |
-| sessions | Go | 166.9 | 1.24x | 86 MB |
-| sessions | Rust | 206.2 | 1.53x | 85 MB |
+| etl | C++ | 69.8 | 1.00x | 72 MB |
+| etl | extC | 69.2 | 0.99x | 69 MB |
+| etl | Go | 91.7 | 1.31x | 72 MB |
+| etl | Rust | 74.9 | 1.07x | 70 MB |
+| sessions | C++ | 137.4 | 1.00x | 86 MB |
+| sessions | extC | 71.4 | 0.52x | 76 MB |
+| sessions | Go | 170.6 | 1.24x | 86 MB |
+| sessions | Rust | 179.7 | 1.31x | 85 MB |
 
 `work_ms` is the workload only; peak RSS is the maximum resident set of the whole
 process. Lower is better in both columns.
@@ -45,26 +45,26 @@ process. Lower is better in both columns.
 
 | threads | C++ | extC | Go | Rust | extC vs C++ |
 | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 | 327.6 | 344.4 | 352.4 | 328.5 | 1.05x |
-| 8 | 96.8 | 94.5 | 76.6 | 70.1 | 0.98x |
-| 24 | 63.4 | 74.3 | 63.9 | 53.6 | 1.17x |
+| 1 | 322.6 | 309.7 | 351.4 | 319.0 | 0.96x |
+| 8 | 100.8 | 78.5 | 77.1 | 74.1 | 0.78x |
+| 24 | 64.3 | 65.1 | 65.1 | 60.4 | 1.01x |
 
 Scaling of each arm against its own single-threaded run:
 
 | threads | C++ | extC | Go | Rust |
 | ---: | ---: | ---: | ---: | ---: |
 | 1 | 1.00x | 1.00x | 1.00x | 1.00x |
-| 8 | 3.38x | 3.64x | 4.60x | 4.69x |
-| 24 | 5.17x | 4.64x | 5.51x | 6.13x |
+| 8 | 3.20x | 3.95x | 4.56x | 4.30x |
+| 24 | 5.02x | 4.76x | 5.40x | 5.28x |
 
 ## Concurrency axis
 
 | language | completion (ms) | throughput (req/s) | bad replies | server checksum | vs C++ throughput |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| C++ | 358.3 | 558,170 | 0 | 620352923810747373 | 1.00x |
-| extC | 357.7 | 559,202 | 0 | 620352923810747373 | 1.00x |
-| Go | 358.3 | 558,253 | 0 | 620352923810747373 | 1.00x |
-| Rust | 352.3 | 567,696 | 0 | 620352923810747373 | 0.98x |
+| C++ | 347.2 | 575,989 | 0 | 620352923810747373 | 1.00x |
+| extC | 345.1 | 579,471 | 0 | 620352923810747373 | 0.99x |
+| Go | 330.4 | 605,371 | 0 | 620352923810747373 | 0.95x |
+| Rust | 350.0 | 571,455 | 0 | 620352923810747373 | 1.01x |
 
 ## What each arm does differently
 
