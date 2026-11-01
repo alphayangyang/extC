@@ -24,6 +24,8 @@
 use std::io
 use std::time
 use stl::vector
+use stl::hashMap
+use stl::sort
 use std::sys::file as sysfile
 use std::sys::io as sysio
 use std::sys::net
@@ -215,15 +217,20 @@ struct session {
     sumLat: i64
 }
 
+/* The all-zero session a missing key starts from. */
+fn zeroSession() -> session {
+    var s: session = { last: 0, count: 0, sumIdx: 0, sumLat: 0 }
+    return s
+}
+
+/* Workload B, in the shape the C++ arm uses: an open-addressing map from `uid` to a
+ * session, one message object materialised per record, and a final pass that evicts what
+ * the TTL drops, sorts the surviving uids and folds them in that order. The checksum is
+ * what makes the shapes comparable: it must come out the same whether the map or the
+ * sort visits an entry first. */
 fn modeSessions(buf: slice<u8>, readNs: i64) -> i32 {
     let t0: i64 = time::now()
-    /* extC has no per-object free: the sessions live in one arena array and a
-     * liveness byte records which ones the TTL keeps. The region releases them all
-     * at block exit instead of one by one; SPEC.md calls this the asymmetrical part
-     * of workload B. */
-    var sess: mut slice<session> = new session[UIDS]
-    var alive: mut slice<u8> = new u8[UIDS]
-    var recs: mut slice<rec> = new rec[1]
+    var sessions: hashMapI64<session> = hashMapI64<session>::withCap(UIDS)
     var v0: i64 = 0
     var v1: i64 = 0
     var v2: i64 = 0
@@ -239,28 +246,32 @@ fn modeSessions(buf: slice<u8>, readNs: i64) -> i32 {
         let c: u8 = buf[i]
         if c == u8(10) {
             v6 = cur
-            /* One message object per record, as the other arms allocate one. */
-            recs[0].ts = v0
-            recs[0].uid = v1
-            recs[0].site = v2
-            recs[0].path = v3
-            recs[0].status = v4
-            recs[0].lat = v5
-            recs[0].bytes = v6
-            let uid: i64 = recs[0].uid
-            var s: session = sess[uid]
-            if alive[uid] == u8(0) {
-                alive[uid] = u8(1)
-                s.count = 0
-                s.sumIdx = 0
-                s.sumLat = 0
+            /* One message object per record, the extC spelling of the C++ arm's
+             * `new Record()` / `delete ev` pair. The arena holds it in the function's
+             * region: the record is dead after this block, but the region is released at
+             * function exit, so peak RSS grows with the record count (2,000,000 objects
+             * of 56 bytes reach a high-water mark instead of being reused). That is the
+             * honest cost of "one object per record" without a per-object free, and the
+             * peak-RSS column is where it shows up. */
+            {
+                var ev: mut slice<rec> = new rec[1]
+                ev[0].ts = v0
+                ev[0].uid = v1
+                ev[0].site = v2
+                ev[0].path = v3
+                ev[0].status = v4
+                ev[0].lat = v5
+                ev[0].bytes = v6
+                let uid: i64 = ev[0].uid
+                var s: session = zeroSession()
+                if let some(prev) = sessions.get(uid) { s = prev }
+                s.count = s.count + 1
+                s.sumIdx = s.sumIdx + lines
+                s.sumLat = s.sumLat + ev[0].lat
+                s.last = ev[0].ts
+                sessions.put(uid, s)
+                if ev[0].ts > newest { newest = ev[0].ts }
             }
-            s.count = s.count + 1
-            s.sumIdx = s.sumIdx + lines
-            s.sumLat = s.sumLat + recs[0].lat
-            s.last = recs[0].ts
-            sess[uid] = s
-            if recs[0].ts > newest { newest = recs[0].ts }
             lines = lines + 1
             f = 0
             cur = 0
@@ -273,25 +284,56 @@ fn modeSessions(buf: slice<u8>, readNs: i64) -> i32 {
         }
     }
     let cutoff: i64 = newest - 300
+    /* Evict, then fold. `remove` is a swap-remove inside the value pool, so the keys are
+     * collected during the scan and dropped after it; folding goes in ascending uid
+     * order, which is what the C++ arm's `std::sort` gives it. */
+    let dense: i64 = sessions.denseLen()
+    var keep: mut slice<i64> = new i64[dense]
+    var nkeep: i64 = 0
+    var d: i64 = 0
+    while d < dense {
+        let uid: i64 = sessions.keyAtDense(d)
+        let s: session = sessions.valAtDense(d)
+        if s.last >= cutoff {
+            keep[nkeep] = uid
+            nkeep = nkeep + 1
+        }
+        d = d + 1
+    }
+    /* Eviction. The C++ arm erases each expired entry in place (`delete` + `erase`).
+     * extC cannot call `hashMapI64::remove` from a function that also takes a view:
+     * `hashMap::find` calls `k.hash()` on the table's type parameter, that call is
+     * unresolvable while the parameter is opaque, and the resulting incomplete effect
+     * summary propagates out of `remove` and then out of any function that calls it
+     * (`argument 1 ... carries a reference into a deeper scope`). So the survivors are
+     * compacted into a fresh table instead: one insert per retained session, which is the
+     * same order of work as the erase loop it replaces, and the old table (with the
+     * expired sessions in it) is released with the frame. */
+    var live: hashMapI64<session> = hashMapI64<session>::withCap(UIDS)
+    var ci: i64 = 0
+    while ci < nkeep {
+        let uid: i64 = keep[ci]
+        var s: session = zeroSession()
+        if let some(found) = sessions.get(uid) { s = found }
+        live.put(uid, s)
+        ci = ci + 1
+    }
+    sort::sort(keep[..nkeep])
     var h: u64 = basis()
     var retained: i64 = 0
     var liveoff: i64 = 0
-    var uid: i64 = 0
-    while uid < UIDS {
-        if alive[uid] != u8(0) {
-            let s: session = sess[uid]
-            if s.last >= cutoff {
-                retained = retained + 1
-                liveoff = liveoff + s.count
-                h = fnv(h, u64(uid))
-                h = fnv(h, u64(s.count))
-                h = fnv(h, u64(s.sumIdx))
-                h = fnv(h, u64(s.sumLat))
-            } else {
-                alive[uid] = u8(0)
-            }
-        }
-        uid = uid + 1
+    var k: i64 = 0
+    while k < nkeep {
+        let uid: i64 = keep[k]
+        var s: session = zeroSession()
+        if let some(found) = live.get(uid) { s = found }
+        retained = retained + 1
+        liveoff = liveoff + s.count
+        h = fnv(h, u64(uid))
+        h = fnv(h, u64(s.count))
+        h = fnv(h, u64(s.sumIdx))
+        h = fnv(h, u64(s.sumLat))
+        k = k + 1
     }
     let t1: i64 = time::now()
     let r10: i64 = ms10(readNs)

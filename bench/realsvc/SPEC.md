@@ -92,19 +92,40 @@ sessions n=<lines> read_ms=<m> work_ms=<m> cs=<cs> retained=<r> liveoff=<sum of 
 `cs` folds, in ascending uid order over **retained** sessions only: `uid`,
 `count`, `sumIdx`, `sumLat`.
 
-Each arm uses its language's natural representation — that *is* the axis:
+Each arm uses its language's natural hash table and its natural per-record
+object — that *is* the axis. All four keep the same shape: a hash map from uid to
+a session value, and one message object per record whose lifetime ends when the
+record has been folded into that session.
 
-| arm | per-record object | session registry |
-|---|---|---|
-| C++ | `new Event{…}` / `delete` | `unordered_map<i64, Session*>` + `delete` on evict |
-| Rust | `Box<Event>` / drop | `HashMap<i64, Box<Session>>` + `remove` on evict |
-| Go | `&Event{…}` (heap) | `map[i64]*Session` + `delete` (GC reclaims) |
-| extC | arena bump (`new Event`) | arena array + liveness flags; the region reclaims at exit |
+| arm | per-record object | session registry | eviction |
+|---|---|---|---|
+| C++ | `new Record{…}` / `delete` | `unordered_map<i64, Session>` | `erase` per expired entry |
+| Rust | `Box<Record>` / drop | `HashMap<i64, Session>` | `remove` per expired entry |
+| Go | `&Record{…}` (heap) | `map[i64]*session` | `delete` per expired entry |
+| extC | arena bump (`new rec[1]` in a block) | `hashMapI64<session>` (`stl::hashMap`) | compact survivors into a fresh table |
 
-extC has no per-object free, so its session objects are reclaimed when the
-enclosing region dies rather than at eviction; the peak-RSS column is where that
-trade shows up. The checksum is identical because the retained set and its
-folded values are the same.
+Two extC notes, both about this axis rather than about the benchmark:
+
+* The per-record object is an arena allocation. The arena keeps it in the
+  function's region: the object is dead once the record has been folded into its
+  session, but the region is released at function exit, so peak RSS grows with the
+  record count (2,000,000 objects of 56 bytes become a high-water mark rather than
+  being reused). That is what "one object per record, no per-object free" costs,
+  and the peak-RSS column is where it shows.
+* extC's eviction *compacts* instead of erasing in place: `hashMapI64::remove`
+  cannot be called today from a function that also takes a view. `hashMap::find`
+  calls `k.hash()` on the table's type parameter; while the parameter is opaque
+  that call cannot be resolved, the resulting effect summary stays incomplete,
+  and incompleteness propagates out of `remove` into every caller, which then
+  fails to pass its own view arguments (`argument 1 ... carries a reference into a
+  deeper scope ... the callee's effects could not be fully analyzed`). Compacting
+  into a fresh table costs one insert per *retained* session — the same order as
+  the erase loop it stands in for — and drops the expired sessions with the old
+  table when the frame ends. This is a compiler limitation, not a design choice;
+  it is reported separately.
+
+The checksum is identical because the retained set and its folded values are the
+same.
 
 ## 5. Workload C — `serve` (coroutines / event loop)
 

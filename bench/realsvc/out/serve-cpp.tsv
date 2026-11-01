@@ -1,11 +1,5 @@
-serve	cpp	1	357.8	bad=0	reqps=558975	server_cs=620352923810747373
-serve	cpp	2	307.7	bad=0	reqps=649903	server_cs=620352923810747373
-serve	cpp	3	303.4	bad=0	reqps=659238	server_cs=620352923810747373
-serve	cpp	4	361.0	bad=0	reqps=553986	server_cs=620352923810747373
-serve	cpp	5	350.2	bad=0	reqps=571043	server_cs=620352923810747373
-serve	cpp	6	356.5	bad=0	reqps=560974	server_cs=620352923810747373
-serve	cpp	7	347.2	bad=0	reqps=575989	server_cs=620352923810747373
-serve	cpp	8	299.4	bad=0	reqps=668068	server_cs=620352923810747373
-serve	cpp	9	352.2	bad=0	reqps=567856	server_cs=620352923810747373
-serve	cpp	10	336.9	bad=0	reqps=593578	server_cs=620352923810747373
-serve	cpp	11	344.0	bad=0	reqps=581361	server_cs=620352923810747373
+serve	cpp	1	390.0	bad=0	reqps=512787	server_cs=620352923810747373
+serve	cpp	2	306.4	bad=0	reqps=652721	server_cs=620352923810747373
+serve	cpp	3	352.3	bad=0	reqps=567760	server_cs=620352923810747373
+serve	cpp	4	361.6	bad=0	reqps=553072	server_cs=620352923810747373
+serve	cpp	5	368.5	bad=0	reqps=542698	server_cs=620352923810747373

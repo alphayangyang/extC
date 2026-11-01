@@ -62,30 +62,36 @@ is each language's ordinary discipline on the same workload:
 - C++: `new`/`delete` for the message object, `unordered_map` of session pointers.
 - Rust: `Box` dropped immediately, `HashMap` of owned sessions.
 - Go: `&event{}` and a `map` of session pointers, so the GC decides.
-- extC: the message object is an arena allocation reclaimed as a block when the loop
-  frame exits, and the session table is a flat arena array indexed by user id where
-  eviction only marks an entry dead.
+- extC: the message object is an arena allocation (it stays in the function's region, so
+  peak RSS grows with the record count rather than being reused) and the session table is
+  `hashMapI64<session>`; eviction compacts the survivors into a fresh table, because
+  `hashMapI64::remove` cannot be called from a function that also takes a view today.
 
 So the table answers "what does the natural thing cost", not "which allocator is
 best". No language was given a strategy it would not write by itself.
 
 ## What the full run says
 
-Medians of eleven repetitions on one 24-core WSL2 host, all arms printing the same
+Medians of five repetitions on one 24-core WSL2 host, all arms printing the same
 checksums (`RESULTS.md` has the tables; ratios are to C++):
 
-- **conventional**: `etl` extC 69.2 ms vs C++ 69.8 ms (0.99x), Go 91.7 (1.31x),
-  Rust 74.9 (1.07x).
-- **reclamation**: `sessions` extC 71.4 ms vs C++ 137.4 ms (0.52x), Go 170.6
-  (1.24x), Rust 179.7 (1.31x) -- and peak RSS is 76 MB against 85-86 MB. The
-  gap is the axis, not a trick: the other three create and destroy an object per
-  record, extC moves an arena pointer and reclaims the frame as a block.
-- **parallel**: extC 309.7 / 78.5 / 65.1 ms at 1 / 8 / 24 threads (3.95x and
-  4.76x self-speedup) against C++ 322.6 / 100.8 / 64.3. Single-threaded the byte
+- **conventional**: `etl` extC 67.9 ms vs C++ 67.7 ms (1.00x), Go 92.7 (1.37x),
+  Rust 73.8 (1.09x).
+- **reclamation**: `sessions` extC 246.4 ms vs C++ 121.3 ms (2.03x, i.e. extC takes
+  about twice the time), Go 169.8 (1.40x), Rust 192.2 (1.58x) -- and peak RSS is 199 MB
+  against 86 MB. With the same shape in every arm (a message object per record plus a
+  hash table of sessions) the cost is visible: two hash lookups per record (extC's map
+  API returns values, so read-modify-write is `get` + `put`) and an arena object per
+  record that lives until the function's region is released. The earlier 0.52x came
+  from not doing that work at all: a flat array indexed by user id, one reused object,
+  no reclamation -- the number measured a different program. It is reported here as the
+  measurement it is, not as a reclamation win.
+- **parallel**: extC 309.9 / 87.5 / 61.8 ms at 1 / 8 / 24 threads (3.54x and
+  5.01x self-speedup) against C++ 321.9 / 82.4 / 66.0. Single-threaded the byte
   scan is dominated by the sequential record table, which is why the curve
   flattens; the arm builds that table in one pass, like the C++ arm.
 - **concurrency**: 200,000 requests over 64 connections, every reply verified,
-  `bad=0` for all four arms: extC 579k req/s, C++ 576k, Go 605k, Rust 571k (the
+  `bad=0` for all four arms: extC 546k req/s, C++ 553k, Go 600k, Rust 589k (the
   four are within run-to-run noise of each other on this host). The first run of
   this arm was 430k: it called `send` once per reply, and the arm now flushes one
   write per read burst like the other three (the profiled difference, and the
