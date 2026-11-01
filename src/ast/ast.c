@@ -816,3 +816,34 @@ static bool visitExprList(const AstVisit *v, Vec *xs) {
     }
     return true;
 }
+
+/**
+ * @brief Build a second struct definition that shares `src`'s fields and methods under another name.
+ *
+ * @param a     Arena to allocate from.
+ * @param src   The struct to copy.
+ * @param name  The C name, also used as the source name, of the copy.
+ * @return      The copy.
+ */
+StructDef *structDefNamedCopy(Arena *a, const StructDef *src, const char *name) {
+    StructDef *out = arenaAllocZero(a, sizeof *out);
+    *out = *src;
+    out->name = name;
+    out->srcName = name;
+    return out;
+}
+
+/**
+ * @brief Build a parameter that carries `src`'s identity but another type.
+ *
+ * @param a     Arena to allocate from.
+ * @param src   The parameter to copy.
+ * @param type  The type of the copy.
+ * @return      The copy.
+ */
+Param *paramWithType(Arena *a, const Param *src, Type *type) {
+    Param *out = arenaAllocZero(a, sizeof *out);
+    *out = *src;
+    out->type = type;
+    return out;
+}

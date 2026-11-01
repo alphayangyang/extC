@@ -626,6 +626,8 @@ void exprRetargetAssoc(Arena *a, Expr *e, const char *typeName, const char *modP
  * @return     The new subtree.
  */
 Expr *exprClone(Arena *a, Expr *src);
+
+
 /**
  * @brief Replace the statement list of a block statement (used by fusion lowering).
  *
@@ -888,6 +890,35 @@ typedef struct {
     Type       *type;
     int         line;
 } Param;
+
+/**
+ * @brief Build a second struct definition that shares `src`'s fields and methods under another name.
+ *
+ * A lambda environment written inside a generic body is laid out once per instance of that body:
+ * the field types are printed through the instance's substitution, so the fields -- and the `call`
+ * method the checker synthesized over them -- are shared, while the C name has to differ. Only the
+ * names are written here; every other member is the template's.
+ *
+ * @param a     Arena to allocate from.
+ * @param src   The struct to copy.
+ * @param name  The C name, also used as the source name, of the copy.
+ * @return      The copy.
+ */
+StructDef *structDefNamedCopy(Arena *a, const StructDef *src, const char *name);
+
+/**
+ * @brief Build a parameter that carries `src`'s identity but another type.
+ *
+ * A per-instance layout of a lambda's `call` method needs its `self` parameter typed as that
+ * layout's own type (the checker typed it as the template environment). Name, emitted name and line
+ * are the template's, so diagnostics still point at the lambda.
+ *
+ * @param a     Arena to allocate from.
+ * @param src   The parameter to copy.
+ * @param type  The type of the copy.
+ * @return      The copy.
+ */
+Param *paramWithType(Arena *a, const Param *src, Type *type);
 
 struct FieldDef {
     const char *name;

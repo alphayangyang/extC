@@ -12601,9 +12601,7 @@ static void lamVarAdd(LamVarScan *sc, Expr *e) {
     FuncDef *tcall = *(FuncDef **)vecAt(&sd->methods, 0);
     const char *envName = arenaPrintf(g->arena, "%s$%s", sd->name, sc->ctxName);
 
-    StructDef *vsd = arenaAllocZero(g->arena, sizeof *vsd);
-    *vsd = *sd;                                  /* names, fields, module: the layout's own name below */
-    vsd->name = vsd->srcName = envName;
+    StructDef *vsd = structDefNamedCopy(g->arena, sd, envName);
     /* The plan facts are keyed by pointer, so the shell has to carry the one that marks it as a
      * lambda environment: `lamEnvNeedsVariants` reads it back. */
     planSetLamScope(vsd, planLamScope(sd));
@@ -12636,14 +12634,7 @@ static void lamVarAdd(LamVarScan *sc, Expr *e) {
     selfT->kind = TY_REF;
     selfT->inner = vtNamed;
     selfT->mut = false;                          /* `call` reads the environment */
-    Param *self = arenaAllocZero(g->arena, sizeof *self);
-    {
-        Param *t0 = *(Param **)vecAt(&tcall->params, 0);
-        self->name = t0->name;
-        self->cname = t0->cname;
-        self->line = t0->line;
-    }
-    self->type = selfT;
+    Param *self = paramWithType(g->arena, *(Param **)vecAt(&tcall->params, 0), selfT);
     vecInit(&vcall->params, g->arena, sizeof(Param *));
     *(Param **)vecPush(&vcall->params) = self;
     for (size_t i = 1; i < tcall->params.len; i++)
