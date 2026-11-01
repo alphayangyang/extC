@@ -1,0 +1,14 @@
+/* `io::flushCout()` must make everything printed so far visible to a reader that is
+ * not this process: when stdout is a file or a pipe it is fully buffered, so a flush
+ * that only fills stdio's buffer would leave the text invisible until exit. The
+ * harness reads the file while this program is still sleeping. */
+use std::io
+use std::time
+
+fn main() -> i32 {
+    io::cout << "mid-run\n"
+    io::flushCout()
+    time::sleepMs(600)
+    io::cout << "done\n"
+    return 0
+}

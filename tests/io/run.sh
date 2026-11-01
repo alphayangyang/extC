@@ -423,6 +423,31 @@ else
 fi
 rm -rf "$f4dir"
 
+# `io::flushCout()` 必须**当场**把已打印的内容交出去：stdout 是文件/管道时是全缓冲，
+# 只 `fwrite` 不 `fflush` 的话，程序还在跑时读不到任何东西（协程服务打印 `serve_ready`
+# 就是因为这条被卡住：harness 等不到这一行，只能靠超时）。
+f5dir=$(mktemp -d)
+if "$EXTC" -w -o "$f5dir/f.c" tests/io/flush_mid.extc 2>/dev/null \
+   && ${CC:-cc} -O1 -std=c11 -fwrapv -o "$f5dir/f" "$f5dir/f.c" 2>/dev/null; then
+    "$f5dir/f" > "$f5dir/out" 2>&1 &
+    f5pid=$!
+    sleep 0.3
+    if grep -q '^mid-run$' "$f5dir/out" 2>/dev/null; then
+        echo "  ok   flush-mid   ->  程序还在跑时就能读到 mid-run"
+    else
+        echo "  FAIL flush-mid   ->  程序还在跑时读到「$(cat "$f5dir/out" 2>/dev/null | tr '\n' '|')」"; fail=1
+    fi
+    wait "$f5pid" 2>/dev/null
+    if [ "$(cat "$f5dir/out" 2>/dev/null)" = "$(printf 'mid-run\ndone')" ]; then
+        echo "  ok   flush-mid   ->  退出前两条都在"
+    else
+        echo "  FAIL flush-mid   ->  退出后读到「$(cat "$f5dir/out" 2>/dev/null | tr '\n' '|')」"; fail=1
+    fi
+else
+    echo "  FAIL flush-mid   ->  编译失败"; fail=1
+fi
+rm -rf "$f5dir"
+
 echo "== print/println 与 io::cout 混写：顺序与源码一致（同一个控制台缓冲）=="
 if out=$("$EXTC" --run tests/io/print_order.extc 2>&1) && [ "$out" = "$(printf 'b\na\nc')" ]; then
     echo "  ok   print-order  ->  $(echo "$out" | tr '\n' '|')"
