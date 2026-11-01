@@ -179,7 +179,10 @@ struct hashMap<K, V> {
     fn get(self: ref hashMap<K, V>, k: K) -> ?V {
         let b = self.find(k)
         if b < 0 { return none }
-        return self.vals.get(self.vals.handleAtDense(i64(self.slot[b])))
+        /* Read the dense prefix, not a handle: `slot[b]` already resolved the storage, so
+         * going through `handleAtDense` + `vals.get` would re-derive the same dense index
+         * and re-check a generation that this call cannot have missed. */
+        return some(self.vals.atDense(i64(self.slot[b])))
     }
 
     /* `k` 的值槽：一次探测拿 handle，之后 `at`/`setAt` 不再探测。读-改-写一个已有键因此只要
@@ -217,7 +220,10 @@ struct hashMap<K, V> {
         if self.pStale() { self.pPoison() }
         let had = self.find(k)
         if had >= 0 {
-            self.vals.set(self.vals.handleAtDense(i64(self.slot[had])), v)
+            /* The overwrite path is the hot one for a read-modify-write loop, so it writes
+             * the dense prefix directly: `slot[had]` is the storage index already, and this
+             * probe is the liveness check (the bucket is LIVE). */
+            self.vals.setAtDense(i64(self.slot[had]), v)
             return true
         }
         /* Rebuild *before* inserting, while there is still a free bucket to land in.

@@ -397,6 +397,18 @@ struct pool<T> {
     @inline
     fn atDense(self: ref pool<T>, i: i64) -> T { return self.vals[i] }
 
+    /* Write the i-th dense value. The dense index is the same one `atDense` reads: it names
+     * the storage, not a handle, so no generation is involved -- a caller that reached it
+     * through `slot[b]` or `gather` has already established that the slot is live. The
+     * index is bounds-checked against the dense prefix, so a bug is caught here rather than
+     * writing through a stale number. */
+    @inline
+    fn setAtDense(self: mut ref pool<T>, i: i64, v: T) -> bool {
+        if i < 0 || i >= self.n { return false }
+        self.vals[i] = v
+        return true
+    }
+
     /* ⭐ **Hot loops should not go through the container.** This hands out the dense prefix
      * as a `slice` **without copying**, so a loop over it compiles to exactly the same
      * thing as a loop over a bare array.

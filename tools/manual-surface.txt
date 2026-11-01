@@ -684,6 +684,7 @@ stl::pool	pool	pidGen	field	internal
 stl::pool	pool	release	method	public
 stl::pool	pool	remove	method	public
 stl::pool	pool	set	method	public
+stl::pool	pool	setAtDense	method	public
 stl::pool	pool	shrink	method	public
 stl::pool	pool	slots	field	internal
 stl::pool	pool	slots	field	internal

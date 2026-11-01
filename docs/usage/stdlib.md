@@ -259,21 +259,26 @@ fn main() -> i32 {
 
 重建有**两条触发线**：装载（`n + dead` 到 70% 容量）与墓碑密度（`dead` 到 25% 容量）。
 
-**槽（handle）是这张表的一等货币**，读-改-写一条记录用它：`get` + `put` 要探测两次，而
-`entry` 命中时只探测一次、`at`/`setAt` 直接按槽读写。handle 是池的**值**（槽号 + 换代号 + 纪），
-不是指针：值池扩容搬数据不会让它悬垂，过期（键被 `remove` 掉、或池清了）时 `at` 还 `none`。
+**槽（handle）用来携带"身份"，不是循环内的快速通道**。`slotOf` / `at` / `setAt` / `entry` 让
+一次探测换出多次按槽访问，省掉重复的哈希；但每次按槽读都要回读槽数组并校验换代号与纪，所以
+**热循环里直接用 `get` / `put`（或 `valAtDense`）更快**：`get` 探测一次后就拿 `slot[b]` 去读
+dense 值列，同一条记录一次探测加一次索引，比"拿 handle 再 `at`/`setAt`"少两三次随机 load。
+handle 的用处是让身份离开循环（存进数组、跨语句复用、跨扩容），它不是指针：值池扩容搬数据不会
+让它悬垂，键被 `remove`（swap-remove，搬最后一个元素）或池清掉之后 `at` 还 `none`，而不是读到
+别人的值 —— 这件事由池的换代检查兜住。
 
 <!-- fragment -->
 ```extc
 use std::io
 use stl::hashMap
 fn bump(m: mut ref hashMapI64<i64>, k: i64) -> i64 {
-    let h: handle = m.entry(k, i64(0))     // 命中：一次探测；缺失：插入 0
+    let h: handle = m.entry(k, i64(0))     // 身份要跨语句：一次探测换出槽
     let v: i64 = m.at(h) ?? i64(0)
     m.setAt(h, v + i64(1))                 // 按槽写回，不再探测
     return v + i64(1)
 }
 ```
+
 
 `hashSetI64` 是"没有值的 map"（值是一格 `u8`），面与 `hashMap` 对齐，
 **唯一差别**：`put` 返回 true 表示**新元素**。`withCap` · `len` ·
@@ -365,7 +370,7 @@ fn main() -> i32 {
 | `contains` / `get` / `set` | `fn get(...) -> ?T`；陈旧给 `none`；`set` 返回是否写成功 |
 | `insert` | `fn insert(self: mut ref pool<T>, v: T) -> handle`（优先复用洞链） |
 | `remove` | 返回是否删掉；**swap-remove**（dense 前缀保持连续）+ 该槽世代 +1 |
-| 迭代 | `atDense(i)` / `handleAtDense(i)` / `toSlice()`（拷一份） / `gather(hs, out)` |
+| 迭代 | `atDense(i)` / `setAtDense(i, v)` / `handleAtDense(i)` / `toSlice()`（拷一份） / `gather(hs, out)` |
 | `shrink` / `clear` / `release` | `clear` 翻 epoch（旧句柄一次比较全废），`release` 整批还 |
 
 ```extc
