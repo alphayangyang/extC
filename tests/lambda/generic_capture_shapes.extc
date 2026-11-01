@@ -1,0 +1,61 @@
+// The shapes around "a lambda in a generic body lays its environment out per instance":
+// a method of a generic struct, two instantiations nested inside one body, a capture that mixes
+// a plain value with one whose type is the parameter, and a `mut ref` capture of such a value.
+//
+// expect: 9 14 23 19 34 19
+use std::io
+
+struct key {
+    v: i64
+    fn hash(self: ref key) -> i64 { return self.v * 2 }
+}
+
+struct item {
+    n: i64
+    fn hash(self: ref item) -> i64 { return self.n + 7 }
+}
+
+// (1) A method of a generic struct: the environment's field type is the struct's parameter.
+struct cell<T> {
+    x: T
+    fn run(self: ref cell<T>, d: i64) -> i64 {
+        let f = fn(y: i64) -> i64 { return y + self.x.hash() }
+        return f(d)
+    }
+}
+
+fn calc<K>(k: K, d: i64) -> i64 {
+    let f = fn(x: i64) -> i64 { return x + k.hash() }
+    return f(d)
+}
+
+// (2) Two instances of *different* generic functions inside one body.
+fn outer<K>(k: K, other: item) -> i64 {
+    return calc<K>(k, 1) + calc<item>(other, 2)
+}
+
+// (3) A capture that mixes a plain value with one whose type is the parameter.
+fn mixed<K>(k: K, d: i64, base: i64) -> i64 {
+    let f = fn(x: i64) -> i64 { return x + base + k.hash() }
+    return f(d)
+}
+
+// (4) A `mut ref` capture of a value whose type is the parameter.
+fn writer<K>(k: K) -> i64 {
+    let bump = fn(x: i64) [mut ref k] -> i64 { return k.hash() + x }
+    var a: i64 = bump(1)
+    var b: i64 = bump(2)
+    return a + b
+}
+
+fn main() -> i32 {
+    var a: key = key { v: 4 }
+    var b: item = item { n: 5 }
+    var cellv: cell<key> = { x: a }
+    io::cout << cellv.run(1) << " "
+    io::cout << cellv.run(6) << " "
+    io::cout << outer<key>(a, b) << " "
+    io::cout << mixed<key>(a, 1, 10) << " " << mixed<item>(b, 2, 20) << " "
+    io::cout << writer<key>(a) << "\n"
+    return 0
+}

@@ -7970,6 +7970,118 @@ static FuncDef *lamHostOf(const FuncDef *f) {
 }
 
 /**
+ * @brief One deferred check, replayed in one concrete instance.
+ *
+ * The four batches that need instance replay (operators, methods, deferred uses, references) all
+ * walk the same two lists with the same guards; only the routine that re-checks the record differs.
+ * They hand that routine to `replayInTypeInstances`/`replayInFuncInstances` through this type.
+ *
+ * @param c         The checker.
+ * @param rec       The record, as the batch stored it.
+ * @param params    The instance's type parameters (`owner->typeParams` or the template's).
+ * @param targs     The instance's type arguments.
+ * @param instName  The instance's C name, used in the diagnostic.
+ */
+typedef void (*ReplayFn)(Checker *c, void *rec, Vec *params, Vec *targs, const char *instName);
+
+/**
+ * @brief Replay a deferred check once per instance of a generic *type*.
+ *
+ * @param c      The checker.
+ * @param tt     The type table that owns the instance list.
+ * @param owner  The generic struct whose instances to visit.
+ * @param gate   When non-NULL, only instances whose shared body actually used that method: a body
+ *               shared by every element type must not force all of them to define the operator.
+ * @param fn     The re-check to run.
+ * @param rec    The record to pass to `fn`.
+ */
+static void replayInTypeInstances(Checker *c, TypeTable *tt, StructDef *owner, FuncDef *gate,
+                                  ReplayFn fn, void *rec) {
+    for (size_t j = 0; j < tt->instances.len; j++) {
+        Type *inst = *(Type **)vecAt(&tt->instances, j);
+        if (!inst || inst->sdef != owner) continue;
+        if (provisionalInstance(&inst->targs)) continue;
+        if (gate && !planInstUsed(gate, inst->name)) continue;
+        fn(c, rec, &owner->typeParams, &inst->targs, inst->name);
+    }
+}
+
+/**
+ * @brief Replay a deferred check once per instance of a generic free function.
+ *
+ * The record stores the function it was written in, so only instances of that template are replayed
+ * (a method is never an instance of a free function, which is why the caller can run this
+ * unconditionally).
+ *
+ * @param c     The checker.
+ * @param tmpl  The generic function template.
+ * @param fn    The re-check to run.
+ * @param rec   The record to pass to `fn`.
+ */
+static void replayInFuncInstances(Checker *c, FuncDef *tmpl, ReplayFn fn, void *rec) {
+    for (size_t j = 0; j < c->funcInsts.len; j++) {
+        FuncDef *fi = *(FuncDef **)vecAt(&c->funcInsts, j);
+        if (!fi || planTemplate(fi) != tmpl) continue;
+        if (provisionalInstance(&fi->targs)) continue;
+        fn(c, rec, &planTemplate(fi)->typeParams, &fi->targs, planInstName(fi));
+    }
+}
+
+/**
+ * @brief Replay a deferred check for a body written inside a lambda, once per instance of the body
+ *        that lambda is written in.
+ *
+ * A `call` method is neither an instance of the environment struct nor an instance of a free
+ * function template, so both ordinary branches skip it. The environment records the enclosing
+ * function, and *that* has instances. A lambda inside a lambda is refused earlier (the inner
+ * environment would have to be laid out inside the outer one), so one hop is enough.
+ *
+ * @param c      The checker.
+ * @param tt     The type table that owns the instance list.
+ * @param recFunc The function a deferred check was recorded against.
+ * @param fn     The re-check to run.
+ * @param rec    The record to pass to `fn`.
+ * @return       true when the record was inside a lambda body (whether or not any instance exists).
+ */
+static bool replayInLambdaInstances(Checker *c, TypeTable *tt, FuncDef *recFunc, ReplayFn fn,
+                                    void *rec) {
+    FuncDef *host = lamHostOf(recFunc);
+    if (!host) return false;
+    if (host->owner && host->owner->typeParams.len > 0) {
+        replayInTypeInstances(c, tt, host->owner, NULL, fn, rec);
+    } else if (host->typeParams.len > 0) {
+        replayInFuncInstances(c, host, fn, rec);
+    }
+    return true;
+}
+
+/** @brief Replay one recorded operator use in one instance. */
+static void replayOpRecord(Checker *c, void *rec, Vec *params, Vec *targs, const char *instName) {
+    runOpCheck(c, (OpCheck *)rec, params, targs, instName);
+}
+
+/** @brief Replay one recorded method call in one instance. */
+static void replayMethodRecord(Checker *c, void *rec, Vec *params, Vec *targs,
+                               const char *instName) {
+    runMethodCheck(c, (MethodCheck *)rec, params, targs, instName);
+}
+
+/** @brief Replay one recorded deferred use in one instance. */
+static void replayDeferredRecord(Checker *c, void *rec, Vec *params, Vec *targs,
+                                 const char *instName) {
+    runDeferredUse(c, (DeferredUse *)rec, params, targs, instName);
+}
+
+/** @brief Replay one recorded reference rule in one instance. */
+static void replayRefRecord(Checker *c, void *rec, Vec *params, Vec *targs, const char *instName) {
+    /* `runRefCheck` reads the substitution context from the checker rather than taking it. */
+    c->substParams = params;
+    c->substArgs   = targs;
+    runRefCheck(c, (RefCheck *)rec, instName);
+}
+
+
+/**
  * @brief Check one whole module: the entry point of this pass.
  *
  * Runs its stages in a fixed order: intern names -> resolve signatures and the types in fields
@@ -8607,24 +8719,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             if (provisionalInstance(&fi->targs)) continue;
             runOpCheck(&c, ec, &planTemplate(fi)->typeParams, &fi->targs, planInstName(fi));
         }
-        /* (3) A lambda body: one `call` method serves every instance of the enclosing body, so
-         * replay the check once per instance of that body (see `lamHostOf`). */
-        FuncDef *host = lamHostOf(ec->func);
-        if (host && host->owner && host->owner->typeParams.len > 0) {
-            for (size_t j = 0; j < tt->instances.len; j++) {
-                Type *inst = *(Type **)vecAt(&tt->instances, j);
-                if (inst->sdef != host->owner) continue;
-                if (provisionalInstance(&inst->targs)) continue;
-                runOpCheck(&c, ec, &host->owner->typeParams, &inst->targs, inst->name);
-            }
-        } else if (host && host->typeParams.len > 0) {
-            for (size_t j = 0; j < c.funcInsts.len; j++) {
-                FuncDef *fi = *(FuncDef **)vecAt(&c.funcInsts, j);
-                if (planTemplate(fi) != host) continue;
-                if (provisionalInstance(&fi->targs)) continue;
-                runOpCheck(&c, ec, &host->typeParams, &fi->targs, planInstName(fi));
-            }
-        }
+        if (replayInLambdaInstances(&c, tt, ec->func, replayOpRecord, ec)) continue;
     }
 
     /* Deferred method calls on a type parameter: the same shape as the operator batch
@@ -8656,25 +8751,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             if (provisionalInstance(&fi->targs)) continue;
             runMethodCheck(&c, mc, &planTemplate(fi)->typeParams, &fi->targs, planInstName(fi));
         }
-        /* (3) A lambda body: `find`/`hash` written inside a closure is replay-decided per instance
-         * of the enclosing body. Without this the call would silently reach code generation, whose
-         * fallback for "no such method" is a `0`. */
-        FuncDef *host = lamHostOf(mc->func);
-        if (host && host->owner && host->owner->typeParams.len > 0) {
-            for (size_t j = 0; j < tt->instances.len; j++) {
-                Type *inst = *(Type **)vecAt(&tt->instances, j);
-                if (inst->sdef != host->owner) continue;
-                if (provisionalInstance(&inst->targs)) continue;
-                runMethodCheck(&c, mc, &host->owner->typeParams, &inst->targs, inst->name);
-            }
-        } else if (host && host->typeParams.len > 0) {
-            for (size_t j = 0; j < c.funcInsts.len; j++) {
-                FuncDef *fi = *(FuncDef **)vecAt(&c.funcInsts, j);
-                if (planTemplate(fi) != host) continue;
-                if (provisionalInstance(&fi->targs)) continue;
-                runMethodCheck(&c, mc, &host->typeParams, &fi->targs, planInstName(fi));
-            }
-        }
+        if (replayInLambdaInstances(&c, tt, mc->func, replayMethodRecord, mc)) continue;
     }
 
     for (size_t j = 0; j < c.funcInsts.len; j++) {
@@ -8727,23 +8804,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             if (provisionalInstance(&fi->targs)) continue;
             runDeferredUse(&c, du, &planTemplate(fi)->typeParams, &fi->targs, planInstName(fi));
         }
-        /* (3) A lambda body: same reason as the two batches above. */
-        FuncDef *host = lamHostOf(du->func);
-        if (host && host->owner && host->owner->typeParams.len > 0) {
-            for (size_t j = 0; j < tt->instances.len; j++) {
-                Type *inst = *(Type **)vecAt(&tt->instances, j);
-                if (inst->sdef != host->owner) continue;
-                if (provisionalInstance(&inst->targs)) continue;
-                runDeferredUse(&c, du, &host->owner->typeParams, &inst->targs, inst->name);
-            }
-        } else if (host && host->typeParams.len > 0) {
-            for (size_t j = 0; j < c.funcInsts.len; j++) {
-                FuncDef *fi = *(FuncDef **)vecAt(&c.funcInsts, j);
-                if (planTemplate(fi) != host) continue;
-                if (provisionalInstance(&fi->targs)) continue;
-                runDeferredUse(&c, du, &host->typeParams, &fi->targs, planInstName(fi));
-            }
-        }
+        if (replayInLambdaInstances(&c, tt, du->func, replayDeferredRecord, du)) continue;
     }
 
 
@@ -8799,28 +8860,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             c.substArgs   = &fi->targs;
             runRefCheck(&c, rc, planInstName(fi));
         }
-        /* (1b) A lambda body: the recorded check names the lambda's `call` method, so the instance
-         * it belongs to is the enclosing body's instance (`lamHostOf`). */
-        FuncDef *lhost = lamHostOf(rc->func);
-        if (lhost && lhost->owner && lhost->owner->typeParams.len > 0) {
-            for (size_t j = 0; j < tt->instances.len; j++) {
-                Type *inst = *(Type **)vecAt(&tt->instances, j);
-                if (inst->sdef != lhost->owner) continue;
-                if (provisionalInstance(&inst->targs)) continue;
-                c.substParams = &lhost->owner->typeParams;
-                c.substArgs   = &inst->targs;
-                runRefCheck(&c, rc, inst->name);
-            }
-        } else if (lhost && lhost->typeParams.len > 0) {
-            for (size_t j = 0; j < c.funcInsts.len; j++) {
-                FuncDef *fi = *(FuncDef **)vecAt(&c.funcInsts, j);
-                if (planTemplate(fi) != lhost) continue;
-                if (provisionalInstance(&fi->targs)) continue;
-                c.substParams = &lhost->typeParams;
-                c.substArgs   = &fi->targs;
-                runRefCheck(&c, rc, planInstName(fi));
-            }
-        }
+        if (replayInLambdaInstances(&c, tt, rc->func, replayRefRecord, rc)) continue;
         /* (2) Type instances, the original path: a method's `T` is fixed by the type
          * arguments of the struct that owns it. */
         if (!owner) continue;                    /* free function: handled by the loop above */

@@ -70,6 +70,7 @@ neg dyn-callable-nested    "$(src dyn_callable_nested.extc)" "a value that conta
 one generic-capture         "$(src generic_capture.extc)"        "17 8 46"
 neg generic-cap-missing     "$(src generic_capture_missing.extc)" "needs \`plain\` to define \`hash\`"
 neg generic-cap-dyn         "$(src generic_capture_dyn.extc)"     "depends on a type parameter"
+one generic-cap-shapes      "$(src generic_capture_shapes.extc)"   "9 14 23 19 34 19"
 neg closure-to-ptr         "$(src closure_to_ptr.extc)" "is a closure that captures state"
 
 # 跨模块：**模块文件**里的闭包，体内调用同模块函数（曾经静默返回 0，无诊断）
