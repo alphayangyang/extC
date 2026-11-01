@@ -2677,66 +2677,6 @@ static Stmt *parseMatch(Parser *p) {
 }
 
 /**
- * @brief Parse `borrow v as e { BODY }`, desugared into a shadowing block.
- *
- * The container `v` is replaced, for the extent of the block, by a read-only view of itself, and
- * `e` is a writable view of the same storage:
- *
- *     { let v: slice<T> = v.asSlice()   var e: mut slice<T> = v.asMutSlice()   BODY }
- *
- * Inside the block the name `v` therefore resolves to a view, so a resize such as `v.push(x)` is
- * an ordinary "no such method" error rather than a special rule, and `e` addresses storage that
- * nothing in the block can move. Element references into `e` are allowed on that basis.
- *
- * The name `borrow` stays a legal identifier: the soft keyword is recognised only in the exact
- * shape `borrow IDENT as IDENT {`.
- *
- * @param p  Parser.
- * @return   The block statement; `NULL` on error (the diagnostic has been reported).
- */
-static Stmt *parseBorrow(Parser *p) {
-    Token *kw = take(p);
-    Token *container = expectIdent(p, "the container to borrow from");
-    if (!container) return NULL;
-    if (!accept(p, "as")) {
-        ctxError(p->ctx, kw->line, kw->col, "A `borrow` block gives the view a name, so it needs an `as <name>` before the body.", "expected `as` here");
-        return NULL;
-    }
-    Token *alias = expectIdent(p, "a name for the borrowed view");
-    if (!alias) return NULL;
-    skipJunk(p);
-    Stmt *body = parseBlock(p);
-    if (!body) return NULL;
-
-    Stmt *outer = stmtNew(p->arena, ST_BLOCK, kw->line);
-    vecInit(&outer->u.block.stmts, p->arena, sizeof(void *));
-
-    /* `var e: mut slice<T> = v.asMutSlice()` -- the writable alias, built **before** the shadow so
-     * that `v` still names the container here. */
-    Stmt *view = stmtNew(p->arena, ST_VAR, kw->line);
-    view->u.var.name = alias->text;
-    view->u.var.ann = NULL;
-    view->u.var.init = exprMethodNew(p->arena, exprIdent(p->arena, container->text, alias->line), "asMutSlice", alias->line);
-    view->u.var.mut = true;
-    view->u.var.isGlobal = false;
-    view->u.var.stableView = true;
-    *(Stmt **)vecPush(&outer->u.block.stmts) = view;
-
-    /* `let v: slice<T> = v.asSlice()` -- the read-only shadow. */
-    Stmt *shadow = stmtNew(p->arena, ST_VAR, kw->line);
-    shadow->u.var.name = container->text;
-    shadow->u.var.ann = NULL;
-    shadow->u.var.init = exprMethodNew(p->arena, exprIdent(p->arena, container->text, container->line), "asSlice", container->line);
-    shadow->u.var.mut = false;
-    shadow->u.var.isGlobal = false;
-    *(Stmt **)vecPush(&outer->u.block.stmts) = shadow;
-
-    *(Stmt **)vecPush(&outer->u.block.stmts) = body;
-    return outer;
-}
-
-
-/**
  * @brief Parse one statement: a declaration, a control statement, a block, an assignment,
  *        or an expression statement.
  *
@@ -2746,10 +2686,6 @@ static Stmt *parseBorrow(Parser *p) {
 static Stmt *parseStmt(Parser *p) {
     Token *t = cur(p);
 
-    /* `borrow v as e { ... }`: a soft keyword, only in this exact shape. */
-    if (at(p, "borrow") && pk(p, 1)->kind == TK_IDENT && strcmp(pk(p, 2)->text, "as") == 0 &&
-        pk(p, 3)->kind == TK_IDENT && strcmp(pk(p, 4)->text, "{") == 0)
-        return parseBorrow(p);
 
     /* An annotation `@xxx` can only introduce a local declaration, and the only one that
      * exists is `@overwrite`. Function annotations such as `@main` are not implemented yet,

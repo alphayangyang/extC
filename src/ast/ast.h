@@ -840,11 +840,7 @@ struct Stmt {
                  /* `global var x: T` / `global let x: T = c`: the **storage** lives outside every
                   * frame (a C block-scope `static`), while the **name** stays in this block.
                   * Depth 0 ⇒ a view of it may cross a `yield`; */
-                 bool isGlobal;
-                 /* Set by the `borrow` desugaring on the writable view it introduces: the storage
-                  * belongs to the enclosing frame and nothing inside the block can move it, so an
-                  * element of this view may be referenced. */
-                 bool stableView; } var;
+                 bool isGlobal; } var;
         /* `op` is NULL for a plain `=` and the operator text (`"+="` ...) for a compound
          * assignment; `opExpr` is the `EX_BIN` the checker resolved for it, which codegen
          * needs when the operator is a user-defined method (`x += y` is then
