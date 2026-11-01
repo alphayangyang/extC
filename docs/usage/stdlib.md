@@ -123,6 +123,64 @@ fn main() -> i32 {
 ```
 实测：`vector n=3 cap=4 sum=6`。
 
+### 自己写一个板块底的容器
+
+`vector` 不是特例：任何一个标了 `@poolObject` 的结构体都**拥有一块自己的池**，于是也能拿到"原地长、乱序归还"的存储。写自己的可增长容器就是四件事 —— 拥有、要、长、守卫与归还：
+
+<!-- fragment -->
+```extc
+use std::sys::pool as syspool
+
+@poolObject
+struct grow<T> {
+    vals:   mut slice<T>
+    n:      i64
+    cap:    i64
+    pid:    i64        /* 池的下标 */
+    pidGen: u64        /* 建池时的世代号，用来认出陈旧拷贝 */
+
+    /* ① 拥有：建一块自己的池，记下它的世代号 */
+    fn withCap(c: i64) -> grow<T> {
+        let rp = syspool::extc_pool_new(-1)
+        let rpg = syspool::extc_pool_generation(rp)
+        var cc: i64 = c
+        if cc < 4 { cc = 4 }
+        return grow<T> { vals: poolSliceRaw<T>(rp, cc), n: 0, cap: cc, pid: rp, pidGen: rpg }
+    }
+
+    /* ② 长：容量不够时向同一个池原地加长，1.5 倍 */
+    fn push(self: mut ref grow<T>, v: T) {
+        if self.n == self.cap {
+            let ncap: i64 = self.cap + self.cap / 2
+            self.vals = poolResizeRaw<T>(self.pid, self.vals, ncap)
+            self.cap = ncap
+        }
+        self.vals[self.n] = v
+        self.n = self.n + 1
+    }
+
+    /* ③ 守卫：这一份还指着自己的池吗？（别名 + release 之后必须能判出来） */
+    fn stale(self: ref grow<T>) -> bool {
+        if self.pid < 0 { return false }
+        return syspool::extc_pool_generation(self.pid) != self.pidGen
+    }
+
+    /* ④ 归还：先收成 0 长度，再重置并丢弃池 */
+    fn release(self: mut ref grow<T>) {
+        if self.pid < 0 { return }
+        if self.stale() { self.pid = -1  return }
+        self.vals = poolResize<T>(self.pid, self.vals, 0)
+        self.cap = 0
+        syspool::extc_pool_reset(self.pid)
+        syspool::extc_pool_drop(self.pid)
+        self.pid = -1
+    }
+}
+```
+
+四步写全了，它就和内置容器一样是 O(活跃量)：手写的 800 万个 `i64` 实测峰值 **64 MB**，与 `vector` 相同。少任何一步的代价写在[内存模型](../../MEMORY-MODEL.md)里 —— 没有守卫是静默的悬垂写，不做原地长就退回"每轮新增一份、留到块退出"。
+
+
 ### `string` + `stringio`：连续字节串与流式读写
 
 `string` 是 **SSO 字节串**：内联 16 字节，写满第 17 个字节才升级到池

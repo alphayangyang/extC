@@ -101,6 +101,7 @@ rm -rf "$TMPC2"
 
 echo "== 用户自定义池底容器（写在入口文件里，不是库模块）：板块 + 池记录 + 提权 =="
 run_case custom  tests/stl/custom_pool.extc  "n=10 cap=13 v9=81 live=1 bytes=104"
+run_case custom-grow tests/stl/custom_pool_grow.extc "n=2000000 cap=2362204 bytes=18897632 first=0 last=1999999 live_after=0"
 
 echo "== varArray：唯一能装引用的容器（arena 底 ⇒ 元素地址永不移动/复用）=="
 # 视图是"快照"而不是悬垂：扩容不释放旧块 ⇒ 读到旧值；带出调用安全（三条事实一次钉住）
