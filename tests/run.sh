@@ -47,6 +47,17 @@ if [ -x tests/runtime-bugs/run.sh ]; then
     fi
 fi
 
+echo "== 元素引用：定长数组的元素是位置（读写、别名、传参、取时检查）=="
+if [ -x tests/elemrefs/run.sh ]; then
+    if out=$(tests/elemrefs/run.sh 2>&1); then
+        printf '%s\n' "$out" | grep -E "^  ok |^elemrefs: ok"
+        pass=$((pass + 1))
+    else
+        echo "$out"
+        bad "元素引用用例"
+    fi
+fi
+
 echo "== 警告：该响的响、正例语料上**零误报**、\`-w\` 能关 =="
 if [ -x tests/warnings/run.sh ]; then
     if out=$(tests/warnings/run.sh 2>&1); then

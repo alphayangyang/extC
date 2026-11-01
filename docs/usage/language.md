@@ -463,8 +463,18 @@ var g, h: i32               // 零初始化：两个都是 0
 | `mut ref T` | 可写借用 | 无 | `ref x`（x 必须是可写的） | 能 |
 | `?ref T` | 可能没有的借用 | `null` | `null` / `ref x` | 只有 `mut ?ref T` 能写 |
 
-- 取引用的表达式是 `ref x`，**只能**作用于变量、字段或 `*p`；索引和调用结果不行
-  （`ref a[1]` → `cannot take a reference to this expression`）。
+- 取引用的表达式是 `ref x`，作用于变量、字段、`*p`，以及**定长数组的元素**：
+  数组的存储就在帧里、永远不会搬家，所以引用不可能因为扩容失效；越界在**取引用那一刻**
+  trap，不在解引用时。视图的元素不行（`ref v[1]` → `cannot take a reference to an element
+  of a view`），因为视图背后的存储可能随容器扩容搬家；可增长容器的元素同理。
+  其他表达式（调用结果、算术结果）也不行。
+
+<!-- fragment -->
+```extc
+var a: [4]i64 = [1, 2, 3, 4]
+var w: mut ref i64 = ref a[2]
+*w = 30                     // 等价于 a[2] = 30
+```
 - `ref x` 的权限由 `x` 决定：`x` 是 `var` 得到 `mut ref T`，`x` 是 `let` 得到 `ref T`。
   拿只读引用的地方要可写的会报 `initializer expects 'mut ref i32', found 'ref i32'`。
 - 调用自由函数时引用实参要**写出来**：`addTo(ref c, 7)`；

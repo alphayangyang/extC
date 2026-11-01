@@ -1,0 +1,14 @@
+// A bounds check runs where the reference is taken, not where it is used.
+use std::io
+
+fn main() -> i32 {
+    var a: [4]i64 = [10, 20, 30, 40]
+    var i: i64 = 2
+    let p: ref i64 = ref a[i]
+    io::println(f"p={*p}")
+    i = 9
+    let q: ref i64 = ref a[i]
+    io::println(f"q={*q}")
+    return 0
+}
+// expect-trap: index 9 out of range (length 4)

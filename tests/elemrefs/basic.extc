@@ -1,0 +1,21 @@
+// Element references into fixed-size arrays: read, write, alias, pass to a function.
+// The storage is a frame array, so it never moves and the reference cannot outlive it.
+use std::io
+
+fn bump(r: mut ref i64) {
+    *r = *r + 1
+}
+
+fn main() -> i32 {
+    var a: [8]i64 = [1, 2, 3, 0, 0, 0, 0, 0]
+    let ro: ref i64 = ref a[2]
+    var rw: mut ref i64 = ref a[3]
+    *rw = 9
+    bump(ref a[5])
+    // Two mutable references to the same element are allowed; the element is the place.
+    var w2: mut ref i64 = ref a[3]
+    *w2 = *w2 + 1
+    io::println(f"ro={*ro} rw={*rw} a3={a[3]} a5={a[5]}")
+    return 0
+}
+// expect: ro=3 rw=10 a3=10 a5=1

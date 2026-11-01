@@ -1,0 +1,7 @@
+use std::io
+fn main() -> i32 {
+    var buf: mut slice<u8> = new u8[8]
+    let p: ref u8 = ref buf[0]
+    io::println(f"p={*p}")
+    return 0
+}

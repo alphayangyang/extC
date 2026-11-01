@@ -2549,8 +2549,19 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 return ot;
             }
             if (!isLvalue(op)) {
-                ckError(c, e->line, "only variables and fields can be referenced",
-                        "cannot take a reference to this expression");
+                /* An element of a view is a value, not a place: the storage behind the view
+                 * belongs to whichever container it came from, and growing that container may
+                 * move it. Saying so is more useful than repeating the general rule. */
+                if (op->kind == EX_INDEX)
+                    ckError(c, e->line,
+                            "an element of a view has no stable address -- the storage behind "
+                            "the view may be moved when its container grows",
+                            "cannot take a reference to an element of a view");
+                else
+                    ckError(c, e->line,
+                            "only variables, fields and fixed-size array elements can be "
+                            "referenced",
+                            "cannot take a reference to this expression");
                 return ttError(tt);
             }
             /* Which reference comes out depends on whether the place is writable:

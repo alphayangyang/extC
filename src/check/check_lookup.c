@@ -732,13 +732,27 @@ bool repeatablePure(Expr *e) {
 /**
  * @brief Tell whether the address of this expression can be taken.
  *
+ * A place is storage the compiler can name: a binding, a field, `*p`, or an element of a
+ * fixed-size array. An array lives in its frame and its storage never moves, so a reference
+ * into one stays valid for as long as the frame does -- which is exactly the lifetime the
+ * depth check already enforces for bindings.
+ *
+ * Elements of views and of the growable containers are deliberately absent. A view may name
+ * storage that a container moves when it grows, and the containers hand out values rather
+ * than addresses for that same reason.
+ *
  * @param e  Expression; NULL is not a place.
- * @return   True when the expression is a binding, a field, or `*p` (the place `p` points
- *           at).
+ * @return   True when the expression is a binding, a field, `*p`, or a fixed-size array
+ *           element.
  */
 bool isLvalue(Expr *e) {
     if (!e) return false;
-    return e->kind == EX_IDENT || e->kind == EX_FIELD || e->kind == EX_DEREF;
+    if (e->kind == EX_IDENT || e->kind == EX_FIELD || e->kind == EX_DEREF) return true;
+    if (e->kind == EX_INDEX) {
+        Expr *obj = e->u.index.obj;
+        return obj && obj->type && obj->type->kind == TY_ARRAY && isLvalue(obj);
+    }
+    return false;
 }
 
 /**

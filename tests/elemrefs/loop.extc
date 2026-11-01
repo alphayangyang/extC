@@ -1,0 +1,20 @@
+// Writing through element references inside a loop: the reference is re-taken each round and
+// the array stays in the frame.
+use std::io
+
+fn main() -> i32 {
+    var a: [16]i64 = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    var i: i64 = 0
+    while i < 16 {
+        var p: mut ref i64 = ref a[i]
+        *p = i * 2
+        i = i + 1
+    }
+    var sum: i64 = 0
+    for k in 0..16 {
+        sum = sum + a[k]
+    }
+    io::println(f"sum={sum}")
+    return 0
+}
+// expect: sum=240

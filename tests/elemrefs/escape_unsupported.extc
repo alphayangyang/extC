@@ -1,0 +1,11 @@
+// A reference into a frame array cannot be returned: the frame dies first. The depth check
+// that already guards bindings covers element references with no extra rule.
+fn pick() -> ref i64 {
+    var a: [4]i64 = [1, 2, 3, 4]
+    return ref a[0]
+}
+
+fn main() -> i32 {
+    let p: ref i64 = pick()
+    return i32(*p)
+}
