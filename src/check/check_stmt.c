@@ -3765,6 +3765,19 @@ void checkStmt(Checker *c, Stmt *s) {
              * for a reference, because a container may grow and move the plate behind a view.
              * A plain `let`/`var` of a view type keeps the flag false. */
             sym->borrowAlias = s->u.var.stableView;
+            /* A `borrow` window freezes the container by shadowing its **name**; a `mut ref` to
+             * the container taken before the window would still resize it through that other
+             * name and move the plate under an element reference. So a container that has been
+             * addressed may not be borrowed. */
+            if (s->u.var.stableView && s->u.var.init && s->u.var.init->kind == EX_METHOD &&
+                s->u.var.init->u.method.recv && s->u.var.init->u.method.recv->kind == EX_IDENT) {
+                Sym *container = lookup(c, s->u.var.init->u.method.recv->u.ident.name);
+                if (container && container->addressed)
+                    ckError(c, s->line,
+                            "An alias to this container can resize it through that other name, which would move the storage under the reference. Borrow the container directly instead of taking a `ref` to it.",
+                            "cannot borrow `%s`: it has been addressed",
+                            s->u.var.init->u.method.recv->u.ident.name);
+            }
             sym->frameStore = s->type && ttIsViewType(s->type) &&
                               exprIsFrameStorage(c, s->u.var.init);
             noteAcyclicNestedLocal(c, s);   /* criterion (iv): reference-typed local in a nested block */

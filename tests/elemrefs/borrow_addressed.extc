@@ -1,0 +1,15 @@
+// A `borrow` window freezes the container by shadowing its name; a `mut ref` to the container
+// taken before the window would resize it through that other name and move the plate under an
+// element reference. So a container that has been addressed may not be borrowed.
+use std::io
+
+fn main() -> i32 {
+    var v: varArray<i64> = varArray<i64>::withCap(4)
+    v.push(7)
+    var back: mut ref varArray<i64> = ref v
+    borrow v as e {
+        back.push(8)
+        io::println(f"e0={e[0]}")
+    }
+    return 0
+}
