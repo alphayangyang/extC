@@ -1241,6 +1241,15 @@ static Type *checkExprInner(Checker *c, Expr *e);   /* the struct-literal path i
 static Type *checkLambda(Checker *c, Expr *e) {
     TypeTable *tt = c->tt;
 
+    /* A lambda at a call site is checked twice: once while the argument list is being checked and
+     * once more when the callee's signature (possibly instantiated) is applied to it. The
+     * environment's type is created by the first check, so the second one has to return that same
+     * type -- a fresh `$lam$` environment would be a structurally identical but *different* type, and
+     * an argument that is a bare lambda would then compare unequal to the parameter it was inferred
+     * from. Memoising is only valid outside a generic body: inside one, the second instance of a
+     * template has different type arguments, so its lambdas really are different types. */
+    if (!c->substParams && e->type && e->u.lambda.sdef && !ttIsError(e->type)) return e->type;
+
     if (c->lamDepth > 0) {
         ckError(c, e->line,
                 "A lambda inside a lambda would have to lay its environment out inside the outer"

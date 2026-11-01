@@ -64,6 +64,7 @@ neg dyn-callable-ref       "$(src dyn_callable_ref.extc)"  "this closure capture
 neg dyn-callable-view      "$(src dyn_callable_view.extc)" "this closure captures a reference"
 one dyn-callable-safety    "$(src dyn_callable_safety.extc)" "12 1 3"
 one generic-thunk          "$(src generic_thunk.extc)"      "3 4 4 20"
+one fn-ptr-generic-arg     "$(src fn_ptr_generic_arg.extc)" "1 100 42"
 neg dyn-callable-dyncap    "$(src dyn_callable_dyncap.extc)" "this closure captures a dynamically dispatched value"
 neg dyn-callable-nested    "$(src dyn_callable_nested.extc)" "a value that contains a reference"
 

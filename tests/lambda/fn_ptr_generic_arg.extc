@@ -1,0 +1,15 @@
+// 直接把 lambda **字面量**当泛型实参：类型参数从实参推断时，非捕获字面量由第一层转成裸指针，
+// 捕获字面量保持闭包环境类型，两种都必须能推断出来（同一个 `apply<F>` 的两次独立实例化）。
+// 期望输出：1 100 42
+use std::io
+
+fn apply<F>(f: F, v: i64) -> i64 { return f(v) }
+
+fn main() -> i32 {
+    var k: i64 = 100
+    let a: i64 = apply(fn(x: i64) -> i64 { return x + 1 }, 0)
+    let b: i64 = apply(fn(x: i64) -> i64 { return x + k }, 0)
+    let c: i64 = apply(fn(x: i64) -> i64 { return x * 2 }, 21)
+    io::cout << a << " " << b << " " << c << "\n"
+    return 0
+}
