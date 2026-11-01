@@ -52,7 +52,7 @@ because the ingest is syscalls, not language.
 | conventional | `etl` | one pass, a state machine, an aggregate table. No allocation past the input buffer. |
 | reclamation | `sessions` | a message object per record plus a session table with a 300 s TTL; about three quarters of the users seen expire inside the window. |
 | parallel | `parmix` | 64 rounds of a mixing function per record, folded into one checksum; 1, 8, and 24 threads. |
-| concurrency | `serve` | a coroutine (extC), goroutine (Go), thread (Rust), or epoll state machine (C++) per connection, 64 connections x 8 in flight, 200,000 requests, every reply checked by the client. |
+| concurrency | `serve` | a coroutine per connection (extC) or a goroutine per connection (Go), or a single-threaded epoll state machine (C++, Rust), 64 connections x 8 in flight, 200,000 requests, every reply checked by the client. |
 
 ## How the reclamation axis is meant to be read
 
@@ -74,16 +74,21 @@ best". No language was given a strategy it would not write by itself.
 Medians of five repetitions on one 24-core WSL2 host, all arms printing the same
 checksums (`RESULTS.md` has the tables; ratios are to C++):
 
-- **conventional**: `etl` extC 65.0 ms vs C++ 68.0 ms (0.96x), Go 90.7 (1.33x),
+- **conventional**: `etl` extC 67.2 ms vs C++ 70.1 ms (0.96x), Go 92.0 (1.31x),
   Rust 73.5 (1.08x).
 - **reclamation**: `sessions` extC 62.2 ms vs C++ 107.3 ms (0.58x), Go 138.4
   (1.29x), Rust 168.8 (1.57x) -- and peak RSS is 76 MB against 85-86 MB. The
   gap is the axis, not a trick: the other three create and destroy an object per
   record, extC moves an arena pointer and reclaims the frame as a block.
-- **parallel**: extC 337.9 / 91.5 / 70.9 ms at 1 / 8 / 24 threads (3.7x and
+- **parallel**: extC 344.4 / 94.5 / 74.3 ms at 1 / 8 / 24 threads (3.6x and
   4.8x self-speedup), within 10-13% of C++ at each width.
 - **concurrency**: 200,000 requests over 64 connections, every reply verified,
-  `bad=0` for all four arms: extC 430k req/s, C++ 595k, Go 578k, Rust 565k.
+  `bad=0` for all four arms: extC 559k req/s, C++ 558k, Go 558k, Rust 568k (the four
+  are within run-to-run noise of each other on this host: extC and C++ sit on the same
+  number, Rust is 2% ahead). The
+  first run of this arm was 430k: it called `send` once per reply, and the arm
+  now flushes one write per read burst like the other three (the profiled
+  difference, and the syscall counts behind it, are in the changelog entry).
 
 ## Caveats
 

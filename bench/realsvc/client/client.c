@@ -179,11 +179,19 @@ int main(int argc, char **argv) {
     long long remainingConns = conns;
     int closed = 0;
     double t0 = -1, t1 = -1;
+    double startMs = nowMs();
     while (remainingConns > 0) {
         int n = epoll_wait(ep, events, 256, 1000);
         if (n < 0) {
             if (errno == EINTR) continue;
             break;
+        }
+        /* A server that never accepted (port already in use, crashed on startup)
+         * would otherwise leave this loop waiting forever; fail loudly instead. */
+        if (nowMs() - startMs > 30000.0) {
+            fprintf(stderr, "client: timed out after %.0f ms with %lld connection(s) still open\n",
+                    nowMs() - startMs, remainingConns);
+            return 3;
         }
         for (int i = 0; i < n; i++) {
             uint32_t idx = events[i].data.u32;

@@ -38,7 +38,6 @@ let FNV_PRIME: u64 = 1099511628211
  * A global `let` may only hold a constant, and that subtraction is not folded into
  * one, so the basis is a function. */
 var gStatus: [9]i32
-var gOut: [64]u8
 var gSiteCnt: [16]i64
 var gSiteLat: [16]i64
 var gSiteMax: [16]i64
@@ -419,9 +418,9 @@ fn putI64(out: mut slice<u8>, at: i64, v0: i64) -> i64 {
     return at
 }
 
-/* Build "count sumLat maxLat sumBytes\n" and return its length. */
-fn putReply(out: mut slice<u8>, site: i64) -> i64 {
-    var at: i64 = 0
+/* Append "count sumLat maxLat sumBytes\n" at `at` and return the new length. */
+fn putReply(out: mut slice<u8>, at0: i64, site: i64) -> i64 {
+    var at: i64 = at0
     at = putI64(out, at, gSiteCnt[site])
     out[at] = u8(32)
     at = at + 1
@@ -460,26 +459,36 @@ fn sendAll(fd: i64, buf: slice<u8>, n: i64) {
 }
 
 /* One coroutine per connection: read whatever arrived, answer every complete request
- * line, yield until the socket is readable again. Views of `buf` are created and
- * dropped inside one run of the loop, never across the `yield`. */
+ * line, yield until the socket is readable again. Replies are written into `rep` and
+ * flushed once per read burst (and whenever `rep` is nearly full), which keeps one
+ * `send` per burst instead of one per reply; the flush happens before the `yield`, so
+ * a request that arrives alone is still answered without waiting for the next one.
+ * Views of `buf` and `rep` are created and dropped inside one run of the loop, never
+ * across the `yield`. */
 fn conn(fd: i64) -> coroutine<i64> {
     var buf: mut slice<u8> = new u8[65536]
+    var rep: mut slice<u8> = new u8[4096]
     var have: i64 = 0
     while true {
         var start: i64 = 0
-        var answer: bool = false
+        var rn: i64 = 0
         while true {
             let nl: i64 = findNl(buf[..have], start)
             if nl < 0 { break }
-            answer = true
+            if rn + 40 > rep.len {
+                sendAll(fd, rep[..rn], rn)
+                rn = 0
+            }
             if gFirstNs == 0 { gFirstNs = time::now() }
             let site: i64 = parseSite(buf[..nl])
-            let n: i64 = putReply(gOut[..], site)
-            sendAll(fd, gOut[..n], n)
+            rn = putReply(rep[..], rn, site)
             gServed = gServed + 1
             start = nl + 1
         }
-        if answer {
+        if rn > 0 {
+            sendAll(fd, rep[..rn], rn)
+        }
+        if start > 0 {
             var rest: i64 = have - start
             var k: i64 = 0
             while k < rest {
@@ -553,6 +562,7 @@ fn modeServe(path: slice<u8>, port: i64, want: i64) -> i32 {
     if !sched::init(ref sp, srv) { return 2 }
     var tasks: sched::tasks<i64> = { rows: sched::newRows(), runq: sched::newQ(), rqHead: 0, freeq: sched::newQ(), acceptq: sched::newQ() }
     io::cout << "serve_ready\n"
+    io::flushCout()
     while gServed < want {
         let fd: i64 = tasks.pump(ref sp, 50)
         if fd >= 0 {

@@ -134,6 +134,12 @@ serve n=<bytes> read_ms=<m> req=<n> secs=<ms> cs=<cs>
 `cs` folds every reply's four fields in arrival order (equivalently: fold the
 16 site rows once, `site, count, sumLat, maxLat, sumBytes`).
 
+The server controls its own write policy, because that policy is part of what
+the axis measures: an arm may buffer replies for a connection and flush them
+with one `send` per read burst, as long as replies keep their order and a
+request that arrives alone is answered without waiting for the next one. The
+flush must therefore happen before the arm waits for more input, not on a timer.
+
 ## 6. Workload D — `parmix` (parallel compute)
 
 A parallel scoring pass over the same records: parse in place, then apply a

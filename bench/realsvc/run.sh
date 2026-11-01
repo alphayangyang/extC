@@ -144,36 +144,50 @@ run_case() {
 # The serve workload is a server process plus the shared client: the number that
 # compares across languages is the client's completion time for a fixed request
 # count and the throughput it reports.
-run_serve() {
-  local lang=$1
+serve_once() {
+  local lang=$1 rep=$2
   local bin; bin=$(bin_of "$lang")
   if [ ! -x "$bin" ]; then say "-- $lang/serve: $bin not built"; return 0; fi
-  local rep i line secs reqps bad srvline srvcs
-  for rep in $(seq 1 "$reps"); do
-    port=$((port + 1))
-    taskset -c "$core" "$bin" serve "$data" "$port" "$reqs" > "out/$lang-serve.server.log" 2>&1 &
-    local srv=$!
-    for i in $(seq 1 100); do
-      grep -q serve_ready "out/$lang-serve.server.log" 2>/dev/null && break
-      sleep 0.1
-    done
-    taskset -c "$((core + 1))-$((core + 3))" ./build/client "$data" "$port" "$reqs" "$conns" "$depth" \
-      > "out/$lang-serve.client.log" 2>&1 || true
+  local line secs reqps bad srvline srvcs i
+  port=$((port + 1))
+  taskset -c "$core" "$bin" serve "$data" "$port" "$reqs" > "out/$lang-serve.server.log" 2>&1 &
+  local srv=$!
+  for i in $(seq 1 100); do
+    grep -q serve_ready "out/$lang-serve.server.log" 2>/dev/null && break
+    kill -0 "$srv" 2>/dev/null || break
+    sleep 0.1
+  done
+  if ! grep -q serve_ready "out/$lang-serve.server.log" 2>/dev/null; then
+    say "-- $lang/serve/$rep: server did not come up ($(tail -1 "out/$lang-serve.server.log" 2>/dev/null))"
     kill "$srv" 2>/dev/null || true
     wait "$srv" 2>/dev/null || true
-    line=$(cat "out/$lang-serve.client.log")
-    secs=$(printf '%s\n' "$line" | grep -o ' ms=[0-9.]*' | head -1 | cut -d= -f2)
-    reqps=$(printf '%s\n' "$line" | grep -o 'reqps=[0-9.]*' | head -1 | cut -d= -f2)
-    bad=$(printf '%s\n' "$line" | grep -o 'bad=[0-9]*' | head -1 | cut -d= -f2)
-    srvline=$(grep '^serve ' "out/$lang-serve.server.log" || true)
-    srvcs=$(printf '%s\n' "$srvline" | grep -oE '(^| )cs=[0-9]+' | head -1 | grep -oE '[0-9]+')
-    [ -n "$secs" ] || { say "-- $lang/serve: no client line"; continue; }
-    printf 'serve\t%s\t%s\t%s\tbad=%s\treqps=%s\tserver_cs=%s\n' \
-      "$lang" "$rep" "$secs" "$bad" "$reqps" "$srvcs" >> "out/serve-$lang.tsv"
-    cp "out/$lang-serve.client.log" "out/$lang-serve-$rep.client.log"
-    cp "out/$lang-serve.server.log" "out/$lang-serve-$rep.server.log"
+    return 0
+  fi
+  taskset -c "$((core + 1))-$((core + 3))" ./build/client "$data" "$port" "$reqs" "$conns" "$depth" \
+    > "out/$lang-serve.client.log" 2>&1 || true
+  kill "$srv" 2>/dev/null || true
+  wait "$srv" 2>/dev/null || true
+  line=$(cat "out/$lang-serve.client.log")
+  secs=$(printf '%s\n' "$line" | grep -o ' ms=[0-9.]*' | head -1 | cut -d= -f2)
+  reqps=$(printf '%s\n' "$line" | grep -o 'reqps=[0-9.]*' | head -1 | cut -d= -f2)
+  bad=$(printf '%s\n' "$line" | grep -o 'bad=[0-9]*' | head -1 | cut -d= -f2)
+  srvline=$(grep '^serve ' "out/$lang-serve.server.log" || true)
+  srvcs=$(printf '%s\n' "$srvline" | grep -oE '(^| )cs=[0-9]+' | head -1 | grep -oE '[0-9]+')
+  [ -n "$secs" ] || { say "-- $lang/serve: no client line"; return 0; }
+  printf 'serve\t%s\t%s\t%s\tbad=%s\treqps=%s\tserver_cs=%s\n' \
+    "$lang" "$rep" "$secs" "$bad" "$reqps" "$srvcs" >> "out/serve-$lang.tsv"
+  cp "out/$lang-serve.client.log" "out/$lang-serve-$rep.client.log"
+  cp "out/$lang-serve.server.log" "out/$lang-serve-$rep.server.log"
+  say "-- $lang/serve/$rep: reqps=$reqps bad=$bad"
+}
+
+# The serve arms are interleaved (one repetition of every arm, then the next
+# repetition) so that machine drift over the run does not bias one arm's median.
+run_serve_all() {
+  local rep l
+  for rep in $(seq 1 "$reps"); do
+    for l in $langs; do serve_once "$l" "$rep"; done
   done
-  say "-- $lang/serve: $(tr '\n' ' ' < "out/serve-$lang.tsv")"
 }
 
 rm -f RESULTS.tsv out/serve-*.tsv
@@ -192,7 +206,7 @@ for w in $workloads; do
         for l in $langs; do run_case "$l" parmix "$t" "parmix/$t" "0-$((t - 1))"; done
       done ;;
     serve)
-      for l in $langs; do run_serve "$l"; done ;;
+      run_serve_all ;;
   esac
 done
 

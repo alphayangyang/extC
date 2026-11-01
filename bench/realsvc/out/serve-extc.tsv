@@ -1,5 +1,11 @@
-serve	extc	1	413.8	bad=0	reqps=483272	server_cs=620352923810747373
-serve	extc	2	449.1	bad=0	reqps=445364	server_cs=620352923810747373
-serve	extc	3	519.1	bad=0	reqps=385247	server_cs=620352923810747373
-serve	extc	4	464.6	bad=0	reqps=430454	server_cs=620352923810747373
-serve	extc	5	487.4	bad=0	reqps=410371	server_cs=620352923810747373
+serve	extc	1	356.3	bad=0	reqps=561273	server_cs=620352923810747373
+serve	extc	2	372.4	bad=0	reqps=537021	server_cs=620352923810747373
+serve	extc	3	307.5	bad=0	reqps=650336	server_cs=620352923810747373
+serve	extc	4	341.2	bad=0	reqps=586105	server_cs=620352923810747373
+serve	extc	5	355.3	bad=0	reqps=562880	server_cs=620352923810747373
+serve	extc	6	310.1	bad=0	reqps=644858	server_cs=620352923810747373
+serve	extc	7	389.0	bad=0	reqps=514153	server_cs=620352923810747373
+serve	extc	8	365.3	bad=0	reqps=547530	server_cs=620352923810747373
+serve	extc	9	357.7	bad=0	reqps=559202	server_cs=620352923810747373
+serve	extc	10	437.5	bad=0	reqps=457180	server_cs=620352923810747373
+serve	extc	11	374.2	bad=0	reqps=534478	server_cs=620352923810747373
