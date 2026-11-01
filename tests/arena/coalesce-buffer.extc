@@ -1,0 +1,45 @@
+// A buffer that is stored through `??`, an option, or a struct literal each round must not be
+// kept for the whole function: the storage of the call is released with the block that stores it.
+//
+// Before the fix every one of the three rounds below leaked one 1 MiB arena block, because the
+// call was handed the function's home arena instead of the block arena. At 1024 rounds that is
+// three gigabytes, which the virtual memory cap in `run.sh` turns into `out of arena memory`.
+use std::io
+
+struct buf {
+    data: mut slice<u8>
+    n: i64
+}
+
+struct wrap {
+    p: buf
+}
+
+fn mk(n: i64) -> buf {
+    var b: buf = { data: new u8[n], n: n }
+    return b
+}
+
+fn mkopt(n: i64) -> ?buf {
+    return some(mk(n))
+}
+
+fn main() -> i32 {
+    let one: i64 = 1024 * 1024
+    var keep: i64 = 0
+    var i: i64 = 0
+    while i < 1024 {
+        var a: buf = mkopt(one) ?? mk(0)
+        keep = keep + a.n
+        var o: ?buf = some(mk(one))
+        if let some(q) = o {
+            keep = keep + q.n
+        }
+        var w: wrap = { p: mk(one) }
+        keep = keep + w.p.n
+        i = i + 1
+    }
+    // 1024 rounds, three buffers of 1 MiB each.
+    io::println(f"keep={keep}")
+    return 0
+}

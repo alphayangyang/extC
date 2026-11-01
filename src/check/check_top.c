@@ -1553,10 +1553,70 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
  */
 void markCallHomeIfEscaping(Checker *c, Expr *v, int at) {
     if (!v) return;
-    if ((v->kind != EX_CALL && v->kind != EX_METHOD) || !planCallee(v)) return;
-    if (!anNeedsHome(planCallee(v))) return;
-    anSetHomeDepth(v, (at < (int)c->scopes.len) ? -1 : (int)c->scopes.len);
-    setCallArenaArg(c, v);          /* always keep `homeDepth` and `arenaArg` in step */
+    /* The destination depth of a value reaches the call that builds it through every wrapper that
+     * hands the value on unchanged: `a ?? b` stores whichever side it takes, `x?` stores `x`'s value,
+     * `T(x)` is `x`, and a literal stores its parts in the value it becomes. Walking them matters
+     * inside a loop -- `buf b = make() ?? dflt` otherwise keeps one allocation per round, because the
+     * call is handed the function's home arena, which is only released when the function returns. */
+    switch (v->kind) {
+    case EX_COALESCE:
+        markCallHomeIfEscaping(c, v->u.coalesce.main, at);
+        markCallHomeIfEscaping(c, v->u.coalesce.fallback, at);
+        return;
+    case EX_TRY:
+        markCallHomeIfEscaping(c, v->u.try_.operand, at);
+        return;
+    case EX_CONV:
+        markCallHomeIfEscaping(c, v->u.conv.operand, at);
+        return;
+    case EX_STRUCTLIT:
+        for (size_t i = 0; i < v->u.lit.inits.len; i++)
+            markCallHomeIfEscaping(c, (*(FieldInit **)vecAt(&v->u.lit.inits, i))->value, at);
+        return;
+    case EX_ENUMVAL:
+        for (size_t i = 0; i < v->u.enumval.args.len; i++)
+            markCallHomeIfEscaping(c, *(Expr **)vecAt(&v->u.enumval.args, i), at);
+        return;
+    case EX_ARRAYLIT:
+        for (size_t i = 0; i < v->u.arraylit.elems.len; i++)
+            markCallHomeIfEscaping(c, *(Expr **)vecAt(&v->u.arraylit.elems, i), at);
+        return;
+    default:
+        break;
+    }
+    if ((v->kind != EX_CALL && v->kind != EX_METHOD && v->kind != EX_ASSOC) || !planCallee(v)) return;
+
+    /* -1: the value is handed out, so the call must use the caller's home arena.
+     * `scopes.len`: the value is stored in the block being checked. */
+    const int depth = (at < (int)c->scopes.len) ? -1 : (int)c->scopes.len;
+
+    /* Only a plain call and a method call answer `needsHome` this early. An associated function
+     * (`vec<u8>::withCap(4)`) waits for the final settlement: `needsHome` is a whole-program answer
+     * that can already read "yes" while the body is being checked, and answering "block" here would
+     * release the callee's blocks at block exit while the body still hands the value out through a
+     * later `return` -- the returned storage would dangle. */
+    if ((v->kind == EX_CALL || v->kind == EX_METHOD) && anNeedsHome(planCallee(v))) {
+        anSetHomeDepth(v, depth);
+        setCallArenaArg(c, v);      /* keep `homeDepth` and `arenaArg` in step */
+        return;
+    }
+    if (depth == -1) {
+        /* Handed out after all: a site recorded for a block has to go back to the home arena. */
+        if (anHomeDepth(v) >= 2) anSetHomeDepth(v, -1);
+        return;
+    }
+    /* Nothing to gain at body level: a value stored there lives as long as the home arena, and home
+     * is the safe answer for a value a later statement hands out. A deeper block is released when it
+     * exits -- which is the case worth fixing, since a loop body is exactly such a block. */
+    if (depth < 2) return;
+    const int cur = anHomeDepth(v);
+    if (cur == 0 || depth < cur) anSetHomeDepth(v, depth);   /* lower only: never shorten a life */
+    /* Stay pending: the final settlement asks the closed question `usesHome` and also sees an escape
+     * (`anHomeDepth == -1`) recorded after this point, which `setCallArenaArg` would have frozen. */
+    if (!v->arenaArgPending) {
+        v->arenaArgPending = true;
+        *(Expr **)vecPush(&c->curArenaSites) = v;
+    }
 }
 
 /**
@@ -9072,8 +9132,15 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         Vec as_ = anArenaSites(f);
         for (size_t j = 0; j < as_.len; j++) {
             Expr *site = *(Expr **)vecAt(&as_, j);
-            if (!site->arenaArgPending || !planCallee(site) || !planUsesHome(planCallee(site))) continue;
-            planSetArenaArg(site, ARENA_HOME);
+            /* A recorded destination decides on its own (`markCallHomeIfEscaping`); otherwise the
+             * callee has to take a home parameter for the site to matter at all. */
+            if (!site->arenaArgPending || !planCallee(site)) continue;
+            if (anHomeDepth(site) == 0 && !planUsesHome(planCallee(site))) continue;
+            /* Hand the block the result is stored in when `markCallHomeIfEscaping` recorded one: the
+             * value only has to live as long as its destination, and the home arena would keep every
+             * round of a loop alive (`buf b = make() ?? dflt` inside a loop leaked one per round).
+             * A site that escaped afterwards carries `-1` and goes home. */
+            planSetArenaArg(site, anHomeDepth(site) >= 2 ? anHomeDepth(site) : ARENA_HOME);
             site->arenaArgPending = false;
         }
     }
