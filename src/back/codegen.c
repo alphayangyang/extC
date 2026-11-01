@@ -7136,7 +7136,11 @@ static bool hoistForbiddenStmt(const Stmt *s) {
 }
 
 /** @brief Does `e` contain a forbidden construct (only the node kinds that can appear in a pure
- *         expression are examined; anything else is forbidden)? */
+ *         expression are examined; anything else is forbidden)?
+ *
+ * A conversion is pure: it turns one value into another and cannot trap, call, or be skipped, so
+ * the scan looks through it. Without that, `i64(v[i])` -- the shape nearly every byte loop has --
+ * would read as a side effect and no loop containing one would ever hoist its bounds test. */
 static bool hoistForbiddenExpr(const Expr *e) {
     if (!e) return false;
     switch (e->kind) {
@@ -7150,6 +7154,7 @@ static bool hoistForbiddenExpr(const Expr *e) {
     case EX_UN:
         if (planCallee(e) || planNeedOp(e)) return true;
         return hoistForbiddenExpr(e->u.un.operand);
+    case EX_CONV: return hoistForbiddenExpr(e->u.conv.operand);
     case EX_FIELD: return hoistForbiddenExpr(e->u.field.obj);
     case EX_INDEX: return hoistForbiddenExpr(e->u.index.obj) || hoistForbiddenExpr(e->u.index.index);
     case EX_DEREF: return hoistForbiddenExpr(e->u.deref.operand);
@@ -7199,6 +7204,9 @@ static void hoistSitesStmt(CG *g, Stmt *s, Vec *sites) {
         hoistSitesExpr(s->u.assign.value, sites);
         return;
     case ST_EXPR: hoistSitesExpr(s->u.expr.expr, sites); return;
+    /* An `if` condition is evaluated every round, so its subscripts are covered too; the two
+     * branches are not (a subscript there runs only on the rounds the branch is taken). */
+    case ST_IF: hoistSitesExpr(s->u.ifs.cond, sites); return;
     default: return;
     }
 }

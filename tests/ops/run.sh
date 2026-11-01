@@ -107,6 +107,23 @@ else
     echo "  FAIL 生成 C 失败"; fail=1
 fi
 
+echo "== 区间循环的下标检查前移：形态判据 =="
+# 判据：字节循环里的 `v[i]` 必须在**循环入口**一次性判范围，而不是每元素一次。
+# 两种最容易漏掉的形态都在 hoist_forms.extc 里：带类型转换的 `i64(v[i])`、`if v[i] == …`。
+if "$EXTC" -w --no-line-map -o build/ops-hoist.c tests/ops/hoist_forms.extc >/dev/null 2>&1; then
+    bad=0
+    n=$(grep -c '__extc_rk' build/ops-hoist.c)
+    [ "$n" -ge 3 ] || { echo "  FAIL 生成的 C 里只有 $n 处 __extc_rk（三个循环各要一次入口检查）⇒ 前移没发生"; fail=1; bad=1; }
+    # 只看三个被检查的函数体（`main` 里是 `while` 循环，不在前移的范围内）
+    if sed -n '/^static int64_t sumConv(/,/^int main(void)/p' build/ops-hoist.c | grep -qE 'slice_u8_index\(v'; then
+        echo "  FAIL 生成的 C 里仍有按元素的 slice_u8_index ⇒ 前移没覆盖这种形态"; fail=1; bad=1
+    fi
+    [ "$bad" = 0 ] && echo "  ok   下标前移  ->  3 个循环各一次入口范围检查，字节循环里没有 slice_u8_index ✓"
+else
+    echo "  FAIL 生成 C 失败（hoist_forms）"; fail=1
+fi
+run_case hoist_forms
+
 echo "== 反例（都必须编译期挡住）=="
 check_err tests/ops/errors/order_missing.extc          'does not define `<`'
 check_err tests/ops/errors/arith_missing.extc          'does not define `+`'

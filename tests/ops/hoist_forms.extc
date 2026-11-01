@@ -1,0 +1,49 @@
+/* tests/ops/hoist_forms.extc —— 区间循环的下标检查前移：形态判据
+ *
+ * 判据（`tests/ops/run.sh` 的「下标检查前移」一节）：
+ *   ① 带类型转换的循环体 `s = s + i64(v[i])` 必须能前移（转换是纯的，不是副作用）
+ *   ② `if v[i] == u8(9)` 里的下标也算覆盖范围（条件每轮必求值）
+ *   ③ 前移后字节循环里没有按元素的 `slice_u8_index`，只有循环入口一次范围检查
+ *   ④ 语义不变：trap 仍按第一个越界元素报（`tests/io/hoist-order.extc` 守这条）
+ */
+// expect: a=59 b=2 c=118
+use std::io
+
+fn sumConv(v: slice<u8>) -> i64 {
+    var s: i64 = 0
+    for i in 0..v.len {
+        s = s + i64(v[i])
+    }
+    return s
+}
+
+fn countNine(v: slice<u8>) -> i64 {
+    var c: i64 = 0
+    for i in 0..v.len {
+        if v[i] == u8(9) { c = c + 1 }
+    }
+    return c
+}
+
+fn sumScaled(v: slice<u8>) -> i64 {
+    var s: i64 = 0
+    for i in 0..v.len {
+        s = s + i64(v[i]) * 2
+    }
+    return s
+}
+
+fn main() -> i32 {
+    var v: mut slice<u8> = new u8[10]
+    var k: i64 = 0
+    while k < 10 {
+        v[k] = u8(k + 1)
+        k = k + 1
+    }
+    v[4] = u8(9)
+    let a: i64 = sumConv(v[..])
+    let b: i64 = countNine(v[..])
+    let c: i64 = sumScaled(v[..])
+    io::cout << f"a={a} b={b} c={c}\n"
+    return 0
+}
