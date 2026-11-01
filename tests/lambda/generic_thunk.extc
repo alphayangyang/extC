@@ -1,6 +1,6 @@
 // 同一程序里两条可调用值的路并存：捕获闭包走 `dyn`（编译器补 impl），非捕获 lambda 走裸
 // `fn(...)` 指针；再用泛型参数 `apply<F>` 把两者都实例化一次（闭包走合成方法，指针走间接调用）。
-// 期望输出：3 4 4 20
+// 期望输出：3 4 4 20 6 11 9
 use std::io
 
 trait IntFn { fn call(self: ref Self, a: i64) -> i64 }
@@ -9,11 +9,28 @@ fn apply<F>(f: F, v: i64) -> i64 { return f(v) }
 
 fn twice(f: fn(i64) -> i64, v: i64) -> i64 { return f(f(v)) }
 
+/// A thunk has to be emitted for every lambda that becomes a pointer, including one that is only
+/// reachable through a `return` inside a branch: the reachability walk starts at the function body.
+fn maker() -> fn(i64) -> i64 { return fn(x: i64) -> i64 { return x + 1 } }
+
+fn pick(which: bool) -> fn(i64) -> i64 {
+    if which { return fn(x: i64) -> i64 { return x + 1 } }
+    return fn(x: i64) -> i64 { return x - 1 }
+}
+
 fn main() -> i32 {
     var k: i64 = 3
     let cl = fn(x: i64) -> i64 { return x + k }
     var d: dyn IntFn = dyn IntFn(cl)
     let ptr: fn(i64) -> i64 = fn(x: i64) -> i64 { return x * 2 }
-    io::cout << apply(cl, 0) << " " << apply(ptr, 2) << " " << d.call(1) << " " << twice(ptr, 5) << "\n"
+    let viaRet: fn(i64) -> i64 = maker()
+    let t1: i64 = apply(cl, 0)
+    let t2: i64 = apply(ptr, 2)
+    let t3: i64 = d.call(1)
+    let t4: i64 = twice(ptr, 5)
+    let t5: i64 = viaRet(5)
+    let t6: i64 = pick(true)(10)
+    let t7: i64 = pick(false)(10)
+    io::cout << t1 << " " << t2 << " " << t3 << " " << t4 << " " << t5 << " " << t6 << " " << t7 << "\n"
     return 0
 }
