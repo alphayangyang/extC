@@ -1,0 +1,23 @@
+// A block of values stored in a long-lived variable must not be kept for the whole function
+// either: `new T[n]` is an object of the reclamation region like a single `new T`, so the
+// collector reaches it through the view's data word, which the root table registers.
+//
+// Without that, every round leaves one 1 MiB arena block behind: 512 rounds are half a gigabyte,
+// which the virtual memory cap in `run.sh` turns into `out of arena memory`. The block itself is
+// still bounded by the collection floor, so a constant peak is what this case checks.
+use std::io
+
+fn main() -> i32 {
+    let one: i64 = 1024 * 1024
+    var keep: i64 = 0
+    var i: i64 = 0
+    var slot: mut slice<u8> = new u8[one]
+    while i < 512 {
+        slot = new u8[one]
+        slot[0] = u8(1)
+        keep = keep + i64(slot[0])
+        i = i + 1
+    }
+    io::println(f"keep={keep}")
+    return 0
+}

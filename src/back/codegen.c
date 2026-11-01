@@ -4125,7 +4125,15 @@ static void rcRootLeaves(CG *g, Type *t, const char *base, int depth) {
         }
         return;
     case TY_GENERIC:
-        if (isView(t) || !t->sdef) return;
+        /* A view's `data` word points at the block that holds its elements. For `new T[n]` on the
+         * reclaiming path that block is an rc slot, and this root is what keeps it alive; a pointer
+         * into an arena, a plate or the stack fails `extc_rc_owns` in the marker, so a view whose
+         * storage is not rc contributes nothing. */
+        if (isView(t)) {
+            *(const char **)vecPush(&g->rcRoots) = arenaPrintf(g->arena, "%s.data", base);
+            return;
+        }
+        if (!t->sdef) return;
         SubCtx sv = substEnter(g, t);
         for (size_t i = 0; i < t->sdef->fields.len; i++) {
             FieldDef *fd = *(FieldDef **)vecAt(&t->sdef->fields, i);
@@ -4268,7 +4276,13 @@ static bool rcEnumRootable(CG *g, Type *t, int depth, bool *hasRefs) {
         }
         return true;
     case TY_GENERIC: {
-        if (isView(t)) return true;
+        /* A view is a root word in its own right: its `data` pointer may be the only edge to a
+         * `new T[n]` block, so the storage that holds the view must be registered even though the
+         * view has no reference slots (`rcScanType` answers `RC_NO_REFS` for it). */
+        if (isView(t)) {
+            *hasRefs = true;
+            return true;
+        }
         if (!t->sdef) return false;
         for (size_t i = 0; i < t->targs.len; i++) {
             if (rcScanType(g, *(Type **)vecAt(&t->targs, i), depth + 1) != RC_NO_REFS)
@@ -4298,8 +4312,19 @@ static bool rcEnumRootable(CG *g, Type *t, int depth, bool *hasRefs) {
  * @param t     The declared type.
  * @param base  The storage's lvalue expression in C.
  */
-static void rcRootDecl(CG *g, Type *t, const char *base) {
+static void rcRootDeclImpl(CG *g, Type *t, const char *base, bool isParam) {
     if (!g->needReclaim || !t) return;
+    /* A view slot is a root in its own right: its `data` word may point at an rc block taken by
+     * `new T[n]`, and `rcScanType` reports a view as having no reference slots (the elements live
+     * behind the pointer, not in the C struct). */
+    if (isView(t)) {
+        /* A *parameter* view needs no root of its own: the caller's copy of the same view is what
+         * keeps the block alive, and the caller's root table is the one a delegated sweep uses. Only
+         * a local view can be the last word naming an rc block. */
+        if (isParam) return;
+        rcRootLeaves(g, t, base, 0);
+        return;
+    }
     RcScan sc = rcScanType(g, t, 0);
     if (sc == RC_CONSERVATIVE) {
         bool hasRefs = false;
@@ -4310,8 +4335,26 @@ static void rcRootDecl(CG *g, Type *t, const char *base) {
         g->rcRootsUnreliable = true;
         return;
     }
-    if (sc == RC_NO_REFS) return;
+    if (sc == RC_NO_REFS) {
+        /* No reference slots -- but the storage may still hold a view, whose `data` word is a root
+         * (`new T[n]` blocks hang off it). Register those and nothing else. */
+        bool hasRoots = false;
+        if (rcEnumRootable(g, t, 0, &hasRoots) && hasRoots) rcRootLeaves(g, t, base, 0);
+        return;
+    }
     rcRootLeaves(g, t, base, 0);
+}
+
+/**
+ * @brief Register the reference roots that live in one declaration.
+ *
+ * @param g        The generator.
+ * @param t        Declared type; NULL is a no-op.
+ * @param base     C spelling of the declared object.
+ * @param isParam  True for a parameter declaration, whose view needs no root of its own.
+ */
+static void rcRootDecl(CG *g, Type *t, const char *base) {
+    rcRootDeclImpl(g, t, base, false);
 }
 
 /**
@@ -4342,9 +4385,12 @@ static const char *exNew(CG *g, Expr *e) {    Type *w = subst(g, e->u.new_.type)
          * arena makes `extc_rc_slabOf` read garbage. A region is claimed by the arena's address
          * (see the table in `emitRuntimePrologue`), so its lifetime matches the arena's exactly.
          *
-         * `new T[n]` (the next case: a `slice<T>` view) does not take this path: a view is **not**
-         * a reference slot, counting can never reach its data pointer, so it can stay in the arena
-         * -- which also sidesteps the slab size limit on array length. */
+         * `new T[n]` (the next case) produces a `slice<T>` view, which is **not** a reference
+         * slot: counting cannot reach its data pointer. The block is an rc slot all the same; the
+         * view's `data` word is what keeps it alive, because `rcRootLeaves` registers `<base>.data`
+         * for a view slot and the marker filters that word through `extc_rc_owns`. A large block
+         * does not run into a slab size limit: `extc_rc_alloc` serves it from a slab of its own
+         * size class. */
         if (g->needReclaim) {
             int lvl = planArenaLevel(e);
             /* Order: the type descriptor first (it must be visible in this statement), then the trigger
@@ -4375,6 +4421,27 @@ static const char *exNew(CG *g, Expr *e) {    Type *w = subst(g, e->u.new_.type)
         n = genExpr(g, e->u.new_.count);
     }
     Type *st = subst(g, e->type);      /* the `slice<T>` the checker produced */
+    /* Only a block at the **function-body level** goes through the rc region. That level is the one
+     * where a replaced buffer has nowhere to go: an inner `{}` releases its arena when the block exits,
+     * and `ARENA_HOME` means the *caller* named the release point, so both are bounded without the
+     * collector. Routing those would pay for the runtime and reclaim nothing -- and it would pull units
+     * that only hand arrays back to their caller out of the idle tier. */
+    if (g->needReclaim && planArenaLevel(e) == 1) {
+        /* The block is an rc slot in the same region the arena would have used; the view's `data`
+         * word is registered as a root (see `rcRootLeaves`), which is how the marker reaches it.
+         * The reference-field offsets of elements 1..n-1 vary with the run-time count, so a static
+         * descriptor cannot express them: use the conservative marker (scan every word) when the
+         * element type contains references, and no descriptor otherwise -- the same rule as
+         * `alloc<T>(n)` in `exGencall`. */
+        int lvl = planArenaLevel(e);
+        const char *td = "(const ExtcRcType *)0";
+        if (rcScanType(g, w, 0) != RC_NO_REFS) td = "((const ExtcRcType *)-1)";
+        const char *core = rcAllocCore(g, arenaPrintf(g->arena, "(void *)&(%s)", ar), lvl,
+            rcOwnKind(g, lvl),
+            arenaPrintf(g->arena, "(int64_t)(%s) * (int64_t)sizeof(%s)", n, cType(g, w)), td);
+        return arenaPrintf(g->arena, "(%s){ .data = (%s *)%s, .len = (int64_t)(%s) }",
+            cType(g, st), cType(g, w), core, n);
+    }
     return arenaPrintf(g->arena,
         "(%s){ .data = (%s *)extc_arena_alloc(&%s, (int64_t)(%s) * (int64_t)sizeof(%s),"
         " \"%s\", %d), .len = (int64_t)(%s) }",
@@ -8924,15 +8991,15 @@ static void genFunc(CG *g, FuncDef *f) {
     if (g->needReclaim && !g->coroFunc) {
         for (size_t i = 0; i < f->params.len; i++) {
             Param *p = *(Param **)vecAt(&f->params, i);
-            rcRootDecl(g, p->type, p->cname ? p->cname : p->name);
+            rcRootDeclImpl(g, p->type, p->cname ? p->cname : p->name, true);
         }
     } else if (g->needReclaim) {
         const FuncDef *cf = g->coroFunc;
         for (size_t i = 0; i < cf->coroFrame.len; i++) {
             const Param *p = (const Param *)vecAt((Vec *)&cf->coroFrame, i);
             if (!p->cname) continue;
-            rcRootDecl(g, p->type,
-                       arenaPrintf(g->arena, "%s->%s", g->coroFrame, p->cname));
+            rcRootDeclImpl(g, p->type,
+                       arenaPrintf(g->arena, "%s->%s", g->coroFrame, p->cname), true);
         }
     }
     size_t mb = g->out->len;
@@ -12434,7 +12501,13 @@ static bool rcAllocInStmtProbe(void *ctx, Stmt *s);
 static bool rcAllocInExpr(void *ctx, Expr *e) {
     (void)ctx;
     if (!e) return true;
-    if (e->kind == EX_NEW) return e->u.new_.count != NULL;      /* with a length => a view, not governed by reclamation */
+    if (e->kind == EX_NEW) {
+        if (!e->u.new_.count) return false;   /* a single object is an rc slot */
+        /* A block of them is an rc slot only where `exNew` puts it there: the function-body level.
+         * Elsewhere the arena's release point (an inner block, or the home arena the caller picked)
+         * already bounds it, so it is not a reclamation-governed allocation. */
+        return planArenaLevel(e) != 1;
+    }
     if (e->kind == EX_GENCALL)
         return !(e->u.gencall.name && strcmp(e->u.gencall.name, "alloc") == 0);
     AstVisit v = { rcAllocInExpr, rcAllocInStmtProbe, NULL };

@@ -3954,13 +3954,15 @@ void checkStmt(Checker *c, Stmt *s) {
                     return;
                 }
             }
-            /* A fresh buffer written into a binding declared in an enclosing block is not released
-             * by the iteration: the loop body's arena is per round, so a `new` whose result lands in
-             * the outer binding's place outlives every round, and the buffers pile up until that
-             * block exits. That is invisible at run time (memory only) and shows up as "the peak
-             * grows with the round count", so it gets a warning. The storage answer is the binding's
-             * lexical depth, not the shape of the statement: a `var` written inside the loop body is
-             * released every round and stays silent. */
+            /* A fresh buffer written into a binding declared in an enclosing block outlives the
+             * iteration. With reclamation on the collector reaches it (the block is an rc slot and
+             * the view's data word is a root), so the bound is the collection floor rather than the
+             * round count; with reclamation off it piles up until that block exits. Either way the
+             * round adds an allocation that is still live when the next one starts, which is what
+             * this warns about: moving the declaration into the loop or using a container that owns
+             * its storage keeps the peak at the live set instead of the floor. The storage answer is
+             * the binding's lexical depth, not the shape of the statement: a `var` written inside the
+             * loop body is released every round and stays silent. */
             if (c->loopBodyDepth > 0 && tgt0 && tgt0->kind == EX_IDENT &&
                 s->u.assign.value && exprContainsNew(s->u.assign.value)) {
                 Sym *slot = lookup(c, tgt0->u.ident.name);
@@ -3971,7 +3973,7 @@ void checkStmt(Checker *c, Stmt *s) {
                            " `string`, `hashMap`), which grows in place. (`-w` turns this warning"
                            " off.)",
                            "the buffer written into `%s` outlives the loop: every round adds an"
-                           " allocation that is released only when the enclosing block exits",
+                           " allocation that is still live when the next round starts",
                            slot->name);
             }
             /* `x += y` is `x = x + y`: which operator it is and whether it applies to these two types
