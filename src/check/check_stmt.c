@@ -3764,7 +3764,7 @@ void checkStmt(Checker *c, Stmt *s) {
             /* Record where a view's storage lives: only storage this frame owns may be indexed
              * for a reference, because a container may grow and move the plate behind a view.
              * A plain `let`/`var` of a view type keeps the flag false. */
-            sym->stableView = s->u.var.stableView;
+            sym->borrowAlias = s->u.var.stableView;
             sym->frameStore = s->type && ttIsViewType(s->type) &&
                               exprIsFrameStorage(c, s->u.var.init);
             noteAcyclicNestedLocal(c, s);   /* criterion (iv): reference-typed local in a nested block */

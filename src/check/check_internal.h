@@ -126,7 +126,7 @@ typedef struct Sym {
     bool        frameStore;
     /* A `borrow` alias: its storage belongs to this frame and the block that introduced the alias
      * cannot move it, so `ref e[i]` is allowed even though `e` is a view. */
-    bool        stableView;
+    bool        borrowAlias;
     /* Per-field depths, at most four entries. To be read as one field block, not as
      * four independent ones.
      *
