@@ -88,6 +88,7 @@
 #define PLAN_PAR_TLS_ARENA       62
 #define PLAN_PAR_FULL_OUT        84
 #define PLAN_LAM_FNPTR           85   /* `EX_LAMBDA`: this literal is used as a bare `fn(...)` pointer, not as an environment value */
+#define PLAN_LAM_SCOPE           86   /* a lambda environment struct: the body it is written in */
 #define PLAN_DEREF               63
 #define PLAN_BOXED_CORO          64
 #define PLAN_CORO_KIND           65
@@ -513,6 +514,37 @@ void planSetCoroOf(StructDef *sd, FuncDef *f) {
     NodeResults *r = resultsAs(sd, true, RKIND_OTHER, __LINE__);
     if (!r) return;
     r->coroOf = f; resultsSetBit(r, PLAN_CORO_OF);
+}
+
+/**
+ * @brief Get the function whose body a lambda environment struct is laid out in.
+ *
+ * A lambda written inside a generic body sees the body's type parameters, so an environment with a
+ * parameter-dependent field has to exist once per *instance* of that body. This records which body
+ * that is: code generation re-emits the environment (and its `call` method) inside each instance's
+ * substitution, and the deferred-recheck passes use it to find those instances, because a check
+ * recorded inside a lambda body names the lambda's `call` method rather than the enclosing function.
+ *
+ * @param sd  The struct definition (a synthesized lambda environment struct).
+ * @return    The function the literal is written in; NULL when the struct is not a lambda
+ *            environment.
+ */
+FuncDef *planLamScope(const StructDef *sd) {
+    NodeResults *r = resultsOf(sd, false);
+    return (r && resultsBit(r, PLAN_LAM_SCOPE)) ? r->lamScope : NULL;
+}
+
+/**
+ * @brief Record the function whose body a lambda environment struct is laid out in.
+ *
+ * @param sd  The synthesized environment struct; NULL ignores this write.
+ * @param f   The function the literal is written in.
+ */
+void planSetLamScope(StructDef *sd, FuncDef *f) {
+    if (!sd) return;
+    NodeResults *r = resultsAs(sd, true, RKIND_OTHER, __LINE__);
+    if (!r) return;
+    r->lamScope = f; resultsSetBit(r, PLAN_LAM_SCOPE);
 }
 
 /**

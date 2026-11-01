@@ -531,6 +531,14 @@ typedef struct {
      * thunk with the lambda's own signature that calls the synthesised `call` method with an empty
      * environment (see `emitLamThunk`). Collected before the prototypes are emitted. */
     Vec         lamThunks;
+    /* LamVar*: one entry per (lambda environment, instance of the body it is written in) pair,
+     * for environments whose layout depends on a type parameter. Collected before the prototypes
+     * are emitted; see `LamVar`. */
+    Vec         lamVars;
+    /* The enclosing instance's C name while a body that may contain such a lambda is generated
+     * (`calc_key`, ...); NULL everywhere else. `cType` / `cMethodName` use it to spell the layout
+     * of a lambda environment whose type depends on a type parameter. */
+    const char *lamCtx;
     Vec         rcGlobalRoots;   /* const char *: global reference slots */
     bool        rcGlobalsUnreliable; /* a global holds reference stores that cannot be enumerated => turn triggers off in every function */
     bool        rcRootsUnreliable;
@@ -771,6 +779,35 @@ static void substLeave(CG *g, SubCtx sv) {
 
 static const char *cFuncName(CG *g, FuncDef *f);   /* defined below; `cType` needs it */
 
+/* One layout of a lambda's environment, for one instance of the body the literal is written in.
+ *
+ * A lambda written inside a generic body can capture a value whose type is a type parameter, so the
+ * environment's field types are only concrete per instance (see `planLamScope`). The checker builds
+ * one environment per literal; this lays that environment out once per instance, as a struct type of
+ * its own (`<env>$<instance>`) with its own `call` method, so `$lam$calc$0` becomes
+ * `$lam$calc$0$calc_key` with a `key` field and `$lam$calc$0$calc_item` with an `item` field.
+ *
+ * The fields themselves are shared with the checker's struct: substitution happens while printing
+ * a field's type, so one `FieldDef` reads as `key` in one layout and `item` in the other. */
+typedef struct {
+    StructDef  *sd;         /* the environment as the checker built it (the template) */
+    StructDef  *vsd;        /* this layout: the enclosing instance's type parameters, its own C name */
+    Type       *vt;         /* `vsd` as a type; `vt->name` is the C name of this layout */
+    Type       *vtNamed;    /* the same type as a `TY_STRUCT`, for signatures (see `lamVarAdd`) */
+    FuncDef    *vcall;      /* `call` for this layout: the template's body, `self` typed as `ref vt` */
+    const char *ctxName;    /* the enclosing instance's C name, e.g. `calc_key` */
+    FuncDef    *ownerFn;    /* the enclosing function instance, or NULL */
+    Type       *ownerInst;  /* the enclosing type instance, or NULL */
+    bool        thunk;      /* some literal of this environment is taken as a bare `fn(...)` value */
+} LamVar;
+
+/** @brief Whether a lambda environment's layout depends on a type parameter (see `LamVar`). */
+static bool lamEnvNeedsVariants(const StructDef *sd);
+/** @brief The layout of `sd` for the instance `g->lamCtx` names, or NULL when there is none. */
+static LamVar *lamVarFor(CG *g, const StructDef *sd);
+/** @brief The C name of `sd`'s layout for the current instance, or NULL (call `cType` then). */
+static const char *lamVarName(CG *g, const StructDef *sd);
+
 /* Register the `!` unwrap helper of one option/result instance; defined with the other
  * on-demand helpers, below `cgLine`. A `!` can appear in a body generated before that
  * point, so the name is declared here. */
@@ -817,6 +854,13 @@ static const char *cType(CG *g, Type *t) {
              * methods and generic instances mangle the same way everywhere). */
             if (t->sdef && planCoroOf(t->sdef))
                 return arenaPrintf(g->arena, "struct %s$frame", cFuncName(g, planCoroOf(t->sdef)));
+            /* A lambda environment whose layout depends on a type parameter: inside an instance the
+             * type is the layout made for that instance (`LamVar`). Outside one there is no single
+             * layout, and only code that is never emitted (the generic template) can ask. */
+            {
+                const char *vn = lamVarName(g, t->sdef);
+                if (vn) return vn;
+            }
             return t->name;
         /* A `dyn` value is the runtime's handle: the same `{pid, slot, gen}` triple the pool
          * runtime defines, which is what `extc_dyn_put` returns and `extc_dyn_slot` checks. */
@@ -1078,6 +1122,12 @@ static const char *cMethodName(CG *g, Type *recvType, FuncDef *f) {
         sa = &rb->targs;
     }
     const char *suffix = opOverloadSuffixIn(g, f, sp, sa);
+    /* A lambda environment's `call`: an environment laid out per instance has one `call` per
+     * instance, named after that layout (`LamVar`). */
+    if (f->owner) {
+        LamVar *v = lamVarFor(g, f->owner);
+        if (v) return arenaPrintf(g->arena, "%s_%s%s", v->vt->name, cSymName(g, f->name), suffix);
+    }
     if (rb && rb->kind == TY_GENERIC)
         return arenaPrintf(g->arena, "%s_%s%s", rb->name, cSymName(g, f->name), suffix);
 
@@ -4708,6 +4758,10 @@ static const char *exEnumval(CG *g, Expr *e) {
  * @return    The thunk's C identifier, owned by `g->arena`.
  */
 static const char *lamThunkName(CG *g, StructDef *sd) {
+    /* A layout made for one instance (`LamVar`) has its own `call`, and therefore its own thunk: the
+     * signature is the instance's, not the template's. */
+    LamVar *v = lamVarFor(g, sd);
+    if (v) return arenaPrintf(g->arena, "%s$fn", cFuncName(g, v->vcall));
     FuncDef *md = *(FuncDef **)vecAt(&sd->methods, 0);
     return arenaPrintf(g->arena, "%s$fn", cFuncName(g, md));
 }
@@ -12388,7 +12442,9 @@ static bool lamThunkScanExpr(void *ctx, Expr *e) {
     LamThunkScan *sc = (LamThunkScan *)ctx;
     if (e && e->kind == EX_LAMBDA && planLamFnPtr(e)) {
         StructDef *sd = e->u.lambda.sdef;
-        if (sd && sd->methods.len == 1) {
+        /* An environment with one layout per instance gets its thunk from that layout
+         * (`emitLamVars`), not from the unit-wide list: its signature is the instance's. */
+        if (sd && sd->methods.len == 1 && !lamEnvNeedsVariants(sd)) {
             bool seen = false;
             for (size_t i = 0; i < sc->g->lamThunks.len && !seen; i++)
                 seen = *(StructDef **)vecAt(&sc->g->lamThunks, i) == sd;
@@ -12441,6 +12497,379 @@ static void emitLamThunks(CG *g) {
         emitLamThunk(g, *(StructDef **)vecAt(&g->lamThunks, i));
 }
 
+/* ---- lambda environments laid out per instance ---------------------------------------------
+ *
+ * A lambda written inside a generic body can capture a value whose type is a type parameter, and its
+ * own signature can mention one too. The environment's C layout is then only concrete per instance,
+ * so it is emitted once per instance (`LamVar`) instead of once per literal: `$lam$calc$0` becomes
+ * `$lam$calc$0$calc_key` (an `i64` field holding a `key`) and `$lam$calc$0$calc_item` (holding an
+ * `item`), each with its own `call` method and, when the literal is used as a bare `fn(...)` value,
+ * its own thunk.
+ *
+ * The field list is shared with the checker's struct -- substitution happens while a field's type is
+ * printed -- so one `FieldDef` reads as `key` in one layout and as `item` in the other.
+ */
+
+/**
+ * @brief Whether a lambda environment's C layout depends on a type parameter.
+ *
+ * The layout has to be repeated per instance exactly when a field or the lambda's own signature
+ * mentions one. A lambda inside a generic body that only captures concrete values keeps one layout
+ * for every instance, which is what almost every closure in practice is.
+ *
+ * @param sd  The lambda's synthesized environment struct.
+ * @return    true when the environment has to be laid out once per instance.
+ */
+static bool lamEnvNeedsVariants(const StructDef *sd) {
+    if (!sd || !planLamScope(sd)) return false;
+    for (size_t i = 0; i < sd->fields.len; i++) {
+        FieldDef *fd = *(FieldDef **)vecAt((Vec *)&sd->fields, i);
+        if (fd && fd->type && mentionsParam(fd->type)) return true;
+    }
+    if (sd->methods.len == 1) {
+        FuncDef *md = *(FuncDef **)vecAt((Vec *)&sd->methods, 0);
+        if (md && funcSignatureMentionsParam(md)) return true;
+    }
+    return false;
+}
+
+/**
+ * @brief The layout of a lambda environment for the instance currently being generated.
+ *
+ * @param g   The generator state; `g->lamCtx` names the instance.
+ * @param sd  The lambda's synthesized environment struct.
+ * @return    The layout, or NULL when `sd` is not an environment that depends on a type parameter or
+ *            the current instance has no layout for it.
+ */
+static LamVar *lamVarFor(CG *g, const StructDef *sd) {
+    if (!g->lamCtx || !sd) return NULL;
+    for (size_t i = 0; i < g->lamVars.len; i++) {
+        LamVar *v = *(LamVar **)vecAt(&g->lamVars, i);
+        if (v->sd == sd && strcmp(v->ctxName, g->lamCtx) == 0) return v;
+    }
+    return NULL;
+}
+
+/**
+ * @brief The C name of a lambda environment inside the instance currently being generated.
+ *
+ * @param g   The generator state.
+ * @param sd  The lambda's synthesized environment struct.
+ * @return    The layout's name; NULL when the environment keeps one layout (use the struct name) or
+ *            the current instance has no layout for it.
+ */
+static const char *lamVarName(CG *g, const StructDef *sd) {
+    LamVar *v = lamVarFor(g, sd);
+    return v ? v->vt->name : NULL;
+}
+
+/* Scan state for `collectLamVariants`: one enclosing instance plus the walk callbacks. */
+typedef struct {
+    CG      *g;
+    Vec     *params;      /* the enclosing instance's type parameter names (borrowed) */
+    Vec     *targs;       /* its type arguments (borrowed) */
+    const char *ctxName;  /* its C name */
+    FuncDef *ownerFn;     /* the enclosing function instance, or NULL */
+    Type    *ownerInst;   /* the enclosing type instance, or NULL */
+    AstVisit v;
+} LamVarScan;
+
+static bool lamVarScanExpr(void *ctx, Expr *e);
+static bool lamVarScanStmt(void *ctx, Stmt *s);
+
+/**
+ * @brief Record the layout of one lambda environment for the instance being scanned.
+ *
+ * The environment struct, its fields and its `call` body are shared with the checker's products; what
+ * is made here is the per-instance shell: a struct type named `<env>$<instance>`, a `call` method
+ * whose `self` has that type, and -- when the literal is used as a bare pointer -- a thunk.
+ *
+ * @param sc  The scan state; the enclosing instance comes from it.
+ * @param e   The `EX_LAMBDA` node.
+ */
+static void lamVarAdd(LamVarScan *sc, Expr *e) {
+    CG *g = sc->g;
+    StructDef *sd = e->u.lambda.sdef;
+    if (!sd || sd->methods.len != 1 || !lamEnvNeedsVariants(sd)) return;
+    for (size_t i = 0; i < g->lamVars.len; i++) {
+        LamVar *have = *(LamVar **)vecAt(&g->lamVars, i);
+        if (have->sd == sd && strcmp(have->ctxName, sc->ctxName) == 0) {
+            have->thunk = have->thunk || planLamFnPtr(e);
+            return;
+        }
+    }
+    FuncDef *tcall = *(FuncDef **)vecAt(&sd->methods, 0);
+    const char *envName = arenaPrintf(g->arena, "%s$%s", sd->name, sc->ctxName);
+
+    StructDef *vsd = arenaAllocZero(g->arena, sizeof *vsd);
+    *vsd = *sd;                                  /* names, fields, module: the layout's own name below */
+    vsd->name = vsd->srcName = envName;
+    /* The plan facts are keyed by pointer, so the shell has to carry the one that marks it as a
+     * lambda environment: `lamEnvNeedsVariants` reads it back. */
+    planSetLamScope(vsd, planLamScope(sd));
+    vecInit(&vsd->typeParams, g->arena, sizeof(const char *));
+    if (sc->params)
+        for (size_t i = 0; i < sc->params->len; i++)
+            *(const char **)vecPush(&vsd->typeParams) = *(const char **)vecAt(sc->params, i);
+
+    Type *vt = arenaAllocZero(g->arena, sizeof *vt);
+    vt->kind = TY_GENERIC;                       /* printed as its name; the struct is emitted as a unit */
+    vt->name = envName;
+    vt->sdef = vsd;
+    vecInit(&vt->targs, g->arena, sizeof(Type *));
+    if (sc->targs)
+        for (size_t i = 0; i < sc->targs->len; i++)
+            *(Type **)vecPush(&vt->targs) = *(Type **)vecAt(sc->targs, i);
+
+    /* The `call` method of this layout: the template's body and result type, with `self` typed as this
+     * layout. The body is shared, so one statement tree serves every instance. */
+    FuncDef *vcall = arenaAllocZero(g->arena, sizeof *vcall);
+    *vcall = *tcall;
+    vcall->owner = vsd;
+    /* Signatures spell the layout through a `TY_STRUCT` of the same name. A `TY_GENERIC` would be
+     * substituted by `cType` into a *new* instance named after its type arguments
+     * (`<env>_key`), which is not the struct that was emitted. */
+    Type *vtNamed = arenaAllocZero(g->arena, sizeof *vtNamed);
+    *vtNamed = *vt;
+    vtNamed->kind = TY_STRUCT;
+    Type *selfT = arenaAllocZero(g->arena, sizeof *selfT);
+    selfT->kind = TY_REF;
+    selfT->inner = vtNamed;
+    selfT->mut = false;                          /* `call` reads the environment */
+    Param *self = arenaAllocZero(g->arena, sizeof *self);
+    {
+        Param *t0 = *(Param **)vecAt(&tcall->params, 0);
+        self->name = t0->name;
+        self->cname = t0->cname;
+        self->line = t0->line;
+    }
+    self->type = selfT;
+    vecInit(&vcall->params, g->arena, sizeof(Param *));
+    *(Param **)vecPush(&vcall->params) = self;
+    for (size_t i = 1; i < tcall->params.len; i++)
+        *(Param **)vecPush(&vcall->params) = *(Param **)vecAt(&tcall->params, i);
+    vecInit(&vsd->methods, g->arena, sizeof(FuncDef *));
+    *(FuncDef **)vecPush(&vsd->methods) = vcall;
+    /* Both loops that emit an instance's methods keep only what the program used; this layout exists
+     * exactly because something used it. */
+    planSetUsed(vcall, true);
+    planSetInstUsed(vcall, envName);
+    /* The hidden parameters of a `call` method (`home`, `zone`, `@overwrite` cells) are decided from
+     * plan facts recorded on the *template* function: the lambda body may allocate, may create a pool
+     * or may write an `@overwrite` cell, and the call site passes the arguments according to those
+     * facts. The clone has to answer the same way or the signature and the call disagree. */
+    planSetUsesHome(vcall, planUsesHome(tcall));
+    planSetMakesPool(vcall, planMakesPool(tcall));
+    planSetOwLocal(vcall, planOwLocal(tcall));
+    planSetOwSites(vcall, planOwSites(tcall));
+
+    LamVar *v = arenaAllocZero(g->arena, sizeof *v);
+    v->sd = sd;
+    v->vsd = vsd;
+    v->vt = vt;
+    v->vtNamed = vtNamed;
+    v->vcall = vcall;
+    v->ctxName = sc->ctxName;
+    v->ownerFn = sc->ownerFn;
+    v->ownerInst = sc->ownerInst;
+    v->thunk = planLamFnPtr(e);
+    *(LamVar **)vecPush(&g->lamVars) = v;
+    /* The struct definition is emitted with the other units (`emitTypes`), which is also what gives it
+     * its forward typedef and dependency-ordered position. */
+    *(Type **)vecPush(&g->insts) = vt;
+}
+
+/** @brief Expression callback of the per-instance lambda scan. */
+static bool lamVarScanExpr(void *ctx, Expr *e) {
+    LamVarScan *sc = (LamVarScan *)ctx;
+    if (e && e->kind == EX_LAMBDA) lamVarAdd(sc, e);
+    return astWalkExprChildren(e, &sc->v);
+}
+
+/** @brief Statement callback of the per-instance lambda scan. */
+static bool lamVarScanStmt(void *ctx, Stmt *s) {
+    LamVarScan *sc = (LamVarScan *)ctx;
+    return astWalkStmtChildren(s, &sc->v);
+}
+
+/**
+ * @brief Find every lambda environment that needs one layout per instance, and make those layouts.
+ *
+ * Only bodies that are really emitted can contain such a lambda, so the scan walks the function
+ * instances in `g->funcs` and the methods of the type instances in `g->insts` -- the same sets the
+ * two body-emission loops walk. Must run after `collectEmitted` (which fills those sets) and before
+ * the prototypes, because a layout is a type and a method that both have to be declared.
+ *
+ * @param g  The generator state; `lamVars` and the instance list grow.
+ */
+static void collectLamVariants(CG *g) {
+    LamVarScan sc;
+    sc.g = g;
+    sc.v.expr = lamVarScanExpr;
+    sc.v.stmt = lamVarScanStmt;
+    sc.v.ctx  = &sc;
+    for (size_t i = 0; i < g->funcs.len; i++) {
+        FuncDef *f = *(FuncDef **)vecAt(&g->funcs, i);
+        if (!f || !f->body || !planTemplate(f)) continue;
+        sc.params = &planTemplate(f)->typeParams;
+        sc.targs  = &f->targs;
+        sc.ctxName = planInstName(f);
+        sc.ownerFn = f;
+        sc.ownerInst = NULL;
+        if (!sc.ctxName) continue;
+        astWalkStmtChildren(f->body, &sc.v);
+    }
+    /* `g->insts` grows as layouts are added, so the count is taken first: a layout's own fields are
+     * already substituted, and no layout can contain a lambda. */
+    size_t n = g->insts.len;
+    for (size_t i = 0; i < n; i++) {
+        Type *inst = *(Type **)vecAt(&g->insts, i);
+        if (!inst || inst->kind != TY_GENERIC || !inst->sdef) continue;
+        for (size_t j = 0; j < inst->sdef->methods.len; j++) {
+            FuncDef *md = *(FuncDef **)vecAt(&inst->sdef->methods, j);
+            if (!md || !md->body || !planUsed(md)) continue;
+            /* The same gate as `emitInstanceBodies`: a method body is emitted for the instances that
+             * used it. */
+            if (md->owner && md->owner->typeParams.len > 0 &&
+                !planInstUsed(md, inst->name) && !planDynTable(md))
+                continue;
+            sc.params = &inst->sdef->typeParams;
+            sc.targs  = &inst->targs;
+            sc.ctxName = inst->name;
+            sc.ownerFn = NULL;
+            sc.ownerInst = inst;
+            astWalkStmtChildren(md->body, &sc.v);
+        }
+    }
+}
+
+/**
+ * @brief Drop the one-layout forms of the environments that are now emitted per instance.
+ *
+ * An environment that needs one layout per instance must not also be emitted once, unsubstituted:
+ * its field would say `int` where the instance writes a `key`, and its template `call` would be
+ * generated with a `T` in a signature. Both are removed here, after `collectLamVariants` decided
+ * which environments they are -- whether or not any layout was made (a generic body that is never
+ * instantiated emits nothing either way).
+ *
+ * @param g  The generator state; `structs` and `funcs` are compacted in place.
+ */
+static void dropLamTemplates(CG *g) {
+    size_t w = 0;
+    for (size_t i = 0; i < g->structs.len; i++) {
+        StructDef *sd = *(StructDef **)vecAt(&g->structs, i);
+        if (lamEnvNeedsVariants(sd)) continue;
+        *(StructDef **)vecAt(&g->structs, w++) = sd;
+    }
+    g->structs.len = w;
+    w = 0;
+    for (size_t i = 0; i < g->funcs.len; i++) {
+        FuncDef *f = *(FuncDef **)vecAt(&g->funcs, i);
+        if (f->owner && lamEnvNeedsVariants(f->owner)) continue;
+        *(FuncDef **)vecAt(&g->funcs, w++) = f;
+    }
+    g->funcs.len = w;
+}
+
+/**
+ * @brief Emit the prototypes of the per-instance lambda layouts: their `call` methods and, where the
+ *        layout is used as a bare `fn(...)` value, their thunks.
+ *
+ * A use site may precede any definition, and the signature is the instance's, so it is printed
+ * inside that instance's substitution. The `call` prototype goes through `genFuncProto` like any other
+ * body, which is also what gives `deadFuncBody` the entry it fills in later and what keeps a `call`
+ * method that ignores `self` compilable under `-Werror=unused-parameter`.
+ *
+ * @param g  The generator state; output goes to the current buffer.
+ */
+static void emitLamVarProtos(CG *g) {
+    for (size_t i = 0; i < g->lamVars.len; i++) {
+        LamVar *v = *(LamVar **)vecAt(&g->lamVars, i);
+        SubCtx sv = substEnter(g, v->vt);
+        const char *savedCtx = g->lamCtx;
+        g->lamCtx = v->ctxName;
+        /* Register the prototype the way the instance loop does: `deadFuncBody` pairs by name, and
+         * only a paired body reaches `markUnusedParams` -- without it a `call` that ignores its
+         * `home` parameter fails `-Werror=unused-parameter`. */
+        size_t pb = g->out->len;
+        genFuncProto(g, v->vcall);
+        {
+            Buf pt;
+            bufInit(&pt, g->arena);
+            bufPutn(&pt, g->out->data + pb, g->out->len - pb);
+            DeadFunc *df = arenaAllocZero(g->arena, sizeof *df);
+            df->name  = cFuncName(g, v->vcall);
+            df->proto = bufCstr(&pt);
+            *(DeadFunc **)vecPush(&g->deadFuncs) = df;
+        }
+        g->lamCtx = savedCtx;
+        if (v->thunk) {
+            Buf ps;
+            bufInit(&ps, g->arena);
+            lamThunkParams(g, v->vcall, &ps);
+            bool vret = !v->vcall->ret || v->vcall->ret->kind == TY_VOID;
+            cgLine(g, "static %s %s(%s);", vret ? "void" : cType(g, v->vcall->ret),
+                   arenaPrintf(g->arena, "%s$fn", cFuncName(g, v->vcall)), bufCstr(&ps));
+        }
+        substLeave(g, sv);
+    }
+}
+
+/**
+ * @brief Emit the definitions of the per-instance lambda layouts: each `call` method and, when the
+ *        layout is used as a bare pointer, its thunk.
+ *
+ * The body is generated inside the instance's substitution context, with `lamCtx` naming the
+ * instance: a lambda literal in that body becomes a literal of *this* layout, and a closure call
+ * reaches *this* layout's `call`.
+ *
+ * @param g  The generator state; output goes to the current buffer.
+ */
+static void emitLamVars(CG *g) {
+    for (size_t i = 0; i < g->lamVars.len; i++) {
+        LamVar *v = *(LamVar **)vecAt(&g->lamVars, i);
+        SubCtx sv = substEnter(g, v->vt);
+        const char *savedCtx = g->lamCtx;
+        g->lamCtx = v->ctxName;
+        if (v->ownerInst) planEnterInst(v->ownerInst);
+        else if (v->ownerFn) planEnterFunc(v->ownerFn);
+        size_t fb = g->out->len;
+        CGACC("cg-emit", genFunc(g, v->vcall));
+        deadFuncBody(g, v->vcall, fb, g->out->len - fb);
+        if (v->ownerInst) planLeaveInst();
+        else if (v->ownerFn) planLeaveFunc();
+        if (v->thunk) {
+            const char *callName = cFuncName(g, v->vcall);
+            Buf ps;
+            bufInit(&ps, g->arena);
+            lamThunkParams(g, v->vcall, &ps);
+            bool vret = !v->vcall->ret || v->vcall->ret->kind == TY_VOID;
+            cgLine(g, "");
+            cgLine(g, "/* A `fn(...)` value for a lambda that captures nothing, laid out for one");
+            cgLine(g, " * instance: the empty environment is a static dummy. */");
+            cgLine(g, "static %s %s$fn(%s) {", vret ? "void" : cType(g, v->vcall->ret), callName,
+                   bufCstr(&ps));
+            cgLine(g, "    static %s __env;", cType(g, v->vtNamed));
+            Buf args;
+            bufInit(&args, g->arena);
+            for (size_t k = 1; k < v->vcall->params.len; k++) {
+                Param *p = *(Param **)vecAt(&v->vcall->params, k);
+                bufPrintf(&args, "%s%s", k > 1 ? ", " : "", p->cname);
+            }
+            if (vret)
+                cgLine(g, "    %s(&__env%s%s);", callName, args.len ? ", " : "", bufCstr(&args));
+            else
+                cgLine(g, "    return %s(&__env%s%s);", callName, args.len ? ", " : "",
+                       bufCstr(&args));
+            cgLine(g, "}");
+        }
+        g->lamCtx = savedCtx;
+        substLeave(g, sv);
+        cgLine(g, "");
+    }
+}
+
+
 /**
  * @brief Emit the unit-wide prototype pool: before every function body, and prototypes only.
  *
@@ -12469,6 +12898,7 @@ static void emitProtos(CG *g, Module *m, Arena *arena) {
         cgLine(g, "static %s %s(%s);", vret ? "void" : cType(g, md->ret), lamThunkName(g, sd),
                bufCstr(&ps));
     }
+    emitLamVarProtos(g);
     /* The prototype pool: every function is declared before any body, and only
      * a prototype may appear here. A definition emitted before the prototype of
      * a function it calls makes C take that function as implicitly declared
@@ -12480,6 +12910,7 @@ static void emitProtos(CG *g, Module *m, Arena *arena) {
     for (size_t i = 0; i < g->insts.len; i++) {
         Type *inst = *(Type **)vecAt(&g->insts, i);
         if (inst->kind != TY_GENERIC) continue;
+        if (inst->sdef && lamEnvNeedsVariants(inst->sdef)) continue;   /* see emitLamVarProtos */
         SubCtx sv = substEnter(g, inst);
         for (size_t j = 0; j < inst->sdef->methods.len; j++) {
             FuncDef *md = *(FuncDef **)vecAt(&inst->sdef->methods, j);
@@ -13017,6 +13448,8 @@ static void initRuntimeText(CG *g, Arena *arena) {
     vecInit(&g->deadLocals, arena, sizeof(DeadLocal *));
     vecInit(&g->primEnts, arena, sizeof(PrimEnt *));
     vecInit(&g->lamThunks, arena, sizeof(StructDef *));
+    vecInit(&g->lamVars, arena, sizeof(LamVar *));
+    g->lamCtx = NULL;
     bufInit(&g->desc, arena);
     bufInit(&g->rcDesc, arena);
     vecInit(&g->rcDescKeys, arena, sizeof(const char *));
@@ -13252,6 +13685,9 @@ static void emitInstanceBodies(CG *g) {
     for (size_t i = 0; i < g->insts.len; i++) {
         Type *inst = *(Type **)vecAt(&g->insts, i);
         if (inst->kind != TY_GENERIC) continue;
+        /* A lambda environment laid out per instance: `emitLamVars` emits its `call` under the
+         * instance's own name (`lamCtx`), which this loop does not set up. */
+        if (inst->sdef && lamEnvNeedsVariants(inst->sdef)) continue;
         SubCtx sv = substEnter(g, inst);
         for (size_t j = 0; j < inst->sdef->methods.len; j++) {
             FuncDef *md = *(FuncDef **)vecAt(&inst->sdef->methods, j);
@@ -13262,8 +13698,13 @@ static void emitInstanceBodies(CG *g) {
                 continue;   /* no other instance has used it: its element type may not have the operator this method needs */
 
             planEnterInst(inst);          /* a method body is shared by every type instance */
+            /* Name the instance for the lambda-environment layout code: a literal whose type depends
+             * on a type parameter is this instance's layout (`LamVar`). */
+            const char *savedLamCtx = g->lamCtx;
+            g->lamCtx = inst->name;
             size_t fb = g->out->len;
             CGACC("cg-emit", genFunc(g, md));
+            g->lamCtx = savedLamCtx;
             planLeaveInst();
             /* A method named by a `dyn` table's thunk is referenced from outside
              * its own scope, and the "definitions nothing names" pass cannot see
@@ -13462,8 +13903,13 @@ static void emitFuncBodies(CG *g) {
         /* Tell the plan which instance is being emitted: a call site inside a generic
          * body is shared by every instance, and what it calls depends on this. */
         planEnterFunc(f);
+        /* A generic function instance may contain a lambda whose environment depends on the
+         * instance's type arguments (`LamVar`), so the body is generated under its name. */
+        const char *savedLamCtx = g->lamCtx;
+        g->lamCtx = planTemplate(f) ? planInstName(f) : NULL;
         size_t fb = g->out->len;
         CGACC("cg-emit", genFunc(g, f));
+        g->lamCtx = savedLamCtx;
         deadFuncBody(g, f, fb, g->out->len - fb);
         planLeaveFunc();
         substLeave(g, sv);
@@ -14026,6 +14472,10 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     scanUnitNeeds(&g, m);
     initRuntimeText(&g, arena);
     collectEmitted(&g, m);
+    /* Lambda environments whose layout depends on a type parameter get one layout per instance of
+     * the body they are written in; the one-layout forms must then not be emitted at all. */
+    collectLamVariants(&g);
+    dropLamTemplates(&g);
     collectLamThunks(&g);
     /* Settle "this program writes the console" first: main's prologue registers
      * `atexit(extc_cout_flush)` from it, and without it a program that exits or traps halfway loses the
@@ -14072,6 +14522,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     emitParTramps(&g);
     emitFuncBodies(&g);
     emitLamThunks(&g);
+    emitLamVars(&g);
     dbgRcCostReport(&g);
     /* Final assembly: the pieces whose need is discovered during generation are
      * spliced in ahead of the bodies - the print runtime and the descriptor

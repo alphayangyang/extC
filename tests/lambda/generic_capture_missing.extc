@@ -1,0 +1,23 @@
+// 泛型体里 lambda 体内的方法调用按实例回放：实例类型没有该方法时必须报错，
+// 而不是让代码生成静默地发一个 `0`。
+// expect: error: `calc_plain` needs `plain` to define `hash`
+use std::io
+
+struct key { v: i64
+    fn hash(self: ref key) -> i64 { return self.v }
+}
+
+struct plain { q: i64 }
+
+fn calc<K>(k: K, d: i64) -> i64 {
+    let f = fn(x: i64) -> i64 { return x + k.hash() }
+    return f(d)
+}
+
+fn main() -> i32 {
+    var a: key = key { v: 5 }
+    var b: plain = plain { q: 1 }
+    var m: i64 = calc<key>(a, 2) + calc<plain>(b, 3)
+    io::cout << m << "\n"
+    return 0
+}

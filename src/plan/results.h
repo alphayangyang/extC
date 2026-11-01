@@ -112,6 +112,11 @@ typedef struct {
     /* ---- plan facts about a struct definition ---- */
     bool        builtinHolder; /* the struct behind a builtin name needs no C definition */
     FuncDef    *coroOf;        /* this frame struct belongs to that coroutine */
+    /* A synthesized lambda environment: the function whose body the literal is written in. Code
+     * generation needs it to lay the environment out once per *instance* of that body, and the
+     * deferred-recheck passes need it because a check recorded inside a lambda body carries the
+     * lambda's `call` method -- not the enclosing function -- as its `func`. */
+    FuncDef    *lamScope;
     TraitDef   *implTrait;     /* the trait an `impl` block implements (NULL = inherent) */
     Type       *implTarget;    /* the type an `impl` block resolves to */
     FuncDef    *parWorker;     /* `parallel::run(worker, ...)`: the worker, for the trampoline */

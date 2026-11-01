@@ -328,6 +328,28 @@ FuncDef *planCoroOf(const StructDef *sd);
 void     planSetCoroOf(StructDef *sd, FuncDef *f);
 
 /**
+ * @brief Get the function whose body a lambda's environment struct is laid out in.
+ *
+ * A lambda written inside a generic body sees that body's type parameters, so an environment with a
+ * parameter-dependent field has to exist once per *instance* of the body. This records which body
+ * that is: code generation re-emits the environment and its `call` method inside each instance's
+ * substitution, and the deferred-recheck passes use it to find those instances (a check recorded in
+ * a lambda body names the lambda's `call` method, not the enclosing function).
+ *
+ * @param sd  The struct definition (a synthesized lambda environment struct).
+ * @return    The function the literal is written in; NULL when the struct is not one.
+ */
+FuncDef *planLamScope(const StructDef *sd);
+
+/**
+ * @brief Record the function whose body a lambda's environment struct is laid out in.
+ *
+ * @param sd  The synthesized environment struct; NULL ignores this write.
+ * @param f   The function the literal is written in.
+ */
+void     planSetLamScope(StructDef *sd, FuncDef *f);
+
+/**
  * @brief Get the user-written signature recorded on a lambda's environment struct.
  *
  * The environment struct is compiler-synthesised; diagnostics show this string, so the user sees

@@ -895,6 +895,17 @@ static bool lambdaCallMatches(Checker *c, TraitDef *tr, Type *pt, int line) {
     StructDef *sd = pt->sdef;
     for (size_t i = 0; i < sd->fields.len; i++) {
         FieldDef *fd = *(FieldDef **)vecAt(&sd->fields, i);
+        if (fd->type && mentionsParam(fd->type)) {
+            /* A layout that depends on a type parameter has one layout per instance of the function
+             * the closure is written in (`LamVar` in the code generator); a `dyn` payload has one
+             * layout, decided by the trait, so there is nothing to write here. */
+            ckError(c, line,
+                    "A `dyn` payload has one layout, decided by the trait it implements. A closure"
+                    " whose captured type depends on a type parameter has a different layout per"
+                    " instance of the function it is written in, so it cannot be that payload.",
+                    "this closure captures a value whose type depends on a type parameter");
+            return false;
+        }
         if (!captureOwnsItsBytes(fd->type, 0)) {
             ckError(c, line,
                     "A `dyn` value is a `{pool, slot, generation}` handle; it cannot describe a"
@@ -1225,27 +1236,6 @@ static bool lamRwStmt(void *ctx, Stmt *s) {
 static Type *checkExprInner(Checker *c, Expr *e);   /* the struct-literal path is re-entered below */
 
 /**
- * @brief Whether a lambda's environment can be shared between checks of the same literal.
- *
- * Sharing is only sound when the environment's layout does not depend on a type parameter: a
- * literal inside a generic body is checked once per instance, and an environment field declared
- * from the template's `T` would stay `T` when the instance needs its concrete type (the generated
- * C then writes a `key` into an `int` field). An environment whose fields are all concrete is the
- * same type in every instance, so one copy serves all of them.
- *
- * @param sd  The lambda's synthesized environment struct.
- * @return    true when no field's type mentions a type parameter.
- */
-static bool lamEnvMentionsNoParam(const StructDef *sd) {
-    if (!sd) return true;
-    for (size_t i = 0; i < sd->fields.len; i++) {
-        FieldDef *fd = *(FieldDef **)vecAt((Vec *)&sd->fields, i);
-        if (fd && fd->type && ttHasParam(fd->type)) return false;
-    }
-    return true;
-}
-
-/**
  * @brief Check a literal lambda, synthesizing its environment struct and `call` method when needed.
  *
  * Order: build the environment type first (its fields are filled in later, because the capture set is
@@ -1267,9 +1257,10 @@ static Type *checkLambda(Checker *c, Expr *e) {
      * environment's type is created by the first check, so the second one has to return that same
      * type -- a fresh `$lam$` environment would be a structurally identical but *different* type, and
      * an argument that is a bare lambda would then compare unequal to the parameter it was inferred
-     * from. Memoising is only valid outside a generic body: inside one, the second instance of a
-     * template has different type arguments, so its lambdas really are different types. */
-    if (e->type && e->u.lambda.sdef && !ttIsError(e->type) && lamEnvMentionsNoParam(e->u.lambda.sdef))
+     * from. Inside a generic body the environment may carry a type parameter in a field; the type is
+     * still one AST node, and code generation lays it out once per instance (`planLamScope`), so the
+     * same memoised type is the right answer there too. */
+    if (e->type && e->u.lambda.sdef && !ttIsError(e->type))
         return e->type;
 
     if (c->lamDepth > 0) {
@@ -1293,6 +1284,7 @@ static Type *checkLambda(Checker *c, Expr *e) {
     sd->ctx = c->ctx;
     sd->modName = c->curFunc ? c->curFunc->modName : NULL;
     sd->line = e->line;
+    planSetLamScope(sd, c->curFunc);
     vecInit(&sd->typeParams, c->arena, sizeof(const char *));
     vecInit(&sd->fields, c->arena, sizeof(FieldDef *));
     vecInit(&sd->methods, c->arena, sizeof(FuncDef *));
@@ -1435,19 +1427,10 @@ static Type *checkLambda(Checker *c, Expr *e) {
             rt->mut = true;
             fd->type = rt;
         } else {
-            fd->type = sy->type;             /* a copy: the closure sees the value it was made with */
-            /* The environment is emitted once, from the template, so a field whose type mentions a
-             * type parameter would reach the C emission as `T` and be written with the instance's
-             * concrete type -- a C type error, not a diagnostic. Reject the shape instead: laying
-             * the environment out per instance is a separate feature. */
-            if (sy->type && ttHasParam(sy->type))
-                ckError(c, e->line,
-                        "The environment of a lambda is laid out once, from the generic body it is"
-                        " written in; a capture whose type depends on a type parameter would need a"
-                        " different layout per instance. Copy the value into a local of a concrete"
-                        " type, or pass it as a parameter.",
-                        "a lambda in a generic function cannot capture `%s`: its type `%s` depends on"
-                        " a type parameter", sy->name, typeStr(c, sy->type));
+            /* A copy: the closure sees the value it was made with. A type that mentions a type
+             * parameter is fine here -- the environment is laid out once per instance of the enclosing
+             * body (see `planLamScope`), so the field's C type is the instance's concrete type. */
+            fd->type = sy->type;
         }
         *(FieldDef **)vecPush(&sd->fields) = fd;
         *(const char **)vecPush(&fields) = fd->name;
@@ -3649,6 +3632,14 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     return checkExprInner(c, e);
                 }
             }
+            /* The `f` in `f(x)` **holds a value of function type** rather than naming a declaration: the call
+             * goes through a code pointer and the signature comes from the type. This branch comes before all
+             * the by-name branches below, because they all describe a declaration this call does not have. */
+            if (e->u.call.callee && e->u.call.callee->kind == EX_IDENT) {
+                Sym *sy = lookup(c, e->u.call.callee->u.ident.name);
+                Type *ct = (sy && sy->type) ? tsub(c, sy->type) : NULL;
+                if (ct && ct->kind == TY_FN) return checkCallThroughFn(c, e, ct);
+            }
             /* The `f` in `f(x)` is a value whose type mentions a **type parameter** (`F`): which method
              * this is only becomes known per instance, exactly like `f.call(x)` on a type parameter.
              * Rewritten in place into that call so the deferred path decides it once the instance is
@@ -3664,14 +3655,6 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     e->u.method.args = args;
                     return checkExprInner(c, e);
                 }
-            }
-            /* The `f` in `f(x)` **holds a value of function type** rather than naming a declaration: the call
-             * goes through a code pointer and the signature comes from the type. This branch comes before all
-             * the by-name branches below, because they all describe a declaration this call does not have. */
-            if (e->u.call.callee && e->u.call.callee->kind == EX_IDENT) {
-                Sym *sy = lookup(c, e->u.call.callee->u.ident.name);
-                Type *ct = (sy && sy->type) ? tsub(c, sy->type) : NULL;
-                if (ct && ct->kind == TY_FN) return checkCallThroughFn(c, e, ct);
             }
             /* `o.f(x)` where `f` is a **field** holding a `fn`, not a method. Without this the
              * method path answers "no method `f` on `op`" -- a sentence about the wrong thing, on a
@@ -4362,7 +4345,10 @@ static Type *checkExprInner(Checker *c, Expr *e) {
              * and only check of it. */
             if (e->u.method.name && strcmp(e->u.method.name, "call") == 0) {
                 Type *ct = peekCallableType(c, e->u.method.recv);
-                if (ct) {
+                /* A *concrete* `fn(...)` means a call through the pointer. A type parameter may
+                 * instantiate to a closure, whose `call` is a real method: rewriting that here would
+                 * turn it back into a call expression and the two rewrites would chase each other. */
+                if (ct && ct->kind == TY_FN) {
                     Expr *recv = e->u.method.recv;      /* read before `u.call` overwrites them */
                     Vec   args = e->u.method.args;
                     e->kind = EX_CALL;

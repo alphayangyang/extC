@@ -1,0 +1,34 @@
+// 泛型函数体里的 lambda 捕获"类型依赖类型参数"的值：每个实例有自己的环境布局
+// （字段类型随实例变具体），`call` 方法也按实例各发一份。
+// expect: 17 8 46
+use std::io
+
+struct key { v: i64
+    fn hash(self: ref key) -> i64 { return self.v * 3 }
+}
+
+struct item { n: i64
+    fn hash(self: ref item) -> i64 { return self.n + 1 }
+}
+
+fn calc<K>(k: K, d: i64) -> i64 {
+    let f = fn(x: i64) -> i64 { return x + k.hash() }
+    return f(d)
+}
+
+// 同一个泛型函数里两个不同的 lambda，各自捕获 T 值
+fn twice<K>(k: K) -> i64 {
+    let add = fn(x: i64) -> i64 { return x + k.hash() }
+    let mul = fn(x: i64) -> i64 { return x * k.hash() }
+    return add(1) + mul(2)
+}
+
+fn main() -> i32 {
+    var a: key = key { v: 5 }
+    var b: item = item { n: 3 }
+    var x: i64 = calc<key>(a, 2)
+    var y: i64 = calc<item>(b, 4)
+    var z: i64 = twice<key>(a)
+    io::cout << x << " " << y << " " << z << "\n"
+    return 0
+}

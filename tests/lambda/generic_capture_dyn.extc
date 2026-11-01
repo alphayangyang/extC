@@ -1,0 +1,21 @@
+use std::io
+
+// `dyn` 载荷只有一份布局（由 trait 决定），而捕获了类型参数相关值的闭包按实例各有一份布局
+// ⇒ 必须拒绝，并且报的是"布局"这条理由，而不是笼统的"含引用"。
+// expect: error: this closure captures a value whose type depends on a type parameter
+trait IntFn { fn call(self: ref Self, a: i64) -> i64 }
+
+struct key { v: i64
+    fn hash(self: ref key) -> i64 { return self.v }
+}
+
+fn wrap<K>(k: K, d: i64) -> i64 {
+    var box: dyn IntFn = dyn IntFn(fn(x: i64) -> i64 { return x + k.hash() })
+    return box.call(d)
+}
+
+fn main() -> i32 {
+    var a: key = key { v: 5 }
+    io::cout << wrap<key>(a, 2) << "\n"
+    return 0
+}
