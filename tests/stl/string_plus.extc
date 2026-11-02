@@ -6,7 +6,7 @@ use stl::string as str
 
 fn tag(name: slice<u8>, n: i64) -> string {
     /* 右操作数是 `string` 值时按值传（拷贝），不会把本地的视图借给返回值 ——
-     * `tmp.toSlice()` 在这里会被借用检查挡下（视图可能比局部活得久），这正是不变量在干活。 */
+     * `tmp.snapshot()` 在这里会被借用检查挡下（视图可能比局部活得久），这正是不变量在干活。 */
     let tmp: string = str::fromI64(n)
     return str::from(name) + "#" + tmp
 }
@@ -17,6 +17,6 @@ fn main(args: slice<slice<u8>>) -> i32 {
     let s: string = a + "cd" + "e"
     let t: string = a + s
     let u: string = tag("x", 7)
-    io::cout << s.toSlice() << " " << t.toSlice() << " " << u.toSlice() << "\n"
+    io::cout << s.snapshot() << " " << t.snapshot() << " " << u.snapshot() << "\n"
     return 0
 }

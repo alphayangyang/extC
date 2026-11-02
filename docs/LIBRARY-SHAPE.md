@@ -31,7 +31,7 @@
 |---|---|---|---|
 | 1 | `fs` 的 `OUT_BUF/OUT_LEN/OUT_FD` 是模块级 `var` | 两个 `par` 分支各写 stdout、或两个协程同时 `println`：缓冲被互相踩 | 缓冲属于 `Out` 对象；`io::out()` 返回单例并由运行期提供原子刷写；新增判据 `tests/io/concurrent-write.extc` |
 | 2 | `io::fmt` 的 `FMT/PAIRS` 是模块级 `var`，且 `PAIRS_READY` 是一次性懒初始化 | 第一次格式化后的表被所有线程共享；初始化竞争 | 表是 `let` 常量表（编译期或启动期一次），`PAIRS_READY` 消失 |
-| 3 | `toSlice()` 在 `vector`/`string` 上**拷贝**，而 `asSlice()`/借出**不拷贝** | 用户以为拿到的是视图，改容器后读到旧数据（或反之）| 只剩两个名字：`view()`（借出、生命周期由检查器管）与 `snapshot()`（拷贝） |
+| 3 | `snapshot()` 在 `vector`/`string` 上**拷贝**，而 `view()`/借出**不拷贝** | 用户以为拿到的是视图，改容器后读到旧数据（或反之）| 只剩两个名字：`view()`（借出、生命周期由检查器管）与 `snapshot()`（拷贝） |
 | 4 | `stl::pool` 的句柄生命周期是第二套世界观 | `ref` 悬垂是编译错，`handle` 过期是运行期 `none` —— 两套规则并存 | `slab<T>` 进 `std::data` 内部，句柄只在 `slab` 内部；主线只剩 `ref` |
 | 5 | `string` 与 `slice<u8>` 是两种文本 | 字面量是 `slice<u8>`，`any` 装进去后 trap 报文里出现 `string$string` 这种内部名 | 字面量默认为 `string`；`slice<u8>` 只在字节流 API 上出现 |
 | 6 | 两套 JSON 编码器（`std::json` 与 `reflect::json`）| 同一件事两种输出路径、两份维护成本 | `std::json` 只保留 `node` 与解析；编码统一走 `reflect`（描述符驱动）|
@@ -76,7 +76,7 @@ std::sys             ← 唯一允许出现 extc_* 与平台类型；被上面�
 2. **名字不编码类型**：`sumI64`→`sum<T>`；`padI64/padF64/padText`→`pad(v: any, width, align)`；`fromI64/toI64`→`parse::int`/`toInt`。
 3. **`extc_` 只允许出现在 `std::sys`**，并且一律 `@private`。
 4. **内部助手带 `p` 前缀的一律改私有并去掉前缀**（`pStale`→私有 `staleOf`，`pRoundUp`→私有 `roundUp`），公开面不出现"魔法前缀"。
-5. **视图与快照分开命名**：`view()` 借出、`snapshot()` 拷贝；禁止 `toSlice` / `asSlice` 两种名字表达同一件事。
+5. **视图与快照分开命名**：`view()` 借出、`snapshot()` 拷贝；禁止 `snapshot` / `view` 两种名字表达同一件事。
 
 ### 4.4 返回值语义（一条规则）
 
@@ -122,8 +122,8 @@ std::text::number-> text / text -> number 各留一个入口（`parse` / `render
 
 | 期 | 内容 | 判据 |
 |---|---|---|
-| **P0 收口** | 214 个内部成员全部 `@private`（含 `p*`、`extc_*`、状态机、`toSlice` 的双名）；`manual_surface` 未覆盖率 0 | `check_manual --gate` 未覆盖 = 0；`surface.md` 只剩真实 API；`tests/run.sh` 377/0 |
-| **P1 拆炸弹** | `fs`/`io::fmt` 的模块级 `var` 改成 `Out`/`In` 对象与 `let` 表；`toSlice/asSlice` → `view/snapshot` | 新增 `tests/io/concurrent-write.extc`（`par` 两分支 + 两协程同时 println，输出逐字节正确）；`bench/app` 与 `bench/crazy` 不低于现在 5% |
+| **P0 收口** | 214 个内部成员全部 `@private`（含 `p*`、`extc_*`、状态机、`snapshot` 的双名）；`manual_surface` 未覆盖率 0 | `check_manual --gate` 未覆盖 = 0；`surface.md` 只剩真实 API；`tests/run.sh` 377/0 |
+| **P1 拆炸弹** | `fs`/`io::fmt` 的模块级 `var` 改成 `Out`/`In` 对象与 `let` 表；`snapshot/view` → `view/snapshot` | 新增 `tests/io/concurrent-write.extc`（`par` 两分支 + 两协程同时 println，输出逐字节正确）；`bench/app` 与 `bench/crazy` 不低于现在 5% |
 | **P2 合并** | `std::text`/`std::data`/`std::nd` 落地；`varArray`+`vector` 合一；8 个格式化名字 → 3 个 | `bench/crazy` 的 extC 臂从 182 行降到 ≤120 行，耗时不降；`tests/` 全绿；`docs/usage/stdlib.md` 重写 |
 | **P3 换根** | `stl::` → `std::` 别名过渡后删除；`prelude` 只留语言必需 | 全仓 `use` 迁移完；`check_manual`/`docs`/`nobench` 绿；外部两个示例工程能编 |
 

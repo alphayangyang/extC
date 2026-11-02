@@ -1628,6 +1628,23 @@ static Type *checkBorrowArg(Checker *c, Expr **slot, Type *want) {
 }
 
 /**
+ * @brief The name of the method that lends a container as a view: `view` (read-only) or `viewMut`
+ *        (writable), with the older `asSlice` / `asMutSlice` spelling still accepted.
+ *
+ * @param base     The container type (already stripped of `ref`).
+ * @param wantMut  True for the writable view.
+ * @return         The declared method's name, or NULL when the type declares neither spelling.
+ */
+static const char *feeldLendName(Type *base, bool wantMut) {
+    if (!base || !structOf(base)) return NULL;
+    const char *primary = wantMut ? "viewMut" : "view";
+    const char *legacy = wantMut ? "asMutSlice" : "asSlice";
+    if (findMethod(base, primary)) return primary;
+    if (findMethod(base, legacy)) return legacy;
+    return NULL;
+}
+
+/**
  * @brief Lend a "container" argument in place as a read-only view: `varArray<T>` is written `v.asSlice()`,
  *        a fixed-size array is written `a[..]`.
  *
@@ -1671,17 +1688,14 @@ static bool lendViewArg(Checker *c, Type *want, Expr **pslot) {
         (elemOk || ttEquals(got->inner, wantElem)) && isPlace(a)) {
         /* `a[..]`: endpoints omitted, and the checker fills in the fixed-size array's length as a literal. */
         node = exprSliceNew(c->arena, a, NULL, NULL, a->line);
-    } else if (isProtoType(got, "varArray", 1) && got->targs.len == 1 &&
-               (elemOk || ttEquals(*(Type **)vecAt(&got->targs, 0), wantElem))) {
-        node = exprMethodNew(c->arena, a, wantMut ? "asMutSlice" : "asSlice", a->line);
     } else {
-        /* Any type can declare its own lend methods: `asSlice() -> slice<T>` (read-only) and
-         * `asMutSlice() -> mut slice<T>` (writable). The criterion is "the method really exists and returns a
-         * view whose element matches" -- the naming convention is not the contract, the signature is. This
-         * keeps user-written containers out of the checker. */
-        FuncDef *borrow = structOf(ttBase(got))
-                              ? findMethod(ttBase(got), wantMut ? "asMutSlice" : "asSlice")
-                              : NULL;
+        /* Any type can declare its own lend method: `view() -> slice<T>` (read-only) and
+         * `viewMut() -> mut slice<T>` (writable); the older `asSlice()` / `asMutSlice()` spelling is still
+         * accepted. The criterion is "the method really exists and returns a view whose element matches" --
+         * the naming convention is not the contract, the signature is. This keeps user-written containers
+         * out of the checker. */
+        const char *name = feeldLendName(ttBase(got), wantMut);
+        FuncDef *borrow = name ? findMethod(ttBase(got), name) : NULL;
         if (borrow && borrow->ret) {
             Type *rb = borrow->ret;
             /* When the method is declared on the template, the return type has `T` in it: substitute with the
@@ -1691,7 +1705,7 @@ static bool lendViewArg(Checker *c, Type *want, Expr **pslot) {
             Type *rbBase = ttBase(rb);
             Type *be = rbBase && ttIsViewType(rbBase) ? viewElemOf(rbBase) : NULL;
             if (be && (elemOk || ttEquals(be, wantElem)) && (!wantMut || rb->mut))
-                node = exprMethodNew(c->arena, a, wantMut ? "asMutSlice" : "asSlice", a->line);
+                node = exprMethodNew(c->arena, a, name, a->line);
         }
     }
     if (!node) return false;
@@ -3757,7 +3771,9 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                      * text path. */
                     if (at && at->kind == TY_STRUCT && at->sdef && at->sdef->name &&
                         strstr(at->sdef->name, "string")) {
-                        Expr *m = exprMethodNew(c->arena, a, "asSlice", a->line);
+                        /* `view()` is the convention (`asSlice()` is the older spelling). */
+                        const char *lend = findMethod(at, "view") ? "view" : "asSlice";
+                        Expr *m = exprMethodNew(c->arena, a, lend, a->line);
                         *slot = m;
                         a = m;
                         at = checkPrintArg(c, a);

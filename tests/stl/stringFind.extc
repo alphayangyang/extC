@@ -42,9 +42,9 @@ fn naive(h: slice<u8>, nd: slice<u8>) -> i64 {
 /* 一个边界用例：既对**期望值**，也对**朴素实现**（两样都要对上才算过；返回 1 = 没过）。
  * 期望值写成字面量是有意的：只跟朴素实现对拍的话，两边一起错就看不出来了。 */
 fn checkOne(h: ref string, nd: ref string, want: i64) -> i64 {
-    let got = h.find(nd.toSlice()) ?? -1
+    let got = h.find(nd.snapshot()) ?? -1
     if got != want { return 1 }
-    if got != naive(h.toSlice(), nd.toSlice()) { return 1 }
+    if got != naive(h.snapshot(), nd.snapshot()) { return 1 }
     return 0
 }
 
@@ -65,8 +65,8 @@ fn main() -> i32 {
                 var hb: i64 = 0
                 while hb < (i64(1) << hl) {
                     mk(ref hay, hb, hl)
-                    let got  = hay.find(nd.toSlice()) ?? -1
-                    let want = naive(hay.toSlice(), nd.toSlice())
+                    let got  = hay.find(nd.snapshot()) ?? -1
+                    let want = naive(hay.snapshot(), nd.snapshot())
                     if got != want { bad = bad + 1 }
                     checked = checked + 1
                     hb = hb + 1
@@ -87,9 +87,9 @@ fn main() -> i32 {
     }
     var p1: string = string::withCap(16)
     p1.append("aaaaab")
-    if (big.find(p1.toSlice()) ?? -1) != -1 { bad = bad + 1 }
+    if (big.find(p1.snapshot()) ?? -1) != -1 { bad = bad + 1 }
     big.push(u8(98))                                   /* 现在末尾是 b：aaa...ab 从 99995 开始 */
-    if (big.find(p1.toSlice()) ?? -1) != 99995 { bad = bad + 1 }
+    if (big.find(p1.snapshot()) ?? -1) != 99995 { bad = bad + 1 }
     var cyc: string = string::withCap(1024)
     var j: i64 = 0
     while j < 4096 {
@@ -98,10 +98,10 @@ fn main() -> i32 {
     }
     var p2: string = string::withCap(16)
     p2.append("abababab")
-    if (cyc.find(p2.toSlice()) ?? -1) != 0 { bad = bad + 1 }
+    if (cyc.find(p2.snapshot()) ?? -1) != 0 { bad = bad + 1 }
     var p3: string = string::withCap(16)
     p3.append("ba")
-    if (cyc.find(p3.toSlice()) ?? -1) != 1 { bad = bad + 1 }
+    if (cyc.find(p3.snapshot()) ?? -1) != 1 { bad = bad + 1 }
 
     /* 边界的**逐条点名**：穷举那一轮的 `nl` 从 1 起（空模式不在里面），这里把每一个都写成
      * 一行 —— 每个都同时与朴素实现对拍（`checkOne`），`edge` 是没过的条数，必须是 0。 */

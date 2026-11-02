@@ -214,15 +214,15 @@ fn main() -> i32 {
     let input: slice<u8> = "PING\r\nSET k 5\r\nhello\r\nGET k\r\nGET nope\r\nSET a 3\r\nxyz\r\nGET a\r\nPING\r\n"
     var base: string = string::withCap(256)
     runFeed(input, 0, ref base)
-    io::cout << "--- 一次喂完 ---\n" << base.toSlice()
+    io::cout << "--- 一次喂完 ---\n" << base.snapshot()
 
     var chunk: i64 = 1
     var bad: i64 = 0
     while chunk <= 16 {
         var got: string = string::withCap(256)
         runFeed(input, chunk, ref got)
-        if !(got.toSlice() == base.toSlice()) {
-            io::cout << "MISMATCH at chunk=" << chunk << ":\n" << got.toSlice()
+        if !(got.snapshot() == base.snapshot()) {
+            io::cout << "MISMATCH at chunk=" << chunk << ":\n" << got.snapshot()
             bad = bad + 1
         }
         chunk = chunk + 1

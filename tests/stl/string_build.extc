@@ -19,6 +19,6 @@ fn main(args: slice<slice<u8>>) -> i32 {
         if i > 1 { csv.append(",") }
         csv.appendI64(i)
     }
-    io::cout << s.toSlice() << " | " << csv.toSlice() << " | e=" << csv.len() - csv.len() << "\n"
+    io::cout << s.snapshot() << " | " << csv.snapshot() << " | e=" << csv.len() - csv.len() << "\n"
     return 0
 }

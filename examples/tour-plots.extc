@@ -92,7 +92,7 @@ fn main() -> i32 {
     i = 0
     while i < plots.len() {
         let area = plots.atDense(i).area()          /* ← 动态派发：表与接收者都取自校验过的槽 */
-        io::cout << line(i, kinds.get(i)!, area).toSlice() << "\n"
+        io::cout << line(i, kinds.get(i)!, area).snapshot() << "\n"
         total = total + area
         if area > best { best = area  bestAt = i }
         i = i + 1

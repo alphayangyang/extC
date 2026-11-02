@@ -693,7 +693,7 @@ var g, h: i32               // 零初始化：两个都是 0
   trap，不在解引用时。视图的元素不行（`ref v[1]` → `cannot take a reference to an element
   of a view`），因为视图背后的存储可能随容器扩容搬家；可增长容器的元素同理。
   视图的元素**分两种**：存储是这一帧自己取来的（`new T[n]`、以及它的窗口）可以取引用 ——
-  存储不可能被谁搬走；指向容器板块的视图（`string::asSlice()`、容器自己的视图）不行，扩容会
+  存储不可能被谁搬走；指向容器板块的视图（`string::view()`、容器自己的视图）不行，扩容会
   把板块换掉。其他表达式（调用结果、算术结果）也不行。
 
 ### 7.2 解引用与自动解引用
@@ -721,16 +721,16 @@ var g, h: i32               // 零初始化：两个都是 0
   所以绑成 `let` 之后可以跨 `yield` / `ext` 使用；局部数组的视图跨 `yield` 仍然被拒
   （那才是"指向别人栈帧"）。
 - **容器在视图参数上自动借出**：只读参数上 `total(va)`（`varArray<T>`）等价于
-  `total(va.asSlice())`、`total(a)`（`[N]T`）等价于 `total(a[..])`；可写参数
+  `total(va.view())`、`total(a)`（`[N]T`）等价于 `total(a[..])`；可写参数
   （`mut slice<T>`）上 `fill(va)` 等价于 `fill(va.asMutSlice())`、`fill(a)` 等价于
   `fill(a[..])`，后者要求容器本身是可写的地方（`var` 绑定），借用检查照常把关。
   方法实参同理（`s.append(bytes)` 的 `bytes`）；**表达式位置也借**（`println(f"…")`、
   `take(f"seven")` 这类右值直接过）。编译器在调用位置造的就是这些节点，借用与生命周期检查照常生效。元素类型对不上时（`varArray<i32>` 传给 `slice<i64>`）不借，
   诊断指出该写什么。
-- **借出不是内建名单**：任何类型只要方法 `asSlice() -> slice<T>`（只读）或
+- **借出不是内建名单**：任何类型只要方法 `view() -> slice<T>`（只读）或
   `asMutSlice() -> mut slice<T>`（可写）的**返回类型**对得上，就能出现在这类参数上 ——
   判据是签名，不是容器是哪个内建类型。`varArray` 与定长数组只是内建的两个现成做法。
-  只有 `asSlice` 的类型不会被借成可写视图（可写参数仍要求 `asMutSlice`）。
+  只有 `view` 的类型不会被借成可写视图（可写参数仍要求 `asMutSlice`）。
 
 ```extc
 // 结果：3 10 80 1059 / hello world 0
@@ -930,7 +930,7 @@ fn main() -> i32 {
 |---|---|---|
 | 存储 | 一块连续 buffer，满了按 2 倍扩容 | 值放 dense 数组，另有 slot→dense 的映射 |
 | 取 / 写 | `v.get(i) -> ?T`、`v.set(i, v)`（按值拷） | `p.get(h) -> ?T`、`p.set(h, v) -> bool`（按值拷） |
-| 可寻址性 | `v[i]` **不行**（`cannot index a value of type 'varArray<i32>'`）；要借出视图：`v.asSlice()` / `v.asMutSlice()` → `slice<T>`，视图元素可索引、可写 | 没有按索引访问；`p.toSlice()` 借出活元素前缀的视图 |
+| 可寻址性 | `v[i]` **不行**（`cannot index a value of type 'varArray<i32>'`）；要借出视图：`v.view()` / `v.asMutSlice()` → `slice<T>`，视图元素可索引、可写 | 没有按索引访问；`p.snapshot()` 借出活元素前缀的视图 |
 | 装引用 / 视图 | 可以：`varArray<slice<u8>>`、`varArray<ref i32>` 都编过（存的时候按寿命检查） | 可以：`pool<slice<u8>>` 编过 |
 | 回收 | **没有逐对象回收**：`clear()` 只把 `len` 归零、不还内存，也不能缩容 | **逐对象回收**：`remove(h)` 把最后一个值搬进空洞、该槽位"代 +1"；之后旧句柄 `get` 得 `none`（不会读到新值） |
 | 句柄 | 下标（会因扩容/搬移失效） | `{ slot, gen, ep }`，陈旧句柄可判定 |
@@ -1209,9 +1209,9 @@ parser 把 `for` 脱糖成 `var` + `while`，共有三种脱糖形状；
 容器形状覆盖：定长数组、`slice<T>`（含字符串字面量）、协程帧，
 以及任何声明了 `iter` / `next` / `value` 三个方法的用户类型
 （`fn iter(self: ref Self) -> It`、`fn next(self: mut ref It) -> bool`、`fn value(self: ref It) -> T`）。
-`varArray` / `string` 这类**有 `asSlice()` 的容器会被自动借出**：`for d in va` 等价于
-`for d in va.asSlice()`，不用手写 `.asSlice()`。`vector<T>` 故意不提供零拷贝视图（`toSlice` 拷贝），
-迭它要显式写 `for d in v.toSlice()`。
+`varArray` / `string` 这类**有 `view()` 的容器会被自动借出**：`for d in va` 等价于
+`for d in va.view()`，不用手写 `.view()`。`vector<T>` 故意不提供零拷贝视图（`snapshot` 拷贝），
+迭它要显式写 `for d in v.snapshot()`。
 
 ```extc
 // 结果：10 60 12 60
@@ -1475,7 +1475,7 @@ fn main() -> i32 {
 | `a == b`（带载荷枚举） | `` `shape` is an enum with a payload, so it has no `==` ``（要比就 `match` 或自己写 `fn ==`） |
 | `let f: fn(i64) -> i64`（无初始化式） | `cannot zero-initialize 'f': it contains a fn`（`fn` 没有零值） |
 | `i8(300)` | 编译通过；运行时 trap `value does not fit in the target type` |
-| `var v: varArray<T>` 上 `v[i]` | `cannot index a value of type 'varArray<i32>'`（用 `get`/`set`/`asSlice`） |
+| `var v: varArray<T>` 上 `v[i]` | `cannot index a value of type 'varArray<i32>'`（用 `get`/`set`/`view`） |
 | 嵌套超过 64 层块 | `nesting too deep in a block (the compiler's limit is 64 levels)` |
 | 表达式树超过 2048 层（`a + a + …` 的长链，或机器生成的表达式） | `expression too deep to check (the compiler's limit is 2048 levels)` |
 

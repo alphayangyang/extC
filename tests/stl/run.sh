@@ -110,7 +110,7 @@ run_case varArray_snapshot tests/stl/varArray_snapshot.extc "snap=11,22 len=2 li
 run_case varArray_mutview_lost tests/stl/varArray_mutview_lost.extc "landed=77 live0=77 live1=22 stale=77,88 alen=3"
 run_case varref  tests/stl/vararray_ref.extc  "a_data=2 b_data=1 n=1"
 
-echo "== string：连续字节串（append 触发 1.5 倍扩容 · asSlice 连续可直印 · shrink 降水位）=="
+echo "== string：连续字节串（append 触发 1.5 倍扩容 · view 连续可直印 · shrink 降水位）=="
 echo "== 深拷贝：\`var b = a\` 不是深拷贝（共用板块）⇒ 要独立副本必须显式 a.clone() =="
 echo "== 共享存储的警告：该报的要报（var b = a / return a），不该报的**一条都不许有** =="
 check_copy_warn() {

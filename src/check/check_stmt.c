@@ -169,8 +169,14 @@ static bool forRetargetToIterator(Checker *c, Stmt *block) {
      * path. */
     {
         Type *sbv = ttBase(tsub(c, st));
-        if (sbv && sbv->kind != TY_ARRAY && !viewElemOf(sbv) && findMethod(sbv, "asSlice")) {
-            bind->u.var.init = exprMethodNew(c->arena, subject, "asSlice", bind->line);
+        /* `view()` is the convention; `asSlice()` is the older spelling and stays accepted. */
+        const char *lend = NULL;
+        if (sbv && sbv->kind != TY_ARRAY && !viewElemOf(sbv)) {
+            if (findMethod(sbv, "view")) lend = "view";
+            else if (findMethod(sbv, "asSlice")) lend = "asSlice";
+        }
+        if (lend) {
+            bind->u.var.init = exprMethodNew(c->arena, subject, lend, bind->line);
             return true;
         }
     }

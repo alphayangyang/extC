@@ -102,7 +102,7 @@ s = s + 1.0             // 另一侧是 f64
 1. `i64(<整数字面量>)` 删掉，按上面的两条例外保留；
 2. `var idx: [8]i64` 直接声明就是零初始化，不写 `[i64(0), …×8]` 字面量；
 3. 定长数组整体赋值即拷贝：`var c: [8]i64 = w.shape`，不写逐元素拷贝循环；
-4. 同一批清理顺手把 `stdlib` 里"为了让类型通过"而存在的多余 `asSlice()` / `ref` 拿掉——每次都用 tests 兜。
+4. 同一批清理顺手把 `stdlib` 里"为了让类型通过"而存在的多余 `view()` / `ref` 拿掉——每次都用 tests 兜。
 
 验收：`i64(<字面量>)` 计数从 5,191 降到 ≤ 600；行数与 tokens 比不升；`./tests/run.sh`、
 `smoke`、`nobench`、`docs` 全绿。
@@ -192,7 +192,7 @@ s = s + 1.0             // 另一侧是 f64
 
 今天能用的东西：
 
-- `stl::string`：`new` / `withCap` / `from(slice<u8>)` / `fromI64`；方法 `len`、`toSlice`、`clone`、
+- `stl::string`：`new` / `withCap` / `from(slice<u8>)` / `fromI64`；方法 `len`、`snapshot`、`clone`、
   `push`、`append`、`concat`、`concatBytes`、`sub`、`at`、`find`、`contains`、`startsWith`、
   `endsWith`、`removeFront`、`clear`、`hash`、`==`（`string` 与 `slice<u8>` 各一套）、`<`。
 - `stl::stringio`（`impl string`）：`readLineFrom` / `readAllFrom` / `writeTo` / `writeLineTo`；
@@ -204,7 +204,7 @@ s = s + 1.0             // 另一侧是 f64
 痛点（都是"有模板但难用"的具体形态）：
 
 1. `f"…"` 只能作 `<<` 的右操作数 ⇒ 想要一个字符串值，就得 `string::new()` 加一串 `append` / `fromI64`；
-2. 字面量是 `slice<u8>`、拥有者是 `string`，转换靠 `from` / `toSlice`，比较还分两套 `==`；
+2. 字面量是 `slice<u8>`、拥有者是 `string`，转换靠 `from` / `snapshot`，比较还分两套 `==`；
 3. 没有 `split`、没有通用的 `parse<T>`（只有 `toI64`）⇒ 切分隔符要手写下标循环；
 4. 没有 `print` / `println` ⇒ 输出只能 `<<` 链，链一长就难读，且必须写在一行；
 5. 读输入得拿 `io::reader` 的 `nextLine` / `nextI64` 再 `match` 错误，逐行循环要自己搭。
@@ -240,7 +240,7 @@ for line in io::lines() { ... }            // 逐行迭代，错误在迭代器�
 `slice<u8>` 或 `string`）。运算符方法因此也能分配：运算符调用点与方法调用共用同一套 zone 记账。
 
 数字与布尔也能直接接在 `+` 后面：`let s = str::from("a=") + n`（整数按十进制、`f64`/`f32` 六位
-小数、`bool` 给 `true`/`false`）；`io::cout << s` 也能直接吃 `string`，不用再写 `s.toSlice()`。
+小数、`bool` 给 `true`/`false`）；`io::cout << s` 也能直接吃 `string`，不用再写 `s.snapshot()`。
 这两项让"用字符串拼一行"彻底不需要临时视图。
 
 **f-string 落在值位置**：`let s: string = f"{name}: {n}"` 展开成
@@ -254,7 +254,7 @@ for line in io::lines() { ... }            // 逐行迭代，错误在迭代器�
 本段又补：`io::eprint` / `io::eprintln`（诊断通道的一句版）、`stringio::fromF64(x, prec)`（定点浮点
 转字符串，复用 `io::pFmtF`；容器不认识"小数点后几位"，所以放 stringio 层）。
 
-还缺的（第 1 层 B 后续）：`varArray`→`slice` 之外的容器转视图（`vector` 的 `toSlice` 仍是显式）。
+还缺的（第 1 层 B 后续）：`varArray`→`slice` 之外的容器转视图（`vector` 的 `snapshot` 仍是显式）。
 
 ### 第 1 层 B 的进展（二）：把默认路径变短
 
@@ -262,10 +262,10 @@ for line in io::lines() { ... }            // 逐行迭代，错误在迭代器�
 
 - **`for` 接受右值主语**：`for part in string::split(line, ",")` 直接可用（不是 place 时编译器先
   收进隐藏绑定、只求值一次）。
-- **容器自动借出**：`for d in va` 等价于 `for d in va.asSlice()`；任何有 `asSlice()` 的类型都能
-  直接迭（`vector` 仍显式 `toSlice()`，因为它故意不交出零拷贝视图）。
+- **容器自动借出**：`for d in va` 等价于 `for d in va.view()`；任何有 `view()` 的类型都能
+  直接迭（`vector` 仍显式 `snapshot()`，因为它故意不交出零拷贝视图）。
 - **表达式位置也自动借出**：`println(f"…")`、`take(f"seven")`、`s.append(bytes)` 都不用先写
-  `asSlice()`（判据与参数借出同一条：签名里返回视图）。
+  `view()`（判据与参数借出同一条：签名里返回视图）。
 - **`?? break` / `?? continue`**：`let v = maybe(i) ?? continue` 一行写完"求值一次、没有就跳"。
 - **`string::toF64(b)`**：与 `toI64` 同位置，`f64(string::toF64(t) ?? 0.0)` 是"读一行再解析"的
   主路径（不再需要 `io::cin >>`）。
@@ -273,7 +273,7 @@ for line in io::lines() { ... }            // 逐行迭代，错误在迭代器�
   每次内建打印末尾补 `fflush(stdout)`，混写顺序与源码一致；`string` 实参按字节写出。
 
 已补：`varArray` / 定长数组传给**只读视图参数**时，调用位置自动借出（`total(va)` 就是
-`total(va.asSlice())`、`total(a)` 就是 `total(a[..])`），借用与生命周期照常检查；写权限
+`total(va.view())`、`total(a)` 就是 `total(a[..])`），借用与生命周期照常检查；写权限
 （`mut slice<T>`）仍要写在调用点。
 
 ## 第 1 层 C 的进展（多下标与切片糖）
@@ -419,7 +419,7 @@ out = a + b * k
   （1M 元素 ×200 轮：extC 0.97–1.01 s vs C 1.06–1.07 s）。
 - 跨函数 `seq::sum` / `seq::max` / `seq::min` 的识别已落地（见进展（三）（四））；多下标与
   `ndview` 形状的整数组表达式也已落地（rank-2/rank-3 直译成 `nd::*Into` 内核）。
-- 还没做：跨 `par` 融合、`ndview` 上的归约（`seq::sum` 只认 `slice<T>`）、`vector::toSlice` 仍是
+- 还没做：跨 `par` 融合、`ndview` 上的归约（`seq::sum` 只认 `slice<T>`）、`vector::snapshot` 仍是
   显式拷贝（故意如此：它是拷贝，不是借出）。
 
 ## 三层路线的现状（第 29 轮收口）
@@ -428,7 +428,7 @@ out = a + b * k
 |---|---|---|---|
 | 0 | `i64(<字面量>)` 自己写出来的仪式 | 已清到 6 处残留（都是语义必需：移位左操作数、`i64` 边界值、只定义 `<<(i64)` 的自定义流） | 本页「噪音测量」+ `tests/sugar/`、`tests/ops/stream*.extc` |
 | 1A | 字面量不替类型参数作主（六条规则） | 已落地 | 本页「第 1 层 A 的进展」 |
-| 1B | 值 f-string（含说明符，**糖自带模块**：不必为它写 `use stl::string`）、`split`/`join`/`trim`、控制台读、`string + 数字`、`asSlice` 借出 | 已落地 | 本页「第 1 层 B 的进展」、`tests/fstring/`、`tests/stl/` |
+| 1B | 值 f-string（含说明符，**糖自带模块**：不必为它写 `use stl::string`）、`split`/`join`/`trim`、控制台读、`string + 数字`、`view` 借出 | 已落地 | 本页「第 1 层 B 的进展」、`tests/fstring/`、`tests/stl/` |
 | 1C | 两下标 / 三下标 / 区间下标 / 复合赋值；`?` 落在语句值位置 | 已落地（零开销有闸门） | 本页「第 1 层 C 的进展」、`tests/stl/nd_sub*.extc`、`tests/ops/try_expr.extc` |
 | 1D | `fn` 形参的效果摘要（回调可写） | 已落地 | 本页「第 1 层 D 的进展」、`tests/ops/fn_callback_view.extc` |
 | 2 | S1 元素链 / S2 归约 / S3 流式 / 容器形式 / 跨函数 `seq::sum`、`seq::max`、`seq::min` | 已落地 | 本页 S1/S2/S3 与（三）（四）、`tests/fuse/`、`bench/fusion/` |
@@ -436,7 +436,7 @@ out = a + b * k
 
 **下一里程碑（不在这一轮的范围里）**：跨 `par` 融合（`par` 写临时视图 + 归约合成两次遍历）、
 `ndview` 上的归约（`seq::sum`/`max`/`min` 只认 `slice<T>`，`nd::sumv` 还没有跨函数识别）、
-`vector::toSlice` 是**故意**显式（拷贝语义要写出来，不做隐式转换）。
+`vector::snapshot` 是**故意**显式（拷贝语义要写出来，不做隐式转换）。
 
 ## 不做的
 

@@ -207,8 +207,8 @@ examples/tour-plots.extc	OK	49536e0a4754dcc2b44264f2205dfdca	49536e0a4754dcc2b44
 examples/tour.extc	OK	577426f315661638861046cb7e24182e	577426f315661638861046cb7e24182e	YES	-
 examples/try-positions.extc	OK	5ec80537936f292d692e03a461097ee2	5ec80537936f292d692e03a461097ee2	YES	-
 examples/types.extc	OK	d790b9ed91110760605ee19449ff4d83	d790b9ed91110760605ee19449ff4d83	YES	-
-examples/varArray-asSlice-return.extc	OK	08e664632b8b480ab4eec59dc932db03	08e664632b8b480ab4eec59dc932db03	YES	-
-examples/varArray-asSlice.extc	OK	f3a559305923cb24d5a6bd203030662b	f3a559305923cb24d5a6bd203030662b	YES	-
+examples/varArray-view-return.extc	OK	08e664632b8b480ab4eec59dc932db03	08e664632b8b480ab4eec59dc932db03	YES	-
+examples/varArray-view.extc	OK	f3a559305923cb24d5a6bd203030662b	f3a559305923cb24d5a6bd203030662b	YES	-
 examples/varArray-outparam.extc	OK	f9b78bd3e25c5874115af0a1525ea046	f9b78bd3e25c5874115af0a1525ea046	YES	-
 examples/varArray-return.extc	OK	4f27d798ed8b7bcf9cb679385e534f53	4f27d798ed8b7bcf9cb679385e534f53	YES	-
 examples/varArray.extc	OK	d2ce9da2069c9b23d24f8ed5af918718	d2ce9da2069c9b23d24f8ed5af918718	YES	-

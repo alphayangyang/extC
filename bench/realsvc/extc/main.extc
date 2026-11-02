@@ -359,7 +359,7 @@ fn modeParmix(buf: slice<u8>, readNs: i64, threads: i64) -> i32 {
         }
     }
     let n: i64 = offs.len()
-    let off: slice<i64> = offs.toSlice()
+    let off: slice<i64> = offs.snapshot()
     /* The last record has no successor offset, so its end is the buffer's end minus the
      * final newline when the file has one. */
     var tail: i64 = 0

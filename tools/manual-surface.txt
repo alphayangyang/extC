@@ -9,13 +9,13 @@ prelude	pcg32	inc	field	internal
 prelude	pcg32	state	field	public
 prelude	slice	data	field	public
 prelude	slice	len	field	public
-prelude	varArray	asSlice	method	public
 prelude	varArray	buf	field	internal
 prelude	varArray	cap	field	internal
 prelude	varArray	clear	method	public
 prelude	varArray	isEmpty	method	public
 prelude	varArray	len	field	public
 prelude	varArray	size	method	public
+prelude	varArray	view	method	public
 std::b64	-	decode	fn	public
 std::b64	-	decodeUrl	fn	public
 std::b64	-	decodedMax	fn	public
@@ -454,6 +454,7 @@ stl::pool	pool	pid	field	internal
 stl::pool	pool	pidGen	field	internal
 stl::pool	pool	slots	field	internal
 stl::pool	pool	vals	field	public
+stl::pool	pool	view	method	public
 stl::pool	pool	withCap	method	public
 stl::seq	-	maxBlocksF64	fn	public
 stl::seq	-	minBlocksF64	fn	public
@@ -479,7 +480,6 @@ stl::string	-	trimEnd	fn	public
 stl::string	-	trimStart	fn	public
 stl::string	-	withCap	fn	public
 stl::string	string	appendByte	method	public
-stl::string	string	asSlice	method	public
 stl::string	string	big	field	internal
 stl::string	string	cap	field	internal
 stl::string	string	capacity	method	public
@@ -490,6 +490,7 @@ stl::string	string	n	field	internal
 stl::string	string	pid	field	internal
 stl::string	string	pidGen	field	internal
 stl::string	string	small	field	internal
+stl::string	string	view	method	public
 stl::stringio	-	fromF64	fn	public
 stl::stringio	-	padF64	fn	public
 stl::stringio	-	padI64	fn	public
@@ -516,3 +517,4 @@ stl::vector	vector	new	method	public
 stl::vector	vector	pid	field	internal
 stl::vector	vector	pidGen	field	internal
 stl::vector	vector	vals	field	public
+stl::vector	vector	view	method	public

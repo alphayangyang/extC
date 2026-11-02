@@ -13,7 +13,7 @@ fn main() -> i32 {
   let v = vector::from(a[..])
   var b: [2]i64 = [7, 8]
   let w = vector::from(b[..])
-  let vs = v.toSlice()
+  let vs = v.snapshot()
   /* `<<` 链不能跨行续（下一行的 `<<` 会被当成新表达式）—— 一行写完，或者拆成两次输出。 */
   io::cout << "s=" << s.len() << " e=" << e.len() << " v=" << v.len() << " w=" << w.len() << " sum="
   io::cout << (vs[0] + vs[1] + vs[2]) << "\n"

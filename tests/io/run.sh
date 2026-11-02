@@ -455,4 +455,17 @@ else
     echo "  FAIL print-order  ->  期望 b|a|c，得到「$(echo "$out" | tr '\n' '|')」"; fail=1
 fi
 
+echo "== 两个协程交替打印：每一行完整（程序级单例输出流 + 协作式切换）=="
+if out=$("$EXTC" --run tests/io/concurrent-write.extc 2>&1); then
+    bad=$(printf '%s\n' "$out" | awk 'length($0) != 0 && $0 != "done" && length($0) != 10 { print }' | wc -l)
+    nlines=$(printf '%s\n' "$out" | wc -l)
+    if [ "$bad" -eq 0 ] && [ "$nlines" -eq 13 ]; then
+        echo "  ok   concurrent-write  ->  12 行整行 + done"
+    else
+        echo "  FAIL concurrent-write  ->  有 $bad 行被切开（共 $nlines 行）"; fail=1
+    fi
+else
+    echo "  FAIL concurrent-write  ->  跑不起来"; fail=1
+fi
+
 exit $fail

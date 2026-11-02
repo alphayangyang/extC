@@ -75,13 +75,18 @@ struct vector<T> {
         return true
     }
 
-    /* **拿到内容只有这一条路：`toSlice()` —— 拷一份到调用者所在的地方。**
+    /* **拿到内容只有这一条路：`snapshot()` —— 拷一份到调用者所在的地方。**
      *
      * 没有"零拷贝视图"是有意的：那等于把池里的东西交出去，而且守不住 ——
      * `push`（可能扩容搬家）/ `clear`（翻纪元）/ `shrink` / `release` 任何一个动作都能让它失效。
      * 名字也不用 `as*`：那看起来就像"给了里面的一个视图"。拷贝的存储由逃逸分析提到调用者
      * 选的地方，所以它可以存、可以返回。 */
-    fn toSlice(self: ref vector<T>) -> slice<T> {
+    /* 借出只读视图（**不拷贝**）：容器因此能直接出现在收 `slice<T>` 的参数上。
+     * 视图在**下一次改变容量/位置的调用**之后失效（`push`/`pop`/`grow`/`clear`/`release`），
+     * 要一份独立拷贝用 `snapshot`。 */
+    fn view(self: ref vector<T>) -> slice<T> { return self.vals[0..self.n] }
+
+    fn snapshot(self: ref vector<T>) -> slice<T> {
         var out: mut slice<T> = new T[self.n]
         copyInto<T>(out, self.vals, self.n)      /* 一次 memmove，不是逐元素循环 */
         return out
@@ -94,7 +99,7 @@ struct vector<T> {
      * `a.release()` 会让 `b` 变成悬垂（守卫能把它变成带位置的 trap，但那已经是事故了）。
      * 想"复制一份来自己改"，唯一的正路是这里：显式、代价可见（一次 O(n) 拷贝 + 一块新板块）。
      *
-     * 新容器的存储**生在调用者所在的地方**（与 `toSlice` 同一条逃逸规则）⇒
+     * 新容器的存储**生在调用者所在的地方**（与 `snapshot` 同一条逃逸规则）⇒
      * 它可以被存下来、被返回、活得比源容器长。 */
     fn clone(self: ref vector<T>) -> vector<T> {
         var out = vector<T>::withCap(self.n)

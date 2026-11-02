@@ -59,7 +59,7 @@ impl string {
     /* Write the whole string out. */
     fn writeTo(self: ref string, w: mut ref io::writer) -> result<i64, io::ioError> {
         /* Straight at the storage, no intermediate copy: `w.write` copies the bytes into the
-         * writer's own buffer anyway, so a `toSlice()` here would copy them twice. The view is
+         * writer's own buffer anyway, so a `snapshot()` here would copy them twice. The view is
          * consumed by the call and dies with it. */
         let n = w.write(self.subView(0, self.len()))?
         return success(n)
@@ -216,7 +216,7 @@ fn padI64(v: i64, width: i64, fill: u8, align: i64) -> string {
     let t: string = stl::string::fromI64(v)
     let digits: i64 = t.len()
     if fill == u8(48) && align == io::RIGHT && width > digits {
-        let bytes = t.toSlice()
+        let bytes = t.snapshot()
         var out: string = stl::string::withCap(width)
         if bytes[0] == u8(45) {
             out.push(u8(45))
@@ -230,13 +230,13 @@ fn padI64(v: i64, width: i64, fill: u8, align: i64) -> string {
         }
         return out
     }
-    return padText(t.toSlice(), width, fill, align)
+    return padText(t.snapshot(), width, fill, align)
 }
 
 /* 浮点：`{x:8.2f}` 走这个。先按 `prec` 位小数定型，再按宽度排 —— 与流上 `padF` 同一顺序。 */
 fn padF64(x: f64, width: i64, prec: i64, fill: u8, align: i64) -> string {
     let t: string = fromF64(x, prec)
-    return padText(t.toSlice(), width, fill, align)
+    return padText(t.snapshot(), width, fill, align)
 }
 
 /* ---------------------------------------------------------------- 从 stdin 读整块文本

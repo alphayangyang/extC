@@ -2,7 +2,7 @@
 # tests/pool/run.sh —— **期 0（slot map / ECS 底座）的常设验收**（docs/topics/POOLS.md；期 0 是库级 slot map，期 1 起是运行期池注册表）
 #
 # 判据：
-#   ① 正例：`insert`/`get`/`set`/`remove`/`len` + dense↔handle 双向 + `toSlice` ✓
+#   ① 正例：`insert`/`get`/`set`/`remove`/`len` + dense↔handle 双向 + `snapshot` ✓
 #   ② 失效：`remove` 之后旧 handle **失效**（世代 +1 ⇒ contains=false ✓）
 #   ③ **churn 不涨**：1e6 轮的峰值 RSS 必须与 1e5 轮**相当**（可见的判据）✓
 #   ④ **判据有牙**：同一个形状**不 remove** ⇒ 必须明显涨（canary：9.9MB → 67MB ✓）

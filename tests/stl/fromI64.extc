@@ -14,16 +14,16 @@ fn check(name: slice<u8>, got: slice<u8>, want: slice<u8>) -> i64 {
 
 fn main() -> i32 {
   var bad: i64 = 0
-  bad = bad + check("zero", string::fromI64(0).toSlice(), "0")
-  bad = bad + check("pos", string::fromI64(1234567890).toSlice(), "1234567890")
-  bad = bad + check("neg", string::fromI64(0 - 42).toSlice(), "-42")
-  bad = bad + check("max", string::fromI64(9223372036854775807).toSlice(), "9223372036854775807")
+  bad = bad + check("zero", string::fromI64(0).snapshot(), "0")
+  bad = bad + check("pos", string::fromI64(1234567890).snapshot(), "1234567890")
+  bad = bad + check("neg", string::fromI64(0 - 42).snapshot(), "-42")
+  bad = bad + check("max", string::fromI64(9223372036854775807).snapshot(), "9223372036854775807")
   var m = i64(-9223372036854775807 - 1)
-  bad = bad + check("min", string::fromI64(m).toSlice(), "-9223372036854775808")
+  bad = bad + check("min", string::fromI64(m).snapshot(), "-9223372036854775808")
 
   // 往返：解析回来再打出来，和原串一致
-  bad = bad + check("rt-pos", string::fromI64(string::toI64("1234567890") ?? 0).toSlice(), "1234567890")
-  bad = bad + check("rt-min", string::fromI64(string::toI64("-9223372036854775808") ?? 0).toSlice(), "-9223372036854775808")
+  bad = bad + check("rt-pos", string::fromI64(string::toI64("1234567890") ?? 0).snapshot(), "1234567890")
+  bad = bad + check("rt-min", string::fromI64(string::toI64("-9223372036854775808") ?? 0).snapshot(), "-9223372036854775808")
 
   // 拒绝的样子：空串 / 只有符号 / 非数字 / 溢出 ⇒ none
   var n: i64 = 0

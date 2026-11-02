@@ -29,5 +29,5 @@ fn churn() {
 fn main() {
     var v: varArray<i32> = mk()
     churn()
-    println("拿到的 = ", v.asSlice(), "  size = ", v.size())
+    println("拿到的 = ", v.view(), "  size = ", v.size())
 }

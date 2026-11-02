@@ -6,7 +6,7 @@ fn main() -> i32 {
     var s: string = string::withCap(8)
     s.append("hello world")
 
-    let copy: slice<u8> = s.toSlice()            /* 拷贝：可以存、可以返回 */
+    let copy: slice<u8> = s.snapshot()            /* 拷贝：可以存、可以返回 */
     let view: slice<u8> = s.subView(0, 5)   /* 零拷贝：只在字符串不再变化时有效 */
 
     var i: i64 = 0

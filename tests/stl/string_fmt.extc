@@ -9,6 +9,6 @@ fn main(args: slice<slice<u8>>) -> i32 {
     let neg = sio::fromF64(-0.5, 3)
     let big = sio::fromF64(1234.5, 1)
     let i = str::fromI64(-42)
-    io::cout << f"pi=[{pi.toSlice()}] neg=[{neg.toSlice()}] big=[{big.toSlice()}] i=[{i.toSlice()}]\n"
+    io::cout << f"pi=[{pi.snapshot()}] neg=[{neg.snapshot()}] big=[{big.snapshot()}] i=[{i.snapshot()}]\n"
     return 0
 }

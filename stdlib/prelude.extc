@@ -234,10 +234,10 @@ struct varArray<T> {
     // searching, println, and C functions behind `extern!` all take `slice<T>`; without these
     // two methods the container would be unusable -- OK. A lent-out view must not be used
     // after growth, nor escape a scope the storage cannot outlive -- the compiler rejects that.
-    fn asSlice(self: ref varArray<T>) -> slice<T> { return self.buf[0..self.len] }
+    fn view(self: ref varArray<T>) -> slice<T> { return self.buf[0..self.len] }
 
     // Compare by content (as `slice` does: whether elements can be compared is checked only
-    // at instantiation -- OK). This must exist because the signature of `asSlice()` mentions
+    // at instantiation -- OK). This must exist because the signature of `view()` mentions
     // `slice<T>`: instantiating `varArray<X>` also instantiates `slice<X>`, and `slice<X>::==`
     // requires `X: ==` -- WRONG. So `varArray<varArray<i32>>` was unwritable (found 2026-09-22).
     fn ==(self: ref varArray<T>, other: varArray<T>) -> bool {

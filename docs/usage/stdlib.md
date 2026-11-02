@@ -57,7 +57,7 @@ prelude 是编译器在每个编译单元前先过一遍的一段 extC 源码。
 | `push` / `pop` | `fn push(self: mut ref varArray<T>, v: T)` / `fn pop(...) -> ?T` |
 | `get` / `set` | `fn get(self: ref varArray<T>, i: i64) -> ?T` / `fn set(self: mut ref varArray<T>, i: i64, v: T)` |
 | `clear` | `fn clear(self: mut ref varArray<T>)` |
-| `asSlice` / `asMutSlice` | `fn asSlice(...) -> slice<T>` / `-> mut slice<T>` |
+| `view` / `asMutSlice` | `fn view(...) -> slice<T>` / `-> mut slice<T>` |
 | `==` | 按内容比较 |
 
 关键语义（都在  的注释里，逐条有位置）：
@@ -103,14 +103,14 @@ fn main() -> i32 {
 | 存储来源 | arena 切片 | **自己的板块**（[内存模型](../MEMORY-MODEL.md)） |
 | 寻址 | 下标 | 下标（`len` / `capacity` / `get` / `set`） |
 | 容量怎么涨 | 翻倍（下限 4） | **1.5 倍、原地长** |
-| 能不能装引用 | 能（ 点名） | 存储是池的板块，取内容只经 `toSlice()` 拷贝 |
-| 取内容 | `asSlice()` / `asMutSlice()` 借出视图 | `toSlice()` **拷一份**（没有零拷贝视图：`push`/`clear`/`shrink`/`release` 任一动作都能让它失效，） |
+| 能不能装引用 | 能（ 点名） | 存储是池的板块，取内容只经 `snapshot()` 拷贝 |
+| 取内容 | `view()` / `asMutSlice()` 借出视图 | `snapshot()` **拷一份**（没有零拷贝视图：`push`/`clear`/`shrink`/`release` 任一动作都能让它失效，） |
 | 深拷贝 | 没有 `clone`；`==` 按内容比较 | `clone()` |
 | 收尾 | 无 | `shrink()` / `release()`（含世代守卫，） |
 | 迭代顺序 | 插入序 | 插入序（dense 连续） |
 
 `vector` 的方法：`withCap` · `new` · `len` · `capacity` ·
-`isEmpty` · `get`（给 `option<T>`） · `set`（越界返回 `false`，不 trap） · `toSlice` ·
+`isEmpty` · `get`（给 `option<T>`） · `set`（越界返回 `false`，不 trap） · `snapshot` ·
 `clone` · `push` · `pop` · `shrink` · `clear` · `release`。
 `vector::from(xs)` 从一段视图拷出一个容器。
 
@@ -120,7 +120,7 @@ use stl::vector
 fn main() -> i32 {
     var v: vector<i64> = vector<i64>::new()
     v.push(i64(3))  v.push(i64(1))  v.push(i64(2))
-    let s = v.toSlice()
+    let s = v.snapshot()
     io::cout << "vector n=" << v.len() << " cap=" << v.capacity() << " sum=" << (s[0] + s[1] + s[2]) << "\n"
     return 0
 }
@@ -194,14 +194,14 @@ struct grow<T> {
 |---|---|
 | 构造 | `string::create(c)` · 模块级 `string::withCap(c)` / `new()` / `empty()` / `from(b)` / `fromI64(n)` |
 | 读数 | `len` · `capacity` · `isEmpty` · `at(i) -> ?u8` |
-| 取内容 | `toSlice() -> slice<u8>`（**拷一份**）、`subView(lo, hi) -> slice<u8>`、`sub(lo, hi)` |
+| 取内容 | `snapshot() -> slice<u8>`（**拷一份**）、`subView(lo, hi) -> slice<u8>`、`sub(lo, hi)` |
 | 拷贝 | `clone()`（内联态出来的仍是内联串） |
 | 比较 | `==` / `<`，右边可以是 `string` 也可以是 `slice<u8>`（所以 `s == "abc"` 成立） |
 | 拼接 | `concat(other) -> string`、`concatBytes(slice<u8>)`、就地 `append(slice<u8>)`、`push(u8)`、`appendByte` |
 | 运算符 | `a + b`：返回**新值**的拼接。右操作数可以是 `slice<u8>`、`string`、整数（按十进制）、`f64`/`f32`（6 位小数，`stringio` 里）或 `bool`；要求 `a` 是 `string`。分配落在调用点的 arena 上，可以在函数里拼完返回 |
 | 追加数字 | `appendI64(v)`；`appendF64(x, prec)`（在 `stringio` 里，定点 `prec` 位小数，上限 20）。拼一行报表少一次临时 `string` |
-| 借出视图 | `asSlice()`：只读字节视图，**不拷贝**；收 `slice<u8>` 的形参因此可以直接传 `string`（自动借出）。要独立拷贝仍写 `toSlice()` |
-| 直接打印 | `io::cout << s`（`string` 的 `<<` 重载在 `stl::string` 里，`use stl::string` 就够，不用写 `s.toSlice()`） |
+| 借出视图 | `view()`：只读字节视图，**不拷贝**；收 `slice<u8>` 的形参因此可以直接传 `string`（自动借出）。要独立拷贝仍写 `snapshot()` |
+| 直接打印 | `io::cout << s`（`string` 的 `<<` 重载在 `stl::string` 里，`use stl::string` 就够，不用写 `s.snapshot()`） |
 | 查找 | `find(needle) -> ?i64`（无匹配 `none`）、`contains`、`startsWith`、`endsWith`、`hash()` |
 | 容量 | `grow()`（1.5 倍）、`shrink()`、`clear()`、`release()`、`removeFront(n)` |
 | 解析 | `string::toI64(b) -> ?i64`；`string::toF64(b) -> ?f64`（整数/小数/指数写法，至少一位数字；不接受 `.5`、`inf`、`nan`、十六进制） |
@@ -210,7 +210,7 @@ struct grow<T> {
 | 裁剪 | `string::trim(s)` / `trimStart(s)` / `trimEnd(s)`：去掉两端 ASCII 空白（空格、`\t`、`\n`、`\r`、`\v`、`\f`），返回**原缓冲视图**（零拷贝）|
 | 比两段字节 | `bytesEq(a, b)` / `bytesLt(a, b)`（模块级关联函数，直接比两段 `slice<u8>`）|
 
-**拿到内容只有 `toSlice()` 一条路（拷贝）**：池里不放视图出去。
+**拿到内容只有 `snapshot()` 一条路（拷贝）**：池里不放视图出去。
 `string` 的 `hash()` + `==` 齐了，所以它能直接当 `hashMap` 的键。
 
 `stl::stringio` 用 `impl` 块把流式读写挂到 `string` 与 `io::istream` / `fs::ifstream` 上
@@ -242,7 +242,7 @@ fn main() -> i32 {
     let n1 = s.readLineFrom(r.reader())?
     let n2 = s.readAllFrom(r.reader())?
     r.close()?
-    io::cout << "n1=" << n1 << " n2=" << n2 << " s=" << s.toSlice() << "\n"
+    io::cout << "n1=" << n1 << " n2=" << n2 << " s=" << s.snapshot() << "\n"
     return 0
 }
 ```
@@ -445,7 +445,7 @@ fn main() -> i32 {
 | `contains` / `get` / `set` | `fn get(...) -> ?T`；陈旧给 `none`；`set` 返回是否写成功 |
 | `insert` | `fn insert(self: mut ref pool<T>, v: T) -> handle`（优先复用洞链） |
 | `remove` | 返回是否删掉；**swap-remove**（dense 前缀保持连续）+ 该槽世代 +1 |
-| 迭代 | `atDense(i)` / `setAtDense(i, v)` / `handleAtDense(i)` / `toSlice()`（拷一份） / `gather(hs, out)` |
+| 迭代 | `atDense(i)` / `setAtDense(i, v)` / `handleAtDense(i)` / `snapshot()`（拷一份） / `gather(hs, out)` |
 | `shrink` / `clear` / `release` | `clear` 翻 epoch（旧句柄一次比较全废），`release` 整批还 |
 
 ```extc
@@ -684,6 +684,12 @@ fn main() -> i32 {
 | `flushOut` / `writeBytes` / `writeBytesRaw` | 冲 stdio 侧 / 进 cout 缓冲 / 直写 fd 1 |
 | `print` / `println` | `fn print(s: slice<u8>)` / `fn println(s: slice<u8>)`（不用链式写法的一行输出，走 cout 同一缓冲；数字仍用 `io::cout`）|
 | `eprint` / `eprintln` | `fn eprint(s: slice<u8>)` / `fn eprintln(s: slice<u8>)`（诊断通道，写 stderr；与 stdout 两条通道分开，`cerr` 是流式写法）|
+
+**程序级单例**：`io::cout`、`io::cerr`、`io::writer` 的缓冲、`fs::fout`/`fs::fin` 以及
+`io::fmt` 的格式化暂存（`FMT`/`PAIRS`）都是**整个程序一份**的状态，不是线程局部的。这不构成隐藏炸弹，
+因为语言把它们挡在了唯一能并行的位置之外：`par` 的工作体**不允许调用任何函数**（编译期拒绝，
+`tests/errors/` 有负例），所以工作线程碰不到这些缓冲；协程是协作式的，一次 `<<` 是"格式化 + 拷进缓冲"
+的连续动作、只在 `yield` 处换人 ⇒ 一行不会被切开（`tests/io/concurrent-write.extc` 钉住这一点）。
 
 低层格式化（`std::io::fmt` 的公开面，`std::io` 与 `std::fs` 共用；名字不带 `p` 前缀，但它们
 **没有兼容性承诺**，热路径要用就直接调）：

@@ -86,7 +86,7 @@ fn eval(s: slice<u8>) -> ?i64 {
         none => { return option<i64>::none }
         some(ts) => {
             var at: i64 = 0
-            return expr(ts.asSlice(), ref at)
+            return expr(ts.view(), ref at)
         }
     }
 }

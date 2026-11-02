@@ -34,8 +34,8 @@ fn main() -> i32 {
     var a: store = mk()
     wrap(ref a, "k")
     wrap(ref a, "aa")
-    let k0 = a.keys.get(0)!.toSlice()
-    let k1 = a.keys.get(1)!.toSlice()
+    let k0 = a.keys.get(0)!.snapshot()
+    let k1 = a.keys.get(1)!.snapshot()
     io::cout << "keys[0]=" << k0 << " keys[1]=" << k1 << "\n"
     if k0 == "k" { return 0 }
     io::cout << "SILENT-WRONG: keys[0] 应为 k，实际是 " << k0 << "（未 trap）\n"

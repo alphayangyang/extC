@@ -14,8 +14,8 @@ fn main() -> i32 {
     var s: string = string::withCap(4)
     var abc: [3]u8 = [u8(65), u8(66), u8(67)]
     t.append(abc[..])
-    s.append(t.toSlice())
-    s.append(t.toSlice())
+    s.append(t.snapshot())
+    s.append(t.snapshot())
     io::cout << "n=" << n << " b="
     var i: i64 = 0
     while i < n { io::cout << i64(b[i])  i = i + 1 }
@@ -24,7 +24,7 @@ fn main() -> i32 {
     while i < 4 { io::cout << i64(a[i])  i = i + 1 }
     var sum: i64 = 0
     i = 0
-    /* 读字节走公开的 `at()`：SSO 之后存储分内联/池两态，`buf` 字段没有了（`string::toSlice`
+    /* 读字节走公开的 `at()`：SSO 之后存储分内联/池两态，`buf` 字段没有了（`string::snapshot`
      * 仍是"拿内容"那条路，这里逐字节读，不必为了一次求和拷一份）。 */
     while i < s.len() { sum = sum + i64(s.at(i) ?? u8(0))  i = i + 1 }
     io::cout << " slen=" << s.len() << " ssum=" << sum

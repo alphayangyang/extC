@@ -5,7 +5,7 @@ fn build() -> slice<i32> {
     var v: varArray<i32> = varArray<i32>::withCap(0)   // 会扩容 ✓
     v.push(7)
     v.push(8)
-    return v.asSlice()
+    return v.view()
 }
 
 fn churn() {

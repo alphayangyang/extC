@@ -1,0 +1,31 @@
+/* 判据：**两个协程交替打印，每一行都完整**。
+ *
+ * 打印走的是同一个 `cout` 缓冲（`io::cout <<` 与 `println` 是同一条路）。协程是协作式的：
+ * 只有 `yield` 才可能换人，而一次 `<<` 是"格式化 + 拷进缓冲"的连续动作 ⇒ 一行不会被切开。
+ * 这条判据钉住的是"程序级单例输出流 + 协作式切换"这个前提；`par` 工作线程里**不允许调用**
+ * （编译期就拒），所以那种撕裂在这门语言里写不出来（见 `tests/errors/` 的 par 负例）。
+ *
+ * 输出：每行 10 个字符，`A` 与 `B` 各 6 行，交替出现，最后一行 `done`。 */
+use std::io
+
+fn talker(tag: slice<u8>, n: i64) -> coroutine<i64> {
+    var i: i64 = 0
+    while i < n {
+        io::cout << tag << tag << tag << tag << tag << tag << tag << tag << tag << tag << "\n"
+        yield i
+        i = i + 1
+    }
+}
+
+fn main() -> i32 {
+    var a = talker("A", 6)
+    var b = talker("B", 6)
+    var more: bool = true
+    while more {
+        var na: bool = a.next()
+        var nb: bool = b.next()
+        if !na && !nb { more = false }
+    }
+    io::cout << "done\n"
+    return 0
+}

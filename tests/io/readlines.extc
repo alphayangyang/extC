@@ -15,7 +15,7 @@ fn main(args: slice<slice<u8>>) -> i32 {
             some(line) => {
                 n = n + 1
                 acc = acc + line.len()
-                io::cout << f"L{line.len()}={line.toSlice()}\n"
+                io::cout << f"L{line.len()}={line.snapshot()}\n"
             }
         }
     }

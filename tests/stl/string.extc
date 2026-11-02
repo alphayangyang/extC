@@ -1,4 +1,4 @@
-// string（池底、连续）：append 触发 1.5 倍扩容 · asSlice 连续可直印 · shrink 降水位 · clear 留容量
+// string（池底、连续）：append 触发 1.5 倍扩容 · view 连续可直印 · shrink 降水位 · clear 留容量
 // 判据：len=12 cap=16->32 shrink=12 · 打印出的字节与写入一致
 use std::io
 use stl::string
@@ -12,11 +12,11 @@ fn main() -> i32 {
     s.shrink()
     io::cout << " shrink=" << s.capacity()
     io::cout << " text="
-    io::cout << s.toSlice()
+    io::cout << s.snapshot()
     var t = string::withCap(16)
     t.append("ab")
     t.push(u8(99))
-    io::cout << " t=" << t.toSlice() << "(" << t.len() << ")"
+    io::cout << " t=" << t.snapshot() << "(" << t.len() << ")"
     s.clear()
     io::cout << " clear=" << s.len() << "/" << s.capacity() << "\n"
     return 0

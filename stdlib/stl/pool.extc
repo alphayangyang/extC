@@ -16,7 +16,7 @@
  * Storage: `vals` / `slots` / `ent` are all on this pool's OWN plate (`poolSlice`,
  * "a pool has two faces"), not arena slices -- so `grow` extends them in
  * place (`poolResize`, not one byte copied: every column is indexed by position) and
- * `release` really returns the memory. Only the result of `toSlice` comes from the
+ * `release` really returns the memory. Only the result of `snapshot` comes from the
  * arena, and that is deliberate: it is handed to the caller, so it has to outlive this
  * container (the opposite rule from storage).
  *
@@ -467,7 +467,10 @@ struct pool<T> {
      * escape machinery promotes it, so the view lives exactly as long as that block and
      * is reclaimed with it. One copy, and then ordinary `slice` code (print, IO, any
      * algorithm) works. */
-    fn toSlice(self: ref pool<T>) -> slice<T> {
+    /* 借出前 `n` 个存活值的只读视图（**不拷贝**）。视图失效于 `insert`/`remove`/`clear`/`grow`。 */
+    fn view(self: ref pool<T>) -> slice<T> { return self.vals[0..self.n] }
+
+    fn snapshot(self: ref pool<T>) -> slice<T> {
         var out: mut slice<T> = new T[self.n]
         var i: i64 = 0
         while i < self.n { out[i] = self.vals[i]  i = i + 1 }
