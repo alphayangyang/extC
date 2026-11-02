@@ -400,6 +400,10 @@ def emit(fns_in, enums, libname):
     return '\n'.join(lines) + '\n'
 
 
+# 这些形参类型是"一个字节的引用"：C 侧就是 `char *` / `const char *`。
+CSTR_PARAM = ('ref u8', '?ref u8')
+
+
 def emit_extern(decls, enums, libname, effects):
     """生成**声明式**绑定：直接的 `extern!("<lib>") fn …`，给"链接进二进制"的库用。
 
@@ -436,7 +440,49 @@ def emit_extern(decls, enums, libname, effects):
         if effects == 'trusted':
             eff = 'Addr=0 Cont=0' + (' Ret=0' if ret not in ('void',) and 'ref' in ret else '')
             lines.append('    effects %s' % eff)
+    if any(t in CSTR_PARAM for _n, _r, ps in decls for _pn, t in ps):
+        lines.append('')
+        lines.extend(emit_cstr_helpers(len([1 for _n, _r, ps in decls for _pn, t in ps if t in CSTR_PARAM])))
     return '\n'.join(lines) + '\n'
+
+
+# C 的 `char *` / `const char *` 在绑定里是 `ref u8`（一个字节的引用），调用点要 `ref buf[i]`。
+# 下面这两个 helper 把那点仪式收掉：给一段 `slice<u8>`，它拷进模块自己的缓冲区并补 NUL，
+# 返回首字节的引用。
+CSTR_SLOTS = 4
+CSTR_SLOT_BYTES = 1024
+
+
+def emit_cstr_helpers(count):
+    """生成 C 字符串 helper（只在绑定里真的出现 `ref u8` 形参时才发）。
+
+    `cstr(s)` 用 0 号槽，`cstrAt(i, s)` 用第 i 个槽（一次调用里有多个字符串时按序给不同的 i）。
+    指针在**下一次调用 cstr/cstrAt 之前**有效 —— 这正是 `effects Addr=0 Cont=0` 签的那句话；
+    库要是把指针存起来，签字就是假的，包的判据该红。
+    """
+    return [
+        '/* ---- 便利函数（自动生成）：把 `slice<u8>` 交给 C 的 `char *` ---- */',
+        '// 模块自己的一块拷贝区（%d 槽 × %d 字节）。指针只在"下一次 cstr/cstrAt 之前"有效；' % (CSTR_SLOTS, CSTR_SLOT_BYTES),
+        '// 这条限制就是 `effects Addr=0 Cont=0` 签的那句话。一次调用里有几个字符串，就按序用不同的槽。',
+        '@private var CN_BUF: [%d]u8' % (CSTR_SLOTS * CSTR_SLOT_BYTES),
+        '',
+        'fn cstr(s: slice<u8>) -> ref u8 {',
+        '    return cstrAt(0, s)',
+        '}',
+        '',
+        'fn cstrAt(slot: i64, s: slice<u8>) -> ref u8 {',
+        '    if slot < 0 || slot >= %d { trap("cstrAt: 槽越界（只有 %d 个）") }' % (CSTR_SLOTS, CSTR_SLOTS),
+        '    if s.len + 1 > %d { trap("cstrAt: 字符串太长（一槽 %d 字节）") }' % (CSTR_SLOT_BYTES, CSTR_SLOT_BYTES),
+        '    var base: i64 = slot * %d' % CSTR_SLOT_BYTES,
+        '    var i: i64 = 0',
+        '    while i < s.len {',
+        '        CN_BUF[base + i] = s[i]',
+        '        i = i + 1',
+        '    }',
+        '    CN_BUF[base + s.len] = u8(0)',
+        '    return ref CN_BUF[base]',
+        '}',
+    ]
 
 
 def main():

@@ -1,0 +1,24 @@
+/* tests/extbind/main_cstr.extc —— 用**运行时**字符串调 C（`.data` 那条路只够给字面量用）。
+ *
+ * 生成器在绑定里额外发两个便利函数：`cstr(s)` / `cstrAt(i, s)` —— 把一段 `slice<u8>` 拷进
+ * 模块自己的缓冲区、补 NUL，返回首字节的引用。指针只在"下一次 cstr/cstrAt 之前"有效，
+ * 这正是绑定里 `effects Addr=0 Cont=0` 签的那句话（库要是把指针存起来，签字就是假的）。
+ */
+use std::io
+use demoapi::*
+
+fn main() -> i32 {
+    /* 名字在运行时拼出来，所以拿不到 `.data`：只能用 cstr 借一个 NUL 结尾的副本 */
+    var buf: mut slice<u8> = new u8[32]
+    let src: slice<u8> = "runtime-name"
+    var i: i64 = 0
+    while i < src.len { buf[i] = src[i]  i = i + 1 }
+    let name: slice<u8> = buf[0..src.len]
+
+    var h: ?ref void = demo_open(cstr(name))
+    if h == null { io::cout << "open failed\n"  return 1 }
+    let s: i64 = demo_add(h, 7, 35)
+    demo_close(h)
+    io::cout << "sum=" << s << " len=" << i64(src.len) << "\n"
+    return 0
+}

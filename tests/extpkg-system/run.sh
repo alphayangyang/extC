@@ -47,9 +47,12 @@ fi
 
 # ---- ② 直接 use + build + 跑 ----
 if python3 tools/extpkg.py build --project "$tmp" --extc "$EXTC" >"$tmp/build.log" 2>&1; then
-    got=$("$tmp/build/app" 2>&1)
-    [ "$got" = "in=64 out=19 back=64 same=yes" ] && ok "use-and-run" "没有一行 extern/effects/链接参数（$got）" \
-                                                 || bad "use-and-run" "输出是 \`$got\`"
+    got=$( cd "$tmp" && ./build/app 2>&1)
+    [ "$got" = "gz=64/0 in=64 out=19 back=64 same=yes" ] \
+        && ok "use-and-run" "没有一行 extern/effects/链接参数（$got）" \
+        || bad "use-and-run" "输出是 \`$got\`"
+    [ -s "$tmp/tests-out.gz" ] && ok "cstr-helper" "运行时路径经 cstr 交给 gzopen，写出 $(stat -c%s "$tmp/tests-out.gz") 字节" \
+                              || bad "cstr-helper" "gz 那条没写出文件"
 else
     bad "use-and-run" "$(tail -2 "$tmp/build.log" | tr '\n' ' ')"
 fi

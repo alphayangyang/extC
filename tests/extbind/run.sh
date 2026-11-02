@@ -23,7 +23,7 @@ tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 cp tests/extbind/demo.h "$tmp/"
 $CC -c -O2 -o "$tmp/demo.o" tests/extbind/demo.c 2>"$tmp/cc.log" \
     && ar rcs "$tmp/libdemo.a" "$tmp/demo.o" || { echo "  FAIL 夹具编不过"; exit 1; }
-cp tests/extbind/main.extc "$tmp/"
+cp tests/extbind/main.extc tests/extbind/main_cstr.extc "$tmp/"
 
 # ---- ① 生成 + 形状 ----
 if python3 tools/cbindgen.py --include demo.h -I "$tmp" --only demo_open,demo_add,demo_close,demo_count \
@@ -35,7 +35,10 @@ if python3 tools/cbindgen.py --include demo.h -I "$tmp" --only demo_open,demo_ad
         'effects Addr=0 Cont=0 Ret=0' \
         'extern!("extc-demo") fn demo_add(h: ?ref void, a: i64, b: i64) -> i64' \
         'extern!("extc-demo") fn demo_count() -> u64' \
-        'extern!("extc-demo") fn demo_close(h: ?ref void) -> void'; do
+        'extern!("extc-demo") fn demo_close(h: ?ref void) -> void' \
+        'fn cstr(s: slice<u8>) -> ref u8' \
+        'fn cstrAt(slot: i64, s: slice<u8>) -> ref u8' \
+        '@private var CN_BUF: [4096]u8'; do
         grep -qF -- "$want" "$tmp/demoapi.extc" || { ok=0; echo "  FAIL 生成物里缺：$want"; }
     done
     # 不带指针返回的声明不该出现 `Ret=`（那一条只对返回引用/视图的函数有意义）
@@ -69,6 +72,15 @@ if ( cd "$tmp" && "$OLDPWD/$EXTC" --run main.extc >"$tmp/run.out" 2>"$tmp/run.er
         && ok "link-file" "链接要求由生成器写出（调用方不写 -l）" || true
 else
     bad "link-and-run" "$(head -2 "$tmp/run.err" | tr '\n' ' ')"
+fi
+
+# ---- ③b 运行时字符串：生成器给的 `cstr` 让 `.data` 之外的路也通 ----
+if ( cd "$tmp" && "$OLDPWD/$EXTC" --run main_cstr.extc >"$tmp/run2.out" 2>"$tmp/run2.err" ); then
+    got=$(cat "$tmp/run2.out")
+    [ "$got" = "sum=42 len=12" ] && ok "cstr-helper" "运行时拼的字符串经 cstr 交给 C（$got）" \
+                                || bad "cstr-helper" "输出是 \`$got\`"
+else
+    bad "cstr-helper" "$(head -2 "$tmp/run2.err" | tr '\n' ' ')"
 fi
 
 # ---- ⑤ 变参被报出来 ----

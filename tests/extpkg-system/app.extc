@@ -24,6 +24,19 @@ fn main() -> i32 {
     var same: bool = blen == u64(64)
     i = 0
     while i < i64(64) { if back[i] != src[i] { same = false }  i = i + i64(1) }
+    /* 运行时拼出来的路径 + `cstr`：生成器给的 helper 让 gz* 这些吃 `char *` 的函数也好用 */
+    var path: mut slice<u8> = new u8[64]
+    let want: slice<u8> = "tests-out.gz"
+    i = 0
+    while i < want.len { path[i] = want[i]  i = i + 1 }
+    let pz: slice<u8> = path[0..want.len]
+    var g: ?ref void = gzopen(cstr(pz), cstrAt(1, "wb"))
+    if g != null {
+        let wrote: i32 = gzwrite(g, src.data, u32(64))
+        let rcg: i32 = gzclose(g)
+        io::cout << "gz=" << i64(wrote) << "/" << i64(rcg) << " "
+    }
+
     io::cout << "in=64 out=" << i64(dlen) << " back=" << i64(blen)
     if same { io::cout << " same=yes\n" } else { io::cout << " same=no\n" }
     return 0
