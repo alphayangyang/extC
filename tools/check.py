@@ -1622,6 +1622,14 @@ def build_items() -> list:
             argv, timeout=to, ok_msg=tail1,
             bad_msg=f"{argv[0].lstrip('./')}", bad_dump=dump_fail(8)))
 
+    # ---- 动态值 any ----
+    items.append(cmd(
+        "any", "tests",
+        "动态值 `any`（16 字节胖值 · 隐式装箱 · 隐式拆箱失败就 trap · 换类型 · 返回 · 容器 · 打印 · 相等）",
+        ["./tests/any/run.sh"], timeout=600,
+        ok_msg=ok_count_ok(" 项（装箱/换类型/拆箱 trap/打印与相等）"),
+        bad_msg="tests/any/run.sh", bad_dump=dump_fail(8)))
+
     # ---- 生成的 C 在严格警告下干净 ----
     items.append(cmd(
         "cgen", "tests",

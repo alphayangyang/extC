@@ -78,6 +78,7 @@ TypeTable *ttNew(Arena *a, Module *m) {
         *(Type **)vecPush(&tt->builtins) = mkType(a, TY_BUILTIN, BUILTIN_NAMES[i]);
 
     tt->tVoid  = mkType(a, TY_VOID, "void");
+    tt->tAny   = mkType(a, TY_ANY, "any");
     tt->tError = mkType(a, TY_ERROR, "<error>");
 
     if (m) ttRegister(tt, m);
@@ -122,6 +123,8 @@ void ttRegister(TypeTable *tt, Module *m) {
  * @return    The table's `void` type.
  */
 Type *ttVoid(TypeTable *tt)  { return tt->tVoid; }
+
+Type *ttAny(TypeTable *tt)   { return tt->tAny; }
 
 /**
  * @brief Get the error type: the result of a failed parse; it suppresses cascading
@@ -206,6 +209,7 @@ static Type *refLike(TypeTable *tt, Type *src, Type *inner) {
  */
 Type *ttFromName(TypeTable *tt, const char *name) {
     if (strcmp(name, "void") == 0) return tt->tVoid;
+    if (strcmp(name, "any") == 0) return tt->tAny;
 
     for (size_t i = 0; i < tt->builtins.len; i++) {
         Type *t = *(Type **)vecAt(&tt->builtins, i);
@@ -488,6 +492,7 @@ const char *ttMangle(TypeTable *tt, Type *t) {
         }
         case TY_PARAM: return t->param;
         case TY_VOID:  return "void";
+        case TY_ANY: return "any";
         case TY_ERROR: return "Error";
         case TY_FN: {
             /* The name of the C **typedef** that stands for this signature (`extc_fn_i64__i64`).
@@ -1126,6 +1131,7 @@ void ttRender(Type *t, Buf *out) {
             return;
         case TY_PARAM: bufPuts(out, t->param); return;
         case TY_VOID:  bufPuts(out, "void"); return;
+        case TY_ANY: bufPuts(out, "any"); return;
         case TY_ERROR: bufPuts(out, "<error>"); return;
         case TY_FN:
             /* The user-facing spelling is the one they wrote: `fn(i64) -> i64`. Printing the C

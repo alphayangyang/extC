@@ -135,6 +135,11 @@ typedef struct {
      * expected: the value is the code pointer, so codegen emits a plain function and not the
      * (empty) environment literal. Set by the checker when it accepts the conversion. */
     bool        lamFnPtr;
+    /* `any` conversions the checker accepted. Boxing needs no payload (the source type is the
+     * operand's own type); unboxing needs the type the context asked for, because the value is
+     * checked against it at run time and that check's message names it. */
+    const Type *anyTo;
+    bool        anyBox;        /* this expression's value is boxed into an `any` */
     uint64_t    addrMask;
     /* ---- call / receiver facts ---- */
     Expr       *extDom;        /* `EX_EXT`: the domain this task is handed to */

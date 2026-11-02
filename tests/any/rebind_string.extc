@@ -1,0 +1,11 @@
+// 换类型：同一个槽先装 i64，再装字符串（超过 8 字节 ⇒ 拷贝进 arena），都能读回来。
+// 判据：`first=7` 与 `second=abc` 两行；`<<` 不支持 any（v1 只走 print/println 的通用打印器）。
+use std::io
+
+fn main() -> i32 {
+    var x: any = i64(7)
+    println("first=", x)
+    x = "abc"
+    println("second=", x)
+    return 0
+}

@@ -1251,6 +1251,38 @@ void planSetLamFnPtr(Expr *e, bool v);
 bool planLamFnPtr(const Expr *e);
 
 /**
+ * @brief Get whether this expression is boxed into an `any`.
+ *
+ * @param e  The expression the checker accepted for boxing.
+ * @return   `true` when code generation must wrap the value in an `ExtcAny`.
+ */
+bool planAnyBox(const Expr *e);
+
+/**
+ * @brief Record that an expression is boxed into an `any`.
+ *
+ * @param e  The expression; its own type is what gets boxed.
+ * @param v  `true` to box it.
+ */
+void planSetAnyBox(Expr *e, bool v);
+
+/**
+ * @brief Get the concrete type an `any` expression is unboxed into.
+ *
+ * @param e  The expression whose type is `any`.
+ * @return   The type the context asked for, or NULL when this is not an unboxing site.
+ */
+const Type *planAnyTo(const Expr *e);
+
+/**
+ * @brief Record that an `any` expression is unboxed into a concrete type.
+ *
+ * @param e   The expression; its own type stays `any`.
+ * @param to  The type the context asked for, checked at run time.
+ */
+void planSetAnyTo(Expr *e, const Type *to);
+
+/**
  * @brief Get the pad primitive an f-string format-specifier slot selects.
  *
  * @param e  The method-call node (`__extc_pad`).

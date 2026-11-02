@@ -281,6 +281,8 @@ bool isPrintable(Type *t) {
     if (!b) return false;
     if (b->kind == TY_BUILTIN) return true;
     if (b->kind == TY_ENUM) return true;
+    /* An `any` always knows how to print itself: it carries the descriptor that says how. */
+    if (b->kind == TY_ANY) return true;
     return b->kind == TY_STRUCT || b->kind == TY_GENERIC || b->kind == TY_ARRAY;
 }
 
@@ -535,6 +537,37 @@ bool checkAssignable(Checker *c, Type *want, Type *got, Expr *node, const char *
     }
 
     if (ttEquals(want, got)) return true;
+
+    /* ---- `any`: the one dynamic value ----
+     *
+     * Boxing is implicit: putting a value where an `any` is expected cannot lose anything, and
+     * the descriptor carries the type, so the value keeps its identity. Unboxing is implicit too,
+     * in the same spirit as `e!`: the program says what it expects and the run time checks it. It
+     * is the **only** conversion in extC that may fail at run time, which is why it is not a
+     * widening: `any` is not "the widest type", it is a container whose contents are known only
+     * when it runs. A wrong expectation traps at the source line instead of reinterpreting bits.
+     *
+     * Both flags are plan facts rather than new kinds of node: the value keeps its own type, and
+     * only the emission site needs to know that a wrapping or unwrapping happens there. */
+    if (want->kind == TY_ANY && got->kind != TY_ANY) {
+        if (node) {
+            planSetAnyBox(node, true);
+            /* The copy the `any` owns lives in the **caller's** home arena, so it outlives this
+             * frame: an `any` may be returned, stored in a container, or handed to a callee. That
+             * makes a boxing site an allocation site of the home arena, which is registered here
+             * exactly like `new` does -- the arena closure then marks this function as using the
+             * home arena it is handed, so every caller passes one in. */
+            if (c && c->curFunc && planArenaLevel(node) == 0) {
+                planSetArenaLevel(node, ARENA_HOME);
+                *(Expr **)vecPush(&c->curArenaSites) = node;
+            }
+        }
+        return true;
+    }
+    if (got->kind == TY_ANY && want->kind != TY_ANY) {
+        if (node) planSetAnyTo(node, want);
+        return true;
+    }
 
     /* Non-null to nullable is the safe direction, hence implicit, the same as dropping `mut`. */
     if (want->kind == TY_REF && got->kind == TY_REF && want->nullable && !got->nullable &&

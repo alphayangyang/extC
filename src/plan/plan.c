@@ -89,6 +89,8 @@
 #define PLAN_PAR_FULL_OUT        84
 #define PLAN_LAM_FNPTR           85   /* `EX_LAMBDA`: this literal is used as a bare `fn(...)` pointer, not as an environment value */
 #define PLAN_LAM_SCOPE           86   /* a lambda environment struct: the body it is written in */
+#define PLAN_ANY_BOX             87   /* an expression whose value is boxed into an `any` */
+#define PLAN_ANY_TO              88   /* an `any` value unboxed into a concrete type: which one */
 #define PLAN_DEREF               63
 #define PLAN_BOXED_CORO          64
 #define PLAN_CORO_KIND           65
@@ -1150,6 +1152,10 @@ PLAN_GET(planCallViaFn, bool, callViaFn, PLAN_CALL_VIA_FN, false)
 PLAN_SET(planSetCallViaFn, bool, callViaFn, PLAN_CALL_VIA_FN)
 PLAN_GET(planLamFnPtr, bool, lamFnPtr, PLAN_LAM_FNPTR, false)
 PLAN_SET(planSetLamFnPtr, bool, lamFnPtr, PLAN_LAM_FNPTR)
+PLAN_GET(planAnyBox, bool, anyBox, PLAN_ANY_BOX, false)
+PLAN_SET(planSetAnyBox, bool, anyBox, PLAN_ANY_BOX)
+PLAN_GET(planAnyTo, const Type *, anyTo, PLAN_ANY_TO, NULL)
+PLAN_SET(planSetAnyTo, const Type *, anyTo, PLAN_ANY_TO)
 PLAN_GET(planPadKind, PlanPadKind, padKind, PLAN_PAD_KIND, PLAN_PAD_NONE)
 PLAN_SET(planSetPadKind, PlanPadKind, padKind, PLAN_PAD_KIND)
 

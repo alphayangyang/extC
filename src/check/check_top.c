@@ -6257,6 +6257,10 @@ static bool idleCarriesRef(TypeTable *tt, Type *t, int depth) {
     case TY_VOID: case TY_BUILTIN: case TY_FN: case TY_DYN:
     case TY_PARAM: case TY_ERROR: case TY_UNRESOLVED:
         return false;
+    /* An `any` owns a copy of its bytes in the arena, never a counted object: dropping the slot
+     * releases nothing, so it does not make this function non-idle. (`rcScanType` answers the
+     * *other* question -- can a root table be enumerated -- and says "conservative" for `any`.) */
+    case TY_ANY: return false;
     case TY_ENUM:
                 /* Look at variant payloads one by one: **the question here is "does dropping this value
          * release an rc object"**, so answer per payload (the `rcScanType` side needs "can root

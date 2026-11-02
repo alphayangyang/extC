@@ -125,6 +125,12 @@ bool typeSupportsOp(TypeTable *tt, Type *t, const char *op, Type *rhs) {
     if (isEq ? cmpIsNative(t) : ttIsNumeric(t)) {
         if (strcmp(op, "%") != 0 || ttIsInteger(t)) return true;
     }
+    /* Two `any` values compare natively: the comparison walks the descriptor, since the type of the
+     * contents is only known at run time. Comparing an `any` with a concrete value is not allowed
+     * here -- unbox it first, so the type expectation is spelled out where a mismatch can trap with
+     * the user's own line as the position. */
+    if (isEq && ttBase(t) && ttBase(t)->kind == TY_ANY && rhs && ttBase(rhs)->kind == TY_ANY)
+        return true;
     /* An array's `==` is derived by the compiler provided its elements are comparable, and it
      * can only be compared with the **same** array type: only asking recursively whether an
      * element is comparable with `rhs` would let `[1]i64 == i32` through, and the generated

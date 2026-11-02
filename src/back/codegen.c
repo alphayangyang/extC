@@ -411,6 +411,8 @@ typedef struct {
      * printing the payload when `?` fails in main); `needRuntime` means "the table is needed". */
     bool        needRuntime;
     bool        needPrint;      /* `extc_print` is called somewhere => emit rtPrint */
+    bool        needAny;        /* the dynamic `any` value is used somewhere => emit its block */
+    bool        needAnyEq;      /* two `any` values are compared => `extc_eq` is needed too */
     bool        needPar;      /* par::run / par::map use the thread runtime */
     bool        needParRegion; /* some worker `new`s => the arena-sharing half of the region machinery takes part in the
      * build */
@@ -889,6 +891,7 @@ static const char *cType(CG *g, Type *t) {
          * definition. */
         case TY_FN:    return t->name ? t->name : "void *";
         case TY_ENUM:  return t->name;      /* a plain enum typedef in C */
+        case TY_ANY:   return "ExtcAny";
         case TY_ERROR: return "int";
         case TY_BUILTIN:
             for (size_t i = 0; C_TYPES[i].extc; i++)
@@ -1827,6 +1830,14 @@ static const char *genBin(CG *g, Expr *e) {
      * and adding it would report "`array_6_i32` needs to define `!=`" instead. */
     if (!planCallee(e)) {
         Type *lt = ttBase(subst(g, e->u.bin.left->type));
+        if (lt && lt->kind == TY_ANY && isEqualityOp(op)) {
+            g->needAny  = true;
+            g->needAnyEq = true;
+            const char *l = eqOperand(g, e->u.bin.left, lt);
+            const char *r = eqOperand(g, e->u.bin.right, lt);
+            const char *call = arenaPrintf(g->arena, "extc_any_eq(%s, %s)", l, r);
+            return strcmp(op, "!=") == 0 ? arenaPrintf(g->arena, "(!%s)", call) : call;
+        }
         if (lt && lt->kind == TY_ARRAY &&
             isEqualityOp(op)) {
             needEq(g, lt);                 /* register: needs to be comparable via extc_eq */
@@ -2246,6 +2257,24 @@ static const char *genPrint(CG *g, Vec *args, bool newline) {
             const char *tmp = arenaPrintf(g->arena, "__extc_p%d", g->tmpSeq++);
             pfLine(g, "%s %s = %s;", cType(g, bt), tmp, code);
             bufPrintf(&b, "extc_cout_put((uint8_t *)(%s).data, (%s).len)", tmp, tmp);
+            continue;
+        }
+
+        /* An `any` prints through its own descriptor, which is exactly the type information the
+         * program carries at that point; the value may be an empty slot, and that reads as
+         * `<none>` rather than nothing at all. */
+        if (bt->kind == TY_ANY) {
+            g->needAny     = true;
+            g->needRuntime = true;
+            g->needPrint   = true;
+            g->needCout    = true;
+            if (printArgIsPlace(a)) {
+                bufPrintf(&b, "extc_any_print(&(%s))", code);
+            } else {
+                const char *tmp = arenaPrintf(g->arena, "__extc_p%d", g->tmpSeq++);
+                pfLine(g, "ExtcAny %s = %s;", tmp, code);
+                bufPrintf(&b, "extc_any_print(&%s)", tmp);
+            }
             continue;
         }
 
@@ -3530,6 +3559,9 @@ static RcScan rcScanType(CG *g, Type *t, int depth) {
     case TY_VOID: case TY_BUILTIN: case TY_FN: case TY_DYN:
     case TY_PARAM: case TY_ERROR: case TY_UNRESOLVED:
         return RC_NO_REFS;
+    case TY_ANY:
+        /* What a dynamic value holds is not visible here, so no offset table can describe it. */
+        return RC_CONSERVATIVE;
     case TY_ENUM:
         return RC_CONSERVATIVE;      /* A variant payload may carry references and cannot be expanded statically => do not trust the
      * root table */
@@ -5071,6 +5103,64 @@ static const char *genExprInner(CG *g, Expr *e) {
 }
 
 /**
+ * @brief Emit the boxing of a value into an `any`.
+ *
+ * The value is evaluated once, into a temporary of its own type, and that temporary is copied by
+ * `extc_any_box` into the arena the `any` owns its bytes in. Copying (rather than pointing at the
+ * operand) is what makes the `any` a **value**: `var x: any = 1`, then `x = "abc"`, keeps working
+ * because each assignment replaces the bytes.
+ *
+ * @param g     The generator.
+ * @param e     The source expression (the one the checker marked with `planAnyBox`).
+ * @param code  Its generated C value.
+ * @return      The name of the `ExtcAny` temporary holding the boxed value.
+ */
+static const char *emitAnyBox(CG *g, Expr *e, const char *code) {
+    Type *t = ttBase(subst(g, e->type));
+    g->needAny = true;
+    g->needRuntime = true;
+    const char *tmp = arenaPrintf(g->arena, "__extc_any%d", g->tmpSeq++);
+    /* The arena is the **home** one: the value a boxed `any` owns may outlive this frame (it can be
+     * returned or stored), so the copy must not sit in a block that dies at the end of the
+     * statement. The checker registers the site so this function is handed a home arena. */
+    const char *src = arenaPrintf(g->arena, "__extc_anyc%d", g->tmpSeq++);
+    pfLine(g, "%s %s = %s;", cType(g, t), src, code);
+    pfLine(g, "ExtcAny %s = extc_any_box(%s, %s, (const void *)&%s, (int64_t)sizeof(%s));",
+           tmp, homeArg(g, ARENA_HOME), descRef(g, t), src, cType(g, t));
+    return tmp;
+}
+
+/**
+ * @brief Emit the unboxing of an `any` into a concrete type.
+ *
+ * The check happens at run time and traps with a source position when the `any` holds another
+ * type -- that is the whole of the "implicit unboxing" rule: the compiler believes the source, the
+ * run time verifies it, and a wrong belief stops the program at the line that had it.
+ *
+ * @param g     The generator.
+ * @param e     The `any` expression the checker marked with `planAnyTo`.
+ * @param want  The type the context expects.
+ * @param code  The generated C value of the `any`.
+ * @return      The name of the temporary holding the unboxed value.
+ */
+static const char *emitAnyUnbox(CG *g, Expr *e, Type *want, const char *code) {
+    g->needAny = true;
+    g->needRuntime = true;
+    const char *addr;
+    if (printArgIsPlace(e)) {
+        addr = arenaPrintf(g->arena, "&(%s)", code);
+    } else {
+        const char *t = arenaPrintf(g->arena, "__extc_anyb%d", g->tmpSeq++);
+        pfLine(g, "ExtcAny %s = %s;", t, code);
+        addr = arenaPrintf(g->arena, "&%s", t);
+    }
+    const char *tmp = arenaPrintf(g->arena, "__extc_anyv%d", g->tmpSeq++);
+    pfLine(g, "%s %s = *((const %s *)extc_any_unbox(%s, %s, \"%s\", %d));",
+           cType(g, want), tmp, cType(g, want), addr, descRef(g, want), g->path, e->line);
+    return tmp;
+}
+
+/**
  * @brief Generate an expression in value position, adding an automatic dereference when needed.
  *
  * The checker treats a `ref T` in value position as `T` and stamps the node with `deref`; that
@@ -5091,6 +5181,14 @@ static const char *genExpr(CG *g, Expr *e) {
      * analyzers. */
     assert(e != NULL);
     const char *s = genExprInner(g, e);
+    /* The two conversions the checker accepted around this expression. Both are marked on the
+     * operand, not on a new node: the value keeps its own type and only the emission site knows
+     * that a wrapping or unwrapping happens here. */
+    if (planAnyBox(e)) {
+        s = emitAnyBox(g, e, s);
+    } else if (planAnyTo(e)) {
+        s = emitAnyUnbox(g, e, subst(g, (Type *)planAnyTo(e)), s);
+    }
     if (planDeref(e)) return arenaPrintf(g->arena, "*(%s)", s);
     return s;
 }
@@ -11482,6 +11580,11 @@ static const PrimPiece PRIM_BLOCK[] = {
     { PRIM_SCAFFOLD, NULL, "\n\n" },
     { PRIM_VAR, "extc_ablock", "typedef struct extc_ablock { struct extc_ablock *prev; int fresh; int64_t cap, used; char data[1]; } extc_ablock;\n" },
     { PRIM_VAR, "extc_arena", "typedef struct extc_arena { extc_ablock *top; extc_ablock *spare; } extc_arena;\n" },
+    /* `any` is a by-value type in signatures (`fn log(v: any)`), so its typedef has to be in the
+     * preamble, ahead of the prototypes; the struct itself is emitted with the rest of the `any`
+     * runtime, before any body uses it. One row, mentioned by name, so a program without `any`
+     * never carries it. */
+    { PRIM_VAR, "ExtcAny", "typedef struct ExtcDesc ExtcDesc;\ntypedef struct ExtcAny { const struct ExtcDesc *desc; union { uint8_t small[8]; void *box; } u; } ExtcAny;\n" },
     { PRIM_SCAFFOLD, NULL, "#ifndef EXTC_ARENA_SPARE_MAX\n" },
     { PRIM_MACRO, NULL, "#define EXTC_ARENA_SPARE_MAX (1 << 20)\n" },
     { PRIM_SCAFFOLD, NULL, "#endif\n" },
@@ -14152,6 +14255,112 @@ static void emitParallelRuntime(CG *g, Buf *out) {
 }
 
 /**
+ * @brief Emit the dynamic-value runtime: the operations on `ExtcAny`.
+ *
+ * `any` is a value whose type is known only when the program runs. The invariant that makes it
+ * sound is that a value has **exactly one** type at a time: rebinding replaces the old value, it
+ * never stacks a second type on top. So the representation is a pair -- a descriptor and the bytes
+ * -- and copy, print, compare and mark are each one walk over that descriptor.
+ *
+ * The bytes live inline when the value is eight bytes or less, and in a copy made in the caller's
+ * arena otherwise. Which of the two is live travels in the **low bit of the descriptor pointer**
+ * (`extc_any_type` clears it): descriptor objects are aligned, so the bit is free, and it keeps the
+ * value at 16 bytes instead of 24. `desc == NULL` means the slot holds nothing.
+ *
+ * `desc->size` is *not* the size of the value -- for a byte view it is 1, the element size -- so the
+ * emission site passes `sizeof(<T>)` to `extc_any_box` and that number decides the layout, while the
+ * descriptor stays the thing printing and comparison walk.
+ *
+ * Emitted only when `g->needAny`, and after `rtPrint`/`rtEq`, because recursing into a field is
+ * `extc_print`/`extc_eq` on the descriptor rather than new code here.
+ *
+ * @param arena     The allocator for the text.
+ * @param out       The unit text, the append target.
+ * @param withPrint Whether `extc_print` is in the unit; the print helper recurses through it.
+ * @param withEq    Whether `==` on two `any` values is used; comparing recurses into `extc_eq`,
+ *                  which is emitted with the equality runtime, so that helper is only defined when
+ *                  that runtime is present.
+ */
+static void anyEmitRuntime(Arena *arena, Buf *out, bool withPrint, bool withEq) {
+    (void)arena;
+    bufPuts(out,
+        "/* ---- `any`: one value whose type is known only at run time ----\n"
+        " *\n"
+        " * 16 bytes, the size of a `slice`: a descriptor and the bytes. Which half of `u` is live is\n"
+        " * kept in the low bit of `desc` (`extc_any_type` clears it): descriptor objects are aligned,\n"
+        " * so the bit is free, and it saves growing the value to 24 bytes. `desc == NULL` means the\n"
+        " * slot holds nothing. The number that decides inline or boxed is the size of the value, which\n"
+        " * the emission site knows and the descriptor does not (`desc->size` is the *element* size for\n"
+        " * a view).\n"
+        " */\n"
+        "static const ExtcDesc *extc_any_type(const ExtcAny *a) {\n"
+        "    return (const ExtcDesc *)((uintptr_t)a->desc & ~(uintptr_t)1);\n"
+        "}\n"
+        "\n"
+        "static bool extc_any_boxed(const ExtcAny *a) {\n"
+        "    return ((uintptr_t)a->desc & (uintptr_t)1) != 0;\n"
+        "}\n"
+        "\n"
+        "EXTC_UNUSED static const void *extc_any_payload(const ExtcAny *a) {\n"
+        "    return extc_any_boxed(a) ? a->u.box : (const void *)a->u.small;\n"
+        "}\n"
+        "\n"
+        "/* Boxing copies the value in: that is what makes an `any` a value rather than a view, and\n"
+        " * what lets one slot hold different types over its life. */\n"
+        "EXTC_UNUSED static ExtcAny extc_any_box(extc_arena *arena, const ExtcDesc *d,\n"
+        "                                       const void *src, int64_t size) {\n"
+        "    ExtcAny v;\n"
+        "    v.desc = d;\n"
+        "    if (size <= 8) {\n"
+        "        memcpy(v.u.small, src, (size_t)size);\n"
+        "    } else {\n"
+        "        void *p = extc_arena_alloc(arena, size, \"any\", 0);\n"
+        "        memcpy(p, src, (size_t)size);\n"
+        "        v.u.box = p;\n"
+        "        v.desc = (const ExtcDesc *)((uintptr_t)d | (uintptr_t)1);\n"
+        "    }\n"
+        "    return v;\n"
+        "}\n"
+        "\n"
+        "/* Unboxing: the one implicit conversion in extC that can fail, so the check is the feature.\n"
+        " * A mismatch traps at the line that asked for the other type; reinterpreting the bits\n"
+        " * silently would be worse than stopping. */\n"
+        "EXTC_UNUSED static const void *extc_any_unbox(const ExtcAny *a, const ExtcDesc *want,\n"
+        "                                              const char *file, int line) {\n"
+        "    if (!a->desc)\n"
+        "        extc_trapMsg(file, line, \"this `any` holds no value\");\n"
+        "    if (extc_any_type(a) != want) {\n"
+        "        const ExtcDesc *got = extc_any_type(a);\n"
+        "        fprintf(stderr, \"%s:%d: trap: this `any` holds a `%s`, not a `%s`\\n\",\n"
+        "                file, line, got->name ? got->name : \"?\",\n"
+        "                want->name ? want->name : \"?\");\n"
+        "        extc_die(1);\n"
+        "    }\n"
+        "    return extc_any_payload(a);\n"
+        "}\n");
+    /* Printing an `any` is the descriptor printer with a run-time descriptor, so it is emitted only
+     * when the program prints one: an unused `static` here would draw `-Wunused-function`, and
+     * printing alone cannot be the reason `extc_print` exists. */
+    if (withPrint)
+        bufPuts(out,
+            "\n"
+            "EXTC_UNUSED static void extc_any_print(const ExtcAny *a) {\n"
+            "    if (!a->desc) { extc_cout_put((uint8_t *)\"<none>\", 6); return; }\n"
+            "    extc_print(extc_any_payload(a), extc_any_type(a));\n"
+            "}\n");
+    /* `==` compares through the same descriptor walk as printing, which is `extc_eq` -- so this half
+     * waits for `rtEq` to be in the unit (the caller gates both on the same flag). */
+    if (withEq)
+        bufPuts(out,
+            "\n"
+            "EXTC_UNUSED static bool extc_any_eq(const ExtcAny *a, const ExtcAny *b) {\n"
+            "    if (extc_any_type(a) != extc_any_type(b)) return false;\n"
+            "    if (!a->desc) return true;\n"
+            "    return extc_eq(extc_any_payload(a), extc_any_payload(b), extc_any_type(a));\n"
+            "}\n");
+}
+
+/**
  * @brief Append the on-demand runtime blocks, the helpers and the view primitives to the unit text, and
  *        register the prunable entries.
  *
@@ -14216,7 +14425,8 @@ static void emitLateRuntime(CG *g, Buf *out, Module *m, Arena *arena) {
          * libc; the layout of `struct termios` is never named. */
         bufPuts(out, bufCstr(&g->rtRaw));
     }
-    if (g->eqNeed.len)                  bufPuts(out, bufCstr(&g->rtEq));
+    if (g->eqNeed.len || g->needAnyEq)  bufPuts(out, bufCstr(&g->rtEq));
+    if (g->needAny)                     anyEmitRuntime(arena, out, g->needPrint, g->needAnyEq);
     bufPuts(out, bufCstr(&g->desc));
     bufPuts(out, bufCstr(&g->rcDesc));   /* the rc type descriptors: they must come before the function bodies too */
     for (size_t i = 0; i < g->helpers.len; i++) {

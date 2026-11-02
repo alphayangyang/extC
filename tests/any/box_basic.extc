@@ -1,0 +1,27 @@
+// 值 与 any：装箱、隐式拆箱、赋值换成别的类型、函数返回 any。
+// 判据：每一行都是"写完立刻读回来"的值，错了就立刻看得见。
+use std::io
+
+fn one() -> any {
+    var n: i64 = 7
+    return n
+}
+
+fn pair() -> any {
+    var p: pair_ = pair_ { a: i64(3), b: i64(4) }
+    return p
+}
+
+struct pair_ { a: i64  b: i64 }
+
+fn main() -> i32 {
+    var x: any = i64(1)
+    var y: i64 = x
+    x = i64(2)
+    y = y + x
+    var v: pair_ = pair()
+    var n: i64 = one()
+    io::cout << y << " " << v.a + v.b << " " << n << "\n"
+    return 0
+}
+// expect: 3 7 7

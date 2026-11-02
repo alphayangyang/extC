@@ -49,6 +49,9 @@ typedef struct {
      * field, a parameter, a local, or produced by substituting a generic. */
     Vec    fnTypes;     /* Type* - function types; interned */
     Type  *tVoid;       /* the interned `void` type, which is the only one */
+    Type  *tAny;        /* the interned `any` type, which is the only one: `any` has no
+                         * parameters and no declaration site, so one pointer compares equal
+                         * to every `any` written anywhere in the program */
     Type  *tError;      /* the error type; every failed resolution returns it, and
                          * widening to or from it succeeds, so one bad type does not
                          * produce a cascade of follow-up errors */
@@ -106,6 +109,14 @@ Type *ttFromName(TypeTable *tt, const char *name);
  * @return    The table's `void` type.
  */
 Type *ttVoid(TypeTable *tt);
+
+/**
+ * @brief Get the one `any` type.
+ *
+ * @param tt  Type table.
+ * @return    The table's `any` type; every `any` in the program is this pointer.
+ */
+Type *ttAny(TypeTable *tt);
 
 /**
  * @brief Get the error type: the result of a failed parse; it suppresses cascading

@@ -2207,6 +2207,17 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             Type *rt = checkValue(c, e->u.bin.right);
             const char *op = e->u.bin.op;
 
+            /* `any` next to an operand of a concrete type means "this must hold that type": the
+             * unbox is attached to the operand here, so the operator itself stays an ordinary one
+             * and a wrong belief traps at this line instead of silently reinterpreting bytes. */
+            if (lt && lt->kind == TY_ANY && rt && rt->kind != TY_ANY) {
+                planSetAnyTo(e->u.bin.left, rt);
+                lt = rt;
+            } else if (rt && rt->kind == TY_ANY && lt && lt->kind != TY_ANY) {
+                planSetAnyTo(e->u.bin.right, lt);
+                rt = lt;
+            }
+
             if (isCmpOp(op)) {
                 if (ttIsError(lt) || ttIsError(rt)) return c->tBool;
 
@@ -2223,6 +2234,12 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     StructDef *sd = structOf(b);
 
                     if (same && cmpIsNative(lt)) return c->tBool;
+
+                    /* Two `any` values compare by walking the descriptor at run time: the contents'
+                     * type is not known here, so the comparison is the generic one and no method is
+                     * involved. Comparing an `any` with a concrete value is deliberately not this
+                     * case -- unbox first, so a type mismatch traps at the line that assumed it. */
+                    if (same && b && b->kind == TY_ANY) return c->tBool;
 
                     /* Arrays: `==` is derived by the compiler. The user cannot write an
                      * array type down, so it cannot be given an `==` method. */

@@ -55,6 +55,11 @@ typedef enum {
                      * `typeLacksZeroValue` -- and `option<fn …>` is how "may be absent" is
                      * written. */
     TY_DYN,         /* `dyn Trait`: a pool-backed `{pool, slot, gen}` name; `name` is the trait */
+    TY_ANY,         /* `any`: a dynamic value. 16 bytes: a type descriptor pointer plus either
+                     * the value itself (when it fits in 8 bytes and holds no references) or a
+                     * pointer to a copy of it. The type it holds is known only at run time, and
+                     * it is exactly one type at a time -- that invariant is what lets assignment,
+                     * copying, and returning be ordinary value semantics. */
     TY_ERROR        /* dummy type for a failed check, so errors do not cascade */
 } TypeKind;
 
