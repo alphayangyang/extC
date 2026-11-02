@@ -118,6 +118,12 @@
 - **绑定生成**：`tools/cbindgen.py --extern --effects trusted --link …` 已经能把"手写 extern + 逐条签
   effects"压成一条命令（2026-11-17）。还没做：`@frozen` 结构体镜像的生成（现在碰到按值结构体就报出来）、
   多库合并成一个包（`extpkg` 那边把生成物 + `.link` + 声明台账放进 `vendor/<pkg>/`）。
+- **调用开销（实测，2026-11-17）**：`extern!` 调用是**直接的 C 调用**（生成的 C 里就是
+  `acc = cadd(acc, i);`，没有表、没有 thunk、没有 dlopen）；20M 次循环测下来比"同 TU 内联"多
+  **0.34 ns/次**（0.34 vs 0，就是一条 `call`+`ret`）。跨 TU 想消掉这条 call 需要 `-flto` 且库也带
+  LTO 信息。⇒ C ABI 的定位按用户 m28272 的话钉住：**快 + 方便**，安全做到"防错不防敌"就够
+  （`plate` 的守卫页/末端对齐方案记在这里，但**不做**：它挡的是"正常库写越界"，而那属于库自己的
+  错，且每缓冲一页的代价与"高效"冲突；真需要时用独立进程隔离）。
 - **还没做**：关键字参数与默认值（Python 侧 `f(a, b=1)`）；异常（`result`/`trap` → `PyErr` 而不是
   `SystemExit`）；返回字符串/字节（现在只有标量与 `bool` 出得去，`bytes` 只能进）；numpy 数组
   通道（`PyArray` 的指针 + 形状 → `ndview<T>`，需要 `mem::plate::viewAt` 那种区间检查门）；
