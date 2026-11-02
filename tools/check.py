@@ -1622,6 +1622,14 @@ def build_items() -> list:
             argv, timeout=to, ok_msg=tail1,
             bad_msg=f"{argv[0].lstrip('./')}", bad_dump=dump_fail(8)))
 
+    # ---- 生成的 C 在严格警告下干净 ----
+    items.append(cmd(
+        "cgen", "tests",
+        "生成的 C 在 `-Wall -Wextra -Werror` 下干净（区间循环的步进标签只在 `continue` 跳它时才发 · `par` 的返回值）",
+        ["./tests/cgen/run.sh"], timeout=300,
+        ok_msg=ok_count_ok(" 项（无 continue 不发标签 · 有 continue 语义对 · par 两种写法）"),
+        bad_msg="tests/cgen/run.sh", bad_dump=dump_fail(8)))
+
     # ---- 期 0 · 哈希表 ----
     items.append(cmd(
         "hashmap", "tests",

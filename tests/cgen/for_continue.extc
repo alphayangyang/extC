@@ -1,0 +1,24 @@
+// 形状：区间循环里用 `continue`（含嵌套循环各层各一个）⇒ 每一步进标签都必须真的发出来，
+// 而且 `continue` 要跳过去执行步进（`for` 脱糖成 `while` 之后不能直接用 C 的 `continue`）。
+// expect: 42 3135
+use std::io
+
+fn main() -> i32 {
+    var s: i64 = 0
+    for i in 0..i64(10) {
+        if i == i64(3) { continue }
+        s = s + i
+    }
+    var t: i64 = 0
+    for i in 0..i64(4) {
+        for j in 0..i64(4) {
+            if j == i64(1) { continue }
+            if i == i64(2) { continue }
+            t = t + i * 10 + j
+        }
+        if i == i64(3) { continue }
+        t = t + 1000
+    }
+    io::cout << s << " " << t << "\n"
+    return 0
+}

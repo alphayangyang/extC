@@ -278,6 +278,10 @@ typedef struct {
      * assertion in `genBlockBody`) and has nothing to do with the array they index (). */
     int        *loopLevel;
     int        *loopStep;
+    /* One slot per enclosing `for`: did any `continue` in its body jump to the step label? The
+     * label is only emitted when it is, or `-Wunused-label` fires on every `for` loop whose body
+     * never continues (most of them). */
+    bool       *loopStepUsed;
     /* `rcRoots.len` on **entry** to each registered loop. It answers "was this slot declared
      * outside that loop?": a slot index below a loop's entry value means the slot was already
      * live before that loop, that is, it is a long-lived slot outside the loop. */
@@ -3023,12 +3027,12 @@ static const char *exCall(CG *g, Expr *e) {
             Expr *th = *(Expr **)vecAt(&e->u.call.args, 3 + nCaps);
             if (th && th->kind == EX_INT && th->u.ival == -1)
                 return arenaPrintf(g->arena,
-                    "((int32_t)extc_par_run(__extc_par_%s, &%s, %s, %s,"
-                    " extc_par_default_threads(), 0))",
+                    "extc_par_run(__extc_par_%s, &%s, %s, %s,"
+                    " extc_par_default_threads(), 0)",
                     wf->name, tmp, planUsesHome(wf) ? "1" : "0", ntmp);
         }
         return arenaPrintf(g->arena,
-            "((int32_t)extc_par_run(__extc_par_%s, &%s, %s, %s, (int64_t)(%s), 0))",
+            "extc_par_run(__extc_par_%s, &%s, %s, %s, (int64_t)(%s), 0)",
             wf->name, tmp, planUsesHome(wf) ? "1" : "0", ntmp,
             genExpr(g, *(Expr **)vecAt(&e->u.call.args, 3 + nCaps)));
     }
@@ -6302,7 +6306,8 @@ static void genBlockBody(CG *g, Stmt *block) {
          * it. Emitted from the same walk that emits the statement, which is what keeps the label
          * and the `goto` in agreement (the `goto` is only emitted when ST_WHILE found this exact
          * statement in the block). */
-        if (planForStep(block) && st == planForStep(block) && g->loopLen > 0 && g->loopStep[g->loopLen - 1])
+        if (planForStep(block) && st == planForStep(block) && g->loopLen > 0 && g->loopStep[g->loopLen - 1]
+            && g->loopStepUsed[g->loopLen - 1])
             cgLine(g, "__extc_forstep_%d: ;", g->loopStep[g->loopLen - 1]);
         genStmt(g, st);
     }
@@ -7803,6 +7808,7 @@ if (condTemps || ownLevel) {
 }
 g->loopLevel[g->loopLen] = g->blkLevel + 1;   /* the body is the next level */
 g->loopStep[g->loopLen] = stepLabel;
+g->loopStepUsed[g->loopLen] = false;
 /* The reference slots live when the loop is entered: slots with a subscript smaller than this cell
  * are the long-lived slots "live before the loop starts" (criterion 2 of `rcEmitStoreRelease`). The
  * loop body's block has not been entered yet, so the root table is exactly the slots live outside
@@ -8301,7 +8307,10 @@ static void genStmtInner(CG *g, Stmt *s) {
             /* `continue` in a `for` must still run the step (C's `for` does); the desugared
              * `while` has it at the end of the body, behind a label. */
             int step = g->loopLen ? g->loopStep[g->loopLen - 1] : 0;
-            if (step) cgLine(g, "goto __extc_forstep_%d;", step);
+            if (step) {
+                g->loopStepUsed[g->loopLen - 1] = true;
+                cgLine(g, "goto __extc_forstep_%d;", step);
+            }
             else      cgLine(g, "continue;");
             return;
         }
@@ -8998,6 +9007,7 @@ static void genFunc(CG *g, FuncDef *f) {
     g->zoneMark  = (bool *)arenaAllocZero(g->arena, (size_t)g->levelCap * sizeof(bool));
     g->loopLevel = (int *)arenaAllocZero(g->arena, (size_t)g->levelCap * sizeof(int));
     g->loopStep  = (int *)arenaAllocZero(g->arena, (size_t)g->levelCap * sizeof(int));
+    g->loopStepUsed = (bool *)arenaAllocZero(g->arena, (size_t)g->levelCap * sizeof(bool));
     g->loopRootBase = (int *)arenaAllocZero(g->arena, (size_t)g->levelCap * sizeof(int));
     /* A function that puts nothing into its own block arenas does not even emit
      * the array. The checker decides that (`planMayUseArena(f)`: the body contains a

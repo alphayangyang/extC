@@ -1,0 +1,11 @@
+// 形状：区间循环，体内**没有** `continue` ⇒ 步进标签一个都不该发（否则 `-Wunused-label`）。
+// 判据在 run.sh：产物里 `__extc_forstep_` 出现 0 次，且 `-Wall -Wextra -Werror` 编得过。
+// expect: 45
+use std::io
+
+fn main() -> i32 {
+    var s: i64 = 0
+    for i in 0..i64(10) { s = s + i }
+    io::cout << s << "\n"
+    return 0
+}
