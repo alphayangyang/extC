@@ -391,6 +391,7 @@ std::json	-	escOf	fn	public
 std::json	-	find	fn	public
 std::json	-	intOf	fn	public
 std::json	-	isOk	fn	public
+std::json	-	json	fn	public
 std::json	-	keyAt	fn	public
 std::json	-	kindOf	fn	public
 std::json	-	member	fn	public
@@ -407,6 +408,7 @@ std::json	-	parse	fn	public
 std::json	-	rawOf	fn	public
 std::json	-	rootOf	fn	public
 std::json	-	strOf	fn	public
+std::json	-	typeName	fn	public
 std::json	-	unescape	fn	public
 std::json	-	valueAt	fn	public
 std::json	builder	afterKey	field	public
@@ -469,8 +471,6 @@ std::proc	-	pin	fn	public
 std::proc	-	self	fn	public
 std::proc	-	spawn	fn	public
 std::proc	-	wait	fn	public
-std::reflect	-	json	fn	public
-std::reflect	-	typeName	fn	public
 std::sys::domain	-	single	fn	public
 std::sys::file	-	open	fn	public
 std::sys::file	-	openAt	fn	public

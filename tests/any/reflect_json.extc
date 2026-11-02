@@ -1,5 +1,5 @@
 use std::io
-use std::reflect
+use std::json
 
 // `reflect::json` / `reflect::typeName` walk the same descriptors the printer uses, so a value whose
 // type is only known at run time can be encoded without the user writing a per-type encoder.

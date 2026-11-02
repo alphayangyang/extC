@@ -14,7 +14,7 @@
  *    真正管理的字段 ⇒ 填充字节不会随机化，逐字节比较才有意义 ✓
  * ⚠️ 这里直接用 `std::sys::term`（特权层）读设置：**判据需要它**，用户代码不该这么做 ✓ */
 use std::io
-use std::term
+use std::io
 use std::sys::term as sys
 
 /* 两个不透明缓冲逐字节相同？（布局不归 extC 管，所以只比字节） */

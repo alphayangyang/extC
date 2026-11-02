@@ -12,7 +12,7 @@
  * （进入 raw 一次 + trap 还原一次）—— 只有一次就说明钩子没接上 ✓
  * ⚠️ 本用例故意不 `close()`：它要的就是"死在半路"那条路径 ✓ */
 use std::io
-use std::term
+use std::io
 
 fn main() -> i32 {
     var t = term::rawTerminal(io::STDIN_FD)!

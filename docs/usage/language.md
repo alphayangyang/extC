@@ -491,7 +491,7 @@ fn main() -> i32 {
 
 <!-- fragment -->
 ```extc
-use std::reflect
+use std::json
 
 var v: any = point { x: i64(1), y: i64(-2) }
 var buf: mut slice<u8> = new u8[256]
