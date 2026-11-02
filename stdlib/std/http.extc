@@ -524,7 +524,7 @@ struct conn {
 struct session {
     c: conn                     /* 标量 ✓ */
     out: mut slice<u8>          /* 请求头缓冲：new ✓ */
-    buf: mut slice<u8>          /* 接收缓冲：new ✓（响应里的切片指向它 ✓）*/
+    @private buf: mut slice<u8>          /* 接收缓冲：new ✓（响应里的切片指向它 ✓）*/
 
     fn make(host: slice<u8>, port: i64, timeoutMs: i64) -> session {
         var fd: i64 = -1

@@ -890,8 +890,8 @@ let WTAGSZ: i64 = 32
 
 @noCopy
 struct builder {
-    buf: mut slice<u8>
-    n: i64
+    @private buf: mut slice<u8>
+    @private n: i64
     depth: i32
     failed: bool
     /* 刚写完一个成员名：紧跟的那个值**不再要**分隔符（否则会写出 `"k":,1`）。 */

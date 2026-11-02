@@ -25,8 +25,8 @@ use std::sys::term as sys
  * `tests/io/raw-trap.extc` covers that path. */
 struct terminal {
     fd:     i32
-    saved:  [128]u8         /* opaque: `struct termios` **as it was**, untouched by extC */
-    rawbuf: [128]u8         /* opaque: the raw settings, derived from `saved` */
+    @private saved:  [128]u8         /* opaque: `struct termios` **as it was**, untouched by extC */
+    @private rawbuf: [128]u8         /* opaque: the raw settings, derived from `saved` */
     on:     bool
 
     /* Switch to raw mode, keeping the old settings in `saved`.

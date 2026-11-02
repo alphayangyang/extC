@@ -30,7 +30,7 @@ let CAPACITY: i64 = 1024
 struct timers {
     at: [1024]i64      /* deadline（纳秒，按序）—— 与 CAPACITY 同宽 */
     tag: [1024]i64     /* 调用方的标识 */
-    n: i64
+    @private n: i64
 
     /* 只把计数清零。数组里的旧值无所谓（`n` 之外的位置不会被读到）。 */
     fn init(self: mut ref timers) -> void { self.n = 0 }

@@ -72,7 +72,7 @@ fn hex(digest: slice<u8>, out: mut slice<u8>) -> i64 {
 @noCopy
 struct state {
     h: [8]u32
-    buf: [64]u8
+    @private buf: [64]u8
     used: i64
     total: u64
 

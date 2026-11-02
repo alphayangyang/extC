@@ -56,11 +56,11 @@
  * reason. */
 use std::sys::io as sysio
 
-use std::io::fmt::{fmtI64Fast, fmtU64Fast, pFmtF, pFillBytes, pPadText, pairsReady, FMT, RIGHT}
+use std::io::fmt::{fmtI64Fast, fmtU64Fast, fmtF, fillBytes, padText, pairsReady, FMT, RIGHT}
 
 /* 门面：`std::io` 的公开面仍是"流 + 格式化 + 诊断"三组，实现分别在 `std/io.extc`、
  * `std/io/fmt.extc`、`std/io/err.extc`。用户只写 `use std::io`。 */
-pub use std::io::fmt::{DIGITS, FMT, LEFT, RIGHT, CENTER, pairsReady, fmtI64Fast, fmtU64Fast, fmtI64, pFmtF, pFillBytes, pPadText, flushCout, print, println}
+pub use std::io::fmt::{DIGITS, FMT, LEFT, RIGHT, CENTER, pairsReady, fmtI64Fast, fmtU64Fast, fmtI64, fmtF, fillBytes, padText, flushCout, print, println}
 pub use std::io::err::{errStream, cerr, errWrite, eprint, eprintln}
 
 /* A read failed, and **why** it failed: an enum, not a magic value.
@@ -136,10 +136,10 @@ fn writeBytesRaw(buf: slice<u8>) -> i64 {
 @noCopy
 struct writer {
     fd:  i32
-    buf: mut slice<u8>
+    @private buf: mut slice<u8>
     len: i64
 
-    fn cap(self: ref writer) -> i64 { return self.buf.len }
+    @private fn cap(self: ref writer) -> i64 { return self.buf.len }
 
     /* Emit what is buffered, including the `println` side, which is what keeps
      * the order right. Returns the number of bytes written (0 = it was empty). */
@@ -204,7 +204,7 @@ fn readSome(fd: i32, buf: mut slice<u8>) -> i64 {
  * `got` 是"到底读到数字没有"的回执 ⇒ 流不必再问 `eof()` 去消"`0` 与 EOF 同形"的歧义 ✓
  */
 @inline
-fn fillState(fd: i32, buf: mut slice<u8>, len: mut ref i64, pos: mut ref i64) -> result<i64, ioError> {
+@private fn fillState(fd: i32, buf: mut slice<u8>, len: mut ref i64, pos: mut ref i64) -> result<i64, ioError> {
     let n = sysio::read(fd, buf.data, buf.len)
     if n < 0 { return failure(ioError.readFailed(fd)) }
     *len = n
@@ -216,7 +216,7 @@ fn fillState(fd: i32, buf: mut slice<u8>, len: mut ref i64, pos: mut ref i64) ->
  * 溢出检查**只从第 19 位起**才做（前 18 位里 `v*10+d` 数学上不可能溢出 ✓ 10^18 < 2^63 ✓）
  * —— 语义与"每一位都检查"完全相同 ✓ 但热路径上省掉一次除法 ✓ */
 @inline
-fn accDigit(v: mut ref i64, nd: mut ref i64, d: i64) -> bool {
+@private fn accDigit(v: mut ref i64, nd: mut ref i64, d: i64) -> bool {
     if *nd < 18 {
         *v = *v * 10 + d
     } else {
@@ -542,7 +542,7 @@ fn readerOf(fd: i32) -> reader {
 /* ⚠️ 它在**解析热循环里逐字节**被调用 ⇒ 必须内联（不标就是一次函数调用 ✗
  * 实测：20M 个数 × 2~3 次 = 上千万次调用，正是输入那条路剩下的主要成本 ✓）*/
 @inline
-fn isSpaceByte(b: i64) -> bool {
+@private fn isSpaceByte(b: i64) -> bool {
     if b == 32 { return true }      /* space */
     if b == 9  { return true }      /* \t    */
     if b == 10 { return true }      /* \n    */
@@ -655,7 +655,7 @@ struct ostream { fd: i32
      * ⇒ 类型定向那一步只能放在检查器（见手册 §6 的 v2 说明）。 */
     @inline
     fn padText(self: ref ostream, v: slice<u8>, width: i64, fill: u8, align: i64) -> ostream {
-        pPadText(v, width, fill, align)
+        padText(v, width, fill, align)
         return { fd: self.fd }
     }
     /* 整数：零填充时**符号在前**（`-5` 宽 4 ⇒ `-005`，不是 `0-5`）*/
@@ -667,14 +667,14 @@ struct ostream { fd: i32
         if fill == u8(48) && align == RIGHT && width > n {
             if FMT[st] == u8(45) {
                 extc_cout_put(FMT[st..st + 1].data, 1)
-                pFillBytes(width - n, fill)
+                fillBytes(width - n, fill)
                 extc_cout_put(FMT[st + 1..24].data, n - 1)
             } else {
-                pFillBytes(width - n, fill)
+                fillBytes(width - n, fill)
                 extc_cout_put(FMT[st..24].data, n)
             }
         } else {
-            pPadText(FMT[st..24], width, fill, align)
+            padText(FMT[st..24], width, fill, align)
         }
         return { fd: self.fd }
     }
@@ -682,8 +682,8 @@ struct ostream { fd: i32
     @inline
     fn padF(self: ref ostream, v: f64, width: i64, prec: i64, fill: u8, align: i64) -> ostream {
         var text: [48]u8
-        let n: i64 = pFmtF(v, prec, text[..])
-        pPadText(text[0..n], width, fill, align)
+        let n: i64 = fmtF(v, prec, text[..])
+        padText(text[0..n], width, fill, align)
         return { fd: self.fd }
     }
 }

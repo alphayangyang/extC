@@ -90,7 +90,7 @@ type result<T, E> = | failure(E) | success(T)
 
 struct pcg32 {
     state: u64
-    inc: u64
+    @private inc: u64
 
     // The official PCG32 XSH-RR output function: it mixes the state into a 32-bit output.
     fn next(self: mut ref pcg32) -> u64 {
@@ -178,9 +178,9 @@ fn shuffleI32(r: mut ref pcg32, a: mut slice<i32>) {
 // ---------------------------------------------------------------------------
 
 struct varArray<T> {
-    buf: mut slice<T>
+    @private buf: mut slice<T>
     len: i64
-    cap: i64
+    @private cap: i64
 
     fn withCap(cap: i64) -> varArray<T> {
         if cap < 0 { cap = 0 }

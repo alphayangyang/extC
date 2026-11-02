@@ -76,7 +76,7 @@ use std::sys::pool as syspool    /* 运行期池：随容器创建，release 时
 struct handle {
     slot: i32
     gen:  i32
-    ep:   i64                  /* the pool epoch this handle was born in (masked) */
+    @private ep:   i64                  /* the pool epoch this handle was born in (masked) */
 }
 
 /* Two handles are the same slot in the same generation of the same epoch. */
@@ -93,18 +93,18 @@ fn same(a: handle, b: handle) -> bool {
 @sharesStorage        /* 按值拷贝时**两份共用同一块板块** ⇒ 编译器在这里报警告，要独立副本用 `clone()` */
 struct pool<T> {
     vals:   mut slice<T>       /* dense: vals[0..len] are the live values, in order */
-    slots:  mut slice<i32>     /* dense index -> slot number (the reverse map) */
+    @private slots:  mut slice<i32>     /* dense index -> slot number (the reverse map) */
     /* ⭐ ONE metadata array instead of two (`sparse` + `gens`), packed into an i64:
      *     live slot:  (gen << 32) | (dense + 1)          low half in [1, cap]
      *     free slot:  (gen << 32) | (next + cap + 2)     low half in [cap+1, 2cap+1]
      *   Live/free is one compare against `cap`; the generation survives a slot going free.
      *   A handle access is **two dependent random loads** (`ent`, then the value), and
      *   the metadata is one 8-byte word per slot. */
-    ent:    mut slice<i64>
+    @private ent:    mut slice<i64>
     /* 运行期池：数据住它所在的 arena，池是 arena 旁边的那条旁链；
      * 随本容器一起创建，所在的地方退出时整条链一起走。release 之后为 -1。 */
-    pid:    i64                /* 运行期池的下标 */
-    pidGen: u64                /* 建池时的世代：拷贝 + 槽位复用之后，防止误放别人的池 */
+    @private pid:    i64                /* 运行期池的下标 */
+    @private pidGen: u64                /* 建池时的世代：拷贝 + 槽位复用之后，防止误放别人的池 */
     /* Pool epoch: `clear` flips this one field instead of rewriting `ent` (O(1)), and a
      * handle carries the value it was born with. Kept OUT of `ent` on purpose -- it is a
      * pool-wide fact, not a per-slot one, and only a veto (see `pLive`). */
@@ -119,26 +119,26 @@ struct pool<T> {
      *      reuses the old free-list encoding in the low half of `ent`: `next + cap + 2`, so
      *      `pLow(e) > cap` already means "free" and no new tag is needed. Holes come first
      *      on `insert`, so a churning workload reuses them and `cursor` stops rising. */
-    cursor:   i32
-    holeHead: i32
-    n:      i64                /* live values, always the dense prefix */
-    cap:    i64
+    @private cursor:   i32
+    @private holeHead: i32
+    @private n:      i64                /* live values, always the dense prefix */
+    @private cap:    i64
 
     /* --- the packed metadata, in one place --- */
     @inline
-    fn pLow(e: i64) -> i64 { return e & 4294967295 }
+    @private fn pLow(e: i64) -> i64 { return e & 4294967295 }
     @inline
-    fn pDense(e: i64) -> i64 { return (e & 4294967295) - 1 }
+    @private fn pDense(e: i64) -> i64 { return (e & 4294967295) - 1 }
     @inline
-    fn pGen(e: i64) -> i64 { return e >> 32 }
+    @private fn pGen(e: i64) -> i64 { return e >> 32 }
     @inline
-    fn pPack(gen: i64, low: i64) -> i64 { return (gen << 32) | low }
+    @private fn pPack(gen: i64, low: i64) -> i64 { return (gen << 32) | low }
 
     /* --- the pool epoch, in one place: width lives in HANDLE_EPOCH_BITS --- */
     @inline
-    fn pEpMask() -> i64 { return (i64(1) << HANDLE_EPOCH_BITS) - 1 }
+    @private fn pEpMask() -> i64 { return (i64(1) << HANDLE_EPOCH_BITS) - 1 }
     @inline
-    fn pEp(v: i64) -> i64 { return v & pool<T>::pEpMask() }
+    @private fn pEp(v: i64) -> i64 { return v & pool<T>::pEpMask() }
 
     /* 槽是不是**空闲**的：`low == 0`（刚清零、从未用过）或 `low > cap`（空洞链上的编码）。
      *

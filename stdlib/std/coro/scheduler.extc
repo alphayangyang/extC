@@ -49,7 +49,7 @@ let WAIT_FD_W: i64 = -4
  * 收尾用负数之后，驱动会走"其它负数"那条路 `send` 一次，`send` 返回 false ⇒ `finish` ✓ */
 
 struct loop {
-    ep: i64
+    @private ep: i64
     listener: i64
     live: i64
     timers: ltimers::timers
@@ -76,7 +76,8 @@ struct tasks<T> {
             i = oi!                       /* 刚查过 len > 0 ✓ */
         }
         if i >= 0 {
-            self.rows.vals[i] = { h: h, done: false, started: false, fd: -2 }
+            let ok = self.rows.set(i, { h: h, done: false, started: false, fd: -2 })
+            if !ok { return false }
         } else {
             self.rows.push({ h: h, done: false, started: false, fd: -2 })
             i = self.rows.len() - 1

@@ -94,7 +94,7 @@ let RIGHT: i64 = 1
 let CENTER: i64 = 2
 
 @inline
-fn pFillBytes(n: i64, fill: u8) -> void {
+fn fillBytes(n: i64, fill: u8) -> void {
     var pad: [64]u8
     var i: i64 = 0
     while i < 64 { pad[i] = fill  i = i + 1 }
@@ -109,20 +109,20 @@ fn pFillBytes(n: i64, fill: u8) -> void {
 
 /* 已经格式化好的文本按 宽度/填充/对齐 写出去。 */
 @inline
-fn pPadText(t: slice<u8>, width: i64, fill: u8, align: i64) -> void {
+fn padText(t: slice<u8>, width: i64, fill: u8, align: i64) -> void {
     var n: i64 = width - t.len
     if n <= 0 {
         sysio::extc_cout_put(t.data, t.len)
     } else if align == CENTER {
         let l: i64 = n / 2
-        pFillBytes(l, fill)
+        fillBytes(l, fill)
         sysio::extc_cout_put(t.data, t.len)
-        pFillBytes(n - l, fill)
+        fillBytes(n - l, fill)
     } else if align == LEFT {
         sysio::extc_cout_put(t.data, t.len)
-        pFillBytes(n, fill)
+        fillBytes(n, fill)
     } else {
-        pFillBytes(n, fill)
+        fillBytes(n, fill)
         sysio::extc_cout_put(t.data, t.len)
     }
 }
@@ -132,9 +132,9 @@ fn pPadText(t: slice<u8>, width: i64, fill: u8, align: i64) -> void {
  * 注意范围检查用 **float 字面量**：`f64(1000000000000000)` 里那个整数字面量会先按默认整型走
  * ⇒ 溢出绕回，判断就失真了（实测：`1.5` 也被判成超范围 ✗）。 */
 @inline
-fn pFmtF(v: f64, prec: i64, out: mut slice<u8>) -> i64 {
+fn fmtF(v: f64, prec: i64, out: mut slice<u8>) -> i64 {
     if v >= 1.0e15 || v <= -1.0e15 {
-        trap("io::pFmtF: |value| >= 1e15 is out of range for the fixed-point formatter")
+        trap("io::fmtF: |value| >= 1e15 is out of range for the fixed-point formatter")
     }
     var o: i64 = 0
     var x: f64 = v
@@ -188,7 +188,7 @@ fn fmtU64Fast(v: u64) -> i64 {
     return end
 }
 
-fn fmtI64(v: i64, out: mut slice<u8>) -> i64 {
+@private fn fmtI64(v: i64, out: mut slice<u8>) -> i64 {
     if v == 0 { out[0] = u8(48)  return 1 }
     var u: i64 = v
     var neg: bool = v < 0

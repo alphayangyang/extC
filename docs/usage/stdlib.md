@@ -84,6 +84,10 @@ fn main() -> i32 {
 
 ## 2. `stl::*`：容器
 
+容器的**存储字段**（`vector.vals`、`map.vals`/`map.depth`、`hashMap.vals`、`pool.vals`）是公开的，因为
+子系统代码（协程调度器的任务行、`hashSet` 的存活位、`stringio` 的窗口）要按位置读写；它们**不是 API**：
+宽度、布局、语义都可能随实现变化，用户代码按容器的方法写。
+
 导入名就是 `stl::<文件名>`：`use stl::vector`、`use stl::hashMap`、`use stl::stringio`……
 这一族里的容器大多带 `@sharesStorage` + `@poolObject`：
 **按值拷贝两份会共用同一块板块**，编译器会为此报警告；要独立副本必须显式 `clone()`
@@ -680,6 +684,16 @@ fn main() -> i32 {
 | `flushOut` / `writeBytes` / `writeBytesRaw` | 冲 stdio 侧 / 进 cout 缓冲 / 直写 fd 1 |
 | `print` / `println` | `fn print(s: slice<u8>)` / `fn println(s: slice<u8>)`（不用链式写法的一行输出，走 cout 同一缓冲；数字仍用 `io::cout`）|
 | `eprint` / `eprintln` | `fn eprint(s: slice<u8>)` / `fn eprintln(s: slice<u8>)`（诊断通道，写 stderr；与 stdout 两条通道分开，`cerr` 是流式写法）|
+
+低层格式化（`std::io::fmt` 的公开面，`std::io` 与 `std::fs` 共用；名字不带 `p` 前缀，但它们
+**没有兼容性承诺**，热路径要用就直接调）：
+
+| 名字 | 一句话 |
+|---|---|
+| `fmt::padText` / `fmt::fillBytes` | 把 `slice<u8>` 按宽度/填充字节/对齐写进 `FMT` 缓冲；`ostream.padText` 是它的糖 |
+| `fmt::fmtF` | 定点格式化一个 `f64`（`|v| >= 1e15` trap）：`f` 说明符与 `padF` 的落点 |
+| `fmt::flushCout` | 把 `cout` 缓冲冲给 stdio；`io::flushOut` 就是它 |
+| `fmt::pairsReady` | 惰性建好格式化说明符查表（`FMT` 的懒初始化），`print`/`println` 先调它 |
 
 关键语义：
 

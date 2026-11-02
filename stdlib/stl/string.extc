@@ -42,12 +42,12 @@ use std::mem as sysmem
                        * 要独立副本用 `clone()`（内联态其实各拿各的 16 字节，但检查器一律保守） */
 @poolObject            /* 这个类型**可能拥有一个池**：升级之后存储住在池自己的板块上，寿命随它所在的地方 */
 struct string {
-    small:  [16]u8          /* 内联缓冲：零值 = 内联空串（零分配的合法状态） */
-    n:      i64
-    cap:    i64             /* 0 = 内联；!= 0 = 池里，且 cap 就是池块容量（>= 16） */
-    big:    ?mut slice<u8>  /* 只有升级到池之后才 some —— 存一次、之后复用（每次 poolSliceRaw 都是新分配） */
-    pid:    i64
-    pidGen: u64
+    @private small:  [16]u8          /* 内联缓冲：零值 = 内联空串（零分配的合法状态） */
+    @private n:      i64
+    @private cap:    i64             /* 0 = 内联；!= 0 = 池里，且 cap 就是池块容量（>= 16） */
+    @private big:    ?mut slice<u8>  /* 只有升级到池之后才 some —— 存一次、之后复用（每次 poolSliceRaw 都是新分配） */
+    @private pid:    i64
+    @private pidGen: u64
 
     /* 构造器（`withCap` 的落点）。非泛型类型上 `string::new(...)` 会被读成
      * "模块 string 的函数 new"（模块名与类型名同名），所以这里叫 `create`；

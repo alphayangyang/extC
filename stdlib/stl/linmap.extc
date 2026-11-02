@@ -34,12 +34,12 @@ use std::sys::pool as syspool    /* 运行期池记录 + 板块原语：这张�
 @sharesStorage        /* 按值拷贝时**两份共用同一块板块** ⇒ 编译器在这里报警告，要独立副本用 `clone()` */
 @poolObject            /* 这个类型**拥有一个池**：存储住在池自己的板块上，寿命随它所在的地方 */
 struct linMap<K, V> {
-    pid:    i64            /* 这张表自己的池记录（一个非嵌套容器 = 一个池）*/
-    pidGen: u64
-    keys: mut slice<K>
+    @private pid:    i64            /* 这张表自己的池记录（一个非嵌套容器 = 一个池）*/
+    @private pidGen: u64
+    @private keys: mut slice<K>
     vals: mut slice<V>
-    n:    i64              /* live entries, always the front `n` of both views */
-    cap:  i64
+    @private n:    i64              /* live entries, always the front `n` of both views */
+    @private cap:  i64
 
     /* A table with room for `want` entries before the first growth. */
     fn withCap(want: i64) -> linMap<K, V> {

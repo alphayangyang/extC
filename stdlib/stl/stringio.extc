@@ -61,7 +61,7 @@ impl string {
         /* Straight at the storage, no intermediate copy: `w.write` copies the bytes into the
          * writer's own buffer anyway, so a `toSlice()` here would copy them twice. The view is
          * consumed by the call and dies with it. */
-        let n = w.write(self.subView(0, self.n))?
+        let n = w.write(self.subView(0, self.len()))?
         return success(n)
     }
 
@@ -71,7 +71,7 @@ impl string {
      * static (depth 0), while `nl[..]` hands an unanalyzable callee a reference into the
      * callee's own frame -- the escape checker refuses that, and rightly so. */
     fn writeLineTo(self: ref string, w: mut ref io::writer) -> result<i64, io::ioError> {
-        let n = w.write(self.subView(0, self.n))?   /* see `writeTo`: no intermediate copy */
+        let n = w.write(self.subView(0, self.len()))?   /* see `writeTo`: no intermediate copy */
         let m = w.write("\n")?
         return success(n + m)
     }
@@ -80,16 +80,16 @@ impl string {
      * 日志少一次临时 `string`。`prec` 上限 20，与 `fromF64` 同一条口径。 */
     fn appendF64(self: mut ref string, x: f64, prec: i64) {
         var buf: [64]u8
-        let n = io::pFmtF(x, prec, buf[..])
+        let n = io::fmtF(x, prec, buf[..])
         self.append(buf[0..n])
     }
 
     /* 浮点数的运算符重载：`s + 1.5` 得到新字符串（默认 6 位小数，与 `appendF64` 的常用
      * 精度一致；要别的精度写 `s.appendF64(x, prec)`）。放在这里而不是 `stl/string.extc`，
-     * 是因为十进制格式化（`io::pFmtF`）属于 I/O 层。 */
+     * 是因为十进制格式化（`io::fmtF`）属于 I/O 层。 */
     fn +(self: ref string, other: f64) -> string {
         var out: string
-        out.append(self.subView(0, self.n))
+        out.append(self.subView(0, self.len()))
         out.appendF64(other, 6)
         return out
     }
@@ -164,7 +164,7 @@ impl fs::ifstream {
 
 /* 浮点数转 `string`：`stringio::fromF64(x, prec)`（定点 `prec` 位小数，四舍五入）。
  *
- * 为什么放这里：格式化浮点的实现（`io::pFmtF`）属于 I/O 层，而 `string` 是容器 —— 容器不
+ * 为什么放这里：格式化浮点的实现（`io::fmtF`）属于 I/O 层，而 `string` 是容器 —— 容器不
  * 该认识"小数点后几位"这种显示决策。这一层同时认识两边，所以转换放这一层。
  *
  * 与 `io::cout << x` 的区别：那条路走 `%g`（最短可回读形式），这里走固定小数位（报表/日志的
@@ -172,7 +172,7 @@ impl fs::ifstream {
  */
 fn fromF64(x: f64, prec: i64) -> string {
     var buf: [64]u8
-    let n = io::pFmtF(x, prec, buf[..])
+    let n = io::fmtF(x, prec, buf[..])
     var out: string = string::withCap(n)
     out.append(buf[0..n])
     return out

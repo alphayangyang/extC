@@ -30,10 +30,10 @@ use std::sys::pool as syspool
 @poolObject            /* 这个类型**拥有一个池**：存储住在池自己的板块上，寿命随它所在的地方 */
 struct vector<T> {
     vals:   mut slice<T>
-    n:      i64
-    cap:    i64
-    pid:    i64                /* 运行期池的下标 */
-    pidGen: u64                /* 建池时的世代：陈旧拷贝不许误放别人的池 */
+    @private n:      i64
+    @private cap:    i64
+    @private pid:    i64                /* 运行期池的下标 */
+    @private pidGen: u64                /* 建池时的世代：陈旧拷贝不许误放别人的池 */
 
     fn withCap(c: i64) -> vector<T> {
         let rp = syspool::extc_pool_new(-1)

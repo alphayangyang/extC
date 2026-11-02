@@ -47,7 +47,7 @@ struct errStream {
 
 let cerr: errStream = errStream { }
 
-fn errWrite(s: slice<u8>) {
+@private fn errWrite(s: slice<u8>) {
     if s.len == 0 { return }
     flushCout()                                /* 先放 stdout 缓冲，见上面的 ⚠️ */
     flush()

@@ -48,19 +48,19 @@ let ORDER: i64 = 16        /* max keys per node (the array sizes in `newNode` ar
 let HALF:  i64 = 8         /* min keys per non-root node once stage 2b rebalances */
 
 struct bnode<K, V> {
-    n:    i32                 /* keys in this node */
-    cnt:  i32                 /* keys in this subtree (leaves: n; internal: sum of children) */
-    leaf: bool
-    keys: mut slice<K>        /* ORDER entries, ascending */
+    @private n:    i32                 /* keys in this node */
+    @private cnt:  i32                 /* keys in this subtree (leaves: n; internal: sum of children) */
+    @private leaf: bool
+    @private keys: mut slice<K>        /* ORDER entries, ascending */
     vals: mut slice<V>        /* leaves only */
-    kids: mut slice<i32>      /* internal only, ORDER + 1 entries */
+    @private kids: mut slice<i32>      /* internal only, ORDER + 1 entries */
     next: i32                 /* leaf chain, -1 at the end */
 }
 
 @sharesStorage        /* 按值拷贝时**两份共用同一块板块** ⇒ 编译器在这里报警告，要独立副本用 `clone()` */
 @poolObject            /* 这个类型**拥有一个池**：存储住在池自己的板块上，寿命随它所在的地方 */
 struct map<K, V> {
-    nodes:  mut slice<bnode<K, V>>   /* per-node scalars + VIEWS into the three stores below */
+    @private nodes:  mut slice<bnode<K, V>>   /* per-node scalars + VIEWS into the three stores below */
     /* The three stores are flat and owned by the map: node `id` owns the 17 key slots at
      * `id * 17`, the 17 value slots at the same offset, and the 18 child slots at `id * 18`.
      * Nodes therefore never allocate -- a node is carved out of storage that already exists.
@@ -68,18 +68,18 @@ struct map<K, V> {
      * allocation inside `put`'s split loop would land in the ARENA OF THAT LOOP BODY and be freed
      * the moment the iteration ends, so a freshly split node would dangle. Storage that is
      * allocated once, at the top level of `withCap` / `growStores`, has the map's own lifetime. */
-    keys:   mut slice<K>
+    @private keys:   mut slice<K>
     vals:   mut slice<V>
-    kids:   mut slice<i32>
-    nnodes: i64
-    ncap:   i64               /* nodes the stores have room for */
-    root:   i32
-    freeHead: i32             /* chain of recycled nodes (through `next`), -1 when empty */
-    pid:    i64               /* runtime pool of this container (`release` hands it back) */
-    pidGen: u64               /* its generation: a stale copy must not release somebody else's */
-    n:      i64               /* live entries */
+    @private kids:   mut slice<i32>
+    @private nnodes: i64
+    @private ncap:   i64               /* nodes the stores have room for */
+    @private root:   i32
+    @private freeHead: i32             /* chain of recycled nodes (through `next`), -1 when empty */
+    @private pid:    i64               /* runtime pool of this container (`release` hands it back) */
+    @private pidGen: u64               /* its generation: a stale copy must not release somebody else's */
+    @private n:      i64               /* live entries */
     path:   mut slice<i32>    /* scratch: the descent path of `put` / `remove` */
-    side:   mut slice<i32>    /* scratch: which child slot was taken at each level */
+    @private side:   mut slice<i32>    /* scratch: which child slot was taken at each level */
     depth:  i64
 
     /* ---------------------------------------------------------------- construction */
@@ -107,7 +107,7 @@ struct map<K, V> {
     fn new() -> map<K, V> { return map<K, V>::withCap(16) }
 
     fn len(self: ref map<K, V>) -> i64 { return self.n }
-    fn nodeCount(self: ref map<K, V>) -> i64 { return self.nnodes }
+    @private fn nodeCount(self: ref map<K, V>) -> i64 { return self.nnodes }
     fn capOf(self: ref map<K, V>) -> i64 { return self.ncap }
     /* 这张表**当下**在它自己池里占的字节（四处存储 + 两块草稿）。
      * 判据：`growStores` 把旧块当场还了 ⇒ 这个数只随当前 `ncap` 走，与长过多少次无关；
@@ -129,32 +129,32 @@ struct map<K, V> {
      * 强制内联之后它们从 profile 里消失，GCC 也能跨过它们优化。
      * 注意：不是所有小函数都值得 —— `hashMap` 那 6 个小访问器加了只值 ~1%（噪声），别加。 */
 @inline
-    fn bn(self: ref map<K, V>, id: i32) -> i64 { return i64(self.nodes[i64(id)].n) }
+    @private fn bn(self: ref map<K, V>, id: i32) -> i64 { return i64(self.nodes[i64(id)].n) }
 @inline
-    fn cntOf(self: ref map<K, V>, id: i32) -> i64 { return i64(self.nodes[i64(id)].cnt) }
+    @private fn cntOf(self: ref map<K, V>, id: i32) -> i64 { return i64(self.nodes[i64(id)].cnt) }
 @inline
-    fn leafOf(self: ref map<K, V>, id: i32) -> bool { return self.nodes[i64(id)].leaf }
+    @private fn leafOf(self: ref map<K, V>, id: i32) -> bool { return self.nodes[i64(id)].leaf }
 @inline
-    fn kn(self: ref map<K, V>, id: i32, i: i64) -> K { return self.nodes[i64(id)].keys[i] }
+    @private fn kn(self: ref map<K, V>, id: i32, i: i64) -> K { return self.nodes[i64(id)].keys[i] }
 @inline
-    fn vn(self: ref map<K, V>, id: i32, i: i64) -> V { return self.nodes[i64(id)].vals[i] }
+    @private fn vn(self: ref map<K, V>, id: i32, i: i64) -> V { return self.nodes[i64(id)].vals[i] }
 @inline
-    fn kd(self: ref map<K, V>, id: i32, i: i64) -> i32 { return self.nodes[i64(id)].kids[i] }
+    @private fn kd(self: ref map<K, V>, id: i32, i: i64) -> i32 { return self.nodes[i64(id)].kids[i] }
 @inline
-    fn nx(self: ref map<K, V>, id: i32) -> i32 { return self.nodes[i64(id)].next }
+    @private fn nx(self: ref map<K, V>, id: i32) -> i32 { return self.nodes[i64(id)].next }
 
 @inline
-    fn setN(self: mut ref map<K, V>, id: i32, v: i64) { self.nodes[i64(id)].n = i32(v) }
+    @private fn setN(self: mut ref map<K, V>, id: i32, v: i64) { self.nodes[i64(id)].n = i32(v) }
 @inline
-    fn setCnt(self: mut ref map<K, V>, id: i32, v: i64) { self.nodes[i64(id)].cnt = i32(v) }
+    @private fn setCnt(self: mut ref map<K, V>, id: i32, v: i64) { self.nodes[i64(id)].cnt = i32(v) }
 @inline
-    fn setKey(self: mut ref map<K, V>, id: i32, i: i64, k: K) { self.nodes[i64(id)].keys[i] = k }
+    @private fn setKey(self: mut ref map<K, V>, id: i32, i: i64, k: K) { self.nodes[i64(id)].keys[i] = k }
 @inline
-    fn setVal(self: mut ref map<K, V>, id: i32, i: i64, v: V) { self.nodes[i64(id)].vals[i] = v }
+    @private fn setVal(self: mut ref map<K, V>, id: i32, i: i64, v: V) { self.nodes[i64(id)].vals[i] = v }
 @inline
-    fn setKid(self: mut ref map<K, V>, id: i32, i: i64, c: i32) { self.nodes[i64(id)].kids[i] = c }
+    @private fn setKid(self: mut ref map<K, V>, id: i32, i: i64, c: i32) { self.nodes[i64(id)].kids[i] = c }
 @inline
-    fn setNext(self: mut ref map<K, V>, id: i32, c: i32) { self.nodes[i64(id)].next = c }
+    @private fn setNext(self: mut ref map<K, V>, id: i32, c: i32) { self.nodes[i64(id)].next = c }
 
     /* Double the stores and re-hang every node's views on the new arrays. The copies are element
      * by element on purpose: a view is a pointer into the old store, so it cannot be moved by
