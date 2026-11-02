@@ -1457,6 +1457,51 @@ fn main() -> i32 {
 `sum` / `max` / `min` / `count` 合并（`seq::sum(xs) ?? f64(0.0)`）。这两个形状合起来覆盖
 "切块算 + 汇总"这条主线。
 
+### 11.9 默认参数
+
+形参可以带默认值，写了默认值的那些可以**在调用点省略**（省略的只能是尾部）：
+
+```extc
+// 结果：30 / 7 / 7
+use std::io
+
+fn scale(n: i64, by: i64 = i64(2), plus: i64 = i64(0)) -> i64 { return n * by + plus }
+
+struct counter {
+    n: i64
+    fn bump(self: ref counter, by: i64 = i64(1)) -> i64 { return self.n + by }
+}
+
+fn main() -> i32 {
+    var c: counter = counter { n: 6 }
+    println(scale(i64(15)))                 // 30：(by=2, plus=0)
+    println(scale(i64(3), i64(1), i64(4)))  // 7
+    println(c.bump())                       // 7：(by=1)
+    return 0
+}
+```
+
+三条规则，都是**声明处**就能查出来的：
+
+1. **默认值必须是编译期常量** —— 字面量，或对它的一次转换/取负（`i64(0)`、`-i64(3)`）。
+   默认值会被复制进每一个省略该实参的调用点，读不到被调方的局部变量，所以这不是限制而是
+   唯一能工作的形状。写成 `b: i64 = a` 报 `a default value must be a compile-time constant`。
+2. **默认值必须形成后缀** —— 一旦某个形参有默认值，它后面的形参都必须有。
+   写成 `fn f(a: i64 = i64(1), b: i64)` 报 `parameter `b` comes after a parameter with a
+   default value, so it needs one too`（"省略的实参"只能是尾部，否则调用点无法判定省略的是哪一个）。
+3. **`self` 不能有默认值**，`extern!` / `@builtin` 声明也不能有 —— 后者是对已有 C 函数的承诺，
+   那个函数不知道默认值这回事。
+
+实参个数不对时，诊断给的是**区间**而不是一个数：
+
+```
+error: `scale` expects 1 to 3 argument(s), got 0
+error: `scale` expects at most 3 argument(s), got 4
+```
+
+实现上没有动调用约定：省略的实参在**检查器**里被补成一棵克隆的常量表达式，代码生成照旧把
+所有实参传满，所以生成的 C 与"用户自己写全"完全一样。
+
 ---
 
 ## 12. 结果：现在写不出来的写法

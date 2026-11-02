@@ -333,6 +333,26 @@ static void checkDeclarations(Checker *c) {
 }
 
 /**
+ * @brief Is this expression something a call site can copy verbatim into an argument slot?
+ *
+ * Default values travel to the call site, so they may not read the callee's locals or the
+ * caller's state: only literals (and a conversion or a negation of one) qualify. The rule is
+ * also what makes copying safe -- a constant has no plan facts that differ between two uses.
+ *
+ * @param e  Expression written after `=` in a parameter list.
+ * @return   `true` when the value is a compile-time constant.
+ */
+static bool defaultIsConstant(Expr *e) {
+    if (!e) return false;
+    switch (e->kind) {
+    case EX_INT: case EX_FLOAT: case EX_BOOL: case EX_STR: return true;
+    case EX_UN:   return defaultIsConstant(e->u.un.operand);
+    case EX_CONV: return defaultIsConstant(e->u.conv.operand);
+    default:      return false;
+    }
+}
+
+/**
  * @brief Check the shape of a method: where it is declared and what `self` is.
  *
  * A function that operates on a value must be declared inside a struct; operators such as `==` are
@@ -343,6 +363,32 @@ static void checkDeclarations(Checker *c) {
  * @param f  Function to check; `f->owner` is NULL for a free function.
  */
 static void checkMethodShape(Checker *c, FuncDef *f) {
+    /* Default values (`t: bool = false`): a call may leave out the tail of the parameter list,
+     * so the defaults have to form a suffix, and they have to be constants the call site can
+     * copy. Both rules are checked here, before any body is looked at, so the diagnostics do not
+     * depend on which arguments some call happens to pass. */
+    bool sawDefault = false;
+    for (size_t i = 0; i < f->params.len; i++) {
+        Param *p = *(Param **)vecAt(&f->params, i);
+        if (p->dflt) {
+            sawDefault = true;
+            if (i == 0 && f->owner && strcmp(p->name, "self") == 0)
+                ckError(c, p->line, NULL, "`self` cannot have a default value");
+            else if (!defaultIsConstant(p->dflt))
+                ckError(c, p->line,
+                        "the value is copied into every call that leaves the argument out, so it "
+                        "may not read anything: a literal (or a conversion or negation of one) is "
+                        "the whole language here",
+                        "a default value must be a compile-time constant");
+        } else if (sawDefault) {
+            ckError(c, p->line,
+                    "a call leaves out the arguments at the end only, so every parameter after the "
+                    "first one with a default value needs one too",
+                    "parameter `%s` comes after a parameter with a default value, so it needs one "
+                    "too", p->name);
+        }
+    }
+
     if (!f->owner) {
         /* A free function has no receiver, so it may not take `self`. */
         if (strcmp(f->name, "==") == 0 || strcmp(f->name, "!=") == 0)

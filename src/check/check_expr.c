@@ -2048,6 +2048,45 @@ static void sugarNdViewArg(Checker *c, Expr *e) {
 }
 
 /**
+ * @brief How many arguments a call has to supply: the parameters ahead of the first default.
+ *
+ * A call may leave out a suffix of the parameter list, and only a suffix: the declaration check
+ * rejects a parameter without a default that follows one with a default, so the count below is
+ * both the minimum and the boundary between "written" and "filled in".
+ *
+ * @param f      Callee.
+ * @param first  Index of the first parameter an argument corresponds to (1 for a method, whose
+ *               parameter 0 is the receiver).
+ * @return       Minimum number of arguments the call must write.
+ */
+static size_t minArgsFor(FuncDef *f, size_t first) {
+    size_t total = f->params.len - first;
+    for (size_t i = 0; i < total; i++)
+        if ((*(Param **)vecAt(&f->params, i + first))->dflt) return i;
+    return total;
+}
+
+/**
+ * @brief Fill the arguments a call leaves out from the callee's default values.
+ *
+ * The defaults are cloned per call site: the plan side table is addressed by node pointer, so two
+ * call sites sharing one node would share one set of facts. Cloning is safe precisely because a
+ * default is a compile-time constant — it carries no facts worth sharing.
+ *
+ * @param c      Checker.
+ * @param args   Argument list to extend (the call node's own vector).
+ * @param f      Callee.
+ * @param first  Index of the first parameter an argument corresponds to.
+ */
+static void fillDefaultArgs(Checker *c, Vec *args, FuncDef *f, size_t first) {
+    size_t total = f->params.len - first;
+    while (args->len < total) {
+        Param *p = *(Param **)vecAt(&f->params, args->len + first);
+        *(Expr **)vecPush(args) = exprClone(c->arena, p->dflt);
+    }
+}
+
+/**
  * @brief Check an expression and return its type: the recursive core of the checker.
  *
  * `checkExpr` wraps it with the bookkeeping every subexpression needs. Some nodes are rewritten **in place**
@@ -3031,10 +3070,26 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             /* The reference check is moved to the end of this case, so it runs after all arguments are
              * checked. */
 
-            if (e->u.assoc.args.len != f->params.len) {
-                ckError(c, e->line, NULL, "`%s::%s` expects %zu argument(s), got %zu",
-                        e->u.assoc.typeName, f->name, f->params.len, e->u.assoc.args.len);
-                return ttError(tt);
+            {
+                size_t need = minArgsFor(f, 0);
+                if (e->u.assoc.args.len < need || e->u.assoc.args.len > f->params.len) {
+                    if (need == f->params.len)
+                        ckError(c, e->line, NULL, "`%s::%s` expects %zu argument(s), got %zu",
+                                e->u.assoc.typeName, f->name, f->params.len,
+                                e->u.assoc.args.len);
+                    else if (need == 0)
+                        ckError(c, e->line, NULL,
+                                "`%s::%s` expects at most %zu argument(s), got %zu",
+                                e->u.assoc.typeName, f->name, f->params.len,
+                                e->u.assoc.args.len);
+                    else
+                        ckError(c, e->line, NULL,
+                                "`%s::%s` expects %zu to %zu argument(s), got %zu",
+                                e->u.assoc.typeName, f->name, need, f->params.len,
+                                e->u.assoc.args.len);
+                    return ttError(tt);
+                }
+                fillDefaultArgs(c, &e->u.assoc.args, f, 0);
             }
             for (size_t i = 0; i < f->params.len; i++) {
                 Param *p = *(Param **)vecAt(&f->params, i);
@@ -4045,10 +4100,23 @@ static Type *checkExprInner(Checker *c, Expr *e) {
              * only in the return type, the message tells the user to write the arguments
              * explicitly: `f<i32>(...)`. */
             if (f->typeParams.len > 0) {
-                if (e->u.call.args.len != f->params.len) {
-                    ckError(c, e->line, NULL, "`%s` expects %zu argument(s), got %zu",
-                            name, f->params.len, e->u.call.args.len);
-                    return f->ret ? f->ret : ttVoid(tt);
+                {
+                    size_t need = minArgsFor(f, 0);
+                    if (e->u.call.args.len < need || e->u.call.args.len > f->params.len) {
+                        if (need == f->params.len)
+                            ckError(c, e->line, NULL, "`%s` expects %zu argument(s), got %zu",
+                                    name, f->params.len, e->u.call.args.len);
+                        else if (need == 0)
+                            ckError(c, e->line, NULL,
+                                    "`%s` expects at most %zu argument(s), got %zu",
+                                    name, f->params.len, e->u.call.args.len);
+                        else
+                            ckError(c, e->line, NULL,
+                                    "`%s` expects %zu to %zu argument(s), got %zu",
+                                    name, need, f->params.len, e->u.call.args.len);
+                        return f->ret ? f->ret : ttVoid(tt);
+                    }
+                    fillDefaultArgs(c, &e->u.call.args, f, 0);
                 }
                 /* Lend container arguments before inference: inference must read the node types that will
                  * actually be checked. */
@@ -4190,10 +4258,21 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 }
             }
 
-            if (e->u.call.args.len != f->params.len) {
-                ckError(c, e->line, NULL, "`%s` expects %zu argument(s), got %zu",
-                        name, f->params.len, e->u.call.args.len);
-                return f->ret ? f->ret : ttVoid(tt);
+            {
+                size_t need = minArgsFor(f, 0);
+                if (e->u.call.args.len < need || e->u.call.args.len > f->params.len) {
+                    if (need == f->params.len)
+                        ckError(c, e->line, NULL, "`%s` expects %zu argument(s), got %zu",
+                                name, f->params.len, e->u.call.args.len);
+                    else if (need == 0)
+                        ckError(c, e->line, NULL, "`%s` expects at most %zu argument(s), got %zu",
+                                name, f->params.len, e->u.call.args.len);
+                    else
+                        ckError(c, e->line, NULL, "`%s` expects %zu to %zu argument(s), got %zu",
+                                name, need, f->params.len, e->u.call.args.len);
+                    return f->ret ? f->ret : ttVoid(tt);
+                }
+                fillDefaultArgs(c, &e->u.call.args, f, 0);
             }
             /* A read-only view parameter accepts a container argument of the same element: first lend `va` / `a`
              * in place into real `va.asSlice()` / `a[..]` nodes, so that inference and checking afterwards see
@@ -4877,10 +4956,21 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             size_t want = f->params.len - 1;
             Type *rt = f->ret ? ttSubstitute(tt, f->ret, sp, sa) : ttVoid(tt);
 
-            if (e->u.method.args.len != want) {
-                ckError(c, e->line, NULL, "`%s` expects %zu argument(s), got %zu",
-                        e->u.method.name, want, e->u.method.args.len);
-                return rt;
+            {
+                size_t need = minArgsFor(f, 1);
+                if (e->u.method.args.len < need || e->u.method.args.len > want) {
+                    if (need == want)
+                        ckError(c, e->line, NULL, "`%s` expects %zu argument(s), got %zu",
+                                e->u.method.name, want, e->u.method.args.len);
+                    else if (need == 0)
+                        ckError(c, e->line, NULL, "`%s` expects at most %zu argument(s), got %zu",
+                                e->u.method.name, want, e->u.method.args.len);
+                    else
+                        ckError(c, e->line, NULL, "`%s` expects %zu to %zu argument(s), got %zu",
+                                e->u.method.name, need, want, e->u.method.args.len);
+                    return rt;
+                }
+                fillDefaultArgs(c, &e->u.method.args, f, 1);
             }
             for (size_t i = 0; i < want; i++) {
                 Param *p = *(Param **)vecAt(&f->params, i + 1);

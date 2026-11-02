@@ -1,0 +1,9 @@
+use std::io
+
+fn shift(v: i64, d: i64 = -i64(3)) -> i64 { return v + d }
+
+fn main() -> i32 {
+    print(shift(i64(0)), " ")
+    println(shift(i64(10), i64(2)))
+    return 0
+}

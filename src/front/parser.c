@@ -2097,6 +2097,22 @@ static FuncDef *parseFunc(Parser *p) {
         pm->name = pn->text;
         pm->type = pt;
         pm->line = pn->line;
+        /* `name: Type = expr`: the value a call uses when it leaves this argument out. Only a
+         * body-carrying `fn` may have one: a declaration (`extern!`, `@builtin`) is a promise
+         * about somebody else's C function, and that function has no notion of a default. */
+        if (at(p, "=")) {
+            Token *eq = take(p);
+            if (p->noBody) {
+                ctxError(p->ctx, eq->line, eq->col,
+                         "a declaration without a body promises an existing C function, and that "
+                         "function takes exactly the parameters written here",
+                         "an `extern!` or `@builtin` declaration cannot have a default value");
+                return NULL;
+            }
+            skipNl(p);
+            pm->dflt = parseExpr(p);
+            if (!pm->dflt) return NULL;
+        }
         *(Param **)vecPush(&fd->params) = pm;
 
         if (accept(p, ",")) skipNl(p);

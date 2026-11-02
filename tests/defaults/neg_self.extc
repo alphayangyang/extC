@@ -1,0 +1,5 @@
+struct box {
+    n: i64
+    fn grow(self: ref box = self, k: i64) -> i64 { return self.n + k }
+}
+fn main() -> i32 { return 0 }

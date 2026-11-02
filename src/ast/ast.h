@@ -893,6 +893,12 @@ typedef struct {
      * lost for every coroutine entry function. */
     const char *cname;
     Type       *type;
+    /* The value a call uses when it leaves this argument out (`t: bool = false`), or NULL.
+     * **Only a compile-time constant is allowed**, and the checker copies it into every call
+     * site that omits the argument: the value cannot read the callee's locals, so copying is
+     * the only shape that works. A parameter without a default may not follow one that has
+     * one, which keeps "the arguments left out" a suffix of the parameter list. */
+    Expr       *dflt;
     int         line;
 } Param;
 

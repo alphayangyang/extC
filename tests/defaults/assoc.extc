@@ -1,0 +1,14 @@
+use std::io
+
+struct point {
+    x: i64
+    fn at(x: i64 = i64(5)) -> point { return point { x: x } }
+}
+
+fn main() -> i32 {
+    let a: point = point::at()
+    let b: point = point::at(i64(12))
+    print(a.x, " ")
+    println(b.x)
+    return 0
+}

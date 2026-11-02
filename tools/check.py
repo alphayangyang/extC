@@ -1630,6 +1630,14 @@ def build_items() -> list:
         ok_msg=ok_count_ok(" 项（装箱/换类型/拆箱 trap/打印与相等）"),
         bad_msg="tests/any/run.sh", bad_dump=dump_fail(8)))
 
+    # ---- 默认参数 ----
+    items.append(cmd(
+        "defaults", "tests",
+        "默认参数（`fn f(a: i64, b: i64 = i64(10))`：省略的尾部实参在调用点补齐 · 默认值必须是常量 · 必须形成后缀）",
+        ["./tests/defaults/run.sh"], timeout=300,
+        ok_msg=ok_count_ok(" 项（省略 0/部分/全部实参 · 方法 · 泛型 · 关联函数 · 负数默认值 · 六种拒绝）"),
+        bad_msg="tests/defaults/run.sh", bad_dump=dump_fail(8)))
+
     # ---- 生成的 C 在严格警告下干净 ----
     items.append(cmd(
         "cgen", "tests",

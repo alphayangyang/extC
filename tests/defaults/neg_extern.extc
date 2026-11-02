@@ -1,0 +1,2 @@
+extern!("libc") fn puts(s: ref u8, n: i64 = i64(0)) -> i32
+fn main() -> i32 { return 0 }

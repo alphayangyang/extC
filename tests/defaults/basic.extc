@@ -1,0 +1,10 @@
+use std::io
+
+fn add(a: i64, b: i64 = i64(10), c: i64 = i64(100)) -> i64 { return a + b + c }
+
+fn main() -> i32 {
+    print(add(1), " ")
+    print(add(1, i64(2)), " ")
+    println(add(1, i64(2), i64(3)))
+    return 0
+}

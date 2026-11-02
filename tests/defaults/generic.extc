@@ -1,0 +1,9 @@
+use std::io
+
+fn pick<T>(v: T, dflt: T, useIt: bool = false) -> T { if useIt { return v }  return dflt }
+
+fn main() -> i32 {
+    print(pick(i64(7), i64(0)), " ")
+    println(pick(i64(7), i64(30), true))
+    return 0
+}
