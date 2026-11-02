@@ -1234,7 +1234,7 @@ fn main() -> i32 {
 ```extc
 use std::io
 use std::loop
-use std::uuid
+use std::hash::digest
 fn main() -> i32 {
     var t: loop::timers
     t.init()
@@ -1243,9 +1243,9 @@ fn main() -> i32 {
     var out: [4]i64
     let due = t.popDue(i64(100), out[..])
     var id: [16]u8
-    uuid::v5dns("example.com", id[..])
+    digest::v5dns("example.com", id[..])
     var u: [36]u8
-    let n = uuid::format(id[..], u[..])
+    let n = digest::format(id[..], u[..])
     io::cout << "next=" << t.next() << " due=" << due << " tag0=" << out[0] << " uuid=" << u[0..n] << "\n"
     return 0
 }

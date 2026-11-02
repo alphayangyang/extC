@@ -248,6 +248,7 @@ std::fs	outBuf	failed	field	public
 std::fs	outBuf	fd	field	public
 std::fs	outBuf	len	field	public
 std::fs	outStream	failed	method	public
+std::hash::digest	-	format	fn	public
 std::hash::digest	-	hmacSha1	fn	internal
 std::hash::digest	-	hmacSha256	fn	internal
 std::hash::digest	-	pRotl	fn	internal
@@ -256,6 +257,11 @@ std::hash::digest	-	sha1Hex	fn	internal
 std::hash::digest	-	sha1Sum	fn	internal
 std::hash::digest	-	sha256Hex	fn	internal
 std::hash::digest	-	sha256Sum	fn	internal
+std::hash::digest	-	v5	fn	public
+std::hash::digest	-	v5dns	fn	public
+std::hash::digest	-	v5oid	fn	public
+std::hash::digest	-	v5url	fn	public
+std::hash::digest	-	v5x500	fn	public
 std::hash::digest	hmacOps	sha1	method	public
 std::hash::digest	hmacOps	sha256	method	public
 std::hash::digest	sha1Ops	hex	method	public
@@ -520,12 +526,6 @@ std::text::string	string	pid	field	internal
 std::text::string	string	pidGen	field	internal
 std::text::string	string	small	field	internal
 std::text::string	string	view	method	public
-std::uuid	-	format	fn	public
-std::uuid	-	v5	fn	public
-std::uuid	-	v5dns	fn	public
-std::uuid	-	v5oid	fn	public
-std::uuid	-	v5url	fn	public
-std::uuid	-	v5x500	fn	public
 std::ws	-	acceptFor	fn	public
 std::ws	-	finOf	fn	public
 std::ws	-	frameInto	fn	public
