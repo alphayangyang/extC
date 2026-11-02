@@ -5,7 +5,7 @@
 
 生成方式：`tools/manual_surface.py`；`check.sh` 保证本页与源码一致。
 
-公开面共 537 个成员，其中内部 114 个：
+公开面共 528 个成员，其中内部 124 个：
 
 ## prelude
 
@@ -110,10 +110,6 @@
 - `sha1State.buf`（字段）
 - `sha256State.buf`（字段）
 
-## std::http
-
-- `session.buf`（字段）
-
 ## std::io
 
 - `-.accDigit`（方法）
@@ -149,6 +145,22 @@
 
 - `-.pRoundUp`（方法）
 
+## std::net
+
+- `-.eqCI`（方法）
+- `-.findSub`（方法）
+- `-.headerBlockEnd`（方法）
+- `-.headerEnd`（方法）
+- `-.hexVal`（方法）
+- `-.isSpace`（方法）
+- `-.lower`（方法）
+- `-.pAppend`（方法）
+- `-.pPow2`（方法）
+- `-.putBytes`（方法）
+- `-.putI64`（方法）
+- `-.shiftToFront`（方法）
+- `session.buf`（字段）
+
 ## std::term
 
 - `terminal.rawbuf`（字段）
@@ -166,9 +178,4 @@
 - `string.pid`（字段）
 - `string.pidGen`（字段）
 - `string.small`（字段）
-
-## std::ws
-
-- `-.pAppend`（方法）
-- `-.pPow2`（方法）
 

@@ -1017,14 +1017,14 @@ fn main() -> i32 {
 
 ```extc
 use std::io
-use std::http
+use std::net
 fn main() -> i32 {
     let raw: slice<u8> = "GET /a/b?x=1 HTTP/1.1\r\nHost: h\r\nContent-Length: 3\r\n\r\nabc"
-    var r: http::request = http::parseRequest(raw)
+    var r: net::request = net::parseRequest(raw)
     io::cout << "method=" << r.method << " path=" << r.path() << " host=" << (r.header("host") ?? "none") << " q=" << (r.query("x") ?? "none") << " len=" << r.length() << " isGet=" << r.isGet() << "\n"
     let resp: slice<u8> = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi"
-    var p: http::response = http::parseResponse(resp)
-    io::cout << "status=" << p.status << " reason=" << http::reasonOf(p.status) << " ok=" << p.isOk() << " len=" << p.length() << "\n"
+    var p: net::response = net::parseResponse(resp)
+    io::cout << "status=" << p.status << " reason=" << net::reasonOf(p.status) << " ok=" << p.isOk() << " len=" << p.length() << "\n"
     return 0
 }
 ```
@@ -1044,14 +1044,14 @@ fn main() -> i32 {
 
 ```extc
 use std::io
-use std::ws
+use std::net
 fn main() -> i32 {
     var acc: [64]u8
-    let n = ws::acceptFor("dGhlIHNhbXBsZSBub25jZQ==", acc[..])
+    let n = net::acceptFor("dGhlIHNhbXBsZSBub25jZQ==", acc[..])
     var m: [4]u8 = [1, 2, 3, 4]
     var frame: [64]u8
-    let fl = ws::frameInto(ws::OP_TEXT, true, "hi", m[..], frame[..])
-    io::cout << "accept=" << acc[0..n] << " op=" << ws::opOf(frame[0..fl]) << " fin=" << ws::finOf(frame[0..fl]) << " masked=" << ws::maskedOf(frame[0..fl]) << " len=" << ws::lenOf(frame[0..fl]) << "\n"
+    let fl = net::frameInto(net::OP_TEXT, true, "hi", m[..], frame[..])
+    io::cout << "accept=" << acc[0..n] << " op=" << net::opOf(frame[0..fl]) << " fin=" << net::finOf(frame[0..fl]) << " masked=" << net::maskedOf(frame[0..fl]) << " len=" << net::lenOf(frame[0..fl]) << "\n"
     return 0
 }
 ```

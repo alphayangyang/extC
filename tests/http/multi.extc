@@ -3,7 +3,7 @@
  * 用法：multi <host> <port>
  * 退出码 0 = 三条都 200、body **逐字节**正确 ✓（不用"含某子串"：错位也能假绿 ✗ 踩过）。 */
 use std::io
-use std::http
+use std::net
 
 fn main(args: slice<slice<u8>>) -> i32 {
     var host: slice<u8> = args[1]
@@ -12,15 +12,15 @@ fn main(args: slice<slice<u8>>) -> i32 {
     var k: i64 = 0
     while k < ps.len { port = port * 10 + (i64(ps[k]) - 48)  k = k + 1 }
 
-    var a: http::session = http::session::make(host, port, 5000)
-    var b: http::session = http::session::make(host, port, 5000)
-    var c: http::session = http::session::make(host, port, 5000)
+    var a: net::session = net::session::make(host, port, 5000)
+    var b: net::session = net::session::make(host, port, 5000)
+    var c: net::session = net::session::make(host, port, 5000)
     if !a.ok() || !b.ok() || !c.ok() { return 1 }
 
     /* 三条**交错**发（各自的缓冲 ✓，互不干扰 ✓）*/
-    var ra: http::response = a.get(host, "/small.txt", "")
-    var rb: http::response = b.get(host, "/index.html", "")
-    var rc: http::response = c.get(host, "/sub/index.html", "")
+    var ra: net::response = a.get(host, "/small.txt", "")
+    var rb: net::response = b.get(host, "/index.html", "")
+    var rc: net::response = c.get(host, "/sub/index.html", "")
     a.close(); b.close(); c.close()
 
     if !ra.is(200) || !rb.is(200) || !rc.is(200) {

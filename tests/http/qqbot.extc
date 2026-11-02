@@ -2,7 +2,7 @@
  *   POST /v2/users/123/messages  +  Authorization: Bot xxx  +  Content-Type: application/json  +  JSON body
  * 假服务器把收到的字节回显，这里逐字验形状 ✓。真机要 HTTPS ⇒ 见 README 的记账 ✓。 */
 use std::io
-use std::http
+use std::net
 
 fn arg(args: slice<slice<u8>>, i: i64) -> slice<u8> {
     if i < args.len { return args[i] }
@@ -14,24 +14,24 @@ fn main(args: slice<slice<u8>>) -> i32 {
     var ps: slice<u8> = arg(args, 1)
     var k: i64 = 0
     while k < ps.len { port = port * 10 + (i64(ps[k]) - 48)  k = k + 1 }
-    var c: http::conn                        /* `conn` 只有标量 ⇒ 可零初始化 ✓ */
-    match http::conn::open("127.0.0.1", port, 5000) {
+    var c: net::conn                        /* `conn` 只有标量 ⇒ 可零初始化 ✓ */
+    match net::conn::open("127.0.0.1", port, 5000) {
         none => { io::cout << "连不上\n"  return 1 }
         some(v) => { c = v }
     }
     var json: slice<u8> = "{\"content\":\"hello\",\"msg_type\":0}"
     var out: mut slice<u8> = new u8[2048]
     var buf: mut slice<u8> = new u8[65536]
-    var r: http::response = c.post("127.0.0.1", "/v2/users/123/messages",
+    var r: net::response = c.post("127.0.0.1", "/v2/users/123/messages",
                                    "Authorization: Bot 1020xxxx\r\nContent-Type: application/json\r\n",
                                    json, out, buf)
     /* 假服务器把请求原样回显在 body 里 ⇒ 逐条验 ✓ */
     var b: slice<u8> = r.body
-    if http::findSub(b, 0, "POST /v2/users/123/messages HTTP/1.1") < 0 { return 2 }
-    if http::findSub(b, 0, "Authorization: Bot 1020xxxx") < 0 { return 3 }
-    if http::findSub(b, 0, "Content-Type: application/json") < 0 { return 4 }
-    if http::findSub(b, 0, "Content-Length: 33") < 0 { return 5 }
-    if http::findSub(b, 0, json) < 0 { return 6 }
+    if net::findSub(b, 0, "POST /v2/users/123/messages HTTP/1.1") < 0 { return 2 }
+    if net::findSub(b, 0, "Authorization: Bot 1020xxxx") < 0 { return 3 }
+    if net::findSub(b, 0, "Content-Type: application/json") < 0 { return 4 }
+    if net::findSub(b, 0, "Content-Length: 33") < 0 { return 5 }
+    if net::findSub(b, 0, json) < 0 { return 6 }
     c.close()
     io::cout << "QQBot 形状 ✓（POST + Authorization + JSON body " << json.len << " 字节）\n"
     return 0
