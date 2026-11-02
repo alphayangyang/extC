@@ -179,5 +179,14 @@ fn lend2() -> slice<i32> {          /* 换成池版本（vec）后：编译错�
 - **P2 进行中**：`std::stl::*` 已拆成 `std::text::{string,stringio}`、`std::data::{vector,map,hashMap,
   set,hashSet,linmap,linset,pool,sort,seq}`、`std::nd`（`nd` + `nd::tensor`）；14 个 `stl` 模块归零。
   编译器糖里写死的模块路径（f-string → `std::text::string`、`stringio`，多下标 → `std::nd`）同步更新。
-  剩余：`vector` + `varArray` 合一、格式化 8 个名字用 `any` 收成 3 个、12 处模块级可变 `var` 收进显式对象。
-- **P3 未开始**：`std::sys` 保持原样（用户明确说"不必全 private"）。
+  模块级可变 `var` 已收进 `fs::OUT` / `fs::IN` / `io::fmt::FMTSTATE` 三个对象（`d67e8c6`），
+  并发写下不再有"隐式共享的可变状态"这类隐藏炸弹。
+- **P2 两项有意不做（带实测理由）**：
+  - `vector` + `varArray` 合一：两者差的是**能力**不是风格 —— arena 底的 `varArray` 允许
+    `return a.view()`（存储被逃逸分析提到调用者），池底的 `vector` 不允许（池随帧死）。
+    合并要么丢"视图带出"，要么丢"原地长 + `release`"。见上面「容器为什么暂时不合并」。
+  - 格式化 8 个名字收成 3 个：目标形状 `format(tpl, args: any...)` 需要**变参**，而变参按
+    用户决定往后推；没有它就只能写成 `format(tpl, slice<any>)`，仪式感反而更重。
+    等变参落地再收。
+- **P3 完成**：全仓 `stl::` 已并回 `std::*`（`cbdb410`），`stdlib/stl/` 目录删除；
+  `std::sys` 保持原样（用户明确说"不必全 private"）。
