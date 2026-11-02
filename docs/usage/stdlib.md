@@ -286,16 +286,16 @@ fn main() -> i32 {
 
 ```extc
 use std::io
-use std::data::set
+use std::data::map
 fn main() -> i32 {
-    var s: set<i64> = set<i64>::withCap(i64(4))
-    s.put(i64(4))
-    s.put(i64(2))
-    io::cout << "first=" << (s.first() ?? -1) << " at1=" << s.at(i64(1)) << " lb3=" << s.lowerBound(i64(3)) << "\n"
+    var s: map<i64, bool> = map<i64, bool>::withCap(i64(4))
+    s.put(i64(4), true)
+    s.put(i64(2), true)
+    io::cout << "lb3=" << s.lowerBound(i64(3)) << " has2=" << s.contains(i64(2)) << "\n"
     return 0
 }
 ```
-实测：`first=2 at1=4 lb3=1`。
+实测：`lb3=1 has2=true`。
 
 ### `hashMap` / `hashSet`：哈希
 
@@ -364,7 +364,7 @@ fn main() -> i32 {
 
 ```extc
 use std::io
-use std::data::hashSet
+use std::data::hashMap
 fn main() -> i32 {
     var s: hashSetI64 = hashSetI64::withCap(i64(4))
     let a = s.put(i64(5))

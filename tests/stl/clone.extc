@@ -20,10 +20,10 @@ use std::data::vector
 use std::text::string
 use std::data::map
 use std::data::hashMap
-use std::data::set
+use std::data::map
 use std::data::linmap
 use std::data::linmap
-use std::data::hashSet
+use std::data::hashMap
 
 fn main() -> i32 {
     /* ① vector：改副本不影响原件 + 副本内容对 */

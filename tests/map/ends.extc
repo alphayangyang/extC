@@ -2,7 +2,7 @@
 // expect: f=1 l=5 emptyF=-1 emptyL=-1 sf=2 sl=4
 use std::io
 use std::data::map
-use std::data::set
+use std::data::map
 
 fn main() -> i32 {
     var m: map<i64, i32> = map<i64, i32>::withCap(16)

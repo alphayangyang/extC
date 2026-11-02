@@ -1,7 +1,7 @@
 // set<T>：**有序**集合（建在 map<T, u8> 上）—— 乱序插入后按序遍历 · put 新元素为真 · lowerBound 排名 · 删中间元素
 // expect: order=1,2,3,4,5 len=5 dup=0 has3=1 lb3=2 lb6=5 rm=1 after=1,2,4,5 lb4=2
 use std::io
-use std::data::set
+use std::data::map
 
 fn main() -> i32 {
     var s: set<i64> = set<i64>::withCap(4)
