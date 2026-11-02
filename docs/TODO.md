@@ -119,10 +119,12 @@
   `.link` + `packages.toml` 的系统依赖条目 + `extpkg.toml` 的"签字待证伪"台账。判据
   `tests/extpkg-system/`（真跑 zlib 往返）。两类来源：系统库（pkg-config，无索引、无需托管）与
   上游源码（`url` + `sha256` + `build`，仍写在项目自己的 `packages.toml`，不需要中央仓库）。
-  待做：`--from git+…` 的常见构建系统自动探、`add` 时顺带生成 `cstr`/`T**` 薄 helper。
+  待做：`--from git+…`（tarball/git + 常见构建系统自动探 cmake/meson/make/configure，探不到就把
+  建议的 `build`/`lib`/`include` 参数打出来）。
 - **绑定生成**：`tools/cbindgen.py --extern --effects trusted --link …` 已经能把"手写 extern + 逐条签
-  effects"压成一条命令（2026-11-17）。还没做：`@frozen` 结构体镜像的生成（现在碰到按值结构体就报出来）、
-  多库合并成一个包（`extpkg` 那边把生成物 + `.link` + 声明台账放进 `vendor/<pkg>/`）。
+  effects"压成一条命令（2026-11-17）；C 字符串形参自动配 `cstr`/`cstrAt` 薄 helper、`T **` 出参自动配一层
+  C shim 变成返回值（2026-11-18，判据 `tests/extbind/` 7/0）。还没做：`@frozen` 结构体镜像的生成
+  （现在碰到按值结构体只报出来）、多库合并成一个包（把生成物 + `.link` + 声明台账放进 `vendor/<pkg>/`）。
 - **调用开销（实测，2026-11-17）**：`extern!` 调用是**直接的 C 调用**（生成的 C 里就是
   `acc = cadd(acc, i);`，没有表、没有 thunk、没有 dlopen）；20M 次循环测下来比"同 TU 内联"多
   **0.34 ns/次**（0.34 vs 0，就是一条 `call`+`ret`）。跨 TU 想消掉这条 call 需要 `-flto` 且库也带
