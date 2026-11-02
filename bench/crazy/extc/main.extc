@@ -1,0 +1,206 @@
+/* bench/crazy —— 事件流报表：parse → 分组聚合 → 动态 JSON → 并行归约。
+ *
+ * 四种语言（extC / Node / Python / Rust）跑同一份输入、打同一行结果。这里尽量用语言里
+ * "写起来爽"的东西：结构体 + 运算符重载当排序键、hashMapI64 当分组表、`any` 在运行期
+ * 决定形状、`reflect::json` 走描述符、`par` 直接开多核。
+ */
+use std::io
+use std::time
+use std::reflect
+use stl::hashMap
+use stl::sort
+use std::sys::file as sysfile
+use std::sys::io as sysio
+
+struct row { ts: i64  uid: i64  kind: i64  region: i64  cents: i64  ms: i64 }
+struct grp {
+    uid: i64
+    count: i64
+    cents: i64
+    worst: i64
+    /* 排序键：按 cents 降序，相等时 uid 升序。`<` 就是"该排在前面"。 */
+    fn <(self: ref grp, o: ref grp) -> bool {
+        if self.cents != o.cents { return self.cents > o.cents }
+        return self.uid < o.uid
+    }
+}
+struct light { ts: i64  uid: i64  kind: i64  region: i64  cents: i64  ms: i64 }
+struct heavy { ts: i64  uid: i64  kind: i64  region: i64  cents: i64  ms: i64  big: i64 }
+
+fn readWhole(path: slice<u8>) -> mut slice<u8> {
+    var size: i64 = 0
+    var mtime: i64 = 0
+    var isdir: i64 = 0
+    let fd: i64 = sysfile::extc_file_open(path.data, path.len, ref size, ref mtime, ref isdir)
+    if fd < 0 { return new u8[1] }
+    var buf: mut slice<u8> = new u8[size + 1]
+    var got: i64 = 0
+    while got < size {
+        let n: i64 = sysio::read(i32(fd), buf[got..].data, size - got)
+        if n <= 0 { break }
+        got = got + n
+    }
+    sysfile::extc_file_close(fd)
+    buf[size] = u8(0)
+    return buf
+}
+
+fn main() -> i32 {
+    let t0: i64 = time::now()
+
+    var buf: mut slice<u8> = readWhole("bench/crazy/data/events.tsv")
+    var n: i64 = 0
+    var i: i64 = 0
+    while i < buf.len {
+        if buf[i] == u8(10) { n = n + 1 }
+        i = i + 1
+    }
+
+    var rows: mut slice<row> = new row[n]
+    var at: i64 = 0
+    var ts: i64 = 0
+    var uid: i64 = 0
+    var kind: i64 = 0
+    var region: i64 = 0
+    var cents: i64 = 0
+    var ms: i64 = 0
+    var field: i64 = 0
+    var sign: i64 = 1
+    i = 0
+    while i < buf.len {
+        let c: u8 = buf[i]
+        if c == u8(10) {
+            rows[at] = row { ts: ts, uid: uid, kind: kind, region: region, cents: cents, ms: ms }
+            at = at + 1
+            ts = 0  uid = 0  kind = 0  region = 0  cents = 0  ms = 0
+            field = 0
+            sign = 1
+        } else if c == u8(9) {
+            field = field + 1
+        } else {
+            let d: i64 = i64(c) - i64(48)
+            if field == 0 { ts = ts * 10 + d }
+            else if field == 1 { uid = uid * 10 + d }
+            else if field == 2 { kind = kind * 10 + d }
+            else if field == 3 { region = region * 10 + d }
+            else if field == 4 { cents = cents * 10 + d }
+            else { ms = ms * 10 + d }
+        }
+        i = i + 1
+    }
+    let parse_us: i64 = (time::now() - t0) / 1000
+
+    /* 分组聚合：一张 hashMapI64，外面再记一份出现顺序的 uid，便于最后遍历。 */
+    let t1: i64 = time::now()
+    var groups: hashMapI64<grp> = hashMapI64<grp>::withCap(i64(65536))
+    var keys: mut slice<i64> = new i64[65536]
+    var nk: i64 = 0
+    var kc: [8]i64 = zeroKinds()
+    var rc: [6]i64 = zeroRegions()
+    var slow: i64 = 0
+    i = 0
+    while i < n {
+        let r: row = rows[i]
+        let g = groups.get(r.uid) ?? grp { uid: r.uid, count: i64(0), cents: i64(0), worst: i64(0) }
+        var gg: grp = g
+        gg.count = gg.count + 1
+        gg.cents = gg.cents + r.cents
+        if r.ms > gg.worst { gg.worst = r.ms }
+        if !groups.put(r.uid, gg) { keys[nk] = r.uid  nk = nk + 1 }
+        kc[r.kind] = kc[r.kind] + 1
+        rc[r.region] = rc[r.region] + r.cents
+        if r.ms > 1000 { slow = slow + 1 }
+        i = i + 1
+    }
+    let agg_us: i64 = (time::now() - t1) / 1000
+
+    /* top 5：把组摊进一个 slice 再排序（`<` 已给出"降序 + uid 升序"）。 */
+    let t2: i64 = time::now()
+    var gs: mut slice<grp> = new grp[nk]
+    i = 0
+    while i < nk {
+        gs[i] = groups.get(keys[i]) ?? grp { uid: keys[i], count: i64(0), cents: i64(0), worst: i64(0) }
+        i = i + 1
+    }
+    sort::sort(gs[..])
+    var top_cs: i64 = 0
+    i = 0
+    while i < 5 && i < gs.len {
+        top_cs = (top_cs * 1000003 + gs[i].uid * 31 + gs[i].cents) % 1000000007
+        i = i + 1
+    }
+
+    /* 动态阶段：每 16 行建一个 `any`，形状在运行期决定（大额行走 heavy），再 JSON。 */
+    var jbuf: mut slice<u8> = new u8[512]
+    var jbytes: i64 = 0
+    var jcs: i64 = 0
+    i = 0
+    while i < n {
+        let r: row = rows[i]
+        if r.cents > 15000 {
+            var v: any = heavy { ts: r.ts, uid: r.uid, kind: r.kind, region: r.region,
+                                 cents: r.cents, ms: r.ms, big: r.cents * 2 }
+            let m: i64 = reflect::json(ref v, jbuf[..])
+            jbytes = jbytes + m
+            jcs = (jcs * 131 + i64(jbuf[m - 1])) % 1000000007
+        } else {
+            var v: any = light { ts: r.ts, uid: r.uid, kind: r.kind, region: r.region,
+                                 cents: r.cents, ms: r.ms }
+            let m: i64 = reflect::json(ref v, jbuf[..])
+            jbytes = jbytes + m
+            jcs = (jcs * 131 + i64(jbuf[m - 1])) % 1000000007
+        }
+        i = i + 16
+    }
+    let json_us: i64 = (time::now() - t2) / 1000
+
+    /* 并行阶段：把 cents*(ms+1) 分块求和，块内不调用函数（par 的限制），最后串起来乘。 */
+    let t3: i64 = time::now()
+    let threads: i64 = 8
+    let chunk: i64 = (n + threads - 1) / threads
+    var parts: mut slice<i64> = new i64[threads]
+    par t in 0..threads {
+        var lo: i64 = t * chunk
+        var hi: i64 = lo + chunk
+        if hi > n { hi = n }
+        var s: i64 = 0
+        var k: i64 = 0
+        while k < 8 {
+            var j: i64 = lo
+            while j < hi {
+                let r: row = rows[j]
+                s = s + r.cents * (r.ms + 1)
+                j = j + 1
+            }
+            k = k + 1
+        }
+        parts[t] = s
+    }
+    var total: i64 = 0
+    i = 0
+    while i < threads {
+        total = (total + parts[i]) % 1000000007
+        i = i + 1
+    }
+    let par_us: i64 = (time::now() - t3) / 1000
+
+    var hcs: i64 = 0
+    i = 0
+    while i < 8 { hcs = (hcs * 7 + kc[i]) % 1000000007  i = i + 1 }
+    i = 0
+    while i < 6 { hcs = (hcs * 7 + rc[i]) % 1000000007  i = i + 1 }
+
+    io::cout << f"rows={n} slow={slow} top={top_cs} hist={hcs} json_bytes={jbytes} json_cs={jcs} par={total}\n"
+    io::cout << f"parse_us={parse_us} agg_us={agg_us} json_us={json_us} par_us={par_us}\n"
+    return 0
+}
+
+fn zeroKinds() -> [8]i64 {
+    var a: [8]i64
+    return a
+}
+
+fn zeroRegions() -> [6]i64 {
+    var a: [6]i64
+    return a
+}
