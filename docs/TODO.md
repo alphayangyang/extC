@@ -107,6 +107,7 @@
 
 - 补齐字符串与序列操作：替换、拉链、带下标遍历；容器之间的通用适配（现在是各拿各的 `view`）。
 - 容器缺的成员：动态数组的**中间插入与删除**（`pop` 已有：去尾不成问题）。
+- `std::nd` 的 15 个内核（`filled/addInto/subInto/mulInto/scaleInto/axpyInto/sumv/swapDims/sub/at2/set2/at3/set3/slice2/sameShapeAdd`）应该变成 `ndview<T>` 的方法（现在是 `nd::NAME(recv, …)`）。试过并回滚：改成方法后要同步三处糖（`src/check/check_stmt.c` 的 `arrayNdKernelStmt`、`src/front/parser.c` 的 `v[i,j]` 读糖与 `v[i,j] = x` 写糖），并且 `ndarray<T>`（拥有者）要转一层；回滚时卡在 `grid[0..1, 0..3] ?? grid.view().sumv() ?? 0.0` 的类型与 `grid[0,0] = x` 的 place 判定上。
 - 一次读满整块（读满给定缓冲的语义）；格式化输入（现在只有 `nextInt` 这类逐项读）。
 - HTTP 客户端：分块编码、头部折叠、TLS、代理、cookie（`std::http` 的文件头有完整记账）。
 
