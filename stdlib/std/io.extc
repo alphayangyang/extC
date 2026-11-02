@@ -61,7 +61,6 @@ use std::io::fmt::{fmtI64Fast, fmtU64Fast, fmtF, fillBytes, padText, pairsReady,
 /* 门面：`std::io` 的公开面仍是"流 + 格式化 + 诊断"三组，实现分别在 `std/io.extc`、
  * `std/io/fmt.extc`、`std/io/err.extc`。用户只写 `use std::io`。 */
 pub use std::io::fmt::{DIGITS, FMTSTATE, LEFT, RIGHT, CENTER, pairsReady, fmtI64Fast, fmtU64Fast, fmtI64, fmtF, fillBytes, padText, flushCout, print, println}
-pub use std::io::err::{errStream, cerr, errWrite, eprint, eprintln}
 
 /* A read failed, and **why** it failed: an enum, not a magic value.
  * NOTE: the payload is what lets an error message say how many bytes were read
@@ -788,4 +787,69 @@ fn inBad() -> bool { return IN_BAD }
 fn inClear() { IN_BAD = false }
 
 let cin: istream = istream { fd: 0 }
+
+
+/* std/io/err.extc -- stderr 这一半：`cerr` 与 `eprint/eprintln`。
+ *
+ * 依赖方向 `err → fmt`（数字进 stderr 也要十进制）与 `std::sys::io`（write），无反向边。
+ */
+
+/* ================================================================ stderr 流
+ *
+ * `cerr << ...` —— 诊断走 stderr，而 `print`/`println` 走 **stdout** ✓
+ * （`println` 写 stdout：`>/dev/null` 挡得住它，`2>/dev/null` 挡不住 ✓）
+ * 这个区分是必要的：`prog > out.txt` 要能拿到**程序的正常输出**，而错误/日志不该混进去 ✓
+ *
+ * 与 `cout` 同一形状（薄句柄、`<<` 按值返回）⇒ 拷贝无害、链式成立 ✓
+ * ⚠️ 每次写之前先 `flush()`：stdout 是带缓冲的，不冲就会**插队**（顺序错乱是这类程序
+ *    最难查的毛病 ✓ 与 `io::writer` 对 STDOUT/STDERR 的处理同一条规矩 ✓）
+ */
+struct errStream {
+    fn <<(self: ref errStream, v: slice<u8>) -> errStream { errWrite(v)  return { } }
+    fn <<(self: ref errStream, v: mut slice<u8>) -> errStream { errWrite(v)  return { } }
+    fn <<(self: ref errStream, v: i64) -> errStream {
+        pairsReady()
+        let st = fmtI64Fast(v)
+        errWrite(FMTSTATE.text[st..24])
+        return { }
+    }
+    fn <<(self: ref errStream, v: bool) -> errStream {
+        if v { errWrite("true") } else { errWrite("false") }
+        return { }
+    }
+    /* 与 `cout` 同一套收窄整数/浮点重载：`cerr << -42` 不该要求先写成 i64。 */
+    fn <<(self: ref errStream, v: i8)  -> errStream { return (*self) << i64(v) }
+    fn <<(self: ref errStream, v: i16) -> errStream { return (*self) << i64(v) }
+    fn <<(self: ref errStream, v: i32) -> errStream { return (*self) << i64(v) }
+    fn <<(self: ref errStream, v: u8)  -> errStream { return (*self) << i64(v) }
+    fn <<(self: ref errStream, v: u16) -> errStream { return (*self) << i64(v) }
+    fn <<(self: ref errStream, v: u32) -> errStream { return (*self) << i64(v) }
+    fn <<(self: ref errStream, v: u64) -> errStream {
+        pairsReady()
+        let st = fmtU64Fast(v)
+        errWrite(FMTSTATE.text[st..24])
+        return { }
+    }
+}
+
+let cerr: errStream = errStream { }
+
+@private fn errWrite(s: slice<u8>) {
+    if s.len == 0 { return }
+    flushCout()                                /* 先放 stdout 缓冲，见上面的 ⚠️ */
+    flush()
+    /* 返回值丢弃：stderr 写失败也没有别的地方可报（这正是"诊断通道"的处境 ✓）*/
+    sysio::write(i32(2), s.data, s.len)
+}
+
+/* 诊断输出的一句版：`io::eprint("x")` / `io::eprintln("x")`。
+ *
+ * 为什么是"两个名字"而不是重载 `print`：普通函数不能按参数类型重载（只有运算符能），
+ * 而诊断通道又必须与 stdout 分开 —— 名字里带 `err` 是这里唯一不歧义的做法。
+ * `eprintln` 的换行是单独的 `errWrite`：两次写、两次 flush，诊断流量小，不值得为它攒缓冲。 */
+fn eprint(s: slice<u8>) { errWrite(s) }
+fn eprintln(s: slice<u8>) {
+    errWrite(s)
+    errWrite("\n")
+}
 

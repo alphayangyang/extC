@@ -128,14 +128,11 @@
 ## std::io
 
 - `-.accDigit`（方法）
+- `-.errWrite`（方法）
 - `-.fillState`（方法）
 - `-.isSpaceByte`（方法）
 - `writer.buf`（字段）
 - `writer.cap`（方法）
-
-## std::io::err
-
-- `-.errWrite`（方法）
 
 ## std::io::fmt
 

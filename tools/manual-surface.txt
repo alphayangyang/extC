@@ -340,6 +340,9 @@ std::http	session	ok	method	public
 std::http	session	out	field	public
 std::http	session	post	method	public
 std::io	-	accDigit	fn	internal
+std::io	-	eprint	fn	public
+std::io	-	eprintln	fn	public
+std::io	-	errWrite	fn	internal
 std::io	-	fillState	fn	internal
 std::io	-	flushOut	fn	public
 std::io	-	inBad	fn	public
@@ -367,9 +370,6 @@ std::io	writer	buf	field	internal
 std::io	writer	cap	method	internal
 std::io	writer	fd	field	public
 std::io	writer	len	field	public
-std::io::err	-	eprint	fn	public
-std::io::err	-	eprintln	fn	public
-std::io::err	-	errWrite	fn	internal
 std::io::fmt	-	fillBytes	fn	public
 std::io::fmt	-	flushCout	fn	public
 std::io::fmt	-	fmtF	fn	public
