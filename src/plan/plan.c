@@ -91,6 +91,7 @@
 #define PLAN_LAM_SCOPE           86   /* a lambda environment struct: the body it is written in */
 #define PLAN_ANY_BOX             87   /* an expression whose value is boxed into an `any` */
 #define PLAN_ANY_TO              88   /* an `any` value unboxed into a concrete type: which one */
+#define PLAN_DYN_CALL            89   /* a method call on an `any`: dispatch by name at run time */
 #define PLAN_DEREF               63
 #define PLAN_BOXED_CORO          64
 #define PLAN_CORO_KIND           65
@@ -1156,6 +1157,8 @@ PLAN_GET(planAnyBox, bool, anyBox, PLAN_ANY_BOX, false)
 PLAN_SET(planSetAnyBox, bool, anyBox, PLAN_ANY_BOX)
 PLAN_GET(planAnyTo, const Type *, anyTo, PLAN_ANY_TO, NULL)
 PLAN_SET(planSetAnyTo, const Type *, anyTo, PLAN_ANY_TO)
+PLAN_GET(planDynCall, bool, dynCall, PLAN_DYN_CALL, false)
+PLAN_SET(planSetDynCall, bool, dynCall, PLAN_DYN_CALL)
 PLAN_GET(planPadKind, PlanPadKind, padKind, PLAN_PAD_KIND, PLAN_PAD_NONE)
 PLAN_SET(planSetPadKind, PlanPadKind, padKind, PLAN_PAD_KIND)
 

@@ -139,7 +139,8 @@ typedef struct {
      * operand's own type); unboxing needs the type the context asked for, because the value is
      * checked against it at run time and that check's message names it. */
     const Type *anyTo;
-    bool        anyBox;        /* this expression's value is boxed into an `any` */
+    bool        anyBox;
+    bool        dynCall;        /* a method call on an `any`: dispatch by the receiver's descriptor */
     uint64_t    addrMask;
     /* ---- call / receiver facts ---- */
     Expr       *extDom;        /* `EX_EXT`: the domain this task is handed to */

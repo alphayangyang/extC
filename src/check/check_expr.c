@@ -4410,6 +4410,56 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     return ttError(tt);
                 }
             }
+            if (!f && ttBase(recvT) && ttBase(recvT)->kind == TY_ANY) {
+                /* A method call on a dynamically typed value: which `m` runs is decided by the
+                 * value's own descriptor when the program runs, so no `FuncDef` is resolved here.
+                 * Three consequences worth spelling out:
+                 *
+                 *   - the result is `any`: the callee's return type cannot be named from here, and
+                 *     the caller unboxes it like any other dynamic value (an implicit conversion
+                 *     that traps if the belief is wrong);
+                 *   - the only compile-time check is the **monotonic** one -- the name has to exist
+                 *     somewhere in the program. Checking signatures here would let a later change
+                 *     (one more type with that name, one more overload) break a program that
+                 *     already compiles, which is exactly what this feature must not do;
+                 *   - arguments are not supported yet: boxing them is a separate step, and an
+                 *     unimplemented shape should say so rather than silently ignore the argument. */
+                if (e->u.method.args.len != 0) {
+                    ckError(c, e->line,
+                            "A dynamic call looks the method up by name at run time; passing"
+                            " arguments through that lookup is not implemented yet.",
+                            "a method call on `any` cannot take arguments yet");
+                    return ttError(tt);
+                }
+                bool known = false;
+                for (size_t i = 0; i < c->m->structs.len; i++) {
+                    StructDef *cand = *(StructDef **)vecAt(&c->m->structs, i);
+                    for (size_t k = 0; k < cand->methods.len; k++) {
+                        FuncDef *md = *(FuncDef **)vecAt(&cand->methods, k);
+                        if (md->params.len == 1 && strcmp(md->name, e->u.method.name) == 0) {
+                            /* Keep **every** candidate alive: reachability prunes methods nobody
+                             * calls by name, and a dynamic site is not a static one. Missing this
+                             * leaves the dispatcher calling a function that was never generated. */
+                            planSetUsed(md, true);
+                            known = true;
+                        }
+                    }
+                }
+                if (!known) {
+                    ckError(c, e->line,
+                            "A dynamic call resolves the name against the types in the program, so"
+                            " some type has to declare that method.",
+                            "no type in this program defines `%s` with no arguments",
+                            e->u.method.name);
+                    return ttError(tt);
+                }
+                /* The boxed result needs an arena that outlives the call site. */
+                planSetDynCall(e, true);
+                planSetArenaLevel(e, ARENA_HOME);
+                *(Expr **)vecPush(&c->curArenaSites) = e;
+                e->type = tt->tAny;
+                return e->type;
+            }
             if (!f) {
                 /* The `d` in `d.m(...)` is a `dyn Trait` value: the method lives in the **trait's** declaration,
                  * not in any type's method set -- the concrete type is only known at run time. This is placed

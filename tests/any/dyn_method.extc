@@ -1,0 +1,25 @@
+// 按类型的动态方法调用：`v.area()` 里哪一个 `area` 跑，由 `v` 运行期持有的类型决定。
+// 判据：同一个槽先装 box 再装 circle，两次调用各走各的方法；返回值按上下文拆成 i64。
+use std::io
+
+struct box { w: i64  h: i64
+    fn area(self: ref box) -> i64 { return self.w * self.h }
+    fn kind(self: ref box) -> i64 { return i64(1) }
+}
+
+struct circle { r: i64
+    fn area(self: ref circle) -> i64 { return self.r * self.r * i64(3) }
+    fn kind(self: ref circle) -> i64 { return i64(2) }
+}
+
+fn main() -> i32 {
+    var v: any = box { w: i64(3), h: i64(4) }
+    var a: i64 = v.area()
+    println("a=", a)
+    v = circle { r: i64(2) }
+    a = v.area()
+    println("a=", a)
+    var k: i64 = v.kind()
+    println("k=", k)
+    return 0
+}

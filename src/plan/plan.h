@@ -1275,6 +1275,25 @@ void planSetAnyBox(Expr *e, bool v);
 const Type *planAnyTo(const Expr *e);
 
 /**
+ * @brief Record that a method call dispatches on the run-time type of an `any` receiver.
+ *
+ * Such a call resolves no `FuncDef` at compile time, so code generation has to emit a dispatcher
+ * that switches on the value's descriptor; this bit is what marks the call site for it.
+ *
+ * @param e  The `EX_METHOD` expression.
+ * @param v  true when the callee is chosen by the receiver's descriptor.
+ */
+void planSetDynCall(Expr *e, bool v);
+
+/**
+ * @brief Whether this call site dispatches on the run-time type of an `any` receiver.
+ *
+ * @param e  The `EX_METHOD` expression.
+ * @return   true when code generation must emit (or reuse) a dispatcher for it.
+ */
+bool planDynCall(const Expr *e);
+
+/**
  * @brief Record that an `any` expression is unboxed into a concrete type.
  *
  * @param e   The expression; its own type stays `any`.

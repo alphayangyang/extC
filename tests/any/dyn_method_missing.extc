@@ -1,0 +1,19 @@
+// 动态派发找不到方法：程序**编得过**（名字在程序里存在），运行期停在调用那一行并说出类型。
+// 判据：trap 报文 `trap: no `area` for a `line``，退出码非 0。
+use std::io
+
+struct box { w: i64  h: i64
+    fn area(self: ref box) -> i64 { return self.w * self.h }
+}
+
+struct line { n: i64 }
+
+fn main() -> i32 {
+    var v: any = box { w: i64(2), h: i64(5) }
+    var a: i64 = v.area()
+    println("a=", a)
+    v = line { n: i64(1) }
+    a = v.area()
+    println("a=", a)
+    return 0
+}
