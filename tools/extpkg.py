@@ -66,9 +66,43 @@ def load_toml(path: Path) -> dict:
         return tomllib.load(f)
 
 
+def toml_dump(man: dict) -> str:
+    """把 packages.toml 写回去（只处理我们自己会写的形状：字符串/布尔/表）。"""
+    out: list[str] = []
+    for sect in ("project", "build"):
+        if man.get(sect):
+            out.append(f"[{sect}]")
+            for k, v in man[sect].items():
+                out.append(f"{k} = {_toml_val(v)}")
+            out.append("")
+    deps = man.get("dependencies") or {}
+    if deps:
+        out.append("[dependencies]")
+        for name in sorted(deps):
+            spec = deps[name]
+            fields = []
+            for k in ("version", "path", "source", "url", "sha256"):
+                if k in spec:
+                    fields.append(f"{k} = {_toml_val(spec[k])}")
+            if spec.get("system"):
+                fields.append("system = true")
+            out.append(f"{name} = {{ {', '.join(fields)} }}")
+        out.append("")
+    return "\n".join(out)
+
+
+def _toml_val(v) -> str:
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    return '"' + str(v).replace('"', '\\"') + '"'
+
+
 def pkg_source(proj: Path, spec: dict) -> str:
     """`path = "vendor/x"` = 本地包（不下载）；否则 `source` 可以是 http(s)://、
     file://，也可以是一个路径（相对项目根）。"""
+    if spec.get("system"):
+        # 系统库（`extpkg add <pkg-config 名>`）：没有来源可下，真相源是这台机器的 pkg-config
+        return "system:pkgconfig:" + str(spec.get("name", "?"))
     if spec.get("path"):
         return "path:" + spec["path"]
     src = spec.get("source")
@@ -174,6 +208,12 @@ def cmd_fetch(proj: Path, offline: bool) -> int:
         spec = deps[name]
         version = str(spec.get("version", "?"))
         url = pkg_source(proj, {"name": name, **spec})
+        if url.startswith("system:"):
+            # 系统库（`extpkg add <pkg-config 名>`）：没有文件要下 —— 真相源就是这台机器上的
+            # pkg-config 与头文件。锁里只记版本，供 `build` 复现时对照。
+            entries.append({"name": name, "version": version, "source": url, "sha256": "-", "root": ".", "files": []})
+            print(f"  system {name} {version}：系统库（pkg-config），没有文件要下")
+            continue
         if url.startswith("path:"):
             local = (proj / url[5:]).resolve()
             if not local.is_dir():
@@ -246,6 +286,9 @@ def cmd_vendor(proj: Path) -> int:
     cache = cache_dir()
     for name in sorted(lock):
         e = lock[name]
+        if str(e.get("source", "")).startswith("system:"):
+            print(f"  system {name}：系统库，不用 vendor")
+            continue
         if str(e.get("source", "")).startswith("path:"):
             print(f"  local  {name}：本地包，不用 vendor（就在 {e['source'][5:]}）")
             continue
@@ -402,13 +445,93 @@ def cmd_verify(pkg: Path, extc: Path) -> int:
 
 # ---------------------------------------------------------------- main
 
+# ---------------------------------------------------------------- add
+
+def _pkgconf(args: list[str]) -> tuple[int, str]:
+    r = subprocess.run(["pkg-config"] + args, capture_output=True, text=True)
+    return r.returncode, r.stdout.strip()
+
+
+def cmd_add(proj: Path, name: str, header: str, only: str, bind_all: bool,
+            effects: str) -> int:
+    """`extpkg add <pkg-config 名>`：装一个**系统里已经有**的 C 库的绑定。
+
+    三件事：① 问 pkg-config 要版本与头文件目录；② 用 `tools/cbindgen.py --extern` 生成
+    `<proj>/vendor/<name>/<name>.extc` + `<name>.link`；③ 把依赖与"签字待证伪"的台账写进
+    `packages.toml` / `extpkg.toml`。之后就能直接 `use <name>` —— `extpkg build` 会给每个
+    vendored 包加 `-I vendor/<name>`，`.link` 由编译器自动读。
+    """
+    rc, ver = _pkgconf(["--modversion", name])
+    if rc != 0:
+        sys.exit(f"extpkg: pkg-config 不认识 `{name}`（先装开发包，或 `--header` 指路）")
+    rc, cflags = _pkgconf(["--cflags", name])
+    incs = [f[2:] for f in cflags.split() if f.startswith("-I")]
+
+    cands = [header] if header else []
+    for d in incs + ["/usr/include", "/usr/local/include"]:
+        for base in (f"{name}.h", f"lib{name}.h", f"{name}/{name}.h"):
+            cands.append(str(Path(d) / base))
+    found = next((c for c in cands if c and Path(c).is_file()), "")
+    if not found:
+        sys.exit(f"extpkg: 找不到 `{name}` 的头文件；用 --header <路径> 指一个")
+
+    pkg_dir = proj / "vendor" / name
+    pkg_dir.mkdir(parents=True, exist_ok=True)
+    out = pkg_dir / f"{name}.extc"
+    gen = [sys.executable, str(Path(__file__).resolve().parent / "cbindgen.py"),
+           "--include", found, "-I", str(Path(found).parent),
+           "-o", str(out), "--extern", f"extc-{name}", "--effects", effects,
+           "--link", f"pkgconfig:{name}"]
+    gen += ["--all"] if bind_all else ["--only", only]
+    if not bind_all and not only:
+        sys.exit("extpkg: 给 --all（绑全部）或 --only a,b（挑几个）")
+    rc = subprocess.run(gen).returncode
+    if rc != 0:
+        print(f"  note   生成器只跳过了一部分（上面列了原因）；改 --only 或补 shim 再试")
+        return rc
+
+    (pkg_dir / "extpkg.toml").write_text(f"""# vendor/{name}/extpkg.toml —— 由 `extpkg add {name}` 生成（系统库 + 生成绑定）。
+#
+# 这个包**没有 vendored 源码**：真相源是这台机器上的 `pkg-config {name}` 与 `{found}`。
+# `extc.lock` 里记着版本，`extpkg build` 会把它当"系统依赖"处理（不下载、不 vendor）。
+
+[package]
+name = "{name}"
+version = "{ver}"
+system = true
+
+[system]
+pkgconfig = "{name}"
+header = "{found}"
+
+[[claim]]
+id = "signature-unproven"
+statement = "生成的 `effects` 签字（Addr=0 Cont=0 Ret=0）成立：库不保留调用方地址、返回的指针不指向调用方帧"
+test = ""
+state = "unverifiable"
+""", encoding="utf-8")
+
+    man_path = proj / "packages.toml"
+    man = load_toml(man_path) if man_path.is_file() else {"project": {"name": proj.name}, "build": {}, "dependencies": {}}
+    man.setdefault("dependencies", {})[name] = {"version": ver, "system": True}
+    man_path.write_text(toml_dump(man), encoding="utf-8")
+    print(f"  ok     {out}")
+    print(f"  use    `use {name}`（{len(out.read_text(encoding='utf-8').splitlines())} 行绑定；链接走 {name}.link）")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(prog="extpkg", description="extC 包工具（verify / fetch / vendor / build）")
-    ap.add_argument("command", choices=["verify", "fetch", "vendor", "build"])
+    ap.add_argument("command", choices=["verify", "fetch", "vendor", "build", "add"])
     ap.add_argument("target", nargs="?", help="verify: 包目录；其余: 项目目录（默认 .）")
     ap.add_argument("--project", default=".", help="项目目录（默认当前目录）")
     ap.add_argument("--offline", action="store_true", help="绝不联网（缓存里没有就报错）")
     ap.add_argument("--extc", default=str(DEFAULT_EXTC))
+    ap.add_argument("--header", default="", help="add: 头文件路径（默认按 pkg-config 的 -I 猜）")
+    ap.add_argument("--only", default="", help="add: 只绑这些函数（逗号分隔）")
+    ap.add_argument("--all", action="store_true", help="add: 绑头文件里全部函数")
+    ap.add_argument("--effects", choices=("none", "trusted"), default="trusted",
+                    help="add: 绑定里的 effects 签字策略（默认 trusted = 一条签字代替手写）")
     a = ap.parse_args()
 
     extc = Path(a.extc)
@@ -420,6 +543,11 @@ def main() -> int:
             sys.exit("extpkg: verify 需要一个包目录")
         return cmd_verify(Path(a.target).resolve(), extc)
     proj = Path(a.target or a.project).resolve()
+    if a.command == "add":
+        if not a.target:
+            sys.exit("extpkg: add 需要一个 pkg-config 名（如 `extpkg add zlib --all`）")
+        # `add zlib` 的 target 是**包名**，项目目录来自 --project（默认当前目录）
+        return cmd_add(Path(a.project).resolve(), a.target, a.header, a.only, a.all, a.effects)
     if a.command == "fetch":
         return cmd_fetch(proj, a.offline)
     if a.command == "vendor":

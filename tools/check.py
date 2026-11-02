@@ -1630,6 +1630,15 @@ def build_items() -> list:
         ok_msg=ok_count_ok(" 项（装箱/换类型/拆箱 trap/打印与相等）"),
         bad_msg="tests/any/run.sh", bad_dump=dump_fail(8)))
 
+    # ---- C ABI：`extpkg add <pkg-config 名>` 之后能直接 `use` ----
+    items.append(cmd(
+        "extpkg-system", "tests",
+        "`extpkg add zlib --all` 在临时项目里生成 `vendor/zlib/{zlib.extc,zlib.link,extpkg.toml}`、记成系统依赖；"
+        "直接 `use zlib` 的程序 `extpkg build` 后跑对（zlib 往返）；不存在的包被拒",
+        ["./tests/extpkg-system/run.sh"], timeout=300,
+        ok_msg=ok_count_ok(" 项（add · use+build+run · 未知包被拒）"),
+        bad_msg="tests/extpkg-system/run.sh", bad_dump=dump_fail(8)))
+
     # ---- C ABI：从 C 头文件生成声明式绑定 ----
     items.append(cmd(
         "extbind", "tests",

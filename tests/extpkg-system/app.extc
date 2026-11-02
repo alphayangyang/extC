@@ -1,0 +1,30 @@
+// tests/extpkg-system/app.extc —— `extpkg add zlib` 之后**直接 `use`** 就能用的证据。
+//
+// 这个文件里没有任何 `extern!`、没有任何 `effects`、没有任何链接参数：绑定是 `extpkg add`
+// 生成的（`vendor/zlib/zlib.extc`），链接要求是它顺手写的 `vendor/zlib/zlib.link`
+// （`pkgconfig:zlib`），由编译器在读到这个模块时自动带上。
+use std::io
+use zlib::*
+
+fn main() -> i32 {
+    var src: mut slice<u8> = new u8[64]
+    var i: i64 = 0
+    while i < i64(64) { src[i] = u8(i % 8)  i = i + i64(1) }
+
+    var dst: mut slice<u8> = new u8[256]
+    var dlen: u64 = u64(256)
+    var rc: i32 = compress(dst.data, ref dlen, src.data, u64(64))
+    if rc != 0 { io::cout << "compress failed rc=" << i64(rc) << "\n"  return 1 }
+
+    var back: mut slice<u8> = new u8[64]
+    var blen: u64 = u64(64)
+    rc = uncompress(back.data, ref blen, dst.data, dlen)
+    if rc != 0 { io::cout << "uncompress failed rc=" << i64(rc) << "\n"  return 1 }
+
+    var same: bool = blen == u64(64)
+    i = 0
+    while i < i64(64) { if back[i] != src[i] { same = false }  i = i + i64(1) }
+    io::cout << "in=64 out=" << i64(dlen) << " back=" << i64(blen)
+    if same { io::cout << " same=yes\n" } else { io::cout << " same=no\n" }
+    return 0
+}

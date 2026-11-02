@@ -253,13 +253,47 @@ def eval_constants(includes, incdirs, names):
     return vals
 
 
-def collect(node, fns, enums, typedefs):
-    """走一遍 AST，收下函数声明与枚举常量。"""
+def _walk_with_file(node, cur, visit):
+    """按源码顺序遍历顶层声明：`loc.file` 只在**换文件**时出现，所以跟一个"当前文件"。
+
+    这样才知道一条声明到底来自我们请求的头文件，还是来自它 `#include` 进来的系统头
+    （`<unistd.h>` 的 `readlinkat`、`<sys/select.h>` 的 `select` 都会被 `--all` 抓到，
+    在用户那边表现为"生成失败，因为 char *restrict" —— 但那条根本不该被生成）。"""
+    if isinstance(node, list):
+        for v in node:
+            cur = _walk_with_file(v, cur, visit)
+        return cur
+    if not isinstance(node, dict):
+        return cur
+    f = node.get('loc', {}).get('file')
+    if f:
+        cur = f
+    visit(node, cur)
+    for v in node.get('inner', []) or []:
+        cur = _walk_with_file(v, cur, visit)
+    return cur
+
+
+def collect(node, fns, enums, typedefs, wanted_files=None):
+    """走一遍 AST，收下函数声明与枚举常量。
+
+    `wanted_files` 非空时只收**这些文件里**声明的函数（`--all` 于是不会把系统头的函数卷进来）。
+    """
+    def visit(n, cur):
+        kind = n.get('kind')
+        if kind == 'FunctionDecl' and n.get('name'):
+            if wanted_files is not None and cur and os.path.realpath(cur) not in wanted_files:
+                return
+            fns.setdefault(n['name'], n)
+    _walk_with_file(node, None, visit)
+    return _collect_rest(node, enums, typedefs)
+
+
+def _collect_rest(node, enums, typedefs):
+    """枚举与 typedef 仍然全收（它们来自哪个头文件不影响正确性，只影响大小）。"""
     if isinstance(node, dict):
         kind = node.get('kind')
-        if kind == 'FunctionDecl' and node.get('name'):
-            fns.setdefault(node['name'], node)
-        elif kind == 'TypedefDecl' and node.get('name'):
+        if kind == 'TypedefDecl' and node.get('name'):
             typedefs.setdefault(node['name'], node.get('type', {}).get('qualType', ''))
         elif kind == 'EnumDecl':
             vals = []
@@ -273,10 +307,10 @@ def collect(node, fns, enums, typedefs):
             if vals:
                 enums.setdefault(node.get('name') or '<anonymous>', vals)
         for v in node.values():
-            collect(v, fns, enums, typedefs)
+            _collect_rest(v, enums, typedefs)
     elif isinstance(node, list):
         for v in node:
-            collect(v, fns, enums, typedefs)
+            _collect_rest(v, enums, typedefs)
 
 
 def params_of(fn):
@@ -406,6 +440,9 @@ def main():
     ap.add_argument('--include', action='append', default=[], help='要读的头文件（可多次）')
     ap.add_argument('-I', dest='incdirs', action='append', default=[], help='头文件搜索目录')
     ap.add_argument('--only', default='', help='要绑的函数（逗号分隔）；不给就得给 --all')
+    ap.add_argument('--allow-skips', action='store_true',
+                    help='`--all` 时默认打开：跳过的形状写进产物头部注释（--only 仍然是严格的：'
+                         '点名要的绑不出来就失败）')
     ap.add_argument('--all', action='store_true', help='绑所有非 deprecated 的函数（大库会很大）')
     ap.add_argument('--no-enums', action='store_true', help='不生成枚举常量')
     ap.add_argument('--name', default='library', help='文档注释里的库名')
@@ -430,7 +467,8 @@ def main():
 
     ast = clang_ast(args.include, args.incdirs)
     fns_all, enums_all, typedefs = {}, {}, {}
-    collect(ast, fns_all, enums_all, typedefs)
+    collect(ast, fns_all, enums_all, typedefs,
+            {os.path.realpath(p) for p in args.include})
     enum_names = set(enums_all)
     for tname, target in typedefs.items():
         if resolve(target, typedefs).startswith('enum'):
@@ -516,6 +554,15 @@ def main():
         text = emit(out_fns, enums, args.name)
     for p in problems:
         sys.stderr.write('[cbindgen] 跳过：%s\n' % p)
+
+    if args.allow_skips or args.all:
+        skipped = [p for p in problems if '头文件里没有这个声明' not in p]
+        if skipped:
+            text = text.replace('// 由 tools/cbindgen.py 生成 —— 不要手改。\n',
+                                '// 由 tools/cbindgen.py 生成 —— 不要手改。\n'
+                                '//\n// 没绑的形状（%d 个，需要时手写 shim）：\n' % len(skipped)
+                                + ''.join('//   · %s\n' % p for p in skipped))
+            problems = [p for p in problems if '头文件里没有这个声明' in p]
 
     if args.check:
         try:
