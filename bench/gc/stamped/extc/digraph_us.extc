@@ -13,7 +13,7 @@
 //     环由区域清扫收回（EXTC_RECLAIM=0 档关掉清扫 ⇒ 地板）。
 use std::io
 
-use std::time
+use std::loop
 var USN: i64 = 0
 var US: [1000002]i64
 fn us() { if USN < 1000002 { US[USN] = time::now()  USN = USN + 1 } }

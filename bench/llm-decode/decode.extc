@@ -8,7 +8,7 @@
  * 输出：GEN <token ids...> 与 TIME / PREFILL / LOAD 三行，归 tests/run.sh 判。
  */
 use std::io
-use std::time
+use std::loop
 use std::fs
 use ggml
 

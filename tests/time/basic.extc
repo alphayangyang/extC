@@ -1,5 +1,5 @@
 // 时间库的四条判据，一个程序跑完（输出是机器可读的 key=value，runner 逐条查）
-use std::time
+use std::loop
 use std::io
 
 fn main() -> i32 {

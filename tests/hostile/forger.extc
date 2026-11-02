@@ -3,14 +3,14 @@
 // 必须说不。（这类"混淆代理"是最常见的一种：库想让你去读它的、或者别人的内存。）
 use std::io
 use std::dl
-use std::heap
+use std::mem
 
 struct api { forge: fn() -> ?ref u8 }
 
 fn main() -> i32 {
     var h: ?ref void = dl::open("build/hostile-forger.so")!
     var a: api = api { forge: fn() -> ?ref u8(dl::sym(h, "forge")!) }
-    var pl: heap::plate = heap::plate::open(heap::DEFAULT_RESERVE)!
+    var pl: mem::plate = mem::plate::open(mem::DEFAULT_RESERVE)!
     var p: ?ref u8 = a.forge()
     if p == null {
         io::cout << "forge=null\n"

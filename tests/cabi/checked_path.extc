@@ -8,7 +8,7 @@
 // 那条不检查的路 —— 不方便和不安全是同一个 bug 的两面。
 use std::io
 use std::dl
-use std::heap
+use std::mem
 
 var out: [64]u8
 
@@ -36,7 +36,7 @@ fn main() -> i32 {
 
     /* ③ 同一片区域的第二处：一个 **depth 0 的实参**（全局内存的视图）不再把"目的地深度"压成 0
      * ⇒ `pl`（局部）不再被误判成"活得不够久" ✓；而**运行时**该拒的照样拒（区间检查 ✓） */
-    var pl: heap::plate = heap::plate::open(heap::DEFAULT_RESERVE)!
+    var pl: mem::plate = mem::plate::open(mem::DEFAULT_RESERVE)!
     match pl.viewAt(out[..].data, u64(4)) {
         some(w) => { io::cout << " viewat=accepted" }
         none    => { io::cout << " viewat=rejected" }

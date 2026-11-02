@@ -24,7 +24,7 @@
 
 use std::sys::net
 use std::loop as ltimers
-use std::time
+use std::loop
 use std::data::vector
 
 /* 一行任务：句柄 + 两个标记 + **它当前注册在 epoll 里的 fd**（-2 = 没注册）。 */

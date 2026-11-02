@@ -4,7 +4,7 @@
 // 不是悄悄读到别人的数据，而是一次响亮的崩。
 use std::io
 use std::dl
-use std::heap
+use std::mem
 
 struct api { take: fn(?ref u8, i64) -> i64 effects Addr=0 Cont=0
              useLater: fn() -> i64 }
@@ -13,7 +13,7 @@ fn main() -> i32 {
     var h: ?ref void = dl::open("build/hostile-keeper.so")!
     var a: api = api { take: fn(?ref u8, i64) -> i64(dl::sym(h, "take")!),
                        useLater: fn() -> i64(dl::sym(h, "use_later")!) }
-    var pl: heap::plate = heap::plate::open(heap::DEFAULT_RESERVE)!
+    var pl: mem::plate = mem::plate::open(mem::DEFAULT_RESERVE)!
     var v: mut slice<u8> = pl.alloc(u64(64))!
     a.take(v.data, 64)
     pl.close()

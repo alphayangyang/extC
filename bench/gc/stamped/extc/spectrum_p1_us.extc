@@ -1,7 +1,7 @@
 // P1 纯短命分配、**无引用**：分配-用完-丢（arena 型、无图）。与 spectrum_p1.go 逐字节同输出。
 use std::io
 
-use std::time
+use std::loop
 var USN: i64 = 0
 var US: [1000002]i64
 fn us() { if USN < 1000002 { US[USN] = time::now()  USN = USN + 1 } }

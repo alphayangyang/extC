@@ -4,7 +4,7 @@
 //  · 全部在栈/arena 上，零堆分配：进程 RSS 由 run.sh 的 /usr/bin/time -v 钉住。
 use std::hash::digest
 use std::io
-use std::time
+use std::loop
 
 fn main() -> i32 {
     let MB: i64 = 1048576

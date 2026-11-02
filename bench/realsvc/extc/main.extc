@@ -22,7 +22,7 @@
  * per byte; README.md records that number next to the ones below.
  */
 use std::io
-use std::time
+use std::loop
 use std::data::vector
 use std::data::hashMap
 use std::sys::file as sysfile

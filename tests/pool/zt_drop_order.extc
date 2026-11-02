@@ -19,7 +19,7 @@
 // ids 表用 scratch 池的一块板块装 —— 与 `zt_exit_cost.extc` 同形，每只池都拿一块真板块。
 use std::io
 use std::sys::pool as syspool
-use std::time
+use std::loop
 
 /* `args[i]` 当十进制数读（没给就用默认值） */
 fn toInt(s: slice<u8>, dflt: i64) -> i64 {

@@ -2,7 +2,7 @@
 // 解析与写入的吞吐（同一台机器量；RSS 由 run.sh 的 /usr/bin/time -v 钉住）。
 use std::json::{parsed, parse, isOk, rootOf, errAt, countOf, builder}
 use std::io
-use std::time
+use std::loop
 
 fn main() -> i32 {
     /* 先用 builder 造一份 ~4 KiB 的真实形状消息（顺便也是写入路径的判据） */

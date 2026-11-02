@@ -18,7 +18,7 @@
 //      再用第 4 步的 `extc_viewOf` 变成视图才解引用 —— 板外那个在 `holds` 就被挡住。
 use std::io
 use std::dl
-use std::heap
+use std::mem
 
 /* 表：模块只看得到这一张。`@frozen` 是对 C 的布局承诺（tests/frozen 那套镜像测试担保它）。 */
 @frozen struct plate_api {
@@ -63,7 +63,7 @@ fn main() -> i32 {
     var sBad: ref void = dl::sym(h, "badPtr")!
 
     /* 板：真板（不是数组）。 */
-    var pl: heap::plate = heap::plate::open(heap::DEFAULT_RESERVE)!
+    var pl: mem::plate = mem::plate::open(mem::DEFAULT_RESERVE)!
 
     /* 表：填函数地址（每个槽一句显式转换 = 签字）。`ctx` 就是这块板。 */
     var api: plate_api = plate_api {

@@ -5,10 +5,10 @@
 // 两次 mprotect 各 ≈370 µs ⇒ 盈亏平衡 ≈0.7 MiB）。代价是那段内存**谁都不能写** —— 内核保证，
 // 写就是硬 SIGSEGV（`tests/heap/loanwrite.extc` 专门验这一条）。
 use std::io
-use std::heap
+use std::mem
 
 fn main() -> i32 {
-    var pl: heap::plate = heap::plate::open(heap::DEFAULT_RESERVE)!
+    var pl: mem::plate = mem::plate::open(mem::DEFAULT_RESERVE)!
     var off: u64 = pl.usedBytes()
     var n: u64 = 8192
     var v: mut slice<u8> = pl.alloc(n)!

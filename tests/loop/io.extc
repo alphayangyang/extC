@@ -6,7 +6,7 @@
 //   ④ 时间就是超时参数：没有 fd 就绪时，`runOnce` 的等待时间 = deadline 表算出来的值。
 use std::loop
 use std::sys::net
-use std::time
+use std::loop
 use std::io
 
 fn main() -> i32 {

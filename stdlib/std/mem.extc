@@ -34,7 +34,7 @@ fn eq(a: slice<u8>, b: slice<u8>) -> bool {
     return extc_memEq(a.data, b.data, a.len) != 0
 }
 
-/* 原地整块拷贝（两边都是可写视图时用；跨界拷贝见 `heap::copyIn`）。 */
+/* 原地整块拷贝（两边都是可写视图时用；跨界拷贝见 `mem::copyIn`）。 */
 fn copy(dst: mut slice<u8>, src: slice<u8>) -> i64 {
     if src.len > dst.len { return -1 }
     var i: i64 = 0
@@ -43,4 +43,273 @@ fn copy(dst: mut slice<u8>, src: slice<u8>) -> i64 {
         i = i + 1
     }
     return src.len
+}
+
+/* std/heap.extc —— 板（Heap）：**一块连续内存 + 一道门**
+ *
+ * 设计。这一层是它的实现侧，三条要点：
+ *
+ * 1. **一次保留、按需 commit、永不搬家**。`open` 只 `mmap` 一片地址空间（`PROT_NONE` +
+ *    `MAP_NORESERVE`：不占物理页），`alloc` 把要用的那几页 `mprotect` 成 RW。地址一给出就不变
+ *    ⇒ 模块手里的板内指针永远有效（直到 `close`）。
+ * 2. **一道门**：每个出口都验一次"这个指针在板内"（`holds`：一次区间比较）。板**不做**世代、
+ *    不做 use-after-free 检查 —— 那是外来库自己的事；`close` 是 `munmap` ⇒ 关板之后再用板内
+ *    指针是**硬缺页**（SIGSEGV），不是悄悄读到别人的数据。
+ * 3. **寿命显式**：`close`（与 `std::fs` 的句柄同一套：`close` 方法一存在，"开了没关"就有编译期
+ *    提醒；双关安全）。Arena 兜底**还没做**，今天忘了关就是漏到进程结束。
+ *
+ * 指针算术在这门语言里**故意没有**（`u64(p)` 只朝一个方向），所以板内的一切都用**偏移**做：
+ * 分配是 `used` 往前推、commit 是记 `committed`；需要地址的地方就切一片视图（`mem[a..b]`）。
+ * `viewOf`（`std::sys::heap`）是唯一一处"指针 + 长度 → 视图"，而它是编译器给的三行 C。 */
+use std::sys::heap as sysheap
+
+/* 常量写成字面量而不是 `u64(4096)`：`i32` 字面量到 `u64` 是一次**带检查**的转换 ⇒ 产物里是
+ * `extc_narrowU(...)` 调用 ⇒ 静态初始化器不是常量（实测：gcc 报 "initializer element is not
+ * constant"）。字面量直接适配目标类型，没有这一层。（`isConstInit` 现在也把"要带检查的转换"
+ * 排除在常量之外 —— 于是这种写法会在编译期得到一句人话。） */
+let PAGE: u64 = 4096               /* 字面量直接适配目标类型 */
+/* commit 的粒度：一次 1 MiB。 */
+let CHUNK: u64 = 1048576            /* 1 MiB，写成一个字面量：`1024 * 1024` 是 i32 算术 ✗ */
+let DEFAULT_RESERVE: u64 = 4294967296   /* 4 GiB */
+
+/* 内部齿轮：`@private` 对编译器（`manual_surface.py` 认这个标注；历史上还有一层按 `p`
+ * 当容器内部助手，不算公开面 —— 公开面清单是 check.sh 的一道闸门）。 */
+@private
+fn pRoundUp(x: u64, a: u64) -> u64 { return ((x + a - u64(1)) / a) * a }
+
+@noCopy
+struct plate {
+    /* 整块保留区。`open` 之后它是 `PROT_NONE` 的 —— 视图本身不碰内存，所以拿得住。 */
+    mem: mut slice<u8>
+    reserved: u64
+    committed: u64
+    used: u64
+    closed: bool
+
+    /* 保留一片地址空间。失败返回 `null`（`mmap` 的失败约定是 `MAP_FAILED` = `(void *)-1`，
+     * 不是 null，所以这里两样都当失败 —— 见下面的比较）。 */
+    fn open(reserve: u64) -> ?plate {
+        var p: ?ref u8 = sysheap::mmap(null, reserve, sysheap::PROT_NONE,
+                                       sysheap::MAP_PRIVATE | sysheap::MAP_ANONYMOUS |
+                                       sysheap::MAP_NORESERVE,
+                                       -1, 0)
+        if p == null { return none }
+        /* 最高一页里的地址都不是合法的映射起点（`MAP_FAILED` 就在那里）。 */
+        if u64(p) >= u64(0) - PAGE { return none }
+        var mem: mut slice<u8> = sysheap::extc_viewOf(p, i64(reserve))
+        return some(plate { mem: mem, reserved: reserve, committed: u64(0), used: u64(0), closed: false })
+    }
+
+    fn reservedBytes(self: ref plate) -> u64 { return self.reserved }
+    fn committedBytes(self: ref plate) -> u64 { return self.committed }
+    fn usedBytes(self: ref plate) -> u64 { return self.used }
+    fn remaining(self: ref plate) -> u64 { return self.reserved - self.used }
+    fn isClosed(self: ref plate) -> bool { return self.closed }
+
+    /* 申请 `n` 字节的**偏移**（bump + 按需 commit）。两个出口共用这一段：
+     * `alloc` 给视图、`allocPtr` 给裸指针（C 那边的门要的就是后者）。 */
+    @private
+    fn pAllocOff(self: mut ref plate, n: u64) -> ?u64 {
+        if self.closed { return none }
+        var end: u64 = pRoundUp(self.used + n, PAGE)
+        if end > self.reserved { return none }
+        if end > self.committed {
+            var newEnd: u64 = pRoundUp(end, CHUNK)
+            if newEnd > self.reserved { newEnd = self.reserved }
+            /* 切一片视图只为拿到那个地址（指针算术没有）；`tail.data` 是 `ref u8`，
+             * 而 `mprotect` 要 `ref void` —— 抹除方向（C-ABI 第 4 步 ①）。 */
+            var tail: mut slice<u8> = self.mem[i64(self.committed)..i64(newEnd)]
+            if sysheap::mprotect(tail.data, newEnd - self.committed, sysheap::PROT_RW) != 0 { return none }
+            self.committed = newEnd
+        }
+        var start: u64 = self.used
+        self.used = end
+        return some(start)
+    }
+
+    /* 申请 `n` 字节，返回**板内视图**；板满了返回 `none`（调用点写 `!` 表示"我知道还有地方"，
+     * 或者 match 一下）。commit 按 `CHUNK` 粒度做：一次 `mprotect` 管一片，不是每页一次。 */
+    /* `effects Ret=0`：我返回的视图**不指向调用方的任何帧**（板是 `mmap` 来的，活到 `close`）。
+     * 这一句是 stdlib 替所有使用者签的 —— 用户于是可以 `var v = pl.alloc(n)!` 之后再 `v.data`
+     * 交给任何没签字的 C 函数，自己一个字都不用写。签字只放一处，且在能证明它的这一层。 */
+    fn alloc(self: mut ref plate, n: u64) -> ?mut slice<u8> effects Ret=0 {
+        match self.pAllocOff(n) {
+            some(off) => { return some(self.mem[i64(off)..i64(off + n)]) }
+            none      => { return none }
+        }
+    }
+
+    /* 同一个申请的**裸指针**出口。存在的理由很具体：板内的指针要交给 C（表的门），而"先把视图
+     * 存进局部、再取 `.data`"会被逃逸分析挡住 —— 存进局部的视图在它眼里只有本帧的寿命，而
+     * `Addr=1` 那种签名要求活得更久（实测）。这里视图是**临时**的，深度跟着 `self`（参数，0）。 */
+    fn allocPtr(self: mut ref plate, n: u64) -> ?ref u8 effects Ret=0 {
+        match self.pAllocOff(n) {
+            some(off) => { return self.mem[i64(off)..i64(off + n)].data }
+            none      => { return null }
+        }
+    }
+
+    /* 板内 `[off, off+n)` 的视图（也要过门：区间必须在保留区**且已经 commit**）。
+     *
+     * 这是"把板内内存交给会**留着**它的 C 函数"的正确取法：内联在调用点写 `pl.view(off, n)!.data`。
+     * 别先把视图存进局部 —— 逃逸分析只知道"本帧里有一个视图"（深度 1），而 `effects Addr=1`
+     * （"我存了你的指针"）要求它活得比这一帧久，于是编译期就挡住（实测报
+     * "may be kept by C forever, but it points into this frame (depth 1)"）。直接从板里取就没这问题：
+     * 视图的深度跟着 `self`（参数，深度 0）。 */
+    fn view(self: mut ref plate, off: u64, n: u64) -> ?mut slice<u8> effects Ret=0 {
+        if self.closed { return none }
+        if off + n > self.reserved { return none }
+        if off + n > self.committed { return none }
+        return some(self.mem[i64(off)..i64(off + n)])
+    }
+
+    /* **那道门**：一次区间比较。板外的指针一律不是（不是"可能不是"）。 */
+    /* 从 C 拿回一个指针之后，把它变成视图的**唯一正路**：先过一遍区间检查，再交给特权层造视图。
+     * `extc_viewOf` 本身关在 `std::sys::heap` 里（用户导不进来），所以门外那句话
+     * "一个指针 + 一个长度 = 一片随便读写的内存"在这里被压成一次比较 ✓。 */
+    fn viewAt(self: ref plate, p: ref u8, n: u64) -> ?mut slice<u8> effects Ret=0 {
+        if n == u64(0) { return none }
+        if !self.holdsRange(p, i64(n)) { return none }
+        return some(sysheap::extc_viewOf(p, i64(n)))
+    }
+
+    fn holds(self: ref plate, p: ref u8) -> bool {
+        var a: u64 = u64(p)
+        var base: u64 = u64(self.mem.data)
+        return a >= base && a < base + self.reserved
+    }
+
+    /* 带的长度的那一版：指针 + 长度整段都要在板内。**给 C 的门用这个**（拿到的常常是裸指针 +
+     * 长度，而"先把指针变成视图再验"会多绕一圈：`extc_viewOf` 让调用者带上隐藏的 arena 参数，
+     * 于是那个函数的地址就不是一个 `fn` 值了，放不进表槽 —— 实测的报错很直白）。 */
+    fn holdsRange(self: ref plate, p: ref u8, n: i64) -> bool {
+        if n <= 0 { return true }
+        var a: u64 = u64(p)
+        var base: u64 = u64(self.mem.data)
+        return a >= base && a + u64(n) <= base + self.reserved
+    }
+
+    /* 视图形态的同一条门。 */
+    fn holdsView(self: ref plate, v: slice<u8>) -> bool {
+        return self.holdsRange(v.data, v.len)
+    }
+
+    /* 宿主把一块内存拷进板里（`dst` 必须是板内的视图 —— 门在这里）。返回拷了多少字节。 */
+    fn copyIn(self: ref plate, dst: mut slice<u8>, src: slice<u8>) -> i64 {
+        if !self.holdsView(dst) { return -1 }
+        var n: i64 = dst.len
+        if src.len < n { n = src.len }
+        return sysheap::extc_memCopy(dst.data, src.data, n)
+    }
+
+    /* 模块的结果拷回宿主的视图（`src` 必须是板内的 —— 同一道门）。方向反过来。 */
+    fn copyOut(self: ref plate, src: slice<u8>, dst: mut slice<u8>) -> i64 {
+        if !self.holdsView(src) { return -1 }
+        var n: i64 = src.len
+        if dst.len < n { n = dst.len }
+        return sysheap::extc_memCopy(dst.data, src.data, n)
+    }
+
+    /* 申请 + 拷进去：宿主最常用的一步（"把这块数据放进板里，给我板内视图"）。 */
+    fn store(self: mut ref plate, src: slice<u8>) -> ?mut slice<u8> effects Ret=0 {
+        var dst: mut slice<u8> = self.alloc(u64(src.len))?
+        if self.copyIn(dst, src) < 0 { return none }
+        return some(dst)
+    }
+
+    /* **只读借出**：把 `[off, off+n)` 降成 `PROT_READ`（往里写 ⇒ 硬 SIGSEGV），`loanRW` 还回来。
+     *
+     * 大输入用它替代拷贝：只读借出是零拷贝，但要付两次 `mprotect` 的钱
+     * ⇒ 盈亏平衡 ≈0.7 MiB，比它大就值得借。
+     *
+     * `mprotect` 只认**页对齐**的地址 ⇒ `off` 必须是 `PAGE` 的倍数（`alloc` 每次都从页边界开始，
+     * 所以正常分配出来的偏移天然满足），长度向上取整到页。 */
+    fn loanRO(self: mut ref plate, off: u64, n: u64) -> bool {
+        return self.pLoan(off, n, sysheap::PROT_READ)
+    }
+
+    fn loanRW(self: mut ref plate, off: u64, n: u64) -> bool {
+        return self.pLoan(off, n, sysheap::PROT_RW)
+    }
+
+    @private
+    fn pLoan(self: mut ref plate, off: u64, n: u64, prot: i32) -> bool {
+        if self.closed { return false }
+        if off % PAGE != u64(0) { return false }
+        var end: u64 = pRoundUp(off + n, PAGE)
+        if end > self.committed { return false }
+        var region: mut slice<u8> = self.mem[i64(off)..i64(end)]
+        return sysheap::mprotect(region.data, end - off, prot) == 0
+    }
+
+    /* 板内视图/指针 → 偏移（内部齿轮）。越界或已关板返回 `none`。 */
+    @private
+    fn pOffOf(self: ref plate, p: ref u8) -> ?u64 {
+        if self.closed { return none }
+        var base: u64 = u64(self.mem.data)
+        var at: u64 = u64(p)
+        if at < base { return none }
+        var off: u64 = at - base
+        if off >= self.committed { return none }
+        return some(off)
+    }
+
+    /* ---------------------------------------------------------------- 契约验证
+     *
+     * 这三个是给"验证我们替库签的那句话"用的。典型用法：
+     *
+     *     let n = a.take(v.data, v.len)          // a.take 签了 effects Addr=0 Cont=0
+     *     if !pl.quarantine(v.data, u64(4096)) { ... }   // 调用一返回就隔离
+     *     a.useLater()                            // 库若食言（留了指针）⇒ 硬缺页
+     *
+     * 为什么用**指针**而不是偏移：调用点手里就是视图（`v.data`），偏移在板外没有意义；
+     * 与 `viewAt` / `holdsRange` 同一取向。
+     */
+
+    /* **隔离**：把 `[p, p+n)` 所在的那几页降成 `PROT_NONE` —— 读或写都硬缺页。
+     * `p` 必须**页对齐**（`alloc` 的每个起点都是，所以正常分配天然满足），否则返回 false：
+     * 从半个对象开始冻结会连累同页的邻居，那种"顺手冻一片"的语义不该是默认。 */
+    fn quarantine(self: mut ref plate, p: ref u8, n: u64) -> bool {
+        match self.pOffOf(p) {
+            some(off) => { return self.pLoan(off, n, sysheap::PROT_NONE) }
+            none      => { return false }
+        }
+    }
+
+    /* 解除隔离（回到可读写）。验证跑完还要继续用这块内存时调用；与 `close` 不冲突。 */
+    fn unquarantine(self: mut ref plate, p: ref u8, n: u64) -> bool {
+        match self.pOffOf(p) {
+            some(off) => { return self.pLoan(off, n, sysheap::PROT_RW) }
+            none      => { return false }
+        }
+    }
+
+    /* **毒化**：把 `[p, p+n)` 填成哨兵字节。用于**不想让它崩**的验证路径 —— 库食言时读到的是
+     * 毒值（可判定），而不是"看起来正常"的旧数据（不可判定）。与 `quarantine` 的区别只在
+     * 失败形态：一个响亮崩，一个可读出来。 */
+    fn poison(self: mut ref plate, p: ref u8, n: u64, byte: u8) -> bool {
+        match self.pOffOf(p) {
+            some(off) => {
+                if off + n > self.committed { return false }
+                var v: mut slice<u8> = self.mem[i64(off)..i64(off + n)]
+                var i: i64 = 0
+                while i < v.len {
+                    v[i] = byte
+                    i = i + 1
+                }
+                return true
+            }
+            none => { return false }
+        }
+    }
+
+    /* 关板：`munmap`。关完之后板内指针再用就是硬缺页（这是设计，不是事故）。双关安全。 */
+    fn close(self: mut ref plate) -> i32 {
+        if self.closed { return 0 }
+        var r: i32 = sysheap::munmap(self.mem.data, self.reserved)
+        self.closed = true
+        self.used = u64(0)
+        self.committed = u64(0)
+        return r
+    }
 }

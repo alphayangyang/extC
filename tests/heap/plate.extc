@@ -7,7 +7,7 @@
 // 判据的牙：板外指针 `holds` 为假；`copyIn` 目标不在板内 ⇒ -1（那道门真的在验）。
 use std::io
 use std::fs
-use std::heap
+use std::mem
 
 /* `/proc/self/statm` 的**第二个**字段是 resident 页数 ⇒ ×4 = KB。 */
 fn rssKB() -> i64 {
@@ -29,7 +29,7 @@ fn rssKB() -> i64 {
 fn main() -> i32 {
     var before: i64 = rssKB()
 
-    var pl: heap::plate = heap::plate::open(heap::DEFAULT_RESERVE)!
+    var pl: mem::plate = mem::plate::open(mem::DEFAULT_RESERVE)!
     var afterOpen: i64 = rssKB()
     io::cout << "reserve=" << i64(pl.reservedBytes() / (u64(1024) * u64(1024))) << "MB"
     var delta: i64 = afterOpen - before

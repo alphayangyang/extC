@@ -9,7 +9,7 @@
 // frame (depth 1)"），因为视图绑定的深度取的是"槽"，而槽在帧里。
 use std::io
 use std::dl
-use std::heap
+use std::mem
 
 /* 全局内存：它的视图同样"不在任何帧里"，所以也进同一条判据（不需要签字）。 */
 var mem: [64]u8
@@ -18,7 +18,7 @@ fn main() -> i32 {
     var h: ?ref void = dl::open("libcairo.so.2")!     /* 借一个真实符号当"未签字的 C 函数" */
     var raw: ref void = dl::sym(h, "cairo_version_string")!
     var f: fn(ref u8) -> i64 = fn(ref u8) -> i64(raw) /* 裸转换 ⇒ 没有 effects ⇒ 最坏情况 */
-    var pl: heap::plate = heap::plate::open(heap::DEFAULT_RESERVE)!
+    var pl: mem::plate = mem::plate::open(mem::DEFAULT_RESERVE)!
 
     var v: mut slice<u8> = pl.alloc(u64(8))!          /* 板内视图，存局部 */
     var g: slice<u8> = mem[..]                        /* 全局视图，存局部 */

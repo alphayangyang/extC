@@ -7,7 +7,7 @@
 //   ④ 失败怎么走：可预期的失败是返回值（`option`），不能继续才 `trap`
 use std::io
 use std::dl
-use std::heap
+use std::mem
 
 let CLOCK_MONOTONIC: i32 = 1
 
@@ -55,7 +55,7 @@ fn main() -> i32 {
 
     /* ② 板：内存从板里给。`alloc` 返回的视图**存进局部**也合法 —— 库里签了 `effects Ret=0`
      * （"返回的视图不指向调用方的任何帧"）⇒ 它的深度取"指向的存储"，不取"槽所在的块" ✓ */
-    var pl: heap::plate = heap::plate::open(heap::DEFAULT_RESERVE)!
+    var pl: mem::plate = mem::plate::open(mem::DEFAULT_RESERVE)!
     var v: mut slice<u8> = pl.alloc(16)!
     v[0] = 104  v[1] = 105  v[2] = 10            /* "hi\n" */
     io::cout << " plate=ok"

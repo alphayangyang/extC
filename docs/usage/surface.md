@@ -117,10 +117,6 @@
 - `sha1State.buf`（字段）
 - `sha256State.buf`（字段）
 
-## std::heap
-
-- `-.pRoundUp`（方法）
-
 ## std::http
 
 - `session.buf`（字段）
@@ -153,7 +149,12 @@
 
 ## std::loop
 
+- `timer.t0`（字段）
 - `timers.n`（字段）
+
+## std::mem
+
+- `-.pRoundUp`（方法）
 
 ## std::term
 
@@ -168,10 +169,6 @@
 - `string.pid`（字段）
 - `string.pidGen`（字段）
 - `string.small`（字段）
-
-## std::time
-
-- `timer.t0`（字段）
 
 ## std::ws
 

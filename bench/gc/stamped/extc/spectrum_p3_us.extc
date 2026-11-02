@@ -1,7 +1,7 @@
 // P3 每轮建一条链表、轮末整片丢（无跨轮引用）。与 .go 同输出。
 use std::io
 
-use std::time
+use std::loop
 var USN: i64 = 0
 var US: [1000002]i64
 fn us() { if USN < 1000002 { US[USN] = time::now()  USN = USN + 1 } }

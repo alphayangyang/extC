@@ -5,7 +5,7 @@
  *
  * 注意收尾：协程最后一次 `yield` 必须是**负数**（驱动把 `>= 0` 读成"等这个 fd 可读"）。 */
 use std::coro::scheduler as sched
-use std::time
+use std::loop
 use std::io
 
 fn napper(id: i64, s: mut ref sched::loop) -> coroutine<i64> {

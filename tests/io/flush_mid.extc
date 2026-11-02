@@ -3,7 +3,7 @@
  * that only fills stdio's buffer would leave the text invisible until exit. The
  * harness reads the file while this program is still sleeping. */
 use std::io
-use std::time
+use std::loop
 
 fn main() -> i32 {
     io::cout << "mid-run\n"

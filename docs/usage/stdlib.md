@@ -815,7 +815,7 @@ fn main() -> i32 {
 ```
 实测（stdin 不是终端，`</dev/null`）：`not-a-tty fd=0`。
 
-### `std::time`：两个钟 + 秒表
+### `std::loop`：两个钟、秒表与定时表
 
 | 名字 | 签名 |
 |---|---|
@@ -824,17 +824,17 @@ fn main() -> i32 {
 | `sleepNs` / `sleepUs` / `sleepMs` | 阻塞当前线程 |
 | `timer` + `start()` | `elapsedNs` / `elapsedUs` / `elapsedMs` / `elapsedSecs`；`t0` 是 `@private` |
 
-`time` 里没有收回调的计时器：把行为当参数有两种写法 —— 不捕获的 lambda 直接当 `fn(...)` 传（[可调用的值](language.md#35-可调用的值fn-与闭包)），带状态的闭包交给泛型参数并在体内调 `call`。
+`loop` 里没有收回调的计时器：把行为当参数有两种写法 —— 不捕获的 lambda 直接当 `fn(...)` 传（[可调用的值](language.md#35-可调用的值fn-与闭包)），带状态的闭包交给泛型参数并在体内调 `call`。
 
 ```extc
 use std::io
-use std::time
+use std::loop
 fn main() -> i32 {
-    let a = time::now()
-    time::sleepMs(i64(2))
-    var t = time::start()
-    time::sleepUs(i64(1000))
-    io::cout << "mono-advances=" << (time::now() > a) << " elapsedUs-positive=" << (t.elapsedUs() > i64(0)) << " real-positive=" << (time::real() > i64(0)) << "\n"
+    let a = loop::now()
+    loop::sleepMs(i64(2))
+    var t = loop::start()
+    loop::sleepUs(i64(1000))
+    io::cout << "mono-advances=" << (loop::now() > a) << " elapsedUs-positive=" << (t.elapsedUs() > i64(0)) << " real-positive=" << (loop::real() > i64(0)) << "\n"
     return 0
 }
 ```
@@ -1133,7 +1133,7 @@ $ ./build/extc --run tests/coro/coro_tasks.extc ; echo $?
 10
 ```
 
-### `std::heap`：板（一块连续内存 + 一道门）
+### `std::mem` 的板：一块连续内存 + 一道门
 
 一次 `mmap` 保留地址空间（`PROT_NONE` + `MAP_NORESERVE`），`alloc` 按需 `mprotect` 成 RW；**地址一给出就不变**；
 每个出口验一次"在板内"（`holds`）；`close` 是 `munmap`，之后再用板内指针是硬缺页。`@noCopy`。
@@ -1142,7 +1142,7 @@ $ ./build/extc --run tests/coro/coro_tasks.extc ; echo $?
 |---|---|
 | `PAGE` / `CHUNK` / `DEFAULT_RESERVE` | `4096` / `1 MiB` / `4 GiB` | 、|
 | `plate::open(reserve) -> ?plate` | 保留一片地址空间 |
-| `reservedBytes` / `committedBytes` / `usedBytes` / `remaining` / `isClosed` | |
+| `reserved` / `committed` / `used`（字段，字节数）+ `reservedBytes` / `committedBytes` / `usedBytes` / `remaining` / `isClosed`（方法） | |
 | `alloc(n) -> ?mut slice<u8>` · `allocPtr(n) -> ?ref u8` | 申请（`effects Ret=0`：返回的视图不指向调用方帧） |
 | `view(off, n)` · `viewAt(p, n)` · `holds(p)` · `holdsRange` · `holdsView` | 板内视图 / 从裸指针过门造视图 / 区间检查 |
 | `copyIn` / `copyOut` / `store` | 进/出板 |
@@ -1152,9 +1152,9 @@ $ ./build/extc --run tests/coro/coro_tasks.extc ; echo $?
 
 ```extc
 use std::io
-use std::heap
+use std::mem
 fn main() -> i32 {
-    var pl: heap::plate = heap::plate::open(heap::DEFAULT_RESERVE)!
+    var pl: mem::plate = mem::plate::open(mem::DEFAULT_RESERVE)!
     var v: mut slice<u8> = pl.alloc(u64(8))!
     v[0] = u8(42)
     let held = pl.holds(v.data)
@@ -1194,7 +1194,7 @@ fn main() -> i32 {
 实测：`triple=42 close=0`。`<<` 链从左到右求值（见"今天会咬人的组合"第 1 条），`close`
 仍建议另起一句：原生运算符与普通调用的实参顺序没有保证。
 
-### `std::mem`：字节块的查找与比较
+### `std::mem`：字节块的查找与比较、板
 
 | 名字 | 签名 |
 |---|---|
@@ -1219,7 +1219,7 @@ fn main() -> i32 {
 ```
 实测：`find=6 miss=-1 eq=true contains=true` / `copied=4 dst=wxyz`。
 
-### `std::loop` 与 `std::uuid`
+### `std::uuid`
 
 `std::loop` 是事件循环的**策略层**：一张按 deadline 排序的表 + 几个纯函数，**没有系统调用、没有 C**，
 所以定时语义可以离线判据。`timers` 是 `@noCopy`、容量固定 `CAPACITY = 1024`

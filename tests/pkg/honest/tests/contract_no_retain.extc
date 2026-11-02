@@ -2,10 +2,10 @@
 // 契约：`extc_demo_consume` 只在调用期间读 ⇒ 返回后立刻隔离那块内存，它也不该再碰。
 use demo
 use std::io
-use std::heap
+use std::mem
 
 fn main() -> i32 {
-    var pl: heap::plate = heap::plate::open(heap::DEFAULT_RESERVE)!
+    var pl: mem::plate = mem::plate::open(mem::DEFAULT_RESERVE)!
     var v: mut slice<u8> = pl.alloc(u64(4096))!
     v[0] = u8(3)
     let s: i64 = demo::extc_demo_consume(v.data, 1)

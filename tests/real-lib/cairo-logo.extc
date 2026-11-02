@@ -16,7 +16,7 @@
 //      （§9.15：这是 `effects` 唯一必须存在的理由）。
 use std::io
 use std::dl
-use std::heap
+use std::mem
 use cairoapi::*     /* 生成物：19 个函数 + 3 组枚举常量 */
 
 let W: i32 = 512
@@ -90,7 +90,7 @@ fn main() -> i32 {
     io::cout << "cairo=" << dl::viewCStr(vp)
 
     /* 画布内存：**板**里。板签了 `effects Ret=0`（§9.15）⇒ 视图存局部也行，指针交给 C 不用签字。 */
-    var pl: heap::plate = heap::plate::open(heap::DEFAULT_RESERVE)!
+    var pl: mem::plate = mem::plate::open(mem::DEFAULT_RESERVE)!
     var pxBytes: u64 = u64(W) * u64(H) * u64(4)
     var pxOff: u64 = pl.usedBytes()
     var px: mut slice<u8> = pl.alloc(pxBytes)!

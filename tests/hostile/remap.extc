@@ -5,14 +5,14 @@
 // 判据故意是"攻击成功"，因为**没有沙箱**这件事必须写在明处（C-ABI.md §9.17）。
 use std::io
 use std::dl
-use std::heap
+use std::mem
 
 struct api { hijack: fn(?ref u8, i64) -> ?ref u8 }
 
 fn main() -> i32 {
     var h: ?ref void = dl::open("build/hostile-remap.so")!
     var a: api = api { hijack: fn(?ref u8, i64) -> ?ref u8(dl::sym(h, "hijack")!) }
-    var pl: heap::plate = heap::plate::open(heap::DEFAULT_RESERVE)!
+    var pl: mem::plate = mem::plate::open(mem::DEFAULT_RESERVE)!
     var v: mut slice<u8> = pl.alloc(u64(64))!
     v[0] = u8(0x11)
     var p: ?ref u8 = a.hijack(v.data, i64(pl.reservedBytes()))

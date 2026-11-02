@@ -6,10 +6,10 @@
 // 比崩溃坏得多，所以这里让测试**检查退出码**（139 = 128 + SIGSEGV），并要求崩溃前那行标记
 // 真的打出来了（否则"立刻崩"和"用完之后崩"分不清）。
 use std::io
-use std::heap
+use std::mem
 
 fn main() -> i32 {
-    var pl: heap::plate = heap::plate::open(heap::DEFAULT_RESERVE)!
+    var pl: mem::plate = mem::plate::open(mem::DEFAULT_RESERVE)!
     var s: mut slice<u8> = pl.store("x")!
     var keep: mut slice<u8> = s          /* 视图是两个词的值：留一份 */
     if pl.close() != 0 {
