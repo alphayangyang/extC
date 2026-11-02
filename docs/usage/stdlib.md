@@ -567,7 +567,7 @@ fn main() -> i32 {
 
 ```extc
 use std::io
-use std::nd::tensor
+use std::nd
 
 fn main() -> i32 {
     var buf: mut slice<i64> = new i64[i64(12)]
