@@ -1,0 +1,54 @@
+// 闭包 × 回收运行期（更硬的一条）：被捕获的**值结构体里装着引用** —— env 字段因此是一个指针，
+// 而 env 是泛型体里按实例布局的那一份。若 env 没被当成根，`w.p` 所指的结点会被提前收掉。
+// expect: 1225 507 507
+use std::io
+
+struct node { val: i64  next: ?mut ref node }
+struct wrap { n: i64  p: ?ref node }
+
+struct key { v: i64
+    fn hash(self: ref key) -> i64 { return self.v * 2 }
+}
+
+fn calc<K>(k: K, w: wrap) -> i64 {
+    let f = fn(x: i64) -> i64 {
+        var q: ?ref node = w.p
+        if q != null { return x + q.val + k.hash() }
+        return x + k.hash() - 1000
+    }
+    return f(1)
+}
+
+fn main() -> i32 {
+    var head = new node
+    head.val = 0
+    head.next = null
+    var sum: i64 = 0
+    var i: i64 = 0
+    while i < 50 {
+        head.next = new node
+        if head.next != null {
+            (*head.next).val = i
+            sum = sum + (*head.next).val
+        }
+        i = i + 1
+    }
+
+    var target = new node
+    target.val = 500
+    var w: wrap = wrap { n: 1, p: target }
+    var kk: key = key { v: 3 }
+    var r: i64 = calc<key>(kk, w)
+
+    // 闭包建好之后再churn：env 不是根的话，这里就能把结点收掉。
+    var j: i64 = 0
+    while j < 500 {
+        head.next = new node
+        if head.next != null { (*head.next).val = j }
+        j = j + 1
+    }
+    var r2: i64 = calc<key>(kk, w)
+
+    io::cout << sum << " " << r << " " << r2 << "\n"
+    return 0
+}

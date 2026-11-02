@@ -71,7 +71,24 @@ one generic-capture         "$(src generic_capture.extc)"        "17 8 46"
 neg generic-cap-missing     "$(src generic_capture_missing.extc)" "needs \`plain\` to define \`hash\`"
 neg generic-cap-dyn         "$(src generic_capture_dyn.extc)"     "depends on a type parameter"
 one generic-cap-shapes      "$(src generic_capture_shapes.extc)"   "9 14 23 19 34 19"
+withrc() { # name file want —— 产物必须真的带回收运行期，且默认档与关档输出相同
+  local name="$1" s="$2" want="$3" got off
+  if ! "$EXTC" -w --no-line-map -o "$tmp/r.c" "$s" 2>"$tmp/e3"; then
+    bad "$name" "extC: $(head -1 "$tmp/e3")"; return; fi
+  local n; n=$(grep -c 'extc_rc_' "$tmp/r.c")
+  if [ "$n" = 0 ]; then
+    bad "$name" "产物里没有回收运行期（这条测的是空壳）"; return; fi
+  if ! gcc -O2 -std=c11 -fwrapv -Wall -Wextra -Werror -pthread -o "$tmp/r" "$tmp/r.c" 2>"$tmp/e4"; then
+    bad "$name" "gcc: $(head -1 "$tmp/e4")"; return; fi
+  got=$("$tmp/r"); off=$(EXTC_RECLAIM=0 "$tmp/r")
+  if [ "$got" != "$want" ]; then bad "$name" "期望 [$want] 实得 [$got]"; return; fi
+  if [ "$got" != "$off" ]; then bad "$name" "回收开/关输出不同：[$got] / [$off]"; return; fi
+  ok "$name" "→ $got（rc=$n，开/关一致）"
+}
+
 neg closure-to-ptr         "$(src closure_to_ptr.extc)" "is a closure that captures state"
+withrc rc-closures          "$(src rc_closures.extc)"      "1225 2 7 13"
+withrc rc-env-refs          "$(src rc_env_refs.extc)"       "1225 507 507"
 
 # 跨模块：**模块文件**里的闭包，体内调用同模块函数（曾经静默返回 0，无诊断）
 modcase() { # name dir want

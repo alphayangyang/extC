@@ -1,0 +1,52 @@
+// 闭包 × 回收运行期：同一个程序里既有让回收运行期必须出场的形状（堆槽里装引用、每轮覆盖），
+// 又有三种闭包 —— `[mut ref]` 捕获、按值捕获一个引用、泛型体里按实例布局的环境。
+// 判据：输出与 `EXTC_RECLAIM=0` 逐字相同；产物里 `extc_rc_` 必须非零（否则这条测的是空壳）。
+// expect: 1225 2 7 13
+use std::io
+
+struct node { val: i64  next: ?mut ref node }
+
+struct key { v: i64
+    fn hash(self: ref key) -> i64 { return self.v * 2 }
+}
+
+// 泛型体里的闭包：环境按实例布局，字段是 `key`。
+fn calc<K>(k: K, head: ref node) -> i64 {
+    let f = fn(x: i64) -> i64 { return x + k.hash() }
+    return f(head.val)
+}
+
+fn main() -> i32 {
+    // 堆槽里装引用 ⇒ 程序真的带回收运行期（这是本用例的前提，见 run.sh 的断言）。
+    var head = new node
+    head.val = 7
+    head.next = null
+    var sum: i64 = 0
+    var i: i64 = 0
+    while i < 50 {
+        head.next = new node
+        if head.next != null {
+            (*head.next).val = i
+            sum = sum + (*head.next).val
+        }
+        i = i + 1
+    }
+
+    // `[mut ref]` 捕获：写的是外层变量。
+    var hits: i64 = 0
+    let bump = fn(x: i64) [mut ref hits] -> i64 {
+        hits = hits + 1
+        return x + hits
+    }
+    var a: i64 = bump(1)
+
+    // 按值捕获一个引用。
+    let readv = fn() -> i64 { return head.val }
+    var b: i64 = readv()
+
+    var kk: key = key { v: 3 }
+    var c: i64 = calc<key>(kk, head)
+
+    io::cout << sum << " " << a << " " << b << " " << c << "\n"
+    return 0
+}
