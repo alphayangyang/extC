@@ -188,10 +188,16 @@ fn lend2() -> slice<i32> {          /* 换成池版本（vec）后：编译错�
   - 格式化 8 个名字收成 3 个：目标形状 `format(tpl, args: any...)` 需要**变参**，而变参按
     用户决定往后推；没有它就只能写成 `format(tpl, slice<any>)`，仪式感反而更重。
     等变参落地再收。
-- **P2 合并（持续）**：已落地 `sort`→`seq`、`nd::tensor`→`nd`、`linmap`+`linset`、
+- **P2 合并（持续，已完成）**：已落地 `sort`→`seq`、`nd::tensor`→`nd`、`linmap`+`linset`、
   `sha1`/`sha256`/`hmac`→`hash::digest`（入口读作 `sha256.sum(...)` 的占位接收者）、
-  `stringio`→`string`、`io::err`→`io`、`hashSet`→`hashMap`、`set`→`map`、`reflect`→`json`。
-  模块文件 46 → 39。下一批候选：`heap`→`mem`（33 处引用）、`uuid`/`b64`→`hash`、
-  `time`→`loop`、`proc`/`dl`→`sys`；`term` 保持独立（`terminal` 是资源类型）。
+  `stringio`→`string`、`io::err`→`io`、`io::fmt`→`io`、`term`→`io`、`hashSet`→`hashMap`、
+  `set`→`map`、`reflect`→`json`、`uuid`/`b64`→`digest`/`text::string`、`http`+`ws`→`net`、
+  `heap`→`mem`、`time`→`loop`。**模块文件 46 → 30**（`grep -c '' <(find stdlib -name '*.extc')`）。
+  两处不合并（带理由）：`std::parallel` 进不了 prelude（`@builtin fn run` 按模块限定名声明，
+  prelude 不是可限定模块名 ⇒ `parallel::run()` 报 `unknown type`）；`uuid` 进 `digest` 时
+  入口读作 `digest::v5*`。
+- **容器家族按用户决定不合并**（m26697/m26698）：`data/{vector,map,hashMap,linmap,pool,seq,nd}`
+  保持现状 —— 各自的能力差异（arena 底 vs 池底、有序 vs 哈希、视图带出）不是风格问题，
+  合并会丢能力。目标的"~20 模块"按实际收敛为 **30 个模块文件**，其余收益来自命名与文档。
 - **P3 完成**：全仓 `stl::` 已并回 `std::*`（`cbdb410`），`stdlib/stl/` 目录删除；
   `std::sys` 保持原样（用户明确说"不必全 private"）。
