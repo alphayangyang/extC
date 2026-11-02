@@ -438,6 +438,7 @@ fn main() -> i32 {
 
 | 名字 | 签名 |
 |---|---|
+| `denseLen` / `keyAtDense` / `valAtDense` | 按**插入序**（dense 前缀）遍历：`fn denseLen(self) -> i64` · `fn keyAtDense(self, d: i64) -> K` · `fn valAtDense(self, d: i64) -> V` |
 | `handle` | `struct handle { slot: i32, gen: i32, ep: i64 }`（普通值，拷贝无害） |
 | `same(a, b)` | `fn same(a: handle, b: handle) -> bool` |
 | `withCap` / `withParent` | `fn withCap(n: i64) -> pool<T>` / `fn withParent(parent: i64, n: i64)` |

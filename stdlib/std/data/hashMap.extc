@@ -385,9 +385,9 @@ struct hashMap<K, V> {
 
     /* Scan the dense side: every live value once, in the pool's own order -- no probing and no
      * holes. This is the face a hot loop wants. */
-    @private fn denseLen(self: ref hashMap<K, V>) -> i64 { return self.vals.len() }
-    @private fn keyAtDense(self: ref hashMap<K, V>, d: i64) -> K { return self.keys[i64(self.bucketOfDense[d])] }
-    @private fn valAtDense(self: ref hashMap<K, V>, d: i64) -> V { return self.vals.atDense(d) }
+    fn denseLen(self: ref hashMap<K, V>) -> i64 { return self.vals.len() }
+    fn keyAtDense(self: ref hashMap<K, V>, d: i64) -> K { return self.keys[i64(self.bucketOfDense[d])] }
+    fn valAtDense(self: ref hashMap<K, V>, d: i64) -> V { return self.vals.atDense(d) }
 
     /* **深拷贝：要一份独立的表就用它。** `var b = a` 是结构体逐成员拷贝（共用板块）⇒
      * 改 b 会改到 a、a.release() 会让 b 悬垂。这里显式拷一份（O(n) + 一块新板块）。 */
@@ -478,9 +478,9 @@ struct hashMapI64<V> {
 
     /* The dense face (`hashMap`'s own face): every live value once, in insertion order, no
      * probing and no holes -- the reason the values live in a pool at all. */
-    @private fn denseLen(self: ref hashMapI64<V>) -> i64 { return self.m.denseLen() }
-    @private fn keyAtDense(self: ref hashMapI64<V>, d: i64) -> i64 { return self.m.keyAtDense(d).v }
-    @private fn valAtDense(self: ref hashMapI64<V>, d: i64) -> V { return self.m.valAtDense(d) }
+    fn denseLen(self: ref hashMapI64<V>) -> i64 { return self.m.denseLen() }
+    fn keyAtDense(self: ref hashMapI64<V>, d: i64) -> i64 { return self.m.keyAtDense(d).v }
+    fn valAtDense(self: ref hashMapI64<V>, d: i64) -> V { return self.m.valAtDense(d) }
 
     fn keyAt(self: ref hashMapI64<V>, i: i64) -> i64 { return self.m.keyAt(i).v }
     fn valAt(self: ref hashMapI64<V>, i: i64) -> V { return self.m.valAt(i) }
