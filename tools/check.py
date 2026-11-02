@@ -1630,6 +1630,14 @@ def build_items() -> list:
         ok_msg=ok_count_ok(" 项（装箱/换类型/拆箱 trap/打印与相等）"),
         bad_msg="tests/any/run.sh", bad_dump=dump_fail(8)))
 
+    # ---- C ABI：包成 CPython 扩展模块 ----
+    items.append(cmd(
+        "python-ext", "tests",
+        "C ABI 通道：`@export` 的 extC 函数生成 CPython 包装（i64/f64/bool/bytes）· 参数类型错报 TypeError · `--scaffold` 目录可 `pip install` 后 import",
+        ["./tests/python-ext/run.sh"], timeout=600,
+        ok_msg=ok_count_ok(" 项（import 调用 · TypeError · bytes · pip install · 两个负例）"),
+        bad_msg="tests/python-ext/run.sh", bad_dump=dump_fail(8)))
+
     # ---- 默认参数 ----
     items.append(cmd(
         "defaults", "tests",

@@ -111,6 +111,17 @@
 - 一次读满整块（读满给定缓冲的语义）；格式化输入（现在只有 `nextInt` 这类逐项读）。
 - HTTP 客户端：分块编码、头部折叠、TLS、代理、cookie（`std::http` 的文件头有完整记账）。
 
+## C ABI / 打包通道（Python 先做）
+
+- **已经能**：`@export` 的 extC 函数 → `PyArg_ParseTuple` 包装 → `import`；`--scaffold` 出
+  `pip install .` 的项目（见 changelog 2026-11-16 与 `tests/python-ext/`）。
+- **还没做**：关键字参数与默认值（Python 侧 `f(a, b=1)`）；异常（`result`/`trap` → `PyErr` 而不是
+  `SystemExit`）；返回字符串/字节（现在只有标量与 `bool` 出得去，`bytes` 只能进）；numpy 数组
+  通道（`PyArray` 的指针 + 形状 → `ndview<T>`，需要 `mem::plate::viewAt` 那种区间检查门）；
+  `extpkg` 与 `pip` 的分工（我们的包管理器管 extC 依赖，pip 只管最终那个 wheel）。
+- **归档里还能用的**：`docs/archive/topics/C-ABI.md` 的 §9.6–§9.16（`@export`、`@frozen`、
+  板/表、`cbindgen.py`、攻击测试）；§9.17 那张攻击表说明这套东西**防错不防敌**。
+
 ## 编译器内部（可整体搁置）
 
 - **`ndview` 接进 `par`**：现在 `par` 的输出是 `slice<T>`（含二维折叠的扁平下标）；`ndview<T>` 上的
