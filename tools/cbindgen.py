@@ -278,12 +278,21 @@ def collect(node, fns, enums, typedefs, wanted_files=None):
     """走一遍 AST，收下函数声明与枚举常量。
 
     `wanted_files` 非空时只收**这些文件里**声明的函数（`--all` 于是不会把系统头的函数卷进来）。
+    clang 记的文件名是"它眼里的那个路径"（可能相对 `-I` 解析前的写法），所以按**真路径或文件名**
+    匹配 —— 后者是必要的：`--include demo.h -I tests/cbindgen` 时 AST 里写的是
+    `tests/cbindgen/demo.h`，而 `demo.h` 的 realpath 是当前目录下的另一个路径。
     """
+    want_paths = {os.path.realpath(p) for p in (wanted_files or ())}
+    want_names = {os.path.basename(p) for p in (wanted_files or ())}
+
     def visit(n, cur):
         kind = n.get('kind')
         if kind == 'FunctionDecl' and n.get('name'):
-            if wanted_files is not None and cur and os.path.realpath(cur) not in wanted_files:
-                return
+            if wanted_files is not None:
+                if not cur:
+                    return
+                if os.path.realpath(cur) not in want_paths and os.path.basename(cur) not in want_names:
+                    return
             fns.setdefault(n['name'], n)
     _walk_with_file(node, None, visit)
     return _collect_rest(node, enums, typedefs)
