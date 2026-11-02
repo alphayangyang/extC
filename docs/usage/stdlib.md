@@ -411,7 +411,7 @@ fn main() -> i32 {
 
 ```extc
 use std::io
-use std::data::linset
+use std::data::linmap
 fn main() -> i32 {
     var s: linSet<i64> = linSet<i64>::withCap(i64(4))
     s.add(i64(7))
