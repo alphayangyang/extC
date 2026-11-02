@@ -5134,6 +5134,51 @@ static const char *genExprInner(CG *g, Expr *e) {
 }
 
 /**
+ * @brief Whether a value of this type may contain a view, so boxing it must copy the bytes it names.
+ *
+ * A view is a pointer plus a length: copying the view copies an address. An `any` owns its payload,
+ * so the payload copied into the box has to be the data, not somebody else's address -- otherwise a
+ * box returned from a function would name a buffer that died with the frame.
+ *
+ * The answer is computed from the **static** type at the boxing site, so types without views pay
+ * nothing: code generation passes a constant to `extc_any_box`, and the memcpy path stays.
+ *
+ * @param g  The generator (field types are substituted in an instance's context).
+ * @param t  The type of the value being boxed.
+ * @return   true when the payload has to be deepened.
+ */
+static bool typeNeedsAnyDup(CG *g, Type *t) {
+    t = ttBase(subst(g, t));
+    if (!t) return false;
+    switch (t->kind) {
+    case TY_ARRAY:
+        return true;                       /* an array is stored inline; its elements may be views */
+    case TY_GENERIC:
+        if (ttIsViewType(t)) return true;  /* `slice<T>` / the byte view: the data is elsewhere */
+        /* fall through: an instance is laid out like a struct */
+        /* FALLTHROUGH */
+    case TY_STRUCT: {
+        StructDef *sd = t->sdef;
+        for (size_t i = 0; sd && i < sd->fields.len; i++) {
+            FieldDef *fd = *(FieldDef **)vecAt(&sd->fields, i);
+            if (typeNeedsAnyDup(g, fd->type)) return true;
+        }
+        return false;
+    }
+    case TY_ENUM:
+        return true;                       /* a variant's payload may hold a view; be conservative */
+    case TY_REF:
+        return false;                      /* borrows are rejected at the boxing site, not deepened */
+    /* kind-default: only views, arrays, aggregates and enums can carry bytes that live somewhere
+     * else. A scalar, a function value or a borrow is copied as it stands, so the memcpy path is
+     * right for every kind that reaches here -- and a future kind has to be looked at, because
+     * "the bytes are the value" is exactly what this predicate decides. */
+    default:
+        return false;
+    }
+}
+
+/**
  * @brief Emit the boxing of a value into an `any`.
  *
  * The value is evaluated once, into a temporary of its own type, and that temporary is copied by
@@ -5156,8 +5201,9 @@ static const char *emitAnyBox(CG *g, Expr *e, const char *code) {
      * statement. The checker registers the site so this function is handed a home arena. */
     const char *src = arenaPrintf(g->arena, "__extc_anyc%d", g->tmpSeq++);
     pfLine(g, "%s %s = %s;", cType(g, t), src, code);
-    pfLine(g, "ExtcAny %s = extc_any_box(%s, %s, (const void *)&%s, (int64_t)sizeof(%s));",
-           tmp, homeArg(g, ARENA_HOME), descRef(g, t), src, cType(g, t));
+    pfLine(g, "ExtcAny %s = extc_any_box(%s, %s, (const void *)&%s, (int64_t)sizeof(%s), %d);",
+           tmp, homeArg(g, ARENA_HOME), descRef(g, t), src, cType(g, t),
+           typeNeedsAnyDup(g, t) ? 1 : 0);
     return tmp;
 }
 
@@ -14339,18 +14385,79 @@ static void anyEmitRuntime(Arena *arena, Buf *out, bool withPrint, bool withEq) 
         "\n"
         "/* Boxing copies the value in: that is what makes an `any` a value rather than a view, and\n"
         " * what lets one slot hold different types over its life. */\n"
+        "/* Deepening a boxed value: a view is a pointer plus a length, so copying the view copies an\n"
+        " * address, not the bytes it names. A payload that contains one is therefore copied field by\n"
+        " * field with `extc_any_fixup`, which allocates fresh backing storage in the same arena. That\n"
+        " * is what makes an `any` *own* its value: the box can outlive the frame the view pointed\n"
+        " * into. Types without views take the memcpy path and pay nothing for this. */\n"
+        "EXTC_UNUSED static void extc_any_fixup(extc_arena *arena, const ExtcDesc *d, void *value,\n"
+        "                                      int depth);\n"
+        "\n"
+        "EXTC_UNUSED static void extc_any_fixup_elems(extc_arena *arena, const ExtcDesc *elem,\n"
+        "                                            void *base, int64_t n, int depth) {\n"
+        "    for (int64_t i = 0; i < n; i++)\n"
+        "        extc_any_fixup(arena, elem, (char *)base + (size_t)i * elem->size, depth + 1);\n"
+        "}\n"
+        "\n"
+        "EXTC_UNUSED static void extc_any_fixup(extc_arena *arena, const ExtcDesc *d, void *value,\n"
+        "                                      int depth) {\n"
+        "    if (!d || !value || depth > 32) return;   /* a cycle deeper than that is left as it is */\n"
+        "    switch (d->kind) {\n"
+        "    case EXTC_D_STRUCT: {\n"
+        "        const ExtcField *fs = (const ExtcField *)d->table;\n"
+        "        for (size_t i = 0; fs && i < d->count; i++)\n"
+        "            extc_any_fixup(arena, fs[i].desc, (char *)value + fs[i].off, depth + 1);\n"
+        "        break;\n"
+        "    }\n"
+        "    case EXTC_D_ARRAY:\n"
+        "        extc_any_fixup_elems(arena, d->elem, value, (int64_t)d->count, depth);\n"
+        "        break;\n"
+        "    case EXTC_D_SLICE:\n"
+        "    case EXTC_D_TEXT: {\n"
+        "        /* Every view is two machine words: a data pointer then an element count. Reading\n"
+        "         * them through `void **` / `int64_t *` avoids naming the view layout here. */\n"
+        "        void **vw = (void **)value;\n"
+        "        int64_t len = ((int64_t *)value)[1];\n"
+        "        if (!vw[0] || len <= 0) break;\n"
+        "        size_t stride = d->kind == EXTC_D_TEXT ? 1 : (d->elem ? d->elem->size : d->size);\n"
+        "        size_t bytes = (size_t)len * stride;\n"
+        "        void *copy = extc_arena_alloc(arena, (int64_t)bytes, \"any\", 0);\n"
+        "        memcpy(copy, vw[0], bytes);\n"
+        "        vw[0] = copy;\n"
+        "        if (d->elem) extc_any_fixup_elems(arena, d->elem, copy, len, depth);\n"
+        "        break;\n"
+        "    }\n"
+        "    case EXTC_D_REF: {\n"
+        "        void **p = (void **)value;\n"
+        "        if (!*p || !d->elem) break;\n"
+        "        void *copy = extc_arena_alloc(arena, (int64_t)d->elem->size, \"any\", 0);\n"
+        "        memcpy(copy, *p, d->elem->size);\n"
+        "        *p = copy;\n"
+        "        extc_any_fixup(arena, d->elem, copy, depth + 1);\n"
+        "        break;\n"
+        "    }\n"
+        "    default:\n"
+        "        break;   /* scalars, enums and the like hold no views of their own */\n"
+        "    }\n"
+        "}\n"
+        "\n");
+        bufPuts(out,
+        "/* `dup` is a compile-time constant: the boxing site knows whether the static type can contain\n"
+        " * a view, so the memcpy-only programs keep the fast path. */\n"
         "EXTC_UNUSED static ExtcAny extc_any_box(extc_arena *arena, const ExtcDesc *d,\n"
-        "                                       const void *src, int64_t size) {\n"
+        "                                       const void *src, int64_t size, int64_t dup) {\n"
         "    ExtcAny v;\n"
         "    v.desc = d;\n"
-        "    if (size <= 8) {\n"
+        "    if (size <= 8 && !dup) {\n"
         "        memcpy(v.u.small, src, (size_t)size);\n"
-        "    } else {\n"
-        "        void *p = extc_arena_alloc(arena, size, \"any\", 0);\n"
-        "        memcpy(p, src, (size_t)size);\n"
-        "        v.u.box = p;\n"
-        "        v.desc = (const ExtcDesc *)((uintptr_t)d | (uintptr_t)1);\n"
+        "        return v;\n"
         "    }\n"
+        "    void *p = size <= 8 ? (void *)v.u.small : extc_arena_alloc(arena, size, \"any\", 0);\n"
+        "    memcpy(p, src, (size_t)size);\n"
+        "    if (dup) extc_any_fixup(arena, d, p, 0);\n"
+        "    if (size <= 8) return v;\n"
+        "    v.u.box = p;\n"
+        "    v.desc = (const ExtcDesc *)((uintptr_t)d | (uintptr_t)1);\n"
         "    return v;\n"
         "}\n"
         "\n"
@@ -14435,8 +14542,8 @@ static void emitDynCalls(CG *g, Module *m, Buf *out) {
                 const char *rct = cType(g, md->ret);
                 bufPrintf(out, "        %s __r = %s(__self);\n", rct, cFuncName(g, md));
                 bufPrintf(out, "        return extc_any_box(__extc_home, %s,"
-                               " (const void *)&__r, (int64_t)sizeof(__r));\n",
-                          descRef(g, md->ret));
+                               " (const void *)&__r, (int64_t)sizeof(__r), %d);\n",
+                          descRef(g, md->ret), typeNeedsAnyDup(g, md->ret) ? 1 : 0);
             } else {
                 bufPrintf(out, "        %s(__self);\n", cFuncName(g, md));
                 bufPuts(out, "        ExtcAny __empty;\n");

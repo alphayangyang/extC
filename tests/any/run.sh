@@ -64,6 +64,7 @@ v=1/2"
 one dyn_method         tests/any/dyn_method.extc          "a=12
 a=12
 k=2"
+one own_payload        tests/any/own_payload.extc           "snapshot=ABCD live=ZBCD"
 trapcase unbox_mismatch tests/any/unbox_mismatch.extc
 dispatch_miss dyn_method_missing tests/any/dyn_method_missing.extc
 

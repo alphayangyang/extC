@@ -1,0 +1,17 @@
+// 装箱即拥有：装进去的视图是**快照**，之后改原缓冲区不影响箱内值。
+// 判据：`snapshot=ABCD live=ZBCD`（箱内是旧字节，原缓冲区已改）。
+use std::io
+
+fn main() -> i32 {
+    var buf: mut slice<u8> = new u8[4]
+    var i: i64 = 0
+    while i < 4 {
+        buf[i] = u8(65) + u8(i)
+        i = i + 1
+    }
+    var v: any = buf[..]
+    buf[0] = u8(90)
+    var s: slice<u8> = v
+    println("snapshot=", s, " live=", buf[..])
+    return 0
+}
