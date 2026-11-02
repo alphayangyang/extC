@@ -2503,7 +2503,13 @@ void checkOperatorSig(Checker *c, FuncDef *f) {
          * stands, and addition does not need it. */
         bool isStream = strcmp(f->name, "<<") == 0 || strcmp(f->name, ">>") == 0;
         Type *rb = f->ret ? ttBase(f->ret) : NULL;
-        if (!rb || rb->sdef != f->owner || (!isStream && f->ret->kind == TY_REF)) {
+        /* Same holder tolerance as the left operand below: an operator attached to a generic
+         * **instance** (`impl slice<u8>`) returns that instance's type, whose `sdef` is the
+         * generic declaration and not the holder. */
+        bool retOk = rb && !ttIsError(rb) && rb->sdef == f->owner;
+        if (!retOk && rb && planBuiltinHolder(f->owner) && f->owner->type)
+            retOk = ttEquals(ttViewReadonly(c->tt, rb), ttViewReadonly(c->tt, f->owner->type));
+        if (!retOk || (!isStream && f->ret->kind == TY_REF)) {
             ckError(c, f->line,
                     isStream ? "a stream operator may return the stream by value or by"
                                " reference (`-> T` or `-> mut ref T`)"
@@ -2519,7 +2525,17 @@ void checkOperatorSig(Checker *c, FuncDef *f) {
         return;
     }
     Type *b0 = ttBase(p0->type);
-    if (!b0 || b0->sdef != f->owner) {
+    /* An operator attached with `impl slice<u8> { fn == ... }` lives in the instance's **holder**
+     * declaration, which is not the body of `slice`; the receiver must therefore be compared with
+     * the holder's target type instead of with `sdef`. `mut` is a permission and not identity
+     * (see `ttViewReadonly`), so a writable view may use the read-only operator. */
+    bool recvOk = b0 && !ttIsError(b0) && b0->sdef == f->owner;
+    if (!recvOk && b0 && planBuiltinHolder(f->owner) && f->owner->type) {
+        Type *want0 = ttViewReadonly(c->tt, f->owner->type);
+        Type *got0 = ttViewReadonly(c->tt, b0);
+        recvOk = ttEquals(got0, want0);
+    }
+    if (!recvOk) {
         ckError(c, f->line, wantS,
                 "the left operand of operator `%s` must be `%s`", f->name, f->owner->name);
         return;

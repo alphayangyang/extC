@@ -1,0 +1,69 @@
+// `impl` on a generic **instance**: `slice<u8>` is a view, not a declaration, and the methods
+// attach to that instance's own method set. The receiver may be a read-only view (`arr[..]`) or
+// the writable shadow `new u8[n]` produces -- the two are the same C struct, so they share the
+// method set (and a writable view may call a read-only method).
+//
+// expect: a=7 b=3 eq=true sum=6 fill=65
+use std::io
+
+impl slice<u8> {
+    fn firstByte(self: ref slice<u8>) -> u8 { return self[0] }
+
+    fn fillWith(self: mut ref slice<u8>, v: u8) {
+        var i: i64 = 0
+        while i < self.len {
+            self[i] = v
+            i = i + 1
+        }
+    }
+
+    fn sameBytes(self: ref slice<u8>, other: slice<u8>) -> bool {
+        if self.len != other.len { return false }
+        var i: i64 = 0
+        while i < self.len {
+            if self[i] != other[i] { return false }
+            i = i + 1
+        }
+        return true
+    }
+}
+
+impl slice<i64> {
+    fn total(self: ref slice<i64>) -> i64 {
+        var s: i64 = 0
+        var i: i64 = 0
+        while i < self.len {
+            s = s + self[i]
+            i = i + 1
+        }
+        return s
+    }
+}
+
+fn firstOf(buf: mut slice<u8>) -> u8 { return buf.firstByte() }
+
+fn main() -> i32 {
+    var arr: [4]u8
+    arr[0] = u8(7)
+
+    var heap: mut slice<u8> = new u8[4]
+    heap[0] = u8(3)
+
+    var nums: mut slice<i64> = new i64[3]
+    nums[0] = i64(1)
+    nums[1] = i64(2)
+    nums[2] = i64(3)
+
+    io::cout << "a=" << i64(firstOf(arr[..])) << " b=" << i64(heap.firstByte())
+
+    var other: mut slice<u8> = new u8[1]
+    other[0] = u8(7)
+    let eq: bool = arr[0..1].sameBytes(other[..])
+    io::cout << " eq=" << eq
+
+    io::cout << " sum=" << nums.total()
+
+    heap.fillWith(u8(65))
+    io::cout << " fill=" << i64(heap[0]) << "\n"
+    return 0
+}

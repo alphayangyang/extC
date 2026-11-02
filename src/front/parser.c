@@ -1607,6 +1607,19 @@ static ImplDef *parseImpl(Parser *p) {
 
     Buf target;
     bufInit(&target, p->arena);
+    /* A fixed array is a **shape**, not a declaration: `[N]T` owns no method set, so an `impl`
+     * block naming one has nowhere to attach. Say that here instead of letting the generic
+     * dotted-name error print "found `[`", which describes the syntax and not the rule. */
+    if (at(p, "[")) {
+        Token *t = cur(p);
+        ctxError(p->ctx, t->line, t->col,
+                 "An `impl` block attaches methods to a type that can own them: a struct, a "
+                 "builtin scalar, or an instance of a generic type such as `slice<u8>`. A fixed "
+                 "array is a shape, so write the method on what the array holds, or on the view "
+                 "`slice<T>` it becomes when you slice it.",
+                 "`impl` cannot extend a fixed array `[N]T`");
+        return NULL;
+    }
     if (!parseDottedName(p, &target, "a type name after `impl`")) return NULL;
 
     im->typeName = bufCstr(&target);

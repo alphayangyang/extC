@@ -145,6 +145,27 @@ bool typeSupportsOp(TypeTable *tt, Type *t, const char *op, Type *rhs) {
 }
 
 /**
+ * @brief The declaration that carries a type's methods, when it is not the type's own body.
+ *
+ * Two kinds of type have no C body of their own and keep their methods elsewhere: a builtin
+ * scalar (`impl i64 { ... }`) and an **instance** of a generic type (`impl slice<u8> { ... }`);
+ * both store the holder in `Type.mholder`.
+ *
+ * A writable view is a **shadow** of its read-only instance (see `ttViewMut`): it shares the
+ * base's C name and layout, so it must also share its method set -- otherwise `impl slice<u8>`
+ * would answer for `s[i..]` but not for `new u8[n]`, which is the same type to the user.
+ *
+ * @param st  The type a call site names.
+ * @return    The holder declaration, or NULL when the type's body itself carries the methods.
+ */
+static StructDef *methodHolder(Type *st) {
+    if (!st) return NULL;
+    if (st->mholder) return st->mholder;
+    if (st->mut && st->inner) return st->inner->mholder;
+    return NULL;
+}
+
+/**
  * @brief The method named `name` on a type; only methods in the type's own body are
  * considered, not free functions.
  *
@@ -157,7 +178,7 @@ FuncDef *findMethod(Type *st, const char *name) {
      * builtin scalar (`impl i64 { ... }`) and a generic **instance** (`impl slice<u8> { ... }`).
      * It is consulted first because it is the more specific of the two -- `structOf` answers
      * with the generic declaration's body, whose methods every instance shares. */
-    StructDef *sd = st ? st->mholder : NULL;
+    StructDef *sd = methodHolder(st);
     if (!sd) sd = structOf(st);
     if (!sd) return NULL;
     for (size_t i = 0; i < sd->methods.len; i++) {
@@ -183,7 +204,8 @@ FuncDef *findMethod(Type *st, const char *name) {
  * @return      The method; `NULL` when there is none.
  */
 FuncDef *findOperator(TypeTable *tt, Type *st, const char *name, Type *rhs) {
-    StructDef *sd = structOf(st);
+    StructDef *sd = methodHolder(st);
+    if (!sd) sd = structOf(st);
     if (!sd) return NULL;
     /* A method of a generic type spells its parameters in terms of the *owner's* type
      * parameters (`slice<T>::==` takes `other: ref slice<T>`), so the receiver's type
@@ -200,7 +222,9 @@ FuncDef *findOperator(TypeTable *tt, Type *st, const char *name, Type *rhs) {
         if (!rhs || m->params.len < 2) return m;
         Param *p1 = *(Param **)vecAt(&m->params, 1);
         Type *pt = sp ? ttSubstitute(tt, p1->type, sp, sa) : p1->type;
-        if (ttEquals(ttBase(pt), ttBase(rhs))) return m;
+        /* `mut` is a permission, not identity: a writable view takes the read-only operator.
+         * Both sides are normalised so `slice<u8>` matches a `mut slice<u8>` operand. */
+        if (ttEquals(ttViewReadonly(tt, ttBase(pt)), ttViewReadonly(tt, ttBase(rhs)))) return m;
     }
     return NULL;
 }

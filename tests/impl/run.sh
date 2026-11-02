@@ -33,6 +33,11 @@ check_pos impl_file_string tests/impl/file_string.extc
 # `@private` 成员（方法级 + 字段级）：同模块可用（正例）
 check_pos impl_privacy_ok tests/impl/privacy_ok.extc
 
+# `impl` 挂在泛型**实例**上：`slice<u8>` 是视图、不是声明，方法属于该实例自己的方法集；
+# 接收者可以是只读视图（`arr[..]`）或 `new u8[n]` 产生的可写影子 —— 两者是同一个 C 结构体，
+# 所以共用方法集（可写视图也能调只读方法），运算符同理。
+check_pos impl_view_methods tests/impl/view_methods.extc
+
 
 # stdin 驱动的正例：`cin >> string`（链式、去换行、替换语义）
 echo "== 正例：跨模块挂的运算符 \`cin >> string\`（stdin 两行）=="
@@ -54,6 +59,7 @@ check_err() {
 }
 check_err tests/impl/errors/dup_body_and_impl.extc 'has duplicate method `sum`'
 check_err tests/impl/errors/dup_two_impls.extc     'has duplicate method `sum`'
+check_err tests/impl/errors/array_target.extc      '`impl` cannot extend a fixed array'
 # `@private` 成员：跨模块读字段 / 调方法 / 字面量写入，三条路径全挡
 check_err tests/impl/privacy_field.extc   'field `seen` of `privmod::counter` is private to module `privmod`'
 check_err tests/impl/privacy_method.extc  '`zero` is private to module `privmod`'

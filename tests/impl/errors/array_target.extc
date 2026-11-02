@@ -1,0 +1,4 @@
+// 反例：定点数组是"形状"不是"声明"，没有方法集可挂 —— 报的是规则，不是"found `[`"。
+// expect: `impl` cannot extend a fixed array
+impl [8]u8 { fn first(self: ref [8]u8) -> u8 { return self[0] } }
+fn main() -> i32 { return 0 }

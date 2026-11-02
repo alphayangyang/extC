@@ -565,6 +565,29 @@ fn main() -> i32 {
 }
 ```
 
+### 3.11 `impl` 挂在泛型实例上：`slice<T>` 的方法
+
+`impl` 的目标可以是一个**泛型实例**，方法就属于那个实例自己的方法集（不共享给 `slice<i32>`）：
+
+<!-- fragment -->
+```extc
+impl slice<u8> {
+    fn firstByte(self: ref slice<u8>) -> u8 { return self[0] }
+    fn fillWith(self: mut ref slice<u8>, v: u8) { … }
+}
+```
+
+接收者有两种写法，都能找到同一个方法集：只读视图 `arr[..]`，和 `new u8[n]` 产生的**可写视图**。
+可写视图是只读实例的"影子"类型（`slice<mut T>`，与 `slice<T>` 是同一个 C 结构体、同一个名字），
+所以它共用方法集，也能调只读方法；反过来不行 —— `mut` 是权限，只能丢不能凭空加。
+
+运算符同理：`impl slice<u8> { fn ==(self: ref slice<u8>, other: ref slice<u8>) -> bool }` 之后，
+两个可写视图可以直接 `a == b`（匹配时 `mut` 会被规范化掉）。
+
+定点数组不行：`[N]T` 是**形状**而不是声明，没有方法集可挂，写 `impl [8]u8 { … }` 会报
+`` `impl` cannot extend a fixed array `[N]T` `` —— 要么把方法写进它元素类型的 `struct` 里，
+要么写在它切片后得到的 `slice<T>` 上。
+
 ---
 
 ## 5. 协议：`trait` 与 `dyn`
