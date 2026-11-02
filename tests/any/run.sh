@@ -68,6 +68,9 @@ one own_payload        tests/any/own_payload.extc           "snapshot=ABCD live=
 trapcase unbox_mismatch tests/any/unbox_mismatch.extc
 dispatch_miss dyn_method_missing tests/any/dyn_method_missing.extc
 one dyn_wide            tests/any/dyn_wide.extc            "acc=156"
+one reflect_json        tests/any/reflect_json.extc        "json={\"name\":\"abc\",\"p\":{\"x\":1,\"y\":-2},\"ok\":true}
+type=rec
+scalar=7"
 dispatch_miss dyn_wide_missing tests/any/dyn_wide_missing.extc plain
 
 printf '通过 %d，失败 %d\n' "$pass" "$fail"

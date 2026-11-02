@@ -14501,24 +14501,114 @@ static void anyEmitRuntime(Arena *arena, Buf *out, bool withPrint, bool withEq) 
             "    if (!a->desc) return true;\n"
             "    return extc_eq(extc_any_payload(a), extc_any_payload(b), extc_any_type(a));\n"
             "}\n");
+    /* JSON from the same descriptor: an `any` is the only thing that can carry a run-time type, so
+     * this half is part of the `any` runtime rather than of the printer. */
+    bufPuts(out,
+            "\n"
+            "/* ---- JSON from a descriptor ----\n"
+            " * The same walk the printer does, writing into a caller-supplied buffer instead of the\n"
+            " * console. No allocation, no recursion through user code: a field whose type is a\n"
+            " * struct is a nested descriptor, so the walk is depth-limited by the type graph. */\n"
+            "EXTC_UNUSED static int64_t extc_json_raw(const char *s, int64_t n, uint8_t *out,\n"
+            "                                        int64_t cap, int64_t o) {\n"
+            "    for (int64_t i = 0; i < n; i++) { if (o < cap) out[o] = (uint8_t)s[i]; o++; }\n"
+            "    return o;\n"
+            "}\n"
+            "EXTC_UNUSED static int64_t extc_json_text(const uint8_t *s, int64_t n, uint8_t *out,\n"
+            "                                          int64_t cap, int64_t o) {\n"
+            "    o = extc_json_raw(\"\\\"\", 1, out, cap, o);\n"
+            "    for (int64_t i = 0; i < n; i++) {\n"
+            "        uint8_t c = s[i];\n"
+            "        if (c == '\"' || c == '\\\\') { o = extc_json_raw(\"\\\\\", 1, out, cap, o);\n"
+            "            o = extc_json_raw((const char *)&c, 1, out, cap, o); }\n"
+            "        else if (c == '\\n') o = extc_json_raw(\"\\\\n\", 2, out, cap, o);\n"
+            "        else if (c == '\\t') o = extc_json_raw(\"\\\\t\", 2, out, cap, o);\n"
+            "        else if (c < 0x20) {\n"
+            "            char esc[7]; int k = snprintf(esc, sizeof esc, \"\\\\u%04x\", (unsigned)c);\n"
+            "            o = extc_json_raw(esc, k, out, cap, o);\n"
+            "        } else o = extc_json_raw((const char *)&c, 1, out, cap, o);\n"
+            "    }\n"
+            "    return extc_json_raw(\"\\\"\", 1, out, cap, o);\n"
+            "}\n"
+            "EXTC_UNUSED static int64_t extc_json_num(const ExtcDesc *d, const void *p, uint8_t *out,\n"
+            "                                         int64_t cap, int64_t o) {\n"
+            "    char b[64]; int n = 0;\n"
+            "    switch (d->kind) {\n"
+            "    case EXTC_D_I8:  n = snprintf(b, sizeof b, \"%d\", (int)*(const int8_t *)p); break;\n"
+            "    case EXTC_D_I16: n = snprintf(b, sizeof b, \"%d\", (int)*(const int16_t *)p); break;\n"
+            "    case EXTC_D_I32: n = snprintf(b, sizeof b, \"%d\", (int)*(const int32_t *)p); break;\n"
+            "    case EXTC_D_I64: n = snprintf(b, sizeof b, \"%lld\", (long long)*(const int64_t *)p); break;\n"
+            "    case EXTC_D_U8:  n = snprintf(b, sizeof b, \"%u\", (unsigned)*(const uint8_t *)p); break;\n"
+            "    case EXTC_D_U16: n = snprintf(b, sizeof b, \"%u\", (unsigned)*(const uint16_t *)p); break;\n"
+            "    case EXTC_D_U32: n = snprintf(b, sizeof b, \"%u\", (unsigned)*(const uint32_t *)p); break;\n"
+            "    case EXTC_D_U64: n = snprintf(b, sizeof b, \"%llu\", (unsigned long long)*(const uint64_t *)p); break;\n"
+            "    case EXTC_D_F32: n = snprintf(b, sizeof b, \"%.9g\", (double)*(const float *)p); break;\n"
+            "    case EXTC_D_F64: n = snprintf(b, sizeof b, \"%.17g\", *(const double *)p); break;\n"
+            "    case EXTC_D_BOOL: return extc_json_raw(*(const bool *)p ? \"true\" : \"false\",\n"
+            "                                          *(const bool *)p ? 4 : 5, out, cap, o);\n"
+            "    default: return extc_json_raw(\"null\", 4, out, cap, o);\n"
+            "    }\n"
+            "    return extc_json_raw(b, n, out, cap, o);\n"
+            "}\n"
+            "EXTC_UNUSED static int64_t extc_json_val(const ExtcDesc *d, const void *p, uint8_t *out,\n"
+            "                                         int64_t cap, int64_t o, int depth) {\n"
+            "    if (!d || depth > 32) return extc_json_raw(\"null\", 4, out, cap, o);\n"
+            "    switch (d->kind) {\n"
+            "    case EXTC_D_STRUCT: {\n"
+            "        const ExtcField *fs = (const ExtcField *)d->table;\n"
+            "        o = extc_json_raw(\"{\", 1, out, cap, o);\n"
+            "        for (size_t i = 0; fs && i < d->count; i++) {\n"
+            "            if (i) o = extc_json_raw(\",\", 1, out, cap, o);\n"
+            "            o = extc_json_text((const uint8_t *)fs[i].name,\n"
+            "                               (int64_t)strlen(fs[i].name), out, cap, o);\n"
+            "            o = extc_json_raw(\":\", 1, out, cap, o);\n"
+            "            o = extc_json_val(fs[i].desc, (const char *)p + fs[i].off, out, cap, o, depth + 1);\n"
+            "        }\n"
+            "        return extc_json_raw(\"}\", 1, out, cap, o);\n"
+            "    }\n"
+            "    case EXTC_D_ENUM: {\n"
+            "        const char *const *vs = (const char *const *)d->table;\n"
+            "        int32_t tag = *(const int32_t *)p;\n"
+            "        if (vs && tag >= 0 && (size_t)tag < d->count)\n"
+            "            return extc_json_text((const uint8_t *)vs[tag], (int64_t)strlen(vs[tag]),\n"
+            "                                  out, cap, o);\n"
+            "        return extc_json_raw(\"null\", 4, out, cap, o);\n"
+            "    }\n"
+            "    case EXTC_D_ARRAY:\n"
+            "    case EXTC_D_SLICE:\n"
+            "    case EXTC_D_TEXT: {\n"
+            "        const uint8_t *data;\n"
+            "        int64_t n;\n"
+            "        if (d->kind == EXTC_D_ARRAY) { data = (const uint8_t *)p; n = (int64_t)d->count; }\n"
+            "        else { data = *(const uint8_t *const *)p; n = ((const int64_t *)p)[1]; }\n"
+            "        if (d->kind == EXTC_D_TEXT) return extc_json_text(data, n, out, cap, o);\n"
+            "        size_t stride = d->kind == EXTC_D_ARRAY ? d->size : (d->elem ? d->elem->size : d->size);\n"
+            "        o = extc_json_raw(\"[\", 1, out, cap, o);\n"
+            "        for (int64_t i = 0; i < n; i++) {\n"
+            "            if (i) o = extc_json_raw(\",\", 1, out, cap, o);\n"
+            "            o = extc_json_val(d->elem, data + (size_t)i * stride, out, cap, o, depth + 1);\n"
+            "        }\n"
+            "        return extc_json_raw(\"]\", 1, out, cap, o);\n"
+            "    }\n"
+            "    case EXTC_D_REF:\n"
+            "        return extc_json_raw(\"null\", 4, out, cap, o);\n"
+            "    default:\n"
+            "        return extc_json_num(d, p, out, cap, o);\n"
+            "    }\n"
+            "}\n"
+            "int64_t extc_any_json(ExtcAny *a, uint8_t *out, int64_t cap) {\n"
+            "    if (!a->desc) return extc_json_raw(\"null\", 4, out, cap, 0);\n"
+            "    return extc_json_val(extc_any_type(a), extc_any_payload(a), out, cap, 0, 0);\n"
+            "}\n"
+            "\n"
+            "/* The type's name, copied out: a `ref u8` cannot be walked from extC source. */\n"
+            "int64_t extc_any_type_name(ExtcAny *a, uint8_t *out, int64_t cap) {\n"
+            "    const ExtcDesc *d = a->desc ? extc_any_type(a) : NULL;\n"
+            "    const char *n = d && d->name ? d->name : (a->desc ? \"?\" : \"<none>\");\n"
+            "    return extc_json_raw(n, (int64_t)strlen(n), out, cap, 0);\n"
+            "}\n");
 }
 
-/**
- * @brief Emit one dispatcher per dynamic call site: `v.m()` where `v` is an `any`.
- *
- * The dispatcher is a switch written as a chain of descriptor comparisons -- no table of function
- * pointers, so nothing here can point at a function that was never generated. The candidate set is
- * **closed world**: every type in the program that declares a no-argument method with that name.
- * That is what keeps the compile-time rule monotonic (the checker only asks whether the name exists
- * anywhere), while the dispatch itself stays exact: a value whose type has no such method traps and
- * names the type.
- *
- * Emitted after the `any` runtime, because the branches box their result with `extc_any_box`.
- *
- * @param g      The generator; `g->dynCalls` holds the sites, in emission order.
- * @param m      The module, the source of the candidate types.
- * @param out    The unit text, the append target.
- */
 /**
  * @brief Ask for the descriptors a dynamic call needs, **before** the descriptor region is emitted.
  *

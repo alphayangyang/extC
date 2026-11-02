@@ -46,6 +46,8 @@ def check():
             head, last = full.split("::")[0], full.split("::")[-1]
             if head not in mods:
                 continue                      # 示意用的假模块
+            if head in ("std", "stl") and last in mods:
+                continue                      # `std::reflect` 这种"包的路径"，不是模块成员
             if last not in names and full not in names:
                 bad.append((p.name, full, "模块成员找不到"))
         for m in re.finditer(r"`([A-Za-z_]\w*)\.([a-z]\w*)\(\)`", t):

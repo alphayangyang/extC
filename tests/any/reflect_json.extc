@@ -1,0 +1,21 @@
+use std::io
+use std::reflect
+
+// `reflect::json` / `reflect::typeName` walk the same descriptors the printer uses, so a value whose
+// type is only known at run time can be encoded without the user writing a per-type encoder.
+struct point { x: i64  y: i64 }
+struct rec { name: slice<u8>  p: point  ok: bool }
+
+fn main() -> i32 {
+    var v: any = rec { name: "abc", p: point { x: i64(1), y: i64(-2) }, ok: true }
+    var buf: mut slice<u8> = new u8[256]
+    var nm: mut slice<u8> = new u8[64]
+    let n: i64 = reflect::json(ref v, buf[..])
+    let t: i64 = reflect::typeName(ref v, nm[..])
+    println("json=", buf[..n])
+    println("type=", nm[..t])
+    var e: any = i64(7)
+    let m: i64 = reflect::json(ref e, buf[..])
+    println("scalar=", buf[..m])
+    return 0
+}

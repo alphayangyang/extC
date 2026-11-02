@@ -376,6 +376,8 @@ std::proc	-	pin	fn	public
 std::proc	-	self	fn	public
 std::proc	-	spawn	fn	public
 std::proc	-	wait	fn	public
+std::reflect	-	json	fn	public
+std::reflect	-	typeName	fn	public
 std::sys::domain	-	single	fn	public
 std::sys::file	-	open	fn	public
 std::sys::file	-	openAt	fn	public

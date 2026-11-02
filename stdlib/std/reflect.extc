@@ -1,0 +1,39 @@
+/* std/reflect.extc —— 读取一个"类型到运行期才知道"的值。
+ *
+ * 重活都在运行期，由编译器已经发射的类型描述符驱动：下面的 JSON 编码走的就是打印器用的那张
+ * 字段/变体表。不分配、不在用户代码里递归 —— 走多深由**类型图**的深度决定。
+ *
+ * @code
+ * use std::io
+ * use std::reflect
+ *
+ * struct point { x: i64  y: i64 }
+ *
+ * fn main() -> i32 {
+ *     var v: any = point { x: i64(1), y: i64(-2) }
+ *     var buf: mut slice<u8> = new u8[256]
+ *     let n: i64 = reflect::json(ref v, buf[..])
+ *     io::cout << "json=" << buf[..n] << "\n"
+ *     return 0
+ * }
+ * @endcode
+ */
+module std::reflect
+
+use std::io
+
+extern!("extc-runtime") fn extc_any_json(v: ref any, out: ref u8, cap: i64) -> i64
+    effects Addr=0 Cont=0
+extern!("extc-runtime") fn extc_any_type_name(v: ref any, out: ref u8, cap: i64) -> i64
+    effects Addr=0 Cont=0
+
+/* 把 `v` 编码成 JSON 写进 `out`，返回编码**需要**的字节数（即使超过 `out.len`）：
+ * 先用小缓冲问长度，再用够大的缓冲写一次。类型是 `ref` 的字段编码成 `null`。 */
+fn json(v: ref any, out: mut slice<u8>) -> i64 {
+    return extc_any_json(v, out.data, out.len)
+}
+
+/* 把运行期类型名（`i64`、`point`，空槽是 `<none>`）拷进 `out`。 */
+fn typeName(v: ref any, out: mut slice<u8>) -> i64 {
+    return extc_any_type_name(v, out.data, out.len)
+}
