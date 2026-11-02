@@ -2,8 +2,7 @@
 // 哈希的**速度与内存**判据（用户的要求：最快 + 内存少）。
 //  · 一次算完（1 MiB 整块）与流式（1 KiB 分片）两条路都量 —— 流式不该比整块慢多少；
 //  · 全部在栈/arena 上，零堆分配：进程 RSS 由 run.sh 的 /usr/bin/time -v 钉住。
-use std::hash::sha256
-use std::hash::sha1
+use std::hash::digest
 use std::io
 use std::time
 
@@ -23,7 +22,7 @@ fn main() -> i32 {
     var t0: i64 = time::now()
     var r: i64 = 0
     while r < rounds {
-        if !sha256::sum(buf[..], out32[..]) { return 1 }
+        if !digest::sha256.sum(buf[..], out32[..]) { return 1 }
         r = r + 1
     }
     var dt: i64 = time::now() - t0
@@ -34,7 +33,7 @@ fn main() -> i32 {
     t0 = time::now()
     r = 0
     while r < rounds {
-        var c: sha256::state
+        var c: digest::sha256State
         c.init()
         var off: i64 = 0
         while off < MB {
@@ -52,7 +51,7 @@ fn main() -> i32 {
     t0 = time::now()
     r = 0
     while r < rounds {
-        if !sha1::sum(buf[..], out20[..]) { return 3 }
+        if !digest::sha1.sum(buf[..], out20[..]) { return 3 }
         r = r + 1
     }
     dt = time::now() - t0

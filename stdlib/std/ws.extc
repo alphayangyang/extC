@@ -14,7 +14,7 @@
  */
 
 use std::b64
-use std::hash::sha1
+use std::hash::digest
 
 let OP_CONT: i64 = 0
 let OP_TEXT: i64 = 1
@@ -41,7 +41,7 @@ fn acceptFor(key: slice<u8>, out: mut slice<u8>) -> i64 {
         j = j + 1
     }
     var digest: [20]u8
-    if !sha1::sum(cat[0..key.len + GUID.len], digest[..]) { return -1 }
+    if !digest::sha1.sum(cat[0..key.len + GUID.len], digest[..]) { return -1 }
     return b64::encode(digest[..], out)
 }
 

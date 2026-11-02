@@ -9,7 +9,7 @@
 |---|---|
 | `use std::io` | 控制台与文件 I/O（**门面**：实现分在 `std/io.extc`、`std/io/fmt.extc`、`std/io/err.extc`） |
 | `use std::data::map` | 有序映射容器 |
-| `use std::hash::sha256` | SHA-256 |
+| `use std::hash::digest` | SHA-256 |
 | `use std::coro::scheduler` | 协程调度器 |
 
 `use a::b` 找的就是文件 `a/b.extc`；搜索顺序是**入口文件所在目录 → 每个 `-I <dir>` → 标准库目录**
@@ -932,35 +932,33 @@ fn main() -> i32 {
 
 | 名字 | 签名 |
 |---|---|
-| `sha256::sum(data, out) -> bool` | `out.len < 32` 给 `false` |
-| `sha256::hex(digest, out) -> i64` | 十六进制，返回长度 |
-| `sha256::state` + `init` / `update` / `final` | 分块哈希 |
-| `sha1::sum` / `hex` / `state`（20 字节摘要） | | 、|
-| `hmac::sha256(key, msg, out) -> bool` | `out.len < 32` 给 `false`；键长 > 64 先散列一次（RFC 2104） |
-| `hmac::sha1(key, msg, out) -> bool` | |
+| `digest::sha256.sum(data, out) -> bool` | `out.len < 32` 给 `false` |
+| `digest::sha256.hex(digest, out) -> i64` | 十六进制，返回长度 |
+| `digest::sha256State` + `init` / `update` / `final` | 分块哈希 |
+| `digest::sha1.sum` / `hex` / `state`（20 字节摘要） | | 、|
+| `digest::hmac.sha256(key, msg, out) -> bool` | `out.len < 32` 给 `false`；键长 > 64 先散列一次（RFC 2104） |
+| `digest::hmac.sha1(key, msg, out) -> bool` | |
 
 零分配（state + 64 字节块都在栈上）。
 
 ```extc
 use std::io
-use std::hash::sha256
-use std::hash::sha1
-use std::hash::hmac
+use std::hash::digest
 fn main() -> i32 {
     var d: [32]u8
-    sha256::sum("abc", d[..])
+    digest::sha256.sum("abc", d[..])
     var hex: [64]u8
-    let hn = sha256::hex(d[..], hex[..])
+    let hn = digest::sha256.hex(d[..], hex[..])
     io::cout << "sha256=" << hex[0..hn] << "\n"
     var d1: [20]u8
-    sha1::sum("abc", d1[..])
+    digest::sha1.sum("abc", d1[..])
     var h1: [40]u8
-    let h1n = sha1::hex(d1[..], h1[..])
+    let h1n = digest::sha1.hex(d1[..], h1[..])
     io::cout << "sha1=" << h1[0..h1n] << "\n"
     var mac: [32]u8
-    hmac::sha256("key", "msg", mac[..])
+    digest::hmac.sha256("key", "msg", mac[..])
     var mh: [64]u8
-    let mhn = sha256::hex(mac[..], mh[..])
+    let mhn = digest::sha256.hex(mac[..], mh[..])
     io::cout << "hmac=" << mh[0..mhn] << "\n"
     return 0
 }

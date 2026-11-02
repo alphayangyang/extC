@@ -8,13 +8,13 @@
  * 全局常量数组装不下带类型的字面量（语言现状），15 个字节的局部拷贝比让用户自己拼要好。
  */
 
-use std::hash::sha1
+use std::hash::digest
 
 /* `SHA-1(ns ∥ name)` 取前 16 字节，钉上 version=5 与 RFC 4122 变体。
  * `out.len < 16` 返回 false。 */
 fn v5(ns: slice<u8>, name: slice<u8>, out: mut slice<u8>) -> bool {
     if out.len < 16 { return false }
-    var c: sha1::state
+    var c: digest::sha1State
     c.init()
     c.update(ns)
     c.update(name)

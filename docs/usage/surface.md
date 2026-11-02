@@ -5,7 +5,7 @@
 
 生成方式：`tools/manual_surface.py`；`check.sh` 保证本页与源码一致。
 
-公开面共 531 个成员，其中内部 108 个：
+公开面共 537 个成员，其中内部 114 个：
 
 ## prelude
 
@@ -104,15 +104,18 @@
 - `vector.pid`（字段）
 - `vector.pidGen`（字段）
 
-## std::hash::sha1
+## std::hash::digest
 
+- `-.hmacSha1`（方法）
+- `-.hmacSha256`（方法）
 - `-.pRotl`（方法）
-- `state.buf`（字段）
-
-## std::hash::sha256
-
 - `-.pRotr`（方法）
-- `state.buf`（字段）
+- `-.sha1Hex`（方法）
+- `-.sha1Sum`（方法）
+- `-.sha256Hex`（方法）
+- `-.sha256Sum`（方法）
+- `sha1State.buf`（字段）
+- `sha256State.buf`（字段）
 
 ## std::heap
 
