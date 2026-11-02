@@ -357,6 +357,45 @@ def emit(fns_in, enums, libname):
     return '\n'.join(lines) + '\n'
 
 
+def emit_extern(decls, enums, libname, effects):
+    """生成**声明式**绑定：直接的 `extern!("<lib>") fn …`，给"链接进二进制"的库用。
+
+    与 `emit`（dl 那条路）的分工：那条路把函数放进表，符号缺失是**返回值**；这条路直接让链接器
+    解析符号 —— 缺符号是链接错误，而不是运行期的一次空指针。
+
+    `effects`：`none`（默认，安全的那一侧 —— 调用方不能把本帧地址交出去）或 `trusted`
+    （**一条签字**：不保留调用方给的地址、不从参数里读走指针；返回指针时再加 `Ret=0`）。
+    `trusted` 是**声明不是证明** —— 包的 claims 台账里应该有一条判据去证伪它（`extpkg verify`）。
+    """
+    lines = []
+    lines.append('// 由 tools/cbindgen.py 生成 —— 不要手改。')
+    lines.append('//')
+    lines.append('// %s：%d 个函数（声明式绑定，符号由链接器解析）。' % (libname, len(decls)))
+    if effects == 'trusted':
+        lines.append('// **effects 是签字，不是证明**：每一条都写着"不保留地址、不读走指针"（返回指针的再加')
+        lines.append('// `Ret=0`）。包的 claims 台账要有一条判据去证伪它；改上游语义时这条判据会红。')
+    else:
+        lines.append('// **没有 effects**：不签 = 最坏情况 = 安全的那一侧（调用方不能把本帧地址交过来）。')
+        lines.append('// 需要"帧内地址就地交给 C"时，人写在包里的一个薄 helper 上签那一句（C-ABI.md §9.15）。')
+    lines.append('')
+    if enums:
+        for name, vals in enums.items():
+            for vname, vval in vals:
+                if vval is not None:
+                    lines.append('let %s: i32 = %s' % (vname, vval))
+        lines.append('')
+    for cname, ret, params in decls:
+        sig = 'extern!("%s") fn %s(%s) -> %s' % (
+            libname, cname,
+            ', '.join('%s: %s' % (n, t) for n, t in params) or '',
+            ret)
+        lines.append(sig)
+        if effects == 'trusted':
+            eff = 'Addr=0 Cont=0' + (' Ret=0' if ret not in ('void',) and 'ref' in ret else '')
+            lines.append('    effects %s' % eff)
+    return '\n'.join(lines) + '\n'
+
+
 def main():
     ap = argparse.ArgumentParser(description='C 头文件 → extC 绑定（dl 那条路，零 effects）')
     # `@file`：把长命令放进一个参数文件（run.sh 里重生成 + --check 用同一份，不会漂）
@@ -374,6 +413,14 @@ def main():
                     help='字段名脱掉的前缀（`auto` = 最长公共前缀，如 cairo_）；C 原名留在注释里')
     ap.add_argument('-o', dest='out', required=True, help='产出的 .extc 路径')
     ap.add_argument('--check', action='store_true', help='只比较：生成物是否与 -o 一致')
+    ap.add_argument('--extern', dest='externlib', default='',
+                    help='声明式绑定：生成 `extern!("<lib>") fn …`（链接进二进制，不 dlopen）。'
+                         '给的是 `extern!` 里的库名（如 extc-sqlite）')
+    ap.add_argument('--effects', choices=('none', 'trusted'), default='none',
+                    help='`--extern` 模式的签字策略：none（默认）或 trusted（一条"不留地址"的签字）')
+    ap.add_argument('--link', action='append', default=[],
+                    help='顺手写 `<out>.link` 的链接要求：`ccflag:<flag>` / `lib:<name>` / `pkgconfig:<name>`，'
+                         '可重复。调用的程序因此一行链接参数都不用写')
     args = ap.parse_args()
 
     if not args.include:
@@ -405,6 +452,10 @@ def main():
         fn = fns_all.get(name)
         if fn is None:
             problems.append('%s：头文件里没有这个声明' % name)
+            continue
+        if fn.get('variadic'):
+            # 变参过不了 C 的 ABI（extC 的调用是静态的、参数个数编译期固定）⇒ 不猜、不静默丢 `...`
+            problems.append('%s：变参函数（`...`）没能声明的形状 —— 包一层定参 helper，或从 --only 里去掉' % name)
             continue
         try:
             rq, _ = split_ret_args(fn.get('type', {}).get('qualType', ''))
@@ -448,7 +499,21 @@ def main():
             if n not in got:
                 sys.stderr.write('[cbindgen] 枚举常量 %s 的值没求出来：跳过（不猜）\n' % n)
 
-    text = emit(out_fns, enums, args.name)
+    if args.externlib:
+        decls = []
+        for short, cname, _sig in out_fns:
+            fn = fns_all[cname]
+            rq, _ = split_ret_args(fn.get('type', {}).get('qualType', ''))
+            ret = map_type(rq, enum_names, True, typedefs)
+            params = []
+            for p in params_of(fn):
+                pt = p.get('type', {}).get('qualType', '')
+                params.append((p.get('name') or 'arg%d' % len(params),
+                               map_type(pt, enum_names, False, typedefs)))
+            decls.append((cname, ret, params))
+        text = emit_extern(decls, enums, args.externlib, args.effects)
+    else:
+        text = emit(out_fns, enums, args.name)
     for p in problems:
         sys.stderr.write('[cbindgen] 跳过：%s\n' % p)
 
@@ -465,6 +530,18 @@ def main():
         sys.exit('[cbindgen] %d 个函数没法生成（上面列了原因）：修或从 --only 里去掉' % len(problems))
     with open(args.out, 'w') as f:
         f.write(text)
+    if args.link:
+        if not args.externlib:
+            sys.exit('[cbindgen] `--link` 只用于 `--extern`（声明式绑定）：dl 那条路由 `api::open` 自己找库')
+        base = args.out[:-5] if args.out.endswith('.extc') else args.out
+        with open(base + '.link', 'w') as f:
+            f.write('# 由 tools/cbindgen.py 生成 —— 这是 `use` 这个模块的程序会自动带上的链接要求。\n')
+            for spec in args.link:
+                kind, _, arg = spec.partition(':')
+                if kind not in ('ccflag', 'lib', 'pkgconfig') or not arg:
+                    sys.exit('[cbindgen] --link 要写成 `ccflag:<flag>` / `lib:<name>` / `pkgconfig:<name>`，收到 `%s`' % spec)
+                f.write('%s %s\n' % (kind, arg))
+        print('生成 %s.link：%d 条链接要求' % (base, len(args.link)))
     print('生成 %s：%d 个函数%s' % (args.out, len(out_fns),
                                 '，%d 组枚举' % len(enums) if enums else ''))
 

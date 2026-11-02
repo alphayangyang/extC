@@ -173,6 +173,17 @@ if out=$("$EXTC" --run tests/cabi/outframe.extc 2>&1); then
 else
     echo "  FAIL outframe  ->  跑不起来"; echo "$out" | sed 's/^/        /' | head -5; fail=1
 fi
+echo '== ⑦b `effects` 的四个名字按任意顺序写（`Ret=` 在末尾也认）=='
+if out=$("$EXTC" --run tests/cabi/effects_order.extc 2>&1); then
+    if echo "$out" | grep -qF "order=ok"; then
+        echo "  ok   effects-order  ->  `Thread=0 Addr=0 Cont=0 Ret=0` 解析通过（从前 `Ret` 在末尾会截断 clause）"
+    else
+        echo "  FAIL effects-order  ->  输出对不上：$(echo "$out" | tr '\n' '|')"; fail=1
+    fi
+else
+    echo "  FAIL effects-order  ->  跑不起来"; echo "$out" | sed 's/^/        /' | head -5; fail=1
+fi
+
 check_err tests/cabi/errors/outframe_frame.extc      'may be kept by C forever'
 check_err tests/cabi/errors/outframe_new.extc        'may be kept by C forever'
 check_err tests/cabi/errors/outframe_reassigned.extc 'may be kept by C forever'

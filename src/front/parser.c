@@ -554,12 +554,13 @@ static void sugarNeedModule(Parser *p, const char *path, int line) {
 }
 
 /**
- * @brief Parse the `effects Addr=... Cont=... Thread=...` clause.
+ * @brief Parse the `effects Addr=... Cont=... Ret=... Thread=...` clause.
  *
  * Written on **any declaration without a function body**: `extern!("libc")` and
  * `@builtin` both count, because the compiler cannot see through either of them
  * (`"libc"` is only a library name for diagnostics). The clause is the author's assertion
- * about argument addresses and about state shared across threads. Each round skips
+ * about argument addresses, about the return value (`Ret=`), and about state shared across
+ * threads. Each round skips
  * newlines before reading the keyword, otherwise `at()` would see TK_NEWLINE and miss it.
  *
  * @param p             Parser.
@@ -619,7 +620,7 @@ static bool parseEffectsClause(Parser *p, FuncDef *f, bool *outSawThread) {
                              nm->text);
                     return NULL;
                 }
-                if (at(p, "Addr") || at(p, "Cont") || at(p, "Thread")) continue;
+                if (at(p, "Addr") || at(p, "Cont") || at(p, "Ret") || at(p, "Thread")) continue;
                 break;
             }
             return true;

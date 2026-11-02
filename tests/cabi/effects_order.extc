@@ -1,0 +1,17 @@
+// expect: order=ok
+// `effects` 的四个名字可以**按任意顺序**写，`Ret=` 写在最后也得认。
+//
+// 从前 `parseEffectsClause` 的续读只认 `Addr` / `Cont` / `Thread` —— `Ret=` 写在末尾时
+// clause 提前结束，后面的 `Ret` 被当成新的顶层声明，报
+// `expected `fn`, `struct`, `type` or `let`/`var`, found `Ret``。绑定生成器
+// （`tools/cbindgen.py --effects trusted`）生成的正是 `Addr=0 Cont=0 Ret=0` 这个顺序，
+// 于是一生成就编不过。
+use std::io
+
+extern!("libc") fn getpid() -> i32 effects Thread=0 Addr=0 Cont=0 Ret=0
+
+fn main() -> i32 {
+    let pid: i32 = getpid()
+    if pid > 0 { io::cout << "order=ok\n" } else { io::cout << "order=bad\n" }
+    return 0
+}

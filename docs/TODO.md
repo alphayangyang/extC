@@ -115,6 +115,9 @@
 
 - **已经能**：`@export` 的 extC 函数 → `PyArg_ParseTuple` 包装 → `import`；`--scaffold` 出
   `pip install .` 的项目（见 changelog 2026-11-16 与 `tests/python-ext/`）。
+- **绑定生成**：`tools/cbindgen.py --extern --effects trusted --link …` 已经能把"手写 extern + 逐条签
+  effects"压成一条命令（2026-11-17）。还没做：`@frozen` 结构体镜像的生成（现在碰到按值结构体就报出来）、
+  多库合并成一个包（`extpkg` 那边把生成物 + `.link` + 声明台账放进 `vendor/<pkg>/`）。
 - **还没做**：关键字参数与默认值（Python 侧 `f(a, b=1)`）；异常（`result`/`trap` → `PyErr` 而不是
   `SystemExit`）；返回字符串/字节（现在只有标量与 `bool` 出得去，`bytes` 只能进）；numpy 数组
   通道（`PyArray` 的指针 + 形状 → `ndview<T>`，需要 `mem::plate::viewAt` 那种区间检查门）；

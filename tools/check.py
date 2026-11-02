@@ -1630,6 +1630,14 @@ def build_items() -> list:
         ok_msg=ok_count_ok(" 项（装箱/换类型/拆箱 trap/打印与相等）"),
         bad_msg="tests/any/run.sh", bad_dump=dump_fail(8)))
 
+    # ---- C ABI：从 C 头文件生成声明式绑定 ----
+    items.append(cmd(
+        "extbind", "tests",
+        "C ABI 绑定生成器（`cbindgen.py --extern`）：`extern!(\"lib\")` 声明 · `--effects trusted` 一条签字 · `Ret=0` 写在末尾 · `.link` 顺手生成 · 变参被拒",
+        ["./tests/extbind/run.sh"], timeout=300,
+        ok_msg=ok_count_ok(" 项（形状 · --check 幂等 · 链接并调通 · .link · 变参被拒）"),
+        bad_msg="tests/extbind/run.sh", bad_dump=dump_fail(8)))
+
     # ---- C ABI：包成 CPython 扩展模块 ----
     items.append(cmd(
         "python-ext", "tests",

@@ -1,0 +1,15 @@
+/* tests/extbind/main.extc —— 用**生成出来的**声明式绑定调一个链接进来的 C 库。
+ *
+ * 生成的 `demoapi.extc` 只有 `extern!("extc-demo") fn …` 和一段 `effects` 签字；链接要求写在
+ * 生成器旁边那个 `demoapi.link` 里（`ccflag <libdemo.a 的路径>`）—— 调用的程序一行链接参数都不用写。 */
+use std::io
+use demoapi::*
+
+fn main() -> i32 {
+    var h: ?ref void = demo_open("abc".data)
+    if h == null { io::cout << "open failed\n"  return 1 }
+    let s: i64 = demo_add(h, 7, 35)
+    demo_close(h)
+    io::cout << "sum=" << s << " count=" << i64(demo_count()) << "\n"
+    return 0
+}
