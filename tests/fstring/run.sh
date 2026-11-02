@@ -3,7 +3,7 @@
 #   ① 输出正确（多槽 / 转义 / 每槽求值一次 / 无文本段）
 #   ② **生成物与手写 `<<` 链逐字节相同** ← 零运行时成本 + "它就是语法糖"的最硬证据
 #   ③ 反例：空槽 · 未闭合 · 多余 `}` · 值位置也要 `string` 目标 · 格式说明符的 10 条语法/类型错误
-#   ④ 糖自带模块：值 f-string 的 `stl::string` / `stl::stringio` 由糖登记，用户不写 `use`
+#   ④ 糖自带模块：值 f-string 的 `std::text::string` 由糖登记，用户不写 `use`
 set -u
 cd "$(dirname "$0")/../.."
 EXTC=${EXTC:-./build/extc}
@@ -74,7 +74,7 @@ fi
 "$EXTC" -w --run tests/fstring/no_import.extc > "$tmp/noimp" 2>&1
 printf 'n=  7 half=3\n' > "$tmp/noimpwant"
 if diff -q "$tmp/noimp" "$tmp/noimpwant" >/dev/null 2>&1; then
-    echo "  ok   self-importing    ->  值 f-string 不需要用户 \`use stl::string\` / \`use stl::stringio\`"
+    echo "  ok   self-importing    ->  值 f-string 不需要用户 \`use std::text::string\` / \`use std::text::stringio\`"
     pass=$((pass+1))
 else
     echo "  FAIL self-importing    ->  $(tr '\n' '|' < "$tmp/noimp")"; fail=$((fail+1))
@@ -166,13 +166,13 @@ neg spec-no-value      "$H
     return 0
 }" "no value before its format specifier"
 neg value-needs-string "use std::io
-use stl::string
+use std::text::string
 fn main() -> i32 {
     let s: slice<u8> = f\"x\"
     return 0
 }" "initializer expects"
 neg value-spec-bool "use std::io
-use stl::string
+use std::text::string
 fn main() -> i32 {
     let b: bool = true
     let s: string = f\"x={b:>4}\"

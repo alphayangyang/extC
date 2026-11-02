@@ -59,7 +59,7 @@ fn main(args: slice<slice<u8>>) -> i32 {
     let built = syspool::extc_pool_live()
     if built != m + 2 { io::cout << "build-bad live=" << built << "\n"; return i32(1) }
 
-    var t = time::start()
+    var t = loop::start()
     if mode == 0 {
         var j: i64 = 0
         while j < m { syspool::extc_pool_drop(ids[j]); j = j + 1 }

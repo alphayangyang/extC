@@ -11,7 +11,7 @@
  *   ③ 量化点积：vec_dot 与「反量化后 f32 点积」比（相对误差 < 1e-3，f16 尺度的量化损失）；
  *   ④ 速度：m×k 的 q4_0 GEMV 与同规模 f32 GEMV 比 ns/elem —— 前者少读 4 倍字节。 */
 use std::io
-use std::time
+use std::loop
 use ggml
 
 let M_SMALL: i64 = 33
@@ -239,22 +239,22 @@ fn run(be: ggml::backend) -> i32 {
     var yq: mut slice<f32> = new f32[M_BIG]
     var yf: mut slice<f32> = new f32[M_BIG]
 
-    var t0: i64 = time::now()
+    var t0: i64 = loop::now()
     var rep: i64 = 0
     var bestq: i64 = -1
     while rep < 5 {
-        var a: i64 = time::now()
+        var a: i64 = loop::now()
         be.gemvQ4(wq, xbq, yq, M_BIG, K_BIG)
-        var b: i64 = time::now()
+        var b: i64 = loop::now()
         if bestq < 0 || b - a < bestq { bestq = b - a }
         rep = rep + 1
     }
     var bestf: i64 = -1
     rep = 0
     while rep < 3 {
-        var a: i64 = time::now()
+        var a: i64 = loop::now()
         gemvNaive(wb, xbig, yf, M_BIG, K_BIG)
-        var b: i64 = time::now()
+        var b: i64 = loop::now()
         if bestf < 0 || b - a < bestf { bestf = b - a }
         rep = rep + 1
     }

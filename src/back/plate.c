@@ -32,7 +32,7 @@ void plateEmitViewOf(Arena *a, Buf *out) {
         " * generic instance, so no struct literal spells it, and `ref void` -> `ref T` is refused on\n"
         " * purpose -- so the privileged layer owns this one three-line door.\n"
         " */\n"
-        "static slice_u8 extc_viewOf(uint8_t *p, int64_t n) {\n"
+        "EXTC_UNUSED static slice_u8 extc_viewOf(uint8_t *p, int64_t n) {\n"
         "    slice_u8 v = { p, n };\n"
         "    return v;\n"
         "}\n\n");

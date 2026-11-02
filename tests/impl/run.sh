@@ -121,7 +121,7 @@ rm -rf "$tmp"
 check_err tests/impl/errors/dup_body_and_impl.extc 'the first declaration is at '
 check_err tests/impl/errors/unknown_type.extc      'unknown type `nope`'
 # impl 方法只有 import 了那个模块才存在 ⇒ 报错必须说"该 import 谁"
-check_err tests/impl/errors/method_needs_import.extc 'declared by module `stl::hashMap` -- add `use stl::hashMap`'
+check_err tests/impl/errors/method_needs_import.extc 'declared by module `std::data::hashMap` -- add `use std::data::hashMap`'
 check_err tests/impl/errors/on_enum.extc           'cannot own methods'
 check_err tests/impl/errors/with_field.extc        'expected `fn` in the `impl` block'
 check_err tests/impl/errors/generic_target.extc    'unknown type `T`'

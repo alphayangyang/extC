@@ -4,8 +4,8 @@ use std::io
 
 fn main() -> i32 {
   // ① 睡眠真的要睡够：sleepMs(50) 至少 45ms（上限交给 runner，CI 机器可能慢）
-  var t = time::start()
-  time::sleepMs(50)
+  var t = loop::start()
+  loop::sleepMs(50)
   io::cout << "sleep_ms=" << t.elapsedMs() << "\n"
 
   // ② 单调钟不倒退，且分辨率是亚毫秒的（连续两次采样取最小正差值）
@@ -25,7 +25,7 @@ fn main() -> i32 {
   // ③ 计时一个**折不掉**的忙循环：上界来自时钟（编译期不知道），优化器没法闭式求值。
   //    （直接写 `while i < 3000000 { s = s + i }` 会被 GCC 折掉 —— 实测 elapsed 21ns。）
   var n: i64 = loop::now() % 300000 + 50000
-  var t2 = time::start()
+  var t2 = loop::start()
   var s: i64 = 0
   var i: i64 = 0
   while i < n { s = s + i * i  i = i + 1 }

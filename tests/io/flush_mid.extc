@@ -8,7 +8,7 @@ use std::loop
 fn main() -> i32 {
     io::cout << "mid-run\n"
     io::flushCout()
-    time::sleepMs(600)
+    loop::sleepMs(600)
     io::cout << "done\n"
     return 0
 }

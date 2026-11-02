@@ -39,11 +39,11 @@ honest = { version = "1", source = "$reg/honest-1.tar.gz" }
 EOF
 cat > "$proj/main.extc" <<'EOF'
 use demo
-use std::heap
+use std::mem
 use std::io
 
 fn main() -> i32 {
-    var pl: heap::plate = heap::plate::open(heap::DEFAULT_RESERVE)!
+    var pl: mem::plate = mem::plate::open(mem::DEFAULT_RESERVE)!
     var v: mut slice<u8> = pl.alloc(u64(8))!
     v[0] = u8(5)
     v[1] = u8(7)
