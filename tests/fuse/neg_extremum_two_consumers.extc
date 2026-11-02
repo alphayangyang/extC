@@ -1,6 +1,6 @@
 // 反例：临时视图有两个消费者（max 与 min）⇒ 只折一处会漏掉另一处，整体不折。
 use std::io
-use stl::seq
+use std::data::seq
 
 fn run(n: i64) -> i32 {
     var a: [3]f64 = [1.0, 2.0, 3.0]

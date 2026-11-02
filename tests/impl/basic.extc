@@ -4,7 +4,7 @@
 // （那个包装就是因为"方法只能写在 struct 体内、而 i64 没有体"才存在的）。
 // expect: sum=7 twice=42|g=70 miss=-7 len=1
 use std::io
-use stl::hashMap
+use std::data::hashMap
 
 struct pt {
     x: i64

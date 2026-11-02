@@ -2,7 +2,7 @@
 // 判据：普通拷贝 n=5 · 重叠搬移 a=3456（若是 memcpy 这条会错）· string::append 批量走它
 // expect: n=5 b=12345 m=4 a=3456 slen=6 ssum=396
 use std::io
-use stl::string
+use std::text::string
 
 fn main() -> i32 {
     var a: [8]i32 = [1,2,3,4,5,6,7,8]

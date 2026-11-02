@@ -3,7 +3,7 @@
 //       （合并把节点退回回收链、下一次分裂再用掉 ⇒ 实测 5 轮后与第 1 轮**完全持平**：first=280 nodes=280）
 // expect: rounds=5|bad=0|bounded=1
 use std::io
-use stl::map
+use std::data::map
 
 let N: i64 = 2000
 

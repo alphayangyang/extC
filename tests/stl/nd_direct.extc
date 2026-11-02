@@ -2,7 +2,7 @@
 // `var g: ndview<f64> = grid.viewMut()` 那一行。可写性仍由借用检查把关（`let` 的 ndarray
 // 会拒绝 `viewMut()`）。
 use std::io
-use stl::nd
+use std::nd
 
 fn main() -> i32 {
     var grid: ndarray<f64> = ndarray<f64>::zeros2(2, 3) ?? ndarray<f64>::empty()

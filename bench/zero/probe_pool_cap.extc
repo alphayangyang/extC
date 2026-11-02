@@ -1,6 +1,6 @@
-// 对照：同一形状，但用 stl::pool 的 withCap（簿记三块走不清零路径）。
+// 对照：同一形状，但用 std::data::pool 的 withCap（簿记三块走不清零路径）。
 use std::io
-use stl::pool
+use std::data::pool
 
 fn main() -> i32 {
     var r: i64 = 0

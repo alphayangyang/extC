@@ -2,7 +2,7 @@
 // 而不是 O(n²)（≈4）。判据由 tests/map/run.sh 用 callgrind 的指令数算 —— 不看墙钟。
 // 用法：cx_app <n> <mode>   mode: i=顺序插入+查 · d=顺序插入+全删 · r=随机插入+全删 · c=churn
 use std::io
-use stl::map
+use std::data::map
 
 fn toInt(s: slice<u8>, dflt: i64) -> i64 {
     if s.len == 0 { return dflt }

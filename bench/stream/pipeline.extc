@@ -7,7 +7,7 @@
 // 把分配/首次触页摊到每遍（外部计时除不掉进程启动，这是本 bench 的口径）。
 // 判据：各形状 stdout 必须逐字节相同（f64 严格求值、Σ 严格按 i 递增）。
 use std::io
-use stl::string as str
+use std::text::string as str
 
 fn argOr(args: slice<slice<u8>>, i: i64, dflt: i64) -> i64 {
     if args.len <= i { return dflt }

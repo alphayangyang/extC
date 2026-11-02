@@ -1,7 +1,7 @@
 // bench/fusion：S1 元素链（同一份源码，`--no-fuse` 是未融合参照）。
 // argv: n [iters]；每轮做 iters 次"写 tmp 的循环 + 相邻读 tmp 的循环"。
 use std::io
-use stl::string as str
+use std::text::string as str
 
 fn argOr(args: slice<slice<u8>>, i: i64, dflt: i64) -> i64 {
     if args.len <= i { return dflt }

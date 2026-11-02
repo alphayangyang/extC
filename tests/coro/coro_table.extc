@@ -1,7 +1,7 @@
 /* 可增长任务表（逃逸规则精度）：**泛型结构体包着 vector**，它的方法里往表里 push 句柄。
  * 这正是调度器要落地的那张表（无容量上限 ⇒ 靠容器增长）。
  * 期望退出码 41 = (0 + 0) + 2 行 + 39。 */
-use stl::vector
+use std::data::vector
 
 struct row {
     h: coroutine<i64>

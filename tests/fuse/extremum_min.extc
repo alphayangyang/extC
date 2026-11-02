@@ -1,6 +1,6 @@
 // `seq::min` + `var` 绑定的形状（与 max 同一条代换，比较方向相反）。
 use std::io
-use stl::seq
+use std::data::seq
 
 fn run(n: i64) -> i32 {
     var a: [4]f64 = [-9.0, 3.5, -1.25, 4.0]

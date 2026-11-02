@@ -11,7 +11,7 @@
  * 只收缩看、不分配、不改变入参 —— 这三个函数在任何一个线程上都合法（`Thread=0`）。
  *
  * @code
- * use stl::seq
+ * use std::data::seq
  *
  * fn main() -> i32 {
  *     var xs: mut slice<f64> = new f64[3]

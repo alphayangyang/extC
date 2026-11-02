@@ -1,7 +1,7 @@
 // 下标语法：读 m[k]（缺给 none）与写 m[k] = v（**缺则新建、有则覆盖**）
 // expect: a=10 none=-1 newLen=3 upd=11 updLen=3 missing=-9
 use std::io
-use stl::map
+use std::data::map
 
 fn main() -> i32 {
     var m: map<i64, i32> = map<i64, i32>::withCap(16)

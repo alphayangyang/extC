@@ -4,7 +4,7 @@
  *   trait / dyn Trait    三种地块共用 `dyn Shape`：**同一张统一表**，三个实现
  *   STL pool<dyn Shape>  地块的**身份**由池持有（句柄 + 世代）：移除后旧句柄 → none
  *   Arena 提权           报表文本在 `line()` 里构造后返回 ⇒ 存储建在**调用者的 place** 里
- *   模块                 use std::io（cin/cout）· use stl::pool · use stl::string
+ *   模块                 use std::io（cin/cout）· use std::data::pool · use std::text::string
  *   cin / cout           从标准输入读地块清单，向标准输出打印报表
  *
  * 输入格式：第一行 n，随后 n 行 `kind a b`（**固定三个整数**；圆形只用 a，b 填 0）
@@ -12,8 +12,8 @@
  * 用法：printf '5\n1 3 4\n2 2 0\n3 6 7\n1 5 5\n2 1 0\n' | ./tour-plots
  * ========================================================================== */
 use std::io
-use stl::pool
-use stl::string
+use std::data::pool
+use std::text::string
 
 /* ---- 形状：一个 trait、三个实现，派发经同一张表 ---- */
 trait Shape { fn area(self: ref Self) -> i64 }

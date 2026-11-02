@@ -589,7 +589,7 @@ struct ostream { fd: i32
     @inline
     /* `i64` 的最小值要单独照顾：`fmtI64Fast` 里的 `0 - v` 在 `2^63` 上溢出，
      * 而带检查的算术会当场抓住它（换 C 会安静地打出错的数）。那个函数从
-     * **负数一侧**取位，永不取绝对值 —— 与 `stl::string::fromI64` 同一招。 */
+     * **负数一侧**取位，永不取绝对值 —— 与 `std::text::string::fromI64` 同一招。 */
     fn <<(self: ref ostream, v: i64) -> ostream {
         pairsReady()
         let st = fmtI64Fast(v)

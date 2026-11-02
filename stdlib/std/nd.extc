@@ -19,7 +19,7 @@
  *
  * @code
  * use std::io
- * use stl::nd
+ * use std::nd
  *
  * fn main() -> i32 {
  *     var a: ndarray<f64> = ndarray<f64>::zeros3(2, 3, 4) ?? ndarray<f64>::empty()

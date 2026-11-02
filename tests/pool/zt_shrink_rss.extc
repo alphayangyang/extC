@@ -10,7 +10,7 @@
 //   ② **期末字节账归零**：`extc_pool_bytesLive() == 0` ⇒ 一个板块都没留下（比 RSS 更硬）。
 use std::io
 use std::sys::pool as syspool
-use stl::vector
+use std::data::vector
 
 fn main() -> i32 {
     var acc: i64 = 0

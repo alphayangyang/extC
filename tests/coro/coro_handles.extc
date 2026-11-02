@@ -7,7 +7,7 @@
  *   还有 `v.push(worker(...))`：装箱点在**实参**处 ✓
  *
  * 期望：(0+1+2) + (10+11+12) + (20+21+22) = 99 ⇒ 99/9 = **11** */
-use stl::vector
+use std::data::vector
 use std::io
 
 fn worker(n: i64, base: i64) -> coroutine<i64> {

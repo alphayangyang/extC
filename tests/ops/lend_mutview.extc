@@ -2,7 +2,7 @@
  * `fill(a)` 就是 `fill(a[..])`。要求容器本身是可写的地方（`var`），借用检查照常把关。 */
 // expect: s1=6 s2=6
 use std::io
-use stl::seq
+use std::data::seq
 
 fn fill(dst: mut slice<i64>) {
     for i in 0..dst.len { dst[i] = i64(i + 1) }

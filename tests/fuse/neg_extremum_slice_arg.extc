@@ -1,6 +1,6 @@
 // 反例：实参是 `tmpv[..]` 视图而不是裸名字 ⇒ 认不出是哪个临时视图，不折。
 use std::io
-use stl::seq
+use std::data::seq
 
 fn run(n: i64) -> i32 {
     var a: [3]f64 = [1.0, 2.0, 3.0]

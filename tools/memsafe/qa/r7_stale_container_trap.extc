@@ -6,7 +6,7 @@
 // 于是 `b.push(...)` 的下标访问带位置 trap（`trap: index 0 out of range (length 0)`）。
 // 这条补的是静态分析看不见的那一半：借用检查管得住"借用比对象活得久"，
 // 但管不住"两份别名，其中一份被显式释放"。
-use stl::vector
+use std::data::vector
 fn main() -> i32 {
     var a = vector<i32>::new()
     a.push(i32(5))

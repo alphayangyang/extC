@@ -1,6 +1,6 @@
 // string：100 万字节逐字节 push / 10 万次 append（8 字节）/ 大串上 1000 次 16 字节 find
 use std::io
-use stl::string
+use std::text::string
 
 let N: i64 = 10000000
 

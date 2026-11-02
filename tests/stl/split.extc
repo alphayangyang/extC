@@ -1,6 +1,6 @@
-// `stl::string::split`：零拷贝切片 + 末尾空段（段数 = 出现次数 + 1）
+// `std::text::string::split`：零拷贝切片 + 末尾空段（段数 = 出现次数 + 1）
 use std::io
-use stl::string as str
+use std::text::string as str
 
 fn main() -> i32 {
     let s: slice<u8> = "a,bb,,ccc"

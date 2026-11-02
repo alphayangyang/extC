@@ -2,7 +2,7 @@
 // remove 是 swap-remove ⇒ 被搬走的元素仍按原键取到（靠 bucketOfDense 反查）
 use std::io
 // expect: order=1,2,3 dense=3 sum=60 afterRebuild=20800 first3=1,2,3 moved=640 gone=-1 len=63 dense=63
-use stl::hashMap
+use std::data::hashMap
 
 fn main() -> i32 {
     var m = hashMapI64<i32>::withCap(4)

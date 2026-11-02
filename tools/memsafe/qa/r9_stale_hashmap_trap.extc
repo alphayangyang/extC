@@ -1,6 +1,6 @@
 // expect: TRAP
 // 守卫（hashMapI64）：别名 + 一份 release ⇒ 陈旧的那一份 put 时带位置地 trap。
-use stl::hashMap
+use std::data::hashMap
 fn main() -> i32 {
     var m = hashMapI64<i32>::withCap(i64(8))
     m.put(i64(1), i32(11))

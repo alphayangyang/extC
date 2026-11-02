@@ -9,7 +9,7 @@
 // expect: after=4 innerlen=2 v=20 bytes=240
 use std::io
 use std::sys::pool as syspool
-use stl::vector
+use std::data::vector
 
 fn main() -> i32 {
     var outer = vector<vector<i32>>::new()

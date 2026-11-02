@@ -3,8 +3,8 @@
  * 判据见 tests/stl/run.sh 的 run_case。
  */
 use std::io
-use stl::string as str
-use stl::stringio
+use std::text::string as str
+use std::text::stringio
 
 fn main() -> i32 {
     let n: i64 = 7

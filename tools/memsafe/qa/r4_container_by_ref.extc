@@ -7,7 +7,7 @@
 // **入**不许让池里的元素拿着外面的引用（`vector<ref T>`）—— 而"把容器整个借出去"不在禁令里。
 // 前提是提权（PLAN #87）：容器的池生在容器值将来所在的那个地方，所以"借到容器"就等于"池还活着"。
 use std::io
-use stl::vector
+use std::data::vector
 
 fn lenOf(v: ref vector<i32>) -> i64 { return v.len() }
 fn bump(v: mut ref vector<i32>) { v.push(i32(99)) }

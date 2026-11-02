@@ -2,7 +2,7 @@
  * 同时钉住"运算符方法可以分配"这条编译器能力：拼接结果由调用点给的 arena 承接，
  * 在函数里拼完再返回也不漏。判据见 tests/stl/run.sh 的 run_case。 */
 use std::io
-use stl::string as str
+use std::text::string as str
 
 fn tag(name: slice<u8>, n: i64) -> string {
     /* 右操作数是 `string` 值时按值传（拷贝），不会把本地的视图借给返回值 ——

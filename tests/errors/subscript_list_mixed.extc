@@ -1,7 +1,7 @@
 // 两下标糖只接受"两个下标"或"两个区间"；一标一区间是笔误，编译期就该拒。
 // expect: mixes an index and a range
 use std::io
-use stl::nd
+use std::nd
 fn main() -> i32 {
     var a: ndarray<f64> = ndarray<f64>::zeros2(3, 4) ?? ndarray<f64>::empty()
     let v: ndview<f64> = a.view()

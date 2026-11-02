@@ -12,7 +12,7 @@
 // 当相位，同一个 key 固定在同一个相位上（建了就删、查时全 miss）⇒ 命中率恒为 0，
 // 量出来的是"全 miss"的形状，与真实会话表完全不是一回事。
 use std::io
-use stl::hashMap
+use std::data::hashMap
 
 use std::time
 use std::sys::io as sysio

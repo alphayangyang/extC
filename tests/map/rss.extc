@@ -1,7 +1,7 @@
 // churn（RSS）：反复 put+remove 同一个键 —— 峰值 RSS 必须与轮数无关（节点被回收链复用）
 // 轮数从命令行拿；判据在 run.sh 里（1e5 vs 1e6 轮的峰值相当）
 use std::io
-use stl::map
+use std::data::map
 
 fn toInt(s: slice<u8>, dflt: i64) -> i64 {
     if s.len == 0 { return dflt }

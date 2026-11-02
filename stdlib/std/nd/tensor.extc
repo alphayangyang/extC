@@ -14,7 +14,7 @@
  * 只读方法在 `ref` 上、写方法在 `mut ref` 上；所有操作只碰自己的步长格，不做分配。
  *
  * @code
- * use stl::tensor
+ * use std::nd::tensor
  *
  * fn main() -> i32 {
  *     var buf: mut slice<f64> = new f64[6]

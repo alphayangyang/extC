@@ -18,7 +18,7 @@
 | 入口 | `fn main() -> i32 { ... }` 或 `fn main() { ... }`（无返回类型 = `void`，退出码 0） |
 | 导入 | `use a::b` · `use a::b::*` · `use a::b::{x, y}` · `use a::b as c` |
 | 预置 | `option` / `result` / `slice` / `varArray` / `unit` / `pcg32` / `coroutine` / `domain` 无需导入（prelude 里就有） |
-| 控制台 | 写：`println(x)` 内建，或 `use std::io` 后 `io::cout << x << "\n"`；读：默认"读一行再解析"——`use stl::stringio` 的 `stringio::readLine()` + `string::toI64`/`toF64`（`io::cin >> x` 是 token 快路，见 §7.5） |
+| 控制台 | 写：`println(x)` 内建，或 `use std::io` 后 `io::cout << x << "\n"`；读：默认"读一行再解析"——`use std::text::stringio` 的 `stringio::readLine()` + `string::toI64`/`toF64`（`io::cin >> x` 是 token 快路，见 §7.5） |
 | 语句 | 不需要分号；写了分号会被忽略。换行只是**空白**，表达式在下一个记号接不下去时结束 |
 | 续行 | 接不下去的记号**不能**起新行：`io::cout << a` 后换行再写 `<< b` 是错的（`<<` 不能续行）|
 | 注释 | `// 行注释` · `/* 块注释 */`（**不嵌套**，遇到第一个 `*/` 就结束） |
@@ -107,10 +107,10 @@ fn main() -> i32 { let __x = 1  return 0 }
   （`f"{ord('a')}"` 同理）。缺右引号时报 `unterminated f-string literal`，而不是把它当普通
   字符串续到行尾。
 - 两个位置：`<<` 的**右操作数**（`io::cout << f"…"`，流式输出，逐段就地写出）与
-  **值位置**（`let s: string = f"…"`，展开成 `stl::string::from(文字段) + 槽 …` 的 `+` 链，
-  结果是 `string`）。`stl::string` 由糖自己登记成一条隐藏导入 —— 这个位置不需要写 `use`。
+  **值位置**（`let s: string = f"…"`，展开成 `std::text::string::from(文字段) + 槽 …` 的 `+` 链，
+  结果是 `string`）。`std::text::string` 由糖自己登记成一条隐藏导入 —— 这个位置不需要写 `use`。
 - 值位置也接受格式说明符：带 `:…` 的槽按**槽值的静态类型**落成
-  `stl::stringio::padI64` / `padF64` / `padText` 调用（`stl::stringio` 同样由糖自己登记），
+  `std::text::stringio::padI64` / `padF64` / `padText` 调用（`std::text::stringio` 同样由糖自己登记），
   语义与 `<<` 右侧的说明符逐条相同。
 - 格式说明符：槽里写 `{值:说明符}`，语法 `[[fill]align][0][width][.prec][type]`。
   - 对齐 `<` 左 / `>` 右 / `^` 居中，前面可加一个填充字节（`{:*^8}`）；不写对齐时文本靠左、数字靠右。
@@ -152,7 +152,7 @@ fn main() -> i32 {
 | `void` | — | — | 只作返回类型；`ref void` 是"没有操作的地址" |
 
 没有 `char`、没有 `string` 关键字。字符串字面量的类型是 `slice<u8>`（字节视图，零拷贝）；
-`stl::string` 是标准库里可增长的那个类型（见 [`stdlib.md`](stdlib.md)）。
+`std::text::string` 是标准库里可增长的那个类型（见 [`stdlib.md`](stdlib.md)）。
 
 ### 3.2 聚合
 
@@ -767,7 +767,7 @@ fn main() -> i32 {
 - 裸视图名不是表达式：`buf = t` 仍是**视图值赋值**（换指针与长度），不是逐元素拷贝。
 - 降糖产物就是手写循环的形状，所以边界检查消除、向量化与融合照常作用在它上面；实测与
   手写 C 的 AXPY 循环同一量级。`par` 体里暂不支持这种写法，仍写显式 `out[i] = …`。
-- **rank-2 形状**（目标是 `ndview<T>`）：不展开循环，直接落成 `stl::nd` 的逐元素内核调用
+- **rank-2 形状**（目标是 `ndview<T>`）：不展开循环，直接落成 `std::nd` 的逐元素内核调用
   —— `dst = a + b` → `nd::addInto`、`a - b` → `subInto`、`a * b` → `mulInto`、
   `a * k` → `scaleInto`、`a + b * k` → `axpyInto`，复合形式同理（`dst += a` →
   `addInto(dst, dst, a)`）。形状在运行期才知道，所以内核返回 `bool`，编译器在外面补一条
@@ -806,14 +806,14 @@ fn main() -> i32 {
 
 ### 7.5 输入：默认"读一行再解析"
 
-命令行程序的输入主路径是 `stl::stringio` 的 `readLine()`（每次读一行、`?string`，EOF 给
+命令行程序的输入主路径是 `std::text::stringio` 的 `readLine()`（每次读一行、`?string`，EOF 给
 `none`）加 `string::toI64` / `string::toF64`（`?i64` / `?f64`）。这样错误能指明是哪一行、
 解析器可以单独测，循环也短：
 
 <!-- fragment -->
 ```extc
-use stl::stringio
-use stl::string
+use std::text::stringio
+use std::text::string
 use std::io
 
 fn main() -> i32 {
@@ -926,7 +926,7 @@ fn main() -> i32 {
 
 ### 8.2 `pool<T>` 与 `varArray<T>` 的区别
 
-| | `varArray<T>`（prelude 里） | `pool<T>`（`stl::pool` 里） |
+| | `varArray<T>`（prelude 里） | `pool<T>`（`std::data::pool` 里） |
 |---|---|---|
 | 存储 | 一块连续 buffer，满了按 2 倍扩容 | 值放 dense 数组，另有 slot→dense 的映射 |
 | 取 / 写 | `v.get(i) -> ?T`、`v.set(i, v)`（按值拷） | `p.get(h) -> ?T`、`p.set(h, v) -> bool`（按值拷） |
@@ -984,7 +984,7 @@ while i < 1000 {
 ```extc
 // 结果：stale=none slot=0 gen=1 / len=2
 use std::io
-use stl::pool
+use std::data::pool
 fn main() -> i32 {
     var p: pool<i64> = pool<i64>::withCap(i64(4))
     let h1 = p.insert(i64(111))
@@ -1249,7 +1249,7 @@ fn main() -> i32 {
 - `%` 对浮点永远不可用（`cannot apply '%' to 'f64'`），重载也不改变这一点。
 - 运算符方法**可以分配**：调用点和方法调用走同一套 zone 记账（`setOpCallArgs` 里的
   `setCallZoneArg`），所以 `fn +(self: ref string, other: slice<u8>) -> string` 这种"分配并
-  返回新值"的运算符是合法形状（见 `stl::string` 的 `+`：`s + "…"`、`a + b`）。
+  返回新值"的运算符是合法形状（见 `std::text::string` 的 `+`：`s + "…"`、`a + b`）。
 - 字符串的 `+` 与 `appendI64` / `appendF64` 覆盖两种拼法：表达式里拼用 `+`（返回新值），
   循环里拼用 `append*`（就地长）。
 - 移位（`<<` / `>>`）的计数在运行期按左操作数**位宽**检查（越界 trap）；计数是**字面量**时
@@ -1454,7 +1454,7 @@ fn main() -> i32 {
 }
 ```
 
-归约是第二形状，不是我行我素的第三种语法：先 `par` 写进数组，再用 `stl::seq` 的
+归约是第二形状，不是我行我素的第三种语法：先 `par` 写进数组，再用 `std::data::seq` 的
 `sum` / `max` / `min` / `count` 合并（`seq::sum(xs) ?? f64(0.0)`）。这两个形状合起来覆盖
 "切块算 + 汇总"这条主线。
 

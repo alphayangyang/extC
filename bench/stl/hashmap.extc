@@ -1,6 +1,6 @@
 // hashMapI64<i32>：100 万次插入 / 100 万次查找 / 50 万次删除（与 bench/stl/hashmap.cpp 同算法同参数）
 use std::io
-use stl::hashMap
+use std::data::hashMap
 
 let N: i64 = 1000000
 

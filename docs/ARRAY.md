@@ -133,7 +133,7 @@ b[1..rows - 1, 1..cols - 1] =
 
 ### 模块与类型
 
-- `stl::nd`：`array2<T>`（拥有、行主序，`data/rows/cols`）、`view2<T>`（借用，
+- `std::nd`：`array2<T>`（拥有、行主序，`data/rows/cols`）、`view2<T>`（借用，
   `data/off/rows/cols/rs/cs`）；一维沿用 `slice<T>` 与 `mut slice<T>`。
 - 构造走关联函数（与 `tensor2::fromFlat` 同形）：`array2<T>::zeros(rows, cols)`、
   `array2<T>::fromFlat(s, rows, cols)`、`view2<T>::of(s, rows, cols, rs, cs)`；
@@ -159,7 +159,7 @@ b[1..rows - 1, 1..cols - 1] =
 `sum` / `max` / `min` / `count` 直接遍历视图（复用 `seq` 的语义：空视图给 `none`，
 行主序固定顺序）；分块并行版本沿用 `parts: mut slice<T>` 的 `sumBlocks` / `maxBlocks` /
 `minBlocks` 形状。**泛型复用**：泛型函数之间可以互调（`tests/generics/deferred_op_through_call.extc`
-守着这条），所以 `nd` 的归约直接转调 `stl::seq`，取行/取列的循环也可以共享泛型 helper。
+守着这条），所以 `nd` 的归约直接转调 `std::data::seq`，取行/取列的循环也可以共享泛型 helper。
 剩下的代价是每个 `T` 都会实例化一份代码（代码体积，不是运行期开销）。
 
 ### 卷积（第二步再展开）

@@ -1,5 +1,5 @@
 use std::io
-use stl::vector
+use std::data::vector
 fn main() -> i32 {
     var a = vector<i64>::withCap(4)
     var i: i64 = 0

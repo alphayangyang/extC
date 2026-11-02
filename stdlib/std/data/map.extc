@@ -30,7 +30,7 @@
  * which adds `release` / `shrink` and turns the free list into pool slots. *
  * @code
  * use std::io
- * use stl::map
+ * use std::data::map
  *
  * fn main() -> i32 {
  *     var m: map<i64, i32> = map<i64, i32>::withCap(4)
@@ -107,7 +107,7 @@ struct map<K, V> {
     fn new() -> map<K, V> { return map<K, V>::withCap(16) }
 
     fn len(self: ref map<K, V>) -> i64 { return self.n }
-    @private fn nodeCount(self: ref map<K, V>) -> i64 { return self.nnodes }
+    fn nodeCount(self: ref map<K, V>) -> i64 { return self.nnodes }
     fn capOf(self: ref map<K, V>) -> i64 { return self.ncap }
     /* 这张表**当下**在它自己池里占的字节（四处存储 + 两块草稿）。
      * 判据：`growStores` 把旧块当场还了 ⇒ 这个数只随当前 `ncap` 走，与长过多少次无关；

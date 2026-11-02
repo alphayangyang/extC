@@ -1,5 +1,5 @@
 use std::io
-use stl::vector
+use std::data::vector
 /* GC 探针：涨到 1e6（8 MB）→ 清空/留 10 个 → [shrink] → 空转让外面采样 */
 fn main() -> i32 {
     var v = vector<i64>::new()

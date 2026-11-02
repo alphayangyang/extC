@@ -1,7 +1,7 @@
 // 共享存储的警告 · **不该报**的形状（同 clone_warn.extc 配对）
 //
 // 这四种都正确：要么移交新值、要么显式 clone、要么按 ref 借，都不该有警告。
-use stl::vector
+use std::data::vector
 
 /* 返回刚建好的值 ⇒ 移交，没有第二份 */
 fn make() -> vector<i32> {

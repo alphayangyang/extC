@@ -1,7 +1,7 @@
 // 下标语法也给哈希表：读 hm[k]、写 hm[k] = v（缺则新建、有则覆盖）
 // expect: a=11 none=-1 newLen=3 upd=111 updLen=3
 use std::io
-use stl::hashMap
+use std::data::hashMap
 
 fn main() -> i32 {
     var m = hashMapI64<i32>::withCap(8)

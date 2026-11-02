@@ -2,7 +2,7 @@
 // expect: cap0=8 key83=83 cap=135 after=0 live=0
 use std::io
 use std::sys::pool as syspool
-use stl::linmap
+use std::data::linmap
 
 fn main() -> i32 {
     var m = linMap<i64, i32>::withCap(8)

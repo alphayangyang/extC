@@ -1,7 +1,7 @@
-// 固定分块的并行归约：`stl::seq` 为此只提供"结合后与串行逐位相同"的那几种
+// 固定分块的并行归约：`std::data::seq` 为此只提供"结合后与串行逐位相同"的那几种
 // （整数求和、f64 的 max/min）。1 线程与多线程必须同输出。
 use std::io
-use stl::seq
+use std::data::seq
 
 fn main() -> i32 {
     let n: i64 = 4096

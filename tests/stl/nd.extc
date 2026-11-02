@@ -1,6 +1,6 @@
-// stl::nd —— N 维视图：3 维/4 维、转置、降维、逐元素运算、形状不匹配
+// std::nd —— N 维视图：3 维/4 维、转置、降维、逐元素运算、形状不匹配
 use std::io
-use stl::nd
+use std::nd
 
 fn main() -> i32 {
     var a: ndarray<f64> = ndarray<f64>::zeros3(2, 3, 4) ?? ndarray<f64>::empty()

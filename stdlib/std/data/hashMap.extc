@@ -7,7 +7,7 @@
  *
  * @code
  * use std::io
- * use stl::hashMap
+ * use std::data::hashMap
  *
  * fn main() -> i32 {
  *     var m = hashMapI64<i32>::withCap(4)
@@ -39,7 +39,7 @@
  *     in phase 1+.
  */
 
-use stl::pool
+use std::data::pool
 use std::sys::pool as syspool    /* 运行期池记录：本容器自己的那一只，值池以它为父 */
 
 let EMPTY: u8 = 0

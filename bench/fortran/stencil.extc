@@ -4,10 +4,10 @@
 // 用法：stencil [n] [iters]，缺省 64 10。输出：cs=<整数> n=<n>
 //
 // 这臂按 extC 的日常写法（甜的那一面）来：range-for 遍历、并行赋值换 buffer、
-// `stl::string::toI64` + `??` 解析参数、f-string 输出。SPEC §2 记了这一点 ——
+// `std::text::string::toI64` + `??` 解析参数、f-string 输出。SPEC §2 记了这一点 ——
 // 横评要比的是「用这门语言的惯用写法」，不是手写 C 的翻版。
 use std::io
-use stl::string as str
+use std::text::string as str
 
 // 第 i 个参数按十进制 i64 读；没给、或不是数字，就用缺省值
 // （`toI64` 给 option，`??` 在缺的时候兜底，正常路径只求值一次）。

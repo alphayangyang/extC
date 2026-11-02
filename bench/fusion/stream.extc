@@ -1,7 +1,7 @@
 // bench/fusion S3：元素链（两层临时视图）+ 归约，编译器应把三处全化掉（流式归约）。
 // argv: n [iters]；每轮分配两层临时视图、写两次、再升序累加。
 use std::io
-use stl::string as str
+use std::text::string as str
 
 fn argOr(args: slice<slice<u8>>, i: i64, dflt: i64) -> i64 {
     if args.len <= i { return dflt }

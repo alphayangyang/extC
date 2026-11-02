@@ -2,7 +2,7 @@
 // 需要独立拷贝时仍写 `snapshot()`。
 // expect: first=97 via=abc same=true
 use std::io
-use stl::string
+use std::text::string
 
 fn firstByte(v: slice<u8>) -> i64 { return i64(v[0]) }
 

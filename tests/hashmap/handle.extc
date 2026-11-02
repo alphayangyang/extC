@@ -10,7 +10,7 @@
  * expect: sum=14 n=2 same=true stale=true keep=true sixth=true
  */
 use std::io
-use stl::hashMap
+use std::data::hashMap
 
 struct sess { n: i64  sum: i64 }
 

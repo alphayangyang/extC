@@ -1,8 +1,8 @@
-/* rank-2 整数组表达式：`vs = va + vb` 一类形状直接落成 stl::nd 的逐元素内核调用
+/* rank-2 整数组表达式：`vs = va + vb` 一类形状直接落成 std::nd 的逐元素内核调用
  * （addInto / subInto / mulInto / scaleInto / axpyInto），不展开循环、不留中间视图。
  * 判据见 tests/stl/run.sh 的 nd_expr 一项。 */
 use std::io
-use stl::nd
+use std::nd
 
 fn show(name: slice<u8>, v: ndview<f64>) -> i32 {
     io::cout << name << "=" << v[0, 0] << "," << v[0, 2] << " " << v[1, 1] << "\n"

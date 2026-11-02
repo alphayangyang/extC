@@ -3,7 +3,7 @@
 // 判据的反面（取视图后 push）写在 README 里：那是签字认账的范围，检查器看不见
 // （它不是生命周期问题，是"块被替换了"）：POOLS.md §5.4 / docs/topics/POOL-SOUNDNESS.md §4.3
 use std::io
-use stl::string
+use std::text::string
 
 fn main() -> i32 {
     var s: string = string::withCap(8)

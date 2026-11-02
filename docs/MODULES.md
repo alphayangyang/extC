@@ -86,7 +86,7 @@ fn main() -> i32 {
 
 prelude 是编译器在每个编译单元前先过一遍的一段 extC 源码，它声明的名字不写 `use` 就能用
 （`option`/`result`/`slice`/`varArray`、`println` 这类内建）。它**不**顺带把大模块
-（`std::io`、`stl::string`）整个拉进来：一次 `use` 两个模块的编译成本约 19ms，
+（`std::io`、`std::text::string`）整个拉进来：一次 `use` 两个模块的编译成本约 19ms，
 每个程序都付就不划算了。默认面只放"所有程序都真的要用"的那几个名字。
 
 ## 7. 诊断质量

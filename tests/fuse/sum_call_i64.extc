@@ -1,7 +1,7 @@
 // 整数元素同样折：注解 `i64` 与元素类型同名时保留（累加器就是元素类型）。
 // expect: s=16
 use std::io
-use stl::seq
+use std::data::seq
 
 fn main() -> i32 {
     let n: i64 = 4

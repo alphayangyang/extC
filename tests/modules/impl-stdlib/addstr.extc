@@ -6,7 +6,7 @@
 // 现在运算符路径与其它调用一样问唯一的主人 `cgImplicitArgs`。这条用例跑 `--run`，所以
 // gcc 那一关也在判据里。
 use std::io
-use stl::string
+use std::text::string
 
 struct tag { text: string }
 

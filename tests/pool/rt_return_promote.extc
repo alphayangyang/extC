@@ -8,7 +8,7 @@
 // expect: live=1 len=3 v0=5 v2=7
 use std::io
 use std::sys::pool as syspool
-use stl::vector
+use std::data::vector
 
 fn make() -> vector<i32> {
     var v = vector<i32>::new()

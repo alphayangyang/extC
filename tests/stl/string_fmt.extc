@@ -1,7 +1,7 @@
 /* 浮点转字符串：`stringio::fromF64(x, prec)`（定点、四舍五入）；整数走 `string::fromI64`。 */
 use std::io
-use stl::string as str
-use stl::stringio as sio
+use std::text::string as str
+use std::text::stringio as sio
 
 fn main(args: slice<slice<u8>>) -> i32 {
     if args.len > 2 { return 1 }

@@ -1,6 +1,6 @@
 // hashSetI64：100 万次插入 / 100 万次 contains / 50 万次删除
 use std::io
-use stl::hashSet
+use std::data::hashSet
 
 let N: i64 = 1000000
 

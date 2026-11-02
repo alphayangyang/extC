@@ -1,7 +1,7 @@
 // `let s = seq::sum(tmp) ?? 0` 也折进写循环：临时视图不落内存（与 --no-fuse 逐字节相同）。
 // expect: s=22
 use std::io
-use stl::seq
+use std::data::seq
 
 fn main() -> i32 {
     let n: i64 = 4

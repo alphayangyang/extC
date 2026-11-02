@@ -1,6 +1,6 @@
 /* ② 池：同一格，不同代 —— 陈旧句柄永远不会指向别人的值 */
 use std::io
-use stl::pool
+use std::data::pool
 
 fn main() -> i32 {
     var p: pool<i64> = pool<i64>::withCap(4)

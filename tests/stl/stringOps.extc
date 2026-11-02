@@ -2,8 +2,8 @@
 // 取字节 · 零拷贝视图 · 以及"能当 hashMap 的键"（hash + == 齐了）
 // expect: c=hello world|a=hello world|eq=true|lt=false|find=6|miss=-1|sw=true|ew=true|at=101|sub=world|cb=hello world!!!|hn=2|hv=20
 use std::io
-use stl::string
-use stl::hashMap
+use std::text::string
+use std::data::hashMap
 
 fn main() -> i32 {
     var a: string = string::withCap(8)

@@ -1,7 +1,7 @@
 // bench/par：数据并行基准的 extC 臂。`par` 与顺序 for 是同一段循环体，只差一个词。
 // 输出唯一一行：cs=<checksum> n=<n>；各臂必须逐字节相同。
 use std::io
-use stl::string as str
+use std::text::string as str
 
 fn argOr(args: slice<slice<u8>>, i: i64, dflt: i64) -> i64 {
     if args.len <= i { return dflt }

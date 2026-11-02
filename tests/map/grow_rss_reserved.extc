@@ -1,6 +1,6 @@
 // 同一形状，但一开始就预留到 1e6 条目 ⇒ 一次 growStores 都不发生（对照组的"下界"）
 use std::io
-use stl::map
+use std::data::map
 
 fn main() -> i32 {
     var m = map<i64, i32>::withCap(200000)

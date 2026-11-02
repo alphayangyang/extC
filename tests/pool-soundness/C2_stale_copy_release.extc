@@ -1,6 +1,6 @@
 // "陈旧拷贝 release"：a 释放后槽位被别人拿走，共享板块的 b 再 release 会 drop 掉**别人的池**
 use std::io
-use stl::vector
+use std::data::vector
 fn main() -> i32 {
     var a: vector<i32> = vector<i32>::withCap(4)
     a.push(i32(7))

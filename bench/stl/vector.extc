@@ -1,6 +1,6 @@
 // vector<i32>：100 万次 push（含翻倍扩容）/ 求和 / 100 万次 pop
 use std::io
-use stl::vector
+use std::data::vector
 
 let N: i64 = 10000000
 

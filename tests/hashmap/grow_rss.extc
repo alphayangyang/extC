@@ -7,7 +7,7 @@
 // 1,048,576×17 = 17.8 MB 跑不掉 ⇒ 判据有牙，且**不依赖 RSS**（RSS 那一版判据会随"清不清零"
 // 漂移：同样的代码在 HEAD 上是 63,296 vs 69,056，在不清零那版上是 63,296 vs 51,968 —— 见 DEVLOG）。
 use std::io
-use stl::hashMap
+use std::data::hashMap
 
 fn main() -> i32 {
     var hm = hashMapI64<i32>::withCap(16)

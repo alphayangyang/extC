@@ -10,10 +10,10 @@
 // 对照 Python（同义）：`" · ".join(p.strip() for p in raw.split(","))`、
 // `sum(r)`、`[av[i] + 2*bv[i] for i in range(n)]`、`sum(2*x+1 for x in out)`。
 use std::io
-use stl::seq
-use stl::string
-use stl::stringio
-use stl::nd
+use std::data::seq
+use std::text::string
+use std::text::stringio
+use std::nd
 
 fn regions(raw: slice<u8>) -> string {
     var out: string = string::empty()

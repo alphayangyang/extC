@@ -14,7 +14,7 @@
 // `tests/pool/run.sh` 把生成物里 `int64_t __extc_zm` 的出现次数钉成常量并说明来源。
 use std::io
 use std::sys::pool
-use stl::hashMap
+use std::data::hashMap
 
 fn main() -> i32 {
     var n: i64 = 8

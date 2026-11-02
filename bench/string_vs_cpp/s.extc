@@ -1,4 +1,4 @@
-/* bench/string_vs_cpp/s.extc —— extC `stl::string`（SSO）这一侧的横评程序。
+/* bench/string_vs_cpp/s.extc —— extC `std::text::string`（SSO）这一侧的横评程序。
  *
  * 12 个场景，`args[1]` 选一个（不给就跑全部）。每个场景打印一行 `名字 cs=整数`：
  * 那个整数是**校验和**，两边必须逐位相同 —— 对不上就是没做等价的工作（不是"跑得慢"的问题）。
@@ -16,7 +16,7 @@
  * 这条是实测出来的，见 RESULTS.md「不公平的地方」）。
  */
 use std::io
-use stl::string
+use std::text::string
 
 /* ---------------------------------------------------------------- 公共公式
  *

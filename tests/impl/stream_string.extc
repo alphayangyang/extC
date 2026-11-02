@@ -7,8 +7,8 @@
 // expect: streamed=9|lines=3 len=2,11,11 eof=0 total=24 head=42
 use std::io
 use std::fs
-use stl::string
-use stl::stringio
+use std::text::string
+use std::text::stringio
 
 fn go() -> result<unit, io::ioError> {
     /* 写：一行（含换行）进 writer 的缓冲，最后 flush 一趟 */

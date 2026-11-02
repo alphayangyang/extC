@@ -355,7 +355,7 @@ Expr *exprSliceNew(Arena *a, Expr *obj, Expr *lo, Expr *hi, int line) {
  * @param a          Arena to allocate from (for the empty targs table).
  * @param e          Expression node to rewrite (in place).
  * @param typeName   The type-name segment (such as `"stl"`).
- * @param modPrefix  Module prefix (such as `"stl::stringio"`).
+ * @param modPrefix  Module prefix (such as `"std::text::stringio"`).
  * @param name       Function name (statically stored).
  * @param args       The new argument list (a vector of pointers).
  */

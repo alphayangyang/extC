@@ -8,7 +8,7 @@
 //      （槽级 `gen` 的老保护没退化 —— 只比 epoch 会静默读到新元素）。
 // expect: cap=8 stale=0 len=0 refill=3 cap2=8 live=3 d=7,8,9 removed=1 reuse=0 fresh=1
 use std::io
-use stl::pool
+use std::data::pool
 
 fn main() -> i32 {
     var p: pool<i32> = pool<i32>::withCap(8)

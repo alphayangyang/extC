@@ -23,9 +23,9 @@
  */
 use std::io
 use std::time
-use stl::vector
-use stl::hashMap
-use stl::sort
+use std::data::vector
+use std::data::hashMap
+use std::data::sort
 use std::sys::file as sysfile
 use std::sys::io as sysio
 use std::sys::net

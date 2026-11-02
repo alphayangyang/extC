@@ -9,10 +9,10 @@
 // 输出（三种语言必须逐字相同）：
 //   b.ins=<新插入条数> b.lkp=<前驱查找校验和> b.scan=<区间计数和> b.del=<删除条数> b.len=<最终条数>
 //
-// 对照：extC `stl::map`（B+ 树）· C++ `std::map`（红黑树）· Go `map` + 排序切片（二分）。
+// 对照：extC `std::data::map`（B+ 树）· C++ `std::map`（红黑树）· Go `map` + 排序切片（二分）。
 // 三种都做**同一件事**，只是各自语言里最自然的那个有序结构。
 use std::io
-use stl::map
+use std::data::map
 
 use std::time
 use std::sys::io as sysio

@@ -17,7 +17,7 @@
  *
  * `ARENA-FORMAL.md:678` 写的是"needsHome 的**传递闭包**" ⇒ 实现比文档少一层 ⇒ 反例成立。 */
 use std::io
-use stl::string
+use std::text::string
 
 struct store { keys: varArray<string> }
 

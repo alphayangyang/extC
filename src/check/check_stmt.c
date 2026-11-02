@@ -2636,7 +2636,7 @@ static bool arrayNdProto(const Type *t, const char *want) {
  * @brief Element type of a name of type `ndview<T>`.
  *
  * The rank-2 shape of an integer-array expression lowers directly to an element-wise kernel call of
- * `stl::nd` (such as `addInto`), so only "the binding is an `ndview<T>`" is accepted and its element
+ * `std::nd` (such as `addInto`), so only "the binding is an `ndview<T>`" is accepted and its element
  * type is returned.
  *
  * @param c     Checker.
@@ -2727,7 +2727,7 @@ static Stmt *arrayNdKernelStmt(Checker *c, const char *fn, const char *dst,
 }
 
 /**
- * @brief Lower an integer-array expression on an `ndview<T>` target to an element-wise `stl::nd`
+ * @brief Lower an integer-array expression on an `ndview<T>` target to an element-wise `std::nd`
  *        kernel call.
  *
  * Accepted shapes (first rank-2 version): `dst = a + b`, `dst = a - b`, `dst = a * b`, `dst = a * k`
@@ -2817,7 +2817,7 @@ Stmt *arrayAssignLower(Checker *c, Stmt *s) {
      * desugaring accepts only shapes that carry an operation. */
     if (!s->u.assign.op && s->u.assign.value->kind == EX_IDENT) return NULL;
     const char *outName = tgt->u.ident.name;
-    /* Try the rank-2 shape (an `ndview<T>` target) first: it goes through `stl::nd`'s element-wise
+    /* Try the rank-2 shape (an `ndview<T>` target) first: it goes through `std::nd`'s element-wise
      * kernel and does not unroll a loop. */
     if (!arrayViewElem(c, outName)) {
         Stmt *nd = arrayNdLower(c, s);

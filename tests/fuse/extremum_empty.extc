@@ -1,6 +1,6 @@
 // 空输入走兜底：折进写循环之后 `found` 仍是 false，结果必须等于用户写的兜底表达式本身。
 use std::io
-use stl::seq
+use std::data::seq
 
 fn run() -> i32 {
     var n: i64 = 0

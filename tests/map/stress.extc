@@ -3,7 +3,7 @@
 //       删掉每个第 3 个键之后剩下的**严格递增**且个数对、删过的查不到、没删的都还在
 // expect: n=4001|bad=0|gb=0|miss=-7|lb=0|removed=1334|db=0|left=2667
 use std::io
-use stl::map
+use std::data::map
 
 fn main() -> i32 {
     var m: map<i64, i32> = map<i64, i32>::withCap(16)

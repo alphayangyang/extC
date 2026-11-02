@@ -1,5 +1,5 @@
 use std::io
-use stl::map
+use std::data::map
 /* 振荡形状：20 轮 ×（插 100k、删 99k）—— [每轮 shrink] 的开销 */
 fn main() -> i32 {
     var m = map<i64, i32>::withCap(1000)

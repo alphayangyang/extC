@@ -8,7 +8,7 @@
 | 你写 | 得到什么 |
 |---|---|
 | `use std::io` | 控制台与文件 I/O（**门面**：实现分在 `std/io.extc`、`std/io/fmt.extc`、`std/io/err.extc`） |
-| `use stl::map` | 有序映射容器 |
+| `use std::data::map` | 有序映射容器 |
 | `use std::hash::sha256` | SHA-256 |
 | `use std::coro::scheduler` | 协程调度器 |
 
@@ -88,7 +88,7 @@ fn main() -> i32 {
 子系统代码（协程调度器的任务行、`hashSet` 的存活位、`stringio` 的窗口）要按位置读写；它们**不是 API**：
 宽度、布局、语义都可能随实现变化，用户代码按容器的方法写。
 
-导入名就是 `stl::<文件名>`：`use stl::vector`、`use stl::hashMap`、`use stl::stringio`……
+导入名就是 `stl::<文件名>`：`use std::data::vector`、`use std::data::hashMap`、`use std::text::stringio`……
 这一族里的容器大多带 `@sharesStorage` + `@poolObject`：
 **按值拷贝两份会共用同一块板块**，编译器会为此报警告；要独立副本必须显式 `clone()`
 （判据  / `clone_ok.extc`，见 ）。
@@ -98,7 +98,7 @@ fn main() -> i32 {
 
 ### `varArray` / `vector`：两个动态数组
 
-| | `varArray<T>`（prelude） | `vector<T>`（`stl::vector`） |
+| | `varArray<T>`（prelude） | `vector<T>`（`std::data::vector`） |
 |---|---|
 | 存储来源 | arena 切片 | **自己的板块**（[内存模型](../MEMORY-MODEL.md)） |
 | 寻址 | 下标 | 下标（`len` / `capacity` / `get` / `set`） |
@@ -116,7 +116,7 @@ fn main() -> i32 {
 
 ```extc
 use std::io
-use stl::vector
+use std::data::vector
 fn main() -> i32 {
     var v: vector<i64> = vector<i64>::new()
     v.push(i64(3))  v.push(i64(1))  v.push(i64(2))
@@ -201,7 +201,7 @@ struct grow<T> {
 | 运算符 | `a + b`：返回**新值**的拼接。右操作数可以是 `slice<u8>`、`string`、整数（按十进制）、`f64`/`f32`（6 位小数，`stringio` 里）或 `bool`；要求 `a` 是 `string`。分配落在调用点的 arena 上，可以在函数里拼完返回 |
 | 追加数字 | `appendI64(v)`；`appendF64(x, prec)`（在 `stringio` 里，定点 `prec` 位小数，上限 20）。拼一行报表少一次临时 `string` |
 | 借出视图 | `view()`：只读字节视图，**不拷贝**；收 `slice<u8>` 的形参因此可以直接传 `string`（自动借出）。要独立拷贝仍写 `snapshot()` |
-| 直接打印 | `io::cout << s`（`string` 的 `<<` 重载在 `stl::string` 里，`use stl::string` 就够，不用写 `s.snapshot()`） |
+| 直接打印 | `io::cout << s`（`string` 的 `<<` 重载在 `std::text::string` 里，`use std::text::string` 就够，不用写 `s.snapshot()`） |
 | 查找 | `find(needle) -> ?i64`（无匹配 `none`）、`contains`、`startsWith`、`endsWith`、`hash()` |
 | 容量 | `grow()`（1.5 倍）、`shrink()`、`clear()`、`release()`、`removeFront(n)` |
 | 解析 | `string::toI64(b) -> ?i64`；`string::toF64(b) -> ?f64`（整数/小数/指数写法，至少一位数字；不接受 `.5`、`inf`、`nan`、十六进制） |
@@ -213,8 +213,8 @@ struct grow<T> {
 **拿到内容只有 `snapshot()` 一条路（拷贝）**：池里不放视图出去。
 `string` 的 `hash()` + `==` 齐了，所以它能直接当 `hashMap` 的键。
 
-`stl::stringio` 用 `impl` 块把流式读写挂到 `string` 与 `io::istream` / `fs::ifstream` 上
-（`io::cout << s` 的重载挂在 `stl::string` 自己身上，所以打印只需要 `use stl::string`，
+`std::text::stringio` 用 `impl` 块把流式读写挂到 `string` 与 `io::istream` / `fs::ifstream` 上
+（`io::cout << s` 的重载挂在 `std::text::string` 自己身上，所以打印只需要 `use std::text::string`，
 这里列的是读与格式化）：
 
 | 名字 | 签名 |
@@ -233,8 +233,8 @@ struct grow<T> {
 ```extc
 use std::io
 use std::fs
-use stl::string
-use stl::stringio
+use std::text::string
+use std::text::stringio
 
 fn main() -> i32 {
     var r: fs::ifstream = fs::openRead("std-e-in.txt")?     // 内容 "alpha\nbeta\n"
@@ -248,7 +248,7 @@ fn main() -> i32 {
 ```
 实测：`n1=5 n2=5 s=alphabeta`（第一行不含换行）。
 
-> 实测的坑：同一个程序里 `use stl::linmap` + `use stl::string`，并且真的实例化
+> 实测的坑：同一个程序里 `use std::data::linmap` + `use std::text::string`，并且真的实例化
 > `linMap<i64, slice<u8>>`（`slice<u8>` 做值）时，生成的 C 里 `option_slice_u8` 会**重复定义**，
 > C 编译失败。最小复现见本页末尾"今天会咬人的组合"第 3 条。
 
@@ -275,7 +275,7 @@ fn main() -> i32 {
 
 ```extc
 use std::io
-use stl::map
+use std::data::map
 fn main() -> i32 {
     var m: map<i64, i64> = map<i64, i64>::new()
     m.put(i64(2), i64(20))  m.put(i64(1), i64(10))
@@ -287,7 +287,7 @@ fn main() -> i32 {
 
 ```extc
 use std::io
-use stl::set
+use std::data::set
 fn main() -> i32 {
     var s: set<i64> = set<i64>::withCap(i64(4))
     s.put(i64(4))
@@ -335,7 +335,7 @@ handle 的用处是让身份离开循环（存进数组、跨语句复用、跨�
 <!-- fragment -->
 ```extc
 use std::io
-use stl::hashMap
+use std::data::hashMap
 fn bump(m: mut ref hashMapI64<i64>, k: i64) -> i64 {
     let h: handle = m.entry(k, i64(0))     // 身份要跨语句：一次探测换出槽
     let v: i64 = m.at(h) ?? i64(0)
@@ -351,7 +351,7 @@ fn bump(m: mut ref hashMapI64<i64>, k: i64) -> i64 {
 
 ```extc
 use std::io
-use stl::hashMap
+use std::data::hashMap
 fn main() -> i32 {
     var m: hashMapI64<i64> = hashMapI64<i64>::withCap(i64(4))
     let had0 = m.put(i64(9), i64(90))
@@ -365,7 +365,7 @@ fn main() -> i32 {
 
 ```extc
 use std::io
-use stl::hashSet
+use std::data::hashSet
 fn main() -> i32 {
     var s: hashSetI64 = hashSetI64::withCap(i64(4))
     let a = s.put(i64(5))
@@ -398,7 +398,7 @@ fn main() -> i32 {
 
 ```extc
 use std::io
-use stl::linmap
+use std::data::linmap
 fn main() -> i32 {
     var m: linMap<i64, i64> = linMap<i64, i64>::withCap(i64(4))
     m.put(i64(2), i64(20))
@@ -411,7 +411,7 @@ fn main() -> i32 {
 
 ```extc
 use std::io
-use stl::linset
+use std::data::linset
 fn main() -> i32 {
     var s: linSet<i64> = linSet<i64>::withCap(i64(4))
     s.add(i64(7))
@@ -450,7 +450,7 @@ fn main() -> i32 {
 
 ```extc
 use std::io
-use stl::pool
+use std::data::pool
 fn main() -> i32 {
     var p: pool<i64> = pool<i64>::withCap(i64(4))
     let h = p.insert(i64(42))
@@ -477,7 +477,7 @@ fn main() -> i32 {
 
 ```extc
 use std::io
-use stl::sort
+use std::data::sort
 fn main() -> i32 {
     var a: [5]i64 = [3, 1, 4, 1, 5]
     var v: mut slice<i64> = a[..]
@@ -513,7 +513,7 @@ worker 上算局部结果写进 `parts[b]`，再按段序串行合并。前置�
 
 ```extc
 use std::io
-use stl::seq
+use std::data::seq
 
 fn main() -> i32 {
     var a: mut slice<i64> = new i64[i64(4096)]
@@ -527,7 +527,7 @@ fn main() -> i32 {
 
 ```extc
 use std::io
-use stl::seq
+use std::data::seq
 
 fn main() -> i32 {
     var xs: [4]f64 = [1.0, 2.0, 3.0, 4.5]
@@ -562,11 +562,11 @@ fn main() -> i32 {
 是同一个类型、都不复制数据。构造失败（形状为负、装不下、步长为负、最远元素越界）返回 `none` —— 库不 trap；
 `empty` 是给 `??` 用的空视图兜底值。读在 `ref` 上、写在 `mut ref` 上；`fromFlat`/`fromStrided` 收
 `mut slice<T>`（要写的张量必须从可写视图建）。表达式位置要写**不带模块前缀**的类型名
-（`use stl::tensor` 之后 `tensor2<i64>::fromFlat(...)`），这是当前解析器的形状。
+（`use std::nd::tensor` 之后 `tensor2<i64>::fromFlat(...)`），这是当前解析器的形状。
 
 ```extc
 use std::io
-use stl::tensor
+use std::nd::tensor
 
 fn main() -> i32 {
     var buf: mut slice<i64> = new i64[i64(12)]
@@ -625,7 +625,7 @@ fn main() -> i32 {
 
 ```extc
 use std::io
-use stl::nd
+use std::nd
 
 fn main() -> i32 {
     var a: ndarray<f64> = ndarray<f64>::zeros3(i64(2), i64(3), i64(4)) ?? ndarray<f64>::empty()
@@ -643,12 +643,12 @@ fn main() -> i32 {
 
 实测：`n=24 s=36 t=72 tr=36`。细节见 `stdlib/stl/nd.extc` 与 `tests/stl/nd.extc`。
 
-二维视图上可以直接写下标糖（`use stl::nd` 之后）：
+二维视图上可以直接写下标糖（`use std::nd` 之后）：
 
 ```extc
 // 结果：one=12 sub=66
 use std::io
-use stl::nd
+use std::nd
 
 fn main() -> i32 {
     var a: ndarray<f64> = ndarray<f64>::zeros2(3, 4) ?? ndarray<f64>::empty()
@@ -1204,7 +1204,7 @@ fn main() -> i32 {
 | `eq(a, b) -> bool` | 整块比较（`n <= 0` 算相同） |
 | `copy(dst, src) -> i64` | 原地整块拷贝；装不下 `-1` |
 
-`stl::string` 的 `find` / `contains` 建在它上面。
+`std::text::string` 的 `find` / `contains` 建在它上面。
 
 ```extc
 use std::io
@@ -1280,7 +1280,7 @@ note:  what a program normally needs is `std::heap`: `plate::open` / `alloc` / `
 |  | 裸 fd、epoll、socket、DNS 运行期 | `std::net`、`std::loop`、`std::coro::scheduler` |
 |  | `mmap` / `mprotect` / `munmap`、`extc_viewOf`、`extc_memCopy` | `std::heap` |
 |  | `fork` / `waitpid` / `getpid` / `sched_setaffinity` / `exit` | `std::proc` |
-|  | 运行期池记录 + 板块原语 | `stl::pool` / `stl::vector`（编译器合成调用） |
+|  | 运行期池记录 + 板块原语 | `std::data::pool` / `std::data::vector`（编译器合成调用） |
 |  | 任务表运行期（`extc_task_begin` / `_zone` / `_end` / `_live`） | `std::coro::scheduler` |
 |  | 域的运行期入口 | 编译器 + 库 |
 
@@ -1327,14 +1327,14 @@ note:  Builtin primitives are how the standard library names what the runtime im
    实测（`io::cout << "had=" << m.put(k, v) << " v=" << (m.get(k) ?? -1)`）：拆成 `let had = ...` /
    `let v = m.get(k) ?? -1` 再打印即可。
 
-3. **`use stl::linmap` + `use stl::string` + 实例化 `linMap<i64, slice<u8>>`**：生成的 C 里
+3. **`use std::data::linmap` + `use std::text::string` + 实例化 `linMap<i64, slice<u8>>`**：生成的 C 里
    `option_slice_u8` 重复定义，C 编译失败：
 
    ```text
    build/…c:371:8: error: redefinition of 'struct option_slice_u8'
    extc: C compiler failed (exit 1) on `build/…c`
    ```
-   把值类型换成 `i64`（不产生 `option<slice<u8>>`）或去掉 `stl::string` 就过。
+   把值类型换成 `i64`（不产生 `option<slice<u8>>`）或去掉 `std::text::string` 就过。
 
 4. **`use std::io` 会把 `std::sys::io` 的名字一起并进那张扁平表**，于是用户文件里不能再声明
    `read` / `write` / `open` / `close`：

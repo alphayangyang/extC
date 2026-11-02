@@ -1,6 +1,6 @@
 // string churn（小）：循环 clear + 追加 200 字节，容量策略不变 ⇒ 内存应当平
 use std::io
-use stl::string
+use std::text::string
 
 fn main() -> i32 {
     var s = string::withCap(1024)

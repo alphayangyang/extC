@@ -1,5 +1,5 @@
 use std::io
-use stl::string
+use std::text::string
 fn main() -> i32 {
     var s: string = string::withCap(4)
     s.append("hello world")

@@ -2,7 +2,7 @@
 // 借出成 `view()`，不必手写 `.view()`。
 // expect: v=hi, you n=5 x=hi
 use std::io
-use stl::string
+use std::text::string
 
 fn take(v: slice<u8>) -> i64 { return v.len }
 

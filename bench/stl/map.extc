@@ -1,6 +1,6 @@
 // map<i64,i32>（B+ 树）：100 万次插入 / 100 万次查找 / 有序遍历 / 50 万次删除
 use std::io
-use stl::map
+use std::data::map
 
 let N: i64 = 1000000
 

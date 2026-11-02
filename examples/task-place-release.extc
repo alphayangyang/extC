@@ -8,7 +8,7 @@
  * expect: a=3 b=4 live=0 */
 use std::io
 use std::sys::pool as syspool
-use stl::vector
+use std::data::vector
 
 fn a() -> coroutine<i64> {
     var v: vector<i32> = vector<i32>::withCap(4)

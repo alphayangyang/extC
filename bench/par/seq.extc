@@ -1,6 +1,6 @@
 // bench/par：顺序参照臂（同一个循环体，`par` 换成 `for`）。
 use std::io
-use stl::string as str
+use std::text::string as str
 
 fn argOr(args: slice<slice<u8>>, i: i64, dflt: i64) -> i64 {
     if args.len <= i { return dflt }

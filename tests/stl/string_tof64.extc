@@ -1,7 +1,7 @@
 // `string::toF64`：十进制文本 -> ?f64（不合形状一律 none，调用点用 `??` 兜底）。
 // expect: 3.14 -0.5 42 1000 0.015 0.25 -1 -1 -1
 use std::io
-use stl::string
+use std::text::string
 
 fn main() -> i32 {
     io::cout << (string::toF64("3.14") ?? 0.0) << " "

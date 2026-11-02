@@ -192,10 +192,10 @@ s = s + 1.0             // 另一侧是 f64
 
 今天能用的东西：
 
-- `stl::string`：`new` / `withCap` / `from(slice<u8>)` / `fromI64`；方法 `len`、`snapshot`、`clone`、
+- `std::text::string`：`new` / `withCap` / `from(slice<u8>)` / `fromI64`；方法 `len`、`snapshot`、`clone`、
   `push`、`append`、`concat`、`concatBytes`、`sub`、`at`、`find`、`contains`、`startsWith`、
   `endsWith`、`removeFront`、`clear`、`hash`、`==`（`string` 与 `slice<u8>` 各一套）、`<`。
-- `stl::stringio`（`impl string`）：`readLineFrom` / `readAllFrom` / `writeTo` / `writeLineTo`；
+- `std::text::stringio`（`impl string`）：`readLineFrom` / `readAllFrom` / `writeTo` / `writeLineTo`；
   对 `io::istream` 与 `fs::ifstream` 也有 `impl`。
 - `std::io`：`cout <<`（`i32`/`i64`/`f64`/`bool`/`slice<u8>`）、`writerOf(fd)`、`readerOf(fd)`、
   `readSome`、`flush`；`io::reader` 的 `nextByte` / `nextLine` / `nextI64` / `avail` / `fill`；
@@ -221,7 +221,7 @@ for line in io::lines() { ... }            // 逐行迭代，错误在迭代器�
 
 ### 第 1 层 B 的进展（字符串与 IO）
 
-- `stl::string::split(s, sep)`：按字节分隔符切分，每段是零拷贝视图（`varArray<slice<u8>>`）。
+- `std::text::string::split(s, sep)`：按字节分隔符切分，每段是零拷贝视图（`varArray<slice<u8>>`）。
   替掉"手写两层 while 找分隔符"约 8–12 行。
 - `io::print(s)` / `io::println(s)`：不用链式写法的一行输出，替掉 `io::cout << s << "\n"`。
 
@@ -233,7 +233,7 @@ for line in io::lines() { ... }            // 逐行迭代，错误在迭代器�
   取还，调用点不用再记那两行样板；空行给 `some("")`，只有 EOF 给 `none`）。
 
 数字进字符串不必先转成 `string` 再切视图：`s.appendI64(n)`、`s.appendF64(x, 2)` 直接追加
-（`appendI64` 在 `stl::string`、`appendF64` 在 `stl::stringio`，后者要 I/O 层的格式化）。
+（`appendI64` 在 `std::text::string`、`appendF64` 在 `std::text::stringio`，后者要 I/O 层的格式化）。
 循环里拼 `csv` 这种形状因此是一行一个调用。
 
 字符串拼接有运算符写法：`let s = str::from("a") + "=" + v`（`fn +` 返回新值；右操作数是
@@ -244,11 +244,11 @@ for line in io::lines() { ... }            // 逐行迭代，错误在迭代器�
 这两项让"用字符串拼一行"彻底不需要临时视图。
 
 **f-string 落在值位置**：`let s: string = f"{name}: {n}"` 展开成
-`stl::string::from("…") + 槽 + …` 的 `+` 链（要求 `stl::string` 被 import）。
+`std::text::string::from("…") + 槽 + …` 的 `+` 链（要求 `std::text::string` 被 import）。
 `let s = f"…"` 不写注解也能推成 `string`。
 
 **值位置也吃格式说明符**：`let s = f"[{n:>4}][{x:8.2f}]"` 里的槽按**槽值的静态类型**落成
-`stl::stringio::padI64` / `padF64` / `padText` 调用（所以带说明符时还要 import `stl::stringio`），
+`std::text::stringio::padI64` / `padF64` / `padText` 调用（所以带说明符时还要 import `std::text::stringio`），
 语义与 `<<` 右侧的说明符逐条相同 —— 报表/日志不需要再为排版退回 `<<`。
 
 本段又补：`io::eprint` / `io::eprintln`（诊断通道的一句版）、`stringio::fromF64(x, prec)`（定点浮点
@@ -278,7 +278,7 @@ for line in io::lines() { ... }            // 逐行迭代，错误在迭代器�
 
 ## 第 1 层 C 的进展（多下标与切片糖）
 
-`v[i, j]` 与 `v[r0..r1, c0..c1]` 现在直接可用（`use stl::nd` 之后）：
+`v[i, j]` 与 `v[r0..r1, c0..c1]` 现在直接可用（`use std::nd` 之后）：
 
 <!-- fragment -->
 ```extc
@@ -428,7 +428,7 @@ out = a + b * k
 |---|---|---|---|
 | 0 | `i64(<字面量>)` 自己写出来的仪式 | 已清到 6 处残留（都是语义必需：移位左操作数、`i64` 边界值、只定义 `<<(i64)` 的自定义流） | 本页「噪音测量」+ `tests/sugar/`、`tests/ops/stream*.extc` |
 | 1A | 字面量不替类型参数作主（六条规则） | 已落地 | 本页「第 1 层 A 的进展」 |
-| 1B | 值 f-string（含说明符，**糖自带模块**：不必为它写 `use stl::string`）、`split`/`join`/`trim`、控制台读、`string + 数字`、`view` 借出 | 已落地 | 本页「第 1 层 B 的进展」、`tests/fstring/`、`tests/stl/` |
+| 1B | 值 f-string（含说明符，**糖自带模块**：不必为它写 `use std::text::string`）、`split`/`join`/`trim`、控制台读、`string + 数字`、`view` 借出 | 已落地 | 本页「第 1 层 B 的进展」、`tests/fstring/`、`tests/stl/` |
 | 1C | 两下标 / 三下标 / 区间下标 / 复合赋值；`?` 落在语句值位置 | 已落地（零开销有闸门） | 本页「第 1 层 C 的进展」、`tests/stl/nd_sub*.extc`、`tests/ops/try_expr.extc` |
 | 1D | `fn` 形参的效果摘要（回调可写） | 已落地 | 本页「第 1 层 D 的进展」、`tests/ops/fn_callback_view.extc` |
 | 2 | S1 元素链 / S2 归约 / S3 流式 / 容器形式 / 跨函数 `seq::sum`、`seq::max`、`seq::min` | 已落地 | 本页 S1/S2/S3 与（三）（四）、`tests/fuse/`、`bench/fusion/` |

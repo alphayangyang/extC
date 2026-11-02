@@ -8,12 +8,12 @@
  *     if mem::eq(a, b) { }                     // 整块比较
  *     if mem::contains(hay, needle) { }
  *
- * 用户通常不需要直接调它们：`stl::string` 的 `find` / `contains` / `startsWith` / `endsWith`
+ * 用户通常不需要直接调它们：`std::text::string` 的 `find` / `contains` / `startsWith` / `endsWith`
  * 就建在这上面（实测：改用 libc 的 memmem 后 `bench/string_vs_cpp` 的 find 一格从 3173ms
  * 掉到与 C++ 同量级 —— 纯 extC 的 Two-Way 逐字节走边界检查太贵）。
  */
 
-/* 原语（`stl::string` 直接用它们；用户通常用下面的 `find`/`contains`/`eq`）：
+/* 原语（`std::text::string` 直接用它们；用户通常用下面的 `find`/`contains`/`eq`）：
  * 在 `hay` 里找 `needle` 的第一个（最左）匹配，返回偏移；没有返回 -1；空模式返回 0。 */
 extern!("extc-mem") fn extc_memFind(hay: ref u8, hayLen: i64, needle: ref u8, needleLen: i64) -> i64
     effects Addr=0 Cont=0

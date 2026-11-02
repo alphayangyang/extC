@@ -1,7 +1,7 @@
-// `io::cout << s` 只需要 `use stl::string`（`<<` 重载挂在 string 模块，不再依赖 stringio）。
+// `io::cout << s` 只需要 `use std::text::string`（`<<` 重载挂在 string 模块，不再依赖 stringio）。
 // expect: hi 3|second
 use std::io
-use stl::string
+use std::text::string
 
 fn main() -> i32 {
     let s: string = f"hi {3}"

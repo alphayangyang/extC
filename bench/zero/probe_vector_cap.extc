@@ -1,7 +1,7 @@
 // 量：用户可见的 vector 预分配（plate 上的一块，**必须清零**）每轮多少钱。
 // 2000 轮 × cap=100000 的 i32 缓冲 = 2000 × 400 KB = 800 MB 的 memset。
 use std::io
-use stl::vector
+use std::data::vector
 
 fn main() -> i32 {
     var r: i64 = 0

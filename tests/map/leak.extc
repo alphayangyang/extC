@@ -1,6 +1,6 @@
 // canary：只 put 不 remove（每次不同键）⇒ 内存**必须涨** —— 上面那条 churn 判据才有牙
 use std::io
-use stl::map
+use std::data::map
 
 fn toInt(s: slice<u8>, dflt: i64) -> i64 {
     if s.len == 0 { return dflt }

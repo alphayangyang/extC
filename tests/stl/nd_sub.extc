@@ -1,7 +1,7 @@
-// stl::nd 的两下标糖：`v[i, j]` 直译成 `nd::at2`、`v[r0..r1, c0..c1]` 直译成
+// std::nd 的两下标糖：`v[i, j]` 直译成 `nd::at2`、`v[r0..r1, c0..c1]` 直译成
 // `nd::slice2`（都是库函数，没有新语法节点，也没有新的运行期形状）。
 use std::io
-use stl::nd
+use std::nd
 
 fn main() -> i32 {
     var a: ndarray<f64> = ndarray<f64>::zeros2(3, 4) ?? ndarray<f64>::empty()

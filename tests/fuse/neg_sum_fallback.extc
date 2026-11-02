@@ -1,7 +1,7 @@
 // 反例：回退值不是零（`?? -1`）时不折 —— 空输入上 `none ?? -1` 与"零累加"不是一回事。
 // expect: s=-1
 use std::io
-use stl::seq
+use std::data::seq
 
 fn main() -> i32 {
     let n: i64 = 0

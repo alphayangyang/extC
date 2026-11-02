@@ -1,7 +1,7 @@
 // map<K, V>（有序表，第一步）：乱序插入后按序遍历 · 覆盖返回真 · lowerBound · 删中间键后仍有序
 // expect: order=1,2,3,4,5 len=5 lb3=2 lb6=5 ow=1 v3=33 miss=-1 rm=1 order2=1,2,4,5 lb5=3
 use std::io
-use stl::map
+use std::data::map
 
 fn main() -> i32 {
     var m: map<i64, i32> = map<i64, i32>::withCap(4)

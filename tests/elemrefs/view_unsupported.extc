@@ -1,7 +1,7 @@
 // A view that names a container's plate is refused: growing the container may move the plate,
 // so the address would go stale. `view()` on a string is exactly that shape.
 use std::io
-use stl::string
+use std::text::string
 
 fn main() -> i32 {
     let s: string = f"hello"

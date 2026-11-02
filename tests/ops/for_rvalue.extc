@@ -3,8 +3,8 @@
 // 得显式 `.snapshot()`）。
 // expect: total=6 parts=a|b|c vsum=15 bytes=hi
 use std::io
-use stl::string
-use stl::vector
+use std::text::string
+use std::data::vector
 
 fn nums() -> [3]i64 { return [1, 2, 3] }
 

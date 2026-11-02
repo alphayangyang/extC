@@ -5,7 +5,7 @@
  * 有任何变化都会让这一行变。
  */
 use std::io
-use stl::seq
+use std::data::seq
 
 fn main() -> i32 {
     var xs: mut slice<f64> = new f64[4]

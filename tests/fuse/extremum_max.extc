@@ -1,7 +1,7 @@
 // S2 家族的 `seq::max` 形状：写循环 + `let mx: i64 = seq::max(tmp) ?? <兜底>`
 // 资格满足时临时视图消失、极值在写循环里顺手维护（浮点/整数同语义、逐位相同）。
 use std::io
-use stl::seq
+use std::data::seq
 
 fn run(n: i64) -> i32 {
     var a: [6]i64 = [-3, -9, -1, -4, -2, -7]

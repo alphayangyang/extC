@@ -1,7 +1,7 @@
 // 泛型键（PLAN #57 的用处）：键是结构体，自带 hash 与 == ⇒ hashMap<K, V> 直接可用
 // expect: a=11 b=22 miss=-7 len=2 after=-1 len=1
 use std::io
-use stl::hashMap
+use std::data::hashMap
 
 struct pt {
     x: i64

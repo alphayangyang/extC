@@ -1,12 +1,12 @@
 /* tests/reclaim-gaps/shapes/pool_ref_slot.extc —— **池容器里装的引用**（`pool<mut ref node>`）。
  *
- * `stl::pool<T>` 的 dense 存储里放的是 `T = mut ref node`：池的缓冲区是一条引用槽数组。
+ * `std::data::pool<T>` 的 dense 存储里放的是 `T = mut ref node`：池的缓冲区是一条引用槽数组。
  * 问题：池的缓冲区不是本运行期的 rc 槽（板/池守卫），codegen 对它里面的引用是当"无引用/不可信"
  * 处理。形状：每轮 `insert` 一个自环节点、再 `remove` ⇒ 池只持有旧值一小会儿；量池持有的引用
  * 有没有让对象活下来、以及峰值随轮数涨不涨。
  */
 use std::io
-use stl::pool
+use std::data::pool
 
 struct node {
     v: i64

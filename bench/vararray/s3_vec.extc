@@ -1,5 +1,5 @@
 use std::io
-use stl::vector
+use std::data::vector
 fn main() -> i32 {
     var sum: i64 = 0
     var r: i64 = 0

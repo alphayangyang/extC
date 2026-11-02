@@ -1,7 +1,7 @@
 // 回归：槽里的 `::` 曾被当成格式说明符的开头，于是 `f"{nd::at2(v, 0, 1)}"` 报
 // "unexpected `:` in a format specifier"。`::` 是模块路径分隔符，不是说明符。
 use std::io
-use stl::nd
+use std::nd
 
 fn main() -> i32 {
     var a: ndarray<f64> = ndarray<f64>::zeros2(2, 2) ?? ndarray<f64>::empty()

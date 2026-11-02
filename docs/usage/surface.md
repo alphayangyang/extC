@@ -5,7 +5,7 @@
 
 生成方式：`tools/manual_surface.py`；`check.sh` 保证本页与源码一致。
 
-公开面共 517 个成员，其中内部 115 个：
+公开面共 517 个成员，其中内部 114 个：
 
 ## prelude
 
@@ -23,6 +23,92 @@
 ## std::coro::scheduler
 
 - `loop.ep`（字段）
+
+## std::data::hashMap
+
+- `hashMap.bucketOfDense`（字段）
+- `hashMap.cap`（字段）
+- `hashMap.dead`（字段）
+- `hashMap.deadOf`（方法）
+- `hashMap.denseLen`（方法）
+- `hashMap.keyAtDense`（方法）
+- `hashMap.keys`（字段）
+- `hashMap.n`（字段）
+- `hashMap.pid`（字段）
+- `hashMap.pidGen`（字段）
+- `hashMap.pidOf`（方法）
+- `hashMap.valAtDense`（方法）
+- `hashMapI64.deadOf`（方法）
+- `hashMapI64.denseLen`（方法）
+- `hashMapI64.keyAtDense`（方法）
+- `hashMapI64.pidOf`（方法）
+- `hashMapI64.tagCensus`（方法）
+- `hashMapI64.valAtDense`（方法）
+
+## std::data::linmap
+
+- `linMap.cap`（字段）
+- `linMap.keys`（字段）
+- `linMap.n`（字段）
+- `linMap.pid`（字段）
+- `linMap.pidGen`（字段）
+
+## std::data::map
+
+- `bnode.cnt`（字段）
+- `bnode.keys`（字段）
+- `bnode.kids`（字段）
+- `bnode.leaf`（字段）
+- `bnode.n`（字段）
+- `map.bn`（方法）
+- `map.cntOf`（方法）
+- `map.freeHead`（字段）
+- `map.kd`（方法）
+- `map.keys`（字段）
+- `map.kids`（字段）
+- `map.kn`（方法）
+- `map.leafOf`（方法）
+- `map.n`（字段）
+- `map.ncap`（字段）
+- `map.nnodes`（字段）
+- `map.nodes`（字段）
+- `map.nx`（方法）
+- `map.pid`（字段）
+- `map.pidGen`（字段）
+- `map.root`（字段）
+- `map.setCnt`（方法）
+- `map.setKey`（方法）
+- `map.setKid`（方法）
+- `map.setN`（方法）
+- `map.setNext`（方法）
+- `map.setVal`（方法）
+- `map.side`（字段）
+- `map.vn`（方法）
+
+## std::data::pool
+
+- `handle.ep`（字段）
+- `pool.cap`（字段）
+- `pool.cursor`（字段）
+- `pool.ent`（字段）
+- `pool.holeHead`（字段）
+- `pool.n`（字段）
+- `pool.pDense`（方法）
+- `pool.pEp`（方法）
+- `pool.pEpMask`（方法）
+- `pool.pGen`（方法）
+- `pool.pLow`（方法）
+- `pool.pPack`（方法）
+- `pool.pid`（字段）
+- `pool.pidGen`（字段）
+- `pool.slots`（字段）
+
+## std::data::vector
+
+- `vector.cap`（字段）
+- `vector.n`（字段）
+- `vector.pid`（字段）
+- `vector.pidGen`（字段）
 
 ## std::hash::sha1
 
@@ -80,96 +166,7 @@
 - `terminal.rawbuf`（字段）
 - `terminal.saved`（字段）
 
-## std::time
-
-- `timer.t0`（字段）
-
-## std::ws
-
-- `-.pAppend`（方法）
-- `-.pPow2`（方法）
-
-## stl::hashMap
-
-- `hashMap.bucketOfDense`（字段）
-- `hashMap.cap`（字段）
-- `hashMap.dead`（字段）
-- `hashMap.deadOf`（方法）
-- `hashMap.denseLen`（方法）
-- `hashMap.keyAtDense`（方法）
-- `hashMap.keys`（字段）
-- `hashMap.n`（字段）
-- `hashMap.pid`（字段）
-- `hashMap.pidGen`（字段）
-- `hashMap.pidOf`（方法）
-- `hashMap.valAtDense`（方法）
-- `hashMapI64.deadOf`（方法）
-- `hashMapI64.denseLen`（方法）
-- `hashMapI64.keyAtDense`（方法）
-- `hashMapI64.pidOf`（方法）
-- `hashMapI64.tagCensus`（方法）
-- `hashMapI64.valAtDense`（方法）
-
-## stl::linmap
-
-- `linMap.cap`（字段）
-- `linMap.keys`（字段）
-- `linMap.n`（字段）
-- `linMap.pid`（字段）
-- `linMap.pidGen`（字段）
-
-## stl::map
-
-- `bnode.cnt`（字段）
-- `bnode.keys`（字段）
-- `bnode.kids`（字段）
-- `bnode.leaf`（字段）
-- `bnode.n`（字段）
-- `map.bn`（方法）
-- `map.cntOf`（方法）
-- `map.freeHead`（字段）
-- `map.kd`（方法）
-- `map.keys`（字段）
-- `map.kids`（字段）
-- `map.kn`（方法）
-- `map.leafOf`（方法）
-- `map.n`（字段）
-- `map.ncap`（字段）
-- `map.nnodes`（字段）
-- `map.nodeCount`（方法）
-- `map.nodes`（字段）
-- `map.nx`（方法）
-- `map.pid`（字段）
-- `map.pidGen`（字段）
-- `map.root`（字段）
-- `map.setCnt`（方法）
-- `map.setKey`（方法）
-- `map.setKid`（方法）
-- `map.setN`（方法）
-- `map.setNext`（方法）
-- `map.setVal`（方法）
-- `map.side`（字段）
-- `map.vn`（方法）
-
-## stl::pool
-
-- `handle.ep`（字段）
-- `pool.cap`（字段）
-- `pool.cursor`（字段）
-- `pool.ent`（字段）
-- `pool.holeHead`（字段）
-- `pool.n`（字段）
-- `pool.pDense`（方法）
-- `pool.pEp`（方法）
-- `pool.pEpMask`（方法）
-- `pool.pGen`（方法）
-- `pool.pLow`（方法）
-- `pool.pPack`（方法）
-- `pool.pid`（字段）
-- `pool.pidGen`（字段）
-- `pool.slots`（字段）
-
-## stl::string
+## std::text::string
 
 - `string.big`（字段）
 - `string.cap`（字段）
@@ -178,10 +175,12 @@
 - `string.pidGen`（字段）
 - `string.small`（字段）
 
-## stl::vector
+## std::time
 
-- `vector.cap`（字段）
-- `vector.n`（字段）
-- `vector.pid`（字段）
-- `vector.pidGen`（字段）
+- `timer.t0`（字段）
+
+## std::ws
+
+- `-.pAppend`（方法）
+- `-.pPow2`（方法）
 

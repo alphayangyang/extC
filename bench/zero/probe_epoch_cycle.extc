@@ -1,6 +1,6 @@
 use std::io
 use std::sys::pool as syspool
-use stl::pool
+use std::data::pool
 
 /* `args[i]` 当十进制数读 */
 fn toInt(s: slice<u8>, dflt: i64) -> i64 {

@@ -50,7 +50,7 @@ typedef struct {
      * assignments, whose names must not collide. */
     int    sugarSeq;
     /* The module being parsed. When the desugaring expands into a library call (a value
-     * f-string goes through `stl::string`, multiple subscripts through `stl::nd`), the
+     * f-string goes through `stl::string`, multiple subscripts through `std::nd`), the
      * module it needs is registered **here** as a hidden `use`: the sugar carries its own
      * module, so the user does not have to remember which file defines `from` for an
      * `f"..."`. */
@@ -366,14 +366,14 @@ static Expr *mkBin(Parser *p, const char *op, Expr *l, Expr *r, int line) {
 }
 
 /**
- * @brief Build a call node for a module function (e.g. `stl::nd::at2(...)`).
+ * @brief Build a call node for a module function (e.g. `std::nd::at2(...)`).
  *
  * Same trick as `fstrFrom`: write the **full module path**, so the parser does not have
  * to know the caller's import aliases -- the loader resolves it as long as the module was
  * imported.
  *
  * @param p          Parser.
- * @param modPrefix  Module path (`"stl::nd"`).
+ * @param modPrefix  Module path (`"std::nd"`).
  * @param name       Function name.
  * @param args       Argument list (already filled in; ownership moves to the node).
  * @param line       Source line attached to the node.
@@ -2929,15 +2929,15 @@ static Stmt *parseStmt(Parser *p) {
         }
         Expr *v = parseExpr(p);
         if (!v) return NULL;
-        /* `v[i, j] = x`: the two-subscript sugar reads as a call to `stl::nd::at2(...)`, and a
+        /* `v[i, j] = x`: the two-subscript sugar reads as a call to `std::nd::at2(...)`, and a
          * call can never be an assignment target, so it is rewritten here into
-         * `stl::nd::set2(v, i, j, x)` (an ordinary call statement). The compound form works the
+         * `std::nd::set2(v, i, j, x)` (an ordinary call statement). The compound form works the
          * same way: `v[i, j] += x` becomes `set2(v, i, j, at2(v, i, j) + x)` -- the element is
          * read once, matching the shape of `v[i] += x`. */
         bool ndIdxTarget = false;
         const char *setName = NULL;
         if (e->kind == EX_ASSOC && e->u.assoc.modPrefix
-            && strcmp(e->u.assoc.modPrefix, "stl::nd") == 0 && e->u.assoc.name) {
+            && strcmp(e->u.assoc.modPrefix, "std::nd") == 0 && e->u.assoc.name) {
             if (strcmp(e->u.assoc.name, "at2") == 0 && e->u.assoc.args.len == 3) {
                 ndIdxTarget = true;
                 setName = "set2";
@@ -2963,8 +2963,8 @@ static Stmt *parseStmt(Parser *p) {
             for (size_t i2 = 0; i2 < e->u.assoc.args.len; i2++)
                 *(Expr **)vecPush(&args) = *(Expr **)vecAt(&e->u.assoc.args, i2);
             *(Expr **)vecPush(&args) = v;
-            sugarNeedModule(p, "stl::nd", t->line);
-            Expr *call = moduleCall(p, "stl::nd", setName, &args, t->line);
+            sugarNeedModule(p, "std::nd", t->line);
+            Expr *call = moduleCall(p, "std::nd", setName, &args, t->line);
             Stmt *ss = stmtNew(p->arena, ST_EXPR, t->line);
             ss->u.expr.expr = call;
             return ss;
@@ -4323,7 +4323,7 @@ static Expr *fstrFrom(Parser *p, Expr *bytes, int line) {
     *(Expr **)vecPush(&args) = bytes;
     Expr *f = exprNew(p->arena, EX_ASSOC, line);
     f->u.assoc.typeName = "stl";
-    f->u.assoc.modPrefix = "stl::string";
+    f->u.assoc.modPrefix = "std::text::string";
     f->u.assoc.name = "from";
     vecInit(&f->u.assoc.targs, p->arena, sizeof(void *));   /* `from` is not generic, so an empty table */
     f->u.assoc.args = args;
@@ -4347,7 +4347,7 @@ static Expr *fstrFrom(Parser *p, Expr *bytes, int line) {
  */
 static Expr *fmtValue(Parser *p, Token *ft) {
     /* A value f-string starts at `stl::string::from`: the sugar registers the module itself. */
-    sugarNeedModule(p, "stl::string", ft->line);
+    sugarNeedModule(p, "std::text::string", ft->line);
     const char *src = ft->text;
     const size_t n = ft->len;
     const int line = ft->line;
@@ -4439,7 +4439,7 @@ static Expr *fmtValue(Parser *p, Token *ft) {
         }
         if (q < innerLen) {
             /* The specifier lands on a padding primitive in `stl::stringio`: likewise registered by the sugar. */
-            sugarNeedModule(p, "stl::stringio", line);
+            sugarNeedModule(p, "std::text::stringio", line);
             Vec args;
             vecInit(&args, p->arena, sizeof(void *));
             *(Expr **)vecPush(&args) = e;
@@ -4729,7 +4729,7 @@ static Expr *parsePostfix(Parser *p) {
             }
         } else if (at(p, "[")) {
             /* `a[i]` indexes, `a[lo..hi]` slices, and `a[i, j]` / `a[r0..r1, c0..c1]`
-             * are the two-subscript forms (lowered to `stl::nd::at2` / `stl::nd::slice2`,
+             * are the two-subscript forms (lowered to `std::nd::at2` / `std::nd::slice2`,
              * so they are plain library calls: no new AST kind, no new runtime shape). */
             Token *br = take(p);
             skipNl(p);
@@ -4803,8 +4803,8 @@ static Expr *parsePostfix(Parser *p) {
                                  "a subscript list holds at most three indices");
                         return NULL;
                     }
-                    sugarNeedModule(p, "stl::nd", br->line);
-                    e = moduleCall(p, "stl::nd", atNames[items.len - 2], &args, br->line);
+                    sugarNeedModule(p, "std::nd", br->line);
+                    e = moduleCall(p, "std::nd", atNames[items.len - 2], &args, br->line);
                 } else if (items.len != 2) {
                     ctxError(p->ctx, br->line, br->col,
                              "range subscripts come in pairs: `v[r0..r1, c0..c1]`",
@@ -4822,8 +4822,8 @@ static Expr *parsePostfix(Parser *p) {
                     *(Expr **)vecPush(&args) = a0->hi;
                     *(Expr **)vecPush(&args) = a1->lo;
                     *(Expr **)vecPush(&args) = a1->hi;
-                    sugarNeedModule(p, "stl::nd", br->line);
-                    e = moduleCall(p, "stl::nd", "slice2", &args, br->line);
+                    sugarNeedModule(p, "std::nd", br->line);
+                    e = moduleCall(p, "std::nd", "slice2", &args, br->line);
                 } else {
                     ctxError(p->ctx, br->line, br->col,
                              "use two indices (`v[i, j]`) or two ranges"

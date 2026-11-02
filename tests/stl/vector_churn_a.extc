@@ -1,6 +1,6 @@
 // churn（小）：循环 clear + push，容量策略不变 ⇒ 内存应当平（run.sh 用 /usr/bin/time 量峰值 RSS）
 use std::io
-use stl::vector
+use std::data::vector
 
 fn main() -> i32 {
     var v = vector<i64>::withCap(1024)

@@ -9,7 +9,7 @@
 //   ⑥ `clone()` 独立：改副本不改原件；原件 `release()` 之后副本照旧可用（内容一字不差）
 // expect: empty=true cap0=0 new=true blank=true s=hi! len=3 cap=0 up=hi!defghijklmnopq cap=32 gt16=true len=17 a=aaa b=bbb clone=aaac a=aaa indep=true d=hi!defghijklmnopq rel=0 capRel=0
 use std::io
-use stl::string
+use std::text::string
 
 fn main() -> i32 {
     /* ① 零值 = 合法的内联空串：能读、能查、没有池。`string::new()` / `string::empty()` 与零值等价 */

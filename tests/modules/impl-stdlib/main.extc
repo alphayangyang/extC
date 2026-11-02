@@ -1,6 +1,6 @@
 // expect: hi|len=2
 use std::io
-use stl::string
+use std::text::string
 use addstr
 
 fn main() -> i32 {

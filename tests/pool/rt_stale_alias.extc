@@ -4,7 +4,7 @@
 // 形状：`var b = a` 是结构体浅拷贝（板块共享、标量各一份），`a.release()` 把板块还给 malloc
 // ⇒ `b` 的 vals 指向别人的内存。守卫比一次世代：对不上就把**这一份**收成空容器，
 // 于是 `b.push(...)` 的下标访问带位置 trap。
-use stl::vector
+use std::data::vector
 fn main() -> i32 {
     var a = vector<i32>::new()
     a.push(i32(5))

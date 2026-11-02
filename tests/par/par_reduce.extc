@@ -1,7 +1,7 @@
-// 归约的 v1 路线：先 `par` 把结果写进数组，再用 `stl::seq` 串行归约（合并顺序固定 ⇒ 与
+// 归约的 v1 路线：先 `par` 把结果写进数组，再用 `std::data::seq` 串行归约（合并顺序固定 ⇒ 与
 // 顺序 for 逐位相同，线程数无关）。
 use std::io
-use stl::seq
+use std::data::seq
 
 fn fillPar(n: i64, out: mut slice<f64>) {
     par i in 0..n { out[i] = f64(i) * 2.0 }

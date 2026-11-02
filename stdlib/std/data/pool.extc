@@ -48,7 +48,7 @@
  *
  * @code
  * use std::io
- * use stl::pool
+ * use std::data::pool
  *
  * fn main() -> i32 {
  *     var p = pool<i32>::withCap(4)

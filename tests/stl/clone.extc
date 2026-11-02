@@ -16,14 +16,14 @@
 //   ④ 覆盖 vector / string / map / hashMap / set / linMap / linSet / hashSet。
 // expect: vec=3/4 vecOk=1,2,3 str=2/3 map=2/3 hm=1/2 set=1/2 lin=1/2 lset=1/2 hset=1/2 vecAfterRelease=4
 use std::io
-use stl::vector
-use stl::string
-use stl::map
-use stl::hashMap
-use stl::set
-use stl::linmap
-use stl::linset
-use stl::hashSet
+use std::data::vector
+use std::text::string
+use std::data::map
+use std::data::hashMap
+use std::data::set
+use std::data::linmap
+use std::data::linset
+use std::data::hashSet
 
 fn main() -> i32 {
     /* ① vector：改副本不影响原件 + 副本内容对 */

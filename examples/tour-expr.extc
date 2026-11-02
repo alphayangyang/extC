@@ -2,8 +2,8 @@
 // 一个小表达式求值器：enum 带载荷、match、ref、`?` 传播、`??` 兜底 ——
 // 没有继承、没有异常、没有装箱；每个 match 都是跳转表，每个 `?` 都是两条分支。
 use std::io
-use stl::string
-use stl::stringio
+use std::text::string
+use std::text::stringio
 
 type tok = | num(i64) | plus | minus | star | lparen | rparen
 

@@ -7,7 +7,7 @@
 // 现在容器构造是逃逸站点，`outer.push(inner)` 把它提到 outer 那一层 ⇒ 池生在外层那个地方。
 // 判据：编译通过 + 跑出 v=20 + ASan 干净（`run.sh` 查后两条）。
 use std::io
-use stl::vector
+use std::data::vector
 
 fn main() -> i32 {
     var outer = vector<vector<i32>>::new()

@@ -7,7 +7,7 @@
 // 判据管的是语义（最左、`none`、空模式 0），不是算法。
 // expect: checked=61410|edge=0|bad=0
 use std::io
-use stl::string
+use std::text::string
 
 /* 位模式造串：第 i 位为 1 取 'b'，否则 'a' */
 fn mk(s: mut ref string, bits: i64, len: i64) {

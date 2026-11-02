@@ -2,8 +2,8 @@
 // 语义与既有的 `>> mut slice<u8>` 一致：**一行、去换行**、目标被**替换**；可链式。
 // expect: a=[hello world]|la=11|b=[second line]|lb=11
 use std::io
-use stl::string
-use stl::stringio
+use std::text::string
+use std::text::stringio
 
 fn main() -> i32 {
     var a: string = string::withCap(16)

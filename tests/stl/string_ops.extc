@@ -1,7 +1,7 @@
 /* join / trim / trimStart / trimEnd：把 `split` 的段拼回去、把协议行两端的空白去掉。
  * 判据：一行机判输出（见 tests/stl/run.sh 里的 run_case）。 */
 use std::io
-use stl::string as str
+use std::text::string as str
 
 fn main(args: slice<slice<u8>>) -> i32 {
     if args.len > 2 { return 1 }

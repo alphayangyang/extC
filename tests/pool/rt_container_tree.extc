@@ -6,7 +6,7 @@
 // expect: live=2 len=2 v=22 after=0
 use std::io
 use std::sys::pool as syspool
-use stl::hashMap
+use std::data::hashMap
 
 fn main() -> i32 {
     var hm = hashMapI64<i32>::withCap(8)

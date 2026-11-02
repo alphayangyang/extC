@@ -1,6 +1,6 @@
 // 负例：`at3` 在 rank-2 视图上要 trap（而不是读错位置）。
 use std::io
-use stl::nd
+use std::nd
 fn main() -> i32 {
     var a: ndarray<f64> = ndarray<f64>::zeros2(i64(2), i64(3)) ?? ndarray<f64>::empty()
     var av: ndview<f64> = a.viewMut()

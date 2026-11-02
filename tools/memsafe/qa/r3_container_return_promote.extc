@@ -6,7 +6,7 @@
 // 现在容器构造是逃逸站点、返回要求它活到本帧之外（`at == 0` ⇒ `ZONE_HOME`）⇒
 // 池生到**调用者**选的那个地方。判据：编译通过 + 跑出 n=3 v0=5 v2=7 + ASan 干净。
 use std::io
-use stl::vector
+use std::data::vector
 
 fn make() -> vector<i32> {
     var v = vector<i32>::new()

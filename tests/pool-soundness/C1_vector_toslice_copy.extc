@@ -1,5 +1,5 @@
 use std::io
-use stl::vector
+use std::data::vector
 fn main() -> i32 {
     var v: vector<i32> = vector<i32>::new()
     v.push(i32(11))

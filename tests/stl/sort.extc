@@ -2,7 +2,7 @@
 // 判据：每种输入都「非降序」**且**元素多重集不变（和 + 异或都不变），结构体键也能排
 // expect: ok=11 sorted=1 sum=499500 xo=0 sm0=0 sm1=999 i64ok=1 ptok=1 pt0=1
 use std::io
-use stl::sort
+use std::data::sort
 
 struct pt {
     x: i64

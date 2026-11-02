@@ -1,8 +1,8 @@
 // 三维视图的下标糖：`v[i, j, k]` 读、`= x` 写、`+= x` 复合写都直译成
-// `stl::nd::at3` / `set3`（与 rank-2 的 at2/set2 同一条路），rank-3 的逐元素
+// `std::nd::at3` / `set3`（与 rank-2 的 at2/set2 同一条路），rank-3 的逐元素
 // 整数组表达式也照常落在 `nd::addInto`/`mulInto`/`scaleInto` 上。
 use std::io
-use stl::nd
+use std::nd
 
 fn fill3(v: ndview<f64>) {
     var i: i64 = 0

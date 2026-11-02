@@ -5,9 +5,9 @@
 # On a `method` row the module column is the **provider**: the module whose `impl`
 # block declares the method (it may differ from the module that owns the type --
 # such a block carries `@ext`, see docs/usage/modules-cabi.md).
-appendF64	string	stl::stringio	public	method
-hash	i64	stl::hashMap	public	method
-readAllFrom	string	stl::stringio	public	method
-readLineFrom	string	stl::stringio	public	method
-writeLineTo	string	stl::stringio	public	method
-writeTo	string	stl::stringio	public	method
+appendF64	string	std::text::stringio	public	method
+hash	i64	std::data::hashMap	public	method
+readAllFrom	string	std::text::stringio	public	method
+readLineFrom	string	std::text::stringio	public	method
+writeLineTo	string	std::text::stringio	public	method
+writeTo	string	std::text::stringio	public	method

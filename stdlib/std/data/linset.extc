@@ -4,7 +4,7 @@
  * a type parameter, which the compiler cannot do yet (no traits). `==` on a parameter *is*
  * supported -- checked per instance, with the diagnostic naming the instance.
  *
- *     use stl::linset
+ *     use std::data::linset
  *     var s: linSet<i64> = linSet<i64>::withCap(4)
  *     s.add(7)
  *     println(s.contains(7))
@@ -13,7 +13,7 @@
  * the set differ only in the value half, and one implementation means one place for the
  * growth, the swap-remove and the `==` requirement.
  */
-use stl::linmap
+use std::data::linmap
 
 @sharesStorage        /* 按值拷贝时**两份共用同一块板块** ⇒ 编译器在这里报警告，要独立副本用 `clone()` */
 struct linSet<T> {

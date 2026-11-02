@@ -1,7 +1,7 @@
 /* tests/generics/effects_deferred_method.extc —— 泛型方法里对类型参数的**协议方法**调用，
  * 不许把效果摘要永久标成"不可判定"。
  *
- * 由来：`stl::hashMap` 的 `find` 写 `k.hash()`（`k: K`）。模板期这条调用解析不了，
+ * 由来：`std::data::hashMap` 的 `find` 写 `k.hash()`（`k: K`）。模板期这条调用解析不了，
  * `collectEffectsExpr` 于是把 `find` 的摘要标成 incomplete；而 `find` 又被 `contains`/`remove`
  * 继承，于是**任何调用 `remove` 的函数都不能再接收视图参数**——
  *   `error: argument 1 of `probe` carries a reference into a deeper scope (depth 1) than

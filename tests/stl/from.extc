@@ -2,8 +2,8 @@
 // 从前是 withCap + append / new + push 起步。
 // 注意 vector 那条：字面量**不能**直接切片（"cannot slice a temporary value"，有意为之：
 // 视图得有主人），所以数组先有个名字，再 `a[..]`。
-use stl::string
-use stl::vector
+use std::text::string
+use std::data::vector
 use std::io
 
 fn main() -> i32 {

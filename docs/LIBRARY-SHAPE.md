@@ -15,11 +15,11 @@
 | 名字里编码类型 | 14 处（`hashI64`、`sumBlocksI64`、`maxBlocksF64`、`padI64`、`padF64`、`fromI64`、`toI64`、`toF64`、`fromF64`、`fmtI64`、`putI64`、`putHeaderI64`、`shuffleI32`）|
 | 模块级可变状态 | **12 个**（`std/fs.extc` 的 `OUT_BUF/OUT_LEN/OUT_FD/OUT_FAILED/IN_BUF/IN_LEN/IN_POS/IN_FD/IN_FAILED`，`std/io/fmt.extc` 的 `FMT/PAIRS/PAIRS_READY`）|
 
-公开面最大的六个模块：`std::http` 72、`stl::hashMap` 44、`std::json` 41、`stl::string` 40、`std::io` 34、`stl::tensor` 33。
+公开面最大的六个模块：`std::http` 72、`std::data::hashMap` 44、`std::json` 41、`std::text::string` 40、`std::io` 34、`std::nd::tensor` 33。
 
 ## 二、五个根因
 
-1. **"两个根"没有定义**。`std::` 与 `stl::` 混着放：`std::json` 不是平台、`stl::string` 不是容器。名字层级反映的是各模块出现的先后，不是职责。
+1. **"两个根"没有定义**。`std::` 与 `stl::` 混着放：`std::json` 不是平台、`std::text::string` 不是容器。名字层级反映的是各模块出现的先后，不是职责。
 2. **"内部"只是约定**。语言不阻止跨模块访问，于是 214 个内部成员（`pStale`、`pPoison`、`extc_*`、缓冲状态机）全都出现在公开面上。清单反映不了真实 API。
 3. **没有一条"返回值语义"规则**。`put` 返回"本来就在"、`set` 返回是否成功、`remove` 返回是否删掉、`insert` 返回句柄、`get` 返回 `?T` —— 同一个"修改"在五个地方有五种返回。
 4. **类型后缀替代了泛型**。`sumBlocksI64` 与 `maxBlocksF64` 并存，是"标量没有 trait"的补丁，代价是名字与记忆负担。
@@ -32,7 +32,7 @@
 | 1 | `fs` 的 `OUT_BUF/OUT_LEN/OUT_FD` 是模块级 `var` | 两个 `par` 分支各写 stdout、或两个协程同时 `println`：缓冲被互相踩 | 缓冲属于 `Out` 对象；`io::out()` 返回单例并由运行期提供原子刷写；新增判据 `tests/io/concurrent-write.extc` |
 | 2 | `io::fmt` 的 `FMT/PAIRS` 是模块级 `var`，且 `PAIRS_READY` 是一次性懒初始化 | 第一次格式化后的表被所有线程共享；初始化竞争 | 表是 `let` 常量表（编译期或启动期一次），`PAIRS_READY` 消失 |
 | 3 | `snapshot()` 在 `vector`/`string` 上**拷贝**，而 `view()`/借出**不拷贝** | 用户以为拿到的是视图，改容器后读到旧数据（或反之）| 只剩两个名字：`view()`（借出、生命周期由检查器管）与 `snapshot()`（拷贝） |
-| 4 | `stl::pool` 的句柄生命周期是第二套世界观 | `ref` 悬垂是编译错，`handle` 过期是运行期 `none` —— 两套规则并存 | `slab<T>` 进 `std::data` 内部，句柄只在 `slab` 内部；主线只剩 `ref` |
+| 4 | `std::data::pool` 的句柄生命周期是第二套世界观 | `ref` 悬垂是编译错，`handle` 过期是运行期 `none` —— 两套规则并存 | `slab<T>` 进 `std::data` 内部，句柄只在 `slab` 内部；主线只剩 `ref` |
 | 5 | `string` 与 `slice<u8>` 是两种文本 | 字面量是 `slice<u8>`，`any` 装进去后 trap 报文里出现 `string$string` 这种内部名 | 字面量默认为 `string`；`slice<u8>` 只在字节流 API 上出现 |
 | 6 | 两套 JSON 编码器（`std::json` 与 `reflect::json`）| 同一件事两种输出路径、两份维护成本 | `std::json` 只保留 `node` 与解析；编码统一走 `reflect`（描述符驱动）|
 | 7 | 底层状态机直接对外（`io::inSync/inSave/inBad/inClear`、`fillState`、`writerOf/readerOf`）| 用户能用，但没有任何兼容承诺 | 全部 `@private`，公开面只留 `Out`/`In` 与 `|>` 式的组合 |
@@ -68,7 +68,7 @@ std::sys             ← 唯一允许出现 extc_* 与平台类型；被上面�
 | `std::hash` | `std/hash/*` + `std/b64` + `std/uuid` | 摘要与编码 |
 | `std::sys` | `std/sys/*` 的 `extc_*` | 全部 `@private` |
 
-`stl::` 作为过渡别名保留两期（`use stl::vector` 仍然可用），第三期删除。
+`stl::` 作为过渡别名保留两期（`use std::data::vector` 仍然可用），第三期删除。
 
 ### 4.3 命名规则（五条）
 
@@ -139,3 +139,17 @@ std::text::number-> text / text -> number 各留一个入口（`parse` / `render
 - 不做"反射式动态调用"（`v.call("area")` 按字符串名），那会把单调性判据打薄；
 - 不把 `pool`/`handle` 提升为一等公民（主线只用 `ref`，句柄留在 `slab` 内部）；
 - 不为 `extern!` 的外部库设计包装（下一步单独做）。
+
+
+## 进度
+
+- **P0 完成（`981ff95`）**：`@private` 成为公开面的唯一凭据；公开面 834 → 515（公开 400 · 内部 115），
+  `manual_surface --worklist` 归零；容器的存储字段（`vals`/`depth`/`chunk`…）在手册里注明"公开但不是 API"。
+- **P1 完成（`62eb15a`）**：`toSlice()` → `snapshot()`（拷贝）、`asSlice()` → `view()`（借出），
+  `vector`/`pool` 补 `view()`；编译器的自动借出与容器 `for` 脱糖改认 `view`/`viewMut`
+  （回退旧拼写，用户自己写的容器两种都认）；手册写明"程序级单例"不是隐藏炸弹（`par` 体内不允许调用）。
+- **P2 进行中**：`std::stl::*` 已拆成 `std::text::{string,stringio}`、`std::data::{vector,map,hashMap,
+  set,hashSet,linmap,linset,pool,sort,seq}`、`std::nd`（`nd` + `nd::tensor`）；14 个 `stl` 模块归零。
+  编译器糖里写死的模块路径（f-string → `std::text::string`、`stringio`，多下标 → `std::nd`）同步更新。
+  剩余：`vector` + `varArray` 合一、格式化 8 个名字用 `any` 收成 3 个、12 处模块级可变 `var` 收进显式对象。
+- **P3 未开始**：`std::sys` 保持原样（用户明确说"不必全 private"）。

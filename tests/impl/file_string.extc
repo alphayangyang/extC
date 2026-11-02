@@ -2,8 +2,8 @@
 // expect: a=[42]|la=2|b=[hello world]|lb=11|bad=false
 use std::io
 use std::fs
-use stl::string
-use stl::stringio
+use std::text::string
+use std::text::stringio
 
 fn go() -> result<unit, io::ioError> {
     var f = fs::ifstream("tests/io/stream-file.txt")?

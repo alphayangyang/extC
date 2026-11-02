@@ -14,7 +14,7 @@
  * The methods grow the string as needed, so the caller never sizes it up front. */
 use std::io
 use std::fs
-use stl::string
+use std::text::string
 
 @ext
 impl string {
@@ -157,8 +157,8 @@ impl fs::ifstream {
 }
 
 /* `io::cout << s` 的形状 = `impl ostream { fn <<(self: ref ostream, v: string) -> ostream }`：
- * 现在挂在 `stl::string` 里（`use stl::string` 就够），`impl` 方法需要的 home 实参由运算符/
- * 方法的 home 记账补齐。回归：`tests/stl/string_print.extc`（只 import `stl::string`，
+ * 现在挂在 `std::text::string` 里（`use std::text::string` 就够），`impl` 方法需要的 home 实参由运算符/
+ * 方法的 home 记账补齐。回归：`tests/stl/string_print.extc`（只 import `std::text::string`，
  * `io::cout << s` 逐字节正确）。
  */
 
@@ -189,8 +189,8 @@ fn fromF64(x: f64, prec: i64) -> string {
  * `align` 用 `std::io` 的 `LEFT`/`RIGHT`/`CENTER`；宽度不够时不截断，原样拷一份。 */
 fn padText(v: slice<u8>, width: i64, fill: u8, align: i64) -> string {
     let n: i64 = width - v.len
-    if n <= 0 { return stl::string::from(v) }
-    var out: string = stl::string::withCap(width)
+    if n <= 0 { return std::text::string::from(v) }
+    var out: string = std::text::string::withCap(width)
     if align == io::CENTER {
         let l: i64 = n / 2
         var i: i64 = 0
@@ -213,11 +213,11 @@ fn padText(v: slice<u8>, width: i64, fill: u8, align: i64) -> string {
 /* 整数：`{x:>4}` 走这个。零填充与流上 `padInt` 同一条特殊路径 —— `-5` 宽 4 得 `-005`，
  * 不是 `0-5`。 */
 fn padI64(v: i64, width: i64, fill: u8, align: i64) -> string {
-    let t: string = stl::string::fromI64(v)
+    let t: string = std::text::string::fromI64(v)
     let digits: i64 = t.len()
     if fill == u8(48) && align == io::RIGHT && width > digits {
         let bytes = t.snapshot()
-        var out: string = stl::string::withCap(width)
+        var out: string = std::text::string::withCap(width)
         if bytes[0] == u8(45) {
             out.push(u8(45))
             var i: i64 = 0

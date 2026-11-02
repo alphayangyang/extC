@@ -1,8 +1,8 @@
 // 有序容器的最小/最大键（空表给 none）—— map 的 firstKey/lastKey 与 set 的 first/last
 // expect: f=1 l=5 emptyF=-1 emptyL=-1 sf=2 sl=4
 use std::io
-use stl::map
-use stl::set
+use std::data::map
+use std::data::set
 
 fn main() -> i32 {
     var m: map<i64, i32> = map<i64, i32>::withCap(16)

@@ -1,7 +1,7 @@
 // 拆箱是 extC 里唯一一条"可能运行期失败"的隐式转换：类型不符就停在那一行，报文说清实际类型。
 // 判据：这个程序**编得过**，运行期 trap，退出码非 0。
 use std::io
-use stl::string
+use std::text::string
 
 fn main() -> i32 {
     var x: any = i64(41)

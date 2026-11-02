@@ -8,7 +8,7 @@
  */
 // expect: c=2 a=3 d=4
 use std::io
-use stl::seq
+use std::data::seq
 
 fn m<T>(x: T) -> T { return x }
 

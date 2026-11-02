@@ -2,8 +2,8 @@
 // 这里同时实例化了 `map<string, i64>`（它的内部节点用的是 `slice<bnode<...>>`）。
 // expect: eq=true got=1
 use std::io
-use stl::string
-use stl::map
+use std::text::string
+use std::data::map
 
 fn main() -> i32 {
     let a: slice<u8> = "abc"

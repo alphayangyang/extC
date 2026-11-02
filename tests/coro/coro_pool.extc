@@ -1,7 +1,7 @@
 /* 切片 C 的验收项：**体顶层建池（vector）、跨挂起点继续用** ✓
  * 池的 plate 生在任务自己的 place 里 ⇒ 活过每一次挂起 ✓ 任务跑完一次性回收 ✓ */
 use std::io
-use stl::vector
+use std::data::vector
 
 fn g(n: i64) -> coroutine<i64> {
     var v: vector<i32> = vector<i32>::withCap(n)

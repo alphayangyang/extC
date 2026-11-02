@@ -7,7 +7,7 @@
  * checked once per instance, so `linMap<i64, ...>` uses the builtin and
  * `linMap<point, ...>` needs `fn ==` on `point`, with the diagnostic naming the instance.
  *
- *     use stl::linmap
+ *     use std::data::linmap
  *     var m: linMap<i64, slice<u8>> = linMap<i64, slice<u8>>::withCap(4)
  *     m.put(1, "one")
  *     println(m.get(1) ?? "missing")

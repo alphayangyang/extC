@@ -1,8 +1,8 @@
 /* 槽里可以写字符串/字符字面量：`f"c={"hi"}"` 的内层 `"` 属于槽表达式，不结束格式串。
  * 判据见 tests/fstring/run.sh 的 nested-literals 一项。 */
 use std::io
-use stl::string
-use stl::stringio
+use std::text::string
+use std::text::stringio
 
 fn main() -> i32 {
     let n: i64 = 3

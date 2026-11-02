@@ -9,7 +9,7 @@
  *
  * Ordered iteration is `at(i)` for i in [0, len) -- the i-th smallest element. `lowerBound(k)` is
  * the rank of the first element not less than k, which is what a range query starts from. */
-use stl::map
+use std::data::map
 
 @sharesStorage        /* 按值拷贝时**两份共用同一块板块** ⇒ 编译器在这里报警告，要独立副本用 `clone()` */
 struct set<T> {

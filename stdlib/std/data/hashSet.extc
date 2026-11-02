@@ -11,7 +11,7 @@
  * The face mirrors `map` exactly (`withCap` / `len` / `contains` / `put` / `remove` / `clear`
  * plus the table-position scan `keyAt` / `liveAt` / `capOf`), with ONE difference: `put` returns
  * true when the element is NEW, while `map::put` returns true when it was already there. */
-use stl::hashMap
+use std::data::hashMap
 
 @sharesStorage        /* 按值拷贝时**两份共用同一块板块** ⇒ 编译器在这里报警告，要独立副本用 `clone()` */
 struct hashSetI64 {

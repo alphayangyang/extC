@@ -3,7 +3,7 @@
 //       排名正确 · 删过的键查不到 · 压实之后再插入仍然正常（存储与视图都被重建过）
 // expect: len=200|bad=0|small=1|grow=1
 use std::io
-use stl::map
+use std::data::map
 
 fn main() -> i32 {
     var m: map<i64, i32> = map<i64, i32>::withCap(16)

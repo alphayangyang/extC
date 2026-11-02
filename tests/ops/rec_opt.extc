@@ -2,7 +2,7 @@
 // 落到末尾的出口也不能凭空 `return __extc_ret_v;`（那是带 arena 尾声的函数才有的槽）。
 // expect: c=5 sum=15
 use std::io
-use stl::string
+use std::text::string
 
 fn countdown(n: i64) -> ?i64 {
     if n == 0 { return some(0) }

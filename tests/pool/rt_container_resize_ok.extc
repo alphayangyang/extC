@@ -1,7 +1,7 @@
 /* 对照：普通池（容器板）**允许**原地搬家 —— 容器扩容照常走 `poolResizeRaw`。
  * 这个用例的存在是为了证明守卫是"按池的模式"生效，而不是把 `_raw` 一刀切禁掉。 */
 use std::io
-use stl::vector
+use std::data::vector
 
 fn main() -> i32 {
     var v: vector<i64> = vector<i64>::withCap(2)
