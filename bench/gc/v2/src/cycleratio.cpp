@@ -6,10 +6,14 @@
 //           然后顶掉 i%256 槽的旧组。
 //   naive  (-DCYCLERATIO_NAIVE)  ：next 是强引用。成环组被顶掉后仍互相持有 ⇒ 不可达环收不掉（泄漏）。
 //   careful(-DCYCLERATIO_CAREFUL)：顶掉前先断环（顺着 next 清一遍链），引用计数级联归零。
+//   fair   (-DCYCLERATIO_FAIR)   ：与 careful 同一路径的别名（run.sh / SPEC 用 _CAREFUL 构建该臂，
+//                                  这里同时接受 _FAIR，两条宏名出同一个可执行体）。
+// FAIR 臂：显式打断环，让 C++ 与 extC/Rust 在同一内存纪律下比较 —— 这正是 extC 用覆盖释放自动做的事。
 // 两臂 stdout 相同（计数只看窗口记账，不看可达性）。
 //
 // 构建：g++ -O2 -std=c++17 -DCYCLERATIO_NAIVE   src/cycleratio.cpp -o b/cycleratio.cpp.bin
 //       g++ -O2 -std=c++17 -DCYCLERATIO_CAREFUL src/cycleratio.cpp -o b/cycleratio.cpp_careful.bin
+//       g++ -O2 -std=c++17 -DCYCLERATIO_FAIR    src/cycleratio.cpp -o b/cycleratio.cpp_fair.bin
 #include <cstdint>
 #include <cstdio>
 #include <memory>
@@ -85,8 +89,10 @@ int main(int argc, char** argv) {
         if (win[b].head) {
             ++evicted;
             dropnodes += win[b].n;
-#if defined(CYCLERATIO_CAREFUL)
-            // careful：顶掉前断环。顺链清 next；成环组因此被打破、引用计数级联归零。
+#if defined(CYCLERATIO_CAREFUL) || defined(CYCLERATIO_FAIR)
+            // 顶掉前断环。顺链清 next；成环组因此被打破、引用计数级联归零。
+            // FAIR 臂走的就是这条路：显式打断环，让 C++ 与 extC/Rust 在同一内存纪律下比较
+            // —— 这正是 extC 用覆盖释放自动做的事。只改释放时机，不改任何输出。
             std::shared_ptr<Node> p = win[b].head;
             for (int64_t t = 0; t < win[b].n && p; ++t) {
                 std::shared_ptr<Node> nx = p->next;

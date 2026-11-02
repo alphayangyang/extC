@@ -135,15 +135,25 @@ do_bench() {
 }
 
 do_pause() {
-  local bad=0 s arm args
+  local bad=0 s arm args rep line
+  local reps=${PAUSE_REPS:-3}
   for s in $SHAPES; do
     args=$(bench_args $s)
     for arm in $ARMS; do
-      env EXTC_RC_PAUSE=1 EXTC_RC_STATS=1 "$B/$s.$arm" $args > /dev/null 2> $PAUSEDIR/$s.$arm.err || true
+      : > $B/out/pause-raw.$s.$arm
+      for rep in $(seq 1 "$reps"); do
+        line=$(env EXTC_RC_PAUSE=1 EXTC_RC_STATS=1 \
+          $B/mrun --pin $PIN --out $B/out/pause.$s.$arm.r$rep \
+          --err $PAUSEDIR/$s.$arm.r$rep.err -- "$B/$s.$arm" $args 2>/dev/null)
+        if [ -z "$(field "$line" ms)" ]; then echo "   FAIL pause $s $arm r$rep"; bad=1; continue; fi
+        echo "$line" >> $B/out/pause-raw.$s.$arm
+      done
+      # 旧文件名保留为第 1 次的副本，不破坏已有引用
+      cp -f $PAUSEDIR/$s.$arm.r1.err $PAUSEDIR/$s.$arm.err
       grep -q '\[step\]' $PAUSEDIR/$s.$arm.err || true
     done
   done
-  echo "pause: $PAUSEDIR"
+  echo "pause: $PAUSEDIR (reps=$reps, pin=$PIN)"
   return $bad
 }
 

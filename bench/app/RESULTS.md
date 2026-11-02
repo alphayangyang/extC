@@ -2,7 +2,7 @@
 
 > **自动生成**（`bash bench/app/run.sh`），别手改。
 > 口径：三种语言**同算法同参数**，跑同一串操作，打印出来的校验和**逐字节相同**才算数；
-> 时间与峰值 RSS 都是 `best of 3`（时间用 bash 内建 `EPOCHREALTIME`，每样本重复 K 次凑到约 0.2 s）。
+> 时间与峰值 RSS 都是 `best of 5`（时间用 bash 内建 `EPOCHREALTIME`，每样本重复 K 次凑到约 0.2 s）。
 
 机器：Intel(R) Core(TM) Ultra 9 275HX · kernel 6.18.54.1-microsoft-standard-WSL2
 
@@ -27,9 +27,9 @@
 
 | 规模 | extC | C++ STL | Go | extC/C++ | extC/Go | 校验和 |
 |---|---|---|---|---|---|---|
-| active=4096 · ops=122880 | 0.003 s<br>21.07 ns/op<br>1.8 MB | 0.002 s<br>13.84 ns/op<br>4.0 MB | 0.002 s<br>20.01 ns/op<br>2.6 MB | 1.52× | 1.05× | `a.len=1791 a.hits=27971 a.acc=691861096` |
-| active=65536 · ops=1966080 | 0.038 s<br>19.13 ns/op<br>4.8 MB | 0.014 s<br>7.30 ns/op<br>6.6 MB | 0.035 s<br>17.73 ns/op<br>8.1 MB | 2.62× | 1.08× | `a.len=39308 a.hits=744377 a.acc=989735048` |
-| active=1048576 · ops=31457280 | 1.093 s<br>34.74 ns/op<br>72.5 MB | 0.182 s<br>5.77 ns/op<br>37.4 MB | 1.555 s<br>49.43 ns/op<br>91.1 MB | 6.02× | 0.70× | `a.len=419645 a.hits=5797684 a.acc=282394677` |
+| active=4096 · ops=122880 | 0.003 s<br>20.85 ns/op<br>1.8 MB | 0.002 s<br>14.15 ns/op<br>4.0 MB | 0.002 s<br>19.70 ns/op<br>2.6 MB | 1.47× | 1.06× | `a.len=1791 a.hits=27971 a.acc=691861096` |
+| active=65536 · ops=1966080 | 0.035 s<br>17.71 ns/op<br>4.8 MB | 0.014 s<br>7.10 ns/op<br>6.7 MB | 0.038 s<br>19.26 ns/op<br>8.1 MB | 2.50× | 0.92× | `a.len=39308 a.hits=744377 a.acc=989735048` |
+| active=1048576 · ops=31457280 | 0.913 s<br>29.02 ns/op<br>72.5 MB | 0.178 s<br>5.66 ns/op<br>37.3 MB | 1.419 s<br>45.10 ns/op<br>91.1 MB | 5.12× | 0.64× | `a.len=419645 a.hits=5797684 a.acc=282394677` |
 
 ## 场景 B：路由表（前驱查找 + 区间扫描）
 
@@ -41,9 +41,9 @@
 
 | 规模 | extC | C++ STL | Go | extC/C++ | extC/Go | 校验和 |
 |---|---|---|---|---|---|---|
-| ops=200000 | 0.106 s<br>192.02 ns/op<br>8.0 MB | 0.130 s<br>237.10 ns/op<br>16.2 MB | 0.056 s<br>102.13 ns/op<br>8.7 MB | 0.81× | 1.88× | `b.ins=198836 b.lkp=76800512 b.scan=201244 b.del=99708 b.len=99128` |
-| ops=1000000 | 1.199 s<br>435.98 ns/op<br>32.7 MB | 2.291 s<br>833.26 ns/op<br>63.4 MB | 0.410 s<br>149.07 ns/op<br>46.4 MB | 0.52× | 2.92× | `b.ins=970962 b.lkp=383996672 b.scan=3939147 b.del=492783 b.len=478179` |
-| ops=2000000 | 3.527 s<br>641.34 ns/op<br>62.0 MB | 7.375 s<br>1340.91 ns/op<br>119.3 MB | 1.148 s<br>208.81 ns/op<br>89.9 MB | 0.48× | 3.07× | `b.ins=1885850 b.lkp=768006400 b.scan=14828627 b.del=970962 b.len=914888` |
+| ops=200000 | 0.097 s<br>175.74 ns/op<br>8.0 MB | 0.102 s<br>185.54 ns/op<br>16.2 MB | 0.052 s<br>95.11 ns/op<br>8.7 MB | 0.95× | 1.85× | `b.ins=198836 b.lkp=76800512 b.scan=201244 b.del=99708 b.len=99128` |
+| ops=1000000 | 0.982 s<br>356.92 ns/op<br>32.7 MB | 1.833 s<br>666.51 ns/op<br>63.3 MB | 0.395 s<br>143.74 ns/op<br>46.4 MB | 0.54× | 2.48× | `b.ins=970962 b.lkp=383996672 b.scan=3939147 b.del=492783 b.len=478179` |
+| ops=2000000 | 3.048 s<br>554.15 ns/op<br>62.0 MB | 5.908 s<br>1074.10 ns/op<br>119.3 MB | 0.927 s<br>168.53 ns/op<br>89.7 MB | 0.52× | 3.29× | `b.ins=1885850 b.lkp=768006400 b.scan=14828627 b.del=970962 b.len=914888` |
 
 ## 场景 C：请求日志 / 动态缓冲
 
@@ -55,17 +55,17 @@ extC 的 `string` 没有 `erase`，截断是**字节循环**（`dropFront`：缓
 
 | 规模 | extC | C++ STL | Go | extC/C++ | extC/Go | 校验和 |
 |---|---|---|---|---|---|---|
-| ops=200000 | 0.008 s<br>38.41 ns/op<br>1.4 MB | 0.004 s<br>20.84 ns/op<br>4.0 MB | 0.005 s<br>22.62 ns/op<br>2.0 MB | 1.84× | 1.70× | `c.appended=4800000 c.trunc=583 c.find=54966 c.acc=94327 c.len=14744` |
-| ops=2000000 | 0.069 s<br>34.43 ns/op<br>1.4 MB | 0.038 s<br>18.95 ns/op<br>4.0 MB | 0.044 s<br>21.94 ns/op<br>2.5 MB | 1.82× | 1.57× | `c.appended=48000000 c.trunc=5846 c.find=601651 c.acc=946987 c.len=16040` |
-| ops=20000000 | 0.667 s<br>33.33 ns/op<br>1.4 MB | 0.299 s<br>14.93 ns/op<br>4.1 MB | 0.313 s<br>15.65 ns/op<br>2.3 MB | 2.23× | 2.13× | `c.appended=480000000 c.trunc=58478 c.find=6076923 c.acc=9473317 c.len=12584` |
+| ops=200000 | 0.007 s<br>36.66 ns/op<br>1.4 MB | 0.004 s<br>19.83 ns/op<br>4.0 MB | 0.004 s<br>21.52 ns/op<br>2.3 MB | 1.85× | 1.70× | `c.appended=4800000 c.trunc=583 c.find=54966 c.acc=94327 c.len=14744` |
+| ops=2000000 | 0.069 s<br>34.28 ns/op<br>1.4 MB | 0.032 s<br>16.06 ns/op<br>4.1 MB | 0.034 s<br>16.88 ns/op<br>2.3 MB | 2.13× | 2.03× | `c.appended=48000000 c.trunc=5846 c.find=601651 c.acc=946987 c.len=16040` |
+| ops=20000000 | 0.657 s<br>32.86 ns/op<br>1.4 MB | 0.291 s<br>14.57 ns/op<br>4.2 MB | 0.311 s<br>15.54 ns/op<br>2.3 MB | 2.26× | 2.11× | `c.appended=480000000 c.trunc=58478 c.find=6076923 c.acc=9473317 c.len=12584` |
 
 ## 汇总（三个规模的时间几何平均）
 
 | 场景 | extC | C++ STL | Go | C++/extC | Go/extC |
 |---|---|---|---|---|---|
-| session | 0.0474 s | 0.0164 s | 0.0511 s | 0.35× | 1.08× |
-| route | 0.7644 s | 1.3013 s | 0.2979 s | 1.70× | 0.39× |
-| log | 0.0706 s | 0.0361 s | 0.0396 s | 0.51× | 0.56× |
+| session | 0.0433 s | 0.0163 s | 0.0507 s | 0.38× | 1.17× |
+| route | 0.6613 s | 1.0338 s | 0.2676 s | 1.56× | 0.40× |
+| log | 0.0691 s | 0.0334 s | 0.0356 s | 0.48× | 0.52× |
 
 ## 结论与分析（2026-09-26）
 
