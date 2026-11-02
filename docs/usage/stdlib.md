@@ -473,17 +473,17 @@ fn main() -> i32 {
 
 语义：introsort（median-of-three + 深度上限后退到 heapsort），**原地、零分配**，栈是 64 项定长数组；
 小区间（≤ 12）走插入排序；**不承诺稳定**；比较用键上的 `<`。
-调用点写 `sort::sort(v)`，**不要**写 `sort::sort<i64>(v)`（那会被读成"类型当值"，报
+调用点写 `seq::sort(v)`，**不要**写 `seq::sort<i64>(v)`（那会被读成"类型当值"，报
 `` `i64` is a type, not a value -- did you mean `i64(x)`? ``）。
 
 ```extc
 use std::io
-use std::data::sort
+use std::data::seq
 fn main() -> i32 {
     var a: [5]i64 = [3, 1, 4, 1, 5]
     var v: mut slice<i64> = a[..]
-    sort::sort(v)
-    io::cout << a[0] << a[1] << a[2] << a[3] << a[4] << " sorted=" << sort::isSorted(v) << "\n"
+    seq::sort(v)
+    io::cout << a[0] << a[1] << a[2] << a[3] << a[4] << " sorted=" << seq::isSorted(v) << "\n"
     return 0
 }
 ```

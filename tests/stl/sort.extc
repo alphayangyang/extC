@@ -2,7 +2,7 @@
 // 判据：每种输入都「非降序」**且**元素多重集不变（和 + 异或都不变），结构体键也能排
 // expect: ok=11 sorted=1 sum=499500 xo=0 sm0=0 sm1=999 i64ok=1 ptok=1 pt0=1
 use std::io
-use std::data::sort
+use std::data::seq
 
 struct pt {
     x: i64
@@ -56,8 +56,8 @@ fn main() -> i32 {
         fill(big[..1000], 1000, modes[mi])
         let s0 = sumOf(big[..1000])
         let x0 = xorOf(big[..1000])
-        sort::sort(big[..1000])
-        if sort::isSorted(big[..1000]) && sumOf(big[..1000]) == s0 && xorOf(big[..1000]) == x0 { ok = ok + 1 }
+        seq::sort(big[..1000])
+        if seq::isSorted(big[..1000]) && sumOf(big[..1000]) == s0 && xorOf(big[..1000]) == x0 { ok = ok + 1 }
         mi = mi + 1
     }
     /* 极小规模：0 / 1 / 2 / 12 / 13 个（插入排序与划分的分界两侧） */
@@ -67,28 +67,28 @@ fn main() -> i32 {
         var small: [13]i64
         fill(small[..13], sizes[si], 2)
         let s1 = sumOf(small[..sizes[si]])
-        sort::sort(small[..sizes[si]])
-        if sort::isSorted(small[..sizes[si]]) && sumOf(small[..sizes[si]]) == s1 { ok = ok + 1 }
+        seq::sort(small[..sizes[si]])
+        if seq::isSorted(small[..sizes[si]]) && sumOf(small[..sizes[si]]) == s1 { ok = ok + 1 }
         si = si + 1
     }
     /* 大一点：3000 个随机（走多轮划分 + 显式栈） */
     var huge: [3000]i64
     fill(huge[..3000], 3000, 0)
     let hs = sumOf(huge[..3000])
-    sort::sort(huge[..3000])
-    if sort::isSorted(huge[..3000]) && sumOf(huge[..3000]) == hs { ok = ok + 1 }
+    seq::sort(huge[..3000])
+    if seq::isSorted(huge[..3000]) && sumOf(huge[..3000]) == hs { ok = ok + 1 }
 
     /* 结构体键：证明泛型真的按 `<` 协议走 */
     var pts: [5]pt = [pt { x: 3, y: 1 }, pt { x: 1, y: 9 }, pt { x: 3, y: 0 }, pt { x: 2, y: 5 }, pt { x: 1, y: 2 }]
-    sort::sort(pts[..])
-    let ptok = sort::isSorted(pts[..])
+    seq::sort(pts[..])
+    let ptok = seq::isSorted(pts[..])
 
     /* 固定读数字面上放一个「元素多重集不变」的独立样本，好让这一行自证 */
     var tail: [1000]i64
     fill(tail[..1000], 1000, 1)
-    sort::sort(tail[..1000])
+    seq::sort(tail[..1000])
     var isS: i64 = 0
-    if sort::isSorted(tail[..1000]) { isS = 1 }
+    if seq::isSorted(tail[..1000]) { isS = 1 }
     var okFlag: i64 = 0
     if ok >= 7 { okFlag = 1 }
     var ptFlag: i64 = 0

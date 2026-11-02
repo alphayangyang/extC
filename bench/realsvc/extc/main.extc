@@ -25,7 +25,6 @@ use std::io
 use std::time
 use std::data::vector
 use std::data::hashMap
-use std::data::sort
 use std::sys::file as sysfile
 use std::sys::io as sysio
 use std::sys::net
@@ -315,7 +314,7 @@ fn modeSessions(buf: slice<u8>, readNs: i64) -> i32 {
         live.put(uid, s)
         ci = ci + 1
     }
-    sort::sort(keep[..nkeep])
+    seq::sort(keep[..nkeep])
     var h: u64 = basis()
     var retained: i64 = 0
     var liveoff: i64 = 0

@@ -8,7 +8,6 @@ use std::io
 use std::time
 use std::reflect
 use std::data::hashMap
-use std::data::sort
 use std::sys::file as sysfile
 use std::sys::io as sysio
 
@@ -122,7 +121,7 @@ fn main() -> i32 {
         gs[i] = groups.get(keys[i]) ?? grp { uid: keys[i], count: i64(0), cents: i64(0), worst: i64(0) }
         i = i + 1
     }
-    sort::sort(gs[..])
+    seq::sort(gs[..])
     var top_cs: i64 = 0
     i = 0
     while i < 5 && i < gs.len {
