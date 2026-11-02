@@ -141,6 +141,34 @@ std::text::number-> text / text -> number 各留一个入口（`parse` / `render
 - 不为 `extern!` 的外部库设计包装（下一步单独做）。
 
 
+
+### 容器为什么暂时**不**合并（2026-11-12 实测）
+
+试过把 `vector<T>`（`@poolObject`，自己的板块、可原地长、可 `release`）与 `varArray<T>`
+（region arena 的 `new T[cap]`）并成 `vec<T>`，撞上一个**能力差异**，不是代码风格问题：
+
+<!-- fragment -->
+```extc
+fn lend() -> slice<i32> {          /* varArray 版：编得过，而且安全 */
+    var a: varArray<i32> = varArray<i32>::withCap(2)
+    a.push(i32(7))
+    return a.view()                 /* 存储是 withCap 里 new 出来的，逃逸分析把它提到调用者那边 */
+}
+
+fn lend2() -> slice<i32> {          /* 换成池版本（vec）后：编译错误 */
+    var a: vec<i32> = vec<i32>::withCap(2)
+    a.push(i32(7))
+    return a.view()                 /* 块住在 `a` 的池里，池随这个帧死 ⇒ 视图会悬垂 */
+}
+```
+
+即：**arena 底让"视图带出调用"成立，池底让它不成立**（后者只能 `snapshot()`，而且两级返回还会再撞
+深度规则）。合并要么放弃"视图带出"，要么放弃"原地长 + `release`"——两个都是用户能感知的能力。
+
+所以暂时保持两个名字，并把差异写清楚（`vec` = 有板块、能释放、视图不外借；`varArray` = arena 底、
+视图可以带出、但增长历史留在区域里）。真正的合一是语言级工作：元素引用或"冻结视图"
+（见 `docs/ELEMENT-REFS.md`），让一个实现同时拿到两种寿命故事。
+
 ## 进度
 
 - **P0 完成（`981ff95`）**：`@private` 成为公开面的唯一凭据；公开面 834 → 515（公开 400 · 内部 115），
