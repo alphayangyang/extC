@@ -188,5 +188,10 @@ fn lend2() -> slice<i32> {          /* 换成池版本（vec）后：编译错�
   - 格式化 8 个名字收成 3 个：目标形状 `format(tpl, args: any...)` 需要**变参**，而变参按
     用户决定往后推；没有它就只能写成 `format(tpl, slice<any>)`，仪式感反而更重。
     等变参落地再收。
+- **P2 合并（持续）**：已落地 `sort`→`seq`、`nd::tensor`→`nd`、`linmap`+`linset`、
+  `sha1`/`sha256`/`hmac`→`hash::digest`（入口读作 `sha256.sum(...)` 的占位接收者）、
+  `stringio`→`string`、`io::err`→`io`、`hashSet`→`hashMap`、`set`→`map`、`reflect`→`json`。
+  模块文件 46 → 39。下一批候选：`heap`→`mem`（33 处引用）、`uuid`/`b64`→`hash`、
+  `time`→`loop`、`proc`/`dl`→`sys`；`term` 保持独立（`terminal` 是资源类型）。
 - **P3 完成**：全仓 `stl::` 已并回 `std::*`（`cbdb410`），`stdlib/stl/` 目录删除；
   `std::sys` 保持原样（用户明确说"不必全 private"）。
