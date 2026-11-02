@@ -53,7 +53,7 @@ fn main() -> i32 {
 
 ## 3. 门面：`pub use` 让实现能拆、用户代码不动
 
-模块可以把自己的名字**再导出**给别人：`pub use std::io::fmt::{padText, fmtI64Fast}`。
+模块可以把自己的名字**再导出**给别人：`pub use std::io::{padText, fmtI64Fast}`。
 于是实现文件怎么拆都不影响调用方 —— `std::io` 就这样把流、格式化、诊断分成三个文件，
 而 `use std::io` 的人一行不改。
 
