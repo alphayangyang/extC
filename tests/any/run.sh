@@ -68,6 +68,7 @@ one own_payload        tests/any/own_payload.extc           "snapshot=ABCD live=
 trapcase unbox_mismatch tests/any/unbox_mismatch.extc
 dispatch_miss dyn_method_missing tests/any/dyn_method_missing.extc
 one dyn_wide            tests/any/dyn_wide.extc            "acc=156"
+one monotonic           tests/any/monotonic.extc           "sq=16 ci=15 bx=9"
 one reflect_json        tests/any/reflect_json.extc        "json={\"name\":\"abc\",\"p\":{\"x\":1,\"y\":-2},\"ok\":true}
 type=rec
 scalar=7"

@@ -1,0 +1,20 @@
+use std::io
+
+// Monotonicity: adding a type that happens to declare a method with the same name must not change
+// what an *existing* call does, and must not make the program stop compiling. `square` and `circle`
+// both declare `area`; `box` only joins them because a later file adds it.
+struct square { s: i64  fn area(self: ref square) -> i64 { return self.s * self.s } }
+struct circle { r: i64  fn area(self: ref circle) -> i64 { return self.r * i64(3) } }
+struct box { w: i64  fn area(self: ref box) -> i64 { return self.w } }
+
+fn areaOf(v: any) -> i64 {
+    return v.area()
+}
+
+fn main() -> i32 {
+    var a: any = square { s: i64(4) }
+    var b: any = circle { r: i64(5) }
+    var c: any = box { w: i64(9) }
+    println("sq=", areaOf(a), " ci=", areaOf(b), " bx=", areaOf(c))
+    return 0
+}
