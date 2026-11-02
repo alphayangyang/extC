@@ -1,0 +1,22 @@
+use std::io
+
+// Ten types define `area` (more than the chain limit, so the receiver is found by searching a
+// sorted table), and one type does not: the call on that one has to trap at run time.
+struct a0 { k: i64  fn area(self: ref a0) -> i64 { return self.k } }
+struct a1 { k: i64  fn area(self: ref a1) -> i64 { return self.k + i64(1) } }
+struct a2 { k: i64  fn area(self: ref a2) -> i64 { return self.k + i64(2) } }
+struct a3 { k: i64  fn area(self: ref a3) -> i64 { return self.k + i64(3) } }
+struct a4 { k: i64  fn area(self: ref a4) -> i64 { return self.k + i64(4) } }
+struct a5 { k: i64  fn area(self: ref a5) -> i64 { return self.k + i64(5) } }
+struct a6 { k: i64  fn area(self: ref a6) -> i64 { return self.k + i64(6) } }
+struct a7 { k: i64  fn area(self: ref a7) -> i64 { return self.k + i64(7) } }
+struct a8 { k: i64  fn area(self: ref a8) -> i64 { return self.k + i64(8) } }
+struct a9 { k: i64  fn area(self: ref a9) -> i64 { return self.k + i64(9) } }
+struct plain { k: i64 }
+
+fn main() -> i32 {
+    var x: any = plain { k: i64(1) }
+    var a: i64 = x.area()
+    println("a=", a)
+    return 0
+}

@@ -11661,7 +11661,7 @@ static const PrimPiece PRIM_BLOCK[] = {
      * preamble, ahead of the prototypes; the struct itself is emitted with the rest of the `any`
      * runtime, before any body uses it. One row, mentioned by name, so a program without `any`
      * never carries it. */
-    { PRIM_VAR, "ExtcAny", "typedef struct ExtcDesc ExtcDesc;\ntypedef struct ExtcAny { const struct ExtcDesc *desc; union { uint8_t small[8]; void *box; } u; } ExtcAny;\n" },
+    { PRIM_VAR, "ExtcAny", "typedef struct ExtcDesc ExtcDesc;\ntypedef struct ExtcAny { const struct ExtcDesc *desc; uint64_t u; } ExtcAny;\n" },
     { PRIM_SCAFFOLD, NULL, "#ifndef EXTC_ARENA_SPARE_MAX\n" },
     { PRIM_MACRO, NULL, "#define EXTC_ARENA_SPARE_MAX (1 << 20)\n" },
     { PRIM_SCAFFOLD, NULL, "#endif\n" },
@@ -14380,7 +14380,7 @@ static void anyEmitRuntime(Arena *arena, Buf *out, bool withPrint, bool withEq) 
         "}\n"
         "\n"
         "EXTC_UNUSED static const void *extc_any_payload(const ExtcAny *a) {\n"
-        "    return extc_any_boxed(a) ? a->u.box : (const void *)a->u.small;\n"
+        "    return extc_any_boxed(a) ? (const void *)(uintptr_t)a->u : (const void *)&a->u;\n"
         "}\n"
         "\n"
         "/* Boxing copies the value in: that is what makes an `any` a value rather than a view, and\n"
@@ -14448,15 +14448,19 @@ static void anyEmitRuntime(Arena *arena, Buf *out, bool withPrint, bool withEq) 
         "                                       const void *src, int64_t size, int64_t dup) {\n"
         "    ExtcAny v;\n"
         "    v.desc = d;\n"
+        "    /* The payload word is always written, even when nothing is copied into it: readers take\n"
+        "     * its address and read a whole struct through it, which the uninitialized-value analysis\n"
+        "     * cannot follow. One store, and the diagnostic stays quiet. */\n"
+        "    v.u = 0;\n"
         "    if (size <= 8 && !dup) {\n"
-        "        memcpy(v.u.small, src, (size_t)size);\n"
+        "        memcpy(&v.u, src, (size_t)size);\n"
         "        return v;\n"
         "    }\n"
-        "    void *p = size <= 8 ? (void *)v.u.small : extc_arena_alloc(arena, size, \"any\", 0);\n"
+        "    void *p = size <= 8 ? (void *)&v.u : extc_arena_alloc(arena, size, \"any\", 0);\n"
         "    memcpy(p, src, (size_t)size);\n"
         "    if (dup) extc_any_fixup(arena, d, p, 0);\n"
         "    if (size <= 8) return v;\n"
-        "    v.u.box = p;\n"
+        "    v.u = (uint64_t)(uintptr_t)p;\n"
         "    v.desc = (const ExtcDesc *)((uintptr_t)d | (uintptr_t)1);\n"
         "    return v;\n"
         "}\n"
@@ -14515,15 +14519,55 @@ static void anyEmitRuntime(Arena *arena, Buf *out, bool withPrint, bool withEq) 
  * @param m      The module, the source of the candidate types.
  * @param out    The unit text, the append target.
  */
-static void emitDynCalls(CG *g, Module *m, Buf *out) {
+/**
+ * @brief Ask for the descriptors a dynamic call needs, **before** the descriptor region is emitted.
+ *
+ * `descRef` registers a type's descriptor row for emission, and the rows are written out before the
+ * bodies; a dispatcher emitted afterwards can therefore not add one. This pass walks the recorded
+ * call sites while that is still possible and registers every candidate type, plus the type each
+ * candidate returns (a return value is boxed, which needs its descriptor too).
+ *
+ * @param g  The generator; `g->dynCalls` holds the sites.
+ * @param m  The module, the source of the candidate types.
+ */
+static void collectDynCallDescs(CG *g, Module *m) {
     for (size_t i = 0; i < g->dynCalls.len; i++) {
         Expr *e = *(Expr **)vecAt(&g->dynCalls, i);
         const char *name = e->u.method.name;
-        bufPrintf(out, "\n/* `v.%s()` on an `any`, resolved by the receiver's descriptor. */\n",
-                  name);
-        bufPrintf(out, "static ExtcAny extc_dyn_%zu(extc_arena *__extc_home,"
-                       " const ExtcAny *__recv) {\n", i);
-        bufPuts(out, "    const ExtcDesc *__t = extc_any_type(__recv);\n");
+        for (size_t k = 0; k < m->structs.len; k++) {
+            StructDef *sd = *(StructDef **)vecAt(&m->structs, k);
+            if (sd->typeParams.len > 0) continue;
+            for (size_t j = 0; j < sd->methods.len; j++) {
+                FuncDef *md = *(FuncDef **)vecAt(&sd->methods, j);
+                if (md->params.len != 1 || strcmp(md->name, name) != 0 || !md->body) continue;
+                (void)descRef(g, sd->type);
+                if (md->ret && md->ret->kind != TY_VOID) (void)descRef(g, md->ret);
+                break;
+            }
+        }
+    }
+}
+
+/**
+ * @brief Emit one resolver per `any` dynamic-call site, keyed by the receiver's descriptor.
+ *
+ * A chain of descriptor comparisons grows with the number of candidate types (2.7 ns at 16, 25 ns at
+ * 256 in the prototype), so above `chainMax` candidates the resolver searches a sorted table instead
+ * and jumps on the index. The candidates are fixed at compile time but their *addresses* are not, so
+ * the table is sorted once, on the first call, and every later call searches it.
+ *
+ * @param g    The generator; `g->dynCalls` holds the sites, in emission order.
+ * @param m    The module whose struct methods are the candidates.
+ * @param out  The unit text to append to.
+ */
+static void emitDynCalls(CG *g, Module *m, Buf *out) {
+    const size_t chainMax = 8;
+    for (size_t i = 0; i < g->dynCalls.len; i++) {
+        Expr *e = *(Expr **)vecAt(&g->dynCalls, i);
+        const char *name = e->u.method.name;
+        /* Collect the candidates first: the emission shape depends on how many there are. */
+        Vec cands;
+        vecInit(&cands, g->arena, sizeof(StructDef *));
         for (size_t k = 0; k < m->structs.len; k++) {
             StructDef *sd = *(StructDef **)vecAt(&m->structs, k);
             if (sd->typeParams.len > 0) continue;      /* an instance needs its own type argument */
@@ -14533,32 +14577,85 @@ static void emitDynCalls(CG *g, Module *m, Buf *out) {
                 if (cand->params.len == 1 && strcmp(cand->name, name) == 0) { md = cand; break; }
             }
             if (!md || !md->body) continue;
+            *(StructDef **)vecPush(&cands) = sd;
+        }
+        bufPrintf(out, "\n/* `v.%s()` on an `any`, resolved by the receiver's descriptor. */\n", name);
+        const bool wide = cands.len > chainMax;
+        if (wide) {
+            bufPrintf(out, "static struct { const ExtcDesc *key; int idx; } extc_dyn_%zu_map[] = {\n", i);
+            for (size_t k = 0; k < cands.len; k++) {
+                StructDef *sd = *(StructDef **)vecAt(&cands, k);
+                bufPrintf(out, "    { %s, %zu },\n", descRef(g, sd->type), k);
+            }
+            bufPuts(out, "};\n");
+            bufPrintf(out, "static int extc_dyn_%zu_sorted = 0;\n", i);
+            bufPrintf(out, "static void extc_dyn_%zu_sort(void) {\n", i);
+            bufPrintf(out, "    size_t __n = sizeof extc_dyn_%zu_map / sizeof extc_dyn_%zu_map[0];\n", i, i);
+            bufPrintf(out, "    for (size_t __i = 1; __i < __n; __i++) {\n");
+            bufPrintf(out, "        const ExtcDesc *__k = extc_dyn_%zu_map[__i].key; int __v = extc_dyn_%zu_map[__i].idx;\n", i, i);
+            bufPrintf(out, "        size_t __j = __i;\n");
+            bufPrintf(out, "        while (__j > 0 && (uintptr_t)extc_dyn_%zu_map[__j - 1].key > (uintptr_t)__k) {\n", i);
+            bufPrintf(out, "            extc_dyn_%zu_map[__j] = extc_dyn_%zu_map[__j - 1]; __j--; }\n", i, i);
+            bufPrintf(out, "        extc_dyn_%zu_map[__j].key = __k; extc_dyn_%zu_map[__j].idx = __v;\n", i, i);
+            bufPuts(out, "    }\n");
+            bufPrintf(out, "    extc_dyn_%zu_sorted = 1;\n", i);
+            bufPuts(out, "}\n");
+        }
+        bufPrintf(out, "static ExtcAny extc_dyn_%zu(extc_arena *__extc_home,"
+                       " const ExtcAny *__recv) {\n", i);
+        bufPuts(out, "    const ExtcDesc *__t = extc_any_type(__recv);\n");
+        if (wide) {
+            bufPrintf(out, "    if (!extc_dyn_%zu_sorted) extc_dyn_%zu_sort();\n", i, i);
+            bufPrintf(out, "    size_t __n = sizeof extc_dyn_%zu_map / sizeof extc_dyn_%zu_map[0];\n", i, i);
+            bufPuts(out, "    size_t __lo = 0, __hi = __n;\n");
+            bufPuts(out, "    while (__lo < __hi) {\n");
+            bufPuts(out, "        size_t __mid = __lo + (__hi - __lo) / 2;\n");
+            bufPrintf(out, "        if ((uintptr_t)extc_dyn_%zu_map[__mid].key < (uintptr_t)__t) __lo = __mid + 1;\n", i);
+            bufPuts(out, "        else __hi = __mid;\n");
+            bufPuts(out, "    }\n");
+            bufPrintf(out, "    if (__lo < __n && extc_dyn_%zu_map[__lo].key == __t) {\n", i);
+            bufPrintf(out, "        switch (extc_dyn_%zu_map[__lo].idx) {\n", i);
+        }
+        for (size_t k = 0; k < cands.len; k++) {
+            StructDef *sd = *(StructDef **)vecAt(&cands, k);
+            FuncDef *md = NULL;
+            for (size_t j = 0; j < sd->methods.len; j++) {
+                FuncDef *cand = *(FuncDef **)vecAt(&sd->methods, j);
+                if (cand->params.len == 1 && strcmp(cand->name, name) == 0) { md = cand; break; }
+            }
             const char *ct = cType(g, sd->type);
             /* The branch is picked by the *receiver's* descriptor: its type has to be described
              * (it is a struct, and printing or comparison may never ask for it otherwise). */
-            bufPrintf(out, "    if (__t == %s) {\n", descRef(g, sd->type));
-            bufPrintf(out, "        %s *__self = (%s *)extc_any_payload(__recv);\n", ct, ct);
+            if (wide) bufPrintf(out, "        case %zu: {\n", k);
+            else      bufPrintf(out, "    if (__t == %s) {\n", descRef(g, sd->type));
+            /* The payload is copied into a properly typed local instead of being cast: the box
+             * stores either bytes or a pointer, and reading it back through a cast is the kind of
+             * type punning that makes an optimizer report `-Wmaybe-uninitialized` on the callers.
+             * One copy of at most a few words, and the dispatch stays in the same nanosecond. */
+            bufPrintf(out, "            %s __self;\n", ct);
+            bufPrintf(out, "            memcpy(&__self, extc_any_payload(__recv), sizeof __self);\n");
             if (md->ret && md->ret->kind != TY_VOID) {
                 const char *rct = cType(g, md->ret);
-                bufPrintf(out, "        %s __r = %s(__self);\n", rct, cFuncName(g, md));
-                bufPrintf(out, "        return extc_any_box(__extc_home, %s,"
+                bufPrintf(out, "            %s __r = %s(&__self);\n", rct, cFuncName(g, md));
+                bufPrintf(out, "            return extc_any_box(__extc_home, %s,"
                                " (const void *)&__r, (int64_t)sizeof(__r), %d);\n",
                           descRef(g, md->ret), typeNeedsAnyDup(g, md->ret) ? 1 : 0);
             } else {
-                bufPrintf(out, "        %s(__self);\n", cFuncName(g, md));
-                bufPuts(out, "        ExtcAny __empty;\n");
-                bufPuts(out, "        __empty.desc = NULL;\n");
-                bufPuts(out, "        memset(__empty.u.small, 0, sizeof __empty.u.small);\n");
-                bufPuts(out, "        return __empty;\n");
+                bufPrintf(out, "            %s(&__self);\n", cFuncName(g, md));
+                bufPuts(out, "            ExtcAny __empty;\n");
+                bufPuts(out, "            __empty.desc = NULL;\n");
+                bufPuts(out, "            __empty.u = 0;\n");
+                bufPuts(out, "            return __empty;\n");
             }
-            bufPuts(out, "    }\n");
+            bufPuts(out, wide ? "        }\n" : "    }\n");
         }
+        if (wide) bufPuts(out, "        default: break;\n        }\n    }\n");
         bufPrintf(out, "    fprintf(stderr, \"trap: no `%s` for a `%%s`\\n\","
                        " __t ? __t->name : \"?\");\n", name);
         bufPuts(out, "    extc_die(1);\n");
         bufPuts(out, "    ExtcAny __none;\n");
         bufPuts(out, "    __none.desc = NULL;\n");
-        bufPuts(out, "    memset(__none.u.small, 0, sizeof __none.u.small);\n");
+        bufPuts(out, "    __none.u = 0;\n");
         bufPuts(out, "    return __none;\n");
         bufPuts(out, "}\n");
     }
@@ -14946,6 +15043,8 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
      * what the define-before-use rule of C requires. */
     g.out = out;
     assembleCoroutineRuntime(&g, out, arena);
+    /* Descriptors a dispatcher names have to be registered while rows are still being collected. */
+    collectDynCallDescs(&g, m);
     emitDescRegion(&g);
     if (g.needCoroHandle && !g.coroDeclsDone) genCoroHandleDecls(&g, m);
     /* Descriptor types and shared scalar descriptors: needed by printing or by

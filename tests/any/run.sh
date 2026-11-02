@@ -25,12 +25,12 @@ build() { # name file -> sets bin, or reports
     return 0
 }
 
-dispatch_miss() { # name file -- 期望"程序编得过、运行期 trap 说没有这个方法"
-    local name=$1 out rc
+dispatch_miss() { # name file receiver -- 期望"程序编得过、运行期 trap 说没有这个方法"
+    local name=$1 out rc recv=${3:-line}
     build "$1" "$2" || return
     out=$("$bin" 2>&1); rc=$?
     [ "$rc" -ne 0 ] || { bad "$name" "没有 trap（rc=0）"; return; }
-    if printf '%s' "$out" | grep -q 'trap: no `area` for a `line`'; then
+    if printf '%s' "$out" | grep -q "trap: no \`area\` for a \`$recv\`"; then
         ok "$name" "$(printf '%s' "$out" | tail -1)"
     else
         bad "$name" "trap 报文不对：$(printf '%s' "$out" | tail -1 | cut -c1-60)"
@@ -67,6 +67,8 @@ k=2"
 one own_payload        tests/any/own_payload.extc           "snapshot=ABCD live=ZBCD"
 trapcase unbox_mismatch tests/any/unbox_mismatch.extc
 dispatch_miss dyn_method_missing tests/any/dyn_method_missing.extc
+one dyn_wide            tests/any/dyn_wide.extc            "acc=156"
+dispatch_miss dyn_wide_missing tests/any/dyn_wide_missing.extc plain
 
 printf '通过 %d，失败 %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

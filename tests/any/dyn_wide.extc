@@ -1,0 +1,79 @@
+use std::io
+
+struct t0 { k: i64
+    fn area(self: ref t0) -> i64 { return self.k * i64(1) }
+}
+
+struct t1 { k: i64
+    fn area(self: ref t1) -> i64 { return self.k * i64(2) }
+}
+
+struct t2 { k: i64
+    fn area(self: ref t2) -> i64 { return self.k * i64(3) }
+}
+
+struct t3 { k: i64
+    fn area(self: ref t3) -> i64 { return self.k * i64(4) }
+}
+
+struct t4 { k: i64
+    fn area(self: ref t4) -> i64 { return self.k * i64(5) }
+}
+
+struct t5 { k: i64
+    fn area(self: ref t5) -> i64 { return self.k * i64(6) }
+}
+
+struct t6 { k: i64
+    fn area(self: ref t6) -> i64 { return self.k * i64(7) }
+}
+
+struct t7 { k: i64
+    fn area(self: ref t7) -> i64 { return self.k * i64(8) }
+}
+
+struct t8 { k: i64
+    fn area(self: ref t8) -> i64 { return self.k * i64(9) }
+}
+
+struct t9 { k: i64
+    fn area(self: ref t9) -> i64 { return self.k * i64(10) }
+}
+
+struct t10 { k: i64
+    fn area(self: ref t10) -> i64 { return self.k * i64(11) }
+}
+
+struct t11 { k: i64
+    fn area(self: ref t11) -> i64 { return self.k * i64(12) }
+}
+
+fn main() -> i32 {
+    var v0: any = t0 { k: i64(2) }
+    var v1: any = t1 { k: i64(2) }
+    var v2: any = t2 { k: i64(2) }
+    var v3: any = t3 { k: i64(2) }
+    var v4: any = t4 { k: i64(2) }
+    var v5: any = t5 { k: i64(2) }
+    var v6: any = t6 { k: i64(2) }
+    var v7: any = t7 { k: i64(2) }
+    var v8: any = t8 { k: i64(2) }
+    var v9: any = t9 { k: i64(2) }
+    var v10: any = t10 { k: i64(2) }
+    var v11: any = t11 { k: i64(2) }
+    var acc: i64 = 0
+    acc = acc + v0.area()
+    acc = acc + v1.area()
+    acc = acc + v2.area()
+    acc = acc + v3.area()
+    acc = acc + v4.area()
+    acc = acc + v5.area()
+    acc = acc + v6.area()
+    acc = acc + v7.area()
+    acc = acc + v8.area()
+    acc = acc + v9.area()
+    acc = acc + v10.area()
+    acc = acc + v11.area()
+    println("acc=", acc)
+    return 0
+}
