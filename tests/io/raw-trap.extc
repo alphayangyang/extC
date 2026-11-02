@@ -14,7 +14,7 @@
 use std::io
 
 fn main() -> i32 {
-    var t = term::rawTerminal(io::STDIN_FD)!
+    var t = io::rawTerminal(io::STDIN_FD)!
     println("raw 开成功，接下来故意 trap")
     var a: [4]i32
     let i: i64 = 9

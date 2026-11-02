@@ -117,6 +117,8 @@
 - `-.fillState`（方法）
 - `-.fmtI64`（方法）
 - `-.isSpaceByte`（方法）
+- `terminal.rawbuf`（字段）
+- `terminal.saved`（字段）
 - `writer.buf`（字段）
 - `writer.cap`（方法）
 
@@ -157,11 +159,6 @@
 - `-.putI64`（方法）
 - `-.shiftToFront`（方法）
 - `session.buf`（字段）
-
-## std::term
-
-- `terminal.rawbuf`（字段）
-- `terminal.saved`（字段）
 
 ## std::text::string
 

@@ -797,16 +797,15 @@ fn main() -> i32 {
 
 ```extc
 use std::io
-use std::term
 fn main() -> i32 {
-    match term::rawTerminal(io::STDIN_FD) {
+    match io::rawTerminal(io::STDIN_FD) {
         failure(e) => { match e { notATerminal(fd) => { io::cout << "not-a-tty fd=" << fd << "\n" }
                                  readFailed(fd) => { io::cout << "readFailed\n" }
                                  lineTooLong(n) => { io::cout << "lineTooLong\n" }
                                  writeFailed(fd) => { io::cout << "writeFailed\n" }
                                  closed(fd) => { io::cout << "closed\n" }
                                  destFull(n) => { io::cout << "destFull\n" } } }
-        success(t) => { var tt: term::terminal = t
+        success(t) => { var tt: io::terminal = t
                         tt.restore()?
                         tt.close()?
                         io::cout << "raw-ok\n" } }

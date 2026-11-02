@@ -288,6 +288,7 @@ std::io	-	padText	fn	public
 std::io	-	pairsReady	fn	public
 std::io	-	print	fn	public
 std::io	-	println	fn	public
+std::io	-	rawTerminal	fn	public
 std::io	-	readSome	fn	public
 std::io	-	readerOf	fn	public
 std::io	-	writeBytes	fn	public
@@ -306,6 +307,10 @@ std::io	reader	chunk	field	public
 std::io	reader	fd	field	public
 std::io	reader	len	field	public
 std::io	reader	pos	field	public
+std::io	terminal	fd	field	public
+std::io	terminal	on	field	public
+std::io	terminal	rawbuf	field	internal
+std::io	terminal	saved	field	internal
 std::io	writer	buf	field	internal
 std::io	writer	cap	method	internal
 std::io	writer	fd	field	public
@@ -484,11 +489,6 @@ std::proc	-	wait	fn	public
 std::sys::domain	-	single	fn	public
 std::sys::file	-	open	fn	public
 std::sys::file	-	openAt	fn	public
-std::term	-	rawTerminal	fn	public
-std::term	terminal	fd	field	public
-std::term	terminal	on	field	public
-std::term	terminal	rawbuf	field	internal
-std::term	terminal	saved	field	internal
 std::text::string	-	decode	fn	public
 std::text::string	-	decodeUrl	fn	public
 std::text::string	-	decodedMax	fn	public

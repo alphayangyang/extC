@@ -1095,3 +1095,100 @@ fn println(s: slice<u8>) {
     print(s)
     sysio::extc_cout_put("\n".data, 1)
 }
+
+/* std/term.extc -- the terminal, as a program sees it.
+ *
+ * A thin layer over `std::sys::term`; user code never writes `std::sys::*` itself.
+ */
+use std::sys::term as sys
+
+/* A terminal that has been switched to **raw mode**: no line buffering (a key arrives
+ * the moment it is pressed), no echo, no signal keys -- which is what a game or a TUI
+ * needs to react to one keystroke.
+ *
+ * ⭐ It is a **resource** in the sense of decision 79: it declares `close`, so a
+ * `var t = rawTerminal(..)?` that never gets closed is reported by the compiler
+ * ("opened here and nothing in this function closes it"). Forgetting to restore the
+ * terminal is worse than forgetting to close a file -- the shell the user returns to
+ * cannot even echo what they type -- so being covered by that check is the point.
+ *
+ * The hidden settings buffer is **opaque**: the C side owns the layout, and `close`
+ * puts back exactly what was there before.
+ *
+ * ⭐ **A trap in raw mode gives the terminal back** (decision 80): `raw()` hands the
+ * settings it found to the runtime as well (`extc_raw_enter`), and the runtime's trap
+ * path calls them back through a dying hook before `exit`. That is the only code still
+ * running at that point -- this type, this frame, are already gone.
+ * `tests/io/raw-trap.extc` covers that path. */
+struct terminal {
+    fd:     i32
+    @private saved:  [128]u8         /* opaque: `struct termios` **as it was**, untouched by extC */
+    @private rawbuf: [128]u8         /* opaque: the raw settings, derived from `saved` */
+    on:     bool
+
+    /* Switch to raw mode, keeping the old settings in `saved`.
+     *
+     * ⚠️ Two buffers, and that is not tidiness: `cfmakeraw` modifies the buffer **in
+     * place**, so deriving raw settings in `saved` would leave nothing to restore --
+     * `restore()` would put *raw* back, and the terminal would stay broken.
+     * (`tests/io/raw-mode.extc` compares the bytes instead of trusting the return value.)
+     *
+     * A `failure` is the normal answer when the descriptor is not a terminal (a pipe, a
+     * file, a CI runner with no tty): `tcgetattr` returns -1 there, and that is a
+     * condition to report, not a bug to trap. */
+    fn raw(self: mut ref terminal) -> result<unit, ioError> {
+        if sys::tcgetattr(self.fd, self.saved[0..128].data) < i32(0) {
+            return failure(ioError.notATerminal(self.fd))
+        }
+        /* Copy, then modify the copy: the original has to survive until `restore`. */
+        var i: i64 = 0
+        while i < 128 {
+            self.rawbuf[i] = self.saved[i]
+            i = i + 1
+        }
+        sys::cfmakeraw(self.rawbuf[0..128].data)
+        if sys::tcsetattr(self.fd, sys::TCSANOW, self.rawbuf[0..128].data) < i32(0) {
+            return failure(ioError.notATerminal(self.fd))
+        }
+        /* Hand the settings we found to the **runtime** as well: it restores them on the
+         * trap path, where the program's own code (this type, this frame) is already
+         * gone. */
+        sys::extc_raw_enter(self.fd, self.saved[0..128].data, 128)
+        self.on = true
+        return success(unit {})
+    }
+
+    /* Put the terminal back exactly as it was. Idempotent, like `close` everywhere else:
+     * a second call is a no-op, and `close` is this method. */
+    fn restore(self: mut ref terminal) -> result<unit, ioError> {
+        if !self.on { return success(unit {}) }
+        self.on = false
+        /* **One authority** for putting the terminal back: the runtime helper, which the
+         * trap path calls too. Two implementations of "restore" would be two chances for
+         * the terminal to end up half-raw. */
+        if sys::extc_raw_leave() < i32(0) {
+            return failure(ioError.notATerminal(self.fd))
+        }
+        return success(unit {})
+    }
+
+    /* `close` is `restore`: the resource that has to be given back is the terminal
+     * itself, not the descriptor (which the program owns anyway). */
+    fn close(self: mut ref terminal) -> result<unit, ioError> {
+        return self.restore()
+    }
+}
+
+/* Take the terminal `fd` and switch it to raw mode.
+ *
+ *     var t = rawTerminal(STDIN_FD)?
+ *     ... read one byte at a time, draw ...
+ *     t.close()?                       // back to a normal shell
+ *
+ * The `terminal` value holds the saved settings, so it has to live at least as long as
+ * the raw mode does -- which is exactly what the type says. */
+fn rawTerminal(fd: i32) -> result<terminal, ioError> {
+    var t: terminal = { fd: fd, on: false }   /* 两个缓冲留零值：它们是 C 那边的布局，extC 只借字节 */
+    let u = t.raw()?
+    return success(t)
+}

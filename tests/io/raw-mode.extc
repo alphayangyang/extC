@@ -33,7 +33,7 @@ fn run() -> result<unit, io::ioError> {
         return failure(io::ioError.notATerminal(io::STDIN_FD))
     }
 
-    var t = term::rawTerminal(io::STDIN_FD)?
+    var t = io::rawTerminal(io::STDIN_FD)?
     println("raw 开成功")
 
     /* ② 真的切过去了 */
