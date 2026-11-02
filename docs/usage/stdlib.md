@@ -686,7 +686,8 @@ fn main() -> i32 {
 | `eprint` / `eprintln` | `fn eprint(s: slice<u8>)` / `fn eprintln(s: slice<u8>)`（诊断通道，写 stderr；与 stdout 两条通道分开，`cerr` 是流式写法）|
 
 **程序级单例**：`io::cout`、`io::cerr`、`io::writer` 的缓冲、`fs::fout`/`fs::fin` 以及
-`io::fmt` 的格式化暂存（`FMT`/`PAIRS`）都是**整个程序一份**的状态，不是线程局部的。这不构成隐藏炸弹，
+`io::fmt` 的格式化暂存（`FMTSTATE`，含 `FMTSTATE.text` 与 `FMTSTATE.pairs`）都是**整个程序一份**的状态，不是线程局部的；
+`fs` 的两块缓冲与它们的 fd/位置也收在两个对象里（`fs::OUT`、`fs::IN`）。这不构成隐藏炸弹，
 因为语言把它们挡在了唯一能并行的位置之外：`par` 的工作体**不允许调用任何函数**（编译期拒绝，
 `tests/errors/` 有负例），所以工作线程碰不到这些缓冲；协程是协作式的，一次 `<<` 是"格式化 + 拷进缓冲"
 的连续动作、只在 `yield` 处换人 ⇒ 一行不会被切开（`tests/io/concurrent-write.extc` 钉住这一点）。

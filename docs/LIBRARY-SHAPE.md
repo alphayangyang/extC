@@ -147,7 +147,7 @@ std::text::number-> text / text -> number 各留一个入口（`parse` / `render
   `manual_surface --worklist` 归零；容器的存储字段（`vals`/`depth`/`chunk`…）在手册里注明"公开但不是 API"。
 - **P1 完成（`62eb15a`）**：`toSlice()` → `snapshot()`（拷贝）、`asSlice()` → `view()`（借出），
   `vector`/`pool` 补 `view()`；编译器的自动借出与容器 `for` 脱糖改认 `view`/`viewMut`
-  （回退旧拼写，用户自己写的容器两种都认）；手册写明"程序级单例"不是隐藏炸弹（`par` 体内不允许调用）。
+  （`asSlice`/`asMutSlice` 仍接受，用户自己写的容器两种拼写都认）；手册写明"程序级单例"不是隐藏炸弹（`par` 体内不允许调用）。
 - **P2 进行中**：`std::stl::*` 已拆成 `std::text::{string,stringio}`、`std::data::{vector,map,hashMap,
   set,hashSet,linmap,linset,pool,sort,seq}`、`std::nd`（`nd` + `nd::tensor`）；14 个 `stl` 模块归零。
   编译器糖里写死的模块路径（f-string → `std::text::string`、`stringio`，多下标 → `std::nd`）同步更新。

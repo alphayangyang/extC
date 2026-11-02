@@ -4,7 +4,7 @@ module std::io::err
  *
  * 依赖方向 `err → fmt`（数字进 stderr 也要十进制）与 `std::sys::io`（write），无反向边。
  */
-use std::io::fmt::{flushCout, fmtI64Fast, fmtU64Fast, pairsReady, FMT}
+use std::io::fmt::{flushCout, fmtI64Fast, fmtU64Fast, pairsReady, FMTSTATE}
 use std::sys::io as sysio
 
 /* ================================================================ stderr 流
@@ -23,7 +23,7 @@ struct errStream {
     fn <<(self: ref errStream, v: i64) -> errStream {
         pairsReady()
         let st = fmtI64Fast(v)
-        errWrite(FMT[st..24])
+        errWrite(FMTSTATE.text[st..24])
         return { }
     }
     fn <<(self: ref errStream, v: bool) -> errStream {
@@ -40,7 +40,7 @@ struct errStream {
     fn <<(self: ref errStream, v: u64) -> errStream {
         pairsReady()
         let st = fmtU64Fast(v)
-        errWrite(FMT[st..24])
+        errWrite(FMTSTATE.text[st..24])
         return { }
     }
 }

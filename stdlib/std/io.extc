@@ -56,11 +56,11 @@
  * reason. */
 use std::sys::io as sysio
 
-use std::io::fmt::{fmtI64Fast, fmtU64Fast, fmtF, fillBytes, padText, pairsReady, FMT, RIGHT}
+use std::io::fmt::{fmtI64Fast, fmtU64Fast, fmtF, fillBytes, padText, pairsReady, FMTSTATE, RIGHT}
 
 /* 门面：`std::io` 的公开面仍是"流 + 格式化 + 诊断"三组，实现分别在 `std/io.extc`、
  * `std/io/fmt.extc`、`std/io/err.extc`。用户只写 `use std::io`。 */
-pub use std::io::fmt::{DIGITS, FMT, LEFT, RIGHT, CENTER, pairsReady, fmtI64Fast, fmtU64Fast, fmtI64, fmtF, fillBytes, padText, flushCout, print, println}
+pub use std::io::fmt::{DIGITS, FMTSTATE, LEFT, RIGHT, CENTER, pairsReady, fmtI64Fast, fmtU64Fast, fmtI64, fmtF, fillBytes, padText, flushCout, print, println}
 pub use std::io::err::{errStream, cerr, errWrite, eprint, eprintln}
 
 /* A read failed, and **why** it failed: an enum, not a magic value.
@@ -594,7 +594,7 @@ struct ostream { fd: i32
         pairsReady()
         let st = fmtI64Fast(v)
         let n = 24 - st
-        extc_cout_put(FMT[st..24].data, n)
+        extc_cout_put(FMTSTATE.text[st..24].data, n)
         return { fd: self.fd }
     }
     @inline
@@ -620,7 +620,7 @@ struct ostream { fd: i32
         pairsReady()
         let st = fmtU64Fast(v)
         let n = 24 - st
-        extc_cout_put(FMT[st..24].data, n)
+        extc_cout_put(FMTSTATE.text[st..24].data, n)
         return { fd: self.fd }
     }
     @inline
@@ -665,16 +665,16 @@ struct ostream { fd: i32
         let st = fmtI64Fast(v)
         let n = 24 - st
         if fill == u8(48) && align == RIGHT && width > n {
-            if FMT[st] == u8(45) {
-                extc_cout_put(FMT[st..st + 1].data, 1)
+            if FMTSTATE.text[st] == u8(45) {
+                extc_cout_put(FMTSTATE.text[st..st + 1].data, 1)
                 fillBytes(width - n, fill)
-                extc_cout_put(FMT[st + 1..24].data, n - 1)
+                extc_cout_put(FMTSTATE.text[st + 1..24].data, n - 1)
             } else {
                 fillBytes(width - n, fill)
-                extc_cout_put(FMT[st..24].data, n)
+                extc_cout_put(FMTSTATE.text[st..24].data, n)
             }
         } else {
-            padText(FMT[st..24], width, fill, align)
+            padText(FMTSTATE.text[st..24], width, fill, align)
         }
         return { fd: self.fd }
     }

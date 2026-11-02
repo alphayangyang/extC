@@ -6,7 +6,7 @@ use std::sys::io as sysio
  *
  * 只依赖两个内建（`extc_cout_put` / `extc_cout_flush`），和 fd、缓冲、流对象都不相干
  * ⇒ 拆出来以后 `io.extc` 只剩流本体，`std::io` 用门面把这里的名字再导出。
- * `FMT` 是"刚格式化好的那个数"的暂存处（只有这一份：格式化与取用必须看同一块缓冲）。
+ * `FMTSTATE.text` 是"刚格式化好的那个数"的暂存处（只有这一份：格式化与取用必须看同一块缓冲）。
  */
 /* ================================================================ 格式化（一处实现）
  *
@@ -26,26 +26,34 @@ let DIGITS: slice<u8> = "0001020304050607080910111213141516171819202122232425262
  * 224 ms（同为 1000 MB/s 量级但比 C 慢一档 ✗）。定长数组的下标是**内联的小检查** ✓
  * ⇒ 热路径写进一个**全局定长数组**（单线程，够用 ✓ 可重入性写在下面 ⚠️）。
  *
- * ⚠️ 因此 `FMT` 是"刚刚格式化好的那个数"的暂存处 ⇒ **别在格式化与取用之间再格式化** ✓
+ * ⚠️ 因此 `FMTSTATE.text` 是"刚刚格式化好的那个数"的暂存处 ⇒ **别在格式化与取用之间再格式化** ✓
  *    （`<<` 里是连续的"格式化 + 立刻取出"，所以安全 ✓）
  */
-var FMT: [24]u8
-var PAIRS: [200]u8
-var PAIRS_READY: bool = false
+struct fmtState {
+    text: [24]u8            /* 刚刚格式化好的那个数：`<<` 里"格式化 + 立刻取出"是连续的 */
+    pairs: [200]u8          /* 0..99 的两字符十进制 ASCII，首次用到时从 `DIGITS` 铺开 */
+    pairsReady: bool
+}
+
+/** @brief 格式化暂存（整个程序一份，非线程局部）。
+
+`text` 只活到"被取走"为止；`pairs` 是查表用的常量。整个程序一份 —— 但 `par` 的工作体
+不允许调用任何函数（编译期拒绝），所以工作线程碰不到它。 */
+var FMTSTATE: fmtState
 
 @inline
 fn pairsReady() {
-    if PAIRS_READY { return }
+    if FMTSTATE.pairsReady { return }
     var d: i64 = 0
     var i: i64 = 0
     while i < 200 {
-        PAIRS[i] = DIGITS[i]
+        FMTSTATE.pairs[i] = DIGITS[i]
         i = i + 1
     }
-    PAIRS_READY = true
+    FMTSTATE.pairsReady = true
 }
 
-/* 把 `v` 写进 `FMT` 的**尾部往前**，返回**起点**（长度 = 24 - 起点 ✓）
+/* 把 `v` 写进 `FMTSTATE.text` 的**尾部往前**，返回**起点**（长度 = 24 - 起点 ✓）
  *
  * ⚠️ 必须**从后往前**填：两位一组的表给的是"高位在前"的一对，若按低位在前追加、
  * 最后整体反转，**对内的顺序也会被翻** ⇒ `40` 会印成 `04` ✗（这个 bug 真发生过）。
@@ -63,22 +71,22 @@ fn fmtI64Fast(v: i64) -> i64 {
         if m < 0 { m = 0 - m }    /* m ∈ (-100, 100) ⇒ 这一步永远安全 */
         v = v / 100                    /* 向零截断 ⇒ 循环收敛，符号不影响 */
         end = end - 2
-        FMT[end]     = PAIRS[m * 2]
-        FMT[end + 1] = PAIRS[m * 2 + 1]
+        FMTSTATE.text[end]     = FMTSTATE.pairs[m * 2]
+        FMTSTATE.text[end + 1] = FMTSTATE.pairs[m * 2 + 1]
     }
     var r: i64 = v
     if r < 0 { r = 0 - r }        /* |v| < 100 ⇒ 安全；`2^63` 那种大小从不出现 */
     if r >= 10 {
         end = end - 2
-        FMT[end]     = PAIRS[r * 2]
-        FMT[end + 1] = PAIRS[r * 2 + 1]
+        FMTSTATE.text[end]     = FMTSTATE.pairs[r * 2]
+        FMTSTATE.text[end + 1] = FMTSTATE.pairs[r * 2 + 1]
     } else {
         end = end - 1
-        FMT[end] = u8(48 + r)
+        FMTSTATE.text[end] = u8(48 + r)
     }
     if neg {
         end = end - 1
-        FMT[end] = u8(45)
+        FMTSTATE.text[end] = u8(45)
     }
     return end
 }
@@ -165,7 +173,7 @@ fn fmtF(v: f64, prec: i64, out: mut slice<u8>) -> i64 {
 
 /* 无符号版：`u64` 的上界 `18446744073709551615` 有 20 位，24 字节缓冲够用。
  * 与 `fmtI64Fast` 同形（尾部往前填、两位一组），只是**没有符号**、余数不为负，
- * 所以不需要"从负数一侧取位"那一招。与 `FMT` 同一个约定：格式化完立刻取用。 */
+ * 所以不需要"从负数一侧取位"那一招。与 `FMTSTATE.text` 同一个约定：格式化完立刻取用。 */
 @inline
 fn fmtU64Fast(v: u64) -> i64 {
     var end: i64 = 24
@@ -173,17 +181,17 @@ fn fmtU64Fast(v: u64) -> i64 {
         let m: u64 = v % u64(100)
         v = v / u64(100)
         end = end - 2
-        FMT[end]     = PAIRS[i64(m) * 2]
-        FMT[end + 1] = PAIRS[i64(m) * 2 + 1]
+        FMTSTATE.text[end]     = FMTSTATE.pairs[i64(m) * 2]
+        FMTSTATE.text[end + 1] = FMTSTATE.pairs[i64(m) * 2 + 1]
     }
     let r: i64 = i64(v)
     if r >= 10 {
         end = end - 2
-        FMT[end]     = PAIRS[r * 2]
-        FMT[end + 1] = PAIRS[r * 2 + 1]
+        FMTSTATE.text[end]     = FMTSTATE.pairs[r * 2]
+        FMTSTATE.text[end + 1] = FMTSTATE.pairs[r * 2 + 1]
     } else {
         end = end - 1
-        FMT[end] = u8(48 + r)
+        FMTSTATE.text[end] = u8(48 + r)
     }
     return end
 }

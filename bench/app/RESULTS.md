@@ -27,9 +27,9 @@
 
 | 规模 | extC | C++ STL | Go | extC/C++ | extC/Go | 校验和 |
 |---|---|---|---|---|---|---|
-| active=4096 · ops=122880 | 0.003 s<br>21.30 ns/op<br>1.8 MB | 0.002 s<br>14.36 ns/op<br>4.1 MB | 0.002 s<br>19.77 ns/op<br>2.6 MB | 1.48× | 1.08× | `a.len=1791 a.hits=27971 a.acc=691861096` |
-| active=65536 · ops=1966080 | 0.046 s<br>23.37 ns/op<br>5.0 MB | 0.014 s<br>7.35 ns/op<br>6.7 MB | 0.063 s<br>32.06 ns/op<br>8.3 MB | 3.18× | 0.73× | `a.len=39308 a.hits=744377 a.acc=989735048` |
-| active=1048576 · ops=31457280 | 1.275 s<br>40.54 ns/op<br>72.5 MB | 0.183 s<br>5.82 ns/op<br>37.4 MB | 1.535 s<br>48.80 ns/op<br>91.3 MB | 6.97× | 0.83× | `a.len=419645 a.hits=5797684 a.acc=282394677` |
+| active=4096 · ops=122880 | 0.003 s<br>20.76 ns/op<br>1.8 MB | 0.002 s<br>14.10 ns/op<br>4.0 MB | 0.002 s<br>19.49 ns/op<br>2.6 MB | 1.47× | 1.07× | `a.len=1791 a.hits=27971 a.acc=691861096` |
+| active=65536 · ops=1966080 | 0.042 s<br>21.20 ns/op<br>4.8 MB | 0.014 s<br>7.27 ns/op<br>6.6 MB | 0.033 s<br>16.67 ns/op<br>8.1 MB | 2.92× | 1.27× | `a.len=39308 a.hits=744377 a.acc=989735048` |
+| active=1048576 · ops=31457280 | 1.086 s<br>34.51 ns/op<br>72.5 MB | 0.198 s<br>6.29 ns/op<br>37.4 MB | 1.720 s<br>54.69 ns/op<br>91.3 MB | 5.49× | 0.63× | `a.len=419645 a.hits=5797684 a.acc=282394677` |
 
 ## 场景 B：路由表（前驱查找 + 区间扫描）
 
@@ -41,9 +41,9 @@
 
 | 规模 | extC | C++ STL | Go | extC/C++ | extC/Go | 校验和 |
 |---|---|---|---|---|---|---|
-| ops=200000 | 0.097 s<br>176.75 ns/op<br>8.0 MB | 0.118 s<br>214.08 ns/op<br>16.0 MB | 0.055 s<br>99.67 ns/op<br>8.5 MB | 0.83× | 1.77× | `b.ins=198836 b.lkp=76800512 b.scan=201244 b.del=99708 b.len=99128` |
-| ops=1000000 | 1.200 s<br>436.29 ns/op<br>32.7 MB | 2.012 s<br>731.74 ns/op<br>63.4 MB | 0.396 s<br>144.08 ns/op<br>46.4 MB | 0.60× | 3.03× | `b.ins=970962 b.lkp=383996672 b.scan=3939147 b.del=492783 b.len=478179` |
-| ops=2000000 | 3.063 s<br>556.97 ns/op<br>62.0 MB | 6.235 s<br>1133.68 ns/op<br>119.1 MB | 0.939 s<br>170.79 ns/op<br>89.5 MB | 0.49× | 3.26× | `b.ins=1885850 b.lkp=768006400 b.scan=14828627 b.del=970962 b.len=914888` |
+| ops=200000 | 0.098 s<br>178.65 ns/op<br>8.0 MB | 0.114 s<br>207.42 ns/op<br>16.2 MB | 0.053 s<br>97.13 ns/op<br>8.7 MB | 0.86× | 1.84× | `b.ins=198836 b.lkp=76800512 b.scan=201244 b.del=99708 b.len=99128` |
+| ops=1000000 | 1.196 s<br>434.79 ns/op<br>32.7 MB | 2.179 s<br>792.33 ns/op<br>63.4 MB | 0.409 s<br>148.72 ns/op<br>46.4 MB | 0.55× | 2.92× | `b.ins=970962 b.lkp=383996672 b.scan=3939147 b.del=492783 b.len=478179` |
+| ops=2000000 | 3.428 s<br>623.27 ns/op<br>62.0 MB | 7.398 s<br>1345.00 ns/op<br>119.3 MB | 1.050 s<br>190.96 ns/op<br>89.5 MB | 0.46× | 3.26× | `b.ins=1885850 b.lkp=768006400 b.scan=14828627 b.del=970962 b.len=914888` |
 
 ## 场景 C：请求日志 / 动态缓冲
 
@@ -55,17 +55,17 @@ extC 的 `string` 没有 `erase`，截断是**字节循环**（`dropFront`：缓
 
 | 规模 | extC | C++ STL | Go | extC/C++ | extC/Go | 校验和 |
 |---|---|---|---|---|---|---|
-| ops=200000 | 0.008 s<br>38.48 ns/op<br>1.4 MB | 0.004 s<br>21.84 ns/op<br>4.2 MB | 0.005 s<br>22.98 ns/op<br>2.3 MB | 1.76× | 1.67× | `c.appended=4800000 c.trunc=583 c.find=54966 c.acc=94327 c.len=14744` |
-| ops=2000000 | 0.070 s<br>35.21 ns/op<br>1.4 MB | 0.035 s<br>17.73 ns/op<br>4.2 MB | 0.057 s<br>28.53 ns/op<br>2.5 MB | 1.99× | 1.23× | `c.appended=48000000 c.trunc=5846 c.find=601651 c.acc=946987 c.len=16040` |
-| ops=20000000 | 0.673 s<br>33.66 ns/op<br>1.4 MB | 0.295 s<br>14.77 ns/op<br>4.2 MB | 0.311 s<br>15.57 ns/op<br>2.3 MB | 2.28× | 2.16× | `c.appended=480000000 c.trunc=58478 c.find=6076923 c.acc=9473317 c.len=12584` |
+| ops=200000 | 0.008 s<br>37.97 ns/op<br>1.4 MB | 0.004 s<br>20.96 ns/op<br>4.1 MB | 0.005 s<br>24.55 ns/op<br>2.3 MB | 1.81× | 1.55× | `c.appended=4800000 c.trunc=583 c.find=54966 c.acc=94327 c.len=14744` |
+| ops=2000000 | 0.071 s<br>35.28 ns/op<br>1.4 MB | 0.041 s<br>20.73 ns/op<br>4.2 MB | 0.044 s<br>21.96 ns/op<br>2.3 MB | 1.70× | 1.61× | `c.appended=48000000 c.trunc=5846 c.find=601651 c.acc=946987 c.len=16040` |
+| ops=20000000 | 0.677 s<br>33.86 ns/op<br>1.4 MB | 0.303 s<br>15.15 ns/op<br>4.0 MB | 0.314 s<br>15.70 ns/op<br>2.5 MB | 2.23× | 2.16× | `c.appended=480000000 c.trunc=58478 c.find=6076923 c.acc=9473317 c.len=12584` |
 
 ## 汇总（三个规模的时间几何平均）
 
 | 场景 | extC | C++ STL | Go | C++/extC | Go/extC |
 |---|---|---|---|---|---|
-| session | 0.0535 s | 0.0167 s | 0.0617 s | 0.31× | 1.15× |
-| route | 0.7096 s | 1.1389 s | 0.2733 s | 1.61× | 0.39× |
-| log | 0.0715 s | 0.0358 s | 0.0434 s | 0.50× | 0.61× |
+| session | 0.0487 s | 0.0170 s | 0.0513 s | 0.35× | 1.05× |
+| route | 0.7385 s | 1.2251 s | 0.2842 s | 1.66× | 0.38× |
+| log | 0.0713 s | 0.0375 s | 0.0408 s | 0.53× | 0.57× |
 
 ## 结论与分析（2026-09-26）
 
