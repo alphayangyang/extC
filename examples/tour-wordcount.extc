@@ -3,7 +3,6 @@
 // （编译器自动借出视图）、`w.len` 是视图字段、值 f-string 带精度说明符。
 use std::io
 use std::text::string
-use std::text::stringio
 
 fn main() -> i32 {
     let text: slice<u8> = "the quick brown fox\njumps over the lazy dog\nthe end\nreally!"

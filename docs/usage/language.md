@@ -18,7 +18,7 @@
 | 入口 | `fn main() -> i32 { ... }` 或 `fn main() { ... }`（无返回类型 = `void`，退出码 0） |
 | 导入 | `use a::b` · `use a::b::*` · `use a::b::{x, y}` · `use a::b as c` |
 | 预置 | `option` / `result` / `slice` / `varArray` / `unit` / `pcg32` / `coroutine` / `domain` 无需导入（prelude 里就有） |
-| 控制台 | 写：`println(x)` 内建，或 `use std::io` 后 `io::cout << x << "\n"`；读：默认"读一行再解析"——`use std::text::stringio` 的 `stringio::readLine()` + `string::toI64`/`toF64`（`io::cin >> x` 是 token 快路，见 §7.5） |
+| 控制台 | 写：`println(x)` 内建，或 `use std::io` 后 `io::cout << x << "\n"`；读：默认"读一行再解析"——`use std::text::string` 的 `string::readLine()` + `string::toI64`/`toF64`（`io::cin >> x` 是 token 快路，见 §7.5） |
 | 语句 | 不需要分号；写了分号会被忽略。换行只是**空白**，表达式在下一个记号接不下去时结束 |
 | 续行 | 接不下去的记号**不能**起新行：`io::cout << a` 后换行再写 `<< b` 是错的（`<<` 不能续行）|
 | 注释 | `// 行注释` · `/* 块注释 */`（**不嵌套**，遇到第一个 `*/` 就结束） |
@@ -110,7 +110,7 @@ fn main() -> i32 { let __x = 1  return 0 }
   **值位置**（`let s: string = f"…"`，展开成 `std::text::string::from(文字段) + 槽 …` 的 `+` 链，
   结果是 `string`）。`std::text::string` 由糖自己登记成一条隐藏导入 —— 这个位置不需要写 `use`。
 - 值位置也接受格式说明符：带 `:…` 的槽按**槽值的静态类型**落成
-  `std::text::stringio::padI64` / `padF64` / `padText` 调用（`std::text::stringio` 同样由糖自己登记），
+  `std::text::string::padI64` / `padF64` / `padText` 调用（`std::text::stringio` 同样由糖自己登记），
   语义与 `<<` 右侧的说明符逐条相同。
 - 格式说明符：槽里写 `{值:说明符}`，语法 `[[fill]align][0][width][.prec][type]`。
   - 对齐 `<` 左 / `>` 右 / `^` 居中，前面可加一个填充字节（`{:*^8}`）；不写对齐时文本靠左、数字靠右。
@@ -812,14 +812,13 @@ fn main() -> i32 {
 
 <!-- fragment -->
 ```extc
-use std::text::stringio
 use std::text::string
 use std::io
 
 fn main() -> i32 {
     var sum: i64 = 0
     while true {
-        let line = stringio::readLine() ?? break
+        let line = string::readLine() ?? break
         if line.len() > 0 { sum = sum + (string::toI64(line) ?? 0) }
     }
     println(f"sum={sum}")

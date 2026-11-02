@@ -524,12 +524,12 @@ struct string {
  * 为什么需要它们：模块名与类型名同名（`stl/string.extc` 里的 `string`）时，
  * `string::new(c)` 会被读成"模块 string 的函数 new"，`string(c)` 也解析不到类型
  * （两条路都要消歧）。泛型容器没这个问题 —— `vector<i32>::new()` 的 `<>` 就消歧了。
- * 这里用"模块级函数"这条路：`string::withCap(n)` 明确是模块导出的函数。
+ * 这里用"模块级函数"这条路：`withCap(n)` 明确是模块导出的函数。
  *
  * 所以：**要容量用 `withCap(n)`；要空串用 `new()` / `empty()`；零值 `var s: string` 也对**。
  * `new()` / `empty()` 与零值完全等价（内联、零分配、`capacity() == 0`）——
- * 它们存在只是为了让手册里那句 `string::new()` 真的能用（此前只有类型上的 `new(c)`，
- * 从模块外写 `string::new()` 根本不存在）。 */
+ * 它们存在只是为了让手册里那句 `new()` 真的能用（此前只有类型上的 `new(c)`，
+ * 从模块外写 `new()` 根本不存在）。 */
 fn withCap(c: i64) -> string { return string::create(c) }
 fn new() -> string { var s: string  return s }
 fn empty() -> string { var s: string  return s }
@@ -613,7 +613,7 @@ fn toF64(b: slice<u8>) -> ?f64 {
   return some(v)
 }
 
-/* 从一段字节**拷贝**出一个 `string`：`string::from("abc")`。
+/* 从一段字节**拷贝**出一个 `string`：`from("abc")`。
  *
  * 为什么需要它（实测）：字符串字面量的类型是 `slice<u8>`，而 extC **不做隐式转换** ——
  * 没有这一步，`var s: string = "abc"` 根本写不出来（`initializer expects string::string,
@@ -628,7 +628,7 @@ fn from(b: slice<u8>) -> string {
   return r
 }
 
-/* 从 `i64` 造一个 `string`：`string::fromI64(n)`。
+/* 从 `i64` 造一个 `string`：`fromI64(n)`。
  *
  * 手写数字，不碰运行期：**从负数一侧取位**（`v % 10 ≤ 0`，取反最多到 9）—— 这样 `i64` 的最小值
  * 也不会在"取绝对值"那一步溢出。位数上限 20 + 符号 + 结尾，24 字节足够。
@@ -775,4 +775,300 @@ fn join(parts: slice<slice<u8>>, sep: slice<u8>) -> string {
 @ext
 impl io::ostream {
     fn <<(self: ref ostream, v: string) -> ostream { return self << v.snapshot() }
+}
+
+/* stl/stringio.extc -- streaming I/O for `string`, attached with an `impl` block.
+ *
+ * Why a separate module: `string` is a container and knows nothing about file descriptors or
+ * buffered readers. Streaming belongs to the I/O layer, and an `impl` block is exactly the tool
+ * for adding behaviour to a type from outside its own body -- here, from outside its own file.
+ *
+ * What "streaming" means on both sides:
+ *   in  -- `readLineFrom` pulls one byte at a time through the reader's buffer (the reader fills
+ *          a whole block per read(2), so this is not a syscall per byte); `readAllFrom` moves a
+ *          whole buffered chunk per append instead of a byte at a time.
+ *   out -- `writeTo` / `writeLineTo` hand the string's bytes to a writer, which buffers and
+ *          flushes on its own schedule.
+ *
+ * The methods grow the string as needed, so the caller never sizes it up front. */
+use std::io
+use std::fs
+
+impl string {
+    /* Read one line and append it -- **the line as `>>` defines it**: the trailing '\n' is not
+     * part of it, and neither is the '\r' of a CRLF (`io::reader::nextLine` settled that
+     * convention, and this follows it rather than inventing a second meaning for the same
+     * word). Returns the number of bytes appended; 0 means EOF and nothing was read. */
+    fn readLineFrom(self: mut ref string, r: mut ref io::reader) -> result<i64, io::ioError> {
+        var n: i64 = 0
+        var heldCR: bool = false
+        while true {
+            let b = r.nextByte()?
+            if b < 0 {
+                /* EOF: a '\r' that never got its '\n' was content, not a line ending. */
+                if heldCR { self.push(u8(13))  n = n + 1 }
+                break
+            }
+            if b == 10 { break }              /* the '\n' is not part of the line */
+            if heldCR { self.push(u8(13))  n = n + 1 }
+            if b == 13 { heldCR = true } else { self.push(u8(b))  n = n + 1  heldCR = false }
+        }
+        return success(n)
+    }
+
+    /* Read everything that is left, one buffered chunk per append. */
+    fn readAllFrom(self: mut ref string, r: mut ref io::reader) -> result<i64, io::ioError> {
+        var n: i64 = 0
+        while true {
+            let have = r.avail()
+            if have > 0 {
+                self.append(r.chunk[r.pos..r.pos + have])
+                r.pos = r.len
+                n = n + have
+                continue
+            }
+            let got = r.fill()?
+            if got == 0 { break }
+        }
+        return success(n)
+    }
+
+    /* Write the whole string out. */
+    fn writeTo(self: ref string, w: mut ref io::writer) -> result<i64, io::ioError> {
+        /* Straight at the storage, no intermediate copy: `w.write` copies the bytes into the
+         * writer's own buffer anyway, so a `snapshot()` here would copy them twice. The view is
+         * consumed by the call and dies with it. */
+        let n = w.write(self.subView(0, self.len()))?
+        return success(n)
+    }
+
+    /* Write the whole string, then a newline.
+     *
+     * The newline is a **string literal**, not a view of a local array: a literal's storage is
+     * static (depth 0), while `nl[..]` hands an unanalyzable callee a reference into the
+     * callee's own frame -- the escape checker refuses that, and rightly so. */
+    fn writeLineTo(self: ref string, w: mut ref io::writer) -> result<i64, io::ioError> {
+        let n = w.write(self.subView(0, self.len()))?   /* see `writeTo`: no intermediate copy */
+        let m = w.write("\n")?
+        return success(n + m)
+    }
+
+    /* 定点浮点数的追加：`s.appendF64(x, 2)`。与 `string::appendI64` 同一个目的 —— 拼一行
+     * 日志少一次临时 `string`。`prec` 上限 20，与 `fromF64` 同一条口径。 */
+    fn appendF64(self: mut ref string, x: f64, prec: i64) {
+        var buf: [64]u8
+        let n = io::fmtF(x, prec, buf[..])
+        self.append(buf[0..n])
+    }
+
+    /* 浮点数的运算符重载：`s + 1.5` 得到新字符串（默认 6 位小数，与 `appendF64` 的常用
+     * 精度一致；要别的精度写 `s.appendF64(x, prec)`）。放在这里而不是 `stl/string.extc`，
+     * 是因为十进制格式化（`io::fmtF`）属于 I/O 层。 */
+    fn +(self: ref string, other: f64) -> string {
+        var out: string
+        out.append(self.subView(0, self.len()))
+        out.appendF64(other, 6)
+        return out
+    }
+
+    fn +(self: ref string, other: f32) -> string { return (*self) + f64(other) }
+}
+
+/* `>>` into a `string`: the operator overloads the I/O layer already has (`mut ref i64`,
+ * `mut slice<u8>`, `mut ref u8`) live in `std::io` / `std::fs`, and a `string` overload has to
+ * live where **both** sides are importable -- `std` cannot import `stl` (that would be an import
+ * cycle), so this is the module for it. An `impl` block attaches it to a type from another
+ * module, which is exactly what `impl` was added for.
+ *
+ * Semantics match `>> slice<u8>`: one line, newline stripped, destination **replaced**. */
+@ext
+impl io::istream {
+    fn >>(self: ref istream, v: mut ref string) -> istream {
+        v.clear()
+        var r: io::reader = io::inSync()
+        match r.eof() {
+            success(atEnd) => {
+                if atEnd { io::IN_BAD = true }
+                else {
+                    match v.readLineFrom(ref r) {
+                        success(n) => { }
+                        failure(e) => { io::IN_BAD = true }
+                    }
+                }
+            }
+            failure(e) => { io::IN_BAD = true }
+        }
+        io::inSave(ref r)
+        return { fd: self.fd }
+    }
+}
+
+/* The same for a file stream, so "read a save file" and "read player input" stay one shape.
+ *
+ * This shell looks like the one above because it has to: what differs is only where the reader
+ * comes from (`inSync`/`inSave` for the console, `self.r` for a file) and which "we hit the end"
+ * flag to raise (`io::IN_BAD` vs `self.failed`). Both of those are module-private state, and
+ * without traits there is nothing to abstract them with -- the part that is worth sharing (the
+ * line rule: strip '\n', handle CRLF, grow the string) has exactly one home:
+ * `string::readLineFrom`. `std::fs` already writes its three built-in `>>` overloads out twice
+ * for the same reason (`ifstream` and `inStream`), so this follows the established shape rather
+ * than inventing a second one. */
+@ext
+impl fs::ifstream {
+    fn >>(self: mut ref ifstream, v: mut ref string) -> mut ref ifstream {
+        v.clear()
+        match self.r.eof() {
+            success(atEnd) => {
+                if atEnd { self.failed = true }
+                else {
+                    match v.readLineFrom(ref self.r) {
+                        success(n) => { }
+                        failure(e) => { self.failed = true }
+                    }
+                }
+            }
+            failure(e) => { self.failed = true }
+        }
+        return self
+    }
+}
+
+/* `io::cout << s` 的形状 = `impl ostream { fn <<(self: ref ostream, v: string) -> ostream }`：
+ * 现在挂在 `std::text::string` 里（`use std::text::string` 就够），`impl` 方法需要的 home 实参由运算符/
+ * 方法的 home 记账补齐。回归：`tests/stl/string_print.extc`（只 import `std::text::string`，
+ * `io::cout << s` 逐字节正确）。
+ */
+
+/* 浮点数转 `string`：`fromF64(x, prec)`（定点 `prec` 位小数，四舍五入）。
+ *
+ * 为什么放这里：格式化浮点的实现（`io::fmtF`）属于 I/O 层，而 `string` 是容器 —— 容器不
+ * 该认识"小数点后几位"这种显示决策。这一层同时认识两边，所以转换放这一层。
+ *
+ * 与 `io::cout << x` 的区别：那条路走 `%g`（最短可回读形式），这里走固定小数位（报表/日志的
+ * 形状）。`prec` 上限 20 —— 超过 `f64` 的有效位数只是噪音。
+ */
+fn fromF64(x: f64, prec: i64) -> string {
+    var buf: [64]u8
+    let n = io::fmtF(x, prec, buf[..])
+    var out: string = withCap(n)
+    out.append(buf[0..n])
+    return out
+}
+
+/* ---------------------------------------------------------------- 值 f-string 的填充原语
+ *
+ * `let s: string = f"{x:>8}"` 里带说明符的槽要一个**返回 string** 的填充函数：流上的
+ * `padInt`/`padF`/`padText` 是写到 fd 的，值位置不能借用。语义与流上的那三个逐条对齐
+ * （宽度按字节、`^` 左右各一半且左少右多、`0` 填充时符号在前）。
+ */
+
+/* 把 `v` 按宽度 `width`（字节）、填充字节 `fill`、对齐 `align` 排成一个新 string。
+ * `align` 用 `std::io` 的 `LEFT`/`RIGHT`/`CENTER`；宽度不够时不截断，原样拷一份。 */
+fn padText(v: slice<u8>, width: i64, fill: u8, align: i64) -> string {
+    let n: i64 = width - v.len
+    if n <= 0 { return from(v) }
+    var out: string = withCap(width)
+    if align == io::CENTER {
+        let l: i64 = n / 2
+        var i: i64 = 0
+        while i < l { out.push(fill)  i = i + 1 }
+        out.append(v)
+        i = 0
+        while i < n - l { out.push(fill)  i = i + 1 }
+    } else if align == io::LEFT {
+        out.append(v)
+        var i: i64 = 0
+        while i < n { out.push(fill)  i = i + 1 }
+    } else {
+        var i: i64 = 0
+        while i < n { out.push(fill)  i = i + 1 }
+        out.append(v)
+    }
+    return out
+}
+
+/* 整数：`{x:>4}` 走这个。零填充与流上 `padInt` 同一条特殊路径 —— `-5` 宽 4 得 `-005`，
+ * 不是 `0-5`。 */
+fn padI64(v: i64, width: i64, fill: u8, align: i64) -> string {
+    let t: string = fromI64(v)
+    let digits: i64 = t.len()
+    if fill == u8(48) && align == io::RIGHT && width > digits {
+        let bytes = t.snapshot()
+        var out: string = withCap(width)
+        if bytes[0] == u8(45) {
+            out.push(u8(45))
+            var i: i64 = 0
+            while i < width - digits { out.push(fill)  i = i + 1 }
+            out.append(bytes[1..digits])
+        } else {
+            var i: i64 = 0
+            while i < width - digits { out.push(fill)  i = i + 1 }
+            out.append(bytes)
+        }
+        return out
+    }
+    return padText(t.snapshot(), width, fill, align)
+}
+
+/* 浮点：`{x:8.2f}` 走这个。先按 `prec` 位小数定型，再按宽度排 —— 与流上 `padF` 同一顺序。 */
+fn padF64(x: f64, width: i64, prec: i64, fill: u8, align: i64) -> string {
+    let t: string = fromF64(x, prec)
+    return padText(t.snapshot(), width, fill, align)
+}
+
+/* ---------------------------------------------------------------- 从 stdin 读整块文本
+ *
+ * 用 `impl` 块里的 `readLineFrom` / `readAllFrom` 能做到，但每个调用点都要
+ * `io::inSync()` + `io::inSave(ref r)` 两行样板：控制台读取的状态住在 `std::io` 的模块级缓冲里
+ * （`IN_POS` 等），不 save 回去，下一次 `inSync()` 就会重读同一段。这两个函数把"同步取还"
+ * 收进来，调用点只剩一句。
+ *
+ * 返回 `none` 只表示 **EOF 且什么都没读到**（空行是 `some("")`，与 EOF 区分开）；读取错误也
+ * 用 `none` 表示（控制台读失败基本只意味着 fd 坏了，不值得为它加一条分支）。
+ */
+
+/* 读一行，行尾的 `\n` / `\r\n` 不算内容（与 `io::reader::nextLine` 的口径一致）。 */
+fn readLine() -> ?string {
+    var r: io::reader = io::inSync()
+    var s: string = withCap(16)
+    var any: bool = false
+    var eof: bool = false
+    var heldCR: bool = false
+    while true {
+        let got = r.nextByte()
+        match got {
+            failure(_) => { io::inSave(ref r)  return none }
+            success(b) => {
+                if b < 0 { eof = true  break }
+                /* `\n` 收尾：扣着的 `\r` 是 CRLF 的前半，不是内容。 */
+                if b == 10 { heldCR = false  break }
+                /* `\r` 先扣着：后面跟 `\n` 就是行尾，否则它是内容。 */
+                if heldCR { s.push(u8(13))  any = true  heldCR = false }
+                if b == 13 { heldCR = true } else { s.push(u8(b))  any = true }
+            }
+        }
+    }
+    /* EOF 之前那个没等到 `\n` 的 `\r` 是内容，不是行尾。 */
+    if heldCR { s.push(u8(13))  any = true }
+    io::inSave(ref r)
+    if !any && eof { return none }
+    return some(s)
+}
+
+/* 读剩下的全部输入。 */
+fn readAll() -> ?string {
+    var r: io::reader = io::inSync()
+    var s: string = withCap(16)
+    while true {
+        let got = r.fill()
+        match got {
+            failure(_) => { io::inSave(ref r)  return none }
+            success(n) => {
+                if n == 0 { break }
+                s.append(r.chunk[0..n])
+            }
+        }
+    }
+    io::inSave(ref r)
+    return some(s)
 }

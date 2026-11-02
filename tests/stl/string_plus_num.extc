@@ -4,7 +4,7 @@
  */
 use std::io
 use std::text::string as str
-use std::text::stringio
+use std::text::string
 
 fn main() -> i32 {
     let n: i64 = 7

@@ -1,10 +1,9 @@
 /* 值位置的 f-string：`let s: string = f"…"` 展开成 `std::text::string::from(文字段) + 槽 …`
- * 的 `+` 链；带格式说明符的槽展开成 `std::text::stringio::padI64/padF64/padText` 调用
+ * 的 `+` 链；带格式说明符的槽展开成 `std::text::string::padI64/padF64/padText` 调用
  * （按槽的静态类型选，与 `<<` 右侧的说明符同一套语义）。判据见 tests/fstring/run.sh
  * 的 value-fstring 一项。 */
 use std::io
 use std::text::string
-use std::text::stringio
 
 fn tag(n: i64) -> string { return f"<{n}>" }
 

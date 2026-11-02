@@ -3,7 +3,6 @@
 use std::io
 use std::fs
 use std::text::string
-use std::text::stringio
 
 fn go() -> result<unit, io::ioError> {
     var f = fs::ifstream("tests/io/stream-file.txt")?

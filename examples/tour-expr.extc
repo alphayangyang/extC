@@ -3,7 +3,6 @@
 // 没有继承、没有异常、没有装箱；每个 match 都是跳转表，每个 `?` 都是两条分支。
 use std::io
 use std::text::string
-use std::text::stringio
 
 type tok = | num(i64) | plus | minus | star | lparen | rparen
 

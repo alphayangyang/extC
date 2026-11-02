@@ -3,7 +3,6 @@
 // expect: a=[hello world]|la=11|b=[second line]|lb=11
 use std::io
 use std::text::string
-use std::text::stringio
 
 fn main() -> i32 {
     var a: string = string::withCap(16)

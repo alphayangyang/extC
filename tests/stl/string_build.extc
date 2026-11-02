@@ -2,7 +2,7 @@
  * 判据见 tests/stl/run.sh 的 run_case。 */
 use std::io
 use std::text::string as str
-use std::text::stringio as sio
+use std::text::string as sio
 
 fn main(args: slice<slice<u8>>) -> i32 {
     if args.len > 2 { return 1 }

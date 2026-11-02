@@ -1992,12 +1992,12 @@ static Type *checkFstrPadCall(Checker *c, Expr *e) {
      * (`stringio$padI64`) and hand it back to the ordinary free-function call path -- argument checking,
      * arena/zone bookkeeping, plan marking, and C emission all take that one existing route. When the module
      * has not been imported the merged module has no such name, and an actionable hint is given here. */
-    char *flat = arenaPrintf(c->arena, "stringio$%s", name);
+    char *flat = arenaPrintf(c->arena, "string$%s", name);
     if (!findFunc(c, flat)) {
         ckError(c, e->line,
-                "A value f-string's format specifier needs `stl::stringio`, which is missing from"
+                "A value f-string's format specifier needs `std::text::string`, which is missing from"
                 " this standard library.",
-                "the sugar imports `stl::stringio` on its own, so a miss here means the standard"
+                "the sugar imports `std::text::string` on its own, so a miss here means the standard"
                 " library is incomplete, not that a `use` line is missing");
         return ttError(c->tt);
     }
@@ -3640,7 +3640,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             Type *wantRet = c->expectRet;
             c->expectRet = NULL;
             /* A specifier slot of a value f-string: a reserved-name call built by the parser, redirected by the
-             * slot value's static type to a `stl::stringio` pad function (see `checkFstrPadCall`). */
+             * slot value's static type to a `std::text::string` pad function (see `checkFstrPadCall`). */
             if (e->u.call.callee && e->u.call.callee->kind == EX_IDENT &&
                 strcmp(e->u.call.callee->u.ident.name, "__extc_fstr_pad") == 0)
                 return checkFstrPadCall(c, e);

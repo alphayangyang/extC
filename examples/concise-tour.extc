@@ -12,7 +12,6 @@
 use std::io
 use std::data::seq
 use std::text::string
-use std::text::stringio
 use std::nd
 
 fn regions(raw: slice<u8>) -> string {

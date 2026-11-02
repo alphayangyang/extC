@@ -4,7 +4,6 @@
 use std::io
 use std::data::seq
 use std::text::string
-use std::text::stringio
 
 fn total(v: slice<i64>) -> i64 {
     var s: i64 = 0

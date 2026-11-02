@@ -229,7 +229,7 @@ for line in io::lines() { ... }            // 逐行迭代，错误在迭代器�
 
 - `string::join(parts, sep)`：把 `split` 的段拼回去（一次按总长分配）。
 - `string::trim` / `trimStart` / `trimEnd`：去两端 ASCII 空白，返回原缓冲视图（零拷贝）。
-- `stringio::readLine()` / `readAll()`：控制台读一句版（内部做 `io::inSync()` 与 `inSave` 的
+- `string::readLine()` / `readAll()`：控制台读一句版（内部做 `io::inSync()` 与 `inSave` 的
   取还，调用点不用再记那两行样板；空行给 `some("")`，只有 EOF 给 `none`）。
 
 数字进字符串不必先转成 `string` 再切视图：`s.appendI64(n)`、`s.appendF64(x, 2)` 直接追加
@@ -248,10 +248,10 @@ for line in io::lines() { ... }            // 逐行迭代，错误在迭代器�
 `let s = f"…"` 不写注解也能推成 `string`。
 
 **值位置也吃格式说明符**：`let s = f"[{n:>4}][{x:8.2f}]"` 里的槽按**槽值的静态类型**落成
-`std::text::stringio::padI64` / `padF64` / `padText` 调用（所以带说明符时还要 import `std::text::stringio`），
+`std::text::string::padI64` / `padF64` / `padText` 调用（所以带说明符时还要 import `std::text::stringio`），
 语义与 `<<` 右侧的说明符逐条相同 —— 报表/日志不需要再为排版退回 `<<`。
 
-本段又补：`io::eprint` / `io::eprintln`（诊断通道的一句版）、`stringio::fromF64(x, prec)`（定点浮点
+本段又补：`io::eprint` / `io::eprintln`（诊断通道的一句版）、`string::fromF64(x, prec)`（定点浮点
 转字符串，复用 `io::pFmtF`；容器不认识"小数点后几位"，所以放 stringio 层）。
 
 还缺的（第 1 层 B 后续）：`varArray`→`slice` 之外的容器转视图（`vector` 的 `snapshot` 仍是显式）。

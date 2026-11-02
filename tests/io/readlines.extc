@@ -1,8 +1,8 @@
-/* stringio::readLine / readAll：控制台读取的两句便利函数。
+/* string::readLine / readAll：控制台读取的两句便利函数。
  * 判据：一行一行读（含空行、CRLF、EOF 区分），再 readAll 读剩下的。 */
 use std::io
 use std::text::string as str
-use std::text::stringio as sio
+use std::text::string as sio
 
 fn main(args: slice<slice<u8>>) -> i32 {
     if args.len > 2 { return 1 }

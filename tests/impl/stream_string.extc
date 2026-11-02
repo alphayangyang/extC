@@ -8,7 +8,6 @@
 use std::io
 use std::fs
 use std::text::string
-use std::text::stringio
 
 fn go() -> result<unit, io::ioError> {
     /* 写：一行（含换行）进 writer 的缓冲，最后 flush 一趟 */

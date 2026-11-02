@@ -527,7 +527,7 @@ static Token *tokAfterNewlines(Parser *p, size_t skip) {
  * The desugaring expands into **library calls** (the start of a value f-string, the kernel
  * of multiple-subscript sugar), and those names live in the standard library. Making the
  * user remember, for one `f"..."`, that the start lives in `stl::string` and the specifier
- * in `stl::stringio`, would write implementation detail into the syntax; the module is
+ * in `std::text::string`, would write implementation detail into the syntax; the module is
  * registered by the sugar itself and the user only sees the sugar. An already imported
  * module (including an aliased import) is not registered twice: a module should be `use`d
  * once.
@@ -4438,8 +4438,8 @@ static Expr *fmtValue(Parser *p, Token *ft) {
             return NULL;
         }
         if (q < innerLen) {
-            /* The specifier lands on a padding primitive in `stl::stringio`: likewise registered by the sugar. */
-            sugarNeedModule(p, "std::text::stringio", line);
+            /* The specifier lands on a padding primitive in `std::text::string`: likewise registered by the sugar. */
+            sugarNeedModule(p, "std::text::string", line);
             Vec args;
             vecInit(&args, p->arena, sizeof(void *));
             *(Expr **)vecPush(&args) = e;

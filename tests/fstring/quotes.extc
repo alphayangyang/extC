@@ -2,7 +2,6 @@
  * 判据见 tests/fstring/run.sh 的 nested-literals 一项。 */
 use std::io
 use std::text::string
-use std::text::stringio
 
 fn main() -> i32 {
     let n: i64 = 3

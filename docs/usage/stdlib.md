@@ -88,7 +88,7 @@ fn main() -> i32 {
 子系统代码（协程调度器的任务行、`hashSet` 的存活位、`stringio` 的窗口）要按位置读写；它们**不是 API**：
 宽度、布局、语义都可能随实现变化，用户代码按容器的方法写。
 
-导入名就是 `stl::<文件名>`：`use std::data::vector`、`use std::data::hashMap`、`use std::text::stringio`……
+导入名就是 `stl::<文件名>`：`use std::data::vector`、`use std::data::hashMap`、`use std::text::string`……
 这一族里的容器大多带 `@sharesStorage` + `@poolObject`：
 **按值拷贝两份会共用同一块板块**，编译器会为此报警告；要独立副本必须显式 `clone()`
 （判据  / `clone_ok.extc`，见 ）。
@@ -223,18 +223,17 @@ struct grow<T> {
 | `string::readAllFrom` | `fn readAllFrom(self: mut ref string, r: mut ref io::reader) -> result<i64, io::ioError>` |
 | `string::writeTo` / `writeLineTo` | `fn writeTo(self: ref string, w: mut ref io::writer) -> result<i64, io::ioError>` |
 | `io::istream >> string` / `fs::ifstream >> string` | 读一行（`\n` 与 CRLF 的 `\r` 都不算内容），**目标被替换** |
-| `stringio::readLine()` | `fn readLine() -> ?string`：从控制台读一行（自带 `io::inSync` / `inSave` 的取还；行尾 CRLF 不算内容；空行是 `some("")`，**EOF 才给 `none`**）|
-| `stringio::readAll()` | `fn readAll() -> ?string`：把控制台剩下的输入一次读完（错误给 `none`）|
-| `stringio::fromF64` | `fn fromF64(x: f64, prec: i64) -> string`：定点格式化成字符串（`prec` 位小数、四舍五入；`prec` 上限 20）|
-| `stringio::padText` | `fn padText(v: slice<u8>, width: i64, fill: u8, align: i64) -> string`：按字节宽度排版（`align` 用 `io::LEFT`/`io::RIGHT`/`io::CENTER`；宽度不够不截断）—— 值 f-string 的 `{s:>8}` 走它 |
-| `stringio::padI64` | `fn padI64(v: i64, width: i64, fill: u8, align: i64) -> string`：整数排版；`0` 填充时符号在前（`-5` 宽 4 ⇒ `-005`）—— 值 f-string 的 `{n:>4}` / `{n:03}` 走它 |
-| `stringio::padF64` | `fn padF64(x: f64, width: i64, prec: i64, fill: u8, align: i64) -> string`：定点 + 排版（`prec` 上限 20）—— 值 f-string 的 `{x:8.2f}` 走它 |
+| `string::readLine()` | `fn readLine() -> ?string`：从控制台读一行（自带 `io::inSync` / `inSave` 的取还；行尾 CRLF 不算内容；空行是 `some("")`，**EOF 才给 `none`**）|
+| `string::readAll()` | `fn readAll() -> ?string`：把控制台剩下的输入一次读完（错误给 `none`）|
+| `string::fromF64` | `fn fromF64(x: f64, prec: i64) -> string`：定点格式化成字符串（`prec` 位小数、四舍五入；`prec` 上限 20）|
+| `string::padText` | `fn padText(v: slice<u8>, width: i64, fill: u8, align: i64) -> string`：按字节宽度排版（`align` 用 `io::LEFT`/`io::RIGHT`/`io::CENTER`；宽度不够不截断）—— 值 f-string 的 `{s:>8}` 走它 |
+| `string::padI64` | `fn padI64(v: i64, width: i64, fill: u8, align: i64) -> string`：整数排版；`0` 填充时符号在前（`-5` 宽 4 ⇒ `-005`）—— 值 f-string 的 `{n:>4}` / `{n:03}` 走它 |
+| `string::padF64` | `fn padF64(x: f64, width: i64, prec: i64, fill: u8, align: i64) -> string`：定点 + 排版（`prec` 上限 20）—— 值 f-string 的 `{x:8.2f}` 走它 |
 
 ```extc
 use std::io
 use std::fs
 use std::text::string
-use std::text::stringio
 
 fn main() -> i32 {
     var r: fs::ifstream = fs::openRead("std-e-in.txt")?     // 内容 "alpha\nbeta\n"
