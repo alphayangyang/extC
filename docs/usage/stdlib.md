@@ -902,7 +902,7 @@ fn main() -> i32 {
 ```
 实测：`kind=1 n=3 a1=2 c=x`（换行）`y` / `built={"k":"v","n":7} ok=true` / `bad-ok=false at=3`。
 
-### `std::b64`：Base64
+### `std::text::string`：Base64（`b64Name` 之外的两个函数）
 
 | 名字 | 签名 |
 |---|---|
@@ -915,13 +915,13 @@ fn main() -> i32 {
 
 ```extc
 use std::io
-use std::b64
+use std::text::string
 fn main() -> i32 {
     var enc: [64]u8
-    let n = b64::encode("hello", enc[..])
+    let n = string::encode("hello", enc[..])
     var dec: [64]u8
-    let m = b64::decode(enc[0..n], dec[..])
-    io::cout << enc[0..n] << " " << dec[0..m] << " " << b64::decode("!!!!", dec[..]) << "\n"
+    let m = string::decode(enc[0..n], dec[..])
+    io::cout << enc[0..n] << " " << dec[0..m] << " " << string::decode("!!!!", dec[..]) << "\n"
     return 0
 }
 ```

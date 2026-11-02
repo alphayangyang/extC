@@ -13,13 +13,6 @@
 - `varArray.buf`（字段）
 - `varArray.cap`（字段）
 
-## std::b64
-
-- `-.pDec`（方法）
-- `-.pDec6`（方法）
-- `-.pEnc`（方法）
-- `-.pEnc6`（方法）
-
 ## std::coro::scheduler
 
 - `loop.ep`（字段）
@@ -163,6 +156,10 @@
 
 ## std::text::string
 
+- `-.pDec`（方法）
+- `-.pDec6`（方法）
+- `-.pEnc`（方法）
+- `-.pEnc6`（方法）
 - `string.big`（字段）
 - `string.cap`（字段）
 - `string.n`（字段）

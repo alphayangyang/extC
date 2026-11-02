@@ -13,7 +13,7 @@
  * 客户端发出的帧**必须**掩码（RFC 6455 §5.1），服务端发来的**必须不掩码** —— 两边都查。
  */
 
-use std::b64
+use std::text::string
 use std::hash::digest
 
 let OP_CONT: i64 = 0
@@ -42,7 +42,7 @@ fn acceptFor(key: slice<u8>, out: mut slice<u8>) -> i64 {
     }
     var digest: [20]u8
     if !digest::sha1.sum(cat[0..key.len + GUID.len], digest[..]) { return -1 }
-    return b64::encode(digest[..], out)
+    return string::encode(digest[..], out)
 }
 
 /* 客户端升级请求（不含结尾空行）。返回写入长度；缓冲不够 -1。 */
