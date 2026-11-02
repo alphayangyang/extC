@@ -898,7 +898,7 @@ impl io::istream {
             }
             failure(e) => { io::IN_BAD = true }
         }
-        io::inSave(ref r)
+        r.save()
         return { fd: self.fd }
     }
 }
@@ -1019,7 +1019,7 @@ fn padF64(x: f64, width: i64, prec: i64, fill: u8, align: i64) -> string {
 /* ---------------------------------------------------------------- 从 stdin 读整块文本
  *
  * 用 `impl` 块里的 `readLineFrom` / `readAllFrom` 能做到，但每个调用点都要
- * `io::inSync()` + `io::inSave(ref r)` 两行样板：控制台读取的状态住在 `std::io` 的模块级缓冲里
+ * `io::inSync()` + `r.save()` 两行样板：控制台读取的状态住在 `std::io` 的模块级缓冲里
  * （`IN_POS` 等），不 save 回去，下一次 `inSync()` 就会重读同一段。这两个函数把"同步取还"
  * 收进来，调用点只剩一句。
  *
@@ -1037,7 +1037,7 @@ fn readLine() -> ?string {
     while true {
         let got = r.nextByte()
         match got {
-            failure(_) => { io::inSave(ref r)  return none }
+            failure(_) => { r.save()  return none }
             success(b) => {
                 if b < 0 { eof = true  break }
                 /* `\n` 收尾：扣着的 `\r` 是 CRLF 的前半，不是内容。 */
@@ -1050,7 +1050,7 @@ fn readLine() -> ?string {
     }
     /* EOF 之前那个没等到 `\n` 的 `\r` 是内容，不是行尾。 */
     if heldCR { s.push(u8(13))  any = true }
-    io::inSave(ref r)
+    r.save()
     if !any && eof { return none }
     return some(s)
 }
@@ -1062,14 +1062,14 @@ fn readAll() -> ?string {
     while true {
         let got = r.fill()
         match got {
-            failure(_) => { io::inSave(ref r)  return none }
+            failure(_) => { r.save()  return none }
             success(n) => {
                 if n == 0 { break }
                 s.append(r.chunk[0..n])
             }
         }
     }
-    io::inSave(ref r)
+    r.save()
     return some(s)
 }
 

@@ -125,27 +125,33 @@ struct pcg32 {
         }
         return x % bound
     }
-}
 
-// 0.0 .. 1.0 (the top 53 bits; enough for a double) -- an explicit conversion exists now -- OK
-fn nextFloat(r: mut ref pcg32) -> f64 {
-    var hi: u64 = r.next()
-    var lo: u64 = r.next()
-    var x: u64 = ((hi << 32) | lo) >> 11          // 53 bits
-    return f64(x) * (1.0 / 9007199254740992.0)    // / 2^53
-}
+    // 0.0 .. 1.0 (the top 53 bits; enough for a double) -- an explicit conversion exists now -- OK
+    fn nextFloat(self: mut ref pcg32) -> f64 {
+        var hi: u64 = self.next()
+        var lo: u64 = self.next()
+        var x: u64 = ((hi << 32) | lo) >> 11          // 53 bits
+        return f64(x) * (1.0 / 9007199254740992.0)    // / 2^53
+    }
 
-// Fisher-Yates: shuffle an i32 view (handy for shuffling gomoku candidate points) -- OK.
-fn shuffleI32(r: mut ref pcg32, a: mut slice<i32>) {
-    var i: i64 = a.len - 1
-    while i > 0 {
-        var j: i64 = i64(r.nextBounded(u64(i + 1)))
-        var t: i32 = a[i]
-        a[i] = a[j]
-        a[j] = t
-        i = i - 1
+    // Fisher-Yates in place: shuffling a view is something the generator does. The element type is
+    // fixed at `i32` because a method cannot declare type parameters of its own yet (a type-level
+    // one would have to come from the owner), and the name does not encode the element type.
+    fn shuffle(self: mut ref pcg32, a: mut slice<i32>) {
+        var i: i64 = a.len - 1
+        while i > 0 {
+            var j: i64 = i64(self.nextBounded(u64(i + 1)))
+            var t: i32 = a[i]
+            a[i] = a[j]
+            a[j] = t
+            i = i - 1
+        }
     }
 }
+
+
+// NOTE: `nextFloat` and `shuffle` are **methods** on the generator (`r.nextFloat()`), not free
+// functions taking it -- the generator is the receiver, and the shape reads that way.
 
 // ---------------------------------------------------------------------------
 // varArray<T> -- a growable array (the basic part of what `std::vector` does -- OK)

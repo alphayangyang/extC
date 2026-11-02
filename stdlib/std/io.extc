@@ -314,6 +314,11 @@ struct reader {
     /* Are bytes still buffered? (Does not touch the fd.) */
     fn buffered(self: ref reader) -> bool { return self.pos < self.len }
 
+    /* Remember this reader's state as the console's save point: the next `readLine` from stdin
+     * continues where this reader stopped. A reader over a **file** uses the file module's own
+     * save point, so this one is about the shared stdin stream. */
+    fn save(self: ref reader) { IN_LEN = self.len  IN_POS = self.pos }
+
     /* Refill: one `read(2)` fills a whole block. Returns the bytes read, **0 =
      * EOF**.
      * NOTE: this enters the kernel once to get a whole block rather than once
@@ -716,8 +721,6 @@ var IN_BAD: bool = false
  * after every operation is what lets a local `reader` be enough -- the parsing itself is
  * `reader`'s, not a second copy of it. */
 fn inSync() -> reader { return { fd: 0, chunk: IN_BUF[..], len: IN_LEN, pos: IN_POS } }
-fn inSave(r: ref reader) { IN_LEN = r.len  IN_POS = r.pos }
-
 struct istream { fd: i32
     /* 热路径：**每个数只调一次 `nextInt`** ✓（先 `skipSpace` 再 `eof` 会变成三次调用 ✗）
      * `0` 与"啥也没读到"在 `nextInt` 的返回里**同形**（EOF 用 `success(0)` 说 ✓）⇒
@@ -748,7 +751,7 @@ struct istream { fd: i32
             }
             failure(e) => { IN_BAD = true }
         }
-        inSave(ref r)
+        r.save()
         return { fd: self.fd }
     }
 
@@ -767,7 +770,7 @@ struct istream { fd: i32
             }
             failure(e) => { IN_BAD = true }
         }
-        inSave(ref r)
+        r.save()
         return { fd: self.fd }
     }
 

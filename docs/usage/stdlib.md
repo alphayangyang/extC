@@ -40,7 +40,7 @@ prelude 是编译器在每个编译单元前先过一遍的一段 extC 源码。
 | `slice<T>` | `{ data: ref T, len: i64 }`；`s[i]` 是语言语法，越界带位置 trap；`hasAt(i)` 只问边界、不取值 |
 | `varArray<T>` | arena 底的动态数组（见下） |
 | `pcg32` | 显式状态的随机数引擎：`pcg32::seeded(42)` · `pcg32::withStream(seed, stream)` · `next()` · `nextBounded(bound)`（0 到 bound−1，用拒绝采样避开取模偏置）|
-| `nextFloat` / `shuffleI32` | 0.0–1.0 的浮点、i32 视图洗牌 |
+| `nextFloat()` / `shuffle(a)` | 0.0–1.0 的浮点、i32 视图原地洗牌（都是生成器的方法：`r.nextFloat()`）|
 | `coroutine<A, B>` | 协程的**接口标记**（帧由编译器按协程函数合成，不要拿它当变量类型） |
 | `domain` | 域的**接口标记**，方法由编译器合成，库侧在 `std::sys::domain` |
 
@@ -223,7 +223,7 @@ struct grow<T> {
 | `string::readAllFrom` | `fn readAllFrom(self: mut ref string, r: mut ref io::reader) -> result<i64, io::ioError>` |
 | `string::writeTo` / `writeLineTo` | `fn writeTo(self: ref string, w: mut ref io::writer) -> result<i64, io::ioError>` |
 | `io::istream >> string` / `fs::ifstream >> string` | 读一行（`\n` 与 CRLF 的 `\r` 都不算内容），**目标被替换** |
-| `string::readLine()` | `fn readLine() -> ?string`：从控制台读一行（自带 `io::inSync` / `inSave` 的取还；行尾 CRLF 不算内容；空行是 `some("")`，**EOF 才给 `none`**）|
+| `string::readLine()` | `fn readLine() -> ?string`：从控制台读一行（自带 `io::inSync()` 的取还，读完调 `r.save()` 把控制台保存点挪到读到的位置；行尾 CRLF 不算内容；空行是 `some("")`，**EOF 才给 `none`**）|
 | `string::readAll()` | `fn readAll() -> ?string`：把控制台剩下的输入一次读完（错误给 `none`）|
 | `string::fromF64` | `fn fromF64(x: f64, prec: i64) -> string`：定点格式化成字符串（`prec` 位小数、四舍五入；`prec` 上限 20）|
 | `string::padText` | `fn padText(v: slice<u8>, width: i64, fill: u8, align: i64) -> string`：按字节宽度排版（`align` 用 `io::LEFT`/`io::RIGHT`/`io::CENTER`；宽度不够不截断）—— 值 f-string 的 `{s:>8}` 走它 |
@@ -1121,7 +1121,7 @@ fn main() -> i32 {
 | `tasks::add` | `fn add(self: mut ref tasks<T>, s: mut ref loop, h: coroutine<i64>) -> bool` |
 | `tasks::step` / `resumeRow` / `finish` / `runScripted` | 推进一行 / 一路推到挂起 / 收尾 / 按顺序推进 |
 | `tasks::pump` / `runEpoll` | 真事件循环：`>=0` 新 accept 的 fd，`-1` 处理了事件，`-2` 超时 |
-| `newRows()` / `newQ()` / `init(s, listener)` / `pendingTimers(s)` | 造表 / 造队列 / 初始化 / 定时器计数 |
+| `newRows()` / `newQ()` / `s.init(listener)` / `s.pendingTimers()` | 造表 / 造队列 / 初始化 / 定时器计数 |
 
 判据在 （脚本化驱动的 `coro_sched.extc` 用退出码自证，`coro_tasks.extc` 也是）：
 

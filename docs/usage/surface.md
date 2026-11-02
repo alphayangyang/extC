@@ -5,7 +5,7 @@
 
 生成方式：`tools/manual_surface.py`；`check.sh` 保证本页与源码一致。
 
-公开面共 528 个成员，其中内部 124 个：
+公开面共 524 个成员，其中内部 125 个：
 
 ## prelude
 
@@ -96,6 +96,10 @@
 - `vector.n`（字段）
 - `vector.pid`（字段）
 - `vector.pidGen`（字段）
+
+## std::fs
+
+- `-.inSave`（方法）
 
 ## std::hash::digest
 

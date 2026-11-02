@@ -54,7 +54,7 @@ fn main() {
     var a: [1024]i32
     var i: i64 = 0
     while i < 1024 { a[i] = i32(i)  i = i + 1 }
-    shuffleI32(ref r, a[..])
+    r.shuffle(a[..])
     var hits: i64 = 0
     var k: i64 = 0
     while k < 200000 {

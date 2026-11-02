@@ -24,7 +24,7 @@ fn napper(id: i64, s: mut ref sched::loop) -> coroutine<i64> {
 
 fn main() -> i32 {
     var s: sched::loop
-    if !sched::init(ref s, -1) { return i32(95) }
+    if !s.init(-1) { return i32(95) }
     var tasks: sched::tasks<i64> = { rows: sched::newRows(), runq: sched::newQ(), rqHead: 0, freeq: sched::newQ(), acceptq: sched::newQ() }
     let n: i64 = 200
     let t0: i64 = loop::now()
@@ -36,7 +36,7 @@ fn main() -> i32 {
     tasks.runEpoll(ref s, 50)
     let dt: i64 = loop::now() - t0
     if s.live != 0 { io::cout << "live=" << s.live << "\n"  return i32(96) }
-    let left: i64 = sched::pendingTimers(ref s)
+    let left: i64 = s.pendingTimers()
     if left != 0 { io::cout << "leaked=" << left << "\n"  return i32(97) }
     if dt < 4000000 { io::cout << "too-fast=" << (dt / 1000) << "us\n"  return i32(98) }
     io::cout << "coro_sleep ok（200 个任务各睡 1..5ms · 全部醒 · 无残留登记 · 用时 " << (dt / 1000000) << "ms）\n"

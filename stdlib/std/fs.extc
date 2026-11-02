@@ -423,7 +423,7 @@ struct inBuf {
 var IN: inBuf
 
 fn inSync() -> io::reader { return { fd: IN.fd, chunk: IN.buf[..], len: IN.len, pos: IN.pos } }
-fn inSave(r: ref io::reader) { IN.len = r.len  IN.pos = r.pos }
+@private/*save point*/ fn inSave(r: ref io::reader) { IN.len = r.len  IN.pos = r.pos }
 
 struct inStream {
     @inline

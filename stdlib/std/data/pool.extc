@@ -77,11 +77,11 @@ struct handle {
     slot: i32
     gen:  i32
     @private ep:   i64                  /* the pool epoch this handle was born in (masked) */
-}
 
-/* Two handles are the same slot in the same generation of the same epoch. */
-fn same(a: handle, b: handle) -> bool {
-    return a.slot == b.slot && a.gen == b.gen && a.ep == b.ep
+    /* Two handles are the same slot in the same generation of the same epoch. */
+    fn same(self: ref handle, other: handle) -> bool {
+        return self.slot == other.slot && self.gen == other.gen && self.ep == other.ep
+    }
 }
 
 /* ⚠️ `@inline` 的取舍要逐个看，别一刀切：

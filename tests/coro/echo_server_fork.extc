@@ -69,7 +69,7 @@ fn serve(core: i64) -> i32 {
     var srv: i64 = net::extc_tcp_listen_shared(7654, 1024)
     if srv < 0 { return i32(1) }
     var s: sched::loop
-    if !sched::init(ref s, srv) { return i32(2) }
+    if !s.init(srv) { return i32(2) }
     var tasks: sched::tasks<i64> = { rows: sched::newRows(), runq: sched::newQ(), rqHead: 0, freeq: sched::newQ(), acceptq: sched::newQ() }
     while true {
         var fd: i64 = tasks.pump(ref s, 50)

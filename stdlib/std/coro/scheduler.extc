@@ -55,6 +55,22 @@ struct loop {
     timers: ltimers::timers
     pendingUntil: i64
     pendingFd: i64          /* `yield WAIT_FD_W` 之前，协程把 fd 放这里 */
+    /* `listener` 传 -1 就是"只驱动任务，不 accept"。 */
+    fn init(self: mut ref loop, listener: i64) -> bool {
+        self.listener = listener
+        self.live = 0
+        self.timers.init()
+        self.pendingUntil = 0
+        self.pendingFd = -1
+        self.ep = net::extc_epoll_new()
+        if self.ep < 0 { return false }
+        /* listener **只注册一次**（从前每轮都 `epoll_ctl(ADD)` 一次 = 每轮一个白费的系统调用 ✗）*/
+        if listener >= 0 { net::extc_epoll_add(self.ep, listener, 1, -1) }
+        return true
+    }
+
+    fn pendingTimers(self: ref loop) -> i64 { return self.timers.count() }
+
 }
 
 struct tasks<T> {
@@ -264,18 +280,4 @@ fn newRows() -> vector<row> { return vector<row>::new() }
 /* i64 队列（`runq`/`freeq`）：库给**裸容器**，组装放在调用点的字面量里 ✓ */
 fn newQ() -> vector<i64> { return vector<i64>::new() }
 
-/* `listener` 传 -1 就是"只驱动任务，不 accept"。 */
-fn init(s: mut ref loop, listener: i64) -> bool {
-    s.listener = listener
-    s.live = 0
-    s.timers.init()
-    s.pendingUntil = 0
-    s.pendingFd = -1
-    s.ep = net::extc_epoll_new()
-    if s.ep < 0 { return false }
-    /* listener **只注册一次**（从前每轮都 `epoll_ctl(ADD)` 一次 = 每轮一个白费的系统调用 ✗）*/
-    if listener >= 0 { net::extc_epoll_add(s.ep, listener, 1, -1) }
-    return true
-}
-
-fn pendingTimers(s: ref loop) -> i64 { return s.timers.count() }
+/* `init` 与 `pendingTimers` 是 `loop` 的方法：驱动器是接收者（`s.init(-1)`）。 */

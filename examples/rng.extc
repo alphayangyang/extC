@@ -14,14 +14,14 @@ fn extra() {
     var acc: f64 = 0.0
     var i: i64 = 0
     while i < 10000 {
-        acc = acc + nextFloat(ref e)
+        acc = acc + e.nextFloat()
         i = i + 1
     }
     println("⑥ nextFloat 均值 = ", acc / 10000.0, "（期望 ≈ 0.5）")
 
     var a: [10]i32 = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
     var g: pcg32 = pcg32::seeded(1)
-    shuffleI32(ref g, a[..])
+    g.shuffle(a[..])
     println("⑦ 洗完 = ", a)
 }
 
