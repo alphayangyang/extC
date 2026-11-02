@@ -121,7 +121,7 @@ struct tasks<T> {
             }
             var req: i64 = self.rows.vals[i].h.value()
             if req == WAIT_UNTIL {
-                let nowDl: i64 = time::now()
+                let nowDl: i64 = loop::now()
                 let dl: i64 = s.pendingUntil
                 if dl > nowDl && s.timers.add(dl, i) >= 0 { return }
                 if !self.rows.vals[i].h.send(req) { self.finish(s, i)  return }
@@ -187,7 +187,7 @@ struct tasks<T> {
         }
         var waitMs: i64 = timeout_ms
         if waitMs < 0 { waitMs = 0 }          /* 负超时 = 不阻塞 */
-        waitMs = s.timers.timeoutMs(time::now(), waitMs)
+        waitMs = s.timers.timeoutMs(loop::now(), waitMs)
         if s.ep < 0 { return -2 }
 
         /* ① runq：要立刻推进的行。一个行可能连着推进多次（`yield 负数` = 别等，再来一轮）*/
@@ -232,7 +232,7 @@ struct tasks<T> {
         /* **到期的定时等待**：tag 就是行号（与 epoll 的 tag 同一套）。
          * 这一段必须在超时路径上也走到 —— 超时正是定时等待到期的时刻。 */
         var due: [32]i64
-        let nd: i64 = s.timers.popDue(time::now(), due[..])
+        let nd: i64 = s.timers.popDue(loop::now(), due[..])
         var d: i64 = 0
         while d < nd {
             if due[d] >= 0 && due[d] < self.rows.len() { self.resumeRow(s, due[d], true) }

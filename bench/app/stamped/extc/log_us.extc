@@ -45,7 +45,7 @@ fn usSet64(off: i64, v: u64) {
 }
 
 fn us() {
-    let t = time::now()
+    let t = loop::now()
     if !USSTART {
         USSTART = true
         UST0 = t

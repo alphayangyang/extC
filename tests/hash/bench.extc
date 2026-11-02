@@ -19,18 +19,18 @@ fn main() -> i32 {
 
     /* ---- SHA-256：整块 256 MiB ---- */
     var rounds: i64 = 256
-    var t0: i64 = time::now()
+    var t0: i64 = loop::now()
     var r: i64 = 0
     while r < rounds {
         if !digest::sha256.sum(buf[..], out32[..]) { return 1 }
         r = r + 1
     }
-    var dt: i64 = time::now() - t0
+    var dt: i64 = loop::now() - t0
     let mbps: i64 = (rounds * MB * 1000) / dt        /* ns → MB/s */
     io::cout << "sha256   " << mbps << " MB/s（整块 1 MiB × " << rounds << "，dt=" << (dt / 1000000) << "ms）\n"
 
     /* ---- SHA-256：流式 1 KiB 一片（同一条数据） ---- */
-    t0 = time::now()
+    t0 = loop::now()
     r = 0
     while r < rounds {
         var c: digest::sha256State
@@ -43,18 +43,18 @@ fn main() -> i32 {
         if !c.final(out32[..]) { return 2 }
         r = r + 1
     }
-    dt = time::now() - t0
+    dt = loop::now() - t0
     let mbps2: i64 = (rounds * MB * 1000) / dt
     io::cout << "sha256   " << mbps2 << " MB/s（流式 1 KiB 片）\n"
 
     /* ---- SHA-1：整块 ---- */
-    t0 = time::now()
+    t0 = loop::now()
     r = 0
     while r < rounds {
         if !digest::sha1.sum(buf[..], out20[..]) { return 3 }
         r = r + 1
     }
-    dt = time::now() - t0
+    dt = loop::now() - t0
     let mbps3: i64 = (rounds * MB * 1000) / dt
     io::cout << "sha1     " << mbps3 << " MB/s（整块 1 MiB × " << rounds << "，dt=" << (dt / 1000000) << "ms）\n"
     io::cout << "bench ok\n"

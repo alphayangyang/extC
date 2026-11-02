@@ -31,7 +31,7 @@ fn main() -> i32 {
     /* 解析：同样的文本 N 次 */
     var pool: [512]json::node
     let rounds: i64 = 20000
-    var t0: i64 = time::now()
+    var t0: i64 = loop::now()
     var r: i64 = 0
     var sink: i64 = 0
     while r < rounds {
@@ -40,12 +40,12 @@ fn main() -> i32 {
         sink = sink + rootOf(p) + countOf(pool[..], rootOf(p))
         r = r + 1
     }
-    var dt: i64 = time::now() - t0
+    var dt: i64 = loop::now() - t0
     let mbps: i64 = (rounds * n * 1000) / dt
     io::cout << "parse " << mbps << " MB/s（" << rounds << " 次 × " << n << " B，dt=" << (dt / 1000000) << "ms，sink=" << sink << "）\n"
 
     /* 写入：同样的消息 N 次 */
-    t0 = time::now()
+    t0 = loop::now()
     r = 0
     while r < rounds {
         var w2: builder = builder::open(big[..])!
@@ -56,7 +56,7 @@ fn main() -> i32 {
         sink = sink + w2.len()
         r = r + 1
     }
-    dt = time::now() - t0
+    dt = loop::now() - t0
     io::cout << "build " << ((rounds * 200 * 1000) / dt) << " MB/s（粗算，dt=" << (dt / 1000000) << "ms）\n"
     io::cout << "bench ok\n"
     return 0

@@ -1,0 +1,14 @@
+// 重入写：`io::cout <<` 在同一个表达式里嵌套调用自己（打印一个"会自己打印"的函数结果）时，
+// 输出必须保持逐行完整、不交错 —— 缓冲是按语句刷的，嵌套调用发生在缓冲拼装期，不会撕裂一行。
+// expect: a=[b]2 line=ok tail=[a]3
+use std::io
+
+fn stamp(tag: slice<u8>, n: i64) -> i64 {
+    io::cout << "[" << tag << "]"
+    return n
+}
+
+fn main() -> i32 {
+    io::cout << "a=" << stamp("b", 2) << " line=" << "ok" << " tail=" << stamp("a", 3) << "\n"
+    return 0
+}

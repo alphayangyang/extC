@@ -194,12 +194,12 @@ fn main(args: slice<slice<u8>>) -> i32 {
     var gdir: slice<u8> = "/tmp/ggml/build/src"
     if args.len > 3 { gdir = args[3] }
 
-    var t0: i64 = time::now()
+    var t0: i64 = loop::now()
     var data: mut slice<u8> = new u8[MAXFILE]
     var f = fs::openRead(args[1])!
     var nraw: i64 = f.readAll(data[..])!
     f.close()!
-    var tload: i64 = time::now() - t0
+    var tload: i64 = loop::now() - t0
 
     /* ---- GGUF 头 ---- */
     var pos: i64 = 0
@@ -357,7 +357,7 @@ fn run(be: ref ggml::backend, data: slice<u8>, toff: slice<i64>, tty: slice<i32>
     var pos: i64 = 0
     var tok: i64 = 0
     var outIds: mut slice<i64> = new i64[ntok]
-    var tpre0: i64 = time::now()
+    var tpre0: i64 = loop::now()
     var prompt: [5]i64 = [1, 9038, 2501, 263, 931]
     var pi: i64 = 0
     while pi < 5 {
@@ -457,12 +457,12 @@ fn run(be: ref ggml::backend, data: slice<u8>, toff: slice<i64>, tty: slice<i32>
         pos = pos + 1
         pi = pi + 1
     }
-    var tpre: i64 = time::now() - tpre0
+    var tpre: i64 = loop::now() - tpre0
     /* 最后一层输出 */
     var j3: i64 = 0
     rmsnormTo(xn, x, nwall[(NLAYER * 2) * NEMBD..(NLAYER * 2 + 1) * NEMBD], NEMBD, eps)
     gemv(be, tty[2], data[toff[2]..toff[2] + tne1[2] * rowBytes(tty[2], NEMBD)], xn, xq, logits, tne1[2], NEMBD)
-    var tdec0: i64 = time::now()
+    var tdec0: i64 = loop::now()
     var s3: i64 = 0
     while s3 < ntok {
         var best: i64 = argmax(logits, NVOCAB)
@@ -554,7 +554,7 @@ fn run(be: ref ggml::backend, data: slice<u8>, toff: slice<i64>, tty: slice<i32>
         rmsnormTo(xn, x, nwall[(NLAYER * 2) * NEMBD..(NLAYER * 2 + 1) * NEMBD], NEMBD, eps)
         gemv(be, tty[2], data[toff[2]..toff[2] + tne1[2] * rowBytes(tty[2], NEMBD)], xn, xq, logits, tne1[2], NEMBD)
     }
-    var tdec: i64 = time::now() - tdec0
+    var tdec: i64 = loop::now() - tdec0
     io::cout << "LOAD us=" << tload / 1000 << "\n"
     io::cout << "PREFILL us=" << tpre / 1000 << "\n"
     io::cout << "TIME us=" << tdec / 1000 << " per_tok_us=" << tdec / 1000 / ntok << " tok_s=" << f64(ntok) * 1000000000.0 / f64(tdec) << "\n"

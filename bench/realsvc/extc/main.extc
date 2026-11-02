@@ -25,6 +25,7 @@ use std::io
 use std::loop
 use std::data::vector
 use std::data::hashMap
+use std::data::seq
 use std::sys::file as sysfile
 use std::sys::io as sysio
 use std::sys::net
@@ -125,7 +126,7 @@ fn ms10(ns: i64) -> i64 { return ns / 100000 }
  * slice helper. With the loop body call-free the compiler hoists the test on
  * `buf[i]` as well, which is what makes this scan a byte per load. */
 fn modeEtl(buf: slice<u8>, readNs: i64) -> i32 {
-    let t0: i64 = time::now()
+    let t0: i64 = loop::now()
     var v0: i64 = 0
     var v1: i64 = 0
     var v2: i64 = 0
@@ -186,7 +187,7 @@ fn modeEtl(buf: slice<u8>, readNs: i64) -> i32 {
         k = k + 1
     }
     h = fnv(h, u64(lines))
-    let t1: i64 = time::now()
+    let t1: i64 = loop::now()
     let r10: i64 = ms10(readNs)
     let w10: i64 = ms10(t1 - t0)
     let rw: i64 = r10 / 10
@@ -228,7 +229,7 @@ fn zeroSession() -> session {
  * what makes the shapes comparable: it must come out the same whether the map or the
  * sort visits an entry first. */
 fn modeSessions(buf: slice<u8>, readNs: i64) -> i32 {
-    let t0: i64 = time::now()
+    let t0: i64 = loop::now()
     var sessions: hashMapI64<session> = hashMapI64<session>::withCap(UIDS)
     var v0: i64 = 0
     var v1: i64 = 0
@@ -331,7 +332,7 @@ fn modeSessions(buf: slice<u8>, readNs: i64) -> i32 {
         h = fnv(h, u64(s.sumLat))
         k = k + 1
     }
-    let t1: i64 = time::now()
+    let t1: i64 = loop::now()
     let r10: i64 = ms10(readNs)
     let w10: i64 = ms10(t1 - t0)
     let rw: i64 = r10 / 10
@@ -348,7 +349,7 @@ fn modeSessions(buf: slice<u8>, readNs: i64) -> i32 {
  * the same shape as the C++ arm. A worker derives its record's end from the next
  * offset, so the bytes are scanned once here and once in the workers. */
 fn modeParmix(buf: slice<u8>, readNs: i64, threads: i64) -> i32 {
-    let t0: i64 = time::now()
+    let t0: i64 = loop::now()
     var offs: vector<i64> = vector<i64>::withCap(buf.len / 40 + 16)
     var start: i64 = 0
     for i in 0..buf.len {
@@ -411,7 +412,7 @@ fn modeParmix(buf: slice<u8>, readNs: i64, threads: i64) -> i32 {
         m = m + 1
     }
     h = fnv(h, u64(n))
-    let t1: i64 = time::now()
+    let t1: i64 = loop::now()
     let r10: i64 = ms10(readNs)
     let w10: i64 = ms10(t1 - t0)
     let rw: i64 = r10 / 10
@@ -516,7 +517,7 @@ fn conn(fd: i64) -> coroutine<i64> {
                 sendAll(fd, rep[..rn], rn)
                 rn = 0
             }
-            if gFirstNs == 0 { gFirstNs = time::now() }
+            if gFirstNs == 0 { gFirstNs = loop::now() }
             let site: i64 = parseSite(buf[..nl])
             rn = putReply(rep[..], rn, site)
             gServed = gServed + 1
@@ -545,10 +546,10 @@ fn conn(fd: i64) -> coroutine<i64> {
 }
 
 fn modeServe(path: slice<u8>, port: i64, want: i64) -> i32 {
-    let t0: i64 = time::now()
+    let t0: i64 = loop::now()
     var full: mut slice<u8> = readWhole(path)
     let buf: slice<u8> = full[..full.len - 1]
-    let t1: i64 = time::now()
+    let t1: i64 = loop::now()
     /* The answers are precomputed before the first connection: this axis measures the
      * request path, not the ingest. */
     var cnt: mut slice<i64> = new i64[SITES]
@@ -607,7 +608,7 @@ fn modeServe(path: slice<u8>, port: i64, want: i64) -> i32 {
             if !tasks.add(ref sp, conn(fd)) { return 3 }
         }
     }
-    let elapsed: i64 = time::now() - gFirstNs
+    let elapsed: i64 = loop::now() - gFirstNs
     var h: u64 = basis()
     var i: i64 = 0
     while i < SITES {
@@ -636,13 +637,13 @@ fn main(args: slice<slice<u8>>) -> i32 {
         return 2
     }
     initStatus()
-    let t0: i64 = time::now()
+    let t0: i64 = loop::now()
     if eq(args[1], "serve") {
         return modeServe(args[2], argI64(args, 3, 9100), argI64(args, 4, 600000))
     }
     var full: mut slice<u8> = readWhole(args[2])
     let buf: slice<u8> = full[..full.len - 1]
-    let t1: i64 = time::now()
+    let t1: i64 = loop::now()
     let readNs: i64 = t1 - t0
     if eq(args[1], "etl") { return modeEtl(buf, readNs) }
     if eq(args[1], "sessions") { return modeSessions(buf, readNs) }

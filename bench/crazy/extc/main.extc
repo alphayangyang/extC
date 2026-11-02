@@ -2,12 +2,13 @@
  *
  * 四种语言（extC / Node / Python / Rust）跑同一份输入、打同一行结果。这里尽量用语言里
  * "写起来爽"的东西：结构体 + 运算符重载当排序键、hashMapI64 当分组表、`any` 在运行期
- * 决定形状、`reflect::json` 走描述符、`par` 直接开多核。
+ * 决定形状、`json::json` 走描述符、`par` 直接开多核。
  */
 use std::io
 use std::loop
 use std::json
 use std::data::hashMap
+use std::data::seq
 use std::sys::file as sysfile
 use std::sys::io as sysio
 
@@ -45,7 +46,7 @@ fn readWhole(path: slice<u8>) -> mut slice<u8> {
 }
 
 fn main() -> i32 {
-    let t0: i64 = time::now()
+    let t0: i64 = loop::now()
 
     var buf: mut slice<u8> = readWhole("bench/crazy/data/events.tsv")
     var n: i64 = 0
@@ -87,10 +88,10 @@ fn main() -> i32 {
         }
         i = i + 1
     }
-    let parse_us: i64 = (time::now() - t0) / 1000
+    let parse_us: i64 = (loop::now() - t0) / 1000
 
     /* 分组聚合：一张 hashMapI64，外面再记一份出现顺序的 uid，便于最后遍历。 */
-    let t1: i64 = time::now()
+    let t1: i64 = loop::now()
     var groups: hashMapI64<grp> = hashMapI64<grp>::withCap(i64(65536))
     var keys: mut slice<i64> = new i64[65536]
     var nk: i64 = 0
@@ -111,10 +112,10 @@ fn main() -> i32 {
         if r.ms > 1000 { slow = slow + 1 }
         i = i + 1
     }
-    let agg_us: i64 = (time::now() - t1) / 1000
+    let agg_us: i64 = (loop::now() - t1) / 1000
 
     /* top 5：把组摊进一个 slice 再排序（`<` 已给出"降序 + uid 升序"）。 */
-    let t2: i64 = time::now()
+    let t2: i64 = loop::now()
     var gs: mut slice<grp> = new grp[nk]
     i = 0
     while i < nk {
@@ -139,22 +140,22 @@ fn main() -> i32 {
         if r.cents > 15000 {
             var v: any = heavy { ts: r.ts, uid: r.uid, kind: r.kind, region: r.region,
                                  cents: r.cents, ms: r.ms, big: r.cents * 2 }
-            let m: i64 = reflect::json(ref v, jbuf[..])
+            let m: i64 = json::json(ref v, jbuf[..])
             jbytes = jbytes + m
             jcs = (jcs * 131 + i64(jbuf[m - 1])) % 1000000007
         } else {
             var v: any = light { ts: r.ts, uid: r.uid, kind: r.kind, region: r.region,
                                  cents: r.cents, ms: r.ms }
-            let m: i64 = reflect::json(ref v, jbuf[..])
+            let m: i64 = json::json(ref v, jbuf[..])
             jbytes = jbytes + m
             jcs = (jcs * 131 + i64(jbuf[m - 1])) % 1000000007
         }
         i = i + 16
     }
-    let json_us: i64 = (time::now() - t2) / 1000
+    let json_us: i64 = (loop::now() - t2) / 1000
 
     /* 并行阶段：把 cents*(ms+1) 分块求和，块内不调用函数（par 的限制），最后串起来乘。 */
-    let t3: i64 = time::now()
+    let t3: i64 = loop::now()
     let threads: i64 = 8
     let chunk: i64 = (n + threads - 1) / threads
     var parts: mut slice<i64> = new i64[threads]
@@ -181,7 +182,7 @@ fn main() -> i32 {
         total = (total + parts[i]) % 1000000007
         i = i + 1
     }
-    let par_us: i64 = (time::now() - t3) / 1000
+    let par_us: i64 = (loop::now() - t3) / 1000
 
     var hcs: i64 = 0
     i = 0

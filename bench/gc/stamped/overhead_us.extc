@@ -4,13 +4,13 @@ use std::loop
 use std::io
 var USN: i64 = 0
 var US: [1000002]i64
-fn us() { if USN < 1000002 { US[USN] = time::now()  USN = USN + 1 } }
+fn us() { if USN < 1000002 { US[USN] = loop::now()  USN = USN + 1 } }
 fn main(args: slice<slice<u8>>) -> i32 {
     var n: i64 = 1000000
-    var t0: i64 = time::now()
+    var t0: i64 = loop::now()
     var i: i64 = 0
     while i < n { us()  i = i + 1 }
-    var t1: i64 = time::now()
+    var t1: i64 = loop::now()
     io::cout << "USOH n=" << n << " total_ns=" << (t1 - t0) << " stamps=" << USN << "\n"
     return 0
 }

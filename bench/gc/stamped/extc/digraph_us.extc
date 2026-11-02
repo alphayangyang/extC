@@ -16,7 +16,7 @@ use std::io
 use std::loop
 var USN: i64 = 0
 var US: [1000002]i64
-fn us() { if USN < 1000002 { US[USN] = time::now()  USN = USN + 1 } }
+fn us() { if USN < 1000002 { US[USN] = loop::now()  USN = USN + 1 } }
 fn usDump() {
     io::cerr << "USMETA n=" << USN << "\n"
     var usk: i64 = 0

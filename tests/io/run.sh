@@ -468,4 +468,11 @@ else
     echo "  FAIL concurrent-write  ->  跑不起来"; fail=1
 fi
 
+echo "== 重入写：输出表达式里嵌套调用会自己打印的函数，整行仍然完整 =="
+if out=$("$EXTC" --run tests/io/reentrant-write.extc 2>&1) && [ "$out" = "a=[b]2 line=ok tail=[a]3" ]; then
+    echo "  ok   reentrant-write  ->  $(echo "$out" | tr '\n' '|')"
+else
+    echo "  FAIL reentrant-write  ->  得到「$(echo "$out" | tr '\n' '|')」"; fail=1
+fi
+
 exit $fail

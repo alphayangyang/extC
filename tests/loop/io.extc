@@ -59,16 +59,16 @@ fn main() -> i32 {
     if idle < 0 { return 13 }
     var tm: loop::timers
     tm.init()
-    let t0: i64 = time::now()
+    let t0: i64 = loop::now()
     if tm.add(t0 + 25000000, 5) < 0 { return 14 }
     var buf: [4]i64
-    let before: i64 = time::now()
+    let before: i64 = loop::now()
     let r: i64 = loop::runOnce(idle, ref tm, buf[..], before, 5000)
-    let dt: i64 = time::now() - before
+    let dt: i64 = loop::now() - before
     if r != 0 { io::cout << "runOnce r=" << r << "\n"  return 15 }
     if dt < 20000000 || dt > 2000000000 { io::cout << "dt=" << (dt / 1000000) << "ms\n"  return 16 }
     var fired: [4]i64
-    if tm.popDue(time::now(), fired[..]) != 1 { return 17 }
+    if tm.popDue(loop::now(), fired[..]) != 1 { return 17 }
     if fired[0] != 5 { return 18 }
 
     io::cout << "loop-io ok（批量 3 个一轮拿回 · 先写后注册不丢 · 两个实例并行 · runOnce 等 " << (dt / 1000000) << "ms = deadline 算出来的）\n"
