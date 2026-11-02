@@ -403,6 +403,70 @@ def emit(fns_in, enums, libname):
 # 这些形参类型是"一个字节的引用"：C 侧就是 `char *` / `const char *`。
 CSTR_PARAM = ('ref u8', '?ref u8')
 
+# 能"用 shim 变成返回值"的出参函数：只处理恰好一个 `T **`、且返回整数状态的那种。
+INT_RET = ('i64', 'i32', 'u64', 'u32', 'bool')
+
+# shim 的形参要用**绑定里那个 C 类型**（extC 侧看见的类型 ←→ C 类型），不能直接用头文件里的写法：
+# 绑定里 `?ref u8` 生成出来是 `uint8_t *`，而头文件里是 `const char *` —— 两者在 C 里是不同的指针类型。
+C_TYPE_OF = {'i64': 'int64_t', 'i32': 'int32_t', 'u32': 'uint32_t', 'u64': 'uint64_t',
+             'f64': 'double', 'f32': 'float', 'bool': 'bool', 'void': 'void',
+             'ref u8': 'uint8_t *', '?ref u8': 'uint8_t *', '?ref void': 'void *',
+             'ref void': 'void *'}
+
+
+def is_out_pointer(qt):
+    """`T **`：一个出参指针（`sqlite3_open(path, &db)` 那种）。"""
+    t = ' '.join(strip_const(qt).split())
+    return t.endswith('**') or t.endswith('* *')
+
+
+def _header_abspath(h, incdirs):
+    """`--include demo.h -I x` 里那个 `demo.h`：先按当前目录，再按 `-I` 找，返回绝对路径。"""
+    if os.path.isabs(h) and os.path.exists(h):
+        return h
+    if os.path.exists(h):
+        return os.path.abspath(h)
+    for d in incdirs:
+        cand = os.path.join(d, h)
+        if os.path.exists(cand):
+            return os.path.abspath(cand)
+    return os.path.abspath(h)
+
+
+def emit_out_shims(shims, headers, incdirs):
+    """生成 `<out>.shim.c`：把每个 `T **` 出参变成返回值。
+
+    extC 里表达不出 `T **`（`ref` 只作用于值，`ref` 一个引用是非法），所以这一格由 C 补：
+    shim 调原函数、把句柄返回、把状态码写进 `int64_t *rc`。生成器同时把它写进 `.link`
+    （`ccflag <shim.c>` 与 `-I` 目录），`use` 这个模块的程序自动带上。
+    """
+    out = ['#include <stdint.h>']
+    for h in headers:
+        out.append('#include "%s"' % _header_abspath(h, incdirs))
+    out.append('/* 由 tools/cbindgen.py 生成 —— 把 `T **` 出参变成返回值，不要手改。 */')
+    for shim, cname, pointee, seq in shims:
+        # 参数按头文件里的**原顺序**排（出参可能不在末尾），出参那一格换成 `int64_t *rc`。
+        args, call = [], []
+        for item in seq:
+            if item[0] == 'p':
+                _k, n, mt, qt = item
+                args.append('%s %s' % (C_TYPE_OF.get(mt, mt), n))
+                # 绑定的指针类型（`uint8_t *`）与头文件的（`const char *`）在 C 里不是同一个类型 ⇒ 显式转回去。
+                call.append('(%s)%s' % (qt, n) if '*' in qt else n)
+            else:
+                args.append('int64_t *rc')
+                call.append('&out')
+        out.append('void *%s(%s) {' % (shim, ', '.join(args)))
+        out.append('    %s out = 0;' % (pointee if pointee != 'void' else 'void *'))
+        out.append('    int64_t r = (int64_t)%s(%s);' % (cname, ', '.join(call)))
+        out.append('    *rc = r;')
+        out.append('    return (void *)out;')
+        out.append('}')
+    return '\n'.join(out) + '\n'
+
+
+
+
 
 def emit_extern(decls, enums, libname, effects):
     """生成**声明式**绑定：直接的 `extern!("<lib>") fn …`，给"链接进二进制"的库用。
@@ -415,6 +479,7 @@ def emit_extern(decls, enums, libname, effects):
     `trusted` 是**声明不是证明** —— 包的 claims 台账里应该有一条判据去证伪它（`extpkg verify`）。
     """
     lines = []
+    shims = []
     lines.append('// 由 tools/cbindgen.py 生成 —— 不要手改。')
     lines.append('//')
     lines.append('// %s：%d 个函数（声明式绑定，符号由链接器解析）。' % (libname, len(decls)))
@@ -431,7 +496,33 @@ def emit_extern(decls, enums, libname, effects):
                 if vval is not None:
                     lines.append('let %s: i32 = %s' % (vname, vval))
         lines.append('')
-    for cname, ret, params in decls:
+    for cname, ret, params, seq, outs, note in decls:
+        if note:
+            lines.append('// 没绑：%s' % note)
+        if outs:
+            outs_qt = outs[0][1]
+            pointee = ' '.join(outs_qt.replace('const', '').split())[:-1].strip()
+            shim = 'extc_shim_%s' % cname
+            shims.append((shim, cname, pointee, seq))
+            args = ', '.join('%s: %s' % (n, t) for n, t in params)            # extern 的形参：照 C 的来
+            wrap_args = ', '.join('%s: %s' % (n, ('slice<u8>' if t in CSTR_PARAM else t))
+                                  for n, t in params)                        # 包装器收 slice<u8>
+            call = ''.join(('cstr(%s)' if t in CSTR_PARAM else '%s') % n + ', '
+                           for n, t in params)
+            lines.append('/* `%s`：C 用 `%s` 当出参；同目录的 shim 把它变成返回值（`%s`）。 */'
+                         % (cname, ' '.join(outs_qt.split()), shim))
+            lines.append('extern!("%s") fn %s(%s%s) -> ?ref void' % (
+                libname, shim, (args + ', ') if args else '', 'rc: mut ref i64'))
+            lines.append('    effects Addr=0 Cont=0 Ret=0')
+            lines.append('')
+            lines.append('/* 状态码不是 0 就当"没拿到"（`null`）；要区分具体错误码就自己写一层。 */')
+            lines.append('fn %s_out(%s) -> ?ref void {' % (cname, wrap_args))
+            lines.append('    var rc: i64 = 0')
+            lines.append('    var h: ?ref void = %s(%sref rc)' % (shim, call))
+            lines.append('    if rc != 0 { return null }')
+            lines.append('    return h')
+            lines.append('}')
+            continue
         sig = 'extern!("%s") fn %s(%s) -> %s' % (
             libname, cname,
             ', '.join('%s: %s' % (n, t) for n, t in params) or '',
@@ -440,10 +531,10 @@ def emit_extern(decls, enums, libname, effects):
         if effects == 'trusted':
             eff = 'Addr=0 Cont=0' + (' Ret=0' if ret not in ('void',) and 'ref' in ret else '')
             lines.append('    effects %s' % eff)
-    if any(t in CSTR_PARAM for _n, _r, ps in decls for _pn, t in ps):
+    if any(t in CSTR_PARAM for _n, _r, ps, _cp, _o, _nt in decls for _pn, t in ps):
         lines.append('')
-        lines.extend(emit_cstr_helpers(len([1 for _n, _r, ps in decls for _pn, t in ps if t in CSTR_PARAM])))
-    return '\n'.join(lines) + '\n'
+        lines.extend(emit_cstr_helpers(1))
+    return '\n'.join(lines) + '\n', shims
 
 
 # C 的 `char *` / `const char *` 在绑定里是 `ref u8`（一个字节的引用），调用点要 `ref buf[i]`。
@@ -598,15 +689,27 @@ def main():
             fn = fns_all[cname]
             rq, _ = split_ret_args(fn.get('type', {}).get('qualType', ''))
             ret = map_type(rq, enum_names, True, typedefs)
-            params = []
+            params, seq, outs, note = [], [], [], None
             for p in params_of(fn):
                 pt = p.get('type', {}).get('qualType', '')
-                params.append((p.get('name') or 'arg%d' % len(params),
-                               map_type(pt, enum_names, False, typedefs)))
-            decls.append((cname, ret, params))
-        text = emit_extern(decls, enums, args.externlib, args.effects)
+                nm = p.get('name') or 'arg%d' % len(params)
+                if is_out_pointer(pt):
+                    outs.append((nm, pt))
+                    seq.append(('o', nm, pt))
+                    continue
+                mt = map_type(pt, enum_names, False, typedefs)
+                params.append((nm, mt))
+                seq.append(('p', nm, mt, pt))  # shim 的形参用绑定里的 C 类型，调用处再按头文件的写法转回去
+            # 出参只能走 shim：恰好一个 `T **` 且返回整数状态；其余形状说清楚为什么没绑。
+            if outs and not (len(outs) == 1 and ret in INT_RET):
+                note = '%s：有 %d 个 `T **` 出参、返回 %s —— 自动 shim 只处理"一个出参 + 整数返回"' \
+                       % (cname, len(outs), ret)
+                outs = []
+            decls.append((cname, ret, params, seq, outs, note))
+        text, shims = emit_extern(decls, enums, args.externlib, args.effects)
     else:
         text = emit(out_fns, enums, args.name)
+        shims = []
     for p in problems:
         sys.stderr.write('[cbindgen] 跳过：%s\n' % p)
 
@@ -632,6 +735,15 @@ def main():
         sys.exit('[cbindgen] %d 个函数没法生成（上面列了原因）：修或从 --only 里去掉' % len(problems))
     with open(args.out, 'w') as f:
         f.write(text)
+    if shims:
+        base = args.out[:-5] if args.out.endswith('.extc') else args.out
+        with open(base + '.shim.c', 'w') as f:
+            f.write(emit_out_shims(shims, args.include, args.incdirs))
+        # shim 的 `.c` 要排在库前面：cc 从左到右扫，静态库要先看到引用它的目标文件。
+        args.link = (['ccflag:-I%s' % os.path.abspath(d) for d in args.incdirs]
+                     + ['ccflag:%s' % os.path.abspath(base + '.shim.c')]
+                     + list(args.link))
+        print('生成 %s.shim.c：%d 个出参函数' % (base, len(shims)))
     if args.link:
         if not args.externlib:
             sys.exit('[cbindgen] `--link` 只用于 `--extern`（声明式绑定）：dl 那条路由 `api::open` 自己找库')

@@ -21,6 +21,11 @@ void demo_close(struct demo *h) { free(h); }
 
 uint64_t demo_count(void) { return 1; }
 
+int64_t demo_alloc(struct demo **out, const char *name) {
+    *out = demo_open(name);
+    return *out ? 0 : -1;
+}
+
 int demo_printf(struct demo *h, const char *fmt, ...) {
     va_list ap;
     (void)h; (void)fmt; (void)ap;

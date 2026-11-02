@@ -1,0 +1,17 @@
+/* tests/extbind/main_out.extc —— `T **` 出参的绑定（生成器补了 C shim）。
+
+ * C 的 `int64_t demo_alloc(demo **out, const char *name)` 在 extC 里表达不出来（`ref` 只作用于
+ * 值，`ref` 一个引用非法），所以生成器把它变成 `demo_alloc_out(name) -> ?ref void`：状态码 0
+ * 就给句柄，非 0 给 `null`。中间那个 shim 由生成器写在同目录的 `demoapi.shim.c` 里，
+ * 并自动进 `.link`（`ccflag <shim.c>`，排在库前面）。 */
+use std::io
+use demoapi::*
+
+fn main() -> i32 {
+    var h: ?ref void = demo_alloc_out("seven")
+    if h == null { io::cout << "alloc failed\n"  return 1 }
+    let s: i64 = demo_add(h, 1, 2)
+    demo_close(h)
+    io::cout << "sum=" << s << "\n"
+    return 0
+}

@@ -13,5 +13,6 @@ int64_t  demo_add(demo *h, int64_t a, int64_t b);
 void     demo_close(demo *h);
 uint64_t demo_count(void);
 int      demo_printf(demo *h, const char *fmt, ...);   /* 变参：不生成，工具报出来 */
+int64_t  demo_alloc(demo **out, const char *name);    /* `T **` 出参：生成器补一个 C shim 变成返回值 */
 
 #endif

@@ -23,10 +23,10 @@ tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 cp tests/extbind/demo.h "$tmp/"
 $CC -c -O2 -o "$tmp/demo.o" tests/extbind/demo.c 2>"$tmp/cc.log" \
     && ar rcs "$tmp/libdemo.a" "$tmp/demo.o" || { echo "  FAIL 夹具编不过"; exit 1; }
-cp tests/extbind/main.extc tests/extbind/main_cstr.extc "$tmp/"
+cp tests/extbind/main.extc tests/extbind/main_cstr.extc tests/extbind/main_out.extc "$tmp/"
 
 # ---- ① 生成 + 形状 ----
-if python3 tools/cbindgen.py --include demo.h -I "$tmp" --only demo_open,demo_add,demo_close,demo_count \
+if python3 tools/cbindgen.py --include demo.h -I "$tmp" --only demo_open,demo_add,demo_close,demo_count,demo_alloc \
         -o "$tmp/demoapi.extc" --extern extc-demo --effects trusted \
         --link "ccflag:$tmp/lib/libdemo.a" >"$tmp/gen.log" 2>&1; then
     ok=1
@@ -38,7 +38,9 @@ if python3 tools/cbindgen.py --include demo.h -I "$tmp" --only demo_open,demo_ad
         'extern!("extc-demo") fn demo_close(h: ?ref void) -> void' \
         'fn cstr(s: slice<u8>) -> ref u8' \
         'fn cstrAt(slot: i64, s: slice<u8>) -> ref u8' \
-        '@private var CN_BUF: [4096]u8'; do
+        '@private var CN_BUF: [4096]u8' \
+        'fn demo_alloc_out(name: slice<u8>) -> ?ref void' \
+        'extern!("extc-demo") fn extc_shim_demo_alloc(name: ?ref u8, rc: mut ref i64) -> ?ref void'; do
         grep -qF -- "$want" "$tmp/demoapi.extc" || { ok=0; echo "  FAIL 生成物里缺：$want"; }
     done
     # 不带指针返回的声明不该出现 `Ret=`（那一条只对返回引用/视图的函数有意义）
@@ -51,7 +53,7 @@ else
 fi
 
 # ---- ④ `--check` 幂等 ----
-if python3 tools/cbindgen.py --include demo.h -I "$tmp" --only demo_open,demo_add,demo_close,demo_count \
+if python3 tools/cbindgen.py --include demo.h -I "$tmp" --only demo_open,demo_add,demo_close,demo_count,demo_alloc \
         -o "$tmp/demoapi.extc" --extern extc-demo --effects trusted --check >"$tmp/chk.log" 2>&1; then
     ok "check-idempotent" "$(tail -1 "$tmp/chk.log" | sed 's/^ok  //')"
 else
@@ -81,6 +83,20 @@ if ( cd "$tmp" && "$OLDPWD/$EXTC" --run main_cstr.extc >"$tmp/run2.out" 2>"$tmp/
                                 || bad "cstr-helper" "输出是 \`$got\`"
 else
     bad "cstr-helper" "$(head -2 "$tmp/run2.err" | tr '\n' ' ')"
+fi
+
+# ---- ③c `T **` 出参：生成器补 C shim，出参变成返回值 ----
+if [ -f "$tmp/demoapi.shim.c" ] && grep -qF -- 'ccflag '"$tmp"'/demoapi.shim.c' "$tmp/demoapi.link" \
+   && grep -qF -- 'void *extc_shim_demo_alloc(' "$tmp/demoapi.shim.c"; then
+    if ( cd "$tmp" && "$OLDPWD/$EXTC" --run main_out.extc >"$tmp/run3.out" 2>"$tmp/run3.err" ); then
+        got=$(cat "$tmp/run3.out")
+        [ "$got" = "sum=3" ] && ok "out-param-shim" "T ** 出参经 shim 变成返回值（$got）" \
+                             || bad "out-param-shim" "输出是 \`$got\`"
+    else
+        bad "out-param-shim" "$(head -2 "$tmp/run3.err" | tr '\n' ' ')"
+    fi
+else
+    bad "out-param-shim" "没有生成 shim.c 或 .link 里没有它"
 fi
 
 # ---- ⑤ 变参被报出来 ----
