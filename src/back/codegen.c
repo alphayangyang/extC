@@ -6424,22 +6424,6 @@ static bool arenaLevelInText(const Buf *b, int lvl) {
     return false;
 }
 
-/**
- * @brief The `@drop` hook of a type, or NULL when it has none.
- *
- * The type is substituted first: inside a generic instance the field's type may still name a
- * parameter, and the hook belongs to the instance's actual struct.
- *
- * @param g  The generator state (for the instantiation context).
- * @param t  Declared type of the binding; may be NULL.
- * @return   The hook's `FuncDef`, or NULL.
- */
-static FuncDef *dropHookOf(CG *g, Type *t) {
-    Type *s = subst(g, t);
-    if (!s) return NULL;
-    StructDef *sd = structOf(ttBase(s));
-    return sd ? sd->dropHook : NULL;
-}
 
 /**
  * @brief Run the `@drop` hooks of a block's own locals, in reverse declaration order.
@@ -6473,17 +6457,67 @@ static void genDropBlocksDownTo(CG *g, size_t base) {
         genBlockTailDrops(g, *(Stmt **)vecAt(&g->dropBlocks, i));
 }
 
+/**
+ * @brief Does dropping a value of this type do anything?
+ *
+ * True when the type has its own `@drop` hook, or when one of its fields does. A field of a `@drop`
+ * type dies with the value that contains it -- the same rule as C++ members and Rust's `Drop` on
+ * fields -- so the walk is recursive. References and views are not followed: they do not own the
+ * value they point at, and following them would drop something that is still alive.
+ *
+ * @param g      The generator state (for the instantiation context).
+ * @param t      The type; may be NULL.
+ * @param depth  Nesting already walked, capped so a pathological type cannot loop.
+ * @return       True when a drop has an effect.
+ */
+static bool typeNeedsDrop(CG *g, Type *t, int depth) {
+    if (!t || depth > 8) return false;
+    Type *b = ttBase(subst(g, t));
+    StructDef *sd = b ? structOf(b) : NULL;
+    if (!sd) return false;
+    if (sd->dropHook) return true;
+    for (size_t i = 0; i < sd->fields.len; i++) {
+        FieldDef *fd = *(FieldDef **)vecAt(&sd->fields, i);
+        if (fd && typeNeedsDrop(g, fd->type, depth + 1)) return true;
+    }
+    return false;
+}
+
+/**
+ * @brief Emit the drop of one value: its own hook first, then its fields in declaration order.
+ *
+ * The hook runs before the fields so it can still read them (a wrapper delegating to a field keeps
+ * working). Fields are visited in declaration order, which is what makes a value's death the mirror
+ * image of its construction.
+ *
+ * @param g      The generator state.
+ * @param path   C expression naming the value, e.g. `a` or `a.inner`.
+ * @param t      The value's type.
+ * @param depth  Nesting already walked, capped like `typeNeedsDrop`.
+ */
+static void genDropValue(CG *g, const char *path, Type *t, int depth) {
+    if (!t || depth > 8) return;
+    Type *b = ttBase(subst(g, t));
+    StructDef *sd = b ? structOf(b) : NULL;
+    if (!sd) return;
+    if (sd->dropHook) cgLine(g, "%s(&(%s));", cMethodName(g, b, sd->dropHook), path);
+    for (size_t i = 0; i < sd->fields.len; i++) {
+        FieldDef *fd = *(FieldDef **)vecAt(&sd->fields, i);
+        if (!fd || !typeNeedsDrop(g, fd->type, depth + 1)) continue;
+        const char *sub = arenaPrintf(g->arena, "%s.%s", path, fd->name);
+        genDropValue(g, sub, fd->type, depth + 1);
+    }
+}
+
 /** @brief Emit the hooks for one block's locals; see the declaration for the timing rules. */
 static void genBlockTailDrops(CG *g, Stmt *block) {
     for (size_t i = block->u.block.stmts.len; i-- > 0;) {
         Stmt *st = *(Stmt **)vecAt(&block->u.block.stmts, i);
         if (!st || st->kind != ST_VAR || !st->u.var.init) continue;
-        Type *dt = subst(g, st->type);
-        FuncDef *md = dropHookOf(g, st->type);
-        if (!md || !dt) continue;
+        if (!typeNeedsDrop(g, st->type, 0)) continue;
         const char *nm = planCName(st) ? planCName(st) : st->u.var.name;
         if (!nm) continue;
-        cgLine(g, "%s(&(%s));", cMethodName(g, dt, md), nm);
+        genDropValue(g, nm, st->type, 0);
     }
 }
 
@@ -8310,9 +8344,9 @@ static void genStmtInner(CG *g, Stmt *s) {
                 if (s->u.assign.value && s->u.assign.value->kind == EX_IDENT)
                     guard.same = strcmp(s->u.assign.value->u.ident.name,
                                         s->u.assign.target->u.ident.name) == 0;
-                FuncDef *hook = guard.same ? NULL : dropHookOf(g, s->u.assign.target->type);
                 const char *hn = planCName(s->u.assign.target);
-                if (hook && hn) cgLine(g, "%s(&(%s));", cMethodName(g, subst(g, s->u.assign.target->type), hook), hn);
+                if (!guard.same && hn && typeNeedsDrop(g, s->u.assign.target->type, 0))
+                    genDropValue(g, hn, s->u.assign.target->type, 0);
             }
             g->inAssignTarget = true;
             const char *tgt = genExpr(g, s->u.assign.target);

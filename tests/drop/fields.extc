@@ -1,0 +1,20 @@
+// expect: inner 1|inner 2|wrap 9|inner 3|inner 4|done
+/* 判据：字段跟着父值走——自己有钩子先跑钩子，再按声明顺序跑字段的钩子 ✓ */
+@noCopy
+struct inner { id: i64
+    @drop
+    fn gone(self: mut ref inner) { println("inner ", self.id) }
+}
+@noCopy
+struct outer { a: inner  b: inner }
+@noCopy
+struct wrap { x: i64  o: outer
+    @drop
+    fn gone(self: mut ref wrap) { println("wrap ", self.x) }
+}
+fn main() -> i32 {
+    { var p: outer = { a: { id: 1 }, b: { id: 2 } } }
+    { var w: wrap = { x: 9, o: { a: { id: 3 }, b: { id: 4 } } } }
+    println("done")
+    return 0
+}
