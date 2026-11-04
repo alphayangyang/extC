@@ -43,14 +43,6 @@
 - `hashMapI64.pidOf`（方法）
 - `hashMapI64.tagCensus`（方法）
 
-## std::data::linmap
-
-- `linMap.cap`（字段）
-- `linMap.keys`（字段）
-- `linMap.n`（字段）
-- `linMap.pid`（字段）
-- `linMap.pidGen`（字段）
-
 ## std::data::map
 
 - `bnode.cnt`（字段）
@@ -58,6 +50,11 @@
 - `bnode.kids`（字段）
 - `bnode.leaf`（字段）
 - `bnode.n`（字段）
+- `linMap.cap`（字段）
+- `linMap.keys`（字段）
+- `linMap.n`（字段）
+- `linMap.pid`（字段）
+- `linMap.pidGen`（字段）
 - `map.bn`（方法）
 - `map.cntOf`（方法）
 - `map.freeHead`（字段）

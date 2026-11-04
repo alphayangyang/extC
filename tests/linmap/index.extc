@@ -1,6 +1,6 @@
 // expect: k=one none=? newLen=2 upd=ONE
 use std::io
-use std::data::linmap
+use std::data::map
 
 fn main() -> i32 {
     var m: linMap<i64, slice<u8>> = linMap<i64, slice<u8>>::withCap(4)

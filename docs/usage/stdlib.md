@@ -333,7 +333,7 @@ fn main() -> i32 {
 ```
 实测：`n1=5 n2=5 s=alphabeta`（第一行不含换行）。
 
-> 实测的坑：同一个程序里 `use std::data::linmap` + `use std::text::string`，并且真的实例化
+> 实测的坑：同一个程序里 `use std::data::map` + `use std::text::string`，并且真的实例化
 > `linMap<i64, slice<u8>>`（`slice<u8>` 做值）时，生成的 C 里 `option_slice_u8` 会**重复定义**，
 > C 编译失败。最小复现见本页末尾"今天会咬人的组合"第 3 条。
 
@@ -483,7 +483,7 @@ fn main() -> i32 {
 
 ```extc
 use std::io
-use std::data::linmap
+use std::data::map
 fn main() -> i32 {
     var m: linMap<i64, i64> = linMap<i64, i64>::withCap(i64(4))
     m.put(i64(2), i64(20))
@@ -496,7 +496,7 @@ fn main() -> i32 {
 
 ```extc
 use std::io
-use std::data::linmap
+use std::data::map
 fn main() -> i32 {
     var s: linSet<i64> = linSet<i64>::withCap(i64(4))
     s.add(i64(7))
@@ -1411,7 +1411,7 @@ note:  Builtin primitives are how the standard library names what the runtime im
    实测（`io::cout << "had=" << m.put(k, v) << " v=" << (m.get(k) ?? -1)`）：拆成 `let had = ...` /
    `let v = m.get(k) ?? -1` 再打印即可。
 
-3. **`use std::data::linmap` + `use std::text::string` + 实例化 `linMap<i64, slice<u8>>`**：生成的 C 里
+3. **`use std::data::map` + `use std::text::string` + 实例化 `linMap<i64, slice<u8>>`**：生成的 C 里
    `option_slice_u8` 重复定义，C 编译失败：
 
    ```text

@@ -5,7 +5,7 @@
  * 为什么单列一条：这是**类型名去重**，编译器不报错、只在 C 里炸，必须端到端跑一遍才看得见 ✓ */
 // expect: got=one len=1
 use std::io
-use std::data::linmap
+use std::data::map
 use std::text::string
 
 fn main() -> i32 {

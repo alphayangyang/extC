@@ -21,8 +21,8 @@ use std::text::string
 use std::data::map
 use std::data::hashMap
 use std::data::map
-use std::data::linmap
-use std::data::linmap
+use std::data::map
+use std::data::map
 use std::data::hashMap
 
 fn main() -> i32 {
