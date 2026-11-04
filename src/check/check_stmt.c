@@ -4373,6 +4373,18 @@ void checkStmt(Checker *c, Stmt *s) {
             sym->frameStore = s->type && ttIsViewType(s->type) &&
                               exprIsFrameStorage(c, s->u.var.init);
             noteAcyclicNestedLocal(c, s);   /* criterion (iv): reference-typed local in a nested block */
+            /* Stage one of the `slice` migration (`-Wowned-view`): `new T[n]` allocates storage the
+             * block owns, so holding it as a bare view loses the fact that it is the owner and that
+             * nothing may grow it. The annotation that keeps that fact is `buf<T>`. Off by default:
+             * the corpus spells this shape in hundreds of places and the warning is only useful
+             * while a file is being converted. */
+            if (c->ctx->warnOwnedView && s->type && ttIsViewType(s->type) && s->u.var.init &&
+                s->u.var.init->kind == EX_NEW && s->u.var.init->u.new_.count) {
+                ckWarn(c, s->line,
+                       "Write `var b: buf<T> = new T[n]` to keep the owner, then `b.view()` where a "
+                       "view is needed; `slice` is a borrow and cannot express ownership.",
+                       "this buffer is owned by the block, but `%s` is a view", s->u.var.name);
+            }
             /* A local whose type has an `@drop` hook makes that hook reachable: code generation
              * emits the call at the end of the block, and reachability pruning must not delete it. */
             markDropHooksUsed(c, s->type, 0);

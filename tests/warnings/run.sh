@@ -61,6 +61,23 @@ for f in tests/warnings/silent/*.extc; do
     fi
 done
 
+# ①b `-Wowned-view`：默认不响，开了必须响，`-w` 仍能全关
+f=tests/warnings/flag/owned_view.extc
+if "$EXTC" "$f" -o /dev/null 2>&1 | grep -q "owned by the block"; then
+    echo "  FAIL owned_view  ->  默认（不加 -Wowned-view）不该响"; fail=1
+else
+    out=$("$EXTC" -Wowned-view "$f" -o /dev/null 2>&1)
+    if echo "$out" | grep -qF -- "this buffer is owned by the block, but"; then
+        if "$EXTC" -Wowned-view -w "$f" -o /dev/null 2>&1 | grep -q "warning:"; then
+            echo "  FAIL owned_view  ->  -w 没关掉警告"; fail=1
+        else
+            echo "  ok   owned_view  ->  开了才响，-w 也关得掉 ✓"
+        fi
+    else
+        echo "  FAIL owned_view  ->  开了没吐期望的警告"; echo "$out" | head -3 | sed 's/^/        /'; fail=1
+    fi
+fi
+
 # ② 正例语料上**零警告**（误报判据）
 # 这一段要把 examples/ + bench/ 全量编译一遍 —— 串行时是整个套件最贵的一段（实测 ~30s）✗
 # 它没有断言、用例之间无依赖 ⇒ 交给 parrun.py 并行（保序、并发有界）✓

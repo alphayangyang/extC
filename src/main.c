@@ -539,6 +539,7 @@ int main(int argc, char **argv) {
     const char *path = NULL;
     const char *outPath = NULL;
     const char *optLevel = NULL;     /* `-O0` .. `-O3`; the default is `-O2` */
+    bool        warnOwnedView = false; /* `-Wowned-view`: stage one of the `slice` migration */
     bool        noWarn = false;      /* `-w`: recorded here because the Ctx does not
                                       * exist yet */
     bool marchNative = false;        /* `-march=native`, off by default: it trades
@@ -585,6 +586,7 @@ int main(int argc, char **argv) {
         }
         if (strcmp(argv[i], "-march=native") == 0) { marchNative = true; continue; }
         if (strcmp(argv[i], "-w") == 0) { noWarn = true; continue; }
+        if (strcmp(argv[i], "-Wowned-view") == 0) { warnOwnedView = true; continue; }
         if (strcmp(argv[i], "--dump-tokens") == 0) {
             dumpTokens = true;
         } else if (strcmp(argv[i], "--dump-effects") == 0) {
@@ -697,6 +699,7 @@ int main(int argc, char **argv) {
     Ctx ctx;
     ctxInit(&ctx, &arena, path, src, srcLen);
     ctx.noWarn = noWarn;
+    ctx.warnOwnedView = warnOwnedView;
 
     Vec toks;
     vecInit(&toks, &arena, sizeof(Token));

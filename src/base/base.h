@@ -201,6 +201,7 @@ typedef struct {
     /* Warning channel: diagnostics that do not change the exit code. */
     int  warnCount;
     bool noWarn;      /* `-w`: do not print any warning */
+    bool warnOwnedView; /* `-Wowned-view`: warn when `new T[n]` is held as a bare view */
     int  errLine, errCol;
     char errMsg[EXTC_MAXERR];
     char errNote[EXTC_MAXERR];
