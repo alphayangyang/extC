@@ -63,30 +63,24 @@
   deeper scope (depth 1) than the arena this call may store it in (depth 0)"；
 - `tools/gate_escape.py`：逃逸健全性语料变红。
 
-根因（已用 `EXTC_DBG_REFARGS=1` 定位）：让容器成为"会建池的类型"之后，`tests/coro/statemachine.extc`
-里 `handle()` 的效果摘要从 `addr=0x0 cont=0x0` 变成 `addr=0x1 cont=0x1`（它把视图存进了一个
-板块底的容器），`step()` 继承这两个位；调用点随即检查"被存进去的值必须活得不比目的地短"，而
-目的地的深度由 `targetDepth` 回答 —— **板块被建模成 home（深度 0）**，于是要求 `depth 0`，
-`ref f`（深度 1）被拒。
+**根因（先前的猜测是错的，以下是量出来的）**：`EXTC_DBG_REFARGS=1` 显示让容器成为"会建池的类型"
+之后，`handle()` 从 `addr=0x0 cont=0x0` 变成 `addr=0x1 cont=0x1`，`step()` 继承这两位，
+于是调用点开始跑 `checkCallRefArgs` 的目的地推断。这个推断做的是
+"取所有**带引用的** `ref` 实参里最浅的一个当目的地"，在 `step(ref f, ref st, input[..], out)` 里
+唯一命中 `typeContainsRef` 的实参是 **`out`**（`mut ref string`），而 `out` 是调用者 `runFeed`
+的形参 ⇒ `slotDepth(out) == 0`（"活得最久"）⇒ `h = 0` ⇒ 深度 1 的 `f` 被拒。
+用 `EXTC_DBG_DEST=1` 打的 `[dest] step arg3 out d2=0` 就是这一步。
 
-也就是说卡点不是一个 if，而是**板块的深度模型**：今天的规则是"池生在 home"，而 `@place` 的语义是
-"存储住在它所在的那个地方"。要让 `varArray` 搬上板块，得先让 `targetDepth`/`calleeCreatesPool`
-这条链按"池出生的那个 place"给深度，而不是一律 home。这也是 P2 那条逃逸规则的同一件事：
-`string`/`vector` 的板块现在借的是 home 的深度 0（所以它们当目的地时永远是"活得最久"），
-更精确的模型是让板块随出生点。要重做这件事，得先把"容器的板块归谁、调用点的 home arena 取哪一层"
-从"类型是否建池"里拆出来 —— 那正是 P2 剩下的那条逃逸规则（返回视图的深度取自接收者）。
+所以卡点**不是**"板块被建模成 home"（先前那条推断不成立：`varArray` 在 arena 版本里也有
+`mut slice` 字段，`typeContainsRef` 一样为真；差别只在于板块版把"提升"变成了"存进板块"，
+于是效果位被置上、目的地推断才被启用）。真正的问题是**目的地是按"哪个实参带引用"猜的，
+而不是按"这个函数到底往哪个参数里存"**：`step` 只往 `st` 里的容器存，`out` 只是被 `append`
+拷了字节，但两者都成了目的地，取最小就塌成 0。
 
-数据留档：峰值对照见本文件开头的 `buf` 一行；行为差异（增长后旧视图从"静默快照"变成悬垂）
-见 `docs/usage/language.md` §8.2 的 `varArray` 段（保持 arena 的说法，因为代码仍是 arena）。
-
-下一轮要动的三个点（按数据流，不是按文件）：
-
-1. **站点记账**：`src/check/check_top.c` 的 `noteArenaSite`（约 1630–1670）里 `if (depth < 2) return;`
-   让"帧级（depth 1）的板块站点"保持效果摘要里的 `homeDepth = 0` —— 这就是"板块活得更久"的来源。
-2. **收尾落位**：同一文件约 9297 行的 placement 把它翻成 `ARENA_HOME` 或具体块级；判据
-   `anMinAt(site)`（0 ⇒ home）。
-3. **消费方**：`checkCallRefArgs`（约 1300–1430）用 `homeDepth` 算 `h`，`h == 0` 就是
-   "被存进去的值必须活到进程结束"。
+修法（下一步，已明确）：把效果摘要补一位 **每参数的目的地掩码** —— 在 `classifyStoredValue`
+的"存进自己的参数"分支里记下目标参数下标，再在调用点把这些位按实参根换成调用者的参数位；
+只有 `destMask` 非空且映射完整时才用它算 `h`，否则退回今天这条保守的启发式。
+不能直接把 callee 的 `destMask` 当 caller 的参数位并集（那会给出错误的、更宽松的 `h`）。
 
 判据（红→绿）：`tests/coro/statemachine.extc` 编过、`tools/gate_escape.py` 0 失败、
 `tests/pool` 的金值（`rt_nest` 的板块字节数、`rt_nest_promote` 的 depth 数字）同步更新、
