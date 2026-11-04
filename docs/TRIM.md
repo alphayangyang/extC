@@ -51,3 +51,21 @@
 - 不为了行数删功能：删的是"第二次答案"，不是能力。
 - 不动 `coroutine` 那条按名字派发的路径（4 处）——它是"协议"不是容器，等并发回收器定了再说。
 - 不删 `any`/`dyn` 任何一方：它们是"结构 vs 名义"两种视图，共用 16 字节载体，不是重复答案。
+
+### 已试过、目前不可行：把 `varArray` 也搬到板块上
+
+想把 `varArray<T>` 的存储从 arena 换成板块（`@place` + `poolSliceRaw`/`poolResizeRaw`），
+这样 8e6 个 `i64` 的峰值从 129,320 KB 掉到 64,252 KB（与 `vector` 同档，对照手写 `new`+翻倍
+是 129,724 KB），`release()` 也能当场还板。**功能上全部通过**（正例、`release()` 归还、
+反例里的越界 trap 都对），但两处闸门红：
+
+- `tests/coro/statemachine.extc`：`step(ref f, ref st, …)` 报 "argument 1 of `step` points into a
+  deeper scope (depth 1) than the arena this call may store it in (depth 0)"；
+- `tools/gate_escape.py`：逃逸健全性语料变红。
+
+根因方向（未查完）：让容器成为"会建池的类型"会改掉调用点 **arena 层级**的推断，而协程帧与
+逃逸语料都建立在那套层级上。要重做这件事，得先把"容器的板块归谁、调用点的 home arena 取哪一层"
+从"类型是否建池"里拆出来 —— 那正是 P2 剩下的那条逃逸规则（返回视图的深度取自接收者）。
+
+数据留档：峰值对照见本文件开头的 `buf` 一行；行为差异（增长后旧视图从"静默快照"变成悬垂）
+见 `docs/usage/language.md` §8.2 的 `varArray` 段（保持 arena 的说法，因为代码仍是 arena）。
