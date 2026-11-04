@@ -157,3 +157,19 @@ only gained a zone handle.
 - `zone::alloc` costs within ~10% of `new` for a bump-shaped workload.
 - The memory model document gains one paragraph: *storage has an owner zone; a zone releases at scope
   exit and bumps an epoch; only early release checks for live views.*
+
+### Labels answer "where does the storage live", not "what does this function do"
+
+Two shortcuts in the checker answer "may this call create a pool", and **both are load-bearing today**:
+
+1. `calleeMakesPool` says *yes* for any method of a `@place` type. That makes the label double as a
+   behaviour claim — every method looks like a pool site, and adding a constructor reclassifies its
+   siblings — but removing it changes escape depth for calls on containers: with no home zone
+   threaded through, `let a = outer.get(2)` on a locally built container is rejected with
+   "borrowed from depth 2, but this can only hold up to depth 1" (`tests/pool/rt_nest_promote.extc`).
+2. `calleeCreatesPool` says *yes* for an associated function of a type that makes pools anywhere.
+   Removing it produces the same rejection for the same reason.
+
+The proper fix is not to delete them but to make **the depth of a returned view come from the
+receiver** rather than from the callee's home zone. That is a change in the escape rules, not in the
+pool machinery; until then these two lines stay, and the label keeps answering two questions at once.
