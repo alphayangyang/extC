@@ -34,6 +34,10 @@ neg() { # name file want-substring
 neg view_grow_vector "$(src view_grow_vector.extc)" 'changes the storage that `s` views'
 neg view_grow_string "$(src view_grow_string.extc)" 'changes the storage that `view` views'
 one view_ok_before   "$(src view_ok_before.extc)"   $'1\ngrew'
+
+neg nested_view_struct    "$(src nested_view_struct.extx)"    'changes the storage that `h` views'
+neg nested_view_container "$(src nested_view_container.extx)" 'changes the storage that `box` views'
+one view_loop_reuse       "$(src view_loop_reuse.extx)"       'size=30'
 trap() { # name file want-substring
   local name="$1" s="$2" want="$3"
   if ! "$EXTC" -w --no-line-map -o "$tmp/t.c" "$s" 2>"$tmp/e1"; then

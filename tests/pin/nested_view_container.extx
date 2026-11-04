@@ -1,0 +1,23 @@
+use std::io
+use std::data::vector
+
+// 把视图交给另一个容器（`box.push(v.view())`）与绑定一个名字是同一件事：增长之后
+// `box` 里那个指针悬垂。这里记的是"视图经 `box` 可达"，所以拒绝时报 `box`。
+// expect-reject: changes the storage that `box` views
+fn main() {
+    var v: vector<i64> = vector<i64>::withCap(4)
+    var i: i64 = 0
+    while i < 4 {
+        v.push(i)
+        i = i + 1
+    }
+    var box: vector<slice<i64>> = vector<slice<i64>>::withCap(4)
+    box.push(v.view())
+    i = 0
+    while i < 20 {
+        v.push(i)
+        i = i + 1
+    }
+    let keep: slice<i64> = box.get(0) ?? v.view()
+    io::cout << f"k0={keep[0]}\n"
+}

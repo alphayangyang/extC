@@ -3358,21 +3358,118 @@ void liveViewsStmtPre(Checker *c, LiveViews *lv, Vec *stmts, size_t i) {
     }
 }
 
+/** @brief Sources of borrows found inside a value that is about to be stored. */
+typedef struct {
+    const char *names[LIVE_VIEW_MAX];  /* owner names, in discovery order */
+    size_t len;                        /* how many are recorded */
+} BorrowSrcs;
+
+/** @brief Record every borrow source inside `e`; defined below. */
+static void borrowSrcsExpr(BorrowSrcs *acc, Expr *e);
+
+/** @brief Walk-callback shim: recurse into one child expression. */
+static bool borrowSrcsVisit(void *ctx, Expr *e) {
+    borrowSrcsExpr((BorrowSrcs *)ctx, e);
+    return true;
+}
+
+/**
+ * @brief Record the receiver of a view-producing call or slice anywhere inside `e`.
+ *
+ * @param acc  Accumulator of owner names (deduplicated, bounded by `LIVE_VIEW_MAX`).
+ * @param e    Expression to scan.
+ */
+static void borrowSrcsExpr(BorrowSrcs *acc, Expr *e) {
+    if (!e || acc->len >= LIVE_VIEW_MAX) return;
+    const char *own = borrowOwner(e);
+    if (own) {
+        bool dup = false;
+        for (size_t i = 0; i < acc->len; i++)
+            if (strcmp(acc->names[i], own) == 0) dup = true;
+        if (!dup) acc->names[acc->len++] = own;
+    }
+    AstVisit v = { borrowSrcsVisit, NULL, acc };
+    astWalkExprChildren(e, &v);
+}
+
+/** @brief Methods that keep what they are given (the counterpart of `growMethodName`). */
+static bool storeMethodName(const char *n) {
+    static const char *const names[] = { "push", "append", "insert", "set", "put", "add" };
+    if (!n) return false;
+    for (size_t i = 0; i < sizeof names / sizeof names[0]; i++)
+        if (strcmp(n, names[i]) == 0) return true;
+    return false;
+}
+
+/**
+ * @brief Register a view that a statement hands to a container instead of binding it.
+ *
+ * `box.push(v.view())` keeps the pointer just as well as `var s = v.view()` does, but there is no
+ * name to look for afterwards: the view is reachable through `box`. Recording `box` as the name
+ * means the growth check asks the right question ("is anything that can read that view still
+ * alive"), which is the conservative direction.
+ *
+ * @param c   Checker.
+ * @param lv  Live-view table.
+ * @param s   Statement to inspect.
+ */
+static void liveViewsNoteStored(Checker *c, LiveViews *lv, Stmt *s) {
+    if (!s || s->kind != ST_EXPR || lv->len >= LIVE_VIEW_MAX) return;
+    Expr *e = s->u.expr.expr;
+    if (!e || e->kind != EX_METHOD || !e->u.method.recv || e->u.method.recv->kind != EX_IDENT) return;
+    if (!storeMethodName(e->u.method.name)) return;
+    const char *into = e->u.method.recv->u.ident.name;
+    for (size_t a = 0; a < e->u.method.args.len && lv->len < LIVE_VIEW_MAX; a++) {
+        Expr *arg = *(Expr **)vecAt(&e->u.method.args, a);
+        BorrowSrcs srcs;
+        srcs.len = 0;
+        borrowSrcsExpr(&srcs, arg);
+        for (size_t k = 0; k < srcs.len && lv->len < LIVE_VIEW_MAX; k++) {
+            Sym *ksym = lookup(c, srcs.names[k]);
+            Type *kty = ksym ? tsub(c, ksym->type) : NULL;
+            StructDef *ksd = kty ? structOf(ttBase(kty)) : NULL;
+            if (!ksd || (!ksd->poolObject && !ksd->dropHook)) continue;
+            lv->items[lv->len].owner = srcs.names[k];
+            lv->items[lv->len].view = into;
+            lv->len++;
+        }
+    }
+}
+
 /**
  * @brief Remember a view bound by the statement that was just checked.
  *
- * Only the direct `var`/`let` shape is tracked: a view that is immediately passed somewhere is
- * the callee's business (and the depth rules already police storing it), while a bound name is
- * exactly the thing that can be read after the container moves.
+ * A view reaches the block in two shapes: bound to a name (`var s = v.view()`), or handed
+ * straight to something that keeps it (`var h = { s: v.view() }`, `box.push(v.view())`). Both
+ * leave a pointer that outlives the growth, so both are recorded.
  *
  * @param c   Checker; this function does not read it.
  * @param lv  Views of the enclosing block.
  * @param s   The statement that was just checked.
  */
+
 void liveViewsStmtPost(Checker *c, LiveViews *lv, Stmt *s) {
-    if (!s || s->kind != ST_VAR || lv->len >= LIVE_VIEW_MAX) return;
+    if (!s || s->kind != ST_VAR || lv->len >= LIVE_VIEW_MAX) { liveViewsNoteStored(c, lv, s); return; }
     const char *owner = borrowOwner(s->u.var.init);
-    if (!owner) return;
+    if (!owner) {
+        /* A view does not have to be bound directly: `var h = { s: v.view() }` keeps the same
+         * pointer, and the block's growth invalidates it just as surely. Nothing here decides
+         * *where* the value went -- recording the owner is enough, because the only question the
+         * growth check asks is "is a view of this container still reachable". */
+        BorrowSrcs srcs;
+        srcs.len = 0;
+        borrowSrcsExpr(&srcs, s->u.var.init);
+        for (size_t k = 0; k < srcs.len && lv->len < LIVE_VIEW_MAX; k++) {
+            Sym *ksym = lookup(c, srcs.names[k]);
+            Type *kty = ksym ? tsub(c, ksym->type) : NULL;
+            StructDef *ksd = kty ? structOf(ttBase(kty)) : NULL;
+            if (!ksd || (!ksd->poolObject && !ksd->dropHook)) continue;
+            lv->items[lv->len].owner = srcs.names[k];
+            lv->items[lv->len].view = s->u.var.name;
+            lv->len++;
+        }
+        return;
+    }
     /* The gate is the `@poolObject` label, not the type's name: a container whose slab is handed
      * back on growth makes an old view a use after free, while an arena-backed container keeps the
      * old block alive and only yields a stale snapshot. */

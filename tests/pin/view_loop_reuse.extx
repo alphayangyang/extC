@@ -1,0 +1,18 @@
+use std::io
+use std::data::vector
+
+// 反方向：每轮"先增长、再取视图、本轮用完"，视图从不跨过增长 ⇒ 必须编过。
+// expect: size=30
+fn main() {
+    var v: vector<i64> = vector<i64>::withCap(4)
+    var i: i64 = 0
+    while i < 30 {
+        v.push(i)
+        let s: slice<i64> = v.view()
+        if s[0] != 0 {
+            io::cout << "bad\n"
+        }
+        i = i + 1
+    }
+    io::cout << f"size={v.len()}\n"
+}
