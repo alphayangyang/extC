@@ -111,6 +111,31 @@ void resolveSignature(Checker *c, FuncDef *f) {
 }
 
 /**
+ * @brief Do two `extern!` declarations name the same C function?
+ *
+ * Two modules may want the same runtime entry point (`extc_pool_new` is the first case: the
+ * prelude grows its own array and `std::sys::pool` declares the primitive for library code).
+ * The prelude cannot `use` a module, so the only way to say "the same C symbol" twice is to
+ * allow a repeated declaration whose signature matches. A signature that *differs* is still
+ * an error: the C side is one function, so the two views have to agree.
+ *
+ * @param a  First declaration.
+ * @param b  Second declaration.
+ * @return true when both are extern and every parameter and the result type agree.
+ */
+static bool sameExternSignature(FuncDef *a, FuncDef *b) {
+    if (!a->isExtern || !b->isExtern) return false;
+    if (a->params.len != b->params.len) return false;
+    if (!a->ret || !b->ret || !ttEquals(a->ret, b->ret)) return false;
+    for (size_t i = 0; i < a->params.len; i++) {
+        Param *pa = *(Param **)vecAt(&a->params, i);
+        Param *pb = *(Param **)vecAt(&b->params, i);
+        if (!pa->type || !pb->type || !ttEquals(pa->type, pb->type)) return false;
+    }
+    return true;
+}
+
+/**
  * @brief Reject duplicate names among module-level declarations.
  *
  * Names are looked up in the scope table by string, so a duplicate silently shadows the other
@@ -144,7 +169,8 @@ static void checkDeclarations(Checker *c) {
         FuncDef *a = *(FuncDef **)vecAt(&m->funcs, i);
         for (size_t j = i + 1; j < m->funcs.len; j++) {
             FuncDef *b = *(FuncDef **)vecAt(&m->funcs, j);
-            if (strcmp(a->name, b->name) == 0)
+            if (strcmp(a->name, b->name) == 0) {
+                if (sameExternSignature(a, b)) continue;   /* one C symbol, declared twice */
                 ckError(c, b->line,
                         (a->reserved || b->reserved)
                             ? "It comes from stdlib/prelude.extc and is part of the language contract."
@@ -152,6 +178,7 @@ static void checkDeclarations(Checker *c) {
                         (a->reserved || b->reserved)
                             ? "`%s` is a reserved definition and cannot be redefined"
                             : "duplicate function `%s`", b->name);
+            }
         }
     }
 

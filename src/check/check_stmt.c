@@ -3295,7 +3295,8 @@ static const char *borrowOwner(Expr *init) {
     if (!init) return NULL;
     if (init->kind == EX_METHOD && init->u.method.recv &&
         init->u.method.recv->kind == EX_IDENT &&
-        (strcmp(init->u.method.name, "view") == 0 || strcmp(init->u.method.name, "viewMut") == 0))
+        (strcmp(init->u.method.name, "view") == 0 || strcmp(init->u.method.name, "viewMut") == 0 ||
+         strcmp(init->u.method.name, "asMutSlice") == 0 || strcmp(init->u.method.name, "asSlice") == 0))
         return init->u.method.recv->u.ident.name;
     if (init->kind == EX_SLICE && init->u.slice.obj && init->u.slice.obj->kind == EX_IDENT)
         return init->u.slice.obj->u.ident.name;

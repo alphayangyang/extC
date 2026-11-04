@@ -1,4 +1,4 @@
-// expect: varArray = varArray { buf: [7, 8, 0, 0], len: 2, cap: 4 }
+// expect: varArray = varArray { pid: 0, vals: [7, 8, 0, 0], len: 2, cap: 4 }
 /* 描述表打印的**覆盖用例**（2026-09-22）：把每种"换线前后必须逐字节一致"的形状
  * 都过一遍 —— struct / 泛型 struct 实例 / 嵌套数组 / 枚举 / option /
  * ?ref / 浮点 / 字节视图 ✓

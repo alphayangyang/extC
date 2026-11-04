@@ -169,51 +169,53 @@ struct pcg32 {
 // @endcode
 //
 // Three design decisions, stitched into extC's memory model:
-//   - no arena of its own: on growth, `new T[cap*2]` allocates in the arena that owns `self`
-//     -- so storage lives exactly as long as the container, with no `Alloc` as in C++ -- OK
-//   - no free -- `clear()` only sets `len` to zero and leaves the memory alone, and there is
-//     no `shrink_to_fit`: memory cannot be returned, so pretending it can would be a lie -- OK
+//   - the storage is a **plate** owned by the container's place (`@place`): growth hands the old
+//     plate back to the allocator right there, so a container that grew a hundred times keeps one
+//     buffer, not a hundred -- OK
+//   - `release()` returns the plate early; without it the plate lives until the enclosing place
+//     exits (`clear()` only sets `len` to zero, the buffer stays for reuse) -- OK
 //   - reads give `?T` (may be absent); an out-of-range index traps with a source position -- OK
 //
-// NOTE: known limitations (as in `std::vector`, no mitigation here): growth invalidates element
-//   references -- after `var p: mut ref i32 = ref v[0]`, a `v.push(..)` swaps in a new buffer
-//   and `p` still points at the old one (the old memory survives, so no crash, but a write via `p`
-//   is silently lost -- WRONG) => do not hold element references; write via `set(i, v)` -- OK.
+// NOTE: growth moves the buffer, so a view (`view()`, `asMutSlice()`) taken before a `push` must
+//   not be used afterwards: in one block that is a compile error (the checker tracks live views),
+//   across frames the borrow simply cannot escape the container's place.
 // NOTE: `set(i, v)` traps only when `i` is past cap; an `i` in [len, cap) writes into the
 //   unused slot (the same as C++'s `operator[]`) => read safely with `get(i)` -- OK.
 // ---------------------------------------------------------------------------
 
+extern!("extc-runtime") fn extc_pool_new(parent: i64) -> i64
+extern!("extc-runtime") fn extc_pool_reset(pid: i64) -> void
+
+@place
 struct varArray<T> {
-    @private buf: mut slice<T>
+    @private pid: i64
+    @private vals: mut slice<T>
     len: i64
     @private cap: i64
 
     fn withCap(cap: i64) -> varArray<T> {
-        if cap < 0 { cap = 0 }
-        var v: varArray<T> = { buf: new T[cap], len: 0, cap: cap }
+        var cc: i64 = cap
+        if cc < 1 { cc = 1 }
+        let pid = extc_pool_new(-1)
+        var v: varArray<T> = { pid: pid, vals: poolSliceRaw<T>(pid, cc), len: 0, cap: cc }
         return v
     }
 
     fn size(self: ref varArray<T>) -> i64 { return self.len }
     fn isEmpty(self: ref varArray<T>) -> bool { return self.len == 0 }
 
-    // Doubles on growth (0 => start at 4); the new buffer goes to the arena that owns `self` -- OK
+    // Doubles on growth; the old plate goes back to the allocator right here, so the peak is
+    // one buffer plus the one being filled, not the whole growth history.
     fn grow(self: mut ref varArray<T>) {
         var ncap: i64 = self.cap * 2
         if ncap < 4 { ncap = 4 }
-        var nb: mut slice<T> = new T[ncap]
-        var i: i64 = 0
-        while i < self.len {
-            nb[i] = self.buf[i]
-            i = i + 1
-        }
-        self.buf = nb
+        self.vals = poolResizeRaw<T>(self.pid, self.vals, ncap)
         self.cap = ncap
     }
 
     fn push(self: mut ref varArray<T>, v: T) {
         if self.len == self.cap { self.grow() }
-        self.buf[self.len] = v
+        self.vals[self.len] = v
         self.len = self.len + 1
     }
 
@@ -221,26 +223,37 @@ struct varArray<T> {
     fn pop(self: mut ref varArray<T>) -> ?T {
         if self.len == 0 { return none }
         self.len = self.len - 1
-        return some(self.buf[self.len])
+        return some(self.vals[self.len])
     }
 
     fn get(self: ref varArray<T>, i: i64) -> ?T {
         if i < 0 || i >= self.len { return none }
-        return some(self.buf[i])
+        return some(self.vals[i])
     }
 
     fn set(self: mut ref varArray<T>, i: i64, v: T) {
-        self.buf[i] = v
+        self.vals[i] = v
     }
 
-    // Resets the length only; the memory is not touched, because an arena cannot free -- OK
+    // Resets the length only; the plate stays for reuse (`release()` is the one that hands it back).
     fn clear(self: mut ref varArray<T>) { self.len = 0 }
+
+    // Hands the plate back now instead of at the end of the enclosing place: the container is
+    // empty afterwards (any index traps with a position, rather than writing into a returned plate).
+    fn release(self: mut ref varArray<T>) {
+        if self.pid < 0 { return }
+        self.vals = poolResize<T>(self.pid, self.vals, 0)
+        self.cap = 0
+        self.len = 0
+        extc_pool_reset(self.pid)
+        self.pid = -1
+    }
 
     // NOTE: this is what contiguity buys -- the storage is lent out as a view. Sorting,
     // searching, println, and C functions behind `extern!` all take `slice<T>`; without these
     // two methods the container would be unusable -- OK. A lent-out view must not be used
     // after growth, nor escape a scope the storage cannot outlive -- the compiler rejects that.
-    fn view(self: ref varArray<T>) -> slice<T> { return self.buf[0..self.len] }
+    fn view(self: ref varArray<T>) -> slice<T> { return self.vals[0..self.len] }
 
     // Compare by content (as `slice` does: whether elements can be compared is checked only
     // at instantiation -- OK). This must exist because the signature of `view()` mentions
@@ -252,7 +265,7 @@ struct varArray<T> {
         }
         var i: i64 = 0
         while i < self.len {
-            if self.buf[i] != other.buf[i] {
+            if self.vals[i] != other.vals[i] {
                 return false
             }
             i = i + 1
@@ -262,7 +275,7 @@ struct varArray<T> {
 
     // A writable view: the first len elements only (`cap` is unused space, not to be exposed) -- OK
     fn asMutSlice(self: mut ref varArray<T>) -> mut slice<T> {
-        return self.buf[0..self.len]
+        return self.vals[0..self.len]
     }
 }
 
