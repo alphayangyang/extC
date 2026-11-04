@@ -3723,7 +3723,13 @@ void checkStmt(Checker *c, Stmt *s) {
              * decides whether to dereference, and without one the initializer is a value position. */
             Type *it;
             if (s->u.var.init->kind == EX_TRY) it = checkTryInner(c, s->u.var.init);
-            else if (s->u.var.ann)             it = checkInto(c, s->u.var.ann, s->u.var.init);
+            else if (s->u.var.ann) {
+                it = checkInto(c, s->u.var.ann, s->u.var.init);
+                /* The annotated form is the one people write once they know the type, so it has to
+                 * report the same "two names, one plate" copy as the unannotated form; without the
+                 * call here `var d: string = c` aliases silently while `var d = c` warns. */
+                warnSharedCopy(c, s->u.var.init, it);
+            }
             /* Without an annotation the natural type is kept, so a reference stays a reference; write
              * `let v = *p` to copy the value. Dereferencing here would make a reference returned by a
              * call unbindable, e.g. `let r = pickFirst(ref a, ref b)`. */
