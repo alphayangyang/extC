@@ -1,0 +1,14 @@
+// A view of a container that can move its storage must not be handed to a function
+// that may keep it: the callee cannot see that a later growth frees the bytes.
+// expect-reject: whose storage moves when it grows
+use std::data::vector
+
+struct box { v: vector<i64>  s: slice<i64> }
+
+fn keep(b: mut ref box, s: slice<i64>) { b.s = s }
+
+fn main() {
+    var b: box = { v: vector<i64>::withCap(4), s: vector<i64>::withCap(0).view() }
+    b.v.push(7)
+    keep(ref b, b.v.view())
+}

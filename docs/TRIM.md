@@ -102,8 +102,9 @@ extern 默认掩码修好之后可以把 `varArray` 的存储换成板块，功�
 heap-use-after-free 而编译器不报错。现在"把会移动存储的视图存进字段"这一步就被拒绝
 （`field_store_view.extx` 钉住），存快照仍然可以（`field_store_snapshot.extx`）。
 
-仍是洞的相邻形状：把视图作为**实参**传进一个会保存它的函数（编译器不读函数体，判断不了
-"这个函数留不留"）；跨函数增长那一半依旧靠 `borrow()` 守卫，不是自动的。
+相邻形状也挡住了：视图作为**实参**传进"可能保存它"的函数，现在按效果摘要的 `Addr`/`Cont`/`Other`
+位在调用点拒绝，并建议 `snapshot()`（`view_arg_stored.extx` 是反例、`view_arg_snapshot.extx` 是正例）。
+跨函数增长那一半依旧靠 `borrow()` 守卫，不是自动的。
 
 ## 已试过、目前不可行：把 `varArray` 也搬到板块上
 

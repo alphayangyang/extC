@@ -1430,6 +1430,28 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
                 " this call may store it in (depth %d)", i + 1, fname, d, h);
     }
 
+    /* A view of a container that can move its storage must not be handed to a function that
+     * may keep it: the callee only sees a view, and nothing in its body can tell it that the
+     * bytes will be freed by a later growth at the caller. Rejecting here is the call-site
+     * half of the field-store rule; `tests/pin/view_arg_stored` is the shape. */
+    {
+        uint64_t stores = callee ? (anAddrMask(callee) | anContMask(callee) | anOtherMask(callee))
+                                 : 0;
+        for (size_t j = 0; stores && j < params->len && j < args->len && j < EFF_MAX_PARAMS; j++) {
+            if (!((stores >> j) & 1u)) continue;
+            Param *p = *(Param **)vecAt(params, j);
+            if (!p->type || !ttIsViewType(ttBase(tsub(c, p->type)))) continue;
+            Expr *a = *(Expr **)vecAt(args, j);
+            const char *owner = NULL;
+            if (!ckHoldsMovingView(c, a, &owner)) continue;
+            ckError(c, a->line,
+                    "The callee may keep this view, and the container it points into can move its"
+                    " storage when it grows. Keep the view local, or take a copy (`snapshot()`).",
+                    "argument %zu of `%s` is a view of `%s`, whose storage moves when it grows",
+                    j + 1, fname, owner);
+        }
+    }
+
     /* Content flow: the callee stores into a container either a pointer read out of
      * argument j or a value that carries references, so that data must live at least to
      * the level h of the destination as well.

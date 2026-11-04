@@ -1027,6 +1027,16 @@ typedef struct {
 bool ckMoveNoCopyInto(Checker *c, Expr *e, const char *dest);
 
 /**
+ * @brief Whether an expression produces a view of storage that its container can move.
+ *
+ * @param c      The checker; unused by the predicate itself, kept for uniformity.
+ * @param e      The expression to classify.
+ * @param owner  Receives the container's type name, or NULL.
+ * @return       true when the value is a view of movable storage.
+ */
+bool ckHoldsMovingView(Checker *c, Expr *e, const char **owner);
+
+/**
  * @brief Note the views bound by statement `i` before it is checked.
  *
  * @param c     Checker.

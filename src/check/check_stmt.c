@@ -3495,6 +3495,22 @@ static bool valueHoldsMovingView(Checker *c, Expr *e, const char **owner) {
 }
 
 /**
+ * @brief Whether an expression produces a view whose container can move its storage.
+ *
+ * The call-site rule needs the same predicate the field-store rule uses: a view of a
+ * pooled container may be invalidated by a growth the callee performs later, so passing
+ * it to a function that keeps it is the hole this exposes.
+ *
+ * @param c      The checker.
+ * @param e      The expression to classify.
+ * @param owner  Receives the container's type name, or NULL.
+ * @return       true when the value is a view of movable storage.
+ */
+bool ckHoldsMovingView(Checker *c, Expr *e, const char **owner) {
+    return valueHoldsMovingView(c, e, owner);
+}
+
+/**
  * @brief Remember the views a statement leaves behind, and reject the ones it stores.
  *
  * A view reaches the block in three shapes: bound to a name (`var s = v.view()`), handed to a

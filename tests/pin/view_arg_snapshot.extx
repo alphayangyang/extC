@@ -1,0 +1,15 @@
+// Passing a copy instead of a view is the fix the diagnostic suggests.
+use std::data::vector
+use std::io
+
+struct box { v: vector<i64>  s: slice<i64> }
+
+fn keep(b: mut ref box, s: slice<i64>) { b.s = s }
+
+fn main() {
+    var b: box = { v: vector<i64>::withCap(4), s: vector<i64>::withCap(0).view() }
+    b.v.push(7)
+    keep(ref b, b.v.snapshot())
+    b.v.push(8)
+    io::cout << f"kept={b.s[0]}\n"
+}
