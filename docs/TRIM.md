@@ -120,6 +120,19 @@ arena 是 `EX_NEW`（可提升），板块是 `EX_GENCALL`（`poolResizeRaw` 的
 `promoteFieldsAt` 如何追到真正的分配站点"。这条要动 `fieldDepthEntry` 的来源记录，属 P1 的
 `slice` 纯借用同一片；本轮不动。
 
+
+## 已知的洞：视图作为实参、由被调方写进元素（2026-11-05）
+
+<!-- fragment -->
+```extc
+fn stash(a: mut slice<slice<i64>>, s: slice<i64>) { a[0] = s }
+stash(a[..], w.view())     /* 视图进了别人的元素；之后 w 增长再读 a[0][0] 是 UAF */
+```
+
+调用点规则只在该参数的效果摘要带"可能保存"位时触发；这里被存下去的是 `a` 的元素，摘要把"保存"
+记在 `a` 上，`s` 没有被标。要挡它需要按实参形状推"被调方可能把第 i 个视图参数放进某个容器"，
+比字段/元素两条规则大一圈。暂记为洞，判据（ASan 干净）等实现后补。
+
 ## 已试过、目前不可行：把 `varArray` 也搬到板块上
 
 想把 `varArray<T>` 的存储从 arena 换成板块（`@place` + `poolSliceRaw`/`poolResizeRaw`），
