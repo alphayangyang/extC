@@ -58,7 +58,7 @@ struct bnode<K, V> {
 }
 
 @sharesStorage        /* 按值拷贝时**两份共用同一块板块** ⇒ 编译器在这里报警告，要独立副本用 `clone()` */
-@poolObject            /* 这个类型**拥有一个池**：存储住在池自己的板块上，寿命随它所在的地方 */
+@place                 /* 这个类型**拥有一个地方**：存储住在那个地方的板块上，寿命随它所在的域 */
 struct map<K, V> {
     @private nodes:  mut slice<bnode<K, V>>   /* per-node scalars + VIEWS into the three stores below */
     /* The three stores are flat and owned by the map: node `id` owns the 17 key slots at

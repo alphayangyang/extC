@@ -16,14 +16,14 @@ The compiler's whole job is three things:
 3. keep a per-zone **epoch** so a handle into zone storage can be checked for staleness
    (`zone::epoch`), which is the same idea already used by `dyn` and by pool generations.
 
-If those three exist, `@poolObject`, `poolSlice<T>`, `poolResize<T>`, `std::sys::pool` and the plate
+If those three exist, `@place` (formerly `@poolObject`), `poolSlice<T>`, `poolResize<T>`, `std::sys::pool` and the plate
 code in `src/back/pools.c` are all redundant.
 
 ## 1. What is privileged today, and why
 
 | Knob | Where | Why it exists |
 |---|---|---|
-| `@poolObject` | type attribute | tells the checker/codegen that this type's storage lives on a plate rather than in the frame, and that its blocks must be revoked on epoch change |
+| `@place` (formerly `@poolObject`) | type attribute | tells the checker/codegen that this type's storage lives on a plate rather than in the frame, and that its blocks must be revoked on epoch change |
 | `poolSlice<T>` / `poolSliceRaw<T>` | generator intrinsic | turns plate memory into a `slice<T>` — the language cannot express this |
 | `poolResize<T>` / `poolResizeRaw<T>` | generator intrinsic | realloc-style growth of a plate block |
 | `extc_pool_*` | runtime C | new/drop/reset/generation/zone chaining |
@@ -37,7 +37,7 @@ an epoch". The problem is purely that **only pools the compiler created can regi
 - a value allocated with `new` cannot be put under zone management (that is why
   `new` inside a loop accumulates: 100 × 1 MiB churn must touch every page and peaks at 103.8 MB,
   while the same shape declared in the loop body peaks at 2.4 MB);
-- a struct cannot declare "my storage is zone-managed" without `@poolObject`, i.e. without the
+- a struct cannot declare "my storage is zone-managed" without `@place`, i.e. without the
   compiler agreeing.
 
 In other words: **the zone is RAII, but only the compiler may write into it.**
@@ -121,7 +121,7 @@ one branch on the release path. Element access stays free.
 
 ## 5. What this deletes
 
-- `@poolObject`, `poolSlice<T>`, `poolSliceRaw<T>`, `poolResize<T>`, `poolResizeRaw<T>`,
+- `@place`/`@poolObject`, `poolSlice<T>`, `poolSliceRaw<T>`, `poolResize<T>`, `poolResizeRaw<T>`,
   `std::sys::pool`, and the plate code paths in `src/back/pools.c` that only exist to serve those.
 - The `fromRaw<T>` idea from revision 1 of this document: with typed `zone::alloc` there is no cast to
   expose. (Raw C pointers stay available through `extern!` for platform shims, as today.)
@@ -143,7 +143,7 @@ one branch on the release path. Element access stays free.
 | 3. `std::mem::arena` | pure extC over `zone::alloc` | `tests/stl/arena_*`; peak = live + one chunk |
 | 4. `std::mem::pool<T>` | free list + generations over zone chunks; handle API (`slotOf/at/setAt/entry`) already exists in `stdMap` land | `tests/pool/*` ported to the library type; `bench/app`/`realsvc` within noise |
 | 5. containers | `varArray` → segmented chunks on `zone::alloc` (peak from 129 MB to ≈70 MB for 8M i64, per prototype); `vector` → zone-backed pool with growth policy; `string` keeps SSO | `tests/run.sh` 377/0; `bench/crazy`, `bench/app`, `bench/realsvc` within noise; 8M-i64 peak recorded in the paper's table |
-| 6. delete privilege | drop the five knobs above | `grep -rn "@poolObject\|poolSlice\|poolResize" src/ stdlib/` = 0 |
+| 6. delete privilege | drop the five knobs above | `grep -rn "@place\|@poolObject\|poolSlice\|poolResize" src/ stdlib/` = 0 |
 | 7. numbers | re-run `bench/memstudy`; update the memory table in the paper honestly | numbers match the code |
 
 Step 5 is where the 129 MB → ~70 MB improvement shows up, and it is a *library* change: the language

@@ -36,6 +36,7 @@ echo "== 正例：稳定 handle · dense 连续 · 世代失效 · API 面 =="
 run_case basic
 run_case api
 run_case gather
+run_case place_user
 
 echo "== churn：1e6 轮的峰值 RSS 必须与 1e5 轮相当（还槽位 ⇒ 平 ✓）=="
 build_one() {   # 名字 文件

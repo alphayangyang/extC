@@ -12,7 +12,7 @@
 use std::io
 use std::sys::pool as syspool
 
-@poolObject
+@place
 struct grow<T> {
     pid:    i64
     pidGen: u64

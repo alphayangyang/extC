@@ -1,0 +1,43 @@
+// expect: n=100 cap=139 sum=4950
+/* 判据：`@place` 是"我的存储住在会比我活得久的那个地方（今天是一个池）"这个标签的用户面 ——
+ * 一个普通结构体标上它，就能用 `poolSliceRaw`/`poolResizeRaw` 写自己的可增长容器，
+ * 不需要编译器的任何特权（对比 `@poolObject`：旧拼写，同一标签，仍接受）。 */
+use std::io
+use std::sys::pool as syspool
+
+@place
+struct grow {
+    @private vals: mut slice<i64>
+    @private n: i64
+    @private cap: i64
+    @private pid: i64
+
+    fn withCap(c: i64) -> grow {
+        let pid: i64 = syspool::extc_pool_new(-1)
+        var cc: i64 = c
+        if cc < 1 { cc = 1 }
+        var g: grow = { vals: poolSliceRaw<i64>(pid, cc), n: 0, cap: cc, pid: pid }
+        return g
+    }
+    fn push(self: mut ref grow, v: i64) {
+        if self.n == self.cap {
+            let nc: i64 = self.cap + self.cap / 2 + 1
+            self.vals = poolResizeRaw<i64>(self.pid, self.vals, nc)
+            self.cap = nc
+        }
+        self.vals[self.n] = v
+        self.n = self.n + 1
+    }
+    fn len(self: ref grow) -> i64 { return self.n }
+    fn view(self: ref grow) -> slice<i64> { return self.vals[0..self.n] }
+}
+
+fn main() -> i32 {
+    var g: grow = grow::withCap(2)
+    var i: i64 = 0
+    while i < 100 { g.push(i)  i = i + 1 }
+    var sum: i64 = 0
+    for v in g.view() { sum = sum + v }
+    io::cout << "n=" << g.len() << " cap=" << g.cap << " sum=" << sum << "\n"
+    return 0
+}

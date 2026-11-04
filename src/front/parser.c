@@ -853,13 +853,17 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
                 skipJunk(&p);
                 continue;
             }
-            /* `@poolObject`: this struct **owns a pool** -- its storage lives on the pool's
-             * own slabs and its lifetime follows the place it sits in. A declaration beats
+            /* `@place` (formerly `@poolObject`): this struct **owns a place** -- its storage lives
+             * on the place's own slabs and its lifetime follows the scope it sits in. A declaration beats
              * an inference: the compiler does not have to guess (both "does it have a `pid`
              * field" and "do its methods build pools" were tried: the first is a magic
              * number, the second has to wait for closures), and a **user-defined container
              * uses the same modifier** and takes exactly the same path. */
-            if (strcmp(nm->text, "poolObject") == 0) {
+            /* `@place`: this struct's storage lives on **a place** that outlives the value (today:
+             * a pool of its own), so it can grow in place and its lifetime follows the scope it
+             * sits in. `@poolObject` is the earlier spelling of the same label and stays accepted;
+             * both set one flag, and nothing else in the compiler knows either word. */
+            if (strcmp(nm->text, "place") == 0 || strcmp(nm->text, "poolObject") == 0) {
                 poolObject = true;
                 skipJunk(&p);
                 continue;

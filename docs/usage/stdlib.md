@@ -89,7 +89,7 @@ fn main() -> i32 {
 宽度、布局、语义都可能随实现变化，用户代码按容器的方法写。
 
 导入名就是 `stl::<文件名>`：`use std::data::vector`、`use std::data::hashMap`、`use std::text::string`……
-这一族里的容器大多带 `@sharesStorage` + `@poolObject`：
+这一族里的容器大多带 `@sharesStorage` + `@place`（旧拼写 `@poolObject`）：
 **按值拷贝两份会共用同一块板块**，编译器会为此报警告；要独立副本必须显式 `clone()`
 （判据  / `clone_ok.extc`，见 ）。
 
@@ -158,13 +158,13 @@ let s = b.view()
 
 ### 自己写一个板块底的容器
 
-`vector` 不是特例：任何一个标了 `@poolObject` 的结构体都**拥有一块自己的池**，于是也能拿到"原地长、乱序归还"的存储。写自己的可增长容器就是四件事 —— 拥有、要、长、守卫与归还：
+`vector` 不是特例：任何一个标了 `@place` 的结构体都**拥有一块自己的地方（池）**，于是也能拿到"原地长、乱序归还"的存储。写自己的可增长容器就是四件事 —— 拥有、要、长、守卫与归还：
 
 <!-- fragment -->
 ```extc
 use std::sys::pool as syspool
 
-@poolObject
+@place
 struct grow<T> {
     vals:   mut slice<T>
     n:      i64

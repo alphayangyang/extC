@@ -89,7 +89,7 @@ impl i64 {
 }
 
 @sharesStorage        /* 按值拷贝时**两份共用同一块板块** ⇒ 编译器在这里报警告，要独立副本用 `clone()` */
-@poolObject            /* 这个类型**拥有一个池**：存储住在池自己的板块上，寿命随它所在的地方 */
+@place                 /* 这个类型**拥有一个地方**：存储住在那个地方的板块上，寿命随它所在的域 */
 struct hashMap<K, V> {
     /* This container's OWN pool record. One non-nested container = one pool;
      * `vals` is created with this as its parent, so the two records really form a tree and
