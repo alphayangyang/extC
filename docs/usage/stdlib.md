@@ -127,6 +127,62 @@ fn main() -> i32 {
 ```
 实测：`vector n=3 cap=4 sum=6`。
 
+### `std::data::place`：`@place` 的公共面
+
+一个标了 `@place` 的类型说："我的存储住在**一个地方**（今天是一个池），那个地方比我活得久"。
+地方本身由运行期注册表管；这个模块只暴露它的**非视图**部分：
+
+| 成员 | 作用 |
+|---|---|
+| `generation(p)` | 地方的世代（每次重置 +1）：容器把它与 id 一起存，还块前比对 |
+| `bytes(p)` | 一个地方当前占着的字节数（判"长了但没留旧块"）|
+| `liveBytes()` | 所有地方占着的字节数（判"退出后有没有漏"就比它进出两次）|
+| `give(p, s)` | 把一块借自地方的字节还回去（`poolGive<T>` 的薄包装）|
+| `free(p)` | 当场还掉一个地方（正常路径靠所在域退出整批收回，一般不用）|
+
+**建池不在这个模块里，返回视图的原语也不在。** 两条都是刻意的：函数体会为池分配开一层自己的
+地方，池于是随它返回而死，所以建池必须发生在你自己的 `@place` 类型的构造函数里（关联函数不另开
+地方，`@inline` 也不改变这一点）；而 `poolSlice<T>` / `poolSliceRaw<T>` / `poolResize<T>` /
+`poolResizeRaw<T>` / `poolGive<T>` 是**编译器内建** —— C 里声明不出"返回 `slice<T>`"，且包一层
+普通函数会丢掉"这个视图是这个类型自己那个地方的"这条知识（赋给字段时被逃逸检查拒绝）。
+
+```extc
+use std::io
+use std::data::place as place
+use std::sys::pool as syspool
+
+@place
+struct grow {
+    @private vals: mut slice<i64>
+    @private n:    i64
+    @private cap:  i64
+    @private pid:  i64
+    fn withCap(c: i64) -> grow {
+        let pid: i64 = syspool::extc_pool_new(-1)
+        var g: grow = { vals: poolSliceRaw<i64>(pid, c), n: 0, cap: c, pid: pid }
+        return g
+    }
+    fn push(self: mut ref grow, v: i64) {
+        if self.n == self.cap {
+            let nc: i64 = self.cap + self.cap / 2 + 1
+            self.vals = poolResizeRaw<i64>(self.pid, self.vals, nc)
+            self.cap = nc
+        }
+        self.vals[self.n] = v
+        self.n = self.n + 1
+    }
+}
+
+fn main() -> i32 {
+    var g: grow = grow::withCap(2)
+    var i: i64 = 0
+    while i < 100 { g.push(i)  i = i + 1 }
+    io::cout << "n=" << g.n << " cap=" << g.cap << " bytes=" << place::bytes(g.pid) << "\n"
+    return 0
+}
+```
+实测：`n=100 cap=139 bytes=1112`（当前板块 139 × 8 字节，加上板块头；四次增长的旧块都还回去了）。
+
 ### `buf<T>`：**拥有**存储的可增长缓冲区
 
 `vector<T>` 与 `buf<T>` 用同一套板块，区别只在**所有权怎么表达**：

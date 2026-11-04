@@ -172,6 +172,10 @@ std::data::map	set	lowerBound	method	public
 std::data::map	set	m	field	public
 std::data::map	set	new	method	public
 std::data::map	set	remove	method	public
+std::data::place	-	bytes	fn	public
+std::data::place	-	free	fn	public
+std::data::place	-	generation	fn	public
+std::data::place	-	liveBytes	fn	public
 std::data::pool	handle	ep	field	internal
 std::data::pool	handle	gen	field	public
 std::data::pool	handle	slot	field	public
