@@ -63,7 +63,7 @@
   deeper scope (depth 1) than the arena this call may store it in (depth 0)"；
 - `tools/gate_escape.py`：逃逸健全性语料变红。
 
-**根因（先前的猜测是错的，以下是量出来的）**：`EXTC_DBG_REFARGS=1` 显示让容器成为"会建池的类型"
+**根因**（`EXTC_DBG_REFARGS=1` 显示）让容器成为"会建池的类型"
 之后，`handle()` 从 `addr=0x0 cont=0x0` 变成 `addr=0x1 cont=0x1`，`step()` 继承这两位，
 于是调用点开始跑 `checkCallRefArgs` 的目的地推断。这个推断做的是
 "取所有**带引用的** `ref` 实参里最浅的一个当目的地"，在 `step(ref f, ref st, input[..], out)` 里
