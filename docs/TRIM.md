@@ -78,3 +78,16 @@
 
 数据留档：峰值对照见本文件开头的 `buf` 一行；行为差异（增长后旧视图从"静默快照"变成悬垂）
 见 `docs/usage/language.md` §8.2 的 `varArray` 段（保持 arena 的说法，因为代码仍是 arena）。
+
+下一轮要动的三个点（按数据流，不是按文件）：
+
+1. **站点记账**：`src/check/check_top.c` 的 `noteArenaSite`（约 1630–1670）里 `if (depth < 2) return;`
+   让"帧级（depth 1）的板块站点"保持效果摘要里的 `homeDepth = 0` —— 这就是"板块活得更久"的来源。
+2. **收尾落位**：同一文件约 9297 行的 placement 把它翻成 `ARENA_HOME` 或具体块级；判据
+   `anMinAt(site)`（0 ⇒ home）。
+3. **消费方**：`checkCallRefArgs`（约 1300–1430）用 `homeDepth` 算 `h`，`h == 0` 就是
+   "被存进去的值必须活到进程结束"。
+
+判据（红→绿）：`tests/coro/statemachine.extc` 编过、`tools/gate_escape.py` 0 失败、
+`tests/pool` 的金值（`rt_nest` 的板块字节数、`rt_nest_promote` 的 depth 数字）同步更新、
+`tests/run.sh` 377/0。
