@@ -6,6 +6,10 @@
  *     覆盖赋值与离开作用域时会跑 `@drop` 把池板当场还给分配器（这正是 `varArray` 在 arena 上
  *     做不到的事：旧块只能留在原地等整个帧退出）
  *
+ * `borrow()` 是**冻结位**的库级形式：借出期间要改变存储身份（`push` 触到 realloc）会在运行期
+ * `trap`，而不是让旧视图静默读到已被分配器收回的字节。同块内"借出后增长"在编译期就被拒，
+ * 跨函数/跨块的情形由这个守卫兜住 —— 编译器一条都没参与。
+ *
  * 是 P1 的语言级 `buf<T>`（`new T[n]` 将来直接返回它）之前的库级原型：用的仍是同一套板块原语
  * `poolSliceRaw` / `poolResizeRaw` / `poolGive`，所以语义与 `vector` 一致，只是所有权由标签保证。
  *
@@ -32,6 +36,7 @@ struct buf<T> {
     @private vals:   mut slice<T>
     @private n:      i64     /* 已用长度 */
     @private cap:    i64     /* 板块容量 */
+    @private pins:   i64     /* 活着的 `borrow()` 守卫个数：> 0 时板块被冻结 */
     @private
 
     /** @brief 交还板块。离开作用域、被覆盖、或函数中途返回时由编译器发出。 */
@@ -59,6 +64,7 @@ struct buf<T> {
             vals:   poolSliceRaw<T>(pid, cc),
             n:      0,
             cap:    cc,
+            pins:   0,
         }
         return b
     }
@@ -78,6 +84,8 @@ struct buf<T> {
     /** @brief 追加一个元素；容量不够时按 1.5 倍再要一块（旧块由 `poolResizeRaw` 当场还掉）。 */
     fn push(self: mut ref buf<T>, v: T) {
         if self.n == self.cap {
+            /* 冻结位：还有守卫活着时改变存储身份，会让它手里的视图指向被收回的板块。 */
+            if self.pins > 0 { trap("this buffer is frozen by a live borrow") }
             var ncap: i64 = self.cap + self.cap / 2
             if ncap <= self.cap { ncap = 4 }
             self.vals = poolResizeRaw<T>(self.pid, self.vals, ncap)
@@ -97,6 +105,16 @@ struct buf<T> {
     /** @brief 清空长度（板块留着，下一次 `push` 直接复用）。 */
     fn clear(self: mut ref buf<T>) { self.n = 0 }
 
+    /** @brief 借出：返回一个守卫，它在作用域里期间这块存储不许改变身份。
+     *
+     * 编译器已经拒绝同一个函数体内的"借出后增长"；这个守卫管的是**跨函数**：把守卫传出去、
+     * 存进别处，或者在被调用的函数里增长，都会在 `push` 的 realloc 路径上 `trap`。
+     * 守卫本身是 `@noCopy`，离开作用域时把计数减回去。 */
+    fn borrow(self: mut ref buf<T>) -> borrowGuard<T> {
+        self.pins = self.pins + 1
+        return { b: self, p: ref self.pins }
+    }
+
     /** @brief 复制一份独立存储（另一个 `buf`，两者之后互不影响）。 */
     fn clone(self: ref buf<T>) -> buf<T> {
         var out: buf<T> = buf<T>::withCap(self.n)
@@ -104,4 +122,26 @@ struct buf<T> {
         while i < self.n { out.push(self.vals[i])  i = i + 1 }
         return out
     }
+}
+
+/** @brief `buf::borrow()` 的守卫：活着的时候缓冲区的存储被冻结。
+ *
+ * 它**不拥有**存储，也不决定缓冲区的寿命：它只让"改变存储身份"这件事在运行期变成确定的
+ * `trap`。与越界、陈旧 `dyn` 句柄、`any` 拆箱是同一种失败方式 —— 程序停下来说清楚哪里不对，
+ * 而不是读一段已经被分配器收回去的字节。
+ */
+@noCopy
+struct borrowGuard<T> {
+    @private b: ref buf<T>
+    @private p: mut ref i64
+
+    @private
+    @drop
+    fn release(self: mut ref borrowGuard<T>) { *self.p = *self.p - 1 }
+
+    /** @brief 只读视图：与 `buf::view()` 相同，但受守卫保护。 */
+    fn view(self: ref borrowGuard<T>) -> slice<T> { return self.b.vals[0..self.b.n] }
+
+    /** @brief 元素个数。 */
+    fn len(self: ref borrowGuard<T>) -> i64 { return self.b.n }
 }

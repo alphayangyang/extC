@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # 视图与容器增长：视图只活到容器搬走存储为止（docs/TYPE-MODEL.md §六）。
 #
-# 冻结位（pin）还没实现，所以运行时那一半暂时只有静态这一半：同一块里"借出视图 → 容器增长 →
-# 之后再读视图"必须编译期拒绝（这正是 ASan 在 vector 上抓到的 heap-use-after-free）。
+# 静态那一半：同一块里"借出视图 → 容器增长 → 之后再读视图"必须编译期拒绝（这正是 ASan 在
+# vector 上抓到的 heap-use-after-free）。动态那一半（跨函数/跨块）由 `buf::borrow()` 的守卫在
+# 运行期 trap —— 计数在库里，编译器一条都没参与。
 # 视图在增长前用完、或活在内层块里，都必须编过。
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
@@ -33,6 +34,19 @@ neg() { # name file want-substring
 neg view_grow_vector "$(src view_grow_vector.extc)" 'changes the storage that `s` views'
 neg view_grow_string "$(src view_grow_string.extc)" 'changes the storage that `view` views'
 one view_ok_before   "$(src view_ok_before.extc)"   $'1\ngrew'
+trap() { # name file want-substring
+  local name="$1" s="$2" want="$3"
+  if ! "$EXTC" -w --no-line-map -o "$tmp/t.c" "$s" 2>"$tmp/e1"; then
+    bad "$name" "extC: $(head -1 "$tmp/e1")"; return; fi
+  if ! gcc -O2 -std=c11 -fwrapv -o "$tmp/t" "$tmp/t.c" 2>"$tmp/e2"; then
+    bad "$name" "gcc: $(head -1 "$tmp/e2")"; return; fi
+  local got; got=$("$tmp/t" 2>"$tmp/e3"); local rc=$?
+  [ "$rc" -ne 0 ] && grep -qF -- "$want" "$tmp/e3" && ok "$name" "trap ✓" \
+    || bad "$name" "rc=$rc err=$(head -1 "$tmp/e3" | cut -c1-48)"
+}
+
+one view_ok_borrow_release "$(src borrow_release.extx)" $'borrowed=7\ngrown=7'
+trap borrow_freezes "$(src borrow_freezes.extx)" 'frozen by a live borrow'
 one view_ok_inner_block "$(src view_ok_inner_block.extc)" $'1\ngrew'
 
 printf '通过 %d，失败 %d\n' "$pass" "$fail"

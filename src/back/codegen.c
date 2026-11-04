@@ -6485,7 +6485,12 @@ static void genDropBlocksDownTo(CG *g, size_t base) {
  */
 static bool typeNeedsDrop(CG *g, Type *t, int depth) {
     if (!t || depth > 8) return false;
-    Type *b = ttBase(subst(g, t));
+    Type *st = subst(g, t);
+    /* A reference or a view names someone else's storage, so it owns nothing to hand back. Without
+     * this test `ttBase` unwraps it and the field is dropped as if it were the pointee, which makes a
+     * guard struct holding `mut ref buf<T>` emit a call with the wrong pointer type. */
+    if (st && (st->kind == TY_REF || ttIsViewType(st))) return false;
+    Type *b = ttBase(st);
     StructDef *sd = b ? structOf(b) : NULL;
     if (!sd) return false;
     if (sd->dropHook) return true;

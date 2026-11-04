@@ -1,0 +1,16 @@
+/* 判据：守卫离开作用域后计数归零，增长恢复正常（否则冻结位会把正常程序也拦住）。 */
+use std::io
+use std::data::buf
+
+fn main() -> i32 {
+    var b: buf<i64> = buf<i64>::withCap(1)
+    b.push(7)
+    {
+        var g: buf::borrowGuard<i64> = b.borrow()
+        io::cout << "borrowed=" << g.view()[0] << "\n"
+    }
+    var i: i64 = 0
+    while i < 6 { b.push(i)  i = i + 1 }
+    io::cout << "grown=" << b.len() << "\n"
+    return 0
+}

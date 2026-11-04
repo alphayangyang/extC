@@ -34,6 +34,11 @@ std::coro::scheduler	tasks	freeq	field	public
 std::coro::scheduler	tasks	rows	field	public
 std::coro::scheduler	tasks	rqHead	field	public
 std::coro::scheduler	tasks	runq	field	public
+std::data::buf	borrowGuard	b	field	internal
+std::data::buf	borrowGuard	len	method	public
+std::data::buf	borrowGuard	p	field	internal
+std::data::buf	borrowGuard	release	method	public
+std::data::buf	borrowGuard	view	method	public
 std::data::buf	buf	cap	field	internal
 std::data::buf	buf	capacity	method	public
 std::data::buf	buf	clear	method	public
@@ -41,6 +46,7 @@ std::data::buf	buf	len	method	public
 std::data::buf	buf	n	field	internal
 std::data::buf	buf	pid	field	internal
 std::data::buf	buf	pidGen	field	internal
+std::data::buf	buf	pins	field	internal
 std::data::buf	buf	vals	field	internal
 std::data::buf	buf	view	method	public
 std::data::buf	buf	viewMut	method	public

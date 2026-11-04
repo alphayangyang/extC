@@ -1,0 +1,20 @@
+/* 判据：守卫活着时改变存储身份是**运行期** trap（跨函数也算）。
+ * 这是冻结位的库级形式：编译器的静态表只管同一个函数体，跨函数的借出靠这个计数。 */
+use std::io
+use std::data::buf
+
+fn growIt(b: mut ref buf<i64>) {
+    var i: i64 = 0
+    while i < 8 { b.push(i)  i = i + 1 }
+}
+
+fn main() -> i32 {
+    var b: buf<i64> = buf<i64>::withCap(2)
+    b.push(1)
+    b.push(2)
+    var g: buf::borrowGuard<i64> = b.borrow()
+    io::cout << "frozen len=" << g.len() << "\n"
+    growIt(ref b)
+    io::cout << "unreachable\n"
+    return 0
+}

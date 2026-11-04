@@ -134,6 +134,12 @@ one branch on the release path. Element access stays free.
 |---|---|---|
 | 1. zone handle | expose `zone` type + `zone::current/alloc/epoch/reset`; runtime keeps the existing registry (chunk list + epoch), ~150 lines C + builtin plumbing | `tests/mem/zone.extc`: nested zones, `reset` bumps epoch, `alloc` storage survives a `return` out of the block that allocated it |
 | 2. pin (early release only) | block counter + `view()` inc + place-death dec + `zone::release` trap | stale-view-after-release program traps with a named message instead of ASan UAF |
+
+**已经能跑的那一半（2026-11-04）。** 编译器侧的静态检查只覆盖同一个函数体，跨函数/跨块的借出
+没有声音。库里的 `buf::borrow()` 用 `@noCopy` 守卫 + `@drop` 把计数做成语言能表达的东西：
+守卫活着时 `pins > 0`，`push` 触到 `realloc` 就 `trap: this buffer is frozen by a live borrow`，
+守卫离开作用域计数减回去。判据在 `tests/pin`（`borrow_freezes` 跨函数 trap、`borrow_release`
+放行）。等编译器有 `buf<T>` 内建之后再把这个机制收进存储头，`borrow()` 就是它的糖。
 | 3. `std::mem::arena` | pure extC over `zone::alloc` | `tests/stl/arena_*`; peak = live + one chunk |
 | 4. `std::mem::pool<T>` | free list + generations over zone chunks; handle API (`slotOf/at/setAt/entry`) already exists in `stdMap` land | `tests/pool/*` ported to the library type; `bench/app`/`realsvc` within noise |
 | 5. containers | `varArray` → segmented chunks on `zone::alloc` (peak from 129 MB to ≈70 MB for 8M i64, per prototype); `vector` → zone-backed pool with growth policy; `string` keeps SSO | `tests/run.sh` 377/0; `bench/crazy`, `bench/app`, `bench/realsvc` within noise; 8M-i64 peak recorded in the paper's table |
