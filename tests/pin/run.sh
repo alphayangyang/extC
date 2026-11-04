@@ -46,6 +46,8 @@ neg many_views            "$(src many_views.extx)"            'changes the stora
 
 neg field_store_view     "$(src field_store_view.extx)"     'this field would hold a view of'
 one field_store_snapshot "$(src field_store_snapshot.extx)" 's0=7 n=1 grew=25'
+neg elem_store_view      "$(src elem_store_view.extx)"      'this element would hold a view of'
+one elem_store_snapshot  "$(src elem_store_snapshot.extx)"  '7'
 trap() { # name file want-substring
   local name="$1" s="$2" want="$3"
   if ! "$EXTC" -w --no-line-map -o "$tmp/t.c" "$s" 2>"$tmp/e1"; then

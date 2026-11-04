@@ -1,0 +1,14 @@
+// 判据：把可移动存储的视图存进数组**元素**，必须被拒绝
+//
+// 元素和字段是同一类问题：视图活着，容器增长把旧板块交还，之后的读就是 use-after-free。
+use std::data::vector
+
+fn main() {
+    var w: vector<i64> = vector<i64>::new()
+    w.push(7)
+    var a: [2]slice<i64> = [w.snapshot(), w.snapshot()]
+    a[0] = w.view()
+    var i: i64 = 0
+    while i < 40 { w.push(i)  i = i + 1 }
+    println(a[0][0])
+}

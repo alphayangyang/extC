@@ -3578,15 +3578,19 @@ bool ckHoldsMovingView(Checker *c, Expr *e, const char **owner) {
  * @param s   The statement that was just checked.
  */
 void liveViewsStmtPost(Checker *c, LiveViews *lv, Stmt *s) {
-    /* A view stored into a field is unreachable from this table: the field can be read in a
-     * later block or in another function, where the growth is invisible. Reject the store. */
-    if (s && s->kind == ST_ASSIGN && s->u.assign.target && s->u.assign.target->kind == EX_FIELD &&
+    /* A view stored into a field or an element is unreachable from this table: both live inside
+     * another object, which can be read in a later block or in another function, where the growth
+     * is invisible. Reject the store. An element matters as much as a field -- `a[0] = v.view()`
+     * puts the same dangling pointer where nothing here can see it. */
+    if (s && s->kind == ST_ASSIGN && s->u.assign.target &&
+        (s->u.assign.target->kind == EX_FIELD || s->u.assign.target->kind == EX_INDEX) &&
         s->u.assign.target->type && ttIsViewType(ttBase(s->u.assign.target->type))) {
         const char *owner = NULL;
         if (valueHoldsMovingView(c, s->u.assign.value, &owner)) {
             ckError(c, s->line,
                     "keep the view local, or take a copy (`snapshot()`) if it has to outlive the statement",
-                    "this field would hold a view of `%s`, whose storage moves when it grows", owner);
+                    "this %s would hold a view of `%s`, whose storage moves when it grows",
+                    s->u.assign.target->kind == EX_INDEX ? "element" : "field", owner);
             return;
         }
     }
