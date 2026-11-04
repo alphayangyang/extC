@@ -1,6 +1,10 @@
 # Destructors
 
-Status: **design** (2026-11-03). Nothing here is implemented yet.
+Status: **partly implemented** (2026-11-03, updated 2026-11-04). Step S1 is in: a `@drop` method on a
+`@noCopy` struct runs when the binding leaves its block, when it is overwritten by `=`, and before a
+`return`. Not in yet: `break`/`continue` out of a block, generators' frames, and any caller that
+holds a borrowed view of the value being dropped — those leak, which is the recoverable side of the
+choice (a missed release is a leak; a doubled one is a use-after-free).
 
 `extC` already has linear types: `@noCopy` means "exactly one owner, may be borrowed but never copied"
 (`fs::file`, `ifstream`, `ofstream`, `loop`, `mem::pool`, `json::doc`, …). Linear types own things the
@@ -43,7 +47,8 @@ Automatic, emitted by the compiler as part of leaving a place:
 
 | Event | Order |
 |---|---|
-| block exit (fall-through, `break`, `continue`, `return` through it) | reverse declaration order, innermost block first |
+| block exit (fall-through, `return` through it) | reverse declaration order, innermost block first |
+| `break` / `continue` out of a block | not yet emitted: the binding leaks instead of dropping twice |
 | overwrite of the place (`f = ofstream::open(..)?`) | old value's drop, then store |
 | end of program | globals with `@drop`, reverse declaration order, before arena teardown |
 | trap | drops of the current block chain run first, then the trap message (keeps ASan clean) |
@@ -145,8 +150,10 @@ Runtime: none. A destructor is a plain C function call on a `mut ref`.
 
 ## 7. Stages
 
-- **Stage 1** (this design): attribute + automatic drops (block exit, overwrite, program end, trap
-  path) + field order + the rejection table + tests 1–4, 7, 8, 11, 12.
+- **Stage 1** (landed, `tests/drop/` 7 cases): attribute + automatic drops on block exit, `return`,
+  and overwrite; hook reachable through reachability pruning for plain and generic types; the two
+  rejection cases. Still open in S1: `break`/`continue`, program end, the trap path, field order
+  (a field of a `@drop` type is not dropped yet), and the borrow census.
 - **Stage 2**: explicit `drop x` with the borrow census (tests 5, 6, 9).
 - **Stage 3**: coroutine frames get a drop list, so a `@drop` value may live across `yield`
   (`conn` coroutines holding an `ifstream`); then test 10 becomes a positive case.

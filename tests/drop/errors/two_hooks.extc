@@ -1,0 +1,9 @@
+/* 反例：一个类型只能有一个 `@drop` 方法 ✗ */
+@noCopy
+struct res { id: i64
+    @drop
+    fn gone(self: mut ref res) { println("a") }
+    @drop
+    fn gone2(self: mut ref res) { println("b") }
+}
+fn main() -> i32 { return 0 }

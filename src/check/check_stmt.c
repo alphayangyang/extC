@@ -4007,6 +4007,20 @@ void checkStmt(Checker *c, Stmt *s) {
             sym->frameStore = s->type && ttIsViewType(s->type) &&
                               exprIsFrameStorage(c, s->u.var.init);
             noteAcyclicNestedLocal(c, s);   /* criterion (iv): reference-typed local in a nested block */
+            /* A local whose type has an `@drop` hook makes that hook reachable: code generation
+             * emits the call at the end of the block, and reachability pruning must not delete it. */
+            {
+                Type *base = s->type ? ttBase(s->type) : NULL;
+                StructDef *dropper = base ? structOf(base) : NULL;
+                if (dropper && dropper->dropHook) {
+                    FuncDef *hook = dropper->dropHook;
+                    planSetUsed(hook, true);
+                    /* A generic instance gets its own copy of the body: the code generator emits it
+                     * only for the instances that are marked as using it. */
+                    if (base->kind == TY_GENERIC && base->name)
+                        planSetInstUsed(hook, base->name);
+                }
+            }
             /* Record where this binding's value comes from (its initializer). Promotion walks the
              * chain back: after `var n = new node`, `head = n` follows `n` to the `new` site and raises
              * it to `head`'s level. A declaration without an initializer records NULL. */

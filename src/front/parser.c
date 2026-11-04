@@ -298,7 +298,7 @@ static Stmt    *parsePar(Parser *p);
 static StructDef *parseStruct(Parser *p);
 static FuncDef   *parseFunc(Parser *p);
 static bool       parseFuncAnnotations(Parser *p, bool *outInline, bool *outPrivate,
-                                       bool *outUnchecked);
+                                       bool *outUnchecked, bool *outDrop);
 static TypeDef   *parseTypeDecl(Parser *p);
 static ImplDef   *parseImpl(Parser *p);
 static TraitDef  *parseTrait(Parser *p);
@@ -664,7 +664,7 @@ static FuncDef *parseExtern(Parser *p) {
     p->noBody = true;
     bool extInl = false;
     if (at(p, "@")) {
-        if (!parseFuncAnnotations(p, &extInl, NULL, NULL)) return NULL;
+        if (!parseFuncAnnotations(p, &extInl, NULL, NULL, NULL)) return NULL;
         if (extInl) {
             ctxError(p->ctx, kw->line, kw->col,
                      "There is no body to inline: this declaration only names a function that"
@@ -1012,6 +1012,13 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
             if (!s) return false;
             s->isPrivate = isPrivate;
             s->noCopy    = noCopy;
+            if (s->dropHook && !s->noCopy) {
+                ctxError(ctx, s->dropHook->line, 1,
+                         "A type with two owners has no single moment to hand its state back."
+                         " Mark the struct `@noCopy` first.",
+                         "`@drop` needs a `@noCopy` struct");
+                return false;
+            }
             if (frozen) s->frozen = true;
             if (sharesStorage) s->sharesStorage = true;
             if (poolObject) s->poolObject = true;
@@ -1203,7 +1210,7 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
             }
             bool inl = fnInline;
             bool unchk = fnUnchecked;
-            if (!parseFuncAnnotations(&p, &inl, NULL, &unchk)) return false;
+            if (!parseFuncAnnotations(&p, &inl, NULL, &unchk, NULL)) return false;
             if (!at(&p, "fn")) {
                 Token *t = cur(&p);
                 ctxError(ctx, t->line, t->col, NULL,
@@ -1341,8 +1348,9 @@ static StructDef *parseStruct(Parser *p) {
         bool inl = false;
         bool priv = false;
         bool unchk = false;
+        bool dropA = false;
         p->sawBuiltin = false;      /* reset per member: the flag is sticky otherwise */
-        if (at(p, "@") && !parseFuncAnnotations(p, &inl, &priv, &unchk)) return NULL;
+        if (at(p, "@") && !parseFuncAnnotations(p, &inl, &priv, &unchk, &dropA)) return NULL;
         if (p->sawBuiltin) {
             Token *b = cur(p);
             ctxError(p->ctx, b->line, b->col,
@@ -1359,6 +1367,16 @@ static StructDef *parseStruct(Parser *p) {
             m->isPrivate = priv;
             m->isUnchecked = unchk;
             m->owner = sd;
+            if (dropA) {
+                /* The `@noCopy` requirement is checked by the caller: the struct's own annotations
+                 * land after its body has been parsed, so the flag is not visible here yet. */
+                if (sd->dropHook) {
+                    ctxError(p->ctx, m->line, 1, NULL,
+                             "`%s` already has an `@drop` method", sd->name);
+                    return NULL;
+                }
+                sd->dropHook = m;
+            }
             *(FuncDef **)vecPush(&sd->methods) = m;
             skipJunk(p);
             continue;
@@ -1692,7 +1710,7 @@ static ImplDef *parseImpl(Parser *p) {
             bool priv = false;
             bool unchk = false;
             p->sawBuiltin = false;  /* reset per member: the flag is sticky otherwise */
-            if (!parseFuncAnnotations(p, &inl, &priv, &unchk)) return NULL;
+            if (!parseFuncAnnotations(p, &inl, &priv, &unchk, NULL)) return NULL;
             if (p->sawBuiltin) {
                 Token *b = cur(p);
                 ctxError(p->ctx, b->line, b->col,
@@ -1940,7 +1958,7 @@ static Token *expectFuncName(Parser *p) {
  *                      reported).
  */
 static bool parseFuncAnnotations(Parser *p, bool *outInline, bool *outPrivate,
-                                 bool *outUnchecked) {
+                                 bool *outUnchecked, bool *outDrop) {
     /* The flags are not reset here: the caller may already have seen `@inline` in the
      * top-level annotation loop (which reads `@private` and `@inline` together before it knows
      * whether the declaration is a function), and clearing it would make `@inline fn f()` look
@@ -1971,6 +1989,23 @@ static bool parseFuncAnnotations(Parser *p, bool *outInline, bool *outPrivate,
                 return false;
             }
             p->sawBuiltin = true;
+            skipNl(p);
+            continue;
+        }
+        if (strcmp(nm->text, "drop") == 0) {
+            if (!outDrop) {
+                ctxError(p->ctx, a->line, a->col,
+                         "It runs when a value of the type leaves its block, so it belongs to a"
+                         " method of a `struct`.",
+                         "`@drop` applies to a method of a `struct`");
+                return false;
+            }
+            if (*outDrop) {
+                ctxError(p->ctx, a->line, a->col, NULL,
+                         "`@drop` appears twice on the same method");
+                return false;
+            }
+            *outDrop = true;
             skipNl(p);
             continue;
         }

@@ -1,0 +1,11 @@
+// expect: plain 7
+/* 判据：`@noCopy` 但没有 `@drop` 的类型什么都不发（钩子是标出来的，不是猜的）✓ */
+@noCopy
+struct plain { id: i64 }
+fn main() -> i32 {
+    {
+        var p: plain = { id: 7 }
+        println("plain ", p.id)
+    }
+    return 0
+}

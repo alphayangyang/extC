@@ -529,6 +529,9 @@ typedef struct {
      * release. */
     Vec         rcRoots;         /* const char *: live reference-slot expressions */
     Vec         rcRootMarks;     /* size_t: `rcRoots.len` on entry to each block level */
+    /* Blocks currently being emitted, outermost first. A `return` runs the `@drop` hooks of every
+     * local still in scope, innermost block first, so it needs to see them. */
+    Vec         dropBlocks;      /* Stmt*: enclosing blocks */
     /* Sites already covered by the loop-entry check of a view subscript (`EX_INDEX *`, see
      * `loopHoistRangeFor`). The elements are node identities: when `exIndex` finds one it emits a
      * bare pointer access and skips the per-iteration branch. */
@@ -5447,6 +5450,9 @@ static void cgRecLeave(CG *g) {
     if (g->isRecursive) cgLine(g, "--__extc_rec_depth;");
 }
 
+/** @brief Run the `@drop` hooks of every local still in scope (see the definition). */
+static void genReturnDrops(CG *g);
+
 /**
  * @brief Return a value from the current function.
  *
@@ -5468,6 +5474,7 @@ static void cgReturn(CG *g, const char *val) {
      * lost. It is a no-op when the buffer is empty. */
     if (g->inMain && g->needCout) cgLine(g, "extc_cout_flush();");
     if (g->noArena) {
+        genReturnDrops(g);
         if (g->isRecursive) {
             /* The return type need not be scalar: a self-recursive function may return `option<T>` or a
              * struct. The temporary is therefore declared with the real return type and **no cast**
@@ -5481,6 +5488,9 @@ static void cgReturn(CG *g, const char *val) {
         return;
     }
     if (val) cgLine(g, "__extc_ret_v = %s;", val);
+    /* `@drop` hooks run after the value is stored and before the jump: a local that owns state
+     * hands it back on the way out, innermost block first. */
+    genReturnDrops(g);
     cgRecLeave(g);
     cgLine(g, "goto __extc_ret;");
 }
@@ -6410,6 +6420,63 @@ static bool arenaLevelInText(const Buf *b, int lvl) {
 }
 
 /**
+ * @brief The `@drop` hook of a type, or NULL when it has none.
+ *
+ * The type is substituted first: inside a generic instance the field's type may still name a
+ * parameter, and the hook belongs to the instance's actual struct.
+ *
+ * @param g  The generator state (for the instantiation context).
+ * @param t  Declared type of the binding; may be NULL.
+ * @return   The hook's `FuncDef`, or NULL.
+ */
+static FuncDef *dropHookOf(CG *g, Type *t) {
+    Type *s = subst(g, t);
+    if (!s) return NULL;
+    StructDef *sd = structOf(ttBase(s));
+    return sd ? sd->dropHook : NULL;
+}
+
+/**
+ * @brief Run the `@drop` hooks of a block's own locals, in reverse declaration order.
+ *
+ * Emitted at the tail of the block and again before a `return`, so both the fall-through and the
+ * early-exit path release once. `break`/`continue` are not covered yet: they leak rather than run a
+ * hook twice.
+ *
+ * @param g      The generator state.
+ * @param block  Block whose locals are leaving scope.
+ */
+static void genBlockTailDrops(CG *g, Stmt *block);
+
+/**
+ * @brief Run the `@drop` hooks of every local still in scope, before a `return`.
+ *
+ * Innermost block first, so a local drops before the locals of the blocks enclosing it. Emitted
+ * into the current output buffer; a `return` inside a nested statement is part of that statement's
+ * text, so this is the same place the return itself goes.
+ *
+ * @param g  The generator state.
+ */
+static void genReturnDrops(CG *g) {
+    for (size_t i = g->dropBlocks.len; i-- > 0;)
+        genBlockTailDrops(g, *(Stmt **)vecAt(&g->dropBlocks, i));
+}
+
+/** @brief Emit the hooks for one block's locals; see the declaration for the timing rules. */
+static void genBlockTailDrops(CG *g, Stmt *block) {
+    for (size_t i = block->u.block.stmts.len; i-- > 0;) {
+        Stmt *st = *(Stmt **)vecAt(&block->u.block.stmts, i);
+        if (!st || st->kind != ST_VAR || !st->u.var.init) continue;
+        Type *dt = subst(g, st->type);
+        FuncDef *md = dropHookOf(g, st->type);
+        if (!md || !dt) continue;
+        const char *nm = planCName(st) ? planCName(st) : st->u.var.name;
+        if (!nm) continue;
+        cgLine(g, "%s(&(%s));", cMethodName(g, dt, md), nm);
+    }
+}
+
+/**
  * @brief Emit one block body: clear its arena level on entry and release it on exit.
  *
  * A loop body is a block too, so each iteration clears once -- the memory a loop uses is therefore
@@ -6446,6 +6513,7 @@ static void genBlockBody(CG *g, Stmt *block) {
      * and truncated on exit -- a local in the block stops being a root once the block ends (which
      * slots are live at a trigger point is something the compiler supplies). */
     *(size_t *)vecPush(&g->rcRootMarks) = g->rcRoots.len;
+    *(Stmt **)vecPush(&g->dropBlocks) = block;
     /* A coroutine's block level lives in the frame and its early-exit path winds differently; a
      * `noArena` function skips both anyway. Both cases are emitted as they are, and only "one block
      * arena level in an ordinary function" is worth asking about first. */
@@ -6486,6 +6554,8 @@ static void genBlockBody(CG *g, Stmt *block) {
             cgLine(g, "__extc_forstep_%d: ;", g->loopStep[g->loopLen - 1]);
         genStmt(g, st);
     }
+    /* `@drop` runs while the block's own storage is still alive. */
+    genBlockTailDrops(g, block);
     if (probe) {
         g->out = savedOut;
         bodyTouches = arenaLevelInText(&scratch, g->blkLevel);
@@ -6509,6 +6579,7 @@ static void genBlockBody(CG *g, Stmt *block) {
     assert(g->rcRootMarks.len > 0);
     g->rcRoots.len = *(size_t *)vecAt(&g->rcRootMarks, g->rcRootMarks.len - 1);
     g->rcRootMarks.len--;
+    g->dropBlocks.len--;
     g->blkLevel--;
 }
 
@@ -8217,6 +8288,18 @@ static void genStmtInner(CG *g, Stmt *s) {
                 flushPrefix(g);
                 cgLine(g, "%s = %s;", at, tryPayloadPath(g, &ti));
                 return;
+            }
+            /* Overwriting a binding that owns its state runs its `@drop` hook first: the old value
+             * is going away, and this is the last moment it can hand that state back. Skipped for
+             * `a = a`, where dropping first would release the very storage being read. */
+            if (s->u.assign.target && s->u.assign.target->kind == EX_IDENT) {
+                struct { bool same; } guard = { false };
+                if (s->u.assign.value && s->u.assign.value->kind == EX_IDENT)
+                    guard.same = strcmp(s->u.assign.value->u.ident.name,
+                                        s->u.assign.target->u.ident.name) == 0;
+                FuncDef *hook = guard.same ? NULL : dropHookOf(g, s->u.assign.target->type);
+                const char *hn = planCName(s->u.assign.target);
+                if (hook && hn) cgLine(g, "%s(&(%s));", cMethodName(g, subst(g, s->u.assign.target->type), hook), hn);
             }
             g->inAssignTarget = true;
             const char *tgt = genExpr(g, s->u.assign.target);
@@ -13220,6 +13303,7 @@ static void initCGState(CG *g, Module *m, TypeTable *tt, Arena *arena) {
      * rather than by CG being zeroed. */
     vecInit(&g->rcRoots, arena, sizeof(const char *));
     vecInit(&g->rcRootMarks, arena, sizeof(size_t));
+    vecInit(&g->dropBlocks, arena, sizeof(Stmt *));
     vecInit(&g->rcGlobalRoots, arena, sizeof(const char *));
     for (size_t i = 0; i < tt->instances.len; i++) {
         Type *it = *(Type **)vecAt(&tt->instances, i);

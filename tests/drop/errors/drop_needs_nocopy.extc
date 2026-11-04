@@ -1,0 +1,6 @@
+/* 反例：`@drop` 只能挂在单所有者的类型上（两个所有者就没有"唯一时机"）✗ */
+struct res { id: i64
+    @drop
+    fn gone(self: mut ref res) { println("drop") }
+}
+fn main() -> i32 { return 0 }

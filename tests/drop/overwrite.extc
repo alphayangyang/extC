@@ -1,0 +1,14 @@
+// expect: drop 1|now a = 2|drop 2
+/* 判据：覆盖赋值先跑旧值的 `@drop`，再写入新值 ✓ */
+@noCopy
+struct res { id: i64
+    @drop
+    fn gone(self: mut ref res) { println("drop ", self.id) }
+}
+fn mk(n: i64) -> res { return res{ id: n } }
+fn main() -> i32 {
+    var a: res = mk(1)
+    a = mk(2)
+    println("now a = ", a.id)
+    return 0
+}

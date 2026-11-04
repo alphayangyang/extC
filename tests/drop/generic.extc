@@ -1,0 +1,12 @@
+// expect: v=3|bye
+/* 判据：泛型实例也有自己的 `@drop` 实体（钩子按**标签**挂，不按类型名）✓ */
+@noCopy
+struct holder<T> { v: T
+    @drop
+    fn gone(self: mut ref holder<T>) { println("bye") }
+}
+fn main() -> i32 {
+    var h: holder<i64> = { v: 3 }
+    println("v=", h.v)
+    return 0
+}

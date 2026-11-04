@@ -1,0 +1,18 @@
+// expect: early|drop 1|rc=7|done
+/* 判据：中途 `return` 也要跑在作用域里的 `@drop`（值先算出来，再交还状态，最后跳）✓ */
+@noCopy
+struct res { id: i64
+    @drop
+    fn gone(self: mut ref res) { println("drop ", self.id) }
+}
+fn f(flag: bool) -> i32 {
+    var a: res = { id: 1 }
+    if flag { println("early")  return 7 }
+    println("late")
+    return 0
+}
+fn main() -> i32 {
+    println("rc=", f(true))
+    println("done")
+    return 0
+}

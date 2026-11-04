@@ -1629,6 +1629,13 @@ def build_items() -> list:
         ["./tests/pin/run.sh"], timeout=600,
         ok_msg=tail1, bad_msg="tests/pin/run.sh", bad_dump=dump_fail(8)))
 
+    # ---- `@drop` 交还状态 ----
+    items.append(cmd(
+        "drop", "tests",
+        "`@drop` 在块退出、中途 return、覆盖赋值时交还状态（逆序 · 只对 @noCopy · 漏释放可恢复）",
+        ["./tests/drop/run.sh"], timeout=600,
+        ok_msg=tail1, bad_msg="tests/drop/run.sh", bad_dump=dump_fail(8)))
+
     # ---- 动态值 any ----
     items.append(cmd(
         "any", "tests",

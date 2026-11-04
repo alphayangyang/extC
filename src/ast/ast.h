@@ -1019,6 +1019,12 @@ struct StructDef {
      * Rust moves and borrows, Go passes a pointer, Python has no implicit object copy;
      * extC writes it down as an annotation. */
     bool        noCopy;
+    /* The `@drop` method, or NULL. It runs when a binding of this type leaves its block, in the
+     * same spirit as a destructor: `@noCopy` promises a single owner, so "the owner is going away"
+     * is exactly the moment the state can be handed back (a pool slot returned, a buffer
+     * released). Only `@noCopy` types may carry one -- with two owners there is no single moment
+     * to run it. */
+    FuncDef    *dropHook;
     /* `@frozen`: the author signs -- **this type's layout is C's layout**: fields in
      * declaration order, with C's alignment and padding, and no hidden fields. It is the
      * **ticket** for crossing a C boundary by value (`ttCrossesC` accepts only structs

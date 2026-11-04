@@ -1,0 +1,19 @@
+// expect: in block|drop 2|after inner|drop 1|done
+/* 判据：`@drop` 在**块退出**时按**逆序**执行（内层先、后声明的先）✓ */
+@noCopy
+struct res { id: i64
+    @drop
+    fn gone(self: mut ref res) { println("drop ", self.id) }
+}
+fn main() -> i32 {
+    {
+        var a: res = { id: 1 }
+        {
+            var b: res = { id: 2 }
+            println("in block")
+        }
+        println("after inner")
+    }
+    println("done")
+    return 0
+}
