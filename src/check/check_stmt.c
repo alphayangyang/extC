@@ -3312,8 +3312,9 @@ static bool scanStmt(ScanHit *h, Stmt *s) {
 /**
  * @brief Name of the container a freshly bound view borrows from.
  *
- * Only the two shapes that hand out a view of an existing container without copying are
- * recognized: a `view()`/`viewMut()` method call and a range slice `a[lo..hi]`. `snapshot()`
+ * Only the shapes that hand out a view of an existing container without copying are recognized:
+ * a `view()`/`viewMut()` method call (older spellings) or `asSlice()`/`asMutSlice()` (what the
+ * containers in the standard library name today), and a range slice `a[lo..hi]`. `snapshot()`
  * copies, and a `new T[n]` buffer has no container to grow, so neither is tracked.
  *
  * @param init  Initializer of a `var`/`let`; may be NULL.
@@ -3323,7 +3324,8 @@ static const char *borrowOwner(Expr *init) {
     if (!init) return NULL;
     if (init->kind == EX_METHOD && init->u.method.recv &&
         init->u.method.recv->kind == EX_IDENT &&
-        (strcmp(init->u.method.name, "view") == 0 || strcmp(init->u.method.name, "viewMut") == 0))
+        (strcmp(init->u.method.name, "view") == 0 || strcmp(init->u.method.name, "viewMut") == 0 ||
+         strcmp(init->u.method.name, "asSlice") == 0 || strcmp(init->u.method.name, "asMutSlice") == 0))
         return init->u.method.recv->u.ident.name;
     if (init->kind == EX_SLICE && init->u.slice.obj && init->u.slice.obj->kind == EX_IDENT)
         return init->u.slice.obj->u.ident.name;

@@ -1176,6 +1176,41 @@ void noteOrigin(Checker *c, Sym *sy, Expr *val) {
 }
 
 /**
+ * @brief Carry a lifetime requirement from a value read out of a container back to what was put in.
+ *
+ * A value taken out of a container (`v.get(k)`) may be **the very reference stored on the way in**:
+ * reading an element creates no new storage, so the life it hands back is the life of the copy
+ * inside the container. The container's own field table holds those sources (`callSrc` / `otherSrc`
+ * / field slots; `checkCallRefArgs` publishes them when the call site sees `v.push(p)`), so lift
+ * them to `at` as well -- this only lengthens a life, the safe direction. Without it, a `p` stored
+ * by `v.push(p)` was only required to live to block level, while the chain handed out by
+ * `return head` already points at it, and the function's return leaves it dangling.
+ *
+ * This must also run on the pool-building path: "the pool is born at level X" says nothing about
+ * what the callee stored into that pool, and a plate-backed container's every method is a
+ * pool-building call (the `@place` declaration makes `calleeMakesPool` true). Skipping the walk
+ * there left the pushed elements at block level while the plate went to the home place -- the
+ * `P2-6` / `P2-7` use-after-free.
+ *
+ * Only an `EX_IDENT` receiver is accepted, and it is resolved with `lookup` rather than `placeRoot`:
+ * this runs during the **final-round replay** too, when the scope has been closed, and `placeRoot`
+ * asserts that a scope exists; `lookup` simply finds no local binding and the step is skipped
+ * silently (the checking pass already lifted what had to be lifted).
+ *
+ * @param c     Checker.
+ * @param val   Call expression (method call; anything else is ignored).
+ * @param at    Level the value has to reach.
+ * @param hops  Carrier steps already taken.
+ */
+static void promoteReceiverFields(Checker *c, Expr *val, int at, int hops) {
+    if (!val || val->kind != EX_METHOD || !val->u.method.recv) return;
+    Expr *recv = val->u.method.recv;
+    if (recv->kind != EX_IDENT) return;
+    Sym *rv = lookup(c, recv->u.ident.name);
+    if (rv) promoteFieldsAt(c, rv, at, hops + 1);
+}
+
+/**
  * @brief Walk a value's carriers and promote the allocation sites inside it to the level the value
  *        has to reach.
  *
@@ -1426,6 +1461,10 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
                 planSetZoneLevel(val, want);
             }
             if (anRefDepth(val) > at) anSetRefDepth(val, at);
+            /* Lowering the level of the **pool** says where the plate lives; it says nothing about
+             * what the callee stored *into* that plate. The two obligations are separate: the pool's
+             * birth level is decided here, the elements' life is decided by the field table. */
+            promoteReceiverFields(c, val, at, hops);
             return true;
         }
         /* When the callee **needs a home arena** (`needsHome`), the new allocation goes into the
@@ -1458,26 +1497,10 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
             if (anRefDepth(val) > at) anSetRefDepth(val, at);
             return true;
         }
-        /* A value taken out of a container (`v.get(k)`) may be **the very reference stored on the way
-         * in**: reading an element creates no new storage, so the life it hands back is the life of
-         * the copy inside the container. The container's own field table holds those sources
-         * (`callSrc` / `otherSrc` / field slots), so lift them to `at` here as well -- this only
-         * lengthens a life, the safe direction. Without it, a `p` stored by `v.push(p)` was only
-         * required to live to block level, while the chain handed out by `return head` already points
-         * at it, and the function's return leaves it dangling.
-         *
-         * The decision is unchanged (still `false`, left to the caller's depth comparison): only the
-         * facts are completed here.
-         *
-         * Only an `EX_IDENT` receiver is accepted, and it is resolved with `lookup` rather than
-         * `placeRoot`: this runs during the **final-round replay** too, when the scope has been
-         * closed, and `placeRoot` asserts that a scope exists; `lookup` simply finds no local binding
-         * and the step is skipped silently (the checking pass already lifted what had to be lifted). */
-        if (val->kind == EX_METHOD && val->u.method.recv &&
-            val->u.method.recv->kind == EX_IDENT) {
-            Sym *rv = lookup(c, val->u.method.recv->u.ident.name);
-            if (rv) promoteFieldsAt(c, rv, at, hops + 1);
-        }
+        /* The decision is unchanged (still `false`, left to the caller's depth comparison): only the
+         * facts are completed here. See `promoteReceiverFields` for why the walk is needed, and why
+         * the pool-building branch above must run it too. */
+        promoteReceiverFields(c, val, at, hops);
         return false;
 
     default:
