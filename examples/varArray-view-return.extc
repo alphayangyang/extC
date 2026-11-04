@@ -1,14 +1,11 @@
 // expect: 拿到的 = [7, 8]
 /* 「把容器里那块存储**当视图借出去**（返回 `slice<T>`）」—— 安全形状 ✓
- *
- * `varArray` 的存储是它自己那个地方的板块：视图只能借到"容器活着"为止，所以要么由调用者
- * 拿着容器（下面这种写法），要么把容器整个返回。返回一个**局部**容器的视图会被拒绝 ——
- * 那块板块随函数返回就还给了分配器，返回视图就是悬垂指针。 */
-fn build(out: mut ref varArray<i32>) {
+ * 扩容过的容器也能返回：因为扩容的存储跟着"逃逸需求"落在了调用者的家 arena 里 ✓ */
+fn build() -> slice<i32> {
     var v: varArray<i32> = varArray<i32>::withCap(0)   // 会扩容 ✓
     v.push(7)
     v.push(8)
-    *out = v
+    return v.view()
 }
 
 fn churn() {
@@ -21,9 +18,7 @@ fn churn() {
 }
 
 fn main() {
-    var keep: varArray<i32> = varArray<i32>::withCap(0)
-    build(ref keep)
-    var s: slice<i32> = keep.view()
+    var s: slice<i32> = build()
     churn()
     println("拿到的 = ", s)
 }

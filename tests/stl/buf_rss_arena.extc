@@ -1,40 +1,12 @@
-/* 对照：同一形状但存储来自 arena（手写 `new` + 翻倍拷贝）—— 旧块只能等整个帧退出，峰值是历代之和。 */
+/* 对照：同一形状但存储来自 arena（`varArray`）—— 旧块只能等整个帧退出，峰值是历代之和。 */
 use std::io
 
-@noCopy
-struct bump<T> {
-    @private vals: mut slice<T>
-    @private n: i64
-    @private cap: i64
-
-    fn withCap(c: i64) -> bump<T> {
-        var cc: i64 = c
-        if cc < 1 { cc = 1 }
-        return { vals: new T[cc], n: 0, cap: cc }
-    }
-    fn push(self: mut ref bump<T>, v: T) {
-        if self.n == self.cap {
-            var nc: i64 = self.cap * 2
-            if nc < 4 { nc = 4 }
-            var nb: mut slice<T> = new T[nc]
-            var i: i64 = 0
-            while i < self.n { nb[i] = self.vals[i]  i = i + 1 }
-            self.vals = nb
-            self.cap = nc
-        }
-        self.vals[self.n] = v
-        self.n = self.n + 1
-    }
-    fn size(self: ref bump<T>) -> i64 { return self.n }
-    fn view(self: ref bump<T>) -> slice<T> { return self.vals[0..self.n] }
-}
-
 fn main() -> i32 {
-    var a: bump<i64> = bump<i64>::withCap(4)
+    var a: varArray<i64> = varArray<i64>::withCap(4)
     var i: i64 = 0
     while i < 8000000 { a.push(i)  i = i + 1 }
     var s: i64 = 0
-    for x in a.view() { s = s + x }
+    for x in a { s = s + x }
     println("n=", a.size(), " sum=", s)
     return 0
 }

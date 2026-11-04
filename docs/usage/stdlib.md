@@ -38,7 +38,7 @@ prelude 是编译器在每个编译单元前先过一遍的一段 extC 源码。
 | `option<T>` | `\| none \| some(T)`；零值 = `none`；取值的路只有 `match` 与 `?` |
 | `result<T, E>` | `\| failure(E) \| success(T)`；零值 = `failure(E 的零值)` |
 | `slice<T>` | `{ data: ref T, len: i64 }`；`s[i]` 是语言语法，越界带位置 trap；`hasAt(i)` 只问边界、不取值 |
-| `varArray<T>` | 板块底的动态数组（见下；与 `buf<T>` 同一条路，但名字短、不用 `use`）|
+| `varArray<T>` | arena 底的动态数组（见下） |
 | `pcg32` | 显式状态的随机数引擎：`pcg32::seeded(42)` · `pcg32::withStream(seed, stream)` · `next()` · `nextBounded(bound)`（0 到 bound−1，用拒绝采样避开取模偏置）|
 | `nextFloat()` / `shuffle(a)` | 0.0–1.0 的浮点、i32 视图原地洗牌（都是生成器的方法：`r.nextFloat()`）|
 | `coroutine<A, B>` | 协程的**接口标记**（帧由编译器按协程函数合成，不要拿它当变量类型） |
@@ -48,7 +48,7 @@ prelude 是编译器在每个编译单元前先过一遍的一段 extC 源码。
 与 `io::cout` 共用同一个输出缓冲，混写顺序与源码一致。要"带条件的流"（`cerr`、`stringio`、
 自定义 `ostream`）时用 `io::cout` 那一套。
 
-### `varArray<T>`：板块底的动态数组
+### `varArray<T>`：arena 底的动态数组
 
 | 方法 | 签名 |
 |---|---|
@@ -57,22 +57,17 @@ prelude 是编译器在每个编译单元前先过一遍的一段 extC 源码。
 | `push` / `pop` | `fn push(self: mut ref varArray<T>, v: T)` / `fn pop(...) -> ?T` |
 | `get` / `set` | `fn get(self: ref varArray<T>, i: i64) -> ?T` / `fn set(self: mut ref varArray<T>, i: i64, v: T)` |
 | `clear` | `fn clear(self: mut ref varArray<T>)` |
-| `release` | `fn release(self: mut ref varArray<T>)`（把板块当场还回去）|
 | `view` / `asMutSlice` | `fn view(...) -> slice<T>` / `-> mut slice<T>` |
 | `==` | 按内容比较 |
 
 关键语义（都在  的注释里，逐条有位置）：
 
-- **谁拥有**：存储是容器自己那个地方的**板块**（`@place`），扩容当场把旧板还给分配器 ⇒
-  峰值是"一份"而不是历代之和（8e6 个 `i64`：`varArray` 64 MB，手写 `new` 翻倍 130 MB）。
-- **能不能装引用**：能装 `ref`/`slice` 字段；但**元素地址会因扩容而移动**，所以不要持有元素引用，
-  要写就用 `set(i, v)`。
+- **谁拥有**：没有自己的 arena；扩容时 `new T[cap*2]` 分配在**拥有 `self` 的那个 arena**。
+- **能不能装引用**：能。 把 `varArray` 点名为"唯一能装引用的容器（arena 底 ⇒ 元素地址永不移动/复用）"。
 - **容量怎么涨**：满时翻倍（下限 4）。
 - **越界**：`get` 越界给 `none`（不 trap）；`set` 只在 `i` 超过 `cap` 时 trap，`i` 落在 `[len, cap)` 会写进未用槽。
-- **扩容会让视图失效**：`v.push(..)` 换掉板块，之前借出的 `slice`/`mut slice` 就作废 ——
-  同块内"增长之后还用旧视图"是编译错误，跨帧则借不出去（判据 `tests/stl/varArray_stale_view.extx`
-  与 `varArray_stale_write.extx`）。
-- **`clear()` 只把 `len` 置 0**，板块留着复用；要提前还就用 `release()`（之后任何下标都带位置 trap）。
+- **扩容会让元素引用失效**：`v.push(..)` 换新块，持有旧 `mut ref` 再写是**静默丢**（旧内存还在，所以不崩）（；判据 ）。
+- **`clear()` 只把 `len` 置 0**，内存不还（没有 `shrink_to_fit`）。
 
 ```extc
 use std::io

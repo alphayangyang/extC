@@ -7,13 +7,12 @@ prelude	pcg32	inc	field	internal
 prelude	pcg32	state	field	public
 prelude	slice	data	field	public
 prelude	slice	len	field	public
+prelude	varArray	buf	field	internal
 prelude	varArray	cap	field	internal
 prelude	varArray	clear	method	public
 prelude	varArray	isEmpty	method	public
 prelude	varArray	len	field	public
-prelude	varArray	pid	field	internal
 prelude	varArray	size	method	public
-prelude	varArray	vals	field	internal
 prelude	varArray	view	method	public
 std::coro::scheduler	-	newQ	fn	public
 std::coro::scheduler	-	newRows	fn	public

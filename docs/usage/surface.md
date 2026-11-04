@@ -5,14 +5,13 @@
 
 生成方式：`tools/manual_surface.py`；`check.sh` 保证本页与源码一致。
 
-公开面共 545 个成员，其中内部 134 个：
+公开面共 544 个成员，其中内部 133 个：
 
 ## prelude
 
 - `pcg32.inc`（字段）
+- `varArray.buf`（字段）
 - `varArray.cap`（字段）
-- `varArray.pid`（字段）
-- `varArray.vals`（字段）
 
 ## std::coro::scheduler
 
