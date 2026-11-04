@@ -52,7 +52,27 @@
 - 不动 `coroutine` 那条按名字派发的路径（4 处）——它是"协议"不是容器，等并发回收器定了再说。
 - 不删 `any`/`dyn` 任何一方：它们是"结构 vs 名义"两种视图，共用 16 字节载体，不是重复答案。
 
-### 视图经字段跨函数逃逸：已挡住（2026-11-05）
+### `varArray` 搬板块：真正的阻塞点是"容器里装的东西从哪来"（2026-11-05）
+
+extern 默认掩码修好之后可以把 `varArray` 的存储换成板块，功能与内存都对（8e6 个 `i64`
+峰值 129,320 KB → 64,252 KB），`tests/run.sh` 也是 377/0。但 `tools/gate_escape.py` 的
+`P2-7_container_before_uaf` 变红，形态是"容器装 `mut ref node`、函数返回链头"：
+
+- arena 底：节点的分配点被提升到 home（生成 C 里 `extc_rc_regionOf(&(*__extc_home), -1)`），
+  返回的引用活得过函数；
+- 板块底：分配点留在本帧（`extc_rc_regionOf(&(__extc_a[1]), 1)`），函数退出 `regionDrop` 之后
+  返回的链头悬垂。
+
+机制上，"容器里装的值会被 `promoteFieldsAt` 顺着容器的字段表提升"这条链是断的：字段表记的是
+"这个字段的值来自哪里"，而板块底 `grow` 里出现了 `self.vals = poolResizeRaw(self.pid, self.vals, …)`
+—— `vals` 的字段来源是 `poolResizeRaw` 的返回值，于是 `push` 存进去的元素来源不在字段表里，
+`v.get(k)` 提升不到它们。
+
+所以这不是"再补一条判据"能收的：要么让字段表理解"增长调用不改变元素来源"，要么给"装引用的
+容器"保留 arena 存储（纯数据元素才用板块）。两条都要先在 `src/check/check_escape.c` 的
+`promoteFieldsAt` / `classifyStoredValue` 里把字段来源链讲清楚，再动 prelude。
+
+## 视图经字段跨函数逃逸：已挡住（2026-11-05）
 
 `b.s = b.v.view()` 之后在别的函数里 `b.v.push(...)`，再读 `b.s[0]` 是 ASan 抓得到的
 heap-use-after-free 而编译器不报错。现在"把会移动存储的视图存进字段"这一步就被拒绝
