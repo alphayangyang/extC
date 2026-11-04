@@ -52,7 +52,31 @@
 - 不动 `coroutine` 那条按名字派发的路径（4 处）——它是"协议"不是容器，等并发回收器定了再说。
 - 不删 `any`/`dyn` 任何一方：它们是"结构 vs 名义"两种视图，共用 16 字节载体，不是重复答案。
 
-### `varArray` 搬板块：真正的阻塞点是"容器里装的东西从哪来"（2026-11-05）
+### 追到根上：`poolSlice`/`poolResize` 的结果深度没有取自池所在的地方（2026-11-05）
+
+用 `EXTC_DBG_FS=1` 把同一程序（`P2-7`）在 arena 底与板块底各编一遍，字段来源表只差两行：
+
+```
+arena  [fs-promote] head kind=23 depth=0 minReq=0 at=0
+plate  [fs-promote] head kind=23 depth=1 minReq=1 at=0
+```
+
+`head` 的来源是 `v.get(k)` 取出来的元素。arena 底这一路是 **d2=0**（元素被要求活到 home），
+所以 `new node` 的站点被提升到 home；板块底是 **d2=1**，于是站点留在本帧，函数退出后悬垂。
+而 `head` 把 `want` 收紧到 0 之后，`promoteInto2` 要提升的表达式是 `poolSliceRaw`/`poolResizeRaw`
+的 **调用**（字段槽 `vals` 的来源，`srckind=16`），不是元素自己的站点 —— 调用结果不可提升，
+于是 `ok=false`，要求落空。
+
+所以阻塞点不是"字段表断了"，而是**两条更基础的规则**：
+
+1. `poolSlice<T>`/`poolResize<T>` 的结果，深度应当取自**池所在的 `@place`**（今天它们像
+   "借自参数"的普通视图，落成了调用点的块级深度）；
+2. 往容器里写元素时，元素的要求是"活得和容器的存储一样久"，而不是"和容器这个绑定一样久"。
+
+两条合起来正是 `docs/TRIM.md` 里记的 P2 前置（"返回视图的深度取自接收者"）。做完这两条，
+`P2-7` 与 `varArray` 搬板块应该一起转绿。
+
+## `varArray` 搬板块：真正的阻塞点是"容器里装的东西从哪来"（2026-11-05）
 
 extern 默认掩码修好之后可以把 `varArray` 的存储换成板块，功能与内存都对（8e6 个 `i64`
 峰值 129,320 KB → 64,252 KB），`tests/run.sh` 也是 377/0。但 `tools/gate_escape.py` 的
