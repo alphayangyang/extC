@@ -14,7 +14,7 @@
 |---|---|---|---|---|
 | **计数层**（`src/back/reclaim.c` 的 counting 模式） | 2,988 行里的计数分支 | `tests/reclaim-perf/count*` | 0（不默认开） | **删**：计数税实测 1.4–16×，靠 `EXTC_RC_NOCOUNT=0` 才开；扫描层保留 |
 | **`varArray` + `vector`** | `prelude.extc` 352 行 + `data/vector.extc` 196 行 | 两套都全 | 112 / 83 | **合并**：等 `slice` 收成纯借用后，`varArray` 变成 `buf<T>` 之上的别名（增长即归还旧块） |
-| **三个映射**：`hashMap` / `map` / `linmap` | 540 / 939 / 227 行 | 各一套 | 149 / 28 / 15 | **留两个**：`hashMap`（无序）+ `map`（有序）；`linmap` 降级为 `map` 的私有实现细节 |
+| **三个映射**：`hashMap` / `map` / `linmap` | 540 / 939 / 227 行 | 各一套 | 149 / 28 / 15 | **先留三个**：三者要求的键能力不同（`hashMapI64` 要 `i64` 键、`map` 要 `K: <`、`linmap` 只要 `K: ==`）。删 `linmap` 的前提是"键类型能提供 `hash()`"或"`map` 接受只有 `==` 的键"，两者都还没有 ⇒ 降级为文档中的"只有 `==` 键时的退路" |
 | **两套 JSON**：`std::json` 的 DOM + `any` 的 `extc_any_json` | 1,137 行 + 运行期文本 | 各一套 | 40 | **留一条路**：`std::reflect::json(ref any)` 打任意值；DOM 只用于"解析后反复查询"的场景 |
 | **两套输出**：`io::cout` 链 + `print`/`println` 内建 | 内建 2 个 + `io` 的缓冲机制 | 两套都测 | 1,379（cout） | **留内建**：`print`/`println` 是 90% 的用法；`io::cout` 保留但文档上作为"需要控制格式/分块写"的入口 |
 | **两种并行**：`par i in ..` + `parallel::run` | `par` 是语法、`run` 是内建 | 各一套 | 42 / 10 | **留 `par`**：`parallel::run` 只在需要"手工分块传偏移"时用；等 `par` 支持二维折叠后删 |

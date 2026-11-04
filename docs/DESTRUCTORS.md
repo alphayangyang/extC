@@ -52,7 +52,7 @@ Automatic, emitted by the compiler as part of leaving a place:
 | `break` / `continue` out of a block | reverse declaration order, down to the blocks actually left |
 | overwrite of the place (`f = ofstream::open(..)?`) | old value's drop, then store |
 | end of program | globals with `@drop`, declaration order, via one `atexit` that `main` registers **after** the console flush (LIFO ⇒ hooks first, flush last, so whatever they print still gets out) |
-| trap | drops of the current block chain run first, then the trap message (keeps ASan clean) |
+| trap | **not covered**: a bounds/stale-dyn trap is raised inside an emitted helper where the enclosing block chain is not visible, so no hook runs before the message. Hooks do run for a `trap` that the *program* raises (`trap(...)` statement) |
 | a by-value parameter of the function exiting | before the block arenas are torn down |
 | a global of a `@drop` type | at process exit; `traps`/`exit()` also go through it |
 
