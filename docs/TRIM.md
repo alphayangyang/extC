@@ -133,36 +133,28 @@ stash(a[..], w.view())     /* 视图进了别人的元素；之后 w 增长再�
 记在 `a` 上，`s` 没有被标。要挡它需要按实参形状推"被调方可能把第 i 个视图参数放进某个容器"，
 比字段/元素两条规则大一圈。暂记为洞，判据（ASan 干净）等实现后补。
 
-## 已试过、目前不可行：把 `varArray` 也搬到板块上
+## 已解决：把 `varArray` 也搬到板块上
 
-想把 `varArray<T>` 的存储从 arena 换成板块（`@place` + `poolSliceRaw`/`poolResizeRaw`），
-这样 8e6 个 `i64` 的峰值从 129,320 KB 掉到 64,252 KB（与 `vector` 同档，对照手写 `new`+翻倍
-是 129,724 KB），`release()` 也能当场还板。**功能上全部通过**（正例、`release()` 归还、
-反例里的越界 trap 都对），但两处闸门红：
+想让 `varArray<T>` 的存储从 arena 换成板块（`@place` + `poolSliceRaw`/`poolResizeRaw`），
+这样 8e6 个 `i64` 的峰值从 129,320 KB 掉到 64,252 KB（与 `vector` 同档），`release()` 也能当场
+还板。功能一直是对的，卡的是两处闸门：`tests/coro/statemachine.extc` 的
+"argument 1 of `step` points into a deeper scope (depth 1) than the arena this call may store
+it in (depth 0)"，以及 `tools/gate_escape.py` 的逃逸语料变红。
 
-- `tests/coro/statemachine.extc`：`step(ref f, ref st, …)` 报 "argument 1 of `step` points into a
-  deeper scope (depth 1) than the arena this call may store it in (depth 0)"；
-- `tools/gate_escape.py`：逃逸健全性语料变红。
+修法落在 `src/check/check_escape.c` 的 `promoteInto2`：**建池分支**把池的 zone 级下调之后
+`return true` 提前返回，跳过了"把接收者容器的字段来源一起提升"那趟走查。arena 底的容器没有
+`@place`，根本不进这条分支，所以只有板块底漏：`v.push(p)` 存进去的 `p` 只被要求活到块级，而
+`return head` 已经把链头交出去，返回即悬垂。
 
-**根因**（`EXTC_DBG_REFARGS=1` 显示）让容器成为"会建池的类型"
-之后，`handle()` 从 `addr=0x0 cont=0x0` 变成 `addr=0x1 cont=0x1`，`step()` 继承这两位，
-于是调用点开始跑 `checkCallRefArgs` 的目的地推断。这个推断做的是
-"取所有**带引用的** `ref` 实参里最浅的一个当目的地"，在 `step(ref f, ref st, input[..], out)` 里
-唯一命中 `typeContainsRef` 的实参是 **`out`**（`mut ref string`），而 `out` 是调用者 `runFeed`
-的形参 ⇒ `slotDepth(out) == 0`（"活得最久"）⇒ `h = 0` ⇒ 深度 1 的 `f` 被拒。
-用 `EXTC_DBG_DEST=1` 打的 `[dest] step arg3 out d2=0` 就是这一步。
+抽成 `promoteReceiverFields` 之后，两条义务在同一个分支里执行："池生在哪层"（zone 级）与
+"池里元素活多久"（字段来源表）。另外 `borrowOwner` 的白名单补上 `asSlice`/`asMutSlice`，
+与 `valueHoldsMovingView` 一致。
 
-所以卡点**不是**"板块被建模成 home"（先前那条推断不成立：`varArray` 在 arena 版本里也有
-`mut slice` 字段，`typeContainsRef` 一样为真；差别只在于板块版把"提升"变成了"存进板块"，
-于是效果位被置上、目的地推断才被启用）。真正的问题是**目的地是按"哪个实参带引用"猜的，
-而不是按"这个函数到底往哪个参数里存"**：`step` 只往 `st` 里的容器存，`out` 只是被 `append`
-拷了字节，但两者都成了目的地，取最小就塌成 0。
+判据：`tools/gate_escape.py` 全绿、`tests/run.sh` 377/0、`tests/coro` 35/0、`tests/pool` 与
+`tests/stl` 全过（金值不用改）、`check.sh smoke`/`docs` 绿；内存 8e6 个 `i64`
+`peak=64056 KB`（对照 arena 版 129,720 KB）。
 
-修法（下一步，已明确）：把效果摘要补一位 **每参数的目的地掩码** —— 在 `classifyStoredValue`
-的"存进自己的参数"分支里记下目标参数下标，再在调用点把这些位按实参根换成调用者的参数位；
-只有 `destMask` 非空且映射完整时才用它算 `h`，否则退回今天这条保守的启发式。
-不能直接把 callee 的 `destMask` 当 caller 的参数位并集（那会给出错误的、更宽松的 `h`）。
-
-判据（红→绿）：`tests/coro/statemachine.extc` 编过、`tools/gate_escape.py` 0 失败、
-`tests/pool` 的金值（`rt_nest` 的板块字节数、`rt_nest_promote` 的 depth 数字）同步更新、
-`tests/run.sh` 377/0。
+**顺带确认过的一条否证**：单独删 `calleeMakesPool` 末尾
+`anIsAssoc(f) && anMakesPoolAny(owner)` 那行捷径，`gate_escape` 仍报 2 条 UAF ⇒ 它与本卡点无关，
+保留。`promoteInto2` 的 `needsHome` 分支仍不走这趟走查：那是"callee 自己的新分配"，其内容已在
+callee 体内按参数深度查过，与"结果指向接收者存储"不同类。
