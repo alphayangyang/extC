@@ -2175,12 +2175,37 @@ static FuncDef *parseFunc(Parser *p) {
     fd->srcPath = p->ctx ? p->ctx->path : NULL; /* the file a run-time check will name */
     vecInit(&fd->params, p->arena, sizeof(void *));
     vecInit(&fd->typeParams, p->arena, sizeof(void *));
+    vecInit(&fd->constParams, p->arena, sizeof(void *));
     vecInit(&fd->targs, p->arena, sizeof(void *));
         /* `fn f<T, U>(...)`: a free function's type parameters, the same table shape a struct
          * carries. */
     if (accept(p, "<")) {
         skipNl(p);
         for (;;) {
+            /* `const N: i64`: a parameter that names a value. The syntax is accepted here so the
+             * checker can say "not supported yet" at the declaration instead of the parser saying
+             * "expected `>`" at the colon -- the reservation is part of the language's surface. */
+            if (at(p, "const")) {
+                take(p);
+                Token *cp = expectIdent(p, "a constant parameter name (uppercase, e.g. `N`)");
+                if (!cp) return NULL;
+                if (!startsUpper(cp->text)) {
+                    ctxError(p->ctx, cp->line, cp->col, NULL,
+                             "constant parameter `%s` must start with an uppercase letter", cp->text);
+                    return NULL;
+                }
+                if (!expect(p, ":", NULL)) return NULL;
+                Token *cty = take(p);
+                if (!cty || strcmp(cty->text, "i64") != 0) {
+                    ctxError(p->ctx, cty ? cty->line : cp->line, cty ? cty->col : cp->col, NULL,
+                             "a `const` parameter must have type `i64` (found `%s`)",
+                             cty ? cty->text : "nothing");
+                    return NULL;
+                }
+                *(const char **)vecPush(&fd->constParams) = cp->text;
+                if (accept(p, ",")) { skipNl(p); continue; }
+                break;
+            }
             /* Type parameters start uppercase (`T`), so `expectIdent` is required here:
              * `expectTypeName` rejects exactly this shape, and its purpose is to reserve the
              * uppercase letters for type parameters. */

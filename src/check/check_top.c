@@ -148,6 +148,19 @@ static bool sameExternSignature(FuncDef *a, FuncDef *b) {
 static void checkDeclarations(Checker *c) {
     Module *m = c->m;
 
+    /* `fn f<const N: i64>`: the parser reserves the syntax, and this is where the language says
+     * out loud that it is not implemented. A parse-time "expected `>`" would hide which feature the
+     * program was reaching for. */
+    for (size_t i = 0; i < m->funcs.len; i++) {
+        FuncDef *f = *(FuncDef **)vecAt(&m->funcs, i);
+        if (f->constParams.len > 0) {
+            ckError(c, f->line, NULL,
+                    "`const` parameters (`fn %s<const %s: i64>`) are reserved but not implemented yet",
+                    f->name ? f->name : "?", *(const char **)vecAt(&f->constParams, 0));
+            break;
+        }
+    }
+
     /* Duplicate struct and function names. */
     for (size_t i = 0; i < m->structs.len; i++) {
         if (i + 8 < m->structs.len) __builtin_prefetch(*(StructDef **)vecAt(&m->structs, i + 8), 0, 0);

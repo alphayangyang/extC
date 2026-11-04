@@ -1115,6 +1115,11 @@ struct FuncDef {
      * its C name from `instName`, and points back at its template through the plan (see
      * `planTemplate` in plan.h) rather than through a field here. */
     Vec         typeParams;      /* const char* */
+    /* `fn f<const N: i64>(...)`: parameters that name a **value** rather than a type. The parser
+     * accepts the syntax so that the reservation is visible in one place, and the checker reports
+     * it as unsupported; keeping the names here means the day it lands, the plumbing starts from a
+     * field that already exists instead of another syntax change. */
+    Vec         constParams;     /* const char* */
     Vec         targs;           /* Type*: only an instance has these */
     /* The file this body was written in. Every diagnostic the generated code can raise at run
      * time (`trap`, a bounds check) prints a `file:line` pair; the line comes from the checked
