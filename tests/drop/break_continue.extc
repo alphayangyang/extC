@@ -1,0 +1,17 @@
+// expect: continue from 0|drop 0|break at 1|drop 1|done
+/* 判据：`break` / `continue` 跳出块时也交还状态（先跑钩子，再放 arena）✓ */
+@noCopy
+struct res { id: i64
+    @drop
+    fn gone(self: mut ref res) { println("drop ", self.id) }
+}
+fn main() -> i32 {
+    var i: i64 = 0
+    while i < 3 {
+        var a: res = { id: i }
+        if i == 1 { println("break at ", i)  break }
+        else { println("continue from ", i)  i = i + 1  continue }
+    }
+    println("done")
+    return 0
+}

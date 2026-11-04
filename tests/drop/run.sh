@@ -33,6 +33,7 @@ one order       "$(src order.extc)"      "in block|drop 2|after inner|drop 1|don
 one overwrite   "$(src overwrite.extc)"  "drop 1|now a = 2|drop 2"
 one no_hook     "$(src no_hook.extc)"    "plain 7"
 one early_return "$(src early_return.extc)" "rc=early|drop 1|7|done"
+one break_continue "$(src break_continue.extc)" "continue from 0|drop 0|break at 1|drop 1|done"
 one generic     "$(src generic.extc)"    "v=3|bye"
 neg needs_nocopy "$(src errors/drop_needs_nocopy.extc)" '`@drop` needs a `@noCopy` struct'
 neg two_hooks    "$(src errors/two_hooks.extc)"          'already has an `@drop` method'

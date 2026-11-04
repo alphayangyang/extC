@@ -48,7 +48,7 @@ Automatic, emitted by the compiler as part of leaving a place:
 | Event | Order |
 |---|---|
 | block exit (fall-through, `return` through it) | reverse declaration order, innermost block first |
-| `break` / `continue` out of a block | not yet emitted: the binding leaks instead of dropping twice |
+| `break` / `continue` out of a block | reverse declaration order, down to the blocks actually left |
 | overwrite of the place (`f = ofstream::open(..)?`) | old value's drop, then store |
 | end of program | globals with `@drop`, reverse declaration order, before arena teardown |
 | trap | drops of the current block chain run first, then the trap message (keeps ASan clean) |

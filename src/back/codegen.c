@@ -532,6 +532,11 @@ typedef struct {
     /* Blocks currently being emitted, outermost first. A `return` runs the `@drop` hooks of every
      * local still in scope, innermost block first, so it needs to see them. */
     Vec         dropBlocks;      /* Stmt*: enclosing blocks */
+    /* `dropBlocks.len` at the point each enclosing loop body started: `break`/`continue` drop only
+     * the blocks they are actually leaving. */
+    Vec         dropLoopBases;   /* size_t */
+    /* Arena levels of the enclosing loops, mirrored for `break`/`continue` (see `loopLevel`). */
+    
     /* Sites already covered by the loop-entry check of a view subscript (`EX_INDEX *`, see
      * `loopHoistRangeFor`). The elements are node identities: when `exIndex` finds one it emits a
      * bare pointer access and skips the per-iteration branch. */
@@ -6462,6 +6467,12 @@ static void genReturnDrops(CG *g) {
         genBlockTailDrops(g, *(Stmt **)vecAt(&g->dropBlocks, i));
 }
 
+/** @brief Run the hooks of the blocks above `base` (innermost first); used by `break`/`continue`. */
+static void genDropBlocksDownTo(CG *g, size_t base) {
+    for (size_t i = g->dropBlocks.len; i-- > base;)
+        genBlockTailDrops(g, *(Stmt **)vecAt(&g->dropBlocks, i));
+}
+
 /** @brief Emit the hooks for one block's locals; see the declaration for the timing rules. */
 static void genBlockTailDrops(CG *g, Stmt *block) {
     for (size_t i = block->u.block.stmts.len; i-- > 0;) {
@@ -8061,7 +8072,9 @@ g->loopStepUsed[g->loopLen] = false;
  * the loop. */
 g->loopRootBase[g->loopLen] = (int)g->rcRoots.len;
 g->loopLen++;
+*(size_t *)vecPush(&g->dropLoopBases) = g->dropBlocks.len;
 genBlockBody(g, s->u.whiles.body);
+g->dropLoopBases.len--;
 g->hoistedIdx.len = hoistMark;   /* restore the outer loop's site table: this loop's ranges hold only inside this loop */
 g->loopLen--;
 if (ownLevel) g->blkLevel--;
@@ -8559,6 +8572,10 @@ static void genStmtInner(CG *g, Stmt *s) {
              * arenas are released first, down to the level of the loop body.
              * The body's own arena is cleared when the next iteration enters
              * it. */
+            /* Locals of the blocks being left run their hooks first: the hook may still need the
+             * arena the slot lives in, which is released two lines down. */
+            if (g->dropLoopBases.len > 0) genDropBlocksDownTo(g, *(size_t *)vecAt(&g->dropLoopBases,
+                                                                                g->dropLoopBases.len - 1));
             int to = g->loopLen ? g->loopLevel[g->loopLen - 1] : 1;
             for (int lv = g->blkLevel; lv >= to; lv--) cgReleaseLevel(g, lv);
             if (s->kind == ST_BREAK) { cgLine(g, "break;"); return; }
@@ -13304,6 +13321,7 @@ static void initCGState(CG *g, Module *m, TypeTable *tt, Arena *arena) {
     vecInit(&g->rcRoots, arena, sizeof(const char *));
     vecInit(&g->rcRootMarks, arena, sizeof(size_t));
     vecInit(&g->dropBlocks, arena, sizeof(Stmt *));
+    vecInit(&g->dropLoopBases, arena, sizeof(size_t));
     vecInit(&g->rcGlobalRoots, arena, sizeof(const char *));
     for (size_t i = 0; i < tt->instances.len; i++) {
         Type *it = *(Type **)vecAt(&tt->instances, i);
