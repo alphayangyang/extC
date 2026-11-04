@@ -48,6 +48,7 @@ struct string {
     @private big:    ?mut slice<u8>  /* 只有升级到池之后才 some —— 存一次、之后复用（每次 poolSliceRaw 都是新分配） */
     @private pid:    i64
     @private pidGen: u64
+    @private pins:   i64             /* 活着的 `borrow()` 守卫个数：> 0 时存储被冻结 */
 
     /* 构造器（`withCap` 的落点）。非泛型类型上 `string::new(...)` 会被读成
      * "模块 string 的函数 new"（模块名与类型名同名），所以这里叫 `create`；
@@ -67,6 +68,7 @@ struct string {
             big:    some(poolSliceRaw<u8>(rp, cc)),
             pid:    rp,
             pidGen: rpg,
+            pins:   0,
         }
         return s
     }
@@ -358,6 +360,18 @@ struct string {
         return std::mem::extc_memEq(v.data, p.data, p.len) == 1
     }
 
+    /* 冻结位：有活着的借用时改存储身份是**确定性错误**，不是未定义行为。 */
+    @private
+    fn frozen(self: ref string) {
+        trap("this string is frozen by a live borrow")
+    }
+
+    /* 借出守卫：活着的时候字符串不许换块/释放（跨函数借出时静态检查看不见增长）。 */
+    fn borrow(self: mut ref string) -> stringGuard {
+        self.pins = self.pins + 1
+        return { s: self, p: ref self.pins }
+    }
+
     /* 扩到 1.5 倍：在原块上长（装不下时才由分配器搬家），字节由 resize 保住。
      * 连续性与「不留历代旧副本」同时成立。
      *
@@ -365,6 +379,7 @@ struct string {
      * 把 16 个内联字节拷进去。之后才走 1.5 倍那条老路。两条路的纪律是同一条：
      * 换块时旧块（这里是"没有块"）当场还回去，不留历代旧副本。 */
     fn grow(self: mut ref string) {
+        if self.pins > 0 { self.frozen() }
         if self.cap == 0 {
             let rp = syspool::extc_pool_new(-1)
             let rpg = syspool::extc_pool_generation(rp)
@@ -504,6 +519,7 @@ struct string {
     }
 
     fn release(self: mut ref string) {
+        if self.pins > 0 { self.frozen() }
         /* 内联：没有池可还（`pid` 可能是 0 —— 第一个池的 rid —— 所以这里**不能**看 pid）。 */
         if self.cap == 0 { return }
         /* One staleness question, one place to ask it (`pStale`): the comparison lives in
@@ -1230,3 +1246,23 @@ fn encode(src: slice<u8>, out: mut slice<u8>) -> i64 { return pEnc(src, out, fal
 fn decode(src: slice<u8>, out: mut slice<u8>) -> i64 { return pDec(src, out, false) }
 fn encodeUrl(src: slice<u8>, out: mut slice<u8>) -> i64 { return pEnc(src, out, true) }
 fn decodeUrl(src: slice<u8>, out: mut slice<u8>) -> i64 { return pDec(src, out, true) }
+
+/** @brief `string::borrow()` 的守卫：活着的时候存储被冻结（增长/释放都会 trap）。
+ *
+ * 它不拥有存储、也不决定寿命：只把"改变存储身份"从"读回收掉的字节"变成一条带位置的 `trap`。
+ */
+@noCopy
+struct stringGuard {
+    @private s: ref string
+    @private p: mut ref i64
+
+    @private
+    @drop
+    fn release(self: mut ref stringGuard) { *self.p = *self.p - 1 }
+
+    /** @brief 只读视图：与 `string::view()` 相同，但受守卫保护。 */
+    fn view(self: ref stringGuard) -> slice<u8> { return self.s.view() }
+
+    /** @brief 字节数。 */
+    fn len(self: ref stringGuard) -> i64 { return self.s.len() }
+}

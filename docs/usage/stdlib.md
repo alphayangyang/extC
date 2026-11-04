@@ -286,6 +286,7 @@ struct grow<T> {
 | 运算符 | `a + b`：返回**新值**的拼接。右操作数可以是 `slice<u8>`、`string`、整数（按十进制）、`f64`/`f32`（6 位小数，`stringio` 里）或 `bool`；要求 `a` 是 `string`。分配落在调用点的 arena 上，可以在函数里拼完返回 |
 | 追加数字 | `appendI64(v)`；`appendF64(x, prec)`（在 `stringio` 里，定点 `prec` 位小数，上限 20）。拼一行报表少一次临时 `string` |
 | 借出视图 | `view()`：只读字节视图，**不拷贝**；收 `slice<u8>` 的形参因此可以直接传 `string`（自动借出）。要独立拷贝仍写 `snapshot()` |
+| 借出守卫 | `borrow() -> stringGuard`：守卫活着时字符串不许换块（增长/释放都会 `trap`），跨函数借出时静态检查看不见增长，这一层就是那时的凭据；守卫 `@drop` 时计数减一 |
 | 直接打印 | `io::cout << s`（`string` 的 `<<` 重载在 `std::text::string` 里，`use std::text::string` 就够，不用写 `s.snapshot()`） |
 | 查找 | `find(needle) -> ?i64`（无匹配 `none`）、`contains`、`startsWith`、`endsWith`、`hash()` |
 | 容量 | `grow()`（1.5 倍）、`shrink()`、`clear()`、`release()`、`removeFront(n)` |

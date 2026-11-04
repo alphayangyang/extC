@@ -1,0 +1,14 @@
+use std::io
+use std::text::string
+
+fn main() -> i32 {
+    var s: string = string::withCap(16)
+    s.append("0123456789abcdef")
+    {
+        var g: stringGuard = s.borrow()
+        println("borrowed=", g.len())
+    }
+    s.append("tail")
+    println("after=", s.len())
+    return 0
+}

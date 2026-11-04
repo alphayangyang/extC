@@ -3,7 +3,7 @@
 #
 # 静态那一半：同一块里"借出视图 → 容器增长 → 之后再读视图"必须编译期拒绝（这正是 ASan 在
 # vector 上抓到的 heap-use-after-free）。动态那一半（跨函数/跨块）由 `buf::borrow()` 的守卫在
-# 运行期 trap —— 计数在库里，编译器一条都没参与（`buf` 与 `vector` 各一套守卫）。
+# 运行期 trap —— 计数在库里，编译器一条都没参与（`buf`、`vector`、`string` 各一套守卫）。
 # 视图在增长前用完、或活在内层块里，都必须编过。
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
@@ -49,6 +49,8 @@ one view_ok_borrow_release "$(src borrow_release.extx)" $'borrowed=7\ngrown=7'
 trap borrow_freezes "$(src borrow_freezes.extx)" 'frozen by a live borrow'
 trap vector_frozen         "$(src vector_frozen.extx)"         'frozen by a live borrow'
 one view_ok_vector_release "$(src vector_frozen_release.extx)" $'borrowed len=4\ngrown=5'
+trap string_frozen         "$(src string_frozen.extx)"         'frozen by a live borrow'
+one view_ok_string_release "$(src string_frozen_release.extx)" $'borrowed=16\nafter=20'
 one view_ok_inner_block "$(src view_ok_inner_block.extc)" $'1\ngrew'
 
 printf '通过 %d，失败 %d\n' "$pass" "$fail"

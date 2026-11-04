@@ -145,6 +145,10 @@ one branch on the release path. Element access stays free.
 悬垂的那一个：`var s = v.view()` 之后 `v.push(…)` 触发换板，旧视图指向已归还的板块，ASan 报
 heap-use-after-free。同一块里的这种写法现在是编译错误；跨函数的增长由守卫在运行期 trap
 （`tests/pin/vector_frozen.extx`）。代价是每个 `vector` 多带一个 `i64` 计数。
+
+`string` 也一样（`string::borrow()` / `stringGuard`）：SSO 态取 `view()` 之后 `append` 让第 17 个
+字节升级到板块，旧视图悬垂在"内联缓冲"上 —— 同一条守卫把这条路也变成确定性 trap
+（`tests/pin/string_frozen.extx`）。`bench/app` 的日志场景（20M 次追加）测不出差异。
 | 3. `std::mem::arena` | pure extC over `zone::alloc` | `tests/stl/arena_*`; peak = live + one chunk |
 | 4. `std::mem::pool<T>` | free list + generations over zone chunks; handle API (`slotOf/at/setAt/entry`) already exists in `stdMap` land | `tests/pool/*` ported to the library type; `bench/app`/`realsvc` within noise |
 | 5. containers | `varArray` → segmented chunks on `zone::alloc` (peak from 129 MB to ≈70 MB for 8M i64, per prototype); `vector` → zone-backed pool with growth policy; `string` keeps SSO | `tests/run.sh` 377/0; `bench/crazy`, `bench/app`, `bench/realsvc` within noise; 8M-i64 peak recorded in the paper's table |

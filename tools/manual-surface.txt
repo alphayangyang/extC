@@ -549,5 +549,11 @@ std::text::string	string	len	method	public
 std::text::string	string	n	field	internal
 std::text::string	string	pid	field	internal
 std::text::string	string	pidGen	field	internal
+std::text::string	string	pins	field	internal
 std::text::string	string	small	field	internal
 std::text::string	string	view	method	public
+std::text::string	stringGuard	len	method	public
+std::text::string	stringGuard	p	field	internal
+std::text::string	stringGuard	release	method	public
+std::text::string	stringGuard	s	field	internal
+std::text::string	stringGuard	view	method	public

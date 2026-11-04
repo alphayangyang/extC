@@ -5,7 +5,7 @@
 
 生成方式：`tools/manual_surface.py`；`check.sh` 保证本页与源码一致。
 
-公开面共 550 个成员，其中内部 136 个：
+公开面共 556 个成员，其中内部 139 个：
 
 ## prelude
 
@@ -189,5 +189,8 @@
 - `string.n`（字段）
 - `string.pid`（字段）
 - `string.pidGen`（字段）
+- `string.pins`（字段）
 - `string.small`（字段）
+- `stringGuard.p`（字段）
+- `stringGuard.s`（字段）
 
