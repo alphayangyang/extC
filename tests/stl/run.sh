@@ -18,6 +18,9 @@ run_case() {   # run_case <名字> <文件> <期望的一整行>
     else echo "  FAIL $name  ->  期望「$want」，得到「$out」"; fail=1; fi
 }
 
+echo "== buf<T>：拥有存储（增长还旧板 / 离开作用域还全部）=="
+run_case buf     tests/stl/buf.extc           "len=1 cap=13 sum=45 c9=9 v0=100 leak=0 growsum=4999950000 gleak=0"
+
 echo "== vector<T>：1.5 倍扩容 / dense 连续 / shrink 降水位 / clear 留容量 =="
 run_case vector  tests/stl/vector.extc  "cap0=4 n=9 cap=9 sum=36 shrink=9 pop=8 n=8 clear=0/9 tail=-9"
 
@@ -98,6 +101,25 @@ else
     echo "  FAIL plate rss  ->  生成或编译失败"; fail=1
 fi
 rm -rf "$TMPC2"
+
+TMPC3=$(mktemp -d)
+echo "== buf<T>：增长峰值是"一份"不是"历代之和"（同一形状 vs arena 底）=="
+# 判据：8e6 个 i64（活跃 64 MB）—— `buf` 扩容当场还旧板，`varArray` 的旧块只能等帧退出。
+if "$EXTC" -w --no-line-map -o "$TMPC3/b.c" tests/stl/buf_rss.extc >/dev/null 2>&1 \
+   && "$EXTC" -w --no-line-map -o "$TMPC3/a.c" tests/stl/buf_rss_arena.extc >/dev/null 2>&1 \
+   && gcc -fwrapv -std=c11 -O2 -o "$TMPC3/b" "$TMPC3/b.c" >/dev/null 2>&1 \
+   && gcc -fwrapv -std=c11 -O2 -o "$TMPC3/a" "$TMPC3/a.c" >/dev/null 2>&1; then
+    kb=$(/usr/bin/time -f %M "$TMPC3/b" 2>&1 >/dev/null | tail -1)
+    ka=$(/usr/bin/time -f %M "$TMPC3/a" 2>&1 >/dev/null | tail -1)
+    if [ "$kb" -lt $(( ka * 3 / 4 )) ]; then
+        echo "  ok   buf rss  ->  buf ${kb} KB vs arena ${ka} KB（低 $(( (ka - kb) * 100 / ka ))%）"
+    else
+        echo "  FAIL buf rss  ->  buf ${kb} KB 没有明显低于 arena ${ka} KB"; fail=1
+    fi
+else
+    echo "  FAIL buf rss  ->  生成或编译失败"; fail=1
+fi
+rm -rf "$TMPC3"
 
 echo "== 用户自定义池底容器（写在入口文件里，不是库模块）：板块 + 池记录 + 提权 =="
 run_case custom  tests/stl/custom_pool.extc  "n=10 cap=13 v9=81 live=1 bytes=104"

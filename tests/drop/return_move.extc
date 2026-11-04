@@ -1,0 +1,23 @@
+/* 判据：`return b` 把局部**移出**——不是拷贝，也不该在返回前跑它的 `@drop`
+   （跑了就会把要交给调用者的状态提前还掉）。调用方接住之后，钩子只在调用方作用域跑一次。 */
+@noCopy
+struct res { n: i32
+    @drop
+    fn close(self: mut ref res) { println("close ", self.n) }
+}
+
+fn make() -> res {
+    var r: res = res{ n: 5 }
+    return r
+}
+
+fn main() -> i32 {
+    var got: res = make()
+    println("got ", got.n)
+    {
+        var inner: res = make()
+        println("inner ", inner.n)
+    }
+    println("done")
+    return 0
+}

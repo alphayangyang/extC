@@ -535,6 +535,9 @@ typedef struct {
     /* `dropBlocks.len` at the point each enclosing loop body started: `break`/`continue` drop only
      * the blocks they are actually leaving. */
     Vec         dropLoopBases;   /* size_t */
+    /* The binding a `return x` is moving out: it is dead on the way out, so its `@drop` hook must
+     * not run for it (running it would release the state the caller now owns). */
+    const char      *dropSkipName;
     /* Arena levels of the enclosing loops, mirrored for `break`/`continue` (see `loopLevel`). */
     
     /* Sites already covered by the loop-entry check of a view subscript (`EX_INDEX *`, see
@@ -6517,6 +6520,12 @@ static void genBlockTailDrops(CG *g, Stmt *block) {
         if (!typeNeedsDrop(g, st->type, 0)) continue;
         const char *nm = planCName(st) ? planCName(st) : st->u.var.name;
         if (!nm) continue;
+        /* `return x` moves `x` out; compare both spellings, because inside a generic instance the
+         * generated name carries the instance suffix while the source name does not. */
+        if (g->dropSkipName &&
+            (strcmp(nm, g->dropSkipName) == 0 ||
+             (st->u.var.name && strcmp(st->u.var.name, g->dropSkipName) == 0)))
+            continue;
         genDropValue(g, nm, st->type, 0);
     }
 }
@@ -8596,7 +8605,13 @@ static void genStmtInner(CG *g, Stmt *s) {
             }
             const char *v = genTopExpr(g, s->u.ret.value);
             flushPrefix(g);              /* must precede the return */
+            /* A plain local handed back is **moved out**: it is dead on the way out, so marking it
+             * here keeps `cgReturn`'s drop sweep from releasing the state the caller now owns.
+             * The name recorded is the source spelling; the sweep compares that too, because
+             * inside a generic instance the generated name carries the instance suffix. */
+            g->dropSkipName = (s->u.ret.value->kind == EX_IDENT) ? s->u.ret.value->u.ident.name : NULL;
             cgReturn(g, v);
+            g->dropSkipName = NULL;
             return;
         }
 

@@ -4793,7 +4793,17 @@ void checkStmt(Checker *c, Stmt *s) {
             }
 
             adoptContextType(s->u.ret.value, want);
+            /* Returning a plain local **moves** it: the state goes to the caller and the local dies
+             * at the end of the frame anyway, so a copy would be a second name for one state. Fields
+             * and elements keep being rejected -- taking one out would leave the aggregate
+             * half-owned. */
+            bool savedMoveOk = c->moveOkHere;
+            const char *savedMoveInto = c->moveIntoName;
+            c->moveOkHere = true;
+            c->moveIntoName = "the caller";
             Type *vt = checkInto(c, want, s->u.ret.value);   /* a reference is wanted: do not dereference */
+            c->moveOkHere = savedMoveOk;
+            c->moveIntoName = savedMoveInto;
             warnSharedReturn(c, s->u.ret.value, vt);
             markCallHomeIfEscaping(c, s->u.ret.value, 0);    /* it is handed out: use the home arena */
             checkAssignable(c, want, vt, s->u.ret.value, "return value");

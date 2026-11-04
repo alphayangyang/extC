@@ -1,0 +1,107 @@
+/* std/data/buf.extc —— 拥有存储的可增长缓冲区（`buf<T>`）
+ *
+ * 与 `vector<T>` 的区别**只在所有权怎么表达**：
+ *   - `vector<T>` 是一个普通值，拷贝它 = 两个名字看同一块池板（`@sharesStorage` 会警告）
+ *   - `buf<T>` 标了 `@noCopy`：值位置出现时**转移**而不是拷贝，所以"同时只有一个人拥有它"，
+ *     覆盖赋值与离开作用域时会跑 `@drop` 把池板当场还给分配器（这正是 `varArray` 在 arena 上
+ *     做不到的事：旧块只能留在原地等整个帧退出）
+ *
+ * 是 P1 的语言级 `buf<T>`（`new T[n]` 将来直接返回它）之前的库级原型：用的仍是同一套板块原语
+ * `poolSliceRaw` / `poolResizeRaw` / `poolGive`，所以语义与 `vector` 一致，只是所有权由标签保证。
+ *
+ * @code
+ * use std::io
+ * use std::data::buf
+ *
+ * fn main() -> i32 {
+ *     var b: buf<i64> = buf<i64>::withCap(4)
+ *     var i: i64 = 0
+ *     while i < 10 { b.push(i)  i = i + 1 }
+ *     println("len=", b.len(), " cap=", b.capacity(), " last=", b.view()[9])
+ *     return 0
+ * }
+ * @endcode
+ */
+
+use std::sys::pool as syspool
+
+@noCopy
+struct buf<T> {
+    @private pid:    i64     /* 运行期池：板的寿命挂在建池时所在的地方上 */
+    @private pidGen: u64     /* 建池时的世代：陈旧拷贝不许误放别人的池 */
+    @private vals:   mut slice<T>
+    @private n:      i64     /* 已用长度 */
+    @private cap:    i64     /* 板块容量 */
+    @private
+
+    /** @brief 交还板块。离开作用域、被覆盖、或函数中途返回时由编译器发出。 */
+    @drop
+    fn release(self: mut ref buf<T>) {
+        if self.cap > 0 && syspool::extc_pool_generation(self.pid) == self.pidGen {
+            self.vals = poolResize<T>(self.pid, self.vals, 0)
+        }
+        self.cap = 0
+        self.n   = 0
+    }
+
+    /** @brief 建一个容量为 `c` 的缓冲区（至少 1，池按容量一次要够）。 */
+    fn withCap(c: i64) -> buf<T> {
+        /* 池生在**调用者**的地方。关联函数体不为池分配单独开一层地方，所以「当前地方」
+         * 就是调用者的地方 —— 与 `vector::withCap` 同一条路；显式指定更外层反而会指到
+         * 调用者的外面去（`extc_pool_zoneOuter` 是给"我自己这一层随时会没"的普通函数用的）。 */
+        let pid = syspool::extc_pool_new(-1)
+        let pg  = syspool::extc_pool_generation(pid)
+        var cc: i64 = c
+        if cc < 1 { cc = 1 }
+        var b: buf<T> = {
+            pid:    pid,
+            pidGen: pg,
+            vals:   poolSliceRaw<T>(pid, cc),
+            n:      0,
+            cap:    cc,
+        }
+        return b
+    }
+
+    /** @brief 元素个数。 */
+    fn len(self: ref buf<T>) -> i64 { return self.n }
+
+    /** @brief 当前板块能装多少（不含再要一块）。 */
+    fn capacity(self: ref buf<T>) -> i64 { return self.cap }
+
+    /** @brief 只读视图：`[0, len)`。它在视野里的期间改容量是编译错误。 */
+    fn view(self: ref buf<T>) -> slice<T> { return self.vals[0..self.n] }
+
+    /** @brief 可写视图：`[0, len)`。 */
+    fn viewMut(self: mut ref buf<T>) -> mut slice<T> { return self.vals[0..self.n] }
+
+    /** @brief 追加一个元素；容量不够时按 1.5 倍再要一块（旧块由 `poolResizeRaw` 当场还掉）。 */
+    fn push(self: mut ref buf<T>, v: T) {
+        if self.n == self.cap {
+            var ncap: i64 = self.cap + self.cap / 2
+            if ncap <= self.cap { ncap = 4 }
+            self.vals = poolResizeRaw<T>(self.pid, self.vals, ncap)
+            self.cap  = ncap
+        }
+        self.vals[self.n] = v
+        self.n = self.n + 1
+    }
+
+    /** @brief 弹出最后一个元素；空的时候返 `none`。 */
+    fn pop(self: mut ref buf<T>) -> ?T {
+        if self.n == 0 { return none }
+        self.n = self.n - 1
+        return some(self.vals[self.n])
+    }
+
+    /** @brief 清空长度（板块留着，下一次 `push` 直接复用）。 */
+    fn clear(self: mut ref buf<T>) { self.n = 0 }
+
+    /** @brief 复制一份独立存储（另一个 `buf`，两者之后互不影响）。 */
+    fn clone(self: ref buf<T>) -> buf<T> {
+        var out: buf<T> = buf<T>::withCap(self.n)
+        var i: i64 = 0
+        while i < self.n { out.push(self.vals[i])  i = i + 1 }
+        return out
+    }
+}

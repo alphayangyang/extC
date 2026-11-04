@@ -36,6 +36,12 @@ extern!("extc-runtime") fn extc_pool_live() -> i64
 extern!("extc-runtime") fn extc_pool_capacity() -> i64
     effects Addr=0 Cont=0
 extern!("extc-runtime") fn extc_pool_zoneDepth() -> i64
+/* **提权的落点（库侧）**：`zone` 参数要的是"哪个地方"的槽号，而一个库函数建池时想要的通常
+ * 是**调用者**的地方 —— 否则池随这一层返回就没了，`buf` 这种东西根本活不过构造函数。
+ * `extc_pool_zoneOuter()` 就是"当前地方的外层"，正是 `@poolObject` 构造器拿到的隐藏 home 的
+ * 等价物；比它再往外需要显式传参（真正的跨层提权仍然由编译器在构造点做）。 */
+extern!("extc-runtime") fn extc_pool_zoneOuter() -> i64
+    effects Addr=0 Cont=0
     effects Addr=0 Cont=0
 
 /* 容器数据用的内存：**池自己的板块**，不是 arena 里的切片（ 作者口径

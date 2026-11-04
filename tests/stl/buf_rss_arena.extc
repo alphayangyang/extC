@@ -1,0 +1,12 @@
+/* 对照：同一形状但存储来自 arena（`varArray`）—— 旧块只能等整个帧退出，峰值是历代之和。 */
+use std::io
+
+fn main() -> i32 {
+    var a: varArray<i64> = varArray<i64>::withCap(4)
+    var i: i64 = 0
+    while i < 8000000 { a.push(i)  i = i + 1 }
+    var s: i64 = 0
+    for x in a { s = s + x }
+    println("n=", a.size(), " sum=", s)
+    return 0
+}

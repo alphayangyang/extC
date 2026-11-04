@@ -1,0 +1,14 @@
+/* 判据：`buf<T>` 的增长峰值 = 一份（旧板块当场还掉），不是历代之和。
+   与 `vector_rss_arena.extc` 同一形状，只有存储来源不同 ⇒ 自比值不看机器绝对数。 */
+use std::io
+use std::data::buf
+
+fn main() -> i32 {
+    var b: buf<i64> = buf<i64>::withCap(4)
+    var i: i64 = 0
+    while i < 8000000 { b.push(i)  i = i + 1 }
+    var s: i64 = 0
+    for x in b.view() { s = s + x }
+    println("n=", b.len(), " sum=", s)
+    return 0
+}
