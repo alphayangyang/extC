@@ -23,5 +23,8 @@ else
     bad mismatch "报文不对：$(head -2 "$tmp/e")"
 fi
 
+out=$("$EXTC" -w --no-line-map --run tests/constgen/mdim.extc 2>"$tmp/e" | tr '\n' ' ')
+if [ "$out" = "5 15 6 " ]; then ok mdim "→ $out"; else bad mdim "期望 [5 15 6] 实得 [$out] $(head -2 "$tmp/e")"; fi
+
 printf '通过 %d，失败 %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

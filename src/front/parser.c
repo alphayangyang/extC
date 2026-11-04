@@ -2408,44 +2408,69 @@ static Type *parseTypeInner(Parser *p) {
         if (!inner) return NULL;
         return typeRef(p->arena, inner);
     }
-    /* Fixed-size array `[N]T`. Dimensions nest recursively: `[15][15]i32` is fifteen
-     * `[15]i32`. */
+    /* Fixed-size array `[N]T`, and its multi-dimensional spelling `[I, J]T`.
+     *
+     * Dimensions nest recursively either way: `[15][15]i32` and `[15, 15]i32` are the same type,
+     * fifteen `[15]i32`. The comma form is only a spelling -- the shape is already part of the
+     * type, so `[2, 3]f64` and `[3, 2]f64` stay different types. A dimension may name a `const`
+     * parameter of the enclosing signature (`[N]T`), in which case the node records the name and
+     * the type table fills the number in once the call is seen. */
     if (at(p, "[")) {
         Token *br = take(p);
-        /* `[N]f64` where `N` is a `const` parameter of the enclosing signature: the length is a
-         * value the caller supplies, so the node records the name instead of a number and the type
-         * table fills the number in once the arguments are known. */
-        if (atKind(p, TK_IDENT)) {
-            Token *cp = cur(p);
-            bool isConst = false;
-            for (size_t ci = 0; ci < p->constParams.len; ci++)
-                if (strcmp(*(const char **)vecAt(&p->constParams, ci), cp->text) == 0) isConst = true;
-            if (isConst) {
-                take(p);
-                if (!expect(p, "]", NULL)) return NULL;
-                Type *symElem = parseType(p);
-                if (!symElem) return NULL;
-                return typeArraySym(p->arena, cp->text, symElem);
+        int64_t dims[8];
+        const char *symDims[8];
+        size_t ndim = 0;
+        for (;;) {
+            if (ndim >= 8) {
+                ctxError(p->ctx, br->line, br->col, NULL,
+                         "a fixed array may have at most 8 dimensions");
+                return NULL;
             }
+            if (atKind(p, TK_IDENT)) {
+                Token *cp = cur(p);
+                bool isConst = false;
+                for (size_t ci = 0; ci < p->constParams.len; ci++)
+                    if (strcmp(*(const char **)vecAt(&p->constParams, ci), cp->text) == 0) isConst = true;
+                if (!isConst) {
+                    ctxError(p->ctx, cp->line, cp->col,
+                             "Only a `const` parameter may be used as an array length.",
+                             "array length must be an integer literal, found `%s`", shown(cp));
+                    return NULL;
+                }
+                take(p);
+                dims[ndim] = -1;
+                symDims[ndim] = cp->text;
+                ndim++;
+            } else if (atKind(p, TK_INT)) {
+                Token *n = take(p);
+                if (n->ival <= 0) {
+                    ctxError(p->ctx, br->line, br->col, NULL,
+                             "array length must be positive, got %lld", (long long)n->ival);
+                    return NULL;
+                }
+                dims[ndim] = n->ival;
+                symDims[ndim] = NULL;
+                ndim++;
+            } else {
+                Token *bad = cur(p);
+                ctxError(p->ctx, bad->line, bad->col,
+                         "For now a fixed array's length must be an integer literal. "
+                         "(Compile-time constants come with `const`.)",
+                         "array length must be an integer literal, found `%s`", shown(bad));
+                return NULL;
+            }
+            if (accept(p, ",")) continue;
+            break;
         }
-        if (!atKind(p, TK_INT)) {
-            Token *bad = cur(p);
-            ctxError(p->ctx, bad->line, bad->col,
-                     "For now a fixed array's length must be an integer literal. "
-                     "(Compile-time constants will come with `const`.)",
-                     "array length must be an integer literal, found `%s`", shown(bad));
-            return NULL;
-        }
-        Token *n = take(p);
         if (!expect(p, "]", NULL)) return NULL;
         Type *elem = parseType(p);
         if (!elem) return NULL;
-        if (n->ival <= 0) {
-            ctxError(p->ctx, br->line, br->col, NULL,
-                     "array length must be positive, got %lld", (long long)n->ival);
-            return NULL;
+        for (size_t k = ndim; k > 0; k--) {
+            size_t d = k - 1;
+            elem = symDims[d] ? typeArraySym(p->arena, symDims[d], elem)
+                              : typeArray(p->arena, dims[d], elem);
         }
-        return typeArray(p->arena, n->ival, elem);
+        return elem;
     }
 
     /* `fn(A, B) -> R` in **type** position: a bare code pointer.
