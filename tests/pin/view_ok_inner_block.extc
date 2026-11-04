@@ -1,0 +1,14 @@
+// 视图活在内层块里 ⇒ 内层块结束时它已经不在了，外层增长是安全的。
+use std::io
+use std::data::vector
+
+fn main() {
+    var v: vector<i64> = vector<i64>::withCap(2)
+    v.push(1)
+    {
+        var s: slice<i64> = v.view()
+        io::println(f"{s.len}")
+    }
+    v.push(3)
+    io::println("grew")
+}

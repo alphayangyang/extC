@@ -3149,6 +3149,215 @@ static size_t forDesugarBindIndex(Stmt *block) {
 }
 
 /**
+ * @brief Does this method name move or free a container's storage?
+ *
+ * The list is the container API's mutating surface: `push`/`append*`/`grow`/`reserve`/`insert`
+ * may reallocate the backing buffer, and `shrink`/`release` hand it back to the allocator. Any of
+ * them makes an already handed out view stale, which is the same class of bug whether the old
+ * bytes are freed or merely abandoned.
+ *
+ * Why the checker names them at all: the pin that makes this a runtime error needs ownership
+ * accounting that only arrives with `buf<T>`. Until then the in-block case — the one that a
+ * sanitizer can actually catch today — is rejected statically, which is cheaper than a trap and
+ * catches the mistake at the source line.
+ *
+ * Only `@poolObject` receivers are tracked (see `liveViewsStmtPost`). Their growth hands the old
+ * slab back to the allocator, so reading through an old view is a use after free. An arena-backed
+ * container such as `varArray` keeps the old block alive until its place ends: growth there leaves
+ * a stale-but-valid snapshot, which is exactly the behaviour `tests/stl/varArray_snapshot.extc`
+ * pins down, so it must not be rejected.
+ *
+ * @param n  Method name; NULL is not a growth call.
+ * @return   `true` when calling it may invalidate views of the receiver.
+ */
+static bool growMethodName(const char *n) {
+    static const char *const names[] = {
+        "push", "append", "appendByte", "appendI64", "appendF64",
+        "grow", "reserve", "insert", "shrink", "release",
+    };
+    if (!n) return false;
+    for (size_t i = 0; i < sizeof names / sizeof names[0]; i++)
+        if (strcmp(n, names[i]) == 0) return true;
+    return false;
+}
+
+/** What a scan is looking for; exactly one of the two is set. */
+typedef struct {
+    const char *viewName;   /* hit on a use of this identifier */
+    const char *ownerName;  /* hit on a growth call on this receiver */
+    int         line;       /* line of the growth call that was found */
+} ScanHit;
+
+/**
+ * @brief Scan an expression for a hit; defined after the walk callbacks it uses.
+ *
+ * @param h  What to look for.
+ * @param e  Expression to scan.
+ * @return   `true` when a hit was found.
+ */
+static bool scanExpr(ScanHit *h, Expr *e);
+
+/**
+ * @brief Visit one expression child, returning false to stop the walk.
+ *
+ * `astWalkExprChildren` stops when a callback returns false, so the polarity is inverted here:
+ * a hit has to come back as "stop".
+ *
+ * @param ctx  The `ScanHit` being filled in.
+ * @param e    Child expression; NULL is a no-op.
+ * @return     `false` when the scan found what it was looking for.
+ */
+static bool scanExprVisit(void *ctx, Expr *e) {
+    return scanExpr((ScanHit *)ctx, e) ? false : true;
+}
+
+/**
+ * @brief Detect a hit on `e` itself, then descend into its children.
+ *
+ * @param h  What to look for; also receives the line of a growth call.
+ * @param e  Expression to scan; NULL is a no-op.
+ * @return   `true` when a hit was found.
+ */
+static bool scanExpr(ScanHit *h, Expr *e) {
+    if (!e) return false;
+    if (h->viewName && e->kind == EX_IDENT && e->u.ident.name &&
+        strcmp(e->u.ident.name, h->viewName) == 0)
+        return true;
+    if (h->ownerName && e->kind == EX_METHOD && growMethodName(e->u.method.name) &&
+        e->u.method.recv && e->u.method.recv->kind == EX_IDENT &&
+        e->u.method.recv->u.ident.name &&
+        strcmp(e->u.method.recv->u.ident.name, h->ownerName) == 0) {
+        h->line = e->line;
+        return true;
+    }
+    AstVisit v = { scanExprVisit, NULL, h };
+    return !astWalkExprChildren(e, &v);
+}
+
+/**
+ * @brief Scan a statement and everything below it for a hit; defined after its callbacks.
+ *
+ * @param h  What to look for.
+ * @param s  Statement to scan.
+ * @return   `true` when a hit was found.
+ */
+static bool scanStmt(ScanHit *h, Stmt *s);
+
+/**
+ * @brief Statement half of the scan: visit one nested statement, returning false to stop.
+ *
+ * @param ctx  The `ScanHit` being filled in.
+ * @param s    Child statement; NULL is a no-op.
+ * @return     `false` when the scan found what it was looking for.
+ */
+static bool scanStmtVisit(void *ctx, Stmt *s) {
+    return scanStmt((ScanHit *)ctx, s) ? false : true;
+}
+
+/**
+ * @brief Scan a statement and everything below it for a hit.
+ *
+ * Two walks, because `astWalkStmtChildren` visits one level: the first visits the expressions the
+ * statement itself owns, the second descends into its child statements.
+ *
+ * @param h  What to look for; also receives the line of a growth call.
+ * @param s  Statement to scan; NULL is a no-op.
+ * @return   `true` when a hit was found.
+ */
+static bool scanStmt(ScanHit *h, Stmt *s) {
+    if (!s) return false;
+    AstVisit exprs = { scanExprVisit, NULL, h };
+    if (!astWalkStmtChildren(s, &exprs)) return true;
+    AstVisit nested = { NULL, scanStmtVisit, h };
+    return !astWalkStmtChildren(s, &nested);
+}
+
+/**
+ * @brief Name of the container a freshly bound view borrows from.
+ *
+ * Only the two shapes that hand out a view of an existing container without copying are
+ * recognized: a `view()`/`viewMut()` method call and a range slice `a[lo..hi]`. `snapshot()`
+ * copies, and a `new T[n]` buffer has no container to grow, so neither is tracked.
+ *
+ * @param init  Initializer of a `var`/`let`; may be NULL.
+ * @return      The receiver's name, or NULL when this is not a borrow of a named container.
+ */
+static const char *borrowOwner(Expr *init) {
+    if (!init) return NULL;
+    if (init->kind == EX_METHOD && init->u.method.recv &&
+        init->u.method.recv->kind == EX_IDENT &&
+        (strcmp(init->u.method.name, "view") == 0 || strcmp(init->u.method.name, "viewMut") == 0))
+        return init->u.method.recv->u.ident.name;
+    if (init->kind == EX_SLICE && init->u.slice.obj && init->u.slice.obj->kind == EX_IDENT)
+        return init->u.slice.obj->u.ident.name;
+    return NULL;
+}
+
+/** How many borrows one block tracks; past this the check gives up rather than guessing. */
+#define LIVE_VIEW_MAX 16
+
+/**
+ * @brief Report growth of a container that a still-used view of this block borrows from.
+ *
+ * Called before the statement is checked, with the statement list and the index so that the
+ * "is the view used again?" question can look ahead. A view that is never touched after the
+ * growth is harmless, so it is not reported; the entry is dropped once reported, which keeps a
+ * second growth in the same block from repeating the same diagnostic.
+ *
+ * @param c      Checker.
+ * @param lv     Views bound so far in this block.
+ * @param stmts  The block's statements.
+ * @param i      Index of the statement about to be checked.
+ */
+void liveViewsStmtPre(Checker *c, LiveViews *lv, Vec *stmts, size_t i) {
+    Stmt *stmt = *(Stmt **)vecAt(stmts, i);
+    for (size_t v = 0; v < lv->len; v++) {
+        ScanHit hit = { NULL, lv->items[v].owner, 0 };
+        if (!scanStmt(&hit, stmt)) continue;
+        bool usedAfter = false;
+        for (size_t j = i; j < stmts->len && !usedAfter; j++) {
+            ScanHit use = { lv->items[v].view, NULL, 0 };
+            usedAfter = scanStmt(&use, *(Stmt **)vecAt(stmts, j));
+        }
+        if (!usedAfter) continue;
+        ckError(c, hit.line,
+                "a view is only good until the container moves its storage: copy what you need"
+                " (`snapshot()`) or finish with the view before growing",
+                "`%s` changes the storage that `%s` views", lv->items[v].owner, lv->items[v].view);
+        for (size_t k = v + 1; k < lv->len; k++) lv->items[k - 1] = lv->items[k];
+        lv->len--;
+        v--;
+    }
+}
+
+/**
+ * @brief Remember a view bound by the statement that was just checked.
+ *
+ * Only the direct `var`/`let` shape is tracked: a view that is immediately passed somewhere is
+ * the callee's business (and the depth rules already police storing it), while a bound name is
+ * exactly the thing that can be read after the container moves.
+ *
+ * @param c   Checker; this function does not read it.
+ * @param lv  Views of the enclosing block.
+ * @param s   The statement that was just checked.
+ */
+void liveViewsStmtPost(Checker *c, LiveViews *lv, Stmt *s) {
+    if (!s || s->kind != ST_VAR || lv->len >= LIVE_VIEW_MAX) return;
+    const char *owner = borrowOwner(s->u.var.init);
+    if (!owner) return;
+    /* The gate is the `@poolObject` label, not the type's name: a container whose slab is handed
+     * back on growth makes an old view a use after free, while an arena-backed container keeps the
+     * old block alive and only yields a stale snapshot. */
+    Sym *osym = lookup(c, owner);
+    Type *oty = osym ? tsub(c, osym->type) : NULL;
+    StructDef *osd = oty ? structOf(ttBase(oty)) : NULL;
+    if (!osd || !osd->poolObject) return;
+    lv->items[lv->len].owner = owner;
+    lv->items[lv->len].view = s->u.var.name;
+    lv->len++;
+}
+
+/**
  * @brief Check a block body in a fresh scope; the block's bindings leave scope when it ends.
  *
  * A block that reclaims its own storage is a place boundary: suspending inside it is forbidden (rule
@@ -3167,6 +3376,10 @@ static void checkBlockBody(Checker *c, Stmt *block) {
     if (boundary) c->placeBoundaryDepth++;
 
     pushScope(c);
+    /* Views bound in this block, so that growing the container underneath a live one is rejected
+     * here instead of turning into a stale read at run time. See `growMethodName`. */
+    LiveViews live;
+    live.len = 0;
     const bool fixedShape = block->parLoop || rangeForBlockShape(block);
     for (size_t i = 0; i < block->u.block.stmts.len; i++) {
         /* A fixed-shape block (range loop / `par` outer block) is recognized by position, so no
@@ -3176,7 +3389,9 @@ static void checkBlockBody(Checker *c, Stmt *block) {
         Stmt **slot = (Stmt **)vecAt(&block->u.block.stmts, i);
         Stmt *lowered = arrayAssignLower(c, *slot);
         if (lowered) *slot = lowered;
+        liveViewsStmtPre(c, &live, &block->u.block.stmts, i);
         checkStmt(c, *slot);
+        liveViewsStmtPost(c, &live, *slot);
         /* A range loop's outer block is `[loop variable, __extc_hi, while]`: once both of them have
          * been checked and the `while` has not, widen the loop variable so that uses in the body get
          * the widened type (see widenRangeForVar). A `par` block is desugared at the same point:

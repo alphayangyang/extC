@@ -1,0 +1,13 @@
+// 借出的视图在被读之前，容器不得改变存储：这是"视图只活到容器搬走存储为止"的判据。
+// 期望：编译期拒绝，理由里点出容器与视图的名字。
+use std::io
+use std::data::vector
+
+fn main() {
+    var v: vector<i64> = vector<i64>::withCap(2)
+    v.push(1)
+    v.push(2)
+    var s: slice<i64> = v.view()
+    v.push(3)                       // 可能 realloc ⇒ s 指向旧缓冲区
+    io::println(f"{s.len}")
+}

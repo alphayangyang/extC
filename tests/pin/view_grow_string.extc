@@ -1,0 +1,10 @@
+// 字符串同理；而且这里的视图是被 f-string 读的，所以"后面还会被用"必须能看出来。
+use std::io
+use std::text::string
+
+fn main() {
+    var s: string = string::from("hi")
+    var view: slice<u8> = s.view()
+    s.append("there")
+    io::println(f"{view.len}")
+}

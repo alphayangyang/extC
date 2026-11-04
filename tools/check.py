@@ -1622,6 +1622,13 @@ def build_items() -> list:
             argv, timeout=to, ok_msg=tail1,
             bad_msg=f"{argv[0].lstrip('./')}", bad_dump=dump_fail(8)))
 
+    # ---- 视图与容器增长 ----
+    items.append(cmd(
+        "pin", "tests",
+        "视图只活到容器搬走存储为止（同块增长 + 之后读视图 ⇒ 编译错误）",
+        ["./tests/pin/run.sh"], timeout=600,
+        ok_msg=tail1, bad_msg="tests/pin/run.sh", bad_dump=dump_fail(8)))
+
     # ---- 动态值 any ----
     items.append(cmd(
         "any", "tests",

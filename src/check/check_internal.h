@@ -977,6 +977,37 @@ void warnSharedReturn(Checker *c, Expr *e, Type *t);
  * @return      The innermost binding of that name; NULL when there is none.
  */
  Sym *lookup (Checker *c, const char *name);
+
+/** A view bound in a block, tracked so growth underneath it can be rejected. */
+typedef struct {
+    const char *owner;   /* container the view borrows from */
+    const char *view;    /* binding name of the view */
+} LiveView;
+
+/** Per-block list of tracked views; see `liveViewsStmtPre`. */
+typedef struct {
+    LiveView items[16];
+    size_t   len;
+} LiveViews;
+
+/**
+ * @brief Report growth of a container that a still-used view of the block borrows from.
+ *
+ * @param c      Checker.
+ * @param lv     Views bound so far in this block.
+ * @param stmts  The block's statements.
+ * @param i      Index of the statement about to be checked.
+ */
+void liveViewsStmtPre (Checker *c, LiveViews *lv, Vec *stmts, size_t i);
+
+/**
+ * @brief Remember a view bound by the statement that was just checked.
+ *
+ * @param c   Checker; unused, kept for a uniform signature.
+ * @param lv  Views of the enclosing block.
+ * @param s   The statement that was just checked.
+ */
+void liveViewsStmtPost(Checker *c, LiveViews *lv, Stmt *s);
 /* The binding at the root of a place, found by walking through fields, indexes and slices; NULL
  * when the place is not rooted in a binding. */
 /* ---------------------------------------------------------------- Phase contract
