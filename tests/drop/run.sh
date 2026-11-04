@@ -39,5 +39,16 @@ one generic     "$(src generic.extc)"    "v=3|bye"
 neg needs_nocopy "$(src errors/drop_needs_nocopy.extc)" '`@drop` needs a `@noCopy` struct'
 neg two_hooks    "$(src errors/two_hooks.extc)"          'already has an `@drop` method'
 
+quiet() { # name file
+  local name="$1" s="$2"
+  if ! "$EXTC" --no-line-map -o "$tmp/q.c" "$s" 2>"$tmp/qe"; then
+    bad "$name" "编不过：$(head -1 "$tmp/qe")"; return; fi
+  if grep -q "nothing in this function closes it" "$tmp/qe"; then
+    bad "$name" "仍然报「打开了没关」（@drop 没被认成释放点）"; return; fi
+  ok "$name" "不再报资源泄漏 ✓"
+}
+
+quiet resource_warning "$(src resource_warning.extc)"
+
 printf '通过 %d，失败 %d\n' "$pass" "$fail"
 [ "$fail" = 0 ]

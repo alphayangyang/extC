@@ -1,0 +1,12 @@
+/* 判据：有 `@drop` 的类型不算"打开了没关"——钩子就是编译器自己发的释放点。
+   编译时**不加 `-w`**：同样的程序去掉 `@drop` 会报 "nothing in this function closes it"。✓ */
+@noCopy
+struct handle { fd: i32
+    @drop
+    fn close(self: mut ref handle) { }
+}
+fn take(n: i32) -> handle { return handle{ fd: n } }
+fn main() -> i32 {
+    var h: handle = take(7)
+    return 0
+}

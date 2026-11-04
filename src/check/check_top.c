@@ -3946,6 +3946,7 @@ typedef struct {
     int         line;
     bool        closed;    /* some `close` call can reach it */
     bool        escaped;   /* handed on, returned or stored: not our business */
+    bool        releases;  /* the type has an `@drop` hook: leaving the scope closes it */
     Vec         aliases;   /* const char*: `let g = f` shares one obligation */
 } FdOblig;
 
@@ -4115,6 +4116,11 @@ static void obligStmt(Checker *c, Stmt *s, Vec *obs) {
          * both name the same descriptor. */
         if (typeIsResource(s->type)) {
             const char *cn = planCName(s) ? planCName(s) : s->u.var.name;
+            /* A `@drop` hook is a release point the compiler emits by itself, so the value is
+             * closed where its life ends and there is nothing to warn about. */
+            Type *bt = ttBase(s->type);
+            StructDef *bsd = bt ? structOf(bt) : NULL;
+            bool releases = bsd && bsd->dropHook != NULL;
             Expr *init = s->u.var.init;
             FdOblig *same = (init && init->kind == EX_IDENT)
                           ? obligFind(obs, planCName(init)) : NULL;
@@ -4125,6 +4131,7 @@ static void obligStmt(Checker *c, Stmt *s, Vec *obs) {
                 o->cname = cn;
                 o->name  = s->u.var.name;
                 o->line  = s->line;
+                o->releases = releases;
                 vecInit(&o->aliases, c->arena, sizeof(const char *));
                 *(FdOblig **)vecPush(obs) = o;
             }
@@ -4184,7 +4191,7 @@ static void checkOpenHandles(Checker *c, FuncDef *f) {
         obligStmt(c, *(Stmt **)vecAt(&f->body->u.block.stmts, i), &obs);
     for (size_t i = 0; i < obs.len; i++) {
         FdOblig *o = *(FdOblig **)vecAt(&obs, i);
-        if (o->closed || o->escaped) continue;
+        if (o->closed || o->escaped || o->releases) continue;
         ckWarn(c, o->line,
                "This is a resource the operating system hands out, not memory: nothing gives it"
                " back for you, and the process holds it until it ends -- a descriptor, a"
