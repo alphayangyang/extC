@@ -49,6 +49,9 @@ typedef struct {
     /* Counter for synthesized `__extc_t<N>` names: one block may hold several parallel
      * assignments, whose names must not collide. */
     int    sugarSeq;
+    /* The `const` parameters of the function whose signature is being parsed, so an array
+     * length can name one (`fn dot<const N: i64>(a: [N]f64)`). Empty outside a signature. */
+    Vec    constParams;
     /* The module being parsed. When the desugaring expands into a library call (a value
      * f-string goes through `stl::string`, multiple subscripts through `std::nd`), the
      * module it needs is registered **here** as a hidden `use`: the sugar carries its own
@@ -727,6 +730,7 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
     p.toks  = toks;
     p.mod   = out;
     vecInit(&p.pending, arena, sizeof(Stmt *));
+    vecInit(&p.constParams, arena, sizeof(void *));
     vecInit(&p.pendingGlobals, arena, sizeof(GlobalDef *));
     skipJunk(&p);
 
@@ -2203,6 +2207,7 @@ static FuncDef *parseFunc(Parser *p) {
                     return NULL;
                 }
                 *(const char **)vecPush(&fd->constParams) = cp->text;
+                *(const char **)vecPush(&p->constParams) = cp->text;   /* visible to `[N]T` in this signature */
                 if (accept(p, ",")) { skipNl(p); continue; }
                 break;
             }
@@ -2259,6 +2264,9 @@ static FuncDef *parseFunc(Parser *p) {
         fd->ret = parseType(p);
         if (!fd->ret) return NULL;
     }
+    /* The signature is over: its `const` parameters must not make `[N]T` look symbolic in the next
+     * function's signature. */
+    p->constParams.len = 0;
 
     /* A declaration **without a function body** (`extern!` or `@builtin`) stops after the
      * return type. Both have to be able to declare `effects`, because the compiler cannot see
@@ -2400,6 +2408,25 @@ static Type *parseTypeInner(Parser *p) {
      * `[15]i32`. */
     if (at(p, "[")) {
         Token *br = take(p);
+        /* `[N]f64` where `N` is a `const` parameter of the enclosing signature: the length is a
+         * compile-time value, but it is not known until the call is seen. The shape is accepted
+         * here so the checker can say "not supported yet" at the declaration; a literal is still
+         * the only length the pipeline can build a type from. */
+        if (atKind(p, TK_IDENT)) {
+            Token *cp = cur(p);
+            bool isConst = false;
+            for (size_t ci = 0; ci < p->constParams.len; ci++)
+                if (strcmp(*(const char **)vecAt(&p->constParams, ci), cp->text) == 0) isConst = true;
+            if (isConst) {
+                take(p);
+                if (!expect(p, "]", NULL)) return NULL;
+                if (!parseType(p)) return NULL;
+                ctxError(p->ctx, cp->line, cp->col, NULL,
+                         "array lengths that name a `const` parameter (`[%s]T`) are reserved but "
+                         "not implemented yet", cp->text);
+                return NULL;
+            }
+        }
         if (!atKind(p, TK_INT)) {
             Token *bad = cur(p);
             ctxError(p->ctx, bad->line, bad->col,

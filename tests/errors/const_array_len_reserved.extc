@@ -1,0 +1,10 @@
+// 判据：`[N]T` 里的 `N` 是签名里的 `const` 参数时，诊断为"已保留、未实现"
+//
+// 为什么单独一条：解析器要认出这个形状（否则报的是"array length must be an integer literal"，
+// 看不出用户想写什么），检查器/解析器必须把"已保留、未实现"说清楚。
+fn dot<const N: i64>(a: [N]f64, b: [N]f64) -> f64 { return 0.0 }
+
+fn main() {
+    var a: [3]f64 = [1.0, 2.0, 3.0]
+    print(dot(a, a))
+}

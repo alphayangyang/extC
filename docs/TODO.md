@@ -108,8 +108,9 @@
   转换只有 `arr[..]` / `b.view()` 与 `snapshot()` 两条显式通道。顺序：先 const 泛型
   （`<const N: i64>`、放开 `[N]T` 的元素类型必须是具体类型），再开 `impl array<T, N>`，
   最后才做 `new` 的返回值迁移（源码里 368 处 `slice` 变量、350 处 `slice<` 拼写要逐个消费）。
-  现状：语法已保留（解析器接受 `<const N: i64>`，检查器在声明处报"reserved but not implemented yet"，
-  `tests/errors/const_param_reserved.extc`）；判据：`fn dot<const N: i64>(a: [N]f64, b: [N]f64)` 可写、`dot(v3, v2)` 报长度不符、
+  现状：语法已保留（解析器接受 `<const N: i64>` 与签名里的 `[N]T`，检查器在声明处报
+  "reserved but not implemented yet"，`tests/errors/const_param_reserved.extc`、
+  `tests/errors/const_array_len_reserved.extc`）；判据：`fn dot<const N: i64>(a: [N]f64, b: [N]f64)` 可写、`dot(v3, v2)` 报长度不符、
   `s = s + t` 走移动不再留旧存储。
 
 - `owned`：让 `extern!` 能声明"返回的内存归调用者"。
