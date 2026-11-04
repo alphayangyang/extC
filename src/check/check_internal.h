@@ -1038,6 +1038,9 @@ bool ckMoveNoCopyInto(Checker *c, Expr *e, const char *dest);
  */
 bool ckHoldsMovingView(Checker *c, Expr *e, const char **owner);
 
+/** @brief The variable a moving view is borrowed from, when the receiver is a plain name. */
+bool ckHoldsMovingViewOf(Checker *c, Expr *e, const char **varName);
+
 /**
  * @brief Note the views bound by statement `i` before it is checked.
  *

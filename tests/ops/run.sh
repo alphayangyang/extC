@@ -51,7 +51,7 @@ run_case slice_place
 run_case lend_custom tests/ops/lend_custom.extc "t=6 s=6"
 run_case lend_view
 run_case lend_mutview
-run_case view_promote
+check_err tests/ops/view_promote_neg.extc "carries a reference into a deeper scope"
 run_case conv_float
 run_case conv_int_float
 run_case concrete

@@ -1494,6 +1494,22 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
             Expr *a = *(Expr **)vecAt(args, j);
             const char *owner = NULL;
             if (!ckHoldsMovingView(c, a, &owner)) continue;
+            /* A view of a container this function created is promotable: the fresh
+             * allocation moves out to the destination's place, so passing it along is
+             * the caller's normal escape, not a dangling view (`tests/ops/view_promote`).
+             * Growth inside this function is already caught by the block-local rule. */
+            {
+                const char *vname = NULL;
+                if (ckHoldsMovingViewOf(c, a, &vname) && vname) {
+                    bool isParam = false;
+                    if (c->curFunc)
+                        for (size_t k = 0; k < c->curFunc->params.len; k++) {
+                            Param *pp = *(Param **)vecAt(&c->curFunc->params, k);
+                            if (pp->name && strcmp(pp->name, vname) == 0) { isParam = true; break; }
+                        }
+                    if (!isParam) continue;
+                }
+            }
             ckError(c, a->line,
                     "The callee may keep this view, and the container it points into can move its"
                     " storage when it grows. Keep the view local, or take a copy (`snapshot()`).",
@@ -3114,6 +3130,17 @@ static void collectEffectsExpr(Checker *c, FuncDef *f, Expr *e) {
             } else {
                 anSetEffUnknown(f, true);
             }
+        } else if (e->kind == EX_CALL && e->u.call.callee && e->u.call.callee->kind == EX_IDENT &&
+                   e->u.call.callee->u.ident.name &&
+                   (strcmp(e->u.call.callee->u.ident.name, "print") == 0 ||
+                    strcmp(e->u.call.callee->u.ident.name, "println") == 0 ||
+                    strcmp(e->u.call.callee->u.ident.name, "flush") == 0)) {
+            /* `print`/`println`/`flush` are builtins dispatched by name, so there is no declaration
+             * to take a summary from; they write to the output buffer and retain nothing. Treating
+             * them as unknown made every function that prints incomplete, and an incomplete summary
+             * forces the caller to prove that *every* reference argument outlives the callee's place:
+             * `show(v: val)` (which matches and prints) could not be called with a value read out of a
+             * container (`tests/genmatrix/hetero_values`). */
         } else if (e->kind == EX_CALL && e->u.call.callee
                    && fnTypeCarriesNoRef(c->tt, tsub(c, e->u.call.callee->type))) {
             /* An indirect call through a `fn` value whose signature has neither reference parameters nor a

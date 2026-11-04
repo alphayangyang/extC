@@ -3568,6 +3568,29 @@ bool ckHoldsMovingView(Checker *c, Expr *e, const char **owner) {
 }
 
 /**
+ * @brief The variable a moving view is borrowed from, when the receiver is a plain name.
+ *
+ * The call-site rule only rejects arguments the caller cannot promote: a view of a
+ * **local** container is promotable (the fresh allocation moves out to the destination's
+ * place), while a view of a parameter or of a borrowed place is not -- that storage lives
+ * somewhere the caller cannot move. `varName` is set to NULL when no such name exists.
+ *
+ * @param c        The checker.
+ * @param e        The argument expression.
+ * @param varName  Receives the borrowed variable's name, or NULL.
+ * @return         true when the expression is a view of movable storage.
+ */
+bool ckHoldsMovingViewOf(Checker *c, Expr *e, const char **varName) {
+    *varName = NULL;
+    const char *owner = NULL;
+    if (!valueHoldsMovingView(c, e, &owner)) return false;
+    if (e && e->kind == EX_METHOD && e->u.method.recv && e->u.method.recv->kind == EX_IDENT)
+        *varName = e->u.method.recv->u.ident.name;
+    else if (e && e->kind == EX_IDENT) *varName = e->u.ident.name;
+    return true;
+}
+
+/**
  * @brief Remember the views a statement leaves behind, and reject the ones it stores.
  *
  * A view reaches the block in three shapes: bound to a name (`var s = v.view()`), handed to a
