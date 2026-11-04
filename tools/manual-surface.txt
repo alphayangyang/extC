@@ -212,8 +212,14 @@ std::data::vector	vector	n	field	internal
 std::data::vector	vector	new	method	public
 std::data::vector	vector	pid	field	internal
 std::data::vector	vector	pidGen	field	internal
+std::data::vector	vector	pins	field	internal
 std::data::vector	vector	vals	field	public
 std::data::vector	vector	view	method	public
+std::data::vector	vectorGuard	len	method	public
+std::data::vector	vectorGuard	p	field	internal
+std::data::vector	vectorGuard	release	method	public
+std::data::vector	vectorGuard	v	field	internal
+std::data::vector	vectorGuard	view	method	public
 std::dl	-	close	fn	public
 std::dl	-	cstr	fn	public
 std::dl	-	cstrLen	fn	public

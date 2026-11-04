@@ -5,8 +5,8 @@
 //     循环体（= 一个地方）退出就被回收，而 outer 的板块里那三个值全指着已还给 malloc 的块
 //     （ASan：heap-use-after-free；不开 ASan 时打印出来"看着完全正常"）。
 //   - `innerlen=2 v=20`：出循环之后**真的能读**内层的元素。
-//   - `bytes=240`：192（outer 的 4×48）+ 3×16（三个内层的缓冲区）都在账上。
-// expect: after=4 innerlen=2 v=20 bytes=240
+//   - `bytes=272`：224（outer 的 4×56，`vector` 多带一个冻结位）+ 3×16（三个内层的缓冲区）都在账上。
+// expect: after=4 innerlen=2 v=20 bytes=272
 use std::io
 use std::sys::pool as syspool
 use std::data::vector

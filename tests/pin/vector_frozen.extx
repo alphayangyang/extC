@@ -1,0 +1,15 @@
+use std::io
+use std::data::vector
+
+/* 增长发生在另一个函数里：静态表看不见这个调用，冻结位是唯一的凭据。 */
+fn growIt(v: mut ref vector<i64>) { v.push(9) }
+
+fn main() -> i32 {
+    var v: vector<i64> = vector<i64>::new()
+    v.push(1)  v.push(2)  v.push(3)  v.push(4)
+    var g: vectorGuard<i64> = v.borrow()
+    println("borrowed len=", g.len())
+    growIt(ref v)
+    println("after grow len=", v.len())
+    return 0
+}

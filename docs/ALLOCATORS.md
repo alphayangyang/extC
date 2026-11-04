@@ -140,6 +140,11 @@ one branch on the release path. Element access stays free.
 守卫活着时 `pins > 0`，`push` 触到 `realloc` 就 `trap: this buffer is frozen by a live borrow`，
 守卫离开作用域计数减回去。判据在 `tests/pin`（`borrow_freezes` 跨函数 trap、`borrow_release`
 放行）。等编译器有 `buf<T>` 内建之后再把这个机制收进存储头，`borrow()` 就是它的糖。
+
+同一条守卫在 `vector<T>` 上也有一份（`vector::borrow()` / `vectorGuard<T>`），因为它是最早被抓到
+悬垂的那一个：`var s = v.view()` 之后 `v.push(…)` 触发换板，旧视图指向已归还的板块，ASan 报
+heap-use-after-free。同一块里的这种写法现在是编译错误；跨函数的增长由守卫在运行期 trap
+（`tests/pin/vector_frozen.extx`）。代价是每个 `vector` 多带一个 `i64` 计数。
 | 3. `std::mem::arena` | pure extC over `zone::alloc` | `tests/stl/arena_*`; peak = live + one chunk |
 | 4. `std::mem::pool<T>` | free list + generations over zone chunks; handle API (`slotOf/at/setAt/entry`) already exists in `stdMap` land | `tests/pool/*` ported to the library type; `bench/app`/`realsvc` within noise |
 | 5. containers | `varArray` → segmented chunks on `zone::alloc` (peak from 129 MB to ≈70 MB for 8M i64, per prototype); `vector` → zone-backed pool with growth policy; `string` keeps SSO | `tests/run.sh` 377/0; `bench/crazy`, `bench/app`, `bench/realsvc` within noise; 8M-i64 peak recorded in the paper's table |

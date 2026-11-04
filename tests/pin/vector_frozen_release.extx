@@ -1,0 +1,14 @@
+use std::io
+use std::data::vector
+
+fn main() -> i32 {
+    var v: vector<i64> = vector<i64>::new()
+    v.push(1)  v.push(2)  v.push(3)  v.push(4)
+    {
+        var g: vectorGuard<i64> = v.borrow()
+        println("borrowed len=", g.len())
+    }
+    v.push(5)
+    println("grown=", v.len())
+    return 0
+}
