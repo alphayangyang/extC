@@ -2736,6 +2736,30 @@ void warnSharedReturn(Checker *c, Expr *e, Type *t) {
 }
 
 /**
+ * @brief Record that a `@noCopy` binding is moved into a new name.
+ *
+ * The annotated form goes through `rejectNoCopy`, which sees `Checker.moveOkHere`; the unannotated
+ * form takes `checkExpr`, which never looks at copies, so the transfer is recorded here. Only a
+ * plain name moves: a field or an element keeps being rejected, because taking it out would leave
+ * the aggregate half-owned.
+ *
+ * @param c     Checker.
+ * @param e     Initializer of the new binding.
+ * @param dest  Name of the destination binding, for the diagnostic.
+ * @return      `true` when a transfer was recorded.
+ */
+bool ckMoveNoCopyInto(Checker *c, Expr *e, const char *dest) {
+    if (!e || e->kind != EX_IDENT) return false;
+    Sym *src = lookup(c, e->u.ident.name);
+    if (!src || src->movedLine) return false;
+    StructDef *sd = structOf(ttBase(src->type ? src->type : e->type));
+    if (!sd || !sd->noCopy) return false;
+    src->movedLine = e->line;
+    src->movedInto = dest;
+    return true;
+}
+
+/**
  * @brief Reject a copy of a `@noCopy` value.
  *
  * Only a **place** is rejected: `var s: ifstream = f()` binds the value the call just
@@ -2752,6 +2776,18 @@ static bool rejectNoCopy(Checker *c, Expr *e, Type *t) {
     if (!e || e->kind == EX_REF || !t) return false;
     StructDef *sd = structOf(ttBase(t));
     if (!sd || !sd->noCopy || !isPlace(e)) return false;
+    /* A `var`/`let` binding of a plain name **moves** the value instead of copying it: the
+     * language transfers `@noCopy` values (they carry an identity, so two names for one state is
+     * what the annotation forbids -- transferring gives the state a single name, which is fine).
+     * Fields, array elements and call arguments stay copied, so those keep the diagnostic. */
+    if (c->moveOkHere && e->kind == EX_IDENT) {
+        Sym *src = lookup(c, e->u.ident.name);
+        if (src && src->movedLine == 0) {
+            src->movedLine = e->line;
+            src->movedInto = c->moveIntoName;
+            return false;
+        }
+    }
     ckError(c, e->line,
             "Pass it as `ref` / `mut ref` instead: `f(ref s)`, or declare the parameter"
             " `mut ref T`. The state it carries has an identity, so a copy would give two"

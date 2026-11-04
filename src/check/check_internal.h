@@ -111,6 +111,11 @@ typedef struct Sym {
     const char *cname;   /* name used in generated C; a shadowed `a` becomes `a__2` */
     Type       *type;    /* declared type, or the inferred one for an unannotated `let` */
     bool        mut;     /* true for `var`; false for `let` and for payload bindings */
+    /* Line that moved this binding's value out, or 0 while the name still holds one. Only
+     * `@noCopy` values move (a copyable one is copied instead). Using a moved name is an error:
+     * the value lives in the destination and the source name owns nothing. */
+    int         movedLine;
+    const char *movedInto;  /* destination binding, for the diagnostic */
     /* True once the address of this binding has been handed out: `ref x`, `x[..]`, or
      * passing it as a `mut ref` argument.
      *
@@ -359,6 +364,12 @@ typedef struct Checker {
      * `zoneEnter`/`zoneLeaveTo` + `arena_release`). A `yield` inside one of them is a compile
      * error: that block's arena would be gone before the coroutine is resumed. */
     int      placeBoundaryDepth;
+
+    /* Set while checking a `var`/`let` initializer: a `@noCopy` place may be moved into the new
+     * binding instead of being rejected as a copy. `moveIntoName` is the destination's name, for
+     * the diagnostic that tells the reader where the value went. */
+    bool        moveOkHere;
+    const char *moveIntoName;
 
     Vec      coroDeferred;
     Vec      coroBinds;        /* `var x = yield e` bindings (CoroBind), consumed by coroFrameLay */
@@ -997,6 +1008,28 @@ typedef struct {
  * @param lv     Views bound so far in this block.
  * @param stmts  The block's statements.
  * @param i      Index of the statement about to be checked.
+ */
+/**
+ * @brief Record that a `@noCopy` binding is moved into a new name.
+ *
+ * The annotated form passes through `rejectNoCopy`, which honours `Checker.moveOkHere`; the
+ * unannotated form takes `checkExpr`, which never looks at copies, so the transfer is recorded
+ * here. Only a plain name moves.
+ *
+ * @param c     Checker.
+ * @param e     Initializer of the new binding.
+ * @param dest  Name of the destination binding, for the diagnostic.
+ * @return      `true` when a transfer was recorded.
+ */
+bool ckMoveNoCopyInto(Checker *c, Expr *e, const char *dest);
+
+/**
+ * @brief Note the views bound by statement `i` before it is checked.
+ *
+ * @param c     Checker.
+ * @param lv    Per-block list of live views.
+ * @param stmts Block statements.
+ * @param i     Index of the statement about to be checked.
  */
 void liveViewsStmtPre (Checker *c, LiveViews *lv, Vec *stmts, size_t i);
 

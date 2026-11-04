@@ -1,0 +1,10 @@
+/* 反例：值已经移动进别人的字段，再读源名字 ⇒ 必须挡住 ✗ */
+@noCopy
+struct counter { pos: i64 }
+struct box { c: counter }
+fn main() -> i32 {
+    var a: counter = { pos: 1 }
+    var b: box = { c: a }
+    println("不该编过 = ", a.pos)   /* ✗ 读已移动的名字 */
+    return 0
+}

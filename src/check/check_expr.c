@@ -2171,6 +2171,18 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             /* Name resolution is frozen here: codegen prints `cname` directly. This is
              * what tells shadowed names apart (`a` from `a__2`). */
             planSetCName(e, s->cname, RKIND_EXPR);
+            /* A moved `@noCopy` binding has given its value away; reading it here would read the
+             * bits the destination now owns. Copyable values are copied instead of moved, so this
+             * only ever fires for `@noCopy`. */
+            if (s->movedLine) {
+                ckError(c, e->line,
+                        "a `@noCopy` value has one owner: after the move the old name holds"
+                        " nothing. Assign a new value to it, or pass `ref` so both names see the"
+                        " same state",
+                        "`%s` was moved into `%s` and cannot be read here",
+                        e->u.ident.name, s->movedInto ? s->movedInto : "another binding");
+                return ttError(tt);
+            }
             /* Pin the resolved binding itself onto the node. The solving pass at the end
              * of the run happens after every function body has been checked, when the
              * scopes are already popped, so looking the name up again would either fail or

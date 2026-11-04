@@ -1,0 +1,14 @@
+// expect: 塞进字段后 b = 1
+/* 正例：把 `@noCopy` 值**移动**进另一个结构体的字段（与绑定同一条规则：交出一个名字）✓
+ *
+ * 判据：移动之后源名字作废（读它见 errors/use_after_move_field.extc）。
+ */
+@noCopy
+struct counter { pos: i64 }
+struct box { c: counter }
+fn main() -> i32 {
+    var a: counter = { pos: 1 }
+    var b: box = { c: a }       /* 移动，不是拷贝 */
+    println("塞进字段后 b = ", b.c.pos)
+    return 0
+}

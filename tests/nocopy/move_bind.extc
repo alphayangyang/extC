@@ -1,0 +1,18 @@
+// expect: 移动后 b = 1|赋新值后 a = 7
+/* 正例：绑定一个**已有的** `@noCopy` 值是**移动**，不是拷贝（docs/TYPE-MODEL.md §七）
+ *
+ * 判据：
+ *   ① `var b: counter = a` 把值交给 `b`，源名字此后作废（用它会是错误，见 errors/use_after_move.extc）✓
+ *   ② 给作废的名字**赋一个新值**，它就重新可用 ✓
+ */
+@noCopy
+struct counter { pos: i64 }
+fn main() -> i32 {
+    var a: counter = { pos: 1 }
+    var b: counter = a          /* 移动，不是拷贝 */
+    println("移动后 b = ", b.pos)
+
+    a = { pos: 7 }              /* 赋新值 ⇒ 名字重新拥有一个值 */
+    println("赋新值后 a = ", a.pos)
+    return 0
+}

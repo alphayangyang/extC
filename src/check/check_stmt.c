@@ -3937,6 +3937,14 @@ void checkStmt(Checker *c, Stmt *s) {
             /* `let x = e?` is one of the positions that allows `?`: with an annotation the annotation
              * decides whether to dereference, and without one the initializer is a value position. */
             Type *it;
+            /* A binding **takes** a `@noCopy` value instead of copying it: the annotation
+             * promises the state has one name, and a transfer keeps that promise while a copy
+             * would break it. `moveOkHere` turns the copy rejection in `rejectNoCopy` into a
+             * transfer, with `moveIntoName` naming the destination. */
+            const bool savedMoveOk = c->moveOkHere;
+            const char *savedMoveInto = c->moveIntoName;
+            c->moveOkHere = true;
+            c->moveIntoName = s->u.var.name;
             if (s->u.var.init->kind == EX_TRY) it = checkTryInner(c, s->u.var.init);
             else if (s->u.var.ann) {
                 it = checkInto(c, s->u.var.ann, s->u.var.init);
@@ -3954,7 +3962,12 @@ void checkStmt(Checker *c, Stmt *s) {
                  * `checkInto`, so "copying a container that shares storage" has to be checked
                  * separately here; otherwise `var b = a` would produce no warning at all. */
                 warnSharedCopy(c, s->u.var.init, it);
+                /* No annotation means `checkExpr`, which never rejects a copy, so the transfer is
+                 * recorded here for the plain-name case. */
+                ckMoveNoCopyInto(c, s->u.var.init, s->u.var.name);
             }
+            c->moveOkHere = savedMoveOk;
+            c->moveIntoName = savedMoveInto;
 
             /* A stream borrow is the only reference that may not be bound: it is the operator's own
              * borrow of the stream, not a reference the user asked for. */
@@ -4154,6 +4167,13 @@ void checkStmt(Checker *c, Stmt *s) {
                      * fresh binding when a slice of frame storage is wanted. */
                     tsy->frameStore = false;
                 }
+            }
+            /* Assigning a fresh value to a binding that was moved out makes the name usable
+             * again: the name owns a value once more. Done before any target checking so that
+             * `a = make()` on a moved `a` does not trip the "cannot be read" diagnostic. */
+            if (tgt0 && tgt0->kind == EX_IDENT) {
+                Sym *w = lookup(c, tgt0->u.ident.name);
+                if (w) { w->movedLine = 0; w->movedInto = NULL; }
             }
             Type *idxBaseT = NULL;    /* base type of an index target, filled in once resolved */
             if (!assignTargetWritable(tgt0)) {
