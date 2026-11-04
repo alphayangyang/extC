@@ -1244,6 +1244,56 @@ bool computeEffectsTransitive(Checker *c, FuncDef *f) {
     return complete;
 }
 
+/** @brief Expression-side walk callback for `callMayGrow`. */
+static bool growsInExpr(void *ctx, Expr *e);
+/** @brief Statement-side walk callback for `callMayGrow`. */
+static bool growsInStmt(void *ctx, Stmt *s);
+
+/**
+ * @brief Statement-side walk callback for `callMayGrow`.
+ *
+ * @param ctx  Unused.
+ * @param s    Statement whose children are visited.
+ * @return     Callback convention: false to stop the walk when a growing call is found.
+ */
+static bool growsInStmt(void *ctx, Stmt *s) {
+    (void)ctx;
+    AstVisit v = { growsInExpr, growsInStmt, NULL };
+    return astWalkStmtChildren(s, &v);
+}
+
+/**
+ * @brief Expression-side walk callback for `callMayGrow`.
+ *
+ * @param ctx  Unused.
+ * @param e    Expression to test and whose children are visited.
+ * @return     Callback convention: false to stop the walk when found.
+ */
+static bool growsInExpr(void *ctx, Expr *e) {
+    (void)ctx;
+    if (e && e->kind == EX_METHOD && e->u.method.name && ckGrowMethodName(e->u.method.name))
+        return false;
+    AstVisit v = { growsInExpr, growsInStmt, NULL };
+    return astWalkExprChildren(e, &v);
+}
+
+/**
+ * @brief Whether a callee's body may move the storage of a container it was handed.
+ *
+ * A conservative scan: any call to a method whose name `ckGrowMethodName` lists says yes. The
+ * callee's body is checked before its callers, so this sees resolved method targets.
+ *
+ * @param f  Callee; a body-less function cannot grow anything.
+ * @return   true when the body contains a growing call at any depth.
+ */
+bool ckCalleeMayGrow(FuncDef *f) {
+    if (!f || !f->body) return false;
+    AstVisit v = { growsInExpr, growsInStmt, NULL };
+    /* The walker returns false when a callback asked it to stop, which is what the
+     * expression callback does on the first growing call it sees. */
+    return !astWalkStmtChildren(f->body, &v);
+}
+
 /**
  * @brief Check that a call's reference arguments outlive the call, and set the arena level from it.
  *

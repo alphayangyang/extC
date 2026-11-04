@@ -3190,11 +3190,21 @@ static bool growMethodName(const char *n) {
     return false;
 }
 
+/**
+ * @brief Exported alias of `growMethodName` for the call-site rule.
+ *
+ * @param n  Method name, or NULL.
+ * @return   true when the call may move the receiver's storage.
+ */
+bool ckGrowMethodName(const char *n) { return growMethodName(n); }
+
 /** What a scan is looking for; exactly one of the two is set. */
 typedef struct {
     const char *viewName;   /* hit on a use of this identifier */
     const char *ownerName;  /* hit on a growth call on this receiver */
     int         line;       /* line of the growth call that was found */
+    Checker    *c;          /* resolver for call targets; this scan runs before the statement
+                             * is checked, so `planCallee` is not filled in yet */
 } ScanHit;
 
 /**
@@ -3238,6 +3248,24 @@ static bool scanExpr(ScanHit *h, Expr *e) {
         strcmp(e->u.method.recv->u.ident.name, h->ownerName) == 0) {
         h->line = e->line;
         return true;
+    }
+    /* Growth hidden inside a call: `grow(ref v)` moves `v`'s storage without a growing
+     * method at this site, so the hit has to come from the callee's body. */
+    if (h->ownerName && h->c && e->kind == EX_CALL) {
+        /* This scan runs *before* the statement is checked, so the call has no resolved
+         * target yet (`planCallee` is empty); the name is resolved here instead. */
+        FuncDef *calleeF = (e->u.call.callee && e->u.call.callee->kind == EX_IDENT)
+                         ? findFunc(h->c, e->u.call.callee->u.ident.name) : NULL;
+        if (!calleeF || !ckCalleeMayGrow(calleeF)) return false;
+        for (size_t a = 0; a < e->u.call.args.len; a++) {
+            Expr *arg = *(Expr **)vecAt(&e->u.call.args, a);
+            if (arg && arg->kind == EX_REF) arg = arg->u.ref.operand;
+            if (arg && arg->kind == EX_IDENT && arg->u.ident.name &&
+                strcmp(arg->u.ident.name, h->ownerName) == 0) {
+                h->line = e->line;
+                return true;
+            }
+        }
     }
     AstVisit v = { scanExprVisit, NULL, h };
     return !astWalkExprChildren(e, &v);
@@ -3329,7 +3357,7 @@ void liveViewsStmtPre(Checker *c, LiveViews *lv, Vec *stmts, size_t i) {
             if (strcmp(lv->items[v].owner, dropped) != 0) continue;
             bool usedAfter = false;
             for (size_t j = i; j < stmts->len && !usedAfter; j++) {
-                ScanHit use = { lv->items[v].view, NULL, 0 };
+                ScanHit use = { lv->items[v].view, NULL, 0, c };
                 usedAfter = scanStmt(&use, *(Stmt **)vecAt(stmts, j));
             }
             if (!usedAfter) continue;
@@ -3340,11 +3368,11 @@ void liveViewsStmtPre(Checker *c, LiveViews *lv, Vec *stmts, size_t i) {
         }
     }
     for (size_t v = 0; v < lv->len; v++) {
-        ScanHit hit = { NULL, lv->items[v].owner, 0 };
+        ScanHit hit = { NULL, lv->items[v].owner, 0, c };
         if (!scanStmt(&hit, stmt)) continue;
         bool usedAfter = false;
         for (size_t j = i; j < stmts->len && !usedAfter; j++) {
-            ScanHit use = { lv->items[v].view, NULL, 0 };
+            ScanHit use = { lv->items[v].view, NULL, 0, c };
             usedAfter = scanStmt(&use, *(Stmt **)vecAt(stmts, j));
         }
         if (!usedAfter) continue;

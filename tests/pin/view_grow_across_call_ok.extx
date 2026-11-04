@@ -1,0 +1,21 @@
+// Finish with the view, or take the guard: both are accepted.
+use std::data::vector
+use std::io
+
+fn grow(v: mut ref vector<i64>) {
+    var i: i64 = 0
+    while i < 8 { v.push(i)  i = i + 1 }
+}
+
+fn main() {
+    var v: vector<i64> = vector<i64>::withCap(2)
+    v.push(1)
+    var s0: i64 = 0
+    {
+        let s: slice<i64> = v.view()
+        s0 = s[0]
+    }
+    grow(ref v)
+    let g: vectorGuard<i64> = v.borrow()
+    io::cout << f"s0={s0} len={g.len()}\n"
+}

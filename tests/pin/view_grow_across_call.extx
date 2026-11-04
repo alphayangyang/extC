@@ -1,0 +1,18 @@
+// A view is alive while a call moves the container's storage: the growth happens inside
+// the callee, so only the call site can see both halves.
+// expect-reject: still views it
+use std::data::vector
+use std::io
+
+fn grow(v: mut ref vector<i64>) {
+    var i: i64 = 0
+    while i < 8 { v.push(i)  i = i + 1 }
+}
+
+fn main() {
+    var v: vector<i64> = vector<i64>::withCap(2)
+    v.push(1)
+    let s: slice<i64> = v.view()
+    grow(ref v)
+    io::cout << f"s0={s[0]}\n"
+}

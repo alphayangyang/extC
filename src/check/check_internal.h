@@ -362,6 +362,17 @@ typedef struct {
     int            line;
 } CoroBind;
 
+typedef struct {
+    const char *owner;   /* container the view borrows from */
+    const char *view;    /* binding name of the view */
+} LiveView;
+
+/** Per-block list of tracked views; see `liveViewsStmtPre`. */
+typedef struct {
+    LiveView items[16];
+    size_t   len;
+} LiveViews;
+
 typedef struct Checker {
     /* How many enclosing blocks will reclaim their own storage (codegen brackets them with
      * `zoneEnter`/`zoneLeaveTo` + `arena_release`). A `yield` inside one of them is a compile
@@ -993,16 +1004,6 @@ void warnSharedReturn(Checker *c, Expr *e, Type *t);
  Sym *lookup (Checker *c, const char *name);
 
 /** A view bound in a block, tracked so growth underneath it can be rejected. */
-typedef struct {
-    const char *owner;   /* container the view borrows from */
-    const char *view;    /* binding name of the view */
-} LiveView;
-
-/** Per-block list of tracked views; see `liveViewsStmtPre`. */
-typedef struct {
-    LiveView items[16];
-    size_t   len;
-} LiveViews;
 
 /**
  * @brief Report growth of a container that a still-used view of the block borrows from.
@@ -1054,6 +1055,22 @@ void liveViewsStmtPre (Checker *c, LiveViews *lv, Vec *stmts, size_t i);
  * @param s   The statement that was just checked.
  */
 void liveViewsStmtPost(Checker *c, LiveViews *lv, Stmt *s);
+
+/**
+ * @brief Whether a callee's body may move the storage of a container it was handed.
+ *
+ * @param f  Callee; a body-less function cannot grow anything.
+ * @return   true when the body contains a growing call at any depth.
+ */
+bool ckCalleeMayGrow(FuncDef *f);
+
+/**
+ * @brief Whether a call to this method name can move the receiver's storage.
+ *
+ * @param n  Method name, or NULL.
+ * @return   true for the names `growMethodName` lists (`push`, `append`, `grow`, ...).
+ */
+bool ckGrowMethodName(const char *n);
 /* The binding at the root of a place, found by walking through fields, indexes and slices; NULL
  * when the place is not rooted in a binding. */
 /* ---------------------------------------------------------------- Phase contract

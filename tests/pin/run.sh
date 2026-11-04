@@ -40,6 +40,8 @@ neg nested_view_container "$(src nested_view_container.extx)" 'changes the stora
 one view_loop_reuse       "$(src view_loop_reuse.extx)"       'size=30'
 neg view_arg_stored      "$(src view_arg_stored.extx)"      'whose storage moves when it grows'
 one view_arg_snapshot    "$(src view_arg_snapshot.extx)"    'kept=7'
+neg view_grow_across_call "$(src view_grow_across_call.extx)" 'changes the storage that `s` views'
+one view_grow_across_ok   "$(src view_grow_across_call_ok.extx)" 's0=1 len=9'
 
 neg field_store_view     "$(src field_store_view.extx)"     'this field would hold a view of'
 one field_store_snapshot "$(src field_store_snapshot.extx)" 's0=7 n=1 grew=25'
