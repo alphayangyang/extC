@@ -148,19 +148,6 @@ static bool sameExternSignature(FuncDef *a, FuncDef *b) {
 static void checkDeclarations(Checker *c) {
     Module *m = c->m;
 
-    /* `fn f<const N: i64>`: the parser reserves the syntax, and this is where the language says
-     * out loud that it is not implemented. A parse-time "expected `>`" would hide which feature the
-     * program was reaching for. */
-    for (size_t i = 0; i < m->funcs.len; i++) {
-        FuncDef *f = *(FuncDef **)vecAt(&m->funcs, i);
-        if (f->constParams.len > 0) {
-            ckError(c, f->line, NULL,
-                    "`const` parameters (`fn %s<const %s: i64>`) are reserved but not implemented yet",
-                    f->name ? f->name : "?", *(const char **)vecAt(&f->constParams, 0));
-            break;
-        }
-    }
-
     /* Duplicate struct and function names. */
     for (size_t i = 0; i < m->structs.len; i++) {
         if (i + 8 < m->structs.len) __builtin_prefetch(*(StructDef **)vecAt(&m->structs, i + 8), 0, 0);
@@ -5275,6 +5262,21 @@ bool unifyTParams(TypeTable *tt, Vec *tp, Vec *targs, Type *want, Type *got) {
             if (!unifyTParams(tt, tp, targs, *(Type **)vecAt(&want->targs, i),
                               *(Type **)vecAt(&got->targs, i))) return false;
         return true;
+    }
+    /* `[N]T` against a concrete array: the `const` parameter's argument is the array type the
+     * caller passed (that is where the length comes from), then the element types unify. */
+    if (want->kind == TY_ARRAY && want->asize < 0 && want->param && got->kind == TY_ARRAY) {
+        for (size_t i = 0; i < tp->len; i++) {
+            if (strcmp(*(const char **)vecAt(tp, i), want->param) != 0) continue;
+            Type *cur = *(Type **)vecAt(targs, i);
+            /* Two different lengths: keep the first witness, so the instance is built and the
+             * second argument is then checked against that length -- the diagnostic the author
+             * needs ("expects `[3]f64`, found `[2]f64`") comes out of the ordinary argument check
+             * instead of an "cannot infer" message here. */
+            if (!cur) *(Type **)vecAt(targs, i) = got;
+            break;
+        }
+        return unifyTParams(tt, tp, targs, want->inner, got->inner);
     }
     if (ttHasParam(want)) return false;   /* mentions T but the shapes disagree => cannot infer */
     return true;

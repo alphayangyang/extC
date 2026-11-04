@@ -1643,6 +1643,13 @@ def build_items() -> list:
         ["./tests/drop/run.sh"], timeout=600,
         ok_msg=tail1, bad_msg="tests/drop/run.sh", bad_dump=dump_fail(8)))
 
+    # ---- `const` 参数：编译期长度 ----
+    items.append(cmd(
+        "constgen", "tests",
+        "`<const N: i64>`：长度由调用点推出、N 在体内可用、长度不符在调用点报出来",
+        ["./tests/constgen/run.sh"], timeout=600,
+        ok_msg=tail1, bad_msg="tests/constgen/run.sh", bad_dump=dump_fail(8)))
+
     # ---- 动态值 any ----
     items.append(cmd(
         "any", "tests",

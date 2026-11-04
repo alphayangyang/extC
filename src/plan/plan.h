@@ -1252,6 +1252,26 @@ void planSetLamFnPtr(Expr *e, bool v);
  * @param v  true when this statement is an in-place call.
  */
 void planSetCompoundCall(Stmt *s, bool v);
+
+/**
+ * @brief Which `const` parameter an identifier names, or -1 when it names none.
+ *
+ * `[N]T` makes `N` usable inside the body (`for i in 0..N`). A body is checked once, as a
+ * template, so the checker records *which* parameter it is; the value belongs to the instance,
+ * and codegen emits one function per length.
+ *
+ * @param e  Identifier expression.
+ * @return   Index into the function's type-parameter list, or -1.
+ */
+int planLenParam(const Expr *e);
+
+/**
+ * @brief Record that an identifier names a `const` parameter.
+ *
+ * @param e    Identifier expression.
+ * @param idx  Index of the parameter in the function's type-parameter list.
+ */
+void planSetLenParam(Expr *e, int idx);
 /**
  * @brief Is this compound assignment an in-place call?
  *

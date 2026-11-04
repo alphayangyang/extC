@@ -144,6 +144,18 @@ Type *typeParam(Arena *a, const char *name, int idx);
  * @return      A TY_ARRAY type.
  */
 Type *typeArray(Arena *a, int64_t n, Type *elem);
+/**
+ * @brief Build a fixed-array type whose length is a `const` parameter (`[N]T`).
+ *
+ * The length is a value the caller supplies, so the node records the parameter's name and
+ * `asize = -1`; instantiation replaces the pair with a concrete length.
+ *
+ * @param a         Arena that owns the node.
+ * @param lenParam  Name of the `const` parameter that supplies the length.
+ * @param elem      Element type.
+ * @return          A TY_ARRAY type with a symbolic length.
+ */
+Type *typeArraySym(Arena *a, const char *lenParam, Type *elem);
 
 /**
  * @brief Build a function type `fn(params...) -> ret` (TY_FN) from the pieces the parser

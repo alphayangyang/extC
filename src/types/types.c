@@ -161,6 +161,34 @@ Type *ttArray(TypeTable *tt, int64_t n, Type *elem) {
 }
 
 /**
+ * @brief Intern a fixed-array type whose length is a `const` parameter.
+ *
+ * Kept apart from `ttArray` so a symbolic length can never be mistaken for a real one: the
+ * length field is `-1` and the parameter's name is the identity. Two signatures that both write
+ * `[N]T` share this node, and instantiation replaces it with a concrete `ttArray`.
+ *
+ * @param tt        Type table that owns the type.
+ * @param lenParam  Name of the `const` parameter.
+ * @param elem      Element type.
+ * @return          The interned symbolic array type.
+ */
+Type *ttArraySym(TypeTable *tt, const char *lenParam, Type *elem) {
+    for (size_t i = 0; i < tt->instances.len; i++) {
+        Type *c = *(Type **)vecAt(&tt->instances, i);
+        if (c->kind != TY_ARRAY || c->asize >= 0 || !c->param) continue;
+        if (strcmp(c->param, lenParam) == 0 && ttEquals(c->inner, elem)) return c;
+    }
+    Type *t = (Type *)arenaAllocZero(tt->arena, sizeof(Type));
+    t->kind = TY_ARRAY;
+    t->asize = -1;
+    t->param = lenParam;
+    t->inner = elem;
+    t->name = ttMangle(tt, t);
+    *(Type **)vecPush(&tt->instances) = t;
+    return t;
+}
+
+/**
  * @brief Build a `ref T` type.
  *
  * A reference is **deliberately not interned**: it is rare, and the caller sets `mut` /
@@ -388,6 +416,7 @@ Type *ttResolve(TypeTable *tt, Ctx *ctx, Type *t, int line, Vec *params) {
                          "cannot make a fixed array of the type parameter `%s`", e->param);
                 return tt->tError;
             }
+            if (t->asize < 0 && t->param) return ttArraySym(tt, t->param, e);
             return ttArray(tt, t->asize, e);
         }
         /* `fn(A, B) -> R` as the parser wrote it: resolve both halves, then intern through
@@ -478,6 +507,9 @@ const char *ttMangle(TypeTable *tt, Type *t) {
         case TY_REF:
             return arenaPrintf(tt->arena, "Ref_%s", ttMangle(tt, t->inner));
         case TY_ARRAY:
+            if (t->asize < 0 && t->param)
+                return arenaPrintf(tt->arena, "array_P%s_%s", t->param,
+                                   ttMangle(tt, t->inner));
             return arenaPrintf(tt->arena, "array_%lld_%s",
                                (long long)t->asize, ttMangle(tt, t->inner));
         case TY_GENERIC: {
@@ -803,8 +835,21 @@ Type *ttSubstitute(TypeTable *tt, Type *t, Vec *params, Vec *args) {
             return t;
         case TY_REF:
             return refLike(tt, t, ttSubstitute(tt, t->inner, params, args));
-        case TY_ARRAY:
-            return ttArray(tt, t->asize, ttSubstitute(tt, t->inner, params, args));
+        case TY_ARRAY: {
+            Type *inner = ttSubstitute(tt, t->inner, params, args);
+            if (t->asize >= 0 || !t->param) return ttArray(tt, t->asize, inner);
+            /* The length is a `const` parameter: its argument is the array type the caller passed
+             * (`[3]f64`), so the concrete length comes from there while the element type comes from
+             * this type. A missing or non-array binding leaves the type symbolic, and the checker
+             * reports that the length could not be inferred. */
+            for (size_t i = 0; i < params->len; i++) {
+                if (strcmp(*(const char **)vecAt(params, i), t->param) != 0) continue;
+                Type *b = (i < args->len) ? *(Type **)vecAt(args, i) : NULL;
+                if (b && b->kind == TY_ARRAY && b->asize >= 0) return ttArray(tt, b->asize, inner);
+                break;
+            }
+            return ttArraySym(tt, t->param, inner);
+        }
         /* A function type is a constructor too, and it is the one whose parts are *both* walked:
          * a template holding a callback (`fn(T) -> T`) hands back a concrete signature only if the
          * parameter and the return type are substituted here. Falling into `default` would leave
@@ -878,8 +923,13 @@ bool ttEquals(Type *a, Type *b) {
         return a->mut == b->mut && a->nullable == b->nullable &&
                ttEquals(a->inner, b->inner);
 
-    if (a->kind == TY_ARRAY)
-        return a->asize == b->asize && ttEquals(a->inner, b->inner);
+    if (a->kind == TY_ARRAY) {
+        if (a->asize != b->asize) return false;
+        if (a->asize < 0) {
+            if (!a->param || !b->param || strcmp(a->param, b->param) != 0) return false;
+        }
+        return ttEquals(a->inner, b->inner);
+    }
 
     if (a->kind == TY_PARAM)
         return a->tpIndex == b->tpIndex && strcmp(a->param, b->param) == 0;

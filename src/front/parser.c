@@ -2206,7 +2206,11 @@ static FuncDef *parseFunc(Parser *p) {
                              cty ? cty->text : "nothing");
                     return NULL;
                 }
+                /* A `const` parameter is also a type parameter for every later stage: inference
+                 * stores its binding in the same argument vector, and the instance name has to
+                 * differ per length. `constParams` only marks *which* of those names are values. */
                 *(const char **)vecPush(&fd->constParams) = cp->text;
+                *(const char **)vecPush(&fd->typeParams) = cp->text;
                 *(const char **)vecPush(&p->constParams) = cp->text;   /* visible to `[N]T` in this signature */
                 if (accept(p, ",")) { skipNl(p); continue; }
                 break;
@@ -2409,9 +2413,8 @@ static Type *parseTypeInner(Parser *p) {
     if (at(p, "[")) {
         Token *br = take(p);
         /* `[N]f64` where `N` is a `const` parameter of the enclosing signature: the length is a
-         * compile-time value, but it is not known until the call is seen. The shape is accepted
-         * here so the checker can say "not supported yet" at the declaration; a literal is still
-         * the only length the pipeline can build a type from. */
+         * value the caller supplies, so the node records the name instead of a number and the type
+         * table fills the number in once the arguments are known. */
         if (atKind(p, TK_IDENT)) {
             Token *cp = cur(p);
             bool isConst = false;
@@ -2420,11 +2423,9 @@ static Type *parseTypeInner(Parser *p) {
             if (isConst) {
                 take(p);
                 if (!expect(p, "]", NULL)) return NULL;
-                if (!parseType(p)) return NULL;
-                ctxError(p->ctx, cp->line, cp->col, NULL,
-                         "array lengths that name a `const` parameter (`[%s]T`) are reserved but "
-                         "not implemented yet", cp->text);
-                return NULL;
+                Type *symElem = parseType(p);
+                if (!symElem) return NULL;
+                return typeArraySym(p->arena, cp->text, symElem);
             }
         }
         if (!atKind(p, TK_INT)) {

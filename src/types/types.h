@@ -280,6 +280,18 @@ Type *ttViewReadonly(TypeTable *tt, Type *t);
  * @return      The interned array type: equal length and element type yield the same pointer.
  */
 Type *ttArray(TypeTable *tt, int64_t n, Type *elem);
+/**
+ * @brief Intern a fixed-array type whose length is a `const` parameter.
+ *
+ * Kept apart from `ttArray` so a symbolic length can never be mistaken for a real one: the
+ * length field is `-1` and the parameter's name is the identity.
+ *
+ * @param tt        Type table that owns the type.
+ * @param lenParam  Name of the `const` parameter.
+ * @param elem      Element type.
+ * @return          The interned symbolic array type.
+ */
+Type *ttArraySym(TypeTable *tt, const char *lenParam, Type *elem);
 
 /**
  * @brief Tell whether a type mentions a type parameter at any depth.

@@ -3017,6 +3017,20 @@ static const char *exIdent(CG *g, Expr *e) {
         }
         return arenaPrintf(g->arena, "&%s", cFuncName(g, planCallee(e)));
     }
+    /* `for i in 0..N`: `N` is a `const` parameter, so the number is the instance's argument -- the
+     * array type the caller passed. The body is shared, the emission is not. */
+    {
+        int lp = planLenParam(e);
+        if (lp >= 0 && g->curFunc && (size_t)lp < g->curFunc->targs.len) {
+            Type *b = *(Type **)vecAt(&g->curFunc->targs, (size_t)lp);
+            if (b && b->kind == TY_ARRAY && b->asize >= 0)
+                return arenaPrintf(g->arena, "%lld", (long long)b->asize);
+            ctxError(g->ctx, e->line, 1, NULL,
+                     "the length `%s` could not be inferred from the call: pass an array whose"
+                     " length is known", e->u.ident.name);
+            return "0";
+        }
+    }
     const char *cn = planCName(e) ? planCName(e) : e->u.ident.name;
     /* A coroutine's parameters and its live-across-`yield` locals live in the frame, which is a
      * plain struct: every mention of one becomes a field access (`FuncDef.coroFrame` is the list
@@ -10325,6 +10339,13 @@ static void unitBody(CG *g, SUnit *u) {
 
     cgLine(g, "struct %s {", unitName(u));
     g->indent++;
+    if (u->inst && u->inst->kind == TY_ARRAY && u->inst->asize < 0) {
+        /* A type whose length is still a `const` parameter is a template, not a value: nothing can
+         * be laid out for it, and instantiation replaces it before any declaration mentions it. */
+        g->indent--;
+        cgLine(g, "};");
+        return;
+    }
     if (u->inst && u->inst->kind == TY_ARRAY) {
         /* An array is a struct holding a bare C array; that is where its value
          * semantics come from. */

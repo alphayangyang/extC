@@ -144,6 +144,8 @@ typedef struct {
     /* `x += y` on a type that defines `fn +=`: the statement is a call, so codegen emits the call and
      * writes nothing back (assigning the result would need the hook to return a value). */
     bool        compoundCall;
+    /* PLAN_LEN_PARAM: which `const` parameter this identifier names, or -1. */
+    int         lenParam;
     /* `new T[n]` in the context of a `@buffer` type: the initializer is that type's one-argument
      * constructor, not an allocation. Set by the checker, read by codegen. */
     bool        newAsBuffer;

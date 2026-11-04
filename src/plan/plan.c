@@ -95,6 +95,7 @@
 #define PLAN_COMPOUND_CALL       90   /* `x += y` where the type defines `fn +=`: a call, not an assign */
 #define PLAN_NEW_AS_BUFFER       91   /* `new T[n]` whose context is a `@buffer` type: its constructor */
 #define PLAN_VAR_CLONE           92   /* `var x = <place>` where the type is `@value`: the copy is `clone` */
+#define PLAN_LEN_PARAM           93   /* the identifier names a `const` parameter: value comes from the instance */
 #define PLAN_DEREF               63
 #define PLAN_BOXED_CORO          64
 #define PLAN_CORO_KIND           65
@@ -1189,6 +1190,26 @@ void planSetCompoundCall(Stmt *s, bool v) {
     if (!r) return;
     r->compoundCall = v;
     resultsSetBit(r, PLAN_COMPOUND_CALL);
+}
+
+/**
+ * @brief @see plan.h
+ */
+int planLenParam(const Expr *e) {
+    NodeResults *r = resultsOf(e, false);
+    if (!r || !resultsBit(r, PLAN_LEN_PARAM)) return -1;
+    return r->lenParam;
+}
+
+/**
+ * @brief @see plan.h
+ */
+void planSetLenParam(Expr *e, int idx) {
+    if (!e) return;
+    NodeResults *r = resultsAs(e, true, RKIND_EXPR, __LINE__);
+    if (!r) return;
+    r->lenParam = idx;
+    resultsSetBit(r, PLAN_LEN_PARAM);
 }
 /**
  * @brief Is this declaration's initializer a copy that must go through `clone`?

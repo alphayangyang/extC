@@ -2184,6 +2184,21 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                             e->u.ident.name, DN(owner), DN(owner), e->u.ident.name);
                     return ttError(tt);
                 }
+                /* `[N]T` makes `N` usable in the body: it is a value supplied by the caller, so the
+                 * template records which parameter it is and each instance gets the number. */
+                if (c->curFunc && c->curFunc->constParams.len > 0) {
+                    for (size_t ci = 0; ci < c->curFunc->constParams.len; ci++) {
+                        if (strcmp(*(const char **)vecAt(&c->curFunc->constParams, ci),
+                                   e->u.ident.name) != 0) continue;
+                        for (size_t pi = 0; pi < c->curFunc->typeParams.len; pi++) {
+                            if (strcmp(*(const char **)vecAt(&c->curFunc->typeParams, pi),
+                                       e->u.ident.name) != 0) continue;
+                            planSetLenParam(e, (int)pi);
+                            e->type = c->tI64;
+                            return c->tI64;
+                        }
+                    }
+                }
                 ckError(c, e->line, "every name must be declared first: locals, parameters, globals,"
                                 " and imported module members all count",
                         "undefined name `%s`", e->u.ident.name);

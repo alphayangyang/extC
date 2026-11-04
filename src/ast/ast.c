@@ -61,6 +61,28 @@ Type *typeArray(Arena *a, int64_t n, Type *elem) {
 }
 
 /**
+ * @brief Build a fixed-array type whose length is a `const` parameter (`[N]T`).
+ *
+ * The parser cannot know the length: it is a value supplied by the caller. The node records the
+ * parameter's name and `asize = -1`, which is the marker `ttResolve`, `ttEquals`, `ttSubstitute`,
+ * and `unifyTParams` all test for; every one of them either carries the name through or replaces
+ * it with a concrete length once the type arguments are known.
+ *
+ * @param a         Arena that owns the node.
+ * @param lenParam  Name of the `const` parameter that supplies the length.
+ * @param elem      Element type.
+ * @return          A TY_ARRAY type with a symbolic length.
+ */
+Type *typeArraySym(Arena *a, const char *lenParam, Type *elem) {
+    Type *t = (Type *)arenaAllocZero(a, sizeof(Type));
+    t->kind = TY_ARRAY;
+    t->asize = -1;
+    t->param = lenParam;
+    t->inner = elem;
+    return t;
+}
+
+/**
  * @brief Build a function type `fn(params...) -> ret` (TY_FN) from the pieces the parser
  * hands over.
  *

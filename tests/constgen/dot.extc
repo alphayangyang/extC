@@ -1,0 +1,20 @@
+// 判据：`<const N: i64>` 让长度成为可推导的编译期参数
+//
+// `[N]T` 里的 N 由调用点传进来的数组长度决定，`N` 在函数体里也能当整数用。
+// 两个长度不同的调用点是两个实例（产物里 `dot_array_3_f64` 与 `dot_array_2_f64`）。
+fn dot<const N: i64>(a: [N]f64, b: [N]f64) -> f64 {
+    var s: f64 = 0.0
+    for i in 0..N { s = s + a[i] * b[i] }
+    return s
+}
+
+fn lengthOf<const N: i64>(a: [N]f64) -> i64 { return N }
+
+fn main() {
+    var v3: [3]f64 = [1.0, 2.0, 3.0]
+    var v2: [2]f64 = [4.0, 5.0]
+    println(dot(v3, v3))
+    println(dot(v2, v2))
+    println(lengthOf(v3))
+    println(lengthOf(v2))
+}
