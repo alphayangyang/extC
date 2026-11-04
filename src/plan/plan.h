@@ -1241,6 +1241,24 @@ void planSetCallViaFn(Expr *e, bool v);
  * @param v  `true` when the literal's value is the code pointer.
  */
 void planSetLamFnPtr(Expr *e, bool v);
+/**
+ * @brief Record that a compound assignment is a call of the type's `fn +=` hook.
+ *
+ * `x += y` means `x = x + y` by default. A type that defines the compound form turns the statement
+ * into a call that may write the receiver in place, and then the result is not assigned back: the
+ * hook's job is the write. Codegen reads this bit to emit the call alone.
+ *
+ * @param s  The assignment statement.
+ * @param v  true when this statement is an in-place call.
+ */
+void planSetCompoundCall(Stmt *s, bool v);
+/**
+ * @brief Is this compound assignment an in-place call?
+ *
+ * @param s  The assignment statement.
+ * @return   true when the type defines the compound form.
+ */
+bool planCompoundCall(const Stmt *s);
 
 /**
  * @brief Get whether a lambda literal is used as a bare `fn(...)` function pointer.

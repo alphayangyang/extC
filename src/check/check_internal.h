@@ -1574,6 +1574,12 @@ void applyCycleMerges(Checker *c);
  *              `<<` and `>>`.
  */
  _Bool isOverloadableOp (const char *name);
+/** @brief Is `op` one of the compound assignment forms (`+=` `-=` `*=` `/=` `%=`)?
+ *
+ *  @param op  Operator spelling.
+ *  @return    true when it is a compound form.
+ */
+_Bool isCompoundOp     (const char *op);
 /**
  * @brief Tell whether a name is an overloadable arithmetic operator.
  *

@@ -92,6 +92,7 @@
 #define PLAN_ANY_BOX             87   /* an expression whose value is boxed into an `any` */
 #define PLAN_ANY_TO              88   /* an `any` value unboxed into a concrete type: which one */
 #define PLAN_DYN_CALL            89   /* a method call on an `any`: dispatch by name at run time */
+#define PLAN_COMPOUND_CALL       90   /* `x += y` where the type defines `fn +=`: a call, not an assign */
 #define PLAN_DEREF               63
 #define PLAN_BOXED_CORO          64
 #define PLAN_CORO_KIND           65
@@ -1159,6 +1160,34 @@ PLAN_GET(planAnyTo, const Type *, anyTo, PLAN_ANY_TO, NULL)
 PLAN_SET(planSetAnyTo, const Type *, anyTo, PLAN_ANY_TO)
 PLAN_GET(planDynCall, bool, dynCall, PLAN_DYN_CALL, false)
 PLAN_SET(planSetDynCall, bool, dynCall, PLAN_DYN_CALL)
+/**
+ * @brief Is this compound assignment a call of the type's `fn +=` hook?
+ *
+ * `x += y` is a **statement**, so these two accessors are written out instead of using the
+ * expression macros: the plan table separates statement slots from expression slots, and a cast
+ * would land in the wrong one.
+ *
+ * @param s  The assignment statement.
+ * @return   true when the statement is an in-place call rather than `x = x + y`.
+ */
+bool planCompoundCall(const Stmt *s) {
+    NodeResults *r = resultsOf(s, false);
+    return r && resultsBit(r, PLAN_COMPOUND_CALL) && r->compoundCall;
+}
+
+/**
+ * @brief Record that a compound assignment is an in-place call.
+ *
+ * @param s  The assignment statement.
+ * @param v  true when the type defines the compound form and the statement is a call.
+ */
+void planSetCompoundCall(Stmt *s, bool v) {
+    if (!s) return;
+    NodeResults *r = resultsAs(s, true, RKIND_STMT, __LINE__);
+    if (!r) return;
+    r->compoundCall = v;
+    resultsSetBit(r, PLAN_COMPOUND_CALL);
+}
 PLAN_GET(planPadKind, PlanPadKind, padKind, PLAN_PAD_KIND, PLAN_PAD_NONE)
 PLAN_SET(planSetPadKind, PlanPadKind, padKind, PLAN_PAD_KIND)
 

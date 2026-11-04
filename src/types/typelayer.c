@@ -45,6 +45,21 @@ bool isEqualityOp(const char *op) {
 }
 
 /**
+ * @brief Is `op` one of the compound assignment forms `+=` `-=` `*=` `/=` `%=`?
+ *
+ * These are **statement** hooks: `x += y` means `x = x + y` unless the type defines `fn +=` on a
+ * writable receiver, in which case it is a call that may write in place. `+` builds a value and
+ * `+=` may update one, so they are separate names with separate overload sets.
+ *
+ * @param op  Operator spelling.
+ * @return    `true` when it is a compound assignment form.
+ */
+bool isCompoundOp(const char *op) {
+    return strcmp(op, "+=") == 0 || strcmp(op, "-=") == 0 || strcmp(op, "*=") == 0 ||
+           strcmp(op, "/=") == 0 || strcmp(op, "%=") == 0;
+}
+
+/**
  * @brief Tell whether `name` is an overloadable operator name (a name a type may define
  * several times).
  *
@@ -57,7 +72,8 @@ bool isEqualityOp(const char *op) {
  */
 bool isOverloadableOp(const char *name) {
     return isCmpOp(name) || isArithOp(name) ||
-           strcmp(name, "<<") == 0 || strcmp(name, ">>") == 0;
+           strcmp(name, "<<") == 0 || strcmp(name, ">>") == 0 ||
+           isCompoundOp(name);
 }
 
 /**

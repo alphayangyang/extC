@@ -141,6 +141,9 @@ typedef struct {
     const Type *anyTo;
     bool        anyBox;
     bool        dynCall;        /* a method call on an `any`: dispatch by the receiver's descriptor */
+    /* `x += y` on a type that defines `fn +=`: the statement is a call, so codegen emits the call and
+     * writes nothing back (assigning the result would need the hook to return a value). */
+    bool        compoundCall;
     uint64_t    addrMask;
     /* ---- call / receiver facts ---- */
     Expr       *extDom;        /* `EX_EXT`: the domain this task is handed to */

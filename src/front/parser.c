@@ -1906,6 +1906,10 @@ static Token *expectFuncName(Parser *p) {
     if (at(p, "==") || at(p, "!=") || at(p, "<") || at(p, "<=") ||
         at(p, ">")  || at(p, ">=") || at(p, "+") || at(p, "-") ||
         at(p, "*")  || at(p, "/")  || at(p, "%")) return take(p);
+    /* The compound forms are statement-level hooks: `x += y` is `x = x + y` unless the type says
+     * otherwise, and saying otherwise means defining `fn +=` on a `mut ref` receiver. They are
+     * separate names from `+` on purpose -- `+` builds a value, `+=` may write in place. */
+    if (at(p, "+=") || at(p, "-=") || at(p, "*=") || at(p, "/=") || at(p, "%=")) return take(p);
     /* `[]` and `[]=` arrive as three or four ordinary tokens, so they are fused here the same way
      * `<<` is: the operator spelling is what the lookup and the mangler key on. */
     if (at(p, "[")) {

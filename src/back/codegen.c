@@ -1020,6 +1020,10 @@ static const char *cSymName(CG *g, const char *name) {
         { "/",  "div" }, { "%",  "rem" },
         { "<<", "shl" }, { ">>", "shr" },
         { "[]", "idx" }, { "[]=", "idxset" },
+        /* The compound assignment hooks are separate names from their value-building cousins, so
+         * they get their own C fragments (`+=` is not `add`). */
+        { "+=", "iadd" }, { "-=", "isub" }, { "*=", "imul" },
+        { "/=", "idiv" }, { "%=", "irem" },
         { NULL, NULL }
     };
     for (size_t i = 0; MAP[i].extc; i++)
@@ -8471,7 +8475,9 @@ static void genStmtInner(CG *g, Stmt *s) {
              * assignment of its call - the checker has already required a target with no
              * call in it, because the call names the target a second time. */
             if (s->u.assign.op) {
-                if (s->u.assign.opExpr && planCallee(s->u.assign.opExpr))
+                if (planCompoundCall(s) && s->u.assign.opExpr)
+                    cgLine(g, "%s;", genBin(g, s->u.assign.opExpr));
+                else if (s->u.assign.opExpr && planCallee(s->u.assign.opExpr))
                     cgLine(g, "%s = %s;", tgt, genBin(g, s->u.assign.opExpr));
                 else
                     cgLine(g, "%s %s %s;", tgt, s->u.assign.op, val);

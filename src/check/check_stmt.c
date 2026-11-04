@@ -4327,6 +4327,24 @@ void checkStmt(Checker *c, Stmt *s) {
             if (s->u.assign.op) {
                 Type *lt = checkExpr(c, s->u.assign.target);
                 if (ttIsError(lt)) return;
+                /* A type may define the compound form itself: `fn +=(self: mut ref T, x: U)` turns
+                 * `a += b` into a call, which is what lets a string append in place instead of
+                 * building a new value and assigning it. `[]=` takes the same road below. */
+                if (findMethod(ttBase(lt), s->u.assign.op)) {
+                    Vec args;
+                    vecInit(&args, c->arena, sizeof(void *));
+                    *(Expr **)vecPush(&args) = s->u.assign.value;
+                    Expr *call = exprNew(c->arena, EX_METHOD, s->line);
+                    call->u.method.recv = s->u.assign.target;
+                    call->u.method.name = s->u.assign.op;
+                    call->u.method.args = args;
+                    /* The statement changes shape, so the union is overwritten only after every read
+                     * of the assignment fields is done. */
+                    s->kind = ST_EXPR;
+                    s->u.expr.expr = call;
+                    checkExpr(c, call);
+                    return;
+                }
                 if (lt->kind == TY_REF) {
                     ckError(c, s->line,
                             "a compound assignment writes the object, so write through the"
@@ -4343,6 +4361,15 @@ void checkStmt(Checker *c, Stmt *s) {
                 if (ttIsError(rt)) return;
                 if (requireMutable(c, s->u.assign.target, s->line, "write")) return;
                 checkStoreEscape(c, s->u.assign.value, s->u.assign.target, s->line);
+                /* The type's own `fn +=` (and friends) writes the receiver, so there is no result to
+                 * store: the statement is the call. Otherwise `x += y` is `x = x + y` and the result
+                 * has to fit the target. */
+                FuncDef *hook = planCallee(s->u.assign.opExpr);
+                if (hook && hook->name && isCompoundOp(hook->name) &&
+                    strcmp(hook->name, s->u.assign.op) == 0) {
+                    planSetCompoundCall(s, true);
+                    return;
+                }
                 checkAssignable(c, lt, rt, s->u.assign.value, "compound assignment");
                 return;
             }

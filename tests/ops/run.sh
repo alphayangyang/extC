@@ -57,6 +57,7 @@ run_case conv_int_float
 run_case concrete
 run_case teeth
 run_case generic
+run_case compound_hook
 run_case builtin
 
 echo "== ① 流运算符 << 与 >>：它们是两个 < / > 记号，却在可重载集合里 =="

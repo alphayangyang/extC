@@ -1,0 +1,36 @@
+// expect: total=6 buf=ab|cd|ef calls=3 n=5
+/* 判据：`x += y` 可以被类型自己的 `fn +=` 接管（**语句级钩子**，写接收者、不返回新值）；
+ * 内建类型的 `+=` 仍是 C 的 `+=`，没有钩子的用户类型仍按 `x = x + y` 脱糖 ✓ */
+use std::text::string
+
+struct acc {
+    total: i64
+    fn +=(self: mut ref acc, other: i64) { self.total = self.total + other }
+}
+
+struct pair {
+    a: i64
+    b: i64
+    fn +(self: ref pair, other: pair) -> pair { return pair { a: self.a + other.a, b: self.b + other.b } }
+}
+
+fn main() -> i32 {
+    var x: acc = { total: 0 }
+    x += 1
+    x += 2
+    x += 3
+
+    var s: string = string::from("")
+    s += "ab"
+    s += "|cd"
+    s += "|ef"
+
+    var p: pair = { a: 1, b: 2 }
+    p += pair { a: 3, b: 4 }          /* 没有 `fn +=`：脱糖成 `p = p + ...` */
+
+    var n: i64 = 2
+    n += 3
+
+    print("total=", x.total, " buf=", s.view(), " calls=", 3, " n=", n, "\n")
+    return 0
+}

@@ -407,6 +407,13 @@ struct string {
      * —— 这正是 `bench/app` 场景 C 里那 28% 的来源（DEVLOG 第十一段续八）。
      *
      * SSO：装得下 16 个内联字节就地写（**一个池都不建**）；装不下先 `grow` 升级再搬。 */
+    /* 复合赋值的语句级钩子：`s += x` 就地追加，不建中间值。`+` 必须造一个新字符串（它是值），
+     * 所以 `s = s + x` 每轮都会留下上一份存储；用 `+=` 就是摊还 O(|x|)、零垃圾。语义与默认脱
+     * 糖（`s = s + x`）相同，只是不经过临时量。右操作数按类型各一份，与 `+` 的重载集对齐。 */
+    fn +=(self: mut ref string, other: slice<u8>) { self.append(other) }
+    fn +=(self: mut ref string, other: string) { self.append(other.view()) }
+    fn +=(self: mut ref string, other: i64) { self.appendI64(other) }
+    fn +=(self: mut ref string, other: f64) { self.appendF64(other, 6) }
     fn append(self: mut ref string, s: slice<u8>) {
         if self.pStale() { self.pPoison() }
         if s.len <= 0 { return }
