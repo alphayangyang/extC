@@ -63,8 +63,17 @@
   deeper scope (depth 1) than the arena this call may store it in (depth 0)"；
 - `tools/gate_escape.py`：逃逸健全性语料变红。
 
-根因方向（未查完）：让容器成为"会建池的类型"会改掉调用点 **arena 层级**的推断，而协程帧与
-逃逸语料都建立在那套层级上。要重做这件事，得先把"容器的板块归谁、调用点的 home arena 取哪一层"
+根因（已用 `EXTC_DBG_REFARGS=1` 定位）：让容器成为"会建池的类型"之后，`tests/coro/statemachine.extc`
+里 `handle()` 的效果摘要从 `addr=0x0 cont=0x0` 变成 `addr=0x1 cont=0x1`（它把视图存进了一个
+板块底的容器），`step()` 继承这两个位；调用点随即检查"被存进去的值必须活得不比目的地短"，而
+目的地的深度由 `targetDepth` 回答 —— **板块被建模成 home（深度 0）**，于是要求 `depth 0`，
+`ref f`（深度 1）被拒。
+
+也就是说卡点不是一个 if，而是**板块的深度模型**：今天的规则是"池生在 home"，而 `@place` 的语义是
+"存储住在它所在的那个地方"。要让 `varArray` 搬上板块，得先让 `targetDepth`/`calleeCreatesPool`
+这条链按"池出生的那个 place"给深度，而不是一律 home。这也是 P2 那条逃逸规则的同一件事：
+`string`/`vector` 的板块现在借的是 home 的深度 0（所以它们当目的地时永远是"活得最久"），
+更精确的模型是让板块随出生点。要重做这件事，得先把"容器的板块归谁、调用点的 home arena 取哪一层"
 从"类型是否建池"里拆出来 —— 那正是 P2 剩下的那条逃逸规则（返回视图的深度取自接收者）。
 
 数据留档：峰值对照见本文件开头的 `buf` 一行；行为差异（增长后旧视图从"静默快照"变成悬垂）
