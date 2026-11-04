@@ -8795,6 +8795,18 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         if (replayInLambdaInstances(&c, tt, ec->func, replayOpRecord, ec)) continue;
     }
 
+    /* Every instance of a type with a `@drop` hook needs that hook's body: the instance body calls
+     * it by the **instance** name, so the template alone leaves the C with an undeclared function.
+     * A `var` that declares such a value registers the instance through its own statement, but a
+     * value that only ever appears as a temporary, such as `take(buf<i64>::withCap(4))`, has no such
+     * site, so the registration is done here for every instance. */
+    for (size_t i = 0; i < tt->instances.len; i++) {
+        Type *inst = *(Type **)vecAt(&tt->instances, i);
+        if (!inst || !inst->sdef || !inst->sdef->dropHook) continue;
+        if (provisionalInstance(&inst->targs)) continue;
+        planSetInstUsed(inst->sdef->dropHook, inst->name);
+    }
+
     /* Deferred method calls on a type parameter: the same shape as the operator batch
      * above -- replayed once per concrete instance, with the instance named in the message.
      *

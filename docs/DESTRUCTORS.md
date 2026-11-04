@@ -53,10 +53,16 @@ Automatic, emitted by the compiler as part of leaving a place:
 | overwrite of the place (`f = ofstream::open(..)?`) | old value's drop, then store |
 | end of program | globals with `@drop`, reverse declaration order, before arena teardown |
 | trap | drops of the current block chain run first, then the trap message (keeps ASan clean) |
+| a by-value parameter of the function exiting | before the block arenas are torn down |
 
 Fields of a `@drop` type die with it: the compiler runs the type's `@drop` body first, then drops the
 fields in reverse declaration order (same as C++ members / Rust `Drop`+fields). A field of a `@drop`
 type thus never needs manual cleanup.
+
+A parameter passed **by value** is the callee's copy, so the callee owns it and drops it on the way
+out; a `ref` or a view parameter names the caller's storage and drops nothing. That is also why only a
+temporary can be passed by value to a `@noCopy` type: a named variable would be a second name for one
+state, so the checker asks for `ref` or for a move instead.
 
 What is **not** automatic: nothing inside the `@drop` body is generated for you; if the type holds a
 raw fd and does not close it, that is a leak (same as C++).

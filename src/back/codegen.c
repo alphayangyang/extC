@@ -6527,6 +6527,32 @@ static void genDropValue(CG *g, const char *path, Type *t, int depth) {
     }
 }
 
+/**
+ * @brief Emit the drop of every by-value parameter that owns storage, at the function's exit.
+ *
+ * A parameter passed by value is the callee's copy: for a type with `@drop` (or with fields that
+ * have one) the callee owns it, so leaving the function has to hand the storage back -- the same
+ * rule that makes a local's death the mirror image of its construction. A `ref` or a view parameter
+ * names the caller's storage and drops nothing.
+ *
+ * The drops run right after the shared epilogue label and **before** the block arenas are destroyed:
+ * a hook may still read through the value (its storage is a plate, not an arena, but the reads go
+ * through the same struct).
+ *
+ * @param g  The generator state.
+ * @param f  The function being emitted.
+ */
+static void genParamDrops(CG *g, FuncDef *f) {
+    for (size_t i = 0; i < f->params.len; i++) {
+        Param *p = *(Param **)vecAt(&f->params, i);
+        if (!p || !p->type || !p->cname) continue;
+        Type *pt = subst(g, p->type);
+        if (!pt || pt->kind == TY_REF || ttIsViewType(pt)) continue;
+        if (!typeNeedsDrop(g, pt, 0)) continue;
+        genDropValue(g, p->cname, pt, 0);
+    }
+}
+
 /** @brief Emit the hooks for one block's locals; see the declaration for the timing rules. */
 static void genBlockTailDrops(CG *g, Stmt *block) {
     for (size_t i = block->u.block.stmts.len; i-- > 0;) {
@@ -9722,6 +9748,7 @@ static void genFunc(CG *g, FuncDef *f) {
         g->indent--;
         cgLine(g, "__extc_ret:");
         g->indent++;
+        genParamDrops(g, f);   /* a by-value parameter is the callee's copy: hand its storage back */
         if (tlsOwnerFrame) cgLine(g, "extc_rc_tlsDepth--;");   /* paired with the prologue's increment */
         /* `destroy`, not `release`: this is the frame's last exit, so the block the
          * arena kept for the next round has to go too. Emitting `release` here would

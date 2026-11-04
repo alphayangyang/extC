@@ -1,0 +1,21 @@
+// expect: n=0 leak=0 take=0
+/* 判据：按值传进函数的 `@noCopy` 参数是**被调用者的副本**，函数退出时它要跑自己的 `@drop`
+ * 把存储还回去；只有临时量能这样传（具名变量必须显式 `ref` 或先移动）。 */
+use std::io
+use std::sys::pool as pool
+use std::data::buf
+
+fn takeIt(b: buf<i64>) -> i64 { return b.len() }
+
+fn main() -> i32 {
+    let base: i64 = pool::extc_pool_bytesLive()
+    var i: i64 = 0
+    var acc: i64 = 0
+    while i < 20000 {
+        acc = acc + takeIt(buf<i64>::withCap(4))
+        i = i + 1
+    }
+    let after: i64 = pool::extc_pool_bytesLive()
+    print("n=", acc, " leak=", after - base, " take=", takeIt(buf<i64>::withCap(8)), "\n")
+    return 0
+}
