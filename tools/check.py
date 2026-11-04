@@ -1629,6 +1629,13 @@ def build_items() -> list:
         ["./tests/pin/run.sh"], timeout=600,
         ok_msg=tail1, bad_msg="tests/pin/run.sh", bad_dump=dump_fail(8)))
 
+    # ---- `@value` 拷贝走 clone ----
+    items.append(cmd(
+        "copy", "tests",
+        "`@value`：从 place 拷贝调用 `clone`，临时量仍移动（拷贝语义绑标签）",
+        ["./tests/copy/run.sh"], timeout=600,
+        ok_msg=tail1, bad_msg="tests/copy/run.sh", bad_dump=dump_fail(8)))
+
     # ---- `@drop` 交还状态 ----
     items.append(cmd(
         "drop", "tests",

@@ -1,0 +1,9 @@
+/* 判据：`@value`（拷贝要克隆）与 `@noCopy`（不许拷贝）互斥。 */
+@value
+@noCopy
+struct bad {
+    @private x: i64
+    fn clone(self: ref bad) -> bad { return bad { x: self.x } }
+}
+
+fn main() -> i32 { return 0 }

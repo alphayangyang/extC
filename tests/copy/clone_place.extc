@@ -1,0 +1,22 @@
+/* 判据：`@value` 类型从**place**拷贝时调用 `clone`，两个值各有自己的存储 ——
+ * 改 `c` 不会碰 `a`（修复前是位拷贝，两者共享同一个池，`a` 的缓冲甚至在 `c` 增长时被 free）。 */
+use std::io
+use std::data::buf
+
+@value
+struct blob {
+    @private b: buf<i64>
+    fn clone(self: ref blob) -> blob { return blob { b: self.b.clone() } }
+    fn push(self: mut ref blob, v: i64) { self.b.push(v) }
+    fn len(self: ref blob) -> i64 { return self.b.len() }
+    fn at(self: ref blob, i: i64) -> i64 { return self.b.view()[i] }
+}
+
+fn main() -> i32 {
+    var a: blob = blob { b: buf<i64>::withCap(4) }
+    a.push(1)
+    var c: blob = a
+    c.push(99)
+    io::cout << "a=" << a.len() << "/" << a.at(0) << " c=" << c.len() << "/" << c.at(1) << "\n"
+    return 0
+}

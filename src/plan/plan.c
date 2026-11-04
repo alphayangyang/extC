@@ -94,6 +94,7 @@
 #define PLAN_DYN_CALL            89   /* a method call on an `any`: dispatch by name at run time */
 #define PLAN_COMPOUND_CALL       90   /* `x += y` where the type defines `fn +=`: a call, not an assign */
 #define PLAN_NEW_AS_BUFFER       91   /* `new T[n]` whose context is a `@buffer` type: its constructor */
+#define PLAN_VAR_CLONE           92   /* `var x = <place>` where the type is `@value`: the copy is `clone` */
 #define PLAN_DEREF               63
 #define PLAN_BOXED_CORO          64
 #define PLAN_CORO_KIND           65
@@ -1189,6 +1190,34 @@ void planSetCompoundCall(Stmt *s, bool v) {
     r->compoundCall = v;
     resultsSetBit(r, PLAN_COMPOUND_CALL);
 }
+/**
+ * @brief Is this declaration's initializer a copy that must go through `clone`?
+ *
+ * `@value` types own storage, so copying one from a place would make two values share it. The
+ * temporary case is a move, not a copy, and is not marked here.
+ *
+ * @param s  The declaration statement.
+ * @return   true when codegen must emit `<type> x = Type_clone(&(init));`.
+ */
+bool planVarClone(const Stmt *s) {
+    NodeResults *r = resultsOf(s, false);
+    return r && resultsBit(r, PLAN_VAR_CLONE) && r->varClone;
+}
+
+/**
+ * @brief Record that a declaration's initializer is a `clone` call.
+ *
+ * @param s  The declaration statement.
+ * @param v  true when the type is `@value` and the initializer is a place.
+ */
+void planSetVarClone(Stmt *s, bool v) {
+    if (!s) return;
+    NodeResults *r = resultsAs(s, true, RKIND_STMT, __LINE__);
+    if (!r) return;
+    r->varClone = v;
+    resultsSetBit(r, PLAN_VAR_CLONE);
+}
+
 /**
  * @brief Is this `new` expression the constructor of a `@buffer` type?
  *

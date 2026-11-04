@@ -1,0 +1,5 @@
+/* 判据：`@value` 类型必须提供 `clone`，否则"拷贝"无法建成独立的值。 */
+@value
+struct bad { @private x: i64 }
+
+fn main() -> i32 { return 0 }

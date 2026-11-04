@@ -792,6 +792,7 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
         bool poolObject = false;   /* @poolObject: this struct owns a pool (per the author) */
         bool buffer     = false;   /* @buffer: this struct is the owning form of `new T[n]` */
         bool sharesStorage = false; /* @sharesStorage: copying by value makes both copies share storage (containers) */
+        bool valueCopy = false;     /* @value: copying from a place must call `clone` */
         bool frozen     = false;   /* @frozen: the author signs off that the layout is C's layout (ticket to cross a C       boundary by value) */
         bool exported   = false;   /* @export: this function's C symbol is for outside use (the other side of extern!) */
         bool moduleEntry = false;  /* @module: this free function is this module's entry point (dispatcher calls it by name) */
@@ -883,6 +884,13 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
              * of storage** (the container family). Not forbidden, only warned about: the
              * user may know exactly what they are doing, but has to be told what this line
              * does. */
+            /* `@value`: a value type that **owns** storage. A copy from a place goes through
+             * `clone` instead of copying the fields; a temporary is still moved. */
+            if (strcmp(nm->text, "value") == 0) {
+                valueCopy = true;
+                skipJunk(&p);
+                continue;
+            }
             if (strcmp(nm->text, "sharesStorage") == 0) {
                 sharesStorage = true;
                 skipJunk(&p);
@@ -1027,6 +1035,13 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
             if (!s) return false;
             s->isPrivate = isPrivate;
             s->noCopy    = noCopy;
+            if (valueCopy && s->noCopy) {
+                ctxError(ctx, s->line, 1,
+                         "`@value` says a copy builds an independent value; `@noCopy` says there is"
+                         " no second owner. Pick one.",
+                         "`@value` and `@noCopy` cannot both describe one struct");
+                return false;
+            }
             if (s->dropHook && !s->noCopy) {
                 ctxError(ctx, s->dropHook->line, 1,
                          "A type with two owners has no single moment to hand its state back."
@@ -1036,6 +1051,22 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
             }
             if (frozen) s->frozen = true;
             if (sharesStorage) s->sharesStorage = true;
+            if (valueCopy) {
+                s->valueCopy = true;
+                /* The hook is a method of this struct, so it is resolved after the body: `clone`
+                 * by name is the only signature the label can promise. */
+                for (size_t i = 0; i < s->methods.len && !s->cloneHook; i++) {
+                    FuncDef *m = *(FuncDef **)vecAt(&s->methods, i);
+                    if (m && strcmp(m->name, "clone") == 0) s->cloneHook = m;
+                }
+                if (!s->cloneHook) {
+                    ctxError(ctx, s->line, 1,
+                             "A `@value` type owns storage, so a copy has to build an independent"
+                             " value: write `fn clone(self: ref T) -> T`.",
+                             "`@value` needs a `clone` method");
+                    return false;
+                }
+            }
             if (poolObject) s->poolObject = true;
             if (buffer) {
                 if (s->typeParams.len != 1) {

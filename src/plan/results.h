@@ -147,6 +147,9 @@ typedef struct {
     /* `new T[n]` in the context of a `@buffer` type: the initializer is that type's one-argument
      * constructor, not an allocation. Set by the checker, read by codegen. */
     bool        newAsBuffer;
+    /* `var x = <place>` where the type is marked `@value`: the copy is the type's `clone` method,
+     * not a field copy. A temporary initializer is moved and leaves this false. */
+    bool        varClone;
     uint64_t    addrMask;
     /* ---- call / receiver facts ---- */
     Expr       *extDom;        /* `EX_EXT`: the domain this task is handed to */

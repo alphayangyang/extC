@@ -7484,7 +7484,19 @@ if (s->u.var.init && s->u.var.init->kind == EX_TRY) {
     TryInfo ti = genTryHead(g, s->u.var.init);
     flushPrefix(g);
     size_t lb = g->out->len;
-    cgLine(g, "%s%s %s = %s;", stg, cType(g, s->type), nm, tryPayloadPath(g, &ti));
+          /* `@value`: copying from a place would share storage, so the value is built through the
+       * type's `clone` (a temporary was moved and never reaches this branch). */
+      if (planVarClone(s) && s->u.var.init) {
+          StructDef *vsd = structOf(ttBase(subst(g, s->type)));
+          const char *fn = vsd && vsd->cloneHook ? cMethodName(g, subst(g, s->type), vsd->cloneHook)
+                                                 : NULL;
+          const char *src = genExpr(g, s->u.var.init);
+          if (fn && src)
+              cgLine(g, "%s%s %s = %s(&(%s));", stg, cType(g, s->type), nm, fn, src);
+          else
+              cgLine(g, "%s%s %s = %s;", stg, cType(g, s->type), nm, tryPayloadPath(g, &ti));
+      } else
+          cgLine(g, "%s%s %s = %s;", stg, cType(g, s->type), nm, tryPayloadPath(g, &ti));
     localDef(g, lb, nm, 1);
     rcRootDecl(g, s->type, nm);
     return;
@@ -7493,7 +7505,25 @@ const char *init = s->u.var.init ? genTopExpr(g, s->u.var.init)
                                  : zeroInit(g, s->type);
 flushPrefix(g);
 size_t lb = g->out->len;
-cgLine(g, "%s%s %s = %s;", stg, cType(g, s->type), nm, asF32(g, s->type, s->u.var.init, init));
+/* `@value`: a copy from a place goes through the type's `clone` (a temporary was moved and is
+ * not marked, so this branch is skipped). */
+{
+    StructDef *vsd = s->type ? structOf(ttBase(subst(g, s->type))) : NULL;
+    const char *fn = (planVarClone(s) && vsd && vsd->cloneHook)
+                         ? cMethodName(g, subst(g, s->type), vsd->cloneHook) : NULL;
+    if (fn && s->u.var.init && init) {
+        /* A method that returns an aggregate takes the same implicit arguments as any other call
+         * (`int64_t __extc_home_zone`), so the call site has to append them. */
+        Buf cl;
+        bufInit(&cl, g->arena);
+        bufPrintf(&cl, "%s(&(%s)", fn, asF32(g, s->type, s->u.var.init, init));
+        cgImplicitArgs(g, &cl, vsd->cloneHook, s->u.var.init, 1, false);
+        bufPuts(&cl, ")");
+        cgLine(g, "%s%s %s = %s;", stg, cType(g, s->type), nm, bufCstr(&cl));
+    }
+    else
+        cgLine(g, "%s%s %s = %s;", stg, cType(g, s->type), nm, asF32(g, s->type, s->u.var.init, init));
+}
 localDef(g, lb, nm, 1);
 /* Counting for reference slots. A **new slot** goes through initRef: it writes and increments the
  * target, and **never reads the old value** -- the "old value" lying in a freshly declared slot is a

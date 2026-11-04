@@ -1029,6 +1029,12 @@ struct StructDef {
      * released). Only `@noCopy` types may carry one -- with two owners there is no single moment
      * to run it. */
     FuncDef    *dropHook;
+    /* `@value`: a value type that owns storage, so a copy must go through its `clone` method
+     * instead of copying the fields. The difference from `@noCopy` is that a copy is allowed at
+     * all: `@value` promises `clone` exists and produces an independent value. A temporary is
+     * still moved, never cloned (`@value` only changes what a copy from a *place* does). */
+    FuncDef    *cloneHook;
+    bool        valueCopy;
     /* `@frozen`: the author signs -- **this type's layout is C's layout**: fields in
      * declaration order, with C's alignment and padding, and no hidden fields. It is the
      * **ticket** for crossing a C boundary by value (`ttCrossesC` accepts only structs

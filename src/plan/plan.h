@@ -1280,6 +1280,22 @@ void planSetNewAsBuffer(Expr *e, bool v);
 bool planNewAsBuffer(const Expr *e);
 
 /**
+ * @brief Is this declaration's initializer a copy that must go through `clone`?
+ *
+ * @param s  The declaration statement.
+ * @return   true when codegen must emit the `clone` call instead of a field copy.
+ */
+bool planVarClone(const Stmt *s);
+
+/**
+ * @brief Record that a declaration's initializer must be copied with `clone`.
+ *
+ * @param s  The declaration statement.
+ * @param v  true when the type is `@value` and the initializer is a place.
+ */
+void planSetVarClone(Stmt *s, bool v);
+
+/**
  * @brief Get whether a lambda literal is used as a bare `fn(...)` function pointer.
  *
  * @param e  The `EX_LAMBDA` node.

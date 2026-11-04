@@ -4136,6 +4136,25 @@ void checkStmt(Checker *c, Stmt *s) {
             /* A local whose type has an `@drop` hook makes that hook reachable: code generation
              * emits the call at the end of the block, and reachability pruning must not delete it. */
             markDropHooksUsed(c, s->type, 0);
+            /* `@value`: a copy from a **place** builds an independent value by calling `clone`; a
+             * temporary is moved instead, so it is not marked here. */
+            {
+                StructDef *vsd = s->type ? structOf(ttBase(s->type)) : NULL;
+                Type *vbase = s->type ? ttBase(s->type) : NULL;
+                if (vsd && vsd->valueCopy && s->u.var.init && isPlace(s->u.var.init)) {
+                    if (!vsd->cloneHook || vsd->cloneHook->params.len != 1) {
+                        ckError(c, s->line, NULL,
+                                "A `@value` type owns storage, so its copy has to be built: the hook"
+                                " takes only `self` and returns a new value.",
+                                "`%s` is marked `@value`, so its `clone` must take only `self`",
+                                vsd->name);
+                    } else {
+                        planSetUsed(vsd->cloneHook, true);
+                        if (vbase) ckNoteInstUse(vsd->cloneHook, vbase);
+                        planSetVarClone(s, true);
+                    }
+                }
+            }
             /* Record where this binding's value comes from (its initializer). Promotion walks the
              * chain back: after `var n = new node`, `head = n` follows `n` to the `new` site and raises
              * it to `head`'s level. A declaration without an initializer records NULL. */
