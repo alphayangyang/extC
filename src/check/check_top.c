@@ -4784,7 +4784,9 @@ static void checkFunc(Checker *c, FuncDef *f) {
      * piece of storage and is rejected (see `declare`). */
     checkFuseFuncBody(c, f->body);
     LiveViews live;
+    live.items = NULL;
     live.len = 0;
+    live.cap = 0;
     for (size_t i = 0; i < f->body->u.block.stmts.len; i++) {
         checkHoistStatementTrys(c, &f->body->u.block.stmts, &i);
         Stmt **slot = (Stmt **)vecAt(&f->body->u.block.stmts, i);

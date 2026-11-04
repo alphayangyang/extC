@@ -3330,8 +3330,37 @@ static const char *borrowOwner(Expr *init) {
     return NULL;
 }
 
-/** How many borrows one block tracks; past this the check gives up rather than guessing. */
-#define LIVE_VIEW_MAX 16
+/** A hard ceiling on tracked borrows per block: past this the check gives up rather than
+ *  growing without bound on a machine-generated file. 4096 views in one block is far past any
+ *  hand-written function, and the table only holds two pointers per entry. */
+#define LIVE_VIEW_MAX 4096
+
+/**
+ * @brief Append one tracked view, growing the table on the arena.
+ *
+ * A block can hold more borrows than any fixed table would fit, so the storage is taken
+ * from the checker's arena and grows by doubling; it dies with the compilation and needs
+ * no free.
+ *
+ * @param c      Checker, for the arena.
+ * @param lv     The table.
+ * @param owner  Container being borrowed from.
+ * @param view   Name of the borrow.
+ */
+static void liveViewsPush(Checker *c, LiveViews *lv, const char *owner, const char *view) {
+    if (lv->len >= LIVE_VIEW_MAX) return;
+    if (lv->len == lv->cap) {
+        size_t ncap = lv->cap ? lv->cap * 2 : 8;
+        if (ncap > LIVE_VIEW_MAX) ncap = LIVE_VIEW_MAX;
+        LiveView *n = (LiveView *)arenaAlloc(c->arena, sizeof(LiveView) * ncap);
+        for (size_t i = 0; i < lv->len; i++) n[i] = lv->items[i];
+        lv->items = n;
+        lv->cap = ncap;
+    }
+    lv->items[lv->len].owner = owner;
+    lv->items[lv->len].view = view;
+    lv->len++;
+}
 
 /**
  * @brief Report growth of a container that a still-used view of this block borrows from.
@@ -3457,9 +3486,7 @@ static void liveViewsNoteStored(Checker *c, LiveViews *lv, Stmt *s) {
             Type *kty = ksym ? tsub(c, ksym->type) : NULL;
             StructDef *ksd = kty ? structOf(ttBase(kty)) : NULL;
             if (!ksd || (!ksd->poolObject && !ksd->dropHook)) continue;
-            lv->items[lv->len].owner = srcs.names[k];
-            lv->items[lv->len].view = into;
-            lv->len++;
+            liveViewsPush(c, lv, srcs.names[k], into);
         }
     }
 }
@@ -3578,9 +3605,7 @@ void liveViewsStmtPost(Checker *c, LiveViews *lv, Stmt *s) {
             Type *kty = ksym ? tsub(c, ksym->type) : NULL;
             StructDef *ksd = kty ? structOf(ttBase(kty)) : NULL;
             if (!ksd || (!ksd->poolObject && !ksd->dropHook)) continue;
-            lv->items[lv->len].owner = srcs.names[k];
-            lv->items[lv->len].view = s->u.var.name;
-            lv->len++;
+            liveViewsPush(c, lv, srcs.names[k], s->u.var.name);
         }
         return;
     }
@@ -3594,9 +3619,7 @@ void liveViewsStmtPost(Checker *c, LiveViews *lv, Stmt *s) {
      * slab (`@poolObject`) or any type with a `@drop` hook, which is how a library container says
      * "my storage goes back before the block ends". */
     if (!osd || (!osd->poolObject && !osd->dropHook)) return;
-    lv->items[lv->len].owner = owner;
-    lv->items[lv->len].view = s->u.var.name;
-    lv->len++;
+    liveViewsPush(c, lv, owner, s->u.var.name);
 }
 
 /**
@@ -3621,7 +3644,9 @@ static void checkBlockBody(Checker *c, Stmt *block) {
     /* Views bound in this block, so that growing the container underneath a live one is rejected
      * here instead of turning into a stale read at run time. See `growMethodName`. */
     LiveViews live;
+    live.items = NULL;
     live.len = 0;
+    live.cap = 0;
     const bool fixedShape = block->parLoop || rangeForBlockShape(block);
     for (size_t i = 0; i < block->u.block.stmts.len; i++) {
         /* A fixed-shape block (range loop / `par` outer block) is recognized by position, so no

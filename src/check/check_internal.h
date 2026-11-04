@@ -369,8 +369,9 @@ typedef struct {
 
 /** Per-block list of tracked views; see `liveViewsStmtPre`. */
 typedef struct {
-    LiveView items[16];
-    size_t   len;
+    LiveView *items;   /* arena-allocated, grows by doubling; NULL while empty */
+    size_t    len;     /* how many are tracked */
+    size_t    cap;     /* how many `items` can hold */
 } LiveViews;
 
 typedef struct Checker {
