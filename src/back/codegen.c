@@ -13697,7 +13697,6 @@ static void scanUnitNeeds(CG *g, Module *m) {
         if (strcmp(f->name, "extc_raw_enter") == 0) g->needRawTerm = true;
         /* The pool registry, on the same footing: the library declares these through
          * `extern!`, so their presence is what says the program uses pools at all. */
-        if (f->name && strncmp(f->name, "extc_pool_", strlen("extc_pool_")) == 0) g->needPool = true;
         if (strcmp(f->name, "extc_cout_put") == 0)  g->needCout    = true;
         /* The byte-search runtime, on the same footing: `std::sys::mem` is the only module
          * that declares these, and its declarations are what says the program wants `memmem`
@@ -13728,19 +13727,23 @@ static void scanUnitNeeds(CG *g, Module *m) {
      * which is exactly the question this cell has to answer. */
     for (size_t i = 0; i < m->funcs.len; i++) {
         FuncDef *f = *(FuncDef **)vecAt(&m->funcs, i);
-        if (f && planMakesPool(f)) g->needPool = true;
+        /* Only a function that is actually emitted can put a pool in the program: the prelude
+         * declares `varArray`, whose methods make pools, in every program; counting those would
+         * charge the pool runtime to programs that never touch it. */
         /* The same holds for the one `@builtin` primitive: it is declared in the privileged layer
          * (`std::sys::heap`) and the compiler supplies the body. It is not `extern!`, so the
          * `externLib`-based scan above cannot see it. */
         if (f && f->isBuiltin && plateIsViewOfName(f->name)) g->needPlateView = true;
     }
-    for (size_t i = 0; i < m->structs.len; i++) {
-        StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
-        for (size_t j = 0; j < sd->methods.len; j++) {
-            FuncDef *f = *(FuncDef **)vecAt(&sd->methods, j);
-            if (!f || planCoroProto(f)) continue;
-            if (planMakesPool(f)) g->needPool = true;
-        }
+    /* `makesPool` over the functions the program actually reaches is the honest signal: the
+     * prelude declares `varArray`, whose methods make pools, in every program, so their mere
+     * presence must not pull the runtime in. */
+    for (size_t i = 0; i < m->funcs.len; i++) {
+        FuncDef *f = *(FuncDef **)vecAt(&m->funcs, i);
+        /* `main`/`@export`/a module entry are roots the pruning keeps without a `planUsed` bit. */
+        if (f && !f->isExtern && (planUsed(f) || cgIsMain(f) || f->isExport || f->isModuleEntry) &&
+            planMakesPool(f))
+            g->needPool = true;
     }
 }
 
