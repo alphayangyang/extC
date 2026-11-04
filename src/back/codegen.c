@@ -9384,7 +9384,34 @@ static void cgReport(void) {
  * @param g  The code generation context.
  * @param f  The function to emit.
  */
+static void genFuncInner(CG *g, FuncDef *f);
+
+/**
+ * @brief Emit one function definition, with `g->path` set to the file the body was written in.
+ *
+ * Every run-time check the generated code can raise prints a `file:line` pair. The line travels
+ * with the checked node, so the file has to travel with the function too: a check emitted inside a
+ * library helper must name the library file, not whichever entry file happened to include it.
+ * Restoring the entry path afterwards keeps the rest of the emission (whole-program thunks and
+ * tables) addressing the program the user compiled.
+ *
+ * @param g  Code generator.
+ * @param f  Function to emit; its `srcPath` may be NULL for compiler-synthesised functions.
+ */
 static void genFunc(CG *g, FuncDef *f) {
+    const char *saved = g->path;
+    if (f->srcPath) g->path = f->srcPath;
+    genFuncInner(g, f);
+    g->path = saved;
+}
+
+/**
+ * @brief Body of `genFunc`: the emitter proper.
+ *
+ * @param g  Code generator.
+ * @param f  Function to emit.
+ */
+static void genFuncInner(CG *g, FuncDef *f) {
     /* The coroutine protocols (`next`/`value`) have no body: they are emitted inline at their call
      * sites (see genMethodCall). Never emit one as a function, whichever path got here. */
     if (planCoroProto(f)) return;

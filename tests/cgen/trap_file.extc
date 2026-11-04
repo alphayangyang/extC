@@ -1,0 +1,18 @@
+// 判据：运行期检查的 `file:line` 必须指向写下那次检查的文件
+//
+// `std::data::vector` 的 `get` 里有一处越界检查，主程序里也有一处。产物里两条字符串常量必须
+// 各自指向自己的源文件：库里的那条带 `stdlib/`，主程序的这条带本文件名。
+//
+// 为什么单独一条：这条字符串只有 `trap` 真的触发时才被看到，而"库里的检查报了调用者的文件名"
+// 会让人去翻错误的文件（见 docs/TODO.md 里那条记录）。
+use std::data::vector
+
+fn main() {
+    var v: vector<i64> = vector<i64>::new()
+    v.push(7)
+    let s: slice<i64> = v.view()
+    let i: i64 = 0
+    print(s[i])
+    print(" ")
+    println(v.get(5) ?? 0)
+}

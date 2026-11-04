@@ -2172,6 +2172,7 @@ static FuncDef *parseFunc(Parser *p) {
     fd->line = kw->line;
     fd->ret = NULL;
     fd->ctx  = p->ctx;                         /* so later passes report in this file */
+    fd->srcPath = p->ctx ? p->ctx->path : NULL; /* the file a run-time check will name */
     vecInit(&fd->params, p->arena, sizeof(void *));
     vecInit(&fd->typeParams, p->arena, sizeof(void *));
     vecInit(&fd->targs, p->arena, sizeof(void *));

@@ -50,3 +50,16 @@ case1 par_forms tests/cgen/par_forms.extc "992 140 0"
 
 printf '通过 %d，失败 %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
+
+# ④ `trap_file`：库里的检查与主程序里的检查各自报自己的文件名
+case1 trap_file tests/cgen/trap_file.extc "7 0"
+if grep -q 'stdlib/std/data/vector.extc' "$tmp/trap_file.c"; then
+    ok "trap-file-lib" "库里的检查带 stdlib 路径"
+else
+    bad "trap-file-lib" "库里的检查没带 stdlib 路径"
+fi
+if grep -q 'tests/cgen/trap_file.extc' "$tmp/trap_file.c"; then
+    ok "trap-file-main" "主程序的检查带自己的文件名"
+else
+    bad "trap-file-main" "主程序的检查没带自己的文件名"
+fi

@@ -1116,6 +1116,11 @@ struct FuncDef {
      * `planTemplate` in plan.h) rather than through a field here. */
     Vec         typeParams;      /* const char* */
     Vec         targs;           /* Type*: only an instance has these */
+    /* The file this body was written in. Every diagnostic the generated code can raise at run
+     * time (`trap`, a bounds check) prints a `file:line` pair; the line comes from the checked
+     * node, so the file has to travel with the function -- otherwise a check emitted inside a
+     * library helper names the entry file of the program that happened to include it. */
+    const char *srcPath;
     Vec         params;          /* Param* */
     /* The binding each parameter resolved to, in declaration order. `void *` because `Sym` is
      * defined in the checker's own header, which ast.h does not see; only the checker reads this.
