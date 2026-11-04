@@ -542,6 +542,10 @@ typedef struct {
     /* The binding a `return x` is moving out: it is dead on the way out, so its `@drop` hook must
      * not run for it (running it would release the state the caller now owns). */
     const char      *dropSkipName;
+    /* Globals whose type carries an `@drop` hook: the process must run those hooks on the way out
+     * (`atexit`), or the state they guard is silently abandoned. Each entry is a `GlobalDrop`. */
+    Vec         globalDrops;
+    bool        needGlobalDrops;
     /* Arena levels of the enclosing loops, mirrored for `break`/`continue` (see `loopLevel`). */
     
     /* Sites already covered by the loop-entry check of a view subscript (`EX_INDEX *`, see
@@ -9612,6 +9616,9 @@ static void genFunc(CG *g, FuncDef *f) {
     /* with a dispatcher, the dispatcher registers it: the entry helper is just a function that gets
      * called, and registering twice prints twice */
     if (isMain && g->needCout && !g->needModuleTramp) cgLine(g, "atexit(extc_cout_flush);");
+    /* Registered after the flush, so atexit's LIFO order runs the hooks first and the flush still
+     * gets the last word on anything they printed. */
+    if (isMain && g->needGlobalDrops && !g->needModuleTramp) cgLine(g, "atexit(extc_drop_globals);");
     /* Only a self-recursive function needs the depth guard; see
      * funcCallsItself. Entering increments, every exit decrements, and
      * `extc_rec_enter` traps with a position once the limit is passed.
@@ -12803,6 +12810,16 @@ static void emitTypes(CG *g, Module *m, TypeTable *tt, Arena *arena) {
 }
 
 /**
+ * @brief One module-level binding whose type carries an `@drop` hook.
+ *
+ * Collected by `emitGlobals` so the exit hook can walk them; see `CG.globalDrops`.
+ */
+typedef struct {
+    const char *name;    /**< The C name of the `static` object. */
+    Type       *declT;   /**< Its declared type, for the drop walk. */
+} GlobalDrop;
+
+/**
  * @brief Emit `static` definitions for the module's globals and constants, registering every line in
  *        the unreferenced-pruning table.
  *
@@ -12855,6 +12872,14 @@ static void emitGlobals(CG *g, Module *m) {
             if (sc == RC_CONSERVATIVE) g->rcGlobalsUnreliable = true;
             else if (sc == RC_LEAF_REFS)
                 *(const char **)vecPush(&g->rcGlobalRoots) = gd->name;
+        }
+        /* A global that owns state gets its hook run at exit; see `CG.globalDrops`. */
+        if (gd->ann && typeNeedsDrop(g, gd->ann, 0)) {
+            GlobalDrop *d = arenaAllocZero(g->arena, sizeof *d);
+            d->name = gd->name;
+            d->declT = gd->ann;
+            *(GlobalDrop *)vecPush(&g->globalDrops) = *d;
+            g->needGlobalDrops = true;
         }
     }
     if (m->globals.len) cgLine(g, "");
@@ -13302,6 +13327,27 @@ static void emitLamVars(CG *g) {
 
 
 /**
+ * @brief Emit the function that runs the `@drop` hooks of module-level bindings at process exit.
+ *
+ * A global is a `static` object whose life is the whole process, so nothing in the block machinery
+ * ever reaches it: without this, a global of a type with an `@drop` hook would abandon whatever the
+ * hook is supposed to hand back. `main` registers it with `atexit`, which runs it before the console
+ * flush (LIFO) so anything it prints still makes it out.
+ *
+ * @param g  Generator; emits nothing when the module has no such global.
+ */
+static void emitGlobalDrops(CG *g) {
+    if (!g->needGlobalDrops) return;
+    cgLine(g, "static void extc_drop_globals(void) {");
+    for (size_t i = 0; i < g->globalDrops.len; i++) {
+        GlobalDrop *d = (GlobalDrop *)vecAt(&g->globalDrops, i);
+        genDropValue(g, d->name, d->declT, 0);
+    }
+    cgLine(g, "}");
+    cgLine(g, "");
+}
+
+/**
  * @brief Emit the unit-wide prototype pool: before every function body, and prototypes only.
  *
  * No definition may appear here: a definition preceding the prototype of a function it calls makes C
@@ -13417,6 +13463,7 @@ static void emitProtos(CG *g, Module *m, Arena *arena) {
         substLeave(g, sv);
     }
     if (g->structs.len || g->insts.len || g->funcs.len) cgLine(g, "");
+    if (g->needGlobalDrops) cgLine(g, "static void extc_drop_globals(void);");
 }
 
 /**
@@ -13473,6 +13520,7 @@ static void initCGState(CG *g, Module *m, TypeTable *tt, Arena *arena) {
     vecInit(&g->dropBlocks, arena, sizeof(Stmt *));
     vecInit(&g->dropExplicit, arena, sizeof(const char *));
     vecInit(&g->dropLoopBases, arena, sizeof(size_t));
+    vecInit(&g->globalDrops, arena, sizeof(GlobalDrop));
     vecInit(&g->rcGlobalRoots, arena, sizeof(const char *));
     for (size_t i = 0; i < tt->instances.len; i++) {
         Type *it = *(Type **)vecAt(&tt->instances, i);
@@ -15378,6 +15426,7 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
     emitFuncBodies(&g);
     emitLamThunks(&g);
     emitLamVars(&g);
+    emitGlobalDrops(&g);
     dbgRcCostReport(&g);
     /* Final assembly: the pieces whose need is discovered during generation are
      * spliced in ahead of the bodies - the print runtime and the descriptor

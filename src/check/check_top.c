@@ -4932,6 +4932,14 @@ static void checkGlobals(Checker *c) {
             g->ann = ttIsError(declT) ? ttError(c->tt) : declT;
         }
 
+        /* A global of a type with an `@drop` hook gets that hook run at process exit
+         * (`atexit`, emitted by codegen). Mark it reachable here: the only other place that does
+         * so is a `var` declaration, and a global is not checked through `ST_VAR` in a body. */
+        if (!ttIsError(g->ann) && g->ann) {
+            StructDef *sd = structOf(ttBase(ttIsError(g->ann) ? NULL : tsub(c, g->ann)));
+            if (sd && sd->dropHook) planSetUsed(sd->dropHook, true);
+        }
+
         Sym *s = (Sym *)arenaAllocZero(c->arena, sizeof(Sym));
         s->name  = g->name;
         s->type  = g->ann;

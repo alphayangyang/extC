@@ -1,0 +1,17 @@
+// expect: body|close 9
+/* 判据：模块级的全局是进程级对象，块机制永远碰不到它 —— 它的 `@drop` 由 `main` 注册的
+ * `atexit` 在退出时跑，且排在控制台 flush 之前（LIFO），所以钩子打印的东西不会丢。 */
+use std::io
+
+@noCopy
+struct res {
+    @private id: i64
+    @private @drop fn close(self: mut ref res) { io::cout << "close " << self.id << "\n" }
+}
+
+var g = res { id: 9 }
+
+fn main() -> i32 {
+    io::cout << "body\n"
+    return 0
+}
