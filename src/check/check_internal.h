@@ -1302,6 +1302,17 @@ Stmt *arrayAssignLower(Checker *c, Stmt *s);
  *           struct).
  */
 void ckNoteInstUse (FuncDef *m, Type *t);
+
+/**
+ * @brief Bookkeeping for a `new T[n]` that becomes a `@buffer` constructor call.
+ *
+ * @param c     The checker.
+ * @param e     The `new` expression standing for the call.
+ * @param ctor  The associated function taking the element count.
+ * @param owner The type instance the call is made on.
+ * @param args  A one-element vector holding the element-count expression.
+ */
+void ckNewAsBufferCall (Checker *c, Expr *e, FuncDef *ctor, Type *owner, Vec *args);
 /**
  * @brief Find a variant by name in an enum definition.
  *

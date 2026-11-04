@@ -93,6 +93,7 @@
 #define PLAN_ANY_TO              88   /* an `any` value unboxed into a concrete type: which one */
 #define PLAN_DYN_CALL            89   /* a method call on an `any`: dispatch by name at run time */
 #define PLAN_COMPOUND_CALL       90   /* `x += y` where the type defines `fn +=`: a call, not an assign */
+#define PLAN_NEW_AS_BUFFER       91   /* `new T[n]` whose context is a `@buffer` type: its constructor */
 #define PLAN_DEREF               63
 #define PLAN_BOXED_CORO          64
 #define PLAN_CORO_KIND           65
@@ -1187,6 +1188,33 @@ void planSetCompoundCall(Stmt *s, bool v) {
     if (!r) return;
     r->compoundCall = v;
     resultsSetBit(r, PLAN_COMPOUND_CALL);
+}
+/**
+ * @brief Is this `new` expression the constructor of a `@buffer` type?
+ *
+ * `let b: buf<T> = new T[n]` asks for the owning form of the buffer, so the initializer builds the
+ * value through that type's one-argument constructor instead of allocating a `slice<T>` view.
+ *
+ * @param e  The `new` expression.
+ * @return   true when codegen must emit the constructor call.
+ */
+bool planNewAsBuffer(const Expr *e) {
+    NodeResults *r = resultsOf(e, false);
+    return r && resultsBit(r, PLAN_NEW_AS_BUFFER) && r->newAsBuffer;
+}
+
+/**
+ * @brief Record that a `new` initializer builds a `@buffer` type.
+ *
+ * @param e  The `new` expression.
+ * @param v  true when the annotation asked for the owning form.
+ */
+void planSetNewAsBuffer(Expr *e, bool v) {
+    if (!e) return;
+    NodeResults *r = resultsAs(e, true, RKIND_EXPR, __LINE__);
+    if (!r) return;
+    r->newAsBuffer = v;
+    resultsSetBit(r, PLAN_NEW_AS_BUFFER);
 }
 PLAN_GET(planPadKind, PlanPadKind, padKind, PLAN_PAD_KIND, PLAN_PAD_NONE)
 PLAN_SET(planSetPadKind, PlanPadKind, padKind, PLAN_PAD_KIND)

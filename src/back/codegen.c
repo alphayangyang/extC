@@ -4525,7 +4525,21 @@ static void rcRootDecl(CG *g, Type *t, const char *base) {
  * @param e  The `EX_NEW` node.
  * @return   The C text of the allocation expression or of the view literal.
  */
-static const char *exNew(CG *g, Expr *e) {    Type *w = subst(g, e->u.new_.type);
+static const char *exNew(CG *g, Expr *e) {
+    /* The context asked for the **owning** form of this buffer (`@buffer`), so the initializer is
+     * that type's constructor with the element count: `buf<T>::withCap(n)`, named through the same
+     * instance decoration methods use. */
+    if (planNewAsBuffer(e) && planCallee(e)) {
+        Buf nb;
+        bufInit(&nb, g->arena);
+        bufPuts(&nb, cMethodName(g, planAssocOwner(e), planCallee(e)));
+        bufPutc(&nb, '(');
+        bufPuts(&nb, genExpr(g, e->u.new_.count));
+        cgImplicitArgs(g, &nb, planCallee(e), e, 1, false);
+        bufPutc(&nb, ')');
+        return bufCstr(&nb);
+    }
+    Type *w = subst(g, e->u.new_.type);
     /* Allocate at the level the checker computed, which may have been promoted because the value
      * is stored into a place that lives further out. This is where memory with automatic cleanup
      * is taken. */

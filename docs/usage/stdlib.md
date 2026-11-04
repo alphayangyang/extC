@@ -142,10 +142,12 @@ fn main() -> i32 {
 方法：`withCap(c)` · `len()` · `capacity()` · `push(v)` · `pop()`（`?T`） · `view()` / `viewMut()` ·
 `clear()` · `clone()`（复制出一份独立存储）。
 
+它标了 `@buffer`，所以 `new T[n]` 在 `buf<T>` 的注解上下文里就是它的构造函数：
+
 <!-- fragment -->
 ```extc
 use std::data::buf
-var b: buf<i64> = buf<i64>::withCap(4)
+var b: buf<i64> = new i64[4]      // 与 buf<i64>::withCap(4) 同一件事
 b.push(7)
 let s = b.view()
 ```

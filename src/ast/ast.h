@@ -1074,6 +1074,12 @@ struct StructDef {
      * hidden "home zone" parameter; (3) if a future rule wants to decide "elements may not
      * carry references" per type, this is the criterion too, not any naming convention. */
     bool        poolObject;
+    /* `@buffer`: this type is the **owning form** of a `new` buffer for its single type parameter.
+     * `let b: buf<T> = new T[n]` then builds the type through its one-argument constructor instead
+     * of producing a `slice<T>` view, which is what makes "a buffer that owns its storage" spellable
+     * without the compiler knowing any type by name. The element type must agree with the type
+     * argument, and `new T[n]` is only a view when the context asks for one. */
+    bool        buffer;
     /* **Some method** of this struct builds a pool (computed along with the closure; see
      * `FuncDef.makesPool`). Why it is needed: a generic method's **template** and
      * **instance** are two FuncDefs, the closure marks only the template, and at a call site

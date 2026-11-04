@@ -1259,6 +1259,25 @@ void planSetCompoundCall(Stmt *s, bool v);
  * @return   true when the type defines the compound form.
  */
 bool planCompoundCall(const Stmt *s);
+/**
+ * @brief Record that a `new T[n]` initializer is the constructor of a `@buffer` type.
+ *
+ * `let b: buf<T> = new T[n]` says the annotation names the **owning** form of the buffer, so the
+ * initializer is that type's one-argument constructor: same element type, storage that the value
+ * owns, and a `@drop` that hands it back. Codegen reads this bit and emits the call instead of an
+ * allocation.
+ *
+ * @param e  The `new` expression.
+ * @param v  true when the context asked for the owning form.
+ */
+void planSetNewAsBuffer(Expr *e, bool v);
+/**
+ * @brief Is this `new` expression the constructor of a `@buffer` type?
+ *
+ * @param e  The `new` expression.
+ * @return   true when codegen must emit the constructor call.
+ */
+bool planNewAsBuffer(const Expr *e);
 
 /**
  * @brief Get whether a lambda literal is used as a bare `fn(...)` function pointer.

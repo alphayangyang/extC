@@ -1,0 +1,20 @@
+// expect: len=0 cap=42 sum=780 owned=true
+/* 判据：`let b: buf<i64> = new i64[4]` 是**拥有型写法** —— `new` 在 `@buffer` 类型的注解上下文里
+ * 变成该类型的一参数构造函数（`buff<T>::withCap`），所以之后 push 增长时旧板块当场还给分配器，
+ * 离开作用域时全部还回去。同一个 `new` 在 `slice` 上下文里仍是一条视图，不受影响。 */
+use std::io
+use std::sys::pool as pool
+use std::data::buf
+
+fn main() -> i32 {
+    let base: i64 = pool::extc_pool_bytesLive()
+    var b: buf<i64> = new i64[4]
+    var i: i64 = 0
+    while i < 40 { b.push(i)  i = i + 1 }
+    var sum: i64 = 0
+    for v in b.view() { sum = sum + v }
+    b.clear()
+    let owned: bool = pool::extc_pool_bytesLive() > base
+    io::cout << "len=" << b.len() << " cap=" << b.capacity() << " sum=" << sum << " owned=" << owned << "\n"
+    return 0
+}

@@ -20,6 +20,14 @@ run_case() {   # run_case <名字> <文件> <期望的一整行>
 
 echo "== buf<T>：拥有存储（增长还旧板 / 离开作用域还全部）=="
 run_case buf     tests/stl/buf.extc           "len=1 cap=13 sum=45 c9=9 v0=100 leak=0 growsum=4999950000 gleak=0"
+run_case buf_new tests/stl/buf_new.extx       "len=0 cap=42 sum=780 owned=true"
+BX=$(mktemp -d)
+if "$EXTC" -w --no-line-map -o "$BX/bx.c" tests/stl/buf_new_wrong_elem.extx 2>&1 | grep -q "initializer expects"; then
+    echo "  ok   buf_new_wrong_elem  ->  元素类型不符被拒 ✓"
+else
+    echo "  FAIL buf_new_wrong_elem  ->  应当报 `initializer expects`"; fail=1
+fi
+rm -rf "$BX"
 
 echo "== vector<T>：1.5 倍扩容 / dense 连续 / shrink 降水位 / clear 留容量 =="
 run_case vector  tests/stl/vector.extc  "cap0=4 n=9 cap=9 sum=36 shrink=9 pop=8 n=8 clear=0/9 tail=-9"

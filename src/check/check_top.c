@@ -637,8 +637,12 @@ static bool reachesHomeArenaTaker(const FuncDef *f) { return f && anNeedsHome(f)
  */
 static bool exprCarriesCallee(const Expr *e) {
     if (!e) return false;
+    /* `EX_NEW` carries a callee only when the context asked for a `@buffer` type: then the `new`
+     * stands for that type's constructor (`withCap`), so the closures must see the edge -- without
+     * it the enclosing function is not marked as pool-making and the generated C passes the wrong
+     * zone. An ordinary `new` has no callee and this predicate stays false. */
     return e->kind == EX_CALL || e->kind == EX_METHOD || e->kind == EX_ASSOC ||
-           e->kind == EX_BIN || e->kind == EX_UN;
+           e->kind == EX_BIN || e->kind == EX_UN || e->kind == EX_NEW;
 }
 
 static bool needsHomeInStmt(void *ctx, Stmt *s);
@@ -10412,7 +10416,12 @@ static bool exprMakesPool(Expr *e, bool descendBlocks) {
             if (exprMakesPool(*(Expr **)vecAt(&e->u.assoc.args, i), descendBlocks)) return true;
         return false;
     }
-    case EX_NEW: return exprMakesPool(e->u.new_.count, descendBlocks);
+    case EX_NEW:
+        /* `new T[n]` in a `@buffer` context is a call of that type's constructor, which builds the
+         * pool the buffer's storage lives on: the block that writes it needs a zone of its own, or
+         * the storage is registered on the caller's zone and the value outlives it. */
+        if (planNewAsBuffer(e) && planCallee(e)) return true;
+        return exprMakesPool(e->u.new_.count, descendBlocks);
     case EX_STRUCTLIT:
         for (size_t i = 0; i < e->u.lit.inits.len; i++)
             if (exprMakesPool((*(FieldInit **)vecAt(&e->u.lit.inits, i))->value, descendBlocks)) return true;

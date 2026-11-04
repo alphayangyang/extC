@@ -30,6 +30,7 @@
 use std::sys::pool as syspool
 
 @noCopy
+@buffer
 struct buf<T> {
     @private pid:    i64     /* 运行期池：板的寿命挂在建池时所在的地方上 */
     @private pidGen: u64     /* 建池时的世代：陈旧拷贝不许误放别人的池 */

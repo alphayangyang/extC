@@ -422,6 +422,27 @@ void ckNoteInstUse(FuncDef *m, Type *t) {
 }
 
 /**
+ * @brief Bookkeeping for a `new T[n]` that becomes a `@buffer` constructor call.
+ *
+ * `let b: buf<T> = new T[n]` is not written as `buf<T>::withCap(n)`, so the associated-call case
+ * never runs for it; this does the two things that case does and codegen depends on: mark the callee
+ * (and its **instance**, since a generic method body is per instance) as used, and compute the hidden
+ * arena/zone arguments the constructor receives.
+ *
+ * @param c     The checker.
+ * @param e     The `new` expression standing for the call.
+ * @param ctor  The associated function taking the element count.
+ * @param owner The type instance the call is made on.
+ * @param args  A one-element vector holding the element-count expression.
+ */
+void ckNewAsBufferCall(Checker *c, Expr *e, FuncDef *ctor, Type *owner, Vec *args) {
+    planSetUsed(ctor, true);
+    ckNoteInstUse(ctor, owner);
+    setCallZoneArg(c, e);
+    if (args) (void)callHomeDepth(c, args, &ctor->params, e);
+}
+
+/**
  * @brief Compute the result type of a binary arithmetic operator.
  *
  * The result rules live only here: the bitwise operators use this same copy, and a second copy would

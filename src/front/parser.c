@@ -790,6 +790,7 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
         bool fnUnchecked = false;  /* @unchecked: subscripts in this function body get no bounds checks */
         bool noCopy    = false;
         bool poolObject = false;   /* @poolObject: this struct owns a pool (per the author) */
+        bool buffer     = false;   /* @buffer: this struct is the owning form of `new T[n]` */
         bool sharesStorage = false; /* @sharesStorage: copying by value makes both copies share storage (containers) */
         bool frozen     = false;   /* @frozen: the author signs off that the layout is C's layout (ticket to cross a C       boundary by value) */
         bool exported   = false;   /* @export: this function's C symbol is for outside use (the other side of extern!) */
@@ -860,6 +861,16 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
              * uses the same modifier** and takes exactly the same path. */
             if (strcmp(nm->text, "poolObject") == 0) {
                 poolObject = true;
+                skipJunk(&p);
+                continue;
+            }
+            /* `@buffer`: this struct is the **owning** form of a `new` buffer. It says two things:
+             * the element type is the struct's single type parameter, and the struct declares exactly
+             * one one-argument (`i64` count) constructor, which `new T[n]` in this struct's context
+             * calls. Naming the attribute rather than the type keeps the compiler from knowing any
+             * library type by name; two user-written buffer types take the same path. */
+            if (strcmp(nm->text, "buffer") == 0) {
+                buffer = true;
                 skipJunk(&p);
                 continue;
             }
@@ -1022,6 +1033,16 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
             if (frozen) s->frozen = true;
             if (sharesStorage) s->sharesStorage = true;
             if (poolObject) s->poolObject = true;
+            if (buffer) {
+                if (s->typeParams.len != 1) {
+                    ctxError(ctx, s->line, 1,
+                             "`new T[n]` has one element type, so the owning form has one type"
+                             " parameter: write `@buffer struct buf<T>`.",
+                             "`@buffer` needs a struct with exactly one type parameter");
+                    return false;
+                }
+                s->buffer = true;
+            }
             *(StructDef **)vecPush(&out->structs) = s;
         } else if (at(&p, "impl")) {
             /* An `impl` block declares nothing: `@private`/`@noCopy` describe declarations,

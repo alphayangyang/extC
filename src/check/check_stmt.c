@@ -4074,6 +4074,50 @@ void checkStmt(Checker *c, Stmt *s) {
             }
             Type *declT = s->u.var.ann ? s->u.var.ann : it;
 
+            /* `let b: buf<T> = new T[n]`: the annotation names the **owning** form of the buffer, so
+             * the initializer builds that value instead of a `slice<T>` view. The rule is the
+             * attribute, not the type name (`@buffer`), and the element type has to agree with the
+             * one type argument -- `let b: buf<i64> = new u8[4]` is a type error here and not a
+             * silent reinterpretation. */
+            if (s->u.var.ann && s->u.var.init && s->u.var.init->kind == EX_NEW && it &&
+                ttIsViewType(it) && it->targs.len == 1 && s->u.var.init->u.new_.count) {
+                StructDef *bsd = structOf(ttBase(s->u.var.ann));
+                Type *bt = ttBase(s->u.var.ann);
+                if (bsd && bsd->buffer && bt->targs.len == 1 &&
+                    ttEquals(*(Type **)vecAt(&bt->targs, 0), *(Type **)vecAt(&it->targs, 0))) {
+                    FuncDef *ctor = NULL;
+                    for (size_t mi = 0; mi < bsd->methods.len && !ctor; mi++) {
+                        FuncDef *mf = *(FuncDef **)vecAt(&bsd->methods, mi);
+                        /* An associated function has no `self`, so its parameter list is just the count. */
+                        if (!mf || mf->params.len != 1) continue;
+                        Param *p0 = *(Param **)vecAt(&mf->params, 0);
+                        if (p0 && p0->type && p0->type->kind == TY_BUILTIN &&
+                            strcmp(p0->type->name, "i64") == 0)
+                            ctor = mf;
+                    }
+                    if (!ctor) {
+                        ckError(c, s->line,
+                                "The owning form of `new T[n]` is built by a constructor that takes"
+                                " the element count. Add `fn withCap(n: i64) -> buf<T>` to the type.",
+                                "`%s` is marked `@buffer` but has no one-argument constructor", bsd->name);
+                    } else {
+                        planSetCallee(s->u.var.init, ctor);
+                        planSetAssocOwner(s->u.var.init, s->u.var.ann);
+                        planSetNewAsBuffer(s->u.var.init, true);
+                        {
+                            /* Same bookkeeping an associated call gets: mark the callee's instance
+                             * used (its body is emitted per instance) and give it the hidden
+                             * arena/zone arguments, or the generated C calls an undeclared name. */
+                            Vec cargs;
+                            vecInit(&cargs, c->arena, sizeof(Expr *));
+                            *(Expr **)vecPush(&cargs) = s->u.var.init->u.new_.count;
+                            ckNewAsBufferCall(c, s->u.var.init, ctor, s->u.var.ann, &cargs);
+                        }
+                        it = s->u.var.ann;
+                    }
+                }
+            }
+
             if (s->u.var.ann)
                 checkAssignable(c, s->u.var.ann, it, s->u.var.init, "initializer");
 
