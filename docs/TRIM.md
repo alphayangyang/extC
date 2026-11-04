@@ -52,7 +52,36 @@
 - 不动 `coroutine` 那条按名字派发的路径（4 处）——它是"协议"不是容器，等并发回收器定了再说。
 - 不删 `any`/`dyn` 任何一方：它们是"结构 vs 名义"两种视图，共用 16 字节载体，不是重复答案。
 
-### 已试过、目前不可行：把 `varArray` 也搬到板块上
+### 已知的洞：视图经字段跨函数逃逸（2026-11-05）
+
+同一块里的三种写法现在都会被拒（直接绑定、结构体字面量字段、`box.push(v.view())`），但**视图先落进
+结构体字段、再由另一个函数增长**仍然安静地过去：
+
+<!-- fragment -->
+```extc
+use std::data::vector
+
+struct box { v: vector<i64>  s: slice<i64> }
+fn grow(b: mut ref box) { var i: i64 = 0  while i < 24 { b.v.push(i)  i = i + 1 } }
+fn main() {
+    var b: box = { v: vector<i64>::withCap(4), s: vector<i64>::withCap(0).view() }
+    b.v.push(7)
+    b.s = b.v.view()          // 视图落进字段
+    grow(ref b)               // 在别的函数里增长
+    io::cout << f"s0={b.s[0]}\n"   // ASan: heap-use-after-free
+}
+```
+
+原因：增长检查按"同一块内的名字"工作，跨函数那一半本来要靠 `borrow()` 守卫，而字段里的视图没有名字；
+另外 `borrowOwner` 只认 `x.view()` 的接收者是**标识符**，`b.v.view()` 的接收者是一条字段路径，
+连"这个视图属于 `b.v`"都取不出来。
+
+要修的地方按顺序：① `borrowOwner` 返回字段路径的根标识符与路径（这样 `b.v.view()` 能对上 `b` 的 `v` 字段）；
+② 字段赋值 `x.f = <含视图>` 且 `f` 的声明类型是视图、被切对象是 `@place`/`@drop` 类型时直接拒绝
+（"视图不能存进字段：容器增长之后它就是悬垂指针，改成 `snapshot()` 或把视图留在局部"）；
+③ 再考虑把这条静态规则推广到"视图作为实参传进可能保存它的函数"。
+
+## 已试过、目前不可行：把 `varArray` 也搬到板块上
 
 想把 `varArray<T>` 的存储从 arena 换成板块（`@place` + `poolSliceRaw`/`poolResizeRaw`），
 这样 8e6 个 `i64` 的峰值从 129,320 KB 掉到 64,252 KB（与 `vector` 同档，对照手写 `new`+翻倍
