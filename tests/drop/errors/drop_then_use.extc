@@ -1,0 +1,12 @@
+/* 判据：显式 drop 之后读这个名字是编译错误（否则读到的是已经交还的状态） */
+@noCopy
+struct res { id: i64
+    @drop
+    fn gone(self: mut ref res) { println("drop") }
+}
+fn main() -> i32 {
+    var a: res = { id: 1 }
+    drop a
+    println(a.id)
+    return 0
+}

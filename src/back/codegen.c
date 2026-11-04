@@ -532,6 +532,10 @@ typedef struct {
     /* Blocks currently being emitted, outermost first. A `return` runs the `@drop` hooks of every
      * local still in scope, innermost block first, so it needs to see them. */
     Vec         dropBlocks;      /* Stmt*: enclosing blocks */
+    /* Names whose `@drop` already ran because of an explicit `drop x`, so the block tail (and a
+     * `return`) must not run it again. Grows at a block's start and is truncated at its end, so a
+     * name reused in a sibling block is not skipped by mistake. */
+    Vec         dropExplicit;    /* const char* */
     /* `dropBlocks.len` at the point each enclosing loop body started: `break`/`continue` drop only
      * the blocks they are actually leaving. */
     Vec         dropLoopBases;   /* size_t */
@@ -5964,6 +5968,7 @@ static bool blockMakesPoolAtLevel(Stmt *b, int lvl) {
         case ST_RETURN: hit = zoneUseExpr(&u, st->u.ret.value); break;
         case ST_YIELD:  hit = zoneUseExpr(&u, st->u.yield_.value); break;
         case ST_TRAP:   hit = zoneUseExpr(&u, st->u.trap_.msg); break;
+        case ST_DROP:   hit = zoneUseExpr(&u, st->u.drop_.target); break;
         case ST_IF:     hit = zoneUseExpr(&u, st->u.ifs.cond); break;
         case ST_WHILE:  hit = zoneUseExpr(&u, st->u.whiles.cond); break;
         case ST_MATCH:  hit = zoneUseExpr(&u, st->u.match.scrutinee); break;
@@ -6259,6 +6264,7 @@ static void collectOwCallsStmt(Stmt *s, Vec *out) {
     switch (s->kind) {
     case ST_YIELD:  collectOwCallsExpr(s->u.yield_.value, out); return;
     case ST_TRAP:   collectOwCallsExpr(s->u.trap_.msg, out); return;
+    case ST_DROP:   collectOwCallsExpr(s->u.drop_.target, out); return;
     case ST_VAR:    collectOwCallsExpr(s->u.var.init, out); return;
     case ST_ASSIGN: collectOwCallsExpr(s->u.assign.target, out); collectOwCallsExpr(s->u.assign.value, out); return;
     case ST_EXPR:   collectOwCallsExpr(s->u.expr.expr, out); return;
@@ -6526,6 +6532,16 @@ static void genBlockTailDrops(CG *g, Stmt *block) {
             (strcmp(nm, g->dropSkipName) == 0 ||
              (st->u.var.name && strcmp(st->u.var.name, g->dropSkipName) == 0)))
             continue;
+        /* An explicit `drop x` already ran the hook for this name in this block. */
+        bool alreadyDropped = false;
+        for (size_t k = 0; k < g->dropExplicit.len; k++) {
+            const char *n = *(const char **)vecAt(&g->dropExplicit, k);
+            if (n && (strcmp(n, nm) == 0 || (st->u.var.name && strcmp(n, st->u.var.name) == 0))) {
+                alreadyDropped = true;
+                break;
+            }
+        }
+        if (alreadyDropped) continue;
         genDropValue(g, nm, st->type, 0);
     }
 }
@@ -6563,6 +6579,9 @@ static void genBlockBody(CG *g, Stmt *block) {
      * same level both write it, and nothing looks at a level after its block has been
      * left, but the save costs a byte and removes the question. */
     bool savedZoneMark = g->zoneMark[g->blkLevel];
+    /* Names dropped explicitly inside this block: the record is cut back when the block ends, so a
+     * sibling block may reuse the name and still get its own hook. */
+    size_t savedDropExplicit = g->dropExplicit.len;
     /* Block boundary of the static root table: the current registration depth is recorded on entry
      * and truncated on exit -- a local in the block stops being a root once the block ends (which
      * slots are live at a trigger point is something the compiler supplies). */
@@ -6634,6 +6653,7 @@ static void genBlockBody(CG *g, Stmt *block) {
     g->rcRoots.len = *(size_t *)vecAt(&g->rcRootMarks, g->rcRootMarks.len - 1);
     g->rcRootMarks.len--;
     g->dropBlocks.len--;
+    g->dropExplicit.len = savedDropExplicit;
     g->blkLevel--;
 }
 
@@ -8290,6 +8310,20 @@ static void genStmtInner(CG *g, Stmt *s) {
             cgLine(g, "extc_die(1);");
             return;
         }
+        case ST_DROP: {
+            /* `drop x`: run the hook **here**, and remember the name so the block tail does not run it
+             * a second time. The checker has already rejected a second drop and any later use. */
+            Expr *target = s->u.drop_.target;
+            const char *nm = planCName(target);
+            if (!nm && target->kind == EX_IDENT) nm = target->u.ident.name;
+            if (nm && target->type) genDropValue(g, nm, target->type, 0);
+            if (nm) {
+                *(const char **)vecPush(&g->dropExplicit) = nm;
+                if (target->kind == EX_IDENT)
+                    *(const char **)vecPush(&g->dropExplicit) = target->u.ident.name;
+            }
+            return;
+        }
         case ST_DOMAIN: {
             /* `d.run { ... }`: the block ends by **running its tasks to completion** -- that is what
              * makes the block structured (nothing it started is still unfinished when it exits).
@@ -8354,7 +8388,22 @@ static void genStmtInner(CG *g, Stmt *s) {
                     guard.same = strcmp(s->u.assign.value->u.ident.name,
                                         s->u.assign.target->u.ident.name) == 0;
                 const char *hn = planCName(s->u.assign.target);
-                if (!guard.same && hn && typeNeedsDrop(g, s->u.assign.target->type, 0))
+                const char *src0 = s->u.assign.target->u.ident.name;
+                /* A place that an explicit `drop` already emptied holds nothing to hand back, and the
+                 * assignment makes it a live place again -- so the name leaves the "already dropped"
+                 * list here. */
+                bool wasDropped = false;
+                if (src0) {
+                    size_t keep = g->dropExplicit.len;
+                    for (size_t k = 0; k < g->dropExplicit.len; k++) {
+                        const char *n = *(const char **)vecAt(&g->dropExplicit, k);
+                        if (n && strcmp(n, src0) == 0) { wasDropped = true; continue; }
+                        *(const char **)vecAt(&g->dropExplicit, keep++) = n;
+                    }
+                    g->dropExplicit.len = keep;
+                }
+                if (!guard.same && !wasDropped && hn &&
+                    typeNeedsDrop(g, s->u.assign.target->type, 0))
                     genDropValue(g, hn, s->u.assign.target->type, 0);
             }
             g->inAssignTarget = true;
@@ -13370,6 +13419,7 @@ static void initCGState(CG *g, Module *m, TypeTable *tt, Arena *arena) {
     vecInit(&g->rcRoots, arena, sizeof(const char *));
     vecInit(&g->rcRootMarks, arena, sizeof(size_t));
     vecInit(&g->dropBlocks, arena, sizeof(Stmt *));
+    vecInit(&g->dropExplicit, arena, sizeof(const char *));
     vecInit(&g->dropLoopBases, arena, sizeof(size_t));
     vecInit(&g->rcGlobalRoots, arena, sizeof(const char *));
     for (size_t i = 0; i < tt->instances.len; i++) {

@@ -1,0 +1,7 @@
+/* 判据：没有 `@drop` 的类型不能用显式 drop（这条语句什么也不做，只会误导读者） */
+struct plain { v: i64 }
+fn main() -> i32 {
+    var p: plain = { v: 1 }
+    drop p
+    return 0
+}

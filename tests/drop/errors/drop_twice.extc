@@ -1,0 +1,12 @@
+/* 判据：同一个 place 显式 drop 两次是编译错误（第二次的钩子跑在已经交还的状态上） */
+@noCopy
+struct res { id: i64
+    @drop
+    fn gone(self: mut ref res) { println("drop") }
+}
+fn main() -> i32 {
+    var a: res = { id: 1 }
+    drop a
+    drop a
+    return 0
+}

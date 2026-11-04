@@ -1,0 +1,14 @@
+// expect: drop 1|drop 2
+/* 判据：显式 drop 之后**赋新值**让这个名字重新可用；覆盖时不再对已经交还的旧值跑一次钩子 ✓ */
+@noCopy
+struct res { id: i64
+    @drop
+    fn gone(self: mut ref res) { println("drop ", self.id) }
+}
+fn main() -> i32 {
+    var a: res = { id: 1 }
+    drop a
+    a = { id: 2 }
+    drop a
+    return 0
+}

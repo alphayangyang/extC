@@ -1317,6 +1317,9 @@ static void rwStmt(Loader *L, ModUnit *self, Stmt *s) {
     case ST_TRAP:     /* `trap(msg)`: the message is an expression too, possibly qualified. */
         rwExpr(L, self, s->u.trap_.msg);
         break;
+    case ST_DROP:     /* `drop x`: the target is a bare name, but rewriting keeps it uniform. */
+        rwExpr(L, self, s->u.drop_.target);
+        break;
     case ST_DOMAIN:   /* `d.run { ... }`: domain block -- receiver and body are rewritten (like ST_IF). */
         rwExpr(L, self, s->u.domain_.callee);
         rwStmt(L, self, s->u.domain_.body);

@@ -2846,6 +2846,17 @@ static Stmt *parseStmt(Parser *p) {
         take(p);
         return s;
     }
+    /* `drop x`: run `x`'s `@drop` hook now and mark the place dead (`ST_DROP`). Recognised by
+     * **shape** (`drop` followed by a name), so a variable named `drop` still works -- and
+     * `drop(x)` is still a call. */
+    if (at(p, "drop") && pk(p, 1) &&
+        (pk(p, 1)->kind == TK_IDENT || pk(p, 1)->kind == TK_TYPE)) {
+        Token *tk = take(p);
+        Stmt *s = stmtNew(p->arena, ST_DROP, tk->line);
+        Token *target = take(p);
+        s->u.drop_.target = exprIdent(p->arena, target->text, target->line);
+        return s;
+    }
     if (at(p, "match"))                return parseMatch(p);
 
     if (at(p, "return")) {

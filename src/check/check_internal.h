@@ -115,6 +115,9 @@ typedef struct Sym {
      * `@noCopy` values move (a copyable one is copied instead). Using a moved name is an error:
      * the value lives in the destination and the source name owns nothing. */
     int         movedLine;
+    /* Line of an explicit `drop x` that already ran this place's hook, or 0. Like a move, the name
+     * survives as a place a program may assign to again, but reading it is a compile error. */
+    int         droppedLine;
     const char *movedInto;  /* destination binding, for the diagnostic */
     /* True once the address of this binding has been handed out: `ref x`, `x[..]`, or
      * passing it as a `mut ref` argument.

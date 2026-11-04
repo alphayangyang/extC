@@ -797,6 +797,7 @@ static bool visitExprList(const AstVisit *v, Vec *xs) {
     case ST_RETURN: return visitExpr(v, s->u.ret.value);
     case ST_YIELD:  return visitExpr(v, s->u.yield_.value);
     case ST_TRAP:   return visitExpr(v, s->u.trap_.msg);
+    case ST_DROP:   return visitExpr(v, s->u.drop_.target);
     /* `d.run { … }`: the block is the domain's body, so both children are walked. */
     case ST_DOMAIN: return visitExpr(v, s->u.domain_.callee) && visitStmt(v, s->u.domain_.body);
     case ST_EXPR:   return visitExpr(v, s->u.expr.expr);

@@ -908,6 +908,10 @@ static void parScanStmt(ParLower *w, Stmt *s) {
                 " let the join see a different iteration set.",
                 "cannot escape a par loop");
         return;
+    case ST_DROP:
+        /* Dropping a worker-local value is fine: it runs before the join like any other
+         * statement and touches only the worker's own place. */
+        return;
     case ST_TRAP:
         parPushItem(w, s->u.trap_.msg, 1);
         return;
@@ -1230,6 +1234,7 @@ void parWorkerAudit(Checker *c, FuncDef *f) {
                 *(Stmt **)vecPush(&stmts) = ((MatchArm *)vecAt(&s->u.match.arms, i))->body;
             break;
         case ST_TRAP: *(Expr **)vecPush(&exprs) = s->u.trap_.msg; break;
+        case ST_DROP: *(Expr **)vecPush(&exprs) = s->u.drop_.target; break;
         default: break;
         }
     }
@@ -3117,6 +3122,10 @@ static size_t tryHoistStmt(Checker *c, Stmt *s, Vec *pre, Vec *guards) {
     case ST_TRAP:
         tryHoistExpr(&h, &s->u.trap_.msg);
         break;
+    case ST_DROP:
+        /* The target is a place by construction; hoisting it would turn the name into a
+         * temporary and the hook would run on the copy. */
+        break;
     case ST_IF:
         tryHoistExpr(&h, &s->u.ifs.cond);
         break;
@@ -3311,6 +3320,25 @@ static const char *borrowOwner(Expr *init) {
  */
 void liveViewsStmtPre(Checker *c, LiveViews *lv, Vec *stmts, size_t i) {
     Stmt *stmt = *(Stmt **)vecAt(stmts, i);
+    /* `drop x` while a view of it is alive would hand the storage back under that view: the same
+     * use after free the growth case rejects, reached through the destructor instead. */
+    if (stmt && stmt->kind == ST_DROP && stmt->u.drop_.target &&
+        stmt->u.drop_.target->kind == EX_IDENT) {
+        const char *dropped = stmt->u.drop_.target->u.ident.name;
+        for (size_t v = 0; v < lv->len; v++) {
+            if (strcmp(lv->items[v].owner, dropped) != 0) continue;
+            bool usedAfter = false;
+            for (size_t j = i; j < stmts->len && !usedAfter; j++) {
+                ScanHit use = { lv->items[v].view, NULL, 0 };
+                usedAfter = scanStmt(&use, *(Stmt **)vecAt(stmts, j));
+            }
+            if (!usedAfter) continue;
+            ckError(c, stmt->line,
+                    "drop the container before borrowing from it, or finish with the view first",
+                    "`%s` is dropped while `%s` still views it", dropped, lv->items[v].view);
+            break;
+        }
+    }
     for (size_t v = 0; v < lv->len; v++) {
         ScanHit hit = { NULL, lv->items[v].owner, 0 };
         if (!scanStmt(&hit, stmt)) continue;
@@ -3351,7 +3379,10 @@ void liveViewsStmtPost(Checker *c, LiveViews *lv, Stmt *s) {
     Sym *osym = lookup(c, owner);
     Type *oty = osym ? tsub(c, osym->type) : NULL;
     StructDef *osd = oty ? structOf(ttBase(oty)) : NULL;
-    if (!osd || !osd->poolObject) return;
+    /* A type that owns storage which can be handed back is a place either way: the compiler-managed
+     * slab (`@poolObject`) or any type with a `@drop` hook, which is how a library container says
+     * "my storage goes back before the block ends". */
+    if (!osd || (!osd->poolObject && !osd->dropHook)) return;
     lv->items[lv->len].owner = owner;
     lv->items[lv->len].view = s->u.var.name;
     lv->len++;
@@ -3784,6 +3815,31 @@ static void noteAcyclicNestedLocal(Checker *c, Stmt *s) {
 }
 
 /**
+ * @brief Does dropping a value of this type run anything?
+ *
+ * True when the type has its own `@drop` hook or one of its fields does: a field of a `@drop` type
+ * dies with the value that contains it. References and views are not followed -- they do not own
+ * what they point at.
+ *
+ * @param c      The checker (for the instantiation context).
+ * @param t      The type; may be NULL.
+ * @param depth  Nesting already walked, capped so a pathological type cannot loop.
+ * @return       True when a drop has an effect.
+ */
+static bool typeHasDrop(Checker *c, Type *t, int depth) {
+    if (!t || depth > 8) return false;
+    Type *b = ttBase(tsub(c, t));
+    StructDef *sd = b ? structOf(b) : NULL;
+    if (!sd) return false;
+    if (sd->dropHook) return true;
+    for (size_t i = 0; i < sd->fields.len; i++) {
+        FieldDef *fd = *(FieldDef **)vecAt(&sd->fields, i);
+        if (fd && typeHasDrop(c, fd->type, depth + 1)) return true;
+    }
+    return false;
+}
+
+/**
  * @brief Make the `@drop` hooks reachable for a type and, recursively, for its fields.
  *
  * Dropping a value runs its own hook and then the hooks of the fields that own state, so every one
@@ -4202,7 +4258,7 @@ void checkStmt(Checker *c, Stmt *s) {
              * `a = make()` on a moved `a` does not trip the "cannot be read" diagnostic. */
             if (tgt0 && tgt0->kind == EX_IDENT) {
                 Sym *w = lookup(c, tgt0->u.ident.name);
-                if (w) { w->movedLine = 0; w->movedInto = NULL; }
+                if (w) { w->movedLine = 0; w->movedInto = NULL; w->droppedLine = 0; }
             }
             Type *idxBaseT = NULL;    /* base type of an index target, filled in once resolved */
             if (!assignTargetWritable(tgt0)) {
@@ -4689,6 +4745,53 @@ void checkStmt(Checker *c, Stmt *s) {
             Type *got = checkExpr(c, s->u.yield_.value);
             if (planYieldType(cf) && got && !ttIsError(got))
                 checkAssignable(c, planYieldType(cf), got, s->u.yield_.value, "the yielded value");
+            return;
+        }
+        case ST_DROP: {
+            /* `drop x`: run `x`'s hook now and mark the place dead. Three shapes have no meaning here
+             * and each gets its own sentence: a non-name (no place to kill), a type without a hook
+             * (the statement would do nothing), and a name that has already given its value away. */
+            Expr *tgt = s->u.drop_.target;
+            if (!tgt || tgt->kind != EX_IDENT) {
+                ckError(c, s->line,
+                        "`drop` names a binding, not an expression: there is nothing left to mark"
+                        " dead afterwards",
+                        "`drop` takes a variable name");
+                return;
+            }
+            Sym *sym = lookup(c, tgt->u.ident.name);
+            if (!sym) {
+                ckError(c, s->line, NULL, "`%s` is not a name in scope",
+                        tgt->u.ident.name);
+                return;
+            }
+            if (sym->droppedLine) {
+                ckError(c, s->line,
+                        "the hook already ran for this place; a plain assignment gives it a new"
+                        " value, and that value gets dropped when the block ends",
+                        "`%s` was already dropped", tgt->u.ident.name);
+                return;
+            }
+            if (sym->movedLine) {
+                ckError(c, s->line,
+                        "a move took the value out of this place, so there is nothing to drop here",
+                        "`%s` was moved into `%s`", tgt->u.ident.name,
+                        sym->movedInto ? sym->movedInto : "another binding");
+                return;
+            }
+            if (!typeHasDrop(c, sym->type, 0)) {
+                ckError(c, s->line,
+                        "`drop` is the explicit form of what the end of a block does: with no `@drop`"
+                        " method there is nothing to run",
+                        "`%s` has no `@drop` method", tgt->u.ident.name);
+                return;
+            }
+            markDropHooksUsed(c, sym->type, 0);
+            /* Codegen needs the type to know which hooks to run, and the C name to print: the target
+             * is not passed through `checkExpr`, so both are attached here. */
+            tgt->type = sym->type;
+            planSetCName(tgt, sym->cname, RKIND_EXPR);
+            sym->droppedLine = s->line;
             return;
         }
         case ST_TRAP: {

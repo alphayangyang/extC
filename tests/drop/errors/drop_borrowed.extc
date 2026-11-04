@@ -1,0 +1,9 @@
+/* 判据：视图还活着的时候 drop 容器是编译错误（比"读旧字节"先一步拒绝） */
+use std::data::buf
+fn main() -> i32 {
+    var b: buf<i64> = buf<i64>::withCap(4)
+    b.push(7)
+    let v = b.view()
+    drop b
+    return i32(v[0])
+}

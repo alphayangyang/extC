@@ -1,0 +1,25 @@
+// expect: before|drop 1|after|b=2|drop 3|drop 4|end|drop 2
+/* 判据：显式 `drop x` 在**那一行**跑钩子，块退出时不再跑第二次；没被显式 drop 的照常在块尾跑 ✓ */
+@noCopy
+struct res { id: i64
+    @drop
+    fn gone(self: mut ref res) { println("drop ", self.id) }
+}
+fn make(id: i64) -> res {
+    var r: res = { id: id }
+    return r
+}
+fn main() -> i32 {
+    var a: res = make(1)
+    println("before")
+    drop a
+    println("after")
+    var b: res = make(2)
+    println("b=", b.id)
+    var c: res = { id: 3 }
+    drop c
+    var d: res = { id: 4 }
+    drop d
+    println("end")
+    return 0
+}

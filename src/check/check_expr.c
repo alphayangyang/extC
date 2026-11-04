@@ -2174,6 +2174,13 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             /* A moved `@noCopy` binding has given its value away; reading it here would read the
              * bits the destination now owns. Copyable values are copied instead of moved, so this
              * only ever fires for `@noCopy`. */
+            if (s->droppedLine) {
+                ckError(c, e->line,
+                        "an explicit `drop` runs the hook now: the place it names holds nothing, so"
+                        " assign a new value before reading it",
+                        "`%s` was dropped here and cannot be read", e->u.ident.name);
+                return ttError(tt);
+            }
             if (s->movedLine) {
                 ckError(c, e->line,
                         "a `@noCopy` value has one owner: after the move the old name holds"
@@ -5212,6 +5219,7 @@ static bool stmtMayPrint(Checker *c, Stmt *s) {
     switch (s->kind) {
     case ST_YIELD:  return exprMayPrint(c, s->u.yield_.value);
     case ST_TRAP:   return true;      /* it writes a line to stderr itself */
+    case ST_DROP:   return false;     /* the hook is a plain method; a hook that prints is a call */
     case ST_VAR:    return exprMayPrint(c, s->u.var.init);
     case ST_ASSIGN: return exprMayPrint(c, s->u.assign.target) || exprMayPrint(c, s->u.assign.value);
     case ST_EXPR:   return exprMayPrint(c, s->u.expr.expr);

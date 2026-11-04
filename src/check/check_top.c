@@ -1905,6 +1905,9 @@ static bool exprIsFresh(Expr *e) {
 static void collectLoopSites(Stmt *s, int loopId, int *nextLoop, Vec *sites) {
     if (!s) return;
     switch (s->kind) {
+    case ST_DROP:
+        /* The target is a place, not an expression that can allocate. */
+        return;
     case ST_TRAP:
         if (loopId && exprHasNew(s->u.trap_.msg)) {
             *(int *)vecPush(sites) = s->u.trap_.msg->line;
@@ -2165,6 +2168,9 @@ static bool markNamesInStmt(Checker *c, FuncDef *f, Stmt *s) {
     if (!s) return false;
     bool grew = false;
     switch (s->kind) {
+    case ST_DROP:
+        /* Naming the place in `drop x` does not make it escape. */
+        return false;
     case ST_TRAP:
         /* The message is read in this frame; nothing in it leaves. */
         return markNamesInExpr(c, s->u.trap_.msg);
@@ -2823,6 +2829,9 @@ static void collectEffectsExpr(Checker *c, FuncDef *f, Expr *e);
 static void collectEffectsStmt(Checker *c, FuncDef *f, Stmt *s, Vec *fresh) {
     if (!s) return;
     switch (s->kind) {
+    case ST_DROP:
+        collectEffectsExpr(c, f, s->u.drop_.target);
+        return;
     case ST_TRAP:
         collectEffectsExpr(c, f, s->u.trap_.msg);
         return;
@@ -4104,6 +4113,9 @@ static void obligExpr(Checker *c, Expr *e, Vec *obs, bool escape) {
 static void obligStmt(Checker *c, Stmt *s, Vec *obs) {
     if (!s) return;
     switch (s->kind) {
+    case ST_DROP:
+        obligExpr(c, s->u.drop_.target, obs, false);
+        return;
     case ST_TRAP:
         obligExpr(c, s->u.trap_.msg, obs, false);
         return;
@@ -10264,6 +10276,7 @@ bool stmtMakesPool(Stmt *s, bool descendBlocks) {
     switch (s->kind) {
     case ST_YIELD:  return exprMakesPool(s->u.yield_.value, descendBlocks);
     case ST_TRAP:   return exprMakesPool(s->u.trap_.msg, descendBlocks);
+    case ST_DROP:   return false;   /* the target is a place, never an allocation */
     case ST_VAR:    return exprMakesPool(s->u.var.init, descendBlocks);
     case ST_ASSIGN: return exprMakesPool(s->u.assign.value, descendBlocks) ||
                            exprMakesPool(s->u.assign.target, descendBlocks);

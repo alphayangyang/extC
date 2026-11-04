@@ -1,10 +1,11 @@
 # Destructors
 
 Status: **partly implemented** (2026-11-03, updated 2026-11-04). Step S1 is in: a `@drop` method on a
-`@noCopy` struct runs when the binding leaves its block, when it is overwritten by `=`, and before a
-`return`. Not in yet: `break`/`continue` out of a block, generators' frames, and any caller that
-holds a borrowed view of the value being dropped — those leak, which is the recoverable side of the
-choice (a missed release is a leak; a doubled one is a use-after-free).
+`@noCopy` struct runs when the binding leaves its block, when it is overwritten by `=`, before a
+`return`, and on the way out of a loop through `break`/`continue`. Step S2 is in as well: `drop x`
+is an explicit statement that runs the hook **there**, and the name is dead afterwards — reading it,
+dropping it twice, or dropping a value someone still holds a view of is a compile error. Not in yet:
+generators' frames, drops on the `trap` path, and program exit for globals.
 
 `extC` already has linear types: `@noCopy` means "exactly one owner, may be borrowed but never copied"
 (`fs::file`, `ifstream`, `ofstream`, `loop`, `mem::pool`, `json::doc`, …). Linear types own things the
@@ -69,33 +70,20 @@ let head = f.readSome(buf)?
 drop f                       // release now; `f` is dead from here on
 ```
 
-`drop x` is a **statement**, not a method call. The compiler:
+`drop x` is a **statement**: it runs the hook at that point and marks the place dead, so the end of
+the block does not run it again. The compiler rejects four shapes, each with its own sentence:
 
-1. runs the destructor,
-2. marks the place `x` as dead (no implicit drop later),
-3. makes any later mention of `x` a compile error: `` `f` was dropped here; it is not a value any more ``.
+- a name that is not a binding (`` `drop` takes a variable name ``),
+- a type with no `@drop` method and no field that has one (``` `p` has no `@drop` method ```),
+- a place that already gave its value away by a move, or that was already dropped,
+- a container that a live view still borrows: `` `b` is dropped while `v` still views it `` — the
+  same rule that rejects growing it, reached through the destructor.
 
-The borrow question — what happens to a view/ref of `x` taken before the drop — is answered
-**statically**:
+Assigning a new value to a dropped name makes it usable again; there is no "drop twice".
 
-- The checker keeps, per function, the set of live borrows and their base place (it already tracks
-  this for the depth rules). At `drop x`, any live borrow based on `x` is an error:
-  `` `v` is borrowed from `f`, which is dropped here ``.
-- A borrow of `x` that was stored somewhere outside the current block (returned, put in a field,
-  into a container) is also an error at the `drop` — because the place that now holds it outlives the
-  drop point.
-- If the checker cannot decide, it rejects (soundness first, completeness later — the same rule the
-  rest of the memory model uses).
-
-Double free is impossible by construction: `@noCopy` gives one owner, and a dead place has no
-destructor left to run.
-
-`drop` is also allowed on a **field** inside a destructor body (`drop self.inner`) so a wrapper type
-can delegate; the same liveness rule applies to borrows of that field.
-
-RAII: yes, that is the shape — scope-bound release, in reverse order, with an explicit early release.
-The differences from C++ are (a) no storage deallocation in destructors, so no move constructors and
-no rule-of-5, and (b) no copy, so no double-owner question at all.
+Not in yet: `drop` on a **field** (`drop self.inner`, so that a wrapper can delegate), and the
+broader question of a borrow that escaped the block. Both are rejected today as "not a variable
+name" / "not tracked here" — the recoverable side (see the status line).
 
 ## 4. What is rejected
 

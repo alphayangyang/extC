@@ -786,6 +786,9 @@ typedef enum {
                              * `file:line: trap: msg` to stderr and stops with code 1, down the same
                              * road the compiler's own checks take (bounds, division by zero), dying
                              * hook included. Expected failures are `result`/`option` values. */
+    ST_DROP,                /* `drop x`: run `x`'s `@drop` hook **now** and mark the place dead. A
+                             * statement, not an expression: it has no value, and a later use of `x`
+                             * is a compile error rather than a second drop. */
     ST_DOMAIN               /* `d.run { … }`: a **domain block**. A statement on purpose: the block
                              * is not a value and cannot be used as an expression, the expression
                              * walkers never have to see it, and the statement walkers handle its
@@ -863,6 +866,7 @@ struct Stmt {
         struct { Expr *value; } ret;
         struct { Expr *msg; } trap_;      /* ST_TRAP: the message (`slice<u8>` / `ref u8` / literal) */
         struct { Expr *expr; } expr;
+        struct { Expr *target; } drop_;    /* ST_DROP: the place whose hook runs now */
         /* ST_DOMAIN: `callee` is the `d.run` that opened the block, `body` is the block itself.
          * Only a value of the language-level object `domain` may carry one (check_stmt.c). */
         struct { Expr *callee; Stmt *body; } domain_;

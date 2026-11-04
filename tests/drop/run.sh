@@ -36,9 +36,15 @@ one early_return "$(src early_return.extc)" "rc=early|drop 1|7|done"
 one break_continue "$(src break_continue.extc)" "continue from 0|drop 0|break at 1|drop 1|done"
 one fields      "$(src fields.extc)"     "inner 1|inner 2|wrap 9|inner 3|inner 4|done"
 one return_move "$(src return_move.extc)" "got 5|inner 5|close 5|done|close 5"
+one explicit_drop "$(src explicit_drop.extc)" "before|drop 1|after|b=2|drop 3|drop 4|end|drop 2"
+one revive_after_drop "$(src revive_after_drop.extc)" "drop 1|drop 2"
 one generic     "$(src generic.extc)"    "v=3|bye"
 neg needs_nocopy "$(src errors/drop_needs_nocopy.extc)" '`@drop` needs a `@noCopy` struct'
 neg two_hooks    "$(src errors/two_hooks.extc)"          'already has an `@drop` method'
+neg drop_then_use "$(src errors/drop_then_use.extc)"      'was dropped here and cannot be read'
+neg drop_twice   "$(src errors/drop_twice.extc)"          'was already dropped'
+neg drop_no_hook "$(src errors/drop_no_hook.extc)"        'has no `@drop` method'
+neg drop_borrowed "$(src errors/drop_borrowed.extc)"      'is dropped while'
 
 quiet() { # name file
   local name="$1" s="$2"
