@@ -106,6 +106,20 @@ heap-use-after-free 而编译器不报错。现在"把会移动存储的视图�
 位在调用点拒绝，并建议 `snapshot()`（`view_arg_stored.extx` 是反例、`view_arg_snapshot.extx` 是正例）。
 跨函数增长那一半依旧靠 `borrow()` 守卫，不是自动的。
 
+### 试过：把"容器被交出时板生在调用者 place"当作开关（2026-11-05，证伪）
+
+想法：`markCallHomeIfEscaping` 已经在"值被交出"时把 arena 站点提升到 home；照抄一句，让建池的调用在
+同一个分支里把 zone 级降到 `ZONE_HOME`，容器里的元素就会被要求活到 home。
+
+`P2-7` 的 `cur.next` 深度仍然是 1；产物里节点由 `build` 的帧 region 分配、退出时 `regionDrop`。原因是 `P2-7` 里**容器本身没有交出**——活下来的是容器里的元素（`head` 被返回）。所以
+要提升的是"写进容器元素的 `new` 站点"，而不是容器的 place；这条链在 arena 底靠 `promoteFieldsAt`
+走通（`[fs-promote] head depth=0`），在板块底走不通（`depth=1`），差别在元素槽的来源种类：
+arena 是 `EX_NEW`（可提升），板块是 `EX_GENCALL`（`poolResizeRaw` 的调用结果，不可提升）。
+
+结论：修点不在 `setCallZoneArg`/`markCallHomeIfEscaping`，而在"元素槽的来源不是分配站点时，
+`promoteFieldsAt` 如何追到真正的分配站点"。这条要动 `fieldDepthEntry` 的来源记录，属 P1 的
+`slice` 纯借用同一片；本轮不动。
+
 ## 已试过、目前不可行：把 `varArray` 也搬到板块上
 
 想把 `varArray<T>` 的存储从 arena 换成板块（`@place` + `poolSliceRaw`/`poolResizeRaw`），
