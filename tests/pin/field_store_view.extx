@@ -1,0 +1,22 @@
+use std::io
+use std::data::vector
+
+struct box { v: vector<i64>  s: slice<i64> }
+
+// 视图落进字段之后，增长可以发生在别的块、别的函数里 —— 本块的名字表看不见，
+// 所以在"存进字段"这一刻拒绝。
+// expect-reject: this field would hold a view of
+fn grow(b: mut ref box) {
+    var i: i64 = 0
+    while i < 24 {
+        b.v.push(i)
+        i = i + 1
+    }
+}
+fn main() {
+    var b: box = { v: vector<i64>::withCap(4), s: vector<i64>::withCap(0).view() }
+    b.v.push(7)
+    b.s = b.v.view()
+    grow(ref b)
+    io::cout << f"s0={b.s[0]}\n"
+}

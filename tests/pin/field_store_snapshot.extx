@@ -1,0 +1,18 @@
+use std::io
+use std::data::vector
+
+struct box { v: vector<i64>  s: slice<i64> }
+
+// 反方向：存的是快照（自己一份字节），随后容器怎么长都不影响它 ⇒ 必须编过。
+// expect: s0=7 n=1 grew=25
+fn main() {
+    var b: box = { v: vector<i64>::withCap(4), s: vector<i64>::withCap(4).view() }
+    b.v.push(7)
+    b.s = b.v.snapshot()
+    var i: i64 = 0
+    while i < 24 {
+        b.v.push(i)
+        i = i + 1
+    }
+    io::cout << f"s0={b.s[0]} n={b.s.len} grew={b.v.len()}\n"
+}

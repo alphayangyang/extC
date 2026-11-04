@@ -3448,7 +3448,77 @@ static void liveViewsNoteStored(Checker *c, LiveViews *lv, Stmt *s) {
  * @param s   The statement that was just checked.
  */
 
+/** @brief Types whose storage a view can outlive: growth hands the old slab back. */
+static bool storageCanMove(Checker *c, Type *t) {
+    if (!t) return false;
+    Type *b = ttBase(tsub(c, t));
+    StructDef *sd = b ? structOf(b) : NULL;
+    return sd && (sd->poolObject || sd->dropHook);
+}
+
+/** @brief Look for a view-producing call on a receiver whose storage can move. */
+static bool valueHoldsMovingView(Checker *c, Expr *e, const char **owner);
+
+/** @brief Walk-callback shim for `valueHoldsMovingView`. */
+static bool movingViewVisit(void *ctx, Expr *e) {
+    struct { Checker *c; const char **owner; bool found; } *st = ctx;
+    return !valueHoldsMovingView(st->c, e, st->owner);
+}
+
+/**
+ * @brief Does this expression produce a view of storage that can be handed back?
+ *
+ * `b.v.view()` is the shape that has no name to freeze: the view is assigned to a field, so the
+ * block-local table never sees a use of it, and the growth happens in another function. Rejecting
+ * the store is the only place the two facts are still in one place.
+ *
+ * @param c      Checker.
+ * @param e      Expression to inspect.
+ * @param owner  Out: a printable name for the storage, when one is found.
+ * @return       `true` when a view of movable storage appears anywhere in `e`.
+ */
+static bool valueHoldsMovingView(Checker *c, Expr *e, const char **owner) {
+    if (!e) return false;
+    if (e->kind == EX_METHOD && e->u.method.recv && e->u.method.name &&
+        (strcmp(e->u.method.name, "view") == 0 || strcmp(e->u.method.name, "viewMut") == 0 ||
+         strcmp(e->u.method.name, "asSlice") == 0 || strcmp(e->u.method.name, "asMutSlice") == 0)) {
+        if (storageCanMove(c, e->u.method.recv->type)) {
+            Type *rt = tsub(c, e->u.method.recv->type);
+            *owner = rt ? typeStr(c, rt) : "this container";
+            return true;
+        }
+    }
+    struct { Checker *c; const char **owner; bool found; } st = { c, owner, false };
+    AstVisit v = { (bool (*)(void *, Expr *))movingViewVisit, NULL, &st };
+    astWalkExprChildren(e, &v);
+    return st.found;
+}
+
+/**
+ * @brief Remember the views a statement leaves behind, and reject the ones it stores.
+ *
+ * A view reaches the block in three shapes: bound to a name (`var s = v.view()`), handed to a
+ * container (`box.push(v.view())`), or assigned to a field (`b.s = b.v.view()`). The first two can
+ * be watched until the block ends; the third can be read from anywhere, so it is rejected while
+ * both the view and its source are still visible here.
+ *
+ * @param c   Checker.
+ * @param lv  Views of the enclosing block.
+ * @param s   The statement that was just checked.
+ */
 void liveViewsStmtPost(Checker *c, LiveViews *lv, Stmt *s) {
+    /* A view stored into a field is unreachable from this table: the field can be read in a
+     * later block or in another function, where the growth is invisible. Reject the store. */
+    if (s && s->kind == ST_ASSIGN && s->u.assign.target && s->u.assign.target->kind == EX_FIELD &&
+        s->u.assign.target->type && ttIsViewType(ttBase(s->u.assign.target->type))) {
+        const char *owner = NULL;
+        if (valueHoldsMovingView(c, s->u.assign.value, &owner)) {
+            ckError(c, s->line,
+                    "keep the view local, or take a copy (`snapshot()`) if it has to outlive the statement",
+                    "this field would hold a view of `%s`, whose storage moves when it grows", owner);
+            return;
+        }
+    }
     if (!s || s->kind != ST_VAR || lv->len >= LIVE_VIEW_MAX) { liveViewsNoteStored(c, lv, s); return; }
     const char *owner = borrowOwner(s->u.var.init);
     if (!owner) {
