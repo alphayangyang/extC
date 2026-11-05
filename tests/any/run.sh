@@ -74,5 +74,14 @@ type=rec
 scalar=7"
 dispatch_miss dyn_wide_missing tests/any/dyn_wide_missing.extc plain
 
+# 反例：`@noCopy` 的值不能被装进 `any`（装箱是拷贝，会给出第二个所有者）。
+if ./build/extc -w --no-line-map -o "$tmp/nb.c" tests/any/no_box_nocopy.extc 2>"$tmp/nb.e"; then
+    bad "no_box_nocopy" "编过了（应该拒绝 ✗）"
+elif grep -q 'is `@noCopy`, so it cannot be boxed' "$tmp/nb.e"; then
+    ok "no_box_nocopy" "$(grep -m1 'error:' "$tmp/nb.e" | cut -c1-72)"
+else
+    bad "no_box_nocopy" "报文不对：$(head -1 "$tmp/nb.e")"
+fi
+
 printf '通过 %d，失败 %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

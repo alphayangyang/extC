@@ -1855,6 +1855,9 @@ void checkHoistStatementTrys (Checker *c, Vec *stmts, size_t *pi);
  * @return    True when any part of the type can hold a reference.
  */
  _Bool typeContainsRef (TypeTable *tt, Type *t);
+
+/** @brief Tell whether a type is, or contains, a `@noCopy` struct (boxing would copy an identity). */
+ _Bool typeHoldsNoCopy (TypeTable *tt, Type *t);
 /**
  * @brief Tell whether a type may hold a **counted rc reference** (`typeContainsRef` without the
  *        view-handle layer).

@@ -585,6 +585,56 @@ static bool typeContainsRefAt(TypeTable *tt, Type *t, int depth) {
 static bool typeContainsFnAt(TypeTable *tt, Type *t, int depth);
 
 /**
+ * @brief Tell whether a type (or a field of it) is a `@noCopy` struct.
+ *
+ * `any` owns its payload, so boxing copies; a `@noCopy` value has an identity and no default way
+ * to be copied, which makes boxing it a silent second owner. Same walk family as
+ * `typeContainsRef`, and conservative past the depth limit.
+ *
+ * @param tt     Type table; substitutes the arguments of generic instances.
+ * @param t      Type to check; NULL holds no `@noCopy` struct.
+ * @param depth  Recursion depth.
+ * @return       True when the type is, or contains, a `@noCopy` struct.
+ */
+static bool typeHoldsNoCopyAt(TypeTable *tt, Type *t, int depth) {
+    if (depth > ZERO_VALUE_DEPTH_LIMIT) return true;   /* conservative */
+    if (!t) return false;
+    if (t->kind == TY_ARRAY) return typeHoldsNoCopyAt(tt, t->inner, depth + 1);
+    if (t->kind == TY_ENUM && t->edef) {
+        for (size_t v = 0; v < t->edef->variants.len; v++) {
+            Variant *va = *(Variant **)vecAt(&t->edef->variants, v);
+            for (size_t i = 0; i < va->types.len; i++)
+                if (typeHoldsNoCopyAt(tt, payloadType(tt, t, va, i), depth + 1)) return true;
+        }
+        return false;
+    }
+    StructDef *sd = structOf(t);
+    if (!sd) return false;
+    if (sd->noCopy) return true;
+    Vec *sp = NULL, *sa = NULL;
+    if (t->kind == TY_GENERIC && t->targs.len == sd->typeParams.len) {
+        sp = &sd->typeParams;
+        sa = &t->targs;
+    }
+    for (size_t i = 0; i < sd->fields.len; i++) {
+        Type *ft = (*(FieldDef **)vecAt(&sd->fields, i))->type;
+        if (typeHoldsNoCopyAt(tt, ttSubstitute(tt, ft, sp, sa), depth + 1)) return true;
+    }
+    return false;
+}
+
+/**
+ * @brief Tell whether a type is, or contains, a `@noCopy` struct.
+ *
+ * @param tt  Type table.
+ * @param t   Type to check.
+ * @return    True when a value of this type has an identity that may not be copied.
+ */
+bool typeHoldsNoCopy(TypeTable *tt, Type *t) {
+    return typeHoldsNoCopyAt(tt, t, 0);
+}
+
+/**
  * @brief Tell whether a type is a function type or contains one internally.
  *
  * The same family of walks as `typeContainsRef`, present only for the wording of one

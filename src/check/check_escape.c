@@ -703,6 +703,21 @@ int targetDepth(Checker *c, Expr *e) {
                     c->ctx && c->ctx->path ? c->ctx->path : "?", e->line, (int)e->kind, d, pure,
                     pure > d ? "UNDER" : "OVER");
     }
+    /* TEMP PROBE (diagnosis only): the depth a view-returning call site gets. */
+    if (dbgOn("EXTC_DBG_RD") &&
+        (e->kind == EX_CALL || e->kind == EX_METHOD || e->kind == EX_ASSOC)) {
+        FuncDef *pf = planCallee(e);
+        Expr *prc = e->kind == EX_METHOD ? e->u.method.recv : NULL;
+        int prd = prc ? targetDepth(c, prc) : -1;
+        fprintf(stderr, "[rd] %s:%d in=%-10s subst=%d fn=%-14s kind=%d recv=%-10s recvD=%d argmax=%d pool=%d zone=%d d=%d ret=%s\n",
+                c->ctx && c->ctx->path ? c->ctx->path : "?", e->line,
+                (c->curFunc && c->curFunc->name) ? c->curFunc->name : "-",
+                c->substParams ? 1 : 0,
+                (pf && pf->name) ? pf->name : "?", (int)e->kind,
+                (prc && prc->kind == EX_IDENT) ? prc->u.ident.name : "-",
+                prd, d, calleeMakesPool(pf) ? 1 : 0, planZoneLevel(e), d,
+                e->type ? typeStr(c, tsub(c, e->type)) : "?");
+    }
     /* A node that mentions a type parameter is not cached: that number holds only inside the
      * generic body and may not hold for an instance. */
     if (!c->substParams && !mentionsParam(e->type)) anSetRefDepth(e, d);

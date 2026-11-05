@@ -1,0 +1,10 @@
+// 反例：`any` **拥有**它的载荷（装箱是拷贝），所以一个带身份的 `@noCopy` 值不能装进去 ——
+// 否则两个名字指向同一个位置。要装箱就装"自己拥有字节"的值（`buf<T>`、或由它组成的结构体）。
+use std::data::buf
+
+fn main() -> i32 {
+    var b: buf<i64> = buf<i64>::withCap(2)
+    b.push(7)
+    var a: any = b
+    return 0
+}

@@ -550,6 +550,18 @@ bool checkAssignable(Checker *c, Type *want, Type *got, Expr *node, const char *
      * Both flags are plan facts rather than new kinds of node: the value keeps its own type, and
      * only the emission site needs to know that a wrapping or unwrapping happens there. */
     if (want->kind == TY_ANY && got->kind != TY_ANY) {
+        /* An `any` **owns** its payload: boxing copies the value in (and deep-copies what it
+         * points at), so two names would hold one identity. A `@noCopy` value has an identity by
+         * declaration and no `clone`-by-default, so it may not be boxed; do it explicitly with a
+         * value that owns its bytes. Checked here rather than at emission because the copy is a
+         * language rule, not an implementation detail. */
+        if (c && typeHoldsNoCopy(c->tt, got)) {
+            ckError(c, node ? node->line : 0,
+                    "Box a value that owns its bytes (`buf<T>`, a struct of them) instead: an `any`"
+                    " copies what it is given, and this value has an identity that may not be copied.",
+                    "`%s` is `@noCopy`, so it cannot be boxed into `any`", typeStr(c, got));
+            return true;
+        }
         if (node) {
             planSetAnyBox(node, true);
             /* The copy the `any` owns lives in the **caller's** home arena, so it outlives this
