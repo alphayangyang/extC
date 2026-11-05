@@ -5,7 +5,7 @@
 # `-I`/--ccflag/`-o`，还得记住入口文件。这两个子命令把"项目"变成约定：
 #
 #   ① 当前目录（或给定目录）里按约定找入口：`src/main.extc` → `main.extc` →
-#      `src/main.extx` → `main.extx` → `packages.toml` 的 `[build] entry`；
+#      `src/main.extc` → `main.extc` → `packages.toml` 的 `[build] entry`；
 #   ② 找不到时把**试过的每一条路径**都打出来（不是一句"没有入口"）；
 #   ③ `--` 之后原样交给程序（`args.len` 能看见），这是 `@module` 子命令能用的前提；
 #   ④ extc build 只出二进制不运行，`-o` 命名它；
@@ -57,17 +57,21 @@ else
     bad "entry-flat-main" "rc=$rc out=「$out」"
 fi
 
-# `.extx` 是包内部源文件的拼法，约定里同样认。
+# 约定只认 `.extc`；别的拼法要由清单指出来（驱动器不猜扩展名）。
 mkdir -p "$TMP/c/src"
-cat > "$TMP/c/src/main.extx" <<'EOF'
+cat > "$TMP/c/src/start.weird" <<'EOF'
 use std::io
-fn main() -> i32 { io::cout << "extx\n"  return 0 }
+fn main() -> i32 { io::cout << "manifest-spelling\n"  return 0 }
+EOF
+cat > "$TMP/c/packages.toml" <<'EOF'
+[build]
+entry = "src/start.weird"
 EOF
 out="$(cd "$TMP/c" && "$EXTC" run 2>&1)"; rc=$?
-if [ "$rc" -eq 0 ] && [ "$out" = "extx" ]; then
-    ok "entry-extx" "src/main.extx"
+if [ "$rc" -eq 0 ] && [ "$out" = "manifest-spelling" ]; then
+    ok "entry-manifest-name" "非 .extc 拼法由 [build] entry 指出"
 else
-    bad "entry-extx" "rc=$rc out=「$out」"
+    bad "entry-manifest-name" "rc=$rc out=「$out」"
 fi
 
 # 清单里写的入口名可以是任意路径 —— 这是"约定找不到时"的最后一档。
@@ -77,9 +81,9 @@ cat > "$TMP/d/packages.toml" <<'EOF'
 name = "demo"
 
 [build]
-entry = "app/start.extx"
+entry = "app/start.extc"
 EOF
-cat > "$TMP/d/app/start.extx" <<'EOF'
+cat > "$TMP/d/app/start.extc" <<'EOF'
 use std::io
 fn main() -> i32 { io::cout << "manifest\n"  return 0 }
 EOF

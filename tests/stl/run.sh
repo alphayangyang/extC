@@ -30,11 +30,11 @@ rejects() { # rejects <名字> <文件> <期望的诊断子串>
 }
 
 echo "== buf<T>：拥有存储（增长还旧板 / 离开作用域还全部）=="
-run_case varArray_release tests/stl/varArray_release.extx "grown>0=true after<1024=true sum=0"
+run_case varArray_release tests/stl/varArray_release.extc "grown>0=true after<1024=true sum=0"
 run_case buf     tests/stl/buf.extc           "len=1 cap=13 sum=45 c9=9 v0=100 leak=0 growsum=4999950000 gleak=0"
-run_case buf_new tests/stl/buf_new.extx       "len=0 cap=42 sum=780 owned=true"
+run_case buf_new tests/stl/buf_new.extc       "len=0 cap=42 sum=780 owned=true"
 BX=$(mktemp -d)
-if "$EXTC" -w --no-line-map -o "$BX/bx.c" tests/stl/buf_new_wrong_elem.extx 2>&1 | grep -q "initializer expects"; then
+if "$EXTC" -w --no-line-map -o "$BX/bx.c" tests/stl/buf_new_wrong_elem.extc 2>&1 | grep -q "initializer expects"; then
     echo "  ok   buf_new_wrong_elem  ->  元素类型不符被拒 ✓"
 else
     echo "  FAIL buf_new_wrong_elem  ->  应当报 `initializer expects`"; fail=1
@@ -147,8 +147,8 @@ run_case custom-grow tests/stl/custom_pool_grow.extc "n=2000000 cap=2362204 byte
 
 echo "== varArray：唯一能装引用的容器（arena 底 ⇒ 元素地址永不移动/复用）=="
 # 视图是"快照"而不是悬垂：扩容不释放旧块 ⇒ 读到旧值；带出调用安全（三条事实一次钉住）
-rejects varArray_stale_view tests/stl/varArray_stale_view.extx "changes the storage that"
-rejects varArray_stale_write tests/stl/varArray_stale_write.extx "changes the storage that"
+rejects varArray_stale_view tests/stl/varArray_stale_view.extc "changes the storage that"
+rejects varArray_stale_write tests/stl/varArray_stale_write.extc "changes the storage that"
 # 写的一面：扩容后通过旧 mut 视图写 ⇒ 静默丢（新块看不到），ASan 证明不是内存不安全
 
 run_case varref  tests/stl/vararray_ref.extc  "a_data=2 b_data=1 n=1"
@@ -250,7 +250,7 @@ asan_ok() {   # 文件 可执行名
       && gcc -fwrapv -std=c11 -g -fsanitize=address -o "$TMP/$2" "$TMP/$2.c" >/dev/null 2>&1 \
       && ! "$TMP/$2" 2>&1 | grep -q Sanitizer
 }
-if asan_ok tests/stl/varArray_release.extx var && asan_ok tests/stl/vector.extc v && asan_ok tests/stl/setOrdered.extc so && asan_ok tests/stl/setStructKey.extc ssk && asan_ok tests/stl/stringOps.extc sop && asan_ok tests/stl/stringEdit.extc sedit && asan_ok tests/stl/stringFind.extc sfi; then
+if asan_ok tests/stl/varArray_release.extc var && asan_ok tests/stl/vector.extc v && asan_ok tests/stl/setOrdered.extc so && asan_ok tests/stl/setStructKey.extc ssk && asan_ok tests/stl/stringOps.extc sop && asan_ok tests/stl/stringEdit.extc sedit && asan_ok tests/stl/stringFind.extc sfi; then
     echo "  ok   ASan  ->  varArray_release · vector · setOrdered · setStructKey · stringOps · stringFind 干净"
 else
     echo "  FAIL ASan  ->  报了内存问题"; fail=1

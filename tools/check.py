@@ -1694,7 +1694,7 @@ def build_items() -> list:
     # ---- 驱动器：项目模式的 run/build ----
     items.append(cmd(
         "cli", "tests",
-        "驱动器：`extc run`/`extc build` 的入口发现（src/main.extc · main.extc · .extx · packages.toml 的 [build] entry · 目录参数）+ 找不到时列出试过的路径 + `--` 之后实参原样透传 + build 只出二进制 + 旧 `--run` 拼写不变",
+        "驱动器：`extc run`/`extc build` 的入口发现（src/main.extc · main.extc · packages.toml 的 [build] entry · 目录参数；约定只认 .extc）+ 找不到时列出试过的路径 + `--` 之后实参原样透传 + build 只出二进制 + 旧 `--run` 拼写不变",
         ["./tests/cli/run.sh"], timeout=300,
         ok_msg=ok_count_ok(" 项（约定入口 · 清单入口 · 目录参数 · 无入口报错 · 实参透传 · build 模式 · 旧拼写）"),
         bad_msg="tests/cli/run.sh", bad_dump=dump_fail(8)))

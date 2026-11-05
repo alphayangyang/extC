@@ -38,7 +38,7 @@ one fields      "$(src fields.extc)"     "inner 1|inner 2|wrap 9|inner 3|inner 4
 one return_move "$(src return_move.extc)" "got 5|inner 5|close 5|done|close 5"
 one explicit_drop "$(src explicit_drop.extc)" "before|drop 1|after|b=2|drop 3|drop 4|end|drop 2"
 one revive_after_drop "$(src revive_after_drop.extc)" "drop 1|drop 2"
-one param_owner "$(src param_owner.extx)" "n=0 leak=0 take=0"
+one param_owner "$(src param_owner.extc)" "n=0 leak=0 take=0"
 one generic     "$(src generic.extc)"    "v=3|bye"
 one global_exit "$(src global_exit.extc)" "body|close 9"
 neg needs_nocopy "$(src errors/drop_needs_nocopy.extc)" '`@drop` needs a `@noCopy` struct'

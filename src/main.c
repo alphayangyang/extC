@@ -387,8 +387,8 @@ static void usage(const char *argv0) {
         "\n"
         "`run` and `build` are the `--run` and `--build` modes without the flags: with no\n"
         "file they take the entry of the project in the current directory. The entry is the\n"
-        "first of src/main.extc, main.extc, src/main.extx, main.extx that exists, else the\n"
-        "path named by `[build] entry` in packages.toml. Everything after `--` goes to the\n"
+        "first of src/main.extc, main.extc that exists, else the path named by\n"
+        "`[build] entry` in packages.toml. Everything after `--` goes to the\n"
         "program, so `extc run -- -m demo x` runs the `@module` entry `demo`.\n"
         "\n"
         "options:\n"
@@ -679,16 +679,16 @@ static const char *manifestEntry(Arena *a, const char *dir) {
 /**
  * @brief Find the entry file of a project directory.
  *
- * The order is the convention, and it is short on purpose: `src/main.extc`, `main.extc`,
- * then the same two with the `.extx` spelling a package's own sources use, then whatever
- * `packages.toml` names. Anything fancier belongs in a manifest.
+ * The order is the convention, and it is short on purpose: `src/main.extc`, then
+ * `main.extc`, then whatever `packages.toml` names. A project that wants another spelling
+ * writes it in the manifest rather than expecting the driver to guess.
  *
  * @param a    Arena the returned string is allocated from.
  * @param dir  Directory to search.
  * @return     Path to the entry file, or NULL when the directory has none.
  */
 static const char *findProjectEntry(Arena *a, const char *dir) {
-    static const char *const candidates[] = { "src/main.extc", "main.extc", "src/main.extx", "main.extx" };
+    static const char *const candidates[] = { "src/main.extc", "main.extc" };
     for (size_t i = 0; i < sizeof candidates / sizeof candidates[0]; i++) {
         const char *p = arenaPrintf(a, "%s/%s", dir, candidates[i]);
         if (pathIsFile(p)) return p;
@@ -893,9 +893,9 @@ int main(int argc, char **argv) {
         path = findProjectEntry(&arena, discoverDir);
         if (!path) {
             fprintf(stderr, "extc: no entry file below `%s`\n", discoverDir);
-            fprintf(stderr, "  looked for %s/src/main.extc, %s/main.extc, %s/src/main.extx,"
-                            " %s/main.extx, and `[build] entry` in %s/packages.toml\n",
-                    discoverDir, discoverDir, discoverDir, discoverDir, discoverDir);
+            fprintf(stderr, "  looked for %s/src/main.extc, %s/main.extc, and `[build] entry`"
+                            " in %s/packages.toml\n",
+                    discoverDir, discoverDir, discoverDir);
             return 2;
         }
     }

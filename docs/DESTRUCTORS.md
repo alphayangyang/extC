@@ -140,7 +140,7 @@ Runtime: none. A destructor is a plain C function call on a `mut ref`.
 8. `trap_path.extc` — a trap after two resources were taken: both closed (check the fd count via `/proc/self/fd`).
 9. `container_reject.extc` — `varArray<@drop type>` **must fail** (negative).
 10. `coro_reject.extc` — a `@drop` value across `yield` **must fail** (negative, until stage 2).
-11. `no_double_close.extx` — ASan build, same handle dropped on a trap path and a return path.
+11. `no_double_close.extc` — ASan build, same handle dropped on a trap path and a return path.
 12. `@drop` on a copyable type **must fail** (negative).
 
 ## 7. Stages

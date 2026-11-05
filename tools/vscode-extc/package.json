@@ -13,7 +13,7 @@
       {
         "id": "extc",
         "aliases": ["extC", "extc"],
-        "extensions": [".extc", ".extx"],
+        "extensions": [".extc"],
         "configuration": "./language-configuration.json"
       }
     ],

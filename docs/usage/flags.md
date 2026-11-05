@@ -13,8 +13,8 @@ usage: build/extc [options] <file.extc>
 
 `run` and `build` are the `--run` and `--build` modes without the flags: with no
 file they take the entry of the project in the current directory. The entry is the
-first of src/main.extc, main.extc, src/main.extx, main.extx that exists, else the
-path named by `[build] entry` in packages.toml. Everything after `--` goes to the
+first of src/main.extc, main.extc that exists, else the path named by
+`[build] entry` in packages.toml. Everything after `--` goes to the
 program, so `extc run -- -m demo x` runs the `@module` entry `demo`.
 
 options:

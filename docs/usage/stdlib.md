@@ -84,8 +84,8 @@ prelude 是编译器在每个编译单元前先过一遍的一段 extC 源码。
 - **容量怎么涨**：满时翻倍（下限 4）。
 - **越界**：`get` 越界给 `none`（不 trap）；`set` 只在 `i` 超过 `cap` 时 trap，`i` 落在 `[len, cap)` 会写进未用槽。
 - **扩容会让视图失效**：`v.push(..)` 换掉板块，之前借出的 `slice`/`mut slice` 就作废 ——
-  同块内"增长之后还用旧视图"是编译错误，跨帧则借不出去（判据 `tests/stl/varArray_stale_view.extx`
-  与 `varArray_stale_write.extx`）。
+  同块内"增长之后还用旧视图"是编译错误，跨帧则借不出去（判据 `tests/stl/varArray_stale_view.extc`
+  与 `varArray_stale_write.extc`）。
 - **`clear()` 只把 `len` 置 0**，板块留着复用；要提前还就用 `release()`（之后任何下标都带位置 trap）。
 
 ```extc
