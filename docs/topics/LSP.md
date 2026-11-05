@@ -87,3 +87,9 @@ wsl.exe -e bash -lc 'cd /home/alphayang/extC_Compiler && EXTC=…/build/extc exe
 - **编辑器显示两个同名标签**：说明同一缓冲区被两种路径拼写打开了；客户端会把诊断 URI
   映射回你打开时的那个 URI（`tools/vscode-extc/paths.js` 的 `known` 表），若仍出现，报给
   `tests/lsp` 加一条反例。
+
+### 排查：扩展日志
+
+`输出` 面板选 **extC** 通道：客户端会打印它到底执行了哪条命令、服务器 stderr、以及退出码。
+第一条日志是 `[client] starting …`，成功时是 `[client] ready: native -> …` 或 `wsl.exe -> …`。
+没有这条日志 = 扩展没被激活（见上：Remote-WSL 窗口要从 **远程** 侧安装，`~/.vscode-server/extensions/`）。

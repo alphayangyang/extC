@@ -13,11 +13,16 @@
 'use strict';
 
 const { spawn } = require('child_process');
+const fs = require('fs');
 const vscode = require('vscode');
 const { toServerPath, toClientUri, uriToPath, pathToUri } = require('./paths');
 
 let client = null;
 const diagnostics = vscode.languages.createDiagnosticCollection('extc');
+const log = vscode.window.createOutputChannel('extC');
+
+/** Append one line to the `extC` output channel (a failed spawn must be visible somewhere). */
+function note(line) { log.appendLine(line); }
 
 /** One JSON-RPC connection to `extc --diagnostics-json …` through the LSP server. */
 class Client {
@@ -30,7 +35,13 @@ class Client {
         this.timers = new Map();    // uri -> debounce timer
         this.proc = this.spawnServer();
         this.proc.stdout.on('data', (chunk) => this.onData(chunk));
+        this.proc.stderr.on('data', (chunk) => note('[server] ' + chunk.toString().trimEnd()));
+        this.proc.on('error', (err) => {
+            note('[client] cannot start the server: ' + err.message);
+            log.show(true);
+        });
         this.proc.on('exit', (code) => {
+            note('[client] server exited with code ' + code);
             for (const [, p] of this.pending) p.reject(new Error('extc-lsp exited (' + code + ')'));
             this.pending.clear();
             diagnostics.clear();
@@ -39,9 +50,19 @@ class Client {
 
     config() {
         var c = vscode.workspace.getConfiguration('extc');
+        var repo = c.get('repoPath', '/home/alphayang/extC_Compiler');
+        // Prefer the checkout that is actually open: a clone lives wherever the user put it,
+        // and a hard-coded default that does not exist is the most likely reason the server
+        // never starts. The configured value still wins whenever it is real.
+        if (!fs.existsSync(repo + '/tools/extc-lsp.py')) {
+            for (const folder of vscode.workspace.workspaceFolders || []) {
+                const p = toServerPath(folder.uri.toString());
+                if (fs.existsSync(p + '/tools/extc-lsp.py')) { repo = p; break; }
+            }
+        }
         return {
             mode: c.get('mode', 'auto'),
-            repoPath: c.get('repoPath', '/home/alphayang/extC_Compiler'),
+            repoPath: repo,
             distro: c.get('wslDistro', ''),
             python: c.get('python', 'python3'),
         };
@@ -54,6 +75,7 @@ class Client {
         const useWsl = cfg.mode === 'wsl' || (cfg.mode === 'auto' && !remote);
         if (!useWsl) {
             const parts = command.split(' ');
+            note('[client] starting `' + command + '` in ' + cfg.repoPath);
             return spawn(parts[0], parts.slice(1), {
                 cwd: cfg.repoPath,
                 env: Object.assign({}, process.env, { EXTC: cfg.repoPath + '/build/extc' }),
@@ -63,6 +85,7 @@ class Client {
             '/build/extc exec ' + command;
         const args = cfg.distro ? ['-d', cfg.distro] : [];
         args.push('-e', 'bash', '-lc', script);
+        note('[client] starting `wsl.exe -e bash -lc <' + script + '>`');
         return spawn('wsl.exe', args, {
             env: Object.assign({}, process.env, { EXTC_WSL_DISTRO: cfg.distro }),
         });
@@ -102,6 +125,15 @@ class Client {
         const body = Buffer.from(JSON.stringify(msg), 'utf8');
         this.proc.stdin.write('Content-Length: ' + body.length + '\r\n\r\n');
         this.proc.stdin.write(body);
+    }
+
+    /** Human-readable description of where the server came from, for the output channel. */
+    describe() {
+        const cfg = this.config();
+        const remote = typeof vscode.env !== 'undefined' ? vscode.env.remoteName : undefined;
+        const useWsl = cfg.mode === 'wsl' || (cfg.mode === 'auto' && !remote);
+        return (useWsl ? 'wsl.exe -> ' : 'native -> ') + cfg.repoPath + ' (remoteName=' +
+            (remote || 'none') + ')';
     }
 
     notify(method, params) { this.send({ jsonrpc: '2.0', method, params }); }
@@ -256,7 +288,12 @@ function activate(context) {
                 completion: { completionItem: { snippetSupport: false } },
             },
         },
-    }).then(() => client.notify('initialized', {})).catch((err) => {
+    }).then(() => {
+        client.notify('initialized', {});
+        note('[client] ready: ' + client.describe());
+    }).catch((err) => {
+        note('[client] initialize failed: ' + err.message);
+        log.show(true);
         vscode.window.showWarningMessage('extC language server did not start: ' + err.message);
     });
 
@@ -290,6 +327,7 @@ function activate(context) {
             provideCompletionItems: (doc, pos) => client.completion(doc.uri.toString(), pos),
         }, '.', ':'),
         diagnostics,
+        log,
         { dispose: () => { try { client.notify('exit', {}); } catch (_) { } client.proc.kill(); } },
     );
 }
