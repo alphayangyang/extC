@@ -477,6 +477,36 @@ void ctxError(Ctx *c, int line, int col, const char *note, const char *fmt, ...)
     else c->errNote[0] = '\0';
 }
 
+/* Set by `--diagnostics-json`; read by both diagnostic sinks. */
+static bool g_diagJson = false;
+
+void ctxSetDiagJson(bool on) { g_diagJson = on; }
+
+/**
+ * @brief Append `s` as a JSON string body (quotes and backslashes escaped).
+ *
+ * Only the characters that can appear in a diagnostic need escaping; a raw `\n` would break
+ * the one-object-per-line framing, so it becomes `\n` like every other control character.
+ *
+ * @param out  Buffer receiving the escaped text (no surrounding quotes).
+ * @param s    Text to escape; NULL writes nothing.
+ */
+static void diagJsonEscape(Buf *out, const char *s) {
+    if (!s) return;
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+        switch (*p) {
+        case '"':  bufPuts(out, "\\\""); break;
+        case '\\': bufPuts(out, "\\\\"); break;
+        case '\n': bufPuts(out, "\\n"); break;
+        case '\r': bufPuts(out, "\\r"); break;
+        case '\t': bufPuts(out, "\\t"); break;
+        default:
+            if (*p < 0x20) bufPrintf(out, "\\u%04x", (unsigned)*p);
+            else bufPutc(out, (char)*p);
+        }
+    }
+}
+
 /**
  * @brief Record a warning: **does not** set `hasError`, compilation continues and
  * the text goes to stderr at once.
@@ -502,6 +532,21 @@ void ctxWarn(Ctx *c, int line, int col, const char *note, const char *fmt, ...) 
     va_start(ap, fmt);
     vsnprintf(msg, sizeof msg, fmt, ap);
     va_end(ap);
+
+    if (g_diagJson) {
+        Buf j;
+        bufInit(&j, c->arena);
+        bufPrintf(&j, "{\"severity\":\"warning\",\"file\":\"");
+        diagJsonEscape(&j, c->path);
+        bufPrintf(&j, "\",\"line\":%d,\"col\":%d,\"message\":\"", line > 0 ? line : 1,
+                  col > 0 ? col : 1);
+        diagJsonEscape(&j, msg);
+        bufPrintf(&j, "\",\"note\":\"");
+        diagJsonEscape(&j, note);
+        bufPuts(&j, "\"}\n");
+        fputs(bufCstr(&j), stdout);
+        return;
+    }
 
     fprintf(stderr, "%s:%d:%d: warning: %s\n", c->path, line, col, msg);
 
@@ -536,6 +581,20 @@ void ctxWarn(Ctx *c, int line, int col, const char *note, const char *fmt, ...) 
  *             finally reaches.
  */
 void ctxRenderDiag(Ctx *c, Buf *out) {
+    if (g_diagJson) {
+        Buf j;
+        bufInit(&j, c->arena);
+        bufPrintf(&j, "{\"severity\":\"error\",\"file\":\"");
+        diagJsonEscape(&j, c->path);
+        bufPrintf(&j, "\",\"line\":%d,\"col\":%d,\"message\":\"", c->errLine > 0 ? c->errLine : 1,
+                  c->errCol > 0 ? c->errCol : 1);
+        diagJsonEscape(&j, c->errMsg);
+        bufPrintf(&j, "\",\"note\":\"");
+        diagJsonEscape(&j, c->errNote[0] ? c->errNote : NULL);
+        bufPuts(&j, "\"}\n");
+        fputs(bufCstr(&j), stdout);
+        return;
+    }
     /* An error raised before parsing has no line number. */
     if (c->errLine > 0)
         bufPrintf(out, "%s:%d:%d: error: %s\n", c->path, c->errLine, c->errCol, c->errMsg);

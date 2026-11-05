@@ -1683,6 +1683,14 @@ def build_items() -> list:
         ok_msg=ok_count_ok(" 项（import 调用 · TypeError · bytes · pip install · 两个负例）"),
         bad_msg="tests/python-ext/run.sh", bad_dump=dump_fail(8)))
 
+    # ---- 编辑器集成：语言服务器 ----
+    items.append(cmd(
+        "lsp", "tests",
+        "编辑器集成：`extc-lsp.py` 的 JSON-RPC 会话（干净缓冲无诊断 · 坏缓冲一条诊断带位置与 note · 大纲只列本文件 · hover/definition 命中 · 补全 · 关闭后清空）+ Windows↔WSL 路径翻译",
+        ["./tests/lsp/run.sh"], timeout=300,
+        ok_msg=ok_count_ok(" 项（路径翻译 · 能力声明 · 诊断 · 大纲 · 悬停 · 跳转 · 补全 · 关闭清空）"),
+        bad_msg="tests/lsp/run.sh", bad_dump=dump_fail(8)))
+
     # ---- 默认参数 ----
     items.append(cmd(
         "defaults", "tests",

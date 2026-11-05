@@ -208,6 +208,18 @@ typedef struct {
 } Ctx;
 
 /**
+ * @brief Switch every diagnostic to machine-readable JSON (one object per line, to stdout).
+ *
+ * The editor integration (`tools/extc-lsp.py`) reads these instead of parsing the human
+ * rendering: a caret line and a quoted source line are for people, and a tool should not have
+ * to reverse-engineer them. Positions stay one-based and byte-based, exactly as the human
+ * renderer prints them; the LSP server converts to its own zero-based UTF-16 coordinates.
+ *
+ * @param on  `true` emits JSON, `false` (the default) keeps the text form.
+ */
+void ctxSetDiagJson(bool on);
+
+/**
  * @brief Is this identifier a C keyword, or a keyword-like name the generated C rejects?
  *
  * extC names must work as C names, so they have to avoid the C vocabulary. Rule: a

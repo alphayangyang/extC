@@ -2,7 +2,7 @@
 
 本页由编译器自身的 `--help` 生成（`tools/gen_flags.py`），因此与实现同步：`check.sh` 在本页与 `extc --help` 不一致时会失败。
 
-开关共 23 个：`--build` · `--ccflag` · `--cflags` · `--check-c` · `--dump-effects` · `--dump-tokens` · `--help` · `--libs` · `--no-fuse` · `--no-line-map` · `--pkg-config` · `--run` · `-I` · `-L` · `-O0` · `-O2` · `-O3` · `-fsyntax-only` · `-h` · `-l` · `-march` · `-o` · `-w`
+开关共 27 个：`--build` · `--ccflag` · `--cflags` · `--check-c` · `--check-only` · `--diagnostics-json` · `--dump-effects` · `--dump-tokens` · `--help` · `--libs` · `--no-fuse` · `--no-line-map` · `--pkg-config` · `--run` · `--source-stdin` · `--symbols-json` · `-I` · `-L` · `-O0` · `-O2` · `-O3` · `-fsyntax-only` · `-h` · `-l` · `-march` · `-o` · `-w`
 
 ```text
 extC compiler
@@ -30,6 +30,10 @@ options:
   --dump-effects   print each function's effect summary (Addr/Cont, arena rule)
   --no-line-map    do not emit `#line` directives (default: emit them)
   --no-fuse        keep adjacent element loops separate
+  --diagnostics-json  print diagnostics as one JSON object per line (for editors)
+  --symbols-json   print this file's declarations as JSON; does not generate C
+  --check-only     stop after type checking; does not generate C
+  --source-stdin   read the source from stdin, keeping the named path as its identity
 
 debug switches -- diagnostics only, **except the marked below**:
   EXTC_DBG_ARENA=1     check the arena level the checker computed vs codegen

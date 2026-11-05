@@ -1,0 +1,55 @@
+{
+  "name": "extc-lsp",
+  "displayName": "extC",
+  "description": "Language support for extC: diagnostics, outline, hover, go-to-definition, completion and syntax highlighting.",
+  "version": "0.1.0",
+  "publisher": "extc",
+  "engines": { "vscode": "^1.70.0" },
+  "categories": ["Programming Languages"],
+  "activationEvents": ["onLanguage:extc"],
+  "main": "./extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "extc",
+        "aliases": ["extC", "extc"],
+        "extensions": [".extc", ".extx"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "extc",
+        "scopeName": "source.extc",
+        "path": "./syntaxes/extc.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "extC",
+      "properties": {
+        "extc.mode": {
+          "type": "string",
+          "enum": ["auto", "wsl", "native"],
+          "default": "auto",
+          "description": "How to reach the server. `wsl` starts it through wsl.exe from a Windows VS Code; `native` starts it directly (Remote-WSL or Linux). `auto` picks based on whether VS Code runs a remote extension host."
+        },
+        "extc.repoPath": {
+          "type": "string",
+          "default": "/home/alphayang/extC_Compiler",
+          "description": "Path of the extC checkout **as the server sees it** (inside WSL)."
+        },
+        "extc.wslDistro": {
+          "type": "string",
+          "default": "",
+          "description": "WSL distribution name; empty means the default one."
+        },
+        "extc.python": {
+          "type": "string",
+          "default": "python3",
+          "description": "Python interpreter that runs tools/extc-lsp.py (inside the environment that has the checkout)."
+        }
+      }
+    }
+  },
+  "scripts": {}
+}

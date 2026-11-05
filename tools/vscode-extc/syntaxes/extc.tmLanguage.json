@@ -1,0 +1,108 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "extC",
+  "scopeName": "source.extc",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#attributes" },
+    { "include": "#fstring" },
+    { "include": "#strings" },
+    { "include": "#chars" },
+    { "include": "#numbers" },
+    { "include": "#keywords" },
+    { "include": "#types" },
+    { "include": "#functions" },
+    { "include": "#operators" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        { "name": "comment.line.double-slash.extc", "match": "//.*$" },
+        { "name": "comment.block.extc", "begin": "/\\*", "end": "\\*/" }
+      ]
+    },
+    "attributes": {
+      "patterns": [
+        { "name": "storage.modifier.attribute.extc", "match": "@[A-Za-z_][A-Za-z0-9_]*" }
+      ]
+    },
+    "fstring": {
+      "patterns": [
+        {
+          "name": "string.interpolated.extc",
+          "begin": "f\"",
+          "end": "\"",
+          "patterns": [
+            { "name": "punctuation.section.interpolation.extc", "match": "\\{[^}]*\\}" },
+            { "name": "constant.character.escape.extc", "match": "\\\\." }
+          ]
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.extc",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            { "name": "constant.character.escape.extc", "match": "\\\\[nrt\\\\\"0]" }
+          ]
+        }
+      ]
+    },
+    "chars": {
+      "patterns": [ { "name": "string.quoted.single.extc", "match": "'(\\\\.|[^'\\\\])'" } ]
+    },
+    "numbers": {
+      "patterns": [
+        { "name": "constant.numeric.hex.extc", "match": "\\b0[xX][0-9a-fA-F_]+\\b" },
+        { "name": "constant.numeric.float.extc", "match": "\\b[0-9][0-9_]*\\.[0-9][0-9_]*([eE][-+]?[0-9]+)?\\b" },
+        { "name": "constant.numeric.integer.extc", "match": "\\b[0-9][0-9_]*\\b" }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.extc",
+          "match": "\\b(if|else|while|for|in|match|return|break|continue|trap|yield|drop|par|global)\\b"
+        },
+        {
+          "name": "keyword.declaration.extc",
+          "match": "\\b(fn|let|var|struct|type|trait|impl|use|pub|module|const|new|dyn|any)\\b"
+        },
+        {
+          "name": "storage.modifier.extc",
+          "match": "\\b(ref|mut|self|as)\\b"
+        },
+        {
+          "name": "constant.language.extc",
+          "match": "\\b(true|false|none)\\b"
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "name": "storage.type.extc",
+          "match": "\\b(i8|i16|i32|i64|u8|u16|u32|u64|f32|f64|bool|str|void)\\b"
+        },
+        {
+          "name": "support.type.extc",
+          "match": "\\b(slice|buf|varArray|vector|hashMap|map|option|result|coroutine|ndarray|ndview|cstr)\\b"
+        }
+      ]
+    },
+    "functions": {
+      "patterns": [
+        { "name": "entity.name.function.extc", "match": "\\b(fn)\\s+([A-Za-z_][A-Za-z0-9_]*)" },
+        { "name": "entity.name.type.extc", "match": "\\b(struct|type|trait)\\s+([A-Za-z_][A-Za-z0-9_]*)" }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        { "name": "keyword.operator.extc", "match": "==|!=|<=|>=|<<|>>|&&|\\|\\||\\+=|-=|\\*=|/=|->|\\.\\.|[-+*/%=<>!&|^~?:.,;]" }
+      ]
+    }
+  }
+}

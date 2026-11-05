@@ -308,6 +308,67 @@ static bool loadModuleLinks(Arena *a, Vec *ctxs, Vec *args, Vec *libNames, Vec *
 }
 
 /**
+ * @brief Print the declarations of one file as a JSON object (`--symbols-json`).
+ *
+ * The editor's outline and its "jump to declaration" both need the file's own declaration
+ * table; both are cheap to derive from the module the checker already built, so no second
+ * parser exists on the tool side. Only declarations that came from `ctx`'s file are printed
+ * (the module also holds the prelude and every imported module), and the order is source
+ * order, which is what an outline shows.
+ *
+ * @param out  Stream to write to.
+ * @param m    Module that holds every declaration of the program.
+ * @param ctx  Context of the file the user named; its `path` is the file being described.
+ */
+static void emitSymbolsJson(FILE *out, Module *m, Ctx *ctx) {
+    bool first = true;
+    fputs("{\"symbols\":[", out);
+    for (size_t i = 0; i < vecLen(&m->funcs); i++) {
+        FuncDef *f = *(FuncDef **)vecAt(&m->funcs, i);
+        if (!f || f->ctx != ctx || funcIsMethod(f)) continue;
+        fprintf(out, "%s{\"kind\":\"fn\",\"name\":\"%s\",\"line\":%d,\"params\":%zu}",
+                first ? "" : ",", f->name, f->line, f->params.len);
+        first = false;
+    }
+    for (size_t i = 0; i < vecLen(&m->structs); i++) {
+        StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
+        if (!sd || sd->ctx != ctx) continue;
+        fprintf(out, "%s{\"kind\":\"struct\",\"name\":\"%s\",\"line\":%d,\"fields\":%zu}",
+                first ? "" : ",", sd->name, sd->line, sd->fields.len);
+        first = false;
+        for (size_t k = 0; k < vecLen(&sd->methods); k++) {
+            FuncDef *md = *(FuncDef **)vecAt(&sd->methods, k);
+            if (!md || md->ctx != ctx) continue;
+            fprintf(out, "%s{\"kind\":\"method\",\"name\":\"%s\",\"line\":%d,\"container\":\"%s\"}",
+                    first ? "" : ",", md->name, md->line, sd->name);
+            first = false;
+        }
+    }
+    for (size_t i = 0; i < vecLen(&m->types); i++) {
+        TypeDef *td = *(TypeDef **)vecAt(&m->types, i);
+        if (!td || td->ctx != ctx) continue;
+        fprintf(out, "%s{\"kind\":\"type\",\"name\":\"%s\",\"line\":%d,\"variants\":%zu}",
+                first ? "" : ",", td->srcName ? td->srcName : td->name, td->line, td->variants.len);
+        first = false;
+    }
+    for (size_t i = 0; i < vecLen(&m->globals); i++) {
+        GlobalDef *gd = *(GlobalDef **)vecAt(&m->globals, i);
+        if (!gd || gd->ctx != ctx) continue;
+        fprintf(out, "%s{\"kind\":\"global\",\"name\":\"%s\",\"line\":%d}", first ? "" : ",",
+                gd->name, gd->line);
+        first = false;
+    }
+    for (size_t i = 0; i < vecLen(&m->traits); i++) {
+        TraitDef *tr = *(TraitDef **)vecAt(&m->traits, i);
+        if (!tr || tr->modName) continue;
+        fprintf(out, "%s{\"kind\":\"trait\",\"name\":\"%s\",\"line\":%d,\"methods\":%zu}",
+                first ? "" : ",", tr->name, tr->line, tr->methods.len);
+        first = false;
+    }
+    fputs("]}\n", out);
+}
+
+/**
  * @brief Print a summary of the command line to stderr.
  *
  * This text lists every accepted switch and every debug environment variable, because it
@@ -343,6 +404,13 @@ static void usage(const char *argv0) {
         "  --dump-effects   print each function's effect summary (Addr/Cont, arena rule)\n"
         "  --no-line-map    do not emit `#line` directives (default: emit them)\n"
         "  --no-fuse        keep adjacent element loops separate\n"
+        /* Editor integration: these four exist for `tools/extc-lsp.py` and for build
+         * systems that want a check without a translation. They never change what the
+         * compiler accepts, only what it prints and how far it goes. */
+        "  --diagnostics-json  print diagnostics as one JSON object per line (for editors)\n"
+        "  --symbols-json   print this file's declarations as JSON; does not generate C\n"
+        "  --check-only     stop after type checking; does not generate C\n"
+        "  --source-stdin   read the source from stdin, keeping the named path as its identity\n"
         "\n"
         /* The two switches named below change the output, so this text cannot claim that
          * they are all diagnostics only: `EXTC_SELFCHECK` can turn a good build red, and
@@ -560,6 +628,16 @@ int main(int argc, char **argv) {
     bool doCheckC = false;
     bool lineMap = true;
     bool noFuse = false;       /* `--no-fuse`: turn off S1 element-chain fusion */
+    /* Editor integration (`tools/extc-lsp.py`). `--diagnostics-json` makes every diagnostic
+     * a JSON object on stdout (see `ctxSetDiagJson`); `--symbols-json` prints the declaration
+     * table of the named file instead of generating C; `--check-only` stops after the
+     * checker; `--source-stdin` reads the source from stdin while keeping `path` as the
+     * file's identity, which is what lets an editor compile an unsaved buffer without
+     * writing it to disk (the module name comes from the path, not from the buffer). */
+    bool diagJson = false;
+    bool symbolsJson = false;
+    bool checkOnly = false;
+    bool sourceStdin = false;
     /* `-I <dir>` module search directories. The command line is parsed before
      * `arenaInit` runs, so the names are collected in a fixed-size array here and
      * copied into a Vec afterwards; pushing into a Vec that has never been
@@ -614,6 +692,14 @@ int main(int argc, char **argv) {
              * differential testing and debugging: with it off, the same source takes the
              * unfused path. */
             noFuse = true;
+        } else if (strcmp(argv[i], "--diagnostics-json") == 0) {
+            diagJson = true;
+        } else if (strcmp(argv[i], "--symbols-json") == 0) {
+            symbolsJson = true;
+        } else if (strcmp(argv[i], "--check-only") == 0) {
+            checkOnly = true;
+        } else if (strcmp(argv[i], "--source-stdin") == 0) {
+            sourceStdin = true;
         } else if (strcmp(argv[i], "--no-line-map") == 0) {
             lineMap = false;
         } else if (strcmp(argv[i], "-I") == 0) {
@@ -689,11 +775,35 @@ int main(int argc, char **argv) {
         *(char **)vecPush(&ccExtra) = (char *)ccFlagArgs[k];
 
     size_t srcLen = 0;
-    char *src = readWholeFile(&arena, path, &srcLen);
+    char *src;
+    if (sourceStdin) {
+        /* Read the whole of stdin into the arena: an editor sends an unsaved buffer, and the
+         * compiler must see it under the path it would otherwise open (module identity and
+         * diagnostic positions both come from that path, not from the stream). */
+        size_t cap = 1 << 16, len = 0;
+        char *buf = (char *)arenaAlloc(&arena, cap);
+        size_t n;
+        while ((n = fread(buf + len, 1, cap - len - 1, stdin)) > 0) {
+            len += n;
+            if (len + 1 >= cap) {
+                size_t ncap = cap * 2;
+                char *nb = (char *)arenaAlloc(&arena, ncap);
+                memcpy(nb, buf, len);
+                buf = nb;
+                cap = ncap;
+            }
+        }
+        buf[len] = 0;
+        src = buf;
+        srcLen = len;
+    } else {
+        src = readWholeFile(&arena, path, &srcLen);
+    }
     if (!src) {
         fprintf(stderr, "extc: cannot read `%s`\n", path);
         return 1;
     }
+    ctxSetDiagJson(diagJson);
 
     Vec searchDirs;
     vecInit(&searchDirs, &arena, sizeof(const char *));
@@ -831,6 +941,12 @@ int main(int argc, char **argv) {
         fputs(bufCstr(&d), stderr);
         bodyDiag = true;
     }
+
+    /* Editor integration: the declaration table, or a checker-only run, both stop here.
+     * `--symbols-json` implies "do not generate C": the caller wants the outline, not a
+     * translation, and keeping the two apart is what makes the LSP response small. */
+    if (!ctx.hasError && !bodyDiag && symbolsJson) { emitSymbolsJson(stdout, &m, &ctx); return 0; }
+    if (!ctx.hasError && !bodyDiag && checkOnly) return 0;
 
     Buf c;
     bufInit(&c, &arena);
