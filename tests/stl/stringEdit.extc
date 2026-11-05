@@ -1,0 +1,30 @@
+use std::io
+use std::text::string
+
+/* 编辑类操作：替换（等长原地 / 变长重建）、删除区间、插入、定位查找、大小写折叠、写下标。
+ * 判据是单行输出，逐字段与预期对齐（`tests/stl/run.sh` 的 stringEdit 一行）。 */
+fn main() -> i32 {
+    var s: string = string::from("Hello, World! Hello there.")
+    let n1: i64 = s.replace("Hello", "Bye")
+    let n2: i64 = s.replace("Bye", "Hi")
+    let n3: i64 = s.replace("Hi", "XXXX")
+    let g: i64 = s.erase(0, 5)
+    s.insert(0, "[")
+    s.insert(s.len(), "]")
+    let r1 = s.rfind("XXXX")
+    let r2 = s.rfind("nope")
+    let f1 = s.findFrom(2, "XXXX")
+    let c: i64 = s.count("XXXX")
+    let ok: bool = s.replaceFirst("XXXX", "zz")
+    var u: string = string::from("MiXeD Case 123")
+    u.toUpper()
+    u.toLower()
+    let w: bool = u.setAt(0, u8(95))
+    let bad: bool = u.setAt(99, u8(65))
+    var e: string = string::from("abcdef")
+    let eg: i64 = e.erase(2, 4)
+    var z: string = string::from("aaa")
+    let zc: i64 = z.replace("aa", "b")
+    io::cout << f"r1={n1} r2={n2} r3={n3} erase={g} s={s.view()} rf={r1!}/{c} ff={f1!} first={ok} u={u.view()} w={w} bad={bad} eg={eg} e={e.view()} zc={zc} z={z.view()}\n"
+    return 0
+}

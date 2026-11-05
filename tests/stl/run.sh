@@ -186,6 +186,7 @@ echo "== string：拼接（+ / +=）· 比较 · 查找 · 视图 · 当 hashMap
 run_case stringOps  tests/stl/stringOps.extc  "c=hello world|a=hello world|eq=true|lt=false|find=6|miss=-1|sw=true|ew=true|at=101|sub=world|cb=hello world!!!|hn=2|hv=20"
 
 echo "== string::find：穷举对拍（{a,b} 上 1..4 的模式 × 0..10 的文本 vs 朴素查找）+ 逐条边界 =="
+run_case stringEdit  tests/stl/stringEdit.extc  "r1=2 r2=2 r3=2 erase=5 s=[ World! zz there.] rf=9/1 ff=9 first=true u=_ixed case 123 w=true bad=false eg=2 e=abef zc=1 z=ba"
 run_case stringFind tests/stl/stringFind.extc "checked=61410|edge=0|bad=0"
 
 echo "== std::sys::mem：运行期原语的边界（空 hay · 空 needle · needle 等于整串 · 自重叠 · 零长视图）=="
@@ -249,7 +250,7 @@ asan_ok() {   # 文件 可执行名
       && gcc -fwrapv -std=c11 -g -fsanitize=address -o "$TMP/$2" "$TMP/$2.c" >/dev/null 2>&1 \
       && ! "$TMP/$2" 2>&1 | grep -q Sanitizer
 }
-if asan_ok tests/stl/varArray_release.extx var && asan_ok tests/stl/vector.extc v && asan_ok tests/stl/setOrdered.extc so && asan_ok tests/stl/setStructKey.extc ssk && asan_ok tests/stl/stringOps.extc sop && asan_ok tests/stl/stringFind.extc sfi; then
+if asan_ok tests/stl/varArray_release.extx var && asan_ok tests/stl/vector.extc v && asan_ok tests/stl/setOrdered.extc so && asan_ok tests/stl/setStructKey.extc ssk && asan_ok tests/stl/stringOps.extc sop && asan_ok tests/stl/stringEdit.extc sedit && asan_ok tests/stl/stringFind.extc sfi; then
     echo "  ok   ASan  ->  varArray_release · vector · setOrdered · setStructKey · stringOps · stringFind 干净"
 else
     echo "  FAIL ASan  ->  报了内存问题"; fail=1

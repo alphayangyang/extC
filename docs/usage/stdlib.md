@@ -217,6 +217,33 @@ let s = b.view()
 同一形状走 `varArray`（arena 底）是 **130 MB** —— 前者是"一份"，后者是"历代之和"；
 块退出后 `extc_pool_bytesLive()` 回到进入前的数。
 
+### 编辑字符串：`replace` / `erase` / `insert` / `findFrom` / `rfind` / `count` / `toUpper`
+
+`string` 是**拥有**的字节串，下面这些方法都在原地改自己（`self: mut ref string`），不造新串：
+
+| 方法 | 语义 | 返回值 |
+|---|---|---|
+| `erase(lo, hi)` | 删掉 `[lo, hi)`，后面往前挪 | 删掉的字节数 |
+| `insert(at, s)` | 在 `at` 处插入一段字节（夹到 `[0, n]`） | — |
+| `replace(needle, with)` | 把所有出现处换掉（**等长原地改写，变长重建**） | 替换次数 |
+| `replaceFirst(needle, with)` | 只换第一处 | `bool` |
+| `findFrom(start, needle)` | 从 `start` 往后找 | `?i64` |
+| `rfind(needle)` | 最后一次出现 | `?i64` |
+| `count(needle)` | 不重叠出现次数 | `i64` |
+| `toUpper()` / `toLower()` | ASCII 折叠（非 ASCII 字节原样） | — |
+| `setAt(i, b)` | 写下标一个字节 | `bool`（越界 `false`） |
+
+<!-- fragment -->
+```extc
+var s: string = string::from("Hello, World! Hello there.")
+let n = s.replace("Hello", "Bye")       /* 2，等长 ⇒ 原地 */
+s.erase(0, 5)                           /* 删掉 "Bye, " 这一段 */
+s.insert(0, "[")
+s.toUpper()
+```
+
+判据在 `tests/stl/stringEdit.extc`（单行输出逐字段对齐），ASan 也扫这一份。
+
 ### 从 `slice` 迁到 `buf<T>`：三步
 
 `slice<T>` 是借用，`buf<T>` 是拥有。把"本块自己 `new` 出来的缓冲区"改写成 `buf` 只要三步：

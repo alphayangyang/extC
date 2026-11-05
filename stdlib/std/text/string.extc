@@ -472,6 +472,222 @@ struct string {
         self.n = keep
     }
 
+    /* 把 `[lo, hi)` 这一段删掉（后面的字节往前挪）。越界夹到边界，不 trap：删除是缩小操作，
+     * 夹边界不会产生悬垂。返回删掉的字节数。 */
+    fn erase(self: mut ref string, lo: i64, hi: i64) -> i64 {
+        if self.pStale() { self.pPoison() }
+        var a: i64 = lo
+        var b: i64 = hi
+        if a < 0 { a = 0 }
+        if b > self.n { b = self.n }
+        if a >= b { return 0 }
+        let gone: i64 = b - a
+        let keep: i64 = self.n - b
+        if self.cap == 0 {
+            copyInto<u8>(self.small[a..a + keep], self.small[b..self.n], keep)
+            self.n = a + keep
+            return gone
+        }
+        match self.big {
+            some(bk) => {
+                var w: mut slice<u8> = bk
+                copyInto<u8>(w[a..a + keep], w[b..self.n], keep)
+            }
+            none => { }
+        }
+        self.n = a + keep
+        return gone
+    }
+
+    /* 在 `at` 处插入一段字节（`at` 夹到 `[0, n]`；插在末尾等价于 append）。 */
+    fn insert(self: mut ref string, at: i64, s: slice<u8>) {
+        if self.pStale() { self.pPoison() }
+        var p: i64 = at
+        if p < 0 { p = 0 }
+        if p > self.n { p = self.n }
+        let add: i64 = s.len
+        if add == 0 { return }
+        let need: i64 = self.n + add
+        if self.cap == 0 && need <= 16 {
+            var j: i64 = self.n - 1
+            while j >= p {
+                self.small[j + add] = self.small[j]
+                j = j - 1
+            }
+            var k: i64 = 0
+            while k < add {
+                self.small[p + k] = s[k]
+                k = k + 1
+            }
+            self.n = need
+            return
+        }
+        while self.cap < need { self.grow() }
+        match self.big {
+            some(bk) => {
+                var w: mut slice<u8> = bk
+                var j: i64 = self.n - 1
+                while j >= p {
+                    w[j + add] = w[j]
+                    j = j - 1
+                }
+                var k: i64 = 0
+                while k < add {
+                    w[p + k] = s[k]
+                    k = k + 1
+                }
+                self.n = need
+            }
+            none => { }
+        }
+    }
+
+    /* 把所有出现的 `needle` 换成 `with`，返回替换次数。
+     *
+     * 长度不变时原地改写（不分配）；长度变了就在一份新串里重建再整体搬回来 —— 原地做的话每次
+     * 替换都要挪尾巴，总代价 O(n·次数)。空模式返回 0（否则"每个位置插一次"没有明确语义）。 */
+    fn replace(self: mut ref string, needle: slice<u8>, with: slice<u8>) -> i64 {
+        let nl: i64 = needle.len
+        if nl == 0 { return 0 }
+        var count: i64 = 0
+        var start: i64 = 0
+        if nl == with.len {
+            while start <= self.n - nl {
+                match self.findFrom(start, needle) {
+                    some(at) => {
+                        var k: i64 = 0
+                        while k < nl { self.sSet(at + k, with[k])  k = k + 1 }
+                        count = count + 1
+                        start = at + nl
+                    }
+                    none => { break }
+                }
+            }
+            return count
+        }
+        var out: string = string::create(self.n)
+        start = 0
+        while true {
+            match self.findFrom(start, needle) {
+                some(at) => {
+                    out.append(self.subView(start, at))
+                    out.append(with)
+                    count = count + 1
+                    start = at + nl
+                }
+                none => {
+                    out.append(self.subView(start, self.n))
+                    break
+                }
+            }
+        }
+        self.clear()
+        self.append(out.view())
+        return count
+    }
+
+    /* 只换第一处；找不到返回 false。 */
+    fn replaceFirst(self: mut ref string, needle: slice<u8>, with: slice<u8>) -> bool {
+        let nl: i64 = needle.len
+        if nl == 0 { return false }
+        match self.find(needle) {
+            some(at) => {
+                self.erase(at, at + nl)
+                self.insert(at, with)
+                return true
+            }
+            none => { return false }
+        }
+    }
+
+    /* 从 `start` 开始找（`find` 的定位版）。`start` 夹到 `[0, n]`。 */
+    fn findFrom(self: ref string, start: i64, needle: slice<u8>) -> ?i64 {
+        var f: i64 = start
+        if f < 0 { f = 0 }
+        if f > self.n { return none }
+        let n: i64 = needle.len
+        if n == 0 { return some(f) }
+        let hay = self.subView(f, self.n)
+        if n > hay.len { return none }
+        let r = std::mem::extc_memFind(hay.data, hay.len, needle.data, n)
+        if r < 0 { return none }
+        return some(f + r)
+    }
+
+    /* 最后一次出现的位置。朴素地从右往左滑（字节串没有反向跳表）。 */
+    fn rfind(self: ref string, needle: slice<u8>) -> ?i64 {
+        let nl: i64 = needle.len
+        if nl == 0 { return some(self.n) }
+        if nl > self.n { return none }
+        var i: i64 = self.n - nl
+        while i >= 0 {
+            if std::mem::extc_memEq(self.subView(i, i + nl).data, needle.data, nl) == 1 {
+                return some(i)
+            }
+            i = i - 1
+        }
+        return none
+    }
+
+    /* `needle` 不重叠出现的次数。 */
+    fn count(self: ref string, needle: slice<u8>) -> i64 {
+        let nl: i64 = needle.len
+        if nl == 0 { return 0 }
+        var found: i64 = 0
+        var start: i64 = 0
+        while true {
+            match self.findFrom(start, needle) {
+                some(at) => {
+                    found = found + 1
+                    start = at + nl
+                }
+                none => { break }
+            }
+        }
+        return found
+    }
+
+    /* ASCII 大小写（原地）：只动 `a`–`z` / `A`–`Z`。`string` 是字节串，Unicode 折叠需要表，
+     * 那是别的模块的事。 */
+    fn toUpper(self: mut ref string) {
+        if self.pStale() { self.pPoison() }
+        var i: i64 = 0
+        while i < self.n {
+            let b = self.sByte(i)
+            if b >= u8(97) && b <= u8(122) { self.sSet(i, u8(i64(b) - 32)) }
+            i = i + 1
+        }
+    }
+
+    fn toLower(self: mut ref string) {
+        if self.pStale() { self.pPoison() }
+        var i: i64 = 0
+        while i < self.n {
+            let b = self.sByte(i)
+            if b >= u8(65) && b <= u8(90) { self.sSet(i, u8(i64(b) + 32)) }
+            i = i + 1
+        }
+    }
+
+    /* 写下标一个字节（`at` 的写版）；越界返回 `false`，和"读越界是条件"对称。 */
+    fn setAt(self: mut ref string, i: i64, b: u8) -> bool {
+        if self.pStale() { self.pPoison() }
+        if i < 0 || i >= self.n { return false }
+        self.sSet(i, b)
+        return true
+    }
+
+    /* 内部：读/写一个字节，调用方已确认 `i` 在 `[0, n)`。 */
+    @private fn sByte(self: ref string, i: i64) -> u8 {
+        if self.cap == 0 { return self.small[i] }
+        return self.big![i]
+    }
+
+    @private fn sSet(self: mut ref string, i: i64, b: u8) {
+        if self.cap == 0 { self.small[i] = b  return }
+        self.big![i] = b
+    }
+
     fn appendByte(self: mut ref string, b: u8) { self.push(b) }
 
     /* 十进制整数的追加：`s.appendI64(n)`。与 `s.append(str::fromI64(n).snapshot())` 的区别是
