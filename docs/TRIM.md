@@ -181,3 +181,24 @@ callee 体内按参数深度查过，与"结果指向接收者存储"不同类�
 比实际需要更久 —— `tests/genmatrix` 里那类形状因此被保守拒绝。修法是给 `FuncDef` 记 `retBorrowArg` /
 `retBorrowField`，让调用点按 `max(slotDepth(arg), 该字段的存储深度)` 取数，并把 `promoteInto2` 的要求
 下沉到存储的 `src`。这条改动是"删池特权"的前置。
+
+## 已知的洞：容器的拷贝让两个名字共享一块板，视图失效只认其中一条路径
+
+容器（`vector`/`varArray`/`string`/映射）是**可拷贝**的值，拷贝之后两个名字指向同一块板 —— 于是
+"另一个名字增长会搬走板子"这件事，编译器只在**本函数内按名字**登记借出时能看见。放进结构体字段
+再借出来，登记就断掉了：
+
+<!-- fragment -->
+```extc
+var v = vector<i64>::new()
+v.push(1)
+var bx: box = { v: v }          /* 拷贝，两个名字一块板 */
+var s: slice<i64> = bx.v.view()
+grow(ref v)                      /* 板子被搬走 */
+print(s[0])                      /* 悬垂：ASan heap-use-after-free */
+```
+
+这个形状在 `retBorrowArg` 之前就被接受（与"返回值深度"那条改动无关），复现见
+`/tmp/hk/share.extc`。根治的办法是让容器不可拷贝（`@noCopy` + 转移），这正是"容器合并"要做的；
+在那之前，`-Wowned-view` 与 `@sharesStorage` 的警告是唯一的提醒。值层面的冻结位（`borrow()`）能挡住
+"同一个名字增长"，挡不住"另一个名字增长"。

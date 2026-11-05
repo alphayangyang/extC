@@ -1689,6 +1689,24 @@ bool planMayUseArena(const FuncDef *f);
  */
 bool planMakesPool(const FuncDef *f);
 /**
+ * @brief Parameter a returned view borrows its storage from.
+ *
+ * A call site that sees a record treats the result as storage that already exists, so the result
+ * reaches the level of that storage rather than the level of the call's own block.
+ *
+ * @param f  The function to query.
+ * @return   The parameter index (a method receiver is 0), `RET_BORROW_CONFLICT` when two `return`
+ *           statements named different sources, or -1 when no source is recorded.
+ */
+int planRetBorrowArg(const FuncDef *f);
+/**
+ * @brief Field of the parameter a returned view borrows its storage from.
+ *
+ * @param f  The function to query.
+ * @return   The field index, or -1 for the parameter's own storage and when no source is recorded.
+ */
+int planRetBorrowField(const FuncDef *f);
+/**
  * @brief Tell whether a loop's condition allocates storage.
  *
  * When true, code generation wraps the loop in an arena reclaimed every round, so allocations in
@@ -1877,6 +1895,14 @@ void planSetMayUseArena(FuncDef *f, bool v);
  * @param v  true when it creates a pool.
  */
 void planSetMakesPool(FuncDef *f, bool v);
+/**
+ * @brief Record which parameter a returned view borrows its storage from.
+ *
+ * @param f      The function; NULL ignores this write.
+ * @param arg    Parameter index the storage comes from, or `RET_BORROW_CONFLICT`.
+ * @param field  Field of that parameter, -1 for the parameter's own storage.
+ */
+void planSetRetBorrow(FuncDef *f, int arg, int field);
 /**
  * @brief Record whether a loop's condition allocates storage.
  *

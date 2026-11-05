@@ -190,6 +190,12 @@ typedef struct {
         int  allocState; int mayPrintState; int freshCount;
         Vec  arenaSites; int nParamSyms; void *paramSyms[64]; /* capacity 64: see the
                                                             * static assertion below */
+        /* The `return`-side borrow summary: which parameter a returned view takes its storage
+         * from, and which field of that parameter holds it. `PLAN_RET_BORROW` says the pair was
+         * recorded; `CHECK_RET_BORROW_CONFLICT` in the first slot means two `return` statements
+         * named different sources. */
+        int  retBorrowArg;
+        int  retBorrowField;
         /* The effect summary itself: one bit per parameter, "a call to
          * this function may store that parameter's address / contents into the caller's
          * frames (`…Addr` / `…Cont`), into this function's home arena (`home…`), or

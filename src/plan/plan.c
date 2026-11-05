@@ -96,6 +96,7 @@
 #define PLAN_NEW_AS_BUFFER       91   /* `new T[n]` whose context is a `@buffer` type: its constructor */
 #define PLAN_VAR_CLONE           92   /* `var x = <place>` where the type is `@value`: the copy is `clone` */
 #define PLAN_LEN_PARAM           93   /* the identifier names a `const` parameter: value comes from the instance */
+#define PLAN_RET_BORROW          94   /* a `return` named the parameter its view borrows from */
 #define PLAN_DEREF               63
 #define PLAN_BOXED_CORO          64
 #define PLAN_CORO_KIND           65
@@ -211,6 +212,48 @@ void planSetMakesPool(FuncDef *f, bool v) {
     NodeResults *s = resultsAs(f, true, RKIND_FUNC, __LINE__);
     s->makesPool = v; resultsSetBit(s, PLAN_MAKES_POOL);
 }
+/**
+ * @brief Record which parameter a returned view borrows its storage from.
+ *
+ * A call site that sees a record treats the result as storage that already exists: it has to reach
+ * the level of that storage instead of the level of the call's own block. `RET_BORROW_CONFLICT` in
+ * `arg` means two `return` statements named different sources, and the call site keeps the
+ * conservative rule that reads every argument.
+ *
+ * @param f      The function; NULL ignores this write.
+ * @param arg    Parameter index the storage comes from, or `RET_BORROW_CONFLICT`.
+ * @param field  Field of that parameter, -1 for the parameter's own storage.
+ */
+void planSetRetBorrow(FuncDef *f, int arg, int field) {
+    if (!f) return;
+    NodeResults *s = resultsAs(f, true, RKIND_FUNC, __LINE__);
+    s->an.retBorrowArg = arg;
+    s->an.retBorrowField = field;
+    resultsSetBit(s, PLAN_RET_BORROW);
+}
+
+/**
+ * @brief Parameter a returned view borrows its storage from.
+ *
+ * @param f  The function to query.
+ * @return   The parameter index, `RET_BORROW_CONFLICT`, or -1 when no source is recorded.
+ */
+int planRetBorrowArg(const FuncDef *f) {
+    NodeResults *s = resultsAs(f, false, RKIND_FUNC, __LINE__);
+    return s && resultsBit(s, PLAN_RET_BORROW) ? s->an.retBorrowArg : -1;
+}
+
+/**
+ * @brief Field of the parameter a returned view borrows its storage from.
+ *
+ * @param f  The function to query.
+ * @return   The field index, or -1 for the parameter's own storage and when no source is recorded.
+ */
+int planRetBorrowField(const FuncDef *f) {
+    NodeResults *s = resultsAs(f, false, RKIND_FUNC, __LINE__);
+    return s && resultsBit(s, PLAN_RET_BORROW) ? s->an.retBorrowField : -1;
+}
+
 /**
  * @brief Record whether a loop's condition allocates storage.
  *

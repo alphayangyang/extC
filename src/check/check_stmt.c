@@ -3505,12 +3505,44 @@ static void liveViewsNoteStored(Checker *c, LiveViews *lv, Stmt *s) {
  * @param s   The statement that was just checked.
  */
 
-/** @brief Types whose storage a view can outlive: growth hands the old slab back. */
-static bool storageCanMove(Checker *c, Type *t) {
+/**
+ * @brief Whether storage of this type can be handed back while a view of it is still live.
+ *
+ * A container that owns a place, or that hooks its drop, publishes the identity of its
+ * storage; growing it returns the old slab, so a view taken before the growth dangles.
+ *
+ * @param c  The checker.
+ * @param t  Type to classify.
+ * @return   true when a view of this type can outlive the storage it points at.
+ */
+bool ckStorageCanMove(Checker *c, Type *t) {
     if (!t) return false;
     Type *b = ttBase(tsub(c, t));
     StructDef *sd = b ? structOf(b) : NULL;
     return sd && (sd->poolObject || sd->dropHook);
+}
+
+/**
+ * @brief Whether an argument hands over a view whose container can move its storage.
+ *
+ * A view call is the explicit shape. An implicit conversion passes the container itself
+ * where the parameter wants a view of it, so the argument names no view, and the type of
+ * the binding is what decides.
+ *
+ * @param c      The checker.
+ * @param e      The argument expression.
+ * @param owner  Receives a printable name for the container, or NULL.
+ * @return       true when the argument is a view of movable storage.
+ */
+bool ckViewOfMovableStorage(Checker *c, Expr *e, const char **owner) {
+    if (ckHoldsMovingView(c, e, owner)) return true;
+    Type *t = e ? e->type : NULL;
+    Sym *sy = (e && e->kind == EX_IDENT) ? identBindOf(e) : NULL;
+    if (sy && sy->type) t = sy->type;
+    if (!ckStorageCanMove(c, t)) return false;
+    Type *b = ttBase(tsub(c, t));
+    *owner = b ? typeStr(c, b) : "this container";
+    return true;
 }
 
 /** @brief Look for a view-producing call on a receiver whose storage can move. */
@@ -3539,7 +3571,7 @@ static bool valueHoldsMovingView(Checker *c, Expr *e, const char **owner) {
     if (e->kind == EX_METHOD && e->u.method.recv && e->u.method.name &&
         (strcmp(e->u.method.name, "view") == 0 || strcmp(e->u.method.name, "viewMut") == 0 ||
          strcmp(e->u.method.name, "asSlice") == 0 || strcmp(e->u.method.name, "asMutSlice") == 0)) {
-        if (storageCanMove(c, e->u.method.recv->type)) {
+        if (ckStorageCanMove(c, e->u.method.recv->type)) {
             Type *rt = tsub(c, e->u.method.recv->type);
             *owner = rt ? typeStr(c, rt) : "this container";
             return true;
@@ -5286,6 +5318,7 @@ void checkStmt(Checker *c, Stmt *s) {
             /* The returned value is handed to the caller, so it is published at layer 0: a return value
              * is supposed to outlive this frame. */
             noteReturnPublish(c, s->u.ret.value, s->line);
+            noteReturnBorrow(c, s->u.ret.value);
             checkEscape(c, s->u.ret.value, 0, s->line, "this return value");
             return;
         }

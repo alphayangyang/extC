@@ -473,6 +473,9 @@ typedef struct Checker {
     /* Deferred storage verdicts (writes like `(*cur).f = v` whose destination depth is not settled):
  * re-judged by min once the DFA settles. See `PendingRefStore`. */
     Vec        pendingRefStores;  /* PendingRefStore* */
+    /* Borrow results whose storage reached a depth (see `BorrowSettled`): a view-returning call
+     * keeps that answer even when re-deriving it from the argument's records would answer higher. */
+    Vec        borrowSettled;  /* BorrowSettled* */
     /* Merging of candidate regions for "possible cycles" (see `CycleMerge`): the allocation sites a
  * possible-cycle heap reference write's host binding may point at are collected after the DFA
  * (while `lookup` still works) and merged after the global level solve. */
@@ -745,6 +748,15 @@ typedef struct {
     const char    *what;    /* operation name used in diagnostics ("this reference" / "this assignment") */
     const FuncDef *fn;      /* owning function: only records from the current round are re-judged */
 } PendingRefStore;
+
+/* A settled borrow result: the call hands back a view of storage that lives in one of its
+ * arguments, and that storage reached `depth` (a smaller number is a longer life). The record is
+ * written only after the promotion succeeded, so an answer kept here is a fact about the storage,
+ * not an estimate; later requirements can only lower it. */
+typedef struct {
+    Expr          *site;   /* the view-returning call site */
+    int            depth;  /* depth its storage reached */
+} BorrowSettled;
 
 /* One record of the "possible cycle" candidate-region merge (route C).
  *
@@ -1042,6 +1054,25 @@ bool ckHoldsMovingView(Checker *c, Expr *e, const char **owner);
 bool ckHoldsMovingViewOf(Checker *c, Expr *e, const char **varName);
 
 /**
+ * @brief Whether storage of this type can be handed back while a view of it is still live.
+ *
+ * @param c  The checker.
+ * @param t  Type to classify.
+ * @return   true when a view of this type can outlive the storage it points at.
+ */
+bool ckStorageCanMove(Checker *c, Type *t);
+
+/**
+ * @brief Whether an argument hands over a view whose container can move its storage.
+ *
+ * @param c      The checker.
+ * @param e      The argument expression.
+ * @param owner  Receives a printable name for the container, or NULL.
+ * @return       true when the argument is a view of movable storage.
+ */
+bool ckViewOfMovableStorage(Checker *c, Expr *e, const char **owner);
+
+/**
  * @brief Note the views bound by statement `i` before it is checked.
  *
  * @param c     Checker.
@@ -1124,6 +1155,10 @@ bool ckGrowMethodName(const char *n);
  *   | `placeRootName`  | FIELD INDEX DEREF | unlimited | **syntactic name** (no resolution) |
  *   | `rootSymNoScope` | FIELD INDEX DEREF SIGN | 16 | binding on the node (`identBindOf`) |
  */
+/* `planRetBorrowArg` answer meaning "the body named more than one source": the call site cannot
+ * use a single argument, so it keeps the rule that reads every argument. */
+#define RET_BORROW_CONFLICT  (-2)
+
 /* Unknown depth (⊤): see the polarity contract in "Depth / identity" above -- comparisons treat it
  * as "deeper" (=> reject), and it must never be passed as a level to promotion. It is the safe
  * fallback at comparison sites: when it cannot prove life is long enough, it assumes it is not. */
@@ -2415,6 +2450,17 @@ int valDepthForStore (Checker *, Expr *);
  * @param line   Source line, for diagnostics.
  */
  void noteReturnPublish (Checker *c, Expr *value, int line);
+/**
+ * @brief Record which parameter a returned view borrows its storage from.
+ *
+ * The call site reads the record to give the result the depth of that storage rather than the
+ * depth of the call's own block. A body whose `return` statements name different sources keeps no
+ * single answer, and the call site then keeps the conservative rule.
+ *
+ * @param c      Checker.
+ * @param value  Returned value.
+ */
+ void noteReturnBorrow (Checker *c, Expr *value);
 
 /**
  * @brief When a call's result escapes the current block, mark the call as using the caller's home

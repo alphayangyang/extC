@@ -1493,7 +1493,7 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
             if (!p->type || !ttIsViewType(ttBase(tsub(c, p->type)))) continue;
             Expr *a = *(Expr **)vecAt(args, j);
             const char *owner = NULL;
-            if (!ckHoldsMovingView(c, a, &owner)) continue;
+            if (!ckViewOfMovableStorage(c, a, &owner)) continue;
             /* A view of a container this function created is promotable: the fresh
              * allocation moves out to the destination's place, so passing it along is
              * the caller's normal escape, not a dangling view (`tests/ops/view_promote`).
@@ -1581,6 +1581,26 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
             if (!typeContainsRef(c->tt, tsub(c, a->type))) continue;
             recordLvlFact(c, a, h);         /* same as above: record the fact first, promote on the last-round replay */
             int d = targetDepth(c, a);
+            /* A view of storage that can move cannot be repaired by promoting the container
+             * when the destination lives past this frame: the growth hands the old slab
+             * back, so the view dies before the place that holds it, and no later function
+             * can see the link. An implicit conversion is the same shape -- the argument is
+             * the container, and the parameter only sees a view of it. Inside the frame the
+             * growth stays visible to the block-local rule, so only `h == 0` is refused. */
+            if (d != 0 && d > h && h == 0) {
+                const char *mowner = NULL;
+                if (ckViewOfMovableStorage(c, a, &mowner)) {
+                    ckError(c, line,
+                            "The callee stores this view into a container it was given, and the"
+                            " container the view points into is one whose storage moves when it"
+                            " grows. Keep the view local, or take a copy (`snapshot()`).",
+                            "argument %zu of `%s` carries a reference into a deeper scope"
+                            " (depth %d) than the place the callee may store it (depth %d);"
+                            " promoting `%s` cannot keep the view alive across a growth",
+                            j + 1, fname, d, h, mowner);
+                    continue;
+                }
+            }
             /* PROMOTE BEFORE REJECTING -- the same half the incomplete-summary branch above
              * has always had, and the reason a container can be handed to something that
              * outlives it.
@@ -8369,6 +8389,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     vecInit(&c.refChecks, arena, sizeof(void *));
     vecInit(&c.lvlRejects, arena, sizeof(void *));
     vecInit(&c.pendingRefStores, arena, sizeof(void *));   /* deferred `(*cur).f = v` verdicts */
+    vecInit(&c.borrowSettled, arena, sizeof(void *));      /* borrow results whose storage moved */
     vecInit(&c.cycleMerges, arena, sizeof(void *));        /* regions merged as candidates for writes that may close a cycle */
     vecInit(&c.callChecks, arena, sizeof(void *));   /* deferred call sites */
     vecInit(&c.narrowMarks, arena, sizeof(size_t));

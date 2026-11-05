@@ -517,6 +517,265 @@ const char *fieldSlotKey(Checker *c, Expr *e) {
     return NULL;
 }
 
+/* ------------------------------------------------------- return-value borrow depth
+ *
+ * A call that hands back a view of storage which already exists is not an allocation site: the
+ * view lives exactly as long as that storage. The function's borrow record names the parameter the
+ * storage belongs to (a method receiver is parameter 0) and the field of
+ * that parameter, or -1 for the parameter's own storage. The `return` statement writes the
+ * record and the call site reads it.
+ */
+
+/**
+ * @brief Tell whether a value of this type can name storage somebody else owns.
+ *
+ * @param c  Checker, providing the type table.
+ * @param t  Type of the value; may be NULL.
+ * @return   `true` for a view (`slice<T>`) and for a reference.
+ */
+static bool borrowResultType(Checker *c, Type *t) {
+    if (!c || !t) return false;
+    Type *b = tsub(c, t);
+    return ttIsViewType(b) || (b && b->kind == TY_REF);
+}
+
+/**
+ * @brief Position of a struct field by name.
+ *
+ * @param c     Checker, providing the type table.
+ * @param t     Type of the struct, possibly behind a reference.
+ * @param name  Field name as written in the source.
+ * @return      Index into the struct's field list; -1 when the type is not a struct or the name
+ *              is not one of its fields.
+ */
+static int structFieldIndex(Checker *c, Type *t, const char *name) {
+    if (!c || !t || !name) return -1;
+    Type *b = ttBase(tsub(c, t));
+    if (!b || !b->sdef || (b->kind != TY_STRUCT && b->kind != TY_GENERIC)) return -1;
+    for (size_t i = 0; i < b->sdef->fields.len; i++) {
+        FieldDef *fd = *(FieldDef **)vecAt(&b->sdef->fields, i);
+        if (fd && fd->name && strcmp(fd->name, name) == 0) return (int)i;
+    }
+    return -1;
+}
+
+/**
+ * @brief Index of a function's parameter that a binding is, by identity.
+ *
+ * @param f   Function whose parameters are looked up; a method receiver is parameter 0.
+ * @param sy  Binding to find.
+ * @return    Parameter index, or -1 when the binding is not a parameter of `f`.
+ */
+static int paramSymIndex(FuncDef *f, Sym *sy) {
+    if (!f || !sy) return -1;
+    int n = anParamSymCount(f);
+    if (n > EFF_MAX_PARAMS) n = EFF_MAX_PARAMS;
+    for (int i = 0; i < n; i++)
+        if ((Sym *)anParamSyms(f)[i] == sy) return i;
+    return -1;
+}
+
+/* Forward declarations: the borrow-source trace asks a call which argument its own borrow comes
+ * from, so the callee lookup and the argument mapping have to be visible before their bodies. */
+static FuncDef *borrowCallee(FuncDef *f);
+static Expr *callArgForParam(Expr *e, int i);
+
+/**
+ * @brief Follow a returned view back to the parameter whose storage it names.
+ *
+ * A path of `field` projections is followed, with a view, a `?` unwrap, or a `try` in between, and
+ * a call that borrows is followed through the argument it named. An index, a dereference, or a call
+ * with no record on the way means the storage is not the parameter's own object, and the answer is
+ * "no borrow". Returning "no borrow" is always the conservative answer, because the call site then
+ * keeps the rule that reads every argument.
+ *
+ * @param c      Checker, providing the type table.
+ * @param e      Returned value.
+ * @param field  Out: index of the field the value is read from, -1 for the parameter itself.
+ * @return       Index of the parameter, or -1 when the value does not borrow from one.
+ */
+static int borrowSourceParam(Checker *c, Expr *e, int *field) {
+    *field = -1;
+    for (int hops = 0; e && hops < 16; hops++) {
+        switch (e->kind) {
+        case EX_SLICE: e = e->u.slice.obj; continue;
+        case EX_SIGN:  e = e->u.sign.operand; continue;
+        case EX_TRY:   e = e->u.try_.operand; continue;
+        case EX_CALL:
+        case EX_METHOD:
+        case EX_ASSOC: {
+            /* The value came from a call that borrows: the storage is wherever the argument that
+             * call named lives in this frame. */
+            FuncDef *callee = borrowResultType(c, e->type) ? borrowCallee(planCallee(e)) : NULL;
+            Expr *inner = callee ? callArgForParam(e, planRetBorrowArg(callee)) : NULL;
+            int innerField = -1;
+            if (!inner) return -1;
+            int p = borrowSourceParam(c, inner, &innerField);
+            *field = innerField;
+            return p;
+        }
+        case EX_FIELD:
+            if (*field < 0) {
+                *field = structFieldIndex(c, e->u.field.obj ? e->u.field.obj->type : NULL,
+                                          e->u.field.name);
+                if (*field < 0) return -1;
+            }
+            e = e->u.field.obj;
+            continue;
+        case EX_IDENT:
+            return paramSymIndex(c ? c->curFunc : NULL, identBindOf(e));
+        default:
+            return -1;
+        }
+    }
+    return -1;
+}
+
+/**
+ * @brief Callee that reported a borrow source for its result.
+ *
+ * @param f  Resolved callee; may be NULL.
+ * @return   `f` or its template when the record sits there; NULL when no source is recorded, or
+ *           when the body reported more than one source and the record cannot be used.
+ */
+static FuncDef *borrowCallee(FuncDef *f) {
+    for (int i = 0; f && i < 2; i++) {
+        int arg = planRetBorrowArg(f);
+        if (arg >= 0) return f;
+        if (arg == RET_BORROW_CONFLICT) return NULL;
+        f = planTemplate(f);
+    }
+    return NULL;
+}
+
+/**
+ * @brief Argument expression that is passed as one parameter of a call.
+ *
+ * @param e  Call site (`EX_CALL`, `EX_METHOD`, `EX_ASSOC`).
+ * @param i  Parameter index; 0 is the receiver of a method.
+ * @return   The argument, or NULL when the call has no such argument.
+ */
+static Expr *callArgForParam(Expr *e, int i) {
+    if (!e || i < 0) return NULL;
+    if (e->kind == EX_METHOD) {
+        if (i == 0) return e->u.method.recv;
+        if ((size_t)(i - 1) >= e->u.method.args.len) return NULL;
+        return *(Expr **)vecAt(&e->u.method.args, i - 1);
+    }
+    Vec *args = (e->kind == EX_CALL) ? &e->u.call.args
+              : (e->kind == EX_ASSOC) ? &e->u.assoc.args : NULL;
+    if (!args || (size_t)i >= args->len) return NULL;
+    return *(Expr **)vecAt(args, i);
+}
+
+/**
+ * @brief Name of the field a borrow record points at, in the callee's own types.
+ *
+ * @param c      Checker, providing the type table.
+ * @param f      Callee carrying the record.
+ * @param field  Field index of the recorded parameter; -1 means the parameter's own storage.
+ * @return       Field name, or NULL when the record names the whole parameter or cannot be
+ *               resolved.
+ */
+static const char *borrowFieldName(Checker *c, FuncDef *f, int field) {
+    int arg = planRetBorrowArg(f);
+    if (!c || !f || field < 0 || arg < 0) return NULL;
+    if ((size_t)arg >= f->params.len) return NULL;
+    Param *p = *(Param **)vecAt(&f->params, arg);
+    if (!p || !p->type) return NULL;
+    Type *b = ttBase(tsub(c, p->type));
+    if (!b || !b->sdef || (size_t)field >= b->sdef->fields.len) return NULL;
+    FieldDef *fd = *(FieldDef **)vecAt(&b->sdef->fields, field);
+    return fd ? fd->name : NULL;
+}
+
+/**
+ * @brief Depth of the storage a call result borrows from one of its arguments.
+ *
+ * The argument's own depth answers "where does the handle live"; the field slot answers "where
+ * does the storage that handle names live", and the larger of the two is the conservative answer,
+ * because a plate may be younger than the container object that holds it.
+ *
+ * @param c      Checker.
+ * @param arg    Argument the callee named; may be NULL.
+ * @param field  Field name on that argument, NULL for the argument itself.
+ * @return       Depth of the storage; 0 when the argument cannot be named.
+ */
+static int borrowArgDepth(Checker *c, Expr *arg, const char *field) {
+    if (!arg) return 0;
+    int d = targetDepth(c, arg);
+    if (!field || c->scopes.len == 0) return d;
+    Expr *place = (arg->kind == EX_REF) ? arg->u.ref.operand : arg;
+    Sym *root = place ? placeRoot(c, place) : NULL;
+    int *slot = root ? fieldDepthEntry(c, root, field, false) : NULL;
+    return slot ? maxInt(d, *slot) : d;
+}
+
+/**
+ * @brief Depth a borrow result's storage is known to have reached.
+ *
+ * @param c  Checker.
+ * @param e  Call site.
+ * @return   The recorded depth, or -1 when the call has no record.
+ */
+static int settledBorrowDepth(Checker *c, Expr *e) {
+    if (!c || !e) return -1;
+    for (size_t i = 0; i < c->borrowSettled.len; i++) {
+        BorrowSettled *r = *(BorrowSettled **)vecAt(&c->borrowSettled, i);
+        if (r && r->site == e) return r->depth;
+    }
+    return -1;
+}
+
+/**
+ * @brief Record that a borrow result's storage reached a depth.
+ *
+ * Called only after the promotion of that storage reported success. A later requirement may be
+ * stricter, so the record keeps the smallest depth seen.
+ *
+ * @param c  Checker.
+ * @param e  Call site whose storage moved.
+ * @param d  Depth the storage reached.
+ */
+static void settleBorrowDepth(Checker *c, Expr *e, int d) {
+    if (!c || !e || d < 0) return;
+    for (size_t i = 0; i < c->borrowSettled.len; i++) {
+        BorrowSettled *r = *(BorrowSettled **)vecAt(&c->borrowSettled, i);
+        if (r && r->site == e) {
+            if (d < r->depth) r->depth = d;
+            return;
+        }
+    }
+    BorrowSettled *r = arenaAllocZero(c->arena, sizeof *r);
+    r->site = e;
+    r->depth = d;
+    *(BorrowSettled **)vecPush(&c->borrowSettled) = r;
+}
+
+/**
+ * @brief Depth a call result has when the callee named a borrow source for it.
+ *
+ * @param c    Checker.
+ * @param e    Call site (`EX_CALL`, `EX_METHOD`, `EX_ASSOC`).
+ * @param out  Receives the depth when the call reports a source.
+ * @return     `true` when `out` was written, `false` when the call site keeps its own rule.
+ */
+static bool borrowResultDepth(Checker *c, Expr *e, int *out) {
+    if (!c || !e || !out) return false;
+    if (!borrowResultType(c, e->type)) return false;
+    int settled = settledBorrowDepth(c, e);
+    if (settled >= 0) {
+        *out = settled;
+        return true;
+    }
+    FuncDef *f = borrowCallee(planCallee(e));
+    if (!f) return false;
+    Expr *arg = callArgForParam(e, planRetBorrowArg(f));
+    if (!arg) return false;
+    *out = borrowArgDepth(c, arg, borrowFieldName(c, f, planRetBorrowField(f)));
+    return true;
+}
+
 /**
  * @brief Depth of the storage the references carried by a value point at.
  *
@@ -664,16 +923,20 @@ int targetDepth(Checker *c, Expr *e) {
          * upper bound: the references a callee can return come only from static storage (0) or from
          * its arguments (<= max(argument)); returning a reference to one of its own locals is
          * rejected by its own return check, so there is no third source. Taking the maximum is what
-         * keeps a callee that returns one of its reference arguments unchanged. */
+         * keeps a callee that returns one of its reference arguments unchanged.
+         *
+         * A callee that hands back a **view of storage that already exists** names the argument
+         * the storage belongs to, and the result lives exactly as long as that storage. The call
+         * then creates nothing, so its own block level takes no part. */
         for (size_t i = 0; i < e->u.call.args.len; i++)
             d = maxInt(d, targetDepth(c, *(Expr **)vecAt(&e->u.call.args, i)));
-        d = poolCallDepth(c, e, d);
+        if (!borrowResultDepth(c, e, &d)) d = poolCallDepth(c, e, d);
         break;
     case EX_METHOD:
         d = maxInt(d, targetDepth(c, e->u.method.recv));   /* the receiver is an argument too */
         for (size_t i = 0; i < e->u.method.args.len; i++)
             d = maxInt(d, targetDepth(c, *(Expr **)vecAt(&e->u.method.args, i)));
-        d = poolCallDepth(c, e, d);
+        if (!borrowResultDepth(c, e, &d)) d = poolCallDepth(c, e, d);
         break;
     case EX_ENUMVAL:
         /* An enum payload construction such as `shape.holding(a[..])` puts the payload inside
@@ -685,7 +948,7 @@ int targetDepth(Checker *c, Expr *e) {
     case EX_ASSOC:
         for (size_t i = 0; i < e->u.assoc.args.len; i++)
             d = maxInt(d, targetDepth(c, *(Expr **)vecAt(&e->u.assoc.args, i)));
-        d = poolCallDepth(c, e, d);
+        if (!borrowResultDepth(c, e, &d)) d = poolCallDepth(c, e, d);
         break;
     default:
         d = 0;
@@ -872,6 +1135,49 @@ static void recordRefCheck(Checker *c, Expr *val, Expr *target, int at,
  * at   - depth the value must reach; 0 = must outlive this frame (the caller's arena)
  */
 static bool promoteInto2(Checker *c, Expr *val, int at, int hops);
+
+/**
+ * @brief Promote the storage a borrowed call result points into.
+ *
+ * A view handed back by a callee lives in storage that already exists, so the requirement goes to
+ * that storage instead of to the call's own block level. With a field, the slot named by the
+ * callee is the one that moves: a slot with no recorded source cannot be moved, and answering
+ * `true` there would lower the call's depth over storage that stayed behind.
+ *
+ * @param c      Checker.
+ * @param arg    Argument the callee named as the source; may be NULL.
+ * @param field  Field of that argument, NULL for the argument itself.
+ * @param at     Depth the result has to reach.
+ * @param hops   Carrier steps already taken.
+ * @return       `true` when the storage now reaches `at`.
+ */
+static bool promoteBorrowed(Checker *c, Expr *arg, const char *field, int at, int hops) {
+    if (!c || !arg || at < 0) return false;
+    Expr *place = (arg->kind == EX_REF) ? arg->u.ref.operand : arg;
+    if (!place) return false;
+    if (!field) return promoteInto2(c, place, at, hops + 1);
+    if (c->scopes.len == 0) return false;
+    Sym *root = placeRoot(c, place);
+    if (!root) return false;
+    for (int i = 0; i < root->nfields; i++) {
+        if (!root->fields[i].name || strcmp(root->fields[i].name, field) != 0) continue;
+        if (!root->fields[i].src) break;
+        if (at < root->fields[i].minReq) root->fields[i].minReq = at;
+        int want = root->fields[i].depth;
+        if (root->fields[i].minReq < want) want = root->fields[i].minReq;
+        Expr *src = root->fields[i].src;
+        Sym *srcSym = root->fields[i].srcSym;
+        bool lower = !root->addressed;
+        if (!promoteInto2(c, src, want, hops + 1)) return false;
+        if (srcSym && srcSym != root && !promoteFieldsAt(c, srcSym, want, hops + 1)) return false;
+        if (lower && root->fields[i].depth > want) root->fields[i].depth = want;
+        return true;
+    }
+    /* The caller keeps no record for that field (its fields are reached through the argument
+     * itself), so the whole argument is what has to reach `at`; moving more than the callee named
+     * only lengthens lifetimes. */
+    return promoteInto2(c, place, at, hops + 1);
+}
 /* `dyn Trait(x)` carries its payload with it, so the payload's allocation sites have to reach the
  * level this value has to reach -- exactly what the rest of this function does for a struct. */
 bool promoteFieldsAt(Checker *c, Sym *sy, int at, int hops);
@@ -1094,6 +1400,39 @@ void noteStore(Checker *c, Expr *value, Expr *target, int at, int line) {
 void noteReturnPublish(Checker *c, Expr *value, int line) {
     if (!c || !value) return;
     recordStore(c, value, value, 0, line);
+}
+
+/**
+ * @brief Record which parameter a returned view borrows its storage from.
+ *
+ * The record is written by the `return` statement and read at the call site. Two `return`
+ * statements that name different sources leave the body with no single answer, and the record
+ * then says so: the call site falls back to the conservative rule that reads every argument.
+ * That covers the shape which cannot be followed at all, such as a view of a local container:
+ * the storage there is the frame's own, so the result does not borrow from a parameter.
+ *
+ * @param c      Checker.
+ * @param value  Returned value.
+ */
+void noteReturnBorrow(Checker *c, Expr *value) {
+    if (!c || !c->curFunc || !value) return;
+    FuncDef *f = c->curFunc;
+    int field = -1;
+    int arg = -1;
+    if (borrowResultType(c, value->type)) arg = borrowSourceParam(c, value, &field);
+    if (arg < 0) {
+        /* A `return` that names no parameter source is a second answer for this body, and the
+         * storage it hands out may be younger than any borrow record would say. */
+        if (planRetBorrowArg(f) >= 0) planSetRetBorrow(f, RET_BORROW_CONFLICT, -1);
+        return;
+    }
+    if (planRetBorrowArg(f) == RET_BORROW_CONFLICT) return;
+    if (planRetBorrowArg(f) < 0) {
+        planSetRetBorrow(f, arg, field);
+        return;
+    }
+    if (planRetBorrowArg(f) != arg || planRetBorrowField(f) != field)
+        planSetRetBorrow(f, RET_BORROW_CONFLICT, -1);
 }
 
 /**
@@ -1452,6 +1791,21 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
                     (void *)planCallee(val), (void *)(planCallee(val) ? planCallee(val)->owner : NULL),
                     planCallee(val) ? (int)planMakesPool(planCallee(val)) : -1,
                     (int)calleeMakesPool(planCallee(val)), planZoneLevel(val), at);
+        /* A callee that hands back a **view of storage that already exists** names the argument the
+         * storage belongs to, and that storage is what has to reach `at`; the call creates nothing,
+         * so its own level takes no part. When the named storage cannot be moved the branches
+         * below still answer, and they only keep the answer conservative. */
+        {
+            FuncDef *bc = borrowResultType(c, val->type) ? borrowCallee(planCallee(val)) : NULL;
+            if (bc) {
+                Expr *arg = callArgForParam(val, planRetBorrowArg(bc));
+                if (promoteBorrowed(c, arg, borrowFieldName(c, bc, planRetBorrowField(bc)), at, hops)) {
+                    settleBorrowDepth(c, val, at);
+                    if (anRefDepth(val) == 0 || anRefDepth(val) > at) anSetRefDepth(val, at);
+                    return true;
+                }
+            }
+        }
         if (calleeMakesPool(planCallee(val)) && planZoneLevel(val) != 0) {
             int want = (at == 0) ? ZONE_HOME : at;
             if (planZoneLevel(val) > want) {
