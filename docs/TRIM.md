@@ -202,3 +202,18 @@ print(s[0])                      /* 悬垂：ASan heap-use-after-free */
 `/tmp/hk/share.extc`。根治的办法是让容器不可拷贝（`@noCopy` + 转移），这正是"容器合并"要做的；
 在那之前，`-Wowned-view` 与 `@sharesStorage` 的警告是唯一的提醒。值层面的冻结位（`borrow()`）能挡住
 "同一个名字增长"，挡不住"另一个名字增长"。
+
+## 删池特权：现在只剩一处红（2026-11-05 实测）
+
+把 `calleeMakesPool` 里那行类型级捷径（`if (f->owner && f->owner->poolObject) return true;`）删掉、
+重新 `make` 之后，全仓只剩**一条**失败：
+
+```
+tests/pool/rt_nest_promote.extc:24: this initializer would hold a reference to a local variable
+  that dies first (borrowed from depth 2, but this can only hold up to depth 1)   let a = outer.get(2)!
+```
+
+`tests/run.sh` 377/0、`tests/coro` 35/0、`gate_escape` 全部在基线内 —— 也就是说这条捷径今天主要就在
+支撑"从容器里按值取出一个容器"这一种形状。修法不是把捷径加回来，而是补上同类的那条事实：容器元素
+**按值**读出来的结果，其存储深度取自元素槽（与 `retBorrowArg` 同族，只是结果不是视图而是拥有者本身）。
+补上之后就能真正删掉捷径，把 `poolSlice`/`poolResize` 从编译器内建降到 `std::mem::pool`。
