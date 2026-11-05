@@ -217,6 +217,27 @@ let s = b.view()
 同一形状走 `varArray`（arena 底）是 **130 MB** —— 前者是"一份"，后者是"历代之和"；
 块退出后 `extc_pool_bytesLive()` 回到进入前的数。
 
+### 从 `slice` 迁到 `buf<T>`：三步
+
+`slice<T>` 是借用，`buf<T>` 是拥有。把"本块自己 `new` 出来的缓冲区"改写成 `buf` 只要三步：
+
+<!-- fragment -->
+```extc
+use std::data::buf
+
+/* 之前：所有权说不出来 —— `buf` 这个名字看着像借来的，其实是唯一一份 */
+var v: mut slice<u8> = new u8[64]
+
+/* 之后：先建拥有者，再在需要视图的地方借出来 */
+var v2: buf<u8> = new u8[64]
+let w: mut slice<u8> = v2.viewMut()
+```
+
+编译器可以用 `-Wowned-view` 帮你找出现场：它对"把 `new T[n]` 直接存进 `slice` 变量"逐个报一句，
+提示改成 `buf<T>`。默认关着，因为语料里这种写法还很多，开关只在一个文件正在改写时有用。
+
+判据在 `tests/warnings/flag/owned_view.extc`：不开开关不响、开了必须响、`-w` 能关掉。
+
 ### 自己写一个板块底的容器
 
 `vector` 不是特例：任何一个标了 `@place` 的结构体都**拥有一块自己的地方（池）**，于是也能拿到"原地长、乱序归还"的存储。写自己的可增长容器就是四件事 —— 拥有、要、长、守卫与归还：
