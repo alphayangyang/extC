@@ -461,8 +461,12 @@ static bool loadPrelude(Arena *arena, TypeTable *tt, Module *m) {
     size_t len = 0;
     const char *src = preludeSource(&len);
 
-    Ctx ctx;
-    ctxInit(&ctx, arena, PRELUDE_PATH, src, len);
+    /* The prelude's `Ctx` lives in the arena, not on this frame: bodies of prelude functions
+     * are checked **after** this function returns (the deferred pass), and they read the
+     * `Ctx` they were parsed with. A stack object would leave those reads pointing at a dead
+     * frame -- a use-after-scope that only a sanitized build reports. */
+    Ctx *ctx = arenaAlloc(arena, sizeof(Ctx));
+    ctxInit(ctx, arena, PRELUDE_PATH, src, len);
 
     Module pm;
     memset(&pm, 0, sizeof pm);
@@ -470,19 +474,19 @@ static bool loadPrelude(Arena *arena, TypeTable *tt, Module *m) {
 
     Vec toks;
     vecInit(&toks, arena, sizeof(Token));
-    lexAll(&ctx, &toks);
-    if (!ctx.hasError) parseModule(&ctx, arena, &toks, &pm);
-    if (!ctx.hasError) {
+    lexAll(ctx, &toks);
+    if (!ctx->hasError) parseModule(ctx, arena, &toks, &pm);
+    if (!ctx->hasError) {
         ttRegister(tt, &pm);        /* the same table the user file will use */
         g_explainRoot = false;      /* a report about the prelude is noise */
         setenv("EXTC_EXPLAIN_ROOT", "0", 1);
-        checkModule(&ctx, arena, tt, &pm);
+        checkModule(ctx, arena, tt, &pm);
     }
 
-    if (ctx.hasError) {
+    if (ctx->hasError) {
         Buf diag;
         bufInit(&diag, arena);
-        ctxRenderDiag(&ctx, &diag);
+        ctxRenderDiag(ctx, &diag);
         fputs("extc: internal error -- the bundled prelude does not compile\n", stderr);
         fputs(bufCstr(&diag), stderr);
         return false;

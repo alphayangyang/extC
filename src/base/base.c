@@ -433,6 +433,10 @@ size_t vecLen(const Vec *v) {
  * @param srcLen  Source length in bytes, excluding the final NUL.
  */
 void ctxInit(Ctx *c, Arena *a, const char *path, const char *src, size_t srcLen) {
+    /* Every flag starts false and every counter at zero, including the ones this function does
+     * not name: a caller that only sets the options it was given would otherwise read an
+     * indeterminate `warnCount` or `warnOwnedView` later. */
+    memset(c, 0, sizeof *c);
     c->arena = a;
     c->path = path;
     c->src = src;
