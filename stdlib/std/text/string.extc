@@ -478,8 +478,41 @@ struct string {
      * 中间那个临时 `string` 不出现 —— 拼日志/报表时不必为"数字"多写一层转换，
      * 也不会踩到"切临时值的视图"的借用规则。负数带 `-`，`i64` 最小值按无符号处理不会溢出。 */
     fn appendI64(self: mut ref string, v: i64) {
-        var t: string = fromI64(v)
-        self.append(t.subView(0, t.n))
+        /* Digits are produced into a stack buffer and appended in one go: going through
+         * `fromI64` would build a throwaway `string` per number (one object, one length
+         * computation, one borrow-checked view) and that is the whole cost when a program is
+         * appending ids in a loop. 20 bytes is the widest `i64` plus a sign. */
+        var buf: [21]u8
+        var neg: bool = false
+        var x: u64 = u64(v)
+        if v < 0 {
+            neg = true
+            x = u64(0) - u64(v)
+        }
+        var k: i64 = 0
+        if x == u64(0) {
+            buf[k] = u8(48)
+            k = k + 1
+        } else {
+            while x > u64(0) {
+                buf[k] = u8(48 + i64(x % u64(10)))
+                x = x / u64(10)
+                k = k + 1
+            }
+        }
+        var out: [21]u8
+        var at: i64 = 0
+        if neg {
+            out[at] = u8(45)
+            at = at + 1
+        }
+        var j: i64 = k - 1
+        while j >= 0 {
+            out[at] = buf[j]
+            at = at + 1
+            j = j - 1
+        }
+        self.append(out[0..at])
     }
 
     /* 缩容到刚好装下（下限 16）；连续性与字节不变。
