@@ -158,7 +158,7 @@ fn main() -> i32 {
 
 | 写法 | 例子 | 说明 |
 |---|---|---|
-| 结构体 | `struct pt { x: i32  y: i32 }` | 字段按**声明顺序**排布 |
+| 结构体 | `struct pt { x: i32, y: i32 }`（换行分隔也行） | 字段按**声明顺序**排布；分隔符是 `,` 或换行，与结构体字面量同一套规则 |
 | 方法 | 写在 `struct` 体内或 `impl pt { … }` 里 | 接收者必须显式声明：`self: ref pt` / `self: mut ref pt` |
 | 无载荷枚举 | `type color = \| red \| green \| blue` | 零值 = 第一个变体 |
 | 带载荷枚举 | `type shape = \| circle(f64) \| rect(f64, f64) \| dot` | 载荷没有字段名，按位置绑定；零值 = 第一个变体（其载荷必须可零初始化） |
@@ -583,6 +583,11 @@ impl slice<u8> {
 
 运算符同理：`impl slice<u8> { fn ==(self: ref slice<u8>, other: ref slice<u8>) -> bool }` 之后，
 两个可写视图可以直接 `a == b`（匹配时 `mut` 会被规范化掉）。
+
+**视图的坐标是只读的**：`data` 与 `len`（`slice` 的两个机器字、rank-N 视图的 shape/stride 字）由编译器构造，
+用户代码不能赋值 —— 哪怕接收者是 `mut slice<T>`：`mut` 管的是**元素**，不是坐标。
+写 `s.len = 1` 报 ``cannot assign `len` on a view of type `mut slice<u8>`; take a different view instead``；
+要更短的视图就切一刀 `s[lo..hi]`，要子视图用 `v.sub(...)`。
 
 定点数组不行：`[N]T` 是**形状**而不是声明，没有方法集可挂，写 `impl [8]u8 { … }` 会报
 `` `impl` cannot extend a fixed array `[N]T` `` —— 要么把方法写进它元素类型的 `struct` 里，

@@ -1,0 +1,15 @@
+// `io::println` 与内建 `println` 是**同一个**打印器：数字、布尔、字符串、f-string 都行。
+// expect: 42|hi|true|size=5|n = 7
+use std::io
+use std::text::string
+
+fn main() -> i32 {
+    io::println(42)
+    io::println("hi")
+    io::println(true)
+    var s: string = string::from("size=5")
+    io::println(s)
+    var n: i64 = 7
+    io::println(f"n = {n}")
+    return 0
+}

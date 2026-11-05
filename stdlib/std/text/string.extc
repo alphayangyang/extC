@@ -298,6 +298,18 @@ struct string {
         return self.big![a..b]
     }
 
+    /* 文本视图方法的接收者版本：`string` 上 `s.trim()` 与 `s[..].trim()` 等价。
+     * 实现仍只有一份（`trim`/`trimStart`/`trimEnd`/`split` 自由函数），这里只转走视图。 */
+    fn trim(self: ref string) -> slice<u8> { return self.subView(0, self.n).trim() }
+
+    fn trimStart(self: ref string) -> slice<u8> { return self.subView(0, self.n).trimStart() }
+
+    fn trimEnd(self: ref string) -> slice<u8> { return self.subView(0, self.n).trimEnd() }
+
+    fn split(self: ref string, sep: slice<u8>) -> varArray<slice<u8>> {
+        return split(self.subView(0, self.n), sep)
+    }
+
     /* ---------------------------------------------------------------- 子串查找：交给运行期
      *
      * WHY NOT Two-Way IN extC (it was here, and it was correct -- `tests/stl/stringFind.extc`
@@ -1514,4 +1526,74 @@ struct stringGuard {
 
     /** @brief 字节数。 */
     fn len(self: ref stringGuard) -> i64 { return self.s.len() }
+}
+
+/* ================================================================ 视图上的文本方法
+ *
+ * 字符串字面量的静态类型是 `slice<u8>`（视图），不是 `string`。所以 `"  a b  ".trim()`、
+ * `"a,b".split(",")` 这类写法只有在 `slice<u8>` 上放方法才成立；自由函数留着当实现，
+ * 方法只做转发（同一份代码、同一份语义、零拷贝）。
+ *
+ * 只给 `slice<u8>`：`slice<f64>`、`slice<i64>` 上的 `trim` 没有意义，把方法收在字节视图上
+ * 正好也是"文本"这个概念的最小面。
+ *
+ * `len()` 是**只读**的：视图的 `data`/`len` 由编译器构造，用户代码不能写（`s.len = 1` 是
+ * 编译错误），要更短的视图就切一刀 `s[lo..hi]`。
+ */
+impl slice<u8> {
+    fn len(self: ref slice<u8>) -> i64 { return self.len }
+
+    fn isEmpty(self: ref slice<u8>) -> bool { return self.len == 0 }
+
+    fn trim(self: ref slice<u8>) -> slice<u8> { return trim(self[..]) }
+
+    fn trimStart(self: ref slice<u8>) -> slice<u8> { return trimStart(self[..]) }
+
+    fn trimEnd(self: ref slice<u8>) -> slice<u8> { return trimEnd(self[..]) }
+
+    fn split(self: ref slice<u8>, sep: slice<u8>) -> varArray<slice<u8>> {
+        return split(self[..], sep)
+    }
+
+    fn toI64(self: ref slice<u8>) -> ?i64 { return toI64(self[..]) }
+
+    fn toF64(self: ref slice<u8>) -> ?f64 { return toF64(self[..]) }
+
+    fn find(self: ref slice<u8>, needle: slice<u8>) -> ?i64 {
+        let m = self.len
+        let n = needle.len
+        if n == 0 { return some(0) }
+        if n > m { return none }
+        let hay = self[..]
+        let r = std::mem::extc_memFind(hay.data, m, needle.data, n)
+        if r < 0 { return none }
+        return some(r)
+    }
+
+    fn contains(self: ref slice<u8>, needle: slice<u8>) -> bool {
+        return (self.find(needle) ?? -1) >= 0
+    }
+
+    fn startsWith(self: ref slice<u8>, p: slice<u8>) -> bool {
+        let s = self[..]
+        if p.len > s.len { return false }
+        var i: i64 = 0
+        while i < p.len {
+            if s[i] != p[i] { return false }
+            i = i + 1
+        }
+        return true
+    }
+
+    fn endsWith(self: ref slice<u8>, p: slice<u8>) -> bool {
+        let s = self[..]
+        if p.len > s.len { return false }
+        let off = s.len - p.len
+        var i: i64 = 0
+        while i < p.len {
+            if s[off + i] != p[i] { return false }
+            i = i + 1
+        }
+        return true
+    }
 }

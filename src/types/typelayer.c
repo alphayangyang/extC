@@ -182,6 +182,25 @@ static StructDef *methodHolder(Type *st) {
 }
 
 /**
+ * @brief The method named `name` declared directly in one declaration's body.
+ *
+ * A plain linear scan of `sd->methods`: method lists are small and a type has exactly one
+ * declaration, so an index would cost more to keep correct than the scan costs to run.
+ *
+ * @param sd    Declaration to search; may be NULL.
+ * @param name  Method name.
+ * @return      The method, or NULL when this declaration does not have it.
+ */
+static FuncDef *methodNamed(StructDef *sd, const char *name) {
+    if (!sd) return NULL;
+    for (size_t i = 0; i < sd->methods.len; i++) {
+        FuncDef *m = *(FuncDef **)vecAt(&sd->methods, i);
+        if (strcmp(m->name, name) == 0) return m;
+    }
+    return NULL;
+}
+
+/**
  * @brief The method named `name` on a type; only methods in the type's own body are
  * considered, not free functions.
  *
@@ -193,15 +212,14 @@ FuncDef *findMethod(Type *st, const char *name) {
     /* `Type.mholder` holds methods that hang off a **type without a body of its own**: a
      * builtin scalar (`impl i64 { ... }`) and a generic **instance** (`impl slice<u8> { ... }`).
      * It is consulted first because it is the more specific of the two -- `structOf` answers
-     * with the generic declaration's body, whose methods every instance shares. */
-    StructDef *sd = methodHolder(st);
-    if (!sd) sd = structOf(st);
-    if (!sd) return NULL;
-    for (size_t i = 0; i < sd->methods.len; i++) {
-        FuncDef *m = *(FuncDef **)vecAt(&sd->methods, i);
-        if (strcmp(m->name, name) == 0) return m;
-    }
-    return NULL;
+     * with the generic declaration's body, whose methods every instance shares.
+     *
+     * The holder **adds** to that body; it does not replace it. `impl slice<u8> { fn trim() }`
+     * must not hide `slice<T>::len` or `slice<T>::==` that the prelude wrote in the
+     * declaration's own body, so a miss in the holder falls back to the body. */
+    FuncDef *m = methodNamed(methodHolder(st), name);
+    if (m) return m;
+    return methodNamed(structOf(st), name);
 }
 
 /**
@@ -219,9 +237,22 @@ FuncDef *findMethod(Type *st, const char *name) {
  *              (for the cases that do not care about the operand type).
  * @return      The method; `NULL` when there is none.
  */
-FuncDef *findOperator(TypeTable *tt, Type *st, const char *name, Type *rhs) {
-    StructDef *sd = methodHolder(st);
-    if (!sd) sd = structOf(st);
+/**
+ * @brief The operator method named `name` on `st`, as declared in one declaration's body.
+ *
+ * Split out from `findOperator` so one operator name can be searched in an instance's holder
+ * **and** in the generic declaration's body it extends: the first hit wins, and the holder is
+ * asked first because it is the more specific declaration.
+ *
+ * @param tt    Type table.
+ * @param st    Left operand type.
+ * @param sd    Declaration to search; may be NULL.
+ * @param name  Operator spelling, such as `<<` or `==`.
+ * @param rhs   Right operand type; NULL accepts the first method with the same name.
+ * @return      The method, or NULL when this declaration does not have a match.
+ */
+static FuncDef *findOperatorIn(TypeTable *tt, Type *st, StructDef *sd, const char *name,
+                               Type *rhs) {
     if (!sd) return NULL;
     /* A method of a generic type spells its parameters in terms of the *owner's* type
      * parameters (`slice<T>::==` takes `other: ref slice<T>`), so the receiver's type
@@ -243,6 +274,30 @@ FuncDef *findOperator(TypeTable *tt, Type *st, const char *name, Type *rhs) {
         if (ttEquals(ttViewReadonly(tt, ttBase(pt)), ttViewReadonly(tt, ttBase(rhs)))) return m;
     }
     return NULL;
+}
+
+/**
+ * @brief The operator method named `name` on `st` whose right operand is `rhs`.
+ *
+ * Two declarations can answer: an instance's holder (`impl slice<u8> { fn == … }`) and the
+ * generic declaration's body (`struct slice<T> { fn == … }`). The holder is asked first and the
+ * body second, so extending an instance adds operators instead of hiding the ones the
+ * declaration already had.
+ *
+ * @param tt    Type table.
+ * @param st    Left operand type.
+ * @param name  Operator spelling, such as `<<` or `==`.
+ * @param rhs   Right operand type; NULL accepts the first method with the same name.
+ * @return      The method, or NULL when neither declaration has a match.
+ */
+FuncDef *findOperator(TypeTable *tt, Type *st, const char *name, Type *rhs) {
+    FuncDef *m = findOperatorIn(tt, st, methodHolder(st), name, rhs);
+    if (m) return m;
+    /* Same rule as `findMethod`: an instance's holder adds methods, it does not hide the
+     * declaration body's operators. */
+    StructDef *body = structOf(st);
+    if (!body || body == methodHolder(st)) return NULL;
+    return findOperatorIn(tt, st, body, name, rhs);
 }
 
 /**

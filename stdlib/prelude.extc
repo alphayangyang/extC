@@ -363,3 +363,121 @@ struct slice<T> {
  * 它是**新增声明**，所以每个产物都会变（产物里带一份由 prelude 派生的痕迹）：这是一次有意
  * 的全量重打基线，不是意外。 */
 struct domain { unit: bool }
+
+// ---------------------------------------------------------------------------
+// assert / unreachable
+//
+// Both are library code, not keywords: `trap(expr)` already says "stop the program with this
+// message", and the runtime stamps the file and line of the **trap**, which is the line the user
+// wrote `assert` on. `@inline` keeps the check free of a call in the C.
+// ---------------------------------------------------------------------------
+
+@inline
+fn assert(cond: bool) {
+    if !cond { trap("assertion failed") }
+}
+
+@inline
+fn assertMsg(cond: bool, msg: slice<u8>) {
+    if !cond { trap(msg) }
+}
+
+fn unreachable() {
+    trap("unreachable code was reached")
+}
+
+// ---------------------------------------------------------------------------
+// Numbers have methods too
+//
+// `x.abs()`, `n.clamp(lo, hi)`, `f.max(0.0)` are the shapes every other language in this family
+// spells; without them every call site is a free-function hunt. Nothing here is a primitive: each
+// body is the comparison written out, so `-O2` removes the call and the branch it implies.
+// ---------------------------------------------------------------------------
+
+impl i64 {
+    fn abs(self: ref i64) -> i64 {
+        let v = *self
+        if v < 0 { return 0 - v }
+        return v
+    }
+    fn min(self: ref i64, other: i64) -> i64 {
+        let v = *self
+        if v < other { return v }
+        return other
+    }
+    fn max(self: ref i64, other: i64) -> i64 {
+        let v = *self
+        if v > other { return v }
+        return other
+    }
+    fn clamp(self: ref i64, lo: i64, hi: i64) -> i64 {
+        let v = *self
+        if v < lo { return lo }
+        if v > hi { return hi }
+        return v
+    }
+    fn toF64(self: ref i64) -> f64 { return f64(*self) }
+    fn toI32(self: ref i64) -> i32 { return i32(*self) }
+}
+
+impl i32 {
+    fn abs(self: ref i32) -> i32 {
+        let v = *self
+        if v < 0 { return 0 - v }
+        return v
+    }
+    fn min(self: ref i32, other: i32) -> i32 {
+        let v = *self
+        if v < other { return v }
+        return other
+    }
+    fn max(self: ref i32, other: i32) -> i32 {
+        let v = *self
+        if v > other { return v }
+        return other
+    }
+    fn clamp(self: ref i32, lo: i32, hi: i32) -> i32 {
+        let v = *self
+        if v < lo { return lo }
+        if v > hi { return hi }
+        return v
+    }
+    fn toI64(self: ref i32) -> i64 { return i64(*self) }
+}
+
+impl u64 {
+    fn min(self: ref u64, other: u64) -> u64 {
+        let v = *self
+        if v < other { return v }
+        return other
+    }
+    fn max(self: ref u64, other: u64) -> u64 {
+        let v = *self
+        if v > other { return v }
+        return other
+    }
+}
+
+impl f64 {
+    fn abs(self: ref f64) -> f64 {
+        let v = *self
+        if v < f64(0) { return f64(0) - v }
+        return v
+    }
+    fn min(self: ref f64, other: f64) -> f64 {
+        let v = *self
+        if v < other { return v }
+        return other
+    }
+    fn max(self: ref f64, other: f64) -> f64 {
+        let v = *self
+        if v > other { return v }
+        return other
+    }
+    fn clamp(self: ref f64, lo: f64, hi: f64) -> f64 {
+        let v = *self
+        if v < lo { return lo }
+        if v > hi { return hi }
+        return v
+    }
+}

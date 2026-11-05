@@ -5,9 +5,26 @@
 # On a `method` row the module column is the **provider**: the module whose `impl`
 # block declares the method (it may differ from the module that owns the type --
 # such a block carries `@ext`, see docs/usage/modules-cabi.md).
+abs	f64	prelude	public	method
+abs	i32	prelude	public	method
+abs	i64	prelude	public	method
 appendF64	string	std::text::string	public	method
+clamp	f64	prelude	public	method
+clamp	i32	prelude	public	method
+clamp	i64	prelude	public	method
 hash	i64	std::data::hashMap	public	method
+max	f64	prelude	public	method
+max	i32	prelude	public	method
+max	i64	prelude	public	method
+max	u64	prelude	public	method
+min	f64	prelude	public	method
+min	i32	prelude	public	method
+min	i64	prelude	public	method
+min	u64	prelude	public	method
 readAllFrom	string	std::text::string	public	method
 readLineFrom	string	std::text::string	public	method
+toF64	i64	prelude	public	method
+toI32	i64	prelude	public	method
+toI64	i32	prelude	public	method
 writeLineTo	string	std::text::string	public	method
 writeTo	string	std::text::string	public	method

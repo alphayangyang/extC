@@ -47,6 +47,20 @@ prelude 是编译器在每个编译单元前先过一遍的一段 extC 源码。
 `print(x)` / `println(x)` 是内建，可以随便用：任何可打印值都行（`string` 按字节写出），
 与 `io::cout` 共用同一个输出缓冲，混写顺序与源码一致。要"带条件的流"（`cerr`、`stringio`、
 自定义 `ostream`）时用 `io::cout` 那一套。
+`io::print(x)` / `io::println(x)` 是**同一个打印器**的模块拼写：`io::println(42)`、`io::println(true)`、
+`io::println(f"n = {n}")` 都行，不必先转成字节视图。
+
+| 名字 | 是什么 |
+|---|---|
+| `assert(cond)` / `assertMsg(cond, msg)` | 条件不成立就 `trap`（报文带文件与行号）；`@inline`，`-O2` 下没有调用 |
+| `unreachable()` | 等价于 `trap("unreachable code was reached")`，给"这里到不了"用 |
+| 数字方法 | `n.abs()` · `n.min(o)` · `n.max(o)` · `n.clamp(lo, hi)`（`i64`/`i32`/`f64`；`u64` 只有 `min`/`max`） |
+| 数字转换 | `i64::toF64` · `i64::toI32` · `i32::toI64`（显式转换仍是 `f64(n)` 那种写法） |
+
+文本方法挂在**字节视图**上，所以字符串字面量直接能点出来（不用先 `string::from`）：
+`"  x  ".trim()` / `.trimStart()` / `.trimEnd()` / `.split(",")` / `.find(s)` / `.contains(s)` /
+`.startsWith(s)` / `.endsWith(s)` / `.toI64()` / `.toF64()` / `.len()` / `.isEmpty()`；
+`string` 上同名方法走同一份实现。视图的 `data`/`len` 由编译器构造，**不能赋值**（`mut slice` 也不行）。
 
 ### `varArray<T>`：板块底的动态数组
 

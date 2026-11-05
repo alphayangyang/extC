@@ -2737,6 +2737,25 @@ bool requireMutable(Checker *c, Expr *e, int line, const char *what) {
                 "cannot %s through a read-only reference", what);
         return true;
     }
+    /* A view is a pair the compiler builds: `data` and `len` for a slice, shape and stride
+     * words for a rank-N view. Letting user code write either half would let a view overstate
+     * or outlive the storage it names -- exactly the class of bug the depth rules exist to
+     * prevent -- so the halves are read-only even through a `mut slice<T>`. `mut` governs the
+     * *elements*, not the coordinates. Callers build the view they want instead. */
+    if (e && e->kind == EX_FIELD) {
+        Type *bt = e->u.field.obj->type;
+        while (bt && bt->kind == TY_REF) bt = bt->inner;
+        if (bt && ttIsViewType(bt)) {
+            ckError(c, line,
+                    "a view's coordinates are built by the compiler (`data` and `len` for a "
+                    "slice, shape and strides for a rank-N view); writing one would let the "
+                    "view name memory it does not own. Build the view you want instead: "
+                    "`v[lo..hi]` shrinks a slice, `v.sub(...)` picks a sub-view.",
+                    "cannot assign `%s` on a view of type `%s`; take a different view instead",
+                    e->u.field.name, typeStr(c, bt));
+            return true;
+        }
+    }
     Sym *root = placeRoot(c, e);
     /* Whether a view's elements can be written depends on whether the view's type carries
      * `mut`. This closes the hole of passing a view by value: in

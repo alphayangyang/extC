@@ -1,0 +1,20 @@
+// 字符串字面量是 `slice<u8>`：文本方法挂在**视图**上，字面量就能直接点出来。
+// expect: trim=[a b] start=[a b]   end=  [a b] split=3 second=b upper-ish=[A B] find=3 has=true false len=9 ints=42
+use std::io
+use std::text::string
+
+fn main() -> i32 {
+    let raw = "  [a b]  "
+    io::cout << "trim=" << raw.trim()
+    io::cout << " start=" << raw.trimStart()
+    io::cout << " end=" << raw.trimEnd()
+    let parts = "a,b,c".split(",")
+    io::cout << " split=" << parts.len << " second=" << parts.get(1)!
+    io::cout << " upper-ish=" << " [A B] ".trim()
+    io::cout << " find=" << ("abc=42".find("=") ?? -1)
+    io::cout << " has=" << "hello".contains("ell") << " " << "hello".contains("zzz")
+    io::cout << " len=" << "ninebytes".len()
+    io::cout << " ints=" << ("42".toI64() ?? -1)
+    io::cout << "\n"
+    return 0
+}

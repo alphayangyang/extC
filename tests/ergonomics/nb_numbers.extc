@@ -1,0 +1,19 @@
+// 数值方法：`abs`/`min`/`max`/`clamp`/`toF64`/`toI32`，i64 · i32 · u64 · f64 各一份。
+// expect: 7 0 0 -0 2.5 4 4 -4
+use std::io
+
+fn main() -> i32 {
+    var a: i64 = 0 - 7
+    var f: f64 = 0.0 - 2.5
+    var u: u64 = 9
+    var i: i32 = 0 - 4
+    io::cout << a.abs() << " "
+    io::cout << a.clamp(0, 3) << " "
+    io::cout << a.min(9).max(0) << " "
+    io::cout << f.max(0.0) << " "
+    io::cout << f.abs() << " "
+    io::cout << u.min(4) << " "
+    io::cout << i.abs() << " "
+    io::cout << i.toI64().toF64() << "\n"
+    return 0
+}

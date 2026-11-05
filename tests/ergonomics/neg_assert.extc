@@ -1,0 +1,10 @@
+// 断言失败是运行期 trap（带文件与行号），不是返回错误码。
+// expect-run-error: trap: assertion failed
+use std::io
+
+fn main() -> i32 {
+    var x: i64 = 1
+    assert(x > 2)
+    io::cout << "unreachable\n"
+    return 0
+}

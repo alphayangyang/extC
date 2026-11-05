@@ -1699,6 +1699,14 @@ def build_items() -> list:
         ok_msg=ok_count_ok(" 项（省略 0/部分/全部实参 · 方法 · 泛型 · 关联函数 · 负数默认值 · 六种拒绝）"),
         bad_msg="tests/defaults/run.sh", bad_dump=dump_fail(8)))
 
+    # ---- 常用写法的手感 ----
+    items.append(cmd(
+        "ergonomics", "tests",
+        "常用写法的手感（字面量上的文本方法 · `string` 同名方法 · 结构体字段逗号 · 数值方法 · `assert`/`unreachable` · `io::println` 收任意值 · 视图坐标只读）",
+        ["./tests/ergonomics/run.sh"], timeout=300,
+        ok_msg=ok_count_ok(" 项（`slice<u8>` 文本方法 · `string` 方法 · 字段逗号 · 数值方法 · `assert` · `io::println` · 两种拒绝）"),
+        bad_msg="tests/ergonomics/run.sh", bad_dump=dump_fail(8)))
+
     # ---- 生成的 C 在严格警告下干净 ----
     items.append(cmd(
         "cgen", "tests",

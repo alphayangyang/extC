@@ -1,0 +1,12 @@
+// 同一个概念、两种接收者：`string` 上的 `trim`/`split` 与视图上的实现是同一份代码。
+// expect: s=hi n=2 parts=2 first=x
+use std::io
+use std::text::string
+
+fn main() -> i32 {
+    var s: string = string::from("  hi  ")
+    io::cout << "s=" << s.trim() << " n=" << s.trim().len()
+    let parts = string::from("x;y").split(";")
+    io::cout << " parts=" << parts.len << " first=" << parts.get(0)! << "\n"
+    return 0
+}

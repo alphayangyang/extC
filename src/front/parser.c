@@ -1439,6 +1439,9 @@ static StructDef *parseStruct(Parser *p) {
             }
             *(FuncDef **)vecPush(&sd->methods) = m;
             skipJunk(p);
+            /* A member list that accepts `,` after a field has to accept it after a method too,
+             * or `struct P { x: i64, fn f() {} , }` is a syntax error for no visible reason. */
+            if (at(p, ",")) { take(p); skipJunk(p); }
             continue;
         }
 
@@ -1507,6 +1510,11 @@ static StructDef *parseStruct(Parser *p) {
         }
         *(FieldDef **)vecPush(&sd->fields) = fd;
         skipJunk(p);
+        /* The separator is optional: fields are usually one per line, but `struct P { x: i64,
+         * y: i64 }` is what every other language in this family accepts (and what the struct
+         * **literal** syntax right above already requires). Accepting both keeps the two ends
+         * of the same concept from disagreeing. */
+        if (at(p, ",")) { take(p); skipJunk(p); }
     }
     if (!expect(p, "}", NULL)) return NULL;
     return sd;

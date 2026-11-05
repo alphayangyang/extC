@@ -1,0 +1,15 @@
+// `struct P { x: i64, y: i64 }` 与结构体字面量用同一个分隔符规则。
+// expect: 3 4 sum=7
+use std::io
+
+struct point {
+    x: i64,
+    y: i64,
+    fn sum(self: ref point) -> i64 { return self.x + self.y },
+}
+
+fn main() -> i32 {
+    let p: point = { x: 3, y: 4 }
+    io::cout << p.x << " " << p.y << " sum=" << p.sum() << "\n"
+    return 0
+}

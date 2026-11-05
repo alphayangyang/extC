@@ -2088,6 +2088,15 @@ static size_t minArgsFor(FuncDef *f, size_t first) {
 }
 
 /**
+ * @brief Tell whether a call's callee name is one of the print builtins.
+ *
+ * The builtin spellings are bare (`print` / `println`); the module-qualified spellings
+ * (`io::print`, or the mangled `io$print` a qualified name can arrive as) mean the same thing.
+ *
+ * @param name  Callee name as written; may carry a module part.
+ * @return      `true` when this call is the print builtin.
+ */
+/**
  * @brief Fill the arguments a call leaves out from the callee's default values.
  *
  * The defaults are cloned per call site: the plan side table is addressed by node pointer, so two
@@ -2108,6 +2117,29 @@ static void fillDefaultArgs(Checker *c, Vec *args, FuncDef *f, size_t first) {
 }
 
 /**
+ * @brief Tell whether a call's callee name is one of the print builtins.
+ *
+ * The builtin spellings are bare (`print` / `println`); the module-qualified spellings
+ * (`io::print`, or the mangled `io$print` a qualified name can arrive as) mean the same thing.
+ * Comparing the last component keeps the two spellings one construct.
+ *
+ * @param name  Callee name as written; may carry a module part.
+ * @return      `true` when this call is the print builtin.
+ */
+static bool isPrintBuiltinName(const char *name) {
+    if (!name) return false;
+    const char *shortName = name;
+    const char *sep = strstr(name, "::");
+    if (sep && sep[2]) {
+        shortName = sep + 2;
+    } else {
+        const char *dollar = strrchr(name, '$');
+        if (dollar && dollar[1]) shortName = dollar + 1;
+    }
+    return strcmp(shortName, "print") == 0 || strcmp(shortName, "println") == 0;
+}
+
+/**
  * @brief Check an expression and return its type: the recursive core of the checker.
  *
  * `checkExpr` wraps it with the bookkeeping every subexpression needs. Some nodes are rewritten **in place**
@@ -2117,6 +2149,7 @@ static void fillDefaultArgs(Checker *c, Vec *args, FuncDef *f, size_t first) {
  * @param e  Expression node; must not be NULL.
  * @return   The expression type; the error type after a diagnostic.
  */
+
 static Type *checkExprInner(Checker *c, Expr *e) {
     TypeTable *tt = c->tt;
 
@@ -3866,7 +3899,11 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             /* Files are the program's own business; the compiler keeps no descriptor table -- `std::fs` closes
              * files with `close(2)` declared as `extern!`, and the handle's `open` flag makes a second close a
              * no-op; what the compiler can do is prove a leak when it can. */
-            if (strcmp(name, "print") == 0 || strcmp(name, "println") == 0) {
+            /* `io::print` / `io::println` are the **same** builtins under the module's name:
+             * `std::io` re-exports them, and a value printable through one spelling must be
+             * printable through the other. The name is answered here, before the library's own
+             * two functions are looked up, so both spellings share one printer. */
+            if (isPrintBuiltinName(name)) {
                 /* `print` / `println` are builtins dispatched by name; they go through the **same buffer** as
                  * `io::cout` (codegen's `genPrint` emits `extc_printf` / `extc_cout_put`, both writing the cout
                  * buffer), so interleaved writes keep source order and need no `flush`. Structural types still

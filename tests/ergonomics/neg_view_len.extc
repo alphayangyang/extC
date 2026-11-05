@@ -1,0 +1,10 @@
+// 视图的坐标由编译器构造：`len`/`data` 不能写（哪怕类型是 `mut slice<u8>`）。
+// `mut` 管的是**元素**，不是坐标。
+// expect-error: cannot assign `len` on a view of type `mut slice<u8>`
+fn shrink(s: mut slice<u8>) {
+    s.len = 1
+}
+
+fn main() -> i32 {
+    return 0
+}

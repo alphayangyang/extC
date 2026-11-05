@@ -1,0 +1,12 @@
+// `assert` / `assertMsg` / `unreachable` 是库里写的（`trap` 是语句），断言成立时零输出。
+// expect: ok 7
+use std::io
+
+fn main() -> i32 {
+    var x: i64 = 7
+    assert(x > 0)
+    assertMsg(x.abs() == 7, "abs broken")
+    if x < 0 { unreachable() }
+    io::cout << "ok " << x << "\n"
+    return 0
+}

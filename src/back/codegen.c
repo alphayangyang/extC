@@ -2229,6 +2229,30 @@ static bool printArgIsPlace(const Expr *e) {
 }
 
 /**
+ * @brief Tell whether a call's callee name is one of the print builtins.
+ *
+ * The builtin spellings are bare (`print` / `println`); the module-qualified spellings
+ * (`io::print`, or the mangled `io$print` a qualified name can arrive as) mean the same thing.
+ * Comparing the last component keeps the two spellings one construct.
+ *
+ * @param name  Callee name as written; may carry a module part.
+ * @param want  Builtin name to compare against (`print` / `println` / `flush`).
+ * @return      `true` when the last component of `name` is `want`.
+ */
+static bool builtinNameIs(const char *name, const char *want) {
+    if (!name) return false;
+    const char *tail = name;
+    const char *sep = strstr(name, "::");
+    if (sep && sep[2]) {
+        tail = sep + 2;
+    } else {
+        const char *dollar = strrchr(name, '$');
+        if (dollar && dollar[1]) tail = dollar + 1;
+    }
+    return strcmp(tail, want) == 0;
+}
+
+/**
  * @brief Emit the expression that implements one `print` call.
  *
  * A structured argument - enum, byte view, struct, generic instance or array - is printed
@@ -3232,8 +3256,10 @@ static const char *exCall(CG *g, Expr *e) {
     }
     if (e->u.call.callee->kind != EX_IDENT) return "0";
     const char *name = e->u.call.callee->u.ident.name;
-    if (strcmp(name, "print") == 0)   return genPrint(g, &e->u.call.args, false);
-    if (strcmp(name, "println") == 0) return genPrint(g, &e->u.call.args, true);
+    /* Both spellings reach here -- the bare builtin and the module-qualified `io::print` the
+     * checker also accepts -- so the name comparison looks at the last component. */
+    if (builtinNameIs(name, "print"))   return genPrint(g, &e->u.call.args, false);
+    if (builtinNameIs(name, "println")) return genPrint(g, &e->u.call.args, true);
     /* `flush()` becomes `fflush(NULL)`; <stdio.h> is already included
      * by the runtime. */
     /* `flush()` only has to drain the cout buffer (the built-in printing writes to that buffer
@@ -10542,7 +10568,12 @@ static const char *genSlice(CG *g, Expr *e) {
     }
 
     const char *loS = lo ? genExpr(g, lo) : "0";
-    const char *arg = ob->kind != TY_ARRAY ? obj
+    /* `ref [N]T` is a pointer the helper already takes by pointer; `ref slice<T>` is a
+     * pointer to the view struct, and the helper takes the struct **by value**, so it
+     * needs one dereference. Without it `v[1..]` through a `ref slice` parameter emitted
+     * `helper(v, ...)` with `v` a `slice_*`, which gcc rejects. */
+    const char *arg = ob->kind != TY_ARRAY
+                      ? (objIsRef ? arenaPrintf(g->arena, "(*%s)", obj) : obj)
                       : (objIsRef ? obj : arenaPrintf(g->arena, "&(%s)", obj));
     if (!hi) {
         /* Only a view base can reach here: for an array base the checker has
@@ -14137,8 +14168,8 @@ static bool coutScanExpr(void *ctx, Expr *e) {
     if (!e) return true;
     if (e->kind == EX_CALL && e->u.call.callee && e->u.call.callee->kind == EX_IDENT) {
         const char *n = e->u.call.callee->u.ident.name;
-        if (n && (strcmp(n, "print") == 0 || strcmp(n, "println") == 0 ||
-                  strcmp(n, "flush") == 0))
+        if (n && (builtinNameIs(n, "print") || builtinNameIs(n, "println") ||
+                  builtinNameIs(n, "flush")))
             *hit = true;
     }
     FuncDef *callee = planCallee(e);
