@@ -2,18 +2,29 @@
 
 本页由编译器自身的 `--help` 生成（`tools/gen_flags.py`），因此与实现同步：`check.sh` 在本页与 `extc --help` 不一致时会失败。
 
-开关共 27 个：`--build` · `--ccflag` · `--cflags` · `--check-c` · `--check-only` · `--diagnostics-json` · `--dump-effects` · `--dump-tokens` · `--help` · `--libs` · `--no-fuse` · `--no-line-map` · `--pkg-config` · `--run` · `--source-stdin` · `--symbols-json` · `-I` · `-L` · `-O0` · `-O2` · `-O3` · `-fsyntax-only` · `-h` · `-l` · `-march` · `-o` · `-w`
+开关共 28 个：`--build` · `--ccflag` · `--cflags` · `--check-c` · `--check-only` · `--diagnostics-json` · `--dump-effects` · `--dump-tokens` · `--help` · `--libs` · `--no-fuse` · `--no-line-map` · `--pkg-config` · `--run` · `--source-stdin` · `--symbols-json` · `-I` · `-L` · `-O0` · `-O2` · `-O3` · `-fsyntax-only` · `-h` · `-l` · `-m` · `-march` · `-o` · `-w`
 
 ```text
 extC compiler
 
 usage: build/extc [options] <file.extc>
+       build/extc run [<file.extc> | <dir>] [-- <program arguments>]
+       build/extc build [<file.extc> | <dir>] [options]
+
+`run` and `build` are the `--run` and `--build` modes without the flags: with no
+file they take the entry of the project in the current directory. The entry is the
+first of src/main.extc, main.extc, src/main.extx, main.extx that exists, else the
+path named by `[build] entry` in packages.toml. Everything after `--` goes to the
+program, so `extc run -- -m demo x` runs the `@module` entry `demo`.
 
 options:
   -o <file>        write the generated C to this file (default: stdout)
   --run            write generated C to build/<name>.c, compile it, run it
+                   (`extc run` is the same mode; it also discovers the entry file
+                   and passes arguments after `--` to the program)
                    (uses $CC, default `cc`; creates ./build/ in the CWD)
   --build          same, but stop before running: the binary is `-o <file>` if
+                   (`extc build` is the same mode, with entry discovery)
                    given, otherwise build/<name> (this is what a package's build
                    step wants: link flags from <module>.link, no execution)
   --check-c        syntax-check the generated C with `$CC -fsyntax-only`

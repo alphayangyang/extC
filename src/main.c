@@ -382,12 +382,23 @@ static void usage(const char *argv0) {
         "extC compiler\n"
         "\n"
         "usage: %s [options] <file.extc>\n"
+        "       %s run [<file.extc> | <dir>] [-- <program arguments>]\n"
+        "       %s build [<file.extc> | <dir>] [options]\n"
+        "\n"
+        "`run` and `build` are the `--run` and `--build` modes without the flags: with no\n"
+        "file they take the entry of the project in the current directory. The entry is the\n"
+        "first of src/main.extc, main.extc, src/main.extx, main.extx that exists, else the\n"
+        "path named by `[build] entry` in packages.toml. Everything after `--` goes to the\n"
+        "program, so `extc run -- -m demo x` runs the `@module` entry `demo`.\n"
         "\n"
         "options:\n"
         "  -o <file>        write the generated C to this file (default: stdout)\n"
         "  --run            write generated C to build/<name>.c, compile it, run it\n"
+        "                   (`extc run` is the same mode; it also discovers the entry file\n"
+        "                   and passes arguments after `--` to the program)\n"
         "                   (uses $CC, default `cc`; creates ./build/ in the CWD)\n"
         "  --build          same, but stop before running: the binary is `-o <file>` if\n"
+        "                   (`extc build` is the same mode, with entry discovery)\n"
         "                   given, otherwise build/<name> (this is what a package's build\n"
         "                   step wants: link flags from <module>.link, no execution)\n"
         "  --check-c        syntax-check the generated C with `$CC -fsyntax-only`\n"
@@ -449,7 +460,7 @@ static void usage(const char *argv0) {
 
         "\n"
         "  -h, --help       show this help\n",
-        argv0);
+        argv0, argv0, argv0);
     /* These further diagnostic switches are printed **separately** from the big table
      * above: one independent fprintf keeps them out of that table's layout. */
     fprintf(stderr,
@@ -595,6 +606,97 @@ static bool loadPrelude(Arena *arena, TypeTable *tt, Module *m) {
     return true;
 }
 
+/* ---------------------------------------------------------------- project discovery */
+
+/**
+ * @brief Does this path name an existing regular file?
+ *
+ * @param p  Path to test.
+ * @return   True when `p` can be opened as a regular file.
+ */
+static bool pathIsFile(const char *p) {
+    struct stat st;
+    return stat(p, &st) == 0 && S_ISREG(st.st_mode);
+}
+
+/**
+ * @brief Does this path name an existing directory?
+ *
+ * @param p  Path to test.
+ * @return   True when `p` is a directory.
+ */
+static bool pathIsDir(const char *p) {
+    struct stat st;
+    return stat(p, &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+/**
+ * @brief Read the entry file a project manifest names, if it names one.
+ *
+ * Only one shape is understood, deliberately: a `[build]` table with a single
+ * `entry = "<path>"` key. A project that wants more than this is asking for a build
+ * description, not a build convention, and `tools/extpkg.py` is where that lives. The
+ * path is taken relative to the manifest's directory.
+ *
+ * @param a    Arena the returned string is allocated from.
+ * @param dir  Directory holding `packages.toml`.
+ * @return     The entry path, or NULL when there is no manifest or no `entry` key.
+ */
+static const char *manifestEntry(Arena *a, const char *dir) {
+    const char *manPath = arenaPrintf(a, "%s/packages.toml", dir);
+    FILE *f = fopen(manPath, "rb");
+    if (!f) return NULL;
+    bool inBuild = false;
+    const char *found = NULL;
+    char line[512];
+    while (fgets(line, sizeof line, f)) {
+        char *s = line;
+        while (*s == ' ' || *s == '\t') s++;
+        if (*s == '[') {
+            /* Section header: leave the table when the `[build]` table ends. */
+            inBuild = strncmp(s, "[build]", 7) == 0;
+            continue;
+        }
+        if (!inBuild) continue;
+        if (strncmp(s, "entry", 5) != 0) continue;
+        char *eq = strchr(s, '=');
+        if (!eq) continue;
+        char *v = eq + 1;
+        while (*v == ' ' || *v == '\t') v++;
+        char quote = *v;
+        if (quote != '"' && quote != '\'') continue;
+        v++;
+        char *end = strchr(v, quote);
+        if (!end) continue;
+        *end = 0;
+        found = arenaPrintf(a, "%s/%s", dir, v);
+        break;
+    }
+    fclose(f);
+    return found;
+}
+
+/**
+ * @brief Find the entry file of a project directory.
+ *
+ * The order is the convention, and it is short on purpose: `src/main.extc`, `main.extc`,
+ * then the same two with the `.extx` spelling a package's own sources use, then whatever
+ * `packages.toml` names. Anything fancier belongs in a manifest.
+ *
+ * @param a    Arena the returned string is allocated from.
+ * @param dir  Directory to search.
+ * @return     Path to the entry file, or NULL when the directory has none.
+ */
+static const char *findProjectEntry(Arena *a, const char *dir) {
+    static const char *const candidates[] = { "src/main.extc", "main.extc", "src/main.extx", "main.extx" };
+    for (size_t i = 0; i < sizeof candidates / sizeof candidates[0]; i++) {
+        const char *p = arenaPrintf(a, "%s/%s", dir, candidates[i]);
+        if (pathIsFile(p)) return p;
+    }
+    const char *fromManifest = manifestEntry(a, dir);
+    return (fromManifest && pathIsFile(fromManifest)) ? fromManifest : NULL;
+}
+
 /* ---------------------------------------------------------------- main */
 
 /**
@@ -656,8 +758,20 @@ int main(int argc, char **argv) {
     int         nCcFlagArgs = 0;
     const char *pkgConfigArgs[8];    /* `--pkg-config <name>` */
     int         nPkgConfigArgs = 0;
+    /* `extc run` / `extc build`: the same two modes as `--run` / `--build`, spelled the
+     * way every other toolchain spells them. `run` also lets the program see its own
+     * arguments, which `--run` cannot express: everything after a bare `--` is handed to
+     * the program unchanged, so a project whose binary dispatches subcommands with
+     * `@module` is driven with `extc run -- -m demo x y`. */
+    const char  *progArgs[64];
+    int          nProgArgs = 0;
+    /* A project directory, or "." -- resolved to an entry file once the arena exists. */
+    const char  *discoverDir = NULL;
+    int          argBegin = 1;
+    if (argc > 1 && strcmp(argv[1], "run") == 0) { doRun = true; argBegin = 2; }
+    else if (argc > 1 && strcmp(argv[1], "build") == 0) { doBuild = true; argBegin = 2; }
 
-    for (int i = 1; i < argc; i++) {
+    for (int i = argBegin; i < argc; i++) {
         /* Optimisation switch: the default is `-O2`; `-march=native` trades portability
          * for speed, so it is enabled only when the user asks for it explicitly. */
         if (strncmp(argv[i], "-O", 2) == 0 && argv[i][2] >= '0' && argv[i][2] <= '3'
@@ -734,6 +848,14 @@ int main(int argc, char **argv) {
         } else if (strcmp(argv[i], "-o") == 0) {
             if (++i >= argc) { fprintf(stderr, "extc: `-o` needs a file name\n"); return 2; }
             outPath = argv[i];
+        } else if (strcmp(argv[i], "--") == 0) {
+            /* Everything after the separator belongs to the compiled program, not to
+             * `extc`: `extc run -- -m demo x` runs the binary's `demo` entry. */
+            for (int k = i + 1; k < argc; k++) {
+                if (nProgArgs < (int)(sizeof progArgs / sizeof progArgs[0])) progArgs[nProgArgs] = argv[k];
+                nProgArgs++;
+            }
+            break;
         } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
             usage(argv[0]);
             return 0;
@@ -748,13 +870,35 @@ int main(int argc, char **argv) {
         }
     }
 
+    if (path && pathIsDir(path)) {
+        /* `extc run src/` and `extc build .`: the argument names the project, not the
+         * file. */
+        discoverDir = path;
+        path = NULL;
+    }
     if (!path) {
-        usage(argv[0]);
-        return 2;
+        /* Only a mode that produces a binary can imply an entry file: plain `extc` with
+         * no input still has nothing to do, and printing the usage is the honest answer. */
+        if (!doRun && !doBuild) {
+            usage(argv[0]);
+            return 2;
+        }
+        if (!discoverDir) discoverDir = ".";
     }
 
     Arena arena;
     arenaInit(&arena, 64 * 1024);
+
+    if (!path) {
+        path = findProjectEntry(&arena, discoverDir);
+        if (!path) {
+            fprintf(stderr, "extc: no entry file below `%s`\n", discoverDir);
+            fprintf(stderr, "  looked for %s/src/main.extc, %s/main.extc, %s/src/main.extx,"
+                            " %s/main.extx, and `[build] entry` in %s/packages.toml\n",
+                    discoverDir, discoverDir, discoverDir, discoverDir, discoverDir);
+            return 2;
+        }
+    }
 
     /* Turn the link switches into `cc` arguments. The order is fixed: pkg-config
      * output first (its cflags are `-I`/`-D` and its libs are `-l`), then the explicit
@@ -1169,6 +1313,11 @@ int main(int argc, char **argv) {
 
     if (doBuild) return 0;              /* the binary is the output; do not run it */
 
-    char *runArgv[] = { (char *)binPath, NULL };
+    /* The program's own arguments follow its path, exactly as if it had been started by
+     * the shell: `extc run -- a b` is `./build/main a b`. */
+    char **runArgv = (char **)arenaAlloc(&arena, sizeof(char *) * (size_t)(nProgArgs + 2));
+    runArgv[0] = (char *)binPath;
+    for (int k = 0; k < nProgArgs; k++) runArgv[k + 1] = (char *)progArgs[k];
+    runArgv[nProgArgs + 1] = NULL;
     return runCmd(runArgv);
 }

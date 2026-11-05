@@ -103,6 +103,23 @@ hello, extC
 
 产物落在 `build/hello.c` 与 `build/hello`；被运行程序的退出码就是 `extc` 的退出码。
 
+**项目模式：`extc run` 与 `extc build`**
+
+多模块项目里，参数不该由人记。两个子命令把"项目"变成约定：不给文件时，在当前目录找入口
+——`src/main.extc` → `main.extc` → `src/main.extx` → `main.extx` → `packages.toml` 的
+`[build] entry`；给目录就等于进那个目录找。
+
+```console
+$ cd my-project                       # 里面有 src/main.extc 和 src/util.extc
+$ ./build/extc run                    # 找入口、编译、运行
+$ ./build/extc run -- a b             # `--` 之后原样交给程序（args.len 看得见）
+$ ./build/extc run -- -m demo x       # 程序用 @module 分派时，直接驱动它的子命令
+$ ./build/extc build -o app           # 只出二进制，不运行
+```
+
+找不到入口时会把试过的每一条路径打出来，而不是只说"没有入口"。
+`--run` / `--build` 两个旧拼写不变（脚本与 `extpkg` 都在用）。
+
 ## 6. 链接开关怎么用
 
 `extern!` 只声明符号，库要由链接开关给。准备两个文件：
