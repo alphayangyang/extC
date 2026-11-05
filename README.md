@@ -123,10 +123,36 @@ make -j"$(nproc)"     # 只依赖 cc，产出 build/extc
 ## 快速开始
 
 ```sh
-make -j"$(nproc)"
-./build/extc --run examples/hello.extc   # 生成 C、编译并运行
-./build/extc examples/tour.extc | head   # 只看生成的 C
+make -j"$(nproc)"                      # 只依赖 cc；约 1.5 秒构建出 build/extc
+./build/extc --run examples/hello-world.extc  # 生成 C、编译、运行
+./build/extc examples/tour.extc | head # 只看生成的 C
 ```
+
+第一次上手照这五步走（详细版见 [`docs/usage/00-start.md`](docs/usage/00-start.md)）：
+
+| 步 | 做什么 | 命令 / 去处 |
+|---|---|---|
+| 1 | 构建编译器 | `make -j"$(nproc)"` → `build/extc` |
+| 2 | 跑通第一个程序 | 抄上面那行 `--run`（`examples/hello-world.extc`，四行）；改一个字再跑一次 |
+| 3 | 让编辑器认识它 | VS Code 扩展（诊断 / 符号 / 悬停 / 补全）：[`docs/topics/LSP.md`](docs/topics/LSP.md) · 一键安装 `tools/install-vscode-ext.sh` |
+| 4 | 看语言长什么样 | [`examples/tour.extc`](examples/tour.extc)（164 行，九个主题）· [`examples/concise-tour.extc`](examples/concise-tour.extc)（短写法）|
+| 5 | 查手册 | 语言 [`docs/usage/language.md`](docs/usage/language.md) · 标准库 [`docs/usage/stdlib.md`](docs/usage/stdlib.md) · 模块与 C 互操作 [`docs/usage/modules-cabi.md`](docs/usage/modules-cabi.md) |
+
+从别的语言过来，第一小时会撞到的几件事：
+
+| 你的习惯 | extC 里 | 为什么 |
+|---|---|---|
+| `let mut x` | `var x`（可写）· `let x`（不可写）| 没有 `mut` 关键字，可写性是声明的种类 |
+| `if n`（整数当条件）| `if n != 0` | 没有隐式真值，条件必须是 `bool` |
+| `println!("hi")` | `println("hi")` 或 `io::println("hi")` | 没有宏；`print`/`println` 是内建，`io::` 那层是同一个打印器 |
+| `&x` 取引用 | `ref x` | 引用是 `ref T` 类型，取地址不做运算 |
+| `#include` / `import` | 文件头 `use std::io` | 模块按文件路径解析；文本方法还要 `use std::text::string` |
+| `"a" + "b"` | `string::from("a") + "b"` | 字面量的静态类型是 `slice<u8>`，`string` 才有 `+` |
+| `;` 结尾 | 换行分隔（`;` 也接受）| 语句以换行结束 |
+| `int` | `i64` / `i32` / `u64` … | 没有默认整数类型，字面量默认 `i64` |
+| 忘了 `return` | 编译通过，运行到函数尾会 trap | 证明不了的一律留成带位置的 trap，不是错数 |
+
+C 语言那套 `int main(int argc, char **argv)` 不适用：入口写 `fn main() -> i32`，返回值就是退出码；`argv` 走 `std::proc`。
 
 | 目标 | 依赖 |
 |---|---|
@@ -160,6 +186,7 @@ EXTC_RC_PAUSE=1 ./build/x                  # 打印每次清扫的最大/累计�
 | 文档 | 内容 |
 |---|---|
 | [`docs/usage/`](docs/usage/) | **现在有什么 / 怎么用**：上手 · 语言 · 标准库 · C 互操作 · 回收通俗版 |
+| [`docs/topics/LSP.md`](docs/topics/LSP.md) | **编辑器支持**：VS Code 扩展、诊断/符号/悬停/补全、连不通时怎么查 |
 | [`docs/RECLAMATION.md`](docs/RECLAMATION.md) | **回收机制**：为什么这么设计、遵守哪些不变量、还缺什么（证据入口在它的末节）|
 | [`docs/TODO.md`](docs/TODO.md) | **有什么待做**（唯一清单） |
 | [`docs/CHANGELOG.md`](docs/CHANGELOG.md) | **开发历史**（全仓库唯一） |

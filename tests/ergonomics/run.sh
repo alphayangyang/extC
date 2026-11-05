@@ -11,6 +11,7 @@
 #   io_println      `io::println` 与内建 `println` 是同一个打印器（数字/布尔/字符串/f-string）
 #   view_len        视图的 `len` 不能写（`mut slice` 也不例外）→ 编译错误
 #   assert_fail     断言失败 → 运行期 trap（带文件行号）
+#   literals        数字分组下划线、`0b`/`0o`、浮点里的下划线；`0x_` 仍报错
 set -u
 cd "$(dirname "$0")/../.."
 EXTC=${EXTC:-./build/extc}
@@ -64,12 +65,14 @@ one struct_commas  tests/ergonomics/nb_struct_commas.extc "3 4 sum=7"
 one numbers        tests/ergonomics/nb_numbers.extc "7 0 0 0 2.5 4 4 -4"
 one assert         tests/ergonomics/nb_assert.extc "ok 7"
 one impl_adds      tests/ergonomics/impl_adds.extc "eq=true len=3 trimmed=[ab]"
+one literals       tests/ergonomics/nb_literals.extc "1000000 170 511 65535 1500 3.14159 -1000000"
 one io_println     tests/ergonomics/nb_io_println.extc "42
 hi
 true
 size=5
 n = 7"
 
+negsrc hex_empty tests/ergonomics/neg_hex_empty.extc 'hexadecimal literal needs at least one digit'
 negsrc view_len  tests/ergonomics/neg_view_len.extc  'cannot assign `len` on a view of type `mut slice<u8>`'
 runfails assert_fail tests/ergonomics/neg_assert.extc "trap: assertion failed"
 

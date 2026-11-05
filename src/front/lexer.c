@@ -200,14 +200,26 @@ static Token *lxLast(Vec *out) {
 
 /* ---------------------------------------------------------------- token kinds */
 
+/*! @brief Is `c` a digit in `radix` (2, 8, 10, or 16), in either case? */
+static bool isDigitInRadix(char c, int radix) {
+    if (radix == 2) return c == '0' || c == '1';
+    if (radix == 8) return c >= '0' && c <= '7';
+    if (radix == 16) return isHex(c);
+    return isDigit(c);
+}
+
 /**
- * @brief Lex one number into `out`: a decimal or 0x hexadecimal integer, or a float with
- *        a fractional part and/or an exponent.
+ * @brief Lex one number into `out`: a decimal, 0x hexadecimal, 0b binary, or 0o octal
+ *        integer, or a float with a fractional part and/or an exponent.
+ *
+ * `_` may stand between digits to group them (`1_000_000`); it is not part of the value, so
+ * the accumulator skips it. It may not lead, trail, or sit next to the radix prefix, which
+ * keeps `1_` and `0x_1` from becoming silent typos.
  *
  * Every number produced here is non-negative: a leading `-` is a separate token consumed
  * by the parser's parseUnary. A `.` is part of the number only when a digit follows it
  * (`1..2` is a range, `1.foo` reads a field of 1). The value is accumulated rather than
- * read with strtoll, because the text is NUL-terminated only after being copied.
+ * read with strtoll, because the text is not NUL-terminated and may contain separators.
  *
  * @param lx   Cursor, sitting on the first digit.
  * @param out  Token vector to append to.
@@ -217,39 +229,64 @@ static void lexNumber(Lexer *lx, Vec *out) {
     size_t start = lx->pos;
     bool isFloat = false;
 
+    /* Integer radix prefixes: 0x hexadecimal, 0b binary, 0o octal. */
+    int radix = 10;
     if (lxPeek(lx, 0) == '0' && (lxPeek(lx, 1) == 'x' || lxPeek(lx, 1) == 'X')) {
-        lxAdvance(lx);
-        lxAdvance(lx);
-        size_t hexStart = lx->pos;
-        while (isHex(lxPeek(lx, 0))) lxAdvance(lx);
+        radix = 16;
+    } else if (lxPeek(lx, 0) == '0' && (lxPeek(lx, 1) == 'b' || lxPeek(lx, 1) == 'B')) {
+        radix = 2;
+    } else if (lxPeek(lx, 0) == '0' && (lxPeek(lx, 1) == 'o' || lxPeek(lx, 1) == 'O')) {
+        radix = 8;
+    }
 
-        if (lx->pos == hexStart) {
-            ctxError(lx->ctx, line, col, NULL, "hexadecimal literal needs at least one digit");
+    if (radix != 10) {
+        lxAdvance(lx);
+        lxAdvance(lx);
+        size_t digStart = lx->pos;
+        for (;;) {
+            char c = lxPeek(lx, 0);
+            if (c == '_' && lx->pos > digStart && isDigitInRadix(lxPeek(lx, 1), radix)) {
+                lxAdvance(lx);
+                continue;
+            }
+            if (!isDigitInRadix(c, radix)) break;
+            lxAdvance(lx);
+        }
+
+        if (lx->pos == digStart) {
+            ctxError(lx->ctx, line, col, NULL,
+                     radix == 16 ? "hexadecimal literal needs at least one digit"
+                     : radix == 2 ? "binary literal needs at least one digit"
+                                  : "octal literal needs at least one digit");
             return;
         }
 
         long long v = 0;
-        for (size_t i = hexStart; i < lx->pos; i++) {
+        for (size_t i = digStart; i < lx->pos; i++) {
             char h = lx->src[i];
+            if (h == '_') continue;
             long long d = isDigit(h) ? (h - '0') : ((h | 0x20) - 'a' + 10);
-            if (v > (LLONG_MAX - d) / 16) {
+            if (v > (LLONG_MAX - d) / radix) {
                 ctxError(lx->ctx, line, col, NULL,
                          "integer literal exceeds the supported signed 64-bit range");
                 return;
             }
-            v = v * 16 + d;
+            v = v * radix + d;
         }
         Token *t = lxPushAt(lx, out, TK_INT, lx->src + start, lx->pos - start, line, col);
         t->ival = v;
         return;
     }
 
-    while (isDigit(lxPeek(lx, 0))) lxAdvance(lx);
+    while (isDigit(lxPeek(lx, 0)) || (lxPeek(lx, 0) == '_' && isDigit(lxPeek(lx, 1)) &&
+                                      lx->pos > start))
+        lxAdvance(lx);
 
     if (lxPeek(lx, 0) == '.' && isDigit(lxPeek(lx, 1))) {
         isFloat = true;
         lxAdvance(lx);
-        while (isDigit(lxPeek(lx, 0))) lxAdvance(lx);
+        while (isDigit(lxPeek(lx, 0)) || (lxPeek(lx, 0) == '_' && isDigit(lxPeek(lx, 1))))
+            lxAdvance(lx);
     }
 
     if (lxPeek(lx, 0) == 'e' || lxPeek(lx, 0) == 'E') {
@@ -257,20 +294,35 @@ static void lexNumber(Lexer *lx, Vec *out) {
         if (isDigit(lxPeek(lx, k))) {
             isFloat = true;
             for (size_t i = 0; i < k; i++) lxAdvance(lx);
-            while (isDigit(lxPeek(lx, 0))) lxAdvance(lx);
+            while (isDigit(lxPeek(lx, 0)) || (lxPeek(lx, 0) == '_' && isDigit(lxPeek(lx, 1))))
+                lxAdvance(lx);
         }
     }
 
     Token *t = lxPushAt(lx, out, isFloat ? TK_FLOAT : TK_INT,
                         lx->src + start, lx->pos - start, line, col);
     if (isFloat) {
-        t->fval = strtod(t->text, NULL);
+        /* `strtod` cannot see through the separators, so strip them into a scratch buffer. */
+        char buf[80];
+        size_t n = 0;
+        for (size_t i = start; i < lx->pos && n + 1 < sizeof buf; i++)
+            if (lx->src[i] != '_') buf[n++] = lx->src[i];
+        buf[n] = 0;
+        t->fval = strtod(buf, NULL);
     } else {
-        errno = 0;
-        t->ival = strtoll(t->text, NULL, 10);
-        if (errno == ERANGE)
+        long long v = 0;
+        bool over = false;
+        for (size_t i = start; i < lx->pos; i++) {
+            char c = lx->src[i];
+            if (c == '_') continue;
+            long long d = c - '0';
+            if (v > (LLONG_MAX - d) / 10) { over = true; break; }
+            v = v * 10 + d;
+        }
+        if (over)
             ctxError(lx->ctx, line, col, NULL,
                      "integer literal exceeds the supported signed 64-bit range");
+        t->ival = v;
     }
 }
 

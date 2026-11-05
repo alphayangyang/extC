@@ -61,7 +61,7 @@ C 编译器不是只给测试用：`--run` / `--build` / `--check-c` 都调用�
 
 ## 5. 三条最小用法
 
-先写一个文件 `hello.extc`：
+仓库里已经有 [`examples/hello-world.extc`](../../examples/hello-world.extc)，内容就是下面四行；想从零开始就在任意目录写一个自己的 `hello.extc`：
 
 ```extc
 use std::io

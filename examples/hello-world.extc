@@ -1,0 +1,7 @@
+// 第一个程序：一行输出。（`extc --run examples/hello-world.extc`）
+use std::io
+
+fn main() -> i32 {
+    io::cout << "hello, extC\n"
+    return 0
+}

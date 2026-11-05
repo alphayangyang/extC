@@ -64,6 +64,17 @@
   计数价仍是清扫侧的 2.5–17 倍。⇒ 计数路线要成立，前提是**槽布局改动（计数进对象头）**，让单价降到
   个位条指令；即便到了那一步，也只有"清扫真的在跑"的形状会赢。先决定是否继续；证据、上界与逐形状数字见
   [`tests/reclaim-perf/TAXMAP.md`](../tests/reclaim-perf/TAXMAP.md) 第 9 节。
+- **容器在循环里长过之后，同层再取视图被误拒（假阳性，2026-11-05）**：
+  <!-- fragment -->
+  ```extc
+  var v: varArray<i64> = varArray<i64>::withCap(1)
+  for i in 0..100 { v.push(i) }        // 这一趟扩容过
+  let s: slice<i64> = v.view()          // error: borrowed from depth 2, but this can only hold up to depth 1
+  ```
+  不扩容的容器、以及把视图放进内层 block 都能过；最小复现 `/tmp/syn/vv2.extc`，`522a3c6^` 上同样复现
+  （与本轮改动无关）。根因方向：`@place` 容器的板块按**扩容发生处**的层级记账，应当按**容器声明处**
+  的层级记账 —— 与 `promoteInto2` 的 `promoteReceiverFields` 同源（那个修的是"接收者字段来源一起提升"）。
+  判据要覆盖：循环内扩容后取视图必须编过、真正跨作用域逃逸仍必须被拒。
 - **AST 冻结施工单还剩 68 条**（`tools/ast-freeze-known-bad.txt` 的棘轮基线，只许变短）：解析器之外的
   代码仍在写 AST。
 
