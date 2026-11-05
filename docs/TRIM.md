@@ -158,3 +158,26 @@ it in (depth 0)"，以及 `tools/gate_escape.py` 的逃逸语料变红。
 `anIsAssoc(f) && anMakesPoolAny(owner)` 那行捷径，`gate_escape` 仍报 2 条 UAF ⇒ 它与本卡点无关，
 保留。`promoteInto2` 的 `needsHome` 分支仍不走这趟走查：那是"callee 自己的新分配"，其内容已在
 callee 体内按参数深度查过，与"结果指向接收者存储"不同类。
+
+## 计数层：先不删（2026-11-05 决定）
+
+删掉"计数"这一档在本轮被推迟。它不是单一开关：`EXTC_RC_SWEEPFREE=1` 的"事件档"（只扫有事件的区）
+与编译器对"能证明无环"的程序自动开计数 + 不扫（`unitAllAcyclic`）都压在它上面，`tests/reclaim-acyclic`
+的整套判据与论文里 acyclic 那条叙述也一样。
+
+将来要删时，路是清楚的：计数档在 `src/back/reclaim.c` 里是**发射器字符串**，`rtCfgIf()` 在编译期按
+`EXTC_RC_NOCOUNT` 丢掉分支，所以删掉分支后生成 C 应当逐字节相同。按这个判据验证过六个形状
+（promote/sizeratio/chase/cycleratio/condsave/mutate）全部 `cmp` 相同；净删 103 行、15 个块。
+两次失败的尝试留下教训：按行删会踩"一行里有多个字符串字面量"，按字面量删会误删嵌套的
+`#if EXTC_RC_FOREIGN_GUARD`。
+
+## 返回视图的深度：今天的边界（2026-11-05 诊断）
+
+`FuncDef` 只有 `Type *ret`，没有函数级"返回值借自谁"的记录；返回处的深度由 `targetDepth()` 按语法重算，
+再被 `poolCallDepth()` 抬到本函数块层级，随后又被 `promoteInto2()` 当成"分配点"改写。调用点不读 callee
+的任何记录，而是按自己的实参重算同一公式。
+
+后果是精度损失：一个"返回自己参数存储里的视图"的包装函数，其结果在调用点被当成新分配，于是要求它活得
+比实际需要更久 —— `tests/genmatrix` 里那类形状因此被保守拒绝。修法是给 `FuncDef` 记 `retBorrowArg` /
+`retBorrowField`，让调用点按 `max(slotDepth(arg), 该字段的存储深度)` 取数，并把 `promoteInto2` 的要求
+下沉到存储的 `src`。这条改动是"删池特权"的前置。
