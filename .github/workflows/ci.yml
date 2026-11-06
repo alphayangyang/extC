@@ -53,13 +53,15 @@ jobs:
     runs-on: ${{ matrix.os }}
     container: ${{ matrix.container }}
     steps:
-      - uses: actions/checkout@v4
-
+      # 容器镜像里没有 git，而 actions/checkout 自己就要用 git —— 所以 bootstrap 必须在
+      # checkout **之前**。
       - name: bootstrap (the container image has no sudo and is minimal)
         if: matrix.container != ''
         run: |
           apt-get update -qq
           apt-get install -y -qq build-essential python3 valgrind git ca-certificates
+
+      - uses: actions/checkout@v4
 
       - name: build the compiler
         run: make -j"$(nproc)"
