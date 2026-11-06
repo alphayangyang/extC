@@ -1,0 +1,19 @@
+use std::io
+use std::coro::scheduler
+
+fn conn(fd: i64) -> coroutine<i64> {
+    var buf: mut slice<u8> = new u8[512]
+    while true {
+        let n = yield fd                    // 等这个 fd 可读；挂起不占栈
+        if n <= 0 { return 0 }
+        let got = std::sys::net::extc_sock_read(fd, buf.data, 512)
+        if got <= 0 { return 0 }
+        var off: i64 = 0
+        while off < got {
+            let w = std::sys::net::extc_sock_write_from(fd, buf.data, off, got - off)
+            if w <= 0 { return 0 }
+            off = off + w
+        }
+    }
+    return 0
+}

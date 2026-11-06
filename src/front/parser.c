@@ -3849,7 +3849,10 @@ static Stmt *parseFor(Parser *p) {
         hoist->u.var.name = nm;
         hoist->u.var.ann  = NULL;
         hoist->u.var.init = head;
-        hoist->u.var.mut  = false;
+        /* Mutable: driving a subject is not just reading it. A coroutine is stepped with
+         * `next()`, which assigns into the binding, so `for x in counter(4)` on a temporary
+         * needs a `var` here -- the name is compiler-owned, nobody else can see the binding. */
+        hoist->u.var.mut  = true;
         hoist->u.var.overwrite = false;
         head = forIdent(p, nm, line);
     }

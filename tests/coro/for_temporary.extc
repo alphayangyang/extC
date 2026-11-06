@@ -1,0 +1,25 @@
+/* 判据：`for x in <临时量>` 要能跑 —— 被驱动的对象是协程时会被改写（`next()` 要赋值），
+ * 所以 desugar 为它建的隐藏绑定必须是 `var`，不能是 `let`。
+ *
+ * 反例形状（修之前）：`for x in counter(4) { }` 报
+ * `cannot assign to `__extc_c0`, which is a `let``。
+ *
+ * 判据（tests/coro/run.sh）：跑起来，stdout 一行 `total = 6`。 */
+use std::io
+
+fn counter(n: i64) -> coroutine<i64> {
+    var i: i64 = 0
+    while i < n {
+        yield i
+        i = i + 1
+    }
+}
+
+fn main() -> i32 {
+    var total: i64 = 0
+    for x in counter(4) {
+        total = total + x
+    }
+    io::cout << "total = " << total << "\n"
+    return 0
+}

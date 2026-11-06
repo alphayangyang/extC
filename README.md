@@ -1,36 +1,41 @@
 # extC
 
-extC 是一门编译到 C11 的语言：**把内存安全、边界与错误检查放进编译期，把运行期留给 C 的速度**。
-没有虚拟机、没有共享运行时库、没有追踪式垃圾回收；写代码时既不用标生命周期，也不用调 `free`。
+extC is a language that compiles to C11: **memory safety, bounds and error checks at compile
+time; C's speed at run time.** No virtual machine, no shared runtime library, no tracing
+collector — and you never write a lifetime annotation or a `free` call.
 
-> 凡是编译期能够证明的，运行时不留痕迹。
+> Whatever the compiler can prove leaves no trace at run time.
+
+*[中文版](README.zh.md)*
 
 [![ci](https://github.com/alphayangyang/extC/actions/workflows/ci.yml/badge.svg)](https://github.com/alphayangyang/extC/actions)
 
-## 它是什么形状
+## Shape of the thing
 
 | | extC |
 |---|---|
-| 编译目标 | C11。生成的 C 由 `cc` 编成最终产物，带 `#line` 指回源码行（`--no-line-map` 可关）|
-| 运行时 | 没有共享运行时库；`hello` 只依赖 libc，二进制约 16 KB |
-| 内存 | 作用域 arena 打底：退出块整片归还；活过块的由区域清扫兜底（默认不做持有者计数，也不扫整个堆）；语言没有 `free` |
-| 检查 | 编译期能证明的一律变成编译错误；证明不了的保留为带源码位置的 trap，没有静默退化的路径 |
-| 逃生舱 | 只有两个：`!`（先检查、再 trap）与 `@unchecked`（唯一的 UB 通道）；两者都要在源码里显式写出来 |
-| 工具链 | 一个 `cc` 就能构建；跑快速验收另需 `python3` |
+| Target | C11. The generated C is compiled by `cc`; `#line` directives map errors back to the `.extc` source (`--no-line-map` turns that off) |
+| Runtime | No shared runtime library; `hello` depends on libc only and is about 16 KB |
+| Memory | A scoped arena is the base: leaving a block returns the whole slab; values that outlive their block are covered by a per-region sweep (no per-object counting by default, no whole-heap walk); the language has no `free` |
+| Checks | What the compiler can prove becomes a compile error; what it cannot prove becomes a trap carrying a source position. There is no silent-degradation path |
+| Escape hatches | Exactly two: `!` (check first, then trap) and `@unchecked` (the only UB channel). Both must be written out in the source |
+| Toolchain | One `cc` builds it; running the fast acceptance suite also needs `python3` |
 
-回收的机制、不变量和还缺什么，见 [`docs/design/RECLAMATION.md`](docs/design/RECLAMATION.md)；通俗版见 [`docs/usage/reclamation.md`](docs/usage/reclamation.md)。
+How reclamation works, what it guarantees, and what is still missing:
+[`docs/design/RECLAMATION.md`](docs/design/RECLAMATION.md); the plain-language version is
+[`docs/usage/reclamation.md`](docs/usage/reclamation.md).
 
-## 能写什么
+## What you can write
 
-| 面 | 有什么 |
+| Area | What is there |
 |---|---|
-| 语言 | 泛型 · `trait` 与 `dyn` · 带载荷枚举 · `option`/`result`/`?`/`??` · `match`（含 `_` 兜底臂）· `if let`/`while let` · 多名字声明与并行赋值 · 切片与引用 · 运算符重载 · `f"…"`（含格式说明符）· 注解（[语言现状](docs/usage/language.md)）|
-| 内存 | 按词法块的 arena · `pool<T>` · `varArray<T>` · 域；编译器只给真需要回收的单元发回收运行期（[语言现状](docs/usage/language.md)）|
-| 并发与 I/O | 协程与调度器 · 线程 · epoll 事件循环 · 终端 raw 模式（[标准库现状](docs/usage/stdlib.md)）|
-| 系统与 C | `extern!` 声明 C 原语 · `@export` 反向给 C 调 · 动态加载 · 链接开关与 `--pkg-config`（[模块与 C 互操作](docs/usage/modules-cabi.md)）|
-| 标准库 | 控制台与文件 · 时间 · 终端 · JSON · Base64 · sha1/sha256/hmac · 套接字 · HTTP · WebSocket · 进程 · 线程 · 堆板 · 动态加载 · 事件循环 · UUID · STL 容器（[标准库现状](docs/usage/stdlib.md)）|
+| Language | Generics · `trait` and `dyn` · enums with payloads · `option`/`result`/`?`/`??` · `match` (with a `_` arm) · `if let`/`while let` · multi-name declarations and parallel assignment · slices and references · operator overloading · `f"…"` (with format specifiers) · attributes ([language guide](docs/usage/language.md)) |
+| Memory | Lexical-block arenas · `pool<T>` · `varArray<T>` · domains; the compiler emits the reclamation runtime only for units that actually need it ([language guide](docs/usage/language.md)) |
+| Concurrency and I/O | Coroutines and a scheduler · threads · an epoll event loop · terminal raw mode ([standard library](docs/usage/stdlib.md)) |
+| Systems and C | `extern!` for C primitives · `@export` to be called from C · dynamic loading · link switches and `--pkg-config` ([modules and C interop](docs/usage/modules-cabi.md)) |
+| Standard library | Console and files · time · terminal · JSON · Base64 · sha1/sha256/hmac · sockets · HTTP · WebSocket · processes · threads · heap slabs · dynamic loading · event loop · UUID · STL containers ([standard library](docs/usage/stdlib.md)) |
 
-## 一段代码，和它生成的 C
+## A program and the C it generates
 
 ```extc
 use std::io
@@ -40,14 +45,15 @@ struct point { x: i32  y: i32 }
 fn main() -> i32 {
     var p = point { x: 1, y: 2 }
     io::cout << "p = " << p.x << ", " << p.y << "\n"   // p = 1, 2
-    var a: [4]i32 = [1, 2, 3, ...]                      // 定长数组，... 补零
-    let s = a[1..3]                                     // 切片视图；能证明的边界不生成检查
+    var a: [4]i32 = [1, 2, 3, ...]                      // fixed-size array, ... pads with zeros
+    let s = a[1..3]                                     // a slice view; provable bounds get no check
     io::cout << "s[0] = " << s[0] << "\n"              // s[0] = 2
     return 0
 }
 ```
 
-生成出来的 C 故意写得很闷：没有宏把戏、没有聪明优化。它自己的抬头就把这件事写在文件里：
+The generated C is deliberately boring: no macro tricks, no clever optimizations. Its own
+header says so:
 
 ```c
 /* Generated by the extC compiler -- do not edit by hand.
@@ -55,12 +61,14 @@ fn main() -> i32 {
  * `#line` directives map the C compiler's errors back to the .extc source lines. */
 ```
 
-想看整段：`./build/extc examples/hello.extc` 把生成的 C 打到屏幕上，`--check-c` 只生成不运行地过一遍 `cc -fsyntax-only`。
-完整巡礼见 [`examples/tour.extc`](examples/tour.extc)，语言用法见 [`docs/usage/`](docs/usage/)。
+To see a whole translation unit: `./build/extc examples/hello.extc` prints the C to stdout, and
+`--check-c` additionally runs `cc -fsyntax-only` over it. A full tour lives in
+[`examples/tour.extc`](examples/tour.extc); language reference under [`docs/usage/`](docs/usage/).
 
-## 编译期就拦下来的
+## Caught at compile time
 
-证明得了的错误不是警告，是编译错误。把上面那段里的 `a[1..3]` 换成越界的下标：
+A provable mistake is not a warning, it is a compile error. Change `a[1..3]` above to an
+out-of-range index:
 
 <!-- expect-error -->
 ```extc
@@ -70,7 +78,7 @@ fn main() -> i32 {
 }
 ```
 
-编译器给的是：
+and the compiler answers:
 
 ```text
 bad.extc:3:1: error: index 7 is not inside `[4]i32` (length 4)
@@ -79,139 +87,301 @@ bad.extc:3:1: error: index 7 is not inside `[4]i32` (length 4)
   note: The compiler can prove this index is out of range.
 ```
 
-有损收窄同样编不过 —— 把 `i32` 赋给 `i8` 得到 `initializer expects i8, found i32`，要缩窄必须自己写出来。证明不了的不会被静默放行：它变成带源码位置的运行期 trap，不是一个错数。
+A lossy narrowing does not compile either — assigning an `i32` to an `i8` gives
+`initializer expects i8, found i32`; a narrowing has to be written out. What cannot be proved is
+not waved through silently: it becomes a trap with a source position, never a wrong answer.
 
-## 快在哪、慢在哪
+## Five things that rarely live in one language
 
-六种语言（extC、C、C++、Rust、Go、Java）在五个重负载形状上的横评：数据全部从标准输入读入（一个生成器产出一份输入，六种语言读同一份），每种语言开满自己的优化，六份输出逐字节一致才算数。
-测量脚本见 [`bench/bigmatrix/`](bench/bigmatrix/)，完整结果见 [`RESULTS.md`](bench/bigmatrix/RESULTS.md)；下表是它的快照。
+### Data parallelism the compiler can check
+
+```extc
+use std::io
+
+fn main() -> i32 {
+    var n: i64 = 1000000
+    var out: mut slice<i64> = new i64[n]
+    par i in 0..n {                       // the body may not call functions or allocate
+        var x: i64 = i * 3 + 7
+        var acc: i64 = 0
+        while acc < 4 { x = (x * 1103515245 + 12345) % 2147483647  acc = acc + 1 }
+        out[i] = x & 1023
+    }
+    var s: i64 = 0
+    var k: i64 = 0
+    while k < n { s = s + out[k]  k = k + 1 }
+    io::println(f"sum = {s}")
+    return 0
+}
+```
+
+There is no lock, no atomic and no data race to reason about: the compiler proves each worker writes
+only its own slot and reads only shared data, and rejects the loop otherwise. Measured 15.1× on 24
+threads (`bench/par/`).
+
+### Coroutines without threads
+
+```extc
+use std::io
+
+fn counter(n: i64) -> coroutine<i64> {
+    var i: i64 = 0
+    while i < n { yield i  i = i + 1 }
+}
+
+fn main() -> i32 {
+    var total: i64 = 0
+    for x in counter(4) { total = total + x }     // pauses a real stack frame, builds no thread
+    io::println(f"total = {total}")
+    return 0
+}
+```
+
+`yield` suspends a frame the compiler laid out in advance; resuming it costs about a nanosecond and
+no allocation. The same runtime drives epoll, which is how a single core answers ~183k requests per
+second in `bench/realsvc/`.
+
+### Duck typing, resolved at compile time
+
+```extc
+use std::io
+
+struct square { side: f64 }
+struct circle { r: f64 }
+
+impl square { fn area(self: ref square) -> f64 { return self.side * self.side } }
+impl circle { fn area(self: ref circle) -> f64 { return 3.14159 * self.r * self.r } }
+
+fn main() -> i32 {
+    var xs: varArray<any> = varArray<any>::withCap(4)
+    xs.push(square { side: 3.0 })
+    xs.push(circle { r: 2.0 })
+    var total: f64 = 0.0
+    for v in xs { total = total + v.area() }   // dispatch by name over the closed world
+    io::println(f"total = {total}")
+    return 0
+}
+```
+
+`any` is one 16-byte value (a descriptor plus either the bytes or a pointer), so a heterogeneous
+array needs no boxes to be walked: a call costs 0.69 ns with four shapes in the program, 2.0 ns with
+twelve. A shape without the method is a compile-time error; a stale `any` traps with a position
+instead of calling into freed memory.
+
+### Ownership written as labels, not as magic type names
+
+```extc
+use std::io
+use std::data::buf
+
+fn main() -> i32 {
+    var b: buf<i64> = buf<i64>::withCap(4)     // owns its bytes; `@noCopy` makes assignment a move
+    var i: i64 = 0
+    while i < 10 {
+        b.push(i)                               // growing while borrowed traps, never a silent UAF
+        i = i + 1
+    }
+    io::println(f"len={b.len()} last={b.view()[9]}")
+    return 0
+}
+```
+
+Four labels carry the semantics — `@noCopy` (move on value position), `@value` (copyable, with a
+`clone` hook), `@drop` (releases, hook runs on every exit path), `@place` (storage borrowed from a
+region) — and nothing in the compiler knows the name `buf`, `string` or `vector`. Write your own
+container, put the same labels on it, and you get the same lifetime guarantees and the same
+diagnostics.
+
+### Reclamation you can reason about
+
+Every allocation belongs to a lexical block, so leaving the block returns the whole slab at once;
+a value that escapes is *promoted* to the caller's region by copying one pointer-sized slot, which
+is why no reference is ever rewritten and no stack is ever scanned. Cycles, when they can happen,
+are collected by a mark-and-sweep that is incremental, budgeted and adaptive. And a per-function
+`idle` proof (no reference field written twice, no reference call across, no reference dropped)
+lets the compiler emit **no counting and no sweeping code at all** for that function — 87 of the 88
+functions in our six workloads need none. Memory stays bounded instead of growing: one million
+rounds of "retain one object per round" peak at 2.9 MB, where the same program with reclamation
+switched off grows to 124 MB (`bench/memstudy/`).
+
+## Where it is fast, and where it is not
+
+Six languages (extC, C, C++, Rust, Go, Java) over five heavy shapes: all data arrives on stdin
+(one generator produces one input, all six read that same input), each language gets its own
+full optimisation, and all six outputs must be byte-identical before a run counts. The measuring
+script is [`bench/bigmatrix/`](bench/bigmatrix/), the full results are
+[`RESULTS.md`](bench/bigmatrix/RESULTS.md); the table below is a snapshot.
 
 | | extC | C | C++ | Rust | Go | Java |
 |---|---|---|---|---|---|---|
-| 五形状几何平均（1.00 = 该形状内最快）| **1.17** | 1.52 | 1.62 | 1.80 | 1.94 | 2.23 |
-| 峰值内存 | 五个形状都不高于 C | — | — | — | — | 高出 1.6 至 96 倍 |
-| 交付文件 | 21–25 KB | 16–20 KB | 16–37 KB | 11.5 MB | 2.4 MB | 3–5 KB |
+| Geometric mean over five shapes (1.00 = fastest on that shape) | **1.17** | 1.52 | 1.62 | 1.80 | 1.94 | 2.23 |
+| Peak memory | no higher than C on all five shapes | — | — | — | — | 1.6× to 96× higher |
+| Delivered binary | 21–25 KB | 16–20 KB | 16–37 KB | 11.5 MB | 2.4 MB | 3–5 KB |
 
-- `rebuild`（分配 + 回收）上 extC 大幅领先：比 C 快 5.8 倍；`bt`（分配 + 递归）、`cdq`（随机访问）、`mandel`（浮点）三项与 C 基本并列（bt 反超，cdq 在 1% 之内，mandel 落后 9%）。
-- 不快的那格也写在表里：`radix`（10⁷ 个 u32 排序）比 C 慢 1.66 倍 —— 账目清楚，是切片索引的边界检查与 `new` 的零初始化保证。
-- 读表须知：数字是快照，重跑会变（同一台机器两次连跑也可能差一成多，整表的绝对值还会随机器状态整体平移 —— 六个语言一起变）；所以看**排序与比值**，别读毫秒。`bt` 与 `rebuild` 逐结点分配，会走回收档，倍率与归因见 [`tests/reclaim-perf/`](tests/reclaim-perf/README.md)。
-- [`RESULTS.md`](bench/bigmatrix/RESULTS.md) 里还留着一条比数字值钱的记录：同一个权值树状数组越界，C 版静默算出一个数，extC 版当场 trap 并给出源码位置。
-- 停顿不看堆大小：横评形状上单次停顿中位数 0.70–1.40 µs、p99 ≤ 2 µs（同一批里 Java 有 45 ms 的单次停顿；跨语言口径不同，别直接对表）。[回收通俗版](docs/usage/reclamation.md) 里「长命槽被反复覆盖」那个例子更能说明代价：一百万轮跑完峰值 2.8 MB，把回收关掉同一份程序是 17.0 MB。
+- On `rebuild` (allocate + reclaim) extC wins by a wide margin: 5.8× faster than C. On `bt`
+  (allocate + recurse), `cdq` (random access) and `mandel` (floating point) it is essentially
+  level with C (ahead on `bt`, within 1% on `cdq`, 9% behind on `mandel`).
+- The bad cell is in the table too: `radix` (sorting 10⁷ u32) is 1.66× slower than C — the bill is
+  the bounds check on slice indexing plus the zero-initialisation guarantee of `new`.
+- How to read this: the numbers are a snapshot and will move (two consecutive runs on the same
+  machine can differ by more than 10%, and the whole table shifts with machine state — all six
+  languages together); read the ordering and the ratios, not the milliseconds. `bt` and `rebuild`
+  allocate per node, so they go through the reclamation tiers; ratios and attribution are in
+  [`tests/reclaim-perf/`](tests/reclaim-perf/README.md).
+- [`RESULTS.md`](bench/bigmatrix/RESULTS.md) keeps one record worth more than the numbers: for the
+  same out-of-range binary-indexed tree, the C version silently produced a number while the extC
+  version trapped on the spot and printed the source position.
+- Pauses do not track heap size: on these shapes the median single pause is 0.70–1.40 µs and p99 is
+  ≤ 2 µs (in the same batch Java has a 45 ms single pause; the cross-language bases differ, do not
+  compare directly). The plain-language reclamation page has a sharper cost example: a long-lived
+  slot overwritten over and over — one million rounds peak at 2.8 MB, and the same program with
+  reclamation switched off peaks at 17.0 MB.
 
-还有两类更贴近应用的对照：
+Three comparisons closer to applications:
 
-- [`bench/app/`](bench/app/RESULTS.md)：extC STL 对 C++ STL 对 Go 的三场景（会话表、路由表、日志缓冲）。路由表那一整场（插入 / 前驱 / 区间扫描 / 删除）比 C++ 的 `std::map` 快 1.6 倍；会话表那格落后（高频删的哈希表打不过 C++ 的 `unordered_map`），落后多少、卡在哪，报告里逐条剖开。
-- [`bench/httpd/`](bench/httpd/README.md)：约 300 行 extC 写的 HTTP/1.1 静态服务器（epoll + 协程 + `sendfile`），与 `python3 -m http.server` 同判据对照：吞吐 5376 req/s 对 4368、峰值 RSS 1.9 MB 对 22.7 MB（报告里的快照）。
-- [`bench/fortran/`](bench/fortran/RESULTS.md)：一个数值 kernel 形状 —— 2D 5 点 Jacobi 模板（`f64`、flat 行主序），extC / C / gfortran 三臂。三条臂在 -O2 与 -O3 -march=native 下都基本并列（-O2 extC 是 C 的 0.99–1.01×、Fortran 是 C 的 0.99–1.02×；-O3 三臂相对差异同样在 ±2% 内），GCC 自报的 `loop vectorized` 处数 extC 与手写 C 都是 3。这臂按 extC 的惯用写法（range-for、并行赋值换 buffer、`??` 解析参数、f-string）；-O3 档、向量化自报与读表须知见报告。
-- [`bench/par/`](bench/par/RESULTS.md)：语言层数据并行 `par i in lo..hi { … }` 的基准 —— 逐元素递推链（计算受限，链长按 argv 传入）。`par1` 与顺序 `for` 基本相等（不给顺序版加税），8 线程在 n=1<<20 上快 4.1×、n=1<<18 上快 3.5×；手写 C 参照臂不检查下标、但链长同样是运行期值，-O2 下与 `seq` 基本并齐，读加速比以 `seq`/`par1` 为基线。
-- [`bench/stream/`](bench/stream/RESULTS.md)：流式管线的 DRAM 代价 —— 同一条逐元素管线写成「物化中间数组 / 融合 / 不落数组直接归约」三种形状，n 跨 L2、L3、DRAM 三档。n=4M 时 extC 的 77 → 49 → 28 ms（融合 −36%，流式 −64%）；C 层唯一赢的调整是非临时写（省写分配的 RFO 读，−21%），`restrict`+对齐+ivdep+预取都不赢。
+- [`bench/app/`](bench/app/RESULTS.md): extC STL vs the C++ STL vs Go on three workloads (session
+  table, routing table, log buffer). The whole routing-table run (insert / predecessor / range scan
+  / delete) is 1.6× faster than C++ `std::map`; the session-table cell loses (a
+  delete-heavy hash table does not beat C++ `unordered_map`) — by how much, and where, is
+  dissected in the report.
+- [`bench/httpd/`](bench/httpd/README.md): a ~300-line HTTP/1.1 static server in extC (epoll +
+  coroutines + `sendfile`), against `python3 -m http.server` on the same criterion:
+  5376 req/s vs 4368, peak RSS 1.9 MB vs 22.7 MB (snapshot from the report).
+- [`bench/fortran/`](bench/fortran/RESULTS.md): one numerical kernel shape — a 2D five-point
+  Jacobi stencil (`f64`, flat row-major) across extC / C / gfortran. All three arms are level at
+  `-O2` and at `-O3 -march=native` (`-O2`: extC is 0.99–1.01× of C, Fortran 0.99–1.02× of C; at
+  `-O3` the relative differences stay within ±2%), and GCC reports the same number of vectorised
+  loops (3) for extC and hand-written C. The extC arm is written the way extC code is written
+  (range-for, parallel assignment to swap buffers, `??` to parse arguments, f-string); the `-O3`
+  arm, the vectorisation report and reading notes are in the report.
+- [`bench/par/`](bench/par/RESULTS.md): the language-level data-parallel form
+  `par i in lo..hi { … }` — an element-wise recurrence chain (compute-bound, chain length from
+  argv). `par1` matches the sequential `for` (no tax on the sequential version), and 8 threads
+  reach 4.1× at n=1<<20 and 3.5× at n=1<<18; the hand-written C arm skips bounds checks but takes
+  the same run-time chain length, and is level with `seq` at `-O2`, so speedups are read against
+  `seq`/`par1`.
+- [`bench/stream/`](bench/stream/RESULTS.md): the DRAM cost of a streaming pipeline — the same
+  element-wise pipeline written three ways (materialise intermediate arrays / fuse / reduce without
+  ever building an array), with n spanning L2, L3 and DRAM. At n=4M extC goes 77 → 49 → 28 ms
+  (fused −36%, streamed −64%); the only instruction-level knob that wins in the C layer is
+  non-temporal stores (saving the RFO read of the write allocation, −21%); `restrict` + alignment
+  + ivdep + prefetch all lose.
 
-## 凭什么信它
+## Why believe it
 
-跑下面几条命令，数字全部现取（`make status` 会把通过/失败数与未推送提交数打出来）：
+Run these and the numbers are fresh (`make status` prints pass/fail counts and unpushed commits):
 
 ```sh
-make -j"$(nproc)"     # 只依赖 cc，产出 build/extc
-./tests/run.sh        # 回归：正例要跑对、编译期反例必须被挡住、运行时反例必须真的 trap 且带源码位置
-./check.sh quick      # 上面的 + 闸门 + 各子系统套件（要 cc 与 python3）
-./check.sh ci         # 同上，再跳过 callgrind 判据（CI 用这档：指令数/失手数的线绑本机工具链）
-./check.sh            # 完整验收：另含全语料 ASan/UBSan 与基准（另需 g++、rustc）
+make -j"$(nproc)"     # needs only cc; produces build/extc
+./tests/run.sh        # regressions: positive cases must run right, compile-error cases must be caught, run-time error cases must really trap with a source position
+./check.sh quick      # the above + gates + per-subsystem suites (needs cc and python3)
+./check.sh ci         # as above, minus the callgrind criteria (CI uses this: instruction and miss counts bind to the local toolchain)
+./check.sh            # full acceptance: also the whole corpus under ASan/UBSan plus benchmarks (needs g++, rustc)
 ```
 
-`quick` 里的闸门不是抽样，是逐条不变量：规模（任何输入都要给出结论，不许崩也不许挂）· 逃逸健全性 · 差分（extC 与等价 C 的结论必须一致）· 实例接线 · 攻击库（通过集合与基线逐行比对）。再往上是元闸门：手册覆盖 · 驱动开关页与 `extc --help` 一致 · 类型分支穷尽性 · include guard · 并发守卫。棘轮式的料（公开面覆盖、Doxygen 欠账）只许变短，不许变长。
+The gates in `quick` are not samples, they are invariants checked one by one: size (any input must
+produce a verdict — no crash, no hang) · escape soundness · differential (extC and equivalent C
+must reach the same verdict) · instance wiring · attack library (the accept set compared line by
+line against a baseline). Above those sit meta-gates: manual coverage · the driver-flags page
+matching `extc --help` · type-branch exhaustiveness · include guards · concurrency guards.
+Ratchet material (public-surface coverage, Doxygen debt) may only shrink.
 
-## 快速开始
+## Quick start
 
 ```sh
-make -j"$(nproc)"                      # 只依赖 cc；约 1.5 秒构建出 build/extc
-./build/extc --version                 # extc 0.0.1-alpha，附目标平台与标准库位置
-./build/extc --run examples/hello-world.extc  # 生成 C、编译、运行
-./build/extc examples/tour.extc | head # 只看生成的 C
-make install PREFIX="$HOME/.local"     # 可选：装成 extc 命令（标准库一起装）
+make -j"$(nproc)"                      # needs only cc; ~1.5 s to build/extc
+./build/extc --version                 # extc 0.0.1-alpha, with target platform and stdlib location
+./build/extc --run examples/hello-world.extc  # generate C, compile, run
+./build/extc examples/tour.extc | head # just look at the generated C
+make install PREFIX="$HOME/.local"     # optional: install as the `extc` command (stdlib goes with it)
 ```
 
-只支持 **Linux / WSL2**（运行期绑 epoll）；支持的发行版、alpha 的承诺边界与版本策略见
-[`RELEASE.md`](RELEASE.md)。
+Only **Linux / WSL2** is supported (the coroutine runtime is bound to epoll); supported
+distributions, the alpha promise and the version policy are in [`RELEASE.md`](RELEASE.md).
 
-第一次上手照这五步走（详细版见 [`docs/usage/00-start.md`](docs/usage/00-start.md)）：
+First five steps (detailed version: [`docs/usage/00-start.md`](docs/usage/00-start.md)):
 
-| 步 | 做什么 | 命令 / 去处 |
+| Step | Do this | Where |
 |---|---|---|
-| 1 | 构建编译器 | `make -j"$(nproc)"` → `build/extc` |
-| 2 | 跑通第一个程序 | 抄上面那行 `--run`（`examples/hello-world.extc`，四行）；改一个字再跑一次 |
-| 3 | 让编辑器认识它 | VS Code 扩展（诊断 / 符号 / 悬停 / 补全）：[`docs/topics/LSP.md`](docs/topics/LSP.md) · 一键安装 `tools/install-vscode-ext.sh` |
-| 4 | 看语言长什么样 | [`examples/tour.extc`](examples/tour.extc)（164 行，九个主题）· [`examples/concise-tour.extc`](examples/concise-tour.extc)（短写法）|
-| 5 | 查手册 | 语言 [`docs/usage/language.md`](docs/usage/language.md) · 标准库 [`docs/usage/stdlib.md`](docs/usage/stdlib.md) · 模块与 C 互操作 [`docs/usage/modules-cabi.md`](docs/usage/modules-cabi.md) |
+| 1 | Build the compiler | `make -j"$(nproc)"` → `build/extc` |
+| 2 | Run the first program | the `--run` line above (`examples/hello-world.extc`, four lines); change a character and run again |
+| 3 | Teach your editor | VS Code extension (diagnostics / symbols / hover / completion): [`docs/topics/LSP.md`](docs/topics/LSP.md) · one-shot install `tools/install-vscode-ext.sh` |
+| 4 | See what the language looks like | [`examples/tour.extc`](examples/tour.extc) (164 lines, nine topics) · [`examples/concise-tour.extc`](examples/concise-tour.extc) (the short spellings) |
+| 5 | Look things up | language [`docs/usage/language.md`](docs/usage/language.md) · stdlib [`docs/usage/stdlib.md`](docs/usage/stdlib.md) · modules and C interop [`docs/usage/modules-cabi.md`](docs/usage/modules-cabi.md) |
 
-从别的语言过来，第一小时会撞到的几件事：
+Coming from another language, these are the things that will bite in the first hour:
 
-| 你的习惯 | extC 里 | 为什么 |
+| Your habit | In extC | Why |
 |---|---|---|
-| `let mut x` | `var x`（可写）· `let x`（不可写）| 没有 `mut` 关键字，可写性是声明的种类 |
-| `if n`（整数当条件）| `if n != 0` | 没有隐式真值，条件必须是 `bool` |
-| `println!("hi")` | `println("hi")` 或 `io::println("hi")` | 没有宏；`print`/`println` 是内建，`io::` 那层是同一个打印器 |
-| `&x` 取引用 | `ref x` | 引用是 `ref T` 类型，取地址不做运算 |
-| `#include` / `import` | 文件头 `use std::io` | 模块按文件路径解析；文本方法还要 `use std::text::string` |
-| `"a" + "b"` | `string::from("a") + "b"` | 字面量的静态类型是 `slice<u8>`，`string` 才有 `+` |
-| `;` 结尾 | 换行分隔（`;` 也接受）| 语句以换行结束 |
-| `int` | `i64` / `i32` / `u64` … | 没有默认整数类型，字面量默认 `i64` |
-| 忘了 `return` | 编译通过，运行到函数尾会 trap | 证明不了的一律留成带位置的 trap，不是错数 |
+| `let mut x` | `var x` (writable) · `let x` (not writable) | No `mut` keyword; writability is the kind of declaration |
+| `if n` (integer as condition) | `if n != 0` | No implicit truthiness; conditions must be `bool` |
+| `println!("hi")` | `println("hi")` or `io::println("hi")` | No macros; `print`/`println` are builtins and the `io::` layer is the same printer |
+| `&x` to take a reference | `ref x` | A reference is a `ref T` type; taking an address is not arithmetic |
+| `#include` / `import` | `use std::io` at the top | Modules resolve by file path; text methods additionally need `use std::text::string` |
+| `"a" + "b"` | `string::from("a") + "b"` | A string literal's static type is `slice<u8>`; only `string` has `+` |
+| `;` at the end | newline-separated (`;` is accepted too) | Statements end at a newline |
+| `int` | `i64` / `i32` / `u64` … | There is no default integer type; literals default to `i64` |
+| Forgetting `return` | compiles, then traps at the end of the function | What cannot be proved is left as a positioned trap, never a wrong answer |
 
-C 语言那套 `int main(int argc, char **argv)` 不适用：入口写 `fn main() -> i32`，返回值就是退出码；`argv` 走 `std::proc`。
+The C `int main(int argc, char **argv)` convention does not apply: the entry is
+`fn main() -> i32` and the return value is the exit code; `argv` comes from `std::proc`.
 
-| 目标 | 依赖 |
+| Goal | Needs |
 |---|---|
-| `make`、`tests/run.sh`、`check.sh quick`、`check.sh ci` | `cc`（gcc 或 clang）、`python3` |
-| `check.sh`（完整模式，含基准）| 另需 `g++`、`rustc` |
-| `bench/bigmatrix/run.sh`（六语言横评）| 另需 `go`、`java` |
-| `bench/fortran/run.sh`（extC / C / gfortran 三臂）| 另需 `gfortran` |
-| `bench/par/run.sh`（`par` 顺序/并行/C 参照）| 一般不用另装（`cc -pthread`） |
+| `make`, `tests/run.sh`, `check.sh quick`, `check.sh ci` | `cc` (gcc or clang), `python3` |
+| `check.sh` (full mode, with benchmarks) | also `g++`, `rustc` |
+| `bench/bigmatrix/run.sh` (six-language comparison) | also `go`, `java` |
+| `bench/fortran/run.sh` (extC / C / gfortran arms) | also `gfortran` |
+| `bench/par/run.sh` (`par` sequential/parallel/C reference) | nothing extra (`cc -pthread`) |
 
-常用驱动选项：
+Common driver options:
 
 ```sh
-./build/extc <file.extc>            # 生成的 C 输出到 stdout
-./build/extc -o out.c <file.extc>   # 写入文件
-./build/extc --check-c <file.extc>  # 生成后再做一次 cc -fsyntax-only
-./build/extc -I <dir> -l z <file.extc>          # 模块搜索目录与链接库
-./build/extc --pkg-config zlib <file.extc>      # 交给 pkg-config 取开关
-./build/extc --help                 # 全部选项
+./build/extc <file.extc>            # generated C to stdout
+./build/extc -o out.c <file.extc>   # write it to a file
+./build/extc --check-c <file.extc>  # generate, then run cc -fsyntax-only over it
+./build/extc -I <dir> -l z <file.extc>          # module search directory and link library
+./build/extc --pkg-config zlib <file.extc>      # let pkg-config supply the switches
+./build/extc --help                 # every option
 ```
 
-回收默认开着，可以调，也可以量：
+Reclamation is on by default; the knobs and the probe:
 
 ```sh
-EXTC_RECLAIM=0 ./build/extc --run x.extc   # 关掉回收，同一份程序对照跑
-EXTC_RC_SHARDS=8 ./build/extc --run x.extc # 把一次清扫切成 8 片，换更短的停顿
-EXTC_RC_PAUSE=1 ./build/x                  # 打印每次清扫的最大/累计停顿与次数
+EXTC_RECLAIM=0 ./build/extc --run x.extc   # switch reclamation off and run the same program
+EXTC_RC_SHARDS=8 ./build/extc --run x.extc # cut one sweep into 8 slices for shorter pauses
+EXTC_RC_PAUSE=1 ./build/x                  # print the largest/total pause and the slice count
 ```
 
-## 文档
+## Documentation
 
-| 文档 | 内容 |
+| Document | Content |
 |---|---|
-| [`docs/usage/`](docs/usage/) | **现在有什么 / 怎么用**：上手 · 语言 · 标准库 · C 互操作 · 回收通俗版 |
-| [`docs/topics/LSP.md`](docs/topics/LSP.md) | **编辑器支持**：VS Code 扩展、诊断/符号/悬停/补全、连不通时怎么查 |
-| [`docs/design/RECLAMATION.md`](docs/design/RECLAMATION.md) | **回收机制**：为什么这么设计、遵守哪些不变量、还缺什么（证据入口在它的末节）|
-| [`docs/plans/TODO.md`](docs/plans/TODO.md) | **有什么待做**（唯一清单） |
-| [`docs/CHANGELOG.md`](docs/CHANGELOG.md) | **开发历史**（全仓库唯一） |
-| [`docs/archive/`](docs/archive/README.md) | 历史快照（只作考古，**不要当现状读**） |
+| [`docs/usage/`](docs/usage/) | **what exists today / how to use it**: getting started · language · stdlib · C interop · reclamation in plain language |
+| [`docs/topics/LSP.md`](docs/topics/LSP.md) | **editor support**: the VS Code extension, diagnostics/symbols/hover/completion, and what to check when it does not connect |
+| [`docs/design/RECLAMATION.md`](docs/design/RECLAMATION.md) | **the reclamation mechanism**: why it is designed this way, which invariants it keeps, what is still missing (its last section is the evidence index) |
+| [`docs/plans/TODO.md`](docs/plans/TODO.md) | **what is left to do** (the only list) |
+| [`docs/CHANGELOG.md`](docs/CHANGELOG.md) | **development history** (the only one in the repo) |
+| [`docs/archive/`](docs/archive/README.md) | historical snapshots (archaeology only, **do not read as current**) |
 
-维护规矩见 [`docs/README.md`](docs/README.md)；注释规范见 [`docs/COMMENT-STYLE.md`](docs/COMMENT-STYLE.md)。
+Maintenance rules: [`docs/README.md`](docs/README.md); comment conventions:
+[`docs/COMMENT-STYLE.md`](docs/COMMENT-STYLE.md).
 
-## 仓库结构
+## Repository layout
 
 ```
-src/        编译器（C11 实现，按 pass 拆分）      stdlib/  prelude 与标准库（用 extC 写）
-tests/      回归用例（74 个套件，统一入口 ./check.sh）            bench/  性能与对比卡具
-docs/       手册 docs/usage/ · 机制 docs/design/ · 计划 · 历史     examples/  示例
-tools/      辅助工具与闸门                      third_party/  第三方绑定（用 -I 引入）
-prototype/  早期原型（heap / reclaim / python，只作考古）          proofs/  不变量的机器检查证明
+src/        the compiler (C11, split by pass)          stdlib/  prelude and standard library (written in extC)
+tests/      regressions (74 suites, one entry ./check.sh)   bench/  performance and comparison harnesses
+docs/       manual docs/usage/ · mechanisms docs/design/ · plans · history   examples/  examples
+tools/      helpers and gates                          third_party/  third-party bindings (pulled in with -I)
+prototype/  early prototypes (heap / reclaim / python, archaeology only)     proofs/  machine-checked invariant proofs
 ```
 
-- 想改代码：先读 [`CONTRIBUTING.md`](CONTRIBUTING.md)。
-- 想知道每个基准量什么：[`bench/README.md`](bench/README.md)；想知道判据怎么组织：[`tests/README.md`](tests/README.md)。
+- To change code, read [`CONTRIBUTING.md`](CONTRIBUTING.md) first.
+- To see what each benchmark measures: [`bench/README.md`](bench/README.md); how criteria are
+  organised: [`tests/README.md`](tests/README.md).
 
-## 许可证
+## License
 
-Apache License 2.0，版权归 Yang Yang 所有。许可证全文见 [`LICENSE`](LICENSE)，归属声明见 [`NOTICE`](NOTICE)。
+Apache License 2.0, copyright Yang Yang. Full text in [`LICENSE`](LICENSE), attribution in
+[`NOTICE`](NOTICE).

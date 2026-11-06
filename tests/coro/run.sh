@@ -364,6 +364,22 @@ else
     echo "  FAIL coro_drive         ->  $(head -2 "$tmp/b2c" | tr '\n' ' ')"; fail=$((fail+1))
 fi
 
+# 切片 B2b：`for x in <临时量>` —— 被驱动的对象会被改写（`next()` 赋值），
+# 所以 desugar 建的那个隐藏绑定必须是 `var`；修之前报 `cannot assign to __extc_c0, which is a let` ✓
+b2b=$tmp/coro_for_temporary
+if "$EXTC" -w --no-line-map -o "$b2b.c" tests/coro/for_temporary.extc >/dev/null 2>&1 \
+   && gcc -std=c11 -fwrapv -Wall -Werror -o "$b2b" "$b2b.c" 2>"$tmp/b2bc"; then
+    out=$("$b2b"); rc=$?
+    if [ "$out" = "total = 6" ] && [ "$rc" = 0 ]; then
+        echo "  ok   coro_for_temporary  ->  for-in 一个临时协程跑出 [$out]"
+        pass=$((pass+1))
+    else
+        echo "  FAIL coro_for_temporary  ->  输出 [$out] 退出码 $rc"; fail=$((fail+1))
+    fi
+else
+    echo "  FAIL coro_for_temporary  ->  $(head -2 "$tmp/b2bc" | tr '\n' ' ')"; fail=$((fail+1))
+fi
+
 # 切片 B1：帧 + step 的**差分判据** —— 生成的 step 驱动出的序列必须与手写状态机逐字节相同 ✓
 # （`-DEXTC_CORO_B1_HARNESS` 只用来绕过"调用协程"的守门：调用是 B2 的事 ✓ 定义侧的变换在这里验 ✓）
 gen=$tmp/coro_step_gen.c
