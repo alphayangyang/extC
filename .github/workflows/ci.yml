@@ -30,9 +30,36 @@ on:
 
 jobs:
   acceptance:
-    runs-on: ubuntu-latest
+    # Three distributions, because "it builds on ubuntu-latest" says nothing about whether
+    # the `cc` a user actually has will take the generated C. 22.04 ships gcc 11 and
+    # glibc 2.35, 24.04 ships gcc 13, bookworm ships gcc 12 -- different C libraries and
+    # different optimisation behaviour, which is exactly where a generator that promises
+    # "the emitted C always compiles" can break.
+    #
+    # `fail-fast: false` is deliberate: one old-distro failure must not hide the fact that
+    # the modern ones are green, and the annotations are per-job.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: ubuntu-22.04
+            os: ubuntu-22.04
+          - name: ubuntu-24.04
+            os: ubuntu-24.04
+          - name: debian-12 (container)
+            os: ubuntu-24.04
+            container: debian:bookworm
+    name: acceptance (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: bootstrap (the container image has no sudo and is minimal)
+        if: matrix.container != ''
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq build-essential python3 valgrind git ca-certificates
 
       - name: build the compiler
         run: make -j"$(nproc)"
@@ -44,10 +71,24 @@ jobs:
           ! grep -q warning /tmp/build.log
 
       - name: valgrind (map/pool 功能套件要用 callgrind/memcheck；缺了它们会自跳过 ⇒ 这里装上，让它们真跑)
+        if: matrix.container == ''
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq valgrind
           valgrind --version
+
+      - name: "extc --version（版本来自仓库根的 VERSION，一处定义）"
+        run: ./build/extc --version
+
+      - name: "make install 到一个临时前缀，并用装好的编译器编译一个小程序"
+        # 装完能跑才算装对：标准库的位置由二进制自己的路径推出，装错目录就等于装了个
+        # 编不了 `use std::io` 的编译器 —— 这一步专门钉这个不变量。
+        run: |
+          make install PREFIX="$RUNNER_TEMP/prefix"
+          "$RUNNER_TEMP/prefix/bin/extc" --version
+          mkdir -p "$RUNNER_TEMP/proj"
+          printf 'use std::io\n\nfn main() {\n    io::println("installed ok")\n}\n' > "$RUNNER_TEMP/proj/main.extc"
+          ( cd "$RUNNER_TEMP/proj" && "$RUNNER_TEMP/prefix/bin/extc" run main.extc )
 
       - name: 这台机器上有什么（注解是唯一读得到的通道 ⇒ 关键工具先报上来）
         run: |

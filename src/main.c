@@ -14,6 +14,27 @@
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
+
+#include "version.h"
+
+/* `extc --version` says what it is running on, because a bug report without the target is
+ * half a bug report and the cheapest thing to add. */
+#if defined(__linux__)
+#define EXTC_TARGET_OS "linux"
+#elif defined(__APPLE__)
+#define EXTC_TARGET_OS "macos"
+#elif defined(_WIN32)
+#define EXTC_TARGET_OS "windows"
+#else
+#define EXTC_TARGET_OS "unknown"
+#endif
+#if defined(__x86_64__) || defined(_M_X64)
+#define EXTC_TARGET_ARCH "x86_64"
+#elif defined(__aarch64__)
+#define EXTC_TARGET_ARCH "aarch64"
+#else
+#define EXTC_TARGET_ARCH "unknown"
+#endif
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -379,7 +400,7 @@ static void emitSymbolsJson(FILE *out, Module *m, Ctx *ctx) {
  */
 static void usage(const char *argv0) {
     fprintf(stderr,
-        "extC compiler\n"
+        "extC compiler " EXTC_VERSION "\n"
         "\n"
         "usage: %s [options] <file.extc>\n"
         "       %s run [<file.extc> | <dir>] [-- <program arguments>]\n"
@@ -392,6 +413,7 @@ static void usage(const char *argv0) {
         "program, so `extc run -- -m demo x` runs the `@module` entry `demo`.\n"
         "\n"
         "options:\n"
+        "  --version, -V    print the compiler version, target and how it finds the library\n"
         "  -o <file>        write the generated C to this file (default: stdout)\n"
         "  --run            write generated C to build/<name>.c, compile it, run it\n"
         "                   (`extc run` is the same mode; it also discovers the entry file\n"
@@ -422,11 +444,16 @@ static void usage(const char *argv0) {
         "  --symbols-json   print this file's declarations as JSON; does not generate C\n"
         "  --check-only     stop after type checking; does not generate C\n"
         "  --source-stdin   read the source from stdin, keeping the named path as its identity\n"
-        "\n"
+        "\n",
         /* The two switches named below change the output, so this text cannot claim that
          * they are all diagnostics only: `EXTC_SELFCHECK` can turn a good build red, and
          * `EXTC_NO_LEVELPASS` changes the generated program. Claiming something the code
          * contradicts is worse than claiming nothing, so both exceptions are named here. */
+        argv0, argv0, argv0);
+    /* Split here, not for style: one concatenated literal over 4095 bytes is longer than
+     * ISO C99 requires a compiler to support, and gcc says so with -Woverlength-strings.
+     * The second half has no `%s`, so it is a plain one-argument fprintf. */
+    fprintf(stderr,
         "debug switches -- diagnostics only, **except the marked below**:\n"
         "  EXTC_DBG_ARENA=1     check the arena level the checker computed vs codegen\n"
         "  EXTC_DBG_QN=1        trace how a qualified name (a::b::c) is parsed/resolved\n"
@@ -459,8 +486,7 @@ static void usage(const char *argv0) {
         "                       overwrite each other. Default `build`, the path every caller gets\n"
 
         "\n"
-        "  -h, --help       show this help\n",
-        argv0, argv0, argv0);
+        "  -h, --help       show this help\n");
     /* These further diagnostic switches are printed **separately** from the big table
      * above: one independent fprintf keeps them out of that table's layout. */
     fprintf(stderr,
@@ -767,6 +793,14 @@ int main(int argc, char **argv) {
     int          nProgArgs = 0;
     /* A project directory, or "." -- resolved to an entry file once the arena exists. */
     const char  *discoverDir = NULL;
+    /* `--version` is answered here, before the subcommands and before any file is looked
+     * for: a version question must not depend on the working directory. */
+    if (argc == 2 && (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-V") == 0)) {
+        printf("extc %s\n", EXTC_VERSION);
+        printf("target %s/%s; C backend: $CC (default `cc`)\n", EXTC_TARGET_OS, EXTC_TARGET_ARCH);
+        printf("stdlib: $EXTC_STD, else <directory of extc>/../stdlib\n");
+        return 0;
+    }
     int          argBegin = 1;
     if (argc > 1 && strcmp(argv[1], "run") == 0) { doRun = true; argBegin = 2; }
     else if (argc > 1 && strcmp(argv[1], "build") == 0) { doBuild = true; argBegin = 2; }

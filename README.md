@@ -124,9 +124,14 @@ make -j"$(nproc)"     # 只依赖 cc，产出 build/extc
 
 ```sh
 make -j"$(nproc)"                      # 只依赖 cc；约 1.5 秒构建出 build/extc
+./build/extc --version                 # extc 0.0.1-alpha，附目标平台与标准库位置
 ./build/extc --run examples/hello-world.extc  # 生成 C、编译、运行
 ./build/extc examples/tour.extc | head # 只看生成的 C
+make install PREFIX="$HOME/.local"     # 可选：装成 extc 命令（标准库一起装）
 ```
+
+只支持 **Linux / WSL2**（运行期绑 epoll）；支持的发行版、alpha 的承诺边界与版本策略见
+[`RELEASE.md`](RELEASE.md)。
 
 第一次上手照这五步走（详细版见 [`docs/usage/00-start.md`](docs/usage/00-start.md)）：
 

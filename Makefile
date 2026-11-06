@@ -34,11 +34,20 @@ CFLAGS   += $(addprefix -I,$(INCDIRS))
 DEPS     := $(OBJS:.o=.d)
 BIN      := $(BUILDDIR)/extc
 EMBED    := $(BUILDDIR)/embed
+# The one place the version lives: `VERSION` (a single line, no newline games elsewhere).
+# It is turned into a header at build time so `extc --version` and the tarball name can
+# never disagree -- two copies of a version is the classic way to ship a wrong one.
+VERSIONFILE := VERSION
+VERSIONH    := $(BUILDDIR)/version.h
+CFLAGS   += -I$(BUILDDIR)
 
 all: $(BIN)
 
 $(BUILDDIR):
 	@mkdir -p $(BUILDDIR)
+
+$(VERSIONH): $(VERSIONFILE) | $(BUILDDIR)
+	@printf '#define EXTC_VERSION "%s"\n' "$$(cat $(VERSIONFILE))" > $@
 
 $(OBJDIR)/%.o: $(SRCDIR)/%.c
 	@mkdir -p $(dir $@)
@@ -46,6 +55,9 @@ $(OBJDIR)/%.o: $(SRCDIR)/%.c
 
 $(BIN): $(OBJS)
 	$(CC) $(CFLAGS) $^ -o $@
+
+# Only `src/main.c` prints the version, so only it needs the header.
+$(OBJDIR)/main.o: $(VERSIONH)
 
 # 把 stdlib/*.extc 嵌进编译器（prelude 机制，见 PLAN.md 的 T4b）。
 # 用 C 写的工具 —— 不引入解释器依赖。
@@ -71,9 +83,28 @@ status: $(BIN)
 	  printf 'check.sh quick  : %s   (rc=%d)\n' "$$(tail -1 $(BUILDDIR)/status-check.log)" "$$rc"
 	@printf 'git 未 push     : %s 个 commit\n' "$$(git rev-list --count @{u}..HEAD 2>/dev/null || echo '无上游')"
 
+# `make install PREFIX=~/.local` puts the binary in <prefix>/bin and the standard library
+# in <prefix>/stdlib -- that second path is not a choice: the compiler finds the standard
+# library at `<directory of the extc binary>/../stdlib` (or `$EXTC_STD`), so an install
+# that drops the library anywhere else produces a compiler that cannot compile `use std::io`.
+PREFIX   ?= /usr/local
+DESTDIR  ?=
+BINDIR   := $(PREFIX)/bin
+SHAREDIR := $(PREFIX)/stdlib
+
+install: $(BIN)
+	install -d $(DESTDIR)$(BINDIR) $(DESTDIR)$(SHAREDIR)
+	install -m 755 $(BIN) $(DESTDIR)$(BINDIR)/extc
+	cp -R $(STDLIB)/. $(DESTDIR)$(SHAREDIR)/
+	@printf 'installed: %s/extc (stdlib in %s)\n' "$(DESTDIR)$(BINDIR)" "$(DESTDIR)$(SHAREDIR)"
+
+uninstall:
+	rm -f $(DESTDIR)$(BINDIR)/extc
+	rm -rf $(DESTDIR)$(SHAREDIR)
+
 clean:
 	rm -rf $(BUILDDIR)
 
 -include $(DEPS)
 
-.PHONY: all test status clean
+.PHONY: all test status clean install uninstall

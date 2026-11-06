@@ -37,6 +37,7 @@
 ## 其它
 
 - 贡献流程见根 [`CONTRIBUTING.md`](../CONTRIBUTING.md)；仓库门面见根 [`README.md`](../README.md)。
+- 支持的平台、安装方式、alpha 的承诺边界与版本策略见根 [`RELEASE.md`](../RELEASE.md)。
 - 专题页（编辑器、内部实现）在 [`topics/`](topics/)。
 - 注释规范见 [`COMMENT-STYLE.md`](COMMENT-STYLE.md)。
 
