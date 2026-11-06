@@ -442,19 +442,23 @@ void ctxInit(Ctx *c, Arena *a, const char *path, const char *src, size_t srcLen)
     c->src = src;
     c->srcLen = srcLen;
     c->hasError = false;
-    c->errLine = 1;
-    c->errCol = 1;
-    c->errMsg[0] = '\0';
-    c->errNote[0] = '\0';
+    c->diagCount = 0;
+    c->diagOverflow = false;
 }
 
 /**
- * @brief Record an error: only the first error of a compilation is kept.
+ * @brief Record an error: every error of a compilation is kept, up to EXTC_MAX_DIAGS.
  *
- * Keeping only the first error avoids burying the user in a cascade of follow-up
- * diagnostics. Nothing is printed here: ctxRenderDiag renders the text later, so
- * the error is independent of what is currently being written to which stream. The
- * message and the note are truncated to EXTC_MAXERR bytes.
+ * Reporting the next error instead of only the first one is what lets a reader fix
+ * three independent mistakes in one pass. The cap exists because a file that is broken
+ * everywhere produces one error per statement; past the cap the rest are dropped and
+ * `diagOverflow` makes the renderer say so. Identical diagnostics at the same position
+ * are recorded once: the same construct is often checked twice (an expression, then the
+ * statement that holds it), and that repeat carries no new information.
+ *
+ * Nothing is printed here: ctxRenderDiag renders the text later, so the error is
+ * independent of what is currently being written to which stream. The message and the
+ * note are truncated to EXTC_MAXERR bytes.
  *
  * @param c     Context.
  * @param line  Source line (one-based); <= 0 means the error has no position.
@@ -463,18 +467,29 @@ void ctxInit(Ctx *c, Arena *a, const char *path, const char *src, size_t srcLen)
  * @param fmt   Message format.
  */
 void ctxError(Ctx *c, int line, int col, const char *note, const char *fmt, ...) {
-    if (c->hasError) return;            /* keep only the first error */
-    c->hasError = true;
-    c->errLine = line;
-    c->errCol = col;
-
+    char msg[EXTC_MAXERR];
     va_list ap;
     va_start(ap, fmt);
-    vsnprintf(c->errMsg, sizeof c->errMsg, fmt, ap);
+    vsnprintf(msg, sizeof msg, fmt, ap);
     va_end(ap);
 
-    if (note) snprintf(c->errNote, sizeof c->errNote, "%s", note);
-    else c->errNote[0] = '\0';
+    c->hasError = true;
+    /* The same construct can be checked more than once; say it once. */
+    for (int i = c->diagCount - 1; i >= 0 && i >= c->diagCount - 2; i--) {
+        if (c->diags[i].line == line && c->diags[i].col == col &&
+            strcmp(c->diags[i].msg, msg) == 0)
+            return;
+    }
+    if (c->diagCount >= EXTC_MAX_DIAGS) {
+        c->diagOverflow = true;
+        return;
+    }
+    Diag *d = &c->diags[c->diagCount++];
+    d->line = line;
+    d->col = col;
+    snprintf(d->msg, sizeof d->msg, "%s", msg);
+    if (note) snprintf(d->note, sizeof d->note, "%s", note);
+    else d->note[0] = '\0';
 }
 
 /* Set by `--diagnostics-json`; read by both diagnostic sinks. */
@@ -569,47 +584,46 @@ void ctxWarn(Ctx *c, int line, int col, const char *note, const char *fmt, ...) 
 }
 
 /**
- * @brief Render the recorded diagnostic to text: header, source line, caret.
+ * @brief Render one recorded error: header, source line, caret.
  *
  * An error raised before parsing has no line number and renders as
  * `path: error: message`, with no source excerpt. The source line is found by
- * scanning from the start of the file; only one error is reported per run, so the
- * linear cost is acceptable.
+ * scanning from the start of the file; there are at most EXTC_MAX_DIAGS errors, so
+ * the linear cost is bounded.
  *
  * @param c    Context.
- * @param out  Buffer that receives the text; the caller decides which stream it
- *             finally reaches.
+ * @param out  Buffer that receives the text.
+ * @param d    The diagnostic to render.
  */
-void ctxRenderDiag(Ctx *c, Buf *out) {
+static void renderOneDiag(Ctx *c, Buf *out, const Diag *d) {
     if (g_diagJson) {
         Buf j;
         bufInit(&j, c->arena);
         bufPrintf(&j, "{\"severity\":\"error\",\"file\":\"");
         diagJsonEscape(&j, c->path);
-        bufPrintf(&j, "\",\"line\":%d,\"col\":%d,\"message\":\"", c->errLine > 0 ? c->errLine : 1,
-                  c->errCol > 0 ? c->errCol : 1);
-        diagJsonEscape(&j, c->errMsg);
+        bufPrintf(&j, "\",\"line\":%d,\"col\":%d,\"message\":\"", d->line > 0 ? d->line : 1,
+                  d->col > 0 ? d->col : 1);
+        diagJsonEscape(&j, d->msg);
         bufPrintf(&j, "\",\"note\":\"");
-        diagJsonEscape(&j, c->errNote[0] ? c->errNote : NULL);
+        diagJsonEscape(&j, d->note[0] ? d->note : NULL);
         bufPuts(&j, "\"}\n");
         fputs(bufCstr(&j), stdout);
         return;
     }
-    /* An error raised before parsing has no line number. */
-    if (c->errLine > 0)
-        bufPrintf(out, "%s:%d:%d: error: %s\n", c->path, c->errLine, c->errCol, c->errMsg);
+    if (d->line > 0)
+        bufPrintf(out, "%s:%d:%d: error: %s\n", c->path, d->line, d->col > 0 ? d->col : 1, d->msg);
     else
-        bufPrintf(out, "%s: error: %s\n", c->path, c->errMsg);
+        bufPrintf(out, "%s: error: %s\n", c->path, d->msg);
 
     /* Walk to the offending source line by counting newlines. */
     int line = 1;
     size_t i = 0;
-    while (i < c->srcLen && line < c->errLine) {
+    while (i < c->srcLen && line < d->line) {
         if (c->src[i] == '\n') line++;
         i++;
     }
 
-    if (line == c->errLine) {
+    if (line == d->line) {
         size_t start = i;
         size_t end = start;
         while (end < c->srcLen && c->src[end] != '\n') end++;
@@ -619,13 +633,37 @@ void ctxRenderDiag(Ctx *c, Buf *out) {
         bufPutc(out, '\n');
 
         bufPuts(out, "  ");
-        int col = c->errCol > 0 ? c->errCol : 1;
+        int col = d->col > 0 ? d->col : 1;
         for (int k = 1; k < col; k++) bufPutc(out, ' ');
         bufPuts(out, "^\n");
     }
 
-    if (c->errNote[0]) {
-        bufPrintf(out, "  note: %s\n", c->errNote);
+    if (d->note[0]) {
+        bufPrintf(out, "  note: %s\n", d->note);
+    }
+}
+
+/**
+ * @brief Render every recorded diagnostic to text, in the order they were found.
+ *
+ * A run that hit EXTC_MAX_DIAGS ends with one extra line saying so: leaving that out
+ * would make a truncated list look like the complete one.
+ *
+ * @param c    Context.
+ * @param out  Buffer that receives the text; the caller decides which stream it
+ *             finally reaches.
+ */
+void ctxRenderDiag(Ctx *c, Buf *out) {
+    for (int i = 0; i < c->diagCount; i++) renderOneDiag(c, out, &c->diags[i]);
+    if (c->diagOverflow) {
+        if (g_diagJson)
+            fprintf(stdout,
+                    "{\"severity\":\"error\",\"file\":\"%s\",\"line\":1,\"col\":1,"
+                    "\"message\":\"too many errors; stopped after %d\",\"note\":\"\"}\n",
+                    c->path, EXTC_MAX_DIAGS);
+        else
+            bufPrintf(out, "%s: error: too many errors; stopped after %d\n", c->path,
+                      EXTC_MAX_DIAGS);
     }
 }
 

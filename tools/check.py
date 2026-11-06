@@ -1699,6 +1699,14 @@ def build_items() -> list:
         ok_msg=ok_count_ok(" 项（约定入口 · 清单入口 · 目录参数 · 无入口报错 · 实参透传 · build 模式 · 旧拼写）"),
         bad_msg="tests/cli/run.sh", bad_dump=dump_fail(8)))
 
+    items.append(cmd(
+        "diag", "tests",
+        "诊断通道：三处独立错误都报、函数体内的错误不在调用点级联、语法错只报一条、"
+        "超过 20 条截断并说明、`--diagnostics-json` 每条一行",
+        ["./tests/diag/run.sh"], timeout=300,
+        ok_msg=ok_count_ok(" 项（多条 · 无级联 · 语法错单条 · 20 条上限 · JSON 逐行）"),
+        bad_msg="tests/diag/run.sh", bad_dump=dump_fail(8)))
+
     # ---- 示例程序：logstat ----
     items.append(cmd(
         "logstat", "tests",

@@ -67,6 +67,18 @@ if [ -x tests/elemrefs/run.sh ]; then
     fi
 fi
 
+echo "== 诊断：一次报多条 =="
+if [ -x tests/diag/run.sh ]; then
+    if out=$(tests/diag/run.sh 2>&1); then
+        printf '%s\n' "$out" | grep -E "^  ok |diag: 通过"
+    else
+        printf '%s\n' "$out"
+        bad "诊断套件"
+    fi
+else
+    bad "tests/diag/run.sh 不存在"
+fi
+
 echo "== 示例程序：logstat（流式日志报表 + 自带数据生成器）=="
 if [ -x tests/logstat/run.sh ]; then
     if out=$(tests/logstat/run.sh 2>&1); then

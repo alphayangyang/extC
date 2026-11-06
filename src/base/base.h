@@ -191,6 +191,23 @@ size_t vecLen(const Vec *v);
 
 #define EXTC_MAXERR 512
 
+/**
+ * @brief How many errors one compilation reports before it stops counting.
+ *
+ * One fix often reveals the next error, so a single message is not enough. The cap
+ * keeps a file that is broken everywhere from printing hundreds of lines: a run that
+ * reaches it says so and stops.
+ */
+#define EXTC_MAX_DIAGS 20
+
+/** @brief One recorded error: the message, the note, and where in the file it is. */
+typedef struct {
+    int  line;
+    int  col;
+    char msg[EXTC_MAXERR];
+    char note[EXTC_MAXERR];
+} Diag;
+
 typedef struct {
     Arena      *arena;
     const char *path;
@@ -202,9 +219,9 @@ typedef struct {
     int  warnCount;
     bool noWarn;      /* `-w`: do not print any warning */
     bool warnOwnedView; /* `-Wowned-view`: warn when `new T[n]` is held as a bare view */
-    int  errLine, errCol;
-    char errMsg[EXTC_MAXERR];
-    char errNote[EXTC_MAXERR];
+    Diag diags[EXTC_MAX_DIAGS];   /* recorded in the order they were found */
+    int  diagCount;               /* how many slots of `diags` are live */
+    bool diagOverflow;            /* a diagnostic was dropped because the cap was reached */
 } Ctx;
 
 /**
