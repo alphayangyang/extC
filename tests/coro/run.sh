@@ -4,6 +4,15 @@
 # 判据：RESP 风格协议按**任意切分**喂进去，产出必须与一次喂完逐字节相同；
 # 且整段响应与黄金值一致（既判"可恢复"也判"语义对"）。
 set -u
+# LeakSanitizer 对这套内存模型没有意义（arena 到进程结束才释放），它在最小发行版里还会偶尔
+# 在退出扫描时挂住 ⇒ 这里只抓越界与 use-after-free。
+export ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=0}"
+# gcc<=12 的 libasan 遇到 vm.mmap_rnd_bits=32 的新内核会**偶发**在启动阶段自己 SEGV
+# （stderr 只有 DEADLYSIGNAL，然后挂住）；实测 32 路并发 9/32 次，关掉地址随机化后 0/32。
+# 原因与三条出路见 tests/asan-probe.sh。这里只对本套件关随机化。
+if [ -z "${EXTC_ASAN_NO_SETARCH:-}" ] && command -v setarch >/dev/null 2>&1; then
+    EXTC_ASAN_NO_SETARCH=1 exec setarch "$(uname -m)" -R bash "$0" "$@"
+fi
 cd "$(dirname "$0")/../.."
 EXTC=${EXTC:-./build/extc}
 pass=0; fail=0
