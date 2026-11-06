@@ -1,16 +1,9 @@
-// examples/logstat -- a small program that reads a log and says what is in it.
+// examples/logstat/src/core.extc -- everything the demo actually does: the
+// tables, the streaming scanner, the report, the data generator and the HTTP
+// server. The three entry points in the sibling files are thin shells.
 //
-// The point of the demo is not the report. It is that every byte the program
-// looks at is streamed: the file is read in blocks, each line is parsed where
-// it lies, and the summary tables are bounded. So the memory a run needs does
-// not grow with the size of the input.
-//
-//   extc run examples/logstat gen access.tsv 2000000
-//   extc run examples/logstat summary access.tsv
-//
-// Input format, one record per line, tab separated:
-//
-//   ts <TAB> path <TAB> status <TAB> lat_us <TAB> bytes
+// Nothing here allocates per record: lines are parsed where they lie inside a
+// fixed read buffer, and every table has a fixed size.
 
 use std::io
 use std::fs
@@ -35,6 +28,9 @@ struct stats {
     pbytes: [4096]i64,
     pname: [4096][96]u8,
 }
+// A run has exactly one report, so the tables are program state, not a local:
+// the server answers from them while everything else is idle.
+var gS: stats
 
 // --- small helpers -------------------------------------------------------
 
@@ -61,51 +57,39 @@ fn putInt(out: mut slice<u8>, at: mut ref i64, v: i64) -> void {
 
 fn putBytes(out: mut slice<u8>, at: mut ref i64, b: slice<u8>) -> void {
     var k: i64 = *at
-    var i: i64 = 0
-    while i < b.len {
+    for i in 0..b.len {
         out[k + i] = b[i]
-        i = i + 1
     }
     *at = k + b.len
 }
 
 fn parseInt(b: slice<u8>) -> i64 {
-    var i: i64 = 0
     var v: i64 = 0
-    while i < b.len {
+    for i in 0..b.len {
         let c: u8 = b[i]
         if c < u8(48) || c > u8(57) { return -1 }
         v = v * 10 + i64(c) - 48
-        i = i + 1
     }
     return v
 }
 
 // The tables are globals: a run has exactly one report, and the serve mode
 // answers from it while everything else is idle.
-var gS: stats
-
 // --- the tables ----------------------------------------------------------
 
 fn addPath(s: mut ref stats, p: slice<u8>) -> void {
-    var i: i64 = 0
-    while i < s.np {
+    for i in 0..s.np {
         if s.plen[i] == p.len {
             var same: bool = true
-            var k: i64 = 0
-            while k < p.len {
+            for k in 0..p.len {
                 if s.pname[i][k] != p[k] { same = false  break }
-                k = k + 1
             }
             if same { s.pcnt[i] = s.pcnt[i] + 1  return }
         }
-        i = i + 1
     }
     if p.len > PATHMAX || s.np >= MAXPATHS { s.other = s.other + 1  return }
-    var k: i64 = 0
-    while k < p.len {
+    for k in 0..p.len {
         s.pname[s.np][k] = p[k]
-        k = k + 1
     }
     s.plen[s.np] = p.len
     s.pcnt[s.np] = 1
@@ -121,8 +105,7 @@ fn addLine(s: mut ref stats, buf: slice<u8>, lo: i64, hi: i64) -> void {
     var status: i64 = -1
     var lat: i64 = -1
     var byt: i64 = -1
-    var k: i64 = lo
-    while k <= hi {
+    for k in lo..hi + 1 {
         if k == hi || buf[k] == u8(9) {
             if fld == 1 { p0 = fs0  pl = k - fs0 }
             else if fld == 2 { status = parseInt(buf[fs0..k]) }
@@ -131,7 +114,6 @@ fn addLine(s: mut ref stats, buf: slice<u8>, lo: i64, hi: i64) -> void {
             fld = fld + 1
             fs0 = k + 1
         }
-        k = k + 1
     }
     if fld < 5 || status < 0 || lat < 0 || byt < 0 { s.bad = s.bad + 1  return }
     s.records = s.records + 1
@@ -155,19 +137,15 @@ fn scan(s: mut ref stats, path: slice<u8>) -> result<i64, io::ioError> {
         if got <= 0 { break }
         let end: i64 = have + got
         var start: i64 = 0
-        var i: i64 = 0
-        while i < end {
+        for i in 0..end {
             if buf[i] == u8(10) {
                 if i > start { addLine(s, buf, start, i) }
                 start = i + 1
             }
-            i = i + 1
         }
         if start > 0 {
-            var k: i64 = 0
-            while start + k < end {
+            for k in 0..end - start {
                 buf[k] = buf[start + k]
-                k = k + 1
             }
             have = end - start
         } else {
@@ -184,11 +162,9 @@ fn pctFromBuckets(s: mut ref stats, want: i64) -> i64 {
     let total: i64 = s.records
     if total == 0 { return 0 }
     var acc: i64 = 0
-    var i: i64 = 0
-    while i < NBUCKET {
+    for i in 0..NBUCKET {
         acc = acc + s.lat[i]
         if acc * 100 >= total * want { return i }
-        i = i + 1
     }
     return NBUCKET - 1
 }
@@ -203,10 +179,8 @@ fn report(s: mut ref stats) -> void {
     while rank < 5 && rank < s.np {
         var best: i64 = -1
         var bestN: i64 = -1
-        var i: i64 = 0
-        while i < s.np {
+        for i in 0..s.np {
             if !used[i] && s.pcnt[i] > bestN { best = i  bestN = s.pcnt[i] }
-            i = i + 1
         }
         if best < 0 { break }
         used[best] = true
@@ -250,8 +224,7 @@ fn gen(path: slice<u8>, rows: i64) -> result<i64, io::ioError> {
     var buf: mut slice<u8> = new u8[CHUNK]
     var at: i64 = 0
     var rng: i64 = 12345
-    var r: i64 = 0
-    while r < rows {
+    for r in 0..rows {
         rng = (rng * 1103515245 + 12345) % 2147483648
         let pick: i64 = (rng / 65536) % 6
         let lat: i64 = 100 + (rng / 4096) % 2900
@@ -263,7 +236,6 @@ fn gen(path: slice<u8>, rows: i64) -> result<i64, io::ioError> {
             at = 0
         }
         genLine(buf, ref at, 1712000000 + r / 1000, pick, status, lat, byt)
-        r = r + 1
     }
     if at > 0 {
         let w2: i64 = o.put(buf[0..at])?
@@ -323,10 +295,8 @@ fn renderJson(s: mut ref stats) -> void {
     while rank < 5 && rank < s.np {
         var best: i64 = -1
         var bestN: i64 = -1
-        var i: i64 = 0
-        while i < s.np {
+        for i in 0..s.np {
             if !used[i] && s.pcnt[i] > bestN { best = i  bestN = s.pcnt[i] }
-            i = i + 1
         }
         if best < 0 { break }
         used[best] = true
@@ -395,11 +365,13 @@ fn conn(fd: i64) -> coroutine<i64> {
             a = a + 1
             var b: i64 = a
             while b < nl && buf[b] != u8(32) { b = b + 1 }
-            if b - a == 8 && buf[a..b] == "/summary" {
+            // Header lines and the blank line that ends the headers are not
+            // requests: a path starts with '/', anything else is skipped.
+            if b > a && buf[a] == u8(47) && b - a == 8 && buf[a..b] == "/summary" {
                 answer(fd, false)
-            } else if b - a == 5 && buf[a..b] == "/text" {
+            } else if b > a && buf[a] == u8(47) && b - a == 5 && buf[a..b] == "/text" {
                 answer(fd, true)
-            } else {
+            } else if b > a && buf[a] == u8(47) {
                 var nf: [128]u8 = [u8(0), ...]
                 var nat: i64 = 0
                 putBytes(nf, ref nat, "HTTP/1.1 404 Not Found\r\nContent-Length: 4\r\n\r\nnope")
@@ -408,10 +380,8 @@ fn conn(fd: i64) -> coroutine<i64> {
             start = nl + 1
         }
         if start > 0 {
-            var k: i64 = 0
-            while start + k < have {
+            for k in 0..have - start {
                 buf[k] = buf[start + k]
-                k = k + 1
             }
             have = have - start
         }
@@ -444,63 +414,31 @@ fn serve(s: mut ref stats, port: i64) -> i32 {
     return 0
 }
 
-// --- entry ---------------------------------------------------------------
 
-fn main(args: slice<slice<u8>>) -> i32 {
-    if args.len < 3 {
-        io::eprintln("usage: logstat gen <file> <rows> | logstat summary <file>")
-        return 2
+// --- surface for the entry points ---------------------------------------
+
+fn genFile(path: slice<u8>, rows: i64) -> result<i64, io::ioError> {
+    return gen(path, rows)
+}
+
+fn scanFile(path: slice<u8>) -> result<i64, io::ioError> {
+    return scan(ref gS, path)
+}
+
+fn reportNow() -> void {
+    report(ref gS)
+}
+
+// Read the file, print the report, then serve it. Returns the process status.
+fn serveFile(path: slice<u8>, port: i64) -> i32 {
+    match scan(ref gS, path) {
+        success(n) => {
+            report(ref gS)
+            return serve(ref gS, port)
+        }
+        failure(e) => {
+            io::eprintln(f"logstat: cannot read {path}")
+            return 1
+        }
     }
-    // report lives in the program, not on the stack: see gS above
-    var ok: bool = false
-    var modeRead: bool = false
-    var modeServe: bool = false
-    var portNum: i64 = 0
-    let mode: slice<u8> = args[1]
-    let file: slice<u8> = args[2]
-    if mode == "gen" {
-        if args.len < 4 {
-            io::eprintln("usage: logstat gen <file> <rows>")
-            return 2
-        }
-        let rows: i64 = parseInt(args[3])
-        if rows <= 0 {
-            io::eprintln("logstat: rows must be positive")
-            return 2
-        }
-        match gen(file, rows) {
-            success(n) => { ok = true }
-            failure(e) => { ok = false }
-        }
-    } else if mode == "serve" {
-        if args.len < 4 {
-            io::eprintln("usage: logstat serve <file> <port>")
-            return 2
-        }
-        portNum = parseInt(args[3])
-        match scan(ref gS, file) {
-            success(n) => { modeServe = true }
-            failure(e) => { modeServe = false }
-        }
-        ok = modeServe
-    } else if mode == "summary" {
-        match scan(ref gS, file) {
-            success(n) => { modeRead = true }
-            failure(e) => { modeRead = false }
-        }
-        ok = modeRead
-    } else {
-        io::eprintln("logstat: unknown mode (gen, summary)")
-        return 2
-    }
-    if !ok {
-        io::eprintln(f"logstat: {mode} failed on {file}")
-        return 1
-    }
-    if modeRead { report(ref gS) }
-    if modeServe {
-        report(ref gS)
-        return serve(ref gS, portNum)
-    }
-    return 0
 }

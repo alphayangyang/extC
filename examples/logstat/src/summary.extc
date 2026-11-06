@@ -1,0 +1,22 @@
+// examples/logstat/src/summary.extc -- `-m summary <file>`: scan and print.
+
+use core
+use std::io
+
+@module("summary", "read a log and print the report: summary <file>")
+fn run(args: slice<slice<u8>>) -> i32 {
+    if args.len < 2 {
+        io::eprintln("usage: logstat -m summary <file>")
+        return 2
+    }
+    match core::scanFile(args[1]) {
+        success(n) => {
+            core::reportNow()
+            return 0
+        }
+        failure(e) => {
+            io::eprintln(f"logstat: cannot read {args[1]}")
+            return 1
+        }
+    }
+}

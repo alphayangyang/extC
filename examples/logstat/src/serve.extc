@@ -1,0 +1,15 @@
+// examples/logstat/src/serve.extc -- `-m serve <file> <port>`: the same report
+// over HTTP. One thread, one epoll loop, one coroutine per connection.
+
+use core
+use std::io
+
+@module("serve", "serve the report over HTTP: serve <file> <port>")
+fn run(args: slice<slice<u8>>) -> i32 {
+    if args.len < 3 {
+        io::eprintln("usage: logstat -m serve <file> <port>")
+        return 2
+    }
+    let port: i64 = core::parseInt(args[2])
+    return core::serveFile(args[1], port)
+}

@@ -1,0 +1,24 @@
+// examples/logstat -- a streaming log report, as a small project.
+//
+//   logstat -m gen <file> <rows>       write a deterministic access log
+//   logstat -m summary <file>          print the report
+//   logstat -m serve <file> <port>     serve the report over HTTP
+//
+// The three subcommands are `@module` entries in the sibling files: one binary
+// carries all of them, and the compiler generates the dispatcher. `logstat`
+// with no `-m` runs this file's `main`.
+
+use core
+use gen
+use summary
+use serve
+use std::io
+
+fn main() -> i32 {
+    io::eprintln("logstat: a streaming log report")
+    io::eprintln("  logstat -m gen <file> <rows>      write a deterministic log")
+    io::eprintln("  logstat -m summary <file>         print the report")
+    io::eprintln("  logstat -m serve <file> <port>    serve the report over HTTP")
+    io::eprintln("  logstat --help                    list the entry points")
+    return 2
+}

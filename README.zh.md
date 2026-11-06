@@ -248,7 +248,7 @@ make install PREFIX="$HOME/.local"     # 可选：装成 extc 命令（标准库
 | 2 | 跑通第一个程序 | 抄上面那行 `--run`（`examples/hello-world.extc`，四行）；改一个字再跑一次 |
 | 3 | 让编辑器认识它 | VS Code 扩展（诊断 / 符号 / 悬停 / 补全）：[`docs/topics/LSP.md`](docs/topics/LSP.md) · 一键安装 `tools/install-vscode-ext.sh` |
 | 4 | 看语言长什么样 | [`examples/tour.extc`](examples/tour.extc)（164 行，九个主题）· [`examples/concise-tour.extc`](examples/concise-tour.extc)（短写法）|
-| 5 | 跑个真东西 | [`examples/logstat`](examples/logstat/SUMMARY.md)：流式读日志出报表，还能用 HTTP 提供；388 MB 输入 0.5 s、峰值内存 2.2 MB |
+| 5 | 跑个真东西 | [`examples/logstat`](examples/logstat/SUMMARY.md)：一个小项目，三个子命令是三个 `@module` 入口 —— 388 MB 输入 0.5 s、峰值内存 2.2 MB，还能用 HTTP 提供报表 |
 | 5 | 查手册 | 语言 [`docs/usage/language.md`](docs/usage/language.md) · 标准库 [`docs/usage/stdlib.md`](docs/usage/stdlib.md) · 模块与 C 互操作 [`docs/usage/modules-cabi.md`](docs/usage/modules-cabi.md) |
 
 从别的语言过来，第一小时会撞到的几件事：

@@ -1,0 +1,25 @@
+// examples/logstat/src/gen.extc -- `-m gen <file> <rows>`: write a deterministic
+// access log so the demo runs without any input file.
+
+use core
+use std::io
+
+@module("gen", "write a deterministic access log: gen <file> <rows>")
+fn run(args: slice<slice<u8>>) -> i32 {
+    if args.len < 3 {
+        io::eprintln("usage: logstat -m gen <file> <rows>")
+        return 2
+    }
+    let rows: i64 = core::parseInt(args[2])
+    if rows <= 0 {
+        io::eprintln("logstat: rows must be positive")
+        return 2
+    }
+    match core::genFile(args[1], rows) {
+        success(n) => { return 0 }
+        failure(e) => {
+            io::eprintln(f"logstat: cannot write {args[1]}")
+            return 1
+        }
+    }
+}
