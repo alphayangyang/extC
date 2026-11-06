@@ -197,14 +197,15 @@ EXTC_RC_PAUSE=1 ./build/x                  # 打印每次清扫的最大/累计�
 ## 仓库结构
 
 ```
-src/       编译器（C11 实现，按 pass 拆分）
-stdlib/    prelude 与标准库（用 extC 写；std/sys 是唯一声明 C 原语的一层）
-extlib/    扩展库（std 之外的第三方绑定，用 -I 引入；进 std 的边界见各库 README）
-examples/  示例          tests/  回归用例      tools/  辅助工具
-bench/     横向基准（含六语言矩阵、bench/app 的场景横评与 bench/par 的并行基准）   docs/   文档
-prototype-reclaim/  回收机制的原型与数值（C 探针 + 跨语言对照）
-proofs/             机制不变量的机器检查证明
+src/        编译器（C11 实现，按 pass 拆分）      stdlib/  prelude 与标准库（用 extC 写）
+tests/      回归用例（74 个套件，统一入口 ./check.sh）            bench/  性能与对比卡具
+docs/       手册 docs/usage/ · 机制 docs/design/ · 计划 · 历史     examples/  示例
+tools/      辅助工具与闸门                      third_party/  第三方绑定（用 -I 引入）
+prototype/  早期原型（heap / reclaim / python，只作考古）          proofs/  不变量的机器检查证明
 ```
+
+- 想改代码：先读 [`CONTRIBUTING.md`](CONTRIBUTING.md)。
+- 想知道每个基准量什么：[`bench/README.md`](bench/README.md)；想知道判据怎么组织：[`tests/README.md`](tests/README.md)。
 
 ## 许可证
 

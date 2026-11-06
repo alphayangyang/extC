@@ -13,7 +13,7 @@
 #      再加上开关关掉的基线，三者一比，因果就闭合了。
 #      另附：gdb 断点直接数 `extc_rc_sweep` 的调用次数（有 gdb 才数）。
 #
-#   ② 与 `prototype-reclaim/stress.c`（C 原型）三方对照：同 N / 4N 的耗时、峰值 RSS、
+#   ② 与 `prototype/reclaim/stress.c`（C 原型）三方对照：同 N / 4N 的耗时、峰值 RSS、
 #      是否随轮数增长。原型参数取 `N 1024 64 20000 48 <分片>`（缓存 1024、每 64 轮、索引
 #      2 万项、48 字节节点），与 extC 形状的旋钮对齐；分片 1 与 8 各给一行。
 #
@@ -139,7 +139,7 @@ fi
 # ── ② 三方对照 ────────────────────────────────────────────────────────────────
 echo
 echo "== ② 三方对照：extC 关档（EXTC_RECLAIM=0）/ extC 开档（=1）/ C 原型 stress.c（同 N / 4N）=="
-PROTO=prototype-reclaim/stress.c
+PROTO=prototype/reclaim/stress.c
 proto_ok=no
 if [ -f "$PROTO" ] && "$CC" -O2 -std=c11 -o "$TMP/stress" "$PROTO" >"$TMP/stress.log" 2>&1; then
     proto_ok=yes

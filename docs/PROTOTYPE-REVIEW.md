@@ -1,30 +1,30 @@
-# 原型复核：`prototype-reclaim/` 里到底有没有「停顿」的现成方案
+# 原型复核：`prototype/reclaim/` 里到底有没有「停顿」的现成方案
 
 > **一句话结论：部分有 —— 但缺的正是"让停顿不随被扫活闭包增长"的那一半。**
 > 原型给了把**单次停顿切小**的两条现成手段（**区域局部清扫**、**分片暂停旋钮**）和一条让停顿**归零**的条件方案
 > （**无环时事件回收 ⇒ 清扫 0 次**，外加**自学习退场**）；它**没有**增量/分步（无预算、无继续点）、
-> **没有**并发/后台、**没有**并发写屏障 —— 它自己的计时把整次 `collect` 都算作一次停顿（`prototype-reclaim/sim.c:389-408`），
-> README 也明说"要微秒级停顿必须付屏障"（`prototype-reclaim/README.md:362`）。
+> **没有**并发/后台、**没有**并发写屏障 —— 它自己的计时把整次 `collect` 都算作一次停顿（`prototype/reclaim/sim.c:389-408`），
+> README 也明说"要微秒级停顿必须付屏障"（`prototype/reclaim/README.md:362`）。
 > 对今天 `digraph` 那类**单一巨大活闭包**（WCC 1000‰，`bench/gc/PAUSE-CORPUS.md:40` 判"不适合切"），
 > 原型的两条切分手段都不成立：今天实测 `EXTC_RC_SHARDS=4` 反而更差（p50 258.5 → 1950.5 µs，`bench/gc/DIGRAPH.md:557,562`）。
 
 **这是只读复核**：没有改 `src/`、`tests/`，没有碰 `docs/CHANGELOG.md`；未跑新计时（任务说不需要），
-§3.2 复用 `prototype-reclaim/run.sh` 在 2026-10-13 的落盘输出（1 样本）。
+§3.2 复用 `prototype/reclaim/run.sh` 在 2026-10-13 的落盘输出（1 样本）。
 **本文件放哪**：新建 `docs/PROTOTYPE-REVIEW.md`（没有动 `docs/RECLAMATION.md` —— 它在别人的在途改动里）。
 
 复核对象与版本（**下文行号只对这些 md5 有效**）：
 
 | 文件 | md5 |
 |---|---|
-| `prototype-reclaim/sim.c` | `fd02dcfb763a9a897b226d0d2baef073` |
-| `prototype-reclaim/slab_final.c` | `0752c3cc7754931ec8b06501d07010fc` |
-| `prototype-reclaim/slab_shard.c` | `b790841f60cf04458b871cf04e5b46f8` |
-| `prototype-reclaim/README.md` | `306cfbed1ba487f40f536853a8529722` |
+| `prototype/reclaim/sim.c` | `fd02dcfb763a9a897b226d0d2baef073` |
+| `prototype/reclaim/slab_final.c` | `0752c3cc7754931ec8b06501d07010fc` |
+| `prototype/reclaim/slab_shard.c` | `b790841f60cf04458b871cf04e5b46f8` |
+| `prototype/reclaim/README.md` | `306cfbed1ba487f40f536853a8529722` |
 | `bench/gc/DIGRAPH.md` | `70c3c194ae6e59941645b0423793a2de` |
 | `bench/gc/PAUSE-CORPUS.md` | `6c5c60f2622a3a700dde401c723215fc` |
 | `tests/reclaim-perf/MARK-MODEL.md` | `4eaf8b28c671b9e80f80a0006530948d` |
-| `prototype-heap/README.md` | `217dbc9e7400b2491b331973c7bfb181` |
-| `prototype-python/README.md` | `6cfd2ed89b376a0cb7db32ede4b93cd3` |
+| `prototype/heap/README.md` | `217dbc9e7400b2491b331973c7bfb181` |
+| `prototype/python/README.md` | `6cfd2ed89b376a0cb7db32ede4b93cd3` |
 
 标注约定：**[实测]** = 有原始输出/落盘数据；**[文档]** = 仓库文档/README 的断言（我没复跑）；
 **[源码]** = 我在本次复核里从代码本身读出的事实；**[推理]** = 我的推断，不是任何一方的数据。
@@ -35,9 +35,9 @@
 
 | # | 机制 | 原型有/无 | 证据（file:line） | 值多少 |
 |---|---|---|---|---|
-| a | **增量/分步**标记或清扫（每步限额 / 继续点） | **无** | 标记循环跑到工作栈空：`sim.c:181-185`、`sim.c:247-252`、`sim.c:203-207`；清扫一次遍历到底：`sim.c:186-189`、`sim.c:264-266`；`prototype-reclaim/*.c` 里 `budget\|预算\|限额\|每步\|step\|resume\|继续点\|incremental` **0 命中**（唯一出现是 README:221 的文字）| —（无） |
+| a | **增量/分步**标记或清扫（每步限额 / 继续点） | **无** | 标记循环跑到工作栈空：`sim.c:181-185`、`sim.c:247-252`、`sim.c:203-207`；清扫一次遍历到底：`sim.c:186-189`、`sim.c:264-266`；`prototype/reclaim/*.c` 里 `budget\|预算\|限额\|每步\|step\|resume\|继续点\|incremental` **0 命中**（唯一出现是 README:221 的文字）| —（无） |
 | b | **写屏障 / 脏集**（存储时记一笔） | **有"存储时记一笔"，但不是并发/增量屏障** | 持有者计数：`sim.c:298-303`（`nf` 饱和到 3）；跨区写登记：`sim.c:232-235`（`store_rs`）、`slab_final.c:174-181`（`rsbit` 一位）| 用途只有两个：事件回收判据 `sim.c:379`、区域标记的种子 `sim.c:244`；省标记量在"跨区入边稀疏"时成立，堆满时只省 2×（README:217-219 [文档]） |
-| c | **并发/后台**线程 | **无** | `prototype-reclaim/`、`prototype-heap/`、`prototype-python/` 全部 `.c` 里 grep `pthread|thread|atomic` **0 命中**；README:683 [文档]"单线程，每次回收仍是一次停顿" | —（无） |
+| c | **并发/后台**线程 | **无** | `prototype/reclaim/`、`prototype/heap/`、`prototype/python/` 全部 `.c` 里 grep `pthread|thread|atomic` **0 命中**；README:683 [文档]"单线程，每次回收仍是一次停顿" | —（无） |
 | d | **整块/区域一次性释放** | **有** | `extc_arena_release` `sim.c:43-53`；slab 版 `slab_release_chain` `sim.c:122-124`；每轮整片释放解析区 `sim.c:336` | 这是 `base` 停顿=0 的原因（不回收）；也是解析区 O(1) 回收的来源 |
 | e | **静态证明"不必回收"**（编译期裁剪） | **无编译器证明；只在运行期"模拟"一个静态事实** | `sim.c:376-379`：`was = cur->nf; ... if (was == 1) extc_free_solo(...)`；README:687 [文档]"探针里由代码直接判（模拟静态唯一性证明）"；动态版自学习在 `slab_final.c:169,304,319` | 事件回收命中率 100% / 0% 两档由共享率决定 [文档]（README:128-145） |
 | f | **暂停计量与 pacing** | **计量：有（整次 collect）；pacing：有触发阈值，无暂停预算** | `pauses` 结构 `sim.c:292-293`；窗口 `sim.c:389`→`sim.c:408`；阈值 `sim.c:382-388` + `sim.c:282`；`slab_final.c:295-306` | 见 §3；**没有**"每次回收最多 X µs / 到 X µs 就继续下次"这类代码 |
@@ -92,7 +92,7 @@
 ### (a) 增量/分步标记或清扫 —— **没有**
 - **无预算、无继续点**：标记是 `while (MKN)` 一口气把工作栈跑空（`sim.c:181-185`；记忆集版 `sim.c:247-252`；全局版 `sim.c:203-207`）；
   清扫是一次链表遍历（`sim.c:186-189`、`sim.c:264-266`）。每次 collect 从 `MKN = 0` 重新开始（`sim.c:178,242`），
-  **没有可恢复状态**。`prototype-reclaim/*.c` 全文 grep `budget|预算|限额|每步|step|resume|继续点|incremental` = **0 命中**。[源码]
+  **没有可恢复状态**。`prototype/reclaim/*.c` 全文 grep `budget|预算|限额|每步|step|resume|继续点|incremental` = **0 命中**。[源码]
 - **分片 ≠ 分步**：分片是**空间切分**（一次只收一个分片，`slab_shard.c:283` 注释"本轮只收一个分片（可控停顿）"，
   `slab_final.c:307-324`），不是把一个分片的标记/清扫**摊到多次暂停**里。[源码]
 - README 自己把"限制每次回收的块数（G1 的暂停预算 + 选区）"列为**没走的那条路**：`README.md:221` [文档]。
@@ -147,7 +147,7 @@
 
 ## 3. 实测停顿是多少、量的是哪一段
 
-### 3.1 原型侧：文档记录的（`prototype-reclaim/README.md`，**[文档]**，机器/时刻不明）
+### 3.1 原型侧：文档记录的（`prototype/reclaim/README.md`，**[文档]**，机器/时刻不明）
 - 冷/热分离：`region` 最大停顿 **5.1 → 5.5 µs**，而冷数据从 468 KiB 涨到 30 000 KiB（**64×**）；同负载 `global` 一直
   **9 968–14 652 µs**（`README.md:50-56`）。原因写明"全局回收每次都要从根遍历全部存活对象"（`README.md:57-58`）。
 - 真实负载（40 万轮）：`region` 47.3 µs / 5.48 ms 总，`region+ev` **2.6 µs / 0.20 ms**，`global` 147.3 µs / 20.68 ms（`README.md:68-73`）；
@@ -211,13 +211,13 @@
 
 ---
 
-## 5. 补充：`prototype-heap/`、`prototype-python/`
+## 5. 补充：`prototype/heap/`、`prototype/python/`
 
-- **`prototype-heap/`**（`prototype-heap/README.md:1-31`）答的是**另一件事**：4 GiB 连续板 + `mmap`/`mprotect` 借出 + `dlopen` 插件的边界检查。
+- **`prototype/heap/`**（`prototype/heap/README.md:1-31`）答的是**另一件事**：4 GiB 连续板 + `mmap`/`mprotect` 借出 + `dlopen` 插件的边界检查。
   **与 GC 停顿无关**：里面唯一的"暂停级"数字是 `mprotect` 固定代价 **369 / 376 µs**（64 MiB），
-  且它按**区间大小**走、会引起别的线程 TLB 抖动（`prototype-heap/README.md:16,30`）——这是零拷贝借出的代价，不是回收停顿。
+  且它按**区间大小**走、会引起别的线程 TLB 抖动（`prototype/heap/README.md:16,30`）——这是零拷贝借出的代价，不是回收停顿。
   ⇒ 对"停顿"问题**没有可借的方案**。[文档]
-- **`prototype-python/`**（`prototype-python/README.md:1-13`）是**作废的第一版编译器草稿**，自己写明"不要再往这里加功能"。
+- **`prototype/python/`**（`prototype/python/README.md:1-13`）是**作废的第一版编译器草稿**，自己写明"不要再往这里加功能"。
   ⇒ **没有任何**回收/停顿设计。[文档]
 
 ---
@@ -232,14 +232,14 @@
 | 编译期"不必回收"的**分析** | **原型没提供**（`README.md:687` 明说是运行期直接判，模拟静态事实） |
 | 暂停预算 / 最大停顿上限 | **原型没提供**（只有触发阈值；`README.md:221` 把 G1 式预算列为未采用） |
 | 原型 README 表里的机器与时刻 | **未记录**（只有"本机"字样），且与今天不同机 ⇒ 跨表绝对值不可混用 |
-| `bench/gc/FINDINGS.md`（2026-09-24） | 里面有**停顿数字吗**：**没有** —— 它只记 `churn`/`rebuild` 的时间与峰值 RSS（`bench/gc/FINDINGS.md:1-4` 口径行、§1/§2 表）；全文只有 1 处出现"停顿"字样（`:67`，且那句是说"GC 的代价在这形状里**不是**停顿"）。唯一另一份 `bench/oi/persist/FINDINGS.md` 与回收无关。原型的停顿数字只在 `prototype-reclaim/README.md` 与本机重跑里 |
+| `bench/gc/FINDINGS.md`（2026-09-24） | 里面有**停顿数字吗**：**没有** —— 它只记 `churn`/`rebuild` 的时间与峰值 RSS（`bench/gc/FINDINGS.md:1-4` 口径行、§1/§2 表）；全文只有 1 处出现"停顿"字样（`:67`，且那句是说"GC 的代价在这形状里**不是**停顿"）。唯一另一份 `bench/oi/persist/FINDINGS.md` 与回收无关。原型的停顿数字只在 `prototype/reclaim/README.md` 与本机重跑里 |
 | 本次复核的计时 | **没跑新计时**（任务说不需要）；§3.2 是同日更早的单样本重跑，且当时有并发负载 |
 | `sim.c` 的 `sweepc`/`gc`/`rs`/`rsev`/`rsr`/`rsl` 模式 | 本次**只读代码**、未跑（`run.sh` 默认只跑 base/solo/sweep/ev，`run.sh:31`） |
 
 ---
 
 **已覆盖**：`sim.c` 全文（430 行逐行读）、`slab_final.c` / `slab_shard.c` 的分片与自学习段、
-`prototype-reclaim/README.md` 的停顿相关全部小节、`prototype-heap/README.md`、`prototype-python/README.md`、
+`prototype/reclaim/README.md` 的停顿相关全部小节、`prototype/heap/README.md`、`prototype/python/README.md`、
 今天侧的 `bench/gc/DIGRAPH.md` §6.9/§7.3-7.4、`bench/gc/PAUSE-CORPUS.md` §0 与口径表、`tests/reclaim-perf/MARK-MODEL.md` §2；
 (a)-(f) 六项逐项 grep 过 `pthread|atomic|barrier|budget|step|resume`（`*.c`/`*.h` 里 0 命中，唯一出现在 README 的文字）。
 **未覆盖**：原型的 `probe_sweep.c` / `probe_coldhot.c` / `probe_real.c` / `stress.c` / `writes.c` / `crosslang/` 的**逐行**代码

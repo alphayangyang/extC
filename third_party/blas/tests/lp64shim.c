@@ -1,4 +1,4 @@
-/* extlib/blas/tests/lp64shim.c —— 一个最小的 LP64 CBLAS：给判据造一条 LP64 路径
+/* third_party/blas/tests/lp64shim.c —— 一个最小的 LP64 CBLAS：给判据造一条 LP64 路径
  *
  * 本机（以及大多数「只装了 numpy 轮子」的机器）只有 numpy 自带的那份 ILP64 OpenBLAS，
  * 符号是 scipy_cblas_sgemm64_。绑定层有两条 ABI 分支，只测 ILP64 等于有一条从不执行。

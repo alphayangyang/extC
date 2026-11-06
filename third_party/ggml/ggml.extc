@@ -1,4 +1,4 @@
-/* extlib/ggml/ggml.extc —— ggml 的量化内核接进 extC：q4_0 / q8_0 的量化、反量化、点积
+/* third_party/ggml/ggml.extc —— ggml 的量化内核接进 extC：q4_0 / q8_0 的量化、反量化、点积
  *
  * 为什么这件事值得单开一个扩展库：BLAS 只解决「浮点 GEMM」，而 LLM 推理的 decode 阶段是
  * **量化权重 × 少量激活的 GEMV**（q4_0 / q8_0 是 llama.cpp 家族最常见的两种权重格式）。

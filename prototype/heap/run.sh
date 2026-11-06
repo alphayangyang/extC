@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# prototype-heap/run.sh —— 编译并跑四个测量（编译契约与产物一致）
+# prototype/heap/run.sh —— 编译并跑四个测量（编译契约与产物一致）
 set -eu
 cd "$(dirname "$0")"
 CC=${CC:-gcc}

@@ -6,7 +6,7 @@
 # tests/reclaim-acyclic/gate-acyclic.sh —— 「无环区域用事件回收（计数）、关掉清扫」这条改动的
 # **动态判据**（原本挂 `check.sh`/`nobench` 的 `gate-acyclic` 项，现已摘出）。
 #
-# 背景（已经实测过的两段）：原型 `prototype-reclaim/README.md` 的 `ev` 档 = **0 次清扫** /
+# 背景（已经实测过的两段）：原型 `prototype/reclaim/README.md` 的 `ev` 档 = **0 次清扫** /
 # 0 停顿 / 内存 12 KiB；而今天默认档同时清扫（事件路径 + 全局清扫两份钱）。改动方向：
 # 程序被判定**无环**时，用计数（事件路径）并让 `shouldSweep` 恒为 0 ⇒ **清扫次数必须为 0**。
 # 危险方向反过来：**判错了** ⇒ 有环区域的环垃圾永远收不掉 ⇒ **峰值 RSS 涨**（不是悬垂）。

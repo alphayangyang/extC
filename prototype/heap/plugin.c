@@ -1,4 +1,4 @@
-/* prototype-heap/plugin.c —— 模拟一个 dlopen 进来的 C 库：只看得见宿主递来的那张表。
+/* prototype/heap/plugin.c —— 模拟一个 dlopen 进来的 C 库：只看得见宿主递来的那张表。
  * 它按**普通指针**语义工作（无痛接入），把结果留在宿主给它的板里，返回**板内指针**。 */
 #include <stdint.h>
 #include <string.h>

@@ -18,7 +18,7 @@ llama 前向（GGUF 解析 + NeoX RoPE + RMSNorm + KV cache + SwiGLU + 量化 GE
 ## 为什么不直接用 `libllama`
 
 为了验证语言本身：这里只借 ggml 的两个东西 —— 量化格式与 `ggml_vec_dot_q4_0_q8_0` /
-`ggml_vec_dot_q8_0_q8_0` 这两个内核（经 `extlib/ggml` 的 dlopen 绑定）。GGUF 解析、
+`ggml_vec_dot_q8_0_q8_0` 这两个内核（经 `third_party/ggml` 的 dlopen 绑定）。GGUF 解析、
 RoPE、norm、attention、KV cache、argmax、token 循环全用 extC 写。
 
 ## 怎么跑
@@ -40,7 +40,7 @@ make -C /tmp/ggml/build -j8          # 产物在 /tmp/ggml/build/src
 然后：
 
 ```
-./build/extc -I extlib/ggml --build bench/llm-decode/decode.extc -o /tmp/llmdecode --ccflag -lm
+./build/extc -I third_party/ggml --build bench/llm-decode/decode.extc -o /tmp/llmdecode --ccflag -lm
 LD_LIBRARY_PATH=/tmp/ggml/build/src /tmp/llmdecode /tmp/models/stories15M-q8_0.gguf 20 /tmp/ggml/build/src
 ```
 
@@ -59,13 +59,13 @@ LD_LIBRARY_PATH=/tmp/ggml/build/src /tmp/llmdecode /tmp/models/stories15M-q8_0.g
   导出的通用 `ggml_vec_dot_q4_0_q8_0`。要把这 15% 拿回来得自己写 repack kernel 或调内部符号。
 - **没有持久线程池**：`parallel::run` 每次 spawn，这里干脆只测单线程。多线程 decode 要等线程池。
 - **prefill 没有用批**：5 个 prompt token 是逐 token 跑的（GEMV 当 GEMM 用会浪费指令），
-  所以 `PREFILL` 不具参考性；真做推理时 prefill 该走 `extlib/blas` 的 sgemm（见 `bench/numpy-matmul`）。
+  所以 `PREFILL` 不具参考性；真做推理时 prefill 该走 `third_party/blas` 的 sgemm（见 `bench/numpy-matmul`）。
 
 ## 数值口径
 
 - f32 权重（norm / embedding 的 F32 张量）按 IEEE754 手工位拼读（extC 现在没有 bitcast；
   这条也顺手逼出了一个编译器 bug：`f32(i64)` 曾走无符号转换，见 `tests/ops/conv_int_float.extc`）。
 - 量化行按「行字节数」切片后直接交给 ggml 的 dequantize/vec_dot，块布局与 llama.cpp 逐位一致
-  （`extlib/ggml/tests/gemv.extc` 有独立的位级判据）。
+  （`third_party/ggml/tests/gemv.extc` 有独立的位级判据）。
 - RoPE 用 NeoX 交错约定（stories15M 就是这种）；cos/sin 在加载时算成 `[pos][dim/2]` 表。
 - KV cache 是 `[layer][pos][n_embd]` 的 f32；attention 是朴素的 softmax + 加权和（没有 FA）。

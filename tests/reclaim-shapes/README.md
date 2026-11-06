@@ -1,7 +1,7 @@
 # `tests/reclaim-shapes/` —— 区域回收的**行为基线**
 
 配套机制文档：[`docs/RECLAMATION.md`](../../docs/RECLAMATION.md)。
-形状来源：该文档「要解决的问题」那一节 + [`prototype-reclaim/README.md`](../../prototype-reclaim/README.md)「压力版」。
+形状来源：该文档「要解决的问题」那一节 + [`prototype/reclaim/README.md`](../../prototype/reclaim/README.md)「压力版」。
 
 ## 这个目录的语义
 
@@ -248,7 +248,7 @@ s.w = wrap { n: keeper }        /* 生成物（修之前）：s->w = (wrap){.n =
 
 `next/prev` 与 `parent/left/right` 天然互指 ⇒ 每对相邻节点就是一个环 ⇒ 引用计数永远不归零，
 只能靠区域清扫（机制文档「四层」里的第四层；`EXTC_RECLAIM=1` 发射的运行期实现了它 ——
-**真正上场的证据**见下面 ⑥）。缓存与索引是**跨结构引用**，对应 prototype-reclaim 里
+**真正上场的证据**见下面 ⑥）。缓存与索引是**跨结构引用**，对应 prototype/reclaim 里
 「记忆集/跨区登记」要处理的那类边。
 
 规模取 8 个节点（秒级）；峰值只有进程底噪量级，所以这里**不设上界** —— 规模行为由 ⑤/⑥ 管。
@@ -271,7 +271,7 @@ s.w = wrap { n: keeper }        /* 生成物（修之前）：s->w = (wrap){.n =
 
 ### 形状：为什么必须靠清扫
 
-`cyclic_pressure.extc` 复刻 [`prototype-reclaim/stress.c`](../../prototype-reclaim/stress.c)
+`cyclic_pressure.extc` 复刻 [`prototype/reclaim/stress.c`](../../prototype/reclaim/stress.c)
 那个业务形状：**64 个桶（每桶 ≤8 节点）的双向链表 + 1024 槽缓存（第二持有者）+ 2 万项索引
 （跨结构引用）+ 带父指针的树（每 16 轮挂一个）**。
 
@@ -430,7 +430,7 @@ callgrind，N=800000：extC 开关开 **3.805 G 条指令**，清扫从不触发
 `cyclic_pressure` 1.00×）。
 
 **取舍与原型的关系**：`shard_bands` 上的方向与
-[`prototype-reclaim/README.md`](../../prototype-reclaim/README.md)「最终版」那张表**同向**
+[`prototype/reclaim/README.md`](../../prototype/reclaim/README.md)「最终版」那张表**同向**
 —— 分片 1→8 是最大停顿 406.7→81.7 µs（好）、峰值 RSS 17→18 MiB（略差）、耗时 49.6→61.9 ms
 （差）；这里是 548.7→218.9 µs、4.29→10.86 MB、437→762 ms。峰值变差有两个来源：每片至少
 一只 1 MiB slab 的底噪，以及每片一套标记栈/记账。

@@ -74,7 +74,7 @@ codegen 把语句 hoist 换成**每实例 unwrap 助手**（纯 C11；`-Wpedanti
 
 **下一件**：**`view<T>` 改名**（纯机械 commit，等没别的改动在飞时做）→
 3. **S1 checked 原语 + S1b trap 统计** → 4. **A′ 的红判据**（`tools/escape-corpus/` 加 mut 洗白形状）→
-5. heap 的 `free` 那一半从 [`prototype-heap/`](../prototype-heap/README.md) 搬进 `std::heap` → 6. 账本收缩（删状态句 + `check_status.py` 闸门）。
+5. heap 的 `free` 那一半从 [`prototype/heap/`](../prototype/heap/README.md) 搬进 `std::heap` → 6. 账本收缩（删状态句 + `check_status.py` 闸门）。
 
 **还有一件零风险的事没做**：**push 那 18 个 commit**（远端仍落后）。
 

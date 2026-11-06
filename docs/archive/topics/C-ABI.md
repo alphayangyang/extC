@@ -122,7 +122,7 @@
    （在 prelude 里加声明会改所有产物；类型不是声明，天然零位移）。判据：产物逐字节不变（语料里没有
    这个类型 ⇒ golden 414/414 应不动）。
 2. **跨界的结构体布局**：`extc_heap_api` 那种表要按 C 布局。这一格与 `HEAP.md` §2 一起做。
-3. **`std::dl`**：`dlopen/dlsym/dlclose` 的 `extern!` 声明 + 表的分发；第一个用户是 `prototype-heap/`
+3. **`std::dl`**：`dlopen/dlsym/dlclose` 的 `extern!` 声明 + 表的分发；第一个用户是 `prototype/heap/`
    那套（纯 C 原型已经在跑，见其 README）。
 4. **Heap 板进运行期**：`mmap` 保留 + 按需 commit + 那道门（区间检查）+ `close` 即 `munmap`。
    到这里 `HEAP.md` 才有实现可指。
@@ -445,7 +445,7 @@ plate=ok byte=42 logged=2 outside=rejected
   （走"收窄必须写出来"那条既有的路，不新增 builtin）。
 * **④ 端到端**：`gcc -shared` 编一个 C 模块导出 `init(table)` 填表，extC 宿主用 `std::dl` 打开、
   经签字的表槽调用、再经表里的函数指针调用，拿回一个指针用**一次区间检查**验证 —— 也就是把
-  `prototype-heap/` 那套搬进语言。
+  `prototype/heap/` 那套搬进语言。
 
 ## 9.10 第 4 步：板（Heap）进运行期（已完成）
 
@@ -572,7 +572,7 @@ alloc=ok write=ok ro=true read=after-ro rw=true write2=ok closed=0      （tests
 loaned ⇒ 写 ⇒ SIGSEGV（rc=139，崩溃前标记可见）                          （tests/heap/loanwrite.extc）
 ```
 
-为什么要有它：大输入进来时"拷贝进板"是 1830 MB/s，而只读借出是**零拷贝**（`prototype-heap/`
+为什么要有它：大输入进来时"拷贝进板"是 1830 MB/s，而只读借出是**零拷贝**（`prototype/heap/`
 4b 量过 21.6 GB/s，两次 `mprotect` 各 ≈370 µs ⇒ 盈亏平衡 ≈0.7 MiB）。代价是那段内存借出期间
 **谁都不能写** —— 内核保证，写就是硬缺页，而这一条有专门的测试盯着。
 

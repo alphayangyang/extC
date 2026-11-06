@@ -2661,7 +2661,7 @@ static const char *const RECLAIM_RT[] = {
     "\n",
     "#include <time.h>\n",
     "/* EXTC_RC_PAUSE=1: accumulate the duration of every **real sweep** (coarse: take the clock before and after), printed at process exit.\n",
-    " * The accounting matches the prototype-reclaim/sim.c pauses (max + total + count). If the platform exposes a monotonic clock use\n",
+    " * The accounting matches the prototype/reclaim/sim.c pauses (max + total + count). If the platform exposes a monotonic clock use\n",
     " * it, otherwise fall back to ISO C `clock()` (CPU time, which underestimates time blocked on page faults/IO). Off by default. */\n",
     "static long long extc_rc_pauseMax, extc_rc_pauseTotal, extc_rc_pauseN;\n",
     "static int extc_rc_pauseOn = -1;\n",

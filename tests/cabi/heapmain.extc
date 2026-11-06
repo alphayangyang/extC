@@ -1,5 +1,5 @@
 // expect: plate=ok byte=42 logged=2 outside=rejected
-// C-ABI 第 3 步第 ④ 块：**一张表 + 一个 C 模块 + 一次区间检查**（`prototype-heap/` 那套在 extC 里）。
+// C-ABI 第 3 步第 ④ 块：**一张表 + 一个 C 模块 + 一次区间检查**（`prototype/heap/` 那套在 extC 里）。
 //
 // 分工与 HEAP.md §2 一致：
 //   · **宿主**（本文件）拥有"板"（一个定长数组）并实现表里的三个函数；

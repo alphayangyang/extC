@@ -485,7 +485,7 @@ static void usage(const char *argv0) {
         "  EXTC_RC_PAUSE=1      diagnostic only: the generated program times every real sweep (one\n"
         "                       clock read before and after) and prints max/total/collects at exit.\n"
         "                       Uses a monotonic clock when the platform exposes one, else ISO C\n"
-        "                       clock() (CPU time). See prototype-reclaim/sim.c for the method.\n");
+        "                       clock() (CPU time). See prototype/reclaim/sim.c for the method.\n");
 }
 
 /* ---------------------------------------------------------------- prelude */

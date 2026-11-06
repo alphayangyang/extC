@@ -850,7 +850,7 @@ cache-sim 判据变红）。
 ## 六、怎么知道是真的
 
 * 机制的不变量与边界有机器检查的证明，见 [`proofs/`](../proofs/README.md)。
-* 数值（开销、内存上界、停顿）由 [`prototype-reclaim/`](../prototype-reclaim/README.md) 的 C 探针
+* 数值（开销、内存上界、停顿）由 [`prototype/reclaim/`](../prototype/reclaim/README.md) 的 C 探针
   与跨语言对照给出。
 * 行为基线与开关下的判据（含分片、根表收窄的对照数据）由
   [`tests/reclaim-shapes/`](../tests/reclaim-shapes/README.md) 给出。

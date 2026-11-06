@@ -1,4 +1,4 @@
-/* extlib/ggml/tests/gemv.extc —— 判据：ggml 绑定算得对、块布局读得对、量化 GEMV 的确省带宽
+/* third_party/ggml/tests/gemv.extc —— 判据：ggml 绑定算得对、块布局读得对、量化 GEMV 的确省带宽
  *
  * 用法：gemv [ggml 构建目录]      目录里应有 libggml-base.so 与 libggml-cpu.so
  *                                  （cmake -B build && make -C build 后的 build/src）

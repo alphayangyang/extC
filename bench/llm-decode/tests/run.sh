@@ -28,7 +28,7 @@ trap 'rm -rf "$TMP"' EXIT
 fail() { echo "  FAIL $1"; exit 1; }
 
 # ---------------------------------------------------------------- 构建
-if ! "$EXTC" -I extlib/ggml --build bench/llm-decode/decode.extc -o "$TMP/decode" \
+if ! "$EXTC" -I third_party/ggml --build bench/llm-decode/decode.extc -o "$TMP/decode" \
         --ccflag -lm >"$TMP/build.log" 2>&1; then
     cat "$TMP/build.log"
     fail "bench/llm-decode/decode.extc 编不过"

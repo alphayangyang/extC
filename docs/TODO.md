@@ -123,7 +123,7 @@
   `var s: slice<u8> = new u8[64]` 处提示改用 `buf<T>` + `.view()`（默认关，语料有数百处）；
   第二阶段把整个语料的这个写法迁完、然后让它在没有 `buf<T>` 时变成错误，同时 `new T[n]` 在
   `slice` 注解下不再算拥有者。规模实测（`(let|var) x: slice<…> = new …`）：**329 处 / 141 个文件**
-  （tests 176、bench 82、extlib 36、examples 17、stdlib 15、tools 3）；stdlib 那 15 处是 `io`/`fs`/
+  （tests 176、bench 82、third_party 36、examples 17、stdlib 15、tools 3）；stdlib 那 15 处是 `io`/`fs`/
   `net` 的内部缓冲，先改成 `buf<T>` 风险最低的一批。
 - **`array<T, N>` / `buf<T>` 与 const 泛型**（类型模型已定案，见 [`TYPE-MODEL.md`](TYPE-MODEL.md) §三、§四）：
   把"拥有存储的数组"从 `slice` 里分出来。要的行为：`[N]T` 归一成 `array<T, N>`（内联、静态长度），

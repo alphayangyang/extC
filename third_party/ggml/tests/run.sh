@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# extlib/ggml/tests/run.sh —— ggml 量化内核绑定的判据
+# third_party/ggml/tests/run.sh —— ggml 量化内核绑定的判据
 #
 # 两件事：
 #   ① 算得对：q4_0 / q8_0 的块布局（f16 尺度 + nibble/int8 位序）必须与 ggml 的
@@ -30,10 +30,10 @@ trap 'rm -rf "$TMP"' EXIT
 fail() { echo "  FAIL $1"; exit 1; }
 
 # ---------------------------------------------------------------- 构建判据程序
-if ! "$EXTC" --build -I extlib/ggml extlib/ggml/tests/gemv.extc -o "$TMP/gemv" \
+if ! "$EXTC" --build -I third_party/ggml third_party/ggml/tests/gemv.extc -o "$TMP/gemv" \
         --ccflag -l --ccflag dl >"$TMP/build.log" 2>&1; then
     cat "$TMP/build.log"
-    fail "extlib/ggml/tests/gemv.extc 编不过"
+    fail "third_party/ggml/tests/gemv.extc 编不过"
 fi
 
 # ---------------------------------------------------------------- 找 ggml

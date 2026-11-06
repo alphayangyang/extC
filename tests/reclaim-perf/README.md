@@ -2,7 +2,7 @@
 
 配套：[`tests/reclaim-shapes/README.md`](../reclaim-shapes/README.md)（行为基线：回收对不对）、
 [`docs/RECLAMATION.md`](../../docs/RECLAMATION.md)（机制与待做清单）、
-[`prototype-reclaim/stress.c`](../../prototype-reclaim/stress.c)（C 原型，对照的基准侧）。
+[`prototype/reclaim/stress.c`](../../prototype/reclaim/stress.c)（C 原型，对照的基准侧）。
 
 **这个目录只做归因，不做门禁**（同 `reclaim-shapes` 的口径：证据，不是判据；不接进 `check.sh`）。
 所有脚本只读形状源、只改 `/tmp` 里**生成物**的副本，`src/` 一个字节都不动。
@@ -110,7 +110,7 @@ git status    = M src/back/codegen.c, M src/back/reclaim.c, M src/back/reclaim.h
 
 **形状与规模**：`tests/reclaim-shapes/cyclic_pressure.extc`，N=800000（与原型同参），
 另有 N=20000/200000 用于小规模与斜率。**C 原型**对照跑
-`prototype-reclaim/stress.c` 的参数 `N 1024 64 20000 48 8`（缓存 1024 / 每 64 轮 / 索引 2 万 / 节点 48 字节 / 分片 8），
+`prototype/reclaim/stress.c` 的参数 `N 1024 64 20000 48 8`（缓存 1024 / 每 64 轮 / 索引 2 万 / 节点 48 字节 / 分片 8），
 与 extC 形状的旋钮对齐。
 
 **编译**：
@@ -406,7 +406,7 @@ return (int)extc_rc_collect(r, roots, nroots);
 在 `/tmp` 重建了一份**纯 HEAD** 的 `extc`（**没动工作树、没动 `.git`、没碰 `build/`**），
 四种组合都跑了 N=800000：
 
-| 构建 | `-O1`（任务规定的编译档） | `-O2`（`prototype-reclaim/run.sh` 的档） |
+| 构建 | `-O1`（任务规定的编译档） | `-O2`（`prototype/reclaim/run.sh` 的档） |
 |---|---|---|
 | **pristine HEAD** `1b62eb8`（`git archive` 重建） | 4 129 038 253 | **3 874 977 128** |
 | **工作树**（HEAD + 未提交 `src/back` 改动，md5 `5e51d77f`） | **4 408 392 512** | 4 120 476 037 |

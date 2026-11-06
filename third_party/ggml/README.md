@@ -1,6 +1,6 @@
-# extlib/ggml/ —— ggml 的量化内核（q4_0 / q8_0）
+# third_party/ggml/ —— ggml 的量化内核（q4_0 / q8_0）
 
-ggml 是 llama.cpp 家族的张量库。BLAS（`extlib/blas`）只解决**浮点 GEMM**，而 LLM 推理的
+ggml 是 llama.cpp 家族的张量库。BLAS（`third_party/blas`）只解决**浮点 GEMM**，而 LLM 推理的
 decode 阶段是**量化权重 × 一行激活的 GEMV**：权重常驻内存、每步只读一遍，谁把权重读得少谁快。
 q4_0 / q8_0 是 llama.cpp 生态最常用的两种权重格式，它们的 kernel 用了普通 C 表达不出来的
 x86 指令（`maddubs`/`madd` 一类），所以纯 extC 的 autovec 版本会在这一段慢 1.4–2.8×。
@@ -10,7 +10,7 @@ dlsym 六只符号，收 `slice`、发 `slice`，其余照 ggml 自己的约定�
 
 ## 为什么是扩展库而不是 std
 
-与 `extlib/blas` 同一条判据（见 `../README.md`）：可选的第三方大库 + 需要自己 cmake 构建 +
+与 `third_party/blas` 同一条判据（见 `../README.md`）：可选的第三方大库 + 需要自己 cmake 构建 +
 符号是「导出但不是公开 API」+ 自带线程/CPU 特性分发。这些都不该塞进语言的默认面。
 
 ## 构建 ggml（一次性）
@@ -92,7 +92,7 @@ exposed for tests and benchmarks"）。所以：
 * `open()` 逐只 `dlsym`，**任何一只缺席就返回 none** —— 版本漂移是运行期事实，不是编译期错误；
 * 块布局（18/34 字节、nibble 序、f16 尺度）也在判据里逐位对拍：`dequantize_row_*` 与
   「自己按位序解一遍」必须完全一致。布局一变，判据立刻红，而不是悄悄算错数；
-* 真正升级 ggml 时先跑 `./extlib/ggml/tests/run.sh`（gate-ggml）。
+* 真正升级 ggml 时先跑 `./third_party/ggml/tests/run.sh`（gate-ggml）。
 
 ## API
 

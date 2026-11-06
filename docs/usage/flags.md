@@ -99,7 +99,7 @@ debug switches -- diagnostics only, **except the marked below**:
   EXTC_RC_PAUSE=1      diagnostic only: the generated program times every real sweep (one
                        clock read before and after) and prints max/total/collects at exit.
                        Uses a monotonic clock when the platform exposes one, else ISO C
-                       clock() (CPU time). See prototype-reclaim/sim.c for the method.
+                       clock() (CPU time). See prototype/reclaim/sim.c for the method.
 ```
 
 ## 环境变量与调试开关

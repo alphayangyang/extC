@@ -1,4 +1,4 @@
-/* prototype-heap/host.c —— 边界层（Heap）的最小原型：连续板 + 一道门。
+/* prototype/heap/host.c —— 边界层（Heap）的最小原型：连续板 + 一道门。
  *
  * 只回答四个问题（每个都打印数字，不打印形容词）：
  *   1. reserve —— 一次 mmap 保留一大段连续区、按需 commit，代价与 RSS 各是多少

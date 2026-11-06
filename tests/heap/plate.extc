@@ -1,7 +1,7 @@
 // expect: reserve=4096MB rss_delta= commit=1024KB stored=11 holds=true outside=false copyin_teeth=-1 reuse=ok closed=0
 // 板的常设验收（HEAP.md / C-ABI.md §9.10）：保留、按需 commit、那道门、寿命。
 //
-// 这里量两件**设计赖以成立**的事（原型里的数字在 `prototype-heap/README.md`，这里在 extC 侧复现）：
+// 这里量两件**设计赖以成立**的事（原型里的数字在 `prototype/heap/README.md`，这里在 extC 侧复现）：
 //   ① 保留 4 GiB **不占物理页** —— 看 `/proc/self/statm` 的 resident 差（期望远小于 4096 KB）；
 //   ② commit **按 CHUNK（1 MiB）粒度**走，而不是整块 4 GiB。
 // 判据的牙：板外指针 `holds` 为假；`copyIn` 目标不在板内 ⇒ -1（那道门真的在验）。

@@ -13,7 +13,7 @@
 #          回收判据一个字不动，两次用的是同一把尺子。报告 REPS 次的中位数（避噪）。
 #        · **峰值内存** —— `/usr/bin/time -v` 的 Maximum resident set size（取最大值）。
 #        · **吞吐** —— 同一程序的墙钟，取 REPS 次里最快的一次（`%e`）。
-#   ③ 方向：与 `prototype-reclaim/README.md`「最终版：计数归零 + 分片」那张表同向吗。
+#   ③ 方向：与 `prototype/reclaim/README.md`「最终版：计数归零 + 分片」那张表同向吗。
 #      原型（200 万轮）：分片 1→8 是 最大停顿 406.7→81.7 µs（好）、峰值 RSS 17→18 MiB
 #      （略差）、耗时 49.6→61.9 ms（差）。
 #
@@ -147,7 +147,7 @@ report_shape tests/reclaim-shapes/cyclic_pressure.extc "cyclic-pressure"
 echo
 echo "== 与原型 README「最终版：计数归零 + 分片」（200 万轮）同向吗 =="
 cat <<'EOF'
-  原型（prototype-reclaim/README.md，slab_final.c）：分片 1 → 8
+  原型（prototype/reclaim/README.md，slab_final.c）：分片 1 → 8
     最大停顿   406.7 µs → 81.7 µs   变好（5.0×）      ← 停顿旋钮的本意
     峰值 RSS   17 MiB   → 18 MiB    略变差            ← 每片至少一只 slab 的底噪
     耗时       49.6 ms  → 61.9 ms   变差（1.25×）     ← 每片都要单独触发/收一次

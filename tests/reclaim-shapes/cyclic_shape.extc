@@ -1,4 +1,4 @@
-/* 形状 ③：**有环形状** —— `prototype-reclaim/README.md`「压力版」那一节的样子。
+/* 形状 ③：**有环形状** —— `prototype/reclaim/README.md`「压力版」那一节的样子。
  *
  * 双向链表（next/prev 互指）+ 带父指针的树（left/right/parent 互指），
  * 再加一个缓存（lru）与一个索引（xref）—— 后两者是**跨结构的引用**。

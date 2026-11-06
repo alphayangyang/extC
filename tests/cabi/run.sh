@@ -110,7 +110,7 @@ check_err tests/cabi/errors/conv_nullable.extc 'it may be null'
 check_err tests/cabi/errors/conv_notptr.extc   'cannot convert `i64` to `fn(i64) -> i64`'
 check_err tests/cabi/errors/conv_no_ret.extc   'needs its return type'
 
-echo '== ④ 一张表 + 一个 C 模块 + 一次区间检查（prototype-heap 那套在 extC 里）=='
+echo '== ④ 一张表 + 一个 C 模块 + 一次区间检查（prototype/heap 那套在 extC 里）=='
 if gcc -std=c11 -fPIC -shared -o build/cabi-heapmod.so tests/cabi/heapmod.c 2>"$tmp/err4"; then
     if out=$("$EXTC" --run tests/cabi/heapmain.extc 2>&1); then
         ok=1

@@ -1,7 +1,7 @@
 /* bench/llm-decode/decode.extc —— 用 extC 自己跑一遍 tiny llama 的 decode。
  *
  * 自己解析 GGUF、自己做 forward（RMSNorm / NeoX RoPE / GQA 无 / SwiGLU / 输出层），
- * 权重与激活的矩阵乘全部走 extlib/ggml 的量化 GEMV（q4_0/q8_0），与 llama.cpp 的
+ * 权重与激活的矩阵乘全部走 third_party/ggml 的量化 GEMV（q4_0/q8_0），与 llama.cpp 的
  * CPU decode 路径同一套 kernel；BLAS 留给 prefill（见 README）。
  *
  * 用法：decode <model.gguf> [n_tokens] [ggml_build_dir]

@@ -1069,10 +1069,10 @@ def build_items() -> list:
     # MIN_RATIO 倍」，否则跳过（shim 那半永远跑）。没有 CBLAS 的干净机器上不会红。
     items.append(cmd(
         "gate-blas", "gate",
-        "闸门·extlib/blas：LP64 与 ILP64 两条 ABI 分支都逐元素对上裸循环（有真库时还要快 2× 以上）",
-        ["./extlib/blas/tests/run.sh"], timeout=600,
+        "闸门·third_party/blas：LP64 与 ILP64 两条 ABI 分支都逐元素对上裸循环（有真库时还要快 2× 以上）",
+        ["./third_party/blas/tests/run.sh"], timeout=600,
         ok_msg=ok_first(r"^  ok   blas"),
-        bad_msg="extlib/blas/tests/run.sh（BLAS 绑定认错 ABI/算错数/封装把性能吃掉了）",
+        bad_msg="third_party/blas/tests/run.sh（BLAS 绑定认错 ABI/算错数/封装把性能吃掉了）",
         bad_dump=dump_fail(12)))
 
     # ---- 闸门·ggml 扩展库的量化内核 ----
@@ -1083,10 +1083,10 @@ def build_items() -> list:
     # ggml 是可选第三方库（要自己 cmake 构建）：找不到时脚本先编过模块与判据程序再跳过。
     items.append(cmd(
         "gate-ggml", "gate",
-        "闸门·extlib/ggml：q4_0/q8_0 块布局与 dequantize 逐位一致、q4_0 GEMV 比 f32 快 2× 以上（无 ggml 时跳过）",
-        ["./extlib/ggml/tests/run.sh"], timeout=600,
+        "闸门·third_party/ggml：q4_0/q8_0 块布局与 dequantize 逐位一致、q4_0 GEMV 比 f32 快 2× 以上（无 ggml 时跳过）",
+        ["./third_party/ggml/tests/run.sh"], timeout=600,
         ok_msg=ok_first(r"^  ok   ggml"),
-        bad_msg="extlib/ggml/tests/run.sh（量化块布局读错/vec_dot 算错/q4 的带宽优势没兑现）",
+        bad_msg="third_party/ggml/tests/run.sh（量化块布局读错/vec_dot 算错/q4 的带宽优势没兑现）",
         bad_dump=dump_fail(12)))
     # ---- 闸门·端到端 decode（bench/llm-decode）----
     # 买的是**整条链一起对**：GGUF 解析（元数据/张量表/量化行）、NeoX RoPE、RMSNorm、

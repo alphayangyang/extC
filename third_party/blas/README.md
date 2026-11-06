@@ -1,4 +1,4 @@
-# extlib/blas —— BLAS 的 extC 绑定（扩展库，不是标准库）
+# third_party/blas —— BLAS 的 extC 绑定（扩展库，不是标准库）
 
 CBLAS 的 `sgemm`/`sgemv`。行主序、收 `slice<f32>`/`slice<f64>`、按符号名认 ABI。
 **不链接、不装包**：用 `std::dl` 在运行期 `dlopen`，所以同一个程序在装了
@@ -37,11 +37,11 @@ fn main() -> i32 {
 }
 ```
 
-编译：`extc --build -I extlib/blas prog.extc -o prog --ccflag -l --ccflag dl`
+编译：`extc --build -I third_party/blas prog.extc -o prog --ccflag -l --ccflag dl`
 （`--ccflag -l --ccflag dl` 是给 `dlopen` 链接 `libdl`；glibc 2.34 之后它并在 libc 里，
 但这句在旧系统上也要成立。）
 
-模块搜索：`-I extlib/blas` ⇒ `use blas` 找 `extlib/blas/blas.extc`（与 `extpkg` 的包
+模块搜索：`-I third_party/blas` ⇒ `use blas` 找 `third_party/blas/blas.extc`（与 `extpkg` 的包
 形状一致：一个目录，里面 `<名字>.extc`）。**不要**用 `-I stdlib` 去引 stdlib ——
 那会把 stdlib 内部的特权层模块认成用户代码（报「`std::sys::heap` is the standard
 library's privileged layer」）。

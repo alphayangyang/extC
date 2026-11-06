@@ -1,4 +1,4 @@
-/* extlib/blas/tests/sgemm.extc —— 判据：BLAS 绑定算得对、且确实比裸循环快
+/* third_party/blas/tests/sgemm.extc —— 判据：BLAS 绑定算得对、且确实比裸循环快
  *
  * 用法：sgemm [库路径]
  *   不给路径就按 soname 探测（probe）。机器上没有任何 BLAS 时以退出码 3 表示「跳过」。

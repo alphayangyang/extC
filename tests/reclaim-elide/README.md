@@ -1,7 +1,7 @@
 # `tests/reclaim-elide/` —— 「计数按编译期收窄」的**红判据语料**
 
 配套机制文档：[`docs/RECLAMATION.md`](../../docs/RECLAMATION.md) 第五节最后一条。
-度量口径：[`prototype-reclaim/README.md`](../../prototype-reclaim/README.md)「写密集形状：计数这块的代价」。
+度量口径：[`prototype/reclaim/README.md`](../../prototype/reclaim/README.md)「写密集形状：计数这块的代价」。
 
 ## 这个目录的语义
 
@@ -30,7 +30,7 @@
 
 ## 计数挂在哪（度量口径）
 
-`prototype-reclaim/README.md`「写密集形状」：
+`prototype/reclaim/README.md`「写密集形状」：
 
 * **计数只挂在"指向关系改变"上**：`p.val = x` 不记，`p.next = q` 记两次（`extc_rc_storeRef`
   里 `inc 新值 + dec 旧值`），`p.next = p.next` 可以不记。单价 ≈ **0.11 ns / 指针赋值**
@@ -80,7 +80,7 @@
 
 | 形状 | 期望 | 覆盖 |
 |---|---|---|
-| `writes_dense.extc` | **该省** | `prototype-reclaim`「写密集形状」：8 个节点串成双向链，之后每轮 4 次指针改链 + 2 次数据写，每 1024 轮才 `new` 1 个节点；所有节点在同一层区里（函数退出整片释放）⇒ 情形①，且是收窄收益**最大**的形状 |
+| `writes_dense.extc` | **该省** | `prototype/reclaim`「写密集形状」：8 个节点串成双向链，之后每轮 4 次指针改链 + 2 次数据写，每 1024 轮才 `new` 1 个节点；所有节点在同一层区里（函数退出整片释放）⇒ 情形①，且是收窄收益**最大**的形状 |
 | `keep_count_granularity.extc` | **不该省（粒度）** | 同一个结构上并排放一次数据写（`hot.val = ...`）与一次指针写（`hot.next = tail`）：指针写**该**出现计数，数据字段赋值行上**不该**出现任何计数调用 |
 
 反面对照只否认**对应那一条**证明（不构成三类情形的划分）：例如 `keep_unknown_region.extc`

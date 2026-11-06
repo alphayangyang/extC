@@ -1,4 +1,4 @@
-/* extlib/blas/blas.extc —— BLAS 的 dlopen 后端：不链接、不装包，按符号名认 ABI
+/* third_party/blas/blas.extc —— BLAS 的 dlopen 后端：不链接、不装包，按符号名认 ABI
  *
  * 为什么 BLAS 是扩展库而不是 std：见同目录 README.md。要点 —— std 里声明的 C 原语必须是
  * libc 或平台绕不开的东西；BLAS 是可选的第三方大库，还有 ABI 分叉和自带的线程池。

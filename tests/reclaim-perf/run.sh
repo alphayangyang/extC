@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # tests/reclaim-perf/run.sh —— 复跑"回收运行期为什么慢"的归因矩阵。
 #
-# 只读 `tests/reclaim-shapes/cyclic_pressure.extc` 与 `prototype-reclaim/stress.c`，
+# 只读 `tests/reclaim-shapes/cyclic_pressure.extc` 与 `prototype/reclaim/stress.c`，
 # 只写自己的临时目录；`src/` 一个字节都不动。
 #
 # 三件事：
@@ -18,7 +18,7 @@ set -u
 DIR=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$DIR/../.." && pwd)
 SRC=${SRC:-$ROOT/tests/reclaim-shapes/cyclic_pressure.extc}
-PROTO=${PROTO:-$ROOT/prototype-reclaim/stress.c}
+PROTO=${PROTO:-$ROOT/prototype/reclaim/stress.c}
 EXTC=${EXTC:-$ROOT/build/extc}
 CC=${CC:-cc}
 N=${N:-200000}

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# extlib/blas/tests/run.sh —— BLAS 绑定的判据
+# third_party/blas/tests/run.sh —— BLAS 绑定的判据
 #
 # 三件事，全都要过：
 #   ① LP64 分支：用 lp64shim.c 造的 32 位维度 CBLAS，验 cblas_sgemm/sgemv/dgemm 这条分支
@@ -31,15 +31,15 @@ trap 'rm -rf "$TMP"' EXIT
 fail() { echo "  FAIL $1"; exit 1; }
 
 # ---------------------------------------------------------------- 构建判据程序
-if ! "$EXTC" --build -I extlib/blas extlib/blas/tests/sgemm.extc -o "$TMP/sgemm" \
+if ! "$EXTC" --build -I third_party/blas third_party/blas/tests/sgemm.extc -o "$TMP/sgemm" \
         --ccflag -l --ccflag dl >"$TMP/build.log" 2>&1; then
     cat "$TMP/build.log"
-    fail "extlib/blas/tests/sgemm.extc 编不过"
+    fail "third_party/blas/tests/sgemm.extc 编不过"
 fi
 
 # ---------------------------------------------------------------- ① LP64 分支
 if ! "$CC" -O2 -shared -fPIC -o "$TMP/libextc_blas_lp64shim.so" \
-        extlib/blas/tests/lp64shim.c >"$TMP/shim.log" 2>&1; then
+        third_party/blas/tests/lp64shim.c >"$TMP/shim.log" 2>&1; then
     cat "$TMP/shim.log"
     fail "lp64shim.c 编不过"
 fi

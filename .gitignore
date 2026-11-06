@@ -42,16 +42,16 @@ bench/gc/io/in_lines.txt
 # DSH 认的项目级 skill 根：`.agents/skills` 是指向 `.claude/skills` 的符号链接，
 # 让同一份 skill 同时被 Claude Code 与 DSH 看到（DSH 只扫 .dsh/skills 与 .agents/skills）
 .agents/
-prototype-python/
+prototype/python/
 
-# prototype-heap 的产物（run.sh 会重新编）
-prototype-heap/host
-prototype-heap/plugin.so
+# prototype/heap 的产物（run.sh 会重新编）
+prototype/heap/host
+prototype/heap/plugin.so
 
-# prototype-reclaim 的产物（run.sh 会重新编）
-prototype-reclaim/probe_sweep
-prototype-reclaim/probe_coldhot
-prototype-reclaim/probe_real
+# prototype/reclaim 的产物（run.sh 会重新编）
+prototype/reclaim/probe_sweep
+prototype/reclaim/probe_coldhot
+prototype/reclaim/probe_real
 # 基准数据与编译产物：**生成的**，不该进版本库（2026-10-07 从历史里剔除，224MB 的文件曾挡住 push）
 bench/io/data/
 bench/io/bin/
@@ -59,9 +59,9 @@ bench/io/bin/
 # 编译产物：Lean 目标文件、Java class、跨语言对照的二进制（都能从源码重建）
 *.olean
 *.class
-prototype-reclaim/crosslang/bench_*
-prototype-reclaim/crosslang/stress_*
-prototype-reclaim/crosslang/writes_*
+prototype/reclaim/crosslang/bench_*
+prototype/reclaim/crosslang/stress_*
+prototype/reclaim/crosslang/writes_*
 
 # 跑出来的裸转储：每次复跑都被重写，不入库（判据 `check-tree` / tools/check_tree.py）
 # 文件仍留在工作区里，只是不再跟踪 —— 要看就自己跑一遍对应的 runner
