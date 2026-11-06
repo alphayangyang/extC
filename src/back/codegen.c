@@ -3046,7 +3046,9 @@ static const char *exIdent(CG *g, Expr *e) {
     {
         int lp = planLenParam(e);
         if (lp >= 0 && g->curFunc && (size_t)lp < g->curFunc->targs.len) {
-            Type *b = *(Type **)vecAt(&g->curFunc->targs, (size_t)lp);
+            /* `vecAt` takes a mutable Vec, and `curFunc` is const here: the cast is the read-only
+             * use of an accessor that has no const overload. Nothing below writes through it. */
+            Type *b = *(Type *const *)vecAt((Vec *)&g->curFunc->targs, (size_t)lp);
             if (b && b->kind == TY_ARRAY && b->asize >= 0)
                 return arenaPrintf(g->arena, "%lld", (long long)b->asize);
             ctxError(g->ctx, e->line, 1, NULL,
@@ -14968,6 +14970,9 @@ static void anyEmitRuntime(Arena *arena, Buf *out, bool withPrint, bool withEq) 
             "    if (!d || depth > 32) return extc_json_raw(\"null\", 4, out, cap, o);\n"
             "    switch (d->kind) {\n"
             "    case EXTC_D_STRUCT: {\n"
+            );
+
+    bufPuts(out,
             "        const ExtcField *fs = (const ExtcField *)d->table;\n"
             "        o = extc_json_raw(\"{\", 1, out, cap, o);\n"
             "        for (size_t i = 0; fs && i < d->count; i++) {\n"
@@ -15019,7 +15024,14 @@ static void anyEmitRuntime(Arena *arena, Buf *out, bool withPrint, bool withEq) 
             "    const ExtcDesc *d = a->desc ? extc_any_type(a) : NULL;\n"
             "    const char *n = d && d->name ? d->name : (a->desc ? \"?\" : \"<none>\");\n"
             "    return extc_json_raw(n, (int64_t)strlen(n), out, cap, 0);\n"
-            "}\n");
+            /* The closing brace belongs to **this** chunk: the text above is emitted in two
+             * `bufPuts` calls because a single literal of that size is over the C99 minimum
+             * (4095 bytes), and cutting between the `return` and the `}` left
+             * `extc_any_type_name` open, so the descriptor table that follows landed inside its
+             * body (`redeclaration of tri_desc with no linkage`). Keep the two halves in step:
+             * every chunk that opens a brace has to close it. */
+            "}\n"
+            );
 }
 
 /**

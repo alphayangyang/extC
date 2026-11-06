@@ -18,6 +18,14 @@ cd "$(dirname "$0")/../.."
 EXTC=${EXTC:-./build/extc}
 CC=${CC:-cc}
 TIME=${TIME:-/usr/bin/time}
+
+# 缺 `time` 时**明说跳过**，不要让后面变成"语义没同时成立"的假红：Debian 最小系统里
+# /usr/bin/time 属于 `time` 包，不在 base 里；RSS 与 pause 两个口径都靠它。
+if [ ! -x "$TIME" ] && ! command -v "$TIME" >/dev/null 2>&1; then
+    echo "  skip  需要 GNU/BSD \`time\`（$TIME 不存在；Debian: apt install time）"
+    exit 0
+fi
+
 PROBE=${PROBE:-tools/rc-pause-probe.py}
 HERE=tests/reclaim-gaps
 OUTDIR=${OUTDIR:-$HERE/out}

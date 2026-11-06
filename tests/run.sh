@@ -1,4 +1,13 @@
 #!/usr/bin/env bash
+
+# 整轮自带上限：某个套件卡住时不该让 `./tests/run.sh` 永久挂着（最小发行版里实测踩到过）。
+# 正常情况下整轮 1 分钟以内；上限默认 15 分钟，`EXTC_TESTS_TIMEOUT=秒` 可覆盖，
+# 超时以 rc=124 结束（`check.sh` 会把它记成 FAIL 并标"超时"）。
+if [ -z "${EXTC_TESTS_INNER:-}" ]; then
+    export EXTC_TESTS_INNER=1
+    timeout "${EXTC_TESTS_TIMEOUT:-900}" bash "$0" "$@"
+    exit $?
+fi
 # extC week-0 回归测试：例子能跑通，坏代码能被编译期挡掉。
 set -u
 cd "$(dirname "$0")/.."

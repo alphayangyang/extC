@@ -558,6 +558,12 @@ static bool typeContainsRefAt(TypeTable *tt, Type *t, int depth) {
     if (depth > ZERO_VALUE_DEPTH_LIMIT) return true;   /* conservative */
     if (!t) return false;
     if (t->kind == TY_REF) return true;
+    /* A `dyn T` value is a handle into the object table of the place that built it: the pool has to
+     * outlive the handle, exactly like a reference's source does. Saying "no reference" here let a
+     * `dyn` be stored from a loop body into a container declared outside the loop, and the slot was
+     * recycled when the body's place ended (a stale read at the next dispatch). `any` is **not**
+     * included: boxing copies the payload, so the box owns its bytes and can be stored anywhere. */
+    if (t->kind == TY_DYN) return true;
     if (t->kind == TY_ARRAY) return typeContainsRefAt(tt, t->inner, depth + 1);
     /* Any variant payload can carry a reference, so all of them are inspected. */
     if (t->kind == TY_ENUM && t->edef) {

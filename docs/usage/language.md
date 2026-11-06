@@ -620,11 +620,16 @@ impl slice<u8> {
 - `dyn Trait(值)` 把一个实现了该协议的值变成 `dyn Trait`；载荷类型必须实现了该协议。
 - 调用点只知道 `dyn Trait`，方法经**表**派发；`dyn Trait` 是普通值，能存字段、进数组、
   进 `varArray<T>`、被函数返回（返回时提升进调用者的地方）。
+- **`dyn` 的值是某个 place 里槽位的句柄**，所以它和引用一样算"携带存储"：把一个在循环体/内层块
+  里造出来的 `dyn` 直接交给活得更久的容器（`xs.push(dyn Tag(b))`）在**检查期就被拒绝**。
+  两条出路：先赋给一个在这层之外声明的 `dyn` 变量再交出去（赋值会把池提升到那层），
+  或者这个容器改用 `any`（`any` 拥有自己的载荷，专门给异构容器用）。
 - 接收者可以是 `ref dyn Trait` / `mut ref dyn Trait`。
 - 拒绝的写法（都有明确诊断）：对 `dyn` 值取字段
   （`must be followed by a method call`）、契约方法没有 `self`
   （`has no 'self'`）、返回 `Self` 的方法（`returns 'Self' and cannot be dispatched through 'dyn'`）。
-- 陈旧 `dyn` 值（它所在的地方已经退出）在派发前被挡住并 trap，不会调到别的实现。
+- 仍然可能有陈旧的 `dyn` 值（例如经过一段检查器看不见的路径），这类在派发前被挡住并 trap，
+  不会调到别的实现 —— 但"循环体里造、外面存"这条最常见的形状已经在编译期拦住了。
 
 ```extc
 // 结果：12 12

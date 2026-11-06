@@ -31,25 +31,20 @@ out=$("$EXTC" -w --run tests/dyn/dyn_in_field.extc 2>&1)
 out=$("$EXTC" -w --run tests/dyn/dyn_in_array.extc 2>&1)
 [ "$out" = "arr=106" ] && ok dyn_in_array "dyn 进定长数组，两种实现混存（$out）" || bad dyn_in_array "期望 arr=106，实得：$out"
 
-# `dyn` payload 的池诞生在**写下这个值的地方**：直接写在循环体里交给容器 ⇒ 块退出即归还，
-# 句柄陈旧（运行期 trap，不是静默错值）；赋给外层声明的变量再交出去 ⇒ 池被提升，正确。
+# `dyn` payload 的池诞生在**写下这个值的地方**：直接写在循环体里交给容器 ⇒ 检查期就拒绝
+# （句柄的 place 比容器短命）；赋给外层声明的变量再交出去 ⇒ 池被提升，正确。
 out=$("$EXTC" -w --run tests/dyn/dyn_payload_inline_block.extc 2>&1)
 [ "$out" = "inline-sum=6" ] && ok dyn_payload_inline_block "循环里先赋给外层变量再 push（池提升）" \
                             || bad dyn_payload_inline_block "期望 inline-sum=6，实得：$out"
 tmp=$(mktemp -d)
+# 检查期拒绝：句柄的 place 比容器短命 ⇒ 报错并给位置（不再是"编过了、运行时才 trap"）
 if "$EXTC" -w --no-line-map -o "$tmp/s.c" tests/dyn/dyn_payload_inline_stale.extc >"$tmp/cc" 2>&1; then
-    if ${CC:-cc} -O1 -std=c11 "$tmp/s.c" -o "$tmp/s" >"$tmp/cc2" 2>&1; then
-        "$tmp/s" >"$tmp/out" 2>"$tmp/err"; rc=$?
-        if [ "$rc" -ne 0 ] && grep -q 'stale `dyn` value' "$tmp/err"; then
-            ok dyn_payload_inline_stale "直接写在循环体里交给容器 ⇒ 运行期 trap（rc=$rc）"
-        else
-            bad dyn_payload_inline_stale "rc=$rc out=[$(tr '\n' ' ' <"$tmp/out")] err=[$(head -1 "$tmp/err")]"
-        fi
-    else
-        bad dyn_payload_inline_stale "C 编译失败：$(head -2 "$tmp/cc2" | tr '\n' ' ')"
-    fi
+    bad dyn_payload_inline_stale "应当被拒绝，却编过了"
+elif grep -q 'carries a reference into a deeper scope' "$tmp/cc" \
+    && grep -q 'dyn_payload_inline_stale.extc:1[0-9]:' "$tmp/cc"; then
+    ok dyn_payload_inline_stale "循环体里造成 dyn 交给外层容器 ⇒ 检查期报错（带位置）"
 else
-    bad dyn_payload_inline_stale "extC 编译失败：$(head -2 "$tmp/cc" | tr '\n' ' ')"
+    bad dyn_payload_inline_stale "报错文不对：$(head -2 "$tmp/cc" | tr '\n' ' ')"
 fi
 rm -rf "$tmp"
 

@@ -1550,7 +1550,17 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
  * depth criteria below). */
             recordLvlFact(c, a, h);
             int d = targetDepth(c, a);
-            if (d != 0 && d > h && promoteInto(c, a, h)) d = targetDepth(c, a);
+            if (d != 0 && d > h && promoteInto(c, a, h)) {
+                /* Re-read the level after the promotion. For `dyn T(x)` the value's life is the
+                 * **place** its handle lives in (`planZoneLevel`), which `promoteInto` just lowered
+                 * to `h`; `targetDepth` answers from the payload's lexical site and would still say
+                 * "the loop body", so the store would be rejected even though the slot really
+                 * moved. Keep the smaller of the two: only the promotion path uses `planZoneLevel`
+                 * here, so the ordinary arena answer is unchanged. */
+                int zl = planZoneLevel(a);
+                d = targetDepth(c, a);
+                if (zl != 0 && zl < d) d = zl;
+            }
             if (d == 0 || d <= h) continue;
             ckError(c, line,
                     "Nothing was stored here that could be checked at this call, so the"
@@ -1615,7 +1625,16 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
              * Sharing this half matters for pools as much as for arenas: a container built
              * inside a loop body and pushed into a container that outlives the loop needs its
              * pool born at the destination's place. */
-            if (d != 0 && d > h && promoteInto(c, a, h)) d = targetDepth(c, a);
+            if (d != 0 && d > h && promoteInto(c, a, h)) {
+                /* Re-read the level after the promotion: for `dyn T(x)` the value's life is the
+                 * **place** the handle lives in (`planZoneLevel`), which the promotion just lowered
+                 * to `h`. `targetDepth` answers from the payload's lexical site, so it would still
+                 * report the loop body and the store would be rejected after the slot really
+                 * moved. Only the promoted path consults `planZoneLevel`, so nothing else changes. */
+                int zl = planZoneLevel(a);
+                d = targetDepth(c, a);
+                if (zl != 0 && zl < d) d = zl;
+            }
             if (d == 0 || d <= h) continue;
             ckError(c, line,
                     "The callee stores what this value points at into a container it was"

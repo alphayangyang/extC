@@ -1,8 +1,14 @@
 /* ============================================================================
  * 地块面积评估报表 —— 把 extC 现有特性**有机**用在一起的最小真程序（单文件）
  *
- *   trait / dyn Trait    三种地块共用 `dyn Shape`：**同一张统一表**，三个实现
- *   STL pool<dyn Shape>  地块的**身份**由池持有（句柄 + 世代）：移除后旧句柄 → none
+ *   trait / any         三种地块共用 `any`：按名字派发 `area()`，编译期只查"名字存在"，
+ *                       加第四种地块不用改这里（封闭世界跳转表，几条候选就是几个分支）
+ *   STL pool<any>       地块的**身份**由池持有（句柄 + 世代）：移除后旧句柄 → none
+ *
+ * 为什么是 `any` 而不是 `dyn Shape`：`dyn` 的值是**某个 place 里槽位的句柄**，槽随那个 place
+ * 结束而回收；把它插进循环体外声明的容器，句柄活不过循环体（读的时候是陈旧句柄）。而 `any`
+ * 是**拥有**的胖值（装箱即拷贝、视图深挖），所以"异构容器的元素"用它才对；`dyn` 适合"同一个
+ * 作用域里临时拿着多态"的形状。这条分工在 docs/usage/language.md 里也有。
  *   Arena 提权           报表文本在 `line()` 里构造后返回 ⇒ 存储建在**调用者的 place** 里
  *   模块                 use std::io（cin/cout）· use std::data::pool · use std::text::string
  *   cin / cout           从标准输入读地块清单，向标准输出打印报表
@@ -63,7 +69,7 @@ fn main() -> i32 {
     if n <= 0 { io::cout << "no plots\n"  return 0 }
 
     var kinds: varArray<i64> = varArray<i64>::withCap(n + 1)
-    var plots: pool<dyn Shape> = pool<dyn Shape>::withCap(n + 1)
+    var plots: pool<any> = pool<any>::withCap(n + 1)
 
     /* 读入：每块地形一个整数标签 + 两个参数 —— 就地造成 dyn 值存进池里 */
     var i: i64 = 0
@@ -72,12 +78,16 @@ fn main() -> i32 {
         var a: i64 = 0
         var b: i64 = 0
         io::cin >> kind >> a >> b
+        /* 装箱：`any` 把值拷进自己的载荷，所以出了这个块它仍然有效 */
         if kind == 1 {
-            plots.insert(dyn Shape(rect { w: a, h: b }))
+            var v: any = rect { w: a, h: b }
+            plots.insert(v)
         } else if kind == 2 {
-            plots.insert(dyn Shape(circle { r: a }))
+            var v: any = circle { r: a }
+            plots.insert(v)
         } else {
-            plots.insert(dyn Shape(tri { b: a, h: b }))
+            var v: any = tri { b: a, h: b }
+            plots.insert(v)
         }
         kinds.push(kind)
         i = i + 1
@@ -91,7 +101,7 @@ fn main() -> i32 {
     var bestAt: i64 = 0
     i = 0
     while i < plots.len() {
-        let area = plots.atDense(i).area()          /* ← 动态派发：表与接收者都取自校验过的槽 */
+        let area: i64 = plots.atDense(i).area()      /* ← 按名字派发（封闭世界），结果落回 i64 */
         io::cout << line(i, kinds.get(i)!, area).snapshot() << "\n"
         total = total + area
         if area > best { best = area  bestAt = i }
@@ -109,7 +119,7 @@ fn main() -> i32 {
     while i > 0 {
         i = i - 1
         /* 先取**值**再问句柄：移除会让池紧凑化，密集下标立刻失真 ⇒ 不要在下标上做文章 */
-        let area = plots.atDense(i).area()
+        let area: i64 = plots.atDense(i).area()
         if area < minArea() {
             let h = plots.handleAtDense(i)
             if plots.remove(h) {
@@ -123,7 +133,7 @@ fn main() -> i32 {
 
     /* 陈旧句柄是**条件**（none），不是崩溃：池用世代把它挡住 */
     match plots.get(stale) {
-        some(v) => { io::cout << "陈旧句柄竟读到 " << v.area() << "（不该发生）\n" }
+        some(v) => { let vv: i64 = v.area()  io::cout << "陈旧句柄竟读到 " << vv << "（不该发生）\n" }
         none    => { io::cout << "陈旧句柄(area=" << staleArea << ") → none：池的世代挡住了它\n" }
     }
     return 0

@@ -33,13 +33,21 @@ for f in tests/asan/*.extc; do
         fail=1
         continue
     fi
-    if ! gcc -fwrapv -O1 -g -fsanitize=address -o "$TMP/$name" "$TMP/$name.c" >"$TMP/$name.gerr" 2>&1; then
+    if ! timeout 300 gcc -fwrapv -O1 -g -fsanitize=address -o "$TMP/$name" "$TMP/$name.c" \
+                          >"$TMP/$name.gerr" 2>&1; then
         echo "  FAIL $name  ->  生成的 C 编不过"
         head -3 "$TMP/$name.gerr" | sed 's/^/        /'
         fail=1
         continue
     fi
-    out=$("$TMP/$name" 2>&1)
+    # 上限：一个卡住的用例不该让整支验收永久挂着（在最小发行版里实测踩到过）。
+    # 编译与运行都要有界，超时按 FAIL 记 —— 卡住和不通过在这里是同一件事。
+    out=$(timeout 60 "$TMP/$name" 2>&1); trc=$?
+    if [ "$trc" = 124 ]; then
+        echo "  FAIL $name  ->  运行超过 60s（卡住了）"
+        fail=1
+        continue
+    fi
     if echo "$out" | grep -q "AddressSanitizer"; then
         echo "  FAIL $name  ->  $(echo "$out" | grep -m1 -o 'ERROR: AddressSanitizer:.*')"
         fail=1
