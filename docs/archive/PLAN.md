@@ -59,8 +59,8 @@
 > 这一行**没跟着改**（跟 §0.4 里 #32/#42 一模一样的老毛病：**实现/测试涨了、记账不动**）。
 > 同一轮还抓到另外两处：`README.md` 状态节写「14 节 · 251 测试」、
 > `extC-overview.md`/`SPEC.md` 写「251」⇒ **三处一起改成实测值**
-> 正式设计文档 [`SPEC.md`](../docs/SPEC.md) · 原则与承诺 [`SPEC.md`](../docs/SPEC.md) §0.5 / §1 ·
-> 内存模型的形式化 [`ARENA-FORMAL.md`](../docs/topics/ARENA-FORMAL.md) · 区域工作总账 [`PLAN-REGION.md`](../docs/history/PLAN-REGION.md)
+> 正式设计文档 `SPEC.md` · 原则与承诺 `SPEC.md` §0.5 / §1 ·
+> 内存模型的形式化 [`ARENA-FORMAL.md`](topics/ARENA-FORMAL.md) · 区域工作总账 [`PLAN-REGION.md`](history/PLAN-REGION.md)
 
 ---
 
@@ -559,12 +559,12 @@ freed by thread T0 here:
 
 >「甲肯定是不够的…让用户显式指定 arena 位置是失败的，因为**显然这里可以做到形式推导**」
 
-⇒ 完整推导写在 **[`ARENA-FORMAL.md`](../docs/topics/ARENA-FORMAL.md)**：把"分配放哪只区域"从**语法猜测**
+⇒ 完整推导写在 **[`ARENA-FORMAL.md`](topics/ARENA-FORMAL.md)**：把"分配放哪只区域"从**语法猜测**
 改成**约束求解**，并证：① 最小解存在唯一（⇒ 不需要注解）② 按解分配 ⇒ sound
 ③ 比今天的规则严格更宽（**"造完返回"可证安全**）④ 原丙破在"合并了地址流与内容流"
 落地清单与验收判据见该文 §5
 
-###（以下为实现甲′ 时的记录，保留）主人拍板：**丙**（2026-09-21）—— 设计已写完，见 [`ARENA.md`](../docs/topics/ARENA.md) §9
+###（以下为实现甲′ 时的记录，保留）主人拍板：**丙**（2026-09-21）—— 设计已写完，见 [`ARENA.md`](topics/ARENA.md) §9
 
 > 主人原话：「**丙，但是做之前，我感觉这个编译器 src 文件过于巨大了，维护阅读都很不方便，
 > 建议按照功能拆分一下部分（？）**」⇒ 顺序定成 **先拆 src（行为零变化）→ 再实现丙**
@@ -707,7 +707,7 @@ fn make() -> box {
 
 | # | 做什么 | 为什么挡着 | 大小 |
 |---|---|---|---|
-| **1** | **主体已落地（2026-09-23，定案 73 + 74）**：`std::sys::io` 原语（`read`/`write` + 签字）+ **`reader`（隐式 64KB）** + **`nextInt`/`nextToken`/`nextLine`/`skipSpace`** + `ioError` 两条 + `writeBytes`/`flushOut`/内建 `flush()`（`tests/io/` **7 条**常设验收，含三条路 + 分块读性能）**还欠**：`readAll` · 格式化输入 B · 写指定 fd。**实测**：12MB/100 万行，逐字节 1.444s vs 分块 0.032s = **45×** **2026-09-24 第二半（手写缓冲热循环）**：`nextLine`/`nextToken`/`skipSpace` 原来**每字节一次方法调用**（`result` 结构体 ⇒ GCC 不内联）⇒ 把循环写进函数体之后：100 万行 **11.5 → 8.8ms**、300 万词 **25.8 → 9.0ms**（接口零改动；1100 个随机输入与旧实现**逐字节对拍一致**）；同一处**实测 `@inline` 是零效果**（交错 A/B ±0.3%，`objdump` 里 GCC 本来就全内联、连函数体都没有）⇒ **`@inline` 只在 GCC 不肯内联时有价值**（例：运行时 `extc_arena_alloc`，3.9×）| **OI 式输入能用了**；gomoku 能读协议 | 中（设计已定，见 [`IO.md`](../docs/topics/IO.md)）| **2026-09-26 实测**：`f.reader()` 与 `readAll` **都已实现**（探针编过并跑通） ⇒ 那两条"还欠"是旧账 已勾掉 **2026-09-26 更正（我先前记错了）**：`readAll` 与 `readSome` 在 `close()` 之后**都正确返回 `failure(closed)`**（`tests/fs/closed-use.extc` 钉的就是这条）。我那条"还能读到 4 字节"的探针，是拿 **`!`** 去接一个**必然失败**的 result —— 而按**定案 53**，`!` 是"**错了算我的**"，真没有值就是 **UB**（不检查 tag、直接读 union 的 success 载荷）⇒ 读到的是垃圾。**没有缺陷** 但这条踩坑说明 `!` 在没有检查的情况下**静默出垃圾**，与 `?` 在 `main` 里 trap（定案 89）**不一致** ⇒ 已列为待主人定夺的设计问题
+| **1** | **主体已落地（2026-09-23，定案 73 + 74）**：`std::sys::io` 原语（`read`/`write` + 签字）+ **`reader`（隐式 64KB）** + **`nextInt`/`nextToken`/`nextLine`/`skipSpace`** + `ioError` 两条 + `writeBytes`/`flushOut`/内建 `flush()`（`tests/io/` **7 条**常设验收，含三条路 + 分块读性能）**还欠**：`readAll` · 格式化输入 B · 写指定 fd。**实测**：12MB/100 万行，逐字节 1.444s vs 分块 0.032s = **45×** **2026-09-24 第二半（手写缓冲热循环）**：`nextLine`/`nextToken`/`skipSpace` 原来**每字节一次方法调用**（`result` 结构体 ⇒ GCC 不内联）⇒ 把循环写进函数体之后：100 万行 **11.5 → 8.8ms**、300 万词 **25.8 → 9.0ms**（接口零改动；1100 个随机输入与旧实现**逐字节对拍一致**）；同一处**实测 `@inline` 是零效果**（交错 A/B ±0.3%，`objdump` 里 GCC 本来就全内联、连函数体都没有）⇒ **`@inline` 只在 GCC 不肯内联时有价值**（例：运行时 `extc_arena_alloc`，3.9×）| **OI 式输入能用了**；gomoku 能读协议 | 中（设计已定，见 [`IO.md`](topics/IO.md)）| **2026-09-26 实测**：`f.reader()` 与 `readAll` **都已实现**（探针编过并跑通） ⇒ 那两条"还欠"是旧账 已勾掉 **2026-09-26 更正（我先前记错了）**：`readAll` 与 `readSome` 在 `close()` 之后**都正确返回 `failure(closed)`**（`tests/fs/closed-use.extc` 钉的就是这条）。我那条"还能读到 4 字节"的探针，是拿 **`!`** 去接一个**必然失败**的 result —— 而按**定案 53**，`!` 是"**错了算我的**"，真没有值就是 **UB**（不检查 tag、直接读 union 的 success 载荷）⇒ 读到的是垃圾。**没有缺陷** 但这条踩坑说明 `!` 在没有检查的情况下**静默出垃圾**，与 `?` 在 `main` 里 trap（定案 89）**不一致** ⇒ 已列为待主人定夺的设计问题
 | **2** | **IO-1**：`open`（`std::fs`：`openRead`/`openWrite`/`openAppend` + 读型/写型两个 struct）· **句柄由程序关**（`close()` = 可检查的提交点；忘关是**警告**「opened and never closed」，按 `close` 方法认资源协议）· `readAll` · `main(args)` | 读源文件 / 写生成的文件 ⇒ 自举与工具的门槛 | 中 | **2026-09-24 完成**：`stdlib/std/fs.extc`（三个名字 + 两个 struct，误用**编不过** · `tests/fs-shape/` 5 项）· `tests/fs/`（fd 恒定 · canary · 警告的泄漏 · `readAll` 两条路 · 双关安全 · closed 带位置 · ASan，7 项）· `tests/argv/`（6 项）· `#55` 随**定案 79** 一起消除（不再需要隐式归属：块退**没有失败通道** ⇒ 隐式关闭 = 静默丢数据）**还欠**（IO-2 那档）：`f.reader()` 那层 · 句柄 affine（`close` 消费掉句柄 ⇒ 编译期挡「关闭后使用」）**规范**：定案 77（命名与形状）· **定案 79**（程序拥有 + 编译期证明的泄漏）· 定案 78（资格判据保留）| **2026-09-26 实测**：**关闭后使用**的编译期拦截**还没有**（探针 `close()` 之后 `readAll` 既编过又跑过）；运行时那半有效（`tests/fs/closed-use.extc` 的 `put` 正确返回 `failure(closed)`）——「句柄 affine」指的就是前半 仍开着
 | **3** | **IO-2**：`f.reader()`（文件当输入源：`nextInt`/`nextLine`/`nextToken` 与 stdin 逐字相同）· `proc::exit(code)`（分层：`std::sys::process`，**不放 `std::io`** —— 结束进程不是 I/O）· termios raw mode（`term::rawTerminal(fd)?` + `close()` 还原；**不包 ncurses**，按 BOOTSTRAP §4.3）· **trap 路径还原终端**（临终钩子 `extc_die` + `extc_raw_enter`/`extc_raw_leave`，**定案 80**）| TUI / 刷量输出 / 五子棋能真的跟人下 | 中 | **2026-09-24 落地三件 + 顺手修 #56**：`tests/io` 13 → **15 项**（`file-reader` · `exit-code`（退出码 7）· `raw-mode` 的非 tty(`failure(notATerminal)`) + PTY(`script`：开得起来、还原**逐字节**相同) 两条路 · `raw-trap`（raw 下 trap ⇒ strace 里 `TCSETS` ×2、最后一条带 cooked 标志））共 **16 项** `ioError` 新增 `notATerminal(i32)`（"三条路分得开"的口径，定案 74）· `extern!` 补上 `void` 返回（`cfmakeraw` 需要）**规范**：定案 77/79 · BOOTSTRAP §4.3 **2026-09-24 补一条口径（定案 84）**：
 `nextLine` **剥**行尾 `\r`（`\r\n` 也算行尾）、`nextLineRaw` **原样**、孤立 `\r` 是内容、
@@ -823,7 +823,7 @@ EOF 前最后一个 `\r` 也剥 —— 起因是**真事故**（WSL 里读 Windo
 ## 5. ⛔ 永远不做（不是"还没做"）
 
 运行期换实现（插件 / 热替换）· GC · 异常 · 裸指针 · 继承 / 虚函数 ·
-手动 `free` / `close` · `errno` / 隐藏全局状态 —— 见 [`SPEC.md`](../docs/SPEC.md) §9
+手动 `free` / `close` · `errno` / 隐藏全局状态 —— 见 `SPEC.md` §9
 
 ---
 
@@ -859,7 +859,7 @@ EOF 前最后一个 `\r` 也剥 —— 起因是**真事故**（WSL 里读 Windo
 | **A4** | 显式命名 + 显式指定 home（名字待定，主人说"不急"）| 逃生舱，最后做 |
 | ~~**A5**~~ | 测试：跨函数链表 · AST 递归 · 循环不涨内存 · 攻击测试全绿 | **2026-09-22 复核：全齐了** —— `bench/stress`（跨函数链表 + 深递归）· `tests/arena/`（循环不涨）· `tests/attacks/`（基线一字不动）+ `tests/asan/`（新增）|
 
-### B · IO（设计已定在 [`IO.md`](../docs/topics/IO.md)）
+### B · IO（设计已定在 [`IO.md`](topics/IO.md)）
 
 原语 `rawRead`/`rawWrite` + `readLine`/`readAll`/`nextInt` 一族 + `ioError` ——
 **用 A1 的 `new i32[1000]` 当缓冲** ⇒ **五子棋能跟人下**（里程碑）
@@ -938,7 +938,7 @@ EOF 前最后一个 `\r` 也剥 —— 起因是**真事故**（WSL 里读 Windo
 | **名字怎么起 / 这语法怎么写** | [`MANUAL.md`](MANUAL.md) | — |
 | **为什么这么设计** | [`SPEC.md`](SPEC.md)（设计口径）· [`DESIGN.md`](DESIGN.md) | — |
 | **哪条拍板了** | [`DECISIONS.md`](DECISIONS.md)（编号最全） | 各文档里的"定案 NN"都指它 |
-| **发生过什么** | [`DEVLOG.md`](DEVLOG.md) | 它里面的**旧计数是历史台阶，故意不改** |
+| **发生过什么** | `DEVLOG.md` | 它里面的**旧计数是历史台阶，故意不改** |
 | **某专题的设计全貌** | 该专题文档（`ARENA*`/`REFS`/`ARRAYS`/`IO`/`MODULES`/`LIBS`）| 专题文档的"实施状态"表**可能滞后** ⇒ 以 §0.4 为准 |
 
 **两条与"文档可信度"有关的硬规矩**：

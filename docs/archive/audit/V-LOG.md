@@ -129,7 +129,7 @@ abort 并打印 `lookup('self') with no open scope (phase=post)` —— 包括�
 
 **产物**（都在提交里）：
 * `CheckPhase` + 阶段契约权威一节（`check_internal.h`）；
-* [docs/topics/NAMING.md](../docs/topics/NAMING.md)：词的纪律 + 注释的五条义务 + 改名对照表；
+* [docs/topics/NAMING.md](../topics/NAMING.md)：词的纪律 + 注释的五条义务 + 改名对照表；
 * 改名：`slotDepth` / `targetDepth`（+`targetDepthPure`）/ `solvedDepth`；
 * `DEPTH_UNKNOWN`（⊤）+ `depthIsUnknown`；`EffState` 命名枚举；删掉 `escapeesFor`（死字段 + 指针截断）。
 

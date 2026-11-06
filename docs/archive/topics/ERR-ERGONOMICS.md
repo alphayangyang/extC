@@ -336,9 +336,9 @@ struct err { code: i64  file: slice<u8>  line: i64 }   /* 字面量 slice 深度
 > | G4 | 同上四份的孪生（`sed 's/^@unchecked$//'`）运行 | 四类**都** trap 且 **rc=1**（修复前 nullref 孪生 rc=255）|
 >
 > **套件**：`tests/annot/run.sh` **27/0**；`tests/run.sh` **330/0**；构建 **0 warning**。
-> **手册已改口**：[01-safety.md](01-safety.md) §5 与 §154（`@unchecked` = 全部检查；`!` 从 UB 出口
-> 表里删掉，改为带位置的 trap）、[18-modules.md](18-modules.md) §12.5（覆盖全部检查 + 新判据）、
-> [04-types.md](04-types.md)（`!` 那一行）、[C-ABI.md](C-ABI.md) §9.18 的历史注记。
+> **手册已改口**：[01-safety.md](../manual/01-safety.md) §5 与 §154（`@unchecked` = 全部检查；`!` 从 UB 出口
+> 表里删掉，改为带位置的 trap）、[18-modules.md](../manual/18-modules.md) §12.5（覆盖全部检查 + 新判据）、
+> [04-types.md](../manual/04-types.md)（`!` 那一行）、[C-ABI.md](C-ABI.md) §9.18 的历史注记。
 > **下面"冒烟的枪"与判据表保留为修复前记录。**
 
 ### 冒烟的枪（2026-10-08 读码所得，修复前）

@@ -200,7 +200,7 @@ fn sum(head: ?ref node) -> i64 {             // 引用类型写在签名里，�
 
 主席树这份**每个语言用自己的分配设施**（主人要求）：extC 用 arena（`new`）、
 C 用 `malloc/free`、C++ 用 `std::vector`、Rust 用 `Vec` ⇒ 算法苹果对苹果，
-内存策略各写各的地道写法 结论与"反面教材"见 [`bench/oi/persist/REPORT.md`](../../bench/oi/persist/REPORT.md)
+内存策略各写各的地道写法 结论与"反面教材"见 [`bench/oi/persist/REPORT.md`](../../../bench/oi/persist/REPORT.md)
 （**C 每节点 `malloc`** 那一行是全场最贵的：时间 2.3×、RSS 3.2× ⇒ 这正是 arena 的卖点）
 
 ---

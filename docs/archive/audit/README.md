@@ -2,7 +2,7 @@
 
 # .audit/ —— 2026-09-30 全量审阅的原始证据
 
-本目录是 [`docs/reviews/COMPILER-AUDIT-2026-09-30.md`](../docs/reviews/COMPILER-AUDIT-2026-09-30.md) 的原始材料，
+本目录是 [`docs/reviews/COMPILER-AUDIT-2026-09-30.md`](../reviews/COMPILER-AUDIT-2026-09-30.md) 的原始材料，
 不是编译器的一部分，也不参与构建/测试。
 
 - `REVIEW-PROTOCOL.md`：审阅协议（给每个审阅单元的共同规则：逐行读、注释不可信、每条必须带位置/引用/复现）。
@@ -19,7 +19,7 @@
   `decisions-part1/2.md`（DECISIONS.md 逐条）、`principles.md`（SPEC/DESIGN 上位原则）、
   `memory-decisions.md`（M-01…M-75）、`types-decisions.md`（D1–D171）、`runtime-decisions.md`（274 条）、
   `manual-contracts.md`（手册契约 161 条 + 48 处冲突）。
-  它们支撑 [`docs/DESIGN-RESOLUTIONS.md`](../docs/DESIGN-RESOLUTIONS.md)（18 条设计裁定）。
+  它们支撑 [`docs/DESIGN-RESOLUTIONS.md`](../DESIGN-RESOLUTIONS.md)（18 条设计裁定）。
 - `notes.md`：审阅过程中的工作笔记（Lead 亲测条目）。
 
 命令行复现用到的脚本与最小程序在 `/tmp/rev/`（变异 fuzz、ASan/UBSan 全量扫描、`--check-c` 全语料扫描、

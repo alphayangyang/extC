@@ -74,7 +74,7 @@ codegen 把语句 hoist 换成**每实例 unwrap 助手**（纯 C11；`-Wpedanti
 
 **下一件**：**`view<T>` 改名**（纯机械 commit，等没别的改动在飞时做）→
 3. **S1 checked 原语 + S1b trap 统计** → 4. **A′ 的红判据**（`tools/escape-corpus/` 加 mut 洗白形状）→
-5. heap 的 `free` 那一半从 [`prototype/heap/`](../prototype/heap/README.md) 搬进 `std::heap` → 6. 账本收缩（删状态句 + `check_status.py` 闸门）。
+5. heap 的 `free` 那一半从 [`prototype/heap/`](../../prototype/heap/README.md) 搬进 `std::heap` → 6. 账本收缩（删状态句 + `check_status.py` 闸门）。
 
 **还有一件零风险的事没做**：**push 那 18 个 commit**（远端仍落后）。
 
@@ -91,8 +91,8 @@ codegen 把语句 hoist 换成**每实例 unwrap 助手**（纯 C11；`-Wpedanti
 | [`topics/`](topics/) | 专题论证（研究材料） | 深入某个机制 |
 | [`DECISIONS.md`](DECISIONS.md) | **档案**：决策登记册 | 查"以前定过没有" |
 | [`PLAN.md`](PLAN.md) | **档案**：缺陷编号权威（`PLAN #NN`）+ 里程碑 | 查某个编号 |
-| [`DEVLOG.md`](DEVLOG.md) | **档案**：开发日志（倒序） | 查"当时怎么想的" |
+| `DEVLOG.md` | **档案**：开发日志（倒序） | 查"当时怎么想的" |
 | [`DESIGN-RESOLUTIONS.md`](DESIGN-RESOLUTIONS.md) · [`STALE-AUDIT.md`](STALE-AUDIT.md) | **档案**：审计期裁定 R1–R18 / 过时清单 | 追溯审计结论 |
-| [`reviews/`](reviews/) · [`../.audit/`](../.audit/README.md) | **档案**：审计报告与原始证据 | 复核某条 finding |
+| [`reviews/`](reviews/) · [`../.audit/`](audit/README.md) | **档案**：审计报告与原始证据 | 复核某条 finding |
 
 **规矩**：档案只追加、不回改，且**不描述当前状态**；`PLAN #NN` 编号以 [`PLAN.md`](PLAN.md) 为准。

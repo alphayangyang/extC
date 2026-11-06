@@ -283,7 +283,7 @@ typedef struct extc_arena { extc_ablock *top; int64_t blkSize; } extc_arena;
 - **含引用的结构体数组今天声明不了**（`var a: [2]p` 报同一个零值错误，且没有数组字面量语法）⇒ 帧里不能放"表"，应用状态要么放帧外、要么做成无引用；
 - **模型在推着你把帧和状态都做成"无引用聚合"**：整个会话 = 一块普通内存，零分配、可整体搬运 对协程是**好消息**（帧便宜、可池化）。
 
-** 撞出的洞（**2026-09-26 已修**；不是协程的问题，是既有 arena 机制的缺口）**：当时那条反例与结论见 [`tests/arena-soundness/README.md`](../../tests/arena-soundness/README.md) 的 H2 行（修法：调用点的 `zoneLevel` 现在做传递闭包）
+** 撞出的洞（**2026-09-26 已修**；不是协程的问题，是既有 arena 机制的缺口）**：当时那条反例与结论见 [`tests/arena-soundness/README.md`](../../../tests/arena-soundness/README.md) 的 H2 行（修法：调用点的 `zoneLevel` 现在做传递闭包）
 > **home zone 的传递闭包只做了一层。** `main → put → newString`（3 层）正确；
 > `main → wrap → put → newString`（**4 层**）就坏：`wrap` 把**自己的** zone 传给 `put`，并把自己的
 > `__extc_home_zone` 标成 `EXTC_UNUSED` ⇒ `newString` 的缓冲分配在 `wrap` 的 place 里，返回即被释放 ⇒
@@ -1018,12 +1018,12 @@ fn parallel<A, B>(input: slice<A>, f: fn(A) -> B) -> varArray<B>
 
 | 关系 | 文档 |
 |---|---|
-| 并发排在主线的**哪里** | [`PLAN.md`](../../docs/PLAN.md) §1（`for` → lambda → 协议 → 模块/`@main`；**协程在这之后**）|
-| arena 的语义与规则 | [`ARENA.md`](../../docs/topics/ARENA.md) · [`ARENA-FORMAL.md`](../../docs/topics/ARENA-FORMAL.md) |
-| `#52`（有家被调者 ⇒ 结果住在我传的 arena） | [`PLAN.md`](../../docs/PLAN.md) §0.4 `#52` · [`DEVLOG.md`](../../docs/DEVLOG.md) 2026-09-23 |
+| 并发排在主线的**哪里** | [`PLAN.md`](../PLAN.md) §1（`for` → lambda → 协议 → 模块/`@main`；**协程在这之后**）|
+| arena 的语义与规则 | [`ARENA.md`](ARENA.md) · [`ARENA-FORMAL.md`](ARENA-FORMAL.md) |
+| `#52`（有家被调者 ⇒ 结果住在我传的 arena） | [`PLAN.md`](../PLAN.md) §0.4 `#52` · `DEVLOG.md` 2026-09-23 |
 | 模块系统（协议要跨模块） | [`MODULES.md`](../../design/MODULES.md) · `DECISIONS.md` 定案 70 |
-| 资源所有权（文件句柄那笔债） | [`IO.md`](../../docs/topics/IO.md) §5：`open` + **程序拥有**（`close()` + 编译期查泄漏，定案 79） |
-| 为什么这么设计（一条原则） | [`DESIGN.md`](../../docs/DESIGN.md) · [`SPEC.md`](../../docs/SPEC.md) |
+| 资源所有权（文件句柄那笔债） | [`IO.md`](IO.md) §5：`open` + **程序拥有**（`close()` + 编译期查泄漏，定案 79） |
+| 为什么这么设计（一条原则） | `DESIGN.md` · `SPEC.md` |
 
 > **一处重要的重叠**：`IO.md` 里那笔"**资源的归属**"（`open` 出来的文件句柄）
 > 跟本文 §2.2 的"协程帧归谁 release"是**同一件事的两个面** ——

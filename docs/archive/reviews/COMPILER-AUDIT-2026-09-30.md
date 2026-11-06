@@ -60,7 +60,7 @@
 
 ### 0.1.1 修复进展（2026-09-30 P0 批次 ✅）
 
-> 详细记录：[`.audit/P0-LOG.md`](../.audit/P0-LOG.md)。这一节只回答"报告里的条目现在什么状态"。
+> 详细记录：[`.audit/P0-LOG.md`](../audit/P0-LOG.md)。这一节只回答"报告里的条目现在什么状态"。
 
 **已修并带回归用例（9 条）**：P0-22（`dropRuntimeDefs` 死循环）、P0-11（`d.run{}` 少算一层 + `blkMax` 指数）、
 P0-13（`?ref` 下标/切片无非空检查）、P0-14（`parallel::run()` 零实参崩）、P0-8（`copyInto` 空视图 memmove）、
@@ -81,7 +81,7 @@ P0-12（f64 整数值字面量发成整型）、P0-4（`funcInstance` NULL 崩�
 
 ### 0.1.2 P1 批次 ✅（2026-09-30，把基线清空）
 
-> 详细记录：[`.audit/P1-LOG.md`](../.audit/P1-LOG.md)。P0 批次留下的 6 条闸门基线，**全部修完**
+> 详细记录：[`.audit/P1-LOG.md`](../audit/P1-LOG.md)。P0 批次留下的 6 条闸门基线，**全部修完**
 > ——四道闸门现在**没有任何已知坏**（`tools/gate-*-known-bad.txt` 全空）。
 
 | 审计条目 | 修法 | 证据 |
@@ -96,7 +96,7 @@ P0-12（f64 整数值字面量发成整型）、P0-4（`funcInstance` NULL 崩�
 
 ### 0.1.3 P2 批次（第一批）✅（2026-09-30）
 
-> 详细记录：[`.audit/P2-LOG.md`](../.audit/P2-LOG.md)。
+> 详细记录：[`.audit/P2-LOG.md`](../audit/P2-LOG.md)。
 
 | 审计条目 | 根因 | 修法 | 证据 |
 |---|---|---|---|
@@ -108,7 +108,7 @@ P0-12（f64 整数值字面量发成整型）、P0-4（`funcInstance` NULL 崩�
 
 ### 0.1.5 P4 批次 ✅（2026-09-30）：定案 99/100/101（含 **R12 / P0-20 落地**）
 
-> 详细记录：[`.audit/P4-LOG.md`](../.audit/P4-LOG.md) 与 [`.audit/R12-DESIGN.md`](../.audit/R12-DESIGN.md)。
+> 详细记录：[`.audit/P4-LOG.md`](../audit/P4-LOG.md) 与 [`.audit/R12-DESIGN.md`](../audit/R12-DESIGN.md)。
 
 | 定案 | 内容 | 判据 |
 |---|---|---|
@@ -217,7 +217,7 @@ golden 从"闸门"降级为"观察项"。
 
 ### 0.1.6 R1/R3 批次（进行中，第 1 轮）
 
-> 详细记录：[`.audit/R1R3-LOG.md`](../.audit/R1R3-LOG.md)。
+> 详细记录：[`.audit/R1R3-LOG.md`](../audit/R1R3-LOG.md)。
 
 **判据先行**：新增**闸门⑤·逃逸健全性**（`tools/gate_escape.py` + `tools/escape-corpus/` 17 份语料 +
 棘轮基线 11 条），已接进 `check.sh` quick（第 54 节）。语料是"记账比真实情况小"的洞的最小复现——

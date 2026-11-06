@@ -10,7 +10,7 @@ X4 收尾（AST 只剩语法事实与身份）。**每阶段行为不变**，验
 
 ## X0（本轮完成）：盘点
 
-**产物**：[docs/topics/AST-ANNOTATIONS.md](../docs/topics/AST-ANNOTATIONS.md) ——
+**产物**：[docs/topics/AST-ANNOTATIONS.md](../topics/AST-ANNOTATIONS.md) ——
 字段 → 谁写 → 谁读 → 陈旧会怎样的权威表，按四类分（① 语法事实 / ② 分析缓存 / ③ 编译计划 /
 ④ 身份与重指）。复核脚本 `tools/x0_annotations.py` 已于 2026-10-02 **删除**：实测它的口径会产生大规模误报（把 `->name`/`->body` 这类**任何结构体都有的成员名**算成同一批字段、把基座是 codegen 自己结构体/局部变量的访问也算进去，还不剥注释与字符串字面量）——正是它当初把回写基线报成 47 的那一类错。可信的口径只有按**声明所在结构体**逐点归属的`tools/check_tmpl_owners.py`；下面各条都按它的口径重新量过。
 
@@ -781,7 +781,7 @@ call wrap_meter pick_meter
 
 **背景**：X 批次把"计划"字段搬进了侧表，但那是**逐字段补丁**；按主流编译器（rustc/Clang/Go/
 Swift/MLIR）的做法，"彻底解耦"缺的是**分析结果那一层**。目标架构与分期写在
-[docs/topics/AST-DECOUPLING.md](../docs/topics/AST-DECOUPLING.md)。P0 = 先立判据。
+[docs/topics/AST-DECOUPLING.md](../topics/AST-DECOUPLING.md)。P0 = 先立判据。
 
 **新增工具**：
 
