@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 视图与容器增长：视图只活到容器搬走存储为止（docs/TYPE-MODEL.md §六）。
+# 视图与容器增长：视图只活到容器搬走存储为止（docs/design/TYPE-MODEL.md §六）。
 #
 # 静态那一半：同一块里"借出视图 → 容器增长 → 之后再读视图"必须编译期拒绝（这正是 ASan 在
 # vector 上抓到的 heap-use-after-free）。动态那一半（跨函数/跨块）由 `buf::borrow()` 的守卫在

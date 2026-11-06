@@ -108,7 +108,7 @@ done
 echo "== ② 旋钮不许被关掉：shard_bands（对齐形状，N=$BAND_N，REPS=$REPS）=="
 # 口径（2026-10-16 修）：判「旋钮还在不在」用运行期 `[work]` 的**确定性计数**，不用 `[step]` 的
 # 平均切片时长 —— 均值 = 总时间/步数，步粒度一变就整体抬高，与分片无关（详见头注释与
-# docs/RECLAMATION.md 未覆盖清单第 9 条）。`[work] walk_max` = 单步最大遍历对象数（分片就是要
+# docs/design/RECLAMATION.md 未覆盖清单第 9 条）。`[work] walk_max` = 单步最大遍历对象数（分片就是要
 # 把它切小），`[work] n` = 工作项数（片多 ⇒ 项多）。计时侧只留绝对上界 `over1ms == 0`、
 # `over64 ≤ 5`。读不到 `[work]` 行按「插桩失败」判红，不许静默变绿。
 band() {     # band <片数> → "<walk_max>|<work_n>|<平均切片µs>|<over1ms>|<步数>|<maxµs>|<over64>|<语义sha12>"

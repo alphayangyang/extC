@@ -1,7 +1,7 @@
 # `tests/reclaim-perf/` —— 回收运行期"慢在哪"的归因与优化账
 
 配套：[`tests/reclaim-shapes/README.md`](../reclaim-shapes/README.md)（行为基线：回收对不对）、
-[`docs/RECLAMATION.md`](../../docs/RECLAMATION.md)（机制与待做清单）、
+[`docs/design/RECLAMATION.md`](../../docs/design/RECLAMATION.md)（机制与待做清单）、
 [`prototype/reclaim/stress.c`](../../prototype/reclaim/stress.c)（C 原型，对照的基准侧）。
 
 **这个目录只做归因，不做门禁**（同 `reclaim-shapes` 的口径：证据，不是判据；不接进 `check.sh`）。
@@ -702,7 +702,7 @@ diff <(sed 's/[0-9]\+//g' /tmp/pristine.c) <(sed 's/[0-9]\+//g' /tmp/on.c) | hea
 计数变量**声明要放在 `extc_rc_ownTab` 声明之后**（`ownLower` 定义在它前面，`ownLower` 也要用计数器，
 得先有声明）。输入用 `bench/bigmatrix/in[-small]/bt.txt`。
 
-**这条把"计数按编译期收窄"的优先级抬上来了**（`docs/RECLAMATION.md` 第五节末条）：
+**这条把"计数按编译期收窄"的优先级抬上来了**（`docs/design/RECLAMATION.md` 第五节末条）：
 在**读式拷贝多、写指针少**的遍历形状上，计数是当下最大的一笔；
 它的三类"该省"判据已经全红在 `tests/reclaim-elide/`（`gate-reclaim-elide` 盯着，见那个目录）。
 

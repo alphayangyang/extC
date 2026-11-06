@@ -26,7 +26,7 @@
  *   · 开关打开时 N vs 4N 的峰值 RSS 比 < 1.5（清扫把环垃圾按内存压力收掉）；
  *   开关关掉时同一形状的比 ≈3.4×（红）——那是「有牙」的证据。
  *
- * ── 语言约束与写法取舍（Lead 已定位根因，见 `docs/RECLAMATION.md` / 本目录 README）──────
+ * ── 语言约束与写法取舍（Lead 已定位根因，见 `docs/design/RECLAMATION.md` / 本目录 README）──────
  *  · **经过解引用写**（`(*head).prev = p`）的目的地槽深度按保守读法取 0（`slotDepth(EX_DEREF)
  *    = targetDepth(head)`，而本地 `?mut ref` 的被指物寿命未知）⇒ 循环体里的 `p`（深度 2）
  *    存不进去。本形状把所有跨对象写都放进 helper，**让目的地是形参**（形参深度 0，本帧已知）：

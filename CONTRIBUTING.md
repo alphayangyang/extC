@@ -15,8 +15,8 @@ make -j8                       # 构建编译器，约 1.5 秒
 ## 改动之前
 
 - **语言当前的口径**在 [`docs/usage/`](docs/usage/) —— 那是手册，不是提案。要改语义，先改文档再改实现。
-- **不许破的决定**在 [`docs/CORE.md`](docs/CORE.md)；类型与存储的选型在 [`docs/TYPE-MODEL.md`](docs/TYPE-MODEL.md) 与 [`docs/MEMORY-MODEL.md`](docs/MEMORY-MODEL.md)。
-- **待做清单**在 [`docs/TODO.md`](docs/TODO.md)。
+- **不许破的决定**在 [`docs/design/CORE.md`](docs/design/CORE.md)；类型与存储的选型在 [`docs/design/TYPE-MODEL.md`](docs/design/TYPE-MODEL.md) 与 [`docs/design/MEMORY-MODEL.md`](docs/design/MEMORY-MODEL.md)。
+- **待做清单**在 [`docs/plans/TODO.md`](docs/plans/TODO.md)。
 
 ## 提交一个改动
 

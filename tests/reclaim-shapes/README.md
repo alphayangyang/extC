@@ -1,6 +1,6 @@
 # `tests/reclaim-shapes/` —— 区域回收的**行为基线**
 
-配套机制文档：[`docs/RECLAMATION.md`](../../docs/RECLAMATION.md)。
+配套机制文档：[`docs/design/RECLAMATION.md`](../../docs/design/RECLAMATION.md)。
 形状来源：该文档「要解决的问题」那一节 + [`prototype/reclaim/README.md`](../../prototype/reclaim/README.md)「压力版」。
 
 ## 这个目录的语义
@@ -384,7 +384,7 @@ callgrind，N=800000：extC 开关开 **3.805 G 条指令**，清扫从不触发
 ## 分片（`EXTC_RC_SHARDS=N`）：停顿旋钮
 
 **停顿 ∝ 被扫区域的可达集**，所以把区域切小、每次只收一片，就是停顿旋钮
-（[`docs/RECLAMATION.md`](../../docs/RECLAMATION.md) 第四节）。实现方式：
+（[`docs/design/RECLAMATION.md`](../../docs/design/RECLAMATION.md) 第四节）。实现方式：
 
 * **一个逻辑区域切成 N 个运行期区域**。区域由 arena 的**地址**认领；第 k 片的认领键是
   「地址 + k」（键只比不读），分配点、触发点、帧销毁点的键都由同一处算出。分片不改运行期

@@ -1,4 +1,4 @@
-<!-- 过时（2026-10-10 归档 · 只作考古）：本文是历史快照，不要当现状读。现状 → `docs/usage/`；待做 → `docs/TODO.md`；历史 → `docs/CHANGELOG.md`。 -->
+<!-- 过时（2026-10-10 归档 · 只作考古）：本文是历史快照，不要当现状读。现状 → `docs/usage/`；待做 → `docs/plans/TODO.md`；历史 → `docs/CHANGELOG.md`。 -->
 
 # MEMORY-SAFETY.md —— extC 的内存安全模型（怎么用 + 什么情况会怎样）
 

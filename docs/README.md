@@ -1,15 +1,44 @@
 # docs 索引
 
-本仓库的文档只有**三类内容**：
+文档分四层。**每篇第一行都写着"状态"**，先看那行再决定要不要读：
 
-| 类别 | 位置 |
+| 层 | 目录 | 是什么 |
+|---|---|---|
+| **手册** | [`usage/`](usage/) | 现在怎么用：语言、标准库、模块与 C ABI、驱动器开关、回收。改语义先改这里。 |
+| **设计** | [`design/`](design/) | 现在为什么这么设计：类型模型、内存模型、回收、并行、融合、数组、模块、核心决定。 |
+| **计划** | [`plans/`](plans/) | 还没做或做了一半：[`TODO.md`](plans/TODO.md)（唯一待做清单）、体量收敛、库形状、简洁度量尺、元素引用。 |
+| **历史** | [`changelog/`](changelog/) · [`archive/`](archive/) | 唯一的开发历史（[`CHANGELOG.md`](CHANGELOG.md) 是索引）。`archive/` 只作考古。 |
+
+## design/ —— 现在为什么这么设计
+
+| 文档 | 一句话 |
 |---|---|
-| **现在有什么 / 怎么用** | [`usage/`](usage/) |
-| **有什么待做** | [`TODO.md`](TODO.md)（清单）· [`MEMORY-MODEL.md`](MEMORY-MODEL.md)（三种存储：帧、板块、对象表 —— 选哪个）· [`TYPE-MODEL.md`](TYPE-MODEL.md)（类型模型：值、引用、复合，以及载体）· [`CORE.md`](CORE.md)（六条不许破的决定与预算表）· [`TRIM.md`](TRIM.md)（体量收敛：哪些重复答案先删、按什么顺序）· [`RECLAMATION.md`](RECLAMATION.md)（回收机制）· [`PARALLEL.md`](PARALLEL.md)（并行机制）· [`FUSION.md`](FUSION.md)（视图融合机制，已落地）· [`ARRAY.md`](ARRAY.md)（数组与视图语义）· [`CONCISENESS.md`](CONCISENESS.md)（简洁度量尺与糖清单）· [`MODULES.md`](MODULES.md)（模块系统：身份、导入、门面、所有权）· [`ELEMENT-REFS.md`](ELEMENT-REFS.md)（元素引用：借容器里的东西而不拷贝）|
-| **开发历史（全仓库唯一）** | [`CHANGELOG.md`](CHANGELOG.md)（索引）· [`changelog/`](changelog/)（正文按月分页）|
-| **门面** | 根 [`README.md`](../README.md) —— 和 `usage/` 同级：同样受下面的示例闸门、历史词闸门与事实闸门管 |
+| [`CORE.md`](design/CORE.md) | 六条不许破的决定与预算表 —— 动别处之前先看这页 |
+| [`TYPE-MODEL.md`](design/TYPE-MODEL.md) | 值、引用、复合，以及它们各自装在什么载体里；拷贝/移动/借出/快照四个词的定义 |
+| [`MEMORY-MODEL.md`](design/MEMORY-MODEL.md) | 三种存储（帧 / 板块 / 对象表）与"该用哪个"的判据 |
+| [`ALLOCATORS.md`](design/ALLOCATORS.md) | 分配器分层：arena、板块、对象表各管什么 |
+| [`DESTRUCTORS.md`](design/DESTRUCTORS.md) | 析构：`@drop` 的全部时机与顺序 |
+| [`RECLAMATION.md`](design/RECLAMATION.md) | 四层回收：按分配点选策略、运行期何时整体删掉 |
+| [`PARALLEL.md`](design/PARALLEL.md) | `par` 的证明义务；线程与回收的规则（实现暂缓） |
+| [`FUSION.md`](design/FUSION.md) | 视图融合：什么形状能合、逐位一致的硬约束 |
+| [`ARRAY.md`](design/ARRAY.md) | 数组与视图语义、rank 与形状 |
+| [`MODULES.md`](design/MODULES.md) | 模块身份、导入、门面、所有权边界 |
 
-历史快照（只作考古，**不要当现状读**）：[`archive/`](archive/README.md)
+## plans/ —— 还没做的
+
+| 文档 | 一句话 |
+|---|---|
+| [`TODO.md`](plans/TODO.md) | 全仓库唯一的待做清单（做完就搬进 `usage/` 或删掉） |
+| [`TRIM.md`](plans/TRIM.md) | 体量收敛：哪些重复答案先删、按什么顺序 |
+| [`LIBRARY-SHAPE.md`](plans/LIBRARY-SHAPE.md) | 标准库该长什么样（45 → 20 模块的四层依赖） |
+| [`CONCISENESS.md`](plans/CONCISENESS.md) | 简洁度量尺与糖清单 |
+| [`ELEMENT-REFS.md`](plans/ELEMENT-REFS.md) | 元素引用：借容器里的东西而不拷贝 |
+
+## 其它
+
+- 贡献流程见根 [`CONTRIBUTING.md`](../CONTRIBUTING.md)；仓库门面见根 [`README.md`](../README.md)。
+- 专题页（编辑器、内部实现）在 [`topics/`](topics/)。
+- 注释规范见 [`COMMENT-STYLE.md`](COMMENT-STYLE.md)。
 
 ## 维护规则
 

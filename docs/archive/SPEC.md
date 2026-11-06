@@ -1,4 +1,4 @@
-<!-- 过时（2026-10-10 归档 · 只作考古）：本文是历史快照，不要当现状读。现状 → `docs/usage/`；待做 → `docs/TODO.md`；历史 → `docs/CHANGELOG.md`。 -->
+<!-- 过时（2026-10-10 归档 · 只作考古）：本文是历史快照，不要当现状读。现状 → `docs/usage/`；待做 → `docs/plans/TODO.md`；历史 → `docs/CHANGELOG.md`。 -->
 
 # SPEC.md —— extC 语言设计（正式版）
 
@@ -731,7 +731,7 @@ match e {
 | [`DECISIONS.md`](../docs/DECISIONS.md) | 哪条定了（编号定案）、哪条还欠着 |
 | [`BOOTSTRAP.md`](../docs/topics/BOOTSTRAP.md) | 自举路线、六步计划、ISO C 边界、沙箱 |
 | [`IO.md`](../docs/topics/IO.md) | 输入输出的设计（未实现）|
-| [`MODULES.md`](../docs/topics/MODULES.md) | **模块系统的调研 + 候选方案**（IO 的前置条件 —— 12 门语言怎么做、六个待拍板问题）|
+| [`MODULES.md`](../design/MODULES.md) | **模块系统的调研 + 候选方案**（IO 的前置条件 —— 12 门语言怎么做、六个待拍板问题）|
 | [`LIBS.md`](../docs/topics/LIBS.md) | **库的形态**（源码分发 / 给 C 用 / `extern!` 信任声明 / 所有权映射）|
 | [`REFS.md`](../docs/topics/REFS.md) / [`ARRAYS.md`](../docs/topics/ARRAYS.md) | 引用 / 数组的专题设计 |
 | [`SYNTAX.md`](../docs/SYNTAX.md) | 命名规范与样板 |

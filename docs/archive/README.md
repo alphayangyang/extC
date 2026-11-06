@@ -5,7 +5,7 @@
 | 想看什么 | 去哪 |
 |---|---|
 | 现在有什么 / 怎么用 | [`../usage/`](../usage/) |
-| 有什么待做 | [`../TODO.md`](../TODO.md) |
+| 有什么待做 | [`../TODO.md`](../plans/TODO.md) |
 | 开发历史（全仓库唯一） | [`../CHANGELOG.md`](../CHANGELOG.md) |
 
 ## 规则

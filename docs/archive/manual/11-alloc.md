@@ -1,4 +1,4 @@
-<!-- 过时（2026-10-10 归档 · 只作考古）：本文是历史快照，不要当现状读。现状 → `docs/usage/`；待做 → `docs/TODO.md`；历史 → `docs/CHANGELOG.md`。 -->
+<!-- 过时（2026-10-10 归档 · 只作考古）：本文是历史快照，不要当现状读。现状 → `docs/usage/`；待做 → `docs/plans/TODO.md`；历史 → `docs/CHANGELOG.md`。 -->
 
 <!-- 本页原来是 docs/MANUAL.md 的「7.7 分配：`new`（`new T` / `new [N]T` / `new T[n]`）」一节（原 §7.7）；所有编辑都改这里，不要把 MANUAL.md 当第二份真源。 -->
 

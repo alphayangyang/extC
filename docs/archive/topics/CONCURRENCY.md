@@ -1,4 +1,4 @@
-<!-- 过时（2026-10-10 归档 · 只作考古）：本文是历史快照，不要当现状读。现状 → `docs/usage/`；待做 → `docs/TODO.md`；历史 → `docs/CHANGELOG.md`。 -->
+<!-- 过时（2026-10-10 归档 · 只作考古）：本文是历史快照，不要当现状读。现状 → `docs/usage/`；待做 → `docs/plans/TODO.md`；历史 → `docs/CHANGELOG.md`。 -->
 
 # CONCURRENCY.md —— 并发现在在哪、该往哪走
 
@@ -1021,7 +1021,7 @@ fn parallel<A, B>(input: slice<A>, f: fn(A) -> B) -> varArray<B>
 | 并发排在主线的**哪里** | [`PLAN.md`](../../docs/PLAN.md) §1（`for` → lambda → 协议 → 模块/`@main`；**协程在这之后**）|
 | arena 的语义与规则 | [`ARENA.md`](../../docs/topics/ARENA.md) · [`ARENA-FORMAL.md`](../../docs/topics/ARENA-FORMAL.md) |
 | `#52`（有家被调者 ⇒ 结果住在我传的 arena） | [`PLAN.md`](../../docs/PLAN.md) §0.4 `#52` · [`DEVLOG.md`](../../docs/DEVLOG.md) 2026-09-23 |
-| 模块系统（协议要跨模块） | [`MODULES.md`](../../docs/topics/MODULES.md) · `DECISIONS.md` 定案 70 |
+| 模块系统（协议要跨模块） | [`MODULES.md`](../../design/MODULES.md) · `DECISIONS.md` 定案 70 |
 | 资源所有权（文件句柄那笔债） | [`IO.md`](../../docs/topics/IO.md) §5：`open` + **程序拥有**（`close()` + 编译期查泄漏，定案 79） |
 | 为什么这么设计（一条原则） | [`DESIGN.md`](../../docs/DESIGN.md) · [`SPEC.md`](../../docs/SPEC.md) |
 

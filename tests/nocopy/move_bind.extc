@@ -1,5 +1,5 @@
 // expect: 移动后 b = 1|赋新值后 a = 7
-/* 正例：绑定一个**已有的** `@noCopy` 值是**移动**，不是拷贝（docs/TYPE-MODEL.md §七）
+/* 正例：绑定一个**已有的** `@noCopy` 值是**移动**，不是拷贝（docs/design/TYPE-MODEL.md §七）
  *
  * 判据：
  *   ① `var b: counter = a` 把值交给 `b`，源名字此后作废（用它会是错误，见 errors/use_after_move.extc）✓

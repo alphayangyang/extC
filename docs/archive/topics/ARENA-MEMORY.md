@@ -1,4 +1,4 @@
-<!-- 过时（2026-10-10 归档 · 只作考古）：本文是历史快照，不要当现状读。现状 → `docs/usage/`；待做 → `docs/TODO.md`；历史 → `docs/CHANGELOG.md`。 -->
+<!-- 过时（2026-10-10 归档 · 只作考古）：本文是历史快照，不要当现状读。现状 → `docs/usage/`；待做 → `docs/plans/TODO.md`；历史 → `docs/CHANGELOG.md`。 -->
 
 # ARENA-MEMORY.md —— arena 与「长运行服务」的内存：一次未完成的尝试
 

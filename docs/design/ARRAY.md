@@ -1,7 +1,9 @@
 # 数组与视图（数组对象的语义契约）
 
+> 状态：**当前口径** —— 这篇写的是现在的事实，改语义先改它。
+
 这份文档回答"数组对象该怎么设计"。它属于"有什么待做"那一类，和
-[`PARALLEL.md`](PARALLEL.md)、[`FUSION.md`](FUSION.md)、[`TODO.md`](TODO.md) 同源：
+[`PARALLEL.md`](PARALLEL.md)、[`FUSION.md`](FUSION.md)、[`TODO.md`](../plans/TODO.md) 同源：
 清单在 `TODO.md`，这里是机制与判据。
 
 结论先写在这里：数组只保留**两个角色**——拥有者（`array`/`array2`）与视图（`view1`/`view2`），
@@ -116,7 +118,7 @@ b[1..rows - 1, 1..cols - 1] =
 - 边界：越界 trap 的时机与文案；空视图；形状不匹配的编译错文案稳定。
 - 性能：`bench/stream` 表达式臂不劣于手写融合臂；`bench/par` 的 `view2` 臂相对 `seq` 有可测加速；
   不使用新特性的既有 bench ±3% 内。
-- 文档：本页 + [`usage/language.md`](usage/language.md) 的新章节 + 示例闸门。
+- 文档：本页 + [`usage/language.md`](../usage/language.md) 的新章节 + 示例闸门。
 
 ## 未决问题
 

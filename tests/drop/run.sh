@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# `@drop`：单所有者的类型在离开块、被覆盖时交还它的状态（docs/DESTRUCTORS.md §S1）。
+# `@drop`：单所有者的类型在离开块、被覆盖时交还它的状态（docs/design/DESTRUCTORS.md §S1）。
 #
 # 这一版只有**块尾**与**覆盖赋值**两个时机：块里 `return` 提前离开时不跑（漏释放是可恢复的
 # 一侧，放两次是 use-after-free），S2 再把跳出路径补齐。

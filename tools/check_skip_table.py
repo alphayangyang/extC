@@ -4,7 +4,7 @@
 ## 为什么需要这个门禁
 
 运行期里有很多"为了省事/省时直接返回"的地方（`if (…) return …;`）。每一处都依赖一个前提，
-前提破了可能往"多留"（保守）或"少算"（不安全）倒。`docs/RECLAMATION.md` 的「快路径与跳过」
+前提破了可能往"多留"（保守）或"少算"（不安全）倒。`docs/design/RECLAMATION.md` 的「快路径与跳过」
 表把这些前提、方向、判据列了出来 —— 但**表是散文**，没有东西拦得住"新加一处跳过却不进表"。
 义务表有 `gate-invariant-table`，这里就是跳过表的对应物。
 
@@ -12,7 +12,7 @@
 
 1. **代码里每处跳过都带标记**：`if (…) return …;` 这一行的同一行必须有 `/* skip:<id> */`。
    未标记的数必须为 **0** —— 这是个只许往下拧的棘轮：新增一处未标记的跳过就会红。
-2. **标记 → 表**：代码里出现的每个 `skip:<id>` 都必须在 `docs/RECLAMATION.md` 里出现。
+2. **标记 → 表**：代码里出现的每个 `skip:<id>` 都必须在 `docs/design/RECLAMATION.md` 里出现。
 3. **表 → 标记**：表里提到的每个 `skip:<id>` 都必须在代码里存在（删掉跳过却留着表行 = 红）。
 
 **跨档取并集**：运行期是按档位发射的（默认 / 计数 / 时间 / 事件 / 本地存储 / 帧根链），
@@ -29,7 +29,7 @@ import tempfile
 
 import check_note_part  # 同目录：复用"把运行期文本发射出来"的那段
 
-DOC = "docs/RECLAMATION.md"
+DOC = "docs/design/RECLAMATION.md"
 RE_TAG = re.compile(r"skip:([a-z0-9][a-z0-9-]*)")
 RE_EARLY = re.compile(r"^\s*if \(.*\)\s*return")
 RE_OPEN = re.compile(r"^\s*if \(.*\)\s*\{?\s*$")

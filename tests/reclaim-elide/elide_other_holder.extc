@@ -1,6 +1,6 @@
 /* 形状 E3（**该省** · 情形③）：**编译器能证明该对象还有别的持有者**。
  *
- * 判据来源：`docs/RECLAMATION.md` 第五节最后一条（引文见 `elide_swept_region.extc`）。
+ * 判据来源：`docs/design/RECLAMATION.md` 第五节最后一条（引文见 `elide_swept_region.extc`）。
  *
  * 形状：`keep` 这个函数层绑定持有对象，而且**在下面那条边之后仍然被读**（最后一行打印
  * `keep.val`）⇒ 有一条活得更久的持有者。新写进 `b.head` 的那条边不改变对象的存活：

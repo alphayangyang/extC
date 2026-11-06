@@ -1,4 +1,4 @@
-<!-- 过时（2026-10-10 归档 · 只作考古）：本文是历史快照，不要当现状读。现状 → `docs/usage/`；待做 → `docs/TODO.md`；历史 → `docs/CHANGELOG.md`。 -->
+<!-- 过时（2026-10-10 归档 · 只作考古）：本文是历史快照，不要当现状读。现状 → `docs/usage/`；待做 → `docs/plans/TODO.md`；历史 → `docs/CHANGELOG.md`。 -->
 
 <!-- MEMORY-MODEL.md —— 技术展示：Arena 与 Pool 的内存管理模型（底层原理版）
      大纲（按作者指定）：1 Arena 是什么 · 2 Arena 提权机制与正确性证明 · 3 Arena 的优劣 ·

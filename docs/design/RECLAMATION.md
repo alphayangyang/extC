@@ -1,7 +1,9 @@
 # 回收（机制与待做）
 
+> 状态：**当前口径** —— 这篇写的是现在的事实，改语义先改它。
+
 这份文档说明 extC 的内存回收长成什么样，以及为此要做的几件事。
-它属于"有什么待做"那一类，和 [`TODO.md`](TODO.md) 同源：`TODO.md` 是清单，这里是它背后的机制。
+它属于"有什么待做"那一类，和 [`TODO.md`](../plans/TODO.md) 同源：`TODO.md` 是清单，这里是它背后的机制。
 
 ## 模型总览
 
@@ -57,7 +59,7 @@ while i < n {
 [`tools/check_slab_cap.py`](../tools/check_slab_cap.py)。slab 只增不减（唯一的块级归还是区域整个归还），
 所以容量粒度直接决定白留多少：固定一整块时每个尺寸类最多白留一整块，按槽定容量之后块变细 ⇒
 清扫得更早也更频繁 ⇒ 峰值占用与 RSS 下降，代价是那一档几个百分点的墙钟（数字见
-[`CHANGELOG.md`](CHANGELOG.md)）。这个下限取 64 KiB 由扫描定出：更小的下限只是把每个尺寸类
+[`CHANGELOG.md`](../CHANGELOG.md)）。这个下限取 64 KiB 由扫描定出：更小的下限只是把每个尺寸类
 拆成更多块，多出来的元数据页与清扫次数会把收益吃回去；更大的下限（128 KiB 起）则会让谱 P5 的
 收益整个丢掉（RSS 回到 136 MB，是 64 KiB 下限那版的 1.76×）。下限是**配置无关**的常量，
 而块大小可以配置（\`EXTC_RC_SLAB_BITS\` < 16 时块小于 64 KiB），所以 \`extc_rc_slabNew\` 里把块大小收回到
@@ -71,7 +73,7 @@ while i < n {
 链头那些满块（每块最多被弹一次，均摊 O(1)），弹空才开新块；释放把某块从满变不满时若它不在链上就头插回链头
 （\`avail\` 位防同一块被重复入链）。bump 路径开出来的 slab 不进链（它不置占用位，而且 \`bumpReset\` 会复用
 同一片内存，原先的创建序线性扫描可能误选它）。旧实现是在区域 \`slabs\` 链上**线性走**找同尺寸有空位的块，
-分配数一多就成了二次方（3200 万次分配 / 8000 块 ⇒ 40 s 级，见 [\`CHANGELOG.md\`](CHANGELOG.md)）；
+分配数一多就成了二次方（3200 万次分配 / 8000 块 ⇒ 40 s 级，见 [\`CHANGELOG.md\`](../CHANGELOG.md)）；
 判据是 [\`tools/check_alloc_hot.py\`](../tools/check_alloc_hot.py)（结构）与
 [\`tests/reclaim-perf/gate-slab-scale.sh\`](../tests/reclaim-perf/gate-slab-scale.sh)（N vs 4N 的每分配指令数比）。
 
@@ -136,7 +138,7 @@ add+del 指令数比、T=8 vs 256 的每次查找指令数比，注入线性形�
 （占用 / 标记 / 跨区登记，≈3 bit/槽）+ 跨区入边计数（2 B）+ **16 位类型号**（2 B；号 → 描述符
 的映射是**每块 slab 的小类型表**，按指针相等去重，1 号固定是兜底描述符）。槽步长既然不是 2 的幂，
 "由对象指针找槽号"就不是一次移位，而是一次**乘倒数右移**（精确性论证在实现里，判据见
-[`tests/reclaim-perf/README.md`](../tests/reclaim-perf/README.md) §11）。
+[`tests/reclaim-perf/README.md`](../../tests/reclaim-perf/README.md) §11）。
 所以下面的形状是零成本的：
 
 <!-- fragment -->
@@ -475,14 +477,14 @@ P2 与这个反例的差别**只有"旧值是否另有根"这一维**（P2 的�
 不变量，证据形态是 `planFn*` 加不动点）。消减机制（掐触发/销账、同区改发裸存）的锚点已经就绪，
 但判定恒假：落地必须做到"生成物逐字不变、判据空转"，红演示用注入把判定强制为真。两条判据
 （静态清单 + 运行期守卫）**只给规格、不落空壳** —— 判定缺席时不许把"绿"当成证据。规格与锚点见
-会话归档 [`archive/2026-10-15-gc-pause.md`](archive/2026-10-15-gc-pause.md) 报告索引里的 `E2_LANDING.md`。
+会话归档 [`archive/2026-10-15-gc-pause.md`](../archive/2026-10-15-gc-pause.md) 报告索引里的 `E2_LANDING.md`。
 **口径**：掐掉运行期后能不能压到线内，取决于按 `-O1` 还是 `-O2` 验收（见"四.一"）。
 
 **开关语义**：`EXTC_RECLAIM=1` 是"**允许**回收 / 不强制关闭"，不是"强制发射"——证明成立时
 发射运行期只是空转，所以②在**任何档**下都跳过。`EXTC_RECLAIM=0` 仍然是从不发射、对照组。
 **注意它不是"只关 GC"**：这一档下分配器也换成 `extc_arena_*` 纯 bump（生成物里连 `malloc` 都没有）
 ⇒ 拿它做 on/off 对照时，差值是「回收运行期 + **槽式分配器** + 记账」vs「纯 bump arena」，
-**不是纯 GC 税**；出处与实测见 [`bench/gc/SPECTRUM-MATRIX.md`](../bench/gc/SPECTRUM-MATRIX.md) §10.1。
+**不是纯 GC 税**；出处与实测见 [`bench/gc/SPECTRUM-MATRIX.md`](../../bench/gc/SPECTRUM-MATRIX.md) §10.1。
 
 **失效方向**：少收 ⇒ **内存涨**，不是悬垂（rc 只释放标记不到的对象）。安全网是两条动态判据
 加一条红证明：
@@ -563,7 +565,7 @@ P2 与这个反例的差别**只有"旧值是否另有根"这一维**（P2 的�
 `n=0`**（环形记录插在**冷**契约入口 `extc_rc_collect`，而热路径走 `extc_rc_step`）⇒ **不能用它断言
 "0 次停顿"**；同一次运行里生成物自己报的 `[pause]`/`[step]` 计数都不为 0。它同一行的
 `step_n`/`step_max_us` 仍然有效。出处与实测见
-[`bench/gc/SPECTRUM-MATRIX.md`](../bench/gc/SPECTRUM-MATRIX.md)（§4.3、§7）。
+[`bench/gc/SPECTRUM-MATRIX.md`](../../bench/gc/SPECTRUM-MATRIX.md)（§4.3、§7）。
 
 **两个停顿总体，别只报一个；三家"停顿"也不可相减。** extC 的生成物自己有**两行**，是两个不同的
 总体：
@@ -577,7 +579,7 @@ P2 与这个反例的差别**只有"旧值是否另有根"这一维**（P2 的�
 同一批运行里两者的总量可以差几个数量级 ⇒ **引用 extC 停顿时必须说清是哪个总体**，只含 `[pause]`
 的结论不能读成"几乎不停顿"。跨语言的口径同样不是一回事：Go 的 `gctrace` STW 不含 assist+bg
 （那些是可并发的 CPU），Java 的 GC Pause 才是真 STW 墙钟 ⇒ **三家的"停顿"只可并排，不可相减或
-相除**。实测与不可比清单见 [`bench/gc/SPECTRUM-MATRIX.md`](../bench/gc/SPECTRUM-MATRIX.md) §4/§7。
+相除**。实测与不可比清单见 [`bench/gc/SPECTRUM-MATRIX.md`](../../bench/gc/SPECTRUM-MATRIX.md) §4/§7。
 
 **`[work]` 的盲区（2026-10-15 抓到，已补量具）**：`[work]` 只统计 `budget ≤ EXTC_RC_MARK_BATCH_MAX`
 的**有界热路径步**；契约排空/结算收尾（`budget=∞`）连量具都躲过去 —— `[step] n` 与 `[work] n`
@@ -615,14 +617,14 @@ P2 与这个反例的差别**只有"旧值是否另有根"这一维**（P2 的�
 按字面把 `B64us` 读成"≥64 µs"会得出错的阈值（这一条读法很容易错，写判据时以源码里的
 `stepNote` 与 `[step]` 的 fprintf 为准）。**更细的 1 / 4 / 16 µs 三档只计数、不打印** ⇒ 单看
 `[step]` 行**读不出 p99 ≤ 10 µs**；要读 p99 得先把细桶打印出来（并/或补 4 µs、10 µs 的**纯计数**
-桶），那是一件要做的，记在 [`TODO.md`](TODO.md)。
+桶），那是一件要做的，记在 [`TODO.md`](../plans/TODO.md)。
 
 **"p99" 有两种，写判据时必须指明是哪种。** 一种是把**所有切片**放一起排序取 p99（"每步时长的
 p99"）；另一种是**每 run 只取一个最大步**、再对这些 per-run max 取 p99（"per-run max 的 p99"）。
 两者的尾巴完全不同：前者的 p99 由极小比例的长步决定，后者每次运行只贡献一个样本、天然更靠尾部
 ⇒ 只报一种会得出误导结论（长步占比可以极小，而 per-run max 仍明显更高）。任何"p99 ≤ X"都要
 写清口径；量具必须两种都读得出来。两种口径的实测分布对照见归档
-[`archive/2026-10-15-locality.md`](archive/2026-10-15-locality.md)。
+[`archive/2026-10-15-locality.md`](../archive/2026-10-15-locality.md)。
 
 **统一工作量预算 `EXTC_RC_WORK_BUDGET=W`（C 编译期 `-D`，默认 0 = 关）**：默认形态下
 `walk`（`MARK_BATCH_MAX`）、`scan`（`SEED_WORDS`）、`push`（`SEED_PUSHES`）是**三个独立预算**且
@@ -649,7 +651,7 @@ p99"）；另一种是**每 run 只取一个最大步**、再对这些 per-run m
   被测程序的时间。逐条打印是在**该步计时取样之后**做的，所以它不污染该步自己的 `dur_us`
   （也正因如此，它连"这次打印花了多少"都看不见）⇒ 只适合把阈值放在**明显高于打印开销**的量级
   （十 µs 以上）。要让低阈值也能用，得先让量具不自扰动（限速/聚合，或拒绝小阈值）—— 记在
-  [`TODO.md`](TODO.md)。
+  [`TODO.md`](../plans/TODO.md)。
 
 **大对象分段扫描：单步停顿不再 ∝ 对象大小（`EXTC_RC_SCAN_CHUNK`）。** 对象里的指针特别多时
 （大数组字段、或运行期才知道长度的结构，按保守扫描逐字看整槽），标记它是**单步不可分片**的工作：
@@ -747,7 +749,7 @@ reclaim 形状闸门（`gate-shapes`/`gate-work`/`gate-shard-cycles`/`gate-idle-
   `keep_indirect_callee`（两条语义敏感的健全性反例）。实现见
   `src/check/check_top.c` 的 `computeRcNoDec`、计划侧 `planRcNoDec`、`src/back/codegen.c` 的 `stVar`。
   收益在"大量指针赋值、极少分配"的代码里最大，而**当前最大的一笔是局部引用拷贝**
-  （`var p = t`，见 [`tests/reclaim-perf/README.md`](../tests/reclaim-perf/README.md) §10）——
+  （`var p = t`，见 [`tests/reclaim-perf/README.md`](../../tests/reclaim-perf/README.md) §10）——
   那一笔要跨过程效果（"被调者不会释放它"），比上面三类都难。
 * **环的可观测性**：让"这个区域里有环"能被统计到，自学习退场才有更准的判据，
   而不必靠"扫了才知道没有"。
@@ -756,7 +758,7 @@ reclaim 形状闸门（`gate-shapes`/`gate-work`/`gate-shard-cycles`/`gate-idle-
 
 上面两块是"清扫覆盖不到"的机制缺口；下面这份是**开放项清单**，按优先级排，每条只写"要什么行为"
 与出处。实测数字只在归档与 `changelog/` 里，本节不复制它们 —— 出处见会话归档
-[`archive/2026-10-15-gc-pause.md`](archive/2026-10-15-gc-pause.md) 的报告索引。
+[`archive/2026-10-15-gc-pause.md`](../archive/2026-10-15-gc-pause.md) 的报告索引。
 
 1. **取消式收尾 —— 已落地**（`extc_rc_abort`：`regionFree` 不再排空在飞的一轮，取消并配对减
    `wb`；`finish`/`abort` 带运行期配对自检）。P5@2.4M 的 25.2 ms 排空消失（`over1ms` 0，
@@ -790,11 +792,11 @@ reclaim 形状闸门（`gate-shapes`/`gate-work`/`gate-shard-cycles`/`gate-idle-
 14. **判据自身的粗粒度**：超阈桶是粗分位；小预算下"标记栈高水位 + `markStep` 内的 `realloc`"
    这条耦合没定量（`PAUSE_10US.md`）。
 15. **标记遍历的访存局部性**：方向（`ownSlab` 热缓存 / 按 slab 局部性排序遍历 / 预取下一个对象 /
-    把每对象要碰的几样结构靠拢或合并 / 清扫预算按槽不按字）与证据记在 [`TODO.md`](TODO.md) 的
+    把每对象要碰的几样结构靠拢或合并 / 清扫预算按槽不按字）与证据记在 [`TODO.md`](../plans/TODO.md) 的
     「回收的量具与访存局部性」一节，原始实测归档在
-    [`archive/2026-10-15-locality.md`](archive/2026-10-15-locality.md)；本清单不复制。
+    [`archive/2026-10-15-locality.md`](../archive/2026-10-15-locality.md)；本清单不复制。
     其中「批弹出窗口」一项已落地（`EXTC_RC_MARK_BATCH_POP` 默认 **200**，见
-    [`changelog/2026-10.md`](changelog/2026-10.md)）：拉长一步内的在飞窗口就能压 `[step]` 总量，而软件预取与其
+    [`changelog/2026-10.md`](../changelog/2026-10.md)）：拉长一步内的在飞窗口就能压 `[step]` 总量，而软件预取与其
     对照证明不是杠杆；批宽同时是遍历顺序旋钮（`collects`/峰值 RSS 跟着动）。**批宽上限在进填充循环前
     一次算好**（`min(批宽, 剩余预算, 窗口配额, 标记栈深度)`），预算与配额按整批扣（`budget -= _nb; pops += _nb;`）
     —— 填充循环里不再每弹一个对象比较三个条件、扣两次账；弹出的集合与顺序逐字不变。标记栈头与栈深
@@ -840,38 +842,38 @@ cache-sim 判据变红）。
     数量对不上时本门禁先红）。
 16. **滑窗 + 长命索引形状上的超线性回收**：回收工作量随规模超线性（幂次约 1.7–1.8），而
     `EXTC_RECLAIM=0` 对照臂是线性的（≈0.97）；**超线性的大头在 `[step]` 记账之外**（残差）
-    ⇒ **根因未定位**。候选方向记在 [`TODO.md`](TODO.md) 的「回收：大横评」一节；出处
-    [`bench/gc/SPECTRUM-MATRIX.md`](../bench/gc/SPECTRUM-MATRIX.md) **§10** 与
+    ⇒ **根因未定位**。候选方向记在 [`TODO.md`](../plans/TODO.md) 的「回收：大横评」一节；出处
+    [`bench/gc/SPECTRUM-MATRIX.md`](../../bench/gc/SPECTRUM-MATRIX.md) **§10** 与
     `bench/gc/spectrum-matrix-reclaim0.tsv`（两轮 × best-of-5、两点幂次、stdout 逐字节相同）。
     **警告**：`EXTC_RECLAIM=0` 连**分配器**一起换（`extc_arena_*` 纯 bump）⇒ 该对照不是纯 GC 税，
-    详见 [`TODO.md`](TODO.md)「回收：大横评」一节的硬警告与「三点七」的开关语义。
-17. **量具 `PAUSE_DIST` 恒 `n=0`**：不能用来断言"0 次停顿"；待修，记在 [`TODO.md`](TODO.md)。
+    详见 [`TODO.md`](../plans/TODO.md)「回收：大横评」一节的硬警告与「三点七」的开关语义。
+17. **量具 `PAUSE_DIST` 恒 `n=0`**：不能用来断言"0 次停顿"；待修，记在 [`TODO.md`](../plans/TODO.md)。
 
 ## 六、怎么知道是真的
 
-* 机制的不变量与边界有机器检查的证明，见 [`proofs/`](../proofs/README.md)。
-* 数值（开销、内存上界、停顿）由 [`prototype/reclaim/`](../prototype/reclaim/README.md) 的 C 探针
+* 机制的不变量与边界有机器检查的证明，见 [`proofs/`](../../proofs/README.md)。
+* 数值（开销、内存上界、停顿）由 [`prototype/reclaim/`](../../prototype/reclaim/README.md) 的 C 探针
   与跨语言对照给出。
 * 行为基线与开关下的判据（含分片、根表收窄的对照数据）由
-  [`tests/reclaim-shapes/`](../tests/reclaim-shapes/README.md) 给出。
-* 开销归因与性能判据由 [`tests/reclaim-perf/`](../tests/reclaim-perf/README.md) 给出；
-  计数收窄的红判据在 [`tests/reclaim-elide/`](../tests/reclaim-elide/README.md)。
+  [`tests/reclaim-shapes/`](../../tests/reclaim-shapes/README.md) 给出。
+* 开销归因与性能判据由 [`tests/reclaim-perf/`](../../tests/reclaim-perf/README.md) 给出；
+  计数收窄的红判据在 [`tests/reclaim-elide/`](../../tests/reclaim-elide/README.md)。
 * **清扫与标记的结构量**：清扫面的逐次普查（扫过槽数/死集/①覆盖/区域尺寸/每区固定开销）在
-  [`tests/reclaim-perf/SWEEP-CENSUS.md`](../tests/reclaim-perf/SWEEP-CENSUS.md)；
+  [`tests/reclaim-perf/SWEEP-CENSUS.md`](../../tests/reclaim-perf/SWEEP-CENSUS.md)；
   `mark` 的分段归因与候选（S1–S5、已否的"专属区域"、可红判据）在
-  [`tests/reclaim-perf/MARK-MODEL.md`](../tests/reclaim-perf/MARK-MODEL.md)。
+  [`tests/reclaim-perf/MARK-MODEL.md`](../../tests/reclaim-perf/MARK-MODEL.md)。
 * **槽号索引**（8 字节尺寸类 ⇒ 乘倒数右移）的域内穷举判据在
   [`tests/reclaim-perf/slotindex.c`](../tests/reclaim-perf/slotindex.c)（挂 `gate-reclaim-perf`）：
   算错一格会把**合法对象**判成"不是本运行期的槽" ⇒ 标记漏走它 ⇒ 清扫当垃圾放掉。它的牙：
   把 `EXTC_RC_RCP_SHIFT` 从 42 改成 19 ⇒ 判据当场红。
 * 「区域不需要回收 ⇒ 整段不发射 rc」这条的**税**判据是 `tests/reclaim-perf/gate-tax.sh`
   （`bt` 的开/关档指令数比，棘轮只许往下拧），峰值界与"该拒的必须拒"由
-  [`tests/reclaim-acyclic/`](../tests/reclaim-acyclic/README.md) 的安全格看着，
+  [`tests/reclaim-acyclic/`](../../tests/reclaim-acyclic/README.md) 的安全格看着，
   验牙靠注入 `reclaim-idle-always`。
 * 清扫**覆盖不到的形状清单**、以及"每个区域有没有回收者""引用写入有没有记账"的静态检查，由
-  [`tests/reclaim-gaps/`](../tests/reclaim-gaps/README.md) 给出。
+  [`tests/reclaim-gaps/`](../../tests/reclaim-gaps/README.md) 给出。
 * 把「根」与「宿主」收敛成一个来源、一条链的**方案**，连同编译器内部没对齐的清单，由
-  [`tests/reclaim-unified/RECON.md`](../tests/reclaim-unified/RECON.md) 给出。
+  [`tests/reclaim-unified/RECON.md`](../../tests/reclaim-unified/RECON.md) 给出。
 * **两条新闸门**（都挂 `nobench`，运行期零改动）：
   - `gate-reclaim-work` 强制**工作量界** —— `[work]` 必须存在且 `n>0`（否则文案是"插桩失败/
     工具不兼容"，不许当绿）、每形状多次运行逐字相同、三条界全部从**产物**里读出（读不到即红，
@@ -911,7 +913,7 @@ cache-sim 判据变红）。
 | 标记 | 跳过 | 前提 | 破坏后的方向 | 判据 |
 |---|---|---|---|---|
 | `skip:chain-bad` | 帧根链上有一帧**枚举不全**（协程帧/`ext` 帧/池元素/视图元素/`match` 绑定那几档）⇒ 整条链拒绝清扫（种子不完整）| 该帧的槽枚举不全 ⇒ 标记走不到它持有的引用 | 多留（保守）| 与 `skip:nosweep` 同一个出口：义务 7 单测 + 注入 `noSweep-drop` | 
-| `skip:sweepfree` | `EXTC_RC_SWEEPFREE=1`（事件档）⇒ 该区域永不触发清扫，只靠计数归零当场回收 | 整程序被证明无环、且**所有能丢引用的位置都是被计数的 rc 槽**（否则记数不完备）| 少算（内存涨，不是悬垂）| **诊断档**：实测它在语料里没有一个能赢的形状，判据已摘出电池（`gate-acyclic` 自报 manual，见 [`tests/reclaim-perf/TAXMAP.md`](../tests/reclaim-perf/TAXMAP.md) 第 7 节）；手工红证明仍用注入 `acyclic-always`（有环形状 RSS 爆）| 
+| `skip:sweepfree` | `EXTC_RC_SWEEPFREE=1`（事件档）⇒ 该区域永不触发清扫，只靠计数归零当场回收 | 整程序被证明无环、且**所有能丢引用的位置都是被计数的 rc 槽**（否则记数不完备）| 少算（内存涨，不是悬垂）| **诊断档**：实测它在语料里没有一个能赢的形状，判据已摘出电池（`gate-acyclic` 自报 manual，见 [`tests/reclaim-perf/TAXMAP.md`](../../tests/reclaim-perf/TAXMAP.md) 第 7 节）；手工红证明仍用注入 `acyclic-always`（有环形状 RSS 爆）| 
 | `skip:own-hot` | 指针所在的那块 1 MiB slab 就是上一次**验证过**的 slab ⇒ 直接复用，省掉哈希与查表 | 掩码后的基址与缓存里的 slab 地址**相等**，且槽边界校验照旧通过 | 少算（不安全）| 注入 `ownhot-nobase`（去掉基址判等）⇒ 跨 slab 的指针会拿到错的 slab、校验失败后被当成区域外；**注意**这一格服务的是末级读失手、不是指令数，别按 `-O1` 指令数删它（收益口径见 changelog）|
 | `skip:rscnt-have` | `rscnt`（每槽跨区入边计数表）已经建过 ⇒ `extc_rc_rsAlloc` 直接返回 | 表一旦建好就跟着 slab 活到 `slabFree`（懒分配只发生在第一次 `rsInc`）| 无（幂等；若重复分配就会泄漏旧表 ⇒ 这条必须保持）| 跨区形状语义逐字（`cross_region`）+ `gate-reclaim-work` |
 | `skip:rscnt-none` | `rscnt` 表不存在 ⇒ 只读访问器返回 0、`rsDec`/`freeSlot` 跳过写 | 表不存在 ⇔ 这块 slab 一次登记都没有过（`rsAlloc` 只在 `rsInc`/`rsIncSlab` 里调）⇒ 没有入边可减/可读 | 少算（把「有入边」读成 0）| 跨区形状 `EXTC_RC_STATS=1` 的 `rs_live` 不随轮数涨 + `gate-reclaim-switch` / `gate-reclaim-gaps` |

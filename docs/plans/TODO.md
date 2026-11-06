@@ -1,15 +1,17 @@
 # 待做（唯一清单）
 
+> 状态：**待做清单** —— 全仓库唯一的待做入口。
+
 **规则**：条目做完就搬进 [`usage/`](usage/)（或者舍弃）；砍掉就**直接删掉**，不留"已取消"。
 **本页不留"已解决"** —— 做完的条目要么搬进 `usage/`，要么删掉；本页只写还没做的事。
 
 写条目时讲清**要什么行为**，不要写"改哪个文件"——文件名会变。机制细节只在
-[`RECLAMATION.md`](RECLAMATION.md)。
+[`RECLAMATION.md`](../design/RECLAMATION.md)。
 
 ## 计数层（推迟，用户决定 2026-11-05）
 
 删掉计数档会影响事件档（`EXTC_RC_SWEEPFREE=1`）与"编译器自判无环 ⇒ 开计数 + 不扫"两条路径，以及
-`tests/reclaim-acyclic` 与论文 acyclic 叙述。删法与验证判据见 `docs/TRIM.md` 的"计数层"一节；净删
+`tests/reclaim-acyclic` 与论文 acyclic 叙述。删法与验证判据见 `docs/plans/TRIM.md` 的"计数层"一节；净删
 103 行，生成 C 逐字节不变。
 
 ## 已排定顺序
@@ -25,14 +27,14 @@
   deref 拷贝、函数返回、容器、协程），能红才实现。**没有红判据不实现。**
 - **堆的逐对象回收**：`std::heap` 的板现在只能整体归还。原型里已经验过"一次保留、按需提交、按尺寸类回收"
   的形态，把那部分搬进来（或做成第三种容器基座）。
-- **区域回收**（机制见 [`RECLAMATION.md`](RECLAMATION.md)）。
+- **区域回收**（机制见 [`RECLAMATION.md`](../design/RECLAMATION.md)）。
   目标：不可达但仍占着存储的对象要有界，且**界与循环轮数无关**；停顿只与被扫区域有关、与整个堆无关。
   四层机制（本地整片释放、提权、计数归零、区域清扫）在默认路径上。
-  机制层的待做项、优先级与出处只在 [`RECLAMATION.md`](RECLAMATION.md) 的「五、要做的」一节；
-  真实业务形状（会话表、路由表、日志缓冲）的现状与复现见 [`bench/app/STALL.md`](../bench/app/STALL.md)。
+  机制层的待做项、优先级与出处只在 [`RECLAMATION.md`](../design/RECLAMATION.md) 的「五、要做的」一节；
+  真实业务形状（会话表、路由表、日志缓冲）的现状与复现见 [`bench/app/STALL.md`](../../bench/app/STALL.md)。
   本条目**只留行为目标**，不复制那份清单，免得两处各自漂。
 - **真实业务形状上的单位成本**：`bench/app/` 的三个场景（会话表、路由表、日志缓冲）的现状见
-  [`bench/app/STALL.md`](../bench/app/STALL.md)。这三个形状**不执行任何回收指令**，但 extC 在路由表上慢于 Go、
+  [`bench/app/STALL.md`](../../bench/app/STALL.md)。这三个形状**不执行任何回收指令**，但 extC 在路由表上慢于 Go、
   在日志缓冲上明显慢于 C++ 与 Go ⇒ 差距在分配、容器与代码生成层。要做的：定位这两个差距，并判断其中有没有回归。
 - **重出 `bench/app` 的结果文件**：它的数值与当前构建对不上 —— 同一条命令、输出校验和相同，成本却差数倍。
   先确认是回归还是口径差，再用当前构建重出。
@@ -63,7 +65,7 @@
   +100%~+455% —— 钱花在"地址→槽查表 + 旁路元数据读改写"。发射层特化救不了：把查找整段减掉后，
   计数价仍是清扫侧的 2.5–17 倍。⇒ 计数路线要成立，前提是**槽布局改动（计数进对象头）**，让单价降到
   个位条指令；即便到了那一步，也只有"清扫真的在跑"的形状会赢。先决定是否继续；证据、上界与逐形状数字见
-  [`tests/reclaim-perf/TAXMAP.md`](../tests/reclaim-perf/TAXMAP.md) 第 9 节。
+  [`tests/reclaim-perf/TAXMAP.md`](../../tests/reclaim-perf/TAXMAP.md) 第 9 节。
 - **容器在循环里长过之后，同层再取视图被误拒（假阳性，2026-11-05）**：
   <!-- fragment -->
   ```extc
@@ -80,7 +82,7 @@
 
 ## 回收：量具与停顿
 
-口径的**单一真源**是 [`RECLAMATION.md`](RECLAMATION.md) 的「四.一」：`[step]` 桶的实际阈值、
+口径的**单一真源**是 [`RECLAMATION.md`](../design/RECLAMATION.md) 的「四.一」：`[step]` 桶的实际阈值、
 低阈值诊断开关的可用区间、"p99"指哪一种。本节只留"要做什么"，不复制口径。
 
 - **`[step]` 的桶打不出细粒度**：1 / 4 / 16 µs 三档只计数、**不打印**，打印出来的桶从 16 µs 起步
@@ -89,7 +91,7 @@
 - **停顿诊断的低阈值不可用**：阈值单位 µs，阈值压到几 µs 时大部分步都打印，整轮被 stderr 拖慢、外层计时作废。
   要决定的是**要不要让它自己防呆**（低阈值限速/聚合，或直接拒绝小阈值）。
 - **标记遍历的访存局部性**：`markStep` 的**指令占比很小，却占 L1 数据读缺失的将近一半**；同一个步预算下
-  **每对象成本随堆增大数倍**。出处：[`archive/2026-10-15-locality.md`](archive/2026-10-15-locality.md)
+  **每对象成本随堆增大数倍**。出处：[`archive/2026-10-15-locality.md`](../archive/2026-10-15-locality.md)
   （那份数字在预取之前）。**已经落地**：压栈与批量弹出的 `__builtin_prefetch`、攒批弹出。
   **还差**：按 slab 局部性排序遍历、把每对象要碰的几样（slab 头 / `occ` 位图 / 对象头 / 子字段）靠近或合并、
   **清扫预算按槽而不是按字**（现在一次清扫仍按 8 词批量，最小步可能 60–170 µs）。
@@ -102,9 +104,9 @@
 
 ## 回收：横评开放项
 
-出处：[`bench/gc/v2/SPEC.md`](../bench/gc/v2/SPEC.md)（形状规格与判据）、
-[`bench/gc/v2/REPORT.md`](../bench/gc/v2/REPORT.md)、停顿分布 [`bench/gc/v2/PAUSE.md`](../bench/gc/v2/PAUSE.md)，
-原始数据 `bench/gc/v2/matrix.tsv` 与 `bench/gc/v2/pause_v2.tsv`；数字与结论只在 [`CHANGELOG.md`](CHANGELOG.md)。
+出处：[`bench/gc/v2/SPEC.md`](../../bench/gc/v2/SPEC.md)（形状规格与判据）、
+[`bench/gc/v2/REPORT.md`](../../bench/gc/v2/REPORT.md)、停顿分布 [`bench/gc/v2/PAUSE.md`](../../bench/gc/v2/PAUSE.md)，
+原始数据 `bench/gc/v2/matrix.tsv` 与 `bench/gc/v2/pause_v2.tsv`；数字与结论只在 [`CHANGELOG.md`](../CHANGELOG.md)。
 本节只留待查项。
 
 - **停顿分布有三格还没有统计意义**：四语言 × 四形状的直方与分位已在 `bench/gc/v2/PAUSE.md`
@@ -125,7 +127,7 @@
   `slice` 注解下不再算拥有者。规模实测（`(let|var) x: slice<…> = new …`）：**329 处 / 141 个文件**
   （tests 176、bench 82、third_party 36、examples 17、stdlib 15、tools 3）；stdlib 那 15 处是 `io`/`fs`/
   `net` 的内部缓冲，先改成 `buf<T>` 风险最低的一批。
-- **`array<T, N>` / `buf<T>` 与 const 泛型**（类型模型已定案，见 [`TYPE-MODEL.md`](TYPE-MODEL.md) §三、§四）：
+- **`array<T, N>` / `buf<T>` 与 const 泛型**（类型模型已定案，见 [`TYPE-MODEL.md`](../design/TYPE-MODEL.md) §三、§四）：
   把"拥有存储的数组"从 `slice` 里分出来。要的行为：`[N]T` 归一成 `array<T, N>`（内联、静态长度），
   `new T[n]` 返回 `buf<T>`（拥有、运行时长度、`@noCopy` + 移动），`slice<T>` 只借；两者方法同名，
   转换只有 `arr[..]` / `b.view()` 与 `snapshot()` 两条显式通道。顺序：先 const 泛型
@@ -140,9 +142,9 @@
 - `@main` 注解（不再硬编码 `main`）。
 - 并行：用户模型只有一句话 —— **可变数据有唯一主人，能共享的只有只读**。引用不过线程。
   这条也决定了多线程回收的形状（谁 arena 谁回收，收集器不需要跨线程同步），规则见
-  [`PARALLEL.md`](PARALLEL.md) 的"线程与回收"一节；它暂缓，缺的是线程语法与池化生命周期。
+  [`PARALLEL.md`](../design/PARALLEL.md) 的"线程与回收"一节；它暂缓，缺的是线程语法与池化生命周期。
   「切块算 + 归约」第一版已落地（`par i in 0..n`、二维折叠、仿射证明、`seq` 的
-  `sum`/`count`/`max`/`min`，见 [`PARALLEL.md`](PARALLEL.md)），**剩下的两件**：
+  `sum`/`count`/`max`/`min`，见 [`PARALLEL.md`](../design/PARALLEL.md)），**剩下的两件**：
   · 传所有权：有界通道，`send` 是移动而不是共享，带本帧引用的值送不出去；
   · 只读快照：只在读多写少时给，发布单元由「多久写一次、写多大一坨」决定，不给透明整对象复制。
   第一版不做锁、原子、共享可变、内存序；用户写并发时不该出现「线程 / 锁 / 共享 / 原子」这些词。
@@ -192,7 +194,7 @@
 
 - **`ndview` 接进 `par`**：现在 `par` 的输出是 `slice<T>`（含二维折叠的扁平下标）；`ndview<T>` 上的
   数据并行要的是"每维下标即该维循环变量"的结构性不相交，以及归约（`nd::sumv` 一类）的融合识别。
-  语义契约与分阶段见 [`ARRAY.md`](ARRAY.md)。
+  语义契约与分阶段见 [`ARRAY.md`](../design/ARRAY.md)。
 ## 文档工程
 
 - `docs/usage/` 的**公开面欠账 29 个**（覆盖率棘轮基线）：其中大半是**内部助手与状态字段** ——

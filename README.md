@@ -18,7 +18,7 @@ extC 是一门编译到 C11 的语言：**把内存安全、边界与错误检�
 | 逃生舱 | 只有两个：`!`（先检查、再 trap）与 `@unchecked`（唯一的 UB 通道）；两者都要在源码里显式写出来 |
 | 工具链 | 一个 `cc` 就能构建；跑快速验收另需 `python3` |
 
-回收的机制、不变量和还缺什么，见 [`docs/RECLAMATION.md`](docs/RECLAMATION.md)；通俗版见 [`docs/usage/reclamation.md`](docs/usage/reclamation.md)。
+回收的机制、不变量和还缺什么，见 [`docs/design/RECLAMATION.md`](docs/design/RECLAMATION.md)；通俗版见 [`docs/usage/reclamation.md`](docs/usage/reclamation.md)。
 
 ## 能写什么
 
@@ -187,8 +187,8 @@ EXTC_RC_PAUSE=1 ./build/x                  # 打印每次清扫的最大/累计�
 |---|---|
 | [`docs/usage/`](docs/usage/) | **现在有什么 / 怎么用**：上手 · 语言 · 标准库 · C 互操作 · 回收通俗版 |
 | [`docs/topics/LSP.md`](docs/topics/LSP.md) | **编辑器支持**：VS Code 扩展、诊断/符号/悬停/补全、连不通时怎么查 |
-| [`docs/RECLAMATION.md`](docs/RECLAMATION.md) | **回收机制**：为什么这么设计、遵守哪些不变量、还缺什么（证据入口在它的末节）|
-| [`docs/TODO.md`](docs/TODO.md) | **有什么待做**（唯一清单） |
+| [`docs/design/RECLAMATION.md`](docs/design/RECLAMATION.md) | **回收机制**：为什么这么设计、遵守哪些不变量、还缺什么（证据入口在它的末节）|
+| [`docs/plans/TODO.md`](docs/plans/TODO.md) | **有什么待做**（唯一清单） |
 | [`docs/CHANGELOG.md`](docs/CHANGELOG.md) | **开发历史**（全仓库唯一） |
 | [`docs/archive/`](docs/archive/README.md) | 历史快照（只作考古，**不要当现状读**） |
 

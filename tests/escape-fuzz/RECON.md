@@ -322,7 +322,7 @@ $ EXTC_DBG_DFA=1 ./build/extc recon/probes/q2_dualpointee.extc -o /dev/null | gr
 | arena 层号 | `check.sh:273-281` `python3 tools/parrun.py --mode arena-scan`（哨兵 `EXTC_DBG_ARENA`） | **任何动 `planArenaLevel`/`arenaArg` 的修改**都要过这条：它比对「检查器算的层」与「codegen 当前块」。改 C1/C4 必然触发它。 |
 | 断言版全量 | `check.sh:45-58`：`EXTC_DBG=1 ./tests/run.sh` | 断言/兜底一被走到就 abort。改 `promoteFieldsAt`/放置要重跑（注意 §8 的 12 例既存 rc=134 会照旧红/被基线覆盖——先看它现在怎么处理）。 |
 | 用例计数 | `check.sh:22-36` 读 `tests/run.sh` 的「失败 0」 | 任何新拒绝/新接受都会改计数；`tests/run.sh` 是唯一真源。 |
-| 文档判据 | `check.sh:100-120`（`check_manual.py` / `check_doc_facts.py` / `check_doc_examples.py`） | `docs/usage/language.md` §8.1 与 `docs/RECLAMATION.md` §一/§五 的提权表述若改，示例必须能编译并标注。 |
+| 文档判据 | `check.sh:100-120`（`check_manual.py` / `check_doc_facts.py` / `check_doc_examples.py`） | `docs/usage/language.md` §8.1 与 `docs/design/RECLAMATION.md` §一/§五 的提权表述若改，示例必须能编译并标注。 |
 | 结构闸门 | `tools/check_guards.py`、`tools/check_switches.py`、`tools/check_ast_freeze.py`（`check.sh:141/150/372`） | 新增 `EXTC_DBG_*` 开关或改 AST 会碰这几条。 |
 | 差分闸门 | `tools/gate_difffuzz.py` + `gate-diff-known-bad.txt`（`check.sh:77`） | 改放置/arena 选择可能改变生成物语义：同一段语义 extC 与等价 C 必须同结论。 |
 
@@ -399,7 +399,7 @@ $ EXTC_DBG_DFA=1 ./build/extc recon/probes/q2_dualpointee.extc -o /dev/null | gr
 
 ### 收尾：文档与既有语料
 
-- `docs/usage/language.md` §8.1 的「逃逸提升」、`docs/RECLAMATION.md` §一/§五 的提权叙述
+- `docs/usage/language.md` §8.1 的「逃逸提升」、`docs/design/RECLAMATION.md` §一/§五 的提权叙述
   按新语义更新（`tools/check_doc_examples.py --gate`）。
 - `tests/errors/` 与 `tests/reclaim-shapes/` 的错误文本若变，随修改一起更新。
 

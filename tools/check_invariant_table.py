@@ -3,13 +3,13 @@
 
 ## 为什么需要这个门禁
 
-`docs/RECLAMATION.md` 的「不变量与它们的牙」表，是把运行期里每一条**义务**（代码注释里编号的
+`docs/design/RECLAMATION.md` 的「不变量与它们的牙」表，是把运行期里每一条**义务**（代码注释里编号的
 那几条）对上"坏掉的方向 / 在哪强制 / 哪条判据证明它有牙"。这份表的价值全在**完整**上：
 新写一条义务却忘了进表，表就从"地图"退化成"抽查记录"，而读者（和以后改这块代码的人）
 会以为没进表的东西不存在。
 
 清单本身没法自动生成（"在哪强制""怎么证明"要人写），但**完整性**可以机械检查：
-发射出来的运行期文本里出现的每个 `义务 N`，都必须在 `docs/RECLAMATION.md` 里出现。
+发射出来的运行期文本里出现的每个 `义务 N`，都必须在 `docs/design/RECLAMATION.md` 里出现。
 这条门禁就是干这个 —— 它不检查表写得好不好，只检查**没有漏项**。
 
 用法：`python3 tools/check_invariant_table.py`（`--selftest` 用合成文本证明它**能红**）。
@@ -21,7 +21,7 @@ import tempfile
 
 import check_note_part  # 同目录：复用"把运行期文本发射出来"的那段
 
-DOC = "docs/RECLAMATION.md"
+DOC = "docs/design/RECLAMATION.md"
 RE_OBLIGATION = re.compile(r"义务\s*(\d+(?:\s*/\s*\d+)*)")
 
 

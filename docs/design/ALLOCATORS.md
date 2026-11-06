@@ -1,5 +1,7 @@
 # Zones, and why allocators should be a library concern
 
+> 状态：**当前口径** —— 这篇写的是现在的事实，改语义先改它。
+
 Status: **plan** (2026-11-03). Nothing here is implemented yet.
 
 ## 0. The one-sentence version
@@ -106,7 +108,7 @@ struct pool<T> {
 
 ## 4. Freezing: only for early release
 
-`pin` (docs/DESTRUCTORS.md §8) shrinks to its real job: **guard `zone::release`**. Zone *exit* needs no
+`pin` (docs/design/DESTRUCTORS.md §8) shrinks to its real job: **guard `zone::release`**. Zone *exit* needs no
 pin because the depth rules already forbid a view outliving the scope; an *early* release is the only
 way to invalidate a view inside a live scope, so that is the only operation that checks the count.
 

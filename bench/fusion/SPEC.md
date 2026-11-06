@@ -33,7 +33,7 @@ while k < iters:
 
 - 机器与口径同 `bench/par`：`cc -O2 -std=c11 -fwrapv`（C 参照臂同一组），`taskset -c 6`，
   RUNS=5 取中位数；计时用外部 `date +%s%N` 包整个进程（含每轮 `new f64[n]` 的分配），毫秒。
-- 判据（`docs/FUSION.md`）：S1 ≥ 1.3×、S3 ≥ 2× 相对未融合；不满足判据的写法不许变慢。
+- 判据（`docs/design/FUSION.md`）：S1 ≥ 1.3×、S3 ≥ 2× 相对未融合；不满足判据的写法不许变慢。
 - 三个臂：`fused`（编译器融合）、`unfused`（`--no-fuse`）、`hand`（`pipeline.c` / `stream.c`
   里的人肉融合写法）。
 

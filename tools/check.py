@@ -657,7 +657,7 @@ def build_items() -> list:
     # 不在检查器里另抄一份（避免"清单与真相各有一份"）。
     items.append(cmd(
         "gate-doc-refs", "gate",
-        "元判据·文档引用：`tools/inject.py` 里的每条注入都必须出现在它声明的活文档里（默认 docs/RECLAMATION.md）",
+        "元判据·文档引用：`tools/inject.py` 里的每条注入都必须出现在它声明的活文档里（默认 docs/design/RECLAMATION.md）",
         ["python3", "tools/check_doc_refs.py"], timeout=120,
         ok_msg=ok_first(r"^ok "),
         bad_msg="tools/check_doc_refs.py（有注入没写进文档）",
@@ -676,7 +676,7 @@ def build_items() -> list:
         bad_dump=dump_fail(8)))
 
     # ---- 元判据·跳过清单与代码同步 ----
-    # 运行期里每处"直接返回"都是一刀；`docs/RECLAMATION.md` 的跳过表写明它们的前提与失效方向。
+    # 运行期里每处"直接返回"都是一刀；`docs/design/RECLAMATION.md` 的跳过表写明它们的前提与失效方向。
     # 义务表已有门禁（gate-invariant-table），这条是跳过表的对应物：标记 ↔ 表行双向对齐，
     # 并且"未标记的单行早退"是个只许往下拧的棘轮（当前 0）。
     items.append(cmd(
@@ -688,11 +688,11 @@ def build_items() -> list:
         bad_dump=dump_fail(8)))
 
     # ---- 元判据·不变量清单不许漏项 ----
-    # 清单（`docs/RECLAMATION.md` 那张表）的价值全在完整：新写一条义务忘了进表，表就退化成
+    # 清单（`docs/design/RECLAMATION.md` 那张表）的价值全在完整：新写一条义务忘了进表，表就退化成
     # 抽查记录。清单本身没法自动生成（"在哪强制""怎么证明"要人写），但完整性可以机械检查。
     items.append(cmd(
         "gate-invariant-table", "gate",
-        "元判据·不变量清单：运行期里出现的每个「义务 N」都必须在 docs/RECLAMATION.md 的表里",
+        "元判据·不变量清单：运行期里出现的每个「义务 N」都必须在 docs/design/RECLAMATION.md 的表里",
         ["python3", "tools/check_invariant_table.py"], timeout=120,
         ok_msg=ok_first(r"^ok "),
         bad_msg="tools/check_invariant_table.py（不变量清单漏项）",

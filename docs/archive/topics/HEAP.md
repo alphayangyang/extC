@@ -1,4 +1,4 @@
-<!-- 过时（2026-10-10 归档 · 只作考古）：本文是历史快照，不要当现状读。现状 → `docs/usage/`；待做 → `docs/TODO.md`；历史 → `docs/CHANGELOG.md`。 -->
+<!-- 过时（2026-10-10 归档 · 只作考古）：本文是历史快照，不要当现状读。现状 → `docs/usage/`；待做 → `docs/plans/TODO.md`；历史 → `docs/CHANGELOG.md`。 -->
 
 <!-- HEAP.md —— 边界层：Heap、dlopen/dlclose、以及消息线共用的那层共享分配器
      来源：2026-09-28 与作者的设计讨论（作者提出 Heap 与"假嵌入"；本文只做整理与定界）。

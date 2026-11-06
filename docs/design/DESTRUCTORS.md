@@ -1,5 +1,7 @@
 # Destructors
 
+> 状态：**当前口径** —— 这篇写的是现在的事实，改语义先改它。
+
 Status: **partly implemented** (2026-11-03, updated 2026-11-04). Step S1 is in: a `@drop` method on a
 `@noCopy` struct runs when the binding leaves its block, when it is overwritten by `=`, before a
 `return`, and on the way out of a loop through `break`/`continue`. Step S2 is in as well: `drop x`
@@ -153,7 +155,7 @@ Runtime: none. A destructor is a plain C function call on a `mut ref`.
 - **Stage 3**: coroutine frames get a drop list, so a `@drop` value may live across `yield`
   (`conn` coroutines holding an `ifstream`); then test 10 becomes a positive case.
 
-## 8. Relation to `pin` (docs/ALLOCATORS.md)
+## 8. Relation to `pin` (docs/design/ALLOCATORS.md)
 
 `pin` counts live borrows so that storage growth can trap instead of leaving a dangling view. It needs
 the same two things destructors need: a per-place death point (to decrement) and a statement that

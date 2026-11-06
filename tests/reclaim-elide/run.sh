@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # tests/reclaim-elide/run.sh —— 「计数按编译期收窄」的**红判据语料**（只钉判据，不做门禁）
 #
-# 判据来源：`docs/RECLAMATION.md` 第五节最后一条 ——
+# 判据来源：`docs/design/RECLAMATION.md` 第五节最后一条 ——
 #   「计数按编译期收窄：计数加不加由编译期决定，而不是一律加。能省的情形：对象所在区域
 #     反正要被清扫、赋的是全新分配的对象（计数从零起、不可能归零）、编译器能证明该对象
 #     还有别的持有者。收益在'大量指针赋值、极少分配'的代码里最大。」
@@ -257,5 +257,5 @@ else
 fi
 echo
 echo "红 = 该形状的判据没成立；绿 = 成立。本目录是**基线**：exit 0，不接进 check.sh 的门禁。"
-echo "详见 README.md（每类形状为什么该省/不该省，逐条引用 docs/RECLAMATION.md 第五节）。"
+echo "详见 README.md（每类形状为什么该省/不该省，逐条引用 docs/design/RECLAMATION.md 第五节）。"
 exit 0

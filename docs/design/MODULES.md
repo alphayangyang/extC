@@ -1,7 +1,9 @@
 # 模块系统：身份、导入、门面与所有权
 
+> 状态：**当前口径** —— 这篇写的是现在的事实，改语义先改它。
+
 这页写**现在的模块规则**：一句话能做什么、边界在哪、错了会看到什么。用法示例见
-[`usage/modules-cabi.md`](usage/modules-cabi.md)，历史见 [`CHANGELOG.md`](CHANGELOG.md)。
+[`usage/modules-cabi.md`](../usage/modules-cabi.md)，历史见 [`CHANGELOG.md`](../CHANGELOG.md)。
 
 ## 1. 模块的身份：文件负责找，`module` 负责叫什么
 

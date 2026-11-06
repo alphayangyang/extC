@@ -1,6 +1,6 @@
 /* 形状 E2（**该省** · 情形②）：**赋的是全新分配的对象（计数从零起、不可能归零）**。
  *
- * 判据来源：`docs/RECLAMATION.md` 第五节最后一条（引文见 `elide_swept_region.extc`）。
+ * 判据来源：`docs/design/RECLAMATION.md` 第五节最后一条（引文见 `elide_swept_region.extc`）。
  *
  * 形状：`head = fresh` 里的 `fresh` 是紧邻上一行 `new` 出来的，而且是这个对象的**第一条
  * 也是唯一一条**入边：没有任何路径会覆盖这个槽、也没有别处会把它减回去。

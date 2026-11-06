@@ -1,9 +1,9 @@
 # 模块与 C 互操作现状
 
 本文只写**现在有什么 / 怎么用**：每一句都能指到**源码位置**或**一条能跑的判据**。
-待做不在这里（见 [`../TODO.md`](../TODO.md)），历史不在这里（见 [`../CHANGELOG.md`](../CHANGELOG.md)）。
+待做不在这里（见 [`../TODO.md`](../plans/TODO.md)），历史不在这里（见 [`../CHANGELOG.md`](../CHANGELOG.md)）。
 
-模块系统的规则（身份、导入、门面、所有权）单独一页：[`MODULES.md`](../MODULES.md)。
+模块系统的规则（身份、导入、门面、所有权）单独一页：[`MODULES.md`](../design/MODULES.md)。
 
 ## 1. 模块系统
 

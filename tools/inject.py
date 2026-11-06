@@ -13,7 +13,7 @@
 #
 # 用法：
 #   python3 tools/inject.py --list            # 名字 + 期望判据 + 为什么
-#   python3 tools/inject.py --list-docs       # 名字 + 写明它牙的文档（默认 docs/RECLAMATION.md）
+#   python3 tools/inject.py --list-docs       # 名字 + 写明它牙的文档（默认 docs/design/RECLAMATION.md）
 #   python3 tools/inject.py thr-stale                 # 跑一条
 #   python3 tools/inject.py thr-stale --gate gate-reclaim-tax   # 换判据
 #   python3 tools/inject.py thr-stale --no-verify-green         # 跳过"还原后必须绿"
@@ -31,7 +31,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 SRC = "src/back/reclaim.c"
 # 每条注入的牙写在哪份活文档里：默认回收文档的义务表/跳过表；不属于回收的判据（例如
 # `@module` 分发器）在各自的功能文档里写明。check_doc_refs.py 按这份声明逐条核对。
-DOC_DEFAULT = "docs/RECLAMATION.md"
+DOC_DEFAULT = "docs/design/RECLAMATION.md"
 CODEGEN = "src/back/codegen.c"
 PLAN = "src/plan/plan.c"
 

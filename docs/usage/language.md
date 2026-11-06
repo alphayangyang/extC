@@ -3,7 +3,7 @@
 本页写给要写 extC 程序的人：**现在能写什么、行为是什么**。
 语言以外的内容见
 [`stdlib.md`](stdlib.md)（标准库）与 [`modules-cabi.md`](modules-cabi.md)（模块与 C 互操作），
-还没做的在 [`../TODO.md`](../TODO.md)。
+还没做的在 [`../TODO.md`](../plans/TODO.md)。
 
 编译器：`./build/extc [options] <file.extc>`；`--run` 编译并运行，`--build` 只编译，
 `--dump-tokens` 只看词法，`--ccflag` / `-l` / `-L` / `--pkg-config` 透传 C 编译链接。
@@ -1002,7 +1002,7 @@ while i < 1000 {
 
 三种改法：把声明搬进循环体（每轮结束整块归还）；本来就是"每轮复用一个缓冲"的意图，用
 `@overwrite`（见 8.1）；要变长就换成自带板块的容器（`vector`、`string`、`hashMap`），
-它们原地扩容，增长历史不累积。要多少内存、差多少，见 [内存模型](../MEMORY-MODEL.md)。
+它们原地扩容，增长历史不累积。要多少内存、差多少，见 [内存模型](../design/MEMORY-MODEL.md)。
 警告不影响退出码，`-w` 全部关掉。
 
 警告只管"把 `new` 写进外层的变量"这一种。值如果是从函数调用拿到的、中间还过了 `??`、
@@ -1182,7 +1182,7 @@ fn main() -> i32 {
 | `@builtin` | 函数（**没有函数体**） | 声明由编译器实现（stdlib 用：`parallel::run`、域、`extc_viewOf`） | `appears twice` |
 | `@overwrite` | 局部 `var` 声明 | 复用同一块存储；初始式必须恰好是 `new` | `` `@overwrite` needs `var` `` / `` `@overwrite` only applies to `new` `` |
 | `@ext` | `impl` 块 | 块扩展的是**别的模块**声明的类型（见 [`modules-cabi.md`](modules-cabi.md) 的 §1.4b） | `` `@ext` applies to an `impl` block `` / `` `@ext` on an impl block of the type's own module `` |
-| `@recursive` / `@main` | — | 现在会被拒绝，编译器直说没有实现 | `` `@recursive` is not implemented yet ``（见 [`../TODO.md`](../TODO.md)） |
+| `@recursive` / `@main` | — | 现在会被拒绝，编译器直说没有实现 | `` `@recursive` is not implemented yet ``（见 [`../TODO.md`](../plans/TODO.md)） |
 
 `trait` 声明身上**没有注解适用**；`impl` 块只接受 `@ext`（其余注解报 `no annotation applies to an impl block`）。
 
@@ -1414,7 +1414,7 @@ fn main() -> i32 {
 `par i in lo..hi { … }` 把一个循环变体交给多个线程跑。它是**唯一的并行动词**：一个循环嵌套就是
 一个内核（kernel）形状，检查能在一个词法块里做完 —— 这也是将来换设备后端时不用改用户代码的原因。
 
-规则只有五条（细节和判据见 `docs/PARALLEL.md`）：
+规则只有五条（细节和判据见 `docs/design/PARALLEL.md`）：
 
 - 输入**只读共享**：体内读的视图按引用捕获，所有 worker 看同一份数据；内建标量（整数、`f32`/
   `f64`、`bool`）按值捕获，进入 worker 前求值一次（worker 拿自己的副本，写副本不影响调用者）；

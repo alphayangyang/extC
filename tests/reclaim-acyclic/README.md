@@ -1,6 +1,6 @@
 # `tests/reclaim-acyclic/` —— 「程序无环 ⇒ 事件档（计数、不扫）」的**动态判据**
 
-配套机制文档：[`docs/RECLAMATION.md`](../../docs/RECLAMATION.md)（跳过表 `skip:sweepfree`）。
+配套机制文档：[`docs/design/RECLAMATION.md`](../../docs/design/RECLAMATION.md)（跳过表 `skip:sweepfree`）。
 上游事实：[`prototype/reclaim/README.md`](../../prototype/reclaim/README.md) 的 `ev` 档
 （0 次清扫 / 0 停顿 / 内存 12 KiB）；对照形状：[`tests/reclaim-shapes/`](../reclaim-shapes/README.md)。
 

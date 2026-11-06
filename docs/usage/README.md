@@ -2,7 +2,7 @@
 
 本目录只写两件事：**现在有什么、怎么用**。
 
-不写历史（历史只进 [`../CHANGELOG.md`](../CHANGELOG.md)），不写待做（待做只进 [`../TODO.md`](../TODO.md)）。
+不写历史（历史只进 [`../CHANGELOG.md`](../CHANGELOG.md)），不写待做（待做只进 [`../TODO.md`](../plans/TODO.md)）。
 
 | 页面 | 内容 |
 |---|---|
