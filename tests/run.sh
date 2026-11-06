@@ -67,6 +67,17 @@ if [ -x tests/elemrefs/run.sh ]; then
     fi
 fi
 
+echo "== 示例程序：logstat（流式日志报表 + 自带数据生成器）=="
+if [ -x tests/logstat/run.sh ]; then
+    if out=$(tests/logstat/run.sh 2>&1); then
+        printf '%s\n' "$out" | grep -E "^  ok |logstat: 通过"
+        pass=$((pass + 1))
+    else
+        echo "$out"
+        bad "logstat 示例"
+    fi
+fi
+
 echo "== 警告：该响的响、正例语料上**零误报**、\`-w\` 能关 =="
 if [ -x tests/warnings/run.sh ]; then
     if out=$(tests/warnings/run.sh 2>&1); then

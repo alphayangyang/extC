@@ -1699,6 +1699,14 @@ def build_items() -> list:
         ok_msg=ok_count_ok(" 项（约定入口 · 清单入口 · 目录参数 · 无入口报错 · 实参透传 · build 模式 · 旧拼写）"),
         bad_msg="tests/cli/run.sh", bad_dump=dump_fail(8)))
 
+    # ---- 示例程序：logstat ----
+    items.append(cmd(
+        "logstat", "tests",
+        "示例 `examples/logstat`：`gen` 写 5000 行、`summary` 数出 5000 条、报表有 top1 与状态分布、同一文件两次输出一致、未知子命令退出码 2",
+        ["./tests/logstat/run.sh"], timeout=300,
+        ok_msg=ok_count_ok(" 项（gen 行数 · records · top1 · 状态分布 · 可重复 · 退出码）"),
+        bad_msg="tests/logstat/run.sh", bad_dump=dump_fail(8)))
+
     # ---- 默认参数 ----
     items.append(cmd(
         "defaults", "tests",

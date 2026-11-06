@@ -307,6 +307,7 @@ First five steps (detailed version: [`docs/usage/00-start.md`](docs/usage/00-sta
 | 2 | Run the first program | the `--run` line above (`examples/hello-world.extc`, four lines); change a character and run again |
 | 3 | Teach your editor | VS Code extension (diagnostics / symbols / hover / completion): [`docs/topics/LSP.md`](docs/topics/LSP.md) · one-shot install `tools/install-vscode-ext.sh` |
 | 4 | See what the language looks like | [`examples/tour.extc`](examples/tour.extc) (164 lines, nine topics) · [`examples/concise-tour.extc`](examples/concise-tour.extc) (the short spellings) |
+| 5 | Run something real | [`examples/logstat`](examples/logstat/SUMMARY.md): streams a log, prints a report, serves it over HTTP — 388 MB in 0.5 s at 2.2 MB peak RSS |
 | 5 | Look things up | language [`docs/usage/language.md`](docs/usage/language.md) · stdlib [`docs/usage/stdlib.md`](docs/usage/stdlib.md) · modules and C interop [`docs/usage/modules-cabi.md`](docs/usage/modules-cabi.md) |
 
 Coming from another language, these are the things that will bite in the first hour:

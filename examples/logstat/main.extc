@@ -1,0 +1,506 @@
+// examples/logstat -- a small program that reads a log and says what is in it.
+//
+// The point of the demo is not the report. It is that every byte the program
+// looks at is streamed: the file is read in blocks, each line is parsed where
+// it lies, and the summary tables are bounded. So the memory a run needs does
+// not grow with the size of the input.
+//
+//   extc run examples/logstat gen access.tsv 2000000
+//   extc run examples/logstat summary access.tsv
+//
+// Input format, one record per line, tab separated:
+//
+//   ts <TAB> path <TAB> status <TAB> lat_us <TAB> bytes
+
+use std::io
+use std::fs
+use std::sys::net
+use std::coro::scheduler as sched
+
+let CHUNK: i64 = 262144        // how much of the file is in flight at once
+let MAXPATHS: i64 = 4096       // distinct paths we keep before calling it "other"
+let PATHMAX: i64 = 96          // longest path we keep, in bytes
+let NBUCKET: i64 = 32          // latency buckets; the last one is "32 ms or more"
+
+struct stats {
+    records: i64,
+    bytes: i64,
+    bad: i64,
+    other: i64,
+    st: [600]i64,
+    lat: [32]i64,
+    np: i64,
+    plen: [4096]i64,
+    pcnt: [4096]i64,
+    pbytes: [4096]i64,
+    pname: [4096][96]u8,
+}
+
+// --- small helpers -------------------------------------------------------
+
+fn digits(v: i64) -> i64 {
+    var n: i64 = 1
+    var x: i64 = v
+    while x >= 10 { x = x / 10  n = n + 1 }
+    return n
+}
+
+// Write v in decimal into out[at..]; returns the new position.
+fn putInt(out: mut slice<u8>, at: mut ref i64, v: i64) -> void {
+    var k: i64 = *at
+    let nd: i64 = digits(v)
+    var i: i64 = nd - 1
+    var x: i64 = v
+    while i >= 0 {
+        out[k + i] = u8(48 + x % 10)
+        x = x / 10
+        i = i - 1
+    }
+    *at = k + nd
+}
+
+fn putBytes(out: mut slice<u8>, at: mut ref i64, b: slice<u8>) -> void {
+    var k: i64 = *at
+    var i: i64 = 0
+    while i < b.len {
+        out[k + i] = b[i]
+        i = i + 1
+    }
+    *at = k + b.len
+}
+
+fn parseInt(b: slice<u8>) -> i64 {
+    var i: i64 = 0
+    var v: i64 = 0
+    while i < b.len {
+        let c: u8 = b[i]
+        if c < u8(48) || c > u8(57) { return -1 }
+        v = v * 10 + i64(c) - 48
+        i = i + 1
+    }
+    return v
+}
+
+// The tables are globals: a run has exactly one report, and the serve mode
+// answers from it while everything else is idle.
+var gS: stats
+
+// --- the tables ----------------------------------------------------------
+
+fn addPath(s: mut ref stats, p: slice<u8>) -> void {
+    var i: i64 = 0
+    while i < s.np {
+        if s.plen[i] == p.len {
+            var same: bool = true
+            var k: i64 = 0
+            while k < p.len {
+                if s.pname[i][k] != p[k] { same = false  break }
+                k = k + 1
+            }
+            if same { s.pcnt[i] = s.pcnt[i] + 1  return }
+        }
+        i = i + 1
+    }
+    if p.len > PATHMAX || s.np >= MAXPATHS { s.other = s.other + 1  return }
+    var k: i64 = 0
+    while k < p.len {
+        s.pname[s.np][k] = p[k]
+        k = k + 1
+    }
+    s.plen[s.np] = p.len
+    s.pcnt[s.np] = 1
+    s.np = s.np + 1
+}
+
+// One line lives in buf[lo..hi] (the newline is not part of it).
+fn addLine(s: mut ref stats, buf: slice<u8>, lo: i64, hi: i64) -> void {
+    var fld: i64 = 0
+    var fs0: i64 = lo
+    var p0: i64 = lo
+    var pl: i64 = 0
+    var status: i64 = -1
+    var lat: i64 = -1
+    var byt: i64 = -1
+    var k: i64 = lo
+    while k <= hi {
+        if k == hi || buf[k] == u8(9) {
+            if fld == 1 { p0 = fs0  pl = k - fs0 }
+            else if fld == 2 { status = parseInt(buf[fs0..k]) }
+            else if fld == 3 { lat = parseInt(buf[fs0..k]) }
+            else if fld == 4 { byt = parseInt(buf[fs0..k]) }
+            fld = fld + 1
+            fs0 = k + 1
+        }
+        k = k + 1
+    }
+    if fld < 5 || status < 0 || lat < 0 || byt < 0 { s.bad = s.bad + 1  return }
+    s.records = s.records + 1
+    s.bytes = s.bytes + byt
+    if status < 600 { s.st[status] = s.st[status] + 1 }
+    var b: i64 = lat / 1000
+    if b >= NBUCKET { b = NBUCKET - 1 }
+    s.lat[b] = s.lat[b] + 1
+    addPath(s, buf[p0..p0 + pl])
+}
+
+// Read the whole file in blocks; a partial line at the end of a block is
+// carried over to the front of the buffer and completed by the next read.
+fn scan(s: mut ref stats, path: slice<u8>) -> result<i64, io::ioError> {
+    let f0 = fs::openRead(path)?
+    var f: ifstream = f0
+    var buf: mut slice<u8> = new u8[CHUNK]
+    var have: i64 = 0
+    while true {
+        let got: i64 = f.readSome(buf[have..CHUNK])?
+        if got <= 0 { break }
+        let end: i64 = have + got
+        var start: i64 = 0
+        var i: i64 = 0
+        while i < end {
+            if buf[i] == u8(10) {
+                if i > start { addLine(s, buf, start, i) }
+                start = i + 1
+            }
+            i = i + 1
+        }
+        if start > 0 {
+            var k: i64 = 0
+            while start + k < end {
+                buf[k] = buf[start + k]
+                k = k + 1
+            }
+            have = end - start
+        } else {
+            have = end
+        }
+    }
+    f.close()?
+    return success(0)
+}
+
+// --- the report ----------------------------------------------------------
+
+fn pctFromBuckets(s: mut ref stats, want: i64) -> i64 {
+    let total: i64 = s.records
+    if total == 0 { return 0 }
+    var acc: i64 = 0
+    var i: i64 = 0
+    while i < NBUCKET {
+        acc = acc + s.lat[i]
+        if acc * 100 >= total * want { return i }
+        i = i + 1
+    }
+    return NBUCKET - 1
+}
+
+fn report(s: mut ref stats) -> void {
+    io::println(f"records={s.records} bytes={s.bytes} bad={s.bad} distinct_paths={s.np} other_paths={s.other}")
+    io::println(f"status 2xx={s.st[200] + s.st[201] + s.st[204]} 3xx={s.st[301] + s.st[302]} 4xx={s.st[400] + s.st[403] + s.st[404]} 5xx={s.st[500] + s.st[502]}")
+    io::println(f"latency p50<{pctFromBuckets(s, 50)}ms p99<{pctFromBuckets(s, 99)}ms")
+    // top five by request count, selection sort on a copy of the indices
+    var used: [4096]bool = [false, ...]
+    var rank: i64 = 0
+    while rank < 5 && rank < s.np {
+        var best: i64 = -1
+        var bestN: i64 = -1
+        var i: i64 = 0
+        while i < s.np {
+            if !used[i] && s.pcnt[i] > bestN { best = i  bestN = s.pcnt[i] }
+            i = i + 1
+        }
+        if best < 0 { break }
+        used[best] = true
+        io::println(f"top{rank + 1} {s.pname[best][0..s.plen[best]]} {s.pcnt[best]}")
+        rank = rank + 1
+    }
+}
+
+// --- data generator ------------------------------------------------------
+
+fn genLine(out: mut slice<u8>, at: mut ref i64, ts: i64, pick: i64, status: i64, lat: i64, byt: i64) -> void {
+    var k: i64 = *at
+    putInt(out, ref k, ts)
+    out[k] = u8(9)  k = k + 1
+    if pick % 6 == 0 {
+        putBytes(out, ref k, "/api/v1/query")
+    } else if pick % 6 == 1 {
+        putBytes(out, ref k, "/api/v1/ingest")
+    } else if pick % 6 == 2 {
+        putBytes(out, ref k, "/healthz")
+    } else if pick % 6 == 3 {
+        putBytes(out, ref k, "/static/app.js")
+    } else if pick % 6 == 4 {
+        putBytes(out, ref k, "/static/style.css")
+    } else {
+        putBytes(out, ref k, "/api/v1/report")
+    }
+    out[k] = u8(9)  k = k + 1
+    putInt(out, ref k, status)
+    out[k] = u8(9)  k = k + 1
+    putInt(out, ref k, lat)
+    out[k] = u8(9)  k = k + 1
+    putInt(out, ref k, byt)
+    out[k] = u8(10)  k = k + 1
+    *at = k
+}
+
+fn gen(path: slice<u8>, rows: i64) -> result<i64, io::ioError> {
+    let o0 = fs::openWrite(path)?
+    var o: ofstream = o0
+    var buf: mut slice<u8> = new u8[CHUNK]
+    var at: i64 = 0
+    var rng: i64 = 12345
+    var r: i64 = 0
+    while r < rows {
+        rng = (rng * 1103515245 + 12345) % 2147483648
+        let pick: i64 = (rng / 65536) % 6
+        let lat: i64 = 100 + (rng / 4096) % 2900
+        let byt: i64 = 120 + (rng / 64) % 4800
+        var status: i64 = 200
+        if pick == 2 { status = 404 } else if pick == 5 { status = 500 }
+        if at + 512 > CHUNK {
+            let w: i64 = o.put(buf[0..at])?
+            at = 0
+        }
+        genLine(buf, ref at, 1712000000 + r / 1000, pick, status, lat, byt)
+        r = r + 1
+    }
+    if at > 0 {
+        let w2: i64 = o.put(buf[0..at])?
+    }
+    o.close()?
+    io::println(f"wrote {rows} records to {path}")
+    return success(rows)
+}
+
+
+// --- serve ---------------------------------------------------------------
+//
+// One thread, one epoll loop, one coroutine per connection: no thread pool,
+// no per-connection allocation beyond its read buffer. The report itself is
+// rendered once, before the first byte is accepted, so answering a request is
+// a memory copy and a write.
+
+var gBody: [65536]u8                       // rendered text report
+var gBodyLen: i64 = 0
+var gJson: [65536]u8                       // rendered JSON report
+var gJsonLen: i64 = 0
+
+fn renderText(s: mut ref stats) -> void {
+    var at: i64 = 0
+    putBytes(gBody, ref at, "records=")
+    putInt(gBody, ref at, s.records)
+    putBytes(gBody, ref at, " bytes=")
+    putInt(gBody, ref at, s.bytes)
+    putBytes(gBody, ref at, " bad=")
+    putInt(gBody, ref at, s.bad)
+    putBytes(gBody, ref at, " p50_ms=")
+    putInt(gBody, ref at, pctFromBuckets(s, 50))
+    putBytes(gBody, ref at, " p99_ms=")
+    putInt(gBody, ref at, pctFromBuckets(s, 99))
+    gBody[at] = u8(10)
+    gBodyLen = at + 1
+}
+
+fn renderJson(s: mut ref stats) -> void {
+    var at: i64 = 0
+    putBytes(gJson, ref at, "{\"records\":")
+    putInt(gJson, ref at, s.records)
+    putBytes(gJson, ref at, ",\"bytes\":")
+    putInt(gJson, ref at, s.bytes)
+    putBytes(gJson, ref at, ",\"bad\":")
+    putInt(gJson, ref at, s.bad)
+    putBytes(gJson, ref at, ",\"distinct_paths\":")
+    putInt(gJson, ref at, s.np)
+    putBytes(gJson, ref at, ",\"p50_ms\":")
+    putInt(gJson, ref at, pctFromBuckets(s, 50))
+    putBytes(gJson, ref at, ",\"p99_ms\":")
+    putInt(gJson, ref at, pctFromBuckets(s, 99))
+    putBytes(gJson, ref at, ",\"top\":[")
+    var used: [4096]bool = [false, ...]
+    var rank: i64 = 0
+    var first: bool = true
+    while rank < 5 && rank < s.np {
+        var best: i64 = -1
+        var bestN: i64 = -1
+        var i: i64 = 0
+        while i < s.np {
+            if !used[i] && s.pcnt[i] > bestN { best = i  bestN = s.pcnt[i] }
+            i = i + 1
+        }
+        if best < 0 { break }
+        used[best] = true
+        if !first { gJson[at] = u8(44)  at = at + 1 }
+        first = false
+        putBytes(gJson, ref at, "{\"path\":\"")
+        putBytes(gJson, ref at, s.pname[best][0..s.plen[best]])
+        putBytes(gJson, ref at, "\",\"count\":")
+        putInt(gJson, ref at, s.pcnt[best])
+        gJson[at] = u8(125)  at = at + 1
+        rank = rank + 1
+    }
+    putBytes(gJson, ref at, "]}\n")
+    gJsonLen = at
+}
+
+fn findNl(buf: slice<u8>, from: i64) -> i64 {
+    var i: i64 = from
+    while i < buf.len {
+        if buf[i] == u8(10) { return i }
+        i = i + 1
+    }
+    return -1
+}
+
+fn sendAll(fd: i64, buf: slice<u8>, n: i64) -> void {
+    var off: i64 = 0
+    while off < n {
+        let w: i64 = net::extc_sock_write_from(fd, buf.data, off, n - off)
+        if w > 0 { off = off + w }
+    }
+}
+
+// Answer the last complete request line in buf[0..have].
+fn answer(fd: i64, wantText: bool) -> void {
+    var hdr: [256]u8 = [u8(0), ...]
+    var at: i64 = 0
+    var n: i64 = gJsonLen
+    if wantText {
+        putBytes(hdr, ref at, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: ")
+        n = gBodyLen
+    } else {
+        putBytes(hdr, ref at, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ")
+    }
+    putInt(hdr, ref at, n)
+    putBytes(hdr, ref at, "\r\nConnection: keep-alive\r\n\r\n")
+    sendAll(fd, hdr[..at], at)
+    if wantText {
+        sendAll(fd, gBody[..gBodyLen], gBodyLen)
+    } else {
+        sendAll(fd, gJson[..gJsonLen], gJsonLen)
+    }
+}
+
+fn conn(fd: i64) -> coroutine<i64> {
+    var buf: mut slice<u8> = new u8[8192]
+    var have: i64 = 0
+    while true {
+        var start: i64 = 0
+        while true {
+            let nl: i64 = findNl(buf[..have], start)
+            if nl < 0 { break }
+            // request line: "GET /path HTTP/1.1"
+            var a: i64 = start
+            while a < nl && buf[a] != u8(32) { a = a + 1 }
+            a = a + 1
+            var b: i64 = a
+            while b < nl && buf[b] != u8(32) { b = b + 1 }
+            if b - a == 8 && buf[a..b] == "/summary" {
+                answer(fd, false)
+            } else if b - a == 5 && buf[a..b] == "/text" {
+                answer(fd, true)
+            } else {
+                var nf: [128]u8 = [u8(0), ...]
+                var nat: i64 = 0
+                putBytes(nf, ref nat, "HTTP/1.1 404 Not Found\r\nContent-Length: 4\r\n\r\nnope")
+                sendAll(fd, nf[..nat], nat)
+            }
+            start = nl + 1
+        }
+        if start > 0 {
+            var k: i64 = 0
+            while start + k < have {
+                buf[k] = buf[start + k]
+                k = k + 1
+            }
+            have = have - start
+        }
+        if have >= 8000 { have = 0 }
+        let ready: i64 = yield fd
+        let r: i64 = net::extc_sock_read(fd, buf[have..].data, 8192 - have)
+        if r <= 0 { return }
+        have = have + r
+    }
+}
+
+fn serve(s: mut ref stats, port: i64) -> i32 {
+    renderText(s)
+    renderJson(s)
+    let srv: i64 = net::extc_tcp_listen_shared(port, 65535)
+    if srv < 0 {
+        io::eprintln("logstat: cannot listen")
+        return 1
+    }
+    var sp: sched::loop
+    if !sp.init(srv) { return 1 }
+    var tasks: sched::tasks<i64> = { rows: sched::newRows(), runq: sched::newQ(), rqHead: 0, freeq: sched::newQ(), acceptq: sched::newQ() }
+    io::println(f"serving on :{port} (GET /summary, /text)")
+    while true {
+        let fd: i64 = tasks.pump(ref sp, 50)
+        if fd >= 0 {
+            if net::extc_sock_nodelay(fd) == 0 { tasks.add(ref sp, conn(fd)) }
+        }
+    }
+    return 0
+}
+
+// --- entry ---------------------------------------------------------------
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    if args.len < 3 {
+        io::eprintln("usage: logstat gen <file> <rows> | logstat summary <file>")
+        return 2
+    }
+    // report lives in the program, not on the stack: see gS above
+    var ok: bool = false
+    var modeRead: bool = false
+    var modeServe: bool = false
+    var portNum: i64 = 0
+    let mode: slice<u8> = args[1]
+    let file: slice<u8> = args[2]
+    if mode == "gen" {
+        if args.len < 4 {
+            io::eprintln("usage: logstat gen <file> <rows>")
+            return 2
+        }
+        let rows: i64 = parseInt(args[3])
+        if rows <= 0 {
+            io::eprintln("logstat: rows must be positive")
+            return 2
+        }
+        match gen(file, rows) {
+            success(n) => { ok = true }
+            failure(e) => { ok = false }
+        }
+    } else if mode == "serve" {
+        if args.len < 4 {
+            io::eprintln("usage: logstat serve <file> <port>")
+            return 2
+        }
+        portNum = parseInt(args[3])
+        match scan(ref gS, file) {
+            success(n) => { modeServe = true }
+            failure(e) => { modeServe = false }
+        }
+        ok = modeServe
+    } else if mode == "summary" {
+        match scan(ref gS, file) {
+            success(n) => { modeRead = true }
+            failure(e) => { modeRead = false }
+        }
+        ok = modeRead
+    } else {
+        io::eprintln("logstat: unknown mode (gen, summary)")
+        return 2
+    }
+    if !ok {
+        io::eprintln(f"logstat: {mode} failed on {file}")
+        return 1
+    }
+    if modeRead { report(ref gS) }
+    if modeServe {
+        report(ref gS)
+        return serve(ref gS, portNum)
+    }
+    return 0
+}
