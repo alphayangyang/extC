@@ -106,8 +106,11 @@ hello, extC
 **项目模式：`extc run` 与 `extc build`**
 
 多模块项目里，参数不该由人记。两个子命令把"项目"变成约定：不给文件时，在当前目录找入口
-——`src/main.extc` → `main.extc` → `packages.toml` 的 `[build] entry`；给目录就等于进那个目录找。约定只认 `.extc`：
-别的文件名由清单写出来，驱动器不猜扩展名。
+——`src/main.extc` → `main.extc` → `packages.toml` 的 `[build] entry` → 目录里**唯一**的那个 `.extc`；
+给目录就等于进那个目录找。约定只认 `.extc`：别的文件名由清单写出来，驱动器不猜扩展名。
+
+最后那一档是为了"写一个文件、跑它"这一步：新目录里只有一个 `hello.extc` 时，
+`extc run` 就是跑它。有两个以上源文件时入口是你的选择，驱动器把候选列出来并给一条可直接粘贴的命令。
 
 ```console
 $ cd my-project                       # 里面有 src/main.extc 和 src/util.extc

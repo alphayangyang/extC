@@ -11,6 +11,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include <ctype.h>
+#include <dirent.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -703,6 +704,37 @@ static const char *manifestEntry(Arena *a, const char *dir) {
 }
 
 /**
+ * @brief Name the `.extc` files directly inside a directory, at most `cap` of them.
+ *
+ * Only the top level: `src/main.extc` is already a rule, and descending would make
+ * "which file?" depend on a tree walk nobody can predict. Used for two things: when a
+ * directory has exactly one source file it *is* the program (`extc run` in a fresh
+ * directory then does what the user means), and when there are several the error can
+ * list them instead of only saying that nothing was found.
+ *
+ * @param a    Arena that owns the returned strings (and the vector).
+ * @param dir  Directory to scan.
+ * @param cap  Stop after this many names.
+ * @return     A vector of `const char *`, full paths, in directory order.
+ */
+static Vec extcFilesIn(Arena *a, const char *dir, size_t cap) {
+    Vec out;
+    vecInit(&out, a, sizeof(const char *));
+    DIR *d = opendir(dir);
+    if (!d) return out;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL && out.len < cap) {
+        size_t n = strlen(e->d_name);
+        if (n < 6 || strcmp(e->d_name + n - 5, ".extc") != 0) continue;
+        const char *full = arenaPrintf(a, "%s/%s", dir, e->d_name);
+        if (!pathIsFile(full)) continue;
+        *(const char **)vecPush(&out) = full;
+    }
+    closedir(d);
+    return out;
+}
+
+/**
  * @brief Find the entry file of a project directory.
  *
  * The order is the convention, and it is short on purpose: `src/main.extc`, then
@@ -720,7 +752,14 @@ static const char *findProjectEntry(Arena *a, const char *dir) {
         if (pathIsFile(p)) return p;
     }
     const char *fromManifest = manifestEntry(a, dir);
-    return (fromManifest && pathIsFile(fromManifest)) ? fromManifest : NULL;
+    if (fromManifest && pathIsFile(fromManifest)) return fromManifest;
+    /* A directory with exactly one source file has an obvious entry. This is the
+     * "write a file, run it" case (`extc run` in a fresh directory), and refusing it
+     * teaches a rule that exists only to make the compiler's life easier. Two or more
+     * files is ambiguous and stays an error -- see the message below. */
+    Vec only = extcFilesIn(a, dir, 2);
+    if (only.len == 1) return *(const char **)vecAt(&only, 0);
+    return NULL;
 }
 
 /* ---------------------------------------------------------------- main */
@@ -927,9 +966,26 @@ int main(int argc, char **argv) {
         path = findProjectEntry(&arena, discoverDir);
         if (!path) {
             fprintf(stderr, "extc: no entry file below `%s`\n", discoverDir);
-            fprintf(stderr, "  looked for %s/src/main.extc, %s/main.extc, and `[build] entry`"
-                            " in %s/packages.toml\n",
+            fprintf(stderr, "  looked for %s/src/main.extc, %s/main.extc, `[build] entry`"
+                            " in %s/packages.toml, and a single .extc file\n",
                     discoverDir, discoverDir, discoverDir);
+            /* Naming the files that *are* there is the difference between "your project
+             * layout is wrong" and "you typed one word too many": with several sources
+             * the entry is a real choice, and the user is the only one who knows it. */
+            Vec found = extcFilesIn(&arena, discoverDir, 8);
+            if (found.len > 1) {
+                /* Show names relative to the directory the user typed (`hello.extc`,
+                 * not `./hello.extc`) -- the e.g. line is meant to be pasted. */
+                bool inCwd = strcmp(discoverDir, ".") == 0;
+                fprintf(stderr, "  several sources; say which one:");
+                for (size_t i = 0; i < found.len; i++) {
+                    const char *f = *(const char **)vecAt(&found, i);
+                    fprintf(stderr, " %s", inCwd ? (strrchr(f, '/') + 1) : f);
+                }
+                const char *first = *(const char **)vecAt(&found, 0);
+                fprintf(stderr, "\n  e.g. `extc run %s`\n",
+                        inCwd ? (strrchr(first, '/') + 1) : first);
+            }
             return 2;
         }
     }

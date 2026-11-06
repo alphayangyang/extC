@@ -57,6 +57,31 @@ else
     bad "entry-flat-main" "rc=$rc out=「$out」"
 fi
 
+# 目录里只有一个 .extc 时，它就是程序 —— "写一个文件、跑它"这一步不该先教一条规则。
+mkdir -p "$TMP/e"
+cat > "$TMP/e/hello.extc" <<'EOF'
+use std::io
+fn main() -> i32 { io::cout << "single-file\n"  return 0 }
+EOF
+out="$(cd "$TMP/e" && "$EXTC" run 2>&1)"; rc=$?
+if [ "$rc" -eq 0 ] && [ "$out" = "single-file" ]; then
+    ok "entry-single-file" "目录里只有一个 .extc 就是入口"
+else
+    bad "entry-single-file" "rc=$rc out=「$out」"
+fi
+
+# 两个源文件时入口是用户的选择：报错要把候选列出来，并且给出可直接粘贴的命令。
+mkdir -p "$TMP/f"
+printf 'fn main() {}\n' > "$TMP/f/a.extc"
+printf 'fn main() {}\n' > "$TMP/f/b.extc"
+out="$(cd "$TMP/f" && "$EXTC" run 2>&1)"; rc=$?
+if [ "$rc" -eq 2 ] && printf '%s' "$out" | grep -q "several sources" \
+   && printf '%s' "$out" | grep -q "a.extc" && printf '%s' "$out" | grep -q "b.extc"; then
+    ok "entry-ambiguous" "多个源文件时列出候选并给出 e.g."
+else
+    bad "entry-ambiguous" "rc=$rc out=「$out」"
+fi
+
 # 约定只认 `.extc`；别的拼法要由清单指出来（驱动器不猜扩展名）。
 mkdir -p "$TMP/c/src"
 cat > "$TMP/c/src/start.weird" <<'EOF'
