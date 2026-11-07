@@ -1100,6 +1100,36 @@ void liveViewsStmtPost(Checker *c, LiveViews *lv, Stmt *s);
 bool ckCalleeMayGrow(FuncDef *f);
 
 /**
+ * @brief Whether this expression is a call shape that carries a callee.
+ *
+ * The three call kinds plus the two operators: after checking, an operator that resolved to a
+ * method has exactly the shape of a method call -- `planCallee` points at the selected operator
+ * method, the hidden arena/zone arguments live on the same node, and codegen emits the same call.
+ * Every walk that asks for the callee must accept all five; the pool-level bugs that motivated
+ * this predicate all came from one walk accepting `EX_CALL`/`EX_METHOD` and not the operators.
+ *
+ * `EX_NEW` carries a callee only when the context asked for a `@buffer` type: then the `new`
+ * stands for that type's constructor, and the closures must see the edge.
+ *
+ * @param e  Expression; NULL allowed.
+ * @return   True when the node names a callee (possibly one that is not resolved yet).
+ */
+bool exprCarriesCallee(const Expr *e);
+
+/**
+ * @brief Whether this node can only be a call: `EX_CALL`, `EX_METHOD`, `EX_ASSOC`.
+ *
+ * The narrower companion of `exprCarriesCallee`, for questions about a call whose callee is *not
+ * resolved*. An operator with no callee is not "unknown" -- it is a builtin arithmetic node with
+ * no hidden arguments -- so treating it as an unresolved call marks the enclosing function's
+ * effects incomplete and turns into false rejections at every call of that function.
+ *
+ * @param e  Expression; NULL allowed.
+ * @return   True for the three call kinds.
+ */
+bool exprIsCallKind(const Expr *e);
+
+/**
  * @brief Whether a call to this method name can move the receiver's storage.
  *
  * @param n  Method name, or NULL.

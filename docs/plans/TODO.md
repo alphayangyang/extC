@@ -77,6 +77,24 @@
   （与本轮改动无关）。根因方向：`@place` 容器的板块按**扩容发生处**的层级记账，应当按**容器声明处**
   的层级记账 —— 与 `promoteInto2` 的 `promoteReceiverFields` 同源（那个修的是"接收者字段来源一起提升"）。
   判据要覆盖：循环内扩容后取视图必须编过、真正跨作用域逃逸仍必须被拒。
+- **池元素读回被拒，而同一个值"存进去"是允许的（假阳性，2026-11-07）**：
+  <!-- fragment -->
+  ```extc
+  var k: pool<string> = pool<string>::withCap(8)
+  for i in 0..1 {
+      var s: string = string::from("hello-world-") + i
+      k.insert(s)                          // accepted: `+` allocates at the destination's level
+  }
+  let got: string = k.atDense(0)           // error: borrowed from depth 4, but this can only hold up to depth 1
+  ```
+  存进去那一侧是对的（生成 C 里 `string$string_add_i32(&__extc_op0, i, __extc_zm1)` —— 结果缓冲区确实分配在
+  函数体那一层，生命周期足够），所以读回时的拒绝是保守过严：`atDense` 的返回值被算成借了容器内部第 4 层。
+  与"运算符结果按目的地定池层级"（`14093e6`）同源：**降层级只发生在存的那一侧，读回那一侧还没有用同样的
+  事实**。修这条要先把"值实际在哪一层"变成可查询的事实（现在 `planZoneLevel` 只记在节点上），再让
+  `atDense`/`get` 这类按值取元素的返回深度从**池的实际层级**而不是模板层推出。判据：上面的形状必须编过，
+  且真跨作用域逃逸（`return got` 到更浅的调用者）仍必须被拒。
+- **循环里构造的池值直接 `return` 仍被拒（已知边界，2026-11-07）**：
+
 - **AST 冻结施工单还剩 68 条**（`tools/ast-freeze-known-bad.txt` 的棘轮基线，只许变短）：解析器之外的
   代码仍在写 AST。
 

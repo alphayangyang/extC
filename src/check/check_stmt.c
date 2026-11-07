@@ -4049,8 +4049,7 @@ static void noteAcyclicStore(Checker *c, Stmt *s, Expr *target, Expr *value) {
         kind = SR_NULL;
     } else if (value->kind == EX_NEW || value->kind == EX_GENCALL) {
         kind = SR_FRESH;
-    } else if (value->kind == EX_CALL || value->kind == EX_METHOD
-               || value->kind == EX_ASSOC) {
+    } else if (exprIsCallKind(value)) {
             /* (i'): the later pass decides whether the callee is acyclic and whether its result is
              * provably fresh. An unrecognized callee lands in this branch too; the later pass treats
              * "cannot resolve" as "does not hold". */
@@ -4515,6 +4514,12 @@ void checkStmt(Checker *c, Stmt *s) {
             if (s->type && typeContainsRef(c->tt, s->type)) {
                 int d = targetDepth(c, s->u.var.init);
                 Expr *ini = s->u.var.init;
+                /* Free and method calls pass the caller's home arena to the callee, so the result
+                 * may point into this frame -- that is what the lift accounts for. An associated
+                 * call (`Type::fn(...)`) reaches the same arena through the hidden argument but
+                 * builds its result through it, so a constructor result stays escapable:
+                 * lifting for it rejected `return buf<T>::withCap(n)` from a generic body
+                 * (tests/stl/buf.extc). */
                 if ((ini->kind == EX_CALL || ini->kind == EX_METHOD)
                     && planCallee(ini) && anNeedsHome(planCallee(ini)) && (int)c->scopes.len > d)
                     d = (int)c->scopes.len;      /* the callee has a home arena: use mine */

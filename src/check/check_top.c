@@ -662,7 +662,7 @@ static bool reachesHomeArenaTaker(const FuncDef *f) { return f && anNeedsHome(f)
  * @param e  Expression.
  * @return   True when it is a call shape.
  */
-static bool exprCarriesCallee(const Expr *e) {
+bool exprCarriesCallee(const Expr *e) {
     if (!e) return false;
     /* `EX_NEW` carries a callee only when the context asked for a `@buffer` type: then the `new`
      * stands for that type's constructor (`withCap`), so the closures must see the edge -- without
@@ -670,6 +670,21 @@ static bool exprCarriesCallee(const Expr *e) {
      * zone. An ordinary `new` has no callee and this predicate stays false. */
     return e->kind == EX_CALL || e->kind == EX_METHOD || e->kind == EX_ASSOC ||
            e->kind == EX_BIN || e->kind == EX_UN || e->kind == EX_NEW;
+}
+
+/**
+ * @brief Whether this node can only be a call (no operators, no `new`).
+ *
+ * The narrower companion of `exprCarriesCallee`: for questions about a call whose callee is
+ * **not resolved**, an operator with no callee is not "unknown" -- it is a builtin arithmetic
+ * node with no hidden arguments at all. Treating it as an unresolved call marks the enclosing
+ * function's effects incomplete, which turns into false rejections at every call of it.
+ *
+ * @param e  Expression; NULL allowed.
+ * @return   True for `EX_CALL`, `EX_METHOD`, `EX_ASSOC`.
+ */
+bool exprIsCallKind(const Expr *e) {
+    return e && (e->kind == EX_CALL || e->kind == EX_METHOD || e->kind == EX_ASSOC);
 }
 
 static bool needsHomeInStmt(void *ctx, Stmt *s);
@@ -1788,7 +1803,7 @@ void markCallHomeIfEscaping(Checker *c, Expr *v, int at) {
     default:
         break;
     }
-    if ((v->kind != EX_CALL && v->kind != EX_METHOD && v->kind != EX_ASSOC) || !planCallee(v)) return;
+    if (!exprCarriesCallee(v) || !planCallee(v)) return;
 
     /* -1: the value is handed out, so the call must use the caller's home arena.
      * `scopes.len`: the value is stored in the block being checked. */
@@ -1799,7 +1814,7 @@ void markCallHomeIfEscaping(Checker *c, Expr *v, int at) {
      * that can already read "yes" while the body is being checked, and answering "block" here would
      * release the callee's blocks at block exit while the body still hands the value out through a
      * later `return` -- the returned storage would dangle. */
-    if ((v->kind == EX_CALL || v->kind == EX_METHOD) && anNeedsHome(planCallee(v))) {
+    if (exprCarriesCallee(v) && planCallee(v) && anNeedsHome(planCallee(v))) {
         anSetHomeDepth(v, depth);
         setCallArenaArg(c, v);      /* keep `homeDepth` and `arenaArg` in step */
         return;
@@ -3106,7 +3121,7 @@ static bool callSubjectMentionsParam(Expr *e) {
  */
 static void collectEffectsExpr(Checker *c, FuncDef *f, Expr *e) {
     if (!e) return;
-    if ((e->kind == EX_CALL || e->kind == EX_METHOD || e->kind == EX_ASSOC) && !planCallee(e)) {
+    if (exprIsCallKind(e) && !planCallee(e)) {
         /* A call through a `fn` **value** (no `FuncDef` on the node).
          *
          * When the value came from a **table slot that carries an `effects` clause**, that clause
@@ -3202,7 +3217,7 @@ static void collectEffectsExpr(Checker *c, FuncDef *f, Expr *e) {
                 anSetEffUnknown(f, true);   /* nothing to go on -> incomplete, conservatively */
         }
     }
-    if ((e->kind == EX_CALL || e->kind == EX_METHOD || e->kind == EX_ASSOC) && planCallee(e)) {
+    if (exprCarriesCallee(e) && planCallee(e)) {
         bool seen = false;
         for (size_t k = 0; k < f->callees.len; k++)
             if (*(FuncDef **)vecAt(&f->callees, k) == planCallee(e)) { seen = true; break; }
@@ -6040,7 +6055,7 @@ static bool rcScanExpr(void *ctx, Expr *e) {
     if (!e) return true;
     if (e->kind == EX_EXT) { sc->bad = true; return false; }      /* starts a concurrent task */
     if (e->kind == EX_DYN) { sc->bad = true; return false; }      /* vtable dispatch: callee unresolved */
-    if (e->kind == EX_CALL || e->kind == EX_METHOD) {
+    if (exprIsCallKind(e) || (exprCarriesCallee(e) && planCallee(e))) {
         FuncDef *g = planCallee(e);
         if (!g || g->isExtern) { sc->bad = true; return false; }  /* unknown / C black box */
     }
@@ -7665,7 +7680,7 @@ static bool idleWalkExprFlag(Checker *c, AcInfo *ac, Expr *e, int depth, bool bo
                 "line %d: a reference-carrying aggregate is produced as a temporary value;"
                 " its references lose this root when it dies", e->line));
     }
-    if (e->kind == EX_CALL || e->kind == EX_METHOD || e->kind == EX_ASSOC) {
+    if (exprIsCallKind(e)) {
         FuncDef *g = planCallee(e);
                 /* An analyzable callee is not judged locally: the unit-wide conjunction judges it (see the
          * section note). An unanalyzable one is handled **parameter-sensitively** -- when neither the
@@ -9968,8 +9983,7 @@ typedef struct { Checker *c; } AllocCtx;
  */
 static bool allocInExpr(void *ctx, Expr *e) {
     AllocCtx *a = (AllocCtx *)ctx;
-    if ((e->kind == EX_CALL || e->kind == EX_METHOD || e->kind == EX_ASSOC) &&
-        (!planCallee(e) || funcAllocates(a->c, planCallee(e)))) return false;   /* found */
+    if (exprIsCallKind(e) && (!planCallee(e) || funcAllocates(a->c, planCallee(e)))) return false;   /* found */
     if (e->kind == EX_NEW || e->kind == EX_GENCALL) return false;   /* found */
     AstVisit v = { allocInExpr, allocInStmt, ctx };
     return astWalkExprChildren(e, &v);
@@ -10544,7 +10558,7 @@ static bool exprMakesPool(Expr *e, bool descendBlocks) {
     /* The three shapes a resolved call takes. `EX_ASSOC` belongs here for the reason its
      * counterpart in `exprCallsNeedsHome` documents: an associated function records its
      * callee through `planCallee` too, and leaving it out is how a summary quietly becomes wrong. */
-    if (e->kind == EX_CALL || e->kind == EX_METHOD || e->kind == EX_ASSOC) {
+    if (exprIsCallKind(e)) {
         /* `flush()` / `print(x)` / `println(x)` are builtins dispatched by name, and the
          * checker leaves `e->func` null for them (it returns before resolving a callee).
          * They cannot create a pool; naming them here keeps the conservative branch below

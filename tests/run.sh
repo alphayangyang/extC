@@ -34,6 +34,17 @@ else
     fail=$((fail + $(echo "$out" | tail -1 | grep -oE '失败 [0-9]+' | grep -oE '[0-9]+')))
 fi
 
+echo "== zone：池层级判定（同类问题只有一种答案）=="
+if [ -x tests/zone/run.sh ]; then
+    if out=$(tests/zone/run.sh 2>&1); then
+        printf '%s\n' "$out" | grep -E "ok |FAIL"
+        pass=$((pass + 1))
+    else
+        echo "$out"
+        bad "zone 用例"
+    fi
+fi
+
 echo "== arena：按块细化（150MB 上限下不许涨）=="
 if [ -x tests/arena/run.sh ]; then
     if out=$(tests/arena/run.sh 2>&1); then

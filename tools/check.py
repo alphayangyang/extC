@@ -1299,12 +1299,23 @@ def build_items() -> list:
         ok_msg=ok_count_ok(" 项（1 正例 + 8 反例项：含 coherence 重名与内建标量）"),
         bad_msg="tests/impl/run.sh", bad_dump=dump_all))
 
+    items.append(cmd(
+        "zone", "tests", "池层级判定：所有调用形状一致，反方向不放宽",
+        ["./tests/zone/run.sh"], timeout=300,
+        ok_msg=ok_count_ok(" 项"), bad_msg="tests/zone/run.sh", bad_dump=dump_all))
+
     # ---- dyn 阶段 1：一组接缝检查 ----
     items.append(cmd(
         "check-walkers", "seam",
         "dyn 阶段 1：构造即调用（派发经表、拒绝存储、生成物合同）；手写 walker 数棘轮",
         sh('python3 tools/check_walkers.py'),
         ok_msg=tail1, bad_msg="tools/check_walkers.py", bad_dump=dump_all))
+    items.append(cmd(
+        "check-call-sites", "seam",
+        "调用形状的判定只能走共享谓词（`exprCarriesCallee` / `exprIsCallKind`），本地手写 kind 列表即红",
+        sh('python3 tools/check_call_sites.py'),
+        ok_msg=tail1, bad_msg="tools/check_call_sites.py", bad_dump=dump_all))
+
     items.append(cmd(
         "check-plan-seam", "seam",
         "计划接缝 X1：codegen 只能经 src/plan.h 读分析产物/编译计划，直读即红",

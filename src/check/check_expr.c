@@ -234,7 +234,7 @@ static bool parBodyExpr(void *ctx, Expr *e) {
      * `(*extc_tls_arena)`; an allocation in the worker body gives it one more hidden home tail
      * parameter, and the trampoline passes the same thread-local arena. Safety comes from the
      * signature: it can only write `out` and only return i64 => an allocation cannot escape. */
-    if (e->kind == EX_CALL || e->kind == EX_METHOD || e->kind == EX_ASSOC) {
+    if (exprIsCallKind(e)) {
         FuncDef *g = planCallee(e);
         if (!g) {
             Expr *ce = e->u.call.callee;
