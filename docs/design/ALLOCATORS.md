@@ -18,16 +18,30 @@ The compiler's whole job is three things:
 3. keep a per-zone **epoch** so a handle into zone storage can be checked for staleness
    (`zone::epoch`), which is the same idea already used by `dyn` and by pool generations.
 
-If those three exist, `@place` (formerly `@poolObject`), `poolSlice<T>`, `poolResize<T>`, `std::sys::pool` and the plate
+If those three exist, `@place` (formerly `@poolObject`), `poolSlice<T>`, `poolResize<T>`, `std::sys::pool` and the block-chain
 code in `src/back/pools.c` are all redundant.
+
+### Three things that were called "plate"
+
+The word was used for three different things, and the confusion cost real debugging time, so the
+vocabulary is fixed here:
+
+| Term | What it is | Where |
+|---|---|---|
+| **`mem::plate`** | a `mmap`-reserved, lazily committed region with a *stable* address (`DEFAULT_RESERVE` = 4 GiB, committed in 1 MiB chunks). It exists so C interop and big scratch buffers can take a pointer that never moves. **A pool never allocates one.** | `stdlib/std/mem.extc` |
+| **block chain** | a pool's own memory: a singly linked list of `malloc(sizeof(ExtcBlock) + bytes)` blocks that the pool grows by adding to, and hands back on release. No reserved region, no 4 GiB. | `src/back/pools.c` |
+| **privileged heap emission** | `extc_viewOf` / `extc_memCopy` and friends: helpers the *generator* emits for code the language cannot spell. They hang off the heap runtime block, not off either of the above. | `src/back/plate.c` |
+
+So: 4 GiB of `PROT_NONE` + `mprotect` means `mem::plate`; a growing pool means a block chain; the
+`plate.c` helpers are a third thing with an overlapping name.
 
 ## 1. What is privileged today, and why
 
 | Knob | Where | Why it exists |
 |---|---|---|
-| `@place` (formerly `@poolObject`) | type attribute | tells the checker/codegen that this type's storage lives on a plate rather than in the frame, and that its blocks must be revoked on epoch change |
-| `poolSlice<T>` / `poolSliceRaw<T>` | generator intrinsic | turns plate memory into a `slice<T>` — the language cannot express this |
-| `poolResize<T>` / `poolResizeRaw<T>` | generator intrinsic | realloc-style growth of a plate block |
+| `@place` (formerly `@poolObject`) | type attribute | tells the checker/codegen that this type's storage lives in a block chain rather than in the frame, and that its blocks must be revoked on epoch change |
+| `poolSlice<T>` / `poolSliceRaw<T>` | generator intrinsic | turns block-chain memory into a `slice<T>` — the language cannot express this |
+| `poolResize<T>` / `poolResizeRaw<T>` | generator intrinsic | realloc-style growth of a block-chain block |
 | `extc_pool_*` | runtime C | new/drop/reset/generation/zone chaining |
 | `std::sys::pool` | privileged stdlib layer | the wrapper containers call |
 

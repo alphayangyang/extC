@@ -1,6 +1,6 @@
 /**
  * @file plate.h
- * @brief On-demand emission for the plate (heap) runtime: `extc_viewOf` and
+ * @brief On-demand emission for the privileged heap layer: `extc_viewOf` and
  * `extc_memCopy`.
  *
  * It has the same shape as the gates in pools.h and memfind.h: one flag in codegen
