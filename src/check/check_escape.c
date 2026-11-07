@@ -1097,6 +1097,29 @@ static bool exprBorrowed(Checker *c, Expr *e) {
 }
 
 /**
+ * @brief Lower the level a pool-building value is recorded at, so it can reach `at`.
+ *
+ * A pool is an allocation site, and a fresh allocation has no other owner: the level "where the
+ * pool is born" can be lowered (smaller is longer-lived). That is what lets a container built in a
+ * loop be stored into a slot declared outside it -- without this, the pool is remembered at the
+ * block the expression sits in and the store is rejected as "a reference into a deeper scope".
+ *
+ * @param val  Value being stored or returned; its zone fact is read and lowered in place.
+ * @param at   Level the value has to fit into; 0 means "the tier outside this frame".
+ * @return     `true` when the site builds a pool and was handled here (the caller then treats it as
+ *             stored), `false` when the site allocates nothing and keeps the old answer.
+ */
+static bool lowerPoolSite(Expr *val, int at) {
+    if (!calleeMakesPool(planCallee(val)) || planZoneLevel(val) == 0) return false;
+    int want = (at == 0) ? ZONE_HOME : at;
+    if (getenv("EXTC_DBG_ZONE"))
+        fprintf(stderr, "[promoted] node=%p %d -> %d (at=%d)\n", (void *)val, planZoneLevel(val), want, at);
+    if (planZoneLevel(val) > want) planSetZoneLevel(val, want);
+    if (anRefDepth(val) > at) anSetRefDepth(val, at);
+    return true;
+}
+
+/**
  * @brief Tell whether the root of a value comes from a parameter of some function.
  *
  * If it does, the lifetime obligation is handed to the call site, which knows how long the
@@ -1776,6 +1799,17 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
         return ok;
     }
 
+    case EX_BIN:
+    case EX_UN:
+        /* An operator that resolved to a method is a call: `a + b` reaches `string::+`, whose body
+         * calls `concat`, which builds the pool. A builtin operator allocates nothing, so the
+         * no-callee case keeps the old answer `false` and the caller still reports. The pool branch
+         * below is what a call site needs and it reads only the site's own facts, so it is repeated
+         * here rather than reached through the shared `u.method` fields (an `EX_BIN` has no
+         * receiver there). */
+        if (!planCallee(val)) return false;
+        return lowerPoolSite(val, at);
+
     case EX_CALL:
     case EX_METHOD:
     case EX_ASSOC:
@@ -1806,15 +1840,7 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
                 }
             }
         }
-        if (calleeMakesPool(planCallee(val)) && planZoneLevel(val) != 0) {
-            int want = (at == 0) ? ZONE_HOME : at;
-            if (planZoneLevel(val) > want) {
-                if (getenv("EXTC_DBG_ZONE"))
-                    fprintf(stderr, "[promoted] node=%p %d -> %d (at=%d)\n",
-                            (void *)val, planZoneLevel(val), want, at);
-                planSetZoneLevel(val, want);
-            }
-            if (anRefDepth(val) > at) anSetRefDepth(val, at);
+        if (lowerPoolSite(val, at)) {
             /* Lowering the level of the **pool** says where the plate lives; it says nothing about
              * what the callee stored *into* that plate. The two obligations are separate: the pool's
              * birth level is decided here, the elements' life is decided by the field table. */

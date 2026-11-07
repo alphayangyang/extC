@@ -1283,6 +1283,9 @@ fn main() -> i32 {
 - 运算符方法**可以分配**：调用点和方法调用走同一套 zone 记账（`setOpCallArgs` 里的
   `setCallZoneArg`），所以 `fn +(self: ref string, other: slice<u8>) -> string` 这种"分配并
   返回新值"的运算符是合法形状（见 `std::text::string` 的 `+`：`s + "…"`、`a + b`）。
+  它建的池**跟着目的地走**：`for i in 0..n { s = s + t }` 与 `s = s.concat(t)` 记在同一个层级，
+  所以这种写法不会让逃逸检查误判（判据 `tests/ops/op_result_depth.extc`）。内建运算符没有 callee，
+  不参与这套记账。
 - 字符串的 `+` 与 `appendI64` / `appendF64` 覆盖两种拼法：表达式里拼用 `+`（返回新值），
   循环里拼用 `append*`（就地长）。
 - 移位（`<<` / `>>`）的计数在运行期按左操作数**位宽**检查（越界 trap）；计数是**字面量**时

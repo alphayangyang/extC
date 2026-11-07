@@ -60,6 +60,9 @@ run_case generic
 run_case compound_hook
 run_case builtin
 
+# 运算符结果按**目的地**定池层级：`s = s + t` 与 `s.concat(t)` 必须得到同一个池层级
+run_case op_result_depth
+
 echo "== ① 流运算符 << 与 >>：它们是两个 < / > 记号，却在可重载集合里 =="
 run_case stream
 

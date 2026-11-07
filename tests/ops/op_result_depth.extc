@@ -1,0 +1,40 @@
+// 运算符结果 **按目的地定池层级**（回归：`s = s + t` 在循环里曾被判成
+// "borrowed from depth 4, but this can only hold up to depth 1"）。
+//
+// `s + t` 解析到 `string::+`，它的体里调 `concat` 建池。运算符在检查器里只是"调用的另一种
+// 拼写"：它的调用站点必须像 `s.concat(t)` 一样拿到目的地那一层的 arena 参数，否则池被记在
+// 循环体那一层，读回时就"比目的地短命"。
+//
+// expect: len=10 same=true n=42 tail=3
+// 判据：① 循环里 `s = s + t` 能编过，且结果与 `s.concat(t)` 一致；
+//       ② `s + t.view()` 同样（运算符右操作数是视图）；
+//       ③ 内建数值运算符（`i64 + i64`）不受影响（没有 callee、没有池）；
+//       ④ 返回位置上用 `+`（`return a + b`）也能过。
+use std::text::string
+
+// 循环里重绑 `s`：**`+` 与方法调用必须得到同一个池层级**。
+// （构出来的字符串在这个函数里打印；"在循环里建、再 return 出去"是另一条既有边界，
+//   与方法调用写法同受一条限制，与本回归无关。）
+fn joinByOp(tail: string) -> i64 {
+    var s: string = string::from("a-")
+    for i in 0..8 { s = s + tail }
+    return s.len()
+}
+
+fn joinByCall(tail: string) -> i64 {
+    var s: string = string::from("a-")
+    for i in 0..8 { s = s.concat(tail) }
+    return s.len()
+}
+
+fn make(n: i64) -> string { return string::from("x") + n }
+
+fn main() -> i32 {
+    let b: string = string::from("b")
+    let op: i64 = joinByOp(b)
+    let call: i64 = joinByCall(b)
+    var n: i64 = 7
+    n = n + 35
+    print(f"len={op} same={op == call} n={n} tail={make(42).len()}")
+    return 0
+}
