@@ -1,0 +1,24 @@
+// Store a pool value that was built inside a loop, then read it back by value.
+//
+// The store is what moves the storage (that is `promoteInto2`'s job), so the container must
+// remember the *post-move* level. Recording the binding's own frame depth instead made the read
+// below fail with "borrowed from depth 4" even though the buffer really lives as long as `k`.
+use std::io
+use std::text::string
+use std::data::pool
+
+fn main() -> i32 {
+    var k: pool<string> = pool<string>::withCap(8)
+    for i in 0..2 {
+        var s: string = string::from("v") + i
+        k.insert(s)
+    }
+    let a: string = k.atDense(0)
+    let b: string = k.atDense(1)
+    print(a)
+    print(b)
+    print(k.len())
+    return 0
+}
+
+// expect: v0|v1|2

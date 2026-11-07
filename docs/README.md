@@ -16,6 +16,7 @@
 | [`CORE.md`](design/CORE.md) | 六条不许破的决定与预算表 —— 动别处之前先看这页 |
 | [`TYPE-MODEL.md`](design/TYPE-MODEL.md) | 值、引用、复合，以及它们各自装在什么载体里；拷贝/移动/借出/快照四个词的定义 |
 | [`MEMORY-MODEL.md`](design/MEMORY-MODEL.md) | 三种存储（帧 / 板块 / 对象表）与"该用哪个"的判据 |
+| [`POOL-LEVELS.md`](design/POOL-LEVELS.md) | 池层级的规则与边界：存储/读回/拒绝各一条 |
 | [`ALLOCATORS.md`](design/ALLOCATORS.md) | 分配器分层：arena、板块、对象表各管什么 |
 | [`DESTRUCTORS.md`](design/DESTRUCTORS.md) | 析构：`@drop` 的全部时机与顺序 |
 | [`RECLAMATION.md`](design/RECLAMATION.md) | 四层回收：按分配点选策略、运行期何时整体删掉 |

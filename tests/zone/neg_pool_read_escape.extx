@@ -1,0 +1,19 @@
+// KNOWN GAP (documented in docs/design/POOL-LEVELS.md, gap G1): a value read out of a
+// loop-local pool and stored into an outer pool is accepted, and reading it back is a
+// heap-use-after-free (ASan). This file is the reproducer; it is expected to be REJECTED
+// once the rule is in place, but is not wired into run.sh while the gap is open.
+// expect: carries a reference into a deeper scope
+use std::text::string
+use std::data::pool
+
+fn main() -> i32 {
+    var keep: pool<string> = pool<string>::withCap(4)
+    for i in 0..2 {
+        var k: pool<string> = pool<string>::withCap(2)
+        k.insert(string::from("a"))
+        let v: string = k.atDense(0)
+        keep.insert(v)
+    }
+    print(keep.len())
+    return 0
+}

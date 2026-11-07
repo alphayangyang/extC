@@ -26,6 +26,15 @@ else
     echo "  FAIL pool_forms  ->  编不过 / 跑不起来"; echo "$out" | sed 's/^/        /' | head -8; fail=1
 fi
 
+echo "== 已知缺口 G2（docs/design/POOL-LEVELS.md）：按值读回仍被拒（假阳性）=="
+if out=$("$EXTC" --run tests/zone/pool_readback.extc 2>&1); then
+    echo "  ok   pool_readback  ->  现在编过了：G2 已修，请把这条改成正例判据（$(echo "$out" | tr '\n' '|')）"
+else
+    echo "$out" | grep -qF "would hold a reference to a local variable that dies first" \
+        && echo "  ok   pool_readback  ->  仍按 G2 记录的方式被拒（读回的层级取得过深）" \
+        || { echo "  FAIL pool_readback  ->  拒绝理由变了（不再是 G2 的层级假阳性）"; echo "$out" | head -4 | sed 's/^/        /'; fail=1; }
+fi
+
 echo "== 反例：循环内的存储视图不得存进外层池 =="
 for f in tests/zone/neg_loop_new_view.extx tests/zone/neg_loop_array_view.extx; do
     want=$(grep -o '// expect:.*' "$f" | sed 's|// expect: *||' | head -1)
