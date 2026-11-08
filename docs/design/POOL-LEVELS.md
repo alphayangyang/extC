@@ -235,7 +235,8 @@ kh.insert(holder { s: k.atDense(0) })      accepted   (use-after-free on read-ba
 
 `borrowDepthAnywhere` walks the whole value (aggregates, `??` arms, operators, a binding's origin)
 and the store rule takes the deepest borrow it finds, so all three are refused now and the question
-has one answer. `tests/zone/neg_shapes_parity.extx` pins the three refusals; a fourth shape,
-`h.s = k.atDense(0)` (a field whose storage is a place rather than a call), still gets through -- it
-goes through the assignment rule rather than the call rule, and that rule has the same "promote
-first" seam; it is tracked as the next gap.
+has one answer. `tests/zone/neg_shapes_parity.extx` pins all four refusals. The fourth is an assignment rather than a
+call (`h.s = k.atDense(0)`, where the place is the field, not a callee's container): it reaches the
+same question through the assignment rule, which had the same "promote first" seam -- promoting the
+value lowered the *site* while the pool stayed where it was born. Both rules now promote only values
+that do not borrow, so a borrowed handle cannot buy its way in.

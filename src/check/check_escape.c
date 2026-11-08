@@ -2380,7 +2380,13 @@ static bool checkEscapeImpl(Checker *c, Expr *val, int at, int line, const char 
      * `d <= at` test below returns early, so once the depth looks shallow enough the site would
      * have no constraint at all. Facts first, comparison second; the criterion itself is
      * unchanged. */
-    promoteInto(c, val, at);
+    {
+        /* Same rule as `checkStoreEscape`: promotion moves a **site**, so it can never make borrowed
+         * bytes live longer than their pool. A value that borrows (a pool read handing back the
+         * pool's own bytes) is compared as it is; only fresh allocations promote. */
+        int bd = 0;
+        if (!borrowDepthAnywhere(c, val, &bd)) promoteInto(c, val, at);
+    }
     int d = targetDepth(c, val);
     if (d <= at) return false;
     /* The error below is still reported (or recorded when `defer`); this only leaves the

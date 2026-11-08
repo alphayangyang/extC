@@ -77,11 +77,11 @@ echo "== 整池回收：逃逸句柄的任务由调用者断言后整块放掉 =
 he=$(mktemp -d)
 # 同一种问法在三种写法上必须给同一个答案：直读、经函数转手、结构体字面量里的字段。
 out=$("$EXTC" --check-only -w tests/zone/neg_shapes_parity.extx 2>&1)
-n=$(printf '%s\n' "$out" | grep -c 'carries a reference into a deeper scope')
-if [ "$n" = 3 ]; then
-    echo "  ok   neg_shapes_parity ->  三种写法都拒（3 条）"
+n=$(printf '%s\n' "$out" | grep -cE 'deeper scope|dies first')
+if [ "$n" = 4 ]; then
+    echo "  ok   neg_shapes_parity ->  四种写法都拒（4 条）"
 else
-    echo "  FAIL neg_shapes_parity ->  只有 $n 条拒绝（期望 3）：$(printf '%s' "$out" | head -2 | tr '\n' ' ')"
+    echo "  FAIL neg_shapes_parity ->  只有 $n 条拒绝（期望 4）：$(printf '%s' "$out" | head -2 | tr '\n' ' ')"
     fail=1
 fi
 
