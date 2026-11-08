@@ -1372,14 +1372,20 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
     if (callee && callee->isExtern) {
         uint64_t stored = anAddrMask(callee) | anContMask(callee) | anOtherMask(callee);
         if (stored == 0) return;                 /* the signature says nothing is stored */
+        /* A black box that may keep a pointer forever: the destination level is 0, so the
+         * place-level report can compare this decision with the others. */
+        LvlSite *lvlSite = lvlSiteNew(c, args, 0, line, fname);
         for (size_t j = 0; j < params->len && j < args->len && j < EFF_MAX_PARAMS; j++) {
             if (!((stored >> j) & 1u)) continue;
             Expr *a = *(Expr **)vecAt(args, j);
             Param *p = *(Param **)vecAt(params, j);
+            lvlSiteMark(lvlSite, j, LVL_CAND_SKIP);
             if (!p->type || p->type->kind != TY_REF) continue;   /* a scalar has no lifetime */
+            lvlSiteRole(lvlSite, j, LVL_ROLE_DEST);
             Expr *place = (a->kind == EX_REF) ? a->u.ref.operand : a;
             int d = placeRoot(c, place) ? slotDepth(c, place) : targetDepth(c, a);
-            if (d == 0) continue;                /* it already outlives this frame */
+            if (d == 0) { lvlSiteMark(lvlSite, j, LVL_CAND_ACCEPT); continue; } /* already outlives */
+            lvlSiteMark(lvlSite, j, LVL_CAND_REJECT);
             ckError(c, line,
                     "A C function is a black box: unless its declaration says it does not keep the"
                     " pointer, it may store it somewhere that outlives this frame. Sign it --"
@@ -1470,12 +1476,18 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
         if (!haveDest && (homeDepth < 0 || !complete)) h = 0;
     }
 
+    /* `h` is final: this is the place level every store made through this call has to fit
+     * into. The verification pass (`check_lvl.c`) records the site here and the decision
+     * at each point below, so `EXTC_DBG_LVL` can compare its own answer with this one. */
+    LvlSite *lvlSite = lvlSiteNew(c, args, h, line, fname);
+
     for (size_t i = 0; addrMaybe && i < params->len; i++) {
         Param *p = *(Param **)vecAt(params, i);
         if (!p->type || p->type->kind != TY_REF) continue;
         Expr *a = *(Expr **)vecAt(args, i);
         Expr *place = (a->kind == EX_REF) ? a->u.ref.operand : a;
         if (mentionsParam(p->type) || mentionsParam(place->type)) continue;  /* generic: defer */
+        lvlSiteRole(lvlSite, i, LVL_ROLE_DEST);
         /* An argument is not always a place (the typical case: `stash(ref l, new node)`
          * passes a `new` directly). `slotDepth` answers 0 for a non-place, and that
          * number is read as "lives forever", so the rule would check nothing. The
@@ -1487,7 +1499,8 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
          * if it can, the value really does live to this level. */
         if (d != 0 && d > h && promoteInto(c, place, h))
             d = placeRoot(c, place) ? slotDepth(c, place) : targetDepth(c, place);
-        if (d == 0 || d <= h) continue;              /* lives long enough */
+        if (d == 0 || d <= h) { lvlSiteMark(lvlSite, i, LVL_CAND_ACCEPT); continue; } /* lives long enough */
+        lvlSiteMark(lvlSite, i, LVL_CAND_REJECT);
         ckError(c, line,
                 "The callee may store this reference into the arena it was given, so the"
                 " argument must live at least that long. Move it to a shallower scope.",
@@ -1564,6 +1577,7 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
  * extra facts introduces no new errors (the values that cannot be promoted are still handled by the
  * depth criteria below). */
             recordLvlFact(c, a, h);
+            lvlSiteRole(lvlSite, j, LVL_ROLE_VALUE);
             int d = targetDepth(c, a);
             if (d != 0 && d > h && promoteInto(c, a, h)) {
                 /* Re-read the level after the promotion. For `dyn T(x)` the value's life is the
@@ -1576,7 +1590,8 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
                 d = targetDepth(c, a);
                 if (zl != 0 && zl < d) d = zl;
             }
-            if (d == 0 || d <= h) continue;
+            if (d == 0 || d <= h) { lvlSiteMark(lvlSite, j, LVL_CAND_ACCEPT); continue; }
+            lvlSiteMark(lvlSite, j, LVL_CAND_REJECT);
             ckError(c, line,
                     "Nothing was stored here that could be checked at this call, so the"
                     " compiler has to assume the worst: this value may end up in the place"
@@ -1599,12 +1614,14 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
                       | anAddrMask(callee) | anHomeAddrMask(callee);
         for (size_t j = 0; j < args->len && j < EFF_MAX_PARAMS; j++) {
             if (!((cont >> j) & 1u)) continue;
+            lvlSiteMark(lvlSite, j, LVL_CAND_SKIP);
             Param *pj = *(Param **)vecAt(params, j);
             if (pj->type && pj->type->kind == TY_REF) continue;   /* `ref` arg: checked above */
             Expr *a = *(Expr **)vecAt(args, j);
             if (mentionsParam(a->type)) continue;
             if (!typeContainsRef(c->tt, tsub(c, a->type))) continue;
             recordLvlFact(c, a, h);         /* same as above: record the fact first, promote on the last-round replay */
+            lvlSiteRole(lvlSite, j, LVL_ROLE_VALUE);
             int d = targetDepth(c, a);
             /* A view of storage that can move cannot be repaired by promoting the container
              * when the destination lives past this frame: the growth hands the old slab
@@ -1623,6 +1640,7 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
                             " (depth %d) than the place the callee may store it (depth %d);"
                             " promoting `%s` cannot keep the view alive across a growth",
                             j + 1, fname, d, h, mowner);
+                    lvlSiteMark(lvlSite, j, LVL_CAND_REJECT);
                     continue;
                 }
             }
@@ -1650,7 +1668,8 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
                 d = targetDepth(c, a);
                 if (zl != 0 && zl < d) d = zl;
             }
-            if (d == 0 || d <= h) continue;
+            if (d == 0 || d <= h) { lvlSiteMark(lvlSite, j, LVL_CAND_ACCEPT); continue; }
+            lvlSiteMark(lvlSite, j, LVL_CAND_REJECT);
             ckError(c, line,
                     "The callee stores what this value points at into a container it was"
                     " given, so that data must live at least as long as that container.",
@@ -4992,6 +5011,11 @@ static void checkFunc(Checker *c, FuncDef *f) {
  * every retarget during the walk. Re-judge the `(*cur).f = v` stores the walk deferred -- word order
  * does not affect the answer (the scope is still open, so `lookup` works). */
         recheckPendingRefStores(c, !dfr.overflow);
+        /* Verification only (`EXTC_DBG_LVL=1`): derive a place level for every expression
+         * from the whole body and print where that answer disagrees with the per-site plan
+         * bits the check-time rules used. Reads the tree, prints to stderr, changes nothing;
+         * returns before doing any work when the variable is unset. */
+        lvlAnalyze(c, f);
     }
     popScope(c);
     c->curFunc = savedFunc;
@@ -8490,6 +8514,10 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         }
     }
     vecInit(&c.stores, arena, sizeof(StoreSite *));    /* long-running: "stored at level k" facts */
+    /* Verification-only place-level data flow (`check_lvl.c`): the switch is read once, and
+     * an unset variable makes every recording site and the analysis itself a no-op. */
+    c.lvlOn = getenv("EXTC_DBG_LVL") != NULL;
+    vecInit(&c.lvlSites, arena, sizeof(LvlSite *));
     /* Must be initialized here, before any pass.
      *
      * `checkGlobals` runs before the first `checkFunc`, so initializing `curArenaSites` inside

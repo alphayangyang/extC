@@ -559,6 +559,14 @@ typedef struct Checker {
      * module-wide requirement table, which is deliberately kept across bodies, is `lvlFacts`. */
     Vec        stores;      /* StoreSite* -- publications, folded over by the level pass */
     size_t     storeBase;   /* index in `stores` where the current body's records begin */
+    /* ---- place-level verification (`EXTC_DBG_LVL=1`, see `check_lvl.c`) ----
+     *
+     * `lvlOn` caches the switch so the hot paths that record a site pay one branch, and
+     * `lvlSites` collects the call sites whose arguments the callee may store. Nothing here
+     * is read or written unless the switch is on; `lvlAnalyze` returns before doing any work
+     * when it is off, so a normal run is byte-for-byte unchanged. */
+    bool       lvlOn;       /* `EXTC_DBG_LVL`, read once when the checker is built */
+    Vec        lvlSites;    /* LvlSite*, module-wide, filtered by `LvlSite.fn` when reporting */
     /* ---- `EXTC_DBG_FX=1`: what the level pass and the effect closures cost ----
      *
      * Cheap counters, in the style of the other `EXTC_DBG_*` switches: each one is bumped
@@ -706,6 +714,50 @@ typedef struct {
     int         line;   /* source line */
     int         late;   /* depth the settled numbers gave */
 } LvlRejection;
+
+/* One call site whose arguments the callee may store, recorded while `checkCallRefArgs`
+ * decides about them (`check_lvl.c`).
+ *
+ * These are **not** the `StoreSite` publications: a `StoreSite` covers assignments, returns,
+ * and the "may keep it" argument rules, while the call-argument rules have always judged on
+ * the spot and only recorded a `LvlFact`. `EXTC_DBG_LVL` asks a different question -- "what
+ * does a whole-body place-level analysis say about *this* argument, and what did the
+ * check-time rule say" -- so the site, its destination level `h`, and the per-argument
+ * decision are captured here, where both numbers are exact.
+ *
+ * Nothing reads this outside the verification pass. `decision` codes are ranked
+ * (`none < skip < accept < reject`), so several rules looking at the same argument resolve
+ * to the strongest answer, matching the fact that an emitted diagnostic is final. */
+typedef struct {
+    Expr        **args;      /* arguments, in parameter order (copied out of the caller's Vec) */
+    int           nargs;     /* argument count */
+    unsigned char *decision; /* per argument: 0 not a candidate, 1 accepted, 2 rejected,
+                              * 3 the callee may store it but no rule judged it */
+    unsigned char *role;     /* per argument: `LVL_ROLE_VALUE` (the bytes are stored into the
+                              * callee) or `LVL_ROLE_DEST` (the argument is the place a
+                              * reference points into) */
+    int           h;         /* place level the callee may store into */
+    int           place;     /* place level of the call statement itself */
+    int           line;      /* source line of the call */
+    const char   *fname;     /* callee name, for the report */
+    FuncDef      *fn;        /* body the call was checked in, or NULL outside every body */
+} LvlSite;
+
+/** @brief Argument the callee cannot store: not a candidate for the store rule. */
+#define LVL_CAND_NONE 0
+/** @brief Argument the check-time rule accepted. */
+#define LVL_CAND_ACCEPT 1
+/** @brief Argument the check-time rule rejected (its diagnostic is final). */
+#define LVL_CAND_REJECT 2
+/** @brief Argument the callee may store but no rule judged (a type or generic filter). */
+#define LVL_CAND_SKIP 3
+
+/** @brief Argument whose bytes the callee may store: the store rule reads its level. */
+#define LVL_ROLE_VALUE 0
+/** @brief Argument that is itself a destination place: `argLvl` is the pointee's level. */
+#define LVL_ROLE_DEST 1
+/** @brief No role recorded yet, because no rule looked at this argument. */
+#define LVL_ROLE_UNSET 255
 
 /* Classification of "write into a reference slot" at an assignment site, recorded in the
  * statement's result slot (`anSetStoreRefKind`) and read by `computeFnAcyclic` after the body walk.
@@ -2597,6 +2649,55 @@ bool calleeCreatesPool (FuncDef *f);
  * @param at   Level the value must be placed into; negative values are ignored.
  */
  void recordLvlFact (Checker *c, Expr *val, int at);
+/**
+ * @brief Record a call site whose arguments the callee may store (`check_lvl.c`).
+ *
+ * Verification only: returns NULL when `EXTC_DBG_LVL` is unset, so the recording costs one
+ * branch in a normal run. The argument vector is copied into the arena, because a method
+ * call passes a temporary `Vec` of its own.
+ *
+ * @param c      Checker.
+ * @param args   Argument vector, in parameter order.
+ * @param h      Place level the callee may store into.
+ * @param line   Source line of the call.
+ * @param fname  Callee name, for the report.
+ * @return       The recorded site, or NULL when the analysis is off.
+ */
+ LvlSite *lvlSiteNew (Checker *c, Vec *args, int h, int line, const char *fname);
+/**
+ * @brief Record what the existing checker decided about one argument of a call site.
+ *
+ * Decision codes are ranked (`none < skip < accept < reject`), so a rejection is never
+ * overwritten by an acceptance.
+ *
+ * @param s     Site returned by `lvlSiteNew`; NULL does nothing.
+ * @param j     Argument index.
+ * @param what  One of `LVL_CAND_NONE`, `LVL_CAND_ACCEPT`, `LVL_CAND_REJECT`, `LVL_CAND_SKIP`.
+ */
+ void lvlSiteMark (LvlSite *s, size_t j, unsigned char what);
+/**
+ * @brief Record what an argument's expression *is* at a call site.
+ *
+ * A destination argument (`ref *a`, a `mut ref` parameter) asks "does the place it points
+ * into live long enough"; a value argument asks "do the bytes being stored live long
+ * enough". The two are reported apart because only the second is a store of the argument's
+ * own bytes.
+ *
+ * @param s     Site returned by `lvlSiteNew`; NULL does nothing.
+ * @param j     Argument index.
+ * @param role  `LVL_ROLE_VALUE` or `LVL_ROLE_DEST`.
+ */
+ void lvlSiteRole (LvlSite *s, size_t j, unsigned char role);
+/**
+ * @brief Run the verification-only place-level data flow over one checked body.
+ *
+ * Returns immediately unless `EXTC_DBG_LVL` is set; it reads the tree, prints disagreements
+ * to stderr, and never writes a diagnostic, a plan bit, or a generated byte.
+ *
+ * @param c  Checker.
+ * @param f  Function whose body has just been checked.
+ */
+ void lvlAnalyze (Checker *c, FuncDef *f);
 /**
  * @brief Check a constructor's signature at its definition.
  *
