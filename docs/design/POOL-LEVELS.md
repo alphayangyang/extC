@@ -255,3 +255,13 @@ index). Ten disagreements appeared, every one of them a carrier promotion the wi
 same duplication the call-site path already carries; the swap of `promoteInto2` to this analysis and
 the extension of the witness to assignment edges should be done together, and the parity test is the
 guard in the meantime.
+
+Two attempts are recorded here so they are not repeated blindly. Propagating the `movable` bit
+through `EX_FIELD`/`EX_INDEX` removed nine of the ten disagreements but left one in the harmless
+direction (`tests/asan/promote-loop.extc`): a binding assigned inside a loop joins its `movable` bit
+with `&&`, while the allocation is re-made every iteration, so the *lexical* fact and the *checked*
+fact part company. Propagating it through `EX_SLICE` then added a new disagreement
+(`tests/attacks/h19_good.extc`), because a slice is a view rather than an allocation of its own.
+Both edits were reverted. The lesson is that `movable` is not a property of the value alone: it is a
+property of the value **at this point in the iteration**, which is exactly what the checker's
+site-level promotion encodes and the witness's facts table does not yet model.
