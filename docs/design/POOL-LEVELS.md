@@ -96,3 +96,33 @@ The checker's promise is one-directional and stated exactly:
 That trade is deliberate: a silent wrong answer is worse than a compile error, and the rejected
 shapes all have an in-language workaround (build the value where it must live, or copy it). G1 is
 the one shape where the trade is currently the wrong way round, and it is tracked as P1.
+
+## 整池粒度的回收（设计，未实现）
+
+包装句柄的泄露（`var h: coroutine<T> = f()` 丢掉后就没人结束任务）不能靠"块退出"解决：
+句柄可以移动，最后一个所有者是谁编译器不知道。回收单位因此是**一个池**：
+
+- **单位**：`ExtcPool` 记录 + 它名下的整条 `ExtcBlock` 链，收尾动作就是既有的
+  `extc_pool_drop`（块链整体 `free`、槽位标可复用、`generation++`）。不逐对象回收：
+  块链没有逐对象边界，池的语义就是"整块给出、整块收回"。
+- **根**：既有但空转的 `extc_rc_framePush` 根链（`src/back/reclaim.c:2057`，注释写明
+  "no emitter pushes onto the chain yet"）。入链两类，都由编译器发射：
+  `EXTC_ROOT_TASK`（`coroutine<T>` 句柄的 `.task`）与 `EXTC_ROOT_POOL`（容器持有的
+  `pid`）；`extc_zoneTop` 的父链也一并视为根（那是活着的 place）。
+- **标记**：从根出发，经 `ExtcPool.parent/firstChild/siblingPrev/nextSibling` 走池树，
+  再经 `zone`/`parent` 走 zone 链；只扫 `extc_pool_zoneNewRoot` 建的根 zone
+  （栈上的 place 生命周期已由 `zoneLeaveTo` 管，不需要也不允许碰）。
+- **清扫**：未标记的根 zone 走 `extc_pool_zoneFreeRoot` → `extc_zoneRelease` →
+  逐池 `extc_pool_drop`。触发器挂在 `extc_rc_maybeCollect` 与 `extc_pool_take`
+  （与计数层同一个预算口），`extc_rc_chainBad()` 时整轮拒绝（根表不完整就不收）。
+- **为什么今天安全**：池不能建在 `par` worker（编译错误）、不能建在 `@export` 入口
+  （隐藏 arena 参数）、不能建在全局初始化（常量式）⇒ 可达根只有"任务"与"容器"两种，
+  且两张表都是未闩的全局量。
+- **判据**（实现时一并落地）：`tests/zone/handle_abandon.extc` 的 `after=50` 变 `0`；
+  50 / 5000 个被放弃句柄的 RSS 持平（今天线性增长）；ASan+UBSan 干净；`extc_pool_live()`
+  在 `par` 与协程混跑的形状下仍回到 0；一次回收的暂停时间与 `bench/memstudy` 的 pause
+  分位数同量级。
+- **便宜的近似**（可以单独先做）：句柄**不逃逸**时（只在本块内被 `next`/`value`/`send`
+  驱动、不返回、不存进容器、不作为实参传出）在块退出处发
+  `if (extc_task_alive(h.task)) extc_task_end(h.task);`。它覆盖绝大多数写法，但漏掉
+  "句柄存进容器后再丢"的形状 —— 所以它只是收窄，不能替掉整池回收。
