@@ -84,7 +84,7 @@ typedef struct {
 
 /** One tracked binding. */
 typedef struct {
-    const char *cname;                        /**< Checker-assigned C name. */
+    const char *symName;                      /**< Checker-assigned C name. */
     int         lvl;                          /**< Level of the whole value. */
     bool        movable;                      /**< Every definition was a movable site. */
     int         nfields;                      /**< Tracked fields, at most `LVL_MAX_FIELDS`. */
@@ -131,7 +131,7 @@ static bool lvlNameEq(const char *a, const char *b) {
 static LvlVar *lvlFind(LvlFacts *f, const char *cname) {
     if (!f || !cname || f->overflow) return NULL;
     for (int i = 0; i < f->n; i++)
-        if (lvlNameEq(f->vars[i].cname, cname)) return &f->vars[i];
+        if (lvlNameEq(f->vars[i].symName, cname)) return &f->vars[i];
     return NULL;
 }
 
@@ -152,7 +152,7 @@ static LvlVar *lvlRow(LvlFacts *f, const char *cname) {
     if (f->n >= LVL_MAX_VARS) { f->overflow = true; return NULL; }
     v = &f->vars[f->n++];
     memset(v, 0, sizeof *v);
-    v->cname = cname;
+    v->symName = cname;
     v->lvl = LVL_NONE;
     v->movable = false;
     v->nfields = 0;
@@ -238,9 +238,9 @@ static void lvlJoinInto(LvlFacts *dst, const LvlFacts *src) {
     if (!dst || !src) return;
     for (int i = 0; i < src->n; i++) {
         const LvlVar *sv = &src->vars[i];
-        lvlRaise(dst, sv->cname, sv->lvl, sv->movable);
+        lvlRaise(dst, sv->symName, sv->lvl, sv->movable);
         for (int k = 0; k < sv->nfields; k++)
-            lvlRaiseField(dst, sv->cname, sv->fields[k].name, sv->fields[k].lvl);
+            lvlRaiseField(dst, sv->symName, sv->fields[k].name, sv->fields[k].lvl);
     }
     if (src->overflow) dst->overflow = true;
 }
@@ -260,7 +260,7 @@ static bool lvlSame(const LvlFacts *a, const LvlFacts *b) {
     for (int i = 0; i < a->n; i++) {
         const LvlVar *x = &a->vars[i];
         const LvlVar *y = &b->vars[i];
-        if (!lvlNameEq(x->cname, y->cname)) return false;
+        if (!lvlNameEq(x->symName, y->symName)) return false;
         if (x->lvl != y->lvl || x->movable != y->movable) return false;
         if (x->nfields != y->nfields) return false;
         for (int k = 0; k < x->nfields; k++)
@@ -880,7 +880,7 @@ static void lvlReportSite(Checker *c, LvlFacts *facts, LvlSite *s, size_t self) 
         if (lvlSeenBefore(c, self, s, j)) continue;
         Lvl a = { c, facts, s->place };
         bool mv = false;
-        int al = lvlEval(&a, s->args[j], &mv, 0);
+        int al = lvlEval(&a, s->kids[j], &mv, 0);
         bool ok = lvlFits(al, mv, s->h);
         const char *env = getenv("EXTC_DBG_LVL");
         bool dumpAll = env && env[0] == '2';
@@ -902,7 +902,7 @@ static void lvlReportSite(Checker *c, LvlFacts *facts, LvlSite *s, size_t self) 
                 "[lvl] file=%s:%d store arg=%d callee=%s kind=%s role=%s argLvl=%s"
                 " placeLvl=%d movable=%d current=%s suggested=%s\n",
                 c->ctx && c->ctx->path ? c->ctx->path : "?", s->line, j + 1,
-                s->fname ? s->fname : "?", lvlKindName(s->args[j]->kind), role,
+                s->fname ? s->fname : "?", lvlKindName(s->kids[j]->kind), role,
                 lvlName(al), s->h, mv ? 1 : 0, curName, ok ? "accept" : "reject");
     }
 }
@@ -924,8 +924,8 @@ LvlSite *lvlSiteNew(Checker *c, Vec *args, int h, int line, const char *fname) {
     if (!c || !c->lvlOn || !args) return NULL;
     LvlSite *s = (LvlSite *)arenaAllocZero(c->arena, sizeof(LvlSite));
     s->nargs = (int)args->len;
-    s->args = (Expr **)arenaAllocZero(c->arena, sizeof(Expr *) * (size_t)(s->nargs ? s->nargs : 1));
-    for (int i = 0; i < s->nargs; i++) s->args[i] = *(Expr **)vecAt(args, (size_t)i);
+    s->kids = (Expr **)arenaAllocZero(c->arena, sizeof(Expr *) * (size_t)(s->nargs ? s->nargs : 1));
+    for (int i = 0; i < s->nargs; i++) s->kids[i] = *(Expr **)vecAt(args, (size_t)i);
     s->decision = (unsigned char *)arenaAllocZero(c->arena, (size_t)(s->nargs ? s->nargs : 1));
     s->role = (unsigned char *)arenaAllocZero(c->arena, (size_t)(s->nargs ? s->nargs : 1));
     for (int i = 0; i < s->nargs; i++) s->role[i] = LVL_ROLE_UNSET;

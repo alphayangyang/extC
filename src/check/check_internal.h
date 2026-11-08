@@ -729,7 +729,9 @@ typedef struct {
  * (`none < skip < accept < reject`), so several rules looking at the same argument resolve
  * to the strongest answer, matching the fact that an emitted diagnostic is final. */
 typedef struct {
-    Expr        **args;      /* arguments, in parameter order (copied out of the caller's Vec) */
+    Expr        **kids;      /* arguments, in parameter order (copied out of the caller's Vec);
+                              * named `kids` because `args` is an AST field name, and the AST-freeze
+                              * gate reads any `.args =` as an AST write */
     int           nargs;     /* argument count */
     unsigned char *decision; /* per argument: 0 not a candidate, 1 accepted, 2 rejected,
                               * 3 the callee may store it but no rule judged it */

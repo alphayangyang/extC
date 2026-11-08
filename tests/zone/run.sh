@@ -66,5 +66,24 @@ else
     echo "  FAIL handle_abandon     ->  $(head -2 "$ha/e" | tr '\n' ' ')"; fail=1
 fi
 
+
+echo "== 红线：句柄逃逸进容器后，任务仍会漏（整池回收落地后变 0）=="
+# 句柄存进容器之后编译器叫不出"最后一个所有者"，所以被驱动过一次就丢弃的任务会把它的 place 与
+# 池留到进程结束。这里钉住今天的数字：after=1；整池回收（docs/design/POOL-LEVELS.md）落地那天
+# 把 1 改成 0。
+he=$(mktemp -d)
+if "$EXTC" -w --no-line-map -o "$he/h.c" tests/zone/handle_escape_pool.extc >/dev/null 2>&1 \
+   && cc -O2 -std=c11 -fwrapv -o "$he/h" "$he/h.c" 2>"$he/e"; then
+    out=$("$he/h" 2>&1)
+    if [ "$out" = "before=0 after=1" ]; then
+        echo "  ok   handle_escape_pool ->  逃逸句柄：池计数 0→1（红线，整池回收后变 0）"
+    else
+        echo "  FAIL handle_escape_pool ->  输出=$out（期望 before=0 after=1）"
+        fail=1
+    fi
+else
+    echo "  FAIL handle_escape_pool ->  $(head -2 "$he/e" | tr '\n' ' ')"; fail=1
+fi
+
 if [ "$fail" = 0 ]; then echo "  zone: 通过"; else echo "  zone: 失败"; fi
 exit "$fail"

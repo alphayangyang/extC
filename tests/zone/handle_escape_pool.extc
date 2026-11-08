@@ -1,0 +1,35 @@
+use std::io
+use std::sys::pool as syspool
+
+// A handle that **escapes** into a container is the remaining red line: the compiler cannot name
+// its last owner, so a task that was driven once and then abandoned keeps its place and the pools
+// born in it until whole-pool collection lands (docs/design/POOL-LEVELS.md). Today `after` is 1 --
+// one started task, one pool. The day collection lands this becomes 0.
+
+fn mk(n: i64) -> coroutine<i64> {
+    var b: varArray<i64> = varArray<i64>::withCap(8)
+    b.push(7)
+    for i in 0..n {
+        let got: i64 = b.get(0) ?? 0
+        yield got
+    }
+    return
+}
+
+fn main() -> i32 {
+    let before: i64 = syspool::extc_pool_live()
+    {
+        var box: varArray<coroutine<i64>> = varArray<coroutine<i64>>::withCap(2)
+        for k in 0..50 {
+            var h: coroutine<i64> = mk(4)
+            box.push(h)
+        }
+        var hh: coroutine<i64> = box.get(0)!
+        if hh.next() {
+            let v: i64 = hh.value()
+        }
+    }
+    let after: i64 = syspool::extc_pool_live()
+    io::println(f"before={before} after={after}")
+    return 0
+}

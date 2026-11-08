@@ -24,6 +24,7 @@ UNDOCUMENTED = {
     "EXTC_DBG_FS",
     "EXTC_DBG_FX",
     "EXTC_DBG_FX_VERBOSE",
+    "EXTC_DBG_LVL",     # place-level witness: prints differences only, never changes emitted C
     "EXTC_DBG_LOCAL",
     "EXTC_DBG_LV",
     "EXTC_DBG_MINAT",

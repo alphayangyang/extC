@@ -3707,10 +3707,10 @@ void liveViewsStmtPost(Checker *c, LiveViews *lv, Stmt *s) {
 /**
  * @brief One handle's use count inside the block that declares it.
  *
- * `name` is the variable name, `uses` counts occurrences that appear anywhere except as a drive
- * receiver, and `drives` counts the receiver of `next` / `value` / `send`.
+ * `name` is the variable name, `nUse` counts occurrences that appear anywhere except as a drive
+ * receiver, and `nDrive` counts the receiver of `next` / `value` / `send`.
  */
-typedef struct { const char *name; int uses; int drives; } CoroHandleScan;
+typedef struct { const char *name; int nUse; int nDrive; } CoroHandleScan;
 
 /** @brief Walk one child expression of the handle scan (defined below the scan itself). */
 static bool coroScanChildExpr(void *ctx, Expr *e);
@@ -3732,13 +3732,13 @@ static bool coroDriveName(const char *m) {
 static void coroScanExpr(CoroHandleScan *hs, Expr *e) {
     if (!e) return;
     if (e->kind == EX_IDENT) {
-        if (e->u.ident.name && strcmp(e->u.ident.name, hs->name) == 0) hs->uses++;
+        if (e->u.ident.name && strcmp(e->u.ident.name, hs->name) == 0) hs->nUse++;
         return;
     }
     if (e->kind == EX_METHOD && e->u.method.recv && e->u.method.recv->kind == EX_IDENT &&
         e->u.method.recv->u.ident.name && strcmp(e->u.method.recv->u.ident.name, hs->name) == 0 &&
         coroDriveName(e->u.method.name)) {
-        hs->drives++;                       /* the handle is only being driven here */
+        hs->nDrive++;                       /* the handle is only being driven here */
         for (size_t i = 0; i < e->u.method.args.len; i++)
             coroScanExpr(hs, *(Expr **)vecAt(&e->u.method.args, i));
         return;
@@ -3805,10 +3805,10 @@ static void noteOwnedCoroHandles(Checker *c, Stmt *block) {
         if (!planBoxedCoro(s->u.var.init)) continue;      /* only the boxed handle form */
         CoroHandleScan hs;
         hs.name = s->u.var.name;
-        hs.uses = 0;
-        hs.drives = 0;
+        hs.nUse = 0;
+        hs.nDrive = 0;
         for (size_t j = i + 1; j < n; j++) coroScanStmt(&hs, *(Stmt **)vecAt(&block->u.block.stmts, j));
-        if (hs.uses == 0 && hs.drives > 0) planSetCoroOwned(s, true);
+        if (hs.nUse == 0 && hs.nDrive > 0) planSetCoroOwned(s, true);
     }
 }
 
