@@ -262,6 +262,12 @@ direction (`tests/asan/promote-loop.extc`): a binding assigned inside a loop joi
 with `&&`, while the allocation is re-made every iteration, so the *lexical* fact and the *checked*
 fact part company. Propagating it through `EX_SLICE` then added a new disagreement
 (`tests/attacks/h19_good.extc`), because a slice is a view rather than an allocation of its own.
-Both edits were reverted. The lesson is that `movable` is not a property of the value alone: it is a
-property of the value **at this point in the iteration**, which is exactly what the checker's
-site-level promotion encodes and the witness's facts table does not yet model.
+Both edits were reverted. A third attempt -- deriving the bit from the binding's `Sym.origin` and
+propagating it through field/index carriers -- still reported ten disagreements, seven of them
+`kind=field` with `movable=0` while the checker accepted: those acceptances came from *lowering a
+borrowed carrier* (`self.nodes[...].next` reaching a pool through a projection), which the `movable`
+bit does not describe at all. The lesson is that `movable` is not a property of the value: it is a
+property of the value **at this point in the iteration, after this site's promotion**, which is
+exactly the checker's stateful per-site decision -- the piece a lattice is meant to replace. Covering
+assignment edges therefore cannot come first; it has to arrive together with the swap, and the
+witness's contract has to grow from "a level and a bit" to "what the checker concluded, and why".
