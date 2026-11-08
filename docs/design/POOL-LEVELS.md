@@ -256,6 +256,14 @@ same duplication the call-site path already carries; the swap of `promoteInto2` 
 the extension of the witness to assignment edges should be done together, and the parity test is the
 guard in the meantime.
 
+A cheaper idea was tried first: keep `promoteInto2` and, at every call site the witness already
+covers, compare the level the fixed point computed with the level the plan recorded. That oracle does
+not work either, and the reason is instructive. In `tests/zone/pool_forms.extc` the six store shapes
+give `plan=1` for five of them and `plan=4` for `ks.insert(t + u)`, while the witness says "level 4,
+movable" for all six. The bytes are safe in all six -- the operator's own body allocates in the home
+arena -- so the plan bit is simply *not consulted* for that site: it is a recorded fact, not the
+authority. Comparing two facts where one is unused produces disagreements that mean nothing.
+
 Two attempts are recorded here so they are not repeated blindly. Propagating the `movable` bit
 through `EX_FIELD`/`EX_INDEX` removed nine of the ten disagreements but left one in the harmless
 direction (`tests/asan/promote-loop.extc`): a binding assigned inside a loop joins its `movable` bit
