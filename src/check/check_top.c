@@ -1579,6 +1579,14 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
             recordLvlFact(c, a, h);
             lvlSiteRole(lvlSite, j, LVL_ROLE_VALUE);
             int d = targetDepth(c, a);
+            /* A value assembled here can still carry another expression's borrowed bytes
+             * (`holder { s = k.atDense(0) }`). Ask the whole value, not just its top: whichever
+             * expression shape the borrow hides in, the answer to "may this be stored" has to be
+             * the same. */
+            {
+                int bd = 0;
+                if (borrowDepthAnywhere(c, a, &bd) && bd > d) d = bd;
+            }
             if (d != 0 && d > h && promoteInto(c, a, h)) {
                 /* Re-read the level after the promotion. For `dyn T(x)` the value's life is the
                  * **place** its handle lives in (`planZoneLevel`), which `promoteInto` just lowered
@@ -1630,13 +1638,11 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
              * borrow fact of the initializer, keep the requirement, and skip promotion. */
             bool borrowedValue = false;
             {
-                Expr *src = a;
-                if (a->kind == EX_IDENT) {
-                    Sym *sy = lookup(c, a->u.ident.name);
-                    if (sy && sy->origin) src = sy->origin;
-                }
                 int bd = 0;
-                if (borrowDepthOf(c, src, &bd) && bd > d) { d = bd; borrowedValue = true; }
+                if (borrowDepthAnywhere(c, a, &bd)) {
+                    borrowedValue = true;
+                    if (bd > d) d = bd;
+                }
             }
             /* A view of storage that can move cannot be repaired by promoting the container
              * when the destination lives past this frame: the growth hands the old slab

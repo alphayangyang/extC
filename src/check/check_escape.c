@@ -814,6 +814,94 @@ static bool borrowResultDepth(Checker *c, Expr *e, int *out) {
 bool borrowDepthOf(Checker *c, Expr *e, int *out) { return borrowResultDepth(c, e, out); }
 
 /**
+ * @brief Deepest borrow found anywhere inside a value, not just at its top.
+ *
+ * A store moves **bytes**, and a struct literal, an array literal, a `??` arm or an operator
+ * result can carry another expression's borrowed bytes even though the node itself was built
+ * here. Asking only the top of the tree let `pool_a.insert(holder { s = pool_b.atDense(0) })`
+ * through while `pool_a.insert(pool_b.atDense(0))` was refused -- one question, two answers, and
+ * the accepted one was a use-after-free.
+ *
+ * @param c    Checker, providing the plan table.
+ * @param e    Expression to walk; nested expressions are visited without recursing into callees.
+ * @param out  Receives the largest depth found (0 when nothing borrows).
+ * @return     True when any part of the value borrows existing storage.
+ */
+static bool borrowDepthWalk(Checker *c, Expr *e, int *out, int hops);
+
+/** @brief State of one `borrowDepthWalk` descent. */
+typedef struct {
+    Checker *c;
+    int *out;   /* largest depth found so far */
+    int hops;   /* recursion budget, so a cyclic tree cannot loop forever */
+    bool any;   /* some part of the value borrows */
+} BorrowWalk;
+
+/**
+ * @brief Visit one child of the value being walked, and keep descending through it.
+ *
+ * The descent is driven by `astWalkExprChildren`, so a new expression kind is covered by
+ * construction -- that is the whole point: this walk replaced a hand-written switch, and the
+ * hand-written one is what missed the shapes that made the struct-literal store a use-after-free.
+ *
+ * @param ctx  `BorrowWalk *` for the current descent.
+ * @param e    Child expression to visit.
+ * @return     True to continue walking.
+ */
+static bool borrowDepthVisit(void *ctx, Expr *e) {
+    BorrowWalk *w = (BorrowWalk *)ctx;
+    if (!e || w->hops > 24) return true;
+    int d = 0;
+    if (borrowDepthOf(w->c, e, &d)) {
+        if (d > *w->out) *w->out = d;
+        w->any = true;
+    }
+    if (e->kind == EX_IDENT) {
+        /* A binding carries no storage of its own: ask the expression it came from. */
+        Sym *sy = identBindOf(e);
+        if (sy && sy->origin && sy->origin != e) {
+            if (borrowDepthWalk(w->c, sy->origin, w->out, w->hops + 1)) w->any = true;
+        }
+    }
+    AstVisit v = { borrowDepthVisit, NULL, w };
+    BorrowWalk kids = { w->c, w->out, w->hops + 1, false };
+    v.ctx = &kids;
+    astWalkExprChildren(e, &v);
+    w->any = kids.any || w->any;
+    return true;
+}
+
+/** @brief Walk one value and every expression inside it, collecting the deepest borrow. */
+static bool borrowDepthWalk(Checker *c, Expr *e, int *out, int hops) {
+    if (!e || !out || hops > 24) return false;
+    BorrowWalk w = { c, out, hops, false };
+    int d = 0;
+    if (borrowDepthOf(c, e, &d)) { if (d > *out) *out = d; w.any = true; }
+    if (e->kind == EX_IDENT) {
+        Sym *sy = identBindOf(e);
+        if (sy && sy->origin && sy->origin != e && borrowDepthWalk(c, sy->origin, out, hops + 1)) w.any = true;
+    }
+    AstVisit v = { borrowDepthVisit, NULL, &w };
+    astWalkExprChildren(e, &v);
+    return w.any;
+}
+
+/**
+ * @brief Does any part of this value borrow storage, and how deep is the deepest borrow.
+ *
+ * @param c    Checker.
+ * @param e    Expression to inspect.
+ * @param out  Receives the deepest borrowed depth.
+ * @return     True when some part of the value borrows.
+ */
+bool borrowDepthAnywhere(Checker *c, Expr *e, int *out) {
+    int d = 0;
+    bool any = borrowDepthWalk(c, e, &d, 0);
+    if (out) *out = d;
+    return any;
+}
+
+/**
  * @brief Depth of the storage the references carried by a value point at.
  *
  * A smaller number means a longer life; 0 means a parameter or a global, that is, outside this
@@ -3546,6 +3634,18 @@ static int targetDepthPure(Checker *c, Expr *e, int hops, Expr **seen) {
         for (size_t i = 0; i < e->u.method.args.len; i++)
             d = maxInt(d, targetDepthPure(c, *(Expr **)vecAt(&e->u.method.args, i),
                                            hops + 1, seen));
+        /* A by-value read out of a pool borrows the pool's bytes: the answer is the pool's own
+         * place, not the handle's. `borrowArgDepth` reads this off the recorded field table, but
+         * the table records the loop that **filled** the pool, so the two disagree for exactly
+         * the shape G1/G2 were about. Ask the receiver's slot depth directly, the same way the
+         * store rule does, and keep the larger of the two answers (the conservative direction). */
+        if (c->scopes.len != 0 && e->u.method.recv) {
+            Sym *root = placeRoot(c, e->u.method.recv);
+            if (root && root->type) {
+                StructDef *rsd = structOf(ttBase(tsub(c, root->type)));
+                if (rsd && rsd->poolObject) d = maxInt(d, slotDepth(c, e->u.method.recv));
+            }
+        }
         return d;
     }
     /* `?` and a conversion pass the operand's references through; an operator can only

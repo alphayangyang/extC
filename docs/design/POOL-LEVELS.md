@@ -219,3 +219,22 @@ needs one of:
   this extends it from levels to decisions).
 
 Either way the witness gate is the guard: it must stay at 0 while the switch disappears.
+
+### One answer per question, per shape
+
+Rule R asks one thing of a value: *where do the bytes it carries live?* Three expression shapes can
+carry another expression's borrowed bytes without being a borrow themselves -- a direct read, a read
+returned unchanged from a function, and a read placed inside a struct literal. Only the first was
+understood, so
+
+```text
+ks.insert(k.atDense(0))                    refused
+ks.insert(identity(k.atDense(0)))          accepted   (use-after-free on read-back)
+kh.insert(holder { s: k.atDense(0) })      accepted   (use-after-free on read-back)
+```
+
+`borrowDepthAnywhere` walks the whole value (aggregates, `??` arms, operators, a binding's origin)
+and the store rule takes the deepest borrow it finds, so all three are refused now and the question
+has one answer. `tests/zone/neg_shapes_parity.extx` pins the three refusals; a fourth shape,
+`h.s = k.atDense(0)` (a field whose storage is a place rather than a call), still gets through -- it
+is a different rule and is tracked as the next gap.

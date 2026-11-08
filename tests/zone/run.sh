@@ -75,6 +75,16 @@ echo "== 整池回收：逃逸句柄的任务由调用者断言后整块放掉 =
 # 池留到进程结束。这里钉住今天的数字：after=1；整池回收（docs/design/POOL-LEVELS.md）落地那天
 # 把 1 改成 0。
 he=$(mktemp -d)
+# 同一种问法在三种写法上必须给同一个答案：直读、经函数转手、结构体字面量里的字段。
+out=$("$EXTC" --check-only -w tests/zone/neg_shapes_parity.extx 2>&1)
+n=$(printf '%s\n' "$out" | grep -c 'carries a reference into a deeper scope')
+if [ "$n" = 3 ]; then
+    echo "  ok   neg_shapes_parity ->  三种写法都拒（3 条）"
+else
+    echo "  FAIL neg_shapes_parity ->  只有 $n 条拒绝（期望 3）：$(printf '%s' "$out" | head -2 | tr '\n' ' ')"
+    fail=1
+fi
+
 if "$EXTC" -w --no-line-map -o "$he/c.c" tests/zone/collect_keeps_stack.extc >/dev/null 2>&1 \
    && cc -O2 -std=c11 -fwrapv -o "$he/c" "$he/c.c" 2>"$he/e"; then
     out=$("$he/c" 2>&1)
