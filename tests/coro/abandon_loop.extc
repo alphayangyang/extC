@@ -1,0 +1,28 @@
+use std::io
+use std::sys::pool as syspool
+
+// A coroutine whose frame is a C local cannot outlive the block that declares it. The driver only
+// ends the task when the step reports "done", so a loop left early used to leak the task's arena,
+// its place and every pool the coroutine created -- unboundedly. The block's release point ends
+// whatever is left, so the pool count comes back to where it started.
+fn mk(n: i64) -> coroutine<i64> {
+    var b: varArray<i64> = varArray<i64>::withCap(8)
+    b.push(7)
+    for i in 0..n {
+        let got: i64 = b.get(0) ?? 0
+        yield got
+    }
+    return
+}
+
+fn main() -> i32 {
+    let before: i64 = syspool::extc_pool_live()
+    for i in 0..50 {
+        for v in mk(4) {
+            break
+        }
+    }
+    let after: i64 = syspool::extc_pool_live()
+    io::println(f"before={before} after={after}")
+    return 0
+}

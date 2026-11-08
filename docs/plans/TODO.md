@@ -226,3 +226,18 @@
   `std::net` / `ws` 等还没有）。
 - 语言页还缺最小例子：协程（`coroutine<A,B>` / `yield`）与域（`ext`），
   以及 `--dump-effects` / `--dump-tokens` 的输出格式说明。
+
+## 协程任务泄露：只剩"包装句柄"这一种
+
+栈帧形式的协程（不带 `coroutine<T>` 标注）已经在块退出时结束任务（2026-11-76），
+被 `break` 放弃的驱动不再漏池。**包装句柄**（`var h: coroutine<T> = f(…)`）不行：帧在任务
+自己的 arena 里，句柄可以移动进更长寿的变量，任务该由最后一个所有者结束 —— 编译器不知道
+那是谁。两个独立复核（L1/L2）确认这是唯一仍泄露的形状：
+
+- L1：`var c = g(1e6)` 只 `next()` 一次就丢掉（每个任务漏它的整条池块链）；
+- L2：`for x in c { break }`（同上）。
+
+方向：**整池粒度进回收** —— 单位是 `ExtcPool` 记录 + 它的整条 `ExtcBlock` 链，用既有的
+`extc_rc_framePush` 根链标记可达的根 zone，未标记的 `extc_pool_zoneNewRoot` zone 整体释放
+（`extc_pool_zoneFreeRoot` → `extc_zoneRelease` → `extc_pool_drop`）。便宜的精确补丁：在
+`genCoroHandleDecls` 发句柄助手的地方，句柄被丢弃时 `if (extc_task_alive(h->task)) extc_task_end(h->task);`。

@@ -600,6 +600,15 @@ typedef struct {
      * for a level that never pushed would pop the *enclosing* zone, leaving pools created
      * afterwards with no zone at all (see `zoneAtLevel` / `cgReleaseLevel`). */
     bool       *zoneMark;
+    /* Tasks whose frame is a C local of the function being emitted, one list per block level.
+     * A stack frame dies with its block, but the task driver ends the task only when the step
+     * reports "done": a loop that is abandoned (`break`, or a frame dropped halfway) never takes
+     * that path, and the task's arena and place then leak -- the pools a coroutine created stay
+     * registered until the process ends. `extc_task_end` is idempotent, so the block's release
+     * point ends whatever is left. Boxed handles are not listed: their frame lives in the task's
+     * own arena and a handle may move to a longer-lived variable, so the task has to end with the
+     * last owner, not with this block. */
+    Vec        *coroTaskAt;
     /* Definitions whose name may never be used again (`DeadDef*`, in emission
      * order); dropUnreferenced decides after the whole unit is assembled. */
     Vec         deadDefs;
@@ -6047,6 +6056,38 @@ static void cgZoneLeave(CG *g, int lvl);
 static void cgArenaRelease(CG *g, int lvl);
 
 /**
+ * @brief Remember that this block's frame driver owns a task, so leaving the block can end it.
+ *
+ * @param g   The generator state.
+ * @param sq  The sequence number of the spawn (the `__extc_czid<sq>` temporary).
+ */
+static void noteStackTask(CG *g, int sq) {
+    if (!g->coroTaskAt || g->blkLevel < 0 || g->blkLevel >= g->levelCap) return;
+    *(int *)vecPush(&g->coroTaskAt[g->blkLevel]) = sq;
+}
+
+/**
+ * @brief End the tasks a leaving block's frames still own.
+ *
+ * A coroutine whose frame is a C local cannot outlive the block that declared it, but the driver
+ * only calls `extc_task_end` when the step reports "done". A loop abandoned halfway (`break`) or a
+ * `for` over a coroutine that is left early therefore leaks the task's arena and its place -- and
+ * with them every pool the coroutine created (16 KB of pool blocks per abandoned task,
+ * unbounded). The block's release point ends them; the call is idempotent, so a task that did run
+ * to completion is unaffected.
+ *
+ * @param g    The generator state.
+ * @param lvl  The block level being left.
+ */
+static void cgCoroTaskEndAt(CG *g, int lvl) {
+    if (!g->coroTaskAt || lvl <= 0 || lvl >= g->levelCap) return;
+    Vec *v = &g->coroTaskAt[lvl];
+    for (size_t i = 0; i < v->len; i++)
+        cgLine(g, "extc_task_end(__extc_czid%d);", *(int *)vecAt(v, i));
+    v->len = 0;                       /* emitted once: a block emits one release point */
+}
+
+/**
  * @brief Release the block arenas down to and including one level.
  *
  * Leaving a place pops back to the depth it started at (mark) instead of popping blindly: early
@@ -6070,6 +6111,7 @@ static void cgArenaRelease(CG *g, int lvl);
  */
 static void cgReleaseLevel(CG *g, int lvl) {
     if (lvl <= 0) return;
+    cgCoroTaskEndAt(g, lvl);
     if (g->noArena && !g->coroFunc) return;
     /* Memory only: files are the program's business (decision 79), so the one place a
      * block release is emitted has nothing to close. */
@@ -6733,6 +6775,14 @@ static void genBlockBody(CG *g, Stmt *block) {
         if (bodyTouches) cgArenaRelease(g, g->blkLevel);   /* clear */
         if (zoneHere) cgLine(g, "int64_t __extc_zm%d = extc_pool_zoneEnter();", g->blkLevel);
         bufPutn(g->out, scratch.data, scratch.len);        /* the body itself */
+        /* A coroutine frame declared in this block is a C local: the driver only ends its task
+         * when the step reports "done", so a `break` out of the loop (or a driver left early)
+         * would leave the task's arena and place -- and every pool the coroutine created --
+         * alive forever. The block's release point ends whatever is left; the call is
+         * idempotent, so a task that did finish is unaffected. Emitted here rather than in
+         * cgReleaseLevel because this path (the probe that measures whether the block touches
+         * its arena) writes the release point itself. */
+        cgCoroTaskEndAt(g, g->blkLevel);
         if (zoneHere) cgZoneLeave(g, g->blkLevel);
         if (bodyTouches) cgArenaRelease(g, g->blkLevel);
     } else {
@@ -7327,6 +7377,7 @@ if (planCName(s) && s->u.var.init && s->u.var.init->kind == EX_CALL &&
         cgLine(g, "int64_t __extc_czsv%d = extc_zoneTop;", sq);
         cgLine(g, "int64_t __extc_czid%d = extc_task_begin();", sq);
         cgLine(g, "int64_t __extc_czm%d = extc_task_zone(__extc_czid%d);", sq, sq);
+        noteStackTask(g, sq);
     }
     /* `var d = inner(args)` **inside a coroutine**: the nested frame is a *field* of this
      * frame, not a C local -- a resume jumps past the declaration, so the initializer has
@@ -9536,6 +9587,8 @@ static void genFuncInner(CG *g, FuncDef *f) {
     g->loopStep  = (int *)arenaAllocZero(g->arena, (size_t)g->levelCap * sizeof(int));
     g->loopStepUsed = (bool *)arenaAllocZero(g->arena, (size_t)g->levelCap * sizeof(bool));
     g->loopRootBase = (int *)arenaAllocZero(g->arena, (size_t)g->levelCap * sizeof(int));
+    g->coroTaskAt = (Vec *)arenaAllocZero(g->arena, (size_t)g->levelCap * sizeof(Vec));
+    for (int lv = 0; lv < g->levelCap; lv++) vecInit(&g->coroTaskAt[lv], g->arena, sizeof(int));
     /* A function that puts nothing into its own block arenas does not even emit
      * the array. The checker decides that (`planMayUseArena(f)`: the body contains a
      * `new`, or calls a function that has a home arena), and about half of the

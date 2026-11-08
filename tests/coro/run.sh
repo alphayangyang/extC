@@ -599,5 +599,17 @@ else
     fi
 fi
 
+
+# 被放弃的协程驱动：`break` 之后任务的 arena / place / 池必须随块结束（否则线性泄露）
+ab=$tmp/abandon_loop
+out=$("$EXTC" --run tests/coro/abandon_loop.extc 2>&1); rc=$?
+if [ "$rc" = 0 ] && [ "$out" = "before=0 after=0" ]; then
+    echo "  ok   abandon_loop        ->  50 个被 break 放弃的任务：池计数 before=0 after=0"
+    pass=$((pass+1))
+else
+    echo "  FAIL abandon_loop        ->  rc=$rc 输出=$(echo "$out" | head -2 | tr '\n' ' ')（任务没随块结束，池在累积）"
+    fail=$((fail+1))
+fi
+
 echo "通过 $pass，失败 $fail"
 [ "$fail" = 0 ] || exit 1
