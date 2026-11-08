@@ -97,6 +97,22 @@ That trade is deliberate: a silent wrong answer is worse than a compile error, a
 shapes all have an in-language workaround (build the value where it must live, or copy it). G1 is
 the one shape where the trade is currently the wrong way round, and it is tracked as P1.
 
+## 见证（`EXTC_DBG_LVL`）与它的闸门
+
+`src/check/check_lvl.c` 是同一个问题的第二个回答者，**只观察**：它算每个表达式的 place 层级，
+在 `EXTC_DBG_LVL=1` 下把"检查器怎么判 / 它会怎么判"逐条打到 stderr，不改任何诊断、不改生成的 C。
+
+全仓语料（1,500 个 `.extc`）跑一遍的结果：
+
+- `argLvl=unknown` 的行是"见证没有意见"（参数、`calleeMakesPool` 还没收敛的调用），单独计数；
+- **真实差异 7 条**（`tools/lvl-witness-baseline.txt`），全部是"检查器接受或没查、见证会拒"的方向
+  —— 见证从来没有比检查器更宽过。形状都是 `current=accepted|unchecked suggested=reject`，即
+  "深层的值进了浅层的 place"，落在两类已知通道上（`ref` 参数经 `mut ref` 转手、签字信任的外来 C）。
+
+闸门 `tools/check_lvl_witness.py`（`check.py` 的 `seam` 组）：差异条数只许持平或减少，`--write`
+重写基线。加形状、改规则时它先响 —— 这就是"把 `promoteInto2` 的手写 `switch(kind)` 换成不动点"
+之前必须先清零的那张清单。
+
 ## 整池粒度的回收（设计，未实现）
 
 包装句柄的泄露（`var h: coroutine<T> = f()` 丢掉后就没人结束任务）不能靠"块退出"解决：

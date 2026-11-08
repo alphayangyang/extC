@@ -1317,6 +1317,12 @@ def build_items() -> list:
         ok_msg=tail1, bad_msg="tools/check_call_sites.py", bad_dump=dump_all))
 
     items.append(cmd(
+        "lvl-witness", "seam",
+        "place 层级见证与检查器的结论差异棘轮（见证只观察，差异只许少）",
+        sh('python3 tools/check_lvl_witness.py'),
+        ok_msg=tail1, bad_msg="tools/check_lvl_witness.py", bad_dump=dump_all))
+
+    items.append(cmd(
         "check-plan-seam", "seam",
         "计划接缝 X1：codegen 只能经 src/plan.h 读分析产物/编译计划，直读即红",
         sh('python3 tools/check_plan_seam.py'),
