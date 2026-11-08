@@ -1,10 +1,9 @@
 use std::io
 use std::sys::pool as syspool
 
-// A handle that **escapes** into a container is the remaining red line: the compiler cannot name
-// its last owner, so a task that was driven once and then abandoned keeps its place and the pools
-// born in it until whole-pool collection lands (docs/design/POOL-LEVELS.md). Today `after` is 1 --
-// one started task, one pool. The day collection lands this becomes 0.
+// A handle that **escapes** into a container: the compiler cannot name its last owner, so ending
+// the task is the program's call. `syspool::collect()` is that call -- it releases task-owned
+// places no handle reaches any more (docs/design/POOL-LEVELS.md). Without it `after` is 1.
 
 fn mk(n: i64) -> coroutine<i64> {
     var b: varArray<i64> = varArray<i64>::withCap(8)
@@ -29,7 +28,10 @@ fn main() -> i32 {
             let v: i64 = hh.value()
         }
     }
+    /* The block is gone and nothing holds those handles any more: the one place that can say so
+     * is the program, so collection is a call rather than a rule (see POOL-LEVELS.md). */
+    let freed: i64 = syspool::collect()
     let after: i64 = syspool::extc_pool_live()
-    io::println(f"before={before} after={after}")
+    io::println(f"before={before} after={after} freed={freed}")
     return 0
 }

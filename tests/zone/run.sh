@@ -70,18 +70,31 @@ else
 fi
 
 
-echo "== 红线：句柄逃逸进容器后，任务仍会漏（整池回收落地后变 0）=="
+echo "== 整池回收：逃逸句柄的任务由调用者断言后整块放掉 =="
 # 句柄存进容器之后编译器叫不出"最后一个所有者"，所以被驱动过一次就丢弃的任务会把它的 place 与
 # 池留到进程结束。这里钉住今天的数字：after=1；整池回收（docs/design/POOL-LEVELS.md）落地那天
 # 把 1 改成 0。
 he=$(mktemp -d)
+if "$EXTC" -w --no-line-map -o "$he/c.c" tests/zone/collect_keeps_stack.extc >/dev/null 2>&1 \
+   && cc -O2 -std=c11 -fwrapv -o "$he/c" "$he/c.c" 2>"$he/e"; then
+    out=$("$he/c" 2>&1)
+    if [ "$out" = "len=3 freed=0" ]; then
+        echo "  ok   collect_keeps_stack ->  整池回收不碰栈上的地方（freed=0）"
+    else
+        echo "  FAIL collect_keeps_stack ->  输出=$out（期望 len=3 freed=0）"
+        fail=1
+    fi
+else
+    echo "  FAIL collect_keeps_stack ->  $(head -2 "$he/e" | tr '\n' ' ')"; fail=1
+fi
+
 if "$EXTC" -w --no-line-map -o "$he/h.c" tests/zone/handle_escape_pool.extc >/dev/null 2>&1 \
    && cc -O2 -std=c11 -fwrapv -o "$he/h" "$he/h.c" 2>"$he/e"; then
     out=$("$he/h" 2>&1)
-    if [ "$out" = "before=0 after=1" ]; then
-        echo "  ok   handle_escape_pool ->  逃逸句柄：池计数 0→1（红线，整池回收后变 0）"
+    if [ "$out" = "before=0 after=0 freed=50" ]; then
+        echo "  ok   handle_escape_pool ->  逃逸句柄：整池回收之后 0（freed=50）"
     else
-        echo "  FAIL handle_escape_pool ->  输出=$out（期望 before=0 after=1）"
+        echo "  FAIL handle_escape_pool ->  输出=$out（期望 before=0 after=0 freed=50）"
         fail=1
     fi
 else

@@ -162,3 +162,39 @@ named gaps are closed; what remains is the ordinary completeness cost of the rul
   驱动、不返回、不存进容器、不作为实参传出）在块退出处发
   `if (extc_task_alive(h.task)) extc_task_end(h.task);`。它覆盖绝大多数写法，但漏掉
   "句柄存进容器后再丢"的形状 —— 所以它只是收窄，不能替掉整池回收。
+
+## Whole-pool collection: freeing what no handle reaches
+
+A task owns a place of its own (`extc_pool_zoneNewRoot`), which sits outside the block stack, so
+no `zoneLeaveTo` ever reaches it. The release that ends it is `extc_task_end`, and the emitter
+calls that where it can prove the block owns the task (a handle whose every later use in the block
+is a drive call). A handle stored into a container escapes that proof: the compiler cannot name
+its last owner, so it cannot decide where the task ends.
+
+`syspool::collect()` is that decision, made by the program:
+
+```text
+{
+    var box: varArray<coroutine<i64>> = varArray<coroutine<i64>>::withCap(2)
+    var h: coroutine<i64> = mk(4)
+    box.push(h)
+}
+// nothing can drive those handles any more; this is the assertion the program makes
+let freed: i64 = syspool::collect()
+```
+
+The unit is the **whole pool**: a task-owned place is released by `extc_pool_zoneFreeRoot`, which
+walks the place's pools, drops each record, and hands its entire block chain back to `malloc` in
+one go. Nothing is collected per object -- the pool record and its blocks are one allocation unit,
+which is what makes the cost proportional to the number of places, not to the number of values.
+
+Which places are task-owned is read off the zone table: `extc_zonePush` always leaves `depth >= 1`
+on a stack place, and the allocator leaves a fresh root at `depth == 0`. Stack places are therefore
+never touched (that is what `tests/zone/collect_keeps_stack.extc` pins), and the collector only ever
+ends tasks that its own contract says are unreachable.
+
+The contract is the caller's: *no handle to a task in those places is live any more.* The emitter
+could register the handles it sees and let the collector decide, but a handle can be copied into a
+container the emitter cannot name, so a registered-root scheme would be silently wrong exactly for
+the shape this feature exists for. Making the call explicit keeps the failure mode a documented
+assertion instead of a wrong answer.

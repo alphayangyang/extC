@@ -279,6 +279,28 @@ let w: mut slice<u8> = v2.viewMut()
 
 判据在 `tests/warnings/flag/owned_view.extc`：不开开关不响、开了必须响、`-w` 能关掉。
 
+### 整池回收：放掉再也没有句柄能驱动的任务
+
+协程任务拥有自己的地方（`extc_pool_zoneNewRoot`），它不在块栈上，所以离开作用域**不会**释放它 ——
+结束任务的唯一动作是 `extc_task_end`，而编译器只在"这个块的句柄每一次使用都是驱动调用"时自己发这句。
+句柄一旦被存进容器就逃出了这个证明，这时结束任务由程序自己决定：
+
+<!-- fragment -->
+```extc
+use std::sys::pool as syspool
+{
+    var box: varArray<coroutine<i64>> = varArray<coroutine<i64>>::withCap(2)
+    var h: coroutine<i64> = mk(4)
+    box.push(h)
+}
+// 这里没有任何还活着的句柄能驱动那些任务：这句断言由程序来下
+let freed: i64 = syspool::collect()
+```
+
+回收的单位是**整个池**：放掉一个任务的地方就把它名下的池记录逐条 `drop`、每条块链整块还给 `malloc`，
+所以代价按"地方的个数"算，不按"值的个数"算。只进程栈上的地方不归它管（那些由块退出释放），
+这也是 `collect()` 不会碰循环里那种临时池的原因。
+
 ### 自己写一个板块底的容器
 
 `vector` 不是特例：任何一个标了 `@place` 的结构体都**拥有一块自己的地方（池）**，于是也能拿到"原地长、乱序归还"的存储。写自己的可增长容器就是四件事 —— 拥有、要、长、守卫与归还：

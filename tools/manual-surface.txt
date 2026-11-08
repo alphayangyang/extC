@@ -515,6 +515,7 @@ std::proc	-	wait	fn	public
 std::sys::domain	-	single	fn	public
 std::sys::file	-	open	fn	public
 std::sys::file	-	openAt	fn	public
+std::sys::pool	-	collect	fn	public
 std::text::string	-	decode	fn	public
 std::text::string	-	decodeUrl	fn	public
 std::text::string	-	decodedMax	fn	public

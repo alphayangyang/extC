@@ -31,6 +31,17 @@ extern!("extc-runtime") fn extc_pool_generation(rid: i64) -> u64
     effects Addr=0 Cont=0
 extern!("extc-runtime") fn extc_pool_live() -> i64
     effects Addr=0 Cont=0
+/* **整池回收**：把所有"任务自己的地方"里、已经没有可驱动句柄的那些整块放掉 —— 池的记录连同
+ * 它的整条块链一次归还，任务随之结束。契约是调用者的**一句断言**：此刻程序里没有任何仍然
+ * 指向那些任务的句柄（被放弃的句柄本来也不该再被驱动；编译器只能看见自己这一层的句柄，
+ * 所以这一步不自动做）。返回放掉了几个地方。 */
+extern!("extc-runtime") fn extc_task_collect() -> i64
+    effects Addr=0 Cont=0
+
+/** @brief 整池回收：放掉所有已经没有句柄能驱动的任务地方，返回放掉的数量。 */
+fn collect() -> i64 {
+    return extc_task_collect()
+}
 /* 槽位表的容量：**只涨到"同时活着的 pool 数"的高水位**，与创建过多少次无关 ——
  * churn 判据（`tests/pool/churn.extc`）用它证明"反复建/放不涨内存" ✓ */
 extern!("extc-runtime") fn extc_pool_capacity() -> i64
