@@ -118,7 +118,8 @@ the one shape where the trade is currently the wrong way round, and it is tracke
 - **为什么今天安全**：池不能建在 `par` worker（编译错误）、不能建在 `@export` 入口
   （隐藏 arena 参数）、不能建在全局初始化（常量式）⇒ 可达根只有"任务"与"容器"两种，
   且两张表都是未闩的全局量。
-- **判据**（实现时一并落地）：`tests/zone/handle_abandon.extc` 的 `after=50` 变 `0`；
+- **判据**（实现时一并落地）：`tests/zone/handle_escape_pool.extc` 的 `after=1` 变 `0`
+  （不逃逸的句柄已经由"块退出结束任务"收干净：`handle_abandon` 是 `0→0`）;
   50 / 5000 个被放弃句柄的 RSS 持平（今天线性增长）；ASan+UBSan 干净；`extc_pool_live()`
   在 `par` 与协程混跑的形状下仍回到 0；一次回收的暂停时间与 `bench/memstudy` 的 pause
   分位数同量级。
