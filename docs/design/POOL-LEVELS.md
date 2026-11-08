@@ -240,3 +240,18 @@ call (`h.s = k.atDense(0)`, where the place is the field, not a callee's contain
 same question through the assignment rule, which had the same "promote first" seam -- promoting the
 value lowered the *site* while the pool stayed where it was born. Both rules now promote only values
 that do not borrow, so a borrowed handle cannot buy its way in.
+
+### Why the witness does not yet cover assignment edges
+
+`tools/check_lvl_witness.py` compares the analysis with the checker at **call** sites (`lvlSiteNew`
+is called from `checkCallRefArgs`). Assignment stores go through `checkStoreEscape` ->
+`checkEscapeImpl`, and they are covered by `tests/zone/neg_shapes_parity.extx` instead. Recording
+them as sites was tried and reverted: the witness models `movable` only for the shapes that build
+bytes directly (`new`, a pool-building call, `??`), while the assignment rule accepts many values by
+promoting a **carrier** (`o.f = cell`, `a[i] = cell` reach the allocation through a field or an
+index). Ten disagreements appeared, every one of them a carrier promotion the witness did not model
+-- not a checker bug. Extending the witness to assignment edges therefore starts with mirroring
+`promoteInto2`'s carrier walk (`EX_FIELD`/`EX_INDEX`/`EX_SLICE`/struct literal/`??`), which is the
+same duplication the call-site path already carries; the swap of `promoteInto2` to this analysis and
+the extension of the witness to assignment edges should be done together, and the parity test is the
+guard in the meantime.
