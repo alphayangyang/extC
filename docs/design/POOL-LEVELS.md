@@ -72,13 +72,22 @@ the **post-move** depth (`min(depth(value), level(container))`, see §4 O2).
 
 **Open gaps** (documented, pinned as "still behaves this way", not as passing criteria):
 
-- **G1 — unsound acceptance (P1).** A value read out of a *loop-local* pool and stored into an outer
-  pool is accepted; reading it back is a **heap-use-after-free** (verified with ASan). Reproducer
-  `tests/zone/neg_pool_read_escape.extx`, expected to be rejected once S2 covers reads whose origin
-  is a call with a recorded return-borrow argument. Attempts so far: comparing
-  `planRetBorrowArg(planCallee(origin))` did not fire because the by-value element read
-  (`pool::atDense`) records no return-borrow argument — the fix has to add that fact first, or to
-  compare against the *pool's* own level recorded on the receiver.
+- **G1 — closed (2026-11-81).** A value read out of a *loop-local* pool and stored into an outer
+  pool could be accepted, and reading it back was a **heap-use-after-free** (verified with ASan).
+  The rule now has the two pieces it was missing:
+  * **the borrow fact** — `pool::atDense` hands back `T` by value, and when `T` owns bytes those
+    bytes live in the pool the receiver names; `borrowSourceParam` walks `return self.vals[i]` to
+    the parameter, `noteReturnBorrow` records it for by-value results too (including an
+    uninstantiated `T`), and `borrowResultDepth` hands the caller the depth of the receiver.
+  * **the honest answer at the store** — the store rule reads that depth from the initializer of
+    the argument (`borrowDepthOf`), keeps the requirement, and refuses to let a promotion claim
+    the value moved: a pool read is not a fresh allocation, and the pool was born at the place the
+    program created it.
+
+  Reproducer `tests/zone/neg_pool_read_escape.extx`, now wired into `tests/zone/run.sh` as a
+  rejection. The shapes that *are* safe still pass: `var s = mk(i); keep.insert(s)` and
+  `keep.insert(string::from("c"))` build a fresh value, promote it, and store it.
+
 - **G2 — false rejection (P2).** After a promoted store (`var s = …; k.insert(s)`), the by-value
   read `k.atDense(0)` is rejected with "borrowed from depth 4". The store side is correct (the
   generated C allocates at level 1); the read side computes the element's depth from a container
@@ -90,12 +99,13 @@ the **post-move** depth (`min(depth(value), level(container))`, see §4 O2).
 
 The checker's promise is one-directional and stated exactly:
 
-> **No accepted program reads freed pool storage** (soundness — subject to gaps G1), **at the cost
-> of rejecting some sound programs** (completeness — G2 and the return of loop-built values).
+> **No accepted program reads freed pool storage** (soundness — the last known hole, G1, is
+> closed), **at the cost of rejecting some sound programs** (completeness — G2 and the return of
+> loop-built values).
 
 That trade is deliberate: a silent wrong answer is worse than a compile error, and the rejected
-shapes all have an in-language workaround (build the value where it must live, or copy it). G1 is
-the one shape where the trade is currently the wrong way round, and it is tracked as P1.
+shapes all have an in-language workaround (build the value where it must live, or copy it). G2 is
+the remaining false rejection; it is a P2 completeness gap, not a soundness one.
 
 ## 见证（`EXTC_DBG_LVL`）与它的闸门
 

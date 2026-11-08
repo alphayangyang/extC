@@ -1,7 +1,7 @@
-// KNOWN GAP (documented in docs/design/POOL-LEVELS.md, gap G1): a value read out of a
-// loop-local pool and stored into an outer pool is accepted, and reading it back is a
-// heap-use-after-free (ASan). This file is the reproducer; it is expected to be REJECTED
-// once the rule is in place, but is not wired into run.sh while the gap is open.
+// Gap G1, closed (2026-11-81): a value read out of a loop-local pool and stored into an outer
+// pool used to be accepted, and reading it back was a heap-use-after-free (ASan). The read is a
+// **borrow**: the bytes stay in the pool the receiver names, and a store cannot move that pool,
+// so the store is now refused at check time. The positive side (`pool_forms`) still passes.
 // expect: carries a reference into a deeper scope
 use std::text::string
 use std::data::pool

@@ -1623,6 +1623,21 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
             recordLvlFact(c, a, h);         /* same as above: record the fact first, promote on the last-round replay */
             lvlSiteRole(lvlSite, j, LVL_ROLE_VALUE);
             int d = targetDepth(c, a);
+            /* A value that came out of a pool **by value** borrows that pool's bytes: the pool was
+             * born where it was created, and a store cannot move it. `promoteInto` would lower the
+             * call's own level and report success while the bytes stay behind (gap G1:
+             * `k.atDense(0)` stored into an outer pool, then freed with the loop body). Read the
+             * borrow fact of the initializer, keep the requirement, and skip promotion. */
+            bool borrowedValue = false;
+            {
+                Expr *src = a;
+                if (a->kind == EX_IDENT) {
+                    Sym *sy = lookup(c, a->u.ident.name);
+                    if (sy && sy->origin) src = sy->origin;
+                }
+                int bd = 0;
+                if (borrowDepthOf(c, src, &bd) && bd > d) { d = bd; borrowedValue = true; }
+            }
             /* A view of storage that can move cannot be repaired by promoting the container
              * when the destination lives past this frame: the growth hands the old slab
              * back, so the view dies before the place that holds it, and no later function
@@ -1658,7 +1673,7 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
              * Sharing this half matters for pools as much as for arenas: a container built
              * inside a loop body and pushed into a container that outlives the loop needs its
              * pool born at the destination's place. */
-            if (d != 0 && d > h && promoteInto(c, a, h)) {
+            if (d != 0 && d > h && !borrowedValue && promoteInto(c, a, h)) {
                 /* Re-read the level after the promotion: for `dyn T(x)` the value's life is the
                  * **place** the handle lives in (`planZoneLevel`), which the promotion just lowered
                  * to `h`. `targetDepth` answers from the payload's lexical site, so it would still
@@ -1667,6 +1682,19 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
                 int zl = planZoneLevel(a);
                 d = targetDepth(c, a);
                 if (zl != 0 && zl < d) d = zl;
+            }
+            /* A by-value call result that borrows storage (`k.atDense(i)` handing back a
+             * `string`) does not create data: the bytes stay in the pool the receiver names, and
+             * a store cannot move that pool. Whatever level the paths above arrived at, the
+             * borrow's own depth is the lifetime the destination must respect (gap G1). */
+            {
+                Expr *srcb = a;
+                if (a->kind == EX_IDENT) {
+                    Sym *syb = lookup(c, a->u.ident.name);
+                    if (syb && syb->origin) srcb = syb->origin;
+                }
+                int bdb = 0;
+                if (d <= h && borrowDepthOf(c, srcb, &bdb) && bdb > h) d = bdb;
             }
             if (d == 0 || d <= h) { lvlSiteMark(lvlSite, j, LVL_CAND_ACCEPT); continue; }
             lvlSiteMark(lvlSite, j, LVL_CAND_REJECT);

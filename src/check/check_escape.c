@@ -767,6 +767,8 @@ static void settleBorrowDepth(Checker *c, Expr *e, int d) {
  * @param out  Receives the depth when the call reports a source.
  * @return     `true` when `out` was written, `false` when the call site keeps its own rule.
  */
+
+
 static bool borrowResultDepth(Checker *c, Expr *e, int *out) {
     if (!c || !e || !out) return false;
     /* Views and references always borrow, and so does a by-value result whose type owns bytes
@@ -785,6 +787,20 @@ static bool borrowResultDepth(Checker *c, Expr *e, int *out) {
     *out = borrowArgDepth(c, arg, borrowFieldName(c, f, planRetBorrowField(f)));
     return true;
 }
+
+/**
+ * @brief Public form of the borrow-depth query, for the store rule.
+ *
+ * A store of a by-value result (`k.atDense(i)` handing back a `string`) stores the pool's bytes,
+ * not a new value; the call site needs the depth of that borrow to keep the destination rule
+ * honest (gap G1).
+ *
+ * @param c    Checker, providing the plan table.
+ * @param e    Expression whose storage depth is wanted.
+ * @param out  Receives the depth when the result borrows.
+ * @return     true when `e` is a call whose result borrows existing storage.
+ */
+bool borrowDepthOf(Checker *c, Expr *e, int *out) { return borrowResultDepth(c, e, out); }
 
 /**
  * @brief Depth of the storage the references carried by a value point at.
@@ -1710,7 +1726,19 @@ static bool promoteInto2(Checker *c, Expr *val, int at, int hops) {
                         val->u.ident.name ? val->u.ident.name : "-",
                         sy->poolSite->kind == EX_CALL ? "EX_CALL" :
                         sy->poolSite->kind == EX_METHOD ? "EX_METHOD" : "EX_ASSOC");
-            return promoteInto2(c, sy->poolSite, at, hops + 1);
+            int nHops = hops + 1;
+            bool moved = promoteInto2(c, sy->poolSite, at, nHops);
+            /* Claiming the value moved is only honest if its **storage** moved. A pool read
+             * (`k.atDense(i)`) is a borrow: the bytes stay in `k`'s pool, and the pool is born at
+             * the place where it was created. `promoteInto2` on the call lowers the call's own
+             * level and returns true while that pool keeps its birth place, which is how a value
+             * could be accepted into an outer container and then freed with the loop body (gap G1).
+             * Report failure here so the caller keeps the error. */
+            if (moved && calleeMakesPool(planCallee(sy->poolSite))) {
+                int zl = planZoneLevel(sy->poolSite);
+                if (zl != 0 && zl > at) moved = false;
+            }
+            return moved;
         }
         if (!sy) return false;
         if (!sy->origin) {

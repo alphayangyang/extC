@@ -2875,4 +2875,7 @@ bool calleeCreatesPool (FuncDef *f);
  */
  bool stmtMakesPool (Stmt *s, bool descendBlocks);
 
+/** @brief Depth of a borrowing call result, for the store rule (see check_escape.c). */
+bool borrowDepthOf(Checker *c, Expr *e, int *out);
+
 #endif /* EXTC_CHECK_INTERNAL_H */

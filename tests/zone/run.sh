@@ -35,8 +35,9 @@ else
         || { echo "  FAIL pool_readback  ->  拒绝理由变了（不再是 G2 的层级假阳性）"; echo "$out" | head -4 | sed 's/^/        /'; fail=1; }
 fi
 
-echo "== 反例：循环内的存储视图不得存进外层池 =="
-for f in tests/zone/neg_loop_new_view.extx tests/zone/neg_loop_array_view.extx; do
+echo "== 反例：循环内的存储视图 / 循环局部池读出的值，都不得存进外层池 =="
+for f in tests/zone/neg_loop_new_view.extx tests/zone/neg_loop_array_view.extx \
+         tests/zone/neg_pool_read_escape.extx; do
     want=$(grep -o '// expect:.*' "$f" | sed 's|// expect: *||' | head -1)
     if out=$("$EXTC" "$f" -o /dev/null 2>&1); then
         echo "  FAIL $(basename "$f")  ->  **编过了**（应该报错 ✗）"; fail=1; continue
