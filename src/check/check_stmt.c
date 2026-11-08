@@ -2912,10 +2912,11 @@ static bool rangeForBlockShape(Stmt *block) {
     return a && b && d && a->kind == ST_VAR && b->kind == ST_VAR && d->kind == ST_WHILE;
 }
 
-/* Interior helpers of the hoisting pass (defined below); declared first because
- * `checkHoistStatementTrys` uses them. */
+/** @brief State of the hoisting pass: inserted statements, guards, sequence number, line. */
 typedef struct { Checker *c; Vec *pre; Vec *guards; int *seq; int line; } TryHoist;
+/** @brief Hoist the `?`s of one expression slot (defined below). */
 static void tryHoistExpr(TryHoist *h, Expr **slot);
+/** @brief Hoist the `?`s of one statement; returns the new statement count (defined below). */
 static size_t tryHoistStmt(Checker *c, Stmt *s, Vec *pre, Vec *guards);
 
 /**
@@ -3692,6 +3693,134 @@ void liveViewsStmtPost(Checker *c, LiveViews *lv, Stmt *s) {
  * @param c      Checker.
  * @param block  Block statement to check.
  */
+/* ---- an abandoned handle coroutine ----
+ *
+ * A `var h: coroutine<T>` keeps its frame in the task's own arena, and the task (with the zone
+ * and pools it owns) only ends when somebody drives it to completion and drops it. When nothing
+ * outside the declaring block can reach the handle, the block itself can end the task: the
+ * checker proves "every later use is a drive call on the handle" and codegen ends it on exit.
+ *
+ * The proof is deliberately one-sided. A shape the scan cannot prove keeps leaking (it stays a
+ * pinned red line in tests/zone/handle_abandon.extc); it never ends a task someone may still use.
+ */
+/** @brief One handle's use count inside the block that declares it. */
+/**
+ * @brief One handle's use count inside the block that declares it.
+ *
+ * `name` is the variable name, `uses` counts occurrences that appear anywhere except as a drive
+ * receiver, and `drives` counts the receiver of `next` / `value` / `send`.
+ */
+typedef struct { const char *name; int uses; int drives; } CoroHandleScan;
+
+/** @brief Walk one child expression of the handle scan (defined below the scan itself). */
+static bool coroScanChildExpr(void *ctx, Expr *e);
+
+/** @brief Whether this method name drives a handle coroutine. */
+static bool coroDriveName(const char *m) {
+    return m && (strcmp(m, "next") == 0 || strcmp(m, "value") == 0 || strcmp(m, "send") == 0);
+}
+
+/**
+ * @brief Count how the handle appears in one expression: driven, or handed anywhere else.
+ *
+ * A drive call (`h.next()`, `h.value()`, `h.send(x)`) counts in `drives` and does **not** look at
+ * the receiver as a use; any other occurrence of the name counts in `uses`.
+ *
+ * @param hs  The scan in progress.
+ * @param e   Expression to walk; NULL returns immediately.
+ */
+static void coroScanExpr(CoroHandleScan *hs, Expr *e) {
+    if (!e) return;
+    if (e->kind == EX_IDENT) {
+        if (e->u.ident.name && strcmp(e->u.ident.name, hs->name) == 0) hs->uses++;
+        return;
+    }
+    if (e->kind == EX_METHOD && e->u.method.recv && e->u.method.recv->kind == EX_IDENT &&
+        e->u.method.recv->u.ident.name && strcmp(e->u.method.recv->u.ident.name, hs->name) == 0 &&
+        coroDriveName(e->u.method.name)) {
+        hs->drives++;                       /* the handle is only being driven here */
+        for (size_t i = 0; i < e->u.method.args.len; i++)
+            coroScanExpr(hs, *(Expr **)vecAt(&e->u.method.args, i));
+        return;
+    }
+    {
+        AstVisit v;
+        v.expr = coroScanChildExpr;
+        v.stmt = NULL;
+        v.ctx  = hs;
+        astWalkExprChildren(e, &v);
+    }
+}
+
+/**
+ * @brief Walk one child expression; keeps the walk going.
+ *
+ * @param ctx  The `CoroHandleScan *` in progress.
+ * @param e    Child expression.
+ * @return     Always `true`, so the walk visits every child.
+ */
+static bool coroScanChildExpr(void *ctx, Expr *e) { coroScanExpr((CoroHandleScan *)ctx, e); return true; }
+
+/** @brief Walk one child statement of the handle scan (defined below the scan itself). */
+static bool coroScanChildStmt(void *ctx, Stmt *s);
+/**
+ * @brief Scan every expression under one statement for uses of the handle.
+ *
+ * @param hs  The scan in progress.
+ * @param s   Statement to walk; NULL returns immediately.
+ */
+static void coroScanStmt(CoroHandleScan *hs, Stmt *s) {
+    if (!s) return;
+    AstVisit v;
+    v.expr = coroScanChildExpr;
+    v.stmt = coroScanChildStmt;
+    v.ctx  = hs;
+    astWalkStmtChildren(s, &v);
+}
+/**
+ * @brief Walk one child statement; keeps the walk going.
+ *
+ * @param ctx  The `CoroHandleScan *` in progress.
+ * @param s    Child statement.
+ * @return     Always `true`, so the walk visits every child.
+ */
+static bool coroScanChildStmt(void *ctx, Stmt *s) { coroScanStmt((CoroHandleScan *)ctx, s); return true; }
+
+/**
+ * @brief Mark a handle local whose task may be ended when its block is left.
+ *
+ * A `var` counts when its initializer is a boxed coroutine call (the handle form) and every later
+ * use in the same block is a drive call on that handle. Copies, arguments, returns and stores all
+ * disqualify it: the task then has an owner this block cannot see.
+ *
+ * @param c      The checker (unused beyond symmetry with the other block passes).
+ * @param block  The block whose statements are being checked.
+ */
+static void noteOwnedCoroHandles(Checker *c, Stmt *block) {
+    (void)c;
+    size_t n = block->u.block.stmts.len;
+    for (size_t i = 0; i + 1 < n; i++) {
+        Stmt *s = *(Stmt **)vecAt(&block->u.block.stmts, i);
+        if (!s || s->kind != ST_VAR || !s->u.var.init || !s->u.var.name) continue;
+        if (!planBoxedCoro(s->u.var.init)) continue;      /* only the boxed handle form */
+        CoroHandleScan hs;
+        hs.name = s->u.var.name;
+        hs.uses = 0;
+        hs.drives = 0;
+        for (size_t j = i + 1; j < n; j++) coroScanStmt(&hs, *(Stmt **)vecAt(&block->u.block.stmts, j));
+        if (hs.uses == 0 && hs.drives > 0) planSetCoroOwned(s, true);
+    }
+}
+
+/**
+ * @brief Check a block's statements in order, in a scope of their own.
+ *
+ * Runs the block-level passes around the statement loop (fusion, place boundary, live views,
+ * loop-variable widening, par lowering) and, after the loop, the owned-handle scan.
+ *
+ * @param c      The checker.
+ * @param block  The `ST_BLOCK` statement.
+ */
 static void checkBlockBody(Checker *c, Stmt *block) {
     /* The `forDesugar` block's retarget is deferred until "the subject declaration has been
      * checked" (see the hook in the loop): when the subject is not a place the parser inserts a
@@ -3729,6 +3858,7 @@ static void checkBlockBody(Checker *c, Stmt *block) {
             else if (rangeForBlockShape(block)) widenRangeForVar(c, block);
         }
     }
+    noteOwnedCoroHandles(c, block);
     popScope(c);
 
     if (boundary) c->placeBoundaryDepth--;

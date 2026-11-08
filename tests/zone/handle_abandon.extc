@@ -2,10 +2,11 @@ use std::io
 use std::sys::pool as syspool
 
 // A **handle** coroutine (`coroutine<T>` annotation) keeps its frame in the task's own arena, and a
-// handle can move into a longer-lived variable, so the task has to end with its last owner -- not
-// with the block. The compiler does not know who that owner is, so this shape still leaks one task
-// (and the pools it created) per abandoned handle. Pinned here so the fix has a red line to cross:
-// the day the task is collected at whole-pool granularity, `after` becomes 0.
+// handle can move into a longer-lived variable, so in general the task has to end with its last
+// owner. When nothing outside the declaring block can reach the handle, the block itself ends the
+// task at exit (`noteOwnedCoroHandles` in the checker, `cgCoroOwnedEndAt` in codegen), so abandoning
+// one releases its zone and the pools born in it instead of leaking them. A handle that *escapes*
+// still has no owner the compiler can name: that shape is what whole-pool collection is for.
 fn mk(n: i64) -> coroutine<i64> {
     var b: varArray<i64> = varArray<i64>::withCap(8)
     b.push(7)

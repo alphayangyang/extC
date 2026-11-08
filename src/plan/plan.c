@@ -89,6 +89,7 @@
 #define PLAN_PAR_FULL_OUT        84
 #define PLAN_LAM_FNPTR           85   /* `EX_LAMBDA`: this literal is used as a bare `fn(...)` pointer, not as an environment value */
 #define PLAN_LAM_SCOPE           86   /* a lambda environment struct: the body it is written in */
+#define PLAN_CORO_OWNED          96   /* a `var` holding a handle coroutine nothing else can reach */
 #define PLAN_ANY_BOX             87   /* an expression whose value is boxed into an `any` */
 #define PLAN_ANY_TO              88   /* an `any` value unboxed into a concrete type: which one */
 #define PLAN_DYN_CALL            89   /* a method call on an `any`: dispatch by name at run time */
@@ -1073,6 +1074,36 @@ void planSetBoxedCoro(Expr *e, bool v) {
     r->boxedCoro = v;
     resultsSetBit(r, PLAN_BOXED_CORO);
 }
+/**
+ * @brief Record that a `var` holds a handle coroutine nothing outside its block can reach.
+ *
+ * The checker sets this only when every later use in the same block is a drive call
+ * (`next`, `value`, `send`) on the handle itself: no copy, no argument, no store, no return.
+ * Codegen then ends the task when the block is left, so an abandoned handle releases its
+ * zone (and the pools born in it) instead of leaking them.
+ *
+ * @param node  The `var` statement; NULL ignores this write.
+ * @param v     Whether the task can be ended at block exit.
+ */
+void planSetCoroOwned(void *node, bool v) {
+    if (!node) return;
+    NodeResults *r = resultsAs(node, true, RKIND_STMT, __LINE__);
+    if (!r) return;
+    r->coroOwned = v;
+    resultsSetBit(r, PLAN_CORO_OWNED);
+}
+
+/**
+ * @brief Whether codegen should end this `var`'s task when its block is left.
+ *
+ * @param node  The `var` statement.
+ * @return      `true` when the checker proved nothing can reach the handle afterwards.
+ */
+bool planCoroOwned(const void *node) {
+    NodeResults *r = resultsOf(node, false);
+    return r && resultsBit(r, PLAN_CORO_OWNED) ? r->coroOwned : false;
+}
+
 PLF_GET(planIsExtTarget, bool, isExtTarget, PLAN_IS_EXT_TARGET, false)
 PLF_SET(planSetIsExtTarget, bool, isExtTarget, PLAN_IS_EXT_TARGET)
 PLF_GET(planIsParWorker, bool, isParWorker, PLAN_IS_PAR_WORKER, false)

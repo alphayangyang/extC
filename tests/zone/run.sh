@@ -56,10 +56,10 @@ ha=$(mktemp -d)
 if "$EXTC" -w --no-line-map -o "$ha/h.c" tests/zone/handle_abandon.extc >/dev/null 2>&1 \
    && cc -O2 -std=c11 -fwrapv -o "$ha/h" "$ha/h.c" 2>"$ha/e"; then
     out=$("$ha/h" 2>&1)
-    if [ "$out" = "before=0 after=50" ]; then
-        echo "  ok   handle_abandon     ->  50 个被放弃的句柄任务：池计数 0→50（已知缺口，见 docs/plans/TODO.md）"
+    if [ "$out" = "before=0 after=0" ]; then
+        echo "  ok   handle_abandon     ->  50 个被放弃的句柄任务：池计数 0→0（块退出结束自己能看见的任务）"
     else
-        echo "  FAIL handle_abandon     ->  输出=$out（期望 before=0 after=50：要么漏得更多，要么已经修好了 —— 后者就把判据改成 after=0）"
+        echo "  FAIL handle_abandon     ->  输出=$out（期望 before=0 after=0：不逃逸的句柄必须不泄露）"
         fail=1
     fi
 else

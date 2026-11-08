@@ -1242,6 +1242,20 @@ void planSetCallViaFn(Expr *e, bool v);
  */
 void planSetLamFnPtr(Expr *e, bool v);
 /**
+ * @brief Record that a `var` holds a handle coroutine nothing outside its block can reach.
+ *
+ * @param node  The `var` statement; NULL ignores this write.
+ * @param v     Whether the task can be ended at block exit.
+ */
+void planSetCoroOwned(void *node, bool v);
+/**
+ * @brief Whether codegen should end this `var`'s task when its block is left.
+ *
+ * @param node  The `var` statement.
+ * @return      `true` when nothing can reach the handle after the block ends.
+ */
+bool planCoroOwned(const void *node);
+/**
  * @brief Record that a compound assignment is a call of the type's `fn +=` hook.
  *
  * `x += y` means `x = x + y` by default. A type that defines the compound form turns the statement

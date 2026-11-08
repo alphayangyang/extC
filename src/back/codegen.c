@@ -609,6 +609,7 @@ typedef struct {
      * own arena and a handle may move to a longer-lived variable, so the task has to end with the
      * last owner, not with this block. */
     Vec        *coroTaskAt;
+    Vec        *ownedCoro;     /* per block level: names of handles whose task this block ends */
     /* Definitions whose name may never be used again (`DeadDef*`, in emission
      * order); dropUnreferenced decides after the whole unit is assembled. */
     Vec         deadDefs;
@@ -6088,6 +6089,41 @@ static void cgCoroTaskEndAt(CG *g, int lvl) {
 }
 
 /**
+ * @brief Remember that this block has to end a handle's task when it is left.
+ *
+ * The checker only marks a handle whose every later use in the block is a drive call
+ * (`noteOwnedCoroHandles`), so nothing outside can still be pointing at the task.
+ *
+ * @param g  The generator state.
+ * @param s  The `var` statement; ignored unless the checker marked it.
+ */
+static void noteOwnedCoro(CG *g, Stmt *s) {
+    if (!s || !planCoroOwned(s) || !g->ownedCoro) return;
+    const char *cn = planCName(s);
+    if (!cn || g->blkLevel < 0 || g->blkLevel >= g->levelCap) return;
+    *(const char **)vecPush(&g->ownedCoro[g->blkLevel]) = cn;
+}
+
+/**
+ * @brief End the tasks of the handles this block owned, if they are still alive.
+ *
+ * Running to completion already ended them (`extc_task_end` is idempotent); this covers the
+ * handles abandoned halfway, and that is the shape whose zone and pools leak without it.
+ *
+ * @param g    The generator state.
+ * @param lvl  The block level being left.
+ */
+static void cgCoroOwnedEndAt(CG *g, int lvl) {
+    if (!g->ownedCoro || lvl <= 0 || lvl >= g->levelCap) return;
+    Vec *v = &g->ownedCoro[lvl];
+    for (size_t i = 0; i < v->len; i++) {
+        const char *cn = *(const char **)vecAt(v, i);
+        cgLine(g, "if (extc_task_alive((%s).task)) extc_task_end((%s).task);", cn, cn);
+    }
+    v->len = 0;
+}
+
+/**
  * @brief Release the block arenas down to and including one level.
  *
  * Leaving a place pops back to the depth it started at (mark) instead of popping blindly: early
@@ -6112,6 +6148,7 @@ static void cgCoroTaskEndAt(CG *g, int lvl) {
 static void cgReleaseLevel(CG *g, int lvl) {
     if (lvl <= 0) return;
     cgCoroTaskEndAt(g, lvl);
+    cgCoroOwnedEndAt(g, lvl);
     if (g->noArena && !g->coroFunc) return;
     /* Memory only: files are the program's business (decision 79), so the one place a
      * block release is emitted has nothing to close. */
@@ -6783,6 +6820,7 @@ static void genBlockBody(CG *g, Stmt *block) {
          * cgReleaseLevel because this path (the probe that measures whether the block touches
          * its arena) writes the release point itself. */
         cgCoroTaskEndAt(g, g->blkLevel);
+        cgCoroOwnedEndAt(g, g->blkLevel);
         if (zoneHere) cgZoneLeave(g, g->blkLevel);
         if (bodyTouches) cgArenaRelease(g, g->blkLevel);
     } else {
@@ -8541,7 +8579,7 @@ static void genStmtInner(CG *g, Stmt *s) {
             cgLine(g, "extc_dom_run(%s);", dv);
             return;
         }
-        case ST_VAR: stVar(g, s); return;
+        case ST_VAR: stVar(g, s); noteOwnedCoro(g, s); return;
 
         case ST_ASSIGN:
             /* An assignment whose value is a `?` reads the payload; the failure
@@ -9589,6 +9627,8 @@ static void genFuncInner(CG *g, FuncDef *f) {
     g->loopRootBase = (int *)arenaAllocZero(g->arena, (size_t)g->levelCap * sizeof(int));
     g->coroTaskAt = (Vec *)arenaAllocZero(g->arena, (size_t)g->levelCap * sizeof(Vec));
     for (int lv = 0; lv < g->levelCap; lv++) vecInit(&g->coroTaskAt[lv], g->arena, sizeof(int));
+    g->ownedCoro = (Vec *)arenaAllocZero(g->arena, (size_t)g->levelCap * sizeof(Vec));
+    for (int lv = 0; lv < g->levelCap; lv++) vecInit(&g->ownedCoro[lv], g->arena, sizeof(const char *));
     /* A function that puts nothing into its own block arenas does not even emit
      * the array. The checker decides that (`planMayUseArena(f)`: the body contains a
      * `new`, or calls a function that has a home arena), and about half of the
