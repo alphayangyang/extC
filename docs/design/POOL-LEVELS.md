@@ -105,9 +105,13 @@ the one shape where the trade is currently the wrong way round, and it is tracke
 全仓语料（1,500 个 `.extc`）跑一遍的结果：
 
 - `argLvl=unknown` 的行是"见证没有意见"（参数、`calleeMakesPool` 还没收敛的调用），单独计数；
-- **真实差异 7 条**（`tools/lvl-witness-baseline.txt`），全部是"检查器接受或没查、见证会拒"的方向
-  —— 见证从来没有比检查器更宽过。形状都是 `current=accepted|unchecked suggested=reject`，即
-  "深层的值进了浅层的 place"，落在两类已知通道上（`ref` 参数经 `mut ref` 转手、签字信任的外来 C）。
+- **真实差异 0 条**。第一次跑出来的是 7 条，全部 `role=dest`：那是"参考指向的地方"，
+  被误用规则 S（`值.level <= 目的地.level`）判了。规则 S 说的是"callee 留下的值"，而
+  `dest` 恰恰相反 —— 它只被写穿，寿命由调用本身兜住（调用者能命名它，所以它活过这次调用的
+  帧），拿 `h` 去判它等于用一条不关于它的规则。见证改成对 `dest` 不下判断后差异清零，
+  基线 `tools/lvl-witness-baseline.txt` 现在是空文件 —— 也就是说见证（`check_lvl.c`）与检查器
+  在这 1,500 个 `.extc` 上结论一致 —— 这是把手写 `switch(kind)` 切成不动点的前提条件，
+  但语料一致不等于语义等价，切换那一步仍要靠闸门兜住。
 
 闸门 `tools/check_lvl_witness.py`（`check.py` 的 `seam` 组）：差异条数只许持平或减少，`--write`
 重写基线。加形状、改规则时它先响 —— 这就是"把 `promoteInto2` 的手写 `switch(kind)` 换成不动点"

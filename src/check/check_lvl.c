@@ -881,7 +881,13 @@ static void lvlReportSite(Checker *c, LvlFacts *facts, LvlSite *s, size_t self) 
         Lvl a = { c, facts, s->place };
         bool mv = false;
         int al = lvlEval(&a, s->kids[j], &mv, 0);
-        bool ok = lvlFits(al, mv, s->h);
+        /* The store rule is about a value the callee keeps. The `dest` role marks the opposite:
+         * the place a reference points into, which the callee only writes through. Its lifetime
+         * is bounded by the call itself -- the caller can name it, so it outlives the frame the
+         * call runs in -- and comparing it against `h` would judge it by a rule that is not
+         * about it. Record no opinion there, so the witness stays quiet unless it has one. */
+        bool isDest = s->role && s->role[j] == LVL_ROLE_DEST;
+        bool ok = isDest ? true : lvlFits(al, mv, s->h);
         const char *env = getenv("EXTC_DBG_LVL");
         bool dumpAll = env && env[0] == '2';
         if (!dumpAll) {

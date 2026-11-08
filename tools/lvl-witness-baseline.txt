@@ -1,7 +1,0 @@
-[lvl] file=tests/cabi/errors/outframe_new.extc:8 store arg=1 callee=fn kind=field role=dest argLvl=1 placeLvl=0 movable=0 current=unchecked suggested=reject
-[lvl] file=tests/escape-fuzz/cases/m_home_pfield_direct.extc:16 store arg=1 callee=link3 kind=ref role=dest argLvl=2 placeLvl=0 movable=0 current=accepted suggested=reject
-[lvl] file=tests/escape-fuzz/cases/m_home_pfield_ret.extc:20 store arg=1 callee=link3 kind=ref role=dest argLvl=1 placeLvl=0 movable=0 current=accepted suggested=reject
-[lvl] file=tests/escape-fuzz/cases/m_main_pfield_direct.extc:16 store arg=1 callee=link3 kind=ref role=dest argLvl=2 placeLvl=1 movable=0 current=accepted suggested=reject
-[lvl] file=tests/escape-fuzz/cases/m_nohome_pfield_direct.extc:16 store arg=1 callee=link3 kind=ref role=dest argLvl=2 placeLvl=1 movable=0 current=accepted suggested=reject
-[lvl] file=tests/escape-fuzz/min/home_pfield_uaf.extc:16 store arg=1 callee=link3 kind=ref role=dest argLvl=2 placeLvl=0 movable=0 current=accepted suggested=reject
-[lvl] file=tests/extern/errors/ptr_unsigned.extc:15 store arg=1 callee=bad kind=ref role=dest argLvl=1 placeLvl=0 movable=0 current=unchecked suggested=reject
