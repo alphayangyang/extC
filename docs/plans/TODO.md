@@ -241,3 +241,36 @@
 `extc_rc_framePush` 根链标记可达的根 zone，未标记的 `extc_pool_zoneNewRoot` zone 整体释放
 （`extc_pool_zoneFreeRoot` → `extc_zoneRelease` → `extc_pool_drop`）。便宜的精确补丁：在
 `genCoroHandleDecls` 发句柄助手的地方，句柄被丢弃时 `if (extc_task_alive(h->task)) extc_task_end(h->task);`。
+
+## 池层级：不动点替换的最后一步（待决 A/B）
+
+`docs/design/POOL-LEVELS.md` 里那套"一个站点一个 plan 位"的判定，有一个只算不算数的旁观者
+（`src/check/check_lvl.c`，`EXTC_DBG_LVL` 门控）。旁观的结论已经和检查器**零差异**
+（`tools/check_lvl_witness.py`，全仓 1,500 个 `.extc`，差异棘轮 0）。剩的一步是让旁观者转正：
+`promoteInto2`/`lowerPoolSite` 改问它，而不是各写一遍 `switch (kind)`。
+
+**已交付、有判据的部分**（不需要再动）：
+
+- 规则 R/S 与四种存储写法给同一个答案，三种写法都钉了反例：`tests/zone/neg_shapes_parity.extx`；
+- G1（循环内局部池读出的值存进外层池）编译期拒绝、G2（按值读回）不再误拒；
+- 整池粒度回收：`syspool::collect()`，逃逸句柄 `after=1 → 0`；
+- 见证闸门 `lvl-witness`（差异只许为 0）。
+
+**卡点**：转正需要对检查器动结构（先扫一遍算函数形状与层级，再进检查器）。三条更便宜的路线
+都用证据否掉了，细节在 `POOL-LEVELS.md` 的 "What is still per-site, and why" 与它后面那几段：
+
+1. 见证扩到赋值边（三次尝试）：剩下的差异不是"算错"，而是 `movable` 这个位表达不了
+   "把借来的载体本身降下去"这类接受；
+2. 数值 oracle（不动点 vs plan 位对拍）：有些站点的 plan 位根本不被读，比它没有意义；
+3. 直接切换：预扫描阶段 `calleeMakesPool` 尚未定，判定拿不到输入。
+
+**待决**（等用户拍板）：
+
+- **A 收工**：行为已一致、判据齐全；把"不动点替换"记为设计债，两套逻辑并存，改这块时要同时
+  改两处（`promoteInto2` 的手写枚举 + `check_lvl.c` 的模型）。
+- **B 动工**：把检查拆成"形状预扫描 + 检查器"两遍，让不动点接管判定。几百行、动核心结构，
+  分步做、每步闸门绿、每步都可以单独停下。
+
+动 B 时的第一步（最小可验证切片）：让 `lvlAnalyze` 能在**没有检查器结论**的前提下算出一组
+函数形状（只依赖语法与已解析的签名），先在一份语料上与现有 plan 位对拍"站点清单是否一致"，
+再谈接管降层判定。
