@@ -599,6 +599,13 @@ static int borrowSourceParam(Checker *c, Expr *e, int *field) {
     for (int hops = 0; e && hops < 16; hops++) {
         switch (e->kind) {
         case EX_SLICE: e = e->u.slice.obj; continue;
+        case EX_INDEX:
+            /* `return self.vals[i]` hands out an element of a view that lives in the parameter:
+             * the bytes read were never owned by this frame, so the result borrows from `self`.
+             * Without this step a pool accessor such as `pool::atDense` looks like it mints a
+             * fresh value, and a caller may promote that value into a younger place (gap G1). */
+            e = e->u.index.obj;
+            continue;
         case EX_SIGN:  e = e->u.sign.operand; continue;
         case EX_TRY:   e = e->u.try_.operand; continue;
         case EX_CALL:
@@ -762,7 +769,10 @@ static void settleBorrowDepth(Checker *c, Expr *e, int d) {
  */
 static bool borrowResultDepth(Checker *c, Expr *e, int *out) {
     if (!c || !e || !out) return false;
-    if (!borrowResultType(c, e->type)) return false;
+    /* Views and references always borrow, and so does a by-value result whose type owns bytes
+     * (`pool::atDense` hands back a `string` that lives in the pool). The recorded source is what
+     * decides; a result the callee built itself has no record and falls through to the old path. */
+    if (!borrowResultType(c, e->type) && !typeContainsRef(c->tt, tsub(c, e->type))) return false;
     int settled = settledBorrowDepth(c, e);
     if (settled >= 0) {
         *out = settled;
@@ -1442,8 +1452,19 @@ void noteReturnBorrow(Checker *c, Expr *value) {
     FuncDef *f = c->curFunc;
     int field = -1;
     int arg = -1;
-    if (borrowResultType(c, value->type)) arg = borrowSourceParam(c, value, &field);
-    if (arg < 0) {
+    bool viewy = borrowResultType(c, value->type);
+    /* A result that is handed back by value can still borrow: `pool::atDense` returns `T`, and
+     * for a `T` that owns bytes (`string`, `buf`, a struct holding a view) those bytes live in
+     * the pool the receiver names. Record that source too, otherwise rule R gives the result a
+     * fresh level and rule S lets it be promoted into a younger place (gap G1). */
+    /* A type parameter may be instantiated with a type that owns bytes (`pool<T>::atDense`
+     * returns `T`), so treat it as carrying storage here: the call-site side decides again with
+     * the instantiated type, where a scalar `T` falls through to the old path. */
+    Type *vt = tsub(c, value->type);
+    bool carries = viewy || (vt && vt->kind == TY_PARAM)
+                || typeContainsRef(c->tt, vt);
+    if (carries) arg = borrowSourceParam(c, value, &field);
+    if (arg < 0 && viewy) {
         /* A `return` that names no parameter source is a second answer for this body, and the
          * storage it hands out may be younger than any borrow record would say. */
         if (planRetBorrowArg(f) >= 0) planSetRetBorrow(f, RET_BORROW_CONFLICT, -1);
