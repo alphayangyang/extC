@@ -1,8 +1,9 @@
 // Store a pool value that was built inside a loop, then read it back by value.
 //
 // The store is what moves the storage (that is `promoteInto2`'s job), so the container must
-// remember the *post-move* level. Recording the binding's own frame depth instead made the read
-// below fail with "borrowed from depth 4" even though the buffer really lives as long as `k`.
+// remember the *post-move* level. This used to fail with "borrowed from depth 4" even though the
+// bytes live in `k`'s place: a by-value element read borrows the **pool's** storage, so its depth
+// is the receiver's slot depth, not the depth of the loop that filled it (gap G2, closed).
 use std::io
 use std::text::string
 use std::data::pool

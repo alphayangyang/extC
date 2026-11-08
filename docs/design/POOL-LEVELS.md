@@ -88,24 +88,29 @@ the **post-move** depth (`min(depth(value), level(container))`, see §4 O2).
   rejection. The shapes that *are* safe still pass: `var s = mk(i); keep.insert(s)` and
   `keep.insert(string::from("c"))` build a fresh value, promote it, and store it.
 
-- **G2 — false rejection (P2).** After a promoted store (`var s = …; k.insert(s)`), the by-value
-  read `k.atDense(0)` is rejected with "borrowed from depth 4". The store side is correct (the
-  generated C allocates at level 1); the read side computes the element's depth from a container
-  depth that was raised to the loop's level, and no rule lowers it back. Reproducer
-  `tests/zone/pool_readback.extc`; `tests/zone/run.sh` asserts *today's* rejection so the fix is
-  visible in the diff when it lands.
+- **G2 — closed (2026-11-82).** After a promoted store (`var s = …; k.insert(s)`), the by-value
+  read `k.atDense(0)` was rejected with "borrowed from depth 4". The store side was right (the
+  generated C allocates in `k`'s place); the read side took the element's depth from the **loop that
+  filled the pool**, because the borrow argument's depth was read from the container's field table.
+  An element of a container is not storage in the handle: for a `@poolObject` receiver the borrow
+  depth is the receiver's **slot depth** (`slotDepth`), which is the pool's place — exactly the
+  lifetime of the bytes. The check did not widen: the unsafe direction is still refused, because a
+  value read out of a loop-local pool borrows *that* pool's slot depth (deeper than the destination).
+
+  Reproducer turned criterion: `tests/zone/pool_readback.extc` is now a positive case in
+  `tests/zone/run.sh`; the negative `tests/zone/neg_pool_read_escape.extx` still rejects.
 
 ## 6. What "the boundary" means here
 
 The checker's promise is one-directional and stated exactly:
 
-> **No accepted program reads freed pool storage** (soundness — the last known hole, G1, is
-> closed), **at the cost of rejecting some sound programs** (completeness — G2 and the return of
-> loop-built values).
+> **No accepted program reads freed pool storage** (soundness — G1 is closed), **at the cost of
+> rejecting some sound programs** (completeness — the return of loop-built values, and any store the
+> rules cannot prove).
 
 That trade is deliberate: a silent wrong answer is worse than a compile error, and the rejected
-shapes all have an in-language workaround (build the value where it must live, or copy it). G2 is
-the remaining false rejection; it is a P2 completeness gap, not a soundness one.
+shapes all have an in-language workaround (build the value where it must live, or copy it). Both
+named gaps are closed; what remains is the ordinary completeness cost of the rules.
 
 ## 见证（`EXTC_DBG_LVL`）与它的闸门
 

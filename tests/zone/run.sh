@@ -26,13 +26,15 @@ else
     echo "  FAIL pool_forms  ->  编不过 / 跑不起来"; echo "$out" | sed 's/^/        /' | head -8; fail=1
 fi
 
-echo "== 已知缺口 G2（docs/design/POOL-LEVELS.md）：按值读回仍被拒（假阳性）=="
+echo "== 按值读回：存进去之后从同一个池读出来（曾经是假阳性 G2）=="
 if out=$("$EXTC" --run tests/zone/pool_readback.extc 2>&1); then
-    echo "  ok   pool_readback  ->  现在编过了：G2 已修，请把这条改成正例判据（$(echo "$out" | tr '\n' '|')）"
+    want=$(grep -o '// expect:.*' tests/zone/pool_readback.extc | sed 's|// expect: *||' | head -1)
+    ok=1
+    for p in ${want//|/ }; do echo "$out" | grep -qF -- "$p" || ok=0; done
+    if [ "$ok" = 1 ]; then echo "  ok   pool_readback  ->  $(echo "$out" | tr '\n' '|')"
+    else echo "  FAIL pool_readback  ->  输出里缺「$want」（$(echo "$out" | tr '\n' '|')）"; fail=1; fi
 else
-    echo "$out" | grep -qF "would hold a reference to a local variable that dies first" \
-        && echo "  ok   pool_readback  ->  仍按 G2 记录的方式被拒（读回的层级取得过深）" \
-        || { echo "  FAIL pool_readback  ->  拒绝理由变了（不再是 G2 的层级假阳性）"; echo "$out" | head -4 | sed 's/^/        /'; fail=1; }
+    echo "  FAIL pool_readback  ->  编不过（G2 回归？）"; echo "$out" | head -4 | sed 's/^/        /'; fail=1
 fi
 
 echo "== 反例：循环内的存储视图 / 循环局部池读出的值，都不得存进外层池 =="

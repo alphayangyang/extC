@@ -711,11 +711,22 @@ static const char *borrowFieldName(Checker *c, FuncDef *f, int field) {
 static int borrowArgDepth(Checker *c, Expr *arg, const char *field) {
     if (!arg) return 0;
     int d = targetDepth(c, arg);
-    if (!field || c->scopes.len == 0) return d;
-    Expr *place = (arg->kind == EX_REF) ? arg->u.ref.operand : arg;
-    Sym *root = place ? placeRoot(c, place) : NULL;
-    int *slot = root ? fieldDepthEntry(c, root, field, false) : NULL;
-    return slot ? maxInt(d, *slot) : d;
+    if (field && c->scopes.len != 0) {
+        /* Storage inside a container is not storage in the **handle**: `pool<T>` keeps its blocks
+         * in the place the pool was born in, so a by-value element read lives as long as the pool
+         * does, not as long as the loop that filled it. Reading the handle's own slot depth is what
+         * closes the false rejection (gap G2) without widening the check: the elements are in the
+         * pool, and the pool's lifetime is exactly `slotDepth` of the receiver. */
+        Expr *place = (arg->kind == EX_REF) ? arg->u.ref.operand : arg;
+        Sym *root = place ? placeRoot(c, place) : NULL;
+        if (root && root->type) {
+            StructDef *rsd = structOf(ttBase(tsub(c, root->type)));
+            if (rsd && rsd->poolObject) return slotDepth(c, place);
+        }
+        int *slot = root ? fieldDepthEntry(c, root, field, false) : NULL;
+        return slot ? maxInt(d, *slot) : d;
+    }
+    return d;
 }
 
 /**
