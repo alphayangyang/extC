@@ -237,4 +237,5 @@ kh.insert(holder { s: k.atDense(0) })      accepted   (use-after-free on read-ba
 and the store rule takes the deepest borrow it finds, so all three are refused now and the question
 has one answer. `tests/zone/neg_shapes_parity.extx` pins the three refusals; a fourth shape,
 `h.s = k.atDense(0)` (a field whose storage is a place rather than a call), still gets through -- it
-is a different rule and is tracked as the next gap.
+goes through the assignment rule rather than the call rule, and that rule has the same "promote
+first" seam; it is tracked as the next gap.

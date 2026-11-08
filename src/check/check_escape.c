@@ -2172,7 +2172,15 @@ bool checkStoreEscape(Checker *c, Expr *val, Expr *target, int line) {
     /* Try the promotion first. When it cannot move anything, the call below still reports, so
      * this is a safety net, and it is idempotent. */
     recordStore(c, val, target, atStore, line);
-    promoteInto(c, val, atStore);
+    /* Promotion moves a **site** down a level; it cannot move bytes that belong to someone else.
+     * A value that borrows storage (`k.atDense(0)` handing back the pool's own bytes) is therefore
+     * left alone: promoting it would report success while the pool stays where it was born, and the
+     * field would hold a handle to freed bytes (the same misuse as `borrowDepthAnywhere` fixes in
+     * `checkCallRefArgs`). Fresh allocations still promote as before. */
+    {
+        int bd = 0;
+        if (!borrowDepthAnywhere(c, val, &bd)) promoteInto(c, val, atStore);
+    }
     bool bad = checkEscapeDefer(c, val, at, line, "this assignment", target);
     /* When the value's origin traces to a parameter, accept the store and leave the lifetime to
      * the call site.
