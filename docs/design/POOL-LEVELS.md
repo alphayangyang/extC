@@ -198,3 +198,24 @@ could register the handles it sees and let the collector decide, but a handle ca
 container the emitter cannot name, so a registered-root scheme would be silently wrong exactly for
 the shape this feature exists for. Making the call explicit keeps the failure mode a documented
 assertion instead of a wrong answer.
+
+## What is still per-site, and why
+
+`promoteInto2` still answers "may this site's place move to level `at`" with a hand-written `switch`
+over expression kinds, while `src/check/check_lvl.c` derives the same answer as a monotone dataflow
+fact. The two agree on the whole corpus today (`tools/check_lvl_witness.py`: 0 disagreements over
+1,500 files, ratcheted), so the remaining work is to delete the switch rather than to change answers.
+
+The obstacle is ordering, not the analysis: `lvlAnalyze` runs **after** a body is checked (the DFA
+has written back and the deferred stores are re-judged), while `promoteInto2` is called **during**
+checking, when the value's level is still being decided. Making the analysis the only decision maker
+needs one of:
+
+- a **pre-pass**: run the level analysis on the body before it is checked, using the facts available
+  at that point (callee `makesPool` comes from the callees' own checked bodies, so a same-file
+  forward reference would be conservative for one pass and exact on a fixpoint of the call graph);
+- **decision re-derivation**: check the body as today, then re-judge every storage site against the
+  converged table and iterate until the decisions stop changing (the replay is already a fixpoint;
+  this extends it from levels to decisions).
+
+Either way the witness gate is the guard: it must stay at 0 while the switch disappears.
