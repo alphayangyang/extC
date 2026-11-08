@@ -48,5 +48,23 @@ for f in tests/zone/neg_loop_new_view.extx tests/zone/neg_loop_array_view.extx; 
     fi
 done
 
+
+echo "== 现状：包装句柄被放弃时，任务仍会漏（红线上限）=="
+# 栈帧形式的协程已经在块退出时结束任务（2026-11-76）；句柄形式不行：句柄可以移动，任务该由
+# 最后一个所有者结束，编译器不知道是谁。这里把"今天还漏"钉住：修好那天把 50 改成 0。
+ha=$(mktemp -d)
+if "$EXTC" -w --no-line-map -o "$ha/h.c" tests/zone/handle_abandon.extc >/dev/null 2>&1 \
+   && cc -O2 -std=c11 -fwrapv -o "$ha/h" "$ha/h.c" 2>"$ha/e"; then
+    out=$("$ha/h" 2>&1)
+    if [ "$out" = "before=0 after=50" ]; then
+        echo "  ok   handle_abandon     ->  50 个被放弃的句柄任务：池计数 0→50（已知缺口，见 docs/plans/TODO.md）"
+    else
+        echo "  FAIL handle_abandon     ->  输出=$out（期望 before=0 after=50：要么漏得更多，要么已经修好了 —— 后者就把判据改成 after=0）"
+        fail=1
+    fi
+else
+    echo "  FAIL handle_abandon     ->  $(head -2 "$ha/e" | tr '\n' ' ')"; fail=1
+fi
+
 if [ "$fail" = 0 ]; then echo "  zone: 通过"; else echo "  zone: 失败"; fi
 exit "$fail"
