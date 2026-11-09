@@ -991,8 +991,11 @@ static void t_scanChunk(void) {
 
     marked += extc_rc_markStep(r, 1);
     if (EXTC_RC_SCAN_CHUNK < (int)(words - 1)) {
-        check(r->scanObj == (void *)obj && (size_t)r->scanOff == (size_t)EXTC_RC_SCAN_CHUNK,
-              "分段：续扫一步恰好走一个 chunk");
+        /* 时间上限（EXTC_RC_SEG_DEADLINE_US）让一段可以提前收工：段内字数仍不得超过一个 chunk，
+         * 只有上限关掉时才必须走满一个 chunk。 */
+        check(r->scanObj == (void *)obj && (size_t)r->scanOff <= (size_t)EXTC_RC_SCAN_CHUNK &&
+              (EXTC_RC_SEG_DEADLINE_US > 0 || (size_t)r->scanOff == (size_t)EXTC_RC_SCAN_CHUNK),
+              "分段：续扫一步走一个 chunk（有时间上限时允许提前收工，但不越过 chunk）");
     }
 
     int bounded = 1, steps = 2;
@@ -1016,7 +1019,13 @@ static void t_scanChunk(void) {
     check(bounded, "分段：续扫每步游标增量不超过一个 chunk（单步工作量有上界）");
     if ((size_t)EXTC_RC_SCAN_CHUNK < words) {
         size_t want = (words + (size_t)EXTC_RC_SCAN_CHUNK - 1) / (size_t)EXTC_RC_SCAN_CHUNK;
+#if EXTC_RC_SEG_DEADLINE_US > 0
+        /* 时间上限把一段拆成两段（ASan/UBSan 下每段只走几百词），段数不再是字数的纯函数：
+         * 契约改成「下界 + 每段有界 + 字数和等于对象字数」——上限只会多分段，不会并段。 */
+        check(segs >= want, "分段：段数 >= ceil(words/chunk)（时间上限只多分段、不并段）");
+#else
         check(segs == want, "分段：段数 == ceil(words/chunk)（每段不多不少）");
+#endif
         check(segsum == words, "分段：各段字数之和 == 对象字数（段边界对账）");
         check(segmax <= (size_t)EXTC_RC_SCAN_CHUNK, "分段：单段字数不超过 chunk");
     }

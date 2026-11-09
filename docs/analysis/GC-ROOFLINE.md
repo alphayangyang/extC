@@ -375,7 +375,7 @@ GC 的对应量：
 | 维度 | 旋钮 | 影响模型哪一项 | 实测/数值 |
 |---|---|---|---|
 | **批量**（batch） | `MARK_BATCH_MAX` b | P(b)=b·τ_t+W_s·64·τ_s ↑；r_min=1+gK/b ↓ | 常态 b=256→224：P 4.71→4.15 µs，r_min 1.690→1.789；压力档 b=1024：P **18.1 µs**（瞬态，见下段） |
-| **切片**（slice） | `EXTC_RC_SCAN_CHUNK` | 不改 λ 均值，只压单步长尾 | 65536→8192：大对象段 1010–1044 µs → **78–98 µs** |
+| **切片**（slice） | `EXTC_RC_SCAN_CHUNK` | 不改 λ 均值，只压单步长尾 | 65536→8192：大对象段 1010–1044 µs → **78–98 µs**（max 族；同段暖存 p50 = 7.9/13.1 µs，见 `P1-SEG-TAIL.md`） |
 | **触发比**（r） | `thr` 倍数 + `M_max` 夹取 | λ(r) ↓、M(r) ↑ | §3.9 前沿 |
 | **分片/分区**（shard/region） | `EXTC_RC_SHARDS` / region 边界 | 改 F_slab 与并行度 | SHARDS=4 实测更慢（+220 MiB RSS、×10.2 时间），当前判否 |
 
@@ -400,7 +400,7 @@ GC 的对应量：
 | `thr` 倍数（r'） | **2**（现状 `max(2·live, floor)`） | 7 MB 预算下的内存下界 | 一旦有 `EXTC_RC_M_MAX`，改成 `thr = min(原式, M_max − 64·L/b)` |
 | `EXTC_RC_M_MAX` | **3·L**（保守，默认 7 MB/1 MB 活集量级） | M=L(1+r')，κ_M=1 | 新开关（P0-4）；未设时用 3·L 作为隐式契约 |
 | `MARK_BATCH_MAX` b | **224**（严格 5 µs 门禁）/ 256（现状） | P(b)=b·17.49+0.2345 µs | b 变小会抬高 r_min（需更频繁触发）；压力档 b 最多 1024（P≈18.1 µs），5 µs 只约束常态步，压力步由 G1②/G20 的 50/64 µs 门限兜底 |
-| `EXTC_RC_SCAN_CHUNK` | **8192** | 大对象段 78–98 µs（实测） | 已改；<32 KB 对象不受影响 |
+| `EXTC_RC_SCAN_CHUNK` | **8192** | 大对象段 78–98 µs（max 族；暖存 p50 7.9/13.1 µs） | 已改；<32 KB 对象不受影响。**v9 结论：不得再降**（≤4096 时 G18 峰值 26,076 → 34,332 kB 破界，见 `P1-SEG-TAIL.md` §4） |
 | `EXTC_RC_SWEEP_BUDGET` | **8**（现状） | 与 SCAN_CHUNK 共用单步预算 | P1-2 后二者联动 |
 | `EXTC_RC_SHARDS` | **1** | SHARDS>1 实测更慢、RSS 暴涨 | 变慢 10.2×、RSS +2120%，不得默认 >1 |
 | 计数 | 按档自动（无环⇒档 1，否则档 2） | §1.1 | 用户显式 `EXTC_RC_NOCOUNT=0` 只在对照实验用 |
@@ -625,7 +625,7 @@ EXTC_RC_M_MAX 未设时，隐式取 3*L（保守 kappa_M=1，r'=2）
 
 冻结口径（v7）：`src/back/reclaim.c` = `e17080d1c80513b27ca06f2bc6224b0f`（4 031 行）、`src/back/codegen.c` = `2f560e2e6deef8c4927db4611344aecb`（16 017 行）（v7 测量输入为 `d339382889b87c0dd18b357c69e2e779`/16 017 行；提交树只把 `typeHasRefSlots` 的前向声明移到 `genViewCopier` 的说明块之前以过 `check-doxygen`，行数与代码不变）、`tests/reclaim/driver.c` = `7b9ac61a55c140640a5964ab74a8780e`（1 523 行）；构建 `build-p1/extc` = `b9fd5784…`，Lead 独立构建 `build-lead7/extc` = `a7f2a873…`（同源码，只差调试段）。证据：`P1-RQ3-CHUNK.md`（281 行）、`P1-QUOTA-FASTPATH.md`（116 行）、`P1-REGIONFREE-BATCH.md`、`MEASUREMENTS-P1.md`。
 
-冻结口径（v8，本轮 closing queue）：`src/back/reclaim.c` = `37c92f0b45180dfd65152801dfe48dfc`（4 128 行）、`src/back/codegen.c` = `2f560e2e6deef8c4927db4611344aecb`（16 017 行，未改）、`tests/reclaim/driver.c` = `a9ac2cf4e2f8f184ef9cb524232ac5d6`（1 543 行）；构建 `build/extc` = `58402a50b8d2f05d5a11f49835c15835`。**v7 与 v8 的 `reclaim.c` 行号不可混用**（本文件已按 v8 重锚）。
+冻结口径（v8，本轮 closing queue）：`src/back/reclaim.c` = `37c92f0b45180dfd65152801dfe48dfc`（4 128 行）、`src/back/codegen.c` = `2f560e2e6deef8c4927db4611344aecb`（16 017 行，未改）、`tests/reclaim/driver.c` = `a9ac2cf4e2f8f184ef9cb524232ac5d6`（1 543 行）；构建 `build/extc` = `58402a50b8d2f05d5a11f49835c15835`。**v7 与 v8 的 `reclaim.c` 行号不可混用**（本文件已按 v8 重锚）。 **v9（续扫段时间上限，2026-11-09）**：`src/back/reclaim.c` = `3de5655435d4dfb2448b2168fee4ca19`（4 156 行）、`src/back/codegen.c` = `2f560e2e6deef8c4927db4611344aecb`（16 017 行，未改）、`tests/reclaim/driver.c` = `f45569f95eb58e791795229ec33dcd85`（1 552 行）、构建 `build/extc` = `1347363b9aaf511ece131de761d4a52c`。**v9 未重锚 `reclaim.c` 行号**（相对 v8 位移 +16…+28 不等，三处插入）：本文与 MEMORY-MODEL 的 `reclaim.c:NNNN` 引用仍是 v8 口径，核对请按符号 grep（`extc_rc_markResume`、`extc_rc_releaseOld`、`[segsteps]`、`EXTC_RC_SEG_DEADLINE_US`）；v9 新代码的权威锚点是 `P1-SEG-TAIL.md` §1。
 
 #### 6.7.1 项 1：SCAN_CHUNK 不缩小（负结果；决定保持 8192 + deadline 800）
 
@@ -738,7 +738,7 @@ callgrind（`align` 小 N）：promote 115 211 310 → **129 126 214（+12.1%）
 | G1③ | p99.9 ≤ 50 µs（n ≥ 1e5，cpu 口径） | `[histo]` | N/A（结构性不可得） | **PASS（薄）**：cyc/pc/pb 的 p99.9 ≤ 32 µs（桶上界；doc 记 cyc 16 µs、独立跑同一量落 32 µs 桶，邻界不影响判决）；pd N/A（桶界 32–64，wall 口径 128 µs） |
 | G2 | `collect`/`account` 单次 **p99.9 ≤ 200 µs**（n ≥ 1e3，cpu 口径；**max 不可作契约**，见 §8.1 R6——2202 样本的单次 max 判 200 µs 会被尖峰支配） | `[chan]` + `[histo]` | 1.08–1.45 ms（整轮排空，n<100 ⇒ RED） | **PASS（判据改 p99.9 后）**：cyc/pc/pb 的 collect p99.9 ≤ 64 µs（两口径合并 n=4404，>128 µs 样本仅 3 个）；max 记录：cyc 215.3 µs（3 reps 合并的单次尖峰）、doc-audit 13 次独立跑 cyc collect max 16.6–91.2 µs ⇒ 旧判据 RED 不可审计，按 `AUDIT-GC-P0.md` §18.4-1 改判 |
 | G3a | `regionFree` 同步段 free 次数 ≤ `#classes + 3`（v7 两阶段后：`_frees += 9+big` 只在 `#if !EXTC_RC_FREE_DEFER` 内，默认 DEFER=1 只剩 `+= 2`）；总量看 `[freequeue] drained_total` | `[regionfree]` + `[freequeue]` 探针 | 无探针 | **PASS（判据已重构）**：默认档 pb 50M `max_frees=3`、pd 200 同；旧判据（`≤10·#slabs+#classes+3`，pb 110190≤122433）只在 DEFER=0 构建可复现 |
-| G3b | `regionFree` 单次 cpu ≤1 ms（停顿硬项；v8 起同步段 O(1)，排空预算 ≤8 slab/100 µs） | `[regionfree]`（`sync_us`/`queue_us`）+ `[chan]` + `[closing]` | 未测（v4 pb cpu 86.2 ms） | **已闭合（v8）**：三形状 `[chan] regionfree` = **0.4 µs**（pd_bigobj，max 0.9）/ **1.6 µs**（pd_pointer_dense，max 2.5）/ **1.7 µs**（pb 100M，max 2.1）；`[regionfree] max_frees=0 max_slabs=0 sync_us≈0.2–1.9`。v7 旧数保留作对照：pd 493.2 µs（max 711.4）、dense 1,365.5–1,849 µs、pb 100M 13.2–14.8 ms、pb 50M 6.35–8.40 ms。**判据达成，用户目标 p99.9 ≈50 µs 亦在桶界内达成**（逐形状精确分位见 `tests/gc-p0/bseg-cal.tsv`：(b) 续扫通道 p99.9 58.53/99.20 µs 仍是老的段尾尾巴，与本项无关）。诚实限制：三个形状都只在退出前 drop 一次，cq 未排空（`slabs_moved=0`），归零由 driver `t_regionFreeDefer*` 与 `freeQueueDrainAll` 证明 |
+| G3b | `regionFree` 单次 cpu ≤1 ms（停顿硬项；v8 起同步段 O(1)，排空预算 ≤8 slab/100 µs） | `[regionfree]`（`sync_us`/`queue_us`）+ `[chan]` + `[closing]` | 未测（v4 pb cpu 86.2 ms） | **已闭合（v8）**：三形状 `[chan] regionfree` = **0.4 µs**（pd_bigobj，max 0.9）/ **1.6 µs**（pd_pointer_dense，max 2.5）/ **1.7 µs**（pb 100M，max 2.1）；`[regionfree] max_frees=0 max_slabs=0 sync_us≈0.2–1.9`。v7 旧数保留作对照：pd 493.2 µs（max 711.4）、dense 1,365.5–1,849 µs、pb 100M 13.2–14.8 ms、pb 50M 6.35–8.40 ms。判据（≤1 ms）达成；**用户目标 p99.9 ≈50 µs 未达成，且不是本项问题**（v9 更正：p99.9 由宿主噪声地板决定，(b) 通道 58.53/99.20 µs 见 §6.7.4 与 `P1-SEG-TAIL.md`）。诚实限制：三个形状都只在退出前 drop 一次，cq 未排空（`slabs_moved=0`），归零由 driver `t_regionFreeDefer*` 与 `freeQueueDrainAll` 证明 |
 | G4 | 注入 4× 循环垃圾时 RSS ≤ `M_max` + 8 MiB，且不随轮次单调涨 | `tests/gc-p0/stress.py` + VmHWM | 不可判（`M_max` 未实现） | **PASS（p1-after）**：A=9,108 kB ≤ `M_max`+8 MiB = 7,031+8,192 = **15,223 kB**；末 6 段差 0.00%；A<B<C（9,108<41,820<83,040） |
 | G5 | digraph Ir ≤ 88,029,115（门禁上限；基线实测 82,037,532） | `gate.sh:88` | 82,037,532 PASS | **87,135,465 PASS（v7）**（比基线 +6.2%，余量 1.0%）；历程 v5 86,316,991 → v6 86,618,661 → elide 卷计数器 + 队列/verify 修正 87,135,465 |
 | G6 | pb 每节点字节 20 ± 10% | `/usr/bin/time -v` VmHWM / N | 20.49 PASS | **20.49 PASS**（pb 100M：2,000,408 kB / 100M） |
@@ -846,8 +846,18 @@ python3 docs/analysis/model/calib.py 2>/dev/null || true   # 见 CALIBRATION §1
 
 **G20 的口径裁决（为什么不再用顺序跑的单次数字）**：empirics 按 `run.sh` 顺序跑出的 promote +3.4%、chase +13.9% 与 Lead 的四臂交错 A/B（0.998、0.973）方向都不同；把四个 `EXTC_RECLAIM=0` 对照臂逐字节 `cmp` 后确认二进制完全相同、其 utime 比值却仍有 0.94–1.62 的散度 ⇒ 该机（WSL2、load≈1.4）在顺序跑下 ±5–15% 内不可分辨。因此 G20 的墙钟/RSS 一律以「同轮交错 + 奇偶换序 + 9 reps + utime 中位」为判据，顺序跑的绝对数字只作观测。
 
-**⇒ 结论（v8）**：**内存侧全绿**（G4/G8/G10/G14/G16/G17/G18；G18 从 1,067,284 kB 的规模无关增长收紧到 26,076 kB 平台，上界 26,624）；**停顿侧 G3b 已闭合**：`regionFree` 三形状 18.6–22.7 ms / 493 µs / 1,365.5 µs / 13.2–14.8 ms → **0.4 / 1.6 / 1.7 µs**（region 级 closing queue，见 §6.7.3），G3b 判据（≤1 ms）与用户目标（单步 p99.9 ≈50 µs）同时满足。**仍红 1 条 + 1 条未决**：G1② 三通道——`(a)` warm 步 over-50 µs 4.25e-4–1.21e-3（预存问题，非本轮引入）、`(b)` 续扫段 p99.9 58.53/99.20 µs（`seg>0` 的老段尾尾巴，量具见 `tests/gc-p0/bseg-cal.tsv`；closing queue 不改这条路径）、`(c)` 已随 G3b 转绿（max 0.4–1.7 µs）；G20 sizeratio 未决。**下一轮优先级**：① markResume 快路径（把 `(b)` 的段时压下去，同时才允许 SCAN_CHUNK 缩小）、② G1② `(a)` 超阈项归因（`P1-STEP-TAIL.md`：环境抢占为主）、③ G20 sizeratio 的量具协议（≥21 reps + utime）、④ 构造「长跑 + 反复 drop 且继续分配」的形状，验证 closing queue 在非退出路径上的排空与 RSS。
+**⇒ 结论（v8）**：**内存侧全绿**（G4/G8/G10/G14/G16/G17/G18；G18 从 1,067,284 kB 的规模无关增长收紧到 26,076 kB 平台，上界 26,624）；**停顿侧 G3b 已闭合**：`regionFree` 三形状 18.6–22.7 ms / 493 µs / 1,365.5 µs / 13.2–14.8 ms → **0.4 / 1.6 / 1.7 µs**（region 级 closing queue，见 §6.7.3），G3b 判据（≤1 ms）满足；单步 p99.9 ≈50 µs 的目标**未达成**（v9 更正：p99 = 20.8/33 µs 已达成、over-1ms = 0；p99.9 由宿主噪声地板决定，见 §6.7.4）。**仍红 1 条 + 1 条未决**：G1② 三通道——`(a)` warm 步 over-50 µs 4.25e-4–1.21e-3（预存问题，非本轮引入）、`(b)` 续扫段 p99.9 58.53/99.20 µs（`seg>0` 的老段尾尾巴，量具见 `tests/gc-p0/bseg-cal.tsv`；closing queue 不改这条路径）、`(c)` 已随 G3b 转绿（max 0.4–1.7 µs）；G20 sizeratio 未决。**下一轮优先级**：① markResume 快路径（把 `(b)` 的段时压下去，同时才允许 SCAN_CHUNK 缩小）、② G1② `(a)` 超阈项归因（`P1-STEP-TAIL.md`：环境抢占为主）、③ G20 sizeratio 的量具协议（≥21 reps + utime）、④ 构造「长跑 + 反复 drop 且继续分配」的形状，验证 closing queue 在非退出路径上的排空与 RSS。
 
+
+#### 6.7.4 v9 轮：续扫段的时间上限与 p99.9 的噪声地板（2026-11-09）
+
+**改动**（`src/back/reclaim.c`）：`extc_rc_markResume` 每 `EXTC_RC_SEG_CHECK_WORDS`(512) 词读一次 `CLOCK_MONOTONIC`，超 `EXTC_RC_SEG_DEADLINE_US`(40) 就存 cursor 返回，并把**实际走过词数**作为返回值。契约：`P_step <= min(C_scan·CHUNK, DEADLINE + C_scan·CHECK_WORDS) + fixed`。代价：gate `87,151,664 → 87,240,547 Ir`（**+0.10%**）；G18 不变（26,076 kB）；`tests/reclaim/run.sh` 204/0（含 ASan、不内联档、chunk=1 与 chunk=1e9 红自测）。
+
+**为什么没有降 p99.9（口径错误被纠正）**：8192 词一段的**中位**成本只有 7.92 µs（pd_bigobj）/ 13.08 µs（dense）⇒ 0.97 / 1.60 ns/word；v8 文档里的「78–98 µs / 9.5–12 ns/word」是 **max 族**。p99.9 = 58.5/99.2 µs 且对时间上限不敏感（deadline=0/20/40 三档同一分布）——配对噪声探针（`tests/gc-p0/noise_floor.c`，2.3 µs 窗口）的 p99.9 = 22–26 µs、>50 µs 事件率 133/s，与 GC 的 ≈200/s 同量级；chunk=8 档的 `[top]` 抓到「8 词 1 pop 的步 dur=cpu=351 µs」，证明 `CLOCK_THREAD_CPUTIME_ID` 把抢占计入。**结论：本机上 p99.9 不是 GC 指标。**
+
+**chunk 能不能降**：可以达标但破坏内存律——`-DEXTC_RC_SCAN_CHUNK=2048` 时 pd p99.9 = 22.7–31.8 µs、dense = 33.8–35.5 µs（都 < 50），但 G18 `pd_bigobj` 峰值 26,076 → **34,332 kB**（上界 26,624，+31%；60 轮 = 200 轮，规模无关性仍成立），增量 ≈ 一个在飞的 8 MiB 分配（分配准入不看请求字节）。⇒ 内存优先，**chunk 保持 8192**。
+
+**下一轮前置条件**：分配准入按请求字节预留 ⇒ 才允许 chunk=2048 ⇒ p99.9 ≤ 50 µs。详见 `docs/analysis/P1-SEG-TAIL.md`（115 行，含全部表格与复现命令）。
 
 **P0 原型结论（生成 C 上验证；本轮 P/B 已落地进 `src/back/reclaim.c`，最终 before/after 与代价见 §6.6，原型细节见 `docs/analysis/P0-PROTOTYPE.md`）**：① **P（回收配额按分配字节计）** 是唯一同时降内存与降时间的改动 —— G18 的 `pd_bigobj` 200 轮从 1,067,288 kB / 1,272.9 ms 降到 26,072 kB / 202.4 ms（内存 −97.6%、时间 −84%，stdout 逐字节相同），原型阶段四个 v2 形状噪声内中性（**落地后实测 sizeratio 墙钟 +9.31%，见 §6.6，以落地版为准**）；它把 §18 的内存界从「经验上界」变成「对分配字节速率成立」，代价是超墙时分配变慢（同步多付回收工作）。② **B（惰性 freelist）** 不换墙钟与内存（四形状 median 差 ≤2%、RSS 逐 kB 相同），换的是 GC 步与停顿：promote GC 步总时长 −12.5%（max 160.4→57.5 µs）、sizeratio −52%（max 51.8→9.5 µs）、cycleratio −8% ⇒ 对 G1/G2 有直接价值；落地版的「计数档同一槽只入链一次」证明在 `AUDIT-P0-IMPL.md` §2（`nfree` 12 处写点逐点核对）。③ **G（madvise 归还空 slab 页）判负**：稳态 churn 下 cycleratio 墙钟 +49%（stime 8.0 ms 全在补页）、sizeratio 噪声内、RSS 不降；小 slab（64 KiB）同样负收益；G-big 只在巨块整块变空时有用但每次重 mmap+memset 8 MiB（+20% 时间、峰值不变）⇒ 默认不做；④ **既有归还路径已存在且更彻底**：每个函数返回时 `extc_rc_regionDrop`→`extc_rc_regionFree`→`free(slab)` 整区归还（strace 见到 3,138 次 `munmap(…,2101248)`）⇒ 页归还救不了「在 main 帧里持续累积垃圾」的形状，只能靠少分配（P）与提前触发。
 
@@ -972,6 +982,7 @@ r'* = r'_max(M_max) = (M_max/L − 1)/κ_M
 | `docs/analysis/MODEL-UPDATE-P1.md` | 模型同步：`P_step` 五通道化、`markResume` 快路径 `W*`、`regionFree` 两阶段式、B 的模型降级（task-30） | 279 |
 | `docs/analysis/P1-STEP-TAIL.md` | `markStep`/续扫段超长步（>50 µs）的子相位归因：环境抢占 / 冷页缺页 / 256-pop 真工作三类（task-32） | 99 |
 | `docs/analysis/P1-CLOSING-QUEUE.md` | v8：region 级 closing queue（G3b 闭合）——机制、`dead` 语义、有界排空、三形状 0.4/1.6/1.7 µs、诚实限制、门禁 | 见文件 |
+| `docs/analysis/P1-SEG-TAIL.md` | v9：续扫段时间上限（+0.10% Ir）、p99.9 = 宿主噪声地板的证据（probe 分布 / noise_floor / [top] 反例）、chunk 扫描（2048 达标但 G18 34,332 kB 破界）、修正后的 C_scan 口径、下一轮前置条件 | 115 |
 | `docs/analysis/AUDIT-P1.md` | P1 四项 + task-32 的独立复核（自建 `build-da2` `10960ce7…`；A12/B8/C9/D0） | 173 |
 | `docs/analysis/AUDIT-P1-RESPONSE.md` | 对 `AUDIT-P1.md` 的逐条处置记录（A 类 12/12、B 类 8/8、C 类按条目分流、D 类 0） | 50 |
 
