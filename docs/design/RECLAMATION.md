@@ -606,7 +606,8 @@ P2 与这个反例的差别**只有"旧值是否另有根"这一维**（P2 的�
 * `[sweepelide]`：整块清扫省略的计数 —— `bulk_reset`（整块重置次数）、`bulk_slots`（被整块回收的槽数）、
   `swept`（逐字扫完的 slab 数）、`mis`（`EXTC_RC_ELIDE_VERIFY=1` 时位图复核不一致的次数；默认 0，
   非 0 表示 roll-up 漂移，该块退回逐字清扫）。判据：`mis=0`。
-* `[regionfree]` / `[chan]`：`regionFree` 的 `max_frees/max_slabs` 与 `sync_us`（第一阶段同步段）/`queue_us`（本次排空），以及三条同步通道（`regionfree`/`release`/`collect`）各自的 n/max/total + 工作量 + 15 桶。
+* `[regionfree]` / `[chan]` / `[closing]`：`regionFree` 的 `max_frees/max_slabs` 与 `sync_us`（同步段）/`queue_us`（本次排空），`[closing]` 报 `regions_pending/slabs_moved/cap_regions`（closing 队列积压与已推进 slab 数），以及三条同步通道（`regionfree`/`release`/`collect`）各自的 n/max/total + 工作量 + 15 桶。
+* **v8 起 `regionFree` 的同步段是 O(1)**：只做 `abort` + `pinDropRegion` + 置 `dead` + 挂线程局部 closing queue（`EXTC_RC_CQ_MAX_REGIONS` 默认 32，超过时 drop 内做一次有界排空）；逐 slab 的 unlinkChildren/`ownDel`/压 free queue 由 `extc_rc_cqDrainCore` 在分配点按 ≤8 slab/100 µs 推进，free 再由 free queue 的排空完成。'dead' 置位即代表整片槽对 `owns()` 一次性失效（见 `skip:dead-region`）。
 * `[freequeue]`：延迟释放队列 —— `slabs_bytes`/`slabs`（当前队列）、`drained_total`（累计排空的 slab 数）、`forced`（队列字节超过 `EXTC_RC_FREE_QUEUE_BYTES`、触发硬截止排空的次数）、`max_depth`/`max_deferred_us`（队列深度峰值 / 最慢一次排空耗时）、`left_slabs`/`left_bytes`（进程退出时残留，由 OS 回收）。判据：`left_slabs=0`（线程/驱动退出前全量排空）；`forced` 只在队列超限时增长。
 * `[clock]`：`step=` / `pause=` / `chan=` 三面的实际时钟；`[histo]` 的读法见上一节。
   **真正的判据是 `finish`/`abort` 里的配对自检**：`r->marking` 为真 ⇒ 该区域贡献过 `wb+1`，
@@ -953,6 +954,7 @@ cache-sim 判据变红）。
 | `skip:pin-null` | `pinSub(NULL)` ⇒ 立刻返回 | 空值没有边可撤 | 无（幂等）| 单测 `t_pin` 的「写空只撤这一条边」 + 全形状（每个槽清空都走这里）|
 | `skip:pin-empty` | 钉住表为空 ⇒ `pinSeed` / `pinDropRegion` 立刻返回 | 空表没有种子、也没有死指针可清 | 无（幂等）| 9 形状 -O2 Ir 逐位不变（常态这条路一次都不进）+ 单测 `t_pin` |
 | `skip:pin-dead` | `pinDropRegion` 里表项属于正在死的区域 ⇒ 删掉（Knuth 回移，删完原地继续扫）| 区域将死 ⇒ 它名下的对象不再需要被钉住；表项留着只会长期占内存、标记期还要走一遍废值 | 无（只影响表容量）| 单测 `t_pin` 的「区域释放时按归属清掉死指针」 |
+| `skip:dead-region` | `extc_rc_owns` 里指针所属区域的 `dead` 已置位 ⇒ 立刻回答“不是本运行期的活槽” | `regionFree` 把 `dead` 置位就代表整片槽一次性失效（`abort` 已取消在飞轮次、`pinDropRegion` 已清钉住项）；`ownDel` 与 `free` 可能还在 closing 队列里等有预算排空，所以必须在 `owns` 这一层挡住，否则 stale 指针会被判活 | 少算（不安全）| 单测 `t_regionFreeDefer` 的“drop 后旧对象立刻不算活”“延迟期内写旧槽不复活对象”+ `gate-release` 4/4 |
 | `skip:not-own` / `skip:no-pointer` | 指针查不到自己的 slab（或指针为空）⇒ 当作"不是本运行期的槽" | 只有本运行期的 slab 才会被查 | 少算（不安全）| 反向表 `ownTab`/`bigTab` **无上限**（`realloc` 翻倍）⇒ 查不到只可能是外来指针；ASan 语料 + 跨语言对拍。`ownSlab` 自己不再显式挡空指针：`p == 0 ⇒ base == 0`，而映射格/登记表/超大块表里都没有键 0 ⇒ 每层探测落空、返回 0 与显式检查相同；空指针边界由 `reclaim-unit` 的「空指针查不到 slab」「空指针不算本运行期的槽」两条断言钉住 |
 | `skip:ttab-hit` | 小类型表的哈希索引探测命中 ⇒ 直接返回该描述符的号 | 索引按描述符**指针相等**建、装载上限 1/2 ⇒ 命中即等价于线性扫到同一个描述符 | 无（就是命中路径）| `gate-reclaim-tables`（T=8 vs 256 的成本比）；语义由 `reclaim-unit` / 语料对拍兜底 |
 | `skip:type-hot` | 本块上一次落表的描述符与本次**指针相等** ⇒ 直接返回上次的类型号，跳过类型表查找 | 描述符按指针相等去重、类型号在本块内只增不改（`ttab` 下标一旦落表就不动），缓存只在落表成功后回填 ⇒ 缓存对等价于查表结果 | 无（就是命中路径）| `gate-reclaim-tables`（T=8 vs 256 成本比）+ 语料对拍；`gate-skip-table` |
@@ -981,6 +983,7 @@ cache-sim 判据变红）。
 | `skip:freeq-empty` | 延迟队列为空 ⇒ `extc_rc_fqDrainAuto` / `extc_rc_freeQueueDrainAll` 立刻返回 | 空队列没有东西可排空；分配点/结算点每次都要问一次 | 无（幂等；热路径常态）| 默认档全电池（`[freequeue]` 的 `drained_total` 只在真入队后增长）+ defer=0 档断言集合与改前逐条相同 |
 | `skip:freeq-budget` | 排空已到本次预算（`EXTC_RC_FREE_BUDGET_SLABS`）⇒ 停手，余下的留在队里 | 延迟队列的存在就是为了把 `free()` 摊到后续分配点；预算只是**时机**，不改变「这些 slab 已经摘链、不再被任何回收路径访问」这一前提 | 内存（延迟 RSS，短期可见）| `t_regionFreeDeferLimit`（单次 drop 后 `fqBytes<=EXTC_RC_FREE_QUEUE_BYTES`、`forced` 增长、排空后归零）+ pb/pd 的 `[freequeue] max_depth/left_bytes` |
 | `skip:freeq-deadline` | 排空已到本次时间上限（`EXTC_RC_FREE_DEADLINE_US`）⇒ 停手，余下的留在队里 | 同上：时间预算只决定「这一次排多少」，队列里的 slab 已不与任何活对象/回收路径相交 | 内存（延迟 RSS）| 同 `skip:freeq-budget`：`[regionfree] queue_us` 有界 + `[freequeue] forced/left_*` 可读 |
+| `skip:closing-empty` | closing 队列为空（`extc_rc_cqHead == NULL`）⇒ `fqDrainAuto` 跳过 cq 段直接进 free 队列 | 空队列没有 slab 可摘链/撤边/`free`；每个开凿点与结算点都要问一次 | 无（幂等；热路径常态）| 默认档全电池（`[closing] regions_pending/slabs_moved` 只在真 drop 后增长）+ `t_regionFreeDefer*` 的有界开凿排空断言 |
 | `skip:not-sweeping` | 没有正在进行的分步清扫 ⇒ `sweepStep` 直接返回 0 | 分步清扫是显式状态（`sweeping`）| 无（幂等）| `gate-reclaim-switch` 的形状语义 + `EXTC_RC_PAUSE` 的 `[step]` 行 |
 | `skip:sweeping-resume` | 上一轮分步清扫没扫完 ⇒ 触发点只**续扫一步**，不起新的 mark | mark 依赖"标记位图已清零"，位图由清扫逐字清零 | 无（把一次长停顿摊成多步）| `gate-reclaim-switch` / 语料指纹（语义逐字节）|
 | `skip:sweep-continue` | 这一步没扫到底 ⇒ `sweepStep` 返回 0，下一轮（分配点）继续 | 游标留在区域里 | 无（同上）| `gate-skip-table` + `gate-reclaim-switch` |

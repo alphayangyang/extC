@@ -1403,10 +1403,12 @@ static void t_regionFreeDefer(void) {
     size_t slabs = extc_rc_slabCount(r);
     check(slabs >= 2, "延迟释放：形状里至少两块 slab");
     long long q0 = extc_rc_fqSlabs;
+    long long c0 = extc_rc_cqN;
     extc_rc_regionFree(r);
-    check(extc_rc_fqSlabs - q0 >= (long long)slabs, "延迟释放：regionFree 只挂队列（同步段不 free slab）");
-    check(extc_rc_fqBytes > 0, "延迟释放：队列字节数 > 0");
-    check(extc_rc_rfSyncFrees < 9 * (long long)slabs, "延迟释放：同步段 free 次数不含 slab（只有类链与 region）");
+    /* O(1) drop：regionFree 一块 slab 都不碰（既不 free、也不进 free 队列），只把 region 挂到关闭队列。 */
+    check(extc_rc_fqSlabs == q0, "延迟释放：regionFree 不再同步 free slab（slab 一块都不进 free 队列）");
+    check(extc_rc_cqN - c0 == 1, "延迟释放：regionFree 只把 region 挂上关闭队列（O(1) drop）");
+    check(extc_rc_rfSyncFrees == 0, "延迟释放：同步段一次 free 都不发（连类链与 region 也等排空）");
     check(!extc_rc_isLive(last), "延迟释放：drop 后旧对象立即不算活");
     last->next = NULL;   /* payload 还在队列里（没 free），写它不 UAF；写入不得复活对象 */
     check(!extc_rc_isLive(last), "延迟释放：延迟期内写旧槽不复活对象");
@@ -1422,6 +1424,7 @@ static void t_regionFreeDefer(void) {
     }
     check(extc_rc_fqSlabs == 0, "延迟释放：分配路径的有界排空把队列清空");
     check(extc_rc_fqBytes == 0, "延迟释放：排空后队列字节数回到 0");
+    check(extc_rc_cqN == 0, "延迟释放：关闭队列也随排空清空（region 自身等链空后 free）");
     extc_rc_regionFree(r2);
     extc_rc_freeQueueDrainAll();   /* 无预算入口：与 defer=0 等价的最后手段 */
     check(extc_rc_fqSlabs == 0, "延迟释放：全量排空入口清空队列");
@@ -1434,8 +1437,10 @@ static void t_regionFreeDeferHuge(void) {
     ExtcRcSlab *s = p ? extc_rc_ownSlab(p) : NULL;
     check(s && s->big, "延迟释放：大对象落在 huge block（payload 与 slab 分开）");
     long long q0 = extc_rc_fqSlabs;
+    long long c0 = extc_rc_cqN;
     extc_rc_regionFree(r);
-    check(extc_rc_fqSlabs - q0 >= 1, "延迟释放：huge block 也挂队列（payload 等排空时 free）");
+    check(extc_rc_fqSlabs == q0, "延迟释放：huge block 也不在 drop 里进 free 队列");
+    check(extc_rc_cqN - c0 == 1, "延迟释放：huge block 的 region 挂在关闭队列上（payload 等排空时 free）");
     extc_rc_freeQueueDrainAll();
     check(extc_rc_fqSlabs == 0, "延迟释放：排空后 huge block 的 slab 与 payload 一起 free");
     check(!extc_rc_isLive(p), "延迟释放：huge block 的槽不再算活");
@@ -1443,20 +1448,23 @@ static void t_regionFreeDeferHuge(void) {
 
 static void t_regionFreeDeferLimit(void) {
     ExtcRcRegion *r = regionNew(43, (int64_t)1 << 40);
-    for (int i = 0; i < 20; i++) (void)extc_rc_alloc(r, 600000, &g_data);   /* 20 x ~600 KB，超过 8 MiB 队列限额 */
+    /* 正常 slab（每块按 ~1 MiB + 位图记账）造出 > 8 MiB 的待 free 量：关闭队列每次推进 8 块就越过限额。 */
+    for (int i = 0; i < 20000; i++) (void)extc_rc_alloc(r, sizeof(Node), &g_node);
     long long f0 = extc_rc_fqForced;
+    long long c0 = extc_rc_cqN;
     extc_rc_regionFree(r);
-    /* 超限额时 drop 当场加强排空（硬截止 1 ms）；单次硬截止同样可能不够（满载/ASan），
-       契约规定后续分配点在仍超限额时会继续用硬截止排空 ⇒ 判据按「有限次分配点内压回限额」。 */
-    for (int k = 0; k < 16 && extc_rc_fqBytes > (int64_t)EXTC_RC_FREE_QUEUE_BYTES; k++) {
+    check(extc_rc_cqN - c0 == 1, "延迟释放：超限额形状也先只挂关闭队列");
+    /* drop 不再自己排空；限额压力由后续分配点的有界排空承担：slab 进 free 队列越过 8 MiB 后改走硬截止。 */
+    for (int k = 0; k < 64 && (extc_rc_cqN != 0 || extc_rc_fqSlabs != 0); k++) {
         ExtcRcRegion *rk = regionNew(80 + k, (int64_t)1 << 40);
         (void)extc_rc_alloc(rk, sizeof(Node), &g_node);
+        if (extc_rc_cqN == 0 && extc_rc_fqSlabs == 0) break;
     }
-    check(extc_rc_fqBytes <= (int64_t)EXTC_RC_FREE_QUEUE_BYTES,
-          "延迟释放：队列字节超上限时 drop 当场加强排空（硬截止 1 ms）");
-    check(extc_rc_fqForced > f0, "延迟释放：加强排空被计数（forced）");
+    check(extc_rc_cqN == 0 && extc_rc_fqSlabs == 0, "延迟释放：分配点的有界排空把超限额形状也清干净");
+    check(extc_rc_fqBytes <= (int64_t)EXTC_RC_FREE_QUEUE_BYTES, "延迟释放：free 队列始终压回 8 MiB 限额内");
     extc_rc_freeQueueDrainAll();
-    check(extc_rc_fqSlabs == 0, "延迟释放：限额路径之后队列可全量清空");
+    check(extc_rc_fqSlabs == 0 && extc_rc_cqN == 0, "延迟释放：限额路径之后两条队列都可全量清空");
+    (void)f0;
 }
 #endif
 #ifdef EXTC_DRIVER_ONLY_SCAN

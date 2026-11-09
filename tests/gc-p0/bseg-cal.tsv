@@ -9,5 +9,5 @@
 # 溯源以源码 md5 为准（m04755 C）：src_md5 = "reclaim.c=<md5>,codegen.c=<md5>"，extc_md5 = 编译器二进制 md5。
 # GO 前下面两行是 ref 数据（P1-RQ3-CHUNK.md 参考构建），md5 未知 ⇒ g1c 会提示「正式门禁前必须用本 build 重标定」。
 # 列：shape	chunk	c_seg_ns	p99.9_us	p99.9_min_us	p99.9_max_us	run_id	src_md5	extc_md5
-pd_bigobj	8192	7.087	58.06	49.54	70.81	cal:2026-11-09T18:46:01:reps=3:pin=6	reclaim.c=e17080d1c80513b27ca06f2bc6224b0f,codegen.c=d339382889b87c0dd18b357c69e2e779	07b7be1a4a9accdcb8eb0c51bbe2fb7c
-pd_pointer_dense	8192	11.077	90.74	85.09	91.83	cal:2026-11-09T18:46:01:reps=3:pin=6	reclaim.c=e17080d1c80513b27ca06f2bc6224b0f,codegen.c=d339382889b87c0dd18b357c69e2e779	07b7be1a4a9accdcb8eb0c51bbe2fb7c
+pd_bigobj	8192	7.145	58.53	56.90	69.78	cal:2026-11-09T23:10:03:reps=3:pin=6	reclaim.c=37c92f0b45180dfd65152801dfe48dfc,codegen.c=2f560e2e6deef8c4927db4611344aecb	58402a50b8d2f05d5a11f49835c15835
+pd_pointer_dense	8192	12.110	99.20	86.37	105.07	cal:2026-11-09T23:10:03:reps=3:pin=6	reclaim.c=37c92f0b45180dfd65152801dfe48dfc,codegen.c=2f560e2e6deef8c4927db4611344aecb	58402a50b8d2f05d5a11f49835c15835
