@@ -1,0 +1,33 @@
+/* G13 计数档/事件档 soundness 回归：**逐字批量搬移**（copyInto）把 ref 字段拷进新容器后，
+ * 源容器槽被覆盖/释放不得连带把目标容器里的指针判死。
+ * 形状由 doc-audit 定（Lead m01267）：用 `ref s[0]` 绕道取元素地址，宿主算堆 ⇒ 能过
+ * unitAllAcyclic 判据 iv，**默认档会自动进事件档（TIER 1）**，从而看得到这个 bug。
+ * 不要用 f-string / 直接 view 写入：那会把 stdlib 拉进 unit，判据失败退回清扫档（TIER 2），
+ * 计数运行期不发射，bug 不可见（Lead m01267/m01269）。
+ *
+ * 判据（默认档与强制计数档都跑）：stdout **去尾部换行后逐字全文**等于 "d0r=7"，退出码 0
+ * （不是子串匹配；标签风格与 uaf_param_overwrite 的 "alias check b.v=" 一致；Lead m01356 指定 d0r=）。
+ * 修复前（doc-audit + 本机 HEAD 复现）：stdout 为 "d0r=555"。
+ *   若 compile-facts 采用「分析侧退回清扫档」方案，默认档产物应为 TIER 2 且输出 7
+ *   （此时按「输出=7」判，TIER 只记录）。
+ * 默认档可达性（Lead m01269）：本形状默认档自动事件档 ⇒ 这是 S0 级（默认路径）bug。
+ * 出处：tests/gc-p0/run.sh 的 g12 模式（G12=参数槽覆盖，仅强制计数档判）。
+ */
+use std::io
+
+struct node { v: i64 }
+struct item { r: mut ref node }
+
+fn main() -> i32 {
+    var s: mut slice<item> = new item[2]
+    var q: mut ref item = ref s[0]
+    q.r = new node
+    q.r.v = 7
+    var d: mut slice<item> = new item[2]
+    copyInto<item>(d, s, 1)
+    q.r = new node
+    var b = new node
+    b.v = 555
+    io::cout << "d0r=" << d[0].r.v << "\n"
+    return 0
+}

@@ -610,6 +610,21 @@ typedef struct {
      * last owner, not with this block. */
     Vec        *coroTaskAt;
     Vec        *ownedCoro;     /* per block level: names of handles whose task this block ends */
+    /* `EXTC_TASK_ROOTS` (**on by default**; `=0` restores the previous product byte for byte):
+     * register the task id slots the emitter can prove alive for the whole task with the runtime's
+     * task table (`extc_task_rootPush` / `extc_task_rootPop`), so `extc_task_collect` can tell a
+     * live task-owned place from a dead one. See `cgTaskRootPush`. */
+    int         taskRoots;
+    /* Registration bookkeeping: one list per block level of the `__extc_trk<seq>` guards emitted
+     * there, plus `taskRootSeq` (the guard names) and `domBodyLevel` -- the block level of the
+     * `d.run { ... }` body being emitted (0 = none), whose pop has to wait for `extc_dom_run`,
+     * because the block's own release text is written *before* the drive call (see ST_DOMAIN).
+     * `atBlockEnd` says "this release is the normal exit of its block", the only release that may
+     * be deferred. */
+    Vec        *taskRootAt;
+    int         taskRootSeq;
+    int         domBodyLevel;
+    bool        atBlockEnd;
     /* Definitions whose name may never be used again (`DeadDef*`, in emission
      * order); dropUnreferenced decides after the whole unit is assembled. */
     Vec         deadDefs;
@@ -1242,6 +1257,10 @@ static void genViewIndexer(CG *g, Type *inst) {
     substLeave(g, sv);
 }
 
+/** @brief Does this type contain reference slots (`rcScanType != RC_NO_REFS`), including the
+ *         conservative "cannot be enumerated" case? Declared here so `genViewCopier` can ask
+ *         before `rcScanType` itself is defined; defined next to `rcScanType`. */
+static bool typeHasRefSlots(CG *g, Type *t);
 /**
  * @brief Emit on demand the whole-block copy primitive of a view type (used by `copyInto`).
  *
@@ -1258,6 +1277,7 @@ static void genViewIndexer(CG *g, Type *inst) {
  * @param inst       The view instance; `targs` has at least one element, the element type.
  * @param unchecked  When `true`, emit the unchecked variant named `<C name>_copyU`.
  */
+
 static void genViewCopier(CG *g, Type *inst, bool unchecked) {
     Type *elem = *(Type **)vecAt(&inst->targs, 0);
     SubCtx sv = substEnter(g, inst);
@@ -1276,6 +1296,27 @@ static void genViewCopier(CG *g, Type *inst, bool unchecked) {
     }
     cgLine(g, "if (n > 0) memmove((void *)d.data, (const void *)s.data, (size_t)n * sizeof(%s));",
            cType(g, elem));
+    /* BUG-B (G13): the byte move duplicates every reference leaf of the element into the
+     * destination, but a count lives **per object, not per slot** -- the destination would be a
+     * second pointer without a second count (counting tier) or without a seed / sweep guard (sweep
+     * tier). A later overwrite of the source slot then decrements the only count and frees the
+     * object the destination still points at (uaf_bulk_copy prints the reused slot's value).
+     * Order matters: the `memmove` stays first so its overlap semantics are unchanged
+     * (`string::removeFront` moves a buffer onto itself); the accounting pass then walks the
+     * **destination** slice and hands each copied element to `extc_rc_storeStructCopy`. When the
+     * base pointer `d.data` is inside rc storage, the primitive can prove the host region from the
+     * base: it records the cross-region edge (rsbit) for every owned reference word and does NOT
+     * evict the target region from sweeping, so repeated `copyInto` stays bounded. Only a base
+     * outside rc storage (stack / pool view) falls back to the conservative direction
+     * (`extc_rc_storeStructCons` with no host: the target region drops out of sweeping). One count
+     * short would free early, one count too many only reclaims late -- the conservative side.
+     * Element types with no reference slots keep the plain `memmove` (the common `u8` copy).
+     * The acyclicity criterion (iv) is told about this separately: the scan cannot see a byte move
+     * (`acScanExpr` in `src/check/check_top.c` marks such a unit as not acyclic). */
+    if (g->needReclaim && typeHasRefSlots(g, elem))
+        cgLine(g, "for (int64_t __extc_bk = 0; __extc_bk < n; __extc_bk++)"
+                  " extc_rc_storeStructCopy((void *)&d.data[__extc_bk], sizeof(%s), (void *)d.data);",
+               cType(g, elem));
     cgLine(g, "return n;");
     g->indent--;
     cgLine(g, "}");
@@ -2938,6 +2979,11 @@ static const char *genGlobalInit(CG *g, Expr *e) {
 static const char *arenaRefAt(CG *g, int level);
 static const char *rcRegionRef(CG *g, const char *basePtr);
 static void arenaDriftCheck(CG *g, Expr *e, const char *what);   /* the arena is picked per level */
+/* Task-root registration (the task-table half of the emitter's collector contract); defined with
+ * the other coroutine release helpers. */
+static void cgTaskRootPush(CG *g, const char *slotExpr);
+static void cgTaskRootPopAt(CG *g, int lvl, bool atBlockEnd, bool clear);
+static void cgTaskRootPopsForReturn(CG *g);
 
 /* Emit the C expression for one expression node.
  *
@@ -2985,6 +3031,10 @@ static const char *exExt(CG *g, Expr *e) {
         cgLine(g, "int64_t %s = extc_zoneTop;", sv);
         cgLine(g, "int64_t %s = extc_task_begin();", id);
         cgLine(g, "int64_t %s = extc_task_zone(%s);", zn, id);
+        /* The task must stay visible to the collector while the domain drives it; `exExt` never
+         * ends it (the domain runtime only steps frames), so the block's release point pops the
+         * registration after `extc_dom_run` (see ST_DOMAIN). */
+        cgTaskRootPush(g, arenaPrintf(g->arena, "&%s", id));
         g->needCoroHandle = true;
         g->needPool = true;
     }
@@ -3708,6 +3758,19 @@ static RcScan rcScanType(CG *g, Type *t, int depth) {
         return RC_CONSERVATIVE;
     }
 }
+
+/**
+ * @brief Does this type contain reference slots at all? (`rcScanType != RC_NO_REFS`, so the
+ *        "cannot be enumerated" answer also counts.)
+ *
+ * `genViewCopier` needs this question earlier in the file than `rcScanType` is defined; the
+ * declaration there and this definition are one pair.
+ *
+ * @param g  The generator (supplies the instantiation context).
+ * @param t  The type to ask about.
+ * @return   True when a byte copy of this type carries reference words.
+ */
+static bool typeHasRefSlots(CG *g, Type *t) { return rcScanType(g, t, 0) != RC_NO_REFS; }
 
 /**
  * @brief Collect a type's reference leaf slots as "relative offset" C constant expressions.
@@ -5561,6 +5624,7 @@ static void cgReturn(CG *g, const char *val) {
     if (g->inMain && g->needCout) cgLine(g, "extc_cout_flush();");
     if (g->noArena) {
         genReturnDrops(g);
+        cgTaskRootPopsForReturn(g);
         if (g->isRecursive) {
             /* The return type need not be scalar: a self-recursive function may return `option<T>` or a
              * struct. The temporary is therefore declared with the real return type and **no cast**
@@ -5577,6 +5641,7 @@ static void cgReturn(CG *g, const char *val) {
     /* `@drop` hooks run after the value is stored and before the jump: a local that owns state
      * hands it back on the way out, innermost block first. */
     genReturnDrops(g);
+    cgTaskRootPopsForReturn(g);
     cgRecLeave(g);
     cgLine(g, "goto __extc_ret;");
 }
@@ -6080,12 +6145,16 @@ static void noteStackTask(CG *g, int sq) {
  * @param g    The generator state.
  * @param lvl  The block level being left.
  */
-static void cgCoroTaskEndAt(CG *g, int lvl) {
+static void cgCoroTaskEndAt(CG *g, int lvl, bool clear) {
     if (!g->coroTaskAt || lvl <= 0 || lvl >= g->levelCap) return;
     Vec *v = &g->coroTaskAt[lvl];
     for (size_t i = 0; i < v->len; i++)
         cgLine(g, "extc_task_end(__extc_czid%d);", *(int *)vecAt(v, i));
-    v->len = 0;                       /* emitted once: a block emits one release point */
+    /* Only the ordinary block end clears: a break/continue release writes its end text here and the
+     * block's own release text stays in the output for the fall-through path (dead on the break
+     * path), exactly like a return. Clearing on the early exit would silence the normal path and
+     * leak one task per completed iteration. */
+    if (clear) v->len = 0;
 }
 
 /**
@@ -6113,14 +6182,94 @@ static void noteOwnedCoro(CG *g, Stmt *s) {
  * @param g    The generator state.
  * @param lvl  The block level being left.
  */
-static void cgCoroOwnedEndAt(CG *g, int lvl) {
+static void cgCoroOwnedEndAt(CG *g, int lvl, bool clear) {
     if (!g->ownedCoro || lvl <= 0 || lvl >= g->levelCap) return;
     Vec *v = &g->ownedCoro[lvl];
     for (size_t i = 0; i < v->len; i++) {
         const char *cn = *(const char **)vecAt(v, i);
         cgLine(g, "if (extc_task_alive((%s).task)) extc_task_end((%s).task);", cn, cn);
     }
-    v->len = 0;
+    if (clear) v->len = 0;            /* see cgCoroTaskEndAt: early exits do not clear */
+}
+
+/**
+ * @brief Register one task id slot with the runtime's task table (`extc_task_rootPush`).
+ *
+ * The collector (`extc_task_collect`) frees a task-owned place once no registered slot can still
+ * reach it, so registration is emitted for every slot the compiler can name and whose lifetime it
+ * can balance statically: a `d.run` body's `ext f(x)` frame (the domain drives it inside that
+ * block), a stack-frame spawn (the block release point ends the task), and every **local** boxed
+ * handle `extc_coro h` -- the handle's `.task` field is the slot, so the collector reads the
+ * slot's current value, a later assignment to the same variable needs no new registration, and a
+ * handle copied into another local is registered at that local's own declaration.
+ *
+ * What is *not* enumerated is a handle stored into an aggregate, a container or a struct field:
+ * the per-slot table cannot name those slots, so a task reachable only through such a container can
+ * still be collected and driven afterwards. That direction is documented as the caller's contract
+ * in `stdlib/std/sys/pool.extc`; registration only ever extends a task's life, never shortens it.
+ *
+ * The runtime table holds 64 slots and `extc_task_rootPush` returns 0 when it is full. The guard is
+ * kept in a local, so `extc_task_rootPop` (a blind pop) runs exactly once per successful push and
+ * never steals another frame's slot; see `cgTaskRootPopAt`.
+ *
+ * @param g        The generator state.
+ * @param slotExpr C expression of the address of the task id slot (e.g. `&__extc_dtid3`).
+ */
+static void cgTaskRootPush(CG *g, const char *slotExpr) {
+    if (!g->taskRoots || !g->taskRootAt || g->blkLevel < 0 || g->blkLevel >= g->levelCap) return;
+    int trk = g->taskRootSeq++;
+    cgLine(g, "int64_t __extc_trk%d = extc_task_rootPush(%s);", trk, slotExpr);
+    *(int *)vecPush(&g->taskRootAt[g->blkLevel]) = trk;
+}
+
+/**
+ * @brief Emit the guarded pops of the registrations one block level made, and forget them.
+ *
+ * The ordinary exit of the block is `atBlockEnd`; when that block is the body of a
+ * `d.run { ... }` the pop has to wait for `extc_dom_run` (the tasks must stay registered while
+ * they are driven, and the block's release text is written before the drive call -- see
+ * ST_DOMAIN), so this call is a no-op there and the caller emits the pop afterwards.
+ *
+ * @param g          The generator state.
+ * @param lvl        The block level whose registrations are being dropped.
+ * @param atBlockEnd True for the ordinary exit of the block that made them; false for an early
+ *                   exit (return / break / continue) and for the deferred pop after the drive.
+ * @param clear      True only for the ordinary block end. A break/continue release emits the pops
+ *                   but keeps the list, so the block's own release text (dead on the early-exit
+ *                   path) still names them on the fall-through path.
+ */
+static void cgTaskRootPopAt(CG *g, int lvl, bool atBlockEnd, bool clear) {
+    if (!g->taskRootAt || lvl <= 0 || lvl >= g->levelCap) return;
+    if (atBlockEnd && g->domBodyLevel == lvl) return;
+    Vec *v = &g->taskRootAt[lvl];
+    for (size_t i = 0; i < v->len; i++)
+        cgLine(g, "if (__extc_trk%d) extc_task_rootPop();", *(int *)vecAt(v, i));
+    /* A break/continue release does not clear: the block's own release text still has to name
+     * these registrations for the fall-through path (dead on the break path), exactly like
+     * cgTaskRootPopsForReturn. Clearing here would leave every completed loop iteration without
+     * a pop -- one stolen slot per iteration. */
+    if (clear) v->len = 0;
+}
+
+/**
+ * @brief Emit the pops of every level a `return` leaves, **without** clearing the lists.
+ *
+ * A `return` is one exit among several of the same block: the block's own release text stays in
+ * the output (dead on the return path, live on the fall-through one) and every `return` of a block
+ * needs the full list. Clearing here would silence the second `return` of a block, whose push
+ * would then never be popped; leaving the list intact keeps every path statically balanced.
+ *
+ * @param g The generator state.
+ */
+static void cgTaskRootPopsForReturn(CG *g) {
+    if (!g->taskRootAt) return;
+    int top = g->blkLevel;
+    if (top >= g->levelCap) top = g->levelCap - 1;
+    for (int lvl = top; lvl >= 1; lvl--) {
+        Vec *v = &g->taskRootAt[lvl];
+        for (size_t i = 0; i < v->len; i++)
+            cgLine(g, "if (__extc_trk%d) extc_task_rootPop();", *(int *)vecAt(v, i));
+    }
 }
 
 /**
@@ -6147,8 +6296,11 @@ static void cgCoroOwnedEndAt(CG *g, int lvl) {
  */
 static void cgReleaseLevel(CG *g, int lvl) {
     if (lvl <= 0) return;
-    cgCoroTaskEndAt(g, lvl);
-    cgCoroOwnedEndAt(g, lvl);
+    cgCoroTaskEndAt(g, lvl, g->atBlockEnd);
+    cgCoroOwnedEndAt(g, lvl, g->atBlockEnd);
+    /* After the task ends, not before: a registration that disappears while the task is still
+     * alive would let the collector free a live task-owned place. */
+    cgTaskRootPopAt(g, lvl, g->atBlockEnd, g->atBlockEnd);
     if (g->noArena && !g->coroFunc) return;
     /* Memory only: files are the program's business (decision 79), so the one place a
      * block release is emitted has nothing to close. */
@@ -6819,8 +6971,9 @@ static void genBlockBody(CG *g, Stmt *block) {
          * idempotent, so a task that did finish is unaffected. Emitted here rather than in
          * cgReleaseLevel because this path (the probe that measures whether the block touches
          * its arena) writes the release point itself. */
-        cgCoroTaskEndAt(g, g->blkLevel);
-        cgCoroOwnedEndAt(g, g->blkLevel);
+        cgCoroTaskEndAt(g, g->blkLevel, true);
+        cgCoroOwnedEndAt(g, g->blkLevel, true);
+        cgTaskRootPopAt(g, g->blkLevel, true, true);
         if (zoneHere) cgZoneLeave(g, g->blkLevel);
         if (bodyTouches) cgArenaRelease(g, g->blkLevel);
     } else {
@@ -6828,7 +6981,12 @@ static void genBlockBody(CG *g, Stmt *block) {
             cgArenaRelease(g, g->blkLevel);   /* clear */
         if (zoneHere && !g->coroFunc)      /* see the note on the release below: the task owns the place */
             cgLine(g, "int64_t __extc_zm%d = extc_pool_zoneEnter();", g->blkLevel);
+        /* This is the normal exit of the block (a break/continue release is not): only it may be
+         * deferred by a `d.run` body (see `cgTaskRootPopAt`). */
+        bool savedAtBlockEnd = g->atBlockEnd;
+        g->atBlockEnd = true;
         cgReleaseLevel(g, g->blkLevel);
+        g->atBlockEnd = savedAtBlockEnd;
     }
     g->zoneMark[g->blkLevel] = savedZoneMark;
     /* Leaving the block: the reference slots declared in it stop being roots. */
@@ -7244,6 +7402,29 @@ static void rcScanLinked(CG *g, Stmt *body) {
 }
 
 /**
+ * @brief Account for a **new** reference slot whose value is already in place (a declaration).
+ *
+ * The counted tiers need one increment per stored pointer; the sweep tier also needs the shade,
+ * because a white object stored into a slot while a marking is in flight would otherwise be missed.
+ * The **event tier** has neither: EXTC_RC_SWEEP_FREE 1 makes extc_rc_shouldSweep a
+ * compile-time 0, so extc_rc_begin is never called and extc_rc_wb -- the participant count that is
+ * the first test in extc_rc_shade / extc_rc_shadeOld -- stays 0 for the whole run: every shade in
+ * this unit is dead code. What remains of initRef is its self-store (the C initializer already
+ * wrote the slot, so the store reads and writes the same storage) plus the increment; the increment
+ * alone is extc_rc_inc, so the event tier emits that and drops the dead half.
+ *
+ * Kept per-site (not "the event tier never emits initRef" everywhere): using this in the
+ * sweep/mixed tier would remove a live write barrier.
+ */
+static void cgInitRefStore(CG *g, const char *slotExpr) {
+    if (g->rcSweepFree == 1 && !g->rcNoCount) {
+        cgLine(g, "extc_rc_inc((void *)(%s));", slotExpr);
+        return;
+    }
+    cgLine(g, "extc_rc_initRef((void **)&(%s), (void *)(%s));", slotExpr, slotExpr);
+}
+
+/**
  * @brief When a whole-value store carries reference leaves, emit the reference-slot accounting
  *        **leaf by leaf**.
  *
@@ -7293,10 +7474,10 @@ static void cgValueRefStore(CG *g, Type *t, const char *dstBase, const char *src
         const char *p = *(const char **)vecAt(&rel, i);
         const char *d = arenaPrintf(g->arena, "%s%s", dstBase, p);
         if (init) {
-            /* the value is already in the target (the declaration is the initialization): read and write the
-     * same storage once, which is a write plus an increment of the target */
+            /* the value is already in the target (the declaration is the initialization): one
+             * increment per leaf, through the entry that knows which tier can drop the dead half */
             dbgRcSite(g, g->blkLevel, 0);
-            cgLine(g, "extc_rc_initRef((void **)&(%s), (void *)(%s));", d, d);
+            cgInitRefStore(g, d);
         } else if (hostUnknown) {
             /* When the host expression cannot be proved, the **slot address** itself may carry the answer
              * (it falls inside an rc slot => that is the memory of some region): try the reverse lookup
@@ -7401,6 +7582,17 @@ if (planCName(s) && s->u.var.init && s->u.var.init->kind == EX_CALL &&
         cgLine(g, "%s", bufCstr(&bx));
         cgLine(g, "extc_coro %s = (extc_coro){ .frame = __extc_czf%d, .kind = %d,"
                   " .task = __extc_czh%d };", planCName(s), sq, planCoroKind(cf), sq);
+        /* A **local** boxed handle is a task root while its slot lives: `extc_task_collect` keeps a
+         * task alive when any registered slot still names it. The **slot address** (not the id) is
+         * registered, so a later assignment to the same variable needs no new registration; a copy
+         * into another local variable gets its own registration at its own declaration (the generic
+         * `ST_VAR` tail below). Not enumerated, and deliberately so: a handle stored into an
+         * aggregate, a container or a struct field -- the static root table is per-slot. Registering
+         * less only lets a task that no slot of the program reaches be freed; it never
+         * frees a task a registered slot still names. A step function is skipped: a suspension
+         * returns before any release point could pop the registration. */
+        if (g->taskRoots && !g->coroFunc && planCName(s))
+            cgTaskRootPush(g, arenaPrintf(g->arena, "&%s.task", planCName(s)));
         g->needCoroHandle = true;
         g->needPool = true;      /* the task table brings the zone runtime with it */
         /* A coroutine frame can hold reference slots, and the static root table does not enumerate the
@@ -7416,6 +7608,10 @@ if (planCName(s) && s->u.var.init && s->u.var.init->kind == EX_CALL &&
         cgLine(g, "int64_t __extc_czid%d = extc_task_begin();", sq);
         cgLine(g, "int64_t __extc_czm%d = extc_task_zone(__extc_czid%d);", sq, sq);
         noteStackTask(g, sq);
+        /* A step function has no release point on every exit (a suspension returns, and an
+         * abandoned step never reaches its end), so a nested task is registered only in an
+         * ordinary function, where the block release point and every return pop it. */
+        if (!g->coroFunc) cgTaskRootPush(g, arenaPrintf(g->arena, "&__extc_czid%d", sq));
     }
     /* `var d = inner(args)` **inside a coroutine**: the nested frame is a *field* of this
      * frame, not a C local -- a resume jumps past the declaration, so the initializer has
@@ -7672,10 +7868,15 @@ localDef(g, lb, nm, 1);
  * little is a missed root. */
 if (g->needReclaim && !s->u.var.isGlobal && cgIsRefType(g, s->type)) {
     dbgRcSite(g, g->blkLevel, 0);
-    if (planRcNoDec(g->curFunc))
+    /* The no-hold entry is a **no-count-tier** optimisation only: the count tier's cascade
+     * decrements a slot's target when the slot's object dies, so every pointer stored into a slot
+     * has to be counted exactly once -- NoHold would leave that decrement without an increment and
+     * free the target early. In the count tier the plain `initRef` is emitted even where the
+     * checker proved the old value dead. */
+    if (planRcNoDec(g->curFunc) && g->rcNoCount)
         cgLine(g, "extc_rc_initRefNoHold((void **)&%s, (void *)%s);", nm, nm);
     else
-        cgLine(g, "extc_rc_initRef((void **)&%s, (void *)%s);", nm, nm);
+        cgInitRefStore(g, nm);
 } else if (g->needReclaim && !s->u.var.isGlobal && s->u.var.init) {
     /* A **whole-value** declaration's reference leaves (`var b: wrap = wrap { n: keeper }`) need
      * accounting too: a bare C initialization emits no `inc` at all, so `b.n` is another way for "the
@@ -7713,6 +7914,16 @@ if (g->needReclaim && !s->u.var.isGlobal && cgIsRefType(g, s->type)) {
  * registered too: it is block-scope `static`, visible in this block, and keeping it a bit longer is
  * the safe direction. */
 rcRootDecl(g, s->type, nm);
+/* A coroutine handle declared as a **local variable** (`var h = mk(5)`, `let h = other`) is a task
+ * root for as long as the slot lives, exactly like the annotated spawn form above: the collector
+ * keeps the task alive while the slot still names it. Registration is per slot, at its
+ * declaration; an assignment later rewrites the same slot and needs none. A handle reaching a
+ * struct field or a container is not enumerated (the same limitation as the spawn site): that
+ * direction leaks a task, never frees a live one. Globals are skipped (static storage, no scope
+ * exit to pop at) and so is a step function (a suspension returns before the pop). */
+if (g->taskRoots && !g->coroFunc && !s->u.var.isGlobal && s->type &&
+    isProtoType(s->type, "coroutine", 1))
+    cgTaskRootPush(g, arenaPrintf(g->arena, "&%s.task", nm));
 return;
 }
 
@@ -8482,6 +8693,39 @@ return;
 }
 
 /**
+ * @brief Is this assignment target the C slot of a **parameter** of the function being emitted?
+ *
+ * The reference-slot store path asks this before it decrements an old value (BUG-A / shape G12).
+ * A parameter slot is registered in the root table at function entry
+ * (`rcRootDeclImpl(..., isParam = true)`) but is never `initRef`'d, so the value it holds carries
+ * **no holder count of its own**. The ordinary store's `-1` on the old value would then free an
+ * object the caller still aliases -- `fn clobber(p: mut ref node) { p = new node }` followed by a
+ * write through the caller's old alias lands in the reused slot (uaf_param_overwrite).
+ *
+ * Matching the generated C name is exact: the checker mangles a local that shadows a parameter
+ * (`a` becomes `a__2`), so a target whose C name equals a parameter's C name can only be that
+ * parameter. Coroutine frames are not parameters: their fields live in the frame struct and their
+ * C spelling (`f->x`) cannot equal the bare parameter name.
+ *
+ * @param g  The generator (supplies `curFunc`).
+ * @param t  The assignment target expression.
+ * @return   True when `t` names a parameter slot of the current function.
+ */
+static bool cgTargetIsParamSlot(CG *g, Expr *t) {
+    if (!g || !t || t->kind != EX_IDENT || !g->curFunc) return false;
+    const char *nm = planCName(t);
+    if (!nm) nm = t->u.ident.name;
+    if (!nm) return false;
+    const FuncDef *f = g->curFunc;
+    for (size_t i = 0; i < f->params.len; i++) {
+        const Param *p = *(Param **)vecAt((Vec *)&f->params, i);
+        const char *pn = (p && p->cname) ? p->cname : (p ? p->name : NULL);
+        if (pn && strcmp(pn, nm) == 0) return true;
+    }
+    return false;
+}
+
+/**
  * @brief Emit the statement itself; this is the real dispatch table, while prefix bookkeeping lives
  *        in `genStmt`.
  *
@@ -8563,11 +8807,21 @@ static void genStmtInner(CG *g, Stmt *s) {
             if (body && body->kind == ST_BLOCK) {
                 cgLine(g, "{");
                 g->indent++;
+                /* The `ext f(x)` frames of this block registered their task ids with the
+                 * collector. The registration must stay until the drive call returns, but the
+                 * block's release text is emitted with the body (genBlockBody) *before*
+                 * `extc_dom_run`: `domBodyLevel` tells that release to defer the pop, which is
+                 * emitted at the lines right after the drive. */
+                int bodyLevel = g->blkLevel + 1;
+                int savedDomBody = g->domBodyLevel;
+                g->domBodyLevel = bodyLevel;
                 genBlockBody(g, body);
+                g->domBodyLevel = savedDomBody;
                 const char *dv = genExpr(g, recv);
                 g->needDomain = true;
                 flushPrefix(g);
                 cgLine(g, "extc_dom_run(%s);", dv);
+                cgTaskRootPopAt(g, bodyLevel, false, true);
                 g->indent--;
                 cgLine(g, "}");
                 return;
@@ -8707,6 +8961,25 @@ static void genStmtInner(CG *g, Stmt *s) {
                      * swept, and from then on the region is reclaimed only by the count reaching
                      * zero. */
                     cgLine(g, "extc_rc_storeRefSlot((void **)&(%s), (void *)(%s));", tgt, val);
+                    return;
+                }
+                /* BUG-A (G12): a **parameter slot** overwritten in the counting tier. The slot is
+                 * a root at function entry (`rcRootDeclImpl(..., isParam = true)`), so it was never
+                 * `initRef`'d -- the old value has no holder count of its own, and the ordinary
+                 * store's `-1` on the old value would free an object the caller still aliases.
+                 * Take the insert-only direction instead: `initRef` writes the slot and increments
+                 * the **new** value, while the old value keeps its count. At worst one reference is
+                 * reclaimed later (the conservative side of soundness); doing nothing would free
+                 * early. That leak is bounded per *forced event tier* run only: one reference per
+                 * overwritten parameter slot (~20 B/iteration in the G12 loop shape), while
+                 * the default sweep tiers (TIER 2/3) reclaim the dead object by sweeping, so memory
+                 * stays bounded there. The only unbounded shape is a forced event-tier run that
+                 * overwrites a parameter slot with a fresh escaping object; the default tiers are bounded.
+                 * The no-count tier does not take this path: there the ordinary store is
+                 * `storeRefLocal` (a plain write, no `-1`), so the shape is already safe and its
+                 * output must stay byte-identical. */
+                if (!g->rcNoCount && cgTargetIsParamSlot(g, s->u.assign.target)) {
+                    cgLine(g, "extc_rc_initRef((void **)&(%s), (void *)(%s));", tgt, val);
                     return;
                 }
                 const char *hreg = rcFreshHostRegion(g, hostBase);
@@ -9605,6 +9878,11 @@ static void genFuncInner(CG *g, FuncDef *f) {
      * note on the `rcFuncUsesHome` field). */
     g->rcFuncUsesHome = planUsesHome(f);
     g->tmpSeq = 0;
+    /* Task-root registration state is per body too: the guard names restart (like the temporaries)
+     * and no block of this body is a `d.run` body yet. */
+    g->taskRootSeq = 0;
+    g->domBodyLevel = 0;
+    g->atBlockEnd = false;
     /* `@unchecked` is a property of **this body**, so it is set on entry and restored on the way
      * out. A coroutine's step function is generated from its own `FuncDef` (the one the
      * annotation sits on), so the flag covers `yield`-split bodies as well. */
@@ -9629,6 +9907,8 @@ static void genFuncInner(CG *g, FuncDef *f) {
     for (int lv = 0; lv < g->levelCap; lv++) vecInit(&g->coroTaskAt[lv], g->arena, sizeof(int));
     g->ownedCoro = (Vec *)arenaAllocZero(g->arena, (size_t)g->levelCap * sizeof(Vec));
     for (int lv = 0; lv < g->levelCap; lv++) vecInit(&g->ownedCoro[lv], g->arena, sizeof(const char *));
+    g->taskRootAt = (Vec *)arenaAllocZero(g->arena, (size_t)g->levelCap * sizeof(Vec));
+    for (int lv = 0; lv < g->levelCap; lv++) vecInit(&g->taskRootAt[lv], g->arena, sizeof(int));
     /* A function that puts nothing into its own block arenas does not even emit
      * the array. The checker decides that (`planMayUseArena(f)`: the body contains a
      * `new`, or calls a function that has a home arena), and about half of the
@@ -12347,6 +12627,34 @@ static void emitPreamble(CG *g, Buf *out, Module *m) {
         "#include <stdarg.h>\n"   /* `extc_printf` (built-in printing and descriptor printing share the cout buffer) */
         "#include <string.h>\n"
         "#include <stdlib.h>\n\n");
+    /* Which reclamation shape this product was built for, as one grep-able line in the product
+     * head. The decision itself is made before the preamble: `scanUnitNeeds` reads the switches
+     * and the all-acyclic upgrade (just above `emitPreamble`) may turn the sweep off and the
+     * counting on. The marker is an **exhaustive** description of the runtime state and must not
+     * contradict the `EXTC_RC_NOCOUNT` / `EXTC_RC_SWEEP_FREE` macros that follow:
+     *   0 = no reclamation runtime at all (`needReclaim` false: the static analysis proved this
+     *       unit reclaim-idle). **No line is emitted** for it: nothing may test a tier the product
+     *       does not have, and a comment line in every product would churn all golden hashes.
+     *       `EXTC_RECLAIM=0` removes the whole runtime, so it also lands here (no marker at all).
+     *   1 = event tier: holder counting on (`EXTC_RC_NOCOUNT 0`), region sweeping off
+     *       (`EXTC_RC_SWEEP_FREE 1`).
+     *   2 = sweep tier: holder counting off (`EXTC_RC_NOCOUNT 1`), region sweeping on
+     *       (`EXTC_RC_SWEEP_FREE 0`) -- the default.
+     *   3 = counted+sweep tier: **both** on (`EXTC_RC_NOCOUNT 0`, `EXTC_RC_SWEEP_FREE 0`); reached
+     *       when `EXTC_RC_NOCOUNT=0` forces counting on a cyclic unit, or `EXTC_RC_SWEEPFREE=0`
+     *       forbids the event tier. */
+    if (g->needReclaim) {
+        int tier;
+        if (g->rcNoCount == 0 && g->rcSweepFree == 1)        tier = 1;
+        else if (g->rcNoCount == 1 && g->rcSweepFree != 1)   tier = 2;
+        else if (g->rcNoCount == 0 && g->rcSweepFree != 1)   tier = 3;
+        else                                                 tier = 2;   /* not reachable; keep the sweep label */
+        bufPrintf(out, "#define EXTC_RC_TIER %d   /* %s */\n", tier,
+                  tier == 1 ? "event tier: holder counting on, region sweeping off"
+                  : tier == 2 ? "sweep tier: holder counting off, region sweeping on"
+                  : tier == 3 ? "counted+sweep tier: both on (NOCOUNT=0 forced)"
+                              : "sweep tier: region sweeping on");
+    }
 
     /* The dyn handle's C type is needed by **prototypes**: a `dyn Trait` parameter is a value of
     * this type, and prototypes are emitted before the runtime that defines it (the pool runtime is
@@ -12412,8 +12720,13 @@ static void emitRuntimePrologue(CG *g, Buf *out, Module *m) {
          * allocation point" is a legal input: neither function is called then, and the generated C must
          * still compile under `-Wall -Werror`. */
         bufPuts(out,
+            "/* EXTC_RC_REG_FULL_POLICY 1: when the table is full, a new region is not entered and\n"
+            " * is never dropped -- leaking a region beats freeing it early (see the note above).\n"
+            " * `extc_rc_regWarned` makes the diagnostic one-shot. */\n"
+            "#define EXTC_RC_REG_FULL_POLICY 1\n"
             "#define EXTC_RC_REG_MAX 512\n"
             "static void *extc_rc_regKey[EXTC_RC_REG_MAX];\n"
+            "static int extc_rc_regWarned;\n"
             "static ExtcRcRegion *extc_rc_regVal[EXTC_RC_REG_MAX];\n"
             "static size_t extc_rc_regN;\n"
             "/* Every frame looks up its home arena once, in the prologue: the table usually holds\n"
@@ -12428,6 +12741,17 @@ static void emitRuntimePrologue(CG *g, Buf *out, Module *m) {
             "        extc_rc_regKey[extc_rc_regN] = key;\n"
             "        extc_rc_regVal[extc_rc_regN] = r;\n"
             "        extc_rc_regN++;\n"
+            "    } else if (!extc_rc_regWarned) {\n"
+            "        /* The full-table path must not be silent: otherwise every later region leaks and nothing\n"
+            "         * said so. Keep the leak (early free is worse), but say it once, under the same\n"
+            "         * diagnostic switch as the rest of the timing story, so tests stay quiet. */\n"
+            "        extc_rc_regWarned = 1;\n"
+            "        /* Compiled in only when the product was built with EXTC_RC_TIME=1 (the                                   \n"
+            "         * emitter's timing switch), so ordinary products and tests stay silent. */        \n"
+            "#if EXTC_RC_TIME\n"
+            "        fprintf(stderr, \"extc: rc region table full (EXTC_RC_REG_MAX=%d);\"                        \n"
+            "                        \" later regions are never dropped\\n\", EXTC_RC_REG_MAX);                \n"
+            "#endif\n"
             "    }\n"
             "    return r;\n"
             "}\n"
@@ -13783,6 +14107,14 @@ static void scanUnitNeeds(CG *g, Module *m) {
     {
         const char *ls = getenv("EXTC_RC_LOCALSTORE");
         if (ls && *ls && strcmp(ls, "0") == 0) g->rcLocalStore = 0;
+    }
+    /* `EXTC_TASK_ROOTS`: register the task id slots the collector may consult. **On by default**;
+     * `=0` is the kill switch and restores the previous product byte for byte (no registration
+     * line is emitted at all). See `cgTaskRootPush`. */
+    g->taskRoots = 1;
+    {
+        const char *tr = getenv("EXTC_TASK_ROOTS");
+        if (tr && *tr && strcmp(tr, "0") == 0) g->taskRoots = 0;
     }
     /* `EXTC_RC_NOCOUNT`: the holder-counting switch. **Default 1 = no counting** (reclaimed by sweeping
      * alone): on the same 31 shape ratchets, ASan corpora, gaps sets, pause probe and absolute peak of a

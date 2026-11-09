@@ -1,0 +1,65 @@
+/* tests/gc-p0/src/pd_pointer_dense.extc --- G18 追加观察用例（Lead m03381）。
+ * 目的：实测 P 的停顿通道在大指针稠密对象上的上界风险（Lead 给的理论上界
+ *   原预算成本 + MAX_MARK(1<<20) x c_unit(≈17.5 ns) ≈ 18 ms，c_unit 未测）。
+ * 形状：每轮 new 一个 8 MiB 的 dense（a: [1048576]?mut ref leaf，huge block），
+ *   1M 个槽位全部填成**非空**指针，每个指向一个**新分配**的 leaf（同时保持活到下一轮：
+ *   前一轮 dense 仍在 w.cur 里，下一轮 collect 时 mark 必须扫这 1M 个非空指针）。
+ *   活集 ≈ 1 个 dense 8 MiB + 它指向的 1M leaf（8 MiB）≈ 16 MiB。
+ * 判据：**只报观测，不参与 G18 判定**（Lead m03381）：
+ *   peak(ru_maxrss)、[histo] 尾部桶（b1ms 起）、over1ms、[top] 前 3；
+ *   若 over1ms > 0 如实记 RED，并写明「P 的停顿通道对大指针稠密对象不成立，
+ *   需要按 n 分档的准入」。
+ * 参数：argv[1] = rounds（默认 200）。stdout 期望 'PD n=200 made=200 s=1048575'
+ *   （末轮 dense 仍在 w.cur；a[1048575].v = 1048575）。
+ * 用 EXTC_RC_PAUSE=1 + EXTC_RC_STEP_CPU=1 采集。
+ * 语法说明：extC 的逃逸检查不允许把循环体局部 ref（depth 2）存进 world（depth 1），
+ *   也不允许在 helper 里把 borrow 存进 outlive 的容器；因此用 'new leaf' 直接存槽。 */
+use std::io
+
+fn parseN(args: slice<slice<u8>>, dflt: i64) -> i64 {
+    if args.len < 2 { return dflt }
+    var s: slice<u8> = args[1]
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    if v > 0 { return v }
+    return dflt
+}
+
+struct leaf { v: i64 }
+struct dense { a: [1048576]?mut ref leaf }
+struct world { cur: ?mut ref dense  made: i64 }
+
+fn holdDense(w: mut ref world, b: mut ref dense) { w.cur = b  w.made = w.made + 1 }
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var n: i64 = parseN(args, 200)
+    var w: world
+    var r: i64 = 0
+    while r < n {
+        var b = new dense
+        var i: i64 = 0
+        while i < 1048576 {
+            var p = new leaf
+            p.v = i
+            (*b).a[i] = p
+            i = i + 1
+        }
+        holdDense(ref w, b)
+        r = r + 1
+    }
+    var s: i64 = 0
+    var c: ?mut ref dense = w.cur
+    if c != null {
+        var l: ?mut ref leaf = (*c).a[1048575]
+        if l != null { s = (*l).v }
+    }
+    io::cout << "PD n=" << n << " made=" << w.made << " s=" << s << "\n"
+    return 0
+}

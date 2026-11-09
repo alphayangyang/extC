@@ -23,6 +23,20 @@
 * **G1（运行期守卫）**：用 `-DEXTC_RC_FOREIGN_GUARD=1` 编 P4 跑一次，要求打印
   `[fg] checks=N bad=M` 且 **N > 0、M == 0**；**拿不到这一行 ⇒ 插桩失败，判红**（不许伪装成绿）。
 
+## 等价形状：条件编译分支里的共用函数体
+
+P1 重构把 `extc_rc_alloc` 的 slab 选取条件写成「`#if` 一种条件带开括号、`#else` 另一种条件带开括号，
+函数体与闭括号共用」的形状 —— 两份开括号只配一个闭括号。逐字符无条件配平的 `functions()` 会把两个开
+括号都算上，于是函数体一路吞到后面的函数（`rsInc`/`rsDec` 自己的**定义行**、具名豁免的
+`extc_rc_unlinkChildren` 都算成 `extc_rc_alloc` 的违例），6 条 FS 全红。**这是切函数体的边界错了，
+不是不变量被破坏**：判据本身不动，文本一个字符都不删，两个分支仍逐行检查。
+
+`functions()` 因此识别 `#if/#ifdef/#ifndef/#elif/#else/#endif`：遇到 `#elif/#else` 把配平深度回到
+`#if` 时的值（每个分支各自完整），`#endif` 弹栈。这样每个分支独立配平、或各开一个括号共用闭括号
+的形状都能切出正确函数体；**没有丢分支、没有放宽判据**，只在配平时把同一条件编译组的两个开括号
+当作两个候选而不是两个真实嵌套。等价形状的回归在 `--selftest` 里：新形状必须绿，且两个分支里
+各注入一次违例都必须变红。
+
 ## 自检 / 红演示
 
 `--selftest` 用合成文本证明 FS1/FS2/FS3 规则**能红**；真实树上的注入演示见
@@ -51,6 +65,9 @@ RE_RSDEC = re.compile(r"\bextc_rc_rsDec(Slab)?\s*\(")
 RE_RSINC = re.compile(r"\bextc_rc_rsInc(Slab)?\s*\(")
 RE_FOREIGN_SET = re.compile(r"->foreign\s*=\s*1")
 RE_FOREIGN_GUARD = re.compile(r"->foreign\b")
+# 条件编译指令：只用于切函数体时的花括号配平（见 functions()），不参与判据本身。
+# 长名在前，避免 "ifdef" 被 "if" 抢先匹配。
+RE_CPP = re.compile(r"#[ \t]*(ifdef|ifndef|elif|else|endif|if)\b")
 
 
 def strip_comments(text: str) -> str:
@@ -68,6 +85,16 @@ def strip_comments(text: str) -> str:
 
 
 def functions(text: str):
+    """按花括号配平切出 (函数名, 函数体文本)。
+
+    **条件编译感知**：发射文本里有「`#if` 一种条件带开括号、`#else` 另一种条件带开括号，
+    函数体与闭括号共用」的形状（P1 重构的 `extc_rc_alloc` 就是）。逐字符无条件配平会把两个
+    开括号都算上、只看见一个闭括号，于是函数体一路吞到后面的函数（`rsInc`/`rsDec` 自己的
+    定义行、具名豁免的 `unlinkChildren` 的 `rsDec` 全被算成 `extc_rc_alloc` 的违例）。
+    这里识别 `#if/#ifdef/#ifndef/#elif/#else/#endif`：遇到 `#elif/#else` 把配平深度回到
+    `#if` 时的值（每个分支各自完整），`#endif` 弹栈。**文本一个字符都不删** —— 两个分支
+    都照常逐行检查，判据本身没有放松，只是函数体边界切对了。
+    """
     text = strip_comments(text)
     sig = re.compile(r"(?:__attribute__\(\(unused\)\)\s*)?static\s+(?:inline\s+)?"
                      r"[\w *]+?\b(\w+)\s*\([^;{]*\)\s*\{")
@@ -76,14 +103,30 @@ def functions(text: str):
         m = sig.search(text, pos)
         if not m:
             return
-        depth, j = 0, m.end() - 1
+        depth, frames, j = 0, [], m.end() - 1
         while j < len(text):
-            if text[j] == "{":
+            ch = text[j]
+            if ch == "{":
                 depth += 1
-            elif text[j] == "}":
+            elif ch == "}":
                 depth -= 1
                 if depth == 0:
                     break
+            elif ch == "#" and not text[text.rfind("\n", 0, j) + 1:j].strip():
+                eol = text.find("\n", j)
+                if eol < 0:
+                    eol = len(text)
+                d = RE_CPP.match(text, j)
+                if d:
+                    kind = d.group(1)
+                    if kind in ("if", "ifdef", "ifndef"):
+                        frames.append(depth)
+                    elif kind in ("elif", "else"):
+                        if frames:
+                            depth = frames[-1]   # 每个分支都从 #if 时的深度开始
+                    elif frames:                  # endif
+                        frames.pop()
+                    j = eol
             j += 1
         yield m.group(1), text[m.start():j + 1]
         pos = j + 1
@@ -172,25 +215,95 @@ static void extc_rc_storeRefOwnedReg(void **slot, void *v, void *host) {
 static void extc_rc_storeStructCons(void *dst, void *owner) { extc_rc_rsInc(nw); r->foreign = 1; }
 """
 
+# P1 的等价形状（回归用）：`extc_rc_alloc` 的 slab 选取条件写成 `#if`/`#else` 各带一个开括号、
+# 函数体与闭括号共用；其后还有 `rsInc`/`rsDec` 的**定义**、具名豁免的 `unlinkChildren`、
+# 以及一个 `#if`/`#else` 两个分支里各有一处 rsInc/rsDec 调用的 store 助手。朴素配平会把
+# `#if` 分支的两个开括号都算上，函数体一路吞到后面 ⇒ 好文本变红（6 条 FS 的假阳性）。
+SELFTEST_CPP = """
+struct ExtcRcSlab { ExtcRcRegion *region; int32_t foreign; };
+static void *extc_rc_alloc(void *r, size_t n) {
+    void *s = 0;
+#if EXTC_RC_LAZY_FREE
+    if (!s || (bump >= nslots && nfree == 0)) {
+#else
+    if (!s || (freelist < 0 && bump >= nslots)) {
+#endif
+        s = extc_rc_slabNew(r, n);
+    }
+    return s;
+}
+/* 以下是 alloc 之后的函数：朴素配平会把它们一起吞进 alloc 的函数体。 */
+__attribute__((unused)) static void extc_rc_rsInc(void *t) { (void)t; }
+__attribute__((unused)) static void extc_rc_rsDec(void *t) { (void)t; }
+__attribute__((unused)) static void extc_rc_rsIncSlab(ExtcRcSlab *s, void *t) { (void)s; (void)t; }
+__attribute__((unused)) static void extc_rc_rsDecSlab(ExtcRcSlab *s, void *t) { (void)s; (void)t; }
+__attribute__((unused)) static void extc_rc_unlinkChildren(ExtcRcSlab *s, size_t i) {
+    void *c = ((void **)s)[i];
+    if (c) { ExtcRcSlab *cs = extc_rc_ownSlab(c); if (cs && cs->region != s->region) extc_rc_rsDecSlab(cs, c); }
+}
+static void extc_rc_storeRefOwnedReg(void **slot, void *v, ExtcRcRegion *host) {
+#if EXTC_RC_NOCOUNT
+    if (extc_rc_partN > 1) {
+        if (host && sv && sv->region != host) { extc_rc_rsIncSlab(sv, v); host->foreign = 1; }
+        if (host && host->foreign) { void *old = *slot; ExtcRcSlab *sold = extc_rc_ownSlab(old); if (sold && sold->region != host) extc_rc_rsDecSlab(sold, old); }
+#else
+    if (host) {
+        ExtcRcRegion *r = host;
+        if (sv && sv->region != r) { extc_rc_rsIncSlab(sv, v); r->foreign = 1; }
+        if (r->foreign && sold && sold->region != r) extc_rc_rsDecSlab(sold, old);
+#endif
+        *slot = v;
+    }
+}
+"""
+
 
 def selftest() -> int:
     fail = 0
 
-    def expect(name, text, want_any):
+    def expect(name, text, want_any, want_fn=None):
         nonlocal fail
         v = static_violations(text)
-        got = {r for r, _, _ in v}
-        if (want_any is None and not v) or (want_any is not None and want_any in got):
+        got = {(r, fn) for r, fn, _ in v}
+        if want_any is None:
+            ok = not v
+        elif want_fn is not None:
+            ok = (want_any, want_fn) in got
+        else:
+            ok = want_any in {r for r, _ in got}
+        if ok:
             print(f"  ok   selftest {name}")
         else:
-            print(f"  FAIL selftest {name}：期望 {want_any or '空'}，得到 {sorted(got)}")
+            print(f"  FAIL selftest {name}：期望 {want_any or '空'}"
+                  f"{'/' + want_fn if want_fn else ''}，得到 {sorted(got)}")
             fail = 1
 
+    # ---- 原有形状（单签名、无 #if 分支）----
     expect("好文本必须绿", SELFTEST_GOOD, None)
-    expect("删掉 foreign=1 ⇒ FS2 红", SELFTEST_GOOD.replace("extc_rc_rsInc(nw); r->foreign = 1;", "extc_rc_rsInc(nw);"), "FS2")
+    expect("删掉 foreign=1 ⇒ FS2 红",
+           SELFTEST_GOOD.replace("extc_rc_rsInc(nw); r->foreign = 1;", "extc_rc_rsInc(nw);"),
+           "FS2", "extc_rc_storeStructCons")
     expect("删掉 rsDec 行的 foreign ⇒ FS1 红",
-           SELFTEST_GOOD.replace("if (host->foreign) { void *old", "if (1) { void *old"), "FS1")
+           SELFTEST_GOOD.replace("if (host->foreign) { void *old", "if (1) { void *old"),
+           "FS1", "extc_rc_storeRefOwnedReg")
     expect("删掉字段 ⇒ FS3 红", SELFTEST_GOOD.replace("int32_t foreign;", ""), "FS3")
+
+    # ---- P1 等价形状（#if/#else 各带开括号、共用函数体与闭括号）----
+    expect("等价形状（#if 分支共用函数体）必须绿", SELFTEST_CPP, None)
+    expect("等价形状 #if 分支删 foreign=1 ⇒ FS2 红",
+           SELFTEST_CPP.replace("extc_rc_rsIncSlab(sv, v); host->foreign = 1;",
+                                "extc_rc_rsIncSlab(sv, v);"),
+           "FS2", "extc_rc_storeRefOwnedReg")
+    expect("等价形状 #else 分支删 foreign=1 ⇒ FS2 红（另一分支没被丢掉）",
+           SELFTEST_CPP.replace("extc_rc_rsIncSlab(sv, v); r->foreign = 1;",
+                                "extc_rc_rsIncSlab(sv, v);"),
+           "FS2", "extc_rc_storeRefOwnedReg")
+    expect("等价形状 #if 分支 rsDec 不再把门 ⇒ FS1 红",
+           SELFTEST_CPP.replace("if (host && host->foreign) { void", "if (host) { void"),
+           "FS1", "extc_rc_storeRefOwnedReg")
+    expect("等价形状 #else 分支 rsDec 不再把门 ⇒ FS1 红（另一分支没被丢掉）",
+           SELFTEST_CPP.replace("if (r->foreign && sold", "if (sold"),
+           "FS1", "extc_rc_storeRefOwnedReg")
     return fail
 
 

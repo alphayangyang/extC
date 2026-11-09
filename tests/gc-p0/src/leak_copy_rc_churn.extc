@@ -1,0 +1,42 @@
+/* L10-c 已知限制（XFAIL/known-issue，不进回归）：目的 view 在 rc 且被反复覆盖。
+ * 形状：dst 在循环外 `new item[1]`（rc region），每轮新建 src 并把 src[0].r 复制进 dst[0].r。
+ * 旧 node 的跨 region in-edge（rsInc）在覆盖时是否撤销——若不撤销，旧 node 每轮都被当作
+ * 存活 seed ⇒ sweep 永不释放 ⇒ 线性泄漏。
+ * 判据：记录 XFAIL：maxRSS(800k)/maxRSS(50k)。本机 build-frz/extc 59171671 实测 6,660 kB → 93,584 kB
+ *   （与 Lead m01688 引用的 doc-audit 数字 6660→93544 kB 逐字吻合）；修复方向 P0-10。
+ * 运行：argv[1] = N（默认 50000）。 */
+use std::io
+fn parseN(args: slice<slice<u8>>, idx: i64, dflt: i64) -> i64 {
+    var i: i64 = idx
+    if args.len <= i { return dflt }
+    var s: slice<u8> = args[i]
+    var v: i64 = 0
+    var k: i64 = 0
+    while k < s.len {
+        var ch: u8 = s[k]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        k = k + 1
+    }
+    if v > 0 { return v }
+    return dflt
+}
+struct node { v: i64 }
+struct item { r: mut ref node }
+fn main(args: slice<slice<u8>>) -> i32 {
+    var n: i64 = parseN(args, 1, 50000)
+    var dst: mut slice<item> = new item[1]
+    var sum: i64 = 0
+    var i: i64 = 0
+    while i < n {
+        var src: mut slice<item> = new item[1]
+        src[0].r = new node
+        src[0].r.v = i
+        copyInto<item>(dst, src, 1)
+        sum = sum + dst[0].r.v
+        i = i + 1
+    }
+    io::cout << "L10C n=" << n << " sum=" << sum << "\n"
+    return 0
+}

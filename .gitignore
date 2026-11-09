@@ -73,6 +73,13 @@ tests/reclaim-unified/out/C-prototype-raw.txt
 bench/gc/v2/pause/*/*.events
 bench/gc/v2/pause/*/*.hist
 
+# 各轮的隔离构建（make BUILDDIR=build-xxx）：源码可重建，不入库
+build-*/
+
+# GC 策略套件（tests/gc-p0）：run.sh 每次重写的原始转储与现场构建的可执行文件
+tests/gc-p0/out/
+tests/gc-p0/bin/
+
 # 我的分析构建（sanitizer / -fanalyzer）：只在本地用，能重新构建
 build-an/
 build-asan/

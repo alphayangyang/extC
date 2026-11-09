@@ -9,6 +9,14 @@ last-level misses 4,614,274 -> 3,545,405). This gate pins the storage decision:
   * freeSlot pushes onto the chain through tid[] and never touches the payload,
   * the alloc-time pop decodes tid[] (and freeSlot does not zero the link),
   * the uint16 encoding bound is declared and guarded at slab construction.
+
+P1 split the free path in two modes (both still keep the link in tid[]):
+  * default (EXTC_RC_LAZY_FREE=0): freeSlotWord links every dead slot as it
+    sweeps, through tid[] (slot index `base + b`),
+  * lazy reuse (EXTC_RC_LAZY_FREE=1): the sweep only counts the holes
+    (`s->nfree += n`), and extc_rc_alloc rebuilds the chain from the occupancy
+    bitmap through tid[] when it next needs a slot in that block,
+so the payload-storage invariant is pinned on both modes.
 """
 import argparse
 import ast
@@ -27,6 +35,11 @@ FREESLOT = 'static void extc_rc_freeSlot(ExtcRcSlab *s, size_t i) {'
 FREESLOT_LINK = 'static void extc_rc_freeSlotLink(ExtcRcSlab *s, size_t i) {'
 FREESLOT_WORD = 'static size_t extc_rc_freeSlotWord(ExtcRcSlab *s, size_t w, uint64_t dead) {'
 DELEGATE = 'extc_rc_freeSlotLink(s, i);'
+WORD_LINK = 's->tid[idx] = (uint16_t)(s->freelist + 1);'
+WORD_POP = 's->freelist = (int64_t)idx;'
+LAZY_HOLES = 's->nfree += (uint32_t)n;'
+ALLOC = 'static EXTC_RC_ALLOC_DECL void *extc_rc_alloc('
+LAZY_IF = '#if EXTC_RC_LAZY_FREE'
 
 
 def emitter_text():
@@ -48,17 +61,67 @@ def body_of(text, sig):
     return text[a:b]
 
 
+def lazy_variant(text, lazy):
+    """Resolve every `#if EXTC_RC_LAZY_FREE` down to the branch a real build
+    compiles: lazy=True keeps the #if branch, lazy=False keeps the #else branch
+    (nothing when there is no #else).  The preprocessor text carries both
+    branches; the alloc body must be inspected one branch at a time, or its
+    raw brace count runs past the function."""
+    lines = text.splitlines(True)
+    out, i = [], 0
+    while i < len(lines):
+        if lines[i].strip().startswith(LAZY_IF):
+            depth, j, spans, start = 1, i + 1, [], i + 1
+            while j < len(lines):
+                s = lines[j].strip()
+                if s.startswith('#if'):
+                    depth += 1
+                elif s.startswith('#endif'):
+                    depth -= 1
+                    if depth == 0:
+                        spans.append((start, j))
+                        break
+                elif depth == 1 and (s.startswith('#else') or s.startswith('#elif')):
+                    spans.append((start, j))
+                    start = j + 1
+                j += 1
+            if not spans:
+                raise AssertionError('unterminated ' + LAZY_IF)
+            if lazy:
+                a, b = spans[0]
+            else:
+                a, b = spans[-1] if len(spans) > 1 else (0, 0)
+            out.append(lazy_variant(''.join(lines[a:b]), lazy))
+            i = j + 1
+            continue
+        out.append(lines[i])
+        i += 1
+    return ''.join(out)
+
+
 def violations(text):
     out = []
     fs = body_of(text, FREESLOT)
     fsl = body_of(text, FREESLOT_LINK)
     fsw = body_of(text, FREESLOT_WORD)
-    if fs is None or fsl is None or fsw is None:
-        return ['freeSlot/freeSlotLink/freeSlotWord missing']
+    alloc_alloc = body_of(lazy_variant(text, False), ALLOC)
+    alloc_lazy = body_of(lazy_variant(text, True), ALLOC)
+    if fs is None or fsl is None or fsw is None or alloc_alloc is None or alloc_lazy is None:
+        return ['freeSlot/freeSlotLink/freeSlotWord/alloc missing']
     if LINK not in fsl:
         out.append('freeSlotLink does not push onto the tid[] chain')
-    if LINK not in fsw:
+    # 默认档：扫描时逐个把空洞挂到 tid[]（idx = base + b）。
+    if WORD_LINK not in fsw:
         out.append('freeSlotWord does not push onto the tid[] chain')
+    # 懒复用档：扫描只数空洞，不挂链。
+    if LAZY_HOLES not in fsw:
+        out.append('freeSlotWord lazy-reuse branch does not count the holes')
+    # 懒复用档的链由 alloc 从占用位图重建，也必须写 tid[]。
+    if WORD_LINK not in alloc_lazy or WORD_POP not in alloc_lazy:
+        out.append('alloc does not rebuild the lazy-reuse chain through tid[]')
+    # 默认档的分配弹出仍要解码 tid[]（值存 tid，载荷不动）。
+    if POP not in alloc_alloc:
+        out.append('default-build alloc does not decode the tid[] chain')
     if DELEGATE not in fs:
         out.append('freeSlot does not delegate the chain push')
     if 'extc_rc_unlinkChildren(s, ' not in fsw:
@@ -95,7 +158,12 @@ def main():
             'tid zeroed': text.replace(LINK, LINK + '\n    ' + TID_ZERO),
             'no delegate': text.replace(DELEGATE, '/* injected */'),
             'word does not unlink': text.replace('extc_rc_unlinkChildren(s, base + b);', '/* injected */'),
-            'word skips chain': text.replace(LINK, LINK + '\n    ' + TID_ZERO),
+            # 默认档 freeSlotWord 跳过挂链（链只能靠载荷或干脆没有）
+            'word skips chain': text.replace(WORD_LINK, '/* injected */'),
+            # 懒复用档 freeSlotWord 不数空洞（链会漏挂，alloc 重建时槽被当满）
+            'word lazy does not count holes': text.replace(LAZY_HOLES, '/* injected */'),
+            # 懒复用档 alloc 重建链时不再写 tid[]（退回载荷/无链）
+            'alloc rebuild loses tid link': text.replace(WORD_POP, '/* injected */'),
         }
         for name, mutated in mutations.items():
             assert mutated != text, name

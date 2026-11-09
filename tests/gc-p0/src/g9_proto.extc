@@ -1,0 +1,37 @@
+use std::io
+use std::sys::pool as syspool
+use std::sys::coroutine as sct
+
+fn mk(n: i64) -> coroutine<i64> {
+    var acc: i64 = 0
+    var tag: i64 = 777
+    for i in 0..n {
+        acc = acc + i
+        yield acc
+    }
+    io::println(f"tag={tag}")
+    return
+}
+
+fn main() -> i32 {
+    var h: coroutine<i64> = mk(5)
+    var got: i64 = 0
+    if h.next() {
+        got = got + h.value()
+    }
+    let live0: i64 = sct::extc_task_live()
+    let freed: i64 = syspool::collect()
+    let live1: i64 = sct::extc_task_live()
+    var steps: i64 = 1
+    var more: bool = true
+    while more {
+        if h.next() {
+            got = got + h.value()
+            steps = steps + 1
+        } else {
+            more = false
+        }
+    }
+    io::println(f"freed={freed} live0={live0} live1={live1} got={got} steps={steps}")
+    return 0
+}

@@ -1,0 +1,38 @@
+/* T1-chain2：两级链，每轮 "w.head = new node; (*w.head).next = new node"（父→子各 +1 边）。
+ * 父对象被下一轮覆盖后不可达；事件档下父的 hold 归零 -> freeSlot，但 freeSlot **不**减 payload
+ * 里子引用的 hold（无级联），所以子结点每轮泄漏 1 个。用于量化档1 的盲点（链型垃圾）。
+ * argv[1]=N。 */
+use std::io
+
+struct node { v: i64  next: ?mut ref node }
+struct world { head: ?mut ref node }
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var n: i64 = 2000000
+    if args.len >= 2 {
+        var s: slice<u8> = args[1]
+        var v: i64 = 0
+        var i: i64 = 0
+        while i < s.len {
+            var ch: u8 = s[i]
+            if ch < u8(48) { break }
+            if ch > u8(57) { break }
+            v = v * 10 + i64(ch) - 48
+            i = i + 1
+        }
+        if v > 0 { n = v }
+    }
+    var w = new world
+    w.head = null
+    var i: i64 = 0
+    while i < n {
+        w.head = new node
+        if w.head != null {
+            (*w.head).next = new node
+            (*w.head).v = i
+        }
+        i = i + 1
+    }
+    io::cout << "T1chain2 n=" << n << "\n"
+    return 0
+}

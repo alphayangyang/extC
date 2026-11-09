@@ -78,7 +78,12 @@ def violations(text):
         'child loop pointer walk': ('const uint32_t *_op = t->off; const uint32_t *_oend = _op + t->nptr;' in text and
                                     'for (; _op < _oend; ++_op) {' in text and
                                     'void *child = *(void **)((char *)o + *_op);' in text),
-        'mark advance inlined': '__attribute__((unused)) static inline __attribute__((always_inline)) void extc_rc_markAdvance(' in text,
+        # 推进计数的分派点必须仍是 always_inline 的内联函数；P1 给配额记账后它的返回
+        # 类型从 void 变成 size_t（返回本轮推进的工作量，调用点 _used += ...），
+        # 门禁只钉「内联分派点」，不钉返回类型。
+        'mark advance inlined': re.search(
+            r'__attribute__\(\(unused\)\) static inline __attribute__\(\(always_inline\)\) '
+            r'\w+ extc_rc_markAdvance\(', text) is not None,
     }
     return [k for k, ok in checks.items() if not ok]
 
@@ -112,7 +117,7 @@ def main():
                       '__builtin_prefetch((void *)(_batch[_nb] & ~(uintptr_t)1)',
                       '#if EXTC_RC_MARK_BATCH_POP > EXTC_RC_MARK_BATCH_MAX',
                       'const uint32_t *_op = t->off;',
-                      '__attribute__((unused)) static inline __attribute__((always_inline)) void extc_rc_markAdvance(']:
+                      '__attribute__((unused)) static inline __attribute__((always_inline)) size_t extc_rc_markAdvance(']:
             assert token in text, token
             mutated = text.replace(token, '/* injected */')
             assert violations(mutated), token

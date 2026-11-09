@@ -1,0 +1,68 @@
+/* G14（P0-7b）默认档循环 copyInto 含引用元素的 item —— 内存是否有界。
+ * 机理（doc-audit，Lead m01356）：copyInto 对含引用槽的元素逐元素调用
+ * extc_rc_storeStructCons(hostKnown=0)，它把**目标 region** 置 noSweep（src/back/reclaim.c:2030，
+ * 无清除点）；默认档（NOCOUNT 1）计数层编译掉后该 region 既不能 sweep、也没有 hold 归零路径
+ * ⇒ 循环里产生的垃圾线性积累。修复方向：新入口 extc_rc_storeStructCopy(dst,size,viewBase)，
+ * 用 viewBase 证明宿主、不再把 region 置 noSweep。
+ * 形状：buf/src 各 new item[1]，每轮 src[0].r = new node（旧 node 变垃圾）后 copyInto<item>(buf, src, 1)；
+ * 目标 buf 固定，所以触发的是"目标 region 退出清扫"这一条。
+ *
+ * 判据（Lead m01688 裁决 (b)，绝对增量 + 对照）：
+ *   PASS = maxRSS(800k, copy) ≤ 1.02 × maxRSS(800k, 对照) 且 maxRSS(800k, copy) ≤ 4 MB。
+ *   对照 = 同一程序把 copyInto 那一步去掉（argv[2] = "--ctl"），其余分配完全一样。
+ *   ratio(800k/50k) 仍打印，但只作观测（50k→100k 的一次性高水位不是泄漏）。
+ *   量具：/usr/bin/time -f '%M'（50k 档 <1ms，sample.py 的 2ms 采样拿不到点）。
+ *   修复前（隔离基线 /tmp/mine2-src/build-mine2/extc md5 a9b391cf…，带 pre-fix 记账）：
+ *   2,636 kB → 17,616 kB = 6.68×（对照未知，doc-audit 报 800k=17,616 vs 对照 2,832）。
+ * 注意：HEAD 的 build/extc 对 copyInto **不发射任何记账**（见 MEAS §5 G13），所以 HEAD 上本用例
+ *   是平坦的（实测 2,640→3,024 kB = 1.145×）；这个平坦不能当成"有界"证据。
+ * 运行：argv[1]=N（parseN，默认 50000）；argv[2]="ctl" 为对照（不做 copyInto）。
+ *   run.sh g14：50k / 100k / 800k(copy) / 800k(对照) 四个 timemax 点 + 3 次 run_plain 退出码自证。 */
+use std::io
+fn parseN(args: slice<slice<u8>>, dflt: i64) -> i64 {
+    if args.len < 2 { return dflt }
+    var s: slice<u8> = args[1]
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    if v > 0 { return v }
+    return dflt
+}
+fn parseCtl(args: slice<slice<u8>>) -> i64 {
+    if args.len < 3 { return 0 }
+    var f: slice<u8> = args[2]
+    if f.len < 1 { return 0 }
+    if f[0] == u8(99) { return 1 }   /* 'c' = ctl（对照：不做 copyInto；不用 "--" 前缀，避免被 sample.py 的 argparse 当选项） */
+    return 0
+}
+
+struct node { v: i64 }
+struct item { r: mut ref node }
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var n: i64 = parseN(args, 50000)
+    var ctl: i64 = parseCtl(args)
+    var buf: mut slice<item> = new item[1]
+    var src: mut slice<item> = new item[1]
+    var i: i64 = 0
+    var sum: i64 = 0
+    while i < n {
+        src[0].r = new node
+        src[0].r.v = i
+        if ctl == 0 {
+            copyInto<item>(buf, src, 1)
+            sum = sum + buf[0].r.v
+        } else {
+            sum = sum + src[0].r.v
+        }
+        i = i + 1
+    }
+    io::cout << "G14 ctl=" << ctl << " n=" << n << " sum=" << sum << " last=" << src[0].r.v << "\n"
+    return 0
+}

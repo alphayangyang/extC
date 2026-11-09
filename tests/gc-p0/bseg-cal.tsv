@@ -1,0 +1,13 @@
+# bseg-cal.tsv — 续扫段步（seg>0）每字成本标定表（Lead m04591 口径，m04755 增列）
+# chunk 锁 8192（Lead m04591 裁决；P1-RQ3-CHUNK.md:3 默认不改）。
+# c_seg_ns = p99.9_us(shape, [segsteps], chunk=8192) / chunk * 1000（每 word 扫描成本，ns；3 reps 取中位，m04755 C）
+# 门禁 (b)：p99.9 <= min(1.5*c_seg_ns*chunk/1000 + 1 us, 64 us 桶界兜底) 且 over1ms = 0；max 只 OBS。
+#   m04755 B：50 us 落不进 15 桶（b32us..b64us 之间），兜底取 b64us 桶界（不是 50 us 精确值）；
+#   要精确到 50 us 需精确分位插桩，列为后续。真正第一道界是 B_seg 闭式，桶界兜底只在闭式被绕过时防灾难。
+# 每个权威 build 用其自身 [segsteps] 重标定一次（run_id / src_md5 / extc_md5 溯源）。formal 标定 run
+# 单独在 after 之前跑、不计入 after 判据（命令：PAUSE=1 STEP_CPU=1、与 after 同 pin/同 args，3 reps 取中位）。
+# 溯源以源码 md5 为准（m04755 C）：src_md5 = "reclaim.c=<md5>,codegen.c=<md5>"，extc_md5 = 编译器二进制 md5。
+# GO 前下面两行是 ref 数据（P1-RQ3-CHUNK.md 参考构建），md5 未知 ⇒ g1c 会提示「正式门禁前必须用本 build 重标定」。
+# 列：shape	chunk	c_seg_ns	p99.9_us	p99.9_min_us	p99.9_max_us	run_id	src_md5	extc_md5
+pd_bigobj	8192	7.087	58.06	49.54	70.81	cal:2026-11-09T18:46:01:reps=3:pin=6	reclaim.c=e17080d1c80513b27ca06f2bc6224b0f,codegen.c=d339382889b87c0dd18b357c69e2e779	07b7be1a4a9accdcb8eb0c51bbe2fb7c
+pd_pointer_dense	8192	11.077	90.74	85.09	91.83	cal:2026-11-09T18:46:01:reps=3:pin=6	reclaim.c=e17080d1c80513b27ca06f2bc6224b0f,codegen.c=d339382889b87c0dd18b357c69e2e779	07b7be1a4a9accdcb8eb0c51bbe2fb7c

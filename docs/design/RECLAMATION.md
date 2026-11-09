@@ -556,10 +556,13 @@ P2 与这个反例的差别**只有"旧值是否另有根"这一维**（P2 的�
 
 ### 四.一、窗口怎么量、判据用哪个数（`EXTC_RC_PAUSE=1`）
 
-**量具**：`EXTC_RC_PAUSE=1` 时进程退出打三行到 stderr ——
+**量具**：`EXTC_RC_PAUSE=1` 时进程退出向 stderr 打一组行 —— `[clock]`（三个计时面的**实际**时钟来源）·
 `[pause]`（契约入口 `collect`/`checkOwed` 的**武装窗口**进→出）· `[step]`（**每个切片**：
-`markStep`/`sweepStep` 每次调用的墙钟 n/max/total + 阈值桶 `over16/over64/over256/over1ms`）·
-`[work]`（同一批切片的**确定性工作量**：`walk_max/scan_max/push_max` + `>16/>64/>256` 桶）。
+`markStep`/`sweepStep` 每次调用的 n/max/total + 阈值桶 `over16/over64/over256/over1ms`）·
+`[histo]`（逐桶计数的 15 桶直方图）· `[top]`（最慢 8 步的归因）· `[segsteps]`（只统计**续扫段步** `seg>0`：`n`、`pops_tot`、`max_us`、与 `[histo]` 同界 15 桶、钟口径同 `[histo]`；无段步时全 0）· `[regionfree]` / `[chan]`（整区
+销毁与三条同步通道的 n/max/total/工作量）· `[work]`（同一批切片的**确定性工作量**：
+`walk_max/scan_max/push_max/seg_max` + `walk_cap`/`walk_gtcap` + `>16/>64/>256` 桶）· `[worst]` / `[ubwork]` / `[wbudget]` /
+`[guard]`。
 `tools/rc-pause-probe.py` 也能插桩 `extc_rc_collect` 与热路径 `extc_rc_step`（`PROBE … step_*`），
 并在插桩失败时 **rc=1**（不许伪装成 `sweeps=0`）。**但它的 `PAUSE_DIST` 行在当前代码形态下恒
 `n=0`**（环形记录插在**冷**契约入口 `extc_rc_collect`，而热路径走 `extc_rc_step`）⇒ **不能用它断言
@@ -581,8 +584,8 @@ P2 与这个反例的差别**只有"旧值是否另有根"这一维**（P2 的�
 （那些是可并发的 CPU），Java 的 GC Pause 才是真 STW 墙钟 ⇒ **三家的"停顿"只可并排，不可相减或
 相除**。实测与不可比清单见 [`bench/gc/SPECTRUM-MATRIX.md`](../../bench/gc/SPECTRUM-MATRIX.md) §4/§7。
 
-**`[work]` 的盲区（2026-10-15 抓到，已补量具）**：`[work]` 只统计 `budget ≤ EXTC_RC_MARK_BATCH_MAX`
-的**有界热路径步**；契约排空/结算收尾（`budget=∞`）连量具都躲过去 —— `[step] n` 与 `[work] n`
+**`[work]` 的盲区（2026-10-15 抓到，已补量具）**：`[work]` 只统计 `budget ≤ EXTC_RC_MARK_BATCH_MAX × EXTC_RC_SWEEP_PRESSURE_MUL`
+的**有界热路径步**（基数 256 × 压力乘子，默认 4 ⇒ 上限 1024；压力乘子是**策略内的步长上限**，不是无界排空）；契约排空/结算收尾（`budget=∞`）连量具都躲过去 —— `[step] n` 与 `[work] n`
 的差就是它们。于是「一次无界排空」在 `[work]` 里表现为**零工作量**（看起来像"这一步没工作"）。
 补的三行：
 
@@ -592,6 +595,20 @@ P2 与这个反例的差别**只有"旧值是否另有根"这一维**（P2 的�
 * `[worst]`：**耗时最大那一步**的分项归因（`kind=mark|sweep`、`why=` 入口标签、预算与各项计数），
   用来区分「多项叠加」与「单一项顶到预算」。
 * `[guard]`：屏障参与者计数 `r4_wb_open`（**信息量** —— 程序可以不 `regionDrop`，那时 >0 合法）。
+* `[top]`：最慢 8 步的**归因** —— `kind=mark|sweep`、`why=` 入口标签、`dur_us`/`cpu_us`、`freed`、
+  `words`/`seg`/`pops`、全局步号 `step` 与触发序 `coll`、`first`（该 region 的首个清扫步）、
+* `[segsteps]`：**续扫段步**（`seg>0`，结构上一步只续扫一段）的独立直方图 —— `n` 步数、
+  `pops_tot`（这些步的 pops 之和；结构上应与 `n` 相等，不等就说明分段路径里混进了别的 pop）、
+  `max_us`、与 `[histo]` 同界的 15 桶。`[step]`/`[histo]` 混装了 `seg=0` 的冷 pop 步与 sweep 步，
+  **段步单步上界只能看这一行**。
+  `trans`（跨 slab）、`minflt`（`EXTC_RC_PAUSE=2` 时读 `/proc/self/stat` 的 minor fault 增量）、
+  `chunk=EXTC_RC_SCAN_CHUNK`。
+* `[sweepelide]`：整块清扫省略的计数 —— `bulk_reset`（整块重置次数）、`bulk_slots`（被整块回收的槽数）、
+  `swept`（逐字扫完的 slab 数）、`mis`（`EXTC_RC_ELIDE_VERIFY=1` 时位图复核不一致的次数；默认 0，
+  非 0 表示 roll-up 漂移，该块退回逐字清扫）。判据：`mis=0`。
+* `[regionfree]` / `[chan]`：`regionFree` 的 `max_frees/max_slabs` 与 `sync_us`（第一阶段同步段）/`queue_us`（本次排空），以及三条同步通道（`regionfree`/`release`/`collect`）各自的 n/max/total + 工作量 + 15 桶。
+* `[freequeue]`：延迟释放队列 —— `slabs_bytes`/`slabs`（当前队列）、`drained_total`（累计排空的 slab 数）、`forced`（队列字节超过 `EXTC_RC_FREE_QUEUE_BYTES`、触发硬截止排空的次数）、`max_depth`/`max_deferred_us`（队列深度峰值 / 最慢一次排空耗时）、`left_slabs`/`left_bytes`（进程退出时残留，由 OS 回收）。判据：`left_slabs=0`（线程/驱动退出前全量排空）；`forced` 只在队列超限时增长。
+* `[clock]`：`step=` / `pause=` / `chan=` 三面的实际时钟；`[histo]` 的读法见上一节。
   **真正的判据是 `finish`/`abort` 里的配对自检**：`r->marking` 为真 ⇒ 该区域贡献过 `wb+1`，
   减完必须恰好少 1，漏减/下溢都会 `extc_rc_oops`（`trap: reclaim: R4:` + rc≠0）。**不要**写成
   "退出时 `wb==0`"。
@@ -600,24 +617,30 @@ P2 与这个反例的差别**只有"旧值是否另有根"这一维**（P2 的�
 「热循环里每轮一次」与「进程退出时一次」由步号直接区分，不靠推理。
 
 **判据用哪两个数**：
-1. **确定性工作量界**（`[work]`）：热路径每步 `walk ≤ EXTC_RC_MARK_BATCH_MAX`、
+1. **确定性工作量界**（`[work]`）：热路径每步 `walk_max ≤ walk_cap = EXTC_RC_MARK_BATCH_MAX × EXTC_RC_SWEEP_PRESSURE_MUL`（默认 256×4 = **1024**；`walk_cap`/`walk_gtcap` 由产物 `[work]` 行给出，`walk_gtcap` 必须为 0）、
    `scan ≤ EXTC_RC_SEED_WORDS`、`push ≤ EXTC_RC_SEED_PUSHES + 63`（压栈按**字**收口：一个字最多
    64 位，所以最后一个字可能超出名义预算 ≤63；这是粒度，不是失控）。超界就是**真的**要做整形。
-   **这条已由 `gate-reclaim-work` 自动强制**（挂 `nobench`，约 3 秒）：五形状现场生成+运行，
+   **这条已由 `gate-reclaim-work` 自动强制**（挂 `nobench`，约 3 秒）：六形状现场生成+运行，
    `[work]` 必须存在且 `n>0`（否则文案是"插桩失败/工具不兼容"，不许当绿）、每形状 3 次逐字相同、
-   三条界全部**蕴含式**成立；三个预算与 `rsbit` 字宽都从**产物** `#define` grep（读不到 ⇒ 红，
+   四条界全部**蕴含式**成立（`walk_max ≤ walk_cap`、`walk_gtcap == 0`、`scan_max ≤ SEED_WORDS`、`push_max ≤ SEED_PUSHES+63`）；三个预算与 `rsbit` 字宽都从**产物** `#define` grep（读不到 ⇒ 红，
    不许硬编码）。红演示见 `docs/changelog/2026-10.md` 顶部：把种子扫描的字预算拿掉 ⇒
-   `scan_max=5120 > SEED_WORDS=512` 直接红（就是那个历史洞）；把 `[work]` 改名 ⇒ 五形状全红在"插桩失败"。
+   `scan_max=5120 > SEED_WORDS=512` 直接红（就是那个历史洞）；把 `[work]` 改名 ⇒ 六形状全红在"插桩失败"。
 2. **超阈切片计数**（`[step]` 的 `overK`）：`over1ms` 必须恒 0；`over64/over256` 用于比值。
    判据是"计数在中位数/最小值口径下不上升"，不是单次最大值。
 
-**读 `[step]` 的桶：标签是累计计数，而且打不出细粒度。** `over16/over64/over256/over1ms` 都是
-**累计**的阈值计数，实际阈值分别是 **≥16 µs / ≥64 µs / ≥256 µs / ≥1 ms**。计数器按**上界**命名
-（`stepB64us` 装的是 **16–64 µs** 那一档），所以 `over16` 的求和里出现 `stepB64us` 是**对的** ——
-按字面把 `B64us` 读成"≥64 µs"会得出错的阈值（这一条读法很容易错，写判据时以源码里的
-`stepNote` 与 `[step]` 的 fprintf 为准）。**更细的 1 / 4 / 16 µs 三档只计数、不打印** ⇒ 单看
-`[step]` 行**读不出 p99 ≤ 10 µs**；要读 p99 得先把细桶打印出来（并/或补 4 µs、10 µs 的**纯计数**
-桶），那是一件要做的，记在 [`TODO.md`](../plans/TODO.md)。
+**读桶：名字是桶上界，`[histo]` 打印全部 15 桶。** `[histo]` 逐桶给出
+`b1us b2us b4us b8us b16us b32us b64us b128us b256us b512us b1ms b4ms b16ms b64ms bge64ms`
+（名字=该桶**上界**且**含等号**：`b16us` 装 8–16 µs、`b64us` 装 32–64 µs、`b64ms` 装 16–64 ms、
+`bge64ms` 装 >64 ms）。`[step]` 的 `over16/over64/over256/over1ms` 是**累计**阈值计数
+（严格 >16 µs / >64 µs / >256 µs / >1 ms），由同一组桶求和得到（`stepSumFrom(5)/(7)/(9)/(11)`）——
+按字面把桶名读成"≥X"会得出错的阈值，写判据时以源码里的 `extc_rc_stepBucket` 与 `[step]`/`[histo]` 的 fprintf 为准。
+**p99 从 `[histo]` 读**（桶内只有计数，精度为一个桶宽；要更细就加桶，口径不变）。
+
+**时钟口径**：`[step]`/`[histo]`/`[chan]`/`[top]` 的时长跟随 `[clock]` 行首字段 ——
+`EXTC_RC_STEP_CPU=1` 且线程 CPU 时钟可用时用 `CLOCK_THREAD_CPUTIME_ID`（`step=cpu chan=cpu`），
+否则墙钟；`pause=wall` 是武装窗口的墙钟。生成物不定义 `_POSIX_C_SOURCE`，strict `-std=c11` 下
+glibc 不暴露该 clock ⇒ 运行期一次性探测后**降级为墙钟**并在 `[clock]` 打 `cpu=unavailable`
+（时长仍是真实值，不会是 0）。
 
 **"p99" 有两种，写判据时必须指明是哪种。** 一种是把**所有切片**放一起排序取 p99（"每步时长的
 p99"）；另一种是**每 run 只取一个最大步**、再对这些 per-run max 取 p99（"per-run max 的 p99"）。
@@ -627,7 +650,7 @@ p99"）；另一种是**每 run 只取一个最大步**、再对这些 per-run m
 [`archive/2026-10-15-locality.md`](../archive/2026-10-15-locality.md)。
 
 **统一工作量预算 `EXTC_RC_WORK_BUDGET=W`（C 编译期 `-D`，默认 0 = 关）**：默认形态下
-`walk`（`MARK_BATCH_MAX`）、`scan`（`SEED_WORDS`）、`push`（`SEED_PUSHES`）是**三个独立预算**且
+`walk`（`MARK_BATCH_MAX`，压力档 ×`SWEEP_PRESSURE_MUL` ⇒ 默认上限 1024）、`scan`（`SEED_WORDS`）、`push`（`SEED_PUSHES`）是**三个独立预算**且
 **叠在同一步**里 ⇒ 一步最坏 = W_walk + W_scan + W_push 个单位。`W > 0` 时三者与 `wbDebt` 加力
 **共用一个总额**（walk 1 对象 = scan 1 字 = push 1 槽 = 1 个单位），由 `markStep` 里的
 `wleft` 扣减；种子字**压不完就把剩余位留在 `seedBits`、游标停在同一字**，所以一个字绝不半途
@@ -689,7 +712,7 @@ reclaim 形状闸门（`gate-shapes`/`gate-work`/`gate-shard-cycles`/`gate-idle-
 **本文档默认引用 `-O2`**，`-O1` 的数字单独标。判定"某条优化能不能压到线内"的结论完全取决于钉哪
 一档 —— 验收线必须先钉死，再谈达标。
 
-**无界步必须单列。** `[work]` 只统计**有界热路径步**（`budget ≤ EXTC_RC_MARK_BATCH_MAX`）⇒
+**无界步必须单列。** `[work]` 只统计**有界热路径步**（`budget ≤ EXTC_RC_MARK_BATCH_MAX × EXTC_RC_SWEEP_PRESSURE_MUL`，默认 1024；压力乘子是策略内步长上限，压力步仍算有界、记在 `[work]`）⇒
 `regionFree`→`settle`、`collect`、定点释放的 `mark` 这些 `budget=∞` 的排空**整段不进 `[work]`**；
 而 `[pause]` 的包裹（`pauseArm`）只挂在 `maybeCollect`/`checkOwed` 上，**不包 `settle`** ⇒ 一次无界
 收尾只在 `[step]` 的 max 里露头，两个"日常看"的行都看不见它。**量具与判据见本节上面的
@@ -876,9 +899,11 @@ cache-sim 判据变红）。
   [`tests/reclaim-unified/RECON.md`](../../tests/reclaim-unified/RECON.md) 给出。
 * **两条新闸门**（都挂 `nobench`，运行期零改动）：
   - `gate-reclaim-work` 强制**工作量界** —— `[work]` 必须存在且 `n>0`（否则文案是"插桩失败/
-    工具不兼容"，不许当绿）、每形状多次运行逐字相同、三条界全部从**产物**里读出（读不到即红，
-    不许硬编码）；红演示见 `changelog/2026-10.md`：拿掉种子扫描的字预算 ⇒ `scan_max` 越界直接红，
-    把 `[work]` 改名 ⇒ 五形状全红在"插桩失败"。
+    工具不兼容"，不许当绿）、每形状多次运行逐字相同、界全部从**产物**里读出（读不到即红，
+    不许硬编码）：`walk_max ≤ walk_cap`（`walk_cap = MARK_BATCH_MAX × SWEEP_PRESSURE_MUL`，从产物
+    `#define` grep）、`walk_gtcap == 0`（超出上限的步数必须为 0，**字段缺失即 FAIL**）、
+    `scan_max ≤ SEED_WORDS`、`push_max ≤ SEED_PUSHES + 63`；红演示见 `changelog/2026-10.md`：
+    拿掉种子扫描的字预算 ⇒ `scan_max` 越界直接红，把 `[work]` 改名 ⇒ 六形状全红在"插桩失败"。
   - `gate-foreign-skip` 守**"跳过旧值登记查表"的前提** —— 每个撤销点被"这只区域出现过跨区值"
     把门、每个登记点同行置位，再编一个带守卫的构建跑一次，要求守卫被检查过且零违例（拿不到守卫
     计数行即红，按"插桩失败"处理）。失效方向是**不安全**（漏撤一条跨区入边），语义与输出类判据
@@ -951,13 +976,32 @@ cache-sim 判据变红）。
 | `skip:old-off` | 没有在飞标记（`extc_rc_wb == 0`）或槽为空 ⇒ 删除屏障不动作（连 `*slot` 都不读）| 没有标记就没有白对象需要保护；`wb == 0` 时被覆盖的旧值不会在本轮被判死 | 无（幂等；热路径常态）| 语料指纹 + `gate-mark-both` 结构判据 + 六档 stdout 逐字节 |
 | `skip:nosweep` | 种子不完整的区域 ⇒ 一个字节都不扫 | 该区域有追不到宿主的入边 | 少算（不安全）| 义务 7 单测 + `noSweep-drop` |
 | `skip:release-budget` | 自上次 O(活集) 遍历以来的新分配 < `max(live, floor)` ⇒ 这次定点释放不做 | 一次 O(活集) 遍历必须由分配量摊销；否则赋值路径上出现 O(N²)（40k 次追加 5.08 s vs 关档 2.4 ms）| 多留（保守：垃圾晚一步收）| `gate-release`（`ring_per_round` 释放槽数仍 >0）+ `gate-reclaim-switch` + `gate-idle-bounded` |
+| `skip:release-sweeping` | 本轮清扫在飞（`home->sweeping`）⇒ 这次定点释放直接返回 | 清扫在飞时由它持有本轮 mark 位图；`releaseOld` 收尾清全表 mark 位，而分配路径靠 mark 位保护清扫中对象 | 多留（保守：死树由随后清扫收掉，本轮不提前释放） | `gate-reclaim-count-unit` 的 `t_releaseDuringSweep`（清扫中分配的对象不被误放、死树仍被收、终态 mark 全 0）|
+| `skip:freeq-none` | `extc_rc_fqPushChain(h)` 的 `h` 为空（区域没有 slab 链）⇒ 什么都不入队 | 没有 slab 就没有可延迟的 `free`；队列只装 slab 链 | 无（幂等）| `t_regionFreeDefer` 的空区域分支 + `[freequeue] left_slabs=0` |
+| `skip:freeq-empty` | 延迟队列为空 ⇒ `extc_rc_fqDrainAuto` / `extc_rc_freeQueueDrainAll` 立刻返回 | 空队列没有东西可排空；分配点/结算点每次都要问一次 | 无（幂等；热路径常态）| 默认档全电池（`[freequeue]` 的 `drained_total` 只在真入队后增长）+ defer=0 档断言集合与改前逐条相同 |
+| `skip:freeq-budget` | 排空已到本次预算（`EXTC_RC_FREE_BUDGET_SLABS`）⇒ 停手，余下的留在队里 | 延迟队列的存在就是为了把 `free()` 摊到后续分配点；预算只是**时机**，不改变「这些 slab 已经摘链、不再被任何回收路径访问」这一前提 | 内存（延迟 RSS，短期可见）| `t_regionFreeDeferLimit`（单次 drop 后 `fqBytes<=EXTC_RC_FREE_QUEUE_BYTES`、`forced` 增长、排空后归零）+ pb/pd 的 `[freequeue] max_depth/left_bytes` |
+| `skip:freeq-deadline` | 排空已到本次时间上限（`EXTC_RC_FREE_DEADLINE_US`）⇒ 停手，余下的留在队里 | 同上：时间预算只决定「这一次排多少」，队列里的 slab 已不与任何活对象/回收路径相交 | 内存（延迟 RSS）| 同 `skip:freeq-budget`：`[regionfree] queue_us` 有界 + `[freequeue] forced/left_*` 可读 |
 | `skip:not-sweeping` | 没有正在进行的分步清扫 ⇒ `sweepStep` 直接返回 0 | 分步清扫是显式状态（`sweeping`）| 无（幂等）| `gate-reclaim-switch` 的形状语义 + `EXTC_RC_PAUSE` 的 `[step]` 行 |
 | `skip:sweeping-resume` | 上一轮分步清扫没扫完 ⇒ 触发点只**续扫一步**，不起新的 mark | mark 依赖"标记位图已清零"，位图由清扫逐字清零 | 无（把一次长停顿摊成多步）| `gate-reclaim-switch` / 语料指纹（语义逐字节）|
 | `skip:sweep-continue` | 这一步没扫到底 ⇒ `sweepStep` 返回 0，下一轮（分配点）继续 | 游标留在区域里 | 无（同上）| `gate-skip-table` + `gate-reclaim-switch` |
+| `skip:elide-no-slab` | 清扫游标不在任何 slab 上（`r->swSlab == NULL`）⇒ 不做整块判定 | 没有当前块就没有可判定的对象集合 | 无（幂等：逐字循环本来就不会进）| `t_sweepBulkReset` + `gate-reclaim-switch` 语义 |
+| `skip:elide-big` | 超大块（`big == 1`：载荷在 slab 外、只有一个槽）⇒ 走逐槽回收 | 超大块的成本在载荷 `free` 与页表拆除，整块重置省不掉；`nslots == 1` 也没有可批的对象 | 无（与逐槽路径行为一致）| `pd` 形状（200 x 8 MiB）语义逐字 + `t_sweepBulkReset` |
+| `skip:elide-foreign` | 本区域写过跨区值（`r->foreign`）⇒ 不做整块重置 | 整块清会跳过逐槽 `unlinkChildren`，它撤销本区域对象持有的跨区边；漏撤销 ⇒ 目标登记位残留、被多留 | 多留（保守：走逐槽路径）| `t_unlink`（跨区边撤销）+ 默认档全电池 |
+| `skip:elide-reachable` | 块的本轮标记计数非零（`s->nMark != 0`）⇒ 走逐字清扫 | `nMark` 是「本块被本轮标记的槽数」的 O(1) 滚动计数（alloc/shadeSlow/MARK_SCAN 置黑 ++，freeSlot/sweepWord/releaseOld 收尾 -- 或归零）；非零 ⇒ 块内有活对象就不能整块清 | 无（只跳过必然无事可做的块）| `t_sweepBulkReset` 的混合块断言 + `EXTC_RC_ELIDE_VERIFY=1` 下 `[sweepelide] mis=0` + 全电池 |
+| `skip:elide-xregion` | 块里某字的跨区入边登记位非零（`rsbit[w] != 0`）⇒ 走逐字清扫 | 登记位是别的区域指向本块的活边；整块重置会让那些边指向重新发号的槽 | 多留（保守：走逐槽路径）| `t_crossRegion` / `t_register` + 跨区形状 + verify 下的 `mis=0` |
+| `skip:elide-counting` | 计数档（`EXTC_RC_NOCOUNT=0`）里整块重置整段折成 `return 0` | 计数档要逐槽维护 `hold`/`rscnt`/`rsbit`；整块清会跳过这些记账。默认档没有这些字段的读者 | 无（默认档专属；计数档走逐槽路径）| 计数档 `EXTC_RC_NOCOUNT=0 bash tests/reclaim/run.sh`（240/0）+ 三档产物编译 |
+| `skip:elide-verify-mismatch` | `EXTC_RC_ELIDE_VERIFY=1` 且该块 mark 或 rsbit 位图有非零字 ⇒ 复核失败，`elideMismatch++` 并放弃整块重置（退回逐字清扫） | 整块重置的前提是 mark/rsbit 全 0；位图非零而 roll-up 说 `nMark==0` 就是计数漂移，重置会把活对象当死对象 | 多留（走逐槽路径，安全方向）| `ELIDE_VERIFY=1` 跑默认/计数两档 run.sh、`pd_bigobj 200`、`cycleratio 400k`，要求 `[sweepelide] mis=0` |
+| `skip:elide-verify-nlive` | `EXTC_RC_ELIDE_VERIFY=1` 且 `popcount(occ) != nLive` ⇒ 同样放弃重置并计数 | `nLive` 必须等于位图上的占用槽数，否则按 `nLive` 记账会写坏 `bytes`/`freedSlots` | 多留（走逐槽路径）| 同上：`mis=0` |
 | `skip:nosweep-abandon` | 义务 7 区域（`noSweep`）**弃扫**：在飞的一轮就地作废，之后一个字节都不扫 | 种子不完整 ⇒ 该区域只靠计数回收 | 无（少收 ⇒ 内存涨，不是悬垂）| `gate-reclaim-count-unit` / `reclaim-unit` 的"义务 7"断言 |
 | `skip:no-owe` | 没有欠账 ⇒ 不销账 | `owe` 由触发点置位 | 多留（保守）| `gate-reclaim-switch` 的形状语义判据 |
 | `skip:no-bumpslab` | 还没 bump 过 ⇒ `bumpReset` 直接返回 | 没有 slab 就没有可复位的指针 | 无（幂等）| 单测 `bump：载荷连续排布` / `bump reset：不新增 slab` |
 | `skip:armed` | 统计只装一次 | 幂等 | 无（诊断）| 无（诊断路径，不影响回收语义）|
+| `skip:m-max-explicit` | 显式给了 `EXTC_RC_M_MAX` ⇒ `extc_rc_mmaxEff` 直接返回它，不再按 `3 x live` 推隐式墙 | 墙由启动时钉死，与 `live` 无关；隐式墙只服务未设档 | 无（策略值：本函数只决定墙在哪，不参与标记/清扫是否正确）| G4：`EXTC_RC_M_MAX=33554432` 跑 100k 环 x400 轮，`[work] M_max_implicit=0` 且峰值 RSS ≤ M_max+8MiB |
+| `skip:no-wall` | 墙算不出来（`live == 0` 的未清扫阶段，且没设 `EXTC_RC_M_MAX`）⇒ 不算压力，按 1 倍预算步进 | 没有活集就没有内存墙可逼近；第一轮扫完后 `live` 落地，墙随之生效 | 无（只影响单步预算，垃圾晚一步收）| `[work]` 的 `pressure=0 M_max_now=0` 只出现在首轮之前；`gate-reclaim-switch` 语义 + G4 显式档 |
+| `skip:no-proc-stat` | 读不到 `/proc/self/stat`（无 proc 的宿主）⇒ `extc_rc_minflt` 返回 -1 | 只在 `EXTC_RC_PAUSE=2` 的归因路径读；读不到就给哨兵 | 无（纯诊断：不参与回收、不影响预算）| `[top]` 的 `minflt=-1` 可 grep；`PAUSE=1` 完全不读该文件 |
+| `skip:no-proc-comm` | `/proc/self/stat` 里找不到 `)`（格式异常）⇒ 同样返回 -1 | comm 字段被括号包住，取最后一个 `)` 之后才是定长字段；找不到就无从定位 minflt | 无（纯诊断）| 同上：`minflt=-1` 哨兵；归因脚本按 `minflt>=0` 过滤 |
+| `skip:top-not-slower` | 新步不慢于 top-K 里当前最慢的一格 ⇒ 不替换 | top-K 只保留 K 个最慢步，用于尾部归因；更慢的步才有信息增量 | 无（纯采样：只影响 `[top]` 行内容）| `[top]` 按 `dur_us` 降序且 rank=1 是最慢步；`gate-skip-table` 自检 |
+| `skip:cascade-oom` | 级联释放的工作栈 `realloc` 失败 ⇒ 不入栈，子对象保留计数留给 sweep | 分配失败时唯一安全方向是保守；sweep 会按标记位收掉未归零的子树 | 多留（保守：晚一步收，不是悬垂）| 计数档 chain2 2M 节点（`-DEXTC_RC_CASCADE_DEBUG=1` 下 `bad=0`）+ ASan；默认档整段折叠不发射 |
 | （无标记）`if (extc_rc_rsIncN) unlinkChildren(...)` | 一次登记都没发生过 ⇒ 不必撤边 | `rsIncN == 0` ⇒ 没有 `rsInc` 类边 | 多留（保守）| `unlink-nop` 证明"撤边"有牙；这个**守卫**没有专门注入 |
 | （无标记）`if (partN > 1) { 登记 }` | 只有一个区域参与 rc ⇒ 免登记 | 单区域不可能有跨区边 | 少算（不安全）| `gate-note-part` + `cross-region` 登记量判据 |
 | （无标记）`#if EXTC_RC_NOCOUNT` 整段 | 关掉计数时计数入口变空操作 | 没有读者 | 少算（不安全）| 单测**两档都跑**（默认 128 / 计数 171）|

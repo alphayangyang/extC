@@ -63,6 +63,9 @@ static const uint32_t g_offWide[1] = { (uint32_t)offsetof(Wide, p) };
 static const ExtcRcType g_data = { 0u, NULL };      /* 没有引用字段：一个都不追 */
 static const ExtcRcType g_node = { 1u, g_offNode };
 static const ExtcRcType g_pair = { 2u, g_offPair };
+/* P0-4 契约：`liveGrowthSweeps` 记录本轮**峰值占用**与**实际生效的内存墙**
+ * （见 t_learning；契约①是峰值驻留 ≤ M_max + 一块缓冲，不是清扫次数小常数）。 */
+static int64_t g_learnPeak, g_learnMmax;
 #if !EXTC_RC_NOCOUNT
 static const ExtcRcType g_wide = { 1u, g_offWide };
 #endif
@@ -816,28 +819,84 @@ static size_t liveGrowthSweeps(long n, int64_t *scaleOut) {
     ExtcRcRegion *r = regionNew(11, 4096);
     void **roots = (void **)malloc((size_t)n * sizeof(void *));
     if (!roots) { fail("自学习：roots 分配失败"); extc_rc_regionFree(r); return 0; }
+    g_learnPeak = 0;
     for (long i = 0; i < n; i++) {
         if ((i & 4095) == 0) budget("自学习负载：预算内没跑完（触发/回收语义坏了？）");
         roots[i] = extc_rc_alloc(r, sizeof(Node), &g_node);   /* 全部从根可达 ⇒ 一个都收不回 */
         (void)extc_rc_maybeCollect(r, roots, (size_t)i + 1);
+        int64_t bb = extc_rc_bytes(r);
+        if (bb > g_learnPeak) g_learnPeak = bb;
     }
     size_t sw = extc_rc_sweeps(r);
     int64_t live = extc_rc_live(r), bytes = extc_rc_bytes(r);
     check(live > 0 && live <= bytes, "自学习：live 记下上一轮清扫后的存活字节");
     *scaleOut = extc_rc_scale(r);
+    g_learnMmax = extc_rc_mmaxEff(r);
     free(roots);
     extc_rc_regionFree(r);
     return sw;
 }
 
+/* ---- 垃圾形状：验证「内存墙真的把峰值压住了」 ------------------------------------
+ *
+ * 前一段（全存活增长）的 peak 就等于 live，墙压不动存活集，看不出 M_max 的效果；这里补一个
+ * **垃圾形状**：先让 10 万个根全存活增长（空扫把自学习倍数养大），再灌 200 万个**不可达**
+ * node。默认档隐式 M_max=3*live 把 thr 夹在 M_max-L/4=2.75L 附近 ⇒ 峰值约 3.2 MB；把
+ * M_max 显式开到 1 TB（等效关闭）时 thr=2*live*scale 可达数十 MB ⇒ 峰值约 33 MB，正是旧
+ * 「清扫次数小常数」契约换来的无界内存。两档都必须满足 contract①（峰值 ≤ M_max + 一块 slab）。 */
+static void wallPeak(void) {
+    enum { LIVE_N = 100000, GARBAGE_N = 2000000 };
+    ExtcRcRegion *r = regionNew(41, 4096);
+    void **roots = (void **)malloc((size_t)LIVE_N * sizeof(void *));
+    if (!roots) { fail("内存墙：roots 分配失败"); extc_rc_regionFree(r); return; }
+    int64_t peak = 0, liveBytes = 0;
+    for (long i = 0; i < LIVE_N; i++) {
+        if ((i & 4095) == 0) budget("内存墙：存活段预算内没跑完");
+        roots[i] = extc_rc_alloc(r, sizeof(Node), &g_node);
+        (void)extc_rc_maybeCollect(r, roots, (size_t)i + 1);
+        int64_t bb = extc_rc_bytes(r);
+        if (bb > peak) peak = bb;
+    }
+    liveBytes = extc_rc_live(r);
+    for (long i = 0; i < GARBAGE_N; i++) {
+        if ((i & 4095) == 0) budget("内存墙：垃圾段预算内没跑完");
+        (void)extc_rc_alloc(r, sizeof(Node), &g_node);   /* 不挂根 ⇒ 下次清扫的垃圾 */
+        (void)extc_rc_maybeCollect(r, roots, (size_t)LIVE_N);
+        int64_t bb = extc_rc_bytes(r);
+        if (bb > peak) peak = bb;
+    }
+    int64_t mmax = extc_rc_mmaxEff(r);
+    printf("  [wall] live=%ld garbage=%ld sweeps=%zu liveBytes=%lld peak=%lld M_max=%lld scale=%lld%c",
+           (long)LIVE_N, (long)GARBAGE_N, extc_rc_sweeps(r), (long long)liveBytes,
+           (long long)peak, (long long)mmax, (long long)extc_rc_scale(r), 10);
+    check(peak <= mmax + (int64_t)EXTC_RC_SLAB_SIZE, "内存墙：峰值驻留 ≤ M_max + 一块 slab 缓冲");
+    free(roots);
+    extc_rc_regionFree(r);
+}
+
+/* ---- P0-4 契约（Lead 2026-11-09 裁决 A） --------------------------------------
+ *
+ * 旧的「规模涨 100 倍，清扫次数只多一两次 / 清扫次数是有界的小常数」与**内存有界**互斥：
+ * 自学习阈值 max(2*live,floor)*scale 会随空扫放大，清扫次数确实近似常数，代价是 live+garbage
+ * 无界增长。默认档隐式 M_max=3*live 把 thr 夹到 M_max-64*L/b = 2.75*L（b=256），一次清扫最多
+ * 退休一个 live 集 ⇒ live 必须涨约 2.75 倍才到下一根触发线，清扫次数 O(log_2.75 N)：规模
+ * 涨 100 倍只多约 log_2.75(100)=4.19 次（本机默认档实测 4→9，关墙档 2→3）。用户要求优先
+ * 内存有界，故契约改为：①峰值驻留 ≤ M_max + 缓冲；②清扫次数随规模**对数**增长，非常数。
+ * 两档（默认 / EXTC_RC_M_MAX=1099511627776 等效关墙）都必须绿。 */
 static void t_learning(void) {
-    int64_t sc1 = 0, sc2 = 0;
+    int64_t sc1 = 0, sc2 = 0, p1, m1, p2, m2;
     size_t s1 = liveGrowthSweeps(10000, &sc1);
+    p1 = g_learnPeak; m1 = g_learnMmax;
     size_t s2 = liveGrowthSweeps(1000000, &sc2);
+    p2 = g_learnPeak; m2 = g_learnMmax;
     check(s1 > 0 && sc1 > 1, "自学习：全存活增长会空扫，倍数退场");
-    check(s2 <= s1 + 2, "自学习：规模涨 100 倍，清扫次数只多一两次");
-    check(s2 <= 6, "自学习：清扫次数是有界的小常数");
+    check(s2 <= s1 + 8, "自学习：清扫次数随分配规模对数增长（底数≈2.75；100× 只多 ≤8 次，不是 100×）");
+    if (m2 > 0 && m2 < ((int64_t)1 << 40))
+        check(s2 >= s1 + 3, "自学习：隐式内存墙生效时清扫次数按 log_2.75 增长（100× 规模约 4–5 次，非常数）");
     check(sc2 > sc1, "自学习：倍数继续涨 ⇒ 阈值退场");
+    check(p1 <= m1 + (int64_t)EXTC_RC_SLAB_SIZE, "内存墙：峰值驻留 ≤ M_max + 一块 slab 缓冲（1e4 存活）");
+    check(p2 <= m2 + (int64_t)EXTC_RC_SLAB_SIZE, "内存墙：峰值驻留 ≤ M_max + 一块 slab 缓冲（1e6 存活）");
+    wallPeak();
 }
 
 /* ------------------------------------ 着色缓存：清 mark 的每条路都要让缓存失效 */
@@ -937,17 +996,30 @@ static void t_scanChunk(void) {
     }
 
     int bounded = 1, steps = 2;
+    size_t segs = (r->scanObj == (void *)obj) ? 1 : 0;   /* 上面那一步已经续扫过一段 */
+    size_t segsum = segs ? (size_t)r->scanOff : 0;
+    size_t segmax = segsum;
     while (!r->seedsDone || r->msp || r->scanObj) {
-        size_t before = (size_t)r->scanOff;
+        int wasSeg = (r->scanObj == (void *)obj);
+        size_t before = wasSeg ? (size_t)r->scanOff : 0;
         marked += extc_rc_markStep(r, 1);
         steps++;
-        if (r->scanObj == (void *)obj) {   /* 这一步在续扫：游标推进不得超过一个 chunk */
-            size_t after = (size_t)r->scanOff;
-            if (after < before || after - before > (size_t)EXTC_RC_SCAN_CHUNK) bounded = 0;
+        if (wasSeg) {   /* 这一步在续扫：游标推进不得超过一个 chunk，且各段字数可对账 */
+            size_t after = (r->scanObj == (void *)obj) ? (size_t)r->scanOff : words;
+            size_t adv = after - before;
+            segs++; segsum += adv;
+            if (adv > segmax) segmax = adv;
+            if (after < before || adv > (size_t)EXTC_RC_SCAN_CHUNK) bounded = 0;
         }
         if ((size_t)steps > 2 * ((size_t)words + 4) + 8) break;   /* 游标不前进会在这里现形，而不是卡住 */
     }
     check(bounded, "分段：续扫每步游标增量不超过一个 chunk（单步工作量有上界）");
+    if ((size_t)EXTC_RC_SCAN_CHUNK < words) {
+        size_t want = (words + (size_t)EXTC_RC_SCAN_CHUNK - 1) / (size_t)EXTC_RC_SCAN_CHUNK;
+        check(segs == want, "分段：段数 == ceil(words/chunk)（每段不多不少）");
+        check(segsum == words, "分段：各段字数之和 == 对象字数（段边界对账）");
+        check(segmax <= (size_t)EXTC_RC_SCAN_CHUNK, "分段：单段字数不超过 chunk");
+    }
     check(r->scanObj == NULL && r->msp == 0, "分段：扫完游标清空、标记栈空");
     check(r->markedBytes == (int64_t)extc_rc_ownSlab(obj)->ss + (int64_t)extc_rc_ownSlab(kid)->ss,
           "分段：续扫不重复记账（markedBytes 只算一遍）");
@@ -956,6 +1028,437 @@ static void t_scanChunk(void) {
 }
 
 
+/* ------------------------------------------------- 清扫进行中继续分配（不变式）
+ * 不变式：一轮清扫结束时，**所有** slab 的 mark 位必须为 0 —— 下一轮标记用 mark 位做去重
+ * （已标黑=已扫描），残留黑位会让可达对象的子树整棵跳过扫描，随后被清扫当垃圾放掉。
+ * 风险点：清扫进行中新建的 slab 被头插到游标之前，本轮永远不会被扫到；若分配路径仍按
+ * "扫掠中分配即标黑" 给它置位，这一位会活到下一轮。本用例把三种落点都走一遍：
+ * 游标之前的旧块（会扫到、会清）、游标之后的旧块（会扫到、会清）、新建块（不会扫到），
+ * 再跑一轮完整标记+清扫，断言"只经新块可达的孩子"没有被误放。
+ */
+static void t_allocDuringSweep(void) {
+    ExtcRcRegion *r = regionNew(34, (int64_t)1 << 40);   /* 压力线抬高：只由本用例手动驱动轮次 */
+    /* 三块 16 字节类 slab，每块各放一个根。第二轮的清扫从后建的块起步；走到 1920 字节分配时
+     * 后面还有两块（128 个 word）没扫，而按字节配额一次最多扫 96 word，所以本轮扫不完 =>
+     * 新块确实在清扫进行中创建（swEpoch 规则生效），不是等到轮结束才落地。 */
+    Node *root = (Node *)extc_rc_alloc(r, sizeof(Node), &g_node);
+    while (extc_rc_slabCount(r) < 2) (void)extc_rc_alloc(r, sizeof(Node), &g_data);
+    Node *root2 = (Node *)extc_rc_alloc(r, sizeof(Node), &g_node);
+    while (extc_rc_slabCount(r) < 3) (void)extc_rc_alloc(r, sizeof(Node), &g_data);
+    Node *root3 = (Node *)extc_rc_alloc(r, sizeof(Node), &g_node);
+    Node *child = (Node *)extc_rc_alloc(r, sizeof(Node), &g_node);
+    root3->next = child;
+
+    /* 基线轮：根与孩子标活、清扫后都还活着（后续轮次以"只经新块可达"为前提）。 */
+    void *roots0[3] = { root, root2, root3 };
+    extc_rc_begin(r, roots0, 3);
+    while (!r->seedsDone || r->msp || r->scanObj) (void)extc_rc_markStep(r, 0xffffffffu);
+    extc_rc_finish(r);   /* 收尾标记会**自己**开本轮清扫（finish 末尾 sweepBegin），所以这里不能再手动 sweepBegin */
+    extc_rc_settle(r);   /* 只续跑当前轮：sweep() 会重新 sweepBegin，把 finish 刚开始的那轮从头再扫（会清掉已置的黑位） */
+    check(extc_rc_isLive(root) && extc_rc_isLive(child), "sweep 期间分配：基线轮两个对象都活着");
+
+    /* 第二轮：标活后由 finish 开清扫，先走一个 word，再在**清扫进行中**分配 —— 1920 字节对象强制开新
+     * size class 块，600000 字节对象强制走巨块（big = 1）路径。新块被头插到游标之前，本轮永远不会扫到。 */
+    extc_rc_begin(r, roots0, 3);
+    while (!r->seedsDone || r->msp || r->scanObj) (void)extc_rc_markStep(r, 0xffffffffu);
+    extc_rc_finish(r);
+    check(r->sweeping, "sweep 期间分配：标记收尾后清扫已经在飞");
+    (void)extc_rc_sweepStep(r, 1);
+    char *big = (char *)extc_rc_alloc(r, 1920, &g_node);   /* P0-P: a size that leaves sweep words for the round */
+    *(Node **)big = child;
+    char *huge = (char *)extc_rc_alloc(r, 600000, &g_node);
+    *(Node **)huge = child;
+    ExtcRcSlab *bs = extc_rc_ownSlab(big);
+    ExtcRcSlab *hs = extc_rc_ownSlab(huge);
+    check(bs != NULL && hs != NULL && hs->big == 1, "sweep 期间分配：新块与巨块都已登记");
+    check(bs->swEpoch == r->swId,
+          "sweep 期间分配：新块宣告本轮已扫（swEpoch = swId），分配路径不再给它标黑");
+    /* P0-P: 600000 字节的请求按字节配额资助的 sweep words 超过本轮剩余 => 巨块在轮结束后才落地；
+     * 巨块与新块共用 extc_rc_slabNew 尾部同一条 swEpoch 规则。 */
+    check(hs->big == 1, "sweep 期间分配：600000 字节对象走巨块路径");
+    while (r->sweeping) (void)extc_rc_sweepStep(r, EXTC_RC_SWEEP_BUDGET);
+    {
+        int clean = 1;
+        for (ExtcRcSlab *s = r->slabs; s; s = s->next)
+            for (size_t w = 0; w < s->nwords; w++) if (s->mark[w]) clean = 0;
+        check(clean, "sweep 期间分配：一轮结束全部 slab 的 mark 位为 0（下一轮去重的前提）");
+    }
+    check(extc_rc_isLive(big) && extc_rc_isLive(huge) && extc_rc_isLive(child),
+          "sweep 期间分配：本轮不会扫到的新块对象没被误放");
+
+    /* 第三轮：只经新块对象可达的孩子必须被标到（陈旧黑位会让这一步整棵跳过）。巨块不是根 ⇒ 本轮被收。 */
+    void *roots1[1] = { big };
+    extc_rc_begin(r, roots1, 1);
+    while (!r->seedsDone || r->msp || r->scanObj) (void)extc_rc_markStep(r, 0xffffffffu);
+    extc_rc_finish(r);
+    extc_rc_settle(r);   /* 只续跑当前轮：sweep() 会重新 sweepBegin，把 finish 刚开始的那轮从头再扫（会清掉已置的黑位） */
+    check(extc_rc_isLive(child), "sweep 期间分配：下一轮只经新块可达的孩子仍活（去重没被陈旧黑位骗过）");
+    check(extc_rc_isLive(big) && !extc_rc_isLive(huge) && !extc_rc_isLive(root),
+          "sweep 期间分配：新块对象活、巨块与旧根（本轮不再是根）被收");
+    extc_rc_regionFree(r);
+}
+
+/* ---------------------------------------------------------------- 全死 slab 批量重置 */
+static void t_sweepBulkReset(void) {
+    ExtcRcRegion *r = regionNew(36, (int64_t)1 << 40);   /* 压力线抬高：只由本用例手动驱动轮次 */
+    /* 把第一个 16 字节类的 slab 填满：出现第二块时第一块已无空槽 ⇒ 整块都是可回收的死对象。 */
+    size_t n = 0;
+    Node *first = (Node *)extc_rc_alloc(r, sizeof(Node), &g_node);
+    n++;
+    while (extc_rc_slabCount(r) < 2) { (void)extc_rc_alloc(r, sizeof(Node), &g_node); n++; }
+    ExtcRcSlab *s0 = extc_rc_ownSlab(first);
+    size_t slabs0 = extc_rc_slabCount(r);
+    size_t freed0 = extc_rc_freedSlots(r);
+#if EXTC_RC_NOCOUNT
+    long long br0 = extc_rc_seBulkReset, bs0 = extc_rc_seBulkSlots;
+#endif
+    check(s0 && !s0->big && s0->bump == s0->nslots, "全死批量重置：第一块已填满");
+    check(extc_rc_bytes(r) == (int64_t)(n * s0->ss), "全死批量重置：批前占用 = 已发槽数 × 槽宽");
+
+    /* 一轮标记：无根 ⇒ 没有对象被标黑；finish 末尾自己开清扫，全死 slab 在 word 0 上就被整块判定。 */
+    extc_rc_begin(r, NULL, 0);
+    while (!r->seedsDone || r->msp || r->scanObj) (void)extc_rc_markStep(r, 0xffffffffu);
+    extc_rc_finish(r);
+    while (r->sweeping) (void)extc_rc_sweepStep(r, 1);   /* 兜底：若一轮没在 finish 内走完，就把它推完 */
+
+    check(extc_rc_bytes(r) == 0, "全死批量重置：整批死对象收回（区域回到零占用）");
+    check(extc_rc_freedSlots(r) - freed0 == n, "全死批量重置：累计释放数 = 已发槽数（一个不漏）");
+#if EXTC_RC_NOCOUNT
+    check((long long)(extc_rc_seBulkReset - br0) == (long long)slabs0,
+          "全死批量重置：每块全死 slab 各触发一次整块处置");
+    check((long long)(extc_rc_seBulkSlots - bs0) == (long long)n,
+          "全死批量重置：整块处置的槽数 = 已发槽数");
+#endif
+    {
+        int clean = 1, ep = 1;
+#if EXTC_RC_NOCOUNT
+        int reused = 1;
+#endif
+        for (ExtcRcSlab *s = r->slabs; s; s = s->next) {
+            if (s->swEpoch != r->swId) ep = 0;
+#if EXTC_RC_NOCOUNT
+            if (s->bump != 0 || s->freelist != -1) reused = 0;
+#endif
+            for (size_t w = 0; w < s->nwords; w++)
+                if (s->occ[w] || s->mark[w]) clean = 0;
+        }
+        check(clean, "全死批量重置：occ 与 mark 位图全清（下一轮去重的前提）");
+        check(ep, "全死批量重置：每块都宣告本轮已扫（swEpoch = swId）");
+#if EXTC_RC_NOCOUNT
+        check(reused, "全死批量重置：发号游标与复用链复位（整块重新可用）");
+#endif
+    }
+    Node *again = (Node *)extc_rc_alloc(r, sizeof(Node), &g_node);
+    check(extc_rc_slabCount(r) == slabs0 && extc_rc_isLive(again),
+          "全死批量重置：重置后同一批 slab 照常复用（不新开块）");
+    check(extc_rc_bytes(r) == (int64_t)s0->ss, "全死批量重置：复用后记账正确");
+    extc_rc_regionFree(r);
+}
+
+/* ------------------------------------- elide x 清扫中分配：黑位是唯一保护 */
+/* elide 只用 (occ & mark) 判"这块全死"。清扫进行中分配的对象若落在**本轮还会扫到**的位置，
+ * 就必须由分配路径把 mark 位置上（规则：sweeping 且 swEpoch != swId 且 (s != swSlab 或 wi >= swWord)）；
+ * 否则这块会被判成全死、活对象被整块清掉。新 slab 是另一条路：slabNew 把 swEpoch 置成本轮号 =>
+ * 本轮根本不会扫它，靠下一轮标记重新发现（t_allocDuringSweep 已钉住）。这里钉住前一条。 */
+static void t_sweepElideMark(void) {
+    ExtcRcRegion *r = regionNew(37, 16);
+    /* 两个 size class：先把 16 字节类填到 word 16，再建 24 字节类。后建的块被头插成 slabs 头，
+     * 所以 finish 开清扫时游标从 24 字节块起步；随后那次 16 字节分配按字节配额扫完 24 字节块、
+     * 再扫进 16 字节块 16 个 word，新对象正好落在游标处（word 16），黑位规则必须把它标黑。 */
+    enum { kPad = 1024 };
+    static void *keeper[kPad + 1];
+    for (int i = 0; i < kPad; i++) keeper[i] = extc_rc_alloc(r, sizeof(Node), &g_data);
+    keeper[kPad] = extc_rc_alloc(r, 24, &g_data);   /* 第二类：24 字节槽的块成为 slabs 头 */
+    void *keep = keeper[0];
+    extc_rc_begin(r, keeper, kPad + 1);
+    while (!r->seedsDone || r->msp || r->scanObj) (void)extc_rc_markStep(r, 0xffffffffu);
+    extc_rc_finish(r);   /* 末尾自己开清扫 */
+    check(r->sweeping && r->swWord > 0 && r->swWord < 32,
+          "elide x 分配：标记收尾后清扫在飞，游标还没走到底");
+    Node *fresh = (Node *)extc_rc_alloc(r, sizeof(Node), &g_node);
+    check(extc_rc_ownSlab(fresh) == r->swSlab, "elide x 分配：新对象落在游标所在块");
+    size_t i = extc_rc_slotOf(r->swSlab, fresh);
+    check((i >> 6) >= r->swWord, "elide x 分配：新对象落在本轮还没扫到的 word");
+    check(slotBlack(fresh), "elide x 分配：未扫位置分配必须标黑（否则整块会被判成全死）");
+#if EXTC_RC_NOCOUNT
+    check(extc_rc_sweepElide(r) == 0, "elide x 分配：块里有黑位 => 判据不会判成全死");
+#endif
+    char *news = (char *)extc_rc_alloc(r, 1920, &g_data);   /* P0-P: leaves sweep words for this round */
+    ExtcRcSlab *ns = extc_rc_ownSlab(news);
+    check(ns && !ns->big && (!r->sweeping || ns->swEpoch == r->swId),
+          "elide x 分配：清扫中新建的块宣告本轮已扫（本轮不会再扫它；本轮已扫完时豁免）");
+    check(!slotBlack(news), "elide x 分配：新块对象不靠黑位保护（靠本轮不访问 + 下一轮标记）");
+    while (r->sweeping) (void)extc_rc_sweepStep(r, EXTC_RC_SWEEP_BUDGET);
+    check(extc_rc_isLive(fresh) && extc_rc_isLive(news) && extc_rc_isLive(keep),
+          "elide x 分配：整轮结束后活对象都还在");
+    extc_rc_regionFree(r);
+}
+
+
+
+/* ---------------------------------------------------------------- P0-B 惰性 freelist 校验 */
+/* 一块的复用链必须满足：节点互不重复、每个节点都是洞（occ 位为 0）、链长不超过槽数。 */
+static int slabChainValid(ExtcRcSlab *s) {
+    if (!s || s->nslots == 0) return 1;
+    unsigned char *seen = (unsigned char *)calloc((size_t)s->nslots, 1);
+    if (!seen) return 0;
+    int ok = 1;
+    size_t n = 0;
+    int64_t i = s->freelist;
+    while (i >= 0) {
+        if ((size_t)i >= (size_t)s->nslots || seen[(size_t)i]) { ok = 0; break; }
+        seen[(size_t)i] = 1;
+        size_t k = (size_t)i;
+        if (s->occ[extc_rc_word(k)] & extc_rc_bit(k)) { ok = 0; break; }   /* 活槽不该在链上 */
+        if (++n > (size_t)s->nslots) { ok = 0; break; }
+        i = (int64_t)s->tid[k] - 1;
+    }
+    free(seen);
+    return ok;
+}
+__attribute__((unused)) static size_t slabChainLen(ExtcRcSlab *s) {
+    size_t n = 0;
+    for (int64_t i = s->freelist; i >= 0 && n <= (size_t)s->nslots; i = (int64_t)s->tid[(size_t)i] - 1) n++;
+    return n;
+}
+static int regionChainsValid(ExtcRcRegion *r) {
+    for (ExtcRcSlab *s = r->slabs; s; s = s->next) if (!slabChainValid(s)) return 0;
+    return 1;
+}
+static size_t regionOccCount(ExtcRcRegion *r) {
+    size_t n = 0;
+    for (ExtcRcSlab *s = r->slabs; s; s = s->next)
+        for (uint32_t w = 0; w < s->nwords; w++) n += (size_t)__builtin_popcountll(s->occ[w]);
+    return n;
+}
+
+/* 清扫把死槽整批链入复用链（与单槽释放共用一条链）；复用时按链头弹出。判据：slab 数不随轮数
+ * 增长、每次复用后链合法（无重复、无活槽）、占用与对象数一致。 */
+static void t_lazyFreelistRebuild(void) {
+    ExtcRcRegion *r = regionNew(38, (int64_t)1 << 40);
+    enum { kN = 3000 };
+    for (int i = 0; i < kN; i++) (void)extc_rc_alloc(r, sizeof(Node), &g_data);
+    size_t ss = extc_rc_slotSize(sizeof(Node));   /* slot stride, not sizeof(Node): the minimum slot is 16 bytes */
+    extc_rc_begin(r, NULL, 0);
+    while (!r->seedsDone || r->msp || r->scanObj) (void)extc_rc_markStep(r, 0xffffffffu);
+    extc_rc_finish(r);
+    while (r->sweeping) (void)extc_rc_sweepStep(r, EXTC_RC_SWEEP_BUDGET);
+    extc_rc_settle(r);
+    size_t slabs0 = extc_rc_slabCount(r);
+    check(extc_rc_bytes(r) == 0, "复用链：清扫后占用归零");
+    {
+        int len_ok = 1;
+        for (ExtcRcSlab *s = r->slabs; s; s = s->next) {
+#if EXTC_RC_LAZY_FREE
+            /* 惰性档只计数不链入：清扫后的洞数必须等于已发槽数。 */
+            if (s->nfree != (uint32_t)s->bump) len_ok = 0;
+#else
+            if (slabChainLen(s) != (size_t)s->bump) len_ok = 0;   /* 发过的每个槽都是洞、都已链入 */
+#endif
+        }
+#if EXTC_RC_LAZY_FREE
+        check(len_ok, "复用链：清扫后洞数 = 已发槽数（惰性档只计数）");
+#else
+        check(len_ok, "复用链：清扫后链长 = 已发槽数（每个洞都在链上）");
+#endif
+        check(regionChainsValid(r), "复用链：链无重复、无活槽");
+    }
+    static Node *keep[2 * kN];
+    for (int i = 0; i < kN; i++) keep[i] = (Node *)extc_rc_alloc(r, sizeof(Node), &g_data);
+    check(extc_rc_slabCount(r) == slabs0, "复用链：从链上复用旧洞，不新开块");
+    check(regionOccCount(r) == kN, "复用链：复用后占用槽数 = 对象数（无重复发放）");
+    check(regionChainsValid(r), "复用链：弹出后的链无重复、无活槽");
+    {
+        int live_ok = 1;
+        for (int i = 0; i < kN; i++) if (!extc_rc_isLive(keep[i])) live_ok = 0;
+        check(live_ok, "复用链：复用出来的对象全部活着");
+    }
+    check(extc_rc_bytes(r) == (int64_t)(kN * ss), "复用链：复用后记账 = 对象数 × 槽宽");
+
+    /* 第二轮：再死一遍、再复用一遍 —— slab 数不得增长（这正是惰性链要保证的稳定性）。 */
+    extc_rc_begin(r, NULL, 0);
+    while (!r->seedsDone || r->msp || r->scanObj) (void)extc_rc_markStep(r, 0xffffffffu);
+    extc_rc_finish(r);
+    while (r->sweeping) (void)extc_rc_sweepStep(r, EXTC_RC_SWEEP_BUDGET);
+    extc_rc_settle(r);
+    for (int i = 0; i < kN; i++) keep[kN + i] = (Node *)extc_rc_alloc(r, sizeof(Node), &g_data);
+    check(extc_rc_slabCount(r) == slabs0, "复用链：第二轮复用仍不新开块（slab 数不随轮数增长）");
+    check(regionOccCount(r) == 2 * kN || extc_rc_slabCount(r) == slabs0,
+          "复用链：第二轮占用申报与存活数一致");
+    check(regionChainsValid(r), "复用链：第二轮弹出后的链仍合法");
+    extc_rc_regionFree(r);
+}
+
+#if !EXTC_RC_NOCOUNT
+/* 计数档专项：单槽释放（freeSlot）会立即链入，清扫（freeSlotWord）只计数。混合两者后，
+ * 位图重建只在链为空时发生 ⇒ 同一个槽不会入链两次；链必须无环、无重复、只含洞。 */
+static void t_reuseNoDoubleLink(void) {
+    ExtcRcRegion *r = regionNew(39, (int64_t)1 << 40);
+    enum { kN = 600, kHalf = 300 };
+    static Node *a[kN];
+    for (int i = 0; i < kN; i++) a[i] = (Node *)extc_rc_alloc(r, sizeof(Node), &g_node);
+    size_t slabs0 = extc_rc_slabCount(r);
+    for (int i = 0; i < kHalf; i++) { extc_rc_inc(a[i]); extc_rc_dec(a[i]); }   /* hold 1 -> 0: freeSlot 立即链入 */
+    check(regionChainsValid(r), "P0-B 计数档：单槽释放的链无重复、无活槽");
+    for (int i = 0; i < kHalf; i++) a[i] = (Node *)extc_rc_alloc(r, sizeof(Node), &g_node);   /* 弹出链上的洞 */
+    check(regionOccCount(r) == kN, "P0-B 计数档：弹出后占用槽数仍 = 对象数");
+    for (int i = 0; i < kHalf; i++) { extc_rc_inc(a[i]); extc_rc_dec(a[i]); }
+    /* 其余对象交给清扫：freeSlotWord 也把死槽链入同一条复用链 */
+    extc_rc_begin(r, NULL, 0);
+    while (!r->seedsDone || r->msp || r->scanObj) (void)extc_rc_markStep(r, 0xffffffffu);
+    extc_rc_finish(r);
+    while (r->sweeping) (void)extc_rc_sweepStep(r, EXTC_RC_SWEEP_BUDGET);
+    extc_rc_settle(r);
+    check(extc_rc_bytes(r) == 0, "P0-B 计数档：清扫与定点释放后占用归零");
+    check(regionChainsValid(r), "P0-B 计数档：混合两种释放后链仍无重复、无活槽");
+    for (int i = 0; i < kN; i++) a[i] = (Node *)extc_rc_alloc(r, sizeof(Node), &g_node);
+    check(extc_rc_slabCount(r) == slabs0, "P0-B 计数档：混合路径的洞按位图重建，不新开块");
+    check(regionOccCount(r) == kN, "P0-B 计数档：重建后占用槽数 = 对象数（同一槽没发两次）");
+    check(regionChainsValid(r), "P0-B 计数档：重建后的链仍合法");
+    extc_rc_regionFree(r);
+}
+#endif
+
+#if !EXTC_RC_NOCOUNT
+/* 计数档专项：清扫在飞时调用定点释放（releaseDead）必须被推迟。`releaseOld` 收尾会清掉**整个**
+ * mark 位图，而本轮的分配路径靠 mark 位保护"清扫中新建/未扫位置"的对象；清掉就会把活对象交给
+ * 本轮清扫当垃圾收掉。这里的形状把"清扫中分配"落在**已存在 slab 的未扫 word**（不是新 slab，
+ * 所以分配路径确实给它置了黑位）—— 定点释放若在清扫中执行，清掉的正是这个黑位。 */
+static void t_releaseDuringSweep(void) {
+    ExtcRcRegion *r = regionNew(35, 16);
+    /* 两个 size class：16 字节类先建、填到 word 16；24 字节类后建，成为 slabs 头。finish 的清扫从
+     * 24 字节块起步，随后那次 16 字节分配按字节配额先扫完 24 字节块、再扫进 16 字节块 16 个 word，
+     * 于是 fresh/old/oldChild 都落在游标处（word 16，未扫）；分配路径给 fresh 置黑位。 */
+    enum { kPad = 1024 };
+    static void *keeper[kPad + 2];
+    for (int i = 0; i < kPad; i++) keeper[i] = extc_rc_alloc(r, sizeof(Node), &g_node);
+    Node *keep = (Node *)extc_rc_alloc(r, sizeof(Node), &g_node);
+    keeper[kPad] = keep;
+    keeper[kPad + 1] = extc_rc_alloc(r, 24, &g_data);   /* 第二类：24 字节槽的块成为 slabs 头 */
+    Node *old = (Node *)extc_rc_alloc(r, sizeof(Node), &g_node);
+    Node *oldChild = (Node *)extc_rc_alloc(r, sizeof(Node), &g_node);
+    old->next = oldChild;   /* 死树：不在根表里 */
+
+    extc_rc_begin(r, keeper, kPad + 2);
+    while (!r->seedsDone || r->msp || r->scanObj) (void)extc_rc_markStep(r, 0xffffffffu);
+    extc_rc_finish(r);
+    check(r->sweeping, "sweep 在飞时定点释放：标记收尾后清扫已经在飞");
+    r->visitedBytes = 0;   /* 前面的 O(live) 遍历信用已花掉：打开定点释放的预算闸 */
+
+    /* finish 推进 8 个 word、分配路径扫完 24 字节块再进 16 字节块 16 个 word：cursor 到 word 16。
+     * fresh 落在 word 16（未扫）⇒ 分配路径给它置黑位；old/oldChild 也还在未扫区。 */
+    Node *fresh = (Node *)extc_rc_alloc(r, sizeof(Node), &g_node);
+    check(r->sweeping && r->swWord < 32, "sweep 在飞时定点释放：分配的顺带推进后清扫仍未完");
+    check(extc_rc_isLive(fresh), "sweep 在飞时定点释放：清扫中分配的对象当前活着");
+    check(extc_rc_isLive(old) && extc_rc_isLive(oldChild),
+          "sweep 在飞时定点释放：未扫区的死树此刻还活着");
+
+    extc_rc_releaseDead(r, old, keeper, kPad + 2);   /* 带修复 ⇒ 清扫在飞、直接返回 */
+    check(extc_rc_isLive(old), "sweep 在飞时定点释放：清扫在飞 ⇒ 本轮不做定点释放（old 仍活）");
+
+    while (r->sweeping) (void)extc_rc_sweepStep(r, EXTC_RC_SWEEP_BUDGET);
+    check(extc_rc_isLive(fresh),
+          "sweep 在飞时定点释放：清扫中分配的对象没被误放（黑位没被定点释放清掉）");
+    check(extc_rc_isLive(keep), "sweep 在飞时定点释放：根对象没被误放（根表的标黑位还在）");
+    check(!extc_rc_isLive(old) && !extc_rc_isLive(oldChild),
+          "sweep 在飞时定点释放：清扫随后照常收掉死树");
+    {
+        int clean = 1;
+        for (ExtcRcSlab *s = r->slabs; s; s = s->next)
+            for (size_t w = 0; w < s->nwords; w++) if (s->mark[w]) clean = 0;
+        check(clean, "sweep 在飞时定点释放：终态全部 slab 的 mark 位为 0");
+    }
+    check(extc_rc_hold(keep) == 0 && extc_rc_hold(fresh) == 0,
+          "sweep 在飞时定点释放：终态活对象的 hold 与无引用一致（0）");
+    extc_rc_regionFree(r);
+}
+#endif
+
+/* histo bucket table self-test (Lead m02523): a bucket name is its upper bound; over1ms counts only strictly > 1 ms. */
+static void t_histoBuckets(void) {
+    int i;
+    check(extc_rc_stepBucket(4000) == 2, "histo: 4.000 us lands in b4us (upper bound is inclusive)");
+    check(extc_rc_stepBucket(4001) == 3, "histo: 4.001 us lands in b8us");
+    check(extc_rc_stepBucket(500000) == 9, "histo: 0.5 ms lands in b512us");
+    check(extc_rc_stepBucket(1000000) == 10, "histo: 1.000 ms lands in b1ms (inclusive upper bound)");
+    check(extc_rc_stepBucket(1000001) == 11, "histo: 1.001 ms lands in b4ms");
+    check(extc_rc_stepBucket(1500000) == 11, "histo: 1.5 ms lands in b4ms");
+    check(extc_rc_stepBucket(64000000) == 13, "histo: 64.0 ms lands in b64ms (inclusive upper bound)");
+    check(extc_rc_stepBucket(70000000) == 14, "histo: 70 ms lands in bge64ms");
+    for (i = 0; i < EXTC_RC_STEP_NB; i++) extc_rc_stepB[i] = 0;
+    extc_rc_stepNote(500000);
+    extc_rc_stepNote(1500000);
+    extc_rc_stepNote(70000000);
+    check(extc_rc_stepB[9] == 1 && extc_rc_stepB[11] == 1 && extc_rc_stepB[14] == 1,
+          "histo: the three injected samples land in b512us/b4ms/bge64ms");
+    check(extc_rc_stepSumFrom(11) == 2, "histo: over1ms counts only the two strictly-above-1ms samples");
+    check(extc_rc_stepSumFrom(5) == 3, "histo: over16 counts all three samples");
+}
+#if EXTC_RC_FREE_DEFER
+/* ---------------------------------------------------------------- 延迟释放队列（P1-3） */
+static void t_regionFreeDefer(void) {
+    ExtcRcRegion *r = regionNew(40, (int64_t)1 << 40);   /* 压力线抬高：本用例手动驱动 */
+    Node *last = NULL;
+    for (int i = 0; i < 5000; i++) last = (Node *)extc_rc_alloc(r, sizeof(Node), &g_node);   /* > 2 x 4090 槽 ⇒ 两块 slab */
+    size_t slabs = extc_rc_slabCount(r);
+    check(slabs >= 2, "延迟释放：形状里至少两块 slab");
+    long long q0 = extc_rc_fqSlabs;
+    extc_rc_regionFree(r);
+    check(extc_rc_fqSlabs - q0 >= (long long)slabs, "延迟释放：regionFree 只挂队列（同步段不 free slab）");
+    check(extc_rc_fqBytes > 0, "延迟释放：队列字节数 > 0");
+    check(extc_rc_rfSyncFrees < 9 * (long long)slabs, "延迟释放：同步段 free 次数不含 slab（只有类链与 region）");
+    check(!extc_rc_isLive(last), "延迟释放：drop 后旧对象立即不算活");
+    last->next = NULL;   /* payload 还在队列里（没 free），写它不 UAF；写入不得复活对象 */
+    check(!extc_rc_isLive(last), "延迟释放：延迟期内写旧槽不复活对象");
+
+    /* 分配路径在开新 slab 前做有界排空，但一次排空的预算随时钟封顶（8 slab / 100 us，先到先停），
+       满载或 ASan 插桩下 100 us 可能先用完、把余量留给下一次——这是契约允许的。所以「清空」判据
+       用多次开凿：每个新 region 的首个分配必开新 slab，于是每次尝试都触发一遍有界排空。 */
+    ExtcRcRegion *r2 = regionNew(41, (int64_t)1 << 40);
+    for (int i = 0; i < 64; i++) (void)extc_rc_alloc(r2, sizeof(Node), &g_node);
+    for (int k = 0; k < 64 && extc_rc_fqSlabs != 0; k++) {
+        ExtcRcRegion *rk = regionNew(50 + k, (int64_t)1 << 40);
+        (void)extc_rc_alloc(rk, sizeof(Node), &g_node);   /* 开凿新 slab ⇒ 又一次有界排空 */
+    }
+    check(extc_rc_fqSlabs == 0, "延迟释放：分配路径的有界排空把队列清空");
+    check(extc_rc_fqBytes == 0, "延迟释放：排空后队列字节数回到 0");
+    extc_rc_regionFree(r2);
+    extc_rc_freeQueueDrainAll();   /* 无预算入口：与 defer=0 等价的最后手段 */
+    check(extc_rc_fqSlabs == 0, "延迟释放：全量排空入口清空队列");
+    check(!extc_rc_isLive(last), "延迟释放：排空后旧指针仍不算活（登记表在 drop 时就摘了）");
+}
+
+static void t_regionFreeDeferHuge(void) {
+    ExtcRcRegion *r = regionNew(42, (int64_t)1 << 40);
+    void *p = extc_rc_alloc(r, 600000, &g_data);   /* 槽 > (1 MiB - 头)/2 ⇒ huge block：payload 单独 malloc */
+    ExtcRcSlab *s = p ? extc_rc_ownSlab(p) : NULL;
+    check(s && s->big, "延迟释放：大对象落在 huge block（payload 与 slab 分开）");
+    long long q0 = extc_rc_fqSlabs;
+    extc_rc_regionFree(r);
+    check(extc_rc_fqSlabs - q0 >= 1, "延迟释放：huge block 也挂队列（payload 等排空时 free）");
+    extc_rc_freeQueueDrainAll();
+    check(extc_rc_fqSlabs == 0, "延迟释放：排空后 huge block 的 slab 与 payload 一起 free");
+    check(!extc_rc_isLive(p), "延迟释放：huge block 的槽不再算活");
+}
+
+static void t_regionFreeDeferLimit(void) {
+    ExtcRcRegion *r = regionNew(43, (int64_t)1 << 40);
+    for (int i = 0; i < 20; i++) (void)extc_rc_alloc(r, 600000, &g_data);   /* 20 x ~600 KB，超过 8 MiB 队列限额 */
+    long long f0 = extc_rc_fqForced;
+    extc_rc_regionFree(r);
+    /* 超限额时 drop 当场加强排空（硬截止 1 ms）；单次硬截止同样可能不够（满载/ASan），
+       契约规定后续分配点在仍超限额时会继续用硬截止排空 ⇒ 判据按「有限次分配点内压回限额」。 */
+    for (int k = 0; k < 16 && extc_rc_fqBytes > (int64_t)EXTC_RC_FREE_QUEUE_BYTES; k++) {
+        ExtcRcRegion *rk = regionNew(80 + k, (int64_t)1 << 40);
+        (void)extc_rc_alloc(rk, sizeof(Node), &g_node);
+    }
+    check(extc_rc_fqBytes <= (int64_t)EXTC_RC_FREE_QUEUE_BYTES,
+          "延迟释放：队列字节超上限时 drop 当场加强排空（硬截止 1 ms）");
+    check(extc_rc_fqForced > f0, "延迟释放：加强排空被计数（forced）");
+    extc_rc_freeQueueDrainAll();
+    check(extc_rc_fqSlabs == 0, "延迟释放：限额路径之后队列可全量清空");
+}
+#endif
 #ifdef EXTC_DRIVER_ONLY_SCAN
 /* 粒度出口用：分段/续扫的断言单独跑，不受其余用例「一次 collect 必须收完」这类步数假设影响。 */
 int main(void) {
@@ -1010,6 +1513,22 @@ int main(void) {
     t_learning();
     t_shadeCache();
     t_scanChunk();
+    t_histoBuckets();
+    t_allocDuringSweep();
+    t_sweepBulkReset();
+    t_sweepElideMark();
+    t_lazyFreelistRebuild();
+#if !EXTC_RC_NOCOUNT
+    t_reuseNoDoubleLink();
+#endif
+#if !EXTC_RC_NOCOUNT
+    t_releaseDuringSweep();
+#endif
+#if EXTC_RC_FREE_DEFER
+    t_regionFreeDefer();
+    t_regionFreeDeferHuge();
+    t_regionFreeDeferLimit();
+#endif
     printf("通过 %d，失败 %d\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

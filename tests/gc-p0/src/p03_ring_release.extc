@@ -1,0 +1,57 @@
+/* P0-3（releaseOld 预算化）的已知权衡形状：R 轮 × 每轮 N 个结点的环，环每轮丢弃。
+ * runtime-facts 自测（Lead m01373）：10×400k 环峰值 107 MB，HEAD 45.8 MB（2.3×）——
+ * releaseOld 预算（2048 步）耗尽后放弃本轮、改靠 sweep，峰值因此变高。**这是已知权衡，不是通过项**：
+ * after 报告只记录本形状的峰值数字，不判 PASS/RED。
+ * 形状说明：本文件是我方"等效形状"（不是 runtime-facts 的原始脚本）；环用 next 回指头结点制造真实循环引用，
+ * 每轮把 head 存进局部 keep 再置 null（丢弃整环）。
+ * 运行：argv 依次给 rounds（默认 10）、nodes（默认 400000）。 */
+use std::io
+fn parseN(args: slice<slice<u8>>, idx: i64, dflt: i64) -> i64 {
+    var i: i64 = idx
+    if args.len <= i { return dflt }
+    var s: slice<u8> = args[i]
+    var v: i64 = 0
+    var k: i64 = 0
+    while k < s.len {
+        var ch: u8 = s[k]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        k = k + 1
+    }
+    if v > 0 { return v }
+    return dflt
+}
+
+struct node { v: i64 next: ?mut ref node }
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var rounds: i64 = parseN(args, 1, 10)
+    var nodes: i64 = parseN(args, 2, 400000)
+    var r: i64 = 0
+    var made: i64 = 0
+    var keep: ?mut ref node = null
+    while r < rounds {
+        var head = new node
+        head.v = r
+        var prev: mut ref node = head
+        var i: i64 = 1
+        while i < nodes {
+            var p = new node
+            p.v = i
+            (*prev).next = p
+            prev = p
+            i = i + 1
+        }
+        (*prev).next = head    /* 回指 ⇒ 真环，计数永不归零，只能靠 sweep/releaseOld */
+        keep = head
+        keep = null
+        made = made + nodes
+        r = r + 1
+    }
+    var tag: i64 = 0
+    var c: ?mut ref node = keep
+    if c != null { tag = (*c).v }
+    io::cout << "P03 rounds=" << rounds << " nodes=" << nodes << " made=" << made << " tag=" << tag << "\n"
+    return 0
+}

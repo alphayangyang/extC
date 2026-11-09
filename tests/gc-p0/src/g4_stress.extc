@@ -1,0 +1,95 @@
+/* G4 正式验收形状：长命活集 L + 每轮注入 4L 循环垃圾。
+ *
+ * 目的：验收用户第一条硬要求「内存有界」——在**默认档（隐式 M_max = 3·L）**下，
+ * 峰值驻留应 ≤ 声明 M_max + 8 MiB，且稳态各轮峰值不随轮次单调上涨（相邻两轮差 ≤2%）。
+ * 三档对照（由 tests/gc-p0/stress.py 驱动）：
+ *   A 默认（隐式 3·L） / B EXTC_RC_M_MAX=33554432（32 MiB） / C EXTC_RC_M_MAX=1099511627776（等效关墙）
+ * 判据与口径见 docs/analysis/MEASUREMENTS-GC-P0.md §8.1；量具是 /proc/<pid>/status 的 VmHWM/VmRSS
+ * （2 ms 采样）+ 运行时 EXTC_RC_PAUSE=1 的 [work]/[mmax] 行。
+ *
+ * 形状细节：
+ *  - 活集：main 开头建 L 个结点的链，根 w.live 永不摘 → 全程 live=L。
+ *  - 垃圾：每轮 2L 对互指结点（a.next=b, b.prev=a 两向 link2）共 4L 个结点，挂 w.ring 后立即
+ *    丢根 ⇒ 每轮留下 4L 个不可达 2-环（计数永不归零，只能靠 sweep）。
+ *  - 每轮向 stderr 打一行 "R k"（io::cerr 每次写前 flush stdout），供 stress.py 对齐采样点；
+ *    轮数/规模用 argv 覆盖：stress.py --live --garb --rounds。
+ */
+use std::io
+
+fn parseN(args: slice<slice<u8>>, idx: i64, dflt: i64) -> i64 {
+    if args.len <= idx { return dflt }
+    var s: slice<u8> = args[idx]
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    if v > 0 { return v }
+    return dflt
+}
+
+struct node { v: i64  next: ?mut ref node  prev: ?mut ref node }
+struct world { live: ?mut ref node  ring: ?mut ref node  made: i64  dropped: i64  liveN: i64 }
+
+fn link2(a: mut ref node, b: mut ref node) { a.next = b  b.prev = a }
+
+/* 关键：结点必须**逃逸**到函数级根 w.ring（rc 区），否则循环体词法层的 arena release 会直接
+ * bump 回收，根本不产生 GC 垃圾（本文件第一版就踩了这个坑：峰值不随配置变化、pressure=0）。
+ * 与 tests/reclaim-shapes/cyclic_pressure.extc 的 rootRing/dropRing 同构。 */
+fn makeRing(w: mut ref world, r: i64) {
+    var a = new node
+    var b = new node
+    a.v = r
+    b.v = 0 - r
+    link2(a, b)
+    link2(b, a)
+    w.ring = a
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var liveN: i64 = parseN(args, 1, 50000)
+    var rounds: i64 = parseN(args, 2, 40)
+    var garbage: i64 = parseN(args, 3, 200000)   // 4L，必须偶数
+    var w: world
+
+    // 活集：一条 L 结点的长链，根 w.live 全程保留。
+    var head = new node
+    head.v = 0
+    var prev: mut ref node = head
+    var i: i64 = 1
+    while i < liveN {
+        var p = new node
+        p.v = i
+        (*prev).next = p
+        prev = p
+        i = i + 1
+    }
+    w.live = head
+    w.liveN = liveN
+
+    var r: i64 = 0
+    while r < rounds {
+        var pairs: i64 = garbage / 2
+        var j: i64 = 0
+        while j < pairs {
+            makeRing(ref w, r)   // 结点逃逸到 w.ring ⇒ 进入 rc 区，成为真 GC 垃圾
+            j = j + 1
+        }
+        w.made = w.made + pairs * 2
+        w.ring = null          // 丢根：本轮 4L 个结点全部不可达
+        w.dropped = w.dropped + 1
+        r = r + 1
+        io::cerr << "R " << r << "\n"
+    }
+
+    // 活集自证：遍历求和（若活集被误回收，地址/数值会异常）
+    var sum: i64 = 0
+    var q: ?mut ref node = w.live
+    while q != null { sum = sum + (*q).v  q = (*q).next }
+    io::cout << "G4S live=" << w.liveN << " rounds=" << rounds << " garb=" << w.made << " dropped=" << w.dropped << " sum=" << sum << "\n"
+    return 0
+}

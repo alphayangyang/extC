@@ -1,0 +1,63 @@
+/* G15 / L10-a 已知限制的量具：pool 槽里的引用赋值 ⇒ 永久 pin ⇒ 无界泄漏。
+ *
+ * 形状取自 docs/analysis/AUDIT-GC-P0.md §9.4（doc-audit 最小例 /tmp/poolres.extc）：
+ *   var s: mut slice<item> = poolSlice<item>(rid, 2); s[0].r = new node;
+ *   s = poolResize<item>(rid, s, 4); s[0].r = new node; s[1].r = new node;
+ *   poolGive<item>(rid, s)        —— 每轮一遍，共 N 轮
+ * 机制（逐行见 AUDIT-GC-P0.md §9.4）：槽地址在 pool（malloc）缓冲里 ⇒ 生成
+ * extc_rc_storeRefSlot（src/back/reclaim.c:2000-2007）→ slabOfInterior 返回空
+ * ⇒ 回落 extc_rc_storeRefUnknown（reclaim.c:1963-1974）→ extc_rc_pinAdd(v) 把对象
+ * 登记为 mark 根；extc_pool_give 只 free 块，不撤 pin；pinSeed（reclaim.c 生成文本）
+ * 继续把它当根 ⇒ T1/T2/T3 三档都不回收。
+ *
+ * 判据（Lead m01501 写死）：maxRSS(800k) / maxRSS(50k) ≤ 1.20。
+ * **本门禁标 XFAIL(known L10-a)**：预期 RED，是给下一轮 P0-8（pin 源区间撤销 / 池级
+ * epoch）留的量具；不计入 after 回归、不作阻塞。报告行写法：`G15 … XFAIL(known L10-a)`。
+ * 修好后本行应自动转 PASS（硬判据不变）。
+ * 运行：argv[1] = 轮数 N（默认 50000）；输出 `G15 n=… sum=…`。 */
+use std::io
+use std::sys::pool as syspool
+
+struct node { v: i64 }
+struct item { r: mut ref node }
+
+fn parseN(args: slice<slice<u8>>, idx: i64, dflt: i64) -> i64 {
+    var i: i64 = idx
+    if args.len <= i { return dflt }
+    var s: slice<u8> = args[i]
+    var v: i64 = 0
+    var k: i64 = 0
+    while k < s.len {
+        var ch: u8 = s[k]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        k = k + 1
+    }
+    if v > 0 { return v }
+    return dflt
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    let n = parseN(args, 1, 50000)
+    let rid = syspool::extc_pool_new(-1)
+    var i: i64 = 0
+    var sum: i64 = 0
+    while i < n {
+        var s: mut slice<item> = poolSlice<item>(rid, 2)
+        s[0].r = new node
+        s[0].r.v = 7
+        s = poolResize<item>(rid, s, 4)
+        sum = sum + s[0].r.v
+        s[0].r = new node
+        s[0].r.v = 8
+        s[1].r = new node
+        s[1].r.v = 9
+        sum = sum + s[1].r.v
+        var _g: i64 = 0
+        if poolGive<item>(rid, s) { _g = 1 }
+        i = i + 1
+    }
+    io::cout << "G15 n=" << n << " sum=" << sum << "\n"
+    return 0
+}

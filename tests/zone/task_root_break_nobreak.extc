@@ -1,0 +1,25 @@
+use std::io
+use std::sys::coroutine as sct
+
+// 对照组：同形但**没有 break**（全部 fall-through）。修复前这条路径一次 end 都不发 ⇒
+// 1000 个任务全漏；修复后期望 live=0。
+
+fn mk(n: i64) -> coroutine<i64> {
+    var acc: i64 = 0
+    for i in 0..n {
+        acc = acc + i
+        yield acc
+    }
+    return
+}
+
+fn main() -> i32 {
+    var j: i64 = 0
+    while j < 1000 {
+        var h: coroutine<i64> = mk(2)
+        j = j + 1
+    }
+    let live: i64 = sct::extc_task_live()
+    io::println(f"live={live}")
+    return i32(live)
+}

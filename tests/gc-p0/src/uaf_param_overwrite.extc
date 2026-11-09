@@ -1,0 +1,27 @@
+/* G12 计数档 soundness 回归：**参数槽被覆盖**后旧别名不得复活。
+ * fn clobber(p: mut ref node){ p = new node }：计数档会把"p 的旧值"减一次引用并把槽位清成
+ * 新对象；若实现有缺陷，main 里的旧别名 a 会指向已被复用的槽，随后 a.v = 111 就改到 b 身上。
+ * 判据（NOCOUNT=0 强制计数档）：stdout 逐字为 "alias check b.v=999"，退出码 0。
+ * 修复前（doc-audit 复现）：b.v=111 —— 即 a 与 b 共用同一槽。
+ * 默认档（不设 EXTC_RC_NOCOUNT）：no-count 无 freeSlot 入口，理论上不可达；实际行为由
+ * run.sh 记录（脚本不假设，默认档只观测）。
+ * 出处：Lead 2026-11-09 回归门禁 G12；tests/gc-p0/run.sh 的 g12 模式。 */
+use std::io
+
+struct node { v: i64 }
+
+fn clobber(p: mut ref node) {
+    p = new node
+    p.v = 0
+}
+
+fn main() -> i32 {
+    var a = new node
+    a.v = 42424242
+    clobber(a)
+    var b = new node
+    b.v = 999
+    a.v = 111
+    io::cout << "alias check b.v=" << b.v << "\n"
+    return 0
+}

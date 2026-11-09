@@ -11,7 +11,8 @@
    **不许当绿**（延续"插桩失败不许伪装成 sweeps=0"的规则）。
 2. **确定性**：每形状跑 3 次，`[work]` 行必须**逐字相同**；不一致 ⇒ FAIL（工作量本应确定）。
 3. **界（蕴含式，数字从**产物**里读，不硬编码）**：
-   `walk_max ≤ EXTC_RC_MARK_BATCH_MAX`、`walk_gt<BATCH_MAX> == 0`（桶存在时）、
+   `walk_max ≤ walk_cap`、`walk_gtcap == 0`，其中 `walk_cap = EXTC_RC_MARK_BATCH_MAX * EXTC_RC_SWEEP_PRESSURE_MUL`
+   （压力乘子是**策略内的步长上限**：这些步仍然是有界热路径步，必须计入 `[work]`，不许落进 `[ubwork]` 伪装成无界排空）；
    `scan_max ≤ EXTC_RC_SEED_WORDS`、`push_max ≤ EXTC_RC_SEED_PUSHES + (字宽-1)`
    （压栈按**字**收口：外层在进字前检查，最后一个 64 位字最多多压 63）。
    三个 `#define` 与 `rsbit` 字宽**都从本树现场生成的 C 里 grep**；任何一个找不到 ⇒ FAIL
@@ -109,16 +110,19 @@ def main():
         p_batch = grab_define(gen_text, "EXTC_RC_MARK_BATCH_MAX")
         p_words = grab_define(gen_text, "EXTC_RC_SEED_WORDS")
         p_push = grab_define(gen_text, "EXTC_RC_SEED_PUSHES")
+        p_mul = grab_define(gen_text, "EXTC_RC_SWEEP_PRESSURE_MUL")
         word_bits = grab_word_bits(gen_text)
         missing = [n for n, v in (("EXTC_RC_MARK_BATCH_MAX", p_batch), ("EXTC_RC_SEED_WORDS", p_words),
-                                  ("EXTC_RC_SEED_PUSHES", p_push), ("rsbit 字宽", word_bits)) if v is None]
+                                  ("EXTC_RC_SEED_PUSHES", p_push), ("EXTC_RC_SWEEP_PRESSURE_MUL", p_mul),
+                                  ("rsbit 字宽", word_bits)) if v is None]
         if missing:
             bad("闸门自身失效：产物里读不到 " + "、".join(missing) +
                 " —— 判据的数字必须从产物 grep，不许硬编码，更不许兜底")
             return 1
         push_cap = p_push + (word_bits - 1)
-        print(f"  参数（从产物读）：BATCH_MAX={p_batch} SEED_WORDS={p_words} SEED_PUSHES={p_push} "
-              f"rsbit={word_bits}位 ⇒ push 允许 ≤ {push_cap}", flush=True)
+        walk_cap = p_batch * p_mul   # 压力乘子是策略内的步长上限：有界热路径步最多涨到这里
+        print(f"  参数（从产物读）：BATCH_MAX={p_batch} PRESSURE_MUL={p_mul} ⇒ walk_cap={walk_cap} "
+              f"SEED_WORDS={p_words} SEED_PUSHES={p_push} rsbit={word_bits}位 ⇒ push 允许 ≤ {push_cap}", flush=True)
 
         # ── 每形状：3 次；元判据 + 确定性 + 界 ───────────────────────────────
         for tag, bpath, n in bins:
@@ -176,11 +180,15 @@ def main():
             d = (f"n={f['n']} walk_max={f.get('walk_max')} scan_max={f.get('scan_max')} "
                  f"push_max={f.get('push_max')}")
             viol = []
-            if not (f.get("walk_max", -1) <= p_batch):
-                viol.append(f"walk_max={f.get('walk_max')} > BATCH_MAX={p_batch}")
-            bkey = f"walk_gt{p_batch}"
-            if bkey in f and f[bkey] != 0:
-                viol.append(f"{bkey}={f[bkey]} != 0")
+            # 步长上限：产物里报的 walk_cap 必须与判据算出来的一致（防"会漂的副本"），且没有步越过它。
+            if f.get("walk_cap") != walk_cap:
+                viol.append(f"walk_cap={f.get('walk_cap')} != BATCH_MAX*PRESSURE_MUL={walk_cap}")
+            if not (f.get("walk_max", -1) <= walk_cap):
+                viol.append(f"walk_max={f.get('walk_max')} > walk_cap={walk_cap}")
+            if "walk_gtcap" not in f:
+                viol.append("walk_gtcap 缺失 —— [work] 没报超过步长上限的步数（插桩失败，不许当绿）")
+            elif f["walk_gtcap"] != 0:
+                viol.append(f"walk_gtcap={f['walk_gtcap']} != 0")
             if not (f.get("scan_max", -1) <= p_words):
                 viol.append(f"scan_max={f.get('scan_max')} > SEED_WORDS={p_words}")
             skey = f"scan_gt{p_words}"

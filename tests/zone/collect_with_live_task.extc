@@ -1,0 +1,52 @@
+use std::io
+use std::sys::pool as syspool
+use std::sys::coroutine as sct
+
+// G9 门禁用例：**有活任务时**调用 syspool::collect()，任务帧必须仍可驱动、任务数不变。
+//
+// 背景（CE 判据 G9，docs/analysis/GC-ROOFLINE.md §7）：任务根登记发射器
+// （extc_task_rootPush）零处发射，运行期 extc_taskRootN 恒 0 ⇒ extc_task_collect 一律放掉
+// 所有 depth==0 的活任务 place。handle_escape_pool.extc 只覆盖"句柄已放弃"的情形，
+// collect_keeps_stack.extc 只覆盖"栈上的池"；本用例补"仍持有的活任务句柄"。
+//
+// 判据（patch 后）：
+//   · freed=0、live0=live1=1 —— collect 不得动活任务；
+//   · 之后仍能把它驱动到结束：got=20（acc 序列 0,1,3,6,10）、steps=5、tag=777 原样打印；
+//   · ASAN 构建下零报告。
+// 基线（HEAD 85b8871b）：collect 当场放掉活任务 place ⇒ 下一次 next() trap
+//   "driving a coroutine whose task has already ended (its frame was released with the task)"，rc=70。
+
+fn mk(n: i64) -> coroutine<i64> {
+    var acc: i64 = 0
+    var tag: i64 = 777
+    for i in 0..n {
+        acc = acc + i
+        yield acc
+    }
+    io::println(f"tag={tag}")
+    return
+}
+
+fn main() -> i32 {
+    var h: coroutine<i64> = mk(5)
+    var got: i64 = 0
+    if h.next() {
+        got = got + h.value()
+    }
+    let live0: i64 = sct::extc_task_live()
+    let freed: i64 = syspool::collect()
+    let live1: i64 = sct::extc_task_live()
+    io::println(f"live0={live0} freed={freed} live1={live1}")
+    var steps: i64 = 1
+    var more: bool = true
+    while more {
+        if h.next() {
+            got = got + h.value()
+            steps = steps + 1
+        } else {
+            more = false
+        }
+    }
+    io::println(f"got={got} steps={steps}")
+    return 0
+}

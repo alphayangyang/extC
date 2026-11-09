@@ -7802,6 +7802,31 @@ static bool acScanExpr(void *ctx, Expr *e) {
     case EX_DYN:
         if (!ac->ivBad) { ac->ivBad = true; ac->ivWhy = "a `dyn` call: the callee is not resolved"; }
         break;
+    case EX_GENCALL: {
+        /* (iv) cannot see a **bulk byte move**. `copyInto<T>` is one `memmove` that duplicates
+         * every reference leaf of the element into the destination, and `poolResize<T>` /
+         * `poolResizeRaw<T>` move the block's bytes (a grow keeps the live prefix) without an
+         * `inc` per reference. The premise of the event tier -- "every drop of a reference goes
+         * through a counted slot" -- therefore does not hold for such a unit: a later overwrite of
+         * the source slot decrements the only count and frees an object the copied block still
+         * points at (shape G13, `tests/gc-p0/src/uaf_bulk_copy.extc`). Mark the local part of (iv)
+         * false, which keeps the unit on the sweep tier (the conservative direction); the program
+         * is not rejected, and a pure-data instantiation (`poolResize<i64>`) passes unchanged. */
+        const char *nm = e->u.gencall.name;
+        if (!ac->ivBad && nm &&
+            (strcmp(nm, "copyInto") == 0 || strcmp(nm, "poolResize") == 0 ||
+             strcmp(nm, "poolResizeRaw") == 0) &&
+            e->u.gencall.targs.len > 0) {
+            Type *et = tsub(sc->c, *(Type **)vecAt(&e->u.gencall.targs, 0));
+            if (et && (mentionsParam(et) || typeHoldsCountedRef(sc->c->tt, et))) {
+                ac->ivBad = true;
+                ac->ivWhy = arenaPrintf(ac->a,
+                    "line %d: `%s` moves a block of elements containing references; the acyclic"
+                    " analysis cannot see the byte move", e->line, nm);
+            }
+        }
+        break;
+    }
     case EX_CALL: case EX_METHOD: case EX_ASSOC: {
         FuncDef *g = planCallee(e);
                 /* An analyzable callee goes through the call-graph closure ((iv) must hold for it too); an

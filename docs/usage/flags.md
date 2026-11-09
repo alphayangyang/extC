@@ -88,6 +88,12 @@ debug switches -- diagnostics only, **except the marked below**:
                        probes the generic entry performs and discards, because the host
                        is a slot, not an object). **On by default**; no-count regime
                        only; `=0` restores the pre-flip output byte for byte.
+  EXTC_TASK_ROOTS=0   kill switch: turn OFF task-root registration -- the emitter registers
+                       the task id slots it proves alive for the whole task with the runtime's
+                       task table (`extc_task_rootPush`/`extc_task_rootPop`), so
+                       `extc_task_collect` can tell a live task-owned place from a dead one.
+                       **On by default**; `=0` emits no registration line and restores the
+                       pre-P0-6 product byte for byte.
   EXTC_RC_TIME=1       diagnostic only: the generated program counts how often each
                        reclamation component is called and prints the tally to stderr.
   EXTC_RC_SWEEPFREE=1  diagnostic only: event regime -- turn holder counting on and stop

@@ -1,0 +1,45 @@
+/* 探针 C：长命根里反复"建环-丢弃环"。每轮新建 a、b 互指成 2-环，挂到 w.ring 再立即丢弃
+ * ⇒ 每轮留下两个**不可达的环**（计数永不归零，只有清扫能收）。
+ * 期望：若 sweep 真能回收，RSS 有界；不能则线性增长。 */
+use std::io
+fn parseN(args: slice<slice<u8>>, dflt: i64) -> i64 {
+    if args.len < 2 { return dflt }
+    var s: slice<u8> = args[1]
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    if v > 0 { return v }
+    return dflt
+}
+
+struct node { v: i64  next: ?mut ref node  prev: ?mut ref node }
+struct world { ring: ?mut ref node  made: i64  dropped: i64 }
+
+fn link2(a: mut ref node, b: mut ref node) { a.next = b  b.prev = a }
+fn rootRing(w: mut ref world, a: mut ref node) { w.ring = a  w.made = w.made + 1 }
+fn dropRing(w: mut ref world) { w.ring = null  w.dropped = w.dropped + 1 }
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var n: i64 = parseN(args, 1000000)
+    var w: world
+    var r: i64 = 0
+    while r < n {
+        var a = new node
+        var b = new node
+        a.v = r
+        b.v = 0 - r
+        link2(a, b)
+        link2(b, a)
+        rootRing(ref w, a)
+        dropRing(ref w)
+        r = r + 1
+    }
+    io::cout << "C n=" << n << " made=" << w.made << " dropped=" << w.dropped << "\n"
+    return 0
+}

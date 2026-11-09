@@ -1,0 +1,74 @@
+/* G17（内存墙双配置峰值）：长命集 + churn 垃圾，测峰值驻留是否随显式/隐式 M_max 单调。
+ * 形状：先建 live 条 node 长链（保持为根，永不被回收），再 rounds 轮各建 garb 条 node 链并丢弃
+ *（每轮把链头赋给局部 drop 后置 null）。
+ * 判据（Lead m01949①）：同一负载下跑 A=默认（隐式 M_max≈3·L）/ B=EXTC_RC_M_MAX=67108864 /
+ * C=EXTC_RC_M_MAX=1099511627776，各 3 reps，VmHWM 应 A<B<C；A≈B≈C ⇒ 内存墙未真正约束。
+ * 运行：argv 依次 live（默认 200000）、rounds（默认 10）、garb（默认 400000）。 */
+use std::io
+fn parseN(args: slice<slice<u8>>, idx: i64, dflt: i64) -> i64 {
+    var i: i64 = idx
+    if args.len <= i { return dflt }
+    var s: slice<u8> = args[i]
+    var v: i64 = 0
+    var k: i64 = 0
+    while k < s.len {
+        var ch: u8 = s[k]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        k = k + 1
+    }
+    if v > 0 { return v }
+    return dflt
+}
+
+struct node { v: i64 next: ?mut ref node }
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var live: i64 = parseN(args, 1, 200000)
+    var rounds: i64 = parseN(args, 2, 10)
+    var garb: i64 = parseN(args, 3, 400000)
+    /* 长命集：永远挂在 head 上 */
+    var head = new node
+    head.v = 0
+    var prev: mut ref node = head
+    var i: i64 = 1
+    while i < live {
+        var p = new node
+        p.v = i
+        (*prev).next = p
+        prev = p
+        i = i + 1
+    }
+    /* churn：每轮建一条 garb 长的链再丢弃 */
+    var dropped: i64 = 0
+    var r: i64 = 0
+    while r < rounds {
+        var g = new node
+        g.v = 0
+        var gp: mut ref node = g
+        var j: i64 = 1
+        while j < garb {
+            var q = new node
+            q.v = j
+            (*gp).next = q
+            gp = q
+            j = j + 1
+        }
+        var drop: ?mut ref node = g
+        drop = null
+        dropped = dropped + garb
+        r = r + 1
+    }
+    /* 末尾遍历长命链（同时防止编译器认为 live 集无用） */
+    var cnt: i64 = 0
+    var sum: i64 = 0
+    var c: ?mut ref node = head
+    while c != null {
+        cnt = cnt + 1
+        sum = sum + (*c).v
+        c = (*c).next
+    }
+    io::cout << "G17 live=" << live << " rounds=" << rounds << " garb=" << garb << " dropped=" << dropped << " cnt=" << cnt << " sum=" << sum << "\n"
+    return 0
+}

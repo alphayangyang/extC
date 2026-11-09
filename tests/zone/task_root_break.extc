@@ -1,0 +1,32 @@
+use std::io
+use std::sys::coroutine as sct
+
+// task-9 / P0-6 回归：循环体里每个迭代创建的任务，在 **fall-through**（不 break）路径上
+// 也必须被块退出点 end 掉。
+//
+// 修复前的 bug：break 语句先把本层的 end/pop 文本发掉并清表，块尾的 release 文本变成空
+// ⇒ 每个正常完成的迭代都漏一个任务（zone + 任务 arena）。本用例 1000 次迭代、第 500 次
+// break，期望结束时活任务数 0（修复前 ~500）。
+//
+// 判据：stdout `live=0`，退出码 0；EXTC_TASK_ROOTS=0 时同样是 live=0。
+
+fn mk(n: i64) -> coroutine<i64> {
+    var acc: i64 = 0
+    for i in 0..n {
+        acc = acc + i
+        yield acc
+    }
+    return
+}
+
+fn main() -> i32 {
+    var j: i64 = 0
+    while j < 1000 {
+        var h: coroutine<i64> = mk(2)
+        if j == 500 { break }
+        j = j + 1
+    }
+    let live: i64 = sct::extc_task_live()
+    io::println(f"live={live}")
+    return i32(live)
+}

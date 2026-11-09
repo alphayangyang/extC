@@ -1,0 +1,44 @@
+/* 探针 B：逃逸对象持续累积（每个新 node 挂到函数级 w.head，永不摘除）→ live 随 N 线性。
+ * 期望：RSS 随 N 线性增长（这是"内存无界"的直接证据）。 */
+use std::io
+fn parseN(args: slice<slice<u8>>, dflt: i64) -> i64 {
+    if args.len < 2 { return dflt }
+    var s: slice<u8> = args[1]
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    if v > 0 { return v }
+    return dflt
+}
+
+struct node { v: i64  next: ?mut ref node }
+struct world { head: ?mut ref node  cnt: i64 }
+
+fn push(w: mut ref world, p: mut ref node) {
+    p.next = w.head
+    w.head = p
+    w.cnt = w.cnt + 1
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var n: i64 = parseN(args, 1000000)
+    var w: world
+    var i: i64 = 0
+    while i < n {
+        var p = new node
+        p.v = i
+        push(ref w, p)
+        i = i + 1
+    }
+    var s: i64 = 0
+    var q: ?mut ref node = w.head
+    while q != null { s = s + (*q).v  q = (*q).next }
+    io::cout << "B n=" << n << " cnt=" << w.cnt << " sum=" << s << "\n"
+    return 0
+}

@@ -36,14 +36,28 @@ RULES = [
     ("tests/reclaim-unified/out/C-prototype-raw.txt", "插桩原型的原始 stdout"),
     ("bench/gc/v2/pause/*/*.events", "停顿原始事件流（聚合器的输入，跑 runner 即得）"),
     ("bench/gc/v2/pause/*/*.hist", "停顿原始直方（同上）"),
+    ("tests/gc-p0/out/**", "gc-p0 runner 每次重写的原始转储（.err/.out/.csv/.log/生成 C）"),
+    ("tests/gc-p0/bin/*", "gc-p0 run.sh 现场构建的可执行文件"),
 ]
 
 WITNESS = "_tree_pat_"      # 替身路径：只是为了拿它问 git"这条模式被忽略吗"
 
 
 def rx(pat: str):
-    """glob → 正则；`*` 只吃一段（不跨 `/`），免得模式误伤更深的同名路径。"""
-    return re.compile("^" + "".join("[^/]*" if c == "*" else re.escape(c) for c in pat) + "$")
+    """glob → 正则；`*` 只吃一段（不跨 `/`），`**` 吃任意层，免得模式误伤更深的同名路径。"""
+    out = []
+    i = 0
+    while i < len(pat):
+        if pat.startswith("**", i):
+            out.append(".*")
+            i += 2
+        elif pat[i] == "*":
+            out.append("[^/]*")
+            i += 1
+        else:
+            out.append(re.escape(pat[i]))
+            i += 1
+    return re.compile("^" + "".join(out) + "$")
 
 
 def tracked(root: pathlib.Path):

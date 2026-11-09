@@ -1,0 +1,61 @@
+/* G16 回归用例：sweep 期间新建的 slab 被错误标黑 ⇒ 活对象被误释放（2026-11-09 已修）
+ *
+ * 形状：持续分配逃逸结点挂到函数级的 w.head（永久存活），同时保持 sweep 有工作可做
+ * （死对象与分配交织 ⇒ sweep 与分配并发）。N=2,000,000 时旧构建
+ * （build-frz/extc 在 reclaim.c:845 修复前）会**挂死**而不是慢：
+ *   · slabNew 把新 slab prepend 到 r->slabs 头，而 sweep 游标已越过头部 ⇒ 本轮永远扫不到这块；
+ *   · 但 alloc 的"扫掠中分配即标黑"（reclaim.c:1329-1335）只看 (s != swSlab || wi >= swWord)，
+ *     新 slab 满足 ⇒ 黑位被置上；
+ *   · 本轮 sweep 永不扫它 ⇒ 黑位无人清；下一轮 markStep 的 dedupe（reclaim.c:2586）
+ *     把黑位当"已扫描"跳过 ⇒ 可达结点整棵子树不标黑 ⇒ 下一轮 sweep 释放活对象；
+ *   · 结果：链里出现环（旧 next 指向被复用的新结点），末尾遍历回跳，表现为 CPU-bound 挂死。
+ * 修复（reclaim.c:845-851，s->bump = 0 之后、extc_rc_ownAdd 之前）：
+ *     if (r->sweeping) s->swEpoch = r->swId;
+ * 判据（tests/gc-p0/run.sh g16 + summarize.py）：
+ *   3 reps 全部 exit 0、timed_out=false、stdout 含 cnt=2000000 且 sum=1999999000000、wall < 5 s。
+ * 旧构建上本用例 25 s 超时 ⇒ RED（timed_out=true）。不要为了"跑得快"把 N 降到 1M 以下：
+ * 实测 1.0–1.3M 在旧构建上也正常，1.5M 起才暴露。
+ * 运行：argv[1]=N（parseN，默认 2000000）。
+ */
+use std::io
+fn parseN(args: slice<slice<u8>>, dflt: i64) -> i64 {
+    if args.len < 2 { return dflt }
+    var s: slice<u8> = args[1]
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    if v > 0 { return v }
+    return dflt
+}
+
+struct node { v: i64  next: ?mut ref node }
+struct world { head: ?mut ref node  cnt: i64 }
+
+fn push(w: mut ref world, p: mut ref node) {
+    p.next = w.head
+    w.head = p
+    w.cnt = w.cnt + 1
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var n: i64 = parseN(args, 2000000)
+    var w: world
+    var i: i64 = 0
+    while i < n {
+        var p = new node
+        p.v = i
+        push(ref w, p)
+        i = i + 1
+    }
+    var s: i64 = 0
+    var q: ?mut ref node = w.head
+    while q != null { s = s + (*q).v  q = (*q).next }
+    io::cout << "B n=" << n << " cnt=" << w.cnt << " sum=" << s << "\n"
+    return 0
+}

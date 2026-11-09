@@ -3698,7 +3698,8 @@ void liveViewsStmtPost(Checker *c, LiveViews *lv, Stmt *s) {
  * A `var h: coroutine<T>` keeps its frame in the task's own arena, and the task (with the zone
  * and pools it owns) only ends when somebody drives it to completion and drops it. When nothing
  * outside the declaring block can reach the handle, the block itself can end the task: the
- * checker proves "every later use is a drive call on the handle" and codegen ends it on exit.
+ * checker proves "every later use is a drive call on the handle, or there is none" and codegen
+ * ends it on exit.
  *
  * The proof is deliberately one-sided. A shape the scan cannot prove keeps leaking (it stays a
  * pinned red line in tests/zone/handle_abandon.extc); it never ends a task someone may still use.
@@ -3790,7 +3791,8 @@ static bool coroScanChildStmt(void *ctx, Stmt *s) { coroScanStmt((CoroHandleScan
  * @brief Mark a handle local whose task may be ended when its block is left.
  *
  * A `var` counts when its initializer is a boxed coroutine call (the handle form) and every later
- * use in the same block is a drive call on that handle. Copies, arguments, returns and stores all
+ * use in the same block is a drive call on that handle (or there is no later use at all: a handle
+ * nobody reads is unreachable by construction). Copies, arguments, returns and stores all
  * disqualify it: the task then has an owner this block cannot see.
  *
  * @param c      The checker (unused beyond symmetry with the other block passes).
@@ -3808,7 +3810,11 @@ static void noteOwnedCoroHandles(Checker *c, Stmt *block) {
         hs.nUse = 0;
         hs.nDrive = 0;
         for (size_t j = i + 1; j < n; j++) coroScanStmt(&hs, *(Stmt **)vecAt(&block->u.block.stmts, j));
-        if (hs.nUse == 0 && hs.nDrive > 0) planSetCoroOwned(s, true);
+        /* nDrive may be zero: a handle that is never read is unreachable, and ending it at block
+         * exit is what keeps a loop-local abandoned handle from leaking one task per iteration
+         * (tests/zone/task_root_break*.extc). nUse is still the disqualifier: copies, arguments,
+         * returns and stores give the task an owner this block cannot see. */
+        if (hs.nUse == 0) planSetCoroOwned(s, true);
     }
 }
 

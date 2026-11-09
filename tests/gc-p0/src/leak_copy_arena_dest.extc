@@ -1,0 +1,44 @@
+/* L10-b 已知限制（XFAIL/known-issue，不进回归）：目的 view 由循环体 arena 分配。
+ * 形状取自 doc-audit 的最小例 /tmp/da-leak_copy-*.extc（本机 build-frz 已复现其数字）：
+ *   循环内 `new item[2]` 得到 s 和 d（都在栈/循环体 arena），copyInto<item>(d, s, 1) 把 s[0] 的 ref 字段
+ *   复制进 d；因为 d 的 base 不在 rc region 内，storeStructCopy 的 slabOfInterior(base) 失败，
+ *   退回把被引用 node 所在 region 置 noSweep（无清除点）⇒ 默认档线性泄漏。
+ * 判据：记录 XFAIL：maxRSS(800k)/maxRSS(50k)。本机 build-frz/extc 59171671 实测 2,648 kB → 17,624 kB
+ *   （对照程序同负载 2,640 → 3,028 kB）；修复方向 P0-9。
+ * 运行：argv[1] = N（默认 50000）。 */
+use std::io
+fn parseN(args: slice<slice<u8>>, idx: i64, dflt: i64) -> i64 {
+    var i: i64 = idx
+    if args.len <= i { return dflt }
+    var s: slice<u8> = args[i]
+    var v: i64 = 0
+    var k: i64 = 0
+    while k < s.len {
+        var ch: u8 = s[k]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        k = k + 1
+    }
+    if v > 0 { return v }
+    return dflt
+}
+struct node { v: i64 }
+struct item { r: mut ref node }
+fn main(args: slice<slice<u8>>) -> i32 {
+    var n: i64 = parseN(args, 1, 50000)
+    var i: i64 = 0
+    var done: i64 = 0
+    while i < n {
+        var s: mut slice<item> = new item[2]
+        var q: mut ref item = ref s[0]
+        q.r = new node
+        q.r.v = i
+        var d: mut slice<item> = new item[2]
+        copyInto<item>(d, s, 1)
+        done = done + 1
+        i = i + 1
+    }
+    io::cout << "L10B n=" << n << " done=" << done << "\n"
+    return 0
+}

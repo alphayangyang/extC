@@ -44,8 +44,51 @@ def body(text, sig):
     return text[a:b]
 
 
+LAZY_IF = '#if EXTC_RC_LAZY_FREE'
+
+
+def lazy_variant(text, lazy):
+    """Resolve every `#if EXTC_RC_LAZY_FREE` down to the branch a real build
+    compiles: lazy=True keeps the #if branch, lazy=False keeps the #else branch
+    (nothing when there is no #else).  The preprocessor text carries both
+    branches, so a raw brace count over the alloc body loses track of the
+    braces the compiler actually sees; this keeps the body single-branch."""
+    lines = text.splitlines(True)
+    out, i = [], 0
+    while i < len(lines):
+        if lines[i].strip().startswith(LAZY_IF):
+            depth, j, spans, start = 1, i + 1, [], i + 1
+            while j < len(lines):
+                s = lines[j].strip()
+                if s.startswith('#if'):
+                    depth += 1
+                elif s.startswith('#endif'):
+                    depth -= 1
+                    if depth == 0:
+                        spans.append((start, j))
+                        break
+                elif depth == 1 and (s.startswith('#else') or s.startswith('#elif')):
+                    spans.append((start, j))
+                    start = j + 1
+                j += 1
+            if not spans:
+                raise AssertionError('unterminated ' + LAZY_IF)
+            if lazy:
+                a, b = spans[0]
+            else:
+                a, b = spans[-1] if len(spans) > 1 else (0, 0)
+            out.append(lazy_variant(''.join(lines[a:b]), lazy))
+            i = j + 1
+            continue
+        out.append(lines[i])
+        i += 1
+    return ''.join(out)
+
+
 def violations(text):
-    alloc = body(text, 'static EXTC_RC_ALLOC_DECL void *extc_rc_alloc(')
+    default = lazy_variant(text, False)
+    lazy = lazy_variant(text, True)
+    alloc = body(default, 'static EXTC_RC_ALLOC_DECL void *extc_rc_alloc(')
     free_slot = body(text, 'static void extc_rc_freeSlot(')
     region_free = body(text, 'static void extc_rc_regionFree(')
     if not alloc:
@@ -56,7 +99,13 @@ def violations(text):
         # allocHot 的尺寸类不变式（唯一写入点见下） ⇒ 不再逐次验 s->ss；若有人把
         # "顺手校验"加回来，这里红。
         'no redundant size check': 's->ss != ss' not in alloc,
-        'cache write single site': text.count('*hot = s;') == 1,
+        # 缓存写入点按编译档钉死：默认档（EXTC_RC_LAZY_FREE=0）只有「命中缓存」
+        # 一处；懒复用档在重建链时发现块其实已满、换新块时要再写一次，恰好两处。
+        # 两处都必须是规范的 `if (hot) *hot = s;` 守卫写法。
+        'cache write single site': (
+            text.count('*hot = s;') == text.count('if (hot) *hot = s;')
+            and default.count('*hot = s;') == 1
+            and lazy.count('*hot = s;') == 2),
         'capacity check': 's->freelist < 0 && s->bump >= s->nslots' in alloc,
         'class lookup': 'ExtcRcClass *c = extc_rc_classSlot(r, ss);' in alloc,
         'class head': 's = c ? c->head : (ExtcRcSlab *)0;' in alloc,
@@ -129,6 +178,12 @@ def main():
         twice = text.replace('if (hot) *hot = s;', 'if (hot) *hot = s;\n    if (hot) *hot = s;')
         assert 'cache write single site' in violations(twice), violations(twice)
         print('ok red: second cache write site')
+        # 懒复用档里也多一处缓存写入同样必须红（默认档 1 处、懒档 2 处是形状）。
+        lazy_extra = text.replace('s->nfree = (uint32_t)chained;',
+                                  's->nfree = (uint32_t)chained;\n        if (hot) *hot = s;')
+        assert lazy_extra != text, 'lazy-branch mutation target missing'
+        assert 'cache write single site' in violations(lazy_extra), violations(lazy_extra)
+        print('ok red: extra cache write in the lazy-reuse branch')
         # 分配体的内联属性被摘掉（回到每次分配付一次调用 + 进出栈）也必须红。
         noinline = text.replace(
             '#define EXTC_RC_ALLOC_DECL __attribute__((always_inline)) inline',

@@ -43,7 +43,7 @@ INJECTIONS = {
         "gate": "reclaim-unit",
         # 打的是 releaseOld（覆盖点定点释放）那条失效路径，不是 begin/sweepBegin 的；
         # 后两条各有代际++ 兜底，只有这条是承重的（去掉它探针就漏标，见 changelog）。
-        "patches": [(SRC, '    "        freed++;\\n",\n    "    }\\n",\n    "    extc_rc_shadeNextGen();   /* the narrowed sweep clears the whole mark span below: black records are void */\\n",\n', "")],
+        "patches": [(SRC, '    "    extc_rc_shadeNextGen();   /* the narrowed sweep clears the whole mark span below: black records are void */\\n",\n    "    for (ExtcRcSlab *s = r->slabs; s; s = s->next)\\n",\n', "")],
     },
     "thr-stale": {
         "why": "拿掉 `collect` 末尾的 `thrUpd` ⇒ 压力阈值过期，触发语义坏掉",
@@ -122,10 +122,10 @@ INJECTIONS = {
         "why": "计数模式下持有者计数只增不减 ⇒ 归零当场回收永不发生，内存随轮数涨（**泄漏**）",
         "gate": "gate-reclaim-count-unit",
         "patches": [
-            (SRC, '    "    s->hold[i]--;\\n",\n    "    if (s->hold[i] == 0) extc_rc_freeSlot(s, i);\\n",\n',
-             '    "    s->hold[i] += 0;\\n",\n    "    if (s->hold[i] == 0) extc_rc_freeSlot(s, i);\\n",\n'),
-            (SRC, '    "    s->hold[i]--;\\n",\n    "    if (s->hold[i] == 0) extc_rc_freeSlot(s, i);            /* 归零当场回收 */\\n",\n',
-             '    "    s->hold[i] += 0;\\n",\n    "    if (s->hold[i] == 0) extc_rc_freeSlot(s, i);            /* 归零当场回收 */\\n",\n'),
+            (SRC, '    "    s->hold[i]--;\\n",\n    "    if (s->hold[i] == 0) extc_rc_freeSlotCascade(s, i);\\n",\n',
+             '    "    s->hold[i] += 0;\\n",\n    "    if (s->hold[i] == 0) extc_rc_freeSlotCascade(s, i);\\n",\n'),
+            (SRC, '    "    s->hold[i]--;\\n",\n    "    if (s->hold[i] == 0) extc_rc_freeSlotCascade(s, i);     /* reclaim on the spot when it hits zero */\\n",\n',
+             '    "    s->hold[i] += 0;\\n",\n    "    if (s->hold[i] == 0) extc_rc_freeSlotCascade(s, i);     /* reclaim on the spot when it hits zero */\\n",\n'),
         ],
     },
     "rsinc-nosat": {
@@ -161,8 +161,8 @@ INJECTIONS = {
         "why": "空闲链弹出后不前进 ⇒ 同一个槽被反复发出（两个活对象同址）。**ASan 抓不到这种别名**"
                "（内存是合法的）⇒ 只有'槽唯一'那条判据能抓",
         "gate": "reclaim-unit",
-        "patches": [(SRC, '    "        s->freelist = (int64_t)s->tid[i] - 1;  /* 0 = 链尾；载荷不参与复用链（见 extc_rc_freeSlot） */\\n",\n',
-                     '    "        s->freelist = (int64_t)i;   /* 注入：空闲链不前进（同一个槽反复发出） */\\n",\n')],
+        "patches": [(SRC, '    "#else\\n",\n    "    if (s->freelist >= 0) {                   /* a slot released earlier (hot path or sweep): pop it */\\n",\n    "        i = (size_t)s->freelist;\\n",\n    "        s->freelist = (int64_t)s->tid[i] - 1;\\n",\n',
+                     '    "#else\\n",\n    "    if (s->freelist >= 0) {                   /* a slot released earlier (hot path or sweep): pop it */\\n",\n    "        i = (size_t)s->freelist;\\n",\n    "        s->freelist = (int64_t)i;   /* 注入：空闲链不前进（同一个槽反复发出） */\\n",\n')],
     },
     "register-noop": {
         "why": "`extc_rc_register` 不再置入边位 ⇒ 目标区域清扫时**种子少一个**，还被指着的对象会被放掉",

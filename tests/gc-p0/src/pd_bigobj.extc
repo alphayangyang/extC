@@ -1,0 +1,62 @@
+/* 探针 G18（原探针 D）：大对象（>= EXTC_RC_SCAN_CHUNK）反复分配-回收。
+ * 参数：argv[1] = rounds（默认 60；G18 固定跑 60 与 200 两档）。
+ * 形状：每轮 new 一个 1M 可空 ref 字段的 big（8 MiB payload，走 huge block）+ 64 个 leaf，
+ *   hold 到 w.cur 后**立刻** w.cur = null。⇒ 活集恒为 1 个 big（≈8 MiB），其余每轮都是垃圾。
+ * 判据（G18，Lead m03207）：200 轮峰值 VmHWM ≤ 3·live + 8 MiB ≈ 26 MiB，且 stdout 逐字节相同
+ *   （期望 `D n=<rounds> made=<rounds> s=0`——末轮 w.cur 已置 null ⇒ s 恒 0）。
+ * before 锚点（Lead 实测，build-lead5/extc，未改编译器）：60 轮 493,400 kB / 745.9 ms；
+ *   200 轮 1,067,288 kB / 1,272.9 ms；[pause] collects=1、[work] n=121、thr_max=1 MiB
+ *   ⇒ 200 轮约 130 个 big 未被回收（≈1042 MB RSS）。
+ * 备注：公式 3·live+8 按 live=8 MiB 算是 32 MiB；Lead 给的 ≈26 MiB 按 live≈6 MiB 计。
+ *   G18 取**更严的 26 MiB** 作硬上界（G18_BOUND_MIB 可覆盖），两种算法都打印。
+ * 用 EXTC_RC_PAUSE=1 看单步停顿；编译期 -DEXTC_RC_SCAN_CHUNK=... 可对比分段与否。 */
+use std::io
+fn parseN(args: slice<slice<u8>>, dflt: i64) -> i64 {
+    if args.len < 2 { return dflt }
+    var s: slice<u8> = args[1]
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    if v > 0 { return v }
+    return dflt
+}
+
+struct leaf { v: i64 }
+struct big { a: [1048576]?mut ref leaf }
+struct world { cur: ?mut ref big  made: i64 }
+
+fn hold(w: mut ref world, b: mut ref big) { w.cur = b  w.made = w.made + 1 }
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var n: i64 = parseN(args, 60)
+    var w: world
+    var r: i64 = 0
+    while r < n {
+        var b = new big
+        var i: i64 = 0
+        while i < 64 {
+            var p = new leaf
+            p.v = r * 64 + i
+            b.a[i] = p
+            i = i + 1
+        }
+        hold(ref w, b)
+        i = 0
+        w.cur = null
+        r = r + 1
+    }
+    var s: i64 = 0
+    var c: ?mut ref big = w.cur
+    if c != null {
+        var l: ?mut ref leaf = (*c).a[0]
+        if l != null { s = (*l).v }
+    }
+    io::cout << "D n=" << n << " made=" << w.made << " s=" << s << "\n"
+    return 0
+}
