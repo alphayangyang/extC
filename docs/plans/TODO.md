@@ -129,7 +129,7 @@
 
 - **停顿分布有三格还没有统计意义**：四语言 × 四形状的直方与分位已在 `bench/gc/v2/PAUSE.md`
   （口径与 runner：`bench/gc/v2/pause/README.md`、`SPEC.md` 第 7 节），但这三格要放大规模或换数据源才有数：
-  Go 的 `chase` 只留了 2 个 STW 事件、Java 的 `cycleratio` 一次 GC 都没有（0 事件）、
+  Go 的 `chase` 只留了个位数 STW 事件、Java 的 `cycleratio` 一次 GC 都没有（0 事件）、
   Node 的 `--trace-gc-nvp` 只有 100 µs 分辨率。
 - **Java 的停顿形状只测了 SerialGC**：单核 ergonomics 落到 SerialGC，与生产上的 G1/ZGC 不是一回事；
   要另开一臂（`-XX:+UseG1GC` / `-XX:+UseZGC`，配 `-Xmx` 对齐内存预算）并把并发阶段与暂停分开报。

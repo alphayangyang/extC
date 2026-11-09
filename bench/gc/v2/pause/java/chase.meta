@@ -2,12 +2,12 @@ lang=java
 arm=java
 shape=chase
 args=1048576 20261013 4000000
-events=1
-total_us=59293.000
-wall_ms=337.687
-wall_plain_ms=373.540
+events=0
+total_us=0.000
+wall_ms=160.011
+wall_plain_ms=161.950
 source=-Xlog:gc:file=<tmp> ' Pause ' lines; trailing <N>ms field -> us (per STW GC pause event)
-total_gc_us=59293.000
+total_gc_us=0.000
 gc_algo=Serial
 reps=1
 concurrent_lines=0
