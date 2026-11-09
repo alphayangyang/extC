@@ -2,18 +2,18 @@ lang=extc
 arm=extc
 shape=chase
 args=1048576 20261013 4000000
-events=728
-total_us=5189.500
-wall_ms=149.197
-wall_plain_ms=141.516
+events=635
+total_us=5543.400
+wall_ms=134.324
+wall_plain_ms=146.269
 source=EXTC_RC_SLOWSTEP=0.001 -> [slow] dur_us= lines (per bounded step: mark / sweep)
-events_mark=559
-total_us_mark=5104.300
-events_sweep=169
-total_us_sweep=85.200
-slices=728
-step_total_us=5189.9
-total_gc_us=5189.9
+events_mark=561
+total_us_mark=5525.300
+events_sweep=74
+total_us_sweep=18.100
+slices=635
+step_total_us=5544.2
+total_gc_us=5544.2
 collects=2
-pause_total_us=60.3
-notes=单次运行；REPS=1 取墙钟最小的一次，events 取自该次
+pause_total_us=58.0
+notes=单次运行；REPS=2 取墙钟最小的一次，events 取自该次

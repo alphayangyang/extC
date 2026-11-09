@@ -2,18 +2,18 @@ lang=extc
 arm=extc
 shape=sizeratio
 args=2000000 20261013
-events=1200
-total_us=2282.800
-wall_ms=28.411
-wall_plain_ms=26.520
+events=1542
+total_us=2211.200
+wall_ms=20.121
+wall_plain_ms=17.669
 source=EXTC_RC_SLOWSTEP=0.001 -> [slow] dur_us= lines (per bounded step: mark / sweep)
 events_mark=345
-total_us_mark=808.200
-events_sweep=855
-total_us_sweep=1474.600
-slices=1200
-step_total_us=2278.0
-total_gc_us=2278.0
+total_us_mark=751.000
+events_sweep=1197
+total_us_sweep=1460.200
+slices=1542
+step_total_us=2205.6
+total_gc_us=2205.6
 collects=171
-pause_total_us=616.0
-notes=单次运行；REPS=1 取墙钟最小的一次，events 取自该次
+pause_total_us=611.0
+notes=单次运行；REPS=2 取墙钟最小的一次，events 取自该次

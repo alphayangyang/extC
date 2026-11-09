@@ -2,13 +2,13 @@ lang=extc
 arm=extc_sweep
 shape=cycleratio
 args=400000 20261013 100
-events=84
-total_us=66.700
-wall_ms=17.300
-wall_plain_ms=15.741
+events=210
+total_us=577.300
+wall_ms=17.841
+wall_plain_ms=16.452
 source=EXTC_RC_SLOWSTEP=0.001 -> [slow] lines with kind=sweep
-slices=213
+slices=339
 collects=42
-step_total_us=346.7
-pause_total_us=127.3
+step_total_us=847.6
+pause_total_us=103.9
 notes=extc 全体的 kind=sweep 子集；只存 hist（分位按档上界近似），逐事件表在 extc/ 下

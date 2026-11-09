@@ -2,18 +2,18 @@ lang=extc
 arm=extc
 shape=cycleratio
 args=400000 20261013 100
-events=213
-total_us=346.800
-wall_ms=17.300
-wall_plain_ms=15.741
+events=339
+total_us=848.300
+wall_ms=17.841
+wall_plain_ms=16.452
 source=EXTC_RC_SLOWSTEP=0.001 -> [slow] dur_us= lines (per bounded step: mark / sweep)
 events_mark=129
-total_us_mark=280.100
-events_sweep=84
-total_us_sweep=66.700
-slices=213
-step_total_us=346.7
-total_gc_us=346.7
+total_us_mark=271.000
+events_sweep=210
+total_us_sweep=577.300
+slices=339
+step_total_us=847.6
+total_gc_us=847.6
 collects=42
-pause_total_us=127.3
-notes=单次运行；REPS=1 取墙钟最小的一次，events 取自该次
+pause_total_us=103.9
+notes=单次运行；REPS=2 取墙钟最小的一次，events 取自该次
