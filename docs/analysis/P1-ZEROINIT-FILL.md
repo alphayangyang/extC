@@ -138,7 +138,7 @@ v12 的 `slabNew` 从 `EXTC_RC_SLAB_CHUNK_MIN`（64 KiB）起倍增 chunk，直�
 1. **chase 仍比 C++ 慢 6.9%**（121.41 vs 116.79）。已定性：指令数反而少 10%（321.0M vs 358.4M）、D1mr 10.39M vs 8.53M、
    DLmr 173k vs 88k；`nocollect`（GC 全关但簿记/屏障保留）后 walk 阶段仍慢 11 ms ⇒ 不是 GC 工作量，是内存子系统/布局。
    下一步候选：把「大图节点」单独用一套 2 MiB 对齐 + `MADV_HUGEPAGE` 的块（本机 THP 是 `madvise`，需要显式请求），
-   代价是槽数与块大小解耦 —— 属下一轮，不在本轮。
+   代价是槽数与块大小解耦 —— 属下一轮，不在本轮。逐行归因与反证见 **§12**（结论：这条差距不靠补齐槽宽拿，是紧凑布局的结构性代价）。
 2. **清零跳表没有结构门禁**：正确性靠 ASan/UBSan 档（清零不全会立刻在标记/清扫上炸），数值靠 bench/gc/v2。
    若要加，最像的锚点是 `gate-mark-locality.sh` 的 Ir 分解，但 16 个 case 的「每个 case 都写到」只能靠动态覆盖证明。
 3. **模型常量按 128 KiB 栅格标定**（`F_slab`、`τ_s`、`c_t`）：块几何只挪常数项，roofline 的形式与策略结论不变；
@@ -173,3 +173,61 @@ EXTC=./build/extc OUT=tests/gc-p0/out/b19-g18 tests/gc-p0/run.sh g18
    先验证 RSS 不翻倍、G18 不破，再谈墙钟。
 2. `elide` 链表化（v11 遗留的 sizeratio 墙钟归因，配额记账已被推翻、B 已默认关）。
 3. G1②(a) warm 尾部：已有归因（环境抢占 + chase 冷页缺页 + 256-pop 真工作），缺的是「可契约化」的判据形态。
+
+## §12 chase 剩余差距的逐行归因（v13 之后一轮）
+
+仪器：`cachegrind --cache-sim=yes`（同一份生成 C 与 cpp 的 `-O2 -g` 构建，输入 `1048576 20261013 4000000`），
+按源码行归因 D1 miss。总量：extC Ir **319,713,318** / D1mr **10,414,120** / DLmr 150,727；
+cpp careful Ir 363,853,623 / D1mr 8,529,167 / DLmr 87,803 —— extC 指令更少、缺失更多。
+
+逐行（D1mr 读）：
+
+| 行 | extC | cpp careful |
+|---|---|---|
+| 游走取边 | `extc_rc_storeRefLocal(... cur->o.data[checkedIndex(r,4,…)])` = **1,549,294** | `cur = cur->o[r]` = 209,566 |
+| `sum += cur->v` | 3,996,846 | 3,998,704 |
+| 建图写边 | 4,175,774 | 4,176,757 |
+
+⇒ 随机访问本身两边一样（≈4.0M）；差额就是取边那一行的 **1.34M**。
+
+机制：cpp 的 48 B 请求经 glibc 变成 64 B chunk（16 B 头 + 48 B 载荷），载荷相位恒为 16，
+所以 `o[4]`（结构体偏移 16..48 的 32 B）永远落在同一个 64 B cache line 内；
+extC 的槽 stride 就是 48 B，槽起点相位按 0/48/32/16 四拍轮转，`o[]` 在其中两拍跨线。
+
+**反证一（把 33–64 B 槽补到 64 B）**：同一份生成 C 只改 `extc_rc_slotSize`，取边行 D1mr **1,549,294 → 0**，
+但整程序 Ir 319.7M → **424.5M**（markStep 58.5M → 160.5M）、RSS 67.7 → **90.2 MB**、
+`thr_max` 63.4 MB → **174.5 MB**、`scale_max` 16 → 64、`M_max_now` 69 MB → 190 MB、
+墙钟 119.07 → **141.97 ms**（7 回合交错；给两边都加 `EXTC_RC_M_MAX=75000000` 后是 122.54 → 141.97）。
+活字节 +33% 把触发线与自适应倍率一起推上去、堆翻倍，miss 收益被吃掉。
+
+**反证二（关掉 GC）**：`extc_rc_shouldSweep` 直接 `return 0` 的生成 C 在 7 回合交错里 125.40 ms，
+不比默认 119.63 ms 快 ⇒ 这 1.34M miss 不是 GC 弄脏 cache 造成的。
+
+结论：chase 的差距 = **紧凑 48 B 槽与 64 B cache line 的相位冲突**。消掉它只有两条路：
+给含引用的小对象补到 64 B（实测更慢，占内存 +33%），或改语言级字段布局规则（确定性布局是硬约束）。
+两条都不做，登记为结构性代价；收益侧是 RSS 比 C++ 低（chase 67,744 vs 77,584 kB）。
+
+四形状复测（v13 冻结 build `8af2a5e8`，11 回合交错 + 奇偶反向，`taskset -c 6`，min ms / 峰值 RSS kB；
+四个形状的 stdout 与 cpp 参考逐字节一致）：
+
+| 形状 | extC | C++ careful | Rust careful | min 比 extC/C++ | paired 中位 extC/C++ | RSS extC / C++ |
+|---|---|---|---|---|---|---|
+| promote 500000 | 38.35 | 115.33 | 36.89 | 0.332 | 0.326（对 Rust 0.975） | 5,724 / 146,504 |
+| sizeratio 2000000 | 14.68 | 16.31 | 19.87 | 0.901 | 0.901（0.760） | 2,656 / 4,080 |
+| chase 1048576 / 4000000 | 134.29 | 123.29 | 244.43 | 1.089 | **1.025**（0.548） | 67,744 / 77,584 |
+| cycleratio 400000 / 100 | 14.31 | 35.30 | 17.37 | 0.405 | 0.408（0.824） | 2,656 / 4,108 |
+
+读法：三形状对 C++ 领先 10–67%、对 Rust 领先 2.5–24%；chase 对 C++ 慢 2.5%（配对中位）到 8.9%（min），
+对 Rust 快 45%。**跨会话漂移 5–13%**（同一 extC 二进制在不同会话里对同一 cpp 二进制可到 1.13×），
+因此只读同轮比值，绝对值只作量级参考。
+
+复现命令：
+
+```sh
+./build/extc -w --no-line-map -I stdlib bench/gc/v2/src/chase.extc -o /tmp/ch.c
+cc -O2 -g -D_POSIX_C_SOURCE=200809L /tmp/ch.c -o /tmp/ch.g
+g++ -O2 -g -o /tmp/ch.cpp.g bench/gc/v2/src/chase.cpp
+valgrind --tool=cachegrind --cache-sim=yes --cachegrind-out-file=/tmp/cg.a /tmp/ch.g 1048576 20261013 4000000
+valgrind --tool=cachegrind --cache-sim=yes --cachegrind-out-file=/tmp/cg.b /tmp/ch.cpp.g 1048576 20261013 4000000
+cg_annotate --auto=yes --show=D1mr --sort=D1mr /tmp/cg.a | head -40
+```

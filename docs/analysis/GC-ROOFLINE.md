@@ -933,7 +933,7 @@ maxRSS 112,092 → **142,620 kB**（三次逐 kB 相同）、生成 C 里的逻�
 
 **模型同步**：校准常量（`F_slab`、`τ_s`、`c_t`）按 128 KiB 栅格测得，块几何只进常数项 ⇒ roofline 的形式（λ 记账、可行带、keep-up 与内存定律）与 §4 的策略结论**不变**；变的是停顿契约多一条「按块容量推导的步预算必须显式夹住」。
 
-**结论**：与 C++ 最好写法：promote 0.36×、sizeratio 0.86×、chase **1.07×**、cycleratio 0.41×；与 Rust 最好写法 0.996 / 0.78 / 0.57 / 0.81。**只剩 chase 比 C++ 慢 6.9%**，且已定性为内存子系统/布局差异（指令数反而少 10%、LL 缺失同量级、`nocollect` 变体仍慢 11 ms ⇒ 不是 GC 工作量）。详见 `docs/analysis/P1-ZEROINIT-FILL.md`。
+**结论**：与 C++ 最好写法：promote 0.36×、sizeratio 0.86×、chase **1.07×**、cycleratio 0.41×；与 Rust 最好写法 0.996 / 0.78 / 0.57 / 0.81。**只剩 chase 与 C++ 差 2.5%（配对中位）到 8.9%（min）**，逐行归因见 `docs/analysis/P1-ZEROINIT-FILL.md` §12：差额是紧凑 48 B 槽与 64 B cache line 的相位冲突（取边行 1.55M vs 0.21M 次 D1 miss），补到 64 B 反而更慢（+33% 活字节触发倍率螺旋）、关掉 GC 也不更快 ⇒ 结构性代价，不是 GC 工作量。
 
 ## 附录 A 定理推导
 
