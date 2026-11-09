@@ -1509,7 +1509,7 @@ static void t_regionFreeDefer(void) {
 
 static void t_regionFreeDeferHuge(void) {
     ExtcRcRegion *r = regionNew(42, (int64_t)1 << 40);
-    void *p = extc_rc_alloc(r, 600000, &g_data);   /* 槽 > (1 MiB - 头)/2 ⇒ huge block：payload 单独 malloc */
+    void *p = extc_rc_alloc(r, 600000, &g_data);   /* 槽 > (128 KiB - 头)/2 ⇒ huge block：payload 单独 malloc */
     ExtcRcSlab *s = p ? extc_rc_ownSlab(p) : NULL;
     check(s && s->big, "延迟释放：大对象落在 huge block（payload 与 slab 分开）");
     long long q0 = extc_rc_fqSlabs;
@@ -1524,8 +1524,8 @@ static void t_regionFreeDeferHuge(void) {
 
 static void t_regionFreeDeferLimit(void) {
     ExtcRcRegion *r = regionNew(43, (int64_t)1 << 40);
-    /* 正常 slab（每块按 ~1 MiB + 位图记账）造出 > 8 MiB 的待 free 量：关闭队列每次推进 8 块就越过限额。 */
-    for (int i = 0; i < 20000; i++) (void)extc_rc_alloc(r, sizeof(Node), &g_node);
+    /* 正常 slab（每块按 ~128 KiB + 位图记账）造出 ~73 块的待 free 量：一次有界排空最多推 8 块 ⇒ 要多个分配点才清空。 */
+    for (int i = 0; i < 300000; i++) (void)extc_rc_alloc(r, sizeof(Node), &g_node);
     long long f0 = extc_rc_fqForced;
     long long c0 = extc_rc_cqN;
     extc_rc_regionFree(r);

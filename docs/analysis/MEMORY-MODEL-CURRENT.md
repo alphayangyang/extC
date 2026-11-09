@@ -237,24 +237,24 @@ typedef struct extc_arena { extc_ablock *top; extc_ablock *spare; } extc_arena;
 - 运行期有一张 **512 项**的静态注册表：`EXTC_RC_REG_MAX 512`，`key[]` / `val[]` 两个数组（`codegen.c:12727-12731`）。
 - 键 = **arena 的地址**（`&__extc_a[k]`）。序言里每帧对每个用到的 level 调一次 `extc_rc_regionOf(&__extc_a[k], k)`（产物 `evidence/example-new.c:2989-2990`）：**线性扫表**，命中即返回；未命中则 `extc_rc_regionNew(rid)` 建一个并登记（表满则**不登记** —— 该 region 之后不会被 drop，等价泄漏，且"宁可漏不可早放"）。
 - 分片（`EXTC_RC_SHARDS>1`）时一个逻辑 region 按分配点 `rcSite++ % N` 切成 N 个运行期 region，键 = `地址 + k`，**必须逐个 drop**（`codegen.c:7501-7502` 为逐字注释：key = address + k … every shard must be dropped individually；函数 7511、逐 shard drop 循环 `7527-7528`；12736-12767 是 regionOf/regionDrop 函数体）。
-- **drop 只在帧销毁**（`cgReclaimDropArena`，`codegen.c:7511-7529（函数体）、7504-7505（分片循环）`；产物 `evidence/example-new.c:3056,3058`）：`extc_rc_regionDrop(key)` → 查表 → `extc_rc_regionFree`。块级 release **不** drop region，否则循环体每轮会新建 1 MiB slab（注释明确）。
+- **drop 只在帧销毁**（`cgReclaimDropArena`，`codegen.c:7511-7529（函数体）、7504-7505（分片循环）`；产物 `evidence/example-new.c:3056,3058`）：`extc_rc_regionDrop(key)` → 查表 → `extc_rc_regionFree`。块级 release **不** drop region，否则循环体每轮会新建一块 slab（注释明确）。
 
 ### 5.2 slab 几何（`reclaim.c:837-911`）
 
 | 项 | 值/规则 | 出处 |
 |---|---|---|
-| slab 对齐与总尺寸 | `EXTC_RC_SLAB_BITS = 20` ⇒ `EXTC_RC_SLAB_SIZE = 1 MiB`，`aligned_alloc(1 MiB, 1 MiB)` | `reclaim.c:138/321/801（`aligned_alloc` 在 801；831 是 `ttab[1] = EXTC_RC_CONSERVATIVE`）` |
+| slab 对齐与总尺寸 | `EXTC_RC_SLAB_BITS = 17` ⇒ `EXTC_RC_SLAB_SIZE = 128 KiB`，`aligned_alloc(128 KiB, 128 KiB)`（v12 起栅格从 1 MiB 降到 128 KiB，理由与实测见 [`P1-SLAB-QUANTUM.md`](P1-SLAB-QUANTUM.md)） | `reclaim.c:138/321/801（`aligned_alloc` 在 801；831 是 `ttab[1] = EXTC_RC_CONSERVATIVE`）` |
 | 头部 | `EXTC_RC_SLAB_HDR = align64(sizeof(ExtcRcSlab))` | `reclaim.c:337` |
 | 槽步长 `ss` | 请求长度向上取 8 的倍数，**非 2 的幂** | `reclaim.c:1535（`slotSize` 调用；1293 是 `if (r->sweeping)`）`（分配路径） |
-| 块初始尺寸 | `chunk = EXTC_RC_SLAB_CHUNK_MIN = 64 KiB`，当 `chunk/ss < EXTC_RC_SLAB_SLOTS_MIN = 1024` 时 `chunk <<= 1`，直到 1 MiB | `reclaim.c:341-342,788-790` |
+| 块初始尺寸 | `chunk = EXTC_RC_SLAB_CHUNK_MIN = 64 KiB`，当 `chunk/ss < EXTC_RC_SLAB_SLOTS_MIN = 1024` 时 `chunk <<= 1`，直到 `EXTC_RC_SLAB_SIZE`（128 KiB） | `reclaim.c:342-343,841-846` |
 | 槽数 | `cap = (chunk - HDR) / ss`；`cap < 2` ⇒ **huge block**：头部照建，payload 单独 `malloc`，`nslots = 1` | `reclaim.c:847-863` |
 | 位图 | `occ`、`mark`、`rsbit` 各 `nwords = (nslots+63)/64` 个 `uint64_t`，**calloc**（要整片清） | `reclaim.c:875-877` |
 | 每槽元数据 | `tid`（2 B，类型号）总是 `malloc`；`hold`（2 B 计数）**仅 NOCOUNT=0 时分配**；`rscnt` 懒惰建 | `reclaim.c:879-892（hold 注释/malloc 823-825、tid 827、ttab 828-831；rscnt 懒建 1401-1407）` |
 | 类型表 | `ttab` 容量 8，`ttab[1] = EXTC_RC_CONSERVATIVE`（号 1 固定是保守描述符） | `reclaim.c:883-887（828 ttabCap=8、829 ttabN=2、830 calloc、831 CONSERVATIVE；833-837 是失败守卫）` |
 | 复用链 | `freelist` 初始 -1；**不预链全块**，"未发放的槽走 bump，只有被释放的槽进 freelist"，链值存在 `tid[]`（槽号+1）而不是 payload | `reclaim.c:900-902（`freelist = -1`、`bump = 0`；857-886 已属 classBucket/classPush）` |
-| 槽号上限 | `EXTC_RC_REUSE_MAX_SLOT = 0xFFFE`，超了 `oops`（复用链编码上限） | `reclaim.c:345（常量）+ 812-813（守卫）` |
+| 槽号上限 | `EXTC_RC_REUSE_MAX_SLOT = 0xFFFE`，超了 `oops`（复用链编码上限） | `reclaim.c:346（常量）+ 870（守卫）` |
 
-**为什么"1 MiB 对齐"重要**：从指针反查 slab 只需一次位与（`EXTC_RC_SLAB_DATA`/`SlabOf`，`reclaim.c:349/344-346`；`regionOfOwn` 见产物 `evidence/example-new.c:1034`）。而"块尺寸随槽尺寸变（64 KiB 起倍增）"是为了避免小尺寸类浪费整 1 MiB（注释逐字："with a fixed 1 MiB, every size class wasted up to 1 MiB"）。
+**为什么"块对齐"重要**：从指针反查 slab 只需一次位与（`EXTC_RC_SLAB_DATA`/`SlabOf`，`reclaim.c:350/361`；`regionOfOwn` 见产物 `evidence/example-new.c:1034`）。对齐单位就是 `EXTC_RC_SLAB_SIZE`（v12 起 128 KiB），所以"一个对齐块 = 一个 slab"是**承重语义**：只能整体缩小栅格，不能把一个大块切成多块（否则反查要做除法或查表）。而"块尺寸随槽尺寸变（64 KiB 起倍增）"是为了避免小尺寸类浪费整块（注释逐字："with a fixed 1 MiB block every size class wasted up to 1 MiB and the payload spread over 16x the address space"）。
 
 ### 5.3 大小类表
 
@@ -269,7 +269,7 @@ typedef struct extc_arena { extc_ablock *top; extc_ablock *spare; } extc_arena;
 1. `extc_rc_notePart(r)`：登记"本 region 参与过 rc"（只有**一个** region 参与时，赋值路径可跳过跨区查找）。
 2. 若本 region 正在清扫：`extc_rc_sweepStep(r, EXTC_RC_SWEEP_BUDGET)` —— **先还清扫债**。
 3. 否则若正在标记：`extc_rc_markAdvance(r)` —— **推进标记**（§7）。
-4. 取大小类：`classSlot(r, ss)` → 命中则从 `freelist` 取一个槽（复用）；否则 `bump` 取未发放槽；都没有 → `slabNew(r, ss)`（冷路径：1 MiB `aligned_alloc` + 3 个位图 `calloc` + `tid` `malloc`）。
+4. 取大小类：`classSlot(r, ss)` → 命中则从 `freelist` 取一个槽（复用）；否则 `bump` 取未发放槽；都没有 → `slabNew(r, ss)`（冷路径：128 KiB `aligned_alloc` + 3 个位图 `calloc` + `tid` `malloc`）。
 5. `memset(p, 0, ss)`：**整个槽**清零（新对象的字段默认值）。
 6. `occ |= bit`；若正在标记，`mark |= bit`（只对**清扫游标尚未到达**的位置补黑，见 §9.3）。
 7. `tid[i] = typeIdx`（类型号；0 = 无描述符）。
@@ -488,7 +488,7 @@ if (r->noSweep) return 0;                   /* 计数层专用 region：默认�
 | 调用点 | `reclaim.c:3528`：`sweepStep` 在 slab 边界（`swWord==0`）先试；命中则 `_left--`、`_trans++`、`continue`（一个预算单位换掉整块） |
 | 判据 | ① 有当前 slab（`!s` ⇒ 返回 0）② `!s->big`（huge block 不参与）③ `!r->foreign` ④ 逐 word 要求 `!(occ[w] & mark[w])`（任何可达位 ⇒ 放弃）且 `!s->rsbit[w]`（任何跨区登记 ⇒ 放弃）⑤ 计数档直接返回 0 |
 | 命中动作 | 记账 `bytes -= live*ss`、`freedSlots += live`、`swFreed += live`（`live` = 全块 occ 的 popcount）；`bump=0`、`freelist=-1`；`memset(occ)` / `memset(mark)`；`!s->avail` 则 `classPush`；`s->swEpoch = swId`；游标推进到 `s->next` |
-| 成本 | 判定是 O(nwords) 一次过：1 MiB slab × 2 位图，16 B 槽 ⇒ ≤1024 word（≈2–3 µs）；实测 cycleratio 单步 max ≤9.9 µs、步数 1,221 → 255 |
+| 成本 | 判定是 O(nwords) 一次过：128 KiB slab × 2 位图，16 B 槽 ⇒ ≤128 word（≈0.3–0.4 µs；1 MiB 栅格时代是 ≤1024 word）；1 MiB 栅格时代实测 cycleratio 单步 max ≤9.9 µs、步数 1,221 → 255 |
 | 与 §9.3 不变式的关系 | 判据要求 `mark` 全 0 ⇒ 不会把「清扫期间分配补黑」的槽判死（那种槽 `occ & mark ≠ 0`）；`rsbit` 全 0 ⇒ 不会有跨区入边指向被重置的槽 |
 | 实测收益 | cycleratio（`bench/gc/v2` bench_args）Ir 274,116,151 → 264,298,098（**−3.56%**），切片数 −4.8×，`[histo]` 的 b32us 桶 2 → 0；`[sweepelide]` 实测 `bulk_reset=651 bulk_slots=1,739,978 swept=105`，与独立探针的 `full_dead=651 / full_dead_slots=1,739,978` 逐位一致 |
 | 限制 | `foreign` 一旦置位，该 region 永久放弃本优化；`rsIncN != 0`、`big`、计数档都不参与；槽很大时（整块槽数很少）判定本身可能比逐槽扫更贵 |
@@ -759,12 +759,12 @@ TICK 调用点（默认 `EXTC_RC_TIME` 关时全部编译成 `do{}while(0)`，`r
 
 | 常量 | 默认 | 行 | 影响 |
 |---|---|---|---|
-| `EXTC_RC_SLAB_BITS` | 20（1 MiB） | 138 | slab 是内存归还的最小单位（**永不归还**） |
+| `EXTC_RC_SLAB_BITS` | 17（128 KiB） | 138 | slab 是内存归还的最小单位（**永不归还**）；同时是**对齐**单位（反查靠位与） |
 | `EXTC_RC_FLOOR` | 1 MiB | 141 | 压力地板；分片时 ÷ N；也是 `roundOk/budgetOk` 的下限 |
 | `EXTC_RC_SCALE_MAX` | 2^40 | 144 | 阈值上限 ⇒ 事实上等于"不再回收" |
 | `EXTC_RC_SCALE_MUL` | 4 | 151 | 连续空扫一次乘 4 |
 | `EXTC_RC_HOLD_SAT` | 65535 | 154 | 计数饱和值 |
-| `EXTC_RC_SLAB_SIZE` | 1<<20 | 330 | slab 大小 |
+| `EXTC_RC_SLAB_SIZE` | `1 << EXTC_RC_SLAB_BITS`（128 KiB） | 330 | slab 大小 = 对齐单位 |
 | `EXTC_RC_SLAB_HDR` | `(sizeof(ExtcRcSlab)+63)&~63` | 331 | slab 头 64 对齐 |
 | `EXTC_RC_SLAB_CHUNK_MIN` | 64 KiB | 335 | 小对象 slab 的首次 chunk 下限 |
 | `EXTC_RC_SLAB_SLOTS_MIN` | 1024 | 336 | 每 slab 最少槽数 |
@@ -841,19 +841,19 @@ TICK 调用点（默认 `EXTC_RC_TIME` 关时全部编译成 `do{}while(0)`，`r
 
 - 触发前一刻 `M = L + G ≲ max(2L, floor)`；
 - 一轮清扫若能收干净，`G ≲ max(L, floor)`；
-- 再加上 slab 粒度取整（每 region 至少一个 1 MiB slab）与大对象 payload（huge block 不在 slab 内），得到
+- 再加上 slab 粒度取整（每 region 至少一个 slab，v12 起 128 KiB）与大对象 payload（huge block 不在 slab 内），得到
 
 本轮新增**内存墙**（P0-4）：触发线被夹到墙下，`thr = min( max(2·live, floor)·scale , M_max − res )`（`res` 定义见 §18.5），`M_max` 未设时隐式 `= 3·live`。⇒ 垃圾缓冲不再由自由参数决定，而由契约决定，见 §18.5。**v10 起**墙帽改成 `M_max − max(64·L/b, R_max)`（`R_max = maxReq`）⇒ 显式墙下触发线之上一律放得下一笔最大请求。**v11 修正**：隐式墙下无条件预留会让 `pd_pointer_dense` 峰值从 112,092 涨到 142,620 kB（+27.3%，自学习倍数养到 64），故预留改为**只绑显式墙**（`P1-ADMISSION.md` §3）；隐式墙回到 v9 公式，dense 逐 kB 相同。
 
 校准形式（本轮实测，替代下面这个「粗暴界」作为对外承诺）：`M_peak = L·(1 + κ_M·r')`，`κ_M∈[0.772,1.010]`，保守取 1 即 `3L`（`CALIBRATION.md` §4；digraph 1M 实测 6.44 MB vs 上界 7.00 MB）。粗暴界如下，仅用于解释 floor 主导的小活集形状：
 
 ```text
-M ≲ thr + max(L, floor) + slabPadding(1 MiB 粒度) + hugePayload    (thr = max(2L, floor)·scale)
+M ≲ thr + max(L, floor) + slabPadding(128 KiB 粒度) + hugePayload    (thr = max(2L, floor)·scale)
 // roundOk 的信用允许 bytes 超过 thr 最多 max(live, floor) 字节后才触发 ⇒
-// 上界用 thr + max(L, floor)，而不是 thr；这解释了 pe 的 3.0 MB ≈ 1 MiB thr + 1 MiB 信用 + 取整
+// 上界用 thr + max(L, floor)，而不是 thr；这解释了 1 MiB 栅格时代 pe 的 3.0 MB ≈ 1 MiB thr + 1 MiB 信用 + 取整
 ```
 
-实测核验：pe（活集 = 1 个对象，floor = 1 MiB）峰值 3.0 MB ≈ 3 个 1 MiB slab —— 与"`2L + floor` 再按 1 MiB 取整"同量级（差的是触发滞后与 slab 粒度）；pc（环垃圾持续产生）恒 2.9 MB；pd 峰值 145.7 MB 来自 200 次 8 MiB 分配先后发生、同时驻留 ≈18 个 payload（200×8 MiB = 1600 MiB 是累计量，不是峰值）+ 元数据。
+实测核验（1 MiB 栅格口径）：pe（活集 = 1 个对象，floor = 1 MiB）峰值 3.0 MB ≈ 3 个 1 MiB slab —— 与"`2L + floor` 再按 1 MiB 取整"同量级（差的是触发滞后与 slab 粒度）；v12 栅格降到 128 KiB 后取整项 ≤128 KiB/region，该式只会更紧；pc（环垃圾持续产生）恒 2.9 MB；pd 峰值 145.7 MB 来自 200 次 8 MiB 分配先后发生、同时驻留 ≈18 个 payload（200×8 MiB = 1600 MiB 是累计量，不是峰值）+ 元数据。
 
 ### 18.3 真正的无界条件（一条都不能漏）
 
@@ -887,7 +887,7 @@ pressure = (bytes ≥ 7/8·M_max) || (thr>0 && bytes > 4·thr)          // 近�
 近墙时每步预算 × EXTC_RC_SWEEP_PRESSURE_MUL                          // 默认 4（reclaim.c:1106）
 ```
 
-- **承诺（经验上界，不是可强制的硬契约）**：峰值驻留实测落在 `M_max + 缓冲` 之内；缓冲 = `max(L, floor)` 的 roundOk 信用 + slab 取整（≤1 MiB/region）+ huge payload 尾项。默认 `M_max = 3·live` ⇒ 与 §18.4 的 `(1+r')·L` 同量级。**注意：分配路径并不拒绝分配**（`M_max` 只用于 arm / 有效墙 `eff` / `thrUpd` 夹取 / pressure 判据 / 诊断），超墙时唯一的动作是加压清扫 ⇒ 该界是经验上界，越界意味着清扫跟不上分配。
+- **承诺（经验上界，不是可强制的硬契约）**：峰值驻留实测落在 `M_max + 缓冲` 之内；缓冲 = `max(L, floor)` 的 roundOk 信用 + slab 取整（≤ 块大小：v12 起 128 KiB/slab）+ huge payload 尾项。默认 `M_max = 3·live` ⇒ 与 §18.4 的 `(1+r')·L` 同量级。**注意：分配路径并不拒绝分配**（`M_max` 只用于 arm / 有效墙 `eff` / `thrUpd` 夹取 / pressure 判据 / 诊断），超墙时唯一的动作是加压清扫 ⇒ 该界是经验上界，越界意味着清扫跟不上分配。
 - **代价（必须一并承诺）**：夹紧 thr 使 sweep 次数从小常数变成 **O(log N)** —— 一轮最多退休一个活集，活集要涨 ~2.75× 才再触发（`reclaim.c:948-968` 上方注释逐字：an unbounded trigger threshold keeps the sweep count a small constant ... pays with unbounded resident memory）。`tests/reclaim/driver.c` 的两条旧断言因此改写成本节的契约；`EXTC_RC_M_MAX=2^40` 等价于关闭夹紧（run.sh 128/0 vs 默认 126/2）。
 - **实测（本轮 after，默认档，`build-rf/extc` = `9fd0dcd8…`）**：10×400k 环形状（`tests/gc-p0/src/p03_ring_release.extc`，rounds=10 × nodes=400000）**VmHWM median 18,164 kB（17.7 MiB）**（3 reps；`/usr/bin/time` 单 rep 复测 18,008 kB），HEAD 同形状 41,616 kB；对照：同形状 `EXTC_RC_M_MAX=32MiB` 42,392 kB、`=64MiB` 47,768 kB、`=1TiB`（关墙）47,768 kB ⇒ **墙确实在约束峰值，且 after 比 HEAD 更低**。该形状 `[work]`：`M_max=4101120`（隐式 3·live）、`thr=2715120`、`pressure_steps=8787`、`scale_max=1`。⚠️ 早前手记的 **93,080 KB（90.9 MiB）/ `pressure_steps=1209` / `collects=13` / `[histo]` n=21833** 来自 interim 构建的单次观测、日志未归档，**v4 复测不复现**（同形状关墙也只到 47.8 MB），已作废，不要再引用。
 - **墙不可达警告**：若 `M_max` 小到连 floor 都放不下（`max(2L,floor)` 压不到墙下），运行期打一次 `[mmax] memory wall unreachable: M_max=… floor=…; using floor`（`reclaim.c:3671-3675`）并退回 floor ⇒ 此时契约退化为 floor 主导，必须让用户看见，不能静默。

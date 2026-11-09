@@ -570,7 +570,7 @@ EXTC_RC_M_MAX 未设时，隐式取 3*L（保守 kappa_M=1，r'=2）
 | sizeratio 2M | 2,394 | 3 | 2,171 | 171 | 1,995,915 | 195,544 | 44,289 |
 | cycleratio | 756 | **651** | 1,739,978 | 63 | 1,778,862 | 54,651 | 30,870 |
 
-⇒ 通用「全死整块回收 / 全活跳过」（theory 的 L1 杠杆）**只在 cycleratio 上成立**（97.8% 死槽集中在全死块里）；promote/sizeratio 上它是零收益，因为它减的是 word 循环，而成本在逐个死槽释放。据此 P1-7 的目标从「通用跳过」收窄为「**全死 slab 批量重置**」：判据（无计数档、非 huge、region 无跨区登记、`occ & mark` 全 0 且 rsbit 全 0）⇒ 整块清零 occ/mark、`bump=0`/`freelist=-1`、按死槽数记账、必要时 `classPush`、打 `swEpoch`、光标前进；代价是判定本身是一次 O(nwords) 扫描（1 MiB slab = 16384 word × 3 位图，必须在单个 step 内完成 ⇒ 已要求给 `[histo]`/`[top]` 的 elide on/off 对比并把「单步 max ≤50 µs」作为通过条件）。
+⇒ 通用「全死整块回收 / 全活跳过」（theory 的 L1 杠杆）**只在 cycleratio 上成立**（97.8% 死槽集中在全死块里）；promote/sizeratio 上它是零收益，因为它减的是 word 循环，而成本在逐个死槽释放。据此 P1-7 的目标从「通用跳过」收窄为「**全死 slab 批量重置**」：判据（无计数档、非 huge、region 无跨区登记、`occ & mark` 全 0 且 rsbit 全 0）⇒ 整块清零 occ/mark、`bump=0`/`freelist=-1`、按死槽数记账、必要时 `classPush`、打 `swEpoch`、光标前进；代价是判定本身是一次 O(nwords) 扫描（1 MiB 栅格时代 slab = 16384 word × 3 位图，v12 起 128 KiB 栅格 = 1024 word × 3 位图，必须在单个 step 内完成 ⇒ 已要求给 `[histo]`/`[top]` 的 elide on/off 对比并把「单步 max ≤50 µs」作为通过条件）。
 
 #### 6.5.3 实测排除项（负结果，不要再投）
 
@@ -579,7 +579,7 @@ EXTC_RC_M_MAX 未设时，隐式取 3*L（保守 kappa_M=1，r'=2）
 | sweep 切片粒度 | `-DEXTC_RC_SWEEP_BUDGET=64/256` | [step] 切片数 21,288→8,172，但总 GC 时间 14.9→15.2 ms 不变 ⇒ GC 是真工作量，不是每片固定开销 |
 | 小对象清零 | 生成 C 里 `memset(p,0,ss)` 只对 ss>32 生效 | 34.0→35.1 ms（噪声内）⇒ 小对象清零不是杠杆 |
 | 只抬 `M_max` | `EXTC_RC_M_MAX=12/24 MiB` | thr 仍被活集约束（3.44 MB），GC 时间不变 ⇒ 墙是天花板不是目标线 |
-| THP | chase 的 slab `aligned_alloc` 后 `madvise(MADV_HUGEPAGE)` | 171.4→171.0 ms、RSS 不变 ⇒ TLB 不是 chase 的瓶颈 |
+| THP | chase 的 slab `aligned_alloc` 后 `madvise(MADV_HUGEPAGE)` | 171.4→171.0 ms、RSS 不变 ⇒ TLB 不是 chase 的瓶颈（1 MiB 栅格时代实测；v12 降到 128 KiB 后栅格税已按 `P1-SLAB-QUANTUM.md` 收掉，本项仍不必重投） |
 | 计数进对象头 | — | 用户决策：普通对象布局必须确定性 |
 
 #### 6.5.4 未暴露的旋钮：`EXTC_RC_FLOOR`
