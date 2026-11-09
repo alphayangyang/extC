@@ -1238,19 +1238,21 @@ static void t_sweepBulkReset(void) {
  * 本轮根本不会扫它，靠下一轮标记重新发现（t_allocDuringSweep 已钉住）。这里钉住前一条。 */
 static void t_sweepElideMark(void) {
     ExtcRcRegion *r = regionNew(37, 16);
-    /* 两个 size class：先把 16 字节类填到 word 16，再建 24 字节类。后建的块被头插成 slabs 头，
-     * 所以 finish 开清扫时游标从 24 字节块起步；随后那次 16 字节分配按字节配额扫完 24 字节块、
-     * 再扫进 16 字节块 16 个 word，新对象正好落在游标处（word 16），黑位规则必须把它标黑。 */
-    enum { kPad = 1024 };
-    static void *keeper[kPad + 1];
+    /* 只用一个 size class（16 字节槽），让游标块与分配目标块是同一块；位置按**可配置常量**算，不写字面量：
+     *   - finish 末尾自己走一步清扫：SWEEP_BUDGET × PRESSURE_MUL 个 word（默认 8，pressure=1）；
+     *   - 随后那次分配再资助 SWEEP_BUDGET + min(ceil(nslots/64), SWEEP_FINISH_MAX) 个 word（默认 8 + 64）；
+     *   - kPad 个槽占 kPad/64 个 word（20000 槽 = 312 个 word）⇒ 新对象发放的 bump 位置必然在游标之前，
+     *     也就是"本轮还没扫到的位置"，黑位规则必须把它标黑。 */
+    enum { kPad = 20000 };
+    static void *keeper[kPad];
     for (int i = 0; i < kPad; i++) keeper[i] = extc_rc_alloc(r, sizeof(Node), &g_data);
-    keeper[kPad] = extc_rc_alloc(r, 24, &g_data);   /* 第二类：24 字节槽的块成为 slabs 头 */
     void *keep = keeper[0];
-    extc_rc_begin(r, keeper, kPad + 1);
+    extc_rc_begin(r, keeper, kPad);
     while (!r->seedsDone || r->msp || r->scanObj) (void)extc_rc_markStep(r, 0xffffffffu);
     extc_rc_finish(r);   /* 末尾自己开清扫 */
-    check(r->sweeping && r->swWord > 0 && r->swWord < 32,
-          "elide x 分配：标记收尾后清扫在飞，游标还没走到底");
+    check(r->sweeping && r->swWord > 0
+          && r->swWord <= EXTC_RC_SWEEP_BUDGET * EXTC_RC_SWEEP_PRESSURE_MUL,
+          "elide x 分配：标记收尾后清扫在飞，游标只走了 finish 自带的那一步");
     Node *fresh = (Node *)extc_rc_alloc(r, sizeof(Node), &g_node);
     check(extc_rc_ownSlab(fresh) == r->swSlab, "elide x 分配：新对象落在游标所在块");
     size_t i = extc_rc_slotOf(r->swSlab, fresh);
@@ -1399,13 +1401,18 @@ static void t_reuseNoDoubleLink(void) {
 /* 计数档专项：清扫在飞时调用定点释放（releaseDead）必须被推迟。`releaseOld` 收尾会清掉**整个**
  * mark 位图，而本轮的分配路径靠 mark 位保护"清扫中新建/未扫位置"的对象；清掉就会把活对象交给
  * 本轮清扫当垃圾收掉。这里的形状把"清扫中分配"落在**已存在 slab 的未扫 word**（不是新 slab，
- * 所以分配路径确实给它置了黑位）—— 定点释放若在清扫中执行，清掉的正是这个黑位。 */
+ * 所以分配路径确实给它置了黑位）—— 定点释放若在清扫中执行，清掉的正是这个黑位。
+ *
+ * 512 KiB 块之后，任一 size class 的块都有几百个 word（16 字节类 512 word），而一次分配的清扫
+ * 收尾信用至多 8 + SWEEP_FINISH_MAX(64) = 72 word ⇒ 光靠分配推进已经扫不完一个块、到不了第二个
+ * size class。所以这块显式把游标推进到 16 字节块的某个 word，再让那一次分配顺带推进；对象刻意
+ * 落在 word 200（kPad = 12800 个槽之后），远在推进终点（<= 90）之后，于是它们确实在未扫区。 */
 static void t_releaseDuringSweep(void) {
     ExtcRcRegion *r = regionNew(35, 16);
-    /* 两个 size class：16 字节类先建、填到 word 16；24 字节类后建，成为 slabs 头。finish 的清扫从
-     * 24 字节块起步，随后那次 16 字节分配按字节配额先扫完 24 字节块、再扫进 16 字节块 16 个 word，
-     * 于是 fresh/old/oldChild 都落在游标处（word 16，未扫）；分配路径给 fresh 置黑位。 */
-    enum { kPad = 1024 };
+    /* 两个 size class：16 字节类先建、填到 word 200；24 字节类后建，成为 slabs 头。finish 的清扫从
+     * 24 字节块起步；下面用空推进把游标送进 16 字节块，随后那次 16 字节分配的字节配额只把它推到
+     * word 90 以内，于是 fresh/old/oldChild 都在未扫区（word 200）；分配路径给 fresh 置黑位。 */
+    enum { kPad = 12800 };   /* 12800 / 64 = 200 word：fresh 落在 word 200 */
     static void *keeper[kPad + 2];
     for (int i = 0; i < kPad; i++) keeper[i] = extc_rc_alloc(r, sizeof(Node), &g_node);
     Node *keep = (Node *)extc_rc_alloc(r, sizeof(Node), &g_node);
@@ -1421,10 +1428,18 @@ static void t_releaseDuringSweep(void) {
     check(r->sweeping, "sweep 在飞时定点释放：标记收尾后清扫已经在飞");
     r->visitedBytes = 0;   /* 前面的 O(live) 遍历信用已花掉：打开定点释放的预算闸 */
 
-    /* finish 推进 8 个 word、分配路径扫完 24 字节块再进 16 字节块 16 个 word：cursor 到 word 16。
-     * fresh 落在 word 16（未扫）⇒ 分配路径给它置黑位；old/oldChild 也还在未扫区。 */
+    /* 空推进：把游标送进 16 字节块（24 字节块 342 word 要几十步；见上面的注释，收尾信用跨不过一块）。 */
+    {   int guard = 0;
+        while (r->sweeping && ++guard < 1000000
+               && !(r->swSlab && r->swSlab->ss == extc_rc_slotSize(sizeof(Node)) && r->swWord > 0))
+            (void)extc_rc_sweepStep(r, EXTC_RC_SWEEP_BUDGET);
+    }
+    check(r->sweeping && r->swSlab && r->swSlab->ss == extc_rc_slotSize(sizeof(Node)) && r->swWord > 0,
+          "sweep 在飞时定点释放：游标推进入 16 字节块的未扫区");
+    long long w0 = (long long)r->swWord;
     Node *fresh = (Node *)extc_rc_alloc(r, sizeof(Node), &g_node);
-    check(r->sweeping && r->swWord < 32, "sweep 在飞时定点释放：分配的顺带推进后清扫仍未完");
+    check(r->sweeping && (long long)r->swWord > w0 && r->swWord < 200,
+          "sweep 在飞时定点释放：分配的顺带推进把清扫往前推、且远没推到 fresh 所在 word");
     check(extc_rc_isLive(fresh), "sweep 在飞时定点释放：清扫中分配的对象当前活着");
     check(extc_rc_isLive(old) && extc_rc_isLive(oldChild),
           "sweep 在飞时定点释放：未扫区的死树此刻还活着");
@@ -1475,7 +1490,9 @@ static void t_histoBuckets(void) {
 static void t_regionFreeDefer(void) {
     ExtcRcRegion *r = regionNew(40, (int64_t)1 << 40);   /* 压力线抬高：本用例手动驱动 */
     Node *last = NULL;
-    for (int i = 0; i < 5000; i++) last = (Node *)extc_rc_alloc(r, sizeof(Node), &g_node);   /* > 2 x 4090 槽 ⇒ 两块 slab */
+    /* A filled 128 KiB block holds (block - header)/16 slots, so a fixed count is one slab at some sizes and two at others; ask the shape for two
+       slabs directly so the drain below always spans more than one block. */
+    for (int i = 0; i < 40000 && extc_rc_slabCount(r) < 2; i++) last = (Node *)extc_rc_alloc(r, sizeof(Node), &g_node);
     size_t slabs = extc_rc_slabCount(r);
     check(slabs >= 2, "延迟释放：形状里至少两块 slab");
     long long q0 = extc_rc_fqSlabs;

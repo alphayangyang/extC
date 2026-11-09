@@ -60,20 +60,20 @@ while i < n {
 区域里的每个对象占一个**槽**：载荷按尺寸档放进块里，**超过一块的载荷单独分配，但仍然只是一个槽**
 —— 计数、跨区登记、标记、清扫对大小对象走同一条路径，不因为载荷大就另开一条。
 
-每块 slab **发放出去的容量也按槽大小定**，不是一律一整块：块大小从 **64 KiB** 起按 **2 的幂**向上取，
-直到装得下 **1024 个槽**、或顶到 `EXTC_RC_SLAB_SIZE`（v12 起 **128 KiB**，同时也是**对齐**单位）。对齐单位与
-「由指针找 slab 是一次按位与」这两条因此都不变，分配仍是同尺寸的一次对齐分配；判据在
-[`tools/check_slab_cap.py`](../tools/check_slab_cap.py)。块大小上限 v12 起从 1 MiB 收到 128 KiB：栅格越小，
-每个尺寸类在块内白留的地址空间越少（1 MiB 时代每块只用 ~64 KiB、94% 的虚拟地址是洞），代价是
-每块槽数变少、开块更频繁（实测 chase 墙钟 −7…−16%、sizeratio −1…−6%，停顿与 RSS 不变；
-判据与证据见 [`P1-SLAB-QUANTUM.md`](../analysis/P1-SLAB-QUANTUM.md)）。slab 只增不减（唯一的块级归还是区域整个归还），
-所以容量粒度直接决定白留多少：固定一整块时每个尺寸类最多白留一整块，按槽定容量之后块变细 ⇒
-清扫得更早也更频繁 ⇒ 峰值占用与 RSS 下降，代价是那一档几个百分点的墙钟（数字见
-[`CHANGELOG.md`](../CHANGELOG.md)）。这个下限取 64 KiB 由扫描定出：更小的下限只是把每个尺寸类
-拆成更多块，多出来的元数据页与清扫次数会把收益吃回去；更大的下限（128 KiB 起）则会让谱 P5 的
-收益整个丢掉（RSS 回到 136 MB，是 64 KiB 下限那版的 1.76×）。下限是**配置无关**的常量，
-而块大小可以配置（\`EXTC_RC_SLAB_BITS\` < 16 时块小于 64 KiB），所以 \`extc_rc_slabNew\` 里把块大小收回到
-\`EXTC_RC_SLAB_SIZE\` 以内；没有这一夹，容量会按超过块大小的 chunk 算，槽写到块外（判据同在上面那个脚本，S8）。
+**v13 起，一块 slab 的发放容量就是一整块**：`EXTC_RC_SLAB_CHUNK_MIN = EXTC_RC_SLAB_SIZE`（512 KiB），
+对齐单位与「由指针找 slab 是一次按位与」这两条不变，分配仍是同尺寸的一次对齐分配；判据在
+[`tools/check_slab_cap.py`](../tools/check_slab_cap.py)。v13 之前发放容量从 **64 KiB** 起按 2 的幂向上取、
+装得下 1024 个槽就停（v12 块上限 128 KiB），48 B 类因此只发 64 KiB / 块 —— 块尾一半永远是洞，
+1 MiB 时代更极端（每块只用 ~64 KiB、94% 的虚拟地址是洞）。v13 把整块发给槽（48 B 类 1,364 → 10,922 槽/块）
+并把栅格从 128 KiB 升到 **512 KiB**（`EXTC_RC_SLAB_BITS 19`，摊销块头/位图/mmap）。账面：v12 的 1 MiB→128 KiB
+让 chase 墙钟 −12.3%、sizeratio −1…−6%，v13 的填满 + 512 KiB 让 sizeratio 再 −7% 量级、chase 持平
+（判据与证据见 [`P1-SLAB-QUANTUM.md`](../analysis/P1-SLAB-QUANTUM.md)、`P1-ZEROINIT-FILL.md`）；停顿与峰值 RSS 不变或更低。
+
+块变大后**任何「按块容量推导的步预算」都必须显式夹住**，否则停顿包络随 `SLAB_BITS` 线性膨胀：分配路径的收尾信用
+`ceil(cursor_slab->nslots / 64)` 原来被块几何自动约束（`_q ≤ 22`），512 KiB / 16 B 槽变成 512 word ⇒ 一步能释放 32,766 槽
+（实测 cross 形状 194 µs，停顿包络的 4×）。现在由 `EXTC_RC_SWEEP_FINISH_MAX`（64 word = 1,024 个 16 B 槽，`reclaim.c:1069`）
+夹住，代价只是大块晚几次分配才清完，总清扫量不变。上限仍是硬界：16 B 槽整块 32,766 槽 < `EXTC_RC_REUSE_MAX_SLOT`，
+没有这一夹容量会按超过块大小的 chunk 算、槽写到块外（判据同在 `check_slab_cap.py`，S8/S9）。
 
 分配要找一块**有空位的同尺寸 slab**，这条路必须是每分配 O(1)、与存活 slab 数无关：
 尺寸类用「槽步长 / 8」当键（槽大小不是 2 的幂，不能拿 log2 索引；槽 ≥ 16 字节 ⇒ 键 ≥ 2，0 当空桶），
@@ -96,11 +96,18 @@ while i < n {
 [`tools/check_alloc_hot.py`](../tools/check_alloc_hot.py)，开关、属性宏与 `noinline` 出口都在它的检查项里，摘掉任何一处都变红。
 
 槽大小的计算（`extc_rc_slotSize`）也必须**强制内联**：分配点常常是常量 `n`（`sizeof 一个类型`），
-内联后槽步长在这一处变成常量，于是清零不再是每分配一次库调用，而是展开成定长内联存储
-（动态 `n` 的调用点也省掉一次调用/返回）。这是分配路径上比重验尺寸更值钱的一笔：
-`cyclic_pressure` 上纯指令数 −7.0%，其中大半来自这一条。判据是
+内联后槽步长在这一处变成常量，尺寸类与清零长度都落到调用点（动态 `n` 的调用点也省掉一次调用/返回）。
+这是分配路径上比重验尺寸更值钱的一笔：`cyclic_pressure` 上纯指令数 −7.0%，其中大半来自这一条。判据是
 [`tools/check_slot_unit.py`](../tools/check_slot_unit.py)：签名上的 `always_inline` 与三条槽大小规则
 都在检查项里，摘掉任一处都变红。
+
+**清零不靠编译器展开**（v13 更正上文早期说法）：槽步长是常量并不保证 `memset(p, 0, ss)` 会被展开 —— `-O2` 下
+glibc 的 fortify 头把它换成 `__memset_chk` 调用（sizeratio 形状该行占总指令 **11.70%**，≈13.5 Ir/次）。
+v13 起清零走自己的 `extc_rc_zeroSmall`（`src/back/reclaim.c:1503`）：`switch (n >> 3)` 的 16→1 fallthrough 跳表，
+每个 case 写一个 8 字节 0（槽数据 64 字节对齐 ⇒ store 对齐），`default: memset(p, 0, n)`；分配体里的调用点
+在 `reclaim.c:1484`（`extc_rc_bump` 里的另一处 `memset` 不动）。收益：sizeratio 22.37 → 16.18 ms（**−27.7%**，
+反超 C++ 最好写法 8%）。诚实限制：跳表**没有**结构门禁，正确性由 `tests/reclaim/run.sh` 的 ASan/UBSan 档覆盖
+（清零不全会立刻在标记/清扫上炸），数值由 `bench/gc/v2` 守着。
 
 每个对象初始化一次的两个热路径 helper（`extc_rc_initRef` / `extc_rc_initRefNoHold`，写槽 + 加一）
 同样**强制内联**：`-O1` 不会跨调用点内联它们，于是每个分配点/字段初始化点都多付一次调用 + 返回；
