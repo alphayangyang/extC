@@ -32,6 +32,7 @@
 > **行号口径（v6 = 本轮 P0 落地）**：`src/back/reclaim.c` = `7c2a9cedd7edd54de0a378d8a507dcbe`（3 801 行）、`build-rf/extc` = `7019342b3e5ccddbe67cbdc96eae2395`。本版只有 §18.6、§19.1、§21、§22 引用了 v6 的新增段落（回收配额 / 惰性 freelist），其余章节的行号仍是 v5 口径 ⇒ **v5 与 v6 行号不可混用**。
 > **行号口径（v7 = P1 一轮：chunk/B/regionFree 队列）**：`src/back/reclaim.c` = `e17080d1c80513b27ca06f2bc6224b0f`（4 031 行）、`src/back/codegen.c` = `2f560e2e6deef8c4927db4611344aecb`（16 017 行，与 v6 相同）（v7 测量输入为 `d339382889b87c0dd18b357c69e2e779`/16 017 行；提交树只把 `typeHasRefSlots` 的前向声明移到 `genViewCopier` 的说明块之前以过 `check-doxygen`，行数与代码不变）、`tests/reclaim/driver.c` = `7b9ac61a55c140640a5964ab74a8780e`（1 523 行）、`build-p1/extc` = `b9fd57843f2c734c16756f6850ace9c5`（我自建 `build-lead7/extc` = `a7f2a873636aa2f69eaa678691cded0e`，同源只差 `-g` 路径）。相对 v6，`reclaim.c` 插入 free-queue（约 +190 行）与 elide 卷计数器（nLive/nMark）⇒ **v6 与 v7 行号不可混用**；更早的 3 572 行版一律作废。
 > **行号口径（v8 = G3b closing queue，当前交付树）**：`src/back/reclaim.c` = `37c92f0b45180dfd65152801dfe48dfc`（4 128 行）、`src/back/codegen.c` = `2f560e2e6deef8c4927db4611344aecb`（16 017 行，与 v7 相同）、`tests/reclaim/driver.c` = `a9ac2cf4e2f8f184ef9cb524232ac5d6`（1 543 行）、`build/extc` = `58402a50b8d2f05d5a11f49835c15835`。相对 v7，`reclaim.c` 插入 region 级 closing queue（+92 行）⇒ **v7 与 v8 行号不可混用**；本文所有行号已按 v8 重算（v7→v8 用插入表逐段映射，再逐条按符号定义行复核）。更早的 4 031 行版 = v7，仅作历史快照。
+> **行号口径（v10 = 分配准入按请求字节，当前工作树）**：`src/back/reclaim.c` = `ff267f16daf6b387d8735158a6d415d7`（4 165 行）、`src/back/codegen.c` = `2f560e2e6deef8c4927db4611344aecb`（16 017 行，v7 起未改）、`tests/reclaim/driver.c` = `e0509b5182033b80a0d2fc33e923e96f`（1 593 行）、`build/extc` = `9bd5588f8441423dcc93d71d198cb1f0`。**v9（4 156 行）与 v10 都没有做全文重锚**：本版只把本轮编辑到的段（§17.1 的 `M_MAX` 行、§18.2、§18.5、§22）更新到 v10，其余章节的行号仍是 v5–v8 口径 ⇒ **跨版本行号不可混用，核对一律按符号 grep**（`reclaim.c` 的权威索引在 `GC-ROOFLINE.md` 附录 D，已按 v10 重锚）。  **行号口径（v11 = 准入只绑显式墙，当前工作树）**：`src/back/reclaim.c` = `ab21781d29c7ee213afbaafc85b0cc1c`（4 169 行）、`tests/reclaim/driver.c` = `6e1bcec5e3320feb780b9567ed9bca4f`（1 620 行）、`build/extc` = `6f1213ea100acac6c12b61cb262776e7`；v10（4 165 行 / `ff267f16`）是**中间口径**（dense 峰值回归已修），其峰值数字作废。本版把 §16.1、§17.1、§18.2、§18.5、§22 更新到 v11，其余仍是 v5–v8 口径 ⇒ 跨版本行号不可混用，核对按符号 grep。
 
 ---
 
@@ -713,12 +714,12 @@ TICK 调用点（默认 `EXTC_RC_TIME` 关时全部编译成 `do{}while(0)`，`r
 
 | 开关 | 源码 | 输出 |
 |---|---|---|
-| `EXTC_RC_PAUSE=1` | `reclaim.c:3712-3821`（`pauseDump`）、3379-3398（`pauseArm`：getenv 3382、SLOWSTEP 阈值 3393-3395、atexit 3396） | 打印 `[pause]/[step]/[work]/[wbudget]/[worst]/[ubwork]/[guard]` 停顿统计 |
-| `EXTC_RC_SLOWSTEP=<us>` | `reclaim.c:3837-3838` 只设阈值，超阈值在 `2820/3122` 打印 `[slow]` | **不是人为加延迟**；是「慢步告警阈值」 |
-| `EXTC_RC_STATS` | `reclaim.c:2275-2294`（`statsArm 1913`） | 退出时打印 `rs_inc/rs_dec/rs_live/rs_hwm/releases/release_slots` |
+| `EXTC_RC_PAUSE=1` | `reclaim.c:3752-3861`（`pauseDump`）、3864-3883（`pauseArm`：getenv 3878、SLOWSTEP 阈值 3879、atexit 3881） | 打印 `[pause]/[step]/[work]/[wbudget]/[worst]/[ubwork]/[guard]` 停顿统计 |
+| `EXTC_RC_SLOWSTEP=<us>` | `reclaim.c:1210/3879` 只设阈值，超阈值在 `3260/3581` 打印 `[slow]` | **不是人为加延迟**；是「慢步告警阈值」 |
+| `EXTC_RC_STATS` | `reclaim.c:2279-2294`（`statsArm` 2287） | 退出时打印 `rs_inc/rs_dec/rs_live/rs_hwm/releases/release_slots` |
 | `EXTC_RC_TIME`（`getenv != NULL` 即开，**设成 "0" 也开**） | `codegen.c:12703`；运行时 156-184 | TICK 分组件计时 + `[rt:counters]` 段 |
 
-**"能全量回收"的接口存在但不是生产路径**：`extc_rc_collect`（`reclaim.c:3902-3911`，标记到底再 settle）、`extc_rc_sweep`（`3503-3507`，`sweepBegin+settle`）、`extc_rc_settle`（`3490-3501`）。**它们的调用者是查询/诊断函数，`codegen.c` 不发射它们**。
+**"能全量回收"的接口存在但不是生产路径**：`extc_rc_collect`（`reclaim.c:3943-3952`，标记到底再 settle）、`extc_rc_sweep`（`3627-3631`，`sweepBegin+settle`）、`extc_rc_settle`（`3614-3625`）。**它们的调用者是查询/诊断函数，`codegen.c` 不发射它们**。
 
 ### 16.2 已实现、无发射器（死代码）
 
@@ -749,7 +750,7 @@ TICK 调用点（默认 `EXTC_RC_TIME` 关时全部编译成 `do{}while(0)`，`r
 | `EXTC_RC_LOCALSTORE` | 1 | `codegen.c:14102-14110（getenv 14108）` | =0 关闭 no-count 层的局部槽 write-only store（`extc_rc_storeRefLocal 3662-3665`） |
 | `EXTC_RC_SHARDS` | 1，上限 64 | `codegen.c:14096-14101` | 分片数 N；floor 按 N 除（`4216-4239`），每次触发只收垃圾最多的 shard |
 | `EXTC_RC_TIME` | 无（`getenv!=NULL` 即开） | `codegen.c:12703` | 计时段 + 计数器段 |
-| `EXTC_RC_M_MAX` | 未设或 0 = 隐式墙 `3·live`（负数按 0） | 运行期 `reclaim.c:986-1008`（`mmaxArm`） | 内存墙（字节）：把触发线夹到 `M_max − 64·L/b`（取 b=256 ⇒ `live/4`，见 §18.5） |
+| `EXTC_RC_M_MAX` | 未设或 0 = 隐式墙 `3·live`（负数按 0） | 运行期 `reclaim.c:986-1008`（`mmaxArm`） | 内存墙（字节）：把触发线夹到 `M_max − max(64·L/b, R_max)`（取 b=256 ⇒ `live/4`；`R_max = region.maxReq` = 见过的最大的单次请求，v10 起；**v11 收窄**：`R_max` 只在显式 `M_max` 下参与预留，隐式墙仍是 `−live/4`，见 §18.5） |
 | `EXTC_RC_SWEEP_PRESSURE_MUL` | 4（1..16，越界 `#error`） | `reclaim.c:1106` | 近墙（`bytes ≥ 7/8·M_max`）时每步预算乘该值：**乘预算、不缩触发间隔**。`markAdvance` 的 walk 批上限随之从 256 变 1024（`reclaim.c:1385`）、sweep 步长与配额同乘 |
 | `EXTC_RC_STEP_CPU` | 未设 = 墙钟 | `reclaim.c:1170` | =1 时 `[histo]/[top]/[chan]/[worst]` 用线程 CPU 时钟计时（滤掉调度噪声） |
 | `EXTC_TASK_ROOTS` | 开 | `codegen.c:613、14111-14118（getenv 14116）` | =0 恢复上一版产物（不发射 `extc_task_rootPush`）；本轮修 P0-6 |
@@ -834,7 +835,7 @@ TICK 调用点（默认 `EXTC_RC_TIME` 关时全部编译成 `do{}while(0)`，`r
 
 ### 18.2 触发线推出的稳态垃圾上界
 
-触发判据（`src/back/reclaim.c:3668-3678`）：`shouldSweep = bytes > thr && roundOk`；`thr = max(2·live, floor) · scale`（`:3514-3563` `thrUpd`）；`roundOk = allocBytes - roundVisitedBytes >= max(live, floor)`（信用制，`:3567-3574`）。
+触发判据（`src/back/reclaim.c:3708-3716`，`extc_rc_shouldSweep`）：`shouldSweep = bytes > thr && roundOk`；`thr = max(2·live, floor) · scale`（`:3638-3696` 的 `extc_rc_thrUpd`，夹取在 `:3655-3681`）；`roundOk = allocBytes - roundVisitedBytes >= max(live, floor)`（信用制，`:3700-3706` 的 `extc_rc_roundOk`，近墙时 `need /= SWEEP_PRESSURE_MUL`）。
 
 由此（`scale = 1` 时）：
 
@@ -842,7 +843,7 @@ TICK 调用点（默认 `EXTC_RC_TIME` 关时全部编译成 `do{}while(0)`，`r
 - 一轮清扫若能收干净，`G ≲ max(L, floor)`；
 - 再加上 slab 粒度取整（每 region 至少一个 1 MiB slab）与大对象 payload（huge block 不在 slab 内），得到
 
-本轮新增**内存墙**（P0-4）：触发线被夹到墙下，`thr = min( max(2·live, floor)·scale , M_max − 64·L/b )`，`M_max` 未设时隐式 `= 3·live`。⇒ 垃圾缓冲不再由自由参数决定，而由契约决定，见 §18.5。
+本轮新增**内存墙**（P0-4）：触发线被夹到墙下，`thr = min( max(2·live, floor)·scale , M_max − res )`（`res` 定义见 §18.5），`M_max` 未设时隐式 `= 3·live`。⇒ 垃圾缓冲不再由自由参数决定，而由契约决定，见 §18.5。**v10 起**墙帽改成 `M_max − max(64·L/b, R_max)`（`R_max = maxReq`）⇒ 显式墙下触发线之上一律放得下一笔最大请求。**v11 修正**：隐式墙下无条件预留会让 `pd_pointer_dense` 峰值从 112,092 涨到 142,620 kB（+27.3%，自学习倍数养到 64），故预留改为**只绑显式墙**（`P1-ADMISSION.md` §3）；隐式墙回到 v9 公式，dense 逐 kB 相同。
 
 校准形式（本轮实测，替代下面这个「粗暴界」作为对外承诺）：`M_peak = L·(1 + κ_M·r')`，`κ_M∈[0.772,1.010]`，保守取 1 即 `3L`（`CALIBRATION.md` §4；digraph 1M 实测 6.44 MB vs 上界 7.00 MB）。粗暴界如下，仅用于解释 floor 主导的小活集形状：
 
@@ -880,7 +881,8 @@ M ≲ thr + max(L, floor) + slabPadding(1 MiB 粒度) + hugePayload    (thr = ma
 
 ```text
 M_max    = EXTC_RC_M_MAX   (未设/0 ⇒ 隐式 3·live；负数按 0)        // reclaim.c:986-1008 的 mmaxArm
-thr      = min( max(2·live, floor)·scale , M_max − live/4 )         // thrUpd 内夹取（源码写法 64·L/b，取 b=256 ⇒ live/4；reclaim.c:3607/3152）
+thr      = min( max(2·live, floor)·scale , M_max − res )             // thrUpd 内夹取（reclaim.c:3638-3696；夹取 :3655-3681）
+res      = 显式墙 ? min( max(live/4, maxReq) , live ) : live/4       // v10 引入、v11 收窄：源码写法 64·L/b，取 b=256 ⇒ live/4；maxReq = 见过的最大的单次请求；隐式墙下不预留（否则 dense +27.3%）
 pressure = (bytes ≥ 7/8·M_max) || (thr>0 && bytes > 4·thr)          // 近墙判据（两条，reclaim.c:1012-1024）
 近墙时每步预算 × EXTC_RC_SWEEP_PRESSURE_MUL                          // 默认 4（reclaim.c:1106）
 ```
@@ -888,7 +890,7 @@ pressure = (bytes ≥ 7/8·M_max) || (thr>0 && bytes > 4·thr)          // 近�
 - **承诺（经验上界，不是可强制的硬契约）**：峰值驻留实测落在 `M_max + 缓冲` 之内；缓冲 = `max(L, floor)` 的 roundOk 信用 + slab 取整（≤1 MiB/region）+ huge payload 尾项。默认 `M_max = 3·live` ⇒ 与 §18.4 的 `(1+r')·L` 同量级。**注意：分配路径并不拒绝分配**（`M_max` 只用于 arm / 有效墙 `eff` / `thrUpd` 夹取 / pressure 判据 / 诊断），超墙时唯一的动作是加压清扫 ⇒ 该界是经验上界，越界意味着清扫跟不上分配。
 - **代价（必须一并承诺）**：夹紧 thr 使 sweep 次数从小常数变成 **O(log N)** —— 一轮最多退休一个活集，活集要涨 ~2.75× 才再触发（`reclaim.c:948-968` 上方注释逐字：an unbounded trigger threshold keeps the sweep count a small constant ... pays with unbounded resident memory）。`tests/reclaim/driver.c` 的两条旧断言因此改写成本节的契约；`EXTC_RC_M_MAX=2^40` 等价于关闭夹紧（run.sh 128/0 vs 默认 126/2）。
 - **实测（本轮 after，默认档，`build-rf/extc` = `9fd0dcd8…`）**：10×400k 环形状（`tests/gc-p0/src/p03_ring_release.extc`，rounds=10 × nodes=400000）**VmHWM median 18,164 kB（17.7 MiB）**（3 reps；`/usr/bin/time` 单 rep 复测 18,008 kB），HEAD 同形状 41,616 kB；对照：同形状 `EXTC_RC_M_MAX=32MiB` 42,392 kB、`=64MiB` 47,768 kB、`=1TiB`（关墙）47,768 kB ⇒ **墙确实在约束峰值，且 after 比 HEAD 更低**。该形状 `[work]`：`M_max=4101120`（隐式 3·live）、`thr=2715120`、`pressure_steps=8787`、`scale_max=1`。⚠️ 早前手记的 **93,080 KB（90.9 MiB）/ `pressure_steps=1209` / `collects=13` / `[histo]` n=21833** 来自 interim 构建的单次观测、日志未归档，**v4 复测不复现**（同形状关墙也只到 47.8 MB），已作废，不要再引用。
-- **墙不可达警告**：若 `M_max` 小到连 floor 都放不下（`max(2L,floor)` 压不到墙下），运行期打一次 `[mmax] memory wall unreachable: M_max=… floor=…; using floor`（`reclaim.c:3632-3636`）并退回 floor ⇒ 此时契约退化为 floor 主导，必须让用户看见，不能静默。
+- **墙不可达警告**：若 `M_max` 小到连 floor 都放不下（`max(2L,floor)` 压不到墙下），运行期打一次 `[mmax] memory wall unreachable: M_max=… floor=…; using floor`（`reclaim.c:3671-3675`）并退回 floor ⇒ 此时契约退化为 floor 主导，必须让用户看见，不能静默。
 
 ### 18.6 前提的修正：回收配额按分配字节计（P0-P，已落地）
 
@@ -1074,7 +1076,7 @@ v7 新增 `[segsteps] n= pops_tot= max_us= b1us…bge64ms=`（15 桶桶界与 `[
 
 extC 的内存管理是**编译期分档的**：绝大多数分配被静态指派到作用域式基质（帧 arena / 任务 arena / plate / pool），内存有界、回收成本 ≈0；只有"逃逸到 level 1 或更浅"的引用对象进入三种档之一的运行期回收器（无回收 / 计数 + 定向释放 / 标记 + 步进清扫）。本轮（阶段 0–2）改造后，三件事变了：
 
-1. **内存有了对外契约**：`M_peak ≤ M_max + 缓冲`，`M_max` 默认隐式 `3·live`、可用 `EXTC_RC_M_MAX` 显式指定 ⇒ 峰值可预言（§18.5）；代价是 sweep 次数变为 O(log N)。RSS 仍等于历史峰值（slab 不还 OS），这是下一个阶段要解决的事（归还/madvise）。
+1. **内存有了对外契约**：`M_peak ≤ M_max + 缓冲`，`M_max` 默认隐式 `3·live`、可用 `EXTC_RC_M_MAX` 显式指定 ⇒ 峰值可预言（§18.5）；代价是 sweep 次数变为 O(log N)。**v10 补齐了契约里漏掉的一项**：墙帽从 `M_max − live/4` 改成 `M_max − max(live/4, maxReq)`，使 `thr + maxReq ≤ M_max` 恒成立（任何单个请求都装得进墙内；`P1-ADMISSION.md`）——这一项是**结构性**的，实测峰值不变（`pd_bigobj` 仍 26,076 kB），只是 `thr_max` 从 22 MiB 收到 16 MiB。**v11 更正**：v10 的无条件预留让 dense 峰值 +27.3%（112,092 → 142,620 kB），现改为**只在显式墙下预留** ⇒ 默认路径与 v9 逐 kB 相同（`P1-ADMISSION.md` §3）。RSS 仍等于历史峰值（slab 不还 OS），这是下一个阶段要解决的事（归还/madvise）。
 2. **三条硬契约通道全部入界（v8）**：`releaseOld` 无续扫 ≤2048 步 ≈36 µs（续扫最坏 0.1–0.2 ms）、大对象分段 8192 words/段（pd max 78–98 µs）、`regionFree` 同步段 O(1)（0.4–1.7 µs，`P1-CLOSING-QUEUE.md`）⇒ G3b 三形状（pd/dense/pb 100M）全部 PASS，G2/G3a 亦 PASS。**仍未达标的两项必须一起写**：G1②(a) 常规步 `>50 µs` 占比（warm 形状 4.25e-4–1.21e-3 > 1e-4）与 (b) 续扫段 p99.9（58.53/99.20 µs，`bseg-cal.tsv`，`[segsteps]` 桶界落 >64 µs 桶）；(b) 的尾部分解见 §19.5.3（环境抢占 + 冷页 + 256-pop 真工作），(a) 是预存问题、非本轮引入。**v9 更正（`P1-SEG-TAIL.md`）**：这两项的数值在本机主要由**宿主噪声地板**决定（配对噪声探针 p99.9 = 22–26 µs、>50 µs 事件率 133/s，与 GC 的 ≈200/s 同量级）；可判的是 p99 = 20.8/33 µs（≤50 µs 达成）与 over-1ms = 0，p99.9 50 µs 目标在 chunk=8192 下不可达。
 3. **两处 UAF 已按保守方向修好**（P0-7 参数槽 insert-only、P0-7b bulk copy 逐引用记账），并登记了三个仍不回收的形状（L10-a/b/c ⇒ P0-8/9/10）。
 

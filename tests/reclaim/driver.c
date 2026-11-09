@@ -785,6 +785,73 @@ static void t_thresholdCache(void) {
     extc_rc_regionFree(r);
 }
 
+/* ---- 分配准入：按请求字节预留（Lead 2026-11-10） --------------------------------
+ *
+ * 触发线只有「已分配堆」一个输入，不看**这一笔请求多大**：堆贴着墙时放进一个 8 MiB 大对象，
+ * 峰值就能顶到 M_max + 8 MiB。修法是在**开凿慢路径**登记本区见过的最大单笔请求 `maxReq`，
+ * 在**显式墙**下把墙帽从 `M_max - live/4` 改成 `M_max - max(live/4, maxReq)`：任一最大请求
+ * 都仍装得进墙内，热路径 0 Ir、停顿不变。
+ *
+ * 为什么只绑显式墙：隐式墙 = 3*L 自己随 L 涨，这条承诺在那里**兑现不了**；而一旦在隐式墙下也
+ * 收紧触发线，早期（live/4 < R_max 时）的触发节奏就会变，自学习倍数轨迹随之改变 —— 实测
+ * pd_pointer_dense 峰值 112,092 → 142,620 kB（+27.3%），逻辑峰值 89.1 → 115.4 MB。默认路径
+ * 不为「只有显式墙下才有意义」的保证付内存账。
+ *
+ * 判据是**红前绿后**的：①把显式墙帽改回 `M_max - live/4`，下面 ② 立刻红；②把预留绑回隐式墙，
+ * 下面 ③ 立刻红（默认路径必须与旧实现逐字节相同）。 */
+static void t_admissionReserve(void) {
+    const int64_t B = 256 * 1024;   /* 超过 slab 单槽上限 ⇒ big 路径，slotSize == 请求大小 */
+    ExtcRcRegion *r = regionNew(21, 4096);
+    void *big = extc_rc_alloc(r, B, EXTC_RC_CONSERVATIVE);
+    void *roots[1] = { big };
+    check(big != NULL && r->maxReq == B, "分配准入①：大请求登记成 maxReq（慢路径写一次，热路径 0 Ir）");
+    check(extc_rc_collect(r, roots, 1) == 0, "分配准入①：全在根上 ⇒ 这一轮收不到东西");
+    check(r->live == B, "分配准入①：live 就是那一个大对象（R_max == live 的最坏配置）");
+    check(r->scale > 1, "分配准入①：空扫把倍数养大（阈值顶到墙帽，才看得见预留）");
+
+    /* ③ 默认路径（隐式墙）必须与旧实现逐字节相同：旧帽 = M_max - live/4。 */
+    int64_t iwall = extc_rc_mmaxEff(r), il4 = r->live / 4;
+    extc_rc_thrUpd(r);
+    int64_t iwant = r->live * 2 * r->scale;
+    if (iwant < r->floor) iwant = r->floor;
+    if (iwall > 0 && iwant > iwall - il4) iwant = iwall - il4;
+    if (iwant < r->floor) iwant = r->floor;
+    check(r->thr == iwant, "分配准入③：隐式墙下触发线不变（预留不绑隐式墙，dense 峰值不回归）");
+
+    /* ② 显式墙：触发线 + 最大一笔请求必须装得进墙。W = 2*B ⇒ live/4 < R_max，帽确实咬住。 */
+    long long savedMmax = extc_rc_mmax;
+    extc_rc_mmax = (long long)(2 * B);
+    extc_rc_thrUpd(r);
+    int64_t wall = extc_rc_mmaxEff(r);
+    check(wall == 2 * B, "分配准入②：显式内存墙生效");
+    check(r->thr + r->maxReq <= wall,
+          "分配准入②：触发线 + 最大一笔请求 ≤ 内存墙（旧帽只留 live/4，这里红）");
+    check(r->thr <= wall - r->maxReq, "分配准入②：预留至少是一整笔最大请求");
+    extc_rc_mmax = savedMmax;
+    extc_rc_thrUpd(r);   /* 恢复默认口径，后面的用例不受影响 */
+
+    /* 对照：小对象区（maxReq 远小于 live/4）在两种墙下都与旧实现**逐字节相同** —— 预留只在
+     * 大请求时收紧，不许顺手偷走小对象的裕量。 */
+    ExtcRcRegion *q = regionNew(22, 4096);
+    void *all[300];
+    for (int i = 0; i < 300; i++) all[i] = extc_rc_alloc(q, sizeof(Pair), &g_pair);
+    check(extc_rc_collect(q, all, 300) == 0, "分配准入③：对照区空扫收 0");
+    int64_t qwall = extc_rc_mmaxEff(q), l4 = q->live / 4;
+    check(q->maxReq == 16 && l4 > q->maxReq, "分配准入③：对照区 maxReq 小于 live/4");
+    int64_t want = q->live * 2 * q->scale;
+    if (want < q->floor) want = q->floor;
+    if (qwall > 0 && want > qwall - l4) want = qwall - l4;
+    if (want < q->floor) want = q->floor;
+    check(q->thr == want, "分配准入③：小对象区阈值不变（仍按 live/4 留裕量）");
+    long long saved2 = extc_rc_mmax;
+    extc_rc_mmax = (long long)qwall;
+    extc_rc_thrUpd(q);
+    check(q->thr == want, "分配准入③：小对象区换成显式墙后阈值仍不变（maxReq 不参与）");
+    extc_rc_mmax = saved2;
+    extc_rc_thrUpd(q);
+    extc_rc_regionFree(r);
+    extc_rc_regionFree(q);
+}
 /* ---------------------------------------------------------------- 无环有界负载：不进清扫 */
 #if !EXTC_RC_NOCOUNT
 static size_t boundedLiveSweeps(long n, int64_t *bytesOut) {
@@ -1524,6 +1591,7 @@ int main(void) {
     t_bump();
     t_trigger();
     t_thresholdCache();
+    t_admissionReserve();
 #if !EXTC_RC_NOCOUNT
     t_acyclic();
 #endif

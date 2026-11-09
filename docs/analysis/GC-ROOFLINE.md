@@ -41,7 +41,7 @@
 1. **成本函数**：λ(r) = (c_t + c_s·F_slab·r)/(r−1) [ns/B]，c_t=0.4114、c_s=0.0108、F_slab=1.30（**M**）。含义：每轮标记整个活集（成本 ∝ L）+ 清扫整个 slab 容量（∝ cap=F·H），本轮只新分配 (r−1)L。
 2. **λ 对 r 单调降**（r>1），地板是 c_s·F_slab=0.014 ns/B（**D**）。⇒ **降税只有两条路：加内存（把 r 推高）或降低 c_t/c_s**。
 3. **内存定律**：M_peak = L + κ_M·H = L·(1+κ_M·r')，κ_M∈[0.772,1.010] 实测（**M**）；保守取 κ_M=1 ⇒ 默认 r'=2 时 **M ≤ 3L**。digraph 1M：L_peak=2.333 MB，上界 7.00 MB，实测 6.44 MB（−8%）。
-4. **停顿定律**：单步停顿 P(b) = b·τ_t + 8·64·τ_s，τ_t=17.49 ns/obj、τ_s=0.458 ns/slot（**M**）⇒ 常态 b=256 时 **4.71 µs**，b=224 时 4.15 µs；**压力档**（近墙时 `b` 乘 `EXTC_RC_SWEEP_PRESSURE_MUL`，默认 4 ⇒ b=1024）最坏 **18.1 µs**（1024×17.49 + 234.5 ns；`reclaim.c:1375/1368`），仍 < G1② 的 50 µs、G20 的 64 µs。实测 p99（常态 mark 步）4.36/4.79/6.42 µs，模型误差 −2%（**M**）。
+4. **停顿定律**：单步停顿 P(b) = b·τ_t + 8·64·τ_s，τ_t=17.49 ns/obj、τ_s=0.458 ns/slot（**M**）⇒ 常态 b=256 时 **4.71 µs**，b=224 时 4.15 µs；**压力档**（近墙时 `b` 乘 `EXTC_RC_SWEEP_PRESSURE_MUL`，默认 4 ⇒ b=1024）最坏 **18.1 µs**（1024×17.49 + 234.5 ns；`reclaim.c:1378/1368`），仍 < G1② 的 50 µs、G20 的 64 µs。实测 p99（常态 mark 步）4.36/4.79/6.42 µs，模型误差 −2%（**M**）。
 5. **`max` 不能当门禁**：同一程序三次 rep 的 max 是 170/52/490 µs，纯空转循环（200k 次 clock_gettime）就已经有 98–171 µs 的 max（**M**）⇒ 本机（WSL2）计时噪声地板 0.1–0.5 ms；G1 必须用 p99。
 6. **keep-up 定律**：r' ≥ r_min(b) = 1 + g·K/b，g=2.76（**U**，旧提交结构计数，上界 5.7）、K=MARK_EVERY=64 ⇒ b=256 时 r_min=1.690，实测 min r'=2.425（裕度 1.43×）。
 7. **可行带（定理 T1）**：在内存预算 M_max 与停顿预算 P_max 下，可行 ⇔ **λ_min(M_max) ≤ λ_keep(b_max)**，其中 λ_min 由内存决定（越小越贵），λ_keep 由 keep-up 决定（越大越缺时间）。当前 extC 落在带内：λ_min(7 MB)=0.228 ≤ 实测 0.2508 ≤ λ_keep(1.69)=0.404。
@@ -67,7 +67,7 @@
 
 | 界 | 内容 | 出处 |
 |---|---|---|
-| 单步标记 | 常态每步最多 `b=MARK_BATCH_MAX=256` 个 pop（压力档夹到 `256×SWEEP_PRESSURE_MUL`，默认 **1024**，`reclaim.c:1375/1368`）、`MARK_STEP=8` 次 word 扫描 | `src/back/reclaim.c` 的 [rt:mark] 常量表 |
+| 单步标记 | 常态每步最多 `b=MARK_BATCH_MAX=256` 个 pop（压力档夹到 `256×SWEEP_PRESSURE_MUL`，默认 **1024**，`reclaim.c:1378/1368`）、`MARK_STEP=8` 次 word 扫描 | `src/back/reclaim.c` 的 [rt:mark] 常量表 |
 | 单步清扫 | `EXTC_RC_SWEEP_BUDGET=8` word/步 | 同上 [rt:sweep] |
 | 大对象扫描 | `EXTC_RC_SCAN_CHUNK`（本轮改为 **8192** word/段） | `EXTC_RC_SCAN_CHUNK` 的 `#define`（运行期文本） |
 | 帧 arena | 块 ≤ `EXTC_ARENA_SPARE_MAX=1 MiB` 的 spare 保留，其余当场 free | `codegen.c:12406-12418` |
@@ -379,7 +379,7 @@ GC 的对应量：
 | **触发比**（r） | `thr` 倍数 + `M_max` 夹取 | λ(r) ↓、M(r) ↑ | §3.9 前沿 |
 | **分片/分区**（shard/region） | `EXTC_RC_SHARDS` / region 边界 | 改 F_slab 与并行度 | SHARDS=4 实测更慢（+220 MiB RSS、×10.2 时间），当前判否 |
 
-**压力档的 b 口径（2026-11-09 落地）**：`b` 的**设计基数是 `MARK_BATCH_MAX = 256`**；但 `extc_rc_markAdvance` 在近墙时会先乘压力乘子 `_pm = extc_rc_pressure(r) ? EXTC_RC_SWEEP_PRESSURE_MUL : 1`，再夹到 `MARK_BATCH_MAX × _pm`（`reclaim.c:1375/1364/1368`）⇒ 运行期上界是 **`walk_cap = 256 × PRESSURE_MUL`（默认 4 ⇒ 1024）**。这是**策略内的有界热路径步**（乘子乘的是被准入的步长，不是无界排空），所以这些步仍记进 `[work]` 而不进 `[ubwork]`；`[work]` 现在同时报 `walk_cap` 与 `walk_gtcap`（超过 `walk_cap` 的步数，有界运行恒 0；`reclaim.c:1228/3693-3697`）。**最坏单步按 1024 pops 算**：P(1024) = 1024×17.49 ns + 8×64×0.458 ns ≈ **18.1 µs**，低于 G1② 的 50 µs、G20 的 64 µs 与 G18 的 1 ms 软界，所以停顿判据不会被它顶破；前提是压力步**只在近墙时出现**——实测 p5 形状 `walk_max = 1024`（压力档步 n=1726）、cross 形状 `walk_max = 568`，`gate-reclaim-work` 6/6 绿（`walk_max ≤ walk_cap`、`walk_gtcap == 0`、`[work]` 缺字段即 FAIL）。若 `walk_gtcap > 0`，或压力步占比持续增长，说明 `b` 已不受策略控制、`P_max` 的形式上界不再成立，判据应当红。
+**压力档的 b 口径（2026-11-09 落地）**：`b` 的**设计基数是 `MARK_BATCH_MAX = 256`**；但 `extc_rc_markAdvance` 在近墙时会先乘压力乘子 `_pm = extc_rc_pressure(r) ? EXTC_RC_SWEEP_PRESSURE_MUL : 1`，再夹到 `MARK_BATCH_MAX × _pm`（`reclaim.c:1378/1364/1368`）⇒ 运行期上界是 **`walk_cap = 256 × PRESSURE_MUL`（默认 4 ⇒ 1024）**。这是**策略内的有界热路径步**（乘子乘的是被准入的步长，不是无界排空），所以这些步仍记进 `[work]` 而不进 `[ubwork]`；`[work]` 现在同时报 `walk_cap` 与 `walk_gtcap`（超过 `walk_cap` 的步数，有界运行恒 0；`reclaim.c:1231/3693-3697`）。**最坏单步按 1024 pops 算**：P(1024) = 1024×17.49 ns + 8×64×0.458 ns ≈ **18.1 µs**，低于 G1② 的 50 µs、G20 的 64 µs 与 G18 的 1 ms 软界，所以停顿判据不会被它顶破；前提是压力步**只在近墙时出现**——实测 p5 形状 `walk_max = 1024`（压力档步 n=1726）、cross 形状 `walk_max = 568`，`gate-reclaim-work` 6/6 绿（`walk_max ≤ walk_cap`、`walk_gtcap == 0`、`[work]` 缺字段即 FAIL）。若 `walk_gtcap > 0`，或压力步占比持续增长，说明 `b` 已不受策略控制、`P_max` 的形式上界不再成立，判据应当红。
 
 形式化：一个策略是一组 (b, chunk, r, shards)；约束是 C1–C3；目标是 λ 最小。**S2 已经在 C1 的边界上，S5 想做的是在不改 (M_max, P_max) 的前提下改变成本结构（c_t/c_s/c_r），而不是改参数**。
 
@@ -445,8 +445,8 @@ GC 的对应量：
 | 2 | P0-4 `thr` 与 `M_max` 绑定 + r 自适应 | `extc_rc_thrUpd` 与调用点 | **已落地**（隐式 3L / `EXTC_RC_M_MAX`） | G4 PASS、G17 观测 |
 | 2 | P1-1 `roundOk` 加压力项 | `extc_rc_roundOk` | **已落地**（pressure = bytes ≥ 7/8·M_max 或 > 4·thr） | 内存不超 M_max |
 | 2 | P1-2 sweep 预算与 `SCAN_CHUNK` 联动 | `sweepStep` 的预算乘子 | **已落地**（`EXTC_RC_SWEEP_PRESSURE_MUL`=4，1..16）；同一乘子也乘 `markAdvance` 的批上限（256→1024，见 §4.3） | 步长稳定 |
-| 2 | P0-12 回收配额按**分配字节**计（P） | `extc_rc_alloc` 的 sweep 预算与 mark 配额（宏 `reclaim.c:1046-1076`；实现 `reclaim.c:1500-1533`） | **已落地**（`SHIFT_MARK=3`、`MAX_MARK=1<<20`、`MAX_WORDS=8192`、`DEADLINE_US=800`；G18 PASS，sizeratio 墙钟 +9.31% 的代价见 6.6） | G18 / G20 |
-| 2 | P1-9 惰性 freelist（sweep 不链接、复用时按位图一次性重建；B） | `ExtcRcSlab.nfree`（`reclaim.c:256`）、热路径头插 `reclaim.c:1821-1822`、重建 `reclaim.c:1578-1596`、sweep 只记账 `reclaim.c:1889-1893` | **已落地**（GC 步总时长 promote −20.2%、sizeratio −56.4%、cycleratio −10.8%；`nfree` 12 处写点/末 word 掩码/不双计论证已过静态审计） | G1/G2、G20 |
+| 2 | P0-12 回收配额按**分配字节**计（P） | `extc_rc_alloc` 的 sweep 预算与 mark 配额（宏 `reclaim.c:1049-1076`；实现 `reclaim.c:1503-1533`） | **已落地**（`SHIFT_MARK=3`、`MAX_MARK=1<<20`、`MAX_WORDS=8192`、`DEADLINE_US=800`；G18 PASS，sizeratio 墙钟 +9.31% 的代价见 6.6） | G18 / G20 |
+| 2 | P1-9 惰性 freelist（sweep 不链接、复用时按位图一次性重建；B） | `ExtcRcSlab.nfree`（`reclaim.c:256`）、热路径头插 `reclaim.c:1824-1822`、重建 `reclaim.c:1581-1596`、sweep 只记账 `reclaim.c:1892-1893` | **已落地**（GC 步总时长 promote −20.2%、sizeratio −56.4%、cycleratio −10.8%；`nfree` 12 处写点/末 word 掩码/不双计论证已过静态审计） | G1/G2、G20 |
 | 3 | E6/E2/E3/E5/E1 标定 | `docs/analysis/CALIBRATION.md` | **已完成** | 模型/实测 ≤1.5× |
 | 3 | E7（g）、E8（c_r）、E9（空扫×4）、E14（κ_M 六形状） | — | 未做 | 见 §2.4 |
 | — | 计数进对象头（计数开销优化） | — | **明确不做**（用户决策：普通对象布局必须确定性） | — |
@@ -506,7 +506,7 @@ free 次数 <= 10 * #slabs + #classes + 3
 
 `[regionfree] n=… max_frees=… max_slabs=…` 在 `EXTC_RC_PAUSE=1` 时打印（`[regionfree]` 探针计数与打印段），使「单次 drop 规模」成为可核对的契约而不是口头承诺。G3a 因此写成「max_frees ≤ 上界公式，且只出现在帧销毁/进程退出」。
 
-**时间未界（G3b）：v4 全红 → v7 部分闭合 → v8 闭合**。v4 after 实测 pb 帧销毁单次 **cpu 86.2 ms / wall 74.8–82.4 ms**、pd cpu 27.5 ms（doc-audit 独立复测 pb cpu 99.0 / wall 94.3 ms）⇒ 那是当时的最大未闭合项。P1 轮改成两阶段（§6.7.3）后：`pd_bigobj` 200 轮 **493.2 µs**（中位，max 711.4）⇒ 达标；`pd_pointer_dense` **1,365.5 µs**、`pb_escape_grow` 100M **8.6 ms**（另一构建 14.2 ms，跨构建 1.6× 散布）⇒ 仍红，剩下的正是**同步段的 `ownDel`**（`pb` 24 510 slab × ≈560 ns）。v8 轮把它做成 region 级 closing 队列（`reclaim.c:2729-2822`：同步段只置 `dead` + 挂线程局部队列，O(1)；`extc_rc_cqDrainCore` `reclaim.c:1771-1814` 在分配点按 ≤8 slab/100 µs 推进 `unlinkChildren`/`ownDel`/压 free queue）：三形状实测 `[chan] regionfree` **0.4 / 1.6 / 1.7 µs**（v7 为 493.2 µs / 1,365.5 µs / 13.2–14.8 ms），`[regionfree] max_frees=0 max_slabs=0`。判据（≤1 ms）与用户目标（p99.9 ≈50 µs）双双满足；诚实限制见 §6.7.3。
+**时间未界（G3b）：v4 全红 → v7 部分闭合 → v8 闭合**。v4 after 实测 pb 帧销毁单次 **cpu 86.2 ms / wall 74.8–82.4 ms**、pd cpu 27.5 ms（doc-audit 独立复测 pb cpu 99.0 / wall 94.3 ms）⇒ 那是当时的最大未闭合项。P1 轮改成两阶段（§6.7.3）后：`pd_bigobj` 200 轮 **493.2 µs**（中位，max 711.4）⇒ 达标；`pd_pointer_dense` **1,365.5 µs**、`pb_escape_grow` 100M **8.6 ms**（另一构建 14.2 ms，跨构建 1.6× 散布）⇒ 仍红，剩下的正是**同步段的 `ownDel`**（`pb` 24 510 slab × ≈560 ns）。v8 轮把它做成 region 级 closing 队列（`reclaim.c:2732-2822`：同步段只置 `dead` + 挂线程局部队列，O(1)；`extc_rc_cqDrainCore` `reclaim.c:1774-1814` 在分配点按 ≤8 slab/100 µs 推进 `unlinkChildren`/`ownDel`/压 free queue）：三形状实测 `[chan] regionfree` **0.4 / 1.6 / 1.7 µs**（v7 为 493.2 µs / 1,365.5 µs / 13.2–14.8 ms），`[regionfree] max_frees=0 max_slabs=0`。判据（≤1 ms）与用户目标（p99.9 ≈50 µs）双双满足；诚实限制见 §6.7.3。
 
 ### 6.3 阶段 2：内存有界（参数化）
 
@@ -602,9 +602,9 @@ EXTC_RC_M_MAX 未设时，隐式取 3*L（保守 kappa_M=1，r'=2）
 
 冻结口径：`src/back/reclaim.c` = `7c2a9ced…`（3801 行）、`src/back/codegen.c` = `d3393828…`（16 017 行）、after 构建 `build-rf/extc` = `7019342b…`；before 构建 `build-lead5/extc` = `9bef5488…`。证据：`docs/analysis/P0-IMPL.md`（233 行）、`docs/analysis/MEASUREMENTS-P0-IMPL.md`（390 行）、`docs/analysis/QUOTA-MODEL.md`（250 行）、`docs/analysis/AUDIT-P0-IMPL.md`（734 行，§13 = 阶段二终稿）。
 
-**P（按分配字节给回收信用）**：sweep 侧 `budget = 8·pressure + max(1, min(ceil(cursor_slab->nslots/64), QUOTA_MAX_WORDS))`；mark 侧 `quota = min(n >> 3, QUOTA_MAX_MARK)` 个 work unit（1 unit = 1 次 pop 或 1 个扫描位图字）；`EXTC_RC_QUOTA_DEADLINE_US=800` 是单步物理上限（注释 `reclaim.c:1046-1076`，实现 `reclaim.c:1500-1533`，钳位 `:1478`）。默认取 **memory-first**（`MAX_MARK=1<<20` 让一个 8 MiB 指针密集大对象在一次分配里扫完）：`deadline=250` 实测会破坏 G18（34,712 kB、hits 100），800 才把 hits 压到 0–1。
+**P（按分配字节给回收信用）**：sweep 侧 `budget = 8·pressure + max(1, min(ceil(cursor_slab->nslots/64), QUOTA_MAX_WORDS))`；mark 侧 `quota = min(n >> 3, QUOTA_MAX_MARK)` 个 work unit（1 unit = 1 次 pop 或 1 个扫描位图字）；`EXTC_RC_QUOTA_DEADLINE_US=800` 是单步物理上限（注释 `reclaim.c:1049-1076`，实现 `reclaim.c:1503-1533`，钳位 `:1478`）。默认取 **memory-first**（`MAX_MARK=1<<20` 让一个 8 MiB 指针密集大对象在一次分配里扫完）：`deadline=250` 实测会破坏 G18（34,712 kB、hits 100），800 才把 hits 压到 0–1。
 
-**B（惰性 freelist）**：sweep 只清 `occ` 位并给 `nfree` 记账，不再逐槽头插；复用该 slab 时按位图一次性重建链（`classSlot` 的 `bump` 耗尽分支，`reclaim.c:1578-1596`），热路径 `freeSlot` 仍头插（`:1730-1731`）。静态复核通过：`nfree` 12 处写点、末 word 掩码、`nfree=chained` 覆写、不双计论证（`AUDIT-P0-IMPL.md` §2）。
+**B（惰性 freelist）**：sweep 只清 `occ` 位并给 `nfree` 记账，不再逐槽头插；复用该 slab 时按位图一次性重建链（`classSlot` 的 `bump` 耗尽分支，`reclaim.c:1581-1596`），热路径 `freeSlot` 仍头插（`:1730-1731`）。静态复核通过：`nfree` 12 处写点、末 word 掩码、`nfree=chained` 覆写、不双计论证（`AUDIT-P0-IMPL.md` §2）。
 
 | 判据 | before（`9bef5488…`） | after（`7019342b…`） | 判定 |
 |---|---|---|---|
@@ -625,7 +625,7 @@ EXTC_RC_M_MAX 未设时，隐式取 3*L（保守 kappa_M=1，r'=2）
 
 冻结口径（v7）：`src/back/reclaim.c` = `e17080d1c80513b27ca06f2bc6224b0f`（4 031 行）、`src/back/codegen.c` = `2f560e2e6deef8c4927db4611344aecb`（16 017 行）（v7 测量输入为 `d339382889b87c0dd18b357c69e2e779`/16 017 行；提交树只把 `typeHasRefSlots` 的前向声明移到 `genViewCopier` 的说明块之前以过 `check-doxygen`，行数与代码不变）、`tests/reclaim/driver.c` = `7b9ac61a55c140640a5964ab74a8780e`（1 523 行）；构建 `build-p1/extc` = `b9fd5784…`，Lead 独立构建 `build-lead7/extc` = `a7f2a873…`（同源码，只差调试段）。证据：`P1-RQ3-CHUNK.md`（281 行）、`P1-QUOTA-FASTPATH.md`（116 行）、`P1-REGIONFREE-BATCH.md`、`MEASUREMENTS-P1.md`。
 
-冻结口径（v8，本轮 closing queue）：`src/back/reclaim.c` = `37c92f0b45180dfd65152801dfe48dfc`（4 128 行）、`src/back/codegen.c` = `2f560e2e6deef8c4927db4611344aecb`（16 017 行，未改）、`tests/reclaim/driver.c` = `a9ac2cf4e2f8f184ef9cb524232ac5d6`（1 543 行）；构建 `build/extc` = `58402a50b8d2f05d5a11f49835c15835`。**v7 与 v8 的 `reclaim.c` 行号不可混用**（本文件已按 v8 重锚）。 **v9（续扫段时间上限，2026-11-09）**：`src/back/reclaim.c` = `3de5655435d4dfb2448b2168fee4ca19`（4 156 行）、`src/back/codegen.c` = `2f560e2e6deef8c4927db4611344aecb`（16 017 行，未改）、`tests/reclaim/driver.c` = `f45569f95eb58e791795229ec33dcd85`（1 552 行）、构建 `build/extc` = `1347363b9aaf511ece131de761d4a52c`。**v9 未重锚 `reclaim.c` 行号**（相对 v8 位移 +16…+28 不等，三处插入）：本文与 MEMORY-MODEL 的 `reclaim.c:NNNN` 引用仍是 v8 口径，核对请按符号 grep（`extc_rc_markResume`、`extc_rc_releaseOld`、`[segsteps]`、`EXTC_RC_SEG_DEADLINE_US`）；v9 新代码的权威锚点是 `P1-SEG-TAIL.md` §1。
+冻结口径（v8，本轮 closing queue）：`src/back/reclaim.c` = `37c92f0b45180dfd65152801dfe48dfc`（4 128 行）、`src/back/codegen.c` = `2f560e2e6deef8c4927db4611344aecb`（16 017 行，未改）、`tests/reclaim/driver.c` = `a9ac2cf4e2f8f184ef9cb524232ac5d6`（1 543 行）；构建 `build/extc` = `58402a50b8d2f05d5a11f49835c15835`。**v7 与 v8 的 `reclaim.c` 行号不可混用**（本文件已按 v8 重锚）。 **v9（续扫段时间上限，2026-11-09）**：`src/back/reclaim.c` = `3de5655435d4dfb2448b2168fee4ca19`（4 156 行）、`src/back/codegen.c` = `2f560e2e6deef8c4927db4611344aecb`（16 017 行，未改）、`tests/reclaim/driver.c` = `f45569f95eb58e791795229ec33dcd85`（1 552 行）、构建 `build/extc` = `1347363b9aaf511ece131de761d4a52c`。**v9 未重锚 `reclaim.c` 行号**（相对 v8 位移 +16…+28 不等，三处插入）：本文与 MEMORY-MODEL 的 `reclaim.c:NNNN` 引用仍是 v8 口径，核对请按符号 grep（`extc_rc_markResume`、`extc_rc_releaseOld`、`[segsteps]`、`EXTC_RC_SEG_DEADLINE_US`）；v9 新代码的权威锚点是 `P1-SEG-TAIL.md` §1。 **v10（分配准入按请求字节，2026-11-10）**：`src/back/reclaim.c` = `ff267f16daf6b387d8735158a6d415d7`（4 165 行）、`src/back/codegen.c` = `2f560e2e6deef8c4927db4611344aecb`（16 017 行，未改）、`tests/reclaim/driver.c` = `e0509b5182033b80a0d2fc33e923e96f`（1 593 行）、构建 `build/extc` = `9bd5588f8441423dcc93d71d198cb1f0`；**本文的 `reclaim.c:NNNN` 引用已按 v10 重锚**（附录 D 为唯一权威索引，v7-v9 的数字按附录 D 表内位移换算）。  **v11（分配准入只绑显式墙，2026-11-10）**：`src/back/reclaim.c` = `ab21781d29c7ee213afbaafc85b0cc1c`（4 169 行）、`src/back/codegen.c` = `2f560e2e6deef8c4927db4611344aecb`（16 017 行，未改）、`tests/reclaim/driver.c` = `6e1bcec5e3320feb780b9567ed9bca4f`（1 620 行）、构建 `build/extc` = `6f1213ea100acac6c12b61cb262776e7`；v10 的 4 165 行/`ff267f16` 是**中间口径**（dense 回归已修，不得引用其峰值数字）。**本文的 `reclaim.c:NNNN` 引用已按 v11 重锚**（v10 引用换算：`3658-3661`→`3660-3665`、`3670`→`3674`、`3690` 之后一律 +4；需按符号 grep 复核）。
 
 #### 6.7.1 项 1：SCAN_CHUNK 不缩小（负结果；决定保持 8192 + deadline 800）
 
@@ -646,12 +646,12 @@ EXTC_RC_M_MAX 未设时，隐式取 3*L（保守 kappa_M=1，r'=2）
 - **配额记账的开销可忽略**：sizeratio 2M 次分配只调 `markAdvance` **174 次（0.0087%）**、`deadline checks=0`；`-DEXTC_RC_QUOTA_MAX_MARK=1` 与 `-DEXTC_RC_QUOTA_DEADLINE_US=0` 两个变体的 Ir 差 **<0.1%**。上一轮把 sizeratio 的 +9.31% 归因于 P 的每分配记账（4.0–7.3 pp）**不成立**，本轮推翻自己的结论并改正。
 - **真因是 B 的懒复用链重建**：sizeratio 2M 次分配上重建 2 020 次、覆盖 1.89M 个洞，重建本身 ≈19.5M Ir（`alloc` 166.4M→211.7M）；「cursor-hole」改写方案 +56M Ir，也是负结果。
 - **裁决：默认 `EXTC_RC_LAZY_FREE=0`**。Lead 独立 A/B（9 reps 奇偶换序、v7 树上只切这一个宏）：promote `LAZY_FREE=1` 0.996×、sizeratio **1.033×**（更差），与上一轮「promote −4.3%」不可复现；Ir 上 B 明确更差（sizeratio 243.3M vs 228.4M）。**B 的收益只是 GC 总步时（吞吐），不是停顿契约**（两档 `max` 同为 32.0 µs）⇒ 保持旋钮、默认关，两档全绿。
-- **elide 改 O(1)**：slab 增加 `nLive`/`nMark` 卷计数器（`alloc` +1 `reclaim.c:1626`、`freeSlot` −1 `:1745`、`freeSlotWord` −n `:1818`、`shade` +1 `:2063`、`sweepWord` 按 popcount 减 `:3417`）；`extc_rc_sweepElide` 判据改为 `nMark != 0 ⇒ skip`（`:3343`）、死槽数直接取 `nLive`（`:3346`），rsbit 仍逐 word 早退（`:3345`）；`EXTC_RC_ELIDE_VERIFY=1` 时在重置前重扫位图、断言 `mark/rsbit` 全 0 且 `popcount(occ)==nLive`（`:3358-3368`），不一致则不重置并计数。cycleratio Ir 分解：elide 省 **11.40M**、roll-up 花 **2.67M**、净 **−8.73M（−3.1%）**。
+- **elide 改 O(1)**：slab 增加 `nLive`/`nMark` 卷计数器（`alloc` +1 `reclaim.c:1629`、`freeSlot` −1 `:1745`、`freeSlotWord` −n `:1818`、`shade` +1 `:2063`、`sweepWord` 按 popcount 减 `:3417`）；`extc_rc_sweepElide` 判据改为 `nMark != 0 ⇒ skip`（`:3343`）、死槽数直接取 `nLive`（`:3346`），rsbit 仍逐 word 早退（`:3345`）；`EXTC_RC_ELIDE_VERIFY=1` 时在重置前重扫位图、断言 `mark/rsbit` 全 0 且 `popcount(occ)==nLive`（`:3358-3368`），不一致则不重置并计数。cycleratio Ir 分解：elide 省 **11.40M**、roll-up 花 **2.67M**、净 **−8.73M（−3.1%）**。
 - **verify 自检抓到真 bug**：`force` 条目（shade 队列）在 `MARK_SCAN` 里被二次计 `nMark`（`nMark=3`/pop=2），修法是 `shadeSlow` 计一次、`MARK_SCAN` 只对非 force 计数（`:2919`）。修后 `pd 200`、cycleratio、bench v2 四形状 `markbegin-mismatch` 全 0；`gate.sh` 因此 +1.48M Ir（该修法的形状成本，不是算法退化）。
 
 #### 6.7.3 项 3：regionFree 两阶段（P1 轮：`pd` 达标、`pb` 未闭合；v8 轮：closing queue 全闭合）
 
-机制（P1 轮的两阶段，v8 起被 closing queue 取代，保留作对照）：同步段只做 `abort` + `pinDropRegion` + 逐 slab（`rsIncN` 时 `unlinkChildren`）+ **`ownDel`**，整链挂进 thread-local 队列（`extc_rc_fqPushChain` `reclaim.c:1420`）；排空点在 `slabNew`（切新块前）与 `settle`，预算 **8 slab / 100 µs**（`extc_rc_fqDrainCore` `:1415`、`extc_rc_fqDrainAuto` `:1435`），队列字节 >8 MiB 时切 **1000 µs 硬截止**并 `forced++`；唯一全量入口 `extc_rc_freeQueueDrainAll`（`:1446`，线程退出用；`codegen.c` 冻结，本轮只提供入口未接线）。两阶段的残留问题正是 `ownDel` 仍在同步段（O(#slabs)），v8 的 closing queue 把它整体推迟。
+机制（P1 轮的两阶段，v8 起被 closing queue 取代，保留作对照）：同步段只做 `abort` + `pinDropRegion` + 逐 slab（`rsIncN` 时 `unlinkChildren`）+ **`ownDel`**，整链挂进 thread-local 队列（`extc_rc_fqPushChain` `reclaim.c:1423`）；排空点在 `slabNew`（切新块前）与 `settle`，预算 **8 slab / 100 µs**（`extc_rc_fqDrainCore` `:1415`、`extc_rc_fqDrainAuto` `:1435`），队列字节 >8 MiB 时切 **1000 µs 硬截止**并 `forced++`；唯一全量入口 `extc_rc_freeQueueDrainAll`（`:1446`，线程退出用；`codegen.c` 冻结，本轮只提供入口未接线）。两阶段的残留问题正是 `ownDel` 仍在同步段（O(#slabs)），v8 的 closing queue 把它整体推迟。
 
 | 形状 | 同步段 | 排队/排空 | `regionfree` 通道 | 判定 |
 |---|---:|---:|---:|---|
@@ -659,13 +659,13 @@ EXTC_RC_M_MAX 未设时，隐式取 3*L（保守 kappa_M=1，r'=2）
 | `pd_pointer_dense` | — | — | **1,365.5 µs**（max 1,370.7） | **RED 登记**（单个 8 MiB `munmap` 在两次 deadline 检查之间不可切分） |
 | `pb_escape_grow` 100M | **13.2–14.2 ms**（24,510 slab × ≈560 ns） | ≈1.0 ms | **14.2–14.8 ms**；退出 `left_slabs=24,316` / 25.7 GB | **RED 未闭合**：同步段 `ownDel` 不可推迟 ⇒ 需 region 级 closing 队列（L15） |
 | `pb_escape_grow` 50M | 6.35–7.39 ms（12,255 slab） | ≈1.0 ms | 7.36–8.40 ms；`left_slabs` 12,019–12,130 / 12.7–12.8 GB | 同一机制的一半规模，供交叉核对 |
-| **v8：`pd_bigobj` 200 轮** | **O(1)**（只置 `dead` + 挂 cq，`reclaim.c:2757-2761`） | 0 | **0.4 µs**（max 0.9） | **PASS**（v7 493.2 µs） |
+| **v8：`pd_bigobj` 200 轮** | **O(1)**（只置 `dead` + 挂 cq，`reclaim.c:2760-2761`） | 0 | **0.4 µs**（max 0.9） | **PASS**（v7 493.2 µs） |
 | **v8：`pd_pointer_dense`** | O(1) | 0 | **1.6 µs**（max 2.5） | **PASS**（v7 1,365.5 µs；8 MiB `munmap` 已移出同步段） |
 | **v8：`pb_escape_grow` 100M** | O(1) | 0 | **1.7 µs**（max 2.1） | **PASS**（v7 13.2–14.8 ms；`regions_pending=1 slabs_moved=0`——单 drop 形状队列未排空，见下） |
 
-**v8 的做法（closing queue）：为什么 `ownDel` 终于可以推迟**。P1 轮的障碍是「队列里的 slab 若仍在注册表，stale 指针会被 `owns()` 当活」。v8 换了一个更便宜的挡板：drop 时置 `r->dead = 1`（`reclaim.c:2757`），并在 `extc_rc_owns` 开头加 `if (s->region->dead) return 0;`（`reclaim.c:693`）——于是 drop 一返回，`isLive`/`register` 立刻为假，注册表里的陈旧条目在语义上失效；`r` 与所有 slab 在排空前一直有效（`s->region` 不悬垂），真正的 `ownDel` 与 `free` 一起留到有预算的排空里做。
+**v8 的做法（closing queue）：为什么 `ownDel` 终于可以推迟**。P1 轮的障碍是「队列里的 slab 若仍在注册表，stale 指针会被 `owns()` 当活」。v8 换了一个更便宜的挡板：drop 时置 `r->dead = 1`（`reclaim.c:2760`），并在 `extc_rc_owns` 开头加 `if (s->region->dead) return 0;`（`reclaim.c:694`）——于是 drop 一返回，`isLive`/`register` 立刻为假，注册表里的陈旧条目在语义上失效；`r` 与所有 slab 在排空前一直有效（`s->region` 不悬垂），真正的 `ownDel` 与 `free` 一起留到有预算的排空里做。
 
-排空器 `extc_rc_cqDrainCore(maxSlabs, deadlineUs)`（`reclaim.c:1771-1814`）每次从 region 链头取**一块** slab（`:1777-1781`）：R3 守卫扫 occ（`:1782-1786`）→ `rsIncN` 时逐占用槽 `unlinkChildren`（`:1787-1793`）→ `ownDel`（`:1794`）→ `extc_rc_fqPushOne` O(1) 压进 free queue（`:1795`，替代 P1 轮 `fqPushChain` 的整链求字节）；链空时才 free 类桶/`mstk`/`cstk`/region（`:1799-1809`），`cqN--`（`:1810`）。预算仍是 **8 slab / 100 µs**，由既有入口推进：`extc_rc_fqDrainAuto` 先跑 cq 再跑 fq（`:1456`、`:1459`），调用点 `slabNew` 与 `settle` 不变；积压超过 `EXTC_RC_CQ_MAX_REGIONS`（默认 32，`:824-825`）时在 drop 内做一次有界排空（`:2764-2765`）；`extc_rc_freeQueueDrainAll` 先全量清 cq（`:1470-1471`）。新观测行 `[closing] regions_pending=… slabs_moved=… cap_regions=…`（`:3761-3763`）。
+排空器 `extc_rc_cqDrainCore(maxSlabs, deadlineUs)`（`reclaim.c:1774-1814`）每次从 region 链头取**一块** slab（`:1777-1781`）：R3 守卫扫 occ（`:1782-1786`）→ `rsIncN` 时逐占用槽 `unlinkChildren`（`:1787-1793`）→ `ownDel`（`:1794`）→ `extc_rc_fqPushOne` O(1) 压进 free queue（`:1795`，替代 P1 轮 `fqPushChain` 的整链求字节）；链空时才 free 类桶/`mstk`/`cstk`/region（`:1799-1809`），`cqN--`（`:1810`）。预算仍是 **8 slab / 100 µs**，由既有入口推进：`extc_rc_fqDrainAuto` 先跑 cq 再跑 fq（`:1456`、`:1459`），调用点 `slabNew` 与 `settle` 不变；积压超过 `EXTC_RC_CQ_MAX_REGIONS`（默认 32，`:824-825`）时在 drop 内做一次有界排空（`:2764-2765`）；`extc_rc_freeQueueDrainAll` 先全量清 cq（`:1470-1471`）。新观测行 `[closing] regions_pending=… slabs_moved=… cap_regions=…`（`:3761-3763`）。
 
 **三条诚实限制（必须一起读）**：①三个形状都只在**进程退出前 drop 一次**，之后不再分配 ⇒ cq 没有机会被开凿点排空（`slabs_moved=0`、`[freequeue] left_slabs=0`），那部分 slab 由 OS 在进程结束时回收；「单步停顿归零」是把 O(#slabs) 的工作搬到队列，**队列在单 drop 形状里永不排空**。②队列确实会归零，由 `tests/reclaim/driver.c` 的 `t_regionFreeDefer*`（204/0）与 `extc_rc_freeQueueDrainAll` 证明：造 64 个新 region 的首分配点驱动有界排空，最终 `cqN==0 && fqSlabs==0`。③长跑、反复 drop 且继续分配的真实形状还没构造出来（region 寿命 = 帧 arena 寿命，普通程序 n=1；`?mut ref` 全局零初始化被语言禁止），所以「队列积压 → 内存」的压力只有 G18 一条旁证（pd_bigobj 60 轮 = 200 轮 = 26,076 kB，上界 26,624；dense 112,092 kB 与 v7 逐 kB 相同）。
 
@@ -673,7 +673,7 @@ EXTC_RC_M_MAX 未设时，隐式取 3*L（保守 kappa_M=1，r'=2）
 
 #### 6.7.4 项 4：G1② 量具重建（通道拆分 + `B_seg` + `max` 降级为 OBS）
 
-- 新增 `[segsteps]`（声明 `reclaim.c:1164`、记录 `:3121-3122`、打印 `:3637-3639`）：只统计 `seg>0`（分段续扫）的步，按与 `[histo]` 相同的 15 桶给出 `n`、`pops_tot`、`max_us` 与逐桶计数。
+- 新增 `[segsteps]`（声明 `reclaim.c:1167`、记录 `:3121-3122`、打印 `:3637-3639`）：只统计 `seg>0`（分段续扫）的步，按与 `[histo]` 相同的 15 桶给出 `n`、`pops_tot`、`max_us` 与逐桶计数。
 - 三通道判定：(a) **常规步** `seg=0` = `[histo]` − `[segsteps]` 逐桶相减（负值或 `n_seg>n_histo` ⇒ 量具 ERROR）；(b) **续扫段** `seg>0` = `[segsteps]`；(c) **`regionfree`/`release`/`collect`/`account`** = `[chan]`。分子/分母都只数同类通道的步。
 - 判据：(a) warm 形状（cyc/pc/pb）`>50 µs` 占比 ≤1e-4 且 p99.9 ≤10 µs；cold-dense（`pd_pointer_dense`）不参与 5 µs 门禁，只判 `τ_t=步时/pops ≤2 µs`、p99.9 ≤1 ms、`over1ms=0`；(b) `p99.9 ≤ min(1.5·c_seg(shape)·chunk + 1 µs, 64 µs)` 且 `over1ms=0`，`max` **只 OBS 不判**；(c) 单次 ≤1 ms（目标 ≤0.2 ms）。`n<1e5` ⇒ **N/A**（不是 PASS），缺 `[segsteps]` ⇒ N/A(no-segsteps)。
 - `c_seg` 只能按形状标定（`tests/gc-p0/bseg-cal.tsv` 9 列，含 `src_md5`；源码变了必须重标），禁止跨形状借；`pd` 两形状 after 各跑 5 reps 合并（12.7–16.3 万段步）。
@@ -793,9 +793,9 @@ callgrind（`align` 小 N）：promote 115 211 310 → **129 126 214（+12.1%）
 | L10 | 含引用元素的 `memmove`/`realloc` 迁移绕过计数 ⇒ 目标悬垂（P0-7b） | **已修**（`extc_rc_storeStructCopy` 先对每个引用字 rsInc 记账、再整体 `memmove` 拷贝；不是逐元素深拷贝；纯数据元素直接 memmove） |
 | L11 | 计数正确性依赖「每次写入 +1」，任何新写入路径都是漏洞面（审计经验） | 记录（见 §6.1） |
 | L12 | sweep 进行中新建的 slab 被 prepend 到 cursor 之后，alloc 的「扫掠中分配即标黑」仍给它标黑 ⇒ 黑位无人清；下一轮 mark 的 dedupe 把可达对象当已扫描跳过 ⇒ 子树不标、下一轮 sweep 误释放活对象（pb 100M 挂死、链成环） | **已修**（`slabNew` 尾部 `if (r->sweeping) s->swEpoch = r->swId;`；G16） |
-| L13 | 回收配额按**事件数**而非**字节数**给：分配事件少的大对象程序让标记/清扫永远跟不上，内存按累计分配量增长（pd_bigobj 200 轮 1.07 GB，活集 8 MB） | **已修**（P：`reclaim.c:1500-1533`；G18 PASS 26,264 kB） |
+| L13 | 回收配额按**事件数**而非**字节数**给：分配事件少的大对象程序让标记/清扫永远跟不上，内存按累计分配量增长（pd_bigobj 200 轮 1.07 GB，活集 8 MB） | **已修**（P：`reclaim.c:1503-1533`；G18 PASS 26,264 kB） |
 | L14 | ~~P 的每分配配额记账是净成本~~ **已推翻**（§6.7.2）：配额记账 <0.1% Ir；sizeratio 的 +9.31% 来自 B 的懒复用链重建，B 默认关后仍余 **+5.0%** 墙钟（v7 A/B）⇒ 真正的净成本在 B 的重建与 elide 卷计数器（后者 +0.95% Ir） | **部分修**（`LAZY_FREE=0` 默认关；卷计数器开销已量化并接受；sizeratio +5% 未完全归因） |
-| L15 | `regionFree` 的同步段仍含 O(#slabs) 的 `ownDel`（必须先从注册表摘除，否则 stale 指针会被 `owns()` 当活）：`pb_escape_grow` 100M 的 24 510 个 slab 实测 **7.5–8.3 ms**（另一构建 13.2 ms，≈560 ns/slab），排队段只有 ≈1.0 ms | **已修（v8）**：region 级 closing queue——drop 置 `r->dead=1`（`reclaim.c:2757`）、`extc_rc_owns` 对 dead region 直接返 0（`:693`）、`unlinkChildren`/`ownDel`/压 free queue 全部移入 `extc_rc_cqDrainCore`（`:1771-1814`，≤8 slab/100 µs）；三形状 `regionfree` 通道 0.4/1.6/1.7 µs。残余：单 drop 形状里 cq 不排空（`slabs_moved=0`），长跑+反复 drop 的形状未构造 |
+| L15 | `regionFree` 的同步段仍含 O(#slabs) 的 `ownDel`（必须先从注册表摘除，否则 stale 指针会被 `owns()` 当活）：`pb_escape_grow` 100M 的 24 510 个 slab 实测 **7.5–8.3 ms**（另一构建 13.2 ms，≈560 ns/slab），排队段只有 ≈1.0 ms | **已修（v8）**：region 级 closing queue——drop 置 `r->dead=1`（`reclaim.c:2760`）、`extc_rc_owns` 对 dead region 直接返 0（`:693`）、`unlinkChildren`/`ownDel`/压 free queue 全部移入 `extc_rc_cqDrainCore`（`:1771-1814`，≤8 slab/100 µs）；三形状 `regionfree` 通道 0.4/1.6/1.7 µs。残余：单 drop 形状里 cq 不排空（`slabs_moved=0`），长跑+反复 drop 的形状未构造 |
 | L16 | 单个 8 MiB `munmap` 在两次 deadline 检查之间不可切分 ⇒ `pd_pointer_dense` 的 `regionfree` 通道 1 708 µs > 1 ms | **未修**（登记；需要页粒度释放或移交 worker——本轮禁止后台线程） |
 | L17 | 相对 HEAD，promote/sizeratio 墙钟 **+5.4%/+5.0%**、chase RSS **+3.5%**（callgrind promote +12.1% Ir：v4 内存墙/压力 +8.2%、quota 路径 +2.5%、elide 卷计数器 +0.95%） | **接受**（内存/停顿契约的价钱；`EXTC_RECLAIM=0` 对照臂在 ±4% 内 ⇒ 代价在回收路径，不在生成代码） |
 
@@ -858,12 +858,49 @@ python3 docs/analysis/model/calib.py 2>/dev/null || true   # 见 CALIBRATION §1
 **chunk 能不能降**：可以达标但破坏内存律——`-DEXTC_RC_SCAN_CHUNK=2048` 时 pd p99.9 = 22.7–31.8 µs、dense = 33.8–35.5 µs（都 < 50），但 G18 `pd_bigobj` 峰值 26,076 → **34,332 kB**（上界 26,624，+31%；60 轮 = 200 轮，规模无关性仍成立），增量 ≈ 一个在飞的 8 MiB 分配（分配准入不看请求字节）。⇒ 内存优先，**chunk 保持 8192**。
 
 **下一轮前置条件**：分配准入按请求字节预留 ⇒ 才允许 chunk=2048 ⇒ p99.9 ≤ 50 µs。详见 `docs/analysis/P1-SEG-TAIL.md`（115 行，含全部表格与复现命令）。
+**v10 已做（结论见 §6.7.5）**：预留已落地，但它**不解决** 2048 档的 G18 —— 2048 的 +8 MiB 由 `EXTC_RC_QUOTA_DEADLINE_US=800` 截断大分配 assist 造成，与触发线无关 ⇒ chunk 保持 8192，p99.9 ≈ 50 µs 的目标按「判据只严不放宽」**不再追**（本机 p99.9 由宿主噪声地板决定，见本节上文）。
 
 **P0 原型结论（生成 C 上验证；本轮 P/B 已落地进 `src/back/reclaim.c`，最终 before/after 与代价见 §6.6，原型细节见 `docs/analysis/P0-PROTOTYPE.md`）**：① **P（回收配额按分配字节计）** 是唯一同时降内存与降时间的改动 —— G18 的 `pd_bigobj` 200 轮从 1,067,288 kB / 1,272.9 ms 降到 26,072 kB / 202.4 ms（内存 −97.6%、时间 −84%，stdout 逐字节相同），原型阶段四个 v2 形状噪声内中性（**落地后实测 sizeratio 墙钟 +9.31%，见 §6.6，以落地版为准**）；它把 §18 的内存界从「经验上界」变成「对分配字节速率成立」，代价是超墙时分配变慢（同步多付回收工作）。② **B（惰性 freelist）** 不换墙钟与内存（四形状 median 差 ≤2%、RSS 逐 kB 相同），换的是 GC 步与停顿：promote GC 步总时长 −12.5%（max 160.4→57.5 µs）、sizeratio −52%（max 51.8→9.5 µs）、cycleratio −8% ⇒ 对 G1/G2 有直接价值；落地版的「计数档同一槽只入链一次」证明在 `AUDIT-P0-IMPL.md` §2（`nfree` 12 处写点逐点核对）。③ **G（madvise 归还空 slab 页）判负**：稳态 churn 下 cycleratio 墙钟 +49%（stime 8.0 ms 全在补页）、sizeratio 噪声内、RSS 不降；小 slab（64 KiB）同样负收益；G-big 只在巨块整块变空时有用但每次重 mmap+memset 8 MiB（+20% 时间、峰值不变）⇒ 默认不做；④ **既有归还路径已存在且更彻底**：每个函数返回时 `extc_rc_regionDrop`→`extc_rc_regionFree`→`free(slab)` 整区归还（strace 见到 3,138 次 `munmap(…,2101248)`）⇒ 页归还救不了「在 main 帧里持续累积垃圾」的形状，只能靠少分配（P）与提前触发。
 
 **外部基准复核（bench/gc/v2）**：用本轮冻结构建重跑 `bench/gc/v2` 四形状六语言，并与 HEAD 85b8871b 同机交错 A/B（见 `MEASUREMENTS-V2-AFTER.md`）：墙钟全部落在 ±7% 噪声带内（callgrind 确定性指令数 promote +8.2%、sizeratio +1.3%、chase +3.3%、cycleratio −0.9%，`EXTC_RECLAIM=0` 臂逐项不变），峰值 RSS +0.6%~+3.5%；chase 因隐式内存墙进入回收更频繁（切片 21→1,255，GC 占墙钟 0.8%→3.6%），属本节契约的预期代价。此外发现一处待修：`M_max < floor` 时运行期会向 stderr 打一行 `[mmax] memory wall unreachable`，违反 v2 SPEC 的“stderr 为空”，应改为仅在显式设置 M_MAX 或诊断开关时告警。
 **量具修订**：`tests/gc-p0/summarize.py` 的聚合判据由 `v == "RED"` 改为 `v.startswith("RED")`（doc-audit C3；先前 G1② 的 `RED(下界>阈)` 在聚合层被漏判为 N/A），修后在 `tests/gc-p0/out/after` 重生成 `summary-fixed.txt`（原 `summary.txt` 保留为冻结证据）。
 
+
+#### 6.7.5 v11 轮：分配准入按请求字节（显式墙为一个最大请求留位；2026-11-10）
+
+**问题**：起轮判据 `r->bytes > r->thr`（`reclaim.c:3708`）只看**已经落账**的堆，不看这一笔请求多大。墙帽是
+`M_max - live/4`，其中 `live/4` 是「一次扫描步的批上界」（b = 256 ⇒ L/4），**与请求大小无关**；大对象形状里它只有 2 MiB，
+远小于一个 8 MiB 请求 ⇒ 一笔最大请求可以在「线刚好处」被放进来，在墙外再叠一个在飞 payload。
+
+**机制**（三处，热路径 0 条指令）：①区域字段 `int64_t maxReq`（`reclaim.c:282`，calloc 自动 0）；②`extc_rc_slabNew` 慢路径登记
+（`reclaim.c:867`，只在 big 路径与「新 class 首槽」付费）；③墙帽 `res = min(max(L/4, maxReq), L)`、`_cap = _wall - res`
+（`reclaim.c:3660-3669`），**预留只在显式墙下生效**（`extc_rc_mmax > 0`）。观测：`[work]` 新增 `maxreq=`/`res=`（`reclaim.c:3825/3835`）。
+
+**为什么只绑显式墙（v10 → v11 的收窄，附回归证据）**：v10 无条件预留，在 `pd_pointer_dense` 上付出 +27.3% 峰值 ——
+maxRSS 112,092 → **142,620 kB**（三次逐 kB 相同）、生成 C 里的逻辑峰值 89,095,920 → **115,390,736 B**；逐块二分（字段 / 登记行 /
+全局 / 探针参数各自单独加都不变，只有把帽块换回 `_cap = _wall - live/4` 才回到 112,092）确认因果块就是墙帽。机制：隐式墙 = `3·L`，
+早期 `live/4 < R_max = 8 MiB` 时预留压低触发线 ⇒ 起轮提前 ⇒ 自学习倍数一路养到 `scale_max = 64`（v9 为 16）⇒ 峰值抬高。
+即：**这条承诺在隐式墙下本就兑现不了**（`3·L` 随 `L` 涨），默认路径不该为它付内存账。收窄后 dense 回到 **112,092 kB**（与 v9 逐 kB 相同），
+`pd_bigobj` 26,072–26,076 kB（噪声内），显式墙下的契约仍由 driver 用例证明。
+
+**契约**：显式墙下 `thr <= M - res` 且 `res >= maxReq` ⇒ `thr + maxReq <= M` ⇒ **任何单个请求都装得进墙内**（旧帽在 `maxReq > L/4`
+时上界的实际形式是 `M - L/4 + maxReq > M`，即漏掉了大请求这一项）；`res <= L` 又保证线不低于活集（不许退化成每次分配都起轮）。
+隐式墙下 `res = L/4`，与 v9 逐字节相同。
+
+**红前绿后（两个方向都验）**：driver 新增 `t_admissionReserve`（`tests/reclaim/driver.c`）。A：把显式墙帽改回 `M - live/4` ⇒
+**212 通过 / 2 失败**（恰好红在契约两条）；B：把预留绑回隐式墙 ⇒ **215 / 1**（恰好红在「默认路径不变」那条）；现行源码 ⇒ **216 / 0**
+（含 ASan/UBSan、`ALLOC_INLINE=0` 各 216/0，chunk=1 13/0）。
+
+**实测（显式墙，chunk = 8192）**：`thr_max` 23,068,672（22 MiB）→ **16,777,264（16 MiB）**，`M_max` 25,165,872 不变，
+`maxreq = res = 8,388,608`；G18 `pd_bigobj` 60 轮 = 200 轮 = **26,076 kB**（界 26,624，余量 548 kB = 2.1%）⇒ PASS；
+`pd_pointer_dense` 200 轮 = **112,092 kB**（与 v9 逐 kB 相同）；`gate.sh` **87,254,363 ≤ 88,029,115**（相对 v9 +102,699 = **+0.12%**）。
+**RSS 峰值没有变好** —— 收益是契约与上界，不是内存。
+
+**2048 档的根因（本轮定论）**：`-DEXTC_RC_SCAN_CHUNK=2048` 时 G18 峰值 **34,716 kB / 逻辑峰值 32 MiB**（界 26,624）；
+但加上 `-DEXTC_RC_QUOTA_DEADLINE_US=100000` 后回到 **26,460 kB / 24 MiB**（`[quota] hits 100 → 0`、`collects 100 → 200`）⇒
+增量来自「一次 8 MiB 大分配的 assist 被 800 µs 截断、一轮标记要跨两次大分配」，**不是**准入/触发线（`[quota] hits=100` vs 8192 档的 4；
+预留乘数 mul=1/2/3 逐字节相同；把 `res` 改 `min(2*maxReq, wall-live)` 把线压到 `L` 后仍是 34,716 kB）。
+⇒ **chunk 保持 8192**；2048 记为「受 assist 预算约束，不是内存准入约束」。详见 `docs/analysis/P1-ADMISSION.md`（179 行）。
 
 ## 附录 A 定理推导
 
@@ -1004,9 +1041,9 @@ r'* = r'_max(M_max) = (M_max/L − 1)/κ_M
 | C10 | `noSweep` 无出口（L6） | 该 region 永不回收，只保证不早放 |
 | C11 | C 互操作的所有权（`plate` 层不分配，但外部 C 代码可持有 extC 指针） | 模型外 |
 
-## 附录 D 源码行号索引（FREEZE v7 口径）
+## 附录 D 源码行号索引（FREEZE v11 口径）
 
-下表是本文所有关键断言的可核对位置。**口径（FREEZE v7 = 交付树）**：src/back/codegen.c = 2f560e2e6deef8c4927db4611344aecb（16 017 行）（v7 测量输入为 `d339382889b87c0dd18b357c69e2e779`/16 017 行；提交树只把 `typeHasRefSlots` 的前向声明移到 `genViewCopier` 的说明块之前以过 `check-doxygen`，行数与代码不变）；src/back/reclaim.c = e17080d1c80513b27ca06f2bc6224b0f（4 031 行）；tests/reclaim/driver.c = 7b9ac61a55c140640a5964ab74a8780e（1 523 行）；git HEAD 85b8871b + 未提交工作树 patch。构建：build-p1/extc = b9fd5784…（交付）、build-lead7/extc = a7f2a873…、build-da2/extc = 10960ce7…（独立复核）；P0 轮的 build-rf/extc = 7019342b… 只在 §6.6 与 G20-P0 行出现。行号是该文件的物理行号；换版本前先 md5sum 对齐。注：同一源码用不同 BUILDDIR 重建时 extc 的 md5 会因调试段（-g）里嵌入的构建目录路径而不同（build-frz/extc = b35c12a1… 即同源二次构建），溯源以源码 md5 为准。
+下表是本文所有关键断言的可核对位置。**当前口径（FREEZE v10）**：src/back/reclaim.c = ff267f16daf6b387d8735158a6d415d7（4 165 行）；src/back/codegen.c = 2f560e2e6deef8c4927db4611344aecb（16 017 行，v7 起未改）；tests/reclaim/driver.c = e0509b5182033b80a0d2fc33e923e96f（1 593 行）；build/extc = 9bd5588f8441423dcc93d71d198cb1f0。**本表已按 v10 重锚**（v7 → v10 经 v8/v9/v10 三轮插行，累计位移 0…+9 不等；v9 → v10 的位移为 +0/+1/+2/+3/+4 分段，见 `P1-ADMISSION.md`）；表外正文的 `reclaim.c:NNNN` 引用与表同源，未单列。**v7 口径（历史）**：codegen.c = 2f560e2e6deef8c4927db4611344aecb（16 017 行）（v7 测量输入为 `d339382889b87c0dd18b357c69e2e779`/16 017 行；提交树只把 `typeHasRefSlots` 的前向声明移到 `genViewCopier` 的说明块之前以过 `check-doxygen`，行数与代码不变）；src/back/reclaim.c = e17080d1c80513b27ca06f2bc6224b0f（4 031 行）；tests/reclaim/driver.c = 7b9ac61a55c140640a5964ab74a8780e（1 523 行）；v7 为 git HEAD 85b8871b + 工作树 patch；v10 为 HEAD 8d0086f0 + 本轮工作树 patch。构建：build-p1/extc = b9fd5784…（v7 交付）、build-lead7/extc = a7f2a873…、build-da2/extc = 10960ce7…（独立复核）；P0 轮的 build-rf/extc = 7019342b… 只在 §6.6 与 G20-P0 行出现。行号是该文件的物理行号；换版本前先 md5sum 对齐。注：同一源码用不同 BUILDDIR 重建时 extc 的 md5 会因调试段（-g）里嵌入的构建目录路径而不同（build-frz/extc = b35c12a1… 即同源二次构建），溯源以源码 md5 为准。
 
 | 主题 | 位置 |
 |---|---|
@@ -1023,35 +1060,42 @@ r'* = r'_max(M_max) = (M_max/L − 1)/κ_M
 | 编译期：region 表满文本（P1-3） | `codegen.c:12727` |
 | 编译期：任务根 push 发射（P0-6） | `codegen.c:6218` |
 | 编译期：档位自动升级判据 | `codegen.c:15941` |
-| 运行期：alloc 快路径 | `reclaim.c:1480` |
-| 运行期：slab 新建 | `reclaim.c:837` |
-| 运行期：槽分配/复用 | `reclaim.c:934` |
+| 运行期：alloc 快路径 | `reclaim.c:1483` |
+| 运行期：slab 新建 | `reclaim.c:838` |
+| 运行期：槽分配/复用 | `reclaim.c:936` |
 | 运行期：region 身份表（发射文本） | `codegen.c:12736` |
-| 运行期：region 释放 | `reclaim.c:2729` |
-| 运行期：阈值更新与夹取 | `reclaim.c:2664` |
-| 运行期：触发判据 | `reclaim.c:3668` |
-| 运行期：标记推进（一步一批） | `reclaim.c:1371` |
-| 运行期：分配点推进 | `reclaim.c:3914` |
-| 运行期：预算信用 | `reclaim.c:2686` |
-| 运行期：标记开始 | `reclaim.c:2901` |
-| 运行期：标记批量（一段扫描） | `reclaim.c:3078` |
-| 运行期：大对象续扫 | `reclaim.c:3060` |
-| 运行期：清扫开始 | `reclaim.c:3488` |
-| 运行期：清扫一步 | `reclaim.c:1116` |
-| 运行期：清扫结算 | `reclaim.c:3583` |
-| 运行期：定向释放 | `reclaim.c:3293` |
-| 运行期：freeSlot | `reclaim.c:1825` |
-| 运行期：级联释放（P0-5） | `reclaim.c:1969` |
-| 运行期：级联栈 push | `reclaim.c:1955` |
-| 运行期：计数更新 | `reclaim.c:2026` |
-| 运行期：pin 加入 | `reclaim.c:2396` |
-| 运行期：pin 种子 | `reclaim.c:2450` |
-| 运行期：内存墙 arm（P0-4） | `reclaim.c:986` |
-| 运行期：墙不可达警告 | `reclaim.c:3635` |
-| 运行期：regionFree 上界注释 | `reclaim.c:2721` |
-| 运行期：regionFree 探针 | `reclaim.c:3755` |
-| 运行期：work 行（M_max 等） | `reclaim.c:3785` |
-| 运行期：释放预算常量 | `reclaim.c:1096` |
-| 运行期：分段段长常量 | `reclaim.c:2968` |
-| 运行期：压力乘子常量 | `reclaim.c:1106` |
-| 运行期：级联调试宏 | `reclaim.c:1942` |
+| 运行期：region 释放 | `reclaim.c:2732` |
+| 运行期：阈值更新与夹取（墙帽含 maxReq 预留） | `reclaim.c:3638`（夹取 `:3660-3679`） |
+| 运行期：触发判据 | `reclaim.c:3708` |
+| 运行期：标记推进（一步一批） | `reclaim.c:1374` |
+| 运行期：分配点推进 | `reclaim.c:3955` |
+| 运行期：预算信用 | `reclaim.c:2689` |
+| 运行期：标记开始 | `reclaim.c:2904` |
+| 运行期：标记续扫（一段扫描） | `reclaim.c:3079` |
+| 运行期：大对象续扫 | `reclaim.c:3118` |
+| 运行期：清扫开始 | `reclaim.c:3519` |
+| 运行期：清扫一步 | `reclaim.c:3549` |
+| 运行期：清扫结算 | `reclaim.c:3614` |
+| 运行期：定向释放 | `reclaim.c:3324` |
+| 运行期：freeSlot | `reclaim.c:1828` |
+| 运行期：级联释放（P0-5） | `reclaim.c:1972` |
+| 运行期：级联栈 push | `reclaim.c:1958` |
+| 运行期：计数更新 | `reclaim.c:2029` |
+| 运行期：pin 加入 | `reclaim.c:2399` |
+| 运行期：pin 种子 | `reclaim.c:2453` |
+| 运行期：内存墙 arm（P0-4） | `reclaim.c:989` |
+| 运行期：墙不可达警告 | `reclaim.c:3674` |
+| 运行期：regionFree 上界注释 | `reclaim.c:2724` |
+| 运行期：regionFree 探针 | `reclaim.c:3795` |
+| 运行期：work 行（M_max/maxreq/res 等） | `reclaim.c:3825` |
+| 运行期：释放预算常量 | `reclaim.c:1099` |
+| 运行期：分段段长常量 | `reclaim.c:2971` |
+| 运行期：压力乘子常量 | `reclaim.c:1109` |
+| 运行期：级联调试宏 | `reclaim.c:1945` |
+| 运行期：准入预留字段 `maxReq`（P1 轮） | `reclaim.c:282` |
+| 运行期：准入预留登记（`slabNew` 慢路径） | `reclaim.c:867` |
+| 运行期：墙帽预留 `res = min(max(L/4, maxReq), L)`（仅显式墙 `extc_rc_mmax>0` 时预留 maxReq） | `reclaim.c:3660-3665` |
+| 运行期：准入预留探针（`maxreq=`/`res=`） | `reclaim.c:3825`（参数 `:3835`） |
+| 运行期：closing queue 排空一步 | `reclaim.c:1774` |
+| 运行期：closing queue 入队（drop 置 dead） | `reclaim.c:2760` |
+| 运行期：`[closing]` 探针 | `reclaim.c:3802` |

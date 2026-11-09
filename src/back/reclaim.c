@@ -279,6 +279,7 @@ static const char *const RECLAIM_RT[] = {
     "    int64_t     roundVisitedBytes;/* round-start credit: consumed only at round start/end, untouched by targeted frees */\n",
     "    int64_t     live;        /* live bytes after the last sweep: the trigger uses twice this */\n",
     "    int64_t     thr;         /* cached pressure threshold: `max(2 * live, floor) * scale` */\n",
+    "    int64_t     maxReq;      /* admission by request size: biggest single request (slot stride) ever seen; the trigger line reserves it */\n",
     "    int64_t     floor;       /* lower bound of memory pressure */\n",
     "    int64_t     scale;       /* self-learned: multiplier from consecutive empty sweeps; 0 = not learned */\n",
     "    size_t      sweeps, freedSlots;\n",
@@ -863,6 +864,7 @@ static const char *const RECLAIM_RT[] = {
     "    s->region = r;\n",
     "    s->big = big;\n",
     "    s->ss = slotSize;\n",
+    "    if ((int64_t)slotSize > r->maxReq) r->maxReq = (int64_t)slotSize;   /* admission by request size: reserve room for one request this big (slow path, so 0 Ir per allocation) */\n",
     "    s->rcp = extc_rc_rcpOf(slotSize);\n",
     "    s->nslots = (uint32_t)nslots;\n",
     "    if (s->nslots > EXTC_RC_REUSE_MAX_SLOT)\n",
@@ -978,6 +980,7 @@ static const char *const RECLAIM_RT[] = {
     " * actually bounded the run. */\n",
 
     "__attribute__((unused)) static long long extc_rc_mmaxNow, extc_rc_mmaxUsed, extc_rc_thrNow;\n",
+    "    __attribute__((unused)) static long long extc_rc_maxReqNow, extc_rc_resNow;\n",
     "__attribute__((unused)) static long long extc_rc_quotaDeadlineHits, extc_rc_quotaChecks, extc_rc_quotaHitsRound, extc_rc_quotaChecksRound;   /* [quota]: deadline stops / deadline loops / per-round counters (the sweepBegin line publishes and resets them) */\n",
 
     "__attribute__((unused)) static int extc_rc_pressLast;\n",
@@ -3643,15 +3646,23 @@ static const char *const RECLAIM_RT[] = {
 
     "    thr *= scale;\n",
 
-    "    /* Memory-wall contract: live + garbage <= M_max, so the trigger line is also capped at M_max - 64*L/b (b = 256 => L/4).\n",
+    "    /* Memory-wall contract: live + garbage <= M_max, so the trigger line is also capped at M_max - max(64*L/b, R_max) (b = 256 => L/4; R_max = the biggest single request, so one such request always still fits under the wall).\n",
+    "     * The R_max reserve binds **only under an explicit wall** (EXTC_RC_M_MAX set): with the implicit 3*L wall the promise cannot be kept anyway (L grows), and binding it there lowers the trigger line in the early phase (while live/4 < R_max) and inflates the self-learned scale multiplier (up to 64x), which raises the peak:\n",
+    "     * pd_pointer_dense goes 112,092 -> 142,620 kB (+27.3%). Default memory behaviour must not pay for a guarantee that only means something under an explicit wall.\n",
 
     "     * An implicit (unset) M_max is 3*L; a wall below floor cannot be met -- use floor and report once, never trap. */\n",
 
     "    int64_t _wall = extc_rc_mmaxEff(r);\n",
+    "    int64_t _res = 0;   /* heap kept free above the trigger line (admission reserve) */\n",
 
     "    if (_wall > 0) {\n",
 
-    "        int64_t _cap = _wall - r->live / 4;\n",
+    "        _res = r->live / 4;   /* b = 256 => L/4: the biggest batch one scan step leaves behind */\n",
+    "        if (extc_rc_mmax > 0 && r->maxReq > _res) {   /* admission by request size: reserve one biggest-request-worth of heap, explicit wall only (see above) */\n",
+    "            _res = r->maxReq;\n",
+    "            if (_res > r->live) _res = r->live;   /* never push the trigger line below the live set: that would collect on every allocation */\n",
+    "        }\n",
+    "        int64_t _cap = _wall - _res;\n",
 
     "        if (_cap < r->floor) {\n",
 
@@ -3675,6 +3686,7 @@ static const char *const RECLAIM_RT[] = {
 
     "    if (scale > extc_rc_scaleMax) extc_rc_scaleMax = scale;\n",
     "    extc_rc_thrNow = thr;\n",
+    "    extc_rc_maxReqNow = r->maxReq; extc_rc_resNow = _res;\n",
 
     "    extc_rc_mmaxNow = _wall;\n",
 
@@ -3810,7 +3822,7 @@ static const char *const RECLAIM_RT[] = {
     "        }\n",
     "    }\n",
     "    /* Per-step **work** (deterministic) -- next to `[step]` wall clock: wall clock is affected by preemption, work is not. */\n",
-    "    fprintf(stderr, \"[work] n=%lld walk_max=%lld scan_max=%lld push_max=%lld seg_max=%lld walk_cap=%lld walk_gtcap=%lld walk_gt16=%lld walk_gt64=%lld walk_gt256=%lld scan_gt16=%lld scan_gt64=%lld scan_gt256=%lld push_gt16=%lld push_gt64=%lld push_gt256=%lld thr_max=%lld mmax=%lld scale_max=%lld pressure_steps=%lld M_max=%lld pressure=%d mult=%d thr=%lld M_max_now=%lld M_max_implicit=%d\\n\",\n",
+    "    fprintf(stderr, \"[work] n=%lld walk_max=%lld scan_max=%lld push_max=%lld seg_max=%lld walk_cap=%lld walk_gtcap=%lld walk_gt16=%lld walk_gt64=%lld walk_gt256=%lld scan_gt16=%lld scan_gt64=%lld scan_gt256=%lld push_gt16=%lld push_gt64=%lld push_gt256=%lld thr_max=%lld mmax=%lld scale_max=%lld pressure_steps=%lld M_max=%lld pressure=%d mult=%d thr=%lld maxreq=%lld res=%lld M_max_now=%lld M_max_implicit=%d\\n\",\n",
 
 
     "            extc_rc_wN, extc_rc_wWalkMax, extc_rc_wScanMax, extc_rc_wPushMax, extc_rc_wSegMax,\n",
@@ -3820,6 +3832,7 @@ static const char *const RECLAIM_RT[] = {
     "            extc_rc_wPushO16, extc_rc_wPushO64, extc_rc_wPushO256, extc_rc_thrMax, (long long)extc_rc_mmax, extc_rc_scaleMax, extc_rc_pressureN,\n",
 
     "            (long long)extc_rc_mmaxUsed, (extc_rc_pressureN > 0 ? 1 : 0), EXTC_RC_SWEEP_PRESSURE_MUL, (long long)extc_rc_thrNow,\n",
+    "    (long long)extc_rc_maxReqNow, (long long)extc_rc_resNow,\n",
 
     "            (long long)extc_rc_mmaxNow, (extc_rc_mmax <= 0 ? 1 : 0));\n",
 

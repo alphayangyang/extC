@@ -40,6 +40,13 @@ while i < n {
 
 **保证**：允许别名；环也能收回；任一区域的驻留垃圾不超过"存活量 + 阈值"；
 停顿只与被扫区域有关、与堆大小无关；无写屏障、无 STW。
+**墙内可容一笔最大请求（v10 引入，v11 收窄到显式墙）**：区域记住见过的最大的单次请求 `maxReq`（只在 `slabNew` 慢路径登记，热路径 0 条指令），
+**显式墙**（`EXTC_RC_M_MAX` 设了值）下触发线夹取改成 `thr <= M_max - max(live/4, maxReq)` ⇒ `thr + maxReq <= M_max`：任何一笔
+请求放进来时，触发线之上一定还装得下它自己，不会出现"分配完才发现超墙"。`res` 由 `maxReq` 与 `live/4` 取大、再夹到 `<= live`
+（线不得低于活集）。**隐式墙（默认 `3*live`）不做 `maxReq` 预留**：这条承诺在隐式墙下本就兑现不了（`3*live` 随活集涨），
+而无条件预留会让 `pd_pointer_dense` 峰值从 112,092 涨到 142,620 kB（+27.3%：预留压低触发线 ⇒ 起轮提前 ⇒ 自学习倍数养到 64）；
+收窄后默认路径与 v9 逐 kB 相同。代价：显式墙下 `maxReq` 只增不减 ⇒ 小对象为主的长跑程序会被永久压低触发线（内存优先、更勤回收）；
+可观测项 `[work]` 的 `maxreq=`/`res=`（隐式墙下 `res` 恒为 `live/4`）。
 
 **代价**：分配是 bump；计数挂在**指针赋值**上（数据写不记）；回收算法本身只占很小一部分指令。
 相对开销取决于形状：**分配密集时这套机制赚，大量改链而极少分配时它赔**（省法见"要做的"）。
@@ -561,7 +568,9 @@ P2 与这个反例的差别**只有"旧值是否另有根"这一维**（P2 的�
 `markStep`/`sweepStep` 每次调用的 n/max/total + 阈值桶 `over16/over64/over256/over1ms`）·
 `[histo]`（逐桶计数的 15 桶直方图）· `[top]`（最慢 8 步的归因）· `[segsteps]`（只统计**续扫段步** `seg>0`：`n`、`pops_tot`、`max_us`、与 `[histo]` 同界 15 桶、钟口径同 `[histo]`；无段步时全 0）· `[regionfree]` / `[chan]`（整区
 销毁与三条同步通道的 n/max/total/工作量）· `[work]`（同一批切片的**确定性工作量**：
-`walk_max/scan_max/push_max/seg_max` + `walk_cap`/`walk_gtcap` + `>16/>64/>256` 桶）· `[worst]` / `[ubwork]` / `[wbudget]` /
+`walk_max/scan_max/push_max/seg_max` + `walk_cap`/`walk_gtcap` + `>16/>64/>256` 桶，
+以及策略侧快照 `thr_max/mmax/scale_max/pressure_steps/M_max/pressure/mult/thr/maxreq/res/M_max_now`；
+其中 `maxreq`/`res` 是 v10 引入、v11 起只在显式墙下非平凡（隐式墙 `res=live/4`）的准入预留观测项）· `[worst]` / `[ubwork]` / `[wbudget]` /
 `[guard]`。
 `tools/rc-pause-probe.py` 也能插桩 `extc_rc_collect` 与热路径 `extc_rc_step`（`PROBE … step_*`），
 并在插桩失败时 **rc=1**（不许伪装成 `sweeps=0`）。**但它的 `PAUSE_DIST` 行在当前代码形态下恒
