@@ -1,0 +1,80 @@
+import viperbuild as vb
+import stdio
+import stdlib
+import memhub
+
+proj = vb.Project("cycvp", "0.0.1")
+proj.config(source=".", includes=["/tmp/viper/V_L64/includes"], compiler=["llc"], linker=["/tmp/viper/linkwrap"])
+proj.build(triple="x86_64-pc-linux-gnu", datalayout="e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128", run=False)
+
+define MASK = 4611686018427387903
+
+class node():
+    k: int64
+    v: int64
+    next: node*
+
+class rng():
+    s: int64
+
+def nxt(st: rng*) -> int64:
+    st.s = (st.s * 1103515245 + 12345) & 2147483647
+    return st.s
+
+def pick(st: rng*, k: int64) -> int64:
+    return (nxt(st) / 1024) % k
+
+def main() -> int:
+    g: int64 = 400000
+    f: int64 = 100
+    arena: rawptr = stdlib.malloc(805306368)
+    mp: memhub.MemPool* = memhub.NewMemPool(arena, 805306368)
+    st: rng* = rng*(mp.alloc(rng.__sizeof__()))
+    st.s = 20261013
+    wh: node** = node**(mp.alloc(2048))
+    wn: int64* = int64*(mp.alloc(2048))
+    b: int64 = 0
+    while b < 256:
+        wh[b] = None
+        wn[b] = 0
+        b = b + 1
+    sum: int64 = 0
+    made: int64 = 0
+    evicted: int64 = 0
+    dropnodes: int64 = 0
+    rings: int64 = 0
+    i: int64 = 0
+    while i < g:
+        k: int64 = 3 + pick(st, 4)
+        isring: bool = pick(st, 100) < f
+        first: node* = None
+        prev: node* = None
+        j: int64 = 0
+        while j < k:
+            s: node* = node*(mp.alloc(node.__sizeof__()))
+            s.k = i
+            s.v = nxt(st) % 1000
+            s.next = None
+            if first == None:
+                first = s
+            if prev != None:
+                prev.next = s
+            prev = s
+            sum = (sum + s.v) & MASK
+            j = j + 1
+        if isring:
+            rings = rings + 1
+            if prev != None:
+                prev.next = first
+        made = made + k
+        bidx: int64 = i % 256
+        old: node* = wh[bidx]
+        if old != None:
+            evicted = evicted + 1
+            dropnodes = dropnodes + wn[bidx]
+        wh[bidx] = first
+        wn[bidx] = k
+        i = i + 1
+    stdio.printf("groups=%lld made=%lld evicted=%lld dropnodes=%lld sum=%lld\n", g, made, evicted, dropnodes, sum)
+    stdio.printf("f=%lld window=256 kmin=3 kmax=6 rings=%lld\n", f, rings)
+    return 0

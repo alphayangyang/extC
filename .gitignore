@@ -100,3 +100,6 @@ paper/*.bib.log
 # journal/full 两个变体只作本地核对（改 authors.tex 即可重建）
 paper/main-journal.pdf
 paper/main-full.pdf
+# Viper 端口的内联构建产物（若在原地构建）
+bench/viper/__vpcbuild__/
+bench/viper/**/__vpcbuild__/
