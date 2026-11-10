@@ -1,0 +1,123 @@
+% ACM artifact appendix (standalone).  Build: ./build.sh artifact
+%
+% It is deliberately a separate document: ACM artifact evaluation is a separate
+% submission from the paper, and the paper appendix must not be the only place
+% where the reproduction commands live.
+\documentclass[acmsmall,10pt,nonacm]{acmart}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{lmodern}
+\settopmatter{printfolios=true,printacmref=false}
+\newcommand{\code}[1]{\texttt{\detokenize{#1}}}
+\setlength{\emergencystretch}{2em}
+\begin{document}
+
+\title{Artifact Appendix: Bounded Reclamation}
+\subtitle{Compile-time tiering, pause and memory contracts, and a roofline for reclamation policy}
+\author{Anonymous Author(s)}
+\affiliation{\institution{Paper under double-blind review}\country{Review copy}}
+
+\begin{abstract}
+This artifact is the extC compiler together with the harness that produces every number in the paper:
+the four-shape cross-language matrix (eleven arms of C++, Rust, Go, Java and JavaScript), the pause
+harnesses, the ten-variant mechanism ablation, the boundedness runs, the tier census, the Lean~4
+development, and the gates that hold the runtime to its budgets.  Everything is built from source with
+\code{make}; no pre-built binary is required and no external data set is used.
+\end{abstract}
+
+\maketitle
+
+\section{Artifact check-list (meta-information)}
+\begin{table}[h]
+\small
+\begin{tabular}{@{}p{0.26\linewidth}p{0.68\linewidth}@{}}
+\toprule
+\textbf{Item} & \textbf{Value} \\
+\midrule
+Program & extC compiler (C, \code{src/}, built with \code{make}); generated C links only against libc \\
+Runtime library & none: the reclamation runtime is emitted into each translated unit (\code{src/back/reclaim.c}) \\
+Proofs & Lean~4, thirteen modules, \code{proofs/}; optional for the experiments \\
+Tests & 216-case C driver (\code{tests/reclaim}), emitted-code gates (\code{tools/}), whole-program instruction budget \\
+Data set & none external; every input is generated from a seed at run time \\
+Hardware & x86-64, four or more cores, 8\,GiB free; a single pinned core is used for timing \\
+Run-time environment & Linux, \code{gcc}, \code{make}, \code{python3} with \code{matplotlib} \\
+Optional tool-chains & \code{rustc}, \code{go}, \code{javac}/\code{java}, \code{node} for competitor arms; \code{valgrind} for the instruction gate \\
+Metrics & wall clock, peak RSS, pause samples, retired instructions (callgrind), emitted tier \\
+Output & \code{.tsv} matrices, \code{.md} reports, \code{.png}/\code{.pdf} figures per script \\
+Experiments & four shapes $\times$ eleven arms (7 interleaved reps); ten-variant ablation; boundedness; census \\
+Publicly available & yes, to be hosted at an anonymized URL for review and archived with a DOI at publication \\
+Code license & Apache-2.0 (\code{LICENSE}) \\
+\bottomrule
+\end{tabular}
+\caption{Meta-information for the artifact evaluation.}
+\end{table}
+
+\section{Description}
+The repository is self-contained.  \code{make} builds \code{build/extc}.  The four shape programs and
+the eleven comparison arms live in \code{bench/gc/v2}, their pause harnesses in
+\code{bench/gc/v2/pause}, the driver suite in \code{tests/reclaim}, the Lean development in
+\code{proofs}, the paper sources in \code{paper/} (with \code{paper/data/*.tsv} holding the checked-in
+numbers), and the scripts that generate every table and figure in \code{paper/figures}.  The runtime
+constants that the ablation moves (\code{EXTC\_RC\_SLAB\_BITS}, \code{EXTC\_RC\_SCAN\_CHUNK},
+\code{EXTC\_RC\_SEG\_DEADLINE\_US}, \code{EXTC\_RC\_SWEEP\_FINISH\_MAX}, and the rest) are
+\code{\#ifndef}-guarded, which is what makes the one-constant-at-a-time ablation possible without
+touching the compiler.
+
+\section{Creation}
+\begin{itemize}
+\item \textbf{How to build:} \code{make} at the repository root, then \code{make check} (or
+  \code{./tests/run.sh}) for the whole test suite.  A minimal build needs only \code{gcc}.
+\item \textbf{How to compile one program:} \code{./build/extc -o out.c prog.extc} emits C;
+  \code{cc -O2 out.c -o prog} links it.  Adding \code{EXTC\_RECLAIM=0} at translation time removes the
+  runtime entirely and is the ``off'' arm of every ablation.
+\item \textbf{How to check the proofs:} \code{cd proofs \&\& bash verify.sh} checks the Lean~4
+  development.  The modules must be compiled in dependency order first (the shipped script assumes the
+  \code{.olean} files exist, and they are not in the repository); the audit and the dependency order
+  are in \code{proofs/README.md}.
+\item \textbf{No network access} is needed once the repository is unpacked.
+\end{itemize}
+
+\section{Getting started (verified path)}
+\begin{enumerate}
+\item \code{make}, then \code{./build/extc -o /tmp/hello.c examples/new.extc \&\& cc -O2 /tmp/hello.c -o /tmp/hello}.
+\item \code{tests/reclaim/run.sh} (expect 216 passing cases; the suite also runs under
+  \code{-fsanitize=address}, \code{-fsanitize=undefined} and with the runtime out of line).
+\item \code{cd bench/gc/v2 \&\& B=/tmp/ar EXTC=../../build/extc bash run.sh align} builds every arm,
+  then \code{B=/tmp/ar TSV=/tmp/ar/matrix.tsv REPS=7 PIN=6 bash run.sh bench} runs the matrix and
+  \code{python3 report.py /tmp/ar/matrix.tsv REPORT.md matrix.png pause\_v2.tsv} renders it.
+\item \code{python3 paper/figures/gen\_tables.py} and \code{gen\_roofline.py} regenerate every table and
+  figure of the paper from \code{paper/data/*.tsv}.
+\end{enumerate}
+
+\section{Evaluation and expected results}
+\begin{itemize}
+\item \textbf{Correctness.} Every arm of the matrix prints the same two lines of output; the harness
+  refuses to time an arm that does not, so a run that completes is already a differential test.
+\item \textbf{Throughput.} On a pinned core, the four extC numbers are approximately 39, 16, 117 and
+  15\,ms for \code{promote}, \code{sizeratio}, \code{chase} and \code{cycleratio} at the paper's sizes;
+  absolute values move with the machine and between sessions by up to 13\%, so only ratios formed inside
+  one interleaved run should be compared.
+\item \textbf{Memory.} Peak RSS is read with \code{/usr/bin/time -f \%M}; the boundedness run keeps
+  3,420\,kB at 125\,000, 1\,000\,000 and 8\,000\,000 rounds with reclamation on, and grows by
+  37$\times$ with it off.
+\item \textbf{Pause.} With \code{EXTC\_RC\_PAUSE=1 EXTC\_RC\_SLOWSTEP=0.001} the runtime logs one line
+  per step; no step on any shape exceeds one millisecond, and the 99.9th percentile is 10--58\,$\mu$s.
+\item \textbf{Budget gate.} \code{tests/reclaim-perf/gate.sh} reruns one shape under callgrind and fails
+  above the frozen instruction budget; \code{tests/reclaim-gaps/gate-release.sh} holds the emitted-code
+  properties; \code{tools/check\_tree.py --gate} holds the tree hygiene.
+\end{itemize}
+
+\section{Methodology and pitfalls}
+Runs are interleaved round-robin with reversed order on alternate rounds, one core pinned with
+\code{taskset}, and every arm warmed once before its first timed round.  Do not build or run anything
+else on the machine during a measurement round: the pause instrumentation charges preempted time to the
+step that was preempted, and a single worst step is a report about the machine, not about the runtime.
+Report medians of the per-round minimum, and never compare absolute milliseconds across sessions.
+
+\section{Anonymization status (review)}
+This appendix and the paper are built from the same source and contain no author names, affiliations,
+acknowledgements or personal URLs.  The artifact repository is to be uploaded to an anonymized host for
+review; the camera-ready version substitutes \code{authors.tex} and the archival DOI.  The proof scripts
+shell out to \code{lean} and (optionally) \code{z3}; neither is needed for the experiments.
+
+\end{document}

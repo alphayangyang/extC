@@ -1,0 +1,42 @@
+% Shared preamble: everything that does not depend on the venue variant.
+%
+% The three entry points are main.tex (anonymous SIGPLAN submission),
+% main-journal.tex (anonymous ACM Small / journal submission) and main-full.tex
+% (named camera-ready or arXiv version, reads authors.tex).  All three share this
+% preamble, frontmatter-anon.tex or frontmatter-full.tex, and body.tex.
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{array}
+\usepackage{balance}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,fit,backgrounds}
+\usepackage{lmodern}
+
+\settopmatter{printfolios=true,printccs=true,printacmref=false}
+
+\newcommand{\tab}{Table~}
+\newcommand{\fig}{Figure~}
+\newcommand{\thm}{Theorem~}
+\newcommand{\cor}{Corollary~}
+\newcommand{\us}{\ensuremath{\,\mu}s}
+\newcommand{\code}[1]{\texttt{\detokenize{#1}}}
+\newcommand{\eq}{Equation~}
+\newcommand{\mth}[1]{\ensuremath{#1}}
+\newcommand{\ms}{ms}
+
+\newtheorem{theorem}{Theorem}
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{corollary}[theorem]{Corollary}
+\theoremstyle{definition}
+\newtheorem{definition}[theorem]{Definition}
+\newtheorem{assumption}[theorem]{Assumption}
+
+\newcommand{\B}{B}
+\newcommand{\Lam}{\lambda}
+
+% acmsmall wants a taller running head than its default 13pt; sigplan ignores this.
+\setlength{\headheight}{15pt}
+\setlength{\emergencystretch}{3em}
+\begin{document}

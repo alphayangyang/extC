@@ -94,3 +94,9 @@ paper/*.fls
 paper/*.fdb_latexmk
 paper/*.synctex.gz
 paper/*.toc
+paper/*.pass.log
+paper/*.bib.log
+# 变体 PDF 由 build.sh 从入库源码生成：主投稿版 main.pdf 与 artifact 附录入库，
+# journal/full 两个变体只作本地核对（改 authors.tex 即可重建）
+paper/main-journal.pdf
+paper/main-full.pdf
