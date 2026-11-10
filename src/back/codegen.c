@@ -413,6 +413,11 @@ typedef struct {
     bool        needPrint;      /* `extc_print` is called somewhere => emit rtPrint */
     bool        needAny;        /* the dynamic `any` value is used somewhere => emit its block */
     bool        needAnyEq;      /* two `any` values are compared => `extc_eq` is needed too */
+    /* The JSON half of the `any` runtime formats numbers through two formatters written in
+     * `std::json` (extC source). No extC code calls them -- the emitted descriptor walk does --
+     * so the `planUsed` bit a call site would set is set by the scan that looks for them, and
+     * that scan is also the answer to "is the JSON half reachable at all". */
+    bool        needAnyJson;
     bool        needPar;      /* par::run / par::map use the thread runtime */
     bool        needParRegion; /* some worker `new`s => the arena-sharing half of the region machinery takes part in the
      * build */
@@ -14176,6 +14181,20 @@ static void scanUnitNeeds(CG *g, Module *m) {
                         strncmp(f->name, "extc_http_", 10) == 0))  g->needHttpFile = true;
         if (f->name && strcmp(f->name, "extc_dns_lookup") == 0)  g->needDns = true;
     }
+    /* The JSON half of the `any` runtime is the one place the generated C calls **extC** code: the
+     * descriptor walk hands each integer to `json$fmtI64`/`json$fmtU64`, which are ordinary digit
+     * arithmetic in the `std::json` module (see `extc_json_i64`). A definition has no call site to
+     * set its `planUsed` bit, so the scan sets it here -- before the prototypes and the bodies are
+     * emitted -- and the same match is what tells the runtime the half is reachable: that module is the
+     * only caller of `extc_any_json`, so no formatter means no caller means no JSON half. */
+    for (size_t i = 0; i < m->funcs.len; i++) {
+        FuncDef *f = *(FuncDef **)vecAt(&m->funcs, i);
+        if (!f || !f->body || !f->name) continue;
+        if (strcmp(f->name, "json$fmtI64") == 0 || strcmp(f->name, "json$fmtU64") == 0) {
+            planSetUsed(f, true);
+            g->needAnyJson = true;
+        }
+    }
     /* Pools have one more source: **`makesPool`, which the checker has already computed**. Looking only
      * at "this module declares an extern of `extc_pool_*`" is not enough -- those declarations live in
      * the **library module** while `m` is the entry module, so at main's prologue `needPool` would still
@@ -15198,8 +15217,11 @@ static void emitParallelRuntime(CG *g, Buf *out) {
  * @param withEq    Whether `==` on two `any` values is used; comparing recurses into `extc_eq`,
  *                  which is emitted with the equality runtime, so that helper is only defined when
  *                  that runtime is present.
+ * @param withJson  Whether the unit carries the two integer formatters of `std::json`; the JSON
+ *                  half walks a descriptor here but formats numbers through them, so it exists only
+ *                  when that module does (the flag comes from the scan in the unit prologue).
  */
-static void anyEmitRuntime(Arena *arena, Buf *out, bool withPrint, bool withEq) {
+static void anyEmitRuntime(Arena *arena, Buf *out, bool withPrint, bool withEq, bool withJson) {
     (void)arena;
     bufPuts(out,
         "/* ---- `any`: one value whose type is known only at run time ----\n"
@@ -15342,7 +15364,10 @@ static void anyEmitRuntime(Arena *arena, Buf *out, bool withPrint, bool withEq) 
             "    return extc_eq(extc_any_payload(a), extc_any_payload(b), extc_any_type(a));\n"
             "}\n");
     /* JSON from the same descriptor: an `any` is the only thing that can carry a run-time type, so
-     * this half is part of the `any` runtime rather than of the printer. */
+     * this half is part of the `any` runtime rather than of the printer. Everything below is that
+     * half, so the gate is a return: it is the tail of the function, and the two `bufPuts` chunks
+     * that follow open and close the brace of `extc_any_type_name` between them. */
+    if (!withJson) return;
     bufPuts(out,
             "\n"
             "/* ---- JSON from a descriptor ----\n"
@@ -15370,18 +15395,34 @@ static void anyEmitRuntime(Arena *arena, Buf *out, bool withPrint, bool withEq) 
             "    }\n"
             "    return extc_json_raw(\"\\\"\", 1, out, cap, o);\n"
             "}\n"
+            "/* The integer formatters are extC functions in the `std::json` module, not text here:\n"
+            " * they are ordinary digit arithmetic, and the descriptor walk only has to hand over the\n"
+            " * tail of the buffer. The returned count is what the number **needs**, so a clipped\n"
+            " * write still reports the size the caller has to ask for. */\n"
+            "EXTC_UNUSED static int64_t extc_json_i64(uint8_t *out, int64_t cap, int64_t o, int64_t v) {\n"
+            "    slice_u8 s;\n"
+            "    s.data = cap > o ? out + o : out;\n"
+            "    s.len = cap > o ? cap - o : 0;\n"
+            "    return o + json$fmtI64(s, v);\n"
+            "}\n"
+            "EXTC_UNUSED static int64_t extc_json_u64(uint8_t *out, int64_t cap, int64_t o, uint64_t v) {\n"
+            "    slice_u8 s;\n"
+            "    s.data = cap > o ? out + o : out;\n"
+            "    s.len = cap > o ? cap - o : 0;\n"
+            "    return o + json$fmtU64(s, v);\n"
+            "}\n"
             "EXTC_UNUSED static int64_t extc_json_num(const ExtcDesc *d, const void *p, uint8_t *out,\n"
             "                                         int64_t cap, int64_t o) {\n"
-            "    char b[64]; int n = 0;\n"
+            "    char b[64]; int n = 0;   /* only the two floating kinds still go through snprintf */\n"
             "    switch (d->kind) {\n"
-            "    case EXTC_D_I8:  n = snprintf(b, sizeof b, \"%d\", (int)*(const int8_t *)p); break;\n"
-            "    case EXTC_D_I16: n = snprintf(b, sizeof b, \"%d\", (int)*(const int16_t *)p); break;\n"
-            "    case EXTC_D_I32: n = snprintf(b, sizeof b, \"%d\", (int)*(const int32_t *)p); break;\n"
-            "    case EXTC_D_I64: n = snprintf(b, sizeof b, \"%lld\", (long long)*(const int64_t *)p); break;\n"
-            "    case EXTC_D_U8:  n = snprintf(b, sizeof b, \"%u\", (unsigned)*(const uint8_t *)p); break;\n"
-            "    case EXTC_D_U16: n = snprintf(b, sizeof b, \"%u\", (unsigned)*(const uint16_t *)p); break;\n"
-            "    case EXTC_D_U32: n = snprintf(b, sizeof b, \"%u\", (unsigned)*(const uint32_t *)p); break;\n"
-            "    case EXTC_D_U64: n = snprintf(b, sizeof b, \"%llu\", (unsigned long long)*(const uint64_t *)p); break;\n"
+            "    case EXTC_D_I8:  return extc_json_i64(out, cap, o, (int64_t)*(const int8_t *)p);\n"
+            "    case EXTC_D_I16: return extc_json_i64(out, cap, o, (int64_t)*(const int16_t *)p);\n"
+            "    case EXTC_D_I32: return extc_json_i64(out, cap, o, (int64_t)*(const int32_t *)p);\n"
+            "    case EXTC_D_I64: return extc_json_i64(out, cap, o, *(const int64_t *)p);\n"
+            "    case EXTC_D_U8:  return extc_json_u64(out, cap, o, (uint64_t)*(const uint8_t *)p);\n"
+            "    case EXTC_D_U16: return extc_json_u64(out, cap, o, (uint64_t)*(const uint16_t *)p);\n"
+            "    case EXTC_D_U32: return extc_json_u64(out, cap, o, (uint64_t)*(const uint32_t *)p);\n"
+            "    case EXTC_D_U64: return extc_json_u64(out, cap, o, *(const uint64_t *)p);\n"
             "    case EXTC_D_F32: n = snprintf(b, sizeof b, \"%.9g\", (double)*(const float *)p); break;\n"
             "    case EXTC_D_F64: n = snprintf(b, sizeof b, \"%.17g\", *(const double *)p); break;\n"
             "    case EXTC_D_BOOL: return extc_json_raw(*(const bool *)p ? \"true\" : \"false\",\n"
@@ -15667,7 +15708,8 @@ static void emitLateRuntime(CG *g, Buf *out, Module *m, Arena *arena) {
         bufPuts(out, bufCstr(&g->rtRaw));
     }
     if (g->eqNeed.len || g->needAnyEq)  bufPuts(out, bufCstr(&g->rtEq));
-    if (g->needAny)                     anyEmitRuntime(arena, out, g->needPrint, g->needAnyEq);
+    if (g->needAny)                     anyEmitRuntime(arena, out, g->needPrint, g->needAnyEq,
+                                                         g->needAnyJson);
     bufPuts(out, bufCstr(&g->desc));
     bufPuts(out, bufCstr(&g->rcDesc));   /* the rc type descriptors: they must come before the function bodies too */
     for (size_t i = 0; i < g->helpers.len; i++) {

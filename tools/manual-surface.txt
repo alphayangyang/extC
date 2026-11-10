@@ -347,6 +347,8 @@ std::json	-	elem	fn	public
 std::json	-	errAt	fn	public
 std::json	-	escOf	fn	public
 std::json	-	find	fn	public
+std::json	-	fmtI64	fn	internal
+std::json	-	fmtU64	fn	internal
 std::json	-	intOf	fn	public
 std::json	-	isOk	fn	public
 std::json	-	json	fn	public

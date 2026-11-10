@@ -1125,6 +1125,56 @@ extern!("extc-runtime") fn extc_any_json(v: ref any, out: ref u8, cap: i64) -> i
 extern!("extc-runtime") fn extc_any_type_name(v: ref any, out: ref u8, cap: i64) -> i64
     effects Addr=0 Cont=0
 
+/* JSON 里的整数由下面两个函数写：一个整数一次调用，替代运行期里的 snprintf 解析格式串
+ * （实测：93,750 行的 JSON 段 20.0 ms -> 13.3 ms，每行 213 -> 141 ns）。放在 extC 而不是
+ * 发射的 C 文本里，是因为它就是普通的逐位算术：这里有类型检查、有测试，生成文件里只剩一次调用。
+ *
+ * 返回值与 snprintf 同口径 —— **需要**的字节数（即使超过 `out.len`），写入按 `out.len` 截断：
+ * 调用方可以先用小缓冲问长度，再按答案要够大的缓冲。 */
+@private fn fmtI64(out: mut slice<u8>, v: i64) -> i64 {
+    var tmp: [24]u8
+    var n: i64 = 0
+    var x: i64 = v
+    while x != 0 {
+        var d: i64 = x % 10
+        if d < 0 { d = 0 - d }      /* C 的取余带上被除数的符号：先掰正再写 */
+        tmp[n] = u8(48 + d)
+        n = n + 1
+        x = x / 10
+    }
+    if n == 0 { tmp[n] = u8(48)  n = 1 }   /* 0 一位都不进循环 */
+    if v < 0 { tmp[n] = u8(45)  n = n + 1 }
+    var lim: i64 = n
+    if lim > out.len { lim = out.len }
+    var k: i64 = 0
+    while k < lim {
+        out[k] = tmp[n - 1 - k]
+        k = k + 1
+    }
+    return n
+}
+
+@private fn fmtU64(out: mut slice<u8>, v: u64) -> i64 {
+    var tmp: [24]u8
+    var n: i64 = 0
+    var x: u64 = v
+    while x != u64(0) {
+        tmp[n] = u8(i64(x % u64(10)) + 48)
+        n = n + 1
+        x = x / u64(10)
+    }
+    if n == 0 { tmp[n] = u8(48)  n = 1 }
+    var lim: i64 = n
+    if lim > out.len { lim = out.len }
+    var k: i64 = 0
+    while k < lim {
+        out[k] = tmp[n - 1 - k]
+        k = k + 1
+    }
+    return n
+}
+
+
 /* 把 `v` 编码成 JSON 写进 `out`，返回编码**需要**的字节数（即使超过 `out.len`）：
  * 先用小缓冲问长度，再用够大的缓冲写一次。类型是 `ref` 的字段编码成 `null`。 */
 fn json(v: ref any, out: mut slice<u8>) -> i64 {
