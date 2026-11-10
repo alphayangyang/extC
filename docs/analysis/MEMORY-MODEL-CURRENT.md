@@ -35,6 +35,7 @@
 > **行号口径（v10 = 分配准入按请求字节，当前工作树）**：`src/back/reclaim.c` = `ff267f16daf6b387d8735158a6d415d7`（4 165 行）、`src/back/codegen.c` = `2f560e2e6deef8c4927db4611344aecb`（16 017 行，v7 起未改）、`tests/reclaim/driver.c` = `e0509b5182033b80a0d2fc33e923e96f`（1 593 行）、`build/extc` = `9bd5588f8441423dcc93d71d198cb1f0`。**v9（4 156 行）与 v10 都没有做全文重锚**：本版只把本轮编辑到的段（§17.1 的 `M_MAX` 行、§18.2、§18.5、§22）更新到 v10，其余章节的行号仍是 v5–v8 口径 ⇒ **跨版本行号不可混用，核对一律按符号 grep**（`reclaim.c` 的权威索引在 `GC-ROOFLINE.md` 附录 D，已按 v10 重锚）。  **行号口径（v11 = 准入只绑显式墙，当前工作树）**：`src/back/reclaim.c` = `ab21781d29c7ee213afbaafc85b0cc1c`（4 169 行）、`tests/reclaim/driver.c` = `6e1bcec5e3320feb780b9567ed9bca4f`（1 620 行）、`build/extc` = `6f1213ea100acac6c12b61cb262776e7`；v10（4 165 行 / `ff267f16`）是**中间口径**（dense 峰值回归已修），其峰值数字作废。本版把 §16.1、§17.1、§18.2、§18.5、§22 更新到 v11，其余仍是 v5–v8 口径 ⇒ 跨版本行号不可混用，核对按符号 grep。
 > **行号口径（v13 = 清零跳表 + 块整块发槽 + 512 KiB 块，当前工作树）**：`src/back/reclaim.c` = `7151a43181f69ab865607f61ad2afad7`（4 212 行）、`src/back/codegen.c` = `2f560e2e6deef8c4927db4611344aecb`（16 017 行，v7 起未改）、`tests/reclaim/driver.c` = `28dd4009ac7207f47e581a697c0d421f`（1,637 行）、`build/extc` = `8af2a5e85324a63720705475d781dbab`。相对 v11，`reclaim.c` 改了三处行为（`extc_rc_zeroSmall` 清零跳表、`EXTC_RC_SLAB_CHUNK_MIN = EXTC_RC_SLAB_SIZE` 块整块发给槽、`EXTC_RC_SLAB_BITS` 17 → 19）并新增 `EXTC_RC_SWEEP_FINISH_MAX`（64 word）夹住分配路径的 sweep 收尾信用 ⇒ 行号位移集中在常量段（+3 ~ +4）与 slabNew/alloc 发射段（+2）。**§5.2、§5.4、§17.2、§18 与块几何相关的行号已按 v13 重锚，其余章节仍是 v5–v8 口径**；机制与四形状实测见 [`P1-ZEROINIT-FILL.md`](P1-ZEROINIT-FILL.md)。
 > **行号口径（v15 = `typeNeedsAnyDup` 在剥引用前判 `?ref`，当前工作树）**：`src/back/codegen.c` = `41c26996d3f608855cc41c72f2f0a996`（16 065 行，v7 起的 16 017 行版本作废）、`stdlib/std/json.extc` = `fc33b94db7b01f61ad367fff768edfbb`（1 186 行）、`src/back/reclaim.c` = `7151a43181f69ab865607f61ad2afad7`（4 212 行，同 v13）、`tests/reclaim/driver.c` = `28dd4009ac7207f47e581a697c0d421f`（1,637 行，同 v13）、`build/extc` = `f8f037a7b4a457da114b7918da796975`。相对 v14，`codegen.c` 只在 `typeNeedsAnyDup`（原 :5308）一处改动：把「引用判断」放到 `ttBase` 之前（`?ref node` 字段不再被剥成 `node` 递归），+6 行 ⇒ **v14 与 v15 的 codegen.c 行号在 :5308 之后不可混用**；本文所有 `codegen.c` 行号已按 v15 重算（换算表：n<5308 ⇒ n；n≥5308 ⇒ n+6），并逐条按内容校验（旧行文本 == 新行文本）。`reclaim.c` 未改 ⇒ 其行号仍是 v13 口径。
+> **行号口径（v16 = `par` 运行期改常驻池，当前工作树）**：`src/back/codegen.c` = `cc01b5f4216ea5c8d9fde77c47c41f24`（16 212 行）、`src/back/reclaim.c` = `7151a43181f69ab865607f61ad2afad7`（4 212 行，同 v13）、`stdlib/std/json.extc` = `fc33b94db7b01f61ad367fff768edfbb`（1 186 行，同 v15）、`tests/reclaim/driver.c` = `28dd4009ac7207f47e581a697c0d421f`（1,637 行，同 v13）、`build/extc` = `4f547333175d8583103543aac0ebf73a`。相对 v15，`codegen.c` 只重写 `emitParallelRuntime`（原 :15019-15180）的发射文本并加入常驻线程池（+147 行，净 +191/-44）⇒ **换算表：n < 15019 ⇒ n；n ≥ 15181 ⇒ n + 147；15019–15180 这段被整体重写，旧行号作废、按符号 grep**。本文与该窗口相关的引用（§15.2、§22 的 `codegen.c:15984-15992`）已按 v16 重算，其余章节未受影响。
 
 ---
 
@@ -683,10 +684,10 @@ TICK 调用点（默认 `EXTC_RC_TIME` 关时全部编译成 `do{}while(0)`，`r
 - 任务根 place：`extc_taskRoots[64]` + `extc_taskRootN`（`coroutine.c:67-75`）；`extc_task_collect`（:78-95）只扫 `depth == 0` 的 zone（= 任务根，`extc_pool_zoneNewRoot` 仅由 `extc_task_begin` 调用，`pools.c:53`），按“已登记根可达”判活，否则 `extc_task_end` + `extc_pool_zoneFreeRoot`。语言表面：`syspool::collect()`（`stdlib/std/sys/pool.extc:38-43`、`:52-55`），契约是调用者的断言。
 - 编译侧：`g->coroFunc ⇒ noArena=true`（`codegen.c:9945/9915`（判据/置位；`6275-6311` 是 `cgReleaseLevel` 注释与函数体、`9920-9931` 是 @overwrite 站点收集）；step 不拥有 arena 数组）；coroutine 帧**不走 rc**，且 coroutine 帧会让 region `rcRootsUnreliable`（`codegen.c:249-252（注释）、7600/7645（协程帧真实置位）；4371-4387 是 `rcRootLeaves` 的 4096 溢出点`）。
 
-### 15.2 parallel worker（`codegen.c:15061-15183`）
+### 15.2 parallel worker（`codegen.c:15064-15345`）
 
-- 每 worker 一个 `extc_arena`（`extc_par_open` 为每个 worker 建一个；`extc_par_region` 时来自 par region）。**region 模式下 worker 自己不销毁**（`codegen.c:15079-15085` 注释），统一由 `par_close` 做（`15027-15042`）。
-- worker 线程序言保存并把 `extc_rc_tlsDepth` 清 0（`codegen.c:15115-15123`），使 worker 入口帧成为 **owner**；尾声恢复（`15102-15104`）。
+- 每 worker 一个 `extc_arena`（`extc_par_open` 为每个 worker 建一个；`extc_par_region` 时来自 par region）。**region 模式下 worker 自己不销毁**（`codegen.c:15099` 注释），统一由 `par_close` 做（`15078-15089`）。
+- worker 线程序言保存并把 `extc_rc_tlsDepth` 清 0（`codegen.c:15116-15117`），使 worker 入口帧成为 **owner**；每块调用后恢复（`15122`）。
 - TLS owner 判据在触发点做运行期三分支（`codegen.c:4288-4298`）：`if (__extc_tlsOwner)` 触发 `else` 记 owe。
 
 ### 15.3 线程模型（准确表述）
@@ -1019,7 +1020,7 @@ v7 新增 `[segsteps] n= pops_tot= max_us= b1us…bge64ms=`（15 桶桶界与 `[
 
 | # | 旧文档断言 | 实际（源码/实测） | 出处 |
 |---|---|---|---|
-| 1 | 默认 = "无计数 + 区域清扫" 单档 | 三档（§1.5）：无回收档 / 事件档 / 清扫档 | `codegen.c:15984-15992`、`:14077-14159` |
+| 1 | 默认 = "无计数 + 区域清扫" 单档 | 三档（§1.5）：无回收档 / 事件档 / 清扫档 | `codegen.c:16131-16139`、`:14077-14159` |
 | 2 | "无写屏障 / 无原子 / 无 STW" | 每次引用赋值都发射 `storeRef*`（§6）；运行时含自旋锁与 `__atomic`；"无 STW"成立 | `codegen.c:8914-9084`；`reclaim.c:412-425, 1985-1991, 926-938` |
 | 3 | "三种存储"（漏回收区 slab） | 五种基质（§1 表 1-1）；`new T` 默认走 `extc_rc_alloc` | `codegen.c:4686/4716`、`:4721/4691-4692` |
 | 4 | "无共享大堆 / 无碎片" | slab 来自 `malloc`，`regionFree` 只 `free` 不 `munmap`；registry 旧代永不 free | `reclaim.c:2764-2857, 390-393, 450-451` |

@@ -103,7 +103,7 @@ src/back/codegen.c:4680-4790（exGencall 的 alloc 分支）：**层号直接用
     int64_t rp = extc_pool_new_at((-1), __extc_home_zone);
     ... .keys = (slice_hashMap$i64Key){ .data = (hashMap$i64Key *)extc_pool_take_raw((int64_t)(rp), ...) }, ... .vals = pool$pool_i32_withParent(rp, c, __extc_home_zone), ...
 pool 由 src/back/pools.c 发射（L19-24 逐字 **"A pool owns its own memory ... The arena does not own those blocks -- it owns their lifetime"**）；extc_pool_new_at = "THE PROMOTION HOOK"（src/back/pools.c:56-57），_at 变体自带 place，非 _at 变体读运行时 extc_zoneTop。place 栈：extc_pool_zoneEnter / zoneLeaveTo(mark) / zoneNewRoot / zoneFreeRoot。
-dyn：src/back/codegen.c:15240/15248 发射 extc_dyn_%zu(extc_arena *__extc_home, ...) 与 extc_any_box(__extc_home, ...)；构造点经 setCallZoneArg 记 zone（src/back/codegen.c:6052-6057 注释）。
+dyn：src/back/codegen.c:15387/15395 发射 extc_dyn_%zu(extc_arena *__extc_home, ...) 与 extc_any_box(__extc_home, ...)；构造点经 setCallZoneArg 记 zone（src/back/codegen.c:6052-6057 注释）。
 
 ### 2.6 闭包
 **未验证**：本轮在 src/back/codegen.c 里 grep "closure" 只命中"迭代到不动点的闭包（closure of the demand set）"这类术语，未定位到闭包的运行时表示与分配路径 ⇒ 见第 11 节。

@@ -144,9 +144,12 @@ error: the output view of a par loop aliases a read-only view
 - **反例测试集**：`tests/par/`（正例对拍 + 限制集每条一个反例），`tools/check.py` 已注册。
 - **基准**：`bench/par/` 报告 ns/cell 与有效带宽。
 
-`par` 的运行时复用 `parallel::run` 的 pthread 池化无关实现：每次调用起线程、原子计数器动态
-领块（`n / (threads * 8)` 为块大小）、线程本地 arena；默认线程数来自 `_SC_NPROCESSORS_ONLN`，
-可用 `EXTC_PAR_THREADS` 覆盖。
+`par` 与 `parallel::run` 共用同一个运行期 `extc_par_run`：一个**常驻池**，第一次并行调用时懒启动，
+线程数减一（父线程自己当第 0 号 worker）；每个槽位固定一个线程，调用方写一个任务、按序号交接，
+线程跑完把同一个序号写回 ⇒ 交活本身不加锁，锁与条件变量只让久等的线程睡下（先自旋一段）。
+块大小 `n / (threads * 8)`，每个 worker 一个线程本地 arena；默认线程数来自 `_SC_NPROCESSORS_ONLN`，
+可用 `EXTC_PAR_THREADS` 覆盖；进程退出时停池并 join 全部线程。池线程自己再进 `par` 时退回单线程，
+不会自己等自己。
 
 现有的 `parallel::run` 继续保留，作为逃生舱：它不保证将来下放到设备端，但今天能干粗活。
 

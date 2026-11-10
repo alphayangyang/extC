@@ -55,10 +55,10 @@
 
 ### 1.1 三档默认路径（判定链在编译期，产物头有 `EXTC_RC_TIER`）
 
-| 档 | 触发条件（`src/back/codegen.c:15984-15992`） | 回收方式 | 内存 | 停顿 |
+| 档 | 触发条件（`src/back/codegen.c:16131-16139`） | 回收方式 | 内存 | 停顿 |
 |---|---|---|---|---|
 | **档 0（无回收）** | `EXTC_RECLAIM=0`，或整 unit 被 `unitReclaimIdle` 证明无回收工作（`codegen.c:14319-14357`、`:14396-14398`） | 不发射回收运行期；分配走 bump/arena | 作用域有界，但逃逸对象随帧 | 零 |
-| **档 1（事件档）** | `EXTC_RC_SWEEPFREE=1`，或 `needReclaim && unitAllAcyclic` 自动升级（`codegen.c:15984-15992`） | 计数（hold）+ 归零当场 `freeSlot`（级联），无清扫 | 无环形状下有界；含环会漏 | 计数更新恒定成本 |
+| **档 1（事件档）** | `EXTC_RC_SWEEPFREE=1`，或 `needReclaim && unitAllAcyclic` 自动升级（`codegen.c:16131-16139`） | 计数（hold）+ 归零当场 `freeSlot`（级联），无清扫 | 无环形状下有界；含环会漏 | 计数更新恒定成本 |
 | **档 2（清扫档）** | 默认：`rcNoCount=1`（`codegen.c:14105`）、`rcSweepFree=0`、`needReclaim` | 每 region 增量标记 + 步进清扫（mark-sweep），无计数 | **无常数上界**（分配速率×触发阈值×环堆积） | 步进预算约束 |
 
 自动升级到档 1 的四条判据（`src/check/check_top.c:6166-6205` + `codegen.c:14358-14402`）：写进 ref 字段的值必须是本帧新鲜分配（或 null）、值的层号严格大于宿主层号、能丢弃引用的位置必须是计数槽、不得有涉及引用的 opaque 调用。**注意这是「无环 + 引用只存在计数槽里」的强条件**，不是普通的「无环」。
@@ -1093,9 +1093,9 @@ r'* = r'_max(M_max) = (M_max/L − 1)/κ_M
 | C10 | `noSweep` 无出口（L6） | 该 region 永不回收，只保证不早放 |
 | C11 | C 互操作的所有权（`plate` 层不分配，但外部 C 代码可持有 extC 指针） | 模型外 |
 
-## 附录 D 源码行号索引（FREEZE v14 口径）
+## 附录 D 源码行号索引（FREEZE v16 口径）
 
-下表是本文所有关键断言的可核对位置。**当前口径（FREEZE v15）**：src/back/reclaim.c = 7151a43181f69ab865607f61ad2afad7（4 212 行，同 v13）；src/back/codegen.c = 41c26996d3f608855cc41c72f2f0a996（16 065 行，相对 v14 的 16 059 行在 :5308 处 +6 行位移，换算表见 `MEMORY-MODEL-CURRENT.md` 头部 v15 行）；stdlib/std/json.extc = fc33b94db7b01f61ad367fff768edfbb（1 186 行）；tests/reclaim/driver.c = 28dd4009ac7207f47e581a697c0d421f（1,637 行）；build/extc = f8f037a7b4a457da114b7918da796975。**本表已按 v14 重锚**：每一行都用符号 grep 逐条复核（v12 与 v11 同为 4 169 行、行号相同；v13 的位移集中在常量段与 `slabNew`/`alloc` 发射段，v10/v11 的换算表见 `P1-ADMISSION.md`）；表外正文的 `reclaim.c:NNNN` 引用与表同源，未单列。**v7 口径（历史）**：codegen.c = 2f560e2e6deef8c4927db4611344aecb（16 017 行）（v7 测量输入为 `d339382889b87c0dd18b357c69e2e779`/16 017 行；提交树只把 `typeHasRefSlots` 的前向声明移到 `genViewCopier` 的说明块之前以过 `check-doxygen`，行数与代码不变）；src/back/reclaim.c = e17080d1c80513b27ca06f2bc6224b0f（4 031 行）；tests/reclaim/driver.c = 7b9ac61a55c140640a5964ab74a8780e（1 523 行）；v7 为 git HEAD 85b8871b + 工作树 patch；v10 为 HEAD 8d0086f0 + 本轮工作树 patch。构建：build-p1/extc = b9fd5784…（v7 交付）、build-lead7/extc = a7f2a873…、build-da2/extc = 10960ce7…（独立复核）；P0 轮的 build-rf/extc = 7019342b… 只在 §6.6 与 G20-P0 行出现。行号是该文件的物理行号；换版本前先 md5sum 对齐。注：同一源码用不同 BUILDDIR 重建时 extc 的 md5 会因调试段（-g）里嵌入的构建目录路径而不同（build-frz/extc = b35c12a1… 即同源二次构建），溯源以源码 md5 为准。
+下表是本文所有关键断言的可核对位置。**当前口径（FREEZE v16）**：src/back/reclaim.c = 7151a43181f69ab865607f61ad2afad7（4 212 行，同 v13）；src/back/codegen.c = cc01b5f4216ea5c8d9fde77c47c41f24（16 212 行，相对 v15 的 16 065 行重写了 `emitParallelRuntime` 的发射文本并 +147 行，换算表见 `MEMORY-MODEL-CURRENT.md` 头部 v16 行）；stdlib/std/json.extc = fc33b94db7b01f61ad367fff768edfbb（1 186 行）；tests/reclaim/driver.c = 28dd4009ac7207f47e581a697c0d421f（1,637 行）；build/extc = 4f547333175d8583103543aac0ebf73a。**本表已按 v16 重锚**：每一行都用符号 grep 逐条复核（v16 只有 `:15984`/`:15989` 两条落进位移区，已改为 `:16131`/`:16136`）（v12 与 v11 同为 4 169 行、行号相同；v13 的位移集中在常量段与 `slabNew`/`alloc` 发射段，v10/v11 的换算表见 `P1-ADMISSION.md`）；表外正文的 `reclaim.c:NNNN` 引用与表同源，未单列。**v7 口径（历史）**：codegen.c = 2f560e2e6deef8c4927db4611344aecb（16 017 行）（v7 测量输入为 `d339382889b87c0dd18b357c69e2e779`/16 017 行；提交树只把 `typeHasRefSlots` 的前向声明移到 `genViewCopier` 的说明块之前以过 `check-doxygen`，行数与代码不变）；src/back/reclaim.c = e17080d1c80513b27ca06f2bc6224b0f（4 031 行）；tests/reclaim/driver.c = 7b9ac61a55c140640a5964ab74a8780e（1 523 行）；v7 为 git HEAD 85b8871b + 工作树 patch；v10 为 HEAD 8d0086f0 + 本轮工作树 patch。构建：build-p1/extc = b9fd5784…（v7 交付）、build-lead7/extc = a7f2a873…、build-da2/extc = 10960ce7…（独立复核）；P0 轮的 build-rf/extc = 7019342b… 只在 §6.6 与 G20-P0 行出现。行号是该文件的物理行号；换版本前先 md5sum 对齐。注：同一源码用不同 BUILDDIR 重建时 extc 的 md5 会因调试段（-g）里嵌入的构建目录路径而不同（build-frz/extc = b35c12a1… 即同源二次构建），溯源以源码 md5 为准。
 
 | 主题 | 位置 |
 |---|---|
@@ -1111,7 +1111,7 @@ r'* = r'_max(M_max) = (M_max/L − 1)/κ_M
 | 编译期：TIER 宏发射（P1-4） | `codegen.c:12663` |
 | 编译期：region 表满文本（P1-3） | `codegen.c:12738` |
 | 编译期：任务根 push 发射（P0-6） | `codegen.c:6229` |
-| 编译期：档位自动升级判据 | `codegen.c:15989` |
+| 编译期：档位自动升级判据 | `codegen.c:16136` |
 | 运行期：alloc 快路径 | `reclaim.c:1526` |
 | 运行期：slab 新建 | `reclaim.c:842` |
 | 运行期：槽分配/复用（尺寸类查表） | `reclaim.c:940` |

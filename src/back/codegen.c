@@ -15016,13 +15016,18 @@ static void assembleCoroutineRuntime(CG *g, Buf *out, Arena *arena) {
 }
 
 /**
- * @brief Append the parallel runtime text of `par::run` / `par::map` to the end of the unit on demand.
+ * @brief Append the parallel runtime text of `par` to the end of the unit on demand.
  *
  * The language has no function pointers, so the callbacks come from generated static trampolines, and
  * this text only knows plain C function pointers. Ranges are distributed by an atomic chunk counter, so
  * they never overlap; each worker gets its own arena (`extc_tls_arena`), so a region has exactly one
- * owner. With `withRegion` set a region is opened, and the next run closes the previous one. Failing to
- * create a thread is not an error: the range is finished by fewer workers.
+ * owner. With `withRegion` set a region is opened, and the next run closes the previous one. The
+ * workers are a resident pool: the first run starts them, and every later run hands a job to a slot
+ * (a sequence number in, the same number back) instead of creating a thread, which turns the fixed
+ * cost of a run from tens of microseconds into a store and a wake. A thread that cannot be started is
+ * not an error: the range is finished by fewer workers, and a task that reaches `par` from inside the
+ * pool runs the range inline rather than waiting on the pool that is running it. The pool is joined
+ * at exit, so a leak checker sees no parked threads.
  *
  * @param g    The code generation context; `needParRegion` decides whether `EXTC_PAR_REGION` is
  *             emitted, and `needPar` (or the `EXTC_DBG_PAR` environment variable) decides whether the
@@ -15034,9 +15039,7 @@ static void emitParallelRuntime(CG *g, Buf *out) {
     if (g->needPar || getenv("EXTC_DBG_PAR"))
     {
         bufPuts(out,
-            "extern int pthread_create(unsigned long *th, const void *attr,\n"
-            "                          void *(*fn)(void *), void *arg);\n"
-            "extern int pthread_join(unsigned long th, void **ret);\n"
+            "#include <pthread.h>\n"
             "\n"
             "typedef struct extc_par_job {\n"
             "    int64_t (*fn)(int64_t id, int64_t lo, int64_t hi, void *ctx);\n"
@@ -15045,13 +15048,13 @@ static void emitParallelRuntime(CG *g, Buf *out) {
             "    void   *region;   /* extc_par_region*, or NULL when no worker allocates */\n"
             "} extc_par_job;\n"
             "\n"
-            "/* Where `new` inside a worker takes its memory from; step 3 wires the analysis\n"
-            " * to it. NULL outside a worker, so the checker can say so loudly. */\n"
+            "/* Where `new` inside a worker takes its memory from; NULL outside a worker, so the\n"
+            " * checker can say so loudly. */\n"
             "_Thread_local extc_arena *extc_tls_arena = NULL;\n"
             "\n"
             "#ifdef EXTC_PAR_REGION\n"
-            "/* Region-shared arena for one parallel run: one arena per worker,\n"
-            " * owned by the region -- the parent reads worker allocations after the join. */\n"
+            "/* Region-shared arena for one parallel run: one arena per worker, owned by the\n"
+            " * region -- the parent reads worker allocations after the join. */\n"
             "typedef struct extc_par_region {\n"
             "    int64_t     workers;\n"
             "    extc_arena *arenas;\n"
@@ -15074,12 +15077,7 @@ static void emitParallelRuntime(CG *g, Buf *out) {
             "/* Release: hand every worker arena back. */\n"
             "EXTC_UNUSED static void extc_par_close(extc_par_region *r) {\n"
             "    if (!r) return;\n"
-            "    for (int64_t i = 0; i < r->workers; i++) {\n"
-            );
-        /* The reclamation region lives as long as the worker arena: the TLS region shared by the whole worker
-         * chain is discarded here (at the start of the next run) together with the arena -- exactly
-         * consistent with the lifetime assumption "readable after the parent frame joins, destroyed
-         * before the next run". Without reclamation this line does not exist. */
+            "    for (int64_t i = 0; i < r->workers; i++) {\n");
         if (g->needReclaim)
             bufPuts(out,
             "        extc_rc_regionDrop((void *)&r->arenas[i]);\n");
@@ -15090,19 +15088,16 @@ static void emitParallelRuntime(CG *g, Buf *out) {
             "}\n"
             "#endif\n"
             "\n"
-            "typedef struct extc_par_arg { extc_par_job *job; int64_t id; } extc_par_arg;\n"
-            "\n"
-            "static void *extc_par_worker(void *p) {\n"
-            "    extc_par_arg *a = (extc_par_arg *)p;\n"
-            "    extc_par_job *j = a->job;\n"
+            "/* One job, run by whichever thread picks it up: the caller runs id 0 itself and the\n"
+            " * pool threads take the other ids. The chunk counter is shared, so the split does not\n"
+            " * depend on who starts first. */\n"
+            "static void extc_par_body(extc_par_job *j, int64_t id) {\n"
             "    extc_arena local;\n"
             "#ifdef EXTC_PAR_REGION\n"
             "    void *r = j->region;\n"
             "    if (r)   /* the parent reads it after the join, so it is not destroyed here */\n"
-            "        extc_tls_arena = &((extc_par_region *)r)->arenas[a->id];\n"
+            "        extc_tls_arena = &((extc_par_region *)r)->arenas[id];\n"
             "    else\n"
-            );
-            bufPuts(out,
             "#endif\n"
             "    { extc_arena_init(&local); extc_tls_arena = &local; }\n"
             "    for (;;) {\n"
@@ -15110,8 +15105,7 @@ static void emitParallelRuntime(CG *g, Buf *out) {
             "        int64_t lo = k * j->chunk;\n"
             "        if (lo >= j->n) break;\n"
             "        int64_t hi = lo + j->chunk;\n"
-            "        if (hi > j->n) hi = j->n;\n"
-            );
+            "        if (hi > j->n) hi = j->n;\n");
         if (g->needReclaim)
             bufPuts(out,
             "        /* Worker entry: the only caller is the C runtime. When the job runs inline on the\n"
@@ -15122,8 +15116,7 @@ static void emitParallelRuntime(CG *g, Buf *out) {
             "        int32_t __extc_depth = extc_rc_tlsDepth;\n"
             "        extc_rc_tlsDepth = 0;\n");
         bufPuts(out,
-            "        int64_t rc = j->fn(a->id, lo, hi, j->ctx);\n"
-            );
+            "        int64_t rc = j->fn(id, lo, hi, j->ctx);\n");
         if (g->needReclaim)
             bufPuts(out,
             "        extc_rc_tlsDepth = __extc_depth;\n");
@@ -15136,49 +15129,203 @@ static void emitParallelRuntime(CG *g, Buf *out) {
             "    if (!r) {\n"
             "#else\n"
             "    {\n"
-            "#endif\n"
-            );
+            "#endif\n");
         if (g->needReclaim)
             bufPuts(out,
             "        extc_rc_regionDrop((void *)&local);   /* the reclamation region lives as long as this arena */\n");
         bufPuts(out,
             "        extc_arena_destroy(&local);   /* a region's arenas are the parent's to free */\n"
             "    }\n"
-            "    return NULL;\n"
+            "}\n"
+            "\n"
+            "/* A resident pool: one thread per slot, reused by every `par` run. A slot belongs to one\n"
+            " * thread, and the caller publishes a job there with a sequence number; the thread runs\n"
+            " * it and publishes the same number back, so handing work over needs no lock. The lock\n"
+            " * and the condition variable only park a thread that has been idle for a while. */\n"
+            "#define EXTC_POOL_SPIN 20000\n"
+            "#if defined(__x86_64__) || defined(__i386__)\n"
+            "#  define EXTC_POOL_PAUSE() __builtin_ia32_pause()\n"
+            "#elif defined(__aarch64__) || defined(__arm__)\n"
+            "#  define EXTC_POOL_PAUSE() __asm__ __volatile__(\"yield\")\n"
+            "#else\n"
+            "#  define EXTC_POOL_PAUSE() ((void)0)\n"
+            "#endif\n"
+            "\n"
+            "typedef struct extc_pool_slot {\n"
+            "    pthread_t       th;\n"
+            "    int64_t         id;\n"
+            "    extc_par_job   *job;\n"
+            "    _Atomic int64_t seq;    /* caller -> thread */\n"
+            "    _Atomic int64_t done;   /* thread -> caller */\n"
+            "    _Atomic int64_t stop;\n"
+            "} extc_pool_slot;\n"
+            "\n"
+            "static pthread_mutex_t extc_pool_mu = PTHREAD_MUTEX_INITIALIZER;\n"
+            "static pthread_cond_t  extc_pool_cv = PTHREAD_COND_INITIALIZER;\n"
+            "static extc_pool_slot *extc_pool = NULL;\n"
+            "static int64_t         extc_pool_n = 0;       /* threads actually created */\n"
+            "static int64_t         extc_pool_seq = 0;     /* last job handed out */\n"
+            "static int             extc_pool_started = 0;\n"
+            "static _Atomic int     extc_pool_waiters = 0;\n"
+            "static _Atomic int     extc_pool_parked = 0;    /* threads asleep on the condition variable */\n"
+            "/* Nonzero on a pool thread: a task that itself reaches `par` must not wait on the pool\n"
+            " * that is running it, so it runs the range inline instead. */\n"
+            "_Thread_local int extc_pool_inside = 0;\n"
+            "\n"
+            "static void extc_pool_stop(void);\n"
+            "\n"
+            "EXTC_UNUSED static void *extc_pool_worker(void *p) {\n"
+            "    extc_pool_slot *s = (extc_pool_slot *)p;\n"
+            "    int64_t seen = 0, spin;\n"
+            "    extc_pool_inside = 1;\n"
+            "    for (;;) {\n"
+            "        int64_t v = __atomic_load_n(&s->seq, __ATOMIC_ACQUIRE);\n"
+            "        if (v == seen) {\n"
+            "            spin = 0;\n"
+            "            for (;;) {\n"
+            "                EXTC_POOL_PAUSE();\n"
+            "                if (__atomic_load_n(&s->stop, __ATOMIC_RELAXED)) return NULL;\n");
+        bufPuts(out,
+            "                v = __atomic_load_n(&s->seq, __ATOMIC_ACQUIRE);\n"
+            "                if (v != seen) break;\n"
+            "                if (++spin < EXTC_POOL_SPIN) continue;\n"
+            "                /* Idle long enough: sleep until the caller publishes again. */\n"
+            "                __atomic_fetch_add(&extc_pool_parked, 1, __ATOMIC_RELAXED);\n"
+            "                pthread_mutex_lock(&extc_pool_mu);\n"
+            "                while ((v = __atomic_load_n(&s->seq, __ATOMIC_ACQUIRE)) == seen &&\n"
+            "                       !__atomic_load_n(&s->stop, __ATOMIC_RELAXED))\n"
+            "                    pthread_cond_wait(&extc_pool_cv, &extc_pool_mu);\n"
+            "                pthread_mutex_unlock(&extc_pool_mu);\n"
+            "                __atomic_fetch_sub(&extc_pool_parked, 1, __ATOMIC_RELAXED);\n"
+            "                if (__atomic_load_n(&s->stop, __ATOMIC_RELAXED)) return NULL;\n"
+            "                break;\n"
+            "            }\n"
+            "        }\n"
+            "        seen = v;\n"
+            "        extc_par_body(s->job, s->id);\n"
+            "        __atomic_store_n(&s->done, v, __ATOMIC_RELEASE);\n"
+            "        if (__atomic_load_n(&extc_pool_waiters, __ATOMIC_RELAXED) > 0) {\n"
+            "            pthread_mutex_lock(&extc_pool_mu);\n"
+            "            pthread_cond_broadcast(&extc_pool_cv);\n"
+            "            pthread_mutex_unlock(&extc_pool_mu);\n"
+            "        }\n"
+            "    }\n"
+            "}\n"
+            "\n"
+            "/* Start `want - 1` threads the first time a program asks for them; a thread that\n"
+            " * cannot be started leaves the pool smaller, which is not an error. */\n"
+            "static void extc_pool_start(int64_t want) {\n"
+            "    int64_t i;\n"
+            "    if (extc_pool_started) return;\n"
+            "    extc_pool_started = 1;\n"
+            "    if (want > 257) want = 257;\n"
+            "    if (want < 2) return;\n"
+            "    extc_pool = (extc_pool_slot *)calloc((size_t)(want - 1), sizeof *extc_pool);\n"
+            "    if (!extc_pool) return;\n"
+            "    for (i = 0; i + 1 < want; i++) {\n"
+            "        extc_pool[i].id = i + 1;\n"
+            "        if (pthread_create(&extc_pool[i].th, NULL, extc_pool_worker,\n"
+            "                           (void *)&extc_pool[i]) != 0)\n"
+            "            break;\n"
+            "        extc_pool_n = i + 1;\n"
+            "    }\n"
+            "    atexit(extc_pool_stop);\n"
+            "}\n"
+            "\n"
+            "/* Give the threads back at exit, so a leak checker and a profiler see a clean\n"
+            " * shutdown instead of threads that are still parked. */\n"
+            "static void extc_pool_stop(void) {\n"
+            "    int64_t i;\n"
+            "    if (!extc_pool) return;\n"
+            "    for (i = 0; i < extc_pool_n; i++)\n");
+        bufPuts(out,
+            "        __atomic_store_n(&extc_pool[i].stop, 1, __ATOMIC_RELAXED);\n"
+            "    pthread_mutex_lock(&extc_pool_mu);\n"
+            "    pthread_cond_broadcast(&extc_pool_cv);\n"
+            "    pthread_mutex_unlock(&extc_pool_mu);\n"
+            "    for (i = 0; i < extc_pool_n; i++) {\n"
+            "        void *r = NULL;\n"
+            "        pthread_join(extc_pool[i].th, &r);\n"
+            "    }\n"
+            "    extc_pool_n = 0;\n"
+            "    free(extc_pool);\n"
+            "    extc_pool = NULL;\n"
             "}\n"
             "\n"
             "/* Run [0,n) with `threads` workers in `chunk`-sized pieces; returns the first\n"
-            " * non-zero worker result (0 = all fine). threads <= 1, or a thread that cannot be\n"
-            " * created, is not an error: the range is simply finished on fewer workers. */\n"
+            " * non-zero worker result (0 = all fine). threads <= 1, or a pool that could not be\n"
+            " * started, is not an error: the range is simply finished on fewer workers. */\n"
             "static int64_t extc_par_run(int64_t (*fn)(int64_t, int64_t, int64_t, void *),\n"
             "                            void *ctx, int64_t withRegion,\n"
             "                            int64_t n, int64_t threads, int64_t chunk) {\n"
             "    extc_par_job job;\n"
-            "    unsigned long th[256];\n"
-            "    extc_par_arg args[256];\n"
-            "    int64_t started = 0, i;\n"
+            "    int64_t nw = 0, i, seq = 0;\n"
+            "    if (threads > 256) threads = 256;\n"
+            "    if (threads < 1) threads = 1;\n"
             "    job.fn = fn; job.ctx = ctx; job.n = n;\n"
             "    job.chunk = chunk > 0 ? chunk : (n / (threads * 8) > 0 ? n / (threads * 8) : 1);\n"
             "    job.next = 0; job.first_err = 0; job.region = NULL;\n"
             "    (void)withRegion;\n"
+            "    if (extc_pool_inside) threads = 1;   /* a task never waits on the pool that runs it */\n"
+            "    if (threads > 1) {\n"
+            "        extc_pool_start(threads);\n"
+            "        if (threads > extc_pool_n + 1) threads = extc_pool_n + 1;\n"
+            "    }\n"
             "#ifdef EXTC_PAR_REGION\n"
             "    if (withRegion) {\n"
             "        /* One region per thread, refreshed per run: the previous one is closed here,\n"
             "         * which is exactly the moment the caller stops being able to read it. */\n"
             "        extc_par_close(extc_tls_region);\n"
-            "        extc_tls_region = extc_par_open(threads > 0 ? threads : 1);\n"
+            "        extc_tls_region = extc_par_open(threads);\n"
             "        job.region = extc_tls_region;\n"
             "    }\n"
             "#endif\n"
             "    if (n <= 0) return 0;\n"
-            "    if (threads > 256) threads = 256;\n"
-            "    for (i = 1; i < threads; i++) {\n"
-            "        args[i].job = &job; args[i].id = i;\n"
-            "        if (pthread_create(&th[i], NULL, extc_par_worker, &args[i]) != 0) break;\n"
-            "        started++;\n"
+            "    nw = threads - 1;\n"
+            "    if (nw > 0) {\n"
+            "        seq = ++extc_pool_seq;\n"
+            "        for (i = 0; i < nw; i++) {\n"
+            "            extc_pool[i].job = &job;\n"
+            "            __atomic_store_n(&extc_pool[i].seq, seq, __ATOMIC_RELEASE);\n"
+            "        }\n"
+            "        /* Only wake them when one is actually asleep: a thread inside its spin window\n"
+            "         * sees the sequence number on its own, so the steady state takes no lock. */\n");
+        bufPuts(out,
+            "        if (__atomic_load_n(&extc_pool_parked, __ATOMIC_RELAXED) > 0) {\n"
+            "            pthread_mutex_lock(&extc_pool_mu);\n"
+            "            pthread_cond_broadcast(&extc_pool_cv);\n"
+            "            pthread_mutex_unlock(&extc_pool_mu);\n"
+            "        }\n"
             "    }\n"
-            "    { extc_par_arg self; self.job = &job; self.id = 0; extc_par_worker(&self); }\n"
-            "    for (i = 1; i <= started; i++) { void *r = NULL; pthread_join(th[i], &r); }\n"
+            "    extc_par_body(&job, 0);\n"
+            "    if (nw > 0) {\n"
+            "        for (i = 0; i < nw; i++)\n"
+            "            if (__atomic_load_n(&extc_pool[i].done, __ATOMIC_ACQUIRE) != seq) break;\n"
+            "        if (i < nw) {\n"
+            "            /* Spin first: in the steady state the workers finish inside the spin window,\n"
+            "             * so the hand-back costs a few loads instead of a wake-up. */\n"
+            "            int64_t spins = 0;\n"
+            "            while (spins++ < EXTC_POOL_SPIN) {\n"
+            "                EXTC_POOL_PAUSE();\n"
+            "                for (i = 0; i < nw; i++)\n"
+            "                    if (__atomic_load_n(&extc_pool[i].done, __ATOMIC_ACQUIRE) != seq) break;\n"
+            "                if (i >= nw) break;\n"
+            "            }\n"
+            "        }\n"
+            "        if (i < nw) {\n"
+            "            /* A worker is genuinely slow: park until the last one publishes. */\n"
+            "            __atomic_fetch_add(&extc_pool_waiters, 1, __ATOMIC_RELAXED);\n"
+            "            pthread_mutex_lock(&extc_pool_mu);\n"
+            "            for (;;) {\n"
+            "                for (i = 0; i < nw; i++)\n"
+            "                    if (__atomic_load_n(&extc_pool[i].done, __ATOMIC_ACQUIRE) != seq) break;\n"
+            "                if (i >= nw) break;\n"
+            "                pthread_cond_wait(&extc_pool_cv, &extc_pool_mu);\n"
+            "            }\n"
+            "            pthread_mutex_unlock(&extc_pool_mu);\n"
+            "            __atomic_fetch_sub(&extc_pool_waiters, 1, __ATOMIC_RELAXED);\n"
+            "        }\n"
+            "    }\n"
             "    return job.first_err;\n"
             "}\n"
             "\n"
