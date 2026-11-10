@@ -27,13 +27,13 @@
 
 ### 1.2 每层 arena 数组长度 N 由什么决定
 
-src/back/codegen.c:9640-9646（genFunc）逐字：
+src/back/codegen.c:9646-9652（genFunc）逐字：
     int maxLv = 1 + blkMaxOfBlock(f->body);
     g->levelCap = maxLv + 2;
     ...
     if (!g->noArena) cgLine(g, "extc_arena __extc_a[%d] = {0};", maxLv + 1);
 
-即 **数组长度 = 1 + (1 + 函数体最大块深度) = 最大层号 + 1**，下标 0 恒不用。层数在 src/back/codegen.c:6489-6556（blkMaxLevel）算出，规则逐字要点：
+即 **数组长度 = 1 + (1 + 函数体最大块深度) = 最大层号 + 1**，下标 0 恒不用。层数在 src/back/codegen.c:6495-6562（blkMaxLevel）算出，规则逐字要点：
     case ST_BLOCK:  return 1 + blkMaxOfBlock(s);
     case ST_IF:     a = 1 + blkMaxOfBlock(thenBody); b = elseBody ? 1 + (...) : 0;  return max(a,b);
     case ST_WHILE:  return (planCondAllocs(s) ? 2 : 1) + blkMaxOfBlock(body);
@@ -42,18 +42,18 @@ src/back/codegen.c:9640-9646（genFunc）逐字：
 
 **样本对照**：/tmp/cf/cyclic_shape.c:3275 逐字 extc_arena __extc_a[4] = {0};（main 体 1 + while 2 + while 内 if 3 ⇒ maxLv=3，长度 4）。
 
-**noArena（连数组都不声明）**：src/back/codegen.c:9618-9679 段内逐字 g->noArena = !planMayUseArena(f) && !(owNow.len > 0 || owcNow.len > 0); 另有 g->coroFunc ⇒ noArena=true（step 不拥有 arena 数组）、mainArgs ⇒ false、isEntry && planUsesHome(f) ⇒ false、isEntry && needPool ⇒ false。语义见 src/back/codegen.c:271-274 逐字：函数不往自己块 arena 放东西 ⇒ 既不声明 __extc_a[N] 也不发 release。
+**noArena（连数组都不声明）**：src/back/codegen.c:9624-9685 段内逐字 g->noArena = !planMayUseArena(f) && !(owNow.len > 0 || owcNow.len > 0); 另有 g->coroFunc ⇒ noArena=true（step 不拥有 arena 数组）、mainArgs ⇒ false、isEntry && planUsesHome(f) ⇒ false、isEntry && needPool ⇒ false。语义见 src/back/codegen.c:271-274 逐字：函数不往自己块 arena 放东西 ⇒ 既不声明 __extc_a[N] 也不发 release。
 
 ### 1.3 能否观察
 
 | 开关/选项 | 定义位置 | 行为 |
 |---|---|---|
 | --dump-effects（= EXTC_DUMP_EFFECTS=1） | src/main.c:438、src/main.c:861-865；读点 src/check/check_top.c:1255/2604/3398/3403 | 打印每函数逃逸集与 effect summary |
-| EXTC_DBG_ARENA=1 | src/main.c:459；实现 src/back/codegen.c:5948-5956（arenaDriftCheck） | **只在两处不一致时打印**：level==0（检查器漏站点）或 level 比当前块更深；**一致时无输出、且不改生成物**。另有 EXTC_DBG_ARENA_VERBOSE=1 逐点打印 |
+| EXTC_DBG_ARENA=1 | src/main.c:459；实现 src/back/codegen.c:5954-5962（arenaDriftCheck） | **只在两处不一致时打印**：level==0（检查器漏站点）或 level 比当前块更深；**一致时无输出、且不改生成物**。另有 EXTC_DBG_ARENA_VERBOSE=1 逐点打印 |
 | EXTC_DUMP_LVL=1 | src/check/check_top.c:9525-9555/9623-9624 | 打印层级求解器收敛轮数与落位统计 |
 
 本轮实测（2026-11-09，用 build/extc）：
-- EXTC_DBG_ARENA=1 编 tests/reclaim-shapes/cyclic_shape.extc：**无输出**（= checker/codegen 一致），与 src/back/codegen.c:5934-5939 的注释一致（"changes no output"）。
+- EXTC_DBG_ARENA=1 编 tests/reclaim-shapes/cyclic_shape.extc：**无输出**（= checker/codegen 一致），与 src/back/codegen.c:5940-5945 的注释一致（"changes no output"）。
 - EXTC_DUMP_LVL=1 编 tests/arena/promote.extc：
   [lvl] 175 level facts, converged after 32 round(s)
   [lvl] decided: 0 sites in the home arena, 0 kept at block level
@@ -67,7 +67,7 @@ src/back/codegen.c:9640-9646（genFunc）逐字：
 
 ## 2. 哪些构造会分配、分配到哪一层
 
-分配层号一律来自检查器：**ar = arenaRefAt(g, planArenaLevel(e))**；ARENA_HOME 渲染成 (*__extc_home)，k>=1 渲染成 &__extc_a[k]（src/back/codegen.c:5766-5775 逐字 if (arenaArg == ARENA_HOME) return "__extc_home"; ... return arenaPrintf(g->arena, "&__extc_a[%d]", arenaArg);）。
+分配层号一律来自检查器：**ar = arenaRefAt(g, planArenaLevel(e))**；ARENA_HOME 渲染成 (*__extc_home)，k>=1 渲染成 &__extc_a[k]（src/back/codegen.c:5772-5781 逐字 if (arenaArg == ARENA_HOME) return "__extc_home"; ... return arenaPrintf(g->arena, "&__extc_a[%d]", arenaArg);）。
 
 ### 2.1 new T（单值）
 src/back/codegen.c:4605-4639（exNew）。两种形态：
@@ -103,7 +103,7 @@ src/back/codegen.c:4680-4790（exGencall 的 alloc 分支）：**层号直接用
     int64_t rp = extc_pool_new_at((-1), __extc_home_zone);
     ... .keys = (slice_hashMap$i64Key){ .data = (hashMap$i64Key *)extc_pool_take_raw((int64_t)(rp), ...) }, ... .vals = pool$pool_i32_withParent(rp, c, __extc_home_zone), ...
 pool 由 src/back/pools.c 发射（L19-24 逐字 **"A pool owns its own memory ... The arena does not own those blocks -- it owns their lifetime"**）；extc_pool_new_at = "THE PROMOTION HOOK"（src/back/pools.c:56-57），_at 变体自带 place，非 _at 变体读运行时 extc_zoneTop。place 栈：extc_pool_zoneEnter / zoneLeaveTo(mark) / zoneNewRoot / zoneFreeRoot。
-dyn：src/back/codegen.c:15234/15248 发射 extc_dyn_%zu(extc_arena *__extc_home, ...) 与 extc_any_box(__extc_home, ...)；构造点经 setCallZoneArg 记 zone（src/back/codegen.c:6046-6051 注释）。
+dyn：src/back/codegen.c:15240/15248 发射 extc_dyn_%zu(extc_arena *__extc_home, ...) 与 extc_any_box(__extc_home, ...)；构造点经 setCallZoneArg 记 zone（src/back/codegen.c:6052-6057 注释）。
 
 ### 2.6 闭包
 **未验证**：本轮在 src/back/codegen.c 里 grep "closure" 只命中"迭代到不动点的闭包（closure of the demand set）"这类术语，未定位到闭包的运行时表示与分配路径 ⇒ 见第 11 节。
@@ -116,7 +116,7 @@ dyn：src/back/codegen.c:15234/15248 发射 extc_dyn_%zu(extc_arena *__extc_home
 任务表本身是 realloc 出来的（src/back/coroutine.c:108-113），不是 arena 分配。
 
 ### 2.8 C 互操作内存
-- 外部声明/未检查函数体：【默认】g->uncheckedBody 关闭借用/转换检查，但不改变分配路径（src/back/codegen.c:9616-9617、1959、3378）。
+- 外部声明/未检查函数体：【默认】g->uncheckedBody 关闭借用/转换检查，但不改变分配路径（src/back/codegen.c:9622-9623、1959、3378）。
 - C 内存的视图：src/back/plate.c:35-38 的 extc_viewOf(uint8_t *p, int64_t n) 只生成 slice_u8 v = { p, n }（**零检查、不分配**）。
 - C 侧 malloc 出来的内存归谁、【未验证】。
 
@@ -184,15 +184,15 @@ release 保留一个 <= EXTC_ARENA_SPARE_MAX (1<<20) 的 spare 块，其余 free
     dnode * head = ((dnode *)extc_rc_alloc(__extc_rcr0, (int64_t)sizeof(dnode), &__extc_rct0));
 样本 /tmp/cf2/owed_home.c:2824（home，rid 传 -1）：
     ExtcRcRegion *__extc_rcr0 = extc_rc_regionOf((void *)&((*__extc_home)), -1);
-⇒ region 的 **key 是 arena 地址**，rid 只存进结构、运行期无读者（src/back/codegen.c:5790-5794 注释逐字："rid is only stored into the struct by regionNew and has no reader"）。因此 region 寿命与那只 arena **完全一致**（src/back/codegen.c:12402-12408 注释逐字 "the region's lifetime coincides exactly with that arena's"）。
+⇒ region 的 **key 是 arena 地址**，rid 只存进结构、运行期无读者（src/back/codegen.c:5796-5800 注释逐字："rid is only stored into the struct by regionNew and has no reader"）。因此 region 寿命与那只 arena **完全一致**（src/back/codegen.c:12408-12414 注释逐字 "the region's lifetime coincides exactly with that arena's"）。
 
 ---
 
 ## 5. 局部释放：写屏障的分派（问题 5）
 
 ### 5.1 分派点
-src/back/codegen.c:8625-8773（赋值语句）是唯一分派处，顺序：refStore = g->needReclaim && !s->u.assign.op && cgIsRefType(target)；host 由 cgSlotHost 判成 RC_HOST_OBJ / RC_HOST_LOCAL / RC_HOST_UNKNOWN；然后：
-1) hostUnknown ⇒ extc_rc_storeRefSlot(slot, v)（发在 :8709）
+src/back/codegen.c:8631-8779（赋值语句）是唯一分派处，顺序：refStore = g->needReclaim && !s->u.assign.op && cgIsRefType(target)；host 由 cgSlotHost 判成 RC_HOST_OBJ / RC_HOST_LOCAL / RC_HOST_UNKNOWN；然后：
+1) hostUnknown ⇒ extc_rc_storeRefSlot(slot, v)（发在 :8715）
 2) 命中 rcFreshHostRegion(hostBase) ⇒ no-count 且 vlvl==hlvl 用 extc_rc_storeRefSameRegion(...)，否则 extc_rc_storeRefOwnedReg(slot, v, hreg)
 3) hostBase==NULL 且 target 是 EX_IDENT ⇒ 先试 rcEmitStoreRelease（点修复定向释放），不行再
 4) rcLocalStore && rcNoCount && hostBase==NULL ⇒ extc_rc_storeRefLocal(slot, v)
@@ -203,19 +203,19 @@ src/back/codegen.c:8625-8773（赋值语句）是唯一分派处，顺序：refS
 
 | 发射形态 | 触发条件（源码位置） | 生成物样本（逐字） |
 |---|---|---|
-| extc_rc_initRef | 引用类型局部/全局"声明即初始化"（src/back/codegen.c:7251-7317 的 init 分支：只写+加，**不读旧值**） | /tmp/cf/cyclic_shape.c:3282 extc_rc_initRef((void **)&head, (void *)head); |
-| extc_rc_storeRefLocal | 【默认，rcLocalStore=1】no-count tier 且 host 证不出（hostBase==NULL）、目标是本帧引用槽（开关 src/back/codegen.c:13783-13790；注释 :8724-8748：no-count 下这两次 ownSlab 纯属浪费） | /tmp/cf/cyclic_shape.c:3301 extc_rc_storeRefLocal((void **)&(prev), (void *)(n)); |
-| extc_rc_storeRefOwnedReg | host 可证，且 host 是**本帧 fresh 局部**（rcFreshName / rcFreshHostRegion，src/back/codegen.c:6991-7030、8620-8768），region 指针可静态给（省运行时反查） | /tmp/cf2/acyclic_heapref.c:3356 extc_rc_storeRefOwnedReg((void **)&(head->next), (void *)(((node *)0)), __extc_rcr0);（null 存储也走这条） |
+| extc_rc_initRef | 引用类型局部/全局"声明即初始化"（src/back/codegen.c:7257-7323 的 init 分支：只写+加，**不读旧值**） | /tmp/cf/cyclic_shape.c:3282 extc_rc_initRef((void **)&head, (void *)head); |
+| extc_rc_storeRefLocal | 【默认，rcLocalStore=1】no-count tier 且 host 证不出（hostBase==NULL）、目标是本帧引用槽（开关 src/back/codegen.c:13789-13796；注释 :8730-8754：no-count 下这两次 ownSlab 纯属浪费） | /tmp/cf/cyclic_shape.c:3301 extc_rc_storeRefLocal((void **)&(prev), (void *)(n)); |
+| extc_rc_storeRefOwnedReg | host 可证，且 host 是**本帧 fresh 局部**（rcFreshName / rcFreshHostRegion，src/back/codegen.c:6997-7036、8620-8768），region 指针可静态给（省运行时反查） | /tmp/cf2/acyclic_heapref.c:3356 extc_rc_storeRefOwnedReg((void **)&(head->next), (void *)(((node *)0)), __extc_rcr0);（null 存储也走这条） |
 | extc_rc_storeRefSameRegion | 同上且 no-count 且值层==host 层（跨区不可能，省掉两次 ownSlab） | /tmp/cf2/struct_copy.c:3406 extc_rc_storeRefSameRegion((void **)&(t->next), (void *)(t)); |
 | extc_rc_storeRefOwned | host 可证但非 fresh（含形参/全局宿主） | /tmp/cf/cyclic_shape.c:3256 extc_rc_storeRefOwned((void **)&(p->next), (void *)(q), (void *)(p)); |
-| extc_rc_storeRefSlot | host **证不出**（基表达式带调用、视图元素等；src/back/codegen.c:8714） | /tmp/cf2/unknown_host.c:3236 extc_rc_storeRefSlot((void **)&((*(id(a))).next), (void *)(a)); |
+| extc_rc_storeRefSlot | host **证不出**（基表达式带调用、视图元素等；src/back/codegen.c:8720） | /tmp/cf2/unknown_host.c:3236 extc_rc_storeRefSlot((void **)&((*(id(a))).next), (void *)(a)); |
 | extc_rc_storeRefUnknown | 由 **storeRefSlot 在运行期回退**才可达：槽不在任何 rc slab 里（视图数据 / C 或 pool 缓冲）。逐字（/tmp/cf/cyclic_shape.c:1591-1597）：if (ss && ss->region) { extc_rc_storeRefOwnedReg(slot, v, ss->region); return; } extc_rc_storeRefUnknown(slot, v); |
-| extc_rc_storeStructCons | 整块赋值（结构体/定长数组）且引用叶子**无法枚举**（RC_CONSERVATIVE）：只加不减 + 注册跨区边；host 证不出则让目标 region 退出清扫（src/back/codegen.c:7711、7246-7312 注释） | 本次样本未观测到发射（见第 11 节） |
-| 逐叶屏障 + 整块 *d = s | 整块赋值且叶子可枚举：拆成每叶一次屏障，再做整块拷贝（src/back/codegen.c:7251-7317） | /tmp/cf2/struct_copy.c:3396-3398：extc_rc_storeRefOwned((void **)&((*__extc_svd0).n), (void *)(__extc_svv0.n), (void *)(s)); *__extc_svd0 = __extc_svv0; |
-| extc_rc_storeRefOwnedRelease | **点修复**定向释放旧值，四个 criterion 全须成立（src/back/codegen.c:7050-7129）：(1) 赋值在循环体内；(2) 目标槽是本帧引用槽且声明在所有已注册循环之外；(3) 写入值是本帧 fresh 分配、从未重绑定、其 region 由本帧拥有；(4) 该对象已被写进某个堆对象的引用字段。禁用：rcSweepFree==1、!needReclaim、rcRootsUnreliable、coroFunc、rcNShard>1、根表>4096 | /tmp/cf2/struct_copy.c:3408 extc_rc_storeRefOwnedRelease((void **)&(keeper), (void *)(t), (void *)0, __extc_rcr1, (void *[]){ (void *)(pad), (void *)(s), (void *)(t) }, 3); |
+| extc_rc_storeStructCons | 整块赋值（结构体/定长数组）且引用叶子**无法枚举**（RC_CONSERVATIVE）：只加不减 + 注册跨区边；host 证不出则让目标 region 退出清扫（src/back/codegen.c:7717、7246-7312 注释） | 本次样本未观测到发射（见第 11 节） |
+| 逐叶屏障 + 整块 *d = s | 整块赋值且叶子可枚举：拆成每叶一次屏障，再做整块拷贝（src/back/codegen.c:7257-7323） | /tmp/cf2/struct_copy.c:3396-3398：extc_rc_storeRefOwned((void **)&((*__extc_svd0).n), (void *)(__extc_svv0.n), (void *)(s)); *__extc_svd0 = __extc_svv0; |
+| extc_rc_storeRefOwnedRelease | **点修复**定向释放旧值，四个 criterion 全须成立（src/back/codegen.c:7056-7135）：(1) 赋值在循环体内；(2) 目标槽是本帧引用槽且声明在所有已注册循环之外；(3) 写入值是本帧 fresh 分配、从未重绑定、其 region 由本帧拥有；(4) 该对象已被写进某个堆对象的引用字段。禁用：rcSweepFree==1、!needReclaim、rcRootsUnreliable、coroFunc、rcNShard>1、根表>4096 | /tmp/cf2/struct_copy.c:3408 extc_rc_storeRefOwnedRelease((void **)&(keeper), (void *)(t), (void *)0, __extc_rcr1, (void *[]){ (void *)(pad), (void *)(s), (void *)(t) }, 3); |
 
 ### 5.3 rcLocalStore 的作用与默认
-- 默认值：src/back/codegen.c:13787-13790 g->rcLocalStore = 1; EXTC_RC_LOCALSTORE=0 时置 0；注释（:13783-13786）逐字：**【默认开】=0 是 kill switch，只影响 no-count tier**；=0 能逐字节恢复"翻档前"的产物（src/main.c 的 --help 段同样如此自述）。
+- 默认值：src/back/codegen.c:13793-13796 g->rcLocalStore = 1; EXTC_RC_LOCALSTORE=0 时置 0；注释（:13789-13792）逐字：**【默认开】=0 是 kill switch，只影响 no-count tier**；=0 能逐字节恢复"翻档前"的产物（src/main.c 的 --help 段同样如此自述）。
 - 作用：本地/参数槽的引用赋值只做"置值+加新值"，**跳过 ownSlab 反查与旧值减**（no-count 档里计数本来不用，那两次查纯属浪费）；旧值保护交给 sweep/region 机制。
 
 ### 5.4 哪些写入被证明"旧值死亡"（可省旧值处理）
@@ -226,7 +226,7 @@ src/back/codegen.c:8625-8773（赋值语句）是唯一分派处，顺序：refS
 ## 6. region 的生命周期与收集触发（问题 6）
 
 ### 6.1 谁创建 region：**不预先创建，第一个用户现场 claim**
-region 由 arena 地址惰性登记：src/back/codegen.c:12419-12448 把下面这段直接放进生成的 C（逐字）：
+region 由 arena 地址惰性登记：src/back/codegen.c:12425-12454 把下面这段直接放进生成的 C（逐字）：
     #define EXTC_RC_REG_MAX 512
     static void *extc_rc_regKey[EXTC_RC_REG_MAX];
     static ExtcRcRegion *extc_rc_regVal[EXTC_RC_REG_MAX];
@@ -237,13 +237,13 @@ region 由 arena 地址惰性登记：src/back/codegen.c:12419-12448 把下面�
       if (extc_rc_regN < EXTC_RC_REG_MAX) { extc_rc_regKey[extc_rc_regN] = key; extc_rc_regVal[extc_rc_regN] = r; extc_rc_regN++; }
       return r;
     }
-配套 extc_rc_regionDrop(void *key)（regionFree + 末元素填补 + regN--）。表满时**不再登记**（src/back/codegen.c:12410-12412 注释逐字：**"leaking a region is preferred over freeing it early"**）。
+配套 extc_rc_regionDrop(void *key)（regionFree + 末元素填补 + regN--）。表满时**不再登记**（src/back/codegen.c:12416-12418 注释逐字：**"leaking a region is preferred over freeing it early"**）。
 ⇒ 粒度为 **arena 地址**：每个函数的每一层块 arena 一个 region（若该层真被 rc 用到），home arena 在**拥有它的帧**里 claim；coroutine 任务 arena 由任务自身持有时在任务里 claim。
 
 ### 6.2 每个函数入口做什么（没有"root table 构造"，根表是就地物化的）
-- 帧入口：src/back/codegen.c:9640-9646 发 extc_arena __extc_a[N] = {0};；src/back/codegen.c:5776-5807 段把 rc 用到的 region 指针在**函数体顶部**预声明（rcPredeclare 先扫 body 的 EX_NEW），最多 40 个：ExtcRcRegion *__extc_rcr0 = extc_rc_regionOf((void *)&(__extc_a[1]), 1);
+- 帧入口：src/back/codegen.c:9646-9652 发 extc_arena __extc_a[N] = {0};；src/back/codegen.c:5782-5813 段把 rc 用到的 region 指针在**函数体顶部**预声明（rcPredeclare 先扫 body 的 EX_NEW），最多 40 个：ExtcRcRegion *__extc_rcr0 = extc_rc_regionOf((void *)&(__extc_a[1]), 1);
 - 根**不是**一张入口时采样的表：每个触发点用当前作用域活引用槽的 C 表达式**当场拼一个复合字面量**（src/back/codegen.c:3941-3992 rcRootTableText）：(void *[]){ (void *)(cur), (void *)(keep) }；n==0 时发 (void *const *)0（运行时只看 nroots）。根内容 = 包围块里还活着的本地 + 本函数参数 + 全局（src/back/codegen.c:3545-3617 注释）。
-- 每进入一层块，根表游标被截断记录：src/back/codegen.c:6738-6741 *(size_t *)vecPush(&g->rcRootMarks) = g->rcRoots.len，块退出时从游标恢复（"块里声明的槽在块外不存在"）。
+- 每进入一层块，根表游标被截断记录：src/back/codegen.c:6744-6747 *(size_t *)vecPush(&g->rcRootMarks) = g->rcRoots.len，块退出时从游标恢复（"块里声明的槽在块外不存在"）。
 
 ### 6.3 何时调用 maybeCollect、参数是什么
 唯一的发射点是 rcEmitTriggerNow（src/back/codegen.c:4101-4186），由 rcAllocCore 在**每个 rc 分配点之前**发出（src/back/codegen.c:4238-4278）。单分片逐字：
@@ -265,7 +265,7 @@ region 由 arena 地址惰性登记：src/back/codegen.c:12419-12448 把下面�
 - 代价（源码自述，仍是当前界的一部分）：只往 home arena 分配且属主之后不再调用的形状仍等帧销毁；属主在循环里反复调被调的形状峰值仍 10.86–10.92 MB（src/back/codegen.c 同段注释）。
 
 ### 6.6 何时释放 region：**只在帧销毁**
-src/back/codegen.c:7319-7340 cgReclaimDropArena 逐字要点：只在**帧销毁**发 extc_rc_regionDrop；块 release 不 drop（否则循环体每轮新建 1 MiB slab）；分片时每个 shard 各自 drop；rcArenaUsed 位图没碰过的 level 跳过。样本 /tmp/cf2/owed_home.c:2905-2907：
+src/back/codegen.c:7325-7346 cgReclaimDropArena 逐字要点：只在**帧销毁**发 extc_rc_regionDrop；块 release 不 drop（否则循环体每轮新建 1 MiB slab）；分片时每个 shard 各自 drop；rcArenaUsed 位图没碰过的 level 跳过。样本 /tmp/cf2/owed_home.c:2905-2907：
     extc_rc_regionDrop((void *)&__extc_a[1]);
     extc_arena_destroy(&__extc_a[1]);
     extc_arena_destroy(&__extc_a[2]);
@@ -273,8 +273,8 @@ src/back/codegen.c:7319-7340 cgReclaimDropArena 逐字要点：只在**帧销毁
 ### 6.7 EXTC_RC_SHARDS 如何切分
 - 语义（src/back/codegen.c:476-497 注释逐字要点）：一个逻辑 region（arena 地址 claim）切成 N 个运行时 region；每 shard 自己的 slab 链、跨区注册位图、mark 栈 ⇒ 可单独 sweep，停顿 ∝ 被收 shard 的可达集。
 - **按分配点分片号，不按活跃集**：rcAllocCore 里 int k = g->rcSite++ % nsh;，region 号 = lvl*nsh + k（src/back/codegen.c:4238-4278 逐字 "extc_rc_alloc(extc_rc_regionOf((void *)((char *)(base) + k), lvl*nsh + k), bytes, td)"）。理由（同段注释）：一个 new 点产生的所有东西（一条链、一个环、一代树节点）永远同 shard，链/环保持完整；按活跃集分会撕裂链环，跨 shard 注册位一旦置位，环状垃圾永远当 seed、界随轮数增长。
-- 上限 64：src/back/codegen.c:13777-13781（v > 64 ? 64 : v；注释：再大则每 shard 至少一个 1 MiB slab 的基线压过停顿收益）。
-- 有跨站点环就**拒绝分片**：src/back/codegen.c:14051-14118 段（[shard] unit has a cycle across sites (fn=%s); refusing to shard ⇒ rcNShard=1）。
+- 上限 64：src/back/codegen.c:13783-13787（v > 64 ? 64 : v；注释：再大则每 shard 至少一个 1 MiB slab 的基线压过停顿收益）。
+- 有跨站点环就**拒绝分片**：src/back/codegen.c:14057-14124 段（[shard] unit has a cycle across sites (fn=%s); refusing to shard ⇒ rcNShard=1）。
 - N==1 时字节相同（src/back/codegen.c:476-497）。
 
 ---
@@ -285,9 +285,9 @@ src/back/codegen.c:7319-7340 cgReclaimDropArena 逐字要点：只在**帧销毁
 
 | 开关 | 读取位置（默认） | 对生成 C 的具体影响 |
 |---|---|---|
-| EXTC_RECLAIM | src/back/codegen.c:13766-13768（**【默认开】**；=0 关） | =0 ⇒ 不发射整套 rc 运行时，分配退化为纯 bump 的 extc_arena_*；=1 ⇒ rcForced，跳过"有没有受治理分配点"的检测**强制**发射（=1 是许可不是强制；idle 证明仍生效） |
-| （无开关）受治理分配点检测 | src/back/codegen.c:14051-14118（scanUnitReclaim） | ① !needReclaim ⇒ return；② unitReclaimIdle ⇒ needReclaim=false（注释：这是**证明**不是优化开关）；③ 跨站点环 ⇒ rcNShard=1；④ rcForced ⇒ return；⑤ 无 new T / alloc<T>(n) / @overwrite 单值 cell ⇒ needReclaim=false |
-| （无开关）idle/acyclic 判据 | src/back/codegen.c:13943-14036 | unitReclaimIdle 三条：每个堆 ref 字段每个对象至多写一次 / ref 类型局部与参数从不被重新赋值 / 无丢引用操作（容器删除替换、@overwrite 复用、free 类内建、接收引用的 opaque callee）；一个点不满足 ⇒ 整单元判 false。unitAllAcyclic 为 event tier 判据 |
+| EXTC_RECLAIM | src/back/codegen.c:13772-13774（**【默认开】**；=0 关） | =0 ⇒ 不发射整套 rc 运行时，分配退化为纯 bump 的 extc_arena_*；=1 ⇒ rcForced，跳过"有没有受治理分配点"的检测**强制**发射（=1 是许可不是强制；idle 证明仍生效） |
+| （无开关）受治理分配点检测 | src/back/codegen.c:14057-14124（scanUnitReclaim） | ① !needReclaim ⇒ return；② unitReclaimIdle ⇒ needReclaim=false（注释：这是**证明**不是优化开关）；③ 跨站点环 ⇒ rcNShard=1；④ rcForced ⇒ return；⑤ 无 new T / alloc<T>(n) / @overwrite 单值 cell ⇒ needReclaim=false |
+| （无开关）idle/acyclic 判据 | src/back/codegen.c:13949-14042 | unitReclaimIdle 三条：每个堆 ref 字段每个对象至多写一次 / ref 类型局部与参数从不被重新赋值 / 无丢引用操作（容器删除替换、@overwrite 复用、free 类内建、接收引用的 opaque callee）；一个点不满足 ⇒ 整单元判 false。unitAllAcyclic 为 event tier 判据 |
 | EXTC_RC_NOCOUNT | src/back/codegen.c:498、13769-13795（**【默认 1 = 不计数】**）；运行期文本 src/back/reclaim.c:2914 发 #define EXTC_RC_NOCOUNT 1，:1317 段 [rt:nocount] 把计数入口编译成 no-op | 计数入口变 no-op，回收只靠 sweep；=0 恢复计数（实测计数层比清扫贵 +100%~+455%，docs/plans/TODO.md） |
 | EXTC_RC_LOCALSTORE | src/back/codegen.c:501、13778-13785（**默认 1**） | =0 关掉 extc_rc_storeRefLocal 发射，回到每次本地槽存储都反查 region 的旧形态（no-count tier 下纯浪费）；=0 可逐字节还原"翻档前"产物 |
 | EXTC_RC_SHARDS | src/back/codegen.c:476、7093、13764-13776（**默认 1**，上限 64） | N>1 ⇒ 每分配点按 rcSite++%N 选 shard、region 号 lvl*N+k、floor 均分、每触发点只收一个 shard；N==1 字节相同 |
@@ -296,13 +296,13 @@ src/back/codegen.c:7319-7340 cgReclaimDropArena 逐字要点：只在**帧销毁
 | EXTC_RC_SWEEP_BUDGET | 运行期 src/back/reclaim.c:888-890（**默认 8 words**） | 一步 sweep 的词数上限（word = 64 slot） |
 | EXTC_RC_MARK_EVERY | 运行期 src/back/reclaim.c:901-903（**默认 64**） | 每多少次分配推进一次标记 |
 | EXTC_RC_WORK_BUDGET | 运行期 src/back/reclaim.c:1001-1013（**默认 0 = off**） | >0 ⇒ walk/scan/push/assist 共用总预算 W，"一步的总工作量按构造 ≤ W" |
-| EXTC_RC_TIME | 运行期 src/back/reclaim.c:62；发射开关 src/back/codegen.c:12396-12401（默认关） | 每个收集步计时并按桶统计（instrument，$ 只改运行时文本、不改分配路径） |
+| EXTC_RC_TIME | 运行期 src/back/reclaim.c:62；发射开关 src/back/codegen.c:12402-12407（默认关） | 每个收集步计时并按桶统计（instrument，$ 只改运行时文本、不改分配路径） |
 | EXTC_RC_PAUSE | 运行期 src/back/reclaim.c:2716-2723（默认关） | 记录单步停顿直方图并以 EXTC_RC_SLOWSTEP 阈值告警，atexit 打印（instrument） |
 | EXTC_ARENA_FILL | 见 --help；只填非零 arena 分配 | 不改变字节内容（调试用） |
-| EXTC_DBG_ARENA / _VERBOSE | src/back/codegen.c:5948-5956 | 只诊断，不改产物（见 §1.3） |
+| EXTC_DBG_ARENA / _VERBOSE | src/back/codegen.c:5954-5962 | 只诊断，不改产物（见 §1.3） |
 | EXTC_DBG_RCCOST | src/back/codegen.c:3896-3939（dbgRcCostReport） | 编译期打印每站点分配/屏障计数表：表头 lvl/ref/refInLoop/alloc/allocInLoop/rootMax，rootMax = 触发点根表槽数最大值（= 标记启动规模） |
 | EXTC_NO_LEVELPASS | src/main.c 自述 **"CHANGES THE OUTPUT"**（414 个 golden 里 2 个的 arena 放置会变） | 跳过 arena level pass，用前端初值 ⇒ 仅用于定位问题 |
-| 帧根链 | src/back/codegen.c:12396-12401（末参数传 0） | **[rt:chain] 是死代码**：注释逐字 "The frame root chain ... has no emitter pushing into the chain yet, so pushing code would be all dead => passing 0 emits nothing." |
+| 帧根链 | src/back/codegen.c:12402-12407（末参数传 0） | **[rt:chain] 是死代码**：注释逐字 "The frame root chain ... has no emitter pushing into the chain yet, so pushing code would be all dead => passing 0 emits nothing." |
 
 ---
 
@@ -351,7 +351,7 @@ src/back/reclaim.c:2745-2801 四个入口：
 | 文件 | 提供什么 | 分配源 | 与 arena / rc 的关系 |
 |---|---|---|---|
 | src/back/reclaim.c（2889 行运行时文本，按 [rt:name] 分段：head/types/helpers/slab/budget/xregion/nocount/shade-cache/xentry/pin/chain/tlsdepth/mark/release/sweep/owe/counters） | 位图 slab 分配器 + 持有计数 + 区域标记/清扫 + owe/owed | 自己 malloc slab（生成物 /tmp/cf/cyclic_shape.c:107-163 ExtcRcSlab/ExtcRcClass 字段 big/rcp/avail/clsBkt/ownMap） | **rc 只治理** new T / new [N]T（仅 level 1）/ alloc<T>(n) / @overwrite 单值 cell。region 由 arena 地址 claim，**寿命 = 那只 arena** |
-| src/back/codegen.c:9640-9646 + 运行期 arena 文本（[rt:head]） | extc_arena bump 分配、release（保留 1 个 spare block，上限 EXTC_ARENA_SPARE_MAX = 1<<20）、destroy、越界 trap | 每块 calloc（cap 倍增，下限 64） | 帧局部对象；**不是** pool，也**不**参与 rc（除上面四类治理点的额外记录） |
+| src/back/codegen.c:9646-9652 + 运行期 arena 文本（[rt:head]） | extc_arena bump 分配、release（保留 1 个 spare block，上限 EXTC_ARENA_SPARE_MAX = 1<<20）、destroy、越界 trap | 每块 calloc（cap 倍增，下限 64） | 帧局部对象；**不是** pool，也**不**参与 rc（除上面四类治理点的额外记录） |
 | src/back/pools.c（126 行） | 容器内存：**池持有自己的块**，place/zone 栈（extc_pool_zoneEnter/zoneLeaveTo/zoneNewRoot/zoneFreeRoot）、块链 take/resize/give、对象表、dyn 槽四代校验 | 全 malloc/realloc/free | 注释（src/back/pools.c:19-24）逐字：a pool **owns its own memory**；**"The arena does not own those blocks -- it owns their lifetime."** extc_pool_new_at = **THE PROMOTION HOOK**（:56-57：函数把自己的分配交给调用者的 place，就要收一个隐藏的 __extc_home arena）。⇒ **容器块走 pool，不走 rc** |
 | src/back/plate.c（74 行） | 只发两个门：extc_viewOf(uint8_t *p, int64_t n) 造 slice_u8（:35-38，零检查）、extc_memCopy（:69-73，memcpy） | **不分配** | 视图不是根、不是 rc 槽（src/back/codegen.c:3545-3617 注释：视图 data 指向 arena/plate/C 存储） |
 | src/back/memfind.c（126 行） | extc_memFind（needleLen<=32 走 memchr+memcmp，否则 memmem）、extc_memEq（memcmp==0） | **不分配** | 只读查找 |
@@ -396,7 +396,7 @@ src/back/reclaim.c:2745-2801 四个入口：
 
 **⑥ 循环体：每轮一个 release（内存按"一轮"有界，与迭代次数无关）**
     extc_arena_release(&__extc_a[1]);        /* 循环体入口清层（owed_home.c:2885 附近）*/
-（src/back/codegen.c:6714-6727 注释逐字：a loop body is a block too, so each iteration clears once -- the memory a loop uses is therefore bounded by one iteration, not by the iteration count.）
+（src/back/codegen.c:6720-6733 注释逐字：a loop body is a block too, so each iteration clears once -- the memory a loop uses is therefore bounded by one iteration, not by the iteration count.）
 
 **⑦ 块/条件层的分配（无 rc 的纯 bump 形态，来自 /tmp/cp-p.c）**
     while (...) { int64_t * p = (int64_t *)extc_arena_alloc(&__extc_a[2], (int64_t)(250000) * (int64_t)sizeof(int64_t), "tests/arena/promote.extc", 13);
@@ -414,7 +414,7 @@ src/back/reclaim.c:2745-2801 四个入口：
 4. **"[lvl] 175 level facts, converged after 32 round(s)"**：32 恰是 check_top.c:9525-9555 的重放上限，无法区分"真收敛"与"撞上限被截断"（代码里未见截断告警）⇒ 待核。
 5. **EXTC_RC_SHARDS>1 未实测**：分片逻辑全部来自读码（codegen.c:476-497/4096-4181/13764-13776），未生成并比较 N=2/4 的产物与行为。
 6. **对照产物未生成**：EXTC_RECLAIM=0、EXTC_RC_NOCOUNT=0、EXTC_RC_LOCALSTORE=0、EXTC_RC_SWEEPFREE=1 的逐字节 diff 均未做（--help 的"=0 逐字节还原"只是自述）。
-7. **extc_rc_storeStructCons 未观测到发射**（唯一发射点 codegen.c:7711）；触发它需要 RC_CONSERVATIVE 的整块赋值样本。
+7. **extc_rc_storeStructCons 未观测到发射**（唯一发射点 codegen.c:7717）；触发它需要 RC_CONSERVATIVE 的整块赋值样本。
 8. **类型描述符生成规则**（rcScanType / rcEmitTypeDesc，codegen.c:3619-3626 附近）未逐行核；td 为 -1 表示"保守扫每字"这一约定来自注释与产物。
 9. **4096 根表上限的口径**：rcEmitTriggerNow 用 n = globals.len + locals.len（codegen.c:4101-4186），rcRootLeaves 用 rcRoots.len > 4096（codegen.c:4292-4329）⇒ 两处口径不同，需对齐。
 10. **C 互操作内存的所有权**：外部声明/未检查函数体、extc_viewOf 之后的 C 内存由谁负责、是否可能进入 rc 图——未验证。
@@ -473,11 +473,11 @@ src/back/reclaim.c:2745-2801 四个入口：
         *(int *)vecPush(&g->taskRootAt[g->blkLevel]) = trk;
     }
 
-（:6220-6225；docstring :6197-6219 说明登记哪四类槽：d.run 体里的 ext 帧、栈帧 spawn、局部 boxed handle 的 .task、拷贝到另一局部时在该变量的声明处；聚合体/容器/结构体字段不登记，方向只多保活。）弹出用守卫局部量配对：if (__extc_trk%d) extc_task_rootPop();（:6243 起；表满时 push 返回 0，不能盲弹偷别人的槽）。
+（:6226-6231；docstring :6203-6225 说明登记哪四类槽：d.run 体里的 ext 帧、栈帧 spawn、局部 boxed handle 的 .task、拷贝到另一局部时在该变量的声明处；聚合体/容器/结构体字段不登记，方向只多保活。）弹出用守卫局部量配对：if (__extc_trk%d) extc_task_rootPop();（:6249 起；表满时 push 返回 0，不能盲弹偷别人的槽）。
 
-登记点：cgTaskRootPush 于 :3039（exExt 的 &__extc_dtid%d）、:7574（boxed handle 的 &%s.task）、:7593（栈帧 spawn 的 &__extc_czid%d，if (!g->coroFunc)）、:7905（handle 拷贝到另一局部时该局部的 .task）。弹出点：cgReturn 两条返回路径 :5629/:5646（cgTaskRootPopsForReturn，不清表）、cgReleaseLevel :6305（传 g->atBlockEnd）、块尾 probe :6978（true,true）、d.run 驱动之后 :8803（bodyLevel，false,true，ST_DOMAIN）。
+登记点：cgTaskRootPush 于 :3039（exExt 的 &__extc_dtid%d）、:7580（boxed handle 的 &%s.task）、:7599（栈帧 spawn 的 &__extc_czid%d，if (!g->coroFunc)）、:7911（handle 拷贝到另一局部时该局部的 .task）。弹出点：cgReturn 两条返回路径 :5635/:5652（cgTaskRootPopsForReturn，不清表）、cgReleaseLevel :6311（传 g->atBlockEnd）、块尾 probe :6984（true,true）、d.run 驱动之后 :8809（bodyLevel，false,true，ST_DOMAIN）。
 
-clear 语义（break/continue 真 bug 的修复）：只有普通块尾清表，早退路径只发弹出、保留清单，因为块自身的 release 文本对 fall-through 路径仍然有效——if (clear) v->len = 0;（:6159，cgCoroTaskEndAt；:6194 cgCoroOwnedEndAt；:6243 起 cgTaskRootPopAt）。EXTC_TASK_ROOTS=0 是编译期 kill switch（默认 1，:13975 附近）。验收：tests/zone/task_root_break.extc --run 打印 live=0；无 break 对照 tests/zone/task_root_break_nobreak.extc 同样 live=0；EXTC_TASK_ROOTS=0 时两例产物只少 trk 行。
+clear 语义（break/continue 真 bug 的修复）：只有普通块尾清表，早退路径只发弹出、保留清单，因为块自身的 release 文本对 fall-through 路径仍然有效——if (clear) v->len = 0;（:6165，cgCoroTaskEndAt；:6200 cgCoroOwnedEndAt；:6249 起 cgTaskRootPopAt）。EXTC_TASK_ROOTS=0 是编译期 kill switch（默认 1，:13981 附近）。验收：tests/zone/task_root_break.extc --run 打印 live=0；无 break 对照 tests/zone/task_root_break_nobreak.extc 同样 live=0；EXTC_TASK_ROOTS=0 时两例产物只少 trk 行。
 
 ### 13.2 P0-5 initRefNoHold 只在无计数档发射
 
@@ -486,11 +486,11 @@ clear 语义（break/continue 真 bug 的修复）：只有普通块尾清表，
     else
         cgLine(g, "extc_rc_initRef((void **)&%s, (void *)%s);", nm, nm);
 
-（:7855 起。）计数档的级联会在槽对象死亡时按槽减计数，NoHold 只写不加会让该次减计数没有对应的加计数 ⇒ 目标提前归零/释放；因此只有无计数档（NoHold 等价于普通写）保留该优化。
+（:7861 起。）计数档的级联会在槽对象死亡时按槽减计数，NoHold 只写不加会让该次减计数没有对应的加计数 ⇒ 目标提前归零/释放；因此只有无计数档（NoHold 等价于普通写）保留该优化。
 
 ### 13.3 P1-3 REG_MAX 满表可观测
 
-运行时文本（:12693 起）现在带可 grep 的宏与一次性告警开关：
+运行时文本（:12699 起）现在带可 grep 的宏与一次性告警开关：
 
     /* EXTC_RC_REG_FULL_POLICY 1: when the table is full, a new region is not entered and
      * is never dropped -- leaking a region beats freeing it early (see the note above).
@@ -504,7 +504,7 @@ clear 语义（break/continue 真 bug 的修复）：只有普通块尾清表，
 
 ### 13.4 P1-4 产物档位 EXTC_RC_TIER（0/1/2/3）
 
-emitPreamble 内（:12604-12631）：只在 g->needReclaim 为真时发一行；EXTC_RECLAIM=0 把整个回收运行期删掉，也就没有标记（档 0 以“无标记”表示，且不能给不存在的运行期发宏）。映射逐字：
+emitPreamble 内（:12610-12637）：只在 g->needReclaim 为真时发一行；EXTC_RECLAIM=0 把整个回收运行期删掉，也就没有标记（档 0 以“无标记”表示，且不能给不存在的运行期发宏）。映射逐字：
 
     int tier;
     if (g->rcNoCount == 0 && g->rcSweepFree == 1)        tier = 1;
@@ -517,7 +517,7 @@ emitPreamble 内（:12604-12631）：只在 g->needReclaim 为真时发一行；
               : tier == 3 ? "counted+sweep tier: both on (NOCOUNT=0 forced)"
                           : "sweep tier: region sweeping on");
 
-0 = 无回收运行期（needReclaim 假）；1 = 事件档（计数开、清扫关）；2 = 清扫档（计数关、清扫开，默认）；3 = 计数+清扫（NOCOUNT=0 强制，或 SWEEP_FREE=0 禁止事件档）。最后一个 else 是 noCount==1 且 sweepFree==1 的组合，当前不可达（EXTC_RC_SWEEPFREE=1 在 :14007 附近强制把 rcNoCount 置 0；自动升级同样置 0），保留文案只为穷举；可达状态下注释与随后生成的 EXTC_RC_NOCOUNT/EXTC_RC_SWEEP_FREE 一致。实测见 §14 矩阵。
+0 = 无回收运行期（needReclaim 假）；1 = 事件档（计数开、清扫关）；2 = 清扫档（计数关、清扫开，默认）；3 = 计数+清扫（NOCOUNT=0 强制，或 SWEEP_FREE=0 禁止事件档）。最后一个 else 是 noCount==1 且 sweepFree==1 的组合，当前不可达（EXTC_RC_SWEEPFREE=1 在 :14013 附近强制把 rcNoCount 置 0；自动升级同样置 0），保留文案只为穷举；可达状态下注释与随后生成的 EXTC_RC_NOCOUNT/EXTC_RC_SWEEP_FREE 一致。实测见 §14 矩阵。
 
 ### 13.5 P0-7 参数槽覆盖（计数档 insert-only store）
 
@@ -528,7 +528,7 @@ emitPreamble 内（:12604-12631）：只在 g->needReclaim 为真时发一行；
         return;
     }
 
-（src/back/codegen.c:8955-8958。）判定器 :8693-8709 cgTargetIsParamSlot：目标必须是 EX_IDENT，C 名取 planCName(t) ?: t->u.ident.name；被遮蔽的局部在 checker 里改名（a__2），所以与参数 cname/name 重名者只能是该参数。理由（注释 :8945-8954）：参数槽在入口只登记为 root、从不 initRef，旧值没有自身计数；普通 store 的 -1 会提前释放调用方别名。insert-only 最多让一个引用晚回收。无计数档不走此路径（那里普通 store 是 storeRefLocal 纯写，已安全且输出必须逐字节不变）。验收：tests/gc-p0/src/uaf_param_overwrite.extc 在默认档与 EXTC_RC_NOCOUNT=0 下都打印 alias check b.v=999（修复前计数档为 111）。边界（Lead 确认，不改代码）：insert-only 只在**强制事件档**（TIER 1：计数开、清扫关）线性泄漏，量级约 20 B/轮（每轮一个新值、旧值不再回收）；默认清扫档 T2 与 T3 由 region 清扫兜底，循环结束后随 region 一起回收，不构成无界增长。
+（src/back/codegen.c:8961-8964。）判定器 :8699-8715 cgTargetIsParamSlot：目标必须是 EX_IDENT，C 名取 planCName(t) ?: t->u.ident.name；被遮蔽的局部在 checker 里改名（a__2），所以与参数 cname/name 重名者只能是该参数。理由（注释 :8951-8960）：参数槽在入口只登记为 root、从不 initRef，旧值没有自身计数；普通 store 的 -1 会提前释放调用方别名。insert-only 最多让一个引用晚回收。无计数档不走此路径（那里普通 store 是 storeRefLocal 纯写，已安全且输出必须逐字节不变）。验收：tests/gc-p0/src/uaf_param_overwrite.extc 在默认档与 EXTC_RC_NOCOUNT=0 下都打印 alias check b.v=999（修复前计数档为 111）。边界（Lead 确认，不改代码）：insert-only 只在**强制事件档**（TIER 1：计数开、清扫关）线性泄漏，量级约 20 B/轮（每轮一个新值、旧值不再回收）；默认清扫档 T2 与 T3 由 region 清扫兜底，循环结束后随 region 一起回收，不构成无界增长。
 
 ### 13.6 P0-7b 批量字节搬移（copyInto）的引用记账 + (iv) 保守退回清扫档
 

@@ -55,13 +55,13 @@
 
 ### 1.1 三档默认路径（判定链在编译期，产物头有 `EXTC_RC_TIER`）
 
-| 档 | 触发条件（`src/back/codegen.c:15978-15986`） | 回收方式 | 内存 | 停顿 |
+| 档 | 触发条件（`src/back/codegen.c:15984-15992`） | 回收方式 | 内存 | 停顿 |
 |---|---|---|---|---|
-| **档 0（无回收）** | `EXTC_RECLAIM=0`，或整 unit 被 `unitReclaimIdle` 证明无回收工作（`codegen.c:14313-14351`、`:14390-14392`） | 不发射回收运行期；分配走 bump/arena | 作用域有界，但逃逸对象随帧 | 零 |
-| **档 1（事件档）** | `EXTC_RC_SWEEPFREE=1`，或 `needReclaim && unitAllAcyclic` 自动升级（`codegen.c:15978-15986`） | 计数（hold）+ 归零当场 `freeSlot`（级联），无清扫 | 无环形状下有界；含环会漏 | 计数更新恒定成本 |
-| **档 2（清扫档）** | 默认：`rcNoCount=1`（`codegen.c:14099`）、`rcSweepFree=0`、`needReclaim` | 每 region 增量标记 + 步进清扫（mark-sweep），无计数 | **无常数上界**（分配速率×触发阈值×环堆积） | 步进预算约束 |
+| **档 0（无回收）** | `EXTC_RECLAIM=0`，或整 unit 被 `unitReclaimIdle` 证明无回收工作（`codegen.c:14319-14357`、`:14396-14398`） | 不发射回收运行期；分配走 bump/arena | 作用域有界，但逃逸对象随帧 | 零 |
+| **档 1（事件档）** | `EXTC_RC_SWEEPFREE=1`，或 `needReclaim && unitAllAcyclic` 自动升级（`codegen.c:15984-15992`） | 计数（hold）+ 归零当场 `freeSlot`（级联），无清扫 | 无环形状下有界；含环会漏 | 计数更新恒定成本 |
+| **档 2（清扫档）** | 默认：`rcNoCount=1`（`codegen.c:14105`）、`rcSweepFree=0`、`needReclaim` | 每 region 增量标记 + 步进清扫（mark-sweep），无计数 | **无常数上界**（分配速率×触发阈值×环堆积） | 步进预算约束 |
 
-自动升级到档 1 的四条判据（`src/check/check_top.c:6166-6205` + `codegen.c:14352-14396`）：写进 ref 字段的值必须是本帧新鲜分配（或 null）、值的层号严格大于宿主层号、能丢弃引用的位置必须是计数槽、不得有涉及引用的 opaque 调用。**注意这是「无环 + 引用只存在计数槽里」的强条件**，不是普通的「无环」。
+自动升级到档 1 的四条判据（`src/check/check_top.c:6166-6205` + `codegen.c:14358-14402`）：写进 ref 字段的值必须是本帧新鲜分配（或 null）、值的层号严格大于宿主层号、能丢弃引用的位置必须是计数槽、不得有涉及引用的 opaque 调用。**注意这是「无环 + 引用只存在计数槽里」的强条件**，不是普通的「无环」。
 
 ### 1.2 已经能证的界（源码常量级，与实测无关）
 
@@ -70,7 +70,7 @@
 | 单步标记 | 常态每步最多 `b=MARK_BATCH_MAX=256` 个 pop（压力档夹到 `256×SWEEP_PRESSURE_MUL`，默认 **1024**，`reclaim.c:1382/1368`）、`MARK_STEP=8` 次 word 扫描 | `src/back/reclaim.c` 的 [rt:mark] 常量表 |
 | 单步清扫 | `EXTC_RC_SWEEP_BUDGET=8` word/步 | 同上 [rt:sweep] |
 | 大对象扫描 | `EXTC_RC_SCAN_CHUNK`（本轮改为 **8192** word/段） | `EXTC_RC_SCAN_CHUNK` 的 `#define`（运行期文本） |
-| 帧 arena | 块 ≤ `EXTC_ARENA_SPARE_MAX=1 MiB` 的 spare 保留，其余当场 free | `codegen.c:12411-12423` |
+| 帧 arena | 块 ≤ `EXTC_ARENA_SPARE_MAX=1 MiB` 的 spare 保留，其余当场 free | `codegen.c:12417-12429` |
 | region 回收 | v8：`regionFree` 置 `dead` + 挂线程局部 closing queue（O(1)）；逐 slab 的 unlinkChildren/`ownDel`/free 由 `extc_rc_cqDrainCore` 按 ≤8 slab/100 µs 推进 | `extc_rc_regionFree`（`:2734-2827`）、`extc_rc_cqDrainCore`（`:1776-1819`） |
 
 ### 1.3 漏洞清单（优化方案必须闭合的部分；每条带 file:line 与实测反例）
@@ -82,7 +82,7 @@
 | L3 | `extc_rc_collect` 一次排空整轮标记 | digraph 1M：一轮 mark 累计 0.30–0.32 ms（p50）、max 1.08–1.45 ms | 契约文档化：只允许在无停顿要求的点调用（§7 G2） |
 | L4 | `releaseOld`（定向释放）纯 DFS，无内部预算 | `persist_nodes` 曾测 2344 µs | **P0-3**（§6） |
 | L5 | `regionFree` 单次调用规模随 region 增长 | 200×8 MiB 用例：单次可达 ms 级 | **P0-2**（§6）；**v8 已闭合**（closing queue，三形状 0.4/1.6/1.7 µs，G3b） |
-| L6 | region 注册表 512 项满则不登记 ⇒ region 泄漏（宁漏不早放） | `codegen.c:12727-12773` | **P1-3** 显式化（§6） |
+| L6 | region 注册表 512 项满则不登记 ⇒ region 泄漏（宁漏不早放） | `codegen.c:12733-12779` | **P1-3** 显式化（§6） |
 | L7 | `noSweep` 置位后**没有任何清零路径** ⇒ 该 region 永不回收 | 写点只有 `storeRefUnknown` 的 `pinAdd` 失败分支与 `storeStructCons` 的宿主未知分支 | 契约：`noSweep` 只能由 pin 失败/未知宿主触发，需可观测（§6 P1-3） |
 | L8 | RSS 只增不减（slab 只 free 不 munmap；arena spare 常驻） | 活集从 142 MB 掉到 20 MB 后 RSS 一字节不降 | **P2-3**（研究项） |
 
@@ -432,8 +432,8 @@ GC 的对应量：
 | 阶段 | 项 | 文件 | 状态 | 验收 |
 |---|---|---|---|---|
 | 0 | P0-5 计数档 `freeSlot` 补子引用级联 | `src/back/reclaim.c`（[rt:cascade]，:1831 起） | **已落地** | G8 |
-| 0 | P0-6 任务根登记（boxed handle） | `src/back/codegen.c`（:6223、注释 :6201-6221；发射点 :3042/:7600/:7619/:7931） | **已落地** | G9 |
-| 0 | P1-4 产物头 `EXTC_RC_TIER` | `src/back/codegen.c:12657` | **已落地** | 三档可 grep |
+| 0 | P0-6 任务根登记（boxed handle） | `src/back/codegen.c`（:6229、注释 :6207-6227；发射点 :3042/:7606/:7625/:7937） | **已落地** | G9 |
+| 0 | P1-4 产物头 `EXTC_RC_TIER` | `src/back/codegen.c:12663` | **已落地** | 三档可 grep |
 | 0 | P1-3 `REG_MAX` 满表显式化 | `src/back/codegen.c` | **已落地**（[reg] 溢出告警，见 6.1） | 注册溢出可观测 |
 | 0 | P0-7 计数档参数槽覆盖（减了没加过的计数） | `src/back/codegen.c` | **已落地**（insert-only 覆盖） | G12 999 |
 | 0 | P0-7b 含引用元素的批量拷贝绕过计数 | `src/back/codegen.c:1286-1330`、`src/back/pools.c:63/72` | **已落地**（storeStructCopy） | G13 7 |
@@ -468,12 +468,12 @@ GC 的对应量：
 | 计数不变式（审计） | 每个字段写入路径都 +1（`initRef`/`storeRefOwned*`/`storeRefUnknown`）；唯一 -1 是 `initRefNoHold`，已在计数档禁用（`planRcNoDec && rcNoCount` 才发）⇒「入槽即 +1」成立 |
 
 **P0-7 / P0-7b 计数档的两条 UAF（`doc-audit` 运行复现，HEAD 亦复现 ⇒ pre-existing）**：
-1. **参数槽覆盖**（`codegen.c:8986`）：`fn clobber(p: mut ref node){ p = new node }` 在计数档发 `extc_rc_storeRefOwned((void**)&p, v, 0)`，而 `storeRefOwned` 无条件对旧值 `holdUpdSlab(...,-1)`（`extc_rc_holdUpdSlab` 的 `-1` 分支）；参数槽入口从不 `initRef`/inc（只登记为根，`codegen.c:10134/10113`）⇒ 减了没加过的计数 ⇒ 活对象被提前释放、槽复用（实测 a、b 同槽，输出 111 而非 999）。修法取**保守方向**：计数档对引用型参数槽的赋值只插入新值 +1、**不递减旧值**（最多泄漏一个引用，不会早放）；不走「入口 initRef + 全退出路径 dec」（return/trap/协程 step 全要动，风险更大）。
+1. **参数槽覆盖**（`codegen.c:8992`）：`fn clobber(p: mut ref node){ p = new node }` 在计数档发 `extc_rc_storeRefOwned((void**)&p, v, 0)`，而 `storeRefOwned` 无条件对旧值 `holdUpdSlab(...,-1)`（`extc_rc_holdUpdSlab` 的 `-1` 分支）；参数槽入口从不 `initRef`/inc（只登记为根，`codegen.c:10140/10113`）⇒ 减了没加过的计数 ⇒ 活对象被提前释放、槽复用（实测 a、b 同槽，输出 111 而非 999）。修法取**保守方向**：计数档对引用型参数槽的赋值只插入新值 +1、**不递减旧值**（最多泄漏一个引用，不会早放）；不走「入口 initRef + 全退出路径 dec」（return/trap/协程 step 全要动，风险更大）。
 2. **批量字节拷贝**（`genViewCopier` `codegen.c:1286-1330`；`poolResize`/`poolResizeRaw` `pools.c:63/72`）：对任意元素类型发 `memmove` ⇒ 含引用的元素被复制却不 inc，源被覆盖后目标悬垂（实测 `d[0].r.v` 输出 555）。修法：编译期已知元素类型描述符 ⇒ 对**含引用元素**的类型逐元素拷贝（引用字段走 `storeRef`/`storeStructCons`），纯数据元素保持 `memmove`。
 
 两条都只在**计数档**可达，但计数档是「无环 unit 自动升级」的默认档，所以不是死代码路径。两者的共同教训：计数正确性依赖「每次写入 +1」这条不变式（§6.1 表），任何**绕过写屏障的写入路径**（参数槽初始化、memmove、realloc 迁移）都是漏洞面——这也是 §8.2 的 L9/L10。
 
-**P0-6 任务根登记**（`codegen.c:6223（注释 :6201-6221）`、发射点 `:3042/:7600/:7619/:7931`）。动机（L2）：`extc_task_collect` 按 `extc_taskRoots[]` 判活，而 `extc_task_rootPush` 原本**零调用点** ⇒ 任何 `syspool::collect()` 都会释放仍被活句柄持有的任务。修法：对**存储是普通局部变量的 boxed handle**（`extc_coro{.frame,.kind,.task}`）在声明处发 `extc_task_rootPush(&h.task)`，在作用域退出（块尾/return/break/continue）配平 `pop`；**拷进聚合体/容器的句柄不登记**——那种情况落到 `stdlib/std/sys/pool.extc` 的契约：`collect()` 是调用者断言「此刻没有任何仍指向那些任务的句柄」。
+**P0-6 任务根登记**（`codegen.c:6229（注释 :6207-6227）`、发射点 `:3042/:7606/:7625/:7937`）。动机（L2）：`extc_task_collect` 按 `extc_taskRoots[]` 判活，而 `extc_task_rootPush` 原本**零调用点** ⇒ 任何 `syspool::collect()` 都会释放仍被活句柄持有的任务。修法：对**存储是普通局部变量的 boxed handle**（`extc_coro{.frame,.kind,.task}`）在声明处发 `extc_task_rootPush(&h.task)`，在作用域退出（块尾/return/break/continue）配平 `pop`；**拷进聚合体/容器的句柄不登记**——那种情况落到 `stdlib/std/sys/pool.extc` 的契约：`collect()` 是调用者断言「此刻没有任何仍指向那些任务的句柄」。
 
 | 证据 | 结果 |
 |---|---|
@@ -1095,29 +1095,29 @@ r'* = r'_max(M_max) = (M_max/L − 1)/κ_M
 
 ## 附录 D 源码行号索引（FREEZE v14 口径）
 
-下表是本文所有关键断言的可核对位置。**当前口径（FREEZE v14）**：src/back/reclaim.c = 7151a43181f69ab865607f61ad2afad7（4 212 行，同 v13）；src/back/codegen.c = 258c8df21dbf75727a6d2c1923321bac（16 059 行，相对 v13 的 16 017 行有 +42 行位移，换算表见 `MEMORY-MODEL-CURRENT.md` 头部 v14 行）；stdlib/std/json.extc = fc33b94db7b01f61ad367fff768edfbb（1 186 行）；tests/reclaim/driver.c = 28dd4009ac7207f47e581a697c0d421f（1,637 行）；build/extc = c703f355532a168960f54411c621274a。**本表已按 v14 重锚**：每一行都用符号 grep 逐条复核（v12 与 v11 同为 4 169 行、行号相同；v13 的位移集中在常量段与 `slabNew`/`alloc` 发射段，v10/v11 的换算表见 `P1-ADMISSION.md`）；表外正文的 `reclaim.c:NNNN` 引用与表同源，未单列。**v7 口径（历史）**：codegen.c = 2f560e2e6deef8c4927db4611344aecb（16 017 行）（v7 测量输入为 `d339382889b87c0dd18b357c69e2e779`/16 017 行；提交树只把 `typeHasRefSlots` 的前向声明移到 `genViewCopier` 的说明块之前以过 `check-doxygen`，行数与代码不变）；src/back/reclaim.c = e17080d1c80513b27ca06f2bc6224b0f（4 031 行）；tests/reclaim/driver.c = 7b9ac61a55c140640a5964ab74a8780e（1 523 行）；v7 为 git HEAD 85b8871b + 工作树 patch；v10 为 HEAD 8d0086f0 + 本轮工作树 patch。构建：build-p1/extc = b9fd5784…（v7 交付）、build-lead7/extc = a7f2a873…、build-da2/extc = 10960ce7…（独立复核）；P0 轮的 build-rf/extc = 7019342b… 只在 §6.6 与 G20-P0 行出现。行号是该文件的物理行号；换版本前先 md5sum 对齐。注：同一源码用不同 BUILDDIR 重建时 extc 的 md5 会因调试段（-g）里嵌入的构建目录路径而不同（build-frz/extc = b35c12a1… 即同源二次构建），溯源以源码 md5 为准。
+下表是本文所有关键断言的可核对位置。**当前口径（FREEZE v15）**：src/back/reclaim.c = 7151a43181f69ab865607f61ad2afad7（4 212 行，同 v13）；src/back/codegen.c = 41c26996d3f608855cc41c72f2f0a996（16 065 行，相对 v14 的 16 059 行在 :5308 处 +6 行位移，换算表见 `MEMORY-MODEL-CURRENT.md` 头部 v15 行）；stdlib/std/json.extc = fc33b94db7b01f61ad367fff768edfbb（1 186 行）；tests/reclaim/driver.c = 28dd4009ac7207f47e581a697c0d421f（1,637 行）；build/extc = f8f037a7b4a457da114b7918da796975。**本表已按 v14 重锚**：每一行都用符号 grep 逐条复核（v12 与 v11 同为 4 169 行、行号相同；v13 的位移集中在常量段与 `slabNew`/`alloc` 发射段，v10/v11 的换算表见 `P1-ADMISSION.md`）；表外正文的 `reclaim.c:NNNN` 引用与表同源，未单列。**v7 口径（历史）**：codegen.c = 2f560e2e6deef8c4927db4611344aecb（16 017 行）（v7 测量输入为 `d339382889b87c0dd18b357c69e2e779`/16 017 行；提交树只把 `typeHasRefSlots` 的前向声明移到 `genViewCopier` 的说明块之前以过 `check-doxygen`，行数与代码不变）；src/back/reclaim.c = e17080d1c80513b27ca06f2bc6224b0f（4 031 行）；tests/reclaim/driver.c = 7b9ac61a55c140640a5964ab74a8780e（1 523 行）；v7 为 git HEAD 85b8871b + 工作树 patch；v10 为 HEAD 8d0086f0 + 本轮工作树 patch。构建：build-p1/extc = b9fd5784…（v7 交付）、build-lead7/extc = a7f2a873…、build-da2/extc = 10960ce7…（独立复核）；P0 轮的 build-rf/extc = 7019342b… 只在 §6.6 与 G20-P0 行出现。行号是该文件的物理行号；换版本前先 md5sum 对齐。注：同一源码用不同 BUILDDIR 重建时 extc 的 md5 会因调试段（-g）里嵌入的构建目录路径而不同（build-frz/extc = b35c12a1… 即同源二次构建），溯源以源码 md5 为准。
 
 | 主题 | 位置 |
 |---|---|
-| 编译期：分配点判定 rc 与否 | `codegen.c:14253` |
-| 编译期：acyclic 单元判定 | `codegen.c:14352` |
-| 编译期：回收空闲单元判定 | `codegen.c:14313` |
+| 编译期：分配点判定 rc 与否 | `codegen.c:14259` |
+| 编译期：acyclic 单元判定 | `codegen.c:14358` |
+| 编译期：回收空闲单元判定 | `codegen.c:14319` |
 | 编译期：单函数 acyclic 判据 | `plan.c:1725` |
 | 编译期：调用图两定点（acyclic / refs-counted） | `check_top.c:6166` |
 | 编译期：帧不结算函数判定（planRcNoDec） | `plan.c:1690` |
 | 编译期：逃逸层判定（发布到更浅层） | `check_escape.c:274` |
-| 编译期：参数槽识别（P0-7） | `codegen.c:8719` |
+| 编译期：参数槽识别（P0-7） | `codegen.c:8725` |
 | 编译期：bulk copy 记账发射（P0-7b） | `codegen.c:1323` |
-| 编译期：TIER 宏发射（P1-4） | `codegen.c:12657` |
-| 编译期：region 表满文本（P1-3） | `codegen.c:12732` |
-| 编译期：任务根 push 发射（P0-6） | `codegen.c:6223` |
-| 编译期：档位自动升级判据 | `codegen.c:15983` |
+| 编译期：TIER 宏发射（P1-4） | `codegen.c:12663` |
+| 编译期：region 表满文本（P1-3） | `codegen.c:12738` |
+| 编译期：任务根 push 发射（P0-6） | `codegen.c:6229` |
+| 编译期：档位自动升级判据 | `codegen.c:15989` |
 | 运行期：alloc 快路径 | `reclaim.c:1526` |
 | 运行期：slab 新建 | `reclaim.c:842` |
 | 运行期：槽分配/复用（尺寸类查表） | `reclaim.c:940` |
 | 运行期：槽尺寸（8 字节对齐，最小 16） | `reclaim.c:712` |
 | 运行期：零初始化跳表 `extc_rc_zeroSmall`（v13） | `reclaim.c:1503`（alloc 内调用点 `:1489`） |
-| 运行期：region 身份表（发射文本） | `codegen.c:12741` |
+| 运行期：region 身份表（发射文本） | `codegen.c:12747` |
 | 运行期：region 释放 | `reclaim.c:2775` |
 | 运行期：阈值更新与夹取（墙帽含 maxReq 预留） | `reclaim.c:3681`（预留 `:3709`、夹取 `:3709-3727`） |
 | 运行期：触发判据 | `reclaim.c:3751` |

@@ -1,0 +1,23 @@
+use std::io
+use std::json
+
+// 自引用类型：字段 `?ref node` 让「装箱要不要深拷贝」的类型扫描必须停在引用上。
+// 这里曾经没有停：ttBase 把 `?ref node` 剥成 `node`，又递归进同一个 struct，
+// 编译期栈溢出（extc RC=139、无任何报错）。
+struct node { k: i64  next: ?ref node }
+
+fn main() -> i32 {
+    var leaf = new node
+    leaf.k = 2
+    leaf.next = null
+    var v: any = node { k: i64(1), next: leaf }
+    var buf: mut slice<u8> = new u8[128]
+    var nm: mut slice<u8> = new u8[64]
+    print(v, "\n")
+    let n: i64 = json::json(ref v, buf[..])
+    let t: i64 = json::typeName(ref v, nm[..])
+    println("json=", buf[..n])
+    println("type=", nm[..t])
+    println("leaf=", leaf.k)
+    return 0
+}

@@ -72,6 +72,10 @@ one monotonic           tests/any/monotonic.extc           "sq=16 ci=15 bx=9"
 one reflect_json        tests/any/reflect_json.extc        "json={\"name\":\"abc\",\"p\":{\"x\":1,\"y\":-2},\"ok\":true}
 type=rec
 scalar=7"
+one box_ref_field       tests/any/box_ref_field.extc       "node { k: 1, next: <ref> }
+json={\"k\":1,\"next\":null}
+type=node
+leaf=2"
 dispatch_miss dyn_wide_missing tests/any/dyn_wide_missing.extc plain
 
 # 反例：`@noCopy` 的值不能被装进 `any`（装箱是拷贝，会给出第二个所有者）。

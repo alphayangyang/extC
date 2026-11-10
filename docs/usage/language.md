@@ -485,9 +485,9 @@ fn main() -> i32 {
   表在第一次调用时排序一次（描述符地址到链接期才定，编译期无法排好序），之后只比地址。
 - v1 的限制：**不能带实参**；候选只覆盖普通结构体（泛型实例的方法暂不参与派发）。
 
-### 3.10 读一个运行期才知道类型的值：`std::reflect`
+### 3.10 读一个运行期才知道类型的值：`json::json` / `json::typeName`
 
-描述符不只用来打印：`std::reflect` 把它们当数据读。
+描述符不只用来打印：`std::json` 里那两个访问器把它们当数据读（`std::reflect` 是计划中的模块名，当前没有这个模块）。
 
 <!-- fragment -->
 ```extc
@@ -495,8 +495,8 @@ use std::json
 
 var v: any = point { x: i64(1), y: i64(-2) }
 var buf: mut slice<u8> = new u8[256]
-let n: i64 = reflect::json(ref v, buf[..])     // {"x":1,"y":-2}，返回需要的字节数
-let t: i64 = reflect::typeName(ref v, nm[..])  // "point"
+let n: i64 = json::json(ref v, buf[..])     // {"x":1,"y":-2}，返回需要的字节数
+let t: i64 = json::typeName(ref v, nm[..])  // "point"
 ```
 
 `json` 返回的是**需要**的字节数，即使它超过缓冲长度：先给小缓冲问长度、再给够大的写一次。

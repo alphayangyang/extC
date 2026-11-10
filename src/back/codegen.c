@@ -5305,8 +5305,14 @@ static const char *genExprInner(CG *g, Expr *e) {
  * @return   true when the payload has to be deepened.
  */
 static bool typeNeedsAnyDup(CG *g, Type *t) {
-    t = ttBase(subst(g, t));
+    t = subst(g, t);
     if (!t) return false;
+    /* A borrow is tested **before** `ttBase` strips it: `?ref node` inside `struct node` is how a
+     * recursive type is spelled, and stripping the reference would make the walk descend into the
+     * same struct forever (the field of a field of a field ...). The borrow itself is never
+     * deepened -- a box holding one is rejected at the boxing site by the checker. */
+    if (t->kind == TY_REF) return false;
+    t = ttBase(t);
     switch (t->kind) {
     case TY_ARRAY:
         return true;                       /* an array is stored inline; its elements may be views */

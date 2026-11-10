@@ -1013,15 +1013,15 @@ fn main() -> i32 {
 ```
 实测：`mono-advances=true elapsedUs-positive=true real-positive=true`。
 
-### `std::reflect`：读一个运行期才知道类型的值
+### 运行期类型读取：`json::json` / `json::typeName`
 
 `any` 里装的类型只有运行期知道，所以"读它"必须走编译器发射的类型描述符。这一层是描述符的
-只读访问器：不分配、不在用户代码里递归。
+只读访问器：不分配、不在用户代码里递归。（`std::reflect` 是计划里的模块名，当前没有这个模块；这两个函数在 `std::json` 里。）
 
 | 函数 | 说明 |
 |---|---|
-| `reflect::json(ref v, out: mut slice<u8>) -> i64` | 按字段/变体表编码成 JSON 写进 `out`，返回**需要**的字节数（可超过 `out.len`） |
-| `reflect::typeName(ref v, out: mut slice<u8>) -> i64` | 拷出运行期类型名（`i64`、`point`、空槽 `<none>`） |
+| `json::json(ref v, out: mut slice<u8>) -> i64` | 按字段/变体表编码成 JSON 写进 `out`，返回**需要**的字节数（可超过 `out.len`） |
+| `json::typeName(ref v, out: mut slice<u8>) -> i64` | 拷出运行期类型名（`i64`、`point`、空槽 `<none>`） |
 
 `ref`/`?ref` 字段编码成 `null`（不跟进去）；枚举编码成变体名；`slice<u8>` 当文本转义；深度上限 32。
 
