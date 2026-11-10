@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# bench/crazy —— 四语言横评：同一份输入、同一行结果。
+# bench/crazy —— 五语言横评：同一份输入、同一行结果。
 # 单核段（parse/聚合/JSON/单线程归约）固定在 core 0；并行段（8 线程归约）单独放开 core 0-7。
 set -u
 cd "$(dirname "$0")/../.." || exit 1
@@ -17,6 +17,27 @@ echo "== building"
 cc -O2 -std=c11 -fwrapv -o /tmp/crazy_extc /tmp/crazy.c || exit 1
 rustc -O -o /tmp/crazy_rust "$B/rust/main.rs" || exit 1
 
+# Viper 臂：viperc 把构建目录里的 .vp 一起编译，所以拷进独立目录再建。
+# 两个臂是同一份源码的两次编译：viper 走 viperc 官方 Linux 流程（mlir-opt ->
+# mlir-translate -> llc，缺中间端优化），viperopt 只把 bench/viper/llcopt 放到
+# PATH 最前，让 llc 之前先跑 opt -O2 —— 与 extC 的 cc -O2 / Rust 的 rustc -O 同口径。
+VIPER=${VIPER:-/tmp/viper/V_L64}
+VBUILD=${VBUILD:-/tmp/crazy_viper}
+LANGS="extc rust node python"
+if [ "${SKIP_VIPER:-0}" != 1 ] && [ -x "$VIPER/viperc" ]; then
+  for v in viper viperopt; do
+    rm -rf "$VBUILD-$v" && mkdir -p "$VBUILD-$v" && cp "$B/viper/main.vp" "$VBUILD-$v/" || exit 1
+    if [ "$v" = viperopt ]; then pfx="$PWD/bench/viper/llcopt:$PATH"; else pfx="$PATH"; fi
+    ( cd "$VBUILD-$v" && PATH="$pfx" "$VIPER/viperc" --src main.vp ) >/dev/null 2>&1 \
+      || { echo "!! viper build failed ($v)"; exit 1; }
+    rm -rf "/tmp/crazy_$v" || exit 1
+    cp "$VBUILD-$v/__vpcbuild__/output/main.exe" "/tmp/crazy_$v" || exit 1
+  done
+  LANGS="extc rust viper viperopt node python"
+else
+  echo "   (Viper arms skipped: $VIPER/viperc not executable, or SKIP_VIPER=1)"
+fi
+
 : > /tmp/crazy_out.tsv
 
 run_one() { # lang pin threads cmd...
@@ -25,22 +46,24 @@ run_one() { # lang pin threads cmd...
 }
 
 echo "== single-core phases (min of $RUNS, core $PIN)"
-for lang in extc rust node python; do
+for lang in $LANGS; do
   case $lang in
-    extc)   cmd=(/tmp/crazy_extc) ;;
-    rust)   cmd=(/tmp/crazy_rust) ;;
-    node)   cmd=(node "$B/node/main.js") ;;
-    python) cmd=(python3 "$B/python/main.py") ;;
+    extc)     cmd=(/tmp/crazy_extc) ;;
+    rust)     cmd=(/tmp/crazy_rust) ;;
+    viper)    cmd=(/tmp/crazy_viper) ;;
+    viperopt) cmd=(/tmp/crazy_viperopt) ;;
+    node)     cmd=(node "$B/node/main.js") ;;
+    python)   cmd=(python3 "$B/python/main.py") ;;
   esac
   for r in $(seq 1 "$RUNS"); do
     out=$(run_one "$lang" "$PIN" 1 "${cmd[@]}")
-    line1=$(printf '%s\n' "$out" | sed -n 1p)
-    line2=$(printf '%s\n' "$out" | sed -n 2p)
-    parse=$(printf '%s\n' "$line2" | sed -n 's/.*parse_us=\([0-9]*\).*/\1/p')
-    agg=$(printf '%s\n' "$line2" | sed -n 's/.*agg_us=\([0-9]*\).*/\1/p')
-    json=$(printf '%s\n' "$line2" | sed -n 's/.*json_us=\([0-9]*\).*/\1/p')
-    par=$(printf '%s\n' "$line2" | sed -n 's/.*par_us=\([0-9]*\).*/\1/p')
-    printf 'single\t%s\t%s\t%s\t%s\t%s\t%s\n' "$lang" "$parse" "$agg" "$json" "$par" "$line1" >> /tmp/crazy_out.tsv
+    line1=$(printf "%s\n" "$out" | sed -n 1p)
+    line2=$(printf "%s\n" "$out" | sed -n 2p)
+    parse=$(printf "%s\n" "$line2" | sed -n "s/.*parse_us=\([0-9]*\).*/\1/p")
+    agg=$(printf "%s\n" "$line2" | sed -n "s/.*agg_us=\([0-9]*\).*/\1/p")
+    json=$(printf "%s\n" "$line2" | sed -n "s/.*json_us=\([0-9]*\).*/\1/p")
+    par=$(printf "%s\n" "$line2" | sed -n "s/.*par_us=\([0-9]*\).*/\1/p")
+    printf "single\t%s\t%s\t%s\t%s\t%s\t%s\n" "$lang" "$parse" "$agg" "$json" "$par" "$line1" >> /tmp/crazy_out.tsv
   done
 done
 
@@ -49,8 +72,8 @@ for lang in extc rust; do
   if [ "$lang" = extc ]; then cmd=(/tmp/crazy_extc); else cmd=(/tmp/crazy_rust); fi
   for r in $(seq 1 "$RUNS"); do
     line2=$(run_one "$lang" "0-7" 8 "${cmd[@]}" | sed -n 2p)
-    par=$(printf '%s\n' "$line2" | sed -n 's/.*par_us=\([0-9]*\).*/\1/p')
-    printf 'par8\t%s\t%s\n' "$lang" "$par" >> /tmp/crazy_out.tsv
+    par=$(printf "%s\n" "$line2" | sed -n "s/.*par_us=\([0-9]*\).*/\1/p")
+    printf "par8\t%s\t%s\n" "$lang" "$par" >> /tmp/crazy_out.tsv
   done
 done
 

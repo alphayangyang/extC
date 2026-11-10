@@ -1,0 +1,314 @@
+import viperbuild as vb
+import stdio
+import stdlib
+import posix
+import io as fileio
+
+proj = vb.Project("crazyvp", "0.0.1")
+proj.config(source=".", includes=["/tmp/viper/V_L64/includes"], compiler=["llc"], linker=["/tmp/viper/linkwrap"])
+proj.build(triple="x86_64-pc-linux-gnu", datalayout="e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128", run=False)
+
+define MOD = 1000000007
+define TSLOTS = 131072
+define TMASK = 131071
+
+class gmap():
+    key: int64*
+    cnt: int64*
+    cs: int64*
+    wr: int64*
+
+def now_us() -> int64:
+    ts: posix.Timespec = posix.Timespec()
+    posix.clock_gettime(posix.CLOCK_MONOTONIC, &ts)
+    return int64(ts.tv_sec) * 1000000 + int64(ts.tv_nsec) / 1000
+
+def put_int(d: uint8*, at: int64, v: int64) -> int64:
+    if v == 0:
+        d[at] = 48
+        return at + 1
+    digits: int64 = 0
+    t: int64 = v
+    while t > 0:
+        digits = digits + 1
+        t = t / 10
+    end: int64 = at + digits
+    t = v
+    while t > 0:
+        end = end - 1
+        d[end] = uint8(48 + t % 10)
+        t = t / 10
+    return at + digits
+
+def find_slot(m: gmap*, uid: int64, create: int64) -> int64:
+    h: int64 = (uid * 2654435761) & 2147483647
+    idx: int64 = h & TMASK
+    while 1 == 1:
+        k: int64 = m.key[idx]
+        if k == uid:
+            return idx
+        if k < 0:
+            if create == 0:
+                return -1
+            m.key[idx] = uid
+            m.cnt[idx] = 0
+            m.cs[idx] = 0
+            m.wr[idx] = 0
+            return idx
+        idx = (idx + 1) & TMASK
+    return -1
+
+def less_slot(m: gmap*, x: int64, y: int64) -> int:
+    cx: int64 = m.cs[x]
+    cy: int64 = m.cs[y]
+    if cx != cy:
+        if cx > cy:
+            return 1
+        return 0
+    if m.key[x] < m.key[y]:
+        return 1
+    return 0
+
+def qsort_slots(a: int64*, lo: int64, hi: int64, m: gmap*) -> None:
+    while lo < hi:
+        i: int64 = lo
+        j: int64 = hi
+        pv: int64 = a[(lo + hi) / 2]
+        while i <= j:
+            while less_slot(m, a[i], pv) == 1:
+                i = i + 1
+            while less_slot(m, pv, a[j]) == 1:
+                j = j - 1
+            if i <= j:
+                t: int64 = a[i]
+                a[i] = a[j]
+                a[j] = t
+                i = i + 1
+                j = j - 1
+        if j - lo < hi - i:
+            qsort_slots(a, lo, j, m)
+            lo = i
+        else:
+            qsort_slots(a, i, hi, m)
+            hi = j
+
+def main() -> int:
+    t0: int64 = now_us()
+
+    f: fileio.File = fileio.File("bench/crazy/data/events.tsv", fileio.MODE.R)
+    if f.closed:
+        stdio.printf("cannot open events.tsv\n")
+        return 1
+    size: int64 = int64(f.size())
+    buf: bytes = stdlib.malloc(sizet(size + 1))
+    got: int64 = int64(f.read_all(buf, sizet(size + 1)))
+    f.close()
+    u: uint8* = uint8*(buf)
+
+    n: int64 = 0
+    i: int64 = 0
+    while i < got:
+        if u[i] == 10:
+            n = n + 1
+        i = i + 1
+
+    ts: int64* = int64*(stdlib.malloc(sizet(n * 8)))
+    uid: int64* = int64*(stdlib.malloc(sizet(n * 8)))
+    kd: int64* = int64*(stdlib.malloc(sizet(n * 8)))
+    rg: int64* = int64*(stdlib.malloc(sizet(n * 8)))
+    ct: int64* = int64*(stdlib.malloc(sizet(n * 8)))
+    ms: int64* = int64*(stdlib.malloc(sizet(n * 8)))
+
+    at: int64 = 0
+    a: int64 = 0
+    b: int64 = 0
+    c: int64 = 0
+    e: int64 = 0
+    g: int64 = 0
+    h: int64 = 0
+    field: int64 = 0
+    i = 0
+    while i < got:
+        ch: uint8 = u[i]
+        if ch == 10:
+            ts[at] = a
+            uid[at] = b
+            kd[at] = c
+            rg[at] = e
+            ct[at] = g
+            ms[at] = h
+            at = at + 1
+            a = 0
+            b = 0
+            c = 0
+            e = 0
+            g = 0
+            h = 0
+            field = 0
+        elif ch == 9:
+            field = field + 1
+        else:
+            d: int64 = int64(ch) - 48
+            if field == 0:
+                a = a * 10 + d
+            elif field == 1:
+                b = b * 10 + d
+            elif field == 2:
+                c = c * 10 + d
+            elif field == 3:
+                e = e * 10 + d
+            elif field == 4:
+                g = g * 10 + d
+            else:
+                h = h * 10 + d
+        i = i + 1
+    parse_us: int64 = now_us() - t0
+
+    t1: int64 = now_us()
+    m: gmap* = gmap*(stdlib.malloc(gmap.__sizeof__()))
+    m.key = int64*(stdlib.malloc(sizet(TSLOTS * 8)))
+    m.cnt = int64*(stdlib.malloc(sizet(TSLOTS * 8)))
+    m.cs = int64*(stdlib.malloc(sizet(TSLOTS * 8)))
+    m.wr = int64*(stdlib.malloc(sizet(TSLOTS * 8)))
+    i = 0
+    while i < TSLOTS:
+        m.key[i] = -1
+        i = i + 1
+    order: int64* = int64*(stdlib.malloc(sizet(65536 * 8)))
+    kc: int64* = int64*(stdlib.malloc(sizet(8 * 8)))
+    rc: int64* = int64*(stdlib.malloc(sizet(6 * 8)))
+    i = 0
+    while i < 8:
+        kc[i] = 0
+        i = i + 1
+    i = 0
+    while i < 6:
+        rc[i] = 0
+        i = i + 1
+    nk: int64 = 0
+    slow: int64 = 0
+    i = 0
+    while i < n:
+        k: int64 = uid[i]
+        s: int64 = find_slot(m, k, 1)
+        if m.cnt[s] == 0:
+            order[nk] = s
+            nk = nk + 1
+        m.cnt[s] = m.cnt[s] + 1
+        m.cs[s] = m.cs[s] + ct[i]
+        if ms[i] > m.wr[s]:
+            m.wr[s] = ms[i]
+        kc[kd[i]] = kc[kd[i]] + 1
+        rc[rg[i]] = rc[rg[i]] + ct[i]
+        if ms[i] > 1000:
+            slow = slow + 1
+        i = i + 1
+    agg_us: int64 = now_us() - t1
+
+    t2: int64 = now_us()
+    qsort_slots(order, 0, nk - 1, m)
+    top: int64 = 0
+    i = 0
+    while i < 5:
+        s2: int64 = order[i]
+        top = (top * 1000003 + m.key[s2] * 31 + m.cs[s2]) % MOD
+        i = i + 1
+
+    jbuf: uint8* = uint8*(stdlib.malloc(sizet(1024)))
+    jbytes: int64 = 0
+    jcs: int64 = 0
+    i = 0
+    while i < n:
+        jbuf[0] = 123
+        jbuf[1] = 34
+        jbuf[2] = 116
+        jbuf[3] = 115
+        jbuf[4] = 34
+        jbuf[5] = 58
+        p: int64 = put_int(jbuf, 6, ts[i])
+        jbuf[p] = 44
+        jbuf[p + 1] = 34
+        jbuf[p + 2] = 117
+        jbuf[p + 3] = 105
+        jbuf[p + 4] = 100
+        jbuf[p + 5] = 34
+        jbuf[p + 6] = 58
+        p = put_int(jbuf, p + 7, uid[i])
+        jbuf[p] = 44
+        jbuf[p + 1] = 34
+        jbuf[p + 2] = 107
+        jbuf[p + 3] = 105
+        jbuf[p + 4] = 110
+        jbuf[p + 5] = 100
+        jbuf[p + 6] = 34
+        jbuf[p + 7] = 58
+        p = put_int(jbuf, p + 8, kd[i])
+        jbuf[p] = 44
+        jbuf[p + 1] = 34
+        jbuf[p + 2] = 114
+        jbuf[p + 3] = 101
+        jbuf[p + 4] = 103
+        jbuf[p + 5] = 105
+        jbuf[p + 6] = 111
+        jbuf[p + 7] = 110
+        jbuf[p + 8] = 34
+        jbuf[p + 9] = 58
+        p = put_int(jbuf, p + 10, rg[i])
+        jbuf[p] = 44
+        jbuf[p + 1] = 34
+        jbuf[p + 2] = 99
+        jbuf[p + 3] = 101
+        jbuf[p + 4] = 110
+        jbuf[p + 5] = 116
+        jbuf[p + 6] = 115
+        jbuf[p + 7] = 34
+        jbuf[p + 8] = 58
+        p = put_int(jbuf, p + 9, ct[i])
+        jbuf[p] = 44
+        jbuf[p + 1] = 34
+        jbuf[p + 2] = 109
+        jbuf[p + 3] = 115
+        jbuf[p + 4] = 34
+        jbuf[p + 5] = 58
+        p = put_int(jbuf, p + 6, ms[i])
+        if ct[i] > 15000:
+            jbuf[p] = 44
+            jbuf[p + 1] = 34
+            jbuf[p + 2] = 98
+            jbuf[p + 3] = 105
+            jbuf[p + 4] = 103
+            jbuf[p + 5] = 34
+            jbuf[p + 6] = 58
+            p = put_int(jbuf, p + 7, ct[i] * 2)
+        jbuf[p] = 125
+        jbytes = jbytes + p + 1
+        jcs = (jcs * 131 + 125) % MOD
+        i = i + 16
+    json_us: int64 = now_us() - t2
+
+    t3: int64 = now_us()
+    total: int64 = 0
+    k8: int64 = 0
+    while k8 < 8:
+        j: int64 = 0
+        s3: int64 = 0
+        while j < n:
+            s3 = s3 + ct[j] * (ms[j] + 1)
+            j = j + 1
+        total = (total + s3) % MOD
+        k8 = k8 + 1
+    par_us: int64 = now_us() - t3
+
+    hcs: int64 = 0
+    i = 0
+    while i < 8:
+        hcs = (hcs * 7 + kc[i]) % MOD
+        i = i + 1
+    i = 0
+    while i < 6:
+        hcs = (hcs * 7 + rc[i]) % MOD
+        i = i + 1
+
+    stdio.printf("rows=%lld slow=%lld top=%lld hist=%lld json_bytes=%lld json_cs=%lld par=%lld\n", n, slow, top, hcs, jbytes, jcs, total)
+    stdio.printf("parse_us=%lld agg_us=%lld json_us=%lld par_us=%lld\n", parse_us, agg_us, json_us, par_us)
+    return 0

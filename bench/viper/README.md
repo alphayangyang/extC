@@ -13,6 +13,7 @@
 | `sizeratio.vp` | sizeratio 端口（4 个尺寸类，2M 次分配） |
 | `ab.py` | 交错计时卡具：`ARMS="name=path,..." REPS=11` 绑核跑，stdout 逐字节比对，`/usr/bin/time` 取峰值 RSS |
 | `setup.sh` | 取 MLIR 21（apt 包的 deb 解包，不动系统）并在 `/tmp/viper` 生成丢弃 Windows 导入库的 linkwrap |
+| `llcopt/llc` | `llc` 包装器：先跑 `opt -O2` 再交给真正的 `llc`。放进 `PATH` 最前即可补上 ViperC Linux 流程缺失的中间端优化 |
 
 每个 `.vp` 都是自包含的 viperbuild 项目（`import viperbuild as vb` + `proj = vb.Project(...)` +
 `proj.config(...)` + `proj.build(...)`），因为 ViperC 要求入口文件里出现 `proj` 绑定，且会把
@@ -51,3 +52,18 @@
   选它是因为要让「回收 vs 不回收」这一个变量可读。
 - 六个臂的 stdout 必须逐字节相同，卡具会把不一致标成 `DIFF` 并最终失败。
 - 绝对毫秒只与同一轮次内的其它臂可比；本机跨会话漂移 5–13%。
+
+## 中间端优化（`llcopt/`）
+
+`viperc` 的 Linux 回落流程是 `mlir-opt` → `mlir-translate` → `llc`，中间**没有** LLVM 的中间端优化；
+而它自己的 `--phase2command` 帮助把这一阶段写成「llc(opt+llc)」，`--asan` 也会先跑 `opt -passes=asan`。
+`llcopt/llc` 是一个 `sh` 包装器：把 `opt -O2` 放在 `llc` 前，其余参数原样透传；真正的 `llc` 由它在
+`PATH` 里**跳过自身目录**查到（否则 `llc` 会解析回自己，无限递归）。
+
+```sh
+# 只在需要对照「带优化」时前置；ViperC 的出厂行为是不带
+PATH=$PWD/bench/viper/llcopt:$PATH /tmp/viper/V_L64/viperc --src main.vp
+```
+
+效果见 `bench/crazy/README.md`：同一份 `viper/main.vp`，不带 opt 215 ms、带 opt 115 ms。
+这个包装器只是实验卡具，不是分发物的一部分。

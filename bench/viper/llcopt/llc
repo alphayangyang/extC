@@ -1,0 +1,42 @@
+#!/bin/sh
+# llc wrapper: run the LLVM IR optimizer before codegen.
+#
+# ViperC legacy PhaseB (mlir-opt -> mlir-translate -> llc) skips the middle-end
+# optimizer on Linux; its own --phase2command help calls the intended stage
+# "llc(opt+llc)". Putting this directory first on PATH restores that stage:
+#
+#   PATH=<repo>/bench/viper/llcopt:$PATH viperc --src main.vp
+#
+# ExtC arms are compiled with cc -O2, so this is the like-for-like comparison.
+#
+# The real llc is looked up in PATH *skipping this directory* - a plain "llc"
+# call would resolve back to this script and recurse forever.
+set -e
+
+me=$(cd "$(dirname "$0")" && pwd -P)
+real=""
+oldifs=$IFS; IFS=:
+for d in $PATH; do
+  [ -n "$d" ] || d=.
+  dr=$(cd "$d" 2>/dev/null && pwd -P) || continue
+  [ "$dr" = "$me" ] && continue
+  if [ -x "$d/llc" ]; then real="$d/llc"; break; fi
+done
+IFS=$oldifs
+if [ -z "$real" ]; then echo "llc wrapper: no real llc found on PATH" >&2; exit 127; fi
+
+out=""
+in=""
+flags=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) out="$2"; shift 2 ;;
+    -*) flags="$flags $1"; shift ;;
+    *) in="$1"; shift ;;
+  esac
+done
+tmp="${TMPDIR:-/tmp}/viper_opt_$$.ll"
+trap 'rm -f "$tmp"' EXIT INT TERM
+opt -O2 "$in" -o "$tmp"
+# shellcheck disable=SC2086
+exec "$real" $flags -o "$out" "$tmp"
