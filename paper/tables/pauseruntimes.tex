@@ -1,0 +1,18 @@
+\begin{table}[t]
+\centering
+\setlength{\tabcolsep}{4pt}
+\footnotesize
+\caption{Longest pauses in microseconds for the four runtimes, as steps / $p_{99.9}$ / max.  A runtime that hides work from its stop-the-world window reports fewer, smaller  samples: the populations are not comparable, only the reported numbers are.}
+\label{tab:pauseruntimes}
+\resizebox{\ifdim\width>\linewidth\linewidth\else\width\fi}{!}{
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+shape & extC & Go & Java & node \\
+\midrule
+promote & 10671 / 19.4 / 80.1 & 90 / 11.6 / 12.0 & 1 / 2378.0 / 2378.0 & 63 / 793.8 / 800.0 \\
+sizeratio & 1542 / 10.1 / 65.9 & 102 / 14.9 / 16.0 & 2 / 369.9 / 370.0 & 51 / 695.0 / 700.0 \\
+chase & 635 / 58.1 / 74.8 & 4 / 6.0 / 6.0 & -- & 14 / 116859.3 / 117300.0 \\
+cycleratio & 339 / 13.3 / 17.4 & 26 / 5.0 / 5.0 & -- & 33 / 793.6 / 800.0 \\
+\bottomrule
+\end{tabular}}
+\end{table}

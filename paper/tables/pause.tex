@@ -1,0 +1,18 @@
+\begin{table}[t]
+\centering
+\setlength{\tabcolsep}{4pt}
+\small
+\caption{Step pauses of the reclaiming build, in microseconds. Every sub-step the mutator  thread spends inside the runtime is one sample; the last column counts samples above  one millisecond.}
+\label{tab:pause}
+\resizebox{\ifdim\width>\linewidth\linewidth\else\width\fi}{!}{
+\begin{tabular}{@{}lrrrrrrrr@{}}
+\toprule
+shape & steps & total (ms) & \% of wall & $p_{50}$ & $p_{99}$ & $p_{99.9}$ & max & $\ge 1$~ms \\
+\midrule
+promote & 10671 & 16.3 & 40.5\% & 1.20 & 4.90 & 19.36 & 80.1 & 0 \\
+sizeratio & 1542 & 2.2 & 12.5\% & 1.70 & 2.40 & 10.08 & 65.9 & 0 \\
+chase & 635 & 5.5 & 3.8\% & 5.70 & 41.73 & 58.13 & 74.8 & 0 \\
+cycleratio & 339 & 0.8 & 5.2\% & 2.00 & 5.30 & 13.34 & 17.4 & 0 \\
+\bottomrule
+\end{tabular}}
+\end{table}

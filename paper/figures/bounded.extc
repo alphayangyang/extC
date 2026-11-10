@@ -1,0 +1,25 @@
+use std::io
+struct node { v: i64  next: ?mut ref node }
+fn parseI64(s: slice<u8>) -> i64 {
+  var v: i64 = 0
+  var i: i64 = 0
+  while i < s.len { var c: u8 = s[i]  if c < u8(48) { break }  if c > u8(57) { break }  v = v * 10 + i64(c) - 48  i = i + 1 }
+  return v
+}
+fn main(args: slice<slice<u8>>) -> i32 {
+  var n: i64 = 1000000
+  if args.len > 1 { n = parseI64(args[1]) }
+  var slot: mut ref node = new node
+  slot.v = 0
+  var sum: i64 = 0
+  var i: i64 = 0
+  while i < n {
+    var x: mut ref node = new node
+    x.v = i
+    sum = (sum + x.v) & 4611686018427387903
+    slot = x
+    i = i + 1
+  }
+  io::cout << "n=" << n << " sum=" << sum << " last=" << slot.v << "\n"
+  return 0
+}

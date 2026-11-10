@@ -1,0 +1,54 @@
+\label{sec:artifact}
+
+\paragraph{What is in the repository.}
+The compiler is built with \code{make} into \code{build/extc}; it needs a C compiler and nothing
+else, and the generated C links only against libc.  The runtime is not a library: \code{src/back/reclaim.c}
+is included into every translation unit that asks for it, and a unit that the analysis judges idle
+takes none of it.  The four shape programs and the eleven comparison arms are in
+\code{bench/gc/v2}, the pause harness in \code{bench/gc/v2/pause}, the driver test suite in
+\code{tests/reclaim}, the emitted-code gates in \code{tools}, and the Lean development in
+\code{proofs}.
+
+\paragraph{How to re-run each table.}
+The harness is one shell script plus one report script, and every table in the paper is a rendering
+of the \code{.tsv} that the run writes:
+\begin{itemize}
+\item \tab\ref{tab:crosslang} and \tab\ref{tab:allarms}: \code{run.sh align} builds every arm
+into the directory named by \code{B}, then \code{run.sh bench} with \code{REPS=7} writes the matrix
+that \code{report.py} renders.
+\item \tab\ref{tab:pause}: \code{pause/extc.sh} with \code{REPS=2} writes the pause logs, and
+\code{pause_report.py} renders \code{PAUSE.md} and \code{pause\_v2.tsv}.
+\item \tab\ref{tab:ablate} and \tab\ref{tab:ablatepause}: \code{measure\_ablation.py}, with
+\code{--pause} for the second.  The script generates the C for each shape once, then recompiles it
+with one \code{-D} constant changed and checks that every variant prints the same bytes as the
+reference before timing it.
+\item \tab\ref{tab:bounded}: \code{measure\_bounded.py} runs \code{bounded.extc} at three orders of
+magnitude of round count, with reclamation on and off.
+\item \tab\ref{tab:census}: \code{census.py} compiles every \code{.extc} under \code{tests/} one
+file at a time and reads the tier of the emitted header.
+\item the two figures: \code{gen\_tables.py} and \code{gen\_roofline.py}, both reading only
+\code{paper/data/*.tsv}.
+\end{itemize}
+
+
+\paragraph{Frozen build.}
+Every number in this paper is from the tree at commit \code{98bd56d2}, in which the runtime is
+\code{src/back/reclaim.c} (4,212 lines, md5 \code{7151a431}), the code generator is
+\code{src/back/codegen.c} (16,017 lines, md5 \code{2f560e2e}), and the driver suite is
+\code{tests/reclaim/driver.c} (1,637 lines, md5 \code{28dd4009}).  The driver reports 216 passing
+cases, and the whole suite is also run with \code{-fsanitize=address}, with
+\code{-fsanitize=undefined} and with the runtime forced out of line, so a correctness result is not
+an artifact of one build configuration.  Two properties are held by gates rather than by tests: the
+instruction count of the generated code for each shape (a frozen budget in the whole-program run)
+and the byte-identity of the emitted C for every shape, so that a change to an unrelated section of
+the compiler cannot silently move the measurements.
+
+\paragraph{Provenance of the numbers.}
+\code{bench/gc/v2/matrix.tsv} is the cross-language run and \code{bench/gc/v2/pause\_v2.tsv} the
+pause run, both checked in.  \code{paper/data/} holds copies of these and the three files produced
+by the mechanism-ablation, boundedness and census scripts, together with the model output of
+\code{gen\_roofline.py}.  The tables in \code{paper/tables} are generated from those files and are
+not edited by hand; where a table and a \code{.tsv} disagree the \code{.tsv} is correct.  The
+numbers that are transcribed rather than generated are the constants of
+\tab\ref{tab:calib}, which come from the calibration runs recorded in \code{docs/analysis}, and
+\code{paper/data/roofline-pareto.tsv} which is model output rather than measurement.

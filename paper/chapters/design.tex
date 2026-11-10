@@ -1,0 +1,239 @@
+\section{Design}
+\label{sec:design}
+
+extC keeps the part of a C-like language that makes memory behaviour predictable:
+objects never move, layouts are deterministic (there is no object header, and no word of a value
+is ever reserved for the runtime), and there are no write barriers on data stores.
+The design question we answer here is how reclamation fits into that shape without giving up
+bounded memory or bounded pause.
+
+Our answer has three parts.
+(1) \emph{Storage is stratified by lexical scope.} Every allocation point has a statically known
+level, and the level selects one of five substrates (\S\
+ef{sec:substrates}), each with a different
+reclamation rule.
+(2) \emph{Reclamation is a compile-time decision.} A unit is analysed and placed in one of three
+tiers (\S\
+ef{sec:tiers}): no runtime at all, an event tier where reference counts free objects on
+the spot, or a sweep tier where each region is marked and swept under explicit budgets.
+(3) \emph{The runtime obeys a two-dimensional contract.} Memory is bounded by a wall that the
+collector's trigger line respects, and each synchronous step of the collector is bounded by a
+budget that is independent of the heap size (\S\
+ef{sec:contract}).
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{@{}p{0.15\linewidth}p{0.19\linewidth}p{0.26\linewidth}p{0.28\linewidth}@{}}
+\toprule
+Substrate & Lifetime owner & Allocation & Reclamation \\
+\midrule
+Frame arena & lexical scope of a block & bump pointer in a chunked arena & whole arena rewound on scope exit \\
+RC region & frame level (a function or block) & slot in a slab, size class by request & budgeted mark--sweep inside the region \\
+Pool & the \texttt{place} the container was created in & slab chain rooted at that place & chain rewound with the place \\
+Task arena & coroutine frame or parallel worker & bump, thread-local & arena discarded when the task ends \\
+Plate & explicit \texttt{plate} value, OS pages & \texttt{mmap} of page-rounded bytes & \texttt{mprotect} / \texttt{munmap} \\
+\bottomrule
+\end{tabular}
+\caption{The five storage substrates. Only the third row is managed by the reclamation runtime;
+the others are released wholesale, so their cost is paid once per scope or per task.}
+\label{tab:substrates}
+\end{table}
+
+\subsection{Storage substrates}
+\label{sec:substrates}
+
+\tab\ref{tab:substrates} lists the substrates.
+Which one a \texttt{new} lands on is decided by the level of its frame, not by its type, so the
+same struct can be arena-allocated in one place and region-allocated in another.
+
+\paragraph{Frame arenas.}
+A block that is not a reclamation region gets a bump arena: a chunk list whose allocation is one
+pointer increment, and whose exit restores the pointer to the block entry.
+The zero cost of this row is what the whole design is trying to preserve, and \S\
+ef{sec:eval}
+shows that 71.7\% of the compiling programs in our corpus still get it for free (\S\
+ef{sec:census}).
+
+\paragraph{Reclamation regions.}
+A region is a set of slabs owned by one frame level.
+Each object occupies exactly one slot; the slot stride is the request rounded up to a multiple of
+eight, so an 80-byte object occupies 80 bytes rather than the next power of two.
+Per-slot metadata is kept in three bitmaps (occupied, marked, cross-region registration) plus a
+16-bit type number and a 16-bit in-edge count, so the payload is byte-exact and the layout of a
+value is never perturbed by the runtime (\S\
+ef{sec:impl-geometry}).
+
+\paragraph{Pools and plates.}
+Containers whose element type is known allocate from a slab chain attached to the \emph{place}
+where they were created, so a container that dies with a block releases its storage with that
+block instead of being swept.
+Plates are the escape hatch for data that must outlive the process's own structure: page-aligned
+\texttt{mmap}, optionally protected, released explicitly.
+
+\paragraph{Task arenas.}
+A coroutine frame and a parallel worker each get a thread-local arena that is discarded when the
+task ends (\texttt{extc\_par\_close} for workers, frame teardown for coroutines).
+Freshly spawned tasks that write into their owner's view get references pinned to the owner's
+region instead, so a task can never leave a dangling edge behind when it is torn down.
+
+\subsection{Placement and escape}
+\label{sec:placement}
+
+Levels are assigned by the escape analysis: parameters are at level $0$, a function body at
+$1$, and each nested block adds one.
+An allocation point's region is the level where its storage must live:
+\begin{equation}
+\ell(pi) = \max(0, k - \mathit{escapeDepth}(pi)),
+\label{eq:placement}
+\end{equation}
+where $k$ is the lexical depth of the allocation point and $escapeDepth$ is the number of
+levels the value escapes.
+Three rules keep the stratified store sound:
+
+\begin{itemize}
+\item \emph{D1 (no downward edge).} Storing a reference into a slot at depth $e$ requires the
+  pointed-to storage to be at depth $d \le e$. Storing a younger object into an older slot is
+  allowed; the reverse would let a scope outlive its referent.
+\item \emph{D2 (promotion is static).} If a value may escape to level $d$, its allocation point
+  is placed at level $d$ at compile time: the storage is born there, nothing is copied or moved at
+  run time, and the object's address is fixed from birth. The only run-time cost at an escape site
+  is the one pointer store that puts the reference into an outer slot.
+  Whether a value lives in a long-lived region is therefore known statically, and
+  \S\ref{sec:formal} never has to reason about a move.
+\item \emph{D3 (views).} A view may not outlive the storage it views: $d \le c$ for view
+  $c$ of container $d$.
+\end{itemize}
+
+Promotion is where unbounded memory can appear: the storage now lives until the outer level ends,
+although only one of the values written into it may still be reachable. That is the shape the
+reclamation tier exists for, and the shape \S\
+ef{sec:formal} reasons about.
+
+\subsection{Choosing a tier}
+\label{sec:tiers}
+
+After placement, the unit is analysed as a whole and assigned a tier.
+The assignment is a pure compile-time decision; two user-visible switches
+(\texttt{EXTC\_RECLAIM}, \texttt{EXTC\_RC\_SWEEPFREE}) only force or forbid a tier, and they exist
+for the experiments in \S\
+ef{sec:eval}.
+
+\paragraph{Tier 0: no runtime.}
+If no allocation point is governed by reclamation, the emitted program contains no reclamation call
+and the runtime text is not even emitted (a 434-line \texttt{hello} world has zero
+\texttt{extc\_rc\_} tokens). This is the default outcome for programs that never promote.
+
+\paragraph{Idle units.}
+A unit is \emph{idle} when every reference field is written at most once per object, no reference
+local or parameter is reassigned in a way that drops a reference, and no operation drops a
+reference (\S\
+ef{sec:formal-idle} formalises this).
+An idle unit needs no reclamation work at all: objects only disappear when their whole region is
+released. The judgement is conservative and whole-unit, so one function that fails it keeps the
+runtime for the unit.
+
+\paragraph{The event tier (T1).}
+The event tier is taken when the unit is \emph{acyclic}: every reference write either stores a
+freshly allocated value, \texttt{null}, or a value from a strictly older level, and every slot that
+can drop a reference is a counted slot.
+Under those conditions no cycle can form and every object that becomes unreachable reaches count
+zero, so the runtime keeps reference counting and does not emit sweeping.
+
+\paragraph{The sweep tier (T2).}
+Otherwise the unit gets cyclic-capable regions: counting is off by default (the
+\emph{no-count} configuration) and unreachable storage is recovered by budgeted mark--sweep over one
+region at a time.
+Counting is not needed for safety in this tier -- the marker finds its seeds from the static root
+table and the cross-region registration bits, not from counts -- so switching it off only removes a
+fast path, never a guarantee.
+
+\begin{table*}[t]
+\centering
+\small
+\resizebox{\ifdim\width>\linewidth\linewidth\else\width\fi}{!}{\begin{tabular}{@{}llccc@{}}
+\toprule
+Tier & When & Counting & Sweeping & Contract \\
+\midrule
+T0 & user forces \texttt{EXTC\_RECLAIM=0} & no & no & memory not bounded (control group) \\
+none & $\mathit{idle}(U)$ & no & no & region wholesale release only \\
+T1 & $\mathit{acyclic}(U)$ & yes & no & $O(1)$ free, memory $\le L + G + O(B)$ \\
+T2 & otherwise & no (default) & yes & budgeted mark--sweep \\
+\bottomrule
+\end{tabular}}
+\caption{Tier assignment. The last two rows are the ones that emit a runtime; T0 and the idle case
+emit none. \S\
+ef{sec:formal} gives the soundness statement for each row.}
+\label{tab:tiers}
+\end{table*}
+
+\subsection{The two-dimensional contract}
+\label{sec:contract}
+
+Let $L$ be the live set of a region (bytes reachable from a complete root table), $M$ the
+bytes the region has ever admitted, and $M_max$ the wall.
+Two properties are promised for every program that runs in T1 or T2:
+
+\begin{description}
+\item[Bounded memory.] $M \le L + G + O(B)$ where $G$ is the trigger floor and $B$
+  the size of one slab, and the bound does not depend on the number of loop iterations, i.e.~it is a
+  function of the live set, not of the total allocation volume.
+\item[Bounded pause.] Every synchronous step the collector takes on the mutator thread is bounded by
+  a constant $P_{\max}$ fixed at compile time, independent of the heap size and of the size of
+  the object being scanned. Pause here means the sum of all collector time on that thread, not a
+  stop-the-world window: there is no separate collector thread to hide work in.
+\end{description}
+
+The contract is maintained by four release layers, each of which removes a different class of
+garbage:
+\begin{enumerate}
+\item \emph{Scope exit} rewinds the arena (zero cost).
+\item \emph{Static placement} puts the storage of an escaping value directly at the level it
+  escapes to; at run time an escape costs one pointer store, never a copy.
+\item \emph{Count zero} frees exactly one object at the moment its last holder drops it (T1, and
+  optionally T2).
+\item \emph{Region sweep} recovers what the first three cannot: cycles, and storage whose counts were
+  saturated deliberately.
+\end{enumerate}
+
+Counting is a knob, not a guarantee: turning it off changes which layer reclaims a given object, not
+whether the program is safe, and the sweep tier therefore stays correct with counting disabled.
+
+\subsection{Deliberate non-goals}
+\label{sec:non-goals}
+
+We do not move objects, so no compaction and no copying collection: fragmentation is bounded by the
+size-class layout, not eliminated.
+We do not scan stacks: the root table is static, emitted at each trigger point, which is why the
+collector needs no shadow stack and why a suspended coroutine registers its frame fields instead.
+We do not run the collector on another thread, so \emph{every} collector instruction is mutator time;
+this is the honest reading of our pause numbers and the reason \S\
+ef{sec:eval} reports both the
+armed-window total and the per-step total.
+We do not attempt to bound the pause of a program that allocates an object larger than the wall in a
+single request: the admission rule (\S\
+ef{sec:impl-admission}) reserves room for one maximum-sized
+request, so such a program is rejected by the bound rather than silently breaking it.
+
+\begin{table*}[t]
+\centering
+\small
+\resizebox{\ifdim\width>\linewidth\linewidth\else\width\fi}{!}{\begin{tabular}{@{}lll@{}}
+\toprule
+Property & Status & Mechanism or reason \\
+\midrule
+peak memory & bounded by $L+G+O(B)$ & trigger line $\ge 2L$, wall $M_{\max}$ \\
+per-step collector time & bounded & batch cap 256, segment deadline 40\,\us \\
+region destruction & $O(1)$ & closing queue drained at allocation points \\
+one request larger than wall & reserved & admission: $\mathit{thr} + R_{\max} \le M_{\max}$ \\
+long-lived garbage in a region & bounded, not zero & sweep is triggered by pressure, not by time \\
+count saturation & not a leak & saturated slots stay countable-by-sweep \\
+pause of a single huge scan & bounded & object scan chunked into 512-word segments \\
+\bottomrule
+\end{tabular}}
+\caption{What the current design does and does not bound. Each bounded row is backed by a theorem
+in \S\
+ef{sec:formal} or by a measured gate in \S\
+ef{sec:eval}.}
+\label{tab:bounded}
+\end{table*}

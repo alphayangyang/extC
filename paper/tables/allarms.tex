@@ -1,0 +1,25 @@
+\begin{table*}[t]
+\centering
+\setlength{\tabcolsep}{4pt}
+\scriptsize
+\caption{All eleven arms: milliseconds (minimum / median) and peak RSS in MB, per shape.}
+\label{tab:allarms}
+\resizebox{\ifdim\width>\linewidth\linewidth\else\width\fi}{!}{
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+arm & promote & sizeratio & chase & cycleratio \\
+\midrule
+extc\texttt{:}default & 39.0 / 40.4 / 7.5 & 16.0 / 16.6 / 7.5 & 117.3 / 129.2 / 66.2 & 15.0 / 15.3 / 7.4 \\
+extc\texttt{:}off & 82.8 / 84.1 / 107.0 & 59.5 / 61.3 / 154.2 & 104.0 / 107.5 / 60.7 & 21.0 / 22.2 / 43.4 \\
+cpp\texttt{:}default & 109.4 / 113.3 / 143.1 & 77.7 / 79.6 / 187.0 & 119.2 / 122.8 / 79.6 & 56.0 / 57.7 / 115.3 \\
+cpp\texttt{:}careful & 109.9 / 111.8 / 143.1 & 17.9 / 18.8 / 7.5 & 116.0 / 121.2 / 75.8 & 36.1 / 36.4 / 7.5 \\
+rust\texttt{:}default & 39.1 / 40.2 / 7.4 & 20.6 / 21.3 / 7.5 & 220.2 / 227.3 / 90.0 & 49.8 / 51.2 / 113.4 \\
+rust\texttt{:}careful & 39.5 / 40.3 / 7.5 & 20.6 / 21.4 / 7.5 & 219.3 / 224.9 / 90.2 & 17.9 / 18.7 / 7.5 \\
+go\texttt{:}default & 106.1 / 114.1 / 7.5 & 45.6 / 46.0 / 7.5 & 146.3 / 154.7 / 64.6 & 33.7 / 35.0 / 7.6 \\
+go\texttt{:}off & 128.8 / 132.1 / 112.6 & 80.8 / 82.6 / 160.6 & 115.3 / 127.7 / 63.6 & 38.9 / 39.5 / 46.0 \\
+java\texttt{:}default & 103.0 / 108.4 / 127.7 & 94.1 / 99.6 / 127.6 & 174.1 / 191.6 / 114.6 & 69.1 / 78.4 / 104.3 \\
+node\texttt{:}split & 102.8 / 108.1 / 74.7 & 85.3 / 91.4 / 72.0 & 1119.6 / 1179.4 / 355.8 & 60.6 / 61.9 / 70.5 \\
+node\texttt{:}bigint & 166.7 / 170.4 / 82.9 & 113.2 / 117.4 / 79.6 & 1321.1 / 1361.8 / 353.1 & 90.6 / 92.3 / 70.8 \\
+\bottomrule
+\end{tabular}}
+\end{table*}

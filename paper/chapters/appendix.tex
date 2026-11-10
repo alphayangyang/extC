@@ -1,0 +1,60 @@
+\appendix
+\section{Additional tables, provenance, and corrections}
+\label{sec:appendix}
+
+This appendix carries the full arm matrix of \S\ref{sec:eval-crosslang}, the data provenance of
+\S\ref{sec:eval}, and the correction log of the instrumentation faults of
+\S\ref{sec:eval-correct}.  \S\ref{sec:appendix:limits} then states, claim by claim, what the Lean
+development proves and what it does not.
+
+\subsection{The full arm matrix}
+\label{sec:appendix:arms}
+
+\tab\ref{tab:allarms} reports every arm of the cross-language matrix, in the same units as
+\tab\ref{tab:crosslang} and from the same run.  The four shapes appear in descending order of
+allocation intensity, and within a shape the arms are ordered by language and configuration.  Some
+entries repay reading individually: the leaky C++ arm on \code{promote} runs in 109\,\ms and holds
+143 MB, which is what a bump allocator with no reuse actually costs; the Go arms are competitive on
+time on two shapes but pay through the garbage collector in the others; and Node on \code{chase} is
+the one entry three orders of magnitude off, which is what a pointer-chasing loop looks like when
+every object is a boxed heap record.  The ratios of \tab\ref{tab:crosslang} are formed against the
+fastest arm of a comparison language, not against an average arm, so they understate the advantage
+against a typical configuration and overstate nothing.
+
+\input{tables/allarms}
+
+\subsection{Provenance and reproduction}
+\label{sec:appendix:artifact}
+
+\input{chapters/artifact}
+
+\subsection{Corrections to numbers we published earlier}
+\label{sec:appendix:corrections}
+
+Progress in this project was measured by instruments we wrote, so a fair paper has to say which
+instruments were later found wrong and what that does to the record.  Three faults were found, all
+in the pause and drain probes, and each one is fixed with a gate that fails if it recurs.
+
+\begin{enumerate}
+\item \emph{The histogram bucket that was always true.}  The distribution probe classified each
+sample by comparing cumulative bounds but the last bucket was assigned rather than compared, so the
+condition "over one millisecond" held for every sample.  The fault cannot make a bound look better
+than it is, but it destroys the resolution needed to see a step-landing improvement, and it was
+present in the internal report where a 60\,\us target appeared to be met.  The probe now compares and
+\tab\ref{tab:pause} is produced by it.
+\item \emph{The clock that was silently zero.}  The step timer asked for per-thread CPU time without
+declaring the feature-test macro that exposes it on this platform, so the clock call failed and the
+probe reported zero for every step.  A zero population is indistinguishable from a perfect one, which
+is why the gate now treats a missing field as a failure rather than a pass, and why the pause section
+reports wall time by default and per-thread CPU time only as a diagnostic.
+\item \emph{The queue that was assumed to drain in one pass.}  A driver test asserted that a single
+bounded drain leaves the deferred-free queue empty.  The budget is eight slabs or one hundred
+\us, whichever comes first, so under sanitizer load the pass sometimes emptied one of two queued
+slabs and the assertion failed even though the runtime was correct.  The judgement was not weakened:
+the test now triggers drain at several allocation points until the queue is empty and still requires
+the final state to be exactly zero, and the full drain path is asserted separately.
+\end{enumerate}
+
+The general lesson is in \S\ref{sec:eval-correct}: a measurement that is cheap to take is also cheap
+to break in a way that looks like good news, so the gates are written to fail on absence of evidence
+as well as on contradictory evidence.

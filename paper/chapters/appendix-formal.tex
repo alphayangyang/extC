@@ -1,0 +1,103 @@
+\section{What is proved, checked, and assumed}
+\label{sec:appendix:limits}
+
+\tab\ref{tab:claims} in \S\ref{sec:formal-status} gives the short version.  This appendix gives the
+long one, claim by claim, because the differences between "proved on paper", "machine-checked in
+Lean" and "held by a gate" are exactly what a reader of a systems paper should be able to audit.
+
+\subsection{Safety of the region machine}
+\label{sec:appendix:safe}
+
+\thm\ref{thm:safe} is proved in \S\ref{sec:thm-safe} from four invariants: the root table of a region
+covers every live slot reachable from outside it (I1), every live slot that holds a reference points
+at a live slot (I2), no live slot points at released storage (I3), and the shade set over-approximates
+the reachable set at the moment marking began (I4).  The four release layers are the four ways a slot
+can become free, and the proof is a case split over them, which is why it is worth naming the Lean
+counterpart of each case:
+\begin{itemize}
+\item \emph{block exit} — \code{ExtCBlock.safe\_freeBlk}, with \code{referrer\_survives\_free}
+covering the case in which a reference outlives the block that allocated the storage;
+\item \emph{static placement} — \code{ExtCBlock.safe\_promote}, which in this design is the
+statement that a value allocated directly in a shallower region is never the target of a pointer to
+the region it escaped from;
+\item \emph{sweep} — \code{ExtCRegion.World.safe\_of\_invariants} (given an over-approximation of
+the live set) and \code{ExtCReclaim.safe\_kill\_unreachable} (a region that is unreachable from
+every seed may be freed as a unit);
+\item \emph{release at the orphaning store} — \code{ExtCBlock.referrer\_survives\_free} together
+with the four static side conditions of the rule, which make the freed set a subset of what a full
+sweep would free.
+\end{itemize}
+The module \code{ExtCRegion} is the largest in the development (742 of the 2,555 lines) because it
+also carries the negative results of \S\ref{sec:appendix:necessity}.
+
+\subsection{Why the assumptions are not decorative}
+\label{sec:appendix:necessity}
+
+An invariant that is assumed in a safety theorem should be shown to be necessary, or the theorem
+says less than it appears to.  The Lean development therefore proves, for three of the four
+invariants, that dropping it makes the safety statement false:
+\begin{enumerate}
+\item \code{ExtCRegion.ForeignRegion.necessity\_CC} exhibits two regions, each of which is locally
+consistent, whose union has a dangling reference; the witness is exactly a cross-region reference
+that the foreign table does not record.  This is why the compiler emits a cross-region bit for every
+stored edge whose target lies in another region, and why the bit is one bit and not a count: the
+proof only needs to know that the region is an entry point.
+\item \code{ExtCRegion.Undershoot.necessity\_INVH} exhibits a machine in which the shade set omits a
+slot that was live when marking began, and a marking pass that then frees it.  This is the content of
+invariant I4, and it is why the barrier shades both the new value and the old value (SATB): shading
+only one of them undershoots.
+\item \code{ExtCRegion.LooseKill.necessity\_kill\_closed} exhibits a region whose kill is justified
+by reachability alone while a live slot in another region still points into it; the proof needs the
+closure condition that no such slot exists, which the runtime discharges by treating any registered
+cross-region entry as a seed.
+\end{enumerate}
+Two further results delimit what can be achieved rather than justifying an assumption:
+\code{ExtCPrecision.any\_sound\_rule\_le\_maxSound} shows that the store rule we emit is the most
+permissive sound rule expressible in the analysis' abstraction, and
+\code{ExtCModel.no\_sound\_finite\_fallback} shows that no finite fallback table can be sound for the
+unknown-host case, which is why the implementation pins such hosts instead of guessing.
+
+\subsection{Where the Lean development stops}
+\label{sec:appendix:gaps}
+
+Four honest gaps, in decreasing order of what a reader might expect them to cover:
+\begin{enumerate}
+\item \emph{The memory theorem is covered at the level of its law, not its statement.}
+\code{ExtCGap} and \code{ExtCMemGap} establish the gap law (with a bounded allocation rate the heap
+stays within a constant factor of the live set) and the monotonicity facts that
+\thm\ref{thm:mem} uses, not the theorem about this runtime's trigger, its scale factor and its
+wall.  Those are checked by the boundedness measurement of \tab\ref{tab:bounded} and by the
+whole-program instruction budget, not by a proof.
+\item \emph{The pause theorem has no Lean counterpart.}  \thm\ref{thm:pause} is a statement about
+emitted code — how many words a step scans, how often it reads the clock, how much sweep credit it
+can spend — and the Lean development models the region machine, not the C.  What exists is
+\code{ExtCPrecision}'s footprint results for a single slice, which is one term of the bound.  The
+rest is held by \tab\ref{tab:budgets} as compile-time constants and by a gate that fails when a step
+walks more than its cap, plus the measured distribution of \tab\ref{tab:pause}.
+\item \emph{The amortised theorem has no Lean counterpart.}  \thm\ref{thm:amortized} is a counting
+argument over transitions; its implementation check is the instruction-count budget, which fails the
+build when a shape's emitted code exceeds a frozen number.
+\item \emph{The escape analysis is assumed, not proved.}  Assumption~\ref{as:sound} (i) is a
+dataflow analysis with several hundred lines of checker code behind it.  We test it on a corpus of
+148 escaped-reference programs and on every test in the tree, and the placement rule it feeds is
+proved sound if the analysis is; what is not proved is the analysis itself.
+\end{enumerate}
+Two smaller boundaries are worth recording.  The Lean modules model reclamation as a synchronous
+system, so the concurrency story of \S\ref{sec:limitations} is outside them; and the development is
+checked by a script (\code{proofs/verify.sh}) that compiles the modules, scans the source for
+\code{sorry} and for user-declared axioms, checks the axiom dependencies of the headline theorems,
+and cross-checks a family of small cases with Z3 — so "no \code{sorry}" here means the script's
+check, and the script is in the artifact.  The script compiles the modules in a fixed order and so
+assumes their \code{.olean} files exist; from a clean tree they must be built in dependency order
+first, after which all thirteen compile and the audit reports only \code{propext} and
+\code{Quot.sound} as axioms.  The Z3 step additionally needs the \code{z3-solver} Python package;
+where it is absent the remaining checks run and that one is reported as failed rather than skipped.
+
+\subsection{What the numbers are, epistemically}
+
+Nothing in \S\ref{sec:eval} is a theorem, and the paper does not use the words "verified" or "proved"
+about a measurement.  \tab\ref{tab:crosslang}, \tab\ref{tab:pause} and \tab\ref{tab:bounded} are the
+output of scripts that are in the artifact, on one machine, with the protocol of
+\S\ref{sec:eval-setup}.  The properties that separate this work from a collection of measurements are
+the theorems; the measurements are how we know the theorems are about a real program, and the gates
+of \S\ref{sec:appendix:artifact} are how we know the program has not drifted away from them.

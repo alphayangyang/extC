@@ -1,0 +1,20 @@
+\begin{table}[t]
+\centering
+\setlength{\tabcolsep}{4pt}
+\small
+\caption{Tier census: every 1396 program under \texttt{tests/}, compiled  one file at a time and classified by the tier mark in the generated C.  A program that  does not compile is counted separately; most of those are negative tests.  544 of the compiled programs emit no reclamation code at all.}
+\label{tab:census}
+\resizebox{\ifdim\width>\linewidth\linewidth\else\width\fi}{!}{
+\begin{tabular}{@{}lrr@{}}
+\toprule
+class & programs & share of compiled \\
+\midrule
+programs examined & 1{,}396 & - \\
+compiled, no runtime emitted (T0) & 544 & $68.5\%$ \\
+compiled, counting tier (T1) & 2 & $0.3\%$ \\
+compiled, sweep tier (T2) & 248 & $31.2\%$ \\
+compiled, total & 794 & 100\% \\
+did not compile standalone & 602 & (378 in negative-test directories) \\
+\bottomrule
+\end{tabular}}
+\end{table}

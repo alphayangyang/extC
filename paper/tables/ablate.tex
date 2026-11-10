@@ -1,0 +1,18 @@
+\begin{table*}[t]
+\centering
+\setlength{\tabcolsep}{4pt}
+\scriptsize
+\caption{Mechanism ablation: wall clock in milliseconds (minimum of seven interleaved runs).  Every column is the same generated C with one constant changed, so a difference is  attributable to the mechanism named by the column: b17/b20 slab geometry, chunk1k/1m  scan chunk, seg0 no segment deadline, segchk64 a check every 64 words, nofin no  sweep-finish credit, off no reclamation at all.}
+\label{tab:ablate}
+\resizebox{\ifdim\width>\linewidth\linewidth\else\width\fi}{!}{
+\begin{tabular}{@{}lrrrrrrrrr@{}}
+\toprule
+shape & def & off & b17 & b20 & chunk1k & chunk1m & seg0 & segchk64 & nofin \\
+\midrule
+promote & 36.9 & 78.4 & 38.7 & 37.6 & 38.8 & 38.2 & 37.6 & 39.9 & 39.5 \\
+sizeratio & 15.0 & 55.7 & 15.8 & 15.2 & 14.7 & 14.5 & 14.7 & 14.9 & 15.3 \\
+chase & 127.8 & 105.5 & 126.6 & 129.8 & 130.4 & 127.4 & 125.5 & 124.8 & 118.2 \\
+cycleratio & 14.3 & 21.3 & 14.2 & 14.2 & 14.2 & 14.1 & 14.0 & 14.1 & 14.0 \\
+\bottomrule
+\end{tabular}}
+\end{table*}

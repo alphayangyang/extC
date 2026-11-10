@@ -1,0 +1,19 @@
+\begin{table}[t]
+\centering
+\setlength{\tabcolsep}{4pt}
+\small
+\caption{A loop whose live set does not grow, run for three orders of magnitude of rounds.  Peak RSS of the reclaiming build is flat; without reclamation the same program  accumulates every node it ever allocated.}
+\label{tab:bounded}
+\resizebox{\ifdim\width>\linewidth\linewidth\else\width\fi}{!}{
+\begin{tabular}{@{}lrrrrr@{}}
+\toprule
+rounds & \multicolumn{2}{c}{reclamation on} & \multicolumn{2}{c}{reclamation off} \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}
+ & ms & peak RSS (MB) & ms & peak RSS (MB) \\
+\midrule
+125{,}000 & 2.0 & 3.3 & 1.9 & 3.3 \\
+1{,}000{,}000 & 4.2 & 3.3 & 7.9 & 16.8 \\
+8{,}000{,}000 & 20.0 & 3.3 & 55.1 & 124.4 \\
+\bottomrule
+\end{tabular}}
+\end{table}

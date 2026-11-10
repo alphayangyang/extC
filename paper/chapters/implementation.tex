@@ -1,0 +1,266 @@
+\section{Implementation}
+\label{sec:impl}
+
+extC is a compiler for a small systems language, written in 75{,}239 lines of C across 50
+source files, that compiles to portable C11. The checker accounts for 32{,}064 of those lines
+(43\%), the back end for 23{,}709, the parser and desugarer for 6{,}738, and the region planner
+for 5{,}007; the two largest files are the code generator (16{,}017 lines) and the reclamation
+runtime that it emits as text (4{,}212 lines).
+No part of the runtime is a library: the generated C contains the runtime functions it needs,
+so a binary links libc and nothing else, and a reader can audit one function of the produced
+program without leaving the file.  The compiler is the only place where a policy decision is
+made; the emitted program contains no configuration logic beyond preprocessor constants.
+
+\subsection{What the compiler decides}
+\label{sec:impl-decide}
+
+Three analyses run before code generation, and each of them can remove work from the emitted
+program rather than speed it up.
+
+\paragraph{Placement.}
+The escape analysis of \S\ref{sec:placement} assigns every allocation site a region level and
+seeds the per-frame root table with the slots that can hold a reference.  The planner then
+merges the candidate sites of a possibly cyclic store into the shallowest of them, which is what
+makes the root table of the surviving region complete: a cycle can only be built inside one
+region, so one root table sees all of its edges.
+
+\paragraph{Unit tier.}
+The tier of a translation unit is decided by a chain of three predicates, each of which can
+short-circuit the next.  If no region in the unit can need reclamation the unit is compiled at
+\emph{T0} and no reclamation code is emitted at all.  Otherwise, if the unit satisfies the
+acyclicity conditions (i)--(iv) of \S\ref{sec:judgments}, it is compiled at \emph{T1}: counting
+is on, sweeping is off, and a reference count that reaches zero frees the object immediately.
+If neither predicate holds, the unit is compiled at \emph{T2}, where counting is off and the
+region is reclaimed by incremental mark and sweep.  The decision is a property of the unit, not
+of a call site, so a program cannot pay for a mechanism it does not use.
+
+\paragraph{Per-function idleness.}
+Independently of the unit tier, the idle proof of \S\ref{sec:tiers} is evaluated per function.
+A function that cannot discard a reference without a fresh allocation in the same iteration
+emits no reclamation code even when the unit keeps the runtime: it neither colours nor counts,
+and its allocations are plain slot hand-outs.  The predicated is applied at the granularity of
+functions because that is the granularity at which the proof is stated.
+
+The consequence reaches the artifact.  In \tab\ref{tab:codesize} a shape compiled with
+reclamation (\texttt{EXTC\_RECLAIM=1}) and the same shape compiled without it (\texttt{EXTC\_RECLAIM=0})
+differ by an order of magnitude in generated code, and the difference is entirely runtime
+functions plus the call sites that invoke them; the program text itself is unchanged.
+
+\begin{table}[t]
+\centering
+\small
+\caption{Generated C for the four benchmark shapes, with reclamation enabled and disabled.
+The two configurations differ in the runtime and in the call sites that reach it; program
+functions are the same in both.}
+\label{tab:codesize}
+\begin{tabular}{@{}lrrrrrr@{}}
+\toprule
+& \multicolumn{2}{c}{reclamation on} & \multicolumn{2}{c}{reclamation off} &
+\multicolumn{2}{c}{ratio} \\
+\cmidrule(lr){2-3} \cmidrule(lr){4-5} \cmidrule(lr){6-7}
+shape & lines & bytes & lines & bytes & lines & bytes \\
+\midrule
+promote    & 4{,}370 & 278{,}838 & 745 & 27{,}747 & 5{,}87$\times$ & 10{,}05$\times$ \\
+sizeratio  & 4{,}462 & 651{,}430 & 831 & 31{,}657 & 5{,}37$\times$ & 20{,}58$\times$ \\
+chase      & 4{,}391 & 280{,}207 & 765 & 28{,}726 & 5{,}74$\times$ & 9{,}75$\times$ \\
+cycleratio & 4{,}407 & 303{,}861 & 773 & 28{,}645 & 5{,}70$\times$ & 10{,}61$\times$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Allocation}
+\label{sec:impl-alloc}
+
+A managed region owns slabs.  A slab is a 512\,KiB aligned block
+(\texttt{EXTC\_RC\_SLAB\_BITS=19}); the whole block is handed out as slots, so slots of a
+size class start at a fixed phase inside the block, and a slot address maps back to its slab by
+a single mask.  Objects larger than the usable remainder of a block get a block of their own with
+one slot; their interior pointers are resolved through a registry rather than the mask.
+
+Slots are sized by rounding the request up to 8 bytes with a floor of 16.  The resulting stride
+is not a power of two in general, so the size class is keyed by $stride/8$ and slot index is
+computed by multiplication with a per-class reciprocal and a shift, never by division.  Each of
+the 32 classes keeps a chain of slabs that have a free slot and a one-entry cache of the last
+hit.  The invariant is one-directional: a slab with a hole is on the chain, and a slab on the
+chain may be full, so a miss costs a scan of the chain rather than a lost slab.
+
+\subsection{Slot metadata, reuse and zeroing}
+\label{sec:impl-meta}
+
+Each slot carries three bitmap bits (occupied, marked, and registered as the target of a
+cross-region edge), a two-byte in-edge count, and a two-byte type identifier that the sweep uses
+to find the reference fields; the payload itself is only 8-byte aligned, which keeps the layout
+deterministic and the object header absent.  A freed slot is pushed onto the class chain by
+writing its successor index into the per-slot type array, so the payload is never read or
+written by the allocator and a stale payload cannot corrupt a chain.  The chain index is 16-bit,
+which bounds the number of slots a chain can hold.
+
+Clearing a fresh slot is done by a fixed-length switch on $n/8$ with fall-through cases down
+to the 16-byte floor, and only the default arm calls \texttt{memset}.  The jump-table form
+avoids the fortified \texttt{memset} that the C library substitutes for a known-length call:
+that substitution cost about 13.5 instructions per allocation in the size-ratio shape before the
+switch replaced it.
+
+The allocation body is emitted \texttt{always\_inline} at every site, which folds the size class
+into an immediate when the request is a constant, at a cost of about 2.7\,KB of machine code per
+site; a build-time switch replaces it with a call.  Constants that the evaluation toggles are
+all \texttt{ifndef}-guarded macros in the emitted runtime, so an experiment is one \texttt{-D}
+flag on the C compiler and changes nothing else.
+
+\subsection{Barriers and the grey set}
+\label{sec:impl-barrier}
+
+Two barriers maintain the tri-colour invariant of \S\ref{sec:transitions}: \texttt{shade}
+colours a value that is about to be stored, and \texttt{shadeOld} colours the value being
+overwritten.  The invariant they maintain is stronger than the classical one and simpler to
+reason about: every pointer value held by the mutator is black, so no white object is reachable
+from a mutated slot when the sweep decides.  A unit at T1 elides the colouring of local slots
+entirely, because local slots are roots of the region and cannot hide a white object.
+
+Greys are not a stack but a 2{,}048-cell open-addressed table whose cell for an address is
+$((addr\gg3)+gen) \bmod 2048$ with a generation counter; a wrap of the generation clears the
+table in one \texttt{memset} of 16\,KiB.  Every transition that resets mark bits advances the
+generation, so a stale entry can never be mistaken for a live grey.
+
+\subsection{Roots without a stack scan}
+\label{sec:impl-roots}
+
+A frame does not scan its stack.  The compiler emits, per frame skeleton, a static table of the
+slots that can hold a reference, and the marker walks that table.  The table describes the owning
+frame only; when a store places a reference into a caller frame, the store records the target
+region as owed and the owner settles the debt before its next call, so no region is ever scanned
+with an incomplete table.
+
+Coroutine and task frames register their reference fields as roots when they are created, and a
+worker thread claims the thread-local arena it was spawned with before it allocates.  A
+cross-region edge is registered as one bit in the target slab, which is what lets a collector seed
+a region from foreign references without looking at the mutator.  When the host of a store cannot
+be attributed to a slab, the value is recorded in a process-level pinned table (open addressing,
+load factor at most one half, Knuth backward shift on removal) and the region that contains it
+drops the whole table on teardown.
+
+\subsection{Trigger, wall and admission}
+\label{sec:impl-trigger}
+
+Reclamation is triggered by memory pressure, not by a byte counter alone: the predicate compares
+the bytes handed out against a threshold, the threshold against a wall, and the bytes against the
+wall directly.  The threshold is self-tuning: an empty collection multiplies it by
+\texttt{EXTC\_RC\_SCALE\_MUL} (default 4), a productive collection resets it.  This is what makes
+the runtime pay for the shapes that need collection and stay out of the way of the shapes that do
+not: \tab\ref{tab:ablate} shows a shape that allocates but never retains improving by a factor of
+two when reclamation is switched off, and a shape that retains improving by 55\% when it is
+switched on.
+
+The wall is $M_{max}$, either the value of \texttt{EXTC\_RC\_M\_MAX} or three times the live
+set.  A large request reserves room before it is admitted: the slow path of the allocator records
+the maximum request seen so far ($R_{max}$) and the threshold update keeps
+$thr + R_{max} \le M_{max}$ whenever the wall was set explicitly (the default wall tracks the
+live set and cannot carry such a promise).  The reservation costs no instruction on the hot path,
+because only a new size class or a huge block enters the slow path.
+
+\subsection{Incremental marking}
+\label{sec:impl-mark}
+
+Marking is a sequence of bounded steps driven by the allocation path; there is no collector
+thread.  A step pops at most \texttt{MARK\_BATCH\_MAX=256} objects from the worklist.  Each
+collection draws a quota of work proportional to the bytes allocated since the last one (one unit
+per 8 bytes, capped at $2^{20}$ units), and aborts back to the mutator when the quota or a
+wall-clock deadline of 800\,\us is reached, keeping the worklist and the cursor for the next step.
+
+An object larger than the scan chunk is scanned in segments: the cursor (object and offset) lives
+in the region, not on the mark stack, and \texttt{markResume} consumes one chunk per step.  A
+chunk is \texttt{EXTC\_RC\_SCAN\_CHUNK=8192} words, and within a chunk the step checks the clock
+every 512 words; if the elapsed time exceeds \texttt{EXTC\_RC\_SEG\_DEADLINE\_US=40} the step
+stores the cursor and returns the number of words it consumed.  This is the mechanism behind the
+pause theorem of \S\ref{sec:thm-bounds}: the step is bounded by the smaller of a full chunk and the
+deadline plus one check interval, rather than by the size of the object.
+
+\subsection{Incremental sweeping}
+\label{sec:impl-sweep}
+
+The sweep walks the occupancy bitmap word by word.  For each word it clears the occupancy and
+registration bits, pushes every set bit onto the class chain, and advances; the work is
+proportional to the capacity of the region, not to its live set, which is exactly the term that
+\thm\ref{thm:amortized} charges to the allocator.  A step stops after a fixed number of words
+(\texttt{EXTC\_RC\_SWEEP\_BUDGET=8}), but when it is about to leave a slab it may spend at most
+\texttt{EXTC\_RC\_SWEEP\_FINISH\_MAX=64} extra words to finish that slab, so the number of
+half-swept slabs stays bounded; if the credit is exhausted the slab is parked and the cursor
+resumes there, which is sound because the mark bits of a parked slab are only reset when the
+parked sweep resumes.
+
+A region whose every slot is dead is freed without sweeping, and that test is $O(1)$ per
+slot rather than a second pass: the sweep maintains two per-region counters, live and marked,
+which are incremented as it walks.  A verification mode recomputes the counters by hand and
+compares, and it is what found the one double-counting bug in this mechanism.
+
+\subsection{Bounded teardown: the closing queue}
+\label{sec:impl-close}
+
+Destroying a region is where an unbounded pause would otherwise hide, because a region can own
+thousands of slabs and each slab can hold hundreds of children.  Region teardown therefore does
+$O(1)$ work on the calling thread: it aborts any collection in flight, drops the pinned entries
+of the region, sets a \emph{dead} flag, appends the region to a closing queue, and returns.
+The dead flag is what makes the immediate return sound: the ownership test that every store
+consults rejects a slot in a dead region, so a value read out of a region after the call cannot
+resurrect it, and the slab memory stays valid until the region is actually drained.
+
+Draining happens on allocation points and on collection settle, with a budget (eight slabs or
+100\,\us, whichever comes first) and a hard deadline of 1\,ms.  For each slab the drain walks the
+occupancy bitmap, decrements the in-edge counts of every child, enqueues freed children on the
+free queue, and, when the slab chain of the region is empty, frees the class buckets, the mark
+stack, the cursor stack and the region header itself.  A queue that grows beyond 32 pending
+regions is drained inline under the same budget, so the memory held by deferred teardown is
+bounded even when a program destroys regions in a loop.
+
+\subsection{Instrumentation and its two audiences}
+\label{sec:impl-instr}
+
+The artifact reports four different populations of time, and the evaluation is careful never to
+add or subtract across them.
+\texttt{[pause]} counts only steps taken inside an armed window, which makes it a lower bound
+on the pause the program experiences.  \texttt{[step]} counts every sub-step the mutator thread
+spends inside the runtime, which is the right quantity for a pause contract but includes the time
+the thread was descheduled.  \texttt{[work]} counts only bounded hot-path steps, with the cap
+$256\times4=1024$ enforced (\texttt{walk\_gtcap} must be zero for the run to be reported);
+unbounded drains are reported separately in \texttt{[ubwork]} and \texttt{[worst]}, so a
+tail that comes from a deliberately unbounded path cannot hide inside a budgeted one.
+
+\begin{table}[t]
+\centering
+\small
+\caption{The constants that bound a step, and the theorem each one serves.  All are
+\texttt{-D}-overridable in the emitted runtime, so \tab\ref{tab:ablate} changes one mechanism at a
+time without touching the compiler.}
+\label{tab:budgets}
+\begin{tabular}{@{}llr@{}}
+\toprule
+constant & role & default \\
+\midrule
+\texttt{SLAB\_BITS}          & slab block size (log2) & 19 \\
+\texttt{SLAB\_CHUNK\_MIN}    & minimum slots per block & 512\,KiB \\
+\texttt{MARK\_BATCH\_MAX}    & objects popped per mark step & 256 \\
+\texttt{QUOTA\_SHIFT\_MARK}  & bytes per work unit & 3 \\
+\texttt{QUOTA\_MAX\_MARK}    & work units per collection & $2^{20}$ \\
+\texttt{QUOTA\_DEADLINE\_US} & wall-clock cap on one assist & 800 \\
+\texttt{SCAN\_CHUNK}         & words per segmented scan step & 8192 \\
+\texttt{SEG\_CHECK\_WORDS}   & words between clock checks & 512 \\
+\texttt{SEG\_DEADLINE\_US}   & clock cap inside one chunk & 40 \\
+\texttt{SWEEP\_BUDGET}       & occupancy words per sweep step & 8 \\
+\texttt{SWEEP\_FINISH\_MAX}  & extra words to close a slab & 64 \\
+\texttt{FREE\_BUDGET\_SLABS} & slabs drained per allocation point & 8 \\
+\texttt{FREE\_DEADLINE\_US}  & time cap on one drain & 100 \\
+\texttt{CQ\_MAX\_REGIONS}    & pending regions before inline drain & 32 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Artifact and gates}
+\label{sec:impl-artifact}
+
+The artifact is built with \texttt{make} and needs a C compiler and nothing else; the proofs
+are Lean~4 modules that \texttt{proofs/verify.sh} rebuilds and audits, and the reclamation runtime is
+exercised by a 216-case C driver that runs the same suite under \texttt{-fsanitize=address} and
+\texttt{-fsanitize=undefined}.  Two properties are held by gates rather than by tests: the
+instruction count of the allocation path has a frozen budget in a whole-program run, and the
+generated C for every benchmark shape must be byte-identical to the artifact of record, so a
+change to the emitted text is never silent.

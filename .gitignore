@@ -83,3 +83,14 @@ tests/gc-p0/bin/
 # 我的分析构建（sanitizer / -fanalyzer）：只在本地用，能重新构建
 build-an/
 build-asan/
+
+# 论文（paper/）的 LaTeX 中间产物：重新编译即得，不入库；main.pdf 与源码/数据/图入库
+paper/*.aux
+paper/*.log
+paper/*.out
+paper/*.bbl
+paper/*.blg
+paper/*.fls
+paper/*.fdb_latexmk
+paper/*.synctex.gz
+paper/*.toc

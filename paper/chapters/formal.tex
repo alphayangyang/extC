@@ -1,0 +1,408 @@
+\section{A core calculus, and what it buys}
+\label{sec:formal}
+
+\S\ref{sec:design} was operational, because that is how the system is built.
+This section states the same design as a small calculus, so that the claims the mechanism rests on
+become theorems rather than assertions: a freed slot is never dereferenced (\S\ref{sec:thm-safe}),
+a compile-time tier switch is sound (\S\ref{sec:thm-tier}), removing collection work from an idle
+function is observationally transparent (\S\ref{sec:thm-idle}), peak memory is a function of the live
+set and not of the run length (\S\ref{sec:thm-bounds}), every synchronous collector step has a bound
+that is independent of the heap (\S\ref{sec:thm-bounds}), total traversal work is linear in allocated
+bytes (\S\ref{sec:thm-bounds}), and deferred freeing still makes progress
+(\S\ref{sec:thm-bounds}).
+
+Section~\ref{sec:formal-status} states exactly what is proved here, what is machine-checked in Lean,
+what is checked by the compiler's own gates, and what is only tested.
+
+\subsection{Store, frames, regions}
+\label{sec:machine}
+
+\emph{Frames} form a stack $F_0, \dots, F_n$ with $F_0$ outermost.
+Each frame owns \emph{regions}, written $\rho^{\ell}$ where $\ell$ is the frame's distance from the
+ground ($\rho^{0}$ belongs to $F_0$ and lives longest).
+We use one direction throughout: \emph{smaller $\ell$ is longer-lived}.
+
+A region is a sequence of \emph{slabs}; a slab is partitioned into \emph{slots}; a slot holds
+either scalars, a struct, a \emph{view} $(p, \mathit{len})$, or a \emph{reference} $p$.
+Every slot $\sigma$ has a type descriptor $\delta(\sigma)$ naming its reference words, and a
+\emph{status} $\mathit{st}(\sigma) \in \{\mathsf{live}, \mathsf{free}\}$; the status of slots in a
+released region is $\mathsf{free}$ and its memory is returned to the allocator.
+
+Runtime state is a pair $(M, \mathit{sh})$ of a memory $M$ mapping slots to values and a shade set
+$\mathit{sh}$ used by the incremental marker.
+$\mathit{reach}_M(S)$ is the set of slots reachable from $S$ by following references and views
+through the type descriptor of each slot; $\mathit{root}(F) = R(F)$ is the frame's \emph{root table},
+a static list of the slots named by its reference-typed locals and parameters, emitted with the code
+of $F$ and never computed at run time.
+$\mathit{seeds}(\rho) = \bigcup_F R(F) \cup \mathit{foreign}(\rho)$ is the seed set of a region,
+where $\mathit{foreign}(\rho)$ is the set of slots in $\rho$ that other regions register as
+cross-region entry points.
+
+\subsection{Static judgments}
+\label{sec:judgments}
+
+\paragraph{Placement.}
+For an allocation site $s$ at depth $k$ the analysis yields a level
+$\ell(s) = \max(0, k - \mathit{escapeDepth}(s))$ (eq.~\ref{eq:placement}) and the site allocates
+directly in $\rho^{\ell(s)}$.
+Nothing is moved later: there is no promotion copy at run time.
+
+\paragraph{Depth rules.}
+Every local, parameter and slot carries a \emph{depth} $d$ (the level of the region that holds it,
+on the same scale; smaller is longer-lived):
+\begin{enumerate}
+\item[(D1)] a reference may be stored into a slot of depth $e$ only if the storage it names has
+  depth $d \le e$;
+\item[(D2)] if a value may escape $j$ frames, its site is placed at $k - j$, so at every escape site
+  the reference is stored into a slot no shallower than the storage it names -- the store is one
+  word write, and there is no copy of the value;
+\item[(D3)] a view of container depth $d$ may only be used in a context whose depth $c$ satisfies
+  $d \le c$.
+\end{enumerate}
+Violating (D1)--(D3) is a compile error, not a runtime check.
+Two mutable references may alias and values are copied by default; no rule assumes uniqueness.
+
+\paragraph{Tier judgments.}
+$\mathit{acyclic}(U)$ holds when every reference write in $U$ either (i) stores a value freshly
+allocated in the same frame, or a call result proved acyclic and fresh, (ii) stores \texttt{null},
+(iii) stores a value from a strictly older level, or (iv) is a counted slot, and no other write can
+drop a reference (this is the checker's \texttt{planFnAcyclic} condition, applied to every function
+of the unit).
+$\mathit{idle}(U)$ holds when every reference field is written at most once per object, no reference
+local or parameter is reassigned in a way that drops a reference, and no operation drops a reference;
+a call to a non-idle callee counts as a drop.
+
+\subsection{Runtime transitions}
+\label{sec:transitions}
+
+The mechanisms of \S\ref{sec:contract} are transitions on $(M, \mathit{sh}, q, \mathcal{S})$,
+where $q$ is the closing queue and $\mathcal{S}$ the free queue.
+Write $\mathit{free}(\rho, S)$ for freeing the slots $S$ of $\rho$, and
+$\mathit{live}(M) = \mathit{reach}_M(\bigcup_F R(F))$.
+
+\begin{description}
+\item[Allocate.] Take a free slot of the right size class (or bump a slab), set it $\mathsf{live}$,
+  zero it, and if a mark round is in flight mark it black.
+\item[Field store.] Write a value; if a mark round is in flight, shade the new value (insertion
+  barrier) and, when replacing a reference, shade the old one (deletion barrier).
+\item[Local release.] On block exit, the block's arena is rewound whole.
+\item[Count zero.] A reference-counted slot whose count reaches zero is freed on the spot.
+\item[Mark step.] Pop at most $b$ objects from the mark stack, scan each through its descriptor, and
+  resume one chunked object scan if one is in progress; at most $\mathit{CHUNK}$ words of a resumed
+  scan are visited before the cursor is saved again.
+\item[Sweep step.] Visit at most $W_s$ words of a region's occupancy bitmap and free the slots of
+  dead words.
+\item[Trial delete.] On an overwrite that satisfies the four static conditions of \S\ref{sec:design},
+  mark from $\mathit{seeds}(\rho) \setminus \{\sigma\}$ and free the slots reachable from the old
+  value but unreachable from the remaining seeds.
+\item[Close.] On region death: abort an in-flight round, drop the region's pins, set
+  $\mathit{dead}(\rho)$, and append $\rho$ to $q$; this part is $O(1)$.
+\item[Drain closing.] At an allocation point, pop regions from $q$, unlink their slots'
+  cross-region edges, remove their registry entries, and push their slabs to $\mathcal{S}$;
+  bounded by $\mathit{SLABS}$ slabs or $\mathit{D}_{	ext{cq}}$ microseconds per step.
+\item[Drain free queue.] Return at most $\mathit{SLABS}$ queued slabs to the allocator, or stop at
+  $\mathit{D}_{	ext{fq}}$ microseconds.
+\item[Admit.] Before allocating $n$ bytes, if the next allocation would cross the trigger line, run
+  the collector; under an explicit wall the trigger line satisfies $\mathit{thr} + R_{\max} \le M_{\max}$,
+  so a request of size at most $R_{\max}$ always fits.
+\end{description}
+
+\subsection{Invariants and safety}
+\label{sec:thm-safe}
+
+\begin{description}
+\item[(I1) Root completeness.] At every trigger point, $R(F)$ contains every live reference slot of
+  $F$; for a region handed to the sweep, $\mathit{seeds}(\rho)$ contains every entry into $\rho$ from
+  outside.
+\item[(I2) Live references name live storage.] If $\sigma$ is live and its reference word holds a
+  pointer to $\sigma'$, then $\sigma'$ is live.
+\item[(I3) No live reference names freed storage.]
+\item[(I4) Dead regions are unreachable.] After $\mathit{dead}(\rho)$ is set, no live slot and no
+  seed names a slot of $\rho$.
+\end{description}
+
+\begin{assumption}[Escape and root soundness]
+\label{as:sound}
+(i) the placement and depth rules are enforced; (ii) at every trigger point the emitted root table
+is complete in the sense of (I1); (iii) type descriptors list exactly the reference words of a layout;
+(iv) C externs never write a reference word of a region slot.
+\end{assumption}
+
+\begin{lemma}[Local release is safe]
+\label{lem:local}
+Freeing a block's arena cannot free storage named by a live reference.
+\end{lemma}
+\begin{proof}
+By (D1), a reference stored outside the block has depth at most the block's depth, so the object it
+names has depth at most that too -- it is in this arena or a deeper one, all of which are released no
+later. Hence no slot released here is named from an outer, still-live slot.
+\end{proof}
+
+\begin{lemma}[Sweep only frees unreachable slots]
+\label{lem:sweep}
+Under (I1), $\rho \setminus \mathit{reach}_M(\mathit{seeds}(\rho)) \subseteq
+\bigcup_{\sigma \in \rho} \{\sigma \mid \text{unreachable}\}$.
+\end{lemma}
+\begin{proof}
+$\mathit{live}(M)$ is reachable from the union of the frames' root tables, and by (I1) every entry into
+$\rho$ from outside is in $\mathit{seeds}(\rho)$. A slot in $\rho$ that is reachable from a root is
+therefore reachable from $\mathit{seeds}(\rho)$: take the last step of a path before it enters $\rho$
+-- that step enters through an entry in the seed set. So the complement of the reachable set inside
+$\rho$ is unreachable.
+\end{proof}
+
+\begin{lemma}[Trial deletion is conservative]
+\label{lem:trial}
+The set freed by a trial delete is a subset of the set a full sweep of $\rho$ with the same seeds
+would free.
+\end{lemma}
+\begin{proof}
+Trial deletion marks from the same seed set with $\sigma$ removed, so its reachable set is a superset
+of the full sweep's reachable set; the freed set is the old value's reachable set minus a superset,
+hence smaller. Removing $\sigma$ from the seeds is sound because $\sigma$ holds the old value at that
+moment: including it would make the old structure its own justification.
+\end{proof}
+
+\begin{lemma}[Deferred region death keeps (I4)]
+\label{lem:defer}
+Setting $\mathit{dead}(\rho)$ at the owner frame's exit preserves (I2) and (I3), and makes
+$\mathit{owns}(p) = 0$ for every $p \in \rho$.
+\end{lemma}
+\begin{proof}
+At the exit of $F$, the only frames that may hold references into $\rho^{\ell}$ are $F$ and deeper
+frames; the deeper ones have already exited, and their arenas are gone, so every remaining reference
+into $\rho$ lives in $\rho$ itself (or in another region that is dying with the same frame).
+Therefore no live slot names $\rho$, i.e. (I3) holds for it, and answering $0$ from
+$\mathit{owns}$ cannot hide a live edge: any query that reaches a slot of $\rho$ started from dead
+storage.
+\end{proof}
+
+\begin{theorem}[No dangling reference]
+\label{thm:safe}
+Under Assumption~\ref{as:sound}, no execution dereferences a freed slot.
+\end{theorem}
+\begin{proof}[Proof sketch]
+Maintain (I1)--(I4) over the transitions of \S\ref{sec:transitions}.
+(I1) is preserved by allocation (the allocating frame records the slot), by the store rule (a
+reference stored into a slot of the current frame is a root, and a slot registered from another
+region is a foreign seed), and by the fact that roots are only dropped together with the storage that
+held them.
+(I2) is preserved by allocate, store (the stored value is live by the induction hypothesis) and by
+every rule that frees storage: local release (Lemma~\ref{lem:local}), sweep
+(Lemma~\ref{lem:sweep}), trial delete (Lemma~\ref{lem:trial}).
+(I3) is preserved by those lemmas plus deferred death (Lemma~\ref{lem:defer}), and by the drain
+transition, which only unlinks cross-region edges of a region that is already dead.
+Dereference is only possible through a reference stored in a live slot, and by (I2) that names a live
+slot; a load through a stale pointer copied into a register earlier is excluded by (I3), since the
+register contents came from a live slot at the time of the load.
+\end{proof}
+
+\subsection{Tier soundness}
+\label{sec:thm-tier}
+
+\begin{theorem}[Both tiers are sound, and the switch is a decision]
+\label{thm:tier}
+Let a unit $U$ be assigned a tier by \S\ref{sec:tiers}.
+(a) If $\mathit{acyclic}(U)$, then in the event tier ($T1$) no slot is freed while reachable, and
+every unreachable slot is freed within one reference-count update after it becomes unreachable.
+(b) If $U$ is placed in the sweep tier ($T2$), then a sweep frees only unreachable slots, whether or
+not reference counting is enabled.
+\end{theorem}
+\begin{proof}[Proof sketch]
+(a) The conditions of $\mathit{acyclic}$ make the reference graph a DAG whose edges always point
+from a younger (deeper) to an older (shallower) slot, or towards a fresh allocation. Counts
+therefore decrease along a topological order: when the last external reference to an object is
+dropped, every object reachable only through it has already had its own count reduced to the value
+it would have if it were reachable, and a chain of zero counts is freed in one cascade.
+No object can be freed while reachable because a reachable object has at least one holder on a live
+path, and the cascade only starts from a slot whose count is zero.
+The correctness of omitting the sweep is then immediate: the sweep would find every slot reachable
+from the seeds, and every unreachable slot has already been freed by counting.
+(b) The marker's seed set is the static root table plus the cross-region registration bits; by
+Lemma~\ref{lem:sweep} the free set is a subset of the unreachable set. Counts play no role in the
+seed construction, so the statement is independent of the \texttt{NOCOUNT} configuration; counting
+on only adds the count-zero transition, which is sound by (I2) and can only make the reachable set
+smaller.
+\end{proof}
+
+\begin{corollary}
+\label{cor:tier-switch}
+For an acyclic unit, switching the event tier off (forcing $T2$) cannot introduce a dangling
+reference; it can only raise the peak memory, because more garbage waits for the sweep.
+\end{corollary}
+
+\subsection{Idle transparency}
+\label{sec:thm-idle}
+
+\begin{theorem}[Removing collection work from an idle function is transparent]
+\label{thm:idle}
+If $\mathit{idle}(f)$ holds, then emitting no collection work for $f$ leaves the observable trace of
+the program unchanged; only timing changes.
+\end{theorem}
+\begin{proof}[Proof sketch]
+The work emitted for a function is counting updates, budgeted collection steps, root materialization
+for callees, and the store barrier.
+The idle judgement removes the first three and keeps the barrier: a store an idle function does
+perform still shades the edge it deletes, so the tri-colour invariant of the marker is maintained
+exactly as in non-idle code.
+Two facts are needed. First, a reference stored by an idle function either comes from a slot
+reachable at the start of the cycle or is the result of an allocation in the current cycle (black by
+construction): the idle conditions forbid reassigning reference locals and forbid writing a
+reference field twice in one object, so the value's source is a root or an untouched field.
+Second, no slot reachable at entry becomes unreachable during $f$, since $f$ drops no reference.
+Hence no omitted step could have been the one that rescues a slot, and the region has the same live
+set at exit.
+Removing the steps therefore only removes work; induction on the statement structure, with a fixed
+point over the call graph, makes the argument well-founded.
+\end{proof}
+
+\subsection{Bounds}
+\label{sec:thm-bounds}
+
+Let $L$ be the live set at a selection point, $G$ the trigger floor, $B$ the size of one slab and
+$\kappa_M$ the measured excess over the live set per unit of retained garbage (the model of
+\S\ref{sec:roofline}; $\kappa_M \in [0.772, 1.010]$).
+
+\begin{theorem}[Bounded memory]
+\label{thm:mem}
+For a loop whose per-round allocation escapes into a bounded set of long-lived slots and whose other
+allocations die with the round, the peak of a region satisfies
+$M_{\text{peak}} \le L + G + O(B) = L(1 + \kappa_M \cdot r_{\max})$, independent of the number of
+rounds, where $r_{\max} = G/L$ is the retention ratio the trigger line allows.
+\end{theorem}
+\begin{proof}[Proof sketch]
+Round-local allocations are released by local release at block exit, so they contribute at most one
+round's worth.
+A promoted value either lands in a bounded slot set (contributing to $L$) or is overwritten; an
+overwritten structure is freed by trial deletion as soon as the credit rule allows a traversal.
+The credit rule requires unvisited allocation bytes to exceed $\max(2L, G)$, so between two
+traversals the region grows by at most $G$ above its live set, and each denial postpones a free
+without stacking: the next round's overwrite makes the older structure unreachable as well, and the
+traversal eventually allowed frees the whole chain.
+With an explicit wall, the trigger line additionally satisfies
+$\mathit{thr} + R_{\max} \le M_{\max}$, so a request up to $R_{\max}$ bytes cannot overshoot the
+wall by more than one request, and $R_{\max}$ is itself bounded by the largest single request the
+program makes.
+\end{proof}
+
+\begin{theorem}[Bounded pause per step]
+\label{thm:pause}
+Every synchronous collector step performed on the mutator thread finishes in time bounded by
+\begin{equation*}
+\begin{aligned}
+P_{\text{step}} &\le b \cdot \tau_t + \min(C_{\text{scan}}\cdot \mathit{CHUNK},\\
+&\qquad D_{\text{seg}} + C_{\text{scan}}\cdot \mathit{CHK}) + W_s \cdot 64 \cdot \tau_s + c_0,
+\end{aligned}
+\end{equation*}
+a constant fixed by compile-time budgets, independent of the heap size, of the number of live
+objects, and of the size of the object being scanned; region destruction is $O(1)$ and its deferred
+work is charged to the bounded drain steps.
+\end{theorem}
+\begin{proof}[Proof sketch]
+Each step's work item is bounded by construction.
+A mark step pops at most $b = \mathit{MARK\_BATCH\_MAX}$ objects and, if an object scan is in
+progress, visits at most $\mathit{CHUNK}$ words or stops at the next multiple of
+$\mathit{CHK}$ words after the segment deadline $D_{\text{seg}}$; a large object is therefore
+scanned across several steps with a saved cursor rather than in one.
+A sweep step visits at most $W_s$ bitmap words and frees at most $64 W_s$ slots; the finishing
+credit for a slab is clamped by a constant so that the bound does not scale with the slab size.
+A trial delete is bounded by the same mark budget because it consumes credit that the credit rule
+only grants in proportion to allocated bytes.
+Region death does constant work and appends to the closing queue; the queue is drained at
+allocation points with at most $\mathit{SLABS}$ slabs or $D_{\text{cq}}$ microseconds per step, and
+the free queue likewise.
+Summing the bounded terms gives the stated constant; in the measured configuration
+$b\cdot\tau_t \approx 4.5$\,\us, $C_{\text{scan}}\cdot\mathit{CHUNK} \approx 8$--$13$\,\us and
+$W_s\cdot 64\cdot \tau_s \approx 0.23$\,\us, i.e. a few tens of microseconds per step, which is
+what \S\ref{sec:eval} measures.
+\end{proof}
+
+\begin{theorem}[Amortized traversal work]
+\label{thm:amortized}
+Over an execution, the total traversal work charged to a region is
+$O(\text{allocated bytes})$ for a region the checker proves acyclic (which additionally never
+sweeps), and $O(\text{allocated bytes} + L)$ otherwise; the second bound constrains the total, not a
+single step.
+\end{theorem}
+\begin{proof}[Proof sketch]
+For the acyclic case the trigger is never armed with a non-empty mark phase, so the collector is a
+no-op and the claim is immediate.
+Otherwise each step's work is charged to allocation bytes admitted since the last visit by the credit
+rule, and the credit only grows with allocation, so summing over the run gives the bound.
+The bound deliberately says nothing about how the work is distributed over the steps; \S\ref{sec:thm-bounds}
+supplies that, and \S\ref{sec:eval} measures the distribution.
+\end{proof}
+
+\begin{theorem}[Deferred freeing makes progress]
+\label{thm:progress}
+After a region $\rho$ is closed, the work needed to release it is $O(\text{slabs}(\rho))$, and each
+allocation point performs at most $\mathit{SLABS}$ slabs of it, so if the program allocates at all,
+$\rho$ is fully released after at most $\lceil \text{slabs}(\rho)/\mathit{SLABS} \rceil$ allocation
+points; the closing queue holds at most $\mathit{CQ\_MAX}$ regions, and exceeding that forces an
+immediate bounded drain.
+\end{theorem}
+\begin{proof}[Proof sketch]
+Closing does constant work per region and enqueues it.
+The drain processes a bounded number of slabs per step and never needs to revisit a slab: unlinking
+the cross-region edges of a dead region is a finite walk over its occupied slots, and by
+Lemma~\ref{lem:defer} none of those edges can be live.
+Since $\mathit{dead}(\rho)$ makes $\mathit{owns}$ answer $0$ for all its slots, the region cannot
+acquire new edges while it waits, so the remaining work is monotonically decreasing.
+If the program stops allocating entirely before the queue is drained, the remaining slabs are
+returned by the process exit path (the OS reclaims them); we state this as an explicit exception
+because it is not a bound on the program's own memory.
+\end{proof}
+
+\subsection{Status of each claim}
+\label{sec:formal-status}
+
+\begin{table*}[t]
+\centering
+\small
+\resizebox{\ifdim\width>\linewidth\linewidth\else\width\fi}{!}{\begin{tabular}{@{}llll@{}}
+\toprule
+Claim & Paper & Lean~4 & Gate \\
+\midrule
+Thm.~\ref{thm:safe} safety & proved (sketch + appendix) & \texttt{World.safe\_of\_invariants} & ASan/UBSan corpus \\
+Thm.~\ref{thm:tier} tiers & proved (sketch) & \texttt{ExtCRegion}, \texttt{ExtCReclaim} & acyclic/forced red proofs \\
+Thm.~\ref{thm:idle} idle & proved (sketch) & \texttt{ExtCIdleMax} (exact) & idle corpus ratchet \\
+Thm.~\ref{thm:mem} memory & proved under Assumption~\ref{as:sound} & \texttt{ExtCGap}, \texttt{ExtCMemGap} & boundedness shapes \\
+Thm.~\ref{thm:pause} pause & proved by budget counting & \texttt{ExtCPrecision} (footprint per slice) & work-budget gate \\
+Thm.~\ref{thm:amortized} cost & proved (sketch) & -- & instruction-count gates \\
+Thm.~\ref{thm:progress} deferred free & proved (sketch) & -- & closing-queue driver tests \\
+\bottomrule
+\end{tabular}}
+\caption{What backs each claim. ``Proved'' means the argument in this section; ``Lean'' means the
+machine-checked module that covers the corresponding core lemma; ``Gate'' means the automated check
+that fails if the implementation stops matching. Blank cells are honest gaps, not claims.}
+\label{tab:claims}
+\end{table*}
+
+\paragraph{What is assumed.}
+Assumption~\ref{as:sound} is the boundary of the whole development.
+(i) is the escape analysis, which is a large program that we test and gate but do not prove.
+(ii) is what the compiler emits; it is checked structurally by gates that require every trigger point
+to materialize the root set the analysis computed.
+(iii) and (iv) are checked by construction (descriptors are emitted from the layout) and by the
+extern convention (an extern receives references but never writes our slots).
+
+\paragraph{What the Lean development covers.}
+Thirteen modules, 2,555 lines, no \texttt{sorry}, checked by \texttt{proofs/verify.sh}: a region
+calculus (\texttt{ExtCRegion}, \texttt{ExtCBlock}), the reclamation core
+(\texttt{ExtCReclaim}, \texttt{ExtCRuntime}), the gap and memory laws used by
+\S\ref{sec:roofline} (\texttt{ExtCGap}, \texttt{ExtCMemGap}), the idle maximum
+(\texttt{ExtCIdleMax}), slice footprints (\texttt{ExtCPrecision}) and the pool and arena models.
+The mapping is one-to-one for safety and idle; for the memory and pause bounds it covers the
+underlying law rather than the whole implementation, and \tab\ref{tab:claims} says so.
+Rebuilding the development from a clean tree compiles all thirteen modules, and the audit behind
+\tab\ref{tab:claims} reproduces: no module contains \texttt{sorry}, and the only axioms any theorem
+depends on are \texttt{propext} and \texttt{Quot.sound}.  Two practical notes for a reader repeating
+this: the shipped script compiles modules in a fixed order and therefore needs the \texttt{.olean}
+files of its dependencies to exist, so the modules are built in dependency order first
+(\texttt{ExtCRegion}, then \texttt{ExtCPool}, \texttt{ExtCModel}, \texttt{ExtCPath}, and so on), and
+its SMT cross-check step needs the \texttt{z3} Python package, which our environment does not have.
+
+\paragraph{What is only tested.}
+The distribution of pause times, the constants of the roofline model, and every number in
+\S\ref{sec:eval} are measurements, not theorems.
+Their reproduction is scripted, and the scripts are the artifact of \S\ref{sec:artifact}.

@@ -1,0 +1,88 @@
+\section{Related Work}
+\label{sec:related}
+
+\paragraph{Reference counting and cycles.}
+Counting~\cite{collins1960} is the oldest automatic reclamation and the one closest to this
+design's barrier, but its classical costs are a write barrier on every store and cycles that no
+count can break \cite{jones2011handbook}. Cycle collection has been attacked with trial deletion
+and concurrent variants \cite{bacon2001concurrent}, with deferred and hybrid counting
+\cite{blackburn2003ulterior}, and with reuse-based optimizations in a functional setting
+\cite{reinking2021perceus}.  extC keeps a counting mode but makes it a tier that the compiler
+chooses, not the default: the default emits no counter at all, and the shapes where counting would
+pay — a reference stored into a long-lived slot and dropped later — are covered by a budgeted sweep
+whose trigger is memory pressure rather than a decrement to zero.
+
+\paragraph{Tracing collectors and bounded pause.}
+Tracing through roots \cite{jones2011handbook} can move objects and can schedule work on other
+threads, and real-time variants bound pauses by work-based scheduling \cite{bacon2003realtime}.
+Uncooperative environments require conservative root discovery \cite{boehm1988uncooperative}, and
+mark-region collectors combine tracing with size-class allocation \cite{blackburn2008immix}, which
+is the closest published relative of our sweep tier.  The difference we exploit is that extC emits
+the root set statically: there is no stack scan, so the collector never needs to interpret a frame,
+and a function that provably stores no escaping reference gets no code from the runtime at all.
+
+\paragraph{Regions, ownership, and lifetimes.}
+Region inference \cite{tofte1997region} and region-based dialects of C
+\cite{grossman2002cyclone,gay2001regions} place objects in lexically scoped regions and free a
+region as a unit, which is what our frame arena and the wholesale release of \S\ref{sec:design} do.
+Ownership and linear type systems make deallocation explicit and checkable
+\cite{clarke1998ownership,bernardy2018linearhaskell}, Rust's borrow checker is the industrial
+form of the same idea \cite{jung2018rustbelt}, and reference capabilities with actor-local heaps
+show how far the discipline can be pushed concurrently \cite{clebsch2013pony}.
+extC keeps the region half of this lineage and not the ownership half: values are copied, mutable
+references may alias, and the checker proves only that a view does not outlive its storage.  That
+weaker discipline is what allows the fallback ladder: when the static analysis cannot prove a free,
+the compiler emits the reason and the runtime finishes the job under a budget.
+
+\paragraph{Escape analysis and placement.}
+Escape analysis decides where an allocation may live \cite{choi1999escape,whaley1999rinard}, and
+partial escape analysis with scalar replacement can remove allocations entirely
+\cite{stadler2014partial}.  In extC escape depth is not only a placement decision: it is the number
+that the root table, the cross-region reference bit and the acyclicity judgement are all stated
+in.  Promotion is therefore a static decision — the allocation is born in the shallow region —
+rather than a runtime copy, which is why the safety proof of \S\ref{sec:formal} needs no move rule.
+
+\paragraph{Analytic performance models.}
+The roofline model \cite{williams2009roofline} puts a workload on a plane of achieved rate against
+operational intensity and says which of two hardware ceilings binds.  \S\ref{sec:roofline} makes
+the same move for reclamation policy, with allocation bytes as the unit of work, collector time per
+allocated byte as the intensity, and the memory and pause contracts as the two ceilings.  The
+analogue is not a metaphor: the cost law, the memory law, the pause law and the feasibility
+condition are theorems about the same measured constants, and the policy question ("which batch and
+which trigger ratio") is a corner of a two-dimensional region, as it is on a roofline.
+
+\paragraph{The cost of automatic memory management.}
+Hertz and Berger \cite{hertz2005quantifying} measured collectors against explicit management and
+found the trade to be roughly a factor of two in time for a factor of three to four in memory; our
+numbers have the same shape but invert the sign on allocation-bound programs, because the
+alternative we compare against is not a tuned allocator but a bump arena that never reuses memory
+(\tab\ref{tab:ablate}: 2.1 to 3.7 times the time and 19 to 59 times the memory with reclamation
+off).  We also report where the analogy fails for us: the store barrier is the cost that cannot be
+removed when a reference is stored, and it is why the pointer-chasing shape is the one where we are
+1.1\% behind the best C++ arm rather than ahead.
+
+\paragraph{What is new here, stated narrowly.}
+Each ingredient has a precedent: block-exit region release \cite{tofte1997region}, static
+placement by escape depth \cite{choi1999escape}, incremental mark--sweep with a work budget
+\cite{blackburn2008immix,bacon2003realtime}, and reclamation at the store that orphans a structure
+\cite{collins1960}.  The contribution is three consequences of putting them in one compiler and
+asking, per unit of compilation, whether each is needed at all:
+\begin{enumerate}
+\item the root set is a static data structure emitted from checking, so there is no stack scan and a
+unit that needs nothing gets no runtime code — 68.5\% of the corpus programs that compile emit
+none (\S\ref{sec:eval-census});
+\item the tiers can be turned off independently, and the no-reclamation build is a working compiler
+mode rather than a strawman, which is what makes the mechanism ablation of
+\S\ref{sec:eval-ablation} comparable arm by arm;
+\item the resulting machine is small enough to state contracts about: seven theorems, four
+calibrated constants, a Lean development of the region and idle invariants, and a gate suite that
+fails when the emitted text stops matching the theorems.
+\end{enumerate}
+
+\paragraph{Alternatives we did not measure.}
+Region-based systems with reference counting for escaping values \cite{grossman2002cyclone},
+Pony-style reference capabilities \cite{clebsch2013pony}, and ownership-passing variants of
+Perceus occupy adjacent points; we compare against hand-written C++, Rust and Go because those are
+what a practitioner would reach for, not because they are the closest research systems.  A
+Perceus-style reuse analysis on these workloads is the obvious missing experiment, and a
+concurrent version of our contract is the obvious missing theory.

@@ -1,0 +1,94 @@
+\section{Introduction}
+\label{sec:intro}
+
+A systems language that manages memory must answer one question before any other:
+how does it find the objects that are still in use?
+Tracing collectors answer with the program roots, which requires a run-time that can scan stacks and registers,
+a dedicated thread or at least a stop-the-world rendezvous, and a representation in which the collector can tell a pointer from an integer.
+Reference counting answers with the store itself, which requires a barrier on every pointer write and leaves cycles uncollected.
+Both answers are structurally expensive: the first builds machinery that suspends or schedules across the whole program,
+the second puts the machinery on the hottest path in the program even when almost nothing is shared.
+
+This paper starts from a different observation.
+Most functions in a managed program never create, overwrite, or drop a reference that outlives the function.
+That is not an approximation to be measured at run time, it is a property to be proved at compile time.
+When the proof holds, the compiler can emit code that frees memory at the end of the owning block and nothing else,
+and the whole reclamation run-time can be absent from that function.
+extC, a small systems language that compiles to C and checks view lifetimes with a depth-indexed escape analysis,
+uses this observation as its organizing principle: the compiler derives the root set statically, decides per translation unit
+which of three reclamation tiers to emit, and, where a run-time is emitted, gives every unit of its work a budget.
+
+\noindent\emph{From a mechanism to a contract.}
+Being able to switch the run-time off is a qualitative result; it is not yet a promise a latency-sensitive user can sign.
+What such a user needs is two numbers: an upper bound on the heap and an upper bound on the pause. Our earlier design
+reported a pause \emph{distribution}, which is the wrong object to promise, because a distribution has a tail and the tail is
+what the user feels. This paper therefore restates the design as a set of contracts and then proves them:
+every step of reclamation work has a work bound that does not depend on the size of the heap or of a region;
+the heap obeys a trigger law that ties its peak to the live set; the destruction of a whole frame is deferred through an
+$O(1)$ queue so that no single step can pay for the frame; and the admission of an allocation reserves room for the largest
+request, so that a single large object cannot overrun the wall between one collection and the next.
+
+\noindent\emph{What the compiler computes.}
+The compiler assigns each allocation site to one of five storage substrates: a frame arena, a typed reclamation region,
+a container pool, a per-task arena, or a plate from \texttt{std.mem}.
+Only the reclamation region needs a collector.
+Reference objects that can escape to the function level go there, in a non-moving, non-stop-the-world, incremental
+mark-and-sweep over typed slabs whose roots are emitted statically; everything else is freed by dropping its scope.
+For the reclamation region, a unit-level proof decides the tier: if no function in the unit needs any reclamation work,
+nothing is emitted; if the unit is proved acyclic under a single-level-churn condition, counting is emitted and sweeping is
+not; otherwise the mark-and-sweep tier is emitted with counting compiled out.
+
+\noindent\emph{Why a roofline.}
+Tuning a reclamation policy has four knobs (the trigger ratio, the batch size of a step, the segment length, and the
+reclamation credit) and two hard constraints (memory and pause), and practitioners tune it by folklore.
+We show that the trade-off has the shape of a roofline model, in the same sense as the GPU model of attainable
+performance: the analogue of arithmetic intensity is the reclamation cost per allocated byte, $\lambda$, and the analogue of
+attainable throughput is the allocation rate the mutator reaches once reclamation work is charged to it.
+The cost of a round is mark plus sweep, the memory is live set plus a fraction of the trigger, and the keep-up condition
+is a lower bound on the trigger ratio. These three laws carve an admissible band out of the plane, and within that band the
+optimal policy is the one that pushes both knobs to their walls --- more precisely, to the memory wall and the pause wall.
+The model is calibrated with six constants measured on the implementation, and it predicts the measured cost of a round to
+within a few percent.
+
+\noindent\emph{Results.}
+We evaluate on four workload shapes that isolate promotion, size turnover, pointer chasing, and ring turnover, against nine
+arms of C++, Rust, Go, Java and JavaScript built from the same specification, in one interleaved frozen run that also checks
+that every arm prints the same answer (Section~\ref{sec:eval}).
+extC matches the fastest Rust arm on the promotion shape (39.0 against 39.1~ms), is faster than the best C++ arm on size
+turnover (16.0 against 17.9~ms) and on the ring (15.0 against 36.1~ms), and is 1.1\% slower than C++ on pointer chasing while
+holding 13\% less peak memory.
+No shape shows a single pause above one millisecond; the 99.9th percentile is $10$--$58\,_\mu$s depending on the shape, and the
+shape that pauses longest is the one with the largest live set, not the one that allocates most.
+Turning reclamation off instead of on is not a free lunch: the allocation-heavy shapes become 1.5--3.7 times slower and
+17--59 times larger, because reclamation replaces page faults with reuse.
+A mechanism ablation that recompiles the same generated program with one budget changed at a time (ten variants) shows which
+constant buys what, and where a choice went against us --- a larger scan chunk, a smaller slab, a padded slot --- the measurement
+says so and the design keeps the version that survives it.
+
+\noindent\emph{Contributions.}
+\begin{itemize}
+\item A description of extC memory management as five substrates and a three-tier compile-time switch, with the exact
+  static conditions under which each tier is emitted, and a census of every \texttt{.extc} file in the tree showing that
+  68.5\% of the programs that compile need no reclamation run-time at all.
+\item A soundness theorem for the full current scheme (no dangling reference) that covers, in addition to the four layers of
+  the earlier design, the deferred destruction of regions through the closing queue, the reservation made by admission, and
+  the switch between tiers.
+\item A bounded-pause theorem: one step of marking walks at most a segment or a wall-clock deadline, one step of sweeping
+  releases at most a credit, one step of deferred destruction moves at most a fixed number of slabs, and the sum is bounded
+  by constants that do not depend on the heap or on the region.
+\item A roofline model of reclamation policy: a cost law, a memory law, a pause law and a keep-up law, an admissibility
+  theorem that reduces to one inequality, an optimality theorem that puts the optimum on both walls, and a Pareto frontier;
+  six calibrated constants and a validation against measurement.
+\item A machine-checked core: 13 Lean~4 modules with no \texttt{sorry} covering region safety, the reclaim rule, the idle
+  analysis optimality, and the memory-gap law, with a table mapping each paper theorem to its machine-checked counterpart and
+  an explicit statement of what the machine check does not cover.
+\item An evaluation from one frozen interleaved run: nine arms over four shapes across six languages, a ten-variant mechanism
+  ablation, pause distributions with the total work share, a boundedness experiment that scales the round count by $8\times$,
+  code-size measurements, and a census.
+\end{itemize}
+
+
+\noindent\emph{Roadmap.}
+Section~\ref{sec:design} describes the design operationally, Section~\ref{sec:formal} states the calculus and the theorems,
+Section~\ref{sec:roofline} derives the roofline model, Section~\ref{sec:impl} maps the design onto the compiler, and
+Section~\ref{sec:eval} measures it. Section~\ref{sec:limitations} states where the design does not apply.

@@ -1,0 +1,20 @@
+\begin{table*}[t]
+\centering
+\setlength{\tabcolsep}{4pt}
+\scriptsize
+\caption{Wall clock in milliseconds (minimum and median of seven interleaved runs, one core,  44 arms, stdout of every arm byte-identical to the reference) and peak resident set.  Each competitor column is the better of its two configurations.}
+\label{tab:crosslang}
+\resizebox{\ifdim\width>\linewidth\linewidth\else\width\fi}{!}{
+\begin{tabular}{@{}lrrrrrrrrrrrrr@{}}
+\toprule
+shape & \multicolumn{2}{c}{extC} & \multicolumn{2}{c}{C++ (best)} & \multicolumn{2}{c}{Rust (best)} & \multicolumn{2}{c}{other (best)} & \multicolumn{2}{c}{time relative to extC} & \multicolumn{3}{c}{peak RSS (MB)} \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}\cmidrule(lr){6-7}\cmidrule(lr){8-9}\cmidrule(lr){10-11}\cmidrule(lr){12-14}
+ & min & med & min & med & min & med & min & med & C++ / extC & Rust / extC & extC & C++ & Rust \\
+\midrule
+promote & 39.0 / 40.4 & 109.4 / 113.3 & 39.1 / 40.2 & 102.8 / 108.1 & $2.81\times$ & $1.00\times$ & 7.5 / 143.1 / 7.4 \\
+sizeratio & 16.0 / 16.6 & 17.9 / 18.8 & 20.6 / 21.4 & 45.6 / 46.0 & $1.12\times$ & $1.28\times$ & 7.5 / 7.5 / 7.5 \\
+chase & 117.3 / 129.2 & 116.0 / 121.2 & 219.3 / 224.9 & 146.3 / 154.7 & $0.99\times$ & $1.87\times$ & 66.2 / 75.8 / 90.2 \\
+cycleratio & 15.0 / 15.3 & 36.1 / 36.4 & 17.9 / 18.7 & 33.7 / 35.0 & $2.40\times$ & $1.19\times$ & 7.4 / 7.5 / 7.5 \\
+\bottomrule
+\end{tabular}}
+\end{table*}

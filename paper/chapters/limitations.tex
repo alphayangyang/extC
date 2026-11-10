@@ -1,0 +1,109 @@
+\section{Limitations and Threats to Validity}
+\label{sec:limitations}
+
+We separate what the paper does not show from what it shows wrongly; the first list is longer.
+
+\paragraph{One machine, one toolchain, seven runs.}
+Every cross-language number comes from a single 24-core laptop running Linux under WSL2 with gcc
+15.2, rustc 1.93.1, Go 1.26.8, OpenJDK 25 and Node 24.  Runs are interleaved and reversed in parity,
+and we only ever compare arms measured in the same session, because the same two binaries drift by
+up to 13\% between sessions on this host.  Seven repetitions give a useable ordering of arms that
+differ by more than a few percent; they do not give confidence intervals, and we report minima and
+medians rather than a mean with a variance we would have to justify.  A different allocator, a
+different libc, or a machine with a different cache-line and TLB geometry can move the numbers, and
+\S\ref{sec:eval-crosslang} is the section where that matters most.
+
+\paragraph{The ablation arms are compile-time constants, not product switches.}
+\tab\ref{tab:ablate} changes one \code{-D} constant of the same generated C file, which is the
+right unit for attributing an effect to a mechanism, but it is not the same as a released compiler
+option.  Two mechanisms have no arm at all: static placement (there is no build in which an object
+that escapes is nevertheless allocated in the frame) and the per-unit idle analysis (turning it off
+would change which units emit a runtime, not how a given unit behaves).  The reclamation-off arm is
+also conservative: it still uses the bump arena and the block-exit release, so the "cost of
+reclamation" we report is the cost of the sweep and count tiers, not of the whole substrate.
+
+\paragraph{The pointer-chasing gap is explained, not removed.}
+On \code{chase} we are 1.01 times the best C++ arm at the minimum and 1.066 times at the median, and
+we know where the difference lives: 3.9\% is the collector (marking and sweeping a live set that is
+nearly the whole heap, which is the definition of the shape) and 1.9\% is a layout phase effect,
+because a 48-byte slot steps through the four phases of a 64-byte line and a two-word field
+therefore straddles a line in one phase out of four.  Padding slots to 64 bytes removes the effect
+and costs 33\% more instructions and 20\% more wall clock; reordering the fields moves the phase
+without changing the rate.  We chose the compact layout and the language keeps a deterministic
+field order.  A reader who values the last percent of a pointer-chasing loop more than heap density
+would choose otherwise, and that is a language decision, not a runtime one.
+
+\paragraph{The admission reservation binds only an explicit wall.}
+\S\ref{sec:impl} reserves room for the largest single request so that
+the reservation inequality holds, but only when the user sets \code{EXTC\_RC\_M\_MAX}.  Under the default
+implicit wall of three times the live set the reservation is left out by design: the implicit wall
+grows with the program, so a promise of the form \mth{thr + R_{\max} \le M_{\max}} cannot be kept
+by construction, and the earlier unconditional version of the rule cost 27\% more resident memory on
+\code{chase} before we narrowed it.  The measured benefit of the reservation is therefore a contract
+and a smaller trigger ceiling, not a lower peak; \S\ref{sec:eval-ablation} reports it as such and we
+do not claim a memory win we cannot show.
+
+\paragraph{The counting tier is almost never selected.}
+Two of the 794 corpus programs that compile satisfy the acyclicity side conditions of
+\S\ref{sec:tiers}.  The tier is sound and it is the one that removes the sweep entirely, so its poor
+recall is a limitation of the proof and not of the mechanism: the conditions demand that every
+cell that can hold a reference be counted and that every stored value be provably fresh or strictly
+deeper, which is a strong ask for heap graphs built by a loop.  We report the number instead of
+widening the conditions, because widening them without a proof would trade a claim we can check for
+a trend we cannot.
+
+\paragraph{Sweeping is proportional to capacity, not to the live set.}
+\thm\ref{thm:pause} charges the collector for the number of words it scans, and the sweep scans the
+occupancy bitmap of a region, so a region whose live set is tiny but whose capacity is large costs
+what its capacity implies.  The elide counters of \S\ref{sec:impl} skip regions in which
+everything is dead, which covers the common case, but a sparse region of mostly live slots is paid
+for by its geometry.  Making the sweep proportional to the live set would need a different structure
+(a mark-to-slot list, or mark-compact), and we did not measure that alternative.
+
+\paragraph{Pause populations are not comparable across languages.}
+The runtime does all of its work on the mutator thread, so every microsecond the collector spends is
+a microsecond the program does not run, and \tab\ref{tab:pause} is the distribution of exactly that.
+A concurrent collector, by construction, moves most of the same work off the mutator and reports a
+pause population that is ten times smaller because it measures a different quantity
+(\S\ref{sec:eval-pause} shows the arithmetic for Go from its own metrics).  The numbers in
+\tab\ref{tab:pauseruntimes} should therefore be read as "what a single-threaded collector must
+spend", not as "how a concurrent collector compares".  Within our own population the tail is also
+host-sensitive: the noise floor of an empty 2.3\,\us window on this machine has a 99.9th percentile
+of 22 to 26\,\us and one sample in the main run reached 80.1\,\us, so we treat a single worst step as
+a report about the machine and only a distribution as a property of the runtime
+(\S\ref{sec:eval-pause}).
+
+\paragraph{Three instrumentation bugs were found late.}
+A histogram whose last bucket was assigned instead of compared made "over one millisecond" true for
+every sample; a CPU clock that silently returned zero because a feature-test macro was not declared
+made every step look free; and a drain test assumed one bounded pass empties a queue that is
+deliberately allowed to need several.  All three are fixed and the gate suite now fails when the
+corresponding probe stops reporting (\S\ref{sec:eval-correct}).  The honest reading is that earlier
+pause numbers in our own development history — including one published internal report that a
+60\,\us target was met — were produced by instruments that could not have detected the fault, and we
+corrected that record rather than quietly replacing it.
+
+\paragraph{The proofs cover the model, not the compiler.}
+The Lean development of \S\ref{sec:formal-status} establishes the safety invariants of the region
+machine, the maximality of the idle criterion, the memory gap law and the precision of the store
+rule, with no \code{sorry}.  It does not establish \thm\ref{thm:pause} (the pause theorem is a
+statement about the emitted code, checked by gates and by measurement), it does not model the C
+implementation, and it does not prove the escape analysis whose judgements \S\ref{sec:formal}
+assumes.  The gap between "the checker accepts" and "the theorem applies" is therefore machine
+checked at the leaves and paper-checked in the middle.
+
+\paragraph{Corpus and comparison arms.}
+The census of \S\ref{sec:eval-census} counts 1,396 \code{.extc} files, of which 602 do not compile
+as a single file: 378 are deliberately invalid programs in negative-test directories and the rest are
+multi-module or library sources that need more than one command line.  The tier percentages are over
+the 794 that compile, which is the honest denominator but not a random sample of programs.  The C++,
+Rust, Go, Java and Node arms were written by us from the same shape description and checked for
+byte-identical output, but they are our implementations of "the best hand-written version", and a
+specialist in any of those languages could move its number.
+
+\paragraph{Concurrency is out of scope.}
+Threads do not share managed regions in this design: a parallel region gives each worker a private
+arena that is released as a unit when the worker finishes, which is why every theorem of
+\S\ref{sec:formal} is single-threaded.  The contract we would want for \code{threads} blocks — a
+per-worker version of the same two bounds, plus absence of data races from the absence of shared
+mutable data — is sketched in the design notes and not proved here.
