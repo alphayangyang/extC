@@ -21,6 +21,7 @@
 | [`DESTRUCTORS.md`](design/DESTRUCTORS.md) | 析构：`@drop` 的全部时机与顺序 |
 | [`RECLAMATION.md`](design/RECLAMATION.md) | 四层回收：按分配点选策略、运行期何时整体删掉 |
 | [`PARALLEL.md`](design/PARALLEL.md) | `par` 的证明义务；线程与回收的规则（实现暂缓） |
+| [`EFFECTS.md`](design/EFFECTS.md) | `request` / `suspend` / `handle`：等待是类型、驱动器是词法作用域（设计稿 v1，未实现） |
 | [`FUSION.md`](design/FUSION.md) | 视图融合：什么形状能合、逐位一致的硬约束 |
 | [`ARRAY.md`](design/ARRAY.md) | 数组与视图语义、rank 与形状 |
 | [`MODULES.md`](design/MODULES.md) | 模块身份、导入、门面、所有权边界 |
