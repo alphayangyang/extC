@@ -44,7 +44,7 @@ static long long extc_probe_stepOver16, extc_probe_stepOver64, extc_probe_stepOv
 /* 热路径分布：`PAUSE_DIST` 只记冷入口 `extc_rc_collect`，而今天热路径走 `extc_rc_step`
  * ⇒ 同一份生成物上常常 `PAUSE_DIST n=0` 而 `step_n` 不为 0。这里把每一步也记进自己的环，
  * 单独打成 `PAUSE_DIST_STEP`（格式与 `PAUSE_DIST` 相同），不改变前者的口径。 */
-#define EXTC_PROBE_SRING 4096
+#define EXTC_PROBE_SRING 65536
 static long long extc_probe_sring[EXTC_PROBE_SRING];
 static size_t extc_probe_sring_n, extc_probe_sring_over;
 static void extc_probe_srecord(long long ns) {
@@ -202,6 +202,44 @@ NEW2 = '    long long extc_probe_t0 = extc_probe_ns();\n    size_t marked = extc
 MARKER = "#ifndef EXTC_RC_SLAB_BITS"
 
 
+def wrap_timed(src, sig, newname, ret, args, callargs, only_nonzero):
+    """把 sig 对应的函数体重命名成 newname，并补一个同名计时包装。
+
+    包装覆盖**所有出口**（含早退）。旧写法只把计时插在尾部 `return ...;` 前，
+    早退路径全漏记（digraph 上曾把 4.7 ms 的停顿总量读成 28 us）。
+    only_nonzero == "n" 时只在返回值非 0 时记录（markAdvance 的 tick 未到就是 no-op，
+    每分配一次都走，记进来会淹没分布）。
+    """
+    if src.count(sig) != 1:
+        return src, False
+    start = src.index(sig)
+    name = sig.split("(")[0].split()[-1]
+    ob = start + sig.index("{")
+    depth = 0
+    k = ob
+    while k < len(src):
+        c = src[k]
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                break
+        k += 1
+    end = k + 1
+    body = src[start + len(sig):end]
+    renamed = sig.replace(name + "(", newname + "(", 1)
+    if only_nonzero == "n":
+        rec = "    if (_n != 0) extc_probe_steprec(extc_probe_ns() - _t0);\n"
+    else:
+        rec = "    extc_probe_steprec(extc_probe_ns() - _t0);\n"
+    wrap = ("\n__attribute__((unused)) static %s %s(%s) {\n"
+            "    long long _t0 = extc_probe_ns();\n"
+            "    %s _n = %s(%s);\n"
+            "%s"
+            "    return _n;\n}\n") % (ret, name, args, ret, newname, callargs, rec)
+    return src[:start] + renamed + body + wrap + src[end:], True
+
 def main() -> int:
     if len(sys.argv) != 2:
         sys.stderr.write("用法：rc-pause-probe.py <生成的 C>\n")
@@ -242,19 +280,19 @@ def main() -> int:
     src = src.replace(MARKER, GLOBALS + "\n" + MARKER, 1)
     src = src.replace(OLD, NEW, 1)
 
-    # 热路径入口 `extc_rc_step`：契约入口的 `max_pause_us` 量不到它（merge 后热路径走这条）。
-    # 有就插：t0 在签名后、记录在它自己的 `return r->swFreed;` 前。没有（老形态）就不插，
-    # 自检也不对它提要求 —— 但 `step_n=0` 会被闸门当成"探针没覆盖热路径"。
-    step_forms = "static size_t extc_rc_step(ExtcRcRegion *r, void *const *roots, size_t nroots) {\n"
-    step_seen = src.count(step_forms) == 1
-    if step_seen:
-        i = src.index(step_forms) + len(step_forms)
-        j = src.find("    return r->swFreed;", i)
-        if j < 0:
-            sys.stderr.write("插桩失败：step 形态不认识（签名有、收尾没有）\n")
-            return 1
-        src = (src[:i] + "    long long extc_probe_st0 = extc_probe_ns();\n" + src[i:j] +
-               "    extc_probe_steprec(extc_probe_ns() - extc_probe_st0);\n" + src[j:])
+    # 热路径停顿 = **一个有界工作单元**：mark 步（extc_rc_step）、mark 推进批
+    # （extc_rc_markAdvance，只在真的推进时记）、sweep 步（extc_rc_sweepStep）。
+    # 三者一律用包装而不是「在 return 前插一行」：后者只覆盖尾部那一条出口，
+    # 早退路径全漏记（digraph 上曾把 4.7 ms 的停顿总量读成 28 us）。
+    src, step_seen = wrap_timed(src, "size_t extc_rc_step(ExtcRcRegion *r, void *const *roots, size_t nroots) {\n",
+                                "extc_rc_step_pbody", "size_t",
+                                "ExtcRcRegion *r, void *const *roots, size_t nroots", "r, roots, nroots", "")
+    src, adv_seen = wrap_timed(src, "size_t extc_rc_markAdvance(ExtcRcRegion *r) {\n",
+                               "extc_rc_markAdvance_pbody", "size_t",
+                               "ExtcRcRegion *r", "r", "n")
+    src, sw_seen = wrap_timed(src, "int extc_rc_sweepStep(ExtcRcRegion *r, uint32_t budget) {\n",
+                              "extc_rc_sweepStep_pbody", "int",
+                              "ExtcRcRegion *r, uint32_t budget", "r, budget", "")
 
     # 自检：插桩必须**真的**插进去。任何一种"静默返回原文"都会让调用方把"没有探针"错读成
     # `sweeps = 0`（闸门文案会写成"清扫次数 = 无"，把人引到"回收没发生"的错误结论上 ——
@@ -268,7 +306,11 @@ def main() -> int:
         ("atexit 挂载", "__attribute__((constructor)) static void extc_probe_arm" in src),
     ]
     if step_seen:
-        checks.append(("热路径 step 计时", "extc_probe_steprec(extc_probe_ns() - extc_probe_st0);" in src))
+        checks.append(("mark 步计时（包装）", "extc_rc_step_pbody(" in src))
+    if adv_seen:
+        checks.append(("mark 推进计时（包装）", "extc_rc_markAdvance_pbody(" in src))
+    if sw_seen:
+        checks.append(("sweep 步计时（包装）", "extc_rc_sweepStep_pbody(" in src))
     bad = [name for name, ok in checks if not ok]
     if bad:
         sys.stderr.write("插桩失败（自检未通过）：%s —— 这是**工具不兼容**，不是目标程序 sweeps=0；"

@@ -14,6 +14,7 @@
 # 用法：
 #   bash bench/gc/run-digraph.sh align        # 只做对齐检查（不测时间）
 #   bash bench/gc/run-digraph.sh selftest     # 丢弃分类校准（喂坏生产者，不测真形状）
+#   bash bench/gc/run-digraph.sh pause        # 停顿分布（extC 读 PAUSE_DIST_STEP / Go 读 gctrace / careful 断开）
 #   bash bench/gc/run-digraph.sh              # 对齐 + 计时（best-of-REPS）
 #   N1=2000 N2=8000 REPS=3 bash bench/gc/run-digraph.sh
 #   SKIP_BUILD=1 bash bench/gc/run-digraph.sh
@@ -358,8 +359,11 @@ pause_block() {
             local pn="" pmax="" ptot="" pshare="" praw="" okline=1
             case "$fam" in
             extc)
-                if grep -q "^PAUSE_DIST " "$errf"; then
-                    praw=$(grep -m1 "^PAUSE_DIST " "$errf")
+                # 热路径走 extc_rc_step：优先读 PAUSE_DIST_STEP（PAUSE_DIST 只覆盖冷入口 collect，
+                # 结构上是 0）；老生成物没有 STEP 行时回退 PAUSE_DIST，判据不变。
+                praw=$(grep -m1 "^PAUSE_DIST_STEP " "$errf")
+                [ -n "$praw" ] || praw=$(grep -m1 "^PAUSE_DIST " "$errf")
+                if [ -n "$praw" ]; then
                     pn=$(printf '%s\n' "$praw" | sed -n 's/.* n=\([0-9]*\) overflow=.*/\1/p')
                     pmax=$(printf '%s\n' "$praw" | sed -n 's/.* max_us=\([0-9.]*\).*/\1/p')
                     local tus
