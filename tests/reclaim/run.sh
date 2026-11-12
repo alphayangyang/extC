@@ -48,6 +48,42 @@ fi
 printf '%s\n' "$out" | sed 's/^/  /'
 ok "全部断言通过"
 
+echo "== 环境闸门（慢步阈值 + 聚合模式）=="
+if ! "$CC" -std=c11 -Wall -Wextra -Wpedantic -Werror -O1 -g -I "$work" \
+        tests/reclaim/env_probe.c -o "$work/env_probe" 2>"$work/env_probe.log"; then
+    bad "环境闸门探针编译失败（-Werror）"; sed 's/^/    /' "$work/env_probe.log" | head -10
+else
+    env_case() {   # $1=描述 $2=期望 stdout $3=期望 stderr 告警（空 = 不许有告警）; 其余 = env
+        _desc=$1; _want=$2; _warn=$3; shift 3
+        _out=$(env "$@" "$work/env_probe" 2>"$work/env.err")
+        if [ "$_out" != "$_want" ]; then
+            bad "$_desc（stdout 是「$_out」，期望「$_want」）"
+        elif [ -n "$_warn" ]; then
+            if grep -qF "$_warn" "$work/env.err"; then ok "$_desc"; else bad "$_desc（缺告警「$_warn」）"; fi
+        else
+            if grep -q "\[slow\] ignored" "$work/env.err"; then bad "$_desc（不该告警）"; else ok "$_desc"; fi
+        fi
+    }
+    env_case "非数字阈值被忽略并告警" "slowUs=-1 ringOn=0 pauseOn=0" "[slow] ignored EXTC_RC_SLOWSTEP=abc" EXTC_RC_SLOWSTEP=abc
+    env_case "超界阈值被忽略（不把 double 转出 long long）" "slowUs=-1 ringOn=0 pauseOn=0" "[slow] ignored EXTC_RC_SLOWSTEP=1e300" EXTC_RC_SLOWSTEP=1e300
+    env_case "合法阈值换算成 ns" "slowUs=200000 ringOn=0 pauseOn=0" "" EXTC_RC_SLOWSTEP=200
+    env_case "低阈值 + 聚合模式" "slowUs=1 ringOn=1 pauseOn=0" "" EXTC_RC_SLOWSTEP=0.001 EXTC_RC_SLOWSTEP_RING=1
+    env_case "聚合开关 =0 时仍逐条打印" "slowUs=1 ringOn=0 pauseOn=0" "" EXTC_RC_SLOWSTEP=0.001 EXTC_RC_SLOWSTEP_RING=0
+    # 聚合模式的**行为**：真的收集到步时只打一行 [slowdist]，不再逐条打 [slow]。
+    if EXTC_RC_PAUSE=1 EXTC_RC_SLOWSTEP=0.001 EXTC_RC_SLOWSTEP_RING=1 timeout 120 "$work/driver" \
+            >/dev/null 2>"$work/ring.err"; then
+        _dist=$(grep -c '^\[slowdist\]' "$work/ring.err")
+        _slow=$(grep -c '^\[slow\] ' "$work/ring.err")
+        if [ "$_dist" = 1 ] && [ "$_slow" = 0 ]; then
+            ok "聚合模式：一行 [slowdist]、零条 [slow]（$(grep '^\[slowdist\]' "$work/ring.err" | cut -c1-60)…）"
+        else
+            bad "聚合模式（[slowdist]=$_dist [slow]=$_slow，期望 1/0）"
+        fi
+    else
+        bad "聚合模式：driver 在 PAUSE=1 下运行失败"
+    fi
+fi
+
 # ASan/UBSan 是**额外的**一遍：分配器自己管 slab，越界与 use-after-free 必须真的干净。
 echo "== ASan / UBSan（内存安全形状要真的跑得干净）=="
 if "$CC" -std=c11 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -I "$work" \

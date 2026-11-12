@@ -16,6 +16,9 @@
   2. 一个 `atexit` 钩子把累计值打印出来（既有 `PROBE` 行**原样、仍走 stdout** —— 门禁在读它 ✓）。
   3. 另注册一个 `atexit`：设 `DIGRAPH_PAUSE_DIST=1` 时把**逐次清扫时长分布**（分位 / 阈值桶 /
      排序后全部时长（n ≤ 1024）或前 50 + 后 50）打到 **stderr** 的 `PAUSE_DIST` 行 —— 不碰 stdout、不碰既有字段 ✓。
+     同一开关下**另起一行** `PAUSE_DIST_STEP`：热路径 `extc_rc_step` 的逐次时长，同样格式、同一套桶。
+     两行必须分开看：今天的热路径走 `extc_rc_step`（`extc_rc_collect` 可以一次都不被调用），
+     所以 `PAUSE_DIST n=0` 是**结构性 0**（冷入口没人调），热路径的分布看 `PAUSE_DIST_STEP`。
 
 判据一个字都不动：回收的触发阈值、标记规则、清扫规则全在被插桩的代码里原样保留，
 所以 N=1 与 N=8 的数字是同一把尺子量的。`-D_POSIX_C_SOURCE=200809L` 是 `clock_gettime`
@@ -38,8 +41,19 @@ static size_t extc_probe_n;
  * `max_pause_us=`，且它按现状打 stdout ✗ 不许动）——新增的分布一律走**门控 stderr** 行 ✗。 */
 static long long extc_probe_stepN, extc_probe_stepMax, extc_probe_stepSum;
 static long long extc_probe_stepOver16, extc_probe_stepOver64, extc_probe_stepOver256, extc_probe_stepOver1ms;
+/* 热路径分布：`PAUSE_DIST` 只记冷入口 `extc_rc_collect`，而今天热路径走 `extc_rc_step`
+ * ⇒ 同一份生成物上常常 `PAUSE_DIST n=0` 而 `step_n` 不为 0。这里把每一步也记进自己的环，
+ * 单独打成 `PAUSE_DIST_STEP`（格式与 `PAUSE_DIST` 相同），不改变前者的口径。 */
+#define EXTC_PROBE_SRING 4096
+static long long extc_probe_sring[EXTC_PROBE_SRING];
+static size_t extc_probe_sring_n, extc_probe_sring_over;
+static void extc_probe_srecord(long long ns) {
+    if (extc_probe_sring_n < EXTC_PROBE_SRING) extc_probe_sring[extc_probe_sring_n++] = ns;
+    else extc_probe_sring_over++;
+}
 /* 热路径入口（`extc_rc_step`）的进→出墙钟：契约入口的 `max_pause_us` 量不到它。 */
 static void extc_probe_steprec(long long ns) {
+    extc_probe_srecord(ns);
     extc_probe_stepN++; extc_probe_stepSum += ns;
     if (ns > extc_probe_stepMax) extc_probe_stepMax = ns;
     if (ns >= 16000) extc_probe_stepOver16++;
@@ -113,9 +127,53 @@ static void extc_probe_dist(void) {
         fprintf(stderr, "]\n");
     }
 }
+static void extc_probe_sdist(void) {
+    if (getenv("DIGRAPH_PAUSE_DIST") == (char *)0) return;
+    size_t i;
+    size_t b1 = 0, b4 = 0, b16 = 0, b64 = 0, b256 = 0, b1ms = 0, bge = 0;
+    double p50 = 0, p90 = 0, p99 = 0, mx = 0;
+    if (extc_probe_sring_n > 0) {
+        qsort(extc_probe_sring, extc_probe_sring_n, sizeof(long long), extc_probe_cmp);
+        for (i = 0; i < extc_probe_sring_n; i++) {
+            long long d = extc_probe_sring[i];
+            if (d < 1000LL) b1++;
+            if (d < 4000LL) b4++;
+            if (d < 16000LL) b16++;
+            if (d < 64000LL) b64++;
+            if (d < 256000LL) b256++;
+            if (d < 1000000LL) b1ms++;
+            else bge++;
+        }
+        p50 = (double)extc_probe_sring[(extc_probe_sring_n - 1) * 50 / 100] / 1000.0;
+        p90 = (double)extc_probe_sring[(extc_probe_sring_n - 1) * 90 / 100] / 1000.0;
+        p99 = (double)extc_probe_sring[(extc_probe_sring_n - 1) * 99 / 100] / 1000.0;
+        mx = (double)extc_probe_sring[extc_probe_sring_n - 1] / 1000.0;
+    }
+    fprintf(stderr,
+            "PAUSE_DIST_STEP n=%zu overflow=%zu p50_us=%.1f p90_us=%.1f p99_us=%.1f max_us=%.1f "
+            "total_us=%.1f b_lt1us=%zu b_lt4us=%zu b_lt16us=%zu b_lt64us=%zu b_lt256us=%zu "
+            "b_lt1ms=%zu b_ge1ms=%zu ",
+            extc_probe_sring_n, extc_probe_sring_over, p50, p90, p99, mx,
+            (double)extc_probe_stepSum / 1000.0, b1, b4, b16, b64, b256, b1ms, bge);
+    if (extc_probe_sring_n <= 1024) {
+        fprintf(stderr, "all=[");
+        for (i = 0; i < extc_probe_sring_n; i++)
+            fprintf(stderr, "%s%.1f", i ? "," : "", (double)extc_probe_sring[i] / 1000.0);
+        fprintf(stderr, "]\n");
+    } else {
+        fprintf(stderr, "first=[");
+        for (i = 0; i < 50; i++)
+            fprintf(stderr, "%s%.1f", i ? "," : "", (double)extc_probe_sring[i] / 1000.0);
+        fprintf(stderr, "] last=[");
+        for (i = extc_probe_sring_n - 50; i < extc_probe_sring_n; i++)
+            fprintf(stderr, "%s%.1f", i == extc_probe_sring_n - 50 ? "" : ",", (double)extc_probe_sring[i] / 1000.0);
+        fprintf(stderr, "]\n");
+    }
+}
 __attribute__((constructor)) static void extc_probe_arm(void) {
     atexit(extc_probe_dump);
     atexit(extc_probe_dist);
+    atexit(extc_probe_sdist);
 }
 """
 

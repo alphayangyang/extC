@@ -583,10 +583,11 @@ P2 与这个反例的差别**只有"旧值是否另有根"这一维**（P2 的�
 其中 `maxreq`/`res` 是 v10 引入、v11 起只在显式墙下非平凡（隐式墙 `res=live/4`）的准入预留观测项）· `[worst]` / `[ubwork]` / `[wbudget]` /
 `[guard]`。
 `tools/rc-pause-probe.py` 也能插桩 `extc_rc_collect` 与热路径 `extc_rc_step`（`PROBE … step_*`），
-并在插桩失败时 **rc=1**（不许伪装成 `sweeps=0`）。**但它的 `PAUSE_DIST` 行在当前代码形态下恒
-`n=0`**（环形记录插在**冷**契约入口 `extc_rc_collect`，而热路径走 `extc_rc_step`）⇒ **不能用它断言
-"0 次停顿"**；同一次运行里生成物自己报的 `[pause]`/`[step]` 计数都不为 0。它同一行的
-`step_n`/`step_max_us` 仍然有效。出处与实测见
+并在插桩失败时 **rc=1**（不许伪装成 `sweeps=0`）。它打**两行**分布，口径不同、必须分开读：
+`PAUSE_DIST` 只覆盖**冷**契约入口 `extc_rc_collect`（热路径不走它 ⇒ 默认形状下恒 `n=0`，这是
+**结构性 0**，不是"0 次停顿"）；`PAUSE_DIST_STEP` 覆盖热路径 `extc_rc_step` 的每一步（同格式、同桶，
+含 `all=`/`first=`/`last=`）—— **要断言停顿分布就读 `PAUSE_DIST_STEP`**。同一次运行里生成物自己报的
+`[pause]`/`[step]` 计数与它互相校验；`step_n`/`step_max_us` 口径与修复前相同。出处与实测见
 [`bench/gc/SPECTRUM-MATRIX.md`](../../bench/gc/SPECTRUM-MATRIX.md)（§4.3、§7）。
 
 **两个停顿总体，别只报一个；三家"停顿"也不可相减。** extC 的生成物自己有**两行**，是两个不同的
@@ -688,13 +689,17 @@ p99"）；另一种是**每 run 只取一个最大步**、再对这些 per-run m
   （`bytes - live`，不 settle）。分片 2.4M 的 `[step] max` 1.1–1.4 ms → **12.8–178.3 µs**。
 * **慢步量具** `EXTC_RC_SLOWSTEP=<µs>`（默认关）：超阈值的每一步都打 `kind/why/分项/mscap/msp`
   ⇒ 判"长尾是外部抢占还是真的重对象"（前者工作量恰好等于预算、`mscap` 不变）。
-* **`EXTC_RC_SLOWSTEP` 的可用区间：低阈值不可用。** 阈值单位是 µs，但整条量具只在
-  `EXTC_RC_PAUSE` 打开时才解析/生效（`pauseArm` 里读环境变量）⇒ 单开它没有任何输出。阈值压到
-  几 µs 时**大部分步都会打印**：整轮被 stderr I/O 拖慢，包裹在外层的 `[pause]` 与墙钟就不再是
-  被测程序的时间。逐条打印是在**该步计时取样之后**做的，所以它不污染该步自己的 `dur_us`
-  （也正因如此，它连"这次打印花了多少"都看不见）⇒ 只适合把阈值放在**明显高于打印开销**的量级
-  （十 µs 以上）。要让低阈值也能用，得先让量具不自扰动（限速/聚合，或拒绝小阈值）—— 记在
-  [`TODO.md`](../plans/TODO.md)。
+* **`EXTC_RC_SLOWSTEP` 的可用区间与两种输出模式。** 阈值单位是 µs，但整条量具只在
+  `EXTC_RC_PAUSE` 打开时才解析/生效（`pauseArm` 里读环境变量）⇒ 单开它没有任何输出。阈值合法
+  区间是 **0 < us ≤ 1e15**：非法值（`abc`、`0`、`1e300`）**告警并关掉**量具
+  （`[slow] ignored EXTC_RC_SLOWSTEP=… (want 0 < us <= 1e15)`），不再静默按 0 处理。逐条打印是在
+  **该步计时取样之后**做的，所以它不污染该步自己的 `dur_us`（也正因如此，它连"这次打印花了多少"
+  都看不见）⇒ **默认模式（逐条 `[slow]` 行）只适合把阈值放在明显高于打印开销的量级（十 µs 以上）**，
+  `bench/gc/v2/pause/` 的 runner 就依赖这些逐条行。**低阈值请加 `EXTC_RC_SLOWSTEP_RING=1`**：
+  样本进固定 4096 槽环（`overflow` 计超界次数），进程退出打一行
+  `[slowdist] n=… overflow=… p50_us=… p90_us=… p99_us=… max_us=… total_us=…`（qsort 后分位），
+  于是低阈值不再被 stderr I/O 拖慢，外层 `[pause]` 与墙钟仍然可读。两者互斥：RING 打开时**一条**
+  `[slow]` 行都不打。
 
 **大对象分段扫描：单步停顿不再 ∝ 对象大小（`EXTC_RC_SCAN_CHUNK`）。** 对象里的指针特别多时
 （大数组字段、或运行期才知道长度的结构，按保守扫描逐字看整槽），标记它是**单步不可分片**的工作：
@@ -890,8 +895,6 @@ cache-sim 判据变红）。
     `bench/gc/spectrum-matrix-reclaim0.tsv`（两轮 × best-of-5、两点幂次、stdout 逐字节相同）。
     **警告**：`EXTC_RECLAIM=0` 连**分配器**一起换（`extc_arena_*` 纯 bump）⇒ 该对照不是纯 GC 税，
     详见 [`TODO.md`](../plans/TODO.md)「回收：大横评」一节的硬警告与「三点七」的开关语义。
-17. **量具 `PAUSE_DIST` 恒 `n=0`**：不能用来断言"0 次停顿"；待修，记在 [`TODO.md`](../plans/TODO.md)。
-
 ## 六、怎么知道是真的
 
 * 机制的不变量与边界有机器检查的证明，见 [`proofs/`](../../proofs/README.md)。
