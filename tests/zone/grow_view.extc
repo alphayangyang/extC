@@ -1,0 +1,15 @@
+// A container that has grown inside a loop can still hand out a view at the same level.
+// Regression: the block of an `@place` container used to be recorded at the *growth* site, so a
+// same-level view was rejected with "borrowed from depth 2" even though the container itself
+// lives in this frame. The block is now recorded at the container's declaration level.
+use std::io
+
+fn main() -> i32 {
+    var v: varArray<i64> = varArray<i64>::withCap(1)
+    for i in 0..100 { v.push(i) }
+    let s: slice<i64> = v.view()
+    io::cout << s.len << "\n"
+    return 0
+}
+
+// expect: 100

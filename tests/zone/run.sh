@@ -37,6 +37,17 @@ else
     echo "  FAIL pool_readback  ->  编不过（G2 回归？）"; echo "$out" | head -4 | sed 's/^/        /'; fail=1
 fi
 
+echo "== 循环里扩容之后，同层再取视图必须能过（假阳性回归）=="
+if out=$("$EXTC" --run tests/zone/grow_view.extc 2>&1); then
+    want=$(grep -o '// expect:.*' tests/zone/grow_view.extc | sed 's|// expect: *||' | head -1)
+    ok=1
+    for p in ${want//|/ }; do echo "$out" | grep -qF -- "$p" || ok=0; done
+    if [ "$ok" = 1 ]; then echo "  ok   grow_view       ->  $(echo "$out" | tr '\n' '|')"
+    else echo "  FAIL grow_view       ->  输出里缺「$want」（$(echo "$out" | tr '\n' '|')）"; fail=1; fi
+else
+    echo "  FAIL grow_view       ->  编不过（深度误拒回归？）"; echo "$out" | head -4 | sed 's/^/        /'; fail=1
+fi
+
 echo "== 反例：循环内的存储视图 / 循环局部池读出的值，都不得存进外层池 =="
 for f in tests/zone/neg_loop_new_view.extx tests/zone/neg_loop_array_view.extx \
          tests/zone/neg_pool_read_escape.extx; do
@@ -52,9 +63,9 @@ for f in tests/zone/neg_loop_new_view.extx tests/zone/neg_loop_array_view.extx \
 done
 
 
-echo "== 现状：包装句柄被放弃时，任务仍会漏（红线上限）=="
-# 栈帧形式的协程已经在块退出时结束任务（2026-11-76）；句柄形式不行：句柄可以移动，任务该由
-# 最后一个所有者结束，编译器不知道是谁。这里把"今天还漏"钉住：修好那天把 50 改成 0。
+echo "== 包装句柄被放弃时，块退出结束它看得见的任务 =="
+# 句柄被丢弃（只 next() 一次、或 for 循环 break）时，块退出会结束编译器叫得出名字的那些任务
+# （`cgCoroOwnedEndAt`）。判据：50 个被放弃的句柄任务，池计数回去到 0。
 ha=$(mktemp -d)
 if "$EXTC" -w --no-line-map -o "$ha/h.c" tests/zone/handle_abandon.extc >/dev/null 2>&1 \
    && cc -O2 -std=c11 -fwrapv -o "$ha/h" "$ha/h.c" 2>"$ha/e"; then
@@ -71,9 +82,8 @@ fi
 
 
 echo "== 整池回收：逃逸句柄的任务由调用者断言后整块放掉 =="
-# 句柄存进容器之后编译器叫不出"最后一个所有者"，所以被驱动过一次就丢弃的任务会把它的 place 与
-# 池留到进程结束。这里钉住今天的数字：after=1；整池回收（docs/design/POOL-LEVELS.md）落地那天
-# 把 1 改成 0。
+# 句柄存进容器之后编译器叫不出"最后一个所有者"：这类任务要由调用者 `syspool::collect()` 断言后
+# 整池放掉（docs/design/POOL-LEVELS.md）。判据：before=0 after=0，freed=50。
 he=$(mktemp -d)
 # 同一种问法在三种写法上必须给同一个答案：直读、经函数转手、结构体字面量里的字段。
 out=$("$EXTC" --check-only -w tests/zone/neg_shapes_parity.extx 2>&1)

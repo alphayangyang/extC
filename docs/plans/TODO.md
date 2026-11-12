@@ -46,7 +46,8 @@
   这是当前**唯一**没定的设计母题。
 - **免写 `std` 前缀**（搁置中）：要的行为是"标准库模块的限定名不用 `use` 也能写"
   （`io::cout`、`json::json`、`net::conn` 这类），只对 `std` 命名空间生效、`std::sys` 不参与，
-  并留一个开关回到现状。现状是仓库里有 **1,266 行 `use std::…`（其中 `use std::io` 占 799）**；
+  并留一个开关回到现状。现状是仓库里有 **1,421 行 `use std::…`（其中 `use std::io` 占 899）**
+  （2026-11-13 实测：`grep -rh "^use std" --include=*.extc .`）；
   已有的替代：选择性导入（`use std::io::{cout, cerr, eprintln}`）、通配（`use std::io::*`）、
   模块别名、以及 `print`/`println` 本来就是编译器内建。判据要先立住三条：隐式与显式同时出现不冲突；
   开关关掉后行为逐字节回到现状；`std::sys` 的名字不会被隐式拉进作用域。用户 2026-11-28 决定先不做。
@@ -66,35 +67,6 @@
   计数价仍是清扫侧的 2.5–17 倍。⇒ 计数路线要成立，前提是**槽布局改动（计数进对象头）**，让单价降到
   个位条指令；即便到了那一步，也只有"清扫真的在跑"的形状会赢。先决定是否继续；证据、上界与逐形状数字见
   [`tests/reclaim-perf/TAXMAP.md`](../../tests/reclaim-perf/TAXMAP.md) 第 9 节。
-- **容器在循环里长过之后，同层再取视图被误拒（假阳性，2026-11-05）**：
-  <!-- fragment -->
-  ```extc
-  var v: varArray<i64> = varArray<i64>::withCap(1)
-  for i in 0..100 { v.push(i) }        // 这一趟扩容过
-  let s: slice<i64> = v.view()          // error: borrowed from depth 2, but this can only hold up to depth 1
-  ```
-  不扩容的容器、以及把视图放进内层 block 都能过；最小复现 `/tmp/syn/vv2.extc`，`522a3c6^` 上同样复现
-  （与本轮改动无关）。根因方向：`@place` 容器的板块按**扩容发生处**的层级记账，应当按**容器声明处**
-  的层级记账 —— 与 `promoteInto2` 的 `promoteReceiverFields` 同源（那个修的是"接收者字段来源一起提升"）。
-  判据要覆盖：循环内扩容后取视图必须编过、真正跨作用域逃逸仍必须被拒。
-- **池元素读回被拒，而同一个值"存进去"是允许的（假阳性，2026-11-07）**：
-  <!-- fragment -->
-  ```extc
-  var k: pool<string> = pool<string>::withCap(8)
-  for i in 0..1 {
-      var s: string = string::from("hello-world-") + i
-      k.insert(s)                          // accepted: `+` allocates at the destination's level
-  }
-  let got: string = k.atDense(0)           // error: borrowed from depth 4, but this can only hold up to depth 1
-  ```
-  存进去那一侧是对的（生成 C 里 `string$string_add_i32(&__extc_op0, i, __extc_zm1)` —— 结果缓冲区确实分配在
-  函数体那一层，生命周期足够），所以读回时的拒绝是保守过严：`atDense` 的返回值被算成借了容器内部第 4 层。
-  与"运算符结果按目的地定池层级"（`14093e6`）同源：**降层级只发生在存的那一侧，读回那一侧还没有用同样的
-  事实**。修这条要先把"值实际在哪一层"变成可查询的事实（现在 `planZoneLevel` 只记在节点上），再让
-  `atDense`/`get` 这类按值取元素的返回深度从**池的实际层级**而不是模板层推出。判据：上面的形状必须编过，
-  且真跨作用域逃逸（`return got` 到更浅的调用者）仍必须被拒。
-- **循环里构造的池值直接 `return` 仍被拒（已知边界，2026-11-07）**：
-
 - **AST 冻结施工单还剩 68 条**（`tools/ast-freeze-known-bad.txt` 的棘轮基线，只许变短）：解析器之外的
   代码仍在写 AST。
 
@@ -114,11 +86,11 @@
   **还差**：按 slab 局部性排序遍历、把每对象要碰的几样（slab 头 / `occ` 位图 / 对象头 / 子字段）靠近或合并、
   **清扫预算按槽而不是按字**（现在一次清扫仍按 8 词批量，最小步可能 60–170 µs）。
   重新开工时先按现状重量，不要拿归档数字当基线。判据口径见 `RECLAMATION.md`「四.一」。
-- **切片延迟的尾部：搁置中。** 要的行为只有一句：`max_us` 的毛刺更少更紧（读法见上，不看 `max`）。
-  做法是把**预算单位从工作量换成时间** —— 在标记弹出循环与清扫字循环里周期性查墙钟，超 deadline 就退出。
-  **搁置的原因**：起轮信用、窗口加力与阈值重算都按 `allocBytes` 记账，换时间预算会把 pacing 一起牵动，
-  账没一起改对之前先不做。真要捡起来，第一步是加纯诊断：把 `wall − CLOCK_THREAD_CPUTIME_ID` 与
-  `getrusage(RUSAGE_THREAD).ru_nivcsw` 打出来，分清"不在 CPU 上"与"在 CPU 上撞上贵单元"。
+- **切片延迟的尾部：只剩 pacing 这一块。** 续扫路径已经有段墙钟预算（`EXTC_RC_SEG_DEADLINE_US`，
+  每 512 词查一次，超了就把游标存进帧里、下一步接着扫），回收配额另有 `EXTC_RC_QUOTA_DEADLINE_US`
+  ⇒ 大对象的续扫不再"一步扫完"。尾部归因也已做过（`docs/analysis/P1-STEP-TAIL.md`）：长尾主要是宿主
+  机抢占与冷页缺页，不是回收工作量。**仍搁置**的是把标记弹出 / 清扫字循环的预算**全部**换成墙钟：
+  起轮信用、窗口加力与阈值重算都按 `allocBytes` 记账，换时间预算会把 pacing 一起牵动。
 
 ## 回收：横评开放项
 
@@ -142,15 +114,16 @@
 - **`slice` 收成纯借用（两阶段迁移）**：第一阶段已可用开关打开 —— `-Wowned-view` 在
   `var s: slice<u8> = new u8[64]` 处提示改用 `buf<T>` + `.view()`（默认关，语料有数百处）；
   第二阶段把整个语料的这个写法迁完、然后让它在没有 `buf<T>` 时变成错误，同时 `new T[n]` 在
-  `slice` 注解下不再算拥有者。规模实测（`(let|var) x: slice<…> = new …`）：**329 处 / 141 个文件**
-  （tests 176、bench 82、third_party 36、examples 17、stdlib 15、tools 3）；stdlib 那 15 处是 `io`/`fs`/
+  `slice` 注解下不再算拥有者。规模实测（`(let|var) x: [mut ]slice<…> = new …`，2026-11-13）：**345 处 / 149 个文件**
+  （tests 188、bench 82、third_party 36、examples 20、stdlib 15、tools 3、根 1）；stdlib 那 15 处是 `io`/`fs`/
   `net` 的内部缓冲，先改成 `buf<T>` 风险最低的一批。
 - **`array<T, N>` / `buf<T>` 与 const 泛型**（类型模型已定案，见 [`TYPE-MODEL.md`](../design/TYPE-MODEL.md) §三、§四）：
   把"拥有存储的数组"从 `slice` 里分出来。要的行为：`[N]T` 归一成 `array<T, N>`（内联、静态长度），
   `new T[n]` 返回 `buf<T>`（拥有、运行时长度、`@noCopy` + 移动），`slice<T>` 只借；两者方法同名，
   转换只有 `arr[..]` / `b.view()` 与 `snapshot()` 两条显式通道。顺序：先 const 泛型
   （`<const N: i64>`、放开 `[N]T` 的元素类型必须是具体类型），再开 `impl array<T, N>`，
-  最后才做 `new` 的返回值迁移（源码里 368 处 `slice` 变量、350 处 `slice<` 拼写要逐个消费）。
+  最后才做 `new` 的返回值迁移（2026-11-13 实测：`(let|var) x: [mut ]slice<…>` 644 处、
+  `slice<` 拼写 2,212 处，要逐个消费）。
   现状：`<const N: i64>` 与签名里的 `[N]T` 已落地（`N` 由调用点的数组长度推出、可在体内当整数用，
   判据 `tests/constgen`：`dot(v3, v2)` 报 `argument expects `[3]f64`, found `[2]f64``）；仍未做的是
   显式写成 `<3>`（今天只能靠推断，`3` 不是类型）、`N` 出现在 `struct` 字段或 `impl` 里、以及下面这些：
@@ -215,32 +188,18 @@
   语义契约与分阶段见 [`ARRAY.md`](../design/ARRAY.md)。
 ## 文档工程
 
-- `docs/usage/` 的**公开面欠账 29 个**（覆盖率棘轮基线）：其中大半是**内部助手与状态字段** ——
-  标准库的约定是"成员缺省公开，`@private` 才是内部"，所以 `inSync` / `depth` / `isSpace` 这类
-  也算进了公开面。两条路：真对外的补进 `stdlib.md`；其余**标 `@private`** 收口，让清单反映真实 API。
+- `docs/usage/` 的**公开面欠账 3 个**（`python3 tools/manual_surface.py --worklist`）：`hashMap::denseLen`
+  （两处重载）与 `map::nodeCount` —— 看着是内部助手，但没写 `@private`。两条路：真对外的补进
+  `stdlib.md`；其余**标 `@private`** 收口，让清单反映真实 API。（2026-11-13 实测：公开 424 / 内部 142，共 566。）
 - **这批欠账里有一部分不能靠标 `@private` 解决**：`std::http` 的 `findSub` / `putBytes` / `lower`
   被 `tests/http/*` 直接引用（它们事实上是**被测试的使用面**）。要么写进文档，
   要么把测试改成只走公开入口 —— 在此之前不要标私有。
-- **有四处恒不执行的判断**（条件写成 `0 && …`）挂在类型元信息查询上：要么启用，要么连那段判断一起删掉。
+- **还剩一处恒不执行的判断**（条件写成 `0 && …`）：`src/check/check_top.c:10430` 的
+  `if (0 && typeContainsRef(...))`。它上面的 `coroDeferred` 分支已经取代了它 ⇒ 连那段判断一起删掉即可。
 - **给公开 API 继续补 `@code` 使用例**（现有 13 个模块；`std::io` 的重载细节、`hmac`、
   `std::net` / `ws` 等还没有）。
 - 语言页还缺最小例子：协程（`coroutine<A,B>` / `yield`）与域（`ext`），
   以及 `--dump-effects` / `--dump-tokens` 的输出格式说明。
-
-## 协程任务泄露：只剩"包装句柄"这一种
-
-栈帧形式的协程（不带 `coroutine<T>` 标注）已经在块退出时结束任务（2026-11-76），
-被 `break` 放弃的驱动不再漏池。**包装句柄**（`var h: coroutine<T> = f(…)`）不行：帧在任务
-自己的 arena 里，句柄可以移动进更长寿的变量，任务该由最后一个所有者结束 —— 编译器不知道
-那是谁。两个独立复核（L1/L2）确认这是唯一仍泄露的形状：
-
-- L1：`var c = g(1e6)` 只 `next()` 一次就丢掉（每个任务漏它的整条池块链）；
-- L2：`for x in c { break }`（同上）。
-
-方向：**整池粒度进回收** —— 单位是 `ExtcPool` 记录 + 它的整条 `ExtcBlock` 链，用既有的
-`extc_rc_framePush` 根链标记可达的根 zone，未标记的 `extc_pool_zoneNewRoot` zone 整体释放
-（`extc_pool_zoneFreeRoot` → `extc_zoneRelease` → `extc_pool_drop`）。便宜的精确补丁：在
-`genCoroHandleDecls` 发句柄助手的地方，句柄被丢弃时 `if (extc_task_alive(h->task)) extc_task_end(h->task);`。
 
 ## 池层级：不动点替换的最后一步（待决 A/B）
 
