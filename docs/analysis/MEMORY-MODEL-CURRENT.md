@@ -37,6 +37,7 @@
 > **行号口径（v15 = `typeNeedsAnyDup` 在剥引用前判 `?ref`，当前工作树）**：`src/back/codegen.c` = `41c26996d3f608855cc41c72f2f0a996`（16 065 行，v7 起的 16 017 行版本作废）、`stdlib/std/json.extc` = `fc33b94db7b01f61ad367fff768edfbb`（1 186 行）、`src/back/reclaim.c` = `7151a43181f69ab865607f61ad2afad7`（4 212 行，同 v13）、`tests/reclaim/driver.c` = `28dd4009ac7207f47e581a697c0d421f`（1,637 行，同 v13）、`build/extc` = `f8f037a7b4a457da114b7918da796975`。相对 v14，`codegen.c` 只在 `typeNeedsAnyDup`（原 :5308）一处改动：把「引用判断」放到 `ttBase` 之前（`?ref node` 字段不再被剥成 `node` 递归），+6 行 ⇒ **v14 与 v15 的 codegen.c 行号在 :5308 之后不可混用**；本文所有 `codegen.c` 行号已按 v15 重算（换算表：n<5308 ⇒ n；n≥5308 ⇒ n+6），并逐条按内容校验（旧行文本 == 新行文本）。`reclaim.c` 未改 ⇒ 其行号仍是 v13 口径。
 > **行号口径（v16 = `par` 运行期改常驻池，当前工作树）**：`src/back/codegen.c` = `cc01b5f4216ea5c8d9fde77c47c41f24`（16 212 行）、`src/back/reclaim.c` = `7151a43181f69ab865607f61ad2afad7`（4 212 行，同 v13）、`stdlib/std/json.extc` = `fc33b94db7b01f61ad367fff768edfbb`（1 186 行，同 v15）、`tests/reclaim/driver.c` = `28dd4009ac7207f47e581a697c0d421f`（1,637 行，同 v13）、`build/extc` = `4f547333175d8583103543aac0ebf73a`。相对 v15，`codegen.c` 只重写 `emitParallelRuntime`（原 :15019-15180）的发射文本并加入常驻线程池（+147 行，净 +191/-44）⇒ **换算表：n < 15019 ⇒ n；n ≥ 15181 ⇒ n + 147；15019–15180 这段被整体重写，旧行号作废、按符号 grep**。本文与该窗口相关的引用（§15.2、§22 的 `codegen.c:15984-15992`）已按 v16 重算，其余章节未受影响。
 > **行号口径（v17 = 量具精确计数，当前工作树）**：`src/back/reclaim.c` = `39c93ca4fa0718920844e91147695589`（4 269 行）、`src/back/codegen.c` = `cc01b5f4216ea5c8d9fde77c47c41f24`（16 212 行，同 v16）、`tests/reclaim/driver.c` = `28dd4009ac7207f47e581a697c0d421f`（1,637 行，同 v13）、`build/extc` = `722e5ff1247c9bd4204e7f24ed01ff84`。相对 v16，`reclaim.c` 只改量具（`[histo]`/`[segsteps]` 新增 `gt10us`/`gt50us`/`gt64us` 三个精确超阈计数、`[chan]` 的 `collect` 格改名为 `trigger-step`），+10 行 ⇒ **换算表：n ≤ 1176 ⇒ n；1177–1179 ⇒ n+1；1180–1275 ⇒ n+2；1276–3301 ⇒ n+5；3302–3832 ⇒ n+8；3833–3836 ⇒ n+9；n ≥ 3837 ⇒ n+10**。本文所有 `reclaim.c` 行号已按 v17 重算，并逐条按内容校验（旧行文本 == 新行文本）。
+> **行号口径（v18 = R2 冷档，当前工作树，2026-11-13）**：`src/back/reclaim.c` = `8f49f0718d788cd1202d348945260ab3`（**4,282 行**）、`src/back/codegen.c` = `cc01b5f4216ea5c8d9fde77c47c41f24`（16,212 行，同 v16/v17）、`tests/reclaim/driver.c` = `28dd4009ac7207f47e581a697c0d421f`（1,637 行，同 v13）、`build/extc` = `9ceb7690c3ae62d12921b7f0a9bf3757`。相对 v17（4,269 行）只插入冷档 13 行（11 行常量块 + 1 行计数器 + 1 行 clamp），`[work]` 的 `cold_steps=` 是原地改 ⇒ **换算表：n < 1153 ⇒ n；1153–1177 ⇒ n+11；1178–1417 ⇒ n+12；n ≥ 1418 ⇒ n+13**。本文的 `reclaim.c` 行号**仍按 v17 保留**（不机械平移：历史上机械平移曾把 `thrUpd` 指到 `markResume`）；本轮新增内容一律用 **v18 绝对行号**并标 `(v18)`，跨版本核对按符号 grep。机制/实测/判据见 §19.6 与 `GC-ROOFLINE.md` §6.8。
 
 ---
 
@@ -785,6 +786,8 @@ TICK 调用点（默认 `EXTC_RC_TIME` 关时全部编译成 `do{}while(0)`，`r
 | `EXTC_RC_MARK_STEP` | 8 | 1147 | `stepBudget` 基数 ∈ [8,72] |
 | `EXTC_RC_MARK_BATCH_MAX` | 256 | 1150 | walk 批**基数**上限；压力档夹到 `256 × SWEEP_PRESSURE_MUL`（默认 4 ⇒ **1024**，`reclaim.c:1394`），`[work] walk_cap` 报运行期实际值 |
 | `EXTC_RC_MARK_BATCH_POP` | 200 | 1153 | 批量 pop 上限 |
+| `EXTC_RC_MARK_COLD_BYTES` | 16 MiB（R2） | `reclaim.c:1154`（v18） | 冷档的活集门槛：`r->live` 超过它，一次 pop 就不再是缓存命中（见 §19.6） |
+| `EXTC_RC_MARK_COLD_BATCH` | 128（R2；`#error` 约束 ≤ `MARK_BATCH_MAX`，`reclaim.c:1161-1163` v18） | `reclaim.c:1158`（v18） | 冷档的每步 pop 上限；只收紧、不放宽（`walk_max ≤ walk_cap` 仍成立） |
 | `EXTC_RC_ASSIST_CAP` | 512 | 1361 | assist 单步上限 |
 | `EXTC_RC_RELEASE_BUDGET` | 2048 步 | 1110 | `releaseOld` 两相共用的步数预算（无续扫时 ≈36 µs；续扫段按 `SCAN_CHUNK/8` 计费 ⇒ 最坏 0.1–0.2 ms） |
 | `EXTC_RC_SWEEP_PRESSURE_MUL` | 4（1..16） | 1120 | 近墙时每步预算乘子（乘预算、不缩触发间隔）；`markAdvance` 的 walk 批上限 256→**1024**，`[work] walk_cap` 随之为 1024 |
@@ -979,6 +982,8 @@ P_max  ≤  c_m·b  +  c_s·s  +  c_c·w  +  c_f·f  +  c_r·n  +  ε
 
 **口径（必读）**：该式是**全通道保守和** ⇒ 只要本步含一次大对象扫描段，`P_max` ≥ `c_c·w` ≈ 78–98 µs（max 族；典型段 4–16 µs，≈0.1 ms 只是上界），与「5 µs 停顿」不相容。**5 µs 门禁只约束不含大对象续扫、且不含压力档的 mark/step 单步**（`CALIBRATION.md`:277-278/334：p99 中位 ≤5 µs、模型 4.71 µs @b=256）；压力档 b=1024 的步模型约 **18.1 µs**（`reclaim.c:1394`），只在近墙出现（实测 p5 `walk_max=1024`、`pressure` 步 n=1726，gate-work 判 `walk_max ≤ walk_cap` 且 `walk_gtcap=0`）；两者不可混用：一个是设计上界之和，一个是实测的常态单步。
 
+**R2 修正（冷档，2026-11-13，见 §19.6）**：上式里的 `b` 不再是全局常量，而是 `b_eff`：暖档 `min(b, 1024)`、冷档（`r->live > EXTC_RC_MARK_COLD_BYTES = 16 MiB`）`min(b, 128)`。所以 `P_step ≤ b_eff·τ_t + 234.5 ns`：暖形状不变，巨活集形状的单步界被**收紧**（不是放宽）。
+
 **杠杆顺序（按对 P 的贡献）**：大分配上的配额通道 `D + 2 segments`（≈0.96–1.0 ms 天花板，只有 `pd_bigobj`/dense 类形状会碰到；由 `EXTC_RC_QUOTA_DEADLINE_US` 直接决定）> `c_c·w`（SCAN_CHUNK：8192 段 78–98 µs/段；旧 65536 段 max 164–269 µs）> `c_r·b_cq`（closing queue 每趟 8 slab ≈4.5 µs）> `c_f·f`（releaseOld 预算）> `c_m·b`（walk，≈**4.5 µs** @b=256、压力档 b=1024 时 ≈**18.1 µs**；基步 8 时 ≈0.14 µs）。这就是优化方案里"先降 P"的次序依据。
 
 ---
@@ -1015,6 +1020,31 @@ v7 新增 `[segsteps] n= pops_tot= max_us= b1us…bge64ms=`（15 桶桶界与 `[
 - 对 chunk 的含义：这条尾部压不低 chunk（task-26 已从另一侧证明）；`chunk=8192` 的一段典型成本是 **4–16 µs**（实测每段 6.16 µs(pd)/12.76 µs(dense) = 0.75/1.56 ns per word，固定成本主导；p50 4–8 µs、p99.9 58.06 µs）⇒ 5 µs 预算 < 一段，只有「按字数预算在段内停下、下次续扫」才可达（E30 修订，见 MODEL-UPDATE-P1.md）。
 
 ---
+### 19.6 v18 轮：标记步的冷档（R2；把巨活集形状的标记步压回契约）
+
+**问题（R1 判据可判化后暴露的唯一真红）**：`pb_escape_grow`（活集长到 GB 级、标记栈几乎总是浅的逃逸增长形状）的**标记步** `>50 µs` 占比 2.56e-4（阈 1e-4）、p99.9 16–32 µs（阈 10 µs）。
+
+**被否掉的做法**：给标记步加**时间**上限（`EXTC_RC_MARK_DEADLINE_US`）。`pb` 20M 上步数 19,531 → **725,207**、整机 **7.7×** 慢、`gate.sh` Ir 破线（89.2M > 88,029,115）。根因：`pb` 的标记栈几乎总是 `sp=1`，走的是 `EXTC_RC_MARK_SHALLOW=64` 的浅栈快路；armed 后禁掉快路 ⇒ 每 pop 从 ~2 ns 变 ~130 ns；且每批一次 `CLOCK_THREAD_CPUTIME_ID` syscall 本机 **122.7 ns**，与 128 pop 的工作同量级。⇒ 时间闸门不能进标记热路径。
+
+**采纳的机制**：按活集分两档封顶 `markAdvance` 的 `b`。常量 `EXTC_RC_MARK_COLD_BYTES (16 << 20)`（v18 `reclaim.c:1154`）与 `EXTC_RC_MARK_COLD_BATCH 128`（`:1158`，另有 `#error` 约束它 ≤ `MARK_BATCH_MAX`，`:1161-1163`）；clamp 在 `extc_rc_markAdvance` 的 window clamp（v18 `:1429`）**之后**（`:1430`）：`if (r->live > (int64_t)EXTC_RC_MARK_COLD_BYTES && b > 128) { b = 128; extc_rc_markColdN++; }`。计数在 `:1189`，`[work]` 行尾新增 `cold_steps=`（`:3927`，实参 `:3939`）。
+
+**为什么门槛是 16 MiB（形状实测，不是按基准名开洞）**：冷档只在巨活集形状触发，其余 `cold_steps=0` —— promote `thr_max=6,068,128`、cycleratio `2,735,120`、chase `thr_max=63,438,892` 但 `r->live` 仍 <16 MiB、pb `thr_max=1,247,201,956`（`cold_steps=331,260`）。门槛是「活集字节数」这一个可解释的量：超过它，一次 pop 就是一次访存而不是缓存命中，`τ_t` 显著大于 17.49 ns/obj。
+
+**判据方向**：冷档只让 `b` 更小 ⇒ `walk_max ≤ walk_cap` 仍逐字成立、`P_step` 上界收紧。`[work]` 的 `walk_max` 与 `walk_gtcap=0` 的既有断言不变（`tools/check_mark_batch.py` 新增 6 条静态断言 + 4 条红自测，`--selftest` 31 条全过）。
+
+| 量（门禁口径 `EXTC_RC_PAUSE=1`，wall 时钟） | R1 | R2 | 判定 |
+|---|---:|---:|---|
+| pb 50M 常规步 p99.9 | RED | `gt10us=89 / n=343,296` = **2.6e-4**（判据 `gt10×1000 ≤ n`） | **PASS** |
+| pb 50M `>50 µs` 占比 | 2.56e-4 | `gt50us=10` = **2.9e-5** | **PASS（≤1e-4）** |
+| pb 50M 其它 | — | `max_us=85.8`、`over1ms=0`、`cold_steps=331,260`、wall 0.88 s（+2.3%）、RSS 911,964 kB 不变 | ① over-1ms=0 |
+| pb 20M | — | `n=115,636`、`gt10=56`、`gt50=6`、wall 0.33 s | 同上 |
+| 四形状 A/B（冷档开/关，5 轮交错 min ms） | 1.000 | promote 0.973 / sizeratio 0.981 / chase 1.007 / cycleratio 0.982；RSS 逐 kB 相同 | 无回归 |
+| `gate.sh` Ir | 87,009,872 | **87,649,685 ≤ 88,029,115**（+0.74%） | PASS |
+| G18（pd_bigobj 200 轮） | 26,072 kB | **26,072 kB ≤ 26,624** | PASS |
+
+**为什么不全档降 `b`**：`b=128` ⇒ promote +4.1% / sizeratio +5.4%；`b=64` ⇒ +7.0% / +5.8%；`b=32` ⇒ +13.0% / +7.6%。这些形状根本不进冷档，全局降预算是用它们的墙钟买它们不需要的界。
+
+**仍未闭合（显式移交下一轮，不算已绿）**：① cyc 的 `(a)` 仍 RED（`n=469,458`、`>50us=1.11e-04`、p99.9 RED；该形状 `cold_steps=0` ⇒ 与本轮无关，属噪声地板）；② pc 的 `(a)` 是 **N/A**（`n=41,184 < 1e5`），必须把 n 抬过 1e5 才能判；③ `tests/gc-p0/bseg-cal.tsv` 的 `c_seg` 标定仍是 v9 口径（门禁已告警必须重标），(b) 通道对 cyc/pb/pc/pd 记 N/A；④ `τ_t^cold` 未单独标定，模型仍用单一 17.49 ns/obj 给上界。
 ## §20 与仓库既有文档的不一致清单（口径必须按本节改）
 
 完整 90 条对账在 `docs/analysis/DOC-AUDIT.md`；这里只列"会误导读者/会误导优化决策"的 10 条。
@@ -1089,6 +1119,8 @@ extC 的内存管理是**编译期分档的**：绝大多数分配被静态指�
 5. **回收配额改为按分配字节计（P0-P + P0-B，§18.6）**：`pd_bigobj` 200 轮从 1,067,284 kB（60 轮的 2.163×、不可控）变为 **26,072 kB 平台（1.000×，上界 26,624 kB、余量 552）**，代价是同形状 GC 步总时长 ×28.7（144,038.6 µs）、`step_max` 66→113.4 µs；惰性 freelist（B）在 v7 轮**已被默认关闭**（`EXTC_RC_LAZY_FREE 0`）：它把清扫步总时长降 promote −20.2% / sizeratio −56.4% / cycleratio −10.8%，但墙钟收益只有 promote 可复现（交错 A/B 0.998→0.972 utime），sizeratio 反而 +5.1% ⇒ 登记 L14。
 
 6. **P1 一轮（四项）三否定一落地；v8 闭合 G3b**：chunk 保持 **8192**（缩小只能拿内存换步时，见 §19.5）；惰性 freelist **默认关**；`regionFree` 两阶段在 v8 升级为 **closing queue**（同步段 O(1)、三形状 0.4–1.7 µs，§19.5）；`G1②` 改三通道量具（`[segsteps]` + `[chan]`，`max` 只作 OBS）。相对 v5 的同机交错 A/B（9 reps、utime）：promote **0.972**、chase **0.973**、cycleratio **1.019**、sizeratio **1.051（未决）**；相对 HEAD 的累计代价 promote +5.4%、sizeratio +5.0%、chase/cycleratio ≤+0.7%（§19.5.2、GC-ROOFLINE §6.7.6）。
+
+7. **R1 + R2（量具可判化 + 标记步冷档，§19.6）**：R1 把 G1② 从桶界改为**精确超阈计数**（`[histo]`/`[segsteps]` 的 `gt10us/gt50us/gt64us`，`[chan]` 的 `collect` 改名 `trigger-step`），使判据可判；R2 用**按活集分档的每步 pop 上限**（暖 `min(b, 1024)` / 冷 `min(b, 128)`，门槛 `EXTC_RC_MARK_COLD_BYTES = 16 MiB`）把 `pb_escape_grow` 的标记步压回契约：p99.9 判据 **2.6e-4 PASS**、`>50 µs` **2.9e-5 PASS**（R1 为 RED / 2.56e-4），四形状 A/B **0.973–1.007**、`gate.sh` Ir **87,649,685 ≤ 88,029,115**、G18 **26,072 kB** 不变；`walk_max ≤ walk_cap` 仍逐字成立（冷档只收紧）。仍未闭合：cyc 的 `(a)` 1.11e-4（噪声地板）、pc 的 `(a)` **N/A（n=41,184 < 1e5）**、`bseg-cal.tsv` 的 `c_seg` 标定仍是 v9 口径。
 
 一句话没变：作用域基质（arena/pool/coro/plate）从来是有界的；rc region 的有界性**现在由契约给出、由标定支撑**。门禁 G1–G16 与 after 实测见 `docs/analysis/GC-ROOFLINE.md` §6–§7。
 

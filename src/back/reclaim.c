@@ -1150,6 +1150,17 @@ static const char *const RECLAIM_RT[] = {
     "#ifndef EXTC_RC_MARK_BATCH_MAX\n",
     "#define EXTC_RC_MARK_BATCH_MAX 256   /* **ceiling** on one `markAdvance` budget (the last window bound; larger lengthens a step's pause, smaller breaks the prefetch batch) */\n",
     "#endif\n",
+    "#ifndef EXTC_RC_MARK_COLD_BYTES\n",
+    "#define EXTC_RC_MARK_COLD_BYTES (16 << 20)   /* live-set threshold where a pop stops being a cache hit;\n",
+    "                                    * past it the per-pop cost is memory latency, so the same pause target needs fewer pops per step */\n",
+    "#endif\n",
+    "#ifndef EXTC_RC_MARK_COLD_BATCH\n",
+    "#define EXTC_RC_MARK_COLD_BATCH 128  /* per-step pop ceiling once live bytes exceed EXTC_RC_MARK_COLD_BYTES;\n",
+    "                                    * calibrated on a shape whose live set runs 450 MB-1.25 GB, where a pop is a miss (about 5x the warm walk) */\n",
+    "#endif\n",
+    "#if EXTC_RC_MARK_COLD_BATCH > EXTC_RC_MARK_BATCH_MAX\n",
+    "#error \"EXTC_RC_MARK_COLD_BATCH exceeds EXTC_RC_MARK_BATCH_MAX\"\n",
+    "#endif\n",
     "#ifndef EXTC_RC_MARK_BATCH_POP\n",
     "#define EXTC_RC_MARK_BATCH_POP 200  /* pop this many objects first, prefetch them together, then scan one by one (breaks the LIFO serial pointer chain);\n",
     "                                    * the batch width also **steers traversal order**: step boundaries move with it, so collects and peak RSS move too;\n",
@@ -1175,6 +1186,7 @@ static const char *const RECLAIM_RT[] = {
     " * **over-threshold step count / quantile proxy** (the threshold buckets below); `max` is reference only, or a fallback upper bound. */\n",
     "static long long extc_rc_stepMax, extc_rc_stepTotal, extc_rc_stepN;\n",
     "static long long extc_rc_stepGt10, extc_rc_stepGt50, extc_rc_stepGt64;   /* exact counts strictly above 10/50/64 us: those are the decision lines, and the log2 bucket edges fall elsewhere, so bucket sums can only bound them */\n",
+    "static long long extc_rc_markColdN;   /* bounded steps whose budget the cold tier cut (live set past the cache) */\n",
     "#define EXTC_RC_STEP_NB 15   /* step duration buckets: upper edges 1/2/4/8/16/32/64/128/256/512 us, then 1/4/16/64 ms, and > 64 ms; a bucket name is its **upper bound** */\n",
     "static long long extc_rc_stepB[EXTC_RC_STEP_NB];\n",
     "static long long extc_rc_segN, extc_rc_segPops, extc_rc_segMax, extc_rc_segB[EXTC_RC_STEP_NB];   /* resumed-segment steps (seg>0): count, pops sum, max ns, same 15 duration buckets as [histo] */\n",
@@ -1415,6 +1427,7 @@ static const char *const RECLAIM_RT[] = {
     "    extc_rc_stepAssist = _debt;   /* assist share (counted in the same total under the unified budget) */\n",
     "    if (r->allocBytes - r->markStartAlloc > EXTC_RC_MARK_WINDOW) b *= 8;\n",
     "    if (b > (size_t)EXTC_RC_MARK_BATCH_MAX * (size_t)_pm) b = (size_t)EXTC_RC_MARK_BATCH_MAX * (size_t)_pm;   /* last window bound: never unlimited (multiplier capped at 16) */\n",
+    "    if (r->live > (int64_t)EXTC_RC_MARK_COLD_BYTES && b > (size_t)EXTC_RC_MARK_COLD_BATCH) { b = (size_t)EXTC_RC_MARK_COLD_BATCH; extc_rc_markColdN++; }   /* cold tier: a pop is a memory miss, so hold the same pause with fewer pops */\n",
 
     "#if EXTC_RC_WORK_BUDGET > 0\n",
     "    if (b > EXTC_RC_WORK_BUDGET) b = EXTC_RC_WORK_BUDGET;   /* under the unified budget the walk budget may not exceed the total either */\n",
@@ -3911,7 +3924,7 @@ static const char *const RECLAIM_RT[] = {
     "        }\n",
     "    }\n",
     "    /* Per-step **work** (deterministic) -- next to `[step]` wall clock: wall clock is affected by preemption, work is not. */\n",
-    "    fprintf(stderr, \"[work] n=%lld walk_max=%lld scan_max=%lld push_max=%lld seg_max=%lld walk_cap=%lld walk_gtcap=%lld walk_gt16=%lld walk_gt64=%lld walk_gt256=%lld scan_gt16=%lld scan_gt64=%lld scan_gt256=%lld push_gt16=%lld push_gt64=%lld push_gt256=%lld thr_max=%lld mmax=%lld scale_max=%lld pressure_steps=%lld M_max=%lld pressure=%d mult=%d thr=%lld maxreq=%lld res=%lld M_max_now=%lld M_max_implicit=%d\\n\",\n",
+    "    fprintf(stderr, \"[work] n=%lld walk_max=%lld scan_max=%lld push_max=%lld seg_max=%lld walk_cap=%lld walk_gtcap=%lld walk_gt16=%lld walk_gt64=%lld walk_gt256=%lld scan_gt16=%lld scan_gt64=%lld scan_gt256=%lld push_gt16=%lld push_gt64=%lld push_gt256=%lld thr_max=%lld mmax=%lld scale_max=%lld pressure_steps=%lld M_max=%lld pressure=%d mult=%d thr=%lld maxreq=%lld res=%lld M_max_now=%lld M_max_implicit=%d cold_steps=%lld\\n\",\n",
 
 
     "            extc_rc_wN, extc_rc_wWalkMax, extc_rc_wScanMax, extc_rc_wPushMax, extc_rc_wSegMax,\n",
@@ -3923,7 +3936,7 @@ static const char *const RECLAIM_RT[] = {
     "            (long long)extc_rc_mmaxUsed, (extc_rc_pressureN > 0 ? 1 : 0), EXTC_RC_SWEEP_PRESSURE_MUL, (long long)extc_rc_thrNow,\n",
     "    (long long)extc_rc_maxReqNow, (long long)extc_rc_resNow,\n",
 
-    "            (long long)extc_rc_mmaxNow, (extc_rc_mmax <= 0 ? 1 : 0));\n",
+    "            (long long)extc_rc_mmaxNow, (extc_rc_mmax <= 0 ? 1 : 0), extc_rc_markColdN);\n",
 
 
     "    /* Measurement for the unified budget: `tot_max` = the largest single-step walk+scan+push (should be <= W);\n",

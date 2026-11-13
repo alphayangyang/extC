@@ -51,6 +51,20 @@ def violations(text):
         # 浅栈路径要一次把浅栈排空：每弹一个就回外层重判 while/浅栈条件，比扫描体本身还显眼
         'shallow drain loop': ('} while (r->msp > 0 && (size_t)r->msp <= (size_t)EXTC_RC_MARK_SHALLOW && budget > 0' in text),
         'batch constant': '#define EXTC_RC_MARK_BATCH_POP' in text,
+        # 冷档：活集超过缓存阈值后每步预算只许**更小**（同一停顿预算下 pop 变贵），且只许降不许升。
+        'cold tier defined': ('#ifndef EXTC_RC_MARK_COLD_BYTES' in text and '#define EXTC_RC_MARK_COLD_BYTES' in text and
+                              '#ifndef EXTC_RC_MARK_COLD_BATCH' in text and '#define EXTC_RC_MARK_COLD_BATCH' in text),
+        'cold tier clamp': ('if (r->live > (int64_t)EXTC_RC_MARK_COLD_BYTES && b > (size_t)EXTC_RC_MARK_COLD_BATCH) '
+                            '{ b = (size_t)EXTC_RC_MARK_COLD_BATCH; extc_rc_markColdN++; }' in text),
+        'cold tier inside advance': all(x in text for x in ('extc_rc_markAdvance(ExtcRcRegion *r) {',
+                                                                'EXTC_RC_MARK_COLD_BATCH) { b = (size_t)EXTC_RC_MARK_COLD_BATCH',
+                                                                'extc_rc_markStep(r, b);')) and
+                                    (text.index('extc_rc_markAdvance(ExtcRcRegion *r) {') <
+                                     text.index('EXTC_RC_MARK_COLD_BATCH) { b = (size_t)EXTC_RC_MARK_COLD_BATCH') <
+                                     text.index('extc_rc_markStep(r, b);')),
+        'cold tier only lowers': ('#if EXTC_RC_MARK_COLD_BATCH > EXTC_RC_MARK_BATCH_MAX' in text and
+                                  'EXTC_RC_MARK_COLD_BATCH exceeds EXTC_RC_MARK_BATCH_MAX' in text),
+        'cold tier reported': ('cold_steps=%lld' in text and 'extc_rc_markColdN);' in text),
         'batch array': 'uintptr_t _batch[EXTC_RC_MARK_BATCH_POP];' in text,
         'limit hoisted': ('size_t _lim = EXTC_RC_MARK_BATCH_POP;' in text and
                           'if (budget < _lim) _lim = budget;' in text and
@@ -101,6 +115,10 @@ def main():
                       'if ((size_t)r->msp <= (size_t)EXTC_RC_MARK_SHALLOW && budget > 0',
                       '} while (r->msp > 0 && (size_t)r->msp <= (size_t)EXTC_RC_MARK_SHALLOW && budget > 0',
                       '#define EXTC_RC_MARK_BATCH_POP',
+                      '#define EXTC_RC_MARK_COLD_BATCH 128',
+                      'if (r->live > (int64_t)EXTC_RC_MARK_COLD_BYTES',
+                      'cold_steps=%lld',
+                      '#if EXTC_RC_MARK_COLD_BATCH > EXTC_RC_MARK_BATCH_MAX',
                       'uintptr_t _batch[EXTC_RC_MARK_BATCH_POP];',
                       'size_t _lim = EXTC_RC_MARK_BATCH_POP;',
                       'if (budget < _lim) _lim = budget;',

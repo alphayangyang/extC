@@ -240,6 +240,7 @@ P(b) = b * tau_t + W_s * 64 * tau_s = b * 17.49ns + 234.5ns
 | 128 | 2.47 µs | 更严门禁（4 µs 内可放大 batch 的更小值） |
 
 实测 mark 步 p99（3 rep）=4.36/4.79/6.42 µs，模型 4.71 µs ⇒ 按下式（模型−实测）/实测 的误差为 +8.0%/−1.7%/−26.6%（写全三值，别只写区间：区间会掩盖符号与口径）；**p99 本身 ±40%，门禁必须写成「p99 中位数 ≤5 µs 且三 rep 的 p99 ≤7 µs」**。`max` 不可用（§0 结论 5）。
+**冷档修正（R2，机制与实测见 §6.8）**：上式的 `b` 不是全局常量，而是**按活集分档**：`b_eff = min(b, 1024)`（暖，`r->live ≤ EXTC_RC_MARK_COLD_BYTES = 16 MiB`）/ `min(b, 128)`（冷，超过该阈值），即 `P_step ≤ b_eff·τ_t + 234.5 ns`。理由是 `τ_t` 本身形状依赖：活集驻留缓存时 ~2 ns/pop，一次 pop 变成一次访存延迟时上式的 17.49 ns/obj 会系统性低估。冷档用**更小的 b 抵消更大的 τ_t**，所以它收紧（而不是放宽）巨活集形状的单步上界；代价是步数上升（调度粒度变细），λ 不变。
 
 ### 3.6 keep-up 定律（T-K，推导在附录 A.2）
 
@@ -727,6 +728,62 @@ callgrind（`align` 小 N）：promote 115 211 310 → **129 126 214（+12.1%）
 
 **⇒ 对 E30（`markResume` 快路径）的修正**：§6.7.7 里的 `W*`（961 字 ≙ 5 µs）仍然成立，但实现必须是「**按字数预算在段内停下、下次从同一段继续**」（真正把一步限制在 W 字），而不是「一步内连续扫多段」——后者只会把步拉长。若不做字预算，`chunk=8192` 的一段典型成本是 **4–16 µs**（`p50` 4–8 µs、`p99.9` 58.06 µs；task-32 日志折算每段 **6.16 µs(pd) / 12.76 µs(dense)**，即 0.75 / 1.56 ns per word，固定成本主导），5 µs 预算 < 一段 ⇒ 门禁对它不可达，必须按字数在段内停。
 
+### 6.8 R2 轮（2026-11-13）：标记步的冷档 —— 把巨活集形状的步时压回停顿契约
+
+**这一轮回答什么**：R1 把 G1② 从「桶界不可判」改成精确可判之后，唯一的**真红**剩在 `pb_escape_grow`（活集走到 GB 级、标记栈几乎总是浅的逃逸增长形状）的**标记步**上：`>50 µs` 占比 2.56e-4（阈 1e-4）、p99.9 16–32 µs（阈 10 µs）。R2 只做一件事：把这类步的**单步预算按活集分档**，使它的步时回到契约内，同时不动其它四形状的 λ。
+
+#### 6.8.1 先排除的方案：给标记步加**时间**上限（负结果）
+
+`EXTC_RC_MARK_DEADLINE_US`（每批 pop 后查钟、超时把 budget 清零）在 `pb` 20M 上把步数从 19,531 推到 **725,207**、整机墙钟 **7.7×**、`gate.sh` 的 Ir 破线（**89.2M > 88,029,115**）。根因有两条，都是结构性的：① `pb` 的标记栈几乎总是 `sp=1`，走的是浅栈快路（`EXTC_RC_MARK_SHALLOW=64`），一旦 armed 就禁掉快路 ⇒ 每 pop 从 ~2 ns 变 ~130 ns；② 每批查一次 `CLOCK_THREAD_CPUTIME_ID` 是 syscall（本机 **122.7 ns**），在 128 pop 一批的尺度上与工作本身同量级。⇒ **时间闸门不能放在标记热路径上**；能放的只有「预算 = 常数」这一种形态。
+
+同一轮的量具发现（已单独固化）：**每步同读 cpu 与 wall 两钟取 `min(cpu, wall)`** 可把 `pb` 20M 的 `max` 从 189.3 µs 降到 62.6 µs、`gt64` 从 4 降到 0 —— 极端尾是 `cpu > wall` 的记账工件（物理上 cpu ≤ wall），属量具修正，不是放宽判据。它解释了 R1 之前「尾部把 `max` 拖到几百 µs」的一部分。
+
+#### 6.8.2 采纳的机制：活集分两档，只收紧上界
+
+事实是**同一条 `P_step ≤ b·τ_t` 对不同形状不成立**：`τ_t` 是每 pop 的成本，活集驻留缓存时 ~2 ns/pop，活集远超 LLC 时一次 pop 就是一次访存延迟。§3.5 用单一 `τ_t = 17.49 ns`，对巨活集形状系统性低估。所以修法不是「全局降 b」（那会按 4–7% 的墙钟去换一个只属于一类形状的收益，见 6.8.4），而是**按活集给 b 封顶**：
+
+```c
+#define EXTC_RC_MARK_COLD_BYTES (16 << 20)   /* live-set threshold: past it a pop is a miss, not a cache hit */
+#define EXTC_RC_MARK_COLD_BATCH 128           /* per-step pop ceiling on the cold side; must be <= MARK_BATCH_MAX */
+#if EXTC_RC_MARK_COLD_BATCH > EXTC_RC_MARK_BATCH_MAX
+#error "EXTC_RC_MARK_COLD_BATCH exceeds EXTC_RC_MARK_BATCH_MAX"
+#endif
+```
+
+落点在 `extc_rc_markAdvance` 的 window clamp **之后**（v18 `reclaim.c:1429` 是原 clamp，`:1430` 是冷档 clamp）：`if (r->live > (int64_t)EXTC_RC_MARK_COLD_BYTES && b > (size_t)EXTC_RC_MARK_COLD_BATCH) { b = 128; extc_rc_markColdN++; }`。`[work]` 行尾新增 `cold_steps=`（v18 `:3927`/`:3939`），计数在 `:1189`。
+
+**契约方向（必须写清，否则等于放宽）**：冷档只让实际 `b` 更小，`walk_max ≤ walk_cap` 仍逐字成立（`walk_cap = MARK_BATCH_MAX × SWEEP_PRESSURE_MUL` = 1024），所以它是**上界收紧**；`P_step` 的模型随之改成 `P_step ≤ b_eff·τ_t + c_fix`，`b_eff = min(b, 1024)`（暖）/ `min(b, 128)`（冷，`live > 16 MiB`）。在 roofline 平面上这个改动**不动 λ**（每字节的回收成本不变），动的是 **P 轴的可达域**：步数 `n` 上升、每步更短，即「调度粒度变细」，不是「多干活」。
+
+#### 6.8.3 为什么门槛取 16 MiB（形状实测，不是按基准名开洞）
+
+冷档只在巨活集形状触发，其余形状 `cold_steps=0`（实测 `[work]`）：promote `thr_max=6,068,128`、cycleratio `2,735,120`、chase `thr_max=63,438,892` 但 `r->live` 仍 <16 MiB（`cold_steps=0`）、pb `thr_max=1,247,201,956` ⇒ `cold_steps=331,260`。即门槛是**活集字节数**这一个可解释的量（LLC 之外一次 pop = 一次访存），与哪个 benchmark 无关；chase 虽然总量大，但每轮触发的 `r->live` 只有几十 MB 中已计入的那一小部分。
+
+#### 6.8.4 实测：pb 转绿、四形状不动、代价可忽略
+
+| 量 | R1（冷档未落） | R2（冷档，v18） | 判据 |
+|---|---:|---:|---|
+| pb 50M 常规步 p99.9 | RED（>10 µs） | `gt10us=89 / n=343,296` ⇒ **2.6e-4**（判据 `gt10×1000 ≤ n`）**PASS** | (a) p99.9 ≤10 µs |
+| pb 50M `>50 µs` 占比 | 2.56e-4 | `gt50us=10` ⇒ **2.9e-5 PASS** | (a) ≤1e-4 |
+| pb 50M 其它 | — | `max_us=85.8`、`over1ms=0`、`cold_steps=331,260`、wall 0.88 s（R1 0.86，**+2.3%**）、RSS 911,964 kB 不变 | ① over-1ms=0 |
+| pb 20M | — | `n=115,636`、`gt10=56`、`gt50=6`、wall 0.33 s | 同上 |
+| 门禁口径 3 reps（`tests/gc-p0/run.sh g1c`） | — | pb `(a) PASS n=1,029,888 >50us=5.34e-05 p99.9=PASS`；`[histo]` 每 rep `n=343,296`、`over64=42` | 见 §7 G1② |
+
+四形状同轮 A/B（同一份新生成 C，两臂只差 `-DEXTC_RC_MARK_COLD_BYTES=1152921504606846976`（关）vs 默认；5 轮交错、pin 6、min ms）：promote **0.973**、sizeratio **0.981**、chase **1.007**、cycleratio **0.982**；RSS 逐 kB 相同（5,728 / 2,676 / 67,744 / 2,660 kB）⇒ 冷档对暖形状是**零影响**（它们根本不进冷档），对 `pb` 是 +2.3% 墙钟换回一条停顿契约。另一侧：`pb` 50M 用 `COLD_BATCH=64/32` 也 PASS，但步数翻倍、墙钟 0.92/0.85 ⇒ **128 是这一段的最优点**，不再往下压。
+
+**为什么不分档而全局降 b（代价表，5 轮交错 min ms）**：`b=128` ⇒ promote **+4.1%**、sizeratio **+5.4%**；`b=64` ⇒ **+7.0% / +5.8%**；`b=32` ⇒ **+13.0% / +7.6%**。这些形状的 `b` 根本没进过冷档，全局降预算就是用它们的墙钟去买一个它们不需要的界。
+
+#### 6.8.5 本轮门禁与代价
+
+`gate.sh` Ir **87,649,685 ≤ 88,029,115**（R1 87,009,872，+0.74%，来自冷档判据与计数）；`tests/reclaim/run.sh` **216/0**（含 chunk=1 全绿与 chunk=1e9 红自测）；`tests/gc-p0/run.sh all` 3 reps：G4-Stress PASS、G8 PASS（档 1,500 / 档 2,3,424 kB = **0.438×**）、**G18 PASS 26,072 kB ≤ 26,624**、G4 PASS、G12/G13/G16 PASS；`./check.sh docs` 13/0、`check_tree.py --gate` 9 条转储模式 ok、`check_changelog.py --gate` ok。`tools/check_mark_batch.py --selftest` 31 条（新增 6 条静态断言 + 4 条红自测 token），`tools/check_alloc_hot.py` 绿。
+
+#### 6.8.6 尚未闭合（显式移交 R3，不是「已绿」）
+
+1. **cyc 的 `(a)` 仍 RED**：`n=469,458`、`>50us=1.11e-04`（阈 1e-4，超 11%）、p99.9 RED；该形状 `cold_steps=0` ⇒ 与本轮改动无关，属 §8.1 R6 的噪声地板（本机 `cpu` 口径 p99.9 地板 0.30 µs、`wall` 尖峰 78–181 µs）。R3 的协议项：≥21 reps 回合交错 + `min(cpu,wall)` 口径 + 噪声扣减的**单侧**判据。
+2. **pc 的 `(a)` 记 N/A（不是 PASS）**：`n=41,184 < 1e5`。R3 必须把 n 抬到 1e5 以上（加 reps 或加大 pc 负载）才能判 —— 这是「消灭 N/A 掩盖」这条目标里剩下的显式缺口。
+3. **`c_seg` 标定陈旧**：`tests/gc-p0/bseg-cal.tsv` 里 `src_md5` 仍是 v9 口径（`reclaim.c=3de56554…`），门禁已告警「必须重标定」；(b) 通道因此对 cyc/pb/pc/pd 记 N/A。重标（空闲机、≥9 reps、同轮重建）列入 R3 量具协议。
+4. **`τ_t` 的形状依赖未进模型**：本轮只把「冷/暖」二分写进 `b_eff`；`τ_t^cold` 未单独标定，模型仍用单一 `τ_t=17.49 ns` 给上界。若以后要精确的 `P_step` 预测，需要按活集分段的 `τ_t` 曲线（R3/R5 的量具项）。
+
+**复现**：`EXTC=build/extc REPS=3 tests/gc-p0/run.sh g1c pb`；冷档关闭对照 `cc -DEXTC_RC_MARK_COLD_BYTES=1152921504606846976 …`；步时分解 `EXTC_RC_PAUSE=1` 下的 `[histo]`/`[segsteps]`/`[work]`。
 ## §7 门禁（Gate）：判据、量具、before / after
 
 门禁的用处不是「证明程序对」，而是**把契约变成可自动判定的句子**：每一条都写死「量具 + 判据 + 口径」，避免出现「实测 106 µs 也算通过」这种自欺。全部跑在既有 harness（`tests/reclaim-perf/gate.sh` 六项 + `tests/gc-p0/run.sh`）上，不需要新依赖。**after 列的构建口径（逐行标注）**：`p1-after` = v7 同轮产物集（`tests/gc-p0/out/p1-after/`，构建 `build-emp3/extc 07b7be1a…`）；`v7` = `build-p1/extc b9fd5784…`；G20-P0 单列 P0 轮（`build-rf/extc 7019342b…`）。跨构建的绝对计时允许 ±5–15% 差（§6.7.6），判据只看方向与阈值；任何一行换构建都必须重标尾号，不得混用。
@@ -1096,6 +1153,7 @@ r'* = r'_max(M_max) = (M_max/L − 1)/κ_M
 ## 附录 D 源码行号索引（FREEZE v17 口径）
 
 下表是本文所有关键断言的可核对位置。**当前口径（FREEZE v17）**：src/back/reclaim.c = 39c93ca4fa0718920844e91147695589（4 269 行，相对 v16 只加量具的 3 个精确超阈计数与 `[chan]` 改名，+10 行，换算表见 `MEMORY-MODEL-CURRENT.md` 头部 v17 行）；src/back/codegen.c = cc01b5f4216ea5c8d9fde77c47c41f24（16 212 行，相对 v15 的 16 065 行重写了 `emitParallelRuntime` 的发射文本并 +147 行，换算表见 `MEMORY-MODEL-CURRENT.md` 头部 v16 行）；stdlib/std/json.extc = fc33b94db7b01f61ad367fff768edfbb（1 186 行）；tests/reclaim/driver.c = 28dd4009ac7207f47e581a697c0d421f（1,637 行）；build/extc = 722e5ff1247c9bd4204e7f24ed01ff84。**本表已按 v17 重锚**：每一行都用符号 grep 逐条复核（v16 只有 `:15984`/`:15989` 两条落进位移区，已改为 `:16131`/`:16136`）（v12 与 v11 同为 4 169 行、行号相同；v13 的位移集中在常量段与 `slabNew`/`alloc` 发射段，v10/v11 的换算表见 `P1-ADMISSION.md`）；表外正文的 `reclaim.c:NNNN` 引用与表同源，未单列。**v7 口径（历史）**：codegen.c = 2f560e2e6deef8c4927db4611344aecb（16 017 行）（v7 测量输入为 `d339382889b87c0dd18b357c69e2e779`/16 017 行；提交树只把 `typeHasRefSlots` 的前向声明移到 `genViewCopier` 的说明块之前以过 `check-doxygen`，行数与代码不变）；src/back/reclaim.c = e17080d1c80513b27ca06f2bc6224b0f（4 031 行）；tests/reclaim/driver.c = 7b9ac61a55c140640a5964ab74a8780e（1 523 行）；v7 为 git HEAD 85b8871b + 工作树 patch；v10 为 HEAD 8d0086f0 + 本轮工作树 patch。构建：build-p1/extc = b9fd5784…（v7 交付）、build-lead7/extc = a7f2a873…、build-da2/extc = 10960ce7…（独立复核）；P0 轮的 build-rf/extc = 7019342b… 只在 §6.6 与 G20-P0 行出现。行号是该文件的物理行号；换版本前先 md5sum 对齐。注：同一源码用不同 BUILDDIR 重建时 extc 的 md5 会因调试段（-g）里嵌入的构建目录路径而不同（build-frz/extc = b35c12a1… 即同源二次构建），溯源以源码 md5 为准。
+**当前口径（FREEZE v18 = R2 冷档，2026-11-13）**：`src/back/reclaim.c` = `8f49f0718d788cd1202d348945260ab3`（**4,282 行**）、`src/back/codegen.c` = `cc01b5f4216ea5c8d9fde77c47c41f24`（16,212 行，同 v16/v17）、`tests/reclaim/driver.c` = `28dd4009ac7207f47e581a697c0d421f`（1,637 行，未改）、`build/extc` = `9ceb7690c3ae62d12921b7f0a9bf3757`。相对 v17，`reclaim.c` 只插入冷档 13 行（11 行常量块 + 1 行计数器 + 1 行 clamp），`[work]` 的 `cold_steps=` 是原地改 ⇒ **换算表：n < 1153 ⇒ n；1153–1177 ⇒ n+11；1178–1417 ⇒ n+12；n ≥ 1418 ⇒ n+13**（锚点复核：v17 `:1417` window clamp → v18 `:1429`；v17 `:1177` stepGt 声明 → v18 `:1188`；冷档 clamp 落在 v18 `:1430`）。**本附录表格仍保留 v17 行号，未做机械平移**（机械平移在历史上曾把符号指错函数）；读 v18 源码请按上表换算或直接按符号 grep，新增行在下表末尾以 v18 绝对行号单列。机制、实测与判据见 §6.8。
 
 | 主题 | 位置 |
 |---|---|
@@ -1155,3 +1213,14 @@ r'* = r'_max(M_max) = (M_max/L − 1)/κ_M
 | 运行期：`[closing]` 探针 | `reclaim.c:3855` |
 | 运行期：sweep 收尾信用 cap（`EXTC_RC_SWEEP_FINISH_MAX`，v13） | `reclaim.c:1069`（用点 `:1545`） |
 | 运行期：`SLAB_BITS` / `SLAB_CHUNK_MIN`（v13） | `reclaim.c:138` / `:345` |
+**v18 新增（R2 冷档，绝对行号，2026-11-13）**
+
+| 主题 | 位置 |
+|---|---|
+| 运行期：冷档活集阈值 `EXTC_RC_MARK_COLD_BYTES`（16 MiB） | `reclaim.c:1154`（v18） |
+| 运行期：冷档每步上限 `EXTC_RC_MARK_COLD_BATCH`（128） | `reclaim.c:1158`（v18） |
+| 运行期：冷档一致性检查 `#error`（COLD_BATCH 大于 MARK_BATCH_MAX 时编译失败） | `reclaim.c:1161-1163`（v18） |
+| 运行期：冷档 clamp（`extc_rc_markAdvance` 内，紧接 window clamp `:1429`） | `reclaim.c:1430`（v18） |
+| 运行期：`extc_rc_markColdN` 计数 | `reclaim.c:1189`（v18） |
+| 运行期：`[work]` 的 `cold_steps=` 探针 | `reclaim.c:3927`（实参 `:3939`，v18） |
+| 工具：冷档静态断言 + 红自测（6 + 4 条） | `tools/check_mark_batch.py`（`--selftest` 31 条） |

@@ -641,6 +641,7 @@ P2 与这个反例的差别**只有"旧值是否另有根"这一维**（P2 的�
 1. **确定性工作量界**（`[work]`）：热路径每步 `walk_max ≤ walk_cap = EXTC_RC_MARK_BATCH_MAX × EXTC_RC_SWEEP_PRESSURE_MUL`（默认 256×4 = **1024**；`walk_cap`/`walk_gtcap` 由产物 `[work]` 行给出，`walk_gtcap` 必须为 0）、
    `scan ≤ EXTC_RC_SEED_WORDS`、`push ≤ EXTC_RC_SEED_PUSHES + 63`（压栈按**字**收口：一个字最多
    64 位，所以最后一个字可能超出名义预算 ≤63；这是粒度，不是失控）。超界就是**真的**要做整形。
+   **R2 起这个界按活集分两档（只收紧，不放宽）**：暖档仍是上面的 `walk_cap`；冷档（`r->live >` `EXTC_RC_MARK_COLD_BYTES = 16 MiB`，即一次 pop 已经是访存而不是缓存命中）每步的 pop 上限再被 `EXTC_RC_MARK_COLD_BATCH = 128` 压住（发射文本里 `markAdvance` 在 window clamp 之后再 clamp； 编译期 `#error` 保证 `COLD_BATCH ≤ MARK_BATCH_MAX`）。所以 `walk_max ≤ walk_cap` 逐字仍成立， 界只是更小；`[work]` 行尾的 `cold_steps=` 报告本轮有多少步进了冷档（0 表示该形状从不触发）。 动机与实测见 `docs/analysis/GC-ROOFLINE.md` §6.8、`docs/analysis/MEMORY-MODEL-CURRENT.md` §19.6。
    **这条已由 `gate-reclaim-work` 自动强制**（挂 `nobench`，约 3 秒）：六形状现场生成+运行，
    `[work]` 必须存在且 `n>0`（否则文案是"插桩失败/工具不兼容"，不许当绿）、每形状 3 次逐字相同、
    四条界全部**蕴含式**成立（`walk_max ≤ walk_cap`、`walk_gtcap == 0`、`scan_max ≤ SEED_WORDS`、`push_max ≤ SEED_PUSHES+63`）；三个预算与 `rsbit` 字宽都从**产物** `#define` grep（读不到 ⇒ 红，
@@ -656,6 +657,7 @@ P2 与这个反例的差别**只有"旧值是否另有根"这一维**（P2 的�
 （严格 >16 µs / >64 µs / >256 µs / >1 ms），由同一组桶求和得到（`stepSumFrom(5)/(7)/(9)/(11)`）——
 按字面把桶名读成"≥X"会得出错的阈值，写判据时以源码里的 `extc_rc_stepBucket` 与 `[step]`/`[histo]` 的 fprintf 为准。
 **v17 起判据线可以精确判**：`[histo]` 与 `[segsteps]` 各多打 `gt10us`/`gt50us`/`gt64us`，是严格 `>10/>50/>64 µs` 的**样本计数**（不是分位）⇒ 判据线落在桶界之间（如 50 µs 落在 `b32us`–`b64us` 之间）时直接读计数，不再靠桶界包含关系；`n<1e5` 仍按 N/A。旧产物没有这三个字段时退回桶界包含关系（判据不放宽）。
+**v18（R2）起这两条线在 `pb` 上实测都绿**：`pb_escape_grow` 50M 的 `[histo]` 给 `gt10us=89 / n=343,296` ⇒ p99.9 判据 `gt10us×1000 ≤ n` 成立（2.6e-4），`gt50us=10` ⇒ `>50 µs` 占比 2.9e-5 ≤ 1e-4； `over1ms=0`、`max_us=85.8`。这不是放松判据，而是把**标记步的每步预算按活集分档**换来的（见本节第 1 条与 `docs/analysis/REFS-V18.md`）：同一份源码的冷档开关 A/B 在四形状上是 0.973/0.981/1.007/0.982、RSS 逐 kB 相同。
 **p99 仍从 `[histo]` 的桶读**（桶内只有计数，精度为一个桶宽）；要精确分位就用 `tools/rc-pause-probe.py` 的 `PAUSE_DIST_STEP`，口径不变。
 
 **时钟口径**：`[step]`/`[histo]`/`[chan]`/`[top]` 的时长跟随 `[clock]` 行首字段 ——
@@ -925,7 +927,7 @@ cache-sim 判据变红）。
   - `gate-reclaim-work` 强制**工作量界** —— `[work]` 必须存在且 `n>0`（否则文案是"插桩失败/
     工具不兼容"，不许当绿）、每形状多次运行逐字相同、界全部从**产物**里读出（读不到即红，
     不许硬编码）：`walk_max ≤ walk_cap`（`walk_cap = MARK_BATCH_MAX × SWEEP_PRESSURE_MUL`，从产物
-    `#define` grep）、`walk_gtcap == 0`（超出上限的步数必须为 0，**字段缺失即 FAIL**）、
+    `#define` grep）、`walk_gtcap == 0`（超出上限的步数必须为 0，**字段缺失即 FAIL**；R2 起 `walk_cap` 是**暖档**帽，冷档另有 `EXTC_RC_MARK_COLD_BATCH=128` 的收紧，两者都从产物 `#define` 读出，并读 `[work]` 的 `cold_steps` 判「这轮到底进没进冷档」——不进冷档的形状拿它当「已覆盖」就是空壳绿）、
     `scan_max ≤ SEED_WORDS`、`push_max ≤ SEED_PUSHES + 63`；红演示见 `changelog/2026-10.md`：
     拿掉种子扫描的字预算 ⇒ `scan_max` 越界直接红，把 `[work]` 改名 ⇒ 六形状全红在"插桩失败"。
   - `gate-foreign-skip` 守**"跳过旧值登记查表"的前提** —— 每个撤销点被"这只区域出现过跨区值"
