@@ -79,7 +79,8 @@ def violations(text):
                                      text.index('extc_rc_markStep(r, b);')),
         'cold tier only lowers': ('#if EXTC_RC_MARK_COLD_BATCH > EXTC_RC_MARK_BATCH_MAX' in text and
                                   'EXTC_RC_MARK_COLD_BATCH exceeds EXTC_RC_MARK_BATCH_MAX' in text),
-        'cold tier reported': ('cold_steps=%lld' in text and 'extc_rc_markColdN);' in text),
+        'cold tier reported': ('cold_steps=%lld' in text and 'extc_rc_markColdN' in text and
+                               'cons_max=%lld' in text and 'extc_rc_wConsMax' in text),
         'batch array': 'uintptr_t _batch[EXTC_RC_MARK_BATCH_POP];' in text,
         'limit hoisted': ('size_t _lim = EXTC_RC_MARK_BATCH_POP;' in text and
                           'if (budget < _lim) _lim = budget;' in text and
@@ -100,10 +101,29 @@ def violations(text):
         'batch walk reads no clock': _no_clock(text, '        size_t _b = 0;', '        if (_split) {   /* segmentation'),
         'shallow drain reads no clock': _no_clock(text, '            do {', '            } while (r->msp > 0 && (size_t)r->msp <= (size_t)EXTC_RC_MARK_SHALLOW'),
         'split stops the step': text.count('&& !_split') >= 3,
-        'split leaves resume cursor': 'r->scanObj = o; r->scanOff = 0; _split = 1;' in text,
+        'split leaves resume cursor': 'r->scanObj = o; r->scanOff = 0; r->scanDesc = 0; _split = 1;' in text,
         'split keeps unscanned batch items': ('if (_split) {' in text and 'while (_nb > _b) {' in text and
                                              'extc_rc_markPushForce(r, (void *)(_raw & ~(uintptr_t)1));' in text),
-        'resume handled at entry': ('if (r->scanObj) {' in text and 'extc_rc_markResume(r);' in text),
+        'resume handled at entry': ('if (r->scanObj && (size_t)r->msp <= (size_t)EXTC_RC_MARK_STACK_SOFT) {' in text and
+                                    'extc_rc_markResume(r);' in text),
+        # R7：单步工作量由编译期常量封顶。这组断言钉的是「界还在源码里」，不是「界有多大」。
+        'step pop cap': ('#ifndef EXTC_RC_MARK_STEP_POP_MAX' in text and '#define EXTC_RC_MARK_STEP_POP_MAX' in text and
+                         'budget > (size_t)EXTC_RC_MARK_STEP_POP_MAX) budget = (size_t)EXTC_RC_MARK_STEP_POP_MAX' in text),
+        'step push cap': ('#define EXTC_RC_MARK_PUSH_STEP' in text and
+                          'if (pushes > (size_t)EXTC_RC_MARK_PUSH_STEP) _split = 1;' in text and
+                          'if (r->msp > _sp) pushes' in text),
+        'inline scan allowance': ('size_t _scanLeft = (size_t)EXTC_RC_SCAN_CHUNK;' in text and
+                                  'if (words > _scanLeft) {' in text and '_scanLeft -= words;' in text),
+        'mark stack soft cap': ('#ifndef EXTC_RC_MARK_STACK_SOFT' in text and '#define EXTC_RC_MARK_STACK_SOFT' in text),
+        # 描述符续扫：cursor 的第二种索引（0 = 保守词，1 = 字段）必须两条都能走，否则长描述符又回到一步扫完。
+        'descriptor cursor': ('int32_t     scanDesc;' in text and 'if (r->scanDesc) {' in text and
+                              'r->scanOff = (uint32_t)(st + walked);' in text),
+        'work counters reported': ('pop_max=%lld' in text and 'push_max=%lld' in text and 'pops_tot=%lld' in text),
+        # 巨块载荷分片丢页：一步只丢一个 chunk，free 只在页表已空时发生（1 ms 级 munmap 不许回来）。
+        'huge payload dropped in pieces': ('extc_rc_bigTrimStep' in text and 'MADV_DONTNEED' in text and
+                                          '#define EXTC_RC_BIG_DROP_BYTES' in text),
+        'free drain bounded below a millisecond': ('#define EXTC_RC_FREE_HARD_DEADLINE_US 50' in text and
+                                                  '#define EXTC_RC_FREE_DEADLINE_US 40' in text),
         'completion checks cursor': text.count('r->scanObj') >= 10 and text.count('|| r->scanObj') >= 5,
         'width ceiling': re.search(r'#if EXTC_RC_MARK_BATCH_POP > EXTC_RC_MARK_BATCH_MAX\s*\n#error', text) is not None,
         # 扫描体：子对象循环走「指针步进」而不是每次重读 t->nptr/t->off[k]（-O1 下实测省 0.68%）；
@@ -134,7 +154,7 @@ def main():
                       'if ((size_t)r->msp <= (size_t)EXTC_RC_MARK_SHALLOW && budget > 0',
                       '} while (r->msp > 0 && (size_t)r->msp <= (size_t)EXTC_RC_MARK_SHALLOW && budget > 0',
                       '#define EXTC_RC_MARK_BATCH_POP',
-                      '#define EXTC_RC_MARK_COLD_BATCH 128',
+                      '#define EXTC_RC_MARK_COLD_BATCH 32',
                       'if (r->live > (int64_t)EXTC_RC_MARK_COLD_BYTES',
                       'cold_steps=%lld',
                       '#if EXTC_RC_MARK_COLD_BATCH > EXTC_RC_MARK_BATCH_MAX',
@@ -149,8 +169,17 @@ def main():
                       'EXTC_RC_MARK_SCAN(_batch[_b]);',
                       'if ((size_t)r->msp <= (size_t)EXTC_RC_MARK_SHALLOW && budget > 0',
                       'while (_nb > _b) {',
-                      'r->scanObj = o; r->scanOff = 0; _split = 1;',
-                      'if (r->scanObj) {',
+                      'r->scanObj = o; r->scanOff = 0; r->scanDesc = 0; _split = 1;',
+                      'if (r->scanObj && (size_t)r->msp <= (size_t)EXTC_RC_MARK_STACK_SOFT) {',
+                      '#define EXTC_RC_MARK_STEP_POP_MAX',
+                      'budget > (size_t)EXTC_RC_MARK_STEP_POP_MAX) budget = (size_t)EXTC_RC_MARK_STEP_POP_MAX',
+                      'if (pushes > (size_t)EXTC_RC_MARK_PUSH_STEP) _split = 1;',
+                      '#define EXTC_RC_MARK_PUSH_STEP',
+                      'if (words > _scanLeft) {',
+                      '_scanLeft -= words;',
+                      '#define EXTC_RC_MARK_STACK_SOFT',
+                      'int32_t     scanDesc;',
+                      '#define EXTC_RC_FREE_HARD_DEADLINE_US 50',
                       'extc_rc_markResume(r);',
                       '__builtin_prefetch((void *)(_batch[_nb] & ~(uintptr_t)1)',
                       '#if EXTC_RC_MARK_BATCH_POP > EXTC_RC_MARK_BATCH_MAX',
@@ -183,6 +212,18 @@ def main():
                             '            if (extc_rc_pauseNow() < 0) break;\n            EXTC_RC_MARK_SCAN(_batch[_b]);')
         assert 'batch walk reads no clock' in violations(tick)
         print('ok red: clock read inside batch walk')
+        # 续扫入口丢掉标记栈软上限（cursor 会把栈推到可达前沿）必须红。
+        nosoft = text.replace('if (r->scanObj && (size_t)r->msp <= (size_t)EXTC_RC_MARK_STACK_SOFT) {', 'if (r->scanObj) {')
+        assert 'resume handled at entry' in violations(nosoft)
+        print('ok red: resume ignores mark stack soft cap')
+        # 每步 pop 硬上限被删掉（压力档回到 1024）必须红。
+        nocap = text.replace('budget > (size_t)EXTC_RC_MARK_STEP_POP_MAX) budget = (size_t)EXTC_RC_MARK_STEP_POP_MAX', 'budget > 0) budget = budget')
+        assert 'step pop cap' in violations(nocap)
+        print('ok red: step pop cap removed')
+        # 扫描额度守卫被删掉（大数组一步扫完）必须红。
+        noallow = text.replace('if (words > _scanLeft) {', 'if (words > (size_t)EXTC_RC_SCAN_CHUNK) {')
+        assert 'inline scan allowance' in violations(noallow)
+        print('ok red: inline scan allowance removed')
         return 0
     bad = violations(text)
     for item in bad:

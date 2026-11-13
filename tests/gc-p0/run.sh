@@ -482,10 +482,11 @@ fi
 
 # release 通道的结构性证据（Lead R3）：数每个用例**生成 C** 里 extc_rc_storeRefOwnedRelease 的调用点。
 # 调用点 0 处 ⇒ 该通道在本形状结构上不可能触发（n==0 是必然而非采样不足）⇒ g1c 记 vacuous PASS；
+# pd_pointer_dense 必须在内：它是唯一的 cold-dense 形状，此前缺 relsite 证据 ⇒ 该用例恒 N/A（Lead R7 补上）。
 # 缺这份文件时 g1c 不 vacuous（保持 N/A），有调用点而 n==0 也不 vacuous —— 不许无证据变绿。
 if [ "$WHAT" = all ] || [ "$WHAT" = g1 ] || [ "$WHAT" = g1cpu ] || [ "$WHAT" = g1c ]; then
     : >"$OUT/relsite.txt"
-    for name in cyc pb pc pd_bigobj rel; do
+    for name in cyc pb pc pd_bigobj pd_pointer_dense rel; do
         [ -f "$OUT/c/$name.c" ] || continue
         n=$(grep -c "extc_rc_storeRefOwnedRelease((" "$OUT/c/$name.c" || true)
         echo "relsite case=$name sites=$n" >>"$OUT/relsite.txt"
@@ -517,7 +518,7 @@ if [ "$WHAT" = all ] || [ "$WHAT" = g1 ] || [ "$WHAT" = g1cpu ] || [ "$WHAT" = g
     python3 tests/gc-p0/g1c.py --dir "$OUT/log" --glob '*_pause_r*.err' \
         --noise "$OUT/noise.txt" --json "$OUT/g1c.json" \
         --stallrate "$OUT/stallrate.txt" --runs "$OUT/runs.jsonl" \
-        --relsite "$OUT/relsite.txt" --chan-only rel:release \
+        --relsite "$OUT/relsite.txt" --chan-only rel:release --require-workbound \
         ${g1c_extra[@]+"${g1c_extra[@]}"} || true
 fi
 

@@ -91,6 +91,15 @@ PER_POP_US = 2.0            # (a-cold) tau_t = 步时/pops 上限（Lead m04242�
 CHAN_MAX_US = 1000.0        # (c) G3b
 CHAN_TARGET_US = 200.0      # (c) 目标（观察）
 RATIO_LIMIT = 1e-4          # (a) >50us 占比
+# ---- clock-free 每步工作量上界（Lead R7）----
+# 判据不读钟：三个量都由编译期常量约束，所以宿主 steal（本机空转实测注入 88-236us）无法让它
+# 假红/假绿。它是本轮堵毫秒尾的正面判据；墙钟 max 只留 OBS（见 GC-ROOFLINE 6.13）。
+POP_MAX_LIMIT = 512          # EXTC_RC_MARK_STEP_POP_MAX：一步最多 pop 512 个对象
+PUSH_STEP = 2048             # EXTC_RC_MARK_PUSH_STEP：一步的 push 记账额度
+BATCH_POP = 200              # EXTC_RC_MARK_BATCH_POP：批路一次最多弹 200 个
+FANOUT = 32                  # codegen 描述符上限（引用字段超 32 个即退回保守扫描）
+MSCAP_LIMIT = 16384          # 2 * EXTC_RC_MARK_STACK_SOFT(8192)
+PUSH_MAX_LIMIT = PUSH_STEP + BATCH_POP * FANOUT   # = 8448
 # (b) 续扫闭式上界（Lead m04242 + m04448）：B_seg(shape) = 1.5 * c_seg(shape) * chunk + 1us。
 # c_seg 必须来自**该形状自己**的实测（不得跨形状借），由 --c-seg NAME=LO[:HI] 传入；未标定
 # => (b) 的 p99.9/max 记 N/A（不得退回旧 5us/10us 占位）。
@@ -170,6 +179,7 @@ def parse_top(txt):
 def _merge(dst, src):
     if dst is None:
         dst = {"n": src["n"], "counts": list(src["counts"]), "max_us": src.get("max_us"),
+               "total_us": src.get("total_us"),
                "pops_tot": src.get("pops_tot"),
                "gt10": src.get("gt10"), "gt50": src.get("gt50"), "gt64": src.get("gt64"),
                "fine": dict(src.get("fine") or {})}
@@ -181,6 +191,8 @@ def _merge(dst, src):
         dst["max_us"] = max(dst["max_us"] or 0.0, src["max_us"])
     if src.get("pops_tot") is not None:
         dst["pops_tot"] = (dst.get("pops_tot") or 0) + src["pops_tot"]
+    if src.get("total_us") is not None:
+        dst["total_us"] = (dst.get("total_us") or 0.0) + src["total_us"]
     for k in ("gt10", "gt50", "gt64"):
         a, b = dst.get(k), src.get(k)
         dst[k] = None if (a is None or b is None) else a + b
@@ -196,10 +208,27 @@ def load_errs(paths):
     chan = {}
     tops = []
     work_maxreq = None   # [work] maxreq：本 run 记录到的最大分配请求字节（(b) 结构性 vacuous 判定用，Lead R3）
+    # [wbudget] 高水位聚合（Lead R7）：pop_max/push_max/mscap_max 取跨 rep 最大值，
+    # pops_tot 求和（每步的 pop 数总量，供 cold-dense 的聚合 tau 用）。
+    wb = None
     for p in paths:
         with open(p, "r", errors="replace") as f:
             txt = f.read()
         rec = pp.parse_text(txt)
+        _wl = rec.get("wbudget_line")
+        if _wl:
+            _f = {}
+            for _k, _v in re.findall(r"([A-Za-z_][A-Za-z0-9_]*)=(-?\d+)", _wl):
+                _f[_k] = int(_v)
+            if "pop_max" in _f:
+                if wb is None:
+                    wb = {"pop_max": 0, "push_max": 0, "mscap_max": 0, "msp_max": 0,
+                          "tot_max": 0, "pops_tot": 0, "reps": 0}
+                for _k in ("pop_max", "push_max", "mscap_max", "msp_max", "tot_max"):
+                    if _k in _f:
+                        wb[_k] = max(wb[_k], _f[_k])
+                wb["pops_tot"] += _f.get("pops_tot") or 0
+                wb["reps"] += 1
         _wr = (rec.get("work") or {}).get("maxreq")
         if _wr is not None and _wr >= 0:
             work_maxreq = _wr if work_maxreq is None else max(work_maxreq, _wr)
@@ -207,6 +236,7 @@ def load_errs(paths):
         if h and h.get("n") is not None:
             hist = _merge(hist, {"n": h["n"], "counts": h["counts"],
                                  "max_us": rec.get("step_max_us"),
+                                 "total_us": rec.get("step_total_us"),
                                  "gt10": h.get("gt10"), "gt50": h.get("gt50"), "gt64": h.get("gt64")})
         s = parse_segsteps(txt)
         if s:
@@ -223,7 +253,7 @@ def load_errs(paths):
                 d["counts"][i] += int(c.get(nm) or 0)
         tops += parse_top(txt)
     tops.sort(key=lambda t: (t.get("cpu_us") is not None, t.get("cpu_us") or 0.0), reverse=True)
-    return hist, seg, chan, tops[:8], len(paths), work_maxreq
+    return hist, seg, chan, tops[:8], len(paths), work_maxreq, wb
 
 
 def load_noise(paths):
@@ -737,7 +767,7 @@ def verdict_mixed(n, counts, max_us, tops):
     return out
 
 
-def verdict_cold_dense(n, counts, max_us, tops, p_noise):
+def verdict_cold_dense(n, counts, max_us, tops, p_noise, step_total_us=None, pops_tot=None):
     """cold-dense 形状（默认 pd_pointer_dense）的 (a) 行（Lead m04242）：
     **不参与** 5us/10us 门禁（E29：冷 pop 1.3-1.9us/obj，b=256 时结构性 300-500us）。
     判 tau_t = 步时/pops <= 2us（[top] 里 **pops>=2** 的最慢步，cpu_us/pops；pops=1 的 seg>0
@@ -788,6 +818,22 @@ def verdict_cold_dense(n, counts, max_us, tops, p_noise):
             "tau_us": worst_all["cpu_us"] / worst_all["pops"],
             "is_seg_resume": (worst_all.get("pops") == 1 and (worst_all.get("seg") or 0) > 0),
         }
+    # 聚合口径（Lead R7）：tau_agg = 总步时 / 总 pop。判据用它；[top] 最慢步的 tau_t 降为 OBS。
+    # 理由：本机空转微基准实测 max 88-236us 的注入停顿，[top] 采样一旦被 steal 打中，tau_t 就是
+    # 200-600us/32pop 的假值；n 达 3e7 步的聚合值把噪声摊到 1/n。上限 PER_POP_US=2.0us 一个字没放宽，
+    # 另外新增 clock-free 的 pop/push/栈高水位上界（verdict_workbound）。缺数据时退回旧口径（1 rep）。
+    if step_total_us is not None and pops_tot:
+        tau_agg = float(step_total_us) / float(pops_tot)
+        out["tau_agg_us"] = tau_agg
+        out["pops_tot"] = pops_tot
+        out["criteria"]["tau_agg"] = {
+            "verdict": "PASS" if tau_agg <= PER_POP_US else "RED",
+            "why": "tau_agg=总步时/总pop=%.4fus %s %.1fus（去噪聚合口径；单步被宿主 steal 打中不改变它）"
+                   % (tau_agg, "<=" if tau_agg <= PER_POP_US else ">", PER_POP_US)}
+        if "tau_t" in out["criteria"]:
+            out["criteria"]["tau_t"]["verdict"] = "OBS"
+            out["criteria"]["tau_t"]["why"] = ("OBS（[top] 最慢步采样，受宿主 steal 支配，不作判据）："
+                                              + (out["criteria"]["tau_t"].get("why") or ""))
     if n < MIN_N:
         out["criteria"]["p999"] = {"verdict": "N/A", "why": "n<1e5"}
         out["note"] = "n<1e5：p99.9 记 N/A（不是 PASS）"
@@ -933,10 +979,40 @@ def load_relsites(path):
     return out
 
 
+def verdict_workbound(wb, required=False):
+    """clock-free 每步工作量上界（Lead R7）：只读 [wbudget] 的高水位，不读钟。
+    pop_max <= EXTC_RC_MARK_STEP_POP_MAX(512)、
+    push_max <= EXTC_RC_MARK_PUSH_STEP(2048) + BATCH_POP(200)*FANOUT(32) = 8448、
+    mscap_max <= 2*EXTC_RC_MARK_STACK_SOFT = 16384。
+    这三个量决定「一步最多做多少工作」，是本轮把毫秒尾堵在机制层的正面判据；
+    墙钟 max 在本宿主上不可判（空转微基准 max 88-236us），只留 OBS。"""
+    out = {"name": "work-bound(clock-free)", "criteria": {}, "required": required,
+           "pop_limit": POP_MAX_LIMIT, "push_limit": PUSH_MAX_LIMIT,
+           "mscap_limit": MSCAP_LIMIT}
+    if not wb or "pop_max" not in wb:
+        out["verdict"] = "N/A"
+        out["note"] = ("缺 [wbudget] pop_max 字段（旧插桩）：工作量上界无法校验"
+                       + ("；--require-workbound 要求可判（不记 N/A）" if required else ""))
+        return out
+    for key, lim, why in (("pop_max", POP_MAX_LIMIT, "EXTC_RC_MARK_STEP_POP_MAX"),
+                          ("push_max", PUSH_MAX_LIMIT, "PUSH_STEP + BATCH_POP*FANOUT"),
+                          ("mscap_max", MSCAP_LIMIT, "2*EXTC_RC_MARK_STACK_SOFT")):
+        v = wb.get(key) or 0
+        out["criteria"][key] = {"verdict": "PASS" if v <= lim else "RED",
+                                "why": "%s=%d %s %d（%s）"
+                                       % (key, v, "<=" if v <= lim else ">", lim, why)}
+    out["pop_max"], out["push_max"], out["mscap_max"] = wb.get("pop_max"), wb.get("push_max"), wb.get("mscap_max")
+    out["pops_tot"], out["reps"] = wb.get("pops_tot"), wb.get("reps")
+    vs = [c["verdict"] for c in out["criteria"].values()]
+    out["verdict"] = "RED" if "RED" in vs else "PASS"
+    return out
+
+
 def analyze(hist, seg, chan, noise, case=None, cold_dense=COLD_DENSE_DEFAULT,
             seg_bound=None, seg_bound_note=None, tops=None, mixed_shapes=MIXED_DEFAULT,
             work_maxreq=None, scan_chunk=None,
-            env_p999=0.0, env_p999_note="", env_p50=0.0, rel_sites=None, chan_only=None):
+            env_p999=0.0, env_p999_note="", env_p50=0.0, rel_sites=None, chan_only=None,
+            wb=None, require_workbound=False):
     """把聚合后的结构变成判定；返回 dict（写 json + 打印都用它）。
     case：用例名（决定 warm / cold-dense / mixed 归类，Lead m04242 + m03564）；
     seg_bound：B_seg 闭式上界（us），None => (b) 的 p99.9/max 记 N/A（未标定，不退回旧占位）。"""
@@ -953,6 +1029,7 @@ def analyze(hist, seg, chan, noise, case=None, cold_dense=COLD_DENSE_DEFAULT,
            "env_p50": env_p50,
            "seg_bound_us": seg_bound, "seg_bound_note": seg_bound_note,
            "per_pop_limit_us": PER_POP_US, "p999_cold_us": P999_COLD_US}
+    res["workbound"] = verdict_workbound(wb, require_workbound)
     p_noise = noise.get("p_noise", 0.0)
     if hist is None:
         res["a"] = {"name": "regular(seg=0)", "verdict": "N/A",
@@ -996,7 +1073,9 @@ def analyze(hist, seg, chan, noise, case=None, cold_dense=COLD_DENSE_DEFAULT,
                             "精确计数负值：[histo] 的 gt* 小于 [segsteps] 的 gt*（插桩不一致）")
                         g_reg = None
                     if cls == "cold-dense":
-                        res["a"] = verdict_cold_dense(n_reg, diff, hist.get("max_us"), tops, p_noise)
+                        res["a"] = verdict_cold_dense(n_reg, diff, hist.get("max_us"), tops, p_noise,
+                                                      step_total_us=hist.get("total_us"),
+                                                      pops_tot=(wb or {}).get("pops_tot"))
                     elif cls == "mixed":
                         # Lead m03564：混合形状的 (a) 不可判（插桩不按 n 归因）⇒ N/A + 可判定界
                         res["a"] = verdict_mixed(n_reg, diff, hist.get("max_us"), tops)
@@ -1089,6 +1168,15 @@ def analyze(hist, seg, chan, noise, case=None, cold_dense=COLD_DENSE_DEFAULT,
             vs.append(_a.get("verdict"))
         vs.append(res.get("b", {}).get("verdict"))
         vs += [c["verdict"] for c in res["channels"].values()]
+    # 工作量界（clock-free，Lead R7）进用例聚合：RED 一律计入；PASS 计入（不透支）；
+    # N/A（旧插桩缺 [wbudget]）只在 --require-workbound 时计入，避免 selftest 的合成用例被打成 N/A。
+    _wbv = (res.get("workbound") or {}).get("verdict")
+    if _wbv == "RED":
+        vs.append("RED")
+    elif _wbv == "PASS":
+        vs.append("PASS")
+    elif require_workbound:
+        vs.append("N/A")
     if "ERROR" in vs:
         res["verdict"] = "ERROR"
     elif "RED" in vs:
@@ -1151,7 +1239,7 @@ def print_report(res, label=None):
         print("  结构性 N/A（已裁决、不进用例聚合，逐条仍打印）：%s"
               % "/".join(res["structural_na"]))
     print("  判据：warm 判 >50us 占比 <=%.0e（扣噪声）+ p99.9<=%.0fus；"
-          "cold-dense 判 tau_t<=%.1fus + p99.9<=%.0fus + over1ms=0（不判 5us 门禁）；"
+          "cold-dense 判 tau_agg(总步时/总pop)<=%.1fus + p99.9<=%.0fus + over1ms=0（不判 5us 门禁）；"
           "mixed 形状 (a) 记 N/A（Lead m03564：插桩不按 n 归因，N/A != PASS）"
           % (res["ratio_limit"], P999_REG_US, PER_POP_US, P999_COLD_US))
     print("  (b) 判据（Lead m04591+m04755）：p99.9 <= min(1.5*c_seg(shape)*chunk+1us, %.0fus 桶界兜底) 且 "
@@ -1163,6 +1251,11 @@ def print_report(res, label=None):
         print("       B_seg = %.2f .. %.2f us（lo 判 PASS / hi 判 RED，中间记 N/A）" % (b["lo"], b["hi"]))
     elif b is not None:
         print("       B_seg = %.2f us" % b)
+    _wb = res.get("workbound") or {}
+    if _wb:
+        _wbtxt = "；".join(c.get("why", "") for c in (_wb.get("criteria") or {}).values())
+        print("  工作量界（clock-free，Lead R7）：**%s**（%s）"
+              % (_wb.get("verdict"), _wbtxt or _wb.get("note") or ""))
     print("  | 通道 | n | >50us 下界/上界 | p99.9 | max_us | 判定 |")
     print("  |---|---|---|---|---|---|")
     print(_row("(a) 常规 seg=0", res.get("a", {})))
@@ -1191,6 +1284,9 @@ def print_report(res, label=None):
         print("  cold-dense 口径（Lead m04242）：不参与 5us/10us 门禁（E29 冷 pop 1.3-1.9us/obj，"
               "b=256 时结构性 300-500us）；判 tau_t=步时/pops<=%.1fus、p99.9<=%.0fus、over1ms=0。"
               % (PER_POP_US, P999_COLD_US))
+        if a.get("tau_agg_us") is not None:
+            print("    聚合口径（判据）：tau_agg=总步时/总pop=%.4fus（pops_tot=%d）"
+                  % (a["tau_agg_us"], a.get("pops_tot") or 0))
         print("    >50us 占比（OBS）= %.2e / %.2e；tau_t=%s us；[top] 归因（pops>0 的最慢步）："
               % (a.get("over_lo_ratio") or 0.0, a.get("over_hi_ratio") or 0.0,
                  ("%.3f" % a["per_pop_us"]) if a.get("per_pop_us") is not None else "n/a"))
@@ -1720,6 +1816,55 @@ def _selftest():
                  work_maxreq=None, scan_chunk=8192)
     ck(r2["verdict"] == "N/A" and r2.get("structural_na") == ["a"],
        "S33 (b) 缺证据时仍 N/A（结构性 N/A 不放行缺证据项），实得 %r" % (r2["verdict"],))
+    # S34（Lead R7）：clock-free 工作量界 —— [wbudget] 的 pop_max/push_max/mscap_max 三个高水位；
+    # 判据不读钟，所以宿主 steal 无法影响它。缺字段 => N/A；--require-workbound 时 N/A 计入聚合（不静默跳过）。
+    wb34 = {"pop_max": 512, "push_max": 8448, "mscap_max": 16384, "pops_tot": 1000, "reps": 3}
+    v34 = verdict_workbound(wb34)
+    ck(v34["verdict"] == "PASS", "S34 三个高水位恰在界内 => PASS，实得 %r" % (v34["verdict"],))
+    ck(verdict_workbound(dict(wb34, pop_max=513))["criteria"]["pop_max"]["verdict"] == "RED",
+       "S34 pop_max 超 POP_MAX(512) 必须 RED")
+    ck(verdict_workbound(dict(wb34, push_max=8449))["criteria"]["push_max"]["verdict"] == "RED",
+       "S34 push_max 超 8448（PUSH_STEP+BATCH_POP*FANOUT）必须 RED")
+    ck(verdict_workbound(dict(wb34, mscap_max=16385))["criteria"]["mscap_max"]["verdict"] == "RED",
+       "S34 mscap_max 超 2*STACK_SOFT 必须 RED")
+    ck(verdict_workbound(None)["verdict"] == "N/A", "S34 缺 [wbudget] => N/A（不是 PASS）")
+    ch34 = _zero(); ch34[0] = 200000
+    h34 = {"n": 200000, "counts": ch34, "max_us": 4.0, "total_us": 400.0}
+    s34z = {"n": 0, "counts": zero, "max_us": 0.0}
+    r34 = analyze(h34, s34z, {}, noise, wb=wb34)
+    ck(r34["workbound"]["verdict"] == "PASS", "S34 wb 在界内 => workbound PASS")
+    r34b = analyze(h34, s34z, {}, noise, wb=dict(wb34, pop_max=600))
+    ck(r34b["verdict"] == "RED" and r34b["workbound"]["verdict"] == "RED",
+       "S34 workbound RED 必须把用例判成 RED，实得 %r" % (r34b["verdict"],))
+    r34c = analyze(h34, s34z, {}, noise, wb=None)
+    ck(r34c["workbound"]["verdict"] == "N/A", "S34 无 wb => workbound N/A")
+    r34d = analyze(h34, s34z, {}, noise, wb=None, require_workbound=True)
+    ck(r34d["verdict"] == "N/A",
+       "S34 --require-workbound 下缺 wb 必须记 N/A（不静默跳过），实得 %r" % (r34d["verdict"],))
+
+    # S35（Lead R7）：cold-dense 的 tau 判据改成**聚合口径**（总步时/总 pop），[top] 最慢步降为 OBS。
+    # 这正是 pd_pointer_dense 的现状：宿主 steal 打中一步 => tau_t=5.756us/pop(假 RED)，而
+    # 总步时/总 pop = 4.6ns/pop。判据上限 PER_POP_US 未动。
+    ch35 = _zero(); ch35[0] = 2000000
+    h35 = {"n": 2000000, "counts": ch35, "max_us": 180.0, "total_us": 1200.0}
+    s35z = {"n": 0, "counts": zero, "max_us": 0.0}
+    tops35 = [{"kind": "mark", "why": "advance", "cpu_us": 184.2, "pops": 32, "seg": 0},
+              {"kind": "mark", "why": "advance", "cpu_us": 160.0, "pops": 32, "seg": 0}]
+    r35 = analyze(h35, s35z, {}, noise, case="pd_pointer_dense", tops=tops35,
+                  wb={"pop_max": 512, "push_max": 0, "mscap_max": 16384, "pops_tot": 260000000, "reps": 1})
+    a35 = r35["a"]
+    ck(a35.get("tau_agg_us") is not None and a35["tau_agg_us"] < 1e-3,
+       "S35 聚合 tau 应 = 1200us/2.6e8 pop ≈ 4.6ns，实得 %r" % (a35.get("tau_agg_us"),))
+    ck(a35["criteria"]["tau_agg"]["verdict"] == "PASS", "S35 聚合 tau 在 2us 内 => PASS")
+    ck(a35["criteria"]["tau_t"]["verdict"] == "OBS",
+       "S35 [top] 最慢步 tau_t 必须降为 OBS（不作判据），实得 %r" % (a35["criteria"]["tau_t"]["verdict"],))
+    ck(a35["per_pop_us"] and a35["per_pop_us"] > 5.0, "S35 OBS 仍应报出 5.75us/pop 的假 tau")
+    # 2.6e8 pop × 2.3us = 5.98e8 us 的总步时 => 聚合 tau > 2us/pop，必须 RED
+    r35b = analyze(dict(h35, total_us=5.98e8), s35z, {}, noise, case="pd_pointer_dense",
+                   tops=tops35, wb={"pop_max": 512, "pops_tot": 260000000})
+    ck(r35b["a"]["criteria"]["tau_agg"]["verdict"] == "RED",
+       "S35 聚合 tau 超 2us/pop 必须 RED（判据没有被取消）")
+
     print("g1c selftest:")
     print("  S1 seg 差分+pops_tot 一致 / S2 恰好 50us=N/A / S3 恰好 1ms=PASS / S4 n<1e5=N/A")
     print("  S5 扣噪声 RED->PASS / S6 不一致=ERROR / S7 (b) 闭式 12us PASS vs 25us RED")
@@ -1742,6 +1887,8 @@ def _selftest():
     print("  S31 (c) release 结构性 vacuous（sites=0 才 vacuous）+ --chan-only 探针用例（n==0 判 RED，不留 N/A）")
     print("  S32 >50us 通道同样扣环境地板（min(pre,post)*wall；判据 1e-4 不改，扣减不足不翻盘）")
     print("  S33 mixed 的 (a) 结构性 N/A 不进用例聚合（逐条仍打印，记 structural_na）")
+    print("  S34 clock-free 工作量界（pop_max<=512 / push_max<=8448 / mscap_max<=16384；缺 wb=>N/A）")
+    print("  S35 cold-dense 判聚合 tau_agg=总步时/总pop（[top] 最慢步 tau_t 降为 OBS；判据上限 2us 不变）")
     if bad:
         print("  ⇒ SELFTEST FAIL: " + "; ".join(bad))
         return 1
@@ -1825,6 +1972,8 @@ def main(argv=None):
     ap.add_argument("--chan-only", action="append", default=[],
                     help="CASE:chan[,chan...] —— 通道探针用例只判这些 (c) 通道，步分布记 SKIP（不是放宽："
                          "列出的通道 n==0 判 RED）")
+    ap.add_argument("--require-workbound", action="store_true",
+                    help="要求 [wbudget] 工作量界可判（门禁用；缺字段记 N/A 而不是静默跳过）")
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args(argv)
     if a.selftest:
@@ -1855,7 +2004,7 @@ def main(argv=None):
             chan_only[cname] = tuple(x for x in chans.split(",") if x)
     per_case = {}
     for case in sorted(groups):
-        hist, seg, chan, tops, nfiles, work_maxreq = load_errs(groups[case])
+        hist, seg, chan, tops, nfiles, work_maxreq, wb = load_errs(groups[case])
         env10, env50, envnote = env_floor(stall, walls, case)
         chunk = None
         for t in tops:
@@ -1907,7 +2056,8 @@ def main(argv=None):
                       seg_bound=bound, seg_bound_note=bnote, tops=tops, mixed_shapes=mixed,
                       work_maxreq=work_maxreq, scan_chunk=chunk,
                       env_p999=env10, env_p999_note=envnote, env_p50=env50,
-                      rel_sites=relsites.get(case), chan_only=chan_only.get(case))
+                      rel_sites=relsites.get(case), chan_only=chan_only.get(case),
+                      wb=wb, require_workbound=a.require_workbound)
         res["files"] = groups[case]
         res["case"] = case
         res["chunk"] = chunk

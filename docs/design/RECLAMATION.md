@@ -784,6 +784,32 @@ reclaim 形状闸门（`gate-shapes`/`gate-work`/`gate-shard-cycles`/`gate-idle-
 （按字计，1 字最多 64 槽 ⇒ 一步的释放数 ≈ 字预算 × 64），标记侧的天花板压不到它；要压最坏步
 必须两边一起看。W 的观测口径与推荐值见会话归档报告索引里的 `PAUSE_10US.md`。
 
+### 四.二、一步的工作量由编译期常量封顶（v25 契约）
+
+停顿时段的一步不是「一个 pop」或「一次清扫」这种单位，而是 `markStep`/`sweepStep` 的一次调用。v25 起，一次调用的工作量由六个编译期常量封顶，**与形状无关**：
+
+| 量 | 常量 | 位置（`src/back/reclaim.c`） | 一步的界 |
+|---|---|---|---|
+| pop | `EXTC_RC_MARK_STEP_POP_MAX = 512`（冷档 `EXTC_RC_MARK_COLD_BATCH = 32`） | 常量 `:1256` / `:1266`，clamp `:3539`，冷档 clamp `:1572` | 512 个对象（活集 > `EXTC_RC_MARK_COLD_BYTES` 时 32 个） |
+| push | `EXTC_RC_MARK_PUSH_STEP = 2048` + 一批描述符扇出（`EXTC_RC_MARK_BATCH_POP = 200` × 32 字段） | 常量 `:1259`，批级记账与截断 `:3665-3666` | 8448 个 child |
+| 内联扫描词 | `EXTC_RC_SCAN_CHUNK = 8192`（步内额度 `_scanLeft`） | 额度 `:3543`，扣减 `:3445`，超额度改游标 `:3437-3442` | 8192 词 |
+| 续扫段词 | 同上，另受 `EXTC_RC_SEG_DEADLINE_US = 40` 约束（每 512 词读一次钟） | `extc_rc_markResume` `:3484` | 8192 词 / 40 µs |
+| 标记栈高水位 | `EXTC_RC_MARK_STACK_SOFT = 8192`（栈深超限的步改为 pop） | 常量 `:1274`，续扫判据 `:3551` | 16384 条（≤128 KiB 记） |
+| 自由队列排空 | `EXTC_RC_FREE_DEADLINE_US = 40`、`EXTC_RC_FREE_HARD_DEADLINE_US = 50` | `:833` / `:841`，`extc_rc_fqDrainAuto` `:1640-1660` | 50 µs + 一块 slab |
+| 巨块载荷丢页 | `EXTC_RC_BIG_DROP_BYTES = 512 KiB` | `[rt:hugefree]` `:858-940`，`extc_rc_bigTrimStep` `:913`，每步入口 `:1647` | 512 KiB/步（≈6.7 µs） |
+
+三条**硬性理由**写在代码注释里，改常量前先读：
+
+1. **push 不能逐条记账**。描述符扫描若按字段数扣额度，守卫会在宏里展开两次、每个 pop 约 2 条指令 ≈ 7 Ir；`tests/reclaim-perf/gate.sh` 的指令数上限（88,029,115）就吃掉了这条路的余量。改为**编译期字段上限 32**（`src/back/codegen.c:3888`，超过即退回保守扫描）+ **批级记账**（每约 200 个 pop 一次），界同样成立而指令数不变。
+2. **冷档 32 是「冷 pop 约 1 µs」的直接后果**。一步要落在 50 µs 内，冷活集形状的 pop 数就必须是个位到几十；`pd_pointer_dense` 的总步时 / 总 pop 读数为 4.6 ns/pop，但单次冷 pop 会被缓存缺失拉到微秒级 ⇒ 32 是权衡点，继续降只增加步数。
+3. **巨块 munmap 不可分**。munmap 的代价跟**驻留页**走：`/tmp/ctl/unmap2.c` 的读数 —— 8 MiB touch 后 116.6–119.6 µs、32 MiB 552.9–901.4 µs、8 MiB 未 touch 0.3 µs、先 `madvise(DONTNEED)` 再 munmap 2.0–2.4 µs、512 KiB 6.5–6.9 µs。所以死巨块先把载荷按 512 KiB/步 `madvise(MADV_DONTNEED)` 丢页，最后一步才 `free`（那时只剩页表工作）。
+
+**判据是计数，不是时间。** `[wbudget]`（`:4320`）多出三个纯计数高水位（更新点 `:3741-3743`）：`pop_max`、`push_max`、`mscap_max`；门禁 `tests/gc-p0/g1c.py --require-workbound` 判 `pop_max ≤ 512`、`push_max ≤ 8448`、`mscap_max ≤ 16384`，缺字段记 N/A 且 N/A 进用例聚合（不许静默变绿）。
+
+**为什么 max 不作判据。** 探针 `/tmp/ctl/ctl.c`（纯自旋、每轮约 59.5 ms、单次迭代约 70 ns）在 `taskset -c 6` 上四次运行的 wall max 读数 87.7 / 123.7 / 102.2 / 105.7 µs，cpu max 88.8 / 140.8 / 235.7 / 108.3 µs，且 cpu 可大于 wall（`CLOCK_THREAD_CPUTIME_ID` 计入被抢占时间）⇒ 本宿主上「测得 max ≤ 50 µs」结构性不可达，与回收器无关。因此 `max` 与 `[top]` 只作 OBS，`over1ms=0`、`>50 µs` 占比、p99.9 三组判据照旧。
+
+**已知盲区（写在判据旁边，不藏在脚注）。** `push_max` 只覆盖批路：保守内联与段扫路径的 push 由扫描额度（≤8192 词/步）间接封顶，未逐条计数 ⇒ `push_max` 是下界。
+
 ## 五、要做的
 
 现在还有若干形状**清扫覆盖不到**：那些形状的界仍随规模增长，有的比关掉回收还差。它们是同一个

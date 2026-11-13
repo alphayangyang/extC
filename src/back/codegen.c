@@ -3616,8 +3616,9 @@ static const char *exConv(CG *g, Expr *e) {
  *    skipping a sweep is better than missing a root and freeing a live object. Storage that
  *    cannot be expanded statically, such as enum payloads, generic enums and coroutine frames,
  *    counts as incomplete.
- *  - An offset entry count above 4096 is treated as incomplete too, to keep the output from
- *    growing needlessly.
+ *  - An offset entry count above 32 (EXTC_RC_MARK_PUSH_STEP territory) is treated as
+ *    incomplete too: a wider descriptor would let one pop push an unbounded number of
+ *    children inside one bounded step (see rcEmitTypeDesc).
  *
  * A third safety direction (the **C hole**: the root table is complete but a calling frame still
  * holds a live reference):
@@ -3875,7 +3876,16 @@ static const char *rcEmitTypeDesc(CG *g, Type *t) {
     vecInit(&offs, g->arena, sizeof(const char *));
     rcCollectOffsets(g, t, "", &offs, 0);
     if (offs.len == 0) return "(const ExtcRcType *)0";
-    if (offs.len > 4096) return "((const ExtcRcType *)-1)";
+    /* Fan-out limit: a descriptor with more entries falls back to the conservative scan.
+     * The number is a **pause contract** constant, not a formatting choice. One bounded step
+     * pops at most EXTC_RC_MARK_STEP_POP_MAX objects and the step push cap charges the
+     * children it pushes once per batch, so the pushes a single pop can add must be a
+     * compile-time constant: 32 makes the worst case of a bounded step about 8k pushes
+     * (200 x 32 + EXTC_RC_MARK_PUSH_STEP) instead of 200 x 4096. A struct with more than 32
+     * reference fields keeps working through the conservative scan, which walks every word
+     * of the slot and is bounded by EXTC_RC_SCAN_CHUNK per step, at the cost of retaining
+     * values that happen to look like pointers. */
+    if (offs.len > 32) return "((const ExtcRcType *)-1)";
     Buf b;
     bufInit(&b, g->arena);
     for (size_t i = 0; i < offs.len; i++) {

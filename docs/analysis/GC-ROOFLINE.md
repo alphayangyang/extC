@@ -1012,7 +1012,7 @@ Linux 侧红的是 `(a-cold)` 的 `tau_t`（cpu 遍 5.434 µs/pop），不是 `(
 **机制。** `extc_rc_sweepStep` 的收尾分支（src/back/reclaim.c:3914–3918）依次做三件事，全部在 pause 计时块之内：
 
     extc_rc_slabShrink(r);       /* 3915：最多 EXTC_RC_SHRINK_VISIT_MAX=256 次链访问、≤16 块入队，摘 nLive==0 的块 */
-    extc_rc_fqDrainAuto();       /* 3916：把队列排空一个有界批次（>8 MiB 走 1000 µs 硬截止档，否则 8 块 / 100 µs）*/
+    extc_rc_fqDrainAuto();       /* 3916：把队列排空一个有界批次（>8 MiB 走硬截止档，否则 8 块 / 40 µs；v25 的常数见 §6.13.2 的 H4）*/
     extc_rc_pageTrimStep(r, EXTC_RC_PAGE_TRIM_BYTES);   /* 3917：≤16 块 / 256 KiB 的 madvise */
 
 `extc_rc_slabShrink`（1898）的摘链条件不变：`nLive == 0`、非 `big`、非 `bumpSlab`、跨区入边位无置位；每次 ≤16 块入队，munmap 交给既有的 `extc_rc_fqDrainCore`。新增的是**slack 闸门**：
@@ -1042,7 +1042,120 @@ Linux 侧红的是 `(a-cold)` 的 `tau_t`（cpu 遍 5.434 µs/pop），不是 `(
 
 8 MiB 现在是**两道归还闸门共用**的 slack 常数（页级 `EXTC_RC_PAGE_TRIM_MIN_SLACK`、块级 `EXTC_RC_SHRINK_MIN_SLACK` 都取 8 MiB），同时是 `C` 的加法常数项；两条归还都在轮末、都进 `[step]`/`[histo]` 的停顿分布 ⇒ 收敛速率有上界：块级 ⌈n/16⌉ 轮、页级 ⌈(C − live)/256 KiB⌉ 轮，而单轮代价由 `EXTC_RC_SHRINK_VISIT_MAX` / `EXTC_RC_SHRINK_REL_MAX` / `EXTC_RC_PAGE_TRIM_*` / free 队列的预算常量共同封顶。
 
-**残余（写进 §8）。** ①`M_slab ≈ 69 kB` 的块外元数据按「含有活对象的块数」计，一个长命对象仍钉住 ≈69 kB；②8 MiB 的 slack 常数；③`fqDrainAuto` 在 `fqBytes > 8 MiB` 时走 `EXTC_RC_FREE_HARD_DEADLINE_US=1000` 的硬截止档 —— 该档单次排空可能触到毫秒级，属 free 队列的既有预算（不是本轮新增），但它在自动路径上出现得更频繁，故记在开放项里等下一轮用「1–2 块/次」的细粒度排空替换。三者的共同出路仍是搬移式压实（停顿 ∝ 活集、需转发指针）；写屏障已否决（m16773）。
+**残余（写进 §8）。** ①`M_slab ≈ 69 kB` 的块外元数据按「含有活对象的块数」计，一个长命对象仍钉住 ≈69 kB；②8 MiB 的 slack 常数；③`fqDrainAuto` 在 `fqBytes > 8 MiB` 时走 `EXTC_RC_FREE_HARD_DEADLINE_US=1000` 的硬截止档 —— 该档单次排空可能触到毫秒级，属 free 队列的既有预算（不是本轮新增），但它在自动路径上出现得更频繁，故记在开放项里等下一轮用「1–2 块/次」的细粒度排空替换。三者的共同出路仍是搬移式压实（停顿 ∝ 活集、需转发指针）；写屏障已否决（m16773）。 （v25：H4 把该档压到 40 / 50 µs，声明见 §6.13.2。）
+
+### 6.13 R7 轮（2026-11-14）：把毫秒尾堵在机制层 —— 四个结构性无界孔 + 无钟工作量界
+
+§6.12 的残余清单里留了三条「未闭合的停顿源」，都属**任意形状**：cold-dense 形状（`pd_pointer_dense`）的 `[step]` 200–600 µs、`[segsteps]` 160–565 µs，以及 free 队列在自动路径上的 1000 µs 硬截止档。本轮先把它们逐条定位到机制，再决定「哪些能靠预算堵死、哪些是本机噪声」。结论是：**四个孔是真的、都能堵；剩下看到的 max 不是回收工作量**。
+
+#### 6.13.1 决定性取证：本机「测得 max」不可判
+
+探针 `/tmp/ctl/ctl.c`：纯自旋（每迭代两次乘加，共 20 万次迭代），每轮用两种钟各测一次，`taskset -c 6`，4 次：
+
+| 轮次 | wall max (µs) | cpu max (µs) | over50 次 | over1ms |
+|---|---|---|---|---|
+| 1 | 87.7 | 88.8 | 1–4 | 0 |
+| 2 | 123.7 | 140.8 | 1–4 | 0 |
+| 3 | 102.2 | 235.7 | 1–4 | 0 |
+| 4 | 105.7 | 108.3 | 1–4 | 0 |
+
+每次迭代的工作量约 70 ns，而单次观测能到 88–236 µs；且出现 **cpu > wall**（`CLOCK_THREAD_CPUTIME_ID` 的记账把被抢占时间也算进来）。因此在本宿主上「所有形状的 `[step]` max ≤ 50 µs」**结构性不可达**，与回收器无关。旁证：pd 的 `[slow]` 日志里**同类步**（`pops=128`、`pushes=0`、`seg=0`、`marked=128`）的耗时从 8 µs 到 152 µs（15 倍），跨 rep 同类步的分布不可区分；跨核（`taskset -c 6/10/14/20/22`）max 129–219 µs 无系统性差异。
+
+处置：**max 与 `[top]` 只作 OBS**，判据换成「一步的工作量由编译期常量封顶」（§6.13.4）。这不是放宽判据 —— 原有的 `>1ms=0`、p99.9、`>50 µs` 占比、`over1ms` 全部保留，另外**新增**了三条 clock-free 上界。
+
+#### 6.13.2 四个结构性无界孔与处置
+
+| 孔 | 机制（v24 之前） | 为什么无界 | 处置（v25） | 界 |
+|---|---|---|---|---|
+| H1 扇出 push | 描述符扫描只受「对象有多少引用字段」约束 | 一个 pop 可 push 任意多个 child；codegen 的描述符上限是 4096 个字段 | `rcEmitTypeDesc` 上限 **4096 → 32**（`codegen.c:3888`，超过即退回保守扫描）+ 批级 push 记账 `EXTC_RC_MARK_PUSH_STEP=2048`（`reclaim.c:1259`、守卫 `:3665-3666`） | 一步 push ≤ 2048 + 200×32 = **8448** |
+| H2 内联保守扫描 | 对象词数 ≤ `SCAN_CHUNK` 时在 pop 内内联扫完，不记账 | 一步 128 个 pop × 每 pop 8192 词 = 1 Mi words | 步内扫描额度 `_scanLeft`（`reclaim.c:3543`，扣减 `:3445`），超出改为记游标续扫（`:3437-3442`） | 一步内联词数 ≤ **8192** |
+| H3 标记栈无软上限 | 栈深只受堆形状约束；`realloc` 加倍 | pd 实测 `msp=804,352`、`mscap=1,048,576`（8 MB）⇒ 下一次增长要拷贝 8 MB | `EXTC_RC_MARK_STACK_SOFT=8192`（`:1274`）：栈深超限时该步改为 pop 而非续扫 | 栈高水位 ≤ **16384** 条（两倍软上限），拷贝 ≤ 128 KiB |
+| H4 free 队列 1 ms 硬帽 | `fqBytes > 8 MiB` 时 `fqDrainCore(0, 1000)` | 该档在自动路径（`slabNew` 前、sweep 收尾）上就可能出现 | `EXTC_RC_FREE_DEADLINE_US` **100 → 40**（`:833`）、`EXTC_RC_FREE_HARD_DEADLINE_US` **1000 → 50**（`:841`） | 一次排空 ≤ **50 µs** + 一块 slab |
+| H5 巨块 munmap | 死巨块在 free 队列里一次 `free()`（内含 munmap） | 8 MiB munmap 实测 **118 µs**、32 MiB 553–901 µs，不可分 | 新增 `[rt:hugefree]`（`:858-940`）：死巨块载荷按 `EXTC_RC_BIG_DROP_BYTES=512 KiB/步` 先 `madvise(MADV_DONTNEED)` 丢页、最后再 `free` | 一步丢页 ≤ **512 KiB**（≈6.7 µs） |
+
+H5 的依据是一条**物理常数**（`/tmp/ctl/unmap2.c`，`taskset -c 6`）：munmap 的代价跟**驻留页**走，不跟虚拟大小走 —— 1 MiB touch 后 13.6–20.9 µs、2 MiB 26.2–27.3 µs、8 MiB 116.6–119.6 µs、32 MiB 552.9–901.4 µs；8 MiB **未 touch** 仅 0.3 µs；8 MiB touch 后先 `madvise(DONTNEED)`（109 µs）再 munmap 只剩 **2.0–2.4 µs**；512 KiB touch 后 6.5–6.9 µs。所以「分片丢页 + 最后 free」是唯一能把巨块归还做成有界步的办法。
+
+顺带钉住一条：压力档会把一步的 pop 预算抬到 1024（`budget` 的乘性上调），`EXTC_RC_MARK_STEP_POP_MAX=512`（`:1256`、clamp `:3539`）是它的**硬顶**；cold 档仍是 32（`:1266`，§6.8）。
+
+#### 6.13.3 为什么不是「每个 pop 记一次账」
+
+最直接的做法是给描述符扫描也按字段数扣 `_scanLeft`（每 pop 一次 compare + sub）。实测**不可支付**：该守卫展开在两处宏里，每个 pop 约 2 条指令 ≈ 7 Ir；pd 有 70 万级 pop，指令数门禁从 88.0 M 涨到 **89,212,148 +1.34% RED**。逐项消融（同轮重建，`tests/reclaim-perf/gate.sh`）：
+
+| 变体 | Ir | 结论 |
+|---|---|---|
+| A 全量（per-pop 描述符记账） | 89,212,665 | RED |
+| B 保守分支只留 `words > _scanLeft` | 89,203,612 | 保守额度几乎免费 |
+| C 删掉描述符 per-pop 额度 | **87,787,139** | PASS，说明超支全部来自描述符记账（−1,416,473 Ir ≈ 700k pop × 2 指令） |
+| E 把字段数扣进 pop 预算 | 92,137,828 | 更差（步数暴增），弃 |
+| F 额度存成 region 字段 | 90,060,637 | 更差（区域字段读写贵于局部变量），弃 |
+| K 步内局部累计 `markedBytes` | 89,301,641 | 略差（寄存器压力），弃 |
+
+于是改用**批级记账**：批路每约 200 个 pop 才做一次 `pushes += (r->msp - _sp)` 与一次比较（`:3665-3666`，≈0 Ir），配合 codegen 的 32 字段上限，把 H1 的界压到 8448 而几乎不花指令数。这是本轮的唯一设计取舍：**上界靠编译期常量 + 批级记账，不靠逐条记账**。
+
+#### 6.13.4 无钟工作量界：本轮新增的正面判据
+
+`[wbudget]` 行（`:4320`）在 v25 里多出三个**纯计数**字段，全部是「一步做了多少工作」的高水位，不读钟（更新点 `:3741-3743`）：
+
+    [wbudget] W=0 tot_max=512 assist_max=1 mscap_max=16384 msp_max=16384 pop_max=512 push_max=0 pops_tot=931910182
+
+门禁侧（`tests/gc-p0/g1c.py`，`--require-workbound`，`run.sh` 已带上）新增 `workbound` 项，三类形状都判：
+
+- `pop_max ≤ EXTC_RC_MARK_STEP_POP_MAX = 512`；
+- `push_max ≤ EXTC_RC_MARK_PUSH_STEP + EXTC_RC_MARK_BATCH_POP × 32 = 2048 + 6400 = 8448`；
+- `mscap_max ≤ 2 × EXTC_RC_MARK_STACK_SOFT = 16384`。
+
+**两个 `push_max` 不是同一个量。** `[work]` 的 `push_max` 只报**种子阶段**的 push 数（`seedPushes` 快照，`:3607`），由 `tests/reclaim-perf/gate-work.py` 按蕴含式界 `EXTC_RC_SEED_PUSHES + (字宽-1) = 319` 判（压栈按字收口，外层在进字前检查）；`[wbudget]` 的 `push_max` 报**整步** push 总量（浅栈 `:3637` + 批路 `:3665`），由 G1④ 按 8448 判。R7 一度让两者共用同一个变量，gate-work 立刻报 `push_max=512 > 319`（p5/p5big）与 digraph 329 —— 修法是**拆语义**（种子阶段结束快照一次 `seedPushes`）而不是抬高 319。
+缺 `[wbudget]` 字段时记 **N/A**（旧插桩），`--require-workbound` 下 N/A 进用例聚合 ⇒ 不会静默变绿。红自测 S34（三个字段各一条 RED）与变异测试（把 `vs.append("RED")` 改成不可能命中 ⇒ S34 立刻变红）都跑过。
+
+同时把 cold-dense 的 tau 判据从「`[top]` 最慢步的 步时/pop」改成**聚合口径** `tau_agg = 总步时 / 总 pop`（`verdict_cold_dense`，`PER_POP_US=2.0` 一个字没动）：因为最慢步一旦被宿主 steal 打中就是 200–600 µs 的假值。旧口径降为 OBS 并继续打印。红自测 S35（聚合 4.6 ns/pop ⇒ PASS；总步时换成 2.3 µs/pop ⇒ RED）。
+
+#### 6.13.5 实测（v25，`build/extc` = 11d39dee…，`taskset -c 6`）
+
+`pd_pointer_dense` 200 轮、PAUSE=1 + STEP_CPU=1，3 个 rep：
+
+| 量 | 改前（v24） | v25 |
+|---|---|---|
+| `[step]` n | 1.5 M | 5.82–5.85 M（冷档 128→32 ⇒ 步数约 ×4） |
+| `[step]` `over64` | 158 | 64–79（≈1.1e-5） |
+| `[step]` `over256` | 1 | 0–4 |
+| `[step]` `over1ms` | 0 | **0** |
+| `[segsteps]` max | 160.7 µs（b256us 桶有样本） | 144–223 µs（大多 8–16 µs） |
+| `[wbudget]` `mscap_max` | 1,048,576 | **16,384** |
+| `[wbudget]` `pop_max` | —（无字段） | **512** |
+| `[top]` 前 8 名 | 含 `sweep`（巨块 munmap）239 µs | **全部 `kind=mark`**（pops=32 或 seg 段）⇒ sweep 类已离开慢步榜 |
+
+成本：pd 的总步时 855,787 µs / 185,615,144 pop ≈ **4.6 ns/pop**（真实冷 pop 成本），而旧口径的 `tau_t=5.756 µs/pop` 是「192 µs 地板 ÷ 32 pop」的伪指标 —— 这就是判据必须去噪的理由。
+
+指令数：`tests/reclaim-perf/gate.sh` **87,886,765 ≤ 88,029,115** PASS（余量 142,350）。
+
+四形状交错 A/B（7 reps、顺序执行、绝不与其它计时任务并发；head = v24）：promote **0.982** / sizeratio **0.998** / chase **0.998** / cycleratio **0.977** ⇒ 墙钟无退化；RSS 略降（chase 67,744→65,440 kB；promote 5,728→5,536；sizeratio 2,672→2,656；cycleratio 2,660→2,656）。
+
+> 量测纪律：上一轮曾报「chase 2.2× 回归」，事后证明是 munmap 探针与 chase 同时 pin 在 core 6 上互相抢占 —— **A/B 与任何计时任务不得并发**。
+
+#### 6.13.6 停顿契约（v25 口径）
+
+    P_step ≤ C_pop·W_pops + C_push·W_pushes + C_scan·W_words + 固定开销
+    W_pops   ≤ 512（冷档 32）        W_pushes ≤ 8448        W_words ≤ 8192（内联与段一致）
+    段扫另受 EXTC_RC_SEG_DEADLINE_US = 40 µs 约束（每 512 词查钟）
+    free 排空 ≤ 50 µs + 一块 slab；巨块丢页 ≤ 512 KiB/步；标记栈 ≤ 16384 条
+
+四条合起来：**单步工作量与形状无关**，这是「避免任意形状出现毫秒量级」的机制层答案；而「本机测得的 max」由 §6.13.1 证明不可判，只作 OBS。
+
+残余（写进 §8）：①`push_max` 只覆盖批路 —— 保守内联/段扫路径的 push 由 scan 额度（≤8192 词）间接封顶，未逐条计数，故 `push_max` 是下界；②冷档 32 让 pd 步数 ×4、总步时 +5%，是「冷 pop 约 1 µs」的必然代价；③`bseg-cal.tsv` 的 `src_md5` 仍陈旧（pd_bigobj `B_seg=48.20 µs`、pd_pointer_dense 74.69 µs）；④8 MiB slack 与 `M_slab≈69 kB` 两条容量常数照旧。
+
+#### 6.13.7 门禁（v25 全量，tests/gc-p0/run.sh all，REPS=3、PAUSE=1、taskset -c 6；EXIT=0，产物 `/tmp/r19/gate`）
+
+| 项 | 结果 |
+|---|---|
+| G1② pd_pointer_dense | (a) PASS（n=29,039,438、>50µs 1.03e-05/2.94e-05、p99.9 PASS）、(b) PASS（n=142,285、count(>74.69µs)=57）、workbound PASS（pop_max=512、mscap_max=16384）、(c) 三通道 PASS ⇒ 用例 PASS |
+| G1② 其余 | cyc / pb / pc / pd_bigobj / rel 全 PASS；pd_bigobj60 N/A（n_seg=7,358 < 1e5，60 轮是 G18 的对照轮数，样本量由用例定义而非采样不足） |
+| cold-dense 聚合口径 | tau_agg = 0.0046 µs/pop（v25 最终构建，`/tmp/r19/gate`，pops_tot=926,678,173；同构建前一次全量 0.0045、pops_tot=9.32e8）；旧口径 tau_t = 17.325 µs/pop（cpu_us=554.4 / pops=32）降为 OBS —— 两者相差约 3,700 倍，正是「最慢步被 steal 打中」的量级 |
+| G18 / G4-Stress / G8 / G12 / G13 / G16 | 全 PASS（G18 peak200=26,268 ≤ 26,624） |
+| tests/reclaim/run.sh | 216 通过 / 0 失败 |
+| tests/reclaim-perf/gate.sh | 87,886,765 ≤ 88,029,115 PASS |
+| 四形状交错 A/B | promote 0.982 / sizeratio 0.998 / chase 0.998 / cycleratio 0.977（7 reps，顺序执行） |
+
+pd_pointer_dense 从 RED 转到 PASS 的路径有两条，缺一不可：①(a) 的判据改成聚合 tau（机制层：冷档 32 + POP_MAX 512）；②run.sh 的 relsite 扫描循环补上 pd_pointer_dense —— 它是唯一的 cold-dense 形状，生成 C 里 extc_rc_storeRefOwnedRelease 的调用点此前没有被计数，(c) release 通道 n=0 就缺「结构性不可达」的证据，整个用例只能记 N/A。补上后 sites=0 有证据，该通道记 vacuous PASS（机制本身仍由 tests/gc-p0/src/rel_overwrite.extc 实测）。
 
 ## §7 门禁（Gate）：判据、量具、before / after
 
@@ -1051,13 +1164,14 @@ Linux 侧红的是 `(a-cold)` 的 `tau_t`（cpu 遍 5.434 µs/pop），不是 `(
 | # | 判据 | 量具 | before（HEAD 85b8871b） | after |
 |---|---|---|---|---|
 | G1① | over-1ms 步数 = 0（**只认 cpu 口径**，wall 仅观察） | `[histo]` 15 桶（`over1ms` 从 `b4ms` 起算，严格 >1 ms）+ `EXTC_RC_STEP_CPU=1` | 0/12 通过（旧 7 桶口径） | **PASS（v7）**：四形状 + 压力用例全部 `over1ms=0`；v6 曾出现 cyc(cpu) 1/537,750 步 2,540.0 µs 单次奇点（[top] `mark/advance pops=256 seg=0`），同一二进制复跑 16+20+10 次全 0 ⇒ 判为 WSL2 时钟尖峰，不记 N/A、不剔除、也不换绿口径 |
-| G1② | **常规步（`seg=0`）** `>50 µs` 占比 ≤1e-4（cpu 口径）+ `p99.9 ≤10 µs`；通道拆分：`(a)`=[histo]−[segsteps]、`(b)`=[segsteps]、`(c)`=[chan] | `EXTC_RC_STEP_CPU=1` + `[histo]`/`[segsteps]`/`[chan]`（`tests/gc-p0/g1c.py`，selftest S1–S33） | 不可判（无直方图） | **RED（v7，三通道）**：`(a)` cyc over-50 µs 跨桶 N/A、p99.9 落 >16 µs 桶；pb `(a)` **4.25e-4–1.21e-3** >1e-4（跨构建 9.99e-5–4.00e-4 ⇒ 必须标 build）；`(b)` pd_bigobj N/A、dense RED；`(c)` dense regionFree 1,819.4 µs RED；pc n=20,592<1e5 ⇒ N/A。**v21（R3 收口，权威 cpu 口径，§6.9.6）**：`cyc` PASS（`n=469,458`、`>50 µs` 净 8.73e-05、p99.9 净 `count(>10 µs)=252`）、`pb` PASS（`n=1,029,888`、5.63e-05、净 0、`over1ms=0`）、`pc` PASS（`n=123,588`、8.09e-06、净 0）、`pd_bigobj` `(b)` PASS（`c_seg=3.841`、`B_seg=48.20 µs`、`count(>48.20 µs) ≤ 59`、`n=126,311`）、`pd_bigobj60` `(b)` N/A（`n_seg=7,488`）、`rel` PASS（release n=90 / max 7.5 µs）、**(b)/(c) 的结构性 vacuous 与 mixed 结构性 N/A 都有证据**（6.9.3）；唯一 RED 是 **`pd_pointer_dense` `(a)`**（`tau_t=5.434 µs/pop`，R4：扇出 push 未计入步预算 + 标记栈扩容、以及 `[top]` 的 `cpu_us` 未走 `stepSpan` 的通道口径） |
+| G1② | **常规步（`seg=0`）** `>50 µs` 占比 ≤1e-4（cpu 口径）+ `p99.9 ≤10 µs`；通道拆分：`(a)`=[histo]−[segsteps]、`(b)`=[segsteps]、`(c)`=[chan] | `EXTC_RC_STEP_CPU=1` + `[histo]`/`[segsteps]`/`[chan]`（`tests/gc-p0/g1c.py`，selftest S1–S33） | 不可判（无直方图） | **RED（v7，三通道）**：`(a)` cyc over-50 µs 跨桶 N/A、p99.9 落 >16 µs 桶；pb `(a)` **4.25e-4–1.21e-3** >1e-4（跨构建 9.99e-5–4.00e-4 ⇒ 必须标 build）；`(b)` pd_bigobj N/A、dense RED；`(c)` dense regionFree 1,819.4 µs RED；pc n=20,592<1e5 ⇒ N/A。**v21（R3 收口，权威 cpu 口径，§6.9.6）**：`cyc` PASS（`n=469,458`、`>50 µs` 净 8.73e-05、p99.9 净 `count(>10 µs)=252`）、`pb` PASS（`n=1,029,888`、5.63e-05、净 0、`over1ms=0`）、`pc` PASS（`n=123,588`、8.09e-06、净 0）、`pd_bigobj` `(b)` PASS（`c_seg=3.841`、`B_seg=48.20 µs`、`count(>48.20 µs) ≤ 59`、`n=126,311`）、`pd_bigobj60` `(b)` N/A（`n_seg=7,488`）、`rel` PASS（release n=90 / max 7.5 µs）、**(b)/(c) 的结构性 vacuous 与 mixed 结构性 N/A 都有证据**（6.9.3）；唯一 RED 是 **`pd_pointer_dense` `(a)`**（`tau_t=5.434 µs/pop`，R4：扇出 push 未计入步预算 + 标记栈扩容、以及 `[top]` 的 `cpu_us` 未走 `stepSpan` 的通道口径） | **v25（R7）**：`pd_pointer_dense` 的 (a)(b)(c) 全 PASS（聚合 `tau_agg=0.0045–0.0046 µs/pop`），并新增 `workbound`（clock-free：pop≤512 / push≤8448 / mscap≤16384，见 §6.13.4）；`pd_bigobj60` N/A（`n_seg=7,358 < 1e5`，60 轮由 G18 的对照定义）。
 | G1③ | p99.9 ≤ 50 µs（n ≥ 1e5，cpu 口径） | `[histo]` | N/A（结构性不可得） | **PASS（薄）**：cyc/pc/pb 的 p99.9 ≤ 32 µs（桶上界；doc 记 cyc 16 µs、独立跑同一量落 32 µs 桶，邻界不影响判决）；pd N/A（桶界 32–64，wall 口径 128 µs） |
+| G1④ | **clock-free 工作量界**：`pop_max ≤ 512`、`push_max ≤ 8448`（PUSH_STEP 2048 + 一批 200×32）、`mscap_max ≤ 16384`；缺字段记 N/A（不静默变绿） | `[wbudget]`（`tests/gc-p0/g1c.py --require-workbound`，selftest S34 + 变异测试） | 无字段（结构性不可判） | **PASS（v25）**：七用例实测 pop_max ≤ 512、push_max ≤ 304、mscap_max ≤ 16384；cold-dense 形状 `mscap_max=16384` 触到软上限两倍（设计值，见 §6.13.2 H3） |
 | G2 | `collect`/`account` 单次 **p99.9 ≤ 200 µs**（n ≥ 1e3，cpu 口径；**max 不可作契约**，见 §8.1 R6——2202 样本的单次 max 判 200 µs 会被尖峰支配） | `[chan]` + `[histo]` | 1.08–1.45 ms（整轮排空，n<100 ⇒ RED） | **PASS（判据改 p99.9 后）**：cyc/pc/pb 的 collect p99.9 ≤ 64 µs（两口径合并 n=4404，>128 µs 样本仅 3 个）；max 记录：cyc 215.3 µs（3 reps 合并的单次尖峰）、doc-audit 13 次独立跑 cyc collect max 16.6–91.2 µs ⇒ 旧判据 RED 不可审计，按 `AUDIT-GC-P0.md` §18.4-1 改判 |
 | G3a | `regionFree` 同步段 free 次数 ≤ `#classes + 3`（v7 两阶段后：`_frees += 9+big` 只在 `#if !EXTC_RC_FREE_DEFER` 内，默认 DEFER=1 只剩 `+= 2`）；总量看 `[freequeue] drained_total` | `[regionfree]` + `[freequeue]` 探针 | 无探针 | **PASS（判据已重构）**：默认档 pb 50M `max_frees=3`、pd 200 同；旧判据（`≤10·#slabs+#classes+3`，pb 110190≤122433）只在 DEFER=0 构建可复现 |
 | G3b | `regionFree` 单次 cpu ≤1 ms（停顿硬项；v8 起同步段 O(1)，排空预算 ≤8 slab/100 µs） | `[regionfree]`（`sync_us`/`queue_us`）+ `[chan]` + `[closing]` | 未测（v4 pb cpu 86.2 ms） | **已闭合（v8）**：三形状 `[chan] regionfree` = **0.4 µs**（pd_bigobj，max 0.9）/ **1.6 µs**（pd_pointer_dense，max 2.5）/ **1.7 µs**（pb 100M，max 2.1）；`[regionfree] max_frees=0 max_slabs=0 sync_us≈0.2–1.9`。v7 旧数保留作对照：pd 493.2 µs（max 711.4）、dense 1,365.5–1,849 µs、pb 100M 13.2–14.8 ms、pb 50M 6.35–8.40 ms。判据（≤1 ms）达成；**用户目标 p99.9 ≈50 µs 未达成，且不是本项问题**（v9 更正：p99.9 由宿主噪声地板决定，(b) 通道 58.53/99.20 µs 见 §6.7.4 与 `P1-SEG-TAIL.md`）。诚实限制：三个形状都只在退出前 drop 一次，cq 未排空（`slabs_moved=0`），归零由 driver `t_regionFreeDefer*` 与 `freeQueueDrainAll` 证明 |
 | G4 | 注入 4× 循环垃圾时 RSS ≤ `M_max` + 8 MiB，且不随轮次单调涨 | `tests/gc-p0/stress.py` + VmHWM | 不可判（`M_max` 未实现） | **PASS（p1-after）**：A=9,108 kB ≤ `M_max`+8 MiB = 7,031+8,192 = **15,223 kB**；末 6 段差 0.00%；A<B<C（9,108<41,820<83,040） |
-| G5 | digraph Ir ≤ 88,029,115（门禁上限；基线实测 82,037,532） | `gate.sh:88` | 82,037,532 PASS | **87,625,199 PASS（v21）**（余量 0.46%）；历程 v5 86,316,991 → v6 86,618,661 → elide 卷计数器 + 队列/verify 修正 87,135,465 → R2 冷档 87,649,685 → R3 一度 **95,578,820 RED**（热路径读钟在 callgrind 下每次 ≈480 Ir，§6.9.7）→ 换成 TSC 时钟 87,142,358 → **删除按墙钟切步的机制**后 87,625,199（走步循环里不读钟，由 `tools/check_mark_batch.py` 两条断言守着） |
+| G5 | digraph Ir ≤ 88,029,115（门禁上限；基线实测 82,037,532） | `gate.sh:88` | 82,037,532 PASS | **87,625,199 PASS（v21）**（余量 0.46%）；历程 v5 86,316,991 → v6 86,618,661 → elide 卷计数器 + 队列/verify 修正 87,135,465 → R2 冷档 87,649,685 → R3 一度 **95,578,820 RED**（热路径读钟在 callgrind 下每次 ≈480 Ir，§6.9.7）→ 换成 TSC 时钟 87,142,358 → **删除按墙钟切步的机制**后 87,625,199（走步循环里不读钟，由 `tools/check_mark_batch.py` 两条断言守着）；v25（R7）**87,886,765**（push 上界与巨块丢页落地后的余量 142,350） |
 | G6 | pb 每节点字节 20 ± 10% | `/usr/bin/time -v` VmHWM / N | 20.49 PASS | **20.49 PASS**（pb 100M：2,000,408 kB / 100M） |
 | G7 | pc 峰值 ≤ 4 MiB 且与轮次无关 | 同上 | 2.85/2.85 MiB PASS | **PASS（p1-after）**：pc **2,996 kB = 2.93 MiB**；cyc 20M/80M = 4,988/4,988 = **1.000×**（`out/p1-after/summary.txt`） |
 | G8 | 强制档 1 于 `chain2`：峰值 ≤ 1.1 × 档 2 | `/usr/bin/time -v` | **15.38× RED** | **PASS（p1-after）**：**0.518×**（T1 1,576 / T2 3,040 kB；独立构建 build-da2 1,580/3,040 = 0.520×）；ASAN 两侧干净 |
