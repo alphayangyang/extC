@@ -37,6 +37,21 @@ def emitter_text():
     return ''.join(ast.literal_eval(m.group()) for m in re.finditer(r'"(?:[^"\\]|\\.)*"', source[start:end]))
 
 
+def _no_clock(text, start, end):
+    i = text.find(start)
+    j = text.find(end, i + 1) if i >= 0 else -1
+    return i >= 0 and j > i and 'extc_rc_pauseNow' not in text[i:j]
+
+
+def _after(text, start, *nodes):
+    i = text.find(start)
+    if i < 0:
+        return False
+    tail = text[i:]
+    pos = [tail.find(n) for n in nodes]
+    return all(pp >= 0 for pp in pos) and pos == sorted(pos)
+
+
 def violations(text):
     checks = {
         'scan macro defined': '#define EXTC_RC_MARK_SCAN(_rawIn) do { ' in text,
@@ -79,7 +94,11 @@ def violations(text):
         # 大对象分段扫描：批扫被 _split 截断时必须把**本批已弹出、还没扫**的栈项压回（它们已经
         # 从标记栈弹出来了，丢掉就是可达对象漏标）；三个循环都要在 _split 上停步；续扫游标不占
         # 栈，由 markStep 入口的 markResume 整步处理；所有完成判定都要多看一眼 scanObj。
-        'scan loop calls macro': 'for (; _b < _nb && !_split; _b++) { EXTC_RC_MARK_SCAN(_batch[_b]); }' in text,
+        'batch scan calls macro': 'EXTC_RC_MARK_SCAN(_batch[_b]);' in text,
+        # 走步循环里不许读时钟：按时间切步会让 [work] 逐次不同（gate-reclaim-work 断言的确定性不许破），
+        # 停顿界只能来自工作预算（pop/字/压栈），不能来自墙钟。
+        'batch walk reads no clock': _no_clock(text, '        size_t _b = 0;', '        if (_split) {   /* segmentation'),
+        'shallow drain reads no clock': _no_clock(text, '            do {', '            } while (r->msp > 0 && (size_t)r->msp <= (size_t)EXTC_RC_MARK_SHALLOW'),
         'split stops the step': text.count('&& !_split') >= 3,
         'split leaves resume cursor': 'r->scanObj = o; r->scanOff = 0; _split = 1;' in text,
         'split keeps unscanned batch items': ('if (_split) {' in text and 'while (_nb > _b) {' in text and
@@ -127,7 +146,8 @@ def main():
                       'r->msp = _sp;',
                       'while (_nb < _lim) {',
                       'budget -= _nb; pops += _nb;',
-                      'for (; _b < _nb && !_split; _b++) { EXTC_RC_MARK_SCAN(_batch[_b]); }',
+                      'EXTC_RC_MARK_SCAN(_batch[_b]);',
+                      'if ((size_t)r->msp <= (size_t)EXTC_RC_MARK_SHALLOW && budget > 0',
                       'while (_nb > _b) {',
                       'r->scanObj = o; r->scanOff = 0; _split = 1;',
                       'if (r->scanObj) {',
@@ -154,10 +174,15 @@ def main():
         assert 'completion checks cursor' in violations(nocursor)
         print('ok red: completion ignores scan cursor')
         # 对象处理体抄回扫描循环里（宏只剩一处调用点）⇒ 两份体迟早漂
-        dup = text.replace('        for (; _b < _nb && !_split; _b++) { EXTC_RC_MARK_SCAN(_batch[_b]); }',
-                           '        for (; _b < _nb && !_split; _b++) {\n            uintptr_t _raw = _batch[_b];\n        }')
+        dup = text.replace('EXTC_RC_MARK_SCAN(_batch[_b]);',
+                           'uintptr_t _raw = _batch[_b]; (void)_raw;')
         assert 'scan body not inlined twice' in violations(dup)
         print('ok red: batch body inlined again')
+        # 在走步循环里插一次读钟（按时间切步）必须红：那会让 [work] 随运行环境变化，破掉工作量确定性
+        tick = text.replace('            EXTC_RC_MARK_SCAN(_batch[_b]);',
+                            '            if (extc_rc_pauseNow() < 0) break;\n            EXTC_RC_MARK_SCAN(_batch[_b]);')
+        assert 'batch walk reads no clock' in violations(tick)
+        print('ok red: clock read inside batch walk')
         return 0
     bad = violations(text)
     for item in bad:

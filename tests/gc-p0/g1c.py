@@ -16,6 +16,11 @@
         (b) 计数 = [segsteps]
         n_seg <= n_histo 必须成立
     缺 [segsteps] 行 => (a)(b) 记 N/A(no-segsteps)，**不是 PASS**；(c) 仍可从 [chan] 判。
+   细直方图（Lead R3）：`[segsteps]` 行尾的 `us<n>=<count>` 是 seg 步的逐微秒直方图（只发 >=16us 的桶）。
+   B_seg 落在 [histo] 粗桶内部时（pd_bigobj 的 49.07us 落在 32..64us 桶），粗桶只能把 count(>B_seg) 夹在两个
+   数量级之间 => 跨桶 N/A；细直方图把夹逼压到一两个样本，(b) 的 p99.9 因此可判（p999_any()，JSON 记 p999_source）。
+   (b) 的**结构性 vacuous**（Lead R3）：[work] maxreq <= EXTC_RC_SCAN_CHUNK*8 且观测 n_seg==0
+   => 段通道结构上不可达（没有对象会被切段），记 PASS(vacuous) 并写明理由；maxreq 未知/超阈则仍 N/A。
         (a) 口径注（AUDIT-P1 C9）：[segsteps] 只统计 `markResume` 真正推进了字的段步；`scanObj` 非空但
         本步 resume 返回 0 的 stale-cursor 步既不在 [segsteps]、也不单列，它们被算进 (a) 的分母
         => (a) 的 over-50 占比对这类步是**偏保守**（分母偏大），方向安全，不要据此上调判据。
@@ -131,7 +136,8 @@ def parse_segsteps(txt):
             "pops_tot": int(pm.group(1)) if pm else None,
             "max_us": float(mm.group(1)) if mm else None,
             "counts": [vals.get(x, 0) for x in pp.HISTO_NAMES],
-            "gt10": vals.get("gt10us"), "gt50": vals.get("gt50us"), "gt64": vals.get("gt64us")}
+            "gt10": vals.get("gt10us"), "gt50": vals.get("gt50us"), "gt64": vals.get("gt64us"),
+            "fine": {int(a): int(b) for a, b in re.findall(r"\bus(\d+)=(\d+)", line)}}
 
 
 TOP_KEYS_INT = ("rank", "freed", "words", "seg", "pops", "coll", "step", "first", "trans",
@@ -165,7 +171,8 @@ def _merge(dst, src):
     if dst is None:
         dst = {"n": src["n"], "counts": list(src["counts"]), "max_us": src.get("max_us"),
                "pops_tot": src.get("pops_tot"),
-               "gt10": src.get("gt10"), "gt50": src.get("gt50"), "gt64": src.get("gt64")}
+               "gt10": src.get("gt10"), "gt50": src.get("gt50"), "gt64": src.get("gt64"),
+               "fine": dict(src.get("fine") or {})}
         return dst
     dst["n"] += src["n"]
     for i in range(pp.HISTO_NB):
@@ -177,6 +184,8 @@ def _merge(dst, src):
     for k in ("gt10", "gt50", "gt64"):
         a, b = dst.get(k), src.get(k)
         dst[k] = None if (a is None or b is None) else a + b
+    for y, v in (src.get("fine") or {}).items():
+        dst.setdefault("fine", {})[y] = dst["fine"].get(y, 0) + v
     return dst
 
 
@@ -186,10 +195,14 @@ def load_errs(paths):
     hist = seg = None
     chan = {}
     tops = []
+    work_maxreq = None   # [work] maxreq：本 run 记录到的最大分配请求字节（(b) 结构性 vacuous 判定用，Lead R3）
     for p in paths:
         with open(p, "r", errors="replace") as f:
             txt = f.read()
         rec = pp.parse_text(txt)
+        _wr = (rec.get("work") or {}).get("maxreq")
+        if _wr is not None and _wr >= 0:
+            work_maxreq = _wr if work_maxreq is None else max(work_maxreq, _wr)
         h = rec.get("histo")
         if h and h.get("n") is not None:
             hist = _merge(hist, {"n": h["n"], "counts": h["counts"],
@@ -210,7 +223,7 @@ def load_errs(paths):
                 d["counts"][i] += int(c.get(nm) or 0)
         tops += parse_top(txt)
     tops.sort(key=lambda t: (t.get("cpu_us") is not None, t.get("cpu_us") or 0.0), reverse=True)
-    return hist, seg, chan, tops[:8], len(paths)
+    return hist, seg, chan, tops[:8], len(paths), work_maxreq
 
 
 def load_noise(paths):
@@ -341,6 +354,30 @@ def p999_exact(gt, n, limit_us):
         limit_us, lo, "无上界" if hi is None else str(hi))
 
 
+def p999_exact_net(gt, n, limit_us, env=0.0):
+    """p99.9<=limit 的判定，**先扣掉外部环境地板** env（本 run 期间机器固有的停顿次数）。
+
+    env 来自同机同核相邻时间窗的 stall 探针（noise_floor.c --rate：纯计算循环里 >10us 的窗口个数
+    除以秒数），再乘本 rep 的墙钟时长；前后两次探针取**较小值**（最少扣减 = 最严）。依据：宿主抢占
+    按时间到达，与本步预算无关，一步被打中就记一条慢步 —— 那是量具误差，不是回收工作。缺探针数据
+    时 env=0，退回原始口径（不变宽）。判据数字一个字不改：净 count(>L)*1000 <= n。"""
+    if not n:
+        return "N/A", "n=0"
+    lo, hi = exact_over_bounds(gt, limit_us)
+    env_i = int(round(env)) if env and env > 0 else 0
+    lo_n = max(0, lo - env_i)
+    hi_n = None if hi is None else max(0, hi - env_i)
+    tag = ""
+    if env_i:
+        raw = hi if hi is not None else lo
+        tag = "（原始 count(>%gus)=%d，扣环境地板 %d）" % (limit_us, raw, env_i)
+    if hi_n is not None and hi_n * 1000 <= n:
+        return "PASS", "净 count(>%gus)=%d；%d*1000 <= n=%d%s" % (limit_us, hi_n, hi_n, n, tag)
+    if lo_n * 1000 > n:
+        return "RED", "净 count(>%gus)>=%d；%d*1000 > n=%d%s" % (limit_us, lo_n, lo_n, n, tag)
+    return "N/A", "净 count(>%gus) 只能给到 [%d, %s]，相对 0.001*n 跨线%s" % (
+        limit_us, lo_n, "无上界" if hi_n is None else str(hi_n), tag)
+
 def p999_bounds(counts, n, limit_us):
     """p99.9 <= limit 的**可判性**：返回 (可判结果, 说明)。
     可判 PASS：累计到 limit 所在桶的**前一桶**已 >= 0.999（p99.9 <= 前桶上界 < limit）；
@@ -357,6 +394,39 @@ def p999_bounds(counts, n, limit_us):
     if n and hi_cum / n < 0.999:
         return "RED", "p99.9 落在 %s 之上 > %gus（桶界可判）" % (hi_s, limit_us)
     return "N/A", "p99.9 落在 %s..%s 的跨桶区间，不能判 %gus" % (_fmt_us(lo_edge), hi_s, limit_us)
+
+
+def fine_over_bounds(fine, limit_us):
+    """用 [segsteps] 的逐微秒直方图给出 count(>limit) 的严格上下界。
+    fine: {整微秒 y: 计数}，桶 y 装的是落在 [y, y+1) us 的步（运行时只发射 >=16us 的桶，故 limit>=16 才适用）。
+    count(>L) 下界 = sum(y >= floor(L)+1)（这些桶整桶都 > L）；
+    上界 = 下界 + 桶 floor(L)（该桶只有一段 > L，不能整桶算，也不能整桶丢）。"""
+    if not fine or limit_us is None:
+        return 0, None
+    import math
+    fl = int(math.floor(limit_us))
+    lower = sum(v for y, v in fine.items() if y >= fl + 1)
+    return lower, lower + int(fine.get(fl, 0))
+
+
+def p999_any(counts, n, limit_us, gt=None, fine=None):
+    """(b) 通道的 p99.9 判定：**先**用逐微秒细直方图，再退回精确计数 / 桶界。
+    为什么需要细直方图：B_seg（pd_bigobj 49.07us）落在 [histo] 的 32us..64us 桶内，粗桶只能把
+    count(>B_seg) 夹在两个数量级之间 => 跨桶不可判；逐微秒桶把夹逼压到一两个样本。
+    返回 (verdict, why, source)，source in {"fine","exact","bucket"}，写进 JSON 便于审计口径。"""
+    if n and fine and limit_us is not None and limit_us >= 16:
+        lo, hi = fine_over_bounds(fine, limit_us)
+        if hi is not None and hi * 1000 <= n:
+            return "PASS", "细直方图：count(>%.2fus) <= %d；%d*1000 <= n=%d" % (
+                limit_us, hi, hi, n), "fine"
+        if lo * 1000 > n:
+            return "RED", "细直方图：count(>%.2fus) >= %d；%d*1000 > n=%d" % (
+                limit_us, lo, lo, n), "fine"
+    if gt is not None:
+        v, w = p999_exact(gt, n, limit_us)
+        return v, w, "exact"
+    v, w = p999_bounds(counts, n, limit_us)
+    return v, w, "bucket"
 
 
 def _fmt_us(v):
@@ -496,7 +566,8 @@ def _bound_cell(value_us, b_lo, b_hi):
 
 def verdict_step_channel(name, n, counts, max_us, p_noise, mode="warm",
                          p999_limit_us=None, over_limit_us=OVER50_US,
-                         ratio_limit=RATIO_LIMIT, min_n=MIN_N, gt=None):
+                         ratio_limit=RATIO_LIMIT, min_n=MIN_N, gt=None, fine=None,
+                         env_p999=0.0, env_p50=0.0):
     """(a-warm)/(b) 的通道判定。返回 dict（json 友好）。
     warm：>50us 占比（扣噪声）+ p99.9<=10us；max 只 OBS，不进判定。
     seg ：p99.9 与 max 用闭式上界 B_seg（未标定 => N/A）；over1ms=0 恒判；>50us 只 OBS。"""
@@ -531,7 +602,25 @@ def verdict_step_channel(name, n, counts, max_us, p_noise, mode="warm",
             out["criteria"]["p999"] = {"verdict": "N/A", "why": "n<1e5"}
             out["note"] = "n<1e5：分位判据 N/A（不是 PASS）"
         else:
-            if exact and lo_net > ratio_limit:
+            # Lead R3：>50us 通道同样扣**环境地板**（宿主停顿按时间到达，落进任一步都会把它推过 50us，
+            # 与本步预算无关）。判据数字一个不改：净 count(>50us)/n <= 1e-4；扣 min(pre,post)*wall。
+            env_i50 = int(round(env_p50)) if (env_p50 and env_p50 > 0) else 0
+            if env_i50:
+                out["env_p50"] = env_i50
+            if exact and env_i50:
+                lo_c = max(0, lo - env_i50)
+                r_c = lo_c / n
+                out["over_lo_count_net"] = lo_c
+                out["over_lo_ratio_net"] = r_c
+                if r_c - p_noise > ratio_limit:
+                    out["criteria"]["over50"] = {"verdict": "RED",
+                        "why": "精确 gt50=%d 扣环境地板 %d 次（min(pre,post)×wall）⇒ 净 %d（%.2e）减噪声 %.2e > %.0e"
+                               % (lo, env_i50, lo_c, r_c, p_noise, ratio_limit)}
+                else:
+                    out["criteria"]["over50"] = {"verdict": "PASS",
+                        "why": "精确 gt50=%d 扣环境地板 %d 次（min(pre,post)×wall）⇒ 净 %d（%.2e）<= %.0e"
+                               % (lo, env_i50, lo_c, r_c, ratio_limit)}
+            elif exact and lo_net > ratio_limit:
                 out["criteria"]["over50"] = {"verdict": "RED",
                     "why": "精确 gt50=%d（%.2e）扣噪声 %.2e > %.0e" % (lo, r_lo, lo_net, ratio_limit)}
             elif exact and r_lo <= ratio_limit:
@@ -552,7 +641,9 @@ def verdict_step_channel(name, n, counts, max_us, p_noise, mode="warm",
                     "why": "跨桶：下界 %.2e <= %.0e < 上界 %.2e（%gus 落在桶内）"
                            % (r_lo, ratio_limit, r_hi, over_limit_us)}
             if exact:
-                pv, pw = p999_exact(gt, n, p999_limit_us)
+                pv, pw = p999_exact_net(gt, n, p999_limit_us, env_p999)
+                if env_p999:
+                    out["env_p999"] = env_p999
             else:
                 pv, pw = p999_bounds(counts, n, p999_limit_us)
             out["criteria"]["p999"] = {"verdict": pv, "why": pw}
@@ -568,14 +659,10 @@ def verdict_step_channel(name, n, counts, max_us, p_noise, mode="warm",
         elif not big:
             out["criteria"]["p999"] = {"verdict": "N/A", "why": "n<1e5"}
         else:
-            if exact:
-                v_lo, w_lo = p999_exact(gt, n, b_lo)
-                v_hi, w_hi = p999_exact(gt, n, b_hi)
-                v_abs, w_abs = p999_exact(gt, n, P999_SEG_ABS_US)
-            else:
-                v_lo, w_lo = p999_bounds(counts, n, b_lo)
-                v_hi, w_hi = p999_bounds(counts, n, b_hi)
-                v_abs, w_abs = p999_bounds(counts, n, P999_SEG_ABS_US)
+            v_lo, w_lo, s_lo = p999_any(counts, n, b_lo, gt, fine)
+            v_hi, w_hi, s_hi = p999_any(counts, n, b_hi, gt, fine)
+            v_abs, w_abs, s_abs = p999_any(counts, n, P999_SEG_ABS_US, gt, fine)
+            out["p999_source"] = {"lo": s_lo, "hi": s_hi, "abs": s_abs}
             reds = []
             if v_hi == "RED":
                 reds.append("p99.9 > B_seg_hi=%.1fus（%s）" % (b_hi, w_hi))
@@ -586,8 +673,8 @@ def verdict_step_channel(name, n, counts, max_us, p_noise, mode="warm",
                 out["criteria"]["p999"] = {"verdict": "RED", "why": "；".join(reds)}
             elif v_lo == "PASS" and v_abs == "PASS":
                 out["criteria"]["p999"] = {"verdict": "PASS",
-                    "why": "p99.9 <= B_seg_lo=%.1fus 且 <= %.0fus 桶界兜底（桶界可判）"
-                           % (b_lo, P999_SEG_CAP_US)}
+                    "why": "p99.9 <= B_seg_lo=%.1fus 且 <= %.0fus 兜底（口径 %s/%s；%s）"
+                           % (b_lo, P999_SEG_CAP_US, s_lo, s_abs, w_lo)}
             else:
                 cross = []
                 if v_lo != "PASS":
@@ -639,9 +726,11 @@ def verdict_mixed(n, counts, max_us, tops):
     out["criteria"]["over50_info"] = {"verdict": "OBS",
         "why": "观测：%.2e / %.2e（混合形状不判；>4us=%d >8us=%d >1ms=%d，n=%d）"
                % (lo / n, hi / n, gt4, gt8, over1, n)}
-    out["criteria"]["slice_le5"] = {"verdict": "N/A",
+    out["criteria"]["slice_le5"] = {"verdict": "N/A", "structural": True,
         "why": "混合形状（每轮 64 个 16 B leaf + 1 个 8 MiB big；插桩不计 n）⇒ 切片 <=5us 不可判"
                "（Lead m03564）；N/A ≠ PASS"}
+    # 已裁决的**结构性不可判**（不是缺证据/样本不足）：不进用例聚合，但仍逐条打印。
+    out["structural_na"] = True
     out["verdict"] = "N/A"
     out["note"] = "混合通道：>4us=%d >8us=%d（n=%d）；(a) 按 m03564 记 N/A，大分配看 (b)" % (
         gt4, gt8, n)
@@ -741,8 +830,113 @@ def verdict_chan(name, d):
     return out
 
 
+def load_stallrates(path):
+    """解析外部停顿率探针（noise_floor --rate 的输出；run.sh 的 stallfloor 加了 case=/rep=/when= 前缀）。
+    返回 {(case, rep): {"pre": (rate10, rate50), "post": (rate10, rate50)}}；文件缺失 => {}。"""
+    out = {}
+    if not path or not os.path.exists(path):
+        return out
+    with open(path, "r") as f:
+        for line in f:
+            line = line.strip()
+            if "stallfloor " not in line or "rate10_per_s=" not in line:
+                continue
+            t = line.split("stallfloor ", 1)[1]
+            d = {}
+            for tok in t.split():
+                if "=" in tok:
+                    k, v = tok.split("=", 1)
+                    d[k] = v
+            try:
+                r10 = float(d.get("rate10_per_s", "nan"))
+                r50 = float(d.get("rate50_per_s", "nan"))
+            except ValueError:
+                continue
+            if r10 != r10:  # nan
+                continue
+            case = d.get("case")
+            try:
+                rep = int(d.get("rep", "0"))
+            except ValueError:
+                continue
+            when = d.get("when", "pre")
+            out.setdefault((case, rep), {})[when] = (r10, r50)
+    return out
+
+
+def load_runs_wall(path):
+    """runs.jsonl -> {(case, rep): wall_s}。同一 (case, rep) 有多条记录时优先 tag==pause 的那条。"""
+    out = {}
+    if not path or not os.path.exists(path):
+        return out
+    with open(path, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            if r.get("wall_s") is None:
+                continue
+            try:
+                key = (r.get("case"), int(r.get("rep")))
+            except (TypeError, ValueError):
+                continue
+            if key in out and r.get("tag") != "pause":
+                continue
+            out[key] = float(r["wall_s"])
+    return out
+
+
+def env_floor(stall, walls, case):
+    """本 case 的外部停顿地板次数。每个 rep：min(pre 速率, post 速率) × 该 rep 墙钟秒数，求和。
+    返回 (n10, n50, note)；缺探针或缺墙钟 => 对应项不扣（返回 0，退回原始口径）。"""
+    n10 = n50 = 0.0
+    parts = []
+    reps = sorted({rep for (c, rep) in stall if c == case})
+    for rep in reps:
+        d = stall.get((case, rep)) or {}
+        rates = [v for v in (d.get("pre"), d.get("post")) if v]
+        wall = walls.get((case, rep))
+        if not rates or wall is None or wall <= 0:
+            parts.append("r%d 缺数据(不扣)" % rep)
+            continue
+        r10 = min(v[0] for v in rates)
+        r50 = min(v[1] for v in rates)
+        n10 += r10 * wall
+        n50 += r50 * wall
+        parts.append("r%d %.1f/s×%.2fs=%.0f" % (rep, r10, wall, r10 * wall))
+    note = "；".join(parts)
+    return n10, n50, note
+
+def load_relsites(path):
+    """读 run.sh 写的 relsite.txt：每用例生成 C 里 extc_rc_storeRefOwnedRelease 的调用点数。
+
+    调用点 0 处 ⇒ (c) release 通道在该形状**结构性不可达**（n==0 是必然而非采样不足），
+    g1c 据此记 vacuous PASS；缺证据（没有该文件）时保持 N/A —— 不许无证据 vacuous。"""
+    out = {}
+    if not path or not os.path.exists(path):
+        return out
+    for ln in open(path, encoding="utf-8", errors="replace"):
+        d = {}
+        for tok in ln.split():
+            if "=" in tok:
+                k, v = tok.split("=", 1)
+                d[k] = v
+        if "case" in d and "sites" in d:
+            try:
+                out[d["case"]] = int(d["sites"])
+            except ValueError:
+                pass
+    return out
+
+
 def analyze(hist, seg, chan, noise, case=None, cold_dense=COLD_DENSE_DEFAULT,
-            seg_bound=None, seg_bound_note=None, tops=None, mixed_shapes=MIXED_DEFAULT):
+            seg_bound=None, seg_bound_note=None, tops=None, mixed_shapes=MIXED_DEFAULT,
+            work_maxreq=None, scan_chunk=None,
+            env_p999=0.0, env_p999_note="", env_p50=0.0, rel_sites=None, chan_only=None):
     """把聚合后的结构变成判定；返回 dict（写 json + 打印都用它）。
     case：用例名（决定 warm / cold-dense / mixed 归类，Lead m04242 + m03564）；
     seg_bound：B_seg 闭式上界（us），None => (b) 的 p99.9/max 记 N/A（未标定，不退回旧占位）。"""
@@ -755,6 +949,8 @@ def analyze(hist, seg, chan, noise, case=None, cold_dense=COLD_DENSE_DEFAULT,
         cls = "warm"
     res = {"min_n": MIN_N, "ratio_limit": RATIO_LIMIT, "case": case, "class": cls,
            "noise": noise, "channels": {}, "verdict": None, "warnings": [],
+           "env_p999": env_p999, "env_p999_note": env_p999_note,
+           "env_p50": env_p50,
            "seg_bound_us": seg_bound, "seg_bound_note": seg_bound_note,
            "per_pop_limit_us": PER_POP_US, "p999_cold_us": P999_COLD_US}
     p_noise = noise.get("p_noise", 0.0)
@@ -807,10 +1003,11 @@ def analyze(hist, seg, chan, noise, case=None, cold_dense=COLD_DENSE_DEFAULT,
                     else:
                         res["a"] = verdict_step_channel(
                             "regular(seg=0)", n_reg, diff, None, p_noise,
-                            mode="warm", p999_limit_us=P999_REG_US, gt=g_reg)
+                            mode="warm", p999_limit_us=P999_REG_US, gt=g_reg,
+                            env_p999=env_p999, env_p50=env_p50)
                     res["b"] = verdict_step_channel(
                         "resume(seg>0)", n_seg, seg["counts"], seg.get("max_us"), p_noise,
-                        mode="seg", p999_limit_us=seg_bound, gt=g_seg)
+                        mode="seg", p999_limit_us=seg_bound, gt=g_seg, fine=seg.get("fine"))
                     for ch in ("a", "b"):
                         cr = res.get(ch, {}).get("criteria", {}).get("p999")
                         if cr is not None and res.get(ch, {}).get("exact_over"):
@@ -830,12 +1027,68 @@ def analyze(hist, seg, chan, noise, case=None, cold_dense=COLD_DENSE_DEFAULT,
                 "seg": worst.get("seg"), "words": worst.get("words"),
                 "kind": worst.get("kind"), "why": worst.get("why"),
                 "note": "OBS（[top] 采样，非判据）：pops=1 & seg>0 的冷整段步，不参与 (b) 判据（Lead m04591）"}
+    # (b) 的**结构性 vacuous**（Lead R3）：该形状在结构上不可能出现 seg>0 步 —— 生成物把长对象按
+    # EXTC_RC_SCAN_CHUNK 个指针字切段（reclaim.c：words > SCAN_CHUNK 时才置 scanObj），所以只要
+    # 本 run 的 [work] maxreq <= SCAN_CHUNK*sizeof(void*) 且观测 n_seg==0，段通道必然永不触发；
+    # 这是「结构上不可达」，不是「样本不足掩盖」。maxreq 未知 / 超阈 / n_seg>0 时一律不 vacuous（保持 N/A）。
+    _bv = res.get("b", {})
+    if (_bv.get("verdict") == "N/A" and work_maxreq is not None and scan_chunk
+            and (res.get("n_seg") or 0) == 0):
+        _thr = int(scan_chunk) * 8
+        if work_maxreq <= _thr:
+            res["b"] = {"name": "resume(seg>0)", "verdict": "PASS", "vacuous": True,
+                        "note": ("vacuously PASS（结构性不可达，非样本不足）：本 run 最大分配请求 maxreq=%d B "
+                                 "<= EXTC_RC_SCAN_CHUNK*8=%d B ⇒ 标记时没有对象会被切段，n_seg==0 是必然而非"
+                                 "采样不足；(b) 的 B_seg 判据在该形状上无定义" % (work_maxreq, _thr))}
     # trigger-step = v17 起的名字（v16 及更早叫 collect；两个都收，旧产物仍可判）
     for name in ("regionfree", "release", "trigger-step", "collect", "account"):
         if name in chan:
-            res["channels"][name] = verdict_chan(name, chan[name])
-    vs = [res.get("a", {}).get("verdict"), res.get("b", {}).get("verdict")]
-    vs += [c["verdict"] for c in res["channels"].values()]
+            ch = verdict_chan(name, chan[name])
+            # (c) release 的**结构性 vacuous**（Lead R3）：发射器要求「循环体内把本帧新分配、
+            # 已写进某个堆对象引用字段、从未重绑的局部量写进本帧根表的长命槽」四条判据同时成立，
+            # 多数负载根本不发射调用点（cyc/pb/pc/pd_bigobj 与 digraph 的生成 C 均为 0 处）。
+            # 调用点 0 处 ⇒ 该通道在本形状不可能触发，n==0 是必然，不是「样本不足」。
+            # 有调用点却 n==0 时不 vacuous（保持 N/A，由用例判定或下一轮修）。
+            if (name == "release" and rel_sites == 0 and not (ch.get("n") or 0)):
+                ch = {"name": "release", "verdict": "PASS", "vacuous": True, "n": 0,
+                      "note": ("vacuously PASS（结构性不可达，非样本不足）：生成 C 中 "
+                               "extc_rc_storeRefOwnedRelease 调用点 0 处（relsite 证据）⇒ 该通道在"
+                               "本形状不可能触发；机制本身由 tests/gc-p0/src/rel_overwrite.extc 探针实测")}
+            res["channels"][name] = ch
+    if chan_only:
+        # 通道探针用例（Lead R3）：只判列出的 (c) 通道；步分布不由它判（四个 warm 形状覆盖）。
+        # 与 N/A 的区别是**不留未验证项**：列出的通道必须真有样本（n>0 或结构性 vacuous），
+        # 否则判 RED（探针没打到机制），而不是记 N/A。
+        res["a"] = {"name": "regular(seg=0)", "verdict": "SKIP",
+                    "note": "channel-probe 用例：步分布不由本用例判（四个 warm 形状覆盖）"}
+        res["b"] = {"name": "resume(seg>0)", "verdict": "SKIP",
+                    "note": "channel-probe 用例：步分布不由本用例判（四个 warm 形状覆盖）"}
+        vs = []
+        for nm in chan_only:
+            d = res["channels"].get(nm)
+            if d is None:
+                res["channels"][nm] = {"name": nm, "n": 0, "verdict": "RED",
+                                       "note": "探针要求该通道有样本，但日志里没有 [chan] 行（未触发且无证据）"}
+                vs.append("RED")
+            elif not (d.get("n") or 0):
+                d["verdict"] = "RED"
+                d["note"] = ("探针要求该通道 n>0，实测 n=0（通道从未触发）"
+                             + ("；" + d["note"] if d.get("note") else ""))
+                vs.append("RED")
+            else:
+                vs.append(d["verdict"])
+    else:
+        # 结构性不可判（已裁决，如 mixed 形状的 (a)）不进聚合：它既不是 PASS 也不是缺证据，
+        # 逐条打印 + 记在 res["structural_na"] 里；缺证据的 N/A（无 [histo]/未标定/n<1e5）仍会让用例 N/A。
+        _a = res.get("a", {})
+        vs = []
+        if _a.get("structural_na") and _a.get("verdict") == "N/A":
+            res["structural_na"] = labels = res.get("structural_na") or []
+            labels.append("a")
+        else:
+            vs.append(_a.get("verdict"))
+        vs.append(res.get("b", {}).get("verdict"))
+        vs += [c["verdict"] for c in res["channels"].values()]
     if "ERROR" in vs:
         res["verdict"] = "ERROR"
     elif "RED" in vs:
@@ -867,7 +1120,7 @@ def _is_mixed(case, patterns):
 # 打印
 # ---------------------------------------------------------------------------
 def _row(label, d):
-    if d.get("verdict") in ("N/A", "ERROR") and "over_lo_ratio" not in d:
+    if d.get("verdict") in ("N/A", "ERROR", "SKIP") and "over_lo_ratio" not in d:
         return "  | %s | - | - | - | - | **%s**（%s） |" % (
             label, d.get("verdict"), d.get("note", ""))
     over = ("%.2e / %.2e" % (d["over_lo_ratio"], d["over_hi_ratio"])) if "over_lo_ratio" in d else "-"
@@ -888,6 +1141,15 @@ def print_report(res, label=None):
     print("  噪声地板：%d reps，cpu over50 最大 %.2e，cpu p99.9 最大 %.3fus"
           % (nz.get("reps", 0), nz.get("p_noise", 0.0), nz.get("p999_noise_us", 0.0))
           + ("" if nz.get("reps", 0) >= 3 else "  ⚠ 不足 3 reps"))
+    if res.get("env_p999"):
+        print("  环境地板扣减（仅 p99.9）：count(>%.0fus) 扣 %.0f 次（%s）"
+              % (P999_REG_US, res["env_p999"], res.get("env_p999_note") or ""))
+    if res.get("env_p50"):
+        print("  环境地板扣减（>%.0fus 通道）：count 扣 %d 次（min(pre,post)×wall，判据不改）"
+              % (OVER50_US, res["env_p50"]))
+    if res.get("structural_na"):
+        print("  结构性 N/A（已裁决、不进用例聚合，逐条仍打印）：%s"
+              % "/".join(res["structural_na"]))
     print("  判据：warm 判 >50us 占比 <=%.0e（扣噪声）+ p99.9<=%.0fus；"
           "cold-dense 判 tau_t<=%.1fus + p99.9<=%.0fus + over1ms=0（不判 5us 门禁）；"
           "mixed 形状 (a) 记 N/A（Lead m03564：插桩不按 n 归因，N/A != PASS）"
@@ -905,9 +1167,12 @@ def print_report(res, label=None):
     print("  |---|---|---|---|---|---|")
     print(_row("(a) 常规 seg=0", res.get("a", {})))
     print(_row("(b) 续扫 seg>0", res.get("b", {})))
+    if (res.get("b") or {}).get("vacuous"):
+        print("       %s" % res["b"].get("note", ""))
     for name, d in res["channels"].items():
         if not d["n"]:
-            print("  | (c) %s | 0 | - | - | - | **N/A**（该通道未触发） |" % name)
+            print("  | (c) %s | 0 | - | - | - | **%s**（%s） |"
+                  % (name, d["verdict"], d.get("note") or "该通道未触发"))
         else:
             print("  | (c) %s | %d | - | - | %.1f | **%s**（目标 <=%.0fus %s） |"
                   % (name, d["n"], d["max_us"], d["verdict"], CHAN_TARGET_US,
@@ -1334,6 +1599,127 @@ def _selftest():
     ck(gt_sub({10: 30, 50: 10, 64: 0}, {10: 2, 50: 1, 64: 0}) == {10: 28, 50: 9, 64: 0},
        "S27 (a) 精确计数差分错")
 
+    # S28（Lead R3）：(b) 的**结构性 vacuous** —— [work] maxreq <= SCAN_CHUNK*8 且 n_seg==0
+    # => PASS(vacuous)；maxreq 超阈 / 未知 / n_seg>0 => 一律仍 N/A（不许 vacuous 掩盖未触发通道）
+    ch28 = _zero(); ch28[0] = 200000
+    h28 = {"n": 200000, "counts": ch28, "max_us": 4.0}
+    s28z = {"n": 0, "counts": zero, "max_us": 0.0}
+    r = analyze(h28, s28z, {}, noise, seg_bound=None, work_maxreq=40, scan_chunk=8192)
+    ck(r["b"]["verdict"] == "PASS" and r["b"].get("vacuous"),
+       "S28 maxreq=40<=64KiB 且 n_seg=0 => (b) 应 vacuous PASS，实得 %r" % (r["b"].get("verdict"),))
+    r = analyze(h28, s28z, {}, noise, seg_bound=None, work_maxreq=8388608, scan_chunk=8192)
+    ck(r["b"]["verdict"] == "N/A",
+       "S28 maxreq=8MiB 超阈时 (b) 必须仍 N/A（不得 vacuous 掩盖），实得 %r" % (r["b"].get("verdict"),))
+    r = analyze(h28, s28z, {}, noise, seg_bound=None)
+    ck(r["b"]["verdict"] == "N/A",
+       "S28 maxreq 未知时 (b) 必须仍 N/A，实得 %r" % (r["b"].get("verdict"),))
+
+    # S29（Lead R3）：逐微秒细直方图的解析 + 合并 + (b) 的夹逼解算（粗桶在 B_seg 处跨桶不可判的老问题）
+    f29 = parse_segsteps("[segsteps] n=5000 pops_tot=5000 max_us=64.0 b1us=0 gt10us=0 gt50us=102 gt64us=0 us49=10 us50=102 us64=3")["fine"]
+    ck(f29 == {49: 10, 50: 102, 64: 3}, "S29 fine 解析失败：%r" % (f29,))
+    ck(fine_over_bounds(f29, 49.07) == (105, 115), "S29 fine_over_bounds(49.07) 应为 (105,115)（>=50us 桶全算，外加 49 桶），实得 %r" % (fine_over_bounds(f29, 49.07),))
+    ck(fine_over_bounds(f29, 50.0) == (3, 105), "S29 整数阈值口径：下界只算 >50us 的桶(us64=3)、上界含 50 桶，实得 %r" % (fine_over_bounds(f29, 50.0),))
+    v, w, src = p999_any([], 228518, 49.07, None, {49: 10, 50: 102})
+    ck(v == "PASS" and src == "fine", "S29 count(>49.07)<=112 => 应 fine PASS，实得 %r/%s" % (v, src))
+    ck(p999_any([], 228518, 49.07, None, {49: 10, 50: 300})[0] == "RED", "S29 count(>49.07)>=300 > 228.5 => 应 fine RED")
+    ck(p999_any([], 228518, 49.07, None, None)[2] == "bucket", "S29 无细直方图应退回桶界口径")
+    a29 = {"n": 100, "counts": [0] * pp.HISTO_NB, "max_us": 1.0, "fine": {50: 3}}
+    b29 = {"n": 100, "counts": [0] * pp.HISTO_NB, "max_us": 1.0, "fine": {50: 4, 64: 1}}
+    ck(_merge(_merge(None, a29), b29)["fine"] == {50: 7, 64: 1}, "S29 _merge 丢/错 fine 桶")
+
+    # S30（Lead R3）：环境地板扣减 —— 宿主抢占的停顿按时间到达，与本步预算无关，一步被打中就记一条慢步，
+    # 那是量具误差不是回收工作。判据数字一个不改：净 count(>10us)*1000 <= n；扣 min(pre,post)*wall；缺数据不扣。
+    g30 = {10: 500, 50: 10, 64: 5}
+    ck(p999_exact_net(g30, 200000, 10.0, 0.0)[0] == "RED",
+       "S30 不扣环境地板：500*1000 > 200000 => 应 RED，实得 %r" % (p999_exact_net(g30, 200000, 10.0, 0.0),))
+    ck(p999_exact_net(g30, 200000, 10.0, 400.0)[0] == "PASS",
+       "S30 扣 400 次环境地板 => 净 100*1000 <= 200000 => 应 PASS，实得 %r" % (p999_exact_net(g30, 200000, 10.0, 400.0),))
+    ck(p999_exact_net(g30, 200000, 10.0, 900.0)[0] == "PASS",
+       "S30 扣减超过计数时净数夹 0（不许变成负的 PASS/RED 混线）")
+    ck(p999_exact_net(g30, 200000, 10.0, 100.0)[0] == "RED",
+       "S30 只扣 100 次仍 400*1000 > 200000 => RED（扣减不足不能翻盘）")
+    st30 = {("cyc", 1): {"pre": (100.0, 10.0), "post": (80.0, 8.0)},
+            ("cyc", 2): {"pre": (50.0, 5.0)}}
+    wl30 = {("cyc", 1): 0.5}
+    n10, n50, note30 = env_floor(st30, wl30, "cyc")
+    ck(abs(n10 - 40.0) < 1e-9, "S30 env_floor：取 min(pre,post)=80 × wall 0.5 => 40，实得 %r" % (n10,))
+    ck("r2 缺数据" in note30, "S30 缺 wall 的 rep 必须标注且不扣，实得 %r" % (note30,))
+    ck(load_stallrates("/nonexistent-xyz") == {}, "S30 缺探针文件 => 空表（不扣减，不是 PASS）")
+
+    # S31（Lead R3）：(c) release 的**结构性 vacuous**（生成 C 调用点 0 处）+ 通道探针用例
+    # （--chan-only 只判列出的通道；列出的通道 n==0 判 RED，不许记 N/A）。
+    ch31 = {"n": 0, "max_us": 0.0, "counts": [0] * pp.HISTO_NB}
+    r = analyze(h28, s28z, {"release": dict(ch31)}, noise, seg_bound=None,
+                work_maxreq=40, scan_chunk=8192, rel_sites=0)
+    ck(r["channels"]["release"]["verdict"] == "PASS" and r["channels"]["release"].get("vacuous"),
+       "S31 rel_sites=0 且 n=0 => release 应 vacuous PASS，实得 %r" % (r["channels"]["release"].get("verdict"),))
+    ck(r["verdict"] == "PASS", "S31 vacuous release 不应把用例拉成 N/A，实得 %r" % (r["verdict"],))
+    r = analyze(h28, s28z, {"release": dict(ch31)}, noise, seg_bound=None,
+                work_maxreq=40, scan_chunk=8192, rel_sites=None)
+    ck(r["channels"]["release"]["verdict"] == "N/A" and r["verdict"] == "N/A",
+       "S31 缺 relsite 证据时 release n=0 仍记 N/A（不许无证据 vacuous）")
+    r = analyze(h28, s28z, {"release": dict(ch31)}, noise, seg_bound=None,
+                work_maxreq=40, scan_chunk=8192, rel_sites=3)
+    ck(r["channels"]["release"]["verdict"] == "N/A",
+       "S31 有调用点（sites=3）而 n=0 时不 vacuous（保持 N/A）")
+    ch31b = {"n": 3, "max_us": 8.1, "counts": [0] * pp.HISTO_NB}
+    r = analyze(h28, s28z, {"release": dict(ch31b)}, noise, seg_bound=None,
+                work_maxreq=40, scan_chunk=8192, rel_sites=0)
+    ck(r["channels"]["release"]["verdict"] == "PASS" and not r["channels"]["release"].get("vacuous"),
+       "S31 有实测样本时按正常判（max=8.1us <=1ms => PASS），不被 sites 证据覆盖")
+    r = analyze(h28, s28z, {"release": dict(ch31)}, noise, seg_bound=None,
+                work_maxreq=40, scan_chunk=8192, chan_only=("release",))
+    ck(r["a"]["verdict"] == "SKIP" and r["b"]["verdict"] == "SKIP",
+       "S31 chan_only 用例的 (a)/(b) 记 SKIP（不判，不是 N/A）")
+    ck(r["channels"]["release"]["verdict"] == "RED" and r["verdict"] == "RED",
+       "S31 chan_only 列出的通道 n=0 => RED（探针没打到机制），实得 %r" % (r["verdict"],))
+    r = analyze(h28, s28z, {"release": dict(ch31b)}, noise, seg_bound=None,
+                work_maxreq=40, scan_chunk=8192, chan_only=("release",))
+    ck(r["verdict"] == "PASS", "S31 chan_only 通道有样本且 max<=1ms => PASS，实得 %r" % (r["verdict"],))
+    r = analyze(h28, s28z, {}, noise, seg_bound=None, chan_only=("release",))
+    ck(r["verdict"] == "RED", "S31 chan_only 列出的通道连 [chan] 行都没有 => RED（不留 N/A）")
+    ck(load_relsites("/nonexistent-xyz") == {}, "S31 缺 relsite 文件 => 空表（不 vacuous）")
+
+    # S32（Lead R3）：>50us 通道也扣环境地板（同样 min(pre,post)*wall；判据 1e-4 不改）
+    g32 = {10: 0, 50: 30, 64: 0}
+    c32 = [0] * pp.HISTO_NB
+    v = verdict_step_channel("regular(seg=0)", 200000, c32, 1.0, 0.0, mode="warm",
+                             p999_limit_us=10.0, gt=g32, env_p50=0.0)
+    ck(v["criteria"]["over50"]["verdict"] == "RED",
+       "S32 不扣环境地板：30/200000=1.5e-4 > 1e-4 => RED，实得 %r" % (v["criteria"]["over50"],))
+    v = verdict_step_channel("regular(seg=0)", 200000, c32, 1.0, 0.0, mode="warm",
+                             p999_limit_us=10.0, gt=g32, env_p50=20.0)
+    ck(v["criteria"]["over50"]["verdict"] == "PASS" and v["env_p50"] == 20,
+       "S32 扣 20 次环境地板 => 净 10/200000=5e-5 => PASS，实得 %r" % (v["criteria"]["over50"],))
+    v = verdict_step_channel("regular(seg=0)", 200000, c32, 1.0, 0.0, mode="warm",
+                             p999_limit_us=10.0, gt=g32, env_p50=5.0)
+    ck(v["criteria"]["over50"]["verdict"] == "RED",
+       "S32 只扣 5 次 => 净 25/200000=1.25e-4 > 1e-4 => RED（扣减不足不翻盘）")
+    v = verdict_step_channel("regular(seg=0)", 200000, c32, 1.0, 0.0, mode="warm",
+                             p999_limit_us=10.0, gt=g32, env_p50=500.0)
+    ck(v["criteria"]["over50"]["verdict"] == "PASS", "S32 扣减超过计数时净数夹 0（不许变负数）")
+    # 噪声带：精确 1.35e-4 落在 (1e-4, ...]，再扣 cpu 噪声 3.5e-5 = 1.0e-4（不 > 限）
+    g32b = {10: 0, 50: 27, 64: 0}
+    v = verdict_step_channel("regular(seg=0)", 200000, c32, 1.0, 3.5e-05, mode="warm",
+                             p999_limit_us=10.0, gt=g32b, env_p50=0.0)
+    ck(v["criteria"]["over50"]["verdict"] == "N/A",
+       "S32 无地板数据且落噪声带 => 仍 N/A（不影响旧行为），实得 %r" % (v["criteria"]["over50"],))
+
+    # S33（Lead R3）：mixed 形状的 (a) 是**已裁决的结构性 N/A**，不进用例聚合（不像缺证据的 N/A）；
+    # 其余通道判完即用例 PASS，并把 "a" 记进 res["structural_na"]。
+    r = analyze(h28, s28z, {"release": {"n": 0, "max_us": 0.0, "counts": [0] * pp.HISTO_NB}},
+                noise, case="pd_bigobj", seg_bound={"lo": 49.07, "hi": 49.07},
+                work_maxreq=40, scan_chunk=8192, rel_sites=0)
+    ck(r["class"] == "mixed" and r["a"]["verdict"] == "N/A" and r["a"].get("structural_na"),
+       "S33 mixed 的 (a) 应记结构性 N/A，实得 %r" % (r["a"].get("verdict"),))
+    ck(r["verdict"] == "PASS" and r.get("structural_na") == ["a"],
+       "S33 结构性 N/A 不进聚合 => 用例 PASS 且记 structural_na=[a]，实得 %r/%r"
+       % (r["verdict"], r.get("structural_na")))
+    ck(r["b"]["verdict"] == "PASS" and r["b"].get("vacuous"), "S33 (b) 仍按 maxreq 结构性 vacuous")
+    r2 = analyze(h28, s28z, {}, noise, case="pd_bigobj", seg_bound=None,
+                 work_maxreq=None, scan_chunk=8192)
+    ck(r2["verdict"] == "N/A" and r2.get("structural_na") == ["a"],
+       "S33 (b) 缺证据时仍 N/A（结构性 N/A 不放行缺证据项），实得 %r" % (r2["verdict"],))
     print("g1c selftest:")
     print("  S1 seg 差分+pops_tot 一致 / S2 恰好 50us=N/A / S3 恰好 1ms=PASS / S4 n<1e5=N/A")
     print("  S5 扣噪声 RED->PASS / S6 不一致=ERROR / S7 (b) 闭式 12us PASS vs 25us RED")
@@ -1350,6 +1736,12 @@ def _selftest():
           "dense 仍 cold-dense、warm 不误归")
     print("  S23/S24 精确计数（gt50us）把桶界 N/A 变成 PASS/RED / S25 包含关系与 ERROR")
     print("  S26 seg 用 gt64 判 64us 兜底 / S27 [segsteps] gt* 解析 + (a) 差分")
+    print("  S28 (b) 结构性 vacuous（maxreq<=SCAN_CHUNK*8 且 n_seg=0 => PASS）vs 超阈/未知 => N/A")
+    print("  S29 [segsteps] us<n>= 细直方图解析/合并 + (b) 的 fine 夹逼解算")
+    print("  S30 环境地板扣减（仅 p99.9；扣 min(pre,post)*wall；缺数据不扣、负数夹 0、扣减不足不翻盘）")
+    print("  S31 (c) release 结构性 vacuous（sites=0 才 vacuous）+ --chan-only 探针用例（n==0 判 RED，不留 N/A）")
+    print("  S32 >50us 通道同样扣环境地板（min(pre,post)*wall；判据 1e-4 不改，扣减不足不翻盘）")
+    print("  S33 mixed 的 (a) 结构性 N/A 不进用例聚合（逐条仍打印，记 structural_na）")
     if bad:
         print("  ⇒ SELFTEST FAIL: " + "; ".join(bad))
         return 1
@@ -1403,6 +1795,11 @@ def main(argv=None):
     ap.add_argument("--glob", default="*.err", help="配合 --dir 的 glob（默认 *.err）")
     ap.add_argument("--noise", action="append", default=[], help="noise_floor 输出文件（可多次）")
     ap.add_argument("--noise-dir", help="目录下全部 noise*.txt")
+    ap.add_argument("--stallrate", default=None,
+                    help="外部停顿率探针（noise_floor --rate；run.sh 的 stallfloor 写入 $OUT/stallrate.txt）；"
+                         "只有 p99.9 通道用它做环境地板扣减；缺文件 => 不扣（退回原始口径）")
+    ap.add_argument("--runs", default=None,
+                    help="runs.jsonl（sample.py 记录，含 wall_s）；与环境地板速率相乘得到扣减次数")
     ap.add_argument("--json", help="把结果写到该 json")
     ap.add_argument("--cold-dense", action="append", default=[],
                     help="cold-dense 归类用的用例名子串（可多次；默认 pd_pointer_dense）")
@@ -1422,6 +1819,12 @@ def main(argv=None):
                     help="当前源码 md5（reclaim.c+codegen.c，溯源以它为准），只用于标定行告警（不参与判定）")
     ap.add_argument("--build-md5", default=None,
                     help="当前编译器二进制 md5（辅助溯源），只用于标定行告警（不参与判定）")
+    ap.add_argument("--relsite", default=None,
+                    help="run.sh 写的 relsite.txt（每用例生成 C 里 extc_rc_storeRefOwnedRelease 调用点数；"
+                         "0 处 ⇒ (c) release 结构性 vacuous，不记 N/A；缺文件则不 vacuous）")
+    ap.add_argument("--chan-only", action="append", default=[],
+                    help="CASE:chan[,chan...] —— 通道探针用例只判这些 (c) 通道，步分布记 SKIP（不是放宽："
+                         "列出的通道 n==0 判 RED）")
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args(argv)
     if a.selftest:
@@ -1438,13 +1841,22 @@ def main(argv=None):
     if a.noise_dir:
         npaths += sorted(glob.glob(os.path.join(a.noise_dir, "noise*.txt")))
     noise = load_noise(npaths)
+    stall = load_stallrates(a.stallrate)
+    walls = load_runs_wall(a.runs)
     cold = tuple(a.cold_dense) if a.cold_dense else COLD_DENSE_DEFAULT
     mixed = tuple(a.mixed) if a.mixed else MIXED_DEFAULT
     cseg = parse_cseg(a.c_seg)
     groups = group_paths(paths)
+    relsites = load_relsites(a.relsite)
+    chan_only = {}
+    for spec in a.chan_only:
+        if ":" in spec:
+            cname, chans = spec.split(":", 1)
+            chan_only[cname] = tuple(x for x in chans.split(",") if x)
     per_case = {}
     for case in sorted(groups):
-        hist, seg, chan, tops, nfiles = load_errs(groups[case])
+        hist, seg, chan, tops, nfiles, work_maxreq = load_errs(groups[case])
+        env10, env50, envnote = env_floor(stall, walls, case)
         chunk = None
         for t in tops:
             if t.get("chunk"):
@@ -1492,7 +1904,10 @@ def main(argv=None):
             bnote = ("B_seg(shape) 未标定：bseg-cal.tsv 缺该形状（1.5*c_seg(shape)*chunk+1us；"
                      "不退回 5us 旧占位）")
         res = analyze(hist, seg, chan, noise, case=case, cold_dense=cold,
-                      seg_bound=bound, seg_bound_note=bnote, tops=tops, mixed_shapes=mixed)
+                      seg_bound=bound, seg_bound_note=bnote, tops=tops, mixed_shapes=mixed,
+                      work_maxreq=work_maxreq, scan_chunk=chunk,
+                      env_p999=env10, env_p999_note=envnote, env_p50=env50,
+                      rel_sites=relsites.get(case), chan_only=chan_only.get(case))
         res["files"] = groups[case]
         res["case"] = case
         res["chunk"] = chunk

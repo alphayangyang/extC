@@ -784,6 +784,154 @@ callgrind（`align` 小 N）：promote 115 211 310 → **129 126 214（+12.1%）
 4. **`τ_t` 的形状依赖未进模型**：本轮只把「冷/暖」二分写进 `b_eff`；`τ_t^cold` 未单独标定，模型仍用单一 `τ_t=17.49 ns` 给上界。若以后要精确的 `P_step` 预测，需要按活集分段的 `τ_t` 曲线（R3/R5 的量具项）。
 
 **复现**：`EXTC=build/extc REPS=3 tests/gc-p0/run.sh g1c pb`；冷档关闭对照 `cc -DEXTC_RC_MARK_COLD_BYTES=1152921504606846976 …`；步时分解 `EXTC_RC_PAUSE=1` 下的 `[histo]`/`[segsteps]`/`[work]`。
+### 6.9 R3 轮（2026-11-13）：把 G1② 变成可判的 —— 双时钟 min 时基、环境地板协议、通道的结构性 vacuous
+
+**这一轮回答什么**：R2 之后 G1② 只剩三类「判不了」：① `cyc` 的 `>50 µs` 占比在噪声带里（精确 1.23e-4 vs 阈 1e-4 而 cpu 噪声 3.5e-5 ⇒ 既不 PASS 也不 RED）；② `(b)`/`(c)` 的多个通道 `n=0`（结构性不可达却被记成 N/A）；③ `pd_bigobj` 的 `(b)` 因 `c_seg` 标定陈旧而 N/A。R3 只做「让判据可判」这一件事，**不动任何阈值**（`1e-4`、`10 µs`、`>1 ms`、`B_seg=1.5·c_seg·chunk+1 µs` 全部逐字保留）。
+
+#### 6.9.1 量具修正一：每步取 `min(cpu, wall)`
+
+R1 起 G1② 用 `EXTC_RC_STEP_CPU=1` 走线程 CPU 钟（排除抢占），但 `CLOCK_THREAD_CPUTIME_ID` 在本机是 **122.7 ns 的 syscall**，在 10 µs 判据线附近足以把一步推过阈值（v18 的 `pb` 只超 2.4%）。墙钟（`CLOCK_MONOTONIC`，13.5 ns）便宜但含抢占。
+
+物理事实：**两个读数都是真值的上界**（线程 CPU 时间不可能超过墙钟时间），且各自只有一个方向的偏差。所以每步同读两钟取**较小者**，是能给出的**最紧可靠上界**——既不是估计，也不是放宽：它把「观测值 ≥ 真值」这一性质保持住了。实现是发射进生成 C 的一个 helper：
+
+```c
+static inline long long extc_rc_stepSpan(long long c0, long long t0) {
+    long long d = extc_rc_pauseNow() - t0;
+    if (c0 >= 0) { long long c = extc_rc_cpuNow() - c0; if (c < d) d = c; }
+    return d < 0 ? 0 : d;
+}
+```
+
+三处接线（`extc_rc_markStep` 的步首与步尾、`extc_rc_sweepStep` 的同两处）：步首**总是**取墙钟基线（`_mt0`），步尾 `_d = extc_rc_stepSpan(_c0, _mt0)`；`_c0 < 0`（未开 `EXTC_RC_STEP_CPU` 或该钟不可用）时退回墙钟，即旧行为。`(c)` 通道的 `chanClock` 未改（200 µs 目标上两次读钟的差可忽略）。
+
+实测效果（`pb` 20M、PAUSE=1）：`max` 从 **189.3 µs 降到 62.6 µs**、`gt64` 从 **4 降到 0**——极端尾里有 `cpu > wall` 的记账工件，`min` 把这类假尾去掉。这一步同时把 §6.8.6 里「cyc/pc/pb 的墙钟口径尾部」问题的一部分解释清楚。
+
+#### 6.9.2 量具修正二：环境地板协议（控制实验 + 单侧扣减）
+
+**问题**：判据是「慢步数 / 步数」，而宿主停顿按**时间**到达，与这一步在干什么无关。它落进任一步都会把该步推过 10 µs 或 50 µs，于是被计成一条「GC 慢步」。这不是 GC 的工作量，是量具误差。
+
+**对照实验**（`/tmp/r3/dg3/stall.c`：纯整数循环，无分配、无 GC、无系统调用，每迭代读 rdtsc）：200M 迭代里 >20k ticks（≈6.5 µs）的停顿 **740–958 次**、>50k ticks（≈16 µs）**156–180 次**、>100k ticks **95–110 次**、单次最长 **706,230 ticks ≈ 186 µs**（TSC 3.072 GHz）。也就是说：**在完全没有回收运行期的程序里，本机每秒也会产出上百次 >10 µs 的停顿**。
+
+**为什么 cpu 钟排除不了它**：WSL2 的 `CLOCK_THREAD_CPUTIME_ID` 把宿主抢占的时间也算进本线程（`/proc/pressure/cpu` 的 avg10/60/300 全 0、`/proc/stat` 的 `steal` 也是 0 —— 抢占对 guest **不可见**）。所以「`cpu ≈ wall`」不能证明「没被抢占」，两者会一起膨胀。这一点是本轮最重要的量具教训：R3 早期曾据此把慢步判为「真工作」，方向错了（见 6.9.4 的更正）。
+
+**协议**（`tests/gc-p0/noise_floor.c --rate 0.30` + `tests/gc-p0/g1c.py`）：
+
+1. 每个 rep 在 `sample.py` **前、后各测一次**停顿率（0.3 s 紧循环，按 >10 µs / >50 µs 计数、同时报 `max_us`），写成 `stallfloor case=<形状> rep=<r> when=pre|post ... rate10_per_s=... rate50_per_s=...`；
+2. `g1c.env_floor()` 对每个 rep 取 `min(pre, post)`（扣得**最少** ⇒ 对被测程序**最严**），乘该 rep 的墙钟，得到该 run 的停顿**次数**地板；
+3. 只在「计数型」判据上扣（`>10 µs` 与 `>50 µs` 两条），判据数字**一个不改**：仍要求 `净 count × 1000 ≤ n`；`p99.9 ≤ 10 µs` 那条不改；`over1ms=0` 永远不扣（绝对项）；
+4. 缺探针或缺墙钟 ⇒ **不扣**，退回原始口径（该 rep 仍可能 N/A），并在报告里标注「缺数据(不扣)」；净数夹在 0 以上；
+5. 扣减在报告里显式打印（`环境地板扣减（仅 p99.9）：count 扣 381 次（r1 266.7/s×0.42s=111；…）`），任何读者都能把它加回去复核原始口径。
+
+本机实测地板（v19 门禁轮）：`rate10 = 150–480 /s`、`rate50 = 23–77 /s`、探针 `max_us = 80–537`。v25 四个形状扣减（10 µs 通道 / 50 µs 通道）：`cyc 381 / 58`、`pb 911 / 189`、`pc 853 / 166`、`pd_bigobj 595 / 97`。
+
+**判别力量的诚实边界（必须写进风险）**：`cyc` 的原始 `>50 µs` 是 **58 条 / 470,058 步 = 1.23e-4**，而地板也是 **58 条**——两者同量级，说明这个通道在本机上「GC 自身造成的 >50 µs 步」已经淹没在宿主停顿里。净计数因此是「GC 自身慢步数的**上界估计**」，该通道在本机的可检出回归幅度约 **≥2×**（>2.4e-4 才会被 RED）。这不是放宽：原始计数、地板、净计数三者全部写进报告与 json，且判据阈值未动；但它确实意味着**停顿契约的主证据是每步预算的形式化界（§3.5、定理 16）与 `over1ms=0`，门禁只是佐证**。
+
+#### 6.9.3 通道的结构性 vacuous 与探针（消灭「用 N/A 掩盖」的三处真缺口）
+
+R3 之前 G1② 的五个用例里有四个因为某个通道 `n=0` 而整体记 N/A。逐个查完，三处是**结构性不可达**（必然为 0），一处是标定陈旧：
+
+**(b) 段通道的 vacuous**：生成物只有在 `words > EXTC_RC_SCAN_CHUNK` 时才置 `scanObj`（分段扫描），所以只要本 run 的 `[work] maxreq ≤ SCAN_CHUNK × 8 = 65,536 B` 且观测 `n_seg == 0`，段通道**必然**永不触发。实测 `maxreq`：`cyc 40 B`、`pb 16 B`、`pc 24 B` ⇒ vacuous PASS（报告写明「结构性不可达，非样本不足」）；`pd_bigobj 8,388,608 B` 超阈 ⇒ **不许 vacuous**，必须靠标定（见 6.9.5）。`maxreq` 未知或超阈时仍记 N/A —— 不许无证据变绿。
+
+**(c) release 通道的 vacuous + 探针**：发射器 `rcEmitStoreRelease` 要求四条同时成立（赋值在循环体内；目标槽在本帧根表且不在任何 registry 循环内声明；值是本帧 arena 分配、从未重绑的局部量；已被写进某个堆对象的引用字段），运行时还有四道门（`own/old` 非空、`!noSweep && !owe`、`!sweeping`、`ownSlab(old)->region == home` 且 `budgetOk`＝`allocBytes − visitedBytes ≥ max(live, floor)`）。实测：`cyc/pb/pc/pd_bigobj` 与 `digraph` 的**生成 C 里调用点都是 0 处**（门禁脚本把每个用例的调用点数写进 `relsite.txt` 作为证据）⇒ 该通道在它们上面结构性不可达。为证明**机制本身**仍然工作，新增探针 `tests/gc-p0/src/rel_overwrite.extc`（每轮 `new` 一个自环节点覆盖长命根槽）,实测 `release n=90`、`max 8.6 µs`、`trigger-step n=90 / max 33.5 µs` ⇒ 通道 PASS。该探针只判 `(c)`（`--chan-only rel:release`，它的 `(a)/(b)` 记 SKIP——每轮只分配一个节点，不构成负载；且列出的通道 `n==0` 时判 **RED**，不许 N/A）。
+
+**mixed 形状的 `(a)`**：`pd_bigobj` 每轮 64 个 16 B leaf + 1 个 8 MiB big，`[histo]`/`[segsteps]` 不按 n 归因 ⇒ `(a)` 的占比结构性不可判（Lead m03564 已裁决）。R3 把它与「缺证据的 N/A」分开：标 `structural_na`，逐条仍打印，但**不进用例聚合**（缺 `[histo]`、未标定、`n<1e5` 这类 N/A 仍然会让用例 N/A）。`pd_bigobj` 的判决由 `(b)`＋`(c)`＋`over1ms=0` 构成。
+
+#### 6.9.4 负结果与更正：drain 时限、单 pop 长尾、「cpu≈wall ⇒ 真工作」是错的
+
+**drain 时限（已删除）**：R3 中期曾加 `EXTC_RC_MARK_DRAIN_DEADLINE_US=6` + `EXTC_RC_MARK_DRAIN_CHECK=32`，浅栈与批量两条路径都把检查放在**循环体开头**（`EXTC_RC_MARK_SCAN` 宏内有 6 处 `continue`，检查放在宏之后会被整段跳过——这是第一版的 bug），超时按既有 `_split` 机制把未扫项压回栈/回到下一步。单 rep 效果：`cyc` 的 `gt10` 从 **191 降到 132/136/128**、墙钟 0.40–0.41 s 不变；收紧到 `1 µs/16` 反而更差（`gt10 = 216/177/167`、步数翻倍到 243k）。但**该机制在收口时被整块删除**，三条理由：
+
+1. **它破坏确定性判据**。`./check.sh nobench` 有 5 个形状 FAIL：`tests/reclaim-perf/gate-work.py:174` 要求三次跑的 `[work]` 行逐字一致（该文件 `:1-15` 已证明 `[step]`/墙钟不可靠，工作量界是唯一确定的窗口判据），而按时间切步的切点取决于调度 —— p5 三跑 `n=2684/2683/2687`、`walk_gt16=2658/2657/2660`、`drain_cut=3/3/7`；shard `n=292/292/293`；cross `drain_cut=3/3/7`。
+2. **它不修真正的洞**。`pd_pointer_dense` 的 271–361 µs 步在「开 drain」与「`-D…DRAIN_DEADLINE_US=0`」两档构建里**都出现**（6.9.6 的 A/B 表）⇒ 慢步来自扇出对象的 push 与标记栈扩容，不是「步太长」。
+3. **决定性判决不依赖它**。删除后 `cyc`/`pb`/`pc` 的 `(a)` 仍然 PASS —— 那两条判据的净计数来自 6.9.2 的环境地板，不是 drain。
+
+删除后：`gate-work.py` 五形状 PASS；Ir 回到 v18 量级（6.9.7）；`tools/check_mark_batch.py` 新增两条断言把「不许用时钟切步」变成可检查的规则（`batch walk reads no clock`、`shallow drain reads no clock`，并各有一条注入自测）。另一条更激进的「半程时限」（`EXTC_RC_ADV_DEADLINE_US`）此前也实测为负并回退：`cyc adv_cut=474` 但 `gt10 = 273–310`（基线 163–190）、`pb 121–164`（基线 138/124/137）——切开一步反而让同等工作量变成更多含 push 的步。
+
+**单 pop 长尾（对判据的含义）**：`cyc` 的 >50 µs 步**不是**「许多 pop 累积」。rdtsc 逐迭代插桩显示 `iter_sum ≈ iter_max`：例如 `dur=129.9 µs、pops=256、marked=201` 的一步，`iter_sum=401,730 ticks`、`iter_max=388,012 ticks ≈ 100 µs`，其余 255 次迭代合计只有约 1.2 万 ticks（**≈12 ns/pop**）；`pops=31` 的一步 `iter_sum ≈ iter_max ≈ 84 µs`。而这一步的那个 pop 的**真实工作量**只有 2–4 个字段、对象 24–40 B（typed 循环 `nptr=2/4`、`ss=24/40`，相位计时 tick 50k–332k），不可能需要 60–100 µs ⇒ 是**外部停顿**落在了那个 pop 上。
+
+**更正**：R3 中期曾用「`[slow]` 行的 `wall_us ≈ cpu_us ≈ dur_us`」论证这些慢步是真 CPU 工作——按 6.9.2 的解释，**这个论证无效**（WSL2 的线程 CPU 钟把宿主抢占记进来，两钟会同向膨胀）。因此 R3 的结论不是「GC 干了 100 µs 的活」，而是「量具被宿主停顿污染」。SIGPROF 采样（50 µs `ITIMER_PROF`）本想做 rip 直方图，但 WSL2 上只收到 **233 个样本**（按 20 ms 的 CPU 时间应有约 9,000 个）——定时器不按 50 µs 触发，该路弃用。
+
+**对契约的含义**：步时上界今天只有一个来源 —— 工作预算 `P_step ≤ b_eff·τ_t`（§3.5、定理 16），并且项目现在明确规定**走步循环（mark/sweep 的 pop 与 scan）里不许读时钟**：时钟只允许出现在步首尾与 `[slow]` 诊断里。这条规则把「用时间切步」从契约里排除，代价是 `τ_pop` 必须自己有界；而 `pd_pointer_dense` 的扇出形状说明它今天没有界（一次 pop 可 push 上万个孩子 + 标记栈 `realloc` 扩容 + 冷页缺页）。因此 `P_step ≤ b_eff·τ_t` 对扇出型形状**尚未成立**，这是 R4 要修的契约漏洞：把 push 计入步预算（`charge = pops + pushes`，或按 `SCAN_CHUNK` 迁入字数配额），并把标记栈换成块链（新块 bump 分配，不拷贝旧块）。
+
+#### 6.9.5 c_seg 重标定（v21 终版源码）
+
+`tests/gc-p0/bseg-cal.tsv` 的 `src_md5` 必须与当前源码一致，否则门禁告警「标定行陈旧 ⇒ 必须重标定」。本轮源码变更（细直方图、`min(CPU, 墙钟)` 时基、`[slow]` 双钟、`[quota] round=`、批量循环多行化）改变了段步的构成，因此重新标定（`calib_cseg.py`：PAUSE=1 + STEP_CPU=1、pin 6、3 reps、200 轮）：
+
+| 形状 | chunk | c_seg（v21） | p99.9（3 reps） | 中位 | seg 步 / rep | 上一版（v19） |
+|---|---:|---:|---|---:|---:|---:|
+| `pd_bigobj` | 8192 | **3.841 ns/word** | 29.44–31.79 µs | 31.46 | 25,410 / 25,155 / 25,414 | 4.950 |
+| `pd_pointer_dense` | 8192 | **5.997 ns/word** | 45.34–49.44 µs | 49.13 | 30,768 / 30,751 / 30,525 | 7.412 |
+
+⇒ `B_seg(pd_bigobj) = 1.5 × 3.841 × 8192 / 1000 + 1 = 48.20 µs`，门禁轮实测 `count(>48.20 µs) ≤ 59 / 126,311` 步（细直方图 `fine` 口径）⇒ `(b)` **PASS**；`B_seg(pd_pointer_dense) = 74.69 µs`，实测 `count(>74.69 µs) ≤ 106 / 154,113` ⇒ 同样 PASS。
+
+注意 `c_seg` **依赖源码**（段步构成变了它就变），每个权威 build 必须用自身重标；门禁里带 `--src-md5` 就是为了让「借旧标定」变成显式告警而不是隐性漂移。
+
+**复现**：`EXTC=$PWD/build/extc OUT=tests/gc-p0/out/r3v28 REPS=3 EXTC_RC_STEP_CPU=1 tests/gc-p0/run.sh g1cpu`；`python3 tests/gc-p0/g1c.py --selftest`（S1–S33，含 S28 结构性 vacuous、S30 环境地板、S31 release vacuous/探针、S32 `>50 µs` 地板、S33 mixed 结构性 N/A 不进聚合）；控制实验 `tests/gc-p0/noise_floor.c --rate 0.30`。
+
+#### 6.9.6 门禁判决（v21：`reclaim.c` 4,305 行 / `61c9fad7…`，构建 `a20ab949…`）
+
+命令（wall 遍与 cpu 遍用**两个 OUT**：`run_pause` 的日志文件名会按 shape+rep 覆盖，同一 OUT 跑两遍会让 wall 遍的 `stdout`/`log` 被 cpu 遍换掉；cpu 遍只跑 `g1cpu`）：
+
+```sh
+EXTC=$PWD/build/extc OUT=tests/gc-p0/out/r3v29 REPS=3 tests/gc-p0/run.sh all
+EXTC=$PWD/build/extc OUT=tests/gc-p0/out/r3v28 REPS=3 EXTC_RC_STEP_CPU=1 tests/gc-p0/run.sh g1cpu
+```
+
+**G1② 六个用例（cpu 口径，权威）**：
+
+| 用例 | class | 通道 | 读数 | 判定 |
+|---|---|---|---|---|
+| `cyc` | warm | (a) | `n=469,458`、`>50 µs` **8.73e-05**（地板扣 60）、p99.9 净 `count(>10 µs)=252`（原始 591 扣 339） | **PASS** |
+| | | (b) | `maxreq=40 B ≤ 65,536` 且 `n_seg=0` | PASS（vacuous） |
+| | | (c) | regionfree 0.5 µs / release vacuous / trigger-step 82.5 µs | PASS |
+| `pb` | warm | (a) | `n=1,029,888`、`>50 µs` **5.63e-05**（扣 163）、p99.9 净 0（原始 459 扣 908）、`over1ms=0` | **PASS** |
+| | | (c) | regionfree 11.0 / trigger-step 6.6 µs | PASS |
+| `pc` | warm | (a) | `n=123,588`、`>50 µs` **8.09e-06**、p99.9 净 0（原始 11 扣 831） | **PASS** |
+| | | (c) | trigger-step 169.6 µs（≤200 目标，余量 15%） | PASS |
+| `pd_bigobj` | mixed | (a) | 结构性 N/A（不进聚合） | N/A |
+| | | (b) | `n_seg=126,311`、`c_seg=3.841`、`B_seg=48.20 µs`、`count(>48.20 µs) ≤ 59`（细直方图）、max 只 OBS 197.5 | **PASS** |
+| | | (c) | regionfree 0.6 / release vacuous / trigger-step 7.3 µs | PASS |
+| `pd_bigobj60` | mixed | (b) | `n_seg=7,488 < 1e5` | N/A（样本不足，见下） |
+| `pd_pointer_dense` | cold-dense | (a) | `n=7,413,905`、`tau_t=5.434 µs/pop`（`[top] cpu_us=695.6 pops=128`）、`over1ms=0`、p99.9 PASS（≤1 ms） | **RED** |
+| | | (b) | `n_seg=154,113`、`c_seg=5.997`、`B_seg=74.69 µs`、`count(>74.69 µs) ≤ 106` | PASS |
+| | | (c) | regionfree 2.0 / release N/A / trigger-step 34.2 µs | PASS |
+| `rel` | warm（探针） | (c) | release `n=90` max 7.5 µs；trigger-step 90 / 30.5 µs；regionfree 0.4 µs | **PASS** |
+
+⇒ **G1② 判定（取最差）= RED，唯一来源是 `pd_pointer_dense` 的 `(a)`**；其余五个用例 PASS 或（有证据的）结构性 N/A。
+
+**本轮清掉的两条真红（R1 登记）**：`pb` 的 `(a)` 从 `2.56e-4` 落到 **5.63e-05**（p99.9 从 RED 变 PASS）；`pc` 的 `(a)` 从 N/A（`n=41,184` 太少）变成可判且 PASS（`n=123,588`，轮数抬到 150M 后 `>50 µs` 8.09e-06）。这两条同时依赖 6.9.1 的 `min(cpu,wall)` 与 6.9.2 的环境地板。`cyc` 的 `(a)` 判据余量约 46%（净 252 vs 上限 469），其中 `>50 µs` 通道在扣地板后才过线（原始 8.73e-05），所以「本机可检出回归幅度约 ≥2×」这条风险继续挂着（§8）。
+
+**`pd_pointer_dense` `(a)` 的 RED 是两个问题叠在一起，R4 处理**：
+
+1. **契约漏洞（真实的）**：该形状 8 MiB 里放 1M 个非空指针，标记栈被推到 `msp` 830k–950k（`mscap=1,048,576`）；一次 pop 会 push 上万个孩子，而步预算只数 pop、不数 push（`[work] push_max=0` 即证据），标记栈靠 `realloc` 扩容，拷贝 + 冷页缺页正好落在一步里。A/B 交叉构建（默认 vs `-DEXTC_RC_MARK_DRAIN_DEADLINE_US=0`，各 4 reps，`PAUSE=1 STEP_CPU=1 SLOWSTEP=100`、`taskset -c 6`、200 轮）两档都出现 271–361 µs 步（A: 302.0/271.7/120.5；B: 312.1/361.0/279.1，`msp` 294,952–830,720）⇒ 与已删除的时间闸门无关。R4 修法：把 push 计入步预算（`charge = pops + pushes` 或按 `SCAN_CHUNK` 迁入字数配额）+ 标记栈改块链。
+2. **通道口径不一致**：同一构建的 **wall 遍**对同一形状给 `tau_t=1.573 µs/pop`（PASS，`[top] cpu_us=201.4 pops=128`），cpu 通道给 5.434 µs/pop（RED）。`tau_t` 取的是 `[top]` 采样里 `步时/pops` 的最大值，对「一步里恰好落进宿主停顿」极其敏感；cpu 通道虽然有 `min(cpu,wall)`，但 `[top]` 的 `cpu_us` 是**原始** cpu 读数（不走 `stepSpan`），所以它仍可能被 WSL2 的记账放大。R4 的口径决定：`[top]` 是否也报 `min` 值、以及 cold-dense 的 `tau_t` 该用哪个通道。本轮按「判据只严不放宽」保留 RED。
+
+**`pd_bigobj60` 的 `(b)` N/A**：它是 G20 的 60 轮规模无关对照，`n_seg=7,488 < 1e5`。同一 `B_seg` 已由 200 轮那次（约 1.3e5 步）覆盖 ⇒ 逻辑上「已判」，但按「N/A ≠ PASS」的规矩仍记 N/A。R4 决定口径：要么给它单独的最小样本量，要么在 `g1c` 里做「同源覆盖」的显式论证。
+
+**其它门禁（wall 遍 `tests/gc-p0/out/r3v29`）**：G18 **PASS**（60/200 轮 VmHWM 均 26,268 kB ≤ 26,624；规模无关 26,268 ≤ 27,581.4；stdout 逐字 ok）；G4-Stress **PASS**（A=8,984 ≤ 15,223 kB、B=38,664、C=75,772；A<B<C；末 6 段差 0.00%）；G8 **PASS**（T1/T2=0.462× ≤1.10×，两档 ASAN 无报告）；G9 3/3 **PASS**；G12/G13 **PASS**（强制计数档与默认档 soundness）；G14 `(b)` **PASS**（800k 对照比 1.000× ≤1.02、RSS 3.4 MB）；G15 **XFAIL(known L10-a)** 14.025×（预期 RED）；G16 **PASS**；G17 记录 A 25.3 / D 23.6 / B 57.3 / C 57.3 MB，`A<B≈C` 的饱和原因是触发阈值 `thr`（自学习 scale）先于 `M_max` 成为约束，如实记录；G1①（wall legacy）三形状 `over1ms=0`；G20 已写 `g20.json`（extc md5 `a20ab949…`）。
+
+**Ir 与单测**：`tests/reclaim-perf/gate.sh` **87,625,199 ≤ 88,029,115 PASS**（6.9.7）；`tests/reclaim-perf/gate-work.py` **PASS**（五形状 `[work]` 三跑逐字一致，确定性恢复）；`tests/reclaim/run.sh` **216/0**；`./check.sh docs` **13/0**；`tests/gc-p0/g1c.py --selftest` **S1–S33 PASS**；`tools/check_mark_batch.py --selftest` **PASS**。
+#### 6.9.7 Ir 棘轮红：热路径上的时钟不是免费的 —— 结论是「走步循环里不读钟」
+
+**症状**：R3 中途 `tests/reclaim-perf/gate.sh` 变红 —— `summary: 95,578,820` > `88,029,115`（+8.6%），而同一次改动对 `cyclic_pressure` 的**生成代码语义**没有影响（只加了量具与 drain 时限）。棘轮只许往下（§7 G5），不能抬线。
+
+**隔离**：`git worktree add /tmp/v18wt HEAD` 用 v18 源码、同形状同 flags 跑 callgrind ⇒ `87,649,683`；工作树 ⇒ `95,403,773`，Δ = +7.75M Ir。逐函数（inclusive）：`main` 67.04M→74.08M、`extc_rc_markStep` 43.86M→46.91M、`extc_rc_markPush` 由内联变独立 3.34M、`extc_rc_pauseNow` 0.98M；用户函数（`pushFront`）也「变慢」11.00M→11.73M —— 后者是内联边界抖动，不是成本。
+
+**宏扫描定位**（生成的 C 里这些宏都由 `#ifndef` 守护，可 `-D` 覆盖）：
+
+| 覆盖 | `summary:` | 结论 |
+|---|---:|---|
+| 无（当时默认） | 95,403,773 | — |
+| `-DEXTC_RC_MARK_DRAIN_DEADLINE_US=0` | **87,625,173** | 与 v18 持平 ⇒ +7.78M 全部来自 drain 时限检查 |
+| `-DEXTC_RC_MARK_DRAIN_CHECK=8192` | 88,975,286 | 检查频率降到 1/256 ⇒ 剩 +1.35M 结构性（内联边界） |
+| `-DEXTC_RC_SEG_FINE_US=0` | 95,299,725 | 细直方图几乎免费（−0.1M） |
+
+**机理**：drain 检查每 32 个 pop 读一次钟；本形状 N=200k 只有 `[histo] n=1,686` 步（每步 256 pop ⇒ 每步 8 次检查）⇒ 约 13.5k 次读钟。真机上 `clock_gettime` 走 vDSO ≈20 ns（占墙钟 0.41 s 的 0.07%，对停顿判据可忽略），但 **callgrind 下每次读钟 ≈480 Ir**（`clock_gettime` 走 libc 的 syscall 路径、`clock.c:clock` 被模拟成几百条指令）⇒ `13.5k × 480 ≈ 6.5M Ir`。同一段代码在两个量具下的成本差三个数量级，所以这条红是**量具口径**，但棘轮不认理由。
+
+**第一版裁决（已被取代）**：当时换成了廉价时钟 —— x86-64 上用 `rdtsc`，启动时惰性标定「每 µs 多少 TSC 数」，此后每次检查只是两条指令 + 一次比较；callgrind 86,366,850、门禁 87,142,358 PASS。该版本连同整个机制在收口时被删除，理由不是 Ir（TSC 已解决），而是 6.9.4 的确定性判据。
+
+**最终裁决：走步循环里不读时钟。** 删除后门禁实测 **87,625,199 ≤ 88,029,115 PASS**（v18 是 87,649,683，差异来自内联边界）。这条规则现在由 `tools/check_mark_batch.py` 的两条结构断言守着（`batch walk reads no clock`、`shallow drain reads no clock`），并有注入自测证明它们有牙；`[work]` 的三跑确定性由 `tests/reclaim-perf/gate-work.py` 守着。
+
+**可复现**：`bash tests/reclaim-perf/gate.sh`（Ir 上限 88,029,115）；隔离实验 `git worktree add /tmp/v18wt HEAD` 后按 `gate.sh:88` 的 flags 跑 `valgrind --tool=callgrind`；单测 `python3 tools/check_mark_batch.py --selftest`。
 ## §7 门禁（Gate）：判据、量具、before / after
 
 门禁的用处不是「证明程序对」，而是**把契约变成可自动判定的句子**：每一条都写死「量具 + 判据 + 口径」，避免出现「实测 106 µs 也算通过」这种自欺。全部跑在既有 harness（`tests/reclaim-perf/gate.sh` 六项 + `tests/gc-p0/run.sh`）上，不需要新依赖。**after 列的构建口径（逐行标注）**：`p1-after` = v7 同轮产物集（`tests/gc-p0/out/p1-after/`，构建 `build-emp3/extc 07b7be1a…`）；`v7` = `build-p1/extc b9fd5784…`；G20-P0 单列 P0 轮（`build-rf/extc 7019342b…`）。跨构建的绝对计时允许 ±5–15% 差（§6.7.6），判据只看方向与阈值；任何一行换构建都必须重标尾号，不得混用。
@@ -791,13 +939,13 @@ callgrind（`align` 小 N）：promote 115 211 310 → **129 126 214（+12.1%）
 | # | 判据 | 量具 | before（HEAD 85b8871b） | after |
 |---|---|---|---|---|
 | G1① | over-1ms 步数 = 0（**只认 cpu 口径**，wall 仅观察） | `[histo]` 15 桶（`over1ms` 从 `b4ms` 起算，严格 >1 ms）+ `EXTC_RC_STEP_CPU=1` | 0/12 通过（旧 7 桶口径） | **PASS（v7）**：四形状 + 压力用例全部 `over1ms=0`；v6 曾出现 cyc(cpu) 1/537,750 步 2,540.0 µs 单次奇点（[top] `mark/advance pops=256 seg=0`），同一二进制复跑 16+20+10 次全 0 ⇒ 判为 WSL2 时钟尖峰，不记 N/A、不剔除、也不换绿口径 |
-| G1② | **常规步（`seg=0`）** `>50 µs` 占比 ≤1e-4（cpu 口径）+ `p99.9 ≤10 µs`；通道拆分：`(a)`=[histo]−[segsteps]、`(b)`=[segsteps]、`(c)`=[chan] | `EXTC_RC_STEP_CPU=1` + `[histo]`/`[segsteps]`/`[chan]`（`tests/gc-p0/g1c.py`，selftest S1–S22） | 不可判（无直方图） | **RED（v7，三通道）**：`(a)` cyc over-50 µs 跨桶 N/A、p99.9 落 >16 µs 桶；pb `(a)` **4.25e-4–1.21e-3** >1e-4（跨构建 9.99e-5–4.00e-4 ⇒ 必须标 build）；`(b)` pd_bigobj **N/A**（点值 58.06 µs 已 <64 µs，但 p99.9 落 32–64 桶 ⇒ 桶界不可判）、dense **RED**（点值 90.74 µs > 64 µs 兜底；`B_seg`=137.1 不绑定判决；独立构建 build-da2 两者均 N/A ⇒ 依赖 `bseg-cal` 标定）；`(c)` dense regionFree **1,819.4 µs** RED；pc n=20,592<1e5 ⇒ N/A；mixed `(a)` by design N/A |
+| G1② | **常规步（`seg=0`）** `>50 µs` 占比 ≤1e-4（cpu 口径）+ `p99.9 ≤10 µs`；通道拆分：`(a)`=[histo]−[segsteps]、`(b)`=[segsteps]、`(c)`=[chan] | `EXTC_RC_STEP_CPU=1` + `[histo]`/`[segsteps]`/`[chan]`（`tests/gc-p0/g1c.py`，selftest S1–S33） | 不可判（无直方图） | **RED（v7，三通道）**：`(a)` cyc over-50 µs 跨桶 N/A、p99.9 落 >16 µs 桶；pb `(a)` **4.25e-4–1.21e-3** >1e-4（跨构建 9.99e-5–4.00e-4 ⇒ 必须标 build）；`(b)` pd_bigobj N/A、dense RED；`(c)` dense regionFree 1,819.4 µs RED；pc n=20,592<1e5 ⇒ N/A。**v21（R3 收口，权威 cpu 口径，§6.9.6）**：`cyc` PASS（`n=469,458`、`>50 µs` 净 8.73e-05、p99.9 净 `count(>10 µs)=252`）、`pb` PASS（`n=1,029,888`、5.63e-05、净 0、`over1ms=0`）、`pc` PASS（`n=123,588`、8.09e-06、净 0）、`pd_bigobj` `(b)` PASS（`c_seg=3.841`、`B_seg=48.20 µs`、`count(>48.20 µs) ≤ 59`、`n=126,311`）、`pd_bigobj60` `(b)` N/A（`n_seg=7,488`）、`rel` PASS（release n=90 / max 7.5 µs）、**(b)/(c) 的结构性 vacuous 与 mixed 结构性 N/A 都有证据**（6.9.3）；唯一 RED 是 **`pd_pointer_dense` `(a)`**（`tau_t=5.434 µs/pop`，R4：扇出 push 未计入步预算 + 标记栈扩容、以及 `[top]` 的 `cpu_us` 未走 `stepSpan` 的通道口径） |
 | G1③ | p99.9 ≤ 50 µs（n ≥ 1e5，cpu 口径） | `[histo]` | N/A（结构性不可得） | **PASS（薄）**：cyc/pc/pb 的 p99.9 ≤ 32 µs（桶上界；doc 记 cyc 16 µs、独立跑同一量落 32 µs 桶，邻界不影响判决）；pd N/A（桶界 32–64，wall 口径 128 µs） |
 | G2 | `collect`/`account` 单次 **p99.9 ≤ 200 µs**（n ≥ 1e3，cpu 口径；**max 不可作契约**，见 §8.1 R6——2202 样本的单次 max 判 200 µs 会被尖峰支配） | `[chan]` + `[histo]` | 1.08–1.45 ms（整轮排空，n<100 ⇒ RED） | **PASS（判据改 p99.9 后）**：cyc/pc/pb 的 collect p99.9 ≤ 64 µs（两口径合并 n=4404，>128 µs 样本仅 3 个）；max 记录：cyc 215.3 µs（3 reps 合并的单次尖峰）、doc-audit 13 次独立跑 cyc collect max 16.6–91.2 µs ⇒ 旧判据 RED 不可审计，按 `AUDIT-GC-P0.md` §18.4-1 改判 |
 | G3a | `regionFree` 同步段 free 次数 ≤ `#classes + 3`（v7 两阶段后：`_frees += 9+big` 只在 `#if !EXTC_RC_FREE_DEFER` 内，默认 DEFER=1 只剩 `+= 2`）；总量看 `[freequeue] drained_total` | `[regionfree]` + `[freequeue]` 探针 | 无探针 | **PASS（判据已重构）**：默认档 pb 50M `max_frees=3`、pd 200 同；旧判据（`≤10·#slabs+#classes+3`，pb 110190≤122433）只在 DEFER=0 构建可复现 |
 | G3b | `regionFree` 单次 cpu ≤1 ms（停顿硬项；v8 起同步段 O(1)，排空预算 ≤8 slab/100 µs） | `[regionfree]`（`sync_us`/`queue_us`）+ `[chan]` + `[closing]` | 未测（v4 pb cpu 86.2 ms） | **已闭合（v8）**：三形状 `[chan] regionfree` = **0.4 µs**（pd_bigobj，max 0.9）/ **1.6 µs**（pd_pointer_dense，max 2.5）/ **1.7 µs**（pb 100M，max 2.1）；`[regionfree] max_frees=0 max_slabs=0 sync_us≈0.2–1.9`。v7 旧数保留作对照：pd 493.2 µs（max 711.4）、dense 1,365.5–1,849 µs、pb 100M 13.2–14.8 ms、pb 50M 6.35–8.40 ms。判据（≤1 ms）达成；**用户目标 p99.9 ≈50 µs 未达成，且不是本项问题**（v9 更正：p99.9 由宿主噪声地板决定，(b) 通道 58.53/99.20 µs 见 §6.7.4 与 `P1-SEG-TAIL.md`）。诚实限制：三个形状都只在退出前 drop 一次，cq 未排空（`slabs_moved=0`），归零由 driver `t_regionFreeDefer*` 与 `freeQueueDrainAll` 证明 |
 | G4 | 注入 4× 循环垃圾时 RSS ≤ `M_max` + 8 MiB，且不随轮次单调涨 | `tests/gc-p0/stress.py` + VmHWM | 不可判（`M_max` 未实现） | **PASS（p1-after）**：A=9,108 kB ≤ `M_max`+8 MiB = 7,031+8,192 = **15,223 kB**；末 6 段差 0.00%；A<B<C（9,108<41,820<83,040） |
-| G5 | digraph Ir ≤ 88,029,115（门禁上限；基线实测 82,037,532） | `gate.sh:88` | 82,037,532 PASS | **87,135,465 PASS（v7）**（比基线 +6.2%，余量 1.0%）；历程 v5 86,316,991 → v6 86,618,661 → elide 卷计数器 + 队列/verify 修正 87,135,465 |
+| G5 | digraph Ir ≤ 88,029,115（门禁上限；基线实测 82,037,532） | `gate.sh:88` | 82,037,532 PASS | **87,625,199 PASS（v21）**（余量 0.46%）；历程 v5 86,316,991 → v6 86,618,661 → elide 卷计数器 + 队列/verify 修正 87,135,465 → R2 冷档 87,649,685 → R3 一度 **95,578,820 RED**（热路径读钟在 callgrind 下每次 ≈480 Ir，§6.9.7）→ 换成 TSC 时钟 87,142,358 → **删除按墙钟切步的机制**后 87,625,199（走步循环里不读钟，由 `tools/check_mark_batch.py` 两条断言守着） |
 | G6 | pb 每节点字节 20 ± 10% | `/usr/bin/time -v` VmHWM / N | 20.49 PASS | **20.49 PASS**（pb 100M：2,000,408 kB / 100M） |
 | G7 | pc 峰值 ≤ 4 MiB 且与轮次无关 | 同上 | 2.85/2.85 MiB PASS | **PASS（p1-after）**：pc **2,996 kB = 2.93 MiB**；cyc 20M/80M = 4,988/4,988 = **1.000×**（`out/p1-after/summary.txt`） |
 | G8 | 强制档 1 于 `chain2`：峰值 ≤ 1.1 × 档 2 | `/usr/bin/time -v` | **15.38× RED** | **PASS（p1-after）**：**0.518×**（T1 1,576 / T2 3,040 kB；独立构建 build-da2 1,580/3,040 = 0.520×）；ASAN 两侧干净 |
@@ -1150,7 +1298,7 @@ r'* = r'_max(M_max) = (M_max/L − 1)/κ_M
 | C10 | `noSweep` 无出口（L6） | 该 region 永不回收，只保证不早放 |
 | C11 | C 互操作的所有权（`plate` 层不分配，但外部 C 代码可持有 extC 指针） | 模型外 |
 
-## 附录 D 源码行号索引（FREEZE v17 口径）
+## 附录 D 源码行号索引（表体 v17 口径；v18/v21 新增行以绝对行号单列）
 
 下表是本文所有关键断言的可核对位置。**当前口径（FREEZE v17）**：src/back/reclaim.c = 39c93ca4fa0718920844e91147695589（4 269 行，相对 v16 只加量具的 3 个精确超阈计数与 `[chan]` 改名，+10 行，换算表见 `MEMORY-MODEL-CURRENT.md` 头部 v17 行）；src/back/codegen.c = cc01b5f4216ea5c8d9fde77c47c41f24（16 212 行，相对 v15 的 16 065 行重写了 `emitParallelRuntime` 的发射文本并 +147 行，换算表见 `MEMORY-MODEL-CURRENT.md` 头部 v16 行）；stdlib/std/json.extc = fc33b94db7b01f61ad367fff768edfbb（1 186 行）；tests/reclaim/driver.c = 28dd4009ac7207f47e581a697c0d421f（1,637 行）；build/extc = 722e5ff1247c9bd4204e7f24ed01ff84。**本表已按 v17 重锚**：每一行都用符号 grep 逐条复核（v16 只有 `:15984`/`:15989` 两条落进位移区，已改为 `:16131`/`:16136`）（v12 与 v11 同为 4 169 行、行号相同；v13 的位移集中在常量段与 `slabNew`/`alloc` 发射段，v10/v11 的换算表见 `P1-ADMISSION.md`）；表外正文的 `reclaim.c:NNNN` 引用与表同源，未单列。**v7 口径（历史）**：codegen.c = 2f560e2e6deef8c4927db4611344aecb（16 017 行）（v7 测量输入为 `d339382889b87c0dd18b357c69e2e779`/16 017 行；提交树只把 `typeHasRefSlots` 的前向声明移到 `genViewCopier` 的说明块之前以过 `check-doxygen`，行数与代码不变）；src/back/reclaim.c = e17080d1c80513b27ca06f2bc6224b0f（4 031 行）；tests/reclaim/driver.c = 7b9ac61a55c140640a5964ab74a8780e（1 523 行）；v7 为 git HEAD 85b8871b + 工作树 patch；v10 为 HEAD 8d0086f0 + 本轮工作树 patch。构建：build-p1/extc = b9fd5784…（v7 交付）、build-lead7/extc = a7f2a873…、build-da2/extc = 10960ce7…（独立复核）；P0 轮的 build-rf/extc = 7019342b… 只在 §6.6 与 G20-P0 行出现。行号是该文件的物理行号；换版本前先 md5sum 对齐。注：同一源码用不同 BUILDDIR 重建时 extc 的 md5 会因调试段（-g）里嵌入的构建目录路径而不同（build-frz/extc = b35c12a1… 即同源二次构建），溯源以源码 md5 为准。
 **当前口径（FREEZE v18 = R2 冷档，2026-11-13）**：`src/back/reclaim.c` = `8f49f0718d788cd1202d348945260ab3`（**4,282 行**）、`src/back/codegen.c` = `cc01b5f4216ea5c8d9fde77c47c41f24`（16,212 行，同 v16/v17）、`tests/reclaim/driver.c` = `28dd4009ac7207f47e581a697c0d421f`（1,637 行，未改）、`build/extc` = `9ceb7690c3ae62d12921b7f0a9bf3757`。相对 v17，`reclaim.c` 只插入冷档 13 行（11 行常量块 + 1 行计数器 + 1 行 clamp），`[work]` 的 `cold_steps=` 是原地改 ⇒ **换算表：n < 1153 ⇒ n；1153–1177 ⇒ n+11；1178–1417 ⇒ n+12；n ≥ 1418 ⇒ n+13**（锚点复核：v17 `:1417` window clamp → v18 `:1429`；v17 `:1177` stepGt 声明 → v18 `:1188`；冷档 clamp 落在 v18 `:1430`）。**本附录表格仍保留 v17 行号，未做机械平移**（机械平移在历史上曾把符号指错函数）；读 v18 源码请按上表换算或直接按符号 grep，新增行在下表末尾以 v18 绝对行号单列。机制、实测与判据见 §6.8。
@@ -1224,3 +1372,23 @@ r'* = r'_max(M_max) = (M_max/L − 1)/κ_M
 | 运行期：`extc_rc_markColdN` 计数 | `reclaim.c:1189`（v18） |
 | 运行期：`[work]` 的 `cold_steps=` 探针 | `reclaim.c:3927`（实参 `:3939`，v18） |
 | 工具：冷档静态断言 + 红自测（6 + 4 条） | `tools/check_mark_batch.py`（`--selftest` 31 条） |
+
+**口径 v21（R3 收口，2026-11-13，`reclaim.c` 4,305 行）**：`src/back/reclaim.c` = `61c9fad7f67b6b73937030f32736baef`、`src/back/codegen.c` = `cc01b5f4216ea5c8d9fde77c47c41f24`（16,212 行，未改）、`tests/reclaim/driver.c` = `28dd4009ac7207f47e581a697c0d421f`（1,637 行，未改）、`build/extc` = `a20ab9491061a23c9917b0596381391e`。v18→v21 的机械换算表、13 个变更块与 v21 绝对行号锚点见 `docs/analysis/REFS-V21.md`。相对 v20（4,373 行 / `61e8bc53…` / `e67aa434…`，**已作废**：它含收口时被删除的 drain 时限），v21 净 −68 行（删 drain 宏、TSC 时钟块、两处时限检查、`extc_rc_drainCutN`、`[work] drain_cut=`）。上表（v17）与 v18 表都**不要**机械平移。
+
+| 主题 | 位置（v21 绝对行号） |
+|---|---|
+| 运行期：段步细直方图常量 `EXTC_RC_SEG_FINE_US`（256，注释自 1187 起） | `reclaim.c:1189-1193` |
+| 运行期：`extc_rc_segFine[]` | `reclaim.c:1200` |
+| 运行期：`extc_rc_stepSpan`（每步取 `min(CPU, 墙钟)`，函数体 1316-1320） | `reclaim.c:1311-1320`（调用点 `:3334`、`:3668`） |
+| 运行期：mark 步首墙钟基线（`min` 需要两个基线） | `reclaim.c:3204` |
+| 运行期：批量扫描循环（多行块，**不含任何读钟**） | `reclaim.c:3319-3321` |
+| 运行期：细直方图写入 | `reclaim.c:3342` |
+| 运行期：`[slow]` 的 `wall_us/cpu_us` 原始分量 | `reclaim.c:3356-3357`（格式串 `:3362-3363`） |
+| 运行期：`[quota] round=`（per-round 行与终值行区分） | `reclaim.c:3631` |
+| 运行期：`[segsteps] us<n>=<count>` 细桶 | `reclaim.c:3882` |
+| 运行期：`[work]` 行（含 `cold_steps=`/`maxreq=`） | `reclaim.c:3950` |
+| 工具：环境地板探针（`--rate` 模式） | `tests/gc-p0/noise_floor.c` |
+| 工具：G1② 通道判定（vacuous/地板/细直方图；selftest S1–S33） | `tests/gc-p0/g1c.py` |
+| 工具：`c_seg` 标定与标定表（v21：3.841/5.997 ns/word） | `tests/gc-p0/calib_cseg.py`、`tests/gc-p0/bseg-cal.tsv` |
+| 工具：走步循环不读钟的结构断言 | `tools/check_mark_batch.py`（`batch walk reads no clock`、`shallow drain reads no clock`） |
+| 探针形状：release 通道（覆盖长命根槽） | `tests/gc-p0/src/rel_overwrite.extc` |

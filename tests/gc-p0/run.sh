@@ -113,10 +113,24 @@ noise() { # 空转基准：同机、同时钟、同规模（n=200000，inner=200
     $CC -O2 -std=c11 -o "$OUT/bin/noise_floor" tests/gc-p0/noise_floor.c \
         >"$OUT/log/noise_floor.compile.log" 2>&1 || { echo "FAIL compile noise_floor" >&2; return 1; }
     : >"$OUT/noise.txt"
+    : >"$OUT/stallrate.txt"
     for r in $(seq 1 "$REPS"); do
         "$OUT/bin/noise_floor" 200000 200 | tee -a "$OUT/noise.txt"
     done
     echo "  ↑ 这是计时噪声地板（不是 GC）：G1 的 >50µs 占比与它对比，p99.9 由 P1-6 直方图给"
+}
+
+stallfloor() { # name rep when —— 外部停顿率探针（不是 GC）：同核相邻时间窗里机器固有的停顿次数
+    # 依据（Lead R3）：宿主抢占对 guest 不可见（PSI/steal 全 0，且 CLOCK_THREAD_CPUTIME_ID 把宿主抢占
+    # 也算进本线程 CPU ⇒ cpu≈wall 同时膨胀），只有"同一台机器、同一核、紧邻时间窗"的纯计算对照能测出地板。
+    # 门禁只把它的产物用于 p99.9 通道的环境扣减（见 tests/gc-p0/g1c.py 的 env_floor）。
+    local name=$1 rep=$2 when=$3
+    if [ ! -x "$OUT/bin/stallrate" ]; then
+        $CC -O2 -std=c11 -o "$OUT/bin/stallrate" tests/gc-p0/noise_floor.c \
+            >"$OUT/log/stallrate.compile.log" 2>&1 || { echo "FAIL compile stallrate" >&2; return 1; }
+    fi
+    "$OUT/bin/stallrate" --rate 0.30 2>/dev/null \
+        | sed "s/^/stallfloor case=$name rep=$rep when=$when /" >>"$OUT/stallrate.txt"
 }
 
 run_plain() { # name rep [args...]
@@ -145,19 +159,24 @@ run_pause() { # name rep [args...]
     clock=wall
     envs=(--env "EXTC_RC_PAUSE=${EXTC_RC_PAUSE:-1}")
     if [ -n "${EXTC_RC_STEP_CPU:-}" ]; then envs+=(--env "EXTC_RC_STEP_CPU=$EXTC_RC_STEP_CPU"); clock=cpu; fi
+    stallfloor "$name" "$rep" pre
     rec=$(python3 tests/gc-p0/sample.py --bin "$OUT/bin/$name" --args "$@" \
         --interval-ms "$INTERVAL" "${envs[@]}" \
         --csv "$OUT/csv/${name}_pause_r${rep}.csv" \
         --stdout "$OUT/log/${name}_pause_r${rep}.out" --stderr "$OUT/log/${name}_pause_r${rep}.err")
     rc=$?
+    # 前后各一次：环境地板取两次里较小的一次（最少扣减 = 最严），见 g1c.py env_floor
+    stallfloor "$name" "$rep" post
     record "$name" "$rep" "$rc" "$rec" "pause" "$*"
     pr=$(python3 tests/gc-p0/pause_parse.py "$OUT/log/${name}_pause_r${rep}.err")
-    python3 -c 'import json,sys
-d=json.loads(sys.argv[3]); d.update(case=sys.argv[1], rep=int(sys.argv[2]), clock=sys.argv[4])
-print(json.dumps(d))' "$name" "$rep" "$pr" "$clock" >>"$OUT/pauses.jsonl"
+    # 解析结果走 stdin 而不是 argv：pc 这种长跑会打出几千行 [quota]，pr 可达数百 KB，
+    # 单个 argv 字符串超过 Linux 的 MAX_ARG_STRLEN(128 KiB) 会让 python3 报 "Argument list too long"。
+    printf '%s' "$pr" | python3 -c 'import json,sys
+d=json.loads(sys.stdin.read()); d.update(case=sys.argv[1], rep=int(sys.argv[2]), clock=sys.argv[3])
+print(json.dumps(d))' "$name" "$rep" "$clock" >>"$OUT/pauses.jsonl"
 }
 
-if [ "$WHAT" = all ] || [ "$WHAT" = noise ] || [ "$WHAT" = g1c ]; then
+if [ "$WHAT" = all ] || [ "$WHAT" = noise ] || [ "$WHAT" = g1c ] || [ "$WHAT" = g1cpu ]; then
     echo "== 空转基准 noise_floor（G1 噪声地板对照，n=200000 inner=200，$REPS reps）=="
     noise
 fi
@@ -432,13 +451,45 @@ fi
 if [ "$WHAT" = g1cpu ] || [ "$WHAT" = g1c ]; then export EXTC_RC_STEP_CPU=1; fi
 echo "== G1：停顿尾部（[pause]/[step]；clock=${EXTC_RC_STEP_CPU:+cpu}${EXTC_RC_STEP_CPU:-wall}）=="
 if [ "$WHAT" = all ] || [ "$WHAT" = g1 ] || [ "$WHAT" = g1cpu ] || [ "$WHAT" = g1c ]; then
-    build pd tests/gc-p0/src/pd_bigobj.extc \
+    # 四个形状必须由本段自建：g1cpu/g1c 单跑时不再依赖先跑过 all/g4（否则 sample.py 找不到
+    # $OUT/bin/<shape> 会静默产出空 .err ⇒ g1c 把 (a)(b) 记成 N/A"（实测：2026-11-13 单跑 g1cpu 全 N/A）。
+    # 混合形状按源文件名命名（pd_bigobj，不叫 pd）：(b) 的 B_seg 标定表按形状名索引，叫 pd 会解析不到
+    # pd_bigobj 行（bseg-cal.tsv 键是 pd_bigobj/pd_pointer_dense）⇒ (b) 结构性 N/A。
+    # 混合形状 pd_bigobj 的 (b) 样本由 **G18 段**提供（200 轮 × G18_PD_REPS=5 reps ⇒ 合并约 1.3-1.6e5
+    # seg>0 步 > MIN_N=1e5）。本段**不要**再跑 pd_bigobj：G18 的 stdout 校验与 g20 的规模无关对照都读
+    # log/pd_bigobj_pause_r*.{err,out}，本段换个轮数跑一次就会把它们覆盖（2026-11-13 实测：本段跑 600 轮
+    # ⇒ G18 的 stdout 逐字校验拿到 600 轮输出 ⇒ G18 假 RED）。
+    # pc 的轮数从 50M 抬到 150M：pc 每次 collect 只推进少量步，50M×3 reps 只有 41 184 步 < MIN_N=1e5
+    # ⇒ (a) 结构性 N/A；150M×3 ⇒ 约 12 万步过线（耗时 0.34s→1s/rep，可接受）。判据线不动。
+    # rel 是 (c) release 通道的**探针用例**（Lead R3）：release 的发射条件很窄，四个负载形状与 digraph
+    # 的生成 C 里调用点都是 0 处 ⇒ 该通道在它们上面结构性不可达（g1c 需要 relsite 证据才记 vacuous）。
+    # 只有本形状真的走 releaseDead（每轮 new 一个自环节点覆盖长命根槽 keep）；它每轮仅分配 1 个节点，
+    # 不构成负载 ⇒ 步分布不判（run.sh 传 --chan-only rel:release，g1c 把它的 (a)/(b) 记 SKIP）。
+    # 轮数 2e6：实测 release n=1（region 大部分时间在 sweeping，releaseDead 按设计直接返回），
+    # 判据是单次 max<=1ms；耗时约 0.01s/rep。
+    build pb tests/gc-p0/src/pb_escape_grow.extc \
+      && build pc tests/gc-p0/src/pc_cycle_churn.extc \
+      && build cyc tests/reclaim-shapes/cyclic_pressure.extc \
+      && build pd_bigobj tests/gc-p0/src/pd_bigobj.extc \
+      && build rel tests/gc-p0/src/rel_overwrite.extc \
       && { for r in $(seq 1 "$REPS"); do
                run_pause cyc "$r" 20000000
-               run_pause pc "$r" 50000000
+               run_pause pc "$r" 150000000
                run_pause pb "$r" 50000000
-               run_pause pd "$r" 200
+               run_pause rel "$r" 2000000
            done; }
+fi
+
+# release 通道的结构性证据（Lead R3）：数每个用例**生成 C** 里 extc_rc_storeRefOwnedRelease 的调用点。
+# 调用点 0 处 ⇒ 该通道在本形状结构上不可能触发（n==0 是必然而非采样不足）⇒ g1c 记 vacuous PASS；
+# 缺这份文件时 g1c 不 vacuous（保持 N/A），有调用点而 n==0 也不 vacuous —— 不许无证据变绿。
+if [ "$WHAT" = all ] || [ "$WHAT" = g1 ] || [ "$WHAT" = g1cpu ] || [ "$WHAT" = g1c ]; then
+    : >"$OUT/relsite.txt"
+    for name in cyc pb pc pd_bigobj rel; do
+        [ -f "$OUT/c/$name.c" ] || continue
+        n=$(grep -c "extc_rc_storeRefOwnedRelease((" "$OUT/c/$name.c" || true)
+        echo "relsite case=$name sites=$n" >>"$OUT/relsite.txt"
+    done
 fi
 
 # G1② 通道拆分（Lead m04215 / task-29）：(a) 常规步 seg=0、(b) 大对象续扫段 seg>0、
@@ -465,6 +516,8 @@ if [ "$WHAT" = all ] || [ "$WHAT" = g1 ] || [ "$WHAT" = g1cpu ] || [ "$WHAT" = g
     if [ -n "${G1C_SEG_MAX_US:-}" ]; then g1c_extra+=(--seg-max-us "$G1C_SEG_MAX_US"); fi
     python3 tests/gc-p0/g1c.py --dir "$OUT/log" --glob '*_pause_r*.err' \
         --noise "$OUT/noise.txt" --json "$OUT/g1c.json" \
+        --stallrate "$OUT/stallrate.txt" --runs "$OUT/runs.jsonl" \
+        --relsite "$OUT/relsite.txt" --chan-only rel:release \
         ${g1c_extra[@]+"${g1c_extra[@]}"} || true
 fi
 

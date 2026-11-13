@@ -1,0 +1,50 @@
+/* tests/gc-p0/src/rel_overwrite.extc —— (c) release 通道探针（Lead R3）。
+ *
+ * 为什么需要它：`extc_rc_storeRefOwnedRelease` 的发射条件很窄（循环体里把「本帧自己 arena 分配、
+ * 已写进某个堆对象引用字段、从未重绑」的局部量写进本帧根表里的长命槽），运行时 releaseDead 还有
+ * 四道门：noSweep/owe、sweeping、old 不在 home、budgetOk（自上次释放以来新增分配 >= floor）。
+ * 结果：cyc/pb/pc/pd_bigobj 四个 G1 形状的生成 C 里 release 调用点 = 0（结构性不可达），
+ * digraph 也是 0。若没有本探针，(c) 的 release 通道永远 N/A，等于未验证。
+ *
+ * 本形状：每轮 `new` 一个自环节点并覆盖长命根槽 `keep` ⇒ 旧值整棵树在覆盖点即死 ⇒ 走释放路径。
+ * 实测（2e6 轮）：release n=1、max 4.3-8.1us（region 大部分时间在 sweeping，releaseDead 按设计
+ * 直接返回；budgetOk 还要求自上次释放新增 >= floor=1 MiB 的分配）。这就是该机制的稀有度。
+ * 判据只判 (c) release 的 max <= 1ms（见 run.sh 的 --chan-only rel:release）；步分布由四个 warm
+ * 形状判，不由本探针判（它每轮只分配 1 个节点，不构成负载）。
+ */
+use std::io
+
+struct node {
+    next: ?mut ref node
+    v: i64
+}
+
+fn parseI64(s: slice<u8>) -> i64 {
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    return v
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var n: i64 = parseI64(args[1])
+    var keep: mut ref node = new node
+    keep.v = 0
+    keep.next = keep
+    var i: i64 = 0
+    while i < n {
+        var p: mut ref node = new node
+        p.v = i
+        p.next = p
+        keep = p
+        i = i + 1
+    }
+    println(keep.v)
+    return 0
+}

@@ -25,6 +25,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <time.h>
+#include <string.h>
 
 static double clk_us(clockid_t c) {
     struct timespec ts;
@@ -62,7 +63,65 @@ static void report(const char *pre, stat_t *s, uint64_t *ns, long n) {
            pre, s->o256, pre, s->o500, pre, s->o1000, pre, (double)s->o50 / (double)n, pre, p999);
 }
 
+
+/* ---- 停顿率探针（G1 的**外部环境地板**，Lead R3） ---------------------------------------------
+ * 纯计算、无分配、无系统调用的连续循环，用 rdtsc 量**每一次循环窗口**的时长，数出 >10us / >50us
+ * 的窗口个数与总时长 => 这台机器当时的「外部停顿速率」（次/秒）。这个速率与代码无关：它是宿主
+ * 抢占 vCPU / 调度抖动造成的，落在任何被计时的工作里都会被算成「慢步」。
+ * 为什么必须按秒给速率：G1 的 p99.9 判据是「count(>10us)/n」，而外部停顿是按**时间**到达的
+ * （rate 次/秒）；一步被外部停顿打中一次就记一条，与这一步本身的预算无关。知道了 rate 与本次
+ * run 的墙钟时长 T，就能算出「本 run 里必然有多少条慢步是环境造成的」（用探针的前后两次速率取
+ * **较小值**，即最少扣减）。
+ * 用法：noise_floor --rate <秒>
+ */
+static double now_us(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (double)t.tv_sec * 1e6 + (double)t.tv_nsec / 1e3;
+}
+static inline uint64_t rdtsc_now(void) { return (uint64_t)__builtin_ia32_rdtsc(); }
+static double tsc_per_us(void) {   /* 用 20ms 的墙钟标定 TSC 频率（TSC 恒定、与频率缩放无关） */
+    double t0 = now_us();
+    uint64_t c0 = rdtsc_now();
+    while (now_us() - t0 < 20000.0) { }
+    double t1 = now_us();
+    uint64_t c1 = rdtsc_now();
+    double dt = t1 - t0;
+    return dt > 0 ? (double)(c1 - c0) / dt : 1000.0;
+}
+static int rate_mode(double secs) {
+    double tpu = tsc_per_us();
+    if (tpu <= 0) tpu = 1000.0;
+    volatile long acc = 0;
+    long iters = 0, g10 = 0, g50 = 0, g100 = 0;
+    uint64_t sum10 = 0, sum50 = 0, maxd = 0;
+    double t0 = now_us();
+    uint64_t pv = rdtsc_now();
+    for (;;) {
+        for (long j = 0; j < 64; j++) acc += j + iters;
+        uint64_t q = rdtsc_now();
+        uint64_t d = q - pv;
+        pv = q;
+        iters++;
+        double dus = (double)d / tpu;
+        if (dus > 10.0) {
+            g10++; sum10 += d;
+            if (dus > 50.0) { g50++; sum50 += d; }
+            if (dus > 100.0) g100++;
+            if (d > maxd) maxd = d;
+        }
+        if (now_us() - t0 >= secs * 1e6) break;
+    }
+    double el = (now_us() - t0) / 1e6;
+    if (el <= 0) el = secs;
+    printf("stallrate elapsed_s=%.4f iters=%ld tsc_per_us=%.2f over10=%ld over50=%ld over100=%ld "
+           "rate10_per_s=%.1f rate50_per_s=%.1f max_us=%.1f sum10_ms=%.2f sum50_ms=%.2f\n",
+           el, iters, tpu, g10, g50, g100, (double)g10 / el, (double)g50 / el,
+           (double)maxd / tpu, (double)sum10 / tpu / 1000.0, (double)sum50 / tpu / 1000.0);
+    return 0;
+}
 int main(int argc, char **argv) {
+    if (argc > 2 && strcmp(argv[1], "--rate") == 0) return rate_mode(atof(argv[2]));
     long n = (argc > 1) ? atol(argv[1]) : 200000;
     long inner = (argc > 2) ? atol(argv[2]) : 200;
     if (n <= 0) n = 200000;
