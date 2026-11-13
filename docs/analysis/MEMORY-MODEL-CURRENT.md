@@ -39,7 +39,7 @@
 > **行号口径（v17 = 量具精确计数，当前工作树）**：`src/back/reclaim.c` = `39c93ca4fa0718920844e91147695589`（4 269 行）、`src/back/codegen.c` = `cc01b5f4216ea5c8d9fde77c47c41f24`（16 212 行，同 v16）、`tests/reclaim/driver.c` = `28dd4009ac7207f47e581a697c0d421f`（1,637 行，同 v13）、`build/extc` = `722e5ff1247c9bd4204e7f24ed01ff84`。相对 v16，`reclaim.c` 只改量具（`[histo]`/`[segsteps]` 新增 `gt10us`/`gt50us`/`gt64us` 三个精确超阈计数、`[chan]` 的 `collect` 格改名为 `trigger-step`），+10 行 ⇒ **换算表：n ≤ 1176 ⇒ n；1177–1179 ⇒ n+1；1180–1275 ⇒ n+2；1276–3301 ⇒ n+5；3302–3832 ⇒ n+8；3833–3836 ⇒ n+9；n ≥ 3837 ⇒ n+10**。本文所有 `reclaim.c` 行号已按 v17 重算，并逐条按内容校验（旧行文本 == 新行文本）。
 > **行号口径（v18 = R2 冷档，当前工作树，2026-11-13）**：`src/back/reclaim.c` = `8f49f0718d788cd1202d348945260ab3`（**4,282 行**）、`src/back/codegen.c` = `cc01b5f4216ea5c8d9fde77c47c41f24`（16,212 行，同 v16/v17）、`tests/reclaim/driver.c` = `28dd4009ac7207f47e581a697c0d421f`（1,637 行，同 v13）、`build/extc` = `9ceb7690c3ae62d12921b7f0a9bf3757`。相对 v17（4,269 行）只插入冷档 13 行（11 行常量块 + 1 行计数器 + 1 行 clamp），`[work]` 的 `cold_steps=` 是原地改 ⇒ **换算表：n < 1153 ⇒ n；1153–1177 ⇒ n+11；1178–1417 ⇒ n+12；n ≥ 1418 ⇒ n+13**。本文的 `reclaim.c` 行号**仍按 v17 保留**（不机械平移：历史上机械平移曾把 `thrUpd` 指到 `markResume`）；本轮新增内容一律用 **v18 绝对行号**并标 `(v18)`，跨版本核对按符号 grep。机制/实测/判据见 §19.6 与 `GC-ROOFLINE.md` §6.8。
 
-> **行号口径（v21 = R3 收口，当前工作树，2026-11-13）**：`src/back/reclaim.c` = `61c9fad7f67b6b73937030f32736baef`（**4,305 行**）、`src/back/codegen.c` = `cc01b5f4216ea5c8d9fde77c47c41f24`（16,212 行，未改）、`tests/reclaim/driver.c` = `28dd4009ac7207f47e581a697c0d421f`（1,637 行，未改）、`build/extc` = `a20ab9491061a23c9917b0596381391e`。相对 v18，`reclaim.c` 净 +23 行（量具与判据：细直方图 `EXTC_RC_SEG_FINE_US`、`extc_rc_stepSpan` 的 `min(CPU,墙钟)`、`[slow]` 原始双钟、`[quota] round=`、批量扫描循环多行化）。**v18→v21 的机械换算表、13 个变更块与 v21 绝对行号锚点见 `docs/analysis/REFS-V21.md`**；本文与 `GC-ROOFLINE.md` 的旧行号**仍按 v17/v18 保留**（禁止机械平移），R3 新增内容一律用 **v21 绝对行号**并标 `(v21)`。机制/实测/判据见 §19.7 与 `GC-ROOFLINE.md` §6.9。
+> **行号口径（v23 = 页级归还，当前工作树，2026-11-30）**：src/back/reclaim.c = `71daa809f13f885489e14918b5e56a7e`（**4,507 行**）、src/back/codegen.c = `cc01b5f4216ea5c8d9fde77c47c41f24`（16,212 行，未改）、tests/reclaim/driver.c = `28dd4009ac7207f47e581a697c0d421f`（1,637 行，未改）、build/extc = `10334a5fac66189da3914daaf0112afb`。相对 v18，reclaim.c 净 +225 行（v21 量具 +23、v22 块级归还 +107、v23 页级归还 +140 中的 +118 是机制本体）。**v18→v23 的 11 个插入块、分段换算表与绝对锚点见 `docs/analysis/REFS-V23.md`**；本文件与 GC-ROOFLINE.md 的旧行号仍按 v17/v18 保留（禁止机械平移），v21 起新增内容用当日绝对行号并标版本。机制/实测/判据：§19.7（v21 量具）、§19.8（v22 块级归还）、§19.9（v23 页级归还）与 GC-ROOFLINE.md §6.9–§6.11。
 
 ---
 
@@ -1070,7 +1070,7 @@ P_step  ≤  b_eff · τ_t          b_eff = min(b, 1024)  … 活集 ≤ 16 MiB�
 
 **(6) 与模型的对应**：`M_max`/冷档/配额窗口的公式与常量一条没动（§19.4/§19.6 仍然成立），roofline 的 `λ(r)` 与 `M = L + κ_M H` 不需要重标。可标定量只有 `c_seg`：v21 重标为 **`pd_bigobj 3.841 ns/word`**、**`pd_pointer_dense 5.997 ns/word`** ⇒ `B_seg` 从 64.36/78.65 µs 降到 **48.20/74.69 µs**（`tests/gc-p0/bseg-cal.tsv` 绑定源码 md5，换 build 必须重标）。Ir 门禁回到 v18 量级（**87,625,199 ≤ 88,029,115**），因为时间闸门删掉后走步循环里不再读钟（`GC-ROOFLINE.md` §6.9.7）。
 
-### 19.7 容量墙与 slab 归还（v22 新增）
+### 19.8 容量墙与 slab 归还（v22 新增）
 
 §18 的内存定律把堆写成 M = L + κ_M·H，§19 的停顿界把一步写成 b·τ_t + c_fix。两条界都默认「容量（已映射的 slab 字节）跟着活集走」。在没有写屏障、也不搬移对象的前提下，这一点并不自动成立：
 
@@ -1089,6 +1089,27 @@ P_step  ≤  b_eff · τ_t          b_eff = min(b, 1024)  … 活集 ≤ 16 MiB�
 **残留（未闭合）。** 稀疏模式不受影响：每块 slab 恰好 1 个长命对象时 slabs 仍是 33 / 129 / 513，第 2、3 轮仍 ≈0.7 ns/KB —— 归还的粒度是 slab，一个存活对象仍钉住 512 KiB。要把这一项降到 O(活集)、只有三条路：①细粒度归还（页级占用计数 + MADV_DONTNEED，常数 = 4 KiB / 槽宽）；②搬移式压实（κ→1，但停顿 ∝ 活集且需要转发指针）；③写屏障（用户已否决，m16773）。本文不宣称稀疏活集已界住。
 
 
+### 19.9 页级归还：容量成本从块降到页（v23 新增）
+
+§19.8 把「峰值之后 slab 永久钉在堆上」这一项消掉，粒度是 512 KiB；稀疏活集里每块留 1 个长命对象，容量项仍是 Θ(容量)。本轮把归还单位降到**页**：`MADV_DONTNEED` 丢物理页，不搬移、不加写屏障、全部在冷路径。
+
+**布局前提（决定了能不能还页）。** 普通 slab 是 `aligned_alloc(EXTC_RC_SLAB_SIZE, EXTC_RC_SLAB_SIZE)`（默认 512 KiB、页对齐）；块头 `EXTC_RC_SLAB_HDR = (sizeof(ExtcRcSlab)+63)&~63` 只有几百字节、**不在页边界上**，所以页 0 含块头、永不归还。元数据（`occ`/`mark`/`rsbit`/`hold`/`tid`/`ttab`）全部在块外单独分配 ⇒ 还页不碰它们；freelist 的下一槽号存在 `s->tid[i]` 而不是载荷里 ⇒ 还页不破坏链表；分配路径每个槽都走 `extc_rc_zeroSmall` ⇒ 还过的页重新分配时语义安全（语言承诺「新分配读作 0」）。
+
+**机制。** `extc_rc_pageTrimStep`（src/back/reclaim.c:2037）由 `extc_rc_sweepStep` 收尾调用（3917），每次至多访问 16 块、还 256 KiB。三层闸门：①**slack**（区域级）`capBytes − bytes < 8 MiB` 不还 —— 差得少时丢页/缺页抖动赢，去掉它 sizeratio +56%、cycleratio +19%；②**quiet**（块级）自上次 pass 起分配数 ≤64 才还，busy 块跳过并把时钟重置为当前 `allocN`；③**稠密** `nLive × 8 > nslots` 跳过。块内按 occ 位图标活页（槽可跨页 ⇒ 同时标首页与尾页），其余连续空页**合并成一个 run** 再 `madvise`。`pgNext` 续扫被预算截断的 pass、`pgLive` 记录上次 pass 的 `nLive` ⇒ 幂等。计数器 `extc_rc_pageRel`（字节）/`extc_rc_pageTrimN`（块 pass 次数），`[pages]` 行打在 `[work]` 之前。
+
+**触发路径与收敛速率。** 调用点是 `extc_rc_sweepStep` 的收尾分支（3917），`sweepStep` 同时在 mutator 自动路径上（4239 / 4301）⇒ 不调 `extc_rc_collect` 的程序也会还页；块级归还（`slabShrink`，3933 ← `settle`）才只在显式路径。速率有界：每次收尾 ≤256 KiB ⇒ 从峰值收敛到界需要 ⌈(C − live)/256 KiB⌉ 轮。探针 `/tmp/pg/pages5.c`（64 MB 峰值、每 MB 1 root、140 万次分配、只调 `extc_rc_maybeCollect`）：RSS 43,636 → 36,404 kB、还页 7.25 MB、29 次块 pass、slabs 64 不变。
+**容量界（本轮口径）。**
+
+    C ≤ live + 4 KiB × #page(含活对象) + M_slab × #slab(含至少一个活对象) + 8 MiB
+    M_slab ≈ 69 kB/块    （实测，计数关：tid 2 B/槽 + occ/mark/rsbit 三张位图 + 分配器取整与固定页）
+
+`M_slab` 是页归还**消不掉**的一项：它按「含活对象的块数」计，所以 1 个长命对象仍钉住 ≈69 kB 元数据（探针 `/tmp/pg/pages4.c` 实测：32 / 64 / 128 块、每块 1 个长命对象 ⇒ 每块残差 69.8 / 69.1 / 68.7 kB，还页 15.62 / 31.25 / 62.50 MB；计数档再加 `hold` 2 B/槽 ≈ 21.8 kB）。8 MiB 是 slack 闸门的常数。两项都必须显式写在界里，不能假装它们是 0。
+
+**实测。** 探针 `/tmp/pg/pages1.c`（48 B 槽、每 MB 一个 root、64 MB 区、400 轮 collect）：slabs 129 → 64、RSS 52,304 → **20,280 kB**、还页 31.27 MB（188 次块 pass）、收敛后单步 16.2–16.5 µs 与关掉机制相同、400 轮 collect 总 11.8 ms。16 MB 区（容量恰好 8 MiB）被 slack 闸门挡下（RSS 14,400 kB、还 0.25 MB），这是设计的取舍不是缺陷。四形状交错 A/B（9 reps）：promote 1.006 / sizeratio 1.007 / chase 0.994 / cycleratio 1.021，RSS 逐形状不变，`[pages] blocks=0`。
+
+**两条踩出来的硬约束（都在源码注释里）。** ①**热路径只能加一个 `s->allocN++`**：先做的「每分配清已还页位图」让四形状慢 4.4%–5.5%，删掉后靠 `pgLive`+quiet 保证幂等，收敛结果逐 kB 相同。②**不能 include `<sys/mman.h>`**：它声明 `mmap(void*)`，与本语言给 plate 的 `uint8_t *mmap(...)` 冲突，README 的 par 示例编不过；运行期自带 `extern int madvise(void *, size_t, int)` 与 `#ifndef MADV_DONTNEED / #define MADV_DONTNEED 4`。
+
+**仍未闭合**：搬移式压实（停顿 ∝ 活集 + 需转发指针）才能把 `M_slab` 与 slack 两项一起消掉；写屏障路线按用户决定不做。
 ## §20 与仓库既有文档的不一致清单（口径必须按本节改）
 
 完整 90 条对账在 `docs/analysis/DOC-AUDIT.md`；这里只列"会误导读者/会误导优化决策"的 10 条。

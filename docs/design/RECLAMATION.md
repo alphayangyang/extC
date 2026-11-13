@@ -366,6 +366,20 @@ place。构造点没有自己的 place 时池就挂在函数体上 —— 循环
 实测：64 MiB 峰值后留 16 个成簇存活对象，基线 slabs 129 → 129 / RSS 82.9 MB 恒定；本机制 slabs 129 → 1（8 轮）/ RSS 16.8 MB。四形状零回归（±7% 噪声带内），指令数门禁 87,617,609 ≤ 88,029,115。
 
 
+## 三点四、页级归还：容量成本的单位从块降到页
+
+§三点三把「整块无占用槽」的 slab 还掉，粒度 512 KiB。稀疏活集里每块都留 1 个长命对象，容量项仍是 Θ(容量) —— 所以还页的单位要再小一档：**页**。
+
+机制（全冷路径、不搬移、不加写屏障）：`extc_rc_pageTrimStep(r, budget)`（src/back/reclaim.c:2037）由 `extc_rc_sweepStep` 收尾调用（3917），每次至多访问 `EXTC_RC_PAGE_TRIM_VISIT_MAX=16` 块、还 `EXTC_RC_PAGE_TRIM_BYTES=256 KiB`；块内用 occ 位图找出活槽覆盖的页（槽可跨页 ⇒ 首尾页都算活），其余**连续空页合并成一个 run** 再 `madvise(MADV_DONTNEED)`。页 0 含块头，永不归还。
+
+契约四句：
+
+1. **承诺（界）**：`C ≤ live + 4 KiB × #page(含活对象) + M_slab × #slab(含至少一个活对象) + 8 MiB`，其中 `M_slab ≈ 69 kB/块` 是块外元数据（实测，计数关：tid 2 B/槽 + 三张位图 + 分配器取整与固定页；计数档再加 hold 2 B/槽 ≈ 21.8 kB）。页归还只改物理页，不改 `r->bytes`。
+2. **承诺（不抖动）**：只有「容量 − 占用 ≥ 8 MiB」（slack）、「自上次 pass 起该块分配 ≤64 槽」（quiet）、「nLive × 8 ≤ nslots」（稠密）三条同时成立才动那块；否则一次 syscall 都不发。去掉 slack 的实测代价：sizeratio 墙钟 +56%、cycleratio +19%。
+3. **承诺（有界）**：一次 closing step 的工作量 ≤ 16 次块访问 + 256 KiB 的 madvise（≈4 µs，@14 ns/KB@），整笔记进 `[step]`/`[histo]` 的停顿分布；`pgNext` 续扫被预算截断的 pass，`pgLive` 保证同一个占用图不重复还（幂等 ⇒ 稳态零成本）。
+4. **不承诺**：含活对象的块，其**元数据**（≈69 kB，实测）不归还；一个长命对象仍钉住 ≈69 kB，而不是 4 KiB。要消掉这一项只能搬移式压实。
+
+实测：64 MB 区稀疏探针（48 B 槽、每 MB 1 root、400 轮 collect）slabs 129 → 64、RSS 52,304 → 20,280 kB、还页 31.27 MB；四形状 A/B 1.006 / 1.007 / 0.994 / 1.021（噪声带内）、RSS 不变、`[pages] blocks=0`。热路径不加分支（只有一个 `s->allocN++`）：先做的「每分配清已还页位图」让四形状慢 4.4%–5.5%，已删。
 ## 三点五、覆盖点的定点释放（环在覆盖点就没了）
 
 环永不归零，所以计数那一层收不了它；但"**覆盖一个槽**"这个动作本身能判死一棵树 —— 只要那
@@ -1080,6 +1094,8 @@ cache-sim 判据变红）。
 | `skip:top-not-slower` | 新步不慢于 top-K 里当前最慢的一格 ⇒ 不替换 | top-K 只保留 K 个最慢步，用于尾部归因；更慢的步才有信息增量 | 无（纯采样：只影响 `[top]` 行内容）| `[top]` 按 `dur_us` 降序且 rank=1 是最慢步；`gate-skip-table` 自检 |
 | `skip:cascade-oom` | 级联释放的工作栈 `realloc` 失败 ⇒ 不入栈，子对象保留计数留给 sweep | 分配失败时唯一安全方向是保守；sweep 会按标记位收掉未归零的子树 | 多留（保守：晚一步收，不是悬垂）| 计数档 chain2 2M 节点（`-DEXTC_RC_CASCADE_DEBUG=1` 下 `bad=0`）+ ASan；默认档整段折叠不发射 |
 | `skip:shrink-null` | `extc_rc_slabShrink(r)` 的 `r` 是空指针 ⇒ 立刻返回 0 | 该函数只有一个调用点（`extc_rc_settle` 尾部：`if (r->shrinkDue) { ... extc_rc_slabShrink(r); ... }`），那里的 `r` 是 settle 的非空参数 ⇒ 发射产物里不可达，纯防御 | 无（幂等：空区域没有 slab 可归还）| `probe4` 探针覆盖归还路径，tests/reclaim 216/0 覆盖 settle 的每一档；结构上由唯一调用点的非空前提兜住 |
+| `skip:pagtrim-null` | `extc_rc_pageTrimStep` 的 `r->trimCur` 为空（区域链已空）⇒ 立刻返回 | 页归还只在有块的区域上有意义；调用点 `extc_rc_sweepStep` 收尾时区域至少有本轮的块 ⇒ 不可达，纯防御 | 无（幂等：没有块就没有页可还）| `tests/reclaim` 216/0 覆盖 settle/sweep 各档；结构上由调用点的非空链前提兜住 |
+| `skip:pagtrim-slack` | `capBytes - bytes < EXTC_RC_PAGE_TRIM_MIN_SLACK`（默认 8 MiB）⇒ 本轮不做页归还 | 容量与占用只差一点时，还回来的页占堆的比例很小，而「丢页→再缺页」的抖动会赢：实测无此闸门 sizeratio 墙钟 +56%、cycleratio +19%；有闸门后四形状 A/B 1.006/1.007/0.994/1.021（噪声带内）| 无（少还：内存上限抬到一个常数 8 MiB，仍与活集无关）| `pages1` 探针：16 MB 区（容量 8 MiB）不还、64 MB 区还 31.27 MB 且 RSS 52,304→20,280 kB；四形状 A/B 的 `[pages] blocks=0` |
 | （无标记）`if (extc_rc_rsIncN) unlinkChildren(...)` | 一次登记都没发生过 ⇒ 不必撤边 | `rsIncN == 0` ⇒ 没有 `rsInc` 类边 | 多留（保守）| `unlink-nop` 证明"撤边"有牙；这个**守卫**没有专门注入 |
 | （无标记）`if (partN > 1) { 登记 }` | 只有一个区域参与 rc ⇒ 免登记 | 单区域不可能有跨区边 | 少算（不安全）| `gate-note-part` + `cross-region` 登记量判据 |
 | （无标记）`#if EXTC_RC_NOCOUNT` 整段 | 关掉计数时计数入口变空操作 | 没有读者 | 少算（不安全）| 单测**两档都跑**（默认 128 / 计数 171）|
