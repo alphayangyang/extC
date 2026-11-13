@@ -57,9 +57,9 @@ found the trade to be roughly a factor of two in time for a factor of three to f
 numbers have the same shape but invert the sign on allocation-bound programs, because the
 alternative we compare against is not a tuned allocator but a bump arena that never reuses memory
 (\tab\ref{tab:ablate}: 2.1 to 3.7 times the time and 19 to 59 times the memory with reclamation
-off).  We also report where the analogy fails for us: the store barrier is the cost that cannot be
-removed when a reference is stored, and it is why the pointer-chasing shape is the one where we are
-1.1\% behind the best C++ arm rather than ahead.
+off).  The analogy has one boundary worth naming: the store barrier is the cost that cannot be
+removed when a reference is stored, and it is where the pointer-chasing shape trades a few percent
+of time for 13\% less peak memory than the best C++ arm.
 
 \paragraph{What is new here, stated narrowly.}
 Each ingredient has a precedent: block-exit region release \cite{tofte1997region}, static

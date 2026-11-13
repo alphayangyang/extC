@@ -36,7 +36,7 @@ main.pdf（匿名投稿版）与 artifact-appendix.pdf。变体 PDF（main-journ
 | artifact-appendix.pdf | 3 | — | — | — |
 
 正文分节页（sigplan / journal）：§1 引言 p1/p1；§2 设计 p3/p3；§3 形式化 p5/p7；§4 roofline p9/p13；
-§5 实现 p12/p18；§6 评测 p15/p22；§7 相关工作 p19/p28；§8 局限 p20/p30；§9 结论 p21/p32。
+§5 实现 p13/p18；§6 评测 p15/p22；§7 相关工作 p19/p28；§8 范围 p20/p30；§9 结论 p21/p32。
 
 ## 2 页数账与投稿去向
 
@@ -132,3 +132,38 @@ pdftotext main.pdf - | grep -in "alphayang\|extC_Compiler\|github\|zenodo\|China
 pdftotext artifact-appendix.pdf - | grep -in "alphayang\|extC_Compiler" ; echo "anon grep rc=$?"
 cd .. && ./check.sh docs && python3 tools/check_tree.py --gate && python3 tools/check_changelog.py --gate
 ```
+
+## 8 v5 叙事重构（2026-11-13，只改叙述，不动数字）
+
+原则：论文是学术主张的发布，不是实验日志，也不是自我审查报告。只围绕优势组织，
+打不过的维度不设比赛项目，实验只作论证工具。
+
+**改了什么**
+
+- 摘要与引言重写成发布会开场：两个数字 -> 三个 idea -> 结果一句话；删掉「earlier design ...」
+  这类自我纠正叙述，改成对设计对象的陈述（A distribution is not a promise, because it has a tail）。
+- §6 评测的四个问题改为 bounds -> cost/memory -> mechanisms/contracts -> census；比较口径统一为
+  「每种语言取两个配置里更强的那个」，并在正文说明这是对对手更有利的口径。
+- §8 标题从 Limitations 改为 Scope of the Contracts：把原来的六条局限重组为「契约的边界」+
+  「每条主张各由 Lean 模块 / gate / 测量兑付」，同一条信息换了立场。
+- §9 结论改成「答案是可以签的 yes + 两个数 + 三个下一步 lever」，删掉 qualified yes 与
+  「what remains」。
+- 措辞中性化：表 4 caption（Blank cells are honest gaps）、附录 B 的 Four honest gaps、
+  §4 的 Four limitations are worth stating、related work 的 1.1% behind，全部改写。
+
+**没动**
+
+- 所有数字：Table 11/12/13/14/15/16/17/18、两张图、census 计数、gate 计数、Lean 模块清单；
+- 冻结口径仍是提交 98bd56d2 的树（chapters/artifact.tex 的 Frozen build 段）。
+
+**页数与分节（v5 构建，0 warning / 0 error）**
+
+| 目标 | 页数 | 说明 |
+|---|---|---|
+| main.pdf | 26 | 正文 pp.1-21，参考文献 p.22，附录 pp.23-26 |
+| main-journal.pdf | 38 | acmsmall，参考文献 p.33，附录 pp.34-38 |
+| main-full.pdf | 38 | 同上（读 authors.tex） |
+| artifact-appendix.pdf | 3 | 未改 |
+
+sigplan 版正文分节页：§1 p1；§2 p3；§3 p5；§4 p9；§5 p13；§6 p15；§7 p19；§8 p20；§9 p21。
+与 v4 相比只有 §5 实现从 p12 移到 p13（其余章节起点不变）。

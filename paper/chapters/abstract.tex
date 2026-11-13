@@ -1,6 +1,6 @@
 A managed run-time owes its users two numbers it rarely states: how much memory it will use, and how long it may pause.
 Collectors answer neither, because a collector is a scheduler: it decides at run time when to work, how much to work, and how long the mutator waits.
-This paper describes extC, a systems language whose reclamation is decided entirely at compile time and whose run-time work is a bounded, incremental algorithm, and it turns the two numbers into contracts that can be checked.
+This paper describes extC, a systems language whose reclamation is decided entirely at compile time and whose run-time work is a bounded, incremental algorithm, and it fixes the two numbers as contracts that a user can sign and a build can check.
 
 Three ideas carry the design.
 First, the compiler places every allocation in one of five storage substrates --- frame arenas, typed reclamation regions, container pools, per-task arenas, and address-reserved plates --- so that four of the five have a scope-derived lifetime and need no collector at all.
@@ -9,7 +9,9 @@ Third, every run-time decision that could grow without bound is given a budget a
 
 We prove the safety of the scheme (no dangling reference) together with tier soundness, idle transparency, bounded memory, bounded pause, amortized work, and the progress of deferred destruction, and we machine-check the core of the model in Lean~4.
 We then formalize reclamation policy as a roofline: the cost per allocated byte is $\lambda(r) = (c_t + c_s F r)/(r-1)$, memory follows $M = L + \kappa_M H$, a step of $b$ pops costs $P(b) = b\tau_t + W_s 64 \tau_s$, and keeping up with the mutator requires $r \ge 1 + gK/b$; the admissible policies form a band on the $(\lambda, a)$ plane whose walls are the memory budget and the pause budget, and the optimal policy sits on both.
-All six constants are measured, and the model tracks measurement to within 2--10\%.
+All six constants are measured, and the model predicts the measured cost of a round and the memory of a loop to within 2--10\%.
 
-On four cross-language workloads extC matches the best Rust arm on promotion (39.0 vs 39.1~ms), beats the best C++ arm on size-ratio (16.0 vs 17.9~ms) and on a ring workload (15.0 vs 36.1~ms), and is within 1.1\% of C++ on a pointer-chasing graph at 13\% lower peak memory, while no workload shows a single pause above one millisecond and the graph shape has a 99.9th-percentile pause of $58\,_\mu$s.
-Turning reclamation off makes the allocation-heavy shapes 1.5--3.7 times slower and 17--59 times larger in memory, which is the cost the design removes.
+On four cross-language workloads extC is at or ahead of the best hand-written C++ and Rust arm on three of the four shapes --- matching the fastest Rust arm on promotion (39.0 vs 39.1~ms), and beating the best C++ arm on size turnover (16.0 vs 17.9~ms) and on a ring workload (15.0 vs 36.1~ms, a factor of 2.4).
+On a pointer-chasing graph it holds 13\% less peak memory than the best C++ arm and runs within 7\% of it, and it is the only arm in the table that can state both of its own bounds.
+No shape has a single pause above one millisecond; the 99.9th percentile is $10$--$58\,_\mu$s, and the shape that pauses longest is the one with the largest live set rather than the one that allocates most.
+With reclamation off instead of on, the allocation-heavy shapes are 1.5--3.7 times slower and 17--59 times larger in memory: reuse in place of page faults is the accounting identity the design is built to satisfy.

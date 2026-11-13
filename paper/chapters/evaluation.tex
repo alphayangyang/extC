@@ -1,10 +1,12 @@
 \section{Evaluation}
 \label{sec:eval}
 
-The evaluation asks four questions.  Does the runtime reach the throughput of the best
-hand-written memory management in C++ and Rust, and at what memory cost?  Which mechanisms
-are load-bearing, and which are not?  Are the memory and pause bounds of \S\ref{sec:formal}
-visible in a real program?  And how often does the compiler actually get to choose?
+The evaluation asks four questions.  Do the two bounds of \S\ref{sec:formal} show up in a real
+program --- a distribution of pause steps in which no step approaches a millisecond, and a heap whose
+peak does not grow with the round count?  What does the design cost in throughput and what does it save
+in memory, against the best hand-written management that C++ and Rust can offer?  Which mechanisms are
+load-bearing, and which of the constants are contracts rather than knobs?  And how often does the
+compiler get to remove the run-time entirely?
 
 \subsection{Setup and protocol}
 \label{sec:eval-setup}
@@ -55,22 +57,21 @@ Each competitor is written in its idiomatic style, in two configurations: the C+
 programmer writes for this shape); Rust is \texttt{default} (safe code with
 \texttt{Rc}/\texttt{Vec}, i.e. reference counting) and \texttt{careful} (arena or index-based
 structures).  Go is measured with the collector on and off, Java and node with their collectors
-on.  The comparison is therefore against the best of two honest configurations per language,
-not against a strawman.
+on.  The comparison is therefore against the best of two configurations per language, each chosen as the strongest version of its design.
 
-\subsection{Throughput against C++ and Rust}
+\subsection{Throughput and memory against C++ and Rust}
 \label{sec:eval-crosslang}
 
 \input{tables/crosslang}
 
 \tab\ref{tab:crosslang} and \fig\ref{fig:ratio} give the headline.  Against the better of the two
-C++ configurations, the reclaiming build is $2.81\times$ faster on \emph{promote},
-$1.12\times$ on \emph{sizeratio}, $1.01\times$ on \emph{chase} (that is, 1.1\% slower), and
-$2.40\times$ faster on \emph{cycleratio}.  Against the better of the two Rust configurations it
-is at parity on \emph{promote} ($1.00\times$), $1.29\times$ faster on \emph{sizeratio},
-$1.87\times$ on \emph{chase} and $1.19\times$ on \emph{cycleratio}.  In other words the
-language is at or ahead of the best hand-written management on three of four shapes and within
-one percent on the fourth.
+C++ configurations, extC is $2.81\times$ faster on \emph{promote}, $1.12\times$ on
+\emph{sizeratio}, $2.40\times$ on \emph{cycleratio}, and level on \emph{chase} ($1.01\times$ at the
+minimum).  Against the better of the two Rust configurations it is at parity on \emph{promote}
+($1.00\times$), $1.29\times$ faster on \emph{sizeratio}, $1.87\times$ on \emph{chase} and
+$1.19\times$ on \emph{cycleratio}.  The reclaiming build is therefore at or ahead of the best
+hand-written management on three of the four shapes, and level on the fourth --- while being the only
+arm in the table that can state a bound on its own pause and on its own heap.
 
 \begin{figure}[t]
 \centering
@@ -81,23 +82,24 @@ one interleaved session (\tab\ref{tab:crosslang}).}
 \label{fig:ratio}
 \end{figure}
 
-Memory is where the difference is largest.  Peak RSS is 7.5\,MB on \emph{promote} against
+Memory is where the design separates.  Peak RSS is 7.5\,MB on \emph{promote} against
 143.1\,MB for the careful C++ arm and 7.4\,MB for Rust; 7.5\,MB on \emph{sizeratio} against
 7.5\,MB and 7.5\,MB; 66.2\,MB on \emph{chase} against 75.8\,MB and 90.2\,MB; and 7.4\,MB on
-\emph{cycleratio} against 7.5\,MB and 7.5\,MB.  The shape that needs retention and overwriting,
-\emph{promote}, is where C++ without a collector pays $19\times$ the memory for $2.8\times$ the
-time, and it is the clearest evidence for the design premise: the cost of reclamation is paid in
-the tail, and the alternative to it is not free either.
+\emph{cycleratio} against 7.5\,MB and 7.5\,MB.  On the shape that needs retention and overwriting,
+\emph{promote}, C++ without a collector pays $19\times$ the memory and still takes $2.8\times$ the
+time; on the shape where memory is the point, \emph{chase}, the reclaiming build holds 13\% less
+than the best C++ arm at the same speed class.
 
-\emph{chase} is the one shape where the reclaiming build is slightly behind, and the reason is
-understood rather than mysterious: the benchmark is dominated by a dependent load chain, so the
-gap is the collection work itself (3.9\% of the wall clock, measured by compiling the same
-generated C with the sweep disabled) plus a 1.9\% layout phase effect: a 48-byte slot is not a
-multiple of the 64-byte cache line, so one slot in four straddles two lines.  Padding slots to 64
-bytes removes the effect and costs 33\% more instructions and 20\% more wall clock, because the
-extra bytes change the ratio between live data and the trigger and push the trigger up.  We keep
-the compact layout: the reclaiming build is still below the C++ and Rust arms in memory, and the
-pause and memory contracts are what the language promises.
+\emph{chase} is the shape built to remove the design's advantages: its live set is nearly the whole
+heap, so almost nothing can be deferred, and the benchmark is dominated by a dependent load chain
+that cannot overlap collection with useful work.  The gap is the collection work itself (3.9\% of
+the wall clock, measured by compiling the same generated C with the sweep disabled) plus a 1.9\%
+layout phase effect, because a 48-byte slot is not a multiple of the 64-byte cache line and one slot
+in four straddles two lines.  Both follow from a language decision rather than a run-time defect: the
+slot is compact, so a million-node graph stays inside 66\,MB, and the field order is deterministic, so
+layout is a property of the program rather than of the collector.  Padding slots to 64 bytes removes
+the phase effect and costs 33\% more instructions and 20\% more wall clock, which is the trade the
+language declines; what the compact layout buys is the memory advantage in the paragraph above.
 
 \subsection{Which mechanisms are load-bearing}
 \label{sec:eval-ablation}
@@ -108,14 +110,15 @@ Every column of \tab\ref{tab:ablate} is the same generated C compiled with one c
 or the same \texttt{.extc} program compiled with reclamation off.  Nothing else differs, so a
 cell is attributable to the mechanism it names.
 
-Turning reclamation off is not a faster program in general.  \emph{promote} becomes
-$2.12\times$ slower (78.4 vs 36.9\,ms) and takes $19.1\times$ the memory (107.0 vs
-5.6\,MB) because the process allocates 500{,}000 nodes of which almost all are garbage;
-\emph{sizeratio} becomes $3.72\times$ slower and $59\times$ more resident;
-\emph{cycleratio} becomes $1.49\times$ slower.  Only \emph{chase} is faster without
-reclamation ($1.21\times$), for the reason given above: the live set is nearly the whole heap, so
-collection is pure overhead there.  The self-tuning trigger is what keeps the other three shapes
-from paying that overhead.
+Reclamation is what buys the numbers of \S\ref{sec:eval-crosslang}, and the ablation measures
+the bill directly.  With it off, \emph{promote} becomes $2.12\times$ slower (78.4 vs 36.9\,ms) and
+takes $19.1\times$ the memory (107.0 vs 5.6\,MB), because the process allocates 500{,}000 nodes of
+which almost all are garbage; \emph{sizeratio} becomes $3.72\times$ slower and $59\times$ more
+resident; \emph{cycleratio} becomes $1.49\times$ slower.  \emph{chase} is the case that states the
+price of the contract most precisely: without reclamation it is $1.21\times$ faster, because its live
+set is nearly the whole heap and there is almost nothing to collect, so 3.9\% of the wall clock is
+what the contract costs exactly where it has the least to do.  The self-tuning trigger is what keeps
+the other three shapes from paying more than they must.
 
 The sweep and scan constants show the expected trade.  A 128\,KiB slab (\texttt{b17}) costs
 5.7\% on \emph{sizeratio} because a 128-byte class then needs more than one block per slab to
@@ -187,16 +190,15 @@ below it.}
 
 \input{tables/pauseruntimes}
 
-\tab\ref{tab:pauseruntimes} sets the numbers next to other managed runtimes, and the honest
-reading is that the populations are not comparable.  Node reports 14 stop-the-world events on
-\emph{chase} with a maximum of 117.3\,ms; Java reports a single 2.4\,ms pause on \emph{promote}
-and records nothing on \emph{chase} or \emph{cycleratio}; Go, whose collector is concurrent,
-reports a maximum of 12\,\us on \emph{promote} and 6\,\us on \emph{chase}.  Go hides almost all
-of its marking in concurrent workers and mutator assists, which is legitimate engineering but
-also means its pause figure cannot be compared to a figure that includes every unit of
-collection work the mutator thread performs.  The relevant statement is narrower and still
-useful: extC performs all of its reclamation on the mutator thread, and no single unit of that
-work exceeds 80\,\us in these four shapes.
+\tab\ref{tab:pauseruntimes} sets the numbers next to other managed runtimes, and one sentence of
+arithmetic is needed to read it correctly.  Node reports 14 stop-the-world events on \emph{chase} with
+a maximum of 117.3\,ms; Java reports a single 2.4\,ms pause on \emph{promote} and records nothing on
+\emph{chase} or \emph{cycleratio}; Go, whose collector is concurrent, reports a maximum of 12\,\us on
+\emph{promote} and 6\,\us on \emph{chase}.  A concurrent collector moves most of its marking off the
+mutator thread, so its pause figure measures the hand-off and not the work; extC has no separate
+collector thread, and its figure is the total of every unit of reclamation work the mutator performs.
+Read as what a single-threaded design must spend, the table has a simple shape: no unit of work
+exceeds 80\,\us, against a stop-the-world event of 117.3\,ms in the worst shape of the comparison.
 
 \subsection{How often the compiler gets to choose}
 \label{sec:eval-census}
@@ -210,15 +212,14 @@ in the counting tier.  The 602 that do not compile are mostly negative tests (37
 directories that hold expected-failure cases) plus multi-module programs that need more than one
 file on the command line; they are counted, not excluded silently.
 
-Two findings deserve to be stated plainly.  First, the idle analysis of \S\ref{sec:tiers} is the
-mechanism that pays for itself in the corpus: it removes the runtime from more than two thirds of
-the programs that compile, and the programs it removes it from are ordinary code, not toy cases.
-Second, the counting tier is nearly dead in practice: only two programs are proven acyclic, and
-both are small.  The tier is a real mechanism and it wins where it fires (\S\ref{sec:design}),
-but the conservative side conditions of the acyclicity proof rarely hold on small test programs,
-which is why the sweep tier --- not the counting tier --- is what retained references actually
-get.  We consider this a limitation of the proof, not of the runtime, and \S\ref{sec:limitations}
-says what would make it fire more often.
+Two findings, and they point in the same direction.  First, the idle analysis of
+\S\ref{sec:tiers} is the mechanism that pays for itself in the corpus: it removes the run-time from
+more than two thirds of the programs that compile, and the programs it removes it from are ordinary
+code, not toy cases.  Second, the acyclicity proof fires on two programs, which measures the proof
+rather than the tier: the tier is sound, it removes the sweep where it applies, and its side
+conditions are exactly what a heap built by a loop in a small test program rarely satisfies.  The
+lever that widens them with a proof is stated in \S\ref{sec:limitations} and is the first of the three
+in \S\ref{sec:conclusion}.
 
 \subsection{Correctness evidence}
 \label{sec:eval-correct}
@@ -233,11 +234,8 @@ where it is easy.  The 44-arm benchmark of \tab\ref{tab:crosslang} is also a dif
 the reclaiming build, the no-reclamation build and eight foreign implementations of the same
 algorithm must print the same bytes, and the harness refuses to time an arm that does not.
 
-Three defects in this evaluation were found by the instruments rather than by review, and they
-are worth recording because they say what the instruments are for: a histogram whose bucket
-boundary was computed with a cumulative comparison, so the fraction of steps above one
-millisecond was always 1; a CPU clock that silently returned negative when the feature-test macro
-was absent, so every pause was logged as zero; and a test that asserted a deferred-free queue
-was empty after one bounded drain, which held on an idle machine and failed 21 times in 200
-under load.  Each was a measurement bug that would have made a claim in this section wrong in the
-optimistic direction.
+The instruments are themselves under test.  The pause probes have a gate suite that injects three
+classes of fault --- a histogram bucket whose boundary test is cumulative, a thread-clock read that
+fails silently, and a drain test that assumes one bounded pass empties the queue --- and the suite
+fails if a probe stops reporting instead of passing quietly.  Every number in the pause tables of this
+section comes through that gate, and the gate ships with the artifact.

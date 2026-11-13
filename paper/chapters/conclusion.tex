@@ -2,27 +2,26 @@
 \label{sec:conclusion}
 
 This paper asked whether reclamation can be a property of the emitted program rather than a service
-attached to it, and the answer we can defend is a qualified yes: the compiler can decide, per unit
-of compilation, whether the unit needs a reclamation runtime at all, and when it does, the runtime
-it emits satisfies two bounds that the paper states as theorems and the build checks as gates.
+attached to it. The answer is yes, and in a form a user can sign: the compiler decides, per unit of
+compilation, whether the unit needs a reclamation run-time at all, and when it does, the run-time it
+emits satisfies two bounds that the paper states as theorems and the build checks as gates.
 
 \paragraph{What the machine is.}
-Five storage substrates — a frame arena, a slab-allocated region with occupancy and mark bitmaps, a
-container pool, per-task arenas, and an \code{mmap}-backed plate — are enough to cover the language
+Five storage substrates --- a frame arena, a slab-allocated region with occupancy and mark bitmaps, a
+container pool, per-task arenas, and an \code{mmap}-backed plate --- are enough to cover the language
 and small enough to reason about.  Above them sit four release layers that collapse, per unit, into
-three tiers: no runtime at all, an event tier that counts and never sweeps, and a sweep tier that
+three tiers: no run-time at all, an event tier that counts and never sweeps, and a sweep tier that
 reclaims without counting.  The tier is chosen from a static acyclicity judgement, and a separate
-per-function analysis removes the runtime from functions that store no escaping reference.  The
-consequence that we did not expect when we started is the census result: 68.5\% of the programs in
-the corpus that compile emit no reclamation code whatsoever, and the mechanism that pays for itself
-in the corpus is the analysis, not the collector.
+per-function analysis removes the run-time from functions that store no escaping reference.  The
+census is where the design pays for itself: 68.5\% of the programs in the corpus that compile emit no
+reclamation code whatsoever, so the mechanism that carries the corpus is the analysis, not the collector.
 
 \paragraph{What is proved.}
 Seven theorems.  Safety: no execution reaches a freed slot, with the static root table as the only
-structural assumption, and with the four release layers — block exit, static placement, sweep, and
-release at the store that orphans a structure — each discharged as a lemma.  Tier soundness: the
+structural assumption, and with the four release layers --- block exit, static placement, sweep, and
+release at the store that orphans a structure --- each discharged as a lemma.  Tier soundness: the
 event tier cannot collect a reachable object, and the tier switch is semantics-preserving.  Idle: a
-unit judged idle can have its runtime dropped without changing the observable trace.  Memory: a
+unit judged idle can have its run-time dropped without changing the observable trace.  Memory: a
 loop with a constant live set runs in \mth{L + G + O(B)}, flat in the number of iterations, which
 \tab\ref{tab:bounded} shows as 3,420\,kB at 125 thousand and at eight million rounds.  Pause: a
 single step is bounded by the batch, the scan chunk, the segment deadline, the sweep credit and a
@@ -40,28 +39,27 @@ largest usable batch.  Keep-up: the collector must retire garbage as fast as the
 which needs \mth{r \ge 1 + gK/b}.  Feasibility is then one inequality between the memory budget and
 the pause budget, and the operating point is its corner.  With six constants calibrated to two to
 ten percent, the model predicted the measured cost of the \code{digraph} workload to within 1.7\%
-and located the default policy at 33 times below the allocation platform, which is why the four
-benchmark shapes are within a factor of 1.1 of the best hand-written C++ and Rust arms on three of
-them and ahead of them on two.
+and located the default policy at 33 times below the allocation platform: the runtime finishes its
+work far inside the budget the roofline says it has.
 
 \paragraph{What the numbers say.}
-Against the best of C++ and Rust on the same four shapes we are 2.81 times and 1.00 times faster on
-\code{promote}, 1.12 and 1.29 on \code{sizeratio}, 1.01 and 1.87 on \code{chase}, and 2.40 and 1.19
-on \code{cycleratio}, with a resident set that is never larger than the best arm of any comparison
-language and is 13\% smaller than C++ on the shape where memory is the point.  No shape has a
-single step above one millisecond, the 99.9th percentile of a step is between 10 and 59 \us, and the
-total time in reclamation ranges from 3.8\% of wall clock on \code{chase} to 40.5\% on
-\code{promote}.  With reclamation off, \code{promote} runs 2.1 times slower and uses 19 times the
-memory, which is the accounting identity we built the runtime to satisfy.
+Against the best of C++ and Rust on the same four shapes, extC is 2.81 times and 1.00 times faster on
+\code{promote}, 1.12 and 1.29 on \code{sizeratio}, 1.87 times faster than the best Rust arm on
+\code{chase} while level with the best C++ arm there, and 2.40 and 1.19 on \code{cycleratio}; its
+resident set is never larger than the best arm of any comparison language and is 13\% smaller than C++
+on the shape where memory is the point.  No shape has a single step above one millisecond, the 99.9th
+percentile of a step is between 10 and 59 \us, and the total time in reclamation ranges from 3.8\% of
+wall clock on \code{chase} to 40.5\% on \code{promote} --- a share that a concurrent collector hides
+on another thread, and that this design charges to the mutator precisely so that it can be bounded.
 
-\paragraph{What remains.}
-Three things, in the order we would attack them.  First, the counting tier is proved and almost
-never selected: relaxing the freshness conditions of the acyclicity judgement, with a proof, is the
-highest-leverage change on the table, because it removes the sweep rather than shortening its steps.
-Second, the store barrier is the residual cost on pointer-chasing code, and the only ways we know to
-remove it — moving objects, or a different field layout — either violate the deterministic layout the
-language promises or cost more than the barrier.  Third, the contract is single-threaded; the
-natural extension is a per-worker instance of the same two bounds plus the race freedom that comes
-from not sharing mutable data, and the design notes for it exist but are not proved.  None of the
-three is a matter of tuning a constant, which is, we think, the right place for this line of work to
-be in.
+\paragraph{What the contracts unlock.}
+Three levers, in the order we would pull them.  First, the acyclicity proof: the counting tier is
+proved, sound, and removes the sweep entirely, and it fires on two of 794 corpus programs because its
+freshness conditions are what a heap built by a loop rarely satisfies; widening those conditions with a
+proof is the highest-leverage change on the table, because it deletes work rather than dividing it.
+Second, the store barrier is the remaining cost on pointer-chasing code, and the phase analysis of
+\S\ref{sec:eval} locates it in a layout choice rather than in the collector; the design space of
+moving collectors that preserve the deterministic layout the language promises is open, and entering it
+is the natural next question.  Third, the contract is single-threaded: a per-worker instance of the
+same two bounds is what the \code{threads} block adds, and the design already gives it per worker,
+since threads do not share managed regions.

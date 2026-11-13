@@ -207,7 +207,7 @@ size-class layout, not eliminated.
 We do not scan stacks: the root table is static, emitted at each trigger point, which is why the
 collector needs no shadow stack and why a suspended coroutine registers its frame fields instead.
 We do not run the collector on another thread, so \emph{every} collector instruction is mutator time;
-this is the honest reading of our pause numbers and the reason \S\
+this is the reading our pause numbers support and the reason \S\
 ef{sec:eval} reports both the
 armed-window total and the per-step total.
 We do not attempt to bound the pause of a program that allocates an object larger than the wall in a

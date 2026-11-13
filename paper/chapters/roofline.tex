@@ -310,7 +310,7 @@ Equations~\ref{eq:lambda}--\ref{eq:pauselaw} reproduce the measured per-byte cos
 $2$--$10\%$ at the calibrated shapes, the same order as the run-to-run drift of the machine;
 model predictions are therefore quoted to two significant digits and never used to decide differences
 smaller than that.
-Two constants carry honest uncertainty: $g$ comes from a structural count on an older revision
+Two constants carry the model uncertainty: $g$ comes from a structural count on an older revision
 ($\le 5.7$ at the outside, which moves $r_{\min}$ by $1.4\times$), and $\tau_t$ varies by shape
 because descriptor dispatch differs.
 
@@ -343,7 +343,7 @@ $\lambda$.
 \subsection{What the model does not claim}
 \label{sec:roofline-limits}
 
-Four limitations are worth stating.
+Four boundaries of the model are worth stating.
 (i) It is a \emph{single-threaded, single-region} model; it says nothing about per-task arenas or
 parallel workers, where the bound becomes a sum over arenas.
 (ii) $\lambda$ assumes a full mark per round; the chunked implementation performs the same total work

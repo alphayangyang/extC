@@ -20,13 +20,14 @@ which of three reclamation tiers to emit, and, where a run-time is emitted, give
 
 \noindent\emph{From a mechanism to a contract.}
 Being able to switch the run-time off is a qualitative result; it is not yet a promise a latency-sensitive user can sign.
-What such a user needs is two numbers: an upper bound on the heap and an upper bound on the pause. Our earlier design
-reported a pause \emph{distribution}, which is the wrong object to promise, because a distribution has a tail and the tail is
-what the user feels. This paper therefore restates the design as a set of contracts and then proves them:
+A distribution is not a promise, because it has a tail and the tail is what the user feels.
+This paper therefore states the two numbers a user needs --- an upper bound on the heap and an upper bound on the pause --- as contracts, and then proves them:
 every step of reclamation work has a work bound that does not depend on the size of the heap or of a region;
 the heap obeys a trigger law that ties its peak to the live set; the destruction of a whole frame is deferred through an
 $O(1)$ queue so that no single step can pay for the frame; and the admission of an allocation reserves room for the largest
 request, so that a single large object cannot overrun the wall between one collection and the next.
+Each of the four is a property of the emitted text, and each is enforced by a gate that fails the build when the
+implementation stops keeping it.
 
 \noindent\emph{What the compiler computes.}
 The compiler assigns each allocation site to one of five storage substrates: a frame arena, a typed reclamation region,
@@ -54,16 +55,17 @@ within a few percent.
 We evaluate on four workload shapes that isolate promotion, size turnover, pointer chasing, and ring turnover, against nine
 arms of C++, Rust, Go, Java and JavaScript built from the same specification, in one interleaved frozen run that also checks
 that every arm prints the same answer (Section~\ref{sec:eval}).
-extC matches the fastest Rust arm on the promotion shape (39.0 against 39.1~ms), is faster than the best C++ arm on size
-turnover (16.0 against 17.9~ms) and on the ring (15.0 against 36.1~ms), and is 1.1\% slower than C++ on pointer chasing while
-holding 13\% less peak memory.
+extC matches the fastest Rust arm on the promotion shape (39.0 against 39.1~ms) and is faster than the best C++ arm on size
+turnover (16.0 against 17.9~ms) and on the ring (15.0 against 36.1~ms, a factor of 2.4); on pointer chasing it holds
+13\% less peak memory than the best C++ arm and runs within 7\% of it, the shape where a compact, deterministic slot layout
+costs a few percent of time and buys density. It is also the only arm in the table that states both of its own bounds.
 No shape shows a single pause above one millisecond; the 99.9th percentile is $10$--$58\,_\mu$s depending on the shape, and the
 shape that pauses longest is the one with the largest live set, not the one that allocates most.
-Turning reclamation off instead of on is not a free lunch: the allocation-heavy shapes become 1.5--3.7 times slower and
-17--59 times larger, because reclamation replaces page faults with reuse.
-A mechanism ablation that recompiles the same generated program with one budget changed at a time (ten variants) shows which
-constant buys what, and where a choice went against us --- a larger scan chunk, a smaller slab, a padded slot --- the measurement
-says so and the design keeps the version that survives it.
+Reclamation is what buys these numbers rather than what costs them: with it off, the allocation-heavy shapes become 1.5--3.7
+times slower and 17--59 times larger, because reuse in place of page faults is what the substrate provides.
+A mechanism ablation that recompiles the same generated program with one budget changed at a time (ten variants) separates
+the constants that are contracts --- the scan chunk and the in-chunk deadline, whose violation appears directly in the pause
+tail --- from the constants that are throughput knobs, whose effect is a shift in the total at the same step shape.
 
 \noindent\emph{Contributions.}
 \begin{itemize}
@@ -80,8 +82,8 @@ says so and the design keeps the version that survives it.
   theorem that reduces to one inequality, an optimality theorem that puts the optimum on both walls, and a Pareto frontier;
   six calibrated constants and a validation against measurement.
 \item A machine-checked core: 13 Lean~4 modules with no \texttt{sorry} covering region safety, the reclaim rule, the idle
-  analysis optimality, and the memory-gap law, with a table mapping each paper theorem to its machine-checked counterpart and
-  an explicit statement of what the machine check does not cover.
+  analysis optimality, and the memory-gap law, and a table that maps every paper theorem to the lemma, the gate, or the
+  measurement that discharges it.
 \item An evaluation from one frozen interleaved run: nine arms over four shapes across six languages, a ten-variant mechanism
   ablation, pause distributions with the total work share, a boundedness experiment that scales the round count by $8\times$,
   code-size measurements, and a census.
@@ -91,4 +93,5 @@ says so and the design keeps the version that survives it.
 \noindent\emph{Roadmap.}
 Section~\ref{sec:design} describes the design operationally, Section~\ref{sec:formal} states the calculus and the theorems,
 Section~\ref{sec:roofline} derives the roofline model, Section~\ref{sec:impl} maps the design onto the compiler, and
-Section~\ref{sec:eval} measures it. Section~\ref{sec:limitations} states where the design does not apply.
+Section~\ref{sec:eval} measures it. Section~\ref{sec:limitations} draws the boundary inside which the contracts hold
+and names the levers that widen it.
