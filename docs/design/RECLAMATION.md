@@ -354,6 +354,18 @@ place。构造点没有自己的 place 时池就挂在函数体上 —— 循环
 看得见引用的窄化控制程序必须仍保守）与注入 `container-desc-conservative`；`tests/reclaim-gaps` 的
 `pool_ref_slot` 峰值比 3.04× → 1.00×（sweeps 0/0 → 2/9），语料全量静态检查的 `silent-both` 9 → 0。
 **并行：两处进程级共享写走独立协议。** 并行 worker 各自的回收区域互不相交（`parTls` 的分配落线程本地 arena），但运行期有两处状态是**进程级共享**的：① slab 登记表（地址 → slab → 区域）—— 写侧曾用 `realloc` + `free` 旧表，两个 worker 同时建 slab 时另一个线程正在已释放的旧表里探测（ASan 下 8 路并行 400 次复现 10 次 SEGV）；现在**按代发布**：写侧在 `extc_rc_regLock` 下 `calloc` 新代重散、`__atomic_store_n` 发布、`extc_rc_regSeq` + 1，**旧代永不 free**（容量 2× 增长 ⇒ 旧代总内存被最终容量界住）；读侧 `extc_rc_ownFind` 无锁，最多 32 轮「读 seq → 读当前代 → 探一格 → 复读 seq」后持锁兜底，热路径入口再叠一层 `extc_rc_ownProbeFast`（镜像表探一格 + 前后 seq 一致即权威）。② 标记参与者计数 `extc_rc_wb`（写屏障门控）—— 每只区域各自 begin/finish，普通 `++/--` 丢更新 ⇒ `barrier participant underflow` 崩溃（修前 1/400）；写侧改原子，但原子的 lock 前缀与内存屏障会渗进热路径（`if (!extc_rc_wb ...)` 每次都要重载 ⇒ owed_home +2.8% Ir），所以声明保持普通 `int`、原子加减包进 noinline 冷函数 `extc_rc_wbAdd`。判据：`gate-reclaim-conc`（结构 11 项 + 8 路并行 ASan 512 次 smoke + 10 条注入自测）与注入 `reg-retry-nocap`；跳过表里 `skip:reg-hit` / `skip:reg-settled` / `skip:reg-race` 三条各写明为什么无锁路径的结果仍是权威的。9 形状 Ir 相对上一提交 −14.1% ~ +1.1%（`extc_rc_shadeSlow` 冷半段不内联、wb 原子移出热路径是主要来源）。
+
+## 三点三、容量归还：slab 的「空」就是契约的兑现点
+
+清扫的成本单位是**容量**，不是活集：一块 slab 里只要还有一个长命对象，它每轮都要逐词扫完（整块跳过的前提是 `s->nMark != 0` 为假，见 §三点五前面的 elide 段）。容量又是高水位 —— slab 只在区域析构时整块归还，所以「峰值」会一直钉在堆上。
+
+本轮给出一条**有界的归还路径**（无写屏障、全在冷路径）：`extc_rc_slabShrink(r)`（src/back/reclaim.c:1882）在一轮收尾之后（`extc_rc_settle` 尾部，3794）沿 region 链最多访问 `EXTC_RC_SHRINK_VISIT_MAX=256` 块，把 `nLive==0`、非 big、非 bump slab、且没有跨区入边位的 slab 从 region 链与 size-class 链 O(1) 摘掉、入 free 队列；每次最多 `EXTC_RC_SHRINK_REL_MAX=16` 块，munmap 交给既有的 `extc_rc_fqDrainCore`（1501）按 `EXTC_RC_FREE_BUDGET_SLABS` / `EXTC_RC_FREE_QUEUE_BYTES` 执行。
+
+契约三句：①**承诺**：一轮结束后，不含任何占用槽的 slab 最多在 ⌈n/16⌉ 轮内被归还（n = 这样的 slab 数），每轮新增工作量 ≤ 256 次链访问 + 16 次入队，munmap 的代价仍由 free 队列的预算常量计入停顿界；②**不承诺**：含 1 个长命对象的 slab 不归还（粒度是 slab），这是稀疏活集上 Θ(容量) 的来源；③**不发散**：`EXTC_RC_SLAB_KEEP`（默认 0）只是复用池大小，不影响界。
+
+实测：64 MiB 峰值后留 16 个成簇存活对象，基线 slabs 129 → 129 / RSS 82.9 MB 恒定；本机制 slabs 129 → 1（8 轮）/ RSS 16.8 MB。四形状零回归（±7% 噪声带内），指令数门禁 87,617,609 ≤ 88,029,115。
+
+
 ## 三点五、覆盖点的定点释放（环在覆盖点就没了）
 
 环永不归零，所以计数那一层收不了它；但"**覆盖一个槽**"这个动作本身能判死一棵树 —— 只要那
@@ -1067,6 +1079,7 @@ cache-sim 判据变红）。
 | `skip:no-proc-comm` | `/proc/self/stat` 里找不到 `)`（格式异常）⇒ 同样返回 -1 | comm 字段被括号包住，取最后一个 `)` 之后才是定长字段；找不到就无从定位 minflt | 无（纯诊断）| 同上：`minflt=-1` 哨兵；归因脚本按 `minflt>=0` 过滤 |
 | `skip:top-not-slower` | 新步不慢于 top-K 里当前最慢的一格 ⇒ 不替换 | top-K 只保留 K 个最慢步，用于尾部归因；更慢的步才有信息增量 | 无（纯采样：只影响 `[top]` 行内容）| `[top]` 按 `dur_us` 降序且 rank=1 是最慢步；`gate-skip-table` 自检 |
 | `skip:cascade-oom` | 级联释放的工作栈 `realloc` 失败 ⇒ 不入栈，子对象保留计数留给 sweep | 分配失败时唯一安全方向是保守；sweep 会按标记位收掉未归零的子树 | 多留（保守：晚一步收，不是悬垂）| 计数档 chain2 2M 节点（`-DEXTC_RC_CASCADE_DEBUG=1` 下 `bad=0`）+ ASan；默认档整段折叠不发射 |
+| `skip:shrink-null` | `extc_rc_slabShrink(r)` 的 `r` 是空指针 ⇒ 立刻返回 0 | 该函数只有一个调用点（`extc_rc_settle` 尾部：`if (r->shrinkDue) { ... extc_rc_slabShrink(r); ... }`），那里的 `r` 是 settle 的非空参数 ⇒ 发射产物里不可达，纯防御 | 无（幂等：空区域没有 slab 可归还）| `probe4` 探针覆盖归还路径，tests/reclaim 216/0 覆盖 settle 的每一档；结构上由唯一调用点的非空前提兜住 |
 | （无标记）`if (extc_rc_rsIncN) unlinkChildren(...)` | 一次登记都没发生过 ⇒ 不必撤边 | `rsIncN == 0` ⇒ 没有 `rsInc` 类边 | 多留（保守）| `unlink-nop` 证明"撤边"有牙；这个**守卫**没有专门注入 |
 | （无标记）`if (partN > 1) { 登记 }` | 只有一个区域参与 rc ⇒ 免登记 | 单区域不可能有跨区边 | 少算（不安全）| `gate-note-part` + `cross-region` 登记量判据 |
 | （无标记）`#if EXTC_RC_NOCOUNT` 整段 | 关掉计数时计数入口变空操作 | 没有读者 | 少算（不安全）| 单测**两档都跑**（默认 128 / 计数 171）|

@@ -1070,6 +1070,25 @@ P_step  ≤  b_eff · τ_t          b_eff = min(b, 1024)  … 活集 ≤ 16 MiB�
 
 **(6) 与模型的对应**：`M_max`/冷档/配额窗口的公式与常量一条没动（§19.4/§19.6 仍然成立），roofline 的 `λ(r)` 与 `M = L + κ_M H` 不需要重标。可标定量只有 `c_seg`：v21 重标为 **`pd_bigobj 3.841 ns/word`**、**`pd_pointer_dense 5.997 ns/word`** ⇒ `B_seg` 从 64.36/78.65 µs 降到 **48.20/74.69 µs**（`tests/gc-p0/bseg-cal.tsv` 绑定源码 md5，换 build 必须重标）。Ir 门禁回到 v18 量级（**87,625,199 ≤ 88,029,115**），因为时间闸门删掉后走步循环里不再读钟（`GC-ROOFLINE.md` §6.9.7）。
 
+### 19.7 容量墙与 slab 归还（v22 新增）
+
+§18 的内存定律把堆写成 M = L + κ_M·H，§19 的停顿界把一步写成 b·τ_t + c_fix。两条界都默认「容量（已映射的 slab 字节）跟着活集走」。在没有写屏障、也不搬移对象的前提下，这一点并不自动成立：
+
+- 清扫的最小工作量是 Θ(容量)：每个占用槽每轮都要「清本轮 mark 位 + occ∧¬mark 判定」，而清位是 Θ(容量)。整块 slab 被跳过只在`s->nMark != 0`为假时成立（src/back/reclaim.c:3629），所以一块 512 KiB 的 slab 里只要留 1 个长命对象，它每轮都要逐词扫完。
+
+- 容量是高水位：slab 只在 region 析构时整块归还。峰值过去以后容量不降，于是「每个长命对象最多钉住一块 slab」这一项不在 §18 的 κ_M 里，却是稀疏活集上最大的一项。
+
+实测（48 B 槽，稀疏活集 = 每 MB 一个 root，连续三轮 collect）：16 / 64 / 256 MB 区在第 2、3 轮零可回收字节，仍花 5.7 / 45.8 / 239.8 µs 与 5.1 / 22.4 / 103.1 µs（≈0.7 ns/KB）。即工作量 ∝ 容量、与垃圾量无关。探针与机制锚点在 docs/analysis/T2-CAPACITY-AND-T1-WIDENING.md。
+
+**机制（v22，冷路径，无写屏障）。** `extc_rc_slabShrink(r)`（src/back/reclaim.c:1882）在一轮已收尾、清扫游标已清空的时刻（`extc_rc_settle` 尾部，3794）沿 region 链访问至多 `EXTC_RC_SHRINK_VISIT_MAX=256` 块，把同时满足「`nLive==0`」「非 big」「非解析档 bump slab」「本区无跨区入边位（rsbit 全零或 `rsIncN==0`）」的 slab 从 region 链和 size-class 链上 O(1) 摘掉（新增 `prev` / `availPrev` 两个反向指针），入 free 队列，每次至多 `EXTC_RC_SHRINK_REL_MAX=16` 块；真正的 munmap 由既有 `extc_rc_fqDrainCore`（1501；budget `EXTC_RC_FREE_BUDGET_SLABS=8`、`EXTC_RC_FREE_QUEUE_BYTES=8 MiB` 硬闸）执行，所以不新增一条「按容量走」的停顿界。`EXTC_RC_SLAB_KEEP`（默认 0）可留少数空 slab 复用；累计归还块数记在 `extc_rc_slabRel`。
+
+调用点放在 settle 尾部而不是标记完成处，是本轮踩出来的：若在标记完成时就置位，shrink 会在一轮 sweep 的游标仍可能指向那块 slab 时把它放掉（探针在 `extc_rc_sweepElide` 里段错误）。`extc_rc_sweepBegin` 清 `shrinkDue`（3688）是同一约束的第二道保险。
+
+**实测（探针 /tmp/p4/probe4.c：64 MiB 峰值 → 留 16 个存活对象 → 每轮 1000 次短命分配）。** 基线 slabs 129 → 129、RSS 82.9 MB 恒定；v22 slabs 129 → 1（8 轮，16 块/轮）、RSS 82.9 → 16.8 MB（其中 11 MB 是探针自己的指针数组，运行期实际 ≈5 MB）。四形状交错 A/B（9 reps，min）：promote 38.86→39.23 ms（+1.0%）、sizeratio 15.40→14.32（−7.0%）、chase 119.22→117.08（−1.8%）、cycleratio 14.35→14.01（−2.4%）；RSS 逐形状不变（5,724 / 2,672 / 67,740 / 2,660 kB）。
+
+**残留（未闭合）。** 稀疏模式不受影响：每块 slab 恰好 1 个长命对象时 slabs 仍是 33 / 129 / 513，第 2、3 轮仍 ≈0.7 ns/KB —— 归还的粒度是 slab，一个存活对象仍钉住 512 KiB。要把这一项降到 O(活集)、只有三条路：①细粒度归还（页级占用计数 + MADV_DONTNEED，常数 = 4 KiB / 槽宽）；②搬移式压实（κ→1，但停顿 ∝ 活集且需要转发指针）；③写屏障（用户已否决，m16773）。本文不宣称稀疏活集已界住。
+
+
 ## §20 与仓库既有文档的不一致清单（口径必须按本节改）
 
 完整 90 条对账在 `docs/analysis/DOC-AUDIT.md`；这里只列"会误导读者/会误导优化决策"的 10 条。
