@@ -54,6 +54,12 @@
        参考标定值（pct 探针，chunk=8192/dl800）：pd_bigobj 34.08us（第二 rep 47.53）⇒ 4.160 ns/word；
        pd_pointer_dense 56.40us（第二 rep 65.05）⇒ 6.885 ns/word ⇒ 正式标定必须 3 reps 中位。
   (c) 通道：max <=1000us（G3b），目标 <=200us（观察，不判）。
+  v17 精确计数：`[histo]`/`[segsteps]` 行尾若带 `gt10us=`/`gt50us=`/`gt64us=`（严格 >10/50/64 µs 的
+  精确步数），则 (a) 的 >50us 占比与 (a)(b) 的 p99.9 改用**精确计数**判定，不再受桶界跨桶 N/A 限制：
+      over50: PASS iff gt50/n <= 1e-4；RED iff gt50/n - p_noise > 1e-4；其余记噪声带 N/A；
+      p99.9: 能证明 count(>L) <= 0.001n 则 PASS、count(>L) > 0.001n 则 RED（L 恰为 10/50/64 us 时精确；
+             其它 L 由 {>t} 的包含关系给上下界；无上界可给 => 退回桶界逻辑）。
+  旧产物无这三个字段 => 全部按桶界逻辑判（行为与 v16 一致）。
   噪声：判据须「扣噪声后仍成立」=> 下界比值先减 p_noise、上界比值加 p_noise 再比；
         噪声取 3 reps 的 cpu_over50_ratio / cpu_p999_us 的最大值（noise.txt）。
   桶界（HISTO_EDGES_NS，pause_parse 硬编码）：50us 落在 b64us 桶（32-64us）内部，
@@ -124,7 +130,8 @@ def parse_segsteps(txt):
     return {"line": line.strip(), "n": int(nm.group(1)) if nm else 0,
             "pops_tot": int(pm.group(1)) if pm else None,
             "max_us": float(mm.group(1)) if mm else None,
-            "counts": [vals.get(x, 0) for x in pp.HISTO_NAMES]}
+            "counts": [vals.get(x, 0) for x in pp.HISTO_NAMES],
+            "gt10": vals.get("gt10us"), "gt50": vals.get("gt50us"), "gt64": vals.get("gt64us")}
 
 
 TOP_KEYS_INT = ("rank", "freed", "words", "seg", "pops", "coll", "step", "first", "trans",
@@ -157,7 +164,8 @@ def parse_top(txt):
 def _merge(dst, src):
     if dst is None:
         dst = {"n": src["n"], "counts": list(src["counts"]), "max_us": src.get("max_us"),
-               "pops_tot": src.get("pops_tot")}
+               "pops_tot": src.get("pops_tot"),
+               "gt10": src.get("gt10"), "gt50": src.get("gt50"), "gt64": src.get("gt64")}
         return dst
     dst["n"] += src["n"]
     for i in range(pp.HISTO_NB):
@@ -166,6 +174,9 @@ def _merge(dst, src):
         dst["max_us"] = max(dst["max_us"] or 0.0, src["max_us"])
     if src.get("pops_tot") is not None:
         dst["pops_tot"] = (dst.get("pops_tot") or 0) + src["pops_tot"]
+    for k in ("gt10", "gt50", "gt64"):
+        a, b = dst.get(k), src.get(k)
+        dst[k] = None if (a is None or b is None) else a + b
     return dst
 
 
@@ -182,7 +193,8 @@ def load_errs(paths):
         h = rec.get("histo")
         if h and h.get("n") is not None:
             hist = _merge(hist, {"n": h["n"], "counts": h["counts"],
-                                 "max_us": rec.get("step_max_us")})
+                                 "max_us": rec.get("step_max_us"),
+                                 "gt10": h.get("gt10"), "gt50": h.get("gt50"), "gt64": h.get("gt64")})
         s = parse_segsteps(txt)
         if s:
             seg = _merge(seg, s)
@@ -264,6 +276,69 @@ def over_thr_bounds(counts, thr_us):
             hi_from = i
             break
     return sum_from(counts, lo_from), sum_from(counts, hi_from)
+
+
+# ---------------------------------------------------------------------------
+# 精确超阈计数（v17）
+# ---------------------------------------------------------------------------
+GT_THRESHOLDS_US = (10, 50, 64)
+
+
+def gt_of(rec):
+    """取 [histo] / [segsteps] 的精确超阈计数 {10:..,50:..,64:..}。
+    三个字段缺一 => None（旧产物 => 调用方退回桶界逻辑，行为与 v16 一致）。"""
+    if not rec:
+        return None
+    g = {}
+    for t, k in ((10, "gt10"), (50, "gt50"), (64, "gt64")):
+        v = rec.get(k)
+        if v is None:
+            return None
+        g[t] = int(v)
+    return g
+
+
+def gt_sub(a, b):
+    """(a) 通道的精确计数 = [histo] - [segsteps]（与逐桶相减同口径）。
+    任一缺 => None；出现负值 => "ERROR"（插桩不一致，调用方不得当 0 用）。"""
+    if a is None or b is None:
+        return None
+    d = {t: a[t] - b[t] for t in GT_THRESHOLDS_US}
+    return "ERROR" if any(v < 0 for v in d.values()) else d
+
+
+def exact_over_bounds(gt, limit_us):
+    """严格 >limit_us 的步数**精确上下界**（靠 {>t} 的包含关系）。
+    上界：{>L} 是 {>t}（t<=L 中最大者）的子集；无 t<=L => None（没有上界）。
+    下界：{>t}（t>L 中最小者）是 {>L} 的子集；无 t>L => 0。
+    L 恰等于某个 t 时上下界相等 = 精确计数。"""
+    for t in GT_THRESHOLDS_US:
+        if limit_us == t:                          # L 恰为阈值 => gt[t] 就是精确值
+            return gt[t], gt[t]
+    hi = None
+    for t in GT_THRESHOLDS_US:
+        if t <= limit_us:
+            hi = gt[t]
+    lo = 0
+    for t in GT_THRESHOLDS_US:
+        if t > limit_us:
+            lo = gt[t]
+            break
+    return lo, hi
+
+
+def p999_exact(gt, n, limit_us):
+    """精确计数下的 p99.9<=limit 判定（整数比较，避开浮点边界）。
+    PASS iff count(>L)*1000 <= n（上界可证）；RED iff count(>L)*1000 > n（下界可证）；否则 N/A。"""
+    if not n:
+        return "N/A", "n=0"
+    lo, hi = exact_over_bounds(gt, limit_us)
+    if hi is not None and hi * 1000 <= n:
+        return "PASS", "count(>%gus) <= %d；%d*1000 <= n=%d（精确计数）" % (limit_us, hi, hi, n)
+    if lo * 1000 > n:
+        return "RED", "count(>%gus) >= %d；%d*1000 > n=%d（精确计数）" % (limit_us, lo, lo, n)
+    return "N/A", "count(>%gus) 只能给到 [%d, %s]，相对 0.001*n 跨线" % (
+        limit_us, lo, "无上界" if hi is None else str(hi))
 
 
 def p999_bounds(counts, n, limit_us):
@@ -421,7 +496,7 @@ def _bound_cell(value_us, b_lo, b_hi):
 
 def verdict_step_channel(name, n, counts, max_us, p_noise, mode="warm",
                          p999_limit_us=None, over_limit_us=OVER50_US,
-                         ratio_limit=RATIO_LIMIT, min_n=MIN_N):
+                         ratio_limit=RATIO_LIMIT, min_n=MIN_N, gt=None):
     """(a-warm)/(b) 的通道判定。返回 dict（json 友好）。
     warm：>50us 占比（扣噪声）+ p99.9<=10us；max 只 OBS，不进判定。
     seg ：p99.9 与 max 用闭式上界 B_seg（未标定 => N/A）；over1ms=0 恒判；>50us 只 OBS。"""
@@ -432,8 +507,14 @@ def verdict_step_channel(name, n, counts, max_us, p_noise, mode="warm",
         out["verdict"] = "N/A"
         out["note"] = "n=0（该通道没有样本）"
         return out
-    lo, hi = over_thr_bounds(counts, over_limit_us)
-    r_lo, r_hi = lo / n, hi / n
+    exact = gt is not None
+    out["exact_over"] = exact
+    if exact:
+        lo = hi = int(gt[50])          # >50us 的步数就是 gt[50]（v17 精确计数）
+        r_lo = r_hi = lo / n
+    else:
+        lo, hi = over_thr_bounds(counts, over_limit_us)
+        r_lo, r_hi = lo / n, hi / n
     out["over_lo_count"], out["over_hi_count"] = lo, hi
     out["over_lo_ratio"], out["over_hi_ratio"] = r_lo, r_hi
     out["p_noise"] = p_noise
@@ -441,7 +522,8 @@ def verdict_step_channel(name, n, counts, max_us, p_noise, mode="warm",
     hi_net = r_hi - p_noise
     out["ratio_lo_net"] = lo_net
     big = n >= min_n
-    obs50 = "观测：%.2e / %.2e（%s 不判该项）" % (r_lo, r_hi, "warm" if mode == "warm" else "seg")
+    obs50 = (("精确：%d/%d = %.2e（gt50us）" % (lo, n, r_lo)) if exact else
+             "观测：%.2e / %.2e（%s 不判该项）" % (r_lo, r_hi, "warm" if mode == "warm" else "seg"))
     if mode == "warm":
         if not big:
             out["criteria"]["over50"] = {"verdict": "N/A",
@@ -449,7 +531,17 @@ def verdict_step_channel(name, n, counts, max_us, p_noise, mode="warm",
             out["criteria"]["p999"] = {"verdict": "N/A", "why": "n<1e5"}
             out["note"] = "n<1e5：分位判据 N/A（不是 PASS）"
         else:
-            if lo_net > ratio_limit:
+            if exact and lo_net > ratio_limit:
+                out["criteria"]["over50"] = {"verdict": "RED",
+                    "why": "精确 gt50=%d（%.2e）扣噪声 %.2e > %.0e" % (lo, r_lo, lo_net, ratio_limit)}
+            elif exact and r_lo <= ratio_limit:
+                out["criteria"]["over50"] = {"verdict": "PASS",
+                    "why": "精确 gt50=%d（%.2e）<= %.0e" % (lo, r_lo, ratio_limit)}
+            elif exact:
+                out["criteria"]["over50"] = {"verdict": "N/A",
+                    "why": "噪声带：精确 %.2e 落在 (%.0e, ...]，cpu 噪声 %.2e（不是 PASS）"
+                           % (r_lo, ratio_limit, p_noise)}
+            elif lo_net > ratio_limit:
                 out["criteria"]["over50"] = {"verdict": "RED",
                     "why": "扣噪声后下界 %.2e > %.0e（上界 %.2e）" % (lo_net, ratio_limit, r_hi)}
             elif hi_net <= ratio_limit:
@@ -459,7 +551,10 @@ def verdict_step_channel(name, n, counts, max_us, p_noise, mode="warm",
                 out["criteria"]["over50"] = {"verdict": "N/A",
                     "why": "跨桶：下界 %.2e <= %.0e < 上界 %.2e（%gus 落在桶内）"
                            % (r_lo, ratio_limit, r_hi, over_limit_us)}
-            pv, pw = p999_bounds(counts, n, p999_limit_us)
+            if exact:
+                pv, pw = p999_exact(gt, n, p999_limit_us)
+            else:
+                pv, pw = p999_bounds(counts, n, p999_limit_us)
             out["criteria"]["p999"] = {"verdict": pv, "why": pw}
         out["criteria"]["max"] = {"verdict": "OBS",
             "why": "max=%s us（warm 通道 max 不作判据）" % (_fmt_us(max_us) if max_us is not None else "n/a")}
@@ -473,9 +568,14 @@ def verdict_step_channel(name, n, counts, max_us, p_noise, mode="warm",
         elif not big:
             out["criteria"]["p999"] = {"verdict": "N/A", "why": "n<1e5"}
         else:
-            v_lo, w_lo = p999_bounds(counts, n, b_lo)
-            v_hi, w_hi = p999_bounds(counts, n, b_hi)
-            v_abs, w_abs = p999_bounds(counts, n, P999_SEG_ABS_US)
+            if exact:
+                v_lo, w_lo = p999_exact(gt, n, b_lo)
+                v_hi, w_hi = p999_exact(gt, n, b_hi)
+                v_abs, w_abs = p999_exact(gt, n, P999_SEG_ABS_US)
+            else:
+                v_lo, w_lo = p999_bounds(counts, n, b_lo)
+                v_hi, w_hi = p999_bounds(counts, n, b_hi)
+                v_abs, w_abs = p999_bounds(counts, n, P999_SEG_ABS_US)
             reds = []
             if v_hi == "RED":
                 reds.append("p99.9 > B_seg_hi=%.1fus（%s）" % (b_hi, w_hi))
@@ -665,6 +765,7 @@ def analyze(hist, seg, chan, noise, case=None, cold_dense=COLD_DENSE_DEFAULT,
         res["verdict"] = "N/A"
     else:
         n_all, c_all = hist["n"], hist["counts"]
+        g_all = gt_of(hist)
         if seg is None:
             res["a"] = {"name": "regular(seg=0)", "verdict": "N/A",
                         "note": "缺 [segsteps] 行 => (a)(b) 不可分（不是 PASS）"}
@@ -692,6 +793,12 @@ def analyze(hist, seg, chan, noise, case=None, cold_dense=COLD_DENSE_DEFAULT,
                     res["b"] = dict(res["a"])
                 else:
                     n_reg = n_all - n_seg
+                    g_seg = gt_of(seg)
+                    g_reg = gt_sub(g_all, g_seg)
+                    if g_reg == "ERROR":
+                        res["warnings"].append(
+                            "精确计数负值：[histo] 的 gt* 小于 [segsteps] 的 gt*（插桩不一致）")
+                        g_reg = None
                     if cls == "cold-dense":
                         res["a"] = verdict_cold_dense(n_reg, diff, hist.get("max_us"), tops, p_noise)
                     elif cls == "mixed":
@@ -700,10 +807,14 @@ def analyze(hist, seg, chan, noise, case=None, cold_dense=COLD_DENSE_DEFAULT,
                     else:
                         res["a"] = verdict_step_channel(
                             "regular(seg=0)", n_reg, diff, None, p_noise,
-                            mode="warm", p999_limit_us=P999_REG_US)
+                            mode="warm", p999_limit_us=P999_REG_US, gt=g_reg)
                     res["b"] = verdict_step_channel(
                         "resume(seg>0)", n_seg, seg["counts"], seg.get("max_us"), p_noise,
-                        mode="seg", p999_limit_us=seg_bound)
+                        mode="seg", p999_limit_us=seg_bound, gt=g_seg)
+                    for ch in ("a", "b"):
+                        cr = res.get(ch, {}).get("criteria", {}).get("p999")
+                        if cr is not None and res.get(ch, {}).get("exact_over"):
+                            cr["why"] = "精确计数口径；" + cr.get("why", "")
                     res["segsteps_line"] = seg.get("line")
         res["n_total"] = n_all
         res["histo_counts"] = c_all
@@ -719,7 +830,8 @@ def analyze(hist, seg, chan, noise, case=None, cold_dense=COLD_DENSE_DEFAULT,
                 "seg": worst.get("seg"), "words": worst.get("words"),
                 "kind": worst.get("kind"), "why": worst.get("why"),
                 "note": "OBS（[top] 采样，非判据）：pops=1 & seg>0 的冷整段步，不参与 (b) 判据（Lead m04591）"}
-    for name in ("regionfree", "release", "collect", "account"):
+    # trigger-step = v17 起的名字（v16 及更早叫 collect；两个都收，旧产物仍可判）
+    for name in ("regionfree", "release", "trigger-step", "collect", "account"):
         if name in chan:
             res["channels"][name] = verdict_chan(name, chan[name])
     vs = [res.get("a", {}).get("verdict"), res.get("b", {}).get("verdict")]
@@ -1176,6 +1288,52 @@ def _selftest():
                 case="cyc_pause", seg_bound=52.1)
     ck(r["class"] == "warm", "S22 warm 形状不应被误归 mixed，实得 %r" % (r["class"],))
 
+    # S23（v17）：同一份 [histo]，桶界是跨桶 N/A，精确计数（gt50us）可判 PASS —— 判据可判化
+    cs23 = _zero(); cs23[6] = 30            # 30 步落在 b64us（32-64us）桶内，桶界分不出 <=50us 的占比
+    h23 = {"n": 200000, "counts": cs23, "max_us": 60.0,
+           "gt10": 30, "gt50": 10, "gt64": 0}
+    s23 = {"n": 0, "counts": _zero(), "max_us": None, "pops_tot": 0,
+           "gt10": 0, "gt50": 0, "gt64": 0}
+    r23 = analyze(h23, s23, {}, noise, case="cyc")
+    ck(r23["a"]["exact_over"] is True, "S23 有 gt* 字段时 exact_over 应 True")
+    ck(r23["a"]["criteria"]["over50"]["verdict"] == "PASS",
+       "S23 精确 gt50=10/2e5=5e-5 应 PASS，实得 %r" % (r23["a"]["criteria"]["over50"],))
+    ck(r23["a"]["criteria"]["p999"]["why"].startswith("精确计数口径"),
+       "S23 p99.9 的 why 应标注精确计数口径：%r" % (r23["a"]["criteria"]["p999"],))
+    h23b = {k: v for k, v in h23.items() if k not in ("gt10", "gt50", "gt64")}
+    r23b = analyze(h23b, s23, {}, noise, case="cyc")
+    ck(r23b["a"]["criteria"]["over50"]["verdict"] == "N/A",
+       "S23 对照：同一桶数据去掉 gt* 后桶界应 N/A，实得 %r" % (r23b["a"]["criteria"]["over50"],))
+    # S24：精确计数把 RED 也判出来（桶界同输入只能 N/A）
+    h24 = dict(h23); h24["gt50"] = 30       # 30/2e5 = 1.5e-4 > 1e-4
+    r24 = analyze(h24, s23, {}, noise, case="cyc")
+    ck(r24["a"]["criteria"]["over50"]["verdict"] == "RED",
+       "S24 精确 gt50=30/2e5 应 RED，实得 %r" % (r24["a"]["criteria"]["over50"],))
+    # S25：非阈值 L 只能给界（靠 {>t} 的包含关系）；L 恰为阈值时上下界相等
+    g25 = {10: 100, 50: 40, 64: 7}
+    ck(exact_over_bounds(g25, 50) == (40, 40), "S25 L=50 应精确 (40,40)")
+    ck(exact_over_bounds(g25, 40) == (40, 100), "S25 L=40 应为 [gt50, gt10]=(40,100)")
+    ck(exact_over_bounds(g25, 5) == (100, None), "S25 L=5 无上界 => (gt10, None)")
+    ck(exact_over_bounds(g25, 70) == (0, 7), "S25 L=70 => 下界 0、上界 gt64")
+    ck(gt_sub({10: 1, 50: 1, 64: 0}, {10: 2, 50: 0, 64: 0}) == "ERROR",
+       "S25 histo-segsteps 出现负值应 ERROR")
+    ck(gt_of({"gt10": 1, "gt50": 0}) is None, "S25 缺 gt64 应 None（退回桶界）")
+    # S26：(b) 通道的精确计数判定（64us 桶界兜底改为精确 gt64）
+    v26 = verdict_step_channel("resume(seg>0)", 200000, _zero(), 70.0, 0.0, mode="seg",
+                               p999_limit_us=50.0, gt={10: 5, 50: 2, 64: 0})
+    ck(v26["criteria"]["p999"]["verdict"] == "PASS",
+       "S26 seg 精确 gt64=0 时 p99.9<=50us(与 64us 兜底) 应 PASS，实得 %r" % (v26["criteria"]["p999"],))
+    v26b = verdict_step_channel("resume(seg>0)", 200000, _zero(), 70.0, 0.0, mode="seg",
+                                p999_limit_us=50.0, gt={10: 400, 50: 300, 64: 300})
+    ck(v26b["criteria"]["p999"]["verdict"] == "RED",
+       "S26 seg 精确 gt64=300/2e5=1.5e-3 应 RED（64us 兜底），实得 %r" % (v26b["criteria"]["p999"],))
+    # S27：[segsteps] 的 gt* 字段解析 + (a) 精确计数 = histo - segsteps
+    s27 = parse_segsteps("[segsteps] n=1000 pops_tot=1000 max_us=3.0 b1us=1000 gt10us=2 gt50us=1 gt64us=0")
+    ck((s27["gt10"], s27["gt50"], s27["gt64"]) == (2, 1, 0),
+       "S27 [segsteps] gt* 解析失败：%r" % (s27,))
+    ck(gt_sub({10: 30, 50: 10, 64: 0}, {10: 2, 50: 1, 64: 0}) == {10: 28, 50: 9, 64: 0},
+       "S27 (a) 精确计数差分错")
+
     print("g1c selftest:")
     print("  S1 seg 差分+pops_tot 一致 / S2 恰好 50us=N/A / S3 恰好 1ms=PASS / S4 n<1e5=N/A")
     print("  S5 扣噪声 RED->PASS / S6 不一致=ERROR / S7 (b) 闭式 12us PASS vs 25us RED")
@@ -1190,6 +1348,8 @@ def _selftest():
     print("  S21 bseg-cal 9 列解析+最长名匹配+B_seg+spread/src_md5/偏差 WARN / S21b 旧 6 列兼容")
     print("  S22 混合通道（pd_bigobj/pd_bigobj60）=> class=mixed、(a) N/A、>50us 只 OBS、"
           "dense 仍 cold-dense、warm 不误归")
+    print("  S23/S24 精确计数（gt50us）把桶界 N/A 变成 PASS/RED / S25 包含关系与 ERROR")
+    print("  S26 seg 用 gt64 判 64us 兜底 / S27 [segsteps] gt* 解析 + (a) 差分")
     if bad:
         print("  ⇒ SELFTEST FAIL: " + "; ".join(bad))
         return 1

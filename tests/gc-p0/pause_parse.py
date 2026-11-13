@@ -9,6 +9,8 @@
   bge64ms 是 >64ms 开区间；**over1ms = 严格 >1e6 ns 的桶和（b4ms 起），不是「最后一个桶」**。
   本脚本按这张表**硬编码**解析（不再用通用正则猜测桶名，避免 b1ms/b1024us 之类串味）。
   旧 7 桶产物（含 bge1ms）走 legacy 归一化：上界 µs→ns 查表映射，bge1ms 计入 over1ms。
+- v17 起 `[histo]`/`[segsteps]` 行尾附 `gt10us=/gt50us=/gt64us=`（严格 >10/50/64 µs 的**精确**
+  计数）。log2 桶界落在 10/50/64 µs 之外，桶和只能给区间；有这三个字段时 g1c 用精确计数判。
 - `[clock]` 行（:3226-3229）自证口径：step/pause/chan = cpu|wall，strict-ANSI 下 cpu 不可用时带
   `cpu=unavailable`（此时运行时会退回墙钟，summarize.py 会做 effective-clock 修正）。
 """
@@ -42,6 +44,11 @@ def parse_histo_line(line):
             "buckets": [[(HISTO_EDGES_NS[i] / 1000.0) if i < len(HISTO_EDGES_NS) else None,
                          counts[i]] for i in range(HISTO_NB)],
             "ge64ms": counts[-1],
+            # v17 起运行期另打三个**精确**超阈计数（判据线在 10/50/64 µs，log2 桶界落在别处，
+            # 桶和只能给界）；旧产物没有这三个字段 => None，g1c 退回桶界逻辑。
+            "gt10": vals.get("gt10us"),
+            "gt50": vals.get("gt50us"),
+            "gt64": vals.get("gt64us"),
             "table": "v4-led-m02523"}
 
 
@@ -60,6 +67,13 @@ def _selftest():
         bad.append("70ms 未落 bge64ms")
     if h["over1ms"] != 2:
         bad.append(f"over1ms={h['over1ms']} 期望 2")
+    if (h["gt10"], h["gt50"], h["gt64"]) != (None, None, None):
+        bad.append("旧行（无 gt*us 字段）应解析为 None")
+    h2 = parse_histo_line(line + " gt10us=2 gt50us=1 gt64us=0")
+    if (h2["gt10"], h2["gt50"], h2["gt64"]) != (2, 1, 0):
+        bad.append("gt 字段解析=%r/%r/%r 期望 2/1/0" % (h2["gt10"], h2["gt50"], h2["gt64"]))
+    if h2["over1ms"] != 2:
+        bad.append("gt 字段不得影响桶解析")
     zero = parse_histo_line("n=0 " + " ".join(f"{n}=0" for n in HISTO_NAMES))
     if zero["over1ms"] != 0:
         bad.append(f"全 0 桶 over1ms={zero['over1ms']} 期望 0")

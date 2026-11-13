@@ -576,7 +576,7 @@ P2 与这个反例的差别**只有"旧值是否另有根"这一维**（P2 的�
 **量具**：`EXTC_RC_PAUSE=1` 时进程退出向 stderr 打一组行 —— `[clock]`（三个计时面的**实际**时钟来源）·
 `[pause]`（契约入口 `collect`/`checkOwed` 的**武装窗口**进→出）· `[step]`（**每个切片**：
 `markStep`/`sweepStep` 每次调用的 n/max/total + 阈值桶 `over16/over64/over256/over1ms`）·
-`[histo]`（逐桶计数的 15 桶直方图）· `[top]`（最慢 8 步的归因）· `[segsteps]`（只统计**续扫段步** `seg>0`：`n`、`pops_tot`、`max_us`、与 `[histo]` 同界 15 桶、钟口径同 `[histo]`；无段步时全 0）· `[regionfree]` / `[chan]`（整区
+`[histo]`（逐桶计数的 15 桶直方图 + 三个**精确**超阈计数 `gt10us`/`gt50us`/`gt64us`）· `[top]`（最慢 8 步的归因）· `[segsteps]`（只统计**续扫段步** `seg>0`：`n`、`pops_tot`、`max_us`、与 `[histo]` 同界 15 桶、同三个 `gt*us` 精确计数、钟口径同 `[histo]`；无段步时全 0）· `[regionfree]` / `[chan]`（整区
 销毁与三条同步通道的 n/max/total/工作量）· `[work]`（同一批切片的**确定性工作量**：
 `walk_max/scan_max/push_max/seg_max` + `walk_cap`/`walk_gtcap` + `>16/>64/>256` 桶，
 以及策略侧快照 `thr_max/mmax/scale_max/pressure_steps/M_max/pressure/mult/thr/maxreq/res/M_max_now`；
@@ -626,7 +626,7 @@ P2 与这个反例的差别**只有"旧值是否另有根"这一维**（P2 的�
 * `[sweepelide]`：整块清扫省略的计数 —— `bulk_reset`（整块重置次数）、`bulk_slots`（被整块回收的槽数）、
   `swept`（逐字扫完的 slab 数）、`mis`（`EXTC_RC_ELIDE_VERIFY=1` 时位图复核不一致的次数；默认 0，
   非 0 表示 roll-up 漂移，该块退回逐字清扫）。判据：`mis=0`。
-* `[regionfree]` / `[chan]` / `[closing]`：`regionFree` 的 `max_frees/max_slabs` 与 `sync_us`（同步段）/`queue_us`（本次排空），`[closing]` 报 `regions_pending/slabs_moved/cap_regions`（closing 队列积压与已推进 slab 数），以及三条同步通道（`regionfree`/`release`/`collect`）各自的 n/max/total + 工作量 + 15 桶。
+* `[regionfree]` / `[chan]` / `[closing]`：`regionFree` 的 `max_frees/max_slabs` 与 `sync_us`（同步段）/`queue_us`（本次排空），`[closing]` 报 `regions_pending/slabs_moved/cap_regions`（closing 队列积压与已推进 slab 数），以及三条同步通道（`regionfree`/`release`/`trigger-step`；v16 及更早那一格叫 `collect`，实际量的是触发路径上的一次 step，v17 起改名）各自的 n/max/total + 工作量 + 15 桶。
 * **v8 起 `regionFree` 的同步段是 O(1)**：只做 `abort` + `pinDropRegion` + 置 `dead` + 挂线程局部 closing queue（`EXTC_RC_CQ_MAX_REGIONS` 默认 32，超过时 drop 内做一次有界排空）；逐 slab 的 unlinkChildren/`ownDel`/压 free queue 由 `extc_rc_cqDrainCore` 在分配点按 ≤8 slab/100 µs 推进，free 再由 free queue 的排空完成。'dead' 置位即代表整片槽对 `owns()` 一次性失效（见 `skip:dead-region`）。
 * `[freequeue]`：延迟释放队列 —— `slabs_bytes`/`slabs`（当前队列）、`drained_total`（累计排空的 slab 数）、`forced`（队列字节超过 `EXTC_RC_FREE_QUEUE_BYTES`、触发硬截止排空的次数）、`max_depth`/`max_deferred_us`（队列深度峰值 / 最慢一次排空耗时）、`left_slabs`/`left_bytes`（进程退出时残留，由 OS 回收）。判据：`left_slabs=0`（线程/驱动退出前全量排空）；`forced` 只在队列超限时增长。
 * `[clock]`：`step=` / `pause=` / `chan=` 三面的实际时钟；`[histo]` 的读法见上一节。
@@ -655,7 +655,8 @@ P2 与这个反例的差别**只有"旧值是否另有根"这一维**（P2 的�
 `bge64ms` 装 >64 ms）。`[step]` 的 `over16/over64/over256/over1ms` 是**累计**阈值计数
 （严格 >16 µs / >64 µs / >256 µs / >1 ms），由同一组桶求和得到（`stepSumFrom(5)/(7)/(9)/(11)`）——
 按字面把桶名读成"≥X"会得出错的阈值，写判据时以源码里的 `extc_rc_stepBucket` 与 `[step]`/`[histo]` 的 fprintf 为准。
-**p99 从 `[histo]` 读**（桶内只有计数，精度为一个桶宽；要更细就加桶，口径不变）。
+**v17 起判据线可以精确判**：`[histo]` 与 `[segsteps]` 各多打 `gt10us`/`gt50us`/`gt64us`，是严格 `>10/>50/>64 µs` 的**样本计数**（不是分位）⇒ 判据线落在桶界之间（如 50 µs 落在 `b32us`–`b64us` 之间）时直接读计数，不再靠桶界包含关系；`n<1e5` 仍按 N/A。旧产物没有这三个字段时退回桶界包含关系（判据不放宽）。
+**p99 仍从 `[histo]` 的桶读**（桶内只有计数，精度为一个桶宽）；要精确分位就用 `tools/rc-pause-probe.py` 的 `PAUSE_DIST_STEP`，口径不变。
 
 **时钟口径**：`[step]`/`[histo]`/`[chan]`/`[top]` 的时长跟随 `[clock]` 行首字段 ——
 `EXTC_RC_STEP_CPU=1` 且线程 CPU 时钟可用时用 `CLOCK_THREAD_CPUTIME_ID`（`step=cpu chan=cpu`），

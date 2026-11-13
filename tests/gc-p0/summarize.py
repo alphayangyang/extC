@@ -774,6 +774,8 @@ def main():
             else:
                 lo = (o64 / steps) if steps else None
                 hi = (o16 / steps) if steps else None
+            lo_s = "n/a" if lo is None else ("%.2e" % lo)
+            hi_s = "n/a" if hi is None else ("%.2e" % hi)
             if o1ms_used > 0:
                 v = "RED"
             elif lo is None or steps == 0:
@@ -820,7 +822,7 @@ def main():
                 o1s += "（histo 为旧 7 桶 legacy 映射）"
             print(f"  {case:4s} clock={clock:4s}: steps={steps}({len(cp)} reps 合并, n/rep≈{steps // max(len(cp), 1)})"
                   f" over16={o16} over64={o64}"
-                  f" (>50µs 占比∈[{lo:.2e},{hi:.2e}] 阈={bound:.1e}) over1ms={o1ms_used}({o1ms_src}){o1s}"
+                  f" (>50µs 占比∈[{lo_s},{hi_s}] 阈={bound:.1e}) over1ms={o1ms_used}({o1ms_src}){o1s}"
                   f"  step max={fmt(mx, ' us', 1)} mean={fmt(mn, ' us', 3)} worst={wk}"
                   f"  p50≤{p50s}us p99≤{p99s}us p99.9={p999s}"
                   f"  ⇒ [①{g1_c1_verdict(o1ms_used)} ②{v} ③{v3}]{clk_s}")
@@ -858,10 +860,10 @@ def main():
           "(a-mixed) 混合通道（pd_bigobj/pd_bigobj60/G1 的 pd：每轮 64×16B + 1×8MiB，插桩不按 n 归因）"
           "(a) 记 **N/A**（Lead m03564，N/A≠PASS），>50us 只作 OBS，大分配看 (b)；"
           "(b) seg>0：p99.9 ≤ min(B_seg(shape)=1.5×c_seg×chunk+1us, 64us 桶界兜底) **且** over1ms=0；"
-          "64us 是 b64us 桶界精度（非 50us 精确值；精确分位插桩列为后续）；"
+          "64us 是 b64us 桶界精度（非 50us 精确值；v17 起用 [histo]/[segsteps] 的 gt10us/gt50us/gt64us 精确计数判，旧产物退回桶界）；"
           "c_seg 取自 tests/gc-p0/bseg-cal.tsv（按形状，不得借；未标定⇒N/A，不退回 5/10us）；"
           "(b).max **只 OBS 不判**（尾部与 chunk 无关、机制未定位，task-32 归因后再议）；"
-          "(c) regionfree/release/collect：max ≤1ms（目标 ≤0.2ms）")
+          "(c) regionfree/release/trigger-step（v16 及更早叫 collect）：max ≤1ms（目标 ≤0.2ms）")
     g1cp = os.path.join(out, "g1c.json")
     gj = None
     if os.path.exists(g1cp):

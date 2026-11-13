@@ -250,7 +250,7 @@ region 由 arena 地址惰性登记：src/back/codegen.c:12425-12454 把下面�
     int n = rcGlobalRoots.len + rcRoots.len;
     if (n > 4096) { rcRootsUnreliable = true; return; }        /* 硬性禁用：根表太大 */
     ... "if (extc_rc_shouldSweep(rg)) extc_rc_maybeCollect(rg, <roots>, n);"
-参数 = (region 指针, 根数组, 根数)；语义（src/back/reclaim.c:2778-2801）：先推进在飞的轮次，sweeping 则走一步 sweep；否则若不该 sweep（未到 floor / 轮次未就绪）直接 return -1（跳过），否则 arm 计时并 step 一次。
+参数 = (region 指针, 根数组, 根数)；语义（src/back/reclaim.c:2783-2806）：先推进在飞的轮次，sweeping 则走一步 sweep；否则若不该 sweep（未到 floor / 轮次未就绪）直接 return -1（跳过），否则 arm 计时并 step 一次。
 多分片：遍历 N 个 shard，extc_rc_regionFloor(rg, (EXTC_RC_FLOOR) / N)（**floor 按 shard 均分**，src/back/codegen.c:4158-4177 注释：否则 N 个 shard 各守整个 floor，总界变 N 倍、停顿旋钮会副作用改变内存界），取 extc_rc_garbageHint 最大的 shard（bytes-live 最多垃圾），**一次只收一个 shard**。
 
 ### 6.4 三个"只能不 collect"的边界（决定了"谁有资格收"）
@@ -261,7 +261,7 @@ region 由 arena 地址惰性登记：src/back/codegen.c:12425-12454 把下面�
 ### 6.5 owe / owed 借贷机制（内层向属主借一次收集）
 - 内层（region 属主是外层帧，或 TLS）不 sweep，只记一笔：src/back/codegen.c:4020-4047 rcEmitOwe 单分片逐字 "if (extc_rc_shouldSweep(rr)) extc_rc_owe(rr);"（parTls 时直接 return，TLS 归属由运行时 RC_OWN_TLS 分支处理）；生成物样本 /tmp/cf2/owed_home.c:2826-2829（if (__extc_homeOwn) {...maybeCollect...} else {...extc_rc_owe(rr);...}）。
 - 属主在**下一次调用之前**结算：src/back/codegen.c:4075-4099 rcEmitOwedCheck 单分片逐字 "if (extc_rc_owed(rr)) extc_rc_checkOwed(rr, <roots>, n);"；调用点插入位置在 cgImplicitArgs（src/back/codegen.c:2471-2484，注释逐字：上一批被调已返回、下一批尚未进入，此刻本帧静态根表是完整 seed，故**不需要**帧级 roots-unreliable 标记）。样本 /tmp/cf2/owed_home.c:2894。
-- 可靠性不变量与界：src/back/reclaim.c:2803-2815 注释逐字 **"if the owner frame never calls again the debt stays forever and the region waits until the frame is destroyed -- a relaxed upper bound, not a dangling pointer."**；运行时实现 src/back/reclaim.c:2816-2849（owe=1；owed；checkOwed：sweeping ⇒ 走一步 / !owe ⇒ -1 / noSweep ⇒ 清 owe 返回 -1 / marking ⇒ 清 owe + markAdvance / 轮次未就绪 ⇒ -1 / 否则清 owe 并 step 一次）。
+- 可靠性不变量与界：src/back/reclaim.c:2808-2820 注释逐字 **"if the owner frame never calls again the debt stays forever and the region waits until the frame is destroyed -- a relaxed upper bound, not a dangling pointer."**；运行时实现 src/back/reclaim.c:2821-2854（owe=1；owed；checkOwed：sweeping ⇒ 走一步 / !owe ⇒ -1 / noSweep ⇒ 清 owe 返回 -1 / marking ⇒ 清 owe + markAdvance / 轮次未就绪 ⇒ -1 / 否则清 owe 并 step 一次）。
 - 代价（源码自述，仍是当前界的一部分）：只往 home arena 分配且属主之后不再调用的形状仍等帧销毁；属主在循环里反复调被调的形状峰值仍 10.86–10.92 MB（src/back/codegen.c 同段注释）。
 
 ### 6.6 何时释放 region：**只在帧销毁**
@@ -288,7 +288,7 @@ src/back/codegen.c:7325-7346 cgReclaimDropArena 逐字要点：只在**帧销毁
 | EXTC_RECLAIM | src/back/codegen.c:13772-13774（**【默认开】**；=0 关） | =0 ⇒ 不发射整套 rc 运行时，分配退化为纯 bump 的 extc_arena_*；=1 ⇒ rcForced，跳过"有没有受治理分配点"的检测**强制**发射（=1 是许可不是强制；idle 证明仍生效） |
 | （无开关）受治理分配点检测 | src/back/codegen.c:14057-14124（scanUnitReclaim） | ① !needReclaim ⇒ return；② unitReclaimIdle ⇒ needReclaim=false（注释：这是**证明**不是优化开关）；③ 跨站点环 ⇒ rcNShard=1；④ rcForced ⇒ return；⑤ 无 new T / alloc<T>(n) / @overwrite 单值 cell ⇒ needReclaim=false |
 | （无开关）idle/acyclic 判据 | src/back/codegen.c:13949-14042 | unitReclaimIdle 三条：每个堆 ref 字段每个对象至多写一次 / ref 类型局部与参数从不被重新赋值 / 无丢引用操作（容器删除替换、@overwrite 复用、free 类内建、接收引用的 opaque callee）；一个点不满足 ⇒ 整单元判 false。unitAllAcyclic 为 event tier 判据 |
-| EXTC_RC_NOCOUNT | src/back/codegen.c:498、13769-13795（**【默认 1 = 不计数】**）；运行期文本 src/back/reclaim.c:2914 发 #define EXTC_RC_NOCOUNT 1，:1317 段 [rt:nocount] 把计数入口编译成 no-op | 计数入口变 no-op，回收只靠 sweep；=0 恢复计数（实测计数层比清扫贵 +100%~+455%，docs/plans/TODO.md） |
+| EXTC_RC_NOCOUNT | src/back/codegen.c:498、13769-13795（**【默认 1 = 不计数】**）；运行期文本 src/back/reclaim.c:2919 发 #define EXTC_RC_NOCOUNT 1，:1317 段 [rt:nocount] 把计数入口编译成 no-op | 计数入口变 no-op，回收只靠 sweep；=0 恢复计数（实测计数层比清扫贵 +100%~+455%，docs/plans/TODO.md） |
 | EXTC_RC_LOCALSTORE | src/back/codegen.c:501、13778-13785（**默认 1**） | =0 关掉 extc_rc_storeRefLocal 发射，回到每次本地槽存储都反查 region 的旧形态（no-count tier 下纯浪费）；=0 可逐字节还原"翻档前"产物 |
 | EXTC_RC_SHARDS | src/back/codegen.c:476、7093、13764-13776（**默认 1**，上限 64） | N>1 ⇒ 每分配点按 rcSite++%N 选 shard、region 号 lvl*N+k、floor 均分、每触发点只收一个 shard；N==1 字节相同 |
 | EXTC_RC_SWEEPFREE | src/back/codegen.c:505、13809-13814（默认 0；=1 时并强制 rcNoCount=0） | =1 ⇒ sweep 直接 free slab/整 region（绕过回收位图），且禁用点修复释放 |
@@ -297,7 +297,7 @@ src/back/codegen.c:7325-7346 cgReclaimDropArena 逐字要点：只在**帧销毁
 | EXTC_RC_MARK_EVERY | 运行期 src/back/reclaim.c:901-903（**默认 64**） | 每多少次分配推进一次标记 |
 | EXTC_RC_WORK_BUDGET | 运行期 src/back/reclaim.c:1001-1013（**默认 0 = off**） | >0 ⇒ walk/scan/push/assist 共用总预算 W，"一步的总工作量按构造 ≤ W" |
 | EXTC_RC_TIME | 运行期 src/back/reclaim.c:62；发射开关 src/back/codegen.c:12402-12407（默认关） | 每个收集步计时并按桶统计（instrument，$ 只改运行时文本、不改分配路径） |
-| EXTC_RC_PAUSE | 运行期 src/back/reclaim.c:2716-2723（默认关） | 记录单步停顿直方图并以 EXTC_RC_SLOWSTEP 阈值告警，atexit 打印（instrument） |
+| EXTC_RC_PAUSE | 运行期 src/back/reclaim.c:2721-2728（默认关） | 记录单步停顿直方图并以 EXTC_RC_SLOWSTEP 阈值告警，atexit 打印（instrument） |
 | EXTC_ARENA_FILL | 见 --help；只填非零 arena 分配 | 不改变字节内容（调试用） |
 | EXTC_DBG_ARENA / _VERBOSE | src/back/codegen.c:5954-5962 | 只诊断，不改产物（见 §1.3） |
 | EXTC_DBG_RCCOST | src/back/codegen.c:3896-3939（dbgRcCostReport） | 编译期打印每站点分配/屏障计数表：表头 lvl/ref/refInLoop/alloc/allocInLoop/rootMax，rootMax = 触发点根表槽数最大值（= 标记启动规模） |
@@ -336,7 +336,7 @@ src/back/codegen.c:7325-7346 cgReclaimDropArena 逐字要点：只在**帧销毁
 markAdvance 预算（src/back/reclaim.c:1023-1038）：b = EXTC_RC_MARK_EVERY * EXTC_RC_MARK_STEP + _debt; 漂移超窗 ⇒ b *= 8; b = min(b, BATCH_MAX); 若 WORK_BUDGET>0 则 b = min(b, W)。
 
 ### 8.3 是否"有界"取决于入口，编译器的默认路径只走有界入口
-src/back/reclaim.c:2745-2801 四个入口：
+src/back/reclaim.c:2750-2806 四个入口：
 - extc_rc_step：markStep(stepBudget) + finish（热路径，**只前进一步**）
 - extc_rc_maybeCollect：触发点用；sweeping 则 sweepStep(SWEEP_BUDGET)，否则 if (!r->marking && (!extc_rc_shouldSweep(r) || !extc_rc_roundOk(r))) return -1; 再 step 一次
 - extc_rc_begin：置 marking、markTick、markStartAlloc、wbAdd(1)、markBegin
@@ -552,7 +552,7 @@ emitPreamble 内（:12610-12637）：只在 g->needReclaim 为真时发一行；
 ### 13.7 副作用、既有红项与文档一致性
 
 - 隔离基线（HEAD 源码 + 只覆盖 codegen.c / check_top.c / check_stmt.c，/tmp/mine2-src/build-mine2/extc）对 HEAD 产物 diff：promote.extc 0 行；acyclic/cyclic 默认档各 17 行（TIER 行 + P1-3 的 REG_FULL_POLICY 文本）；cyclic + EXTC_RECLAIM=0 0 行；copyInto 纯数据形状 0 行；引用元素 bulk 形状 135 行（档位回退 + 记账循环）；参数槽计数档 19 行。除上述预期文本外无其他污染。
-- 集成树（build-cf，含其他 teammate 在途的 src/back/reclaim.c 改动）当前 tests/reclaim/run.sh 与 tests/coro 红：reclaim 运行期文本里的诊断 fprintf 参数与格式串不匹配，-Werror=format 失败（如 reclaim.c:2647 的 [slow] 行）；不是本节改动引起，等 reclaim.c 收尾后复跑。隔离基线上 coro 37/37、zone 全过、reclaim-shapes exit 0。
+- 集成树（build-cf，含其他 teammate 在途的 src/back/reclaim.c 改动）当前 tests/reclaim/run.sh 与 tests/coro 红：reclaim 运行期文本里的诊断 fprintf 参数与格式串不匹配，-Werror=format 失败（如 reclaim.c:2652 的 [slow] 行）；不是本节改动引起，等 reclaim.c 收尾后复跑。隔离基线上 coro 37/37、zone 全过、reclaim-shapes exit 0。
 - G13 判据已对齐（empirics 改用例打标签）：tests/gc-p0/src/uaf_bulk_copy.extc 现在输出 d0r=7，run.sh 判据也是 d0r=7。实测 run.sh g12（EXTC=build-cf/extc）：G12 强制计数档 T3 PASS 'alias check b.v=999'（修复前 111）、G13 默认档 T2 PASS 'd0r=7'（修复前 555）、G13 强制计数档 T3 PASS。
 - tests/gc-p0/summarize.py 的档位文案仍是“TIER 宏只分 1/2”，是四值改动前的旧叙述；它用 NOCOUNT/SWEEP_FREE 反推档位，判据本身不受影响，但报告里 T3 的括号说明需更新。
 - promote-place 行在 tests/reclaim-shapes/run.sh 为红；HEAD 与隔离基线两处都红 ⇒ pre-existing，非本次改动。
