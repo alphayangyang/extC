@@ -969,7 +969,7 @@ Linux 侧红的是 `(a-cold)` 的 `tau_t`（cpu 遍 5.434 µs/pop），不是 `(
 
 **c_cap 的实测区间。** 48 B 槽、单次 collect：全死 0.86 ns/KB；整区 1 个存活 1.00 ns/KB；每 MB 1 个存活 8.11 ns/KB（64 块不可跳过 slab × ≈7.4 µs）；每槽 1 个存活外推 ≈16 ns/KB。16 B 槽同序（4.1–7.3 / 26 ns/KB）。折成每字节 0.0007–0.016 ns/B，正好覆盖标定的 c_s = 0.0108 ns/B —— 也就是说容量项在稀疏活集上等于「把整块容量当活集扫一遍」，这正是无屏障 mark-sweep 的下界。
 
-**本轮的裁剪。** 死 slab 归还（`extc_rc_slabShrink`，src/back/reclaim.c:1882；调用点在 `extc_rc_settle` 尾部 3794）把「整块无占用槽」的 slab 从 region 链与 size-class 链 O(1) 摘掉、交给既有的有界 free 队列（每次至多 16 块入队；munmap 仍受 EXTC_RC_FREE_BUDGET_SLABS / EXTC_RC_FREE_QUEUE_BYTES 约束）。容量界从「峰值以后永不下降」变成：
+**本轮的裁剪。** 死 slab 归还（`extc_rc_slabShrink`，src/back/reclaim.c:1898；调用点在 `extc_rc_sweepStep` 收尾分支 3915，见 §6.12）把「整块无占用槽」的 slab 从 region 链与 size-class 链 O(1) 摘掉、交给既有的有界 free 队列（每次至多 16 块入队；munmap 仍受 EXTC_RC_FREE_BUDGET_SLABS / EXTC_RC_FREE_QUEUE_BYTES 约束）。容量界从「峰值以后永不下降」变成：
 
     C ≤ live + (512 KiB) × #slab(含至少一个活对象)   （本轮）；理想形态 C ≤ live + (4 KiB) × #page(含至少一个活对象)
 
@@ -984,7 +984,7 @@ Linux 侧红的是 `(a-cold)` 的 `tau_t`（cpu 遍 5.434 µs/pop），不是 `(
 
 **成本常数（`madvise(MADV_DONTNEED)`，WSL2 6.18，64 MiB 触达后）。** 逐 4 KiB 页 `1.885 µs`/次；64 KiB run `7.16 µs`/次（0.45 µs/页）；整段 64 MiB 一次 `899 µs`（≈55 ns/页 ≈ **14 ns/KB**）；对已空页重复 madvise `0.156 µs`/次。两条推论写进机制：①空页必须**合并成连续 run** 再还（逐页还比整段还贵 34×）；②按 14 ns/KB，`EXTC_RC_PAGE_TRIM_BYTES = 256 KiB` ≈ `4 µs`，与 §6.8 冷档步时上界（128 pop ≈ 2.2 µs + 固定项）同量级，所以还页可以整笔记进 closing step 而不破坏停顿时界。
 
-**机制（三层闸门，全部冷路径）。** `extc_rc_pageTrimStep(r, budget)`（src/back/reclaim.c:2037）由 `extc_rc_sweepStep` 的收尾分支调用（3917，紧接 `r->shrinkDue = 1;` 之后、pause 计时块之内），每次至多访问 `EXTC_RC_PAGE_TRIM_VISIT_MAX=16` 块、还 `EXTC_RC_PAGE_TRIM_BYTES=256 KiB`：
+**机制（三层闸门，全部冷路径）。** `extc_rc_pageTrimStep(r, budget)`（src/back/reclaim.c:2037）由 `extc_rc_sweepStep` 的收尾分支调用（3917，紧接块级归还之后、pause 计时块之内），每次至多访问 `EXTC_RC_PAGE_TRIM_VISIT_MAX=16` 块、还 `EXTC_RC_PAGE_TRIM_BYTES=256 KiB`：
 
 1. **slack 闸门**（区域级）：`capBytes − bytes < EXTC_RC_PAGE_TRIM_MIN_SLACK (8 MiB)` 就不还。容量与占用只差一点时，还回来的页占堆比例小，而「丢页 → 再缺页」的抖动会赢：去掉这条闸门，sizeratio 墙钟 +56%、cycleratio +19%。
 2. **quiet 闸门**（块级）：`(allocN − pgAllocN) ≤ EXTC_RC_PAGE_TRIM_ACTIVE (64)` 才还；busy 块跳过并把 quiet 时钟重置为当前 `allocN`（否则首次的 delta 永远大于 64，块永远不会被还）。`pgLive == nLive && pgNext < 0` 也跳过：占用图没变 ⇒ 没有新的空页。
@@ -992,7 +992,7 @@ Linux 侧红的是 `(a-cold)` 的 `tau_t`（cpu 遍 5.434 µs/pop），不是 `(
 
 块内：用 occ 位图标出活槽覆盖的页（槽可跨页 ⇒ 标首页与尾页），其余连续空页一个 `madvise`；`pgNext` 续扫被预算截断的 pass、`pgLive` 标记 pass 完成 ⇒ 幂等。页 0 含块头永不还；分配路径每槽都调 `extc_rc_zeroSmall` ⇒ 归还后重新分配语义安全；freelist 的下一槽号存在 `s->tid[i]` 而不在载荷里 ⇒ DONTNEED 不破坏链表。
 
-**触发路径与收敛速率。** 调用点在 `extc_rc_sweepStep` 的收尾分支，而 `sweepStep` 也跑在 mutator 的自动路径上（`extc_rc_maybeCollect` → `extc_rc_sweepStep`，4239 / 4301）⇒ **从不调用 `extc_rc_collect` 的程序也会还页**；只有块级归还（`extc_rc_slabShrink`，3933）挂在 `extc_rc_settle` 上、属显式路径专属。但速率是有界的：每次收尾最多还 256 KiB，所以从峰值收敛到上面那个界需要 ⌈(C − live) / 256 KiB⌉ 轮。探针 `/tmp/pg/pages5.c`（64 MB 峰值、每 MB 一个 root、之后 140 万次分配、**只**调 `extc_rc_maybeCollect`）：RSS 43,636 → 36,404 kB、还页 7.25 MB（29 次块 pass）、`slabs` 恒定 64（本轮不摘块，符合预期）。这条速率上界与停顿界同向：还页成本摊进每轮固定预算，收敛慢一点换每次停顿短一点。
+**触发路径与收敛速率。** 调用点在 `extc_rc_sweepStep` 的收尾分支，而 `sweepStep` 也跑在 mutator 的自动路径上（`extc_rc_maybeCollect` → `extc_rc_sweepStep`，4239 / 4301）⇒ **从不调用 `extc_rc_collect` 的程序也会还页**；块级归还（`extc_rc_slabShrink`，3915）与页归还（3917）同处这一个收尾分支 ⇒ 两者都跑在自动路径上（§6.12）。但速率是有界的：每次收尾最多还 256 KiB，所以从峰值收敛到上面那个界需要 ⌈(C − live) / 256 KiB⌉ 轮。探针 `/tmp/pg/pages5.c`（64 MB 峰值、每 MB 一个 root、之后 140 万次分配、**只**调 `extc_rc_maybeCollect`）：RSS 43,636 → 36,404 kB、还页 7.25 MB（29 次块 pass）、`slabs` 恒定 64（本轮不摘块，符合预期）。这条速率上界与停顿界同向：还页成本摊进每轮固定预算，收敛慢一点换每次停顿短一点。
 **契约（容量界收紧）。**
 
     C ≤ live + 4 KiB × #page(含活对象) + M_slab × #slab(含至少一个活对象) + 8 MiB   （本轮）
@@ -1005,6 +1005,45 @@ Linux 侧红的是 `(a-cold)` 的 `tau_t`（cpu 遍 5.434 µs/pop），不是 `(
 **两个负结果（写进模型）。** ①「每分配清已还页位图」的幂等实现让四形状慢 4.4% / 5.2% / 3.5% / 5.5% —— 热路径只能容忍一个 `s->allocN++`，不能加分支；幂等性改由 `pgLive` + quiet 闸门保证，收敛结果逐 kB 相同。②`<sys/mman.h>` 不能 include：它声明 `mmap(void*)`，而本语言给 plate 的 stdlib 声明自己的 `uint8_t *mmap(...)` ⇒ `conflicting types for 'mmap'`，README 的 par 示例直接编不过；运行期改为自带 `extern int madvise(void *, size_t, int)` 与 `#ifndef MADV_DONTNEED / #define MADV_DONTNEED 4`（Linux 与 Darwin 都是 4）。
 
 **与 §6.10 的关系。** 两块合起来就是「无屏障、不搬移」这一支能做到的容量界：块级归还消掉「峰值后整块钉住」，页级归还把剩下的常数从 512 KiB 压到 4 KiB + ≈69 kB 元数据。残余两项（元数据常数、8 MiB slack）只能靠搬移式压实（停顿 ∝ 活集、需转发指针）或写屏障（已否决）消掉，记在 §8 开放项。
+### 6.12 R6 轮（2026-12-01）：块级归还接到 mutator 路径 —— 容量项不再依赖显式 settle
+
+§6.11 末段把一条限制留在清单里：**块级归还挂在 `extc_rc_settle` 上，只属显式路径**。于是「从不调用 `extc_rc_collect` 的程序」即使拥有大量已死块，容量也只能靠页归还吃掉块内空页，块本身（512 KiB 映射 + ≈69 kB 元数据）一直钉在堆上。本轮把块级归还移到**轮末**：与页归还同一个收尾分支，因此同一条自动路径（`extc_rc_maybeCollect` → `extc_rc_sweepStep`）上就会发生。
+
+**机制。** `extc_rc_sweepStep` 的收尾分支（src/back/reclaim.c:3914–3918）依次做三件事，全部在 pause 计时块之内：
+
+    extc_rc_slabShrink(r);       /* 3915：最多 EXTC_RC_SHRINK_VISIT_MAX=256 次链访问、≤16 块入队，摘 nLive==0 的块 */
+    extc_rc_fqDrainAuto();       /* 3916：把队列排空一个有界批次（>8 MiB 走 1000 µs 硬截止档，否则 8 块 / 100 µs）*/
+    extc_rc_pageTrimStep(r, EXTC_RC_PAGE_TRIM_BYTES);   /* 3917：≤16 块 / 256 KiB 的 madvise */
+
+`extc_rc_slabShrink`（1898）的摘链条件不变：`nLive == 0`、非 `big`、非 `bumpSlab`、跨区入边位无置位；每次 ≤16 块入队，munmap 交给既有的 `extc_rc_fqDrainCore`。新增的是**slack 闸门**：
+
+    if (r->capBytes - (int64_t)r->bytes < (int64_t)EXTC_RC_SHRINK_MIN_SLACK) return 0;   /* 1900，skip:shrink-slack */
+
+`EXTC_RC_SHRINK_MIN_SLACK = 8 MiB`（1894–1895）：容量与占用相差不足 8 MiB 时不摘任何块。理由与页归还的 slack 闸门同源 —— 摘块换来的是「munmap 512 KiB → 之后重新 carve」，抖动会赢（无 slack 的页归还实测：sizeratio 墙钟 +56%、cycleratio +19%；块级更贵，故保留同一常数）。代价是容量界抬一个常数 8 MiB。
+
+配套的一处记账修正：`capBytes` 的累加从 `#if EXTC_RC_PAGE_TRIM` 里移出来（885），改成无条件记账。否则 `-DEXTC_RC_PAGE_TRIM=0` 时 `capBytes` 恒 0，新闸门 `capBytes − bytes < 8 MiB` 永远成立 ⇒ 块级归还被静默关掉。
+
+**停顿口径的证据（本轮新增的判定方法）。** 块级归还进 closing step 后，最大的风险是「一个步里 munmap 16 × 512 KiB + 契约元数据」。因此用**同轮交错的 base/pat 双臂**判，不用跨构建的绝对数：pb（50 M）与 cyc（20 M）各 5 个 rep，wall 口径、`taskset -c 6`：
+
+| 形状 | 臂 | `gt50us`（5 rep） | 中位 | `[histo] n`/rep | `>1ms` |
+|---|---|---|---|---|---|
+| pb 50M | base（v23） | 25, 21, 30, 45, 50 | 30 | 343,296 | 0–1 |
+| pb 50M | pat（v24） | 31, 42, 29, 38, 29 | 31 | 343,296 | 0–2 |
+| cyc 20M | base（v23） | 32, 16, 18, 21, 28 | 21 | 156,486 | 0 |
+| cyc 20M | pat（v24） | 23, 22, 23, 29, 17 | 23 | 156,486 | 0–1 |
+
+两条读法：①两臂的分布统计上不可区分（中位 30 vs 31、21 vs 23，全部落在同一噪声带），`n` 逐 rep 逐字相同 ⇒ 本轮机制没有移动停顿分布；②full gate（`tests/gc-p0/run.sh all`、REPS=3）在同一构建上判 pb `(a)` PASS（`4.27e-05`）、cyc PASS、pc PASS，唯一 RED 是既有漏 `pd_pointer_dense`（R4 fanout，`(a)` `>50us` 下界 5.33e-05 但上界 1.44e-04 过阈、`(b)` p99.9 RED）⇒ 本轮没有新增停顿红；pb/cyc 在别的轮次偶发 (a) RED（`7e-5–1.5e-4` 跨阈、wall 口径含整机抢占）属环境地板，base 臂同样出现（base 整轮 gate 曾出现 `over1ms=52`、`step max=3,563 us`）。
+
+**吞吐与容量。** 四形状交错 A/B（15 reps，min ms，base = `git archive HEAD` 重建）：promote **1.013** / sizeratio **0.970** / chase **1.015** / cycleratio **1.002**，RSS 逐形状不变（±4–64 kB）；指令数门禁 87,871,190 Ir（v23 为 87,871,102，+88 Ir）。探针 `pages6`（64 MB 峰值、零 root、之后 140 万次分配、**只**调 `extc_rc_maybeCollect`）：base = 64 slabs / `slabRel=0` / RSS 43,788 kB ⇒ pat = **16 slabs / `slabRel=48` / RSS 18,832 kB**，残差正是 8 MiB slack 余量。
+
+**契约（容量界，v24 口径）。**
+
+    C ≤ live + 4 KiB × #page(含活对象) + M_slab × #slab(含至少一个活对象) + 8 MiB
+
+8 MiB 现在是**两道归还闸门共用**的 slack 常数（页级 `EXTC_RC_PAGE_TRIM_MIN_SLACK`、块级 `EXTC_RC_SHRINK_MIN_SLACK` 都取 8 MiB），同时是 `C` 的加法常数项；两条归还都在轮末、都进 `[step]`/`[histo]` 的停顿分布 ⇒ 收敛速率有上界：块级 ⌈n/16⌉ 轮、页级 ⌈(C − live)/256 KiB⌉ 轮，而单轮代价由 `EXTC_RC_SHRINK_VISIT_MAX` / `EXTC_RC_SHRINK_REL_MAX` / `EXTC_RC_PAGE_TRIM_*` / free 队列的预算常量共同封顶。
+
+**残余（写进 §8）。** ①`M_slab ≈ 69 kB` 的块外元数据按「含有活对象的块数」计，一个长命对象仍钉住 ≈69 kB；②8 MiB 的 slack 常数；③`fqDrainAuto` 在 `fqBytes > 8 MiB` 时走 `EXTC_RC_FREE_HARD_DEADLINE_US=1000` 的硬截止档 —— 该档单次排空可能触到毫秒级，属 free 队列的既有预算（不是本轮新增），但它在自动路径上出现得更频繁，故记在开放项里等下一轮用「1–2 块/次」的细粒度排空替换。三者的共同出路仍是搬移式压实（停顿 ∝ 活集、需转发指针）；写屏障已否决（m16773）。
+
 ## §7 门禁（Gate）：判据、量具、before / after
 
 门禁的用处不是「证明程序对」，而是**把契约变成可自动判定的句子**：每一条都写死「量具 + 判据 + 口径」，避免出现「实测 106 µs 也算通过」这种自欺。全部跑在既有 harness（`tests/reclaim-perf/gate.sh` 六项 + `tests/gc-p0/run.sh`）上，不需要新依赖。**after 列的构建口径（逐行标注）**：`p1-after` = v7 同轮产物集（`tests/gc-p0/out/p1-after/`，构建 `build-emp3/extc 07b7be1a…`）；`v7` = `build-p1/extc b9fd5784…`；G20-P0 单列 P0 轮（`build-rf/extc 7019342b…`）。跨构建的绝对计时允许 ±5–15% 差（§6.7.6），判据只看方向与阈值；任何一行换构建都必须重标尾号，不得混用。
