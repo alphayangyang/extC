@@ -826,6 +826,8 @@ static inline long long extc_rc_stepSpan(long long c0, long long t0) {
 
 **判别力量的诚实边界（必须写进风险）**：`cyc` 的原始 `>50 µs` 是 **58 条 / 470,058 步 = 1.23e-4**，而地板也是 **58 条**——两者同量级，说明这个通道在本机上「GC 自身造成的 >50 µs 步」已经淹没在宿主停顿里。净计数因此是「GC 自身慢步数的**上界估计**」，该通道在本机的可检出回归幅度约 **≥2×**（>2.4e-4 才会被 RED）。这不是放宽：原始计数、地板、净计数三者全部写进报告与 json，且判据阈值未动；但它确实意味着**停顿契约的主证据是每步预算的形式化界（§3.5、定理 16）与 `over1ms=0`，门禁只是佐证**。
 
+**跨 OS 复核（见 6.9.8）**：这一地板不是 WSL2 的记账工件 —— 同一台机器的 Windows 原生进程测得 `rate10 = 170–223 /s`、`rate50 = 50 /s`、`max_us = 313 / 168`，与 guest 侧同阶；WSL2 只是把它记进线程 CPU 钟。⇒ 扣减协议与阈值不变。
+
 #### 6.9.3 通道的结构性 vacuous 与探针（消灭「用 N/A 掩盖」的三处真缺口）
 
 R3 之前 G1② 的五个用例里有四个因为某个通道 `n=0` 而整体记 N/A。逐个查完，三处是**结构性不可达**（必然为 0），一处是标定陈旧：
@@ -932,6 +934,31 @@ EXTC=$PWD/build/extc OUT=tests/gc-p0/out/r3v28 REPS=3 EXTC_RC_STEP_CPU=1 tests/g
 **最终裁决：走步循环里不读时钟。** 删除后门禁实测 **87,625,199 ≤ 88,029,115 PASS**（v18 是 87,649,683，差异来自内联边界）。这条规则现在由 `tools/check_mark_batch.py` 的两条结构断言守着（`batch walk reads no clock`、`shallow drain reads no clock`），并有注入自测证明它们有牙；`[work]` 的三跑确定性由 `tests/reclaim-perf/gate-work.py` 守着。
 
 **可复现**：`bash tests/reclaim-perf/gate.sh`（Ir 上限 88,029,115）；隔离实验 `git worktree add /tmp/v18wt HEAD` 后按 `gate.sh:88` 的 flags 跑 `valgrind --tool=callgrind`；单测 `python3 tools/check_mark_batch.py --selftest`。
+
+#### 6.9.8 跨 OS 复核（Windows / MinGW 原生进程）：地板是机器的属性，扇出洞与 OS 无关
+
+**为什么做这个**：6.9.2 的地板论证全部来自 WSL2，而 WSL2 的 `CLOCK_THREAD_CPUTIME_ID` 会把宿主抢占记进 guest 线程（`cpu >= wall` 的来源）。所以「宿主停顿」与「WSL2 记账工件」在 guest 内无法区分。原生 Windows 进程给出独立观测点（用户 m16294 建议）。完整记录、三处 shim、复现命令见 **docs/analysis/WIN-MINGW.md**；这里只留结论。
+
+**移植面**：生成的 C 只需三处 shim —— `aligned_alloc` → `_aligned_malloc`（MinGW 无声明）、配对释放 → `_aligned_free`、`tcsetattr`/`tcgetattr`/`cfmakeraw` 三个 stub（裸终端 extern）。`clock_gettime`（两种钟）与 `__builtin_ia32_rdtsc` 在 MinGW 下都能编能跑。**不改 src/**，探针产物不入库。
+
+**(1) 环境地板在原生侧同样存在**（`stallrate.exe --rate 0.3`，纯整数循环，两次）：`rate10_per_s = 170.0 / 223.3`（WSL2 门禁轮 150–480）、`rate50_per_s = 50.0 / 50.0`（23–77）、`max_us = 313.3 / 167.8`（80–537）。⇒ **地板来自宿主调度，是这台机器的属性**；WSL2 的作用只是把它记进线程 CPU 钟。6.9.2 的扣减协议与阈值**一个字不用改**。
+
+**(2) `[work]` 是发射文本的性质，跨 OS 逐字相同**（这是「工作量界是唯一可靠窗口判据」的正面证据）：`cyc 20M n=144,016`、`pb 50M n=333,516`、`pc 150M n=6,866`，`walk_max` 分别 256 / 1024 / 1，原生侧完全一致；`[histo] n` 也逐字相同（156,486 / 343,296 / 41,196），stdout 内容 `cmp` 只差 CRLF（Windows 文本模式）。例外是 `dense`：两侧都跨 rep 有 ±1% 波动（压力触发路径，`pressure_steps≈11,780`）⇒ 该形状不能套三跑确定性棘轮。
+
+**(3) `pd_pointer_dense` 的扇出洞与 OS 无关，原生侧更严重**（给 R4 设下界）：
+
+| 量 | Linux（r3v29，5 reps） | Windows 原生（5 reps） |
+|---|---:|---:|
+| `[segsteps] max_us`（(b)，只 OBS） | 165.1 / 285.9 / 193.8 / 182.1 / 198.8 | **1411.4** |
+| `[histo]` ≥1 ms 桶 | 0（b512us 0–1） | **每 rep b1ms=1–2 且 b4ms=1** |
+| `gt10us` 占比 | 22,800–24,731 / ≈1.52 M ≈ **1.5%** | 16,056–17,976 / ≈1.52 M ≈ **1.06%** |
+
+Linux 侧红的是 `(a-cold)` 的 `tau_t`（cpu 遍 5.434 µs/pop），不是 `(b)`（PASS，`max` 按 m04591 只 OBS）；原生侧把同一机制的尾巴放大到 **1.4 ms、且每 rep 出现 ≥4 ms 单步**。⇒ 6.9.6 的两条 R4 修法（push 计入步预算 `charge = pops + pushes`、标记栈改块链）优先级最高，且 R4 验收必须至少复核一次原生侧。
+
+**(4) MinGW 的 `CLOCK_THREAD_CPUTIME_ID` 不能量步**：`EXTC_RC_STEP_CPU=1` 时 `cyc` 的 `gt10us` 从 61–70 掉到 **11**、15.6 万条样本里 15.6 万落 <1 µs 桶 ⇒ 粒度是 `GetThreadTimes` 量级，大量读数被截断为 0。⇒ Windows 侧只能用 wall 口径；这是移植限制，不是判据问题。
+
+**(5) 本复核不能替代 Linux 门禁**：无 ASan / valgrind / Ir / RSS 口径，只覆盖停顿分布与 `[work]`/`stdout` 一致性，且只搬了 4 个形状。
+
 ## §7 门禁（Gate）：判据、量具、before / after
 
 门禁的用处不是「证明程序对」，而是**把契约变成可自动判定的句子**：每一条都写死「量具 + 判据 + 口径」，避免出现「实测 106 µs 也算通过」这种自欺。全部跑在既有 harness（`tests/reclaim-perf/gate.sh` 六项 + `tests/gc-p0/run.sh`）上，不需要新依赖。**after 列的构建口径（逐行标注）**：`p1-after` = v7 同轮产物集（`tests/gc-p0/out/p1-after/`，构建 `build-emp3/extc 07b7be1a…`）；`v7` = `build-p1/extc b9fd5784…`；G20-P0 单列 P0 轮（`build-rf/extc 7019342b…`）。跨构建的绝对计时允许 ±5–15% 差（§6.7.6），判据只看方向与阈值；任何一行换构建都必须重标尾号，不得混用。
