@@ -428,6 +428,23 @@ place。构造点没有自己的 place 时池就挂在函数体上 —— 循环
 判死，而第 2 轮循环体开头的分配触发点先到压力线（那一次 `freed=0`，自学习还把 `scale` 翻倍，
 是触发策略自己的事）。红证明：注入 `release-off`（关掉发射 ⇒ 判据红）。
 
+## 三点六、跨区出边的位图登记：大槽死时只扫「写过跨区指针的 64 B 组」（v29）
+
+前面几层处理的是「谁还活着」；这一层处理**死掉之后撤销出边的代价**。引用计数必须逐条撤销出边，而撤销只发生在放掉最后一条入边的那一刻 —— 它没有续扫余地（续过就悬垂），也没有写屏障可用（用户 m16773 排除）。于是对**没有描述符**的类型（`src/back/codegen.c:3888`：`offs.len > 32` 就返回 `EXTC_RC_CONSERVATIVE`），`extc_rc_unlinkChildren` 只能按 `ss/sizeof(void*)` 扫完整块：`struct huge { a: [1048576]?mut ref leaf }` 一次死掉要扫 1,048,576 个词，实测 1182–1530 µs；8 MiB 的 6.7 GB/s 就是扫描带宽，没有常数可删。
+
+机制（冷路径为主、**不加写屏障**）：在**既有**的跨区登记分支（`extc_rc_rsIncSlab`，原只标目标槽）上顺手记一位 —— 一位管 64 B（8 个引用词），每槽 `wmW = ceil(ss/4096)` 词（`src/back/reclaim.c:1972` 的 `extc_rc_wmarkSlot`，入口 1987–1988）；释放时 `unlinkChildren` 的 CONSERVATIVE 分支只读**置位组**的 8 个词，读后清零（`2008` 起，位图分支 `2013–2031`）。跨度 < 4 KiB 不分配位图（全扫 ≤ 512 词）。
+
+为什么登记点在体外函数里而不是内联进 `storeRefOwned`：内联体内**从不执行**的新代码会让 `-O1` 给形状函数重新分配寄存器，实测 +435k Ir（12 个变体标定）⇒ 破 Ir 棘轮；三参的 `extc_rc_rsIncSlab` 只多一次寄存器传参。
+
+契约四句：
+
+1. **承诺（界）**：单步内单个死槽的撤销工作量 `W_unlink(ss, m) ≤ min(ss/8, 8·m)` 个引用域，`m` = 该槽本轮置位的 64 B 组数。
+2. **承诺（soundness 不靠维护位图）**：位图是超集，释放时从内存重读真值 ⇒ 覆写/清空引用**没有**维护义务；这也意味着它不是写屏障，只在既有登记分支上加一个「位或」。
+3. **承诺（兜底方向）**：整值拷贝（`storeStructCons` 的 `hostKnown` 分支、`storeStructCopy`）没有源槽可指 ⇒ 置 `r->wmUnsafe`，该区所有 CONSERVATIVE 槽退回全扫描：慢回位图前，但 correctness 不变。
+4. **不承诺**：稠密侧没闭合 —— 若对象的每个 64 B 组都写过跨区指针（`m = ss/4096`），上界回到 `ss/8`，仍是 ≈1.2 ms / 8 MiB 槽。语料侧只有 10 个类型超 32 项描述符（3 个 n=64、7 个 n=4097），真正 >1M 域只有 t04 这个压测程序。
+
+实测（`tests/gc-torture`，`-DEXTC_RC_WMARK=0/1` 同一份生成 C）：t04 `[step] max_us` 1106.4 / 871.6 / 671.6 → **4.7 / 11.5 / 16.7**，over1ms 1 / 0 / 0 → **0**，`[step] total_us` 43,126 → 170–183；`rs_inc / rs_dec / rs_live` 960 / 952 / 8 逐字不变（撤销没漏）。四形状 A/B（15 reps，min）0.961 / 0.991 / 0.966 / 0.991、RSS 逐形状不变；`gate.sh` Ir **87,914,793 ≤ 88,029,115**（余量 114,322）。退路：`-DEXTC_RC_WMARK=0`。
+
 ## 三点七、整段不发射 rc 运行期（区域"不需要回收"的证明）
 
 前面几层都是**运行期**的机制：计数、清扫、定点释放。这一层是**编译期**的：一个区域被证明
@@ -1133,6 +1150,8 @@ cache-sim 判据变红）。
 | `skip:shrink-slack` | `capBytes - bytes < EXTC_RC_SHRINK_MIN_SLACK`（默认 8 MiB）⇒ 本轮不摘任何死块 | 容量只比占用多一点时，摘块换来的内存很小，而「munmap → 再 carve 新块」的抖动会赢（页级归还的 slack 闸门已实测：无闸门 sizeratio 墙钟 +56%、cycleratio +19%；块级同源）| 少还：内存上限抬到一个常数 8 MiB，仍与历史峰值解耦（含有活对象的块不还这条与峰值的联系另行断开）| `pages6` 探针：base 64 slabs / slabRel=0 / RSS 43,788 kB vs 本补丁 16 slabs / slabRel=48 / RSS 18,832 kB（floor ＝ 8 MiB slack 余量）；四形状 A/B 1.013/0.970/1.015/1.002（噪声带内）|
 | `skip:pagtrim-null` | `extc_rc_pageTrimStep` 的 `r->trimCur` 为空（区域链已空）⇒ 立刻返回 | 页归还只在有块的区域上有意义；调用点 `extc_rc_sweepStep` 收尾时区域至少有本轮的块 ⇒ 不可达，纯防御 | 无（幂等：没有块就没有页可还）| `tests/reclaim` 216/0 覆盖 settle/sweep 各档；结构上由调用点的非空链前提兜住 |
 | `skip:pagtrim-slack` | `capBytes - bytes < EXTC_RC_PAGE_TRIM_MIN_SLACK`（默认 8 MiB）⇒ 本轮不做页归还 | 容量与占用只差一点时，还回来的页占堆的比例很小，而「丢页→再缺页」的抖动会赢：实测无此闸门 sizeratio 墙钟 +56%、cycleratio +19%；有闸门后四形状 A/B 1.006/1.007/0.994/1.021（噪声带内）| 无（少还：内存上限抬到一个常数 8 MiB，仍与活集无关）| `pages1` 探针：16 MB 区（容量 8 MiB）不还、64 MB 区还 31.27 MB 且 RSS 52,304→20,280 kB；四形状 A/B 的 `[pages] blocks=0` |
+| `skip:wmark-noslot` | `extc_rc_wmarkSlot` 的 `slot` 是空指针 ⇒ 立刻返回 | 它只在 `extc_rc_rsIncSlab` 里被调用，`srcSlot` 为空表示该调用点没有源槽（整值拷贝、pin 等路径直接用 `wmUnsafe` 兜底）| 无（幂等：什么都不记）| `tests/reclaim` 216/0；t04 的 `rs_inc/rs_dec` 与位图前对账；`wmUnsafe` 兜底路径由 `storeStructCons/Copy` 的 A/B 覆盖 |
+| `skip:wmark-noslab` | 源槽不在受管块里（栈槽、帧 arena），或该块跨度低于 `EXTC_RC_WMARK_MIN_BYTES`（4 KiB）⇒ 不记位图 | 前者的生命期由栈帧/arena 整块释放，不走逐槽撤销；后者一块只有 ≤512 个引用域，全扫描本来就在 0.5 µs 以内 | 无（不记位：这些槽本来就不需要位图）| `tests/gc-torture` 12/12、`tests/reclaim` 216/0；小跨度形状（promote/sizeratio/cycleratio）A/B 在噪声带内 |
 | （无标记）`if (extc_rc_rsIncN) unlinkChildren(...)` | 一次登记都没发生过 ⇒ 不必撤边 | `rsIncN == 0` ⇒ 没有 `rsInc` 类边 | 多留（保守）| `unlink-nop` 证明"撤边"有牙；这个**守卫**没有专门注入 |
 | （无标记）`if (partN > 1) { 登记 }` | 只有一个区域参与 rc ⇒ 免登记 | 单区域不可能有跨区边 | 少算（不安全）| `gate-note-part` + `cross-region` 登记量判据 |
 | （无标记）`#if EXTC_RC_NOCOUNT` 整段 | 关掉计数时计数入口变空操作 | 没有读者 | 少算（不安全）| 单测**两档都跑**（默认 128 / 计数 171）|

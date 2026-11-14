@@ -1379,8 +1379,10 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
             if (!((stored >> j) & 1u)) continue;
             Expr *a = *(Expr **)vecAt(args, j);
             Param *p = *(Param **)vecAt(params, j);
+            if (!p->type || p->type->kind != TY_REF) continue;   /* a scalar has no lifetime, so
+                                                                  * the witness records no opinion
+                                                                  * for it */
             lvlSiteMark(lvlSite, j, LVL_CAND_SKIP);
-            if (!p->type || p->type->kind != TY_REF) continue;   /* a scalar has no lifetime */
             lvlSiteRole(lvlSite, j, LVL_ROLE_DEST);
             Expr *place = (a->kind == EX_REF) ? a->u.ref.operand : a;
             int d = placeRoot(c, place) ? slotDepth(c, place) : targetDepth(c, a);
@@ -1622,12 +1624,16 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
                       | anAddrMask(callee) | anHomeAddrMask(callee);
         for (size_t j = 0; j < args->len && j < EFF_MAX_PARAMS; j++) {
             if (!((cont >> j) & 1u)) continue;
-            lvlSiteMark(lvlSite, j, LVL_CAND_SKIP);
             Param *pj = *(Param **)vecAt(params, j);
-            if (pj->type && pj->type->kind == TY_REF) continue;   /* `ref` arg: checked above */
+            if (pj->type && pj->type->kind == TY_REF) { lvlSiteMark(lvlSite, j, LVL_CAND_SKIP); continue; }   /* `ref` arg: checked above */
             Expr *a = *(Expr **)vecAt(args, j);
-            if (mentionsParam(a->type)) continue;
+            if (mentionsParam(a->type)) { lvlSiteMark(lvlSite, j, LVL_CAND_SKIP); continue; }
+            /* A value whose type cannot carry a reference owns no bytes in any place, so the
+             * store rule says nothing about it. Record no opinion here rather than `skip`: the
+             * witness compares the two, and the level of an expression that merely computes a
+             * scalar (`g.off.get(i) ?? 0`) is not a lifetime anyone can violate. */
             if (!typeContainsRef(c->tt, tsub(c, a->type))) continue;
+            lvlSiteMark(lvlSite, j, LVL_CAND_SKIP);
             recordLvlFact(c, a, h);         /* same as above: record the fact first, promote on the last-round replay */
             lvlSiteRole(lvlSite, j, LVL_ROLE_VALUE);
             int d = targetDepth(c, a);

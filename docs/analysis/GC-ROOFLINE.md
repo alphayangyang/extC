@@ -1629,6 +1629,125 @@ P3 的失败是有价值的：步数不是独立预测出来的，它由 `n = po
 1. **阈值即冷档阈值，只对本机的 `LLC_eff` 成立**：16 MiB 门槛在 LLC 更大的机器上会把「暖但 20–30 MB」的活集判成冷档；后果是仍正确、但白付批量的固定成本（指令数相同，损失只在这一项的常数里）。移植按 §2.5 四步重标，`-D...=0` 是退路。
 2. **`r->live` 是上一轮的标记量**：堆刚长大后的第一轮标记仍按旧值选路径（可能先走一次浅栈），第二轮起正确。与冷档 clamp 的语义完全一致，不是新引入的偏差。
 3. **它不改 Ir、不改 RSS、不改停顿上界**：改的是同一上界下每 pop 的单价。所以 `λ(r)` 不因这一轮下降 —— 下降的是冷档形状的墙钟，以及「路径退化把 `τ_pop` 抬到 300 ns」这个风险（§6.16.7 第 1 条）。
+
+### 6.18 R-W 轮（2026-12-09）：大槽的跨区出边用 64 B 组位图登记（v29）
+
+#### 6.18.1 问题的形状：这一步与对象大小成正比
+
+§8.2 的 L8 修的是**标记侧**的可续扫。释放侧还剩一处既不可续、又与对象大小线性的工作：一个对象的跨区出边在它死的时候必须逐条撤销（引用计数的固有代价），而 `extc_rc_unlinkChildren` 对**描述符缺失**的类型（`EXTC_RC_CONSERVATIVE`，由 `src/back/codegen.c:3888` 的 `if (offs.len > 32) return "((const ExtcRcType *)-1)";` 产生）只能按整块扫：
+
+    if (t == EXTC_RC_CONSERVATIVE) {
+        size_t words = s->ss / sizeof(void *);
+        for (w = 0; w < words; w++) {
+            void *c = ((void **)p)[w];
+            if (c) { cs = ownSlab(c); if (cs && cs->region != s->region) rsDecSlab(cs, c); }
+        }
+        return;
+    }
+
+`tests/gc-torture/src/t04_bigchurn.extc` 的 `struct huge { a: [1048576]?mut ref leaf  tag: i64 }` 是它的极端形态：8 MiB 槽、`ss = 8,388,616` B、1,048,576 个引用域，其中只有 960 个曾经非空。实测该步 **1182–1530 µs**，`unlinkChildren` 占该步 99.9%（1248.5 / 1248.8 µs）⇒ 折算 6.7 GB/s，已是扫描带宽下限，删不掉常数。契约（§3.13 的一步上界）要求 `P_step ≤ 常数`，而这一步是 `Θ(ss/8)`：**对象多大，停顿就多大**。
+
+这不是「慢」，是**无界**：`ss` 由类型定义决定，而 `[N]?mut ref T` 的 N 写在程序里。所以它与 §6.10–6.12 的容量问题同性质，只是旋钮从「历史峰值」换成了「类型大小」。
+
+#### 6.18.2 两条被排除的路
+
+1. **摊到多步**（把 unlink 可续化）：原型已否证（`docs/analysis/UNLINK-DEFERRAL.md`）。t11 探针（256 KiB 载荷）把停顿从 230 µs 压到 102 µs，但 RSS 从 3.4 MB 升到 269 MB（+210 kB/轮）。滞留量 ≈ (walk 域数 / 每步域数) × 分配速率 × 步间隔 ⇒ **停顿上界与滞留上界是同一旋钮的两端**；t04 每轮 8 MiB、按每步 8192 域需 128 步 ⇒ 滞留 128 × 8 MiB，任何保留界都兜不住。
+2. **给源槽加「我有跨区出边」的标记**：那要在每个指针写点判断源槽，就是新增写屏障 —— 用户明确排除（m16773：「尽量减少写屏障 … 写屏障时间长了就掉吞吐」）。现状 `extc_rc_rsIncSlab` 只标**目标槽**：`if (s->rscnt[i]++ == 0) { s->rsbit[word] |= bit; s->region->seedAny = 1; }`，源槽没有任何标记。
+
+剩下的一条是：**把「哪些引用域写过跨区指针」本身记下来** —— 不在指针写点加判断，而是在**已经存在**的跨区登记分支上顺手记一位。记的粒度不能是「每个域」，否则位图本身就成了 `ss/8` 的负担；取 64 B 一组（一个 cache line）。
+
+#### 6.18.3 机制（`src/back/reclaim.c`，v29 唯一改动文件，4,738 行）
+
+| 件 | 位置（v29 绝对行号）| 内容 |
+|---|---|---|
+| 开关 | `reclaim.c:221-241` | `EXTC_RC_WMARK`（默认 1；0 = 位图前行为，供 A/B）、`EXTC_RC_WMARK_MIN_BYTES 4096` |
+| 槽位图 | `reclaim.c:290-293` | `uint64_t *wmark; uint32_t wmW;`（`ExtcRcSlab` 尾部追加）|
+| 区标志 | `reclaim.c:350-351` | `int32_t wmUnsafe;`（该区出现过「登记了边但叫不出源槽」的写 ⇒ 整区退回全扫描，单调置位）|
+| 分配 | `reclaim.c:1005-1013` | `slabNew`：`ss ≥ 4096` 时 `wmW = ceil(ss/4096)`、`wmark = calloc(nslots*wmW)`；失败 `extc_rc_oops` |
+| 登记 | `reclaim.c:1972`（助手）、`1987-1988`（入口）| `extc_rc_wmarkSlot(void **slot)` 由 `extc_rc_rsIncSlab(s, t, srcSlot)` 首行调用 |
+| 扫描 | `reclaim.c:2008` 起，位图分支 `2013-2031` | `unlinkChildren` 的 `EXTC_RC_CONSERVATIVE` 分支先走位图，`wmUnsafe`/无位图时退回全扫描 |
+| 销毁/复位 | `reclaim.c:1669`、`3264`、`3919-3920`、`4031` | 两处 `free(s->wmark)`；elide 整块复位与 bulk reset 各自 `memset` 位图 |
+
+**几何**：一位管 64 B（8 个词），每槽 `wmW = ceil(ss/4096)` 个 64 位词。每块 slab 的位图恒为 `nslots × wmW` 词 —— 512 KiB 块约 128 词 = **1 KiB**（与步长无关）；8 MiB 单槽块 2048 词 = 16 KiB（0.2%）。跨度 < 4 KiB 不分配：这类槽的全扫 ≤ 512 词 ≈ 0.4 µs，已在线下。
+
+**登记（热路径只多一次寄存器传参）**：
+
+    /* 体外函数，不内联；调用点：2718 / 2729 / 2785 / 2799 */
+    static void extc_rc_rsIncSlab(ExtcRcSlab *s, void *t, void **srcSlot) {
+        if (srcSlot) extc_rc_wmarkSlot(srcSlot);
+        ...原有目标槽标记...
+    }
+
+    static void extc_rc_wmarkSlot(void **slot) {
+        ExtcRcSlab *so = ownSlab(slot);
+        if (!so || !so->wmark) return;
+        i = slotOf(so, slot); base = EXTC_RC_SLAB_DATA(so) + i*so->ss;
+        off = (char *)slot - base;
+        if (off < 0 || off >= so->ss) { so->region->wmUnsafe = 1; return; }
+        g = off >> 6;
+        so->wmark[i*so->wmW + (g >> 6)] |= 1ull << (g & 63);
+    }
+
+**为什么登记点必须在体外函数里**：本轮先把同样的逻辑内联进 `extc_rc_storeRefOwned`（`always_inline`），`-DEXTC_RC_WMARK=1` 与 `=0` 的生成 C 只差这一点，指令数却从 88,126,708 涨到 88,130,880，**相对 HEAD 基线 +435k**，Ir 棘轮破线（88,130,882 > 88,029,115）。逐函数 diff 定位到 `pushFront +200,000`、`retireChain +88,692`、`idxPut +80,692`、`treePut +50,000`、`cachePut +12,500` —— 全是**形状自己的函数**，`markStep` 与 `main` 的热路径逐字相同。12 个变体（内联/noinline/守卫/两参/三参/整块索引/挪整个分支）标定后取到结论：只要那段代码进入 `storeRefOwned` 的内联体，即使**从不执行**（该形状 `wmHits=0`、`rs_inc=0`），也产生 +235k~+435k 的寄存器分配噪声；把逻辑放进既有的体外函数 `rsIncSlab` 并加一个参数，才回到 87,914,793（≤ 88,029,115，余量 114,322）。
+
+**释放侧**：只扫置位组，真值从内存重读（位图允许是超集 —— 覆写/清空不需要维护位图）：
+
+    if (s->wmark && !s->region->wmUnsafe) {
+        for (k = 0; k < s->wmW; k++) {
+            uint64_t wm = s->wmark[i*s->wmW + k];
+            if (!wm) continue;
+            s->wmark[i*s->wmW + k] = 0;            /* 槽位图在读完即清，复用时干净 */
+            w0 = k * 64;
+            for (q = 0; q < 64; q++) {
+                if (!(wm & (1ull << q))) continue;
+                w = w0 + q;                         /* 一个 64 B 组 = 8 个引用词 */
+                for (jj = 0; jj < 8 && w*8 + jj < words; jj++) { ...ownSlab/rsDecSlab... }
+            }
+        }
+        return;
+    }
+
+**兜底（正确性优先）**：整值拷贝两条路径（`storeStructCons` 的 `hostKnown` 分支、`storeStructCopy`）保留 `r->wmUnsafe = 1` —— 它们把别的对象的引用整体搬进目标区，叫不出「源槽」。一旦某区 `wmUnsafe`，该区所有 CONSERVATIVE 槽退回全扫描：正确性不变，性能回落到位图前。
+
+#### 6.18.4 实测（v29 构建，`build/extc` = `b5ad0e7cdcb7abbf0cd8f8f18b113570`）
+
+**t04_bigchurn A/B**（同一份生成 C，只差 `-DEXTC_RC_WMARK=0/1`；`EXTC_RC_PAUSE=1`、taskset -c 6、120 轮、各 3 rep）：
+
+| 臂 | `[step] max_us` | over16 | over64 | over1ms | `[step] total_us` |
+|---|---|---|---|---|---|
+| wmark=0（位图前）| 1106.4 / 871.6 / 671.6 | 119 | 119 | 1 / 0 / 0 | 43,126 |
+| wmark=1（v29）| **4.7 / 11.5 / 16.7** | 0（一轮 1）| 0 | **0** | 170–183 |
+
+`[pause] collects=119 max_us=20.7`、`[step] n=238 max_us=6.2`。`EXTC_RC_STATS=1` 下 `rs_inc=960 / rs_dec=952 / rs_live=8` 与位图前逐字相同 —— 位图路没有漏撤销（这是正确性的直接证据，不只是「跑过了」）。
+
+**四形状交错 A/B**（15 reps，min；base = `/tmp/wmbase/wt` HEAD 构建 `build/extc` md5 `d584725c5f0a2a660f006d257f58226a`）：promote 0.961 / sizeratio 0.991 / chase 0.966 / cycleratio 0.991；RSS 逐形状不变。首次 9 reps 为 0.980 / 1.039 / 0.927 / 1.024（符号翻转）⇒ 结论是**噪声带内、无回归**，不是「变快了」。
+
+**Ir**：`tests/reclaim-perf/gate.sh` 87,914,793 ≤ 88,029,115（HEAD 基线 87,695,414）⇒ 棘轮余量从 142,350 降到 114,322。位图机制自身的执行开销在同一份生成 C 上只有 4,172 Ir（0.005%）。
+
+**门禁**：`tests/gc-torture/run.sh all` 12 通过 / xfail 0 / 失败 0（t04 的 `xfail` 字段已从 CASES 删掉 —— 棘轮只许变严）；`asan` 5/5；`tests/reclaim/run.sh` 216/0（含不内联档、`chunk=1` 分段档）；`tests/gc-p0/run.sh all` EXIT=0，G18 PASS（26,272 / 26,268 ≤ 26,624）、G4-Stress PASS。
+
+#### 6.18.5 契约：一步的撤销工作量
+
+设 `ss` 为槽跨度、`m` 为该槽在本轮登记中置位的 64 B 组数（`0 ≤ m ≤ ss/4096`），则一步内单个死槽的撤销工作量
+
+    W_unlink(ss, m) ≤ min( ss/8 , 8·m ) 个引用域
+
+（`ss/8` 是词数；`8·m` 是置位组覆盖的词数。）这一轮把最坏情况的**输入**从「`ss/8`，与槽大小成正比」改成「`8·m`，与**真实跨区出边的分布**成正比」。
+
+**诚实声明**：它只闭合**稀疏**侧。若一个对象的每个 64 B 组都写过跨区指针（`m = ss/4096`），上界回到 `ss/8`，仍是 1.2 ms / 8 MiB 槽 —— 稠密侧要靠「按对象域数计费/声明」的契约路线（§6.13 的 A 路线），本轮不做。语料侧的定位：全语料 1,396 个程序里只有 **10 个类型**的描述符超 32 项（3 个 n=64、7 个 n=4097），其中真正超过 1M 域的只有 t04 这一个压测程序（census 探针已回滚，不进树）。所以这条不是常见路径，而是**为「语言允许写 `[N]?mut ref T`」兑现的边界**。
+
+#### 6.18.6 门禁与退路
+
+- `tests/gc-torture/run.sh all` 的 t04 从 `xfail` 转为严格 PASS（判据：精确 stdout + RSS ≤ 64 MiB + `over1ms=0` + `pop_max ≤ 512` / `push_max ≤ 8,448` / `mscap_max ≤ 16,384`）。
+- `tools/check_skip_table.py`：新增 `skip:wmark-noslot`、`skip:wmark-noslab` 两行（`docs/design/RECLAMATION.md` 跳过表）⇒ 76 类标记、未标记早退 0。
+- 退路：`-DEXTC_RC_WMARK=0` 回到位图前行为（语义完全等价，只慢）；`-DEXTC_RC_WMARK_MIN_BYTES` 调阈值可把不值的槽排除在外。
+
+#### 6.18.7 边界（三条）
+
+1. **位图是超集，靠「读真值」保持 soundness**：位图只回答「这 8 个词里可能有一个非空跨区引用」，不回答「哪一个」。所以清空/覆写引用时不需要维护位图（没有写屏障义务），代价是对置位组做一次 8 词读 —— 这些词本来就要读。
+2. **位图内存与槽大小解耦**：每块 `nslots × wmW` 词 ≈ 128 词，因为 `nslots ∝ 1/ss`、`wmW ∝ ss`；8 MiB 单槽块是唯一例外（16 KiB，0.2%）。这条几何是「按块付费」而不是「按容量付费」，所以不改变 §6.10 的容量界。
+3. **`wmUnsafe` 会把收益退回**：整值拷贝/越界登记会置位，且**没有清零路径**（单调）。语义上安全（退回全扫描），但意思是「用了 `@drop` 整值搬运的区拿不到这一轮的好处」。当前语料里触发面小（`pd_*` 与 torture 的 `t05_copyrefs` 是刻意构造），但换真实程序前要重新 census。
+
 ## §7 门禁（Gate）：判据、量具、before / after
 
 门禁的用处不是「证明程序对」，而是**把契约变成可自动判定的句子**：每一条都写死「量具 + 判据 + 口径」，避免出现「实测 106 µs 也算通过」这种自欺。全部跑在既有 harness（`tests/reclaim-perf/gate.sh` 六项 + `tests/gc-p0/run.sh`）上，不需要新依赖。**after 列的构建口径（逐行标注）**：`p1-after` = v7 同轮产物集（`tests/gc-p0/out/p1-after/`，构建 `build-emp3/extc 07b7be1a…`）；`v7` = `build-p1/extc b9fd5784…`；G20-P0 单列 P0 轮（`build-rf/extc 7019342b…`）。跨构建的绝对计时允许 ±5–15% 差（§6.7.6），判据只看方向与阈值；任何一行换构建都必须重标尾号，不得混用。
@@ -1683,6 +1802,7 @@ P3 的失败是有价值的：步数不是独立预测出来的，它由 `n = po
 | R14 | `tau_pop` 的发射项只做到「可算的下界 + 相加假设」：`τ_pop = Ir_pop/Ir_per_s + β·T_LL` 里的 beta（依赖指针密度）只有五个形状的观测（0.07-0.69），没有机制模型；单用 `tau_issue` 预测 tau_pop 的 ±20% 判据只 1/5 成立（§3.12） | 模型能证明「发射项存在且是下界」，不能逐形状预测 tau_pop；`c_t = tau_pop/s̄` 的形状依赖仍靠实测 | U：beta 由「依赖指针密度 × MLP」推出来（需再标定 MLP 与 miss 的重叠度）；`tau_issue` 的 IPC×f 反推未做（CALIBRATION §15 限制 2） |
 | R15 | **延迟屋顶的单 pop 尾部无机制模型**：随机链上 `P_step` 的 p99.9 落在 64-128 µs 桶（gt64 率 1.9-2.4e-4），且 b=1 时仍有 5/2.44M 步 >64 µs（max 126.7 µs）⇒ 尾部是「单次 pop 的走表/页错误级代价」，与 b 无关；缩小 footprint（1M node/32 MB）率降到 0.8-1.2e-4 但没有干净消失 ⇒ **不能唯一归因 TLB** | 「停顿有界」在延迟屋顶上只能承诺均值（b=32 实测 2.80 µs）＋尾部率，不能承诺 p99.9 ≤ 10 µs；跨机移植时该率会变 | 下一轮候选：2 MiB 对齐的大块 slab + `MADV_HUGEPAGE`（判据：τ_pop 降 ≥30% 且 RSS 增幅 ≤5%）；LAT-d 只判 `over1ms=0`（min-over-reps），删除「max ≤ 50 µs」在这类形状上的任何表述 |
 | R16 | 路径选择的阈值复用了冷档阈值（16 MiB = 本机 LLC_eff 的 1.3-2x），单机标定 | 在 LLC 更大的机器上，16-32 MiB 的活集会被判成冷档：结果仍正确（指令数相同），但白付批量的固定成本；反之在 LLC 更小的机器上会漏判 | 移植按 §2.5 四步重标 `LLC_eff` 与 `EXTC_RC_MARK_COLD_BYTES`；`-DEXTC_RC_MARK_SHALLOW_WARM_ONLY=0` 可退回只看栈深（§6.17.7）|
+| R17 | **位图登记只闭合稀疏侧**：`W_unlink ≤ min(ss/8, 8·m)`，若对象的每个 64 B 组都写过跨区指针则上界回到 `ss/8`（≈1.2 ms / 8 MiB 槽，§6.18.5）；`wmUnsafe`（整值拷贝/越界）会让该区永久退回全扫描 | 稠密侧仍是「与对象大小成正比」的无界项，只是触发面从「所有大槽」缩到「每个 64 B 组都有出边的大槽」 | 下一步候选：按对象域数计费/声明的契约（§6.13 的 A 路线），或引用数组落成槽的布局改动（C 路线，需语言层拍板）；`EXTC_RC_WMARK=0` 是 A/B 与回退开关 |
 
 ### 8.2 实现侧（已修 / 未修）
 
@@ -2148,3 +2268,22 @@ r'* = r'_max(M_max) = (M_max/L − 1)/κ_M
 | 工具：`c_seg` 标定与标定表（v21：3.841/5.997 ns/word） | `tests/gc-p0/calib_cseg.py`、`tests/gc-p0/bseg-cal.tsv` |
 | 工具：走步循环不读钟的结构断言 | `tools/check_mark_batch.py`（`batch walk reads no clock`、`shallow drain reads no clock`） |
 | 探针形状：release 通道（覆盖长命根槽） | `tests/gc-p0/src/rel_overwrite.extc` |
+
+**口径 v29（R-W 位图登记，2026-12-09，`reclaim.c` 4,738 行）**：`src/back/reclaim.c` = `845c57e2b230202efcd04639e07664d9`、`src/back/codegen.c` = `3ae6e499b6a2d64668ff1daf2eed26a2`（16,222 行，未改）、`tests/reclaim/driver.c` = `28dd4009ac7207f47e581a697c0d421f`（1,637 行，未改）、`build/extc` = `b5ad0e7cdcb7abbf0cd8f8f18b113570`。相对 v28（`7a157eb5…`/4,664 行）净 +74 行，17 个 hunk 的分段换算与逐条锚点见 `docs/analysis/REFS-V29.md`（禁止单一 offset 平移）；机制、A/B 与边界见 §6.18。下表是本节新增行的**绝对行号**：
+
+| 主题 | 位置（v29 绝对行号）|
+|---|---|
+| 运行期：`EXTC_RC_WMARK` 开关与 `EXTC_RC_WMARK_MIN_BYTES`（4096）| `reclaim.c:221-241` |
+| 运行期：`ExtcRcSlab` 的 `wmark` / `wmW` | `reclaim.c:290-293` |
+| 运行期：`ExtcRcRegion` 的 `wmUnsafe` | `reclaim.c:350-351` |
+| 运行期：`slabNew` 的位图分配（`ss ≥ 4096` 才建，失败 `extc_rc_oops`）| `reclaim.c:1005-1013` |
+| 运行期：`free(s->wmark)` 两处销毁点 | `reclaim.c:1669`、`reclaim.c:3264` |
+| 运行期：`extc_rc_wmarkSlot`（登记助手，含越界 ⇒ `wmUnsafe`）| `reclaim.c:1972`（注释 1968–1971）|
+| 运行期：`extc_rc_rsIncSlab(s, t, srcSlot)` 三参入口（首行登记）| `reclaim.c:1987-1988` |
+| 运行期：`unlinkChildren` 的位图分支（读置位组 8 词、读后清零）| `reclaim.c:2013-2031`（函数起 2008）|
+| 运行期：四个 `rsIncSlab` 调用点（传源槽）| `reclaim.c:2718`、`:2729`、`:2785`、`:2799` |
+| 运行期：整值拷贝的 `wmUnsafe` 置位 | `reclaim.c:3003`、`:3040` |
+| 运行期：elide 整块复位时清位图 | `reclaim.c:3919-3920` |
+| 运行期：bulk reset 时清位图 | `reclaim.c:4031` |
+| 门禁：torture 的 t04 从 xfail 转严格 PASS | `tests/gc-torture/run.sh`（CASES 行）|
+| 文档：跳过表新增两行 | `docs/design/RECLAMATION.md`（`skip:wmark-noslot` / `skip:wmark-noslab`）|

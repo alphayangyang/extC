@@ -55,7 +55,7 @@ INJECTIONS = {
         # **两处都要拆**：`storeRefOwned` 与第十二刀的 `storeRefOwnedReg` 各有一份登记逻辑；
         # 只拆前者时形状走的是后者 ⇒ 打不到活路径。
         "gate": "gate-reclaim-switch",
-        "patches": [(SRC, '    "            if (host && sv && sv->region != host) { extc_rc_rsIncSlab(sv, v); host->foreign = 1; }\\n",\n', ""), (SRC, '    "                if (sv && sv->region != r) { extc_rc_rsIncSlab(sv, v); r->foreign = 1; }\\n",\n    "                if (r->foreign) { void *old = *slot; ExtcRcSlab *sold = old ? extc_rc_ownSlab(old) : (ExtcRcSlab *)0; if (sold && sold->region != r) extc_rc_rsDecSlab(sold, old); }\\n",\n', "")],
+        "patches": [(SRC, '    "            if (host && sv && sv->region != host) { extc_rc_rsIncSlab(sv, v, slot); host->foreign = 1; }   /* [rt:wmark] the source slot names the group */\\n",\n', ""), (SRC, '    "                if (sv && sv->region != r) { extc_rc_rsIncSlab(sv, v, slot); r->foreign = 1; }   /* [rt:wmark] the source slot names the group */\\n",\n    "                if (r->foreign) { void *old = *slot; ExtcRcSlab *sold = old ? extc_rc_ownSlab(old) : (ExtcRcSlab *)0; if (sold && sold->region != r) extc_rc_rsDecSlab(sold, old); }\\n",\n', "")],
     },
     "localstore-on-objhost": {
         "why": "把对象宿主（`hreg != NULL`）的引用存储也改发本地槽的只写入口 "
@@ -82,10 +82,10 @@ INJECTIONS = {
         "gate": "gate-reclaim-switch",
         # 两个变体各插一处（只插 `storeRefOwned` 打不到活路径 —— 与 `rsinc-drop` 同一条教训）。
         "patches": [
-            (SRC, '    "            if (host && sv && sv->region != host) { extc_rc_rsIncSlab(sv, v); host->foreign = 1; }\\n",\n    "            if (host && host->foreign) { void *old = *slot; ExtcRcSlab *sold = old ? extc_rc_ownSlab(old) : (ExtcRcSlab *)0; if (sold && sold->region != host) extc_rc_rsDecSlab(sold, old); }\\n",\n',
-             '    "            if (host && sv && sv->region != host) { extc_rc_rsIncSlab(sv, v); host->foreign = 1; }\\n",\n    "            if (sv) extc_rc_rsIncSlab(sv, v);   /* 注入：过度登记（第 18 轮那个回归） */\\n",\n    "            if (host && host->foreign) { void *old = *slot; ExtcRcSlab *sold = old ? extc_rc_ownSlab(old) : (ExtcRcSlab *)0; if (sold && sold->region != host) extc_rc_rsDecSlab(sold, old); }\\n",\n'),
-            (SRC, '    "                if (sv && sv->region != r) { extc_rc_rsIncSlab(sv, v); r->foreign = 1; }\\n",\n    "                if (r->foreign) { void *old = *slot; ExtcRcSlab *sold = old ? extc_rc_ownSlab(old) : (ExtcRcSlab *)0; if (sold && sold->region != r) extc_rc_rsDecSlab(sold, old); }\\n",\n',
-             '    "                if (sv && sv->region != r) { extc_rc_rsIncSlab(sv, v); r->foreign = 1; }\\n",\n    "                if (sv) extc_rc_rsIncSlab(sv, v);   /* 注入：过度登记（第 18 轮那个回归） */\\n",\n    "                if (r->foreign) { void *old = *slot; ExtcRcSlab *sold = old ? extc_rc_ownSlab(old) : (ExtcRcSlab *)0; if (sold && sold->region != r) extc_rc_rsDecSlab(sold, old); }\\n",\n'),
+            (SRC, '    "            if (host && sv && sv->region != host) { extc_rc_rsIncSlab(sv, v, slot); host->foreign = 1; }   /* [rt:wmark] the source slot names the group */\\n",\n    "            if (host && host->foreign) { void *old = *slot; ExtcRcSlab *sold = old ? extc_rc_ownSlab(old) : (ExtcRcSlab *)0; if (sold && sold->region != host) extc_rc_rsDecSlab(sold, old); }\\n",\n',
+             '    "            if (host && sv && sv->region != host) { extc_rc_rsIncSlab(sv, v, slot); host->foreign = 1; }   /* [rt:wmark] the source slot names the group */\\n",\n    "            if (sv) extc_rc_rsIncSlab(sv, v, slot);   /* 注入：过度登记（第 18 轮那个回归） */\\n",\n    "            if (host && host->foreign) { void *old = *slot; ExtcRcSlab *sold = old ? extc_rc_ownSlab(old) : (ExtcRcSlab *)0; if (sold && sold->region != host) extc_rc_rsDecSlab(sold, old); }\\n",\n'),
+            (SRC, '    "                if (sv && sv->region != r) { extc_rc_rsIncSlab(sv, v, slot); r->foreign = 1; }   /* [rt:wmark] the source slot names the group */\\n",\n    "                if (r->foreign) { void *old = *slot; ExtcRcSlab *sold = old ? extc_rc_ownSlab(old) : (ExtcRcSlab *)0; if (sold && sold->region != r) extc_rc_rsDecSlab(sold, old); }\\n",\n',
+             '    "                if (sv && sv->region != r) { extc_rc_rsIncSlab(sv, v, slot); r->foreign = 1; }   /* [rt:wmark] the source slot names the group */\\n",\n    "                if (sv) extc_rc_rsIncSlab(sv, v, slot);   /* 注入：过度登记（第 18 轮那个回归） */\\n",\n    "                if (r->foreign) { void *old = *slot; ExtcRcSlab *sold = old ? extc_rc_ownSlab(old) : (ExtcRcSlab *)0; if (sold && sold->region != r) extc_rc_rsDecSlab(sold, old); }\\n",\n'),
         ],
     },
     "perf-lookup": {
@@ -143,7 +143,7 @@ INJECTIONS = {
         # 打的正是 `storeRefOwnedReg` 的登记那一句：内部 API 阶段（直接调 `rsInc`）不受影响，
         # 所以能红的**只能**是"真实路径"那一组断言 —— 它们有没有牙，靠这条注入证明。
         "gate": "reclaim-unit",
-        "patches": [(SRC, '    "            if (host && sv && sv->region != host) { extc_rc_rsIncSlab(sv, v); host->foreign = 1; }\\n",\n',
+        "patches": [(SRC, '    "            if (host && sv && sv->region != host) { extc_rc_rsIncSlab(sv, v, slot); host->foreign = 1; }   /* [rt:wmark] the source slot names the group */\\n",\n',
                      '    "            if (host && sv && sv->region != host) { host->foreign = 1; }   /* 注入：真实赋值路径不登记 */\\n",\n')],
     },
     "noSweep-drop": {
@@ -201,8 +201,8 @@ INJECTIONS = {
     "occ-guard-drop": {
         "why": "跨区登记不再检查占用位 ⇒ 空闲槽也会被置入边位（保守方向：复用后目标被多留）",
         "gate": "reclaim-unit",
-        "patches": [(SRC, '    "__attribute__((unused)) static void extc_rc_rsIncSlab(ExtcRcSlab *s, void *t) {\\n",\n    "    size_t i = extc_rc_slotOf(s, t);\\n",\n    "    if (!(s->occ[extc_rc_word(i)] & extc_rc_bit(i))) return;   /* skip:occ-free */\\n",\n',
-                     '    "__attribute__((unused)) static void extc_rc_rsIncSlab(ExtcRcSlab *s, void *t) {\\n",\n    "    size_t i = extc_rc_slotOf(s, t);\\n",\n    /* 注入：拿掉占用位守卫 */\n')],
+        "patches": [(SRC, '    "__attribute__((unused)) static void extc_rc_rsIncSlab(ExtcRcSlab *s, void *t, void **srcSlot) {\\n",\n    "    if (srcSlot) extc_rc_wmarkSlot(srcSlot);   /* the source slot: its bitmap records which 64-byte groups to look at */\\n",\n    "    size_t i = extc_rc_slotOf(s, t);\\n",\n    "    if (!(s->occ[extc_rc_word(i)] & extc_rc_bit(i))) return;   /* skip:occ-free */\\n",\n',
+                     '    "__attribute__((unused)) static void extc_rc_rsIncSlab(ExtcRcSlab *s, void *t, void **srcSlot) {\\n",\n    "    if (srcSlot) extc_rc_wmarkSlot(srcSlot);   /* the source slot: its bitmap records which 64-byte groups to look at */\\n",\n    "    size_t i = extc_rc_slotOf(s, t);\\n",\n    /* 注入：拿掉占用位守卫 */\n')],
     },
     "ownhot-nobase": {
         "why": "把「上一块」缓存的基址判等去掉 ⇒ 跨 slab 的指针也用缓存里的 slab 判定（校验会失败 ⇒ 活对象被当区域外跳过）",

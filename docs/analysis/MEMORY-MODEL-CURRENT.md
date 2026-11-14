@@ -42,6 +42,8 @@
 > **行号口径（v24 = 自动路径块级归还，当前工作树，2026-12-01）**：src/back/reclaim.c = `711d2b02ade155be40b52508cf784397`（**4,506 行**）、src/back/codegen.c = `cc01b5f4216ea5c8d9fde77c47c41f24`（16,212 行，未改）、tests/reclaim/driver.c = `28dd4009ac7207f47e581a697c0d421f`（1,637 行，未改）、build/extc = `effe8fe2f4330ea878347d4c6c54b2a1`。相对 v23：reclaim.c 净 −1 行（删 `shrinkDue` 字段与三处使用 −5、`capBytes` 记账去 `#if` −2、新宏与 slack 早退 +5、调换调用点 +3）。**v23→v24 的 11 个 hunk、分段换算表与绝对锚点见 `docs/analysis/REFS-V24.md`**；本文件与 GC-ROOFLINE.md 的旧行号仍按 v17/v18 保留（禁止机械平移），v21 起新增内容用当日绝对行号并标版本。机制/实测/判据：§19.7（v21 量具）、§19.8（v22/v24 块级归还）、§19.9（v23 页级归还）、§19.10（v24 自动路径）与 GC-ROOFLINE.md §6.9–§6.12。
 > **行号口径（v25 = R7 停顿契约，当前工作树，2026-11-14）**：`src/back/reclaim.c` = `0b91d96ee08ff5e2589136ca313aee4f`（**4,658 行**）、`src/back/codegen.c` = `3ae6e499b6a2d64668ff1daf2eed26a2`（16,222 行；描述符长度上限 4096 → **32**）、`tests/reclaim/driver.c` = `28dd4009ac7207f47e581a697c0d421f`（1,637 行，未改）、`build/extc` = `11d39dee4a6481b9e003591ac4e57cc9`。相对 v24（4,506 行）：新增 `[rt:hugefree]` 发射块（858–940，84 行）、步内扫描额度与标记栈软上限、pop/push 高水位计数与 `[wbudget]` 三个新字段、冷档 128 → 32、free 队列 40/50 µs。**v24→v25 的 37 个 hunk、分段换算表与绝对锚点见 `docs/analysis/REFS-V25.md`**；本文件旧行号仍按 v17/v18 保留（禁止机械平移），v21 起新增内容用当日绝对行号并标版本。机制/实测/判据：§19.11 与 `GC-ROOFLINE.md` §6.13。
 > **行号口径（v28 = R-A 路径选择，当前工作树，2026-12-05）**：`src/back/reclaim.c` = `7a157eb5d30bb3b71b67c41eea1c6f07`（**4,664 行**，v25 起 +6）、`src/back/codegen.c` = `3ae6e499b6a2d64668ff1daf2eed26a2`（16,222 行，未改）、`tests/reclaim/driver.c` = `28dd4009ac7207f47e581a697c0d421f`（1,637 行，未改）、`build/extc` = `e742e423dd5b901cf0405f5beb3a4cb7`。相对 v25 只有两处**纯插入**（`+3` 行在宏区 3339–3341、`+3` 行在浅栈判定 3623–3625）⇒ **v25 与 v28 行号不可混用**；分段换算与绝对锚点见 `docs/analysis/REFS-V28.md`，核对一律按符号 grep，禁止机械平移。
+> **行号口径（v29 = R-W 位图登记，当前工作树，2026-12-09）**：`src/back/reclaim.c` = `845c57e2b230202efcd04639e07664d9`（**4,738 行**，v28 起 +74）、`src/back/codegen.c` = `3ae6e499b6a2d64668ff1daf2eed26a2`（16,222 行，未改）、`tests/reclaim/driver.c` = `28dd4009ac7207f47e581a697c0d421f`（1,637 行，未改）、`build/extc` = `b5ad0e7cdcb7abbf0cd8f8f18b113570`。相对 v28 新增 74 行：宏区 +21（`EXTC_RC_WMARK` / `EXTC_RC_WMARK_MIN_BYTES` 与长注释）、`ExtcRcSlab` 尾部 +4、`ExtcRcRegion` +2、`slabNew` 位图分配 +9、`extc_rc_wmarkSlot` +18、`unlinkChildren` 位图分支 +19、`rsIncSlab` 三参签名与四个调用点 +3、销毁/复位四处 +8（合计 74）⇒ **v28 与 v29 行号不可混用**；分段换算（旧 n → 新 n + {0(≤220) / 21(221–268) / 25(269–324) / 27(325–977) / 36(978–1931) / 52–53(1932–1959) / 72–74(1960–4664)}）、17 个 hunk 与绝对锚点见 `docs/analysis/REFS-V29.md`，核对按符号 grep，禁止机械平移。
+
 
 ---
 
@@ -1255,6 +1257,62 @@ H5 的依据是实测的物理常数（`/tmp/ctl/unmap2.c`，`taskset -c 6`）�
 1. **阈值即冷档阈值，只对本机 `LLC_eff`（8–12 MB）成立**：16 MiB 门槛在 LLC 更大的机器上会把「暖但 20–30 MB」的活集判成冷档 ⇒ 仍正确，但白付批量固定成本（指令数相同，损失只在该项常数里）。移植按 `GC-ROOFLINE.md` §2.5 四步重标，`-D...=0` 是退路。
 2. **`r->live` 是上一轮的标记量**：堆刚长大后的第一轮仍按旧值选路径，第二轮起正确；与冷档 clamp 的语义完全一致，不是新偏差。
 3. **它不改 Ir、不改 RSS、不改停顿上界**：改的是同一上界下每 pop 的单价。所以 `λ(r)` 不因这一轮下降 —— 下降的是冷档形状的墙钟，以及「路径退化把 `τ_pop` 抬到 300 ns、`b=32` 破 8 µs」的那个风险（`GC-ROOFLINE.md` §6.16.7 第 1 条）。
+### 19.13 大槽的跨区出边用 64 B 组位图登记（v29 新增）
+
+#### 19.13.1 为什么它是「停顿契约」的一部分
+
+§19.11 把标记侧的可续扫与每步常量上界写成了无钟计数；释放侧还剩一处**不可续、且与对象大小线性**的工作：一个对象的跨区出边在它死的时候必须逐条撤销。对没有描述符的类型（`EXTC_RC_CONSERVATIVE`，`src/back/codegen.c:3888` 的 `if (offs.len > 32) return "((const ExtcRcType *)-1)";`）只能按 `ss/sizeof(void*)` 扫完整块，于是单步工作量是 `Θ(ss/8)` —— **对象多大，停顿就多大**，而 `ss` 由类型定义决定（`[N]?mut ref T` 的 N 写在程序里）。`tests/gc-torture/src/t04_bigchurn.extc`（8 MiB 槽、1,048,576 个引用域、其中 960 个曾非空）实测该步 **1182–1530 µs**。
+
+两条路被排除：**摊到多步**用滞留换停顿（原型已否证，RSS 3.4 MB → 269 MB，见 `UNLINK-DEFERRAL.md`）；**给源槽加标记**＝新增写屏障（用户 m16773 排除）。剩下的第三条：在**已经存在**的跨区登记分支上顺手记一位 —— 不在指针写点加判断，只记「这 64 B 里有一条跨区出边」。
+
+#### 19.13.2 机制（v29，`src/back/reclaim.c` 唯一改动文件，4,738 行 / `845c57e2…`）
+
+| 件 | 位置（v29 绝对行号）| 内容 |
+|---|---|---|
+| 开关 | 221–241 | `EXTC_RC_WMARK`（默认 1；0 = 位图前行为，供 A/B）、`EXTC_RC_WMARK_MIN_BYTES 4096` |
+| 槽位图 | 290–293 | `ExtcRcSlab` 尾部加 `uint64_t *wmark; uint32_t wmW;` |
+| 区标志 | 350–351 | `ExtcRcRegion` 加 `int32_t wmUnsafe;`（整区退回全扫描，单调置位）|
+| 分配 | 1005–1013 | `slabNew`：`ss ≥ 4096` 时 `wmW = ceil(ss/4096)`、`wmark = calloc(nslots*wmW)` |
+| 登记 | 1972（助手）、1987–1988（入口）| `extc_rc_wmarkSlot(slot)` 由 `extc_rc_rsIncSlab(s, t, srcSlot)` 首行调用；四个调用点在 2718 / 2729 / 2785 / 2799 |
+| 扫描 | 2008 起，位图分支 2013–2031 | `unlinkChildren` 的 CONSERVATIVE 分支先走位图（读置位组的 8 个词、读后清零、命中跨区即 `rsDecSlab`）|
+| 销毁/复位 | 1669、3264、3919–3920、4031 | 两处 `free(s->wmark)`；elide 整块复位与 bulk reset 各 `memset` 位图 |
+
+三条几何事实：
+
+1. **一位管 64 B**（8 个引用词），每槽 `wmW = ceil(ss/4096)` 个 64 位词；每块 slab 的位图恒 `nslots × wmW` 词 ⇒ 512 KiB 块约 128 词 = **1 KiB**（与步长无关），8 MiB 单槽块 16 KiB（0.2%）。
+2. **热路径只多一次寄存器传参**：位图集写在**体外**函数 `extc_rc_rsIncSlab` 里（原函数加第三参）。原因不是美学：把同样逻辑内联进 `extc_rc_storeRefOwned`（`always_inline`）会让**从不执行**的代码产生 +435k Ir 的寄存器分配噪声（12 个变体标定，`GC-ROOFLINE.md` §6.18.3），Ir 棘轮破线；三参形式回到 87,914,793 ≤ 88,029,115。
+3. **位图是超集**：它只回答「这 8 个词里可能有一条非空跨区引用」，真值在释放时从内存重读 ⇒ 覆写/清空引用**不需要**维护位图，所以这不是写屏障，只是既有登记分支上的一个位或。
+
+兜底：整值拷贝两条路径（`storeStructCons` 的 `hostKnown` 分支、`storeStructCopy`）没有源槽可指 ⇒ 置 `r->wmUnsafe = 1`，该区随后所有 CONSERVATIVE 槽退回全扫描（正确性不变，性能回落到位图前）。
+
+#### 19.13.3 契约（形状）
+
+    单步内单个死槽的撤销工作量  W_unlink(ss, m) ≤ min( ss/8 , 8·m )  个引用域
+
+其中 `m` 是该槽本轮置位的 64 B 组数（`0 ≤ m ≤ ss/4096`）。判据仍是无钟计数：`[wbudget]` 的 `pop_max ≤ 512` / `push_max ≤ 8,448` / `mscap_max ≤ 16,384` 不动，另加 torture 的 `over1ms = 0`。
+
+**诚实声明**：它只闭合**稀疏**侧。若一个对象的每个 64 B 组都写过跨区指针（`m = ss/4096`），上界回到 `ss/8`（仍是 ≈1.2 ms / 8 MiB 槽）；稠密侧需要「按对象域数计费/声明」的契约路线，本轮不做。语料定位：全语料 1,396 个程序里只有 10 个类型的描述符超 32 项（3 个 n=64、7 个 n=4097），真正超过 1M 域的只有 t04 这个压测程序。
+
+#### 19.13.4 实测（v29，`build/extc` = `b5ad0e7c…`，`taskset -c 6`）
+
+| 量 | wmark=0（位图前）| wmark=1（v29）|
+|---|---|---|
+| t04 `[step] max_us`（3 rep）| 1106.4 / 871.6 / 671.6 | **4.7 / 11.5 / 16.7** |
+| t04 over1ms | 1 / 0 / 0 | **0** |
+| t04 `[step] total_us` | 43,126 | 170–183 |
+| t04 `rs_inc / rs_dec / rs_live` | 960 / 952 / 8 | 960 / 952 / 8（逐字相同）|
+| 四形状 A/B（15 reps，min）| — | promote 0.961、sizeratio 0.991、chase 0.966、cycleratio 0.991 |
+| RSS（四形状）| — | 逐形状不变 |
+| `tests/reclaim-perf/gate.sh` Ir | 87,695,414（HEAD 基线）| **87,914,793 ≤ 88,029,115** |
+
+门禁：`tests/gc-torture/run.sh all` 12 通过 / xfail 0 / 失败 0（t04 的 `xfail` 字段已删，棘轮只许变严）；`asan` 5/5；`tests/reclaim/run.sh` 216/0；`tests/gc-p0/run.sh all` EXIT=0（G18 PASS 26,272 / 26,268 ≤ 26,624、G4-Stress PASS）。
+
+#### 19.13.5 边界（三条）
+
+1. **位图内存按块付费，不是按容量付费**：`nslots ∝ 1/ss`、`wmW ∝ ss` ⇒ 每块约 1 KiB，不改变 §19.9/§19.10 的容量界。
+2. **`wmUnsafe` 单调且无清零路径**：语义安全（退回全扫描），但意思是「用过整值搬运的区拿不到这一轮的好处」；当前语料触发面小（`pd_*`、`t05_copyrefs` 是刻意构造），换真实程序前要重新 census。
+3. **Ir 余量只剩 114,322**（88,029,115 − 87,914,793）：任何新增热路径代码都要先算这笔账；本轮为了不破线，把逻辑放在既有体外函数里而不是内联体里。
+
 ## §20 与仓库既有文档的不一致清单（口径必须按本节改）
 
 完整 90 条对账在 `docs/analysis/DOC-AUDIT.md`；这里只列"会误导读者/会误导优化决策"的 10 条。
@@ -1331,6 +1389,8 @@ extC 的内存管理是**编译期分档的**：绝大多数分配被静态指�
 6. **P1 一轮（四项）三否定一落地；v8 闭合 G3b**：chunk 保持 **8192**（缩小只能拿内存换步时，见 §19.5）；惰性 freelist **默认关**；`regionFree` 两阶段在 v8 升级为 **closing queue**（同步段 O(1)、三形状 0.4–1.7 µs，§19.5）；`G1②` 改三通道量具（`[segsteps]` + `[chan]`，`max` 只作 OBS）。相对 v5 的同机交错 A/B（9 reps、utime）：promote **0.972**、chase **0.973**、cycleratio **1.019**、sizeratio **1.051（未决）**；相对 HEAD 的累计代价 promote +5.4%、sizeratio +5.0%、chase/cycleratio ≤+0.7%（§19.5.2、GC-ROOFLINE §6.7.6）。
 
 7. **R1 + R2（量具可判化 + 标记步冷档，§19.6）**：R1 把 G1② 从桶界改为**精确超阈计数**（`[histo]`/`[segsteps]` 的 `gt10us/gt50us/gt64us`，`[chan]` 的 `collect` 改名 `trigger-step`），使判据可判；R2 用**按活集分档的每步 pop 上限**（暖 `min(b, 1024)` / 冷 `min(b, 128)`，门槛 `EXTC_RC_MARK_COLD_BYTES = 16 MiB`）把 `pb_escape_grow` 的标记步压回契约：p99.9 判据 **2.6e-4 PASS**、`>50 µs` **2.9e-5 PASS**（R1 为 RED / 2.56e-4），四形状 A/B **0.973–1.007**、`gate.sh` Ir **87,649,685 ≤ 88,029,115**、G18 **26,072 kB** 不变；`walk_max ≤ walk_cap` 仍逐字成立（冷档只收紧）。仍未闭合：cyc 的 `(a)` 1.11e-4（噪声地板）、pc 的 `(a)` **N/A（n=41,184 < 1e5）**、`bseg-cal.tsv` 的 `c_seg` 标定仍是 v9 口径。
+
+8. **R-W（v29）：大槽的跨区出边用 64 B 组位图登记（§19.13）**：`W_unlink(ss, m) ≤ min(ss/8, 8·m)`，t04 的 `[step] max_us` **1106.4 / 871.6 / 671.6 → 4.7 / 11.5 / 16.7**、`over1ms` → **0**，`rs_inc / rs_dec / rs_live` 960 / 952 / 8 逐字不变，四形状 A/B 0.961 / 0.991 / 0.966 / 0.991、RSS 不变，`gate.sh` Ir **87,914,793 ≤ 88,029,115**（余量 114,322）。登记点在既有体外函数 `extc_rc_rsIncSlab` 里而不是内联体里 —— 内联体的**未执行**代码会让形状函数重新分配寄存器、+435k Ir 破线（12 变体标定，`GC-ROOFLINE.md` §6.18.3）。**诚实的边界**：只闭合稀疏侧，每个 64 B 组都有跨区出边的大槽上界仍是 `ss/8`。
 
 一句话没变：作用域基质（arena/pool/coro/plate）从来是有界的；rc region 的有界性**现在由契约给出、由标定支撑**。门禁 G1–G16 与 after 实测见 `docs/analysis/GC-ROOFLINE.md` §6–§7。
 

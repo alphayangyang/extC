@@ -31,7 +31,7 @@ CASES=(
   "t01_sparse_pin|1000000 200|64000|none"
   "t02_fanout|40|32000|none"
   "t03_deepring|1000000 12|100000|none"
-  "t04_bigchurn|120|24000|none|sweep frees a huge obj: unlinkChildren walks its 1M ref fields in one step (0.27-1.45 ms, CORPUS-TORTURE 5.2)"
+  "t04_bigchurn|120|24000|none"
   "t05_copyrefs|800000|8192|none"
   "t06_handles|8 200000|12000|none"
   "t07_tasks|20000|6144|none"

@@ -877,6 +877,10 @@ static void lvlReportSite(Checker *c, LvlFacts *facts, LvlSite *s, size_t self) 
     for (int j = 0; j < s->nargs; j++) {
         unsigned char cur = lvlBestDecision(c, s, j);
         if (cur == LVL_CAND_NONE) continue;
+        /* The store rule is about a value that carries bytes in a place. A scalar owns none,
+         * so no level comparison can make it unsafe; sighting one here would be the witness
+         * judging something the rule does not cover. */
+        if (!lvlCarriesPlace(c, s->kids[j])) continue;
         if (lvlSeenBefore(c, self, s, j)) continue;
         Lvl a = { c, facts, s->place };
         bool mv = false;
