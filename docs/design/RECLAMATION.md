@@ -797,6 +797,11 @@ reclaim 形状闸门（`gate-shapes`/`gate-work`/`gate-shard-cycles`/`gate-idle-
 | 标记栈高水位 | `EXTC_RC_MARK_STACK_SOFT = 8192`（栈深超限的步改为 pop） | 常量 `:1274`，续扫判据 `:3551` | 16384 条（≤128 KiB 记） |
 | 自由队列排空 | `EXTC_RC_FREE_DEADLINE_US = 40`、`EXTC_RC_FREE_HARD_DEADLINE_US = 50` | `:833` / `:841`，`extc_rc_fqDrainAuto` `:1640-1660` | 50 µs + 一块 slab |
 | 巨块载荷丢页 | `EXTC_RC_BIG_DROP_BYTES = 512 KiB` | `[rt:hugefree]` `:858-940`，`extc_rc_bigTrimStep` `:913`，每步入口 `:1647` | 512 KiB/步（≈6.7 µs） |
+| 标记路径选择（v28） | `EXTC_RC_MARK_SHALLOW_WARM_ONLY = 1`（暖档才走浅栈；阈值复用 `EXTC_RC_MARK_COLD_BYTES`） | 宏 `:3339-3341`，条件 `:3623-3625` | 冷档一步只会走批路（批量 pop ≤32），浅栈单扫不出现在冷档 |
+
+**表里的行号是 v25 口径**（本表写定时的构建）。v28 只在两个位置各插入 3 行发射文本（`:3339-3341` 与 `:3623-3625`），因此 v25 行号换算到 v28 是分段的：**≤3,338 同号；3,339–3,619 加 3；≥3,620 加 6**。逐条对照与绝对锚点见 [`docs/analysis/REFS-V28.md`](../analysis/REFS-V28.md)，不要用单一 offset 平移。
+
+**标记路径由屋顶选**（v28 新增的第七个常量，只影响「哪条路走」，不改变上面任何一条界）：浅栈快路的守卫里多一个合取项 `(int64_t)r->live <= (int64_t)EXTC_RC_MARK_COLD_BYTES`。暖档（活集 ≤16 MiB）一个 pop 是缓存命中，装批的固定开销与推迟去重是纯损失，浅栈单扫更便宜；冷档一个 pop 是 DRAM miss，**装批才把缺页延迟重叠起来**（同一随机链同 134 MB 活集：浅栈 86–91 ns/pop vs 批量 20.5 ns/pop，指令数逐位相同）。两条路径的 pop 上界不变（暖 512 / 冷 32），`walk_max ≤ walk_cap` 逐字仍成立。
 
 三条**硬性理由**写在代码注释里，改常量前先读：
 
@@ -921,6 +926,7 @@ Ir 随阈值 8 → 32 → 64 单调降到 87 823 666，再往上（128 / 256）�
 `shallow drain loop` / `scan loop calls macro` / `scan body shared once` 钉住这几条；拆掉批量的路只留给出问题的形状
 （`gate-mark-locality --selftest` 用 `-DEXTC_RC_MARK_SHALLOW=4000000000u` 把它翻成全单扫，要求
 cache-sim 判据变红）。
+**浅栈快路只在暖档存在**（v28）：条件里多一个合取项 `(int64_t)r->live <= (int64_t)EXTC_RC_MARK_COLD_BYTES`，由 `EXTC_RC_MARK_SHALLOW_WARM_ONLY`（默认 1）包住（发射文本 `src/back/reclaim.c:3623-3625`，宏在 `:3339-3341`）。理由是同一条屋顶：暖 pop 是缓存命中，装批的固定开销与推迟去重都是纯损失；活集过了 16 MiB 之后一个 pop 变成访存，**装批才是重叠缺页延迟的手段**（同一随机链、同 134 MB 活集，浅栈 86–91 ns/pop vs 批量 20.5 ns/pop，指令数逐位相同）。宏置 0 恢复「只看深度」的旧规则，供 A/B 与大 cache 机器使用。
     子对象循环里的同块去重也不再验槽首、也不查 `occ`：只按「包含该地址的槽」查 `mark` 位，省掉
     每个同块子对象一次 `k * s->ss == off` 的乘法校验与一次 `occ` 读。这是安全的：`mark` 位立着 ⇒ 这个槽
     本轮已经黑过，弹栈端会用同一道位挡下；槽空而 `mark` 立着时旧写法的压栈同样只会被弹栈端的 `occ`

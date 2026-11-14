@@ -1516,10 +1516,119 @@ P3 的失败是有价值的：步数不是独立预测出来的，它由 `n = po
 
 #### 6.16.7 对策略的含义（三条，都可执行）
 
-1. **延迟屋顶上 b 的选择由 τ_pop 决定，且必须区分路径**：`b_cold ≤ floor(P_max/τ_pop)`，τ_pop 取该形状实测（本形状 90 ns ⇒ 8 µs 预算给 b ≤ 88，装 32 有 2.8× 余量；但若路径退化成浅栈而 τ_pop 抬到 300 ns 以上，b=32 就会破 8 µs）。判据：**同一 build 上量 τ_pop，再算 b**，不许跨形状借。
+1. **延迟屋顶上 b 的选择由 τ_pop 决定，且必须区分路径**：`b_cold ≤ floor(P_max/τ_pop)`，τ_pop 取该形状实测（本形状 90 ns ⇒ 8 µs 预算给 b ≤ 88，装 32 有 2.8× 余量；但若路径退化成浅栈而 τ_pop 抬到 300 ns 以上，b=32 就会破 8 µs）。判据：**同一 build 上量 τ_pop，再算 b**，不许跨形状借。（v28 起这条警告有机制解：路径由活集选，冷档不再退化成浅栈 —— 见 §6.17。）
 2. **真正的杠杆是 T_LL，不是 b**：τ_pop 的 90 ns 里 88 ns 是访存（§3.12 的发射项只有 2-3 ns）。把随机链的 miss 变成 L3 命中只能靠「活集回到 LLC 覆盖内」；把 DRAM 延迟压下去只能靠**页级放大**（THP/2 MiB 对齐的 slab）——§6.14.7 已证 THP 对 chase 无效（≤0.27% 墙钟），但那是因为 slab 512 KiB 不满足 2 MiB 对齐、THP 根本没形成；本形状给出的是**必须先改分配粒度再谈大页**的证据链，列为下一轮候选（2 MiB 对齐的大块 slab + MADV_HUGEPAGE，判据：τ_pop 下降 ≥30% 且 RSS 增幅 ≤5%）。
 3. **`m` 进模型（式 3.13），并记录它的来源**：`m` 由步形态决定（浅栈 1.0 / 深栈批量 4.8），因此「同一形状改一个编译期开关就换屋顶」是可能的；这也解释了 §6.13 的冷档把 b 压到 32 却只拿到「均值 2.8 µs、尾部不变」的结果。R14 行随之扩展为「`m` 无机制模型」，见 §8.1。
 
+### 6.17 R-A 轮（2026-12-05）：用屋顶判据选标记路径 —— 冷档走批量、暖档走浅栈（v28）
+
+#### 6.17.1 为什么这是一个策略问题，而不是实现细节
+
+§6.16.3 的两条路径是**同一份生成 C 上的一个开关**（`-DEXTC_RC_MARK_SHALLOW=0`）：166 MB 随机链、同一活集，callgrind 三口径（Ir / D1 / LLd）逐位相同，浅栈 0.88–0.93 s（`τ_pop` 86–91 ns，`m=1`），批量 0.37 s（`τ_pop` 20.5 ns，`m≈4.8`）。指令数一样，差的是 **miss 能不能重叠**。
+
+于是「走哪条路」落在策略层：同一个 `b`，路径决定式 3.13 里 `τ_pop` 的取值，四倍差距。屋顶给出的判据很干脆 ——
+
+- **暖档**（活的字节在 `LLC_eff` 8–12 MB 内）：每 pop 是 cache hit，批量的固定成本（数组、四路 min、fill、批扫、延迟去重的 push）是**纯损失**；
+- **冷档**（活的字节过 `LLC_eff`）：每 pop 是一次 DRAM miss，批量是唯一让 miss 重叠的机制（§2.5 延迟梯、§3.11 每对象屋顶）。
+
+这条判据把 §6.16.7 第 1 条从「警告」变成「机制」：那里的原话是「若路径退化成浅栈而 `τ_pop` 抬到 300 ns 以上，b=32 就会破 8 µs」——现在路径由活集决定，不再由栈深决定。
+
+#### 6.17.2 机制（v28：`src/back/reclaim.c` 两处纯插入，共 6 行）
+
+宏区（行 3339–3341）与浅栈判定（行 3623–3625）：
+
+    /* 宏区 */
+    #ifndef EXTC_RC_MARK_SHALLOW_WARM_ONLY
+    #define EXTC_RC_MARK_SHALLOW_WARM_ONLY 1
+    #endif
+
+    /* extc_rc_markStep 的浅栈分支 */
+    if ((size_t)r->msp <= (size_t)EXTC_RC_MARK_SHALLOW && budget > 0
+    #if EXTC_RC_MARK_SHALLOW_WARM_ONLY
+        && (int64_t)r->live <= (int64_t)EXTC_RC_MARK_COLD_BYTES
+    #endif
+    #if EXTC_RC_WORK_BUDGET > 0
+        && wleft > 0
+    #endif
+       ) {
+
+三条性质值得写清楚：
+
+1. **不新开常数**：阈值就是冷档那一个旋钮 `EXTC_RC_MARK_COLD_BYTES`（16 MiB，v25 起）。一个活集只有一个「冷不冷」的答案，路径和每步预算必须用同一个答案，否则两个口径迟早打架（v27 的 R-A 收口正是为了消灭这种不一致）。
+2. **`r->live` 是确定的**：它在 sweep 收尾刷新，恒等于「上一轮标记到的字节数」。路径选择因此不影响 `[work]` 的三跑逐字确定性（`gate-reclaim-work` 的断言），也不读钟。
+3. **0 值退回 v27 行为**：`-DEXTC_RC_MARK_SHALLOW_WARM_ONLY=0` 恢复「只看栈深」，用于 A/B 和**大缓存机器的移植**（§2.5 四步：量 `LLC_eff` → 调 `EXTC_RC_MARK_COLD_BYTES` → 复核 `b_cold ≤ floor(P_max/τ_pop)`）。
+
+生成 C 的证据（暖档形状：`promote`，`diff base.c new.c` 全列，只差预处理文本）：
+
+    2883a2884,2886
+    > #ifndef EXTC_RC_MARK_SHALLOW_WARM_ONLY
+    > #define EXTC_RC_MARK_SHALLOW_WARM_ONLY 1   /* ... */
+    > #endif
+    3158a3162,3164
+    > #if EXTC_RC_MARK_SHALLOW_WARM_ONLY
+    >             && (int64_t)r->live <= (int64_t)EXTC_RC_MARK_COLD_BYTES   /* ... */
+    > #endif
+
+即：暖档形状的机器码只多一条比较（`.text` +32 B，四形状逐形状相同），预处理后的差异只有那个合取项本身。
+
+#### 6.17.3 实测：LAT 形状（冷档，166 MB 活集，`rounds=4`，`taskset -c 6`，`EXTC_RC_PAUSE=1`）
+
+三臂：`base` = HEAD（v27）构建；`ctrl` = v28 生成 C 但 `-DEXTC_RC_MARK_SHALLOW_WARM_ONLY=0`；`v28` = 默认。5 reps 交错，取 min / 中位：
+
+| 臂 | 墙钟 min / 中位（ms）| `[step] total_us`（5 reps）| Σ步时 / pop | `[wbudget] push_max` | RSS（kB）|
+|---|---|---|---|---|---|
+| base | 948 / 974 | 692,623 / 754,165 / 712,883 / 734,900 / 785,328 | 87–98 ns | 0 | 311,972 |
+| ctrl | 948 / 974 | 688,644 / 765,843 / 716,203 / 808,858 / 758,006 | 87–102 ns | 0 | 311,972 |
+| **v28** | **364 / 374** | **169,753 / 194,329 / 175,036 / 213,724 / 171,178** | **21.3–26.8 ns** | **32** | 311,972 |
+
+读法四条：
+
+1. **墙钟 2.60×**（min 948 → 364 ms，中位 974 → 374 ms）。GC 时间从 736 ms 降到 185 ms（均值），折 92.4 → 23.2 ns/pop（4.0×），和 §6.16.3 的 86–91 vs 20.5 ns 同序。
+2. **路径确实切换了**：`push_max` 0 → 32 是批量路径的指纹（浅栈路径不压栈），`[wbudget] pop_max` 仍是 32（冷档 clamp 未动）。`ctrl` 与 `base` 逐项重合，说明差异来自这一条合取项，不来自构建。
+3. **停顿上界不变、单价变了**：均值步时 = `b·τ_pop + c_fix`，由 2.93 µs 降到 0.74 µs（b=32）；`over1ms` 在 v28 两轮里 0，`over64` 由 52–69 降到 7–22。这是「同一个上界下每 pop 变便宜」，不是放宽契约。
+4. **内存不动**：RSS 311,972 kB 逐臂逐 rep 相同（活集 166 MB、`capBytes` 相同；本轮不碰分配/回收路径）。
+
+#### 6.17.4 暖档形状：结构化不变（这是「不退化」的凭证）
+
+四形状（`promote` / `sizeratio` / `chase` / `cycleratio`，`bench/gc/v2` 的 bench 参数）交错各 11 reps，`base` = v27 构建、`v28` = 本轮：
+
+| 形状 | min（base / v28，ms）| min 比 | 中位比 | RSS（base / v28，kB）|
+|---|---|---|---|---|
+| promote | 37 / 38 | 0.974 | 0.975 | 5,536 / 5,540 |
+| sizeratio | 17 / 17 | 1.000 | 0.944 | 2,656 / 2,660 |
+| chase | 113 / 113 | 1.000 | 0.983 | 65,444 / 65,440 |
+| cycleratio | 16 / 16 | 1.000 | 1.000 | 2,660 / 2,656 |
+
+中位比的 1 ms 颗粒度来自 `date +%s%N` 的毫秒取整；min 逐形状相同、RSS 逐形状相同、机器码只多一条恒真比较（暖档 `r->live` 3.4 MB / 1 MB / 63 MB 里 chase 的 63 MB 是触发阈值 `thr` 不是活集）⇒ 暖档的结论是**结构化不变**，不是「测不出来」。
+
+#### 6.17.5 跨语言横评（v28 构建，`bench/gc/v2/run.sh bench --lang "extc cpp rust"`，`REPS=7`、`PIN=6`）
+
+| 形状 | extC min（ms）| 最快的对手 min | 对手 | extC 相对 | RSS（extC / 对手，kB）|
+|---|---|---|---|---|---|
+| promote | **37.750** | 36.446 | rust:default | 0.97× | 7,624 / 7,792 |
+| sizeratio | **16.638** | 17.531 | cpp:careful | 1.05× | 7,744 / 7,676 |
+| chase | **111.194** | 105.340 | cpp:careful | 0.95× | 65,444 / 77,632 |
+| cycleratio | **15.066** | 17.452 | rust:careful | 1.16× | 7,612 / 7,564 |
+
+与 §6.2 的 v25 口径逐形状同号（差异在 ±3% 噪声带）；`extc:off` 四臂 65.4 / 54.1 / 95.2 / 21.9 ms、RSS 109.6 / 157.9 / 62.1 / 44.5 MB —— 这四形状的活集都在 16 MiB 以下，v28 不改变它们的路径。**横评里没有冷档形状**，冷档的对比对象是 §6.16 的 LAT 通道与「关回收」臂；这正是 R-C 把 LAT 形状放进 `tests/gc-p0` 的理由。
+
+#### 6.17.6 契约与门禁
+
+| 项 | v27 | v28 | 判据 |
+|---|---|---|---|
+| `[wbudget] pop_max`（LAT）| 32 | 32 | ≤ 512（`EXTC_RC_MARK_STEP_POP_MAX`）|
+| `[wbudget] push_max`（LAT）| 0 | 32 | ≤ 8,448（`EXTC_RC_MARK_PUSH_STEP`）|
+| `[wbudget] mscap_max`（LAT）| 16,384 | 16,384 | ≤ 16,384（`EXTC_RC_MARK_STACK_SOFT`）|
+| 均值步时（LAT，b=32）| 2.93 µs | 0.74 µs | `b·τ_pop(W) + c_fix`，`W` = 活集 |
+| RSS（LAT）| 311,972 kB | 311,972 kB | 逐形状不变 |
+
+门禁侧：`tools/check_mark_batch.py` 新增 `warm-only path selector` 断言（宏定义 + `#if` 守卫 + 合取项三件都在）与两条变异（把合取项换成 `&& 1`、把 `#if` 守卫删掉都必须红），`--selftest` 通过；LAT-a..e 由 `tests/gc-p0/run.sh` 照旧判（判据未动）。
+
+#### 6.17.7 边界（三条，都写在这里以免被当成普适承诺）
+
+1. **阈值即冷档阈值，只对本机的 `LLC_eff` 成立**：16 MiB 门槛在 LLC 更大的机器上会把「暖但 20–30 MB」的活集判成冷档；后果是仍正确、但白付批量的固定成本（指令数相同，损失只在这一项的常数里）。移植按 §2.5 四步重标，`-D...=0` 是退路。
+2. **`r->live` 是上一轮的标记量**：堆刚长大后的第一轮标记仍按旧值选路径（可能先走一次浅栈），第二轮起正确。与冷档 clamp 的语义完全一致，不是新引入的偏差。
+3. **它不改 Ir、不改 RSS、不改停顿上界**：改的是同一上界下每 pop 的单价。所以 `λ(r)` 不因这一轮下降 —— 下降的是冷档形状的墙钟，以及「路径退化把 `τ_pop` 抬到 300 ns」这个风险（§6.16.7 第 1 条）。
 ## §7 门禁（Gate）：判据、量具、before / after
 
 门禁的用处不是「证明程序对」，而是**把契约变成可自动判定的句子**：每一条都写死「量具 + 判据 + 口径」，避免出现「实测 106 µs 也算通过」这种自欺。全部跑在既有 harness（`tests/reclaim-perf/gate.sh` 六项 + `tests/gc-p0/run.sh`）上，不需要新依赖。**after 列的构建口径（逐行标注）**：`p1-after` = v7 同轮产物集（`tests/gc-p0/out/p1-after/`，构建 `build-emp3/extc 07b7be1a…`）；`v7` = `build-p1/extc b9fd5784…`；G20-P0 单列 P0 轮（`build-rf/extc 7019342b…`）。跨构建的绝对计时允许 ±5–15% 差（§6.7.6），判据只看方向与阈值；任何一行换构建都必须重标尾号，不得混用。
@@ -1573,6 +1682,7 @@ P3 的失败是有价值的：步数不是独立预测出来的，它由 `n = po
 | R13 | 段步（`seg>0`）的 `max` 尾部 —— **已归因，但只对 `chunk=8192` 的 58–329 µs 成立**（task-32，`P1-STEP-TAIL.md`）：① **环境抢占**为主（`minflt=0`、单次停顿集中在 1 个 4 KiB 子块、邻块 0.1–0.7 µs；纯指针遍历对照在同一核复现 rate 2e-5/子块）；② `chase` 是**对象冷页缺页**（`minflt=16–49`，100–143 µs）；③ `promote`/`pd_dense` 的 256-pop 批是**真实工作量**（60–230 µs，0.6–1.9 µs/pop）。**未测**：小 chunk 的 871 µs（§6.7.1 观测，无归因实验） | 「单步 max」对续扫段不可契约化：本机 `CLOCK_THREAD_CPUTIME_ID` 把被抢占时间计入 CPU（doc-audit 独立重跑 control2：cpu/tick = **84.0/85.1/93.7%**，报告原写 70–80% 是保守值）⇒ `cpu_us≈dur_us` 不能当「这是 GC 工作」；对照的 worst 870–2345 µs 是**高负载时刻**观测，空载机 458–522 µs ⇒ 引用时必须同时给 load 与时间戳（C8）。因此 G1②(b) 只判 p99.9 与 `over-1ms=0`、`max` 只作诊断；`chunk` 调小压不低这条尾部（task-26 已证） |
 | R14 | `tau_pop` 的发射项只做到「可算的下界 + 相加假设」：`τ_pop = Ir_pop/Ir_per_s + β·T_LL` 里的 beta（依赖指针密度）只有五个形状的观测（0.07-0.69），没有机制模型；单用 `tau_issue` 预测 tau_pop 的 ±20% 判据只 1/5 成立（§3.12） | 模型能证明「发射项存在且是下界」，不能逐形状预测 tau_pop；`c_t = tau_pop/s̄` 的形状依赖仍靠实测 | U：beta 由「依赖指针密度 × MLP」推出来（需再标定 MLP 与 miss 的重叠度）；`tau_issue` 的 IPC×f 反推未做（CALIBRATION §15 限制 2） |
 | R15 | **延迟屋顶的单 pop 尾部无机制模型**：随机链上 `P_step` 的 p99.9 落在 64-128 µs 桶（gt64 率 1.9-2.4e-4），且 b=1 时仍有 5/2.44M 步 >64 µs（max 126.7 µs）⇒ 尾部是「单次 pop 的走表/页错误级代价」，与 b 无关；缩小 footprint（1M node/32 MB）率降到 0.8-1.2e-4 但没有干净消失 ⇒ **不能唯一归因 TLB** | 「停顿有界」在延迟屋顶上只能承诺均值（b=32 实测 2.80 µs）＋尾部率，不能承诺 p99.9 ≤ 10 µs；跨机移植时该率会变 | 下一轮候选：2 MiB 对齐的大块 slab + `MADV_HUGEPAGE`（判据：τ_pop 降 ≥30% 且 RSS 增幅 ≤5%）；LAT-d 只判 `over1ms=0`（min-over-reps），删除「max ≤ 50 µs」在这类形状上的任何表述 |
+| R16 | 路径选择的阈值复用了冷档阈值（16 MiB = 本机 LLC_eff 的 1.3-2x），单机标定 | 在 LLC 更大的机器上，16-32 MiB 的活集会被判成冷档：结果仍正确（指令数相同），但白付批量的固定成本；反之在 LLC 更小的机器上会漏判 | 移植按 §2.5 四步重标 `LLC_eff` 与 `EXTC_RC_MARK_COLD_BYTES`；`-DEXTC_RC_MARK_SHALLOW_WARM_ONLY=0` 可退回只看栈深（§6.17.7）|
 
 ### 8.2 实现侧（已修 / 未修）
 
@@ -1786,6 +1896,10 @@ taskset -c 6 /tmp/markcost 16 3 6       # 16 MB 活集、3 reps、pin core 6
     cc -O2 -std=c11 -fwrapv -D_POSIX_C_SOURCE=200809L -o /tmp/lat/rand /tmp/lat/rand.c
     taskset -c 6 env EXTC_RC_PAUSE=1 /tmp/lat/rand 4 2>&1 >/dev/null | grep -E "step|histo|wbudget"
     taskset -c 6 env EXTC_RC_PAUSE=1 /tmp/lat/rand 4 s 2>&1 >/dev/null | grep -E "step|histo|wbudget"   # 顺序对照
+
+    # 路径选择对照（§6.17）：v28 生成 C 上加 -DEXTC_RC_MARK_SHALLOW_WARM_ONLY=0 回到 v27 行为
+    cc -O2 -std=c11 -fwrapv -D_POSIX_C_SOURCE=200809L -DEXTC_RC_MARK_SHALLOW_WARM_ONLY=0 -o /tmp/lat/rand_v27 /tmp/lat/rand.c
+    for r in 1 2 3 4 5; do for a in rand rand_v27; do /usr/bin/time -f %e taskset -c 6 /tmp/lat/$a 4 >/dev/null; done; done   # v28 ~0.37 s vs v27 ~0.95 s
 
     # 路径切换对照（§6.16.3）：同源码只加 -DEXTC_RC_MARK_SHALLOW=0
     cc -O2 -std=c11 -fwrapv -D_POSIX_C_SOURCE=200809L -DEXTC_RC_MARK_SHALLOW=0 -o /tmp/lat/rand_deep /tmp/lat/rand.c

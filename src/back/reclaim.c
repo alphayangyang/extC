@@ -3336,6 +3336,9 @@ static const char *const RECLAIM_RT[] = {
     "#ifndef EXTC_RC_MARK_SHALLOW\n",
     "#define EXTC_RC_MARK_SHALLOW 64\n",
     "#endif\n",
+    "#ifndef EXTC_RC_MARK_SHALLOW_WARM_ONLY\n",
+    "#define EXTC_RC_MARK_SHALLOW_WARM_ONLY 1   /* the shallow fast path is a warm-tier optimization: when a pop is a cache hit, the batch fixed cost and the deferred-dedup pushes are pure loss. Once the live set is past EXTC_RC_MARK_COLD_BYTES a pop is a DRAM miss, and batching is what overlaps those misses (same instruction count: 86-91 ns/pop shallow vs 20.5 ns/pop batched). 0 restores the depth-only rule, for A/B and for machines whose cache is much larger than this one. */\n",
+    "#endif\n",
     "/* Segment the scan of large objects: when one object holds very many pointers (a large array field, or a struct whose length is only known at run time),\n",
     " * scanning it is **single-step indivisible** work -- the single-step pause is proportional to object length. Segment it by EXTC_RC_SCAN_CHUNK:\n",
     " * this step walks one segment, records the position in the region cursor, and the next full step continues with another segment.\n",
@@ -3617,6 +3620,9 @@ static const char *const RECLAIM_RT[] = {
      * objects accumulate. Draining in the loop also avoids re-evaluating the while and
      * shallow-stack conditions in the outer loop after every pop. */
     "        if ((size_t)r->msp <= (size_t)EXTC_RC_MARK_SHALLOW && budget > 0\n",
+    "#if EXTC_RC_MARK_SHALLOW_WARM_ONLY\n",
+    "            && (int64_t)r->live <= (int64_t)EXTC_RC_MARK_COLD_BYTES   /* roof picks the path: a warm pop is a cache hit (batch fixed cost is pure loss), a cold pop is a DRAM miss (batching overlaps it) */\n",
+    "#endif\n",
     "#if EXTC_RC_WORK_BUDGET > 0\n",
     "            && wleft > 0\n",
     "#endif\n",

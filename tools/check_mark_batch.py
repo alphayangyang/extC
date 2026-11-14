@@ -115,6 +115,13 @@ def violations(text):
         'inline scan allowance': ('size_t _scanLeft = (size_t)EXTC_RC_SCAN_CHUNK;' in text and
                                   'if (words > _scanLeft) {' in text and '_scanLeft -= words;' in text),
         'mark stack soft cap': ('#ifndef EXTC_RC_MARK_STACK_SOFT' in text and '#define EXTC_RC_MARK_STACK_SOFT' in text),
+        # R28：路径由屋顶决定。活集过了冷档阈值以后**不再**走浅栈快路（串行指针链，m=1，τ_pop 86-91 ns），
+        # 改走批量路径让 miss 重叠（m≈4.8，τ_pop 20.5 ns）——两条路径的指令数逐位相同（§6.17），
+        # 差的只是 miss 能不能重叠。阈值就是冷档那一个旋钮 EXTC_RC_MARK_COLD_BYTES，不另开常数。
+        'warm-only path selector': ('#ifndef EXTC_RC_MARK_SHALLOW_WARM_ONLY' in text and
+                                    '#define EXTC_RC_MARK_SHALLOW_WARM_ONLY 1' in text and
+                                    '#if EXTC_RC_MARK_SHALLOW_WARM_ONLY' in text and
+                                    '&& (int64_t)r->live <= (int64_t)EXTC_RC_MARK_COLD_BYTES' in text),
         # 描述符续扫：cursor 的第二种索引（0 = 保守词，1 = 字段）必须两条都能走，否则长描述符又回到一步扫完。
         'descriptor cursor': ('int32_t     scanDesc;' in text and 'if (r->scanDesc) {' in text and
                               'r->scanOff = (uint32_t)(st + walked);' in text),
@@ -178,6 +185,7 @@ def main():
                       'if (words > _scanLeft) {',
                       '_scanLeft -= words;',
                       '#define EXTC_RC_MARK_STACK_SOFT',
+                      '#if EXTC_RC_MARK_SHALLOW_WARM_ONLY',
                       'int32_t     scanDesc;',
                       '#define EXTC_RC_FREE_HARD_DEADLINE_US 50',
                       'extc_rc_markResume(r);',
@@ -216,6 +224,10 @@ def main():
         nosoft = text.replace('if (r->scanObj && (size_t)r->msp <= (size_t)EXTC_RC_MARK_STACK_SOFT) {', 'if (r->scanObj) {')
         assert 'resume handled at entry' in violations(nosoft)
         print('ok red: resume ignores mark stack soft cap')
+        # 路径选择退回「只看栈深」（冷档又走浅栈串行链）必须红：那是本轮修掉的性能洞。
+        warmoff = text.replace('&& (int64_t)r->live <= (int64_t)EXTC_RC_MARK_COLD_BYTES', '&& 1')
+        assert 'warm-only path selector' in violations(warmoff)
+        print('ok red: path selector ignores the live set')
         # 每步 pop 硬上限被删掉（压力档回到 1024）必须红。
         nocap = text.replace('budget > (size_t)EXTC_RC_MARK_STEP_POP_MAX) budget = (size_t)EXTC_RC_MARK_STEP_POP_MAX', 'budget > 0) budget = budget')
         assert 'step pop cap' in violations(nocap)

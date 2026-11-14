@@ -41,6 +41,7 @@
 
 > **行号口径（v24 = 自动路径块级归还，当前工作树，2026-12-01）**：src/back/reclaim.c = `711d2b02ade155be40b52508cf784397`（**4,506 行**）、src/back/codegen.c = `cc01b5f4216ea5c8d9fde77c47c41f24`（16,212 行，未改）、tests/reclaim/driver.c = `28dd4009ac7207f47e581a697c0d421f`（1,637 行，未改）、build/extc = `effe8fe2f4330ea878347d4c6c54b2a1`。相对 v23：reclaim.c 净 −1 行（删 `shrinkDue` 字段与三处使用 −5、`capBytes` 记账去 `#if` −2、新宏与 slack 早退 +5、调换调用点 +3）。**v23→v24 的 11 个 hunk、分段换算表与绝对锚点见 `docs/analysis/REFS-V24.md`**；本文件与 GC-ROOFLINE.md 的旧行号仍按 v17/v18 保留（禁止机械平移），v21 起新增内容用当日绝对行号并标版本。机制/实测/判据：§19.7（v21 量具）、§19.8（v22/v24 块级归还）、§19.9（v23 页级归还）、§19.10（v24 自动路径）与 GC-ROOFLINE.md §6.9–§6.12。
 > **行号口径（v25 = R7 停顿契约，当前工作树，2026-11-14）**：`src/back/reclaim.c` = `0b91d96ee08ff5e2589136ca313aee4f`（**4,658 行**）、`src/back/codegen.c` = `3ae6e499b6a2d64668ff1daf2eed26a2`（16,222 行；描述符长度上限 4096 → **32**）、`tests/reclaim/driver.c` = `28dd4009ac7207f47e581a697c0d421f`（1,637 行，未改）、`build/extc` = `11d39dee4a6481b9e003591ac4e57cc9`。相对 v24（4,506 行）：新增 `[rt:hugefree]` 发射块（858–940，84 行）、步内扫描额度与标记栈软上限、pop/push 高水位计数与 `[wbudget]` 三个新字段、冷档 128 → 32、free 队列 40/50 µs。**v24→v25 的 37 个 hunk、分段换算表与绝对锚点见 `docs/analysis/REFS-V25.md`**；本文件旧行号仍按 v17/v18 保留（禁止机械平移），v21 起新增内容用当日绝对行号并标版本。机制/实测/判据：§19.11 与 `GC-ROOFLINE.md` §6.13。
+> **行号口径（v28 = R-A 路径选择，当前工作树，2026-12-05）**：`src/back/reclaim.c` = `7a157eb5d30bb3b71b67c41eea1c6f07`（**4,664 行**，v25 起 +6）、`src/back/codegen.c` = `3ae6e499b6a2d64668ff1daf2eed26a2`（16,222 行，未改）、`tests/reclaim/driver.c` = `28dd4009ac7207f47e581a697c0d421f`（1,637 行，未改）、`build/extc` = `e742e423dd5b901cf0405f5beb3a4cb7`。相对 v25 只有两处**纯插入**（`+3` 行在宏区 3339–3341、`+3` 行在浅栈判定 3623–3625）⇒ **v25 与 v28 行号不可混用**；分段换算与绝对锚点见 `docs/analysis/REFS-V28.md`，核对一律按符号 grep，禁止机械平移。
 
 ---
 
@@ -1199,6 +1200,61 @@ H5 的依据是实测的物理常数（`/tmp/ctl/unmap2.c`，`taskset -c 6`）�
 
 ①`push_max` 只覆盖批路：保守内联与段扫路径的 push 由扫描额度（≤8192 词/步）间接封顶，未逐条计数，故 `push_max` 是下界而非全量。②冷档 32 让 `pd_pointer_dense` 步数 ×4、总步时 +5%，这是「冷 pop 约 1 µs」的必然代价。③`bseg-cal.tsv` 的 `c_seg` 标定仍是 v9 口径（`src_md5` 陈旧，每跑 gate 都打印重标定提示）。④`M_slab ≈ 69 kB` 与 8 MiB slack 两条容量常数照旧（§19.9–§19.10）。
 
+### 19.12 标记路径由屋顶选：冷档批量、暖档浅栈（v28 新增）
+
+#### 19.12.1 为什么它是「停顿契约」的一部分
+
+§19.6 的冷档把每步 `b` 压到 32，是为了让巨活集形状的**单步**回到契约内。但同一份生成 C 上还有第二个旋钮：一步里 pop 出来的对象**怎么扫**——浅栈快路（一次 pop 一个，串行指针链）还是批量路径（先攒一批再扫，让 payload 的 miss 重叠）。R-C 的延迟屋顶实测（`GC-ROOFLINE.md` §6.16.3）把这件事定量了：166 MB 随机链、**同一活集**、callgrind 三口径（Ir / D1 / LLd）逐位相同，
+
+- 浅栈：0.88–0.93 s，`τ_pop` 86–91 ns，`m=1`（一次只有一个 miss 在飞）；
+- 批量：0.37 s，`τ_pop` 20.5 ns，`m≈4.8`（一批 miss 同时在飞）。
+
+指令数一样，差的是 miss 能不能重叠。于是「走哪条路」决定式 §19.4 里 `P_step ≤ b_eff·τ_t + c_fix` 的 `τ_t`，四倍差距；它和 `b` 一样属于停顿契约，而不是实现细节。
+
+#### 19.12.2 机制（v28，`src/back/reclaim.c` 两处纯插入共 6 行）
+
+| 位置 | 行（v28）| 内容 |
+|---|---|---|
+| 宏区 | 3339–3341 | `EXTC_RC_MARK_SHALLOW_WARM_ONLY`，默认 1；`#endif` 后接既有 `EXTC_RC_MARK_COLD_BYTES`（16 MiB）/`EXTC_RC_MARK_COLD_BATCH`（32）|
+| `extc_rc_markStep` 浅栈判定 | 3623–3625 | `#if EXTC_RC_MARK_SHALLOW_WARM_ONLY` / `&& (int64_t)r->live <= (int64_t)EXTC_RC_MARK_COLD_BYTES` / `#endif` |
+
+三条性质：
+
+1. **不新开常数**：阈值就是冷档那一个旋钮 `EXTC_RC_MARK_COLD_BYTES`（16 MiB，v25 起）。一个活集只有一个「冷不冷」的答案，路径与每步预算必须用同一个答案。
+2. **`r->live` 是确定的**：sweep 收尾刷新，恒等于上一轮标记到的字节数 ⇒ 路径选择不影响 `[work]` 的三跑逐字确定性（`gate-reclaim-work` 的断言），也不读钟。
+3. **0 值退回 v27 行为**：`-DEXTC_RC_MARK_SHALLOW_WARM_ONLY=0` 用于 A/B 与大缓存机器移植（`GC-ROOFLINE.md` §2.5 四步）。
+
+#### 19.12.3 契约（形状）
+
+| 项 | 式 | 判据（无钟计数）|
+|---|---|---|
+| 单步 pop 上界 | `pops_step ≤ b_eff ≤ 512` | `[wbudget] pop_max ≤ 512`（LAT 实测 32）|
+| 单步 push 上界 | `pushes_step ≤ 8,448` | `[wbudget] push_max ≤ 8,448`（LAT 实测 32；浅栈路径为 0）|
+| 标记栈高水位 | `msp_max ≤ 16,384` | `[wbudget] mscap_max` |
+| 单步时间 | `P_step ≤ b_eff·τ_pop(W) + c_fix`，`W` = 活集 | 均值 + 尾部率（LAT 通道）；`W > LLC_eff` 时 `τ_pop` 取批量值 |
+
+`b_eff` 与路径都由 `W = r->live` 决定：`W ≤ 16 MiB` ⇒ 暖档 `min(b,1024)` + 浅栈；`W > 16 MiB` ⇒ 冷档 `min(b,32)` + 批量。两条都是「同一个上界下的单价」，不是放宽。
+
+#### 19.12.4 实测（v28，`build/extc` = `e742e423…`，`taskset -c 6`）
+
+| 量 | v27（HEAD）| v28 |
+|---|---|---|
+| LAT 墙钟 min / 中位（166 MB 活集，rounds=4）| 948 / 974 ms | **364 / 374 ms**（2.60×）|
+| LAT `[step] total_us`（5 reps）| 692,623–785,328 | **169,753–213,724** |
+| LAT Σ步时 / pop | 87–98 ns | **21.3–26.8 ns** |
+| LAT 均值步时（`b=32`）| 2.93 µs | **0.74 µs** |
+| LAT `push_max` / `pop_max` / `mscap_max` | 0 / 32 / 16,384 | 32 / 32 / 16,384 |
+| LAT RSS | 311,972 kB | 311,972 kB（不变）|
+| 暖档四形状（min 比 base/v28）| — | promote 0.974、sizeratio 1.000、chase 1.000、cycleratio 1.000（11 reps 交错）|
+| 暖档四形状 RSS | — | 逐形状相同（5,536 / 2,656 / 65,444 / 2,660 kB）|
+
+暖档形状的生成 C 只多 8 行预处理文本（`diff` 全列见 `GC-ROOFLINE.md` §6.17.2），机器码 `.text` +32 B 逐形状相同 ⇒ 「不退化」是结构性的，不是测不出来。
+
+#### 19.12.5 边界（三条）
+
+1. **阈值即冷档阈值，只对本机 `LLC_eff`（8–12 MB）成立**：16 MiB 门槛在 LLC 更大的机器上会把「暖但 20–30 MB」的活集判成冷档 ⇒ 仍正确，但白付批量固定成本（指令数相同，损失只在该项常数里）。移植按 `GC-ROOFLINE.md` §2.5 四步重标，`-D...=0` 是退路。
+2. **`r->live` 是上一轮的标记量**：堆刚长大后的第一轮仍按旧值选路径，第二轮起正确；与冷档 clamp 的语义完全一致，不是新偏差。
+3. **它不改 Ir、不改 RSS、不改停顿上界**：改的是同一上界下每 pop 的单价。所以 `λ(r)` 不因这一轮下降 —— 下降的是冷档形状的墙钟，以及「路径退化把 `τ_pop` 抬到 300 ns、`b=32` 破 8 µs」的那个风险（`GC-ROOFLINE.md` §6.16.7 第 1 条）。
 ## §20 与仓库既有文档的不一致清单（口径必须按本节改）
 
 完整 90 条对账在 `docs/analysis/DOC-AUDIT.md`；这里只列"会误导读者/会误导优化决策"的 10 条。
