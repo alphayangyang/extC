@@ -1,0 +1,10 @@
+deg max=114 at=808 sources=896 sinks=710 sum=8000
+q 943 reach=16 sum=56888 maxdep=6
+q 1607 reach=18 sum=93163 maxdep=8
+q 1497 reach=4 sum=11063 maxdep=3
+q 269 reach=16 sum=72780 maxdep=7
+tot edges=2000 nodes=2000 queries=4 reach=54 sum=233894
+sets union=28 inter=0
+setsum=27205
+cov nodes=28 max=3 at=308 full=0
+covsum=1973

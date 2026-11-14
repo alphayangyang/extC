@@ -1,0 +1,49 @@
+/* t10_alias_slots.extc --- 槽位/别名安全（计数档 + 清扫档两跑）。
+ * 形状：① 参数槽被覆盖后旧别名不得复活；② pool 句柄在 clear/rebuild 后必须读不到；
+ *   ③ copyInto 覆盖含引用元素。判据：stdout 逐字固定（任何"读到别人的值"都会改变数字），
+ *   退出码 0，ASan 干净。runner 用 -DEXTC_RC_NOCOUNT=0 -DEXTC_RC_SWEEPFREE=0 强制计数档再跑一遍。 */
+use std::io
+use std::data::pool
+
+struct node { v: i64 }
+struct item { r: mut ref node }
+
+fn clobber(p: mut ref node) {
+    p = new node
+    p.v = 0
+}
+
+fn main() -> i32 {
+    var a = new node
+    a.v = 42424242
+    clobber(a)
+    var b = new node
+    b.v = 999
+    a.v = 111
+    var alias_ok: i64 = 0
+    if b.v == 999 { alias_ok = 1 }
+
+    var p: pool<i64> = pool<i64>::withCap(8)
+    var h0 = p.insert(7)
+    var h1 = p.insert(9)
+    var got0: i64 = p.get(h0) ?? -1
+    var rm: bool = p.remove(h0)
+    var stale: i64 = p.get(h0) ?? -1
+    var reinsert = p.insert(11)
+    var after0: i64 = p.get(h0) ?? -1
+    var live1: i64 = p.get(h1) ?? -1
+
+    var buf: mut slice<item> = new item[2]
+    var src: mut slice<item> = new item[2]
+    var n1 = new node
+    n1.v = 5
+    var n2 = new node
+    n2.v = 6
+    src[0].r = n1
+    src[1].r = n2
+    copyInto<item>(buf, src, 2)
+    var cs: i64 = buf[0].r.v + buf[1].r.v
+
+    io::cout << "T10 alias=" << alias_ok << " b=" << b.v << " got0=" << got0 << " rm=" << rm << " stale=" << stale << " after0=" << after0 << " live1=" << live1 << " cs=" << cs << "\n"
+    return 0
+}

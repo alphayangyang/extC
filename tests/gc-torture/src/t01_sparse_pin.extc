@@ -1,0 +1,94 @@
+/* t01_sparse_pin.extc --- 稀疏活集钉住容量（第 4 项的残留面）。
+ * 形状：两阶段。
+ *   ① 峰值：建一条 m 结点的**双向**链（全程可从局部根到达 ⇒ 真活集 = m*24 B），
+ *      同时每 k 个结点另建一个**独立**的 keeper（不参与链），放进 h.keep（64 个根）；
+ *      链贯穿几十个 slab，keeper 也随之散布。
+ *   ② 崩塌：链头 next 置 null、链尾根置 null ⇒ 4M 结点全部不可达（双向环 ⇒ 计数档也回收
+ *      不了，只能清扫）；活集只剩 64 个孤立 keeper（≈1.5 KiB）。然后 rings 轮短命环垃圾。
+ * 判据：(a) 末态 RSS 不随 rings 上涨；(b) 末态 RSS <= 40 MiB（容量归还：
+ *   64 个各含 1 个活对象的 slab 头 ≈69 kB/块 + 各 1 页；(c) sum 校验 keeper 值。
+ * argv[1]=m 默认 4000000，argv[2]=rings 默认 400。 */
+use std::io
+
+fn parseN(args: slice<slice<u8>>, idx: i64, dflt: i64) -> i64 {
+    if args.len <= idx { return dflt }
+    var s: slice<u8> = args[idx]
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    if v > 0 { return v }
+    return dflt
+}
+
+struct node { v: i64  next: ?mut ref node  prev: ?mut ref node }
+struct holder { keep: [64]?mut ref node }
+struct world { cur: ?mut ref node  made: i64 }
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var m: i64 = parseN(args, 1, 4000000)
+    var rings: i64 = parseN(args, 2, 400)
+    var k: i64 = m / 64
+    var h: holder
+    var w: world
+    var head = new node
+    head.v = 0
+    var cur: ?mut ref node = head
+    var i: i64 = 1
+    var kept: i64 = 0
+    while i < m {
+        if cur == null { break }
+        var p = new node
+        p.v = i
+        (*cur).next = p
+        p.prev = cur
+        cur = p
+        if i % k == 0 {
+            var kp = new node        // 独立 keeper：不入链
+            kp.v = 0 - i
+            h.keep[kept] = kp
+            kept = kept + 1
+        }
+        i = i + 1
+    }
+    head.next = null                 // ① 断头
+    cur = null                       // ② 断尾根：中间结点只剩彼此的 prev/next 互指
+
+    var r: i64 = 0
+    while r < rings {
+        var a = new node
+        a.v = r
+        var b = new node
+        b.v = 0 - r
+        a.next = b
+        b.next = a
+        var last: mut ref node = b
+        var j: i64 = 0
+        while j < 4096 {
+            var q = new node
+            q.v = j
+            (*last).next = q
+            last = q
+            j = j + 1
+        }
+        (*last).next = a             // 闭合成环 ⇒ 只能清扫
+        w.cur = a
+        w.made = w.made + 4098
+        r = r + 1
+    }
+
+    var sum: i64 = 0
+    var c: i64 = 0
+    while c < 64 {
+        var p: ?mut ref node = h.keep[c]
+        if p != null { sum = sum + (*p).v }
+        c = c + 1
+    }
+    io::cout << "T01 m=" << m << " rings=" << rings << " kept=" << kept << " made=" << w.made << " sum=" << sum << "\n"
+    return 0
+}

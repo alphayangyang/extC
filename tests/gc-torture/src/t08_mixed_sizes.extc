@@ -1,0 +1,96 @@
+/* t08_mixed_sizes.extc --- 8 个 size class 同时 churn + 少量散布活对象。
+ * 形状：每轮按固定比例分配 8 种大小的结点（16/32/48/64/96/128/192/384 B），其中每 1000 个
+ *   留 1 个在 h.keep；轮末 sum 校验。判据：(a) 精确 stdout；(b) 末态 RSS <= 24 MiB 且
+ *   4 倍轮次不涨（size-class 链、availPrev 摘链、classSlot 修正这些路径全被打到）。
+ * argv[1]=rounds 默认 400，argv[2]=per round 默认 20000。 */
+use std::io
+
+fn parseN(args: slice<slice<u8>>, idx: i64, dflt: i64) -> i64 {
+    if args.len <= idx { return dflt }
+    var s: slice<u8> = args[idx]
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    if v > 0 { return v }
+    return dflt
+}
+
+struct s16 { a: i64  b: i64 }
+struct s32 { a: i64  b: i64  c: i64  d: i64 }
+struct s48 { a: i64  b: i64  c: i64  d: i64  e: i64  f: i64 }
+struct s64 { a: i64  b: i64  c: i64  d: i64  e: i64  f: i64  g: i64  h: i64 }
+struct s96 { a: [12]i64 }
+struct s128 { a: [16]i64 }
+struct s192 { a: [24]i64 }
+struct s384 { a: [48]i64 }
+struct holder { k1: [128]?mut ref s16  k2: [128]?mut ref s32  k3: [128]?mut ref s48  k4: [128]?mut ref s64 }
+struct holder2 { k5: [128]?mut ref s96  k6: [128]?mut ref s128  k7: [128]?mut ref s192  k8: [128]?mut ref s384 }
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var rounds: i64 = parseN(args, 1, 400)
+    var per: i64 = parseN(args, 2, 20000)
+    var h: holder
+    var h2: holder2
+    var kept: i64 = 0
+    var r: i64 = 0
+    var sum: i64 = 0
+    while r < rounds {
+        var i: i64 = 0
+        while i < per {
+            var m: i64 = i % 8
+            var keepit: bool = i % 1000 == 0
+            var slot: i64 = (i / 1000) % 128
+            if m == 0 {
+                var o = new s16
+                o.a = i
+                sum = sum + o.a % 5
+                if keepit { if slot < 128 { if kept < 128 * 8 { h.k1[slot % 128] = o  kept = kept + 1 } } }
+            } else if m == 1 {
+                var o = new s32
+                o.d = i
+                sum = sum + o.d % 5
+                if keepit { if slot < 128 { h.k2[slot] = o } }
+            } else if m == 2 {
+                var o = new s48
+                o.f = i
+                sum = sum + o.f % 5
+                if keepit { if slot < 128 { h.k3[slot] = o } }
+            } else if m == 3 {
+                var o = new s64
+                o.h = i
+                sum = sum + o.h % 5
+                if keepit { if slot < 128 { h.k4[slot] = o } }
+            } else if m == 4 {
+                var o = new s96
+                o.a[11] = i
+                sum = sum + o.a[11] % 5
+                if keepit { if slot < 128 { h2.k5[slot] = o } }
+            } else if m == 5 {
+                var o = new s128
+                o.a[15] = i
+                sum = sum + o.a[15] % 5
+                if keepit { if slot < 128 { h2.k6[slot] = o } }
+            } else if m == 6 {
+                var o = new s192
+                o.a[23] = i
+                sum = sum + o.a[23] % 5
+                if keepit { if slot < 128 { h2.k7[slot] = o } }
+            } else {
+                var o = new s384
+                o.a[47] = i
+                sum = sum + o.a[47] % 5
+                if keepit { if slot < 128 { h2.k8[slot] = o } }
+            }
+            i = i + 1
+        }
+        r = r + 1
+    }
+    io::cout << "T08 rounds=" << rounds << " per=" << per << " kept=" << kept << " sum=" << sum << "\n"
+    return 0
+}

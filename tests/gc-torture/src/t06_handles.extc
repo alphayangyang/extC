@@ -1,0 +1,77 @@
+/* t06_handles.extc --- pool 句柄跨扩容/删除（换代检查）+ 稠密前缀。
+ * 形状：每轮向 pool<i64> 插 per 个、按 1/391 留一批句柄、再删它们；删除后重读必须给 none
+ *   （读到别人的值就是 bug）；同时按 dense 顺序求和。判据：精确 stdout（含 stale=0）。
+ * argv[1]=rounds 默认 8，argv[2]=per round 默认 200000。 */
+use std::io
+use std::data::pool
+
+fn parseN(args: slice<slice<u8>>, idx: i64, dflt: i64) -> i64 {
+    if args.len <= idx { return dflt }
+    var s: slice<u8> = args[idx]
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    if v > 0 { return v }
+    return dflt
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var rounds: i64 = parseN(args, 1, 8)
+    var per: i64 = parseN(args, 2, 200000)
+    var p: pool<i64> = pool<i64>::withCap(per)
+    var keep_on: [512]bool
+    var live_h: [512]handle
+    var stale_hit: i64 = 0
+    var r: i64 = 0
+    var sum: i64 = 0
+    while r < rounds {
+        var i: i64 = 0
+        while i < per {
+            var h0 = p.insert(i * 7 + r)
+            if i % 391 == 0 {
+                var slot: i64 = (i / 391) % 512
+                if slot < 512 {
+                    if keep_on[slot] == false {
+                        keep_on[slot] = true
+                        live_h[slot] = h0
+                    }
+                }
+            }
+            i = i + 1
+        }
+        var j: i64 = 0
+        var n: i64 = p.len()
+        while j < n {
+            var v: i64 = p.atDense(j)
+            if j % 3 != 0 { sum = sum + v % 13 }
+            j = j + 1
+        }
+        var s: i64 = 0
+        while s < 512 {
+            if keep_on[s] {
+                var hv: handle = live_h[s]
+                var got: i64 = p.get(hv) ?? -999999999
+                if got != -999999999 { sum = sum + got % 7 }
+                var rm: bool = p.remove(hv)
+                if rm {
+                    var again: i64 = p.get(hv) ?? -999999999
+                    if again != -999999999 { stale_hit = stale_hit + 1 }
+                }
+                keep_on[s] = false
+            }
+            s = s + 1
+        }
+        /* 轮末清空：池的容量停在高水位（这是池的契约），但句柄全部换代 ⇒ 下一轮的
+         * 插入复用槽位，RSS 不随轮次线性长。 */
+        p.clear()
+        r = r + 1
+    }
+    io::cout << "T06 rounds=" << rounds << " per=" << per << " len=" << p.len() << " sum=" << sum << " stale=" << stale_hit << "\n"
+    return 0
+}

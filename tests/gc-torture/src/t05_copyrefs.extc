@@ -1,0 +1,61 @@
+/* t05_copyrefs.extc --- 循环里的 bulk copy（含引用元素）+ 少量散布活对象。
+ * 形状：每轮 src[0].r = new node（旧值成垃圾）后 copyInto<item>(buf, src, 1)，
+ *   每 4096 轮把一个旧 node 留在 h.keep（散布活对象）；sum 校验每轮读到的值。
+ * 判据：(a) 精确 stdout；(b) 末态 RSS <= 12 MiB 且 4n 轮不涨；
+ *   (c) ASan/UBSan 干净（copyInto 的记账若错，这里直接 UAF）。
+ * argv[1]=n 默认 800000。 */
+use std::io
+
+fn parseN(args: slice<slice<u8>>, idx: i64, dflt: i64) -> i64 {
+    if args.len <= idx { return dflt }
+    var s: slice<u8> = args[idx]
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    if v > 0 { return v }
+    return dflt
+}
+
+struct node { v: i64 }
+struct item { r: mut ref node }
+struct holder { keep: [256]?mut ref node }
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var n: i64 = parseN(args, 1, 800000)
+    var buf: mut slice<item> = new item[1]
+    var src: mut slice<item> = new item[1]
+    var h: holder
+    var kept: i64 = 0
+    var i: i64 = 0
+    var sum: i64 = 0
+    while i < n {
+        src[0].r = new node
+        src[0].r.v = i
+        copyInto<item>(buf, src, 1)
+        sum = sum + buf[0].r.v % 1000
+        if i % 4096 == 0 {
+            if kept < 256 {
+                var kp = new node
+                kp.v = 0 - i
+                h.keep[kept] = kp
+                kept = kept + 1
+            }
+        }
+        i = i + 1
+    }
+    var ks: i64 = 0
+    var c: i64 = 0
+    while c < kept {
+        var p: ?mut ref node = h.keep[c]
+        if p != null { ks = ks + (*p).v }
+        c = c + 1
+    }
+    io::cout << "T05 n=" << n << " kept=" << kept << " sum=" << sum << " ks=" << ks << " last=" << src[0].r.v << "\n"
+    return 0
+}

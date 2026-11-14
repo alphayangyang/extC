@@ -1,0 +1,55 @@
+/* t02_fanout.extc --- 宽扇出 + 分段扫描。
+ * 形状：每轮 new 一个 wide（a: [262144]?mut ref leaf，2 MiB，超过 SCAN_CHUNK 8192 词），
+ *   把 262144 个槽全部填成新 leaf，挂到 w.cur；下一轮换新 wide，旧 wide 及其 262144 个
+ *   leaf 全部变垃圾（只保留最后 1 个）。活集 ≈ 2 MiB + 262144*16 B ≈ 6 MiB。
+ * 判据：(a) 正确性 PD 式校验；(b) [wbudget] pop_max<=512 / push_max<=8448 / mscap<=16384；
+ *   (c) [histo] over1ms=0；(d) RSS <= 3*live+8 MiB。argv[1]=rounds 默认 40。 */
+use std::io
+
+fn parseN(args: slice<slice<u8>>, idx: i64, dflt: i64) -> i64 {
+    if args.len <= idx { return dflt }
+    var s: slice<u8> = args[idx]
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    if v > 0 { return v }
+    return dflt
+}
+
+struct leaf { v: i64 }
+struct wide { a: [262144]?mut ref leaf }
+struct world { cur: ?mut ref wide  made: i64 }
+
+fn holdW(w: mut ref world, b: mut ref wide) { w.cur = b  w.made = w.made + 1 }
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var n: i64 = parseN(args, 1, 40)
+    var w: world
+    var r: i64 = 0
+    while r < n {
+        var b = new wide
+        var i: i64 = 0
+        while i < 262144 {
+            var p = new leaf
+            p.v = r * 262144 + i
+            (*b).a[i] = p
+            i = i + 1
+        }
+        holdW(ref w, b)
+        r = r + 1
+    }
+    var s: i64 = 0
+    var c: ?mut ref wide = w.cur
+    if c != null {
+        var l: ?mut ref leaf = (*c).a[262143]
+        if l != null { s = (*l).v }
+    }
+    io::cout << "T02 n=" << n << " made=" << w.made << " s=" << s << "\n"
+    return 0
+}

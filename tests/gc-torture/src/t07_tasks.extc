@@ -1,0 +1,61 @@
+/* t07_tasks.extc --- 任务（协程）根登记：容器跨 yield 存活，且一半任务被提前放弃。
+ * 形状：mk(n) 在协程帧里建一个 varArray<i64>（存储在该任务的 arena 里），跨 yield 一直 push；
+ *   主循环驱动 tasks 个任务，偶数号只取第一个值就 break（提前结束 ⇒ 任务地方整块归还），
+ *   奇数号走到结束。判据：精确 stdout 且 after == before（syspool 的池计数回基线），
+ *   并在 ASan 下运行（任务根漏登记 ⇒ 任务 arena 被回收后 UAF）。argv[1]=tasks 默认 20000。 */
+use std::io
+use std::sys::pool as syspool
+
+fn parseN(args: slice<slice<u8>>, idx: i64, dflt: i64) -> i64 {
+    if args.len <= idx { return dflt }
+    var s: slice<u8> = args[idx]
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    if v > 0 { return v }
+    return dflt
+}
+
+fn mk(n: i64) -> coroutine<i64> {
+    var b: varArray<i64> = varArray<i64>::withCap(8)
+    b.push(n)
+    var i: i64 = 0
+    while i < 6 {
+        b.push(n + i)
+        let sz: i64 = b.size()
+        yield sz
+        i = i + 1
+    }
+    yield b.size()
+    return
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var tasks: i64 = parseN(args, 1, 20000)
+    var before: i64 = syspool::extc_pool_live()
+    var sum: i64 = 0
+    var t: i64 = 0
+    while t < tasks {
+        if t % 2 == 0 {
+            for v in mk(t) {
+                sum = sum + v
+                break
+            }
+        } else {
+            for v in mk(t) {
+                sum = sum + v % 3
+            }
+        }
+        t = t + 1
+    }
+    var freed: i64 = syspool::collect()
+    var after: i64 = syspool::extc_pool_live()
+    io::cout << "T07 tasks=" << tasks << " sum=" << sum << " freed=" << freed << " before=" << before << " after=" << after << "\n"
+    return 0
+}

@@ -38,6 +38,7 @@ RULES = [
     ("bench/gc/v2/pause/*/*.hist", "停顿原始直方（同上）"),
     ("tests/gc-p0/out/**", "gc-p0 runner 每次重写的原始转储（.err/.out/.csv/.log/生成 C）"),
     ("tests/gc-p0/bin/*", "gc-p0 run.sh 现场构建的可执行文件"),
+    ("tests/gc-torture/out/**", "gc-torture runner 的生成 C / 可执行文件 / 输入 / 日志（OUT 指到树内时）"),
 ]
 
 WITNESS = "_tree_pat_"      # 替身路径：只是为了拿它问 git"这条模式被忽略吗"

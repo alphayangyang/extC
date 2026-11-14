@@ -1,0 +1,38 @@
+deg max=440 at=14630 sources=2035 sinks=912 sum=800000
+q 25957 reach=47608 sum=314180179 maxdep=14
+q 40577 reach=47608 sum=136469897 maxdep=15
+q 20964 reach=47608 sum=276836775 maxdep=15
+q 10331 reach=47608 sum=709542286 maxdep=16
+q 19751 reach=47608 sum=899339861 maxdep=15
+q 38300 reach=47608 sum=381449486 maxdep=14
+q 18729 reach=47608 sum=160231214 maxdep=15
+q 18763 reach=47608 sum=213656472 maxdep=14
+q 39124 reach=47608 sum=360027024 maxdep=14
+q 37983 reach=2 sum=90006 maxdep=1
+q 39855 reach=47608 sum=10158259 maxdep=14
+q 31196 reach=47608 sum=591062120 maxdep=14
+q 42743 reach=47608 sum=668930421 maxdep=14
+q 35569 reach=47608 sum=226154046 maxdep=15
+q 38016 reach=47608 sum=230026822 maxdep=14
+q 29311 reach=47608 sum=302567330 maxdep=15
+q 36832 reach=47608 sum=777966143 maxdep=14
+q 4904 reach=47608 sum=447377013 maxdep=14
+q 16993 reach=47608 sum=941801128 maxdep=16
+q 21165 reach=47608 sum=520496123 maxdep=15
+q 12232 reach=47608 sum=180973821 maxdep=14
+q 12596 reach=47608 sum=459006087 maxdep=15
+q 45632 reach=47608 sum=67273598 maxdep=15
+q 18231 reach=47608 sum=975721437 maxdep=14
+q 2631 reach=47608 sum=60630073 maxdep=14
+q 2471 reach=47608 sum=118690493 maxdep=14
+q 21415 reach=47608 sum=619009520 maxdep=15
+q 43455 reach=47608 sum=741693326 maxdep=14
+q 15312 reach=47608 sum=720923229 maxdep=15
+q 45270 reach=47608 sum=473411781 maxdep=15
+q 27691 reach=47608 sum=74353444 maxdep=15
+q 42838 reach=47608 sum=440047925 maxdep=15
+tot edges=200000 nodes=50000 queries=32 reach=1475850 sum=100097248
+sets union=47608 inter=2
+setsum=189425099
+cov nodes=47608 max=32 at=37983 full=2
+covsum=72283237

@@ -1,0 +1,68 @@
+/* t03_deepring.extc --- 深环 + 重复重建（标记递归深度 / 清扫整环死亡）。
+ * 形状：建一个 n 结点的双向环（各带 next/prev），挂根后每轮再建一个全新环替换根，
+ *   旧环整环不可达（计数永不归零 ⇒ 只能清扫）。轮末校验新环长度与两端值。
+ * 判据：(a) 稳态 RSS 不随轮次上涨；(b) RSS <= 3*live+8 MiB；(c) [histo] over1ms=0。
+ * argv[1]=n 默认 1000000，argv[2]=rounds 默认 12。 */
+use std::io
+
+fn parseN(args: slice<slice<u8>>, idx: i64, dflt: i64) -> i64 {
+    if args.len <= idx { return dflt }
+    var s: slice<u8> = args[idx]
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    if v > 0 { return v }
+    return dflt
+}
+
+struct node { v: i64  next: ?mut ref node  prev: ?mut ref node }
+struct world { ring: ?mut ref node  len: i64 }
+
+fn link2(a: mut ref node, b: mut ref node) { a.next = b  b.prev = a }
+
+fn buildRing(w: mut ref world, n: i64, tag: i64) {
+    var head = new node
+    head.v = tag
+    var prev: mut ref node = head
+    var i: i64 = 1
+    while i < n {
+        var p = new node
+        p.v = tag * n + i
+        (*prev).next = p
+        p.prev = prev
+        prev = p
+        i = i + 1
+    }
+    (*prev).next = head
+    head.prev = prev
+    w.ring = head
+    w.len = n
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var n: i64 = parseN(args, 1, 1000000)
+    var rounds: i64 = parseN(args, 2, 12)
+    var w: world
+    var r: i64 = 0
+    while r < rounds {
+        buildRing(ref w, n, r)
+        r = r + 1
+    }
+    var cnt: i64 = 0
+    var sum: i64 = 0
+    var q: ?mut ref node = w.ring
+    while q != null {
+        cnt = cnt + 1
+        sum = sum + (*q).v
+        q = (*q).next
+        if cnt >= w.len { break }
+    }
+    io::cout << "T03 n=" << n << " rounds=" << rounds << " cnt=" << cnt << " sum=" << sum << "\n"
+    return 0
+}

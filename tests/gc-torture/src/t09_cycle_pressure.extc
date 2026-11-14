@@ -1,0 +1,72 @@
+/* t09_cycle_pressure.extc --- 长命活集 L + 每轮 4L 环垃圾（G4 形状的函数化版本）。
+ * 形状：链长 L 的长命活集（根 w.live 全程保留），每轮注入 2L 个互指结点（a.next=b, b.prev=a），
+ *   挂根后立刻丢根 ⇒ 每轮 4L 个不可达 2-环。判据：(a) 峰值 RSS <= 3*L*24B + 16 MiB；
+ *   (b) 轮末 RSS 不随轮次单调上涨（相邻差 <= 4%）；(c) sum 校验活集。
+ * argv[1]=L 默认 200000，argv[2]=rounds 默认 20。 */
+use std::io
+
+fn parseN(args: slice<slice<u8>>, idx: i64, dflt: i64) -> i64 {
+    if args.len <= idx { return dflt }
+    var s: slice<u8> = args[idx]
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    if v > 0 { return v }
+    return dflt
+}
+
+struct node { v: i64  next: ?mut ref node  prev: ?mut ref node }
+struct world { live: ?mut ref node  ring: ?mut ref node  liveN: i64  made: i64 }
+
+fn link2(a: mut ref node, b: mut ref node) { a.next = b  b.prev = a }
+
+fn makeRing(w: mut ref world, r: i64) {
+    var a = new node
+    var b = new node
+    a.v = r
+    b.v = 0 - r
+    link2(a, b)
+    link2(b, a)
+    w.ring = a
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var L: i64 = parseN(args, 1, 200000)
+    var rounds: i64 = parseN(args, 2, 20)
+    var w: world
+    var head = new node
+    head.v = 0
+    var prev: mut ref node = head
+    var i: i64 = 1
+    while i < L {
+        var p = new node
+        p.v = i
+        (*prev).next = p
+        prev = p
+        i = i + 1
+    }
+    w.live = head
+    w.liveN = L
+    var r: i64 = 0
+    while r < rounds {
+        var j: i64 = 0
+        while j < L {
+            makeRing(ref w, r)
+            j = j + 1
+        }
+        w.made = w.made + L * 2
+        w.ring = null
+        r = r + 1
+    }
+    var sum: i64 = 0
+    var q: ?mut ref node = w.live
+    while q != null { sum = sum + (*q).v  q = (*q).next }
+    io::cout << "T09 L=" << L << " rounds=" << rounds << " garb=" << w.made << " sum=" << sum << "\n"
+    return 0
+}

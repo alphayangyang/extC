@@ -80,6 +80,9 @@ build-*/
 tests/gc-p0/out/
 tests/gc-p0/bin/
 
+# 语料套件（tests/gc-torture）：构建产物默认写 /tmp，OUT 指到树内时这里全是能重新生成的转储
+tests/gc-torture/out/
+
 # 我的分析构建（sanitizer / -fanalyzer）：只在本地用，能重新构建
 build-an/
 build-asan/

@@ -1,0 +1,507 @@
+/* datalog_lite.extc --- 真程序 1：Datalog-lite（magic-set 传递闭包引擎）
+ *
+ * 这不是为一个 GC 形状造出来的微基准，而是一个完整的小引擎：词法/语法、符号表、
+ * CSR 邻接、半朴素（semi-naive）求值、去重（visited）与聚合，全部用 std 容器写。
+ * 输入是文本，输出必须逐字稳定（同输入 ⇒ 同输出），因此它同时是「真实工作负载」和
+ * 「语义回归」两件事的证据。
+ *
+ * 输入（stdin，每行一条，空白分隔，行首 # 是注释）：
+ *   n <nodes>              图的结点上界（提示，可省略）
+ *   e <src> <dst>          一条边（结点用 0..nodes-1 的整数 id）
+ *   q <node>               一个查询源（magic seed）
+ *
+ * 程序语义（这就是规则集）：
+ *   seed(X)  :- q(X).
+ *   path(X,Y) :- seed(X), edge(X,Y).
+ *   path(X,Z) :- path(X,Y), edge(Y,Z).
+ *   answer(X, N) :- seed(X), N = count{Y : path(X,Y)}, D = maxdepth(X).
+ * 也就是对每个查询做一次「带层号的 BFS」，正是 magic-set 变换后的求值计划：
+ * 每个 seed 只物化从它可达的事实，而不是整个 X×Y 笛卡尔积。
+ *
+ * 输出（三种语言实现必须逐字相同）：
+ *   q <src> reach=<可达结点数含自身> sum=<Σ(id+1)*(depth+1) mod 1000000007> maxdep=<最深层号>
+ *   最后一行：
+ *   tot edges=<边数> nodes=<出现过的结点数> queries=<查询数> reach=<Σreach> sum=<Σsum mod 1e9+7>
+ *
+ * 用法：datalog_lite [max_edges]   （默认 200000，用于规模阶梯；只为控制内存，不改变语义）
+ *
+ * 为什么它对内存管理是一次真考验：
+ *   ① 输入缓冲（一次读全部 stdin）+ 边数组 + CSR + 每查询一张 visited 表，生命周期各不相同；
+ *   ② visited 是 hashMapI64<i64>，每查询新建、查询结束立刻不可达 ⇒ 每查询一份新板块；
+ *   ③ frontier 用 vector<i64> 两层交替，1.5× 原地长 ⇒ 板块换代；
+ *   ④ 迭代里还有大量短命 i64 盒（option 的载荷）⇒ 清扫档的主要垃圾来源。
+ *
+ * 四个阶段（按执行顺序；每一阶段的活集生命周期都不一样）：
+ *   阶段 1  逐查询 BFS：visited 表每查询一份，查询结束即不可达；
+ *   阶段 2  度分布：正图 + 反向图，两张 CSR 同时活（O(2E)）；
+ *   阶段 3  并集/交集：流式维护，峰值多两张表；
+ *   阶段 4  覆盖度：cov 跨所有查询存活，是活集最大的一段。
+ *
+ * 规模阶梯（runner 会按这一列跑三档）：
+ *   small   2,000 边 /  4 查询      ≈ 2 MB      （进清扫档前的最小形状）
+ *   medium  200,000 边 / 32 查询    ≈ 17 MB     （默认档，本机 0.45 s）
+ *   large   800,000 边 / 32 查询    ≈ 60 MB     （容量峰值档，验证归还）
+ *
+ * 复现：
+ *   python3 tests/gc-torture/gen_graph.py 200000 32 > /tmp/g.txt
+ *   ./build/extc tests/gc-torture/src/datalog_lite.extc -o /tmp/d.c
+ *   cc -O2 -std=c11 -fwrapv -D_POSIX_C_SOURCE=200809L -o /tmp/d /tmp/d.c
+ *   /tmp/d < /tmp/g.txt
+ */
+use std::io
+use std::data::vector
+use std::data::hashMap
+use std::text::string as str
+
+/* ---------- 词法：文本上的游标（不切分、不拷贝，全部是输入缓冲的视图） ---------- */
+
+struct lexer {
+    s: slice<u8>
+    i: i64
+}
+
+impl lexer {
+    fn eof(self: ref lexer) -> bool { return self.i >= self.s.len }
+
+    /* 跳过空白；# 到行尾也当空白（注释）。 */
+    fn skip(self: mut ref lexer) {
+        while self.i < self.s.len {
+            var b: u8 = self.s[self.i]
+            if b == u8(10) || b == u8(13) || b == u8(32) || b == u8(9) { self.i = self.i + 1 } else {
+                if b == u8(35) {
+                    while self.i < self.s.len {
+                        var c: u8 = self.s[self.i]
+                        if c == u8(10) { break }
+                        self.i = self.i + 1
+                    }
+                } else {
+                    break
+                }
+            }
+        }
+    }
+
+    /* 取一个词（到空白为止）作为输入缓冲的视图，游标停在该词之后。 */
+    fn word(self: mut ref lexer) -> slice<u8> {
+        self.skip()
+        var b0: i64 = self.i
+        while self.i < self.s.len {
+            var b: u8 = self.s[self.i]
+            if b == u8(10) || b == u8(13) || b == u8(32) || b == u8(9) { break }
+            self.i = self.i + 1
+        }
+        return self.s[b0..self.i]
+    }
+
+    /* 词是十进制数字时解析；否则给 -1（调用方据此报错，不静默）。 */
+    fn num(self: mut ref lexer) -> i64 {
+        let w: slice<u8> = self.word()
+        if w.len == 0 { return -1 }
+        var v: i64 = 0
+        var i: i64 = 0
+        while i < w.len {
+            var b: u8 = w[i]
+            if b < u8(48) || b > u8(57) { return -1 }
+            v = v * 10 + (i64(b) - 48)
+            i = i + 1
+        }
+        return v
+    }
+}
+
+/* ---------- 小工具 ---------- */
+
+fn wordIs(w: slice<u8>, lit: slice<u8>) -> bool {
+    if w.len != lit.len { return false }
+    var i: i64 = 0
+    while i < w.len {
+        if w[i] != lit[i] { return false }
+        i = i + 1
+    }
+    return true
+}
+
+fn imax(a: i64, b: i64) -> i64 { if a > b { return a } return b }
+
+let MOD: i64 = 1000000007
+
+/* ---------- 图：边数组 → CSR（compressed sparse row） ---------- */
+
+struct graph {
+    off: vector<i64>
+    adj: vector<i64>
+    n: i64
+    e: i64
+}
+
+impl graph {
+    /* 从边数组建 CSR。两趟：先数出度，再前缀和，再填。
+     * 结果写进调用方的 g（mut ref）：容器的存储属于调用方的板块，所以这个函数
+     * 不会把"本帧的板块"带给别人 —— 这正是检查器要求的形状。 */
+    fn build(g: mut ref graph, es: ref vector<i64>, ed: ref vector<i64>, nodes: i64) {
+        g.n = nodes
+        g.e = es.len()
+        g.off.clear()
+        g.adj.clear()
+        var i: i64 = 0
+        while i <= nodes {
+            g.off.push(0)
+            i = i + 1
+        }
+        i = 0
+        while i < g.e {
+            var a: i64 = es.get(i) ?? 0
+            var c: i64 = g.off.get(a + 1) ?? 0
+            g.off.set(a + 1, c + 1)
+            i = i + 1
+        }
+        i = 1
+        while i <= nodes {
+            var p: i64 = g.off.get(i - 1) ?? 0
+            var c: i64 = g.off.get(i) ?? 0
+            g.off.set(i, p + c)
+            i = i + 1
+        }
+        i = 0
+        while i < g.e {
+            g.adj.push(0)
+            i = i + 1
+        }
+        /* 游标：off 的副本，避免再分配一张与结点数同大的表 */
+        var cur: vector<i64> = vector<i64>::withCap(nodes + 1)
+        i = 0
+        while i <= nodes {
+            cur.push(g.off.get(i) ?? 0)
+            i = i + 1
+        }
+        i = 0
+        while i < g.e {
+            var a: i64 = es.get(i) ?? 0
+            var slot: i64 = cur.get(a) ?? 0
+            g.adj.set(slot, ed.get(i) ?? 0)
+            cur.set(a, slot + 1)
+            i = i + 1
+        }
+        cur.release()
+    }
+
+    fn outDeg(self: ref graph, u: i64) -> i64 {
+        var a: i64 = self.off.get(u) ?? 0
+        var b: i64 = self.off.get(u + 1) ?? 0
+        return b - a
+    }
+
+    fn to(self: ref graph, k: i64) -> i64 { return self.adj.get(k) ?? 0 }
+}
+
+/* ---------- 求值：每个 seed 做一次带层号的 BFS（= magic-set 计划） ---------- */
+
+struct answer {
+    reach: i64
+    sum: i64
+    maxdep: i64
+}
+
+/* 一次 BFS（一个 seed 的 magic-set 计划）。容器由调用方持有：
+ * 这样"求集合摘要"的那段代码可以直接复用同一张 visited 表，而不用把表拷一遍。 */
+fn bfs(g: ref graph, seed: i64, seen: mut ref hashMapI64<i64>, frontier: mut ref vector<i64>, nextLev: mut ref vector<i64>) -> answer {
+    var a: answer
+    a.reach = 0
+    a.sum = 0
+    a.maxdep = 0
+    seen.clear()
+    frontier.clear()
+    nextLev.clear()
+    if seed < 0 || seed >= g.n { return a }
+    seen.put(seed, 0)
+    frontier.push(seed)
+    a.reach = 1
+    a.sum = (seed + 1) % MOD
+    var depth: i64 = 0
+    while frontier.len() > 0 {
+        depth = depth + 1
+        nextLev.clear()
+        var j: i64 = 0
+        while j < frontier.len() {
+            var u: i64 = frontier.get(j) ?? 0
+            var k: i64 = g.off.get(u) ?? 0
+            var ke: i64 = g.off.get(u + 1) ?? 0
+            while k < ke {
+                var v: i64 = g.to(k)
+                var was: i64 = seen.get(v) ?? -1
+                if was < 0 {
+                    seen.put(v, depth)
+                    nextLev.push(v)
+                    a.reach = a.reach + 1
+                    a.sum = (a.sum + ((v + 1) % MOD) * ((depth + 1) % MOD)) % MOD
+                    if depth > a.maxdep { a.maxdep = depth }
+                }
+                k = k + 1
+            }
+            j = j + 1
+        }
+        /* 换层：下一层在这里，旧层（frontier）整块不可达。
+         * 用 clear + 逐个搬而不是交换两个 vector 变量：交换会让"存储属于哪一帧"
+         * 变得可疑（检查器直接拒绝），而搬一层只是一次 O(宽度) 的写。 */
+        frontier.clear()
+        var j2: i64 = 0
+        while j2 < nextLev.len() {
+            frontier.push(nextLev.get(j2) ?? 0)
+            j2 = j2 + 1
+        }
+    }
+    return a
+}
+
+/* 单个查询：自己建表、自己还表（表在查询结束时不可达，等回收器下一轮）。 */
+fn evalSeed(g: ref graph, seed: i64) -> answer {
+    var seen: hashMapI64<i64> = hashMapI64<i64>::withCap(1024)
+    var frontier: vector<i64> = vector<i64>::withCap(64)
+    var nextLev: vector<i64> = vector<i64>::withCap(64)
+    var a: answer = bfs(g, seed, ref seen, ref frontier, ref nextLev)
+    seen.release()
+    frontier.release()
+    nextLev.release()
+    return a
+}
+
+/* ---------- 阶段 2：度分布（反向图也是同一条 build，只是边数组换位） ---------- */
+
+struct degres {
+    maxd: i64
+    maxat: i64
+    srcs: i64
+    sinks: i64
+    sum: i64
+}
+
+fn degrees(g: ref graph, rg: ref graph) -> degres {
+    var d: degres
+    d.maxd = 0
+    d.maxat = 0
+    d.srcs = 0
+    d.sinks = 0
+    d.sum = 0
+    var i: i64 = 0
+    while i < g.n {
+        var od: i64 = g.outDeg(i)
+        var idg: i64 = rg.outDeg(i)
+        if idg > d.maxd {
+            d.maxd = idg
+            d.maxat = i
+        }
+        if idg == 0 { d.srcs = d.srcs + 1 }
+        if od == 0 { d.sinks = d.sinks + 1 }
+        d.sum = (d.sum + od * 3 + idg) % MOD
+        i = i + 1
+    }
+    return d
+}
+
+/* ---------- 阶段 3：多 seed 的集合摘要（并集 / 交集） ---------- */
+
+/* 对每个查询求一次可达集，流式维护：
+ *   union = 见过的所有结点的并；
+ *   inter = 所有查询都可达的结点（第一个查询初始化，后续逐个剔除）。
+ * 这里同时活两张 visited 表 + 并集表 ⇒ 容量峰值比单查询高一个量级，
+ * 而它们都是"查询期短命"的板块：这个阶段是容量归还的主要压力点。 */
+fn setsSummary(g: ref graph, qs: ref vector<i64>) -> i64 {
+    var seen: hashMapI64<i64> = hashMapI64<i64>::withCap(1024)
+    var uni: hashMapI64<i64> = hashMapI64<i64>::withCap(1024)
+    var inter: hashMapI64<i64> = hashMapI64<i64>::withCap(1024)
+    var frontier: vector<i64> = vector<i64>::withCap(64)
+    var nextLev: vector<i64> = vector<i64>::withCap(64)
+    var first: i64 = 1
+    var qi: i64 = 0
+    while qi < qs.len() {
+        var src: i64 = qs.get(qi) ?? 0
+        bfs(g, src, ref seen, ref frontier, ref nextLev)
+        var n: i64 = seen.denseLen()
+        var i: i64 = 0
+        while i < n {
+            uni.put(seen.keyAtDense(i), 1)
+            i = i + 1
+        }
+        if first == 1 {
+            first = 0
+            inter.clear()
+            var j: i64 = 0
+            while j < n {
+                inter.put(seen.keyAtDense(j), 1)
+                j = j + 1
+            }
+        } else {
+            /* 从尾往头删：remove 是 swap-remove，从后删不会跳过未访问的元素 */
+            var j2: i64 = inter.denseLen() - 1
+            while j2 >= 0 {
+                var k3: i64 = inter.keyAtDense(j2)
+                var has: i64 = seen.get(k3) ?? -1
+                if has < 0 { inter.remove(k3) }
+                j2 = j2 - 1
+            }
+        }
+        qi = qi + 1
+    }
+    var usum: i64 = 0
+    var i2: i64 = 0
+    while i2 < uni.denseLen() {
+        usum = (usum + (uni.keyAtDense(i2))) % MOD
+        i2 = i2 + 1
+    }
+    io::cout << "sets union=" << uni.len() << " inter=" << inter.len() << "\n"
+    seen.release()
+    uni.release()
+    inter.release()
+    frontier.release()
+    nextLev.release()
+    return usum
+}
+
+/* ---------- 阶段 4：查询覆盖度（一个结点被多少 seed 可达） ---------- */
+
+/* 这是"聚合"型规则：answer(X, C) :- seed(S), path(S,X), C = count{S}。
+ * 实现上就是逐查询把 visited 表的每个键在 cov 里 +1。它是本程序里活集最大的
+ * 一段（cov 的条目数 = 并集大小，且跨所有查询存活）。 */
+fn coverage(g: ref graph, qs: ref vector<i64>) -> i64 {
+    var seen: hashMapI64<i64> = hashMapI64<i64>::withCap(1024)
+    var cov: hashMapI64<i64> = hashMapI64<i64>::withCap(1024)
+    var frontier: vector<i64> = vector<i64>::withCap(64)
+    var nextLev: vector<i64> = vector<i64>::withCap(64)
+    var qi: i64 = 0
+    while qi < qs.len() {
+        bfs(g, qs.get(qi) ?? 0, ref seen, ref frontier, ref nextLev)
+        var n: i64 = seen.denseLen()
+        var i: i64 = 0
+        while i < n {
+            var k: i64 = seen.keyAtDense(i)
+            var c: i64 = cov.get(k) ?? 0
+            cov.put(k, c + 1)
+            i = i + 1
+        }
+        qi = qi + 1
+    }
+    var maxc: i64 = 0
+    var maxat: i64 = 0
+    var full: i64 = 0
+    var sum: i64 = 0
+    var i2: i64 = 0
+    while i2 < cov.denseLen() {
+        var k2: i64 = cov.keyAtDense(i2)
+        var c2: i64 = cov.valAtDense(i2)
+        if c2 > maxc {
+            maxc = c2
+            maxat = k2
+        }
+        if c2 == qs.len() { full = full + 1 }
+        sum = (sum + c2 * (k2 % 97 + 1)) % MOD
+        i2 = i2 + 1
+    }
+    io::cout << "cov nodes=" << cov.len() << " max=" << maxc << " at=" << maxat << " full=" << full << "\n"
+    seen.release()
+    cov.release()
+    frontier.release()
+    nextLev.release()
+    return sum
+}
+
+/* ---------- main ---------- */
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var maxEdges: i64 = 200000
+    if args.len > 1 {
+        var s: slice<u8> = args[1]
+        var v: i64 = 0
+        var i: i64 = 0
+        while i < s.len {
+            var b: u8 = s[i]
+            if b >= u8(48) && b <= u8(57) { v = v * 10 + (i64(b) - 48) }
+            i = i + 1
+        }
+        if v > 0 { maxEdges = v }
+    }
+
+    var text: str::string = str::readAll() ?? str::new()
+    if text.len() == 0 {
+        io::cerr << "datalog_lite: empty input (feed edges on stdin)" << "\n"
+        return 2
+    }
+
+    var lx: lexer = { s: text.view(), i: 0 }
+    var es: vector<i64> = vector<i64>::withCap(1024)
+    var ed: vector<i64> = vector<i64>::withCap(1024)
+    var qs: vector<i64> = vector<i64>::withCap(64)
+    var nodes: i64 = 0
+    var bad: i64 = 0
+
+    while !lx.eof() {
+        var w: slice<u8> = lx.word()
+        if w.len == 0 { break }
+        if wordIs(w, "e") {
+            var a: i64 = lx.num()
+            var b: i64 = lx.num()
+            if a < 0 || b < 0 { bad = bad + 1 } else {
+                if es.len() < maxEdges {
+                    es.push(a)
+                    ed.push(b)
+                    nodes = imax(nodes, imax(a, b) + 1)
+                }
+            }
+        } else if wordIs(w, "q") {
+            var a: i64 = lx.num()
+            if a < 0 { bad = bad + 1 } else { qs.push(a)  nodes = imax(nodes, a + 1) }
+        } else if wordIs(w, "n") {
+            var a: i64 = lx.num()
+            if a > nodes { nodes = a }
+        } else {
+            /* 未知词：跳过一行，继续（真实输入里常有表头/注释） */
+            bad = bad + 1
+        }
+    }
+
+    if nodes <= 0 || es.len() == 0 {
+        io::cerr << "datalog_lite: no edges" << "\n"
+        return 2
+    }
+
+    var g: graph = { off: vector<i64>::withCap(8), adj: vector<i64>::withCap(8), n: 0, e: 0 }
+    var rg: graph = { off: vector<i64>::withCap(8), adj: vector<i64>::withCap(8), n: 0, e: 0 }
+    graph::build(ref g, ref es, ref ed, nodes)
+    graph::build(ref rg, ref ed, ref es, nodes)
+    es.release()
+    ed.release()
+
+    /* 阶段 2：度分布（正图 + 反向图都是同一条 build 的产物） */
+    var d: degres = degrees(ref g, ref rg)
+    io::cout << "deg max=" << d.maxd << " at=" << d.maxat << " sources=" << d.srcs << " sinks=" << d.sinks << " sum=" << d.sum << "\n"
+    rg.off.release()
+    rg.adj.release()
+
+    /* 阶段 1：逐查询 BFS（半朴素求值的单 seed 计划） */
+    var totReach: i64 = 0
+    var totSum: i64 = 0
+    var qi: i64 = 0
+    while qi < qs.len() {
+        var src: i64 = qs.get(qi) ?? 0
+        var a: answer = evalSeed(ref g, src)
+        totReach = totReach + a.reach
+        totSum = (totSum + a.sum) % MOD
+        io::cout << "q " << src << " reach=" << a.reach << " sum=" << a.sum << " maxdep=" << a.maxdep << "\n"
+        qi = qi + 1
+    }
+    io::cout << "tot edges=" << g.e << " nodes=" << g.n << " queries=" << qs.len() << " reach=" << totReach << " sum=" << totSum << "\n"
+
+    /* 阶段 3：并集 / 交集（流式，峰值只多两张表） */
+    var usum: i64 = setsSummary(ref g, ref qs)
+    io::cout << "setsum=" << usum << "\n"
+
+    /* 阶段 4：覆盖度（活集最大的一段；cov 跨所有查询存活） */
+    var covsum: i64 = coverage(ref g, ref qs)
+    io::cout << "covsum=" << covsum << "\n"
+
+    /* 收尾：把自己建的东西显式还掉（release 是 O(1) 的板块归还，不是 GC 的替代） */
+    g.off.release()
+    g.adj.release()
+    qs.release()
+    if bad > 0 { io::cerr << "datalog_lite: " << bad << " malformed tokens skipped" << "\n" }
+    return 0
+}
