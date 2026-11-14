@@ -448,6 +448,27 @@ c_t = tau_pop / s_bar          tau_t = tau_pop
 - τ_issue/τ_pop ∈ [0.35, 0.80]：实测 0.38-0.76，成立；
 - |τ_issue − τ_pop|/τ_pop ≤ 20%：**1/5 成立（不通过）** ⇒ 不采用「单屋顶预测 τ_pop」，改用两项相加；这条失败记入 §8 残余。
 
+### 3.13 每 pop 的访存成本：延迟屋顶与 MLP（R-C/R-D 新增，实测见 §6.16）
+
+§3.11 的表里有 `m`（有效访存并行度），取值由「梯延迟 ÷ 实测每 pop」**反推**（16 MiB 3.4、32 MiB 3.1、64 MiB 2.3、128 MiB 1.8、256 MiB 1.6）。R-C 的延迟屋顶形状把这个量第一次**直接测出来**，并且暴露出一个模型上更重要的性质：
+
+**`m` 不是机器的常数，而是步形态的常数。** 同一个程序、同一份活集、同一份随机链，只切换「这一步的 pop 由哪条路径处理」，指令数与 cache miss 数逐位相同，墙钟差 2.4 倍：
+
+| 口径（rounds=2，taskset -c 6） | Ir（callgrind） | D1 miss | LLd miss | 墙钟 | τ_pop |
+|---|---|---|---|---|---|
+| 浅栈路径（默认，`EXTC_RC_MARK_SHALLOW` 生效） | 854,607,899 | 15,887,170 | 10,233,592 | 0.88 s | **91 ns/pop** |
+| 深栈批量路径（`-DEXTC_RC_MARK_SHALLOW=0`） | 854,435,238 | 15,887,135 | 10,233,590 | **0.37 s** | **20.5 ns/pop** |
+
+两者的 Ir 差 0.02%、D1/LLd miss 差 5 位数以内，墙钟差 2.4 倍 ⇒ 差别**只能是 miss 的在飞重叠度**：浅栈路径「pop 一个、立刻扫一个」，下一跳地址要等上一条 line 回来（m=1，每 pop 付一次完整 T_LL）；深栈批量路径先把一批对象收进 `_batch[]` 并顺手 `__builtin_prefetch`，再逐个扫描 ⇒ 这批的 miss 在飞重叠（m≈4.8）。发射文本里这两条路径是同一个宏体（`src/back/reclaim.c` 的 `EXTC_RC_MARK_SCAN`），所以差别不在指令数，在**依赖结构**。
+
+于是每 pop 的成本写成两项之积的形式：
+
+    τ_pop(b) = T_LL(W)/(kappa_L · m(path(b))) + Ir_pop/Ir_per_s        (式 3.13)
+
+其中 `T_LL(W)` 由 §2.5 的延迟梯给（4 MiB 21.3 ns … 256 MB 98.1 ns），`m=1` 是浅栈的严格依赖、`m≈4.8` 是批量路径的重叠度，最后一项是 §3.12 的发射成本（2.8-5.6 ns，永远只是下界）。**步预算 b 不是单调杠杆**：b 决定的是「这一步走哪条路径」，τ_pop 随路径跳变，而不是随 b 线性变化。
+
+**尾部不服从式 3.13**：式 3.13 给的是均值。延迟屋顶上单个 pop 偶尔要付一次完整的页表走查（§2.5 的 `epsilon_tlb` 4-30 ns 是常态，深度走查可到 µs 量级），所以把 b 压到 1 也压不掉尾部 —— 实测 b=1 时 2,444,448 步里仍有 5 步 >64 µs、max 126.7 µs。⇒ **在延迟屋顶上，`P_step ≤ 50 µs` 不是调 b 能达成的目标**，能达成的是均值界（b=32 实测 2.80 µs）＋「尾部是单 pop 属性」这一条结构性陈述。要动尾部必须动 T_LL 本身（页大小/物理连续性）或把活集拉回 LLC 覆盖内，见 §6.16.7。
+
 ## §4 策略族 S1–S5 的判定（形式化 + 实测）
 
 ### 4.1 总表
@@ -1424,6 +1445,81 @@ callgrind_annotate --threshold=99 /tmp/re9/promote-p.cg | grep markStep
 
 **对本模型的意义**：§3.11 那张表原来把 tau_issue 写成 3.8-15.0 ns（其实是 τ_pop），本轮起 tau_issue 是可算量、τ_pop 是两项之和。c_t = τ_pop/s̄ 仍是记账比值，但它的形状依赖现在有机制解释：β 项。
 
+### 6.16 R-C/R-D 轮（2026-11-14）：延迟屋顶形状 —— 让「大堆 + 依赖链」第一次可测（v26，无源码改动）
+
+#### 6.16.1 为什么需要这个形状
+
+§6.14 的六个真实形状 τ_pop 全部落在 3.8-15.0 ns（§6.15 表），也就是全在 **issue 屋顶**：延迟项只能靠 256 MB 随机环微基准（98.1 ns）外推。这带来两个盲点：①「延迟屋顶下的停顿契约」从未被真实负载检验过；②冷档（`EXTC_RC_MARK_COLD_BYTES = 16 MiB`）在语料里只有一个 dense 形状会触发。新增的 `tests/gc-p0/src/lat_randchain.extc` 补上这一类：4,194,304 个 32 B node（约 134 MB 活集），Fisher-Yates 洗牌后 `next` 指向洗牌序后继（末个回 0，覆盖全部 node 的随机环），根只有 `world.head`；再按轮分配 512 B junk 覆盖同一批槽位制造真垃圾。**同源代码带一个顺序对照组**（argv[2] 首字节 `s`：跳过洗牌，链按分配序）—— 两组 pop 数、RSS、collects 完全相同，唯一变量是地址序。
+
+#### 6.16.2 随机 vs 顺序：13 倍 τ_pop 只来自地址序（5 reps，rounds=4，PAUSE=1）
+
+| 组 | pop 数 | [step] n | Σ步时 | τ_pop | 墙钟 | RSS | collects | gt64 |
+|---|---|---|---|---|---|---|---|---|
+| 随机链 | 7.97e6 | 250,800-250,824 | 732-783 ms | **92-98 ns/pop** | 0.93-0.99 s | 312,356 kB | 3 | 48-60（1.9-2.4e-4）|
+| 顺序链 | 7.975e6 | 250,867-250,871 | 54-57 ms | **6.8-7.1 ns/pop** | 0.20 s | 312,356 kB | 3 | 5-7（2-3e-5）|
+
+pop 数差 0.04%、RSS 与 collects 逐位相同 ⇒ **13× τ_pop 与 4.8× 墙钟完全由地址序造成**，这是语料里第一个「每 pop 一次 DRAM 访问」的标记路径，τ_pop 与 §2.5 延迟梯的 128 MB 点同序。随机组的其余统计全部指向同一件事：均值步时 2.80 µs（= 32 pop × 87 ns）、`pop_max=32`（冷档生效）、max 170-5,354 µs、over256 0-14、over1ms 0-1（3 reps 里 1 个 rep 有 1 步，顺序组同 rep 也有 3.58 ms ⇒ 环境事件）。
+
+#### 6.16.3 步形态：批大小 b 的拐点就是浅栈/深栈的切换点（callgrind 三口径）
+
+| b（rounds=4） | [step] n | Σ步时 | τ_pop | pops_tot | push_max | 墙钟 |
+|---|---|---|---|---|---|---|
+| 32 | 250,806 | 729 ms | 91 ns | 7.97e6 | 0 | 0.93 s |
+| 64 | 125,802 | 704 ms | 89 ns | 7.94e6 | 0 | 0.90 s |
+| 128 | 83,562 | 226 ms | **22 ns** | 10.29e6 | 128 | **0.41 s** |
+| 256 | 43,329 | 219 ms | 21 ns | 10.28e6 | 200 | 0.39 s |
+| 512 | 23,223 | 220 ms | 21 ns | 10.28e6 | 313 | 0.39 s |
+| **32 + `-DEXTC_RC_MARK_SHALLOW=0`** | 250,909 | 163 ms | **20.5 ns** | 7.97e6 | 32 | **0.37 s** |
+
+最后一行是关键：把浅栈路径关掉、b 仍取 32，τ_pop 从 91 ns 掉到 20.5 ns、墙钟从 0.93 s 掉到 0.37 s ⇒ **拐点是路径切换，不是 b 本身**。callgrind 在同一对二进制上给出「Ir 差 0.02%、D1/LLd miss 差 5 位以内、墙钟差 2.4 倍」，因此这不是工作量差，而是 §3.13 的 MLP 差（m=1 vs m≈4.8）。同时注意 b≥128 时 `pops_tot` 从 7.97e6 抬到 10.29e6（每轮 2.66e6 → 3.43e6）：深栈路径把保守扫描 arena 时压进栈的 4.19M 指针也计入 pop，而浅栈路径在种子阶段计入 `[work]` 的 `push` 而不计 pop ⇒ **`pops_tot` 在两种路径下不同源，跨路径比 τ 无意义**（判据因此只在同一路径内比，见 6.16.6 的 LAT-b 用随机/顺序同路径对照）。
+
+#### 6.16.4 尾部是单 pop 属性，不是批属性
+
+b=1/2/4/8（rounds=2，冷档、浅栈）实测：
+
+| b | [step] n | Σ步时 | 均值步时 | gt64 | over1ms | max |
+|---|---|---|---|---|---|---|
+| 1 | 2,444,448 | 63.8 ms | 26 ns | 5（2.0e-6）| 0 | 126.7 µs |
+| 2 | 1,222,773 | 39.6 ms | 32 ns | 2 | 0 | 102.0 µs |
+| 4 | 612,170 | 25.6 ms | 42 ns | 2 | 0 | 112.8 µs |
+| 8 | 263,439 | 20.5 ms | 78 ns | 3 | 0 | 149.7 µs |
+
+一步只 pop 一个对象时仍有 >64 µs 的步、max 仍在 100-150 µs ⇒ **这个尾部不可能靠调 b 消除**（它已经是 1 pop 的时长）：随机链上偶发的一次完整走表/页错误级代价。同形状顺序对照组的 gt64 只有 5-7/250k（2-3e-5），是随机组的 1/7，所以尾部的主体是**地址序相关的访存代价**，不是宿主噪声（同期纯自旋探针地板 max 0.9-1.7 µs）。footprint 缩到 1M node（32 MB，暖档 b=512）时 gt64 降到 6-9/77k（0.8-1.2e-4），到 262,144 node（8 MB，正好 STLB 覆盖）时 2-4/21k（1-1.9e-4，绝对值 2-4 步）⇒ 尾部随 footprint 下降但没有干净地消失，**不能**把尾部唯一归因于 TLB；这条记为开放项（§8.1 R15）。
+
+#### 6.16.5 R-D：先写预测再测量（预测文件 /tmp/lat/predict_rd.md，测量点 b=48、rounds=6、3 reps）
+
+模型（式 3.13 + 冷档）：`τ_pop = T_LL(166 MB)/m`，`mean_step(b) = b·τ_pop + c_fix`，常数取 `T_LL=90 ns`（§2.5 延迟梯 128 MB 量级内插）、`m=1`（b=48 走浅栈）、`c_fix=0.2 µs`。
+
+| # | 预测量 | 预测值 | 实测值 | 残差 | 判定（≤25%）|
+|---|---|---|---|---|---|
+| P1 | τ_pop | 90.0 ns/pop | 77.9-84.8 ns | +6% ~ +15% | **PASS** |
+| P2 | mean_step(48) | 4.52 µs | 3.69-4.01 µs | +13% ~ +23% | **PASS**（余量小）|
+| P3 | [step] n（6 轮）| 376,000 | 218,322-218,359 | **−42%** | **FAIL** |
+| P4 | gt64 率 | 2.2e-4 | 2.34e-4（min over reps）| +6% | **PASS** |
+| P5 | over1ms（min over reps）| 0 | 0（per-rep 0/1/0）| — | **PASS** |
+
+P3 的失败是有价值的：步数不是独立预测出来的，它由 `n = pops_total/b` 决定（实测 10.33e6/48 = 215k），而 `pops_total` 本身是「本轮标记到底走了多少对象」的结果，不能由 b 外推。**修正后的结构律：`n = pops_total/b`，`Σ步时 = pops_total·τ_pop + n·c_fix`** ⇒ 两式联立后 `mean_step = b·τ_pop + c_fix` 仍成立（P2 的 13-23% 残差主要来自 τ_pop 的 +6~15% 偏高与 c_fix 的量级）。这条把 §3.5 的 `P(b) = b·τ_t + c` 从「经验式」升级成「可由 pops_total 与 b 算出来的量」，R-D 的验收结论是：**均值可预测（3/3 命中 ≤25%），样本数不可由 b 预测（1 FAIL，已改写为结构律）**。
+
+#### 6.16.6 门禁（LAT-a..e，`tests/gc-p0/lat_check.py`；`run.sh lat` 或 `all` 都会跑）
+
+判据脚本自带 `--selftest`（8 个合成用例）：好数据必须 5/5 PASS，坏数据必须把对应通道推成 RED —— `pop_max=512`→LAT-a、随机/顺序无差→LAT-b、gt64 率 4e-3→LAT-c、`over1ms=1`→LAT-d、对照 gt64 率 8e-4→LAT-e、缺 `[wbudget]`→LAT-a、整个目录无产物→LAT-a（**缺文件不是 N/A**：选了 `lat` 目标就必须有产物，否则是 harness 坏了）。拼出来的日志走的是同一条 `parse_err` → `analyze` 路径，所以自测同时也守了解析器。
+
+| 编号 | 判据 | 实测 | 结果 |
+|---|---|---|---|
+| LAT-a | 每个 rep `[wbudget] pop_max ≤ 32`（166 MB 活集 ⇒ 冷档必须生效）且 `[step] n ≥ 1e5` | pop_max=32、n=250,800-250,824 | PASS |
+| LAT-b | `tau_rand/tau_seq ≥ 5.0` 且 `tau_seq ≤ 12 ns/pop`（形状自证：拉不开差距说明已不是延迟屋顶）| 86.4 / 6.8 = **12.67** | PASS |
+| LAT-c | 随机链 gt64 率 min-over-reps ≤ 5e-4 | 1.71e-4（3 reps 全 ≤2.11e-4）| PASS（2.9× 余量）|
+| LAT-d | 随机链 `over1ms` min-over-reps == 0 | 0（per-rep 0/1/0，1 步 4,823.8 µs）| PASS |
+| LAT-e | 顺序对照 gt64 率 max-over-reps ≤ 1e-4 | 1.59e-5 | PASS |
+
+**本通道不判 p99.9 ≤ 10 µs**，理由写在判据脚本头部：单 pop 尾部本身到 64-256 µs（6.16.4 的 b=1 数据），任何 b 都压不下去；把 10 µs 写进这个通道只会得到一个恒 RED 的假判据，与「判据只严不放宽」相反 —— 正确的是**把契约按形状拆开**：暖档（活集 < 16 MiB 或访问有局部性）继续判 10 µs；延迟屋顶只判「均值 + 尾部率 + 单 pop 结构」。p99.9 作为 OBS 打印，归属 §8.1 R15。
+
+#### 6.16.7 对策略的含义（三条，都可执行）
+
+1. **延迟屋顶上 b 的选择由 τ_pop 决定，且必须区分路径**：`b_cold ≤ floor(P_max/τ_pop)`，τ_pop 取该形状实测（本形状 90 ns ⇒ 8 µs 预算给 b ≤ 88，装 32 有 2.8× 余量；但若路径退化成浅栈而 τ_pop 抬到 300 ns 以上，b=32 就会破 8 µs）。判据：**同一 build 上量 τ_pop，再算 b**，不许跨形状借。
+2. **真正的杠杆是 T_LL，不是 b**：τ_pop 的 90 ns 里 88 ns 是访存（§3.12 的发射项只有 2-3 ns）。把随机链的 miss 变成 L3 命中只能靠「活集回到 LLC 覆盖内」；把 DRAM 延迟压下去只能靠**页级放大**（THP/2 MiB 对齐的 slab）——§6.14.7 已证 THP 对 chase 无效（≤0.27% 墙钟），但那是因为 slab 512 KiB 不满足 2 MiB 对齐、THP 根本没形成；本形状给出的是**必须先改分配粒度再谈大页**的证据链，列为下一轮候选（2 MiB 对齐的大块 slab + MADV_HUGEPAGE，判据：τ_pop 下降 ≥30% 且 RSS 增幅 ≤5%）。
+3. **`m` 进模型（式 3.13），并记录它的来源**：`m` 由步形态决定（浅栈 1.0 / 深栈批量 4.8），因此「同一形状改一个编译期开关就换屋顶」是可能的；这也解释了 §6.13 的冷档把 b 压到 32 却只拿到「均值 2.8 µs、尾部不变」的结果。R14 行随之扩展为「`m` 无机制模型」，见 §8.1。
+
 ## §7 门禁（Gate）：判据、量具、before / after
 
 门禁的用处不是「证明程序对」，而是**把契约变成可自动判定的句子**：每一条都写死「量具 + 判据 + 口径」，避免出现「实测 106 µs 也算通过」这种自欺。全部跑在既有 harness（`tests/reclaim-perf/gate.sh` 六项 + `tests/gc-p0/run.sh`）上，不需要新依赖。**after 列的构建口径（逐行标注）**：`p1-after` = v7 同轮产物集（`tests/gc-p0/out/p1-after/`，构建 `build-emp3/extc 07b7be1a…`）；`v7` = `build-p1/extc b9fd5784…`；G20-P0 单列 P0 轮（`build-rf/extc 7019342b…`）。跨构建的绝对计时允许 ±5–15% 差（§6.7.6），判据只看方向与阈值；任何一行换构建都必须重标尾号，不得混用。
@@ -1434,6 +1530,7 @@ callgrind_annotate --threshold=99 /tmp/re9/promote-p.cg | grep markStep
 | G1② | **常规步（`seg=0`）** `>50 µs` 占比 ≤1e-4（cpu 口径）+ `p99.9 ≤10 µs`；通道拆分：`(a)`=[histo]−[segsteps]、`(b)`=[segsteps]、`(c)`=[chan] | `EXTC_RC_STEP_CPU=1` + `[histo]`/`[segsteps]`/`[chan]`（`tests/gc-p0/g1c.py`，selftest S1–S33） | 不可判（无直方图） | **RED（v7，三通道）**：`(a)` cyc over-50 µs 跨桶 N/A、p99.9 落 >16 µs 桶；pb `(a)` **4.25e-4–1.21e-3** >1e-4（跨构建 9.99e-5–4.00e-4 ⇒ 必须标 build）；`(b)` pd_bigobj N/A、dense RED；`(c)` dense regionFree 1,819.4 µs RED；pc n=20,592<1e5 ⇒ N/A。**v21（R3 收口，权威 cpu 口径，§6.9.6）**：`cyc` PASS（`n=469,458`、`>50 µs` 净 8.73e-05、p99.9 净 `count(>10 µs)=252`）、`pb` PASS（`n=1,029,888`、5.63e-05、净 0、`over1ms=0`）、`pc` PASS（`n=123,588`、8.09e-06、净 0）、`pd_bigobj` `(b)` PASS（`c_seg=3.841`、`B_seg=48.20 µs`、`count(>48.20 µs) ≤ 59`、`n=126,311`）、`pd_bigobj60` `(b)` N/A（`n_seg=7,488`）、`rel` PASS（release n=90 / max 7.5 µs）、**(b)/(c) 的结构性 vacuous 与 mixed 结构性 N/A 都有证据**（6.9.3）；唯一 RED 是 **`pd_pointer_dense` `(a)`**（`tau_t=5.434 µs/pop`，R4：扇出 push 未计入步预算 + 标记栈扩容、以及 `[top]` 的 `cpu_us` 未走 `stepSpan` 的通道口径） | **v25（R7）**：`pd_pointer_dense` 的 (a)(b)(c) 全 PASS（聚合 `tau_agg=0.0045–0.0046 µs/pop`），并新增 `workbound`（clock-free：pop≤512 / push≤8448 / mscap≤16384，见 §6.13.4）；`pd_bigobj60` N/A（`n_seg=7,358 < 1e5`，60 轮由 G18 的对照定义）。
 | G1③ | p99.9 ≤ 50 µs（n ≥ 1e5，cpu 口径） | `[histo]` | N/A（结构性不可得） | **PASS（薄）**：cyc/pc/pb 的 p99.9 ≤ 32 µs（桶上界；doc 记 cyc 16 µs、独立跑同一量落 32 µs 桶，邻界不影响判决）；pd N/A（桶界 32–64，wall 口径 128 µs） |
 | G1④ | **clock-free 工作量界**：`pop_max ≤ 512`、`push_max ≤ 8448`（PUSH_STEP 2048 + 一批 200×32）、`mscap_max ≤ 16384`；缺字段记 N/A（不静默变绿） | `[wbudget]`（`tests/gc-p0/g1c.py --require-workbound`，selftest S34 + 变异测试） | 无字段（结构性不可判） | **PASS（v25）**：七用例实测 pop_max ≤ 512、push_max ≤ 304、mscap_max ≤ 16384；cold-dense 形状 `mscap_max=16384` 触到软上限两倍（设计值，见 §6.13.2 H3） |
+| LAT-a..e | 延迟屋顶形状（`tests/gc-p0/src/lat_randchain.extc`）：(a) 冷档 `pop_max ≤ 32` 且 `n ≥ 1e5`；(b) `tau_rand/tau_seq ≥ 5` 且 `tau_seq ≤ 12 ns/pop`；(c) gt64 率 ≤5e-4；(d) `over1ms` min-over-reps = 0；(e) 对照组 gt64 率 ≤1e-4 | `[step]`/`[histo]`/`[wbudget]`（`tests/gc-p0/lat_check.py`；`run.sh lat` 或 `all`） | 无此形状（语料六个形状全在 issue 屋顶，τ_pop 3.8-15 ns） | **PASS（v26）**：LAT-a `pop_max=32`、`n=250,800-250,824`；LAT-b `86.4/6.8=12.67`；LAT-c `1.71e-4`（限 5e-4）；LAT-d `0`（per-rep 0/1/0）；LAT-e `1.59e-5`。**p99.9 在本通道不判 10 µs**：单 pop 尾部本身 64-256 µs（b=1 实测 5/2.44M 步 >64 µs、max 126.7 µs），见 §6.16.4/§6.16.6 |
 | G2 | `collect`/`account` 单次 **p99.9 ≤ 200 µs**（n ≥ 1e3，cpu 口径；**max 不可作契约**，见 §8.1 R6——2202 样本的单次 max 判 200 µs 会被尖峰支配） | `[chan]` + `[histo]` | 1.08–1.45 ms（整轮排空，n<100 ⇒ RED） | **PASS（判据改 p99.9 后）**：cyc/pc/pb 的 collect p99.9 ≤ 64 µs（两口径合并 n=4404，>128 µs 样本仅 3 个）；max 记录：cyc 215.3 µs（3 reps 合并的单次尖峰）、doc-audit 13 次独立跑 cyc collect max 16.6–91.2 µs ⇒ 旧判据 RED 不可审计，按 `AUDIT-GC-P0.md` §18.4-1 改判 |
 | G3a | `regionFree` 同步段 free 次数 ≤ `#classes + 3`（v7 两阶段后：`_frees += 9+big` 只在 `#if !EXTC_RC_FREE_DEFER` 内，默认 DEFER=1 只剩 `+= 2`）；总量看 `[freequeue] drained_total` | `[regionfree]` + `[freequeue]` 探针 | 无探针 | **PASS（判据已重构）**：默认档 pb 50M `max_frees=3`、pd 200 同；旧判据（`≤10·#slabs+#classes+3`，pb 110190≤122433）只在 DEFER=0 构建可复现 |
 | G3b | `regionFree` 单次 cpu ≤1 ms（停顿硬项；v8 起同步段 O(1)，排空预算 ≤8 slab/100 µs） | `[regionfree]`（`sync_us`/`queue_us`）+ `[chan]` + `[closing]` | 未测（v4 pb cpu 86.2 ms） | **已闭合（v8）**：三形状 `[chan] regionfree` = **0.4 µs**（pd_bigobj，max 0.9）/ **1.6 µs**（pd_pointer_dense，max 2.5）/ **1.7 µs**（pb 100M，max 2.1）；`[regionfree] max_frees=0 max_slabs=0 sync_us≈0.2–1.9`。v7 旧数保留作对照：pd 493.2 µs（max 711.4）、dense 1,365.5–1,849 µs、pb 100M 13.2–14.8 ms、pb 50M 6.35–8.40 ms。判据（≤1 ms）达成；**用户目标 p99.9 ≈50 µs 未达成，且不是本项问题**（v9 更正：p99.9 由宿主噪声地板决定，(b) 通道 58.53/99.20 µs 见 §6.7.4 与 `P1-SEG-TAIL.md`）。诚实限制：三个形状都只在退出前 drop 一次，cq 未排空（`slabs_moved=0`），归零由 driver `t_regionFreeDefer*` 与 `freeQueueDrainAll` 证明 |
@@ -1475,6 +1572,7 @@ callgrind_annotate --threshold=99 /tmp/re9/promote-p.cg | grep markStep
 | R8 | 同样分配字节下 `SCAN_CHUNK` 65536 的 collects 是 8192 的 3.6×（25 vs 7）、总 step 时间 6.4×，机制未定位 | 「每秒 GC 工作量」不是不变量 | 只按每步承诺（§8.3-2）；记 TODO 待 `seg_words` 落地后复查 |
 | R13 | 段步（`seg>0`）的 `max` 尾部 —— **已归因，但只对 `chunk=8192` 的 58–329 µs 成立**（task-32，`P1-STEP-TAIL.md`）：① **环境抢占**为主（`minflt=0`、单次停顿集中在 1 个 4 KiB 子块、邻块 0.1–0.7 µs；纯指针遍历对照在同一核复现 rate 2e-5/子块）；② `chase` 是**对象冷页缺页**（`minflt=16–49`，100–143 µs）；③ `promote`/`pd_dense` 的 256-pop 批是**真实工作量**（60–230 µs，0.6–1.9 µs/pop）。**未测**：小 chunk 的 871 µs（§6.7.1 观测，无归因实验） | 「单步 max」对续扫段不可契约化：本机 `CLOCK_THREAD_CPUTIME_ID` 把被抢占时间计入 CPU（doc-audit 独立重跑 control2：cpu/tick = **84.0/85.1/93.7%**，报告原写 70–80% 是保守值）⇒ `cpu_us≈dur_us` 不能当「这是 GC 工作」；对照的 worst 870–2345 µs 是**高负载时刻**观测，空载机 458–522 µs ⇒ 引用时必须同时给 load 与时间戳（C8）。因此 G1②(b) 只判 p99.9 与 `over-1ms=0`、`max` 只作诊断；`chunk` 调小压不低这条尾部（task-26 已证） |
 | R14 | `tau_pop` 的发射项只做到「可算的下界 + 相加假设」：`τ_pop = Ir_pop/Ir_per_s + β·T_LL` 里的 beta（依赖指针密度）只有五个形状的观测（0.07-0.69），没有机制模型；单用 `tau_issue` 预测 tau_pop 的 ±20% 判据只 1/5 成立（§3.12） | 模型能证明「发射项存在且是下界」，不能逐形状预测 tau_pop；`c_t = tau_pop/s̄` 的形状依赖仍靠实测 | U：beta 由「依赖指针密度 × MLP」推出来（需再标定 MLP 与 miss 的重叠度）；`tau_issue` 的 IPC×f 反推未做（CALIBRATION §15 限制 2） |
+| R15 | **延迟屋顶的单 pop 尾部无机制模型**：随机链上 `P_step` 的 p99.9 落在 64-128 µs 桶（gt64 率 1.9-2.4e-4），且 b=1 时仍有 5/2.44M 步 >64 µs（max 126.7 µs）⇒ 尾部是「单次 pop 的走表/页错误级代价」，与 b 无关；缩小 footprint（1M node/32 MB）率降到 0.8-1.2e-4 但没有干净消失 ⇒ **不能唯一归因 TLB** | 「停顿有界」在延迟屋顶上只能承诺均值（b=32 实测 2.80 µs）＋尾部率，不能承诺 p99.9 ≤ 10 µs；跨机移植时该率会变 | 下一轮候选：2 MiB 对齐的大块 slab + `MADV_HUGEPAGE`（判据：τ_pop 降 ≥30% 且 RSS 增幅 ≤5%）；LAT-d 只判 `over1ms=0`（min-over-reps），删除「max ≤ 50 µs」在这类形状上的任何表述 |
 
 ### 8.2 实现侧（已修 / 未修）
 
@@ -1677,6 +1775,29 @@ taskset -c 6 /tmp/markcost 16 3 6       # 16 MB 活集、3 reps、pin core 6
 口径注意：①注入的计时每步多两次 `CLOCK_MONOTONIC`（各 ~13.5 ns），步数 381-10,705 ⇒ 对 mark_ns 的影响 <0.3%；②`markcost` 测的是「全存活、elide 不生效」的最坏清扫，真实形状的 sweep 还含释放级联，两者不可混用；③THP A/B 必须先确认 `/proc/self/smaps` 的 `AnonHugePages` 之和等于 footprint，否则测得的是「没合成大页的同义反复」（探针自己打印该值）。
 
 表：§2.5（常量）、§6.14.3（延迟梯/TLB 梯）、§6.14.4（THP A/B）、§6.14.5（11 点每 pop 成本）、§6.14.6（六个真实形状）。
+
+### 9.6 延迟屋顶形状（R-C，v26；判据 LAT-a..e）
+
+    # 便捷入口（run.sh lat 会做同样的事，并额外跑空转地板与 stallrate 探针）
+    EXTC=./build/extc REPS=3 OUT=tests/gc-p0/out/lat tests/gc-p0/run.sh lat
+
+    # 手工复现（与 §6.16 的数字同口径：taskset -c 6、PAUSE=1、rounds=4、5 reps）
+    ./build/extc tests/gc-p0/src/lat_randchain.extc -o /tmp/lat/rand.c
+    cc -O2 -std=c11 -fwrapv -D_POSIX_C_SOURCE=200809L -o /tmp/lat/rand /tmp/lat/rand.c
+    taskset -c 6 env EXTC_RC_PAUSE=1 /tmp/lat/rand 4 2>&1 >/dev/null | grep -E "step|histo|wbudget"
+    taskset -c 6 env EXTC_RC_PAUSE=1 /tmp/lat/rand 4 s 2>&1 >/dev/null | grep -E "step|histo|wbudget"   # 顺序对照
+
+    # 路径切换对照（§6.16.3）：同源码只加 -DEXTC_RC_MARK_SHALLOW=0
+    cc -O2 -std=c11 -fwrapv -D_POSIX_C_SOURCE=200809L -DEXTC_RC_MARK_SHALLOW=0 -o /tmp/lat/rand_deep /tmp/lat/rand.c
+    taskset -c 6 env EXTC_RC_PAUSE=1 /tmp/lat/rand_deep 2 2>&1 >/dev/null | grep -E "step|wbudget"
+
+    # 批大小扫描（拐点在 128；必须同时给 BATCH_MAX，否则生成 C 的 #error 会拦住）
+    for b in 32 64 128 256 512; do cc -O2 -std=c11 -fwrapv -D_POSIX_C_SOURCE=200809L \
+        -DEXTC_RC_MARK_COLD_BATCH=$b -DEXTC_RC_MARK_COLD_BYTES=0 -DEXTC_RC_MARK_BATCH_MAX=512 \
+        -o /tmp/lat/b$b /tmp/lat/rand.c; done
+
+    # callgrind 三口径（Ir / D1 / LLd 必须逐位相同；注意 valgrind 要在 taskset 内层）
+    taskset -c 6 valgrind --tool=callgrind --cache-sim=yes --callgrind-out-file=/tmp/lat/cg.out /tmp/lat/rand 2 2>&1 | tail -12
 
 ## 附录 A 定理推导
 

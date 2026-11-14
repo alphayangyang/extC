@@ -37,6 +37,7 @@
 #                                     #   60 轮单 rep 走 case pd_bigobj60；判据 200 轮 ≤3L+2SLAB + stdout 逐字）
 #   tests/gc-p0/run.sh g20            # G20：bench/gc/v2 四形状的 [step]/[histo]（P0-B 停顿收益；5 reps×4 形状）
 #   tests/gc-p0/run.sh g20cmp         # G20 跨 tag 对照：BEFORE_G20=…p0-before/g20.json AFTER_G20=…p0-after/g20.json
+#   tests/gc-p0/run.sh lat              # LAT（R-C 延迟屋顶形状）：随机链 vs 顺序链对照，判据见 tests/gc-p0/lat_check.py 头部
 #   EXTC_RC_STEP_CPU=1 tests/gc-p0/run.sh g1cpu   # G1 的 CPU 口径，追加到同一 OUT（clock=cpu）
 #   G1C_C_SEG="pd_pointer_dense=34:52,pd_bigobj=9.5:12" tests/gc-p0/run.sh g1c
 #                                   # (b) B_seg(shape)=1.5*c_seg(shape)*chunk+1us（c_seg 按形状实测，不得跨形状借）
@@ -522,5 +523,18 @@ if [ "$WHAT" = all ] || [ "$WHAT" = g1 ] || [ "$WHAT" = g1cpu ] || [ "$WHAT" = g
         ${g1c_extra[@]+"${g1c_extra[@]}"} || true
 fi
 
+echo "== LAT：延迟屋顶形状（R-C；tests/gc-p0/lat_check.py；判据见脚本头）=="
+# 语料里第一个「标记每 pop 一次 DRAM 访问」的负载：随机链（tau_pop 92-98 ns）与同 pop 数的顺序链
+# 对照（6.8-7.1 ns）。它让 roofline 的**延迟屋顶**第一次可测；此前六个形状全落在 issue 屋顶。
+# 只判结构性/自证/尾部率（LAT-a..e），**p99.9 不判 10 µs**：单 pop 尾部本身到 64-256 µs。
+if [ "$WHAT" = all ] || [ "$WHAT" = lat ] || [ "$WHAT" = g1 ] || [ "$WHAT" = g1c ]; then
+    build lat_rand tests/gc-p0/src/lat_randchain.extc \
+      && build lat_seq tests/gc-p0/src/lat_randchain.extc \
+      && { for r in $(seq 1 "$REPS"); do
+               run_pause lat_rand "$r" 4
+               run_pause lat_seq "$r" 4 s
+           done; }
+    python3 tests/gc-p0/lat_check.py --dir "$OUT/log" --json "$OUT/lat.json" || true
+fi
 echo "== 汇总 =="
 python3 tests/gc-p0/summarize.py "$OUT" | tee "$OUT/summary.txt"

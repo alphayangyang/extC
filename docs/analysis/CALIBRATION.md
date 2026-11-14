@@ -474,6 +474,43 @@ taskset -c 6 /tmp/markcost 16 3 6
 
 **判据**：同一二进制、同 pin、3 rep 的 ns/iter 极差 ≤2%；两混合（11 vs 24 Ir/iter）的 Ir/s 差 ≤10%（本机 4.4%）。任一不满足 ⇒ 频率/热降频/负载干扰，整组数不可用。
 
+## §16 延迟屋顶的 τ_pop 与 MLP（v28 新增：式 3.13 的 T_LL 与 m）
+
+§15 给的是**发射项** `Ir_pop/Ir_per_s`（每 pop 的指令时间）。式 3.13 的另一项是访存项：一旦标记的每一步都落在 LLC 之外，`τ_pop` 由「一次依赖加载的延迟 ÷ 同时在飞的 miss 数」给出。这两条常数在本机实测如下，来源与限制逐条列出。
+
+### 16.1 常量表
+
+| 常量 | 值 | 口径 | 来源 |
+|---|---|---|---|
+| `T_LL`（LLC 外单次依赖加载） | **90 ns**（区间 78-157 ns） | 指针追逐，活集 128-256 MB | `tools/probe/memhier.c`（§14.1）；取 128 MB 点 97.9 ns 与 256 MB 点 102 ns 的下沿，再按 R-C 形状的 166 MB footprint 取 90 ns |
+| `κ_L`（每 miss 覆盖的字节） | 1 line = 64 B | 相邻 node 不共享 line | R-C 形状 node=32 B + 随机链 ⇒ 一跳一条 line |
+| `m`（同时在飞的 miss 数） | **1**（浅栈）/ **4.8**（深栈批量） | 同一随机链、同一 Ir、同一 miss 数，只换路径 | §6.16.3 三口径表（Ir/D1/LLd 逐位相同，墙钟 0.88 vs 0.37 s ⇒ m 比 2.4） |
+| `c_fix`（步的固定开销） | **0.2 µs** | 每步除 pop 之外的时钟读与状态检查 | R-D 预测文件，实测 mean_step − b·τ_pop 的残差 |
+
+### 16.2 由常量到预测
+
+    tau_pop(W) = T_LL(W) / (kappa_L * m(path)) + Ir_pop / Ir_per_s
+    mean_step(b) = b * tau_pop + c_fix
+
+- **暖档（活集 < 16 MiB，冷档阈值见 §3.5）**：全部命中 L1-L3，`T_LL` 项退化为 §14.1 的 L1/L2 延迟（0.78/1.8-5.4 ns），此时 `tau_pop ≈ Ir_pop/Ir_per_s`（§15 的 2.76-5.59 ns），语料六个形状实测 3.66-14.41 ns 全部落在这一支。
+- **冷档（活集 > 16 MiB 且每 pop 一次跨页跳）**：`m=1` 时 `tau_pop ≈ 90 ns`，实测 77.9-87.9 ns（残差 +3%~+15%）；`m=4.8` 时 `tau_pop ≈ 20 ns`，实测 20.5-22 ns。
+- **判据（LAT-b）**：同一形状随机/顺序的 `tau` 比 ≥5（实测 12.67），顺序对照 `tau_seq ≤ 12 ns`（实测 6.8）——这一条把「形状确实是延迟屋顶」与「只是慢」分开。
+
+### 16.3 引用时必须带的三条限制
+
+1. **`m` 不是机器常数，是步形态常数**。它由「一次 pop 之后是否立刻扫」决定：浅栈路径 `m=1`，深栈批量路径 `m≈4.8`。所以 `τ_pop` 不能写成「本机恒定 90 ns」；正确写法是 `T_LL/m(path)`，并给出该路径对应的 `b`。
+2. **`T_LL` 是「冷、随机、无预取」的上界**。同 footprint 下顺序访问只有 6.8 ns/pop（12.7× 差），THP 开启与否只差 4-30 ns；因此 `T_LL` 只在「每 pop 跳一条新 line」时成立（LAT-b 与 §6.16.2 都在守这个前提）。
+3. **尾部不在式 3.13 内**。单 pop 步的 p99.9 落在 64-128 µs 桶（b=1 仍有 5/2.44M 步 >64 µs），这是「单次走表+页错误级代价」，与 `b` 无关（§8.1 R15）；式 3.13 只承诺均值，LAT-d 因此只判 `over1ms=0`。
+
+### 16.4 复现
+
+    ./build/extc tests/gc-p0/src/lat_randchain.extc -o /tmp/lat/rand.c
+    cc -O2 -std=c11 -fwrapv -D_POSIX_C_SOURCE=200809L -o /tmp/lat/rand /tmp/lat/rand.c
+    taskset -c 6 env EXTC_RC_PAUSE=1 /tmp/lat/rand 4 2>&1 >/dev/null | grep -E "step|wbudget"
+    # m 的对照：同源码加 -DEXTC_RC_MARK_SHALLOW=0（深栈批量），其余不变
+
+两条数字口径：`tau = [work] 总 step 时间 / [wbudget] pops_tot`（**跨路径不可比**，pops_tot 的分母来源不同，见 §6.16.3）；`m = tau(shallow)/tau(deep)`。
+
 ## 附录 A 原始数据汇总（`analyze8.py` 输出）
 
 | 数据集 | 轮 | 分配 MB | `a_all` GB/s | `a_mut` GB/s | `λ_GC` ns/B | `λ_model` | 误差 | `τ_t` ns | `τ_s` ns | `c_t` ns/B | `c_s` ns/B | GC% |

@@ -1,0 +1,99 @@
+/* 探针 LAT（R-C）：延迟屋顶形状 —— 语料里第一个「标记每 pop 一次 DRAM 访问」的负载。
+ * 目的：让 roofline 的**延迟屋顶**第一次可测。此前六个形状的 tau_pop 都在 3.8-15 ns（L2/L3 区间，
+ *   全部落在 issue 屋顶），延迟项只能靠 256 MB 随机环微基准外推；本形状用一条覆盖全活集的随机链
+ *   把 tau_pop 推到 DRAM 区间（实测 92-98 ns/pop），并给出同 pop 数的**顺序链对照组**。
+ * 形状：N=4,194,304 个 32 B node（约 134 MB 活集）；Fisher-Yates 洗牌后 next 指向洗牌序后继（末个
+ *   回 0，构成覆盖全部 node 的随机环）；根只有 world.head 一条（arena 数组是构建脚手架，但它自身
+ *   也被保守扫描，所以 [work] 的 pop 数不等于链长）。再分配 rounds 轮 65,536 个 512 B junk 覆盖同一
+ *   批槽位（旧 junk 变死）制造真实垃圾 churn，把堆推过 3L 触发回收轮。
+ * 参数：argv[1] = rounds（默认 4）；argv[2] 首字节为 s ⇒ **顺序对照组**（跳过洗牌，链按分配序，
+ *   同 pop 数、同 RSS、同 collects，唯一变量＝地址序）。
+ * 实测（v26 构建、taskset -c 6、EXTC_RC_PAUSE=1、rounds=4、5 reps，2026-11-14）：
+ *   随机：wall 0.93-0.99 s、RSS 312,356 kB、collects=3、[step] n≈250,800、total 732-783 ms、
+ *         pops_tot=7.97e6 ⇒ tau_pop 92-98 ns/pop、pop_max=32（冷档）、gt64=48-60（1.9-2.4e-4）、
+ *         over256=0-14、over1ms=0-1、max 170-5354 µs。
+ *   顺序：wall 0.20 s、RSS 312,356 kB、collects=3、n≈250,870、total 54-57 ms ⇒ tau_pop 6.8-7.1 ns/pop、
+ *         gt64=5-7（2-3e-5）。⇒ 地址序单独造成 13× tau_pop 与 4.8× 墙钟，指令数与 cache miss 数相同
+ *         （callgrind：浅栈 854.6M Ir / 10,233,592 LLd，深栈 854.4M Ir / 10,233,590 LLd，墙钟 0.88 vs 0.37 s）
+ *         ⇒ 差别是**访存并行度（MLP）**，不是工作量：tau_pop = T_LL / MLP。
+ * 判据（tests/gc-p0/lat_check.py）：LAT-a 冷档结构性 pop_max<=32 且 n>=1e5；LAT-b tau_rand/tau_seq>=5
+ *   且 tau_seq<=12 ns；LAT-c gt64 率 <=5e-4（实测 1.9-2.4e-4，2x 余量）；LAT-d min-over-reps over1ms==0；
+ *   LAT-e 对照组 gt64 率 <=1e-4。**p99.9 在本通道不判 10 µs**：单 pop 的尾部本身就到 64-256 µs，
+ *   这是延迟屋顶的性质（b=1 时仍 5 步 >64 µs / 2.44M 步，max 126.7 µs），不是批大小能修的。 */
+use std::io
+
+struct node { v: i64  p0: i64  p1: i64  next: ?mut ref node }
+struct arena { a: [4194304]?mut ref node }
+struct world { head: ?mut ref node  made: i64 }
+struct junk { v: [64]i64 }
+struct jarr { a: [65536]?mut ref junk }
+
+fn parseN(args: slice<slice<u8>>, dflt: i64) -> i64 {
+    if args.len < 2 { return dflt }
+    var s: slice<u8> = args[1]
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    if v > 0 { return v }
+    return dflt
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var rounds: i64 = parseN(args, 4)
+    var seq: i64 = 0
+    if args.len >= 3 { if args[2].len >= 1 { if args[2][0] == u8(115) { seq = 1 } } }
+    var ar = new arena
+    var i: i64 = 0
+    while i < 4194304 {
+        var p = new node
+        p.v = i
+        (*ar).a[i] = p
+        i = i + 1
+    }
+    if seq == 0 {
+        var x: i64 = 88172645463325252
+        i = 4194303
+        while i > 0 {
+            x = x * 6364136223846793005 + 1442695040888963407
+            if x < 0 { x = 0 - x }
+            var m: i64 = i + 1
+            var r: i64 = x - (x / m) * m
+            var t: ?mut ref node = (*ar).a[i]
+            (*ar).a[i] = (*ar).a[r]
+            (*ar).a[r] = t
+            i = i - 1
+        }
+    }
+    i = 0
+    while i < 4194304 {
+        var q: ?mut ref node = (*ar).a[i]
+        var nx: i64 = i + 1
+        if nx >= 4194304 { nx = 0 }
+        var r2: ?mut ref node = (*ar).a[nx]
+        if q != null { (*q).next = r2 }
+        i = i + 1
+    }
+    var w: world
+    w.head = (*ar).a[0]
+    w.made = 4194304
+    var ja = new jarr
+    var rr: i64 = 0
+    while rr < rounds {
+        i = 0
+        while i < 65536 {
+            var j = new junk
+            j.v[0] = i + rr
+            (*ja).a[i] = j
+            i = i + 1
+        }
+        rr = rr + 1
+    }
+    io::cout << "LAT nodes=" << w.made << " rounds=" << rounds << " seq=" << seq << " head=" << (w.head != null) << "\n"
+    return 0
+}
