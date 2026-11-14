@@ -400,6 +400,56 @@ $B -O2 -I stdlib -w -o /tmp/cal/p1.c bench/gc/src/spectrum_p1.extc
 
 `calprof.py` 与 `analyze*.py` 目前在 `/tmp/cal/`，未入库（只读源码、不改仓库）；如需长期保留应移到 `tools/`（需 Lead 批准，因为那会新增仓库文件）。
 
+## §14 内存层级常量（v26 新增：TLB 与 cache miss 的实测来源）
+
+§2 的 `c_t` 与 `c_s`、以及 GC-ROOFLINE §3.11 的 `tau_pop` 屋顶，全部由本节三个通道给出。硬件：Intel Core Ultra 9 275HX（Arrow Lake HX）、WSL2、pin core 6、MemTotal 20.5 GB；L1d 48 KiB 12-way、L2 3 MiB 12-way（每核）、L3 36 MiB 12-way（shared 0-23）、line 64 B。`perf` 不可用（`kernel.perf_event_paranoid=2` ⇒ `perf stat` 报 `No supported events found`），所以**没有任何硬件计数器数据**，miss 数一律来自 callgrind `--cache-sim=yes` 的模拟或微基准。
+
+### 14.1 常量表（每行给出通道与级）
+
+| 常量 | 值 | 级 | 通道 | 出处 |
+|---|---|---|---|---|
+| f | 3.47 GHz | M | 微基准 | 4 条独立依赖链 × 400M 迭代 0.115 s（`/tmp/flg/cal.c`） |
+| T_L1 | 0.78 ns/load | M | 微基准 | `memhier.c` 延迟梯 16-32 KiB |
+| T_L2 | 1.8-5.4 ns/load | M | 微基准 | 延迟梯 256 KiB-2 MiB（2.98 / 3.44 / 4.45 / 5.37） |
+| T_LL | 12.7-16.5 ns/load | M | 微基准 | 延迟梯 4-8 MiB（12.67 / 16.52） |
+| T_DRAM | 97.9-156.6 ns/load | M | 微基准 | 延迟梯 16-256 MiB（依赖链，5 次取 min） |
+| LLC_eff | 8-12 MB | M | 微基准 | 延迟梯 8→12 MiB 从 18.0 跳到 52.1；THP A/B 两种页大小同处跳 |
+| C_STLB | 2048 项（4 KiB 页 ⇒ 8 MiB） | M | 微基准 | `memhier.c` TLB 梯：2048 项 18.02 ns、4096 项 21.49 ns |
+| T_walk | 4-13.5 ns | M | 微基准 | TLB 梯 + THP A/B（同 footprint 差 4-30 ns，含与 DRAM 重叠） |
+| B_read | 20.4-23.7 GB/s | M | 微基准 | 192 MiB 顺序读，3 轮 |
+| B_write | 16.2-16.9 GB/s | M | 微基准 | 同上 |
+| B_copy | 34-36 GB/s | M | 微基准 | 同上（r+w 计） |
+| kappa_L(pop) | promote 0.00（`DLmr`=0 / 2,078,796）、sizeratio 0.00（0 / 175,275）、chase **0.092**（28,110 / 305,837） | M | callgrind | `--cache-sim=yes` 的**标记函数** `extc_rc_markStep` 自身 `DLmr` ÷ pop（`/tmp/cg5/*.ann`；全程序 `DLmr`/pop = 0.0006/0.006/0.28） |
+| m（MLP） | 16 MiB 3.4、32 MiB 3.1、64 MiB 2.3、128 MiB 1.8、256 MiB 1.6 | D | 反推 | 梯延迟 ÷ 实测每 pop（`markcost` 11 点） |
+| 大页可用性（rc 堆） | 不可用 | D | 机制 | slab 为 512 KiB 独立 mmap、非 2 MiB 对齐；THP 模式 madvise ⇒ 无法合成 |
+
+### 14.2 与 §2 常量的换算
+
+- `tau_pop = max(tau_issue, kappa_L·T_DRAM/m, b_pop/B_eff) + epsilon_tlb·1[W_pages > C_STLB]`（GC-ROOFLINE §3.11）。τ 是「每标记对象」口径，`c_t = tau_pop / s_bar` 是「每被标字节」口径；`s̄ = 42.5 B`（digraph 1M）。
+- 校验：digraph 250k 注入实测 `tau_pop = 14.98 ns`、`s̄ = 42.5 B` ⇒ `c_t = 0.353 ns/B`；§2.2 的标定值 0.4114 比它高 14%，两个差源可核对（标定轮每步两次 `pauseNow` 20-40 ns；标定构建是 v7 系）。**§2.2 继续用 0.4114（偏保守），差值记 L。**
+- `c_s = 0.0108 ns/B` 不动：受控探针 `markcost`（全存活、elide 不生效的最坏清扫）11 点给出 0.496-0.613 ns/KB = 0.00048-0.00060 ns/B，比 0.0108 小 18 倍——两者口径不同（`c_s` 含释放级联与每 slab 固定成本，`markcost` 只量位图扫描），所以 `c_s` 不能改用探针值；这条差异本身是本轮的一个结论：**清扫的扫描项是带宽型、常数级；`c_s` 里的大头是释放与元数据**。
+- 冷档阈值：`EXTC_RC_MARK_COLD_BYTES = 16 MiB` ∈ [max(C_STLB·4 KiB, LLC_eff), 2×max(...)] = [8-12 MB, 16-24 MB] ✔。
+
+### 14.3 复现（三条通道，全部可重跑）
+
+```sh
+cc -O2 -o /tmp/memhier tools/probe/memhier.c && taskset -c 6 /tmp/memhier 6      # 延迟梯/TLB 梯/带宽
+cc -O2 -o /tmp/thpab   tools/probe/thpab.c   && taskset -c 6 /tmp/thpab 6        # 4 KiB vs 2 MiB A/B
+./build/extc tests/gc-p0/src/pb_escape_grow.extc -o /tmp/pb.c
+python3 tools/probe/rc-markcost.py slice  /tmp/pb.c -o /tmp/rt.inc             # 受控探针用运行期
+python3 tools/probe/rc-markcost.py inject /tmp/pb.c -o /tmp/pb-mi.c            # 真实形状注入计时
+cc -O2 -std=c11 -fwrapv -D_POSIX_C_SOURCE=200809L -o /tmp/pb-mi /tmp/pb-mi.c
+taskset -c 6 /tmp/pb-mi 20000000
+cc -O2 -std=c11 -fwrapv -D_POSIX_C_SOURCE=200809L -I/tmp -o /tmp/markcost tools/probe/markcost.c
+taskset -c 6 /tmp/markcost 16 3 6
+```
+
+### 14.4 引用时必须带的三条限制
+
+1. **LLC_eff 的机制是 U**：只做了页大小 A/B 与延迟梯，没有组冲突/stride 对照 ⇒ 「36 MiB、12-way 下有效容量 8-12 MB」是实测值 + 未分离的解释。
+2. **m 的下降（3.4→1.6）是 D（反推）**：候选机制是位图 RMW 串行化（每 pop 两次位图读改写、第二次依赖第一次）与标记栈自身 miss，没有实验把两者拆开。
+3. **phi_gc（GC 侧 DRAM 流量）只有理论值**：perf 不可用，没有用计数器验 ⇒ 带宽屋顶的四项里，`B_eff` 是 M、`phi` 是 D。
+
 ## 附录 A 原始数据汇总（`analyze8.py` 输出）
 
 | 数据集 | 轮 | 分配 MB | `a_all` GB/s | `a_mut` GB/s | `λ_GC` ns/B | `λ_model` | 误差 | `τ_t` ns | `τ_s` ns | `c_t` ns/B | `c_s` ns/B | GC% |
