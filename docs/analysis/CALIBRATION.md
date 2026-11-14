@@ -450,6 +450,30 @@ taskset -c 6 /tmp/markcost 16 3 6
 2. **m 的下降（3.4→1.6）是 D（反推）**：候选机制是位图 RMW 串行化（每 pop 两次位图读改写、第二次依赖第一次）与标记栈自身 miss，没有实验把两者拆开。
 3. **phi_gc（GC 侧 DRAM 流量）只有理论值**：perf 不可用，没有用计数器验 ⇒ 带宽屋顶的四项里，`B_eff` 是 M、`phi` 是 D。
 
+## §15 指令吞吐 Ir_per_s（v27 新增：§3.12 的 tau_issue 分母）
+
+**用途**：把「每 pop 的发射成本」从同义反复（拿 τ_pop 当 tau_issue）变成两个可独立测的量之一；另一项是 Ir_pop（callgrind 的 `extc_rc_markStep` 独占 Ir ÷ pop 数）。
+
+**探针**：`tools/probe/ipeak.c`（8 / 16 条独立累加链 + 空 `__asm__` 屏障）。
+
+**本机实测（Intel Core Ultra 9 275HX，WSL2，pin 6，gcc 13.3 -O2 -fno-tree-vectorize）**：
+
+| 混合 | Ir/iter（callgrind 差商） | ns/iter（3 rep 最小） | Ir/s |
+|---|---|---|---|
+| 8 链 · 11 Ir/iter | 11.0008 | 0.324 | 33.95 G |
+| 16 链 · 24 Ir/iter | 24.0013 | 0.679 | 35.35 G |
+
+取 **Ir_per_s = 34.6 G**（两混合差 4.4%，取均值）。
+
+**口径与限制（引用时必须带）**：
+
+1. 这是**纯 ALU、寄存器驻留**的天花板，比任何摸内存的循环都高 ⇒ 由它算出的 `tau_issue = Ir_pop/Ir_per_s` 是**下界**，不是预测值。
+2. 它吸收 IPC×f，所以**不要**再用 §2.5 的 `f = 3.47 GHz` 当分母：3.47 GHz 是「4 条依赖链每迭代」的吞吐（≈1 iter/ns），与时钟不是一回事。若要反推时钟：34.6 G / IPC，IPC 需另行标定（本机未做，属 U）。
+3. `-fno-tree-vectorize` 必须带：否则循环被 SIMD 化，Ir/iter 与 ns/iter 同时变，靠假设的 Ir/iter 会得出错误的 Ir/s。
+4. 换机器必须重测（LLC/前端宽度/频率都变），并把新值写回 §3.12 的表与 `tools/probe/ipeak.c` 注释。
+
+**判据**：同一二进制、同 pin、3 rep 的 ns/iter 极差 ≤2%；两混合（11 vs 24 Ir/iter）的 Ir/s 差 ≤10%（本机 4.4%）。任一不满足 ⇒ 频率/热降频/负载干扰，整组数不可用。
+
 ## 附录 A 原始数据汇总（`analyze8.py` 输出）
 
 | 数据集 | 轮 | 分配 MB | `a_all` GB/s | `a_mut` GB/s | `λ_GC` ns/B | `λ_model` | 误差 | `τ_t` ns | `τ_s` ns | `c_t` ns/B | `c_s` ns/B | GC% |

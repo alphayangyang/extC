@@ -148,7 +148,7 @@
 
 | 常量 | 值 | 级 | 来源 |
 |---|---|---|---|
-| f（有效频率） | 3.47 GHz | M | 4 条独立依赖链 × 400M 迭代 0.115 s |
+| f（依赖链吞吐，**不是时钟**） | 3.47 G iter/s | M | 4 条独立依赖链 × 400M 迭代 0.115 s；指令吞吐 Ir_per_s = 34.6 G 见 §3.12 |
 | T_L1 | 0.78 ns/load | M | 延迟梯 16-32 KiB |
 | T_L2 | 1.8-5.4 ns/load（256 KiB-2 MiB） | M | 延迟梯 |
 | T_LL | 12.7-16.5 ns/load（4-8 MiB） | M | 延迟梯 |
@@ -163,6 +163,8 @@
 
 1. 本机上 4 KiB 页的 STLB 覆盖（8 MiB）与 LLC 有效容量（8-12 MB）同量级、且都远小于名义 L3（36 MiB）⇒ 活集超过 ~8 MB 后，**标记的每次随机 pop 同时付一次 cache miss 与一次页表走**。
 2. DRAM 依赖链 98-157 ns 与顺序带宽 20-24 GB/s 合起来看：一次**无重叠的随机 miss** 的成本相当于 40-75 条顺序 line 的带宽成本 ⇒ 延迟屋顶与带宽屋顶差一个数量级以上。GPU roofline 的两个屋顶（compute 与 bandwidth）是可比的，这里不可比 —— 这是本模型与 GPU 类比的第一个结构性差异（第二个差异见 §3.10：这里的两个硬墙是契约参数，不是硬件常数）。
+
+**移植：这张表是机器属性，不是模型常数（v27 新增）。** 表里除 `f` 以外的每一项都要在新机器上重测，顺序四步：①`./build/extc` 编 `tools/probe/memhier.c`，得 T_L1/T_L2/T_LL/T_DRAM 与 LLC_eff（延迟梯拐点）；②`tools/probe/thpab.c` 得大页可用性（rc 堆现在是 512 KiB 独立 mmap，结构性拿不到 THP）；③`tools/probe/ipeak.c` 得 Ir_per_s（§3.12 的 tau_issue 分母）；④重标 `tests/gc-p0/bseg-cal.tsv`（B_seg 与各形状 τ_pop），否则 G1② 的强判据会以旧 `src_md5` 的口径误判。判据：换机器后 `EXTC_RC_MARK_COLD_BYTES` 的许可区间 [max(C_STLB·4 KiB, LLC_eff), 2×max(...)] 若整体移动超过 1.5×，必须重设阈值（本机 16 MiB 落在 [8-12 MB, 16-24 MB] 内）。反例：在 128 MB LLC 的机器上，16 MiB 阈值会把 60 MB 活集判成暖档 ⇒ b=1024 的步时被 τ_pop 放大 3-7 倍。
 
 ## §3 形式化模型（两条硬约束下的最优 GC 策略）
 
@@ -230,6 +232,14 @@ lambda(r) = (c_t + c_s * F_slab * r) / (r - 1)          [ns per allocated byte]
 
 **c_t 不是单点常数**：上式把 τ 记成常数只在活集驻留缓存时成立；活集超过 LLC 有效容量（本机 8-12 MB）后每一次 pop 变成一次访存延迟，c_t 与 τ_t 要换成 §3.11 的三屋顶形式（冷档阈值即由它推出）。
 
+**每对象形式（同一式的另一种量纲；§3.11 起 τ 用它）**：把 λ 乘上平均槽字节 `s_bar`（48 B 对象 = 48），得到每回收一个对象的成本
+
+```
+lambda_obj(r) = s_bar * lambda(r) = (tau_t + tau_s * F_slab * r) / (r - 1)   [ns per reclaimed object]
+```
+
+代 τ_t=17.49 ns/obj、τ_s=0.458 ns/slot、F_slab=1.30：r=2 ⇒ 18.7 ns/obj；r=2.83 ⇒ 10.5；r=4.13 ⇒ 6.4；r→∞ ⇒ 0.60（= τ_s·F_slab）。与 λ 是一一对应的单调变换，但**每对象形式才是标记成本的量纲**：§3.11/§3.12 的 τ_pop 是「每 pop 一个对象」，λ_obj 是「每回收一个对象」，两者之比就是 r−1 与 F_slab 的记账。内存侧的同型写法是每存活对象字节 = s̄·M/L = s̄·(1 + κ_M·H/L)。
+
 ### 3.4 内存定律（T-M）
 
 标记期间上一轮垃圾正在被 sweep 回收，所以峰值只保留 H 的一部分：
@@ -263,7 +273,7 @@ P(b) = b * tau_t + W_s * 64 * tau_s = b * 17.49ns + 234.5ns
 | 128 | 2.47 µs | 更严门禁（4 µs 内可放大 batch 的更小值） |
 
 实测 mark 步 p99（3 rep）=4.36/4.79/6.42 µs，模型 4.71 µs ⇒ 按下式（模型−实测）/实测 的误差为 +8.0%/−1.7%/−26.6%（写全三值，别只写区间：区间会掩盖符号与口径）；**p99 本身 ±40%，门禁必须写成「p99 中位数 ≤5 µs 且三 rep 的 p99 ≤7 µs」**。`max` 不可用（§0 结论 5）。
-**冷档修正（R2，机制与实测见 §6.8）**：上式的 `b` 不是全局常量，而是**按活集分档**：`b_eff = min(b, 1024)`（暖，`r->live ≤ EXTC_RC_MARK_COLD_BYTES = 16 MiB`）/ `min(b, 128)`（冷，超过该阈值），即 `P_step ≤ b_eff·τ_t + 234.5 ns`。理由是 `τ_t` 本身形状依赖：活集驻留缓存时 ~2 ns/pop，一次 pop 变成一次访存延迟时上式的 17.49 ns/obj 会系统性低估。冷档用**更小的 b 抵消更大的 τ_t**，所以它收紧（而不是放宽）巨活集形状的单步上界；代价是步数上升（调度粒度变细），λ 不变。这条修正的机制解释在 §3.11 推论 2：`τ_pop` 从 3.8-15 ns 涨到 28-98 ns（3-7 倍）时，`b` 必须按同一比例收缩才能守住同一个 `P_step`，128 是 16 MiB 阈值下的解。
+**冷档修正（R2，机制与实测见 §6.8）**：上式的 `b` 不是全局常量，而是**按活集分档**：`b_eff = min(b, 1024)`（暖，`r->live ≤ EXTC_RC_MARK_COLD_BYTES = 16 MiB`）/ `min(b, EXTC_RC_MARK_COLD_BATCH = 32)`（冷，超过该阈值；R2 时为 128，v25 起 32），即 `P_step ≤ b_eff·τ_t + 234.5 ns`。理由是 `τ_t` 本身形状依赖：活集驻留缓存时 ~2 ns/pop，一次 pop 变成一次访存延迟时上式的 17.49 ns/obj 会系统性低估。冷档用**更小的 b 抵消更大的 τ_t**，所以它收紧（而不是放宽）巨活集形状的单步上界；代价是步数上升（调度粒度变细），λ 不变。这条修正的机制解释在 §3.11 推论 2：`τ_pop` 从 3.8-15 ns 涨到 28-98 ns（3-7 倍）时，`b` 必须按同一比例收缩才能守住同一个 `P_step`；冷档批量的预算方程是 `b_cold ≤ floor(P_max/τ_pop_cold) = floor(8 µs/98 ns) = 81`，v25 装 32（更紧：实测冷档最坏单 pop 到 ~1 µs 量级，见 §6.13.2）——**文档、常量、推导三处现在同一个数：32**。
 
 ### 3.6 keep-up 定律（T-K，推导在附录 A.2）
 
@@ -381,9 +391,11 @@ tau_pop = max( tau_issue , kappa_L * T_DRAM / m , b_pop / B_eff )
 c_t = tau_pop / s_bar          tau_t = tau_pop
 ```
 
+**v27 修订（§3.12 实测）**：上式的 `max(...)` 只在「tau_issue 是下界」的意义上成立；实测关系是**相加**——发射项与访存项不重叠，`τ_pop = Ir_pop/Ir_per_s + β·T_LL`，β=0.07-0.69（与依赖指针密度同序，T_LL 取 13 ns）。τ_issue 的实测值是 **2.76-5.59 ns**，不是 3.8-15.0 ns（那是 τ_pop）。
+
 | 项 | 含义 | 取值/来源 |
 |---|---|---|
-| tau_issue | 每 pop 的发射成本 Ir_pop/(IPC·f)；同形状驻留在 L1/L2 时实测即此值 | 本语料 3.8-15.0 ns/pop（§6.14.6） |
+| tau_issue | 每 pop 的发射成本 = Ir_pop / Ir_per_s（Ir_per_s = 34.6 G Ir/s，§3.12） | **2.76-5.59 ns/pop**（五形状，§3.12）；3.8-15.0 是 τ_pop，不能当 tau_issue |
 | kappa_L | 每 pop 的 DRAM miss 数（**标记函数自身的 `DLmr` ÷ pop**） | callgrind：promote 0/2,078,796 = 0.00；sizeratio 0/175,275 = 0.00；chase 28,110/305,837 = **0.092**。全程序 `DLmr`/pop 是 0.0006 / 0.006 / 0.28（差额在 mutator 自身与位图/释放路径） |
 | m | 有效访存并行度（MLP）：依赖链 m=1，有独立子指针/预取时 m>1 | 用「梯延迟 / 实测每 pop」反推：16 MiB 3.4、32 MiB 3.1、64 MiB 2.3、128 MiB 1.8、256 MiB 1.6 |
 | b_pop | 每 pop 拉取的字节（对象所在 line + 位图/元数据 line） | 64-128 B |
@@ -399,8 +411,42 @@ c_t = tau_pop / s_bar          tau_t = tau_pop
 三条推论（都落到契约或可行性边界上）：
 
 1. **冷档阈值有推导依据**：`EXTC_RC_MARK_COLD_BYTES = 16 MiB` 是本机两个墙（STLB 覆盖 8 MiB、LLC_eff 8-12 MB）的保守 2 倍。判据：阈值 ∈ [max(C_STLB·4 KiB, LLC_eff), 2×max(...)] ≈ [8-12 MB, 16-24 MB]。太小会让巨活集形状吃到一次 pop 的完整 DRAM 延迟；太大则让 100 MB 级堆仍按暖档批量 1024 走，单步上界被 τ_pop 放大 3-7 倍。
-2. **冷档批量是 τ_pop 的函数**：τ_issue→τ_latency 让每 pop 涨 3-7 倍（暖 3.8-15 ns ⇒ 冷 28-98 ns），要维持 P_step ≤ 8 µs，冷档 b 必须 ≤ 128（98×128 = 12.5 µs 已贴上限；实测冷档最坏单 pop 约 1 µs 量级 ⇒ 装的是 32，见 §6.13.2）。**冷档 = 用更小的 b 去换 τ_pop 的漂移**，这是 §3.5 那条修正的机制解释。
+2. **冷档批量是 τ_pop 的函数**：τ_issue→τ_latency 让每 pop 涨 3-7 倍（暖 3.8-15 ns ⇒ 冷 28-98 ns），要维持 P_step ≤ 8 µs，冷档 b 必须 ≤ floor(P_max/τ_pop_cold) = floor(8 µs/98 ns) = 81；v25 装 32（R2 曾装 128；实测冷档最坏单 pop ~1 µs 量级，故收到 32，见 §6.13.2）。**冷档 = 用更小的 b 去换 τ_pop 的漂移**，这是 §3.5 那条修正的机制解释。
 3. **带宽墙（第四面，进可行带、今天不 binding）**：a ≤ B_eff / (phi_mut + phi_gc)，phi 是每分配字节的 DRAM 流量。当前 a_all = 0.309 GB/s 对 B_read = 21 GB/s ⇒ **松 68 倍**。它的用处有二：给「并行标记 / 多线程回收 / 搬移压实」这类方案设天花板；解释为什么 THP 与字段重排类优化拿不到可测收益（§6.14.7 给出上界 <0.3% 墙钟）。
+
+### 3.12 每 pop 的发射成本 tau_issue：用指令数与指令吞吐算出来（v27 新增，实测见 §6.15）
+
+§3.11 把 tau_issue 写成 `Ir_pop/(IPC·f)`，但 Ir_pop 与 Ir_per_s 从未单独测过，于是文里的「tau_issue」一直是「驻留形状的实测 τ_pop」的同义词（§3.11 表里那行 3.8-15.0 ns 其实是 τ_pop）。这一节把两个因子分别测出来，检验只靠它们能不能预测 τ_pop。
+
+**因子一：Ir_per_s = 33.9-35.4 G Ir/s（取 34.6）。** 探针 `tools/probe/ipeak.c`：8 条 / 16 条独立累加链 + 空 `__asm__` 屏障（防 DCE 与 SIMD 化）；callgrind 用 N=0 与 N=1.25M 两点差商得 **11.0008 / 24.0013 Ir 每迭代**；墙钟取各 3 次最小值 **0.324 / 0.679 ns/iter** ⇒ 33.95 / 35.35 G Ir/s。两种混合（每迭代 11 vs 24 Ir）只差 4.4% ⇒ 这个上界对混合不敏感，是「发射侧天花板」。**注意 §2.5 的 `f = 3.47 GHz` 不是时钟**：那是 4 条依赖链每迭代的吞吐（≈1 iter/ns），不能当 `Ir_pop/(IPC·f)` 的分母（否则算出 13 G Ir/s，与实测差 2.6 倍）；Ir_per_s 已经把 IPC×f 折在一起。
+
+**因子二：Ir_pop（每 pop 指令数）。** callgrind 的 `extc_rc_markStep` 独占 Ir ÷ 同一形状、同一编译器、注入探针测到的 pop 数（`tools/probe/rc-markcost.py inject`）。
+
+表 3.12（五形状，v27 源码，`-O2`，pin 6；τ_pop 取 3 rep 最小值）
+
+| 形状 | pops | markStep Ir | Ir/pop | τ_issue = Ir/pop ÷ 34.6 G | τ_pop 实测 | τ_issue/τ_pop | τ_mem = τ_pop − τ_issue | β = τ_mem/13 ns | D1mr/pop |
+|---|---|---|---|---|---|---|---|---|---|
+| promote | 2,078,729 | 300,030,427 | 144.3 | 4.17 ns | 6.07 | 0.69 | 1.90 | 0.15 | 2.71 |
+| sizeratio | 175,275 | 16,762,028 | 95.6 | 2.76 | 3.66 | 0.76 | 0.90 | 0.07 | 0.86 |
+| cycleratio | 49,020 | 6,313,980 | 128.8 | 3.72 | 5.57 | 0.67 | 1.85 | 0.14 | 0.02 |
+| chase | 305,837 | 59,198,408 | 193.6 | 5.59 | 12.10 | 0.46 | 6.51 | 0.50 | 1.65 |
+| digraph | 275,680 | 52,414,265 | 190.1 | 5.49 | 14.41 | 0.38 | 8.92 | 0.69 | 0.79 |
+
+（pops 与 τ_pop 来自注入版，Ir 来自未注入版，两份构建同源码同编译器；注入只加每步两次读钟，对 promote 的 Ir 影响 ≤1.1%。）
+
+三条结论：
+
+1. **tau_issue 是 τ_pop 的下界，五个形状全部成立**（比值 0.38-0.76）。因此 §3.11 的 `tau_pop = max(tau_issue, ...)` 只在下界意义上对：实测关系是**相加**——发射项与访存项不发生重叠，`τ_pop = Ir_pop/Ir_per_s + β·T_LL`（T_LL 取 §2.5 的 12.7-16.5 ns，本节统一用 13 ns）。
+2. **残差是「每 pop 阻塞在 L3 的 miss 数」β，不是常数**：β = 0.07-0.69，且与「标记路径是否走依赖指针」同序：sizeratio 的对象里是短数组、访问在本地（0.07）；promote 顺序扫 slab（0.15）；cycleratio（0.14）；chase 的下一跳是链上下一个节点（0.50）；digraph 每个 pop 的下一跳是图边（0.69 = 几乎每 pop 付一次 L3）。无依赖的顺序访问（promote/sizeratio）由 D1mr/pop 2.71、0.86 只换来 0.15/0.07 ⇒ **非依赖 miss 被乱序与 MLP 吸收，只有依赖 miss 计入 τ_mem**。
+3. **±20% 判据只在 sizeratio 成立（1/5，不通过）**：单用 Ir/pop 预测 τ_pop 的误差 −24% 到 −62%，全部偏低（因为它是下界）。诚实结论：**tau_issue 的第一性成立（可算、且是可证的下界），但它只是 τ_pop 的一项**；要 ±20% 必须带 β 项，而 β 需要「依赖指针密度」这个形状量（本语料 0.07-0.69）。模型据此从「单屋顶取 max」改成「两屋顶相加」，见 §3.11 修订。
+
+**对契约读数的影响**：把两项式代回 §3.5 的 `P(b) = b·τ_t + c`：暖档 b=256、取最大 β 的 digraph ⇒ 256×14.41 ns = 3.69 µs（§6.5 实测 p99 4.4-6.4 µs ⇒ 模型低 15-40%，仍是下界，门禁继续以实测为准）；冷档 b=32、τ_pop_cold=98 ns ⇒ 3.14 µs ≤ 8 µs 目标（与 §3.5 的 b_cold ≤ 81 相容）。
+
+**判据（R-E 验收，写进 `tools/probe/ipeak.c` 头注释）**：
+
+- τ_issue ≤ τ_pop：5/5 成立；
+- τ_issue/τ_pop ∈ [0.35, 0.80]：实测 0.38-0.76，成立；
+- |τ_issue − τ_pop|/τ_pop ≤ 20%：**1/5 成立（不通过）** ⇒ 不采用「单屋顶预测 τ_pop」，改用两项相加；这条失败记入 §8 残余。
 
 ## §4 策略族 S1–S5 的判定（形式化 + 实测）
 
@@ -806,7 +852,7 @@ callgrind（`align` 小 N）：promote 115 211 310 → **129 126 214（+12.1%）
 
 落点在 `extc_rc_markAdvance` 的 window clamp **之后**（v18 `reclaim.c:1429` 是原 clamp，`:1430` 是冷档 clamp）：`if (r->live > (int64_t)EXTC_RC_MARK_COLD_BYTES && b > (size_t)EXTC_RC_MARK_COLD_BATCH) { b = 128; extc_rc_markColdN++; }`。`[work]` 行尾新增 `cold_steps=`（v18 `:3927`/`:3939`），计数在 `:1189`。
 
-**契约方向（必须写清，否则等于放宽）**：冷档只让实际 `b` 更小，`walk_max ≤ walk_cap` 仍逐字成立（`walk_cap = MARK_BATCH_MAX × SWEEP_PRESSURE_MUL` = 1024），所以它是**上界收紧**；`P_step` 的模型随之改成 `P_step ≤ b_eff·τ_t + c_fix`，`b_eff = min(b, 1024)`（暖）/ `min(b, 128)`（冷，`live > 16 MiB`）。在 roofline 平面上这个改动**不动 λ**（每字节的回收成本不变），动的是 **P 轴的可达域**：步数 `n` 上升、每步更短，即「调度粒度变细」，不是「多干活」。
+**契约方向（必须写清，否则等于放宽）**：冷档只让实际 `b` 更小，`walk_max ≤ walk_cap` 仍逐字成立（`walk_cap = MARK_BATCH_MAX × SWEEP_PRESSURE_MUL` = 1024），所以它是**上界收紧**；`P_step` 的模型随之改成 `P_step ≤ b_eff·τ_t + c_fix`，`b_eff = min(b, 1024)`（暖）/ `min(b, 128)`（冷，`live > 16 MiB`；**v25 起常量收到 32**，见 §6.13.2 与 §3.5）。在 roofline 平面上这个改动**不动 λ**（每字节的回收成本不变），动的是 **P 轴的可达域**：步数 `n` 上升、每步更短，即「调度粒度变细」，不是「多干活」。
 
 #### 6.8.3 为什么门槛取 16 MiB（形状实测，不是按基准名开洞）
 
@@ -1332,6 +1378,52 @@ TLB 梯（每步跨一页、页内只碰 1 条 line ⇒ 数据工作集极小，
 - **sweep 口径不可混用**：`markcost` 的 0.58-0.61 ns/KB 是「全存活、elide 不生效」的纯扫描；真实形状的 sweep 含释放级联（promote 3.29 ms 对 ~3.4 MB 容量，sizeratio 1.47 ms 对 ~2 MB 容量），c_s 仍用 CALIBRATION §4 的标定值 0.0108 ns/B，不改。
 - **带宽屋顶未测 GC 侧流量**：phi_gc 只有理论值（每扫一个 64 B line 一次读），没有用 PCM/硬件计数器验（perf 不可用）。
 
+### 6.15 R-E 轮（2026-12-04）：把 tau_issue 算出来 —— 指令吞吐 × 每 pop 指令数（v27，无源码改动）
+
+目的：§3.11 把 `tau_issue = Ir_pop/(IPC·f)` 写成形式，但两个因子都没测过。本节给两个因子的探针与五形状数据，结论与判据见 §3.12；**本轮不改 `src/` 一个字节**（只新增 `tools/probe/ipeak.c`）。
+
+#### 6.15.1 指令吞吐上限 Ir_per_s
+
+```
+cc -O2 -fno-tree-vectorize -o /tmp/ipeak tools/probe/ipeak.c
+taskset -c 6 /tmp/ipeak 8  200000000      # 0.324 / 0.331 / 0.330 ns/iter（3 rep）
+taskset -c 6 /tmp/ipeak 16 200000000      # 0.679 / 0.683 / 0.712 ns/iter
+taskset -c 6 valgrind --tool=callgrind --callgrind-out-file=/tmp/i8a.cg /tmp/ipeak 8 0          # 139,671 Ir（启动基线）
+taskset -c 6 valgrind --tool=callgrind --callgrind-out-file=/tmp/i8b.cg /tmp/ipeak 8 1250000    # 13,890,688 Ir
+```
+
+差商 ⇒ 11.0008 Ir/iter（mode 8）、24.0013 Ir/iter（mode 16）；配最小值墙钟 ⇒ **33.95 / 35.35 G Ir/s**，取 **34.6 G**。两条混合差 4.4%，说明这个天花板由前端/后端宽度决定、对指令混合不敏感。
+
+**踩过的坑**：①不加 `__asm__` 屏障时 -O2 把整个循环折掉（`sec=0.000000`）；②加屏障但不开 `-fno-tree-vectorize` 时循环被 SIMD 化（`paddq` 一条做 4 个加），用「假设 11 Ir/iter」会算出 ~33 G 的假天花板——不必假设，直接 callgrind 数；③`valgrind ... taskset -c 6 BIN` 与 `taskset -c 6 valgrind ... BIN` 不等价：前者 valgrind 跟的是 `taskset`，exec 后不跟进去，profile 为空（cg 文件 0 字节，annotate 什么都不打印）。
+
+#### 6.15.2 每 pop 指令数 Ir_pop
+
+```
+./build/extc -w --no-line-map -I stdlib bench/gc/v2/src/promote.extc -o /tmp/re9/promote.c
+python3 tools/probe/rc-markcost.py inject /tmp/re9/promote.c -o /tmp/re9/promote-mi.c
+cc -O2 -D_POSIX_C_SOURCE=200809L /tmp/re9/promote-mi.c -o /tmp/re9/promote-mi
+taskset -c 6 /tmp/re9/promote-mi 500000 20261013       # [mi] mark_ns / mark_n
+cc -O2 -D_POSIX_C_SOURCE=200809L /tmp/re9/promote.c -o /tmp/re9/promote
+taskset -c 6 valgrind --tool=callgrind --cache-sim=yes --callgrind-out-file=/tmp/re9/promote-p.cg /tmp/re9/promote 500000 20261013
+callgrind_annotate --threshold=99 /tmp/re9/promote-p.cg | grep markStep
+```
+
+五形状（参数同 bench：promote 500000 20261013；sizeratio 2000000 20261013；chase 1048576 20261013 4000000；cycleratio 400000 20261013 100；digraph 250000）：
+
+| 形状 | markStep Ir | pops | Ir/pop | τ_pop（3 rep 最小） | D1mr/pop | DLmr/pop |
+|---|---|---|---|---|---|---|
+| promote | 300,030,427 | 2,078,729 | 144.3 | 6.07 ns | 2.71 | 0.00 |
+| sizeratio | 16,762,028 | 175,275 | 95.6 | 3.66 | 0.86 | 0.00 |
+| cycleratio | 6,313,980 | 49,020 | 128.8 | 5.57 | 0.02 | 0.00 |
+| chase | 59,198,408 | 305,837 | 193.6 | 12.10 | 1.65 | 0.092 |
+| digraph | 52,414,265 | 275,680 | 190.1 | 14.41 | 0.79 | 0.00 |
+
+#### 6.15.3 读数
+
+（数值见 §3.12 表与三条结论。）三条要点：①τ_issue = 2.76-5.59 ns，只是 τ_pop 的 38-76%；②残差 β=0.07-0.69 ns×13 ns 与依赖指针同序，非依赖 miss（D1mr/pop 2.71 的 promote）只值 0.15 个 L3；③单屋顶 ±20% 判据 1/5，改两项相加。
+
+**对本模型的意义**：§3.11 那张表原来把 tau_issue 写成 3.8-15.0 ns（其实是 τ_pop），本轮起 tau_issue 是可算量、τ_pop 是两项之和。c_t = τ_pop/s̄ 仍是记账比值，但它的形状依赖现在有机制解释：β 项。
+
 ## §7 门禁（Gate）：判据、量具、before / after
 
 门禁的用处不是「证明程序对」，而是**把契约变成可自动判定的句子**：每一条都写死「量具 + 判据 + 口径」，避免出现「实测 106 µs 也算通过」这种自欺。全部跑在既有 harness（`tests/reclaim-perf/gate.sh` 六项 + `tests/gc-p0/run.sh`）上，不需要新依赖。**after 列的构建口径（逐行标注）**：`p1-after` = v7 同轮产物集（`tests/gc-p0/out/p1-after/`，构建 `build-emp3/extc 07b7be1a…`）；`v7` = `build-p1/extc b9fd5784…`；G20-P0 单列 P0 轮（`build-rf/extc 7019342b…`）。跨构建的绝对计时允许 ±5–15% 差（§6.7.6），判据只看方向与阈值；任何一行换构建都必须重标尾号，不得混用。
@@ -1382,6 +1474,7 @@ TLB 梯（每步跨一页、页内只碰 1 条 line ⇒ 数据工作集极小，
 | R7 | 大对象标记的分段续扫走 `extc_rc_markResume()`，该路径原先只 `pops++` 不计 `words` ⇒ 计量看不见分段扫描 | 「单步有界」对超大对象曾无法自证；`seg_max` 已在 v2 上报（P1-6） | 契约改为 `P_step <= C_scan(8192)*8192 + 固定步成本`；8192 段实测 78–98 µs（≈9.5–12 ns/word），`seg_max` 已上报 |
 | R8 | 同样分配字节下 `SCAN_CHUNK` 65536 的 collects 是 8192 的 3.6×（25 vs 7）、总 step 时间 6.4×，机制未定位 | 「每秒 GC 工作量」不是不变量 | 只按每步承诺（§8.3-2）；记 TODO 待 `seg_words` 落地后复查 |
 | R13 | 段步（`seg>0`）的 `max` 尾部 —— **已归因，但只对 `chunk=8192` 的 58–329 µs 成立**（task-32，`P1-STEP-TAIL.md`）：① **环境抢占**为主（`minflt=0`、单次停顿集中在 1 个 4 KiB 子块、邻块 0.1–0.7 µs；纯指针遍历对照在同一核复现 rate 2e-5/子块）；② `chase` 是**对象冷页缺页**（`minflt=16–49`，100–143 µs）；③ `promote`/`pd_dense` 的 256-pop 批是**真实工作量**（60–230 µs，0.6–1.9 µs/pop）。**未测**：小 chunk 的 871 µs（§6.7.1 观测，无归因实验） | 「单步 max」对续扫段不可契约化：本机 `CLOCK_THREAD_CPUTIME_ID` 把被抢占时间计入 CPU（doc-audit 独立重跑 control2：cpu/tick = **84.0/85.1/93.7%**，报告原写 70–80% 是保守值）⇒ `cpu_us≈dur_us` 不能当「这是 GC 工作」；对照的 worst 870–2345 µs 是**高负载时刻**观测，空载机 458–522 µs ⇒ 引用时必须同时给 load 与时间戳（C8）。因此 G1②(b) 只判 p99.9 与 `over-1ms=0`、`max` 只作诊断；`chunk` 调小压不低这条尾部（task-26 已证） |
+| R14 | `tau_pop` 的发射项只做到「可算的下界 + 相加假设」：`τ_pop = Ir_pop/Ir_per_s + β·T_LL` 里的 beta（依赖指针密度）只有五个形状的观测（0.07-0.69），没有机制模型；单用 `tau_issue` 预测 tau_pop 的 ±20% 判据只 1/5 成立（§3.12） | 模型能证明「发射项存在且是下界」，不能逐形状预测 tau_pop；`c_t = tau_pop/s̄` 的形状依赖仍靠实测 | U：beta 由「依赖指针密度 × MLP」推出来（需再标定 MLP 与 miss 的重叠度）；`tau_issue` 的 IPC×f 反推未做（CALIBRATION §15 限制 2） |
 
 ### 8.2 实现侧（已修 / 未修）
 

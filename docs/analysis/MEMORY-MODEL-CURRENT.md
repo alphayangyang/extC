@@ -790,7 +790,7 @@ TICK 调用点（默认 `EXTC_RC_TIME` 关时全部编译成 `do{}while(0)`，`r
 | `EXTC_RC_MARK_BATCH_MAX` | 256 | 1150 | walk 批**基数**上限；压力档夹到 `256 × SWEEP_PRESSURE_MUL`（默认 4 ⇒ **1024**，`reclaim.c:1394`），`[work] walk_cap` 报运行期实际值 |
 | `EXTC_RC_MARK_BATCH_POP` | 200 | 1153 | 批量 pop 上限 |
 | `EXTC_RC_MARK_COLD_BYTES` | 16 MiB（R2） | `reclaim.c:1154`（v18） | 冷档的活集门槛：`r->live` 超过它，一次 pop 就不再是缓存命中（见 §19.6） |
-| `EXTC_RC_MARK_COLD_BATCH` | 128（R2；`#error` 约束 ≤ `MARK_BATCH_MAX`，`reclaim.c:1161-1163` v18） | `reclaim.c:1158`（v18） | 冷档的每步 pop 上限；只收紧、不放宽（`walk_max ≤ walk_cap` 仍成立） |
+| `EXTC_RC_MARK_COLD_BATCH` | **32**（v25；R2 时为 128，`#error` 约束 ≤ `MARK_BATCH_MAX`，`reclaim.c:1270-1272` v25） | `reclaim.c:1158`（v18） | 冷档的每步 pop 上限；只收紧、不放宽（`walk_max ≤ walk_cap` 仍成立） |
 | `EXTC_RC_ASSIST_CAP` | 512 | 1361 | assist 单步上限 |
 | `EXTC_RC_RELEASE_BUDGET` | 2048 步 | 1110 | `releaseOld` 两相共用的步数预算（无续扫时 ≈36 µs；续扫段按 `SCAN_CHUNK/8` 计费 ⇒ 最坏 0.1–0.2 ms） |
 | `EXTC_RC_SWEEP_PRESSURE_MUL` | 4（1..16） | 1120 | 近墙时每步预算乘子（乘预算、不缩触发间隔）；`markAdvance` 的 walk 批上限 256→**1024**，`[work] walk_cap` 随之为 1024 |
@@ -985,7 +985,7 @@ P_max  ≤  c_m·b  +  c_s·s  +  c_c·w  +  c_f·f  +  c_r·n  +  ε
 
 **口径（必读）**：该式是**全通道保守和** ⇒ 只要本步含一次大对象扫描段，`P_max` ≥ `c_c·w` ≈ 78–98 µs（max 族；典型段 4–16 µs，≈0.1 ms 只是上界），与「5 µs 停顿」不相容。**5 µs 门禁只约束不含大对象续扫、且不含压力档的 mark/step 单步**（`CALIBRATION.md`:277-278/334：p99 中位 ≤5 µs、模型 4.71 µs @b=256）；压力档 b=1024 的步模型约 **18.1 µs**（`reclaim.c:1394`），只在近墙出现（实测 p5 `walk_max=1024`、`pressure` 步 n=1726，gate-work 判 `walk_max ≤ walk_cap` 且 `walk_gtcap=0`）；两者不可混用：一个是设计上界之和，一个是实测的常态单步。
 
-**R2 修正（冷档，2026-11-13，见 §19.6）**：上式里的 `b` 不再是全局常量，而是 `b_eff`：暖档 `min(b, 1024)`、冷档（`r->live > EXTC_RC_MARK_COLD_BYTES = 16 MiB`）`min(b, 128)`。所以 `P_step ≤ b_eff·τ_t + 234.5 ns`：暖形状不变，巨活集形状的单步界被**收紧**（不是放宽）。
+**R2 修正（冷档，2026-11-13，见 §19.6）**：上式里的 `b` 不再是全局常量，而是 `b_eff`：暖档 `min(b, 1024)`、冷档（`r->live > EXTC_RC_MARK_COLD_BYTES = 16 MiB`）`min(b, 32)`（v25；R2 时为 128）。所以 `P_step ≤ b_eff·τ_t + 234.5 ns`：暖形状不变，巨活集形状的单步界被**收紧**（不是放宽）。
 
 **杠杆顺序（按对 P 的贡献）**：大分配上的配额通道 `D + 2 segments`（≈0.96–1.0 ms 天花板，只有 `pd_bigobj`/dense 类形状会碰到；由 `EXTC_RC_QUOTA_DEADLINE_US` 直接决定）> `c_c·w`（SCAN_CHUNK：8192 段 78–98 µs/段；旧 65536 段 max 164–269 µs）> `c_r·b_cq`（closing queue 每趟 8 slab ≈4.5 µs）> `c_f·f`（releaseOld 预算）> `c_m·b`（walk，≈**4.5 µs** @b=256、压力档 b=1024 时 ≈**18.1 µs**；基步 8 时 ≈0.14 µs）。这就是优化方案里"先降 P"的次序依据。
 
@@ -1029,7 +1029,7 @@ v7 新增 `[segsteps] n= pops_tot= max_us= b1us…bge64ms=`（15 桶桶界与 `[
 
 **被否掉的做法**：给标记步加**时间**上限（`EXTC_RC_MARK_DEADLINE_US`）。`pb` 20M 上步数 19,531 → **725,207**、整机 **7.7×** 慢、`gate.sh` Ir 破线（89.2M > 88,029,115）。根因：`pb` 的标记栈几乎总是 `sp=1`，走的是 `EXTC_RC_MARK_SHALLOW=64` 的浅栈快路；armed 后禁掉快路 ⇒ 每 pop 从 ~2 ns 变 ~130 ns；且每批一次 `CLOCK_THREAD_CPUTIME_ID` syscall 本机 **122.7 ns**，与 128 pop 的工作同量级。⇒ 时间闸门不能进标记热路径。
 
-**采纳的机制**：按活集分两档封顶 `markAdvance` 的 `b`。常量 `EXTC_RC_MARK_COLD_BYTES (16 << 20)`（v18 `reclaim.c:1154`）与 `EXTC_RC_MARK_COLD_BATCH 128`（`:1158`，另有 `#error` 约束它 ≤ `MARK_BATCH_MAX`，`:1161-1163`）；clamp 在 `extc_rc_markAdvance` 的 window clamp（v18 `:1429`）**之后**（`:1430`）：`if (r->live > (int64_t)EXTC_RC_MARK_COLD_BYTES && b > 128) { b = 128; extc_rc_markColdN++; }`。计数在 `:1189`，`[work]` 行尾新增 `cold_steps=`（`:3927`，实参 `:3939`）。
+**采纳的机制**：按活集分两档封顶 `markAdvance` 的 `b`。常量 `EXTC_RC_MARK_COLD_BYTES (16 << 20)`（v18 `reclaim.c:1154`）与 `EXTC_RC_MARK_COLD_BATCH 128`（`:1158`，另有 `#error` 约束它 ≤ `MARK_BATCH_MAX`，`:1161-1163`；**v25 起该常量收到 32**，见 §19.11）；clamp 在 `extc_rc_markAdvance` 的 window clamp（v18 `:1429`）**之后**（`:1430`）：`if (r->live > (int64_t)EXTC_RC_MARK_COLD_BYTES && b > 128) { b = 128; extc_rc_markColdN++; }`。计数在 `:1189`，`[work]` 行尾新增 `cold_steps=`（`:3927`，实参 `:3939`）。
 
 **为什么门槛是 16 MiB（形状实测，不是按基准名开洞）**：冷档只在巨活集形状触发，其余 `cold_steps=0` —— promote `thr_max=6,068,128`、cycleratio `2,735,120`、chase `thr_max=63,438,892` 但 `r->live` 仍 <16 MiB、pb `thr_max=1,247,201,956`（`cold_steps=331,260`）。门槛是「活集字节数」这一个可解释的量：超过它，一次 pop 就是一次访存而不是缓存命中，`τ_t` 显著大于 17.49 ns/obj。
 
