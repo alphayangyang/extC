@@ -47,7 +47,7 @@
 | t01_sparse_pin | 1000000 200 | 49,264 kB | 45 ms | 0 | 400 万结点双向链建满（活集 ≈207 MB）后断头，稀疏留 63 个 keeper；容量必须回落 |
 | t02_fanout | 40 | 25,756 kB | 120 ms | 0 | 2 MiB 宽对象（262,144 个引用域，超 SCAN_CHUNK 8192 词）⇒ 分段扫描 |
 | t03_deepring | 1000000 12 | 80,972 kB | 148 ms | 0 | 100 万结点双向环，每轮整环换根 ⇒ 整环不可达 |
-| t04_bigchurn | 120 | xfail | — | 1 | 每轮 8 MiB 巨块 + 8 叶子，填完立刻丢根；见 §5.2 |
+| t04_bigchurn | 120 | 9,764 kB | 32 ms | 0 | 每轮 8 MiB 巨块 + 8 叶子，填完立刻丢根；v29 起撤销按 64 B 组位图走，见 §5.2 |
 | t05_copyrefs | 800000 | 3,564 kB | 10 ms | 0 | copyInto 拷含引用元素（G14 路径），每 4096 轮散留 keeper |
 | t06_handles | 8 200000 | 5,508 kB | 9 ms | 0 | pool 句柄：remove 后重读必须给 none（陈旧句柄不 trap），轮末 clear 让容量平台化 |
 | t07_tasks | 20000 | 2,244 kB | 5 ms | 0 | 协程内建 varArray 跨 yield；偶数号任务取第一个值就 break（任务 arena 整块归还）；判据 extc_pool_live after==before |
@@ -74,9 +74,9 @@ ladder 档（只判 RSS/停顿）：
 
 同一程序在 1600/6400 轮下末态 RSS 是 97,436 / 22,856 kB（峰值 207,892 kB）——**向下收敛**，说明 slab/页归还路径在真实分配序列上生效。峰值本身是 4M 结点的活集，不是泄漏。
 
-### 5.2 t04：清扫释放巨对象时，一步的工作量正比于它的引用域个数（开放 RED）
+### 5.2 t04：清扫释放巨对象时，一步的工作量正比于它的引用域个数（v29 已闭合）
 
-现象（可复现）：[step] n=238，其中 1~5 步 >1 ms，最长 1,139–1,529 µs；[top] rank=1 恒为 kind=sweep why=finish，freed=1、words=1。
+现象（可复现，v28 构建）：[step] n=238，其中 1~5 步 >1 ms，最长 1,139–1,529 µs；[top] rank=1 恒为 kind=sweep why=finish，freed=1、words=1。
 
 定位（在生成 C 上逐层加时，未改源）：
 
@@ -85,13 +85,11 @@ ladder 档（只判 RSS/停顿）：
         if (extc_rc_rsIncN) extc_rc_unlinkChildren(s, base + b);   ← 占其中 ≈99.9%
           for (w = 0; w < ss/8; w++) { void *c = ((void**)p)[w]; ... }   ← 保守描述符：8,388,616/8 = 1,048,576 个域
 
-机制：t04 的对象是 8 MiB 的「结构体内联 1M 个可空引用」的巨块，描述符因域数超上限而退回 EXTC_RC_CONSERVATIVE；一旦进程里**曾经**出现过跨区边（本例 rs_inc=960、rs_dec=952、rs_live=8），释放任何槽都要先把它指向别区的引用逐个撤销计数；对这样一个槽，撤销就是一整圈 1M 个域的遍历。
+机制：t04 的对象是 8 MiB 的「结构体内联 1M 个可空引用」的巨块，描述符因域数超上限而退回 EXTC_RC_CONSERVATIVE；进程里一旦出现跨区边（本例 rs_inc=960、rs_dec=952、rs_live=8），释放任何槽都要先把它指向别区的引用逐个撤销计数；对这样一个槽，撤销就是一整圈 1M 个域的遍历。t01 的 rs_inc=0，同一个 freeSlotWord 走 rsIncN==0 的短路，所以不出现。
 
-契约结论：**一步的工作量正比于被释放对象的引用域个数，而它不受任何编译期常量封顶**——这是停顿契约（P_step ≤ 编译期常量）的一个真实缺口，不是量具噪声。对照：t01 的 rs_inc=0，同一个 freeSlotWord 走的是 rsIncN==0 的短路，所以不出现。
+已关闭（v29，提交 9bd1cccd）：在既有的跨区登记分支上顺手记一位「哪个 64 B 组写过跨区指针」（`src/back/reclaim.c` 的 `extc_rc_wmarkSlot`），释放时只读置位组的 8 个词。契约变成 `W_unlink(ss, m) ≤ min(ss/8, 8·m)`，m = 置位组数 —— 上界不再由对象大小单独决定，而由真实跨区出边的分布决定。已否证的另一条路（把 walk 摊到多步）见 `docs/analysis/UNLINK-DEFERRAL.md`：停顿上界与滞留上界是同一旋钮两端。
 
-已排除的方向（A/B 各一次，max_us 不变 1.07–1.23 ms）：EXTC_RC_BIG_DROP_BYTES=65536/4194304、EXTC_RC_FREE_BUDGET_SLABS=1、EXTC_RC_FREE_HARD_DEADLINE_US=10、EXTC_RC_PAGE_TRIM=0。也就是说这不是「巨块页归还」或「free 队列排空」的预算问题，而是在那之前的 unlink 遍历。
-
-修复方向（下一轮）：把 unlink 做成可续（与标记扫描的 SCAN_CHUNK 同构）——槽的 occ 位在遍历完成前保持置位（对象不会被复用），region 里存续扫游标 {slab, word, slot, field, conservative}，每步最多走 EXTC_RC_UNLINK_CHUNK（建议 8192）个域，走完才清位并 free；契约改为「一步至多扫 UNLINK_CHUNK 个引用域」。
+判据（同一份生成 C 只差 `-DEXTC_RC_WMARK=0/1`，120 轮、3 rep）：`[step] max_us` 1106.4 / 871.6 / 671.6 → **4.7 / 11.5 / 16.7**，over1ms 1 / 0 / 0 → **0**，`[step] total_us` 43,126 → 170–183；`rs_inc / rs_dec / rs_live` 960 / 952 / 8 逐字不变；本表 RSS 9,764 kB、墙钟 32 ms。撤销侧不再是无界项，剩下的「稠密侧」没闭合（每个 64 B 组都写过跨区指针时上界回到 ss/8），常见度取证见 `docs/analysis/WMARK-REACH.md`。
 
 复现命令（约 5 秒）：
 
@@ -108,12 +106,12 @@ ladder 档（只判 RSS/停顿）：
 1. **并发/协程真程序**：t07 只覆盖任务 arena 的归还；par worker 的每 worker 一区、跨区注册、任务根登记仍只有微形状；
 2. **与 C 库/系统交互的程序**：plate（mmap）路径在语料里只被 stdlib 内部用到；
 3. **规模更大的真程序**：datalog_lite 是 506 行单文件；要检验「程序变大时 68.5% 这个比例怎么变」，需要 2–5k 行的多文件程序；
-4. **xfail 的归零**：t04 的 unlink 分块落地后删除该行的 xfail 字段（本轮只允许严格化的方向）。
+4. **稠密侧与 L10-c**：t04 的 xfail 已删（v29，提交 9bd1cccd）；仍缺 ① 一个「每个 64 B 组都写跨区指针」的用例，用来测 `W_unlink` 的右端；② `tests/gc-p0/src/leak_copy_rc_churn.extc` 的 L10-c 泄漏（覆盖已登记入边时不撤销）。常见度取证见 `docs/analysis/WMARK-REACH.md`。
 
 ## 7 复现
 
     make build/extc -j8
-    ./tests/gc-torture/run.sh all      # 12 案，期望：通过 11，xfail 1，失败 0
+    ./tests/gc-torture/run.sh all      # 12 案，期望：通过 12，xfail 0，失败 0
     ./tests/gc-torture/run.sh asan     # 5 案
     ./tests/gc-torture/run.sh ladder   # 8 次运行
     ./tests/gc-torture/run.sh quick    # 3 案（编辑循环）
