@@ -471,8 +471,24 @@ typedef struct {
      * (`tests/reclaim-shapes/run-switch.sh`, `tests/reclaim-perf/`) want exactly the "switch on"
      * setting, whether or not there is an allocation site. */
     bool        needReclaim;
-    /* set when `EXTC_RECLAIM` has a non-zero value: skip the allocation-site test in `scanUnitReclaim` and emit unconditionally */
+    /* set when `EXTC_RECLAIM` has a non-zero value: the last pruning in `scanUnitReclaim` ("no governed
+     * allocation point => no runtime") is skipped, so a switch-oriented gate gets a runtime on a shape
+     * that allocates nothing the collector could reclaim. The idle proof still runs first. */
     bool        rcForced;
+    /* Criterion (d) of the idle proof -- "the unit does not drop live **memory** either".
+     *
+     * Criteria (a)(b)(c) ask about references, so a unit whose only garbage is a replaced array
+     * (`b = new u8[64MiB]` inside a loop, with `b` declared in the function body) has no reference
+     * site at all and those three criteria hold on it. With the reference criteria alone such a unit
+     * emits no runtime and every `new` lands in the frame arena, where the generation the round
+     * replaced stays until the function returns: the peak then follows the round count instead of the
+     * live set.
+     *
+     * Set by `scanUnitReclaim` when such a site exists. It keeps the unit out of the idle tier (a
+     * runtime is emitted) and out of the event tier: the event tier frees an object when its holder
+     * count reaches zero, and an array of bytes has no holders to count, so only the sweep tier can
+     * reclaim it. */
+    bool        rcMemGrowth;
     /* `EXTC_RC_SHARDS=N`: the **shard count** of the reclamation runtime (the pause knob);
      * default 1.
      *
@@ -14302,6 +14318,67 @@ static bool rcAllocInStmtProbe(void *ctx, Stmt *s) {
     return astWalkStmtChildren(s, &v);
 }
 
+/* ------------------------------------------------- criterion (d): does the unit grow memory?
+ *
+ * The reference criteria cannot see a replaced array: `b = new u8[n]` in a loop has no reference slot
+ * anywhere, so (a)(b)(c) are vacuously true. Criterion (d) is the memory half of the same question --
+ * "does this unit lose something a collection would get back?" -- and it stays purely syntactic: a
+ * `new T[n]` that `exNew` puts in the **function-body arena** (level 1) and that sits inside a loop.
+ * Level 1 is exactly the level that outlives the iteration but not the frame, so the previous
+ * generation is unreachable and unreleased until the function returns.
+ *
+ * Deliberately narrow (the failure direction is "false => judged idle => memory grows", so a wrong
+ * "true" would only emit a runtime block nobody needs):
+ *   - a loop-body declaration (`while ... { var b = new u8[n] }`) is level 2: the arena releases it at
+ *     the end of the iteration, so it is not growth;
+ *   - the home arena / a value handed back to the caller is not level 1: the caller names the
+ *     release point;
+ *   - an allocation outside a loop happens once per call and the frame's release bounds it.
+ * `tests/gc-torture/src/t12_overwrite_arena.extc` is the case that turns red if this is lost. */
+
+/** @brief Walk context of criterion (d): the current loop-nesting depth. */
+typedef struct { int depth; } RcMemProbeCtx;
+
+static bool rcMemStmtProbe(void *ctx, Stmt *s);
+
+/** @brief Expression callback: false when a level-1 `new T[n]` sits inside a loop.
+ * @param ctx  The `RcMemProbeCtx` of the walk.
+ * @param e    The expression to test.
+ * @return     false to stop the walk (the site was found). */
+static bool rcMemExprProbe(void *ctx, Expr *e) {
+    RcMemProbeCtx *c = (RcMemProbeCtx *)ctx;
+    if (!e) return true;
+    if (e->kind == EX_NEW && e->u.new_.count && c->depth > 0 && planArenaLevel(e) == 1)
+        return false;
+    AstVisit v = { rcMemExprProbe, rcMemStmtProbe, c };
+    return astWalkExprChildren(e, &v);
+}
+
+/** @brief Statement callback: counts loop depth, then forwards to the generic child walk.
+ * @param ctx  The `RcMemProbeCtx` of the walk.
+ * @param s    The statement whose children are walked.
+ * @return     false to stop the walk (a site was found below). */
+static bool rcMemStmtProbe(void *ctx, Stmt *s) {
+    RcMemProbeCtx *c = (RcMemProbeCtx *)ctx;
+    if (!s) return true;
+    bool loop = (s->kind == ST_WHILE);   /* `for` and `par` are desugared into `while` */
+    if (loop) c->depth++;
+    AstVisit v = { rcMemExprProbe, rcMemStmtProbe, c };
+    bool ok = astWalkStmtChildren(s, &v);
+    if (loop) c->depth--;
+    return ok;
+}
+
+/** @brief Does this body replace a function-level array inside a loop (criterion (d))?
+ * @param body  The function body; NULL (an extern) is false.
+ * @return      true when such a site is present. */
+static bool rcBodyGrowsMemory(Stmt *body) {
+    if (!body) return false;
+    RcMemProbeCtx c = { 0 };
+    AstVisit v = { rcMemExprProbe, rcMemStmtProbe, &c };
+    return !astWalkStmtChildren(body, &v);
+}
+
 /**
  * @brief Can the whole unit **skip emitting the rc runtime entirely**: every used function judged
  *        "loses no live reference"?
@@ -14353,6 +14430,33 @@ static int unitReclaimIdle(CG *g, Module *m) {
 }
 
 /**
+ * @brief Does any emitted body grow memory (criterion (d))?
+ *
+ * Same traversal as `unitReclaimIdle`: the pruned function list, then the method bodies of generic
+ * instances. Global initializers sit in no function body, so they have no loop and cannot grow.
+ *
+ * @param g  The generator; `funcs` and `insts` are already filled in.
+ * @param m  The module (unused; kept symmetric with `unitReclaimIdle`).
+ * @return   true when at least one emitted body replaces a function-level array inside a loop.
+ */
+static int unitGrowsMemory(CG *g, Module *m) {
+    (void)m;
+    for (size_t i = 0; i < g->funcs.len; i++) {
+        FuncDef *f = *(FuncDef **)vecAt(&g->funcs, i);
+        if (f && f->body && rcBodyGrowsMemory(f->body)) return 1;
+    }
+    for (size_t i = 0; i < g->insts.len; i++) {
+        Type *it = *(Type **)vecAt(&g->insts, i);
+        if (!it || it->kind != TY_GENERIC || !it->sdef) continue;
+        for (size_t j = 0; j < it->sdef->methods.len; j++) {
+            FuncDef *md = *(FuncDef **)vecAt(&it->sdef->methods, j);
+            if (md && planUsed(md) && md->body && rcBodyGrowsMemory(md->body)) return 1;
+        }
+    }
+    return 0;
+}
+
+/**
  * @brief Can the whole unit take the "event tier": every used function judged acyclic and references
  *        living only in counted slots?
  *
@@ -14400,8 +14504,10 @@ static int unitAllAcyclic(CG *g, Module *m) {
 /**
  * @brief Narrow `needReclaim`: no reclamation-governed allocation point means no runtime is emitted.
  *
- * When `EXTC_RECLAIM=1` (`rcForced`) the whole pass is skipped -- the gate is written for the "switch
- * on" tier regardless of whether an allocation point exists.
+ * `EXTC_RECLAIM=1` (`rcForced`) does not force emission past this proof: the proof decides whether any
+ * reclamation work exists at all, and the switch only means "do not force it off". What `rcForced`
+ * bypasses is the last pruning step ("no governed allocation point => no runtime"), which the
+ * switch-oriented gates rely on to get a "switch on" build of a shape that allocates.
  *
  * Must run after `collectEmitted` and before `emitPreamble`/`emitRuntimePrologue`: the criterion needs
  * `g->funcs` (the pruned function list), and the runtime text enters the preamble based on this flag.
@@ -14412,6 +14518,7 @@ static int unitAllAcyclic(CG *g, Module *m) {
 
 static void scanUnitReclaim(CG *g, Module *m) {
     if (!g->needReclaim) return;
+
     /* (2) "skip the rc runtime entirely": the whole unit is proved to have no reclamation work => no
      * runtime is emitted **in any tier**.
      *
@@ -14427,8 +14534,20 @@ static void scanUnitReclaim(CG *g, Module *m) {
      * belong in the "fast path and skips" table of the reclamation notes -- that table is kept aligned
      * in both directions with the runtime text alone by `tools/check_skip_table.py`.) */
     if (unitReclaimIdle(g, m)) {
-        g->needReclaim = false;
-        return;
+        /* (2b) Criterion (d): "it loses no live **memory** either". Criteria (a)(b)(c) speak about
+         * references only, and a unit whose garbage is a replaced array holds no reference at all, so
+         * they are vacuous on it. Criterion (d) says: a `new T[n]` that the frame arena owns (level 1),
+         * created inside a loop, survives the iteration that replaced it -- the block is released only
+         * when the enclosing frame returns, so the peak grows with the round count. Such a unit keeps
+         * the runtime. */
+        if (!unitGrowsMemory(g, m)) {
+            g->needReclaim = false;
+            return;
+        }
+        g->rcMemGrowth = true;
+        if (dbgOn("EXTC_DBG_IDLEMEM"))
+            fprintf(stderr, "[idlemem] idle by (a)(b)(c) but replaces a frame-level array in a loop:"
+                            " runtime emitted (sweep tier)\n");
     }
     /* (3) "this unit has a possible cross-site cycle" => **sharding is refused** (`EXTC_RC_SHARDS > 1`
      * degrades to one shard in this unit). Reason: shard boundaries must align with structural
@@ -14456,6 +14575,9 @@ static void scanUnitReclaim(CG *g, Module *m) {
             if (md && planUsed(md) && planFnCrossSiteCycle(md)) { g->rcNShard = 1; break; }
         }
     }
+    /* `EXTC_RECLAIM=1` (`rcForced`) bypasses this last pruning only: the gates that compare "switch on"
+     * against "switch off" (`tests/reclaim-shapes/run-switch.sh`, `tests/reclaim-perf/`) need a runtime
+     * in the on build even when the shape allocates nothing the collector could reclaim. */
     if (g->rcForced) return;
     for (size_t i = 0; i < g->funcs.len; i++) {
         FuncDef *f = *(FuncDef **)vecAt(&g->funcs, i);
@@ -16143,7 +16265,9 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
      * references live only in counted slots" => every unreachable object is eventually freed on the spot
      * when its count reaches zero => sweeping has nothing to do. `EXTC_RC_SWEEPFREE=1` still overrides
      * it (the criteria's red proof uses that). */
-    if (g.rcSweepFree != -1 && g.needReclaim && unitAllAcyclic(&g, m)) {
+    /* Criterion (d) units stay in the sweep tier: the event tier frees an object when its holder count
+     * reaches zero, and the array that made the unit non-idle has no holders to count. */
+    if (g.rcSweepFree != -1 && g.needReclaim && !g.rcMemGrowth && unitAllAcyclic(&g, m)) {
         g.rcSweepFree = 1;
         g.rcNoCount = 0;
     }

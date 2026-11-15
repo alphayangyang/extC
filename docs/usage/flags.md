@@ -56,6 +56,9 @@ debug switches -- diagnostics only, **except the marked below**:
   EXTC_DBG_OWNER=1     report each result slot first reached from another body
   EXTC_DBG_RCCOST=1    print each region's rc site census (reference stores / allocations /
                        max root-table slots, split by "inside a loop")
+  EXTC_DBG_IDLEMEM=1   print the units the idle proof clears on references alone whose
+                       garbage is a frame-level array a loop replaces (criterion (d) keeps
+                       the runtime: the block survives the round)
   EXTC_DUMP_EFFECTS=1  print each function's effect summary
   EXTC_NO_LEVELPASS=1  skip the arena level pass -- **CHANGES THE OUTPUT**: it moves arena
                        placement in 2 of the 414 golden programs

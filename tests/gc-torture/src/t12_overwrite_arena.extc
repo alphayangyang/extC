@@ -1,0 +1,56 @@
+/* t12_overwrite_arena.extc --- 函数级缓冲在循环里被反复替换（idle 判据的 (d) 缺口）。
+ * 形状：函数体级 `var b: slice<u8>` 先拿 1 MiB，然后循环 rounds 次把它替换成 new u8[mib MiB]，
+ *   每次触页（每 4 KiB 写一个字节）后只留校验和。旧代没有任何引用指向它，也没有块级释放点可挂。
+ *   修复前：整单元被 idle 判据按「不丢活引用」证明成立 ⇒ 不发射运行期 ⇒ 每一代都留在函数帧
+ *   arena 到函数返回（20 轮实测峰值 1,312,556 kB，live 只有 64 MiB）。
+ *   修复后：criterion (d) 让该单元进清扫档（不进事件档：字节数组没有 holder 可数），峰值由
+ *   压力触发律给出 ≈ 3x live。
+ * 判据：(a) 峰值 RSS <= 220 MB；(b) 精确 stdout；(c) PAUSE 构建 [histo] over1ms=0 且
+ *   [wbudget] pop_max<=512 / push_max<=8448 / mscap_max<=16384。
+ * argv[1]=rounds 默认 20，argv[2]=mib 默认 64。 */
+use std::io
+
+fn parseN(args: slice<slice<u8>>, idx: i64, dflt: i64) -> i64 {
+    if args.len <= idx { return dflt }
+    var s: slice<u8> = args[idx]
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    if v > 0 { return v }
+    return dflt
+}
+
+/* 触页：每 4096 字节写一次再读回，既让页真的落到 RSS 里，也让分配不会被优化掉 */
+fn touch(b: mut slice<u8>, seed: i64) -> i64 {
+    var acc: i64 = 0
+    var i: i64 = 0
+    while i < b.len {
+        b[i] = u8((seed + i) % 251)
+        acc = acc + i64(b[i])
+        i = i + 4096
+    }
+    return acc
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var rounds: i64 = parseN(args, 1, 20)
+    var mib: i64 = parseN(args, 2, 64)
+    var bytes: i64 = mib * 1048576
+    var acc: i64 = 0
+    var r: i64 = 0
+    var b: mut slice<u8> = new u8[1048576]
+    acc = acc + touch(b, 1)
+    while r < rounds {
+        b = new u8[bytes]
+        acc = acc + touch(b, r)
+        r = r + 1
+    }
+    io::cout << "T12 rounds=" << rounds << " mib=" << mib << " acc=" << acc % 1000 << "\n"
+    return 0
+}

@@ -43,6 +43,7 @@
 > **行号口径（v25 = R7 停顿契约，当前工作树，2026-11-14）**：`src/back/reclaim.c` = `0b91d96ee08ff5e2589136ca313aee4f`（**4,658 行**）、`src/back/codegen.c` = `3ae6e499b6a2d64668ff1daf2eed26a2`（16,222 行；描述符长度上限 4096 → **32**）、`tests/reclaim/driver.c` = `28dd4009ac7207f47e581a697c0d421f`（1,637 行，未改）、`build/extc` = `11d39dee4a6481b9e003591ac4e57cc9`。相对 v24（4,506 行）：新增 `[rt:hugefree]` 发射块（858–940，84 行）、步内扫描额度与标记栈软上限、pop/push 高水位计数与 `[wbudget]` 三个新字段、冷档 128 → 32、free 队列 40/50 µs。**v24→v25 的 37 个 hunk、分段换算表与绝对锚点见 `docs/analysis/REFS-V25.md`**；本文件旧行号仍按 v17/v18 保留（禁止机械平移），v21 起新增内容用当日绝对行号并标版本。机制/实测/判据：§19.11 与 `GC-ROOFLINE.md` §6.13。
 > **行号口径（v28 = R-A 路径选择，当前工作树，2026-12-05）**：`src/back/reclaim.c` = `7a157eb5d30bb3b71b67c41eea1c6f07`（**4,664 行**，v25 起 +6）、`src/back/codegen.c` = `3ae6e499b6a2d64668ff1daf2eed26a2`（16,222 行，未改）、`tests/reclaim/driver.c` = `28dd4009ac7207f47e581a697c0d421f`（1,637 行，未改）、`build/extc` = `e742e423dd5b901cf0405f5beb3a4cb7`。相对 v25 只有两处**纯插入**（`+3` 行在宏区 3339–3341、`+3` 行在浅栈判定 3623–3625）⇒ **v25 与 v28 行号不可混用**；分段换算与绝对锚点见 `docs/analysis/REFS-V28.md`，核对一律按符号 grep，禁止机械平移。
 > **行号口径（v29 = R-W 位图登记，当前工作树，2026-12-09）**：`src/back/reclaim.c` = `845c57e2b230202efcd04639e07664d9`（**4,738 行**，v28 起 +74）、`src/back/codegen.c` = `3ae6e499b6a2d64668ff1daf2eed26a2`（16,222 行，未改）、`tests/reclaim/driver.c` = `28dd4009ac7207f47e581a697c0d421f`（1,637 行，未改）、`build/extc` = `b5ad0e7cdcb7abbf0cd8f8f18b113570`。相对 v28 新增 74 行：宏区 +21（`EXTC_RC_WMARK` / `EXTC_RC_WMARK_MIN_BYTES` 与长注释）、`ExtcRcSlab` 尾部 +4、`ExtcRcRegion` +2、`slabNew` 位图分配 +9、`extc_rc_wmarkSlot` +18、`unlinkChildren` 位图分支 +19、`rsIncSlab` 三参签名与四个调用点 +3、销毁/复位四处 +8（合计 74）⇒ **v28 与 v29 行号不可混用**；分段换算（旧 n → 新 n + {0(≤220) / 21(221–268) / 25(269–324) / 27(325–977) / 36(978–1931) / 52–53(1932–1959) / 72–74(1960–4664)}）、17 个 hunk 与绝对锚点见 `docs/analysis/REFS-V29.md`，核对按符号 grep，禁止机械平移。
+> **行号口径（v30 = idle 判据的第四判据 (d)：不丢内存，当前工作树）**：`src/back/codegen.c` = `ec12011cc5bbff7100072bb465d8f234`（**16,346 行**，v29 的 16,222 行版本作废，净 +124）、`src/back/reclaim.c` = `845c57e2b230202efcd04639e07664d9`（4,738 行，同 v29）、`tests/reclaim/driver.c` = `28dd4009ac7207f47e581a697c0d421f`（1,637 行，同 v29）、`build/extc` = `f5ed0d066b084f7f13024b9f4f14950c`。相对 v29，`codegen.c` 的改动全在回收判定一侧（新字段 `rcMemGrowth`、四个新 helper、`scanUnitReclaim` 的 idle 分支、档位闸门）⇒ **换算表：1–473 同号；474–475 段被替代；476–14304 ⇒ +16；14305–14355 ⇒ +77；14356–14402 ⇒ +104；14403–14414 ⇒ +106；14415–14429 ⇒ +107；14432–14458 ⇒ +119；14459–16145 ⇒ +122；16147–16222 ⇒ +124；被替代段（474、14403–14404、14430–14431、14459、16146）按符号 grep**；`reclaim.c` 未改，§5/§17/§18/§19 的运行期行号仍按 v29。机制与实测见 §19.14。
 
 
 ---
@@ -1312,6 +1313,70 @@ H5 的依据是实测的物理常数（`/tmp/ctl/unmap2.c`，`taskset -c 6`）�
 1. **位图内存按块付费，不是按容量付费**：`nslots ∝ 1/ss`、`wmW ∝ ss` ⇒ 每块约 1 KiB，不改变 §19.9/§19.10 的容量界。
 2. **`wmUnsafe` 单调且无清零路径**：语义安全（退回全扫描），但意思是「用过整值搬运的区拿不到这一轮的好处」；当前语料触发面小（`pd_*`、`t05_copyrefs` 是刻意构造），换真实程序前要重新 census。
 3. **Ir 余量只剩 114,322**（88,029,115 − 87,914,793）：任何新增热路径代码都要先算这笔账；本轮为了不破线，把逻辑放在既有体外函数里而不是内联体里。
+
+### 19.14 idle 证明的第四判据 (d)：不丢**内存**（v30 新增）
+
+§18 的 idle 证明（判据 (a)(b)(c)）与 §19.13 的位图登记都只回答一个问题：**这个单元会不会丢活引用**。
+三条判据全部是引用判据 —— 字段写几次、ref 局部量是否被重新赋值、有没有丢引用的操作。一个只玩
+`slice<u8>` / `[N]u8` 的程序一条 `ref` 都没有，(a)(b)(c) 因此**空洞成立**，整单元判 idle、`needReclaim = false`，
+生成物里一个 `extc_rc_alloc` 都没有，所有 `new T[n]` 走帧 arena 的 bump 分配。
+
+在没有覆盖写的时候这是对的：块作用域里的数组在块末由 `extc_arena_release` 整片归还（探针 `loop1.extc`：
+0 处 `extc_rc_alloc`、4 处 `extc_arena_release`、LiveSet 恒定 64 MiB、峰值 61–66 MB）。但它漏掉了另一种形状：
+**函数级 `var b = new T[n]` 在循环里被重新赋值**。此时旧块的 `data` 字被直接覆盖，没有任何钩子；帧 arena 要到
+函数返回才归还 ⇒ 峰值 = 轮数 × 每轮字节，与活集无关（探针 `loop2.extc`：20 轮 × 64 MiB，活集 64 MiB，
+v29 实测峰值 **1,312,556 kB**，生成物 0 处 `extc_rc_alloc`）。
+
+#### (d) 的判据
+
+**(d) 单元里不存在「函数体帧级别的数组在循环体内被新建」。** 命中条件三条合取（`rcMemExprProbe`，codegen.c:14348）：
+表达式是 `EX_NEW`、带 `count`（`new T[n]` 形式）、当前循环深度 `depth > 0`、且 `planArenaLevel(e) == 1`
+（存储落在函数体帧 arena —— 也就是「没有更早的释放点」的那一级）。语句走查用 `rcMemStmtProbe`（codegen.c:14361）
+维护循环深度（`for`/`par` 在 AST 里已脱糖成 `while`），`rcBodyGrowsMemory`（14375）对一具体函数体求值，
+`unitGrowsMemory`（14442）对整单元的具函数与 generic 方法体合取。
+
+判定位置在 `scanUnitReclaim` 的 idle 分支 (2b)：`if (unitReclaimIdle(g, m)) { if (!unitGrowsMemory(g, m)) { needReclaim = false; return; }
+g->rcMemGrowth = true; ... }`（codegen.c:14543 与 14547）。即：**idle 证明的两半从「不丢活引用」扩成「不丢活引用、也不丢活内存」**，
+两半都成立才允许整段不发射运行期。
+
+#### 为什么这类单元必须留在清扫档，不能升 T1
+
+单元一旦判非 idle，档位联动会在「无环证明成立」时把 `rcSweepFree` 置 1（T1 事件档：计数开、清扫关）。
+T1 档的内存界靠**引用计数把垃圾变成 0**，它数的是引用，不数字节：字节数组没有 holder，没有计数可开。
+所以 v30 在档位闸门上加了一条否决（codegen.c:16268–16270）：
+`if (g.rcSweepFree != -1 && g.needReclaim && !g.rcMemGrowth && unitAllAcyclic(&g, m))` —— `rcMemGrowth` 的单元
+永远拿不到 T1，只能停在 T2 清扫档；只有清扫档能收掉「被覆盖的帧级数组」。
+
+#### 语义修正：`EXTC_RECLAIM=1` 与 idle 证明的顺序
+
+`EXTC_RECLAIM=1`（开档）的用途是「同一份语义、强制发射运行期」，供门禁对照。它的实现是 `if (g->rcForced) return;`
+绕过最后那道「没有受治理分配点就不发射」的剪枝。**它不是「跳过整趟 pass」**：idle 证明仍然先跑，
+`rcForced` 只作用于剪枝。v30 曾把这条早退提到 pass 开头，结果是 bt / rebuild / `hole_c` / elide 四个门禁
+的「开档」产物多出发射运行期 —— Ir 棘轮（bt 3,152,725 > 2,950,000、rebuild 18,440,147 > 15,790,000）、
+税线（bt 1.113× > 1.050×）、`hole_c` 的「家 arena 不许发清扫触发」、elide 的计数门禁同时变红。
+现位置在 `for (... rcBodyHasGovernedAlloc ...)` 之前（codegen.c:14578），与 v29 一致。
+
+#### 实测
+
+| 形状 | v29 峰值 | v30 峰值 | 生成物 `extc_rc_alloc` | 档位 | 墙钟 |
+|---|---|---|---|---|---|
+| `/tmp/av/loop2.extc`（20 × 64 MiB 覆盖写，活集 64 MiB） | 1,312,556 kB | **199,464 kB** | 0 → 11 | T0 → T2 | 0.57 s → 0.09 s |
+| `tests/gc-torture/src/t12_overwrite_arena.extc`（同形状，52 行） | 1,313,212 kB | **199,264 kB** | 0 → 11 | T0 → T2 | 0.57 s → 0.093 s |
+| `/tmp/av/loop1.extc`（块作用域内新建，每轮块末释放） | 61,556 kB | 61,556 kB | 0 → 0 | T0 | 不变 |
+
+t12 带 `-DEXTC_RC_PAUSE=1 -DEXTC_RC_STATS=1` 的运行期读数：`thr=134,217,728`（= 2L）、`M_max=201,326,592`（= 3L）、
+`[chan] trigger-step n=10 max_us=25.0 total_us=118.9`、`[work] n=10 walk_max=1`、`maxrss=199,648 kB`。
+峰值 = live(64 MiB) + 两代垃圾(2 × 64 MiB) + ~7 MB 元数据 = 199 MB，**与轮数无关** —— 这就是 §19.4 的
+`M ≤ (1 + κ_M·r)L` 在该形状上第一次成立。
+
+#### 边界（写清楚）
+
+1. **只覆盖「覆盖写」**：块作用域数组不需要 (d)（块末已归还，实测峰值平）；「每轮 `new` 并存进容器/长寿命槽」
+   的累积型本来就被 (c) 判否（临时量/容器替换），不走这条新判据。
+2. **(d) 是「有没有可能丢内存」的充分条件里的保守一侧**：命中即发射运行期，不判断实际是否真的泄漏。
+   代价是全语料 1,641 个源文件里只翻转 3 行（见 §19.14 末表），且三行的墙钟/RSS 都在噪声内。
+3. **idle 指纹基线只能往严的方向改**：`tools/idle-fingerprint-baseline.tsv` 的 `same` 列从 YES 变 NO 要写台账
+   （`tests/reclaim-idle/README.md` 台账节），反向（NO → YES）视为放宽，需单独审。
 
 ## §20 与仓库既有文档的不一致清单（口径必须按本节改）
 

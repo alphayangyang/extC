@@ -53,6 +53,21 @@
 产物，不写进散文。** 基线里的编译器是**重构前**那一份——它的 md5 与主树当前的编译器不同，
 `check` 会把两侧绑定都打出来并注明"绑定不同不算失败，逐行相同才是结论"。
 
+## 台账（每次 `freeze` 都要在这里写一行）
+
+指纹基线只许往严的方向改：允许 YES → NO（从 idle 变成发射运行期），不允许 NO → YES 悄悄发生。
+每跑一次 `python3 tests/reclaim-idle/fingerprint.py freeze`，在这里记四条：HEAD、`build/extc` md5、语料规模、
+与上一次基线的差（翻转行清单 + 反向翻转数）。
+
+| # | 日期 | HEAD | `build/extc` md5 | 语料 | 与上一版基线的差 |
+|---|---|---|---|---|---|
+| 1 | 2026-11-16 | `85b8871b` | `9bef5488…` | 1,641 | 初始基线（提交即可）。 |
+| 2 | 2026-12-10（v29） | `853e46d0` | `b5ad0e7cdcb7abbf0cd8f8f18b113570` | 1,641 | `rc_syms` 列 291 行变化、**idle↔非 idle 翻转 0 行** —— 这段只加了运行期入口（wmark 等），tier 判定没动。 |
+| 3 | 2026-12-11（v30） | 工作树（criterion (d)） | `f5ed0d066b084f7f13024b9f4f14950c` | 1,641 | **YES → NO 恰好 3 行**：`tests/gc-torture/src/t12_overwrite_arena.extc`、`tests/stl/vector_rss_arena.extc`、`tests/warnings/loop-retained-buffer.extc`；反向 0 行；其余行逐字相同。三行实测：t12 峰值 1,313,212 → 199,264 kB；vector_rss_arena RSS 17,592 → 17,716 kB（+0.7%）；loop-retained-buffer RSS 1,868 kB 不变。 |
+
+当前基线统计（第 3 行）：OK 1,141 / FAIL 500 / `same=YES` 836 / `same=NO` 305。
+对照副本留在 `/tmp/d6/fp_old.tsv`（第 1 行）、`/tmp/d6/fp_v29.tsv`（第 2 行）、`/tmp/d6/fp_v30.tsv`（第 3 行）。
+
 ## 复现
 
 ### 1. 取重构前的源码树并构建（不动主工作树）

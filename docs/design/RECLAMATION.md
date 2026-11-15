@@ -577,6 +577,36 @@ P2 与这个反例的差别**只有"旧值是否另有根"这一维**（P2 的�
 `planFnReclaimIdle`，字段在冻结清单里），整单元合取与收窄在 `src/back/codegen.c` 的
 `unitReclaimIdle` / `scanUnitReclaim`。`EXTC_DBG_RCIDLE=1` 逐函数打印判定与理由。
 
+### 三点七续、判据 (d)：证明只管引用，不管内存（v30）
+
+上面 (a)(b)(c) 的每一条都在回答「会不会丢活引用」。(a) 管字段写几次、(b) 管 ref 局部量的槽、(c) 管容器替换/临时量/
+看不清的被调者。**三条都是引用判据**，所以一个只玩 `slice<u8>` / `[N]u8` 的程序一条都不违反 —— 它们空洞成立，
+整单元判 idle、`needReclaim = false`、生成物 0 处 `extc_rc_alloc`。
+
+这在「块作用域」形状下是对的（块末 `extc_arena_release` 整片归还），但在**函数级数组被循环覆盖**时是错的：
+`b = new u8[67108864]` 覆盖旧 `b.data`，旧块没有任何钩子，帧 arena 要到函数返回才归还 ⇒ 峰值 = 轮数 × 每轮字节。
+所以 v30 加了**第四判据 (d)：单元里不存在「帧级别数组在循环体内被新建」**。
+
+* 判据：`EX_NEW` + 带 count + 循环深度 > 0 + `planArenaLevel == 1`（`rcMemExprProbe` / `rcMemStmtProbe` /
+  `rcBodyGrowsMemory` / `unitGrowsMemory`，`src/back/codegen.c:14348 / 14361 / 14375 / 14442`）；
+  命中 ⇒ `rcMemGrowth = true`，idle 判定改成 `unitReclaimIdle(g, m) && !unitGrowsMemory(g, m)`（`codegen.c:14543`）。
+* **idle 的含义因此是两半**：不丢活引用 **且** 不丢活内存，两半都成立才允许整段不发射运行期。
+* **这类单元不许升 T1**（`codegen.c:16268–16270` 的档位闸门加 `!g.rcMemGrowth`）：T1 的内存界来自「计数把垃圾变成 0」，
+  它数的是引用；字节数组没有 holder 可数，清扫档是唯一能收掉它的档。
+* **`EXTC_RECLAIM=1` 只绕最后那道剪枝**，不跳过这趟 pass：`if (g->rcForced) return;` 必须在 `rcBodyHasGovernedAlloc`
+  循环之前（`codegen.c:14578`），否则「开档」产物与默认档语义分叉（v30 踩过：bt/rebuild/`hole_c`/elide 四道门禁同时红）。
+
+契约句（三条，与本节其它契约同格式）：
+
+1. **一个单元被判 idle，当且仅当 (a)(b)(c) 成立且 (d) 成立。** (d) 为假时发射清扫档运行期，与泛型落点无关。
+2. **这类单元的峰值 ∈ [(1+r)L, (1+2r)L + 元数据]**，由触发律 `thr = min(max(2L, floor)·scale, M_max − live/4)` 给出，
+   **与循环轮数无关**（`tests/gc-torture/src/t12_overwrite_arena.extc`：20 轮 × 64 MiB、活集 64 MiB、峰值 199,264 kB）。
+3. **判据只往严的方向改**：idle 指纹里 `same` 列 YES → NO 要写台账（`tests/reclaim-idle/README.md` 的台账节），
+   NO → YES 视为放宽，需单独审。
+
+边界：(d) 只认 `new T[n]`（`alloc<T>(n)` 从不受治理；pool/vector 是 foreign memory，走 pin，容量问题在三点三/三点四）；
+判据按循环深度判而不是按「是否真的覆盖」判 —— 循环里 new 但从不覆盖的写法也会发射运行期（RSS 不变，只是多 11 处调用）。
+
 ## 四、停顿与分片
 
 **停顿 ∝ 被扫区域的可达集**，所以最直接的手段是**分片**：把一个逻辑结构切进多个区域、每次只收一片。

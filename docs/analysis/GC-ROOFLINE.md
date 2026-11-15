@@ -1750,6 +1750,85 @@ P3 的失败是有价值的：步数不是独立预测出来的，它由 `n = po
 
 4. **覆盖面按全语料量过**：1,530 个 `.extc` 逐个编译，18 个程序含 21 个 >32 域的类型（四个 gcbench 形状全部命中 —— `chase` 的整张图就以 `EXTC_RC_CONSERVATIVE` 分配，所以大槽在基准里是常态），真实应用生成的 C 里 `extc_rc_` 出现 0 次；跨区边只出现在 6 / 527 个可跑测试程序里，与位图同形的只有 t04。做法与数字见 `docs/analysis/WMARK-REACH.md`。
 
+### 6.19 v30：把「不丢内存」写进 tier 判定 —— criterion (d)（2026-12-11）
+
+#### 6.19.1 缺口在模型里的位置
+
+§3.6 的内存定律 `M = L + κ_M·H` 有一个前提：**H 是由触发律界定的**（`H = r·L`，r 是触发时堆 ÷ 活集）。
+这条前提对「整段不发射运行期」的单元不成立 —— 那里没有运行期，也就没有触发律，峰值等于**累计分配量**。
+§18 的 idle 证明只证明了「不丢活引用」，所以「累计分配量 = 活集」在它看来是自动的。对只玩
+`slice<u8>`/`[N]u8` 的程序这个推论是假的：没有 `ref` 就没有 holder，(a)(b)(c) 三条引用判据空洞成立，
+而函数级数组在循环里被覆盖替换时旧块被直接丢弃（`a = b;` 对 slice 是结构体赋值，无 store 钩子），
+帧 arena 要到函数返回才归还。
+
+于是模型侧要补的不是一条新公式，而是**内存定律的适用域**：
+
+- 有运行期（T1/T2）的单元：`M ≤ L + κ_M·H`，H 由触发律 `thr = min(max(2L, floor)·scale, M_max − live/4)` 界定；
+- 无运行期（idle，T0）的单元：`M = 活集 + 一次性峰值`，这个等式**要求单元里没有「分配后丢弃」的重复动作**；
+- 判据 (d) 就是把第二条要求变成编译期可判的条件；不满足的单元退回第一条。
+
+#### 6.19.2 判据与决策点
+
+`unitGrowsMemory(g, m)`（`src/back/codegen.c:14442`）在整单元上合取：存在一个 `new T[n]`（带 count），
+其 `planArenaLevel == 1`（帧级别，即没有更早的释放点），且处在循环深度 > 0 的位置
+（`rcMemExprProbe` 14348 / `rcMemStmtProbe` 14361 / `rcBodyGrowsMemory` 14375）。命中 ⇒ `rcMemGrowth = true`，
+idle 判定 `unitReclaimIdle(g, m) && !unitGrowsMemory(g, m)` 为假 ⇒ 发射运行期。
+
+同时档位闸门要否决 T1（`codegen.c:16268–16270`）：
+
+```
+if (g.rcSweepFree != -1 && g.needReclaim && !g.rcMemGrowth && unitAllAcyclic(&g, m)) { ... }
+```
+
+理由在 §3.11 的屋顶语言里最清楚：T1 事件档的内存界来自「引用计数把垃圾的 H 变成 0」，它计的是引用；
+字节数组没有引用计数器可挂，`unitAllAcyclic` 的无环证明对它没有任何内存含义。T2 清扫档是唯一能收掉
+「没有 holder 的垃圾」的档，因为它的界不是计数而是**触发律 + 清扫**。
+
+#### 6.19.3 实测：容量从「轮数 × 每轮字节」变成「(1+2r)L」
+
+| 形状（`tests/gc-torture/src/t12_overwrite_arena.extc`，52 行） | 峰值 RSS | 生成物 `extc_rc_alloc` | 档位 | 墙钟 | 回声 |
+|---|---|---|---|---|---|
+| v29（idle 判据只有 (a)(b)(c)） | 1,313,212 kB | 0 | T0 | 0.57 s | live 64 MiB ⇒ 峰值/live = **20.5×** |
+| v30（含 (d)） | **199,264 kB** | 11 | T2 | 0.093 s | 峰值/live = **3.1×**，与 20 轮无关 |
+
+运行期读数（`-DEXTC_RC_PAUSE=1 -DEXTC_RC_STATS=1`）：`thr=134,217,728`（2L）、`M_max=201,326,592`（3L）、
+`[chan] trigger-step n=10 max_us=25.0 total_us=118.9`、`[work] n=10 walk_max=1`、`maxrss=199,648 kB`。
+把轮数从 20 拉到 40，峰值只随「两代垃圾」涨一次然后持平 —— 这正是 `M = L + κ_M·H` 里 H 被触发律钉住的表现。
+
+#### 6.19.4 对照：块作用域不需要这条判据
+
+`loop1.extc`（同样的 64 MiB、同样的循环，但 `var b = new u8[...]` 在 **while 体内**声明）：v29/v30 都是
+0 处 `extc_rc_alloc`、4 处 `extc_arena_release`、峰值 61,556 kB。块的 arena 层比声明深，块末整片归还，
+不存在「被覆盖的旧块」。所以 (d) 的命中条件里 `planArenaLevel == 1` 与 `depth > 0` 缺一不可：前者排除
+「有更早释放点」，后者排除「每轮新建、次轮就死」的累积型误判。
+
+#### 6.19.5 代价与覆盖面（全语料 1,641 个源文件）
+
+- idle 指纹（`tests/reclaim-idle/fingerprint.py`）：v29 → v30 **恰好 3 行 YES→NO**，反向 0 行，其它行逐字相同：
+  `tests/gc-torture/src/t12_overwrite_arena.extc`、`tests/stl/vector_rss_arena.extc`、`tests/warnings/loop-retained-buffer.extc`。
+- 三行实测：loop-retained-buffer `extc_rc_alloc` 0→11、RSS 1,868 kB 不变；vector_rss_arena 0→11、
+  RSS 17,592→17,716 kB（+0.7%）、墙钟 0.00→0.01 s（`tests/stl` 的 plate RSS 判据仍过：池底 9,344 vs arena 17,716 kB）；
+  t12 见上。
+- 暖档四形状交错 A/B（15 reps，min）：promote 0.991、sizeratio 0.999、chase 0.997、cycleratio 0.961，RSS 逐形状完全相同
+  ⇒ 判据是纯编译期的，不触碰热路径，Ir 棘轮 `87,914,793 ≤ 88,029,115` 与 v29 同值。
+
+#### 6.19.6 与既有量具的关系
+
+- **`[work]` 通道不进 (d) 的单元**：这些单元的运行期工作量仍由 §6.13 的 `pop_max ≤ 512 / push ≤ 8448 / mscap ≤ 16384` 封顶；
+  t12 的 `[work] walk_max=1`（每次触发只走一个根）。
+- **`G1②`/`G18` 不受影响**：criterion (d) 只改「发射不发射」，不改任何 `EXTC_RC_` 常量。
+- **`EXTC_DBG_IDLEMEM=1`** 是这条判据的量具：打印 `[idlemem] idle by (a)(b)(c) but replaces a frame-level array in a loop:
+  runtime emitted (sweep tier)`，登记在 `extc --help` 的 debug 开关表与 `docs/usage/flags.md`。
+
+#### 6.19.7 边界
+
+1. (d) 是保守的充分条件：命中就发射运行期，不判断「实际是否真的泄漏」。漏判方向是「有重复分配但都活着的累积型」
+   —— 那种形状由 §3.6 的触发律与 `M_max` 兜住，不需要 (d)。
+2. 判据只认真实 `new T[n]`。`alloc<T>(n)` 与容器（pool/vector）不在这个通道上：前者从不受治理，后者是 foreign memory
+   （`extc_rc_storeRefUnknown` ⇒ pin），它们的容量问题在 §6.10/§6.11 的容量项里，不在本节的记忆项里。
+3. 判据按**循环深度**而不是「是否覆盖」判：`new` 在循环体里、`planArenaLevel==1` 就算，即使这一轮没有再赋值。
+   这会让「循环里 new 一个数组但从不覆盖」的写法也发射运行期（RSS 不变，只是多了 11 处调用）；目前语料里这样的程序 3 个。
+
 ## §7 门禁（Gate）：判据、量具、before / after
 
 门禁的用处不是「证明程序对」，而是**把契约变成可自动判定的句子**：每一条都写死「量具 + 判据 + 口径」，避免出现「实测 106 µs 也算通过」这种自欺。全部跑在既有 harness（`tests/reclaim-perf/gate.sh` 六项 + `tests/gc-p0/run.sh`）上，不需要新依赖。**after 列的构建口径（逐行标注）**：`p1-after` = v7 同轮产物集（`tests/gc-p0/out/p1-after/`，构建 `build-emp3/extc 07b7be1a…`）；`v7` = `build-p1/extc b9fd5784…`；G20-P0 单列 P0 轮（`build-rf/extc 7019342b…`）。跨构建的绝对计时允许 ±5–15% 差（§6.7.6），判据只看方向与阈值；任何一行换构建都必须重标尾号，不得混用。
