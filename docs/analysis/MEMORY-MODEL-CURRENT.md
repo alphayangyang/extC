@@ -1529,7 +1529,7 @@ v34 起这层有了自己的基质，但只服务同一个特例：
 
 #### 19.17.4 边界
 
-1. **`U` 项**：载荷的已提交量是 `round4k(com)`，但占用的区间是 2 的幂 ⇒ 每个巨块载荷最多 2× 取整（实测 8.1 MiB → 16 MiB），记进内存界的是 `+ U` 而不是把它藏起来。
+1. **取整在 VA 上，不在 RSS 上**：carve 把请求向上取整到 2 的幂个量子（`区间 = max(2 MiB, 2 × com)`；实测 8.1 MiB → 16 MiB），但页只按被写的部分驻留 ⇒ 取整不改变 `M`，它改变的是 VA 预算（com < 2 MiB 时区间固定 2 MiB，最多 8×）。真正进 `M` 的页级放大是**大页尾页**：每个被触区间最多多驻留一个 2 MiB 页，记 `+ P_hp`（`P_hp ≤ 2 MiB × #被触区间`；t04 的 +2.3 MB 就是一次尾页，t13 的 +16 MB ≈ 8 个区间的尾页）。
 2. **稀疏触页的放大**：t04 +2.3 MB 是「8 MiB 载荷只碰几页、但每碰拉一个 2 MiB 页」。R4 把容器存储也换成 extent 时这一项会从巨块扩到所有 ≥4 MiB 的容器。
 3. **不是运行期开关**：`EXTC_RC_EXT` 是生成 C 的编译期常量（与其余 `EXTC_RC_*` 一致），`-DEXTC_RC_EXT=0` 得到一个「载荷走 `aligned_alloc`」的对照臂。
 4. **overcommit 与 Windows**：`MAP_NORESERVE` 依赖 overcommit 允许；没有 `mmap` 的平台整节退化成 stub。这两条都由 `EXTC_RC_EXT_OK` 一处收口。
@@ -1615,7 +1615,7 @@ extC 的内存管理是**编译期分档的**：绝大多数分配被静态指�
 
 9. **S1（v33）：容量归还收敛成一个水位（§19.16）**：删掉 `slabShrink` / `pageTrim` / `SHRINK_GRACE` / `SHRINK_CAP_LIVE` 四个旋钮（连同 `SLAB_KEEP`、`SLAB_KEEP_BIG`、`SHRINK_*`、`PAGE_TRIM_*` 共十三个名字与 `deadA`/`deadN`/`allocN`/`pgAllocN` 四个字段），换成一个不等式 `capBytes > CAP_MULT·bytes + RETURN_FLOOR`（默认 2 倍 + 16 MiB）与一个 `extc_rc_returnStep` pass（≤256 块访问 / ≤16 次摘链 / ≤256 KiB 页）。`grow11` 峰值 241,096 → **189,660 kB**（3.8× → 3.0× 活集）、`t13` 194,732 → **148,664 kB**、`grow11mr40` 108,244 → 104,676 kB、`t04` 保持 9,764 kB / 0.02 s；代价是 `t12`（每轮 64 MiB 全换新）墙钟 0.09 → 0.29 s（还回去的容量要重新缺页，233 ns/KB）；四形状干净 A/B **0.982 / 1.008 / 1.012 / 0.998**（min，15 reps；median 0.990 / 1.024 / 0.993 / 1.004，符号翻转 ⇒ 噪声带，同轮三臂开档与关档差 ≤1.3%），`gate.sh` Ir **87,678,211 ≤ 88,029,115**（删热路径 `allocN++` 使 Ir 下降）。
 
-10. **R2a（v34）：巨块载荷从一个预留的 VA arena 里 carve（§19.17）**：buddy 2 MiB 量子、`MAP_NORESERVE`、选择性大页（≥ 4 MiB 才 advise）；t12 0.270 → **0.080 s**、t13 0.210 → **0.060 s**，四形状 RSS 不变（chase 快 3–4%），代价是 t04 +2.3 MB / t13 +16 MB 的取整与大页放大；Ir 87,678,535，生成 C 只有运行期段内的 4 个 hunk。
+10. **R2a（v34）：巨块载荷从一个预留的 VA arena 里 carve（§19.17）**：buddy 2 MiB 量子、`MAP_NORESERVE`、选择性大页（≥ 4 MiB 才 advise）；t12 0.270 → **0.080 s**、t13 0.210 → **0.060 s**，四形状 RSS 不变（chase 快 3–4%），代价是 t04 +2.3 MB / t13 +16 MB 的大页尾页放大（≤2 MiB/被触区间；区间取整只落在 VA 上）；Ir 87,678,535，生成 C 只有运行期段内的 4 个 hunk。
 
 一句话没变：作用域基质（arena/pool/coro/plate）从来是有界的；rc region 的有界性**现在由契约给出、由标定支撑**。门禁 G1–G16 与 after 实测见 `docs/analysis/GC-ROOFLINE.md` §6–§7。
 
