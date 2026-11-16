@@ -49,6 +49,7 @@
 > **行号口径（E3 = codegen.c 按主题分节，当前工作树）**：`src/back/codegen.c` 现为 **75 行**（39 行文件头 + 14 行 `cg-split:begin`/`cg-split:end` 说明块 + 22 条 `#include "cg/*.inc"`；说明块渲染时整块丢掉）。22 个分节文件 `src/back/cg/*.inc` 合计 16,368 行，渲染文本 md5 仍是 `02acf0b0ae84ece59fb2b70d604ddda7`（逐字节未变）⇒ 本文的 codegen.c 行号继续指向同一行正文，只是那一行的物理位置在某个 `src/back/cg/*.inc` 里。`build/extc` 的 md5 由 `24ce5d0a…` 变为 `eaa22babe131cfc6360fac7eb51a7b0c`，原因是 DWARF 记录分节文件名与节内行号，生成 C 逐字不变（`tools/emitted_identity.py --check` 430 行）⇒ **源码指纹取渲染文本 md5，不取二进制 md5**。**旧行号 → 分节文件 + 节内行号的对照表见 `docs/analysis/REFS-E3.md`**（22 行分节表、六个抽样核对、两个常用坐标：`struct RcPlan` 在 `cg/20-primitive-block.inc`、`rcPlanDecide` 在 `cg/210-criterion-d.inc`）。
 > **行号口径（E2 = 回收计划收成一个值，当前工作树）**：`src/back/codegen.c` = `02acf0b0ae84ece59fb2b70d604ddda7`（**16,368 行**，v31 的 16,346 行版本作废，净 +22）、`src/back/reclaim.c` = `75ecc57760aa8c8d92bef3f4bd452529`（**241 行**：E1 起是数组头 + 24 条 `#include "rt/*.inc"`；渲染文本仍是 4,780 行、md5 仍是 `29a6372e…`）、`tests/reclaim/driver.c` = `28dd4009ac7207f47e581a697c0d421f`（1,637 行，未改）、`build/extc` = `24ce5d0ab3e817bc5f8ddedee6773b84`。E2 只有两类改动：七个决策字段从 `CG` 搬进 `struct RcPlan`（读写点改 `g->rc.*`）、`scanUnitReclaim` 改名 `rcPlanDecide`；生成 C 逐字不变（`tools/emitted_identity.py --check` 430 行）。**codegen.c 的 87 个变化块与分段换算见 `docs/analysis/REFS-E2.md`**（禁止单一 offset 平移），reclaim.c 的行号引用继续按 v31 / 渲染文本。
 > **行号口径（v33 = 容量归还收敛成一个水位，当前工作树）**：`src/back/reclaim.c` = `a8706acf8b9b144399e46fa2c73ad000`（**241 行**：E1 起的数组头 + 24 条 `#include "rt/*.inc"`；渲染文本 **4,780 行**、356,734 字符，`python3 tools/source_split.py --check` ok）、`src/back/codegen.c` = `6ba135e22e86ec89d5cd8aa416a994bc`（75 行，未改）、`tests/reclaim/driver.c` = `28dd4009ac7207f47e581a697c0d421f`（1,637 行，未改）、`build/extc` = `b5a05be1ce5780d34a8f50b4e322322a`。相对 v31 渲染行的变化全部落在容量归还一节：删 `52-slab-release.inc` + `53-page-release.inc`，新增 `52-capacity-release.inc`（surplus / pageWorth / pageTrimSlab / slabUnlink / returnStep）与 `53-slot-release.inc`；`ExtcRcSlab` 删 `deadA`/`deadN`/`allocN`/`pgAllocN` 四字段；分配热路径删 `s->allocN++`；`[pages]` 后新增 `[return]` 一行。**v31→v33 的 hunk、分段换算与绝对锚点见 `docs/analysis/REFS-V33.md`**；本文旧行号仍按 v17/v18 保留（禁止机械平移），v21 起新增内容用当日绝对行号并标版本。机制/实测/判据：§19.16 与 `GC-ROOFLINE.md` §6.21。
+> **行号口径（v34 = R2a 巨块载荷走预留 VA arena，当前工作树）**：`src/back/reclaim.c` = `b05bbde438d39f3254dc5ea5e8b8d220`（**243 行**：E1 起的数组头 + 25 条 `#include "rt/*.inc"`；渲染文本 **4,998 行**、370,304 字符、`837071b7b5d835af0cec34e72065e7c5`）、`src/back/codegen.c` = `6ba135e22e86ec89d5cd8aa416a994bc`（75 行，渲染 16,429 行，本轮未改）、`tests/reclaim/driver.c` = `28dd4009ac7207f47e581a697c0d421f`（1,637，未改）、`build/extc` = `9bcf0e917446b75e04e3cdb928ea3232`；v33→v34 的逐段换算见 `docs/analysis/REFS-V34.md`（四个 offset：+0 / +213 / +214 / +217）。
 
 
 ---
@@ -1477,6 +1478,62 @@ static int extc_rc_surplus(ExtcRcRegion *r) {
 3. `EXTC_RC_RETURN_FLOOR` 的 16 MiB 是本机取值：它由「最小要被救的巨块是 8 MiB」推出（9 MiB 已足够，取一倍余量），换语言/换尺寸档要重算。
 
 **复现**：v33 = `src/back/reclaim.c` = `a8706acf8b9b144399e46fa2c73ad000`（241 行，渲染文本 4,780 行）、`build/extc` = `b5a05be1ce5780d34a8f50b4e322322a`；探针 `/tmp/s4/grow11.extc`、`/tmp/s4/g11mr_40.extc`、`tests/gc-torture/src/t12_overwrite_arena.extc`、`tests/gc-torture/src/t13_growth_copy.extc`、`tests/gc-torture/src/t04_bigchurn.extc`；运行期统计要 `-DEXTC_RC_PAUSE=1` 编译并设 `EXTC_RC_PAUSE=1`。
+### 19.17 巨块载荷的基质：extent（保留的 VA 域，v34 新增）
+
+这是 R2a（`docs/analysis/EXTENT-R1.md` 的结论落地）在这一份文档里的位置：它不新增对外可见的第六种基质，而是把**巨块槽的载荷从哪里来**从「一次 `aligned_alloc`」换成「从一个预留的 VA arena 里 carve 一个 2 MiB 对齐的区间」。对外的对象放置规则、槽大小分类、可达性判定、三档策略全部不变。
+
+#### 19.17.1 在这一份模型里的位置
+
+§2 的五个存储基质里，巨块槽此前不是基质，是 rc region 的一个特例：`slabNew` 见到 `cap < 2` 就建一个只含一槽的 slab，载荷由 `extc_rc_bigPayloadAlloc` 用 `aligned_alloc(4096, round4k(n))` 拿一次映射，由 `extc_rc_bigTrimStep` 按 `EXTC_RC_BIG_DROP_BYTES` 分片 `MADV_DONTNEED`，整条丢完后 `free`。所以它虽然挂在 region 上，**地址与页表是一次性的**：释放之后地址还给不了别人，下一个载荷再付一次 1,897 ns 的映射（R1 实测）。
+
+v34 起这层有了自己的基质，但只服务同一个特例：
+
+| 项 | 内容 |
+| --- | --- |
+| 单位 | **extent** = 2 MiB 对齐的 VA 区间（量子 `EXTC_RC_EXT_QSHIFT` = 21） |
+| 容量 | 每个 arena `EXTC_RC_EXT_ORD` = 15 个 order（32,768 量子 = 64 GiB VA），最多 8 个 arena（512 GiB VA，懒创建） |
+| 分配器 | buddy；每量子一个字节 `ordQ`（bit 7 = 空闲块首，低 7 位 order，`0xFF` = 块内部），空闲链 `nextQ` |
+| 预留方式 | `mmap(NULL, span, PROT_READ\|PROT_WRITE, MAP_PRIVATE\|MAP_ANONYMOUS\|MAP_NORESERVE)`，起点对齐到 2 MiB |
+| 大页 | 只对 carve 出来且 ≥ `EXTC_RC_EXT_HUGE_MIN`（4 MiB）的区间 `madvise(MADV_HUGEPAGE)` |
+| 入口 | `extc_rc_extAlloc(com, max, &outCom)` / `extc_rc_extRelease(p)`，包一把专用自旋锁 |
+| 归还 | `extRelease` 把 VA 按 buddy 合并回空闲链；页已经由丢页链 `MADV_DONTNEED` 掉了 |
+| 探针 | `[extent] arenas= va_mb= res_mb= calls= fails=`（`[return]` 之后一行） |
+| 关掉 | `-DEXTC_RC_EXT=0`（或平台无 `mmap`）⇒ 载荷路径改走 `aligned_alloc`，两个入口恒返回 0/NULL |
+
+#### 19.17.2 生命周期归谁管（这一层不改变所有权）
+
+三件事仍然分层，没有互相越界：
+
+1. **槽何时空出来**由 rc region 决定：`occ` 位图 + 标记/清扫（§5、§6）判定这个巨块槽不可达，`freeSlot` 清 occ 并把它压回 size-class 空闲链。
+2. **载荷的页何时丢**由丢页链决定：载荷进 `extc_rc_bdHead` 链，`extc_rc_bigTrimStep` 每步丢 ≤ `EXTC_RC_BIG_DROP_BYTES`，这就是 §19.15 的 `[chan] bigdrop` 通道。
+3. **载荷的 VA 何时回**由 extent 层决定：整条丢完的分支把区间还回 buddy（`extc_rc_extRelease`），下次同量级的载荷 7 ns 拿到同一个区间。
+
+所以 extent 层不参与「对象是否活着」的判定，只回答「这块地址现在归谁」。这也是 R2b 的边界：在把 extent 登记进 region 账本之前，预留区里的内存对回收器仍是外来内存（`extc_rc_ownSlab` / `extc_rc_slabOfInterior` 找不到 ⇒ `storeRefUnknown` ⇒ pin 表），巨块槽之所以不需要这条，是它天然不会被别人的引用指进载荷内部（`extc_rc_ownBig` 只认载荷首字节）。
+
+#### 19.17.3 实测
+
+三臂交错（同机 core 6，5 rep 取 min；wall 秒 / maxrss kB）：
+
+| 臂 | t04_bigchurn | t12_overwrite_arena | t13_growth_copy |
+| --- | --- | --- | --- |
+| `EXTC_RC_EXT=0` | 0.020 / 9,760 | 0.270 / 199,548 | 0.210 / 148,660 |
+| `EXT=1, HUGE=0` | 0.020 / 9,956 | 0.260 / 199,684 | 0.210 / 156,352 |
+| `EXT=1`（默认） | 0.020 / 12,024 | 0.080 / 200,584 | 0.060 / 164,624 |
+
+结论分两句，不能混：
+
+- **carve 便宜在墙钟上看不见**（第二臂 ≈ 第一臂）：这三个形状的时间在写页上，不在分配上。
+- **大页是 2.5–3.5× 的全部来源**（第三臂）：首触一个 2 MiB 页代替 512 次 4 KiB 缺页，丢弃也按大页（2.7 vs 19 ns/KB），重触 99 vs 260–279 ns/KB（`tools/probe/thpdrop.c`）。
+
+四形状（暖档主力）15 rep 交错 A/B：promote 0.998/1.015、sizeratio 1.015/0.993、**chase 0.956/0.973**（其 `[1048576]?mut ref` 载荷吃到 4 MiB 门槛）、cycleratio 0.997/0.992 ⇒ 除 chase 变快 3–4% 外都在 ±2% 噪声带内。RSS：大页选择化之后 5,872 / 2,668 / 65,672 / 2,796 kB，逐形状与 v33 相差 ≤ 128 kB。
+
+#### 19.17.4 边界
+
+1. **`U` 项**：载荷的已提交量是 `round4k(com)`，但占用的区间是 2 的幂 ⇒ 每个巨块载荷最多 2× 取整（实测 8.1 MiB → 16 MiB），记进内存界的是 `+ U` 而不是把它藏起来。
+2. **稀疏触页的放大**：t04 +2.3 MB 是「8 MiB 载荷只碰几页、但每碰拉一个 2 MiB 页」。R4 把容器存储也换成 extent 时这一项会从巨块扩到所有 ≥4 MiB 的容器。
+3. **不是运行期开关**：`EXTC_RC_EXT` 是生成 C 的编译期常量（与其余 `EXTC_RC_*` 一致），`-DEXTC_RC_EXT=0` 得到一个「载荷走 `aligned_alloc`」的对照臂。
+4. **overcommit 与 Windows**：`MAP_NORESERVE` 依赖 overcommit 允许；没有 `mmap` 的平台整节退化成 stub。这两条都由 `EXTC_RC_EXT_OK` 一处收口。
+
 ## §20 与仓库既有文档的不一致清单（口径必须按本节改）
 
 完整 90 条对账在 `docs/analysis/DOC-AUDIT.md`；这里只列"会误导读者/会误导优化决策"的 10 条。
@@ -1557,6 +1614,8 @@ extC 的内存管理是**编译期分档的**：绝大多数分配被静态指�
 8. **R-W（v29）：大槽的跨区出边用 64 B 组位图登记（§19.13）**：`W_unlink(ss, m) ≤ min(ss/8, 8·m)`，t04 的 `[step] max_us` **1106.4 / 871.6 / 671.6 → 4.7 / 11.5 / 16.7**、`over1ms` → **0**，`rs_inc / rs_dec / rs_live` 960 / 952 / 8 逐字不变，四形状 A/B 0.961 / 0.991 / 0.966 / 0.991、RSS 不变，`gate.sh` Ir **87,914,793 ≤ 88,029,115**（余量 114,322）。登记点在既有体外函数 `extc_rc_rsIncSlab` 里而不是内联体里 —— 内联体的**未执行**代码会让形状函数重新分配寄存器、+435k Ir 破线（12 变体标定，`GC-ROOFLINE.md` §6.18.3）。**诚实的边界**：只闭合稀疏侧，每个 64 B 组都有跨区出边的大槽上界仍是 `ss/8`。
 
 9. **S1（v33）：容量归还收敛成一个水位（§19.16）**：删掉 `slabShrink` / `pageTrim` / `SHRINK_GRACE` / `SHRINK_CAP_LIVE` 四个旋钮（连同 `SLAB_KEEP`、`SLAB_KEEP_BIG`、`SHRINK_*`、`PAGE_TRIM_*` 共十三个名字与 `deadA`/`deadN`/`allocN`/`pgAllocN` 四个字段），换成一个不等式 `capBytes > CAP_MULT·bytes + RETURN_FLOOR`（默认 2 倍 + 16 MiB）与一个 `extc_rc_returnStep` pass（≤256 块访问 / ≤16 次摘链 / ≤256 KiB 页）。`grow11` 峰值 241,096 → **189,660 kB**（3.8× → 3.0× 活集）、`t13` 194,732 → **148,664 kB**、`grow11mr40` 108,244 → 104,676 kB、`t04` 保持 9,764 kB / 0.02 s；代价是 `t12`（每轮 64 MiB 全换新）墙钟 0.09 → 0.29 s（还回去的容量要重新缺页，233 ns/KB）；四形状干净 A/B **0.982 / 1.008 / 1.012 / 0.998**（min，15 reps；median 0.990 / 1.024 / 0.993 / 1.004，符号翻转 ⇒ 噪声带，同轮三臂开档与关档差 ≤1.3%），`gate.sh` Ir **87,678,211 ≤ 88,029,115**（删热路径 `allocN++` 使 Ir 下降）。
+
+10. **R2a（v34）：巨块载荷从一个预留的 VA arena 里 carve（§19.17）**：buddy 2 MiB 量子、`MAP_NORESERVE`、选择性大页（≥ 4 MiB 才 advise）；t12 0.270 → **0.080 s**、t13 0.210 → **0.060 s**，四形状 RSS 不变（chase 快 3–4%），代价是 t04 +2.3 MB / t13 +16 MB 的取整与大页放大；Ir 87,678,535，生成 C 只有运行期段内的 4 个 hunk。
 
 一句话没变：作用域基质（arena/pool/coro/plate）从来是有界的；rc region 的有界性**现在由契约给出、由标定支撑**。门禁 G1–G16 与 after 实测见 `docs/analysis/GC-ROOFLINE.md` §6–§7。
 

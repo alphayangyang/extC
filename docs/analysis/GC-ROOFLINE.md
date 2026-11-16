@@ -2010,6 +2010,74 @@ M ≤ 3·L + 8 MiB + 4 KiB·#page(含活对象) + M_slab·#slab(含活对象)   
 **（iv）未复核的边界。** MinGW 原生侧没有在本轮跑（v31 的巨块 1.4 ms 已由 t04 的 `wmark` 闭合，见 §6.18）；容量归还这条路径的跨 OS 行为只在 Linux/WSL2 上判过，列为下一轮可选项。
 
 **（v）为什么不做跨机器重标。** 本条机制的两个常数（`CAP_MULT`、`RETURN_FLOOR`）都是**活集的倍数**与**复用存量**，不含时钟量；唯一带时钟的是页丢弃的 13 ns/KB 与再缺页的 233 ns/KB（§6.21.4），它们只影响「归还划不划算」的判读，不影响上界。换机器不需要动这两个宏。
+### 6.22 v34：巨块载荷从一个预留的 VA arena 里 carve（R2a）
+
+这一节把「容量项」里最后一条不属于回收器工作量的开支收进底盘：巨块载荷（`cap < 2` 的槽，一个槽一块载荷）的分配与归还。它不改两界的形式，改的是 `c_cap` 的三个常数里最贵的那一项。
+
+#### 6.22.1 要解决的那一项
+
+R1（`docs/analysis/RESERVE-GROWTH.md`）量出三个数与它们的比值：
+
+| 动作 | 单价 | 怎么量 |
+| --- | --- | --- |
+| 从一块预留里 carve 一个 2 MiB 对齐的区间 | **7 ns**（`tools/probe/vaarena.c`，共享 arena 与每区间一次 `mmap` 之比 270×） | buddy 位运算 |
+| 每区间一次 `mmap`（R2a 之前巨块载荷的做法） | **1,897 ns** | 同上 |
+| `MADV_DONTNEED` 丢页（大页） | **2.7 ns/KB**（无大页 19 ns/KB） | `tools/probe/thpdrop.c` |
+| 丢完之后再触同一段 | **99 ns/KB**（无大页 260–279 ns/KB） | 同上，64 MiB 5.81–6.92 ms / 256 MiB 24.63–25.37 ms |
+
+R2a 之前，巨块载荷走 `aligned_alloc(4096, round4k(n))`：每个载荷一次映射、自己的页表、地址还给不了别人（释放只能 `free`）；丢页由 `extc_rc_bigTrimStep` 按 `EXTC_RC_BIG_DROP_BYTES` 分片做，整条丢完再 `free`。R1 的结论是这两步都能从底盘里拿到，而且**拿到的方式不是「少做系统调用」，是「让页是 2 MiB 的」**——这一节第 3 小节用三臂把这件事钉死。
+
+#### 6.22.2 机制：一个 buddy arena、选择性大页、归还即还 VA
+
+运行期新增一节 `[rt:extent]`（`src/back/rt/32-extent.inc`，渲染文本第 883–1095 行），三件事：
+
+1. **buddy 地址空间**：量子 `EXTC_RC_EXT_QSHIFT` = 21（2 MiB，正好是大页尺寸 ⇒ 每个 carve 出来的区间天然按大页对齐），每个 arena `EXTC_RC_EXT_ORD` = 15（32,768 量子 = 64 GiB VA），最多 `EXTC_RC_EXT_ARENAS` = 8 个（512 GiB VA，懒创建，第一个 arena 满了才建下一个）。每量子一个字节 `ordQ`：bit 7 置位表示这个量子是一块空闲块的首量子、低 7 位是它的 order；`0xFF` 表示它是某块内部；分配中的块首只记 order、不置 bit 7。空闲链 `nextQ` 按块首串起来，合并只认 buddy 规则。预留是 `PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE`：占的是地址空间与页表，不是驻留内存，只有被写过的页才 RSS。
+2. **选择性大页**：`EXTC_RC_EXT_HUGE_MIN` = 4 MiB。只有 carve 出来的区间 ≥ 4 MiB 才对该区间 `madvise(MADV_HUGEPAGE)`（1.7 µs）。理由见 6.22.4：整段 arena 都 advise 会让小载荷也吃到 2 MiB 大页，把 promote 的 RSS 从 5,680 抬到 7,416 kB。
+3. **归还即还 VA**：`extc_rc_extRelease(p)` 判归属（量子边界校验，不在量子边界上返回 0）、按 `ordQ` 取 order、按 buddy 合并回空闲链；`extc_rc_bigPayloadAlloc` 先 `extc_rc_extAlloc(m, m, &com)`（R2a 的 `max` 暂时等于 `com`，不给 slack），拿不到就改走 `aligned_alloc`；`extc_rc_bigTrimStep` 整条丢完的分支由 `free(d)` 改成 `{ int kept = extc_rc_extRelease((char *)d); if (!kept) free(d); }` —— 页已经被 `MADV_DONTNEED` 丢掉了，VA 还回 buddy 供下一个载荷复用，这才是 R1 里 7 ns 与 1,897 ns 的差别落到这条路径上。
+
+两个入口（`extc_rc_extAlloc` / `extc_rc_extRelease`）包一把**专用**自旋锁（`__atomic_exchange_n` / `__atomic_store_n`），不与既有 `own` 表的 `regLock` 共用，避免锁嵌套。`EXTC_RC_EXT = 0` 或平台没有 `mmap` 时整节退化成零计数 stub、两个入口永远返回 0/NULL ⇒ 载荷路径改走 `aligned_alloc`，这就是 A/B 的对照臂。
+
+新增探针一行（`[return]` 之后）：`[extent] arenas=%d va_mb=%lld res_mb=%lld calls=%lld fails=%lld`。
+
+#### 6.22.3 实测：收益全部来自大页，carve 便宜在写页面前量级不可见
+
+三臂交错（同机 core 6，5 rep 取 min；wall 秒 / maxrss kB，`/usr/bin/time -f %M`）：
+
+| 臂 | t04_bigchurn | t12_overwrite_arena | t13_growth_copy |
+| --- | --- | --- | --- |
+| `-DEXTC_RC_EXT=0`（R2a 之前） | 0.020 / 9,760 | 0.270 / 199,548 | 0.210 / 148,660 |
+| `-DEXTC_RC_EXT=1 -DEXTC_RC_EXT_HUGE=0` | 0.020 / 9,956 | 0.260 / 199,684 | 0.210 / 156,352 |
+| `-DEXTC_RC_EXT=1`（默认，大页开） | 0.020 / 12,024 | **0.080** / 200,584 | **0.060** / 164,624 |
+
+读法三条：
+
+1. **carve 便宜不可见**：第二臂与第一臂的墙钟差在 8% 以内（t12 0.270 → 0.260 是唯一一侧），因为这三个形状的时间不在分配上，在**写页**上——第一次碰到一个页就要一次缺页，而缺页的粒度决定缺页次数。
+2. **大页是 2.5–3.5× 的全部来源**：t12 0.260 → 0.080、t13 0.210 → 0.060。首触一个 2 MiB 页代替该区间里的 512 次 4 KiB 缺页；`MADV_DONTNEED` 也按大页丢（2.7 vs 19 ns/KB），下一次交付到同一个载荷时再付 99 而不是 260 ns/KB。
+3. **代价在 RSS，且可定价**：t04 9,760 → 12,024 kB（+2.3 MB），t13 148,660 → 164,624 kB（+16 MB）。前者是稀疏触页（8 MiB 载荷只碰几个 4 KiB，但每次碰都拉来一个 2 MiB 页），后者是 buddy 向上取整（8.1 MiB 的载荷落进 16 MiB 的区间）加大页。两者都远在门禁内（t13 的上界 260,000 kB）。
+
+#### 6.22.4 为什么大页要「选择性」：一条实测的回归
+
+第一版在 arena 创建时对整段 64 GiB 预留做一次 `MADV_HUGEPAGE`。promote 的 RSS 从 5,680 抬到 **7,416 kB**、sizeratio +132 kB：这两个形状的巨块载荷只有 512 KiB 量级，只被稀疏碰几页，但每一碰都拉来一个 2 MiB 大页，收益为零、代价全额。改成 `EXTC_RC_EXT_HUGE_MIN = 4 MiB`（只对 carve 区间做）之后，四形状 RSS 回到 5,872 / 2,668 / 65,672 / 2,796 kB，与 R2a 之前逐形状相差 ≤ 128 kB。
+
+教训写在这里，因为它是 R4「容器存储换 extent」的前置：**大页是按区间选的，不是按 arena 选的**。
+
+#### 6.22.5 契约与模型位置
+
+这一节不改两界的形式，只改三处系数与一处记账归属：
+
+- **内存界**：预留的地址空间不进 `M`——`MAP_NORESERVE` 的 VA 不驻留、不记账，只有被 carve 且被写过的页计入 RSS。所以 `M ≤ 2L + 16 MiB + 4 KiB·#page + M_slab·#slab` 不变，新增的是**向上取整项**：一个载荷的已提交量是 `round4k(com)` 但占用的区间是 2 的幂（≤ 2× com，实测 8.1 MiB → 16 MiB）。把它写成 `+ U`，`U ≤ 一代 carve 的合计 ≤ 2 × 巨块载荷字节`，且只对 ≥ `EXTC_RC_EXT_HUGE_MIN` 的载荷有意义。
+- **成本模型**：`c_cap = (13 + 233·p) ns/KB` 保持不动并且仍然成立为**保守上界**——大页下实测丢弃 2.7 ns/KB、重触 99 ns/KB，都低于这两个系数。这一节只把「每个载荷一次 1,897 ns 的映射」从分配路径里去掉（R1 的相对比 270×）。
+- **停顿界**：`P_step` 不变。carve 与 release 都是 order 级的位运算（实测 7 ns），不进 `[step]` 计时；`madvise(MADV_HUGEPAGE)` 的 1.7 µs 发生在 `slabNew`（分配路径），与 R2a 之前 `aligned_alloc` 的位置相同。
+
+生成 C 的逐字证据（`tools/emitted_identity.py` 重冻结的 `--why` 原文）：运行期文本新增 `[rt:extent]` 一节、载荷路径从它 carve，**每个发射运行期的生成文件都因这一次插入而变化，除此之外没有变化**。以 promote 为例（同一份 stdlib、同一组开关，base 臂 = R1 提交 tree 内重建的 extc）：`diff` 只有 4 个 hunk，全部落在运行期段内（新增 `[rt:extent]` 整节、`bigPayloadAlloc` 一行、`bigTrimStep` 一行、`[extent]` 探针一行），程序自身文本零变化。
+
+#### 6.22.6 边界
+
+1. **不是零成本**：`U` 与「稀疏触页被放大到大页」两件事都是真实成本（6.22.3 第 3 条）。R4 把容器存储也换成 extent 时，这两个成本会从「巨块载荷」扩到「所有 ≥4 MiB 的容器」，届时 `EXTC_RC_EXT_HUGE_MIN` 与 `U` 要一起重新定价。
+2. **平台**：`EXTC_RC_EXT_OK = (EXTC_RC_EXT>0) && (__linux__ || __APPLE__)`。没有 `mmap`、或者 overcommit 被设成 strict 时，`EXT` 关掉即回到 `aligned_alloc`（宏不是运行期开关，是编译期常量：`-DEXTC_RC_EXT=0`）。
+3. **内部指针仍不可解析**：`extc_rc_ownBig` 只接受「恰好等于载荷首字节」的指针（`return s->big ? (uintptr_t)s->data == (uintptr_t)p : ...`），extent 只换掉了载荷从哪里来，没有改这条判定。R2b 才把 extent 接进区域账本与归还 pass；在那之前，预留区里的内存对回收器仍然是「外来内存」（`storeRefUnknown` → pin 表）。
+4. **重冻结的口径**：`tools/emitted-identity-baseline.tsv` 本轮由 `--write --set core` 重写，430 行；`--check` 逐字节相同。重冻结只允许「运行期文本变化引起的整段位移」这一类差异，程序自身文本的变化仍会让基线报 RED。
+
 ## §7 门禁（Gate）：判据、量具、before / after
 
 门禁的用处不是「证明程序对」，而是**把契约变成可自动判定的句子**：每一条都写死「量具 + 判据 + 口径」，避免出现「实测 106 µs 也算通过」这种自欺。全部跑在既有 harness（`tests/reclaim-perf/gate.sh` 六项 + `tests/gc-p0/run.sh`）上，不需要新依赖。**after 列的构建口径（逐行标注）**：`p1-after` = v7 同轮产物集（`tests/gc-p0/out/p1-after/`，构建 `build-emp3/extc 07b7be1a…`）；`v7` = `build-p1/extc b9fd5784…`；G20-P0 单列 P0 轮（`build-rf/extc 7019342b…`）。跨构建的绝对计时允许 ±5–15% 差（§6.7.6），判据只看方向与阈值；任何一行换构建都必须重标尾号，不得混用。

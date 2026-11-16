@@ -637,6 +637,18 @@ P2 与这个反例的差别**只有"旧值是否另有根"这一维**（P2 的�
 
 **改名**：决策入口 `scanUnitReclaim` 现在叫 `rcPlanDecide`；`CG` 上的七个旧字段收进 `g->rc.*`。生成 C 逐字不变
 （`tools/emitted_identity.py --check` 是本轮的验收）。
+## 三点九、巨块载荷的底盘：预留的 VA 域（extent，v34）
+
+巨块槽（一槽一块载荷）的载荷不再是一次独立映射，而是从一块预留的地址空间里 carve 出来的 2 MiB 对齐区间。四句契约：
+
+1. **地址空间不是内存**：预留走 `MAP_NORESERVE`，只有被写过的页计入 RSS。所以内存界里出现的是「已提交字节 + 取整项」，不出现预留长度——预留 64 GiB 的 arena 与 R2a 之前的一次 8 MiB 映射在 `M` 上只差取整那一项。
+2. **取整是显式的**：buddy 按 2 的幂给区间，一个载荷占用的区间是其已提交量的 2 倍以内（实测 8.1 MiB → 16 MiB）。这一项记作内存界里的 `U`，不许藏。
+3. **大页按区间选，不按 arena 选**：只有 carve 出来且不小于 `EXTC_RC_EXT_HUGE_MIN` 的区间才 `madvise(MADV_HUGEPAGE)`。给整段 arena 加会让小载荷也吃到 2 MiB 大页，把 promote 的 RSS 抬起来——那是一条实测回归，不是猜测。
+4. **归还分两级，都不碰可达性**：页由丢页链 `MADV_DONTNEED` 按 `EXTC_RC_BIG_DROP_BYTES` 分片丢（停顿项仍是 `c_drop`），VA 由 `extc_rc_extRelease` 按 buddy 合并还回；carve 与 release 都是 order 级位运算，不进单步工作量。
+5. **关掉即退化**：`EXTC_RC_EXT=0`（或平台没有 `mmap`）时两个入口恒返回 0/NULL，载荷路径改走 `aligned_alloc`——语义、契约、停顿与内存界的形式都不变，只少掉每载荷一次映射与按区间的大页。
+
+判据：三臂（`EXT=0` / `EXT=1` 且 `HUGE=0` / `EXT=1`）在 t04、t12、t13 上 stdout 逐字节相同；`[extent] fails=0`；生成的 C 里 extent 只以「运行期文本新增一节」的形式出现，程序自身文本零变化（`tools/emitted_identity.py` 重冻结，promote 的 `diff` 只有 4 个 hunk，全在运行期段内）。
+
 ## 四、停顿与分片
 
 **停顿 ∝ 被扫区域的可达集**，所以最直接的手段是**分片**：把一个逻辑结构切进多个区域、每次只收一片。
@@ -1192,6 +1204,9 @@ cache-sim 判据变红）。
 | `skip:elide-big` | 超大块（`big == 1`：载荷在 slab 外、只有一个槽）⇒ 走逐槽回收 | 超大块的成本在载荷 `free` 与页表拆除，整块重置省不掉；`nslots == 1` 也没有可批的对象 | 无（与逐槽路径行为一致）| `pd` 形状（200 x 8 MiB）语义逐字 + `t_sweepBulkReset` |
 | `skip:elide-foreign` | 本区域写过跨区值（`r->foreign`）⇒ 不做整块重置 | 整块清会跳过逐槽 `unlinkChildren`，它撤销本区域对象持有的跨区边；漏撤销 ⇒ 目标登记位残留、被多留 | 多留（保守：走逐槽路径）| `t_unlink`（跨区边撤销）+ 默认档全电池 |
 | `skip:elide-reachable` | 块的本轮标记计数非零（`s->nMark != 0`）⇒ 走逐字清扫 | `nMark` 是「本块被本轮标记的槽数」的 O(1) 滚动计数（alloc/shadeSlow/MARK_SCAN 置黑 ++，freeSlot/sweepWord/releaseOld 收尾 -- 或归零）；非零 ⇒ 块内有活对象就不能整块清 | 无（只跳过必然无事可做的块）| `t_sweepBulkReset` 的混合块断言 + `EXTC_RC_ELIDE_VERIFY=1` 下 `[sweepelide] mis=0` + 全电池 |
+| `skip:ext-no-mmap` | `extc_rc_extArenaNew` 的 `mmap` 失败（`0` 或 `MAP_FAILED`）⇒ 这个 arena 不建，调用方改走 `aligned_alloc` | 预留地址空间是优化不是语义：拿不到就退回每块自己一次映射，回收路径、契约与停顿都不变（页照样按 `MADV_DONTNEED` 分片丢）| 无（正确性不受影响：只是退回每块一次映射的分配方式）| `-DEXTC_RC_EXT=0` 与默认臂在 t04/t12/t13 上 stdout 逐字节相同；`[extent] fails=` 计数 |
+| `skip:ext-not-base` | 释放的指针不是 2 MiB 量子边界 ⇒ 不属于任何 carve 出来的范围，返回 0 | 调用方（巨块丢页队列）用返回值区分「arena 的 VA」和「自己的映射」：前者还回 buddy，后者 `free` | 无（幂等：返回 0 只决定谁负责释放）| `-DEXTC_RC_EXT=0` 臂（全部走 `free`）与混合臂都跑 t04/t12/t13 通过 |
+| `skip:ext-not-block` | 该量子上不是「已分配的块首」（空闲位置位、或 order 越界）⇒ 同样返回 0 | 双重释放或释放内部指针在这里变成一次拒绝，而不是把空闲链写坏 | 无（幂等：拒绝即交回调用方的 `free`）| buddy 自检：释放 1/2/4/8 量子的块后重新 carve 拿回同一地址；`tests/reclaim` 216/0 |
 | `skip:elide-xregion` | 块里某字的跨区入边登记位非零（`rsbit[w] != 0`）⇒ 走逐字清扫 | 登记位是别的区域指向本块的活边；整块重置会让那些边指向重新发号的槽 | 多留（保守：走逐槽路径）| `t_crossRegion` / `t_register` + 跨区形状 + verify 下的 `mis=0` |
 | `skip:elide-counting` | 计数档（`EXTC_RC_NOCOUNT=0`）里整块重置整段折成 `return 0` | 计数档要逐槽维护 `hold`/`rscnt`/`rsbit`；整块清会跳过这些记账。默认档没有这些字段的读者 | 无（默认档专属；计数档走逐槽路径）| 计数档 `EXTC_RC_NOCOUNT=0 bash tests/reclaim/run.sh`（240/0）+ 三档产物编译 |
 | `skip:elide-verify-mismatch` | `EXTC_RC_ELIDE_VERIFY=1` 且该块 mark 或 rsbit 位图有非零字 ⇒ 复核失败，`elideMismatch++` 并放弃整块重置（退回逐字清扫） | 整块重置的前提是 mark/rsbit 全 0；位图非零而 roll-up 说 `nMark==0` 就是计数漂移，重置会把活对象当死对象 | 多留（走逐槽路径，安全方向）| `ELIDE_VERIFY=1` 跑默认/计数两档 run.sh、`pd_bigobj 200`、`cycleratio 400k`，要求 `[sweepelide] mis=0` |

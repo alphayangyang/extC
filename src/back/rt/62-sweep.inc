@@ -414,6 +414,9 @@
     "    /* Per-step **work** (deterministic) -- next to `[step]` wall clock: wall clock is affected by preemption, work is not. */\n",
     "    fprintf(stderr, \"[pages] rel_bytes=%lld blocks=%lld rel_mb=%.2f\\n\", extc_rc_pageRel, extc_rc_pageTrimN, (double)extc_rc_pageRel / 1048576.0);\n",
     "    fprintf(stderr, \"[return] steps=%lld rel_slabs=%lld page_mb=%.2f page_blocks=%lld cap_mb=%.2f live_mb=%.2f\\n\", extc_rc_retN, extc_rc_slabRel, (double)extc_rc_pageRel / 1048576.0, extc_rc_pageTrimN, (double)extc_rc_capMax / 1048576.0, (double)extc_rc_capLiveMax / 1048576.0);\n",
+    "#if EXTC_RC_EXT_OK\n",
+    "    fprintf(stderr, \"[extent] arenas=%d va_mb=%lld res_mb=%lld calls=%lld fails=%lld\\n\", extc_rc_extNArena, extc_rc_extVaBytes >> 20, extc_rc_extLive >> 20, extc_rc_extCalls, extc_rc_extFails);\n",
+    "#endif\n",
     "    fprintf(stderr, \"[work] n=%lld walk_max=%lld scan_max=%lld push_max=%lld seg_max=%lld walk_cap=%lld walk_gtcap=%lld walk_gt16=%lld walk_gt64=%lld walk_gt256=%lld scan_gt16=%lld scan_gt64=%lld scan_gt256=%lld push_gt16=%lld push_gt64=%lld push_gt256=%lld thr_max=%lld mmax=%lld scale_max=%lld pressure_steps=%lld M_max=%lld pressure=%d mult=%d thr=%lld maxreq=%lld res=%lld M_max_now=%lld M_max_implicit=%d cold_steps=%lld cons_max=%lld\\n\",\n",
 
 

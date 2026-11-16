@@ -103,6 +103,7 @@ static const char *const RECLAIM_RT[] = {
 #include "rt/30-helpers.inc"
 #include "rt/31-slab.inc"
 #include "rt/32-deferred.inc"
+#include "rt/32-extent.inc"
 #include "rt/33-hugefree.inc"
 #include "rt/40-pause.inc"
 #include "rt/41-budget.inc"
