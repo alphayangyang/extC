@@ -19,6 +19,7 @@ wrap<box>（泛型实参 box 含 mut ref 字段）的 main 必须发整值保守
 被放开）。再断 src/back/codegen.c 里那条规则的形状。--selftest 做 6 条注入，每条必须变红。
 """
 import argparse
+import source_split
 import os
 import subprocess
 import sys
@@ -142,7 +143,7 @@ def check(cont, narrow, codegen):
         if COLLECT in nm:
             bad.append("narrow: main() now emits a trigger although a ref-carrying generic"
                        " struct still hides leaves outside the root table")
-    src = codegen.read_text() if codegen.exists() else ""
+    src = source_split.read_path(codegen) if codegen.exists() else ""
     if TARGSCAN not in src:
         bad.append("src/back/codegen.c: generic case does not compute targRefs")
     if FIELDSCAN not in src:
@@ -168,7 +169,7 @@ SELFTEST = [
 
 def selftest(cont, narrow, codegen):
     bad = []
-    src = codegen.read_text() if codegen.exists() else ""
+    src = source_split.read_path(codegen) if codegen.exists() else ""
     for name, which, old, new in SELFTEST:
         base = {"cont": cont, "narrow": narrow, "src": src}[which]
         if old not in base:

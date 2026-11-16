@@ -20,6 +20,7 @@
 --selftest 做 9 条注入，每条必须变红。
 """
 import argparse
+import source_split
 import os
 import re
 import subprocess
@@ -180,7 +181,7 @@ SELFTEST = [
 def selftest(dyn, promo, plain, top, escape, codegen, pools):
     bad = []
     base = {"dyn": dyn, "promo": promo, "plain": plain, "top": top.read_text(),
-            "escape": escape.read_text(), "codegen": codegen.read_text(),
+            "escape": escape.read_text(), "codegen": source_split.read_path(codegen),
             "pools": pools.read_text()}
     for name, which, old, new in SELFTEST:
         if old not in base[which]:
@@ -212,7 +213,7 @@ def main():
             print("FAIL %s" % e)
             return 1
     bad = check(dyn, promo, plain, TOP.read_text(), ESCAPE.read_text(),
-                CODEGEN.read_text(), POOLS.read_text())
+                source_split.read_path(CODEGEN), POOLS.read_text())
     if args.selftest:
         bad += selftest(dyn, promo, plain, TOP, ESCAPE, CODEGEN, POOLS)
     if bad:

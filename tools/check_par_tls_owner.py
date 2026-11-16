@@ -25,6 +25,7 @@ parallel + 回收同时在场的程序里显形，9 形状指令数棘轮与单�
 --selftest 对发射物做 6 条注入，每条必须让判据变红。
 """
 import argparse
+import source_split
 import os
 import subprocess
 import sys
@@ -156,7 +157,7 @@ def check(par, plain, codegen):
             bad.append("par_tls: inner-frame branch does not record owed-only")
         if "extc_rc_maybeCollect(" in no:
             bad.append("par_tls: inner-frame branch collects with incomplete roots")
-    src = codegen.read_text() if codegen.exists() else ""
+    src = source_split.read_path(codegen) if codegen.exists() else ""
     if "__extc_tlsOwner && " not in src:
         bad.append("src/back/codegen.c: owed-check runtime ownership condition is missing")
     def at(needle):

@@ -38,6 +38,7 @@ import re
 import sys
 
 import doc_anchors
+import source_split
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = "src/back/codegen.c"
@@ -183,7 +184,7 @@ def check_text(text, label="tree"):
 
 
 def selftest():
-    text = open(os.path.join(ROOT, SRC), encoding="utf-8").read()
+    text = source_split.read(SRC)
     if check_text(text):
         print("selftest: the current tree is already red; run without --selftest first", file=sys.stderr)
         return 1
@@ -225,7 +226,7 @@ def main():
     args = ap.parse_args()
     if args.selftest:
         return selftest()
-    text = open(os.path.join(ROOT, SRC), encoding="utf-8").read()
+    text = source_split.read(SRC)
     bad = check_text(text)
     if bad:
         for b in bad:

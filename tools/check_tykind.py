@@ -25,7 +25,7 @@ for line in m.group(1).split('\n'):
 
 # Collect switch bodies whose subject mentions `kind`.
 def switches(path):
-    raw = open(path, encoding='utf-8', errors='replace').read()
+    raw = cscan.read(path)
     # Blank comments out **in place** (keep offsets) so reported line numbers point at the
     # real source line -- the first version reported post-strip lines and pointed at nothing.
     text = re.sub(r'/\*.*?\*/', lambda m: re.sub(r'[^\n]', ' ', m.group(0)), raw, flags=re.S)

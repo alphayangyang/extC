@@ -26,13 +26,13 @@ import argparse
 import ast
 from pathlib import Path
 import re
-import reclaim_source
+import source_split
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def emitter_text():
-    source = reclaim_source.text()
+    source = source_split.text()
     start = source.index('RECLAIM_RT[]')
     end = source.index('\n};', start)
     return ''.join(ast.literal_eval(m.group()) for m in re.finditer(r'"(?:[^"\\]|\\.)*"', source[start:end]))

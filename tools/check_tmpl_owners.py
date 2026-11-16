@@ -34,6 +34,7 @@ plan side table on its own -- moving it is a storage change, while the real work
 making the instance set explicit.
 """
 import re
+import source_split
 import sys
 import pathlib
 
@@ -287,7 +288,7 @@ def collect(files, structs, type_names):
         if pathlib.Path(path).name == "plan.c":
             continue
         p = pathlib.Path(path)
-        raw = p.read_text(encoding="utf-8")
+        raw = source_split.read_path(p)
         code = strip_comments(raw)
         raw_tokens = len(re.findall(r"\b%s\b" % FIELD, raw))
         spans = declaration_spans(code)

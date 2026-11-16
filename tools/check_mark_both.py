@@ -17,14 +17,14 @@
 """
 import argparse
 from pathlib import Path
-import reclaim_source
+import source_split
 
 ROOT = Path(__file__).resolve().parents[1]
 DEL_SITES = 4
 
 
 def source_text():
-    return reclaim_source.text()
+    return source_split.text()
 
 
 def body(text, sig):

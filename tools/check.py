@@ -924,6 +924,17 @@ def build_items() -> list:
         ok_msg=ok_first(r"^ok allocation cache structure"),
         bad_msg="tools/check_alloc_hot.py（区域 slab 分配缓存结构或红自测失效）",
         bad_dump=dump_fail(10)))
+    # ---- 分节源码的自洽：两个 16k/4.7k 行的头文件把正文放在 src/back/{rt,cg}/*.inc ----
+    # 拆分本身不改变编译产物（emitted-identity 是那条不变量），但分节会坏在别的地方：
+    # 少一个 #include、某个 .inc 末尾丢换行（与下一节熔成一行）、标记顺序写反、渲染里还留着
+    # 没展开的 #include。这些都不会让编译器报错，只会让读源码的闸门读到一半。
+    items.append(cmd(
+        "check-source-split", "core",
+        "分节源码自洽（每个 #include 都有文件、没有空分节、分节以换行收尾、标记顺序正确、渲染无残留）",
+        ["python3", "tools/source_split.py", "--check"], timeout=60,
+        ok_msg=ok_first(r"^ok: every split root"), bad_msg="分节源码不自洽",
+        bad_dump=dump_fail(10)))
+
     # ---- 闸门·回收计划（RcPlan）的单一决策点 ----
     # 七个决策字段（reclaim/forced/memGrowth/nShard/noCount/sweepFree/rootsUnreliable）只在
     # scanUnitNeeds / rcPlanDecide / generateC 里写，发射点只读；退化的 rootsUnreliable 只能单向

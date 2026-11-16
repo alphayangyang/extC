@@ -80,7 +80,7 @@ def main():
             continue
         scanned += 1
         rel = cscan.rel(ROOT, path)
-        code = cscan.strip(open(path, encoding="utf-8").read())
+        code = cscan.strip(cscan.read(path))
         for m in re.finditer(r"(?:->|\.)\s*([A-Za-z_]\w*)\b", code):
             field = m.group(1)
             if field not in members or not cscan.WRITE.match(code[m.end():m.end() + 4]):

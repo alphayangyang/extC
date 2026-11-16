@@ -56,7 +56,7 @@ OUTPUT_AFFECTING = ["EXTC_NO_LEVELPASS", "EXTC_SELFCHECK"]
 def switches_in_code() -> set:
     found = set()
     for path in [pathlib.Path(p) for p in cscan.src_files(ROOT, (".c",))]:
-        found |= set(re.findall(r'"(EXTC_[A-Z0-9_]+)"', path.read_text(encoding="utf-8")))
+        found |= set(re.findall(r'"(EXTC_[A-Z0-9_]+)"', cscan.read(path)))
     return found
 
 

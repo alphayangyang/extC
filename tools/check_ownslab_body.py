@@ -23,7 +23,7 @@ import argparse
 import ast
 import re
 from pathlib import Path
-import reclaim_source
+import source_split
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -36,7 +36,7 @@ SKIP_TAGS = ['skip:own-hot', 'skip:lookup-probe']
 
 
 def emitter_text():
-    source = reclaim_source.text()
+    source = source_split.text()
     start = source.index('RECLAIM_RT[]')
     end = source.index('\n};', start)
     return ''.join(ast.literal_eval(m.group())

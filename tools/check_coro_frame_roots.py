@@ -18,6 +18,7 @@
 每条必须让判据变红。
 """
 import argparse
+import source_split
 import os
 import subprocess
 import sys
@@ -127,7 +128,7 @@ def check(coro, plain, codegen):
         bad.append("coro: step emits the TLS owner prologue (coro step is not a parTls frame)")
     if "(void *)(f->" in plain:
         bad.append("plain: non-coroutine program emits coroutine frame-field roots")
-    src = codegen.read_text() if codegen.exists() else ""
+    src = source_split.read_path(codegen) if codegen.exists() else ""
     if ROC not in src:
         bad.append("src/back/codegen.c: genFunc still marks coroutine step root tables unreliable")
     if ROC_OLD in src:
@@ -161,7 +162,7 @@ SELFTEST = [
 
 def selftest(coro, plain, codegen):
     bad = []
-    src = codegen.read_text() if codegen.exists() else ""
+    src = source_split.read_path(codegen) if codegen.exists() else ""
     for name, which, old, new in SELFTEST:
         base = {"coro": coro, "plain": plain, "src": src}[which]
         if old not in base:

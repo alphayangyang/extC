@@ -152,7 +152,7 @@ def main() -> int:
     bad = 0
     hand_written = 0        # recursive *and* untagged: the copies still to be migrated
     for path in [pathlib.Path(p) for p in cscan.src_files(ROOT, (".c",))]:
-        raw = path.read_text(encoding="utf-8")
+        raw = cscan.read(path)
         text = strip_comments_and_strings(raw)
         for pos, block in switch_blocks(text):
             labels = set(re.findall(r"case\s+((?:EX|ST)_[A-Z0-9_]+)", block))

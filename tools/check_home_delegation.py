@@ -18,6 +18,7 @@ build 体内必须 if (__extc_homeOwn) { ... maybeCollect ... } else { ... owe .
 --selftest 做 9 条注入，每条必须变红。
 """
 import argparse
+import source_split
 import os
 import subprocess
 import sys
@@ -181,7 +182,7 @@ def check(home, plain, codegen):
     if "__extc_homeOwn" in plain:
         bad.append("plain: a program with no home-arena parameter pays the delegation flag"
                    " (zero-tax broken)")
-    src = codegen.read_text() if codegen.exists() else ""
+    src = source_split.read_path(codegen) if codegen.exists() else ""
     if TOP_GUARD not in src:
         bad.append("src/back/codegen.c: homeOwnArg does not require the call to be the"
                    " statement top-level expression")
@@ -214,7 +215,7 @@ SELFTEST = [
 
 def selftest(home, plain, codegen):
     bad = []
-    src = codegen.read_text() if codegen.exists() else ""
+    src = source_split.read_path(codegen) if codegen.exists() else ""
     for name, which, old, new in SELFTEST:
         base = {"home": home, "plain": plain, "src": src}[which]
         if old not in base:

@@ -15,6 +15,7 @@
 docs/topics/AST-ANNOTATIONS.md 第 3 节）。
 """
 import re
+import source_split
 import sys
 import pathlib
 import sys
@@ -102,7 +103,7 @@ WRITE_BACK_BASELINE = {
 
 def check_write_backs():
     counts = {}
-    text = CODEGEN.read_text(encoding="utf-8")
+    text = source_split.read_path(CODEGEN)
     for field in WRITE_BACK_BASELINE:
         counts[field] = len(re.findall(
             r"->" + field + r"\s*(?:=(?!=)|\+\+|--|\+=|-=|\|=|&=)", text))
@@ -113,7 +114,7 @@ def check_write_backs():
 
 def check_reads():
     bad = []
-    for i, line in enumerate(CODEGEN.read_text(encoding="utf-8").split("\n"), 1):
+    for i, line in enumerate(source_split.read_path(CODEGEN).split("\n"), 1):
         code = line.split("/*")[0]
         for field in PLAN_FIELDS:
             for m in re.finditer(r"->\s*" + field + r"\b", code):

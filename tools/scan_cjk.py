@@ -64,7 +64,7 @@ def scan(src):
 def main():
     args = [a for a in sys.argv[1:] if a != '-v']
     verbose = '-v' in sys.argv[1:]
-    files = args or cscan.src_files('.')
+    files = args or cscan.src_files('.', ('.c', '.h', '.inc'))
     total_c = total_o = 0
     for f in files:
         with open(f, encoding='utf-8', errors='replace') as fh:

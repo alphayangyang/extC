@@ -249,7 +249,7 @@ def check_pool_funnel():
     for path in [pathlib.Path(p) for p in cscan.src_files(ROOT, (".c",))]:
         if path.name == "pools.c":
             continue
-        for n, line in enumerate(path.read_text(encoding="utf-8").split("\n"), 1):
+        for n, line in enumerate(cscan.read(path).split("\n"), 1):
             if not pat.search(line):
                 continue
             stripped = line.strip()

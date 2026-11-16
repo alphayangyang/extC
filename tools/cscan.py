@@ -183,6 +183,15 @@ def src_files(root, exts=(".c", ".h"), subdir="src"):
     return found
 
 
+def read(path):
+    """Text of one source file. The two section-split headers (src/back/reclaim.c and
+    src/back/codegen.c) render their sections first (tools/source_split.py); every other
+    file is read as it sits on disk. A checker that reads the split header directly sees
+    only its #include list and then reports "ok" over an empty body."""
+    import source_split
+    return source_split.read_path(path)
+
+
 def rel(root, path):
     """Path relative to `root`, with forward slashes (what the baselines key on)."""
     return os.path.relpath(path, root).replace(os.sep, "/")

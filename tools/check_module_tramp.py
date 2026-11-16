@@ -14,6 +14,7 @@ __extc_entry_<模块>$<函数>，表 extc_module_entries[] 记名字、描述、
 src/back/codegen.c 里那条发射规则，--selftest 做 10 条注入、每条必须变红。
 """
 import argparse
+import source_split
 import os
 import subprocess
 import sys
@@ -106,7 +107,7 @@ def check(mod, plain, codegen):
         bad.append("the two usage errors do not exit 2")
     if "ExtcModuleEntry" in plain or "__extc_entry_" in plain or "extc_module_usage" in plain:
         bad.append("plain: a program with no @module pays for the dispatcher (zero-tax broken)")
-    src = codegen.read_text() if codegen.exists() else ""
+    src = source_split.read_path(codegen) if codegen.exists() else ""
     for key, needle in SRC.items():
         if needle not in src:
             bad.append("src/back/codegen.c: the %s rule is missing" % key)
@@ -130,7 +131,7 @@ SELFTEST = [
 
 def selftest(mod, plain, codegen):
     bad = []
-    src = codegen.read_text() if codegen.exists() else ""
+    src = source_split.read_path(codegen) if codegen.exists() else ""
     for name, which, old, new in SELFTEST:
         base = {"mod": mod, "plain": plain, "src": src}[which]
         if old not in base:
