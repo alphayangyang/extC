@@ -1,0 +1,18 @@
+/* 判据：借出未结束就要求搬家 ⇒ 运行期 `trap`（库级冻结位），不是静默读到被收回的字节。
+   同一块内的「借出后增长」在编译期就被拒，跨函数的那一条只能由这个守卫兜住。
+   本文件只用于「运行期必须失败」判据。 */
+use std::io
+use std::data::buf
+
+fn growWhileBorrowed(b: mut ref buf<i64>, g: mut ref borrowGuard<i64>) {
+    var i: i64 = 0
+    while i < 5000 { b.push(i)  i = i + 1 }
+}
+
+fn main() -> i32 {
+    var b: buf<i64> = buf<i64>::withCap(4)
+    var g: borrowGuard<i64> = b.borrow()
+    growWhileBorrowed(ref b, ref g)
+    println("should not reach here len=", b.len())
+    return 0
+}

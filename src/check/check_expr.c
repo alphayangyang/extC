@@ -693,6 +693,57 @@ static Type *refNotANumber(Checker *c, Expr *e, Type *lt, Type *rt, const char *
 }
 
 /**
+ * @brief The two buffer primitives: `extc_sizeOf<T>()` and `extc_viewOfT<T>(p, n)`.
+ *
+ * `extc_sizeOf<T>()` is the size of one element in bytes. extC has no `sizeof`, and a
+ * buffer has to convert between "elements" and "bytes of reservation", so the one
+ * question the language cannot ask is answered here.
+ *
+ * `extc_viewOfT<T>(p, n)` re-types a byte pointer as a `mut slice<T>` of `n` elements.
+ * Like `extc_viewOf` it checks **nothing** at run time: the caller owns the range (the
+ * buffer keeps it inside one reservation, and its own `len`/`cap` are what bounds it).
+ * It exists because `extern!` may not return a view and extC has no pointer casts.
+ *
+ * @param c     Checker.
+ * @param e     Generic call node; its name and arguments are used.
+ * @param elem  The resolved element type `T`.
+ * @return      `i64` for `extc_sizeOf`, `mut slice<T>` for `extc_viewOfT`; the error
+ *              type when the arguments do not match.
+ */
+static Type *checkBufPrim(Checker *c, Expr *e, Type *elem) {
+    TypeTable *tt = c->tt;
+    const char *nm = e->u.gencall.name;
+    if (strcmp(nm, "extc_sizeOf") == 0) {
+        if (e->u.gencall.args.len != 0) {
+            ckError(c, e->line, NULL, "`extc_sizeOf` takes no arguments, got %zu",
+                    e->u.gencall.args.len);
+            return ttError(tt);
+        }
+        return c->tI64;
+    }
+    /* `extc_viewOfT<T>(p, n)`: the same two shapes `extc_viewOf` insists on -- a byte
+     * pointer and an integer length -- with the element type coming from the type argument. */
+    if (e->u.gencall.args.len != 2) {
+        ckError(c, e->line, NULL, "`extc_viewOfT` takes 2 arguments (a byte pointer and an element count), got %zu",
+                e->u.gencall.args.len);
+        return ttError(tt);
+    }
+    Expr *ap = *(Expr **)vecAt(&e->u.gencall.args, 0);
+    Expr *an = *(Expr **)vecAt(&e->u.gencall.args, 1);
+    Type *tp = checkExpr(c, ap);   /* the reference **is** the value here, as in extc_viewOf */
+    Type *tn = checkValue(c, an);
+    if (!ttIsError(tp) && !(tp->kind == TY_REF &&
+                            ttBase(tp->inner) && ttBase(tp->inner)->kind == TY_BUILTIN))
+        ckError(c, ap->line,
+                "It re-types a pointer without checking anything, so it insists on the one"
+                " shape it can mean: `ref u8`.",
+                "`extc_viewOfT` wants a `ref u8`, found `%s`", typeStr(c, tp));
+    if (!ttIsError(tn) && !ttIsInteger(tn))
+        ckError(c, an->line, NULL,
+                "`extc_viewOfT` wants an integer element count, found `%s`", typeStr(c, tn));
+    return ttViewMut(tt, sliceOf(c, elem), true);
+}
+/**
  * @brief Check the pool primitives `poolSlice` / `poolResize` / `poolGive`, plus the `...Raw` variants
  *        of the first two.
  *
@@ -3425,7 +3476,10 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             /* The pool primitives share this path for the same reason `alloc` does: the
              * library needs memory the compiler has to name the type of. */
             bool isPoolPrim = isPoolPrimitiveName(e->u.gencall.name);
-            if (!isAlloc && !isPoolPrim) {
+            /* The buffer primitives are on this path for the same reason: the generator has
+             * to write the element type out in C, which the library cannot do. */
+            bool isBufPrim = isBufPrimitiveName(e->u.gencall.name);
+            if (!isAlloc && !isPoolPrim && !isBufPrim) {
                 FuncDef *tf = findFunc(c, e->u.gencall.name);
                 if (tf && tf->typeParams.len == e->u.gencall.targs.len && tf->typeParams.len > 0) {
                     Vec targs;
@@ -3543,6 +3597,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             /* Write the resolved type back: codegen reads the type arguments of the node, not
              * this local variable. */
             *(Type **)vecAt(&e->u.gencall.targs, 0) = elem;
+            if (isBufPrim) return checkBufPrim(c, e, elem);
             if (isPoolPrim) return checkPoolPrim(c, e, elem);
             if (e->u.gencall.args.len != 1) {
                 ckError(c, e->line, NULL, "`%s` takes one argument (how many elements)",

@@ -28,6 +28,18 @@ run_case() {   # run_case <名字> <文件> <期望的一整行>
     else echo "  FAIL $name  ->  期望「$want」，得到「$out」"; fail=1; fi
 }
 
+traps() {   # traps <名字> <文件> <期望的运行期消息子串>
+    local name=$1 f=$2 want=$3 out
+    if out=$("$EXTC" --run "$f" 2>&1); then
+        echo "  FAIL $name  ->  应当运行期失败却成功了：$(echo "$out" | tail -1)"; fail=1; return
+    fi
+    if echo "$out" | grep -qF -- "$want"; then
+        echo "  ok   $name  ->  运行期 trap ✓"
+    else
+        echo "  FAIL $name  ->  消息不对：$(echo "$out" | tail -1 | cut -c1-70)"; fail=1
+    fi
+}
+
 rejects() { # rejects <名字> <文件> <期望的诊断子串>
   if "$EXTC" -w --no-line-map -o "$BUSY/r.c" "$2" 2>"$BUSY/r.err"; then
     echo "  FAIL $1  ->  被接受了（应当报「$3」）"; fail=1
@@ -150,6 +162,34 @@ else
 fi
 rm -rf "$TMPC3"
 
+echo "== buf<T>：对抗路径（搬家逐元素对位 · shrink 后重新长 · 两万个小缓冲区 churn · 冻结位）=="
+run_case buf_adv    tests/stl/buf_adv.extc    "n=3 sum=44999850000 bad=0 v0=7 cap=4 empty=-1 leak=0 live=35651584"
+run_case buf_struct tests/stl/buf_struct.extc "n=400000 bad=0 sum=79999800000 moves=1 capGE=true"
+traps    buf_frozen tests/stl/buf_frozen.extc "this buffer is frozen by a live borrow"
+run_case buf_fuzz  tests/stl/buf_fuzz.extc  "rounds=3000 bad=0 worst=0 leak=0"
+run_case buf_huge  tests/stl/buf_huge.extc  "n=10 sum=45 max=134217728 reserved=1073741824 live=1073741824"
+
+echo "== buf<T>：小缓冲区 churn 的预留账本（1e4 与 1e5 两轮，只差轮数）=="
+# 判据：轮数 ×11 而峰值 RSS 不许翻倍 —— 预留必须被复用（分配器有一份空闲表），
+# 否则 1e5 轮要 200 GiB 地址空间、RSS 也会跟着涨。
+TMPC4=$(mktemp -d)
+if "$EXTC" -w --no-line-map -o "$TMPC4/a.c" tests/stl/buf_churn_a.extc >/dev/null 2>&1 \
+   && "$EXTC" -w --no-line-map -o "$TMPC4/b.c" tests/stl/buf_churn_b.extc >/dev/null 2>&1 \
+   && gcc -fwrapv -std=c11 -O2 -o "$TMPC4/a" "$TMPC4/a.c" >/dev/null 2>&1 \
+   && gcc -fwrapv -std=c11 -O2 -o "$TMPC4/b" "$TMPC4/b.c" >/dev/null 2>&1; then
+    ka=$(/usr/bin/time -f %M "$TMPC4/a" 2>&1 >/dev/null | tail -1)
+    kb=$(/usr/bin/time -f %M "$TMPC4/b" 2>&1 >/dev/null | tail -1)
+    la=$("$TMPC4/a" 2>/dev/null); lb=$("$TMPC4/b" 2>/dev/null)
+    if [ "$kb" -le $(( ka * 2 )) ] && [ "$la" = "rounds=10000 leak=0" ] && [ "$lb" = "rounds=100000 leak=0" ]; then
+        echo "  ok   buf churn  ->  1e4: ${ka} KB · 1e5: ${kb} KB ⇒ 平（账本回零）"
+    else
+        echo "  FAIL buf churn  ->  1e4: ${ka} KB / ${la} · 1e5: ${kb} KB / ${lb}"; fail=1
+    fi
+else
+    echo "  FAIL buf churn  ->  生成或编译失败"; fail=1
+fi
+rm -rf "$TMPC4"
+
 echo "== 用户自定义池底容器（写在入口文件里，不是库模块）：板块 + 池记录 + 提权 =="
 run_case custom  tests/stl/custom_pool.extc  "n=10 cap=13 v9=81 live=1 bytes=104"
 run_case custom-grow tests/stl/custom_pool_grow.extc "n=2000000 cap=2362204 bytes=18897632 first=0 last=1999999 live_after=0"
@@ -259,7 +299,7 @@ asan_ok() {   # 文件 可执行名
       && gcc -fwrapv -std=c11 -g -fsanitize=address -o "$TMP/$2" "$TMP/$2.c" >/dev/null 2>&1 \
       && ! "$TMP/$2" 2>&1 | grep -q Sanitizer
 }
-if asan_ok tests/stl/varArray_release.extc var && asan_ok tests/stl/vector.extc v && asan_ok tests/stl/setOrdered.extc so && asan_ok tests/stl/setStructKey.extc ssk && asan_ok tests/stl/stringOps.extc sop && asan_ok tests/stl/stringEdit.extc sedit && asan_ok tests/stl/stringFind.extc sfi; then
+if asan_ok tests/stl/buf_adv.extc ba && asan_ok tests/stl/buf_struct.extc bs && asan_ok tests/stl/buf_fuzz.extc bfz && asan_ok tests/stl/varArray_release.extc var && asan_ok tests/stl/vector.extc v && asan_ok tests/stl/setOrdered.extc so && asan_ok tests/stl/setStructKey.extc ssk && asan_ok tests/stl/stringOps.extc sop && asan_ok tests/stl/stringEdit.extc sedit && asan_ok tests/stl/stringFind.extc sfi; then
     echo "  ok   ASan  ->  varArray_release · vector · setOrdered · setStructKey · stringOps · stringFind 干净"
 else
     echo "  FAIL ASan  ->  报了内存问题"; fail=1

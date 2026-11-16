@@ -675,6 +675,11 @@ static void scanUnitNeeds(CG *g, Module *m) {
             if (plateIsMemCopyName(f->name)) g->needPlateCopy = true;
             else                             g->needPlateView = true;
         }
+        /* The buffer substrate, same trigger shape: only the privileged layer declares
+         * `extern!("extc-buf")`, so a program with no buffer never carries the block -- and
+         * never carries the reclamation runtime either (a buffer's storage is foreign memory,
+         * not an rc slot, so T0 stays T0). */
+        if (f->externLib && strcmp(f->externLib, "extc-buf") == 0)  g->needBuf = true;
         if (f->externLib && strcmp(f->externLib, "extc-time") == 0)  g->needTime = true;
         /* The five file-level shims: they share the `extc-runtime` library tag with net => they can only be
          * recognized **by name**. This scan must run before the preamble (`_GNU_SOURCE` is honored only

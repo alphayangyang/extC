@@ -378,6 +378,7 @@ typedef struct {
     /* On-demand emission for the plate layer: **one flag per declaration** (a declaration is emitted only when its flag is set). */
     bool        needPlateView;    /* `extc_viewOf`: the plate's only entry point for using a reserved area as a view */
     bool        needPlateCopy;    /* `extc_memCopy`: the whole-block copy behind plate copyIn/copyOut */
+    bool        needBuf;          /* the buffer substrate: `extc_buf_reserve` / `extc_buf_release` / `extc_buf_discard` behind std::data::buf */
     bool        needTime;     /* the program uses `extern!("extc-time")` => emit the clock and sleep */
     /* Is the function being generated marked `@unchecked`? Then **no check at all** is
      * emitted for its body -- not just the element indexes: bounds, division, shift,

@@ -1,0 +1,14 @@
+// 形状 S1：从 4 个元素的容量开始 push 到 8e6 个 i64，然后整段求和。
+// 这条形状把「增长」放在最显眼的位置：容量从 4 长到 8e6 一共要搬几次家、搬多少字节。
+use std::io
+use std::data::buf
+
+fn main() -> i32 {
+    var b: buf<i64> = buf<i64>::withCap(4)
+    var i: i64 = 0
+    while i < 8000000 { b.push(i)  i = i + 1 }
+    var s: i64 = 0
+    for x in b.view() { s = s + x }
+    println("n=", b.len(), " sum=", s, " moves=", b.relocations())
+    return 0
+}

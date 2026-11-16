@@ -1643,6 +1643,7 @@ static void emitLateRuntime(CG *g, Buf *out, Module *m, Arena *arena) {
     if (g->needMemFind) memfindEmitRuntime(arena, out);
     if (g->needPlateView) plateEmitViewOf(arena, out);
     if (g->needPlateCopy) plateEmitMemCopy(arena, out);
+    if (g->needBuf) bufRtEmitRuntime(arena, out);
     if (g->needTime) timeEmitRuntime(arena, out);
     if (g->needEvent) eventEmitRuntime(arena, out);
     if (g->needDomain) {

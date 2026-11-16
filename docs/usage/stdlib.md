@@ -202,35 +202,65 @@ fn main() -> i32 {
 ```
 实测：`n=100 cap=139 bytes=1112`（当前板块 139 × 8 字节，加上板块头；四次增长的旧块都还回去了）。
 
-### `buf<T>`：**拥有**存储的可增长缓冲区
+### `buf<T>`：**拥有**一片地址预留的可增长缓冲区
 
-`vector<T>` 与 `buf<T>` 用同一套板块，区别只在**所有权怎么表达**：
+`buf<T>`（`std::data::buf`）把自己的存储做成一片**地址预留**，不是一块板块：每个 `buf` 恰好持有一片预留，
+元素 `i` 的地址恒为 `base + i*sizeof(T)`。
 
-| | `vector<T>` | `buf<T>`（`std::data::buf`） |
+- 预留是**地址空间，不是内存**：没写过的页不驻留。
+- 在预留内增长（`push` 推进长度、`reserve` 推高容量）**不拷贝**，地址不动；页由第一次写提交。
+- 长度撞到预留上限 `maxCapacity()` 时才**搬一次家**：新预留按 16 倍长，拷 `len` 个元素，旧的当场还；
+  `relocations()` 数搬家的次数。
+- `shrink(k)` 把 `[k, cap)` 的页还给操作系统（地址不变，再写会重新提交）；`clear()` 只把长度归零。
+- `@drop` 把整片预留还掉；`release()` 是同一个动作的公开入口（第二次调用是空操作）。
+
+| | `vector<T>` | `buf<T>` |
 |---|---|---|
-| 标了 `@noCopy` | 否 | **是**（值位置出现时**转移**，不是拷贝） |
-| 谁拥有板块 | 值的一份拷贝看不到"谁拥有"，两个名字共享同一块板 | 转移语义保证**同时只有一个名字** |
-| 离开作用域 | 不自动交还（要显式 `release()`） | **自动交还**（`@drop`） |
-| 覆盖赋值 | 旧板留着（可能泄漏） | **旧板当场还回去** |
-| 增长 | 1.5 倍、原地长 | 1.5 倍、原地长（旧块当场还） |
+| 存储来源 | 板块（池） | 自己的一片地址预留 |
+| 所有权 | 值的拷贝共享同一块板 | `@noCopy`：值位置出现即**转移**，同时只有一个名字 |
+| 增长 | 到容量上限时重建，旧块还回去 | 预留内**只推长度**；撞到预留上限才搬一次家 |
+| 离开作用域 | 不自动交还 | `@drop` 自动交还 |
 
-方法：`withCap(c)` · `len()` · `capacity()` · `push(v)` · `pop()`（`?T`） · `view()` / `viewMut()` ·
-`clear()` · `clone()`（复制出一份独立存储）。
+方法（都是成员函数，`self` 是被调的那个缓冲区）：
 
-它标了 `@buffer`，所以 `new T[n]` 在 `buf<T>` 的注解上下文里就是它的构造函数：
+| 方法 | 语义 |
+|---|---|
+| `withCap(c)` | 建一个长度 0、容量 `c` 的 `buf`（`new T[n]` 是它的另一种写法） |
+| `len()` / `capacity()` / `maxCapacity()` | 长度 / 容量 / 这片预留最多能装多少元素 |
+| `push(v)` | 末尾追加一个；容量不够就先在预留内推容量 |
+| `pop()` | 弹掉末尾一个，返回 `?T`（空时 `null`） |
+| `view()` / `viewMut()` | 借出 `slice<T>` / `mut slice<T>`，看到的正好是 `[0, len)` |
+| `reserve(n)` | 保证容量至少 `n`；在预留内不动地址，超出预留就搬家（逐段拷、拷完一段丢源一段，峰值 = 一份 + 一块） |
+| `shrink(k)` | 容量收到 `k`（`k` 夹到 `[len, cap]`），丢页但地址不变 |
+| `clear()` | 长度归零，容量与地址都不动 |
+| `relocations()` / `reservedBytes()` | 搬家次数 / 这片预留的字节数（按分配到的块算） |
+| `release()` | 把整片预留还回去；`@drop` 会再调一次，第二次是空操作 |
+| `borrow()` | 冻结位：借出期间搬家会在运行期 `trap`（`buf_frozen.extc`） |
+| `clone()` | 复制一份独立存储 |
+| `buf::bufLive()` | 模块函数：本进程所有 `buf` 当前握着的预留总字节数（账本，用来查泄漏） |
+
+视图的有效性只有一条：**搬家让旧视图失效**。同一块内“借出后改变存储身份”在编译期就被拒；
+跨函数的情形由 `borrow()` 的运行期守卫兜住。完整的语义与不变量见 `docs/design/BUF-INVARIANT.md`。
 
 <!-- fragment -->
 ```extc
 use std::data::buf
-var b: buf<i64> = new i64[4]      // 与 buf<i64>::withCap(4) 同一件事
-b.push(7)
-let s = b.view()
+
+var b: buf<i64> = buf<i64>::withCap(4)
+var i: i64 = 0
+while i < 100000 { b.push(i)  i = i + 1 }
+println("len=", b.len(), " cap=", b.capacity(), " max=", b.maxCapacity(),
+        " moves=", b.relocations(), " reservedKiB=", i64(b.reservedBytes()) / 1024,
+        " liveKiB=", buf::bufLive() / 1024)
 ```
 
-判据（`tests/stl/buf.extc`、`tests/stl/buf_rss.extc`）：8e6 个 i64 的增长峰值 **64 MB**，
-同一形状走 `varArray`（arena 底）是 **130 MB** —— 前者是"一份"，后者是"历代之和"；
-块退出后 `extc_pool_bytesLive()` 回到进入前的数。
+实测：`len=100000 cap=138255 max=262144 moves=0 reservedKiB=2048 liveKiB=2048` —— 10 万次 push 一次都没搬家
+（容量在预留内推着走），而 RSS 只有 2.6 MB：2 MiB 的预留里只碰过几页。
 
+判据在 `tests/stl/buf.extc`（增长与视图）、`buf_new.extc`（`new T[n]` 构造）、`buf_adv.extc`（跨函数借用）、
+`buf_struct.extc`（结构体元素）、`buf_frozen.extc`（借出期间搬家会 trap）、`buf_churn_a/b.extc`（账本回零）、
+`buf_fuzz.extc`（随机顺序释放 + 账本恒等）、`buf_huge.extc`（1 GiB 预留只驻留碰过的页）；
+与 C++ 的对照见 `bench/buf/RESULTS.md`。
 ### 编辑字符串：`replace` / `erase` / `insert` / `findFrom` / `rfind` / `count` / `toUpper`
 
 `string` 是**拥有**的字节串，下面这些方法都在原地改自己（`self: mut ref string`），不造新串：

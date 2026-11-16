@@ -1,0 +1,88 @@
+// buf_fuzz —— 分配器的对抗测试：**不按 LIFO 顺序**释放、混合 3 个数量级的预留、
+// 并对每一项动作之后核一次账本（bufLive() 必须等于活缓冲区的 reservedBytes 之和）。
+//
+// 这条用例是为重写后的 buddy 分配器准备的：它同时压三件事——
+//   ① 大块先切小再回收（高阶级联切分）、② 中间层释放后与相邻空闲块合并、
+//   ③ 账本（extc_buf_liveBytes）随每次 carve/give 的加减与真实存活集合一致。
+use std::io
+use std::data::buf
+
+let SEED0: i64 = 0x2545F4914F6CDD1D
+
+struct rng {
+    s: i64
+}
+
+fn next(r: mut ref rng) -> i64 {
+    r.s = r.s ^ (r.s << 13)
+    r.s = r.s ^ (r.s >> 7)
+    r.s = r.s ^ (r.s << 17)
+    if r.s < 0 { r.s = 0 - r.s }
+    return r.s
+}
+
+fn fill(b: mut ref buf<i64>, n: i64) {
+    var j: i64 = 0
+    while j < n { b.push(j)  j = j + 1 }
+}
+
+fn sumOf(b: ref buf<i64>) -> i64 {
+    var s: i64 = 0
+    for x in b.view() { s = s + x }
+    return s
+}
+
+fn main() -> i32 {
+    let base: i64 = buf::bufLive()
+    var r: rng = { s: SEED0 }
+    var rounds: i64 = 0
+    var bad: i64 = 0
+    var worst: i64 = 0
+    while rounds < 3000 {
+        var a: buf<i64> = buf<i64>::withCap(1 + next(ref r) % 40)
+        var b: buf<i64> = buf<i64>::withCap(1 + next(ref r) % 4000)
+        var c: buf<i64> = buf<i64>::withCap(1 + next(ref r) % 300000)
+        let na: i64 = 1 + next(ref r) % 40
+        let nb: i64 = 1 + next(ref r) % 4000
+        let nc: i64 = 1 + next(ref r) % 300000
+        fill(ref a, na)
+        fill(ref b, nb)
+        fill(ref c, nc)
+        if sumOf(ref a) != na * (na - 1) / 2 { bad = bad + 1 }
+        if sumOf(ref b) != nb * (nb - 1) / 2 { bad = bad + 1 }
+        if sumOf(ref c) != nc * (nc - 1) / 2 { bad = bad + 1 }
+        // 三个缓冲区的预留字节数之和就是账本应有的增量（reservedBytes() 是公开读数）
+        let live3: i64 = i64(a.reservedBytes()) + i64(b.reservedBytes()) + i64(c.reservedBytes())
+        var d1: i64 = buf::bufLive() - base - live3
+        if d1 < 0 { d1 = 0 - d1 }
+        if d1 > worst { worst = d1 }
+        if d1 != 0 { bad = bad + 1 }
+        // 随机挑一个**不是 LIFO 顺序**的释放序列：先放中间那个，再放最小的，最后放最大的
+        let pick: i64 = next(ref r) % 3
+        var la: i64 = i64(a.reservedBytes())
+        var lb: i64 = i64(b.reservedBytes())
+        var lc: i64 = i64(c.reservedBytes())
+        if pick == 0 {
+            b.release()
+            la = i64(a.reservedBytes())  lc = i64(c.reservedBytes())
+            if buf::bufLive() - base - (la + lc) != 0 { bad = bad + 1 }
+            a.release()
+            lc = i64(c.reservedBytes())
+            if buf::bufLive() - base - lc != 0 { bad = bad + 1 }
+        } else {
+            if pick == 1 {
+                a.release()
+                lb = i64(b.reservedBytes())  lc = i64(c.reservedBytes())
+                if buf::bufLive() - base - (lb + lc) != 0 { bad = bad + 1 }
+            } else {
+                c.release()
+                la = i64(a.reservedBytes())  lb = i64(b.reservedBytes())
+                if buf::bufLive() - base - (la + lb) != 0 { bad = bad + 1 }
+            }
+        }
+        rounds = rounds + 1
+    }
+    let last: i64 = buf::bufLive() - base
+    println("rounds=", rounds, " bad=", bad, " worst=", worst, " leak=", last)
+    return 0
+}

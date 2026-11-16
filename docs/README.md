@@ -18,6 +18,7 @@
 | [`MEMORY-MODEL.md`](design/MEMORY-MODEL.md) | 三种存储（帧 / 板块 / 对象表）与"该用哪个"的判据 |
 | [`POOL-LEVELS.md`](design/POOL-LEVELS.md) | 池层级的规则与边界：存储/读回/拒绝各一条 |
 | [`ALLOCATORS.md`](design/ALLOCATORS.md) | 分配器分层：arena、板块、对象表各管什么 |
+| [`BUF-INVARIANT.md`](design/BUF-INVARIANT.md) | 可增长数组：一个不变量（一片预留）、四个动作、视图何时失效 |
 | [`DESTRUCTORS.md`](design/DESTRUCTORS.md) | 析构：`@drop` 的全部时机与顺序 |
 | [`RECLAMATION.md`](design/RECLAMATION.md) | 四层回收：按分配点选策略、运行期何时整体删掉 |
 | [`PARALLEL.md`](design/PARALLEL.md) | `par` 的证明义务；线程与回收的规则（实现暂缓） |

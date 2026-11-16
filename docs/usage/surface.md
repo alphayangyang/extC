@@ -5,7 +5,7 @@
 
 生成方式：`tools/manual_surface.py`；`check.sh` 保证本页与源码一致。
 
-公开面共 566 个成员，其中内部 142 个：
+公开面共 876 个成员，其中内部 163 个：
 
 ## prelude
 
@@ -23,10 +23,13 @@
 - `borrowGuard.b`（字段）
 - `borrowGuard.p`（字段）
 - `buf.cap`（字段）
+- `buf.max`（字段）
+- `buf.mem`（字段）
+- `buf.moveTo`（方法）
+- `buf.moves`（字段）
 - `buf.n`（字段）
-- `buf.pid`（字段）
-- `buf.pidGen`（字段）
 - `buf.pins`（字段）
+- `buf.reserved`（字段）
 - `buf.vals`（字段）
 
 ## std::data::hashMap
@@ -102,6 +105,7 @@
 ## std::data::vector
 
 - `vector.cap`（字段）
+- `vector.frozen`（方法）
 - `vector.n`（字段）
 - `vector.pid`（字段）
 - `vector.pidGen`（字段）
@@ -152,6 +156,17 @@
 - `-.pUtf8`（方法）
 - `builder.buf`（字段）
 - `builder.n`（字段）
+- `builder.pStr`（方法）
+- `builder.puts`（方法）
+- `builder.sep`（方法）
+- `parser.fail`（方法）
+- `parser.lit`（方法）
+- `parser.newNum`（方法）
+- `parser.newStr`（方法）
+- `parser.pArray`（方法）
+- `parser.pObject`（方法）
+- `parser.skipWs`（方法）
+- `parser.value`（方法）
 
 ## std::loop
 
@@ -161,6 +176,9 @@
 ## std::mem
 
 - `-.pRoundUp`（方法）
+- `plate.pAllocOff`（方法）
+- `plate.pLoan`（方法）
+- `plate.pOffOf`（方法）
 
 ## std::net
 
@@ -186,10 +204,13 @@
 - `-.pEnc6`（方法）
 - `string.big`（字段）
 - `string.cap`（字段）
+- `string.frozen`（方法）
 - `string.n`（字段）
 - `string.pid`（字段）
 - `string.pidGen`（字段）
 - `string.pins`（字段）
+- `string.sByte`（方法）
+- `string.sSet`（方法）
 - `string.small`（字段）
 - `stringGuard.p`（字段）
 - `stringGuard.s`（字段）

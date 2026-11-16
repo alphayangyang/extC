@@ -1208,6 +1208,19 @@ static const char *exGencall(CG *g, Expr *e) {
      * `poolSliceRaw` / `poolResizeRaw` are the same two calls with the zeroing left out, for a
      * column whose every slot is written before it is read. */
     const char *gcName = e->u.gencall.name;
+    /* `extc_sizeOf<T>()` / `extc_viewOfT<T>(p, n)`: the buffer's two doors. Neither emits a
+     * runtime: the first is `sizeof`, the second is a struct literal. */
+    if (isBufPrimitiveName(gcName)) {
+        const char *btn = cType(g, subst(g, *(Type **)vecAt(&e->u.gencall.targs, 0)));
+        if (strcmp(gcName, "extc_sizeOf") == 0)
+            return arenaPrintf(g->arena, "((int64_t)sizeof(%s))", btn);
+        Type *bst = subst(g, e->type);   /* the `mut slice<T>` the checker produced */
+        return arenaPrintf(g->arena,
+            "(%s){ .data = (%s *)(%s), .len = (int64_t)(%s) }",
+            cType(g, bst), btn,
+            genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, 0)),
+            genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, 1)));
+    }
     if (isPoolPrimitiveName(gcName)) {
         const char *rid = genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, 0));
         if (strcmp(gcName, "poolGive") == 0) {

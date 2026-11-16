@@ -1,0 +1,20 @@
+/* 判据：小缓冲区的 churn 内存平（1e4 与 1e5 两轮同一形状，只差轮数）。
+   每个缓冲区预留 2 MiB 地址空间、离开作用域就还回去 —— 分配器必须复用这些预留，
+   否则 1e5 轮要占 200 GiB 地址空间（1e5 × 2 MiB）。 */
+use std::io
+use std::data::buf
+
+fn main() -> i32 {
+    let base: i64 = buf::bufLive()
+    var i: i64 = 0
+    while i < 10000 {
+        {
+            var t: buf<i64> = buf<i64>::withCap(64)
+            var j: i64 = 0
+            while j < 64 { t.push(i * 64 + j)  j = j + 1 }
+        }
+        i = i + 1
+    }
+    println("rounds=", i, " leak=", buf::bufLive() - base)
+    return 0
+}

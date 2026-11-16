@@ -1,0 +1,49 @@
+/* 判据：`buf<T>` 的对抗路径 —— 搬家（拷一段丢一段）之后每个元素仍在原下标上、
+   `shrink(0)` 之后重新长是同一片预留、空缓冲区的 `pop` 是 `none`、两万个小缓冲区的
+   churn 之后账本回到原点（预留被分配器复用，不是泄漏）。 */
+use std::io
+use std::data::buf
+
+fn churn(base: i64) -> i64 {
+    var i: i64 = 0
+    while i < 20000 {
+        {
+            var t: buf<i64> = buf<i64>::withCap(4)
+            var j: i64 = 0
+            while j < 8 { t.push(i + j)  j = j + 1 }
+        }
+        i = i + 1
+    }
+    return buf::bufLive() - base
+}
+
+fn main() -> i32 {
+    let base: i64 = buf::bufLive()
+    /* ① 四代之后逐个元素校验：搬家的每一段都必须落在原下标上 */
+    var b: buf<i64> = buf<i64>::withCap(4)
+    var i: i64 = 0
+    while i < 300000 { b.push(i)  i = i + 1 }
+    var bad: i64 = 0
+    var s: i64 = 0
+    var k: i64 = 0
+    for x in b.view() {
+        s = s + x
+        if x != k { bad = bad + 1 }
+        k = k + 1
+    }
+    /* ② 把页全还掉再长：地址不变、容量重新几何增长 */
+    b.shrink(0)
+    b.push(7)
+    b.push(8)
+    b.push(9)
+    /* ③ 空缓冲区：pop 是 none、view 是空的 */
+    var e: buf<i64> = buf<i64>::withCap(1)
+    let none1: i64 = e.pop() ?? -1
+    /* ④ 两万个小缓冲区 churn：账本回到原点（预留被分配器复用） */
+    let pre: i64 = buf::bufLive()
+    let leak: i64 = churn(pre)
+    println("n=", b.len(), " sum=", s, " bad=", bad, " v0=", b.view()[0],
+            " cap=", b.capacity(), " empty=", none1, " leak=", leak,
+            " live=", buf::bufLive() - base)
+    return 0
+}

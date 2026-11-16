@@ -30,9 +30,12 @@ vocabulary is fixed here:
 |---|---|---|
 | **`mem::plate`** | a `mmap`-reserved, lazily committed region with a *stable* address (`DEFAULT_RESERVE` = 4 GiB, committed in 1 MiB chunks). It exists so C interop and big scratch buffers can take a pointer that never moves. **A pool never allocates one.** | `stdlib/std/mem.extc` |
 | **block chain** | a pool's own memory: a singly linked list of `malloc(sizeof(ExtcBlock) + bytes)` blocks that the pool grows by adding to, and hands back on release. No reserved region, no 4 GiB. | `src/back/pools.c` |
+| **buffer reservation** | `buf<T>` 的存储：一片 2 MiB 对齐的地址预留，从进程级 buddy VA arena 里切（2 MiB 量子、8 个 64 GiB 竞技场懒创建）；没写过的页不驻留，`shrink` 用 `madvise(DONTNEED)` 把页还掉而地址不变。不进回收器、不占 `rc` 槽。 | `stdlib/std/data/buf.extc` + `src/back/bufrt.c`；语义见 [`BUF-INVARIANT.md`](BUF-INVARIANT.md) |
 | **privileged heap emission** | `extc_viewOf` / `extc_memCopy` and friends: helpers the *generator* emits for code the language cannot spell. They hang off the heap runtime block, not off either of the above. | `src/back/plate.c` |
 
-So: 4 GiB of `PROT_NONE` + `mprotect` means `mem::plate`; a growing pool means a block chain; the
+So: 4 GiB of `PROT_NONE` + `mprotect` means `mem::plate`; a growing pool means a block chain; a
+`buf<T>` means a reservation carved out of the process-wide VA arena (and it is the one storage that
+keeps its size, so it is also the only one that can give capacity back); the
 `plate.c` helpers are a third thing with an overlapping name.
 
 ## 1. What is privileged today, and why

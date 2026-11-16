@@ -1,0 +1,32 @@
+/* 判据：元素不是 8 字节整齐倍数（24 字节的结构体）时，搬家的分段边界落在页中间 ——
+   「已拷前缀的整页」可以丢、半页不能丢，所以每个元素必须原样活到最后。 */
+use std::io
+use std::data::buf
+
+struct rec {
+    a: i64
+    b: i64
+    c: i64
+}
+
+fn main() -> i32 {
+    var b: buf<rec> = buf<rec>::withCap(2)
+    var i: i64 = 0
+    while i < 400000 {
+        b.push(rec { a: i, b: i * 3, c: 0 - i })
+        i = i + 1
+    }
+    var bad: i64 = 0
+    var idx: i64 = 0
+    var sum: i64 = 0
+    for r in b.view() {
+        if r.a != idx { bad = bad + 1 }
+        if r.b != idx * 3 { bad = bad + 1 }
+        if r.c != 0 - idx { bad = bad + 1 }
+        sum = sum + r.a
+        idx = idx + 1
+    }
+    println("n=", b.len(), " bad=", bad, " sum=", sum, " moves=", b.relocations(),
+            " capGE=", b.capacity() >= b.len())
+    return 0
+}

@@ -1,0 +1,17 @@
+// 形状 S3：装满 8e6 之后 `shrink(4096)` 把页还给操作系统（地址不变），再原地长回去。
+// 这条形状量两件事：还页的价（madvise）与「重新长回去要不要再分配/再拷贝」。
+use std::io
+use std::data::buf
+
+fn main() -> i32 {
+    var b: buf<i64> = buf<i64>::withCap(4)
+    var i: i64 = 0
+    while i < 8000000 { b.push(i)  i = i + 1 }
+    b.shrink(4096)
+    i = 4096
+    while i < 8000000 { b.push(i)  i = i + 1 }
+    var s: i64 = 0
+    for x in b.view() { s = s + x }
+    println("n=", b.len(), " sum=", s, " moves=", b.relocations(), " cap=", b.capacity())
+    return 0
+}

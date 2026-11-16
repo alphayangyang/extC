@@ -269,4 +269,20 @@ static inline bool isPoolPrimitiveName(const char *n) {
                  strcmp(n, "poolGive") == 0 || strcmp(n, "copyInto") == 0);
 }
 
+/**
+ * @brief Is this one of the two buffer primitives (`extc_sizeOf` / `extc_viewOfT`)?
+ *
+ * Both exist for the same reason `alloc` is a primitive: the generator has to name the
+ * element type in C, and the standard library cannot (`extc_sizeOf<T>()` has no `sizeof`
+ * spelling in extC, and `extc_viewOfT<T>()` would have to return `slice<T>`, which
+ * `extern!` refuses -- two C parameters, not one machine word). The names live only here,
+ * so the checker and codegen cannot drift apart.
+ *
+ * @param n  Declaration name.
+ * @return   `true` when it is one of them.
+ */
+static inline bool isBufPrimitiveName(const char *n) {
+    return n && (strcmp(n, "extc_sizeOf") == 0 || strcmp(n, "extc_viewOfT") == 0);
+}
+
 #endif

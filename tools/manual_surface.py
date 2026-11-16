@@ -92,30 +92,34 @@ def body_of(src, open_brace):
 def top_level_lines(src, start, end):
     """体区间里**深度 0**的行（即类型体的直接成员，而不是方法体里的字面量/局部）。
 
-    返回 [(行首下标, 该行文本)]。方法体与结构体字面量里的 `name: value` 不算声明：
-    它们深度 > 0，这里直接跳过。
+    这里看的是**行首**深度，不是行尾：一个多行函数的签名行以 `{` 结尾，行尾深度已经是 1，
+    若按行尾判就会被整条漏掉（单行函数体 `{ return x }` 反而会被记下）—— 那会让公开面清单
+    只认单行成员。字符串/字符字面量里的括号照旧不计数。
+
+    返回 [(行首下标, 该行文本)]。
     """
     out = []
-    i, depth, line_start = start, 0, start
+    i, depth, line_start, line_depth = start, 0, start, 0
     while i < end:
         c = src[i]
         if c == '"' or c == "'":
             q = c
             i += 1
             while i < end and src[i] != q:
-                i += 2 if src[i] == '\\' else 1
+                i += 2 if src[i] == chr(92) else 1
             i += 1
             continue
-        if c == '\n':
-            if depth == 0:
+        if c == chr(10):
+            if line_depth == 0:
                 out.append((line_start, src[line_start:i]))
             line_start = i + 1
+            line_depth = depth
         elif c == '{':
             depth += 1
         elif c == '}':
             depth -= 1
         i += 1
-    if depth == 0 and line_start < end:
+    if line_depth == 0 and line_start < end:
         out.append((line_start, src[line_start:end]))
     return out
 

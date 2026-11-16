@@ -18,6 +18,7 @@
 #include "domain.h"      /* the pool registry runtime */
 #include "memfind.h"        /* the byte-search runtime (std::sys::mem), emitted on demand */
 #include "plate.h"          /* the plate runtime (std::sys::heap), emitted on demand */
+#include "bufrt.h"          /* the buffer substrate (std::data::buf), emitted on demand */
 #include "reclaim.h"        /* the reclamation runtime (slab + holder counts + region sweep) */
 /* The checker owns the rules this pass has to agree with, so it includes the checker's
  * header rather than restating them: `typeSupportsOp` decides whether an operator applied

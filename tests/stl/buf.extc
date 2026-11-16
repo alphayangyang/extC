@@ -2,7 +2,6 @@
    而 `varArray` 在 arena 上做不到这两件事（旧块只能等整个帧退出）。 */
 use std::io
 use std::data::buf
-use std::sys::pool as syspool
 
 fn grow() -> i64 {
     var b: buf<i64> = buf<i64>::withCap(4)
@@ -26,17 +25,17 @@ fn main() -> i32 {
     b.push(100)
 
     /* 离开作用域交还板块：块前后字节账相等（不泄漏） */
-    let before: i64 = syspool::extc_pool_bytesLive()
+    let before: i64 = buf::bufLive()
     {
         var t: buf<i64> = buf<i64>::withCap(256)
         t.push(1)
     }
-    let after: i64 = syspool::extc_pool_bytesLive()
+    let after: i64 = buf::bufLive()
 
     /* 增长到底：10 万次 push 之后，临时那个 buf 也一个字节不留 */
-    let l0: i64 = syspool::extc_pool_bytesLive()
+    let l0: i64 = buf::bufLive()
     let gs: i64 = grow()
-    let l1: i64 = syspool::extc_pool_bytesLive()
+    let l1: i64 = buf::bufLive()
 
     println("len=", b.len(), " cap=", b.capacity(), " sum=", s, " c9=", c.view()[9],
             " v0=", b.view()[0], " leak=", after - before, " growsum=", gs, " gleak=", l1 - l0)

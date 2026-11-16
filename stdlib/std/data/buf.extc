@@ -1,17 +1,23 @@
 /* std/data/buf.extc —— 拥有存储的可增长缓冲区（`buf<T>`）
  *
- * 与 `vector<T>` 的区别**只在所有权怎么表达**：
- *   - `vector<T>` 是一个普通值，拷贝它 = 两个名字看同一块池板（`@sharesStorage` 会警告）
- *   - `buf<T>` 标了 `@noCopy`：值位置出现时**转移**而不是拷贝，所以"同时只有一个人拥有它"，
- *     覆盖赋值与离开作用域时会跑 `@drop` 把池板当场还给分配器（这正是 `varArray` 在 arena 上
- *     做不到的事：旧块只能留在原地等整个帧退出）
+ * **一个不变量**：每个 `buf` 恰好持有一片**地址预留**，元素 `i` 的地址永远是 `base + i*sizeof(T)`。
+ * 预留是地址空间，不是内存：没有写过的页不驻留。于是
+ *   - 在预留内增长（`push` 超过容量）**不拷贝**，只把长度往前推，页由第一次写触发提交；
+ *   - 只有长度撞到预留上限（`max`）时才搬一次家：新预留按 16 倍长，拷 `len` 个元素，旧的当场还掉；
+ *   - `shrink(k)` 把 `[k, cap)` 的页还给操作系统（`madvise(DONTNEED)`），地址不变，再次写会重新提交；
+ *   - `@drop release` 把整片预留还给分配器 —— 这是「旧代不会留在堆上」的兑现点。
  *
- * `borrow()` 是**冻结位**的库级形式：借出期间要改变存储身份（`push` 触到 realloc）会在运行期
- * `trap`，而不是让旧视图静默读到已被分配器收回的字节。同块内"借出后增长"在编译期就被拒，
+ * 与 `vector<T>` 的区别只在两件事：所有权（`@noCopy`，值位置出现是转移）与容量语义（预留 + 原地长）。
+ * `vector` 的存储来自池块，只能靠 `poolResize` 原块加长；`buf` 的存储来自自己的预留，
+ * 增长不需要分配器参与，所以「增长」与「换一块」被分开了。
+ *
+ * `borrow()` 是**冻结位**的库级形式：借出期间要改变存储身份（搬家）会在运行期 `trap`，
+ * 而不是让旧视图静默读到已经被分配器收回的字节。同块内「借出后增长」在编译期就被拒，
  * 跨函数/跨块的情形由这个守卫兜住 —— 编译器一条都没参与。
  *
- * 是 P1 的语言级 `buf<T>`（`new T[n]` 将来直接返回它）之前的库级原型：用的仍是同一套板块原语
- * `poolSliceRaw` / `poolResizeRaw` / `poolGive`，所以语义与 `vector` 一致，只是所有权由标签保证。
+ * 三个 C 入口（`extc_buf_reserve` / `extc_buf_release` / `extc_buf_discard`）来自编译器，
+ * 因为它们要指针算术与整数转指针（2 MiB 对齐、`madvise`、把内部地址折回页首），语言故意不开这两样；
+ * **策略**（留多少、何时长、何时搬、长度多少）全在这个结构体里，C 侧不认识任何策略。
  *
  * @code
  * use std::io
@@ -21,96 +27,240 @@
  *     var b: buf<i64> = buf<i64>::withCap(4)
  *     var i: i64 = 0
  *     while i < 10 { b.push(i)  i = i + 1 }
- *     println("len=", b.len(), " cap=", b.capacity(), " last=", b.view()[9])
+ *     println("len=", b.len(), " cap=", b.capacity(), " last=", b.view()[9],
+ *             " moves=", b.relocations(), " live=", buf::bufLive())
  *     return 0
  * }
  * @endcode
  */
 
-use std::sys::pool as syspool
+use std::sys::heap as sysheap
+
+/* 三个 C 入口 + 一格账本。**都声明在这个模块里**，不在 `std::sys::heap`：预留要把区间对齐到
+ * 2 MiB 并 `madvise(MADV_HUGEPAGE)`，丢页要把「偏离页首」的地址折回页首 —— 两者都需要指针
+ * 算术与整数转指针，而语言故意不开这两样，所以这三格只能由编译器给（`src/back/bufrt.c`）。
+ * 声明的位置就是触发器：只有真用了 `buf` 的程序才会把它们扫到，才发射那块 C 代码
+ * （`src/back/cg/190-lambda-envs.inc` 按 `externLib == "extc-buf"` 点亮 `needBuf`）。
+ * 策略（留多少、何时长、何时搬、长度多少）全在这个文件里，C 侧不知道任何策略。 */
+extern!("extc-buf") fn extc_buf_reserve(bytes: u64) -> ?ref u8 effects Addr=0 Cont=0
+extern!("extc-buf") fn extc_buf_release(at: ref u8, bytes: u64) -> i32 effects Addr=0 Cont=0
+extern!("extc-buf") fn extc_buf_discard(at: ref u8, bytes: u64) -> i32 effects Addr=0 Cont=0
+/* 一片预留**实际**拿到多少字节（按 2 MiB 量子取整后的块大小）；不是 arena 块时返回 0。 */
+extern!("extc-buf") fn extc_buf_span(at: ref u8) -> i64 effects Addr=0 Cont=0
+/* 活着的缓冲区一共预留了多少**地址空间**（不是驻留内存）：给泄漏判据用的一格。 */
+extern!("extc-buf") fn extc_buf_live() -> i64 effects Addr=0 Cont=0
+
+/* 预留策略的常数。写成字面量而不是 `i64(2097152)`：带检查的转换会让静态初始化器不是常量
+ * （与 `std/mem.extc` 的 PAGE/CHUNK 同一条理由）。 */
+let BUF_FLOOR_BYTES: i64 = 2097152      /* 小缓冲区也至少留 2 MiB 地址空间（大页的量子） */
+let BUF_MAX_BYTES: i64 = 1073741824     /* 一次预留不超过 1 GiB 字节 */
+let BUF_HEADROOM: i64 = 16              /* 搬家时按 16 倍长留，够装下「终值远大于当前」的情形 */
+let BUF_MOVE_BYTES: i64 = 2097152       /* 搬家每拷这么多字节就丢掉源的一段页（峰值 = 一份 + 一块） */
 
 @noCopy
 @buffer
 struct buf<T> {
-    @private pid:    i64     /* 运行期池：板的寿命挂在建池时所在的地方上 */
-    @private pidGen: u64     /* 建池时的世代：陈旧拷贝不许误放别人的池 */
-    @private vals:   mut slice<T>
-    @private n:      i64     /* 已用长度 */
-    @private cap:    i64     /* 板块容量 */
-    @private pins:   i64     /* 活着的 `borrow()` 守卫个数：> 0 时板块被冻结 */
-    @private
-
-    /** @brief 交还板块。离开作用域、被覆盖、或函数中途返回时由编译器发出。 */
+    @private mem:      mut slice<u8>   /* 整片预留（len = reserved 字节）；视图不碰内存，所以 PROT_NONE 也拿得住 */
+    @private vals:     mut slice<T>    /* 预留的类型化视图，len = cap */
+    @private reserved: u64             /* 预留字节数（已按页取整） */
+    @private moves:    i64             /* 存储搬过几次家：可观测的「增长代价」计数 */
+    @private n:        i64             /* 已用长度 */
+    @private cap:      i64             /* 预留内已承诺的容量（页由写触发提交） */
+    @private max:      i64             /* 预留最多装几个元素：撞到就搬家 */
+    @private pins:     i64             /* 活着的 `borrow()` 守卫个数：> 0 时不许换存储 */
+    /** @brief 交还整片预留。离开作用域、被覆盖、或函数中途返回时由编译器发出；也可以现在就调。
+     *
+     * 对本对象的第二次调用是空操作（`reserved` 已经是 0），所以 `release()` 之后即使
+     * `@drop` 再发一次也不会重复归还。这是「提前还」的公开入口：想在块中途把大预留还给
+     * 分配器（而不是等作用域结束）时用它。 */
     @drop
     fn release(self: mut ref buf<T>) {
-        if self.cap > 0 && syspool::extc_pool_generation(self.pid) == self.pidGen {
-            self.vals = poolResize<T>(self.pid, self.vals, 0)
+        if self.reserved > u64(0) {
+            if extc_buf_release(self.mem.data, self.reserved) != 0 {
+                trap("buf: cannot give the reservation back")
+            }
         }
+        self.reserved = u64(0)
         self.cap = 0
-        self.n   = 0
+        self.n = 0
     }
 
-    /** @brief 建一个容量为 `c` 的缓冲区（至少 1，池按容量一次要够）。 */
+    /** @brief 建一个容量为 `c` 的缓冲区（至少 1），并一次留够 16 倍 `c` 的地址空间。 */
     fn withCap(c: i64) -> buf<T> {
-        /* 池生在**调用者**的地方。关联函数体不为池分配单独开一层地方，所以「当前地方」
-         * 就是调用者的地方 —— 与 `vector::withCap` 同一条路；显式指定更外层反而会指到
-         * 调用者的外面去（`extc_pool_zoneOuter` 是给"我自己这一层随时会没"的普通函数用的）。 */
-        let pid = syspool::extc_pool_new(-1)
-        let pg  = syspool::extc_pool_generation(pid)
+        let esz: i64 = extc_sizeOf<T>()
         var cc: i64 = c
         if cc < 1 { cc = 1 }
+        /* 预留上限（元素数）：至少装得下 cc，按 1 GiB 字节封顶，小量按 2 MiB 字节起。 */
+        var floorElems: i64 = BUF_FLOOR_BYTES / esz
+        if floorElems < 1 { floorElems = 1 }
+        var limElems: i64 = BUF_MAX_BYTES / esz
+        if limElems < cc { limElems = cc }
+        var mx: i64 = cc * BUF_HEADROOM
+        if mx < floorElems { mx = floorElems }
+        if mx > limElems { mx = limElems }
+        let bytes: u64 = u64(mx * esz)
+        var raw: ?ref u8 = extc_buf_reserve(bytes)
+        if raw == null { trap("buf: cannot reserve address space") }
+        /* 账本记的是**实际**拿到的块（量子取整），所以容量上限也按它算：一个 512 字节的 buf
+         * 实际握着 2 MiB 地址空间，`maxCapacity()` 必须说 2 MiB，不能说 512 字节。 */
+        var span: i64 = i64(bytes)
+        if raw != null {
+            let got: i64 = extc_buf_span(raw)
+            if got > span { span = got }
+        }
+        var realMax: i64 = span / esz
+        var mem: mut slice<u8> = sysheap::extc_viewOf(raw, span)
+        var vals: mut slice<T> = extc_viewOfT<T>(mem.data, cc)
         var b: buf<T> = {
-            pid:    pid,
-            pidGen: pg,
-            vals:   poolSliceRaw<T>(pid, cc),
-            n:      0,
-            cap:    cc,
-            pins:   0,
+            mem:      mem,
+            vals:     vals,
+            reserved: u64(span),
+            moves:    0,
+            n:        0,
+            cap:      cc,
+            max:      realMax,
+            pins:     0,
         }
         return b
     }
 
     /** @brief 元素个数。 */
+    @inline
     fn len(self: ref buf<T>) -> i64 { return self.n }
 
-    /** @brief 当前板块能装多少（不含再要一块）。 */
+    /** @brief 当前承诺的容量（不含搬家）。 */
+    @inline
     fn capacity(self: ref buf<T>) -> i64 { return self.cap }
 
+    /** @brief 这片预留最多装几个元素：超过它就要搬一次家。 */
+    @inline
+    fn maxCapacity(self: ref buf<T>) -> i64 { return self.max }
+
+    /** @brief 存储搬过几次家（每次搬家拷一次当时的长；这是「增长代价」的可观测计数）。 */
+    @inline
+    fn relocations(self: ref buf<T>) -> i64 { return self.moves }
+
+    /** @brief 整片预留的地址空间字节数（不是驻留内存）。 */
+    @inline
+    fn reservedBytes(self: ref buf<T>) -> u64 { return self.reserved }
+
     /** @brief 只读视图：`[0, len)`。它在视野里的期间改容量是编译错误。 */
+    @inline
     fn view(self: ref buf<T>) -> slice<T> { return self.vals[0..self.n] }
 
     /** @brief 可写视图：`[0, len)`。 */
+    @inline
     fn viewMut(self: mut ref buf<T>) -> mut slice<T> { return self.vals[0..self.n] }
 
-    /** @brief 追加一个元素；容量不够时按 1.5 倍再要一块（旧块由 `poolResizeRaw` 当场还掉）。 */
+    /** @brief 追加一个元素；容量不够时在预留内原地长（不拷贝），撞到预留上限才搬一次家。 */
+    @inline
     fn push(self: mut ref buf<T>, v: T) {
-        if self.n == self.cap {
-            /* 冻结位：还有守卫活着时改变存储身份，会让它手里的视图指向被收回的板块。 */
-            if self.pins > 0 { trap("this buffer is frozen by a live borrow") }
-            var ncap: i64 = self.cap + self.cap / 2
-            if ncap <= self.cap { ncap = 4 }
-            self.vals = poolResizeRaw<T>(self.pid, self.vals, ncap)
-            self.cap  = ncap
-        }
+        if self.n == self.cap { self.reserve(1) }
         self.vals[self.n] = v
         self.n = self.n + 1
     }
 
     /** @brief 弹出最后一个元素；空的时候返 `none`。 */
+    @inline
     fn pop(self: mut ref buf<T>) -> ?T {
         if self.n == 0 { return none }
         self.n = self.n - 1
         return some(self.vals[self.n])
     }
 
-    /** @brief 清空长度（板块留着，下一次 `push` 直接复用）。 */
+    /** @brief 保证还能再放 `more` 个元素（长度不变）。预留内原地长，撞上限才搬家。 */
+    fn reserve(self: mut ref buf<T>, more: i64) {
+        let want: i64 = self.n + more
+        if want <= self.cap { return }
+        if self.pins > 0 { trap("this buffer is frozen by a live borrow") }
+        if want <= self.max {
+            /* 预留内长：地址不动，只把承诺的容量往前推。页由第一次写触发提交，
+             * 所以这里一次分配、一次拷贝都没有（`relocations()` 不动）。 */
+            var ncap: i64 = self.cap + self.cap / 2
+            if ncap < 4 { ncap = 4 }
+            if ncap < want { ncap = want }
+            if ncap > self.max { ncap = self.max }
+            self.cap = ncap
+            self.vals = extc_viewOfT<T>(self.mem.data, self.cap)
+            return
+        }
+        self.moveTo(want)
+    }
+
+    /** @brief 搬到更大的预留：新预留按 16 倍长（封顶 1 GiB 字节），拷 `len` 个元素，旧的当场还掉。 */
+    @private
+    fn moveTo(self: mut ref buf<T>, want: i64) {
+        let esz: i64 = extc_sizeOf<T>()
+        var limElems: i64 = BUF_MAX_BYTES / esz
+        if limElems < want { limElems = want }
+        var nmax: i64 = self.max * BUF_HEADROOM
+        if nmax > limElems { nmax = limElems }
+        if nmax < want { nmax = want }
+        if nmax < self.max { nmax = self.max }
+        let bytes: u64 = u64(nmax * esz)
+        var raw: ?ref u8 = extc_buf_reserve(bytes)
+        if raw == null { trap("buf: cannot reserve address space") }
+        var span: i64 = i64(bytes)
+        if raw != null {
+            let got: i64 = extc_buf_span(raw)
+            if got > span { span = got }
+        }
+        var realMax: i64 = span / esz
+        var nmem: mut slice<u8> = sysheap::extc_viewOf(raw, span)
+        var nvals: mut slice<T> = extc_viewOfT<T>(nmem.data, realMax)
+        /* 拷一段、丢一段：**已拷过的源页当场还给操作系统**。于是搬家的瞬时峰值是
+         * 「一份 + 一块」，而不是「旧代 + 新代」—— 这正是容量界 M <= live + O(1) 的来源。 */
+        var chunk: i64 = BUF_MOVE_BYTES / esz
+        if chunk < 1 { chunk = 1 }
+        var done: i64 = 0
+        while done < self.n {
+            var cn: i64 = self.n - done
+            if cn > chunk { cn = chunk }
+            copyInto<T>(nvals[done .. done + cn], self.vals[done .. done + cn], cn)
+            var srcHere: mut slice<u8> = self.mem[done * esz .. self.n * esz]
+            let dropBytes: u64 = u64(((cn * esz) / 4096) * 4096)
+            if dropBytes > u64(0) { extc_buf_discard(srcHere.data, dropBytes) }
+            done = done + cn
+        }
+        let oldAt: ref u8 = self.mem.data
+        let oldBytes: u64 = self.reserved
+        self.mem = nmem
+        self.vals = nvals
+        self.reserved = u64(span)
+        self.max = realMax
+        self.cap = realMax
+        self.moves = self.moves + 1
+        if extc_buf_release(oldAt, oldBytes) != 0 {
+            trap("buf: cannot give the old reservation back")
+        }
+    }
+
+    /** @brief 长度改成 `k`（不超过当前长度），并把 `[k, cap)` 的页还给操作系统。
+     *
+     * 地址不变、容量变成 `k`：之后在预留内再 push 会重新提交那些页（内容为零），
+     * 所以「借出去的视图」看到的地址仍是同一个 —— 但它看到过的字节不再有效。 */
+    fn shrink(self: mut ref buf<T>, k: i64) {
+        if k < 0 { trap("buf: shrink needs a length >= 0") }
+        var kk: i64 = k
+        if kk > self.n { kk = self.n }
+        if kk < self.cap {
+            let esz: i64 = extc_sizeOf<T>()
+            var tail: mut slice<u8> = self.mem[kk * esz .. self.cap * esz]
+            let drop: u64 = u64((self.cap - kk) * esz)
+            if extc_buf_discard(tail.data, drop) != 0 {
+                trap("buf: cannot give pages back")
+            }
+            self.cap = kk
+            self.vals = extc_viewOfT<T>(self.mem.data, kk)
+        }
+        self.n = kk
+    }
+
+    /** @brief 清空长度，预留与页都留着（下一次 `push` 直接复用）。要还页用 `shrink(0)`。 */
+    @inline
     fn clear(self: mut ref buf<T>) { self.n = 0 }
 
-    /** @brief 借出：返回一个守卫，它在作用域里期间这块存储不许改变身份。
-     *
-     * 编译器已经拒绝同一个函数体内的"借出后增长"；这个守卫管的是**跨函数**：把守卫传出去、
-     * 存进别处，或者在被调用的函数里增长，都会在 `push` 的 realloc 路径上 `trap`。
-     * 守卫本身是 `@noCopy`，离开作用域时把计数减回去。 */
+    /** @brief 借出：返回一个守卫，它在作用域里期间这块存储不许搬家。 */
     fn borrow(self: mut ref buf<T>) -> borrowGuard<T> {
         self.pins = self.pins + 1
         return { b: self, p: ref self.pins }
@@ -125,12 +275,12 @@ struct buf<T> {
     }
 }
 
-/** @brief `buf::borrow()` 的守卫：活着的时候缓冲区的存储被冻结。
+/** @brief 进程当前为所有活着的 `buf` 预留了多少**地址空间**（不是驻留内存）。
  *
- * 它**不拥有**存储，也不决定缓冲区的寿命：它只让"改变存储身份"这件事在运行期变成确定的
- * `trap`。与越界、陈旧 `dyn` 句柄、`any` 拆箱是同一种失败方式 —— 程序停下来说清楚哪里不对，
- * 而不是读一段已经被分配器收回去的字节。
- */
+ * 一个数就够写泄漏判据：块前块后相等，说明 `@drop` 把预留全还了。 */
+fn bufLive() -> i64 { return extc_buf_live() }
+
+/** @brief `buf::borrow()` 的守卫：活着的时候缓冲区的存储被冻结。 */
 @noCopy
 struct borrowGuard<T> {
     @private b: ref buf<T>

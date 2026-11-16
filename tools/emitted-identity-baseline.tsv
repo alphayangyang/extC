@@ -1,7 +1,7 @@
 # emitted-C identity baseline (refactor invariant)
-# extc md5: 30bbfdc0e15f867d8f7a5e4353648e95
+# extc md5: 08207c28cb0166deb20c9e5a98639ce7
 # columns: config, source, status, md5, bytes
-# why: R3: the runtime text gains the payload reserve (ExtcRcSlab.bigMax / EXTC_RC_EXT_SLACK) and in-place growth (extc_rc_bigGrow); every generated file that emits the runtime changes by that insertion alone
+# why: UNRECORDED (--write without --why)
 default	bench/app/log.extc	ok	454a6c6ce140460c62a4ba9e03e7c107	89309
 reclaim	bench/app/log.extc	ok	cb00ef205d6fed2ab231585a77183961	401967
 default	bench/app/route.extc	ok	ae18294e0c8edaaecb28913a5870ea55	126299
@@ -326,16 +326,30 @@ default	tests/reclaim-shapes/struct_copy.extc	ok	547502f52a13c57753994ae827b3ac2
 reclaim	tests/reclaim-shapes/struct_copy.extc	ok	547502f52a13c57753994ae827b3ac25	344435
 default	tests/reclaim-shapes/unknown_host.extc	ok	33dd0b934ee47a6c4cafe9e44d7b9263	334383
 reclaim	tests/reclaim-shapes/unknown_host.extc	ok	33dd0b934ee47a6c4cafe9e44d7b9263	334383
-default	tests/stl/buf.extc	ok	7c8c0bf03dc664038465e37cd937611d	59296
-reclaim	tests/stl/buf.extc	ok	b97c48a37619ec278a3f7f3fd6b5e7c8	371275
-default	tests/stl/buf_new.extc	ok	d5f0f3588a1b783201eb8294ef169aec	375180
-reclaim	tests/stl/buf_new.extc	ok	d5f0f3588a1b783201eb8294ef169aec	375180
+default	tests/stl/buf.extc	ok	74fdb626a29041a815226aaac7f35b92	77266
+reclaim	tests/stl/buf.extc	ok	deda4be88b4309d7f2fa68305ed0822b	389408
+default	tests/stl/buf_adv.extc	ok	791e6760af0d01082cd1c1d381ed51a6	78769
+reclaim	tests/stl/buf_adv.extc	ok	b501c0694d4bfe88297960068a3c13f6	390911
+default	tests/stl/buf_churn_a.extc	ok	a41eed2b1f5ee52bf272bfde566d57a3	70687
+reclaim	tests/stl/buf_churn_a.extc	ok	5d8a4b5da2751e1bc0f4f1a9437d0dc8	382829
+default	tests/stl/buf_churn_b.extc	ok	785a39d10dd418a3c1c26795a494772e	70688
+reclaim	tests/stl/buf_churn_b.extc	ok	7da6a3bc5e9bb5b6ac40e171ae5d7703	382830
+default	tests/stl/buf_frozen.extc	ok	e28ff7a9bf62ac78ab7138fab90c9a6a	71361
+reclaim	tests/stl/buf_frozen.extc	ok	725fa184bfa1b9c80820caa14507a3a9	383609
+default	tests/stl/buf_fuzz.extc	ok	d2afe73d3786668ae830e66967e76840	80496
+reclaim	tests/stl/buf_fuzz.extc	ok	eca2a38153345d552bcbf3d2972a4fa6	392638
+default	tests/stl/buf_huge.extc	ok	41692242b7fc4e0aeab6bbd96b0af7dd	72997
+reclaim	tests/stl/buf_huge.extc	ok	772c47dbc01c12d5210a0ebd7f8ccf02	385139
+default	tests/stl/buf_new.extc	ok	d28ef30d522c483c28adab444cf767cc	393051
+reclaim	tests/stl/buf_new.extc	ok	d28ef30d522c483c28adab444cf767cc	393051
 default	tests/stl/buf_new_wrong_elem.extc	fail 1	a65735d7f284a6d6c385452196011648	0
 reclaim	tests/stl/buf_new_wrong_elem.extc	fail 1	a65735d7f284a6d6c385452196011648	0
-default	tests/stl/buf_rss.extc	ok	abc5f168a17167412f08b9646107000a	53749
-reclaim	tests/stl/buf_rss.extc	ok	e21bd6badecd13f67d00247945e4e778	365728
+default	tests/stl/buf_rss.extc	ok	b651079af6df3ce8db5004bbda8028ba	71597
+reclaim	tests/stl/buf_rss.extc	ok	cdceff240befe5e857253c51c0b36cdd	383739
 default	tests/stl/buf_rss_arena.extc	ok	e4d72f67676691a695ee3971af43e8f8	21338
 reclaim	tests/stl/buf_rss_arena.extc	ok	52f5b410568e30843ce48411a615e031	334050
+default	tests/stl/buf_struct.extc	ok	3de579c2aca4234065d5244ad3d6e465	73588
+reclaim	tests/stl/buf_struct.extc	ok	85ab17fef94996909e071d0437e5e3ef	385730
 default	tests/stl/clone.extc	ok	6c4779df5f93b2cb1ca5d1f3b2ac111d	265639
 reclaim	tests/stl/clone.extc	ok	640b5814d18ac966849f376e8205593c	578365
 default	tests/stl/clone_ok.extc	ok	16fe15364cf5e1874fe6901ba7bcc3eb	47759

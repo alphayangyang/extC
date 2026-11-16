@@ -1,0 +1,25 @@
+// 形状 S5：16e6 个 i64（128 MB）顺序扫 + 随机索引扫。
+// 这条形状量的是**连续布局**的兑现：buf 的地址是 base + i*sizeof(T)，所以顺序扫能向量化、
+// 随机扫没有间接层。任何分块/句柄化的增长方案都要在这里交税，buf 不交。
+use std::io
+use std::data::buf
+
+fn main() -> i32 {
+    var b: buf<i64> = buf<i64>::withCap(4)
+    var i: i64 = 0
+    while i < 16000000 { b.push(i * 3)  i = i + 1 }
+    let v: slice<i64> = b.view()
+    var seq: i64 = 0
+    for x in v { seq = seq + x }
+    // 索引序列只用正数乘加（不溢出 64 位），所以与 C++ 那一臂逐位相同。
+    var idx: i64 = 12345
+    var rnd: i64 = 0
+    var k: i64 = 0
+    while k < 16000000 {
+        idx = (idx * 1103515245 + 12345) % 16000000
+        rnd = rnd + v[idx]
+        k = k + 1
+    }
+    println("n=", b.len(), " seq=", seq, " rnd=", rnd)
+    return 0
+}

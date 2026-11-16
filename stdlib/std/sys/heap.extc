@@ -28,6 +28,10 @@ extern!("libc") fn munmap(p: ref void, len: u64) -> i32 effects Addr=0 Cont=0
  * `@builtin` 的语义本来就对：它不是 C 库里的函数，是编译器实现的原语（与 `parallel::run` 同族）。 */
 @builtin fn extc_viewOf(p: ref u8, n: i64) -> mut slice<u8> effects Addr=0 Cont=0
 
+/* 缓冲区的三个 C 入口（`extc_buf_reserve` / `extc_buf_release` / `extc_buf_discard`）不在这里声明：
+ * 它们只属于 `std::data::buf`，声明在 `buf.extc` 里 —— 这个模块是每个用到 `sys::heap` 的程序
+ * 都会读到的（`mmap`/`mprotect` 的声明就住在这），把缓冲区的 C 块挂在这里等于把它们都拖进来。 */
+
 /* `memcpy` 后面的门（与 `std::sys::mem` 的 `extc_memEq` 同一个理由：它的签名里有 `const void *`
  * 与 `size_t`，extC 都写不出来，而手写声明会与 `<string.h>` 撞）。板的 `copyIn`/`copyOut` 要
  * **整块**拷贝 —— 逐字节循环每个字节过一次边界检查，那正是要避免的。 */

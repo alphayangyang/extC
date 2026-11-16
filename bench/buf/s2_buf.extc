@@ -1,0 +1,21 @@
+// 形状 S2：100 万个**短命**缓冲区，每个装 64 个 i64，装完就地丢弃。
+// 这条形状量的不是搬家中位数而是「一个缓冲区的固定成本」：预留、交还、以及分配器的复用。
+use std::io
+use std::data::buf
+
+fn main() -> i32 {
+    let base: i64 = buf::bufLive()
+    var s: i64 = 0
+    var i: i64 = 0
+    while i < 1000000 {
+        {
+            var t: buf<i64> = buf<i64>::withCap(64)
+            var j: i64 = 0
+            while j < 64 { t.push(i * 64 + j)  j = j + 1 }
+            for x in t.view() { s = s + x }
+        }
+        i = i + 1
+    }
+    println("n=", i, " sum=", s, " leak=", buf::bufLive() - base)
+    return 0
+}

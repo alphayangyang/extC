@@ -1,0 +1,17 @@
+// buf_huge —— 一次预留 1 GiB 字节（封顶值）会发生什么：地址空间一个块，驻留内存只有碰过的页。
+// 判据：① `reservedBytes()` 必须是 1 GiB（账本记实际块大小，不是请求的字节数）；
+//      ② `maxCapacity()` 必须等于 1 GiB / sizeof(i64)；③ 只写 10 个元素，RSS 应当很小。
+use std::io
+use std::data::buf
+
+fn main() -> i32 {
+    var b: buf<i64> = buf<i64>::withCap(1)
+    b.reserve(134217727)
+    var i: i64 = 0
+    while i < 10 { b.push(i)  i = i + 1 }
+    var s: i64 = 0
+    for x in b.view() { s = s + x }
+    println("n=", b.len(), " sum=", s, " max=", b.maxCapacity(),
+            " reserved=", b.reservedBytes(), " live=", buf::bufLive())
+    return 0
+}

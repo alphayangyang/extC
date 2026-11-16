@@ -1,0 +1,27 @@
+// 形状 S4：元素是 24 字节的结构体（不是 2 的幂、也不是 8 的倍数），2e6 个。
+// 搬家的分段边界会落在页中间 ⇒ 「已拷前缀的整页可以丢、半页不能丢」这条必须对。
+use std::io
+use std::data::buf
+
+struct rec {
+    a: i64
+    b: i64
+    c: i64
+}
+
+fn main() -> i32 {
+    var b: buf<rec> = buf<rec>::withCap(2)
+    var i: i64 = 0
+    while i < 2000000 {
+        b.push(rec { a: i, b: i * 3, c: 0 - i })
+        i = i + 1
+    }
+    var s: i64 = 0
+    var bad: i64 = 0
+    for r in b.view() {
+        if r.b != r.a * 3 { bad = bad + 1 }
+        s = s + r.a
+    }
+    println("n=", b.len(), " sum=", s, " bad=", bad, " moves=", b.relocations())
+    return 0
+}
