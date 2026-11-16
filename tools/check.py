@@ -1233,6 +1233,12 @@ def build_items() -> list:
         ok_msg=ok_out, bad_msg="公开面清单已过期",
         bad_dump=lambda _out: ["  跑 python3 tools/manual_surface.py"]))
 
+    # ---- 活文档的锚点：引用符号，不引用行号 ----
+    items.append(cmd(
+        "check-doc-anchors", "docs",
+        "活文档的锚点引用符号（严格集 0 个数字锚点；棘轮集不许新增；所有符号可解析）",
+        sh('python3 tools/doc_anchors.py --check'),
+        ok_msg=ok_first(r"^ok: symbol-only"), bad_msg="文档锚点用了行号，或符号解不出来", bad_dump=dump_head(10)))
     # ---- 活文档不写历史 ----
     items.append(cmd(
         "check-no-history", "docs",

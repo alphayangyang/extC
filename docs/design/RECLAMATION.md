@@ -71,7 +71,7 @@ while i < n {
 
 块变大后**任何「按块容量推导的步预算」都必须显式夹住**，否则停顿包络随 `SLAB_BITS` 线性膨胀：分配路径的收尾信用
 `ceil(cursor_slab->nslots / 64)` 原来被块几何自动约束（`_q ≤ 22`），512 KiB / 16 B 槽变成 512 word ⇒ 一步能释放 32,766 槽
-（实测 cross 形状 194 µs，停顿包络的 4×）。现在由 `EXTC_RC_SWEEP_FINISH_MAX`（64 word = 1,024 个 16 B 槽，`reclaim.c:1069`）
+（实测 cross 形状 194 µs，停顿包络的 4×）。现在由 `EXTC_RC_SWEEP_FINISH_MAX`（64 word = 1,024 个 16 B 槽，`reclaim.c:EXTC_RC_SWEEP_FINISH_MAX`）
 夹住，代价只是大块晚几次分配才清完，总清扫量不变。上限仍是硬界：16 B 槽整块 32,766 槽 < `EXTC_RC_REUSE_MAX_SLOT`，
 没有这一夹容量会按超过块大小的 chunk 算、槽写到块外（判据同在 `check_slab_cap.py`，S8/S9）。
 
@@ -103,9 +103,9 @@ while i < n {
 
 **清零不靠编译器展开**（v13 更正上文早期说法）：槽步长是常量并不保证 `memset(p, 0, ss)` 会被展开 —— `-O2` 下
 glibc 的 fortify 头把它换成 `__memset_chk` 调用（sizeratio 形状该行占总指令 **11.70%**，≈13.5 Ir/次）。
-v13 起清零走自己的 `extc_rc_zeroSmall`（`src/back/reclaim.c:1503`）：`switch (n >> 3)` 的 16→1 fallthrough 跳表，
+v13 起清零走自己的 `extc_rc_zeroSmall`（`src/back/reclaim.c:extc_rc_zeroSmall`）：`switch (n >> 3)` 的 16→1 fallthrough 跳表，
 每个 case 写一个 8 字节 0（槽数据 64 字节对齐 ⇒ store 对齐），`default: memset(p, 0, n)`；分配体里的调用点
-在 `reclaim.c:1484`（`extc_rc_bump` 里的另一处 `memset` 不动）。收益：sizeratio 22.37 → 16.18 ms（**−27.7%**，
+在 `reclaim.c:extc_rc_alloc`（`extc_rc_bump` 里的另一处 `memset` 不动）。收益：sizeratio 22.37 → 16.18 ms（**−27.7%**，
 反超 C++ 最好写法 8%）。诚实限制：跳表**没有**结构门禁，正确性由 `tests/reclaim/run.sh` 的 ASan/UBSan 档覆盖
 （清零不全会立刻在标记/清扫上炸），数值由 `bench/gc/v2` 守着。
 
@@ -359,7 +359,7 @@ place。构造点没有自己的 place 时池就挂在函数体上 —— 循环
 
 清扫的成本单位是**容量**，不是活集：一块 slab 里只要还有一个长命对象，它每轮都要逐词扫完（整块跳过的前提是 `s->nMark != 0` 为假，见 §三点五前面的 elide 段）。容量又是高水位 —— slab 只在区域析构时整块归还，所以「峰值」会一直钉在堆上。
 
-归还路径（无写屏障、全在冷路径）：`extc_rc_slabShrink(r)`（src/back/reclaim.c:1898）在 `extc_rc_sweepStep` 的收尾分支（3915）沿 region 链最多访问 `EXTC_RC_SHRINK_VISIT_MAX=256` 块，把 `nLive==0`、非 big、非 bump slab、且没有跨区入边位的 slab 从 region 链与 size-class 链 O(1) 摘掉、入 free 队列；每次最多 `EXTC_RC_SHRINK_REL_MAX=16` 块，munmap 交给既有的 `extc_rc_fqDrainCore`（1501）按 `EXTC_RC_FREE_BUDGET_SLABS` / `EXTC_RC_FREE_QUEUE_BYTES` 执行，紧接着的 `extc_rc_fqDrainAuto()`（3916）在同一个步里排空一个有界批次。
+归还路径（无写屏障、全在冷路径）：`extc_rc_slabShrink(r)`（src/back/reclaim.c:extc_rc_slabShrink）在 `extc_rc_sweepStep` 的收尾分支（3915）沿 region 链最多访问 `EXTC_RC_SHRINK_VISIT_MAX=256` 块，把 `nLive==0`、非 big、非 bump slab、且没有跨区入边位的 slab 从 region 链与 size-class 链 O(1) 摘掉、入 free 队列；每次最多 `EXTC_RC_SHRINK_REL_MAX=16` 块，munmap 交给既有的 `extc_rc_fqDrainCore`（1501）按 `EXTC_RC_FREE_BUDGET_SLABS` / `EXTC_RC_FREE_QUEUE_BYTES` 执行，紧接着的 `extc_rc_fqDrainAuto()`（3916）在同一个步里排空一个有界批次。
 
 两处约束写死在代码里：
 
@@ -374,7 +374,7 @@ place。构造点没有自己的 place 时池就挂在函数体上 —— 循环
 
 §三点三把「整块无占用槽」的 slab 还掉，粒度 512 KiB。稀疏活集里每块都留 1 个长命对象，容量项仍是 Θ(容量) —— 所以还页的单位要再小一档：**页**。
 
-机制（全冷路径、不搬移、不加写屏障）：`extc_rc_pageTrimStep(r, budget)`（src/back/reclaim.c:2037）由 `extc_rc_sweepStep` 收尾调用（3917），每次至多访问 `EXTC_RC_PAGE_TRIM_VISIT_MAX=16` 块、还 `EXTC_RC_PAGE_TRIM_BYTES=256 KiB`；块内用 occ 位图找出活槽覆盖的页（槽可跨页 ⇒ 首尾页都算活），其余**连续空页合并成一个 run** 再 `madvise(MADV_DONTNEED)`。页 0 含块头，永不归还。
+机制（全冷路径、不搬移、不加写屏障）：`extc_rc_pageTrimStep(r, budget)`（src/back/reclaim.c:extc_rc_pageTrimStep）由 `extc_rc_sweepStep` 收尾调用（3917），每次至多访问 `EXTC_RC_PAGE_TRIM_VISIT_MAX=16` 块、还 `EXTC_RC_PAGE_TRIM_BYTES=256 KiB`；块内用 occ 位图找出活槽覆盖的页（槽可跨页 ⇒ 首尾页都算活），其余**连续空页合并成一个 run** 再 `madvise(MADV_DONTNEED)`。页 0 含块头，永不归还。
 
 契约四句：
 
@@ -430,9 +430,9 @@ place。构造点没有自己的 place 时池就挂在函数体上 —— 循环
 
 ## 三点六、跨区出边的位图登记：大槽死时只扫「写过跨区指针的 64 B 组」（v29）
 
-前面几层处理的是「谁还活着」；这一层处理**死掉之后撤销出边的代价**。引用计数必须逐条撤销出边，而撤销只发生在放掉最后一条入边的那一刻 —— 它没有续扫余地（续过就悬垂），也没有写屏障可用（用户 m16773 排除）。于是对**没有描述符**的类型（`src/back/codegen.c:3888`：`offs.len > 32` 就返回 `EXTC_RC_CONSERVATIVE`），`extc_rc_unlinkChildren` 只能按 `ss/sizeof(void*)` 扫完整块：`struct huge { a: [1048576]?mut ref leaf }` 一次死掉要扫 1,048,576 个词，实测 1182–1530 µs；8 MiB 的 6.7 GB/s 就是扫描带宽，没有常数可删。
+前面几层处理的是「谁还活着」；这一层处理**死掉之后撤销出边的代价**。引用计数必须逐条撤销出边，而撤销只发生在放掉最后一条入边的那一刻 —— 它没有续扫余地（续过就悬垂），也没有写屏障可用（用户 m16773 排除）。于是对**没有描述符**的类型（`src/back/codegen.c:rcEmitTypeDesc`：`offs.len > 32` 就返回 `EXTC_RC_CONSERVATIVE`），`extc_rc_unlinkChildren` 只能按 `ss/sizeof(void*)` 扫完整块：`struct huge { a: [1048576]?mut ref leaf }` 一次死掉要扫 1,048,576 个词，实测 1182–1530 µs；8 MiB 的 6.7 GB/s 就是扫描带宽，没有常数可删。
 
-机制（冷路径为主、**不加写屏障**）：在**既有**的跨区登记分支（`extc_rc_rsIncSlab`，原只标目标槽）上顺手记一位 —— 一位管 64 B（8 个引用词），每槽 `wmW = ceil(ss/4096)` 词（`src/back/reclaim.c:1972` 的 `extc_rc_wmarkSlot`，入口 1987–1988）；释放时 `unlinkChildren` 的 CONSERVATIVE 分支只读**置位组**的 8 个词，读后清零（`2008` 起，位图分支 `2013–2031`）。跨度 < 4 KiB 不分配位图（全扫 ≤ 512 词）。
+机制（冷路径为主、**不加写屏障**）：在**既有**的跨区登记分支（`extc_rc_rsIncSlab`，原只标目标槽）上顺手记一位 —— 一位管 64 B（8 个引用词），每槽 `wmW = ceil(ss/4096)` 词（`src/back/reclaim.c:extc_rc_rsInc` 的 `extc_rc_wmarkSlot`，入口 1987–1988）；释放时 `unlinkChildren` 的 CONSERVATIVE 分支只读**置位组**的 8 个词，读后清零（`2008` 起，位图分支 `2013–2031`）。跨度 < 4 KiB 不分配位图（全扫 ≤ 512 词）。
 
 为什么登记点在体外函数里而不是内联进 `storeRefOwned`：内联体内**从不执行**的新代码会让 `-O1` 给形状函数重新分配寄存器，实测 +435k Ir（12 个变体标定）⇒ 破 Ir 棘轮；三参的 `extc_rc_rsIncSlab` 只多一次寄存器传参。
 
@@ -588,13 +588,13 @@ P2 与这个反例的差别**只有"旧值是否另有根"这一维**（P2 的�
 所以 v30 加了**第四判据 (d)：单元里不存在「帧级别数组在循环体内被新建」**。
 
 * 判据：`EX_NEW` + 带 count + 循环深度 > 0 + `planArenaLevel == 1`（`rcMemExprProbe` / `rcMemStmtProbe` /
-  `rcBodyGrowsMemory` / `unitGrowsMemory`，`src/back/codegen.c:14348 / 14361 / 14375 / 14442`）；
-  命中 ⇒ `rcMemGrowth = true`，idle 判定改成 `unitReclaimIdle(g, m) && !unitGrowsMemory(g, m)`（`codegen.c:14543`）。
+  `rcBodyGrowsMemory` / `unitGrowsMemory`，`src/back/codegen.c:rcMemExprProbe..unitGrowsMemory`）；
+  命中 ⇒ `rcMemGrowth = true`，idle 判定改成 `unitReclaimIdle(g, m) && !unitGrowsMemory(g, m)`（`codegen.c:unitGrowsMemory`）。
 * **idle 的含义因此是两半**：不丢活引用 **且** 不丢活内存，两半都成立才允许整段不发射运行期。
-* **这类单元不许升 T1**（`codegen.c:16268–16270` 的档位闸门加 `!g.rcMemGrowth`）：T1 的内存界来自「计数把垃圾变成 0」，
+* **这类单元不许升 T1**（`codegen.c:generateC` 的档位闸门加 `!g.rcMemGrowth`）：T1 的内存界来自「计数把垃圾变成 0」，
   它数的是引用；字节数组没有 holder 可数，清扫档是唯一能收掉它的档。
 * **`EXTC_RECLAIM=1` 只绕最后那道剪枝**，不跳过这趟 pass：`if (g->rcForced) return;` 必须在 `rcBodyHasGovernedAlloc`
-  循环之前（`codegen.c:14578`），否则「开档」产物与默认档语义分叉（v30 踩过：bt/rebuild/`hole_c`/elide 四道门禁同时红）。
+  循环之前（`codegen.c:scanUnitReclaim`），否则「开档」产物与默认档语义分叉（v30 踩过：bt/rebuild/`hole_c`/elide 四道门禁同时红）。
 
 契约句（三条，与本节其它契约同格式）：
 
@@ -852,7 +852,7 @@ reclaim 形状闸门（`gate-shapes`/`gate-work`/`gate-shard-cycles`/`gate-idle-
 
 三条**硬性理由**写在代码注释里，改常量前先读：
 
-1. **push 不能逐条记账**。描述符扫描若按字段数扣额度，守卫会在宏里展开两次、每个 pop 约 2 条指令 ≈ 7 Ir；`tests/reclaim-perf/gate.sh` 的指令数上限（88,029,115）就吃掉了这条路的余量。改为**编译期字段上限 32**（`src/back/codegen.c:3888`，超过即退回保守扫描）+ **批级记账**（每约 200 个 pop 一次），界同样成立而指令数不变。
+1. **push 不能逐条记账**。描述符扫描若按字段数扣额度，守卫会在宏里展开两次、每个 pop 约 2 条指令 ≈ 7 Ir；`tests/reclaim-perf/gate.sh` 的指令数上限（88,029,115）就吃掉了这条路的余量。改为**编译期字段上限 32**（`src/back/codegen.c:rcEmitTypeDesc`，超过即退回保守扫描）+ **批级记账**（每约 200 个 pop 一次），界同样成立而指令数不变。
 2. **冷档 32 是「冷 pop 约 1 µs」的直接后果**。一步要落在 50 µs 内，冷活集形状的 pop 数就必须是个位到几十；`pd_pointer_dense` 的总步时 / 总 pop 读数为 4.6 ns/pop，但单次冷 pop 会被缓存缺失拉到微秒级 ⇒ 32 是权衡点，继续降只增加步数。
 3. **巨块 munmap 不可分**。munmap 的代价跟**驻留页**走：`/tmp/ctl/unmap2.c` 的读数 —— 8 MiB touch 后 116.6–119.6 µs、32 MiB 552.9–901.4 µs、8 MiB 未 touch 0.3 µs、先 `madvise(DONTNEED)` 再 munmap 2.0–2.4 µs、512 KiB 6.5–6.9 µs。所以死巨块先把载荷按 512 KiB/步 `madvise(MADV_DONTNEED)` 丢页，最后一步才 `free`（那时只剩页表工作）。
 
@@ -973,7 +973,7 @@ Ir 随阈值 8 → 32 → 64 单调降到 87 823 666，再往上（128 / 256）�
 `shallow drain loop` / `scan loop calls macro` / `scan body shared once` 钉住这几条；拆掉批量的路只留给出问题的形状
 （`gate-mark-locality --selftest` 用 `-DEXTC_RC_MARK_SHALLOW=4000000000u` 把它翻成全单扫，要求
 cache-sim 判据变红）。
-**浅栈快路只在暖档存在**（v28）：条件里多一个合取项 `(int64_t)r->live <= (int64_t)EXTC_RC_MARK_COLD_BYTES`，由 `EXTC_RC_MARK_SHALLOW_WARM_ONLY`（默认 1）包住（发射文本 `src/back/reclaim.c:3623-3625`，宏在 `:3339-3341`）。理由是同一条屋顶：暖 pop 是缓存命中，装批的固定开销与推迟去重都是纯损失；活集过了 16 MiB 之后一个 pop 变成访存，**装批才是重叠缺页延迟的手段**（同一随机链、同 134 MB 活集，浅栈 86–91 ns/pop vs 批量 20.5 ns/pop，指令数逐位相同）。宏置 0 恢复「只看深度」的旧规则，供 A/B 与大 cache 机器使用。
+**浅栈快路只在暖档存在**（v28）：条件里多一个合取项 `(int64_t)r->live <= (int64_t)EXTC_RC_MARK_COLD_BYTES`，由 `EXTC_RC_MARK_SHALLOW_WARM_ONLY`（默认 1）包住（发射文本 `src/back/reclaim.c:extc_rc_markResume`，宏在 `src/back/reclaim.c:extc_rc_regionFree..extc_rc_markPush`）。理由是同一条屋顶：暖 pop 是缓存命中，装批的固定开销与推迟去重都是纯损失；活集过了 16 MiB 之后一个 pop 变成访存，**装批才是重叠缺页延迟的手段**（同一随机链、同 134 MB 活集，浅栈 86–91 ns/pop vs 批量 20.5 ns/pop，指令数逐位相同）。宏置 0 恢复「只看深度」的旧规则，供 A/B 与大 cache 机器使用。
     子对象循环里的同块去重也不再验槽首、也不查 `occ`：只按「包含该地址的槽」查 `mark` 位，省掉
     每个同块子对象一次 `k * s->ss == off` 的乘法校验与一次 `occ` 读。这是安全的：`mark` 位立着 ⇒ 这个槽
     本轮已经黑过，弹栈端会用同一道位挡下；槽空而 `mark` 立着时旧写法的压栈同样只会被弹栈端的 `occ`
