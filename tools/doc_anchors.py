@@ -26,6 +26,7 @@ re-verified against this tree) are rewritten automatically.
   python3 tools/doc_anchors.py --map reclaim.c:3637    what symbol owns this line today
 """
 import argparse
+import reclaim_source
 import os
 import re
 import sys
@@ -217,8 +218,8 @@ def func_name(code):
 class Index:
     def __init__(self, rel):
         self.rel = rel
-        with open(os.path.join(ROOT, rel), encoding="utf-8", errors="replace") as f:
-            self.raw = f.read().splitlines()
+        reclaim_source.ROOT = ROOT
+        self.raw = reclaim_source.read(rel).splitlines()
         self.code = [code_view(l) for l in self.raw]
         self.deltas = brace_counts(self.code)
         self.tokens = set(["file-scope"])

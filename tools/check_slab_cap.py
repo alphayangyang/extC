@@ -30,6 +30,7 @@ v13 起块**整块**发给同一尺寸类（CHUNK_MIN = SLAB_SIZE）：块尾不
 """
 import argparse
 from pathlib import Path
+import reclaim_source
 
 ROOT = Path(__file__).resolve().parents[1]
 CHUNK_DEF = '#define EXTC_RC_SLAB_CHUNK_MIN EXTC_RC_SLAB_SIZE'
@@ -45,7 +46,7 @@ CLAMP = 'if (chunk > EXTC_RC_SLAB_SIZE) chunk = EXTC_RC_SLAB_SIZE;'
 
 
 def source_text():
-    return (ROOT / 'src/back/reclaim.c').read_text()
+    return reclaim_source.text()
 
 
 def body(text, sig):

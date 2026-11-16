@@ -28,6 +28,7 @@ import argparse
 import ast
 import re
 from pathlib import Path
+import reclaim_source
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -40,7 +41,7 @@ INVALIDATION_CALL = 'extc_rc_shadeNextGen();'
 
 
 def emitter_text():
-    source = (ROOT / 'src/back/reclaim.c').read_text()
+    source = reclaim_source.text()
     start = source.index('RECLAIM_RT[]')
     end = source.index('\n};', start)
     return ''.join(ast.literal_eval(m.group())

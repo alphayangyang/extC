@@ -19,6 +19,7 @@
 #   python3 tools/inject.py thr-stale --no-verify-green         # 跳过"还原后必须绿"
 #   python3 tools/inject.py --check-anchors                      # 只核对锚点（不重编、不跑判据）
 import argparse
+import reclaim_source
 import os
 import pathlib
 import subprocess
@@ -346,7 +347,8 @@ INJECTIONS = {
 
 
 def read(rel):
-    return (ROOT / rel).read_text()
+    reclaim_source.ROOT = str(ROOT)
+    return reclaim_source.read(rel)
 
 
 def write(rel, text):
@@ -356,10 +358,8 @@ def write(rel, text):
     `bench/` 占 3.5 GB，真复制一次要 30 s）。硬链接下"就地截断写"会**改到原树**，
     而"写新文件再改名"只会断开这一条链接 ⇒ 原树一个字节都不动。"""
     import os
-    dst = ROOT / rel
-    tmp = dst.with_name(dst.name + ".inject-tmp")
-    tmp.write_text(text)
-    os.replace(tmp, dst)
+    reclaim_source.ROOT = str(ROOT)
+    reclaim_source.write(rel, text)
 
 
 def build():
@@ -429,7 +429,8 @@ def check_anchors() -> int:
                 print(f"  STALE {nm}[{i}]  目标文件不存在：{rel}", file=sys.stderr)
                 bad += 1
                 continue
-            n = len(anchor_spans(p.read_text(), old))
+            reclaim_source.ROOT = str(ROOT)
+            n = len(anchor_spans(reclaim_source.read(rel), old))
             if n != 1:
                 print(f"  STALE {nm}[{i}]  锚点在 {rel} 里命中 {n} 次（去注释后要求恰好 1 次）", file=sys.stderr)
                 bad += 1

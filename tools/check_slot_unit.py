@@ -22,6 +22,7 @@ import argparse
 import ast
 from pathlib import Path
 import re
+import reclaim_source
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -52,7 +53,7 @@ WIDE = re.compile(r'(128|256|512|f80|f128|__m128|simd|vec)', re.I)
 
 
 def emitter_text():
-    source = (ROOT / 'src/back/reclaim.c').read_text()
+    source = reclaim_source.text()
     start = source.index('RECLAIM_RT[]')
     end = source.index('\n};', start)
     return ''.join(ast.literal_eval(m.group()) for m in re.finditer(r'"(?:[^"\\]|\\.)*"', source[start:end]))
