@@ -50,6 +50,7 @@
 > **行号口径（E2 = 回收计划收成一个值，当前工作树）**：`src/back/codegen.c` = `02acf0b0ae84ece59fb2b70d604ddda7`（**16,368 行**，v31 的 16,346 行版本作废，净 +22）、`src/back/reclaim.c` = `75ecc57760aa8c8d92bef3f4bd452529`（**241 行**：E1 起是数组头 + 24 条 `#include "rt/*.inc"`；渲染文本仍是 4,780 行、md5 仍是 `29a6372e…`）、`tests/reclaim/driver.c` = `28dd4009ac7207f47e581a697c0d421f`（1,637 行，未改）、`build/extc` = `24ce5d0ab3e817bc5f8ddedee6773b84`。E2 只有两类改动：七个决策字段从 `CG` 搬进 `struct RcPlan`（读写点改 `g->rc.*`）、`scanUnitReclaim` 改名 `rcPlanDecide`；生成 C 逐字不变（`tools/emitted_identity.py --check` 430 行）。**codegen.c 的 87 个变化块与分段换算见 `docs/analysis/REFS-E2.md`**（禁止单一 offset 平移），reclaim.c 的行号引用继续按 v31 / 渲染文本。
 > **行号口径（v33 = 容量归还收敛成一个水位，当前工作树）**：`src/back/reclaim.c` = `a8706acf8b9b144399e46fa2c73ad000`（**241 行**：E1 起的数组头 + 24 条 `#include "rt/*.inc"`；渲染文本 **4,780 行**、356,734 字符，`python3 tools/source_split.py --check` ok）、`src/back/codegen.c` = `6ba135e22e86ec89d5cd8aa416a994bc`（75 行，未改）、`tests/reclaim/driver.c` = `28dd4009ac7207f47e581a697c0d421f`（1,637 行，未改）、`build/extc` = `b5a05be1ce5780d34a8f50b4e322322a`。相对 v31 渲染行的变化全部落在容量归还一节：删 `52-slab-release.inc` + `53-page-release.inc`，新增 `52-capacity-release.inc`（surplus / pageWorth / pageTrimSlab / slabUnlink / returnStep）与 `53-slot-release.inc`；`ExtcRcSlab` 删 `deadA`/`deadN`/`allocN`/`pgAllocN` 四字段；分配热路径删 `s->allocN++`；`[pages]` 后新增 `[return]` 一行。**v31→v33 的 hunk、分段换算与绝对锚点见 `docs/analysis/REFS-V33.md`**；本文旧行号仍按 v17/v18 保留（禁止机械平移），v21 起新增内容用当日绝对行号并标版本。机制/实测/判据：§19.16 与 `GC-ROOFLINE.md` §6.21。
 > **行号口径（v35 = R2b 巨大块载荷的宿主解析，当前工作树）**：`src/back/reclaim.c` = `b05bbde438d39f3254dc5ea5e8b8d220`（**242 行**：E1 起的数组头 + 25 条 `#include "rt/*.inc"`；渲染文本 **5,050 行**、374,981 字符、`1dcea37a8ea7858a350035507b7364b1`）、`src/back/codegen.c` = `6ba135e22e86ec89d5cd8aa416a994bc`（75 行，渲染 16,429 行 / `aaaaf36f73ff859044acb222934ce9c8`，本轮未改）、`tests/reclaim/driver.c` = `b82c9c83270d859ed51418e2ecb96d05`（1,655 行）、`build/extc` = `82e1b3e2237a3fb961b7f80e1b647224`；v34→v35 的逐段换算见 `docs/analysis/REFS-V35.md`。
+> **行号口径（v36 = R3 载荷预留与原地长，当前工作树）**：`src/back/reclaim.c` = `b05bbde438d39f3254dc5ea5e8b8d220`（**242 行**：E1 起的数组头 + 25 条 `#include "rt/*.inc"`；渲染文本 **5,123 行**、380,449 字符、`b8d11ef09d0eeb1cec19d65192d29594`）、`src/back/codegen.c` = `6ba135e22e86ec89d5cd8aa416a994bc`（75 行，渲染 16,429 行 / `aaaaf36f73ff859044acb222934ce9c8`，本轮未改）、`tests/reclaim/driver.c` = `a10fc463149af86ee86f8667fdf65a7f`（**1,706 行**）、`build/extc` = `30bbfdc0e15f867d8f7a5e4353648e95`；v35→v36 的 7 个 hunk 与逐段换算见 `docs/analysis/REFS-V36.md`（渲染文本净 +73 行：`ExtcRcSlab.bigMax` +3、slack 宏与 `bigPayloadAlloc` 签名 +24、载荷分配体 +15、两处 `reserved` 回退 +2、`extc_rc_bigGrow` +34、`slabNew` 调用点 ±0）。
 
 
 ---
@@ -1554,6 +1555,54 @@ v34 起这层有了自己的基质，但只服务同一个特例：
 **边界**：①`pin` 表对**池块/视图数据**的泄漏不在此列（槽不在任何 extent 里，L10-a/G15 按用户决定推迟到池重构）；②`EXTC_RC_EXT=0` 或无 mmap 平台下两个入口是 stub，退回位图前的保守路径（慢但不误释放）；③绑定发生在 `slabNew`，不在分配热路径；④R3/R4 会让更多地址落进 extent，因此本节是它们的前置条件。
 
 **指纹（v35）**：渲染文本 5,050 行 / md5 `1dcea37a8ea7858a350035507b7364b1`；物理 `src/back/reclaim.c` 242 行；`tests/reclaim/driver.c` 1,655 行 / md5 `b82c9c83270d859ed51418e2ecb96d05`；行号换算见 `REFS-V35.md`。
+### 19.19 载荷先留地址、再原地长（v36 新增，R3）
+
+#### 19.19.1 这一份模型里的位置
+
+§19.17 换掉了巨块载荷的**底盘**（预留 VA 域），§19.18 让它**可解析**。这一节补的是同一栏的第三个缺口：载荷的**容量**曾经只能靠拷贝长出来，而拷贝的成本与对象同阶。R3 把「以后可能长到多大」也记进 slab（`bigMax`），于是一次增长只有触页成本。
+
+这一层**不改变所有权**：载荷仍然属于它所在的 region，随 slab 的释放整段还给 arena；`bigMax` 只是「这块载荷的地址最多能长到哪里」的记录。
+
+#### 19.19.2 机制
+
+| 位置 | 内容 |
+| --- | --- |
+| `ExtcRcSlab.bigMax` | 巨大块专用：载荷可原地长到的上限（字节）；普通块为 0（容量就是块本身） |
+| `extc_rc_bigPayloadAlloc(n, &reserved)` | `m = bigRound(n)`；`EXTC_RC_EXT_SLACK > 0` 时 `max = clamp(m·SLACK, SLACK_MIN(2 MiB), SLACK_MAX(1 GiB))`，否则 `max = m`；`extc_rc_extAlloc(m, max, &com)` **只提交 `com` 页、只预留 `max` 地址**；carve 失败退回 `aligned_alloc` 且 `reserved = m`（自己的映射没有预留） |
+| `extc_rc_bigGrow(s, n)` | `want = bigRound(n)`；`want ≤ ss` ⇒ 返回现有容量；`want > bigMax` ⇒ 0（调用方搬）；否则组位图按新步长重建、`ss`/`rcp` 换步长、`region->bytes/allocBytes/capBytes` 各 += `want − ss`；新窗口不清零（内核首次读给零页） |
+| `slabNew` | 把 `reserved` 写进 `s->bigMax`；此后归还仍按 `bigRound(n)`（= 已提交 com）记 drop 链 |
+
+#### 19.19.3 契约
+
+- **预留上界**：`bigMax = clamp(bigRound(n)·SLACK, 2 MiB, 1 GiB)`；生产默认 `EXTC_RC_EXT_SLACK = 0`（等于 R3 之前的行为），驱动测试用 16 打开。
+- **增长成本**：预留之内 O(1) 账本写（+ 组位图可能一次 `realloc`），零拷贝、零前置清页；新窗口的页由调用方第一次写时按页付钱。
+- **拒绝是诚实的**：`want > bigMax` ⇒ 返回 0，调用方搬到新对象，旧代由清扫回收；容量界不变。
+- **地址稳定性**：预留之内增长不搬 data（`EXTC_RC_SLAB_DATA(s)` 不变）⇒ 已发出的元素地址仍有效（R4 的 `buf` 不变量要用）。
+- **归还按 used**：drop 链记 `bigRound(n)`，VA 尾巴整段还给 arena；一步丢弃量仍由 `extc_rc_bigTrimStep(budget)` 封顶 —— 容量界与停顿界各由原来的那个量给出，R3 没有新增旋钮（只有一个 slack 倍数，默认关）。
+
+#### 19.19.4 实测
+
+探针 `slackgrow2.c`（通过发射出来的运行期文本，8 MiB 载荷按 1.1× 长到 64 MiB，core 6）：
+
+| 臂 | bigMax | 步数 | 增长墙钟 | minflt | RSS HWM |
+| --- | --- | --- | --- | --- | --- |
+| slack = 16，原地长 | 128 MiB | 22 | **15.6–20.2 ms** | **61** | 67,892–67,896 kB |
+| slack = 16，只预留 | 128 MiB | 0 | 0.04–0.05 ms | **2** | **10,416–10,420 kB** |
+| slack = 0 | 8 MiB | — | 第一步拒绝 | — | — |
+
+对照同形状（8 MiB 起始、同会话）的拷贝增长（`tools/probe/reserveproto.c`）：**375.7–394.5 ms** / 峰值 130.8 MB ⇒ 原地长快 **17–25 倍**，且峰值只有 1.06× 活集。第二行说明预留只花地址空间：`extLive = 128 MiB` 是 VA，RSS 只有 10.4 MB。
+
+驱动新增 **13 条断言**（`tests/reclaim` 221 → **234/0**，ASan/UBSan 与不内联档全绿）：容量对账、基址不变、已写字节保值、新窗口读作零、账本三项同增、可长到 `bigMax`、超限拒绝且步长不变、归还后 `extLive` 回到分配前。
+
+#### 19.19.5 边界
+
+- **slack 是赌终值的**：16× 起步意味着「不会长过初始的 16 倍」，超过就搬一次（并以 `2×max` 重新预留）。R1 的 slack-4× 实验说明留得不够就是白留。
+- **默认关**：生成文本里还没有让载荷变长的东西（增长动词/容器存储是 R4），开着只会白占 VA 与大页尾页。R4 一旦开始用 `extc_rc_bigGrow`，这个开关必须默认打开。
+- **搬家的瞬时峰值**：预留用尽那一次，新旧两代同时活着（幂等上界仍是 `2L` 再加那一刻的旧代）。R3 只降低搬家的频率，不消除它。
+- **大页尾页放大**：≤2 MiB / 被触区间（与预留大小无关）。
+
+机制与价格的完整表格见 [`GC-ROOFLINE.md`](GC-ROOFLINE.md) §6.24。
+
 ## §20 与仓库既有文档的不一致清单（口径必须按本节改）
 
 完整 90 条对账在 `docs/analysis/DOC-AUDIT.md`；这里只列"会误导读者/会误导优化决策"的 10 条。
@@ -1639,6 +1688,7 @@ extC 的内存管理是**编译期分档的**：绝大多数分配被静态指�
 
 11. **R2b（v35）：巨大块载荷内部的地址能命名宿主（§19.18）**：arena 增加归属表 `ownQ`（2 MiB 量子 → slab，32,768×8 B = 256 KiB/arena，惰性分配），`slabNew` 的 big 分支绑定、`extGive` 回收块时清空；`slabOfInterior` 与 `wmarkSlot` 各加一级区间反查 ⇒ 载荷内部写跨区指针时不再进 `pin` 表、位图能记到组、释放时边能撤销。探针：`[pin] n=0`（修复前 800k 次存储涨 17.5 B/次）、`rs_inc=960 rs_dec=952 rs_live=8`（修复前 rs_dec=0 rs_live=960）；`tests/reclaim` 221/0；暖档四形状 0.979 / 1.030 / 1.004 / 1.027（两个形状没有 ≥2 MiB 载荷 ⇒ 只付一次原子读）。
 
+12. **R3（v36）：载荷先留地址、再原地长（§19.19）**：`ExtcRcSlab.bigMax` 记住「载荷的地址最多能长到哪里」，`extc_rc_bigPayloadAlloc` 按 `clamp(bigRound(n)·16, 2 MiB, 1 GiB)` 预留、只提交 `bigRound(n)` 页，`extc_rc_bigGrow` 在预留之内换 `ss`/`rcp` 并把 `bytes/allocBytes/capBytes` 各加一个增量（组位图按新步长重建），新窗口不清零（内核首次读给零页）。实测 8 MiB→64 MiB 22 步 **15.6–20.2 ms**、缺页 **61** 次、RSS HWM 67.9 MB、`data_same=1`，对照同形状同会话的拷贝增长 375.7–394.5 ms / 峰值 130.8 MB ⇒ **快 17–25 倍**；只预留不碰时 RSS 10.4 MB（预留是 VA 不是内存）。生产默认 `EXTC_RC_EXT_SLACK = 0`（今天生成文本里没有消费者，R4 的容器/增长动词会打开它）；驱动用 16 编译 ⇒ 13 条断言（`tests/reclaim` **234/0**）。拒绝语义：`want > bigMax` 返回 0，调用方搬一次，容量界与停顿界都不变。
 一句话没变：作用域基质（arena/pool/coro/plate）从来是有界的；rc region 的有界性**现在由契约给出、由标定支撑**。门禁 G1–G16 与 after 实测见 `docs/analysis/GC-ROOFLINE.md` §6–§7。
 
 下一步的优化方案与形式化模型（内存有界、停顿有界、类 Roofline 的 GC 策略平衡）见同目录 `docs/analysis/GC-ROOFLINE.md`。

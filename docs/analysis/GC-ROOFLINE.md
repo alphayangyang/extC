@@ -2165,6 +2165,101 @@ taskset -c 6 env EXTC_RC_STATS=1 ./probe1   # 看 rs_inc/rs_dec/[pin]/[step]
 # 驱动断言
 tests/reclaim/run.sh                          # 221/0（含 ASan 与不内联档）
 ```
+### 6.24 v36：载荷先留地址、再原地长（R3）
+
+§6.20 与 §6.21 把「容量」这一栏从回收器里收到一个水位上，§6.22 与 §6.23 把容量的**基质**换成预留的 VA 域。这一节补的是同一栏的第三个缺口：容量曾经只能靠**拷贝**长出来（`new` 一块更大的、`memcpy`、让旧代变垃圾），而拷贝的成本与对象同阶。R3 让载荷在 carve 时就把「以后可能长到多大」的地址一起留住，于是一次增长只有触页成本、没有拷贝。
+
+#### 6.24.1 为什么是载荷：拷贝增长的价目
+
+`tools/probe/reserveproto.c`（R1 的探针；本轮同会话重跑三次）测的是**同一条 8 MiB 的 `i64` 数组按 1.1× 长到 64 MiB**（8,010,895 个元素）——这正是本轮运行期探针的形状：
+
+| 做法（**8 MiB 起始**） | 墙钟 | 峰值 RSS | 备注 |
+| --- | --- | --- | --- |
+| 拷贝增长（1.1×，159 次 mmap/munmap） | **375.7–394.5 ms** | 130.8 MB | 每代 `memcpy` 一遍，旧代即刻变垃圾 |
+| 预留 1 GiB 地址、原地 bump（`lazy` 臂） | **22.5–22.7 ms** | 67.2 MB | 0 拷贝，基址不变（`stable=1`） |
+| R3 的载荷路径（`slack=16`、22 步、经发射文本） | **15.6–20.2 ms** | 67.9 MB | 0 拷贝，缺页 61 次（§6.24.4） |
+
+同形状、同会话的对照是 **17–25 倍**。跨形状的倍数不写，因为拷贝的字节数随起始规模走：R1 的另一组探针从 **8 KiB（1,024 元素）** 长到同一终值，拷贝只搬 58.8 MB，对照就变成 6–7 倍（`tools/probe/slackgrow.c` 与 `vectorbench.cpp`）：
+
+| 做法（**8 KiB 起始**、同一终值） | 墙钟 | 拷贝 | 峰值 RSS |
+| --- | --- | --- | --- |
+| `std::vector` `push_back`（不知道终值） | 48.3–49.5 ms / 23 次 realloc | 同阶 | 69 MB |
+| `reserve(8M)`（**事先知道**终值） | 21.9–22.1 ms | 0 | 66 MB |
+| 预留 1 GiB 地址、原地 bump | 20.2–21.0 ms | 0 | 64 MB |
+| 同上 + 大页 | **7.08–7.23 ms**（本轮重测 7.92–8.25） | 0 | 65 MB |
+| 应用侧拷贝增长（1.1×，11 代） | 44.2–45.7 ms（本轮重测 56.27） | 58.8 MB | 66 MB |
+
+两表的差别本身就是论点：**拷贝的代价与「已经有多少数据」成正比，原地长的代价只与「新写了多少页」成正比**。R1 还有一个反直觉的结论（§EXTENT-R1）：**光留 slack 不消拷贝**——按 4× 留、但每代仍长到预留上限，slack 用尽就再搬一次（实测仍复制 6 次、49.9 MB）。要消掉拷贝，预留必须按**终值**一次留够，这也是 R3 取 16× 起步的理由。
+
+#### 6.24.2 机制：`max` 与 `com` 分开，`bigMax` 记住上限
+
+carve 接口本来就分开（§6.22 的 `extc_rc_extAlloc(com, max, &outCom)`），R3 只是让载荷第一次真的用上它：
+
+- `extc_rc_bigPayloadAlloc(n, &reserved)`：`m = bigRound(n)`，`max = m`；`EXTC_RC_EXT_SLACK > 0` 时 `max = clamp(m · SLACK, SLACK_MIN, SLACK_MAX)`；`extc_rc_extAlloc(m, max, &com)` ⇒ **只提交 `com` 页、只预留 `max` 地址**；carve 失败（arena 拼不出连续块 / 平台无 mmap）退回 `aligned_alloc`，此时 `reserved = m`（自己的映射没有预留，增长会拒绝）。
+- `slabNew` 把 `reserved` 存进 `s->bigMax`（`[rt:bigslack]`，普通块为 0）。
+- `extc_rc_bigGrow(s, n)`：`want = bigRound(n)`；`want ≤ ss` ⇒ 返回现有容量（幂等）；`want > bigMax` ⇒ 返回 0（超出预留，调用方必须搬）；否则重建组位图（按新步长，尾部清零）、`ss`/`rcp` 换到新步长、`region->bytes/allocBytes/capBytes` 各 += `want − ss`。**长出来的窗口不清零**：它从未被写过，内核在第一次读时给零页，所以增长既没有拷贝也没有前置的页工作。
+- 账本对「容量水位」是中性的：三项同时 +delta，`capBytes − bytes`（§6.21 的 surplus）不变，所以一次增长不会凭空制造一段「该归还的 slack」。
+
+归还路径不变：drop 链的 `left = bigRound(n)` 就是**已提交**的字节（§6.20），VA 尾巴由 `extc_rc_extGive` 按 buddy 块阶整段收回。
+
+#### 6.24.3 契约
+
+| 项 | 内容 |
+| --- | --- |
+| **预留上界** | `bigMax = clamp(bigRound(n_msb) · EXTC_RC_EXT_SLACK, EXTC_RC_EXT_SLACK_MIN(2 MiB), EXTC_RC_EXT_SLACK_MAX(1 GiB))`；`EXTC_RC_EXT_SLACK = 0`（生产默认）时 `bigMax = bigRound(n)` |
+| **增长成本** | 预留之内：O(1) 次账本写 + 一次组位图 `realloc`（只在变长时），**零拷贝、零前置清页**；调用方第一次写新窗口时按页付钱（大页下一张 2 MiB PMD 一次缺页） |
+| **拒绝是诚实的** | `want > bigMax` ⇒ 返回 0，调用方搬到新对象；旧代变垃圾，由清扫按「不可达」回收——容量界不变，只是这一次要付拷贝 |
+| **归还按 used** | drop 链按 `bigRound(n)`（= 已提交 com）记字节，VA 尾巴整段还给 arena；一步的丢弃工作量仍由 `extc_rc_bigTrimStep(budget)` 封顶 |
+| **地址稳定性** | 预留之内增长**不搬 data**（`EXTC_RC_SLAB_DATA(s)` 不变），所以已经发出的元素地址仍然有效——这是 R4 的 `buf` 不变量要用的那条性质 |
+
+#### 6.24.4 实测（发射出来的运行期文本，`tests/reclaim` 同款 include 方式）
+
+探针 `slackgrow2.c`（R3 临时版，本机 Intel Core Ultra 9 275HX / WSL2 / core 6）：8 MiB 载荷按 1.1× 长到 64 MiB。
+
+| 臂 | bigMax | ss | 步数 | 增长墙钟 | 拷贝 | minflt | RSS HWM | 归还后 extLive |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| slack = 16，原地长 | **128 MiB** | 8 MiB | 22 | **15.6–20.2 ms**（0.71–0.92 ms/步） | 0 | **61** | 67,892–67,896 kB | 0 |
+| slack = 16，只预留不长 | 128 MiB | 8 MiB | 0 | 0.04–0.05 ms（只碰 8 MiB） | 0 | **2** | **10,416–10,420 kB** | 0 |
+| slack = 0，试图原地长 | 8 MiB | 8 MiB | — | 第一步就拒绝 | — | — | — | 0 |
+
+三行分别是三件事：①增长只花触页——56 MiB 新页只产生 **61** 次缺页（大页把 64 MiB 摊成约 32 次主项，其余是开头那 8 MiB 与元数据），墙钟 15.6 ms 与 R1 的「预留 + bump」同档（22.5–22.7 ms），比**同形状**（8 MiB 起始、同会话）的拷贝增长 375.7–394.5 ms **快 17–25 倍**。这一段的时间几乎全是首次触页：同一段做一次整触，本机两次量到 5.85 ms 与 15.59 ms，环境方差就在这个量级，所以只报区间；②只预留不碰的地址不花钱——`extLive = 128 MiB` 是 VA，`RSS HWM` 只有 10.4 MB；③关掉 slack 时行为与 R3 之前逐字一致（`bigMax == ss`，增长拒绝 ⇒ 调用方搬）。
+
+驱动侧新增 **13 条断言**（`tests/reclaim` 221 → **234/0**，ASan/UBSan 与不内联档同一套全绿）：发放容量 = 请求（向上取整到页）、`bigMax > ss`、两倍内原地长、基址不变、已写字节保值、新窗口读作零、账本三项同增一个增量、可长到 `bigMax`、超 `bigMax` 拒绝且步长不变、整段还给 arena（`extLive` 回到分配前）。驱动在 include 前 `#define EXTC_RC_EXT_SLACK 16`（注释写明生产默认是 0）——这样增长路径**在断言之下**，而不是只在文档里。
+
+#### 6.24.5 为什么默认关，以及开着的价钱
+
+**默认 `EXTC_RC_EXT_SLACK = 0`：今天生成文本里还没有任何东西会让载荷变长。** 增长动词与容器的存储是 R4 的事；在 R4 之前把每个超大对象的地址都按 16× 预留，只会白占 VA 与大页尾页，换不到任何一次省下来的拷贝。开关留在发射文本里（不是编译器开关），因为 R4 的容器一旦开始用 `extc_rc_bigGrow`，它就必须是默认打开的策略。
+
+开着的价钱三条：
+
+- **VA 消耗 ×16（最多 1 GiB/对象）**：VA 不是 RSS（第二行实测：预留 128 MiB、RSS 10.4 MB），但 `ulimit -v` 与 `VmSize` 会计入，按 §6.22.7 的预算换算是「一个 8 MiB 载荷占 128 MiB VA ⇒ 512 GiB 池可容 4,096 个同时飞的载荷」。
+- **大页尾页 ≤2 MiB / 被触区间**：这是 §6.22.3 那条「两级浪费分开记」的放大项，与预留大小无关（只与真正写到的区间有关）。
+- **搬家那一次的瞬时峰值 = 旧 + 新**：预留用尽时 `bigGrow` 拒绝，调用方（R4 的容器）必须在新位置放一块再拷——那一刻两代同时活着。R3 不改变这条，它只把搬家的**频率**从每次增长一次降到「预留用尽时一次」。
+
+#### 6.24.6 边界
+
+- **slack 是赌终值的**：预留 16× 起步意味着「数组不会长过初始大小的 16 倍」；超过就搬一次（此后按 `2×max` 重新预留）。R1 的 slack-4× 实验说明留得不够就是白留——策略必须由「调用方知道终值」来兑现，不能靠乐观留一点。
+- **`bigGrow` 不重新绑定宿主**：`ss` 变长后 `extc_rc_slabOfInterior` 的掩码与 extent 查询都用 `nslots·ss` 当上界（§6.23），R2b 已经按「发放容量」而不是整块判断，所以长出来的部分自动落在可解析范围内。
+- **组位图按新步长重建**：64 MiB 载荷 ⇒ `wmW = 2048` 字 = 16 KiB（0.02%），`realloc` 只在新步长更大时发生。
+- **没有分片承诺的对象仍然不可分片**：`bigGrow` 让「预留」这件事成立，但**增长窗口的首次触页**仍然是在调用方写的那一刻按页发生的；如果调用方在一万个不同线程里同时写新窗口，那些缺页也同时发生（R3 不改变这一点）。
+
+#### 6.24.7 复现
+
+```sh
+# 探针：把发射出来的运行期文本落成 include，再编译三臂
+cc -std=c11 -O2 -I src/base -I src/back tests/reclaim/emit_main.c src/back/reclaim.c src/base/base.c -o /tmp/r3/emit
+/tmp/r3/emit > /tmp/r3/extc_reclaim_runtime.inc
+cc -std=c11 -O2 -I /tmp/r3 /tmp/r3/slackgrow2.c -o /tmp/r3/sg2                        # slack 16
+cc -std=c11 -O2 -DEXTC_RC_EXT_SLACK=0 -I /tmp/r3 /tmp/r3/slackgrow2.c -o /tmp/r3/sg2s0 # slack 0
+taskset -c 6 /tmp/r3/sg2 1   # 原地长 8 -> 64 MiB
+taskset -c 6 /tmp/r3/sg2 2   # 只预留不碰
+taskset -c 6 /tmp/r3/sg2s0 1 # 拒绝（调用方必须搬）
+# 驱动断言（slack=16 编进去）
+tests/reclaim/run.sh         # 234/0（含 ASan 与不内联档）
+```
+
+拷贝增长的对照表在 `docs/analysis/EXTENT-R1.md`（`tools/probe/slackgrow.c`）。
+
 ## §7 门禁（Gate）：判据、量具、before / after
 
 门禁的用处不是「证明程序对」，而是**把契约变成可自动判定的句子**：每一条都写死「量具 + 判据 + 口径」，避免出现「实测 106 µs 也算通过」这种自欺。全部跑在既有 harness（`tests/reclaim-perf/gate.sh` 六项 + `tests/gc-p0/run.sh`）上，不需要新依赖。**after 列的构建口径（逐行标注）**：`p1-after` = v7 同轮产物集（`tests/gc-p0/out/p1-after/`，构建 `build-emp3/extc 07b7be1a…`）；`v7` = `build-p1/extc b9fd5784…`；G20-P0 单列 P0 轮（`build-rf/extc 7019342b…`）。跨构建的绝对计时允许 ±5–15% 差（§6.7.6），判据只看方向与阈值；任何一行换构建都必须重标尾号，不得混用。

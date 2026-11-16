@@ -658,6 +658,20 @@ P2 与这个反例的差别**只有"旧值是否另有根"这一维**（P2 的�
 3. **关掉即退化**：`EXTC_RC_EXT=0` 或无 `mmap` 平台下两个入口是 stub，退回位图前的保守路径（慢但不误释放）；元数据上限 8 × 256 KiB，且只在进程出现过巨块时分配（簿记，不是容量）。
 
 判据：`tests/reclaim` 221/0（新增 5 条断言：载荷内部地址命名宿主、越过发放容量仍失手、写入不再进 `pin` 表、跨区入边登记为 1 并在写空时撤销；ASan/UBSan 与不内联档同跑）；探针 `probe1`（t04 形状、边写进第二颗粒）`rs_inc=960 rs_dec=952 rs_live=8`、`[pin] n=0`，修复前是 `rs_dec=0 rs_live=960`；暖档四形状交错 A/B 0.979/1.030/1.004/1.027（两个形状没有 ≥2 MiB 载荷，反查只付一次原子读 0）。
+## 三点十一、载荷的容量也提前留好地址（v36，R3）
+
+`三点九` 让巨块载荷从一个预留的 VA 域里 carve，`三点十` 让载荷内部的地址能命名宿主。但载荷的**容量**仍然只能靠拷贝长：`new` 一块更大的、`memcpy`、旧代变垃圾。R3 让 carve 时就把「以后可能长到多大」的地址一起留住：
+
+1. **预留是 `max`、提交是 `com`。** `extc_rc_bigPayloadAlloc` 按 `clamp(bigRound(n)·EXTC_RC_EXT_SLACK, SLACK_MIN, SLACK_MAX)` 算出 `max`，交给 `extc_rc_extAlloc(com, max, &com)`：只有 `com` 页会被提交，`max` 只是地址。上限记进 `ExtcRcSlab.bigMax`（普通块为 0）。
+2. **预留之内的增长是 O(1) 且不搬。** `extc_rc_bigGrow` 换 `ss`/`rcp`、按新步长重建组位图、把 `region->bytes/allocBytes/capBytes` 各加一个增量；新窗口不清零——它从未被写过，内核在第一次读时给零页。所以一次增长零拷贝、零前置清页，且 `EXTC_RC_SLAB_DATA(s)` 不变（已经发出的元素地址仍有效）。
+3. **超出预留就诚实拒绝。** `want > bigMax` 返回 0，调用方搬到新对象；旧代变垃圾，由清扫按「不可达」回收。归还仍按 `bigRound(n)`（= 已提交 com）记 drop 链，VA 尾巴由 `extc_rc_extGive` 整段收回。
+
+判据：`tests/reclaim` 的 `t_bigslack` **13 条断言**（容量对账、基址不变、已写字节保值、新窗口读作零、账本三项同增、可长到 `bigMax`、超限拒绝且步长不变、归还后 `extLive` 回到分配前），221 → **234/0**（含 ASan/UBSan 与不内联档）；探针实测 8 MiB→64 MiB 22 步 **15.6–20.2 ms**、缺页 61 次、`data_same=1`，对照同形状同会话的拷贝增长（`tools/probe/reserveproto.c`）375.7–394.5 ms。
+
+生产默认 `EXTC_RC_EXT_SLACK = 0`：今天生成文本里没有任何东西会让载荷变长（增长动词与容器存储是 R4），开着只会白占 VA 与大页尾页；驱动在 include 前定义 16，让增长路径**在断言之下**。
+
+价格：VA ×16（最多 1 GiB/对象，`ulimit -v` 会计入）、大页尾页 ≤2 MiB/被触区间、搬家那一次新旧两代同时活着。机制与完整实测见 [`GC-ROOFLINE.md`](../../analysis/GC-ROOFLINE.md) §6.24。
+
 ## 四、停顿与分片
 
 **停顿 ∝ 被扫区域的可达集**，所以最直接的手段是**分片**：把一个逻辑结构切进多个区域、每次只收一片。
@@ -1180,6 +1194,10 @@ cache-sim 判据变红）。
 | `skip:ext-lookup-arena` | `p` 不在这个 arena 的地址区间 ⇒ 看下一个 | 与 `skip:ext-bind-arena` 对称：地址落在哪个 arena 是唯一的 | 无（少做）| 同 `skip:ext-bind-arena` |
 | `skip:ext-lookup-nomap` | 该 arena 的归属表还没建（没有任何块被绑定过）⇒ 返回空 | 表是惰性建的；没建就等于这个 arena 里没有可解析的巨大块 | 多留（保守全扫）| 冷启动路径由 `tests/reclaim` 216/0 覆盖 |
 | `skip:ext-lookup-miss` | 所有 arena 都不含 `p` ⇒ 返回空 | 调用点只对「掩码路径失手」的地址才走到这里，此时正确回答就是「不是 rc 槽」 | 多留（退回 `storeRefUnknown`，钉住方向）| 单测 `t_hostSlot` 的「反查失手」组 |
+| `skip:big-grow-notbig` | `extc_rc_bigGrow` 收到的 `s` 为空或不是巨大块 ⇒ 返回 0（长不了）| 只有巨大块有「预留上限」（`bigMax`）；普通 512 KiB 块里装的是定长槽，槽本身没有可长的地方 | 无（少做）| 单测 `t_bigslack` 的「空块拒绝」 |
+| `skip:big-grow-nogrow` | `bigRound(n) <= s->ss` ⇒ 返回现有发放容量，什么都不做 | 调用方要的长度已经在发放容量之内，页也早就提交过；再长一次不该产生任何动作 | 无（幂等）| 单测 `t_bigslack` 的「发放容量就是请求（向上取整到页）」 |
+| `skip:big-grow-exhausted` | `bigRound(n) > s->bigMax` ⇒ 返回 0，调用方自己搬 | 预留上限就是「地址先留住多少」的兑现点：预留之内原地长是 O(1)，超出之后只能搬（搬完旧代变垃圾，由清扫释放）| 无（拒绝＝让调用方选搬）| 单测 `t_bigslack` 的「超过预留上限拒绝（调用方负责搬）」+「拒绝之后步长不变」 |
+| `skip:big-grow-nomem` | 给新长度重建组位图（`realloc`）失败 ⇒ 返回 0 | 组位图是「64 B 组有没有被写过跨区指针」的登记本，尺寸随对象变长；重建失败时退回位图前的保守全扫，正确性不变（钉住/多留方向）| 多留（保守全扫）| 读审分支；正常路径由 `t_bigslack` 的「长到预留上限成功」覆盖 |
 | `skip:pin-not-obj` | 未知宿主槽里存的不是本运行期的活槽（外来指针/空）⇒ 不登记 | 钉住表的键只服务「值是本运行期对象」：不是本运行期对象就没有区域可清、也没有标记可追 | 无（不是引用）| 单测 `t_pin` 的「不是本运行期活槽的值不登记」 + `gate-reclaim-gaps` |
 | `skip:pin-hole` | 扫钉住表时这一格是空的（`v == NULL`）⇒ 跳过（不是早退：继续扫）| 表是**开放寻址哈希**，空格就是「没有项」；探测链在装载 ≤ 1/2 时一定终止于空格 | 无（空格没有项可看）| 单测 `t_pin`（表空时 `pinSeed`/`pinDropRegion` 无副作用）+ 形状 `slot_elem_unknown` 峰值有界 |
 | `skip:pin-oom` | 钉住表扩容（新表 `calloc` + 重散）失败 ⇒ 返回 0，调用方回落 `noSweep` | 分配失败时唯一安全的方向是保守（少收）| 多留（保守）| 正常路径由单测 `t_noSweep` 的「目标区域不再退出清扫」兜住；OOM 分支只读审（没有形状级注入）|

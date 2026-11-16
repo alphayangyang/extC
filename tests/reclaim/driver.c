@@ -26,6 +26,10 @@ typedef struct Node { struct Node *next; } Node;                /* 16 字节（�
 typedef struct Pair { struct Node *a; struct Node *b; } Pair;   /* 16 字节，两个指针字段 */
 typedef struct Wide { uint64_t pad; struct Node *p; } Wide;     /* 16 字节，指针只在**第二个**字 */
 
+/* R3 的载荷预留策略：生产默认关（0 = 请求多少就预留多少），这里打开 16 倍，好让 bigGrow 的原地长路径进入断言。
+ * 生成文件仍然按默认值编译，所以断言覆盖的是机制而不是默认策略。 */
+#define EXTC_RC_EXT_SLACK 16
+
 #include "extc_reclaim_runtime.inc"
 
 static int g_pass, g_fail;
@@ -1587,6 +1591,52 @@ int main(void) {
     return g_fail ? 1 : 0;
 }
 #else
+/* ---------------------------------------------------------------- 巨块载荷：预留上限与原地长
+ *
+ * 契约（R3）：bigMax 是这次载荷可能长到的上限 —— 策略关闭时就是请求本身，打开时是请求的 16 倍（夹在
+ * [SLACK_MIN, SLACK_MAX]）。载荷可以在 bigMax 之内原地长：data、已经写过的字节、slab 的身份都不变；
+ * 区域账本的占用/分配/容量三者跟着同一个增量长；位图按新步长重建。超过 bigMax 必须拒绝，由调用方搬到新
+ * 载荷（这就是「增长用预留地址换拷贝」的边界）。长出来的那段是从未写过的页，读出来必须是零 —— 内核按需
+ * 给零页，所以增长既没有拷贝也没有提前的清零工作量。归还仍然按**用过的字节**走 drop 链，区间整段还给
+ * arena：账本 extLive 回到分配前。 */
+static void t_bigslack(void) {
+    extc_rc_freeQueueDrainAll();   /* 先清干净：extLive 是全局账本，前面用例的巨块载荷可能还在队列里（fq 到 bd 的交接要第二趟） */
+    extc_rc_freeQueueDrainAll();
+    long long live0 = extc_rc_extLive;
+    ExtcRcRegion *r = regionNew(24, 4096);
+    size_t base = (size_t)EXTC_RC_SLAB_SIZE * 8;   /* 4 MiB 载荷 ⇒ cap<2 ⇒ 超大块 */
+    char *p = (char *)extc_rc_alloc(r, base, &g_data);
+    ExtcRcSlab *s = extc_rc_slabOfInterior(p);
+    check(s != NULL && s->big, "载荷 slack：4 MiB 请求走超大块");
+    check(s->ss == base, "载荷 slack：发放容量就是请求（向上取整到页）");
+    check(extc_rc_bigGrow(NULL, 4096) == 0, "载荷 slack：空块拒绝");
+#if (EXTC_RC_EXT_SLACK > 0) && EXTC_RC_EXT
+    check(s->bigMax > base, "载荷 slack：预留上限大于请求（地址先留住，页没有提交）");
+    p[0] = (char)0x5a;
+    p[base - 1] = (char)0x33;
+    int64_t bytes0 = r->bytes, cap0 = r->capBytes;
+    size_t grown = extc_rc_bigGrow(s, base * 2);
+    check(grown == base * 2 && s->ss == base * 2, "载荷 slack：两倍之内原地长成功");
+    check((void *)EXTC_RC_SLAB_DATA(s) == (void *)p, "载荷 slack：原地长不搬 data（基址不变）");
+    check(p[0] == (char)0x5a && p[base - 1] == (char)0x33, "载荷 slack：已经写过的字节保持原值");
+    check(p[base] == 0 && p[base * 2 - 1] == 0, "载荷 slack：长出来的那段读作零（内核按需给零页，不用提前清）");
+    check(r->bytes == bytes0 + (int64_t)base && r->capBytes == cap0 + (int64_t)base,
+          "载荷 slack：区域账本跟着长（占用/分配/容量同增一个增量）");
+    size_t top = extc_rc_bigGrow(s, s->bigMax);
+    check(top == s->bigMax, "载荷 slack：长到预留上限成功");
+    check(extc_rc_bigGrow(s, s->bigMax + 4096) == 0, "载荷 slack：超过预留上限拒绝（调用方负责搬）");
+    check(s->ss == s->bigMax, "载荷 slack：拒绝之后步长不变");
+#else
+    check(s->bigMax == s->ss, "载荷 slack：策略关闭时上限就是请求（不白占地址）");
+    check(extc_rc_bigGrow(s, base * 2) == 0, "载荷 slack：策略关闭时原地长被拒（请求多少就是多少）");
+#endif
+    extc_rc_regionFree(r);
+    /* 两趟：fqDrainCore 释放块时才把巨块载荷压进 drop 链，所以一趟只管到 fq 到 bd 的交接。 */
+    extc_rc_freeQueueDrainAll();
+    extc_rc_freeQueueDrainAll();
+    check(extc_rc_extLive == live0, "载荷 slack：区间整段还给 arena（extLive 回到分配前）");
+}
+
 int main(void) {
     printf("== reclaim 运行期断言 ==\n");
 #if !EXTC_RC_NOCOUNT
@@ -1627,6 +1677,7 @@ int main(void) {
     t_trigger();
     t_thresholdCache();
     t_admissionReserve();
+    t_bigslack();
 #if !EXTC_RC_NOCOUNT
     t_acyclic();
 #endif
