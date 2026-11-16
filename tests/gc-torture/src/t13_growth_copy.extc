@@ -1,0 +1,58 @@
+/* t13_growth_copy.extc --- 函数级缓冲在循环里「拷贝增长」（巨块载荷的归还缺口）。
+ * 形状：函数体级 `var b: mut slice<u8>` 在循环里被替换成 new u8[cap]，cap 每轮乘 1.1（每次拷贝增长都要
+ *   旧代 + 新代同时在世），每代触页后只留校验和。旧代没有任何引用指向它，尺寸每轮都不同，所以复用缓存
+ *   里没有「同一尺寸的槽」可接。
+ *   修复前（v30）：criterion (d) 已经让该单元进清扫档、收集真的在跑，但巨块载荷从不归还（freeSlot 只清 occ，
+ *   slabShrink/pageTrimStep 都 if (s->big) continue）⇒ 峰值 = 各代之和。
+ *   修复后（v31）：空巨块同权离链 + 丢弃速率绑在「让堆变大的那次分配」+ 复用宽限 + 容量闸门
+ *   EXTC_RC_SHRINK_CAP_LIVE ⇒ 峰值是闭包活集的常数倍，与轮数无关。
+ * 判据：(a) 峰值 RSS <= 260 MB（v30 约 460 MB）；(b) 精确 stdout；(c) PAUSE 构建 [histo] over1ms=0 且
+ *   [wbudget] pop_max<=512 / push_max<=8448 / mscap_max<=16384。
+ * argv[1]=rounds 默认 20，argv[2]=起始 MiB 默认 8。 */
+use std::io
+
+fn parseN(args: slice<slice<u8>>, idx: i64, dflt: i64) -> i64 {
+    if args.len <= idx { return dflt }
+    var s: slice<u8> = args[idx]
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    if v > 0 { return v }
+    return dflt
+}
+
+/* 触页：每 4096 字节写一次再读回，让页真的落到 RSS 里 */
+fn touch(b: mut slice<u8>, seed: i64) -> i64 {
+    var acc: i64 = 0
+    var i: i64 = 0
+    while i < b.len {
+        b[i] = u8((seed + i) % 251)
+        acc = acc + i64(b[i])
+        i = i + 4096
+    }
+    return acc
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var rounds: i64 = parseN(args, 1, 20)
+    var mib: i64 = parseN(args, 2, 8)
+    var cap: i64 = mib * 1048576
+    var acc: i64 = 0
+    var b: mut slice<u8> = new u8[cap]
+    acc = acc + touch(b, 1)
+    var r: i64 = 0
+    while r < rounds {
+        cap = cap + cap / 10
+        b = new u8[cap]
+        acc = acc + touch(b, r)
+        r = r + 1
+    }
+    io::cout << "T13 rounds=" << rounds << " mib=" << (cap / 1048576) << " acc=" << acc % 1000 << "\n"
+    return 0
+}

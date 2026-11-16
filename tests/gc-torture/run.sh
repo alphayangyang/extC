@@ -39,6 +39,7 @@ CASES=(
   "t09_cycle_pressure|200000 20|24000|none"
   "t10_alias_slots||4096|none"
   "t12_overwrite_arena|20 64|220000|none"
+  "t13_growth_copy|20 8|260000|none"
   "datalog_lite|200000|32768|graph 200000 32 50000"
   "datalog_lite_small|2000|8192|graph 2000 4 2000"
 )

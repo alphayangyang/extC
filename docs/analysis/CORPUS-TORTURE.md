@@ -1,6 +1,6 @@
 # 语料扩容：真实程序与对抗程序（tests/gc-torture）
 
-本文记录 2026-12 语料扩容的**形状、判据与实测**。口径：本树 HEAD 的 build/extc（v28 发射文本，src/back/reclaim.c md5 7a157eb5d30bb3b71b67c41eea1c6f07 / 4,664 行），一台机器（Intel Core Ultra 9 275HX、WSL2、taskset -c 6）。
+本文记录 2026-12 语料扩容的**形状、判据与实测**。口径：本树 HEAD 的 build/extc（v31 发射文本，src/back/reclaim.c md5 29a6372eb0fac935f215847df35ccf41 / 4,780 行；src/back/codegen.c ec12011cc5bbff7100072bb465d8f234 / 16,346 行；build/extc f82ee508c6fe7233f228fc0decc00b9c），一台机器（Intel Core Ultra 9 275HX、WSL2、taskset -c 6）。
 
 ## 1 为什么要扩
 
@@ -21,7 +21,7 @@
 ## 2 目录与运行
 
     tests/gc-torture/
-      src/            *.extc（t01..t10 对抗程序 + datalog_lite 真程序）
+      src/            *.extc（t01..t13 对抗程序 + datalog_lite 真程序）
       expected/       *.txt（golden：逐字 stdout）
       gen_graph.py    确定性图生成器（同一参数输出逐字相同）
       sample.py       RSS 采样器（2 ms 间隔，报告末态/峰值/四分之一后的增长）
@@ -54,6 +54,8 @@
 | t08_mixed_sizes | 400 20000 | 3,056 kB | 63 ms | 0 | 8 个 size class（16/32/48/64/96/128/192/384 B）同时 churn |
 | t09_cycle_pressure | 200000 20 | 14,892 kB | 123 ms | 0 | 20 万结点长链活集 + 每轮 80 万个互指 2-环（不可达但互指，只能清扫） |
 | t10_alias_slots | —  | 1,864 kB | 4 ms | 0 | 参数槽覆盖后别名不复活、pool 句柄 stale 必须 none、copyInto 覆盖引用 |
+| t12_overwrite_arena | 20 64 | 199,264 kB | 90 ms | 0 | 函数级缓冲在循环里被**同尺寸**替换（idle 判据 (d) 的形状）；峰值 = live + 两代垃圾 |
+| t13_growth_copy | 20 8 | 194,352 kB | 224 ms | 0 | 函数级缓冲在循环里**拷贝增长**（1.1×，尺寸每轮都变）；峰值 = 闭包活集的常数倍，与轮数无关，见 §5.4 |
 | datalog_lite | 200000 边/32 查询/50000 结点 | 17,456 kB | 396 ms | — | 506 行真程序：magic-set BFS + 双向 CSR 度分布 + 并集/交集 + 覆盖度，四阶段活集依次变大 |
 | datalog_lite_small | 2000 边/4 查询/2000 结点 | 1,868 kB | 4 ms | — | 同上小档 |
 
@@ -101,6 +103,14 @@ ladder 档（只判 RSS/停顿）：
 
 首次全量跑出现 1 次 over1ms；同一二进制连跑 5 次全是 0（max_us 69.2 / 91.2 / 123.8 / 221.2 / 306.8，over256=0/0/0/0/1）。与 R3 记录的环境地板（纯自旋程序 wall_max 88–236 µs）同源：这台机器的抢占会让极少数步跨过 1 ms。判据保持严格（不放宽 over1ms=0），观测上把它记为环境项。
 
+### 5.4 t13：拷贝增长的峰值曾经等于各代之和（v31 已闭合）
+
+形状：函数级 `var b: mut slice<u8>` 在循环里被替换成 `new u8[cap]`，`cap` 每轮乘 1.1（起始 8 MiB、20 轮 ⇒ 末代 53 MiB），每代触页后只留校验和。
+
+v30 的读数：`[step]` 的收集确实在跑（criterion (d) 已让它进清扫档），但截峰值 **526,816 kB** —— 巨块载荷从不归还（`extc_rc_freeSlot` 只清 occ，`slabShrink`/`pageTrimStep` 都 `if (s->big) continue`），所以容量 = 各代之和。v31 的读数：**194,352 kB / 224 ms / over1ms=0**（= 闭包活集 53 MB 的 3.6 倍，与轮数无关）。
+
+判据：峰值 RSS ≤ 260,000 kB —— **v30 红（526,816 > 260,000）、v31 绿（194,352）**，这是本用例先红后绿的证据；机制见 `MEMORY-MODEL-CURRENT.md` §19.15 与 `GC-ROOFLINE.md` §6.20。
+
 ## 6 还没覆盖的（下一步）
 
 1. **并发/协程真程序**：t07 只覆盖任务 arena 的归还；par worker 的每 worker 一区、跨区注册、任务根登记仍只有微形状；
@@ -111,7 +121,7 @@ ladder 档（只判 RSS/停顿）：
 ## 7 复现
 
     make build/extc -j8
-    ./tests/gc-torture/run.sh all      # 12 案，期望：通过 12，xfail 0，失败 0
+    ./tests/gc-torture/run.sh all      # 14 案，期望：通过 14，xfail 0，失败 0
     ./tests/gc-torture/run.sh asan     # 5 案
     ./tests/gc-torture/run.sh ladder   # 8 次运行
     ./tests/gc-torture/run.sh quick    # 3 案（编辑循环）
