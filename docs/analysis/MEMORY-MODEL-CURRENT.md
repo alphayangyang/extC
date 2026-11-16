@@ -49,7 +49,7 @@
 > **行号口径（E3 = codegen.c 按主题分节，当前工作树）**：`src/back/codegen.c` 现为 **75 行**（39 行文件头 + 14 行 `cg-split:begin`/`cg-split:end` 说明块 + 22 条 `#include "cg/*.inc"`；说明块渲染时整块丢掉）。22 个分节文件 `src/back/cg/*.inc` 合计 16,368 行，渲染文本 md5 仍是 `02acf0b0ae84ece59fb2b70d604ddda7`（逐字节未变）⇒ 本文的 codegen.c 行号继续指向同一行正文，只是那一行的物理位置在某个 `src/back/cg/*.inc` 里。`build/extc` 的 md5 由 `24ce5d0a…` 变为 `eaa22babe131cfc6360fac7eb51a7b0c`，原因是 DWARF 记录分节文件名与节内行号，生成 C 逐字不变（`tools/emitted_identity.py --check` 430 行）⇒ **源码指纹取渲染文本 md5，不取二进制 md5**。**旧行号 → 分节文件 + 节内行号的对照表见 `docs/analysis/REFS-E3.md`**（22 行分节表、六个抽样核对、两个常用坐标：`struct RcPlan` 在 `cg/20-primitive-block.inc`、`rcPlanDecide` 在 `cg/210-criterion-d.inc`）。
 > **行号口径（E2 = 回收计划收成一个值，当前工作树）**：`src/back/codegen.c` = `02acf0b0ae84ece59fb2b70d604ddda7`（**16,368 行**，v31 的 16,346 行版本作废，净 +22）、`src/back/reclaim.c` = `75ecc57760aa8c8d92bef3f4bd452529`（**241 行**：E1 起是数组头 + 24 条 `#include "rt/*.inc"`；渲染文本仍是 4,780 行、md5 仍是 `29a6372e…`）、`tests/reclaim/driver.c` = `28dd4009ac7207f47e581a697c0d421f`（1,637 行，未改）、`build/extc` = `24ce5d0ab3e817bc5f8ddedee6773b84`。E2 只有两类改动：七个决策字段从 `CG` 搬进 `struct RcPlan`（读写点改 `g->rc.*`）、`scanUnitReclaim` 改名 `rcPlanDecide`；生成 C 逐字不变（`tools/emitted_identity.py --check` 430 行）。**codegen.c 的 87 个变化块与分段换算见 `docs/analysis/REFS-E2.md`**（禁止单一 offset 平移），reclaim.c 的行号引用继续按 v31 / 渲染文本。
 > **行号口径（v33 = 容量归还收敛成一个水位，当前工作树）**：`src/back/reclaim.c` = `a8706acf8b9b144399e46fa2c73ad000`（**241 行**：E1 起的数组头 + 24 条 `#include "rt/*.inc"`；渲染文本 **4,780 行**、356,734 字符，`python3 tools/source_split.py --check` ok）、`src/back/codegen.c` = `6ba135e22e86ec89d5cd8aa416a994bc`（75 行，未改）、`tests/reclaim/driver.c` = `28dd4009ac7207f47e581a697c0d421f`（1,637 行，未改）、`build/extc` = `b5a05be1ce5780d34a8f50b4e322322a`。相对 v31 渲染行的变化全部落在容量归还一节：删 `52-slab-release.inc` + `53-page-release.inc`，新增 `52-capacity-release.inc`（surplus / pageWorth / pageTrimSlab / slabUnlink / returnStep）与 `53-slot-release.inc`；`ExtcRcSlab` 删 `deadA`/`deadN`/`allocN`/`pgAllocN` 四字段；分配热路径删 `s->allocN++`；`[pages]` 后新增 `[return]` 一行。**v31→v33 的 hunk、分段换算与绝对锚点见 `docs/analysis/REFS-V33.md`**；本文旧行号仍按 v17/v18 保留（禁止机械平移），v21 起新增内容用当日绝对行号并标版本。机制/实测/判据：§19.16 与 `GC-ROOFLINE.md` §6.21。
-> **行号口径（v34 = R2a 巨块载荷走预留 VA arena，当前工作树）**：`src/back/reclaim.c` = `b05bbde438d39f3254dc5ea5e8b8d220`（**243 行**：E1 起的数组头 + 25 条 `#include "rt/*.inc"`；渲染文本 **4,998 行**、370,304 字符、`837071b7b5d835af0cec34e72065e7c5`）、`src/back/codegen.c` = `6ba135e22e86ec89d5cd8aa416a994bc`（75 行，渲染 16,429 行，本轮未改）、`tests/reclaim/driver.c` = `28dd4009ac7207f47e581a697c0d421f`（1,637，未改）、`build/extc` = `9bcf0e917446b75e04e3cdb928ea3232`；v33→v34 的逐段换算见 `docs/analysis/REFS-V34.md`（四个 offset：+0 / +213 / +214 / +217）。
+> **行号口径（v35 = R2b 巨大块载荷的宿主解析，当前工作树）**：`src/back/reclaim.c` = `b05bbde438d39f3254dc5ea5e8b8d220`（**242 行**：E1 起的数组头 + 25 条 `#include "rt/*.inc"`；渲染文本 **5,050 行**、374,981 字符、`1dcea37a8ea7858a350035507b7364b1`）、`src/back/codegen.c` = `6ba135e22e86ec89d5cd8aa416a994bc`（75 行，渲染 16,429 行 / `aaaaf36f73ff859044acb222934ce9c8`，本轮未改）、`tests/reclaim/driver.c` = `b82c9c83270d859ed51418e2ecb96d05`（1,655 行）、`build/extc` = `82e1b3e2237a3fb961b7f80e1b647224`；v34→v35 的逐段换算见 `docs/analysis/REFS-V35.md`。
 
 
 ---
@@ -1534,6 +1534,26 @@ v34 起这层有了自己的基质，但只服务同一个特例：
 3. **不是运行期开关**：`EXTC_RC_EXT` 是生成 C 的编译期常量（与其余 `EXTC_RC_*` 一致），`-DEXTC_RC_EXT=0` 得到一个「载荷走 `aligned_alloc`」的对照臂。
 4. **overcommit 与 Windows**：`MAP_NORESERVE` 依赖 overcommit 允许；没有 `mmap` 的平台整节退化成 stub。这两条都由 `EXTC_RC_EXT_OK` 一处收口。
 
+### 19.18 巨大块载荷的宿主解析（v35 新增，R2b）
+
+**为什么单列**：`§19.17` 把巨块载荷的**基质**换成了 extent，但回收器对地址的**解释能力**没有跟着换——这属于「停顿/正确性契约」而不是「内存界」，所以放在本节。
+
+**缺口（v34 口径）**：宿主反查只有一级——按 512 KiB 掩码回退到块首查登记表。巨大块的载荷是 carve 出来的区间，不对齐任何已登记块首，于是载荷**内部**（偏移 ≥ 512 KiB 的引用域）：
+
+| 后果 | 通道 | 实测 |
+| --- | --- | --- |
+| 赋值走 `storeRefUnknown` ⇒ 值进 `pin` 表 | 内存（每存储 ≈17.5 B 元数据，只增不减）| `probe0` 200k/800k 轮 RSS 30,600 / 41,116 kB |
+| `wmarkSlot` 置不到位 ⇒ 释放时保守分支不撤边 | 正确性（计数档永久泄漏）| `probe1`：`rs_inc=960 rs_dec=0 rs_live=960` |
+
+**机制（v35）**：arena 在 `ordQ` 旁加等长归属表 `ownQ`（2 MiB 量子 → `ExtcRcSlab *`，256 KiB/arena，惰性 `calloc`）。`slabNew` 的 big 分支绑定、`extGive` 清量子、`extLookup` 无锁读；`slabOfInterior` 与 `wmarkSlot` 共用这级反查。
+
+**契约**：`p ∈ [data, data + ss)` ⇒ 返回该块；容量外/已回收/表分配失败 ⇒ 返回空并回落保守方向。成本 `O(8)` 次比较 + 一次原子读；元数据 ≤2 MiB/进程。**内存界不变**（簿记不是容量）。
+
+**实测**：`probe0` `[pin] n=0`、RSS 24,084 / 35,028 kB、2M/5M 轮 54,416 / 54,612 kB 平台；`probe1` `rs_dec=952`、`rs_live=8`、`[pin] n=0`、步 max 5.3 → 3.4 µs；`tests/reclaim` **221/0**（新增 5 条断言，ASan/UBSan 干净）；暖档四形状 A/B 0.979 / 1.030 / 1.004 / 1.027（噪声带）。
+
+**边界**：①`pin` 表对**池块/视图数据**的泄漏不在此列（槽不在任何 extent 里，L10-a/G15 按用户决定推迟到池重构）；②`EXTC_RC_EXT=0` 或无 mmap 平台下两个入口是 stub，退回位图前的保守路径（慢但不误释放）；③绑定发生在 `slabNew`，不在分配热路径；④R3/R4 会让更多地址落进 extent，因此本节是它们的前置条件。
+
+**指纹（v35）**：渲染文本 5,050 行 / md5 `1dcea37a8ea7858a350035507b7364b1`；物理 `src/back/reclaim.c` 242 行；`tests/reclaim/driver.c` 1,655 行 / md5 `b82c9c83270d859ed51418e2ecb96d05`；行号换算见 `REFS-V35.md`。
 ## §20 与仓库既有文档的不一致清单（口径必须按本节改）
 
 完整 90 条对账在 `docs/analysis/DOC-AUDIT.md`；这里只列"会误导读者/会误导优化决策"的 10 条。
@@ -1616,6 +1636,8 @@ extC 的内存管理是**编译期分档的**：绝大多数分配被静态指�
 9. **S1（v33）：容量归还收敛成一个水位（§19.16）**：删掉 `slabShrink` / `pageTrim` / `SHRINK_GRACE` / `SHRINK_CAP_LIVE` 四个旋钮（连同 `SLAB_KEEP`、`SLAB_KEEP_BIG`、`SHRINK_*`、`PAGE_TRIM_*` 共十三个名字与 `deadA`/`deadN`/`allocN`/`pgAllocN` 四个字段），换成一个不等式 `capBytes > CAP_MULT·bytes + RETURN_FLOOR`（默认 2 倍 + 16 MiB）与一个 `extc_rc_returnStep` pass（≤256 块访问 / ≤16 次摘链 / ≤256 KiB 页）。`grow11` 峰值 241,096 → **189,660 kB**（3.8× → 3.0× 活集）、`t13` 194,732 → **148,664 kB**、`grow11mr40` 108,244 → 104,676 kB、`t04` 保持 9,764 kB / 0.02 s；代价是 `t12`（每轮 64 MiB 全换新）墙钟 0.09 → 0.29 s（还回去的容量要重新缺页，233 ns/KB）；四形状干净 A/B **0.982 / 1.008 / 1.012 / 0.998**（min，15 reps；median 0.990 / 1.024 / 0.993 / 1.004，符号翻转 ⇒ 噪声带，同轮三臂开档与关档差 ≤1.3%），`gate.sh` Ir **87,678,211 ≤ 88,029,115**（删热路径 `allocN++` 使 Ir 下降）。
 
 10. **R2a（v34）：巨块载荷从一个预留的 VA arena 里 carve（§19.17）**：buddy 2 MiB 量子、`MAP_NORESERVE`、选择性大页（≥ 4 MiB 才 advise）；t12 0.270 → **0.080 s**、t13 0.210 → **0.060 s**，四形状 RSS 不变（chase 快 3–4%），代价是 t04 +2.3 MB / t13 +16 MB 的大页尾页放大（≤2 MiB/被触区间；区间取整只落在 VA 上）；Ir 87,678,535，生成 C 只有运行期段内的 4 个 hunk。
+
+11. **R2b（v35）：巨大块载荷内部的地址能命名宿主（§19.18）**：arena 增加归属表 `ownQ`（2 MiB 量子 → slab，32,768×8 B = 256 KiB/arena，惰性分配），`slabNew` 的 big 分支绑定、`extGive` 回收块时清空；`slabOfInterior` 与 `wmarkSlot` 各加一级区间反查 ⇒ 载荷内部写跨区指针时不再进 `pin` 表、位图能记到组、释放时边能撤销。探针：`[pin] n=0`（修复前 800k 次存储涨 17.5 B/次）、`rs_inc=960 rs_dec=952 rs_live=8`（修复前 rs_dec=0 rs_live=960）；`tests/reclaim` 221/0；暖档四形状 0.979 / 1.030 / 1.004 / 1.027（两个形状没有 ≥2 MiB 载荷 ⇒ 只付一次原子读）。
 
 一句话没变：作用域基质（arena/pool/coro/plate）从来是有界的；rc region 的有界性**现在由契约给出、由标定支撑**。门禁 G1–G16 与 after 实测见 `docs/analysis/GC-ROOFLINE.md` §6–§7。
 

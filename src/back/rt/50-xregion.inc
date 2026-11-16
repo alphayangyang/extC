@@ -72,6 +72,7 @@
     "__attribute__((unused)) static void extc_rc_wmarkSlot(void **slot) {\n",
     "    if (!slot) return;   /* skip:wmark-noslot */\n",
     "    ExtcRcSlab *so = extc_rc_ownSlab((void *)slot);\n",
+    "    if (!so) so = extc_rc_extLookup((void *)slot);   /* [rt:extent-own] a field inside a huge payload: the carved range names the block */\n",
     "    if (!so || !so->wmark) return;   /* skip:wmark-noslab -- stride below the threshold, or the slot lives outside a managed slab */\n",
     "    size_t i = extc_rc_slotOf(so, (void *)slot);\n",
     "    char  *base = EXTC_RC_SLAB_DATA(so) + i * so->ss;\n",

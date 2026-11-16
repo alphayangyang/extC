@@ -649,6 +649,15 @@ P2 与这个反例的差别**只有"旧值是否另有根"这一维**（P2 的�
 
 判据：三臂（`EXT=0` / `EXT=1` 且 `HUGE=0` / `EXT=1`）在 t04、t12、t13 上 stdout 逐字节相同；`[extent] fails=0`；生成的 C 里 extent 只以「运行期文本新增一节」的形式出现，程序自身文本零变化（`tools/emitted_identity.py` 重冻结，promote 的 `diff` 只有 4 个 hunk，全在运行期段内）。
 
+## 三点十、巨大块载荷里的地址也要能命名宿主（v35，R2b）
+
+`三点九` 换了载荷的底盘，但回收器解释地址的能力没有跟着换：宿主反查只有一级（按 512 KiB 掩码折到块首查登记表），而 carve 出来的载荷区间不对齐任何已登记块首。于是载荷**内部**（偏移 ≥ 512 KiB 的引用域）写跨区指针时：赋值走 `storeRefUnknown`（值进 `pin` 表，只增不减），位图也记不到组（释放时保守分支一条边都不撤）。三句契约：
+
+1. **地址能定位到块**：`p ∈ [data, data + ss)` ⇒ 宿主反查返回该巨块的 slab。第二级索引是 arena 的归属表 `ownQ`（2 MiB 量子 → slab，256 KiB/arena，惰性分配）；容量之外、已 `extGive`、表没建出来 ⇒ 返回空并回落保守方向。
+2. **绑定与清空在块的生命周期上**：`slabNew` 的 big 分支绑定（`extc_rc_extBind`），`extGive` 回收块时把量子清空。读是无锁的（`extNArena` 与每个量子都是 release/acquire），所以反查只多一次原子读，不进分配热路径。
+3. **关掉即退化**：`EXTC_RC_EXT=0` 或无 `mmap` 平台下两个入口是 stub，退回位图前的保守路径（慢但不误释放）；元数据上限 8 × 256 KiB，且只在进程出现过巨块时分配（簿记，不是容量）。
+
+判据：`tests/reclaim` 221/0（新增 5 条断言：载荷内部地址命名宿主、越过发放容量仍失手、写入不再进 `pin` 表、跨区入边登记为 1 并在写空时撤销；ASan/UBSan 与不内联档同跑）；探针 `probe1`（t04 形状、边写进第二颗粒）`rs_inc=960 rs_dec=952 rs_live=8`、`[pin] n=0`，修复前是 `rs_dec=0 rs_live=960`；暖档四形状交错 A/B 0.979/1.030/1.004/1.027（两个形状没有 ≥2 MiB 载荷，反查只付一次原子读 0）。
 ## 四、停顿与分片
 
 **停顿 ∝ 被扫区域的可达集**，所以最直接的手段是**分片**：把一个逻辑结构切进多个区域、每次只收一片。
@@ -1160,7 +1169,17 @@ cache-sim 判据变红）。
 | `skip:occ-free` | 按槽计数/登记/持有的入口：槽没占用就返回 | 只有**占用**的槽才有计数、登记位、类型 | 多留（保守）| 注入 `occ-guard-drop` ⇒ 红在 `bump 跨区：bump 槽在按槽登记之外` |
 | `skip:slot-null` | 槽存储帮助函数（`storeRef`/`storeRefSameRegion`/`storeRefOwnedReg`/`storeRefOwned`/`storeRefUnknown`/`storeRefSlot`/`storeRefLocal`）的 `slot` 是 NULL ⇒ 立刻返回 | 没有槽就没有位置可写、也没有边要撤/要记：传空槽（`(void**)0` 探针，或零初始化路径）的含义就是"只为求值、无目标" | 无（幂等）| `tests/runtime-bugs/run.sh` 的 `(void**)0` 探针（修复前 13 例全 SIGSEGV，现在全部无副作用）+ 全形状对拍 |
 | `skip:sat-inc` / `skip:sat-dec` / `skip:hold-zero` | 计数到顶粘住 / 降到零以下不再减 | 饱和值粘住 | 少算（不安全）| `count-nosat` / `rsinc-nosat` ⇒ 各自红在饱和判据上 |
-| `skip:host-slab` | 宿主表达式证不出来时按**槽地址**反查宿主：「槽不属于任何 rc slab」⇒ 回落 `storeRefUnknown`（把值钉住；钉不住才 `noSweep`）| 普通 slab 一造出来就进登记表（映射格 + 开放寻址表，整片丢弃时注销），超大块表按载荷地址精确匹配；反查还要过 `offOf(p) < nslots*ss`（夹**发放容量**，不是整块）⇒ 查不到只可能是视图/arena 数组/池/C 缓冲里的槽，那种槽确实没有「装着它的 rc 区域」 | 多留（保守）| 单测 `t_hostSlot` 的「反查失手」组（栈上槽 ⇒ **值被钉住**、目标区域不再退出清扫；超大块载荷不认）+ `gate-reclaim-gaps` 的 `base_call_unknown`（反查得到 ⇒ 峰值比 0.95×） |
+| `skip:host-slab` | 宿主表达式证不出来时按**槽地址**反查宿主：「槽不属于任何 rc slab」⇒ 回落 `storeRefUnknown`（把值钉住；钉不住才 `noSweep`）| 普通 slab 一造出来就进登记表（映射格 + 开放寻址表，整片丢弃时注销），超大块表按载荷地址精确匹配；反查还要过 `offOf(p) < nslots*ss`（夹**发放容量**，不是整块）⇒ 查不到只可能是视图/arena 数组/池/C 缓冲里的槽，那种槽确实没有「装着它的 rc 区域」 | 多留（保守）| 单测 `t_hostSlot` 的「反查失手」组（栈上槽 ⇒ **值被钉住**、目标区域不再退出清扫；超大块载荷由 extent 区间表认（见 `skip:host-slab-ext`））+ `gate-reclaim-gaps` 的 `base_call_unknown`（反查得到 ⇒ 峰值比 0.95×） |
+| `skip:host-slab-mask` | 掩码路径先试：`p & ~(SLAB_SIZE-1)` 命中普通 slab 登记项，且 `offOf(p) < nslots·ss` ⇒ 该地址在发放容量内，返回它 | 普通 slab 按 512 KiB 对齐发放，掩码折到块首后查登记表是 O(1)；`offOf` 的上界夹的是**发放容量**而不是整块，所以载荷之外的偏移不会被误认成槽 | 无（本来就是命中路径）| 单测 `t_hostSlot` 命中组；字段落在第一个 512 KiB 内的巨大块走这条 |
+| `skip:host-slab-ext` | 掩码失手后再由 `extc_rc_extLookup(p)` 查 extent 区间归属表：命中且偏移在发放容量内 ⇒ 返回该巨大块的 slab | 巨大块的载荷是从 64 GiB 预留 arena 里 carve 出来的区间，不落在任何 512 KiB 对齐块里，掩码结构上认不出它；extent 表按 2 MiB 量子记录「哪块归哪个 slab」，所以载荷里第 65536 个引用域（越过第一个 512 KiB）也能命名宿主 | 无（命中路径；查不到才回落保守）| 探针 `probe1`：8 条边写到第二颗粒，`rs_inc=960 rs_dec=952 rs_live=8`（修复前 `rs_dec=0 rs_live=960`，边永不撤销）|
+| `skip:ext-bind-arena` | `extc_rc_extBind(p, s)` 遍历 arena 时 `p` 不在这个 arena 的 `[base, base+span)` 内 ⇒ 看下一个 | 绑定只可能发生在 carve 出 `p` 的那个 arena；arena 数 ≤8，线性扫是常数 | 无（少做）| `tests/reclaim` 216/0 与 gc-torture 14 通过；探针 `[extent]` 显示 t12/t13 都只建 1 个 arena |
+| `skip:ext-bind-unaligned` | `p` 不是量子对齐的块首 ⇒ 不绑定 | 只有 `extCarve` 的返回值会被绑定，它必然量子对齐；不齐说明调用点错了，绑定反而会把错误的区间标给这个 slab | 多留（不记账 ⇒ 该载荷回落保守全扫）| 结构断言（唯一调用点在 `slabNew` 的 big 分支，值来自 `extAlloc`）|
+| `skip:ext-bind-free` | `ordQ[b]` 带 freelist 位（0x80）⇒ 该块是空闲的，没有宿主可绑 | 空闲块不属于任何 slab；`extGive` 会把这些量子清零，与这里互为兜底 | 无（幂等）| `extGive` 清 `ownQ` 的执行点 + `tests/reclaim` 216/0 |
+| `skip:ext-bind-nomem` | 惰性 `calloc` 归属表失败 ⇒ 放弃绑定 | 归属表只服务「巨大块载荷里的内部地址能否命名宿主」这一条优化；分配失败时退回位图前的保守全扫，正确性不变（`storeRefUnknown` 的钉住方向仍是多留）| 多留（保守全扫，慢但不误释放）| `EXTC_RC_WMARK=0` 对照臂：同一生成 C，`t04` 退化到 1,106 µs 仍正确 |
+| `skip:ext-lookup-empty` | 进程还没有任何 arena（`extNArena == 0`）⇒ 立刻返回空 | 绝大多数程序没有超大载荷；这一行让「没有巨大块」的程序在这条路径上只付一次原子读 | 无（少做）| 四形状 A/B 0.98–1.01（都没有 ≥2 MiB 载荷）；promote/sizeratio/chase/cycleratio RSS 不变 |
+| `skip:ext-lookup-arena` | `p` 不在这个 arena 的地址区间 ⇒ 看下一个 | 与 `skip:ext-bind-arena` 对称：地址落在哪个 arena 是唯一的 | 无（少做）| 同 `skip:ext-bind-arena` |
+| `skip:ext-lookup-nomap` | 该 arena 的归属表还没建（没有任何块被绑定过）⇒ 返回空 | 表是惰性建的；没建就等于这个 arena 里没有可解析的巨大块 | 多留（保守全扫）| 冷启动路径由 `tests/reclaim` 216/0 覆盖 |
+| `skip:ext-lookup-miss` | 所有 arena 都不含 `p` ⇒ 返回空 | 调用点只对「掩码路径失手」的地址才走到这里，此时正确回答就是「不是 rc 槽」 | 多留（退回 `storeRefUnknown`，钉住方向）| 单测 `t_hostSlot` 的「反查失手」组 |
 | `skip:pin-not-obj` | 未知宿主槽里存的不是本运行期的活槽（外来指针/空）⇒ 不登记 | 钉住表的键只服务「值是本运行期对象」：不是本运行期对象就没有区域可清、也没有标记可追 | 无（不是引用）| 单测 `t_pin` 的「不是本运行期活槽的值不登记」 + `gate-reclaim-gaps` |
 | `skip:pin-hole` | 扫钉住表时这一格是空的（`v == NULL`）⇒ 跳过（不是早退：继续扫）| 表是**开放寻址哈希**，空格就是「没有项」；探测链在装载 ≤ 1/2 时一定终止于空格 | 无（空格没有项可看）| 单测 `t_pin`（表空时 `pinSeed`/`pinDropRegion` 无副作用）+ 形状 `slot_elem_unknown` 峰值有界 |
 | `skip:pin-oom` | 钉住表扩容（新表 `calloc` + 重散）失败 ⇒ 返回 0，调用方回落 `noSweep` | 分配失败时唯一安全的方向是保守（少收）| 多留（保守）| 正常路径由单测 `t_noSweep` 的「目标区域不再退出清扫」兜住；OOM 分支只读审（没有形状级注入）|

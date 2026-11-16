@@ -2099,6 +2099,72 @@ R2a 之前，巨块载荷走 `aligned_alloc(4096, round4k(n))`：每个载荷一
 
 **什么时候该调小**：部署环境地址空间很紧时，`-DEXTC_RC_EXT_ORD=13`（16 GiB/arena）或 `-DEXTC_RC_EXT_ARENAS=2` 即可，代价是大载荷更容易回退。**R3 之后注意**：carve 按 `max`（预留上界，≤16× 请求）记账，`[extent] res_mb` 记的是已 carve 的 VA 而不是已提交页，所以 512 GiB 预算按预留量消耗——一个 8 MiB 载荷最多占 128 MiB VA，仍可容纳 4,096 个同时在飞的载荷。
 
+### 6.23 v35：巨大块的载荷成为「可解析的宿主」（R2b）
+
+#### 6.23.1 缺口：R2a 之后载荷仍然是「回收器看不懂的地址空间」
+
+§6.22 让巨大块的载荷从预留 VA arena 里 carve，把 mmap/munmap 的成本从增长路径上拿掉。但**回收器的宿主反查只认 512 KiB 对齐块**：`extc_rc_slabOfInterior` 先按掩码回退到 512 KiB 边界查登记表，而 carve 出来的载荷区间不对齐到任何登记过的块首（巨大块的登记键是载荷首字节），于是
+
+- 载荷**内部**的引用域（偏移 ≥ 512 KiB 的 `[N]?mut ref T` 元素）写跨区指针时，宿主反查失手 ⇒ 走 `storeRefUnknown` ⇒ 值进 `pin` 表（只增不减，实测每存储 ≈17.5 B 元数据）或把目标区域标成 `noSweep`；
+- 更隐蔽的一半：`extc_rc_wmarkSlot` 也用同一条反查给「哪 64 B 组被写过」置位，反查失手 ⇒ 位图空 ⇒ 释放时 `unlinkChildren` 的保守分支**一条边都不撤**（不是慢，是错）：探针里 `rs_inc=960 rs_dec=0 rs_live=960`，入边永远留在账上——计数档下就是 960 个目标永久泄漏。
+
+#### 6.23.2 机制：每个 2 MiB 量子记一个 slab 指针
+
+arena 的 `ordQ` 已经知道每个量子属于哪一块；R2b 在旁边加一张等长的归属表 `ownQ`（`ExtcRcSlab **`，32,768 × 8 B = **256 KiB/arena**）并把它当作「地址 → slab」的第二级索引：
+
+```c
+s = extc_rc_slabOfInterior(p);           /* 1st level: 512 KiB-aligned block table */
+if (s) return s;
+s = extc_rc_extLookup(p);                /* 2nd level: extent quantum -> slab */
+if (s && offOf(s, p) < nslots * ss) return s;
+return 0;
+```
+
+三个约束让它不进热路径：①**只在绑定/丢弃时写**——`extc_rc_slabNew` 的 big 分支拿到载荷后调一次 `extc_rc_extBind`（按块阶把该块的量子全部填上），`extGive` 回收块时把量子清空；②**读是无锁的**——`extNArena` 用 release/acquire 发布，`ownQ` 的每一项也是 release/acquire，所以 `extLookup` 不加锁、只多一次原子读；③**表是惰性建的**——进程里没有 ≥2 MiB 载荷时 `extNArena == 0`，第一行就返回。
+
+`extc_rc_wmarkSlot` 与 `extc_rc_slabOfInterior` 现在共用这条二级反查，于是「宿主是谁」和「哪个 64 B 组被写过」两件事在载荷内部都成立。
+
+#### 6.23.3 契约
+
+> **宿主解析不变式**：若 `p ∈ [data, data + ss)`（该巨大块的发放容量内），则 `slabOfInterior(p)` 返回该块的 slab；`p` 落在容量之外、块已 `extGive`、或归属表分配失败时返回空（调用方回落保守方向）。
+
+成本：`O(#arena) = 8` 次区间比较 + 一次原子读；元数据上限 8 × 256 KiB = **2 MiB/进程**，且只在载荷真的出现时分配。**内存界不变**：归属表是簿记，不是容量。
+
+#### 6.23.4 实测
+
+探针 `probe0`（2 个 8 MiB 槽位、循环往**第 65536 个**引用域写叶子，即越过第一个 512 KiB）：修复前 200k/800k 轮 RSS 30,600 / 41,116 kB（每次存储 ≈17.5 B ⇒ `pin` 表），修复后 `[pin] n=0 cap=0`、RSS 24,084 / 35,028 kB，2M 与 5M 轮分别 54,416 / 54,612 kB（**平台**，差值来自未达触发线的垃圾）。
+
+探针 `probe1`（t04 形状，8 条边写进第二颗粒，每轮丢一个 8 MiB 巨块）：
+
+| 臂 | `rs_inc` | `rs_dec` | `rs_live` | `[pin]` | `[step] max` | `over1ms` |
+| --- | --- | --- | --- | --- | --- | --- |
+| v34 口径 | 960 | **0** | **960** | 无探针 | 5.3 µs | 0 |
+| v35 | 960 | **952** | **8** | **n=0** | 3.4 µs | 0 |
+
+`rs_live=8` 是最后一轮仍活着的那 8 个目标；其余 952 条入边在块释放时被正确撤销——这是 v35 的**正确性**收益（计数档下那些目标会永久泄漏），而不是停顿收益。
+
+驱动侧新增 5 条断言（`tests/reclaim` 216 → **221/0**，ASan/UBSan 干净）：载荷内部地址命名宿主、越过发放容量仍失手、写入不再进 `pin` 表、跨区入边登记为 1 并在写空时撤销。语料里的 `t04`/`t12`/`t13` 墙钟与 RSS 不变。
+
+#### 6.23.5 代价与边界
+
+- 暖档四形状交错 A/B（9 reps，min）：promote **0.979**、sizeratio **1.030**、chase **1.004**、cycleratio **1.027**——两个 +3% 与两个 −2% 都在噪声带内（同轮中位符号翻转），且这四个形状**都没有 ≥2 MiB 载荷**，`extLookup` 在它们身上只付一次原子读 0。
+- 归属表只在「进程出现过巨大块」时有内存足迹（≤2 MiB）；`EXTC_RC_EXT=0` 或平台无 mmap 时两个入口是 stub，退回位图前的保守路径。
+- 绑定时机是 `slabNew`，不在分配热路径；若将来 R3 改成「载荷按区间丢弃」，`extGive` 的清量子逻辑已经就位。
+- 未闭合：`pin` 表本身对**池块/视图数据**的泄漏（L10-a/G15）与本轮无关——那些槽不在任何 extent 里；用户已决定推迟到池的重构（m27052）。
+
+#### 6.23.6 与 R3 / R4 的关系
+
+R3（载荷 slack + 区间级丢弃）与 R4（容器存储换 extent）都会让**更多**地址落在 extent 里：R2b 是它们的前置，否则引用容器与可增长缓冲的跨区边同样解析不到宿主，`pin` 泄漏只是从池搬进预留区。
+
+#### 6.23.7 复现
+
+```sh
+# 探针（t04 形状 + 深处写边）
+cc -O2 -std=c11 -fwrapv -D_POSIX_C_SOURCE=200809L -DEXTC_RC_STATS=1 -DEXTC_RC_PAUSE=1 probe1.c -o probe1
+taskset -c 6 env EXTC_RC_STATS=1 ./probe1   # 看 rs_inc/rs_dec/[pin]/[step]
+# 驱动断言
+tests/reclaim/run.sh                          # 221/0（含 ASan 与不内联档）
+```
 ## §7 门禁（Gate）：判据、量具、before / after
 
 门禁的用处不是「证明程序对」，而是**把契约变成可自动判定的句子**：每一条都写死「量具 + 判据 + 口径」，避免出现「实测 106 µs 也算通过」这种自欺。全部跑在既有 harness（`tests/reclaim-perf/gate.sh` 六项 + `tests/gc-p0/run.sh`）上，不需要新依赖。**after 列的构建口径（逐行标注）**：`p1-after` = v7 同轮产物集（`tests/gc-p0/out/p1-after/`，构建 `build-emp3/extc 07b7be1a…`）；`v7` = `build-p1/extc b9fd5784…`；G20-P0 单列 P0 轮（`build-rf/extc 7019342b…`）。跨构建的绝对计时允许 ±5–15% 差（§6.7.6），判据只看方向与阈值；任何一行换构建都必须重标尾号，不得混用。

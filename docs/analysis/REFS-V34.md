@@ -6,8 +6,8 @@
 
 | 文件 | v33（HEAD 90c876f1，R1 提交前） | v34（本轮工作树） |
 | --- | --- | --- |
-| `src/back/reclaim.c`（物理） | `75ecc57760aa8c8d92bef3f4bd452529` / 241 行 | `b05bbde438d39f3254dc5ea5e8b8d220` / **243 行**（25 条 `#include "rt/*.inc"`） |
-| 渲染文本（`tools/source_split.py` 读出） | `2ad2ae580109578b77d6f096214b19f1` / 4,780 行 / 356,735 字符 | `837071b7b5d835af0cec34e72065e7c5` / **4,998 行** / 370,304 字符 |
+| `src/back/reclaim.c`（物理） | `75ecc57760aa8c8d92bef3f4bd452529` / 241 行 | `b05bbde438d39f3254dc5ea5e8b8d220` / **242 行**（25 条 `#include "rt/*.inc"`） |
+| 渲染文本（`tools/source_split.py` 读出） | `2ad2ae580109578b77d6f096214b19f1` / 4,780 行 / 356,735 字符 | `837071b7b5d835af0cec34e72065e7c5` / **4,997 行** / 370,381 字符 |
 | `src/back/codegen.c` | `6ba135e22e86ec89d5cd8aa416a994bc` / 75 行（渲染 16,429 行 / `aaaaf36f73ff859044acb222934ce9c8`） | 未改 |
 | `tests/reclaim/driver.c` | `28dd4009ac7207f47e581a697c0d421f` / 1,637 行 | 未改 |
 | `build/extc` | `b5a05be1ce5780d34a8f50b4e322322a` | **`9bcf0e917446b75e04e3cdb928ea3232`** |
@@ -71,7 +71,7 @@
 | `extc_rc_bigTrimStep`（末端 `extRelease`） | 1154 – 1170 |
 | `[extent]` 探针 | 4639 – 4641 |
 
-`src/back/reclaim.c` 物理行：243 行，include 列表里 `32-extent.inc` 位于 `32-deferred.inc` 之后、`33-hugefree.inc` 之前。
+`src/back/reclaim.c` 物理行：242 行，include 列表里 `32-extent.inc` 位于 `32-deferred.inc` 之后、`33-hugefree.inc` 之前。
 
 ## §4 使用规则
 

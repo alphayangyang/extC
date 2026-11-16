@@ -127,6 +127,7 @@
     "    if ((int64_t)slotSize > r->maxReq) r->maxReq = (int64_t)slotSize;   /* admission by request size: reserve room for one request this big (slow path, so 0 Ir per allocation) */\n",
     "    s->rcp = extc_rc_rcpOf(slotSize);\n",
     "    s->nslots = (uint32_t)nslots;\n",
+    "    if (big) (void)extc_rc_extBind(s->data, s);   /* [rt:extent-own] interior addresses of this payload now name the block */\n",
     "    r->capBytes += (int64_t)nslots * (int64_t)slotSize;   /* capacity, not occupancy: both release passes compare it against r->bytes */\n",
     "    if (s->nslots > EXTC_RC_REUSE_MAX_SLOT)\n",
     "        extc_rc_oops(\"slab slot count exceeds the reuse-chain encoding limit\");\n",

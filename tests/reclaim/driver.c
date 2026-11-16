@@ -414,22 +414,40 @@ static void t_hostSlot(void) {
     extc_rc_collect(rc, NULL, 0);
     check(!extc_rc_isLive(c), "槽地址反查：栈上槽写空 ⇒ 钉住撤销，照常收掉");
 
-    /* 超大块：载荷是单独 malloc 的，按掩码定位不成立 ⇒ 反查必须失手，不能返回一只
-     * 看起来对的 slab（那会让误认的宿主区域被当成可扫）。失手同样靠钉住值兜底。 */
+    /* 超大块：载荷是单独 malloc 的，掩码路径（按 512 KiB 对齐块首查登记表）结构上定不了位。
+     * 宿主反查还有第二级：extent 区间归属表按 2 MiB 量子记住「哪块归哪个 slab」，所以载荷内部
+     * 的地址能命名宿主 ⇒ 走「宿主已知」而不是钉住。载荷之外（越过发放容量）必须仍然失手。 */
     ExtcRcRegion *rd = regionNew(20, 4096);
-    void *bigSlot = extc_rc_alloc(rd, EXTC_RC_SLAB_SIZE, &g_data);   /* cap<2 ⇒ 超大块 */
-    check(extc_rc_slabOfInterior(bigSlot) == NULL,
-          "槽地址反查：超大块载荷不认（掩码定不了位 ⇒ 调用方回落保守）");
+    void *bigSlot = extc_rc_alloc(rd, (size_t)EXTC_RC_SLAB_SIZE * 8, &g_data);   /* cap<2 ⇒ 超大块 */
+    ExtcRcSlab *bigs = extc_rc_slabOfInterior(bigSlot);
+    check(bigs != NULL && bigs->big, "槽地址反查：超大块槽首定位到自己的块");
+#if EXTC_RC_EXT
+    /* 第二颗粒（偏移 512 KiB，掩码路径的边界之外）也要认得出来。 */
+    check(extc_rc_slabOfInterior((char *)bigSlot + (1 << 20)) == bigs,
+          "槽地址反查：超大块载荷内部地址由 extent 区间表命名宿主");
+#endif
+    check(extc_rc_slabOfInterior((char *)bigSlot + (size_t)bigs->ss + 8) == NULL,
+          "槽地址反查：越过发放容量的地址仍然不认");
     ExtcRcRegion *re = regionNew(21, 4096);
     Node *e = (Node *)extc_rc_alloc(re, sizeof(Node), &g_node);
-    extc_rc_storeRefSlot((void **)bigSlot, e);
-    check(*(void **)bigSlot == (void *)e && !re->noSweep,
-          "槽地址反查：超大块里的槽也不退出清扫（钉住值）");
+    void *deepSlot = (char *)bigSlot + (1 << 20);   /* 1 MiB in: past the mask window, inside the payload */
+    size_t pinBefore = extc_rc_pinN;
+    extc_rc_storeRefSlot((void **)deepSlot, e);
+    check(*(void **)deepSlot == (void *)e && !re->noSweep,
+          "槽地址反查：超大块内部槽 ⇒ 目标区域照常清扫（不钉住）");
+    check(extc_rc_pinN == pinBefore, "槽地址反查：超大块内部槽不再进钉住表");
+    if (extc_rc_partN > 1) {
+        check(extc_rc_rsCount(e) == 1, "槽地址反查：超大块内部槽登记跨区入边");
+        extc_rc_collect(re, NULL, 0);
+        check(extc_rc_isLive(e), "槽地址反查：入边在 ⇒ 活过一轮");
+        extc_rc_storeRefSlot((void **)deepSlot, NULL);
+        check(extc_rc_rsCount(e) == 0, "槽地址反查：超大块内部槽写空 ⇒ 入边跟着撤");
+    } else {
+        extc_rc_collect(re, NULL, 0);
+    }
+    extc_rc_storeRefSlot((void **)deepSlot, NULL);
     extc_rc_collect(re, NULL, 0);
-    check(extc_rc_isLive(e), "槽地址反查：超大块槽里的值被钉住 ⇒ 活过一轮");
-    extc_rc_storeRefSlot((void **)bigSlot, NULL);
-    extc_rc_collect(re, NULL, 0);
-    check(!extc_rc_isLive(e), "槽地址反查：超大块槽写空 ⇒ 钉住撤销");
+    check(!extc_rc_isLive(e), "槽地址反查：超大块内部槽写空 ⇒ 照常收掉");
 
     extc_rc_regionFree(ra);
     extc_rc_regionFree(rb);
