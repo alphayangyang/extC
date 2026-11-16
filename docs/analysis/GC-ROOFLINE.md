@@ -1878,6 +1878,138 @@ if (g.rcSweepFree != -1 && g.needReclaim && !g.rcMemGrowth && unitAllAcyclic(&g,
 
 **回归守护**：`tests/gc-torture/src/t13_growth_copy.extc`（20 轮 1.1× 拷贝增长、起始 8 MiB）先红后绿 —— 同一份源在 v30 编译下 526,816 kB 判 RED、v31 下 194,352 kB 通过（阈值 260,000 kB）。
 
+### 6.21 v33：容量归还收敛成一个水位（删掉 slabShrink / pageTrim / grace / CAP_LIVE 四个旋钮）
+
+v31 把容量项拆成四段机制：块级摘链（§6.10，`extc_rc_slabShrink`）、页级归还（§6.11，`extc_rc_pageTrimStep`）、复用宽限（§6.20，`deadA`/`deadN`）、容量比例闸门（§6.20，`EXTC_RC_SHRINK_CAP_LIVE`）。四段各自有判据、各自有旋钮，**并且串联生效**：2×2 探针（`CAP_LIVE ∈ {3, 0}` × `GRACE ∈ {1, 0}`）显示 `grow11` 只有同时放松两道才从 240 MB 掉到 189 MB，任一道在就停在 240 MB；把闸门里的尺子从 `r->bytes` 换成 `r->live` 完全无效（240,708–240,716 kB）。也就是说**峰值当时由两个比例判据决定，不是由机制决定**。本节把四段换成一个水位 + 一个 pass，并给出这个水位在 roofline 里的价目表。
+
+#### 6.21.1 一个水位
+
+```c
+static int extc_rc_surplus(ExtcRcRegion *r) {
+    return EXTC_RC_CAP_MULT > 0
+        && r->capBytes > r->bytes * (int64_t)EXTC_RC_CAP_MULT + (int64_t)EXTC_RC_RETURN_FLOOR;
+}
+```
+
+一句话：**刻出来的容量比活集超出一个倍数再加一个固定存量，就是过剩**。默认 `EXTC_RC_CAP_MULT = 2`、`EXTC_RC_RETURN_FLOOR = 16 MiB`。
+
+- `CAP_MULT = 2` 的语义是**一代余量**：一次 1.1× 的拷贝增长从 `L` 到 1.1·L 只需要 1.1·L 的容量（拷贝那一刻新旧两代同时在，§6.20 已量到这部分瞬态），2·L 覆盖得了，所以留下的死容量还能原地接住一次增长。实测 `CAP_MULT = 3` 时 `grow11` 峰值 231,280 kB，越过本节给的 3·L 验收线（190 MB）⇒ 2 是能接住一次增长的最小整数。
+- `RETURN_FLOOR = 16 MiB` 是**复用存量**：给「活集很小、每轮新建一个大块」的形状（`t04_bigchurn` 8 MiB 巨块、t01 稀疏 pin）留一块常驻余量，否则每次归还都要在下一次分配时重新缺页。9 MiB 就够救 `t04`（其 cap 是 8,388,616 B，比 8 MiB 多 8 字节，所以 8 MiB 的存量差 8 字节不达）；取 16 MiB 留一倍余量。它不是一个新旋钮，而是同一个不等式里的常数项 —— 读出来仍然是一句话。
+
+旧的 `deadA`/`deadN`（按 `allocN` 推断「这块还热吗」）与 `SHRINK_MIN_SLACK`/`PAGE_TRIM_MIN_SLACK` 两道 8 MiB slack 全部删除：前者是**猜复用**，后者是**第二道水位**。判据里不再有历史状态，只有 `capBytes`、`bytes` 两个即时量。
+
+#### 6.21.2 一个 pass
+
+`extc_rc_returnStep(r)` 在清扫轮收尾（`extc_rc_sweepStep`，与 `extc_rc_fqDrainAuto` 同一处，pause 计时块内）跑一次，单游标 `r->trimCur` round-robin：
+
+1. **死块**（`nLive == 0` 且 `rsbit` 无位）⇒ O(1) 摘链 + 入 free 队列。不再有任何复用宽限判据。
+2. **活块但页值得还**（`!s->big`、上次 pass 之后 `nLive` 变过即 `s->pgLive != nLive`、且 `extc_rc_pageWorth(s)`）⇒ `extc_rc_pageTrimSlab` 对连续空页 run 做 `MADV_DONTNEED`。
+3. 每摘一块都**重新验水位**，够了就停。
+
+`pageWorth` 是算术充分条件，替掉旧的 `PAGE_TRIM_DENSE`（`nLive·8 > nslots` 跳过）与 `PAGE_TRIM_ACTIVE`（`allocN − pgAllocN ≤ 64` 才算安静）两个猜测：
+
+```c
+int64_t per = 1 + ((int64_t)s->ss >> 12);   /* pages one live slot can pin */
+return (int64_t)s->nLive * per < ((int64_t)s->nslots * (int64_t)s->ss) >> 12;
+```
+
+即「活槽最多能钉住的页数小于总页数」时才值得走一遍位图。预算是三个常数：`RETURN_VISIT_MAX = 256` 块、`RETURN_SLAB_MAX = 16` 次摘链、`RETURN_BYTES = 256 KiB` 页字节 —— 与 §6.13 的「一步工作量由编译期常量封顶」同一口径，所以 P_step 的形状不变。
+
+`[return] steps=%lld rel_slabs=%lld page_mb=%.2f page_blocks=%lld cap_mb=%.2f live_mb=%.2f` 是这条路径的量具（v33 新增），`cap_mb`/`live_mb` 是 `capBytes`/`bytes` 的高水位。
+
+#### 6.21.3 实测（同机 core 6，3 次中位，`/usr/bin/time -f %M`；base = HEAD 90c876f1）
+
+| 形状 | 活集 | base | v33（`CAP_MULT=2`，`FLOOR=16 MiB`） | 读法 |
+|---|---|---|---|---|
+| `grow11`（帧级 1.1× 增长到 8M `i64`） | 63.4 MB | 241,096 kB / 0.35 s | **189,660 kB / 0.35 s** | 3.8× → 3.0× 活集；`FLOOR = 0` 时 183,536 kB（峰值更低但 `t04` 退化，见下） |
+| `grow11mr`（同形状 40 轮） | 16 MB | 108,244 kB / 3.27 s | **104,676 kB / 3.16 s** | 轮数无关 |
+| `t13_growth_copy`（20 轮 1.1×，起始 8 MiB） | 49 MB | 194,732 kB / 0.21 s | **148,664 kB / 0.23 s** | 门禁阈值 260,000 kB |
+| `t12_overwrite_arena`（20 × 64 MiB 覆盖） | 64 MB | 199,648 kB / 0.09 s | 199,548 kB / **0.29 s** | 峰值不变，**墙钟 +0.20 s** —— 见 §6.21.5 |
+| `t04_bigchurn`（120 轮 8 MiB 巨块） | 0 | 10,148 kB / 0.03 s | **9,764 kB / 0.02 s** | `FLOOR = 0` 时退化到 0.42 s / 246,653 次缺页（13×）⇒ `FLOOR` 的由来 |
+
+四形状交错 A/B（干净 15 reps、min、与任何其它计时任务不并发；`base` = `90c876f1` 树内重建）：`promote` **0.982** / `sizeratio` **1.008** / `chase` **1.012** / `cycleratio` **0.998**，中位 0.990 / 1.024 / 0.993 / 1.004 —— min 与 median 的符号逐形状翻转 ⇒ 噪声带；RSS 5,676 / 2,664 / 65,452 / 2,796 kB 对 base 的 5,672 / 2,792 / 65,448 / 2,796 kB（±128 kB）。更早一轮 11 reps 给出 0.999 / 1.030 / 1.041 / 1.005，同轮三臂（`CAP_MULT=0` 关档 / `RETURN_BYTES=0` 只摘块 / 默认）把差摊开：`sizeratio` 14.69 / 14.31 / 14.65、`chase` 114.04 / 114.39 / 115.50 ⇒ 开档与关档之间 ≤ 1.3%，判为**噪声带内**（见 §6.21.6）。
+
+Ir 门禁：87,911,848 → **87,678,211**（≤ 88,029,115）。**Ir 是降的**，因为删掉了分配热路径上的 `s->allocN++`（`#if EXTC_RC_PAGE_TRIM` 块）—— 归还的判据从「猜复用」换成即时量之后，分配侧不再需要记账。
+
+停顿：`grow11` `[step] n=104 max_us=3.1 over1ms=0`；`[pause] collects=52 max_us=85.0`（一轮回收的总时长，不是单步）。容量路径没有引入新的长步：一个 pass 的代价上界是 256 次块访问 + 16 次摘链 + 256 KiB 的 `MADV_DONTNEED`（整段 ≈ 13 ns/KB ⇒ 256 KiB ≈ 3.4 µs）。
+
+#### 6.21.4 价目表：归还、再缺页、清扫（本条给 `CAP_MULT` 与 `FLOOR` 定值）
+
+| 动作 | 本机常数 | 量法 |
+|---|---|---|
+| 归还（`MADV_DONTNEED`，整段） | **13 ns/KB** | 256 MiB 3.5 ms |
+| 再缺页（首次触页） | **233 ns/KB** | 256 MiB 重新触页 61 ms；`t12` 的 1.28 GB 归还量对应 +0.20 s ⇒ 156 ns/KB，同阶 |
+| 清扫同样一段容量 | **0.5–0.9 ns/KB** | §6.10 / §6.8（`c_s = 0.0108 ns/B`） |
+
+**归还 + 再缺页的一次往返 ≈ 246 ns/KB，是清扫同一段容量的 250–450 倍。** 所以容量归还不是「免费的清理」，而是**用未来的缺页换现在的内存**；只有当那份容量真的不会再用（峰值已经过去）时才划算。这条价目表就是 `CAP_MULT = 2` 的证明：留一代（可以原地接一次增长，零缺页），超出一代的部分一定不会再被同一代用到；`FLOOR` 单独处理「每轮都是新内存」的形状，那里的缺页本来就要付，不是归还引起的。
+
+于是 §6.10/§6.20 里的容量项系数有了闭式：
+
+```
+c_cap = (13 + 233·p) ns/KB      当归还一 KB，且下一轮的复用概率是 p
+```
+
+策略取 p 的上界作为默认（同一活集不增长 ⇒ p = 0 ⇒ 归还只要 13 ns/KB），把 p > 0 的那部分折进 `CAP_MULT` 与 `FLOOR` 两个常数里。`λ(r)` 的式子不变（清扫的 `c_s` 没动），变的是**内存墙的位置**：
+
+```
+M ≤ CAP_MULT·L + RETURN_FLOOR + 4 KiB·#page(含活对象) + M_slab·#slab(含活对象)      （v33）
+M ≤ 3·L + 8 MiB + 4 KiB·#page(含活对象) + M_slab·#slab(含活对象)                     （v31）
+```
+
+`M_slab ≈ 69 kB`（§6.12）、页 4 KiB（§6.11）。v33 的墙比 v31 低一整个 `L`，而且三项都是编译期常数或即时量，没有一项依赖历史峰值。
+
+#### 6.21.5 代价：还回去的容量要重新缺页
+
+`t12_overwrite_arena`（20 轮 × 64 MiB 覆盖，活集恒 64 MB）是这条代价的标本：峰值 199,548 kB 与 v31 逐 kB 相同，但墙钟 0.09 → 0.29 s。它每轮丢掉 64 MiB、下一轮又要同样一块 ⇒ `CAP_MULT = 2` 把 ≈1.28 GB 的容量还给了 OS，再以 156 ns/KB 重新缺页，正好是价目表预测的量。观察到的两个极端：
+
+- `CAP_MULT = 3` 时 `t12` 回到 0.10 s（不再还），但 `grow11` 峰值 231 MB 破 3·L 线 ⇒ **这是同一个旋钮的两端，没有第三种选择**（与 §3.5「上界与滞留是同一旋钮」、§6.20.5「速率与暂停是同一旋钮」同构）。
+- `CAP_MULT = 0`（关档）时 `t12` 0.09 s、`grow11` 保持 241 MB ⇒ 用来做 A/B 的关档臂。
+
+契约里写清楚：**还回去的容量在下次分配时按首次触页计费**。这不是回归，是内存界的价码；用户若知情可以 `-DEXTC_RC_CAP_MULT=3` 或 `=0` 换回吞吐，但那两条都不是默认档（默认档承诺的是内存界）。
+
+#### 6.21.6 边界与旋钮
+
+- **旋钮数 4 → 2**（`CAP_MULT`、`RETURN_FLOOR`）+ 三个预算常数（`RETURN_VISIT_MAX` / `RETURN_SLAB_MAX` / `RETURN_BYTES`）。删掉的是 `SLAB_KEEP`、`SLAB_KEEP_BIG`、`SHRINK_GRACE`、`SHRINK_CAP_LIVE`、`SHRINK_VISIT_MAX`、`SHRINK_REL_MAX`、`SHRINK_MIN_SLACK`、`PAGE_TRIM`、`PAGE_TRIM_BYTES`、`PAGE_TRIM_VISIT_MAX`、`PAGE_TRIM_MIN_SLACK`、`PAGE_TRIM_DENSE`、`PAGE_TRIM_ACTIVE` 十三个名字。
+- `sizeratio` 与 `chase` 的 +3~4% 只出现在 11 rep 这一轮；同一轮的三臂（关档 / 只摘块 / 默认）差 ≤ 1.3%，判为噪声带。15 rep 复测与跨机器复核记在 §6.21.7。
+- `pgLive != nLive` 的幂等性依赖「块内活槽数不变 ⇒ 没有新空页」，这是精确状态比较而不是猜复用；`pgNext` 续扫游标仍是单调的，所以一个 pass 不会在同一个块上重复走位图。
+- 稠密侧（每 64 B 组都写过跨区指针，§6.18 的右端 `8·m`）与 L10-a（pool 槽 pin，§19 之外的已知漏洞）不在本节范围。
+- `bigdrop` 仍在（巨块载荷的丢弃速率，§6.20）：它管的是**载荷 mmap 本身**，与本节管的**刻出来的容量**是两个量；`FLOOR = 16 MiB` 让 8 MiB 单槽巨块不被反复归还，两者在同一处收尾分支（`extc_rc_returnStep` → `extc_rc_fqDrainAuto`）配合。
+
+#### 6.21.7 复测与复核
+
+口径：v33 工作树（`src/back/reclaim.c` = `a8706acf8b9b144399e46fa2c73ad000`，渲染文本 4,780 行 / `2ad2ae580109578b77d6f096214b19f1`；`build/extc` = `b5a05be1ce5780d34a8f50b4e322322a`）；`base` = `90c876f1` 树内重建（`build-b/extc` = `d44f092dc8495e48ed6ee8e9ebf63559`）。行号一律按 v33 口径、以符号定位（`extc_rc_surplus` / `extc_rc_pageWorth` / `extc_rc_slabUnlink` / `extc_rc_returnStep` 同在 `extc_rc_returnStep` 那一节，调用点在 `extc_rc_sweepStep` 的收尾分支，量具是 `[return]` 行），禁止从 v31 机械平移（换算表见 `REFS-V33.md`）。
+
+**（i）暖档四形状。** 干净 15 reps（顺序执行、不与任何其它计时任务并发、`taskset -c 6`、min ms）：0.982 / 1.008 / 1.012 / 0.998，中位 0.990 / 1.024 / 0.993 / 1.004 —— min 与 median 的符号逐形状翻转，RSS 差 ≤128 kB ⇒ **噪声带内**。更早一轮 11 reps 的 0.999 / 1.030 / 1.041 / 1.005 与同轮三臂（关档 / 只摘块 / 默认）一致地指向同一个结论：`sizeratio` 与 `chase` 的开档—关档差 ≤1.3%，量不出本条机制的系统代价。
+
+**（ii）停顿与内存门禁的双臂复跑。** 同一晚、同一台机器，两臂各跑一遍 `tests/gc-p0/run.sh all`（`PAUSE=1`、`REPS=3`、`EXTC_RC_STEP_CPU=1`），**两臂都 `EXIT=0`，逐用例 PASS**：
+
+| 用例 | S1 臂（v33） | base 臂（`90c876f1`） | 判定 |
+|---|---|---|---|
+| `cyc` (a) | 1.64e-04 | 1.26e-04 | 双 PASS（warm 通道，阈 1e-4 之上按 n 与 p99.9 联合判） |
+| `pb` (a) | 2.36e-05 | 2.41e-05 | 双 PASS |
+| `pc` (a) | 4.05e-05 | 8.09e-06 | 双 PASS |
+| `pd_pointer_dense` (a) / (b) | 1.18e-05 / p99.9 PASS | 3.29e-05 / p99.9 PASS | 双 PASS（`B_seg` 仍是旧标定 74.69 µs，见 §7 的 bseg 行） |
+| `pd_bigobj` (b) | 7.05e-04 | 7.50e-04 | 双 PASS |
+| G18 | peak60 = peak200 = 26,272 kB ≤ 26,624 | 同 | 双 PASS |
+| G4-Stress | PASS | PASS | 双 PASS |
+
+**归因结论（第一层：单次全量运行）。** 更早一次全量运行里出现的 `pb` (a) RED（`over1ms=1`，内含单个 5,806.7 µs 的离群步）与 `pd_pointer_dense` (b) RED（`>50 µs` 1.72e-3）**在双臂同时复跑中都不复现**，且 base 臂在同一位置给出同向同量级的数字 ⇒ 是环境的单次离群（`over1ms` 桶只有 1–2 个样本就越线），不是本轮机制引入的回归。判据一字未放宽；离群样本保留在 `pauses.jsonl` 里可复查。
+
+**归因结论（第二层：门禁尺度的交错双臂）。** 门禁跑的是 `G18_PD_REPS=5` 的合并样本（`pd_bigobj` 约 12.4 万 `seg>0` 步、`pd_pointer_dense` 约 14.2 万），所以按同一尺度各做 2 次交错双臂（4 次运行）再看：**两次 RED 并不集中在同一臂、也不集中在同一形状**——
+
+| 轮次 | S1 臂 `pd_bigobj` (b) | S1 臂 `pd_dense` (b) | base 臂 `pd_bigobj` (b) | base 臂 `pd_dense` (b) |
+|---|---|---|---|---|
+| 1 | **RED**：单步 1,629.2 µs（计数 90/124,548 未越线） | PASS：88/142,928、max 371.3 µs | PASS：max 238.4 µs | **RED**：单步 2,391.3 µs（计数 89/141,829 未越线） |
+| 2 | **RED**：单步 1,102.4 µs（计数 76/123,214 未越线） | PASS：94/141,998、max 875.0 µs | PASS：max 463.7 µs | **RED**：计数 144/142,164 越线（max 386.1 µs） |
+
+两臂各红两次、且各自红在不同的通道上；把 `pd_bigobj` 单拉出来做 6×2 次定向跑（同一二进制、`200` 轮、`taskset -c 6`），`over1ms` 为 **S1 0/6、base 1/6**（S1 侧 max 100.9–340.3 µs，base 侧 max 149.7–546.9 µs）——尾部是**双臂共有的偶发单步**，不是 S1 的系统性质。③ `pd_pointer_dense` 的 p99.9 按构造就坐在阈值上：3 reps 合并时两臂的 `>64 µs` 率分别是 7.62e-4 / 1.14e-3（S1）与 1.01e-3 / 1.09e-3（base），门禁阈值是 1e-3 ⇒ 合并到 5 reps 后计数在 88–144 之间摆动（限 142），±10% 的机时漂移就能翻转判决，且 base 臂同样会越线。
+
+所以 `(b)` 通道的尾部**在本机不可归因于本轮机制**：判据（`over-1ms = 0` 与 `p99.9` 计数）一字未放宽，红样本保留；要把它变成可重复的判决，只能换更抗噪的量具（例如把 `over-1ms` 改成「每 1e5 步的过 1 ms 次数」这类率判据，并把 p99.9 的阈值与样本量绑定），这属于量具工作，不在本轮的机制范围内。
+**（iii）生成 C 变了。** 发射文本变了 ⇒ `tools/emitted_identity.py` 的基线必须按本轮重冻结；重冻结的前提是「逐字节 diff 只落在容量归还那一节发射的代码上」，这件事由基线 diff 本身证明，不靠声明。
+
+**（iv）未复核的边界。** MinGW 原生侧没有在本轮跑（v31 的巨块 1.4 ms 已由 t04 的 `wmark` 闭合，见 §6.18）；容量归还这条路径的跨 OS 行为只在 Linux/WSL2 上判过，列为下一轮可选项。
+
+**（v）为什么不做跨机器重标。** 本条机制的两个常数（`CAP_MULT`、`RETURN_FLOOR`）都是**活集的倍数**与**复用存量**，不含时钟量；唯一带时钟的是页丢弃的 13 ns/KB 与再缺页的 233 ns/KB（§6.21.4），它们只影响「归还划不划算」的判读，不影响上界。换机器不需要动这两个宏。
 ## §7 门禁（Gate）：判据、量具、before / after
 
 门禁的用处不是「证明程序对」，而是**把契约变成可自动判定的句子**：每一条都写死「量具 + 判据 + 口径」，避免出现「实测 106 µs 也算通过」这种自欺。全部跑在既有 harness（`tests/reclaim-perf/gate.sh` 六项 + `tests/gc-p0/run.sh`）上，不需要新依赖。**after 列的构建口径（逐行标注）**：`p1-after` = v7 同轮产物集（`tests/gc-p0/out/p1-after/`，构建 `build-emp3/extc 07b7be1a…`）；`v7` = `build-p1/extc b9fd5784…`；G20-P0 单列 P0 轮（`build-rf/extc 7019342b…`）。跨构建的绝对计时允许 ±5–15% 差（§6.7.6），判据只看方向与阈值；任何一行换构建都必须重标尾号，不得混用。
@@ -2422,3 +2554,5 @@ r'* = r'_max(M_max) = (M_max/L − 1)/κ_M
 **口径 E2（回收计划收成一个值，2026-12-16）**：`src/back/codegen.c` = `02acf0b0ae84ece59fb2b70d604ddda7`（16,368 行，v31 的 16,346 行净 +22）、`src/back/reclaim.c` = `75ecc57760aa8c8d92bef3f4bd452529`（241 行；E1 起是数组头 + 24 个 `rt/*.inc`，渲染文本 4,780 行、md5 `29a6372e…`）、`build/extc` = `24ce5d0ab3e817bc5f8ddedee6773b84`。codegen.c 的 87 个变化块（七个决策字段搬进 `struct RcPlan`、`scanUnitReclaim` 改名 `rcPlanDecide`）与分段换算见 `docs/analysis/REFS-E2.md`；生成 C 逐字不变（`tools/emitted_identity.py --check` 430 行）。本附录此前各表钉在 v17/v21/v29 各期的绝对行号，本次不改它们，定位一律按符号 grep + REFS-E2 表。
 
 **口径 E3（codegen.c 按主题分节，2026-12-17）**：`src/back/codegen.c` 现为 75 行（39 行文件头 + 14 行说明块 + 22 条 `#include "cg/*.inc"`），22 个分节文件合计 16,368 行，渲染文本 md5 仍是 `02acf0b0ae84ece59fb2b70d604ddda7` ⇒ **本附录与各表里的 codegen.c 行号仍指同一行正文**，只是物理位置在某个 `src/back/cg/*.inc` 里；`src/back/reclaim.c` = `75ecc57760aa8c8d92bef3f4bd452529`（241 行，渲染文本 4,780 行、md5 `29a6372e…`）。`build/extc` = `eaa22babe131cfc6360fac7eb51a7b0c`：与 E2 的 `24ce5d0a…` 不同是因为 DWARF 记录分节文件名与节内行号，**生成 C 逐字不变**（`tools/emitted_identity.py --check` 430 行）⇒ 二进制 md5 不再当源码指纹。旧行号的分节坐标（22 行分节表、节内偏移、抽样核对）见 `docs/analysis/REFS-E3.md`。
+
+**口径 v33（S1：容量归还收敛成一个水位，2026-12-20）**：`src/back/reclaim.c` = `a8706acf8b9b144399e46fa2c73ad000`（241 行；渲染文本 4,780 行、md5 `2ad2ae580109578b77d6f096214b19f1`）、`src/back/codegen.c` = `6ba135e22e86ec89d5cd8aa416a994bc`（75 行，未改）、`tests/reclaim/driver.c` = `28dd4009ac7207f47e581a697c0d421f`（1,637 行，未改）、`build/extc` = `b5a05be1ce5780d34a8f50b4e322322a`。相对 v32（`75ecc577…` / 241 行、渲染文本 4,805 行 / `93a53fde…`）渲染文本净 −25 行：删 `52-slab-release.inc` 与 `53-page-release.inc`，新增 `52-capacity-release.inc` 与 `53-slot-release.inc`，并在 `00-head.inc` / `21-wmark.inc` / `33-hugefree.inc` / `41-budget.inc` / `62-sweep.inc` 各删几行。**本附录不再为新机制新增数字行号表**：定位一律按符号（`extc_rc_surplus` / `extc_rc_pageWorth` / `extc_rc_slabUnlink` / `extc_rc_returnStep` / `[return]` 探针），v32→v33 的分段换算表、被替换块清单与绝对锚点全部收在 `docs/analysis/REFS-V33.md`；机制、价目表与边界见 §6.21，生成 C 的逐字节基线已按本轮重冻结。

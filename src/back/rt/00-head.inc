@@ -1,6 +1,3 @@
-    "#ifndef EXTC_RC_PAGE_TRIM\n",
-    "#define EXTC_RC_PAGE_TRIM 1   /* declared here: the allocation path and slabNew test it before the pass is defined */\n",
-    "#endif\n",
     "/* ---- reclaim runtime: bitmap slab + holder counts + regional sweep [rt:head] ----\n",
     " *\n",
     " * Three of the four tiers the runtime provides (release the whole local place, zero the counts, regional sweep):\n",

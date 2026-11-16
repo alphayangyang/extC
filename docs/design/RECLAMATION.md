@@ -355,35 +355,37 @@ place。构造点没有自己的 place 时池就挂在函数体上 —— 循环
 `pool_ref_slot` 峰值比 3.04× → 1.00×（sweeps 0/0 → 2/9），语料全量静态检查的 `silent-both` 9 → 0。
 **并行：两处进程级共享写走独立协议。** 并行 worker 各自的回收区域互不相交（`parTls` 的分配落线程本地 arena），但运行期有两处状态是**进程级共享**的：① slab 登记表（地址 → slab → 区域）—— 写侧曾用 `realloc` + `free` 旧表，两个 worker 同时建 slab 时另一个线程正在已释放的旧表里探测（ASan 下 8 路并行 400 次复现 10 次 SEGV）；现在**按代发布**：写侧在 `extc_rc_regLock` 下 `calloc` 新代重散、`__atomic_store_n` 发布、`extc_rc_regSeq` + 1，**旧代永不 free**（容量 2× 增长 ⇒ 旧代总内存被最终容量界住）；读侧 `extc_rc_ownFind` 无锁，最多 32 轮「读 seq → 读当前代 → 探一格 → 复读 seq」后持锁兜底，热路径入口再叠一层 `extc_rc_ownProbeFast`（镜像表探一格 + 前后 seq 一致即权威）。② 标记参与者计数 `extc_rc_wb`（写屏障门控）—— 每只区域各自 begin/finish，普通 `++/--` 丢更新 ⇒ `barrier participant underflow` 崩溃（修前 1/400）；写侧改原子，但原子的 lock 前缀与内存屏障会渗进热路径（`if (!extc_rc_wb ...)` 每次都要重载 ⇒ owed_home +2.8% Ir），所以声明保持普通 `int`、原子加减包进 noinline 冷函数 `extc_rc_wbAdd`。判据：`gate-reclaim-conc`（结构 11 项 + 8 路并行 ASan 512 次 smoke + 10 条注入自测）与注入 `reg-retry-nocap`；跳过表里 `skip:reg-hit` / `skip:reg-settled` / `skip:reg-race` 三条各写明为什么无锁路径的结果仍是权威的。9 形状 Ir 相对上一提交 −14.1% ~ +1.1%（`extc_rc_shadeSlow` 冷半段不内联、wb 原子移出热路径是主要来源）。
 
-## 三点三、容量归还：slab 的「空」就是契约的兑现点
+## 三点三、容量归还：一个水位，一个 pass
 
-清扫的成本单位是**容量**，不是活集：一块 slab 里只要还有一个长命对象，它每轮都要逐词扫完（整块跳过的前提是 `s->nMark != 0` 为假，见 §三点五前面的 elide 段）。容量又是高水位 —— slab 只在区域析构时整块归还，所以「峰值」会一直钉在堆上。
+清扫的成本单位是**容量**，不是活集：一块 slab 里只要还有一个长命对象，它每轮都要逐词扫完（整块跳过的前提是 `s->nMark != 0` 为假，见 §三点五前面的 elide 段）。容量又是高水位 —— 块只在区域析构时整块归还，所以峰值会一直钉在堆上。
 
-归还路径（无写屏障、全在冷路径）：`extc_rc_slabShrink(r)`（src/back/reclaim.c:extc_rc_slabShrink）在 `extc_rc_sweepStep` 的收尾分支（3915）沿 region 链最多访问 `EXTC_RC_SHRINK_VISIT_MAX=256` 块，把 `nLive==0`、非 big、非 bump slab、且没有跨区入边位的 slab 从 region 链与 size-class 链 O(1) 摘掉、入 free 队列；每次最多 `EXTC_RC_SHRINK_REL_MAX=16` 块，munmap 交给既有的 `extc_rc_fqDrainCore`（1501）按 `EXTC_RC_FREE_BUDGET_SLABS` / `EXTC_RC_FREE_QUEUE_BYTES` 执行，紧接着的 `extc_rc_fqDrainAuto()`（3916）在同一个步里排空一个有界批次。
+「什么算多余」只有**一个判据**：
 
-两处约束写死在代码里：
+**水位**：`capBytes > bytes × EXTC_RC_CAP_MULT + EXTC_RC_RETURN_FLOOR`（`extc_rc_surplus`，`skip:return-watermark`）。`capBytes` 是区域已经 carve 出来的字节，`bytes` 是闭包时刻的活字节。`EXTC_RC_CAP_MULT`（默认 2）是**一代死容量**：一次拷贝增长要同时持有旧代与新代，2 正好够这一代；`EXTC_RC_RETURN_FLOOR`（默认 16 MiB）是**复用存量**，让反复 churn 同一尺寸的进程不必每轮把刚还的页再缺一遍。两者都是编译期常量，所以 `M = live + O(#block) + floor` 仍然成立。
 
-1. **slack 闸门**：`capBytes − bytes < EXTC_RC_SHRINK_MIN_SLACK`（8 MiB）时一块都不摘（1900，`skip:shrink-slack`）。容量只比占用多一点时，摘块换来的是「munmap 512 KiB → 之后重新 carve」，抖动会赢；代价是容量界抬一个常数 8 MiB。第二道是**容量预算**：`capBytes <= bytes * EXTC_RC_SHRINK_CAP_LIVE`（默认 3）时同样一块都不摘（`skip:shrink-budget`），它把「空块复用缓存」绑在活集上，而不是让 churn 每轮把块还给 OS。
-2. **只能发生在轮末**：清扫游标可能停在链上任意一块，摘块前提是游标已清空 ⇒ 摘链固定在 `extc_rc_sweepStep` 的收尾分支。摘链只在这个位置；settle 与标记完成处都不摘块。
+超过水位就由同一个 pass `extc_rc_returnStep`（`src/back/rt/52-capacity-release.inc`）在 `extc_rc_sweepStep` 的收尾分支（`extc_rc_returnStep(r); extc_rc_fqDrainAuto();`）交还两类多余：
 
-契约三句：①**承诺**：从轮末（closing step）算起，不含任何占用槽的 slab 最多在 ⌈n/16⌉ 轮内被归还（n = 这样的 slab 数），每轮新增工作量 ≤ 256 次链访问 + 16 次入队 + 一次有界排空，这些成本都发生在同一个被计时的步内 ⇒ 计入 `[step]`/`[histo]` 的停顿分布；②**不承诺**：含 1 个长命对象的 slab 不归还（粒度是 512 KiB），这是稀疏活集上 Θ(容量) 的剩余来源，由 §三点四的页级归还补一档；③**不发散**：`EXTC_RC_SLAB_KEEP`（默认 0）是空**小块**的复用池大小；空**巨块**另有一个带宽限的复用缓存（`EXTC_RC_SLAB_KEEP_BIG`，界不是计数而是「还在被复用吗」+ 容量闸门 `EXTC_RC_SHRINK_CAP_LIVE`，默认 3× 闭包活集）⇒ 容量上界 `max(3·live, live + N_req) + 8 MiB`，与历史峰值解耦，一次巨块分配最多丢同请求量的死载荷（`[chan] bigdrop`）。
+* **死块**：块内无活槽 ⇒ 从 region 链与 size-class 链 O(1) 摘掉、`capBytes` 相应减少、入 free 队列（载荷不在这里碰，巨块自己的丢弃链负责）；每步 ≤ `EXTC_RC_RETURN_SLAB_MAX` = 16 块，每摘一块回头验一次水位，达标就停。
+* **死页**：块内有活槽但稀疏 ⇒ 把不含占用槽的连续页 run `madvise(MADV_DONTNEED)`；每步 ≤ `EXTC_RC_RETURN_BYTES` = 256 KiB、≤ `EXTC_RC_RETURN_PAGE_MAX` = 8 块。页归还只改物理页，不改 `bytes`。
 
-实测：64 MiB 峰值后留 16 个成簇存活对象，基线 slabs 129 → 129 / RSS 82.9 MB 恒定；本机制 slabs 129 → 1（8 轮）/ RSS 16.8 MB。自动路径探针（64 MB 峰值、零 root、之后 140 万次分配、只调 `extc_rc_maybeCollect`）：slabs 64 → 16、`slabRel=48`、RSS 43,788 → 18,832 kB（残差 = 8 MiB slack 余量）。四形状 A/B 1.013 / 0.970 / 1.015 / 1.002（噪声带内），指令数门禁 87,871,190 ≤ 88,029,115。
+一次 step 最多看 `EXTC_RC_RETURN_VISIT_MAX` = 256 块 ⇒ 工作量以**块数**封顶，不以容量封顶；摘链是 O(1)，所以那 16 也是停顿上界。所有动作都在被计时的步内，计入 `[step]`/`[histo]` 的分布，`[return]` 行报告 `steps`/`rel_slabs`/`page_mb`/`page_blocks`/`cap_mb`/`live_mb`。
 
-## 三点四、页级归还：容量成本的单位从块降到页
+页归还**按状态幂等**，不按钟：`pgLive` 记住上次跑完 pass 时看到的 `nLive`，`nLive` 没变 ⇒ 没有新的空页，一块都不看；`pgNext` 续扫被预算截断的 pass。稀疏判据是算术而不是调参：一个活槽最多覆盖 `1 + (ss >> 12)` 页，这个上界已经够到页数时，读位图也找不到空页（`extc_rc_pageWorth`）。
 
-§三点三把「整块无占用槽」的 slab 还掉，粒度 512 KiB。稀疏活集里每块都留 1 个长命对象，容量项仍是 Θ(容量) —— 所以还页的单位要再小一档：**页**。
+契约三句：①**界**：`C ≤ CAP_MULT · live + 16 MiB + 一块`，与历史峰值解耦；②**工作量**：每 closing step ≤ 256 次链访问 + 16 次 O(1) 摘链 + ≤ 256 KiB 的 madvise，全在同一个被计时的步内；③**代价**：还回去的容量，下一次同尺寸分配要重新缺页 —— pass 不预测未来，峰值发生在轮内的形状（每轮一个 64 MiB 缓冲、峰值不因归还而下降）拿不到收益却要付缺页账，这类形状的成本记在契约里而不加特例。
 
-机制（全冷路径、不搬移、不加写屏障）：`extc_rc_pageTrimStep(r, budget)`（src/back/reclaim.c:extc_rc_pageTrimStep）由 `extc_rc_sweepStep` 收尾调用（3917），每次至多访问 `EXTC_RC_PAGE_TRIM_VISIT_MAX=16` 块、还 `EXTC_RC_PAGE_TRIM_BYTES=256 KiB`；块内用 occ 位图找出活槽覆盖的页（槽可跨页 ⇒ 首尾页都算活），其余**连续空页合并成一个 run** 再 `madvise(MADV_DONTNEED)`。页 0 含块头，永不归还。
+实测：grow11（8M 元素、1.1× 拷贝增长、活集 63.4 MB、累计分配 767 MB）峰值 241,096 → 189,032 kB、墙钟 0.35 s 不变；g11mr 40 轮 × 2M 元素 108,244 → 104,676 kB；t13（20 轮 1.1× 增长）194,732 → 148,664 kB；t04（120 轮 8 MiB 巨块）0.03 → 0.02 s；t12（20 轮 64 MiB 缓冲）RSS 不变、墙钟 0.09 → 0.29 s，就是第③条那份账。
 
-契约四句：
+## 三点四、页级归还：同一 pass 里的死页
 
-1. **承诺（界）**：`C ≤ live + 4 KiB × #page(含活对象) + M_slab × #slab(含至少一个活对象) + 8 MiB`，其中 `M_slab ≈ 69 kB/块` 是块外元数据（实测，计数关：tid 2 B/槽 + 三张位图 + 分配器取整与固定页；计数档再加 hold 2 B/槽 ≈ 21.8 kB）。页归还只改物理页，不改 `r->bytes`。
-2. **承诺（不抖动）**：只有「容量 − 占用 ≥ 8 MiB」（slack）、「自上次 pass 起该块分配 ≤64 槽」（quiet）、「nLive × 8 ≤ nslots」（稠密）三条同时成立才动那块；否则一次 syscall 都不发。去掉 slack 的实测代价：sizeratio 墙钟 +56%、cycleratio +19%。
-3. **承诺（有界）**：一次 closing step 的工作量 ≤ 16 次块访问 + 256 KiB 的 madvise（≈4 µs，@14 ns/KB@），整笔记进 `[step]`/`[histo]` 的停顿分布；`pgNext` 续扫被预算截断的 pass，`pgLive` 保证同一个占用图不重复还（幂等 ⇒ 稳态零成本）。
-4. **不承诺**：含活对象的块，其**元数据**（≈69 kB，实测）不归还；一个长命对象仍钉住 ≈69 kB，而不是 4 KiB。要消掉这一项只能搬移式压实。
+块级的粒度是 512 KiB（超长槽是整块一槽）；稀疏活集里每块都留 1 个长命对象，块就还不了 —— 所以还页的单位再小一档：**页**，而动作仍在 §三点三 的那个 pass 里。
 
-实测：64 MB 区稀疏探针（48 B 槽、每 MB 1 root、400 轮 collect）slabs 129 → 64、RSS 52,304 → 20,280 kB、还页 31.27 MB；四形状 A/B 1.006 / 1.007 / 0.994 / 1.021（噪声带内）、RSS 不变、`[pages] blocks=0`。热路径不加分支（只有一个 `s->allocN++`）：先做的「每分配清已还页位图」让四形状慢 4.4%–5.5%，已删。
+机制（全冷路径、不搬移、不加写屏障）：`extc_rc_pageTrimSlab(s, budget)` 用 occ 位图找出活槽覆盖的页（槽可跨页 ⇒ 首尾页都算活），其余**连续空页合并成一个 run** 再 `madvise(MADV_DONTNEED)`；页 0 含块头，永不归还。所有元数据（occ/mark/rsbit/hold/tid/ttab）都在块外，复用链的下一槽号存在 `tid[]` 里 ⇒ 回收器读的页一页都不还；被还的页只在 `extc_rc_zeroSmall` 发槽时重新写，而那条路径本来就把槽清零 ⇒ 「新分配读作零」不变。
+
+契约三句：①**额外界**：`C ≤ live + 4 KiB × #page(含活对象) + M_slab × #slab(含至少一个活对象) + 16 MiB`，其中 `M_slab ≈ 69 kB/块` 是块外元数据（实测，计数关：tid 2 B/槽 + 三张位图 + 分配器取整与固定页；计数档再加 hold 2 B/槽 ≈ 21.8 kB）；②**有界**：一次 step 至多 8 块、256 KiB、约 4 µs（@14 ns/KB）；③**不承诺**：含活对象的块，其元数据不归还 —— 一个长命对象仍钉住 ≈69 kB 而不是 4 KiB，要消掉这一项只能搬移式压实。
+
+实测：64 MB 区稀疏探针（48 B 槽、每 MB 1 root、400 轮 collect）slabs 129 → 64、RSS 52,304 → 20,280 kB、还页 31.27 MB。真形状里 `[pages]` 只在容量确实超过水位时报数：grow11 只还 0.25 MB（大块是整块摘链，不是还页）。热路径零分支 —— 分配侧既不读钟也不计数。
+
 ## 三点五、覆盖点的定点释放（环在覆盖点就没了）
 
 环永不归零，所以计数那一层收不了它；但"**覆盖一个槽**"这个动作本身能判死一棵树 —— 只要那
@@ -1204,13 +1206,12 @@ cache-sim 判据变红）。
 | `skip:no-proc-comm` | `/proc/self/stat` 里找不到 `)`（格式异常）⇒ 同样返回 -1 | comm 字段被括号包住，取最后一个 `)` 之后才是定长字段；找不到就无从定位 minflt | 无（纯诊断）| 同上：`minflt=-1` 哨兵；归因脚本按 `minflt>=0` 过滤 |
 | `skip:top-not-slower` | 新步不慢于 top-K 里当前最慢的一格 ⇒ 不替换 | top-K 只保留 K 个最慢步，用于尾部归因；更慢的步才有信息增量 | 无（纯采样：只影响 `[top]` 行内容）| `[top]` 按 `dur_us` 降序且 rank=1 是最慢步；`gate-skip-table` 自检 |
 | `skip:cascade-oom` | 级联释放的工作栈 `realloc` 失败 ⇒ 不入栈，子对象保留计数留给 sweep | 分配失败时唯一安全方向是保守；sweep 会按标记位收掉未归零的子树 | 多留（保守：晚一步收，不是悬垂）| 计数档 chain2 2M 节点（`-DEXTC_RC_CASCADE_DEBUG=1` 下 `bad=0`）+ ASan；默认档整段折叠不发射 |
-| `skip:shrink-null` | `extc_rc_slabShrink(r)` 的 `r` 是空指针 ⇒ 立刻返回 0 | 该函数的唯一调用点（`extc_rc_sweepStep` 收尾分支：`extc_rc_slabShrink(r);`），那里的 `r` 是逐步推进的非空区域参数 ⇒ 发射产物里不可达，纯防御| 无（幂等：空区域没有 slab 可归还）| `probe4` 探针覆盖归还路径，tests/reclaim 216/0 覆盖 sweep/settle 各档；结构上由唯一调用点的非空前提兜住 |
-| `skip:shrink-slack` | `capBytes - bytes < EXTC_RC_SHRINK_MIN_SLACK`（默认 8 MiB）⇒ 本轮不摘任何死块 | 容量只比占用多一点时，摘块换来的内存很小，而「munmap → 再 carve 新块」的抖动会赢（页级归还的 slack 闸门已实测：无闸门 sizeratio 墙钟 +56%、cycleratio +19%；块级同源）| 少还：内存上限抬到一个常数 8 MiB，仍与历史峰值解耦（含有活对象的块不还这条与峰值的联系另行断开）| `pages6` 探针：base 64 slabs / slabRel=0 / RSS 43,788 kB vs 本补丁 16 slabs / slabRel=48 / RSS 18,832 kB（floor ＝ 8 MiB slack 余量）；四形状 A/B 1.013/0.970/1.015/1.002（噪声带内）|
-| `skip:shrink-budget` | `EXTC_RC_SHRINK_CAP_LIVE > 0 && capBytes <= bytes * EXTC_RC_SHRINK_CAP_LIVE`（默认 3）⇒ 容量仍在活集的常数倍以内时，本轮一块都不摘 | 摘块的唯一理由是容量离开活集走：只要容量还在活集的 3 倍以内，保住这些空块就是保住下一轮的同尺寸复用（否则每轮 munmap 512 KiB 再重新 carve+触页）。这条闸门是「复用缓存」的容量界，与 slack 闸门互补 | 容量上界抬到 3 倍「闭包时的活集字节」（瞬时量，不是峰值）；一个只做拷贝增长的程序因此可以停在一代的路上，这是块级的常数，仍与历史峰值解耦 | `growround_slice`：无预算 0.15 s / 45,609 缺页，有预算 0.08 s / 12,310 缺页（= 不归还的基线）；`grow11` 240 MB vs 无补丁 750 MB；`g11mr` 10 轮 126 MB / 40 轮 131 MB |
-| `skip:pagtrim-null` | `extc_rc_pageTrimStep` 的 `r->trimCur` 为空（区域链已空）⇒ 立刻返回 | 页归还只在有块的区域上有意义；调用点 `extc_rc_sweepStep` 收尾时区域至少有本轮的块 ⇒ 不可达，纯防御 | 无（幂等：没有块就没有页可还）| `tests/reclaim` 216/0 覆盖 settle/sweep 各档；结构上由调用点的非空链前提兜住 |
-| `skip:pagtrim-slack` | `capBytes - bytes < EXTC_RC_PAGE_TRIM_MIN_SLACK`（默认 8 MiB）⇒ 本轮不做页归还 | 容量与占用只差一点时，还回来的页占堆的比例很小，而「丢页→再缺页」的抖动会赢：实测无此闸门 sizeratio 墙钟 +56%、cycleratio +19%；有闸门后四形状 A/B 1.006/1.007/0.994/1.021（噪声带内）| 无（少还：内存上限抬到一个常数 8 MiB，仍与活集无关）| `pages1` 探针：16 MB 区（容量 8 MiB）不还、64 MB 区还 31.27 MB 且 RSS 52,304→20,280 kB；四形状 A/B 的 `[pages] blocks=0` |
+| `skip:return-null` | `extc_rc_returnStep(r)` 的 `r` 是空指针 ⇒ 立刻返回 0 | 唯一调用点是 `extc_rc_sweepStep` 的收尾分支，那里的 `r` 是逐步推进的非空区域参数 ⇒ 发射产物里不可达，纯防御 | 无（幂等：空区域没有容量可交还）| `tests/reclaim` 216/0 覆盖 sweep/settle 各档；结构上由唯一调用点的非空前提兜住 |
+| `skip:return-watermark` | `r->capBytes <= EXTC_RC_CAP_MULT · r->bytes + EXTC_RC_RETURN_FLOOR`（默认 2×、16 MiB）⇒ 判据答「不是多余」 | 这一行就是整个策略：容量超过「一代死容量 + 复用存量」才算多余。2× 是拷贝增长要同时持有旧代与新代的那一代；16 MiB 存量让反复 churn 同一尺寸的进程不必每轮把刚还的页再缺一遍（t04：无存量 0.41 s，有存量 0.02 s）。两者都是编译期常量，界仍是 `live + O(#block) + floor` | 多留：容量界抬到 2 倍闭包活集加 16 MiB 常数；与历史峰值解耦（不再随峰值线性增长）| grow11 241,096→189,660 kB、墙钟 0.35 s 不变；t13 194,732→148,664 kB；t12 20 轮 64 MiB 缓冲峰值不变而墙钟 0.09→0.29 s（还回去的容量要重新缺页，见 §三点三 第③条）|
+| `skip:return-quiet` | 步入口复验水位：`!extc_rc_surplus(r)` ⇒ 本步一块不看 | 水位只需在 pass 入口与每次摘块后各验一次：入口不达标时连游标都不碰，这是「稳态零成本」的那一半 | 无（少做：跳过的是本就不该做的工作）| `[return] steps` 只在容量超过水位时增长；四形状 A/B 0.982 / 1.008 / 1.012 / 0.998（min，15 rep；11 rep 那轮 0.999 / 1.030 / 1.041 / 1.005，min 与中位符号翻转 ⇒ 噪声带）|
+| `skip:return-empty` | `r->trimCur` 为空 ⇒ 立刻返回 | 容量 pass 要有块可看；`trimCur` 只在该链非空时被置为链头，走完整条链后再绕回链头，所以为空只可能是区域本身没有块 | 无（幂等：没有块就没有容量可交还）| `tests/reclaim` 216/0 的 settle/sweep 各档（含空区域）；结构上由 `if (!r->trimCur) r->trimCur = r->slabs;` 之后的 `slabs` 决定 |
 | `skip:wmark-noslot` | `extc_rc_wmarkSlot` 的 `slot` 是空指针 ⇒ 立刻返回 | 它只在 `extc_rc_rsIncSlab` 里被调用，`srcSlot` 为空表示该调用点没有源槽（整值拷贝、pin 等路径直接用 `wmUnsafe` 兜底）| 无（幂等：什么都不记）| `tests/reclaim` 216/0；t04 的 `rs_inc/rs_dec` 与位图前对账；`wmUnsafe` 兜底路径由 `storeStructCons/Copy` 的 A/B 覆盖 |
-| `skip:wmark-noslab` | 源槽不在受管块里（栈槽、帧 arena），或该块跨度低于 `EXTC_RC_WMARK_MIN_BYTES`（4 KiB）⇒ 不记位图 | 前者的生命期由栈帧/arena 整块释放，不走逐槽撤销；后者一块只有 ≤512 个引用域，全扫描本来就在 0.5 µs 以内 | 无（不记位：这些槽本来就不需要位图）| `tests/gc-torture` 12/12、`tests/reclaim` 216/0；小跨度形状（promote/sizeratio/cycleratio）A/B 在噪声带内 |
+| `skip:wmark-noslab` | 源槽不在受管块里（栈槽、帧 arena），或该块跨度低于 `EXTC_RC_WMARK_MIN_BYTES`（4 KiB）⇒ 不记位图 | 前者的生命期由栈帧/arena 整块释放，不走逐槽撤销；后者一块只有 ≤512 个引用域，全扫描本来就在 0.5 µs 以内 | 无（不记位：这些槽本来就不需要位图）| `tests/gc-torture` 14/14、`tests/reclaim` 216/0；小跨度形状（promote/sizeratio/cycleratio）A/B 在噪声带内 |
 | （无标记）`if (extc_rc_rsIncN) unlinkChildren(...)` | 一次登记都没发生过 ⇒ 不必撤边 | `rsIncN == 0` ⇒ 没有 `rsInc` 类边 | 多留（保守）| `unlink-nop` 证明"撤边"有牙；这个**守卫**没有专门注入 |
 | `skip:decold-null` | `extc_rc_decOldRef` 的旧值是空指针 ⇒ 立刻返回 | 没写过引用（或已被清零）的槽从来没有登记过边与计数，撤销的対象不存在 | 无（幂等：什么都不撤）| `tests/reclaim` 216/0；L10-c 的 `rs_inc/rs_dec` 对账（`rs_live` 停在 1）；`tests/gc-p0/run.sh l10` 的 RSS 判据 |
 | `skip:decold-notobj` | 旧值不在任何受管块里（C 指针、池块、栈地址，或已被回收/毒化的槽）⇒ 不撤 | 边与计数只在 `storeRef*` 落到受管块时登记过；旧值不受管说明它没被登记，撤了反而会把别人的计数减掉 | 无（不存在的计数不撤）| 同上 + `tests/gc-torture` 14/14（t05_copyrefs/t10_alias_slots 覆盖池/混尺寸拷贝）|

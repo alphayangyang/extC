@@ -174,7 +174,6 @@
     "    s->nMark = 0;\n",
     "    s->nfree = 0;   /* EXTC_RC_LAZY_FREE: no hole pending yet */\n",
     "    s->pgNext = -1;   /* no page pass in progress */\n",
-    "    s->deadA = 0; s->deadN = 0;   /* no closing has seen this block empty yet */\n",
     "/* A slab created **while a sweep is in flight** is prepended at the head of the slab list, i.e. *behind* the cursor, so this round never\n",
     " * reaches it. Declaring it part of the swept set (swEpoch = swId) keeps the allocation-time rule in extc_rc_alloc from marking its slots\n",
     " * black: no sweep pass would ever clear such a bit (mark rounds do not clear the bitmap), and the next mark round would treat a reachable\n",
