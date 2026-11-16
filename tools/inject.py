@@ -148,14 +148,14 @@ INJECTIONS = {
                      '    "            if (host && sv && sv->region != host) { host->foreign = 1; }   /* 注入：真实赋值路径不登记 */\\n",\n')],
     },
     "noSweep-drop": {
-        "why": "拿掉\"钉不住 ⇒ 目标区域退出清扫\"（义务 7 的最后兜底）⇒ 种子不完整的区域照样被扫（不安全方向）",
+        "why": "拿掉\"钉不住 ⇒ 目标区域退出清扫\"（义务 7 的两条路）⇒ 种子不完整照样被扫、整区永久不再清扫（都是不安全方向）",
         # 两处：`storeRefUnknown` 的钉不住回落（OOM 兜底）与 `storeStructCons` 的保守分支。
         "gate": "reclaim-unit",
         "patches": [
             (SRC, '    "        if (r) r->noSweep = 1;\\n",\n',
              '    "        if (r) { /* 注入：不退出清扫 */ }\\n",\n'),
-            (SRC, '    "        else if (rv) rv->noSweep = 1;\\n",\n',
-             '    "        else if (rv) { /* 注入：不退出清扫 */ }\\n",\n'),
+            (SRC, '    "        else { void *po = (void *)0; if (rv && !extc_rc_pinPut(&((void **)dst)[i], nw, &po)) rv->noSweep = 1; }\\n",\n',
+             '    "        else { if (rv) rv->noSweep = 1; }   /* 注入：保守整值拷贝回到「目标区域退出清扫」 */\\n",\n'),
         ],
     },
     "freelist-stuck": {

@@ -9038,7 +9038,24 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         }
     }
 
-
+    /* Every instance of a type with a `@drop` hook needs that hook's body: the instance body calls
+     * it by the **instance** name, so the template alone leaves the C with an undeclared function.
+     * A `var` that declares such a value registers the instance through its own statement, but a
+     * value that only ever appears as a temporary, such as `take(buf<i64>::withCap(4))`, has no such
+     * site, so the registration is done here for every instance.
+     *
+     * This has to run **before** the closure below. The hook body is a root of that
+     * closure, and the methods it calls -- a `@drop` that revokes reference edges goes
+     * through a private helper -- are reached from no other site. Registered after the
+     * closure, the helper is left out of the emitted C while the hook body still names
+     * it: an implicit declaration at the call site, seen as
+     * `implicit declaration of function ...; did you mean ...` when the C is compiled. */
+    for (size_t i = 0; i < tt->instances.len; i++) {
+        Type *inst = *(Type **)vecAt(&tt->instances, i);
+        if (!inst || !inst->sdef || !inst->sdef->dropHook) continue;
+        if (provisionalInstance(&inst->targs)) continue;
+        planSetInstUsed(inst->sdef->dropHook, inst->name);
+    }
 
     /* Per-instance method-use closure: a method body is emitted for one type instance only
      * when that instance really used it (see the gates in the replay loops above). A body that
@@ -9107,18 +9124,6 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
             runOpCheck(&c, ec, &planTemplate(fi)->typeParams, &fi->targs, planInstName(fi));
         }
         if (replayInLambdaInstances(&c, tt, ec->func, replayOpRecord, ec)) continue;
-    }
-
-    /* Every instance of a type with a `@drop` hook needs that hook's body: the instance body calls
-     * it by the **instance** name, so the template alone leaves the C with an undeclared function.
-     * A `var` that declares such a value registers the instance through its own statement, but a
-     * value that only ever appears as a temporary, such as `take(buf<i64>::withCap(4))`, has no such
-     * site, so the registration is done here for every instance. */
-    for (size_t i = 0; i < tt->instances.len; i++) {
-        Type *inst = *(Type **)vecAt(&tt->instances, i);
-        if (!inst || !inst->sdef || !inst->sdef->dropHook) continue;
-        if (provisionalInstance(&inst->targs)) continue;
-        planSetInstUsed(inst->sdef->dropHook, inst->name);
     }
 
     /* Deferred method calls on a type parameter: the same shape as the operator batch

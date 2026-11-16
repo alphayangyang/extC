@@ -26,7 +26,7 @@
 #
 # 用法：
 #   tests/gc-p0/run.sh                # 全部（含空转基准，约 30–60 s）
-#   tests/gc-p0/run.sh g8             # 只跑 G8（g8|g9|g12|g13|g14|g15|g16|g18|g20|p03|peak|l10|g4|g1|g1cpu|g1c|noise）
+#   tests/gc-p0/run.sh g8             # 只跑 G8（g8|g9|g12|g13|g14|g15|g16|g18|g20|g21|p03|peak|l10|g4|g1|g1cpu|g1c|noise）
 #   tests/gc-p0/run.sh g12            # G12/G13 计数档 soundness（编译期 EXTC_RC_NOCOUNT=0；两档都跑）
 #   tests/gc-p0/run.sh g13            # 只跑 G13（uaf_bulk_copy，默认 T2 + 强制 T3 两档，期望 d0r=7）
 #   tests/gc-p0/run.sh stress         # **G4 正式验收**：注入 4×L 循环垃圾（tests/gc-p0/stress.py，3 档×3 reps）
@@ -386,10 +386,10 @@ if [ "$WHAT" = all ] || [ "$WHAT" = p03 ]; then
 fi
 
 
-echo "== G15（XFAIL·known L10-a）：pool 槽里的引用赋值 ⇒ 永久 pin（判据 RSS(800k) ≤1.20×RSS(50k)）=="
-# Lead m01501。预期 **RED**：pin 表项永久有效（extc_pool_give 不撤 pin），三档都不回收；
-# 这是给下一轮 P0-8（pin 源区间撤销 / 池级 epoch）留的量具，**不计入 after 回归、不作阻塞**。
-# 报告行写成 `G15 … XFAIL(known L10-a)`；修好后硬判据不变，自动应转 PASS。
+echo "== G15（硬判据）：pool 槽里的引用赋值 ⇒ 外部边表兜住（判据 RSS(800k) ≤1.20×RSS(50k)）=="
+# Lead R4b：从 XFAIL 提升成硬判据。池块与缓冲区一样反查不到宿主，落进同一条
+# extc_rc_storeRefUnknown；那张表现在按槽位记，池块复用后槽地址不变 ⇒ 表项只被改正、
+# 不随轮数增长（插桩：两档都是 pin n=35 / cap=128，RSS 3,764 kB）。红了就是没兜住，不是欠账。
 if [ "$WHAT" = all ] || [ "$WHAT" = g15 ]; then
     if build g15 tests/gc-p0/src/leak_pool_pin.extc; then
         defines g15
@@ -398,6 +398,22 @@ if [ "$WHAT" = all ] || [ "$WHAT" = g15 ]; then
         # 退出码自证：trap 早退会让 RSS 变小 ⇒ 假 PASS
         run_plain g15 1 50000
         run_plain g15 2 800000
+        tail -2 "$OUT/timemax.txt"
+    fi
+fi
+
+echo "== G21：缓冲区存储里的引用赋值 ⇒ 结构动作撤销外部边（判据 RSS(800k) ≤1.20×RSS(50k)）=="
+# Lead R4b。形状见 tests/gc-p0/src/leak_buf_ref.extc 头：每轮 withCap(4) → push 4 个引用 → shrink(2) →
+# push 1 → release，共 N 轮。**硬判据**（G15 是 XFAIL，这一条不是）：两档 stdout 逐字正确 + 退出码 0，
+# 且 maxRSS 比值 ≤ 1.20。self-proof：产物里 extc_buf_releaseRefs 调用点必须 > 0，否则形状根本没走到
+# 撤销路径（判据会变成空转）。
+if [ "$WHAT" = all ] || [ "$WHAT" = g21 ]; then
+    if build g21 tests/gc-p0/src/leak_buf_ref.extc; then
+        defines g21
+        timemax g21 50000
+        timemax g21 800000
+        run_plain g21 1 50000
+        run_plain g21 2 800000
         tail -2 "$OUT/timemax.txt"
     fi
 fi

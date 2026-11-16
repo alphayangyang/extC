@@ -49,6 +49,11 @@ extern!("extc-buf") fn extc_buf_discard(at: ref u8, bytes: u64) -> i32 effects A
 extern!("extc-buf") fn extc_buf_span(at: ref u8) -> i64 effects Addr=0 Cont=0
 /* 活着的缓冲区一共预留了多少**地址空间**（不是驻留内存）：给泄漏判据用的一格。 */
 extern!("extc-buf") fn extc_buf_live() -> i64 effects Addr=0 Cont=0
+/* 结构动作（丢元素 / 交还预留 / 搬家）撤销 `[from, to)` 这些元素里引用域的外部边登记：
+ * 含引用的 `T` 每个引用槽在回收运行期里有一条登记，元素被丢掉时必须跟着撤，否则那块存储
+ * 会把已经丢掉的值一直当成标记根（被复用的缓冲区就成了无界根集）。不含引用的 `T` 没有登记，
+ * 这一次调用只是一次空表检查。 */
+extern!("extc-buf") fn extc_buf_releaseRefs(at: ref u8, esz: i64, from: i64, to: i64) -> i32 effects Addr=0 Cont=0
 
 /* 预留策略的常数。写成字面量而不是 `i64(2097152)`：带检查的转换会让静态初始化器不是常量
  * （与 `std/mem.extc` 的 PAGE/CHUNK 同一条理由）。 */
@@ -68,6 +73,15 @@ struct buf<T> {
     @private cap:      i64             /* 预留内已承诺的容量（页由写触发提交） */
     @private max:      i64             /* 预留最多装几个元素：撞到就搬家 */
     @private pins:     i64             /* 活着的 `borrow()` 守卫个数：> 0 时不许换存储 */
+    /* 撤销 `[from, to)` 这些元素的引用域登记（见 `extc_buf_releaseRefs`）。`to <= from` 时空转：
+     * `pop` 不撤（取出的元素由调用方持有），那一条登记在该槽下一次被写时改正。 */
+    @private
+    fn dropRefs(self: ref buf<T>, from: i64, to: i64) {
+        if to <= from { return }
+        let esz: i64 = extc_sizeOf<T>()
+        let _r: i32 = extc_buf_releaseRefs(self.mem.data, esz, from, to)
+    }
+
     /** @brief 交还整片预留。离开作用域、被覆盖、或函数中途返回时由编译器发出；也可以现在就调。
      *
      * 对本对象的第二次调用是空操作（`reserved` 已经是 0），所以 `release()` 之后即使
@@ -76,6 +90,7 @@ struct buf<T> {
     @drop
     fn release(self: mut ref buf<T>) {
         if self.reserved > u64(0) {
+            self.dropRefs(0, self.n)
             if extc_buf_release(self.mem.data, self.reserved) != 0 {
                 trap("buf: cannot give the reservation back")
             }
@@ -222,6 +237,7 @@ struct buf<T> {
             if dropBytes > u64(0) { extc_buf_discard(srcHere.data, dropBytes) }
             done = done + cn
         }
+        self.dropRefs(0, self.n)
         let oldAt: ref u8 = self.mem.data
         let oldBytes: u64 = self.reserved
         self.mem = nmem
@@ -243,6 +259,7 @@ struct buf<T> {
         if k < 0 { trap("buf: shrink needs a length >= 0") }
         var kk: i64 = k
         if kk > self.n { kk = self.n }
+        self.dropRefs(kk, self.n)
         if kk < self.cap {
             let esz: i64 = extc_sizeOf<T>()
             var tail: mut slice<u8> = self.mem[kk * esz .. self.cap * esz]
@@ -258,7 +275,10 @@ struct buf<T> {
 
     /** @brief 清空长度，预留与页都留着（下一次 `push` 直接复用）。要还页用 `shrink(0)`。 */
     @inline
-    fn clear(self: mut ref buf<T>) { self.n = 0 }
+    fn clear(self: mut ref buf<T>) {
+        self.dropRefs(0, self.n)
+        self.n = 0
+    }
 
     /** @brief 借出：返回一个守卫，它在作用域里期间这块存储不许搬家。 */
     fn borrow(self: mut ref buf<T>) -> borrowGuard<T> {

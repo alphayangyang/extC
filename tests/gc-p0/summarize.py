@@ -318,10 +318,12 @@ def main():
         print(f"  n/a（timemax.txt 缺 g14 的 50k/100k/800k/800k(ctl)；现有={sorted(g14)}）")
     print()
 
-    # ---------------- G15（XFAIL·known L10-a） ----------------
-    print("## G15 pool 槽里的引用赋值 ⇒ 永久 pin（**XFAIL(known L10-a)**；判据 maxRSS(800k) ≤ 1.20 × maxRSS(50k)）")
-    # Lead m01501：预期 RED（pin 表项永久保留，extc_pool_give 不撤 pin），是给下一轮 P0-8 留的量具；
-    # 不计入 after 回归、不作阻塞。修好后硬判据不变，本行自动转 PASS。
+    # ---------------- G15（硬判据：R4b 之后不再 XFAIL） ----------------
+    print("## G15 pool 槽里的引用赋值 ⇒ 外部边表兜住（**硬判据** maxRSS(800k) ≤ 1.20 × maxRSS(50k)）")
+    # Lead R4b：这条从 XFAIL 提升成硬判据。池块与缓冲区一样反查不到宿主，落进同一条
+    # extc_rc_storeRefUnknown；R4b 之后那张表按**槽位**记（池块被复用，槽地址不变 ⇒ 表项只会被
+    # 改正、不会随轮数增长），插桩实测 pin 表 50k 与 800k 都是 n=35 / cap=128、RSS 3,764 kB 两档相同。
+    # 判据不变、只变口径：红了就是外部边表没兜住池块路径，不是已知欠账。
     g15 = {}
     for line in read_text(os.path.join(out, "timemax.txt")).splitlines():
         parts = line.split()
@@ -333,7 +335,7 @@ def main():
         a = int(g15["50000"][0]); b = int(g15["800000"][0])
         ratio = b / a if a else None
         ok = ratio is not None and ratio <= 1.20 and len(exits) == 2 and all(e == 0 for e in exits)
-        verdict = "PASS（意外转绿 ⇒ 可提升为硬门禁）" if ok else "XFAIL(known L10-a)（预期 RED）"
+        verdict = "PASS" if ok else "RED（随轮数增长 ⇒ 外部边表没兜住池块路径）"
         print(f"  50k maxRSS = {a} kB / 800k maxRSS = {b} kB  ratio = {fmt(ratio, 'x', 3)}"
               f"  exit={exits}  [{'PASS' if ok else 'RED'} <=1.20x]  {verdict}")
         if exits and any(e != 0 for e in exits):
@@ -349,6 +351,46 @@ def main():
         print(f"  n/a（timemax.txt 缺 g15 的 50000/800000 两档；现有={sorted(g15)}）")
     print()
 
+
+    # ---------------- G21：缓冲区存储里的引用赋值 ----------------
+    # Lead R4b。硬判据：两档 stdout 逐字正确 + exit 0 + maxRSS(800k)/maxRSS(50k) <= 1.20。
+    # self-proof：产物里 extc_buf_releaseRefs 调用点必须 > 0（形状确实走到整段撤销路径）。
+    print('## G21 缓冲区存储里的引用赋值 ⇒ 结构动作撤销外部边（硬判据 maxRSS(800k) <= 1.20 × maxRSS(50k)）')
+    g21 = {}
+    for line in read_text(os.path.join(out, 'timemax.txt')).splitlines():
+        parts = line.split()
+        if len(parts) >= 4 and parts[0] == 'g21':
+            g21[parts[1]] = (parts[-2], parts[-1])
+    g21r = by.get('g21', [])
+    g21exits = [r['exit'] for r in g21r]
+    if '50000' in g21 and '800000' in g21:
+        a = int(g21['50000'][0]); b = int(g21['800000'][0])
+        ratio = b / a if a else None
+        want = {'50000': 'G21 n=50000 sum=1400000', '800000': 'G21 n=800000 sum=22400000'}
+        seen = {}
+        for i in range(1, len(g21r) + 1):
+            p = os.path.join(out, 'log', 'g21_r%d.out' % i)
+            if not os.path.exists(p):
+                continue
+            t = read_text(p).strip()
+            for k in want:
+                if t == want[k]:
+                    seen[k] = True
+        outs_ok = len(seen) == 2
+        ok = (ratio is not None and ratio <= 1.20 and len(g21exits) == 2
+              and all(e == 0 for e in g21exits) and outs_ok)
+        print('  50k maxRSS = %d kB / 800k maxRSS = %d kB  ratio = %s  exit=%s  stdout_ok=%s  [%s <=1.20x]'
+              % (a, b, fmt(ratio, 'x', 3), g21exits, outs_ok, 'PASS' if ok else 'RED'))
+        ctxt = read_text(os.path.join(out, 'c', 'g21.c'))
+        rel = len(re.findall(r'^(?!.*static ).*extc_buf_releaseRefs\s*\(', ctxt, re.M))
+        if rel == 0:
+            print('  ⚠ 产物 g21.c 中 extc_buf_releaseRefs 调用点 0 次 ⇒ 形状没走到撤销路径，'
+                  '此处的平坦**不能**证明边被撤销了')
+        else:
+            print('  记账自证：产物 g21.c 中 extc_buf_releaseRefs 调用点 %d 次' % rel)
+    else:
+        print('  n/a（timemax.txt 缺 g21 的 50000/800000 两档；现有=%s）' % sorted(g21))
+    print()
     # ---------------- G16 回归：sweep 中新建 slab 的错误标黑 ----------------
     print("## G16 回归：sweep 中新建 slab 的错误标黑（原 bug ⇒ 2M 挂死；判据 3 reps 全 exit 0 且输出正确）")
     g16 = by.get("g16", [])

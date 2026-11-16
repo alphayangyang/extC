@@ -607,7 +607,7 @@ emitPreamble 内（:12610-12637）：只在 g->needReclaim 为真时发一行；
 
 ### 14.2 L10-b / L10-c：copyInto 记账的两处漏账（2026-11-16 已修，各带一个硬门禁）
 
-**现状：L10-b 与 L10-c 都已关闭**（同一提交带 `tests/gc-p0/l10_check.py` 与 `run.sh` 的 L10 段）。L10-a（pool 槽里的引用赋值 ⇒ 永久 pin）仍在，是 G15 的 XFAIL，见本节末尾。
+**现状：L10-b 与 L10-c 都已关闭**（同一提交带 `tests/gc-p0/l10_check.py` 与 `run.sh` 的 L10 段）。L10-a（pool 槽里的引用赋值 ⇒ 永久 pin）已由外部边表按槽地址登记兜住（G15 由 XFAIL 提升为硬判据），但池的 free 仍不显式撤边，撤销一侧随 R4c 迁 `buf` 收口，见本节末尾。
 
 读者注意：P0-7b（2026-11-09）只修复了"目标 view 在 rc 存储且目标槽不被反复覆盖"的形状（uaf_bulk_copy 与 G14 reference）；下面两条是它没覆盖的两类，2026-11-16 才关掉。历史现象与根因保留在两小节里，因为它们是这两个回归用例的由来。
 
@@ -633,4 +633,4 @@ emitPreamble 内（:12610-12637）：只在 g->needReclaim 为真时发一行；
 
 #### 与 L10-a 的关系
 
-L10-a（pool 槽里的引用赋值 ⇒ 永久 pin，即 tests/gc-p0 G15 的 XFAIL）与 L10-b/L10-c 是同一族"记账只增不减 / 永久 pin"问题：L10-a 属运行期 pool 路径，L10-b/L10-c 属 copyInto 记账路径（编译侧发射 + 运行期入口）。三者都不阻塞本轮交付；但任何"copyInto 已修好"的结论都必须限定在 G14 reference 形状（buf/src 都在函数体 ⇒ rc 基址、目标槽固定）。
+L10-a（pool 槽里的引用赋值 ⇒ 永久 pin，即 tests/gc-p0 G15 的形状）与 L10-b/L10-c 是同一族"记账只增不减 / 永久 pin"问题：L10-a 属运行期 pool 路径，L10-b/L10-c 属 copyInto 记账路径（编译侧发射 + 运行期入口）。三者都不阻塞本轮交付；但任何"copyInto 已修好"的结论都必须限定在 G14 reference 形状（buf/src 都在函数体 ⇒ rc 基址、目标槽固定）。

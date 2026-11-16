@@ -139,18 +139,41 @@ println("len=", g.len())
 于是一个 512 字节的 `buf` 实际握着 2 MiB 却只报 4096，账本差了两个数量级 —— 泄漏判据当场失效。
 现在 `withCap` 与搬家都走 `extc_buf_span` 问分配器要实际大小。
 
-## 7 与回收器的关系（很重要，R4b 之前是边界）
+## 7 与回收器的关系（元素含引用）
 
-`buf` 的存储是**外来内存**（foreign memory）：它不占 `rc` 槽、不进 region、不参与标记/清扫。
-所以一个只用 `buf` 的程序**仍然是 T0**（运行期一行回收代码都不发射），`EXTC_RC_*` 各档对它无效。
+`buf` 的存储**不是** `rc` 槽：不占槽、不进 region、不参与标记/清扫，所以只用 `buf` 的程序仍然是
+T0（运行期一行回收代码都不发射），`EXTC_RC_*` 各档对它无效 —— 这一条在元素含引用时也不变。
 
-这也意味着 R4a 不覆盖「`buf` 里装引用」的形状：元素是 `mut ref T` 或含引用的结构体时，元素里的引用
-不会被登记成块级根，块离开作用域时也不会被撤销 —— 这是 R4b 要修的、也是 L10-a/G15 那条池块 pin
-泄漏的同族问题。在 R4b 落地之前，**不要把含引用的值放进 `buf`**：没有测试这么做，也没有检查器拦它。
+含引用元素（`buf<mut ref T>`、元素是含引用的结构体）时，元素里的每条边仍要被回收器看见：生成 C 在写
+元素时发 `extc_rc_storeRefSlot`，而槽落在 `buf` 的预留里 ⇒ 「这条槽装在哪个对象里」证不出来 ⇒ 走运行期的
+**外部边表**（键 = 槽地址，内容 = 被指着的那块 + 它所属的区域；一条 24 B）。因此只有**真的**往 `buf` 里写
+引用才登记：`buf<i64>` 一条都不进表。
+
+结构动作同时撤销这些边，撤销按**地址区间**一次做完（`extc_buf_releaseRefs` → `extc_rc_pinDropRange`）：
+
+| 动作 | 撤销的区间 | 备注 |
+|---|---|---|
+| `shrink(k)` | `[k, n)` | 字节还是同一片地址，只是元素不再可达 |
+| `clear()` | `[0, n)` | 之后 `n = 0`；容量不变 |
+| `release()` | `[0, n)` | 先撤边再还预留（`@drop` 也走这里）|
+| 搬家（`reserve` 跨代）| 整段旧代 | 拷一段、撤一段、丢一段源页 |
+| `pop()` | **不撤** | 取出的元素由调用方持有；该槽下一次被写时表项自动改正 |
+
+价：`buf<i64>` 的 `shrink(0)` 仍是 `madvise` 价（≈13 ns/KB，64 MiB < 1 ms）；`buf<mut ref node>` 的
+`shrink` 额外付一次表扫描。两者都只落在结构动作上，不在 `push`/`pop` 热路径上。
+
+T0 程序编译成空操作：`extc_buf_releaseRefs` 的函数体被 `#if defined(EXTC_RC_TIER)` 包住，没有表就没有
+登记、也没有撤销。
+
+判据：`tests/gc-p0` 的 G21（每轮 `withCap(4)` → push 四个引用 → `shrink(2)` → push 一个 → `release`，
+50k 与 800k 轮）RSS 3,764 → 3,764 kB（1.000×，判据 ≤1.20×；硬门禁，不是 XFAIL）；生成物里
+`extc_buf_releaseRefs` 调用点 3 处（形状确实走到撤销路径）；`tests/reclaim` 的 `t_pinRange`（区间内全撤、
+区间外不动、表长正好减槽数、撤销后同槽重新登记不凭空减计数）；`buf_adv`/`buf_fuzz` 的账本判据不变。
 
 ## 8 未做 / 已知边界
 
-1. **含引用元素**：见 §7，R4b。
+1. **表项上界是「写过的不同槽地址数」**：同一个槽被反复写只改一条，所以上界不是一个 buf 的元素数，
+   而是「峰值同时在用的缓冲区的槽集合」；`pop` 不撤、预留归还竞技场后没人复查的槽都留在这个上界里。
 2. **发射器的 arena 前置挡住内联**：现在每个函数都带 `extc_arena __extc_a[3]` 与两次
    `extc_arena_destroy`，即使它一次都不分配；这让库的热成员必须显式写 `@inline` 才能被内联进调用者
    的循环（不写时 `push` 从 2.6 ns 变 10 ns，同一条循环）。根因在发射器，修法是「不分配的函数据
@@ -160,16 +183,17 @@ println("len=", g.len())
    跨块的旧视图由 §4(b) 的守卫兜住（守卫活着时不许搬家，也不许 `shrink` 到视图之外）。
 5. **arena 用满时回落**：竞技场（512 GiB）切不出来时回落成独立 `mmap`，`bufLive()` 仍然记账，
    但那一块的「切块价」变成 `mmap` 价。
-
 ## 9 位置与测试
 
 - 策略与全部注释：`stdlib/std/data/buf.extc`（约 300 行，含每个成员的语义注释）。
 - C 入口：`src/back/bufrt.c` 的发射载荷（`extc_buf_reserve` / `extc_buf_release` /
-  `extc_buf_discard` / `extc_buf_span` / `extc_buf_live`），只在程序声明
+  `extc_buf_discard` / `extc_buf_span` / `extc_buf_live` / `extc_buf_releaseRefs`），只在程序声明
   `extern!("extc-buf")` 时发射 —— 声明的位置就是触发器，声明搬走了就不会有人为没用过 `buf` 的程序
   付这 10 KB。
+- 引用侧的桥：`extc_buf_releaseRefs` 在 `#if defined(EXTC_RC_TIER)` 里调运行期的
+  `extc_rc_pinDropRange`；`buf.extc` 的私有成员 `dropRefs(from, to)` 是四个结构动作唯一的调用点。
 - 测试：`tests/stl/buf.extc`（基本）、`buf_new.extc`（`@buffer` 的 `new T[n]` 降级）、`buf_adv.extc`
   （对抗写入 + 账本）、`buf_struct.extc`（非平凡元素）、`buf_frozen.extc`（守卫 `trap`）、
   `buf_churn_{a,b}.extc`（块内/循环内 churn 的账本必须回零）、`buf_fuzz.extc`（3,000 轮随机长度
-  + 非 LIFO 释放 + 每步账本）、`buf_huge.extc`（1 GiB 预留只驻留碰过的页）。
-- 卡具：`bench/buf/`（五条形状对 C++，`SPEC.md` 判据、`RESULTS.md` 数字与陷阱）。
+  + 非 LIFO 释放 + 每步账本）、`buf_huge.extc`（1 GiB 预留只驻留碰过的页）；引用侧的两条判据是
+  `tests/gc-p0` 的 G21 与 `tests/reclaim` 的 `t_pinRange`。- 卡具：`bench/buf/`（五条形状对 C++，`SPEC.md` 判据、`RESULTS.md` 数字与陷阱）。

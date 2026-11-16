@@ -1603,6 +1603,116 @@ v34 起这层有了自己的基质，但只服务同一个特例：
 
 机制与价格的完整表格见 [`GC-ROOFLINE.md`](GC-ROOFLINE.md) §6.24。
 
+### 19.20 第五种存储基质：`buf<T>` 的预留（v37 新增，R4a）
+
+#### 19.20.1 这一份模型里的位置
+
+§1 数过的存储基质是五种（帧 arena / rc region / pool / 协程任务 arena / plate）。`buf<T>` 是第六种，也是最简单的一种：**容器自己拥有一片预留的地址域**，不经过 rc 的槽、不经过 pool 的块，回收器完全看不见它。它的界不在 §18 的公式里，而在「一片预留」这三个字里：`reserved` 是这片预留的实际大小（量子取整），`live` 是其中用到的元素，两者都由容器自己的账本给出，可读、可测、可断言。
+
+为什么值得单独记：它把「容量」从回收器手里拿走。§19.16 之后回收器归还容量只做一件事 —— 判断 `capBytes − bytes` 超没超水位；而一个 `buf` 的容量是它**自己**的预留，回收器连问都不用问。于是「容器会增长」不再是回收器的负载，而是容器的一次指针推进。
+
+#### 19.20.2 机制
+
+| 位置 | 内容 |
+| --- | --- |
+| 进程级 VA 竞技场 | `EXTC_BUF_ARENAS = 8` 个、每个 `64 GiB`（`QSHIFT = 21`，量子 2 MiB，`ORD = 15`），`mmap` 一次 `PROT_READ|PROT_WRITE`、懒创建；按 2 MiB 对齐发放，`carve` 实测 **7 ns**（对照一次 `mmap` 1,897 ns） |
+| buddy 分配链 | 每量子 1 bit 起点表 + 字节序表 + 双向自由链（`flPush`/`flPop`）：切块只写起点位、合并 O(1) 摘链；第一版涂 interior 标记并线性扫链，10 万次短命 `buf` 要 **0.76 s** |
+| `extc_buf_reserve(bytes)` | 抬到 4 KiB、页取整，从竞技场 carve；竞技场拼不出连续块时退回独立 `mmap`。返回**基址**（对齐到 2 MiB） |
+| `extc_buf_release(at, bytes)` | 还给竞技场（不进内核）：容量回到空闲表，页留在大页里 ⇒ 短命 `buf` 的稳态 RSS 是**常数**（100 万次 1,868 kB） |
+| `extc_buf_discard(at, bytes)` | `MADV_DONTNEED`：只用于 `shrink` 与搬家时「拷一段丢一段」，每 2 MiB 一块、向下取整到页 |
+| `extc_buf_span(at)` | 这块预留**实际**多大（量子取整）；账本必须报它，不能报请求字节（512 B 的请求实际握 2 MiB） |
+| `extc_buf_live()` | 进程当前预留总量（`buf::bufLive()`），`buf_fuzz` 用它做账本守恒 |
+| 视图两个发射原语 | `extc_sizeOf<T>()`、`extc_viewOfT<T>(p, n)` —— 语言没有 `sizeof` 与指针算术，类型化视图必须由发射器给 |
+
+不变量（`docs/design/BUF-INVARIANT.md` §1）是**一片预留 + 一条地址公式**：`len ≤ cap ≤ max`，元素地址恒为 `base + i·sizeof(T)`；预留之内增长只推 `cap`（地址不动、零拷贝），只有预留用尽才搬家（`epoch + 1`，旧视图失效）。四个动作 `reserve / grow / shrink / release` 都作用在这一片地址上：
+
+- `shrink(k)`：地址不动，把 `[k, cap)` 的页丢掉，`cap = k`；
+- `release()`：整片还给竞技场（页不还内核），`@drop` 再发一次是空操作；
+- 搬家用「拷一段、丢一段」：每 2 MiB 拷完就把源那一段 `discard` ⇒ 瞬时峰值是**一份 + 一块**，不是旧代 + 新代。
+
+#### 19.20.3 契约
+
+- **内存界**：一个 `buf` 的预留是 `span` 字节（量子取整，最小 2 MiB）；进程预留总量 = Σ `span`，是**地址空间**而不是常驻集。常驻集上界 = 已写的页（大页尾页放大 ≤ 2 MiB / 被触区间）。`release` 只把容量还给竞技场；要还内存给内核是 `shrink` / `discard`。
+- **停顿界**：`carve` 在锁内是 O(ORD) = O(1)（15 次位运算），不进回收器的任何预算；`buf` 完全不出现在回收器的路径上 —— **只用 `buf` 的程序连回收运行期都不发射**（`#if defined(EXTC_RC_TIER)` 之外它编成空操作，T0 程序不会被拖进回收器）。
+- **拷贝是一次真正的 O(len) 动作，但它在 mutator 侧**：`reserve` 在预留之内不拷；预留用尽那一次搬家是 O(len) 字节复制（与 `std::vector` 的 realloc 同一个量级），它不进任何停顿预算，也不改变回收器的界。契约说的是「回收器的每一步有界」，不是「程序不会做长事」。
+- **没有静默的失败**：`maxCapacity` 可读；`reserve(n)` 超上限（1 GiB 预留、117 万元素级的默认上限）返回失败而不 trap。
+
+#### 19.20.4 实测（`bench/buf/run.sh`，REPS = 7，min-of-7，`taskset -c 6`，同形状校验和逐字相同）
+
+| 形状 | `buf<T>` | `std::vector` | `vector` + `reserve` | 常驻集（buf / vec） |
+| --- | --- | --- | --- | --- |
+| S1 从 4 长到 8e6 个 `i64` | **0.020 s**，搬家 2 次 | 0.059 s，24 次 | 0.030 s，1 次 | 65,452 / 69,196 kB |
+| S2 100 万次短命 `buf`（512 B） | **0.076 s** | 0.096 s | — | **1,868** / 4,288 kB |
+| S3 装满 → `shrink(4096)` → 长回 | **0.028 s** | 0.085 s（`shrink_to_fit` 走重新分配，12 次） | — | 65,452 / 69,192 kB |
+| S4 24 B 结构体 2e6 个 | **0.017 s**，搬家 2 次 | 0.049 s，22 次 | — | 49,076 / 52,968 kB |
+| S5 16e6 `i64` 顺序 + 随机索引扫 | 0.086 s | 0.116 s | — | 128,940 / 128,904 kB |
+
+S1 的快不是「拷贝更便宜」，是**不拷**：`buf` 一次 `reserve` 拿够地址，此后 8e6 次 `push` 只推 `cap`；`vector` 的 24 次搬家是 24 次真拷贝。S3 里 `buf` 只付「丢页 + 再缺页」的价（`shrink` < 1 ms，长回 4 ms ≈ 16 GB/s，大页路径下 0.5 ns/元素），`vector` 的 `shrink_to_fit` 则重新分配。S2 的常驻集差一半是「还容量不还页 + 拷一段丢一段」的直接后果。
+
+账本口径的判据（`tests/stl`，失败 0）：`buf_fuzz` 3,000 轮、三个数量级、非 LIFO 释放顺序，每轮核 `buf::bufLive() − base == Σ reservedBytes()` ⇒ `rounds=3000 bad=0 worst=0 leak=0`；`buf_huge` 断言 1 GiB 预留只手写 10 个元素时 `max=134217728 reserved=1073741824 live=1073741824` 而 RSS 4,016 kB。
+
+#### 19.20.5 两条被撞出来的边界
+
+- **`release` 不把存储清零**：块回到竞技场时页还在、字节还是上一轮的。于是「往复用的存储里写引用」这件事**不能读槽里的旧值**（§19.21）—— 这一条把一个原本以为是「覆盖写语义」的问题变成了「表的键必须取槽地址」的问题。
+- **发射器的 arena 前置会挡住内联**：每个函数前都发 `extc_arena __extc_a[3] = {0};` 与两次 `extc_arena_destroy`，即使该函数一次都不分配（`buf::push` 就是），C 编译器因此拒绝把它内联进调用者的循环 —— 同一个循环 2.6 ns/push 变 10 ns/push（S3 因此假红 1.77×）。修法：库的热成员加 `@inline`（10 处）。这是**发射器的债**，记在 `BUF-INVARIANT.md` §8。
+
+完整语义与可运行示例见 `docs/design/BUF-INVARIANT.md`，实现与价目见 [`GC-ROOFLINE.md`](GC-ROOFLINE.md) §6.25。
+### 19.21 引用写进非 rc 存储：外部边表（v37 新增，R4b）
+
+#### 19.21.1 这一份模型里的位置
+
+§18 的每条公式都假设「引用在 rc 槽里」：槽有宿主 region、有占用位、有入度。但语言允许把引用写进回收器不认识的地方 —— 桩上局部量、`new T[n]` 的视图、池块、`buf<T>` 的预留、`C` 缓冲区。这些槽没有寿命可跟踪，**可这条边还在**：值仍然是本运行期管的活对象，只要还有人指着它，它就不能被收。
+
+§19.13 的 64 B 组位图解决的是「大槽内部的引用域」，入口仍然绑在 slab + slot 上。这一节解决最后一段：**槽根本不在任何 slab 里**。
+
+#### 19.21.2 机制：把边记在槽上，而不是把值钉成根
+
+| 位置 | 内容 |
+| --- | --- |
+| 表结构 | 开放寻址哈希，条目 `{ void **slot; void *v; ExtcRcRegion *rg; }` = **24 B**；键 = **槽地址**，每外部槽一条；散列 `(((uintptr_t)slot >> 3) * 0x9E3779B97F4A7C15ull) >> 32`，装载 ≤ 1/2 翻倍重散，删除走 Knuth 回移 |
+| `extc_rc_pinPut(slot, v, &old)` | 登记或改写这个槽的边；`oldOut` 给出**表里原本的值**；`v` 不是本运行期的活槽（外来指针 / 0）⇒ 把这个槽的条目**清掉** |
+| `extc_rc_storeRefUnknown(slot, v)` | `shade(v)` → `pinPut` → `*slot = v` → `if (old) { shade(old); dec(old); }` → `inc(v)`；只在表扩容失败（`calloc` 失败）时给目标区域打 `noSweep` |
+| `extc_rc_pinSeed(r)` | 起轮：遍历表，`rg == r` 的条目 `markPush` 成种子（`noinline`：内联会让 owe 形状每分配 +2 Ir） |
+| `extc_rc_pinDropRange(lo, hi)` | 结构动作：槽地址落在 `[lo, hi)` 的条目全部 `dec` + 删除；一次表扫描，不是每元素一次 |
+| `extc_rc_pinDropRegion(r)` | `regionFree` 时清掉属于该区域的死指针（对象已死，留着只会让标记走废值） |
+| `extc_rc_storeStructCons` | 保守整值拷贝不再把整区置 `noSweep`，改成**逐字** `pinPut`（栈地址 / 池块地址的条目随槽被重写而改正） |
+| buf 侧的桥 | `extc_buf_releaseRefs(at, esz, from, to)` 在 `#if defined(EXTC_RC_TIER)` 里调 `pinDropRange`，否则编成空操作；`buf.extc` 的私有成员 `dropRefs(from, to)` 是 `shrink` / `clear` / `release` / 搬家四个结构动作唯一的调用点 |
+
+两个决定是有界性的全部来源：
+
+1. **键取槽址、不取值。** 同一个槽被反复写只改一条；槽被复用不会留下上一位主人的条目。值键的表只能在「同槽覆盖」时撤边，而 `shrink` / `release` 丢掉的那几个元素没有任何槽能撤 —— 条目随轮数涨（这正是 L10-a/G15 的机制）。
+2. **旧值只从表里取，绝不读槽里的字节。** `buf` 的存储从竞技场复用回来是**不清零**的（§19.20.5），槽里可能是上一轮的陈旧指针；按陈旧字 `dec` 会撤掉别人还持有的边 —— 那是提前回收，方向错。没有条目就什么都不撤。
+
+#### 19.21.3 契约
+
+- **内存界**：表大小 ≤ `24 B × 外部槽条目数`，条目数 = 「在容器/桩上写过的不同槽地址」减去已撤销的。界里**没有轮数**：同一槽写一百万次还是一条。撤销之后条目立刻消失（`pinDropRange`），表会收缩。
+- **停顿界**：登记/撤销一条摊 O(1)（负载因子 ≤ 1/2）；`pinDropRange` 是**一次表扫描**，但它发生在 mutator 的结构动作里（`release` / `shrink` / `clear`），不进停顿预算。起轮时的 `pinSeed` 在回收器里，代价 O(表容量)，这一项**还没有标定**（见 19.21.5）。
+- **语义**：`pop()` **不撤边** —— 取出的元素由调用方持有，那条边仍然成立；该槽下一次被写时表项自动改正。这是刻意的取舍，写在 `BUF-INVARIANT.md` §7。
+- **T0 不付钱**：只用 `buf<i64>` 的程序一条都不进表（不含引用元素时 `extc_sizeOf` 之外零成本），也没有回收运行期。
+
+#### 19.21.4 实测
+
+形状 `tests/gc-p0/src/leak_buf_ref.extc`（G21，硬判据 ≤ 1.20×）：每轮 `buf<mut ref node>::withCap(4)`、push 四个 `new node`、`shrink(2)`、再 push 一个、`release()`。
+
+| 臂 | 50k 轮 peak RSS | 800k 轮 peak RSS | 比 | 判决 |
+| --- | --- | --- | --- | --- |
+| 本轮（槽址键 + 区间撤销） | 3,764 kB | 3,764 kB | **1.000×** | PASS |
+| 基线（值键 pin 表，无撤销） | 24,144 kB | **363,008 kB** | **15.035×** | RED |
+| 对照臂：生成 C 里让 `pinDropRange` 立刻返回 | 3,764 kB | 3,764 kB | **1.000×** | 平 |
+
+第三行是机制归因，也是这一节最重要的一条负结果：**上界来自键的选择，不来自区间撤销**。把撤销整个关掉 R21 仍然平 —— 因为同一槽写一百万次还是一条。区间撤销买的是**及时性**：`release` 之后条目立刻消失、表收缩、那些对象下一轮就能收（`pin` 立即回落），而不是「上界更小」。写文档、写论文都不能把撤销说成有界性的来源。
+
+单测 `tests/reclaim`（242/0）钉住更细的语义：`t_pin`（不是活槽不登记 / 两条槽指着同值 ⇒ 两条条目 / 撤一条仍在 / 撤完可收 / 覆盖撤旧边 / 区域死时清死指针且别的区域不受牵连）、`t_pinRange`（区间内全撤 / 区间外不动 / 表长正好减槽数 / 撤销后同槽重新登记不凭空减计数）、`t_noSweep`（保守整值存储逐字登记、区域**照常清扫**）。跳过表 95 类标记、未标记早退 0 处。
+
+池块（`poolSlice` / `poolResize` / `poolGive`，G15 形状）与缓冲区一样反查不到宿主，落进的也是同一条 `extc_rc_storeRefUnknown`。键换成槽地址之后，池块复用、槽地址不变 ⇒ 表项被改正、不随轮数长：在 `g15.c` 的 `main` 尾部插一行读 `extc_rc_pinN` / `extc_rc_pinCap`，50k 与 800k 两档都是 **n=35 / cap=128**，`maxRSS` 3,572 / 3,568 kB（**0.999×**）⇒ G15 由 XFAIL 提升成硬判据（`summarize.py` 与 `run.sh` 的口径同步改掉）。
+#### 19.21.5 边界与还欠的账
+
+- **池块有界、但撤销没接**：G15 的平坦来自「键取槽地址」，不是来自池的 free 里撤边 —— 池的 free 不调 `releaseRefs`，条目要到该槽被重写或区域死时 `pinDropRegion` 才消失。R4c 删掉 stdlib 池（容器迁 `buf`）之后由 `dropRefs` 接管这一侧。
+- **`pinSeed` 的 O(表容量) 未标定**：表大时起轮那一下是回收器里的真实开销，它目前不在 `P_step` 的任何一项里。G21 的表只有 16 条，看不出这一项；要一条「几十万个外部槽」的形状才量得出来。
+- **`pop` 不撤边**：丢掉的槽位仍留一条条目，直到该槽被重写或区间撤销。上界因此是「峰值同时在用的槽集合」而不是「当前活元素数」—— 方向仍是安全（多留），但要在 `BUF-INVARIANT.md` 里说清。
+- **多线程**：表有锁（`pinLockAcq`），登记与撤销都在锁内；种子扫描也持锁。分片（per-worker 表）是 §S 里并发那一栏的事，不在本节。
+
+机制与价格表见 [`GC-ROOFLINE.md`](GC-ROOFLINE.md) §6.26；跳过表的每一行在 `docs/design/RECLAMATION.md`。
 ## §20 与仓库既有文档的不一致清单（口径必须按本节改）
 
 完整 90 条对账在 `docs/analysis/DOC-AUDIT.md`；这里只列"会误导读者/会误导优化决策"的 10 条。
@@ -1689,6 +1799,8 @@ extC 的内存管理是**编译期分档的**：绝大多数分配被静态指�
 11. **R2b（v35）：巨大块载荷内部的地址能命名宿主（§19.18）**：arena 增加归属表 `ownQ`（2 MiB 量子 → slab，32,768×8 B = 256 KiB/arena，惰性分配），`slabNew` 的 big 分支绑定、`extGive` 回收块时清空；`slabOfInterior` 与 `wmarkSlot` 各加一级区间反查 ⇒ 载荷内部写跨区指针时不再进 `pin` 表、位图能记到组、释放时边能撤销。探针：`[pin] n=0`（修复前 800k 次存储涨 17.5 B/次）、`rs_inc=960 rs_dec=952 rs_live=8`（修复前 rs_dec=0 rs_live=960）；`tests/reclaim` 221/0；暖档四形状 0.979 / 1.030 / 1.004 / 1.027（两个形状没有 ≥2 MiB 载荷 ⇒ 只付一次原子读）。
 
 12. **R3（v36）：载荷先留地址、再原地长（§19.19）**：`ExtcRcSlab.bigMax` 记住「载荷的地址最多能长到哪里」，`extc_rc_bigPayloadAlloc` 按 `clamp(bigRound(n)·16, 2 MiB, 1 GiB)` 预留、只提交 `bigRound(n)` 页，`extc_rc_bigGrow` 在预留之内换 `ss`/`rcp` 并把 `bytes/allocBytes/capBytes` 各加一个增量（组位图按新步长重建），新窗口不清零（内核首次读给零页）。实测 8 MiB→64 MiB 22 步 **15.6–20.2 ms**、缺页 **61** 次、RSS HWM 67.9 MB、`data_same=1`，对照同形状同会话的拷贝增长 375.7–394.5 ms / 峰值 130.8 MB ⇒ **快 17–25 倍**；只预留不碰时 RSS 10.4 MB（预留是 VA 不是内存）。生产默认 `EXTC_RC_EXT_SLACK = 0`（今天生成文本里没有消费者，R4 的容器/增长动词会打开它）；驱动用 16 编译 ⇒ 13 条断言（`tests/reclaim` **234/0**）。拒绝语义：`want > bigMax` 返回 0，调用方搬一次，容量界与停顿界都不变。
+13. **R4a（v37）：可增长数组的存储成了自己的一片预留（§19.20）**：新增第五种存储基质 `buf<T>` —— 进程级 8×64 GiB 的 VA 竞技场（懒创建、`MAP_NORESERVE`）、2 MiB 量子的 O(1) buddy（双向自由链 + 起点位图）、`≥ 4 MiB` 才 `MADV_HUGEPAGE`，carve **7 ns** 对照一次 `mmap` **1,897 ns**；四格运行期入口 `extc_buf_reserve` / `extc_buf_release` / `extc_buf_discard` / `extc_buf_span`，两个发射原语 `extc_sizeOf<T>()` 与 `extc_viewOfT<T>`。不变量：`len ≤ cap ≤ max`、元素地址恒为 `base + i·sizeof(T)`；增长在预留内**零拷贝**、搬家「拷一段丢一段」（峰值 = 一份 + 2 MiB）。`bench/buf` 五形状（REPS=7，min）：S1 8e6 个 `i64` **0.020 s / 2 次搬家 / 65,452 kB** vs `std::vector` 0.059 s / 24 次 / 69,196 kB vs `vector+reserve` 0.030 s / 1 次 / 66,308 kB；S2 一百万短命 buf 0.076 vs 0.096 s；S3 装满→`shrink(4096)`→长回 **0.028 vs 0.085 s**（还 64 MiB 页 <1 ms、长回 4 ms）；S4 0.017 vs 0.049 s；S5 布局连续（不作排名）。三条撞出来的边界：buddy 第一版线性扫 + 涂 interior ⇒ 每次分配 65,536 次写、S2 **0.76 s**；发射器给每个函数发 `extc_arena` 前置挡住内联 ⇒ 同一循环 **2.6 → 10 ns/push**（指令数只差 10%），10 个热成员 `@inline` 后 76 → 4 ms；`reservedBytes()` 报请求值而非实际 carve 块 ⇒ `buf_fuzz` 抓到 `bad=5692 / worst=33,552,768`，改报 `extc_buf_span()` 后 `bad=0 / worst=0 / leak=0`。`tests/stl` 失败 0（含 ASan），只用 `buf` 的程序仍是 T0（不发射回收运行期）。
+14. **R4b（v37）：引用写进非 rc 存储 —— 外部边表（§19.21）**：把一直存在的 `pin` 表从「值键 + 计数」换成「**槽地址键**，一槽一条 `{slot, v, rg}`（24 B）」，并新增区间撤销 `extc_rc_pinDropRange(lo, hi)`（`buf` 的 `shrink` / `clear` / `release` / 搬家经 `extc_buf_releaseRefs` 调用）。两条可证的理由：①**旧值只能从表里取**——存储会被还回去再 carve（`buf` 的 `release` 不清零），槽里的字节可能是上一位主人的陈旧指针，按它 `dec` 撤掉的是别人的边（UAF 方向）；②结构动作要**按地址区间**精确撤边。同时修掉 `storeStructCons` 在宿主未知时置 `noSweep` 的整区退出（改成逐字登记）。新门禁 **G21**（`buf<mut ref node>` 每轮 withCap/push/shrink/push/release，n=50k vs 800k）：本轮 **3,764 / 3,764 kB = 1.000× PASS**，基线（HEAD 8faab139 值键）**24,144 → 363,008 kB = 15.035× RED**，**对照臂**（把 `pinDropRange` 改成立刻返回）仍 **1.000×** ⇒ **上界来自键的选择、撤销买的是及时性**，两者不能混说。驱动 `t_pin` / `t_pinRange` / `t_storeStructRooted`（清扫档与计数档、ASan、不内联档）⇒ `tests/reclaim` **242/0**。契约：`M ≤ live + 24 B × 峰值外部槽数`（无轮数项）、结构动作 O(区间条目 + 表扫描) 在 mutator 侧、`buf<i64>` 零成本、`pop` 不撤边、`pinSeed` O(表容量) 未标定。边界：池块（G15）仍是 XFAIL，R4c 把池存储换成 `buf` 后同一张表覆盖它。
 一句话没变：作用域基质（arena/pool/coro/plate）从来是有界的；rc region 的有界性**现在由契约给出、由标定支撑**。门禁 G1–G16 与 after 实测见 `docs/analysis/GC-ROOFLINE.md` §6–§7。
 
 下一步的优化方案与形式化模型（内存有界、停顿有界、类 Roofline 的 GC 策略平衡）见同目录 `docs/analysis/GC-ROOFLINE.md`。

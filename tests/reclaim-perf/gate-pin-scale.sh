@@ -15,7 +15,7 @@
 #   ② 每钉一个指令数绝对值 ≤ ABS（默认 400；实测 ~285，防「比恒定但常数被放大」的回归）
 #   另加一条健全性：4N 档的表项数必须是 N 档的 ~4×（探针确实在钉，不是空转）。
 #
-# --selftest：往 pinAdd 里注入一次**线性预扫**（语义等价、成本 O(表长)），重新量一遍，
+# --selftest：往 pinPut 里注入一次**线性预扫**（语义等价、成本 O(表长)），重新量一遍，
 #   要求①**变红**（有牙），且真实运行期那两条判据为绿（先绿后红都验到）。
 #
 # 缺 valgrind：打印一行 跳过：… 后退出 0（check.py 记 skip；CI 装了 valgrind ⇒ 不许跳过）。
@@ -119,16 +119,17 @@ import sys
 src, dst = sys.argv[1], sys.argv[2]
 t = open(src).read()
 anchor = ("    extc_rc_pinLockAcq();\n"
-          "    if ((extc_rc_pinN + 1) * 2 > extc_rc_pinCap")
+        "    if (!v || !extc_rc_owns(v)) {")
 if t.count(anchor) != 1:
-    raise SystemExit("注入失败：pinAdd 的锁后锚点不唯一（发射文本形状变了？）")
+  raise SystemExit("注入失败：pinPut 的锁后锚点不唯一（发射文本形状变了？）")
 ins = ("    extc_rc_pinLockAcq();\n"
-       "    for (size_t _q = 0; _q < extc_rc_pinCap; _q++) {   /* 注入：线性预扫 */\n"
-       "        if (extc_rc_pins[_q].v && extc_rc_pins[_q].v == v) {\n"
-       "            extc_rc_pins[_q].n++; extc_rc_pinUnlock(); return 1;\n"
-       "        }\n"
-       "    }\n"
-       "    if ((extc_rc_pinN + 1) * 2 > extc_rc_pinCap")
+     "    {   /* 注入：线性预扫（每格原样写回：语义等价、成本 O(表长)） */\n"
+     "        for (size_t _q = 0; _q < extc_rc_pinCap; _q++) {\n"
+     "            volatile void **_vp = (volatile void **)&extc_rc_pins[_q].v;\n"
+     "            *_vp = extc_rc_pins[_q].v;\n"
+     "        }\n"
+     "    }\n"
+     "    if (!v || !extc_rc_owns(v)) {")
 open(dst, 'w').write(t.replace(anchor, ins))
 PY
     then

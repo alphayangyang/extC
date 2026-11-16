@@ -76,6 +76,7 @@ std::data::buf	buf	cap	field	internal
 std::data::buf	buf	capacity	method	public
 std::data::buf	buf	clear	method	public
 std::data::buf	buf	clone	method	public
+std::data::buf	buf	dropRefs	method	internal
 std::data::buf	buf	len	method	public
 std::data::buf	buf	max	field	internal
 std::data::buf	buf	maxCapacity	method	public

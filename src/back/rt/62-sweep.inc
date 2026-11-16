@@ -37,7 +37,7 @@
     "    if (extc_rc_pinN) {\n",
     "        for (size_t pi = 0; pi < extc_rc_pinCap; pi++) {\n",
     "            ExtcRcPin *pp = &extc_rc_pins[pi];\n",
-    "            if (pp->n && pp->rg == r && (uintptr_t)extc_rc_slabOf(pp->v) == (uintptr_t)s) extc_rc_sgBad++;\n",
+    "            if (pp->slot && pp->rg == r && (uintptr_t)extc_rc_slabOf(pp->v) == (uintptr_t)s) extc_rc_sgBad++;\n",
     "        }\n",
     "    }\n",
     "#endif\n",

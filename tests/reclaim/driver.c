@@ -314,12 +314,12 @@ static void t_slotUnique(void) {
     extc_rc_regionFree(r);
 }
 
-/* 钉住表查询（测试专用）：值在表里被几条槽指着。表本身在运行期文本里。
+/* 钉住表查询（测试专用）：值在表里被几条槽指着。表本身在运行期文本里，键是槽位地址。
  * 表是开放寻址哈希（空格 v == NULL），所以按容量扫、跳过空格。 */
 static size_t extc_rc_pinCountOf(void *v) {
     size_t n = 0;
     for (size_t i = 0; i < extc_rc_pinCap; i++)
-        if (extc_rc_pins[i].v == v) n += extc_rc_pins[i].n;
+        if (extc_rc_pins[i].slot && extc_rc_pins[i].v == v) n += 1;
     return n;
 }
 
@@ -462,7 +462,7 @@ static void t_hostSlot(void) {
 
 /* ---------------------------------------------------------- 钉住表：按引用计数、可撤销、随区域清死指针
  *
- * 未知宿主槽的边现在按「值」登记，所以表必须支持同一个值被多条槽指着（计数）、覆盖时撤一条、
+ * 未知宿主槽的边按槽位登记，同一个值被多条槽指着就是多条不同的槽条目；覆盖时撤掉该槽那一条、
  * 区域释放时把属于它的死指针清掉（否则表会一直涨、标记期还会走废值）。这三条都是抽象不变式，
  * 形状级判据（slot_elem_unknown 有界）只间接覆盖第一条。 */
 static void t_pin(void) {
@@ -512,6 +512,58 @@ static void t_pin(void) {
     extc_rc_regionFree(rb);
 }
 
+/* ------------------------------------------- 钉住表：按区间撤销（缓冲区存储的整段结构动作）
+ *
+ * 元素带引用的缓冲区在 shrink / clear / release / 搬家时一次丢掉一整段元素，这段存储不是 rc 槽，
+ * 边只记在「外部边表」里；表以槽位为键，所以整段撤销就是一次按地址区间的删除。这里钉四条：
+ * 区间内的边全撤、区间外的不动、别的区域的项不受牵连、撤销之后同一槽重新登记还能正常入表。 */
+static void t_pinRange(void) {
+    ExtcRcRegion *ra = regionNew(24, 4096);
+    ExtcRcRegion *rb = regionNew(25, 4096);
+    Node *a = (Node *)extc_rc_alloc(ra, sizeof(Node), &g_node);
+    Node *b = (Node *)extc_rc_alloc(rb, sizeof(Node), &g_node);
+    void *slots[8];   /* 模拟一段缓冲区存储：连续地址、不是 rc 槽 */
+    void *outside = NULL;
+    for (int i = 0; i < 8; i++) slots[i] = NULL;
+
+    for (int i = 0; i < 4; i++) extc_rc_storeRefUnknown(&slots[i], a);
+    for (int i = 4; i < 8; i++) extc_rc_storeRefUnknown(&slots[i], b);
+    extc_rc_storeRefUnknown(&outside, a);
+    check(extc_rc_pinCountOf(a) == 5 && extc_rc_pinCountOf(b) == 4,
+          "区间撤销：先按槽登记好两张值");
+
+    /* 只丢前一半（模拟 shrink 到 4）：a 那四条边全撤，b 与区间外的边一条不动。 */
+    size_t before = extc_rc_pinN;
+    extc_rc_pinDropRange(&slots[0], &slots[4]);
+    check(extc_rc_pinCountOf(a) == 1 && extc_rc_pinCountOf(b) == 4,
+          "区间撤销：区间内的边全撤、区间外与别的区域不动");
+    check(extc_rc_pinN == before - 4, "区间撤销：表长度正好减去区间内的槽数");
+
+    /* 整段丢（模拟 clear / release）：b 也清零，区间外那条留着。 */
+    extc_rc_pinDropRange(&slots[0], &slots[8]);
+    check(extc_rc_pinCountOf(b) == 0 && extc_rc_pinCountOf(a) == 1,
+          "区间撤销：整段丢之后只剩区间外的那条");
+    /* 清扫档：撤掉边不等于释放对象（要等下一轮扫描才收）；计数档：最后一条入边撤掉就归零即收。 */
+#if EXTC_RC_NOCOUNT
+    check(extc_rc_isLive(b), "区间撤销：清扫档撤销边不等于释放对象（b 仍然活着）");
+#else
+    /* 计数档：最后一条入边撤掉，计数归零，对象当场收。 */
+    check(!extc_rc_isLive(b), "区间撤销：计数档最后一条入边撤掉就归零即收（b 当场释放）");
+#endif
+    check(slots[4] == (void *)b && slots[7] == (void *)b,
+          "区间撤销：撤销只动表、不改写存储里的字节（元素还在原地）");
+
+    /* 存储没有被清零时重新往同一个槽写：表里没有旧条目 ⇒ 只登记，不凭空 dec 一个陈旧值。 */
+    extc_rc_storeRefUnknown(&slots[3], a);
+    check(extc_rc_pinCountOf(a) == 2, "区间撤销：撤销后同一槽重新写入照常登记（不信槽里的陈旧字节）");
+
+    /* 收尾：把剩下的边写空，表回到原样（下面区域释放再兜一次底）。 */
+    extc_rc_storeRefUnknown(&slots[3], NULL);
+    extc_rc_storeRefUnknown(&outside, NULL);
+    check(extc_rc_pinCountOf(a) == 0, "区间撤销：写空之后值完全出表");
+    extc_rc_regionFree(ra);
+    extc_rc_regionFree(rb);
+}
 /* 标记位查询：下面那条用例要在「增量标记在飞」时确认结构拷贝的叶子当场被标黑。 */
 static int rcSlotBlack(void *p) {
     ExtcRcSlab *s = extc_rc_ownSlab(p);
@@ -527,8 +579,8 @@ static int rcSlotBlack(void *p) {
  * 现在 codegen 把所有变体的载荷叶子都按根登记（`rcRootLeaves` 的 TY_ENUM 分支），存储侧
  * 只逐字记账、不下调保守 —— 判据：字照原样、目标区域照常清扫、叶子在增量标记期间标黑。
  *
- * 对照那一组是同一只新区域上的旧路：它**必须**置 `noSweep`，否则说明这条用例根本没碰到
- * 旧路（旧路被悄悄换掉时，判据就成了空转）。
+ * 对照那一组是同一只新区域上的保守路（hostKnown = 0）：它**不得**再置 `noSweep`，而是把认出的字登记成根
+ * （保守路被悄悄换掉时，判据就成了空转）。
  */
 static void t_storeStructRooted(void) {
     ExtcRcRegion *ra = regionNew(30, 4096);
@@ -561,8 +613,10 @@ static void t_storeStructRooted(void) {
         Node *c = (Node *)extc_rc_alloc(rc, sizeof(Node), &g_node);
         void *wc[1] = { c };
         extc_rc_storeStructCons((void *)wc, sizeof(wc), NULL, 0);
-        check(rc->noSweep && !ra->noSweep && !rb->noSweep,
-              "枚举整值存储（对照）：旧路仍然让目标区域退出清扫（用例没走空）");
+        check(!rc->noSweep && extc_rc_pinCountOf(c) == 1,
+              "枚举整值存储（对照）：保守路改成逐字登记，目标区域照常清扫");
+        extc_rc_storeRefUnknown(&wc[0], NULL);
+        check(extc_rc_pinCountOf(c) == 0, "枚举整值存储（对照）：那条登记能被同槽覆盖撤掉");
         extc_rc_regionFree(rc);
     }
 
@@ -1659,6 +1713,7 @@ int main(void) {
     t_noSweep();
     t_hostSlot();
     t_pin();
+    t_pinRange();
     t_storeStructRooted();
     t_slotUnique();
     t_unregister();

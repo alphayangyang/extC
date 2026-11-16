@@ -1,0 +1,60 @@
+/* G21：缓冲区存储里的引用赋值 —— 结构动作必须撤销那些边。
+ *
+ * 形状（与 G15 的池形状同构，但存储换成 buf<T> 自己的那片预留）：每轮
+ *   var b: buf<mut ref node> = buf<mut ref node>::withCap(4)
+ *   b.push(new node) ×4（元素值 7/8/9/10）→ 读校验和
+ *   b.shrink(2)（丢掉两个元素）→ 再 push 一个（值 11）→ 读校验和
+ *   b.release()（整片还掉）
+ * 共 N 轮。缓冲区存储不是 rc 槽，元素里的引用只能记在运行期的外部边表里；
+ * shrink / release 一次丢一整段元素时就按地址区间撤销那些边。不撤则表项随轮数线性涨、
+ * 被指着的节点永不回收 ⇒ RSS 随轮数线性涨、退出前 [pin] n 也线性涨。
+ *
+ * 判据（硬判据，不是 XFAIL）：maxRSS(800k) / maxRSS(50k) ≤ 1.20，且两档 stdout 逐字正确、退出码 0。
+ * 运行：argv[1] = 轮数 N（默认 50000）；输出 `G21 n=… sum=…`。 */
+use std::io
+use std::data::buf
+
+struct node { v: i64 }
+
+fn parseN(args: slice<slice<u8>>, idx: i64, dflt: i64) -> i64 {
+    var i: i64 = idx
+    if args.len <= i { return dflt }
+    var s: slice<u8> = args[i]
+    var v: i64 = 0
+    var k: i64 = 0
+    while k < s.len {
+        var ch: u8 = s[k]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        k = k + 1
+    }
+    if v > 0 { return v }
+    return dflt
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    let n = parseN(args, 1, 50000)
+    var i: i64 = 0
+    var sum: i64 = 0
+    while i < n {
+        var b: buf<mut ref node> = buf<mut ref node>::withCap(4)
+        var j: i64 = 0
+        while j < 4 {
+            var p: mut ref node = new node
+            p.v = 7 + j
+            b.push(p)
+            j = j + 1
+        }
+        sum = sum + b.view()[0].v + b.view()[3].v
+        b.shrink(2)
+        var q: mut ref node = new node
+        q.v = 11
+        b.push(q)
+        sum = sum + b.view()[2].v
+        b.release()
+        i = i + 1
+    }
+    io::cout << "G21 n=" << n << " sum=" << sum << "\n"
+    return 0
+}
