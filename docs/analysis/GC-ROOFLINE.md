@@ -2073,10 +2073,31 @@ R2a 之前，巨块载荷走 `aligned_alloc(4096, round4k(n))`：每个载荷一
 
 #### 6.22.6 边界
 
-1. **不是零成本**：`U` 与「稀疏触页被放大到大页」两件事都是真实成本（6.22.3 第 3 条）。R4 把容器存储也换成 extent 时，这两个成本会从「巨块载荷」扩到「所有 ≥4 MiB 的容器」，届时 `EXTC_RC_EXT_HUGE_MIN` 与 `U` 要一起重新定价。
+1. **不是零成本，但两笔要分开记**：「VA 取整」只花地址空间（6.22.7 的预算），「大页尾页」才进 RSS（6.22.3 第 3 条）。R4 把容器存储也换成 extent 时，这两笔会从「巨块载荷」扩到「所有 ≥4 MiB 的容器」，届时 `EXTC_RC_EXT_HUGE_MIN` 与 `P_hp` 要一起重新定价。
 2. **平台**：`EXTC_RC_EXT_OK = (EXTC_RC_EXT>0) && (__linux__ || __APPLE__)`。没有 `mmap`、或者 overcommit 被设成 strict 时，`EXT` 关掉即回到 `aligned_alloc`（宏不是运行期开关，是编译期常量：`-DEXTC_RC_EXT=0`）。
 3. **内部指针仍不可解析**：`extc_rc_ownBig` 只接受「恰好等于载荷首字节」的指针（`return s->big ? (uintptr_t)s->data == (uintptr_t)p : ...`），extent 只换掉了载荷从哪里来，没有改这条判定。R2b 才把 extent 接进区域账本与归还 pass；在那之前，预留区里的内存对回收器仍然是「外来内存」（`storeRefUnknown` → pin 表）。
 4. **重冻结的口径**：`tools/emitted-identity-baseline.tsv` 本轮由 `--write --set core` 重写，430 行；`--check` 逐字节相同。重冻结只允许「运行期文本变化引起的整段位移」这一类差异，程序自身文本的变化仍会让基线报 RED。
+
+#### 6.22.7 地址预算、每个 arena 的常数与失败模式（v34）
+
+**每个 arena 的常数成本**（`tools/probe/arena_cost.c`，本机 core 6，单次量级）：
+
+| 项 | 实测 | 说明 |
+|---|---|---|
+| 预留 | 一次 `mmap(64 GiB + 2 MiB, PROT_READ\|PROT_WRITE, MAP_NORESERVE)` = **1.1–2.0 µs**；`VmSize` +64 GiB，`VmRSS` **+0.3 MB**（元数据与页表账），没有页驻留 | 地址空间是它唯一真正占用的东西 |
+| 对齐 | base 向上取整到 2 MiB，头部至多留 2 MiB（本次 0 B） | `extArenaNew` 预留 `span + q` 就是为此 |
+| 元数据 | `nextQ` 32,768 × 4 B + `ordQ` 32,768 × 1 B = **160 KiB** 堆 | 按量子数算，与 arena 多大无关 |
+| 页表 | 只按被写过的页 | 大页下一张 PMD 覆盖 1 GiB，没有 PTE 页 |
+
+**8 个是进程级上限，不是每 region / 每 worker 的**：arena 池是 `static ExtcRcExtArena extc_rc_extArena[EXTC_RC_EXT_ARENAS]`（发射文本里的全局数组），carve 与 give 由一把自旋锁串行（一个载荷可能被别的线程释放），懒创建、永不 `munmap`。所以约束是「**同时活着的 carve 总量 ≤ 8 × 64 GiB = 512 GiB**」，而不是「同时 8 个区域各有一块」。
+
+**预算对照**：512 GiB 是 x86-64 一个进程用户地址空间（约 128 TiB）的 **0.4%**；`MAP_NORESERVE` 既不记账也不驻留。实测三个巨块形状都只建 **1 个** arena（`[extent] arenas=1 va_mb=65536 res_mb=16/192/192`，t04 / t12 / t13）——第二个 arena 只在第一个拼不出连续块时才会被创建。注意 `res_mb` 是**已 carve 的 VA**（`extc_rc_extLive`），不是已提交页。
+
+**单次上限**：一次 carve 最大 = 一个 arena 的 span = 64 GiB（`EXTC_RC_EXT_ORD=15` 个 2 MiB 量子）。更大的单个载荷直接 `extCalls++` / `extFails++`，并回退 `aligned_alloc`。
+
+**什么时候真的会不够**：①同时活着的 carve 超过 512 GiB——在 512 GiB RSS 之前不可能，因为 carve 的页要被写才驻留；②碎片——一个 arena 里拼不出连续块就去建下一个（至多 8 个），全碎才失败；③环境限制——`ulimit -v` / 地址空间 rlimit（`VmSize` 计入预留）、`overcommit_memory=2`（`NORESERVE` 被忽略）、单载荷 > 64 GiB。三条都是**优雅回退**（`[extent] fails=` 计数），正确性不变，性能回到 R2a 之前。
+
+**什么时候该调小**：部署环境地址空间很紧时，`-DEXTC_RC_EXT_ORD=13`（16 GiB/arena）或 `-DEXTC_RC_EXT_ARENAS=2` 即可，代价是大载荷更容易回退。**R3 之后注意**：carve 按 `max`（预留上界，≤16× 请求）记账，`[extent] res_mb` 记的是已 carve 的 VA 而不是已提交页，所以 512 GiB 预算按预留量消耗——一个 8 MiB 载荷最多占 128 MiB VA，仍可容纳 4,096 个同时在飞的载荷。
 
 ## §7 门禁（Gate）：判据、量具、before / after
 

@@ -6,7 +6,7 @@
     " *\n",
     " * Shape: a buddy allocator over EXTC_RC_EXT_QSHIFT-sized quanta, inside reservations of EXTC_RC_EXT_ORD quanta each (64 GiB of\n",
     " * address space). The reservation is PROT_READ|PROT_WRITE, MAP_NORESERVE: address space and page tables are what it costs, and no\n",
-    " * page is resident until a writer touches it. On Linux the whole reservation is MADV_HUGEPAGE, which is measured to make a drop 2.7\n",
+    " * page is resident until a writer touches it. On Linux a carved range of at least EXTC_RC_EXT_HUGE_MIN is advised MADV_HUGEPAGE (advising the whole reservation costs RSS), which is measured to make a drop 2.7\n",
     " * ns/KB and a re-touch 99 ns/KB, against 19 and 260 without huge pages (tools/probe/thpdrop.c).\n",
     " *\n",
     " * One byte per quantum records the state: bit 7 set means the quantum starts a free block and the low bits are its order, 0xFF means\n",
