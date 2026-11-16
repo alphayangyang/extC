@@ -64,7 +64,7 @@ BUILD_SIG = "static node * build("
 
 TOP_GUARD = 'if (!site || site != g->topExpr) return "0";'
 FORWARD = 'return "__extc_homeOwn";'
-TRAMP_ZERO = 'if (g->needReclaim) bufPuts(&args, ", 0");'
+TRAMP_ZERO = 'if (g->rc.reclaim) bufPuts(&args, ", 0");'
 GEN_TOP = "genTopExpr(g, "
 TRIGGER_FLAG = 'pfLine(g, "if (__extc_homeOwn) {");'
 

@@ -924,6 +924,18 @@ def build_items() -> list:
         ok_msg=ok_first(r"^ok allocation cache structure"),
         bad_msg="tools/check_alloc_hot.py（区域 slab 分配缓存结构或红自测失效）",
         bad_dump=dump_fail(10)))
+    # ---- 闸门·回收计划（RcPlan）的单一决策点 ----
+    # 七个决策字段（reclaim/forced/memGrowth/nShard/noCount/sweepFree/rootsUnreliable）只在
+    # scanUnitNeeds / rcPlanDecide / generateC 里写，发射点只读；退化的 rootsUnreliable 只能单向
+    # 置真；rcPlanDecide 里 idle 证明必须早于 forced 早退。把早退提到证明之前会让开档产物与默认档分叉，第 4 条判据守的正是这个顺序，
+    # `--selftest` 注入五类变异（自决写入/清退化/forced 提前/多字段/旧名回来）确认判据有牙。
+    items.append(cmd(
+        "gate-rc-plan", "gate",
+        "闸门·回收计划：字段集固定、决策只在拥有它的函数里写、退化单向、idle 证明在 forced 之前",
+        ["python3", "tools/check_rc_plan.py"], timeout=60,
+        ok_msg=ok_first(r"^ok rc plan"),
+        bad_msg="tools/check_rc_plan.py（RcPlan 的决策点被绕过，或判据本身失效）",
+        bad_dump=dump_fail(10)))
 
     # ---- 闸门·槽粒度（8 字节取整）与它的对齐前提 ----
     # 买的是**峰值 RSS**：槽粒度直接决定内部碎片，而 8 是一切类型的自然对齐上界。
@@ -978,7 +990,7 @@ def build_items() -> list:
         bad_msg="tools/check_par_tls_owner.py（parTls 归属判定/三态触发/区域丢弃或缺红自测失效）",
         bad_dump=dump_fail(12)))
     # ---- 闸门·协程帧字段根：step 的帧字段进根表、块 arena 归帧自己 -------------------
-    # 协程帧由调用者复合字面量建、跨 yield 活下来；整函数 rcRootsUnreliable 会让它一个触发都不发。
+    # 协程帧由调用者复合字面量建、跨 yield 活下来；整函数 rc.rootsUnreliable 会让它一个触发都不发。
     # 判据跑真实发射（coro_frame_cycle + 普通程序），--selftest 九条注入全红。
     items.append(cmd(
         "gate-coro-frame-roots", "gate",

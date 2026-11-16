@@ -182,6 +182,84 @@ typedef struct {
     bool        quiet;
 } PrimEnt;
 
+/**
+ * @brief The reclamation plan of one translation unit: every decision about *whether* and
+ *        *how* the unit reclaims, in one value computed in one place (`rcPlanDecide`).
+ *
+ * The emission sites ask questions about this value, never switch on rules of their own: a
+ * site asks "does the plan say a runtime is emitted" and never re-derives the answer from the
+ * shape of the program it happens to be looking at. Two classes of past bug came from the
+ * opposite arrangement -- a site that decided for itself, and a pruning step whose position in
+ * the sequence was load-bearing without saying so (the v30 regression: moving the `rc.forced`
+ * early return above the idle proof skipped the proof for every unit built with the switch on).
+ * `tools/check_rc_plan.py` holds the line: the only functions allowed to write these fields are
+ * the ones named in its table, and that table is the document.
+ */
+typedef struct RcPlan {
+    /* The reclamation runtime (bitmap slab + holder counts + region sweep) is enabled: the
+     * runtime text goes into the prologue, `new` takes its storage from an rc region claimed by
+     * arena address, and reference stores emit count updates.
+     *
+     * **On by default**, but the runtime is emitted only when the program has an allocation site
+     * the collector governs (`rcPlanDecide`: `new T`, `alloc<T>(n)`, and the single-value
+     * cells of `@overwrite`). A program without such a site (400-odd golden files) therefore
+     * generates byte-identical C, and a program with one gets all four layers.
+     *
+     * `EXTC_RECLAIM=0` turns it off (for comparison and troubleshooting); `EXTC_RECLAIM=1`
+     * **forces** emission regardless of allocation sites -- the switch-oriented gates
+     * (`tests/reclaim-shapes/run-switch.sh`, `tests/reclaim-perf/`) want exactly the "switch on"
+     * setting, whether or not there is an allocation site. */
+    bool        reclaim;
+    /* set when `EXTC_RECLAIM` has a non-zero value: the last pruning in `rcPlanDecide` ("no governed
+     * allocation point => no runtime") is skipped, so a switch-oriented gate gets a runtime on a shape
+     * that allocates nothing the collector could reclaim. The idle proof still runs first. */
+    bool        forced;
+    /* Criterion (d) of the idle proof -- "the unit does not drop live **memory** either".
+     *
+     * Criteria (a)(b)(c) ask about references, so a unit whose only garbage is a replaced array
+     * (`b = new u8[64MiB]` inside a loop, with `b` declared in the function body) has no reference
+     * site at all and those three criteria hold on it. With the reference criteria alone such a unit
+     * emits no runtime and every `new` lands in the frame arena, where the generation the round
+     * replaced stays until the function returns: the peak then follows the round count instead of the
+     * live set.
+     *
+     * Set by `rcPlanDecide` when such a site exists. It keeps the unit out of the idle tier (a
+     * runtime is emitted) and out of the event tier: the event tier frees an object when its holder
+     * count reaches zero, and an array of bytes has no holders to count, so only the sweep tier can
+     * reclaim it. */
+    bool        memGrowth;
+    /* `EXTC_RC_SHARDS=N`: the **shard count** of the reclamation runtime (the pause knob);
+     * default 1.
+     *
+     * A shard = one logical region (claimed by the arena's address) split into N **runtime
+     * regions**: each shard has its own slab chain, its own cross-region registration bitmap
+     * (`rsbit`, the per-shard in-edge set `SRS` of the prototype) and its own mark stack, so it
+     * can be swept **on its own** -- the pause is proportional to the reachable set of the shard
+     * being collected, independent of the size of the logical region.
+     *
+     * The shard number is fixed by **allocation site** (`rcSite++ % rcNShard`), not by live set
+     * or object count: everything one `new` site produces (a list, a cycle, one generation of
+     * tree nodes) always lands in the same shard, so lists and cycles inside a shard stay whole.
+     * Splitting by live set would tear a list and a cycle into two shards; once a cross-shard
+     * registration bit is set, cyclic garbage would forever be a seed and the bound would grow
+     * with every round (the prototype's throughput suffered as well).
+     *
+     * With N == 1 a logical region still has exactly one runtime region: every emission site
+     * below takes the original branch and the generated C is **byte-identical** to the one
+     * without sharding. N > 1 only claims more regions; not a character of the runtime text
+     * changes -- cross-region registration, source-side cancellation and per-region sweeping are
+     * all existing machinery, and a shard *is* a region. */
+    int         nShard;
+    /* `EXTC_RC_NOCOUNT=1`: the count entry points compile to a no-op (collection relies on
+     * sweeping alone). See the `#if` in reclaim.c. */
+    int         noCount;
+    /* `EXTC_RC_SWEEPFREE=1`: the event setting (no sweep); see the switch below. */
+    int         sweepFree;
+    /* Degradation flag: the static root table is not complete (more than 4096 slots),
+     * so trigger points act as if every root were unenumerable. */
+    bool        rootsUnreliable;
+} RcPlan;
+
 typedef struct {
     Arena      *arena;
     Ctx        *ctx;
@@ -457,69 +535,10 @@ typedef struct {
     /* Does the program declare a pool extern? Then the registry runtime is emitted, and
      * every place that can create one carries the two hooks that key its pools to it. */
     bool        needPool;
-    /* The reclamation runtime (bitmap slab + holder counts + region sweep) is enabled: the
-     * runtime text goes into the prologue, `new` takes its storage from an rc region claimed by
-     * arena address, and reference stores emit count updates.
-     *
-     * **On by default**, but the runtime is emitted only when the program has an allocation site
-     * the collector governs (`scanUnitReclaim`: `new T`, `alloc<T>(n)`, and the single-value
-     * cells of `@overwrite`). A program without such a site (400-odd golden files) therefore
-     * generates byte-identical C, and a program with one gets all four layers.
-     *
-     * `EXTC_RECLAIM=0` turns it off (for comparison and troubleshooting); `EXTC_RECLAIM=1`
-     * **forces** emission regardless of allocation sites -- the switch-oriented gates
-     * (`tests/reclaim-shapes/run-switch.sh`, `tests/reclaim-perf/`) want exactly the "switch on"
-     * setting, whether or not there is an allocation site. */
-    bool        needReclaim;
-    /* set when `EXTC_RECLAIM` has a non-zero value: the last pruning in `scanUnitReclaim` ("no governed
-     * allocation point => no runtime") is skipped, so a switch-oriented gate gets a runtime on a shape
-     * that allocates nothing the collector could reclaim. The idle proof still runs first. */
-    bool        rcForced;
-    /* Criterion (d) of the idle proof -- "the unit does not drop live **memory** either".
-     *
-     * Criteria (a)(b)(c) ask about references, so a unit whose only garbage is a replaced array
-     * (`b = new u8[64MiB]` inside a loop, with `b` declared in the function body) has no reference
-     * site at all and those three criteria hold on it. With the reference criteria alone such a unit
-     * emits no runtime and every `new` lands in the frame arena, where the generation the round
-     * replaced stays until the function returns: the peak then follows the round count instead of the
-     * live set.
-     *
-     * Set by `scanUnitReclaim` when such a site exists. It keeps the unit out of the idle tier (a
-     * runtime is emitted) and out of the event tier: the event tier frees an object when its holder
-     * count reaches zero, and an array of bytes has no holders to count, so only the sweep tier can
-     * reclaim it. */
-    bool        rcMemGrowth;
-    /* `EXTC_RC_SHARDS=N`: the **shard count** of the reclamation runtime (the pause knob);
-     * default 1.
-     *
-     * A shard = one logical region (claimed by the arena's address) split into N **runtime
-     * regions**: each shard has its own slab chain, its own cross-region registration bitmap
-     * (`rsbit`, the per-shard in-edge set `SRS` of the prototype) and its own mark stack, so it
-     * can be swept **on its own** -- the pause is proportional to the reachable set of the shard
-     * being collected, independent of the size of the logical region.
-     *
-     * The shard number is fixed by **allocation site** (`rcSite++ % rcNShard`), not by live set
-     * or object count: everything one `new` site produces (a list, a cycle, one generation of
-     * tree nodes) always lands in the same shard, so lists and cycles inside a shard stay whole.
-     * Splitting by live set would tear a list and a cycle into two shards; once a cross-shard
-     * registration bit is set, cyclic garbage would forever be a seed and the bound would grow
-     * with every round (the prototype's throughput suffered as well).
-     *
-     * With N == 1 a logical region still has exactly one runtime region: every emission site
-     * below takes the original branch and the generated C is **byte-identical** to the one
-     * without sharding. N > 1 only claims more regions; not a character of the runtime text
-     * changes -- cross-region registration, source-side cancellation and per-region sweeping are
-     * all existing machinery, and a shard *is* a region. */
-    int         rcNShard;
-    /* `EXTC_RC_NOCOUNT=1`: the count entry points compile to a no-op (collection relies on
-     * sweeping alone). See the `#if` in reclaim.c. */
-    int         rcNoCount;
     /* `EXTC_RC_LOCALSTORE` (**on by default**, `=0` is the kill switch): local and parameter
      * slots (`owner == 0`) go through the dedicated entry `extc_rc_storeRefLocal`, which skips the
      * two `ownSlab` calls that the non-counting setting leaves useless. */
     int         rcLocalStore;
-    /* `EXTC_RC_SWEEPFREE=1`: the event setting (no sweep); see the switch below. */
-    int         rcSweepFree;
     /* Allocation-site counter: shard number = `rcSite++ % rcNShard`. It is bumped once per
      * emitted rc allocation expression, so one `new` always keeps the same shard number in the
      * whole product (two compilations agree). */
@@ -535,7 +554,7 @@ typedef struct {
     struct {
         int64_t nRef, nRefLoop, nAlloc, nAllocLoop, rootSlotsMax;
     }           dbgRc[72];
-    /* Compile-time state of the reclamation runtime (meaningful only when `needReclaim` is on).
+    /* Compile-time state of the reclamation runtime (meaningful only when `rc.reclaim` is on).
      *
      * `rcRoots` is the **static root table**: the C expressions of the reference slots live in the
      * current scope (`saved`, `c.a`, `arr[i].next`). A slot is pushed when it is declared and the
@@ -544,7 +563,7 @@ typedef struct {
      * point. At a trigger point both are joined into one root table handed to
      * `extc_rc_maybeCollect`.
      *
-     * `rcRootsUnreliable`: this function holds reference stores that cannot be enumerated
+     * `rc.rootsUnreliable`: this function holds reference stores that cannot be enumerated
      * statically (enum payloads, generic enums, coroutine frames, ...). **An incomplete root table
      * is never used**: the trigger point is skipped rather than risk a missing root and a wrong
      * release. */
@@ -589,8 +608,11 @@ typedef struct {
      * of a lambda environment whose type depends on a type parameter. */
     const char *lamCtx;
     Vec         rcGlobalRoots;   /* const char *: global reference slots */
+    /* The reclamation plan of this unit: whether a runtime is emitted at all, which tier,
+     * the shard count, and the two degradation flags. Written by `rcPlanDecide`; every
+     * emission site below reads it as `g->rc.<field>`. */
+    RcPlan      rc;
     bool        rcGlobalsUnreliable; /* a global holds reference stores that cannot be enumerated => turn triggers off in every function */
-    bool        rcRootsUnreliable;
     /* Whether the function being generated takes the hidden "home arena" parameter
      * (= `planUsesHome(f)`).
      *
@@ -1334,7 +1356,7 @@ static void genViewCopier(CG *g, Type *inst, bool unchecked) {
      * Element types with no reference slots keep the plain `memmove` (the common `u8` copy).
      * The acyclicity criterion (iv) is told about this separately: the scan cannot see a byte move
      * (`acScanExpr` in `src/check/check_top.c` marks such a unit as not acyclic). */
-    if (g->needReclaim && typeHasRefSlots(g, elem))
+    if (g->rc.reclaim && typeHasRefSlots(g, elem))
         cgLine(g, "for (int64_t __extc_bk = 0; __extc_bk < n; __extc_bk++)"
                   " extc_rc_storeStructCopy((void *)&d.data[__extc_bk], sizeof(%s), (void *)d.data);",
                cType(g, elem));
@@ -2488,8 +2510,8 @@ static bool cgHasImplicitArgs(const FuncDef *callee) {
  *              value that was received).
  */
 static const char *homeOwnArg(CG *g, const Expr *site, int hlvl) {
-    if (!g->needReclaim || g->parTls || g->coroFunc) return "0";
-    if (g->rcRootsUnreliable) return "0";
+    if (!g->rc.reclaim || g->parTls || g->coroFunc) return "0";
+    if (g->rc.rootsUnreliable) return "0";
     if (g->rcGlobalRoots.len + g->rcRoots.len > 0) return "0";
     if (!site || site != g->topExpr) return "0";
     if (g->inMain) return "1";                      /* main's arena belongs to main itself */
@@ -2542,8 +2564,8 @@ static void cgImplicitArgs(CG *g, Buf *b, const FuncDef *callee, const Expr *sit
         /* The ownership-delegation flag: it follows the home arena argument and both sides must emit it
          * (see `homeOwnArg`). The callee uses it to decide whether its own static root table
          * qualifies to sweep on the spot, so it exists only in a translation unit with
-         * `needReclaim`. */
-        if (g->needReclaim) {
+         * `rc.reclaim`. */
+        if (g->rc.reclaim) {
             if (n) bufPuts(b, ", ");
             bufPuts(b, forSignature ? "EXTC_UNUSED int32_t __extc_homeOwn"
                                     : homeOwnArg(g, site, hlvl));
@@ -3628,7 +3650,7 @@ static const char *exConv(CG *g, Expr *e) {
  * function's parameters + the globals.
  *
  * Two safety directions:
- *  - **Emit no trigger at all while the root table is incomplete** (`rcRootsUnreliable`):
+ *  - **Emit no trigger at all while the root table is incomplete** (`rc.rootsUnreliable`):
  *    skipping a sweep is better than missing a root and freeing a live object. Storage that
  *    cannot be expanded statically, such as enum payloads, generic enums and coroutine frames,
  *    counts as incomplete.
@@ -3879,12 +3901,12 @@ static void rcCollectOffsets(CG *g, Type *t, const char *base, Vec *out, int dep
  * scan them linearly (about 40 Ir per allocation across the eight node-allocation points of
  * `shard_bands`, a third of that shape's cost).
  *
- * @param g  The generator; returns an empty descriptor while `needReclaim` is off.
+ * @param g  The generator; returns an empty descriptor while `rc.reclaim` is off.
  * @param t  The allocated type.
  * @return   A C expression pointing at an `ExtcRcType`.
  */
 static const char *rcEmitTypeDesc(CG *g, Type *t) {
-    if (!g->needReclaim || g->prefixBlk == 0) return "(const ExtcRcType *)0";
+    if (!g->rc.reclaim || g->prefixBlk == 0) return "(const ExtcRcType *)0";
     RcScan sc = rcScanType(g, t, 0);
     if (sc == RC_NO_REFS) return "(const ExtcRcType *)0";
     if (sc == RC_CONSERVATIVE) return "((const ExtcRcType *)-1)";
@@ -4009,7 +4031,7 @@ static void dbgRcSite(CG *g, int lvl, int kind) {
 static void dbgRcCostReport(CG *g) {
     if (!g->dbgCost) return;
     fprintf(stderr, "[rccost] unit needReclaim=%d noCount=%d sweepFree=%d shards=%d\n",
-            g->needReclaim, g->rcNoCount, g->rcSweepFree, g->rcNShard > 0 ? g->rcNShard : 1);
+            g->rc.reclaim, g->rc.noCount, g->rc.sweepFree, g->rc.nShard > 0 ? g->rc.nShard : 1);
     fprintf(stderr, "[rccost] %-4s %8s %10s %8s %12s %9s\n",
             "lvl", "ref", "refInLoop", "alloc", "allocInLoop", "rootMax");
     int64_t tr = 0, trl = 0, ta = 0, tal = 0, trm = 0;
@@ -4107,7 +4129,7 @@ static size_t rcRootTableTextSkip(CG *g, Buf *b, size_t skipLocal) {
  *                 is `lvl * shard count + k`.
  */
 static void rcEmitOweNow(CG *g, const char *basePtr, int lvl) {
-    if (g->rcNShard <= 1) {
+    if (g->rc.nShard <= 1) {
         const char *rr = rcRegionRef(g, basePtr);
         if (rr) {
             pfLine(g, "{ if (extc_rc_shouldSweep(%s)) extc_rc_owe(%s); }", rr, rr);
@@ -4125,7 +4147,7 @@ static void rcEmitOweNow(CG *g, const char *basePtr, int lvl) {
               " ExtcRcRegion *__extc_rcw = extc_rc_regionOf((void *)((char *)(%s) + __extc_rcwk),"
               " (int32_t)(%d + __extc_rcwk));"
               " if (extc_rc_shouldSweep(__extc_rcw)) extc_rc_owe(__extc_rcw); } }",
-           g->rcNShard, basePtr, lvl * g->rcNShard);
+           g->rc.nShard, basePtr, lvl * g->rc.nShard);
 }
 
 /** @brief Entry point for the bookkeeping when the region is not owned; the TLS state does not
@@ -4162,13 +4184,13 @@ static void rcEmitOwe(CG *g, const char *basePtr, int lvl) {
  *                 frame's root table is incomplete and cannot settle).
  */
 static void rcEmitOwedCheck(CG *g, const char *basePtr, int lvl, RcOwn own) {
-    if (!g->needReclaim || g->rcRootsUnreliable || g->prefixBlk == 0) return;
-    if (g->rcGlobalRoots.len + g->rcRoots.len > 4096) { g->rcRootsUnreliable = true; return; }
+    if (!g->rc.reclaim || g->rc.rootsUnreliable || g->prefixBlk == 0) return;
+    if (g->rcGlobalRoots.len + g->rcRoots.len > 4096) { g->rc.rootsUnreliable = true; return; }
     Buf b;
     bufInit(&b, g->arena);
     size_t n = rcRootTableText(g, &b);
     const char *ownCond = own == RC_OWN_TLS ? "__extc_tlsOwner && " : "";
-    if (g->rcNShard <= 1) {
+    if (g->rc.nShard <= 1) {
         const char *rr = rcRegionRef(g, basePtr);
         if (rr) {
             pfLine(g, "{ if (%sextc_rc_owed(%s)) extc_rc_checkOwed(%s, %s, %zu); }",
@@ -4184,7 +4206,7 @@ static void rcEmitOwedCheck(CG *g, const char *basePtr, int lvl, RcOwn own) {
               " ExtcRcRegion *__extc_rcc = extc_rc_regionOf((void *)((char *)(%s) + __extc_rcck),"
               " (int32_t)(%d + __extc_rcck));"
               " if (%sextc_rc_owed(__extc_rcc)) extc_rc_checkOwed(__extc_rcc, %s, %zu); } }",
-           g->rcNShard, basePtr, lvl * g->rcNShard, ownCond, bufCstr(&b), n);
+           g->rc.nShard, basePtr, lvl * g->rc.nShard, ownCond, bufCstr(&b), n);
 }
 
 /**
@@ -4219,12 +4241,12 @@ static void rcEmitOwedCheck(CG *g, const char *basePtr, int lvl, RcOwn own) {
  */
 static void rcEmitTriggerNow(CG *g, const char *basePtr, int lvl) {
     size_t n = g->rcGlobalRoots.len + g->rcRoots.len;
-    if (n > 4096) { g->rcRootsUnreliable = true; return; }
+    if (n > 4096) { g->rc.rootsUnreliable = true; return; }
     Buf b;
     bufInit(&b, g->arena);
     n = rcRootTableText(g, &b);
     const char *rg = arenaPrintf(g->arena, "__extc_rcg%d", g->rcGuardSeq++);
-    if (g->rcNShard <= 1) {
+    if (g->rc.nShard <= 1) {
         /* Single shard: byte-identical to the non-sharded wiring (the claim key is the region base
      * address). */
         const char *rr = rcRegionRef(g, basePtr);
@@ -4268,8 +4290,8 @@ static void rcEmitTriggerNow(CG *g, const char *basePtr, int lvl) {
               " int64_t %s = extc_rc_garbageHint(%s);"
               " if (!%s || %s > %s) { %s = %s; %s = %s; } }"
               " if (%s) extc_rc_maybeCollect(%s, %s, %zu); }",
-           rb, rbg, ck, ck, g->rcNShard, ck, rg, basePtr, ck, lvl * g->rcNShard, ck,
-           rg, g->rcNShard, rg,
+           rb, rbg, ck, ck, g->rc.nShard, ck, rg, basePtr, ck, lvl * g->rc.nShard, ck,
+           rg, g->rc.nShard, rg,
            gd, rg, rb, gd, rbg, rb, rg, rbg, gd,
            rb, rb, bufCstr(&b), n);
 }
@@ -4289,7 +4311,7 @@ static void rcEmitTriggerNow(CG *g, const char *basePtr, int lvl) {
  * @param own      The trigger route.
  */
 static void rcEmitTrigger(CG *g, const char *basePtr, int lvl, RcOwn own) {
-    if (!g->needReclaim || g->rcRootsUnreliable || g->prefixBlk == 0) return;
+    if (!g->rc.reclaim || g->rc.rootsUnreliable || g->prefixBlk == 0) return;
     if (own == RC_OWN_YES) { rcEmitTriggerNow(g, basePtr, lvl); return; }
     if (own == RC_OWN_NO) {
         /* The other half of ownership delegation (`homeOwnArg`): this frame does not own the home arena,
@@ -4351,7 +4373,7 @@ static void rcEmitTrigger(CG *g, const char *basePtr, int lvl, RcOwn own) {
 static const char *rcAllocCore(CG *g, const char *basePtr, int lvl, RcOwn own,
                                const char *bytesExpr, const char *td) {
     dbgRcSite(g, lvl, 1);
-    int nsh = g->rcNShard > 0 ? g->rcNShard : 1;
+    int nsh = g->rc.nShard > 0 ? g->rc.nShard : 1;
     int k = g->rcSite++ % nsh;
     rcEmitTrigger(g, basePtr, lvl, own);
     if (nsh == 1) {
@@ -4380,7 +4402,7 @@ static const char *rcAllocCore(CG *g, const char *basePtr, int lvl, RcOwn own,
  */
 static void rcRootLeaves(CG *g, Type *t, const char *base, int depth) {
     if (!t || depth > 16) return;
-    if (g->rcRoots.len > 4096) { g->rcRootsUnreliable = true; return; }
+    if (g->rcRoots.len > 4096) { g->rc.rootsUnreliable = true; return; }
     t = subst(g, t);
     if (!t) return;
     switch (t->kind) {
@@ -4399,7 +4421,7 @@ static void rcRootLeaves(CG *g, Type *t, const char *base, int depth) {
             Variant *v = *(Variant **)vecAt(&t->edef->variants, i);
             for (size_t k = 0; k < v->types.len; k++) {
                 Type *pt = *(Type **)vecAt(&v->types, k);
-                if (g->rcRoots.len > 4096) { g->rcRootsUnreliable = true; return; }
+                if (g->rcRoots.len > 4096) { g->rc.rootsUnreliable = true; return; }
                 /* A generic enum instance must substitute its arguments into the payload types (the same
      * technique as the binding in `stMatch`). */
                 if (t->edef->typeParams.len > 0 &&
@@ -4415,7 +4437,7 @@ static void rcRootLeaves(CG *g, Type *t, const char *base, int depth) {
     case TY_ARRAY: {
         Type *e = subst(g, t->inner);
         for (int64_t i = 0; i < t->asize; i++) {
-            if (g->rcRoots.len > 4096) { g->rcRootsUnreliable = true; return; }
+            if (g->rcRoots.len > 4096) { g->rc.rootsUnreliable = true; return; }
             /* An array is a wrapping C struct: its elements are written as `arr.data[i]`. */
             rcRootLeaves(g, e, arenaPrintf(g->arena, "%s.data[%lld]", base, (long long)i), depth + 1);
         }
@@ -4617,7 +4639,7 @@ static bool rcEnumRootable(CG *g, Type *t, int depth, bool *hasRefs) {
  * @param base  The storage's lvalue expression in C.
  */
 static void rcRootDeclImpl(CG *g, Type *t, const char *base, bool isParam) {
-    if (!g->needReclaim || !t) return;
+    if (!g->rc.reclaim || !t) return;
     /* A view slot is a root in its own right: its `data` word may point at an rc block taken by
      * `new T[n]`, and `rcScanType` reports a view as having no reference slots (the elements live
      * behind the pointer, not in the C struct). */
@@ -4636,7 +4658,7 @@ static void rcRootDeclImpl(CG *g, Type *t, const char *base, bool isParam) {
             rcRootLeaves(g, t, base, 0);
             return;
         }
-        g->rcRootsUnreliable = true;
+        g->rc.rootsUnreliable = true;
         return;
     }
     if (sc == RC_NO_REFS) {
@@ -4709,7 +4731,7 @@ static const char *exNew(CG *g, Expr *e) {
          * for a view slot and the marker filters that word through `extc_rc_owns`. A large block
          * does not run into a slab size limit: `extc_rc_alloc` serves it from a slab of its own
          * size class. */
-        if (g->needReclaim) {
+        if (g->rc.reclaim) {
             int lvl = planArenaLevel(e);
             /* Order: the type descriptor first (it must be visible in this statement), then the trigger
              * (it lands before the statement), and the allocation expression last -- all three use
@@ -4744,7 +4766,7 @@ static const char *exNew(CG *g, Expr *e) {
      * and `ARENA_HOME` means the *caller* named the release point, so both are bounded without the
      * collector. Routing those would pay for the runtime and reclaim nothing -- and it would pull units
      * that only hand arrays back to their caller out of the idle tier. */
-    if (g->needReclaim && planArenaLevel(e) == 1) {
+    if (g->rc.reclaim && planArenaLevel(e) == 1) {
         /* The block is an rc slot in the same region the arena would have used; the view's `data`
          * word is registered as a root (see `rcRootLeaves`), which is how the marker reaches it.
          * The reference-field offsets of elements 1..n-1 vary with the run-time count, so a static
@@ -4859,7 +4881,7 @@ static const char *exGencall(CG *g, Expr *e) {
      * with reclamation on it must be a slab slot too, for exactly the reason given at `exNew` (a
      * region is claimed by the arena's address). The pool/plate cases want the pool's own plate
      * and are not this path's concern. */
-    if (g->needReclaim) {
+    if (g->rc.reclaim) {
         int lvl = planArenaLevel(e);
         Type *et = subst(g, *(Type **)vecAt(&e->u.gencall.targs, 0));
         /* A block of `n` elements: the reference-field offsets of elements 1..n-1 vary with the
@@ -5935,7 +5957,7 @@ static bool rcPreExpr(void *ctx, Expr *e);
  * @param body  The function body statement.
  */
 static void rcPredeclare(CG *g, Stmt *body) {
-    if (!g->needReclaim || !body) return;
+    if (!g->rc.reclaim || !body) return;
     /* A coroutine body is a `switch (pc)` + `goto` resume state machine: resuming can **jump into**
      * the middle of the body, so a local computed once at function entry is uninitialized on the
      * path that skips it (gcc reports `-Wmaybe-uninitialized`). Allocations inside a coroutine
@@ -6424,7 +6446,7 @@ static void cgCoroArenaDestroy(CG *g) {
     if (!g->coroFunc) return;
     int n = 1 + blkMaxOfBlock(((FuncDef *)g->coroFunc)->body);
     for (int lv = 1; lv <= n; lv++) {
-        if (g->needReclaim)
+        if (g->rc.reclaim)
             cgLine(g, "extc_rc_regionDrop((void *)&%s->arena%d);", g->coroFrame, lv);
         cgLine(g, "extc_arena_destroy(&%s->arena%d);", g->coroFrame, lv);
     }
@@ -7182,7 +7204,7 @@ static void rcNoteFreshLocal(CG *g, Stmt *s) {
      * level land on different shards by allocation point -- the statically given region need not be
      * the one holding the host (`cross_region_elem` peaks at 2.77x with SHARDS=8, so the
      * registration missed it). A coroutine body is the same (region locals are not hoisted). */
-    if (!g->needReclaim || g->coroFunc || g->rcNShard > 1) return;
+    if (!g->rc.reclaim || g->coroFunc || g->rc.nShard > 1) return;
     if (g->rcFreshN >= 64) return;
     Expr *init = s->u.var.init;
     if (!init || init->kind != EX_NEW || init->u.new_.count) return;
@@ -7283,15 +7305,15 @@ static bool rcEmitStoreRelease(CG *g, const char *tgt, const char *tgtName,
      * the whole live set from the other roots), so keeping it in the event tier costs without
      * paying: shapes such as tail insertion would pay a full marking on every assignment. The
      * criterion hangs on the event tier's memory gate (`gate-event-bounded`). */
-    if (g->rcSweepFree == 1) return false;
-    if (!g->needReclaim || g->rcRootsUnreliable || g->coroFunc) return false;
+    if (g->rc.sweepFree == 1) return false;
+    if (!g->rc.reclaim || g->rc.rootsUnreliable || g->coroFunc) return false;
     /* Sharding (`EXTC_RC_SHARDS` > 1): marking starts only from the roots of **this one shard
      * region** plus the cross-region seeds, so an object that only live objects in another shard
      * point at cannot be marked => it would be taken for "reachable from the old value alone" and
      * released (dangling). Under sharding `rcNoteFreshLocal` registers nothing anyway => nothing
      * can be emitted here; blocking it explicitly keeps the **code and this comment from one
      * source**, instead of relying on a side effect elsewhere. */
-    if (g->rcNShard > 1) return false;
+    if (g->rc.nShard > 1) return false;
     if (g->loopLen <= 0) return false;                       /* 1 */
     if (!value || value->kind != EX_IDENT) return false;
     const char *vn = planCName(value) ? planCName(value) : value->u.ident.name;
@@ -7405,7 +7427,7 @@ static bool rcLinkStmt(void *ctx, Stmt *s) {
     CG *g = (CG *)ctx;
     Expr *tgt = (s && s->kind == ST_ASSIGN) ? s->u.assign.target : NULL;
     Expr *ve  = (s && s->kind == ST_ASSIGN) ? s->u.assign.value : NULL;
-    if (tgt && ve && !s->u.assign.op && ve->kind == EX_IDENT && g->needReclaim &&
+    if (tgt && ve && !s->u.assign.op && ve->kind == EX_IDENT && g->rc.reclaim &&
         tgt->type && cgIsRefType(g, tgt->type)) {
         Expr *base = NULL;
         if (cgSlotHost(g, tgt, &base) == RC_HOST_OBJ) {
@@ -7433,7 +7455,7 @@ static bool rcLinkExpr(void *ctx, Expr *e) {
  */
 static void rcScanLinked(CG *g, Stmt *body) {
     vecInit(&g->rcLinked, g->arena, sizeof(const char *));
-    if (!body || !g->needReclaim) return;
+    if (!body || !g->rc.reclaim) return;
     AstVisit v = { rcLinkExpr, rcLinkStmt, g };
     astWalkStmtChildren(body, &v);
 }
@@ -7454,7 +7476,7 @@ static void rcScanLinked(CG *g, Stmt *body) {
  * sweep/mixed tier would remove a live write barrier.
  */
 static void cgInitRefStore(CG *g, const char *slotExpr) {
-    if (g->rcSweepFree == 1 && !g->rcNoCount) {
+    if (g->rc.sweepFree == 1 && !g->rc.noCount) {
         cgLine(g, "extc_rc_inc((void *)(%s));", slotExpr);
         return;
     }
@@ -7546,12 +7568,12 @@ static void cgValueRefStore(CG *g, Type *t, const char *dstBase, const char *src
  * @param lvl  The block level (1 = the function body).
  */
 static void cgReclaimDropArena(CG *g, int lvl) {
-    if (!g->needReclaim) return;
+    if (!g->rc.reclaim) return;
     /* This function never referenced this level (it neither allocated nor handed it out as a home)
      * => this arena cannot have a region and the `regionDrop` would only scan the registry for
      * nothing. Skip it. */
     if (lvl >= 1 && !(g->rcArenaUsed & (1u << lvl))) return;
-    if (g->rcNShard <= 1) {
+    if (g->rc.nShard <= 1) {
         /* single shard: one region, one drop -- the same text either way */
         if (g->coroFunc)
             cgLine(g, "extc_rc_regionDrop((void *)&%s->arena%d);", g->coroFrame, lvl);
@@ -7561,7 +7583,7 @@ static void cgReclaimDropArena(CG *g, int lvl) {
     }
     const char *ar = g->coroFunc ? arenaPrintf(g->arena, "%s->arena%d", g->coroFrame, lvl)
                                  : arenaPrintf(g->arena, "__extc_a[%d]", lvl);
-    for (int k = 0; k < g->rcNShard; k++)
+    for (int k = 0; k < g->rc.nShard; k++)
         cgLine(g, "extc_rc_regionDrop((void *)((char *)&%s + %d));", ar, k);
 }
 
@@ -7634,7 +7656,7 @@ if (planCName(s) && s->u.var.init && s->u.var.init->kind == EX_CALL &&
         g->needPool = true;      /* the task table brings the zone runtime with it */
         /* A coroutine frame can hold reference slots, and the static root table does not enumerate the
      * frame => no trigger is emitted for this function (the safe direction). */
-        if (g->needReclaim) g->rcRootsUnreliable = true;
+        if (g->rc.reclaim) g->rc.rootsUnreliable = true;
         return;
     }
     const bool hasZone = planCoroNeedsZone(cf);
@@ -7679,7 +7701,7 @@ if (planCName(s) && s->u.var.init && s->u.var.init->kind == EX_CALL &&
     if (hasZone) cgLine(g, "extc_zoneTop = __extc_czsv%d;", sq);
     /* The frame is a value local and can hold reference slots; the static root table does not
      * enumerate the synthesized frame => this function turns triggers off (the safe direction). */
-    if (g->needReclaim) g->rcRootsUnreliable = true;
+    if (g->rc.reclaim) g->rc.rootsUnreliable = true;
     return;
 }
 /* A frame field is not declared here: the frame struct holds it, and the assignment is
@@ -7698,7 +7720,7 @@ if (g->coroFunc && planCName(s)) {
             /* A frame field is an **existing** slot (the frame is a compound literal, so pointer fields
              * read as 0) and a resume re-runs this initialization => overwrite semantics, through
              * storeRef: decrement the old value, increment the new one. */
-            if (g->needReclaim && cgIsRefType(g, s->type))
+            if (g->rc.reclaim && cgIsRefType(g, s->type))
                 cgLine(g, "extc_rc_storeRef((void **)&%s->%s, (void *)(%s));",
                        g->coroFrame, planCName(s), v);
             else
@@ -7770,7 +7792,7 @@ if (s->u.var.overwrite) {
              * have a reference type too, and a pointer into the arena reaching the counting functions
              * would read garbage. The region is claimed by the cell's home arena and lives as long as
              * that arena. */
-            if (g->needReclaim) {
+            if (g->rc.reclaim) {
                 /* Type descriptor + sweep trigger, placed before the allocating statement: this storage also comes
                  * from an rc region, the descriptor is stored with the slot, and the region claim key the
                  * trigger uses matches the `extc_rc_alloc` below (the same shard number, see
@@ -7903,18 +7925,18 @@ localDef(g, lb, nm, 1);
  * bit: a bit on the target object's position, and the sweep walks the bitmap in order when seeding.
  * Registering too much is the safe direction (it only keeps an object alive longer); registering too
  * little is a missed root. */
-if (g->needReclaim && !s->u.var.isGlobal && cgIsRefType(g, s->type)) {
+if (g->rc.reclaim && !s->u.var.isGlobal && cgIsRefType(g, s->type)) {
     dbgRcSite(g, g->blkLevel, 0);
     /* The no-hold entry is a **no-count-tier** optimisation only: the count tier's cascade
      * decrements a slot's target when the slot's object dies, so every pointer stored into a slot
      * has to be counted exactly once -- NoHold would leave that decrement without an increment and
      * free the target early. In the count tier the plain `initRef` is emitted even where the
      * checker proved the old value dead. */
-    if (planRcNoDec(g->curFunc) && g->rcNoCount)
+    if (planRcNoDec(g->curFunc) && g->rc.noCount)
         cgLine(g, "extc_rc_initRefNoHold((void **)&%s, (void *)%s);", nm, nm);
     else
         cgInitRefStore(g, nm);
-} else if (g->needReclaim && !s->u.var.isGlobal && s->u.var.init) {
+} else if (g->rc.reclaim && !s->u.var.isGlobal && s->u.var.init) {
     /* A **whole-value** declaration's reference leaves (`var b: wrap = wrap { n: keeper }`) need
      * accounting too: a bare C initialization emits no `inc` at all, so `b.n` is another way for "the
      * slot was written without accounting" (the same hole as the assignment side). With no
@@ -8694,8 +8716,8 @@ for (size_t i = 0; i < s->u.match.arms.len; i++) {
          * block-registered mechanism of the static root table cannot cover it. So when the bound type
          * contains a reference slot, this function is treated as having an incomplete root table and
          * emits no trigger at all (the safe direction). */
-        if (g->needReclaim && bt && rcScanType(g, bt, 0) != RC_NO_REFS)
-            g->rcRootsUnreliable = true;
+        if (g->rc.reclaim && bt && rcScanType(g, bt, 0) != RC_NO_REFS)
+            g->rc.rootsUnreliable = true;
         size_t beforeBind = g->out->len;
         cgLine(g, "%s %s = %s.u.%s._%zu;", cType(g, bt), *(const char **)vecAt(&arm->binds, k),
                subj, arm->variant, k);
@@ -8931,7 +8953,7 @@ static void genStmtInner(CG *g, Stmt *s) {
              * `p`, and a local or global slot passes nothing (those are roots covered by the trigger
              * point's root table). The object expression must be a **pure place**, or it is evaluated
              * twice at the same spot (`f()->f = v` would call `f()` twice). */
-            const bool refStore = g->needReclaim && !s->u.assign.op
+            const bool refStore = g->rc.reclaim && !s->u.assign.op
                                   && cgIsRefType(g, s->u.assign.target->type);
             /* A **whole-value** store (a struct or fixed-size array copied by value): the target slot is not a
              * reference type itself, but its payload can hold reference leaves
@@ -8943,7 +8965,7 @@ static void genStmtInner(CG *g, Stmt *s) {
              * argument carrying a reference) => the conservative per-word path (increment only, plus
              * registration or dropping out of sweeping). */
             Type *rawTT = s->u.assign.target ? s->u.assign.target->type : NULL;
-            const RcScan valScan = (g->needReclaim && !s->u.assign.op && !refStore && rawTT)
+            const RcScan valScan = (g->rc.reclaim && !s->u.assign.op && !refStore && rawTT)
                                        ? rcScanType(g, rawTT, 0) : RC_NO_REFS;
             const bool valueStore = valScan != RC_NO_REFS;
             const char *owner = "0";
@@ -9015,7 +9037,7 @@ static void genStmtInner(CG *g, Stmt *s) {
                  * The no-count tier does not take this path: there the ordinary store is
                  * `storeRefLocal` (a plain write, no `-1`), so the shape is already safe and its
                  * output must stay byte-identical. */
-                if (!g->rcNoCount && cgTargetIsParamSlot(g, s->u.assign.target)) {
+                if (!g->rc.noCount && cgTargetIsParamSlot(g, s->u.assign.target)) {
                     cgLine(g, "extc_rc_initRef((void **)&(%s), (void *)(%s));", tgt, val);
                     return;
                 }
@@ -9049,7 +9071,7 @@ static void genStmtInner(CG *g, Stmt *s) {
                         fprintf(stderr, "[rclevel] host=%s hlvl=%d planLvl=%d eqPlan=%d freshLvl=%d eqFresh=%d\n",
                                 hreg, hlvl, plvl, hlvl == plvl, vlvl, vlvl == hlvl);
                     }
-                    if (g->rcNoCount && vlvl != -2 && vlvl == hlvl)
+                    if (g->rc.noCount && vlvl != -2 && vlvl == hlvl)
                         cgLine(g, "extc_rc_storeRefSameRegion((void **)&(%s), (void *)(%s));", tgt, val);
                     else
                         cgLine(g, "extc_rc_storeRefOwnedReg((void **)&(%s), (void *)(%s), %s);",
@@ -9071,7 +9093,7 @@ static void genStmtInner(CG *g, Stmt *s) {
                  * gated block of `storeRefOwned` does nothing for `so == 0` => emit the write-only entry
                  * point. Placed after `rcEmitStoreRelease`: the point-fix release path goes first,
                  * semantics unchanged. */
-                if (g->rcLocalStore && g->rcNoCount && hostBase == NULL) {
+                if (g->rcLocalStore && g->rc.noCount && hostBase == NULL) {
                     cgLine(g, "extc_rc_storeRefLocal((void **)&(%s), (void *)(%s));", tgt, val);
                     return;
                 }
@@ -10144,7 +10166,7 @@ static void genFuncInner(CG *g, FuncDef *f) {
      * records what it owes. The depth is maintained by each worker chain's prologue and epilogue;
      * trap/exit end the process outright and need no compensation. Frames with `noArena` take no
      * part (their epilogue emits no decrement and their prologue no increment). */
-    bool tlsOwnerFrame = g->needReclaim && g->parTls && !g->noArena && !g->coroFunc;
+    bool tlsOwnerFrame = g->rc.reclaim && g->parTls && !g->noArena && !g->coroFunc;
     if (tlsOwnerFrame)
         cgLine(g, "EXTC_UNUSED int __extc_tlsOwner = (extc_rc_tlsDepth++ == 0);");
     /* The reclamation root table starts over per function: a parameter slot that contains a
@@ -10159,13 +10181,13 @@ static void genFuncInner(CG *g, FuncDef *f) {
      * exit point into the caller's root table, and the seed is complete when the step sweeps only its
      * own block arena. */
     g->rcRoots.len = 0;
-    g->rcRootsUnreliable = g->needReclaim && g->rcGlobalsUnreliable;
-    if (g->needReclaim && !g->coroFunc) {
+    g->rc.rootsUnreliable = g->rc.reclaim && g->rcGlobalsUnreliable;
+    if (g->rc.reclaim && !g->coroFunc) {
         for (size_t i = 0; i < f->params.len; i++) {
             Param *p = *(Param **)vecAt(&f->params, i);
             rcRootDeclImpl(g, p->type, p->cname ? p->cname : p->name, true);
         }
-    } else if (g->needReclaim) {
+    } else if (g->rc.reclaim) {
         const FuncDef *cf = g->coroFunc;
         for (size_t i = 0; i < cf->coroFrame.len; i++) {
             const Param *p = (const Param *)vecAt((Vec *)&cf->coroFrame, i);
@@ -10603,7 +10625,7 @@ static void genParTramp(CG *g, FuncDef *f) {
             /* The ownership-delegation flag is always 0: a thread-local arena's ownership is decided by the
              * run-time depth (`RC_OWN_TLS`), and delegation means "the owner hands the right to sweep to
              * the callee on the spot", which does not apply to the worker chain. */
-            if (g->needReclaim) bufPuts(&args, ", 0");
+            if (g->rc.reclaim) bufPuts(&args, ", 0");
         }
         cgLine(g, "    return (int64_t)%s(id, lo, hi, %s);", f->name, bufCstr(&args));
     }
@@ -12680,11 +12702,11 @@ static void emitPreamble(CG *g, Buf *out, Module *m) {
      *   3 = counted+sweep tier: **both** on (`EXTC_RC_NOCOUNT 0`, `EXTC_RC_SWEEP_FREE 0`); reached
      *       when `EXTC_RC_NOCOUNT=0` forces counting on a cyclic unit, or `EXTC_RC_SWEEPFREE=0`
      *       forbids the event tier. */
-    if (g->needReclaim) {
+    if (g->rc.reclaim) {
         int tier;
-        if (g->rcNoCount == 0 && g->rcSweepFree == 1)        tier = 1;
-        else if (g->rcNoCount == 1 && g->rcSweepFree != 1)   tier = 2;
-        else if (g->rcNoCount == 0 && g->rcSweepFree != 1)   tier = 3;
+        if (g->rc.noCount == 0 && g->rc.sweepFree == 1)        tier = 1;
+        else if (g->rc.noCount == 1 && g->rc.sweepFree != 1)   tier = 2;
+        else if (g->rc.noCount == 0 && g->rc.sweepFree != 1)   tier = 3;
         else                                                 tier = 2;   /* not reachable; keep the sweep label */
         bufPrintf(out, "#define EXTC_RC_TIER %d   /* %s */\n", tier,
                   tier == 1 ? "event tier: holder counting on, region sweeping off"
@@ -12731,14 +12753,14 @@ static void emitPreamble(CG *g, Buf *out, Module *m) {
 static void emitRuntimePrologue(CG *g, Buf *out, Module *m) {
     /* The reclamation runtime: the slab allocator, the holder counts and the region sweep.
      * It is emitted **before** any code that could name it -- its functions are `static` -- and
-     * only when the program has a governed allocation point (`g->needReclaim`, narrowed by
-     * `scanUnitReclaim` from that criterion; `EXTC_RECLAIM=1` forces it on, `=0` off). */
-    if (g->needReclaim) {
+     * only when the program has a governed allocation point (`g->rc.reclaim`, narrowed by
+     * `rcPlanDecide` from that criterion; `EXTC_RECLAIM=1` forces it on, `=0` off). */
+    if (g->rc.reclaim) {
         /* The frame root chain (the [rt:chain] section in reclaim.c) has no emitter pushing into the chain
          * yet, so pushing code would be all dead => passing 0 emits nothing. The place to wire it up
          * is this 0: it becomes the corresponding codegen flag. */
-        reclaimEmitRuntime(g->arena, out, g->rcNoCount, getenv("EXTC_RC_TIME") != NULL,
-                           g->rcSweepFree == 1, g->rcLocalStore == 1, 0);
+        reclaimEmitRuntime(g->arena, out, g->rc.noCount, getenv("EXTC_RC_TIME") != NULL,
+                           g->rc.sweepFree == 1, g->rcLocalStore == 1, 0);
         /* A region is claimed by **the arena's address**. The allocation point already knows which arena
          * it lands on (`arenaRefAt`), so the region's lifetime coincides exactly with that arena's --
          * including the case where the callee allocates with the caller's home arena (the home arena
@@ -13432,7 +13454,7 @@ static void emitGlobals(CG *g, Module *m) {
          * root table must list it. A global is file-level `static`, so its name is visible in every
          * function body. When a type's references cannot be enumerated => every function's trigger is
          * turned off. */
-        if (g->needReclaim && gd->ann) {
+        if (g->rc.reclaim && gd->ann) {
             RcScan sc = rcScanType(g, gd->ann, 0);
             if (sc == RC_CONSERVATIVE) g->rcGlobalsUnreliable = true;
             else if (sc == RC_LEAF_REFS)
@@ -14117,23 +14139,23 @@ static void scanUnitNeeds(CG *g, Module *m) {
     /* The reclamation switch: on by default, `EXTC_RECLAIM=0` turns it off, and a nonzero value forces it
      * **on** (skipping the allocation-point criterion below). The criterion itself is not here -- this
      * pass only sets the intent from the environment, and once `collectEmitted` has picked the functions
-     * that really get emitted, `scanUnitReclaim` narrows it to "is there a reclamation-governed
+     * that really get emitted, `rcPlanDecide` narrows it to "is there a reclamation-governed
      * allocation point". */
     const char *rcEnv = getenv("EXTC_RECLAIM");
-    g->rcForced = rcEnv && *rcEnv && strcmp(rcEnv, "0") != 0;
-    g->needReclaim = !(rcEnv && *rcEnv && strcmp(rcEnv, "0") == 0);
+    g->rc.forced = rcEnv && *rcEnv && strcmp(rcEnv, "0") != 0;
+    g->rc.reclaim = !(rcEnv && *rcEnv && strcmp(rcEnv, "0") == 0);
     /* `EXTC_RC_SHARDS=N`: the reclamation **shard count** (the pause knob), 1 by default. Only a value
      * above 1 cuts each logical region into N run-time regions; 1, unset, empty, non-numeric and
      * out-of-range all mean 1 (single-shard behavior). The ceiling is 64: beyond that the baseline of
      * at least one 1 MiB slab per shard outweighs the pause benefit. */
-    g->rcNShard = 1;
+    g->rc.nShard = 1;
     /* The default is the **no-count** fast path; `EXTC_RC_NOCOUNT=0` restores counting. */
-    g->rcNoCount = 1;
+    g->rc.noCount = 1;
     {
         const char *sh = getenv("EXTC_RC_SHARDS");
         if (sh && *sh) {
             long v = strtol(sh, NULL, 10);
-            if (v > 1) g->rcNShard = (int)(v > 64 ? 64 : v);
+            if (v > 1) g->rc.nShard = (int)(v > 64 ? 64 : v);
         }
     }
     /* `EXTC_RC_LOCALSTORE`: a dedicated entry point for local and parameter slots. **On by default**;
@@ -14160,7 +14182,7 @@ static void scanUnitNeeds(CG *g, Module *m) {
      * that mode too). */
     {
         const char *nc = getenv("EXTC_RC_NOCOUNT");
-        if (nc && *nc && strcmp(nc, "0") == 0) g->rcNoCount = 0;
+        if (nc && *nc && strcmp(nc, "0") == 0) g->rc.noCount = 0;
     }
     /* `EXTC_RC_SWEEPFREE`: the **event tier** -- a program without cycles has nothing to sweep: every
      * unreachable object is freed on the spot when its last holder disappears (the count-reaches-zero
@@ -14177,9 +14199,9 @@ static void scanUnitNeeds(CG *g, Module *m) {
      * it holds, there is no way to compare against the other behavior). */
     {
         const char *sf = getenv("EXTC_RC_SWEEPFREE");
-        g->rcSweepFree = 0;
-        if (sf && *sf) g->rcSweepFree = (strcmp(sf, "0") == 0) ? -1 : 1;
-        if (g->rcSweepFree == 1) g->rcNoCount = 0;
+        g->rc.sweepFree = 0;
+        if (sf && *sf) g->rc.sweepFree = (strcmp(sf, "0") == 0) ? -1 : 1;
+        if (g->rc.sweepFree == 1) g->rc.noCount = 0;
     }
     /* `EXTC_DBG_RCCOST=1`: count rc sites per block level (diagnostic, byte-identical product). */
     if (getenv("EXTC_DBG_RCCOST")) g->dbgCost = 1;
@@ -14516,8 +14538,8 @@ static int unitAllAcyclic(CG *g, Module *m) {
  * @param m  The module; global initializers are inspected from it.
  */
 
-static void scanUnitReclaim(CG *g, Module *m) {
-    if (!g->needReclaim) return;
+static void rcPlanDecide(CG *g, Module *m) {
+    if (!g->rc.reclaim) return;
 
     /* (2) "skip the rc runtime entirely": the whole unit is proved to have no reclamation work => no
      * runtime is emitted **in any tier**.
@@ -14541,10 +14563,10 @@ static void scanUnitReclaim(CG *g, Module *m) {
          * when the enclosing frame returns, so the peak grows with the round count. Such a unit keeps
          * the runtime. */
         if (!unitGrowsMemory(g, m)) {
-            g->needReclaim = false;
+            g->rc.reclaim = false;
             return;
         }
-        g->rcMemGrowth = true;
+        g->rc.memGrowth = true;
         if (dbgOn("EXTC_DBG_IDLEMEM"))
             fprintf(stderr, "[idlemem] idle by (a)(b)(c) but replaces a frame-level array in a loop:"
                             " runtime emitted (sweep tier)\n");
@@ -14557,28 +14579,28 @@ static void scanUnitReclaim(CG *g, Module *m) {
      * outside the group (a container, say) still lives in another shard, and a cross-shard reference
      * still pins the whole cycle. A single-site self-cycle (one allocation point per chain in
      * `shard_bands`) is unaffected => the pause benefit of the shard knob survives. */
-    for (size_t i = 0; i < g->funcs.len && g->rcNShard > 1; i++) {
+    for (size_t i = 0; i < g->funcs.len && g->rc.nShard > 1; i++) {
         FuncDef *f = *(FuncDef **)vecAt(&g->funcs, i);
         if (f && f->body && planFnCrossSiteCycle(f)) {
             if (dbgOn("EXTC_DBG_ZONE"))
                 fprintf(stderr,
                         "[shard] unit has a cycle across sites (fn=%s); refusing to shard\n",
                         f->name ? f->name : "?");
-            g->rcNShard = 1;
+            g->rc.nShard = 1;
         }
     }
-    for (size_t i = 0; i < g->insts.len && g->rcNShard > 1; i++) {
+    for (size_t i = 0; i < g->insts.len && g->rc.nShard > 1; i++) {
         Type *it = *(Type **)vecAt(&g->insts, i);
         if (!it || it->kind != TY_GENERIC || !it->sdef) continue;
         for (size_t j = 0; j < it->sdef->methods.len; j++) {
             FuncDef *md = *(FuncDef **)vecAt(&it->sdef->methods, j);
-            if (md && planUsed(md) && planFnCrossSiteCycle(md)) { g->rcNShard = 1; break; }
+            if (md && planUsed(md) && planFnCrossSiteCycle(md)) { g->rc.nShard = 1; break; }
         }
     }
     /* `EXTC_RECLAIM=1` (`rcForced`) bypasses this last pruning only: the gates that compare "switch on"
      * against "switch off" (`tests/reclaim-shapes/run-switch.sh`, `tests/reclaim-perf/`) need a runtime
      * in the on build even when the shape allocates nothing the collector could reclaim. */
-    if (g->rcForced) return;
+    if (g->rc.forced) return;
     for (size_t i = 0; i < g->funcs.len; i++) {
         FuncDef *f = *(FuncDef **)vecAt(&g->funcs, i);
         if (f && rcBodyHasGovernedAlloc(f->body)) return;
@@ -14598,7 +14620,7 @@ static void scanUnitReclaim(CG *g, Module *m) {
         GlobalDef *gd = *(GlobalDef **)vecAt(&m->globals, i);
         if (gd && gd->init && !rcAllocInExpr(NULL, gd->init)) return;
     }
-    g->needReclaim = false;
+    g->rc.reclaim = false;
 }
 
 /**
@@ -15210,7 +15232,7 @@ static void emitParallelRuntime(CG *g, Buf *out) {
             "EXTC_UNUSED static void extc_par_close(extc_par_region *r) {\n"
             "    if (!r) return;\n"
             "    for (int64_t i = 0; i < r->workers; i++) {\n");
-        if (g->needReclaim)
+        if (g->rc.reclaim)
             bufPuts(out,
             "        extc_rc_regionDrop((void *)&r->arenas[i]);\n");
         bufPuts(out,
@@ -15238,7 +15260,7 @@ static void emitParallelRuntime(CG *g, Buf *out) {
             "        if (lo >= j->n) break;\n"
             "        int64_t hi = lo + j->chunk;\n"
             "        if (hi > j->n) hi = j->n;\n");
-        if (g->needReclaim)
+        if (g->rc.reclaim)
             bufPuts(out,
             "        /* Worker entry: the only caller is the C runtime. When the job runs inline on the\n"
             "         * same thread (threads <= 1, or a thread could not be started) the outer frame's\n"
@@ -15249,7 +15271,7 @@ static void emitParallelRuntime(CG *g, Buf *out) {
             "        extc_rc_tlsDepth = 0;\n");
         bufPuts(out,
             "        int64_t rc = j->fn(id, lo, hi, j->ctx);\n");
-        if (g->needReclaim)
+        if (g->rc.reclaim)
             bufPuts(out,
             "        extc_rc_tlsDepth = __extc_depth;\n");
         bufPuts(out,
@@ -15262,7 +15284,7 @@ static void emitParallelRuntime(CG *g, Buf *out) {
             "#else\n"
             "    {\n"
             "#endif\n");
-        if (g->needReclaim)
+        if (g->rc.reclaim)
             bufPuts(out,
             "        extc_rc_regionDrop((void *)&local);   /* the reclamation region lives as long as this arena */\n");
         bufPuts(out,
@@ -16260,16 +16282,16 @@ bool generateC(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m, bool lineMap, B
      * `atexit(extc_cout_flush)` from it, and without it a program that exits or traps halfway loses the
      * bytes in the buffer. */
     scanConsoleUse(&g);
-    scanUnitReclaim(&g, m);
+    rcPlanDecide(&g, m);
     /* The event tier (the automatic half of `EXTC_RC_SWEEPFREE`): the whole unit is proved "acyclic and
      * references live only in counted slots" => every unreachable object is eventually freed on the spot
      * when its count reaches zero => sweeping has nothing to do. `EXTC_RC_SWEEPFREE=1` still overrides
      * it (the criteria's red proof uses that). */
     /* Criterion (d) units stay in the sweep tier: the event tier frees an object when its holder count
      * reaches zero, and the array that made the unit non-idle has no holders to count. */
-    if (g.rcSweepFree != -1 && g.needReclaim && !g.rcMemGrowth && unitAllAcyclic(&g, m)) {
-        g.rcSweepFree = 1;
-        g.rcNoCount = 0;
+    if (g.rc.sweepFree != -1 && g.rc.reclaim && !g.rc.memGrowth && unitAllAcyclic(&g, m)) {
+        g.rc.sweepFree = 1;
+        g.rc.noCount = 0;
     }
     emitPreamble(&g, out, m);
     emitRuntimePrologue(&g, out, m);

@@ -575,13 +575,13 @@ P2 与这个反例的差别**只有"旧值是否另有根"这一维**（P2 的�
 
 实现落点：逐站点扫描在 `src/check/check_top.c` 的 `idleWalkStmt` / `idleWalkExpr`（结论写进计划侧
 `planFnReclaimIdle`，字段在冻结清单里），整单元合取与收窄在 `src/back/codegen.c` 的
-`unitReclaimIdle` / `scanUnitReclaim`。`EXTC_DBG_RCIDLE=1` 逐函数打印判定与理由。
+`unitReclaimIdle` / `rcPlanDecide`。`EXTC_DBG_RCIDLE=1` 逐函数打印判定与理由。
 
 ### 三点七续、判据 (d)：证明只管引用，不管内存（v30）
 
 上面 (a)(b)(c) 的每一条都在回答「会不会丢活引用」。(a) 管字段写几次、(b) 管 ref 局部量的槽、(c) 管容器替换/临时量/
 看不清的被调者。**三条都是引用判据**，所以一个只玩 `slice<u8>` / `[N]u8` 的程序一条都不违反 —— 它们空洞成立，
-整单元判 idle、`needReclaim = false`、生成物 0 处 `extc_rc_alloc`。
+整单元判 idle、`g->rc.reclaim = false`、生成物 0 处 `extc_rc_alloc`。
 
 这在「块作用域」形状下是对的（块末 `extc_arena_release` 整片归还），但在**函数级数组被循环覆盖**时是错的：
 `b = new u8[67108864]` 覆盖旧 `b.data`，旧块没有任何钩子，帧 arena 要到函数返回才归还 ⇒ 峰值 = 轮数 × 每轮字节。
@@ -589,12 +589,12 @@ P2 与这个反例的差别**只有"旧值是否另有根"这一维**（P2 的�
 
 * 判据：`EX_NEW` + 带 count + 循环深度 > 0 + `planArenaLevel == 1`（`rcMemExprProbe` / `rcMemStmtProbe` /
   `rcBodyGrowsMemory` / `unitGrowsMemory`，`src/back/codegen.c:rcMemExprProbe..unitGrowsMemory`）；
-  命中 ⇒ `rcMemGrowth = true`，idle 判定改成 `unitReclaimIdle(g, m) && !unitGrowsMemory(g, m)`（`codegen.c:unitGrowsMemory`）。
+  命中 ⇒ `g->rc.memGrowth = true`，idle 判定改成 `unitReclaimIdle(g, m) && !unitGrowsMemory(g, m)`（`codegen.c:unitGrowsMemory`）。
 * **idle 的含义因此是两半**：不丢活引用 **且** 不丢活内存，两半都成立才允许整段不发射运行期。
-* **这类单元不许升 T1**（`codegen.c:generateC` 的档位闸门加 `!g.rcMemGrowth`）：T1 的内存界来自「计数把垃圾变成 0」，
+* **这类单元不许升 T1**（`codegen.c:generateC` 的档位闸门加 `!g.rc.memGrowth`）：T1 的内存界来自「计数把垃圾变成 0」，
   它数的是引用；字节数组没有 holder 可数，清扫档是唯一能收掉它的档。
-* **`EXTC_RECLAIM=1` 只绕最后那道剪枝**，不跳过这趟 pass：`if (g->rcForced) return;` 必须在 `rcBodyHasGovernedAlloc`
-  循环之前（`codegen.c:scanUnitReclaim`），否则「开档」产物与默认档语义分叉（v30 踩过：bt/rebuild/`hole_c`/elide 四道门禁同时红）。
+* **`EXTC_RECLAIM=1` 只绕最后那道剪枝**，不跳过这趟 pass：`if (g->rc.forced) return;` 必须在 `rcBodyHasGovernedAlloc`
+  循环之前（`codegen.c:rcPlanDecide`），否则「开档」产物与默认档语义分叉（v30 踩过：bt/rebuild/`hole_c`/elide 四道门禁同时红）。
 
 契约句（三条，与本节其它契约同格式）：
 
@@ -607,6 +607,34 @@ P2 与这个反例的差别**只有"旧值是否另有根"这一维**（P2 的�
 边界：(d) 只认 `new T[n]`（`alloc<T>(n)` 从不受治理；pool/vector 是 foreign memory，走 pin，容量问题在三点三/三点四）；
 判据按循环深度判而不是按「是否真的覆盖」判 —— 循环里 new 但从不覆盖的写法也会发射运行期（RSS 不变，只是多 11 处调用）。
 
+## 三点八、回收计划是一个值（E2）
+
+「这个单元要不要回收、怎么回收」在发射器里是一个**值**：`struct RcPlan`（`src/back/codegen.c`）的七个字段
+—— `reclaim`、`forced`、`memGrowth`、`nShard`、`noCount`、`sweepFree`、`rootsUnreliable`。它只在一个地方
+算出来（`rcPlanDecide`；`scanUnitNeeds` 负责开关与默认值，`generateC` 负责挑档），发射点只**读**它：一个
+站点问「计划说发不发运行期」，不再从自己正在看的程序形状里重新推一遍。
+
+这么收的理由是两类真实 bug 的共同形状：**站点自己作决定**，以及**剪枝步骤的位置是承重的却没人说**。
+后者在本树里是判据：`rcPlanDecide` 里 `unitReclaimIdle(` 必须在 `if (g->rc.forced)` 之前、`memGrowth` 在两者
+之间 —— 把开档早退提到 idle 证明前面，开档产物与默认档语义就分叉（bt/rebuild/`hole_c`/elide 四道门禁同时红）。
+同理 `rootsUnreliable` 是**退化**标记，只能置真。
+
+三条契约句：
+
+1. **发射点只读**：`g->rc.X` 的读可以出现在任何发射点；写只许出现在拥有它的函数里 —— `scanUnitNeeds` /
+   `rcPlanDecide` / `generateC`（表在 `tools/check_rc_plan.py` 的 `OWNERS`）。
+2. **退化单向**：`rootsUnreliable` 只能写成 `true` 或派生式 `g->rc.reclaim && g->rcGlobalsUnreliable`；没有把它
+   清回 false 的代码路径。
+3. **剪枝顺序是计划的一部分**：idle 证明先在、forced 早退在后、`memGrowth` 在两者之间；档位选择
+   （`sweepFree` / `noCount`）只在 `generateC` 与 `rcPlanDecide`。
+
+**判据**：`tools/check_rc_plan.py`（`gate-rc-plan`，挂 `check.sh nobench`）。它按源码里 `g->rc.X` 的写点查归属
+函数（行 → 符号走 `tools/doc_anchors.py`）、查字段集恰好七个、查旧字段名不回来、查上面三条契约，并对五类
+变异（自决写入 / 清退化 / forced 提前 / 多一个字段 / 旧名回来）做 `--selftest`。判据只看代码（注释与字符串
+字面量先被涂白），所以注释可以讨论历史、诊断串可以打印旧名，行号不变。
+
+**改名**：决策入口 `scanUnitReclaim` 现在叫 `rcPlanDecide`；`CG` 上的七个旧字段收进 `g->rc.*`。生成 C 逐字不变
+（`tools/emitted_identity.py --check` 是本轮的验收）。
 ## 四、停顿与分片
 
 **停顿 ∝ 被扫区域的可达集**，所以最直接的手段是**分片**：把一个逻辑结构切进多个区域、每次只收一片。

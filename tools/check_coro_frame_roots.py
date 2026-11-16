@@ -4,7 +4,7 @@
 ## 为什么需要这个门禁
 
 协程帧（churn$frame）由调用者的复合字面量建、跨 yield 活下来，step 的 C 形参只有那个帧指针。
-把 coroFunc 整体当成 rcRootsUnreliable ⇒ step 一个触发都不发，帧里那只块 arena
+把 coroFunc 整体当成 rc.rootsUnreliable ⇒ step 一个触发都不发，帧里那只块 arena
 （f->arena1）的函数级层只能等帧销毁才还。现在两头都改了：
 
 1. genFunc 按 checker 排好的 coroFrame 表，把各字段的引用叶子登记成根（f->name）；帧起点零
@@ -63,8 +63,8 @@ KEEP_ROOT = "(void *)(f->keep)"
 P_ROOT = "(void *)(f->p)"
 COLLECT = "extc_rc_maybeCollect("
 TLS_OWNER = "__extc_tlsOwner"
-ROC = "g->rcRootsUnreliable = g->needReclaim && g->rcGlobalsUnreliable;"
-ROC_OLD = "g->rcRootsUnreliable = g->needReclaim && (g->coroFunc != NULL || g->rcGlobalsUnreliable);"
+ROC = "g->rc.rootsUnreliable = g->rc.reclaim && g->rcGlobalsUnreliable;"
+ROC_OLD = "g->rc.rootsUnreliable = g->rc.reclaim && (g->coroFunc != NULL || g->rcGlobalsUnreliable);"
 CORO_LOOP = "for (size_t i = 0; i < cf->coroFrame.len; i++) {"
 FRAME_OWNS = "if (g->parTls) return false;"
 FRAME_OWNS_OLD = "if (g->parTls || g->coroFunc) return false;"

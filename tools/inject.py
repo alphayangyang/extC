@@ -218,8 +218,8 @@ INJECTIONS = {
         "why": "把「同区」判定强制为真 ⇒ 跨区赋值也走免登记快路径（漏登记 ⇒ 悬垂）",
         "gate": "gate-reclaim-switch",
         "patches": [(CODEGEN,
-                     "                    if (g->rcNoCount && vlvl != -2 && vlvl == hlvl)",
-                     "                    if (g->rcNoCount)   /* 注入：判定恒真 */")],
+                     "                    if (g->rc.noCount && vlvl != -2 && vlvl == hlvl)",
+                     "                    if (g->rc.noCount)   /* 注入：判定恒真 */")],
     },
     "release-off": {
         "why": "把覆盖点定点释放的发射整个关掉 ⇒ `ring_per_round` 退回区域清扫（55 次扫 + 峰值"
@@ -230,10 +230,10 @@ INJECTIONS = {
         # `return false`，后面的四条判据与发射全成死代码。死代码里那些变量仍被"使用"过，
         # 所以 `-Wunused-*` 不会因为这段注入报错（注入失败 = 编译失败，与"判据红"必须分开）。
         "patches": [(CODEGEN,
-                     '    if (!g->needReclaim || g->rcRootsUnreliable || g->coroFunc) return false;\n'
+                     '    if (!g->rc.reclaim || g->rc.rootsUnreliable || g->coroFunc) return false;\n'
                      '    /* 分片',
                      '    if (1) return false;   /* 注入：关掉定点释放的发射 */\n'
-                     '    if (!g->needReclaim || g->rcRootsUnreliable || g->coroFunc) return false;\n'
+                     '    if (!g->rc.reclaim || g->rc.rootsUnreliable || g->coroFunc) return false;\n'
                      '    /* 分片')],
     },
     "acyclic-always": {

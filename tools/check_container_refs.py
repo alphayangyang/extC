@@ -5,13 +5,13 @@
 
 池/板容器（pool<T> / vector<T>）的元素住在**容器自己的板**上，不在 C 描述符的字段里：描述符
 字段是三块视图 + 几个整数。rcScanType 早先对「泛型实参带引用」一律返回 RC_CONSERVATIVE，
-于是 pool<mut ref node> 这种局部量让整个函数 rcRootsUnreliable ⇒ 一个触发都不发、欠收也没人
+于是 pool<mut ref node> 这种局部量让整个函数 rc.rootsUnreliable ⇒ 一个触发都不发、欠收也没人
 还（pool_ref_slot 峰值比 3.04×、sweeps 0/0）。
 
 现在的规则：先扫字段；字段里一个引用叶子都没有（s == RC_NO_REFS）而泛型实参带引用，说明引用
 只在板的元素里 —— 描述符本身没有引用槽，根表不欠这笔账，触发照常发；元素里的引用由写入点的
 屏障负责（storeRefSlot 查得到 rc 槽就按槽记账，查不到就把值钉成根，见 [rt:pin]）。字段里**也**
-看得见引用（内联数组、按值内嵌的引用结构体）时仍然走保守路（rcRootsUnreliable + 整值保守存储）
+看得见引用（内联数组、按值内嵌的引用结构体）时仍然走保守路（rc.rootsUnreliable + 整值保守存储）
 —— 这是安全方向的窄化，不是全面放开。
 
 判据跑真实发射：pool_ref_slot 的 main 必须有 maybeCollect、不得对 p 发整值保守存储；一个
@@ -126,7 +126,7 @@ def check(cont, narrow, codegen):
     else:
         if COLLECT not in cm:
             bad.append("container: main() has no sweep trigger (the generic descriptor still"
-                       " shuts rcRootsUnreliable off)")
+                       " shuts rc.rootsUnreliable off)")
         if POOL_CONS in cm:
             bad.append("container: main() still emits the conservative whole-value store for the"
                        " pool descriptor")
