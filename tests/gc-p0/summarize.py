@@ -611,23 +611,29 @@ def main():
         print("  n/a（未跑；run.sh peak）")
     print()
 
-    # ---------------- L10-b / L10-c 已知限制（XFAIL） ----------------
-    print("## L10-b / L10-c 已知限制（**XFAIL/known-issue，不进回归、不判 PASS/RED**；只记录 800k/50k ratio）")
-    tm = read_text(os.path.join(out, "timemax.txt"))
-    found = False
-    for nm, tag in (("l10b", "L10-b 目的 view 在循环体 arena ⇒ slabOfInterior(base) 失败 ⇒ noSweep（P0-9）"),
-                    ("l10c", "L10-c 目的 view 在 rc 且反复覆盖 ⇒ rsInc 边不撤销（P0-10）")):
-        d = {}
-        for line in tm.splitlines():
-            parts = line.split()
-            if len(parts) >= 4 and parts[0] == nm:
-                d[parts[1]] = int(parts[-2])
-        if "50000" in d and "800000" in d:
-            found = True
-            a, b = d["50000"], d["800000"]
-            print(f"  {nm}: 50k={a} kB / 800k={b} kB  ratio={fmt(b/a if a else None, 'x', 2)}"
-                  f"  ⇒ XFAIL(known-issue)  {tag}")
-    if not found:
+    # ---------------- L10：线性泄漏用例（tests/gc-p0/l10_check.py 判定，这里只转述）----------------
+    print("## L10：线性泄漏用例（VmHWM 800k/50k <= 1.25x 且 rs_live <= 8；判定在 l10_check.py）")
+    l10 = None
+    path = os.path.join(out, "l10.json")
+    if os.path.exists(path):
+        try:
+            l10 = json.loads(read_text(path))
+        except ValueError:
+            l10 = None
+    if l10:
+        for case in sorted(l10.get("cases", {})):
+            r = l10["cases"][case]
+            n = r.get("numbers", {})
+            detail = ""
+            if "ratio" in n:
+                detail = ("50k=%d kB / 800k=%d kB  ratio=%.2fx  rs_live=%s/%s"
+                          % (n["hwm_50k_kb"], n["hwm_800k_kb"], n["ratio"],
+                             n.get("rs_live_50000"), n.get("rs_live_800000")))
+            print("  %s %s  %s" % (r.get("verdict"), r.get("name"), detail))
+            for c in r.get("checks", []):
+                print("        · " + c)
+        print("  ⇒ " + str(l10.get("verdict")))
+    else:
         print("  n/a（未跑；run.sh l10）")
     print()
 

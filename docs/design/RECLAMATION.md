@@ -1212,6 +1212,8 @@ cache-sim 判据变红）。
 | `skip:wmark-noslot` | `extc_rc_wmarkSlot` 的 `slot` 是空指针 ⇒ 立刻返回 | 它只在 `extc_rc_rsIncSlab` 里被调用，`srcSlot` 为空表示该调用点没有源槽（整值拷贝、pin 等路径直接用 `wmUnsafe` 兜底）| 无（幂等：什么都不记）| `tests/reclaim` 216/0；t04 的 `rs_inc/rs_dec` 与位图前对账；`wmUnsafe` 兜底路径由 `storeStructCons/Copy` 的 A/B 覆盖 |
 | `skip:wmark-noslab` | 源槽不在受管块里（栈槽、帧 arena），或该块跨度低于 `EXTC_RC_WMARK_MIN_BYTES`（4 KiB）⇒ 不记位图 | 前者的生命期由栈帧/arena 整块释放，不走逐槽撤销；后者一块只有 ≤512 个引用域，全扫描本来就在 0.5 µs 以内 | 无（不记位：这些槽本来就不需要位图）| `tests/gc-torture` 12/12、`tests/reclaim` 216/0；小跨度形状（promote/sizeratio/cycleratio）A/B 在噪声带内 |
 | （无标记）`if (extc_rc_rsIncN) unlinkChildren(...)` | 一次登记都没发生过 ⇒ 不必撤边 | `rsIncN == 0` ⇒ 没有 `rsInc` 类边 | 多留（保守）| `unlink-nop` 证明"撤边"有牙；这个**守卫**没有专门注入 |
+| `skip:decold-null` | `extc_rc_decOldRef` 的旧值是空指针 ⇒ 立刻返回 | 没写过引用（或已被清零）的槽从来没有登记过边与计数，撤销的対象不存在 | 无（幂等：什么都不撤）| `tests/reclaim` 216/0；L10-c 的 `rs_inc/rs_dec` 对账（`rs_live` 停在 1）；`tests/gc-p0/run.sh l10` 的 RSS 判据 |
+| `skip:decold-notobj` | 旧值不在任何受管块里（C 指针、池块、栈地址，或已被回收/毒化的槽）⇒ 不撤 | 边与计数只在 `storeRef*` 落到受管块时登记过；旧值不受管说明它没被登记，撤了反而会把别人的计数减掉 | 无（不存在的计数不撤）| 同上 + `tests/gc-torture` 14/14（t05_copyrefs/t10_alias_slots 覆盖池/混尺寸拷贝）|
 | （无标记）`if (partN > 1) { 登记 }` | 只有一个区域参与 rc ⇒ 免登记 | 单区域不可能有跨区边 | 少算（不安全）| `gate-note-part` + `cross-region` 登记量判据 |
 | （无标记）`#if EXTC_RC_NOCOUNT` 整段 | 关掉计数时计数入口变空操作 | 没有读者 | 少算（不安全）| 单测**两档都跑**（默认 128 / 计数 171）|
 | （无标记）`ownTab`/`bigTab`/`mstk` 增长 | `realloc` 翻倍；失败即 `oops` | 不静默截断 | 不会静默失效 | `gate-checkc` + ASan 语料 |

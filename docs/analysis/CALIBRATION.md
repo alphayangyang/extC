@@ -511,6 +511,61 @@ taskset -c 6 /tmp/markcost 16 3 6
 
 两条数字口径：`tau = [work] 总 step 时间 / [wbudget] pops_tot`（**跨路径不可比**，pops_tot 的分母来源不同，见 §6.16.3）；`m = tau(shallow)/tau(deep)`。
 
+## §17 标定的机器状态前置检查（v32 新增：为什么两道）
+
+`tests/gc-p0/bseg-cal.tsv` 把 seg 步的 p99.9 换算成 `c_seg`（ns/word），门禁 (b) 用它判 `p99.9 ≤ B_seg`。
+这张表是**在某一台机器的某一刻**量出来的，而 `c_seg` 不是一个纯代码常数：pd 形状的活集（几十到几百 MB）远超 LLC，
+每一步都在 LLC 之外跳，所以它的尾部是**访存延迟**的函数。标定工具因此必须在动手之前证明「这台机器此刻处于标定条件」，
+否则一次被抢占的测量会永久放宽门禁门槛（判据只严不放宽）。
+
+### 17.1 第一道：指令吞吐（`--no-speed-check` 可跳过）
+
+- 探针：`tools/probe/ipeak.c`（8 条独立累加链，空 asm 屏障防 DCE/向量化），编译命令在工具里固定为 `cc -O2 -fno-tree-vectorize`。
+- 参考值 `SPEED_REF_NS = 0.324` ns/iter（§15 标定的同一口径），容差 `SPEED_TOL = 1.40`。
+- 超过上限即 `SystemExit`：此时标定会把降频写进 `c_seg`。
+
+### 17.2 第二道：访存延迟（`--no-latency-check` 可跳过）
+
+- 探针：`tools/probe/memhier.c` 的延迟梯，只跑到 **64 MiB 一点**（`memhier <cpu> 67108864`，新增的第二参数；不必付 256 MiB 的代价）。
+- 参考值 `LAT_REF_NS = 156.6`（2026-12-03 实测带 97.9–156.6 的上界，§14.1），容差 `LAT_TOL = 1.30`。
+- 这一道是必须的：**算力额定并不代表访存额定**。2026-11-16 的一个窗口里 ipeak 全程 0.331–0.342 ns/iter（额定），
+  而 64 MiB 随机环是 **338.04 ns/load**（参考带上界的 2.2 倍），晚些时候回到 145–152 ns。
+
+### 17.3 漂移取证（2026-11-16，同一小时、同一核、三条臂）
+
+| 臂 | 源码 | pd_bigobj `c_seg` | pd_pointer_dense `c_seg` | ipeak |
+|---|---|---|---|---|
+| patched | 当前树（HEAD + L10 修复） | 6.421 | 8.803 | 0.342 |
+| era1113 | `49d76213`（2026-11-13 的代码） | 6.294 | 9.920 | 0.335 |
+| base | `a5ae1446`（本轮前的 HEAD） | 7.110 | 7.375 | 0.331 |
+| **表里记的 11-13 值** | `61c9fad7` 那一代 | **3.841** | **5.997** | — |
+
+三条臂全部比表高 1.6–2.1×，**包括那一代代码本身**（era1113）。⇒ 漂移不在源码：
+同一份 11-13 代码今天重跑也复现不出来。而三段测量里 ipeak 一直是 0.33–0.34，只有访存那一路出现过 338 ns 的窗口。
+
+### 17.4 结论与规则
+
+1. **表不重写**。拿今天（访存被抬高）的数字写进 `bseg-cal.tsv` 会把门禁 (b) 放大约 1.6–2×，违反「只严不放宽」。
+   现状是：表里的常数比今天的实测更严，门禁仍按它判，pd 两个形状当前 PASS。
+2. **重标定必须过两道前置检查**，并通过 `--src-md5`（`tools/source_split.py --md5` 的渲染文本 md5）与 `--build-md5` 记录来源。
+3. **`c_seg` 量的是整步**（探针插在 `extc_rc_stepNote(_d)` 之后、`if (seg > 0)` 之前），所以它包含步内的容量尾部工作：
+   v23 的页归还、v24 的自动块归还与 free 队列排空、v31 的巨块丢弃都在 `extc_rc_sweepStep` 的收尾里。
+   这些工作各有自己的预算（≤256 KiB/次、≤16 块/次、40/50 µs 硬截止），但形式上属于「一步」，所以契约写成
+   `P_step ≤ b·τ_t + c + c_seg·chunk`，其中 `c_seg` 是**整步/chunk**，不是「扫描/chunk」。
+4. **样本量门槛**：`MIN_N = 100000`。p99.9 需要至少 1e5 个 seg>0 步；200 轮只有约 2.5e4，样本不足时工具**失败**（不再记 N/A 放行）。
+
+### 17.5 复现
+
+```sh
+# 合法标定（两道前置检查都会打印）
+python3 tests/gc-p0/calib_cseg.py --extc ./build/extc \
+    --src-md5 "$(python3 tools/source_split.py --md5 | tr '\n' ' ')" \
+    --build-md5 "$(md5sum build/extc | cut -d' ' -f1)" --rounds 1000 --min-n 100000
+# 只看机器状态（不标定）
+cc -O2 -fno-tree-vectorize -o /tmp/ipeak tools/probe/ipeak.c && taskset -c 6 /tmp/ipeak 8 400000000
+cc -O2 -o /tmp/memhier tools/probe/memhier.c && taskset -c 6 /tmp/memhier 6 67108864
+```
+
 ## 附录 A 原始数据汇总（`analyze8.py` 输出）
 
 | 数据集 | 轮 | 分配 MB | `a_all` GB/s | `a_mut` GB/s | `λ_GC` ns/B | `λ_model` | 误差 | `τ_t` ns | `τ_s` ns | `c_t` ns/B | `c_s` ns/B | GC% |

@@ -59,6 +59,10 @@ EXEMPT = {
     "extc_rc_unlinkChildren":
         "对象被释放时要把它手里的跨区边**无条件**撤掉（目标槽还活着的入边少一条是一个真实的"
         "跨区边消失）⇒ 与宿主区域有没有出现过外来指针无关，不需要 foreign 把门",
+    "extc_rc_decOldRef":
+        "槽里的旧值被覆盖之前，要把旧值持有的跨区入边**无条件**撤掉（不撤就是一个真实的跨区边"
+        "永远挂在目标上，目标永远不释放）⇒ 这条撤销与宿主区域有没有出现过外来指针无关；"
+        "rscnt 未分配时 rsDecSlab 自身是 no-op，所以不需要 foreign 把门",
 }
 
 RE_RSDEC = re.compile(r"\bextc_rc_rsDec(Slab)?\s*\(")

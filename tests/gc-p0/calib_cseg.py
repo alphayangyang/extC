@@ -18,8 +18,12 @@ p99.9_max_us/run_id/src_md5/extc_md5），spread=3 reps 的 min..max。
   - 每 rep 一次独立进程；p99.9 取该 rep 全量 seg>0 步（探针上限 4e6 步）。
 
 用法：
-  python3 tests/gc-p0/calib_cseg.py --extc ./build-emp3/extc \
-      --src-md5 reclaim.c=...,codegen.c=... --build-md5 $(md5sum build-emp3/extc | cut -d' ' -f1)
+  python3 tests/gc-p0/calib_cseg.py --extc ./build/extc \
+      --src-md5 "reclaim.c=$(python3 tools/source_split.py --md5 | awk '$1=="src/back/reclaim.c"{print $2}'),codegen.c=$(python3 tools/source_split.py --md5 | awk '$1=="src/back/codegen.c"{print $2}')" \
+      --build-md5 $(md5sum build/extc | cut -d' ' -f1)
+
+src_md5 / extc_md5 是溯源戳：src_md5 取**渲染文本**（E1/E3 之后头部只剩 #include 列表），
+extc_md5 只作参考（同源码不同 BUILDDIR 的二进制 md5 不同）。
   python3 tests/gc-p0/calib_cseg.py --selftest
 """
 import argparse
@@ -40,6 +44,7 @@ DEFAULT_CAL = os.path.join(HERE, "bseg-cal.tsv")
 DEFAULT_OUT = os.path.join(HERE, "out", "p1-cal")
 SHAPES = {"pd_bigobj": "pd_bigobj.extc", "pd_pointer_dense": "pd_pointer_dense.extc"}
 ROUNDS = 200
+MIN_N = 100000   # p99.9 需要 >=1e5 个 seg>0 步；200 轮只有 ~2.5e4 ⇒ 默认要求调用方抬 --rounds
 REPS = 3
 PIN = 6
 
@@ -177,7 +182,7 @@ def fmt_us(x):
     return "%.2f" % x
 
 
-def calibrate_shape(extc, cc, cflags, shape, outdir, reps, pin, chunk=None):
+def calibrate_shape(extc, cc, cflags, shape, outdir, reps, pin, chunk=None, rounds=ROUNDS, min_n=MIN_N):
     cdir = os.path.join(outdir, "c")
     bdir = os.path.join(outdir, "bin")
     os.makedirs(cdir, exist_ok=True)
@@ -200,7 +205,7 @@ def calibrate_shape(extc, cc, cflags, shape, outdir, reps, pin, chunk=None):
     env["EXTC_RC_STEP_CPU"] = "1"
     reps_out = []
     for i in range(1, reps + 1):
-        cmd = [binp, str(ROUNDS)]
+        cmd = [binp, str(rounds)]
         if pin is not None and pin >= 0:
             taskset = shutil.which("taskset")
             if taskset:
@@ -212,9 +217,11 @@ def calibrate_shape(extc, cc, cflags, shape, outdir, reps, pin, chunk=None):
         if p.returncode != 0 or pr is None:
             raise SystemExit("FAIL run %s rep%d rc=%s probe=%r stderr_tail=%s"
                              % (shape, i, p.returncode, pr, (p.stderr or "")[-400:]))
-        if pr.get("n", 0) < 100000:
-            print("  ⚠ %s rep%d: seg 步 n=%s < 1e5（p99.9 样本不足，记 N/A）"
-                  % (shape, i, pr.get("n")), file=sys.stderr)
+        if pr.get("n", 0) < min_n:
+            # p99.9 需要 >=1e5 个样本才有意义；样本不足不是「记 N/A」而是**标定不成立**：
+            # 200 轮的 seg 步只有 ~2.5e4，p99.9 就是第 25 大的数，跑几次能差 1.7×。
+            raise SystemExit("FAIL %s rep%d: seg 步 n=%s < min_n=%d（p99.9 样本不足；抬 --rounds 或显式 --min-n 放行）"
+                             % (shape, i, pr.get("n"), min_n))
         reps_out.append({"rep": i, "probe": pr, "wall_s": round(wall, 3), "rc": p.returncode})
         with open(os.path.join(outdir, "log", "cal_%s_r%d.err" % (shape, i)), "w") as f:
             f.write(p.stderr)
@@ -275,6 +282,66 @@ def _selftest():
     return 0
 
 
+SPEED_REF_NS = 0.324   # tools/probe/ipeak.c mode 8 (8 adds/iter) on an idle core, 2026-11 (GC-ROOFLINE 3.12)
+SPEED_TOL = 1.40      # 超过 1.4 倍 = 这台机器此刻慢了（降频/被别的负载抢核）⇒ 标定不成立
+
+# 第二个前置检查：**内存延迟**。seg 步的尾部是访存延迟主导的（pd 形状的活集远超 LLC），
+# 而 ipeak 只测得出算力、测不出访存 —— 实测同一份 11-13 代码在今天重跑，c_seg 从 3.841/5.997
+# 涨到 6.294/9.920（1.6–2.1×），而 ipeak 一直是 0.33 ns（额定），同期 64 MiB 随机环延迟 338 ns/load
+# （12-03 的带宽是 98–157）。所以标定前必须证明访存也在带内。参考值取 12-03 实测带电的上界 156.6。
+LAT_REF_NS = 156.6    # tools/probe/memhier.c 延迟梯 64 MiB 点（GC-ROOFLINE §2.5 / CALIBRATION §11）
+LAT_TOL = 1.30       # 超过 1.3 倍 = 此刻访存被抢占/跨 NUMA ⇒ 标定不成立
+
+
+def measure_core_speed(cc, pin, outdir):
+    """把 ipeak 8 链跑一遍，返回 ns/iter；慢于参考值 SPEED_TOL 倍就拒绝标定。
+
+    标定把 p99.9 换算成 ns/word，机器慢一倍、c_seg 就涨一倍。这种漂移不是运行期变化，
+    写进 bseg-cal.tsv 会把门禁门槛一起放宽（判据只严不放宽）⇒ 先证明「这台机器此刻是额定速度」。
+    """
+    src = os.path.join(ROOT, "tools", "probe", "ipeak.c")
+    if not os.path.exists(src):
+        return None
+    binp = os.path.join(outdir, "ipeak")
+    r = run([cc, "-O2", "-fno-tree-vectorize", "-o", binp, src])
+    if r.returncode != 0:
+        return None
+    cmd = [binp, "8", "200000000"]
+    if pin is not None and pin >= 0 and shutil.which("taskset"):
+        cmd = ["taskset", "-c", str(pin)] + cmd
+    p = run(cmd)
+    m = re.search(r"ns_per_iter=([0-9.]+)", p.stdout or "")
+    return float(m.group(1)) if m else None
+
+
+def measure_dram_latency(cc, pin, outdir):
+    """把 memhier 的延迟梯只跑到 64 MiB 一点，返回 ns/load；访存慢于参考值 LAT_TOL 倍就拒绝标定。
+
+    为什么单靠 ipeak 不够：seg 步的 p99.9 由「一次 pop 走到哪一级缓存/内存」决定，pd 形状的活集（几十到几百 MB）
+    远超 LLC，所以尾部量的是 DRAM 延迟。算力额定、访存被抢时，c_seg 会整体抬高 1.5–2×。
+    """
+    src = os.path.join(ROOT, "tools", "probe", "memhier.c")
+    if not os.path.exists(src):
+        return None
+    binp = os.path.join(outdir, "memhier")
+    r = run([cc, "-O2", "-o", binp, src])
+    if r.returncode != 0:
+        return None
+    cpu = str(pin) if (pin is not None and pin >= 0) else "none"
+    cmd = [binp, cpu, str(64 << 20)]
+    if pin is not None and pin >= 0 and shutil.which("taskset"):
+        cmd = ["taskset", "-c", str(pin)] + cmd
+    p = run(cmd)
+    for line in (p.stdout or "").splitlines():
+        parts = line.split()
+        if len(parts) == 3 and parts[0].isdigit() and int(parts[0]) == (64 << 20):
+            try:
+                return float(parts[2])
+            except ValueError:
+                return None
+    return None
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="c_seg 标定（Lead m04755 C）")
     ap.add_argument("--extc", default=os.path.join(ROOT, "build-emp3", "extc"))
@@ -284,8 +351,15 @@ def main(argv=None):
     ap.add_argument("--cal", default=DEFAULT_CAL)
     ap.add_argument("--shapes", default="pd_bigobj,pd_pointer_dense")
     ap.add_argument("--reps", type=int, default=REPS)
+    ap.add_argument("--rounds", type=int, default=ROUNDS, help="每个 rep 的程序轮数（p99.9 需 n>=--min-n）")
+    ap.add_argument("--min-n", type=int, default=MIN_N,
+                    help="每个 rep 的 seg>0 步下界；不足即失败（p99.9 的样本量门槛）")
     ap.add_argument("--pin", type=int, default=PIN, help="-1 = 不 pin")
     ap.add_argument("--chunk", type=int, default=None, help="期望的生成物 chunk（不一致即报错）")
+    ap.add_argument("--no-speed-check", action="store_true",
+                    help="跳过「这台机器此刻是额定速度」的前置检查（只用于事后复算，不进正式标定）")
+    ap.add_argument("--no-latency-check", action="store_true",
+                    help="跳过「这台机器此刻的 DRAM 延迟在带内」的前置检查（只用于事后复算）")
     ap.add_argument("--src-md5", default="")
     ap.add_argument("--build-md5", default="")
     ap.add_argument("--no-update", action="store_true")
@@ -294,11 +368,40 @@ def main(argv=None):
     if a.selftest:
         return _selftest()
     os.makedirs(os.path.join(a.out, "log"), exist_ok=True)
+    speed = None
+    if not a.no_speed_check:
+        speed = measure_core_speed(a.cc, a.pin, a.out)
+        if speed is None:
+            print("  ⚠ 速度前置检查跑不起来（tools/probe/ipeak.c 或 cc 不可用）—— 记 WARN，不阻塞",
+                  file=sys.stderr)
+        elif speed > SPEED_REF_NS * SPEED_TOL:
+            raise SystemExit("FAIL 这台机器此刻只有额定速度的 %.0f%%（ipeak 8 链 %.3f ns/iter，参考 %.3f，容差 %.2fx）；"
+                             "此时标定会把机器降频写进 c_seg、把门禁门槛一起放宽 ⇒ 等机器空闲/降温后重跑，"
+                             "或用 --no-speed-check 显式跳过（只用于事后复算）"
+                             % (100.0 * SPEED_REF_NS / speed, speed, SPEED_REF_NS, SPEED_TOL))
+        else:
+            print("  速度前置检查：ipeak 8 链 %.3f ns/iter（参考 %.3f，≤ %.2fx）ok"
+                  % (speed, SPEED_REF_NS, SPEED_TOL))
+    lat = None
+    if not a.no_latency_check:
+        lat = measure_dram_latency(a.cc, a.pin, a.out)
+        if lat is None:
+            print("  ⚠ 访存前置检查跑不起来（tools/probe/memhier.c 或 cc 不可用）—— 记 WARN，不阻塞",
+                  file=sys.stderr)
+        elif lat > LAT_REF_NS * LAT_TOL:
+            raise SystemExit("FAIL 这台机器此刻的 64 MiB 随机环延迟是 %.1f ns/load（参考 %.1f，容差 %.2fx）；"
+                             "seg 步的尾部由访存决定，此时标定会把被抢占的访存写进 c_seg 并放宽门禁门槛 "
+                             "⇒ 等机器空闲后重跑，或用 --no-latency-check 显式跳过（只用于事后复算）"
+                             % (lat, LAT_REF_NS, LAT_TOL))
+        else:
+            print("  访存前置检查：64 MiB 随机环 %.1f ns/load（参考 %.1f，≤ %.2fx）ok"
+                  % (lat, LAT_REF_NS, LAT_TOL))
     results = {}
     for shape in [s.strip() for s in a.shapes.split(",") if s.strip()]:
         if shape not in SHAPES:
             raise SystemExit("未知形状 %r（可选 %s）" % (shape, ",".join(SHAPES)))
-        r = calibrate_shape(a.extc, a.cc, a.cflags, shape, a.out, a.reps, a.pin, a.chunk)
+        r = calibrate_shape(a.extc, a.cc, a.cflags, shape, a.out, a.reps, a.pin, a.chunk,
+                            a.rounds, a.min_n)
         results[shape] = r
         print("  %-17s chunk=%d  p99.9=%s..%s us（中位 %s）  c_seg=%s ns/word  n=%s"
               % (shape, r["chunk"], fmt_us(r["p999_min_us"]), fmt_us(r["p999_max_us"]),
@@ -306,7 +409,9 @@ def main(argv=None):
                  ",".join(str(x["probe"]["n"]) for x in r["reps"])))
     meta = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "extc": os.path.abspath(a.extc),
             "extc_md5": a.build_md5, "src_md5": a.src_md5, "cflags": a.cflags,
-            "reps": a.reps, "pin": a.pin, "rounds": ROUNDS, "chunk": None, "results": results}
+            "reps": a.reps, "pin": a.pin, "rounds": a.rounds, "min_n": a.min_n,
+            "core_speed_ns_per_iter": speed, "dram_latency_ns": lat,
+            "chunk": None, "results": results}
     with open(os.path.join(a.out, "calib_cseg.json"), "w") as f:
         json.dump(meta, f, indent=1)
     if not a.no_update:
@@ -315,8 +420,9 @@ def main(argv=None):
             row = {"shape": shape, "chunk": r["chunk"], "c_seg_ns": fmt_cseg(r["c_seg_ns"]),
                    "p99.9_us": fmt_us(r["p999_us"]), "p99.9_min_us": fmt_us(r["p999_min_us"]),
                    "p99.9_max_us": fmt_us(r["p999_max_us"]),
-                   "run_id": "cal:%s:reps=%d:pin=%s" % (meta["ts"], a.reps,
-                                                        "none" if a.pin < 0 else a.pin),
+                   "run_id": "cal:%s:reps=%d:pin=%s:rounds=%d" % (meta["ts"], a.reps,
+                                                                  "none" if a.pin < 0 else a.pin,
+                                                                  a.rounds),
                    "src_md5": a.src_md5 or "unknown", "extc_md5": a.build_md5 or "unknown"}
             if shape in rows:
                 rows[shape] = row

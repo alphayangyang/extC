@@ -32,7 +32,7 @@
 #   tests/gc-p0/run.sh stress         # **G4 正式验收**：注入 4×L 循环垃圾（tests/gc-p0/stress.py，3 档×3 reps）
 #   #   注意：g4 子命令只覆盖 G6/G7 代理（pb/pc/cyc），**不是** G4 判据；G4 看 stress。
 #   tests/gc-p0/run.sh peak           # G17 内存墙双配置峰值（A 默认 / D 16MiB / B 64MiB / C 1TB）
-#   tests/gc-p0/run.sh l10            # L10-b/L10-c 已知限制（XFAIL，只记录数字，不进回归）
+#   tests/gc-p0/run.sh l10            # L10-b/L10-c 线性泄漏用例（判据在 l10_check.py：RSS 800k/50k <=1.25x 且 rs_live<=8）
 #   tests/gc-p0/run.sh g18            # G18：pd_bigobj 60/200 轮 × 8 MiB（200 轮 G18_PD_REPS=5 reps 合并，
 #                                     #   60 轮单 rep 走 case pd_bigobj60；判据 200 轮 ≤3L+2SLAB + stdout 逐字）
 #   tests/gc-p0/run.sh g20            # G20：bench/gc/v2 四形状的 [step]/[histo]（P0-B 停顿收益；5 reps×4 形状）
@@ -428,25 +428,25 @@ if [ "$WHAT" = all ] || [ "$WHAT" = peak ]; then
     fi
 fi
 
-echo "== L10-b/L10-c 已知限制（XFAIL/known-issue，**不进回归、不判 PASS/RED**，只记录 800k/50k ratio）=="
-# Lead m01688：两例均为默认档线性泄漏，修复方向 P0-9/P0-10；数字写 MEASUREMENTS-GC-P0.md 已知限制节。
-if [ "$WHAT" = l10 ]; then
+echo "== L10：线性泄漏用例（判据见 tests/gc-p0/l10_check.py 头：VmHWM 800k/50k <= 1.25x 且 rs_live <= 8）=="
+# 两例都是「同一形状跑到 50k 与 800k 轮」：泄漏时 RSS 与 rs_live 都随轮数线性涨，修好后都与轮数无关。
+# EXTC_RC_STATS=1 只影响退出时多打一行 rs_* 统计（运行期读环境变量，产物不用重编译）。
+if [ "$WHAT" = all ] || [ "$WHAT" = l10 ]; then
     for k in b c; do
         case $k in
-            b) nm=l10b;; c) nm=l10c;;
-        esac
-        case $k in
-            b) src=tests/gc-p0/src/leak_copy_arena_dest.extc;; c) src=tests/gc-p0/src/leak_copy_rc_churn.extc;;
+            b) nm=l10b; src=tests/gc-p0/src/leak_copy_arena_dest.extc;;
+            c) nm=l10c; src=tests/gc-p0/src/leak_copy_rc_churn.extc;;
         esac
         if build "$nm" "$src"; then
             defines "$nm"
             timemax "$nm" 50000
             timemax "$nm" 800000
-            run_plain "$nm" 1 50000
-            run_plain "$nm" 2 800000
-            tail -2 "$OUT/timemax.txt"
+            EXTC_RC_STATS=1 run_plain "$nm" 1 50000
+            EXTC_RC_STATS=1 run_plain "$nm" 2 800000
+
         fi
     done
+    python3 tests/gc-p0/l10_check.py --dir "$OUT" --json "$OUT/l10.json" || true
 fi
 
 if [ "$WHAT" = g1cpu ] || [ "$WHAT" = g1c ]; then export EXTC_RC_STEP_CPU=1; fi
@@ -509,8 +509,15 @@ if [ "$WHAT" = all ] || [ "$WHAT" = g1 ] || [ "$WHAT" = g1cpu ] || [ "$WHAT" = g
     if command -v md5sum >/dev/null 2>&1 && [ -f "$EXTC" ]; then
         g1c_extra+=(--build-md5 "$(md5sum "$EXTC" | awk '{print $1}')")
         # Lead m04755 C：溯源以**源码 md5** 为准（同源码二次构建的 extc md5 会因 -g 路径不同而不同）。
+        # E1/E3 之后两个头部只剩 #include 列表 ⇒ 必须哈希**渲染文本**（编译器真正读的那一份），
+        # 否则改 rt/*.inc 或 cg/*.inc 不会动 src_md5，bseg 标定的陈旧检测会失明。
         if [ -f src/back/reclaim.c ] && [ -f src/back/codegen.c ]; then
-            g1c_extra+=(--src-md5 "reclaim.c=$(md5sum src/back/reclaim.c | awk '{print $1}'),codegen.c=$(md5sum src/back/codegen.c | awk '{print $1}')")
+            split_md5=$(python3 tools/source_split.py --md5 2>/dev/null)
+            r_md5=$(printf '%s\n' "$split_md5" | awk '$1=="src/back/reclaim.c"{print $2}')
+            c_md5=$(printf '%s\n' "$split_md5" | awk '$1=="src/back/codegen.c"{print $2}')
+            if [ -n "$r_md5" ] && [ -n "$c_md5" ]; then
+                g1c_extra+=(--src-md5 "reclaim.c=$r_md5,codegen.c=$c_md5")
+            fi
         fi
     fi
     if [ -n "${G1C_C_SEG:-}" ]; then g1c_extra+=(--c-seg "$G1C_C_SEG"); fi

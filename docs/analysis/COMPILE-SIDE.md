@@ -605,9 +605,11 @@ emitPreamble 内（:12610-12637）：只在 g->needReclaim 为真时发一行；
 - 归因对照：把 copyInto 那一行删掉、其余不变（sum 改读 src[0].r.v）的对照程序 /tmp/g14_ctl.extc，同编译器同档位：50k 2648 / 100k 3224 / 200k 3224 / 400k 3224 / 800k 3224 / 1.6M 3224 / 3.2M 3224 KB —— 与含 copyInto 的曲线逐点相同。⇒ 1.218× 的超阈来自该形状本身在 50k→100k 之间一次性抬升约 576 KB 的堆高水位（arena/region 首次扩容与 free-slab 保留），不是 P0-7b 记账造成的增长；P0-7b 把 copyInto 形状从修复前的 6.68×（2636→17616 KB）拉回到与"完全不做 copyInto"的形状逐点一致。
 - 结论：门禁口径对 50k 基线的一次性开销敏感；按 ≤1.20× 死判，同一台上任何同形状（含无 copyInto 对照）都会红。**Lead 2026-11-09 裁决采用判据 (b)**：「maxRSS(800k) ≤ 1.02 × maxRSS(对照：同程序不做 copyInto，或 100k 起基线) 且 maxRSS(800k) ≤ 4 MB」，同时照旧报 50k / 100k / 800k 三个点与 ratio。按该判据：对照 800k=3224 KB、比值 3224/3224 = 1.000×、绝对 3224 KB ≤ 4 MB ⇒ PASS。run.sh/用例由 empirics 改，本节只留命令与数字。
 
-### 14.2 已知限制 L10-b / L10-c：copyInto 记账不覆盖的两类形状（Lead 裁决：本轮不修）
+### 14.2 L10-b / L10-c：copyInto 记账的两处漏账（2026-11-16 已修，各带一个硬门禁）
 
-Lead 2026-11-09 裁决：L10-b（arena-dest fallback）与 L10-c（rc 基址反复覆盖时 rsInc 边不撤销）**本轮不修**，登记为已知限制，连同 L10-a（pool 槽引用赋值 ⇒ 永久 pin，属运行期）一起写入 docs/analysis/GC-ROOFLINE.md §8；两条都不阻塞本轮交付。**读者注意：P0-7b 只修复了"目标 view 在 rc 存储且目标槽不被反复覆盖"的形状（uaf_bulk_copy 与 G14 reference），copyInto 并非全好了。**
+**现状：L10-b 与 L10-c 都已关闭**（同一提交带 `tests/gc-p0/l10_check.py` 与 `run.sh` 的 L10 段）。L10-a（pool 槽里的引用赋值 ⇒ 永久 pin）仍在，是 G15 的 XFAIL，见本节末尾。
+
+读者注意：P0-7b（2026-11-09）只修复了"目标 view 在 rc 存储且目标槽不被反复覆盖"的形状（uaf_bulk_copy 与 G14 reference）；下面两条是它没覆盖的两类，2026-11-16 才关掉。历史现象与根因保留在两小节里，因为它们是这两个回归用例的由来。
 
 #### L10-b：目的 view 由 arena 分配 ⇒ fallback 的 noSweep 永久 pin
 
@@ -615,6 +617,8 @@ Lead 2026-11-09 裁决：L10-b（arena-dest fallback）与 L10-c（rc 基址反�
 - 机理：extc_rc_storeStructCopy 里 slabOfInterior(base) 失败 ⇒ 退回 extc_rc_storeStructCons(dst, size, (void *)0, 0)；hostKnown=0 对每个被引用对象执行 rv->noSweep = 1（src/back/reclaim.c 的 storeStructCons 文本），而 noSweep 没有清除点 ⇒ 该 region 永久退出清扫 ⇒ 线性积累。
 - 实测：50k 2640 / 200k 5520 / 800k 17616 KB（与修复前完全相同，新入口未改善）；把生成物里该 fallback 改成 no-op 后 800k = 2832 KB 平坦、ASAN 干净、输出 acc=5600000 正确 ⇒ 根因确为 noSweep pin。判据（沿用 G14 旧口径 maxRSS(800k) ≤ 1.2 × maxRSS(50k)）：当前 6.67× ⇒ RED。
 - 修复方向 P0-9：给 noSweep 加清除点（region 生命周期/世代），或编译侧要求 copyInto 目的 view 必须是 rc 基址（否则拒绝或静态告警）。
+- **2026-11-16 落地（第二条的推广形态）**：只要元素类型含引用（`rcScanType(g, w, 0) != RC_NO_REFS`），`new T[n]` 一律放进 rc 区，不再看 `planArenaLevel`，描述符取保守值。理由写进 src/back/cg/80-roots-and-triggers.inc：arena 槽不是 rc 槽，`storeRefSlot` 找不到宿主就退回 `storeRefUnknown` ⇒ pin 表；而 arena 复用时会 memset，pin 撤不回来。实测 50k/200k/800k 的 RSS **3,616/3,616/3,616 KB**（线性泄漏消失），rs_inc=rs_dec=0。
+- 判据：`l10_check.py` 的 L10-b 段（maxRSS(800k) ≤ 1.25 × maxRSS(50k)，并核对 stdout 的 `L10B` 行）。
 
 #### L10-c：rc 基址但目标槽被反复覆盖 ⇒ rsInc 边只增不减
 
@@ -622,6 +626,10 @@ Lead 2026-11-09 裁决：L10-b（arena-dest fallback）与 L10-c（rc 基址反�
 - 机理：storeStructCopy 对每个新值做 rsInc（跨区边）并置 r->foreign=1；memmove 已把旧值覆盖掉，但**旧边不撤销** ⇒ 旧 node 永远有跨区入边、不可回收。
 - 实测：50k 6660 KB → 800k 93544 KB（旧实现 85592 KB）⇒ 不有界；判据 800k ≤ 1.2 × 50k 为 RED。
 - 修复方向 P0-10：边记账改成"按槽位去重 + 覆盖时撤销旧边"（src/back/reclaim.c 的 unlinkChildren 已有按边撤销机制，可复用），或把 copyInto 的记账从 inc-only 改成"先 dec 旧槽、再 inc 新槽"。
+- **2026-11-16 落地（第二条）**：`genViewCopier` 在 memmove **之前**发射一趟只读 pre-pass，对目标区每个「可枚举引用叶子」调新入口 `extc_rc_decOldRef`（src/back/rt/61-release.inc）：旧值不是本运行期的槽就跳过、同区跳过、跨区则 `rsDecSlab`（计数档再 `holdUpdSlab(-1)`）。顺序固定 dec → memmove → 只增记账，所以旧边在值消失之前撤销。
+- 实测：50k 6,724 → **3,616 KB**、200k 23,248 → 3,616、800k 92,820 → 3,616（平）；`rs_inc=n、rs_dec=n-1、rs_live=1`（剩下的那条属于仍活的 `d` 槽）。
+- 判据：L10-c 段（maxRSS(800k) ≤ 1.25 × maxRSS(50k)、`rs_live ≤ 8`、stdout 的 `L10C n=… sum=…` 两条）。
+- 已知边界：元素类型是保守描述符（`EXTC_RC_CONSERVATIVE`）时没有 pre-pass（叶子不可枚举），这类元素仍是 inc-only；语料里没有这种形状（17 个大槽类型都是内联数组，叶子可枚举）。
 
 #### 与 L10-a 的关系
 

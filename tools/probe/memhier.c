@@ -45,12 +45,17 @@ static double measure(char *base, size_t stride, double budget_ns, int reps) {
   return best;
 }
 
+/* Upper bound on the footprint the ladder walks, settable as argv[2]: the calibration precheck only needs one
+ * DRAM point and should not pay for the 256 MiB rungs (see tests/gc-p0/calib_cseg.py). */
+static size_t FP_MAX = (size_t)-1;
+
 static void latency_ladder(void) {
   size_t fp[] = {16u<<10,32u<<10,64u<<10,128u<<10,256u<<10,512u<<10,1u<<20,2u<<20,4u<<20,8u<<20,16u<<20,24u<<20,32u<<20,36u<<20,40u<<20,48u<<20,64u<<20,128u<<20,256u<<20};
   printf("## latency ladder (random cycle over 64B lines), ns/load, min of 5\n");
   printf("%12s %10s %10s\n","footprint","lines","ns/load");
   for (unsigned k=0;k<sizeof(fp)/sizeof(fp[0]);k++){
     size_t bytes = fp[k]; size_t n = bytes/64;
+    if (bytes > FP_MAX) continue;
     char *b = mmap(NULL, bytes, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS|MAP_POPULATE, -1, 0);
     if (b==MAP_FAILED){printf("%12zu mmap FAIL\n",bytes); fflush(stdout); continue;}
     build_cycle(n,64,b);
@@ -101,7 +106,8 @@ static void bandwidth(void) {
 
 int main(int argc,char**argv){
   setvbuf(stdout,NULL,_IOLBF,0);
-  if(argc>1){cpu_set_t s;CPU_ZERO(&s);CPU_SET(atoi(argv[1]),&s);sched_setaffinity(0,sizeof(s),&s);}
+  if(argc>1 && strcmp(argv[1],"none")!=0){cpu_set_t s;CPU_ZERO(&s);CPU_SET(atoi(argv[1]),&s);sched_setaffinity(0,sizeof(s),&s);}
+  if(argc>2){ FP_MAX = (size_t)strtoull(argv[2],NULL,10); latency_ladder(); return 0; }
   latency_ladder();
   tlb_ladder(0);
   tlb_ladder(1);

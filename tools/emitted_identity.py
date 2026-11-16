@@ -92,11 +92,13 @@ def collect(args):
     return rows
 
 
-def write_baseline(rows):
+def write_baseline(rows, why=None):
     extc = os.path.join(ROOT, "build", "extc")
     lines = ["# emitted-C identity baseline (refactor invariant)",
              "# extc md5: " + (md5_bytes(open(extc, "rb").read()) if os.path.exists(extc) else "missing"),
              "# columns: config, source, status, md5, bytes"]
+    # 行为改动后重新冻结必须留下理由：否则下一次 --check 失败时没人知道基线被谁、因为什么改写过。
+    lines.insert(3, "# why: " + (" ".join(why.split()) if why else "UNRECORDED (--write without --why)"))
     for cname, rel, status, h, size, _note in rows:
         lines.append("%s\t%s\t%s\t%s\t%d" % (cname, rel, status, h, size))
     open(BASELINE, "w", encoding="utf-8").write("\n".join(lines) + "\n")
@@ -121,12 +123,14 @@ def main():
     ap.add_argument("--set", default="core", choices=["core", "all"])
     ap.add_argument("--configs", default="default,reclaim")
     ap.add_argument("--limit", type=int, default=40)
+    ap.add_argument("--why", default="",
+                    help="--write 时记录重新冻结的理由（行为改动不是重构，理由必须留痕、可被复核）")
     args = ap.parse_args()
     if not (args.write or args.check):
         ap.error("one of --write or --check is required")
     rows = collect(args)
     if args.write:
-        n = write_baseline(rows)
+        n = write_baseline(rows, args.why)
         print("baseline written: %d rows -> %s" % (n, os.path.relpath(BASELINE, ROOT)))
         return 0
     base = read_baseline()

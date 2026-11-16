@@ -285,6 +285,16 @@ static void genViewIndexer(CG *g, Type *inst) {
  *         conservative "cannot be enumerated" case? Declared here so `genViewCopier` can ask
  *         before `rcScanType` itself is defined; defined next to `rcScanType`. */
 static bool typeHasRefSlots(CG *g, Type *t);
+/** @brief Are this type's reference leaves enumerable (`rcScanType == RC_LEAF_REFS`)? The byte
+ *         copy primitive needs one answer at the same place as @ref typeHasRefSlots: an
+ *         enumerable element type can undo the old values of the destination leaf by leaf, a
+ *         conservative one cannot (no offsets are known, so it keeps the increment-only path).
+ *         Declared here, defined next to `rcScanType`. */
+static bool typeRefsEnumerable(CG *g, Type *t);
+/** @brief The C lvalue paths of a type's reference leaf slots, relative to an empty base (such as
+ *         `.r`, `.kids.data[0]`). Declared here so the byte copy primitive can splice each leaf
+ *         onto its own element expression; defined next to `rcRootLeaves`. */
+static void rcLeafPaths(CG *g, Type *t, const char *base, Vec *out, int depth);
 /**
  * @brief Emit on demand the whole-block copy primitive of a view type (used by `copyInto`).
  *
@@ -317,6 +327,34 @@ static void genViewCopier(CG *g, Type *inst, bool unchecked) {
         cgLine(g, "    extc_trapMsg(file, line, \"the view has no storage\");");
     } else {
         cgLine(g, "(void)file; (void)line;");
+    }
+    /* L10-c: the byte move is about to overwrite the destination's old values and the accounting
+     * pass below is increment-only. Undo the counts (and the cross-region in-edges) those old
+     * values hold first, leaf by leaf from the element type -- otherwise every overwritten slot
+     * leaves a permanent seed behind and the heap grows once per round. Read-only and emitted
+     * **before** the memmove, so the overlap semantics of the move are untouched. Only enumerable
+     * element types qualify (a conservative one has no offsets to trust); the destination base
+     * must be provable rc storage, the same condition under which the copy pass registers edges.
+     * The host region is looked up once per call, not once per element. */
+    if (g->rc.reclaim && typeRefsEnumerable(g, elem)) {
+        Vec rel;
+        vecInit(&rel, g->arena, sizeof(const char *));
+        rcLeafPaths(g, elem, "", &rel, 0);
+        if (rel.len > 0) {
+            cgLine(g, "if (n > 0) {");
+            g->indent++;
+            cgLine(g, "ExtcRcSlab *__extc_cs = extc_rc_slabOfInterior((void *)d.data);");
+            cgLine(g, "ExtcRcRegion *__extc_cr = __extc_cs ? __extc_cs->region : (ExtcRcRegion *)0;");
+            cgLine(g, "for (int64_t __extc_ck = 0; __extc_cr && __extc_ck < n; __extc_ck++) {");
+            g->indent++;
+            for (size_t i = 0; i < rel.len; i++)
+                cgLine(g, "extc_rc_decOldRef(__extc_cr, (void *)d.data[__extc_ck]%s);",
+                       *(const char **)vecAt(&rel, i));
+            g->indent--;
+            cgLine(g, "}");
+            g->indent--;
+            cgLine(g, "}");
+        }
     }
     cgLine(g, "if (n > 0) memmove((void *)d.data, (const void *)s.data, (size_t)n * sizeof(%s));",
            cType(g, elem));

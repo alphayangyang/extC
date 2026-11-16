@@ -182,6 +182,20 @@ static RcScan rcScanType(CG *g, Type *t, int depth) {
  * @return   True when a byte copy of this type carries reference words.
  */
 static bool typeHasRefSlots(CG *g, Type *t) { return rcScanType(g, t, 0) != RC_NO_REFS; }
+/**
+ * @brief Are this type's reference leaves enumerable? (`rcScanType == RC_LEAF_REFS`, so the
+ *        conservative "cannot be enumerated" answer is **not** included.)
+ *
+ * The whole-block copy primitive asks this before the byte move: only an enumerable element type
+ * has leaf offsets, so only it can undo the destination's old values (one decrement per leaf, the
+ * mirror of the increment the copy pass adds afterwards). A conservative element type keeps the
+ * increment-only direction -- over-retain rather than guess an offset.
+ *
+ * @param g  The generator (supplies the instantiation context).
+ * @param t  The type to ask about.
+ * @return   True when the reference leaves of this type can be enumerated statically.
+ */
+static bool typeRefsEnumerable(CG *g, Type *t) { return rcScanType(g, t, 0) == RC_LEAF_REFS; }
 
 /**
  * @brief Collect a type's reference leaf slots as "relative offset" C constant expressions.
@@ -1132,8 +1146,17 @@ static const char *exNew(CG *g, Expr *e) {
      * where a replaced buffer has nowhere to go: an inner `{}` releases its arena when the block exits,
      * and `ARENA_HOME` means the *caller* named the release point, so both are bounded without the
      * collector. Routing those would pay for the runtime and reclaim nothing -- and it would pull units
-     * that only hand arrays back to their caller out of the idle tier. */
-    if (g->rc.reclaim && planArenaLevel(e) == 1) {
+     * that only hand arrays back to their caller out of the idle tier.
+     *
+     * The exception is a block whose **element type holds references**. An arena slot is not a
+     * reference slot, so `extc_rc_storeRefSlot` cannot name the host of `v[i].r = x`: it falls to
+     * `extc_rc_storeRefUnknown`, whose pin table holds one entry per store (and an overwritten
+     * entry cannot be withdrawn once the arena zeroed the cell on reuse). Counting reaches slab
+     * slots only, so such a block becomes an rc slot: the element slots are then the hosts, the
+     * pin table stays empty, and the block's lifetime is the marker's business rather than the
+     * block's. */
+    const bool refElems = rcScanType(g, w, 0) != RC_NO_REFS;
+    if (g->rc.reclaim && (planArenaLevel(e) == 1 || refElems)) {
         /* The block is an rc slot in the same region the arena would have used; the view's `data`
          * word is registered as a root (see `rcRootLeaves`), which is how the marker reaches it.
          * The reference-field offsets of elements 1..n-1 vary with the run-time count, so a static
@@ -1142,7 +1165,7 @@ static const char *exNew(CG *g, Expr *e) {
          * `alloc<T>(n)` in `exGencall`. */
         int lvl = planArenaLevel(e);
         const char *td = "(const ExtcRcType *)0";
-        if (rcScanType(g, w, 0) != RC_NO_REFS) td = "((const ExtcRcType *)-1)";
+        if (refElems) td = "((const ExtcRcType *)-1)";
         const char *core = rcAllocCore(g, arenaPrintf(g->arena, "(void *)&(%s)", ar), lvl,
             rcOwnKind(g, lvl),
             arenaPrintf(g->arena, "(int64_t)(%s) * (int64_t)sizeof(%s)", n, cType(g, w)), td);

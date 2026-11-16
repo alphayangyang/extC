@@ -22,9 +22,12 @@ result is unchanged.
   python3 tools/source_split.py                 print the file list and rendered line count
   python3 tools/source_split.py --check         assert each split root renders byte-identically
                                                 to what the sections hold (round-trip check)
+  python3 tools/source_split.py --md5           md5 of each split root's rendered text (what the
+                                                compiler reads), one '<rel> <md5>' row per root
 
 Only the two split roots have sections; every other path falls through to a plain read.
 """
+import hashlib
 import os
 import re
 
@@ -229,6 +232,13 @@ def check_split(rel):
 
 def main(argv):
     rc = 0
+    if "--md5" in argv:
+        # Tools that record provenance (tests/gc-p0/run.sh → g1c.py, calib_cseg.py) must hash what
+        # the compiler reads, not the header: after E1/E3 the header is an #include list, so its own
+        # md5 does not move when a section changes.
+        for rel in SPLITS:
+            print("%s %s" % (rel, hashlib.md5(text(rel).encode("utf-8")).hexdigest()))
+        return 0
     if "--check" in argv:
         for rel in SPLITS:
             bad, rendered = check_split(rel)
