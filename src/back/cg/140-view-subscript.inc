@@ -845,7 +845,7 @@ static void genStmtInner(CG *g, Stmt *s) {
             Expr *target = s->u.drop_.target;
             const char *nm = planCName(target);
             if (!nm && target->kind == EX_IDENT) nm = target->u.ident.name;
-            if (nm && target->type) genDropValue(g, nm, target->type, 0);
+            if (nm && target->type) genDropValue(g, dropValueRef(g, nm), target->type, 0);
             if (nm) {
                 *(const char **)vecPush(&g->dropExplicit) = nm;
                 if (target->kind == EX_IDENT)
@@ -943,7 +943,7 @@ static void genStmtInner(CG *g, Stmt *s) {
                 }
                 if (!guard.same && !wasDropped && hn &&
                     typeNeedsDrop(g, s->u.assign.target->type, 0))
-                    genDropValue(g, hn, s->u.assign.target->type, 0);
+                    genDropValue(g, dropValueRef(g, hn), s->u.assign.target->type, 0);
             }
             g->inAssignTarget = true;
             const char *tgt = genExpr(g, s->u.assign.target);

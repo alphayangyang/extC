@@ -107,14 +107,15 @@ struct tasks<T> {
 
     /* 推进一个任务一步（脚本化驱动用）：返回它是否还活着。 */
     fn step(self: mut ref tasks<T>, s: mut ref loop, i: i64) -> bool {
-        if self.rows.vals[i].done { return false }     /* 结束过的句柄过期，再驱动会 trap（规则②）*/
-        if !self.rows.vals[i].started {
-            self.rows.vals[i].started = true
-            if !self.rows.vals[i].h.next() { self.finish(s, i)  return false }
+        var rs = self.rows.viewMut()
+        if rs[i].done { return false }     /* 结束过的句柄过期，再驱动会 trap（规则②）*/
+        if !rs[i].started {
+            rs[i].started = true
+            if !rs[i].h.next() { self.finish(s, i)  return false }
             return true
         }
-        var req: i64 = self.rows.vals[i].h.value()     /* 挂起时留下的请求（**读在 send 之前**）*/
-        if !self.rows.vals[i].h.send(req) { self.finish(s, i)  return false }
+        var req: i64 = rs[i].h.value()     /* 挂起时留下的请求（**读在 send 之前**）*/
+        if !rs[i].h.send(req) { self.finish(s, i)  return false }
         return true
     }
 
@@ -125,59 +126,61 @@ struct tasks<T> {
      * **负请求（"别等，立刻再推我"）只在这一处处理** —— 从前两条路各写一遍，就绪那条漏了 ⇒
      * 恢复后又 `yield -1` 的任务再也没人推 ✗（实测：coro_echo / coro_epoll 两个判据当场挂）。 */
     fn resumeRow(self: mut ref tasks<T>, s: mut ref loop, i: i64, ready: bool) {
-        if self.rows.vals[i].done { return }
+        var rs = self.rows.viewMut()
+        if rs[i].done { return }
         if ready {
-            if !self.rows.vals[i].h.send(self.rows.vals[i].h.value()) { self.finish(s, i)  return }
+            if !rs[i].h.send(rs[i].h.value()) { self.finish(s, i)  return }
         }
         while true {
-            if !self.rows.vals[i].started {
-                self.rows.vals[i].started = true
-                if !self.rows.vals[i].h.next() { self.finish(s, i)  return }
+            if !rs[i].started {
+                rs[i].started = true
+                if !rs[i].h.next() { self.finish(s, i)  return }
                 continue
             }
-            var req: i64 = self.rows.vals[i].h.value()
+            var req: i64 = rs[i].h.value()
             if req == WAIT_UNTIL {
                 let nowDl: i64 = loop::now()
                 let dl: i64 = s.pendingUntil
                 if dl > nowDl && s.timers.add(dl, i) >= 0 { return }
-                if !self.rows.vals[i].h.send(req) { self.finish(s, i)  return }
+                if !rs[i].h.send(req) { self.finish(s, i)  return }
                 continue
             }
             if req == WAIT_FD_W {
                 let fdw: i64 = s.pendingFd
                 if fdw < 0 {
                     /* 没给 fd：立刻再推一轮（别把任务卡死） */
-                    if !self.rows.vals[i].h.send(req) { self.finish(s, i)  return }
+                    if !rs[i].h.send(req) { self.finish(s, i)  return }
                     continue
                 }
-                if self.rows.vals[i].fd != fdw || self.rows.vals[i].mode != 2 {
+                if rs[i].fd != fdw || rs[i].mode != 2 {
                     net::extc_epoll_arm(s.ep, fdw, 0, i)     /* readable=0 ⇒ EPOLLOUT */
-                    self.rows.vals[i].fd = fdw
-                    self.rows.vals[i].mode = 2
+                    rs[i].fd = fdw
+                    rs[i].mode = 2
                 }
                 return
             }
             if req >= 0 {
                 /* 等这个 fd 可读；**行号就是 epoll 的 tag** ⇒ 回来时不用查任何表 ✓ */
-                if self.rows.vals[i].fd != req || self.rows.vals[i].mode != 1 {
+                if rs[i].fd != req || rs[i].mode != 1 {
                     net::extc_epoll_arm(s.ep, req, 1, i)
-                    self.rows.vals[i].fd = req
-                    self.rows.vals[i].mode = 1
+                    rs[i].fd = req
+                    rs[i].mode = 1
                 }
                 return
             }
-            if !self.rows.vals[i].h.send(req) { self.finish(s, i)  return }
+            if !rs[i].h.send(req) { self.finish(s, i)  return }
         }
     }
 
     /* 收尾一行：标记 + 计数 + 把座位还给 `freeq`。**不缩表**（`pop` 会换掉内部视图，而索引是
      * 外面对表的唯一把手）。**幂等**：重复收尾会把同一个座位还两次 ⇒ 以后两个任务坐同一行 ✗。 */
     fn finish(self: mut ref tasks<T>, s: mut ref loop, i: i64) {
-        if self.rows.vals[i].done { return }
-        self.rows.vals[i].done = true
+        var rs = self.rows.viewMut()
+        if rs[i].done { return }
+        rs[i].done = true
         s.timers.cancel(i)
-        self.rows.vals[i].fd = -2
-        self.rows.vals[i].mode = 0
+        rs[i].fd = -2
+        rs[i].mode = 0
         self.freeq.push(i)
         s.live = s.live - 1
     }
@@ -208,7 +211,7 @@ struct tasks<T> {
 
         /* ① runq：要立刻推进的行。一个行可能连着推进多次（`yield 负数` = 别等，再来一轮）*/
         while self.rqHead < self.runq.len() {
-            var i: i64 = self.runq.vals[self.rqHead]
+            var i: i64 = self.runq.get(self.rqHead)!
             self.rqHead = self.rqHead + 1
             self.resumeRow(s, i, false)
         }

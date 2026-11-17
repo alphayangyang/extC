@@ -197,3 +197,112 @@ T0 程序编译成空操作：`extc_buf_releaseRefs` 的函数体被 `#if define
   `buf_churn_{a,b}.extc`（块内/循环内 churn 的账本必须回零）、`buf_fuzz.extc`（3,000 轮随机长度
   + 非 LIFO 释放 + 每步账本）、`buf_huge.extc`（1 GiB 预留只驻留碰过的页）；引用侧的两条判据是
   `tests/gc-p0` 的 G21 与 `tests/reclaim` 的 `t_pinRange`。- 卡具：`bench/buf/`（五条形状对 C++，`SPEC.md` 判据、`RESULTS.md` 数字与陷阱）。
+
+## 10 第一个消费者：`vector` 建在 `buf` 上
+
+### 10.1 形状：一个字段，一条不变量
+
+`vector<T>` 现在只有一个私有字段 `b: buf<T>`：长度就是 `b.len()`，元素 `i` 的地址恒为
+`base + i*sizeof(T)`。增长因此只有两种形态 —— 预留内推长度（0 拷贝、地址不动），或撞到
+`maxCapacity()` 时搬一次家（由 `buf` 做：逐段拷、拷完丢源页，峰值 = 一份 + 一块）。`shrink()`
+把尾部页还给系统而地址不变；`release()` 与 `@drop` 把整片预留还回竞技场。
+
+方法的语义全部委托给 `buf`，`vector` 只负责下标形状与下限：`withCap` 把容量下限夹到 4，
+`shrink` 把目标容量夹到 `[4, capacity)`，`pop` 在空时给 `option<T>::none` 而不是走进 `buf` 的
+`null` 返回。`view()` 仍借出 `[0, len)` 的只读视图，`snapshot()` 仍是拷贝，`from<T>(xs)` 仍是
+逐元素 `push`。
+
+### 10.2 所有权：`@noCopy` 让「两份值共用一块板」写不出来
+
+旧 `vector` 是 `@sharesStorage @place`：按值拷贝两份共用同一个池板块，靠池的世代号
+（`pid` / `pidGen` / `pStale` / `pPoison`）判陈旧。`buf` 拥有预留且是 `@noCopy`，若 `vector` 仍
+标 `@sharesStorage`，`var b = a` 会逐位复制 `buf` 句柄 ⇒ 两个名字各自 `@drop release` 同一片预留
+（double free），而判陈旧的凭据（池世代）随池一起退场。因此 `vector` 改成 `@noCopy`：
+
+- `var b = a` 是**转移**。转移之后读 `a` 是编译错（实测报 `a was moved into b and cannot be read
+  here`，并连带 `no method push on <error>`），所以「一份 release 之后另一份悬垂」这类事故在语言里
+  没有写法。
+- 要一份能自己改的副本用 `clone()`：它是深拷贝（新建预留 + 逐元素 push）。`tests/stl/clone.extc`
+  的 ④（原件 `release()` 后副本仍可用）现在由 `clone()` 保持。
+- 旧的世代/冻结三件套（`pid`、`pidGen`、`pStale`、`pPoison`、`frozen`）整个消失；`borrow()` 仍给出
+  `borrowGuard`，`vectorGuard` 只是把它转发一层（`view()` / `len()`）。
+
+### 10.3 顺带修掉的两个编译器缺陷
+
+**（a）泛型实例的字段类型。** 一个 `StructDef` 被所有实例共享，所以 `vector<i32>` 的字段在定义侧
+仍写着 `buf<T>`。codegen 的 `typeNeedsDrop` / `genDropValue` 与 checker 的 `typeHasDrop` /
+`markDropHooksUsed` 若照字面递归，问的是模板、发射的是模板钩子：生成的 C 调
+`buf$buf_T_release`，而实际定义叫 `buf$buf_i32_release` ⇒ `implicit declaration of function`。
+四处统一成「先按实例的实参替换字段类型再往下走」（checker 侧的新助手 `fieldTypeInInstance`），
+两侧的分析与发射重新一致。
+
+**（b）effects 摘要与名字分派内建。** `buf::withCap` 调 `extc_sizeOf<T>()`、`extc_viewOfT<T>()`，
+`buf::push` 调 `sysheap::extc_viewOf`：这些都是 checker/codegen 按名字分派的内建，没有声明可读，
+旧的效应收集器直接用「回调名的整串」与 `print`/`println`/`flush` 比 `strcmp`。经模块限定调用的
+名字是 `mod$name`（实测 `heap$extc_viewOf`、`io$print`），整串永远匹配不上 ⇒ 摘要被标成不完整 ⇒
+**所有**调用者都要证明每个引用实参活得比被调方的位置更久，于是 `vector::from(a[..])` 被拒
+（`tests/stl/from.extc`）。修法是把白名单判断改成「比最后一个 `$` 之后的那一段」，并把
+`trap`/`extc_sizeOf`/`extc_viewOf`/`extc_viewOfT` 一并列入 —— 它们要么不返回、要么只重解释调用方
+已经持有的指针，与 `extc_viewOf` 自己的 `effects Addr=0 Cont=0` 是同一个承诺。
+
+### 10.4 判据
+
+| 判据 | 结果 |
+|---|---|
+| `tests/stl/run.sh` | 56 项 0 失败（含 ASan 组） |
+| `tests/stl/vector.extc` 输出 | `cap0=4 n=9 cap=9 sum=36 shrink=9 pop=8 n=8 clear=0/9 tail=-9`（与迁移前逐字相同） |
+| `tests/stl/vector_grow.extc` | `caps=4,6,9,…,711,1066 n=1000`（1.5 倍、1000 次 push 搬 14 次） |
+| vector churn（1e5 / 1e6 轮） | 1,664 kB / 1,664 kB ⇒ 平 |
+| 峰值 RSS（同形状 vs arena 切片） | 9,964 kB vs 18,284 kB（低 45%） |
+| `tests/stl/from.extc` | 由「effects 不完整」的编译错变为通过，输出 `s=5 e=0 v=3 w=2 sum=6` |
+
+### 10.5 未做
+
+- `string` / `hashMap` / `map` / `place` 仍在池板块上（它们的迁移是 R4c 的后续步），`stdlib` 的池
+  与运行期池因此还不能删。
+- `vector` 的 `@noCopy` 让「按值拷贝共享」这一族测试失效：`tests/pool/rt_stale_alias.extc` 已改成
+  编译错负例，`tests/pool/rt_clone_alias.extc` 是 `clone()` 的正例；池的其余用例等 R4c 后续步。
+
+### 10.6 视图元素不能装「拥有预留的值」
+
+容器把元素按字节写进自己的平面数组，容器死亡时**不会**逐个跑元素的 `@drop`。所以一个拥有预留
+的值（`buf`、以及建在它上面的 `vector`）一旦被写进视图元素，那份预留就再没有人还：
+
+- 临时量：`outer.push(vector<i64>::new())` 的参数按值传入，函数尾发射参数的 `@drop release`，
+  而元素已经被拷进容器 —— 元素指向**已释放**的预留。迁移前实测：`buf::bufLive()` 在 `push` 前
+  2,097,152 字节、`push` 后 0，而 `outer.get(0).len()` 仍读到 1。
+- 具名变量：先被 `@noCopy` 拒（`may not be copied by value`），这条更早、更清楚。
+
+因此语言加了一条规则：**视图元素不能是拥有型值**。两条路径：具体类型在 `checkStoreEscape` 当场
+报（`cannot store T into a view element: it owns a reservation and the copy would never be dropped`），
+模板里的 `T` 延迟到实例化时报（复用 `RefCheck`，诊断落在元素写入那一行并带上实例名）。附带修
+了同一处的可见性漏洞：视图跟踪的旧门是「容器自己声明了 `@drop` 钩子或 `poolObject`」，而新的
+`vector` 自己不声明钩子（存储靠字段 `buf` 归还）⇒ 7 条「视图增长后仍能用」的负例被漏判；门
+改成传递性的 `typeHasDrop`。
+
+这条规则对用户代码同样成立：`mut slice<vector<i64>>` 的元素赋值也是同一个形状。仓库里仍有装引用
+的容器（`buf<mut ref node>`、`vector<mut ref node>`），引用不拥有存储，不受影响。
+
+### 10.7 协程调度器跟着改
+
+`stdlib/std/coro/scheduler.extc` 里 28 处 `self.rows.vals[i]` 依赖旧 `vector` 的**公开** `vals` 字段。
+新 `vector` 的存储藏在 `buf` 里，唯一可行的写法是先绑局部视图再按下标读写：`var rs = self.rows.viewMut()`，
+然后 `rs[i].h.next()`。语言侧的两条硬约束（实测，别再试）：
+
+- `v.viewMut()[i].field = x` 不行 —— 临时视图不是「地方」（报 `it is not a place`）。
+- 给容器加 `fn at(self: mut ref buf<T>, i: i64) -> mut ref T` 也不行 —— 只有本帧 `new T[n]` 来的视图
+  允许对元素取引用（报 `cannot take a reference to an element of this view`），容器背后的视图可能被换掉。
+
+所以调度器的每个方法在自己的作用域里取一次视图，视图存活期间不做结构性动作（不 `push` / `reserve`），
+需要 `finish` 时只改字段。`tests/coro/coro_table.extc` 与 `coro_sched.extc` 同步改写。
+
+### 10.8 生成 C 的可见变化
+
+两类，都被 `tools/emitted_identity.py` 逐个文件看过：
+
+1. **真实行为变化**：用到 `vector` 的 22 个程序（两种回收配置各一行，共 44 行）生成 C 变了 ——
+   `vector` 的存储从池板块换成 `buf` 预留，钩子从池的 `@drop` 换成 `buf::release`。
+2. **声明顺序的置换**：`hashMap`/`string`/`map` 这类**没有**用到 `vector` 的程序里，类型声明区有
+   若干行换了位置（`pool$pool_u8` 之类）。原因是 checker 侧的字段替换会内化（intern）实例类型，
+   让它的登记时机早于 codegen 原本的时机；逐行排序后两个文件完全相同（对 `hashSet` 与 `stringOps`
+   实测为纯置换），语义无变化。重冻结基线时按「置换，已验证」记录。

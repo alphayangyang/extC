@@ -2132,6 +2132,26 @@ Expr *originOf(Checker *c, Expr *val, int hops) {
 }
 
 /**
+ * @brief Tell whether a store writes an element through a view.
+ *
+ * The storage behind a view is a flat array of values the container owns: an element store writes
+ * the bytes and nothing else. For a plain value that is exactly right; for a value that owns a
+ * reservation (a `@drop` type) it produces a second owner that no hook ever releases for the copy,
+ * and the original name releases it a second time. `buf<T>::push` does exactly this
+ * `self.vals[self.n] = v`, so the rule in `checkStoreEscape` and its deferred twin in
+ * `runRefCheck` are what keep a container from holding an owning element.
+ *
+ * @param target  Left side of an assignment; may be NULL.
+ * @return        True when it is `view[i]` (any projection whose immediate object is a view).
+ */
+static bool storesIntoView(const Expr *target) {
+    if (!target || target->kind != EX_INDEX) return false;
+    const Expr *obj = target->u.index.obj;
+    if (!obj || !obj->type) return false;
+    return ttIsViewType(obj->type);
+}
+
+/**
  * @brief Every escape rule a single store has to satisfy.
  *
  * Beyond the depth rule, a borrowed value may not be stored where it outlives the call. When
@@ -2157,6 +2177,20 @@ bool checkStoreEscape(Checker *c, Expr *val, Expr *target, int line) {
     if (mentionsParam(val->type)) {
         recordRefCheck(c, val, target, slotDepth(c, target), line, "this assignment");
         return false;
+    }
+    /* A value that owns a reservation cannot live in a view element: the store copies the bytes
+     * and no hook ever runs for that copy, so the value would be released twice (once when the
+     * original name dies, once when the container does). Named here for the concrete case, and
+     * again in `runRefCheck` for the case a template sees only as `T`. */
+    if (storesIntoView(target) && typeHasDrop(c, val->type, 0)) {
+        ckError(c, line,
+                "A view is a flat array of values: storing writes the bytes and the container never"
+                " runs a `@drop` hook for that copy, so the value would be released twice -- once"
+                " here and once when the original name dies. Keep the element type plain, or own"
+                " the value outside the container.",
+                "cannot store `%s` into a view element: it owns a reservation and the copy would"
+                " never be dropped", typeStr(c, val->type));
+        return true;
     }
     /* The question here is which level the value is stored into, so `storeLayer` is used
      * rather than `slotDepth` (the trap is described at `storeLayer`). */
@@ -2280,6 +2314,7 @@ void recordZeroCheck(Checker *c, Type *t, int line, const char *name) {
     rc->line     = line;
     rc->what     = name;
     rc->func     = c->curFunc;
+    rc->ctx      = c->ctx;
     *(RefCheck **)vecPush(&c->refChecks) = rc;
 }
 
@@ -2312,6 +2347,10 @@ static void recordRefCheck(Checker *c, Expr *val, Expr *target, int at,
     rc->line   = line;
     rc->what   = what;
     rc->func   = c->curFunc;
+    /* Fourth kind (see `viewElem`): an owning value stored into a view element. The element type
+     * is opaque while the template is checked, so the decision waits for the instance. */
+    rc->ctx      = c->ctx;
+    rc->viewElem = storesIntoView(target);
     /* Compute these numbers now, while the scope is open and `lookup` still finds the
      * parameters. The walk does not stop early for a node that mentions a type parameter, so
      * this depth is computed under the assumption "the parameter may carry a reference", which

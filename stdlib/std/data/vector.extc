@@ -1,14 +1,14 @@
-/* stl/vector.extc —— 池底动态数组（STL 的第一个池底容器原型）
+/* std/data/vector.extc —— 预留底动态数组：`buf<T>` 之上的一层下标视图
  *
- * 与 `stl/pool<T>` 的分工：
- *   - `pool<T>`：**手柄寻址**（稳定身份，erase 之后旧 handle 可判失效）
- *   - `vector<T>`：**下标寻址**（就是 C++ 那个语义），因此不需要槽位表与世代，
- *     但它照样是"池底"的：随容器建一条运行期池记录（寿命挂在"地方"上）、
- *     容量按 vector 式翻倍、`shrink` 降高水位、`release` 时校验世代
+ * **一个对象、一个不变量**：`vector<T>` 持有一个 `buf<T>`，元素 `i` 的地址永远是
+ * `base + i*sizeof(T)`；长度就是 `buf` 的长度。于是
+ *   - 增长只在预留内推进长度（不拷贝、不搬家），撞到预留上限才搬一次家（`buf` 负责）；
+ *   - `shrink()` 把尾部的页还给操作系统，地址不变；
+ *   - `release()`（以及 `@drop`）把整片预留还给分配器 —— 旧代不会留在堆上。
  *
- * 内存：`vals` 是**池的板块**，
- * 不是 arena 切片 —— 扩容时旧块当场还给池，历代旧副本不会留在 arena 里；`shrink` 也据此真缩。
- * dense 永远连续 ⇒ `atDense` / SIMD 一直成立。
+ * **所有权**：`vector` 是 `@noCopy`（它拥有存储）。`var b = a` 是**转移**，不是拷贝：
+ * 转移之后旧名字什么都没有（编译期就报错），所以「两份值共用一个板块、一份 release 后
+ * 另一份悬垂」这一整类事故**在语言里写不出来**。要一份能自己改的副本用 `clone()`。
  *
  * @code
  * use std::io
@@ -24,213 +24,125 @@
  * }
  * @endcode
  */
-use std::sys::pool as syspool
+use std::data::buf
 
-@sharesStorage        /* 按值拷贝时**两份共用同一块板块** ⇒ 编译器在这里报警告，要独立副本用 `clone()` */
-@place                 /* 这个类型**拥有一个地方**：存储住在那个地方的板块上，寿命随它所在的域 */
+@noCopy
 struct vector<T> {
-    vals:   mut slice<T>
-    @private n:      i64
-    @private cap:    i64
-    @private pid:    i64                /* 运行期池的下标 */
-    @private pidGen: u64                /* 建池时的世代：陈旧拷贝不许误放别人的池 */
-    @private pins:   i64                /* 活着的 `borrow()` 守卫个数：> 0 时板块被冻结 */
+    @private b: buf<T>
 
+    /** @brief 建一个容量为 `c` 的数组（下限 1；`buf` 再按 2 MiB 地址空间起留）。 */
     fn withCap(c: i64) -> vector<T> {
-        let rp = syspool::extc_pool_new(-1)
-        let rpg = syspool::extc_pool_generation(rp)
         var cc: i64 = c
         if cc < 4 { cc = 4 }
-        var v: vector<T> = {
-            vals:   poolSliceRaw<T>(rp, cc),
-            n:      0,
-            cap:    cc,
-            pid:    rp,
-            pidGen: rpg,
-            pins:   0,
-        }
+        var v: vector<T> = { b: buf<T>::withCap(cc) }
         return v
     }
 
+    /** @brief 建一个空数组（容量下限 4）。 */
     fn new() -> vector<T> { return vector<T>::withCap(4) }
 
+    /** @brief 元素个数。 */
     @inline
-    fn len(self: ref vector<T>) -> i64 { return self.n }
+    fn len(self: ref vector<T>) -> i64 { return self.b.len() }
 
+    /** @brief 当前承诺的容量（预留内可以原地长到这个数，不搬家）。 */
     @inline
-    fn capacity(self: ref vector<T>) -> i64 { return self.cap }
+    fn capacity(self: ref vector<T>) -> i64 { return self.b.capacity() }
 
+    /** @brief 这片预留最多装几个元素。 */
     @inline
-    fn isEmpty(self: ref vector<T>) -> bool { return self.n == 0 }
+    fn maxCapacity(self: ref vector<T>) -> i64 { return self.b.maxCapacity() }
 
-    /* 下标读：越界给 none（条件用值，不 trap）*/
+    /** @brief 存储搬过几次家（增长代价的可观测计数）。 */
+    @inline
+    fn relocations(self: ref vector<T>) -> i64 { return self.b.relocations() }
+
+    /** @brief 没有元素。 */
+    @inline
+    fn isEmpty(self: ref vector<T>) -> bool { return self.b.len() == 0 }
+
+    /** @brief 下标读：越界给 `none`（条件用值，不 trap）。 */
     fn get(self: ref vector<T>, i: i64) -> option<T> {
-        if i < 0 || i >= self.n { return option<T>::none }
-        return option<T>::some(self.vals[i])
+        if i < 0 || i >= self.b.len() { return option<T>::none }
+        return option<T>::some(self.b.view()[i])
     }
 
-    /* 下标写：越界就什么都不做（调用者用 `hasAt` 先问）*/
+    /** @brief 下标写：越界就什么都不做（调用者用 `get` 先问）。 */
     fn set(self: mut ref vector<T>, i: i64, v: T) -> bool {
-        if self.pStale() { self.pPoison() }
-        if i < 0 || i >= self.n { return false }
-        self.vals[i] = v
+        if i < 0 || i >= self.b.len() { return false }
+        self.b.viewMut()[i] = v
         return true
     }
 
-    /* **拿到内容只有这一条路：`snapshot()` —— 拷一份到调用者所在的地方。**
-     *
-     * 没有"零拷贝视图"是有意的：那等于把池里的东西交出去，而且守不住 ——
-     * `push`（可能扩容搬家）/ `clear`（翻纪元）/ `shrink` / `release` 任何一个动作都能让它失效。
-     * 名字也不用 `as*`：那看起来就像"给了里面的一个视图"。拷贝的存储由逃逸分析提到调用者
-     * 选的地方，所以它可以存、可以返回。 */
-    /* 借出只读视图（**不拷贝**）：容器因此能直接出现在收 `slice<T>` 的参数上。
-     * 视图在**下一次改变容量/位置的调用**之后失效（`push`/`pop`/`grow`/`clear`/`release`），
-     * 要一份独立拷贝用 `snapshot`。 */
-    fn view(self: ref vector<T>) -> slice<T> { return self.vals[0..self.n] }
+    /** @brief 只读视图 `[0, len)`（不拷贝）。改容量的调用之后失效；要独立拷贝用 `snapshot`。 */
+    fn view(self: ref vector<T>) -> slice<T> { return self.b.view() }
 
+    /** @brief 可写视图 `[0, len)`（不拷贝）。与 `view` 同一道闸：改容量的调用之后失效。 */
+    fn viewMut(self: mut ref vector<T>) -> mut slice<T> { return self.b.viewMut() }
+
+    /** @brief 拷一份到调用者所在的地方（`snapshot` 是拷贝，不是视图）。 */
     fn snapshot(self: ref vector<T>) -> slice<T> {
-        var out: mut slice<T> = new T[self.n]
-        copyInto<T>(out, self.vals, self.n)      /* 一次 memmove，不是逐元素循环 */
+        var out: mut slice<T> = new T[self.b.len()]
+        copyInto<T>(out, self.b.view(), self.b.len())
         return out
     }
 
-    /* **深拷贝：要一份独立的新容器就用它。**
-     *
-     * `var b = a` 不是深拷贝 —— 那是**结构体逐成员拷贝**，两份共用同一块板块
-     * （`vals` 是指针被抄了一份）。于是 `b.push(...)` 会改到 `a` 的内容，而
-     * `a.release()` 会让 `b` 变成悬垂（守卫能把它变成带位置的 trap，但那已经是事故了）。
-     * 想"复制一份来自己改"，唯一的正路是这里：显式、代价可见（一次 O(n) 拷贝 + 一块新板块）。
-     *
-     * 新容器的存储**生在调用者所在的地方**（与 `snapshot` 同一条逃逸规则）⇒
-     * 它可以被存下来、被返回、活得比源容器长。 */
+    /** @brief 深拷贝：要一份独立存储的新数组用它（`var b = a` 是转移，不是拷贝）。 */
     fn clone(self: ref vector<T>) -> vector<T> {
-        var out = vector<T>::withCap(self.n)
-        copyInto<T>(out.vals, self.vals, self.n)   /* 一次 memmove（长度已由 withCap 保证） */
-        out.n = self.n
+        var out = vector<T>::withCap(self.b.len())
+        var i: i64 = 0
+        while i < self.b.len() { out.push(self.b.view()[i])  i = i + 1 }
         return out
     }
-    
-    /* 扩到 1.5 倍：**在原块上长**（装不下时才由分配器搬家），内容由 resize 保住。
-     * 有了真板块之后 1.5 才是对的因子（翻倍只在「旧块还不了」时才占优）；
-     * 峰值因此是 O(活跃量)，不是历代旧副本之和。 */
-    fn grow(self: mut ref vector<T>) {
-        if self.pid < 0 { return }            /* 已 release：没有池可要，下面的下标会响亮越界 */
-        if self.pins > 0 { self.frozen() }    /* 有活着的借用 ⇒ 换板会把别人的视图变成悬垂 */
-        let ncap = self.cap + self.cap / 2
-        self.vals = poolResizeRaw<T>(self.pid, self.vals, ncap)
-        self.cap  = ncap
-    }
 
-    /* 冻结位：有活着的借用时改存储身份是**确定性错误**，不是未定义行为。 */
-    @private
-    fn frozen(self: ref vector<T>) {
-        trap("this buffer is frozen by a live borrow")
-    }
+    /** @brief 追加一个元素；容量不够时在预留内原地长，撞到预留上限才搬一次家。 */
+    @inline
+    fn push(self: mut ref vector<T>, v: T) { self.b.push(v) }
 
-    /* 借出守卫：活着的时候容器不许换板/缩容/释放。视图只能**在守卫活着的时候**拿来用，
-     * 守卫离开作用域（`@drop`）计数减一。它不拥有存储、也不决定寿命 —— 与越界、陈旧 `dyn`
-     * 一样是"停下来说清楚"，不是"读回收掉的字节"。 */
-    fn borrow(self: mut ref vector<T>) -> vectorGuard<T> {
-        self.pins = self.pins + 1
-        return { v: self, p: ref self.pins }
-    }
-
-    /* **守卫**：这一份容器值还指着它的池吗？
-     *
-     * 池被 `release` 掉、或者那个槽位被别的池复用时，世代对不上 —— 这时 `vals` 指向的板块
-     * 已经不在我们名下（可能已经还给 malloc，也可能已经归别人）。实测的静默形状：
-     *     var a = vector<i32>::new()   var b = a   a.release()   b.push(i32(9))
-     * 别名让两份共用一个板块，`a.release()` 之后 `b` 就成了悬垂 —— 不开 ASan 时打印完全正常。 */
-    fn pStale(self: ref vector<T>) -> bool {
-        if self.pid < 0 { return false }
-        return syspool::extc_pool_generation(self.pid) != self.pidGen
-    }
-
-    /* 陈旧 ⇒ 把**这一份**收成空容器（板块不要碰，它可能已经归别人）：容量归零之后，
-     * 任何一次下标访问都会带位置地 trap —— 把静默 UAF 变成响亮失败。 */
-    fn pPoison(self: mut ref vector<T>) {
-        self.vals = poolSlice<T>(-1, 0)
-        self.n    = 0
-        self.cap  = 0
-        self.pid  = -1
-    }
-
-    fn push(self: mut ref vector<T>, v: T) {
-        if self.pStale() { self.pPoison() }
-        if self.n >= self.cap { self.grow() }
-        self.vals[self.n] = v
-        self.n = self.n + 1
-    }
-
+    /** @brief 弹出最后一个元素；空的时候返 `none`。 */
+    @inline
     fn pop(self: mut ref vector<T>) -> option<T> {
-        if self.n == 0 { return option<T>::none }
-        self.n = self.n - 1
-        return option<T>::some(self.vals[self.n])
+        if self.b.len() == 0 { return option<T>::none }
+        return self.b.pop()
     }
 
-    /* 缩容：降到刚好装下（下限 4）。dense 保持连续。
-     * 同一块缩回去 ⇒ 让出的是真的内存，不只是池的工作集。 */
+    /** @brief 缩到刚好装下 `len()` 个元素（下限 4），尾部页还给操作系统。 */
     fn shrink(self: mut ref vector<T>) {
-        if self.pins > 0 { self.frozen() }
-        var ncap: i64 = self.n
+        var ncap: i64 = self.b.len()
         if ncap < 4 { ncap = 4 }
-        if ncap >= self.cap { return }
-        self.vals = poolResizeRaw<T>(self.pid, self.vals, ncap)
-        self.cap  = ncap
+        if ncap >= self.b.capacity() { return }
+        self.b.shrink(ncap)
     }
 
-    /* 清空但保留容量（下一次填回来不用重新分配）*/
-    fn clear(self: mut ref vector<T>) { self.n = 0 }
+    /** @brief 清空但保留容量（下一次填回来不用重新提交页）。 */
+    @inline
+    fn clear(self: mut ref vector<T>) { self.b.clear() }
 
-    /* 释放这一层：世代对不上 = 陈旧拷贝，什么都不做 */
-    fn release(self: mut ref vector<T>) {
-        if self.pins > 0 { self.frozen() }
-        if self.pid < 0 { return }
-        /* One staleness question, one place to ask it (`pStale`): the comparison lives in
-         * exactly one place, and two copies of a load-bearing check would drift. */
-        if self.pStale() {
-            self.pid = -1
-            return
-        }
-        /* 先把视图收成 0 长、容量归零，再把板块还给池：之后任何下标都是响亮越界
-         * （带位置的 trap），而不是写进一块已经还掉的内存。 */
-        self.vals = poolResize<T>(self.pid, self.vals, 0)
-        self.cap  = 0
-        syspool::extc_pool_reset(self.pid)
-        syspool::extc_pool_drop(self.pid)
-        self.pid = -1
+    /** @brief 现在就把整片预留还给分配器（之后 `@drop` 再发一次也是空操作）。 */
+    fn release(self: mut ref vector<T>) { self.b.release() }
+
+    /** @brief 借出：守卫活着的时候数组不许搬家。 */
+    fn borrow(self: mut ref vector<T>) -> vectorGuard<T> {
+        var g: vectorGuard<T> = { g: self.b.borrow() }
+        return g
     }
 }
 
-/* 从一段视图**拷贝**出一个 `vector`：`vector::from(xs)`（`T` 靠推断，不用写类型参数）。
- *
- * 同上：数组字面量**不会**自己变成 vector（没有隐式转换、也没有上下文采纳）—— 要造就明写。
- * 写法照 ``seq::sort<T>``：泛型自由函数，调用点推断。
- */
+/** @brief 从一段视图**拷贝**出一个 `vector`（`T` 靠推断）。 */
 fn from<T>(a: slice<T>) -> vector<T> {
   var v = vector<T>::withCap(i64(a.len))
   var i: i64 = 0
   while i < a.len { v.push(a[i])  i = i + 1 }
   return v
 }
-
-/** @brief `vector::borrow()` 的守卫：活着的时候板块被冻结（增长/缩容/释放都会 trap）。
- *
- * 它**不拥有**存储，也不决定容器的寿命：只把"改变存储身份"从"读回收掉的字节"变成一条
- * 带位置的 `trap`。跨函数借出时静态检查看不见增长，这一层就是那时唯一的凭据。
- */
+/** @brief `vector::borrow()` 的守卫：活着的时候存储被冻结（搬家会 trap）。 */
 @noCopy
 struct vectorGuard<T> {
-    @private v: ref vector<T>
-    @private p: mut ref i64
-
-    @private
-    @drop
-    fn release(self: mut ref vectorGuard<T>) { *self.p = *self.p - 1 }
+    @private g: borrowGuard<T>
 
     /** @brief 只读视图：与 `vector::view()` 相同，但受守卫保护。 */
-    fn view(self: ref vectorGuard<T>) -> slice<T> { return self.v.vals[0..self.v.n] }
+    fn view(self: ref vectorGuard<T>) -> slice<T> { return self.g.view() }
 
     /** @brief 元素个数。 */
-    fn len(self: ref vectorGuard<T>) -> i64 { return self.v.n }
+    fn len(self: ref vectorGuard<T>) -> i64 { return self.g.len() }
 }

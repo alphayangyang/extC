@@ -1,17 +1,20 @@
 // 共享存储的警告 · **应该报**的形状（与 clone_ok.extc 配对，判据在 run.sh 里）
 //
 // `var b = a` / `return a` 绑定的是"另一个名字指向同一块板块"，编译器必须点出来。
-use std::data::vector
+//
+// 容器正陆续迁到 `buf<T>`（`@noCopy`，转移语义），所以这个警告由**用户自己标注**的
+// `@sharesStorage` 类型来钉住：它测的是语言机制，不该依赖 stdlib 里哪个容器还用着
+// 共享板块。语料里仍用池块/共享板块的用户类型走同一条诊断。
+@sharesStorage
+struct seat { id: i32 }
 
-fn passThrough(a: vector<i32>) -> vector<i32> {
+fn passThrough(a: seat) -> seat {
     return a
 }
 
 fn main() -> i32 {
-    var a: vector<i32> = vector<i32>::withCap(4)
-    a.push(i32(1))
+    var a: seat = seat { id: 1 }
     var b = a
-    b.push(i32(2))
     let c = passThrough(a)
-    return i32(c.len())
+    return i32(b.id + c.id)
 }

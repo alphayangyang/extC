@@ -3488,7 +3488,7 @@ static void liveViewsNoteStored(Checker *c, LiveViews *lv, Stmt *s) {
             Sym *ksym = lookup(c, srcs.names[k]);
             Type *kty = ksym ? tsub(c, ksym->type) : NULL;
             StructDef *ksd = kty ? structOf(ttBase(kty)) : NULL;
-            if (!ksd || (!ksd->poolObject && !ksd->dropHook)) continue;
+            if (!ksd || !ckStorageCanMove(c, kty)) continue;
             liveViewsPush(c, lv, srcs.names[k], into);
         }
     }
@@ -3520,7 +3520,12 @@ bool ckStorageCanMove(Checker *c, Type *t) {
     if (!t) return false;
     Type *b = ttBase(tsub(c, t));
     StructDef *sd = b ? structOf(b) : NULL;
-    return sd && (sd->poolObject || sd->dropHook);
+    if (!sd) return false;
+    /* A container does not have to own a hook of its own: `vector<T>` holds a `buf<T>` and
+     * its storage goes back when the block ends, so the question is whether *any* drop runs
+     * for this type, not whether this type declares one. Without the walk a nested container
+     * looked arena-backed and the growth check let the dangling view through. */
+    return sd->poolObject || typeHasDrop(c, t, 0);
 }
 
 /**
@@ -3666,7 +3671,7 @@ void liveViewsStmtPost(Checker *c, LiveViews *lv, Stmt *s) {
             Sym *ksym = lookup(c, srcs.names[k]);
             Type *kty = ksym ? tsub(c, ksym->type) : NULL;
             StructDef *ksd = kty ? structOf(ttBase(kty)) : NULL;
-            if (!ksd || (!ksd->poolObject && !ksd->dropHook)) continue;
+            if (!ksd || !ckStorageCanMove(c, kty)) continue;
             liveViewsPush(c, lv, srcs.names[k], s->u.var.name);
         }
         return;
@@ -3680,7 +3685,7 @@ void liveViewsStmtPost(Checker *c, LiveViews *lv, Stmt *s) {
     /* A type that owns storage which can be handed back is a place either way: the compiler-managed
      * slab (`@poolObject`) or any type with a `@drop` hook, which is how a library container says
      * "my storage goes back before the block ends". */
-    if (!osd || (!osd->poolObject && !osd->dropHook)) return;
+    if (!osd || !ckStorageCanMove(c, oty)) return;
     liveViewsPush(c, lv, owner, s->u.var.name);
 }
 
@@ -4247,6 +4252,27 @@ static void noteAcyclicNestedLocal(Checker *c, Stmt *s) {
 }
 
 /**
+ * @brief The field type as seen through a generic instance.
+ *
+ * A StructDef is shared by all of its instances, so a field of `vector<i32>` still reads `buf<T>`
+ * on the definition. Walking it as written asks about the template and, worse, names the template
+ * hook when reachability is recorded: the generated C then calls `buf$buf_i32_release`, which is
+ * never emitted, and cc reports an implicit declaration. The same substitution the code generator
+ * makes in `typeNeedsDrop`/`genDropValue` is made here so the two agree.
+ *
+ * @param tt  Type table.
+ * @param b   Base type of the value being walked (an instance, when it has type arguments).
+ * @param sd  Struct of that base type.
+ * @param fd  Field of that struct.
+ * @return    The field type with the instance arguments substituted, or the declared type.
+ */
+static Type *fieldTypeInInstance(TypeTable *tt, Type *b, StructDef *sd, FieldDef *fd) {
+    if (b && b->kind == TY_GENERIC && b->sdef == sd && b->targs.len == sd->typeParams.len)
+        return ttSubstitute(tt, fd->type, &sd->typeParams, &b->targs);
+    return fd->type;
+}
+
+/**
  * @brief Does dropping a value of this type run anything?
  *
  * True when the type has its own `@drop` hook or one of its fields does: a field of a `@drop` type
@@ -4258,15 +4284,20 @@ static void noteAcyclicNestedLocal(Checker *c, Stmt *s) {
  * @param depth  Nesting already walked, capped so a pathological type cannot loop.
  * @return       True when a drop has an effect.
  */
-static bool typeHasDrop(Checker *c, Type *t, int depth) {
+bool typeHasDrop(Checker *c, Type *t, int depth) {
     if (!t || depth > 8) return false;
-    Type *b = ttBase(tsub(c, t));
+    Type *st = tsub(c, t);
+    /* A reference or a view owns no storage: whatever sits behind it outlives the view. */
+    if (st && (st->kind == TY_REF || ttIsViewType(st))) return false;
+    Type *b = ttBase(st);
     StructDef *sd = b ? structOf(b) : NULL;
     if (!sd) return false;
     if (sd->dropHook) return true;
     for (size_t i = 0; i < sd->fields.len; i++) {
         FieldDef *fd = *(FieldDef **)vecAt(&sd->fields, i);
-        if (fd && typeHasDrop(c, fd->type, depth + 1)) return true;
+        if (!fd) continue;
+        if (fd->type && (fd->type->kind == TY_REF || ttIsViewType(fd->type))) continue;
+        if (typeHasDrop(c, fieldTypeInInstance(c->tt, b, sd, fd), depth + 1)) return true;
     }
     return false;
 }
@@ -4284,7 +4315,9 @@ static bool typeHasDrop(Checker *c, Type *t, int depth) {
  */
 static void markDropHooksUsed(Checker *c, Type *t, int depth) {
     if (!t || depth > 8) return;
-    Type *b = ttBase(tsub(c, t));
+    Type *st = tsub(c, t);
+    if (st && (st->kind == TY_REF || ttIsViewType(st))) return;
+    Type *b = ttBase(st);
     StructDef *sd = b ? structOf(b) : NULL;
     if (!sd) return;
     if (sd->dropHook) {
@@ -4293,7 +4326,9 @@ static void markDropHooksUsed(Checker *c, Type *t, int depth) {
     }
     for (size_t i = 0; i < sd->fields.len; i++) {
         FieldDef *fd = *(FieldDef **)vecAt(&sd->fields, i);
-        if (fd) markDropHooksUsed(c, fd->type, depth + 1);
+        if (!fd) continue;
+        if (fd->type && (fd->type->kind == TY_REF || ttIsViewType(fd->type))) continue;
+        markDropHooksUsed(c, fieldTypeInInstance(c->tt, b, sd, fd), depth + 1);
     }
 }
 

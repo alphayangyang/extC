@@ -26,8 +26,9 @@ fn main() -> i32 {
     if !a || !b { return i32(90) }
     var s: i64 = 0
     var i: i64 = 0
+    var rs = t.rows.viewMut()            /* 元素位置：取一次本地视图，循环里没有再长表 */
     while i < t.count() {
-        if t.rows.vals[i].h.next() { s = s + t.rows.vals[i].h.value() }
+        if rs[i].h.next() { s = s + rs[i].h.value() }
         i = i + 1
     }
     return i32(s + t.count() + 39)          /* 0 + 2 + 39 = 41 */

@@ -103,14 +103,19 @@ fn main() -> i32 {
 
 ## 2. `stl::*`：容器
 
-容器的**存储字段**（`vector.vals`、`map.vals`/`map.depth`、`hashMap.vals`、`pool.vals`）是公开的，因为
+容器的**存储字段**（`map.vals`/`map.depth`、`hashMap.vals`、`pool.vals`、`string` 的缓冲句柄）是公开的，因为
 子系统代码（协程调度器的任务行、`hashSet` 的存活位、`stringio` 的窗口）要按位置读写；它们**不是 API**：
 宽度、布局、语义都可能随实现变化，用户代码按容器的方法写。
 
 导入名就是 `stl::<文件名>`：`use std::data::vector`、`use std::data::hashMap`、`use std::text::string`……
-这一族里的容器大多带 `@sharesStorage` + `@place`（旧拼写 `@poolObject`）：
-**按值拷贝两份会共用同一块板块**，编译器会为此报警告；要独立副本必须显式 `clone()`
-（判据  / `clone_ok.extc`，见 ）。
+
+这一族现在分成两代存储：
+
+- **`vector<T>` 与 `buf<T>`**：存储是**自己的一片地址预留**（[BUF-INVARIANT](../design/BUF-INVARIANT.md)），
+  类型是 `@noCopy` —— `var b = a` 是**转移**，转移后读旧名字是编译错；要独立副本用 `clone()`。
+- **`string` / `hashMap` / `map` / `set` 系列**（尚未迁移）：带 `@sharesStorage` + `@place`（旧拼写
+  `@poolObject`），**按值拷贝两份会共用同一块板块**，编译器会为此报警告；要独立副本必须显式
+  `clone()`（判据  / `clone_ok.extc`，见 ）。
 
 这些容器的存储是它们**自己的板块**，不是帧里的一段：换缓冲时旧块当场归还，所以"反复建、反复丢"是
 稳态内存。三种存储（帧、板块、对象表）各自适合什么、以及选错的代价，见[内存模型](../design/MEMORY-MODEL.md)。
@@ -119,19 +124,23 @@ fn main() -> i32 {
 
 | | `varArray<T>`（prelude） | `vector<T>`（`std::data::vector`） |
 |---|---|
-| 存储来源 | arena 切片 | **自己的板块**（[内存模型](../design/MEMORY-MODEL.md)） |
-| 寻址 | 下标 | 下标（`len` / `capacity` / `get` / `set`） |
-| 容量怎么涨 | 翻倍（下限 4） | **1.5 倍、原地长** |
-| 能不能装引用 | 能（ 点名） | 存储是池的板块，取内容只经 `snapshot()` 拷贝 |
-| 取内容 | `view()` / `asMutSlice()` 借出视图 | `snapshot()` **拷一份**（没有零拷贝视图：`push`/`clear`/`shrink`/`release` 任一动作都能让它失效，） |
+| 存储来源 | arena 切片 | **自己的一片地址预留**（`buf<T>`，[BUF-INVARIANT](../design/BUF-INVARIANT.md)） |
+| 所有权 | 拷贝able | `@noCopy`：`var b = a` 是转移，同时只有一个名字 |
+| 寻址 | 下标 | 下标（`len` / `capacity` / `maxCapacity` / `get` / `set`） |
+| 容量怎么涨 | 翻倍（下限 4） | **1.5 倍、原地长**（撞到预留上限才搬一次家，`relocations()` 数次数） |
+| 能不能装引用 | 能（ 点名） | 能：写元素时经运行期的**外部边表**登记（键 = 槽地址），结构动作按区间撤销 |
+| 取内容 | `view()` / `asMutSlice()` 借出视图 | `view()` 借出 `[0, len)` 的只读视图；要独立拷贝用 `snapshot()` |
 | 深拷贝 | 没有 `clone`；`==` 按内容比较 | `clone()` |
-| 收尾 | 无 | `shrink()` / `release()`（含世代守卫，） |
+| 收尾 | 无 | `shrink()`（尾部页还给系统）/ `release()`（整片预留还回竞技场，`@drop` 也走这里） |
 | 迭代顺序 | 插入序 | 插入序（dense 连续） |
 
-`vector` 的方法：`withCap` · `new` · `len` · `capacity` ·
-`isEmpty` · `get`（给 `option<T>`） · `set`（越界返回 `false`，不 trap） · `snapshot` ·
-`clone` · `push` · `pop` · `shrink` · `clear` · `release`。
-`vector::from(xs)` 从一段视图拷出一个容器。
+`vector` 的方法：`withCap` · `new` · `len` · `capacity` · `maxCapacity` · `relocations` ·
+`isEmpty` · `get`（给 `option<T>`） · `set`（越界返回 `false`，不 trap） · `view`（只读视图） ·
+`snapshot`（拷贝） · `clone`（深拷贝） · `push` · `pop` · `shrink` · `clear` · `release` ·
+`borrow`。`vector::from(xs)` 从一段视图拷出一个容器。
+
+所有权是**转移**语义：`var b = a` 之后 `a` 不能再读（编译错），要两份独立存储写
+`var b = a.clone()`。`tests/stl/clone.extc` ④ 就是这一条。
 
 ```extc
 use std::io
@@ -216,10 +225,11 @@ fn main() -> i32 {
 
 | | `vector<T>` | `buf<T>` |
 |---|---|---|
-| 存储来源 | 板块（池） | 自己的一片地址预留 |
-| 所有权 | 值的拷贝共享同一块板 | `@noCopy`：值位置出现即**转移**，同时只有一个名字 |
-| 增长 | 到容量上限时重建，旧块还回去 | 预留内**只推长度**；撞到预留上限才搬一次家 |
-| 离开作用域 | 不自动交还 | `@drop` 自动交还 |
+| 存储来源 | 一片地址预留（内部持有一个 `buf<T>`） | 自己的一片地址预留 |
+| 所有权 | `@noCopy`：值位置出现即**转移**，同时只有一个名字 | `@noCopy`：同上 |
+| 增长 | 预留内**只推长度**；撞到预留上限才搬一次家 | 预留内**只推长度**；撞到预留上限才搬一次家 |
+| 额外语义 | 下标形状、`get`/`set`（越界不 trap）、`shrink` 下限 4 | 只有长度；越界由调用者负责 |
+| 离开作用域 | `@drop` 自动交还（经 `buf`） | `@drop` 自动交还 |
 
 方法（都是成员函数，`self` 是被调的那个缓冲区）：
 
@@ -339,7 +349,7 @@ let freed: i64 = syspool::collect()
 
 ### 自己写一个板块底的容器
 
-`vector` 不是特例：任何一个标了 `@place` 的结构体都**拥有一块自己的地方（池）**，于是也能拿到"原地长、乱序归还"的存储。写自己的可增长容器就是四件事 —— 拥有、要、长、守卫与归还：
+这是**旧一代**的写法：`vector` 已迁到 `buf<T>` 的地址预留上（[BUF-INVARIANT](../design/BUF-INVARIANT.md) §10），剩下的 `string` / `hashMap` / `map` 仍在池板块上。想写一个新的可增长容器，优先持有 `buf<T>`：它给的是「预留内 0 拷贝增长 + 撞上限搬一次家 + 结构动作按区间撤边」。下面这条 `@place` 路径仍然可用，但它要自己管世代、冻结与归还。四件事 —— 拥有、要、长、守卫与归还：
 
 <!-- fragment -->
 ```extc
@@ -392,7 +402,7 @@ struct grow<T> {
 }
 ```
 
-四步写全了，它就和内置容器一样是 O(活跃量)：手写的 800 万个 `i64` 实测峰值 **64 MB**，与 `vector` 相同。少任何一步的代价写在[内存模型](../design/MEMORY-MODEL.md)里 —— 没有守卫是静默的悬垂写，不做原地长就退回"每轮新增一份、留到块退出"。
+四步写全了，它就和内置容器一样是 O(活跃量)：手写的 800 万个 `i64` 实测峰值 **64 MB**，与 `buf<T>` 相同（`buf` 自己的形状是 65,452 kB，见 `bench/buf/RESULTS.md`）。少任何一步的代价写在[内存模型](../design/MEMORY-MODEL.md)里 —— 没有守卫是静默的悬垂写，不做原地长就退回"每轮新增一份、留到块退出"。
 
 
 ### `string` + `stringio`：连续字节串与流式读写
@@ -1488,7 +1498,7 @@ note:  what a program normally needs is `std::heap`: `plate::open` / `alloc` / `
 |  | 裸 fd、epoll、socket、DNS 运行期 | `std::net`、`std::loop`、`std::coro::scheduler` |
 |  | `mmap` / `mprotect` / `munmap`、`extc_viewOf`、`extc_memCopy` | `std::heap` |
 |  | `fork` / `waitpid` / `getpid` / `sched_setaffinity` / `exit` | `std::proc` |
-|  | 运行期池记录 + 板块原语 | `std::data::pool` / `std::data::vector`（编译器合成调用） |
+|  | 运行期池记录 + 板块原语 | `std::data::pool`（编译器合成调用；`vector` 已改走 `std::data::buf`） |
 |  | 任务表运行期（`extc_task_begin` / `_zone` / `_end` / `_live`） | `std::coro::scheduler` |
 |  | 域的运行期入口 | 编译器 + 库 |
 

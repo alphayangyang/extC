@@ -434,6 +434,12 @@ typedef struct {
     /* Blocks currently being emitted, outermost first. A `return` runs the `@drop` hooks of every
      * local still in scope, innermost block first, so it needs to see them. */
     Vec         dropBlocks;      /* Stmt*: enclosing blocks */
+    /* size_t, parallel to dropBlocks: how many statements of that block have been emitted so far.
+     * A return in the middle of a block drops only the locals declared **before** it -- a local
+     * declared after the return never came to life, so running its hook would name an object the
+     * C compiler has not seen yet (this is how the buf/vector @drop hook first broke early
+     * returns). */
+    Vec         dropPos;
     /* Names whose `@drop` already ran because of an explicit `drop x`, so the block tail (and a
      * `return`) must not run it again. Grows at a block's start and is truncated at its end, so a
      * name reused in a sibling block is not skipped by mistake. */

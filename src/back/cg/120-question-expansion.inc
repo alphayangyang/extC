@@ -1234,7 +1234,7 @@ static bool arenaLevelInText(const Buf *b, int lvl) {
  * @param g      The generator state.
  * @param block  Block whose locals are leaving scope.
  */
-static void genBlockTailDrops(CG *g, Stmt *block);
+static void genBlockTailDrops(CG *g, Stmt *block, size_t limit);
 
 /**
  * @brief Run the `@drop` hooks of every local still in scope, before a `return`.
@@ -1247,13 +1247,15 @@ static void genBlockTailDrops(CG *g, Stmt *block);
  */
 static void genReturnDrops(CG *g) {
     for (size_t i = g->dropBlocks.len; i-- > 0;)
-        genBlockTailDrops(g, *(Stmt **)vecAt(&g->dropBlocks, i));
+        genBlockTailDrops(g, *(Stmt **)vecAt(&g->dropBlocks, i),
+                          *(size_t *)vecAt(&g->dropPos, i));
 }
 
 /** @brief Run the hooks of the blocks above `base` (innermost first); used by `break`/`continue`. */
 static void genDropBlocksDownTo(CG *g, size_t base) {
     for (size_t i = g->dropBlocks.len; i-- > base;)
-        genBlockTailDrops(g, *(Stmt **)vecAt(&g->dropBlocks, i));
+        genBlockTailDrops(g, *(Stmt **)vecAt(&g->dropBlocks, i),
+                          *(size_t *)vecAt(&g->dropPos, i));
 }
 
 /**
@@ -1280,9 +1282,21 @@ static bool typeNeedsDrop(CG *g, Type *t, int depth) {
     StructDef *sd = b ? structOf(b) : NULL;
     if (!sd) return false;
     if (sd->dropHook) return true;
+    /* A field of a **generic instance** still names the struct's type parameters: the StructDef is
+     * shared by every instance, so `buf<T>` stays `buf<T>` in `fd->type`. Substituting it with the
+     * instance's arguments is what names the right hook (without this, dropping a `vector<i32>`
+     * emitted `buf$buf_T_release`, a function that does not exist). */
+    Vec *tps = NULL, *tas = NULL;
+    if (b->kind == TY_GENERIC && b->sdef == sd && b->targs.len == sd->typeParams.len) {
+        tps = &sd->typeParams;
+        tas = &b->targs;
+    }
     for (size_t i = 0; i < sd->fields.len; i++) {
         FieldDef *fd = *(FieldDef **)vecAt(&sd->fields, i);
-        if (fd && typeNeedsDrop(g, fd->type, depth + 1)) return true;
+        if (!fd) continue;
+        if (fd->type && (fd->type->kind == TY_REF || ttIsViewType(fd->type))) continue;
+        Type *ft = (tps && tas) ? ttSubstitute(g->tt, fd->type, tps, tas) : fd->type;
+        if (typeNeedsDrop(g, ft, depth + 1)) return true;
     }
     return false;
 }
@@ -1305,12 +1319,44 @@ static void genDropValue(CG *g, const char *path, Type *t, int depth) {
     StructDef *sd = b ? structOf(b) : NULL;
     if (!sd) return;
     if (sd->dropHook) cgLine(g, "%s(&(%s));", cMethodName(g, b, sd->dropHook), path);
+    /* See `typeNeedsDrop`: a field of a generic instance still names the struct's type parameters,
+     * so it has to be substituted with this instance's arguments before its own drop is named. */
+    Vec *tps = NULL, *tas = NULL;
+    if (b->kind == TY_GENERIC && b->sdef == sd && b->targs.len == sd->typeParams.len) {
+        tps = &sd->typeParams;
+        tas = &b->targs;
+    }
     for (size_t i = 0; i < sd->fields.len; i++) {
         FieldDef *fd = *(FieldDef **)vecAt(&sd->fields, i);
-        if (!fd || !typeNeedsDrop(g, fd->type, depth + 1)) continue;
+        if (!fd) continue;
+        if (fd->type && (fd->type->kind == TY_REF || ttIsViewType(fd->type))) continue;
+        Type *ft = (tps && tas) ? ttSubstitute(g->tt, fd->type, tps, tas) : fd->type;
+        if (!typeNeedsDrop(g, ft, depth + 1)) continue;
         const char *sub = arenaPrintf(g->arena, "%s.%s", path, fd->name);
-        genDropValue(g, sub, fd->type, depth + 1);
+        genDropValue(g, sub, ft, depth + 1);
     }
+}
+
+/**
+ * @brief Name a local for a drop: a coroutine's live-across-yield locals are frame fields.
+ *
+ * Inside a coroutine every mention of a frame-resident local is emitted as a field access (see
+ * \`exIdent\`), and a drop is a mention like any other. Without this the block-tail drop of a value
+ * with an \`@drop\` hook emitted \`&(v)\` in a body where \`v\` only exists as \`f->v\`, which the C
+ * compiler rejects.
+ *
+ * @param g      The generator state.
+ * @param cname  The C name of the local, as written in the body.
+ * @return       The frame field access, or \`cname\` unchanged outside a coroutine.
+ */
+static const char *dropValueRef(CG *g, const char *cname) {
+    if (!g->coroFunc || !cname) return cname;
+    for (size_t i = 0; i < g->coroFunc->coroFrame.len; i++) {
+        const Param *p = (const Param *)vecAt((Vec *)&g->coroFunc->coroFrame, i);
+        if (p->cname && strcmp(p->cname, cname) == 0)
+            return arenaPrintf(g->arena, "%s->%s", g->coroFrame, cname);
+    }
+    return cname;
 }
 
 /**
@@ -1335,13 +1381,16 @@ static void genParamDrops(CG *g, FuncDef *f) {
         Type *pt = subst(g, p->type);
         if (!pt || pt->kind == TY_REF || ttIsViewType(pt)) continue;
         if (!typeNeedsDrop(g, pt, 0)) continue;
-        genDropValue(g, p->cname, pt, 0);
+        genDropValue(g, dropValueRef(g, p->cname), pt, 0);
     }
 }
 
 /** @brief Emit the hooks for one block's locals; see the declaration for the timing rules. */
-static void genBlockTailDrops(CG *g, Stmt *block) {
-    for (size_t i = block->u.block.stmts.len; i-- > 0;) {
+static void genBlockTailDrops(CG *g, Stmt *block, size_t limit) {
+    /* A return in the middle of a block stops at the statement it is in: locals declared later
+     * never came to life. The block's own tail passes the full count. */
+    size_t n = limit < block->u.block.stmts.len ? limit : block->u.block.stmts.len;
+    for (size_t i = n; i-- > 0;) {
         Stmt *st = *(Stmt **)vecAt(&block->u.block.stmts, i);
         if (!st || st->kind != ST_VAR || !st->u.var.init) continue;
         if (!typeNeedsDrop(g, st->type, 0)) continue;
@@ -1363,7 +1412,7 @@ static void genBlockTailDrops(CG *g, Stmt *block) {
             }
         }
         if (alreadyDropped) continue;
-        genDropValue(g, nm, st->type, 0);
+        genDropValue(g, dropValueRef(g, nm), st->type, 0);
     }
 }
 
@@ -1408,6 +1457,7 @@ static void genBlockBody(CG *g, Stmt *block) {
      * slots are live at a trigger point is something the compiler supplies). */
     *(size_t *)vecPush(&g->rcRootMarks) = g->rcRoots.len;
     *(Stmt **)vecPush(&g->dropBlocks) = block;
+    *(size_t *)vecPush(&g->dropPos) = 0;
     /* A coroutine's block level lives in the frame and its early-exit path winds differently; a
      * `noArena` function skips both anyway. Both cases are emitted as they are, and only "one block
      * arena level in an ordinary function" is worth asking about first. */
@@ -1446,10 +1496,12 @@ static void genBlockBody(CG *g, Stmt *block) {
         if (planForStep(block) && st == planForStep(block) && g->loopLen > 0 && g->loopStep[g->loopLen - 1]
             && g->loopStepUsed[g->loopLen - 1])
             cgLine(g, "__extc_forstep_%d: ;", g->loopStep[g->loopLen - 1]);
+        if (g->dropPos.len > 0)
+            *(size_t *)vecAt(&g->dropPos, g->dropPos.len - 1) = i + 1;
         genStmt(g, st);
     }
     /* `@drop` runs while the block's own storage is still alive. */
-    genBlockTailDrops(g, block);
+    genBlockTailDrops(g, block, block->u.block.stmts.len);
     if (probe) {
         g->out = savedOut;
         bodyTouches = arenaLevelInText(&scratch, g->blkLevel);
@@ -1489,6 +1541,7 @@ static void genBlockBody(CG *g, Stmt *block) {
     g->rcRoots.len = *(size_t *)vecAt(&g->rcRootMarks, g->rcRootMarks.len - 1);
     g->rcRootMarks.len--;
     g->dropBlocks.len--;
+    if (g->dropPos.len > 0) g->dropPos.len--;
     g->dropExplicit.len = savedDropExplicit;
     g->blkLevel--;
 }

@@ -120,6 +120,20 @@ rt_run() {   # rt_run <名字> <文件> <期望的一整行>
     if [ "$out" = "$want" ]; then echo "  ok   $name  ->  $out"
     else echo "  FAIL $name  ->  期望「$want」，得到「$out」"; fail=1; fi
 }
+
+# 跑一个**必须被拒**的用例：编译失败，且诊断里出现指定片段
+rt_reject() {   # rt_reject <名字> <文件> <期望的诊断片段>
+    local t=$1 f=$2 want=$3 out rc
+    out=$("$EXTC" "$f" -o "build/reject-$t.c" 2>&1); rc=$?
+    if [ "$rc" -eq 0 ]; then
+        echo "  FAIL $t  ->  编过了（这个形状必须被拒：元素会拥有预留）"; fail=1; return
+    fi
+    if echo "$out" | grep -qF -- "$want"; then
+        echo "  ok   $t  ->  $(echo "$out" | grep -F -- "$want" | head -1 | sed 's/^ *//')"
+    else
+        echo "  FAIL $t  ->  诊断里缺「$want」"; echo "$out" | head -4 | sed 's/^/        /'; fail=1
+    fi
+}
 rt_run rt_basic    tests/pool/rt_basic.extc    "live=0 up=1 gen=1 down=0 stale=0"
 # 模式（容器池 / 对象表池）+ reset 换代：SOUNDNESS.md 的 O3/O4 两条不变量
 rt_run rt_mode_gen  tests/pool/rt_mode_gen.extc  "kind=0/1 genchanged=1"
@@ -225,10 +239,10 @@ echo "== 提权的运行期落点：池生在外层那个地方 ⇒ 内层块退
 rt_run rt_promote  tests/pool/rt_promote.extc  "in=2 out=1 use=42 live=1"
 
 echo "== 池的提权（容器那一档）：循环里建内层、推入外层 ⇒ 内层池生在外层那个地方 =="
-rt_run rt_nest     tests/pool/rt_nest_promote.extc "after=4 innerlen=2 v=20 bytes=272"
+rt_reject rt_nest  tests/pool/rt_nest_promote.extc "a view element cannot hold"
 
 echo "== 池的提权（返回那一档）：函数里建好的容器返回给调用方 =="
-rt_run rt_rett     tests/pool/rt_return_promote.extc "live=1 len=3 v0=5 v2=7"
+rt_run rt_rett     tests/pool/rt_return_promote.extc "live=0 len=3 v0=5 v2=7"
 
 echo "== 染色（§7.2/§7.3）：同一个下标每一轮的颜色都不同 ⇒ 翻一位作废整棵树 =="
 rt_run rt_color    tests/pool/rt_color.extc    "c1=1 c2=2 c3=3 diff=1,1 birth_eq_row=1 live=0"
@@ -250,15 +264,245 @@ else
     echo "  skip rt_color_memcheck  ->  valgrind 不可用"
 fi
 
-# 措辞放宽的由来：守卫把过期别名的切片存储置空后，**依赖下标检查**来 trap（原先报 "trap: index"）；
-# H5 给视图索引原语加的"存储为空"检查现在排在前面（报 "trap: the view has no storage"）。
-# 两者都是带源码位置的 trap、退出码都是 1，而本用例的本意正是"过期别名必须带位置地 trap" ⇒ 都收。
-echo "== 守卫（别名那一档）：一份 release 之后另一份不许静默写已释放的板块 =="
+# 迁移到 buf 基质之后（vector 是 @noCopy）：两份容器值共用一个板块这件事在**编译期**就被拒，
+# 比运行期 trap 更严。用例外壳仍守两件事：①复制即转移，原件之后不可用（编译错点名 move）；
+# ②要独立存储只能 clone()，原件 release() 之后副本仍然可写可读。
+echo "== 守卫（别名那一档）：复制是转移（编译期拒）；独立副本要走 clone() =="
 if out=$("./build/extc" --run tests/pool/rt_stale_alias.extc 2>&1); rc=$?; then :; fi
-if [ "${rc:-0}" = 1 ] && printf '%s' "$out" | grep -qE "trap: (index|the view has no storage)" && printf '%s' "$out" | grep -q "tests/pool/rt_stale_alias.extc:"; then
+if [ "${rc:-0}" = 1 ] && printf '%s' "$out" | grep -q "was moved into" && printf '%s' "$out" | grep -q "tests/pool/rt_stale_alias.extc:"; then
     echo "  ok   rt_alias   ->  $(printf '%s' "$out" | head -1 | cut -c1-76)"
 else
-    echo "  FAIL rt_alias   ->  期望带位置的 trap（下标或空存储）+ 退出码 1，得到 rc=${rc:-?}：$(printf '%s' "$out" | head -1)"; fail=1
+    echo "  FAIL rt_alias   ->  期望『复制即转移』的编译错 + 退出码 1，得到 rc=${rc:-?}：$(printf '%s' "$out" | head -1)"; fail=1
+fi
+if out=$("./build/extc" --run tests/pool/rt_clone_alias.extc 2>&1); rc=$?; then :; fi
+if [ "${rc:-0}" = 0 ] && [ "$out" = "14"$'\n'"0" ]; then
+    echo "  ok   rt_clone   ->  副本独立：原件 release 之后副本仍可写（输出 14 / 0）"
+else
+    echo "  FAIL rt_clone   ->  期望退出码 0 与输出 14/0，得到 rc=${rc:-?}：$(printf '%s' "$out" | tr '\n' '|')"; fail=1
+fi
+
+echo "== 池级 epoch 的价值：clear() 的代价与容量无关（旧版逐槽重写 ⇒ 4096 槽要慢几百倍）=="
+if build_one pool-perf-s perf_clear_8 && build_one pool-perf-b perf_clear_4096; then
+    ts=$(/usr/bin/time -f %e ./build/pool-perf-s 2>&1 >/dev/null | tail -1)
+    tb=$(/usr/bin/time -f %e ./build/pool-perf-b 2>&1 >/dev/null | tail -1)
+    if awk -v a="$ts" -v b="$tb" 'BEGIN{exit !(b <= a*4 + 0.20)}'; then
+        echo "  ok   clear O(1) ->  cap=8: ${ts}s · cap=4096: ${tb}s ⇒ **同量级**（400 万轮）"
+    else
+        echo "  FAIL clear O(1) ->  cap=8: ${ts}s · cap=4096: ${tb}s ⇒ 随容量涨了（clear 还在逐槽重写？）"; fail=1
+    fi
+else
+    echo "  FAIL clear O(1) ->  编不过"; fail=1
+fi
+
+if build_one pool-churn churn && build_one pool-leak churn-leak; then
+    s=$(peak pool-churn 100000);  b=$(peak pool-churn 1000000)
+    if [ "$b" -le $(( s * 3 / 2 )) ]; then
+        echo "  ok   churn      ->  1e5: ${s} KB · 1e6: ${b} KB ⇒ **平** ✓（10 倍轮数，内存不变）"
+    else
+        echo "  FAIL churn      ->  1e5: ${s} KB · 1e6: ${b} KB ⇒ 涨了 ✗（槽位没复用？）"; fail=1
+    fi
+    ls=$(peak pool-leak 100000); lb=$(peak pool-leak 1000000)
+    if [ "$lb" -gt $(( ls * 2 )) ]; then
+        echo "  ok   canary     ->  不 remove：${ls} KB → ${lb} KB ⇒ **判据会响** ✓"
+    else
+        echo "  FAIL canary     ->  不 remove 竟然没涨（${ls} → ${lb} KB）⇒ 上面那条判据没有牙 ✗"; fail=1
+    fi
+else
+    echo "  FAIL churn  ->  编不过"; fail=1
+fi
+
+echo "== ASan：这些路径必须干净 =="
+TMP=$(mktemp -d)
+printf 'int main(void){return 0;}\n' > "$TMP/p.c"
+if gcc -fwrapv -fsanitize=address -o "$TMP/p" "$TMP/p.c" >/dev/null 2>&1; then
+    ok=1
+    for t in basic api; do
+        if "$EXTC" "tests/pool/$t.extc" -o "$TMP/$t.c" >/dev/null 2>&1 \
+           && gcc -fwrapv -O1 -g -fsanitize=address -o "$TMP/$t" "$TMP/$t.c" >/dev/null 2>&1 \
+           && "$TMP/$t" >/dev/null 2>&1; then :; else echo "  FAIL $t  ->  ASan 报错"; fail=1; ok=0; fi
+    done
+    if "$EXTC" tests/pool/churn.extc -o "$TMP/churn.c" >/dev/null 2>&1 \
+       && gcc -fwrapv -O1 -g -fsanitize=address -o "$TMP/churn" "$TMP/churn.c" >/dev/null 2>&1 \
+       && "$TMP/churn" 20000 >/dev/null 2>&1; then :; else echo "  FAIL churn  ->  ASan 报错"; fail=1; ok=0; fi
+    [ "$ok" = 1 ] && echo "  ok   basic · api · churn  ->  ASan 干净"
+else
+    echo "  skip  gcc 不支持 -fsanitize=address（这一支跳过）"
+fi
+rm -rf "$TMP"
+
+# ---------------------------------------------------------------- 期 1：运行期池注册表
+# 机制本身（不是容器）的验收：建/世代/释放 · 块退出带走子树 · churn 容量停在高水位 ·
+# 旧 handle 带位置地失败 · 内存来自同一只 arena · 生成物 -Werror + ASan
+echo
+echo "== 期 1 · 池注册表：建 / 世代 / 释放 =="
+rt_run() {   # rt_run <名字> <文件> <期望的一整行>
+    # `-w`：这一节判的是**运行期行为**（输出的那一整行必须逐字相等）。`@sharesStorage` 的
+    # 编译期警告会混进 `2>&1` 里，把比较搅坏 —— 而那条警告本身有专门的判据
+    #（tests/stl/run.sh 的 clone_warn/clone_ok），这里静音不丢覆盖面。
+    local name=$1 f=$2 want=$3 out
+    if ! out=$("$EXTC" -w --run "$f" 2>&1); then
+        echo "  FAIL $name  ->  编译/运行失败"; echo "$out" | head -4 | sed 's/^/        /'; fail=1; return
+    fi
+    if [ "$out" = "$want" ]; then echo "  ok   $name  ->  $out"
+    else echo "  FAIL $name  ->  期望「$want」，得到「$out」"; fail=1; fi
+}
+
+# 跑一个**必须被拒**的用例：编译失败，且诊断里出现指定片段
+rt_reject() {   # rt_reject <名字> <文件> <期望的诊断片段>
+    local t=$1 f=$2 want=$3 out rc
+    out=$("$EXTC" "$f" -o "build/reject-$t.c" 2>&1); rc=$?
+    if [ "$rc" -eq 0 ]; then
+        echo "  FAIL $t  ->  编过了（这个形状必须被拒：元素会拥有预留）"; fail=1; return
+    fi
+    if echo "$out" | grep -qF -- "$want"; then
+        echo "  ok   $t  ->  $(echo "$out" | grep -F -- "$want" | head -1 | sed 's/^ *//')"
+    else
+        echo "  FAIL $t  ->  诊断里缺「$want」"; echo "$out" | head -4 | sed 's/^/        /'; fail=1
+    fi
+}
+rt_run rt_basic    tests/pool/rt_basic.extc    "live=0 up=1 gen=1 down=0 stale=0"
+# 模式（容器池 / 对象表池）+ reset 换代：SOUNDNESS.md 的 O3/O4 两条不变量
+rt_run rt_mode_gen  tests/pool/rt_mode_gen.extc  "kind=0/1 genchanged=1"
+
+echo "== 建池族按名字认：表池作为**第一只池**也必须成功（三处登记缺一即 -1）=="
+rt_run rt_table_first tests/pool/rt_table_first.extc "rid_ok=true kind=1"
+
+echo "== 期 1 · 块退出带走子树 · 父释放带走子 =="
+rt_run rt_blockexit tests/pool/rt_blockexit.extc "before=0 in=1 rid=0 after=0 two=2 gone=0"
+
+echo "== 期 1 · churn：容量停在高水位（内存平）=="
+rt_run rt_churn    tests/pool/rt_churn.extc    "live=0 cap=64 gen=0 acc=20000100000"
+
+echo "== 对象表模式：只追加 —— \`poolResizeRaw\` 同样被挡（搬家与清零是正交的两件事）=="
+if out=$("$EXTC" --run tests/pool/rt_table_no_resize.extc 2>&1); rc=$?; then :; fi
+if [ "${rc:-0}" = 1 ] && echo "$out" | grep -q "may not be resized in place"; then
+    echo "  ok   rt_table_no_resize  ->  trap（$(echo "$out" | grep -o 'a block may not be resized in place' | head -1)）"
+else
+    echo "  FAIL rt_table_no_resize  ->  期望 trap + 退出码 1，得到 rc=${rc:-?}：$(echo "$out" | head -2)"
+    fail=1
+fi
+
+echo "== 对照：普通池允许原地搬家（容器扩容照常）=="
+rt_run rt_container_resize_ok tests/pool/rt_container_resize_ok.extc "len=100"
+
+echo "== 期 1 · 旧 handle 带位置地失败（bug ⇒ trap、条件 ⇒ 值）=="
+if out=$("$EXTC" --run tests/pool/rt_stale.extc 2>&1); rc=$?; then :; fi
+if [ "${rc:-1}" = 1 ] && echo "$out" | grep -q "staleHandle" && echo "$out" | grep -q "tests/pool/rt_stale.extc:"; then
+    echo "  ok   rt_stale  ->  $(echo "$out" | head -1 | cut -c1-72)"
+else
+    echo "  FAIL rt_stale  ->  期望带 staleHandle 与 tests/pool/rt_stale.extc:行 的 trap + 退出码 1，得到 rc=${rc:-?}：$(echo "$out" | head -1)"
+    fail=1
+fi
+
+echo "== 期 1 · 一个地方一个 zone：多个池 + 嵌套树，出块整区走 =="
+rt_run rt_tree     tests/pool/rt_tree.extc     "live0=1 in=2 depth=2 after=1 depth=1"
+rt_run rt_zone     tests/pool/rt_zone.extc     "depth=1 live=0 in=2/4 after-drop=3 after-reset=2 out=1/0"
+
+# ---------------------------------------------------------------- zone 按需发射
+# 钩子是**税**：每个嵌套块（含每个循环体）压/弹一次 zone，而绝大多数块根本不建池。
+# 修法是给函数算一个传递摘要 `makesPool`（能不能直接/间接调到 `extc_pool_new`，最小不动点），
+# 块只在这个摘要为真时压 zone。这两条判据把"该省的省了"和"该留的留着"同时钉住。
+echo "== zone 按需发射 · 正例：不建池的循环体里不许有钩子（次数写死，理由在下面）=="
+if "$EXTC" tests/pool/rt_zone_ondemand.extc -o build/rt_zone_ondemand.c >/dev/null 2>&1; then
+    # 期望值 4 的来历（从这个用例的形状数出来，不是量出来的）：
+    #   1) `main` 的帧压一次（`__extc_zm1`）—— 它自己调 `pool::extc_pool_new`，摘要为真；
+    #   2) 建池的那个块压一次 —— 块自己建池；
+    #   3) 那个块出块时弹一次 —— 配平（每个压过的层弹一次）；
+    #   4) `main` 尾声弹回帧深度一次 —— 早退路径也走这里，所以这一行必须留着。
+    # 修之前这里是 11 次（5 压 6 弹）：多出来的是三条只读元素的 while 循环体（各自压/弹）
+    # 与不建池的库调用。`want_enter = 2` 正是"不建池的循环体不许有钩子"这条判据的抓手。
+    # **2026-09-26 加强**：第三条循环体调的是 `hashMapI64<i32>::put`/`get`/`remove` ——
+    # 泛型方法体里有 `k.hash()`（`#57` 推迟解析的协议方法），而模板期解析不出来 ⇒ 整条链
+    # 被保守标成"会建池"，每轮都带钩子（实测占 `bench/app/session.extc` 全部时间的 14.5%）。
+    # **前两条判据盖不到它**（它们只调 `slice::get`），所以这件事长期没有抓手 ——
+    # 现在同样钉在 `want_enter = 2` 里。
+    want_enter=2
+    want_leave=2
+    got_enter=$(grep -c 'int64_t __extc_zm[0-9]* = extc_pool_zoneEnter()' build/rt_zone_ondemand.c)
+    got_leave=$(grep -c 'extc_pool_zoneLeaveTo(__extc_zm[0-9]*)' build/rt_zone_ondemand.c)
+    if [ "$got_enter" = "$want_enter" ] && [ "$got_leave" = "$want_leave" ]; then
+        echo "  ok   rt_zone_ondemand  ->  zoneEnter ${got_enter} 次（期望 ${want_enter}）· zoneLeaveTo ${got_leave} 次（期望 ${want_leave}）⇒ 不建池的循环体没有钩子"
+    else
+        echo "  FAIL rt_zone_ondemand  ->  zoneEnter ${got_enter}（期望 ${want_enter}）· zoneLeaveTo ${got_leave}（期望 ${want_leave}）⇒ 钩子发多了（税没省掉）或发少了（池会漏登记）"
+        fail=1
+    fi
+else
+    echo "  FAIL rt_zone_ondemand  ->  编不过"; fail=1
+fi
+
+echo "== zone 按需发射 · 反例：在循环体里建池 ⇒ 那一层的钩子必须还在 =="
+rt_run rt_zone_inloop tests/pool/rt_zone_inloop.extc "total=6 live=0 depth=1"
+if "$EXTC" tests/pool/rt_zone_inloop.extc -o build/rt_zone_inloop.c >/dev/null 2>&1; then
+    got_enter=$(grep -c 'int64_t __extc_zm[0-9]* = extc_pool_zoneEnter()' build/rt_zone_inloop.c)
+    if [ "$got_enter" = 2 ]; then
+        echo "  ok   rt_zone_inloop   ->  zoneEnter ${got_enter} 次 ⇒ 循环体那一层还在（帧 + 循环体）"
+    else
+        echo "  FAIL rt_zone_inloop   ->  zoneEnter ${got_enter} 次（期望 2）⇒ 循环体建池却没有自己的 zone，池会漏登记"; fail=1
+    fi
+else
+    echo "  FAIL rt_zone_inloop   ->  编不过"; fail=1
+fi
+
+echo "== 期 1 · 槽位复用：同一个槽位号，世代 +1 =="
+rt_run rt_reuse    tests/pool/rt_reuse.extc    "same=true gen=1->2"
+
+echo "== 期 1 · 容器接入：池随容器创建，release 整批还，出块整区走 =="
+rt_run rt_container tests/pool/rt_container.extc "live=0 made=1 closed=0 again=1 out=0"
+
+echo "== 期 1 · 拷贝 + 槽位复用：陈旧拷贝不许放掉别人的池（pidGen）=="
+rt_run rt_pidgen  tests/pool/rt_pidgen.extc  "live=1 c-len=0"
+
+echo "== 容量工具：shrink 降高水位，数据与 handle 全部继续有效 =="
+rt_run rt_shrink  tests/pool/rt_shrink.extc  "cap=1024->8 len=3 vals=10,20,30 again=40 len=4"
+
+echo "== 板块：池自己的内存（拿一块 · 原块上长 · 还一块 · 字节账 · drop 归零）=="
+rt_run rt_plate    tests/pool/plate.extc       "take=800 zero=0 wrote=7 bytes=800 grew=1200 kept=7 tail0=0 dual=1264 gave=1 aftergive=64 live=0"
+
+echo "== 容器接线：一个容器 = 一棵池树（容器自己的池 + 值池以它为父）=="
+rt_run rt_ctree    tests/pool/rt_container_tree.extc "live=2 len=2 v=22 after=0"
+
+echo "== 提权的运行期落点：池生在外层那个地方 ⇒ 内层块退出带不走它 =="
+rt_run rt_promote  tests/pool/rt_promote.extc  "in=2 out=1 use=42 live=1"
+
+echo "== 池的提权（容器那一档）：循环里建内层、推入外层 ⇒ 内层池生在外层那个地方 =="
+rt_reject rt_nest  tests/pool/rt_nest_promote.extc "a view element cannot hold"
+
+echo "== 池的提权（返回那一档）：函数里建好的容器返回给调用方 =="
+rt_run rt_rett     tests/pool/rt_return_promote.extc "live=0 len=3 v0=5 v2=7"
+
+echo "== 染色（§7.2/§7.3）：同一个下标每一轮的颜色都不同 ⇒ 翻一位作废整棵树 =="
+rt_run rt_color    tests/pool/rt_color.extc    "c1=1 c2=2 c3=3 diff=1,1 birth_eq_row=1 live=0"
+if command -v valgrind >/dev/null 2>&1; then
+    # 这一支自己生成 C 再编：上面 rt_run 的 `--run` 顺手落下的 build/rt_color.c 是**它的副作用产物**，
+    # 不是这条判据的前置 —— 新鲜检出（build/ 整个不存在）或并行套件里谁先把它带走都撑不住这个假设，
+    # 2026-10-17 的 CI 就是因此在 cc1 报 "build/rt_color.c: No such file or directory"。
+    CTMP=$(mktemp -d)
+    if "$EXTC" -w tests/pool/rt_color.extc -o "$CTMP/rt_color.c" >"$CTMP/gen.log" 2>&1 \
+       && "$CC" -std=c11 -O0 -g -fwrapv "$CTMP/rt_color.c" -o "$CTMP/rt_color_memcheck" \
+       && valgrind --quiet --error-exitcode=99 "$CTMP/rt_color_memcheck" >/dev/null; then
+        echo "  ok   rt_color_memcheck  ->  新 zone 的颜色先初始化再读取"
+    else
+        echo "  FAIL rt_color_memcheck  ->  未初始化读取或 C 编译失败"; fail=1
+        tail -3 "$CTMP/gen.log" 2>/dev/null | sed 's/^/        /'
+    fi
+    rm -rf "$CTMP"
+else
+    echo "  skip rt_color_memcheck  ->  valgrind 不可用"
+fi
+
+# 迁移到 buf 基质之后（vector 是 @noCopy）：复制即转移，独立副本只能 clone()。
+echo "== 守卫（别名那一档）：复制是转移（编译期拒）；独立副本要走 clone() =="
+if out=$("./build/extc" --run tests/pool/rt_stale_alias.extc 2>&1); rc=$?; then :; fi
+if [ "${rc:-0}" = 1 ] && printf '%s' "$out" | grep -q "was moved into" && printf '%s' "$out" | grep -q "tests/pool/rt_stale_alias.extc:"; then
+    echo "  ok   rt_alias   ->  $(printf '%s' "$out" | head -1 | cut -c1-76)"
+else
+    echo "  FAIL rt_alias   ->  期望『复制即转移』的编译错 + 退出码 1，得到 rc=${rc:-?}：$(printf '%s' "$out" | head -1)"; fail=1
+fi
+if out=$("./build/extc" --run tests/pool/rt_clone_alias.extc 2>&1); rc=$?; then :; fi
+if [ "${rc:-0}" = 0 ] && [ "$out" = "14"$'\n'"0" ]; then
+    echo "  ok   rt_clone   ->  副本独立：原件 release 之后副本仍可写（输出 14 / 0）"
+else
+    echo "  FAIL rt_clone   ->  期望退出码 0 与输出 14/0，得到 rc=${rc:-?}：$(printf '%s' "$out" | tr '\n' '|')"; fail=1
 fi
 
 echo "== 池级 epoch：clear 是 O(1) 染色（旧句柄整体失配 · 再插不涨容量 · 同 epoch 复用同槽仍失配）=="

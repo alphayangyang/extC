@@ -660,10 +660,18 @@ typedef struct {
      * While a body is a template, `T` has no size, so the check can neither pass nor
      * fail; it is recorded and then run for every concrete instantiation. */
     bool        isNewSize;
+    /* A fourth kind: an owning value stored into a **view element**.
+     *
+     * A container's element storage is a plain array: the store copies the bytes and no hook runs
+     * for the copy, so a value that owns a reservation would be released twice. While the body is
+     * a template the element type is opaque, so the decision waits for the instance -- see
+     * `runRefCheck`. */
+    bool        viewElem;
     Type       *declType;/* declared type the deferred rule applies to */
     int         line;    /* source line to report */
     const char *what;    /* short noun phrase naming the operation, for the diagnostic */
     FuncDef    *func;    /* the generic function this rule belongs to */
+    Ctx        *ctx;     /* the file this store was written in: the diagnostic names it */
 } RefCheck;
 
 /* The requirement "this value has to fit into level `at`".
@@ -2018,6 +2026,19 @@ void checkHoistStatementTrys (Checker *c, Vec *stmts, size_t *pi);
  * @return    True when zeroing this type would produce a null reference or null function pointer.
  */
  _Bool typeLacksZeroValue (TypeTable *tt, Type *t);
+/**
+ * @brief Tell whether dropping a value of this type runs a hook.
+ *
+ * True when the type has its own `@drop` hook or one of its fields does. The code generator has a
+ * twin of this walk (`typeNeedsDrop`) and the two must agree: this one decides whether an element
+ * store is legal, the other decides whether a drop call is emitted.
+ *
+ * @param c      Checker (for the instantiation context).
+ * @param t      Type to check; may be NULL.
+ * @param depth  Nesting already walked, capped against a pathological type.
+ * @return       True when a drop has an effect.
+ */
+bool typeHasDrop (Checker *c, Type *t, int depth);
 /**
  * @brief Tell whether a value of this type may take part in an operation with operator `op`.
  *

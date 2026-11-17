@@ -3168,6 +3168,36 @@ static bool callSubjectMentionsParam(Expr *e) {
 }
 
 /**
+ * @brief Tell whether a call target is a builtin that provably retains nothing.
+ *
+ * These are dispatched by the checker or by the code generator and have no declaration to take a
+ * summary from, so the effect walk has to recognize them by name. Every one of them is safe to
+ * treat as storing nothing: the print family writes to the output buffer, trap does not return, and
+ * the three view/size doors only re-type a pointer the caller already holds (the same promise
+ * extc_viewOf makes in its "effects Addr=0 Cont=0" clause).
+ *
+ * The comparison is on the LAST component of a dollar-separated name, because a call reached
+ * through a module is written mod$name. Matching the whole string missed every qualified call:
+ * io$print inside io$println, heap$extc_viewOf inside buf::withCap. Marking those unresolved made
+ * the enclosing summary incomplete, and an incomplete callee forces EVERY caller to prove that all
+ * of its reference arguments outlive the callee place, so vector::from(a[..]) was rejected for a
+ * local array that the base tier accepted.
+ *
+ * @param name  Callee name as written; may be module-qualified.
+ * @return      True when the builtin provably retains nothing.
+ */
+static bool isRetainsNothingBuiltin(const char *name) {
+    static const char *const BASE[] = {"print", "println", "flush", "trap",
+                                       "extc_sizeOf", "extc_viewOf", "extc_viewOfT"};
+    if (!name) return false;
+    const char *last = strrchr(name, '$');
+    last = last ? last + 1 : name;
+    for (size_t i = 0; i < sizeof BASE / sizeof BASE[0]; i++)
+        if (strcmp(last, BASE[i]) == 0) return true;
+    return false;
+}
+
+/**
  * @brief Record the calls in an expression and the callees they reach.
  *
  * A call that cannot be resolved sets `anEffUnknown(f)`, and the summary stays incomplete forever;
@@ -3245,15 +3275,14 @@ static void collectEffectsExpr(Checker *c, FuncDef *f, Expr *e) {
             }
         } else if (e->kind == EX_CALL && e->u.call.callee && e->u.call.callee->kind == EX_IDENT &&
                    e->u.call.callee->u.ident.name &&
-                   (strcmp(e->u.call.callee->u.ident.name, "print") == 0 ||
-                    strcmp(e->u.call.callee->u.ident.name, "println") == 0 ||
-                    strcmp(e->u.call.callee->u.ident.name, "flush") == 0)) {
-            /* `print`/`println`/`flush` are builtins dispatched by name, so there is no declaration
-             * to take a summary from; they write to the output buffer and retain nothing. Treating
-             * them as unknown made every function that prints incomplete, and an incomplete summary
-             * forces the caller to prove that *every* reference argument outlives the callee's place:
-             * `show(v: val)` (which matches and prints) could not be called with a value read out of a
-             * container (`tests/genmatrix/hetero_values`). */
+                   isRetainsNothingBuiltin(e->u.call.callee->u.ident.name)) {
+            /* These are builtins dispatched by name, so there is no declaration to take a summary
+             * from; none of them retains a reference. Treating them as unknown made every function
+             * that prints, or that builds a buf<T>, incomplete, and an incomplete summary forces the
+             * caller to prove that *every* reference argument outlives the callee place: show(v: val)
+             * (which matches and prints) could not be called with a value read out of a container
+             * (tests/genmatrix/hetero_values), and vector::from(a[..]) was rejected for a local
+             * array (tests/stl/from.extc) only because buf::withCap calls extc_viewOfT. */
         } else if (e->kind == EX_CALL && e->u.call.callee
                    && fnTypeCarriesNoRef(c->tt, tsub(c, e->u.call.callee->type))) {
             /* An indirect call through a `fn` value whose signature has neither reference parameters nor a
@@ -5757,6 +5786,31 @@ static void runRefCheck(Checker *c, RefCheck *rc, const char *instName) {
         /* Same reasoning: a function that is never called needs no per-instance recheck. */
         if (rc->func && !planUsed(rc->func)) return;
         Type *vt = tsub(c, rc->val->type);
+        /* Fourth kind: an owning value stored into a view element.
+         *
+         * The element storage is a plain array; the store copies the bytes and no hook runs for
+         * that copy, so the value would be released twice -- once by this copy and once by the
+         * original name. The concrete case is reported in `checkStoreEscape`; a template sees
+         * only `T`, so the decision is made here with the instance's type. This is what makes
+         * `vector<vector<i64>>` a compile error instead of the silent use-after-free it was.
+         */
+        if (rc->viewElem && typeHasDrop(c, vt, 0)) {
+            c->substParams = NULL;
+            c->substArgs   = NULL;
+            /* Report through the file the store was written in, not the caller's: the store
+             * lives in the callee's body, so the entry file's path with the callee's line
+             * number would point at an unrelated line of the wrong file. Naming the instance
+             * keeps the call path visible from there. */
+            char msg[EXTC_MAXERR];
+            snprintf(msg, sizeof msg,
+                     "in instance `%s`: a view element cannot hold `%s` -- it owns a reservation"
+                     " and the copy would never be dropped", instName, typeStr(c, vt));
+            ctxError(rc->ctx ? rc->ctx : c->ctx, rc->line, 1,
+                     "A container's element storage is a flat array: the store copies the bytes and no"
+                     " `@drop` hook runs for that copy, so the value would be released twice. A view"
+                     " cannot hold an element that owns a reservation.", "%s", msg);
+            return;
+        }
         c->substParams = NULL;
         c->substArgs   = NULL;
         if (!typeContainsRef(tt, vt)) return;

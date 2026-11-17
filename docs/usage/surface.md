@@ -5,7 +5,7 @@
 
 生成方式：`tools/manual_surface.py`；`check.sh` 保证本页与源码一致。
 
-公开面共 877 个成员，其中内部 164 个：
+公开面共 869 个成员，其中内部 158 个：
 
 ## prelude
 
@@ -105,14 +105,8 @@
 
 ## std::data::vector
 
-- `vector.cap`（字段）
-- `vector.frozen`（方法）
-- `vector.n`（字段）
-- `vector.pid`（字段）
-- `vector.pidGen`（字段）
-- `vector.pins`（字段）
-- `vectorGuard.p`（字段）
-- `vectorGuard.v`（字段）
+- `vector.b`（字段）
+- `vectorGuard.g`（字段）
 
 ## std::fs
 

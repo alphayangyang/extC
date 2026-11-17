@@ -34,12 +34,13 @@ fn main() -> i32 {
      * 任务跑完再读会大声 trap（帧已经随任务回收了 —— 规则②）。 */
     var last0: i64 = 0
     var last1: i64 = 0
+    var rows = tasks.rows.viewMut()      /* 表已经建好、之后只推进不增长 ⇒ 视图一直有效 */
     var k2: i64 = 0
     while k2 < 12 {
         var i: i64 = order[k2]
         if tasks.step(ref s, i) {
-            if i == 0 { last0 = tasks.rows.vals[0].h.value() }
-            if i == 1 { last1 = tasks.rows.vals[1].h.value() }
+            if i == 0 { last0 = rows[0].h.value() }
+            if i == 1 { last1 = rows[1].h.value() }
         }
         k2 = k2 + 1
     }
