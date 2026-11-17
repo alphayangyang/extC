@@ -259,7 +259,7 @@ T0 程序编译成空操作：`extc_buf_releaseRefs` 的函数体被 `#if define
 
 ### 10.5 未做
 
-- `string` / `hashMap` / `map` / `place` 仍在池板块上（它们的迁移是 R4c 的后续步），`stdlib` 的池
+- `map` / `set` / `place` 仍在池板块上（它们的迁移是 R4c 的后续步），`stdlib` 的池
   与运行期池因此还不能删。
 - `vector` 的 `@noCopy` 让「按值拷贝共享」这一族测试失效：`tests/pool/rt_stale_alias.extc` 已改成
   编译错负例，`tests/pool/rt_clone_alias.extc` 是 `clone()` 的正例；池的其余用例等 R4c 后续步。
@@ -728,6 +728,75 @@ var lm: linMap<K, V> = { keys: kb, vals: vb, n: 0, cap: c }
 
 ### 17.3 未做
 
-`hashMap`（`slots<V>` + 四列 `block`，稀疏桶列的 `release` 口径要先定：桶列只有 `tag[i] == LIVE` 的位置
-才是元素）、`map` / `set`（四列 + `nodes` 视图重指）仍在池板块上；迁完它们、并且 `bench/containers` 的
-三臂对拍不掉线，才删 `stdlib/std/sys/pool.extc` 与 `stdlib/std/data/pool.extc`。
+`hashMap` 已经在 §18 迁完；`map` / `set`（四列 + `nodes` 视图重指）仍在池板块上。迁完它们、并且
+`bench/containers` 的三臂对拍不掉线，才删 `stdlib/std/sys/pool.extc` 与 `stdlib/std/data/pool.extc`。
+
+## 18 第二个接上 `block<T>` / `slots<T>` 的容器：`hashMap` / `hashSet`
+
+`hashMap<K, V>` 从「一块池板块上的四列 + `pool<V>` 值列 + 池纪元」变成「四块 `block` + 一条 `slots<V>`
+值列」，`@sharesStorage` / `@place` / `pid` / `pidGen` / `pStale` / `pPoison` 一起退场：
+
+```
+@noCopy struct hashMap<K, V> {
+    @private keys: block<K>          /* 桶里的键（只有活桶有） */
+    tag:  block<u8>                  /* EMPTY / LIVE / TOMB */
+    slot: block<i32>                 /* 桶 -> 值列的稠密下标（不活时为 -1） */
+    @private bucketOfDense: block<i32>  /* slot 的反查：稠密下标 -> 桶 */
+    vals: slots<V>                   /* 值本身：稠密、可复用、句柄寻址 */
+    @private n: i64  @private dead: i64  @private cap: i64
+}
+```
+
+### 18.1 稀疏列的口径：`used` 是 0，钩子只走两个点
+
+桶列是**稀疏**的：只有 `tag[i] == LIVE` 的位置才是元素，而 `cap` 里可能一半是 EMPTY。所以四块桶列
+**一律保持 `used() == 0`**：`block::release` 与字段的自动 `@drop` 因此一个桶都不扫、一条键钩子都不跑。
+键的生命周期只有两个入口 —— `keys.take(i)`（搬出去：`remove` 的 swap-remove、`rebuild` 的重排）与
+`keys.dropAt(i)`（就地丢：`clear` / `release`）。把桶列 `setUsed(cap)` 会让 `release` 把 TOMB/EMPTY 槽里
+的脏字节当键去跑钩子 —— 那是 `block` 文档里「脏内存不许跑钩子」那条纪律的反面。
+
+`tag` 是唯一必须主动清零的桶列：`EMPTY == 0` 是线性探测的终止符，而块内存是复用的脏内存。构造时
+清零 `cap` 个字节、`rebuild` 时清零新表的 `ncap` 个字节 —— 两处都写了循环，因为这里不能用 `memset`
+（`memset` 与 `<string.h>` 的原型冲突，见 §12）。
+
+### 18.2 `rebuild` 换表：先重排、再整列接管
+
+`rebuild(ncap)` 拿四块新列 + 一条新值列不行 —— 值列不换（值的位置与容量无关，句柄跨重建有效），
+换的只有四个桶列。重排把活键 `take` 进新列（旧槽留零，于是旧块里没有活键），然后**整列接管**：
+
+```
+        self.keys.adopt(ref nk)
+        self.tag.adopt(ref nt)
+        self.slot.adopt(ref ns)
+        self.bucketOfDense.adopt(ref nb)
+```
+
+`block::adopt` 是这一步专用的接线面：`@noCopy` 的值不能按值赋来赋去，而「旧块当场还、新块字段整体
+搬过来、对方变成空块」是这句话唯一的正确语义。换表的那一瞬间两代桶列同时在手（旧列在 `adopt` 里
+才被还），所以重建的峰值是「新列 + 旧列」，而稳态永远只有一代。
+
+### 18.3 值列跟着表一起长
+
+`slots<V>` 的容量与桶列同寿：`withCap` 时同容量，`rebuild` 只换桶列不动值列（`slots::grow` 是值列自己
+的事：装载到 70% 时 `put` 会先让值列长到 1.5×）。`bucketOfDense` 必须与表同容量：稠密下标最多到
+`n`，而 `n` 可以长过旧表容量 —— 留旧长度的那版在第一次长表之后写过界（`index 128 out of range`）。
+
+### 18.4 判据
+
+- `tests/hashmap/run.sh` 十个程序全绿：正例（新键 / 覆盖 / 查 / 删）、结构体键、稠密序、下标、句柄
+  （`slotHandle` 跨插入仍有效、`remove` 之后过期）、碰撞（墓碑复用）、墓碑 churn、`grow`、ASan 四例；
+- `grow` 的硬判据：**增长到 N 的增量与预先留够同样字节逐字节相当**（69,206,016 B vs 69,206,016 B）
+  ⇒ 旧列全还了，没有一代被留在堆上；
+- `churn`：1e5 轮与 1e6 轮峰值 RSS 都是 1,872 kB（平）；对照臂 `canary`（只 put 不 remove）从 10,124 kB
+  长到 94,804 kB ⇒ 这条判据会响；
+- `tests/pool/rt_container_tree.extc` 判据从 `live=2` 改成 `live=0`：容器已经一只池都不登记，
+  「容器不许把池偷带出来」那半条仍然有牙；
+- `tests/stl` / `tests/pool` / `tests/dense` / `tests/copy` / `tests/linmap` 全绿；`bench/containers` 与
+  `tests/gc-p0` 不出新红。
+
+### 18.5 未做与代价
+
+`map` / `set`（四列 + `nodes` 视图重指）仍在池板块上。`hashMap` 的重建峰值比池版高（`grow` 峰值 RSS
+93,484 kB / 57,116 kB，池版同程序 57,924 kB / 47,748 kB）：池把旧板块还给 malloc，下一次重建常能就地
+复用；缓冲区基质把旧量子还给竞技场，重建瞬间的两代仍然是实实在在的两代。判据只看字节账，不看峰值 ——
+但这笔台账记在这里，等 `map` / `set` 迁完、`bench/containers` 三臂对拍时一起收。

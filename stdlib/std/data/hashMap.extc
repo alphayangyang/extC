@@ -39,8 +39,7 @@
  *     in phase 1+.
  */
 
-use std::data::pool
-use std::sys::pool as syspool    /* 运行期池记录：本容器自己的那一只，值池以它为父 */
+use std::data::dense::{block, slots, slotHandle}
 
 let EMPTY: u8 = 0
 let LIVE:  u8 = 1
@@ -88,23 +87,18 @@ impl i64 {
     fn hash(self: ref i64) -> i64 { return hashI64(*self) }
 }
 
-@sharesStorage        /* 按值拷贝时**两份共用同一块板块** ⇒ 编译器在这里报警告，要独立副本用 `clone()` */
-@place                 /* 这个类型**拥有一个地方**：存储住在那个地方的板块上，寿命随它所在的域 */
+@noCopy
 struct hashMap<K, V> {
-    /* This container's OWN pool record. One non-nested container = one pool;
-     * `vals` is created with this as its parent, so the two records really form a tree and
-     * dropping this one takes the value pool with it. */
-    @private pid:    i64
-    @private pidGen: u64
-    @private keys: mut slice<K>          /* the bucket's key (live buckets only) */
-    tag:  mut slice<u8>         /* EMPTY / LIVE / TOMB */
-    slot: mut slice<i32>        /* bucket -> dense index inside `vals` (-1 when not live) */
-    /* The reverse of `slot`, one entry per dense index. The pool's `remove` is a swap-remove:
-     * the last live value moves into the hole, so the map has to fix the moved element's bucket,
-     * and this column is what says which bucket that is. Without it the table would keep pointing
-     * at values that moved. */
-    @private bucketOfDense: mut slice<i32>
-    vals: pool<V>               /* the values themselves: dense, reusable, handle-addressed */
+    /* 四列桶存储与值列都跟着这张表的值走：没有池 id、没有纪元。`var b = a` 是转移，
+     * 要独立副本用 `clone()`；字节账直接问这四块加值列。 */
+    @private keys: block<K>          /* the bucket's key (live buckets only) */
+    tag:  block<u8>         /* EMPTY / LIVE / TOMB */
+    slot: block<i32>        /* bucket -> dense index inside `vals` (-1 when not live) */
+    /* The reverse of `slot`, one entry per dense index. The value column's `remove` is a
+     * swap-remove: the last live value moves into the hole, so the map has to fix the moved
+     * element's bucket, and this column is what says which bucket that is. */
+    @private bucketOfDense: block<i32>
+    vals: slots<V>               /* the values themselves: dense, reusable, handle-addressed */
     @private n:    i64                   /* live entries */
     @private dead: i64                   /* tombstones */
     @private cap:  i64                   /* always a power of two */
@@ -113,30 +107,27 @@ struct hashMap<K, V> {
     fn withCap(want: i64) -> hashMap<K, V> {
         var c: i64 = 8
         while c < want * 2 { c = c * 2 }
-        let rp  = syspool::extc_pool_new(-1)
-        let rpg = syspool::extc_pool_generation(rp)
         var m: hashMap<K, V> = {
-            pid:    rp,
-            pidGen: rpg,
-            /* 四列都在**这张表自己的池板块**上（不是 arena 切片）：重建时旧的几块当场
-             * 还回去，不留历代旧列。之前用 `new` 时，每一次 rebuild 都把上一代的四列
-             * 留给 arena —— 同容量同条目数下峰值 90,412 KB vs 69,036 KB，那 30% 就是它们。 */
-            keys: poolSliceRaw<K>(rp, c),
-            tag:  poolSlice<u8>(rp, c),          /* ⚠️ tag 必须清零：EMPTY == 0 是探测的终止符 */
-            slot: poolSliceRaw<i32>(rp, c),
-            bucketOfDense: poolSliceRaw<i32>(rp, c),
-            vals: pool<V>::withParent(rp, c),      /* 值池以这个容器自己的池为父 */
+            keys: block<K>::withCap(c),
+            tag:  block<u8>::withCap(c),          /* tag 必须清零：EMPTY == 0 是探测的终止符 */
+            slot: block<i32>::withCap(c),
+            bucketOfDense: block<i32>::withCap(c),
+            vals: slots<V>::withCap(c),      /* 值列与桶列同寿：一起长、一起还 */
             n:    0,
             dead: 0,
             cap:  c,
+        }
+        /* 块内存是复用的脏内存，而 tag 的 `0` 有含义（EMPTY）⇒ 这一列必须显式清零。 */
+        var i: i64 = 0
+        while i < c {
+            m.tag[i] = u8(0)
+            i = i + 1
         }
         return m
     }
 
     fn len(self: ref hashMap<K, V>) -> i64 { return self.n }
     fn capOf(self: ref hashMap<K, V>) -> i64 { return self.cap }
-    /* 本表运行期池的下标（只读读数）：容量与字节账的判据要指到**这一只**池上。 */
-    @private fn pidOf(self: ref hashMap<K, V>) -> i64 { return self.pid }
     /* 墓碑与活跃数的读数（只读）：探测链变长的诊断用它。 */
     @private fn deadOf(self: ref hashMap<K, V>) -> i64 { return self.dead }
     /* 诊断读数：桶的三种状态各有多少（EMPTY 是探测链的终止符，它的数量决定 miss 的代价）。 */
@@ -153,7 +144,9 @@ struct hashMap<K, V> {
     /* 这张表**当下**在它自己池里占的字节（四列 + 值池）。
      * 判据：`rebuild` 把旧列当场还了 ⇒ 这个数只随当前 `cap` 走，与重建过多少次无关；
      * 若旧列还留着，它会大一整代（见 tests/hashmap/run.sh）。 */
-    fn bytesOf(self: ref hashMap<K, V>) -> i64 { return syspool::extc_pool_bytes(self.pid) }
+    fn bytesOf(self: ref hashMap<K, V>) -> i64 {
+        return self.keys.bytesOf() + self.tag.bytesOf() + self.slot.bytesOf() + self.bucketOfDense.bytesOf() + self.vals.bytesOf()
+    }
 
     /* Find the bucket holding `k`: live bucket index, or -1 when absent.
      *
@@ -191,25 +184,24 @@ struct hashMap<K, V> {
         return some(self.vals.atDense(i64(self.slot[b])))
     }
 
-    /* `k` 的值槽：一次探测拿 handle，之后 `at`/`setAt` 不再探测。读-改-写一个已有键因此只要
+    /* `k` 的值槽：一次探测拿 slotHandle，之后 `at`/`setAt` 不再探测。读-改-写一个已有键因此只要
      * 一次探测（`get` + `put` 要两次），这是"取出来改一下写回去"该有的形状。
-     * handle 是池的**值**，不是指针：值池扩容/搬动不会让它悬垂，过期了 `at` 会还 `none`。 */
-    fn slotOf(self: ref hashMap<K, V>, k: K) -> ?handle {
+     * slotHandle 是槽存储的**值**，不是指针：值列扩容/搬家不会让它悬垂，过期了 `at` 会还 `none`。 */
+    fn slotOf(self: ref hashMap<K, V>, k: K) -> ?slotHandle {
         let b = self.find(k)
         if b < 0 { return none }
         return some(self.vals.handleAtDense(i64(self.slot[b])))
     }
 
-    /* handle 指向的值；handle 过期（被 remove 搬走、或池清了）时 `none`。 */
-    fn at(self: ref hashMap<K, V>, h: handle) -> ?V { return self.vals.get(h) }
+    /* slotHandle 指向的值；过期（被 remove 搬走、或 clear 换了代）时 `none`。 */
+    fn at(self: ref hashMap<K, V>, h: slotHandle) -> ?V { return self.vals.get(h) }
 
-    /* 用 handle 就地写回：一次池访问，不探测。 */
-    fn setAt(self: mut ref hashMap<K, V>, h: handle, v: V) -> bool { return self.vals.set(h, v) }
+    /* 用 slotHandle 就地写回：一次槽访问，不探测。 */
+    fn setAt(self: mut ref hashMap<K, V>, h: slotHandle, v: V) -> bool { return self.vals.set(h, v) }
 
     /* `k` 的 handle，缺失时插入 `dflt`。命中只探测一次；新键多一次（`put` 内部再探），
      * 所以"每记录一次哈希探测"的循环就写这一句。 */
-    fn entry(self: mut ref hashMap<K, V>, k: K, dflt: V) -> handle {
-        if self.pStale() { self.pPoison() }
+    fn entry(self: mut ref hashMap<K, V>, k: K, dflt: V) -> slotHandle {
         let had = self.find(k)
         if had >= 0 { return self.vals.handleAtDense(i64(self.slot[had])) }
         self.put(k, dflt)
@@ -223,7 +215,6 @@ struct hashMap<K, V> {
     fn []=(self: mut ref hashMap<K, V>, k: K, v: V) -> bool { return self.put(k, v) }
 
     fn put(self: mut ref hashMap<K, V>, k: K, v: V) -> bool {
-        if self.pStale() { self.pPoison() }
         let had = self.find(k)
         if had >= 0 {
             /* The overwrite path is the hot one for a read-modify-write loop, so it writes
@@ -288,7 +279,7 @@ struct hashMap<K, V> {
         }
         /* Take the removed key out of its bucket: for a key that owns storage a plain
          * `tag[b] = EMPTY` would leave those bytes behind and nothing would ever drop them. */
-        let _gone: K = elemTake<K>(self.keys, b)
+        let _gone: K = self.keys.take(b)
         self.n = self.n - 1
         self.tag[b] = EMPTY
         let mask = self.cap - 1
@@ -302,7 +293,7 @@ struct hashMap<K, V> {
             if ((j - home) & mask) >= ((j - hole) & mask) {
                 /* A move, not a copy: the element walks to the hole and its old slot is zeroed, so an
                  * owning key still has exactly one owner. */
-                self.keys[hole] = elemTake<K>(self.keys, j)
+                self.keys[hole] = self.keys.take(j)
                 self.tag[hole]  = LIVE
                 self.slot[hole] = self.slot[j]
                 self.bucketOfDense[i64(self.slot[hole])] = i32(hole)
@@ -315,55 +306,54 @@ struct hashMap<K, V> {
     }
 
     /* Rehash into a table of `ncap` buckets (a power of two), dropping the tombstones. The values
-     * are not touched: they stay exactly where the pool put them, which is what keeps an element's
-     * dense index (and every live handle) valid across a rebuild. */
+     * are not touched: they stay exactly where the value column put them, which is what keeps an
+     * element's dense index (and every live handle) valid across a rebuild. */
     fn rebuild(self: mut ref hashMap<K, V>, ncap: i64) {
-        /* 新表从池里拿四块，旧的填完当场还（`poolGive`）—— 于是重建只在**换的那一瞬间**
-         * 有两代同时在手，稳态永远只有一代。容量仍然翻倍：这是**哈希**的要求（探测用
-         * `hash & (cap-1)`，必须是 2 的幂），与"旧块还不了才翻倍"那条无关。 */
-        var nk: mut slice<K>   = poolSliceRaw<K>(self.pid, ncap)
-        var nt: mut slice<u8>  = poolSlice<u8>(self.pid, ncap)   /* ⚠️ 同上：新 tag 必须全 EMPTY */
-        var ns: mut slice<i32> = poolSliceRaw<i32>(self.pid, ncap)
-        /* `bucketOfDense` is indexed by DENSE index, so it has to hold as many entries as there
-         * are values -- and the pool's dense side grows past the old table capacity as soon as
-         * the table doubles. `poolResizeRaw` extends it in place, keeping the live prefix; the
-         * rehash below fills the rest. */
-        /* `bucketOfDense` 是**稠密下标**索引的（位置与容量无关）⇒ 直接加长：内容原地保留，
-         * 那趟前缀拷贝整段删掉。另外三列做不到这件事 —— 桶号 `h & (cap-1)` 随 cap 变，
-         * 每个元素的位置都变，O(n) 重排是哈希扩容语义的一部分。
-         * `bucketOfDense` 的长度仍要是 ncap：池的稠密侧会随表一起长过旧容量，
-         * 早先留着旧长度的那版在第一次长表后写越界过（`index 128 out of range (length 128)`）。 */
-        self.bucketOfDense = poolResizeRaw<i32>(self.pid, self.bucketOfDense, ncap)
+        /* 新表拿四块新存储，旧的填完当场还 —— 于是重建只在**换的那一瞬间**有两代同时在手，
+         * 稳态永远只有一代。容量仍然翻倍：这是**哈希**的要求（探测用 `hash & (cap-1)`，
+         * 必须是 2 的幂），与"旧块还不了才翻倍"那条无关。 */
+        var nk: block<K>   = block<K>::withCap(ncap)
+        var nt: block<u8>  = block<u8>::withCap(ncap)
+        var ns: block<i32> = block<i32>::withCap(ncap)
+        var nb: block<i32> = block<i32>::withCap(ncap)
+        /* 新 tag 必须全 EMPTY（`EMPTY == 0` 是探测的终止符）：块内存不清零，这里显式清零。 */
+        var z: i64 = 0
+        while z < ncap {
+            nt[z] = u8(0)
+            z = z + 1
+        }
+        /* `bucketOfDense` 是**稠密下标**索引的，位置与容量无关；它长到 ncap 是因为稠密侧会随
+         * 表一起长过旧容量（早先留着旧长度的那版在第一次长表后写越界过）。重排会把每个活
+         * 元素的桶号重写一遍，所以新列里没有需要保留的前缀。 */
         var i: i64 = 0
         while i < self.cap {
             if self.tag[i] == LIVE {
                 var j = self.keys[i].hash() & (ncap - 1)
                 while nt[j] == LIVE { j = (j + 1) & (ncap - 1) }
                 nt[j] = LIVE
-                nk[j] = elemTake<K>(self.keys, i)
+                nk[j] = self.keys.take(i)
                 ns[j] = self.slot[i]
-                self.bucketOfDense[i64(self.slot[i])] = i32(j)
+                nb[i64(self.slot[i])] = i32(j)
             }
             i = i + 1
         }
-        poolGive<K>(self.pid, self.keys)
-        poolGive<u8>(self.pid, self.tag)
-        poolGive<i32>(self.pid, self.slot)
-        self.keys = nk
-        self.tag  = nt
-        self.slot = ns
+        /* 整列换上：`adopt` 内部先还旧块（活键已被 `take` 搬走、死桶是零 ⇒ 不会再跑钩子），
+         * 再把新块的字段整体接管过来。 */
+        self.keys.adopt(ref nk)
+        self.tag.adopt(ref nt)
+        self.slot.adopt(ref ns)
+        self.bucketOfDense.adopt(ref nb)
         self.cap  = ncap
         self.dead = 0
     }
 
-    /* Drop every entry, keeping the capacity. `clear` on the pool is O(1) (it flips the pool
-     * epoch, */
+    /* Drop every entry, keeping the capacity. */
     fn clear(self: mut ref hashMap<K, V>) {
         var i: i64 = 0
         while i < self.cap {
             /* An owning key is stored in its bucket, so emptying the table has to run the key's
              * hook too; for a key type with no storage this compiles to nothing. */
-            if self.tag[i] == LIVE { elemDrop<K>(self.keys, i, i + 1) }
+            if self.tag[i] == LIVE { self.keys.dropAt(i) }
             self.tag[i] = EMPTY
             i = i + 1
         }
@@ -372,47 +362,21 @@ struct hashMap<K, V> {
         self.dead = 0
     }
 
-    /* Hand the value pool back: the container and its pool are born together. */
-    /* 整棵池树还回去：先放值池（它的三块视图会被收成 0 长），再放这个容器自己的记录。
-     * 父池的递归本来也会带走子池，两处都做不冲突：谁先到谁放，后到的查不到活记录就跳过。 */
-    /* **守卫**：这一份哈希表值还指着它的池吗？陈旧 ⇒ 四列收空，下一次访问带位置地 trap。 */
-    fn pStale(self: ref hashMap<K, V>) -> bool {
-        if self.pid < 0 { return false }
-        return syspool::extc_pool_generation(self.pid) != self.pidGen
-    }
-    fn pPoison(self: mut ref hashMap<K, V>) {
-        self.keys = poolSlice<K>(-1, 0)
-        self.tag  = poolSlice<u8>(-1, 0)
-        self.slot = poolSlice<i32>(-1, 0)
-        self.bucketOfDense = poolSlice<i32>(-1, 0)
+    /* 四列与值列都还回去：`release` 幂等，字段的自动 `@drop` 再发一次是空操作。 */
+    fn release(self: mut ref hashMap<K, V>) {
+        var i: i64 = 0
+        while i < self.cap {
+            if self.tag[i] == LIVE { self.keys.dropAt(i) }
+            i = i + 1
+        }
+        self.vals.release()
+        self.keys.release()
+        self.tag.release()
+        self.slot.release()
+        self.bucketOfDense.release()
         self.n    = 0
         self.dead = 0
         self.cap  = 0
-        self.pid  = -1
-    }
-
-    fn release(self: mut ref hashMap<K, V>) {
-        /* Live keys sit in the bucket columns, so they are dropped here: the pool tree hands the
-         * memory back without ever calling an element hook. A stale copy points into a pool that
-         * has been reused, so it is skipped. */
-        if self.pid >= 0 && !self.pStale() {
-            var i: i64 = 0
-            while i < self.cap {
-                if self.tag[i] == LIVE { elemDrop<K>(self.keys, i, i + 1) }
-                i = i + 1
-            }
-        }
-        self.vals.release()
-        if self.pid < 0 { return }
-        /* One staleness question, one place to ask it (`pStale`): the comparison lives in
-         * exactly one place, and two copies of a load-bearing check would drift. */
-        if self.pStale() {
-            self.pid = -1  /* 陈旧拷贝：槽位已被别的池复用 */
-            return
-        }
-        syspool::extc_pool_reset(self.pid)
-        syspool::extc_pool_drop(self.pid)
-        self.pid = -1
     }
 
     /* Scan by bucket position (the face the first version had). */
@@ -464,7 +428,7 @@ struct i64Key {
 }
 
 /* The `i64`-keyed face: what `hashMapI64<V>` always was, now one conversion deep. */
-@sharesStorage        /* 按值拷贝时**两份共用同一块板块** ⇒ 编译器在这里报警告，要独立副本用 `clone()` */
+@noCopy
 struct hashMapI64<V> {
     m: hashMap<i64Key, V>
 
@@ -480,7 +444,6 @@ struct hashMapI64<V> {
         var h: hashMapI64<V> = { m: self.m.clone() }
         return h
     }
-    @private fn pidOf(self: ref hashMapI64<V>) -> i64 { return self.m.pidOf() }
     @private fn deadOf(self: ref hashMapI64<V>) -> i64 { return self.m.deadOf() }
     @private fn tagCensus(self: ref hashMapI64<V>, which: i64) -> i64 { return self.m.tagCensus(which) }
 
@@ -500,17 +463,17 @@ struct hashMapI64<V> {
 
     fn remove(self: mut ref hashMapI64<V>, k: i64) -> bool { return self.m.remove(i64Key { v: k }) }
 
-    /* handle 走的是值池里的稳定槽位，不是指针：值池扩容搬动数据时不会悬垂。 */
-    fn slotOf(self: ref hashMapI64<V>, k: i64) -> ?handle { return self.m.slotOf(i64Key { v: k }) }
-    fn at(self: ref hashMapI64<V>, h: handle) -> ?V { return self.m.at(h) }
-    fn setAt(self: mut ref hashMapI64<V>, h: handle, v: V) -> bool { return self.m.setAt(h, v) }
-    fn entry(self: mut ref hashMapI64<V>, k: i64, dflt: V) -> handle {
+    /* slotHandle 走的是值列里的稳定槽位，不是指针：值列扩容搬家时不会悬垂。 */
+    fn slotOf(self: ref hashMapI64<V>, k: i64) -> ?slotHandle { return self.m.slotOf(i64Key { v: k }) }
+    fn at(self: ref hashMapI64<V>, h: slotHandle) -> ?V { return self.m.at(h) }
+    fn setAt(self: mut ref hashMapI64<V>, h: slotHandle, v: V) -> bool { return self.m.setAt(h, v) }
+    fn entry(self: mut ref hashMapI64<V>, k: i64, dflt: V) -> slotHandle {
         return self.m.entry(i64Key { v: k }, dflt)
     }
 
     fn clear(self: mut ref hashMapI64<V>) { self.m.clear() }
 
-    /* 整棵池树还回去（本容器自己的池 + 值池） */
+    /* 四列与值列都还回去 */
     fn release(self: mut ref hashMapI64<V>) { self.m.release() }
 
     /* The dense face (`hashMap`'s own face): every live value once, in insertion order, no
@@ -538,7 +501,7 @@ struct hashMapI64<V> {
  * plus the table-position scan `keyAt` / `liveAt` / `capOf`), with ONE difference: `put` returns
  * true when the element is NEW, while `map::put` returns true when it was already there. */
 
-@sharesStorage        /* 按值拷贝时**两份共用同一块板块** ⇒ 编译器在这里报警告，要独立副本用 `clone()` */
+@noCopy
 struct hashSetI64 {
     m: hashMapI64<u8>
 
@@ -567,7 +530,7 @@ struct hashSetI64 {
 
     fn clear(self: mut ref hashSetI64) { self.m.clear() }
 
-    /* 整棵池树还回去 */
+    /* 四列与值列都还回去 */
     fn release(self: mut ref hashSetI64) { self.m.release() }
 
     /* Scan by table position (the dense face arrives with the pool-backed map). */

@@ -3,14 +3,15 @@
  * 判据：
  *   ① `entry` 缺失时插入默认值；`at` 读到它；`setAt` 写回去 ✓
  *   ② 同一键两次 `entry` 得到同一个槽（命中只探测一次）✓
- *   ③ handle 跨**插入别的键**仍然有效（值池扩容搬数据不搬身份）✓
- *   ④ 键被 `remove` 掉之后 `at` 还 `none`，而不是读到别人的值（池的换代检查兜住）✓
+ *   ③ slotHandle 跨**插入别的键**仍然有效（值列扩容搬数据不搬身份）✓
+ *   ④ 键被 `remove` 掉之后 `at` 还 `none`，而不是读到别人的值（世代检查兜住）✓
  *   ⑤ 这些方法都能在"带 slice 形参"的函数里调用（效果摘要按实例重算）✓
  *
  * expect: sum=14 n=2 same=true stale=true keep=true sixth=true
  */
 use std::io
 use std::data::hashMap
+use std::data::dense::{slotHandle}
 
 struct sess { n: i64  sum: i64 }
 
@@ -19,16 +20,16 @@ fn run(keys: slice<i64>) -> i32 {
     var i: i64 = 0
     while i < keys.len {
         let k: i64 = keys[i]
-        let h: handle = m.entry(k, sess { n: 0, sum: 0 })
+        let h: slotHandle = m.entry(k, sess { n: 0, sum: 0 })
         var s: sess = m.at(h) ?? sess { n: 0, sum: 0 }
         s.n = s.n + 1
         s.sum = s.sum + k
         m.setAt(h, s)
         i = i + 1
     }
-    let h7: handle = m.entry(i64(7), sess { n: 0, sum: 0 })
+    let h7: slotHandle = m.entry(i64(7), sess { n: 0, sum: 0 })
     /* ②：命中时 `entry` 回同一个槽 —— 用"再 entry 一次不该覆盖成 99"证明 */
-    let _again: handle = m.entry(i64(7), sess { n: 99, sum: 99 })
+    let _again: slotHandle = m.entry(i64(7), sess { n: 99, sum: 99 })
     var same: bool = false
     if let some(s) = m.at(h7) { same = s.sum == i64(14) && s.n == 2 }
 

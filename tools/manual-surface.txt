@@ -99,6 +99,7 @@ std::data::buf	buf	view	method	public
 std::data::buf	buf	viewMut	method	public
 std::data::buf	buf	withCap	method	public
 std::data::dense	-	denseClassBytes	fn	internal
+std::data::dense	block	adopt	method	public
 std::data::dense	block	bytes	field	internal
 std::data::dense	block	bytesOf	method	public
 std::data::dense	block	cap	field	internal
@@ -176,11 +177,6 @@ std::data::hashMap	hashMap	keys	field	internal
 std::data::hashMap	hashMap	len	method	public
 std::data::hashMap	hashMap	liveAt	method	public
 std::data::hashMap	hashMap	n	field	internal
-std::data::hashMap	hashMap	pPoison	method	public
-std::data::hashMap	hashMap	pStale	method	public
-std::data::hashMap	hashMap	pid	field	internal
-std::data::hashMap	hashMap	pidGen	field	internal
-std::data::hashMap	hashMap	pidOf	method	internal
 std::data::hashMap	hashMap	put	method	public
 std::data::hashMap	hashMap	rebuild	method	public
 std::data::hashMap	hashMap	release	method	public
@@ -209,7 +205,6 @@ std::data::hashMap	hashMapI64	keyAtDense	method	public
 std::data::hashMap	hashMapI64	len	method	public
 std::data::hashMap	hashMapI64	liveAt	method	public
 std::data::hashMap	hashMapI64	m	field	public
-std::data::hashMap	hashMapI64	pidOf	method	internal
 std::data::hashMap	hashMapI64	put	method	public
 std::data::hashMap	hashMapI64	release	method	public
 std::data::hashMap	hashMapI64	remove	method	public

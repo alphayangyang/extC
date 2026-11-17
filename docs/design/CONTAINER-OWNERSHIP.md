@@ -1,9 +1,9 @@
 # 容器的所有权与拷贝语义（R4c 的规则）
 
 > 状态：规则已定并落地 —— `vector` 与 `string` 的存储已经在缓冲区基质上（`buf<T>` 预留 /
-> 密排槽），`hashMap` 的元素所有权（移动进、逐元素 drop）已接，`linMap` / `linSet` 的存储也已换成
-> `block<T>`（`docs/design/BUF-INVARIANT.md` §17）；`hashMap` / `map` / `place` 的 **存储**仍在池板块上，
-> 迁完它们才能删池。判据在 `bench/containers/`（四格 V + 三格 S）、
+> 密排槽），`linMap` / `linSet` 的存储换成 `block<T>`（`docs/design/BUF-INVARIANT.md` §17），
+> `hashMap` / `hashSet` 的存储换成四列 `block` + 一条 `slots<V>` 值列（§18）；`map` / `set` / `place` 的
+> **存储**仍在池板块上，迁完它们才能删池。判据在 `bench/containers/`（四格 V + 三格 S）、
 > `tests/stl/`、`tests/gc-p0/`（G15 / G21 / G22）。
 
 ## 1. 要解决的问题
@@ -106,8 +106,8 @@ R5 **零值必须可 drop。** 声明 `var s: string` 得到的是**值**（内�
 
 1. ~~`vector<T>`~~：已完成 —— `@noCopy`，持有 `buf<T>`。
 2. ~~`string`~~：已完成 —— SSO 16 字节保留，长存储走基质（§5），`@value` + `@drop`，深拷贝 `clone`。
-3. **`hashMap<K,V>`**：元素所有权已接（移动进、逐元素 drop）；存储仍是池板块，下一步换成 `buf<K>` /
-   `buf<V>`，扩容时把元素**移动**到新预留（不是拷贝），旧预留整块释放。
+3. ~~`hashMap<K,V>`~~：已完成 —— 四列 `block`（键 / 标记 / 槽号 / 稠密下标反查）+ 一条 `slots<V>`
+   值列，`rebuild` 先重排再用 `adopt` 整列接管（§18）。
 4. **`map<K,V>`**（有序 map）同上；`place.extc` 的池引用迁走。
 5. **删池**：`stdlib/std/sys/pool.extc`（77 行）、`stdlib/std/data/pool.extc`（493 行）、运行期
    `src/back/pools.c` 与 `extc_pool_*`。到此存储基质从四种（帧 arena / 回收区 / 池 / plate）变成三种。

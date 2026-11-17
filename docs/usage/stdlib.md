@@ -115,9 +115,12 @@ fn main() -> i32 {
   §11–§15）—— 小载荷走 16 B…64 KiB 的密排槽，大载荷走 2 MiB 量子的地址预留，值自己被 `@drop` 时
   把整片还回去。`vector<T>` / `buf<T>` 是 `@noCopy`：`var b = a` 是**转移**，要独立副本写 `clone()`。
   `string` 是 `@value`：拷贝即深拷贝（`clone()` 与按值传递都建新值），所以两份永远不共享。
-- **`hashMap` / `map` / `set` 系列**（存储尚未迁移）：带 `@sharesStorage` + `@place`，**按值拷贝两份会共用
-  同一块板块**，要独立副本必须显式 `clone()`。元素所有权已经接上（元素进容器是移动、
-  `clear`/`shrink`/`release`/`pop` 逐元素跑钩子），所以 `hashMap<string, i32>` 这类拥有元素的容器可用。
+- **`hashMap` / `hashSet`**：存储同样在缓冲区基质上（[BUF-INVARIANT](../design/BUF-INVARIANT.md) §18）——
+  四列桶存储是 `block<T>`、值列是 `dense::slots<V>`，都是一个值自己的存储，`@noCopy`：`var b = a` 是
+  **转移**，要独立副本写 `clone()`。元素所有权接上（元素进容器是移动、`clear`/`shrink`/`release`/`remove`
+  逐元素跑钩子），所以 `hashMap<string, i32>` 这类拥有元素的容器可用。
+- **`map` / `set` 系列**（存储尚未迁移）：带 `@sharesStorage` + `@place`，**按值拷贝两份会共用同一块板块**，
+  要独立副本必须显式 `clone()`；元素所有权同样已经接上。
 
 这些容器的存储是它们**自己的**，不是帧里的一段：换缓冲时旧片当场归还，所以"反复建、反复丢"是
 稳态内存。三种存储（帧、缓冲区基质、对象表）各自适合什么、以及选错的代价，见[内存模型](../design/MEMORY-MODEL.md)。
@@ -351,7 +354,7 @@ let freed: i64 = syspool::collect()
 
 ### 自己写一个板块底的容器
 
-`vector` 与 `string` 已经挪到缓冲区基质上（[BUF-INVARIANT](../design/BUF-INVARIANT.md) §10、§15），`hashMap` / `map` 的存储还在池板块上。想写一个新的可增长容器，优先持有 `buf<T>`：它给的是「预留内 0 拷贝增长 + 撞上限搬一次家 + 结构动作按区间撤边」。下面这条 `@place` 路径仍然可用，但它要自己管世代、冻结与归还。四件事 —— 拥有、要、长、守卫与归还：
+`vector`、`string`、`hashMap` / `hashSet` 与 `linMap` / `linSet` 已经挪到缓冲区基质上（[BUF-INVARIANT](../design/BUF-INVARIANT.md) §10、§15、§17、§18），`map` / `set` / `place` 的存储还在池板块上。想写一个新的可增长容器，优先持有 `buf<T>`：它给的是「预留内 0 拷贝增长 + 撞上限搬一次家 + 结构动作按区间撤边」。下面这条 `@place` 路径仍然可用，但它要自己管世代、冻结与归还。四件事 —— 拥有、要、长、守卫与归还：
 
 <!-- fragment -->
 ```extc
@@ -527,7 +530,7 @@ fn main() -> i32 {
 ### `hashMap` / `hashSet`：哈希
 
 **键固定是 `i64`**：extC 没有 trait，编译器不能在类型参数上叫 `hash()`，所以哈希容器的键是具体的
-`i64`，值才是泛型参数 `V`。键里可以打包两个 `i32`、一个 `pool` 句柄、
+`i64`，值才是泛型参数 `V`。键里可以打包两个 `i32`、一个槽句柄、
 一个字符串表偏移。
 
 模块级还有一个 `hashI64(k)`：`i64` 的哈希函数，`hashMapI64` 的键就用它。
@@ -541,12 +544,12 @@ fn main() -> i32 {
 | `len` / `capOf` / `deadOf` | `fn len(...) -> i64` 等 |
 | `contains` / `get` / `[]` | `fn get(...) -> ?V` |
 | `put` / `[]=` | `fn put(self: mut ref hashMapI64<V>, k: i64, v: V) -> bool`；**true = 键本来就在** |
-| `remove` / `clear` / `release` | 删、清、整批还池 |
+| `remove` / `clear` / `release` | 删、清、四列与值列整批还回去 |
 | 按桶扫 | `keyAt(i)` / `valAt(i)` / `liveAt(i)`（表位置；**不是插入序**） |
 | 按 dense 扫 | `denseLen()` / `keyAtDense(d)` / `valAtDense(d)` |
-| 按槽读写 | `slotOf(k) -> ?handle`（一次探测）/ `at(h) -> ?V` / `setAt(h, v)` / `entry(k, dflt) -> handle` |
+| 按槽读写 | `slotOf(k) -> ?slotHandle`（一次探测）/ `at(h) -> ?V` / `setAt(h, v)` / `entry(k, dflt) -> slotHandle`；句柄类型来自 `std::data::dense` |
 | `clone` | 深拷贝 |
-| `rebuild(ncap)` | 换一张 `ncap` 容量（2 的幂）的表，旧块当场还池 |
+| `rebuild(ncap)` | 换一张 `ncap` 容量（2 的幂）的表，旧列当场还（换表那一瞬间有两代在手） |
 
 重建有**两条触发线**：装载（`n + dead` 到 70% 容量）与墓碑密度（`dead` 到 25% 容量）。
 
@@ -554,16 +557,16 @@ fn main() -> i32 {
 一次探测换出多次按槽访问，省掉重复的哈希；但每次按槽读都要回读槽数组并校验换代号与纪，所以
 **热循环里直接用 `get` / `put`（或 `valAtDense`）更快**：`get` 探测一次后就拿 `slot[b]` 去读
 dense 值列，同一条记录一次探测加一次索引，比"拿 handle 再 `at`/`setAt`"少两三次随机 load。
-handle 的用处是让身份离开循环（存进数组、跨语句复用、跨扩容），它不是指针：值池扩容搬数据不会
-让它悬垂，键被 `remove`（swap-remove，搬最后一个元素）或池清掉之后 `at` 还 `none`，而不是读到
-别人的值 —— 这件事由池的换代检查兜住。
+handle 的用处是让身份离开循环（存进数组、跨语句复用、跨扩容），它不是指针：值列扩容搬家不会
+让它悬垂，键被 `remove`（swap-remove，搬最后一个元素）或 `clear` 换了代之后 `at` 还 `none`，而不是
+读到别人的值 —— 这件事由槽的世代与纪元检查兜住。
 
 <!-- fragment -->
 ```extc
 use std::io
 use std::data::hashMap
 fn bump(m: mut ref hashMapI64<i64>, k: i64) -> i64 {
-    let h: handle = m.entry(k, i64(0))     // 身份要跨语句：一次探测换出槽
+    let h: slotHandle = m.entry(k, i64(0)) // 身份要跨语句：一次探测换出槽
     let v: i64 = m.at(h) ?? i64(0)
     m.setAt(h, v + i64(1))                 // 按槽写回，不再探测
     return v + i64(1)
@@ -730,6 +733,7 @@ fn main() -> i32 {
 | `[]` / `[]=` | 读；写一个**空槽**（`elemPut`，不碰旧字节；覆盖活元素先 `dropAt(i)`） |
 | `view(from,to)` / `take(i)` / `dropAt(i)` | 只读视图 / 把元素搬出去 / 就地跑 `@drop` 钩子 |
 | `growTo(want)` | 换一块更大的、活前缀逐个**搬**进去、旧块当场还（不拷贝，不出现两个主人） |
+| `adopt(ref other)` | 接管另一块的整块内容：旧块当场还、对方变成空块（重建路径用；`@noCopy` 不能按值赋） |
 | `release()` | 整块交还（`@drop`；第二次调用是空操作） |
 
 `slots<T>` 的句柄类型叫 `slotHandle`（`slot` + `gen` + `ep`），与 `pool<T>` 的 `handle` 同名不同型：

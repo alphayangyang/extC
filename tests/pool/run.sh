@@ -233,7 +233,7 @@ echo "== 板块：池自己的内存（拿一块 · 原块上长 · 还一块 ·
 rt_run rt_plate    tests/pool/plate.extc       "take=800 zero=0 wrote=7 bytes=800 grew=1200 kept=7 tail0=0 dual=1264 gave=1 aftergive=64 live=0"
 
 echo "== 容器接线：一个容器 = 一棵池树（容器自己的池 + 值池以它为父）=="
-rt_run rt_ctree    tests/pool/rt_container_tree.extc "live=2 len=2 v=22 after=0"
+rt_run rt_ctree    tests/pool/rt_container_tree.extc "live=0 len=2 v=22 after=0"
 
 echo "== 提权的运行期落点：池生在外层那个地方 ⇒ 内层块退出带不走它 =="
 rt_run rt_promote  tests/pool/rt_promote.extc  "in=2 out=1 use=42 live=1"
@@ -460,7 +460,7 @@ echo "== 板块：池自己的内存（拿一块 · 原块上长 · 还一块 ·
 rt_run rt_plate    tests/pool/plate.extc       "take=800 zero=0 wrote=7 bytes=800 grew=1200 kept=7 tail0=0 dual=1264 gave=1 aftergive=64 live=0"
 
 echo "== 容器接线：一个容器 = 一棵池树（容器自己的池 + 值池以它为父）=="
-rt_run rt_ctree    tests/pool/rt_container_tree.extc "live=2 len=2 v=22 after=0"
+rt_run rt_ctree    tests/pool/rt_container_tree.extc "live=0 len=2 v=22 after=0"
 
 echo "== 提权的运行期落点：池生在外层那个地方 ⇒ 内层块退出带不走它 =="
 rt_run rt_promote  tests/pool/rt_promote.extc  "in=2 out=1 use=42 live=1"

@@ -156,6 +156,24 @@ struct block<T> {
         nb.bytes = u64(0)
     }
 
+    /** @brief 接管 `other` 的整块内容；`other` 变成空块，它随后的自动 `@drop` 是空操作。
+     *
+     * 重建路径（`hashMap::rebuild` 那一类「先在新列里重排、再整列换上」）需要这一件事，
+     * 而 `@noCopy` 的值不能按值赋来赋去。唯一的正确语义是：旧块当场还、新块的字段整体搬
+     * 过来、对方被清成空块。 */
+    fn adopt(self: mut ref block<T>, other: mut ref block<T>) {
+        if other.bytes == u64(0) { return }
+        self.release()
+        self.mem = other.mem
+        self.vals = other.vals
+        self.cap = other.cap
+        self.cnt = other.cnt
+        self.bytes = other.bytes
+        other.bytes = u64(0)
+        other.cap = 0
+        other.cnt = 0
+    }
+
     /** @brief 缩到 `want` 个元素：新块搬 `[0, min(used,want))`、丢掉并还掉旧块。 */
     @private
     fn shrinkTo(self: mut ref block<T>, want: i64) {
