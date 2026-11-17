@@ -1,0 +1,45 @@
+// 形状 H2：容量只给 8（`withCap(8)`）从空长到 4e6 条，再按同一序列做命中查询。
+// 考的是增长路径本身：几何扩容、旧列重排、墓碑密度。
+use std::io
+use std::data::hashMap
+
+let SEED0: u64 = 0x2545F4914F6CDD1D
+let N: i64 = 4000000
+let SPACE: u64 = 1000000007
+
+struct rng {
+    s: u64
+}
+
+fn next(r: mut ref rng) -> u64 {
+    var x: u64 = r.s
+    x = x ^ (x << u64(13))
+    x = x ^ (x >> u64(7))
+    x = x ^ (x << u64(17))
+    r.s = x
+    return x
+}
+
+fn main() -> i32 {
+    var m: hashMapI64<i64> = hashMapI64<i64>::withCap(i64(8))
+    var r: rng = { s: SEED0 }
+    var i: i64 = 0
+    while i < N {
+        let k: i64 = i64(next(ref r) % SPACE)
+        let _had: bool = m.put(k, k * i64(3) + i64(1))
+        i = i + 1
+    }
+    var r2: rng = { s: SEED0 }
+    var sum: i64 = 0
+    var hits: i64 = 0
+    i = 0
+    while i < N {
+        let k: i64 = i64(next(ref r2) % SPACE)
+        let v: i64 = m.get(k) ?? i64(0)
+        if v != i64(0) { hits = hits + i64(1) }
+        sum = sum + v
+        i = i + 1
+    }
+    println("n=", m.len(), " hits=", hits, " sum=", sum)
+    return 0
+}

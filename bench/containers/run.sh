@@ -63,11 +63,18 @@ for shape in $(echo "$SHAPES" | tr ',' ' '); do
         s1) desc='1000 万次短串（15 字节）构造+读回，不该分配' ; src=s1_sso.extc; csrc=s1_sso.cpp ;;
         s2) desc='16 条 4 MiB 长串，64 字节块 append 65536 次' ; src=s2_growstr.extc; csrc=s2_growstr.cpp ;;
         s3) desc='8 MiB 串 clone 20 次（深拷贝，搬 160 MiB）' ; src=s3_clone_str.extc; csrc=s3_clone_str.cpp ;;
+        h1) desc='4e6 条 i64 键：容量一次给够，插入后全量命中查询' ; src=h1_cap.extc;    csrc=h1_cap.cpp ;;
+        h2) desc='同样的 4e6 条键，但从容量 8 长起来（增长路径）' ; src=h2_grow.extc;   csrc=h2_grow.cpp ;;
+        h3) desc='8e6 次插入/查询/删除混在 1e6 个键上（墓碑与 swap-remove）' ; src=h3_churn.extc; csrc=h3_churn.cpp ;;
+        h4) desc='2e6 条之后两遍全表遍历（值列一遍、桶列一遍）' ; src=h4_iter.extc;   csrc=h4_iter.cpp ;;
+        h5) desc='4e6 条之后 8e6 次不命中查询（未命中路径）' ; src=h5_miss.extc;   csrc=h5_miss.cpp ;;
+        h6) desc='只做 4e6 次插入（把 h1 拆成插入侧与查询侧）' ; src=h6_putonly.extc; csrc= ;;
         *) echo "unknown shape: $shape" >&2; exit 2 ;;
     esac
     echo "== $shape：$desc =="
     built=""
     for arm in old new cpp; do
+        if [ "$arm" = cpp ] && [ -z "$csrc" ]; then continue; fi
         f=$src; [ $arm = cpp ] && f=$csrc
         if build_arm "$f" "$arm"; then built="$built $arm"; else echo "  FAIL $arm 编不过（$f）"; fail=1; fi
     done

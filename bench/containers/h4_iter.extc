@@ -1,0 +1,48 @@
+// 形状 H4：插入 2e6 条之后做两遍全表遍历（值列一遍、桶列一遍）。
+// 考的是遍历成本：extC 的值列是稠密的（`valAtDense`），C++ 是沿桶链走。
+use std::io
+use std::data::hashMap
+
+let SEED0: u64 = 0x2545F4914F6CDD1D
+let N: i64 = 2000000
+let SPACE: u64 = 1000000007
+
+struct rng {
+    s: u64
+}
+
+fn next(r: mut ref rng) -> u64 {
+    var x: u64 = r.s
+    x = x ^ (x << u64(13))
+    x = x ^ (x >> u64(7))
+    x = x ^ (x << u64(17))
+    r.s = x
+    return x
+}
+
+fn main() -> i32 {
+    var m: hashMapI64<i64> = hashMapI64<i64>::withCap(N)
+    var r: rng = { s: SEED0 }
+    var i: i64 = 0
+    while i < N {
+        let k: i64 = i64(next(ref r) % SPACE)
+        let _had: bool = m.put(k, k * i64(3) + i64(1))
+        i = i + 1
+    }
+    var vsum: i64 = 0
+    let dn: i64 = m.denseLen()
+    var d: i64 = 0
+    while d < dn {
+        vsum = vsum + m.valAtDense(d)
+        d = d + 1
+    }
+    var ksum: i64 = 0
+    let cap: i64 = m.capOf()
+    var b: i64 = 0
+    while b < cap {
+        if m.liveAt(b) { ksum = ksum + m.keyAt(b) }
+        b = b + 1
+    }
+    println("n=", m.len(), " dn=", dn, " vsum=", vsum, " ksum=", ksum)
+    return 0
+}
