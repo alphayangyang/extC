@@ -60,8 +60,15 @@ else
     echo "  FAIL move_arg  ->  编不过（移动必须通过 ✗）"; echo "$out" | sed 's/^/        /' | head -6; fail=1
 fi
 
+echo "== 正例（读元素用方法链：接收者借元素本身，不复制）=="
+if out=$("$EXTC" --run tests/nocopy/read_chain.extc 2>&1); then
+    if echo "$out" | grep -qF "chain=7 sum=9"; then echo "  ok   read_chain  ->  $out"
+    else echo "  FAIL read_chain  ->  输出不对（$out）"; fail=1; fi
+else
+    echo "  FAIL read_chain  ->  编不过（方法链必须通过）"; echo "$out" | sed "s/^/        /" | head -6; fail=1
+fi
 echo "== 反例（其余复制点 + 移动后使用，逐个隔离）=="
-for f in arg_twice assign_copy use_after_move use_after_move_field bind_field_copy bind_elem_copy; do
+for f in arg_twice assign_copy use_after_move use_after_move_field bind_field_copy bind_elem_copy arg_elem_copy arg_field_copy ret_view_elem_copy; do
     if out=$("$EXTC" "tests/nocopy/errors/$f.extc" -o /dev/null 2>&1); then
         echo "  FAIL $f  ->  **编过了**（拷贝必须挡住 ✗）"; fail=1; continue
     fi

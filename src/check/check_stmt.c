@@ -5508,6 +5508,10 @@ void checkStmt(Checker *c, Stmt *s) {
                 retMoves = rs && rs->depth >= 1;
             }
             if (!retMoves && ckValueCopyNeedsClone(c, want, s->u.ret.value)) planSetRetClone(s, true);
+            /* A field, an element or `*p` cannot be taken out of the frame: the caller would own what the
+             * frame still owns, and both would free it. A bare local is moved above. */
+            if (s->u.ret.value && s->u.ret.value->kind != EX_IDENT)
+                ckOwningArgMoveOnly(c, want, s->u.ret.value, "return value");
             /* A returned reference must point at a parameter or at static data, i.e. depth 0. */
             if (dbgOn("EXTC_DBG_RET3"))
                 fprintf(stderr, "[ret3] %-8s line=%d kind=%d d=%d mentionsParam=%d\n",

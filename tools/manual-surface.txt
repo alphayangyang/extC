@@ -65,6 +65,7 @@ std::coro::scheduler	tasks	runEpoll	method	public
 std::coro::scheduler	tasks	runScripted	method	public
 std::coro::scheduler	tasks	runq	field	public
 std::coro::scheduler	tasks	step	method	public
+std::data::buf	-	bufClassBytes	fn	internal
 std::data::buf	-	bufLive	fn	public
 std::data::buf	borrowGuard	b	field	internal
 std::data::buf	borrowGuard	len	method	public

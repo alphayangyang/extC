@@ -5794,6 +5794,29 @@ static void runRefCheck(Checker *c, RefCheck *rc, const char *instName) {
          * only `T`, so the decision is made here with the instance's type. This is what makes
          * `vector<vector<i64>>` a compile error instead of the silent use-after-free it was.
          */
+        /* Fifth kind: an owning value read out of storage the reader does not own. */
+        if (rc->ownRead) {
+            /* Only for the instance that actually calls this method: the template is used by
+             * another instantiation, which says nothing about this one. */
+            if (rc->func && !planInstUsed(rc->func, instName)) return;
+            Type *ot = tsub(c, rc->declType);
+            c->substParams = NULL;
+            c->substArgs   = NULL;
+            if (!ot || ot->kind == TY_REF || ttHasParam(ot)) return;
+            StructDef *osd = structOf(ttBase(ot));
+            if (!osd || !osd->noCopy || !rc->val) return;
+            if (rc->val->kind != EX_INDEX && rc->val->kind != EX_DEREF && rc->val->kind != EX_FIELD)
+                return;
+            char omsg[EXTC_MAXERR];
+            snprintf(omsg, sizeof omsg,
+                     "in instance `%s`: `%s` is `@noCopy`: it may not be copied by value",
+                     instName, DN(osd));
+            ctxError(rc->ctx ? rc->ctx : c->ctx, rc->line, 1,
+                     "An element, a field or a pointee hands back bytes that the aggregate still"
+                     " owns, so two names would free one storage. Read it through a method call on"
+                     " the view, or take it out with a move such as `pop`.", "%s", omsg);
+            return;
+        }
         if (rc->viewElem && !rc->viewMove && typeHasDrop(c, vt, 0)) {
             c->substParams = NULL;
             c->substArgs   = NULL;

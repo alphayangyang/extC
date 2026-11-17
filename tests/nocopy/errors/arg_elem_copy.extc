@@ -1,0 +1,12 @@
+/* 反例：把数组元素按值传给参数 = 拷出一份共享存储，必须挡住。
+   元素槽仍持有它，两个名字会各析构一次。 */
+@noCopy
+struct counter { pos: i64 }
+fn take(c: counter) -> i64 { return c.pos }
+fn main() -> i32 {
+    var arr = new counter[2]
+    arr[0].pos = 7
+    let x: i64 = take(arr[0])
+    println("不该编过", x)
+    return 0
+}

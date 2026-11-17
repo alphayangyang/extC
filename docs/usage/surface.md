@@ -5,7 +5,7 @@
 
 生成方式：`tools/manual_surface.py`；`check.sh` 保证本页与源码一致。
 
-公开面共 869 个成员，其中内部 158 个：
+公开面共 870 个成员，其中内部 159 个：
 
 ## prelude
 
@@ -20,6 +20,7 @@
 
 ## std::data::buf
 
+- `-.bufClassBytes`（方法）
 - `borrowGuard.b`（字段）
 - `borrowGuard.p`（字段）
 - `buf.cap`（字段）

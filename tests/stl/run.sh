@@ -52,8 +52,8 @@ rejects() { # rejects <名字> <文件> <期望的诊断子串>
 
 echo "== buf<T>：拥有存储（增长还旧板 / 离开作用域还全部）=="
 run_case varArray_release tests/stl/varArray_release.extc "grown>0=true after<1024=true sum=0"
-run_case buf     tests/stl/buf.extc           "len=1 cap=13 sum=45 c9=9 v0=100 leak=0 growsum=4999950000 gleak=0"
-run_case buf_new tests/stl/buf_new.extc       "len=0 cap=42 sum=780 owned=true"
+run_case buf     tests/stl/buf.extc           "len=1 cap=16 sum=45 c9=9 v0=100 leak=0 growsum=4999950000 gleak=0"
+run_case buf_new tests/stl/buf_new.extc       "len=0 cap=64 sum=780 owned=true"
 BX=$(mktemp -d)
 if "$EXTC" -w --no-line-map -o "$BX/bx.c" tests/stl/buf_new_wrong_elem.extc 2>&1 | grep -q "initializer expects"; then
     echo "  ok   buf_new_wrong_elem  ->  元素类型不符被拒 ✓"
@@ -63,7 +63,7 @@ fi
 rm -rf "$BX"
 
 echo "== vector<T>：1.5 倍扩容 / dense 连续 / shrink 降水位 / clear 留容量 =="
-run_case vector  tests/stl/vector.extc  "cap0=4 n=9 cap=9 sum=36 shrink=9 pop=8 n=8 clear=0/9 tail=-9"
+run_case vector  tests/stl/vector.extc  "cap0=4 n=9 cap=16 sum=36 shrink=9 pop=8 n=8 clear=0/9 tail=-9"
 
 echo "== copyInto<T>：一次带检查的整块搬移（memmove，区间可重叠）+ string::append 批量走它 =="
 run_case copyInto tests/stl/copyInto.extc "n=5 b=12345 m=4 a=3456 slen=6 ssum=396"
@@ -103,7 +103,7 @@ run_case string_build tests/stl/string_build.extc "n=-42 b=3.14 big=-92233720368
 run_case string_fmt tests/stl/string_fmt.extc "pi=[3.14] neg=[-0.500] big=[1234.5] i=[-42]"
 
 echo "== vector<T>：grow 摊还（1000 次 push 只搬 14 次 · 1.5 倍）=="
-run_case grow    tests/stl/vector_grow.extc    "caps=4,6,9,13,19,28,42,63,94,141,211,316,474,711,1066 n=1000"
+run_case grow    tests/stl/vector_grow.extc    "caps=4,8,16,32,64,128,256,512,1024 n=1000"
 
 echo "== vector<T>：churn 内存平（1e5 与 1e6 两轮，容量策略相同 ⇒ 峰值 RSS 相当）=="
 TMPC=$(mktemp -d)
@@ -163,16 +163,16 @@ fi
 rm -rf "$TMPC3"
 
 echo "== buf<T>：对抗路径（搬家逐元素对位 · shrink 后重新长 · 两万个小缓冲区 churn · 冻结位）=="
-run_case buf_adv    tests/stl/buf_adv.extc    "n=3 sum=44999850000 bad=0 v0=7 cap=4 empty=-1 leak=0 live=35651584"
-run_case buf_elem   tests/stl/buf_elem.extc  "n=1 len0=3 live=4194304"
-run_case buf_struct tests/stl/buf_struct.extc "n=400000 bad=0 sum=79999800000 moves=1 capGE=true"
+run_case buf_adv    tests/stl/buf_adv.extc    "n=3 sum=44999850000 bad=0 v0=7 cap=4 empty=-1 leak=0 live=33554448"
+run_case buf_elem   tests/stl/buf_elem.extc  "n=1 len0=3 live=528"
+run_case buf_struct tests/stl/buf_struct.extc "n=400000 bad=0 sum=79999800000 moves=12 capGE=true"
 traps    buf_frozen tests/stl/buf_frozen.extc "this buffer is frozen by a live borrow"
 run_case buf_fuzz  tests/stl/buf_fuzz.extc  "rounds=3000 bad=0 worst=0 leak=0"
 run_case buf_huge  tests/stl/buf_huge.extc  "n=10 sum=45 max=134217728 reserved=1073741824 live=1073741824"
 # 同一程序里有 `par`：发射器必须给 buf 基质带锁（EXTC_BUF_MT 1），判据是它照样跑对。
-run_case buf_par   tests/stl/buf_par.extc   "len=100 sum=65280 live=2097152"
+run_case buf_par   tests/stl/buf_par.extc   "len=100 sum=65280 live=1024"
 # 元素所有权：容器的元素自己拥有预留（push = 移动、pop = 移出、clear/shrink = 逐元素 @drop）。
-run_case buf_own   tests/stl/buf_own.extc   "len=3 popped=1 n=2 poplive=6291456 clearlive=2097152 live=0"
+run_case buf_own   tests/stl/buf_own.extc   "len=3 popped=1 n=2 poplive=576 clearlive=512 live=0"
 # clone 只对可复制的元素成立：元素拥有预留时必须在编译期被拒（否则拷出一份共享所有权）。
 rejects  buf_own_clone tests/stl/buf_own_clone.extc "a view element cannot hold"
 

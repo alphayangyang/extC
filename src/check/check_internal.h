@@ -671,6 +671,10 @@ typedef struct {
      * concrete decision, with the symbol marked moved, is in `checkStoreEscape`), and a
      * temporary has no owner to drop it. Only a move is allowed; anything else stays rejected. */
     bool        viewMove;
+    /* A fifth kind: an owning value read out of storage the reader does not own, handed to a
+     * by-value position. The destination type is opaque while the template is checked, so the
+     * decision waits for the instance -- see `runRefCheck`. */
+    bool        ownRead;
     Type       *declType;/* declared type the deferred rule applies to */
     int         line;    /* source line to report */
     const char *what;    /* short noun phrase naming the operation, for the diagnostic */
@@ -1121,6 +1125,47 @@ bool ckMoveNoCopyInto(Checker *c, Expr *e, const char *dest);
  * @return   `true` when an error was reported.
  */
 bool ckRejectNoCopyCopy(Checker *c, Expr *e, Type *t);
+/**
+ * @brief Reject a read of an owned value out of storage the reader does not own.
+ *
+ * `outer.view()[0]`, `box.c` and `*p` all produce a value whose bytes belong to an
+ * aggregate that still frees them; handing that value to a by-value position would leave two
+ * names owning one storage, and the second destructor to run hands it back a second time.
+ *
+ * @param c  Checker, for reporting.
+ * @param e  Expression in value position.
+ * @param t  Its type.
+ * @return   `true` when an error was reported.
+ */
+bool ckRejectOwningRead(Checker *c, Expr *e, Type *t);
+
+/**
+ * @brief Defer an owning-read rejection to instantiation.
+ *
+ * A generic body is checked once on the template, where a parameter type is opaque: `T` may be
+ * an owning type or a plain number, so the rule cannot be decided there. The record is replayed
+ * for every instance, with the value and the destination substituted.
+ *
+ * @param c     Checker; the record is appended to `c->refChecks`.
+ * @param dst   Destination type, as written in the template body.
+ * @param a     Value read out of storage.
+ * @param what  Short noun phrase naming the operation, for the diagnostic.
+ */
+void ckDeferOwningRead(Checker *c, Type *dst, Expr *a, const char *what);
+/**
+ * @brief Reject handing an owning value to a by-value position that cannot transfer it.
+ *
+ * Every position that stores its operand inside a new owner (a by-value argument, an enum
+ * payload, a struct-literal field) transfers a `@noCopy` value instead of copying it. A plain
+ * name transfers; a field, an element or a dereference cannot be taken out of the aggregate it
+ * belongs to, so copying it would give one storage two owners.
+ *
+ * @param c     The checker.
+ * @param dst   The type of the destination.
+ * @param a     The expression handed over.
+ * @param what  Short name of the destination, for the transfer bookkeeping.
+ */
+void ckOwningArgMoveOnly(Checker *c, Type *dst, Expr *a, const char *what);
 
 /**
  * @brief Whether an expression produces a view of storage that its container can move.

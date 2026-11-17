@@ -29,7 +29,7 @@ neg() { # name file want-substring
 one clone_place "$(src clone_place.extc)" "a=1/1 c=2/99"
 one move_temp   "$(src move_temp.extc)"   "t=2/5"
 one copy_points "$(src copy_points.extc)" \
-  "live0=0|move=0|arg=1/1|assoc=1/2|method=17/3|field=4|ret=5|assign=6|indep=1/2|live1=8388608|live2=0"
+  "live0=0|move=0|arg=1/1|assoc=1/2|method=17/3|field=4|ret=5|assign=6|indep=1/2|live1=64|live2=0"
 neg no_clone    "$(src errors/no_clone.extc)"     '`@value` needs a `clone` method'
 neg with_nocopy "$(src errors/with_nocopy.extc)"  '`@value` and `@noCopy` cannot both'
 

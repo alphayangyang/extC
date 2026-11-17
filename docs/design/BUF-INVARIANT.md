@@ -450,12 +450,19 @@ RSS 的最大偏差是 v2 的 +5.7%：克隆出的每个副本各自拥有预留
 | 制度 | 单位 | 增长 | 现状 |
 |---|---|---|---|
 | 预留 range | 2 MiB 量子（按 2 的幂取整） | 预留内零拷贝，撞上限搬一次家 | 全部容器在用 |
-| 密排槽 slot | 16 B…64 KiB，13 个尺寸类（类 `lg` 的槽 = `16 << lg` 字节） | 类内不搬，跨类搬家 | 底盘已就绪，容器还没切 |
+| 密排槽 slot | 16 B…64 KiB，13 个尺寸类（类 `lg` 的槽 = `16 << lg` 字节） | 类内不搬，跨类搬家 | 载荷 ≤ 64 KiB 的容器在用（§13.3） |
 
-结构：每个 2 MiB 量子首 64 字节是 `ExtcBufSml {cls, live, free, next}`，槽地址 = `quantum + 64 + idx * cls`；
+结构：每个 2 MiB 量子首 64 字节是 `ExtcBufSml {cls, live, free, bump, next}`，槽地址 = `quantum + 64 + idx * cls`；
 同一尺寸类的量子挂在 `smlHead[lg]` 链上，空闲槽的链穿在槽首 4 字节。一个量子只有一类；`live` 记用了几个槽、
 `free` 记空了几个；**整量子空了才还给 buddy**（`extc_buf_smlRetire` 先从类链摘掉再 `give`，合并照常发生）。
-记账不变：量子被 carve 时 `liveBytes += 2 MiB`，退还时减回 —— `extc_buf_live()` 仍然是"活缓冲区占的地址空间"。
+
+空闲链是**懒建**的：格式化一个量子只写它的头页（`free = -1`、`bump = 0`），槽按 `bump` 的顺序发出去，
+被还回来的槽才把前 4 字节当链指针挂进 `free`。这条不是微优化 —— 格式化时顺手把整条链穿一遍会写满
+2 MiB 量子的每一页，等于每个用到的尺寸类常驻 2 MiB。`tests/gc-torture` 的 `datalog_lite_small`（2,000 轮，
+8 MiB 预算）实测 10,724 kB，改成懒建之后回到 2,084 kB；`datalog_lite`（200,000 轮）24,684 kB，
+同一时刻的对照臂（容器全走预留）是 24,556 kB。
+
+记账按"活分配认领的字节"：槽认领一个类容量，预留认领整块字节 —— `extc_buf_live()` 是活缓冲区认领的总量，于是 `buf::bufLive() == Σ reservedBytes()` 对两个制度同时成立（§13.3）。
 
 归还入口只有一个：`extc_buf_release(at, bytes)` 先问 `extc_buf_smlClsAt(at)`（槽起点返回类字节，否则 0），
 命中走 `extc_buf_slotRelease`，否则走 buddy。`extc_buf_discard` 对槽是空操作（返回 0）：槽与邻居共页，
@@ -481,6 +488,23 @@ carve 本来就会自己建 arena，缺的是"类链必须有一个可走的 are
 
 实测：`通过 27，失败 0` × 2 档；C 级探针 20 万个 32 B 槽只占 8 MiB 地址空间（4 个量子），全部归还后 `live` 回 0。
 
+### 13.3 `buf<T>` 的两个制度：按载荷字节分派
+
+`withCap` / `reserve` / `moveTo` 按“容量 × 元素大小”的字节数分派：不超过 `BUF_SLOT_BYTES`（65536）用密排槽，超过用 2 MiB 量子的预留。同一个 `buf` 可以从槽搬到预留（类跨过 64 KiB 时），从此按预留规则走。
+
+两个制度的容量语义不同：
+
+| | 小载荷（字节数 ≤ 64 KiB） | 大载荷 |
+|---|---|---|
+| 起始 | `withCap(n)` 拿一个装得下 n 个元素的类（16 B 起翻倍）；`capacity()` 报 n，`maxCapacity()` 报类容量的元素数 | 16 倍 `n` 的预留，下限 2 MiB 字节、上限 1 GiB；`maxCapacity()` 报预留里的元素数 |
+| 增长 | 先按 `cap + cap/2` 往里推承诺容量（地址不动、零拷贝）；撞到类容量就跨类搬家，新类至少是当前字节的两倍 | 同样先推承诺容量；撞上界就搬家，新预留按 16 倍长，拷一段丢一段源的老页 |
+| 数字 | `buf<i64>::withCap(13)` ⇒ `cap=13 max=16 reserved=128` | `buf<i64>::withCap(9000)` ⇒ `cap=9000 max=262144 reserved=2097152` |
+
+两本账是同一本：`extc_buf_live()` 记“活分配认领的字节”——槽认领它那个类的字节，预留认领整块的字节。于是 `buf::bufLive() == Σ reservedBytes()` 对两个制度同时成立（`buf_fuzz` 的不变量挂在这条上）。量子是物理单位，与认领量无关：20 万个 32 B 槽认领 6.4 MB，只占 4 个量子。
+
+修掉的一个真缺陷：`extc_buf_discard` 原来只认“槽起点”，而 `moveTo` / `shrink` 传进去的是槽内偏移，于是 `MADV_DONTNEED` 会把同一量子里的活槽（含量子头）一起抹掉，头里的 `cls` 归零 ⇒ `extc_buf_slotRelease` 除零。现在 `extc_buf_smlInside(at)` 只问“这个字节落在槽量子里吗”，discard 对槽一律空转；`slotRelease` 另外对 `cls <= 0` 防御性退出。
+
+判据随制度改（都在 `tests/stl`）：`buf` 的 `cap=16`（`withCap(4)` 之后 push 到 10 个元素）、`buf_new` 的 `cap=64`、`vector` 的 `cap=16`、`vector_grow` 的 `caps=4,8,16,…,1024`、`buf_elem` 的 `live=528`（容器 512 + 元素 16）、`buf_par` 的 `live=1024`、`buf_own` 的 `poplive=576 clearlive=512`。`tests/bufrt` 的账本三条断言改成认领字节口径：两个 32 B 槽记 64、还一个记 32、槽 + 4 MiB 预留记 4 MiB + 128；27 条判据 × 2 发射档全绿。
 ## 14 从元素里"取出来"是拷贝，不是移动
 
 §12.1 说**写进**视图元素是移动。反方向不成立：从元素或字段里取出一个拥有存储的值**不是**移动，
@@ -496,8 +520,21 @@ let d = box.b       /* 字段仍在 box 里 */
 现在无注解绑定先试"名字 ⇒ 转移"，不是名字（字段、元素）就交给 `@noCopy` 的拷贝拒绝。
 
 **就地读仍然是合法的**：`println(s[0].len())` 是对元素位置的只读方法调用，不产生第二份所有权，
-判据 `tests/stl/buf_elem.extc`（`n=1 len0=3 live=4194304`，结束账正好是容器与元素各一份预留）。
+判据 `tests/stl/buf_elem.extc`（`n=1 len0=3 live=528`：容器 512 字节的类 + 元素 16 字节的类）。
 
+### 14.1 所有按值位置都算，泛型要等实例化
+
+同一条规则覆盖六个“按值给出去”的位置：普通实参、关联函数实参、方法实参、结构体字面量字段、枚举载荷、`return`。判定是“目的地类型是 `@noCopy`，来源是 `EX_INDEX` / `EX_DEREF` / `EX_FIELD`”——纯名字是转移（合法）、临时量与 `new` 原地搬（合法）、方法链读（`v.view()[i].m()`，接收者是 `ref`）不产生第二份所有权（合法）。
+
+实现分三处：`ckOwningArgMoveOnly`（src/check/check_expr.c，五个值位置在那里判）、`ckRejectOwningRead` + `reportNoCopyCopy`（src/check/check_escape.c，诊断只有一份）、`return` 那一路在 src/check/check_stmt.c（裸局部仍是移动，非名字的来源走同一条判定）。
+
+模板体里报不出来，因为模板检查时目的地类型还是类型参数。所以命中类型参数时不当场报，而是记一条 `RefCheck{ownRead}`（`ckDeferOwningRead`），等这个模板被实例化、目的地落成具体 `@noCopy` 结构体时再报；而且只在这个实例真的调用了那个方法时报（`planInstUsed`）——否则 `vector<i32>` 用了 `get`，`vector<vector<i32>>` 就被连坐。诊断带实例名：
+
+```
+error: in instance `vector$vector_vector$vector_i32`: `vector::vector` is `@noCopy`: it may not be copied by value
+```
+
+判据：`tests/nocopy/errors/arg_elem_copy.extc` 与 `arg_field_copy.extc`（普通位置）、`tests/pool/err_nest_get_copy.extc`（实例化之后才报的那一路）、`tests/nocopy/errors/ret_view_elem_copy.extc`（`return v.view()[0]`）、`tests/nocopy/read_chain.extc`（就地读仍然合法：`chain=7 sum=9`）。
 **已知边界**：`for d in v.view()` 在元素拥有存储时现在是编译错误 —— 按值迭代要把元素拷出来。
 要让它工作需要"借出视图元素"的语义（`ref` 到视图元素目前被拒），那是语言面的事，留给迭代语义那一轮；
 今天写 `for i in 0..v.len() { s[i].len() }`（`s` 先绑定一次视图）就地读。

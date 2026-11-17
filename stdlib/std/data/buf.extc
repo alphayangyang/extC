@@ -43,6 +43,10 @@ use std::sys::heap as sysheap
  * （`src/back/cg/190-lambda-envs.inc` 按 `externLib == "extc-buf"` 点亮 `needBuf`）。
  * 策略（留多少、何时长、何时搬、长度多少）全在这个文件里，C 侧不知道任何策略。 */
 extern!("extc-buf") fn extc_buf_reserve(bytes: u64) -> ?ref u8 effects Addr=0 Cont=0
+/* 密排槽：小载荷（<= 64 KiB）从 16 B..64 KiB 的 13 个尺寸类里拿一个槽。槽与邻居共页，
+ * 所以一个 32 字节的缓冲值占 32 字节，而不是一个 2 MiB 量子。归还走同一个 `extc_buf_release`：
+ * C 侧按地址查类，命中就走尺寸类链，否则走 buddy。 */
+extern!("extc-buf") fn extc_buf_slotReserve(bytes: u64) -> ?ref u8 effects Addr=0 Cont=0
 extern!("extc-buf") fn extc_buf_release(at: ref u8, bytes: u64) -> i32 effects Addr=0 Cont=0
 extern!("extc-buf") fn extc_buf_discard(at: ref u8, bytes: u64) -> i32 effects Addr=0 Cont=0
 /* 一片预留**实际**拿到多少字节（按 2 MiB 量子取整后的块大小）；不是 arena 块时返回 0。 */
@@ -61,6 +65,15 @@ let BUF_FLOOR_BYTES: i64 = 2097152      /* 小缓冲区也至少留 2 MiB 地址
 let BUF_MAX_BYTES: i64 = 1073741824     /* 一次预留不超过 1 GiB 字节 */
 let BUF_HEADROOM: i64 = 16              /* 搬家时按 16 倍长留，够装下「终值远大于当前」的情形 */
 let BUF_MOVE_BYTES: i64 = 2097152       /* 搬家每拷这么多字节就丢掉源的一段页（峰值 = 一份 + 一块） */
+let BUF_SLOT_BYTES: i64 = 65536         /* 载荷不超过这么多字节时走密排槽，超过就走 2 MiB 量子的预留 */
+
+/* 尺寸类：16 B 起、每次翻倍，13 类到 64 KiB。返回值 >= want（want >= 1）。 */
+@private
+fn bufClassBytes(want: i64) -> i64 {
+    var c: i64 = 16
+    while c < want { c = c * 2 }
+    return c
+}
 
 @noCopy
 @buffer
@@ -106,6 +119,32 @@ struct buf<T> {
         let esz: i64 = extc_sizeOf<T>()
         var cc: i64 = c
         if cc < 1 { cc = 1 }
+        /* 小载荷走密排槽：一次拿一个够装 cc 个元素的类（16 B..64 KiB），没有 2 MiB 量子的底。
+         * 容量上限就是这个类的容量，之后的增长按「下一类」翻倍搬家；同类的槽密排在同一个量子里。 */
+        let wantBytes: i64 = cc * esz
+        if wantBytes <= BUF_SLOT_BYTES {
+            var cb: i64 = bufClassBytes(wantBytes)
+            var raw0: ?ref u8 = extc_buf_slotReserve(u64(cb))
+            if raw0 == null { trap("buf: cannot reserve storage") }
+            var sp0: i64 = cb
+            if raw0 != null {
+                let got0: i64 = extc_buf_span(raw0)
+                if got0 > sp0 { sp0 = got0 }
+            }
+            var mem0: mut slice<u8> = sysheap::extc_viewOf(raw0, sp0)
+            var vals0: mut slice<T> = extc_viewOfT<T>(mem0.data, cc)
+            var b0: buf<T> = {
+                mem:      mem0,
+                vals:     vals0,
+                reserved: u64(sp0),
+                moves:    0,
+                n:        0,
+                cap:      cc,
+                max:      sp0 / esz,
+                pins:     0,
+            }
+            return b0
+        }
         /* 预留上限（元素数）：至少装得下 cc，按 1 GiB 字节封顶，小量按 2 MiB 字节起。 */
         var floorElems: i64 = BUF_FLOOR_BYTES / esz
         if floorElems < 1 { floorElems = 1 }
@@ -210,14 +249,31 @@ struct buf<T> {
     @private
     fn moveTo(self: mut ref buf<T>, want: i64) {
         let esz: i64 = extc_sizeOf<T>()
-        var limElems: i64 = BUF_MAX_BYTES / esz
-        if limElems < want { limElems = want }
-        var nmax: i64 = self.max * BUF_HEADROOM
-        if nmax > limElems { nmax = limElems }
-        if nmax < want { nmax = want }
-        if nmax < self.max { nmax = self.max }
-        let bytes: u64 = u64(nmax * esz)
-        var raw: ?ref u8 = extc_buf_reserve(bytes)
+        let wantBytes: i64 = want * esz
+        /* 小载荷在类之间搬家：新类至少装得下 want，且至少是当前字节的两倍（几何增长，
+         * 于是「按类翻倍」与 C++ 的 2 倍增长同价）；大载荷照旧按 16 倍预留一次留够。 */
+        let slotMove: bool = wantBytes <= BUF_SLOT_BYTES
+        var bytes: u64 = u64(0)
+        if slotMove {
+            var target: i64 = wantBytes
+            if self.reserved > u64(0) {
+                let dbl: i64 = i64(self.reserved) * 2
+                if dbl > target { target = dbl }
+            }
+            var cb: i64 = bufClassBytes(target)
+            if cb > BUF_SLOT_BYTES { cb = BUF_SLOT_BYTES }
+            bytes = u64(cb)
+        } else {
+            var limElems: i64 = BUF_MAX_BYTES / esz
+            if limElems < want { limElems = want }
+            var nmax: i64 = self.max * BUF_HEADROOM
+            if nmax > limElems { nmax = limElems }
+            if nmax < want { nmax = want }
+            if nmax < self.max { nmax = self.max }
+            bytes = u64(nmax * esz)
+        }
+        var raw: ?ref u8 = null
+        if slotMove { raw = extc_buf_slotReserve(bytes) } else { raw = extc_buf_reserve(bytes) }
         if raw == null { trap("buf: cannot reserve address space") }
         var span: i64 = i64(bytes)
         if raw != null {

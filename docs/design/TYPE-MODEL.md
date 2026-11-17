@@ -241,11 +241,19 @@ s = s + "abc"       // 走 `fn +` ：造新字符串再赋值，上一份存储�
 `@value` 可以与 `@drop` 同用：每次拷贝都是 `clone`，所以每份值各自拥有自己的存储、各自跑
 自己的 `@drop`；`@noCopy` 则是"只有一个所有者"。两条路的区别在拷贝，不在释放。
 
-**"取出来"不是移动**：只有名字（本地绑定，或按值实参绑上去的形参）能转移。从字段或视图元素里取一个
-拥有存储的值出来是**拷贝** —— 那个槽仍然持有它 —— 所以 `let d = box.b` 与 `let d = s[0]` 对 `@noCopy`
-类型是编译错误，诊断与带注解的 `let d: T = …` 相同（`ckRejectNoCopyCopy`）。无注解绑定先试"名字 ⇒ 转移"，
-不是名字才走这条拒绝。判据：`tests/nocopy/errors/bind_field_copy.extc`、`bind_elem_copy.extc`（两条反例），
-`tests/stl/buf_elem.extc`（就地只读方法调用合法，结束账正好等于容器与元素各一份预留）。
+**"取出来"不是移动**：只有名字（本地绑定，或按值实参绑上去的形参）能转移。从字段、视图元素或解引用里
+取一个拥有存储的值出来是**拷贝** —— 那个槽仍然持有它 —— 所以对 `@noCopy` 类型是编译错误。判据是：目的地
+类型不是引用，`structOf(ttBase(dst))->noCopy`，而来源是 `EX_INDEX` / `EX_FIELD` / `EX_DEREF`
+（`ckOwningArgMoveOnly`，六个按值位置共用：无注解 `var`、普通实参、关联函数实参、方法实参、字面量字段、
+枚举载荷、`return`）。纯名字、`new`、临时量、方法链读（`v.view()[i].m()`）都不受影响。泛型模板体里目的地
+还是类型参数，这条检查记进 `RefCheck.ownRead` 推迟到实例化，而且只在这个实例真的调用了该方法时才是错
+（`planInstUsed` 那道闸，否则 `vector<i32>` 的用法会替所有实例报错）。
+
+规则与诊断形状（含实例化期那条 `error: in instance \`vector$vector_vector$vector_i32\`：…`）在
+`docs/design/BUF-INVARIANT.md` §14。判据：`tests/nocopy/errors/{bind_field_copy,bind_elem_copy,
+arg_elem_copy,arg_field_copy,ret_view_elem_copy}.extc`、`tests/pool/err_nest_get_copy.extc`（实例化期反例）；
+正例 `tests/stl/buf_elem.extc`（就地只读方法调用合法，结束账正好等于容器与元素各一份预留）、
+`tests/nocopy/read_chain.extc`。
 
 判据在 `tests/copy/`（5 项）：`clone_place`、`move_temp`、`copy_points`（一张 11 行的计数表，
 覆盖上表每一个拷贝点与 `*p`，并以"六个副本各自 drop 后 `buf::bufLive()==0`"收尾），以及两条

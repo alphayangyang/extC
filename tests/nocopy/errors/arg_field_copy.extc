@@ -1,0 +1,12 @@
+/* 反例：把结构体字段按值传给参数 = 拷出一份共享存储，必须挡住。 */
+@noCopy
+struct counter { pos: i64 }
+struct box { c: counter }
+fn take(c: counter) -> i64 { return c.pos }
+fn main() -> i32 {
+    var b: box = { c: make() }
+    let x: i64 = take(b.c)
+    println("不该编过", x)
+    return 0
+}
+fn make() -> counter { return { pos: 3 } }

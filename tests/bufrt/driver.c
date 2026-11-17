@@ -58,9 +58,9 @@ static void test_retire(void) {
     uint8_t *b = extc_buf_slotReserve(32);
     check(a && b && a != b, "两个 32 字节槽拿到不同地址");
     check(a && b && (size_t)(b - a) == 32, "同尺寸类的相邻槽步长等于尺寸类（32 字节）");
-    check(extc_buf_live() - before == (long long)2 * 1024 * 1024, "一个量子记进账（2 MiB 地址空间）");
+    check(extc_buf_live() - before == 64, "两个 32 字节槽各记一个类容量（2 × 32 字节）");
     if (a) extc_buf_slotRelease(a);
-    check(extc_buf_live() - before == (long long)2 * 1024 * 1024, "还一个槽时量子仍在（账不变）");
+    check(extc_buf_live() - before == 32, "还一个槽只减一个类容量（量子还在，另一个槽仍活着）");
     if (b) {
         b[0] = 0x5A;
         check(b[0] == 0x5A, "同量子里的另一个槽没被归还路径牵连");
@@ -93,7 +93,7 @@ static void test_mixed(void) {
     uint8_t *s2 = extc_buf_slotReserve(64);
     check(s1 && big && s2, "一个进程里同时拿到槽与 4 MiB 预留");
     check(extc_buf_span(big) == (int64_t)4 * 1024 * 1024, "预留区间的 span 是 4 MiB");
-    check(extc_buf_live() - before == (long long)6 * 1024 * 1024, "账 = 2 MiB（量子）+ 4 MiB（预留）");
+    check(extc_buf_live() - before == (long long)4 * 1024 * 1024 + 128, "账 = 4 MiB（预留）+ 两个 64 字节槽");
     big[0] = 0x11; big[4194303] = 0x22;
     check(big[0] == 0x11 && big[4194303] == 0x22, "预留区间的首尾字节可写可读");
     extc_buf_slotRelease(s1);

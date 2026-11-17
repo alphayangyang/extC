@@ -405,6 +405,39 @@ static FuncDef *findOpLiteral(Checker *c, Type *st, const char *op, const char *
 }
 
 /**
+ * @brief Reject handing an owning value to a position that would copy it.
+ *
+ * A `@noCopy` value carries storage. A by-value parameter, an enum payload and a struct-literal
+ * field all own what they are given, so the value has to arrive by transfer. A plain name is
+ * transferred (the destination owns it from then on); a field, an element or a dereference is not,
+ * and copying one would leave two owners of one storage -- both would free it.
+ *
+ * The transfer bookkeeping lives here rather than at each call site so that every value position
+ * reaches the same answer: `f(s)` moves `s`, `f(s[0])` is rejected, `f(make())` binds a temporary.
+ *
+ * @param c     The checker.
+ * @param dst   The type the value is handed to.
+ * @param a     The expression handed over.
+ * @param what  A short name for the destination, used in transfer bookkeeping.
+ */
+void ckOwningArgMoveOnly(Checker *c, Type *dst, Expr *a, const char *what) {
+    (void)what;   /* the transfer is recorded where the code generator marks moves */
+    if (!c || !dst || !a || ttIsError(dst)) return;
+    Type *dt = tsub(c, dst);
+    if (!dt || dt->kind == TY_REF) return;
+    if (ttHasParam(dt)) { ckDeferOwningRead(c, dst, a, what); return; }  /* opaque inside a template */   /* a reference borrows: nothing is owned */
+    Type *b = ttBase(dt);
+    StructDef *sd = b ? structOf(b) : NULL;
+    if (!sd || !sd->noCopy) return;
+    if (a->kind == EX_IDENT) return;         /* a plain name is transferred, not copied */
+    /* A value the callee just produced (a call, a literal, a `new`) is a temporary and moves in
+     * place. Reading an element, a pointee or a field hands over a **copy**: that storage belongs
+     * to the aggregate, which still frees it. */
+    if (a->kind != EX_INDEX && a->kind != EX_DEREF && a->kind != EX_FIELD) return;
+    (void)ckRejectOwningRead(c, a, b);
+}
+
+/**
  * @brief Would copying this expression into a place of type `dst` share storage?
  *
  * An `@value` type owns its storage, so every by-value copy has to be built by the type's
@@ -3361,6 +3394,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 /* The same `@value` copy rule as an ordinary call: an associated function is a
                  * call too, so a place handed to a by-value parameter is cloned. */
                 if (ckValueCopyNeedsClone(c, pt, a)) planSetArgClone(a, true);
+                ckOwningArgMoveOnly(c, pt, a, "argument");
             }
             /* The reference check applies to an associated function as well, once its
              * arguments have been checked. */
@@ -3938,6 +3972,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 Expr *arg = *(Expr **)vecAt(&e->u.enumval.args, i);
                 Type *at  = checkInto(c, pt, arg);
                 checkAssignable(c, pt, at, arg, "payload value");
+                ckOwningArgMoveOnly(c, pt, arg, "payload");
                 /* The payload is stored inside this value, so a reference it carries must not
                  * live for less than the value does. */
                 checkEscape(c, arg, c->scopes.len, e->line, "this payload value");
@@ -4576,6 +4611,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                  * copied through `clone`, or two values would share one storage and the callee's
                  * parameter would release what the caller still holds. */
                 if (ckValueCopyNeedsClone(c, p->type, a)) planSetArgClone(a, true);
+                ckOwningArgMoveOnly(c, p->type, a, "argument");
             }
             /* Every call site is checked, not only the ones with a home arena: what matters is
              * that the callee may store into a container the argument points at, which has
@@ -5263,6 +5299,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 /* A method argument follows the same `@value` rule as an ordinary call: the
                  * callee's parameter owns what it is given and drops it on the way out. */
                 if (ckValueCopyNeedsClone(c, pt, a)) planSetArgClone(a, true);
+                ckOwningArgMoveOnly(c, pt, a, "argument");
             }
             /* The rule is checked only after the arguments have been checked: before that `a->type` is not filled
              * in yet and `typeContainsRef` says "no" to everything, so violations would slip through silently.
@@ -5351,6 +5388,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 /* A field of an `@value` type owns its storage: a literal that copies a place
                  * into it would leave two owners, so the copy is built through `clone`. */
                 if (ckValueCopyNeedsClone(c, want, fi->value)) planSetArgClone(fi->value, true);
+                ckOwningArgMoveOnly(c, want, fi->value, "field");
             }
 
             /* Omitted fields are filled with the zero value, but `ref` has no zero value: leaving it alone would

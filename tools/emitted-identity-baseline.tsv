@@ -1,7 +1,7 @@
 # emitted-C identity baseline (refactor invariant)
-# extc md5: 9a346bc684d0172abc86b7d6b888cae1
+# extc md5: 2c3c7a48983a5a899d4977ce8c707408
 # columns: config, source, status, md5, bytes
-# why: buf 底的第二个制度：发射载荷新增密排槽（ExtcBufSml、slotReserve/slotRelease、release 分派、discard 对槽空操作）；只有用到 buf 的程序变化
+# why: buf 底盘改了：密排槽空闲链懒建（ExtcBufSml 加 bump，格式化只写头页）；buf<T> 按载荷字节分派两个制度（小载荷走 slotReserve、容量按尺寸类翻倍）；discard 用 extc_buf_smlInside 避免抹掉同量子活槽；账本改记活分配认领的字节。只有用到容器的程序变化（19 个程序 × 2 配置），0 missing
 default	bench/app/log.extc	ok	454a6c6ce140460c62a4ba9e03e7c107	89309
 reclaim	bench/app/log.extc	ok	0a606c931da8ab014e6ce23400a8a2e1	403092
 default	bench/app/route.extc	ok	ae18294e0c8edaaecb28913a5870ea55	126299
@@ -84,8 +84,8 @@ default	tests/gc-p0/src/g9_proto.extc	ok	80c262a01cad222211b4c2385caaf646	88563
 reclaim	tests/gc-p0/src/g9_proto.extc	ok	bbdc10d895df53a0a147267bb22552b6	402698
 default	tests/gc-p0/src/lat_randchain.extc	ok	840893d6aac03a7e62d872750d1cb45c	348446
 reclaim	tests/gc-p0/src/lat_randchain.extc	ok	840893d6aac03a7e62d872750d1cb45c	348446
-default	tests/gc-p0/src/leak_buf_ref.extc	ok	26a7fb9f2e6a3f804cb72fd3f4cfa188	416388
-reclaim	tests/gc-p0/src/leak_buf_ref.extc	ok	26a7fb9f2e6a3f804cb72fd3f4cfa188	416388
+default	tests/gc-p0/src/leak_buf_ref.extc	ok	6e00b4740f430fa4dbd193499bdffd84	423434
+reclaim	tests/gc-p0/src/leak_buf_ref.extc	ok	6e00b4740f430fa4dbd193499bdffd84	423434
 default	tests/gc-p0/src/leak_copy_arena_dest.extc	ok	b42e034a7786535a3b566f3a409b71db	343449
 reclaim	tests/gc-p0/src/leak_copy_arena_dest.extc	ok	b42e034a7786535a3b566f3a409b71db	343449
 default	tests/gc-p0/src/leak_copy_rc_churn.extc	ok	0e1a776740913face8193dec26abadfd	343518
@@ -118,8 +118,8 @@ default	tests/gc-p0/src/uaf_bulk_copy_default.extc	ok	0649b2c22fba88cc16937ebd04
 reclaim	tests/gc-p0/src/uaf_bulk_copy_default.extc	ok	0649b2c22fba88cc16937ebd04cc269f	337904
 default	tests/gc-p0/src/uaf_param_overwrite.extc	ok	ce4af7ec934a5adeedcce3e694aba401	335776
 reclaim	tests/gc-p0/src/uaf_param_overwrite.extc	ok	ce4af7ec934a5adeedcce3e694aba401	335776
-default	tests/gc-torture/src/datalog_lite.extc	ok	91aeb02dad09bc223e245a3d7d095f14	234723
-reclaim	tests/gc-torture/src/datalog_lite.extc	ok	eeffb5015582d6e0c19ebd91d90e4560	548834
+default	tests/gc-torture/src/datalog_lite.extc	ok	e5630c517ef7be82397c2aeae3ddc34e	241598
+reclaim	tests/gc-torture/src/datalog_lite.extc	ok	cc5d3f746a554c9d5d17a49b10d1b234	555856
 default	tests/gc-torture/src/t01_sparse_pin.extc	ok	a0e9c3f7ebedfd4aefc3a74bfff0926e	360625
 reclaim	tests/gc-torture/src/t01_sparse_pin.extc	ok	a0e9c3f7ebedfd4aefc3a74bfff0926e	360625
 default	tests/gc-torture/src/t02_fanout.extc	ok	979a08d749efaec63ad077cec9feeb94	343105
@@ -152,6 +152,8 @@ default	tests/pool/churn-leak.extc	ok	48e77bdbb48d68baf7d3904c19a27758	60691
 reclaim	tests/pool/churn-leak.extc	ok	f6baeb3b7515c0a2ee321fb029ec5759	373795
 default	tests/pool/churn.extc	ok	a93cadbc5f34f1ab389c2327f0edca2e	63585
 reclaim	tests/pool/churn.extc	ok	b2116a9fe421cbee5e4c32c9e3b0640c	376689
+default	tests/pool/err_nest_get_copy.extc	fail 1	4d397fd00f0d034d54ae9084a98ec2ce	0
+reclaim	tests/pool/err_nest_get_copy.extc	fail 1	4d397fd00f0d034d54ae9084a98ec2ce	0
 default	tests/pool/gather.extc	ok	d9de2bf706a965485550af8d73eb059d	65613
 reclaim	tests/pool/gather.extc	ok	3b3ee5beabeee677e53812a9fcf2119f	379182
 default	tests/pool/perf_clear_4096.extc	ok	c8cc8b1025d656eb6f0bbe8a27e4a8b1	70658
@@ -168,28 +170,28 @@ default	tests/pool/rt_blockexit.extc	ok	5e5acb971fb6d91c06d72de4d1908312	55966
 reclaim	tests/pool/rt_blockexit.extc	ok	5e5acb971fb6d91c06d72de4d1908312	55966
 default	tests/pool/rt_churn.extc	ok	2b53139d701d996ccf090a24d5fb32b8	55825
 reclaim	tests/pool/rt_churn.extc	ok	2b53139d701d996ccf090a24d5fb32b8	55825
-default	tests/pool/rt_clone_alias.extc	ok	f31b460ae1b45d53b59be40eb93817c1	85335
-reclaim	tests/pool/rt_clone_alias.extc	ok	2df4adff9e787664f3d92d8d7960bfa0	398602
+default	tests/pool/rt_clone_alias.extc	ok	2be1942a8eb228aa1a586e0bc906ff5a	92210
+reclaim	tests/pool/rt_clone_alias.extc	ok	2a22f492606a83b09ca911ba627834df	405624
 default	tests/pool/rt_color.extc	ok	a01371df0027b7c35f7d0ede4cf2d140	57529
 reclaim	tests/pool/rt_color.extc	ok	a01371df0027b7c35f7d0ede4cf2d140	57529
 default	tests/pool/rt_container.extc	ok	15980830197f75faad99a747911e6822	61571
 reclaim	tests/pool/rt_container.extc	ok	07c00150a950d4459de1c785552bbbcc	374675
-default	tests/pool/rt_container_resize_ok.extc	ok	0459c4971bc80fa88f3b1d6ac20432fd	93678
-reclaim	tests/pool/rt_container_resize_ok.extc	ok	f66986bf5f0a5ccebcfaf166e0f5aca1	406945
+default	tests/pool/rt_container_resize_ok.extc	ok	755748e6a62dbcf18ebe54942474113c	100553
+reclaim	tests/pool/rt_container_resize_ok.extc	ok	033e3418d9a0ee094ace77fa4e4cf630	413967
 default	tests/pool/rt_container_tree.extc	ok	dc93228e933e46678049085360544fdc	93295
 reclaim	tests/pool/rt_container_tree.extc	ok	ded82309f15ba841a2662c7a8bcb17d9	406399
 default	tests/pool/rt_epoch.extc	ok	7aebded99003fbf72e362f672ec6bfcc	79562
 reclaim	tests/pool/rt_epoch.extc	ok	f9cd544449218de8ffc8b22ed0046146	392666
 default	tests/pool/rt_mode_gen.extc	ok	7d3de9eef9acbcfe01b56928a3efe660	55403
 reclaim	tests/pool/rt_mode_gen.extc	ok	7d3de9eef9acbcfe01b56928a3efe660	55403
-default	tests/pool/rt_nest_promote.extc	ok	8b9933cc05464ff46307e4c2bada0abb	130931
-reclaim	tests/pool/rt_nest_promote.extc	ok	b1ccf0ba727c0649cd1f38726796498c	444361
+default	tests/pool/rt_nest_promote.extc	ok	88b3cb603197a4aa03dbaef48b6aa9a2	141065
+reclaim	tests/pool/rt_nest_promote.extc	ok	5e24a283d77719aca27aa49879037dba	454789
 default	tests/pool/rt_pidgen.extc	ok	e2e818d35406d008697015348cda7c0e	60898
 reclaim	tests/pool/rt_pidgen.extc	ok	12ee48e9db58d4721e446096cb9b0195	374002
 default	tests/pool/rt_promote.extc	ok	9212a2c56b80ef6fc4fea5fbe861382d	56060
 reclaim	tests/pool/rt_promote.extc	ok	9212a2c56b80ef6fc4fea5fbe861382d	56060
-default	tests/pool/rt_return_promote.extc	ok	d635c75181a822b4b419f2805d893628	105905
-reclaim	tests/pool/rt_return_promote.extc	ok	9562e7b79dd5cc4bd1acfd38e01295ac	419172
+default	tests/pool/rt_return_promote.extc	ok	4a7d2d023c8969a18884ada0e2028a54	112780
+reclaim	tests/pool/rt_return_promote.extc	ok	3076cd24cad0d59a704d6ab8f2ce0a1c	426194
 default	tests/pool/rt_reuse.extc	ok	95e3ac4c2aad1ee5ead1f3ebd2855771	55960
 reclaim	tests/pool/rt_reuse.extc	ok	95e3ac4c2aad1ee5ead1f3ebd2855771	55960
 default	tests/pool/rt_shrink.extc	ok	4a7596372c8ee9c39117bee4626e0e45	76119
@@ -214,8 +216,8 @@ default	tests/pool/zt_drop_order.extc	ok	1383c228c96f8da4056585465049edd3	77760
 reclaim	tests/pool/zt_drop_order.extc	ok	1383c228c96f8da4056585465049edd3	77760
 default	tests/pool/zt_exit_cost.extc	ok	0ab311a39d540bf144e5dc473d530414	58630
 reclaim	tests/pool/zt_exit_cost.extc	ok	0ab311a39d540bf144e5dc473d530414	58630
-default	tests/pool/zt_shrink_rss.extc	ok	d3fec93ba2b1225443abd36e6b80e145	103612
-reclaim	tests/pool/zt_shrink_rss.extc	ok	002ce35963aad04cc9be4926077948eb	416879
+default	tests/pool/zt_shrink_rss.extc	ok	78794aed1f51cfeeacc607568347f3ee	110487
+reclaim	tests/pool/zt_shrink_rss.extc	ok	3b3bb4ef11594f4b108fae830ff59bba	423901
 default	tests/reclaim-gaps/shapes/base_call_unknown.extc	ok	43ad61a24e55ae070c3e0da240e66897	343931
 reclaim	tests/reclaim-gaps/shapes/base_call_unknown.extc	ok	43ad61a24e55ae070c3e0da240e66897	343931
 default	tests/reclaim-gaps/shapes/byval_temp.extc	ok	7cca72951da0cbb73885cbd8debbea20	342083
@@ -332,42 +334,42 @@ default	tests/reclaim-shapes/struct_copy.extc	ok	4ca6b9f918dc66b633735332d426cf1
 reclaim	tests/reclaim-shapes/struct_copy.extc	ok	4ca6b9f918dc66b633735332d426cf1d	345560
 default	tests/reclaim-shapes/unknown_host.extc	ok	7a4312adaf7060419d3f2978211397eb	335508
 reclaim	tests/reclaim-shapes/unknown_host.extc	ok	7a4312adaf7060419d3f2978211397eb	335508
-default	tests/stl/buf.extc	ok	b4ab5a0ecb8dc58c829837f624b35acf	92124
-reclaim	tests/stl/buf.extc	ok	a8e52e5fffe56b3c38cc4eef62799f8b	405391
-default	tests/stl/buf_adv.extc	ok	c8c4de6425aa32d310095852e2ba4c36	93835
-reclaim	tests/stl/buf_adv.extc	ok	770ba0120dc24079199c7781d98aebad	407102
-default	tests/stl/buf_churn_a.extc	ok	6eaf640e9088962b75728b1533eae364	85085
-reclaim	tests/stl/buf_churn_a.extc	ok	a490431e4ac86e5dd697f32a5741107c	398352
-default	tests/stl/buf_churn_b.extc	ok	2da2007aeb3fdafddf32483ad541547a	85086
-reclaim	tests/stl/buf_churn_b.extc	ok	8f4abb5ce2ff7e539f2683825979e0e2	398353
-default	tests/stl/buf_elem.extc	ok	366f25da3a1ac991cf04811529c383c7	103001
-reclaim	tests/stl/buf_elem.extc	ok	7dafa2c00cc053ae4e9e829ef95f7828	416431
-default	tests/stl/buf_frozen.extc	ok	fbd62abef057004cb26bfe7c8bea7f18	85759
-reclaim	tests/stl/buf_frozen.extc	ok	1708324cc3dcf87fc267ca7ac3b81f92	399132
-default	tests/stl/buf_fuzz.extc	ok	c7b74e873059e47d9631814156ebf6cc	94894
-reclaim	tests/stl/buf_fuzz.extc	ok	a2e8642f285a907d759afdb97cd0d78d	408161
-default	tests/stl/buf_huge.extc	ok	93f0cc69c02be93a352a7165de22d771	87395
-reclaim	tests/stl/buf_huge.extc	ok	7baab4dfee328e227390b2a154993d7d	400662
-default	tests/stl/buf_new.extc	ok	a488d937f9760c6dbd2327010a500e11	408882
-reclaim	tests/stl/buf_new.extc	ok	a488d937f9760c6dbd2327010a500e11	408882
+default	tests/stl/buf.extc	ok	270c9e08eca6546ec6e562e3086d5f52	98999
+reclaim	tests/stl/buf.extc	ok	1bfb615bc33404579a9bb2179fd3a54f	412413
+default	tests/stl/buf_adv.extc	ok	7282b80935d8128c1651fad130e2f789	100710
+reclaim	tests/stl/buf_adv.extc	ok	44bf5366b2271adaf020f4aacc76551f	414124
+default	tests/stl/buf_churn_a.extc	ok	ffbe9fe2bf71ff850c2c227e1849fc7e	91960
+reclaim	tests/stl/buf_churn_a.extc	ok	d09b2b647afd5f5db5141bcb54fb5ed1	405374
+default	tests/stl/buf_churn_b.extc	ok	e635f5254ded3cc62e161eced8d2fe1a	91961
+reclaim	tests/stl/buf_churn_b.extc	ok	2f83f27c3af528c6bb2a0260841b26b2	405375
+default	tests/stl/buf_elem.extc	ok	c181e6023003952a2f2ba0686e03d195	114463
+reclaim	tests/stl/buf_elem.extc	ok	1de6f0697f50e6b5519f41611dcbed82	428187
+default	tests/stl/buf_frozen.extc	ok	7653dfc13ce6d7fdbf812f60e526ca55	92634
+reclaim	tests/stl/buf_frozen.extc	ok	479f65e2d85a7df6ad1127daf85235ce	406154
+default	tests/stl/buf_fuzz.extc	ok	0a8df561b73bd4712d5909756ea4459d	101769
+reclaim	tests/stl/buf_fuzz.extc	ok	dab2b5e1b8cd627cd3c62bac7d3fd7f3	415183
+default	tests/stl/buf_huge.extc	ok	5a0ed2e5acbc5270e5587b949394fb53	94270
+reclaim	tests/stl/buf_huge.extc	ok	b23e51579b8830a73bc24f40277a372c	407684
+default	tests/stl/buf_new.extc	ok	0b63909b31c66fcf27be131842338859	415904
+reclaim	tests/stl/buf_new.extc	ok	0b63909b31c66fcf27be131842338859	415904
 default	tests/stl/buf_new_wrong_elem.extc	fail 1	a65735d7f284a6d6c385452196011648	0
 reclaim	tests/stl/buf_new_wrong_elem.extc	fail 1	a65735d7f284a6d6c385452196011648	0
-default	tests/stl/buf_own.extc	ok	8930dd3d99db9ec33f21bd0093dfde4e	122967
-reclaim	tests/stl/buf_own.extc	ok	ac74d14d954e03d3f8956bb81a2c7fd7	436397
-default	tests/stl/buf_own_clone.extc	fail 1	46e437fb7230f1379196d7b26ea1d74b	0
-reclaim	tests/stl/buf_own_clone.extc	fail 1	46e437fb7230f1379196d7b26ea1d74b	0
-default	tests/stl/buf_par.extc	ok	b3bb071d0b85b88ae3ef4303250df668	420655
-reclaim	tests/stl/buf_par.extc	ok	b3bb071d0b85b88ae3ef4303250df668	420655
-default	tests/stl/buf_rss.extc	ok	3b357b0966e4539ecce73b55585ec5c4	85995
-reclaim	tests/stl/buf_rss.extc	ok	538902f0a5ece7dd6feb1000e5e67945	399262
+default	tests/stl/buf_own.extc	ok	9c541d297a83fa821fcd2bb324235301	134476
+reclaim	tests/stl/buf_own.extc	ok	95608d16b61184a5732f6df33da6f542	448200
+default	tests/stl/buf_own_clone.extc	fail 1	c313d13a88ccdb2eff0ae5c4a1460eae	0
+reclaim	tests/stl/buf_own_clone.extc	fail 1	c313d13a88ccdb2eff0ae5c4a1460eae	0
+default	tests/stl/buf_par.extc	ok	d88aeca60044c3174575cff23dc25bc9	427677
+reclaim	tests/stl/buf_par.extc	ok	d88aeca60044c3174575cff23dc25bc9	427677
+default	tests/stl/buf_rss.extc	ok	50efa193837166b6f65accbdb5671097	92870
+reclaim	tests/stl/buf_rss.extc	ok	c70ab8073154da2caffffc62b8215dd8	406284
 default	tests/stl/buf_rss_arena.extc	ok	e4d72f67676691a695ee3971af43e8f8	21338
 reclaim	tests/stl/buf_rss_arena.extc	ok	04cdc19151fdbedbdcf52e95a5a9452d	335175
-default	tests/stl/buf_struct.extc	ok	d074dd98467e5b50d0a9b4f124b660e3	87982
-reclaim	tests/stl/buf_struct.extc	ok	3a64b95f54d029aa29b3eb6ab69b6104	401249
-default	tests/stl/clone.extc	ok	90b36ce1a0a918738e6abc08cdfbbdaa	305183
-reclaim	tests/stl/clone.extc	ok	d8161aae82a38e541df7fa74b9c43737	619197
-default	tests/stl/clone_ok.extc	ok	e3e20fbb873580424c2b343bcf74c32d	81349
-reclaim	tests/stl/clone_ok.extc	ok	b0d6f8fdc7e0a9b6c213d2a83f3a1d4f	394616
+default	tests/stl/buf_struct.extc	ok	3cf4c13ef5d970fea41945494cf52146	94853
+reclaim	tests/stl/buf_struct.extc	ok	b4a73152efee5b1a959ce4bd83432749	408267
+default	tests/stl/clone.extc	ok	3594b6aa164662a2876758d6e5ac1ea8	312058
+reclaim	tests/stl/clone.extc	ok	df4556bf9ee157810e5c52189e1e1344	626219
+default	tests/stl/clone_ok.extc	ok	64dce2e131bfcc2a320dbef3a220eb29	88224
+reclaim	tests/stl/clone_ok.extc	ok	67a847f7b7a42563a38fc2eddd473418	401638
 default	tests/stl/clone_warn.extc	ok	9146875f95e7e195cb3158a94b230c17	3394
 reclaim	tests/stl/clone_warn.extc	ok	9146875f95e7e195cb3158a94b230c17	3394
 default	tests/stl/copyInto.extc	ok	39a7ba53dfc793cd3172b96a28e3d51a	85477
@@ -376,8 +378,8 @@ default	tests/stl/custom_pool.extc	ok	04b465a5cb4b1ffbfde687b99c197d13	60357
 reclaim	tests/stl/custom_pool.extc	ok	a06de9c1430eed6cdad3295b5c45e221	373461
 default	tests/stl/custom_pool_grow.extc	ok	a3c3eb16562150c7127cdb05853d7146	60199
 reclaim	tests/stl/custom_pool_grow.extc	ok	354a0f1f3f10f45a5e956948f5c3d044	373303
-default	tests/stl/from.extc	ok	b28a206f1135c9091d6161d90000c67f	130200
-reclaim	tests/stl/from.extc	ok	cf1814e5aaec5d447b7a183aaddbb89d	444796
+default	tests/stl/from.extc	ok	b411c914aea94e1dc3540d736f31d63f	137075
+reclaim	tests/stl/from.extc	ok	fd7253bf53e98ca0ccefdc007f7e0342	451818
 default	tests/stl/fromI64.extc	ok	0d994eddd7ceb58c8380f24e298eb9bf	100134
 reclaim	tests/stl/fromI64.extc	ok	353253d42fe9ae273cf38e742d132f16	415285
 default	tests/stl/hashSet.extc	ok	520cdd5ccebb6f71a07d533f4c972728	106349
@@ -448,15 +450,15 @@ default	tests/stl/varArray_stale_write.extc	fail 1	d30e7136e668de78aa938f933eab4
 reclaim	tests/stl/varArray_stale_write.extc	fail 1	d30e7136e668de78aa938f933eab4ac8	0
 default	tests/stl/vararray_ref.extc	ok	cdabbfebc97f2bb9d8b833492bdc721e	50457
 reclaim	tests/stl/vararray_ref.extc	ok	da6f52c36dad596002bcb4f05d0b7f2b	363604
-default	tests/stl/vector.extc	ok	12151658e952e6510280fcaa130f1f95	108193
-reclaim	tests/stl/vector.extc	ok	91f9f3bda1acf8d3093e5cb219882e76	421861
-default	tests/stl/vector_churn_a.extc	ok	540714addb0aebabaae8f40c1f7c392e	95416
-reclaim	tests/stl/vector_churn_a.extc	ok	9a54837e0baf02b4cf8264e717bef874	408683
-default	tests/stl/vector_churn_b.extc	ok	d246b0251d6f1e105f39e14f335222f3	95417
-reclaim	tests/stl/vector_churn_b.extc	ok	cabeae3b136f838cc4ab7ee3ed60b6ba	408684
-default	tests/stl/vector_grow.extc	ok	88f0b681cfc1e6f9cc28662de22b72b5	94839
-reclaim	tests/stl/vector_grow.extc	ok	357e43c9d377936ecfeda4e92b9a0275	408106
+default	tests/stl/vector.extc	ok	d25c515f9990cde9fe75daae7884841e	115068
+reclaim	tests/stl/vector.extc	ok	ea2957aa77b29269f4ca09ec8617b577	428883
+default	tests/stl/vector_churn_a.extc	ok	8b838002c0185673aec6faf090ae1605	102291
+reclaim	tests/stl/vector_churn_a.extc	ok	7ce95def2270bad770039b31c61afdcc	415705
+default	tests/stl/vector_churn_b.extc	ok	201d57b1c7337dae74d14a4fd6a8e3fd	102292
+reclaim	tests/stl/vector_churn_b.extc	ok	4400384d214cd3e3a7118373dadfc167	415706
+default	tests/stl/vector_grow.extc	ok	f88745a7d9b3ef088aa0ac2d8c03575a	101714
+reclaim	tests/stl/vector_grow.extc	ok	ef0967a0ad87fd468697257329bb6779	415128
 default	tests/stl/vector_rss_arena.extc	ok	286f7abae8055ce1687f297aa3039c70	336560
 reclaim	tests/stl/vector_rss_arena.extc	ok	286f7abae8055ce1687f297aa3039c70	336560
-default	tests/stl/vector_rss_plate.extc	ok	2496a29587920031def34e8c84fadc50	94790
-reclaim	tests/stl/vector_rss_plate.extc	ok	03bf1037d3b745ecd929809c027b2b97	408057
+default	tests/stl/vector_rss_plate.extc	ok	b9187b6ae699e2134cfca3f0cb3b6ec0	101665
+reclaim	tests/stl/vector_rss_plate.extc	ok	85d90584d06136b530ed07bbba357a70	415079

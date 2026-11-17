@@ -7,6 +7,8 @@
 //   - R4c 把容器存储换成 buf<T>（@noCopy，拥有预留）之后，元素存储是视图背后的平面数组：
 //     `push` 写入只拷字节、不为那一份拷贝跑 @drop，所以语言要求这一步是**移动** —— 源名字交出
 //     所有权、源在块尾不再跑钩子。这与池的生死无关，是同一类 use-after-free 的根。
+//   - 读出元素也只能**借用**：`get(2)!` 会把元素按字节复制一份（两个名字拥有同一片存储，各析构一次），
+//     所以检查器对它报错。合法读法是链式调用 `outer.view()[2].len()`，接收者借的是元素本身。
 //
 // 所以这个用例的判据是：**能编能跑、内层内容完整、池一个字节都不占**（vector 的存储已不在池上）。
 // 三个内层的预留各在 push 时交给外层，外层 clear/release 时逐元素跑 @drop ⇒ 最后 live 归零。
@@ -24,9 +26,9 @@ fn main() -> i32 {
         outer.push(inner)
         i = i + 1
     }
-    let a = outer.get(2)!
     io::cout << "after=" << syspool::extc_pool_live()
-    io::cout << " innerlen=" << a.len() << " v=" << i64(a.get(1) ?? i32(-1))
+    io::cout << " innerlen=" << outer.view()[2].len()
+    io::cout << " v=" << i64(outer.view()[2].get(1) ?? i32(-1))
     io::cout << " bytes=" << syspool::extc_pool_bytesLive() << "\n"
     return 0
 }

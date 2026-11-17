@@ -1,0 +1,15 @@
+// 反例：把视图元素按值取出去当返回值。元素仍留在容器里，返回值会是同一片存储的第二个
+// 所有者，两个析构器各还一次。方法链读过（v.view()[0].valueOf()）不受影响。
+// 期望：error: `counter` is `@noCopy`: it may not be copied by value
+use std::data::vector
+
+@noCopy struct counter {
+    pos: i64
+    fn valueOf(self: ref counter) -> i64 { return self.pos }
+}
+
+fn first(v: ref vector<counter>) -> counter {
+    return v.view()[0]
+}
+
+fn main() -> i32 { return 0 }

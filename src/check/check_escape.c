@@ -3396,6 +3396,23 @@ bool ckMoveNoCopyInto(Checker *c, Expr *e, const char *dest) {
 }
 
 /**
+ * @brief Report that an `@noCopy` value would be copied by value.
+ *
+ * One wording for both paths that can reach it: a copy of a place (a binding, a field or an
+ * element) and a read of an owned value out of storage the reader does not own.
+ *
+ * @param c  Checker, for reporting.
+ * @param e  Expression that would be copied.
+ * @param sd Its structure definition, which carries the annotation.
+ */
+static void reportNoCopyCopy(Checker *c, Expr *e, StructDef *sd) {
+    ckError(c, e->line,
+            "Pass it as `ref` / `mut ref` instead: `f(ref s)`, or declare the parameter"
+            " `mut ref T`. The state it carries has an identity, so a copy would give two"
+            " names to one position.",
+            "`%s` is `@noCopy`: it may not be copied by value", DN(sd));
+}
+/**
  * @brief Reject a copy of a `@noCopy` value.
  *
  * Only a **place** is rejected: `var s: ifstream = f()` binds the value the call just
@@ -3424,11 +3441,7 @@ static bool rejectNoCopy(Checker *c, Expr *e, Type *t) {
             return false;
         }
     }
-    ckError(c, e->line,
-            "Pass it as `ref` / `mut ref` instead: `f(ref s)`, or declare the parameter"
-            " `mut ref T`. The state it carries has an identity, so a copy would give two"
-            " names to one position.",
-            "`%s` is `@noCopy`: it may not be copied by value", DN(sd));
+    reportNoCopyCopy(c, e, sd);
     return true;
 }
 
@@ -3445,6 +3458,51 @@ static bool rejectNoCopy(Checker *c, Expr *e, Type *t) {
  * @return   `true` when an error was reported.
  */
 bool ckRejectNoCopyCopy(Checker *c, Expr *e, Type *t) { return rejectNoCopy(c, e, t); }
+
+/**
+ * @brief Reject a read of an owned value out of storage the reader does not own.
+ *
+ * `outer.view()[0]`, `box.c` and `*p` hand back a value whose bytes belong to an
+ * aggregate that still frees them, so two names end up owning one storage.
+ *
+ * @param c  Checker, for reporting.
+ * @param e  Expression in value position.
+ * @param t  Its type.
+ * @return   `true` when an error was reported.
+ */
+bool ckRejectOwningRead(Checker *c, Expr *e, Type *t) {
+    if (!e || !t) return false;
+    StructDef *sd = structOf(ttBase(t));
+    if (!sd || !sd->noCopy) return false;
+    reportNoCopyCopy(c, e, sd);
+    return true;
+}
+/**
+ * @brief Defer an owning-read check until the template it sits in is instantiated.
+ *
+ * Inside a template the destination type is still a parameter, so `structOf` has nothing to
+ * test. The read is recorded instead and re-examined per instance by `runRefCheck`, which also
+ * skips instances that never call the method.
+ *
+ * @param c     Checker.
+ * @param dst   Declared destination type (still parameterised).
+ * @param a     The expression read out of storage.
+ * @param what  Short name for the destination, used in the diagnostic.
+ */
+void ckDeferOwningRead(Checker *c, Type *dst, Expr *a, const char *what) {
+    if (!c || !dst || !a || !c->curFunc) return;
+    if (!funcTParams(c->curFunc) || funcTParams(c->curFunc)->len == 0) return;
+    RefCheck *rc = (RefCheck *)arenaAllocZero(c->arena, sizeof(RefCheck));
+    rc->val      = a;
+    rc->declType = dst;
+    rc->line     = a->line;
+    rc->what     = what;
+    rc->func     = c->curFunc;
+    rc->ctx      = c->ctx;
+    rc->ownRead  = true;
+    *(RefCheck **)vecPush(&c->refChecks) = rc;
+}
+
 
 /**
  * @brief Tell whether an expression is a stream-operator result that returns a reference.
