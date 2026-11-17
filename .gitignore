@@ -53,6 +53,7 @@ prototype/reclaim/probe_sweep
 prototype/reclaim/probe_coldhot
 prototype/reclaim/probe_real
 # 基准数据与编译产物：**生成的**，不该进版本库（2026-10-07 从历史里剔除，224MB 的文件曾挡住 push）
+bench/*/out/
 bench/io/data/
 bench/io/bin/
 

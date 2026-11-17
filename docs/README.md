@@ -21,6 +21,7 @@
 | [`BUF-INVARIANT.md`](design/BUF-INVARIANT.md) | 可增长数组：一个不变量（一片预留）、四个动作、视图何时失效 |
 | [`DESTRUCTORS.md`](design/DESTRUCTORS.md) | 析构：`@drop` 的全部时机与顺序 |
 | [`RECLAMATION.md`](design/RECLAMATION.md) | 四层回收：按分配点选策略、运行期何时整体删掉 |
+| [`WEAK-REFS.md`](design/WEAK-REFS.md) | 弱引用：`weak<T>`、持有期是强引用、索引链与定长表（设计稿 v1，未实现） |
 | [`PARALLEL.md`](design/PARALLEL.md) | `par` 的证明义务；线程与回收的规则（实现暂缓） |
 | [`EFFECTS.md`](design/EFFECTS.md) | `request` / `suspend` / `handle`：等待是类型、驱动器是词法作用域（设计稿 v1，未实现） |
 | [`FUSION.md`](design/FUSION.md) | 视图融合：什么形状能合、逐位一致的硬约束 |
