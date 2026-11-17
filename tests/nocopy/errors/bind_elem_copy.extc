@@ -1,0 +1,10 @@
+/* 反例：从数组元素里取出 @noCopy 值，必须挡住。元素槽仍持有它。 */
+@noCopy
+struct counter { pos: i64 }
+fn main() -> i32 {
+    var arr = new counter[2]
+    arr[0].pos = 7
+    let x = arr[0]              /* 静默拷贝：arr[0] 与 x 会各自析构一份存储 */
+    println("不该编过", x.pos)
+    return 0
+}

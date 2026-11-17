@@ -241,6 +241,12 @@ s = s + "abc"       // 走 `fn +` ：造新字符串再赋值，上一份存储�
 `@value` 可以与 `@drop` 同用：每次拷贝都是 `clone`，所以每份值各自拥有自己的存储、各自跑
 自己的 `@drop`；`@noCopy` 则是"只有一个所有者"。两条路的区别在拷贝，不在释放。
 
+**"取出来"不是移动**：只有名字（本地绑定，或按值实参绑上去的形参）能转移。从字段或视图元素里取一个
+拥有存储的值出来是**拷贝** —— 那个槽仍然持有它 —— 所以 `let d = box.b` 与 `let d = s[0]` 对 `@noCopy`
+类型是编译错误，诊断与带注解的 `let d: T = …` 相同（`ckRejectNoCopyCopy`）。无注解绑定先试"名字 ⇒ 转移"，
+不是名字才走这条拒绝。判据：`tests/nocopy/errors/bind_field_copy.extc`、`bind_elem_copy.extc`（两条反例），
+`tests/stl/buf_elem.extc`（就地只读方法调用合法，结束账正好等于容器与元素各一份预留）。
+
 判据在 `tests/copy/`（5 项）：`clone_place`、`move_temp`、`copy_points`（一张 11 行的计数表，
 覆盖上表每一个拷贝点与 `*p`，并以"六个副本各自 drop 后 `buf::bufLive()==0`"收尾），以及两条
 反例（缺 `clone`、与 `@noCopy` 同用）。

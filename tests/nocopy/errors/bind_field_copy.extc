@@ -1,0 +1,10 @@
+/* 反例：从字段里取出 @noCopy 值，必须挡住。字段仍持有它，两个名字一片存储。 */
+@noCopy
+struct counter { pos: i64 }
+struct box { c: counter }
+fn main() -> i32 {
+    var b: box = { c: { pos: 3 } }
+    let x = b.c                 /* 静默拷贝：b.c 与 x 会各自析构一份存储 */
+    println("不该编过", x.pos)
+    return 0
+}

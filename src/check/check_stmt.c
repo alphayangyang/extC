@@ -4512,8 +4512,12 @@ void checkStmt(Checker *c, Stmt *s) {
                  * separately here; otherwise `var b = a` would produce no warning at all. */
                 warnSharedCopy(c, s->u.var.init, it);
                 /* No annotation means `checkExpr`, which never rejects a copy, so the transfer is
-                 * recorded here for the plain-name case. */
-                ckMoveNoCopyInto(c, s->u.var.init, s->u.var.name);
+                 * recorded here for the plain-name case. A field or an element of a view is not a
+                 * transferable name: taking it out would leave the aggregate and the new binding
+                 * owning one plate, and the second destructor hands it back twice. */
+                if (!ckMoveNoCopyInto(c, s->u.var.init, s->u.var.name) &&
+                    s->u.var.init->kind != EX_IDENT)
+                    ckRejectNoCopyCopy(c, s->u.var.init, it);
             }
             c->moveOkHere = savedMoveOk;
             c->moveIntoName = savedMoveInto;

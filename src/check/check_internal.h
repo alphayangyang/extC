@@ -1107,6 +1107,22 @@ void warnSharedReturn(Checker *c, Expr *e, Type *t);
 bool ckMoveNoCopyInto(Checker *c, Expr *e, const char *dest);
 
 /**
+ * @brief Reject a copy of a `@noCopy` value, with the same diagnostic the annotated form gives.
+ *
+ * The unannotated binding path checks its initializer as an expression, which never looks at
+ * copies, so an initializer that is a **place inside an aggregate** -- a field or an element of
+ * a view -- would be copied silently: two names for one plate, and the second destructor to run
+ * hands the storage back twice. A plain name is a transfer (`ckMoveNoCopyInto`) and a call result
+ * is a fresh value, so only the aggregate-place case reaches the rejection.
+ *
+ * @param c  Checker, for reporting.
+ * @param e  Initializer of the new binding.
+ * @param t  Its type.
+ * @return   `true` when an error was reported.
+ */
+bool ckRejectNoCopyCopy(Checker *c, Expr *e, Type *t);
+
+/**
  * @brief Whether an expression produces a view of storage that its container can move.
  *
  * @param c      The checker; unused by the predicate itself, kept for uniformity.

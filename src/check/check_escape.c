@@ -3433,6 +3433,20 @@ static bool rejectNoCopy(Checker *c, Expr *e, Type *t) {
 }
 
 /**
+ * @brief Exported entry to the copy rejection, for the unannotated binding path.
+ *
+ * That path checks its initializer with `checkExpr`, which is about values and never about
+ * copies, so it asks here once the cheap transfer case has been ruled out. Keeping the
+ * diagnostic in one place is the point: `var d = s[0]` and `var d: T = s[0]` must read the same.
+ *
+ * @param c  Checker, for reporting.
+ * @param e  Expression in value position.
+ * @param t  Its type.
+ * @return   `true` when an error was reported.
+ */
+bool ckRejectNoCopyCopy(Checker *c, Expr *e, Type *t) { return rejectNoCopy(c, e, t); }
+
+/**
  * @brief Tell whether an expression is a stream-operator result that returns a reference.
  *
  * `fin >> x` hands back the same stream object, not a new value; a shift's result type is an

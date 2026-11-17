@@ -61,7 +61,7 @@ else
 fi
 
 echo "== 反例（其余复制点 + 移动后使用，逐个隔离）=="
-for f in arg_twice assign_copy use_after_move use_after_move_field; do
+for f in arg_twice assign_copy use_after_move use_after_move_field bind_field_copy bind_elem_copy; do
     if out=$("$EXTC" "tests/nocopy/errors/$f.extc" -o /dev/null 2>&1); then
         echo "  FAIL $f  ->  **编过了**（拷贝必须挡住 ✗）"; fail=1; continue
     fi

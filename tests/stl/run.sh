@@ -164,6 +164,7 @@ rm -rf "$TMPC3"
 
 echo "== buf<T>：对抗路径（搬家逐元素对位 · shrink 后重新长 · 两万个小缓冲区 churn · 冻结位）=="
 run_case buf_adv    tests/stl/buf_adv.extc    "n=3 sum=44999850000 bad=0 v0=7 cap=4 empty=-1 leak=0 live=35651584"
+run_case buf_elem   tests/stl/buf_elem.extc  "n=1 len0=3 live=4194304"
 run_case buf_struct tests/stl/buf_struct.extc "n=400000 bad=0 sum=79999800000 moves=1 capGE=true"
 traps    buf_frozen tests/stl/buf_frozen.extc "this buffer is frozen by a live borrow"
 run_case buf_fuzz  tests/stl/buf_fuzz.extc  "rounds=3000 bad=0 worst=0 leak=0"

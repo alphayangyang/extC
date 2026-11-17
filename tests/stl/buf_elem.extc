@@ -1,0 +1,16 @@
+/* 拥有的元素只能就地读：容器里的 buf 元素不能绑给新名字（那会是两个名字一片存储），
+ * 但「就地调只读方法」是合法的，也不许出现第二次归还 —— 判据是结束时的 bufLive 账。 */
+use std::data::buf
+use std::data::vector
+
+fn main() -> i32 {
+    var v: vector<buf<u8>> = vector<buf<u8>>::new()
+    var a: buf<u8> = buf<u8>::withCap(8)
+    a.push(u8(1))
+    a.push(u8(2))
+    a.push(u8(3))
+    v.push(a)
+    var s = v.view()
+    println("n=", v.len(), " len0=", s[0].len(), " live=", buf::bufLive())
+    return 0
+}
