@@ -1136,6 +1136,17 @@ def build_items() -> list:
         bad_msg="tools/check_mark_batch.py（标记 walk 的批弹出结构或红自测失效）",
         bad_dump=dump_fail(10)))
 
+    # ---- 闸门·buf 基质的两条编译期决定 ----
+    # 买的是 bench/containers v4 的 13→3 ms：回收量子缓存与锁消除都是**结构性选择**，
+    # 行为判据看不见回潮（删掉 mag0 仍然正确、只是慢 4 倍），所以判结构 + 红自测。
+    items.append(cmd(
+        "gate-buf-mt", "gate",
+        "闸门·buf 基质：回收量子先取后并、span 快路只在单线程档、锁只在有 par 时发射，且红自测有效",
+        ["python3", "tools/check_buf_mt.py"], timeout=120,
+        ok_msg=ok_first(r"^ok buf substrate decisions"),
+        bad_msg="tools/check_buf_mt.py（buf 基质的回收缓存/MT 决定回潮或红自测失效）",
+        bad_dump=dump_fail(10)))
+
     # ---- 闸门·复用链存在 tid[] 里（不是槽载荷）----
     # 这条买的是 **P5 的墙钟**（0.910×）：被释放的槽是冷的，把链的 8 字节头插指针写进载荷
     # 等于清扫每放一槽多一次末级写失手；两种编码**语义等价**，所以行为判据抓不到它回潮，

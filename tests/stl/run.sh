@@ -168,6 +168,8 @@ run_case buf_struct tests/stl/buf_struct.extc "n=400000 bad=0 sum=79999800000 mo
 traps    buf_frozen tests/stl/buf_frozen.extc "this buffer is frozen by a live borrow"
 run_case buf_fuzz  tests/stl/buf_fuzz.extc  "rounds=3000 bad=0 worst=0 leak=0"
 run_case buf_huge  tests/stl/buf_huge.extc  "n=10 sum=45 max=134217728 reserved=1073741824 live=1073741824"
+# 同一程序里有 `par`：发射器必须给 buf 基质带锁（EXTC_BUF_MT 1），判据是它照样跑对。
+run_case buf_par   tests/stl/buf_par.extc   "len=100 sum=65280 live=2097152"
 
 echo "== buf<T>：小缓冲区 churn 的预留账本（1e4 与 1e5 两轮，只差轮数）=="
 # 判据：轮数 ×11 而峰值 RSS 不许翻倍 —— 预留必须被复用（分配器有一份空闲表），

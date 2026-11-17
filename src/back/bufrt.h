@@ -27,7 +27,11 @@
  *
  * @param a    Arena (unused: the block is plain text).
  * @param out  Generated C being written.
+ * @param mt   Whether the unit can start threads (`par`). The arena is process-wide, so it
+ *             needs a lock exactly then; a single-threaded unit gets a block with the lock
+ *             compiled out, which is what makes a churn of small buffers competitive with a
+ *             bump-pointer pool.
  */
-void bufRtEmitRuntime(Arena *a, Buf *out);
+void bufRtEmitRuntime(Arena *a, Buf *out, int mt);
 
 #endif

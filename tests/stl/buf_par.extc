@@ -1,0 +1,18 @@
+// par 与 buf 同程序：`par` 是 extC 程序起线程的唯一途径，发射器据此决定 buf 基质要不要带锁。
+// 判据一行输出：worker 侧算出的和、主线程 buf 的长度与预留账本。
+use std::io
+use std::data::buf
+
+fn main() -> i32 {
+    let n: i64 = 256
+    var acc: mut slice<i64> = new i64[n]
+    par j in 0..n { acc[j] = j * 2 }
+    var b: buf<i64> = buf<i64>::withCap(4)
+    var i: i64 = 0
+    while i < 100 { b.push(i)  i = i + 1 }
+    var s: i64 = 0
+    var k: i64 = 0
+    while k < n { s = s + acc[k]  k = k + 1 }
+    io::cout << "len=" << b.len() << " sum=" << s << " live=" << buf::bufLive() << "\n"
+    return 0
+}

@@ -1,0 +1,18 @@
+// 形状 V4：20 万个小容器（容量 8、装 8 个 i64）的生死循环。
+// 这是池版本的主场：板块在池里复用，一个容器死掉只还世代号；buf 版本每次 reserve/release 一次预留。
+use std::io
+use std::data::vector
+
+fn main() -> i32 {
+    var total: i64 = 0
+    var r: i64 = 0
+    while r < 200000 {
+        var v: vector<i64> = vector<i64>::withCap(8)
+        var i: i64 = 0
+        while i < 8 { v.push(r + i)  i = i + 1 }
+        for x in v.view() { total = total + x }
+        r = r + 1
+    }
+    println("n=", 8, " sum=", total)
+    return 0
+}

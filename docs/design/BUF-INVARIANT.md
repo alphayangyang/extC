@@ -195,7 +195,8 @@ T0 程序编译成空操作：`extc_buf_releaseRefs` 的函数体被 `#if define
 - 测试：`tests/stl/buf.extc`（基本）、`buf_new.extc`（`@buffer` 的 `new T[n]` 降级）、`buf_adv.extc`
   （对抗写入 + 账本）、`buf_struct.extc`（非平凡元素）、`buf_frozen.extc`（守卫 `trap`）、
   `buf_churn_{a,b}.extc`（块内/循环内 churn 的账本必须回零）、`buf_fuzz.extc`（3,000 轮随机长度
-  + 非 LIFO 释放 + 每步账本）、`buf_huge.extc`（1 GiB 预留只驻留碰过的页）；引用侧的两条判据是
+  + 非 LIFO 释放 + 每步账本）、`buf_huge.extc`（1 GiB 预留只驻留碰过的页）、`buf_par.extc`（`par`
+  与 `buf` 同程序 ⇒ 基质必须带锁发射，见 §11.3）；引用侧的两条判据是
   `tests/gc-p0` 的 G21 与 `tests/reclaim` 的 `t_pinRange`。- 卡具：`bench/buf/`（五条形状对 C++，`SPEC.md` 判据、`RESULTS.md` 数字与陷阱）。
 
 ## 10 第一个消费者：`vector` 建在 `buf` 上
@@ -306,3 +307,70 @@ T0 程序编译成空操作：`extc_buf_releaseRefs` 的函数体被 `#if define
    若干行换了位置（`pool$pool_u8` 之类）。原因是 checker 侧的字段替换会内化（intern）实例类型，
    让它的登记时机早于 codegen 原本的时机；逐行排序后两个文件完全相同（对 `hashSet` 与 `stringOps`
    实测为纯置换），语义无变化。重冻结基线时按「置换，已验证」记录。
+## 11 基质本身的账：回收量子、span 快路、要不要带锁
+
+`buf` 的第一版在**小容器 churn** 上输给了它取代的池。`bench/containers` 的 v4 是 20 万个小容器
+（`withCap(8)`、各 8 个 `i64`）的生死循环：池版本 4 ms，`buf` 版本 13 ms —— 3.25×。这条形状是
+故意的反向选择（池的免费表在这种尺寸上本来就快），但删池之前必须把它平掉，否则「池提供的廉价
+共享与复用」会被悄悄换成每容器一次 15 层 buddy 记账。三处结构性修正把它拉到 3 ms：
+
+| 台阶 | v4 墙钟（20 万容器） | 改了什么 |
+|---|---|---|
+| 第一版 | 13 ms | 每次 `reserve` 切 2 MiB 量子、每次 `release` 合并回去 |
+| +回收量子 | 6 ms | `EXTC_BUF_MAG_KEEP 32`：每竞技场留 32 个 order-0 块的免费链 |
+| +span 快路 | 5 ms | 记住最近一次 `carve` 的 `(地址, 大小)`，`span` 不再扫竞技场 |
+| +锁按需 | 3 ms | `EXTC_BUF_MT 0`：单线程程序里预留/归还不发原子操作 |
+
+### 11.1 回收量子必须在合并之前
+
+`extc_buf_give` 把块交回去时要和同尺寸的伙伴合并。合并是 15 层循环，而 4 KiB 的容器只用一个
+order-0 块 —— 合并完再进免费链，下次 `carve` 拿到的已经是更高阶的块，还得再切下来。所以回收
+判断要放在合并**之前**：`if (k == 0 && extc_buf_magN < EXTC_BUF_MAG_KEEP)` 就把块挂进 `mag0`
+（链走 `nextQ`）并按 2 MiB 记 `liveBytes`，直接返回。第一版把这段写在合并之后，热路径永远命中
+不了，热路径永远命中不到，与没写这段代码等价 —— 记在这里，因为它是「看代码像对的、量起来是零」的典型。
+
+缓存只占地址空间（32 × 2 MiB），不占驻留：块里的页本来就是还给系统的。
+
+### 11.2 span 快路与它的闸
+
+`extc_buf_span(at)` 回答「这块 `at` 占了多大」，`release` 要用它记账。原实现加锁扫竞技场的
+`ordQ`，在 4 KiB 的容器上是每容器一次的固定开销。快路是记下最近一次 `carve` 的 `(地址, 字节数)`，
+命中就直接返回。
+
+**它只能出现在单线程档**：`lastAt`/`lastSpan` 是裸变量，多线程下无锁读写是 UB。所以快路的声明、
+三处写、一处读共五个位置全部包在 `#if !EXTC_BUF_MT` 里（`tools/check_buf_mt.py` 数的就是这 5 个
+`#if` 与那行读，改少一处门禁就红）。
+
+### 11.3 锁只有能起线程的程序才付
+
+竞技场是进程级结构，`reserve`/`release` 要保护它 —— 但只在**程序真的能起线程**时才需要。`par`
+是 extC 程序起线程的唯一途径（`pthread_create` 只出现在 `needPar` 点亮的那段线程池里），而发射器
+在所有函数体发射完之后才知道 `needPar`，所以 `bufRtEmitRuntime(arena, out, g->needPar ? 1 : 0)`
+在文首写一行 `#define EXTC_BUF_MT 0/1`，载荷里锁的变量与两个函数体都在 `#if EXTC_BUF_MT` 内。
+代价是每容器两次原子交换；单线程程序不再付它，`--selftest` 的「MT 恒写 1」变异会被门禁抓到。
+
+当前语料里 `par` 循环体不能调函数（编译期就报 `cannot call a function inside a par loop`），所以
+worker 线程今天碰不到竞技场；按 `needPar` 发射是保守选择 —— 规则放宽时这里不需要再想一遍。
+`tests/stl/buf_par.extc` 就是这条的判据：同一程序里有 `par` 与 `buf`，输出一行
+`len=100 sum=65280 live=2097152`。
+
+### 11.4 数字（`bench/containers`，REPS=11，min，`taskset -c 6`，三臂输出逐字一致）
+
+| 形状 | 池版本 old | `buf` 版本 new | C++ | new / old |
+|---|---|---|---|---|
+| v1 8e6 个 `i64` 增长 | 34 ms / 64,256 kB | 22 ms / 65,456 kB | 64 ms / 69,232 kB | 0.65× |
+| v2 2e6 后 5 次 clone | 28 ms / 32,852 kB | 14 ms / 34,732 kB | 36 ms / 35,048 kB | 0.50× |
+| v3 clear 后复用容量 | 54 ms / 64,256 kB | 28 ms / 65,456 kB | 76 ms / 69,348 kB | 0.52× |
+| v4 20 万小容器 churn | 4 ms / 1,868 kB | 3 ms / 1,868 kB | 7 ms / 4,152 kB | 0.75× |
+
+判据（`bench/containers/SPEC.md`）：新臂墙钟不劣于旧臂 10%，RSS 不劣于旧臂 +ε。四格现在都满足；
+RSS 的最大偏差是 v2 的 +5.7%：克隆出的每个副本各自拥有预留，而池版本的克隆与原件共享一块板块。
+
+### 11.5 判据与门禁
+
+- `tools/check_buf_mt.py`：编译两段内嵌探针（单线程、`par`+`buf`），对**生成 C**判 6 条结构判据，
+  并用 6 个变异做红自测（MT 恒 0 / 恒 1、删回收链、`carve` 不看缓存、删单线程闸、锁换成 `while (0)`）。
+  注册为 `gate-buf-mt`。
+- `tests/stl/buf_par.extc`：`par` 与 `buf` 同程序的输出判据。
+- 行为侧仍然由 `tests/stl` 的 buf 系与 `bench/buf` 的五条形状顶着（v4 那 3 ms 门禁不判墙钟 ——
+  结构对了就便宜，结构错了就该被 `gate-buf-mt` 抓住，墙钟只记在这里）。

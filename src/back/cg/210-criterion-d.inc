@@ -1643,7 +1643,10 @@ static void emitLateRuntime(CG *g, Buf *out, Module *m, Arena *arena) {
     if (g->needMemFind) memfindEmitRuntime(arena, out);
     if (g->needPlateView) plateEmitViewOf(arena, out);
     if (g->needPlateCopy) plateEmitMemCopy(arena, out);
-    if (g->needBuf) bufRtEmitRuntime(arena, out);
+    /* `mt` is whether the unit can start threads: `par` is the only way it can, and this point in
+     * the emission order is after every function body, so the flag is settled. A single-threaded
+     * unit gets the arena with no lock (see bufrt.c). */
+    if (g->needBuf) bufRtEmitRuntime(arena, out, g->needPar ? 1 : 0);
     if (g->needTime) timeEmitRuntime(arena, out);
     if (g->needEvent) eventEmitRuntime(arena, out);
     if (g->needDomain) {

@@ -1,0 +1,19 @@
+// 形状 V2：装满 2e6 之后连做 5 次拷贝。
+// 池版本的 clone 从池里拿一块新板块再逐元素拷；buf 版本 reserve + 逐元素 push（预留一次到位）。
+use std::io
+use std::data::vector
+
+fn main() -> i32 {
+    var a: vector<i64> = vector<i64>::withCap(4)
+    var i: i64 = 0
+    while i < 2000000 { a.push(i * 3)  i = i + 1 }
+    var s: i64 = 0
+    var k: i64 = 0
+    while k < 5 {
+        var b = a.clone()
+        s = s + b.len() + b.view()[b.len() - 1]
+        k = k + 1
+    }
+    println("n=", a.len(), " sum=", s)
+    return 0
+}

@@ -1,0 +1,19 @@
+// 形状 V3：装满 8e6、clear()、再装满一次（容量应当被复用，不该重新长）。
+// 池版本 clear 只把 n 置 0、板块保留；buf 版本同理（容量归零由 release 才做）。
+use std::io
+use std::data::vector
+
+fn main() -> i32 {
+    var v: vector<i64> = vector<i64>::withCap(4)
+    var s: i64 = 0
+    var round: i64 = 0
+    while round < 2 {
+        var i: i64 = 0
+        while i < 8000000 { v.push(i)  i = i + 1 }
+        for x in v.view() { s = s + x }
+        v.clear()
+        round = round + 1
+    }
+    println("n=", v.len(), " sum=", s)
+    return 0
+}
