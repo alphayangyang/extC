@@ -69,8 +69,10 @@
  *                    (meaningful only in the no-count tier).
  * @param frameRoots  Frame root chain: 1 = emit the chain push/lookup code. No emitter
  *                    pushes onto the chain yet, so callers pass 0.
+ * @param weakOn      weak references: 1 = emit the [rt:weak] section and define EXTC_RC_WEAK;
+ *                    otherwise the emitted text is unchanged.
  */
 void reclaimEmitRuntime(Arena *a, Buf *out, int noCount, int timeOn, int sweepFree, int localStore,
-                        int frameRoots);
+                        int frameRoots, int weakOn);
 
 #endif /* EXTC_RECLAIM_H */

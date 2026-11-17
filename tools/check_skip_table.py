@@ -45,6 +45,7 @@ MODES = [
     ("事件档", {"EXTC_RC_SWEEPFREE": "1"}),
     ("本地存储档", {"EXTC_RC_LOCALSTORE": "1"}),
     ("帧根链档", {"EXTC_RC_FRAMEROOTS": "1"}),
+    ("弱引用档", {"EXTC_RC_WEAK": "1"}),
 ]
 
 

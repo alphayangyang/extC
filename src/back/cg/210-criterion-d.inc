@@ -197,7 +197,15 @@ static int unitAllAcyclic(CG *g, Module *m) {
  */
 
 static void rcPlanDecide(CG *g, Module *m) {
-    if (!g->rc.reclaim) return;
+    if (!g->rc.reclaim) {
+        /* A weak reference names an rc slot, so a unit that holds one cannot do without the runtime:
+         * there would be no slot to name and nothing to invalidate the handle. */
+        if (g->needWeak)
+            ctxError(g->ctx, 1, 1, NULL,
+                     "a weak reference names a reclaimed object, so it needs the reclamation runtime"
+                     " (EXTC_RECLAIM=0 turns that off)");
+        return;
+    }
 
     /* (2) "skip the rc runtime entirely": the whole unit is proved to have no reclamation work => no
      * runtime is emitted **in any tier**.
@@ -213,7 +221,9 @@ static void rcPlanDecide(CG *g, Module *m) {
      * (This is a **compile-time** early exit: it is not in the emitted runtime text, so it does not
      * belong in the "fast path and skips" table of the reclamation notes -- that table is kept aligned
      * in both directions with the runtime text alone by `tools/check_skip_table.py`.) */
-    if (unitReclaimIdle(g, m)) {
+    /* A handle makes the idle proof inapplicable: it is meaningful only when the object it names is an
+     * rc slot, so the unit keeps the runtime even when it allocates nothing the collector would reclaim. */
+    if (!g->needWeak && unitReclaimIdle(g, m)) {
         /* (2b) Criterion (d): "it loses no live **memory** either". Criteria (a)(b)(c) speak about
          * references only, and a unit whose garbage is a replaced array holds no reference at all, so
          * they are vacuous on it. Criterion (d) says: a `new T[n]` that the frame arena owns (level 1),
@@ -259,6 +269,10 @@ static void rcPlanDecide(CG *g, Module *m) {
      * against "switch off" (`tests/reclaim-shapes/run-switch.sh`, `tests/reclaim-perf/`) need a runtime
      * in the on build even when the shape allocates nothing the collector could reclaim. */
     if (g->rc.forced) return;
+    /* A unit that holds a handle keeps the runtime even when it allocates nothing the collector
+     * would reclaim: the handle names an rc slot, and there would be no slot table without the
+     * runtime. This is the same keep direction as the forced switch, one line above it. */
+    if (g->needWeak) return;
     for (size_t i = 0; i < g->funcs.len; i++) {
         FuncDef *f = *(FuncDef **)vecAt(&g->funcs, i);
         if (f && rcBodyHasGovernedAlloc(f->body)) return;

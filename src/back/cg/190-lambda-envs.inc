@@ -586,6 +586,57 @@ static void initCGState(CG *g, Module *m, TypeTable *tt, Arena *arena) {
  *           `needPlateCopy`, `needPlateView`, `needTime`, `needHttpFile` and `needDns`.
  * @param m  The current module; the declarations in `funcs` and `structs` are the only sources.
  */
+/** @brief Expression callback for the weak-reference scan: stops the walk once one is found. */
+static bool weakUseInExpr(void *ctx, Expr *e);
+
+/** @brief Statement callback for the weak-reference scan (declared here for the expression one). */
+static bool weakUseInStmt(void *ctx, Stmt *s);
+
+/** @brief Expression callback: sets `needWeak` and stops the walk at the first weak primitive. */
+static bool weakUseInExpr(void *ctx, Expr *e) {
+    CG *g = (CG *)ctx;
+    if (!e) return true;
+    /* The weak primitives take the primitive path of a generic call, which the checker recognizes
+     * by name and never resolves to a declaration -- so unlike the plate and buffer triggers there
+     * is no declaration to notice, and the bodies have to be walked. */
+    if (e->kind == EX_GENCALL && e->u.gencall.name && isWeakPrimitiveName(e->u.gencall.name)) {
+        g->needWeak = true;
+        return false;
+    }
+    AstVisit v = { weakUseInExpr, weakUseInStmt, ctx };
+    return astWalkExprChildren(e, &v);
+}
+
+/** @brief Statement callback: walks every child of the statement. */
+static bool weakUseInStmt(void *ctx, Stmt *s) {
+    AstVisit v = { weakUseInExpr, weakUseInStmt, ctx };
+    return astWalkStmtChildren(s, &v);
+}
+
+/** @brief Does the module take any weak reference? Sets `needWeak` on the first one found.
+ *
+ * Walks function bodies (generic templates included: the library's `weak::of` is one) and the
+ * methods of every struct, because a `weak` handle can be taken inside a method and nowhere else.
+ *
+ * @param g  The code generation context; sets `needWeak`.
+ * @param m  The module being generated.
+ */
+static void scanWeakUse(CG *g, Module *m) {
+    AstVisit v = { weakUseInExpr, weakUseInStmt, g };
+    for (size_t i = 0; i < m->funcs.len; i++) {
+        FuncDef *f = *(FuncDef **)vecAt(&m->funcs, i);
+        if (f && f->body) astWalkStmtChildren(f->body, &v);
+    }
+    for (size_t i = 0; i < m->structs.len; i++) {
+        StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
+        if (!sd) continue;
+        for (size_t k = 0; k < sd->methods.len; k++) {
+            FuncDef *mf = *(FuncDef **)vecAt(&sd->methods, k);
+            if (mf && mf->body) astWalkStmtChildren(mf->body, &v);
+        }
+    }
+}
+
 static void scanUnitNeeds(CG *g, Module *m) {
     /* The reclamation switch: on by default, `EXTC_RECLAIM=0` turns it off, and a nonzero value forces it
      * **on** (skipping the allocation-point criterion below). The criterion itself is not here -- this
@@ -732,5 +783,8 @@ static void scanUnitNeeds(CG *g, Module *m) {
             planMakesPool(f))
             g->needPool = true;
     }
+    /* Weak references: the runtime block and the tier decision both hang off this flag, and both are
+     * emitted before the bodies, so the answer has to come from a scan, not from a call site. */
+    scanWeakUse(g, m);
 }
 

@@ -295,4 +295,20 @@ static inline bool isBufPrimitiveName(const char *n) {
                  strcmp(n, "elemPut") == 0);
 }
 
+/**
+ * @brief Is this the name of one of the weak-reference primitives?
+ *
+ * They are on the generic-call path because only the compiler can write the target type `T` out in
+ * C: the library holds three words per handle and cannot turn them back into a `T *`.
+ * `weakUpgrade` also has to come back as `?ref T` -- a reference that may be absent, which is
+ * exactly what a reclaimed object is.
+ *
+ * @param n  Declaration name.
+ * @return   `true` when it is one of them.
+ */
+static inline bool isWeakPrimitiveName(const char *n) {
+    return n && (strcmp(n, "weakAddr") == 0 || strcmp(n, "weakTag") == 0 ||
+                 strcmp(n, "weakGen") == 0 || strcmp(n, "weakUpgrade") == 0);
+}
+
 #endif

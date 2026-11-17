@@ -1,7 +1,7 @@
 # emitted-C identity baseline (refactor invariant)
-# extc md5: 6b95fad3eee690284ee693a938abd368
+# extc md5: 3f69491dab42a2b77c84ad73d8debc76
 # columns: config, source, status, md5, bytes
-# why: hashMap/hashSet 迁到 block+slots（8 个用 hashMap 的程序 × 2 配置 = 16 行）：类型声明/定义换成 dense*/dense*、运行期块集合去掉 extc_pool_*/extc_task_* 加入 extc_buf_*、hashMap 方法体与 rebuild 的 adopt、调用点透传 zone 与出口 release；另 dense.extc 的 adopt 段落后补一个空行，dense 模块内的分配点行号随之 +1。其余 444 行逐字节相同。
+# why: the only new line in the two affected programs is the discard mark that the match-arm emitter now writes for a payload binding (the parser hides it under a temp name; the unit is compiled with -Werror, so it must be read at the declaration).
 default	bench/app/log.extc	ok	ad0bdf583d6602315eb360d056354c8f	118168
 reclaim	bench/app/log.extc	ok	64f05fc09b9fcfd42f3b92a95e56a063	433038
 default	bench/app/route.extc	ok	0192f96636fb6613d8e9be098229f7e0	157946
@@ -118,8 +118,8 @@ default	tests/gc-p0/src/uaf_bulk_copy_default.extc	ok	0649b2c22fba88cc16937ebd04
 reclaim	tests/gc-p0/src/uaf_bulk_copy_default.extc	ok	0649b2c22fba88cc16937ebd04cc269f	337904
 default	tests/gc-p0/src/uaf_param_overwrite.extc	ok	ce4af7ec934a5adeedcce3e694aba401	335776
 reclaim	tests/gc-p0/src/uaf_param_overwrite.extc	ok	ce4af7ec934a5adeedcce3e694aba401	335776
-default	tests/gc-torture/src/datalog_lite.extc	ok	69da4f87b1416ce072d60c0dc3e1bc74	278037
-reclaim	tests/gc-torture/src/datalog_lite.extc	ok	41a8ad6fd0776b5cd5691f68ba42e1e1	593946
+default	tests/gc-torture/src/datalog_lite.extc	ok	99c82dd72f556e1257b23cd7650efc40	278066
+reclaim	tests/gc-torture/src/datalog_lite.extc	ok	39b7bec99c191030348e517d168acd16	593975
 default	tests/gc-torture/src/t01_sparse_pin.extc	ok	a0e9c3f7ebedfd4aefc3a74bfff0926e	360625
 reclaim	tests/gc-torture/src/t01_sparse_pin.extc	ok	a0e9c3f7ebedfd4aefc3a74bfff0926e	360625
 default	tests/gc-torture/src/t02_fanout.extc	ok	979a08d749efaec63ad077cec9feeb94	343105
@@ -396,8 +396,8 @@ default	tests/stl/nd_sub.extc	ok	d4cc1817b3fef05bef084a40d4069563	42785
 reclaim	tests/stl/nd_sub.extc	ok	c424f2a97637a557dde0b1c98fd2cae3	356687
 default	tests/stl/nd_sub3.extc	ok	d004e5af86ed96ae3dcde002342b701d	45093
 reclaim	tests/stl/nd_sub3.extc	ok	0ff51e22a576a8aa30d5b26cb5855a5b	359777
-default	tests/stl/seq.extc	ok	9b5ce525baddbccaa4053f607cb87892	372204
-reclaim	tests/stl/seq.extc	ok	9b5ce525baddbccaa4053f607cb87892	372204
+default	tests/stl/seq.extc	ok	6957eb571b393277497194efc541e9f3	372279
+reclaim	tests/stl/seq.extc	ok	6957eb571b393277497194efc541e9f3	372279
 default	tests/stl/setOrdered.extc	ok	dbc1ccd464eb533a5b2dc13a13e90d98	157604
 reclaim	tests/stl/setOrdered.extc	ok	6264188ebe09ec2e54a381a72df09190	471562
 default	tests/stl/setStructKey.extc	ok	8963f9f3eb9d3c14f1a45b9f8912178f	131254

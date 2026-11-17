@@ -1,0 +1,68 @@
+/* std/weak.extc —— 弱引用（`weak<T>`）：指向一个被回收的对象的句柄，不阻止它被回收。
+ *
+ * **值就是三个机器字**：对象的地址、该槽的版本号、该板（slab）的进程级序号。三个字都是
+ * 拿的那一刻从运行期读来的，句柄本身不登记在任何表里 —— 没有表要维护，也就没有表要清扫。
+ * `upgrade` 把三个字交回运行期，由它做五步纯读校验（板还在表里 / 板序号相符 / 区未关闭 /
+ * 槽仍占用 / 版本号相符），全过才把地址还回来，否则 `none`。目标死亡一侧**零工作**：
+ * 版本号在释放槽时由运行期自己 +1，句柄侧不需要被告知。
+ *
+ * 三条语义：
+ *   1. `upgrade()` 拿到的是普通 `ref T`：被它持有期间就是个栈根，回收器扫根就保活。
+ *   2. 它的逃逸级别是**调用点当前 zone**，与 `new` / `alloc` 同一条规则。
+ *   3. `T` 必须住在被回收的槽里；对帧 arena / 池块 / 板的地址取弱引用在运行期 `trap`。
+ *
+ * @code
+ * use std::weak
+ *
+ * fn main() -> i32 {
+ *     var n: mut ref i64 = new i64
+ *     *n = 7
+ *     let w: weak<i64> = weak::of(n)
+ *     match w.upgrade() {
+ *         some(p) => { println(*p) }
+ *         none => { println(0) }
+ *     }
+ *     return 0
+ * }
+ * @endcode
+ */
+
+struct weak<T> {
+    @private addr: i64   /* 对象的地址：upgrade 成功时原样还回来 */
+    @private tag:  i64   /* 槽的版本号：槽被复用过就不再相符 */
+    @private gen:  i64   /* 板的进程级序号：地址被新板复用时挡住 ABA */
+
+    /* 三个字装进句柄。泛型结构体没有字面量，所以先声明再逐字段写（字段是 @private，
+     * 只有本类型自己的方法能写）。 */
+    @private
+    fn ofWords(a: i64, t: i64, g: i64) -> weak<T> {
+        var w: weak<T> = {}
+        w.addr = a
+        w.tag  = t
+        w.gen  = g
+        return w
+    }
+
+    /** @brief 把句柄换回对象；目标已经回收则 `none`。
+     *
+     * 返回 `option<ref T>` 而不是 `?ref T`：这样今天就能直接用 `?` 传导
+     * （`?` 只认 `option` / `result`），空值就是「失效」。 */
+    fn upgrade(self: ref weak<T>) -> option<ref T> {
+        var q: ?ref T = weakUpgrade<T>(self.addr, self.tag, self.gen)
+        if q == null { return none }
+        return some(q)
+    }
+
+    /** @brief 目标是否还活着。与 `upgrade() != none` 同义，省一次装包。 */
+    fn isValid(self: ref weak<T>) -> bool {
+        var q: ?ref T = weakUpgrade<T>(self.addr, self.tag, self.gen)
+        return q != null
+    }
+}
+
+/** @brief 取 `p` 的弱引用（模块函数，`T` 从实参推出）。
+ *
+ * 写成模块函数而不是关联函数，是因为 `T` 只出现在实参里：`weak::of(n)` 不用写 `<i64>`。 */
+fn of<T>(p: ref T) -> weak<T> {
+    return weak<T>::ofWords(weakAddr<T>(p), weakTag<T>(p), weakGen<T>(p))
+}

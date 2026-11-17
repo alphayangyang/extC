@@ -733,6 +733,14 @@ for (size_t i = 0; i < s->u.match.arms.len; i++) {
         size_t beforeBind = g->out->len;
         cgLine(g, "%s %s = %s.u.%s._%zu;", cType(g, bt), *(const char **)vecAt(&arm->binds, k),
                subj, arm->variant, k);
+        /* A `_` in the payload list means "discard": the parser gives it a hidden `__extc_t<N>`
+         * name so two discards in one arm do not collide. Nothing reads such a binding by
+         * construction, and the generated unit is compiled with -Werror, so mark it read at the
+         * declaration. The dead-binding pass removes the line only when it can place it in the
+         * unit text; a discard binding taken out of a function that was itself assembled from a
+         * scratch buffer cannot be located there, and this mark is what keeps that case clean. */
+        const char *bn0 = *(const char **)vecAt(&arm->binds, k);
+        if (bn0 && strncmp(bn0, "__extc_t", 8) == 0) cgLine(g, "(void)%s;", bn0);
         /* An arm that never reads its payload - `none => 0` written with a
          * binding it does not use, or an arm that only ignores the value it
          * matched - should not pay for the copy. The line is remembered, and

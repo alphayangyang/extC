@@ -1,0 +1,29 @@
+// expect: 0 0 1
+use std::weak
+
+fn yn(b: bool) -> i64 {
+    if b { return 1 }
+    return 0
+}
+
+
+fn spawn() -> weak<i64> {
+    var t: mut ref i64 = new i64
+    *t = 11
+    return weak::of(t)
+}
+
+fn dead(w: weak<i64>) -> bool {
+    let q: option<ref i64> = w.upgrade()
+    match q {
+        some(_) => { return false }
+        none => { return true }
+    }
+}
+
+fn main() -> i32 {
+    var w: weak<i64> = spawn()
+    var c: weak<i64> = w
+    println(yn(w.isValid()), " ", yn(c.isValid()), " ", yn(dead(c)))
+    return 0
+}

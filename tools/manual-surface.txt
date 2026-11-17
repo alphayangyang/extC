@@ -920,3 +920,9 @@ std::text::string	stringGuard	p	field	internal
 std::text::string	stringGuard	release	method	public
 std::text::string	stringGuard	s	field	internal
 std::text::string	stringGuard	view	method	public
+std::weak	weak	addr	field	internal
+std::weak	weak	gen	field	internal
+std::weak	weak	isValid	method	public
+std::weak	weak	ofWords	method	internal
+std::weak	weak	tag	field	internal
+std::weak	weak	upgrade	method	public

@@ -35,9 +35,10 @@
  * @param line    one line of the runtime text.
  * @param timeOn  the counting tier is on.
  * @param chainOn the frame-root chain is emitted.
+ * @param weakOn  a weak reference exists in this unit.
  * @return 1 to emit the section, 0 to drop it.
  */
-static int rtSectionOn(const char *line, int timeOn, int chainOn) {
+static int rtSectionOn(const char *line, int timeOn, int chainOn, int weakOn) {
     const char *p = strstr(line, "[rt:");
     if (p == NULL) return 1;
     p += 4;
@@ -46,6 +47,7 @@ static int rtSectionOn(const char *line, int timeOn, int chainOn) {
     size_t n = (size_t)(e - p);
     if (n == 8 && memcmp(p, "counters", 8) == 0) return timeOn;   /* counter arrays exist only in the counting tier */
     if (n == 5 && memcmp(p, "chain", 5) == 0) return chainOn;     /* the frame-root chain has no emitter pushing onto it */
+    if (n == 4 && memcmp(p, "weak", 4) == 0) return weakOn;       /* weak references: nothing is emitted unless the unit takes one */
     return 1;
 }
 
@@ -61,16 +63,17 @@ static int rtSectionOn(const char *line, int timeOn, int chainOn) {
  * @param noCount   value of EXTC_RC_NOCOUNT.
  * @param timeOn    value of EXTC_RC_TIME.
  * @param sweepFree value of EXTC_RC_SWEEP_FREE.
+ * @param weakOn    value of EXTC_RC_WEAK.
  * @param[out] val  receives the truth value of the condition when it resolves.
  * @return 1 if the condition resolves, 0 if it is left to the preprocessor.
  */
-static int rtCfgIf(const char *p, int noCount, int timeOn, int sweepFree, int *val) {
-    static const char *const suffixes[3] = { "NOCOUNT", "TIME", "SWEEP_FREE" };
-    const int vals[3] = { noCount, timeOn, sweepFree };
+static int rtCfgIf(const char *p, int noCount, int timeOn, int sweepFree, int weakOn, int *val) {
+    static const char *const suffixes[4] = { "NOCOUNT", "TIME", "SWEEP_FREE", "WEAK" };
+    const int vals[4] = { noCount, timeOn, sweepFree, weakOn };
     while (*p == ' ') p++;
     int neg = 0;
     if (*p == '!') { neg = 1; p++; while (*p == ' ') p++; }
-    for (int k = 0; k < 3; k++) {
+    for (int k = 0; k < 4; k++) {
         /* The macro name is built from prefix + suffix instead of one whole literal: these are
          * macros the generated file defines, not switches of the compiler itself (a whole literal
          * would be taken for a new switch by the static scan of the switch table). */
@@ -121,6 +124,7 @@ static const char *const RECLAIM_RT[] = {
 #include "rt/61-release.inc"
 #include "rt/62-sweep.inc"
 #include "rt/63-owe.inc"
+#include "rt/64-weak.inc"
 };
 
 /**
@@ -158,9 +162,11 @@ static void rtTextBug(size_t lineNo, const char *what) {
  *                   no-count tier).
  * @param frameRoots frame-root chain: 1 emits chain push/lookup code; no emitter pushes onto the
  *                   chain, so callers pass 0.
+ * @param weakOn     weak references: 1 = emit the [rt:weak] section and define EXTC_RC_WEAK. A unit
+ *                   that takes none emits exactly the text it did before (the fields are guarded too).
  */
 void reclaimEmitRuntime(Arena *a, Buf *out, int noCount, int timeOn, int sweepFree,
-                        int localStore, int frameRoots) {
+                        int localStore, int frameRoots, int weakOn) {
     (void)a;
     /* Define the macros first: which branch of #if EXTC_RC_NOCOUNT / #if EXTC_RC_TIME below is
      * taken is decided by them. EXTC_RC_NOCOUNT is normally 1 — counting entry points compile to
@@ -168,6 +174,9 @@ void reclaimEmitRuntime(Arena *a, Buf *out, int noCount, int timeOn, int sweepFr
     bufPuts(out, noCount ? "#define EXTC_RC_NOCOUNT 1\n" : "#define EXTC_RC_NOCOUNT 0\n");
     bufPuts(out, timeOn ? "#define EXTC_RC_TIME 1\n" : "#define EXTC_RC_TIME 0\n");
     bufPuts(out, sweepFree ? "#define EXTC_RC_SWEEP_FREE 1\n" : "#define EXTC_RC_SWEEP_FREE 0\n");
+    /* Written only when the unit takes a weak reference: undefined, every #if above resolves to 0,
+     * and a program without a handle emits exactly the text it always did. */
+    if (weakOn) bufPuts(out, "#define EXTC_RC_WEAK 1\n");
     enum { RT_CFG_MAX_DEPTH = 16 };   /* #if nesting the tables below can track */
     int skipSec = 0;        /* drop the current section whole */
     int sup = 0;            /* inside a dropped #if layer: emit the current branch */
@@ -177,7 +186,11 @@ void reclaimEmitRuntime(Arena *a, Buf *out, int noCount, int timeOn, int sweepFr
     size_t nlines = sizeof RECLAIM_RT / sizeof RECLAIM_RT[0];
     for (size_t i = 0; i < nlines; i++) {
         const char *line = RECLAIM_RT[i];
-        if (strstr(line, "[rt:") != NULL) skipSec = !rtSectionOn(line, timeOn, frameRoots);
+        /* Only a dashed section header starts a section: prose inside a comment may name a section
+         * ("the [rt:weak] fields below"), and taking such a mention for a boundary would drop the
+         * rest of the section -- including the #endif that closes an #if opened just before it. */
+        if (strstr(line, "[rt:") != NULL && strstr(line, "----") != NULL)
+            skipSec = !rtSectionOn(line, timeOn, frameRoots, weakOn);
         if (skipSec) continue;
         if (strncmp(line, "#if", 3) == 0) {
             if (depth == RT_CFG_MAX_DEPTH) {
@@ -192,7 +205,7 @@ void reclaimEmitRuntime(Arena *a, Buf *out, int noCount, int timeOn, int sweepFr
             int known = -1;
             int v = 0;
             if (strncmp(line, "#ifdef", 6) != 0 && strncmp(line, "#ifndef", 7) != 0)
-                known = rtCfgIf(line + 3, noCount, timeOn, sweepFree, &v);
+                known = rtCfgIf(line + 3, noCount, timeOn, sweepFree, weakOn, &v);
             resolvable[depth] = known;
             skipped[depth] = known == 1 && !v;
             if (skipped[depth]) sup++;

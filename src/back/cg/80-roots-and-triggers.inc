@@ -1210,6 +1210,27 @@ static const char *exGencall(CG *g, Expr *e) {
     const char *gcName = e->u.gencall.name;
     /* `extc_sizeOf<T>()` / `extc_viewOfT<T>(p, n)`: the buffer's two doors. Neither emits a
      * runtime: the first is `sizeof`, the second is a struct literal. */
+    /* Weak references: the handle is three words the library stores, turned back into an object by
+     * the runtime. Only the generator can write T out, and the checker already typed weakUpgrade as a
+     * ?ref T, whose null value is exactly the NULL returned once the object is gone. */
+    if (isWeakPrimitiveName(gcName)) {
+        const char *wt = cType(g, ttBase(subst(g, *(Type **)vecAt(&e->u.gencall.targs, 0))));
+        if (strcmp(gcName, "weakAddr") == 0)
+            return arenaPrintf(g->arena, "((int64_t)(uintptr_t)(void *)(%s))",
+                               genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, 0)));
+        g->needWeak = true;   /* the unit now carries the weak half of the runtime */
+        if (strcmp(gcName, "weakTag") == 0)
+            return arenaPrintf(g->arena, "((int64_t)extc_rc_weakTag((void *)(%s)))",
+                               genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, 0)));
+        if (strcmp(gcName, "weakGen") == 0)
+            return arenaPrintf(g->arena, "((int64_t)extc_rc_weakGen((void *)(%s)))",
+                               genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, 0)));
+        return arenaPrintf(g->arena,
+            "((%s *)(void *)extc_rc_weakGet((void *)(uintptr_t)(%s), (uint64_t)(%s), (uint64_t)(%s)))",
+            wt, genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, 0)),
+            genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, 1)),
+            genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, 2)));
+    }
     if (isBufPrimitiveName(gcName)) {
         if (strcmp(gcName, "extc_sizeOf") == 0)
             return arenaPrintf(g->arena, "((int64_t)sizeof(%s))",

@@ -5,7 +5,7 @@
 
 生成方式：`tools/manual_surface.py`；`check.sh` 保证本页与源码一致。
 
-公开面共 919 个成员，其中内部 182 个：
+公开面共 925 个成员，其中内部 186 个：
 
 ## prelude
 
@@ -236,4 +236,11 @@
 - `string.small`（字段）
 - `stringGuard.p`（字段）
 - `stringGuard.s`（字段）
+
+## std::weak
+
+- `weak.addr`（字段）
+- `weak.gen`（字段）
+- `weak.ofWords`（方法）
+- `weak.tag`（字段）
 

@@ -974,6 +974,51 @@ static Type *checkBufPrim(Checker *c, Expr *e, Type *elem) {
     return ttViewMut(tt, sliceOf(c, elem), true);
 }
 /**
+ * @brief Check the weak-reference primitives `weakAddr` / `weakTag` / `weakGen` / `weakUpgrade`.
+ *
+ * A handle is three words the library owns: the address, the slot version and the slab serial. The
+ * compiler part is the type. The target type has to be written out in C so the runtime can hand a
+ * `T *` back, and `weakUpgrade` has to come back as `?ref T`: a reference that may be absent,
+ * which is exactly what a reclaimed object is. That is why the zero value of the result is
+ * `null` rather than a runtime error -- object death is an expected event, not a failure.
+ *
+ * @param c     The checker.
+ * @param e     The `EX_GENCALL` node.
+ * @param elem  The resolved type argument `T`.
+ * @return      `i64` for the three words of a handle, `?ref T` for `weakUpgrade`.
+ */
+static Type *checkWeakPrim(Checker *c, Expr *e, Type *elem) {
+    TypeTable *tt = c->tt;
+    const char *nm = e->u.gencall.name;
+    const bool upgrade = strcmp(nm, "weakUpgrade") == 0;
+    if (e->u.gencall.args.len != (upgrade ? 3u : 1u)) {
+        ckError(c, e->line, NULL, "`%s` takes %s, got %zu", nm,
+                upgrade ? "the three words of a handle" : "one reference", e->u.gencall.args.len);
+        return ttError(tt);
+    }
+    if (!upgrade) {
+        Expr *a = *(Expr **)vecAt(&e->u.gencall.args, 0);
+        Type *ta = checkExpr(c, a);   /* the reference **is** the value here, as in extc_viewOf */
+        if (!ttIsError(ta) && !(ta->kind == TY_REF && ttBase(ta->inner) && ttEquals(ttBase(ta->inner), elem)))
+            ckError(c, a->line,
+                    "A weak reference names one object, so the argument has to be a reference to the"
+                    " type argument.",
+                    "`%s` wants a `ref %s`, found `%s`", nm, typeStr(c, elem), typeStr(c, ta));
+        return c->tI64;   /* the handle word: the library stores it, the runtime reads it */
+    }
+    for (size_t i = 0; i < 3; i++) {
+        Expr *a = *(Expr **)vecAt(&e->u.gencall.args, i);
+        Type *ta = checkValue(c, a);
+        if (!ttIsError(ta) && !ttIsInteger(ta))
+            ckError(c, a->line, NULL, "`weakUpgrade` takes the three words of a handle (the fields of a `weak<T>`),"
+                    " found `%s` for argument %zu", typeStr(c, ta), i + 1);
+    }
+    Type *r = ttRef(tt, elem);
+    r->nullable = true;   /* the object may be gone: `null` is the answer, not a trap */
+    return r;
+}
+
+/**
  * @brief Check the pool primitives `poolSlice` / `poolResize` / `poolGive`, plus the `...Raw` variants
  *        of the first two.
  *
@@ -3742,7 +3787,10 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             /* The buffer primitives are on this path for the same reason: the generator has
              * to write the element type out in C, which the library cannot do. */
             bool isBufPrim = isBufPrimitiveName(e->u.gencall.name);
-            if (!isAlloc && !isPoolPrim && !isBufPrim) {
+            /* The weak primitives share this path for the same reason: the generator has to write the
+             * target type out in C, and weakUpgrade comes back as a ?ref T. */
+            bool isWeakPrim = isWeakPrimitiveName(e->u.gencall.name);
+            if (!isAlloc && !isPoolPrim && !isBufPrim && !isWeakPrim) {
                 FuncDef *tf = findFunc(c, e->u.gencall.name);
                 if (tf && tf->typeParams.len == e->u.gencall.targs.len && tf->typeParams.len > 0) {
                     Vec targs;
@@ -3861,6 +3909,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
              * this local variable. */
             *(Type **)vecAt(&e->u.gencall.targs, 0) = elem;
             if (isBufPrim) return checkBufPrim(c, e, elem);
+            if (isWeakPrim) return checkWeakPrim(c, e, elem);
             if (isPoolPrim) return checkPoolPrim(c, e, elem);
             if (e->u.gencall.args.len != 1) {
                 ckError(c, e->line, NULL, "`%s` takes one argument (how many elements)",

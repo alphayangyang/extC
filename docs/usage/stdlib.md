@@ -1527,6 +1527,59 @@ fn main() -> i32 {
 实测：`next=-1 due=2 tag0=8 uuid=cfbff0d1-9375-5685-968c-48ce8b15ae17`
 （`python3 -c "import uuid;print(uuid.uuid5(uuid.NAMESPACE_DNS,'example.com'))"` 给同一个值）。
 
+### `std::weak`：弱引用（指向回收器对象，但不保活）
+
+`weak<T>` 是 **24 字节纯值**（目标地址 + 槽版本 + slab 序号）：可以按字节拷贝、可以当结构体字段 /
+容器元素 / `option` 载荷，没有 `@drop`、没有引用计数。它只是「记住一个对象」，不让那个对象活着。
+
+| 成员 | 形状 | 说明 |
+|---|---|---|
+| `weak<T>::of(p)` | `(ref T) -> weak<T>` | 取句柄；目标必须是回收器管辖的对象，否则运行期 trap |
+| `w.upgrade()` | `() -> option<ref T>` | 目标还在给 `some(引用)`，已被回收给 `none` |
+| `w.isValid()` | `() -> bool` | 只问活不活，不取引用 |
+
+**拿到的引用在被持有期间是强引用**：`upgrade()` 的结果就是普通 `ref` 局部，回收器扫到栈根就保活。
+「拿到之后对象消失」不存在；消失只发生在 `upgrade()` 返回 `none` 的那些调用。
+
+```extc
+use std::weak
+
+struct node {
+    v: i64
+}
+
+fn main() -> i32 {
+    var n: mut ref node = new node
+    n.v = 7
+    var w: weak<node> = weak::of(n)
+    var seen: i64 = -1
+    let got: option<ref node> = w.upgrade()
+    match got {
+        some(p) => { seen = p.v + 1 }
+        none => { seen = 0 }
+    }
+    println(seen)              // 8：目标还活着
+    println(w.isValid())       // true
+    var c: weak<node> = w      // 拷贝就是另一个独立句柄
+    println(c.isValid())       // true
+    return 0
+}
+```
+
+**失效时机由存储释放决定，不是「下一次收集」。** 函数体里 `new` 出来的对象属于块作用域的区域，
+块退出（函数返回）时整块释放，句柄在那一刻起就是 `none`：
+
+<!-- fragment -->
+```extc
+fn make() -> weak<i64> {
+    var t: mut ref i64 = new i64
+    *t = 11
+    return weak::of(t)     // 句柄指向的对象随函数返回一起没了
+}
+```
+
+**限制**：目标只能是回收器管的槽对象（帧 arena / 池块 / 板上的对象 `of()` 会 trap）；句柄绑地址，
+对象搬到新地址（超出预留的大块增长）即失效；当前只对单线程有意义。
 ### 用户层不该直接用：`std::sys::*`
 
 `std::sys::*` 是**声明 C 原语的特权层**：它能把任意 `(指针, 长度)` 变成视图，能 map/unmap 任意地址段。

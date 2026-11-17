@@ -3280,7 +3280,13 @@ static bool isRetainsNothingBuiltin(const char *name) {
                                        "extc_buf_reserve", "extc_buf_slotReserve",
                                        "extc_buf_release", "extc_buf_discard",
                                        "extc_buf_span", "extc_buf_live",
-                                       "extc_buf_releaseRefs"};
+                                       "extc_buf_releaseRefs",
+                                       /* The weak-reference door: it reads the address and the
+                                        * slot tag of an object the caller already holds and keeps
+                                        * neither, so a call to it must not be read as "this callee
+                                        * may store the reference" -- that turned weak::of into a
+                                        * pin of its argument and kept every probed object alive. */
+                                       "weakAddr", "weakTag", "weakGen", "weakUpgrade"};
     if (!name) return false;
     const char *last = strrchr(name, '$');
     last = last ? last + 1 : name;
@@ -3382,6 +3388,15 @@ static void collectEffectsExpr(Checker *c, FuncDef *f, Expr *e) {
  * cannot publish the caller's reference. The summary stays complete (otherwise every library
  * function taking a callback would drag its caller into the worst case: `apply(buf, inc)` would
  * report "effects could not be fully analyzed"). */
+        } else if (e->kind == EX_GENCALL && e->u.gencall.name &&
+                   isRetainsNothingBuiltin(e->u.gencall.name)) {
+            /* A primitive generic call (`weakAddr<T>(p)`, `weakTag<T>(p)`, `elemPut<T>(...)`) carries
+             * no declaration either, so it takes the same treatment as the named builtins above:
+             * the arguments are read for the call and nothing is kept. Falling through to the
+             * unknown branch made the summary of `weak::of` incomplete, and an incomplete summary
+             * makes the caller pin every reference argument -- the object the handle named stayed
+             * alive forever, which the tests/weak/stale probe saw as an upgrade that never fails. */
+            
         } else {
             /* A call on a **type parameter** is deferred, not unknown: `k.hash()` inside
              * `hashMap<K,V>` cannot be resolved while the template is checked, but the instance round

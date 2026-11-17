@@ -23,9 +23,11 @@ int main(void) {
     /* 帧根链（reclaim.c 的 [rt:chain]）还没有发射方往链里 push ⇒ 与 codegen 一致传 0。
      * EXTC_RC_FRAMEROOTS 只给"跳过表跨档核对"用：那一档里的 skip 标记也得对得上表。 */
     int frameRoots = getenv("EXTC_RC_FRAMEROOTS") != NULL;
+    /* 弱引用节（[rt:weak]）：只在这个档里发，跳过表按档取并集时才看得到那 9 条 skip 标记。 */
+    int weakOn = getenv("EXTC_RC_WEAK") != NULL;
     reclaimEmitRuntime(&a, &out, noCount, getenv("EXTC_RC_TIME") != NULL,
                        getenv("EXTC_RC_SWEEPFREE") != NULL, getenv("EXTC_RC_LOCALSTORE") != 0 ? 1 : 0,
-                       frameRoots);
+                       frameRoots, weakOn);
     fputs(bufCstr(&out), stdout);
     return 0;
 }

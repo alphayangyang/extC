@@ -1581,7 +1581,7 @@ static void emitRuntimePrologue(CG *g, Buf *out, Module *m) {
          * yet, so pushing code would be all dead => passing 0 emits nothing. The place to wire it up
          * is this 0: it becomes the corresponding codegen flag. */
         reclaimEmitRuntime(g->arena, out, g->rc.noCount, getenv("EXTC_RC_TIME") != NULL,
-                           g->rc.sweepFree == 1, g->rcLocalStore == 1, 0);
+                           g->rc.sweepFree == 1, g->rcLocalStore == 1, 0, g->needWeak ? 1 : 0);
         /* A region is claimed by **the arena's address**. The allocation point already knows which arena
          * it lands on (`arenaRefAt`), so the region's lifetime coincides exactly with that arena's --
          * including the case where the callee allocates with the caller's home arena (the home arena

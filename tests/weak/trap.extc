@@ -1,0 +1,9 @@
+// expect-trap: weak reference of an object outside every reclaimed region
+use std::weak
+
+fn main() -> i32 {
+    var x: i64 = 5
+    var w: weak<i64> = weak::of(ref x)
+    println(w.isValid())
+    return 0
+}

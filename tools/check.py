@@ -1700,6 +1700,13 @@ def build_items() -> list:
         ["./tests/dense/run.sh"], timeout=600,
         ok_msg=tail1, bad_msg="tests/dense/run.sh", bad_dump=dump_fail(8)))
 
+    # ---- 弱引用 ----
+    items.append(cmd(
+        "weak", "tests",
+        "`weak<T>`：句柄三字与槽版本号、目标死亡后升级为 `none`、可自由拷贝、非回收槽运行期 trap",
+        ["./tests/weak/run.sh"], timeout=600,
+        ok_msg=tail1, bad_msg="tests/weak/run.sh", bad_dump=dump_fail(8)))
+
     # ---- `@drop` 交还状态 ----
     items.append(cmd(
         "drop", "tests",

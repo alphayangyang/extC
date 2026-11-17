@@ -1274,6 +1274,15 @@ cache-sim 判据变红）。
 | （无标记）`if (extc_rc_rsIncN) unlinkChildren(...)` | 一次登记都没发生过 ⇒ 不必撤边 | `rsIncN == 0` ⇒ 没有 `rsInc` 类边 | 多留（保守）| `unlink-nop` 证明"撤边"有牙；这个**守卫**没有专门注入 |
 | `skip:decold-null` | `extc_rc_decOldRef` 的旧值是空指针 ⇒ 立刻返回 | 没写过引用（或已被清零）的槽从来没有登记过边与计数，撤销的対象不存在 | 无（幂等：什么都不撤）| `tests/reclaim` 216/0；L10-c 的 `rs_inc/rs_dec` 对账（`rs_live` 停在 1）；`tests/gc-p0/run.sh l10` 的 RSS 判据 |
 | `skip:decold-notobj` | 旧值不在任何受管块里（C 指针、池块、栈地址，或已被回收/毒化的槽）⇒ 不撤 | 边与计数只在 `storeRef*` 落到受管块时登记过；旧值不受管说明它没被登记，撤了反而会把别人的计数减掉 | 无（不存在的计数不撤）| 同上 + `tests/gc-torture` 14/14（t05_copyrefs/t10_alias_slots 覆盖池/混尺寸拷贝）|
+| `skip:weak-notslot` | `extc_rc_weakTag` 的目标不在任何受管块里（栈、帧 arena、池块、板）⇒ 运行期 trap | 弱引用的失效依赖「槽」这个回收单位；那几类存储整块释放、不逐槽回收，句柄永远不会失效 | 明确 trap（不静默） | `tests/weak/trap` |
+| `skip:weak-dead` | 目标所在区域已关闭 ⇒ trap（取句柄时） | 已关闭区域的槽随时可能被整块交还，句柄从诞生就是死的 | 明确 trap（不静默） | `tests/weak` 四程序 + 默认档全电池 |
+| `skip:weak-vacant` | 槽的占用位为 0 ⇒ trap（取句柄时） | 对空槽取句柄没有对象可指（调用点拿着一个已释放的位置） | 明确 trap（不静默） | 同上 |
+| `skip:weak-no-slab` | `extc_rc_weakGet` 的地址找不到宿主 slab ⇒ `none` | 块已整块归还给分配器：地址不再属于任何受管块 | 无（判「已死」就是正确答复） | `tests/weak/stale` |
+| `skip:weak-slab-reused` | 找到的 slab 序号与句柄里的不同 ⇒ `none` | 同一段地址被新 slab 复用（ABA）：地址对、块不对 | 无（保守：判死） | `tests/weak/stale` + `many` |
+| `skip:weak-region-dead` | 宿主区域已关闭 ⇒ `none` | 区域关闭时整块槽都被交还 | 无（保守：判死） | `tests/weak/stale` |
+| `skip:weak-slot-vacant` | 槽占用位为 0 ⇒ `none` | 目标已被回收、槽还没被复用 | 无（正确答复） | `tests/weak/stale` |
+| `skip:weak-slot-reused` | 槽版本号与句柄里的不同（或版本表还没建）⇒ `none` | 槽已被复用给另一个对象；版本表没建说明这个 slab 从没被登记过，句柄不可能来自它 | 无（正确答复） | `tests/weak/stale` + `many` |
+| `skip:weak-gen` | `extc_rc_weakGen` 找不到宿主 slab ⇒ 返回 0 | 序号从 1 起，0 不是任何 slab 的序号，配对必然失败 | 无（保守：句柄从诞生就死） | `tests/weak/trap`（取句柄前就 trap，走不到这里）+ 默认档 |
 | （无标记）`if (partN > 1) { 登记 }` | 只有一个区域参与 rc ⇒ 免登记 | 单区域不可能有跨区边 | 少算（不安全）| `gate-note-part` + `cross-region` 登记量判据 |
 | （无标记）`#if EXTC_RC_NOCOUNT` 整段 | 关掉计数时计数入口变空操作 | 没有读者 | 少算（不安全）| 单测**两档都跑**（默认 128 / 计数 171）|
 | （无标记）`ownTab`/`bigTab`/`mstk` 增长 | `realloc` 翻倍；失败即 `oops` | 不静默截断 | 不会静默失效 | `gate-checkc` + ASan 语料 |

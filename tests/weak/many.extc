@@ -1,0 +1,35 @@
+// expect: 3 1
+use std::weak
+use std::data::vector
+
+fn spawn() -> weak<i64> {
+    var t: mut ref i64 = new i64
+    *t = 3
+    return weak::of(t)
+}
+
+fn liveCount(v: ref vector<weak<i64>>) -> i64 {
+    var k: i64 = 0
+    var i: i64 = 0
+    while i < v.len() {
+        let it: option<weak<i64>> = v.get(i)
+        match it {
+            some(w) => { if w.isValid() { k = k + 1 } }
+            none => { }
+        }
+        i = i + 1
+    }
+    return k
+}
+
+fn main() -> i32 {
+    var keep: mut ref i64 = new i64
+    *keep = 5
+    var v: vector<weak<i64>> = vector<weak<i64>>::withCap(4)
+    v.push(spawn())
+    v.push(spawn())
+    v.push(weak::of(keep))
+    v.push(spawn())
+    println(v.len() - liveCount(ref v), " ", liveCount(ref v))
+    return 0
+}
