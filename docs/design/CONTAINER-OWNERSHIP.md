@@ -82,6 +82,8 @@ R4 **容器要留存外来值时，自己 clone 一份。** 所有权不共享�
 每一步的判据（缺一不可）：
 
 - `bench/containers/` 对应形状 `new ≤ old × 1.10`，RSS `new ≤ old + 8 MiB`；
+- `tests/gc-p0/run.sh g22` 的位移判据（`maxRSS(k=16 条 1 MiB 串) ≤ 1.5 × maxRSS(k=4)`）从 XFAIL 转 PASS ——
+  它量的是「峰值只由活集决定」，与 S2 的斜率表是同一件事的两个量具；
 - S2 类形状的 RSS **不随迭代数增长**（迁移后应当 ≈ 2 × 单条活集，而不是 4 MiB × 串数）；
 - `tests/stl`、`tests/pool`、`tests/pin` 全绿（世代语义的用例按新语义重写，不许直接删）；
 - G15（池 pin 泄漏）与 G21（buf 引用元素）两条 RSS 判据仍 PASS；

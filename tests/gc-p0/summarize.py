@@ -391,6 +391,42 @@ def main():
     else:
         print('  n/a（timemax.txt 缺 g21 的 50000/800000 两档；现有=%s）' % sorted(g21))
     print()
+    # ---------------- G22：长串周转的内存上界（XFAIL 棘轮） ----------------
+    # Lead R4c。池底 string 的「共享拷贝」把内存按构造过的总量算：k 条 1 MiB 长串顺序构造、
+    # 每条用完即弃（活集恒为一条），峰值却随 k 线性涨。判据 maxRSS(16)/maxRSS(4) <= 1.5。
+    # 迁移前是 XFAIL（已知欠账，不算门禁红），string 迁到 buf 之后必须转 PASS 并提成硬判据。
+    print("## G22 长串周转的内存上界（位移判据 maxRSS(k=16) <= 1.5 × maxRSS(k=4)；迁移前 XFAIL）")
+    g22 = {}
+    for line in read_text(os.path.join(out, "timemax.txt")).splitlines():
+        parts = line.split()
+        if len(parts) >= 4 and parts[0] == "g22":
+            try:
+                g22[parts[1]] = int(parts[2])
+            except ValueError:
+                pass
+    g22r = by.get("g22", [])
+    if "4" in g22 and "16" in g22:
+        a, b = g22["4"], g22["16"]
+        ratio = b / a if a else None
+        want = {"4": "G22 k=4 sum=4194304", "16": "G22 k=16 sum=16777216"}
+        seen = {}
+        for i in range(1, len(g22r) + 1):
+            p = os.path.join(out, "log", "g22_r%d.out" % i)
+            if not os.path.exists(p):
+                continue
+            t = read_text(p).strip()
+            for kk in want:
+                if t == want[kk]:
+                    seen[kk] = True
+        outs_ok = len(seen) == 2
+        ok = (ratio is not None and ratio <= 1.5 and outs_ok
+              and all(r.get("exit") == 0 for r in g22r))
+        print("  k=4 maxRSS = %d kB / k=16 maxRSS = %d kB  ratio = %s  stdout_ok=%s  [%s <=1.5x]"
+              % (a, b, fmt(ratio, "x", 3), outs_ok,
+                 "PASS" if ok else "XFAIL(已知：string 还在池上，只还世代号不还板块；迁移后必须转 PASS)"))
+    else:
+        print("  n/a（timemax.txt 缺 g22 的 4/16 两档；现有=%s）" % sorted(g22))
+    print()
     # ---------------- G16 回归：sweep 中新建 slab 的错误标黑 ----------------
     print("## G16 回归：sweep 中新建 slab 的错误标黑（原 bug ⇒ 2M 挂死；判据 3 reps 全 exit 0 且输出正确）")
     g16 = by.get("g16", [])

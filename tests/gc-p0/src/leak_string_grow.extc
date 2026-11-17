@@ -1,0 +1,46 @@
+/* G22：长串周转的内存上界 —— 池底 string 的「共享拷贝」把内存按构造过的总量算。
+ *
+ * 形状：连续构造 k 条 1 MiB 的长串（每条用 64 字节块 append 16384 次），每条用完即弃；
+ * 因此**活集恒为一条 1 MiB**。argv[1] = k（默认 16）。
+ *
+ * 判据（迁移前是 XFAIL 棘轮，迁移后转硬判据）：maxRSS(k=16) / maxRSS(k=4) 应 ≤ 1.5 ——
+ * 活集不随 k 变，峰值就不该随 k 变。池底实现今天线性增长（4 MiB 串实测 5.8/9.9/18.2/34.5/67.3 MB，
+ * 斜率 ≈ 一个串），因为池只还世代号、不还板块；规则与迁移顺序见 docs/design/CONTAINER-OWNERSHIP.md。
+ * 运行时还要读 stdout 里的校验和，防「提前截断/被优化掉」的假 PASS。 */
+use std::io
+use std::text::string
+
+fn parseN(args: slice<slice<u8>>, idx: i64, dflt: i64) -> i64 {
+    var i: i64 = idx
+    if args.len <= i { return dflt }
+    var s: slice<u8> = args[i]
+    var v: i64 = 0
+    var k: i64 = 0
+    while k < s.len {
+        var ch: u8 = s[k]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        k = k + 1
+    }
+    if v > 0 { return v }
+    return dflt
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    let k = parseN(args, 1, 16)
+    var sum: i64 = 0
+    var i: i64 = 0
+    while i < k {
+        var s: string
+        var chunk: [64]u8
+        var j: i64 = 0
+        while j < 64 { chunk[j] = u8(65 + j % 26)  j = j + 1 }
+        var r: i64 = 0
+        while r < 16384 { s.append(chunk[..])  r = r + 1 }
+        sum = sum + s.len()
+        i = i + 1
+    }
+    io::cout << "G22 k=" << k << " sum=" << sum << "\n"
+    return 0
+}
