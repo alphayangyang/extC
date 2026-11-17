@@ -1,0 +1,18 @@
+// 形状 S1：SSO 短串周转 —— 1000 万次「零值构造 + 写 15 字节 + 读长度」。
+// 两代存储都不该为它分配（内联 16 字节），所以它度量的是写入/读路径本身。
+use std::io
+use std::text::string
+
+fn main() -> i32 {
+    var sum: i64 = 0
+    var i: i64 = 0
+    while i < 10000000 {
+        var s: string
+        s.append("abcdefgh")
+        s.append("ijklmno")
+        sum = sum + s.len()
+        i = i + 1
+    }
+    println("n=", sum, " i=", i)
+    return 0
+}

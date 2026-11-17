@@ -1,0 +1,21 @@
+// 形状 S3：深拷贝 —— 1 条 8 MiB 字符串 clone 20 次（clone 是 O(n)：新缓冲区 + 搬字节，共搬 160 MiB）。
+use std::io
+use std::text::string
+
+fn main() -> i32 {
+    var base: string
+    var chunk: [1024]u8
+    var j: i64 = 0
+    while j < 1024 { chunk[j] = u8(97 + j % 26)  j = j + 1 }
+    var r: i64 = 0
+    while r < 8192 { base.append(chunk[..])  r = r + 1 }
+    var sum: i64 = base.len()
+    var k: i64 = 0
+    while k < 20 {
+        var c: string = base.clone()
+        sum = sum + c.len()
+        k = k + 1
+    }
+    println("n=", sum, " base=", base.len())
+    return 0
+}

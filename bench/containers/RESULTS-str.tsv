@@ -1,0 +1,10 @@
+shape	arm	sec	rss_kb	verdict	output
+s1	old	0.035	1868	min-of-5	n=150000000 i=10000000
+s1	new	0.036	1864	min-of-5	n=150000000 i=10000000
+s1	cpp	0.032	4100	min-of-5	n=150000000 i=10000000
+s2	old	0.022	67328	min-of-5	n=67108864 cap=1
+s2	new	0.023	67328	min-of-5	n=67108864 cap=1
+s2	cpp	0.040	11736	min-of-5	n=67108864 cap=1
+s3	old	0.019	18140	min-of-5	n=176160768 base=8388608
+s3	new	0.019	18136	min-of-5	n=176160768 base=8388608
+s3	cpp	0.023	20324	min-of-5	n=176160768 base=8388608
