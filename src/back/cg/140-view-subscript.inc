@@ -948,7 +948,13 @@ static void genStmtInner(CG *g, Stmt *s) {
             g->inAssignTarget = true;
             const char *tgt = genExpr(g, s->u.assign.target);
             g->inAssignTarget = false;
-            const char *val = genTopExpr(g, s->u.assign.value);
+            /* A `@value` target stores an **independent** value: the right side is cloned when it is a
+             * place, exactly the way a by-value argument is (the checker marks the site with
+             * `planArgClone`, the same bit the argument path uses -- one semantic, one bit). A
+             * temporary is a move and is stored as it is. */
+            const char *cl = (planArgClone(s->u.assign.value) && s->u.assign.target)
+                             ? cloneValueText(g, s->u.assign.target->type, s->u.assign.value) : NULL;
+            const char *val = cl ? cl : genTopExpr(g, s->u.assign.value);
             /* Assigning a reference slot has **overwrite** semantics (the slot already holds an old value), so
              * it goes through storeRef: decrement the old value, increment the new one. A data field
              * (`p.val = x`) is not a reference type => not a word is emitted.
@@ -1212,13 +1218,17 @@ static void genStmtInner(CG *g, Stmt *s) {
                 cgReturn(g, bufCstr(&rb));
                 return;
             }
-            const char *v = genTopExpr(g, s->u.ret.value);
+            /* A returned place of an `@value` type is a **copy the callee builds**: the caller
+             * owns what comes back, and the local the place names is dropped on the way out, so a
+             * bit copy would leave the caller holding released storage. The checker marked it. */
+            const char *cl = planRetClone(s) ? cloneValueText(g, g->retType, s->u.ret.value) : NULL;
+            const char *v = cl ? cl : genTopExpr(g, s->u.ret.value);
             flushPrefix(g);              /* must precede the return */
             /* A plain local handed back is **moved out**: it is dead on the way out, so marking it
              * here keeps `cgReturn`'s drop sweep from releasing the state the caller now owns.
              * The name recorded is the source spelling; the sweep compares that too, because
              * inside a generic instance the generated name carries the instance suffix. */
-            g->dropSkipName = (s->u.ret.value->kind == EX_IDENT) ? s->u.ret.value->u.ident.name : NULL;
+            g->dropSkipName = (!cl && s->u.ret.value->kind == EX_IDENT) ? s->u.ret.value->u.ident.name : NULL;
             cgReturn(g, v);
             g->dropSkipName = NULL;
             return;

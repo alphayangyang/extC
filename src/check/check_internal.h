@@ -1819,6 +1819,20 @@ _Bool isCompoundOp     (const char *op);
  */
  _Bool isPlace (Expr *e);
 /**
+ * @brief Does copying this expression into a `@value` place have to build a new value?
+ *
+ * True when the destination is a `@value` struct with a `clone` method and the source is a **place**:
+ * the source keeps its storage, so the copy calls that method instead of copying the bytes. A
+ * temporary is a move and answers false. A true answer also records the plan bit and marks the hook
+ * as used, so the call site needs no second decision.
+ *
+ * @param c    The checker state.
+ * @param dst  The destination type.
+ * @param src  The source expression.
+ * @return     True when the caller must mark `src` for cloning.
+ */
+ bool ckValueCopyNeedsClone (Checker *c, Type *dst, Expr *src);
+/**
  * @brief Tell whether a value of this type may be passed to `print` or `println`.
  *
  * Structs, generic instances, and arrays are printed recursively by compiler-generated `_debug`

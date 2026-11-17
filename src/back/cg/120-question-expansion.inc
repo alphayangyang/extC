@@ -97,6 +97,19 @@ static void cgRecLeave(CG *g) {
 /** @brief Run the `@drop` hooks of every local still in scope (see the definition). */
 static void genReturnDrops(CG *g);
 
+/** @brief Is a local within reach whose death hands storage back? Asked before choosing the shape of
+ *         an arena-less return, which has no epilogue to jump to. */
+static bool genReturnDropsPending(CG *g);
+
+/** @brief Does one by-value parameter own storage, so that leaving the function has to hand it back? */
+static bool paramNeedsDrop(CG *g, Param *p);
+
+/** @brief Are there parameters of `f` whose death hands storage back? */
+static bool funcHasParamDrops(CG *g, FuncDef *f);
+
+/** @brief Emit the drop of every by-value parameter that owns storage (see the definition). */
+static void genParamDrops(CG *g, FuncDef *f);
+
 /**
  * @brief Return a value from the current function.
  *
@@ -118,7 +131,26 @@ static void cgReturn(CG *g, const char *val) {
      * lost. It is a no-op when the buffer is empty. */
     if (g->inMain && g->needCout) cgLine(g, "extc_cout_flush();");
     if (g->noArena) {
+        /* There is no epilogue label to jump to, so the drops are emitted here. The value has to be
+         * materialised into a temporary first: a hook must not read the parameter or the local the
+         * returned value was taken from. */
+        /* \`curFunc\` is read-only here: the generator never writes through it. */
+        FuncDef *cur = (FuncDef *)g->curFunc;
+        bool pending = genReturnDropsPending(g) || funcHasParamDrops(g, cur);
+        if (val && pending) {
+            cgLine(g, "{ %s __r = %s;", cType(g, g->curFunc->ret), val);
+            g->indent++;
+            genReturnDrops(g);
+            genParamDrops(g, cur);
+            cgTaskRootPopsForReturn(g);
+            if (g->isRecursive) cgLine(g, "--__extc_rec_depth;");
+            cgLine(g, "return __r;");
+            g->indent--;
+            cgLine(g, "}");
+            return;
+        }
         genReturnDrops(g);
+        genParamDrops(g, cur);
         cgTaskRootPopsForReturn(g);
         if (g->isRecursive) {
             /* The return type need not be scalar: a self-recursive function may return `option<T>` or a
@@ -1374,15 +1406,58 @@ static const char *dropValueRef(CG *g, const char *cname) {
  * @param g  The generator state.
  * @param f  The function being emitted.
  */
+static bool paramNeedsDrop(CG *g, Param *p) {
+    if (!p || !p->type || !p->cname) return false;
+    Type *pt = subst(g, p->type);
+    if (!pt || pt->kind == TY_REF || ttIsViewType(pt)) return false;
+    return typeNeedsDrop(g, pt, 0);
+}
+
+static bool funcHasParamDrops(CG *g, FuncDef *f) {
+    if (!f) return false;
+    for (size_t i = 0; i < f->params.len; i++)
+        if (paramNeedsDrop(g, *(Param **)vecAt(&f->params, i))) return true;
+    return false;
+}
+
 static void genParamDrops(CG *g, FuncDef *f) {
+    if (!f) return;
     for (size_t i = 0; i < f->params.len; i++) {
         Param *p = *(Param **)vecAt(&f->params, i);
-        if (!p || !p->type || !p->cname) continue;
-        Type *pt = subst(g, p->type);
-        if (!pt || pt->kind == TY_REF || ttIsViewType(pt)) continue;
-        if (!typeNeedsDrop(g, pt, 0)) continue;
-        genDropValue(g, dropValueRef(g, p->cname), pt, 0);
+        if (!paramNeedsDrop(g, p)) continue;
+        genDropValue(g, dropValueRef(g, p->cname), subst(g, p->type), 0);
     }
+}
+
+/**
+ * @brief Does one local of a block hand storage back when it dies?
+ *
+ * The one place that answers the question, so the sweep and the "is there anything to hand back"
+ * test used to shape an arena-less return cannot drift apart.
+ *
+ * @param g   The generator state.
+ * @param st  The statement; anything but an initialised `var` answers false.
+ * @return    True when its drop has an effect and has not been taken over by `return` or an
+ *            explicit `drop`.
+ */
+static bool localNeedsDrop(CG *g, Stmt *st) {
+    if (!st || st->kind != ST_VAR || !st->u.var.init) return false;
+    if (!typeNeedsDrop(g, st->type, 0)) return false;
+    const char *nm = planCName(st) ? planCName(st) : st->u.var.name;
+    if (!nm) return false;
+    /* `return x` moves `x` out; compare both spellings, because inside a generic instance the
+     * generated name carries the instance suffix while the source name does not. */
+    if (g->dropSkipName &&
+        (strcmp(nm, g->dropSkipName) == 0 ||
+         (st->u.var.name && strcmp(st->u.var.name, g->dropSkipName) == 0)))
+        return false;
+    /* An explicit `drop x` already ran the hook for this name in this block. */
+    for (size_t k = 0; k < g->dropExplicit.len; k++) {
+        const char *n = *(const char **)vecAt(&g->dropExplicit, k);
+        if (n && (strcmp(n, nm) == 0 || (st->u.var.name && strcmp(n, st->u.var.name) == 0)))
+            return false;
+    }
+    return true;
 }
 
 /** @brief Emit the hooks for one block's locals; see the declaration for the timing rules. */
@@ -1392,28 +1467,21 @@ static void genBlockTailDrops(CG *g, Stmt *block, size_t limit) {
     size_t n = limit < block->u.block.stmts.len ? limit : block->u.block.stmts.len;
     for (size_t i = n; i-- > 0;) {
         Stmt *st = *(Stmt **)vecAt(&block->u.block.stmts, i);
-        if (!st || st->kind != ST_VAR || !st->u.var.init) continue;
-        if (!typeNeedsDrop(g, st->type, 0)) continue;
+        if (!localNeedsDrop(g, st)) continue;
         const char *nm = planCName(st) ? planCName(st) : st->u.var.name;
-        if (!nm) continue;
-        /* `return x` moves `x` out; compare both spellings, because inside a generic instance the
-         * generated name carries the instance suffix while the source name does not. */
-        if (g->dropSkipName &&
-            (strcmp(nm, g->dropSkipName) == 0 ||
-             (st->u.var.name && strcmp(st->u.var.name, g->dropSkipName) == 0)))
-            continue;
-        /* An explicit `drop x` already ran the hook for this name in this block. */
-        bool alreadyDropped = false;
-        for (size_t k = 0; k < g->dropExplicit.len; k++) {
-            const char *n = *(const char **)vecAt(&g->dropExplicit, k);
-            if (n && (strcmp(n, nm) == 0 || (st->u.var.name && strcmp(n, st->u.var.name) == 0))) {
-                alreadyDropped = true;
-                break;
-            }
-        }
-        if (alreadyDropped) continue;
         genDropValue(g, dropValueRef(g, nm), st->type, 0);
     }
+}
+
+static bool genReturnDropsPending(CG *g) {
+    for (size_t i = g->dropBlocks.len; i-- > 0;) {
+        Stmt *block = *(Stmt **)vecAt(&g->dropBlocks, i);
+        size_t limit = *(size_t *)vecAt(&g->dropPos, i);
+        size_t n = limit < block->u.block.stmts.len ? limit : block->u.block.stmts.len;
+        for (size_t k = n; k-- > 0;)
+            if (localNeedsDrop(g, *(Stmt **)vecAt(&block->u.block.stmts, k))) return true;
+    }
+    return false;
 }
 
 /**

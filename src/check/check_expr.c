@@ -405,6 +405,45 @@ static FuncDef *findOpLiteral(Checker *c, Type *st, const char *op, const char *
 }
 
 /**
+ * @brief Would copying this expression into a place of type `dst` share storage?
+ *
+ * An `@value` type owns its storage, so every by-value copy has to be built by the type's
+ * `clone`. The declaration case is handled where the binding is created; the other three copy
+ * points are a by-value argument, a struct-literal field initializer and a `return`. A temporary is
+ * **moved**, not copied, and needs nothing.
+ *
+ * Asking the question here is also what keeps the hook reachable: code generation emits the call,
+ * and reachability pruning deletes any method instance nobody planned to use -- the generated C
+ * would then call a function that has no definition.
+ *
+ * @param c    The checker.
+ * @param dst  The type the value is copied into.
+ * @param src  The expression that is copied.
+ * @return     true when the copy must go through `clone`.
+ */
+bool ckValueCopyNeedsClone(Checker *c, Type *dst, Expr *src) {
+    if (!c || !dst || !src || ttIsError(dst)) return false;
+    Type *b = ttBase(tsub(c, dst));
+    StructDef *sd = b ? structOf(b) : NULL;
+    if (!sd || !sd->valueCopy || !sd->cloneHook) return false;
+    /* A malformed hook is reported on the declaration path, where the message can name the type;
+     * copying through it is simply not planned. */
+    if (sd->cloneHook->params.len != 1) return false;
+    /* A place has storage of its own: a binding, a field / index / slice of one, and `*p` (the
+     * pointee of a reference -- `isPlace` stops at the dereference, but the storage it names is the
+     * caller's and a copy must be built from it). */
+    /* `ttBase` unwraps a reference, so the operand's type is read as it is: TY_REF means the
+     * dereference names the caller's storage. */
+    bool place = isPlace(src) ||
+                 (src->kind == EX_DEREF && src->u.deref.operand && src->u.deref.operand->type &&
+                  src->u.deref.operand->type->kind == TY_REF);
+    if (!place) return false;
+    planSetUsed(sd->cloneHook, true);
+    ckNoteInstUse(sd->cloneHook, b);
+    return true;
+}
+
+/**
  * @brief Record that a method/operator `m` was used on this receiver type.
  *
  * Only recorded when the receiver is a **concrete instance** of that generic struct: template method
@@ -3246,6 +3285,9 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 /* `coroutine<T>` is a uniform handle, a plain 24-byte value, so any place
                  * that takes a value takes it. */
                 checkAssignable(c, pt, at, a, "argument");
+                /* The same `@value` copy rule as an ordinary call: an associated function is a
+                 * call too, so a place handed to a by-value parameter is cloned. */
+                if (ckValueCopyNeedsClone(c, pt, a)) planSetArgClone(a, true);
             }
             /* The reference check applies to an associated function as well, once its
              * arguments have been checked. */
@@ -4457,6 +4499,10 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 /* `coroutine<T>` is a uniform handle, a plain 24-byte value, so any place
                  * that takes a value takes it. */
                 checkAssignable(c, p->type, at, a, "argument");
+                /* A by-value argument of an `@value` type owns its storage: a place has to be
+                 * copied through `clone`, or two values would share one storage and the callee's
+                 * parameter would release what the caller still holds. */
+                if (ckValueCopyNeedsClone(c, p->type, a)) planSetArgClone(a, true);
             }
             /* Every call site is checked, not only the ones with a home arena: what matters is
              * that the callee may store into a container the argument points at, which has
@@ -5141,6 +5187,9 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 /* `coroutine<T>` is a uniform handle, a plain 24-byte value, so any place
                  * that takes a value takes it. */
                 checkAssignable(c, pt, at, a, "argument");
+                /* A method argument follows the same `@value` rule as an ordinary call: the
+                 * callee's parameter owns what it is given and drops it on the way out. */
+                if (ckValueCopyNeedsClone(c, pt, a)) planSetArgClone(a, true);
             }
             /* The rule is checked only after the arguments have been checked: before that `a->type` is not filled
              * in yet and `typeContainsRef` says "no" to everything, so violations would slip through silently.
@@ -5226,6 +5275,9 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 bufInit(&what, c->arena);
                 bufPrintf(&what, "field `%s`", fi->name);
                 checkAssignable(c, want, vt, fi->value, bufCstr(&what));
+                /* A field of an `@value` type owns its storage: a literal that copies a place
+                 * into it would leave two owners, so the copy is built through `clone`. */
+                if (ckValueCopyNeedsClone(c, want, fi->value)) planSetArgClone(fi->value, true);
             }
 
             /* Omitted fields are filled with the zero value, but `ref` has no zero value: leaving it alone would

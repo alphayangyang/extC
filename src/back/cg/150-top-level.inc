@@ -972,6 +972,13 @@ static void genFuncInner(CG *g, FuncDef *f) {
     bool fallsOff = !(f->body && f->body->kind == ST_BLOCK && f->body->u.block.stmts.len > 0
                       && stmtIsDefiniteReturn(*(Stmt **)vecAt(&f->body->u.block.stmts,
                                                               f->body->u.block.stmts.len - 1)));
+    /* An arena-less function has no epilogue to jump to, so falling off the end of the body hands
+     * its locals and its by-value parameters back here. Emitted only on the exit that really falls
+     * off; a body that ends in a `return` already left through `cgReturn`. */
+    if (fallsOff && g->noArena) {
+        genReturnDrops(g);
+        genParamDrops(g, f);
+    }
     if (g->isRecursive) {
         cgRecLeave(g);
         /* This return is emitted only when the body can fall off its end. When

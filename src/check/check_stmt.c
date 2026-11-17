@@ -5170,6 +5170,11 @@ void checkStmt(Checker *c, Stmt *s) {
             checkStoreEscape(c, s->u.assign.value, s->u.assign.target, s->line);
             if (ttIsError(tt_)) return;
             checkAssignable(c, tt_, vt, s->u.assign.value, "assignment");
+            /* Storing into a `@value` place builds an independent value, so a place on the right is
+             * cloned (the same rule as a by-value argument). The old value of the place is dropped by
+             * the generator before the new one is stored, so the assignment is a drop-and-build pair
+             * rather than a bit copy that leaks the storage it replaced. */
+            if (ckValueCopyNeedsClone(c, tt_, s->u.assign.value)) planSetArgClone(s->u.assign.value, true);
             noteAcyclicStore(c, s, s->u.assign.target, s->u.assign.value);
             return;
         }
@@ -5485,6 +5490,20 @@ void checkStmt(Checker *c, Stmt *s) {
             warnSharedReturn(c, s->u.ret.value, vt);
             markCallHomeIfEscaping(c, s->u.ret.value, 0);    /* it is handed out: use the home arena */
             checkAssignable(c, want, vt, s->u.ret.value, "return value");
+            /* The caller receives a value that owns its storage, so returning a place of an
+             * `@value` type builds the caller's copy through `clone` instead of handing out the
+             * local's storage.
+             *
+             * A **bare local** is the exception: it dies with the frame, so the value is moved, not
+             * copied -- the same rule `@noCopy` follows above (the code generator skips that local's
+             * drop, because the caller owns the value now). A field, an element, `*p` or a parameter
+             * keeps the storage this frame does not own and is cloned. */
+            bool retMoves = false;
+            if (s->u.ret.value && s->u.ret.value->kind == EX_IDENT) {
+                Sym *rs = lookup(c, s->u.ret.value->u.ident.name);
+                retMoves = rs && rs->depth >= 1;
+            }
+            if (!retMoves && ckValueCopyNeedsClone(c, want, s->u.ret.value)) planSetRetClone(s, true);
             /* A returned reference must point at a parameter or at static data, i.e. depth 0. */
             if (dbgOn("EXTC_DBG_RET3"))
                 fprintf(stderr, "[ret3] %-8s line=%d kind=%d d=%d mentionsParam=%d\n",

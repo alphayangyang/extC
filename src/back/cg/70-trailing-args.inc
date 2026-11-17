@@ -278,6 +278,10 @@ static const char *genDynCall(CG *g, Expr *e) {
     return arenaPrintf(g->arena, "extc_dyn_%zu(%s, &%s)", idx, homeArg(g, ARENA_HOME), rtmp);
 }
 
+/* Defined below, next to the struct-literal path that also uses it: a by-value copy of an
+ * `@value` place is a **built** copy, never a byte copy. */
+static const char *cloneValueText(CG *g, Type *dst, Expr *site);
+
 /**
  * @brief Generate a method call as an ordinary function call on the receiver.
  *
@@ -446,14 +450,55 @@ static const char *genMethodCall(CG *g, Expr *e) {
     Buf b;
     bufInit(&b, g->arena);
     bufPrintf(&b, "%s(%s", fname, recvC);
-    for (size_t i = 0; i < e->u.method.args.len; i++)
-        bufPrintf(&b, ", %s", genExpr(g, *(Expr **)vecAt(&e->u.method.args, i)));
+    for (size_t i = 0; i < e->u.method.args.len; i++) {
+        /* The written argument that lands in parameter `i + 1` (0 is the receiver): a by-value
+         * `@value` parameter is built here for the same reason an ordinary argument is. */
+        Expr *a = *(Expr **)vecAt(&e->u.method.args, i);
+        const char *av = NULL;
+        if (planArgClone(a) && i + 1 < f->params.len) {
+            Param *pm = *(Param **)vecAt(&f->params, i + 1);
+            av = cloneValueText(g, pm->type, a);
+        }
+        bufPrintf(&b, ", %s", av ? av : genExpr(g, a));
+    }
     /* The receiver counts as the shallowest mutable reference argument, so it is the first
      * argument for both the implicit tail parameters and the `@overwrite` cells. */
     cgImplicitArgs(g, &b, f, e, e->u.method.args.len + 1, false);
     owPassCells(g, &b, e, e->u.method.args.len + 1, cgHasImplicitArgs(f));
     bufPutc(&b, ')');
     return bufCstr(&b);
+}
+
+/**
+ * @brief Emit the `clone` call that builds a by-value copy of an `@value` place.
+ *
+ * An `@value` type owns its storage, so every by-value copy has to be built instead of copied
+ * byte for byte: the checker marks the three copy points besides a declaration (a by-value
+ * argument, a struct-literal field initializer and a `return`) and this turns the mark into
+ * `Type_clone(&(place))`.
+ *
+ * The hook takes only `self`, but any call to a method that returns an aggregate still passes the
+ * implicit arguments the declaration asks for, so they are appended here through the same helper
+ * every other call site uses.
+ *
+ * @param g     The generator.
+ * @param dst   The type of the place the copy is written into.
+ * @param site  The place being copied; a temporary is moved and never reaches here.
+ * @return      C text of the clone call, or `NULL` when the hook cannot be named.
+ */
+static const char *cloneValueText(CG *g, Type *dst, Expr *site) {
+    Type *t = subst(g, dst);
+    StructDef *sd = structOf(ttBase(t));
+    if (!sd || !sd->cloneHook) return NULL;
+    const char *fn = cMethodName(g, t, sd->cloneHook);
+    const char *src = genExpr(g, site);
+    if (!fn || !src) return NULL;
+    Buf cl;
+    bufInit(&cl, g->arena);
+    bufPrintf(&cl, "%s(&(%s)", fn, src);
+    cgImplicitArgs(g, &cl, sd->cloneHook, site, 1, false);
+    bufPuts(&cl, ")");
+    return bufCstr(&cl);
 }
 
 /**
@@ -524,8 +569,12 @@ static const char *genStructLitAs(CG *g, Expr *e, bool staticInit) {
         Type *ft = subst(g, fd->type);
         Expr *v = litValueFor(e, fd->name);
         if (i) bufPuts(&b, ", ");
-        bufPrintf(&b, ".%s = %s", fd->name,
-                  v ? genExpr(g, v) : zeroValue(g, ft));
+        /* A field of an `@value` type owns its storage: copying a place into the literal would
+         * leave two owners, so the checker marked the initializer and the copy is built here. */
+        const char *vt = NULL;
+        if (v && planArgClone(v)) vt = cloneValueText(g, ft, v);
+        if (!vt) vt = v ? genExpr(g, v) : zeroValue(g, ft);
+        bufPrintf(&b, ".%s = %s", fd->name, vt);
     }
     bufPuts(&b, "}");
 
@@ -945,7 +994,12 @@ static const char *exCall(CG *g, Expr *e) {
     bufPutc(&b, '(');
     for (size_t i = 0; i < e->u.call.args.len; i++) {
         if (i) bufPuts(&b, ", ");
-        bufPuts(&b, genExpr(g, *(Expr **)vecAt(&e->u.call.args, i)));
+        /* A by-value argument of an `@value` type is a **copy that has to be built**: the callee`s
+         * parameter owns its storage and drops it on the way out, so handing over the place itself
+         * would hand over the caller`s storage too. The checker marked the argument. */
+        Expr *a = *(Expr **)vecAt(&e->u.call.args, i);
+        const char *av = planArgClone(a) ? cloneValueText(g, a->type, a) : NULL;
+        bufPuts(&b, av ? av : genExpr(g, a));
     }
     /* Asking the owner **once** is enough: it hands out both home and zone. Asking twice (home
      * first, then zone) would emit both into every function that needs both. The `poolNewAt` path
@@ -1075,7 +1129,10 @@ static const char *exAssoc(CG *g, Expr *e) {
     bufPutc(&b, '(');
     for (size_t i = 0; i < e->u.assoc.args.len; i++) {
         if (i) bufPuts(&b, ", ");
-        bufPuts(&b, genExpr(g, *(Expr **)vecAt(&e->u.assoc.args, i)));
+        /* Same rule as an ordinary call: a by-value `@value` argument is built, not copied. */
+        Expr *a = *(Expr **)vecAt(&e->u.assoc.args, i);
+        const char *av = planArgClone(a) ? cloneValueText(g, a->type, a) : NULL;
+        bufPuts(&b, av ? av : genExpr(g, a));
     }
     /* An associated function such as `Type::make()` allocates, so the
      * home arena argument is appended. */

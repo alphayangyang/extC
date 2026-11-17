@@ -1046,11 +1046,16 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
                          "`@value` and `@noCopy` cannot both describe one struct");
                 return false;
             }
-            if (s->dropHook && !s->noCopy) {
+            /* A `@drop` hook needs **one owner per value**: either `@noCopy` (exactly one owner, no
+             * copies exist) or `@value` (a copy builds an independent value through `clone`, so every
+             * copy owns its own storage and can be released on its own). A struct with neither label is
+             * bit-copied, which would give two owners one moment to release -- rejected. */
+            if (s->dropHook && !s->noCopy && !valueCopy) {
                 ctxError(ctx, s->dropHook->line, 1,
-                         "A type with two owners has no single moment to hand its state back."
-                         " Mark the struct `@noCopy` first.",
-                         "`@drop` needs a `@noCopy` struct");
+                         "A type with two owners has no single moment to hand its state back. Mark the"
+                         " struct `@noCopy` (no copies) or `@value` (a copy is a `clone`, so each"
+                         " copy owns its storage) first.",
+                         "`@drop` needs a `@noCopy` or `@value` struct");
                 return false;
             }
             if (frozen) s->frozen = true;

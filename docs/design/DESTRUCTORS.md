@@ -40,9 +40,11 @@ struct ofstream {
 - Reason: a magic name makes an accidental `fn drop` silently become a destructor. An attribute is
   opt-in and shows up in review; the call site stays readable whichever name the author picks
   (`dispose`, `close`, `release`).
-- `@drop` is only legal on a method of a `@noCopy` type that takes `self: mut ref T` and returns
-  `void`. A `@drop` type must declare exactly one such method (`check_` gate).
-- A type with `@drop` must be `@noCopy`: dropping is only unambiguous when there is exactly one owner.
+- `@drop` is only legal on a method of a `@noCopy` or `@value` type that takes `self: mut ref T` and
+  returns `void`. A `@drop` type must declare exactly one such method (`check_` gate).
+- A type with `@drop` must be `@noCopy` or `@value`: dropping is unambiguous only when each copy owns
+  its own storage. An `@value` type gets that from its `clone` (every copy is built from scratch); a
+  `@noCopy` type from the fact that it never gets a second owner.
 
 ## 2. When it runs
 
@@ -98,7 +100,7 @@ name" / "not tracked here" — the recoverable side (see the status line).
 
 | Shape | Why | Checked |
 |---|---|---|
-| `@drop` on a copyable type | dropping needs one owner | `@drop requires @noCopy` |
+| `@drop` on a type that is neither `@noCopy` nor `@value` | dropping needs an owner per copy | `@drop` needs a `@noCopy` or `@value` struct |
 | `drop x` while `x` is borrowed | dangling | at the statement |
 | `drop` of a field outside a destructor | partial move out of a value | at the statement |
 | a `@drop` value inside `varArray`/`vector`/`hashMap`/`dyn`/`any` | those copy/clone values | at the container's element check |
@@ -112,7 +114,7 @@ name" / "not tracked here" — the recoverable side (see the status line).
 Checker:
 
 - `Type.dropMethod` (or a flag on the `StructDef`) filled while checking the type body; `@drop`
-  validated (arity, `self: mut ref Self`, `void`, `@noCopy`).
+  validated (arity, `self: mut ref Self`, `void`, `@noCopy` or `@value`).
 - Place bookkeeping: the checker already knows, per block, which locals are declared and their
   types; add "needs drop" to the block's scope frame so codegen can walk it.
 - `drop x` statement: `ST_DROP`, new statement kind (walkers and the AST-freeze baseline need the

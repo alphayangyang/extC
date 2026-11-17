@@ -204,15 +204,26 @@ s = s + "abc"       // 走 `fn +` ：造新字符串再赋值，上一份存储�
 
 ### 已经能跑的那一半（`@value`）
 
-| 情形 | 今天的行为 |
+`@value` 现在**全通路**接上了：只要目的地是 `@value` 类型、来源是一个 place（有自己存储的
+表达式），拷贝就走 `T::clone`；临时量是移动，不发 `clone`。
+
+| 拷贝点 | 今天的行为 |
 |---|---|
-| `var d: T = c`，`T` 标记 `@value`，`c` 是变量/字段/元素（place） | 调用 `T::clone(&c)`，两个值各有自己的存储 |
-| `var d: T = make()`（临时量） | 移动，不调用 `clone`（临时量没有第二个名字） |
-| 结构体字面量字段、按值实参、按值返回 | 仍是位拷贝（还没接 `clone`）⇒ `@value` 类型暂时不要用在这三个位置 |
+| `var d: T = c`（`c` 是 place） | 调用 `T::clone(&c)`（`PLAN_VAR_CLONE`） |
+| `var d: T = make()`（临时量） | 移动，不发 `clone` |
+| 按值实参、关联函数实参、方法实参 | 调用 `T::clone(&x)`（`PLAN_ARG_CLONE`） |
+| 结构体字面量字段 `S { f: x }` | 调用 `T::clone(&x)`（`PLAN_ARG_CLONE`） |
+| `return x`（`x` 是 place） | 调用 `T::clone(&x)`（`PLAN_RET_CLONE`）；返回的是本地绑定或临时量时是移动，不发 `clone` |
+| `x = y`（`x` 是 `@value` place，`y` 是 place） | 先 drop `x` 的旧值，再 `T::clone(&y)`（复用 `PLAN_ARG_CLONE`） |
+| `*p`（`p: ref T`）出现在上述任一位置 | 认作 place ⇒ 走 `clone` |
 
 `@value` 与 `@noCopy` 互斥：一个说"拷贝要建成独立的值"，一个说"不许有第二个所有者"。
-判据在 `tests/copy/`（4 项）：`clone_place`、`move_temp`，以及两条反例（缺 `clone`、与
-`@noCopy` 同用）。
+`@value` 可以与 `@drop` 同用：每次拷贝都是 `clone`，所以每份值各自拥有自己的存储、各自跑
+自己的 `@drop`；`@noCopy` 则是"只有一个所有者"。两条路的区别在拷贝，不在释放。
+
+判据在 `tests/copy/`（5 项）：`clone_place`、`move_temp`、`copy_points`（一张 11 行的计数表，
+覆盖上表每一个拷贝点与 `*p`，并以"六个副本各自 drop 后 `buf::bufLive()==0`"收尾），以及两条
+反例（缺 `clone`、与 `@noCopy` 同用）。
 
 ## 八、性能与元数据预算
 

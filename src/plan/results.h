@@ -155,6 +155,11 @@ typedef struct {
     /* `var x = <place>` where the type is marked `@value`: the copy is the type's `clone` method,
      * not a field copy. A temporary initializer is moved and leaves this false. */
     bool        varClone;
+    /* `@value` copies the checker accepted at the other three copy points: a by-value argument or
+     * struct-literal field (`argClone`) and a `return` (`retClone`). The declaration case above is
+     * `varClone`. */
+    bool        argClone;
+    bool        retClone;
     uint64_t    addrMask;
     /* ---- call / receiver facts ---- */
     Expr       *extDom;        /* `EX_EXT`: the domain this task is handed to */

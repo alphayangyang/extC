@@ -1,0 +1,70 @@
+/* 判据：`@value` 类型的**每一个按值拷贝点**都调用 `clone`，而临时量与本地变量的返回是移动；
+ * 每个副本拥有自己的缓冲（在副本上 push 不改变原件），并且离开作用域时各自的 `@drop` 都跑一次
+ * （`buf` 的预留全部归还，`buf::bufLive()==0`）。修复前这些位置是位拷贝：两个值共享同一块
+ * 预留，且在副本上 push 会把原件的缓冲换掉。 */
+use std::io
+use std::data::buf
+
+var gClones: i64 = 0
+
+@value
+struct blob {
+    @private b: buf<i64>
+
+    fn clone(self: ref blob) -> blob {
+        gClones = gClones + 1
+        return blob { b: self.b.clone() }
+    }
+    fn push(self: mut ref blob, v: i64) { self.b.push(v) }
+    fn len(self: ref blob) -> i64 { return self.b.len() }
+    fn at(self: ref blob, i: i64) -> i64 { return self.b.view()[i] }
+    /* 方法实参 */
+    fn withOther(self: ref blob, other: blob) -> i64 { return self.len() * 10 + other.at(0) }
+    /* 关联函数实参 */
+    fn consume(x: blob) -> i64 { return x.len() }
+    /* 构造：返回本地变量是移动，不 clone */
+    fn make(v: i64) -> blob {
+        var r = blob { b: buf<i64>::withCap(2) }
+        r.push(v)
+        return r
+    }
+    @drop
+    fn dispose(self: mut ref blob) { self.b.release() }
+}
+
+@value
+struct holder {
+    v: blob
+    fn clone(self: ref holder) -> holder { return holder { v: self.v.clone() } }
+    @drop
+    fn dispose(self: mut ref holder) { }   /* 字段按声明逆序自动释放 */
+}
+
+/* 普通函数按值实参 */
+fn takeByValue(x: blob) -> i64 { return x.len() }
+
+/* 按值返回一个 place：clone */
+fn echoOf(p: ref blob) -> blob { return *p }
+
+fn main() -> i32 {
+    io::cout << "live0=" << buf::bufLive() << "\n"
+    {
+        var a = blob::make(7)
+        io::cout << "move=" << gClones << "\n"
+        io::cout << "arg=" << takeByValue(a) << "/" << gClones << "\n"
+        io::cout << "assoc=" << blob::consume(a) << "/" << gClones << "\n"
+        io::cout << "method=" << a.withOther(a) << "/" << gClones << "\n"
+        var h = holder { v: a }
+        io::cout << "field=" << gClones << "\n"
+        var e = echoOf(ref a)
+        io::cout << "ret=" << gClones << "\n"
+        var q = blob::make(1)
+        q = a
+        io::cout << "assign=" << gClones << "\n"
+        q.push(42)
+        io::cout << "indep=" << a.len() << "/" << q.len() << "\n"
+        io::cout << "live1=" << buf::bufLive() << "\n"
+    }
+    io::cout << "live2=" << buf::bufLive() << "\n"
+    return 0
+}

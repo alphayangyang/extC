@@ -96,6 +96,8 @@
 #define PLAN_COMPOUND_CALL       90   /* `x += y` where the type defines `fn +=`: a call, not an assign */
 #define PLAN_NEW_AS_BUFFER       91   /* `new T[n]` whose context is a `@buffer` type: its constructor */
 #define PLAN_VAR_CLONE           92   /* `var x = <place>` where the type is `@value`: the copy is `clone` */
+#define PLAN_ARG_CLONE           97   /* a by-value argument / field initializer of an `@value` type: the copy is `clone` */
+#define PLAN_RET_CLONE           98   /* `return <place>` of an `@value` type: the copy is `clone` */
 #define PLAN_LEN_PARAM           93   /* the identifier names a `const` parameter: value comes from the instance */
 #define PLAN_RET_BORROW          94   /* a `return` named the parameter its view borrows from */
 #define PLAN_DEREF               63
@@ -1311,6 +1313,64 @@ void planSetVarClone(Stmt *s, bool v) {
     if (!r) return;
     r->varClone = v;
     resultsSetBit(r, PLAN_VAR_CLONE);
+}
+
+/**
+ * @brief Is this argument (or struct-literal field initializer) a copy that must go through
+ *        `clone`?
+ *
+ * A by-value parameter of an `@value` type owns its storage, so handing it a place would make two
+ * values share it: the copy is built by the type's `clone` instead. A temporary is moved and is
+ * never marked.
+ *
+ * @param e  The argument / field initializer expression.
+ * @return   true when codegen must emit `Type_clone(&(e))` for this argument.
+ */
+bool planArgClone(const Expr *e) {
+    NodeResults *r = resultsOf(e, false);
+    return r && resultsBit(r, PLAN_ARG_CLONE) && r->argClone;
+}
+
+/**
+ * @brief Record that a by-value argument or field initializer must be copied with `clone`.
+ *
+ * @param e  The argument / field initializer expression.
+ * @param v  true when the target type is `@value` and this expression is a place.
+ */
+void planSetArgClone(Expr *e, bool v) {
+    if (!e) return;
+    NodeResults *r = resultsAs(e, true, RKIND_EXPR, __LINE__);
+    if (!r) return;
+    r->argClone = v;
+    resultsSetBit(r, PLAN_ARG_CLONE);
+}
+
+/**
+ * @brief Is this `return` value a copy that must go through `clone`?
+ *
+ * The caller receives an independent value, so returning a place of an `@value` type would leave
+ * two owners of one storage. `clone` builds the caller's copy.
+ *
+ * @param s  The `return` statement.
+ * @return   true when codegen must emit `return Type_clone(&(e));`.
+ */
+bool planRetClone(const Stmt *s) {
+    NodeResults *r = resultsOf(s, false);
+    return r && resultsBit(r, PLAN_RET_CLONE) && r->retClone;
+}
+
+/**
+ * @brief Record that a `return` value must be copied with `clone`.
+ *
+ * @param s  The `return` statement.
+ * @param v  true when the return type is `@value` and the value is a place.
+ */
+void planSetRetClone(Stmt *s, bool v) {
+    if (!s) return;
+    NodeResults *r = resultsAs(s, true, RKIND_STMT, __LINE__);
+    if (!r) return;
+    r->retClone = v;
+    resultsSetBit(r, PLAN_RET_CLONE);
 }
 
 /**

@@ -1330,6 +1330,39 @@ bool planVarClone(const Stmt *s);
 void planSetVarClone(Stmt *s, bool v);
 
 /**
+ * @brief Is this argument (or struct-literal field initializer) a copy that must be built by
+ *        `clone`?
+ *
+ * @param e  The argument / field initializer expression.
+ * @return   true when codegen must pass `Type_clone(&(e))` instead of the expression itself.
+ */
+bool planArgClone(const Expr *e);
+
+/**
+ * @brief Record that a by-value argument or field initializer is a `@value` copy.
+ *
+ * @param e  The argument / field initializer expression.
+ * @param v  true when the target type is `@value` and this expression is a place.
+ */
+void planSetArgClone(Expr *e, bool v);
+
+/**
+ * @brief Is this `return` value a copy that must be built by `clone`?
+ *
+ * @param s  The `return` statement.
+ * @return   true when codegen must return `Type_clone(&(e))`.
+ */
+bool planRetClone(const Stmt *s);
+
+/**
+ * @brief Record that a `return` value is a `@value` copy.
+ *
+ * @param s  The `return` statement.
+ * @param v  true when the return type is `@value` and the value is a place.
+ */
+void planSetRetClone(Stmt *s, bool v);
+
+/**
  * @brief Get whether a lambda literal is used as a bare `fn(...)` function pointer.
  *
  * @param e  The `EX_LAMBDA` node.
