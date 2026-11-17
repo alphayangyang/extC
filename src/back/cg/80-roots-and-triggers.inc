@@ -1223,6 +1223,37 @@ static const char *exGencall(CG *g, Expr *e) {
                 genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, 0)),
                 genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, 1)));
         }
+        /* `elemPut<T>(v, i, val)`: store into a slot that holds no element, leaving the old
+         * bytes alone. An ordinary store is a *replacement* and the generator drops the old
+         * content first; a container over reused storage cannot afford that, because "old
+         * content" there is whatever the storage's previous user left behind. The value is
+         * transferred into the slot, so a name it came from is marked moved. */
+        if (strcmp(gcName, "elemPut") == 0) {
+            Expr *vArg = *(Expr **)vecAt(&e->u.gencall.args, 0);
+            Type *vt = ttBase(subst(g, vArg->type));
+            Type *et = *(Type **)vecAt(&vt->targs, 0);
+            const char *vv = arenaPrintf(g->arena, "__extc_elv%d", g->tmpSeq++);
+            const char *ii = arenaPrintf(g->arena, "__extc_epi%d", g->tmpSeq++);
+            g->pfMode = 1;
+            pfLine(g, "%s %s = (%s);", cType(g, vt), vv, genExpr(g, vArg));
+            pfLine(g, "int64_t %s = (int64_t)(%s);", ii,
+                   genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, 1)));
+            Expr *valArg = *(Expr **)vecAt(&e->u.gencall.args, 2);
+            if (valArg->kind == EX_IDENT && typeNeedsDrop(g, et, 0)) {
+                const char *nm = plainIdentCName(g, valArg);
+                if (nm) noteMoved(g, nm);
+            }
+            if (typeNeedsDrop(g, et, 0)) {
+                /* Materialise first: the value can be a field of the same storage. */
+                const char *tv = arenaPrintf(g->arena, "__extc_epv%d", g->tmpSeq++);
+                pfLine(g, "%s %s = (%s);", cType(g, et), tv, genExpr(g, valArg));
+                pfLine(g, "%s.data[%s] = %s;", vv, ii, tv);
+            } else {
+                pfLine(g, "%s.data[%s] = (%s);", vv, ii, genExpr(g, valArg));
+            }
+            g->pfMode = 0;
+            return "true";
+        }
         /* `elemDrop` / `elemTake` are buffer primitives too, but their text is emitted below:
          * they write the statement prefix, so they cannot be one expression. */
     }
@@ -1289,7 +1320,9 @@ static const char *exGencall(CG *g, Expr *e) {
         g->indent--;
         pfLine(g, "}");
         g->pfMode = 0;
-        return "0";
+        /* A statement primitive: the expression slot holds nothing, and `(void)` keeps a
+         * `-Wunused-value` out of the generated C. */
+        return "(void)0";
     }
 
     if (isPoolPrimitiveName(gcName)) {

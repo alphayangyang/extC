@@ -5,7 +5,7 @@
 
 生成方式：`tools/manual_surface.py`；`check.sh` 保证本页与源码一致。
 
-公开面共 871 个成员，其中内部 160 个：
+公开面共 928 个成员，其中内部 189 个：
 
 ## prelude
 
@@ -33,6 +33,38 @@
 - `buf.pins`（字段）
 - `buf.reserved`（字段）
 - `buf.vals`（字段）
+
+## std::data::dense
+
+- `-.denseClassBytes`（方法）
+- `block.bytes`（字段）
+- `block.cap`（字段）
+- `block.cnt`（字段）
+- `block.dropRange`（方法）
+- `block.dropRefs`（方法）
+- `block.growTo`（方法）
+- `block.mem`（字段）
+- `block.setUsed`（方法）
+- `block.shrinkTo`（方法）
+- `block.vals`（字段）
+- `handle.ep`（字段）
+- `slots.cap`（字段）
+- `slots.cursor`（字段）
+- `slots.ent`（字段）
+- `slots.epoch`（字段）
+- `slots.grow`（方法）
+- `slots.holeHead`（字段）
+- `slots.n`（字段）
+- `slots.pDense`（方法）
+- `slots.pEp`（方法）
+- `slots.pEpMask`（方法）
+- `slots.pFree`（方法）
+- `slots.pGen`（方法）
+- `slots.pLive`（方法）
+- `slots.pLow`（方法）
+- `slots.pPack`（方法）
+- `slots.rev`（字段）
+- `slots.vals`（字段）
 
 ## std::data::hashMap
 

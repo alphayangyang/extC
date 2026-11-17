@@ -864,6 +864,54 @@ static Type *checkBufPrim(Checker *c, Expr *e, Type *elem) {
      * element type, and it has to be **writable** (`mut slice<T>`): both operations write the slot
      * they visit. A hook-less element type makes `elemDrop` emit nothing, so the container code
      * does not have to be written twice. */
+    /* `elemPut<T>(v, i, val)`: store a value into a slot that holds **no** element, without
+     * running the old content's hook. A container built on dirty, reused storage cannot use an
+     * ordinary store: `t[i] = val` is a *replacement*, so the generator first drops whatever the
+     * slot already holds -- and for a slot the container does not own that would run a hook on
+     * leftover bytes from the storage's previous user. The value is **transferred** into the slot:
+     * the caller loses it, the slot owns it, and the name it came from is dead from here on. */
+    if (strcmp(nm, "elemPut") == 0) {
+        if (e->u.gencall.args.len != 3) {
+            ckError(c, e->line, NULL,
+                    "`elemPut` takes 3 arguments (a `mut slice<T>`, an index, and the value)",
+                    "got %zu", e->u.gencall.args.len);
+            return ttError(tt);
+        }
+        Expr *av = *(Expr **)vecAt(&e->u.gencall.args, 0);
+        Type *tv = ttBase(checkValue(c, av));
+        if (!ttIsError(tv) && !ttIsViewType(tv)) {
+            ckError(c, av->line, NULL,
+                    "`elemPut` writes one element of a view, so it wants a `mut slice<T>`",
+                    "found `%s`", typeStr(c, tv));
+            return ttError(tt);
+        }
+        if (!ttIsError(tv) && !tv->mut) {
+            ckError(c, av->line, NULL, NULL,
+                    "`elemPut` writes the slot it stores into, so the view must be `mut`");
+            return ttError(tt);
+        }
+        Type *ti = checkValue(c, *(Expr **)vecAt(&e->u.gencall.args, 1));
+        if (!ttIsError(ti) && !ttIsInteger(ti))
+            ckError(c, e->line, NULL, "`elemPut` wants an integer index", "found `%s`", typeStr(c, ti));
+        Expr *val = *(Expr **)vecAt(&e->u.gencall.args, 2);
+        Type *et = ttIsError(tv) ? ttError(tt) : *(Type **)vecAt(&tv->targs, 0);
+        Type *ta = ttIsError(et) ? ttError(tt) : checkInto(c, et, val);
+        if (!ttIsError(et) && !ttIsError(ta))
+            checkAssignable(c, et, ta, val, "stored value");
+        if (!ttIsError(et)) {
+            ckOwningArgMoveOnly(c, et, val, "stored value");
+            /* The slot owns it now: the name it came from is dead (see the enum-payload case). */
+            if (val->kind == EX_IDENT && payloadOwnsStorage(c, et, 0)) {
+                Sym *srcSym = lookup(c, val->u.ident.name);
+                if (srcSym && srcSym->movedLine == 0) {
+                    srcSym->movedLine = e->line;
+                    srcSym->movedInto = "a slot";
+                }
+            }
+        }
+        return c->tBool;
+    }
+
     if (strcmp(nm, "elemDrop") == 0 || strcmp(nm, "elemTake") == 0) {
         const bool take = nm[4] == 'T';
         const size_t want = take ? 2 : 3;
@@ -899,7 +947,8 @@ static Type *checkBufPrim(Checker *c, Expr *e, Type *elem) {
             }
         }
         if (take && !ttIsError(tv)) return *(Type **)vecAt(&tv->targs, 0);
-        return c->tI64;
+        /* `elemDrop` is a statement primitive: it has no result to use. */
+        return ttVoid(tt);
     }
 
     /* `extc_viewOfT<T>(p, n)`: the same two shapes `extc_viewOf` insists on -- a byte

@@ -1,0 +1,23 @@
+// expect: n=3 at0=10 at1=40 at2=30 h1=40 g=3 v=40 set=true gone=false
+/* 交换删除的稠密序：删 `b` 之后最后一个值搬进洞里，其它位置不动。 */
+use std::data::dense::{handle, slots}
+
+fn main() -> i32 {
+    var d: slots<i64> = slots<i64>::withCap(8)
+    let a = d.insert(10)
+    let b = d.insert(20)
+    let c = d.insert(30)
+    let e = d.insert(40)
+    let _rm = d.remove(b)
+    /* 稠密序现在是 10, 40, 30；`e` 的稠密下标从 3 变成 1。 */
+    let h1 = d.handleAtDense(1)
+    var hs: mut slice<handle> = new handle[8]
+    hs[0] = a  hs[1] = c  hs[2] = e  hs[3] = b
+    var out: mut slice<i64> = new i64[8]
+    let k: i64 = d.gather(hs[0..4], out[0..4])
+    println("n=", d.len(), " at0=", d.atDense(0), " at1=", d.atDense(1),
+            " at2=", d.atDense(2),
+            " h1=", d.get(h1) ?? -1, " g=", k, " v=", d.get(e) ?? -1,
+            " set=", d.set(a, 11), " gone=false")
+    return 0
+}

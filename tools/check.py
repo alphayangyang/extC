@@ -1693,6 +1693,13 @@ def build_items() -> list:
         ["./tests/copy/run.sh"], timeout=600,
         ok_msg=tail1, bad_msg="tests/copy/run.sh", bad_dump=dump_fail(8)))
 
+    # ---- 容器去池化的地基：块与稠密槽存储 ----
+    items.append(cmd(
+        "dense", "tests",
+        "`block<T>` / `slots<T>`：拥有的类型化块、稳定句柄与稠密前缀、增长搬而不拷、清空还元素载荷",
+        ["./tests/dense/run.sh"], timeout=600,
+        ok_msg=tail1, bad_msg="tests/dense/run.sh", bad_dump=dump_fail(8)))
+
     # ---- `@drop` 交还状态 ----
     items.append(cmd(
         "drop", "tests",

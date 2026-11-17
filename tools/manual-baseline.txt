@@ -4,7 +4,6 @@ std::coro::scheduler	5
 std::data::hashMap	3
 std::data::map	17
 std::data::pool	4
-std::data::vector	2
 std::fs	3
 std::hash::digest	2
 std::io	5

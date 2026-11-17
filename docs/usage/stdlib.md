@@ -690,6 +690,31 @@ fn main() -> i32 {
 ```
 实测：`get=42 dense=42 rm=true live-after=false`。
 
+### `std::data::dense`：块与稠密槽存储（库的地基）
+
+`dense` 是**库内部的地基**，不是给普通程序用的容器：`map` / `set` / `linMap` / `hashMap` 的平坦列与槽表
+都建在它上面（[BUF-INVARIANT](../design/BUF-INVARIANT.md) §16）。它换掉的正是 `pool<T>` 与 `poolSlice*`：
+存储跟着值走，不再有「运行期池的一本账」。
+
+| 类型 | 一句话 |
+|---|---|
+| `block<T>` | 一块**拥有的**类型化存储：容量固定、整块归还、`[0, used)` 是元素（替代 `poolSlice` / `poolSliceRaw`）|
+| `slots<T>` | 稠密槽存储：稳定句柄（世代 + 纪元）、稠密前缀（交换删除）、空洞链 + bump 游标、1.5× 增长（替代 `pool<T>`）|
+
+`slots<T>` 的 API 面与 `pool<T>` 同形（`withCap` / `len` / `capacity` / `contains` / `get` / `set` / `insert` /
+`remove` / `atDense` / `setAtDense` / `handleAtDense` / `gather` / `view` / `shrink` / `clear` / `release`），
+两条差别要记住：
+
+- **它是 `@noCopy` 的**：`var b = a` 是转移，要副本写 `clone()`。旧 `pool<T>` 的 `@sharesStorage` + 池世代
+  「陈旧检测」不再需要 —— 值语义与编译期检查取代了它。
+- **`clear` / `remove` / `release` 会还元素**：对元素跑 `@drop`（没有钩子的 `T` 编译成空操作，所以
+  `slots<i64>` 的 `clear` 仍是 O(1)），并撤元素里引用域的外部边登记。旧池把值当字节数组，翻纪元之后
+  元素拥有的存储就没人还了。
+
+写一个**空槽**用 `block::[]=`（内部是 `elemPut` 原语：不碰槽里原来的字节）；覆盖一个**活**元素先
+`dropAt(i)` 再写。块内存在这里是复用的，普通赋值的「先 drop 旧内容」会在脏字节上跑钩子。
+
+判据：`tests/dense/run.sh`（句柄失效、槽复用升世代、清空还载荷、增长搬而不拷、交换删除的稠密序）。
 ### `sort`：原地比较排序
 
 | 名字 | 签名 |

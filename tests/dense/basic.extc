@@ -1,0 +1,13 @@
+// expect: n=3 a=10 c=30 b=20 len=3 cap=8
+/* `slots<T>` 的最基本一圈：插三个、按句柄取、按稠密序读、容量不会因为插三个就长。 */
+use std::data::dense::{handle, slots}
+
+fn main() -> i32 {
+    var d: slots<i64> = slots<i64>::withCap(8)
+    let a = d.insert(10)
+    let b = d.insert(20)
+    let c = d.insert(30)
+    println("n=", d.len(), " a=", d.get(a) ?? -1, " c=", d.get(c) ?? -1, " b=", d.get(b) ?? -1,
+            " len=", d.len(), " cap=", d.capacity())
+    return 0
+}

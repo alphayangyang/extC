@@ -1,7 +1,7 @@
 # emitted-C identity baseline (refactor invariant)
-# extc md5: f8532e53a8a79066f175f0d1b21618ec
+# extc md5: 0033c4c7555d1bd21cbdd3aa617014f7
 # columns: config, source, status, md5, bytes
-# why: string 迁到缓冲区基质（值语义 + 深拷贝 + 赋值物化 __extc_ov）、容器的元素所有权（elemTake/elemDrop，POD 移出不清零）、缓冲原语不再算分配（容器方法不再多一帧栈上 arena）、槽底盘两处固定成本（归还一趟扫描 + 每个尺寸类一个暖量子）；114 行 = 57 个容器/string 程序 x 2 配置，逐程序核对全部落在这四类
+# why: elemDrop change
 default	bench/app/log.extc	ok	ad0bdf583d6602315eb360d056354c8f	118168
 reclaim	bench/app/log.extc	ok	64f05fc09b9fcfd42f3b92a95e56a063	433038
 default	bench/app/route.extc	ok	ae18294e0c8edaaecb28913a5870ea55	126299
@@ -184,8 +184,8 @@ default	tests/pool/rt_epoch.extc	ok	7aebded99003fbf72e362f672ec6bfcc	79562
 reclaim	tests/pool/rt_epoch.extc	ok	f9cd544449218de8ffc8b22ed0046146	392666
 default	tests/pool/rt_mode_gen.extc	ok	7d3de9eef9acbcfe01b56928a3efe660	55403
 reclaim	tests/pool/rt_mode_gen.extc	ok	7d3de9eef9acbcfe01b56928a3efe660	55403
-default	tests/pool/rt_nest_promote.extc	ok	cd6dc025f8f7d69ed959999b8e307a72	140455
-reclaim	tests/pool/rt_nest_promote.extc	ok	afc81cc547fcb11c18d1fdd52ced4dab	455033
+default	tests/pool/rt_nest_promote.extc	ok	11181daa34d631180ad2b1bda5daf1de	140461
+reclaim	tests/pool/rt_nest_promote.extc	ok	e5f2cfe598ba7b056d126bea5f35420c	455039
 default	tests/pool/rt_pidgen.extc	ok	e2e818d35406d008697015348cda7c0e	60898
 reclaim	tests/pool/rt_pidgen.extc	ok	12ee48e9db58d4721e446096cb9b0195	374002
 default	tests/pool/rt_promote.extc	ok	9212a2c56b80ef6fc4fea5fbe861382d	56060
@@ -342,8 +342,8 @@ default	tests/stl/buf_churn_a.extc	ok	b82b308bba668ad34e1a296b875cadc4	92847
 reclaim	tests/stl/buf_churn_a.extc	ok	50a3229ed025919e555b5fe4d4e476f2	407115
 default	tests/stl/buf_churn_b.extc	ok	a1e2df49b53a05ec61e8740381190090	92848
 reclaim	tests/stl/buf_churn_b.extc	ok	cf949c75e6fd0d1a7c3d8326eb9dbbf1	407116
-default	tests/stl/buf_elem.extc	ok	c8eb220b572e22daaedb1d75b607ea67	114261
-reclaim	tests/stl/buf_elem.extc	ok	64075c839bd039b3e5a8ce33037608cd	428839
+default	tests/stl/buf_elem.extc	ok	64b9dc8021763a2528d6a7444ec68efa	114267
+reclaim	tests/stl/buf_elem.extc	ok	e620aa3f93bd140671e6df31e3c083cc	428845
 default	tests/stl/buf_frozen.extc	ok	5c055a3d1efa50302522b92ee5f7136f	93521
 reclaim	tests/stl/buf_frozen.extc	ok	86a3510c31015a6c8bfb59b5bc49c7d4	407895
 default	tests/stl/buf_fuzz.extc	ok	220ec214e71afd41f051f0da7d81fd1f	102656
@@ -354,8 +354,8 @@ default	tests/stl/buf_new.extc	ok	027a951f4079e3d3864d65b3801a5a91	417528
 reclaim	tests/stl/buf_new.extc	ok	027a951f4079e3d3864d65b3801a5a91	417528
 default	tests/stl/buf_new_wrong_elem.extc	fail 1	a65735d7f284a6d6c385452196011648	0
 reclaim	tests/stl/buf_new_wrong_elem.extc	fail 1	a65735d7f284a6d6c385452196011648	0
-default	tests/stl/buf_own.extc	ok	2820d9ab7afcfa1932ac2d5a985cae1b	133718
-reclaim	tests/stl/buf_own.extc	ok	e05bfb33450c327e7e17293a2e847d1b	448296
+default	tests/stl/buf_own.extc	ok	45a6038d5727cffe6afe04e034908b4c	133736
+reclaim	tests/stl/buf_own.extc	ok	ccd1bfcdf4561b305aee2b90abd0e7da	448314
 default	tests/stl/buf_own_clone.extc	fail 1	af30b357abd35ac66c192f0881774d01	0
 reclaim	tests/stl/buf_own_clone.extc	fail 1	af30b357abd35ac66c192f0881774d01	0
 default	tests/stl/buf_par.extc	ok	e1fc6c777d01770e02aa4744821777cf	429418

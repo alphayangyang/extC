@@ -1,0 +1,33 @@
+// expect: base=true payloads=true released=true
+/* 存储必须回到基线：`slots<i64>` 的三块、以及拥有型元素（`string`）的载荷。 */
+use std::data::dense::{slots}
+use std::data::buf
+use std::text::string
+
+fn main() -> i32 {
+    let base: i64 = buf::bufLive()
+    var d: slots<i64> = slots<i64>::withCap(64)
+    var i: i64 = 0
+    while i < 200 { let _h = d.insert(i * 3)  i = i + 1 }
+    d.release()
+    let base1: bool = buf::bufLive() == base
+    /* 拥有型元素：`clear` 必须对每个元素跑 `@drop`，否则它们的长串载荷就漏了。
+     * 判据分两步 —— 载荷确实被还了（差值至少 40x40 字节），三块随后 `release` 归零。 */
+    var s: slots<string> = slots<string>::withCap(8)
+    var k: i64 = 0
+    while k < 40 {
+        var t: string = string::withCap(64)
+        var j: i64 = 0
+        while j < 40 { t.push(u8(65 + k % 26))  j = j + 1 }
+        let _h = s.insert(t)
+        k = k + 1
+    }
+    let held: i64 = buf::bufLive()
+    s.clear()
+    let after: i64 = buf::bufLive()
+    let payloads: bool = held - after >= 1600
+    s.release()
+    let released: bool = buf::bufLive() == base
+    println("base=", base1, " payloads=", payloads, " released=", released)
+    return 0
+}

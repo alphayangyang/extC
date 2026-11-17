@@ -291,7 +291,8 @@ static inline bool isPoolPrimitiveName(const char *n) {
  */
 static inline bool isBufPrimitiveName(const char *n) {
     return n && (strcmp(n, "extc_sizeOf") == 0 || strcmp(n, "extc_viewOfT") == 0 ||
-                 strcmp(n, "elemDrop") == 0 || strcmp(n, "elemTake") == 0);
+                 strcmp(n, "elemDrop") == 0 || strcmp(n, "elemTake") == 0 ||
+                 strcmp(n, "elemPut") == 0);
 }
 
 #endif
