@@ -109,16 +109,18 @@ fn main() -> i32 {
 
 导入名就是 `stl::<文件名>`：`use std::data::vector`、`use std::data::hashMap`、`use std::text::string`……
 
-这一族现在分成两代存储：
+这一族现在分两代存储：
 
-- **`vector<T>` 与 `buf<T>`**：存储是**自己的一片地址预留**（[BUF-INVARIANT](../design/BUF-INVARIANT.md)），
-  类型是 `@noCopy` —— `var b = a` 是**转移**，转移后读旧名字是编译错；要独立副本用 `clone()`。
-- **`string` / `hashMap` / `map` / `set` 系列**（尚未迁移）：带 `@sharesStorage` + `@place`（旧拼写
-  `@poolObject`），**按值拷贝两份会共用同一块板块**，编译器会为此报警告；要独立副本必须显式
-  `clone()`（判据  / `clone_ok.extc`，见 ）。
+- **`vector<T>`、`buf<T>`、`string`**：存储由**缓冲区基质**发给值本身（[BUF-INVARIANT](../design/BUF-INVARIANT.md)
+  §11–§15）—— 小载荷走 16 B…64 KiB 的密排槽，大载荷走 2 MiB 量子的地址预留，值自己被 `@drop` 时
+  把整片还回去。`vector<T>` / `buf<T>` 是 `@noCopy`：`var b = a` 是**转移**，要独立副本写 `clone()`。
+  `string` 是 `@value`：拷贝即深拷贝（`clone()` 与按值传递都建新值），所以两份永远不共享。
+- **`hashMap` / `map` / `set` 系列**（存储尚未迁移）：带 `@sharesStorage` + `@place`，**按值拷贝两份会共用
+  同一块板块**，要独立副本必须显式 `clone()`。元素所有权已经接上（元素进容器是移动、
+  `clear`/`shrink`/`release`/`pop` 逐元素跑钩子），所以 `hashMap<string, i32>` 这类拥有元素的容器可用。
 
-这些容器的存储是它们**自己的板块**，不是帧里的一段：换缓冲时旧块当场归还，所以"反复建、反复丢"是
-稳态内存。三种存储（帧、板块、对象表）各自适合什么、以及选错的代价，见[内存模型](../design/MEMORY-MODEL.md)。
+这些容器的存储是它们**自己的**，不是帧里的一段：换缓冲时旧片当场归还，所以"反复建、反复丢"是
+稳态内存。三种存储（帧、缓冲区基质、对象表）各自适合什么、以及选错的代价，见[内存模型](../design/MEMORY-MODEL.md)。
 
 ### `varArray` / `vector`：两个动态数组
 
@@ -349,7 +351,7 @@ let freed: i64 = syspool::collect()
 
 ### 自己写一个板块底的容器
 
-这是**旧一代**的写法：`vector` 已迁到 `buf<T>` 的地址预留上（[BUF-INVARIANT](../design/BUF-INVARIANT.md) §10），剩下的 `string` / `hashMap` / `map` 仍在池板块上。想写一个新的可增长容器，优先持有 `buf<T>`：它给的是「预留内 0 拷贝增长 + 撞上限搬一次家 + 结构动作按区间撤边」。下面这条 `@place` 路径仍然可用，但它要自己管世代、冻结与归还。四件事 —— 拥有、要、长、守卫与归还：
+`vector` 与 `string` 已经挪到缓冲区基质上（[BUF-INVARIANT](../design/BUF-INVARIANT.md) §10、§15），`hashMap` / `map` 的存储还在池板块上。想写一个新的可增长容器，优先持有 `buf<T>`：它给的是「预留内 0 拷贝增长 + 撞上限搬一次家 + 结构动作按区间撤边」。下面这条 `@place` 路径仍然可用，但它要自己管世代、冻结与归还。四件事 —— 拥有、要、长、守卫与归还：
 
 <!-- fragment -->
 ```extc
@@ -407,8 +409,13 @@ struct grow<T> {
 
 ### `string` + `stringio`：连续字节串与流式读写
 
-`string` 是 **SSO 字节串**：内联 16 字节，写满第 17 个字节才升级到池
-；`cap == 0` 就是"还在内联"。零值合法且零分配。
+`string` 是 **SSO 字节串**：内联 16 字节，写满第 17 个字节才向缓冲区基质要存储（≤ 64 KiB 拿一个
+密排槽，更大拿 2 MiB 量子的地址预留）；`cap == 0` 就是"还在内联"。零值合法且零分配，`release()`
+把整片还回去。
+
+两个容量数要分清：`capacity()` 报的是**答应给调用者的字节数**，基质实际给的片可能更大（尺寸类或
+量子），所以 `grow()` 只要新容量还在同一片里就只抬这个数、不搬字节；`shrink()` 只在片比需要的容量
+大一倍以上时才搬一次家。`clone()` 一次要到刚好装下的容量，不走 1.5 倍逐级扩容。
 
 | 方法 | 签名 |
 |---|---|
@@ -421,7 +428,7 @@ struct grow<T> {
 | 运算符 | `a + b`：返回**新值**的拼接。右操作数可以是 `slice<u8>`、`string`、整数（按十进制）、`f64`/`f32`（6 位小数，`stringio` 里）或 `bool`；要求 `a` 是 `string`。分配落在调用点的 arena 上，可以在函数里拼完返回 |
 | 追加数字 | `appendI64(v)`；`appendF64(x, prec)`（在 `stringio` 里，定点 `prec` 位小数，上限 20）。拼一行报表少一次临时 `string` |
 | 借出视图 | `view()`：只读字节视图，**不拷贝**；收 `slice<u8>` 的形参因此可以直接传 `string`（自动借出）。要独立拷贝仍写 `snapshot()` |
-| 直接打印 | `io::cout << s`（`string` 的 `<<` 重载在 `std::text::string` 里，`use std::text::string` 就够，不用写 `s.snapshot()`） |
+| 直接打印 | `io::cout << s`（`string` 的 `<<` 重载在 `std::text::string` 里且收 `ref string`，`use std::text::string` 就够，不用写 `s.snapshot()`，也不复制） |
 | 查找 | `find(needle) -> ?i64`（无匹配 `none`）、`contains`、`startsWith`、`endsWith`、`hash()` |
 | 容量 | `grow()`（1.5 倍）、`shrink()`、`clear()`、`release()`、`removeFront(n)` |
 | 解析 | `string::toI64(b) -> ?i64`；`string::toF64(b) -> ?f64`（整数/小数/指数写法，至少一位数字；不接受 `.5`、`inf`、`nan`、十六进制） |

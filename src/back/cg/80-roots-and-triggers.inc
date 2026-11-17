@@ -1241,6 +1241,19 @@ static const char *exGencall(CG *g, Expr *e) {
         /* An element type with no hook has nothing to run, and the loop would visit every slot
          * for nothing: `clear` on a byte buffer has to stay O(1). */
         if (!take && !typeNeedsDrop(g, et, 0)) return "(void)0";
+        /* A move out of a slot is only an operation when the element owns something: the slot
+         * must be zeroed so the container's later hook pass does not run on a copy that already
+         * left. For an element with no storage the move **is** the value, and zeroing would be a
+         * `memset` of a slot the same statement stops reading (the container lowers its length or
+         * clears its tag), so a `vector<i64>` pop stays two loads. */
+        if (take && !typeNeedsDrop(g, et, 0)) {
+            const char *vv = arenaPrintf(g->arena, "__extc_elv%d", g->tmpSeq++);
+            g->pfMode = 1;
+            pfLine(g, "%s %s = (%s);", cType(g, vt), vv, genExpr(g, vArg));
+            g->pfMode = 0;
+            return arenaPrintf(g->arena, "%s.data[(int64_t)(%s)]", vv,
+                               genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, 1)));
+        }
         const char *vv = arenaPrintf(g->arena, "__extc_elv%d", g->tmpSeq++);
         g->pfMode = 1;
         pfLine(g, "%s %s = (%s);", cType(g, vt), vv, genExpr(g, vArg));
@@ -1465,8 +1478,18 @@ static const char *exEnumval(CG *g, Expr *e) {
     bufInit(&b, g->arena);
     bufPrintf(&b, "(%s){ .tag = %s_%s, .u.%s = {", tn, tn, vn, vn);
     for (size_t i = 0; i < e->u.enumval.args.len; i++) {
+        Expr *pa = *(Expr **)vecAt(&e->u.enumval.args, i);
         if (i) bufPuts(&b, ", ");
-        bufPrintf(&b, "._%zu = %s", i, genExpr(g, *(Expr **)vecAt(&e->u.enumval.args, i)));
+        bufPrintf(&b, "._%zu = %s", i, genExpr(g, pa));
+        /* A payload stores the operand **inside** the constructed value, so a plain name is
+         * transferred: the payload owns what the name held. Marking the move keeps the name's own
+         * drop from handing the same storage back a second time (`readLine` returning `some(s)`
+         * is the shape that exposed it -- the frame dropped `s` and the caller looked at freed
+         * bytes). */
+        if (pa && pa->kind == EX_IDENT && typeNeedsDrop(g, subst(g, pa->type), 0)) {
+            const char *nm = plainIdentCName(g, pa);
+            if (nm) noteMoved(g, nm);
+        }
     }
     bufPuts(&b, "} }");
     return bufCstr(&b);

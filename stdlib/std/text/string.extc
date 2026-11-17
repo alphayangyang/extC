@@ -1,26 +1,30 @@
-/* stl/string.extc —— SSO 字节串（内联 16 字节，超过了才进池；STL 第二个池底容器）
+/* std/text/string.extc —— SSO 字节串（内联 16 字节，超过了才向 buf 基质要存储）
  *
- * 口径：**序列化面保持连续** —— 下游全吃 `slice<u8>`
- * （print · IO · 哈希 · `extern!` 边界），所以这里绝不分块；**拿到内容只有 `snapshot()` 一条路
- * （拷一份），池里不放视图出去**。
+ * 口径：**序列化面保持连续** —— 下游全吃 `slice<u8>`（print · IO · 哈希 · `extern!` 边界），
+ * 所以这里绝不分块；**拿到内容只有 `snapshot()` 一条路（拷一份），视图不交出去**。
  *
  * 两态存储，判据**只有一个**：`cap == 0` ⟺ 内联（内容在 `small[16]u8` 里）。
  *   · **零值 = 内联空串**：合法、可用、零分配 —— `var s: string` 直接写，`isEmpty()` 为真、
- *     `capacity()` 为 0（没有池）。所以这个类型可以零初始化（字段里没有裸的引用，
- *     `big` 的零值是 `none`）；
- *   · **第一次写到第 17 个字节才升级**：建池 → 拿一块 32 字节的板块 → 把 16 个内联字节拷过去
- *     → 填 `cap`/`pid`/`pidGen`/`big`。之后就是普通池底容器：`grow` 按 1.5 倍原地长
- *     （旧块当场还回去，不留历代旧副本）、`shrink` 降高水位、`release` 校验世代后整批还。
+ *     `capacity()` 为 0。所以这个类型可以零初始化（字段里没有裸的引用，`big` 的零值是 `none`）；
+ *   · **第一次写到第 17 个字节才升级**：向 buf 基质要一片 32 字节的密排槽，把 16 个内联字节拷过去，
+ *     填 `cap` / `big`。之后 `grow` 按 1.5 倍换一片更大的（旧的当场还回去，不留历代旧副本），
+ *     `shrink` 换一片刚好装下的，`release`（`@drop` 钩子）把整片还回去并收成内联空串。
  *
- * **`pid == 0` 绝不是"没有池"的哨兵**：第一个池的 rid 恰好就是 0（`{index,generation}` 打包）。
- * 内联还是池，只问 `cap == 0`；`pStale` / `pPoison` / `release` / `grow` / `push` / `append` /
- * `removeFront` / `shrink` / `at` / `snapshot` / `subView` 各问一次，问的都是同一个字段。
+ * **存储基质是 bufrt，不是 `buf<u8>` 字段**：≤ 64 KiB 的载荷从 16 B..64 KiB 的 13 个尺寸类里
+ * 拿一个密排槽（槽与邻居共页），更大的从 2 MiB 量子的地址预留里切；归还都走同一个
+ * `extc_buf_release`（按地址查类）。**为什么不直接放一个 `buf<u8>` 字段**：`buf` 内部持有
+ * 非空引用（`mem: mut slice<u8>`），含引用的结构体不能零初始化，而零值 = 内联空串是全仓依赖的
+ * 不变量；所以这里只借基质的四个入口（`slotReserve` / `reserve` / `span` / `release`），
+ * 策略（何时长、长多少、何时还）全在本文件。
  *
- * 内联态没有池记录（`pid` 只是零值 0），所以**不花池、不分配**：100 万次"构造 + 写一字节 + 读回"
- * 实测 eager 9.35 ms · 零值惰性 14.59 ms · **SSO 0.39 ms**。`pid`/`pidGen` 只在升级时才有意义。
+ * **值语义**：`@value` + `@drop`。拷贝一律走 `clone`（深拷贝），所以两份**不共享**存储，
+ * 也就没有世代这回事 —— `pStale` 恒 `false`，`pPoison` 只是防御性地收成空串。
  *
- * 内联态的容量：字段 `cap` 是 0（`capacity()` 因此对零值/短串如实回答"没有池"），但**物理上**
- * 还能再装 16 个字节 —— 写入路径 `push` / `append` 先看 `n < 16` 就地写，装不下才升级。
+ * 内联态**不花存储、不分配**：100 万次构造 + 写一字节 + 读回
+ * 实测 eager 9.35 ms · 零值惰性 14.59 ms · **SSO 0.39 ms**。
+ *
+ * 内联态 `capacity()` 如实回答 0（没有要过存储），但**物理上**还能再装 16 个字节 ——
+ * 写入路径 `push` / `append` 先看 `n < 16` 就地写，装不下才升级。
  *
  * @code
  * use std::io
@@ -29,47 +33,91 @@
  * fn main() -> i32 {
  *     var s: string = string::withCap(8)
  *     s.append("hello")
- *     io::cout << s.snapshot() << " len=" << s.len() << "\n"
- *     return 0
  * }
  * @endcode
  */
 use std::io
-use std::sys::pool as syspool
+use std::sys::heap as sysheap
+use std::sys::bufrt as bufrt
 use std::mem as sysmem
 
-@sharesStorage        /* **升级到池之后**按值拷贝 ⇒ 两份共用同一块板块，编译器在这里报警告；
-                       * 要独立副本用 `clone()`（内联态其实各拿各的 16 字节，但检查器一律保守） */
-@place                 /* 这个类型**可能拥有一个地方**：升级之后存储住在那个地方的板块上，寿命随它所在的域 */
+/* 16 B..64 KiB 的尺寸类：与 buf 基质同一套（向上取到 2 的幂，下限 16）。 */
+@private fn classBytes(want: i64) -> i64 {
+    var c: i64 = 16
+    while c < want { c = c + c }
+    return c
+}
+
+
+
+
+@value               /* 拥有存储的值：拷贝一律深拷贝（`clone`），释放走 `@drop`。
+                       * 不共享存储 ⇒ 拷贝不共用板块，也就不需要世代号：只有共享一块
+                       * 存储的容器才要靠 pid/pidGen 判陈旧，值语义的 string 不在此列。 */
 struct string {
     @private small:  [16]u8          /* 内联缓冲：零值 = 内联空串（零分配的合法状态） */
     @private n:      i64
-    @private cap:    i64             /* 0 = 内联；!= 0 = 池里，且 cap 就是池块容量（>= 16） */
-    @private big:    ?mut slice<u8>  /* 只有升级到池之后才 some —— 存一次、之后复用（每次 poolSliceRaw 都是新分配） */
-    @private pid:    i64
-    @private pidGen: u64
+    @private cap:    i64             /* 0 = 内联；!= 0 = 基质给的认领字节（槽的类字节或预留的 span） */
+    @private big:    ?mut slice<u8>  /* 只有升级之后才 some —— 存一次，换片时整片还回去 */
     @private pins:   i64             /* 活着的 `borrow()` 守卫个数：> 0 时存储被冻结 */
+
+
+    /* 向基质要一片存储并把 `big` / `cap` 设好。
+     *
+     * 两个数分得清：`cap` 是**答应给调用者的容量**（`capacity()` 就返回它，等于请求的字节数），
+     * `big.len` 是基质实际给的片长（尺寸类或 2 MiB 量子的粒度，总是 >= `cap`）。归还按 `big.len`
+     * 整片还，抬容量时只要还装得下就一个字节都不搬 —— 这就是尺寸类白送的原地增长。 */
+    @private fn alloc(self: mut ref string, want: i64) {
+        var bytes: i64 = want
+        if bytes < 16 { bytes = 16 }
+        if bytes <= 65536 {
+            /* 小载荷走尺寸类槽：类字节就是基质实际给的片长。 */
+            let cb = classBytes(bytes)
+            let raw = bufrt::extc_buf_slotReserve(u64(cb))
+            if raw == null { trap("string: cannot reserve storage") }
+            self.big = some(sysheap::extc_viewOf(raw!, cb))
+        } else {
+            /* 大载荷走 2 MiB 量子的预留：片长要问基质（`span`），容量仍旧按请求报。 */
+            let raw = bufrt::extc_buf_reserve(u64(bytes))
+            if raw == null { trap("string: cannot reserve storage") }
+            let sp = bufrt::extc_buf_span(raw!)
+            var got: i64 = bytes
+            if sp >= bytes { got = sp }
+            self.big = some(sysheap::extc_viewOf(raw!, got))
+        }
+        self.cap = bytes
+    }
+
+    /* 把存储还给基质并收成内联空串。幂等（`cap` 归零之后不再动基质），所以显式
+     * `s.release()` 之后编译器再跑一次 `@drop` 也没有第二次归还。 */
+    @inline
+    @private fn freeStorage(self: mut ref string) {
+        match self.big {
+            some(bk) => {
+                var m: mut slice<u8> = bk
+                if m.len > 0 {
+                    let _r: i32 = bufrt::extc_buf_release(m.data, u64(m.len))
+                }
+            }
+            none => { }
+        }
+        self.big = none
+        self.cap = 0
+        self.n   = 0
+    }
 
     /* 构造器（`withCap` 的落点）。非泛型类型上 `string::new(...)` 会被读成
      * "模块 string 的函数 new"（模块名与类型名同名），所以这里叫 `create`；
      * `new` / `empty` 两个名字留给**模块级**函数（文件末尾），从模块外写才对得上。
      *
-     * 语义与老的 `new` 一字不差：**要了容量就建池**（`c` 下限 16 ⇒ `capacity()` 立刻 >= 16），
-     * 因为"预分配 n 字节"这句承诺不能靠内联的 16 字节兑现。SSO 省下的是**零值**与短串的默认构造，
-     * 不是显式的 `withCap`。 */
+     * 语义：**要了容量就真要一片存储**（`c` 下限 16 ⇒ `capacity()` 立刻 >= 16），
+     * 因为"预分配 n 字节"这句承诺不能靠内联的 16 字节兑现。SSO 省下的是**零值**与短串的
+     * 默认构造，不是显式的 `withCap`。 */
     fn create(c: i64) -> string {
-        let rp = syspool::extc_pool_new(-1)
-        let rpg = syspool::extc_pool_generation(rp)
+        var s: string
         var cc: i64 = c
         if cc < 16 { cc = 16 }
-        var s: string = {
-            n:      0,
-            cap:    cc,
-            big:    some(poolSliceRaw<u8>(rp, cc)),
-            pid:    rp,
-            pidGen: rpg,
-            pins:   0,
-        }
+        s.alloc(cc)
         return s
     }
 
@@ -113,7 +161,17 @@ struct string {
      * `a` 的内容、`a.release()` 会让 `b` 悬垂。显式拷贝的代价可见（一次 O(n) 拷贝 + 最多一块新板块），
      * 新缓冲区生在调用者所在的地方。短串从这里出去仍是**内联**的：`append` 会自己按需升级。 */
     fn clone(self: ref string) -> string {
+        /* 拷贝**知道自己要多大**，所以一次性要到刚好装下的容量：不经过 1.5 倍的逐级扩容。
+         * 逐级扩容对拷贝是纯损失 —— 多搬 O(n) 字节，而且搬家时新旧两代同时在场的峰值
+         * 会从「两份」涨到「三代」（`bench/containers/s3` 的 RSS 就是这一格的量具）。 */
         var out: string
+        if self.n > 16 {
+            out.alloc(self.n)
+            var dst: mut slice<u8> = out.big!
+            copyInto<u8>(dst[0..self.n], self.subView(0, self.n), self.n)
+            out.n = self.n
+            return out
+        }
         out.append(self.subView(0, self.n))
         return out
     }
@@ -384,29 +442,46 @@ struct string {
         return { s: self, p: ref self.pins }
     }
 
-    /* 扩到 1.5 倍：在原块上长（装不下时才由分配器搬家），字节由 resize 保住。
-     * 连续性与「不留历代旧副本」同时成立。
+    /* 换一片更大的：新旧同时在场，拷完就把旧的还回去 —— 所以瞬时内存是"一份 + 一块"，
+     * 不是"历代旧副本"。增长按 1.5 倍（连续性与摊还同时成立）。
      *
-     * SSO：`cap == 0` 时这一步是**升级**，不是扩容 —— 建池、拿第一块 32 字节的板块、
-     * 把 16 个内联字节拷进去。之后才走 1.5 倍那条老路。两条路的纪律是同一条：
-     * 换块时旧块（这里是"没有块"）当场还回去，不留历代旧副本。 */
+     * SSO：`cap == 0` 时这一步是**升级**，不是扩容 —— 要一片 32 字节的密排槽、把 16 个内联
+     * 字节拷进去。之后才走 1.5 倍那条路。两条路的纪律是同一条：换片时旧片当场还回去。 */
     fn grow(self: mut ref string) {
         if self.pins > 0 { self.frozen() }
         if self.cap == 0 {
-            let rp = syspool::extc_pool_new(-1)
-            let rpg = syspool::extc_pool_generation(rp)
-            var blk: mut slice<u8> = poolSliceRaw<u8>(rp, 32)
-            copyInto<u8>(blk, self.small[0..16], 16)
-            self.big = some(blk)
-            self.cap = 32
-            self.pid = rp
-            self.pidGen = rpg
+            self.alloc(32)
+            var dst: mut slice<u8> = self.big!
+            copyInto<u8>(dst[0..16], self.small[0..16], 16)
             return
         }
-        if self.pid < 0 { return }
-        let ncap = self.cap + self.cap / 2
-        self.big = some(poolResizeRaw<u8>(self.pid, self.big!, ncap))
-        self.cap = ncap
+        var want: i64 = self.cap + self.cap / 2
+        if want <= self.cap { want = self.cap + 16 }
+        /* 片长通常比 `cap` 大（尺寸类）：装得下就只抬 `cap`，一个字节都不搬。 */
+        var have: i64 = 0
+        match self.big {
+            some(bk) => {
+                var m: mut slice<u8> = bk
+                have = m.len
+            }
+            none => { }
+        }
+        if want <= have {
+            self.cap = want
+            return
+        }
+        let keep: i64 = self.n
+        var oldSlice: mut slice<u8> = self.big!
+        let old: i64 = oldSlice.len
+        self.big = none
+        self.cap = 0
+        self.alloc(want)
+        if keep > 0 {
+            let k = keep
+            var dst: mut slice<u8> = self.big!
+            copyInto<u8>(dst[0..k], oldSlice[0..k], k)
+        }
+        let _r: i32 = bufrt::extc_buf_release(oldSlice.data, u64(old))
     }
 
     fn push(self: mut ref string, b: u8) {
@@ -743,64 +818,64 @@ struct string {
         self.append(out[0..at])
     }
 
-    /* 缩容到刚好装下（下限 16）；连续性与字节不变。
+    /* 换一片刚好装下的（下限 16）；连续性与字节不变。
      *
      * 内联态（`cap == 0`）没有可缩的：它本来就只占 16 字节，而且"下限 16"这条承诺
-     * 与内联缓冲等大 —— 池态缩到 16 之后仍是池态，不往回退（退回内联会让 `capacity()`
+     * 与内联缓冲等大 —— 有存储的缩到 16 之后仍然有存储，不往回退（退回内联会让 `capacity()`
      * 从 16 掉到 0，那是另一个语义）。 */
     fn shrink(self: mut ref string) {
         if self.cap == 0 { return }
-        var ncap: i64 = self.n
-        if ncap < 16 { ncap = 16 }
-        if ncap >= self.cap { return }
-        self.big = some(poolResizeRaw<u8>(self.pid, self.big!, ncap))
-        self.cap = ncap
+        var want: i64 = self.n
+        if want < 16 { want = 16 }
+        if want >= self.cap { return }
+        var have: i64 = 0
+        match self.big {
+            some(bk) => {
+                var m: mut slice<u8> = bk
+                have = m.len
+            }
+            none => { }
+        }
+        /* 只有片比需要的容量大一倍以上才真搬家还内存：跨一个尺寸类边界就搬一次的话，
+         * `shrink()` 每调用一次都要付一次拷贝，而换回来的常常是零字节。 */
+        if have <= want * 2 {
+            self.cap = want
+            return
+        }
+        let keep: i64 = self.n
+        var oldSlice: mut slice<u8> = self.big!
+        let old: i64 = oldSlice.len
+        self.big = none
+        self.cap = 0
+        self.alloc(want)
+        if keep > 0 {
+            var dst: mut slice<u8> = self.big!
+            copyInto<u8>(dst[0..keep], oldSlice[0..keep], keep)
+        }
+        let _r: i32 = bufrt::extc_buf_release(oldSlice.data, u64(old))
     }
 
     fn clear(self: mut ref string) { self.n = 0 }
 
-    /* **守卫**：这一份容器值还指着它的池吗？（池被 release 掉 / 槽位被别的池复用时世代对不上）
-     * 陈旧 ⇒ 把这一份收成空容器，让下一次下标访问带位置地 trap，而不是写已还给 malloc 的内存。
+    /* **守卫**：这一份容器值还指着它的存储吗？
      *
-     * 内联态（`cap == 0`）没有池，谈不上陈旧 —— 这一条**必须问在 `pid` 之前**：
-     * 零值的 `pid` 就是 0，而 0 是一个合法的池 rid（第一个池）。 */
-    fn pStale(self: ref string) -> bool {
-        if self.cap == 0 { return false }
-        if self.pid < 0 { return false }
-        return syspool::extc_pool_generation(self.pid) != self.pidGen
-    }
-    /* 收成**零值**（内联空串）：这是 SSO 之后唯一的"空且合法"状态 ——
-     * 陈旧拷贝从此不再指向任何池块，所以既不会写已还给 malloc 的内存，
-     * 也不会像旧实现那样把 0 长视图留在身上（那要求每个访问点都记得自己会 trap）。 */
-    fn pPoison(self: mut ref string) {
-        self.n   = 0
-        self.cap = 0
-        self.big = none
-        self.pid = -1
-    }
+     * 值语义之后没有"共享一块存储"这件事：拷贝都是深拷贝（`clone`），释放只影响自己，
+     * 所以答案恒为 `false`。名字与调用点留着（每个 mutator 都问一次），这样"陈旧"这个概念
+     * 从实现里彻底消失时，调用点不需要跟着改一遍。 */
+    fn pStale(self: ref string) -> bool { return false }
 
+    /* 收成**零值**（内联空串）：把存储还给基质。陈旧不再出现，这里是防御性入口 ——
+     * 万一将来又出现共享，走这一条至少不会写已归还的内存。 */
+    fn pPoison(self: mut ref string) { self.freeStorage() }
+
+    /* 释放存储并收成内联空串；`@drop` 钩子（离开作用域、以及每份拷贝各自结束时）走这里。
+     * 显式调用也合法：之后这个字符串就是空串，读它不再需要"记得它会 trap"。 */
+    @drop
     fn release(self: mut ref string) {
         if self.pins > 0 { self.frozen() }
-        /* 内联：没有池可还（`pid` 可能是 0 —— 第一个池的 rid —— 所以这里**不能**看 pid）。 */
-        if self.cap == 0 { return }
-        /* One staleness question, one place to ask it (`pStale`): the comparison lives in
-         * exactly one place, and two copies of a load-bearing check would drift. */
-        if self.pStale() {
-            self.pPoison()      /* 陈旧拷贝：槽位已被别的池复用，什么都不许做 */
-            return
-        }
-        let rp = self.pid
-        /* 先把视图收成 0 长，再把板块还给池：之后任何下标都是响亮越界
-         * （带位置的 trap），而不是写进一块已经还掉的内存。还完收成零值（内联空串）：
-         * 释放过的字符串就是空串 —— 读它不再需要"记得它会 trap"。 */
-        self.big = some(poolResize<u8>(rp, self.big!, 0))
-        self.cap = 0
-        self.big = none
-        self.n   = 0
-        syspool::extc_pool_reset(rp)
-        syspool::extc_pool_drop(rp)
-        self.pid = -1
+        self.freeStorage()
     }
+
 }
 
 /* 模块级构造器。
@@ -1058,7 +1133,7 @@ fn join(parts: slice<slice<u8>>, sep: slice<u8>) -> string {
  * 依赖方向是 `std::text::string → std::io`，不成环。 */
 @ext
 impl io::ostream {
-    fn <<(self: ref ostream, v: string) -> ostream { return self << v.snapshot() }
+    fn <<(self: ref ostream, v: ref string) -> ostream { return self << v.view() }
 }
 
 /* stl/stringio.extc -- streaming I/O for `string`, attached with an `impl` block.

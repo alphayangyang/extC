@@ -1,0 +1,35 @@
+/* 判据：`s = s.concat(t)` 的右侧读**正被覆盖的那个名字**时，旧值必须在右侧求值之后、且先把新值
+   物化再交给 `@drop` —— 否则钩子还掉的是右侧正在读的存储。修前循环每轮得到 `"" + t`（len=1）。 */
+use std::text::string
+use std::io
+
+fn sameAs(a: ref string, want: slice<u8>) -> bool {
+    let v = a.view()
+    if v.len != want.len { return false }
+    for i in 0..v.len { if v[i] != want[i] { return false } }
+    return true
+}
+
+fn grow(tail: string) -> string {
+    var s = string::from("a-")
+    for i in 0..4 { s = s.concat(tail) }
+    return s
+}
+
+fn main() -> i32 {
+    let g = grow(string::from("bb"))
+    let gOk = sameAs(ref g, "a-bbbbbbbb")
+
+    /* 右侧是 place（clone 会先读 s），同样先物化再 drop */
+    var s = string::from("xyz")
+    s = s.clone()
+    let cOk = sameAs(ref s, "xyz")
+
+    /* 右侧不读目标：旧的「先 drop 后求值」顺序保留 */
+    var t = string::from("old")
+    t = string::fromI64(12345)
+    let rOk = sameAs(ref t, "12345")
+
+    println("g=", gOk, " glen=", g.len(), " c=", cOk, " r=", rOk, " rlen=", t.len())
+    return 0
+}

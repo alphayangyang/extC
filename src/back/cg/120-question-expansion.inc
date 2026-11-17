@@ -1490,12 +1490,18 @@ static void genParamDrops(CG *g, FuncDef *f) {
  * test used to shape an arena-less return cannot drift apart.
  *
  * @param g   The generator state.
- * @param st  The statement; anything but an initialised `var` answers false.
+ * @param st  The statement; anything but a `var` answers false.
  * @return    True when its drop has an effect and has not been taken over by `return` or an
  *            explicit `drop`.
+ *
+ * A `var x: T` with no initializer still **is** a value -- the zero value -- and it can own storage
+ * before the block ends (`var s: string` followed by `s.append(...)` moves it off the inline
+ * buffer), so it is dropped like any other. The price is a rule on hooks: a zero value has to be
+ * droppable, which is why `release` in the library is written as `if (reserved > 0) { ... }` rather
+ * than assuming there is something to hand back.
  */
 static bool localNeedsDrop(CG *g, Stmt *st) {
-    if (!st || st->kind != ST_VAR || !st->u.var.init) return false;
+    if (!st || st->kind != ST_VAR) return false;
     if (!typeNeedsDrop(g, st->type, 0)) return false;
     const char *nm = planCName(st) ? planCName(st) : st->u.var.name;
     if (!nm) return false;

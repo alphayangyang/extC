@@ -391,11 +391,10 @@ def main():
     else:
         print('  n/a（timemax.txt 缺 g21 的 50000/800000 两档；现有=%s）' % sorted(g21))
     print()
-    # ---------------- G22：长串周转的内存上界（XFAIL 棘轮） ----------------
-    # Lead R4c。池底 string 的「共享拷贝」把内存按构造过的总量算：k 条 1 MiB 长串顺序构造、
-    # 每条用完即弃（活集恒为一条），峰值却随 k 线性涨。判据 maxRSS(16)/maxRSS(4) <= 1.5。
-    # 迁移前是 XFAIL（已知欠账，不算门禁红），string 迁到 buf 之后必须转 PASS 并提成硬判据。
-    print("## G22 长串周转的内存上界（位移判据 maxRSS(k=16) <= 1.5 × maxRSS(k=4)；迁移前 XFAIL）")
+    # ---------------- G22：长串周转的内存上界（硬判据） ----------------
+    # Lead R4c。判据 maxRSS(16)/maxRSS(4) <= 1.5：k 条 1 MiB 长串顺序构造、每条用完即弃
+    # （活集恒为一条），峰值只能由活集定，不能由「构造过的总量」定。
+    print("## G22 长串周转的内存上界（位移判据 maxRSS(k=16) <= 1.5 × maxRSS(k=4)）")
     g22 = {}
     for line in read_text(os.path.join(out, "timemax.txt")).splitlines():
         parts = line.split()
@@ -423,7 +422,7 @@ def main():
               and all(r.get("exit") == 0 for r in g22r))
         print("  k=4 maxRSS = %d kB / k=16 maxRSS = %d kB  ratio = %s  stdout_ok=%s  [%s <=1.5x]"
               % (a, b, fmt(ratio, "x", 3), outs_ok,
-                 "PASS" if ok else "XFAIL(已知：string 还在池上，只还世代号不还板块；迁移后必须转 PASS)"))
+                 "PASS" if ok else "FAIL"))
     else:
         print("  n/a（timemax.txt 缺 g22 的 4/16 两档；现有=%s）" % sorted(g22))
     print()

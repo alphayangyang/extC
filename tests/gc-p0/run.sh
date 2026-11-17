@@ -27,7 +27,7 @@
 # 用法：
 #   tests/gc-p0/run.sh                # 全部（含空转基准，约 30–60 s）
 #   tests/gc-p0/run.sh g8             # 只跑 G8（g8|g9|g12|g13|g14|g15|g16|g18|g20|g21|g22|p03|peak|l10|g4|g1|g1cpu|g1c|noise）
-#   tests/gc-p0/run.sh g22            # G22：长串周转的峰值位移（XFAIL 棘轮；string 迁 buf 之后转硬判据）
+#   tests/gc-p0/run.sh g22            # G22：长串周转的峰值位移（硬判据 maxRSS(k=16) <= 1.5 × maxRSS(k=4)）
 #   tests/gc-p0/run.sh g12            # G12/G13 计数档 soundness（编译期 EXTC_RC_NOCOUNT=0；两档都跑）
 #   tests/gc-p0/run.sh g13            # 只跑 G13（uaf_bulk_copy，默认 T2 + 强制 T3 两档，期望 d0r=7）
 #   tests/gc-p0/run.sh stress         # **G4 正式验收**：注入 4×L 循环垃圾（tests/gc-p0/stress.py，3 档×3 reps）
@@ -419,7 +419,7 @@ if [ "$WHAT" = all ] || [ "$WHAT" = g21 ]; then
     fi
 fi
 
-echo "== G22：长串周转的内存上界（池底 string 的共享拷贝 ⇒ 峰值随构造过的总量涨）=="
+echo "== G22：长串周转的内存上界（判据 maxRSS(k=16) <= 1.5 × maxRSS(k=4)）=="
 # Lead R4c：这是一条 **XFAIL 棘轮**（迁移前必须红、迁移后必须绿），形状见
 # tests/gc-p0/src/leak_string_grow.extc 头：连续构造 k 条 1 MiB 长串、每条用完即弃，活集恒为一条。
 # 判据：maxRSS(k=16) / maxRSS(k=4) ≤ 1.5（活集不随 k 变，峰值就不该随 k 变）。

@@ -32,6 +32,6 @@
  *             compiled out, which is what makes a churn of small buffers competitive with a
  *             bump-pointer pool.
  */
-void bufRtEmitRuntime(Arena *a, Buf *out, int mt);
+void bufRtEmitRuntime(Arena *a, Buf *out, int mt, int rcTier);
 
 #endif

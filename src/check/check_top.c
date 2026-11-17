@@ -525,7 +525,12 @@ static bool exprIsPoolBlock(Expr *e);
 static bool hasNewInExpr(void *ctx, Expr *e) {
     const NewScan *sc = ctx;
     if (e->kind == EX_NEW) return false;                            /* found */
-    if (e->kind == EX_GENCALL &&
+    /* The buffer primitives are not allocations: `extc_sizeOf` is `sizeof`, `extc_viewOfT` builds
+     * a view of storage that already exists, and `elemTake` / `elemDrop` move or drop an element
+     * inside a view the container already owns. A container method that only takes elements out
+     * (`hashMap::remove`) therefore needs no frame arena of its own -- counting these would give
+     * it one plus a destroy chain per call, for nothing. */
+    if (e->kind == EX_GENCALL && !isBufPrimitiveName(e->u.gencall.name) &&
         !(sc && sc->skipPoolSlices && exprIsPoolBlock(e))) return false; /* found */
     AstVisit v = { hasNewInExpr, hasNewInStmt, ctx };
     return astWalkExprChildren(e, &v);
@@ -2930,6 +2935,74 @@ static Sym *rootSymNoScope(Expr *e) {
 }
 
 /**
+ * @brief Tell whether a value names storage that no frame owns, without a scope lookup.
+ *
+ * The scope-free twin of `exprOutOfFrame`: the summary pass runs after the bodies have been
+ * checked, so the answer comes from the binding the resolver pinned on the node. Storage the
+ * substrate handed out (`extc_buf_reserve`/`extc_buf_slotReserve`, a `plate` view) and a
+ * `global` outlive every frame; storing such a value into a container publishes nothing of the
+ * caller, so the summary records no constraint on any argument.
+ *
+ * @param e  Value expression; NULL allowed.
+ * @return   True when every storage the value names outlives this frame.
+ */
+/**
+ * @brief Compare a callee name against a plain function name, ignoring module qualification.
+ *
+ * Declarations carry their module path (`std$sys$heap$extc_viewOf`), while the primitives this file
+ * reasons about are named by their last segment.
+ *
+ * @param name  Declaration name; NULL allowed.
+ * @param want  Unqualified name to look for.
+ * @return      True when the last `$`-separated segment of `name` equals `want`.
+ */
+static bool plainFnNameIs(const char *name, const char *want) {
+    if (!name) return false;
+    const char *last = strrchr(name, '$');
+    return strcmp(last ? last + 1 : name, want) == 0;
+}
+
+/**
+ * @brief Scope-free twin of `rootSymNoScope`'s lifetime question, for a stored value.
+ *
+ * The effects pass runs after the scopes are gone, so it cannot ask `exprOutOfFrame`; this walker
+ * unwraps the shapes that pass a value through unchanged and answers whether the value came from
+ * storage that outlives the current frame. `extc_viewOf(p, n)` inherits `p`'s lifetime, and a call
+ * whose declaration says `Ret=0` hands back exactly what it was given.
+ *
+ * @param e  The value being stored, or NULL.
+ * @return   True when the value provably outlives this frame, so storing it is not "unknown".
+ */
+static bool valueOutOfFrameNoScope(Expr *e) {
+    if (!e) return false;
+    switch (e->kind) {
+    case EX_SIGN:  return valueOutOfFrameNoScope(e->u.sign.operand);
+    case EX_CONV:  return valueOutOfFrameNoScope(e->u.conv.operand);
+    case EX_TRY:   return valueOutOfFrameNoScope(e->u.try_.operand);
+    case EX_DEREF: return valueOutOfFrameNoScope(e->u.deref.operand);
+    default: break;
+    }
+    if (exprIsCallKind(e)) {
+        FuncDef *fd = planCallee(e);
+        /* The summary pass runs after the bodies, and a plain call is not always pinned to its
+         * declaration at that point: fall back to the name written at the call site, which is all
+         * the primitive needs (it is dispatched by name). */
+        const char *cn = (fd && fd->name) ? fd->name
+                       : (e->kind == EX_CALL && e->u.call.callee
+                          && e->u.call.callee->kind == EX_IDENT)
+                             ? e->u.call.callee->u.ident.name : NULL;
+        if (fd && fd->extRetFresh) return true;      /* the declaration promises it */
+        if (plainFnNameIs(cn, "extc_viewOf")) {
+            Vec *as = (e->kind == EX_CALL) ? &e->u.call.args :
+                      (e->kind == EX_METHOD) ? &e->u.method.args : &e->u.assoc.args;
+            return as->len >= 1 && valueOutOfFrameNoScope(*(Expr **)vecAt(as, 0));
+        }
+    }
+    Sym *sy = rootSymNoScope(e);
+    return sy && sy->outOfFrame;
+}
+
+/**
  * @brief Tell which parameter of `f` a value `e` comes from, by symbol rather than by spelling.
  *
  * The summary records "argument j was stored", and the call site checks only that argument, so the
@@ -3031,6 +3104,13 @@ static void classifyStoredValue(Checker *c, FuncDef *f, Expr *e, int i, bool int
     }
     if (e->kind == EX_NEW) return;                /* freshly allocated, so it is trivially safe */
     if (exprIsPoolBlock(e)) return;               /* a pool plate block: fresh, and the container owns it */
+    /* Storage no frame owns: a substrate reservation (signed `Ret=0`), a `plate` view, a
+     * `global`. Storing it cannot dangle on any argument, so it is as safe as a fresh
+     * allocation for the purpose of this summary. Without this, the SSO `string`'s
+     * `alloc` recorded "parameter 0 may receive anything", every `push`/`append` caller
+     * inherited `otherMask`, and the call-site rule collapsed to "an argument may not live in
+     * any block" (`statemachine`'s `step` could not be called with a frame local). */
+    if (valueOutOfFrameNoScope(e)) return;
     /* A variant construction with **no payload** (`none`, and any payload-free enum variant)
      * holds no reference, whatever the union's type says: the payload is simply not there.
      * Without this, `self.big = none` -- how an SSO string clears its pool view -- marks the
@@ -3188,7 +3268,19 @@ static bool callSubjectMentionsParam(Expr *e) {
  */
 static bool isRetainsNothingBuiltin(const char *name) {
     static const char *const BASE[] = {"print", "println", "flush", "trap",
-                                       "extc_sizeOf", "extc_viewOf", "extc_viewOfT"};
+                                       "extc_sizeOf", "extc_viewOf", "extc_viewOfT",
+                                       /* The substrate's C doors: they carve or hand back address
+                                        * space the caller already asked for, and none of them keeps a
+                                        * reference the caller passed in. Without them here the
+                                        * bodies of the string and container methods become
+                                        * "unanalysable", and an unanalysable body forces every
+                                        * caller to prove that all of its reference arguments outlive
+                                        * the callee place -- the coroutine state machine was rejected
+                                        * for a frame reference it had every right to pass. */
+                                       "extc_buf_reserve", "extc_buf_slotReserve",
+                                       "extc_buf_release", "extc_buf_discard",
+                                       "extc_buf_span", "extc_buf_live",
+                                       "extc_buf_releaseRefs"};
     if (!name) return false;
     const char *last = strrchr(name, '$');
     last = last ? last + 1 : name;
@@ -3301,8 +3393,9 @@ static void collectEffectsExpr(Checker *c, FuncDef *f, Expr *e) {
              * decidable. The template's own conservatism lives in the `mentionsParam` rules
              * (a `T` may carry a reference), which is where `tests/errors/generic_borrowed_store.extc`
              * gets its rejection from; it does not depend on this bit. */
-            if (!callSubjectMentionsParam(e))
+            if (!callSubjectMentionsParam(e)) {
                 anSetEffUnknown(f, true);   /* nothing to go on -> incomplete, conservatively */
+            }
         }
     }
     if (exprCarriesCallee(e) && planCallee(e)) {

@@ -84,6 +84,10 @@ static void genEqAdapter(CG *g, Type *t, FuncDef *m) {
 static void cgImplicitArgs(CG *g, Buf *b, const FuncDef *callee, const Expr *site, size_t nargs,
                            bool forSignature);
 
+/* The `@value` copy builder, for the same reason: an operator is a method call too, and its second
+ * parameter may be by value, so `genBin` below needs to build the copy rather than pass the place. */
+static const char *cloneValueText(CG *g, Type *dst, Expr *site);
+
 /**
  * @brief Wrap an emitted integer expression back to its declared width when that width is
  *        narrower than C's `int`.
@@ -201,8 +205,30 @@ static const char *genBin(CG *g, Expr *e) {
              * that is not a place, such as the result of a chained `<<`, has to be materialized. */
             l = selfOperandAsParam(g, e->u.bin.left, l, p0, e->u.bin.left->type);
         }
-        const char *r = genExpr(g, e->u.bin.right);
-        if (p1->type->kind == TY_REF) r = arenaPrintf(g->arena, "&(%s)", r);
+        /* The right operand fills a by-value parameter whenever the operator is the one an `@value`
+         * type defines (`fn ==(self: ref string, other: string)`), so the copy rule is the argument
+         * path's rule: a place is built by `clone`, a temporary is moved. Passing the place itself
+         * would hand the callee's parameter ownership of the caller's storage, and the parameter
+         * drop on the way out would free it while the caller still points at it. */
+        const char *r = planArgClone(e->u.bin.right)
+                        ? cloneValueText(g, p1->type, e->u.bin.right)
+                        : NULL;
+        if (!r) r = genExpr(g, e->u.bin.right);
+        if (p1->type->kind == TY_REF) {
+            /* A reference parameter needs an lvalue, and the right operand is often a call
+             * (`cout << (a + b)`): `&(f(x))` is not a C lvalue, and the temporary has to outlive the
+             * call, so it is materialized into a statement first -- the same treatment the left half
+             * gets above. */
+            bool rIsPlace = printArgIsPlace(e->u.bin.right);
+            Type *rT = subst(g, e->u.bin.right->type);
+            if (!rIsPlace && g->prefixBlk > 0 && rT && rT->kind != TY_REF && rT->kind != TY_ARRAY) {
+                const char *rtmp = arenaPrintf(g->arena, "__extc_op%d", g->tmpSeq++);
+                pfLine(g, "%s %s = %s;", cType(g, rT), rtmp, r);
+                r = arenaPrintf(g->arena, "&%s", rtmp);
+            } else {
+                r = arenaPrintf(g->arena, "&(%s)", r);
+            }
+        }
 
         /* An operator is a method call, so it asks the same single owner for the hidden
          * arguments (`cgImplicitArgs`); the checker already decided the level for it

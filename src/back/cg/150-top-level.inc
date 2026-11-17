@@ -720,6 +720,7 @@ static void genFuncInner(CG *g, FuncDef *f) {
     /* A cell is initialized with `&__extc_a[1]`, so the arena array must be emitted whenever
      * there is any cell, even in a function that allocates nothing. */
     g->noArena = !planMayUseArena(f) && !(owNow.len > 0 || owcNow.len > 0);
+
     /* A step owns no arena array: it is not a place, and what it allocates belongs to the task's own
      * place. Emitting one also made it unused, which
      * `-Wall -Werror` rejects. */

@@ -2,22 +2,25 @@
 
 > 状态：**当前口径** —— 这篇写的是现在的事实，改语义先改它。
 
-Status: **partly implemented** (2026-11-03, updated 2026-11-04). Step S1 is in: a `@drop` method on a
-`@noCopy` struct runs when the binding leaves its block, when it is overwritten by `=`, before a
-`return`, and on the way out of a loop through `break`/`continue`. Step S2 is in as well: `drop x`
-is an explicit statement that runs the hook **there**, and the name is dead afterwards — reading it,
-dropping it twice, or dropping a value someone still holds a view of is a compile error. Not in yet:
-generators' frames, drops on the `trap` path, and program exit for globals.
+Status: **implemented for `@noCopy` and `@value` types**. A `@drop` method runs when the binding
+leaves its block (fall-through, `return`, `break`/`continue`), when it is overwritten by `=`, on a
+by-value parameter when the callee returns, on fields in reverse declaration order, and on globals at
+program end. `drop x` is an explicit statement that runs the hook **there**, and the name is dead
+afterwards — reading it, dropping it twice, or dropping a value someone still holds a view of is a
+compile error; assigning a new value revives it. Not in yet: coroutine frames (a `@drop` value across
+`yield`), and the hooks of a runtime-raised `trap` (bounds / stale dyn).
 
 `extC` already has linear types: `@noCopy` means "exactly one owner, may be borrowed but never copied"
 (`fs::file`, `ifstream`, `ofstream`, `loop`, `mem::pool`, `json::doc`, …). Linear types own things the
 arena does not: file descriptors, sockets, locks. Without a destructor every early return leaks one,
 and the user has to write `close()` on every path. That is the awkwardness this note fixes.
 
-The design is deliberately narrower than C++: **a destructor releases external resources, it never
-frees storage.** Storage belongs to places (frame block, plate, frame of a coroutine) and is released
-by the place, not by user code. That one restriction is what makes destructors cheap here: no `Rc`,
-no rule-of-5, no move constructors.
+The design is deliberately narrower than C++: **a destructor releases what the value owns, and nothing
+else.** Storage that belongs to a *place* (a frame block, a plate, a coroutine frame) is released by
+the place, not by user code; storage that belongs to a *value* — a reservation the value asked for and
+nobody else can reach — is returned by that value's `@drop` (`string`, `buf<T>`). The distinction is
+what keeps destructors cheap: no `Rc`, no rule-of-5, no move constructors. A `@value` type can have a
+`@drop` because every copy is built from scratch by its `clone`.
 
 ## 1. Marking a destructor
 
@@ -64,6 +67,16 @@ Fields of a `@drop` type die with it: the compiler runs the type's `@drop` body 
 fields in reverse declaration order (same as C++ members / Rust `Drop`+fields). A field of a `@drop`
 type thus never needs manual cleanup.
 
+**A binding with no initializer is still a value.** `var s: string` runs its `@drop` at block exit like
+any other binding; the hook must be safe on the zero value (the library asks `if reserved > 0` instead
+of assuming there is storage to return). Without this rule a loop that declares an empty value and
+writes it long pays one reservation per iteration: the set of places that need a drop is about the
+place, not about whether the author wrote an initializer.
+
+A container that owns its elements (`buf<T>`, `vector<T>`, `hashMap<K,V>`) runs the element's hook when
+an element leaves the container (`clear`, `shrink`, `release`, `pop`, overwrite) and takes an element by
+*move* when one is stored into it. The rules and their checks are in `docs/design/CONTAINER-OWNERSHIP.md`.
+
 A parameter passed **by value** is the callee's copy, so the callee owns it and drops it on the way
 out; a `ref` or a view parameter names the caller's storage and drops nothing. That is also why only a
 temporary can be passed by value to a `@noCopy` type: a named variable would be a second name for one
@@ -103,9 +116,9 @@ name" / "not tracked here" — the recoverable side (see the status line).
 | `@drop` on a type that is neither `@noCopy` nor `@value` | dropping needs an owner per copy | `@drop` needs a `@noCopy` or `@value` struct |
 | `drop x` while `x` is borrowed | dangling | at the statement |
 | `drop` of a field outside a destructor | partial move out of a value | at the statement |
-| a `@drop` value inside `varArray`/`vector`/`hashMap`/`dyn`/`any` | those copy/clone values | at the container's element check |
+| a `@drop` value inside `varArray`/`dyn`/`any` | those copy/clone values | at the container's element check |
 | a `@drop` value captured by a closure | closures copy the environment | capture check |
-| a `@drop` value held across `yield` | frame drop list not implemented yet (stage 2) | at the coroutine's frame layout |
+| a `@drop` value held across `yield` | frame drop list not implemented yet (stage 3) | at the coroutine's frame layout |
 | a `@drop` value passed as `par` capture | parallel copies | the `par` capture check |
 | trap inside a `@drop` body | cleanup must not fail halfway | callee effects: only non-trapping calls |
 
@@ -132,30 +145,45 @@ Codegen:
 
 Runtime: none. A destructor is a plain C function call on a `mut ref`.
 
-## 6. Tests (`tests/destructor/`)
+## 6. Tests (`tests/drop/`, 19 cases)
 
-1. `auto_block.extc` — three resources, block exit, reverse order, counters print `3 2 1`.
-2. `auto_early_return.extc` — resources taken, `return` in the middle of nested blocks; everything closed once.
-3. `auto_break_continue.extc` — loop body resources dropped per iteration.
-4. `overwrite.extc` — assigning a new handle drops the old one first.
-5. `explicit.extc` — `drop f`, then a later `f.close()` **must fail to compile** (negative case).
-6. `borrowed.extc` — `let v = f.view()` then `drop f` **must fail** with the borrow message (negative).
-7. `field_auto.extc` — a `@drop` field inside a `@drop` struct, both bodies run, reverse order.
-8. `trap_path.extc` — a trap after two resources were taken: both closed (check the fd count via `/proc/self/fd`).
-9. `container_reject.extc` — `varArray<@drop type>` **must fail** (negative).
-10. `coro_reject.extc` — a `@drop` value across `yield` **must fail** (negative, until stage 2).
-11. `no_double_close.extc` — ASan build, same handle dropped on a trap path and a return path.
-12. `@drop` on a copyable type **must fail** (negative).
+Each positive case prints a trace of hook calls, so order and multiplicity are the assertion:
+
+| Case | What it pins |
+|---|---|
+| `order.extc` | block exit, innermost first, reverse declaration order |
+| `overwrite.extc` | `=` drops the old value before the store |
+| `no_hook.extc` | a type without a hook is untouched |
+| `early_return.extc` | `return` through nested blocks runs every hook once |
+| `break_continue.extc` | `break` / `continue` run the hooks of the blocks they leave |
+| `fields.extc` | a `@drop` field runs after the outer body, reverse order |
+| `return_move.extc` | returning a local moves it out: no hook in the callee, one in the caller |
+| `explicit_drop.extc` | `drop x` runs the hook there and the block exit does not repeat it |
+| `revive_after_drop.extc` | assigning to a dropped name makes it live again |
+| `param_owner.extc` | a by-value parameter is the callee's copy and is dropped there (`n=0 leak=0`) |
+| `generic.extc` | the hook is reachable through a generic instance |
+| `global_exit.extc` | a global's hook runs at program end, after the body |
+| `resource_warning.extc` | a hook counts as the release point, so the leak warning goes quiet |
+| `errors/drop_needs_nocopy.extc` | `@drop` on a type that is neither `@noCopy` nor `@value` |
+| `errors/two_hooks.extc` | one hook per type |
+| `errors/drop_then_use.extc` | reading a dropped name |
+| `errors/drop_twice.extc` | dropping twice |
+| `errors/drop_no_hook.extc` | `drop` of a type with no hook |
+| `errors/drop_borrowed.extc` | `drop` while a live view borrows the value |
+
+`script/tests` runs the same programs under ASan; `tests/copy` covers the `@value` side (every copy is a
+`clone`, so each copy owns its storage and each runs its own hook).
 
 ## 7. Stages
 
-- **Stage 1** (landed, `tests/drop/` 7 cases): attribute + automatic drops on block exit, `return`,
-  and overwrite; hook reachable through reachability pruning for plain and generic types; the two
-  rejection cases. Still open in S1: `break`/`continue`, program end, the trap path, field order
-  (a field of a `@drop` type is not dropped yet), and the borrow census.
-- **Stage 2**: explicit `drop x` with the borrow census (tests 5, 6, 9).
-- **Stage 3**: coroutine frames get a drop list, so a `@drop` value may live across `yield`
-  (`conn` coroutines holding an `ifstream`); then test 10 becomes a positive case.
+- **Stage 1 (in)**: attribute + automatic drops on block exit, `return`, `break`/`continue`, overwrite,
+  fields (reverse order) and globals at program end; hook reachable through reachability pruning for
+  plain and generic types; a by-value parameter is dropped by the callee.
+- **Stage 2 (in)**: explicit `drop x` with the borrow census, revive-by-assignment, and the leak
+  warning counting a hook as the release point.
+- **Stage 3 (open)**: coroutine frames get a drop list, so a `@drop` value may live across `yield`
+  (`conn` coroutines holding an `ifstream`); the trap path of runtime-raised traps (bounds / stale dyn)
+  still skips the hooks because the enclosing block chain is not visible inside the emitted helper.
 
 ## 8. Relation to `pin` (docs/design/ALLOCATORS.md)
 

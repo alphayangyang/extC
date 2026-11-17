@@ -1,12 +1,12 @@
-/* G22：长串周转的内存上界 —— 池底 string 的「共享拷贝」把内存按构造过的总量算。
+/* G22：长串周转的内存上界。
  *
  * 形状：连续构造 k 条 1 MiB 的长串（每条用 64 字节块 append 16384 次），每条用完即弃；
  * 因此**活集恒为一条 1 MiB**。argv[1] = k（默认 16）。
  *
- * 判据（迁移前是 XFAIL 棘轮，迁移后转硬判据）：maxRSS(k=16) / maxRSS(k=4) 应 ≤ 1.5 ——
- * 活集不随 k 变，峰值就不该随 k 变。池底实现今天线性增长（4 MiB 串实测 5.8/9.9/18.2/34.5/67.3 MB，
- * 斜率 ≈ 一个串），因为池只还世代号、不还板块；规则与迁移顺序见 docs/design/CONTAINER-OWNERSHIP.md。
+ * 判据：maxRSS(k=16) / maxRSS(k=4) 应 ≤ 1.5 —— 活集不随 k 变，峰值就不该随 k 变。
+ * 规则的依据见 docs/design/CONTAINER-OWNERSHIP.md（零值也要 drop、长串的存储由基质发给值本身）。
  * 运行时还要读 stdout 里的校验和，防「提前截断/被优化掉」的假 PASS。 */
+
 use std::io
 use std::text::string
 

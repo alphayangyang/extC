@@ -796,6 +796,76 @@ static bool cgTargetIsParamSlot(CG *g, Expr *t) {
     return false;
 }
 
+/** @brief State of one "does this expression read that binding" walk. */
+typedef struct { const char *name; bool found; } MentionScan;
+
+/**
+ * @brief The child callback of `mentionWalk`, forward-declared ahead of its first use.
+ *
+ * @param ctx  The `MentionScan *` the walk is running for.
+ * @param e    The child expression being visited.
+ * @return     `false` when this child holds the name, which stops the whole walk.
+ */
+static bool mentionChild(void *ctx, Expr *e);
+
+/**
+ * @brief One step of the "does this expression read that binding" walk.
+ *
+ * A `@drop` value that is overwritten may have its right side read the very place being
+ * overwritten (`s = s.concat(t)`, `p = f(ref p)`): finding that read is what decides whether the
+ * old value can be handed back before the right side runs. Returning false stops the walk at the
+ * first hit, the convention `astWalkExprChildren` uses for every early exit.
+ *
+ * @param ms  The scan: the name looked for and whether it was found.
+ * @param e   The expression to inspect, or NULL.
+ * @return    `true` to keep walking; `false` once the name has been found.
+ */
+static bool mentionWalk(MentionScan *ms, Expr *e) {
+    if (!e) return true;
+    if (e->kind == EX_IDENT) {
+        if (e->u.ident.name && strcmp(e->u.ident.name, ms->name) == 0) {
+            ms->found = true;
+            return false;
+        }
+        return true;
+    }
+    const AstVisit v = { mentionChild, NULL, ms };
+    return astWalkExprChildren(e, &v);
+}
+
+/**
+ * @brief The child callback of `mentionWalk`; see that function for the question it answers.
+ *
+ * @param ctx  The `MentionScan *` the walk is running for.
+ * @param e    The child expression being visited.
+ * @return     `false` when this child holds the name, which stops the whole walk.
+ */
+static bool mentionChild(void *ctx, Expr *e) {
+    return mentionWalk((MentionScan *)ctx, e);
+}
+
+/**
+ * @brief Does `e` read a binding by this source name anywhere in it?
+ *
+ * Used by the assignment path: overwriting a binding hands the old value back with its `@drop`
+ * hook, but the right side may read the very place that is being overwritten (`s = s.concat(t)`,
+ * `p = f(ref p)`). In that case the old value is handed back only after the right side has been
+ * evaluated and materialised, so the hook cannot free storage the expression still reads.
+ *
+ * The walk goes through `astWalkExprChildren`, the one place that lists an expression's children,
+ * rather than a private `switch`: a kind added later is then followed here automatically instead
+ * of being silently skipped.
+ *
+ * @param e     The expression to scan, or NULL.
+ * @param name  The source name of the binding being overwritten.
+ * @return      True when a read of that binding may appear inside `e`.
+ */
+static bool exprMentionsName(const Expr *e, const char *name) {
+    if (!e || !name) return false;
+    MentionScan ms = { name, false };
+    mentionWalk(&ms, (Expr *)e);
+    return ms.found;
+}
 /**
  * @brief Emit the statement itself; this is the real dispatch table, while prefix bookkeeping lives
  *        in `genStmt`.
@@ -921,6 +991,14 @@ static void genStmtInner(CG *g, Stmt *s) {
             /* Overwriting a binding that owns its state runs its `@drop` hook first: the old value
              * is going away, and this is the last moment it can hand that state back. Skipped for
              * `a = a`, where dropping first would release the very storage being read. */
+            /* The old value of an overwritten binding is handed back with its `@drop` hook, but
+             * not before the right side has been read: `s = s.concat(t)` reads the very place being
+             * overwritten, so the hook has to run **after** the value exists (see below). These three
+             * flags carry that decision across the value evaluation. */
+            bool dropOld = false;
+            bool oldReadByValue = false;
+            const char *dropCName = NULL;
+            Type *dropType = NULL;
             if (s->u.assign.target && s->u.assign.target->kind == EX_IDENT) {
                 struct { bool same; } guard = { false };
                 if (s->u.assign.value && s->u.assign.value->kind == EX_IDENT)
@@ -942,8 +1020,14 @@ static void genStmtInner(CG *g, Stmt *s) {
                     g->dropExplicit.len = keep;
                 }
                 if (!guard.same && !wasDropped && hn &&
-                    typeNeedsDrop(g, s->u.assign.target->type, 0))
-                    genDropValue(g, dropValueRef(g, hn), s->u.assign.target->type, 0);
+                    typeNeedsDrop(g, s->u.assign.target->type, 0)) {
+                    dropOld = true;
+                    dropCName = hn;
+                    dropType = s->u.assign.target->type;
+                    oldReadByValue = exprMentionsName(s->u.assign.value, src0);
+                    if (!oldReadByValue)
+                        genDropValue(g, dropValueRef(g, hn), s->u.assign.target->type, 0);
+                }
             }
             g->inAssignTarget = true;
             const char *tgt = genExpr(g, s->u.assign.target);
@@ -975,6 +1059,18 @@ static void genStmtInner(CG *g, Stmt *s) {
             const char *cl = (planArgClone(s->u.assign.value) && s->u.assign.target)
                              ? cloneValueText(g, s->u.assign.target->type, s->u.assign.value) : NULL;
             const char *val = cl ? cl : genTopExpr(g, s->u.assign.value);
+            /* The right side reads the binding being overwritten, so the old value is handed back
+             * only now, after the new value exists -- and it is materialised first, because the hook
+             * may release the storage that the freshly computed value still points into. The
+             * temporary is a plain C variable: no hook runs on it, and the store below gives its
+             * ownership to the target, so nothing is released twice. */
+            if (dropOld && oldReadByValue) {
+                const char *tmp = arenaPrintf(g->arena, "__extc_ov%d", g->tmpSeq++);
+                flushPrefix(g);
+                cgLine(g, "__typeof__(%s) %s = %s;", dropCName, tmp, val);
+                genDropValue(g, dropValueRef(g, dropCName), dropType, 0);
+                val = tmp;
+            }
             /* Assigning a reference slot has **overwrite** semantics (the slot already holds an old value), so
              * it goes through storeRef: decrement the old value, increment the new one. A data field
              * (`p.val = x`) is not a reference type => not a word is emitted.

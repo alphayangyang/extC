@@ -286,6 +286,9 @@ struct hashMap<K, V> {
             self.slot[bMoved] = i32(d)
             self.bucketOfDense[d] = i32(bMoved)
         }
+        /* Take the removed key out of its bucket: for a key that owns storage a plain
+         * `tag[b] = EMPTY` would leave those bytes behind and nothing would ever drop them. */
+        let _gone: K = elemTake<K>(self.keys, b)
         self.n = self.n - 1
         self.tag[b] = EMPTY
         let mask = self.cap - 1
@@ -297,7 +300,9 @@ struct hashMap<K, V> {
              * `j` without first crossing the hole -- otherwise moving it would hide it from
              * its own lookup. Distances are taken modulo the capacity. */
             if ((j - home) & mask) >= ((j - hole) & mask) {
-                self.keys[hole] = self.keys[j]
+                /* A move, not a copy: the element walks to the hole and its old slot is zeroed, so an
+                 * owning key still has exactly one owner. */
+                self.keys[hole] = elemTake<K>(self.keys, j)
                 self.tag[hole]  = LIVE
                 self.slot[hole] = self.slot[j]
                 self.bucketOfDense[i64(self.slot[hole])] = i32(hole)
@@ -335,7 +340,7 @@ struct hashMap<K, V> {
                 var j = self.keys[i].hash() & (ncap - 1)
                 while nt[j] == LIVE { j = (j + 1) & (ncap - 1) }
                 nt[j] = LIVE
-                nk[j] = self.keys[i]
+                nk[j] = elemTake<K>(self.keys, i)
                 ns[j] = self.slot[i]
                 self.bucketOfDense[i64(self.slot[i])] = i32(j)
             }
@@ -355,7 +360,13 @@ struct hashMap<K, V> {
      * epoch, */
     fn clear(self: mut ref hashMap<K, V>) {
         var i: i64 = 0
-        while i < self.cap { self.tag[i] = EMPTY  i = i + 1 }
+        while i < self.cap {
+            /* An owning key is stored in its bucket, so emptying the table has to run the key's
+             * hook too; for a key type with no storage this compiles to nothing. */
+            if self.tag[i] == LIVE { elemDrop<K>(self.keys, i, i + 1) }
+            self.tag[i] = EMPTY
+            i = i + 1
+        }
         self.vals.clear()
         self.n    = 0
         self.dead = 0
@@ -381,6 +392,16 @@ struct hashMap<K, V> {
     }
 
     fn release(self: mut ref hashMap<K, V>) {
+        /* Live keys sit in the bucket columns, so they are dropped here: the pool tree hands the
+         * memory back without ever calling an element hook. A stale copy points into a pool that
+         * has been reused, so it is skipped. */
+        if self.pid >= 0 && !self.pStale() {
+            var i: i64 = 0
+            while i < self.cap {
+                if self.tag[i] == LIVE { elemDrop<K>(self.keys, i, i + 1) }
+                i = i + 1
+            }
+        }
         self.vals.release()
         if self.pid < 0 { return }
         /* One staleness question, one place to ask it (`pStale`): the comparison lives in

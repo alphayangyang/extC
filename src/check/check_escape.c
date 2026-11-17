@@ -113,6 +113,31 @@ bool exprOutOfFrame(Checker *c, Expr *e) {
             FieldDef *fd = planField(e->u.method.recv);
             if (fd && fd->hasEffects && fd->effRetFresh) return true;
         }
+        /* The substrate view constructor is `&p[0..n]` by construction, so the view it makes
+         * inherits the lifetime of `p`: a view over a reservation -- or over any other storage
+         * that outlives every frame -- outlives every frame as well. This is a fact of the
+         * compiler-level primitive (`extc_viewOf`), not a guess about a library function: the
+         * SSO `string` builds its big buffer this way, and without the propagation the binding
+         * below answers "in frame", the store into `self.big` has no attributable source, and
+         * every `push`/`append` caller inherits the strictest call-site rule. */
+        if (exprIsCallKind(e)) {
+            const char *nm = NULL;
+            Vec *as = NULL;
+            switch (e->kind) {   /* the argument vector lives in a different member per call shape */
+                case EX_CALL:
+                    nm = (e->u.call.callee && e->u.call.callee->kind == EX_IDENT)
+                             ? e->u.call.callee->u.ident.name : NULL;
+                    as = &e->u.call.args;
+                    break;
+                case EX_METHOD: nm = e->u.method.name; as = &e->u.method.args; break;
+                case EX_ASSOC:  nm = e->u.assoc.name;  as = &e->u.assoc.args;  break;
+                default: break;
+            }
+            const char *last = nm ? strrchr(nm, '$') : NULL;
+            if (last ? strcmp(last + 1, "extc_viewOf") == 0 : (nm && strcmp(nm, "extc_viewOf") == 0)) {
+                if (as && as->len >= 1 && exprOutOfFrame(c, *(Expr **)vecAt(as, 0))) return true;
+            }
+        }
         return planCallee(e) && planCallee(e)->extRetFresh;
     }
     default: return false;

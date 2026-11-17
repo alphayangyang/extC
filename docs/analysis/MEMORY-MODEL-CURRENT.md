@@ -72,7 +72,7 @@ extC 的内存管理**不是"一个 GC"**，而是：
 |---|---|---|---|---|---|---|
 | 1 | **帧 arena**（bump） | `new`/`alloc` 落在 level≥2 的块内，或 home 层 | `extc_arena_alloc`（`codegen.c:12442`） | 块结束 / 帧返回 | `extc_arena_release` / `extc_arena_destroy`，整块丢弃，无逐对象成本 | **有界**：= 该作用域内累计分配字节（+ 对齐/块头），释放后归零；循环体每轮进门/出门各 release 一次 |
 | 2 | **rc region**（slab + 标记清扫） | `new T`、定长 `new [N]T`、`alloc<T>(n)`、单值 `@overwrite`（`needReclaim` 为真时一律 rc，与层号无关，`codegen.c:4686/4716`）；`alloc<T>(n)` 与 `new T[n]` 的 data 区仅层号 == 1（`:4721-4736、4831-4843`） | `extc_rc_alloc`（`reclaim.c:1489`） | 不可达被标记清扫判定 | 增量标记 + 步进清扫，槽进 freelist 复用；slab **永不归还** | **无常量上界**：Σ(存活 region 的 slab 峰值) |
-| 3 | **pool** | 容器（vec/map/string/list…） | `extc_pool_*`（`pools.c` 发射） | 句柄 generation 失配 / pool 释放 | 整块 `realloc`/`free` + generation 使旧句柄失效 | 随容器存活期增长；无自动回收 |
+| 3 | **pool** | 容器（`hashMap`/`map`/`set`/`pool`；`vector` 与 `string` 的存储已交给缓冲区基质，见 §19.20/§19.21） | `extc_pool_*`（`pools.c` 发射） | 句柄 generation 失配 / pool 释放 | 整块 `realloc`/`free` + generation 使旧句柄失效 | 随容器存活期增长；无自动回收 |
 | 4 | **coroutine / parallel worker arena** | 每个任务的帧 | `extc_arena_*`（每任务独立） | 任务结束 | 确定性 destroy | **有界（每任务）** |
 | 5 | **plate**（`std.mem`） | 程序显式请求 | `mmap(PROT_NONE)+mprotect`（`stdlib/std/mem.extc`） | `close` | `munmap`；永不搬家 | **有界**（用户 view 的长度） |
 

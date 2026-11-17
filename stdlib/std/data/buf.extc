@@ -35,29 +35,10 @@
  */
 
 use std::sys::heap as sysheap
+use std::sys::bufrt as bufrt
 
-/* 三个 C 入口 + 一格账本。**都声明在这个模块里**，不在 `std::sys::heap`：预留要把区间对齐到
- * 2 MiB 并 `madvise(MADV_HUGEPAGE)`，丢页要把「偏离页首」的地址折回页首 —— 两者都需要指针
- * 算术与整数转指针，而语言故意不开这两样，所以这三格只能由编译器给（`src/back/bufrt.c`）。
- * 声明的位置就是触发器：只有真用了 `buf` 的程序才会把它们扫到，才发射那块 C 代码
- * （`src/back/cg/190-lambda-envs.inc` 按 `externLib == "extc-buf"` 点亮 `needBuf`）。
- * 策略（留多少、何时长、何时搬、长度多少）全在这个文件里，C 侧不知道任何策略。 */
-extern!("extc-buf") fn extc_buf_reserve(bytes: u64) -> ?ref u8 effects Addr=0 Cont=0
-/* 密排槽：小载荷（<= 64 KiB）从 16 B..64 KiB 的 13 个尺寸类里拿一个槽。槽与邻居共页，
- * 所以一个 32 字节的缓冲值占 32 字节，而不是一个 2 MiB 量子。归还走同一个 `extc_buf_release`：
- * C 侧按地址查类，命中就走尺寸类链，否则走 buddy。 */
-extern!("extc-buf") fn extc_buf_slotReserve(bytes: u64) -> ?ref u8 effects Addr=0 Cont=0
-extern!("extc-buf") fn extc_buf_release(at: ref u8, bytes: u64) -> i32 effects Addr=0 Cont=0
-extern!("extc-buf") fn extc_buf_discard(at: ref u8, bytes: u64) -> i32 effects Addr=0 Cont=0
-/* 一片预留**实际**拿到多少字节（按 2 MiB 量子取整后的块大小）；不是 arena 块时返回 0。 */
-extern!("extc-buf") fn extc_buf_span(at: ref u8) -> i64 effects Addr=0 Cont=0
-/* 活着的缓冲区一共预留了多少**地址空间**（不是驻留内存）：给泄漏判据用的一格。 */
-extern!("extc-buf") fn extc_buf_live() -> i64 effects Addr=0 Cont=0
-/* 结构动作（丢元素 / 交还预留 / 搬家）撤销 `[from, to)` 这些元素里引用域的外部边登记：
- * 含引用的 `T` 每个引用槽在回收运行期里有一条登记，元素被丢掉时必须跟着撤，否则那块存储
- * 会把已经丢掉的值一直当成标记根（被复用的缓冲区就成了无界根集）。不含引用的 `T` 没有登记，
- * 这一次调用只是一次空表检查。 */
-extern!("extc-buf") fn extc_buf_releaseRefs(at: ref u8, esz: i64, from: i64, to: i64) -> i32 effects Addr=0 Cont=0
+/* 这些 C 入口声明在 `std::sys::bufrt`（不含泛型的那一层）：入口住在这里会把整个 `buf<T>`
+ * 泛型声明拖进只用 `string` 的程序，见那个文件的头注释。策略仍全在这个文件里。 */
 
 /* 预留策略的常数。写成字面量而不是 `i64(2097152)`：带检查的转换会让静态初始化器不是常量
  * （与 `std/mem.extc` 的 PAGE/CHUNK 同一条理由）。 */
@@ -92,7 +73,7 @@ struct buf<T> {
     fn dropRefs(self: ref buf<T>, from: i64, to: i64) {
         if to <= from { return }
         let esz: i64 = extc_sizeOf<T>()
-        let _r: i32 = extc_buf_releaseRefs(self.mem.data, esz, from, to)
+        let _r: i32 = bufrt::extc_buf_releaseRefs(self.mem.data, esz, from, to)
     }
 
     /** @brief 交还整片预留。离开作用域、被覆盖、或函数中途返回时由编译器发出；也可以现在就调。
@@ -105,7 +86,7 @@ struct buf<T> {
         if self.reserved > u64(0) {
             self.dropRefs(0, self.n)
             elemDrop<T>(self.vals, 0, self.n)
-            if extc_buf_release(self.mem.data, self.reserved) != 0 {
+            if bufrt::extc_buf_release(self.mem.data, self.reserved) != 0 {
                 trap("buf: cannot give the reservation back")
             }
         }
@@ -124,11 +105,11 @@ struct buf<T> {
         let wantBytes: i64 = cc * esz
         if wantBytes <= BUF_SLOT_BYTES {
             var cb: i64 = bufClassBytes(wantBytes)
-            var raw0: ?ref u8 = extc_buf_slotReserve(u64(cb))
+            var raw0: ?ref u8 = bufrt::extc_buf_slotReserve(u64(cb))
             if raw0 == null { trap("buf: cannot reserve storage") }
             var sp0: i64 = cb
             if raw0 != null {
-                let got0: i64 = extc_buf_span(raw0)
+                let got0: i64 = bufrt::extc_buf_span(raw0)
                 if got0 > sp0 { sp0 = got0 }
             }
             var mem0: mut slice<u8> = sysheap::extc_viewOf(raw0, sp0)
@@ -154,13 +135,13 @@ struct buf<T> {
         if mx < floorElems { mx = floorElems }
         if mx > limElems { mx = limElems }
         let bytes: u64 = u64(mx * esz)
-        var raw: ?ref u8 = extc_buf_reserve(bytes)
+        var raw: ?ref u8 = bufrt::extc_buf_reserve(bytes)
         if raw == null { trap("buf: cannot reserve address space") }
         /* 账本记的是**实际**拿到的块（量子取整），所以容量上限也按它算：一个 512 字节的 buf
          * 实际握着 2 MiB 地址空间，`maxCapacity()` 必须说 2 MiB，不能说 512 字节。 */
         var span: i64 = i64(bytes)
         if raw != null {
-            let got: i64 = extc_buf_span(raw)
+            let got: i64 = bufrt::extc_buf_span(raw)
             if got > span { span = got }
         }
         var realMax: i64 = span / esz
@@ -273,11 +254,11 @@ struct buf<T> {
             bytes = u64(nmax * esz)
         }
         var raw: ?ref u8 = null
-        if slotMove { raw = extc_buf_slotReserve(bytes) } else { raw = extc_buf_reserve(bytes) }
+        if slotMove { raw = bufrt::extc_buf_slotReserve(bytes) } else { raw = bufrt::extc_buf_reserve(bytes) }
         if raw == null { trap("buf: cannot reserve address space") }
         var span: i64 = i64(bytes)
         if raw != null {
-            let got: i64 = extc_buf_span(raw)
+            let got: i64 = bufrt::extc_buf_span(raw)
             if got > span { span = got }
         }
         var realMax: i64 = span / esz
@@ -294,7 +275,7 @@ struct buf<T> {
             copyInto<T>(nvals[done .. done + cn], self.vals[done .. done + cn], cn)
             var srcHere: mut slice<u8> = self.mem[done * esz .. self.n * esz]
             let dropBytes: u64 = u64(((cn * esz) / 4096) * 4096)
-            if dropBytes > u64(0) { extc_buf_discard(srcHere.data, dropBytes) }
+            if dropBytes > u64(0) { bufrt::extc_buf_discard(srcHere.data, dropBytes) }
             done = done + cn
         }
         self.dropRefs(0, self.n)
@@ -306,7 +287,7 @@ struct buf<T> {
         self.max = realMax
         self.cap = realMax
         self.moves = self.moves + 1
-        if extc_buf_release(oldAt, oldBytes) != 0 {
+        if bufrt::extc_buf_release(oldAt, oldBytes) != 0 {
             trap("buf: cannot give the old reservation back")
         }
     }
@@ -325,7 +306,7 @@ struct buf<T> {
             let esz: i64 = extc_sizeOf<T>()
             var tail: mut slice<u8> = self.mem[kk * esz .. self.cap * esz]
             let drop: u64 = u64((self.cap - kk) * esz)
-            if extc_buf_discard(tail.data, drop) != 0 {
+            if bufrt::extc_buf_discard(tail.data, drop) != 0 {
                 trap("buf: cannot give pages back")
             }
             self.cap = kk
@@ -366,7 +347,7 @@ struct buf<T> {
 /** @brief 进程当前为所有活着的 `buf` 预留了多少**地址空间**（不是驻留内存）。
  *
  * 一个数就够写泄漏判据：块前块后相等，说明 `@drop` 把预留全还了。 */
-fn bufLive() -> i64 { return extc_buf_live() }
+fn bufLive() -> i64 { return bufrt::extc_buf_live() }
 
 /** @brief `buf::borrow()` 的守卫：活着的时候缓冲区的存储被冻结。 */
 @noCopy

@@ -1,0 +1,40 @@
+/* std/sys/bufrt.extc —— 缓冲区基质的 C 入口（预留 / 密排槽 / 归还 / 丢页 / 保留引用登记）
+ *
+ * 这一层只声明编译器给的入口（实现见 `src/back/bufrt.c`），没有任何策略、没有泛型类型：
+ * 「留多少、何时长、何时搬」全在使用者那里（`std::data::buf` 的 `buf<T>`、`std::text::string`）。
+ *
+ * **为什么单独一个模块**：入口声明的位置就是发射触发点 —— 只有真用到它们的程序才会被扫到，
+ * 才发射那块 C 代码（`src/back/cg/190-lambda-envs.inc` 按 `externLib == "extc-buf"` 点亮
+ * `needBuf`）。如果声明住在 `std::data::buf` 里，那么只用 `string` 的程序也会把 `buf<T>` 的
+ * 泛型声明（以及它的方法实例）一并拖进来；而这些泛型在实例化时按裸名解析 `buf<T>`，
+ * 用户程序里恰好有一个同名 `struct buf` 就会被解析成那个非泛型类型，编译报
+ * "buf expects 0 type argument(s)"。把入口搬到不含泛型的模块之后，依赖链是
+ * `string -> sys::bufrt`，与 `buf<T>` 无关。
+ *
+ * 这些入口都不能用 extC 写：预留要把区间对齐到 2 MiB 并 `madvise(MADV_HUGEPAGE)`，丢页要把
+ * 「偏离页首」的地址折回页首 —— 两者都需要指针算术与整数转指针，而语言故意不开这两样。 */
+
+/* 一片预留：按 2 MiB 量子取地址空间，返回起点（失败为 null）。
+ *
+ * `Ret=0`：交出来的地址是基质自己的存储，**不指向调用方任何帧** —— 它活得比每个帧都久，
+ * 直到使用者交还。这个声明不是修辞：效应的存储来源判定靠它（`exprOutOfFrame`），漏了它
+ * 之后「预留 -> 视图 -> 存进容器的字段」这条链在摘要里读成「来路不明的指针」，容器整个
+ * 变成「可能存任何东西」，于是每个用容器的函数在调用点都按最坏情况检查。 */
+extern!("extc-buf") fn extc_buf_reserve(bytes: u64) -> ?ref u8 effects Addr=0 Cont=0 Ret=0
+/* 密排槽：小载荷（<= 64 KiB）从 16 B..64 KiB 的 13 个尺寸类里拿一个槽。槽与邻居共页，
+ * 所以一个 32 字节的缓冲值占 32 字节，而不是一个 2 MiB 量子。归还走同一个 `extc_buf_release`：
+ * C 侧按地址查类，命中就走尺寸类链，否则走 buddy。 */
+extern!("extc-buf") fn extc_buf_slotReserve(bytes: u64) -> ?ref u8 effects Addr=0 Cont=0 Ret=0
+/* 整片交还：按地址查类，命中走尺寸类链、否则按 `bytes` 走 buddy。返回 0 表示已归还。 */
+extern!("extc-buf") fn extc_buf_release(at: ref u8, bytes: u64) -> i32 effects Addr=0 Cont=0
+/* 把一段页还给操作系统（`madvise(DONTNEED)`）：地址与长度可以不是页对齐的，C 侧折回页首。 */
+extern!("extc-buf") fn extc_buf_discard(at: ref u8, bytes: u64) -> i32 effects Addr=0 Cont=0
+/* 一片预留**实际**拿到多少字节（按 2 MiB 量子取整后的块大小）；不是 arena 块时返回 0。 */
+extern!("extc-buf") fn extc_buf_span(at: ref u8) -> i64 effects Addr=0 Cont=0
+/* 活着的缓冲区一共预留了多少**地址空间**（不是驻留内存）：给泄漏判据用的一格。 */
+extern!("extc-buf") fn extc_buf_live() -> i64 effects Addr=0 Cont=0
+/* 结构动作（丢元素 / 交还预留 / 搬家）撤销 `[from, to)` 这些元素里引用域的外部边登记：
+ * 含引用的 `T` 每个引用槽在回收运行期里有一条登记，元素被丢掉时必须跟着撤，否则那块存储
+ * 会把已经丢掉的值一直当成标记根（被复用的缓冲区就成了无界根集）。不含引用的 `T` 没有登记，
+ * 这一次调用只是一次空表检查。 */
+extern!("extc-buf") fn extc_buf_releaseRefs(at: ref u8, esz: i64, from: i64, to: i64) -> i32 effects Addr=0 Cont=0

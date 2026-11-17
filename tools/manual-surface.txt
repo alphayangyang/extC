@@ -782,6 +782,7 @@ std::sys::domain	-	single	fn	public
 std::sys::file	-	open	fn	public
 std::sys::file	-	openAt	fn	public
 std::sys::pool	-	collect	fn	public
+std::text::string	-	classBytes	fn	internal
 std::text::string	-	decode	fn	public
 std::text::string	-	decodeUrl	fn	public
 std::text::string	-	decodedMax	fn	public
@@ -810,6 +811,7 @@ std::text::string	-	trim	fn	public
 std::text::string	-	trimEnd	fn	public
 std::text::string	-	trimStart	fn	public
 std::text::string	-	withCap	fn	public
+std::text::string	string	alloc	method	internal
 std::text::string	string	append	method	public
 std::text::string	string	appendByte	method	public
 std::text::string	string	appendI64	method	public
@@ -831,6 +833,7 @@ std::text::string	string	endsWith	method	public
 std::text::string	string	erase	method	public
 std::text::string	string	find	method	public
 std::text::string	string	findFrom	method	public
+std::text::string	string	freeStorage	method	internal
 std::text::string	string	frozen	method	internal
 std::text::string	string	grow	method	public
 std::text::string	string	hash	method	public
@@ -841,8 +844,6 @@ std::text::string	string	n	field	internal
 std::text::string	string	pNumeric	method	public
 std::text::string	string	pPoison	method	public
 std::text::string	string	pStale	method	public
-std::text::string	string	pid	field	internal
-std::text::string	string	pidGen	field	internal
 std::text::string	string	pins	field	internal
 std::text::string	string	push	method	public
 std::text::string	string	release	method	public

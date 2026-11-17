@@ -60,9 +60,9 @@ for shape in $(echo "$SHAPES" | tr ',' ' '); do
         v2) desc='2e6 装满后连做 5 次克隆' ; src=v2_clone.extc; csrc=v2_vec.cpp ;;
         v3) desc='8e6 装满 → clear → 再装满' ; src=v3_reuse.extc; csrc=v3_vec.cpp ;;
         v4) desc='20 万个小容器（容量 8）生死循环' ; src=v4_churn.extc; csrc=v4_vec.cpp ;;
-        s1) desc='50 万次短串（15 字节）构造+读回，不该分配' ; src=s1_sso.extc; csrc=s1_sso.cpp ;;
-        s2) desc='3 条 1 MiB 长串，64 字节块 append 16384 次' ; src=s2_growstr.extc; csrc=s2_growstr.cpp ;;
-        s3) desc='128 KiB 串 clone 5 次（深拷贝）' ; src=s3_clone_str.extc; csrc=s3_clone_str.cpp ;;
+        s1) desc='1000 万次短串（15 字节）构造+读回，不该分配' ; src=s1_sso.extc; csrc=s1_sso.cpp ;;
+        s2) desc='16 条 4 MiB 长串，64 字节块 append 65536 次' ; src=s2_growstr.extc; csrc=s2_growstr.cpp ;;
+        s3) desc='8 MiB 串 clone 20 次（深拷贝，搬 160 MiB）' ; src=s3_clone_str.extc; csrc=s3_clone_str.cpp ;;
         *) echo "unknown shape: $shape" >&2; exit 2 ;;
     esac
     echo "== $shape：$desc =="

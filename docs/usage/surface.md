@@ -5,7 +5,7 @@
 
 生成方式：`tools/manual_surface.py`；`check.sh` 保证本页与源码一致。
 
-公开面共 870 个成员，其中内部 159 个：
+公开面共 871 个成员，其中内部 160 个：
 
 ## prelude
 
@@ -194,16 +194,17 @@
 
 ## std::text::string
 
+- `-.classBytes`（方法）
 - `-.pDec`（方法）
 - `-.pDec6`（方法）
 - `-.pEnc`（方法）
 - `-.pEnc6`（方法）
+- `string.alloc`（方法）
 - `string.big`（字段）
 - `string.cap`（字段）
+- `string.freeStorage`（方法）
 - `string.frozen`（方法）
 - `string.n`（字段）
-- `string.pid`（字段）
-- `string.pidGen`（字段）
 - `string.pins`（字段）
 - `string.sByte`（方法）
 - `string.sSet`（方法）

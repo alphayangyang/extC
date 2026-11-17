@@ -355,7 +355,19 @@ static void deferOp(Checker *c, Expr *e, const char *op) {
  */
 static void setOpCallArgs(Checker *c, Expr *e, FuncDef *m) {
     setCallZoneArg(c, e);
-    if (!m || !c->eSites.arena) return;
+    if (!m) return;
+    /* The right operand fills the operator's second parameter, which is by value for the operators an
+     * `@value` type defines (`fn ==(self: ref string, other: string)`). Every other by-value position
+     * builds the copy with `ckValueCopyNeedsClone`, but an operator is desugared to its method here
+     * rather than in the method-call path, so this is the only place that can decide it. Without the
+     * decision the call hands the operand's bytes over: the callee's parameter drop on the way out
+     * frees storage the caller still points at. */
+    if (m->params.len >= 2) {
+        Param *rp = *(Param **)vecAt(&m->params, 1);
+        if (rp && rp->type && ckValueCopyNeedsClone(c, rp->type, e->u.bin.right))
+            planSetArgClone(e->u.bin.right, true);
+    }
+    if (!c->eSites.arena) return;
     /* Only a `mut ref` operand can be written to, so only then is there an escape point to record:
      * `==` / `<` pass both operands as `ref` and record nothing. */
     bool anyMut = false;
@@ -420,6 +432,54 @@ static FuncDef *findOpLiteral(Checker *c, Type *st, const char *op, const char *
  * @param a     The expression handed over.
  * @param what  A short name for the destination, used in transfer bookkeeping.
  */
+/**
+ * @brief Does this type own storage that a transfer has to carry along?
+ *
+ * An enum payload is stored **inside** the value being constructed, so an operand that is a plain
+ * name is transferred into it rather than copied: the name is dead afterwards and the payload owns
+ * what the name held. The question is the one the generator asks with `typeNeedsDrop` -- an enum
+ * recurses into its payloads, a struct into its fields -- and it is kept in step here because the
+ * checker has to record exactly the move the generator marks, or one side would free storage the
+ * other side still owns.
+ *
+ * @param c      The checker (for the instantiation context).
+ * @param t      The type; may be NULL.
+ * @param depth  Nesting already walked, capped so a pathological type cannot loop.
+ * @return       True when moving the value hands storage to the destination.
+ */
+static bool payloadOwnsStorage(Checker *c, Type *t, int depth) {
+    if (!t || depth > 8) return false;
+    Type *st = tsub(c, t);
+    if (st && (st->kind == TY_REF || ttIsViewType(st))) return false;
+    Type *b = ttBase(st);
+    if (b && b->kind == TY_ENUM && b->edef) {
+        for (size_t i = 0; i < b->edef->variants.len; i++) {
+            Variant *v = *(Variant **)vecAt(&b->edef->variants, i);
+            for (size_t k = 0; k < v->types.len; k++) {
+                Type *pt = *(Type **)vecAt(&v->types, k);
+                if (b->edef->typeParams.len > 0 && b->targs.len == b->edef->typeParams.len)
+                    pt = ttSubstitute(c->tt, pt, &b->edef->typeParams, &b->targs);
+                if (payloadOwnsStorage(c, pt, depth + 1)) return true;
+            }
+        }
+        return false;
+    }
+    /* Everything that is not an enum is the question `typeHasDrop` already answers: the hook of a
+     * struct, or a field that owns storage, recursion included. */
+    return typeHasDrop(c, b, depth);
+}
+
+/**
+ * @brief An argument that gives its storage away may only be moved in, never copied.
+ *
+ * See the declaration in `check_internal.h` for the rule; this definition exists so the check is
+ * available to the expression walker without a second pass.
+ *
+ * @param c     The checker.
+ * @param dst   The parameter type the argument is matched against.
+ * @param a     The argument expression.
+ * @param what  What the argument is, for the diagnostic.
+ */
 void ckOwningArgMoveOnly(Checker *c, Type *dst, Expr *a, const char *what) {
     (void)what;   /* the transfer is recorded where the code generator marks moves */
     if (!c || !dst || !a || ttIsError(dst)) return;
@@ -456,7 +516,12 @@ void ckOwningArgMoveOnly(Checker *c, Type *dst, Expr *a, const char *what) {
  */
 bool ckValueCopyNeedsClone(Checker *c, Type *dst, Expr *src) {
     if (!c || !dst || !src || ttIsError(dst)) return false;
-    Type *b = ttBase(tsub(c, dst));
+    /* A reference parameter borrows instead of owning, so there is no copy to build. The question also
+     * arrives for an operator's right operand, whose parameter may be `ref T`: answering "clone" there
+     * would hand a temporary to `&(...)`, which is not a C lvalue. */
+    Type *dt = tsub(c, dst);
+    if (!dt || dt->kind == TY_REF) return false;
+    Type *b = ttBase(dt);
     StructDef *sd = b ? structOf(b) : NULL;
     if (!sd || !sd->valueCopy || !sd->cloneHook) return false;
     /* A malformed hook is reported on the declaration path, where the message can name the type;
@@ -3973,6 +4038,18 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 Type *at  = checkInto(c, pt, arg);
                 checkAssignable(c, pt, at, arg, "payload value");
                 ckOwningArgMoveOnly(c, pt, arg, "payload");
+                /* A plain name handed to a payload is **transferred**, not copied: the payload
+                 * lives inside the constructed value, so it owns what the name held and the name
+                 * is dead from here on. The generator marks that move so the name's own drop does
+                 * not free the storage a second time; recording it here turns a later read into a
+                 * diagnostic instead of a silent read of storage somebody else now owns. */
+                if (arg->kind == EX_IDENT && payloadOwnsStorage(c, pt, 0)) {
+                    Sym *srcSym = lookup(c, arg->u.ident.name);
+                    if (srcSym && srcSym->movedLine == 0) {
+                        srcSym->movedLine = e->line;
+                        srcSym->movedInto = et->name;
+                    }
+                }
                 /* The payload is stored inside this value, so a reference it carries must not
                  * live for less than the value does. */
                 checkEscape(c, arg, c->scopes.len, e->line, "this payload value");
