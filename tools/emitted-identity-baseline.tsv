@@ -1,17 +1,17 @@
 # emitted-C identity baseline (refactor invariant)
-# extc md5: 0033c4c7555d1bd21cbdd3aa617014f7
+# extc md5: 6b95fad3eee690284ee693a938abd368
 # columns: config, source, status, md5, bytes
-# why: elemDrop change
+# why: linMap/linSet 的存储从池板块换成 block<T>：生成 C 里 dense$block_* 与 bufrt 运行期被实例化，linMap/linSet 的方法体与签名（分配点带 zone）改变，pStale/pPoison 退场；map.extc 的 #line 行号随文件行数位移；另修结构体字面量字段对拥有存储类型是转移
 default	bench/app/log.extc	ok	ad0bdf583d6602315eb360d056354c8f	118168
 reclaim	bench/app/log.extc	ok	64f05fc09b9fcfd42f3b92a95e56a063	433038
-default	bench/app/route.extc	ok	ae18294e0c8edaaecb28913a5870ea55	126299
-reclaim	bench/app/route.extc	ok	54c9484cd6a53ce84d64e2a299a1e7be	439403
+default	bench/app/route.extc	ok	0192f96636fb6613d8e9be098229f7e0	157946
+reclaim	bench/app/route.extc	ok	172ce51a885b3312d5dca33868dcd42b	471904
 default	bench/app/session.extc	ok	4d2999b9efdd0f6f6d396c4fa8c9e224	105661
 reclaim	bench/app/session.extc	ok	6b2e96d5d0294c962fbdca8837119625	418765
 default	bench/app/stamped/extc/log_us.extc	ok	9e056da78bfd7888697ca4bca6648fe6	145956
 reclaim	bench/app/stamped/extc/log_us.extc	ok	774cb8a20d97635d8d065dac9a15a8b9	460826
-default	bench/app/stamped/extc/route_us.extc	ok	998eab8f1ff626e0fd9284632a18a22c	158608
-reclaim	bench/app/stamped/extc/route_us.extc	ok	3a62ff9a7c9f091c7615206c7ee6a6ae	471712
+default	bench/app/stamped/extc/route_us.extc	ok	1fbce59f59e65d4216e6d64f54d0160e	190211
+reclaim	bench/app/stamped/extc/route_us.extc	ok	d803314108f6847a7c25b033a60ea290	504169
 default	bench/app/stamped/extc/session_us.extc	ok	e1ff62233d305df181383b7c91689e54	137212
 reclaim	bench/app/stamped/extc/session_us.extc	ok	4fad2c471a9c712a9847f50b6948304b	450316
 default	bench/gc/v2/src/chase.extc	ok	0e0096260fed63d2998aca296a0f9aef	347611
@@ -366,8 +366,8 @@ default	tests/stl/buf_rss_arena.extc	ok	e4d72f67676691a695ee3971af43e8f8	21338
 reclaim	tests/stl/buf_rss_arena.extc	ok	04cdc19151fdbedbdcf52e95a5a9452d	335175
 default	tests/stl/buf_struct.extc	ok	281e341fc81054cf2e35e776192bfa15	95740
 reclaim	tests/stl/buf_struct.extc	ok	488ef8a6e3f7c8cafe4df8bcd1b702e8	410008
-default	tests/stl/clone.extc	ok	b7c3581b18cca96cb11a701b00f6b9d7	319510
-reclaim	tests/stl/clone.extc	ok	82fcc45c5a618a474c381b1997d28c21	634758
+default	tests/stl/clone.extc	ok	43c5c408a0c6b5e03e0d978c66a909c7	344640
+reclaim	tests/stl/clone.extc	ok	fcc6f025705e1271ec6726b76a5f39da	660311
 default	tests/stl/clone_ok.extc	ok	0fa6b901ab4a4e110d9027f2f702a695	88899
 reclaim	tests/stl/clone_ok.extc	ok	6106e2243123a6a995b4464c4fff2923	403167
 default	tests/stl/clone_warn.extc	ok	9146875f95e7e195cb3158a94b230c17	3394
@@ -398,12 +398,12 @@ default	tests/stl/nd_sub3.extc	ok	d004e5af86ed96ae3dcde002342b701d	45093
 reclaim	tests/stl/nd_sub3.extc	ok	0ff51e22a576a8aa30d5b26cb5855a5b	359777
 default	tests/stl/seq.extc	ok	9b5ce525baddbccaa4053f607cb87892	372204
 reclaim	tests/stl/seq.extc	ok	9b5ce525baddbccaa4053f607cb87892	372204
-default	tests/stl/setOrdered.extc	ok	b25520ef48a70ab60f6cf23e3bf9c480	125957
-reclaim	tests/stl/setOrdered.extc	ok	73692742963e8e0d4cf0a9d819060d30	439061
-default	tests/stl/setStructKey.extc	ok	db2e85527d7eddf6ce1c501f2a54f51f	99511
-reclaim	tests/stl/setStructKey.extc	ok	1b9d20e5221c7e297de757650df0e7e3	412615
-default	tests/stl/slice_eq_any_elem.extc	ok	0c29087c926541f6782b463d66f7d890	159714
-reclaim	tests/stl/slice_eq_any_elem.extc	ok	6a3068cb91d2713fb1ff788dc33126c5	475176
+default	tests/stl/setOrdered.extc	ok	dbc1ccd464eb533a5b2dc13a13e90d98	157604
+reclaim	tests/stl/setOrdered.extc	ok	6264188ebe09ec2e54a381a72df09190	471562
+default	tests/stl/setStructKey.extc	ok	8963f9f3eb9d3c14f1a45b9f8912178f	131254
+reclaim	tests/stl/setStructKey.extc	ok	7d2ac00e0fbea258f2feb5677390c660	445212
+default	tests/stl/slice_eq_any_elem.extc	ok	32be9e25bada342d60b8aad9d89a7070	160728
+reclaim	tests/stl/slice_eq_any_elem.extc	ok	f0b38533c50f1f940bc9f11a82293ba5	476190
 default	tests/stl/sort.extc	ok	37188d4a5f7d89ba815b98539d0a5689	92199
 reclaim	tests/stl/sort.extc	ok	83349d2803dd5b7ad33affa4de395959	405967
 default	tests/stl/split.extc	ok	699aa69e390e9cde3fc0115b6f08ff50	95861

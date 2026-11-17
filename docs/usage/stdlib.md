@@ -608,6 +608,10 @@ fn main() -> i32 {
 `hash` 不支持）。存储 **dense 且是插入序**；`remove` 是
 **swap-remove**（最后一个填洞）⇒ 删过之后顺序不再保持。
 
+存储是值自己的：两列各是一块 `block<K>` / `block<V>`（见 `std::data::dense`），`var b = a` 是**转移**
+（`@noCopy`，要独立副本写 `clone()`）。增长换一块更大的存储、把活前缀搬进去、旧块当场还 —— 表里
+不会同时存在两代；`release` 把两块都还回去（之后再调是空操作）。
+
 | 方法 | 签名 |
 |---|---|
 | `withCap` | `fn withCap(want: i64) -> linMap<K, V>` |
@@ -715,6 +719,21 @@ fn main() -> i32 {
 `dropAt(i)` 再写。块内存在这里是复用的，普通赋值的「先 drop 旧内容」会在脏字节上跑钩子。
 
 判据：`tests/dense/run.sh`（句柄失效、槽复用升世代、清空还载荷、增长搬而不拷、交换删除的稠密序）。
+
+`block<T>` 的接线面（容器层用；普通程序用上面的容器就够）：
+
+| 名字 | 语义 |
+|---|---|
+| `withCap(want)` | `fn withCap(want: i64) -> block<T>`：一块至少装 `want` 个元素的存储 |
+| `capacity()` / `used()` / `setUsed(u)` | 容量 / 现在装着几个元素 / 把 `u` 个槽认作元素（容器自己记账） |
+| `bytesOf()` | 这块存储实际握着多少字节（账本口径） |
+| `[]` / `[]=` | 读；写一个**空槽**（`elemPut`，不碰旧字节；覆盖活元素先 `dropAt(i)`） |
+| `view(from,to)` / `take(i)` / `dropAt(i)` | 只读视图 / 把元素搬出去 / 就地跑 `@drop` 钩子 |
+| `growTo(want)` | 换一块更大的、活前缀逐个**搬**进去、旧块当场还（不拷贝，不出现两个主人） |
+| `release()` | 整块交还（`@drop`；第二次调用是空操作） |
+
+`slots<T>` 的句柄类型叫 `slotHandle`（`slot` + `gen` + `ep`），与 `pool<T>` 的 `handle` 同名不同型：
+两个模块同时在作用域里也不会撞名。
 ### `sort`：原地比较排序
 
 | 名字 | 签名 |

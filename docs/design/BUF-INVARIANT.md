@@ -677,3 +677,57 @@ error: in instance `vector$vector_vector$vector_i32`: `vector::vector` is `@noCo
   `release` 之后归零；
 - `grow` / `order`：1.5× 增长后每个句柄仍指着自己的值、空洞链不丢（删 25 插 25，容量不长）；交换删除的稠密序
   正确（删 `b` 之后最后一个值搬进洞里，其它位置不动）。
+
+## 17 第一个接上 `block<T>` 的容器：`linMap` / `linSet`
+
+`linMap<K, V>` 的形状变成两块 `block`，不再是 `@sharesStorage` + `poolSlice` + 池纪元：
+
+```
+@noCopy struct linMap<K, V> {
+    keys: block<K>
+    vals: block<V>
+    n:    i64
+    cap:  i64
+}
+```
+
+三条动作与 `block` 的语义一一对应：**增长**是 `keys.growTo(c)` / `vals.growTo(c)`（`c = cap + cap/2`，
+换一块更大的、活前缀搬进去、旧块当场还，所以峰值是「一份 + 一块」而不是两代同时在场的 1.5 倍）；
+**swap-remove** 是搬不是拷（`take(last)` 取出最后一个、对洞里跑 `dropAt`、再写回去）；**clear / release**
+逐元素 `dropAt` 之后 `setUsed(0)`，两块 `release` 幂等，所以字段的自动 `@drop` 不会重复归还。
+
+为此 `block::growTo` 与 `block::setUsed` 从 `@private` 提到公开——它们是**容器层**的接线面（`docs/usage/stdlib.md`
+的 dense 节列了它们），不属于普通程序的 API。同时 `slots<T>` 的句柄类型改名 `slotHandle`：池还在的时候
+`pool<T>::handle` 与它在同一个程序里可能同时可见，两个模块导出同名类型会让裸名变歧义。
+
+### 17.1 顺带修掉的真缺陷：字面量字段是转移，不是拷贝
+
+接线的第一版能过 `tests/linmap` 的读写，但 `linSet` 一退出就 trap：`dense block: cannot give the block back`。
+根因在结构体字面量：
+
+```
+var kb: block<K> = block<K>::withCap(c)
+var lm: linMap<K, V> = { keys: kb, vals: vb, n: 0, cap: c }
+```
+
+生成器把 `keys: kb` 发射成**位拷贝**，同时在函数出口对 `kb` 自己跑 `@drop` —— 同一块存储被归还两次，
+第二次 `extc_buf_release` 失败并 trap。检查器一侧同样没人记账，所以搬走之后读 `kb` 也没有诊断。
+
+修法两处：检查器在字段初始化处加一条「字段值是在拥有存储的类型 + 纯名字 + 没被标成 `clone` ⇒ 标记 moved」
+（`@value` 的字段是**拷贝**，走 `clone` 钩子，不在此列）；生成器在 `genStructLitAs` 里对同一条件调
+`noteArgMove`，让源名字的块出口不再释放。这条规则与枚举载荷的转移是同一条 —— 值一旦住进聚合体，
+名字就让出所有权。
+
+### 17.2 判据
+
+- `tests/linmap/run.sh` 五个程序（覆盖/缺失/删除/扩容、结构体键、集合、下标、释放后用 `extc_pool_live()`
+  验证这只容器**不登记池**）逐行输出比对；`cap` 序列 8→12→18→27→40→60→90→135 与 1.5× 增长一致；
+- `tests/copy/literal_field_move.extc`：局部 `buf` 写进字面量字段后原地释放（`live=16`、`after=0`），不 trap；
+- `tests/copy/errors/moved_into_literal.extc`：搬走之后再读那个名字是诊断，不是静默读到别人拥有的存储；
+- `tests/dense/run.sh` 与 `tests/stl`、`tests/pool` 全绿（`slotHandle` 改名只动类型名，不动语义）。
+
+### 17.3 未做
+
+`hashMap`（`slots<V>` + 四列 `block`，稀疏桶列的 `release` 口径要先定：桶列只有 `tag[i] == LIVE` 的位置
+才是元素）、`map` / `set`（四列 + `nodes` 视图重指）仍在池板块上；迁完它们、并且 `bench/containers` 的
+三臂对拍不掉线，才删 `stdlib/std/sys/pool.extc` 与 `stdlib/std/data/pool.extc`。

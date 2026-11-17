@@ -84,7 +84,6 @@ struct block<T> {
 
     /** @brief 记账：把 `u` 个槽认作元素（越界是容器自己的错，当场响亮失败）。 */
     @inline
-    @private
     fn setUsed(self: mut ref block<T>, u: i64) {
         if u < 0 || u > self.cap { trap("dense block: used count out of range") }
         self.cnt = u
@@ -134,7 +133,6 @@ struct block<T> {
      *
      * 搬（`elemTake`）而不是拷：元素可能拥有存储，拷贝一份等于两个主人。搬完的旧槽是零，
      * 所以旧块的钩子遍历只会碰到零值（空操作），旧块也不会把已经搬走的存储再释放一次。 */
-    @private
     fn growTo(self: mut ref block<T>, want: i64) {
         if want <= self.cap { return }
         var nb: block<T> = block<T>::withCap(want)
@@ -202,13 +200,13 @@ struct block<T> {
     }
 }
 /* 一个稳定引用。它是**值**：拷贝它是安全的（容器拥有存储，句柄只负责命名）。 */
-struct handle {
+struct slotHandle {
     slot: i32
     gen:  i32
     @private ep: i64                 /* 这个句柄出生时的纪元（被掩码过） */
 
     /* 同一个槽、同一世代、同一纪元，才是同一个东西。 */
-    fn same(self: ref handle, other: handle) -> bool {
+    fn same(self: ref slotHandle, other: slotHandle) -> bool {
         return self.slot == other.slot && self.gen == other.gen && self.ep == other.ep
     }
 }
@@ -313,7 +311,7 @@ struct slots<T> {
      *   2. 槽：纪元相等**不等于**活着；权威是打包的低半段（空闲槽 > cap）加上槽世代。这一层
      *      抓的是同一纪元里的槽复用（`remove` 之后 `insert` 又拿到同一个槽）。 */
     @private
-    fn pLive(self: ref slots<T>, h: handle) -> bool {
+    fn pLive(self: ref slots<T>, h: slotHandle) -> bool {
         if slots<T>::pEp(h.ep) != slots<T>::pEp(self.epoch) { return false }
         let s: i64 = i64(h.slot)
         if s < 0 || s >= self.cap { return false }
@@ -323,16 +321,16 @@ struct slots<T> {
     }
 
     /** @brief 这个句柄还是它命名的那个槽吗？ */
-    fn contains(self: ref slots<T>, h: handle) -> bool { return self.pLive(h) }
+    fn contains(self: ref slots<T>, h: slotHandle) -> bool { return self.pLive(h) }
 
     /** @brief 值，或者句柄失效时的 `none`。 */
-    fn get(self: ref slots<T>, h: handle) -> ?T {
+    fn get(self: ref slots<T>, h: slotHandle) -> ?T {
         if !self.contains(h) { return none }
         return some(self.vals[slots<T>::pDense(self.ent[i64(h.slot)])])
     }
 
     /** @brief 通过句柄写。句柄失效时返回 false（什么都不写）。 */
-    fn set(self: mut ref slots<T>, h: handle, v: T) -> bool {
+    fn set(self: mut ref slots<T>, h: slotHandle, v: T) -> bool {
         if !self.contains(h) { return false }
         let d: i64 = slots<T>::pDense(self.ent[i64(h.slot)])
         self.vals.dropAt(d)              /* 被覆盖的值：跑钩子（POD 是空操作） */
@@ -346,7 +344,7 @@ struct slots<T> {
      *   2. 否则 bump 游标 —— 本纪元没用过的槽。
      * 本纪元没用过的槽里还留着**上一个纪元**的打包字：只继承它的世代，其余覆盖。
      * 整字覆写正是让这件事安全的原因。 */
-    fn insert(self: mut ref slots<T>, v: T) -> handle {
+    fn insert(self: mut ref slots<T>, v: T) -> slotHandle {
         if self.holeHead < i32(0) && i64(self.cursor) >= self.cap { self.grow() }
         var s: i64 = 0
         if self.holeHead >= i32(0) {
@@ -363,7 +361,7 @@ struct slots<T> {
         self.n = self.n + 1
         self.vals.setUsed(self.n)
         self.rev.setUsed(self.n)
-        return handle { slot: i32(s), gen: i32(slots<T>::pGen(e)), ep: slots<T>::pEp(self.epoch) }
+        return slotHandle { slot: i32(s), gen: i32(slots<T>::pGen(e)), ep: slots<T>::pEp(self.epoch) }
     }
 
     /* 释放一个槽，并且**不移动任何其它值的稠密位置**：把最后一个值换进洞里，
@@ -372,7 +370,7 @@ struct slots<T> {
      *
      * 元素是**有钩子**的：洞里的值先跑 `@drop`，最后一个值是被**搬**过来的（`take`，槽里留零）。
      * 两处都要撤外部边登记，否则那块存储会被当成永远的标记根。 */
-    fn remove(self: mut ref slots<T>, h: handle) -> bool {
+    fn remove(self: mut ref slots<T>, h: slotHandle) -> bool {
         if !self.pLive(h) { return false }
         let s: i64 = i64(h.slot)
         let e: i64 = self.ent[s]
@@ -429,17 +427,17 @@ struct slots<T> {
 
     /** @brief 第 `i` 个稠密值的句柄（`atDense` 的逆）。 */
     @inline
-    fn handleAtDense(self: ref slots<T>, i: i64) -> handle {
+    fn handleAtDense(self: ref slots<T>, i: i64) -> slotHandle {
         let s: i64 = i64(self.rev[i])
-        return handle { slot: i32(s), gen: i32(slots<T>::pGen(self.ent[s])), ep: slots<T>::pEp(self.epoch) }
+        return slotHandle { slot: i32(s), gen: i32(slots<T>::pGen(self.ent[s])), ep: slots<T>::pEp(self.epoch) }
     }
 
     /** @brief 把一批句柄一次性解析成稠密下标（失效的写 -1），返回有效的个数。 */
-    fn gather(self: ref slots<T>, hs: slice<handle>, out: mut slice<i64>) -> i64 {
+    fn gather(self: ref slots<T>, hs: slice<slotHandle>, out: mut slice<i64>) -> i64 {
         var k: i64 = 0
         var i: i64 = 0
         while i < hs.len {
-            let h: handle = hs[i]
+            let h: slotHandle = hs[i]
             let s: i64 = i64(h.slot)
             var d: i64 = -1
             if s >= 0 && s < self.cap {

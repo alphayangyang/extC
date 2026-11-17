@@ -173,6 +173,8 @@ fn zeros<const N: i64>() -> [N]f64 { … }
 | `return a` | `a` 是本地绑定或临时量 | 标死，块尾不再跑 `@drop` |
 | `container_element = a`（视图元素写入） | `a` 是普通名字，或整个值是临时量 | 标死，块尾不再跑 `@drop` |
 
+字面量字段的那一行在生成器一侧同样是转移：源名字的块出口跳过 `@drop`，判据是 `tests/copy/literal_field_move.extc`（局部 `buf` 写进字段后原地归还、`bufLive()` 归零），搬走后再读那个名字则是诊断（`tests/copy/errors/moved_into_literal.extc`）。
+
 **字段与元素不能当移动的源**：`S { f: h.q }`、`out.vals[i] = self.vals[j]` 这类写法拿走一半所有权，
 留下一个半死的聚合体，所以只要那个类型拥有存储就是编译错误。这条是容器元素所有权的入口：
 `buf<T>::push` 的形参是名字（移动），而 `buf<T>::clone` 逐槽写的是**另一个视图的元素** ⇒ 元素

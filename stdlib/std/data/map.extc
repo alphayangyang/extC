@@ -43,6 +43,7 @@
  * @endcode
  */
 use std::sys::pool as syspool    /* 运行期池：容器诞生时登记，release 时整批还 */
+use std::data::dense::{block}    /* 容器的平坦列：拥有的类型化块（见 `std::data::dense`） */
 
 let ORDER: i64 = 16        /* max keys per node (the array sizes in `newNode` are these numbers) */
 let HALF:  i64 = 8         /* min keys per non-root node once stage 2b rebalances */
@@ -956,28 +957,22 @@ struct set<T> {
  * `hashMapI64`. Use it while keys are not integers and the table is small.
  * -------------------------------------------------------------------------------------- */
 /* A `K -> V` table searched linearly. */
-@sharesStorage        /* 按值拷贝时**两份共用同一块板块** ⇒ 编译器在这里报警告，要独立副本用 `clone()` */
-@place                 /* 这个类型**拥有一个地方**：存储住在那个地方的板块上，寿命随它所在的域 */
+@noCopy
 struct linMap<K, V> {
-    @private pid:    i64            /* 这张表自己的池记录（一个非嵌套容器 = 一个池）*/
-    @private pidGen: u64
-    @private keys: mut slice<K>
-    vals: mut slice<V>
-    @private n:    i64              /* live entries, always the front `n` of both views */
+    @private keys: block<K>
+    @private vals: block<V>
+    @private n:    i64
     @private cap:  i64
 
     /* A table with room for `want` entries before the first growth. */
     fn withCap(want: i64) -> linMap<K, V> {
         var c: i64 = 4
         while c < want { c = c * 2 }
-        let rp  = syspool::extc_pool_new(-1)
-        let rpg = syspool::extc_pool_generation(rp)
-        /* 两个视图在**这张表自己的板块**上：增长时同一块加长，旧的不会留给 arena。 */
-        var lm: linMap<K, V> = {
-            pid: rp, pidGen: rpg,
-            keys: poolSliceRaw<K>(rp, c), vals: poolSliceRaw<V>(rp, c),
-            n: 0, cap: c,
-        }
+        var kb: block<K> = block<K>::withCap(c)
+        var vb: block<V> = block<V>::withCap(c)
+        kb.setUsed(0)
+        vb.setUsed(0)
+        var lm: linMap<K, V> = { keys: kb, vals: vb, n: 0, cap: c }
         return lm
     }
 
@@ -997,18 +992,22 @@ struct linMap<K, V> {
 
     fn contains(self: ref linMap<K, V>, k: K) -> bool { return self.find(k) >= 0 }
 
-    /* Write the pair, overwriting a key that is already there.
-     *
-     * Returns false only when the table could not grow, which needs the arena to be out of
-     * memory -- `new` traps before that can happen, so a `false` here is unreachable today
-     * and the signature keeps the door open for a grow that can fail. */
     /* `lm[k] = v` -- the write side; same semantics as `put` (insert or overwrite). */
     fn []=(self: mut ref linMap<K, V>, k: K, v: V) -> bool { return self.put(k, v) }
 
-        fn put(self: mut ref linMap<K, V>, k: K, v: V) -> bool {
-            if self.pStale() { self.pPoison() }
+    /* Write the pair, overwriting a key that is already there.
+     *
+     * The reserve is the block's, not the arena's: growth replaces the block with a bigger one
+     * and moves the live prefix into it (the old block goes back at once), so the table never
+     * holds two generations.
+     *
+     * Returns false only when the table could not grow; `block` traps when storage cannot be
+     * reserved, so a `false` here is unreachable today and the signature keeps the door open for
+     * a grow that can fail. */
+    fn put(self: mut ref linMap<K, V>, k: K, v: V) -> bool {
         let at = self.find(k)
         if at >= 0 {
+            self.vals.dropAt(at)          /* 被覆盖的值：先跑钩子，再写新值 */
             self.vals[at] = v
             return true
         }
@@ -1017,12 +1016,11 @@ struct linMap<K, V> {
         self.keys[self.n] = k
         self.vals[self.n] = v
         self.n = self.n + 1
+        self.keys.setUsed(self.n)
+        self.vals.setUsed(self.n)
         return true
     }
 
-    /* The value for a key, or `none`. Reading through the option is what the type
-     * parameter makes possible: `?V` where `V` is itself a parameter is an ordinary
-     * generic enum instance. */
     /* `lm[k]` -- read side of the subscript syntax; `none` when the key is absent. */
     fn [](self: ref linMap<K, V>, k: K) -> ?V { return self.get(k) }
 
@@ -1032,14 +1030,27 @@ struct linMap<K, V> {
         return some(self.vals[at])
     }
 
-    /* Drop the entry for a key. The last entry takes its place (swap-remove). */
+    /* Drop the entry for a key. The last entry takes its place (swap-remove); the removed pair
+     * runs its hooks, and the last pair is **moved** (not copied) so an owning key has exactly
+     * one owner. */
     fn remove(self: mut ref linMap<K, V>, k: K) -> bool {
         let at = self.find(k)
         if at < 0 { return false }
         let last = self.n - 1
-        self.keys[at] = self.keys[last]
-        self.vals[at] = self.vals[last]
+        if at != last {
+            let kk: K = self.keys.take(last)
+            let vv: V = self.vals.take(last)
+            self.keys.dropAt(at)
+            self.vals.dropAt(at)
+            self.keys[at] = kk
+            self.vals[at] = vv
+        } else {
+            self.keys.dropAt(at)
+            self.vals.dropAt(at)
+        }
         self.n = last
+        self.keys.setUsed(last)
+        self.vals.setUsed(last)
         return true
     }
 
@@ -1047,7 +1058,7 @@ struct linMap<K, V> {
      * there. These are the accessors to use with `len`. */
     fn keyAt(self: ref linMap<K, V>, i: i64) -> K { return self.keys[i] }
     fn valAt(self: ref linMap<K, V>, i: i64) -> V { return self.vals[i] }
-    /* **深拷贝**（同 vector/map：`var b = a` 是结构体逐成员拷贝、两份共用板块）。 */
+    /* **深拷贝**（同 vector/map：要独立副本就显式拷一份，`var b = a` 是转移）。 */
     fn clone(self: ref linMap<K, V>) -> linMap<K, V> {
         var out = linMap<K, V>::withCap(self.n + 1)
         var i: i64 = 0
@@ -1058,45 +1069,35 @@ struct linMap<K, V> {
         return out
     }
 
-    fn clear(self: mut ref linMap<K, V>) { self.n = 0 }
+    /* 清空：每个元素跑钩子，块留着当容量（`used` 归零后，块再也不会把它们当元素）。 */
+    fn clear(self: mut ref linMap<K, V>) {
+        var i: i64 = 0
+        while i < self.n {
+            self.keys.dropAt(i)
+            self.vals.dropAt(i)
+            i = i + 1
+        }
+        self.n = 0
+        self.keys.setUsed(0)
+        self.vals.setUsed(0)
+    }
 
-    /* 增到 1.5 倍：**在原块上加长**（`poolResize` 保住内容）。这里连拷贝循环都不需要 ——
-     * 这张表的下标就是插入序，加长不改变任何已有元素的位置。 */
+    /* 增到 1.5 倍：**换块**（`block::growTo` 把活前缀搬进新块，旧块当场还）。这张表的下标
+     * 就是插入序，搬家不改变任何已有元素的位置。 */
     fn grow(self: mut ref linMap<K, V>) {
         let c = self.cap + self.cap / 2
-        self.keys = poolResizeRaw<K>(self.pid, self.keys, c)
-        self.vals = poolResizeRaw<V>(self.pid, self.vals, c)
+        self.keys.growTo(c)
+        self.vals.growTo(c)
         self.cap = c
     }
 
-    /* 把这一层还回去：两个视图先收成 0 长，再把板块还给池（之后越界是响亮 trap）。 */
-    /* **守卫**：这一份线性表值还指着它的池吗？陈旧 ⇒ 两个视图收空，下一次访问带位置地 trap。 */
-    fn pStale(self: ref linMap<K, V>) -> bool {
-        if self.pid < 0 { return false }
-        return syspool::extc_pool_generation(self.pid) != self.pidGen
-    }
-    fn pPoison(self: mut ref linMap<K, V>) {
-        self.keys = poolSlice<K>(-1, 0)
-        self.vals = poolSlice<V>(-1, 0)
-        self.n    = 0
-        self.cap  = 0
-        self.pid  = -1
-    }
-
+    /* 把存储还回去：先让元素跑钩子，再整块交还（两次调用是空操作，所以字段的自动 `@drop`
+     * 不会重复归还）。 */
     fn release(self: mut ref linMap<K, V>) {
-        if self.pid < 0 { return }
-        /* One staleness question, one place to ask it (`pStale`): the comparison lives in
-         * exactly one place, and two copies of a load-bearing check would drift. */
-        if self.pStale() {
-            self.pid = -1  /* 陈旧拷贝：槽位已被别的池复用 */
-            return
-        }
-        self.keys = poolResize<K>(self.pid, self.keys, 0)
-        self.vals = poolResize<V>(self.pid, self.vals, 0)
-        self.cap  = 0
-        syspool::extc_pool_reset(self.pid)
-        syspool::extc_pool_drop(self.pid)
-        self.pid = -1
+        self.clear()
+        self.keys.release()
+        self.vals.release()
+        self.cap = 0
     }
 }
 
@@ -1115,7 +1116,8 @@ struct linMap<K, V> {
  * the set differ only in the value half, and one implementation means one place for the
  * growth, the swap-remove and the `==` requirement.
  */
-@sharesStorage        /* 按值拷贝时**两份共用同一块板块** ⇒ 编译器在这里报警告，要独立副本用 `clone()` */
+/* 与 `linMap` 同一条路：存储跟着值走，`var b = a` 是转移。 */
+@noCopy
 struct linSet<T> {
     m: linMap<T, unit>
 

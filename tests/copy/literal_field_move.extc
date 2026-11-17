@@ -1,0 +1,31 @@
+/* 判据：把拥有存储的 `@noCopy` 值写进**结构体字面量的字段**是转移，不是拷贝 —— 字面量里的字段
+ * 成为唯一主人，源名字当场死去，它离开作用域时不能再释放一次。修复前这一处是位拷贝：源名字和
+ * 字面量字段各自跑 `@drop`，第二次归还同一块存储时 trap。 */
+use std::io
+use std::data::buf
+
+@noCopy
+struct box {
+    @private b: buf<i64>
+
+    fn len(self: ref box) -> i64 { return self.b.len() }
+    fn push(self: mut ref box, v: i64) { self.b.push(v) }
+    @drop
+    fn dispose(self: mut ref box) { self.b.release() }
+}
+
+fn make(v: i64) -> box {
+    var b: buf<i64> = buf<i64>::withCap(2)   /* 局部变量写进字面量字段：转移 */
+    b.push(v)
+    var x: box = { b: b }
+    return x
+}
+
+fn main() -> i32 {
+    var x: box = make(7)
+    x.push(8)
+    io::cout << "len=" << x.len() << " live=" << buf::bufLive() << "\n"
+    x.dispose()
+    io::cout << "after=" << buf::bufLive() << "\n"
+    return 0
+}

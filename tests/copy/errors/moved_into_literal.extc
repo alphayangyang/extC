@@ -1,0 +1,18 @@
+/* 判据：写进字面量字段的名字是**转移**，之后再读它是诊断（不是静默读到别人拥有的存储）。 */
+use std::data::buf
+
+@noCopy
+struct box {
+    @private b: buf<i64>
+    fn len(self: ref box) -> i64 { return self.b.len() }
+    @drop
+    fn dispose(self: mut ref box) { self.b.release() }
+}
+
+fn main() -> i32 {
+    var b: buf<i64> = buf<i64>::withCap(2)
+    b.push(1)
+    var x: box = { b: b }
+    b.push(2)                          /* `b` 已经转移进 `x` */
+    return i32(x.len())
+}

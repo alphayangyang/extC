@@ -32,8 +32,10 @@ one assign_reads_target "$(src assign_reads_target.extc)" \
   "g=true glen=10 c=true r=true rlen=5"
 one copy_points "$(src copy_points.extc)" \
   "live0=0|move=0|arg=1/1|assoc=1/2|method=17/3|field=4|ret=5|assign=6|indep=1/2|live1=64|live2=0"
+one literal_field_move "$(src literal_field_move.extc)" "len=2 live=16|after=0"
 neg no_clone    "$(src errors/no_clone.extc)"     '`@value` needs a `clone` method'
 neg with_nocopy "$(src errors/with_nocopy.extc)"  '`@value` and `@noCopy` cannot both'
+neg moved_into_literal "$(src errors/moved_into_literal.extc)" 'was moved into'
 
 printf '通过 %d，失败 %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

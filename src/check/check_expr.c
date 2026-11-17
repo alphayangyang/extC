@@ -5515,6 +5515,17 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                  * into it would leave two owners, so the copy is built through `clone`. */
                 if (ckValueCopyNeedsClone(c, want, fi->value)) planSetArgClone(fi->value, true);
                 ckOwningArgMoveOnly(c, want, fi->value, "field");
+                /* A plain name written into a field of an owning type is **transferred**, the
+                 * same rule a payload follows: the literal owns the storage, the name is dead
+                 * from here on. The generator marks the move so the name's own drop does not
+                 * free the storage twice. */
+                if (!planArgClone(fi->value) && fi->value->kind == EX_IDENT && payloadOwnsStorage(c, want, 0)) {
+                    Sym *srcSym = lookup(c, fi->value->u.ident.name);
+                    if (srcSym && srcSym->movedLine == 0) {
+                        srcSym->movedLine = e->line;
+                        srcSym->movedInto = sd->name;
+                    }
+                }
             }
 
             /* Omitted fields are filled with the zero value, but `ref` has no zero value: leaving it alone would

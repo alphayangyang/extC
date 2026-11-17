@@ -5,7 +5,7 @@
 
 生成方式：`tools/manual_surface.py`；`check.sh` 保证本页与源码一致。
 
-公开面共 928 个成员，其中内部 189 个：
+公开面共 924 个成员，其中内部 186 个：
 
 ## prelude
 
@@ -42,12 +42,10 @@
 - `block.cnt`（字段）
 - `block.dropRange`（方法）
 - `block.dropRefs`（方法）
-- `block.growTo`（方法）
 - `block.mem`（字段）
-- `block.setUsed`（方法）
 - `block.shrinkTo`（方法）
 - `block.vals`（字段）
-- `handle.ep`（字段）
+- `slotHandle.ep`（字段）
 - `slots.cap`（字段）
 - `slots.cursor`（字段）
 - `slots.ent`（字段）
@@ -91,8 +89,7 @@
 - `linMap.cap`（字段）
 - `linMap.keys`（字段）
 - `linMap.n`（字段）
-- `linMap.pid`（字段）
-- `linMap.pidGen`（字段）
+- `linMap.vals`（字段）
 - `map.bn`（方法）
 - `map.cntOf`（方法）
 - `map.freeHead`（字段）

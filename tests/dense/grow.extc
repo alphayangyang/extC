@@ -1,10 +1,10 @@
 // expect: n=50 cap=60 order=true holes=0 d0=49 d49=124 rm=25
 /* 增长 1.5 倍时元素是被**搬**过去的（不是拷）：值不丢、顺序不变、空洞链不许丢。 */
-use std::data::dense::{handle, slots}
+use std::data::dense::{slotHandle, slots}
 
 fn main() -> i32 {
     var d: slots<i64> = slots<i64>::withCap(4)
-    var hs: mut slice<handle> = new handle[64]
+    var hs: mut slice<slotHandle> = new slotHandle[64]
     var i: i64 = 0
     while i < 50 { hs[i] = d.insert(i)  i = i + 1 }
     /* 增长之后每个句柄仍然指着自己的值。 */

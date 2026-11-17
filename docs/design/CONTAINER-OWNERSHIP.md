@@ -1,8 +1,9 @@
 # 容器的所有权与拷贝语义（R4c 的规则）
 
 > 状态：规则已定并落地 —— `vector` 与 `string` 的存储已经在缓冲区基质上（`buf<T>` 预留 /
-> 密排槽），`hashMap` 的元素所有权（移动进、逐元素 drop）已接；`hashMap` / `map` / `place` 的
-> **存储**仍在池板块上，迁完它们才能删池。判据在 `bench/containers/`（四格 V + 三格 S）、
+> 密排槽），`hashMap` 的元素所有权（移动进、逐元素 drop）已接，`linMap` / `linSet` 的存储也已换成
+> `block<T>`（`docs/design/BUF-INVARIANT.md` §17）；`hashMap` / `map` / `place` 的 **存储**仍在池板块上，
+> 迁完它们才能删池。判据在 `bench/containers/`（四格 V + 三格 S）、
 > `tests/stl/`、`tests/gc-p0/`（G15 / G21 / G22）。
 
 ## 1. 要解决的问题
@@ -132,4 +133,4 @@ R5 **零值必须可 drop。** 声明 `var s: string` 得到的是**值**（内�
 - **世代号与 `pStale` / `pPoison` 退场**：`string` 没有「陈旧视图」这种运行期状态了，因为不再有第二个所有者
   能释放存储；剩下的失效只有一种：**增长搬家**，与 `buf` 的视图规则一致。名字暂时留着（恒 `false` / 收成零值）。
 - **`io::cout << s` 收 `ref string`**：打印是读，不该每打一次就深拷贝一份（`@value` 的按值形参会拷贝）。
-- **顺序**：`vector`、`string` 已在缓冲区基质上；`hashMap` / `map` / `place` 随后。
+- **顺序**：`vector`、`string` 已在缓冲区基质上，`linMap` / `linSet` 的存储已换成 `block<T>`；`hashMap` / `map` / `place` 随后。

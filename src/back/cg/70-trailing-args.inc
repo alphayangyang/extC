@@ -611,6 +611,9 @@ static const char *genStructLitAs(CG *g, Expr *e, bool staticInit) {
          * leave two owners, so the checker marked the initializer and the copy is built here. */
         const char *vt = NULL;
         if (v && planArgClone(v)) vt = cloneValueText(g, ft, v);
+        /* A field of an owning type takes the storage of a plain name over: the name is dead
+         * after the literal, so its block exit must not run the hook a second time. */
+        if (!vt) noteArgMove(g, v, ft);
         if (!vt) vt = v ? genExpr(g, v) : zeroValue(g, ft);
         bufPrintf(&b, ".%s = %s", fd->name, vt);
     }
