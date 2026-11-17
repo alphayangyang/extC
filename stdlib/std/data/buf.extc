@@ -91,6 +91,7 @@ struct buf<T> {
     fn release(self: mut ref buf<T>) {
         if self.reserved > u64(0) {
             self.dropRefs(0, self.n)
+            elemDrop<T>(self.vals, 0, self.n)
             if extc_buf_release(self.mem.data, self.reserved) != 0 {
                 trap("buf: cannot give the reservation back")
             }
@@ -180,7 +181,10 @@ struct buf<T> {
     fn pop(self: mut ref buf<T>) -> ?T {
         if self.n == 0 { return none }
         self.n = self.n - 1
-        return some(self.vals[self.n])
+        self.dropRefs(self.n, self.n + 1)
+        /* Move the element out and leave a **zero** behind: the slot belongs to the container
+         * again, and a zero value runs no hook when it is later overwritten or cleared. */
+        return some(elemTake<T>(self.vals, self.n))
     }
 
     /** @brief 保证还能再放 `more` 个元素（长度不变）。预留内原地长，撞上限才搬家。 */
@@ -260,6 +264,7 @@ struct buf<T> {
         var kk: i64 = k
         if kk > self.n { kk = self.n }
         self.dropRefs(kk, self.n)
+        elemDrop<T>(self.vals, kk, self.n)
         if kk < self.cap {
             let esz: i64 = extc_sizeOf<T>()
             var tail: mut slice<u8> = self.mem[kk * esz .. self.cap * esz]
@@ -277,6 +282,7 @@ struct buf<T> {
     @inline
     fn clear(self: mut ref buf<T>) {
         self.dropRefs(0, self.n)
+        elemDrop<T>(self.vals, 0, self.n)
         self.n = 0
     }
 
@@ -286,11 +292,17 @@ struct buf<T> {
         return { b: self, p: ref self.pins }
     }
 
-    /** @brief 复制一份独立存储（另一个 `buf`，两者之后互不影响）。 */
+    /** @brief 复制一份独立存储（另一个 `buf`，两者之后互不影响）。
+     *
+     * 逐槽写入，而不是 `out.push(self.vals[i])`：push 的形参是一次**移动**，把元素从
+     * `self` 的存储里搬走；而 clone 只是要一份拷贝。写成视图元素赋值之后，模板在实例化时
+     * 会检查"这次写入是不是移动"—— 源是另一个视图的元素（不是名字，不能移动）⇒ 元素类型
+     * 自己拥有预留时，`clone` 在编译期被拒，而不是拷出一份共享所有权的值。 */
     fn clone(self: ref buf<T>) -> buf<T> {
         var out: buf<T> = buf<T>::withCap(self.n)
         var i: i64 = 0
-        while i < self.n { out.push(self.vals[i])  i = i + 1 }
+        while i < self.n { out.vals[i] = self.vals[i]  i = i + 1 }
+        out.n = self.n
         return out
     }
 }

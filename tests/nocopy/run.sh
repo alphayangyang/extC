@@ -48,12 +48,24 @@ else
     echo "  FAIL move_into_field  ->  编不过（移动必须通过 ✗）"; echo "$out" | sed 's/^/        /' | head -6; fail=1
 fi
 
+echo "== 正例（移动进实参：按值传 = 交出所有权）=="
+if out=$("$EXTC" --run tests/nocopy/move_arg.extc 2>&1); then
+    want=$(grep -o '// expect:.*' tests/nocopy/move_arg.extc | sed 's|// expect: *||' | head -1)
+    ok=1
+    IFS='|' read -ra parts <<< "$want"
+    for p in "${parts[@]}"; do echo "$out" | grep -qF -- "$p" || ok=0; done
+    if [ "$ok" = 1 ]; then echo "  ok   move_arg  ->  $(echo "$out" | tr '\n' '|')"
+    else echo "  FAIL move_arg  ->  输出里缺「$want」（$(echo "$out" | tr '\n' '|')）"; fail=1; fi
+else
+    echo "  FAIL move_arg  ->  编不过（移动必须通过 ✗）"; echo "$out" | sed 's/^/        /' | head -6; fail=1
+fi
+
 echo "== 反例（其余复制点 + 移动后使用，逐个隔离）=="
-for f in arg_copy assign_copy use_after_move use_after_move_field; do
+for f in arg_twice assign_copy use_after_move use_after_move_field; do
     if out=$("$EXTC" "tests/nocopy/errors/$f.extc" -o /dev/null 2>&1); then
         echo "  FAIL $f  ->  **编过了**（拷贝必须挡住 ✗）"; fail=1; continue
     fi
-    if [ "$f" = use_after_move ] || [ "$f" = use_after_move_field ]; then
+    if [ "$f" = use_after_move ] || [ "$f" = use_after_move_field ] || [ "$f" = arg_twice ]; then
         if ! echo "$out" | grep -qF 'was moved into'; then
             echo "  FAIL $f  ->  消息不是"已移动"口径"; echo "$out" | head -2 | sed 's/^/        /'; fail=1; continue
         fi

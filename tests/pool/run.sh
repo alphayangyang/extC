@@ -239,7 +239,7 @@ echo "== 提权的运行期落点：池生在外层那个地方 ⇒ 内层块退
 rt_run rt_promote  tests/pool/rt_promote.extc  "in=2 out=1 use=42 live=1"
 
 echo "== 池的提权（容器那一档）：循环里建内层、推入外层 ⇒ 内层池生在外层那个地方 =="
-rt_reject rt_nest  tests/pool/rt_nest_promote.extc "a view element cannot hold"
+rt_run    rt_nest  tests/pool/rt_nest_promote.extc "after=0 innerlen=2 v=20 bytes=0"
 
 echo "== 池的提权（返回那一档）：函数里建好的容器返回给调用方 =="
 rt_run rt_rett     tests/pool/rt_return_promote.extc "live=0 len=3 v0=5 v2=7"
@@ -465,7 +465,7 @@ echo "== 提权的运行期落点：池生在外层那个地方 ⇒ 内层块退
 rt_run rt_promote  tests/pool/rt_promote.extc  "in=2 out=1 use=42 live=1"
 
 echo "== 池的提权（容器那一档）：循环里建内层、推入外层 ⇒ 内层池生在外层那个地方 =="
-rt_reject rt_nest  tests/pool/rt_nest_promote.extc "a view element cannot hold"
+rt_run    rt_nest  tests/pool/rt_nest_promote.extc "after=0 innerlen=2 v=20 bytes=0"
 
 echo "== 池的提权（返回那一档）：函数里建好的容器返回给调用方 =="
 rt_run rt_rett     tests/pool/rt_return_promote.extc "live=0 len=3 v0=5 v2=7"

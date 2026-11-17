@@ -450,6 +450,17 @@ typedef struct {
     /* The binding a `return x` is moving out: it is dead on the way out, so its `@drop` hook must
      * not run for it (running it would release the state the caller now owns). */
     const char      *dropSkipName;
+    /* Names whose value was **moved out** by a transfer: a `@noCopy` value bound to a new name,
+     * handed to a by-value parameter, or stored into a container element that now owns it. The
+     * block tail and the parameter epilogue must not run their `@drop` hook, because the state
+     * lives where it was moved to and running the hook would release it twice. A name is dropped
+     * from the set when a local of the same name is declared again, so a name reused in a sibling
+     * block is not skipped by mistake. Cleared at the start of every function body. */
+    Vec         movedNames;      /* const char* */
+    /* Emit `cgLine` into the statement prefix instead of the output. A drop hook that has to run
+     * **before** the statement that overwrites the place it drops (an element of a view being
+     * overwritten) cannot be written after that statement, and the prefix runs before it. */
+    bool        pfMode;
     /* Globals whose type carries an `@drop` hook: the process must run those hooks on the way out
      * (`atexit`), or the state they guard is silently abandoned. Each entry is a `GlobalDrop`. */
     Vec         globalDrops;
@@ -637,9 +648,12 @@ static void cgLine(CG *g, const char *fmt, ...) {
     const char *tmp = cgFormat(g, fmt, ap);
     va_end(ap);
 
-    for (int i = 0; i < g->indent; i++) bufPuts(g->out, "    ");
-    bufPuts(g->out, tmp);
-    bufPutc(g->out, '\n');
+    /* `pfMode` redirects the line into the pending prefix: the same emitter then serves an
+     * ordinary output line and a hook that has to run before the statement it protects. */
+    Buf *dst = g->pfMode ? &g->prefix : g->out;
+    for (int i = 0; i < g->indent; i++) bufPuts(dst, "    ");
+    bufPuts(dst, tmp);
+    bufPutc(dst, '\n');
 }
 
 
@@ -676,6 +690,68 @@ static void flushPrefix(CG *g) {
     if (g->prefix.len == 0) return;
     bufPuts(g->out, bufCstr(&g->prefix));
     bufInit(&g->prefix, g->arena);
+}
+
+/* The `@drop` hook emitter, defined with the other drop helpers: this section needs it for the
+ * `elemDrop` / `elemTake` primitives, which run an element's hook where the container asks. */
+static void genDropValue(CG *g, const char *path, Type *t, int depth);
+/*
+ * The C name a plain identifier stands for, or null when the expression is not a plain name.
+ * The transfer rules move the value of a *name*; a field or an element stays where it is, so
+ * nothing outside a name is ever recorded as moved out.
+ */
+static const char *plainIdentCName(CG *g, Expr *e) {
+    (void)g;
+    if (!e || e->kind != EX_IDENT) return NULL;
+    return planCName(e) ? planCName(e) : e->u.ident.name;
+}
+/**
+ * @brief Record that the value in this name was **moved out**: the block tail and the parameter
+ *        epilogue must not run its `@drop` hook, because the state now lives where it went.
+ *
+ * Only a plain name can be moved out (that is the checker's transfer rule); anything else passes
+ * a null name and is not recorded.
+ *
+ * @param g   Generator state; `movedNames` collects the names of this function.
+ * @param nm  The C name of the local or parameter, or null for a non-name value.
+ */
+static void noteMoved(CG *g, const char *nm) {
+    if (!nm) return;
+    for (size_t i = 0; i < g->movedNames.len; i++)
+        if (strcmp(*(const char **)vecAt(&g->movedNames, i), nm) == 0) return;
+    *(const char **)vecPush(&g->movedNames) = nm;
+}
+
+/**
+ * @brief Was the value in this name moved out earlier in the same function body?
+ *
+ * @param g   Generator state; reads `movedNames`.
+ * @param nm  The C name of the local or parameter, or null.
+ * @return true when the name's `@drop` hook is the callee's or the caller's to run.
+ */
+static bool isMovedName(CG *g, const char *nm) {
+    if (!nm) return false;
+    for (size_t i = 0; i < g->movedNames.len; i++)
+        if (strcmp(*(const char **)vecAt(&g->movedNames, i), nm) == 0) return true;
+    return false;
+}
+
+/**
+ * @brief Forget that this name was moved out: a local declared under the same name is a new
+ *        object, so it owns its state again and has to be dropped.
+ *
+ * @param g   Generator state; edits `movedNames`.
+ * @param nm  The C name of the local being declared.
+ */
+static void forgetMoved(CG *g, const char *nm) {
+    if (!nm) return;
+    for (size_t i = 0; i < g->movedNames.len; i++) {
+        if (strcmp(*(const char **)vecAt(&g->movedNames, i), nm) != 0) continue;
+        *(const char **)vecAt(&g->movedNames, i) =
+            *(const char **)vecAt(&g->movedNames, g->movedNames.len - 1);
+        g->movedNames.len--;
+        return;
+    }
 }
 
 /**

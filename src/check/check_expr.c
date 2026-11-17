@@ -760,6 +760,50 @@ static Type *checkBufPrim(Checker *c, Expr *e, Type *elem) {
         }
         return c->tI64;
     }
+    /* `elemDrop<T>(v, from, to)` / `elemTake<T>(v, i)`: the two element-level operations a
+     * container needs and the language cannot express -- run the element's `@drop` hook in place
+     * over a range, and move one element out leaving a zero behind. The view argument names the
+     * element type, and it has to be **writable** (`mut slice<T>`): both operations write the slot
+     * they visit. A hook-less element type makes `elemDrop` emit nothing, so the container code
+     * does not have to be written twice. */
+    if (strcmp(nm, "elemDrop") == 0 || strcmp(nm, "elemTake") == 0) {
+        const bool take = nm[4] == 'T';
+        const size_t want = take ? 2 : 3;
+        if (e->u.gencall.args.len != want) {
+            ckError(c, e->line, NULL,
+                    take ? "`elemTake` takes 2 arguments (a `mut slice<T>` and an index)"
+                         : "`elemDrop` takes 3 arguments (a `mut slice<T>` and the range start and end)",
+                    "got %zu", e->u.gencall.args.len);
+            return ttError(tt);
+        }
+        Expr *av = *(Expr **)vecAt(&e->u.gencall.args, 0);
+        Type *tv = ttBase(checkValue(c, av));
+        if (!ttIsError(tv) && !ttIsViewType(tv)) {
+            ckError(c, av->line, NULL,
+                    take ? "`elemTake` moves an element out of a view slot, so it wants a `mut slice<T>`"
+                         : "`elemDrop` runs the element hook in place, so it wants a `mut slice<T>`",
+                    "found `%s`", typeStr(c, tv));
+            return ttError(tt);
+        }
+        if (!ttIsError(tv) && !tv->mut) {
+            ckError(c, av->line, NULL, NULL,
+                    take ? "`elemTake` writes the slot it moves out of, so the view must be `mut`"
+                         : "`elemDrop` writes the slot it visits, so the view must be `mut`");
+            return ttError(tt);
+        }
+        for (size_t i = 1; i < e->u.gencall.args.len; i++) {
+            Type *ti = checkValue(c, *(Expr **)vecAt(&e->u.gencall.args, i));
+            if (!ttIsError(ti) && !ttIsInteger(ti)) {
+                ckError(c, e->line, NULL,
+                        take ? "`elemTake` wants an integer index" : "`elemDrop` wants integer range bounds",
+                        "found `%s`", typeStr(c, ti));
+                return ttError(tt);
+            }
+        }
+        if (take && !ttIsError(tv)) return *(Type **)vecAt(&tv->targs, 0);
+        return c->tI64;
+    }
+
     /* `extc_viewOfT<T>(p, n)`: the same two shapes `extc_viewOf` insists on -- a byte
      * pointer and an integer length -- with the element type coming from the type argument. */
     if (e->u.gencall.args.len != 2) {
@@ -1737,6 +1781,35 @@ static Type *checkBorrowArg(Checker *c, Expr **slot, Type *want) {
      * print/println are desugared). */
     return checkInto(c, want, *slot);
 }
+/**
+ * @brief Check one call argument, treating a **by-value** parameter as the new owner of a
+ *        `@noCopy` name.
+ *
+ * A by-value parameter owns what it is given and runs its `@drop` hook on the way out, exactly
+ * like `var w = v` does for a local. Passing a `@noCopy` value by value is therefore a transfer,
+ * not a copy: the state gets a single name, which is the whole point of the annotation. The
+ * permission is granted only for a by-value parameter -- a `ref` / `mut ref` argument lends the
+ * object and keeps the old rule.
+ *
+ * @param c     Checker.
+ * @param slot  Argument slot; may be rewritten in place by the view-lending step.
+ * @param want  The parameter's declared type.
+ * @return      The argument's type.
+ */
+static Type *checkArgBorrow(Checker *c, Expr **slot, Type *want) {
+    bool savedMove = c->moveOkHere;
+    const char *savedInto = c->moveIntoName;
+    if (want && want->kind != TY_REF) {
+        c->moveOkHere = true;
+        c->moveIntoName = "the callee";
+    }
+    Type *at = checkBorrowArg(c, slot, want);
+    c->moveOkHere = savedMove;
+    c->moveIntoName = savedInto;
+    return at;
+}
+
+
 
 /**
  * @brief The name of the method that lends a container as a view: `view` (read-only) or `viewMut`
@@ -1878,7 +1951,7 @@ static Type *checkCallThroughFn(Checker *c, Expr *e, Type *ft) {
     for (size_t i = 0; i < ps.len; i++) {
         Param *p = *(Param **)vecAt(&ps, i);
         Expr **slot = (Expr **)vecAt(&e->u.call.args, i);
-        Type *at = checkBorrowArg(c, slot, p->type);
+        Type *at = checkArgBorrow(c, slot, p->type);
         Expr  *a = *slot;
 
         /* The same spelling rule as an ordinary call: passing a reference to a `ref T` parameter is
@@ -3273,7 +3346,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 Param *p = *(Param **)vecAt(&f->params, i);
                 Expr **slot = (Expr **)vecAt(&e->u.assoc.args, i);
                 Type *pt = ttSubstitute(tt, p->type, sp, sa);
-                Type *at = checkBorrowArg(c, slot, pt);
+                Type *at = checkArgBorrow(c, slot, pt);
                 Expr  *a = *slot;
                 if (pt->kind == TY_REF && at->kind != TY_REF && !ttIsError(at)) {
                     ckError(c, a->line,
@@ -4482,7 +4555,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             for (size_t i = 0; i < f->params.len; i++) {
                 Param *p  = *(Param **)vecAt(&f->params, i);
                 Expr **slot = (Expr **)vecAt(&e->u.call.args, i);
-                Type *at = checkBorrowArg(c, slot, p->type);
+                Type *at = checkArgBorrow(c, slot, p->type);
                 Expr  *a  = *slot;
 
                 /* When the parameter is a `ref T`, the call site has to spell `ref` out, so
@@ -5174,7 +5247,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                  * also accepts "expression results" such as a value f-string. */
                 Expr **slot = (Expr **)vecAt(&e->u.method.args, i);
                 lendViewArg(c, pt, slot);
-                Type *at = checkBorrowArg(c, slot, pt);
+                Type *at = checkArgBorrow(c, slot, pt);
                 a = *slot;
                 if (pt->kind == TY_REF && at->kind != TY_REF && !ttIsError(at)) {
                     ckError(c, a->line,

@@ -948,6 +948,26 @@ static void genStmtInner(CG *g, Stmt *s) {
             g->inAssignTarget = true;
             const char *tgt = genExpr(g, s->u.assign.target);
             g->inAssignTarget = false;
+            /* Storing into a **view element** whose element type owns storage: the slot may hold a
+             * live element, and the store overwrites its bytes without running any hook, so the old
+             * element is handed back first -- the same rule as overwriting a binding above, at a
+             * place that is an index instead of a name. The address is taken once so an index
+             * expression with a side effect is still evaluated once. Slots at and beyond the
+             * container's length are zero (the container zeroes what `pop`/`clear`/`shrink`
+             * take out of it), and a hook is a no-op on a zero value, so writing the next element
+             * of a growing buffer releases nothing. A value that is **moved** in gives its
+             * ownership up here, so its own block exit must not run the hook again. */
+            if (!s->u.assign.op && s->u.assign.target &&
+                s->u.assign.target->kind == EX_INDEX && s->u.assign.target->type &&
+                typeNeedsDrop(g, s->u.assign.target->type, 0)) {
+                g->pfMode = 1;
+                pfLine(g, "{ __typeof__(%s) *__extc_ov = &(%s);", tgt, tgt);
+                genDropValue(g, "(*__extc_ov)", s->u.assign.target->type, 0);
+                pfLine(g, "}");
+                g->pfMode = 0;
+                const char *mn = plainIdentCName(g, s->u.assign.value);
+                if (mn && !planArgClone(s->u.assign.value)) noteMoved(g, mn);
+            }
             /* A `@value` target stores an **independent** value: the right side is cloned when it is a
              * place, exactly the way a by-value argument is (the checker marks the site with
              * `planArgClone`, the same bit the argument path uses -- one semantic, one bit). A

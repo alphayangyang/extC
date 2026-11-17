@@ -2178,11 +2178,20 @@ bool checkStoreEscape(Checker *c, Expr *val, Expr *target, int line) {
         recordRefCheck(c, val, target, slotDepth(c, target), line, "this assignment");
         return false;
     }
-    /* A value that owns a reservation cannot live in a view element: the store copies the bytes
-     * and no hook ever runs for that copy, so the value would be released twice (once when the
-     * original name dies, once when the container does). Named here for the concrete case, and
+    /* A value that owns a reservation may live in a view element only by being **moved** in: the
+     * store copies the bytes and no hook runs for that copy, so the destination becomes the one
+     * owner and the source has to give its ownership up here. A plain name does that -- the
+     * generator stops running its hook when the block exits -- and a temporary has no owner to
+     * drop it. A place that is not a name -- a field, another element -- cannot give ownership up
+     * without leaving its aggregate half-owned, so that stays rejected.
+     *
+     * The move is recorded by the generator, not here: the same name may be stored on several
+     * control-flow paths (`linMap::put` stores on the found-key path and again after `grow`), and
+     * a name is only dead once every path that stores it has been taken. Marking it here would
+     * reject the second store as a read of a moved value. Named here for the concrete case, and
      * again in `runRefCheck` for the case a template sees only as `T`. */
     if (storesIntoView(target) && typeHasDrop(c, val->type, 0)) {
+        if (val->kind == EX_IDENT || !isPlace(val)) return false;
         ckError(c, line,
                 "A view is a flat array of values: storing writes the bytes and the container never"
                 " runs a `@drop` hook for that copy, so the value would be released twice -- once"
@@ -2351,6 +2360,10 @@ static void recordRefCheck(Checker *c, Expr *val, Expr *target, int at,
      * is opaque while the template is checked, so the decision waits for the instance. */
     rc->ctx      = c->ctx;
     rc->viewElem = storesIntoView(target);
+    /* Whether that store is a **move** into the slot, decided exactly as the concrete case in
+     * `checkStoreEscape` decides it: a plain name hands its ownership over, a temporary has no
+     * owner to drop it. Neither is marked moved in the checker (see `checkStoreEscape`). */
+    if (rc->viewElem && (val->kind == EX_IDENT || !isPlace(val))) rc->viewMove = true;
     /* Compute these numbers now, while the scope is open and `lookup` still finds the
      * parameters. The walk does not stop early for a node that mentions a type parameter, so
      * this depth is computed under the assumption "the parameter may carry a reference", which

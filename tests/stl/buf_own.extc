@@ -1,0 +1,48 @@
+// 元素所有权 · 常设判据：容器的元素自己拥有预留（buf<vector<i64>>）
+//
+// 判据：
+//   ① 局部名字 push 进去 = 移动：源在块尾不再跑 @drop，所以只有一份预留被记帐
+//   ② 临时量 push 进去 = 容器成为第一个所有者（没有第二个名字要 drop）
+//   ③ pop 出来的元素归调用方，槽被清零 ⇒ 后面的 clear 不会再 drop 它
+//   ④ clear / shrink 逐元素跑 @drop ⇒ 内层预留全部归还
+//   ⑤ 最后 buf::bufLive() == 0（一张预留都没漏）
+use std::io
+use std::data::buf
+use std::data::vector
+
+fn main() -> i32 {
+    var b = buf<vector<i64>>::withCap(4)
+
+    /* ① 局部名字装进去 */
+    var v = vector<i64>::new()
+    v.push(7)
+    b.push(v)
+
+    /* ② 临时量装进去 */
+    b.push(vector<i64>::new())
+    b.push(vector<i64>::new())
+    let len = b.len()
+
+    /* ③ 取出的元素归调用方：它带着自己的预留走，槽被清零。它在块尾按 @drop 还掉。 */
+    var popped: i64 = 0
+    {
+        var top = b.pop()!
+        top.push(9)
+        popped = top.len()
+    }
+    let poplive = buf::bufLive()
+    let n = b.len()
+
+    /* ④ 逐元素 drop 剩余两个，再 release 整个容器 */
+    b.clear()
+    let clearlive = buf::bufLive()
+    b.push(vector<i64>::new())
+    b.shrink(0)
+    b.release()
+
+    /* ⑤ 账本归零 */
+    io::cout << "len=" << len << " popped=" << popped << " n=" << n
+    io::cout << " poplive=" << poplive << " clearlive=" << clearlive
+    io::cout << " live=" << buf::bufLive() << "\n"
+    return 0
+}

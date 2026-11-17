@@ -1211,16 +1211,74 @@ static const char *exGencall(CG *g, Expr *e) {
     /* `extc_sizeOf<T>()` / `extc_viewOfT<T>(p, n)`: the buffer's two doors. Neither emits a
      * runtime: the first is `sizeof`, the second is a struct literal. */
     if (isBufPrimitiveName(gcName)) {
-        const char *btn = cType(g, subst(g, *(Type **)vecAt(&e->u.gencall.targs, 0)));
         if (strcmp(gcName, "extc_sizeOf") == 0)
-            return arenaPrintf(g->arena, "((int64_t)sizeof(%s))", btn);
-        Type *bst = subst(g, e->type);   /* the `mut slice<T>` the checker produced */
-        return arenaPrintf(g->arena,
-            "(%s){ .data = (%s *)(%s), .len = (int64_t)(%s) }",
-            cType(g, bst), btn,
-            genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, 0)),
-            genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, 1)));
+            return arenaPrintf(g->arena, "((int64_t)sizeof(%s))",
+                               cType(g, subst(g, *(Type **)vecAt(&e->u.gencall.targs, 0))));
+        if (strcmp(gcName, "extc_viewOfT") == 0) {
+            const char *btn = cType(g, subst(g, *(Type **)vecAt(&e->u.gencall.targs, 0)));
+            Type *bst = subst(g, e->type);   /* the `mut slice<T>` the checker produced */
+            return arenaPrintf(g->arena,
+                "(%s){ .data = (%s *)(%s), .len = (int64_t)(%s) }",
+                cType(g, bst), btn,
+                genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, 0)),
+                genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, 1)));
+        }
+        /* `elemDrop` / `elemTake` are buffer primitives too, but their text is emitted below:
+         * they write the statement prefix, so they cannot be one expression. */
     }
+    if (strcmp(gcName, "elemDrop") == 0 || strcmp(gcName, "elemTake") == 0) {
+        /* `elemDrop<T>(v, from, to)` / `elemTake<T>(v, i)`: the element's `@drop` hook run in
+         * place, and a move out of a view slot. Both are emitted into the **statement prefix**:
+         * the container calls them before it lowers its own length, so the hooks still see a slot
+         * the container claims, and the prefix is where a hook that must run before the statement
+         * belongs. The view is a struct literal, so it is materialised into a temporary and read
+         * from there -- evaluating the argument twice would build two copies and drop through the
+         * wrong one. */
+        const bool take = gcName[4] == 'T';
+        Expr *vArg = *(Expr **)vecAt(&e->u.gencall.args, 0);
+        Type *vt = ttBase(subst(g, vArg->type));
+        Type *et = *(Type **)vecAt(&vt->targs, 0);
+        /* An element type with no hook has nothing to run, and the loop would visit every slot
+         * for nothing: `clear` on a byte buffer has to stay O(1). */
+        if (!take && !typeNeedsDrop(g, et, 0)) return "(void)0";
+        const char *vv = arenaPrintf(g->arena, "__extc_elv%d", g->tmpSeq++);
+        g->pfMode = 1;
+        pfLine(g, "%s %s = (%s);", cType(g, vt), vv, genExpr(g, vArg));
+        if (take) {
+            const char *ii = arenaPrintf(g->arena, "__extc_eii%d", g->tmpSeq++);
+            const char *rr = arenaPrintf(g->arena, "__extc_eir%d", g->tmpSeq++);
+            pfLine(g, "int64_t %s = (int64_t)(%s);", ii,
+                   genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, 1)));
+            pfLine(g, "%s %s = %s.data[%s];", cType(g, et), rr, vv, ii);
+            /* Zero the slot: the element now lives in the returned value, and the container must
+             * not run its hook for a slot it no longer owns when it is later cleared. */
+            pfLine(g, "memset((void *)&%s.data[%s], 0, sizeof(%s));", vv, ii, cType(g, et));
+            g->pfMode = 0;
+            return rr;
+        }
+        const char *fi = arenaPrintf(g->arena, "__extc_efi%d", g->tmpSeq++);
+        const char *ti = arenaPrintf(g->arena, "__extc_eti%d", g->tmpSeq++);
+        const char *ei = arenaPrintf(g->arena, "__extc_eei%d", g->tmpSeq++);
+        pfLine(g, "int64_t %s = (int64_t)(%s);", fi,
+               genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, 1)));
+        pfLine(g, "int64_t %s = (int64_t)(%s);", ti,
+               genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, 2)));
+        /* Clamped against the view's own length: the container passes a range it derived from that
+         * length, and the clamp is what makes an out-of-range bound a no-op instead of a walk past
+         * the end. */
+        pfLine(g, "for (int64_t %s = %s; %s < %s && %s < %s.len; %s++) {", ei, fi, ei, ti, ei, vv, ei);
+        g->indent++;
+        genDropValue(g, arenaPrintf(g->arena, "%s.data[%s]", vv, ei), et, 0);
+        /* Zero the slot after its hook ran. Slots at and beyond the length are then always zero,
+         * which is what lets a store into the next slot drop the old content unconditionally:
+         * a hook is a no-op on a zero value. */
+        pfLine(g, "memset((void *)&%s.data[%s], 0, sizeof(%s));", vv, ei, cType(g, et));
+        g->indent--;
+        pfLine(g, "}");
+        g->pfMode = 0;
+        return "0";
+    }
+
     if (isPoolPrimitiveName(gcName)) {
         const char *rid = genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, 0));
         if (strcmp(gcName, "poolGive") == 0) {

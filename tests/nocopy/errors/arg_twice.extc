@@ -1,0 +1,10 @@
+// 反例：同一个 @noCopy 名字被移动两次 —— 第二次是读一个已经交出去的 name
+@noCopy
+struct counter { pos: i64 }
+fn take(c: counter) -> i64 { return c.pos }
+fn main() -> i32 {
+    var a: counter = { pos: 0 }
+    let x = take(a)
+    let y = take(a)
+    return i32(x + y)
+}

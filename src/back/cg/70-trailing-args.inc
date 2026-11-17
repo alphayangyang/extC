@@ -281,6 +281,12 @@ static const char *genDynCall(CG *g, Expr *e) {
 /* Defined below, next to the struct-literal path that also uses it: a by-value copy of an
  * `@value` place is a **built** copy, never a byte copy. */
 static const char *cloneValueText(CG *g, Type *dst, Expr *site);
+/* Defined in the drop section (120-question-expansion.inc), which comes after this file: the
+ * argument loops here ask both whether a parameter owns storage and whether the argument is a
+ * move. */
+static bool typeNeedsDrop(CG *g, Type *t, int depth);
+static void noteArgMove(CG *g, Expr *a, Type *pt);
+static Type *methodParamType(CG *g, Type *recvT, FuncDef *f, size_t i);
 
 /**
  * @brief Generate a method call as an ordinary function call on the receiver.
@@ -455,9 +461,10 @@ static const char *genMethodCall(CG *g, Expr *e) {
          * `@value` parameter is built here for the same reason an ordinary argument is. */
         Expr *a = *(Expr **)vecAt(&e->u.method.args, i);
         const char *av = NULL;
-        if (planArgClone(a) && i + 1 < f->params.len) {
-            Param *pm = *(Param **)vecAt(&f->params, i + 1);
-            av = cloneValueText(g, pm->type, a);
+        if (i + 1 < f->params.len) {
+            Type *pt = methodParamType(g, recvT, f, i + 1);
+            if (planArgClone(a)) av = cloneValueText(g, pt, a);
+            else                 noteArgMove(g, a, pt);
         }
         bufPrintf(&b, ", %s", av ? av : genExpr(g, a));
     }
@@ -486,6 +493,37 @@ static const char *genMethodCall(CG *g, Expr *e) {
  * @param site  The place being copied; a temporary is moved and never reaches here.
  * @return      C text of the clone call, or `NULL` when the hook cannot be named.
  */
+/**
+ * @brief Note that a by-value argument is **moved** into the callee's parameter.
+ *
+ * A parameter of a type that owns storage is the callee's copy only in the sense that the bytes
+ * are copied: ownership moves with them, and the callee runs the hook on the way out
+ * (`genParamDrops`). The caller's name therefore owns nothing after the call, and its own block
+ * exit must not run the hook a second time. A place the checker marked for cloning is not a move:
+ * the clone is a new value and the source keeps its own.
+ *
+ * @param g   The generator.
+ * @param a   The written argument.
+ * @param pt  The parameter's declared type (a type parameter is substituted here).
+ */
+/** * @brief The declared type of parameter `i` as **this call site** sees it. * * Inside a generic body the declaration still reads `T`, and a call on a concrete receiver * (`outer.push(inner)` on a `buf<vector<i64>>`) calls an instance whose parameter types were * substituted at instantiation. Whether an argument is a move depends on that substituted type: * `T` itself owns nothing, `vector<i64>` owns a reservation. The receiver carries the arguments, * so the substitution is taken from it; otherwise the ambient context applies. * * @param g      The generator. * @param recvT  The receiver type as written at this site (already substituted). * @param f      The method definition. * @param i      Parameter index. * @return       The parameter type to reason about. */static Type *methodParamType(CG *g, Type *recvT, FuncDef *f, size_t i) {
+    if (i >= f->params.len) return NULL;
+    Type *pt = (*(Param **)vecAt(&f->params, i))->type;
+    Type *bt = ttBase(recvT);
+    if (bt && bt->kind == TY_GENERIC && bt->sdef && bt->targs.len && bt->sdef->typeParams.len)
+        return ttSubstitute(g->tt, pt, &bt->sdef->typeParams, &bt->targs);
+    return subst(g, pt);
+}
+static void noteArgMove(CG *g, Expr *a, Type *pt) {
+    if (!a || !pt || planArgClone(a)) return;
+    /* Inside a generic body the parameter still reads `T`: instantiate it before asking whether
+     * the callee owns its parameter, or a `vector<i64>` element would look like a type with no
+     * storage. */
+    if (!typeNeedsDrop(g, subst(g, pt), 0)) return;
+    const char *nm = plainIdentCName(g, a);
+    if (nm) noteMoved(g, nm);
+}
+
 static const char *cloneValueText(CG *g, Type *dst, Expr *site) {
     Type *t = subst(g, dst);
     StructDef *sd = structOf(ttBase(t));
@@ -999,6 +1037,10 @@ static const char *exCall(CG *g, Expr *e) {
          * would hand over the caller`s storage too. The checker marked the argument. */
         Expr *a = *(Expr **)vecAt(&e->u.call.args, i);
         const char *av = planArgClone(a) ? cloneValueText(g, a->type, a) : NULL;
+        if (!av) {
+            FuncDef *cf = planCallee(e);
+            if (cf && i < cf->params.len) noteArgMove(g, a, (*(Param **)vecAt(&cf->params, i))->type);
+        }
         bufPuts(&b, av ? av : genExpr(g, a));
     }
     /* Asking the owner **once** is enough: it hands out both home and zone. Asking twice (home
@@ -1132,6 +1174,10 @@ static const char *exAssoc(CG *g, Expr *e) {
         /* Same rule as an ordinary call: a by-value `@value` argument is built, not copied. */
         Expr *a = *(Expr **)vecAt(&e->u.assoc.args, i);
         const char *av = planArgClone(a) ? cloneValueText(g, a->type, a) : NULL;
+        if (!av) {
+            FuncDef *cf = planCallee(e);
+            if (cf && i < cf->params.len) noteArgMove(g, a, (*(Param **)vecAt(&cf->params, i))->type);
+        }
         bufPuts(&b, av ? av : genExpr(g, a));
     }
     /* An associated function such as `Type::make()` allocates, so the

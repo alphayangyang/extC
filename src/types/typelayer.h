@@ -270,19 +270,28 @@ static inline bool isPoolPrimitiveName(const char *n) {
 }
 
 /**
- * @brief Is this one of the two buffer primitives (`extc_sizeOf` / `extc_viewOfT`)?
+ * @brief Is this one of the buffer primitives (`extc_sizeOf` / `extc_viewOfT` / `elemDrop` /
+ *        `elemTake`)?
  *
- * Both exist for the same reason `alloc` is a primitive: the generator has to name the
+ * All four exist for the same reason `alloc` is a primitive: the generator has to name the
  * element type in C, and the standard library cannot (`extc_sizeOf<T>()` has no `sizeof`
- * spelling in extC, and `extc_viewOfT<T>()` would have to return `slice<T>`, which
- * `extern!` refuses -- two C parameters, not one machine word). The names live only here,
- * so the checker and codegen cannot drift apart.
+ * spelling in extC, `extc_viewOfT<T>()` would have to return `slice<T>`, which `extern!`
+ * refuses -- two C parameters, not one machine word, and the same holds for a function that
+ * hands an element back). The names live only here, so the checker and codegen cannot drift
+ * apart.
+ *
+ * `elemDrop` / `elemTake` are the two **element-level** operations a container needs and the
+ * language cannot express: run the element's `@drop` hook in place over a range of a view, and
+ * move one element out (leaving a zero in the slot so nothing drops it twice). Without them a
+ * container cannot hold an element that owns storage: a write copies bytes and runs no hook, and
+ * nothing would ever run the element's hook for the copies the container owns.
  *
  * @param n  Declaration name.
  * @return   `true` when it is one of them.
  */
 static inline bool isBufPrimitiveName(const char *n) {
-    return n && (strcmp(n, "extc_sizeOf") == 0 || strcmp(n, "extc_viewOfT") == 0);
+    return n && (strcmp(n, "extc_sizeOf") == 0 || strcmp(n, "extc_viewOfT") == 0 ||
+                 strcmp(n, "elemDrop") == 0 || strcmp(n, "elemTake") == 0);
 }
 
 #endif

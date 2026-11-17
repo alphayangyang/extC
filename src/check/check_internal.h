@@ -667,6 +667,10 @@ typedef struct {
      * a template the element type is opaque, so the decision waits for the instance -- see
      * `runRefCheck`. */
     bool        viewElem;
+    /* Whether that store is a **move**: a plain name hands its ownership over to the slot (the
+     * concrete decision, with the symbol marked moved, is in `checkStoreEscape`), and a
+     * temporary has no owner to drop it. Only a move is allowed; anything else stays rejected. */
+    bool        viewMove;
     Type       *declType;/* declared type the deferred rule applies to */
     int         line;    /* source line to report */
     const char *what;    /* short noun phrase naming the operation, for the diagnostic */

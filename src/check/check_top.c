@@ -5794,7 +5794,7 @@ static void runRefCheck(Checker *c, RefCheck *rc, const char *instName) {
          * only `T`, so the decision is made here with the instance's type. This is what makes
          * `vector<vector<i64>>` a compile error instead of the silent use-after-free it was.
          */
-        if (rc->viewElem && typeHasDrop(c, vt, 0)) {
+        if (rc->viewElem && !rc->viewMove && typeHasDrop(c, vt, 0)) {
             c->substParams = NULL;
             c->substArgs   = NULL;
             /* Report through the file the store was written in, not the caller's: the store

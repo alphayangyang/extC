@@ -667,6 +667,8 @@ static void genFuncInner(CG *g, FuncDef *f) {
     /* Task-root registration state is per body too: the guard names restart (like the temporaries)
      * and no block of this body is a `d.run` body yet. */
     g->taskRootSeq = 0;
+    /* Names moved out are per body: the same source name in another function is another object. */
+    g->movedNames.len = 0;
     g->domBodyLevel = 0;
     g->atBlockEnd = false;
     /* `@unchecked` is a property of **this body**, so it is set on entry and restored on the way

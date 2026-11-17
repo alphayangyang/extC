@@ -557,6 +557,7 @@ static void initCGState(CG *g, Module *m, TypeTable *tt, Arena *arena) {
     vecInit(&g->dropPos, arena, sizeof(size_t));
     vecInit(&g->dropExplicit, arena, sizeof(const char *));
     vecInit(&g->dropLoopBases, arena, sizeof(size_t));
+    vecInit(&g->movedNames, arena, sizeof(const char *));
     vecInit(&g->globalDrops, arena, sizeof(GlobalDrop));
     vecInit(&g->rcGlobalRoots, arena, sizeof(const char *));
     for (size_t i = 0; i < tt->instances.len; i++) {

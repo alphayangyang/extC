@@ -1311,6 +1311,21 @@ static bool typeNeedsDrop(CG *g, Type *t, int depth) {
      * guard struct holding `mut ref buf<T>` emit a call with the wrong pointer type. */
     if (st && (st->kind == TY_REF || ttIsViewType(st))) return false;
     Type *b = ttBase(st);
+    /* An enum payload dies with the value that carries it, exactly like a struct field: `?buf<T>`
+     * is an `option<T>` whose `some` payload owns storage, and a `pop` hands one back. The tag
+     * picks the live variant at run time, so every variant is reported and the emitter switches. */
+    if (b && b->kind == TY_ENUM && b->edef) {
+        for (size_t i = 0; i < b->edef->variants.len; i++) {
+            Variant *v = *(Variant **)vecAt(&b->edef->variants, i);
+            for (size_t k = 0; k < v->types.len; k++) {
+                Type *pt = *(Type **)vecAt(&v->types, k);
+                if (b->edef->typeParams.len > 0 && b->targs.len == b->edef->typeParams.len)
+                    pt = ttSubstitute(g->tt, pt, &b->edef->typeParams, &b->targs);
+                if (typeNeedsDrop(g, pt, depth + 1)) return true;
+            }
+        }
+        return false;
+    }
     StructDef *sd = b ? structOf(b) : NULL;
     if (!sd) return false;
     if (sd->dropHook) return true;
@@ -1348,6 +1363,42 @@ static bool typeNeedsDrop(CG *g, Type *t, int depth) {
 static void genDropValue(CG *g, const char *path, Type *t, int depth) {
     if (!t || depth > 8) return;
     Type *b = ttBase(subst(g, t));
+    /* An enum carries its payloads in a tagged union, so the drop follows the tag: each variant
+     * that holds something owning runs the hook on `u.<variant>._<k>`. The `switch` runs for a
+     * value that is about to die, so it can read the tag in place. */
+    if (b && b->kind == TY_ENUM && b->edef && enumHasPayload(b->edef)) {
+        bool any = false;
+        for (size_t i = 0; i < b->edef->variants.len && !any; i++) {
+            Variant *v = *(Variant **)vecAt(&b->edef->variants, i);
+            for (size_t k = 0; k < v->types.len && !any; k++) {
+                Type *pt = *(Type **)vecAt(&v->types, k);
+                if (b->edef->typeParams.len > 0 && b->targs.len == b->edef->typeParams.len)
+                    pt = ttSubstitute(g->tt, pt, &b->edef->typeParams, &b->targs);
+                any = typeNeedsDrop(g, pt, depth + 1);
+            }
+        }
+        if (!any) return;
+        cgLine(g, "switch ((%s).tag) {", path);
+        for (size_t i = 0; i < b->edef->variants.len; i++) {
+            Variant *v = *(Variant **)vecAt(&b->edef->variants, i);
+            if (v->types.len == 0) continue;
+            cgLine(g, "case %s_%s:", cType(g, b), v->name);
+            g->indent++;
+            for (size_t k = 0; k < v->types.len; k++) {
+                Type *pt = *(Type **)vecAt(&v->types, k);
+                if (b->edef->typeParams.len > 0 && b->targs.len == b->edef->typeParams.len)
+                    pt = ttSubstitute(g->tt, pt, &b->edef->typeParams, &b->targs);
+                if (!typeNeedsDrop(g, pt, depth + 1)) continue;
+                genDropValue(g, arenaPrintf(g->arena, "%s.u.%s._%zu", path, v->name, k),
+                             pt, depth + 1);
+            }
+            cgLine(g, "break;");
+            g->indent--;
+        }
+        cgLine(g, "default: break;");
+        cgLine(g, "}");
+        return;
+    }
     StructDef *sd = b ? structOf(b) : NULL;
     if (!sd) return;
     if (sd->dropHook) cgLine(g, "%s(&(%s));", cMethodName(g, b, sd->dropHook), path);
@@ -1425,6 +1476,9 @@ static void genParamDrops(CG *g, FuncDef *f) {
     for (size_t i = 0; i < f->params.len; i++) {
         Param *p = *(Param **)vecAt(&f->params, i);
         if (!paramNeedsDrop(g, p)) continue;
+        /* A by-value parameter whose value was moved on to another receiver is not ours to drop:
+         * the receiver owns it, and the parameter slot still holds the same state. */
+        if (isMovedName(g, p->cname)) continue;
         genDropValue(g, dropValueRef(g, p->cname), subst(g, p->type), 0);
     }
 }
@@ -1451,6 +1505,10 @@ static bool localNeedsDrop(CG *g, Stmt *st) {
         (strcmp(nm, g->dropSkipName) == 0 ||
          (st->u.var.name && strcmp(st->u.var.name, g->dropSkipName) == 0)))
         return false;
+    /* The value was moved out of this local by a transfer: bound to another name or handed to a
+     * by-value parameter. The receiver owns the state now, so the hook here would release it a
+     * second time (two `buf` values would hand the same reservation back). */
+    if (isMovedName(g, nm) || (st->u.var.name && isMovedName(g, st->u.var.name))) return false;
     /* An explicit `drop x` already ran the hook for this name in this block. */
     for (size_t k = 0; k < g->dropExplicit.len; k++) {
         const char *n = *(const char **)vecAt(&g->dropExplicit, k);

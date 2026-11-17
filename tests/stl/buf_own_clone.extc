@@ -1,0 +1,14 @@
+// 反例：buf 的 clone 只对**可复制**的元素成立。元素自己拥有预留时，clone 需要逐元素深拷贝，
+// 而 `clone` 的实现是 `out.push(self.vals[i])` —— 那是一次移动，不能用来复制。
+// 判据：编译期被拒，并且诊断指出元素类型。
+use std::data::buf
+use std::data::vector
+
+fn main() -> i32 {
+    var b = buf<vector<i64>>::withCap(2)
+    b.push(vector<i64>::new())
+    var copy = b.clone()
+    copy.release()
+    b.release()
+    return 0
+}

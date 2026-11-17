@@ -458,6 +458,28 @@ static void cgReclaimDropArena(CG *g, int lvl) {
 }
 
 /**
+ * @brief Account for a declaration that **takes a value over** from an existing name.
+ *
+ * Two things are recorded. A local declared under this name is a new object, so a previous
+ * "moved out" marking for the name is forgotten. And when the initializer is a plain name of a
+ * type that owns state (no `@value` clone: a clone builds an independent value, so the source
+ * keeps its own), the new local owns the state from here on and the old name's `@drop` hook must
+ * not run at the end of the block -- that is the difference between a move and a leak or a
+ * double release.
+ *
+ * @param g   Generator state; the moved-name set is edited.
+ * @param s   The `var` statement.
+ * @param nm  The C name of the new local.
+ */
+static void noteVarDeclMove(CG *g, Stmt *s, const char *nm) {
+    forgetMoved(g, nm);
+    if (!s || !s->u.var.init || planVarClone(s)) return;
+    if (!typeNeedsDrop(g, subst(g, s->type), 0)) return;
+    noteMoved(g, plainIdentCName(g, s->u.var.init));
+}
+
+
+/**
  * @brief Emit `ST_VAR`: an ordinary declaration, a coroutine spawn, an `@overwrite` unit, and a
  *        declaration initialized by `f()?`.
  *
@@ -754,6 +776,7 @@ if (s->u.var.init && s->u.var.init->kind == EX_TRY) {
       } else
           cgLine(g, "%s%s %s = %s;", stg, cType(g, s->type), nm, tryPayloadPath(g, &ti));
     localDef(g, lb, nm, 1);
+    noteVarDeclMove(g, s, nm);
     rcRootDecl(g, s->type, nm);
     return;
 }
@@ -781,6 +804,7 @@ size_t lb = g->out->len;
         cgLine(g, "%s%s %s = %s;", stg, cType(g, s->type), nm, asF32(g, s->type, s->u.var.init, init));
 }
 localDef(g, lb, nm, 1);
+    noteVarDeclMove(g, s, nm);
 /* Counting for reference slots. A **new slot** goes through initRef: it writes and increments the
  * target, and **never reads the old value** -- the "old value" lying in a freshly declared slot is a
  * free-list slot number (the slab allocator keeps its free list in the slot head), and dereferencing

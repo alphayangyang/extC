@@ -1,0 +1,13 @@
+// 正例：按值当实参 = 把所有权交给被调函数（对 @noCopy 来说这条路是移动，不是拷贝）
+// expect: taken = 0|after = 1
+@noCopy
+struct counter { pos: i64 }
+fn take(c: counter) -> i64 { return c.pos }
+fn main() -> i32 {
+    var a: counter = { pos: 0 }
+    println("taken = ", take(a))
+    /* 移动之后 `a` 已经死了；给它赋新值，名字重新可用（与绑定移动同一条规则）。 */
+    a = { pos: 1 }
+    println("after = ", a.pos)
+    return 0
+}
