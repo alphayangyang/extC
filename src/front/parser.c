@@ -793,7 +793,6 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
         bool builtinDecl = false;  /* @builtin: implemented by the compiler (no function body) */
         bool fnUnchecked = false;  /* @unchecked: subscripts in this function body get no bounds checks */
         bool noCopy    = false;
-        bool poolObject = false;   /* @poolObject: this struct owns a pool (per the author) */
         bool buffer     = false;   /* @buffer: this struct is the owning form of `new T[n]` */
         bool sharesStorage = false; /* @sharesStorage: copying by value makes both copies share storage (containers) */
         bool valueCopy = false;     /* @value: copying from a place must call `clone` */
@@ -855,21 +854,6 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
             }
             if (strcmp(nm->text, "noCopy") == 0) {
                 noCopy = true;
-                skipJunk(&p);
-                continue;
-            }
-            /* `@place` (formerly `@poolObject`): this struct **owns a place** -- its storage lives
-             * on the place's own slabs and its lifetime follows the scope it sits in. A declaration beats
-             * an inference: the compiler does not have to guess (both "does it have a `pid`
-             * field" and "do its methods build pools" were tried: the first is a magic
-             * number, the second has to wait for closures), and a **user-defined container
-             * uses the same modifier** and takes exactly the same path. */
-            /* `@place`: this struct's storage lives on **a place** that outlives the value (today:
-             * a pool of its own), so it can grow in place and its lifetime follows the scope it
-             * sits in. `@poolObject` is the earlier spelling of the same label and stays accepted;
-             * both set one flag, and nothing else in the compiler knows either word. */
-            if (strcmp(nm->text, "place") == 0 || strcmp(nm->text, "poolObject") == 0) {
-                poolObject = true;
                 skipJunk(&p);
                 continue;
             }
@@ -991,8 +975,8 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
                      " other modules), `@inline` (on a function: the call must be inlined),"
                      " `@unchecked` (on a function: its index expressions lose the bounds check),"
                      " `@noCopy` (on a struct:"
-                     " it may only be passed as `ref` / `mut ref`), `@poolObject` (on a struct: it owns"
-                     " a pool), `@sharesStorage` (on a struct: a by-value copy shares storage) and"
+                     " it may only be passed as `ref` / `mut ref`),"
+                     " `@sharesStorage` (on a struct: a by-value copy shares storage) and"
                      " `@frozen` (on a struct: its layout is the C layout, so it may cross the C"
                      " boundary by value), `@export` (on a function: it becomes a C symbol that"
                      " C can call), `@module` (on a free function: it becomes this module's"
@@ -1076,7 +1060,6 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
                     return false;
                 }
             }
-            if (poolObject) s->poolObject = true;
             if (buffer) {
                 if (s->typeParams.len != 1) {
                     ctxError(ctx, s->line, 1,
@@ -1090,10 +1073,10 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
             *(StructDef **)vecPush(&out->structs) = s;
         } else if (at(&p, "impl")) {
             /* An `impl` block declares nothing: `@private`/`@noCopy` describe declarations,
-             * `@poolObject`/`@sharesStorage` describe storage, `@inline`/`@unchecked`
+             * `@sharesStorage` describes storage, `@inline`/`@unchecked`
              * describe bodies. The only applicable one is `@ext` (already read above); for
              * the rest, saying so is better than silently ignoring them. */
-            if (isPrivate || noCopy || sharesStorage || poolObject || fnInline || fnUnchecked || frozen
+            if (isPrivate || noCopy || sharesStorage || fnInline || fnUnchecked || frozen
                 || exported || moduleEntry) {
                 Token *t = cur(&p);
                 ctxError(ctx, t->line, t->col,
@@ -1111,7 +1094,7 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
         } else if (at(&p, "trait")) {
             /* Like an `impl` block, a trait only declares behaviour, so no annotation
              * applies. */
-            if (isPrivate || fnInline || fnUnchecked || noCopy || sharesStorage || poolObject || frozen
+            if (isPrivate || fnInline || fnUnchecked || noCopy || sharesStorage || frozen
                 || exported || moduleEntry) {
                 Token *t = cur(&p);
                 ctxError(ctx, t->line, t->col,
@@ -1142,12 +1125,6 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
                 ctxError(ctx, cur(&p)->line, cur(&p)->col,
                          "Only a `struct` can share storage on copy; an enum has no storage.",
                          "`@sharesStorage` goes on a `struct`");
-                return false;
-            }
-            if (poolObject) {
-                ctxError(ctx, cur(&p)->line, cur(&p)->col,
-                         "Only a `struct` owns a pool; an enum has no storage of its own.",
-                         "`@poolObject` goes on a `struct`");
                 return false;
             }
             if (frozen) {

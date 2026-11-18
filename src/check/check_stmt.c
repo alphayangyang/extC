@@ -3171,10 +3171,10 @@ static size_t forDesugarBindIndex(Stmt *block) {
  * sanitizer can actually catch today — is rejected statically, which is cheaper than a trap and
  * catches the mistake at the source line.
  *
- * Only `@poolObject` receivers are tracked (see `liveViewsStmtPost`). Their growth hands the old
- * slab back to the allocator, so reading through an old view is a use after free. An arena-backed
- * container such as `varArray` keeps the old block alive until its place ends: growth there leaves
- * a stale-but-valid snapshot, which is exactly the behaviour `tests/stl/varArray_snapshot.extc`
+ * Only receivers whose storage can be handed back are tracked (see `liveViewsStmtPost`): a type
+ * with a `@drop` hook, which is how a library container says that growth hands the old block
+ * back to the allocator, so reading through an old view is a use after free. An arena-backed
+ * container such as `varArray` keeps the old block alive until its place ends: growth there
  * pins down, so it must not be rejected.
  *
  * @param n  Method name; NULL is not a growth call.
@@ -3525,7 +3525,7 @@ bool ckStorageCanMove(Checker *c, Type *t) {
      * its storage goes back when the block ends, so the question is whether *any* drop runs
      * for this type, not whether this type declares one. Without the walk a nested container
      * looked arena-backed and the growth check let the dangling view through. */
-    return sd->poolObject || typeHasDrop(c, t, 0);
+    return typeHasDrop(c, t, 0);
 }
 
 /**
@@ -3677,15 +3677,14 @@ void liveViewsStmtPost(Checker *c, LiveViews *lv, Stmt *s) {
         }
         return;
     }
-    /* The gate is the `@poolObject` label, not the type's name: a container whose slab is handed
-     * back on growth makes an old view a use after free, while an arena-backed container keeps the
-     * old block alive and only yields a stale snapshot. */
+    /* The gate is whether the type can hand its storage back, not the type's name: a container
+     * whose block is returned on growth makes an old view a use after free, while an arena-backed
+     * container keeps the old block alive and only yields a stale snapshot. */
     Sym *osym = lookup(c, owner);
     Type *oty = osym ? tsub(c, osym->type) : NULL;
     StructDef *osd = oty ? structOf(ttBase(oty)) : NULL;
-    /* A type that owns storage which can be handed back is a place either way: the compiler-managed
-     * slab (`@poolObject`) or any type with a `@drop` hook, which is how a library container says
-     * "my storage goes back before the block ends". */
+    /* A type with a `@drop` hook owns storage that can be handed back before the block ends,
+     * which is how a library container says "my storage does not outlive the block". */
     if (!osd || !ckStorageCanMove(c, oty)) return;
     liveViewsPush(c, lv, owner, s->u.var.name);
 }

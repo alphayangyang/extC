@@ -2722,44 +2722,34 @@ int valDepthForStore (Checker *, Expr *);
  void setCallZoneArg (Checker *c, Expr *e);
 
 /**
- * @brief Tell whether a callee's result may live on a pool.
+ * @brief Tell whether a callee's result may live in a place.
  *
- * This asks about the type's nature: a type declared `@poolObject` owns a pool, and a closure that
- * resolves to `makesPool`, or a pool-constructing extern recognized by name, also counts. A generic
- * method's template and its instance are two `FuncDef`s, so the associated-function family relaxes
- * this through a mark on the struct.
+ * This asks about the type's nature: a closure that resolves to `makesPool` counts, and the `new` /
+ * `withCap` / `withParent` associated-function family relaxes through a mark on the struct. A
+ * generic method's template and its instance are two `FuncDef`s, so that mark is what carries the
+ * answer from one to the other.
  *
  * @param f  Callee definition; NULL counts as no.
- * @return   True when the owning type is marked `@poolObject`, the closure finds that the function
- *           makes a pool, the function has no body and its name belongs to the pool-constructor
- *           family, or it is an associated function of a pool-making type; false otherwise.
+ * @return   True when the closure finds that the function makes a place, or it is an associated
+ *           function of a place-making type; false otherwise.
  */
  bool calleeMakesPool (FuncDef *f);
-/* The family that **creates pools** at run time is recognized by name (an extern has no body, so
- * effect inference cannot see through it). The rule lives **only here**:
- *   - `calleeMakesPool` / `calleeCreatesPool` ask "will this call create a pool" => the whole family;
- *   - the codegen rewrite points add a home zone only to the **two without a zone parameter** (the
- *     `_at` variants carry their own).
- * Consequence of failing to register one name: nothing implements this family in the emitted
- * C (places own the dynamic storage), so the list serves only to keep the checker and the code
- * generator keyed on one spelling; it goes away with the primitives themselves. */
-
-/* The pool primitives form **one list with one spelling**: the checker validates their arity
- * and code generation lowers them by hand, both keyed on the same names. Adding a name on one
- * side only would leave the other reading arguments it never checked and re-deriving an
- * arity of its own. */
+/* Place sites are decided without a name table: the closure answers `makesPool`, and the
+ * `new` / `withCap` / `withParent` family relaxes through a mark on the struct. An unresolved
+ * callee is not a site -- an `extern!` helper, a builtin primitive, or an associated function on a
+ * type parameter cannot build a place. */
 
 /**
- * @brief Tell whether this call reaches `extc_pool_new`.
+ * @brief Tell whether this call may land its result in a place.
  *
- * A different question from "may the result live on a pool": this asks only whether the callee's
- * side creates a pool, for the block-level zone hook. An unresolved callee counts as yes,
- * conservatively.
+ * A different question from "may the result live in a place": this asks only whether the callee
+ * side creates one, for the block-level zone hook. An unresolved callee returns false: what stays
+ * unresolved is an `extern!` helper, a builtin primitive, or an associated function on a type
+ * parameter, and none of them can build a place.
  *
- * @param f  Callee definition; NULL means the callee is unresolved.
- * @return   True when the closure finds that the function makes a pool, the function has no body
- *           and its name belongs to the pool-constructor family, or it is an associated function of
- *           a pool-making type; true for NULL; false otherwise.
+ * @param f  Callee definition; NULL (unresolved) returns false.
+ * @return   True when the closure finds that the function makes a place, or it is an associated
+ *           function of a place-making type; false otherwise.
  */
 bool calleeCreatesPool (FuncDef *f);
 

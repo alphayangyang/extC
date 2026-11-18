@@ -1079,19 +1079,6 @@ struct StructDef {
      * always wrong" (readers, streams); `sharesStorage` means "the semantics of copying
      * differ from intuition, but you may mean it". */
     bool        sharesStorage;
-    /* `@poolObject`: this type **owns a pool** (its storage lives on the pool's own slabs
-     * and lives as long as the place the pool object resides in).
-     *
-     * A declaration beats inference: the compiler does not have to guess ("does it have a
-     * `pid` field" is a magic number, "do its methods build a pool" waits for the closure),
-     * one modifier states the fact, and **user-written containers declare with the same
-     * modifier** and take exactly the same path.
-     *
-     * With it the compiler can do three things deterministically: (1) a constructor call of
-     * this type is a **pool site** (promotable); (2) a function that builds a pool takes the
-     * hidden "home zone" parameter; (3) if a future rule wants to decide "elements may not
-     * carry references" per type, this is the criterion too, not any naming convention. */
-    bool        poolObject;
     /* `@buffer`: this type is the **owning form** of a `new` buffer for its single type parameter.
      * `let b: buf<T> = new T[n]` then builds the type through its one-argument constructor instead
      * of producing a `slice<T>` view, which is what makes "a buffer that owns its storage" spellable
@@ -1481,7 +1468,7 @@ static inline bool funcTakesHomeArena(const FuncDef *f) { return f && planUsesHo
  * signature and the argument at a call site).
  *
  * **Known divergence, not yet fixed**: the checker promotes on the richer `calleeMakesPool`,
- * which is also true for `@poolObject` methods and `isAssoc` on an owner whose body builds a
+ * which is also true for `isAssoc` on an owner whose body builds a
  * place anywhere (`anMakesPoolAny`); this accessor reads the raw flag, which those do not set.
  * So a site can be promoted to the zone level and still have no argument emitted. Closing it
  * means teaching both sides the same question: do the two together. */

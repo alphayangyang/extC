@@ -19,7 +19,7 @@ The compiler's whole job is three things:
    (`zone::epoch`), which is the same idea already used by `dyn` 的 place 槽世代（`zgen`）。
 
 If those three exist, `@place` (formerly `@poolObject`), `poolSlice<T>`, `poolResize<T>`, `std::sys::pool` and the block-chain
-code in `src/back/pools.c` are all redundant. **（v38：这一批已经删掉了** —— `src/back/pools.c` 与整套池原语退出运行期，`dyn` 载荷改落 place 的 chunk 链；`@place` 语法面是最后一小块，见 §5。）
+code in `src/back/pools.c` are all redundant. **（v38：这一批已经删掉了** —— `src/back/pools.c` 与整套池原语退出运行期，`dyn` 载荷改落 place 的 chunk 链；`@place` / `@poolObject` 语法面在 v40 也删掉了，见 §5。）
 
 ### Three things that were called "plate"
 
@@ -44,7 +44,7 @@ keeps its size, so it is also the only one that can give capacity back); the
 
 | Knob | Where | Why it exists |
 |---|---|---|
-| `@place` (formerly `@poolObject`) | type attribute | tells the checker/codegen that this type's storage lives in a block chain rather than in the frame, and that its blocks must be revoked on epoch change |
+| ~~`@place` (formerly `@poolObject`)~~ | ~~type attribute~~ | 已删除（v40）：视图悬垂门改由 `@drop` 钩子判定（`ckStorageCanMove` 只剩 `typeHasDrop`），`calleeMakesPool` 的声明捷径一并收起 |
 | ~~`poolSlice<T>` / `poolSliceRaw<T>` / `poolResize<T>` / `poolResizeRaw<T>`~~ | ~~generator intrinsic~~ | 已删除（v39）：名字表 `isPoolPrimitiveName`、检查器 `checkPoolPrim`、发射分支整族退场；`copyInto` 留下 —— 它服务的是视图复制，与池无关 |
 | `extc_place_*` | runtime C | enter/leaveTo/newRoot/freeRoot/alloc（v38 起取代池：`extc_pool_*` 对象运行期已删除） |
 | `std::sys::pool` | ~~privileged stdlib layer~~ | 已删除（v38）：容器改用 `buf<T>` 预留与 `block<T>` |
@@ -57,8 +57,8 @@ an epoch". The problem is purely that **only places the compiler created can reg
 - a value allocated with `new` cannot be put under zone management (that is why
   `new` inside a loop accumulates: 100 × 1 MiB churn must touch every page and peaks at 103.8 MB,
   while the same shape declared in the loop body peaks at 2.4 MB);
-- a struct cannot declare "my storage is zone-managed" without `@place`, i.e. without the
-  compiler agreeing.
+- a struct cannot declare "my storage is zone-managed" at all: the language has no such
+  annotation (v40), and a program that writes one is rejected as an unknown annotation.
 
 In other words: **the zone is RAII, but only the compiler may write into it.**
 
@@ -141,8 +141,8 @@ one branch on the release path. Element access stays free.
 
 ## 5. What this deletes
 
-- `@place`/`@poolObject`, `poolSlice<T>`, `poolSliceRaw<T>`, `poolResize<T>`, `poolResizeRaw<T>`,
-  `std::sys::pool`（**已全部删除**，v38–v39：`src/back/pools.c` 连同一整套池原语退出运行期；名字表 `isPoolCtorName` / `poolCtorNeedsZone` / `isPoolPrimitiveName`、检查器 `checkPoolPrim`、codegen 的池原语与 `poolNewAt` 分支在 v39 退场；`copyInto` 保留 —— 它服务的是视图复制，不是池）。
+- ~~`@place`/`@poolObject`~~, ~~`poolSlice<T>`, `poolSliceRaw<T>`, `poolResize<T>`, `poolResizeRaw<T>`,
+  `std::sys::pool`（**已全部删除**，v38–v40：`src/back/pools.c` 连同一整套池原语退出运行期；名字表 `isPoolCtorName` / `poolCtorNeedsZone` / `isPoolPrimitiveName`、检查器 `checkPoolPrim`、codegen 的池原语与 `poolNewAt` 分支在 v39 退场；`@place`/`@poolObject` 注解与 `StructDef.poolObject` 在 v40 退场；`copyInto` 保留 —— 它服务的是视图复制，不是池）。
 - The `fromRaw<T>` idea from revision 1 of this document: with typed `zone::alloc` there is no cast to
   expose. (Raw C pointers stay available through `extern!` for platform shims, as today.)
 - `stl::pool<T>` as a language concept：容器自己持有存储（地址预留或 `block<T>`），不再需要槽回收层；`pool` 模块已删除。
@@ -171,7 +171,7 @@ heap-use-after-free。同一块里的这种写法现在是编译错误；跨函�
 | 3. `std::mem::arena` | pure extC over `zone::alloc` | `tests/stl/arena_*`; peak = live + one chunk |
 | 4. `std::mem::pool<T>` | free list + generations over zone chunks; handle API (`slotOf/at/setAt/entry`) already exists in `stdMap` land | `tests/pool/*` ported to the library type; `bench/app`/`realsvc` within noise |
 | 5. containers | `varArray` → segmented chunks on `zone::alloc` (peak from 129 MB to ≈70 MB for 8M i64, per prototype); `vector` → zone-backed pool with growth policy; `string` keeps SSO | `tests/run.sh` 377/0; `bench/crazy`, `bench/app`, `bench/realsvc` within noise; 8M-i64 peak recorded in the paper's table |
-| 6. delete privilege | drop the five knobs above | `grep -rn "@place\|@poolObject\|poolSlice\|poolResize" src/ stdlib/` = 0 |
+| 6. delete privilege | drop the five knobs above | `grep -rn "@place\|@poolObject\|poolSlice\|poolResize" src/ stdlib/` = 0（v40 达成：src/ 与 stdlib/ 都是 0） |
 | 7. numbers | re-run `bench/memstudy`; update the memory table in the paper honestly | numbers match the code |
 
 Step 5 is where the 129 MB → ~70 MB improvement shows up, and it is a *library* change: the language
@@ -199,6 +199,8 @@ Two shortcuts in the checker answer "may this call create a pool", and **both ar
    Removing it produces the same rejection for the same reason.
 
 **（v39）** 池原语与池构造器的名字表已经删除，两条捷径还在，但结论变了：`calleeCreatesPool` 对**未解析的 callee** 不再回答 yes（`extern!` helper / 内建原语 / 类型参数关联函数都不可能建 place），`exprMakesPool` 的 `case EX_NEW` 也不再算 place 站点 —— 于是 place 运行期只在真有 `dyn` 值或任务表时发射（语料 1,676 个程序里 59 个）。代价是**容器跨挂起**的口子改由类型级 `typeOwnsStorage` 判定（`@buffer` 类型授能力），`string` 与 `block<T>` 基容器暂时不授能力（见 MEMORY-MODEL-CURRENT §19.23）。`@place` 标签本身还在，它同时承担视图失效门（`src/check/check_stmt.c`），删它要连同那条门一起改。
+
+**（v40）** 这一块也删完了：`@place` / `@poolObject` 注解、`StructDef.poolObject` 字段、parser 的解析与三条报错文案、`ckStorageCanMove` 的标签捷径、`check_escape.c` 的两处 by-value 深度放宽、`calleeMakesPool` 的声明捷径一起退场。视图悬垂门现在只看 `typeHasDrop`（语料里的容器都有 `@drop` 或经字段递归命中）；两条捷径里 `calleeMakesPool` 只剩 `makesPool` 与 `makesPoolAny` 两项。
 
 The proper fix is not to delete them but to make **the depth of a returned view come from the
 receiver** rather than from the callee's home zone. That is a change in the escape rules, not in the

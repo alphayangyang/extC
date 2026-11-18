@@ -756,4 +756,4 @@ var lm: linMap<K, V> = { keys: kb, vals: vb, n: 0, cap: c }
 
 ### 18.4 未做
 
-`map` / `set` 的存储是七块 `block<T>` 平坦列（见 `stdlib/std/data/map.extc` 的头注释与 §17 的接线面）。`slots<T>` / `slotHandle` 与 stdlib 的池模块已经删除；编译器的 pool 特例族已经拆完：`poolSlice*` / `poolResize*` / `poolGive` 的名字表、检查器分支与发射分支连同 `extc_pool_*` 一起删除（v38–v39），只剩 `copyInto`（它服务视图复制）与 `@place` 标签本身。
+`map` / `set` 的存储是七块 `block<T>` 平坦列（见 `stdlib/std/data/map.extc` 的头注释与 §17 的接线面）。`slots<T>` / `slotHandle` 与 stdlib 的池模块已经删除；编译器的 pool 特例族已经拆完：`poolSlice*` / `poolResize*` / `poolGive` 的名字表、检查器分支与发射分支连同 `extc_pool_*` 一起删除（v38–v40），只剩 `copyInto`（它服务视图复制）；`@place` 注解本身也已在 v40 删除。

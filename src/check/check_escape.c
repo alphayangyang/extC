@@ -737,17 +737,11 @@ static int borrowArgDepth(Checker *c, Expr *arg, const char *field) {
     if (!arg) return 0;
     int d = targetDepth(c, arg);
     if (field && c->scopes.len != 0) {
-        /* Storage inside a container is not storage in the **handle**: `pool<T>` keeps its blocks
-         * in the place the pool was born in, so a by-value element read lives as long as the pool
-         * does, not as long as the loop that filled it. Reading the handle's own slot depth is what
-         * closes the false rejection (gap G2) without widening the check: the elements are in the
-         * pool, and the pool's lifetime is exactly `slotDepth` of the receiver. */
+        /* A by-value element read borrows the storage the container owns, and the field table
+         * records where that storage was last handed out. Ask for the larger of the handle's own
+         * depth and the recorded slot: erring toward the longer life is the safe direction. */
         Expr *place = (arg->kind == EX_REF) ? arg->u.ref.operand : arg;
         Sym *root = place ? placeRoot(c, place) : NULL;
-        if (root && root->type) {
-            StructDef *rsd = structOf(ttBase(tsub(c, root->type)));
-            if (rsd && rsd->poolObject) return slotDepth(c, place);
-        }
         int *slot = root ? fieldDepthEntry(c, root, field, false) : NULL;
         return slot ? maxInt(d, *slot) : d;
     }
@@ -1709,11 +1703,10 @@ void noteOrigin(Checker *c, Sym *sy, Expr *val) {
  * by `v.push(p)` was only required to live to block level, while the chain handed out by
  * `return head` already points at it, and the function's return leaves it dangling.
  *
- * This must also run on the pool-building path: "the pool is born at level X" says nothing about
- * what the callee stored into that pool, and a plate-backed container's every method is a
- * pool-building call (the `@place` declaration makes `calleeMakesPool` true). Skipping the walk
- * there left the pushed elements at block level while the plate went to the home place -- the
- * `P2-6` / `P2-7` use-after-free.
+ * This must also run on the place-building path: "the value lands in the place at level X" says
+ * nothing about what the callee stored there, and a container's every method may reach a place.
+ * Skipping the walk there left the pushed elements at block level while the storage went to the
+ * home place -- the `P2-6` / `P2-7` use-after-free.
  *
  * Only an `EX_IDENT` receiver is accepted, and it is resolved with `lookup` rather than `placeRoot`:
  * this runs during the **final-round replay** too, when the scope has been closed, and `placeRoot`
@@ -3832,18 +3825,6 @@ static int targetDepthPure(Checker *c, Expr *e, int hops, Expr **seen) {
         for (size_t i = 0; i < e->u.method.args.len; i++)
             d = maxInt(d, targetDepthPure(c, *(Expr **)vecAt(&e->u.method.args, i),
                                            hops + 1, seen));
-        /* A by-value read out of a pool borrows the pool's bytes: the answer is the pool's own
-         * place, not the handle's. `borrowArgDepth` reads this off the recorded field table, but
-         * the table records the loop that **filled** the pool, so the two disagree for exactly
-         * the shape G1/G2 were about. Ask the receiver's slot depth directly, the same way the
-         * store rule does, and keep the larger of the two answers (the conservative direction). */
-        if (c->scopes.len != 0 && e->u.method.recv) {
-            Sym *root = placeRoot(c, e->u.method.recv);
-            if (root && root->type) {
-                StructDef *rsd = structOf(ttBase(tsub(c, root->type)));
-                if (rsd && rsd->poolObject) d = maxInt(d, slotDepth(c, e->u.method.recv));
-            }
-        }
         return d;
     }
     /* `?` and a conversion pass the operand's references through; an operator can only

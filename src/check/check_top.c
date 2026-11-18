@@ -1919,8 +1919,7 @@ void markCallHomeIfEscaping(Checker *c, Expr *v, int at) {
  * @brief Tell whether a callee can create a pool (every read site goes through here).
  *
  * A generic method's template and instance are two `FuncDef`s; the closure only reaches the
- * template, while at a call site `e->func` may be the template. A `@poolObject` declaration wins
- * over inference; a struct's `makesPoolAny` only relaxes for associated functions (the `new` /
+ * template, while at a call site `e->func` may be the template. A struct's `makesPoolAny` only relaxes for associated functions (the `new` /
  * `withCap` / `withParent` family), and other library methods do not join that family, so a value
  * that cannot be promoted is not misjudged as a site.
  *
@@ -1929,10 +1928,6 @@ void markCallHomeIfEscaping(Checker *c, Expr *v, int at) {
  */
 bool calleeMakesPool(FuncDef *f) {
     if (!f) return false;
-    /* **Declaration wins**: `@poolObject` marks a struct as owning a pool. It is more reliable
-     * than inference: looking for a `pid` field is magic, and looking at whether methods create
-     * pools has to wait for the closure. */
-    if (f->owner && f->owner->poolObject) return true;
     if (planMakesPool(f)) return true;
     return anIsAssoc(f) && f->owner && anMakesPoolAny(f->owner);
 }
@@ -10794,17 +10789,17 @@ static FuncDef *(*poolCalleeResolve)(Expr *e) = NULL;
 void setPoolCalleeResolver(FuncDef *(*fn)(Expr *e)) { poolCalleeResolve = fn; }
 
 /**
- * @brief Can this call reach `extc_pool_new`?
+ * @brief Can this call reach a place site?
  *
  * It is not the question `calleeMakesPool` asks: that one asks whether the result may live in a
- * place (escape and promotion) and relaxes for `@poolObject` types, while the block-level zone hook
+ * place (escape and promotion), while the block-level zone hook
  * only needs "may this call create a place". An unresolved callee returns false: what stays
  * unresolved is an `extern!` helper, a builtin primitive, or an associated function on a type
  * parameter, and none of them can build a place (the sites are `dyn` values, which the AST answers
  * by itself, and task tables, which are scanned separately).
  *
  * @param f  Callee; NULL (unresolved) returns false.
- * @return   true when the call may create a pool.
+ * @return   true when the call may create a place.
  */
 bool calleeCreatesPool(FuncDef *f) {
     /* An unresolved callee is not a place site: the sites are `dyn` values and task places, and

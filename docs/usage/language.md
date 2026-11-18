@@ -1190,7 +1190,6 @@ fn main() -> i32 {
 | `@inline` | 函数 / 方法 | 调用必须内联；**递归（含互递归）不行** | `` `@inline` cannot be honoured: `f` reaches itself `` / `needs a body, and an extern declaration has none` |
 | `@unchecked` | 函数 / 方法 | 该函数体不生成运行时检查 | `@unchecked applies to a function, not to a struct` / `not to a field` / `needs a body` / `appears twice` |
 | `@noCopy` | `struct` | 只能按 `ref` / `mut ref` 传 | `` `counter` is `@noCopy`: it may not be copied by value `` |
-| `@place` | `struct` | 池基质退场后这个注解没有可用的底座（容器自己持有存储，见 8.2）；新代码不要用，它会随编译器的池特例一起删除 | `@place goes on a struct` |
 | `@sharesStorage` | `struct` | 按值拷贝时两份共用存储（容器那一族）；编译器给警告 | `@sharesStorage goes on a struct` |
 | `@frozen` | `struct` | 布局就是 C 的布局，是按值过 `extern!` 边界的门票 | `@frozen goes on a struct` / `appears twice` |
 | `@export` | **自由函数** | 生成 C 可见符号（非 `static`），C 可以直接调 | `@export goes on a function`（方法 / 泛型 / 协程 / `extern!` / 结构体 / 枚举 / 全局都拒） |

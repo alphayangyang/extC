@@ -2,7 +2,7 @@
 
 > 状态：**当前口径** —— 这篇写的是现在的事实，改语义先改它。
 
-> **基质变更注记（v38–v39）。** 池容器、池原语（`poolSlice*` / `poolResize*` / `poolGive`）与 `@poolObject` / `@place` 的容器用法已经从语言里退场：容器自己拥有的存储今天只有两种形状 —— `buf<T>` 的**地址预留**（`vector`、`string`）与 `block<T>` 的**平坦块**（`hashMap` / `map` / `set` / `linMap` / `linSet`）。下文出现的「板块」一律指「容器自己拥有的那段存储」，按这两种形状读；`dyn` 值住的是 place 的载荷区（`src/back/places.c`），不是池。
+> **基质变更注记（v38–v39）。** 池容器、池原语（`poolSlice*` / `poolResize*` / `poolGive`）与 `@poolObject` / `@place` 的容器用法已经从语言里退场（v40 起注解本身也删除了，写了报未知注解）：容器自己拥有的存储今天只有两种形状 —— `buf<T>` 的**地址预留**（`vector`、`string`）与 `block<T>` 的**平坦块**（`hashMap` / `map` / `set` / `linMap` / `linSet`）。下文出现的「板块」一律指「容器自己拥有的那段存储」，按这两种形状读；`dyn` 值住的是 place 的载荷区（`src/back/places.c`），不是池。
 
 extC 没有 `free`，也没有垃圾回收器。`new` 出来的东西只可能住在三种地方，**住哪儿决定了它能活多久、也决定了用起来贵不贵**。选错地方不会编译报错，只会让内存数字看不懂 —— 这一页就是那张对照表。
 
