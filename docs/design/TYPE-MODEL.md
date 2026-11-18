@@ -235,6 +235,8 @@ s = s + "abc"       // 走 `fn +` ：造新字符串再赋值，上一份存储�
 | `var d: T = make()`（临时量） | 移动，不发 `clone` |
 | 按值实参、关联函数实参、方法实参 | 调用 `T::clone(&x)`（`PLAN_ARG_CLONE`） |
 | 结构体字面量字段 `S { f: x }` | 调用 `T::clone(&x)`（`PLAN_ARG_CLONE`） |
+| 运算符的右侧操作数（`a == b`，右侧填按值形参） | 调用 `T::clone(&b)`：运算符也是方法调用，走同一判据 |
+| 泛型体里上述任一位置（形参类型还是 `T`） | 推迟到实例化：checker 记 `RefCheck.argClone`，生成器用替换后的类型在调用点判定（`argCopyNeedsClone`） |
 | `return x`（`x` 是 place） | 调用 `T::clone(&x)`（`PLAN_RET_CLONE`）；返回的是本地绑定或临时量时是移动，不发 `clone` |
 | `x = y`（`x` 是 `@value` place，`y` 是 place） | 先 drop `x` 的旧值，再 `T::clone(&y)`（复用 `PLAN_ARG_CLONE`） |
 | `*p`（`p: ref T`）出现在上述任一位置 | 认作 place ⇒ 走 `clone` |
@@ -257,9 +259,19 @@ arg_elem_copy,arg_field_copy,ret_view_elem_copy}.extc`、`tests/pool/err_nest_ge
 正例 `tests/stl/buf_elem.extc`（就地只读方法调用合法，结束账正好等于容器与元素各一份预留）、
 `tests/nocopy/read_chain.extc`。
 
-判据在 `tests/copy/`（5 项）：`clone_place`、`move_temp`、`copy_points`（一张 11 行的计数表，
-覆盖上表每一个拷贝点与 `*p`，并以"六个副本各自 drop 后 `buf::bufLive()==0`"收尾），以及两条
-反例（缺 `clone`、与 `@noCopy` 同用）。
+运算符也是方法调用：`a == b` 的右侧填的是 `fn ==(self: ref Self, other: Self)` 的**按值**形参，
+所以同一个判据也管它（`src/back/cg/60-structural-eq.inc` 的 `genBin`）。泛型体里目的地类型还是 `T`，
+两个问题（有没有 clone 钩子、实参是不是 place）都只能按实例回答：checker 把问题记成
+`RefCheck.argClone` 推迟重放，生成器在调用点用替换后的类型做同一个决定（`argCopyNeedsClone`）。
+少了这一步，`hashMap<K,V>` 的 `find` 里 `self.keys[b] == k` 会把 `k` 位拷贝给 `eq`，callee 出口 drop 它、
+`find` 又 drop 一次 ⇒ 同一片存储还两遍（账本 `-32`、槽的空闲链被写两次；ASan 看不见，因为二次释放
+发生在 bufrt 自己的槽分配器内部）。
+
+判据在 `tests/copy/`（6 项）：`clone_place`、`move_temp`、`copy_points`（一张 11 行的计数表，
+覆盖上表每一个拷贝点与 `*p`，并以"六个副本各自 drop 后 `buf::bufLive()==0`"收尾）、
+`generic_arg_clone`（两层泛型转发把 owning 实参按值传下去，再用 `hashMap<string,i64>` 做短键与
+29 字节长键的 put/get；收尾 `live=16` 只剩源串自己那个 16 字节槽），以及三条
+反例（缺 `clone`、与 `@noCopy` 同用、字面量字段移动后源失效）。
 
 ## 八、性能与元数据预算
 

@@ -3528,6 +3528,33 @@ void ckDeferOwningRead(Checker *c, Type *dst, Expr *a, const char *what) {
     *(RefCheck **)vecPush(&c->refChecks) = rc;
 }
 
+/**
+ * @brief Defer the decision that a by-value argument has to be cloned until instantiation.
+ *
+ * A by-value parameter of an owning `@value` type is the callee's copy and the callee drops it, so
+ * a caller that passes a place must pass a clone. Inside a template the parameter type is still a
+ * type parameter and `structOf` has nothing to test, so the rule is recorded here and replayed per
+ * instance by `runRefCheck`; the replay also decides whether the argument is a place, which a
+ * temporary does not need. The code generator makes the matching decision per instance with the
+ * substituted type (`argCopyNeedsClone`), and the two must agree.
+ *
+ * @param c    Checker; the record is appended to `c->refChecks`.
+ * @param dst  Parameter type, still parameterised.
+ * @param a    The argument expression.
+ */
+void ckDeferArgClone(Checker *c, Type *dst, Expr *a) {
+    if (!c || !dst || !a || !c->curFunc) return;
+    if (!funcTParams(c->curFunc) || funcTParams(c->curFunc)->len == 0) return;
+    RefCheck *rc = (RefCheck *)arenaAllocZero(c->arena, sizeof(RefCheck));
+    rc->val      = a;
+    rc->declType = dst;
+    rc->line     = a->line;
+    rc->func     = c->curFunc;
+    rc->ctx      = c->ctx;
+    rc->argClone = true;
+    *(RefCheck **)vecPush(&c->refChecks) = rc;
+}
+
 
 /**
  * @brief Tell whether an expression is a stream-operator result that returns a reference.

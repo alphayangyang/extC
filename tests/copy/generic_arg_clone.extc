@@ -1,0 +1,30 @@
+// expect: forward=7|kept=5|hit-short=10|hit-long=20|len=2|live=16
+use std::text::string
+use std::data::hashMap
+use std::sys::bufrt
+use std::io
+
+// A generic callee that owns its by-value parameter: for `T = string` the callee drops the
+// argument on the way out, so the caller inside another generic body must hand over a clone.
+fn poke<T>(x: T, n: i64) -> i64 { return n }
+
+fn forward<T>(x: T) -> i64 {
+    let r: i64 = poke(x, 7)
+    return r
+}
+
+fn main() -> i32 {
+    var s: string = string::from("hello")
+    let f: i64 = forward(s)
+    println("forward=", f)
+    println("kept=", s.len())
+    var m: hashMap<string, i64> = hashMap<string, i64>::withCap(8)
+    let _p: bool = m.put(string::from("k1"), 10)
+    match m.get(string::from("k1")) { some(v) => { println("hit-short=", v) } none => { println("miss-short") } }
+    let _q: bool = m.put(string::from("a-much-longer-key-0123456789"), 20)
+    match m.get(string::from("a-much-longer-key-0123456789")) { some(v) => { println("hit-long=", v) } none => { println("miss-long") } }
+    println("len=", m.len())
+    m.release()
+    println("live=", bufrt::extc_buf_live())
+    return 0
+}

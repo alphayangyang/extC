@@ -5902,6 +5902,34 @@ static void runRefCheck(Checker *c, RefCheck *rc, const char *instName) {
          * only `T`, so the decision is made here with the instance's type. This is what makes
          * `vector<vector<i64>>` a compile error instead of the silent use-after-free it was.
          */
+        /* Sixth kind: an owning value passed by value from inside a template body.
+         *
+         * The callee drops its by-value parameter, so a caller passing a place must pass a clone;
+         * a temporary is moved instead. Neither half can be decided on the template, where the
+         * parameter type is `T`. The *decision* is made per instance by the code generator
+         * (`argCopyNeedsClone`); this side only records the clone hook as used, because reachability
+         * pruning deletes any method instance nobody planned to use and the emitted C would then
+         * name a function with no definition. Recording the plan bit here instead would be wrong:
+         * a plan bit is shared by every instance of the template, so one instance that needs the
+         * clone would suppress the move marking in another instance that does not. */
+        if (rc->argClone) {
+            if (rc->func && !planInstUsed(rc->func, instName)) return;
+            Type *ct = tsub(c, rc->declType);
+            c->substParams = NULL;
+            c->substArgs   = NULL;
+            if (!ct || ct->kind == TY_REF || ttHasParam(ct)) return;
+            StructDef *csd = structOf(ttBase(ct));
+            if (!csd || !csd->valueCopy || !csd->cloneHook || csd->cloneHook->params.len != 1) return;
+            Expr *ca = rc->val;
+            if (!ca) return;
+            bool cplace = ca->kind == EX_IDENT || ca->kind == EX_INDEX || ca->kind == EX_FIELD ||
+                          (ca->kind == EX_DEREF && ca->u.deref.operand && ca->u.deref.operand->type &&
+                           ca->u.deref.operand->type->kind == TY_REF);
+            if (!cplace) return;
+            planSetUsed(csd->cloneHook, true);
+            ckNoteInstUse(csd->cloneHook, ttBase(ct));
+            return;
+        }
         /* Fifth kind: an owning value read out of storage the reader does not own. */
         if (rc->ownRead) {
             /* Only for the instance that actually calls this method: the template is used by

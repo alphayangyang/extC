@@ -1,7 +1,7 @@
 # emitted-C identity baseline (refactor invariant)
-# extc md5: 3f69491dab42a2b77c84ad73d8debc76
+# extc md5: 56957c447e4efabbbce699ba0f2350ce
 # columns: config, source, status, md5, bytes
-# why: the only new line in the two affected programs is the discard mark that the match-arm emitter now writes for a payload binding (the parser hides it under a temp name; the unit is compiled with -Werror, so it must be read at the declaration).
+# why: 本轮把 @value 按值拥有实参的 clone 提到实例化期决定（RefCheck.argClone + argCopyNeedsClone），并让运算符路径用同一判据；因此 hashMap 的 find/get/put 对 string 键在探测处与调用边界各补齐一次 clone，出口补 string-string_release(&(k))；同时无 arena 函数补按值形参 drop。逐行核对：只有 tests/stl/stringOps.extc 与 tests/stl/slice_eq_any_elem.extc两程序（×2 配置）变化，全部落在 hashMap-string 的 find/get/put 与 eq 调用点。
 default	bench/app/log.extc	ok	ad0bdf583d6602315eb360d056354c8f	118168
 reclaim	bench/app/log.extc	ok	64f05fc09b9fcfd42f3b92a95e56a063	433038
 default	bench/app/route.extc	ok	0192f96636fb6613d8e9be098229f7e0	157946
@@ -402,8 +402,8 @@ default	tests/stl/setOrdered.extc	ok	dbc1ccd464eb533a5b2dc13a13e90d98	157604
 reclaim	tests/stl/setOrdered.extc	ok	6264188ebe09ec2e54a381a72df09190	471562
 default	tests/stl/setStructKey.extc	ok	8963f9f3eb9d3c14f1a45b9f8912178f	131254
 reclaim	tests/stl/setStructKey.extc	ok	7d2ac00e0fbea258f2feb5677390c660	445212
-default	tests/stl/slice_eq_any_elem.extc	ok	32be9e25bada342d60b8aad9d89a7070	160728
-reclaim	tests/stl/slice_eq_any_elem.extc	ok	f0b38533c50f1f940bc9f11a82293ba5	476190
+default	tests/stl/slice_eq_any_elem.extc	ok	35cd13ca5c7037aa72fb718cc7c08732	163145
+reclaim	tests/stl/slice_eq_any_elem.extc	ok	c3b5034db22034988b163416b034a09b	478607
 default	tests/stl/sort.extc	ok	37188d4a5f7d89ba815b98539d0a5689	92199
 reclaim	tests/stl/sort.extc	ok	83349d2803dd5b7ad33affa4de395959	405967
 default	tests/stl/split.extc	ok	699aa69e390e9cde3fc0115b6f08ff50	95861
@@ -414,8 +414,8 @@ default	tests/stl/stringEdit.extc	ok	9348fcf0ff4c7eba2a00edc466c19261	140221
 reclaim	tests/stl/stringEdit.extc	ok	1a7e91924838ef4c946ea72e4a1c0a3e	455675
 default	tests/stl/stringFind.extc	ok	0266927f0c7c60bf83122c45e35e950b	126002
 reclaim	tests/stl/stringFind.extc	ok	0b9b904bf064f8bb8d230d1ae9ea4372	448344
-default	tests/stl/stringOps.extc	ok	a6e3fcb4fabc05788d97502385d8ee88	192378
-reclaim	tests/stl/stringOps.extc	ok	32098a29b0934e275167143cb268b91e	509763
+default	tests/stl/stringOps.extc	ok	53b3d16c61694a1060c6febf90462890	192694
+reclaim	tests/stl/stringOps.extc	ok	5574484abf31c06b64bbda0cc569ae29	510079
 default	tests/stl/string_borrow.extc	ok	fd33f7b85d1330581ad958cfc5450be9	112754
 reclaim	tests/stl/string_borrow.extc	ok	5d514d872b3ea43acb7c8e623d1e77cb	428076
 default	tests/stl/string_build.extc	ok	41d18a1718b9ffcfa4e7ccd0c96c1b5b	125015

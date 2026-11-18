@@ -85,8 +85,11 @@ static void cgImplicitArgs(CG *g, Buf *b, const FuncDef *callee, const Expr *sit
                            bool forSignature);
 
 /* The `@value` copy builder, for the same reason: an operator is a method call too, and its second
- * parameter may be by value, so `genBin` below needs to build the copy rather than pass the place. */
+ * parameter may be by value, so `genBin` below needs to build the copy rather than pass the place.
+ * The predicate beside it answers the same question from the substituted type, which is what an
+ * operator inside a generic body (resolved here, not in the checker) has to consult. */
 static const char *cloneValueText(CG *g, Type *dst, Expr *site);
+static bool argCopyNeedsClone(CG *g, Expr *a, Type *pt);
 
 /**
  * @brief Wrap an emitted integer expression back to its declared width when that width is
@@ -207,10 +210,10 @@ static const char *genBin(CG *g, Expr *e) {
         }
         /* The right operand fills a by-value parameter whenever the operator is the one an `@value`
          * type defines (`fn ==(self: ref string, other: string)`), so the copy rule is the argument
-         * path's rule: a place is built by `clone`, a temporary is moved. Passing the place itself
-         * would hand the callee's parameter ownership of the caller's storage, and the parameter
-         * drop on the way out would free it while the caller still points at it. */
-        const char *r = planArgClone(e->u.bin.right)
+         * path's rule: a place is built by `clone`, a temporary is moved. Inside a generic body the
+         * checker cannot answer -- the operand type is still `T`, and the method is resolved here at
+         * instantiation -- so `argCopyNeedsClone` answers from the substituted type instead. */
+        const char *r = argCopyNeedsClone(g, e->u.bin.right, p1->type)
                         ? cloneValueText(g, p1->type, e->u.bin.right)
                         : NULL;
         if (!r) r = genExpr(g, e->u.bin.right);

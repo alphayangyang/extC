@@ -286,6 +286,7 @@ static const char *cloneValueText(CG *g, Type *dst, Expr *site);
  * move. */
 static bool typeNeedsDrop(CG *g, Type *t, int depth);
 static void noteArgMove(CG *g, Expr *a, Type *pt);
+static bool argCopyNeedsClone(CG *g, Expr *a, Type *pt);
 static Type *methodParamType(CG *g, Type *recvT, FuncDef *f, size_t i);
 
 /**
@@ -463,8 +464,8 @@ static const char *genMethodCall(CG *g, Expr *e) {
         const char *av = NULL;
         if (i + 1 < f->params.len) {
             Type *pt = methodParamType(g, recvT, f, i + 1);
-            if (planArgClone(a)) av = cloneValueText(g, pt, a);
-            else                 noteArgMove(g, a, pt);
+            if (argCopyNeedsClone(g, a, pt)) av = cloneValueText(g, pt, a);
+            else                             noteArgMove(g, a, pt);
         }
         bufPrintf(&b, ", %s", av ? av : genExpr(g, a));
     }
@@ -514,8 +515,50 @@ static const char *genMethodCall(CG *g, Expr *e) {
         return ttSubstitute(g->tt, pt, &bt->sdef->typeParams, &bt->targs);
     return subst(g, pt);
 }
+/**
+ * @brief Tell whether an argument names a place whose bytes the caller keeps.
+ *
+ * A binding, a field, an element and `*p` (the pointee of a reference) all have storage of their
+ * own, so a by-value copy of one has to be built. A temporary has nothing to copy from.
+ *
+ * @param a  The written argument.
+ * @return   True for a place; false for anything else.
+ */
+static bool argSiteIsPlace(Expr *a) {
+    if (!a) return false;
+    if (a->kind == EX_IDENT || a->kind == EX_INDEX || a->kind == EX_FIELD) return true;
+    return a->kind == EX_DEREF && a->u.deref.operand && a->u.deref.operand->type &&
+           a->u.deref.operand->type->kind == TY_REF;
+}
+
+/**
+ * @brief Does this by-value argument have to be built as a clone?
+ *
+ * The checker decides this for a concrete call site and records it with `planArgClone`. Inside a
+ * template body the parameter type is still `T`, so it can only record the question and replay it
+ * per instance (`runRefCheck`); the decision at the emitted call is therefore made here with the
+ * substituted type. The rule is the checker's: the callee drops its by-value parameter, so passing
+ * a place hands over storage; a temporary is moved instead and needs nothing.
+ *
+ * @param g   The generator, whose substitution context answers for `T`.
+ * @param a   The written argument.
+ * @param pt  The parameter's declared type.
+ * @return    True when the argument must be cloned.
+ */
+static bool argCopyNeedsClone(CG *g, Expr *a, Type *pt) {
+    if (!a) return false;
+    if (planArgClone(a)) return true;
+    if (!pt) return false;
+    Type *t = subst(g, pt);
+    if (!t || t->kind == TY_REF) return false;
+    if (!typeNeedsDrop(g, t, 0)) return false;
+    StructDef *sd = structOf(ttBase(t));
+    if (!sd || !sd->valueCopy || !sd->cloneHook || sd->cloneHook->params.len != 1) return false;
+    return argSiteIsPlace(a);
+}
+
 static void noteArgMove(CG *g, Expr *a, Type *pt) {
-    if (!a || !pt || planArgClone(a)) return;
+    if (!a || !pt || argCopyNeedsClone(g, a, pt)) return;
     /* Inside a generic body the parameter still reads `T`: instantiate it before asking whether
      * the callee owns its parameter, or a `vector<i64>` element would look like a type with no
      * storage. */
@@ -610,7 +653,7 @@ static const char *genStructLitAs(CG *g, Expr *e, bool staticInit) {
         /* A field of an `@value` type owns its storage: copying a place into the literal would
          * leave two owners, so the checker marked the initializer and the copy is built here. */
         const char *vt = NULL;
-        if (v && planArgClone(v)) vt = cloneValueText(g, ft, v);
+        if (v && argCopyNeedsClone(g, v, ft)) vt = cloneValueText(g, ft, v);
         /* A field of an owning type takes the storage of a plain name over: the name is dead
          * after the literal, so its block exit must not run the hook a second time. */
         if (!vt) noteArgMove(g, v, ft);
@@ -1039,11 +1082,13 @@ static const char *exCall(CG *g, Expr *e) {
          * parameter owns its storage and drops it on the way out, so handing over the place itself
          * would hand over the caller`s storage too. The checker marked the argument. */
         Expr *a = *(Expr **)vecAt(&e->u.call.args, i);
-        const char *av = planArgClone(a) ? cloneValueText(g, a->type, a) : NULL;
-        if (!av) {
-            FuncDef *cf = planCallee(e);
-            if (cf && i < cf->params.len) noteArgMove(g, a, (*(Param **)vecAt(&cf->params, i))->type);
-        }
+        FuncDef *cf = planCallee(e);
+        /* The destination is the **parameter's** type, not the argument's: inside a template body
+         * the argument may be a `T` place while the parameter is already a concrete instance type,
+         * and the clone hook is named after the destination. */
+        Type *pt = (cf && i < cf->params.len) ? (*(Param **)vecAt(&cf->params, i))->type : a->type;
+        const char *av = argCopyNeedsClone(g, a, pt) ? cloneValueText(g, pt, a) : NULL;
+        if (!av && cf && i < cf->params.len) noteArgMove(g, a, pt);
         bufPuts(&b, av ? av : genExpr(g, a));
     }
     /* Asking the owner **once** is enough: it hands out both home and zone. Asking twice (home
@@ -1176,11 +1221,10 @@ static const char *exAssoc(CG *g, Expr *e) {
         if (i) bufPuts(&b, ", ");
         /* Same rule as an ordinary call: a by-value `@value` argument is built, not copied. */
         Expr *a = *(Expr **)vecAt(&e->u.assoc.args, i);
-        const char *av = planArgClone(a) ? cloneValueText(g, a->type, a) : NULL;
-        if (!av) {
-            FuncDef *cf = planCallee(e);
-            if (cf && i < cf->params.len) noteArgMove(g, a, (*(Param **)vecAt(&cf->params, i))->type);
-        }
+        FuncDef *cf = planCallee(e);
+        Type *pt = (cf && i < cf->params.len) ? (*(Param **)vecAt(&cf->params, i))->type : a->type;
+        const char *av = argCopyNeedsClone(g, a, pt) ? cloneValueText(g, pt, a) : NULL;
+        if (!av && cf && i < cf->params.len) noteArgMove(g, a, pt);
         bufPuts(&b, av ? av : genExpr(g, a));
     }
     /* An associated function such as `Type::make()` allocates, so the

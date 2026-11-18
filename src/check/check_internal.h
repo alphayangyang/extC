@@ -675,6 +675,13 @@ typedef struct {
      * by-value position. The destination type is opaque while the template is checked, so the
      * decision waits for the instance -- see `runRefCheck`. */
     bool        ownRead;
+    /* A sixth kind: an `@value` argument passed by value from inside a generic body.
+     *
+     * A by-value parameter of an owning `@value` type is the callee's copy: the callee drops it
+     * on the way out, so the caller has to hand over a **clone** of a place or a temporary it
+     * owns. While the body is a template the parameter type is opaque (`T`), so the decision is
+     * deferred to the instance -- see `runRefCheck`. */
+    bool        argClone;
     Type       *declType;/* declared type the deferred rule applies to */
     int         line;    /* source line to report */
     const char *what;    /* short noun phrase naming the operation, for the diagnostic */
@@ -1152,6 +1159,20 @@ bool ckRejectOwningRead(Checker *c, Expr *e, Type *t);
  * @param what  Short noun phrase naming the operation, for the diagnostic.
  */
 void ckDeferOwningRead(Checker *c, Type *dst, Expr *a, const char *what);
+/**
+ * @brief Defer deciding that a by-value argument has to be cloned until the template is
+ *        instantiated.
+ *
+ * Inside a template the parameter type is still `T`, so `structOf` has nothing to test and the
+ * code generator cannot know either: it decides per instance with the substituted type, and the
+ * hook has to be recorded as used here or reachability pruning drops its body and the emitted C
+ * names a function nobody wrote.
+ *
+ * @param c    Checker; the record is appended to `c->refChecks`.
+ * @param dst  Parameter type, as written in the template body.
+ * @param a    The argument expression.
+ */
+void ckDeferArgClone(Checker *c, Type *dst, Expr *a);
 /**
  * @brief Reject handing an owning value to a by-value position that cannot transfer it.
  *

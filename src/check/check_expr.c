@@ -521,6 +521,13 @@ bool ckValueCopyNeedsClone(Checker *c, Type *dst, Expr *src) {
      * would hand a temporary to `&(...)`, which is not a C lvalue. */
     Type *dt = tsub(c, dst);
     if (!dt || dt->kind == TY_REF) return false;
+    /* Inside a template the parameter type is still a type parameter: neither the clone hook nor
+     * "is this a place" can be decided here, so record the question for the instance replay. The
+     * code generator decides the same question per instance with the substituted type. */
+    if (ttHasParam(dt)) {
+        ckDeferArgClone(c, dst, src);
+        return false;
+    }
     Type *b = ttBase(dt);
     StructDef *sd = b ? structOf(b) : NULL;
     if (!sd || !sd->valueCopy || !sd->cloneHook) return false;
