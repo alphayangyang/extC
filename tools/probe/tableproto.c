@@ -13,10 +13,14 @@
  *            old table stays readable only while every bucket after the
  *            cursor is untouched, so a run that stops mid-migration must
  *            finish draining before any lookup.
- *   eh     : extendible hashing, one directory entry per 4 KiB page of 168
- *            slots (24 B each).  A page splits one at a time; there is no
- *            whole-table rehash and the peak is the live bytes plus one
- *            page.
+ *   eh     : extendible hashing on a reserved slab: one directory entry per
+ *            page of EH_SLOTS 16 B slots (key, value; key 0 is the empty
+ *            sentinel), split at EH_SPLIT_AT load.  A page splits one at a
+ *            time into two pages resolved by one more hash bit, so there is
+ *            no whole-table rehash: the peak is the live bytes plus a page
+ *            and the longest step is one page of re-insertions plus one
+ *            directory doubling.  -DEH_PAGE / -DEH_SLOTS / -DEH_SPLIT_AT
+ *            are the shape knobs (default 4096 / 255 / 75% load).
  *
  * Build: cc -O2 -std=c11 -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE -o tableproto tableproto.c
  * Run:   taskset -c 6 ./tableproto <mode> <n>
@@ -213,80 +217,115 @@ static void tab_put_inc(Tab *t, int64_t k, int64_t v)
     tab_insert(t, k, v);
 }
 
-/* ---------------- extendible hashing on a reserved slab ---------------- */
-#ifndef EH_SLOTS
-#define EH_SLOTS 168              /* 168 * 24 B = 4032 B payload, one 4 KiB page */
+/* ---------------- extendible hashing on a reserved slab --------------- */
+#ifndef EH_PAGE
+#define EH_PAGE 4096              /* one page of the table */
 #endif
-#define EH_PAGE 4096
-typedef struct { uint8_t tag; int64_t k, v; } EB;
-typedef struct { int64_t pd, n; EB b[EH_SLOTS]; } EPage;
-typedef struct { EPage *base; int32_t *dir; int d; int64_t npages, splits; double worst, spanms; } EH;
+#ifndef EH_SLOTS
+#define EH_SLOTS 255              /* 255 * 16 B + 8 B header = 4088 B, one page */
+#endif
+#ifndef EH_SPLIT_AT
+#define EH_SPLIT_AT ((EH_SLOTS * 3) / 4)   /* split a page above 75% load */
+#endif
+#define EH_PEND 4096              /* worklist of entries waiting for a home */
+typedef struct { int64_t k, v; } EB;      /* k == 0 is the empty sentinel */
+typedef struct { int32_t pd, n; EB b[EH_SLOTS]; } EPage;
+_Static_assert(sizeof(EPage) <= EH_PAGE, "an EH page must fit in one page");
+typedef struct {
+    EPage *base; int32_t *dir; int d; int64_t npages, splits;
+    EB pend[EH_PEND]; int64_t npend;
+    double worst, spanms;
+} EH;
 
 static inline EPage *eh_page(EH *m, int64_t i) { return (EPage *)((char *)m->base + i * EH_PAGE); }
-static inline int64_t eh_slot(int64_t h) { return (int64_t)(((uint64_t)h >> 40) % EH_SLOTS); }
-static inline EPage *eh_pageof(EH *m, int64_t h) { return eh_page(m, m->dir[h & (((int64_t)1 << m->d) - 1)]); }
-
-static void eh_newpage(EH *m, int64_t pd)
+static inline int64_t eh_slot_h(uint64_t h) { return (int64_t)(((h >> 32) * (uint64_t)EH_SLOTS) >> 32); }
+static inline int64_t eh_di_h(EH *m, uint64_t h) { return (int64_t)(h & (((uint64_t)1 << m->d) - 1)); }
+static inline void eh_defer(EH *m, int64_t k, int64_t v)
 {
-    EPage *p = eh_page(m, m->npages++);
-    p->pd = pd; p->n = 0;
+    m->pend[m->npend].k = k; m->pend[m->npend].v = v; m->npend++;
+}
+
+static int64_t eh_newpage(EH *m, int64_t pd)
+{
+    int64_t i = m->npages++;
+    EPage *p = eh_page(m, i);
+    memset(p, 0, EH_PAGE);
+    p->pd = (int32_t)pd;
+    return i;
 }
 
 static int eh_find(EH *m, int64_t k, int64_t *v)
 {
-    int64_t h = (int64_t)hk(k);
-    EPage *p = eh_pageof(m, h);
-    int64_t s = eh_slot(h);
+    uint64_t h = hk(k);
+    int64_t pi = m->dir[eh_di_h(m, h)];
+    __builtin_prefetch((char *)m->base + pi * EH_PAGE);
+    EPage *p = eh_page(m, pi);
+    int64_t s = eh_slot_h(h);
     for (int64_t i = 0; i < EH_SLOTS; i++) {
         EB *e = &p->b[s];
-        if (e->tag != FULL) return 0;
+        if (e->k == 0) return 0;
         if (e->k == k) { *v = e->v; return 1; }
         if (++s == EH_SLOTS) s = 0;
     }
     return 0;
 }
 
-static void eh_put(EH *m, int64_t k, int64_t v);
-
-static void eh_split(EH *m, int64_t di)
+/* Split the page that holds key k. The page aliases 2^(d - pd) directory
+   entries; only the aliases that take the new bit move to the new page, so a
+   split costs one page of entries plus O(aliases) directory writes. */
+static void eh_split(EH *m, int64_t k)
 {
     double t0 = now_ms();
-    int64_t pi = m->dir[di];
-    EPage *p = eh_page(m, pi);
+    uint64_t h = hk(k);
+    int64_t di = eh_di_h(m, h);
+    EPage *p = eh_page(m, m->dir[di]);
     if (p->pd == m->d) {
         int64_t half = (int64_t)1 << m->d;
         int32_t *ndir = (int32_t *)anew((size_t)(half * 2) * sizeof(int32_t));
         for (int64_t i = 0; i < half; i++) { ndir[i] = m->dir[i]; ndir[i + half] = m->dir[i]; }
         free(m->dir); m->dir = ndir; m->d++;
+        di = eh_di_h(m, h);
     }
-    int64_t bit = (int64_t)1 << p->pd;
-    EB tmp[EH_SLOTS]; int64_t tn = 0;
-    for (int64_t i = 0; i < EH_SLOTS; i++)
-        if (p->b[i].tag == FULL) { tmp[tn++] = p->b[i]; p->b[i].tag = EMPTY; }
-    int64_t npi = m->npages;
-    eh_newpage(m, p->pd + 1);
-    p->pd++; p->n = 0;
-    int64_t ndir = (int64_t)1 << m->d;
-    for (int64_t i = 0; i < ndir; i++) if (m->dir[i] == pi && (i & bit)) m->dir[i] = (int32_t)npi;
+    int64_t pd = p->pd;
+    int64_t bit = (int64_t)1 << pd;
+    int64_t cnt = (int64_t)1 << (m->d - pd);
+    int64_t base = di & (bit - 1);
+    int64_t npi = eh_newpage(m, pd + 1);
+    p->pd = (int32_t)(pd + 1);
+    for (int64_t j = 0; j < cnt; j++) {
+        int64_t idx = base + (j << pd);
+        if (idx & bit) m->dir[idx] = (int32_t)npi;
+    }
+    for (int64_t i = 0; i < EH_SLOTS; i++) {
+        if (p->b[i].k != 0) { eh_defer(m, p->b[i].k, p->b[i].v); p->b[i].k = 0; }
+    }
+    p->n = 0;
     m->splits++;
-    for (int64_t i = 0; i < tn; i++) eh_put(m, tmp[i].k, tmp[i].v);
     double dt = now_ms() - t0; if (dt > m->worst) m->worst = dt; m->spanms += dt;
 }
-
 static void eh_put(EH *m, int64_t k, int64_t v)
 {
-    int64_t h = (int64_t)hk(k);
-    int64_t di = h & (((int64_t)1 << m->d) - 1);
-    EPage *p = eh_page(m, m->dir[di]);
-    int64_t s = eh_slot(h);
-    for (int64_t i = 0; i < EH_SLOTS; i++) {
-        EB *e = &p->b[s];
-        if (e->tag != FULL) { e->tag = FULL; e->k = k; e->v = v; p->n++; return; }
-        if (e->k == k) { e->v = v; return; }
-        if (++s == EH_SLOTS) s = 0;
+    eh_defer(m, k, v);
+    while (m->npend > 0) {
+        int64_t kk = m->pend[m->npend - 1].k, vv = m->pend[m->npend - 1].v;
+        m->npend--;
+        uint64_t h = hk(kk);
+        int64_t di = eh_di_h(m, h);
+        __builtin_prefetch((char *)m->base + (int64_t)m->dir[di] * EH_PAGE);
+        EPage *p = eh_page(m, m->dir[di]);
+        int64_t s = eh_slot_h(h);
+        int done = 0;
+        for (int64_t i = 0; i < EH_SLOTS; i++) {
+            EB *e = &p->b[s];
+            if (e->k == kk) { e->v = vv; done = 1; break; }
+            if (e->k == 0) {
+                if (p->n >= EH_SPLIT_AT) break;
+                e->k = kk; e->v = vv; p->n++; done = 1; break;
+            }
+            if (++s == EH_SLOTS) s = 0;
+        }
+        if (!done) { eh_defer(m, kk, vv); eh_split(m, kk); }
     }
-    eh_split(m, di);
-    eh_put(m, k, v);
 }
 
 static void eh_init(EH *m, int64_t reserve)
@@ -297,7 +336,7 @@ static void eh_init(EH *m, int64_t reserve)
     if (m->base == MAP_FAILED) { fprintf(stderr, "mmap failed"); exit(1); }
     m->d = 4;
     m->dir = (int32_t *)anew((size_t)16 * sizeof(int32_t));
-    for (int i = 0; i < 16; i++) { m->dir[i] = (int32_t)m->npages; eh_newpage(m, 4); }
+    for (int i = 0; i < 16; i++) m->dir[i] = (int32_t)eh_newpage(m, 4);
 }
 int main(int argc, char **argv)
 {
@@ -305,7 +344,7 @@ int main(int argc, char **argv)
     int64_t n = argc > 2 ? atoll(argv[2]) : 4000000;
     int64_t q = n, sum = 0, hits = 0;
     int64_t *keys = malloc((size_t)n * 8);
-    for (int64_t i = 0; i < n; i++) keys[i] = (int64_t)(sm_next() % 1000000007ull);
+    for (int64_t i = 0; i < n; i++) keys[i] = (int64_t)(sm_next() % 1000000007ull) + 1;
     double t0, t1; long peak; double worst; int64_t cap_end = 0;
 
     if (strcmp(mode, "cur") == 0 || strcmp(mode, "curpre") == 0) {
