@@ -1,0 +1,41 @@
+/* tests/reclaim-gaps/shapes/buf_ref_slot.extc —— **缓冲区容器里装的引用**（`varArray<mut ref node>`）。
+ *
+ * 容器存储是地址预留（bufrt），不是 rc 槽：元素里写引用落在外部边表的键（槽地址）上，结构动作
+ * 撤销它。形状：每轮 push 一个自环节点、再 pop ⇒ 容器只持有旧值一小会儿；量它持有的引用
+ * 有没有让对象活下来、以及峰值随轮数涨不涨。
+ */
+use std::io
+
+struct node {
+    v: i64
+    next: ?mut ref node
+}
+
+fn parseI64(s: slice<u8>) -> i64 {
+    var v: i64 = 0
+    var i: i64 = 0
+    while i < s.len {
+        var ch: u8 = s[i]
+        if ch < u8(48) { break }
+        if ch > u8(57) { break }
+        v = v * 10 + i64(ch) - 48
+        i = i + 1
+    }
+    return v
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var n: i64 = parseI64(args[1])
+    var p: varArray<mut ref node> = varArray<mut ref node>::withCap(8)
+    var i: i64 = 0
+    while i < n {
+        var nd: mut ref node = new node
+        nd.v = i
+        nd.next = nd
+        p.push(nd)
+        let _popped = p.pop()
+        i = i + 1
+    }
+    io::cout << "n=" << n << " len=" << p.size() << "\n"
+    return 0
+}

@@ -26,7 +26,7 @@
 #
 # 用法：
 #   tests/gc-p0/run.sh                # 全部（含空转基准，约 30–60 s）
-#   tests/gc-p0/run.sh g8             # 只跑 G8（g8|g9|g12|g13|g14|g15|g16|g18|g20|g21|g22|p03|peak|l10|g4|g1|g1cpu|g1c|noise）
+#   tests/gc-p0/run.sh g8             # 只跑 G8（g8|g12|g13|g14|g15|g16|g18|g20|g21|g22|p03|peak|l10|g4|g1|g1cpu|g1c|noise）
 #   tests/gc-p0/run.sh g22            # G22：长串周转的峰值位移（硬判据 maxRSS(k=16) <= 1.5 × maxRSS(k=4)）
 #   tests/gc-p0/run.sh g12            # G12/G13 计数档 soundness（编译期 EXTC_RC_NOCOUNT=0；两档都跑）
 #   tests/gc-p0/run.sh g13            # 只跑 G13（uaf_bulk_copy，默认 T2 + 强制 T3 两档，期望 d0r=7）
@@ -200,21 +200,11 @@ if [ "$WHAT" = all ] || [ "$WHAT" = g8 ]; then
            done; }
 fi
 
-echo "== G9：活任务存在时 syspool::collect()（tests/zone/collect_with_live_task.extc）=="
-if [ "$WHAT" = all ] || [ "$WHAT" = g9 ]; then
-    if build g9 tests/zone/collect_with_live_task.extc; then
-        for r in $(seq 1 "$REPS"); do run_plain g9 "$r"; done
-        echo "  g9 stdout（全文）："; sed 's/^/    /' "$OUT/log/g9_r1.out" 2>/dev/null
-        echo "  g9 stderr（首行）：$(head -1 "$OUT/log/g9_r1.err" 2>/dev/null)"
-        # ASAN：同一份生成物（-O1 -g），确认 collect 路径本身没有 UAF/双重释放
-        if $CC -O1 -g -std=c11 -fwrapv -fsanitize=address -o "$OUT/bin/g9_asan" "$OUT/c/g9.c" \
-                >"$OUT/log/g9_asan.compile.log" 2>&1; then
-            ASAN_OPTIONS=detect_leaks=0:abort_on_error=1 timeout 60 "$OUT/bin/g9_asan" \
-                >"$OUT/log/g9_asan.out" 2>"$OUT/log/g9_asan.err"; echo "  asan rc=$?" \
-                | tee -a "$OUT/log/g9_asan.out"
-        else echo "  skip ASAN (libasan missing)" | tee -a "$OUT/log/g9_asan.out"; fi
-    fi
-fi
+echo "== G9（n/a）：活任务存在时 collect() —— 形状 tests/zone/collect_with_live_task.extc 随 std::data::pool 删除"
+# 那条形状测的是「任务根登记后 syspool::collect() 不释放活引用」。池模块退场后 collect 入口随之消失，
+# 但**同一个失效模式**（任务根没登记 ⇒ 任务 arena 被回收 ⇒ UAF）仍由 tests/gc-torture 的
+# `t07_tasks` 守护：任务帧里的 `new [8]i64` 跨 yield 存活、一半任务提前结束，判据是精确 stdout、
+# after==before、且在 ASan 档运行（gc-torture 的 asan 档跑 t07）。这里只留记录，不再空跑。
 
 # G12/G13 共用：强制计数档（T3）+ 默认档各跑 REPS 次并打印 stdout。
 # 抽成顶层函数是为了让 `run.sh g13` 也能单独用（Lead m02258：doc-audit 需要可复制的 G13 命令）。
@@ -387,21 +377,9 @@ if [ "$WHAT" = all ] || [ "$WHAT" = p03 ]; then
 fi
 
 
-echo "== G15（硬判据）：pool 槽里的引用赋值 ⇒ 外部边表兜住（判据 RSS(800k) ≤1.20×RSS(50k)）=="
-# Lead R4b：从 XFAIL 提升成硬判据。池块与缓冲区一样反查不到宿主，落进同一条
-# extc_rc_storeRefUnknown；那张表现在按槽位记，池块复用后槽地址不变 ⇒ 表项只被改正、
-# 不随轮数增长（插桩：两档都是 pin n=35 / cap=128，RSS 3,764 kB）。红了就是没兜住，不是欠账。
-if [ "$WHAT" = all ] || [ "$WHAT" = g15 ]; then
-    if build g15 tests/gc-p0/src/leak_pool_pin.extc; then
-        defines g15
-        timemax g15 50000
-        timemax g15 800000
-        # 退出码自证：trap 早退会让 RSS 变小 ⇒ 假 PASS
-        run_plain g15 1 50000
-        run_plain g15 2 800000
-        tail -2 "$OUT/timemax.txt"
-    fi
-fi
+echo "== G15（n/a）：pool 槽里的引用赋值 —— 池基质已随退场删除"
+# 形状 tests/gc-p0/src/leak_pool_pin.extc 建在 std::data::pool 上，模块退场时一并删除；同一条外部边表
+# 路径由 G21（缓冲区存储里的引用赋值，结构动作撤销外部边）继承覆盖，判据不放宽。
 
 echo "== G21：缓冲区存储里的引用赋值 ⇒ 结构动作撤销外部边（判据 RSS(800k) ≤1.20×RSS(50k)）=="
 # Lead R4b。形状见 tests/gc-p0/src/leak_buf_ref.extc 头：每轮 withCap(4) → push 4 个引用 → shrink(2) →

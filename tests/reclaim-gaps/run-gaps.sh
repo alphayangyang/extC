@@ -88,9 +88,9 @@ SPECS=(
   # ══ G16：TLS / parallel worker 房间（新写的正向程序）═════════════════════
   "par_tls_cycle_n40000|par_tls_cycle|40000|asan"
   "par_tls_cycle_n160000|par_tls_cycle|160000|asan"
-  # ══ G17：池容器里装的引用（pool<mut ref T>）══════════════════════════════
-  "pool_ref_slot_n40000|pool_ref_slot|40000|asan"
-  "pool_ref_slot_n160000|pool_ref_slot|160000|asan"
+  # ══ G17：缓冲区容器里装的引用（varArray<mut ref T>）══════════════════════════════
+  "buf_ref_slot_n40000|buf_ref_slot|40000|asan"
+  "buf_ref_slot_n160000|buf_ref_slot|160000|asan"
   # ══ G18：dyn 载荷 carrying ref ═══════════════════════════════════════════
   "dyn_payload_n40000|dyn_payload|40000|asan"
   "dyn_payload_n160000|dyn_payload|160000|asan"
@@ -303,7 +303,7 @@ SCALE=(
   "match_payload|match_payload|160000|640000"
   "byval_temp|byval_temp|160000|640000"
   "par_tls_cycle|par_tls_cycle|160000|640000"
-  "pool_ref_slot|pool_ref_slot|160000|640000"
+  "buf_ref_slot|buf_ref_slot|160000|640000"
   "dyn_payload|dyn_payload|160000|640000"
   "closure_chain|closure_chain|160000|640000"
   # G20：参数是轮数；20 → 80（4×）。开档今天 ≈3.9×，关档（EXTC_RECLAIM=0）≈1.1× 做对照。

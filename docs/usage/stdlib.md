@@ -62,7 +62,7 @@ prelude 是编译器在每个编译单元前先过一遍的一段 extC 源码。
 `.startsWith(s)` / `.endsWith(s)` / `.toI64()` / `.toF64()` / `.len()` / `.isEmpty()`；
 `string` 上同名方法走同一份实现。视图的 `data`/`len` 由编译器构造，**不能赋值**（`mut slice` 也不行）。
 
-### `varArray<T>`：板块底的动态数组
+### `varArray<T>`：地址预留底的动态数组
 
 | 方法 | 签名 |
 |---|---|
@@ -71,14 +71,13 @@ prelude 是编译器在每个编译单元前先过一遍的一段 extC 源码。
 | `push` / `pop` | `fn push(self: mut ref varArray<T>, v: T)` / `fn pop(...) -> ?T` |
 | `get` / `set` | `fn get(self: ref varArray<T>, i: i64) -> ?T` / `fn set(self: mut ref varArray<T>, i: i64, v: T)` |
 | `clear` | `fn clear(self: mut ref varArray<T>)` |
-| `release` | `fn release(self: mut ref varArray<T>)`（把板块当场还回去）|
+| `release` | `fn release(self: mut ref varArray<T>)`（把预留当场还回竞技场）|
 | `view` / `asMutSlice` | `fn view(...) -> slice<T>` / `-> mut slice<T>` |
 | `==` | 按内容比较 |
 
 关键语义（都在  的注释里，逐条有位置）：
 
-- **谁拥有**：存储是容器自己那个地方的**板块**（`@place`），扩容当场把旧板还给分配器 ⇒
-  峰值是"一份"而不是历代之和（8e6 个 `i64`：`varArray` 64 MB，手写 `new` 翻倍 130 MB）。
+- **谁拥有**：存储是容器自己的一段**地址预留**（`bufrt` 竞技场发给值本身），扩容换一段更大的预留、旧段当场还回竞技场 ⇒ 不靠作用域尾部归还。旧段留在竞技场里复用，所以峰值接近两倍终值（8e6 个 `i64`：`varArray` 130 MB；同样数据的 `buf<T>` 66 MB，见 `bench/containers/RESULTS.md`）。
 - **能不能装引用**：能装 `ref`/`slice` 字段；但**元素地址会因扩容而移动**，所以不要持有元素引用，
   要写就用 `set(i, v)`。
 - **容量怎么涨**：满时翻倍（下限 4）。
@@ -86,7 +85,7 @@ prelude 是编译器在每个编译单元前先过一遍的一段 extC 源码。
 - **扩容会让视图失效**：`v.push(..)` 换掉板块，之前借出的 `slice`/`mut slice` 就作废 ——
   同块内"增长之后还用旧视图"是编译错误，跨帧则借不出去（判据 `tests/stl/varArray_stale_view.extc`
   与 `varArray_stale_write.extc`）。
-- **`clear()` 只把 `len` 置 0**，板块留着复用；要提前还就用 `release()`（之后任何下标都带位置 trap）。
+- **`clear()` 只把 `len` 置 0**，预留留着复用；要提前还就用 `release()`（之后任何下标都带位置 trap）。
 
 ```extc
 use std::io
@@ -158,62 +157,6 @@ fn main() -> i32 {
 }
 ```
 实测：`vector n=3 cap=4 sum=6`。
-
-### `std::data::place`：`@place` 的公共面
-
-一个标了 `@place` 的类型说："我的存储住在**一个地方**（今天是一个池），那个地方比我活得久"。
-地方本身由运行期注册表管；这个模块只暴露它的**非视图**部分：
-
-| 成员 | 作用 |
-|---|---|
-| `generation(p)` | 地方的世代（每次重置 +1）：容器把它与 id 一起存，还块前比对 |
-| `bytes(p)` | 一个地方当前占着的字节数（判"长了但没留旧块"）|
-| `liveBytes()` | 所有地方占着的字节数（判"退出后有没有漏"就比它进出两次）|
-| `give(p, s)` | 把一块借自地方的字节还回去（`poolGive<T>` 的薄包装）|
-| `free(p)` | 当场还掉一个地方（正常路径靠所在域退出整批收回，一般不用）|
-
-**建池不在这个模块里，返回视图的原语也不在。** 两条都是刻意的：函数体会为池分配开一层自己的
-地方，池于是随它返回而死，所以建池必须发生在你自己的 `@place` 类型的构造函数里（关联函数不另开
-地方，`@inline` 也不改变这一点）；而 `poolSlice<T>` / `poolSliceRaw<T>` / `poolResize<T>` /
-`poolResizeRaw<T>` / `poolGive<T>` 是**编译器内建** —— C 里声明不出"返回 `slice<T>`"，且包一层
-普通函数会丢掉"这个视图是这个类型自己那个地方的"这条知识（赋给字段时被逃逸检查拒绝）。
-
-```extc
-use std::io
-use std::data::place as place
-use std::sys::pool as syspool
-
-@place
-struct grow {
-    @private vals: mut slice<i64>
-    @private n:    i64
-    @private cap:  i64
-    @private pid:  i64
-    fn withCap(c: i64) -> grow {
-        let pid: i64 = syspool::extc_pool_new(-1)
-        var g: grow = { vals: poolSliceRaw<i64>(pid, c), n: 0, cap: c, pid: pid }
-        return g
-    }
-    fn push(self: mut ref grow, v: i64) {
-        if self.n == self.cap {
-            let nc: i64 = self.cap + self.cap / 2 + 1
-            self.vals = poolResizeRaw<i64>(self.pid, self.vals, nc)
-            self.cap = nc
-        }
-        self.vals[self.n] = v
-        self.n = self.n + 1
-    }
-}
-
-fn main() -> i32 {
-    var g: grow = grow::withCap(2)
-    var i: i64 = 0
-    while i < 100 { g.push(i)  i = i + 1 }
-    io::cout << "n=" << g.n << " cap=" << g.cap << " bytes=" << place::bytes(g.pid) << "\n"
-    return 0
-}
-```
-实测：`n=100 cap=139 bytes=1112`（当前板块 139 × 8 字节，加上板块头；四次增长的旧块都还回去了）。
 
 ### `buf<T>`：**拥有**一片地址预留的可增长缓冲区
 
@@ -329,85 +272,9 @@ let w: mut slice<u8> = v2.viewMut()
 
 判据在 `tests/warnings/flag/owned_view.extc`：不开开关不响、开了必须响、`-w` 能关掉。
 
-### 整池回收：放掉再也没有句柄能驱动的任务
+### 自己写一个容器：持有 `buf<T>` 或 `dense::block<T>`
 
-协程任务拥有自己的地方（`extc_pool_zoneNewRoot`），它不在块栈上，所以离开作用域**不会**释放它 ——
-结束任务的唯一动作是 `extc_task_end`，而编译器只在"这个块的句柄每一次使用都是驱动调用"时自己发这句。
-句柄一旦被存进容器就逃出了这个证明，这时结束任务由程序自己决定：
-
-<!-- fragment -->
-```extc
-use std::sys::pool as syspool
-{
-    var box: varArray<coroutine<i64>> = varArray<coroutine<i64>>::withCap(2)
-    var h: coroutine<i64> = mk(4)
-    box.push(h)
-}
-// 这里没有任何还活着的句柄能驱动那些任务：这句断言由程序来下
-let freed: i64 = syspool::collect()
-```
-
-回收的单位是**整个池**：放掉一个任务的地方就把它名下的池记录逐条 `drop`、每条块链整块还给 `malloc`，
-所以代价按"地方的个数"算，不按"值的个数"算。只进程栈上的地方不归它管（那些由块退出释放），
-这也是 `collect()` 不会碰循环里那种临时池的原因。
-
-### 自己写一个板块底的容器
-
-`vector`、`string`、`hashMap` / `hashSet`、`map` / `set` 与 `linMap` / `linSet` 的存储都在缓冲区基质上（各自的类型化块，见 [BUF-INVARIANT](../design/BUF-INVARIANT.md) §10、§15、§17、§18 与 [HASHMAP](../design/HASHMAP.md)）；`place` 的存储还在池板块上。想写一个新的可增长容器，优先持有 `buf<T>`：它给的是「预留内 0 拷贝增长 + 撞上限搬一次家 + 结构动作按区间撤边」。下面这条 `@place` 路径仍然可用，但它要自己管世代、冻结与归还。四件事 —— 拥有、要、长、守卫与归还：
-
-<!-- fragment -->
-```extc
-use std::sys::pool as syspool
-
-@place
-struct grow<T> {
-    vals:   mut slice<T>
-    n:      i64
-    cap:    i64
-    pid:    i64        /* 池的下标 */
-    pidGen: u64        /* 建池时的世代号，用来认出陈旧拷贝 */
-
-    /* ① 拥有：建一块自己的池，记下它的世代号 */
-    fn withCap(c: i64) -> grow<T> {
-        let rp = syspool::extc_pool_new(-1)
-        let rpg = syspool::extc_pool_generation(rp)
-        var cc: i64 = c
-        if cc < 4 { cc = 4 }
-        return grow<T> { vals: poolSliceRaw<T>(rp, cc), n: 0, cap: cc, pid: rp, pidGen: rpg }
-    }
-
-    /* ② 长：容量不够时向同一个池原地加长，1.5 倍 */
-    fn push(self: mut ref grow<T>, v: T) {
-        if self.n == self.cap {
-            let ncap: i64 = self.cap + self.cap / 2
-            self.vals = poolResizeRaw<T>(self.pid, self.vals, ncap)
-            self.cap = ncap
-        }
-        self.vals[self.n] = v
-        self.n = self.n + 1
-    }
-
-    /* ③ 守卫：这一份还指着自己的池吗？（别名 + release 之后必须能判出来） */
-    fn stale(self: ref grow<T>) -> bool {
-        if self.pid < 0 { return false }
-        return syspool::extc_pool_generation(self.pid) != self.pidGen
-    }
-
-    /* ④ 归还：先收成 0 长度，再重置并丢弃池 */
-    fn release(self: mut ref grow<T>) {
-        if self.pid < 0 { return }
-        if self.stale() { self.pid = -1  return }
-        self.vals = poolResize<T>(self.pid, self.vals, 0)
-        self.cap = 0
-        syspool::extc_pool_reset(self.pid)
-        syspool::extc_pool_drop(self.pid)
-        self.pid = -1
-    }
-}
-```
-
-四步写全了，它就和内置容器一样是 O(活跃量)：手写的 800 万个 `i64` 实测峰值 **64 MB**，与 `buf<T>` 相同（`buf` 自己的形状是 65,452 kB，见 `bench/buf/RESULTS.md`）。少任何一步的代价写在[内存模型](../design/MEMORY-MODEL.md)里 —— 没有守卫是静默的悬垂写，不做原地长就退回"每轮新增一份、留到块退出"。
-
+`vector`、`string`、`hashMap` / `hashSet`、`map` / `set`、`linMap` / `linSet`、`varArray` 的存储都在缓冲区基质上（各自的类型化块或地址预留，见 [BUF-INVARIANT](../design/BUF-INVARIANT.md) 与 [HASHMAP](../design/HASHMAP.md)）。要写一个新的可增长容器，持有 `buf<T>`：预留内 0 拷贝增长、撞上限搬一次家、结构动作按区间撤边；平坦列式结构用 `dense::block<T>`：容量固定、整块归还、`growTo` 搬家不拷贝。存储跟着值走（`@noCopy` + `@drop`），不依赖作用域尾部的任何登记。
 
 ### `string` + `stringio`：连续字节串与流式读写
 
@@ -550,7 +417,7 @@ fn main() -> i32 {
 | 按桶位扫 | `keyAt(i)` / `valAt(i)` / `liveAt(i)`，`i` 走 `[0, capOf())`（**不是插入序**；桶位随重哈希变）|
 | `clone` | 深拷贝 |
 
-**没有** `slotHandle` / `entry` / 按句柄读写 / 稠密值列：不承诺元素地址，要跨结构修改持有引用用 `std::weak`。
+**没有** `entry` / 按句柄读写 / 稠密值列：不承诺元素地址，要跨结构修改持有引用用 `std::weak`。
 
 <!-- fragment -->
 ```extc
@@ -643,74 +510,14 @@ fn main() -> i32 {
 ```
 实测：`has=true dup=false len=1 at0=7`。
 
-### `pool<T>`：槽回收工具（多数程序不需要）
+### `std::data::dense`：块存储（库的地基）
 
-这一层不是"容器的默认底座"，而是**槽回收**：给一批元素分配稳定的槽位、允许删除、并让句柄在槽被
-复用之后**读不到**而不是读到别人。容器（`vector` / `string` / `hashMap` / `map` / `set`）用不到它 ——
-它们的存储是自己的板块，迭代就是扫 dense 连续内存。什么时候才值得用 `pool`：
-
-- 元素**有删有插**，而且调用方要长期记住"哪一个"（句柄代替指针，扩容搬数据不会悬垂）；
-- 需要一个**稠密连续**的前缀来做批量遍历，同时允许中间删除（删除走 swap-remove，前缀不破）。
-
-不值得用的场合也很明确：只在循环里读改写一段连续数据（用视图或容器的 dense 访问）、只是想动态
-分配一批对象（用 `dyn` 或直接 `new`）。三种存储的分工见[内存模型](../design/MEMORY-MODEL.md)。
-
-值住在一个 **dense 连续**数组里，调用方拿的是**句柄**（`slot + generation + epoch`），不是指针。**陈旧句柄不 trap**：查询式 API 给 `?T` / `bool`
-（，`at(h)` 那种 trap 版要等 `@trackCaller`）。
-
-| 名字 | 签名 |
-|---|---|
-| `denseLen` / `keyAtDense` / `valAtDense` | 按**插入序**（dense 前缀）遍历：`fn denseLen(self) -> i64` · `fn keyAtDense(self, d: i64) -> K` · `fn valAtDense(self, d: i64) -> V` |
-| `handle` | `struct handle { slot: i32, gen: i32, ep: i64 }`（普通值，拷贝无害） |
-| `same(a, b)` | `fn same(a: handle, b: handle) -> bool` |
-| `withCap` / `withParent` | `fn withCap(n: i64) -> pool<T>` / `fn withParent(parent: i64, n: i64)` |
-| `len` / `capacity` / `bytesOf` | |
-| `contains` / `get` / `set` | `fn get(...) -> ?T`；陈旧给 `none`；`set` 返回是否写成功 |
-| `insert` | `fn insert(self: mut ref pool<T>, v: T) -> handle`（优先复用洞链） |
-| `remove` | 返回是否删掉；**swap-remove**（dense 前缀保持连续）+ 该槽世代 +1 |
-| 迭代 | `atDense(i)` / `setAtDense(i, v)` / `handleAtDense(i)` / `snapshot()`（拷一份） / `gather(hs, out)` |
-| `shrink` / `clear` / `release` | `clear` 翻 epoch（旧句柄一次比较全废），`release` 整批还 |
-
-```extc
-use std::io
-use std::data::pool
-fn main() -> i32 {
-    var p: pool<i64> = pool<i64>::withCap(i64(4))
-    let h = p.insert(i64(42))
-    let g = p.get(h) ?? -1
-    let d = p.atDense(i64(0))
-    let rm = p.remove(h)
-    io::cout << "get=" << g << " dense=" << d << " rm=" << rm << " live-after=" << p.contains(h) << "\n"
-    return 0
-}
-```
-实测：`get=42 dense=42 rm=true live-after=false`。
-
-### `std::data::dense`：块与稠密槽存储（库的地基）
-
-`dense` 是**库内部的地基**，不是给普通程序用的容器：`map` / `set` / `linMap` / `hashMap` 的平坦列与槽表
-都建在它上面（[BUF-INVARIANT](../design/BUF-INVARIANT.md) §16）。它换掉的正是 `pool<T>` 与 `poolSlice*`：
-存储跟着值走，不再有「运行期池的一本账」。
+`dense` 是**库内部的地基**，不是给普通程序用的容器：`map` / `set` / `linMap` / `hashMap` 的平坦列建在它上面
+（[BUF-INVARIANT](../design/BUF-INVARIANT.md) §16）。它只导出一样东西：`block<T>`。
 
 | 类型 | 一句话 |
 |---|---|
-| `block<T>` | 一块**拥有的**类型化存储：容量固定、整块归还、`[0, used)` 是元素（替代 `poolSlice` / `poolSliceRaw`）|
-| `slots<T>` | 稠密槽存储：稳定句柄（世代 + 纪元）、稠密前缀（交换删除）、空洞链 + bump 游标、1.5× 增长（替代 `pool<T>`）|
-
-`slots<T>` 的 API 面与 `pool<T>` 同形（`withCap` / `len` / `capacity` / `contains` / `get` / `set` / `insert` /
-`remove` / `atDense` / `setAtDense` / `handleAtDense` / `gather` / `view` / `shrink` / `clear` / `release`），
-两条差别要记住：
-
-- **它是 `@noCopy` 的**：`var b = a` 是转移，要副本写 `clone()`。旧 `pool<T>` 的 `@sharesStorage` + 池世代
-  「陈旧检测」不再需要 —— 值语义与编译期检查取代了它。
-- **`clear` / `remove` / `release` 会还元素**：对元素跑 `@drop`（没有钩子的 `T` 编译成空操作，所以
-  `slots<i64>` 的 `clear` 仍是 O(1)），并撤元素里引用域的外部边登记。旧池把值当字节数组，翻纪元之后
-  元素拥有的存储就没人还了。
-
-写一个**空槽**用 `block::[]=`（内部是 `elemPut` 原语：不碰槽里原来的字节）；覆盖一个**活**元素先
-`dropAt(i)` 再写。块内存在这里是复用的，普通赋值的「先 drop 旧内容」会在脏字节上跑钩子。
-
-判据：`tests/dense/run.sh`（句柄失效、槽复用升世代、清空还载荷、增长搬而不拷、交换删除的稠密序）。
+| `block<T>` | 一块**拥有的**类型化存储：容量固定、整块归还、`[0, used)` 是元素 |
 
 `block<T>` 的接线面（容器层用；普通程序用上面的容器就够）：
 
@@ -720,13 +527,18 @@ fn main() -> i32 {
 | `capacity()` / `used()` / `setUsed(u)` | 容量 / 现在装着几个元素 / 把 `u` 个槽认作元素（容器自己记账） |
 | `bytesOf()` | 这块存储实际握着多少字节（账本口径） |
 | `[]` / `[]=` | 读；写一个**空槽**（`elemPut`，不碰旧字节；覆盖活元素先 `dropAt(i)`） |
-| `view(from,to)` / `take(i)` / `dropAt(i)` | 只读视图 / 把元素搬出去 / 就地跑 `@drop` 钩子 |
+| `view(from,to)` / `viewMut(from,to)` | 只读 / 可写的元素视图 |
+| `take(i)` / `dropAt(i)` | 把元素搬出去 / 就地跑 `@drop` 钩子 |
 | `growTo(want)` | 换一块更大的、活前缀逐个**搬**进去、旧块当场还（不拷贝，不出现两个主人） |
 | `adopt(ref other)` | 接管另一块的整块内容：旧块当场还、对方变成空块（重建路径用；`@noCopy` 不能按值赋） |
 | `release()` | 整块交还（`@drop`；第二次调用是空操作） |
 
-`slots<T>` 的句柄类型叫 `slotHandle`（`slot` + `gen` + `ep`），与 `pool<T>` 的 `handle` 同名不同型：
-两个模块同时在作用域里也不会撞名。
+块内存在这里是复用的**脏**内存：只有 `[0, used)` 被认作元素，钩子与撤边只走这一段。写一个**空槽**用
+`block::[]=`（内部是 `elemPut` 原语：不碰槽里原来的字节）；覆盖一个**活**元素先 `dropAt(i)` 再写 ——
+普通赋值的「先 drop 旧内容」会在脏字节上跑钩子。
+
+判据：`tests/dense/run.sh`（写空槽不碰旧字节、增长搬而不拷、清空还载荷、POD 移出不清零）。
+
 ### `sort`：原地比较排序
 
 | 名字 | 签名 |
@@ -1595,7 +1407,6 @@ note:  what a program normally needs is `std::heap`: `plate::open` / `alloc` / `
 |  | 裸 fd、epoll、socket、DNS 运行期 | `std::net`、`std::loop`、`std::coro::scheduler` |
 |  | `mmap` / `mprotect` / `munmap`、`extc_viewOf`、`extc_memCopy` | `std::heap` |
 |  | `fork` / `waitpid` / `getpid` / `sched_setaffinity` / `exit` | `std::proc` |
-|  | 运行期池记录 + 板块原语 | `std::data::pool`（编译器合成调用；`vector` 已改走 `std::data::buf`） |
 |  | 任务表运行期（`extc_task_begin` / `_zone` / `_end` / `_live`） | `std::coro::scheduler` |
 |  | 域的运行期入口 | 编译器 + 库 |
 

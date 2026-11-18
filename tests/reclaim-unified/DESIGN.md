@@ -79,7 +79,7 @@
 | ① 跨帧看不见 · home | `home_cycle` rounds=1 | 6.17→17.92（**2.91×**）| **+6.6 MB** | **0** |
 | ① 跨帧看不见 · TLS | `par_tls_cycle` | 8.54→22.79（**2.67×**）| **+6.5 MB** | **0** |
 | ② 非帧 · 协程/ext 帧 | `coro_frame_cycle` / `ext_frame_cycle` | 5.90→17.71 / 5.96→17.71（**3.00×/2.97×**）| +6.5/+6.6 | **0** |
-| ② 非帧 · 池缓冲 | `pool_ref_slot` | 6.11→17.92（**2.93×**）| **+6.6 MB** | **0** |
+| ② 非帧 · 缓冲区 | `buf_ref_slot` | 6.11→17.92（**2.93×**）| **+6.6 MB** | **0** |
 | ② 非帧 · 视图元素/调用基 | `slot_elem_unknown` / `base_call_unknown` | 12.29→33.11 / 12.29→33.17（≈**2.7×**）| 比 off 好 | 4/19（收的是别的区域）|
 | ② 非帧 · dyn 载荷 | `dyn_payload` | 24.29→82.29（**3.39×**）| **+3.6 MB** | 2/9（dyn 池不回收）|
 | ③ 粒度 · 一条 match 绑定 | `match_payload` | 6.11→17.98（**2.94×**）| **+6.6 MB** | **0** |
@@ -258,7 +258,7 @@ C 局部量**，逐字扫是安全方向（`owns` 守卫会滤掉非 rc 值）�
    `run-evidence.sh` 5 通过 / 0 失败；复核判据 `gate-reclaim-evidence`。
 4. **缺口矩阵棘轮**（已落地）：`gate.py` + `gate-known-bad.txt`（今天 **9** 条：`home_cycle_r1`、
    `slot_elem_unknown`、`base_call_unknown`、`coro_frame_cycle`、`ext_frame_cycle`、
-   `match_payload`、`par_tls_cycle`、`pool_ref_slot`、`dyn_payload`），接成 `gate-reclaim-gaps`。
+   `match_payload`、`par_tls_cycle`、`buf_ref_slot`、`dyn_payload`），接成 `gate-reclaim-gaps`。
    两个方向都红，注入验过。同一个闸门还断言**每个形状的 sanitizer 结论**（`asan=0`；
    基线 `asan-known-bad.txt` 当前为空），红向注入验过。全语料那一份棘轮见第 2 条。
 5. **性能闸门**（已落地）：`gate-reclaim-perf`（3.1s，进 quick）；现行线 **324 000 000**，
@@ -485,7 +485,7 @@ mid 1.037×（3.6 %）。
 | 形状 | 补什么 | 判据 |
 |---|---|---|
 | `match_payload`（G3）| arm 绑定是 C 局部量：**登记成槽**（保守档也行），作用域 = arm | ①o |
-| `pool_ref_slot`（G5）| 池缓冲的引用槽 → `pin/unpin`（覆盖撤销；池 block 出口批量撤销）| ①q |
+| `buf_ref_slot`（G5）| 缓冲区的引用槽 → `pin/unpin`（覆盖撤销；池 block 出口批量撤销）| ①q |
 | `slot_elem_unknown`/`base_call_unknown`（G6）| place 求值一次 + 逐叶 `pin/unpin`，**不再 `noSweep`** | ①m（对照 `slot_elem_known` 必须 1.00×）|
 | `coro_frame_cycle`/`ext_frame_cycle`（G2）| 挂起帧的**帧描述符**压链（合成帧字段静态可枚举）| ①n |
 | `dyn_payload`（G7）| `rcScanType` 对 `TY_DYN` 的 `RC_NO_REFS` 与逃逸侧口径对齐（`check_escape.c:491-495`）| ①r |
@@ -562,7 +562,7 @@ N=2e5 `cyclic_pressure` `1 169 388 408 → 510 475 244 → 404 358 444 → 339 1
    做之前先做一个 20 行的微原型（`cyclic_pressure` + `home_cycle`），比 `gate.sh` 基线。
 2. **取地址的代价**：223 个标量局部会被钉到栈上（`RECON §2.2(d)`）；`-O1` 下的真实影响未测。
 3. **pin 的界**：`pin/unpin` 有界于"非帧引用槽个数"是**推断**（§3.3），要拿 `slot_elem_unknown`
-   与 `pool_ref_slot` 各做一个原型量 4N 比。
+   与 `buf_ref_slot` 各做一个原型量 4N 比。
 4. **挂起协程帧的链**：帧描述符怎么与"当前线程的链"接（挂起时压、恢复时弹，还是任务自带链头）
    未设计到函数级；`ext` 帧交给 domain 之后的归属也未查。
 5. **TLS 交叉线程**：今天 worker 的分配被改道 `extc_tls_arena`，所以"main 的家 arena 给 worker"

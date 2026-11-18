@@ -968,23 +968,22 @@ fn main() -> i32 {
 `@overwrite var n = new T`：让每轮循环**复用同一块存储**（活到本帧，不是块），
 初始式必须恰好是 `new`，且绑定必须是 `var`。
 
-### 8.2 `pool<T>` 与 `varArray<T>` 的区别
+### 8.2 三个动态数组：`varArray<T>`、`vector<T>`、`buf<T>`
 
-| | `varArray<T>`（prelude 里） | `pool<T>`（`std::data::pool` 里） |
-|---|---|---|
-| 存储 | 一段地址预留；满了换一段更大的（2 倍），原来那段当场还回竞技场 | 值放 dense 数组，另有 slot→dense 的映射 |
-| 取 / 写 | `v.get(i) -> ?T`、`v.set(i, v)`（按值拷） | `p.get(h) -> ?T`、`p.set(h, v) -> bool`（按值拷） |
-| 可寻址性 | `v[i]` **不行**（`cannot index a value of type 'varArray<i32>'`）；要借出视图：`v.view()` / `v.asMutSlice()` → `slice<T>`，视图元素可索引、可写 | 没有按索引访问；`p.snapshot()` 借出活元素前缀的视图 |
-| 装引用 / 视图 | 可以：`varArray<slice<u8>>`、`varArray<ref i32>` 都编过（存的时候按寿命检查） | 可以：`pool<slice<u8>>` 编过 |
-| 回收 | 存储是**地址预留**：扩容当场把上一段还给竞技场，`release()` 也能提前还；`clear()` 只把 `len` 归零、存储留着复用 | **逐对象回收**：`remove(h)` 把最后一个值搬进空洞、该槽位"代 +1"；之后旧句柄 `get` 得 `none`（不会读到新值） |
-| 句柄 | 下标（会因扩容/搬移失效） | `{ slot, gen, ep }`，陈旧句柄可判定 |
+| | `varArray<T>`（prelude 里） | `vector<T>`（`std::data::vector`） | `buf<T>`（`std::data::buf`） |
+|---|---|---|---|
+| 存储 | 一段地址预留；满了换一段更大的（2 倍），原来那段当场还回竞技场 | 内部持有一个 `buf<T>`：预留内只推长度，撞到预留上限才搬一次家 | 自己的一片地址预留 |
+| 取 / 写 | `v.get(i) -> ?T`、`v.set(i, v)`（按值拷） | `v.get(i)` / `v.set(i, v)`、`len` / `capacity` | 只有长度；`push` / `pop` / 下标由调用者负责 |
+| 可寻址性 | `v[i]` **不行**（`cannot index a value of type 'varArray<i32>'`）；要借出视图：`v.view()` / `v.asMutSlice()` → `slice<T>` | 同左：`view()` / `snapshot()` | `view()` / `asMutSlice()` |
+| 装引用 / 视图 | 可以：`varArray<slice<u8>>`、`varArray<ref i32>` 都编过（存的时候按寿命检查） | 可以 | 可以 |
+| 回收 | 扩容当场把上一段还给竞技场，`release()` 也能提前还；`clear()` 只把 `len` 归零、存储留着复用 | `@drop` 交还（经 `buf`）；`shrink(k)` 把 `[k, cap)` 的页还给操作系统（地址不变） | `@drop` 交还，`release()` 是公开入口 |
 
-扩容的规矩要记住：`push` 换掉存储之后，**之前借出的视图就作废了** —— 旧板已经还给分配器，
-所以"增长之后还用旧视图"在同块内是编译错误（`\`v\` changes the storage that \`s\` views`），
+扩容的规矩要记住：`push` 换掉存储之后，**之前借出的视图就作废了** —— 旧段已经还给竞技场，
+所以"增长之后还用旧视图"在同块内是编译错误（`v` changes the storage that `s` views`），
 跨帧则根本借不出去。用完再增长，或者增长之后重新取视图：
 
 ```extc
-// 结果：1 2 —— 先借、先用，再增长；增长之后重新借
+// 结果：99 2 —— 先借、先写，再增长；增长之后重新借
 use std::io
 fn main() -> i32 {
     var v: varArray<i32> = varArray<i32>::withCap(2)
@@ -998,6 +997,7 @@ fn main() -> i32 {
     return 0
 }
 ```
+
 
 ### 8.3 循环里换缓冲：一条警告
 
@@ -1018,7 +1018,7 @@ while i < 1000 {
 ```
 
 三种改法：把声明搬进循环体（每轮结束整块归还）；本来就是"每轮复用一个缓冲"的意图，用
-`@overwrite`（见 8.1）；要变长就换成自带板块的容器（`vector`、`string`、`hashMap`），
+`@overwrite`（见 8.1）；要变长就换成自带存储的容器（`vector`、`string`、`hashMap`），
 它们原地扩容，增长历史不累积。要多少内存、差多少，见 [内存模型](../design/MEMORY-MODEL.md)。
 警告不影响退出码，`-w` 全部关掉。
 
@@ -1027,23 +1027,21 @@ while i < 1000 {
 不会攒到函数退出。
 
 ```extc
-// 结果：stale=none slot=0 gen=1 / len=2
+// 结果：a=1000 b=1000
 use std::io
-use std::data::pool
+use std::data::buf
 fn main() -> i32 {
-    var p: pool<i64> = pool<i64>::withCap(i64(4))
-    let h1 = p.insert(i64(111))
-    let h2 = p.insert(i64(222))
-    p.remove(h1)                     // 槽位换代
-    let h3 = p.insert(i64(333))      // 复用同一格
-    match p.get(h1) {
-        some(v) => { io::cout << "stale=" << v << "\n" }
-        none    => { io::cout << "stale=none slot=" << i64(h3.slot) << " gen=" << i64(h3.gen) << "\n" }
-    }
-    io::cout << "len=" << p.len() << "\n"
+    var a: varArray<i64> = varArray<i64>::withCap(4)
+    var i: i64 = 0
+    while i < 1000 { a.push(i)  i = i + 1 }
+    var b: buf<i64> = buf<i64>::withCap(4)
+    i = 0
+    while i < 1000 { b.push(i)  i = i + 1 }
+    io::cout << "a=" << a.size() << " b=" << b.len() << "\n"
     return 0
 }
 ```
+
 
 ---
 
@@ -1192,7 +1190,7 @@ fn main() -> i32 {
 | `@inline` | 函数 / 方法 | 调用必须内联；**递归（含互递归）不行** | `` `@inline` cannot be honoured: `f` reaches itself `` / `needs a body, and an extern declaration has none` |
 | `@unchecked` | 函数 / 方法 | 该函数体不生成运行时检查 | `@unchecked applies to a function, not to a struct` / `not to a field` / `needs a body` / `appears twice` |
 | `@noCopy` | `struct` | 只能按 `ref` / `mut ref` 传 | `` `counter` is `@noCopy`: it may not be copied by value `` |
-| `@place` | `struct` | 该类型拥有一个**地方**（今天是一个池）：存储住在那个地方的板块上，可以原地增长、寿命随所在的域；旧拼写 `@poolObject` 仍接受 | `@place goes on a struct` |
+| `@place` | `struct` | 池基质退场后这个注解没有可用的底座（容器自己持有存储，见 8.2）；新代码不要用，它会随编译器的池特例一起删除 | `@place goes on a struct` |
 | `@sharesStorage` | `struct` | 按值拷贝时两份共用存储（容器那一族）；编译器给警告 | `@sharesStorage goes on a struct` |
 | `@frozen` | `struct` | 布局就是 C 的布局，是按值过 `extern!` 边界的门票 | `@frozen goes on a struct` / `appears twice` |
 | `@export` | **自由函数** | 生成 C 可见符号（非 `static`），C 可以直接调 | `@export goes on a function`（方法 / 泛型 / 协程 / `extern!` / 结构体 / 枚举 / 全局都拒） |

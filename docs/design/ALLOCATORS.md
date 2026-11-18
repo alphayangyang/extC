@@ -2,7 +2,7 @@
 
 > 状态：**当前口径** —— 这篇写的是现在的事实，改语义先改它。
 
-Status: **plan** (2026-11-03). Nothing here is implemented yet.
+Status: **plan** (2026-11-03)，其中「容器离开池板块」这一半已经落地（2026-12-01）：`vector` / `string` / `varArray` / 全部关联容器现在持有地址预留或 `block<T>`，stdlib 的池与 `place` 模块已删除，运行期池只剩 `dyn` 与 zone 链在用。下面 §2 起的 `zone::alloc` 提案**仍未实现**。
 
 ## 0. The one-sentence version
 
@@ -144,8 +144,7 @@ one branch on the release path. Element access stays free.
   `std::sys::pool`, and the plate code paths in `src/back/pools.c` that only exist to serve those.
 - The `fromRaw<T>` idea from revision 1 of this document: with typed `zone::alloc` there is no cast to
   expose. (Raw C pointers stay available through `extern!` for platform shims, as today.)
-- `stl::pool<T>` as a language concept. It becomes `std::mem::pool<T>`, an ordinary library type with
-  the same generation design that `dyn` and pool handles already use.
+- `stl::pool<T>` as a language concept：容器自己持有存储（地址预留或 `block<T>`），不再需要槽回收层；`pool` 模块已删除。
 
 ## 6. Migration
 

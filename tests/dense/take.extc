@@ -1,0 +1,17 @@
+// expect: taken=7 used=1 sum=9
+/* `take` 把元素搬出去（POD 的槽不擦：搬走即"没有元素"，`used` 记账才是真相）；
+ * `dropAt` 对单个元素跑钩子。 */
+use std::data::dense::{block}
+
+fn main() -> i32 {
+    var b: block<i64> = block<i64>::withCap(4)
+    b[0] = 7
+    b[1] = 9
+    b.setUsed(2)
+    let taken: i64 = b.take(0)
+    let sum: i64 = b[1]
+    b.setUsed(1)
+    b.dropAt(0)
+    println("taken=", taken, " used=", b.used(), " sum=", sum)
+    return 0
+}

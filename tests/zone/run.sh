@@ -1,67 +1,43 @@
 #!/usr/bin/env bash
-# tests/zone/run.sh —— 池层级判定的常设验收：**同类问题只有一种答案**
+# tests/zone/run.sh —— 位置（zone）判定的常设验收：**同类问题只有一种答案**
 #
 # 判据：
-#   ① 循环里构造的池值，无论写成 `f(x)` / `recv.m(x)` / `a + b` / `a ?? b` / 结构体字面量，
-#      存进活在循环外面的池都必须通过，且运行时值正确（`pool_forms`）✓
-#   ② 反方向不许放宽：循环里 `new` 出来的缓冲区视图、循环里声明的定长数组视图，
-#      存进外层池必须**在检查期**被拒（两条 neg 用例）✓
+#   ① 循环里扩容之后，同层再取视图必须能过（假阳性回归，`grow_view`）✓
+#   ② 反方向不许放宽：循环里 `new` 出来的缓冲区视图、循环里声明的定长数组视图、
+#     存进外层位置必须**在检查期**被拒 ✓
+#   ③ 被放弃的句柄任务在块退出时结束：活任务数回到 0（`handle_abandon`）✓
 #
-# 背景：`promoteInto2` 里"能不能按目的地降池层级"曾经是手写 kind 枚举，`a + b` 漏在里面，
+# 背景：`promoteInto2` 里"能不能按目的地降位置层级"曾经是手写 kind 枚举，`a + b` 漏在里面，
 # 于是 method 写法能过、运算符写法报 "borrowed from depth 4"（提交 14093e6 修好，
-# `tools/check_call_sites.py` 防止再长出第二份枚举）。
+# `tools/check_call_sites.py` 防止再长出第二份枚举）。池板块退场之后，这一层只剩位置判定本身。
 set -u
 cd "$(dirname "$0")/../.."
 EXTC=./build/extc
 fail=0
 
-echo "== 正例：所有调用形状在循环里构造池值再存入外层池 =="
-if out=$("$EXTC" --run tests/zone/pool_forms.extc 2>&1); then
-    want=$(grep -o '// expect:.*' tests/zone/pool_forms.extc | sed 's|// expect: *||' | head -1)
-    ok=1
-    for p in ${want//|/ }; do echo "$out" | grep -qF -- "$p" || ok=0; done
-    if [ "$ok" = 1 ]; then echo "  ok   pool_forms  ->  $(echo "$out" | tr '\n' '|')"
-    else echo "  FAIL pool_forms  ->  输出里缺「$want」（$(echo "$out" | tr '\n' '|')）"; fail=1; fi
-else
-    echo "  FAIL pool_forms  ->  编不过 / 跑不起来"; echo "$out" | sed 's/^/        /' | head -8; fail=1
-fi
-
-echo "== 按值读回：存进去之后从同一个池读出来（曾经是假阳性 G2）=="
-if out=$("$EXTC" --run tests/zone/pool_readback.extc 2>&1); then
-    want=$(grep -o '// expect:.*' tests/zone/pool_readback.extc | sed 's|// expect: *||' | head -1)
-    ok=1
-    for p in ${want//|/ }; do echo "$out" | grep -qF -- "$p" || ok=0; done
-    if [ "$ok" = 1 ]; then echo "  ok   pool_readback  ->  $(echo "$out" | tr '\n' '|')"
-    else echo "  FAIL pool_readback  ->  输出里缺「$want」（$(echo "$out" | tr '\n' '|')）"; fail=1; fi
-else
-    echo "  FAIL pool_readback  ->  编不过（G2 回归？）"; echo "$out" | head -4 | sed 's/^/        /'; fail=1
-fi
-
 echo "== 循环里扩容之后，同层再取视图必须能过（假阳性回归）=="
 if out=$("$EXTC" --run tests/zone/grow_view.extc 2>&1); then
-    want=$(grep -o '// expect:.*' tests/zone/grow_view.extc | sed 's|// expect: *||' | head -1)
+    want=$(grep -o "// expect:.*" tests/zone/grow_view.extc | sed "s|// expect: *||" | head -1)
     ok=1
     for p in ${want//|/ }; do echo "$out" | grep -qF -- "$p" || ok=0; done
-    if [ "$ok" = 1 ]; then echo "  ok   grow_view       ->  $(echo "$out" | tr '\n' '|')"
-    else echo "  FAIL grow_view       ->  输出里缺「$want」（$(echo "$out" | tr '\n' '|')）"; fail=1; fi
+    if [ "$ok" = 1 ]; then echo "  ok   grow_view       ->  $(echo "$out" | tr "\n" "|")"
+    else echo "  FAIL grow_view       ->  输出里缺「$want」（$(echo "$out" | tr "\n" "|")）"; fail=1; fi
 else
-    echo "  FAIL grow_view       ->  编不过（深度误拒回归？）"; echo "$out" | head -4 | sed 's/^/        /'; fail=1
+    echo "  FAIL grow_view       ->  编不过（深度误拒回归？）"; echo "$out" | head -4 | sed "s/^/        /"; fail=1
 fi
 
-echo "== 反例：循环内的存储视图 / 循环局部池读出的值，都不得存进外层池 =="
-for f in tests/zone/neg_loop_new_view.extx tests/zone/neg_loop_array_view.extx \
-         tests/zone/neg_pool_read_escape.extx; do
-    want=$(grep -o '// expect:.*' "$f" | sed 's|// expect: *||' | head -1)
+echo "== 反例：循环内的存储视图 / 循环局部容器读出的值，都不得存进外层位置 =="
+for f in tests/zone/neg_loop_new_view.extx tests/zone/neg_loop_array_view.extx; do
+    want=$(grep -o "// expect:.*" "$f" | sed "s|// expect: *||" | head -1)
     if out=$("$EXTC" "$f" -o /dev/null 2>&1); then
         echo "  FAIL $(basename "$f")  ->  **编过了**（应该报错 ✗）"; fail=1; continue
     fi
     if echo "$out" | grep -qF -- "$want"; then
-        echo "  ok   $(basename "$f")  ->  $(echo "$out" | grep -m1 'error:' | cut -c1-84)"
+        echo "  ok   $(basename "$f")  ->  $(echo "$out" | grep -m1 "error:" | cut -c1-84)"
     else
-        echo "  FAIL $(basename "$f")  ->  消息里没有「$want」"; echo "$out" | head -4 | sed 's/^/        /'; fail=1
+        echo "  FAIL $(basename "$f")  ->  消息里没有「$want」"; echo "$out" | head -4 | sed "s/^/        /"; fail=1
     fi
 done
-
 
 echo "== 包装句柄被放弃时，块退出结束它看得见的任务 =="
 # 句柄被丢弃（只 next() 一次、或 for 循环 break）时，块退出会结束编译器叫得出名字的那些任务
@@ -77,49 +53,9 @@ if "$EXTC" -w --no-line-map -o "$ha/h.c" tests/zone/handle_abandon.extc >/dev/nu
         fail=1
     fi
 else
-    echo "  FAIL handle_abandon     ->  $(head -2 "$ha/e" | tr '\n' ' ')"; fail=1
+    echo "  FAIL handle_abandon     ->  $(head -2 "$ha/e" | tr "\n" " ")"; fail=1
 fi
-
-
-echo "== 整池回收：逃逸句柄的任务由调用者断言后整块放掉 =="
-# 句柄存进容器之后编译器叫不出"最后一个所有者"：这类任务要由调用者 `syspool::collect()` 断言后
-# 整池放掉（docs/design/POOL-LEVELS.md）。判据：before=0 after=0，freed=50。
-he=$(mktemp -d)
-# 同一种问法在三种写法上必须给同一个答案：直读、经函数转手、结构体字面量里的字段。
-out=$("$EXTC" --check-only -w tests/zone/neg_shapes_parity.extx 2>&1)
-n=$(printf '%s\n' "$out" | grep -cE 'deeper scope|dies first')
-if [ "$n" = 4 ]; then
-    echo "  ok   neg_shapes_parity ->  四种写法都拒（4 条）"
-else
-    echo "  FAIL neg_shapes_parity ->  只有 $n 条拒绝（期望 4）：$(printf '%s' "$out" | head -2 | tr '\n' ' ')"
-    fail=1
-fi
-
-if "$EXTC" -w --no-line-map -o "$he/c.c" tests/zone/collect_keeps_stack.extc >/dev/null 2>&1 \
-   && cc -O2 -std=c11 -fwrapv -o "$he/c" "$he/c.c" 2>"$he/e"; then
-    out=$("$he/c" 2>&1)
-    if [ "$out" = "len=3 freed=0" ]; then
-        echo "  ok   collect_keeps_stack ->  整池回收不碰栈上的地方（freed=0）"
-    else
-        echo "  FAIL collect_keeps_stack ->  输出=$out（期望 len=3 freed=0）"
-        fail=1
-    fi
-else
-    echo "  FAIL collect_keeps_stack ->  $(head -2 "$he/e" | tr '\n' ' ')"; fail=1
-fi
-
-if "$EXTC" -w --no-line-map -o "$he/h.c" tests/zone/handle_escape_pool.extc >/dev/null 2>&1 \
-   && cc -O2 -std=c11 -fwrapv -o "$he/h" "$he/h.c" 2>"$he/e"; then
-    out=$("$he/h" 2>&1)
-    if [ "$out" = "before=0 after=0 freed=50" ]; then
-        echo "  ok   handle_escape_pool ->  逃逸句柄：整池回收之后 0（freed=50）"
-    else
-        echo "  FAIL handle_escape_pool ->  输出=$out（期望 before=0 after=0 freed=50）"
-        fail=1
-    fi
-else
-    echo "  FAIL handle_escape_pool ->  $(head -2 "$he/e" | tr '\n' ' ')"; fail=1
-fi
+rm -rf "$ha"
 
 if [ "$fail" = 0 ]; then echo "  zone: 通过"; else echo "  zone: 失败"; fi
 exit "$fail"

@@ -1,1 +1,0 @@
-T06 rounds=8 per=200000 len=0 sum=6410725 stale=0

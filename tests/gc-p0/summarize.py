@@ -318,39 +318,11 @@ def main():
         print(f"  n/a（timemax.txt 缺 g14 的 50k/100k/800k/800k(ctl)；现有={sorted(g14)}）")
     print()
 
-    # ---------------- G15（硬判据：R4b 之后不再 XFAIL） ----------------
-    print("## G15 pool 槽里的引用赋值 ⇒ 外部边表兜住（**硬判据** maxRSS(800k) ≤ 1.20 × maxRSS(50k)）")
-    # Lead R4b：这条从 XFAIL 提升成硬判据。池块与缓冲区一样反查不到宿主，落进同一条
-    # extc_rc_storeRefUnknown；R4b 之后那张表按**槽位**记（池块被复用，槽地址不变 ⇒ 表项只会被
-    # 改正、不会随轮数增长），插桩实测 pin 表 50k 与 800k 都是 n=35 / cap=128、RSS 3,764 kB 两档相同。
-    # 判据不变、只变口径：红了就是外部边表没兜住池块路径，不是已知欠账。
-    g15 = {}
-    for line in read_text(os.path.join(out, "timemax.txt")).splitlines():
-        parts = line.split()
-        if len(parts) >= 4 and parts[0] == "g15":
-            g15[parts[1]] = (parts[-2], parts[-1])  # args -> (maxrss_kb, wall_s)
-    grs = by.get("g15", [])
-    exits = [r["exit"] for r in grs]
-    if "50000" in g15 and "800000" in g15:
-        a = int(g15["50000"][0]); b = int(g15["800000"][0])
-        ratio = b / a if a else None
-        ok = ratio is not None and ratio <= 1.20 and len(exits) == 2 and all(e == 0 for e in exits)
-        verdict = "PASS" if ok else "RED（随轮数增长 ⇒ 外部边表没兜住池块路径）"
-        print(f"  50k maxRSS = {a} kB / 800k maxRSS = {b} kB  ratio = {fmt(ratio, 'x', 3)}"
-              f"  exit={exits}  [{'PASS' if ok else 'RED'} <=1.20x]  {verdict}")
-        if exits and any(e != 0 for e in exits):
-            print(f"  ⚠ 有非 0 退出（trap/失败）⇒ 低 RSS 可能是早退，判 RED；stderr 见 log/g15_r*.err")
-        ctxt = read_text(os.path.join(out, "c", "g15.c"))
-        slot = len(re.findall(r"^(?!.*static inline).*extc_rc_storeRefSlot\s*\(", ctxt, re.M))
-        if slot == 0:
-            print("  ⚠ 产物 g15.c 中 extc_rc_storeRefSlot 调用点 0 次 ⇒ 形状没有落到 pin 路径，"
-                  "此处的平坦/增长与 L10-a 无关")
-        else:
-            print(f"  记账自证：产物 g15.c 中 extc_rc_storeRefSlot 调用点 {slot} 次")
-    else:
-        print(f"  n/a（timemax.txt 缺 g15 的 50000/800000 两档；现有={sorted(g15)}）")
+    # ---------------- G15（n/a：池基质退场） ----------------
+    print("## G15 pool 槽里的引用赋值 —— n/a（池基质退场，形状随模块删除）")
+    # 形状 leak_pool_pin 建在 std::data::pool 上；退场删掉模块与形状。同一条外部边表路径由 G21 继承。
+    print("  n/a（tests/gc-p0/src/leak_pool_pin.extc 随 std::data::pool 删除；覆盖由 G21 继承）")
     print()
-
 
     # ---------------- G21：缓冲区存储里的引用赋值 ----------------
     # Lead R4b。硬判据：两档 stdout 逐字正确 + exit 0 + maxRSS(800k)/maxRSS(50k) <= 1.20。

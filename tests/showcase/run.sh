@@ -42,14 +42,6 @@ run_exact showcase-arena-return examples/showcase-arena-return.extc "n=5 sum(y)=
 echo "== 展示代码：home 机制（被调者的分配落在调用者的分区）=="
 run_exact showcase-home examples/showcase-home.extc "len=6 sum=55"
 
-echo "== 展示代码：池的身份（同一格，不同代）=="
-run_exact showcase-pool-identity examples/showcase-pool-identity.extc \
-"h1 格=0 代=0
-h2 格=1 代=0
-h3 格=0 代=1
-陈旧句柄 → none（不会指向 h3 的 333）
-h3 → 333"
-
 echo "== 展示代码：视图（拷贝是默认，零拷贝要签字）=="
 run_exact showcase-views examples/showcase-views.extc "copy.len=11 view=5 sum=532"
 
@@ -60,4 +52,4 @@ i64::doubled=42"
 echo "== 展示代码：与 C 同层（extern! + effects）=="
 run_grep showcase-extern examples/showcase-extern.extc "pid>0=true"
 
-if [ "$fail" = 0 ]; then echo "通过 6，失败 0"; else echo "通过 $((6-1))，失败 1"; exit 1; fi
+if [ "$fail" = 0 ]; then echo "通过 5，失败 0"; else echo "通过 $((5-1))，失败 1"; exit 1; fi

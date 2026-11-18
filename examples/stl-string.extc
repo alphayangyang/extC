@@ -44,7 +44,7 @@ fn main() -> i32 {
     }
     io::cout << " a=" << a.snapshot() << " b=" << b.snapshot()
 
-    /* ⑥ clone() 独立：改副本不改原件；`var d = s` 才是共享（检查器会为它报 `@sharesStorage` 警告） */
+    /* ⑥ clone() 独立：改副本不改原件；`var d = s` 是值拷贝（深拷贝，两份各有自己的存储） */
     var c = a.clone()
     c.push(u8(99))
     io::cout << " clone=" << c.snapshot() << " a=" << a.snapshot()

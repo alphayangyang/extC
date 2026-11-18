@@ -8,7 +8,7 @@
  *   main → put → newString        3 层：正确
  *   main → wrap → put → newString 4 层：**坏**
  *
- * 机制（生成物证据）：`wrap` 把**自己的** zone（`extc_pool_zoneEnter()` 的返回值）传给 `put`，
+ * 机制（生成物证据）：`wrap` 把**自己的** zone 号传给 `put`，
  * 并把自己的 `__extc_home_zone` 参数标成 `EXTC_UNUSED`。于是 `newString` 的缓冲分配在
  * `wrap` 那个 place 里，`wrap` 一返回该 place 被弹出 ⇒ 缓冲被下一次分配复用 ⇒ **静默改坏**。
  *

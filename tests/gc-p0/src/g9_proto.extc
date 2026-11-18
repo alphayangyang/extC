@@ -1,5 +1,6 @@
+/* G9：**被放弃的任务**（句柄随块结束而丢）的任务地方必须随块退出归还，
+ * 不等任何显式回收调用 —— 判据是块退出后活任务数为 0，且仍在驱动的任务不受影响。 */
 use std::io
-use std::sys::pool as syspool
 use std::sys::coroutine as sct
 
 fn mk(n: i64) -> coroutine<i64> {
@@ -14,24 +15,20 @@ fn mk(n: i64) -> coroutine<i64> {
 }
 
 fn main() -> i32 {
-    var h: coroutine<i64> = mk(5)
     var got: i64 = 0
-    if h.next() {
-        got = got + h.value()
-    }
-    let live0: i64 = sct::extc_task_live()
-    let freed: i64 = syspool::collect()
-    let live1: i64 = sct::extc_task_live()
-    var steps: i64 = 1
-    var more: bool = true
-    while more {
+    {
+        var h: coroutine<i64> = mk(5)
         if h.next() {
             got = got + h.value()
-            steps = steps + 1
-        } else {
-            more = false
         }
     }
-    io::println(f"freed={freed} live0={live0} live1={live1} got={got} steps={steps}")
+    let live1: i64 = sct::extc_task_live()
+    var h2: coroutine<i64> = mk(5)
+    var steps: i64 = 0
+    while h2.next() {
+        got = got + h2.value()
+        steps = steps + 1
+    }
+    io::println(f"live1={live1} got={got} steps={steps}")
     return 0
 }

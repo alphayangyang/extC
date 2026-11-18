@@ -868,7 +868,7 @@ struct map<K, V> {
  * Ordered iteration is `at(i)` for i in [0, len) -- the i-th smallest element. `lowerBound(k)` is
  * the rank of the first element not less than k, which is what a range query starts from. */
 
-@sharesStorage        /* 按值拷贝时**两份共用同一块板块** ⇒ 编译器在这里报警告，要独立副本用 `clone()` */
+@noCopy
 struct set<T> {
     m: map<T, u8>
 
@@ -880,7 +880,7 @@ struct set<T> {
     fn new() -> set<T> { return set<T>::withCap(16) }
 
     fn len(self: ref set<T>) -> i64 { return self.m.len() }
-    /* **深拷贝**：`var b = a` 是结构体逐成员拷贝（两份共用底层 map 的板块）。 */
+    /* **深拷贝**：集合拥有自己的 map，赋值是转移；要副本写 `clone()`。 */
     fn clone(self: ref set<T>) -> set<T> {
         var s: set<T> = { m: self.m.clone() }
         return s
@@ -898,6 +898,8 @@ struct set<T> {
     fn remove(self: mut ref set<T>, k: T) -> bool { return self.m.remove(k) }
 
     fn clear(self: mut ref set<T>) { self.m.clear() }
+    fn shrink(self: mut ref set<T>) { self.m.shrink() }
+    fn release(self: mut ref set<T>) { self.m.release() }
 
     /* Rank of the first element not less than `k` (the count of elements smaller than `k`). */
     fn lowerBound(self: ref set<T>, k: T) -> i64 { return self.m.lowerBound(k) }

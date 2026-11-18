@@ -60,6 +60,26 @@ static bool rcBodyGrowsMemory(Stmt *body) {
 }
 
 /**
+ * @brief Will this instance method's body actually be emitted?
+ *
+ * The same gate `emitInstanceBodies` uses. The criterion loops run **before** emission and must count
+ * against the same set: a template-level use of a method (`set::shrink` calling `map::shrink`, say)
+ * flips `planUsed` for the template, but no instance body is emitted unless that instance uses it --
+ * counting the unemitted body would carry a whole reclamation runtime into a program that never
+ * allocates (the empty-rc capability ratchet, `gate-rc-idle-corpus`).
+ */
+static bool rcInstMethodEmitted(Type *inst, FuncDef *md) {
+    if (!md || !md->body) return false;
+    if (inst->sdef && lamEnvNeedsVariants(inst->sdef)) return false;
+    if (planCoroProto(md)) return false;
+    if (!planUsed(md)) return false;
+    if (md->owner && md->owner->typeParams.len > 0 &&
+        !planInstUsed(md, inst->name) && !planDynTable(md))
+        return false;
+    return true;
+}
+
+/**
  * @brief Can the whole unit **skip emitting the rc runtime entirely**: every used function judged
  *        "loses no live reference"?
  *
@@ -285,7 +305,7 @@ static void rcPlanDecide(CG *g, Module *m) {
         if (!it || it->kind != TY_GENERIC || !it->sdef) continue;
         for (size_t j = 0; j < it->sdef->methods.len; j++) {
             FuncDef *md = *(FuncDef **)vecAt(&it->sdef->methods, j);
-            if (md && planUsed(md) && rcBodyHasGovernedAlloc(md->body)) return;
+            if (md && rcInstMethodEmitted(it, md) && rcBodyHasGovernedAlloc(md->body)) return;
         }
     }
     for (size_t i = 0; i < m->globals.len; i++) {

@@ -259,8 +259,7 @@ T0 程序编译成空操作：`extc_buf_releaseRefs` 的函数体被 `#if define
 
 ### 10.5 未做
 
-- `map` / `set` / `place` 仍在池板块上（它们的迁移是 R4c 的后续步），`stdlib` 的池
-  与运行期池因此还不能删。
+- 容器层已全部离开池板块；`place` 模块与 stdlib 的池模块已删，运行期池只剩 `dyn` 与 zone 链在用（`src/back/pools.c` 随 `dyn` 换底删除）。
 - `vector` 的 `@noCopy` 让「按值拷贝共享」这一族测试失效：`tests/pool/rt_stale_alias.extc` 已改成
   编译错负例，`tests/pool/rt_clone_alias.extc` 是 `clone()` 的正例；池的其余用例等 R4c 后续步。
 
@@ -617,34 +616,31 @@ error: in instance `vector$vector_vector$vector_i32`: `vector::vector` is `@noCo
 复用，就是这条路）。检查与发射在四个解析点共用的 `setOpCallArgs` 与 `genBin` 上各一处；
 目的地是 `ref` 时不是按值位置，`ckValueCopyNeedsClone` 先按 `TY_REF` 早退。
 
-## 16 去池化的地基：`block<T>` 与 `slots<T>`
+## 16 去池化的地基：`block<T>`
 
-`map` / `set` / `linMap` / `hashMap` 的存储现在长在**运行期池的板块**上（`poolSlice` / `poolSliceRaw` +
-`pool<T>`，各自带一条 `pid` / `pidGen` 纪元）。这些容器真正需要的能力只有两条：**容量固定、任意
-下标读写的平坦列**，以及**稳定句柄 + 稠密前缀的槽表**。两条都不需要「运行期有一本池账」。
+`map` / `set` / `linMap` / `hashMap` 的存储是**自有的平坦块**。这些容器真正需要的能力只有一条：
+**容量固定、任意下标读写的平坦列**；运行期池那本账（槽号、世代、板块归属）对它们没有用处，
+存储跟着值走。
 
 `stdlib/std/data/dense.extc` 用缓冲区基质自己的四个 C 入口（`std::sys::bufrt` 的预留 / 密排槽 / 归还 /
-保留引用登记，与 `buf<T>` 共用同一竞技场与同一本账）实现同样两件事：
+保留引用登记，与 `buf<T>` 共用同一竞技场与同一本账）实现它：
 
 | 类型 | 替代 | 语义 |
 |---|---|---|
-| `block<T>` | `poolSlice<T>` / `poolSliceRaw<T>` | 一块**拥有的**类型化存储：容量固定（`capacity()`）、整块归还、`[0, used)` 是元素 |
-| `slots<T>` | `pool<T>` | 稠密槽存储：稳定句柄（世代 + 纪元）、稠密前缀（交换删除）、空洞链 + bump 游标、1.5× 增长 |
+| `block<T>` | `poolSlice<T>` / `poolSliceRaw<T>` / `pool<T>` | 一块**拥有的**类型化存储：容量固定（`capacity()`）、整块归还、`[0, used)` 是元素 |
 
 ### 16.1 为什么不是 `buf<T>`
 
-`buf<T>` 的不变量是「一个可增长前缀 + 一片预留」：元素只能追加，搬家时整片换、`epoch` +1。池的用途
-正好相反 —— 元素可以在任意下标写入、删除后那个槽要能被复用、容量不需要增长语义（长到 1.5 倍只是
-为了装下更多句柄）。把 `buf<T>` 掰成这个形状会把它的不变量拆掉，所以是两个新类型，不是一个类型加模式。
+`buf<T>` 的不变量是「一个可增长前缀 + 一片预留」：元素只能追加，搬家时整片换、`epoch` +1。平坦列的用途
+正好相反 —— 元素可以在任意下标写入、删除后那个槽要能被复用、容量不需要增长语义（长到 1.5 倍只是为了
+装下更多元素）。把 `buf<T>` 掰成这个形状会把它的不变量拆掉，所以是一个新类型，不是一个类型加模式。
 
 ### 16.2 `used`：脏内存的记账
 
 `bufrt` 的槽是**复用的**，槽里留着上一个使用者的字节，所以块的内存是脏的。`block<T>` 因此带一个
 `used` 计数：只有 `[0, used)` 是元素，钩子与引用边撤销都只走这一段；`[used, cap)` 是「没有元素的容量」。
 这条记账替代了一次 `memset` 清零 —— 8 MiB 的块清零是 8 MiB 的写，而它装的元素可能一个都还没写。
-
-例外是 `slots<T>` 的 `ent` 表（槽号 → 打包的世代 + 稠密下标）：那张表里的 `0` 是「从未用过的空闲槽」
-的编码，所以它是唯一必须主动清零的列（构造时清零一次、增长时清零新增段）。
+需要主动清零的列由容器自己负责（`hashMap` 的 `tag` 是唯一一处，见 §18.1）。
 
 ### 16.3 增长是搬，不是拷
 
@@ -652,31 +648,27 @@ error: in instance `vector$vector_vector$vector_i32`: `vector::vector` is `@noCo
 然后撤旧块的引用边、跑旧槽的钩子（全是零，所以是空操作）、把旧块当场还回去。峰值因此是「一份 + 一块」，
 不是「新旧两代同时在场的 1.5 倍」。这一点与 `buf<T>` 的 `moveTo` 是同一条纪律。
 
-`slots<T>` 的增长把三块（`vals` / `rev` / `ent`）一起换，并把空洞链与 bump 游标原样带过去：增长不许丢洞，
-否则「删一半再插一半」会白长一倍的容量。
-
 ### 16.4 `clear` 必须还元素
 
-旧的 `pool<T>` 把值当字节数组：`clear` 只翻纪元、一个元素的钩子都不跑。元素一旦拥有存储（`string` 的
-长串载荷就是），翻完纪元那些载荷就没人还了。`slots<T>` 的 `clear` / `remove` / `release` 都对**元素**
-跑 `@drop`（`elemDrop<T>` 对没有钩子的 `T` 编译成 `(void)0`，所以 `slots<i64>` 的 `clear` 仍然是 O(1)），
-并且撤元素里引用域的外部边登记（键是槽地址，见 §7）。
+`block<T>` 自己只按 `[0, used)` 做事，元素钩子由容器在结构动作里跑：`clear` / `release` / `remove` 对每个
+活元素调 `dropAt(i)`（`elemDrop<T>` 对没有钩子的 `T` 编译成 `(void)0`，所以 `block<i64>` 的 `clear` 仍然
+是 O(1)），并撤元素里引用域的外部边登记（键是槽地址，见 §7）。元素一旦拥有存储（`string` 的长串载荷
+就是），漏掉这一步就是泄漏。
 
-### 16.5 与旧 `pool<T>` 的不兼容
+### 16.5 与旧池基质的不同：没有句柄，也没有世代
 
-`pool<T>` 是 `@sharesStorage` 的：`var b = a` 共享板块，靠池世代判「陈旧」。`slots<T>` 是 `@noCopy` 的：
-它拥有存储，拷贝是**转移**，要副本写 `clone()`。这一条是有意的 —— 池世代那套「陈旧检测」被值语义与
-编译期检查取代（`pStale` / `pPoison` 在容器迁完之后一起退场）。
+容器都是 `@noCopy` 的：它拥有存储，拷贝是**转移**，要副本写 `clone()`。旧池那套「句柄 + 世代」的陈旧
+检测没有对应物 —— 容器不再发放句柄，元素被搬走或删掉之后旧下标就不再有意义，这一点写在每个容器的
+契约里（[HASHMAP.md](HASHMAP.md) §3）。
 
 ### 16.6 判据
 
 `tests/dense/run.sh` 五个程序，逐行输出比对 + `gcc -Wall -Wextra -Werror` 干净：
 
-- `basic` / `stale`：句柄取放；`remove` 让槽世代 +1（槽复用后旧句柄仍失效）、`clear` 翻纪元让整代句柄作废；
-- `leak`：`bufLive()` 账本 —— `slots<i64>` 释放后归零；`slots<string>` 的 `clear` 确实还掉 40×40 字节载荷，
-  `release` 之后归零；
-- `grow` / `order`：1.5× 增长后每个句柄仍指着自己的值、空洞链不丢（删 25 插 25，容量不长）；交换删除的稠密序
-  正确（删 `b` 之后最后一个值搬进洞里，其它位置不动）。
+- `basic` / `take`：取放与搬出（POD 的槽不擦）；
+- `dirty`：写一个**空槽**不碰槽里原来的字节（`elemPut`），普通赋值才会先跑钩子；
+- `leak`：`bufLive()` 账本 —— 块释放后归零，清空时确实还掉元素载荷；
+- `grow`：增长后每个元素仍在自己位置、旧块当场还（`used` 与 `cap` 对得上）。
 
 ## 17 第一个接上 `block<T>` 的容器：`linMap` / `linSet`
 
@@ -697,8 +689,7 @@ error: in instance `vector$vector_vector$vector_i32`: `vector::vector` is `@noCo
 逐元素 `dropAt` 之后 `setUsed(0)`，两块 `release` 幂等，所以字段的自动 `@drop` 不会重复归还。
 
 为此 `block::growTo` 与 `block::setUsed` 从 `@private` 提到公开——它们是**容器层**的接线面（`docs/usage/stdlib.md`
-的 dense 节列了它们），不属于普通程序的 API。同时 `slots<T>` 的句柄类型改名 `slotHandle`：池还在的时候
-`pool<T>::handle` 与它在同一个程序里可能同时可见，两个模块导出同名类型会让裸名变歧义。
+的 dense 节列了它们），不属于普通程序的 API。
 
 ### 17.1 顺带修掉的真缺陷：字面量字段是转移，不是拷贝
 
@@ -724,12 +715,11 @@ var lm: linMap<K, V> = { keys: kb, vals: vb, n: 0, cap: c }
   验证这只容器**不登记池**）逐行输出比对；`cap` 序列 8→12→18→27→40→60→90→135 与 1.5× 增长一致；
 - `tests/copy/literal_field_move.extc`：局部 `buf` 写进字面量字段后原地释放（`live=16`、`after=0`），不 trap；
 - `tests/copy/errors/moved_into_literal.extc`：搬走之后再读那个名字是诊断，不是静默读到别人拥有的存储；
-- `tests/dense/run.sh` 与 `tests/stl`、`tests/pool` 全绿（`slotHandle` 改名只动类型名，不动语义）。
+- `tests/dense/run.sh` 与 `tests/stl` 全绿。
 
 ### 17.3 未做
 
-`hashMap` 已经在 §18 迁完；`map` / `set`（四列 + `nodes` 视图重指）仍在池板块上。迁完它们、并且
-`bench/containers` 的三臂对拍不掉线，才删 `stdlib/std/sys/pool.extc` 与 `stdlib/std/data/pool.extc`。
+`hashMap` 已经在 §18 迁完、`map` / `set` 在 §17 的接线面上；池基质（`stdlib/std/sys/pool.extc`、`stdlib/std/data/pool.extc`、`place`）已经删掉，运行期那份只剩 `dyn` 与 zone 链在用。
 
 ## 18 第二个接上 `block<T>` 的容器：`hashMap` / `hashSet`
 
@@ -766,4 +756,4 @@ var lm: linMap<K, V> = { keys: kb, vals: vb, n: 0, cap: c }
 
 ### 18.4 未做
 
-`map` / `set` 的存储已经换成七块 `block<T>` 平坦列（见 `stdlib/std/data/map.extc` 的头注释与 §17 的接线面），`place` 仍在池板块上；池退场那一步才把 `slots<T>` / `slotHandle` 与编译器 pool 特例族一起删掉。
+`map` / `set` 的存储是七块 `block<T>` 平坦列（见 `stdlib/std/data/map.extc` 的头注释与 §17 的接线面）。`slots<T>` / `slotHandle` 与 stdlib 的池模块已经删除；编译器的 pool 特例族（`@place` / `poolSlice*` / `extc_pool_*`）随 `dyn` 换底那一步删。

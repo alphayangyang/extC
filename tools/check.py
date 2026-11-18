@@ -1014,7 +1014,7 @@ def build_items() -> list:
     # ---- 闸门·容器描述符里的引用：字段扫不到引用就照常触发，元素引用交给写入屏障 ------
     # 池/板容器的元素住在自己的板上（描述符字段只有视图），泛型实参带引用不再让整函数关触发；
     # 字段里也看得见引用（内联数组 / 按值内嵌）仍走保守路。
-    # 判据跑真实发射（pool_ref_slot + wrap<box> 窄化控制），--selftest 六条注入全红。
+    # 判据跑真实发射（buf_ref_slot + wrap<box> 窄化控制），--selftest 六条注入全红。
     items.append(cmd(
         "gate-container-refs", "gate",
         "闸门·容器描述符引用：描述符字段没引用 ⇒ 触发照常发（元素引用靠写入屏障钉住），字段里有引用仍保守，且 6 条注入全红",
@@ -1654,17 +1654,9 @@ def build_items() -> list:
         ok_msg=ok_count_ok(" 项（正例 + 边界 + 无参哨兵 + 3 反例）"),
         bad_msg="tests/argv/run.sh", bad_dump=dump_fail(8)))
 
-    # ---- 池 ----
-    items.append(cmd(
-        "pool", "tests",
-        "池（期 0 库级 slot map + 期 1 运行期池注册表：handle · dense · churn 不涨 · 块退出带走子树 —— 见 POOLS.md）",
-        ["./tests/pool/run.sh"], timeout=600,
-        ok_msg=ok_count_ok(" 项（handle/dense/世代 · churn 平 · canary 会响 · ASan）"),
-        bad_msg="tests/pool/run.sh", bad_dump=dump_fail(8)))
-
     # ---- 有序 map ----
     items.append(cmd(
-        "map", "tests", "有序 map<K, V>（POOLS.md §11：B 树；第一步是单节点有序表）",
+        "map", "tests", "有序 map<K, V>（B 树：七块平坦列 + 空闲 id 链）",
         ["./tests/map/run.sh"], timeout=600,
         ok_msg=tail1, bad_msg="tests/map/run.sh", bad_dump=dump_fail(8)))
 
@@ -1813,7 +1805,7 @@ def build_items() -> list:
     # ---- 期 0 · 哈希表 ----
     items.append(cmd(
         "hashmap", "tests",
-        "期 0 · 哈希表（key→value 随机的正解：开放寻址 + 墓碑 · 见 POOLS.md §10.2）",
+        "哈希表（key→value 随机的正解：三列平坦存储 + 线性探测 + Knuth 回移 · 见 docs/design/HASHMAP.md）",
         ["./tests/hashmap/run.sh"], timeout=600,
         ok_msg=ok_count_ok(" 项（新键/覆盖/碰撞/墓碑 churn 平/canary/ASan）"),
         bad_msg="tests/hashmap/run.sh", bad_dump=dump_fail(8)))
@@ -1823,13 +1815,13 @@ def build_items() -> list:
         "showcase", "tests",
         "展示代码（examples/showcase-*.extc：文档里的六段，每次编译并运行）",
         ["bash", "tests/showcase/run.sh"], timeout=300,
-        ok_msg=ok_count_ok(" 项（Arena 返回值 · home 机制 · 池身份 · 视图 · impl · extern!）"),
+        ok_msg=ok_count_ok(" 项（Arena 返回值 · home 机制 · 视图 · impl · extern!）"),
         bad_msg="tests/showcase/run.sh", bad_dump=dump_fail(8)))
 
     # ---- STL ----
     items.append(cmd(
         "stl", "tests",
-        "STL 库（一个库装所有动态容器；容器建在池上 —— 见 POOLS.md 期 3）",
+        "STL 库（一个库装所有动态容器；存储是地址预留与平坦块 —— 见 docs/design/BUF-INVARIANT.md）",
         ["./tests/stl/run.sh"], timeout=600,
         ok_msg=ok_count_ok(" 项（vector：翻倍/dense 连续/shrink/clear · ASan）"),
         bad_msg="tests/stl/run.sh", bad_dump=dump_fail(8)))

@@ -10,7 +10,6 @@
  *
  * 反例（必须静默，见 silent/loop-local-buffer.extc）：
  *   · buffer 声明在循环体内 ⇒ 每轮归还 ✓
- *   · `poolSlice` 再取一次 ⇒ 借已有的板块，不是新分配 ✓
  *   · `x = y`（值不是 `new`）⇒ 不产生新存储 ✓
  */
 use std::io

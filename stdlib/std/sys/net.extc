@@ -1,6 +1,6 @@
 /* std/sys/net.extc —— 事件与 socket 的**特权层**
  *
- * 与 `std::sys::pool`、`std::sys::coroutine` 同一形状：这一层只把生成器提供的运行期原语声明成
+ * 与 `std::sys::coroutine` 同一形状：这一层只把生成器提供的运行期原语声明成
  * extC 能调的东西，实现是 `src/coroutine.c` 的事件块，**按需发射**。
  *
  * 跨边界只有**标量**（和一个指针）：`epoll_event` 的缓冲区留在运行期里，extC 侧永远看不到结构体 ——
@@ -79,7 +79,7 @@ extern!("extc-runtime") fn extc_sock_shutdown_wr(fd: i64) -> i64
 
 /* 和 `extc_tcp_listen` 同形，但设上 `SO_REUSEPORT`（在 bind **之前**）⇒ **N 个独立进程**可以绑
  * 同一个端口，内核按流哈希把连接分给它们。这就是多进程的全部：不共享内存、不加锁、不改语言 ——
- * `extc_pool_*` 与 `extc_task_*` 天然各进程一份，某个 worker 崩了也只带走自己的连接。
+ * `extc_task_*` 天然各进程一份，某个 worker 崩了也只带走自己的连接。
  *
  * 启动用 `tools/extc-workers.sh N <程序>`：一条命令起 N 个进程、各绑一个核、崩了自动重启。
  *

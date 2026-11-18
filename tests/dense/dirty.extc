@@ -1,0 +1,37 @@
+// expect: ok=true n=2 steady=true
+/* 块的内存是**脏**的：复用槽里留着上一个使用者的字节。`[]=` 是 `elemPut`，不碰旧字节 ——
+ * 所以把 `string` 写进一个从密排槽里拿来的块，不会对垃圾跑 `@drop`（曾经会 trap 在「借用冻结」）。
+ * 判据同时压一遍循环：每轮拿块、写两个串、整块还 —— 账本不许随轮数涨。 */
+use std::data::dense::{block}
+use std::data::buf
+use std::text::string
+
+fn cycle() -> i64 {
+    var b: block<string> = block<string>::withCap(8)
+    var t: string = string::withCap(32)
+    t.append("dirty-slot-payload")
+    b[0] = t
+    var u: string = string::withCap(32)
+    u.append("second")
+    b[1] = u
+    b.setUsed(2)
+    let ok: bool = b[0].view() == "dirty-slot-payload" && b[1].view() == "second"
+    let n: i64 = b.used()
+    b.release()
+    if !ok { return -1 }
+    return n
+}
+
+fn churn(rounds: i64) -> i64 {
+    var i: i64 = 0
+    while i < rounds { let _n: i64 = cycle()  i = i + 1 }
+    return buf::bufLive()
+}
+
+fn main() -> i32 {
+    let n: i64 = cycle()
+    let warm: i64 = churn(100)
+    let steady: i64 = churn(400)
+    println("ok=", n == 2, " n=", n, " steady=", steady == warm)
+    return 0
+}

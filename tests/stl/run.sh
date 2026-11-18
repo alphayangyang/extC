@@ -197,10 +197,6 @@ else
 fi
 rm -rf "$TMPC4"
 
-echo "== 用户自定义池底容器（写在入口文件里，不是库模块）：板块 + 池记录 + 提权 =="
-run_case custom  tests/stl/custom_pool.extc  "n=10 cap=13 v9=81 live=1 bytes=104"
-run_case custom-grow tests/stl/custom_pool_grow.extc "n=2000000 cap=2362204 bytes=18897632 first=0 last=1999999 live_after=0"
-
 echo "== varArray：能装引用的容器（元素是引用值；增长搬家搬的是引用，指向的对象不动）=="
 # 视图不能跨增长使用：扩容当场还旧块 ⇒ 同块内跨增长读/写是编译错误（跨帧则借不出去）
 rejects varArray_stale_view tests/stl/varArray_stale_view.extc "changes the storage that"

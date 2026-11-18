@@ -34,7 +34,7 @@ else
     fail=$((fail + $(echo "$out" | tail -1 | grep -oE '失败 [0-9]+' | grep -oE '[0-9]+')))
 fi
 
-echo "== zone：池层级判定（同类问题只有一种答案）=="
+echo "== zone：位置（zone）判定（同类问题只有一种答案）=="
 if [ -x tests/zone/run.sh ]; then
     if out=$(tests/zone/run.sh 2>&1); then
         printf '%s\n' "$out" | grep -E "ok |FAIL"

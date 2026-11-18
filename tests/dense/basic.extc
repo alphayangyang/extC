@@ -1,13 +1,17 @@
-// expect: n=3 a=10 c=30 b=20 len=3 cap=8
-/* `slots<T>` 的最基本一圈：插三个、按句柄取、按稠密序读、容量不会因为插三个就长。 */
-use std::data::dense::{slotHandle, slots}
+// expect: cap=8 used=3 a=10 c=30 first=true
+/* block<T> 的最基本一圈：拿固定容量、写下标、记账 used、按 used 读回。 */
+use std::data::dense::{block}
 
 fn main() -> i32 {
-    var d: slots<i64> = slots<i64>::withCap(8)
-    let a = d.insert(10)
-    let b = d.insert(20)
-    let c = d.insert(30)
-    println("n=", d.len(), " a=", d.get(a) ?? -1, " c=", d.get(c) ?? -1, " b=", d.get(b) ?? -1,
-            " len=", d.len(), " cap=", d.capacity())
+    var b: block<i64> = block<i64>::withCap(8)
+    let c0: i64 = b.capacity()
+    let u0: i64 = b.used()
+    b[0] = 10
+    b[1] = 20
+    b[2] = 30
+    b.setUsed(3)
+    let a: i64 = b[0]
+    let c: i64 = b[2]
+    println("cap=", c0, " used=", b.used(), " a=", a, " c=", c, " first=", u0 == 0)
     return 0
 }

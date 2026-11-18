@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tests/dense/run.sh —— 容器去池化的地基：`block<T>`（拥有的类型化块）与 `slots<T>`（稠密槽存储）
+# tests/dense/run.sh —— 容器去池化的地基：`block<T>`（拥有的类型化块）
 #
 # 判据：
 #   ① 每个程序的整行输出（`// expect:` 第一行自带数字自证）
@@ -26,10 +26,10 @@ one() { # name file
 }
 
 one basic basic.extc
-one stale stale.extc
+one dirty dirty.extc
 one leak  leak.extc
 one grow  grow.extc
-one order order.extc
+one take  take.extc
 
 printf '通过 %d，失败 %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

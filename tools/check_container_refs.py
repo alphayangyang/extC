@@ -3,10 +3,10 @@
 
 ## 为什么需要这个门禁
 
-池/板容器（pool<T> / vector<T>）的元素住在**容器自己的板**上，不在 C 描述符的字段里：描述符
+缓冲区容器（vector<T> / varArray<T>）的元素住在**容器自己的板**上，不在 C 描述符的字段里：描述符
 字段是三块视图 + 几个整数。rcScanType 早先对「泛型实参带引用」一律返回 RC_CONSERVATIVE，
-于是 pool<mut ref node> 这种局部量让整个函数 rc.rootsUnreliable ⇒ 一个触发都不发、欠收也没人
-还（pool_ref_slot 峰值比 3.04×、sweeps 0/0）。
+于是 varArray<mut ref node> 这种局部量让整个函数 rc.rootsUnreliable ⇒ 一个触发都不发、欠收也没人
+还（buf_ref_slot 峰值比随轮数增长、sweeps 0/0）。
 
 现在的规则：先扫字段；字段里一个引用叶子都没有（s == RC_NO_REFS）而泛型实参带引用，说明引用
 只在板的元素里 —— 描述符本身没有引用槽，根表不欠这笔账，触发照常发；元素里的引用由写入点的
@@ -14,7 +14,7 @@
 看得见引用（内联数组、按值内嵌的引用结构体）时仍然走保守路（rc.rootsUnreliable + 整值保守存储）
 —— 这是安全方向的窄化，不是全面放开。
 
-判据跑真实发射：pool_ref_slot 的 main 必须有 maybeCollect、不得对 p 发整值保守存储；一个
+判据跑真实发射：buf_ref_slot 的 main 必须有 maybeCollect、不得对 p 发整值保守存储；一个
 wrap<box>（泛型实参 box 含 mut ref 字段）的 main 必须发整值保守存储且一个触发都不发（窄化没
 被放开）。再断 src/back/codegen.c 里那条规则的形状。--selftest 做 6 条注入，每条必须变红。
 """
@@ -28,7 +28,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 EXTC = Path(os.environ.get("EXTC", str(ROOT / "build" / "extc")))
-CONTAINER = ROOT / "tests/reclaim-gaps/shapes/pool_ref_slot.extc"
+CONTAINER = ROOT / "tests/reclaim-gaps/shapes/buf_ref_slot.extc"
 CODEGEN = ROOT / "src/back/codegen.c"
 
 NARROW = '''use std::io
@@ -130,7 +130,7 @@ def check(cont, narrow, codegen):
                        " shuts rc.rootsUnreliable off)")
         if POOL_CONS in cm:
             bad.append("container: main() still emits the conservative whole-value store for the"
-                       " pool descriptor")
+                       " container descriptor")
     if ALLOC not in narrow:
         bad.append("narrow: control program is vacuous (no rc allocation at all)")
     if nm is None:

@@ -72,7 +72,7 @@ extC 的内存管理**不是"一个 GC"**，而是：
 |---|---|---|---|---|---|---|
 | 1 | **帧 arena**（bump） | `new`/`alloc` 落在 level≥2 的块内，或 home 层 | `extc_arena_alloc`（`codegen.c:12442`） | 块结束 / 帧返回 | `extc_arena_release` / `extc_arena_destroy`，整块丢弃，无逐对象成本 | **有界**：= 该作用域内累计分配字节（+ 对齐/块头），释放后归零；循环体每轮进门/出门各 release 一次 |
 | 2 | **rc region**（slab + 标记清扫） | `new T`、定长 `new [N]T`、`alloc<T>(n)`、单值 `@overwrite`（`needReclaim` 为真时一律 rc，与层号无关，`codegen.c:4686/4716`）；`alloc<T>(n)` 与 `new T[n]` 的 data 区仅层号 == 1（`:4721-4736、4831-4843`） | `extc_rc_alloc`（`reclaim.c:1489`） | 不可达被标记清扫判定 | 增量标记 + 步进清扫，槽进 freelist 复用；slab **永不归还** | **无常量上界**：Σ(存活 region 的 slab 峰值) |
-| 3 | **pool** | 容器（`hashMap`/`map`/`set`/`pool`；`vector` 与 `string` 的存储已交给缓冲区基质，见 §19.20/§19.21） | `extc_pool_*`（`pools.c` 发射） | 句柄 generation 失配 / pool 释放 | 整块 `realloc`/`free` + generation 使旧句柄失效 | 随容器存活期增长；无自动回收 |
+| 3 | **运行期池**（只剩 `dyn` 载荷与 zone 链在用） | `dyn Trait(x)` 的载荷块；用户可见容器已全部离开（`vector`/`string` → 缓冲区基质，`hashMap`/`map`/`set`/`linMap`/`linSet` → `block<T>`，见 §19.20/§19.21/§19.22） | `extc_pool_*`（`pools.c` 发射） | zone 回卷 / 池释放 | 整块 `realloc`/`free` | 随 `dyn` 载荷存活期增长；无自动回收 |
 | 4 | **coroutine / parallel worker arena** | 每个任务的帧 | `extc_arena_*`（每任务独立） | 任务结束 | 确定性 destroy | **有界（每任务）** |
 | 5 | **plate**（`std.mem`） | 程序显式请求 | `mmap(PROT_NONE)+mprotect`（`stdlib/std/mem.extc`） | `close` | `munmap`；永不搬家 | **有界**（用户 view 的长度） |
 
@@ -139,7 +139,7 @@ if (g.rcSweepFree != -1 && g.needReclaim && unitAllAcyclic(&g, m)) {
 | `new T[n]`（**无长度**，n 运行期决定） | 永远是"视图"（slice），不是引用槽 | `extc_arena_alloc(&__extc_a[k], n*sizeof(T), ...)`，再包成 `slice` | arena（**层号 == 1 时 data 区改走 `extc_rc_alloc`**，见下注②） |
 | `alloc<T>(n)` | 层号由检查器 `planArenaLevel` 给出；== 1 时进 rc | level==1：`extc_rc_alloc(...)`；否则 arena | rc 或 arena |
 | 单值 `@overwrite` 单元 | 单元总在当前帧；初始化器就是 `new T` | `extc_rc_alloc(...)` | rc |
-| 容器字面量/操作 | — | `extc_pool_*` / `extc_dyn*` | pool |
+| `dyn Trait(x)` 的载荷表 | — | `extc_pool_*` / `extc_dyn*` | 运行期池 |
 | 字符串字面量 | — | 静态 `char[]`（只读），不分配 | rodata |
 | coroutine 帧 | — | 每任务 `extc_arena`（`task->arena<k>`） | coro arena |
 | `std.mem` 的 plate | — | `mmap` 保留 + `mprotect` commit | plate |
@@ -670,14 +670,14 @@ TICK 调用点（默认 `EXTC_RC_TIME` 关时全部编译成 `do{}while(0)`，`r
 
 ---
 
-## §13 pool（容器数据块，独立分配器）
+## §13 运行期池（`dyn` 载荷的数据块，独立分配器）
 
 - 由 `src/back/pools.c`（126 行）**整段作为发射文本**写出，底层只有 `malloc/realloc/free`。
 - 源码注释逐字（`src/back/pools.c:19-24`）：**"A pool owns its own memory … The arena does not own those blocks -- it owns their lifetime"** ⇒ 容器块**不走 rc**，也不占 arena 字节；arena 只决定它们的寿命。
 - `extc_pool_new_at`（`pools.c:56-57`）= **THE PROMOTION HOOK**（"函数把自己的分配交给调用者的 place，就要收一个隐藏的 `__extc_home` arena"）。
 - place/zone 栈：`extc_pool_zoneEnter / zoneLeaveTo(mark) / zoneNewRoot / zoneFreeRoot`；容器句柄带 **generation**（`pools.c:5-7`：pool 句柄只有 1 个 `gen`，`dyn` 句柄才有 `gen+pgen`）使陈旧句柄失效。
 - 回收方式：`drop/release`（整 pool 释放）、place 结束、`zoneLeaveTo` 回卷；**没有**任何"自动回收不可达容器"的机制。
-- 内存性质：随容器/place 存活期增长；**有界性由作用域（place/task/frame 结束）给出，不由 GC 给出**。
+- 内存性质：随 `dyn` 载荷 / zone 存活期增长；**有界性由作用域（place/task/frame 结束）给出，不由 GC 给出**。用户可见的池基质（`std::data::pool`、`std::sys::pool`、`std::data::place` 与 `@place` 容器）已经退场，运行期这一份只剩 `dyn` 与 zone 链在用。
 
 ---
 
@@ -697,7 +697,7 @@ TICK 调用点（默认 `EXTC_RC_TIME` 关时全部编译成 `do{}while(0)`，`r
 - 任务表 = `realloc` 增长（`:106-114`），**不是** arena 分配。
 - **每任务一个独立 arena**：`:57` `static extc_arena *extc_taskArena;`；分配门 `:124-131`（`extc_task_alloc ⇒ extc_arena_alloc`），注释逐字："A task's own place as an allocator: the frame of a boxed coroutine lives here, and so does anything the coroutine allocates with new (slice C's promotion)."
 - 任务结束 `:145` `extc_arena_destroy(&extc_taskArena[id])`（**destroy 而不是 release**；注释：任务不会再跑，spare 块会永远占着）。
-- 任务根 place：`extc_taskRoots[64]` + `extc_taskRootN`（`coroutine.c:67-75`）；`extc_task_collect`（:78-95）只扫 `depth == 0` 的 zone（= 任务根，`extc_pool_zoneNewRoot` 仅由 `extc_task_begin` 调用，`pools.c:53`），按“已登记根可达”判活，否则 `extc_task_end` + `extc_pool_zoneFreeRoot`。语言表面：`syspool::collect()`（`stdlib/std/sys/pool.extc:38-43`、`:52-55`），契约是调用者的断言。
+- 任务根 place：`extc_taskRoots[64]` + `extc_taskRootN`（`coroutine.c:67-75`）；`extc_task_collect`（:78-95）只扫 `depth == 0` 的 zone（= 任务根，`extc_pool_zoneNewRoot` 仅由 `extc_task_begin` 调用，`pools.c:53`），按“已登记根可达”判活，否则 `extc_task_end` + `extc_pool_zoneFreeRoot`。语言表面：`syspool::collect()` 已随池模块删除；编译器在块退出处自己发 `extc_task_end`，逃出该证明的句柄由 `extc_task_collect` 在运行期按已登记根判活。
 - 编译侧：`g->coroFunc ⇒ noArena=true`（`codegen.c:9945/9915`（判据/置位；`6275-6311` 是 `cgReleaseLevel` 注释与函数体、`9920-9931` 是 @overwrite 站点收集）；step 不拥有 arena 数组）；coroutine 帧**不走 rc**，且 coroutine 帧会让 region `rcRootsUnreliable`（`codegen.c:249-252（注释）、7600/7645（协程帧真实置位）；4371-4387 是 `rcRootLeaves` 的 4096 溢出点`）。
 
 ### 15.2 parallel worker（`codegen.c:15064-15345`）
@@ -1704,10 +1704,10 @@ S1 的快不是「拷贝更便宜」，是**不拷**：`buf` 一次 `reserve` �
 
 单测 `tests/reclaim`（242/0）钉住更细的语义：`t_pin`（不是活槽不登记 / 两条槽指着同值 ⇒ 两条条目 / 撤一条仍在 / 撤完可收 / 覆盖撤旧边 / 区域死时清死指针且别的区域不受牵连）、`t_pinRange`（区间内全撤 / 区间外不动 / 表长正好减槽数 / 撤销后同槽重新登记不凭空减计数）、`t_noSweep`（保守整值存储逐字登记、区域**照常清扫**）。跳过表 95 类标记、未标记早退 0 处。
 
-池块（`poolSlice` / `poolResize` / `poolGive`，G15 形状）与缓冲区一样反查不到宿主，落进的也是同一条 `extc_rc_storeRefUnknown`。键换成槽地址之后，池块复用、槽地址不变 ⇒ 表项被改正、不随轮数长：在 `g15.c` 的 `main` 尾部插一行读 `extc_rc_pinN` / `extc_rc_pinCap`，50k 与 800k 两档都是 **n=35 / cap=128**，`maxRSS` 3,572 / 3,568 kB（**0.999×**）⇒ G15 由 XFAIL 提升成硬判据（`summarize.py` 与 `run.sh` 的口径同步改掉）。
+缓冲区容器（`varArray<mut ref T>` / `buf<mut ref T>`，G21 形状）与 `dyn` 载荷一样反查不到宿主，落进的也是同一条 `extc_rc_storeRefUnknown`。键换成槽地址之后，槽复用、地址不变 ⇒ 表项被改正、不随轮数长：50k 与 800k 两档的峰值都是 **1.000×**（G21，3,764 kB）。G15 那个池块形状随池基质退场删除，覆盖由 G21 继承。
 #### 19.21.5 边界与还欠的账
 
-- **池块有界、但撤销没接**：G15 的平坦来自「键取槽地址」，不是来自池的 free 里撤边 —— 池的 free 不调 `releaseRefs`，条目要到该槽被重写或区域死时 `pinDropRegion` 才消失。R4c 删掉 stdlib 池（容器迁 `buf`）之后由 `dropRefs` 接管这一侧。
+- **区域外存储有界、但撤销要看谁负责**：有界来自「键取槽地址」，不是来自区间撤销 —— 条目要到该槽被重写、区间撤销或区域死时才消失。容器现在的结构动作都接上了 `dropRefs`（`buf` 的 `release` / `shrink` / `clear` / `moveTo`，`block` 的 `dropRefs`），`pop` 不撤（元素由调用方持有）。
 - **`pinSeed` 的 O(表容量) 未标定**：表大时起轮那一下是回收器里的真实开销，它目前不在 `P_step` 的任何一项里。G21 的表只有 16 条，看不出这一项；要一条「几十万个外部槽」的形状才量得出来。
 - **`pop` 不撤边**：丢掉的槽位仍留一条条目，直到该槽被重写或区间撤销。上界因此是「峰值同时在用的槽集合」而不是「当前活元素数」—— 方向仍是安全（多留），但要在 `BUF-INVARIANT.md` 里说清。
 - **多线程**：表有锁（`pinLockAcq`），登记与撤销都在锁内；种子扫描也持锁。分片（per-worker 表）是 §S 里并发那一栏的事，不在本节。

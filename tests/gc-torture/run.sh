@@ -33,11 +33,9 @@ CASES=(
   "t03_deepring|1000000 12|100000|none"
   "t04_bigchurn|120|24000|none"
   "t05_copyrefs|800000|8192|none"
-  "t06_handles|8 200000|12000|none"
   "t07_tasks|20000|6144|none"
   "t08_mixed_sizes|400 20000|8192|none"
   "t09_cycle_pressure|200000 20|24000|none"
-  "t10_alias_slots||4096|none"
   "t12_overwrite_arena|20 64|220000|none"
   "t13_growth_copy|20 8|260000|none"
   "datalog_lite|200000|32768|graph 200000 32 50000"
@@ -175,13 +173,11 @@ if [ "$MODE" = "one" ]; then
   done
 elif [ "$MODE" = "asan" ]; then
   run_asan t07_tasks "5000" none
-  run_asan t10_alias_slots "" none
   run_asan t05_copyrefs "20000" none
   run_asan t01_sparse_pin "20000 4" none
   run_asan datalog_lite "20000" "graph 20000 4 8000"
 elif [ "$MODE" = "quick" ]; then
   run_one datalog_lite_small 2000 8192 "graph 2000 4 2000" pause
-  run_one t10_alias_slots "" 4096 none pause
   run_one t07_tasks 20000 6144 none pause
 elif [ "$MODE" = "ladder" ]; then
   # 规模阶梯：同一形状两档，检查峰值 RSS 仍在上界内（容量归还的验收口径）。

@@ -1,33 +1,22 @@
-// expect: n=50 cap=60 order=true holes=0 d0=49 d49=124 rm=25
-/* 增长 1.5 倍时元素是被**搬**过去的（不是拷）：值不丢、顺序不变、空洞链不许丢。 */
-use std::data::dense::{slotHandle, slots}
+// expect: used=50 cap=64 order=true zero=true
+/* 增长是**搬**不是拷：`growTo` 把元素一个个 `elemTake` 到新块、旧块当场还回竞技场。 */
+use std::data::dense::{block}
 
 fn main() -> i32 {
-    var d: slots<i64> = slots<i64>::withCap(4)
-    var hs: mut slice<slotHandle> = new slotHandle[64]
+    var b: block<i64> = block<i64>::withCap(4)
     var i: i64 = 0
-    while i < 50 { hs[i] = d.insert(i)  i = i + 1 }
-    /* 增长之后每个句柄仍然指着自己的值。 */
+    while i < 4 { b[i] = i * i  i = i + 1 }
+    b.setUsed(4)
+    b.growTo(64)
+    while i < 50 { b[i] = i * i  i = i + 1 }
+    b.setUsed(50)
     var order: bool = true
     var j: i64 = 0
     while j < 50 {
-        let v: i64 = d.get(hs[j]) ?? -1
-        if v != j { order = false }
+        if b[j] != j * j { order = false }
         j = j + 1
     }
-    /* 删掉一半（每次删都产生一个洞），再插同样多 —— 洞必须被先用掉，容量不许白长。 */
-    var k: i64 = 0
-    while k < 25 { let _rm = d.remove(hs[k])  k = k + 1 }
-    var m: i64 = 0
-    while m < 25 { let _h = d.insert(100 + m)  m = m + 1 }
-    var holes: i64 = 0
-    var q: i64 = 0
-    while q < d.len() {
-        let h = d.handleAtDense(q)
-        if !d.contains(h) { holes = holes + 1 }
-        q = q + 1
-    }
-    println("n=", d.len(), " cap=", d.capacity(), " order=", order,
-            " holes=", holes, " d0=", d.atDense(0), " d49=", d.atDense(49), " rm=25")
+    let zero: bool = b[60] == 0
+    println("used=", b.used(), " cap=", b.capacity(), " order=", order, " zero=", zero)
     return 0
 }

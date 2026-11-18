@@ -1,8 +1,8 @@
-// 池底（池自己的板块）：这张表登记自己的池 · 增长在原块上加长 · release 整棵树还回去
+// 线性表：存储是自己的平坦块 · 增长搬家 · release 把块整块还回去（竞技场账本归零）
 // expect: cap0=8 key83=83 cap=135 after=0 live=0
 use std::io
-use std::sys::pool as syspool
 use std::data::map
+use std::data::buf
 
 fn main() -> i32 {
     var m = linMap<i64, i32>::withCap(8)
@@ -14,6 +14,6 @@ fn main() -> i32 {
     }
     io::cout << " key83=" << i64(m.get(83) ?? i32(-1)) << " cap=" << m.capOf()
     m.release()
-    io::cout << " after=" << m.capOf() << " live=" << syspool::extc_pool_live() << "\n"
+    io::cout << " after=" << m.capOf() << " live=" << buf::bufLive() << "\n"
     return 0
 }

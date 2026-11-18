@@ -5,7 +5,7 @@
 
 生成方式：`tools/manual_surface.py`；`check.sh` 保证本页与源码一致。
 
-公开面共 912 个成员，其中内部 191 个：
+公开面共 827 个成员，其中内部 158 个：
 
 ## prelude
 
@@ -49,24 +49,6 @@
 - `block.mem`（字段）
 - `block.shrinkTo`（方法）
 - `block.vals`（字段）
-- `slotHandle.ep`（字段）
-- `slots.cap`（字段）
-- `slots.cursor`（字段）
-- `slots.ent`（字段）
-- `slots.epoch`（字段）
-- `slots.grow`（方法）
-- `slots.holeHead`（字段）
-- `slots.n`（字段）
-- `slots.pDense`（方法）
-- `slots.pEp`（方法）
-- `slots.pEpMask`（方法）
-- `slots.pFree`（方法）
-- `slots.pGen`（方法）
-- `slots.pLive`（方法）
-- `slots.pLow`（方法）
-- `slots.pPack`（方法）
-- `slots.rev`（字段）
-- `slots.vals`（字段）
 
 ## std::data::hashMap
 
@@ -111,24 +93,6 @@
 - `map.setVal`（方法）
 - `map.side`（字段）
 - `map.vn`（方法）
-
-## std::data::pool
-
-- `handle.ep`（字段）
-- `pool.cap`（字段）
-- `pool.cursor`（字段）
-- `pool.ent`（字段）
-- `pool.holeHead`（字段）
-- `pool.n`（字段）
-- `pool.pDense`（方法）
-- `pool.pEp`（方法）
-- `pool.pEpMask`（方法）
-- `pool.pGen`（方法）
-- `pool.pLow`（方法）
-- `pool.pPack`（方法）
-- `pool.pid`（字段）
-- `pool.pidGen`（字段）
-- `pool.slots`（字段）
 
 ## std::data::vector
 

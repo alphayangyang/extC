@@ -1,25 +1,21 @@
-/* std/data/dense.extc —— 稠密槽存储（`slots<T>`）与它底下的类型化块（`block<T>`）
+/* std/data/dense.extc —— 类型化块存储（block<T>）
  *
- * 这两个类型是把容器存储从「运行期池」上撤下来的第一块地基：
- *   - `block<T>`：一块**拥有的**类型化存储。容量固定、整块归还，用多少由 `used` 记账。
- *     它就是 `map` / `hashMap` 里那些「平坦列」的替代品（原来是 `poolSlice` / `poolSliceRaw`）；
- *   - `slots<T>`：带世代与纪元的**稠密槽存储**，句柄寻址、交换删除。它是 `pool<T>` 的替代品。
+ * 容器存储从「运行期池」上撤下来之后，所有平坦列（map 的节点列、hashMap 的三列）都建在
+ * 这个类型上：一块**拥有的**类型化存储，容量固定、整块归还，用多少由 used 记账。
  *
- * **为什么不是 `buf<T>`**：`buf<T>` 的不变量是「一个可增长的前缀 + 一片预留」，元素只能追加
- * 或整体搬家；而这两者要的是「容量固定、任意下标读写」的数组（`ent` 槽表、桶列、节点列）。
- * 所以它们直接用 `std::sys::bufrt` 的四个 C 入口（预留 / 密排槽 / 归还 / 保留引用登记），
- * 与 `buf<T>` 共用同一片竞技场与同一本账 —— 一个进程里只有一种「向系统要地址空间」的路。
+ * **为什么不是 buf<T>**：buf<T> 的不变量是「一个可增长的前缀 + 一片预留」，元素只能追加
+ * 或整体搬家；而平坦列要的是「容量固定、任意下标读写」的数组（桶列、节点列）。所以它直接用
+ * std::sys::bufrt 的四个 C 入口（预留 / 密排槽 / 归还 / 保留引用登记），与 buf<T> 共用同一片
+ * 竞技场与同一本账 —— 一个进程里只有一种「向系统要地址空间」的路。
  *
- * **`used` 不是装饰**：`bufrt` 的槽是复用的，槽里可能留着上一个使用者的字节，所以块的内存
- * 是**脏**的：复用的槽里留着上一个使用者的字节。`block<T>` 因此只对 `[0, used)` 里的槽跑钩子、只对 `[0, used)` 撤引用边；
- * `[used, cap)` 是「没有元素的容量」。（`slots<T>` 把它的 `ent` 表整块写成 0 —— 那张表的 0
- * 是「空闲」的编码，所以它是唯一需要主动清零的列。）
+ * **used 不是装饰**：bufrt 的槽是复用的，复用的槽里留着上一个使用者的字节，所以块的内存
+ * 是**脏**的：block<T> 只对 [0, used) 里的槽跑钩子、只对 [0, used) 撤引用边；[used, cap)
+ * 是「没有元素的容量」。
  *
  * **引用边**：元素里可能含引用域，写入这些域会在回收运行期的外部边表里留一条登记，键是
- * 槽地址。所以任何**搬动或丢弃**元素的动作都要先撤销 `[from, to)` 的登记（`dropRefs`），
- * 不然那块存储会被当成永远的标记根。不含引用的 `T` 里这条调用是空表检查。
+ * 槽地址。所以任何**搬动或丢弃**元素的动作都要先撤销 [from, to) 的登记（dropRefs），
+ * 不然那块存储会被当成永远的标记根。不含引用的 T 里这条调用是空表检查。
  */
-
 use std::sys::bufrt as bufrt
 use std::sys::heap as sysheap
 
@@ -27,8 +23,6 @@ use std::sys::heap as sysheap
 let DENSE_SLOT_BYTES: i64 = 65536
 /* 稠密槽的最小容量：一张新表至少这么多槽，省掉「插入第二个元素就长一次」。 */
 let DENSE_MIN_CAP: i64 = 8
-/* 句柄里纪元那几位（只影响检测强度，不影响正确性，见 `pool<T>` 的同名说明）。 */
-let HANDLE_EPOCH_BITS: i64 = 32
 
 /* 尺寸类：16 B 起、每次翻倍，到 64 KiB。返回值 >= want。 */
     @private
@@ -40,8 +34,8 @@ fn denseClassBytes(want: i64) -> i64 {
 
 /* 一块**拥有的**类型化存储：容量固定（`capacity()`）、整块归还、`[0, used)` 是元素。
  *
- * 它只做三件事：给定容量拿存储、按下标读写、整块还回去。增长由使用者做（见 `slots<T>`）：
- * 因为增长时要先把元素**搬出来**（元素可能拥有存储），再还旧块 —— 那是使用者的语义。 */
+ * 它只做三件事：给定容量拿存储、按下标读写、整块还回去。增长由使用者做：
+ * 先把元素一个个**搬出来**（元素可能拥有存储），再还旧块 —— 那是使用者的语义。 */
 @noCopy
 struct block<T> {
     @private mem:   mut slice<u8>   /* 同一片存储的字节视图（归还时交出 `mem.data`） */
@@ -218,330 +212,5 @@ struct block<T> {
         if rc != 0 { trap("dense block: cannot give the block back") }
         self.bytes = u64(0)
         self.cap = 0
-    }
-}
-/* 一个稳定引用。它是**值**：拷贝它是安全的（容器拥有存储，句柄只负责命名）。 */
-struct slotHandle {
-    slot: i32
-    gen:  i32
-    @private ep: i64                 /* 这个句柄出生时的纪元（被掩码过） */
-
-    /* 同一个槽、同一世代、同一纪元，才是同一个东西。 */
-    fn same(self: ref slotHandle, other: slotHandle) -> bool {
-        return self.slot == other.slot && self.gen == other.gen && self.ep == other.ep
-    }
-}
-
-/* 稠密槽存储：稳定句柄、连续存储、槽位复用。它是 `std::data::pool::pool<T>` 的替代品，
- * 换掉的东西只有一样：三块存储从「运行期池的板块」变成「自己的类型化块」（`block<T>`）。
- *
- * 语义与 `pool<T>` 逐条相同 —— 稳定句柄（世代 + 纪元）、稠密前缀（交换删除，遍历连续）、
- * 空洞链 + bump 游标、`clear` 翻纪元否决旧句柄。多出来的两条是这次换基质的**全部目的**：
- *   - 存储跟着值走：`block<T>` 有名字、有类型、由字段 `@drop` 归还，不再需要运行期的池记录；
- *   - `clear` / `release` / `remove` 对**元素**跑 `@drop`（`elemDrop<T>` 对没有钩子的 `T`
- *     编译成 `(void)0`，所以 POD 元素一点不慢）。旧的 `pool<T>` 把值当字节数组，翻纪元之后
- *     元素里拥有的存储就没人还了。
- *
- * ⚠️ 与 `pool<T>` 的**唯一不兼容**：`pool<T>` 是 `@sharesStorage` 的（`var b = a` 共享板块）；
- * 这个类型是 `@noCopy`（它拥有存储）。要副本就写 `clone()`。
- */
-@noCopy
-struct slots<T> {
-    @private vals:  block<T>          /* dense：前 n 个是活值，按稠密序 */
-    @private rev:   block<i32>        /* 稠密下标 -> 槽号（反向映射），前 n 个有效 */
-    /* 一条 i64 元数据代替两条（`sparse` + `gens`）：
-     *     活槽：(gen << 32) | (dense + 1)          低半段在 [1, cap]
-     *     空槽：(gen << 32) | (next + cap + 2)      低半段在 [cap+1, 2cap+1]
-     *   活/空闲是跟 `cap` 比一个数；世代跨过「变空闲」保留下来。
-     * 这张表整块写成 0（0 就是「从未用过的空闲槽」）⇒ 构造时清零一次、增长时清零新增段。 */
-    @private ent:   block<i64>
-    /* 纪元：`clear` 只翻这一个字段（对 POD 元素是 O(1)），句柄带着它出生时的值。
-     * 它**只能否决**、不能确认 —— 见 `pLive`。 */
-    @private epoch: i64
-    /* 本纪元的槽由 bump 游标 + 显式空洞链分配：
-     *   INVARIANT  本纪元的活槽 = [0, cursor) 减去空洞链上的槽。
-     * 所以 `slot >= cursor` 的槽本纪元还没发出去过，读起来是空闲。
-     *   - `cursor`  : 本纪元用过的最高槽 + 1（bump 前沿）
-     *   - `holeHead`: `remove` 让出来的槽链的链头（-1 = 没有洞） */
-    @private cursor:   i32
-    @private holeHead: i32
-    @private n:      i64             /* 活值个数，恒等于稠密前缀长度 */
-    @private cap:    i64
-
-    /* --- 打包元数据，只在这几个函数里解释 --- */
-    @inline
-    @private fn pLow(e: i64) -> i64 { return e & 4294967295 }
-    @inline
-    @private fn pDense(e: i64) -> i64 { return (e & 4294967295) - 1 }
-    @inline
-    @private fn pGen(e: i64) -> i64 { return e >> 32 }
-    @inline
-    @private fn pPack(gen: i64, low: i64) -> i64 { return (gen << 32) | low }
-
-    /* --- 纪元，只在这几个函数里解释：位宽在 HANDLE_EPOCH_BITS --- */
-    @inline
-    @private fn pEpMask() -> i64 { return (i64(1) << HANDLE_EPOCH_BITS) - 1 }
-    @inline
-    @private fn pEp(v: i64) -> i64 { return v & slots<T>::pEpMask() }
-
-    /* 槽是不是空闲的：`low == 0`（清零、从未用过）或 `low > cap`（空洞链的编码）。
-     * 把 0 也算空闲是关键：`ent` 建好即清零 ⇒ 全新的表天然全空闲，`withCap` 不必逐槽写编码。 */
-    @inline
-    @private
-    fn pFree(self: ref slots<T>, e: i64) -> bool {
-        let lo: i64 = slots<T>::pLow(e)
-        return lo == 0 || lo > self.cap
-    }
-
-    /** @brief 一张能装 `want` 个值、还没长过的空表。 */
-    fn withCap(want: i64) -> slots<T> {
-        var c: i64 = want
-        if c < DENSE_MIN_CAP { c = DENSE_MIN_CAP }
-        var s: slots<T> = {
-            vals:  block<T>::withCap(c),
-            rev:   block<i32>::withCap(c),
-            ent:   block<i64>::withCap(c),
-            epoch: 0,
-            cursor: i32(0),
-            holeHead: i32(-1),
-            n: 0,
-            cap: c,
-        }
-        /* 元数据表是唯一需要主动清零的列：0 就是「空闲」的编码（脏槽里可能是活槽的编码）。 */
-        var i: i64 = 0
-        while i < c { s.ent[i] = 0  i = i + 1 }
-        s.ent.setUsed(c)
-        return s
-    }
-
-    /** @brief 活值个数。 */
-    @inline
-    fn len(self: ref slots<T>) -> i64 { return self.n }
-
-    /** @brief 当前容量（`shrink` 之后变小；增长是 1.5 倍）。 */
-    @inline
-    fn capacity(self: ref slots<T>) -> i64 { return self.cap }
-
-    /** @brief 三个块当下握着的字节数（账本口径）。 */
-    fn bytesOf(self: ref slots<T>) -> i64 {
-        return self.vals.bytesOf() + self.rev.bytesOf() + self.ent.bytesOf()
-    }
-
-    /* 唯一的「这个句柄还有效吗」入口，两层按顺序：
-     *   1. 纪元：句柄出生纪元 vs 当前纪元。不等 ⇒ 整代作废（`clear`）⇒ 当场否决，连 `ent` 都不碰；
-     *   2. 槽：纪元相等**不等于**活着；权威是打包的低半段（空闲槽 > cap）加上槽世代。这一层
-     *      抓的是同一纪元里的槽复用（`remove` 之后 `insert` 又拿到同一个槽）。 */
-    @private
-    fn pLive(self: ref slots<T>, h: slotHandle) -> bool {
-        if slots<T>::pEp(h.ep) != slots<T>::pEp(self.epoch) { return false }
-        let s: i64 = i64(h.slot)
-        if s < 0 || s >= self.cap { return false }
-        let e: i64 = self.ent[s]
-        if self.pFree(e) { return false }
-        return slots<T>::pGen(e) == i64(h.gen)
-    }
-
-    /** @brief 这个句柄还是它命名的那个槽吗？ */
-    fn contains(self: ref slots<T>, h: slotHandle) -> bool { return self.pLive(h) }
-
-    /** @brief 值，或者句柄失效时的 `none`。 */
-    fn get(self: ref slots<T>, h: slotHandle) -> ?T {
-        if !self.contains(h) { return none }
-        return some(self.vals[slots<T>::pDense(self.ent[i64(h.slot)])])
-    }
-
-    /** @brief 通过句柄写。句柄失效时返回 false（什么都不写）。 */
-    fn set(self: mut ref slots<T>, h: slotHandle, v: T) -> bool {
-        if !self.contains(h) { return false }
-        let d: i64 = slots<T>::pDense(self.ent[i64(h.slot)])
-        self.vals.dropAt(d)              /* 被覆盖的值：跑钩子（POD 是空操作） */
-        self.vals.dropRefs(d, d + 1)     /* 再撤它的引用域登记 */
-        self.vals[d] = v
-        return true
-    }
-
-    /* 加一个值、把句柄交回去。槽的选择顺序：
-     *   1. 空洞链（`remove` 还回来的槽）—— 弹链头；
-     *   2. 否则 bump 游标 —— 本纪元没用过的槽。
-     * 本纪元没用过的槽里还留着**上一个纪元**的打包字：只继承它的世代，其余覆盖。
-     * 整字覆写正是让这件事安全的原因。 */
-    fn insert(self: mut ref slots<T>, v: T) -> slotHandle {
-        if self.holeHead < i32(0) && i64(self.cursor) >= self.cap { self.grow() }
-        var s: i64 = 0
-        if self.holeHead >= i32(0) {
-            s = i64(self.holeHead)
-            self.holeHead = i32(slots<T>::pLow(self.ent[s]) - self.cap - 2)
-        } else {
-            s = i64(self.cursor)
-            self.cursor = self.cursor + i32(1)
-        }
-        let e: i64 = self.ent[s]
-        self.ent[s] = slots<T>::pPack(slots<T>::pGen(e), self.n + 1)
-        self.rev[self.n] = i32(s)
-        self.vals[self.n] = v
-        self.n = self.n + 1
-        self.vals.setUsed(self.n)
-        self.rev.setUsed(self.n)
-        return slotHandle { slot: i32(s), gen: i32(slots<T>::pGen(e)), ep: slots<T>::pEp(self.epoch) }
-    }
-
-    /* 释放一个槽，并且**不移动任何其它值的稠密位置**：把最后一个值换进洞里，
-     * 活值前缀保持连续（这是让遍历可向量化的原因）。`remove` 同时把该槽的世代 +1，
-     * 让它的所有旧句柄失效。句柄已经失效时返回 false。
-     *
-     * 元素是**有钩子**的：洞里的值先跑 `@drop`，最后一个值是被**搬**过来的（`take`，槽里留零）。
-     * 两处都要撤外部边登记，否则那块存储会被当成永远的标记根。 */
-    fn remove(self: mut ref slots<T>, h: slotHandle) -> bool {
-        if !self.pLive(h) { return false }
-        let s: i64 = i64(h.slot)
-        let e: i64 = self.ent[s]
-        let d: i64 = slots<T>::pDense(e)
-        let last: i64 = self.n - 1
-        self.vals.dropAt(d)
-        self.vals.dropRefs(d, d + 1)
-        if d != last {
-            self.vals[d] = self.vals.take(last)
-            self.vals.dropRefs(last, last + 1)
-            let moved: i64 = i64(self.rev[last])
-            self.rev[d] = i32(moved)
-            let me: i64 = self.ent[moved]
-            self.ent[moved] = slots<T>::pPack(slots<T>::pGen(me), d + 1)
-        }
-        self.n = last
-        self.vals.setUsed(self.n)
-        self.rev.setUsed(self.n)
-        /* 世代 +1（这个槽的旧句柄失效，**本纪元里也失效**）并挂上空洞链，一次写。 */
-        self.ent[s] = slots<T>::pPack(slots<T>::pGen(e) + 1, i64(self.holeHead) + self.cap + 2)
-        self.holeHead = i32(s)
-        return true
-    }
-
-    /* 清空。对 POD 元素是 O(1)（翻纪元、重置游标，一个槽都不写）；
-     * 对**有钩子**的元素必须在这里跑钩子（否则它们拥有的存储就漏了）—— `elemDrop<T>` 对没有钩子的
-     * `T` 编译成 `(void)0`，所以那条语句对 POD 是免费的。 */
-    fn clear(self: mut ref slots<T>) {
-        if self.n > 0 {
-            self.vals.dropRefs(0, self.n)
-            self.vals.dropRange(0, self.n)
-            self.vals.setUsed(0)
-            self.rev.setUsed(0)
-        }
-        self.epoch = self.epoch + 1
-        self.n = 0
-        self.cursor = i32(0)
-        self.holeHead = i32(-1)
-    }
-
-    /** @brief 稠密前缀，按顺序：连续，所以遍历它就是在遍历内存。 */
-    @inline
-    fn atDense(self: ref slots<T>, i: i64) -> T { return self.vals[i] }
-
-    /** @brief 写第 `i` 个稠密值（稠密下标是存储的名字，不带世代；越界会响亮 trap）。 */
-    @inline
-    fn setAtDense(self: mut ref slots<T>, i: i64, v: T) -> bool {
-        if i < 0 || i >= self.n { return false }
-        self.vals.dropAt(i)
-        self.vals.dropRefs(i, i + 1)
-        self.vals[i] = v
-        return true
-    }
-
-    /** @brief 第 `i` 个稠密值的句柄（`atDense` 的逆）。 */
-    @inline
-    fn handleAtDense(self: ref slots<T>, i: i64) -> slotHandle {
-        let s: i64 = i64(self.rev[i])
-        return slotHandle { slot: i32(s), gen: i32(slots<T>::pGen(self.ent[s])), ep: slots<T>::pEp(self.epoch) }
-    }
-
-    /** @brief 把一批句柄一次性解析成稠密下标（失效的写 -1），返回有效的个数。 */
-    fn gather(self: ref slots<T>, hs: slice<slotHandle>, out: mut slice<i64>) -> i64 {
-        var k: i64 = 0
-        var i: i64 = 0
-        while i < hs.len {
-            let h: slotHandle = hs[i]
-            let s: i64 = i64(h.slot)
-            var d: i64 = -1
-            if s >= 0 && s < self.cap {
-                let e: i64 = self.ent[s]
-                if slots<T>::pLow(e) <= self.cap && slots<T>::pGen(e) == i64(h.gen) {
-                    d = slots<T>::pDense(e)
-                    k = k + 1
-                }
-            }
-            out[i] = d
-            i = i + 1
-        }
-        return k
-    }
-
-    /** @brief 活值的只读视图（**不拷贝**）。`insert` / `remove` / `clear` / 增长之后失效。 */
-    fn view(self: ref slots<T>) -> slice<T> { return self.vals.view(0, self.n) }
-
-    /* 增长 1.5 倍：三块都换新块（旧块当场还掉）。元素是被**搬**过去的 —— 见 `block::growTo`。
-     * 空洞链与游标原样带过去，`grow` 不许丢洞。`ent` 新长出来的那一段必须清零（0 = 空闲）。 */
-    @private
-    fn grow(self: mut ref slots<T>) {
-        var ncap: i64 = self.cap + self.cap / 2
-        if ncap <= self.cap { ncap = self.cap + 1 }
-        let old: i64 = self.cap
-        self.vals.growTo(ncap)
-        self.rev.growTo(ncap)
-        self.ent.growTo(ncap)
-        self.cap = ncap
-        var i: i64 = old
-        while i < ncap { self.ent[i] = 0  i = i + 1 }
-        self.ent.setUsed(ncap)
-    }
-
-    /** @brief 缩到刚好装下活值（下限 `DENSE_MIN_CAP`）：把高水位让出去，句柄全部继续有效。 */
-    fn shrink(self: mut ref slots<T>) {
-        var ncap: i64 = self.n
-        if ncap < DENSE_MIN_CAP { ncap = DENSE_MIN_CAP }
-        if ncap >= self.cap { return }
-        self.vals.shrinkTo(ncap)
-        self.rev.shrinkTo(ncap)
-        self.ent.shrinkTo(ncap)
-        var head: i32 = i32(-1)
-        var prev: i64 = -1
-        var used: i64 = i64(self.cursor)
-        if used > ncap { used = ncap }
-        var i: i64 = used - 1
-        while i >= 0 {
-            if self.pFree(self.ent[i]) {
-                if prev < 0 {
-                    head = i32(i)
-                } else {
-                    self.ent[prev] = slots<T>::pPack(slots<T>::pGen(self.ent[prev]), i + ncap + 2)
-                }
-                prev = i
-            }
-            i = i - 1
-        }
-        if prev >= 0 {
-            self.ent[prev] = slots<T>::pPack(slots<T>::pGen(self.ent[prev]), i64(head) + ncap + 2)
-        }
-        self.holeHead = head
-        self.cursor = i32(ncap)
-        self.cap = ncap
-        self.ent.setUsed(ncap)
-    }
-
-    /* 提前把三块还回去（之后字段的自动 `@drop` 再发一次也是空操作）。
-     * 活值先跑钩子：它们拥有的存储归它们自己，块只管槽。 */
-    fn release(self: mut ref slots<T>) {
-        if self.cap <= 0 { return }
-        if self.n > 0 {
-            self.vals.dropRefs(0, self.n)
-            self.vals.dropRange(0, self.n)
-            self.vals.setUsed(0)
-            self.rev.setUsed(0)
-        }
-        self.vals.release()
-        self.rev.release()
-        self.ent.release()
-        self.n = 0
-        self.cap = 0
-        self.cursor = i32(0)
-        self.holeHead = i32(-1)
     }
 }
