@@ -2738,8 +2738,9 @@ int valDepthForStore (Checker *, Expr *);
  *   - `calleeMakesPool` / `calleeCreatesPool` ask "will this call create a pool" => the whole family;
  *   - the codegen rewrite points add a home zone only to the **two without a zone parameter** (the
  *     `_at` variants carry their own).
- * Consequence of failing to register one name: `extc_pool_new_table` gets no zone =>
- * `extc_pool_new_at(parent, extc_zoneTop)` hits `extc_zoneTop == -1` => **returns -1**. */
+ * Consequence of failing to register one name: nothing implements this family in the emitted
+ * C (places own the dynamic storage), so the list serves only to keep the checker and the code
+ * generator keyed on one spelling; it goes away with the primitives themselves. */
 
 /* The pool primitives form **one list with one spelling**: the checker validates their arity
  * and code generation lowers them by hand, both keyed on the same names. Adding a name on one

@@ -558,7 +558,7 @@ c_t = tau_pop / s_bar          tau_t = tau_pop
 | 0 | P1-4 产物头 `EXTC_RC_TIER` | `src/back/codegen.c:12663` | **已落地** | 三档可 grep |
 | 0 | P1-3 `REG_MAX` 满表显式化 | `src/back/codegen.c` | **已落地**（[reg] 溢出告警，见 6.1） | 注册溢出可观测 |
 | 0 | P0-7 计数档参数槽覆盖（减了没加过的计数） | `src/back/codegen.c` | **已落地**（insert-only 覆盖） | G12 999 |
-| 0 | P0-7b 含引用元素的批量拷贝绕过计数 | `src/back/codegen.c:1286-1330`、`src/back/pools.c:63/72` | **已落地**（storeStructCopy） | G13 7 |
+| 0 | P0-7b 含引用元素的批量拷贝绕过计数 | `src/back/codegen.c:1286-1330`、`src/back/pools.c:63/72`（v38 起池退场，这两处 resize 随 `poolResize*` 一起删除） | **已落地**（storeStructCopy） | G13 7 |
 | 1 | P0-1 `SCAN_CHUNK` 65536→8192 | `EXTC_RC_SCAN_CHUNK` 的 `#define` | **已落地** | G1③、pd 尾巴 |
 | 1 | P0-3 `releaseOld` 步数预算 | `EXTC_RC_RELEASE_BUDGET` 的 `#define`、`extc_rc_releaseOld` 主体 | **已落地**（2048） | G2 |
 | 1 | P0-2 `regionFree` 成本界 + `[regionfree]` 探针 | `extc_rc_regionFree`、`[regionfree]`/`[freequeue]`/`[closing]` 探针打印段 | **已落地**（P0 轮：成本界 + 探针；P1 轮：两阶段 + 有预算排空；v8 轮：region 级 closing queue，见 6.2 / 6.7.3） | G3a PASS / G3b **已闭合**（v8：pd 0.4 µs、dense 1.6 µs、pb 100M 1.7 µs；v7 遗留的 dense 1,365 µs / pb 13.2–14.8 ms 由 closing queue 消除） |
@@ -591,7 +591,7 @@ c_t = tau_pop / s_bar          tau_t = tau_pop
 
 **P0-7 / P0-7b 计数档的两条 UAF（`doc-audit` 运行复现，HEAD 亦复现 ⇒ pre-existing）**：
 1. **参数槽覆盖**（`codegen.c:8992`）：`fn clobber(p: mut ref node){ p = new node }` 在计数档发 `extc_rc_storeRefOwned((void**)&p, v, 0)`，而 `storeRefOwned` 无条件对旧值 `holdUpdSlab(...,-1)`（`extc_rc_holdUpdSlab` 的 `-1` 分支）；参数槽入口从不 `initRef`/inc（只登记为根，`codegen.c:10140/10113`）⇒ 减了没加过的计数 ⇒ 活对象被提前释放、槽复用（实测 a、b 同槽，输出 111 而非 999）。修法取**保守方向**：计数档对引用型参数槽的赋值只插入新值 +1、**不递减旧值**（最多泄漏一个引用，不会早放）；不走「入口 initRef + 全退出路径 dec」（return/trap/协程 step 全要动，风险更大）。
-2. **批量字节拷贝**（`genViewCopier` `codegen.c:1286-1330`；`poolResize`/`poolResizeRaw` `pools.c:63/72`）：对任意元素类型发 `memmove` ⇒ 含引用的元素被复制却不 inc，源被覆盖后目标悬垂（实测 `d[0].r.v` 输出 555）。修法：编译期已知元素类型描述符 ⇒ 对**含引用元素**的类型逐元素拷贝（引用字段走 `storeRef`/`storeStructCons`），纯数据元素保持 `memmove`。
+2. **批量字节拷贝**（`genViewCopier` `codegen.c:1286-1330`；`poolResize`/`poolResizeRaw` `pools.c:63/72`（v38 已删，`copyInto` 仍在用））：对任意元素类型发 `memmove` ⇒ 含引用的元素被复制却不 inc，源被覆盖后目标悬垂（实测 `d[0].r.v` 输出 555）。修法：编译期已知元素类型描述符 ⇒ 对**含引用元素**的类型逐元素拷贝（引用字段走 `storeRef`/`storeStructCons`），纯数据元素保持 `memmove`。
 
 两条都只在**计数档**可达，但计数档是「无环 unit 自动升级」的默认档，所以不是死代码路径。两者的共同教训：计数正确性依赖「每次写入 +1」这条不变式（§6.1 表），任何**绕过写屏障的写入路径**（参数槽初始化、memmove、realloc 迁移）都是漏洞面——这也是 §8.2 的 L9/L10。
 

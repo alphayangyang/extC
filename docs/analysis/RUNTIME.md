@@ -61,7 +61,7 @@
 | 巨块（big=1） | reclaim.c:786-794、2006 | calloc 头 + malloc(slotSize) 载荷 | 槽释放只进复用链；载荷只在 regionFree 时 free | 随 rc |
 | bump 区 | reclaim.c:1896-1918 | rc slab 内 bump | bumpReset 整片回卷（O(1)）；否则等 regionFree | 随 rc（codegen 的 parse/临时对象） |
 | arena | codegen.c:12130-12163 | calloc block（cap 从 64 起倍增，1 MiB 后不再倍增） | 作用域 extc_arena_release（留 1 个 spare block，其余 free）、extc_arena_destroy（含 spare） | 开（非 rc 程序的主要来源） |
-| pool | pools.c（整段为发射文本） | malloc（take）/ realloc（resize） | drop/release/place 结束；generation 使陈旧句柄失效 | 按需 |
+| place 载荷区（dyn） | places.c（整段为发射文本，315 行） | calloc 一个 chunk + bump（extc_place_alloc） | place 结束整条 chunk 链 free；槽世代（zgen）使陈旧句柄失效 | 按需 |
 | coroutine task arena | coroutine.c:50-57、97-150 | extc_arena_alloc | extc_task_end 时 extc_arena_destroy（不只是 release，注释 142-145） | 按需 |
 | parallel worker arena | codegen.c:14685-14815 | 每 worker 一个 extc_arena（EXTC_PAR_REGION 时来自 extc_par_region） | worker 结束 destroy + regionDrop | 按需 |
 | domain | domain.c | calloc/realloc | extc_dom_free | 按需 |

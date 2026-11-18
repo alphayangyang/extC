@@ -109,9 +109,9 @@ R5 **零值必须可 drop。** 声明 `var s: string` 得到的是**值**（内�
 2. ~~`string`~~：已完成 —— SSO 16 字节保留，长存储走基质（§5），`@value` + `@drop`，深拷贝 `clone`。
 3. ~~`hashMap<K,V>`~~：已完成 —— 四列 `block`（键 / 标记 / 槽号 / 稠密下标反查）+ 一条 `slots<V>`
    值列，`rebuild` 先重排再用 `adopt` 整列接管（§18）。
-4. **`map<K,V>`**（有序 map）同上；`place.extc` 的池引用迁走。
-5. **删池**：`stdlib/std/sys/pool.extc`（77 行）、`stdlib/std/data/pool.extc`（493 行）、运行期
-   `src/back/pools.c` 与 `extc_pool_*`。到此存储基质从四种（帧 arena / 回收区 / 池 / plate）变成三种。
+4. ~~**`map<K,V>`**（有序 map）~~：已完成；`place.extc` 已随池退场删除。
+5. ~~**删池**~~：**已完成（v38）** —— `stdlib/std/sys/pool.extc`（77 行）、`stdlib/std/data/pool.extc`（493 行）、运行期
+   `src/back/pools.c` 与 `extc_pool_*` 全部删除，`dyn` 载荷改落 place 的 chunk 链（`src/back/places.c`）。存储基质重列为：帧 arena / rc region / place 载荷区（`dyn`）/ 协程任务 arena / plate；另有 `buf<T>` 地址预留（第六种）。
 
 每一步的判据（缺一不可）：
 

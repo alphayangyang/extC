@@ -12,8 +12,8 @@ src/back/memfind.h	0
 src/back/modules.c	0
 src/back/plate.c	0
 src/back/plate.h	0
-src/back/pools.c	0
-src/back/pools.h	0
+src/back/places.c	0
+src/back/places.h	0
 src/back/prelude.c	0
 src/back/prelude.h	0
 src/base/base.c	0

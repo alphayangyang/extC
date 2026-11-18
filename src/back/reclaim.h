@@ -3,7 +3,7 @@
  * @brief On-demand emission entry point for the reclamation runtime: bitmap slab
  * allocator + holder-count zeroing + region sweep.
  *
- * It has the same shape as the gates in pools.h and plate.h: one flag in codegen, and this
+ * It has the same shape as the gates in places.h and plate.h: one flag in codegen, and this
  * C block is appended to the same translation unit on demand. The trigger is "the program
  * has heap storage that needs reclaiming", so a program without reclamation carries not one
  * byte of it.

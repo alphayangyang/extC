@@ -259,9 +259,9 @@ T0 程序编译成空操作：`extc_buf_releaseRefs` 的函数体被 `#if define
 
 ### 10.5 未做
 
-- 容器层已全部离开池板块；`place` 模块与 stdlib 的池模块已删，运行期池只剩 `dyn` 与 zone 链在用（`src/back/pools.c` 随 `dyn` 换底删除）。
+- 容器层已全部离开池板块；`place` 模块与 stdlib 的池模块已删，运行期池已整体退场（v38）：`dyn` 载荷改为 bump 分配进命名 place 的 `malloc` chunk 链（`src/back/places.c`，315 行），place 栈改名为 `extc_place_*`；`src/back/pools.c` / `pools.h` 已删除。
 - `vector` 的 `@noCopy` 让「按值拷贝共享」这一族测试失效：`tests/pool/rt_stale_alias.extc` 已改成
-  编译错负例，`tests/pool/rt_clone_alias.extc` 是 `clone()` 的正例；池的其余用例等 R4c 后续步。
+  编译错负例，`tests/pool/rt_clone_alias.extc` 是 `clone()` 的正例；`tests/pool/` 整个目录已随池退场删除（Phase A 收口）。
 
 ### 10.6 视图元素不能装「拥有预留的值」
 

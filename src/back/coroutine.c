@@ -16,7 +16,7 @@
  *     the environment (rule 1).
  *
  * The frame still carries the zone itself: a step reads it from there, which is what the J1
- * check in `tools/check_concurrency_guards.py` enforces (no `extc_zoneTop` inside a `$step`).
+ * check in `tools/check_concurrency_guards.py` enforces (no `extc_placeTop` inside a `$step`).
  */
 #include "coroutine.h"
 
@@ -35,13 +35,15 @@
 void coroutineEmitRuntime(Arena *a, Buf *out) {
     (void)a;
     bufPuts(out,
-        "/* The two pool primitives this table sits on: declared here because the pool runtime is\n"
+        "/* The place primitives this table sits on: declared here because the place runtime is\n"
         " * emitted on demand, and a program that only spawns coroutines never pulls it in by itself\n"
         " * (`genCoroDecls` marks the pool runtime needed as well, which is what defines them). */\n"
-        "int64_t extc_pool_zoneEnter(void);\n"
-        "void    extc_pool_zoneLeaveTo(int64_t mark);\n"
-        "int64_t extc_pool_zoneNewRoot(void);\n"
-        "void    extc_pool_zoneFreeRoot(int64_t zi);\n"
+        "int64_t extc_place_enter(void);\n"
+        "void    extc_place_leaveTo(int64_t mark);\n"
+        "int64_t extc_place_newRoot(void);\n"
+        "void    extc_place_freeRoot(int64_t zi);\n"
+        "int64_t extc_place_count(void);\n"
+        "int64_t extc_place_isRoot(int64_t zi);\n"
         "/* ---- coroutine task table ----\n"
         " * A task is the place its coroutine's storage hangs off: entered at the spawn, made\n"
         " * current for every step, and released in one go when the task ends. The table is what\n"
@@ -55,14 +57,14 @@ void coroutineEmitRuntime(Arena *a, Buf *out) {
         " * same shape as a block arena or a pool plate. A boxed coroutine's frame is the first\n"
         " * tenant -- it must outlive the C scope that spawned it. */\n"
         "static extc_arena *extc_taskArena;\n");
-    bufPuts(out,         "/* ---- whole-pool collection: roots handed in by the emitter ----\n"
-        " * A place a task owns (`extc_pool_zoneNewRoot`) is out of the block stack, so no\n"
+    bufPuts(out,         "/* ---- whole-place collection: roots handed in by the emitter ----\n"
+        " * A place a task owns (`extc_place_newRoot`) is out of the block stack, so no\n"
         " * `zoneLeaveTo` can reach it. Once the last handle that could still drive that task is\n"
         " * gone nothing can reach it either, and that is the one shape in which a pool outlives\n"
         " * every reference to it: the emitter registers the handles it can see, and collection\n"
-        " * frees what no registered handle reaches. Without `needPool` there are no places, so\n"
+        " * frees what no registered handle reaches. Without `needPool` there is no place runtime, so\n"
         " * this section ships only where the task table does (which sets `needPool`).\n"
-        " * A task-owned place is recognised by `depth == 0`: `extc_zonePush` always sets depth\n"
+        " * A task-owned place is recognised by `depth == 0`: `extc_place_enter` always pushes depth\n"
         " * >= 1, and the allocator leaves a fresh root at 0. */\n"
         "static int64_t *extc_taskRoots[64];\n"
         "static int64_t  extc_taskRootN;\n"
@@ -77,8 +79,8 @@ void coroutineEmitRuntime(Arena *a, Buf *out) {
         "/* Free every task-owned place that no registered handle reaches any more. */\n"
         "int64_t extc_task_collect(void) {\n"
         "    int64_t freed = 0;\n"
-        "    for (int64_t zi = 0; zi < extc_zoneNext; zi++) {\n"
-        "        if (!extc_zones[zi].live || extc_zones[zi].depth != 0) continue;\n"
+        "    for (int64_t zi = 0; zi < extc_place_count(); zi++) {\n"
+        "        if (!extc_place_isRoot(zi)) continue;\n"
         "        int reachable = 0;\n"
         "        for (int64_t i = 0; i < extc_taskRootN && !reachable; i++) {\n"
         "            int64_t t = *extc_taskRoots[i];\n"
@@ -88,7 +90,7 @@ void coroutineEmitRuntime(Arena *a, Buf *out) {
         "        if (reachable) continue;\n"
         "        for (int64_t t = 0; t < extc_taskNext; t++)\n"
         "            if (extc_taskLive[t] && extc_taskZone[t] == zi) extc_task_end(t);\n"
-        "        extc_pool_zoneFreeRoot(zi);\n"
+        "        extc_place_freeRoot(zi);\n"
         "        freed++;\n"
         "    }\n"
         "    return freed;\n"
@@ -100,7 +102,7 @@ void coroutineEmitRuntime(Arena *a, Buf *out) {
         "    /* The task's place is a **root** slot: not on the block stack, so no enclosing block\n"
         "     * leave and no other task's end can pop it, and ending this task can release exactly\n"
         "     * its own storage whenever that happens (a task's lifetime is not LIFO). */\n"
-        "    int64_t zone = extc_pool_zoneNewRoot();\n"
+        "    int64_t zone = extc_place_newRoot();\n"
         "    if (extc_taskNext == extc_taskCap) {\n"
         "        int64_t cap = extc_taskCap ? extc_taskCap * 2 : 16;\n"
         "        int64_t *z = (int64_t *)realloc(extc_taskZone, (size_t)cap * sizeof *z);\n"
@@ -146,7 +148,7 @@ void coroutineEmitRuntime(Arena *a, Buf *out) {
         "    /* Its own place in one go too -- precisely, whatever the stack looks like: the old\n"
         "     * `zoneLeaveTo` popped every zone above this one (killing live tasks) or nothing at\n"
         "     * all (leaking), because it assumed the task was the topmost place. */\n"
-        "    extc_pool_zoneFreeRoot(extc_taskZone[id]);\n"
+        "    extc_place_freeRoot(extc_taskZone[id]);\n"
         "}\n"
         "/* Is this one task still alive? A handle outlives its task only by mistake: driving one\n"
         " * must trap loudly, not touch the freed place the frame lived in. */\n"

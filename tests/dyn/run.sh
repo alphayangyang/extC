@@ -79,7 +79,7 @@ esac
 d=$(mktemp -d)
 if "$EXTC" -w --no-line-map -o "$d/v.c" tests/dyn/dyn_stored.extc >/dev/null 2>&1 \
    && grep -q '= extc_dyn_put(' "$d/v.c"; then
-    ok dyn_stored_codegen "生成物把载荷拷进池（= extc_dyn_put(）"
+    ok dyn_stored_codegen "生成物把载荷存进 place（= extc_dyn_put(）"
 else
     bad dyn_stored_codegen "生成物里没有 extc_dyn_put"
 fi
@@ -166,12 +166,12 @@ fi
 if "$EXTC" -w --no-line-map -o "$tmp/s.c" tests/dyn/dyn_stored_call.extc >/dev/null 2>&1; then
     puts2=$(grep -o '= extc_dyn_put(' "$tmp/s.c" | wc -l | tr -d " ")
     slots2=$(grep -o '= extc_dyn_slot(' "$tmp/s.c" | wc -l | tr -d " ")
-    tbl=$(grep -c 'extc_pool_new_table' "$tmp/s.c" || true)
+    tbl=$(grep -c 's->addr = extc_place_alloc(zi, size);' "$tmp/s.c" || true)
     disp=$(grep -o '\->vt)->' "$tmp/s.c" | wc -l | tr -d " ")
     if [ "$puts2" -ge 1 ] && [ "$slots2" -ge 1 ] && [ "$tbl" -ge 1 ] && [ "$disp" -ge 1 ]; then
-        ok dyn_object_table "存储值进**对象表池** + 取用前校验：new_table ×$tbl · put ×$puts2 · slot ×$slots2 · dispatch ×$disp"
+        ok dyn_object_table "存储值进**命名 place 的载荷** + 取用前校验：alloc ×$tbl · put ×$puts2 · slot ×$slots2 · dispatch ×$disp"
     else
-        bad dyn_object_table "new_table=$tbl put=$puts2 slot=$slots2 dispatch=$disp（都期望 ≥1）"
+        bad dyn_object_table "alloc=$tbl put=$puts2 slot=$slots2 dispatch=$disp（都期望 ≥1）"
     fi
     if gcc -std=c11 -fwrapv -Wall -Werror -fsyntax-only "$tmp/s.c" 2>"$tmp/e2"; then
         ok dyn_stored_contract "生成物合同编译零告警（存储值形式）"
@@ -192,13 +192,13 @@ if "$EXTC" -w --no-line-map -o "$tmp/r.c" tests/dyn/dyn_call.extc >/dev/null 2>&
     cat >> "$tmp/rt.c" <<'EOF'
 #undef main
 int main(void) {
-    int64_t z = extc_pool_zoneEnter();
+    int64_t z = extc_place_enter();
     box b; b.v = 7;
     ExtcDynHandle h = extc_dyn_put((const void *)&b, (int64_t)sizeof(box), &extc_vt$Tag$box, z);
     ExtcDynSlot *s = extc_dyn_slot(h, "runtime-judge", 1);
     printf("alive=%lld\n", (long long)*((int64_t *)s->addr));
     fflush(stdout);
-    extc_pool_zoneLeaveTo(z);            /* the place that owned the pool is gone */
+    extc_place_leaveTo(z);            /* the place that owned the pool is gone */
     ExtcDynSlot *s2 = extc_dyn_slot(h, "runtime-judge", 2);   /* must trap here */
     printf("NOT-REACHED %p\n", (void *)s2);
     return 0;

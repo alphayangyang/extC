@@ -44,12 +44,12 @@ BASELINE = os.path.join(ROOT, "tools", "layering-known-bad.txt")
 PHASE = {
     "base.h": 0, "ast.h": 1, "types.h": 2, "plan.h": 3,
     "check_internal.h": 4, "check.h": 4, "codegen.h": 5, "parser.h": 2, "lexer.h": 0,
-    "modules.h": 5, "dataflow.h": 4, "check_dataflow.h": 4, "coroutine.h": 5, "pools.h": 5, "plate.h": 5,
+    "modules.h": 5, "dataflow.h": 4, "check_dataflow.h": 4, "coroutine.h": 5, "places.h": 5, "plate.h": 5,
     "domain.h": 5, "memfind.h": 5, "prelude.h": 5, "dbg.h": 0, "time.h": 0,
 }
 # Headers a later phase may include even though they sit lower/higher in the table.
 PUBLISHED = {"plan.h", "check.h", "codegen.h", "parser.h", "modules.h", "types.h", "ast.h",
-             "base.h", "dbg.h", "coroutine.h", "pools.h", "plate.h", "domain.h",
+             "base.h", "dbg.h", "coroutine.h", "places.h", "plate.h", "domain.h",
              "memfind.h", "prelude.h", "lexer.h", "time.h", "dataflow.h"}
 PRIVATE = {"check_internal.h"}
 # The checker's own headers, in-layer for `check_*.c` by construction.
@@ -64,7 +64,7 @@ LAYER_OF_H = {
     "types.h": 2, "parser.h": 2, "typelayer.h": 2,
     "plan.h": 3,
     "check.h": 4, "check_internal.h": 4, "dataflow.h": 4,
-    "codegen.h": 5, "coroutine.h": 5, "modules.h": 5, "pools.h": 5, "plate.h": 5,
+    "codegen.h": 5, "coroutine.h": 5, "modules.h": 5, "places.h": 5, "plate.h": 5,
     "domain.h": 5, "memfind.h": 5, "prelude.h": 5,
 }
 

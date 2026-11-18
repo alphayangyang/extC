@@ -2,7 +2,7 @@
  * @file coroutine.h
  * @brief Coroutine task table: the runtime half of `coroutine<T>`.
  *
- * It is a file of its own for the same reason as the pool registry (pools.h): coroutines
+ * It is a file of its own for the same reason as the place registry (places.h): coroutines
  * touch several passes, and spreading the runtime through `codegen.c` would repeat the
  * pattern of "a little in every file, complete in none". Work that belongs to the compiler
  * stays in the compiler's files (`yield` desugaring, frames, stepping); what belongs to

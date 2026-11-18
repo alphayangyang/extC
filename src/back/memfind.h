@@ -3,7 +3,7 @@
  * @brief On-demand emission entry point for the byte-search runtime (`extc_memFind` /
  * `extc_memEq`).
  *
- * It has the same shape as the two gates in pools.h and coroutine.h: one flag in codegen
+ * It has the same shape as the two gates in places.h and coroutine.h: one flag in codegen
  * (`CG.needMemFind`), and after every function body has been emitted this C block is
  * appended to the same translation unit on demand.
  *

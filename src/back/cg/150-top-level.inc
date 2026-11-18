@@ -484,10 +484,10 @@ static void genCoroDecls(CG *g, Module *m) {
          * task's whole place goes in one release: the author's B decision for slice C. */
         if (planCoroNeedsZone(f)) {
             cgLine(g, "static bool %s$next(struct %s$frame *f) {", cFuncName(g, f), cFuncName(g, f));
-            cgLine(g, "    int64_t __sv = extc_zoneTop;");
-            cgLine(g, "    extc_zoneTop = f->zone;");
+            cgLine(g, "    int64_t __sv = extc_placeTop;");
+            cgLine(g, "    extc_placeTop = f->zone;");
             cgLine(g, "    bool __r = %s$step(f);", cFuncName(g, f));
-            cgLine(g, "    extc_zoneTop = __sv;");
+            cgLine(g, "    extc_placeTop = __sv;");
             cgLine(g, "    if (!__r) extc_task_end(f->task);   /* ran to completion: same release as a drop */");
             cgLine(g, "    return __r;");
             cgLine(g, "}");
@@ -778,7 +778,7 @@ static void genFuncInner(CG *g, FuncDef *f) {
     /* A step is not a place of its own: the task's place (slice C) is what its storage hangs off, so
      * it must not open a zone of its own here -- that mark also went unused in the generated C. */
     if (g->zoneHere && !g->noArena && planMakesPool(f) && !g->coroFunc) {
-        cgLine(g, "int64_t __extc_zm1 = extc_pool_zoneEnter();   /* the function body is one place */");
+        cgLine(g, "int64_t __extc_zm1 = extc_place_enter();   /* the function body is one place */");
         g->zoneMark[1] = true;
         g->zoneFrameMarked = true;
     }
@@ -1054,7 +1054,7 @@ static void genFuncInner(CG *g, FuncDef *f) {
          * prologue: nothing pushed, nothing popped. */
         for (int lv = maxLv; lv >= 1; lv--)
             if (lv < g->levelCap && g->zoneMark[lv])
-                cgLine(g, "extc_pool_zoneLeaveTo(__extc_zm%d);", lv);
+                cgLine(g, "extc_place_leaveTo(__extc_zm%d);", lv);
         if (isEntry) {
             if (g->needCout) cgLine(g, "extc_cout_flush();");
             /* The C entry point returns an `int`, so the value is cast - and it **is** the

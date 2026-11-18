@@ -843,7 +843,7 @@ static void assembleCoroutineRuntime(CG *g, Buf *out, Arena *arena) {
             if (!g->poolDone) {
                 Buf pr;
                 bufInit(&pr, arena);
-                poolsEmitRuntime(arena, &pr);
+                placesEmitRuntime(arena, &pr);
                 bufPuts(&nb, bufCstr(&pr));
                 g->poolDone = true;
             }
@@ -1669,7 +1669,7 @@ static void emitLateRuntime(CG *g, Buf *out, Module *m, Arena *arena) {
     if (g->needCout || g->needPrint) bufPuts(out, bufCstr(&g->rtCout));
     if (g->needPrint)                                  bufPuts(out, bufCstr(&g->rtPrint));
     if (g->needCoutF64) bufPuts(out, bufCstr(&g->rtCoutF64));
-    if (g->needPool && !g->poolDone) poolsEmitRuntime(arena, out);
+    if (g->needPool && !g->poolDone) placesEmitRuntime(arena, out);
     if (g->needHttpFile) fileLayerEmitRuntime(arena, out);
     if (g->needDns) dnsEmitRuntime(arena, out);
     /* The byte-search runtime, for a program that declares `extern!("extc-mem")`. Its trigger
@@ -1703,7 +1703,7 @@ static void emitLateRuntime(CG *g, Buf *out, Module *m, Arena *arena) {
         domainEmitRuntime(arena, out);
     }
     /* The dyn half is separate so a pool-only program keeps byte-identical generated C. */
-    if (planUsesDyn(m)) poolsEmitDynRuntime(arena, out);
+    if (planUsesDyn(m)) placesEmitDynRuntime(arena, out);
     if (g->needRawTerm) {
         /* The raw-terminal block. `tcsetattr` is declared with the same prototype the
          * library declares for it, so the two declarations agree and the call reaches

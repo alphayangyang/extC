@@ -555,7 +555,7 @@ if (planCName(s) && s->u.var.init && s->u.var.init->kind == EX_CALL &&
     const int  sq = g->coroSeq++;
     if (hasZone) {
         flushPrefix(g);
-        cgLine(g, "int64_t __extc_czsv%d = extc_zoneTop;", sq);
+        cgLine(g, "int64_t __extc_czsv%d = extc_placeTop;", sq);
         cgLine(g, "int64_t __extc_czid%d = extc_task_begin();", sq);
         cgLine(g, "int64_t __extc_czm%d = extc_task_zone(__extc_czid%d);", sq, sq);
         noteStackTask(g, sq);
@@ -590,7 +590,7 @@ if (planCName(s) && s->u.var.init && s->u.var.init->kind == EX_CALL &&
     bufPrintf(&init, " };");
     flushPrefix(g);
     cgLine(g, "%s", bufCstr(&init));
-    if (hasZone) cgLine(g, "extc_zoneTop = __extc_czsv%d;", sq);
+    if (hasZone) cgLine(g, "extc_placeTop = __extc_czsv%d;", sq);
     /* The frame is a value local and can hold reference slots; the static root table does not
      * enumerate the synthesized frame => this function turns triggers off (the safe direction). */
     if (g->rc.reclaim) g->rc.rootsUnreliable = true;

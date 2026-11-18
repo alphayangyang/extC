@@ -35,7 +35,7 @@ PROMO = ROOT / "tests/dyn/dyn_promoted_return.extc"
 TOP = ROOT / "src/check/check_top.c"
 ESCAPE = ROOT / "src/check/check_escape.c"
 CODEGEN = ROOT / "src/back/codegen.c"
-POOLS = ROOT / "src/back/pools.c"
+PLACES = ROOT / "src/back/places.c"
 
 PLAIN = """struct node {
     v: i64
@@ -62,8 +62,8 @@ fn main() -> i32 {
 }
 """
 
-ZONE_ENTER = "extc_pool_zoneEnter()"
-ZONE_LEAVE = "extc_pool_zoneLeaveTo("
+ZONE_ENTER = "extc_place_enter()"
+ZONE_LEAVE = "extc_place_leaveTo("
 PUT_DEF = "ExtcDynHandle extc_dyn_put("
 CALL_BLOCK = re.compile(r"extc_dyn_put\(\(const void \*\)&[^;]*?, (__extc_zm[0-9]+)\);")
 CALL_HOME = re.compile(r"extc_dyn_put\(\(const void \*\)&[^;]*?, __extc_home_zone\);")
@@ -71,7 +71,7 @@ HOME_SIG = "static ExtcDynHandle make(int64_t __extc_home_zone) {"
 TOP_POOL = "case EX_DYN: return true;"
 EMIT_FMT = "&extc_vt$%s$%s, %s)"
 PUT_SIG = "ExtcDynHandle extc_dyn_put(const void *payload, int64_t size, const void *vt, int64_t zi) {"
-NEW_AT = "extc_pool_new_at(-1, zi);"
+NEW_AT = "s->addr = extc_place_alloc(zi, size);"
 DEPTH_SIG = "static int dynSiteDepth(Expr *e, int d) {"
 
 
@@ -120,7 +120,7 @@ def loop_bodies(text):
             out.append(body)
 
 
-def check(dyn, promo, plain, top, escape, codegen, pools):
+def check(dyn, promo, plain, top, escape, codegen, places):
     bad = []
     loops = loop_bodies(dyn)
     if not loops:
@@ -158,31 +158,31 @@ def check(dyn, promo, plain, top, escape, codegen, pools):
         bad.append("src/check/check_escape.c: dynSiteDepth is not used on all three depth walks")
     if EMIT_FMT not in codegen:
         bad.append("src/back/codegen.c: `extc_dyn_put` is not emitted with the place argument")
-    if PUT_SIG not in pools:
-        bad.append("src/back/pools.c: `extc_dyn_put` does not take a place index")
-    if NEW_AT not in pools:
-        bad.append("src/back/pools.c: the dyn table is not born in the named place")
+    if PUT_SIG not in places:
+        bad.append("src/back/places.c: `extc_dyn_put` does not take a place index")
+    if NEW_AT not in places:
+        bad.append("src/back/places.c: the dyn table is not born in the named place")
     return bad
 
 
 SELFTEST = [
-    ("del-loop-enter", "dyn", ZONE_ENTER, "extc_pool_zoneEnterX()"),
-    ("del-loop-leave", "dyn", ZONE_LEAVE, "extc_pool_zoneLeaveToX("),
-    ("put-to-top", "dyn", "__extc_zm2)", "extc_zoneTop)"),
-    ("home-to-top", "promo", "__extc_home_zone)", "extc_zoneTop)"),
-    ("plain-tax", "plain", "    return 0;", "    int64_t __extc_zm9 = extc_pool_zoneEnter();\n    return 0;"),
+    ("del-loop-enter", "dyn", ZONE_ENTER, "extc_place_enterX()"),
+    ("del-loop-leave", "dyn", ZONE_LEAVE, "extc_place_leaveToX("),
+    ("put-to-top", "dyn", "__extc_zm2)", "extc_placeTop)"),
+    ("home-to-top", "promo", "__extc_home_zone)", "extc_placeTop)"),
+    ("plain-tax", "plain", "    return 0;", "    int64_t __extc_zm9 = extc_place_enter();\n    return 0;"),
     ("src-not-pool", "top", TOP_POOL, "case EX_DYN: return false;"),
     ("src-put-3args", "codegen", EMIT_FMT, "&extc_vt$%s$%s)"),
-    ("src-put-nozi", "pools", PUT_SIG, "ExtcDynHandle extc_dyn_put(const void *payload, int64_t size, const void *vt) {"),
-    ("src-new-at-top", "pools", NEW_AT, "extc_pool_new_at(-1, extc_zoneTop);"),
+    ("src-put-nozi", "places", PUT_SIG, "ExtcDynHandle extc_dyn_put(const void *payload, int64_t size, const void *vt) {"),
+    ("src-new-at-top", "places", NEW_AT, "s->addr = extc_place_alloc(extc_placeTop, size);"),
 ]
 
 
-def selftest(dyn, promo, plain, top, escape, codegen, pools):
+def selftest(dyn, promo, plain, top, escape, codegen, places):
     bad = []
     base = {"dyn": dyn, "promo": promo, "plain": plain, "top": top.read_text(),
             "escape": escape.read_text(), "codegen": source_split.read_path(codegen),
-            "pools": pools.read_text()}
+            "places": places.read_text()}
     for name, which, old, new in SELFTEST:
         if old not in base[which]:
             bad.append("injection %s anchor not found (sync this gate when emission changes)" % name)
@@ -190,7 +190,7 @@ def selftest(dyn, promo, plain, top, escape, codegen, pools):
         args = dict(base)
         args[which] = base[which].replace(old, new)
         got = check(args["dyn"], args["promo"], args["plain"], str(args["top"]),
-                    str(args["escape"]), str(args["codegen"]), str(args["pools"]))
+                    str(args["escape"]), str(args["codegen"]), str(args["places"]))
         if not got:
             bad.append("injection %s does not turn the check red (check is a no-op)" % name)
     return bad
@@ -213,9 +213,9 @@ def main():
             print("FAIL %s" % e)
             return 1
     bad = check(dyn, promo, plain, TOP.read_text(), ESCAPE.read_text(),
-                source_split.read_path(CODEGEN), POOLS.read_text())
+                source_split.read_path(CODEGEN), PLACES.read_text())
     if args.selftest:
-        bad += selftest(dyn, promo, plain, TOP, ESCAPE, CODEGEN, POOLS)
+        bad += selftest(dyn, promo, plain, TOP, ESCAPE, CODEGEN, PLACES)
     if bad:
         print("FAIL dyn place structure:")
         for b in bad:

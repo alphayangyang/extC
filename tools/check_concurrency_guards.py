@@ -14,11 +14,11 @@
 **J2 · 规则 3 的前身（生成物）**：`yield` 不许出现在地方边界内。
   今天对应的不变式：**地方边界自洽** ——
   (a) `extc_arena_release(&__extc_a[k])` 里的 `k` 必须小于该函数声明的 `__extc_a[N]`；
-  (b) `__extc_zm<k>` 必须先由 `= extc_pool_zoneEnter()` 定义、后使用（`zoneLeaveTo` 的实参）。
+  (b) `__extc_zm<k>` 必须先由 `= extc_place_enter()` 定义、后使用（`zoneLeaveTo` 的实参）。
   这两条把"边界在哪里、编号几层"变成可核对的事实；`yield` 落地后，规则 3 就是
   "挂起点不得落在这些配对之间" ✓
 
-**J3 · 规则 4/7 的前身（源码）**：池的元数据（`pid`/`gen`/`pgen`/槽表）只允许在 `src/pools.c`
+**J3 · 规则 4/7 的前身（源码）**：dyn 元数据（`zi`/`gen`/`zgen`/槽表）只允许在 `src/back/places.c`
   里读写 —— 将来要把"取槽 + 校验世代"做成原子，只能有一个地方可改 ✓
   （唯一允许的例外：`codegen.c` 里那句 `ExtcDynHandleS` 的类型串，它是接口不是访问 ✓）
 
@@ -43,7 +43,7 @@ CORPUS = [
     "tests/arena-promoted/*.extc",
     "tests/coro/*.extc",
     "tests/dyn/dyn_stored_call.extc",
-    "tests/pool/churn.extc",
+    "tests/reclaim-gaps/shapes/dyn_payload.extc",
     "examples/out-param.extc",
     "examples/tour-plots.extc",
 ]
@@ -64,7 +64,7 @@ FRAME_ZONE_ARG = re.compile(r"^[A-Za-z_]\w*->zone$")
 # "我此刻所在的那个地方"：运行期自己的名字。它**不是**派生算术（`extc_zoneTop` 的含义是直接的），
 # 但仍然是**环境**而不是"调用者钉死的地方" ⇒ 单栈下正确，**任务体内不许用**（规则 1）：
 # `spawn` 落地时，这条要么收紧成"必须来自帧字段"，要么由规则 1 的判据覆盖 ✓ 计数棘轮先钉住它。
-FALLBACK = "extc_zoneTop"
+FALLBACK = "extc_placeTop"
 FALLBACK_BUDGET = 2        # 2026-09-26 在下面这份语料上量到的个数
 # arena 那一个隐藏实参同样只许两种形状：转发 `__extc_home`，或钉死在某一层 `&__extc_a[k]`。
 ALLOWED_ARENA_ARG = re.compile(r"^(__extc_home|&__extc_a\[\d+\]|-?\d+)$")
@@ -215,13 +215,13 @@ def check_generated(path: pathlib.Path, stats_fallback):
                        f"__extc_a[{arena_n}]")
     # J2b: a `__extc_zm<k>` must be defined (by zoneEnter) before it is used.
     defined = set()
-    for m in re.finditer(r"__extc_zm(\d+)\s*=\s*extc_pool_zoneEnter\(\)", code):
+    for m in re.finditer(r"__extc_zm(\d+)\s*=\s*extc_place_enter\(\)", code):
         defined.add(m.group(1))
     for m in re.finditer(r"__extc_zm(\d+)", code):
         if m.group(1) not in defined:
             line = code[:m.start()].count("\n") + 1
             bad.append(f"J2 {path.name}:{line} 用了 __extc_zm{m.group(1)}，但这段代码里没有它的"
-                       f" `= extc_pool_zoneEnter()` 定义")
+                       f" `= extc_place_enter()` 定义")
             break
     # J1 收紧（切片 C 落地后才有意义）：**任务体**里不许出现环境 zone。
     # `$step` 是任务体，恢复点的地方只能从帧字段读；`$next`（驱动器）不在这个范围内 ——
@@ -229,7 +229,7 @@ def check_generated(path: pathlib.Path, stats_fallback):
     for m in re.finditer(r"\nEXTC_UNUSED static bool \w+\$step\([^)]*\)\s*\{", code):
         end = code.find("\n}\n", m.end())
         body = code[m.end():end if end != -1 else len(code)]
-        for env in ("extc_zoneTop", "__extc_home_zone"):
+        for env in ("extc_placeTop", "__extc_home_zone"):
             if env in body:
                 line = code[:m.start()].count("\n") + 1
                 bad.append(f"J1 {path.name}:{line} `$step` 里出现了 `{env}` —— "
@@ -238,16 +238,16 @@ def check_generated(path: pathlib.Path, stats_fallback):
 
 
 
-def check_pool_funnel():
-    """J3: pool metadata is touched only in src/pools.c."""
+def check_place_funnel():
+    """J3: dyn metadata is touched only in src/back/places.c."""
     bad = []
     allowed = {
         # The interface, not an access: the emitted handle type says which fields exist.
-        ("codegen.c", "struct ExtcDynHandleS { int64_t pid, slot, gen, pgen; }"),
+        ("codegen.c", "struct ExtcDynHandleS { int64_t zi, slot, gen, zgen; }"),
     }
-    pat = re.compile(r"(pgen|->gen\b|->pid\b|->slots\b|\.slots\b)")
+    pat = re.compile(r"(zgen\b|extc_dynSlots\b|extc_dynFree\b|extc_dynLiveN\b|extc_dynCap\b)")
     for path in [pathlib.Path(p) for p in cscan.src_files(ROOT, (".c",))]:
-        if path.name == "pools.c":
+        if path.name == "places.c":
             continue
         for n, line in enumerate(cscan.read(path).split("\n"), 1):
             if not pat.search(line):
@@ -255,7 +255,7 @@ def check_pool_funnel():
             stripped = line.strip()
             if any(path.name == f and marker in stripped for f, marker in allowed):
                 continue
-            bad.append(f"J3 src/{path.name}:{n} 碰到池的元数据：{line.strip()[:70]}")
+            bad.append(f"J3 src/{path.name}:{n} 碰到 dyn 表的元数据：{line.strip()[:70]}")
     return bad
 
 
@@ -277,7 +277,7 @@ def main() -> int:
                 bad += v
                 stats["calls"] += s["calls"]
                 stats["levels"] |= set(s["arena_levels"])
-    bad += check_pool_funnel()
+    bad += check_place_funnel()
     if stats_fallback[0] > FALLBACK_BUDGET:
         bad.append(f"J1 兜底 `{FALLBACK}` 出现 {stats_fallback[0]} 次，预算 {FALLBACK_BUDGET} —— "
                    f"它正是规则 1 禁止的'从环境现算'，只许少不许增（协程落地前必须改成帧字段）")
@@ -292,7 +292,7 @@ def main() -> int:
     if bad:
         print(f"  {len(bad)} 条违规 —— 见上（规则见 docs/topics/CONCURRENCY.md §12）")
         return 1
-    print("  J1 zone 实参只转发或钉死 ✓ · J2 地方边界自洽 ✓ · J3 池元数据只经 pools.c ✓")
+    print("  J1 zone 实参只转发或钉死 ✓ · J2 地方边界自洽 ✓ · J3 dyn 元数据只经 places.c ✓")
     return 0
 
 

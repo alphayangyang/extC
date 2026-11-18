@@ -2,7 +2,7 @@
 
 > 状态：**当前口径** —— 这篇写的是现在的事实，改语义先改它。
 
-Status: **plan** (2026-11-03)，其中「容器离开池板块」这一半已经落地（2026-12-01）：`vector` / `string` / `varArray` / 全部关联容器现在持有地址预留或 `block<T>`，stdlib 的池与 `place` 模块已删除，运行期池只剩 `dyn` 与 zone 链在用。下面 §2 起的 `zone::alloc` 提案**仍未实现**。
+Status: **plan** (2026-11-03)，其中「容器离开池板块」这一半已经落地（2026-12-01）：`vector` / `string` / `varArray` / 全部关联容器现在持有地址预留或 `block<T>`，stdlib 的池与 `place` 模块已删除；运行期池也已在 v38 整体退场（`src/back/pools.c` 删除，`dyn` 载荷改落 `src/back/places.c` 的 place chunk 链）。下面 §2 起的 `zone::alloc` 提案**仍未实现**。
 
 ## 0. The one-sentence version
 
@@ -16,10 +16,10 @@ The compiler's whole job is three things:
 2. create **typed** views over zone storage (`zone::alloc<T>` returns `slice<T>`, so no cast is ever
    exposed to users);
 3. keep a per-zone **epoch** so a handle into zone storage can be checked for staleness
-   (`zone::epoch`), which is the same idea already used by `dyn` and by pool generations.
+   (`zone::epoch`), which is the same idea already used by `dyn` 的 place 槽世代（`zgen`）。
 
 If those three exist, `@place` (formerly `@poolObject`), `poolSlice<T>`, `poolResize<T>`, `std::sys::pool` and the block-chain
-code in `src/back/pools.c` are all redundant.
+code in `src/back/pools.c` are all redundant. **（v38：这一批已经删掉了** —— `src/back/pools.c` 与整套池原语退出运行期，`dyn` 载荷改落 place 的 chunk 链；`@place` 语法面是最后一小块，见 §5。）
 
 ### Three things that were called "plate"
 
@@ -29,7 +29,7 @@ vocabulary is fixed here:
 | Term | What it is | Where |
 |---|---|---|
 | **`mem::plate`** | a `mmap`-reserved, lazily committed region with a *stable* address (`DEFAULT_RESERVE` = 4 GiB, committed in 1 MiB chunks). It exists so C interop and big scratch buffers can take a pointer that never moves. **A pool never allocates one.** | `stdlib/std/mem.extc` |
-| **block chain** | a pool's own memory: a singly linked list of `malloc(sizeof(ExtcBlock) + bytes)` blocks that the pool grows by adding to, and hands back on release. No reserved region, no 4 GiB. | `src/back/pools.c` |
+| **block chain** | a pool's own memory: a singly linked list of `malloc(sizeof(ExtcBlock) + bytes)` blocks that the pool grows by adding to, and hands back on release. No reserved region, no 4 GiB. **（已退场，v38）** | `src/back/pools.c`（已删除） |
 | **buffer reservation** | `buf<T>` 的存储：一片 2 MiB 对齐的地址预留，从进程级 buddy VA arena 里切（2 MiB 量子、8 个 64 GiB 竞技场懒创建）；没写过的页不驻留，`shrink` 用 `madvise(DONTNEED)` 把页还掉而地址不变。不进回收器、不占 `rc` 槽。 | `stdlib/std/data/buf.extc` + `src/back/bufrt.c`；语义见 [`BUF-INVARIANT.md`](BUF-INVARIANT.md) |
 | **privileged heap emission** | `extc_viewOf` / `extc_memCopy` and friends: helpers the *generator* emits for code the language cannot spell. They hang off the heap runtime block, not off either of the above. | `src/back/plate.c` |
 
@@ -38,6 +38,8 @@ So: 4 GiB of `PROT_NONE` + `mprotect` means `mem::plate`; a growing pool means a
 keeps its size, so it is also the only one that can give capacity back); the
 `plate.c` helpers are a third thing with an overlapping name.
 
+**（v38）** 上表的 block chain 已随池退场删除：`extc_pool_take/give/resize` 与 `@place` 的运行期都不再有消费者（`poolSlice*` / `poolResize*` / `poolGive` 已零用户）；仍在用的是 `mem::plate`（预留地址）与 `buf<T>` 预留（`src/back/bufrt.c`）。
+
 ## 1. What is privileged today, and why
 
 | Knob | Where | Why it exists |
@@ -45,12 +47,12 @@ keeps its size, so it is also the only one that can give capacity back); the
 | `@place` (formerly `@poolObject`) | type attribute | tells the checker/codegen that this type's storage lives in a block chain rather than in the frame, and that its blocks must be revoked on epoch change |
 | `poolSlice<T>` / `poolSliceRaw<T>` | generator intrinsic | turns block-chain memory into a `slice<T>` — the language cannot express this |
 | `poolResize<T>` / `poolResizeRaw<T>` | generator intrinsic | realloc-style growth of a block-chain block |
-| `extc_pool_*` | runtime C | new/drop/reset/generation/zone chaining |
-| `std::sys::pool` | privileged stdlib layer | the wrapper containers call |
+| `extc_place_*` | runtime C | enter/leaveTo/newRoot/freeRoot/alloc（v38 起取代池：`extc_pool_*` 对象运行期已删除） |
+| `std::sys::pool` | ~~privileged stdlib layer~~ | 已删除（v38）：容器改用 `buf<T>` 预留与 `block<T>` |
 
-The zone machinery underneath is good and should be kept: `extc_pool_zoneEnter` /
-`extc_pool_zoneLeaveTo` / `extc_pool_zoneReset` already give "scope exit releases everything, or bumps
-an epoch". The problem is purely that **only pools the compiler created can register there**, so:
+The zone machinery underneath is good and should be kept: `extc_place_enter` /
+`extc_place_leaveTo` / `extc_place_newRoot` / `extc_place_freeRoot` already give "scope exit releases everything, or bumps
+an epoch". The problem is purely that **only places the compiler created can register there**, so:
 
 - a library author can allocate bytes (`malloc` via `extern!`) but cannot get a typed view of them;
 - a value allocated with `new` cannot be put under zone management (that is why
@@ -141,7 +143,7 @@ one branch on the release path. Element access stays free.
 ## 5. What this deletes
 
 - `@place`/`@poolObject`, `poolSlice<T>`, `poolSliceRaw<T>`, `poolResize<T>`, `poolResizeRaw<T>`,
-  `std::sys::pool`, and the plate code paths in `src/back/pools.c` that only exist to serve those.
+  `std::sys::pool`（**已全部删除**，v38：`src/back/pools.c` 连同一整套池原语退出运行期；`copyInto` 保留 —— 它服务的是视图复制，不是池）。
 - The `fromRaw<T>` idea from revision 1 of this document: with typed `zone::alloc` there is no cast to
   expose. (Raw C pointers stay available through `extern!` for platform shims, as today.)
 - `stl::pool<T>` as a language concept：容器自己持有存储（地址预留或 `block<T>`），不再需要槽回收层；`pool` 模块已删除。

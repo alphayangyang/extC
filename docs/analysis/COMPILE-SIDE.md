@@ -98,12 +98,14 @@ src/back/codegen.c:4680-4790（exGencall 的 alloc 分支）：**层号直接用
     case EX_STR: return arenaPrintf(g->arena, "(%s){ .data = (uint8_t *)"%s", .len = sizeof("%s") - 1 }", cType(g,e->type), e->u.str.text, e->u.str.text);
 注释：字面量在**只读内存**里，长度用 sizeof-1 让 C 处理转义。样本：/tmp/cf/cyclic_shape.c:3394 行附近 (slice_u8){ .data = (uint8_t *)"fwd=", .len = sizeof("fwd=") - 1 }。
 
-### 2.5 容器（vector / hashMap / string 扩容 / dyn / pool<T>）
-容器不占 arena、也不占 rc slab：它们**从 pool 拿 malloc 块**。样本 /tmp/cf/hm.c:1146/1150（编译 tests/hashmap/basic.extc 得到）：
-    int64_t rp = extc_pool_new_at((-1), __extc_home_zone);
-    ... .keys = (slice_hashMap$i64Key){ .data = (hashMap$i64Key *)extc_pool_take_raw((int64_t)(rp), ...) }, ... .vals = pool$pool_i32_withParent(rp, c, __extc_home_zone), ...
-pool 由 src/back/pools.c 发射（L19-24 逐字 **"A pool owns its own memory ... The arena does not own those blocks -- it owns their lifetime"**）；extc_pool_new_at = "THE PROMOTION HOOK"（src/back/pools.c:56-57），_at 变体自带 place，非 _at 变体读运行时 extc_zoneTop。place 栈：extc_pool_zoneEnter / zoneLeaveTo(mark) / zoneNewRoot / zoneFreeRoot。
-dyn：src/back/codegen.c:15387/15395 发射 extc_dyn_%zu(extc_arena *__extc_home, ...) 与 extc_any_box(__extc_home, ...)；构造点经 setCallZoneArg 记 zone（src/back/codegen.c:6052-6057 注释）。
+### 2.5 容器（vector / hashMap / string 扩容 / dyn）
+
+**（v38 起本节重写：池基质退场）** 容器不占 arena、也不占 rc slab，但也不再从 pool 拿块：
+
+- `vector<T>` / `string` 的载荷走 `buf<T>` 的地址预留（`extc_buf_reserve` / `extc_buf_grow` / `extc_buf_release`，`src/back/bufrt.c`）；`string` 的 ≤16 字节走内联 SSO。
+- `hashMap` / `map` / `set` / `linMap` / `linSet` 的存储是容器自有的平坦块（`block<T>`），容量固定、任意下标读写。
+- `dyn` 的载荷落在构造点的**命名 place** 里：发射物把 place 号当第 4 实参传给 `extc_dyn_put`（`src/back/places.c:235`），载荷 `extc_place_alloc(zi, size)` bump 进该 place 的 chunk 链；句柄 `{ zi, slot, gen, zgen }` 靠两次世代比较判陈旧。
+- 历史对照：v38 之前容器块由 `src/back/pools.c`（126 行）的池块链提供（`extc_pool_new_at` / `extc_pool_take_raw`），该文件与整套 `extc_pool_*` 对象运行期已删除。
 
 ### 2.6 闭包
 **未验证**：本轮在 src/back/codegen.c 里 grep "closure" 只命中"迭代到不动点的闭包（closure of the demand set）"这类术语，未定位到闭包的运行时表示与分配路径 ⇒ 见第 11 节。
@@ -352,7 +354,7 @@ src/back/reclaim.c:2750-2806 四个入口：
 |---|---|---|---|
 | src/back/reclaim.c（2889 行运行时文本，按 [rt:name] 分段：head/types/helpers/slab/budget/xregion/nocount/shade-cache/xentry/pin/chain/tlsdepth/mark/release/sweep/owe/counters） | 位图 slab 分配器 + 持有计数 + 区域标记/清扫 + owe/owed | 自己 malloc slab（生成物 /tmp/cf/cyclic_shape.c:107-163 ExtcRcSlab/ExtcRcClass 字段 big/rcp/avail/clsBkt/ownMap） | **rc 只治理** new T / new [N]T（仅 level 1）/ alloc<T>(n) / @overwrite 单值 cell。region 由 arena 地址 claim，**寿命 = 那只 arena** |
 | src/back/codegen.c:9646-9652 + 运行期 arena 文本（[rt:head]） | extc_arena bump 分配、release（保留 1 个 spare block，上限 EXTC_ARENA_SPARE_MAX = 1<<20）、destroy、越界 trap | 每块 calloc（cap 倍增，下限 64） | 帧局部对象；**不是** pool，也**不**参与 rc（除上面四类治理点的额外记录） |
-| src/back/pools.c（126 行） | 容器内存：**池持有自己的块**，place/zone 栈（extc_pool_zoneEnter/zoneLeaveTo/zoneNewRoot/zoneFreeRoot）、块链 take/resize/give、对象表、dyn 槽四代校验 | 全 malloc/realloc/free | 注释（src/back/pools.c:19-24）逐字：a pool **owns its own memory**；**"The arena does not own those blocks -- it owns their lifetime."** extc_pool_new_at = **THE PROMOTION HOOK**（:56-57：函数把自己的分配交给调用者的 place，就要收一个隐藏的 __extc_home arena）。⇒ **容器块走 pool，不走 rc** |
+| src/back/places.c（315 行） | place 载荷区：place 槽表（extc_place_enter/leaveTo/newRoot/freeRoot/alloc）+ 每槽一条 malloc chunk 链 + dyn 槽表（extc_dyn_put / extc_dyn_slot，四次比较判陈旧：zi / zgen / gen / slot）；src/back/pools.c 与 extc_pool_* 已删除（v38） | 全 malloc/calloc/free | 尾注释（src/back/places.c:19-24）自述「A place is a scope of storage, not a value」；dyn 载荷是它的唯一消费者 |
 | src/back/plate.c（74 行） | 只发两个门：extc_viewOf(uint8_t *p, int64_t n) 造 slice_u8（:35-38，零检查）、extc_memCopy（:69-73，memcpy） | **不分配** | 视图不是根、不是 rc 槽（src/back/codegen.c:3545-3617 注释：视图 data 指向 arena/plate/C 存储） |
 | src/back/memfind.c（126 行） | extc_memFind（needleLen<=32 走 memchr+memcmp，否则 memmem）、extc_memEq（memcmp==0） | **不分配** | 只读查找 |
 | src/back/coroutine.c（552 行） | 任务表（realloc 增长）+ **每任务一个 extc_arena**（:57 static extc_arena *extc_taskArena;）+ 任务根 place 注册（extc_taskRoots[64]） | 帧 = 任务 arena bump（:124-130 extc_task_alloc ⇒ extc_arena_alloc）；表 = realloc | 任务帧**不走 rc**：任务自己的 arena 一次 release/destroy（:145 extc_arena_destroy(&extc_taskArena[id]) 注释：任务不会再跑，spare 块会永远占着）；extc_task_collect 按根 place 可达性整任务回收 |
@@ -586,7 +588,7 @@ emitPreamble 内（:12610-12637）：只在 g->needReclaim 为真时发一行；
 剩余存疑/未验证（补 §11）：
 
 1. extc_task_collect 仍无调用者（src/back/coroutine.c 内只有定义与前置声明）⇒ P0-6 目前只是为将来的整池 collect 接线，登记不改变任何现有运行期行为。
-2. (iv) 对 poolResize/poolResizeRaw 的退回是否必要未单独证明：pools.c 的 resize 是 realloc 搬移（同一对象集合，按对象计数不变），不像 copyInto 那样在目的地制造第二个指针；这里的处理方向是保守（只影响档位，不拒绝程序），是否可从 (iv) 收紧另行验证。
+2. (iv) 对 poolResize/poolResizeRaw 的退回是否必要未单独证明（v38：这两个原语已随池退场删除，现存 `copyInto` 仍在走 (iv)）：pools.c 的 resize 是 realloc 搬移（同一对象集合，按对象计数不变），不像 copyInto 那样在目的地制造第二个指针；这里的处理方向是保守（只影响档位，不拒绝程序），是否可从 (iv) 收紧另行验证。
 3. 引用元素 copyInto 的逐元素 storeStructCons 在强制事件档（EXTC_RC_SWEEPFREE=1，TIER 1）下已验证输出正确且 ASAN 干净，但没有在“事件档 + 大量 churn”的压力形状下测过暂停/内存界。
 4. TIER 标记未进入任何 golden 判据（tools/golden.sh 只把逐字节差异当观察项、判据是合法 C），所以它的稳定性靠本节矩阵而非门禁。
 

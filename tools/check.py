@@ -1389,7 +1389,7 @@ def build_items() -> list:
         ok_msg=tail1, bad_msg="tools/check_switches.py", bad_dump=dump_head(8)))
     items.append(cmd(
         "check-concurrency-guards", "seam",
-        "并发护栏 J1/J2/J3：zone 实参只转发或钉死 · 地方边界自洽 · 池元数据只经 pools.c",
+        "并发护栏 J1/J2/J3：zone 实参只转发或钉死 · 地方边界自洽 · dyn 元数据只经 places.c",
         sh('python3 tools/check_concurrency_guards.py'),
         ok_msg=tail1, bad_msg="tools/check_concurrency_guards.py", bad_dump=dump_all))
     items.append(cmd(

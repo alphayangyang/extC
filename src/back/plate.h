@@ -3,7 +3,7 @@
  * @brief On-demand emission for the privileged heap layer: `extc_viewOf` and
  * `extc_memCopy`.
  *
- * It has the same shape as the gates in pools.h and memfind.h: one flag in codegen
+ * It has the same shape as the gates in places.h and memfind.h: one flag in codegen
  * (`CG.needPlate`), and this C block is appended to the same translation unit on demand.
  * The trigger is the **declaration**: `extern!("extc-heap")` appears only in the
  * privileged layer `stdlib/std/sys/heap.extc`.

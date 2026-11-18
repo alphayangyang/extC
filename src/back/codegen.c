@@ -13,7 +13,7 @@
 #include "codegen.h"
 #include "dbg.h"         /* EXTC_DBG_ASSERT: contract violations are compiler bugs */
 #include "plan.h"          /* the one read port for the plan: the side table the analysis passes record into */
-#include "pools.h"
+#include "places.h"
 #include "coroutine.h"
 #include "domain.h"      /* the pool registry runtime */
 #include "memfind.h"        /* the byte-search runtime (std::sys::mem), emitted on demand */

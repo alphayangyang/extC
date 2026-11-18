@@ -1537,14 +1537,14 @@ static void emitPreamble(CG *g, Buf *out, Module *m) {
     }
 
     /* The dyn handle's C type is needed by **prototypes**: a `dyn Trait` parameter is a value of
-    * this type, and prototypes are emitted before the runtime that defines it (the pool runtime is
+    * this type, and prototypes are emitted before the runtime that defines it (the place runtime is
     * spliced in during final assembly). Declaring it here closes that gap; C11 allows a typedef to
     * be repeated when it names the same type, so the runtime keeps its own copy. */
     {
         if (planUsesDyn(m))
             bufPuts(out,
                 "#define EXTC_DYN_HANDLE_DEFINED 1\n"
-                "struct ExtcDynHandleS { int64_t pid, slot, gen, pgen; };\n"
+                "struct ExtcDynHandleS { int64_t zi, slot, gen, zgen; };\n"
                 "typedef struct ExtcDynHandleS ExtcDynHandle;\n\n");
         /* The coroutine handle, for the same reason as the dyn one: prototypes and the instance
          * structs (`vector<coroutine<T>>`) mention it before the runtime could define it. */

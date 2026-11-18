@@ -747,7 +747,7 @@ static const char *exExt(CG *g, Expr *e) {
     bufInit(&init, g->arena);
     if (planCoroNeedsZone(cf)) {
         flushPrefix(g);
-        cgLine(g, "int64_t %s = extc_zoneTop;", sv);
+        cgLine(g, "int64_t %s = extc_placeTop;", sv);
         cgLine(g, "int64_t %s = extc_task_begin();", id);
         cgLine(g, "int64_t %s = extc_task_zone(%s);", zn, id);
         /* The task must stay visible to the collector while the domain drives it; `exExt` never
@@ -767,7 +767,7 @@ static const char *exExt(CG *g, Expr *e) {
     bufPrintf(&init, " };");
     flushPrefix(g);
     cgLine(g, "%s", bufCstr(&init));
-    if (planCoroNeedsZone(cf)) cgLine(g, "extc_zoneTop = %s;", sv);
+    if (planCoroNeedsZone(cf)) cgLine(g, "extc_placeTop = %s;", sv);
     g->needDomain = true;
     flushPrefix(g);
     cgLine(g, "extc_dom_add(%s, (void *)&%s, %s$domstep);", genExpr(g, planExtDom(e)), tmp, cn);

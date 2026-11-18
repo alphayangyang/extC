@@ -276,15 +276,15 @@ static void lineMark(CG *g, Stmt *s) {
  * The site records its own level (the checker's `zoneLevel`): `ZONE_HOME` = the home zone this
  * function received (passed down), k>=1 = `__extc_zm<k>` of the place at level k.
  *
- * The fallback is the runtime's own "the place I am in right now", `extc_zoneTop`: it is exactly
- * equivalent to `(extc_pool_zoneDepth() - 1)` (in the runtime `zoneDepth() = zoneTop + 1`), but
+ * The fallback is the runtime's own "the place I am in right now", `extc_placeTop`: it is exactly
+ * equivalent to `(extc_place_depth() - 1)` (in the runtime `extc_place_depth() = extc_placeTop + 1`), but
  * its meaning is direct instead of drifting with the definition of `zoneDepth()`. On a single
  * stack it is the place the caller is in. Only a `noArena` function reaches this (it pushed no
  * zone); so does `stmtMakesPool` when it conservatively answers true for an unresolved callee that
  * does not actually create a pool, in which case there is neither a zone nor a runtime yet the
  * call site still has to produce the second argument. This arm references the runtime's zone
  * table, so the pool runtime is marked as needed here; the runtime text is only emitted after the
- * function bodies (`if (g->needPool) poolsEmitRuntime(...)`), so there is time.
+ * function bodies (`if (g->needPool) placesEmitRuntime(...)`), so there is time.
  *
  * @param g  The generator state.
  * @param e  The call-site expression; NULL or no zone level takes the fallback.
@@ -332,12 +332,12 @@ static const char *zoneArgRef(CG *g, Expr *e) {
     }
     /* The fallback references the runtime zone table, so the pool runtime is marked as "needed"
      * here -- the runtime text is only emitted after the function bodies
-     * (`if (g.needPool) poolsEmitRuntime(...)`), so there is time. The typical way to reach this
+     * (`if (g.needPool) placesEmitRuntime(...)`), so there is time. The typical way to reach this
      * arm is `stmtMakesPool` conservatively answering true for an unresolved callee: that function
      * does not actually create a pool, so there is neither a zone nor a runtime, yet the call site
      * still has to produce the second argument. */
     g->needPool = true;
-    return "extc_zoneTop";
+    return "extc_placeTop";
 }
 
 /**
@@ -590,7 +590,7 @@ static bool zoneUseExpr(ZoneUse *u, Expr *e) {
         FuncDef *f = planCallee(e);
         const char *nm = (f && f->name) ? f->name : NULL;
         /* `extc_pool_new` / `extc_pool_new_table` read the place they run in from the runtime
-         * (`extc_zoneTop`), so they need whichever block the call sits in to have pushed its
+         * (`extc_placeTop`), so they need whichever block the call sits in to have pushed its
          * zone. The `_at` variant carries its own place and does not. */
         if (poolCtorNeedsZone(nm)) u->hit = true;
         else if (f && calleeCreatesPool(f) && (planZoneLevel(e) == u->lvl || planZoneLevel(e) == 0))
@@ -605,7 +605,7 @@ static bool zoneUseExpr(ZoneUse *u, Expr *e) {
  * @brief May this block create a pool **in its own zone**?
  *
  * The block-level question, and the only one `genBlockBody` asks: a block pushes
- * `extc_pool_zoneEnter()` so that pools created in it are released when it ends. But a call whose
+ * `extc_place_enter()` so that pools created in it are released when it ends. But a call whose
  * pool is born elsewhere -- `ZONE_HOME`, that is, the place the caller received -- does not need
  * it: `string::push` upgrades its receiver's SSO buffer through `grow`, which asks for the
  * **home** zone, so in a loop body of `s.push(c)` the place would guard pools that never land in
@@ -856,7 +856,7 @@ static void cgReleaseLevel(CG *g, int lvl) {
  */
 static void cgZoneLeave(CG *g, int lvl) {
     if (lvl <= 0 || lvl >= g->levelCap || !g->zoneMark[lvl]) return;
-    cgLine(g, "extc_pool_zoneLeaveTo(__extc_zm%d);", lvl);
+    cgLine(g, "extc_place_leaveTo(__extc_zm%d);", lvl);
 }
 
 /**
@@ -1641,7 +1641,7 @@ static void genBlockBody(CG *g, Stmt *block) {
          * reclamation region is not dropped here, for the reason given in `cgReleaseLevel`: dropping
          * it every iteration would mean creating a new 1 MiB slab every iteration. */
         if (bodyTouches) cgArenaRelease(g, g->blkLevel);   /* clear */
-        if (zoneHere) cgLine(g, "int64_t __extc_zm%d = extc_pool_zoneEnter();", g->blkLevel);
+        if (zoneHere) cgLine(g, "int64_t __extc_zm%d = extc_place_enter();", g->blkLevel);
         bufPutn(g->out, scratch.data, scratch.len);        /* the body itself */
         /* A coroutine frame declared in this block is a C local: the driver only ends its task
          * when the step reports "done", so a `break` out of the loop (or a driver left early)
@@ -1659,7 +1659,7 @@ static void genBlockBody(CG *g, Stmt *block) {
         if (!g->noArena && !g->coroFunc)   /* a coroutine's storage is the task's, not this block's */
             cgArenaRelease(g, g->blkLevel);   /* clear */
         if (zoneHere && !g->coroFunc)      /* see the note on the release below: the task owns the place */
-            cgLine(g, "int64_t __extc_zm%d = extc_pool_zoneEnter();", g->blkLevel);
+            cgLine(g, "int64_t __extc_zm%d = extc_place_enter();", g->blkLevel);
         /* This is the normal exit of the block (a break/continue release is not): only it may be
          * deferred by a `d.run` body (see `cgTaskRootPopAt`). */
         bool savedAtBlockEnd = g->atBlockEnd;

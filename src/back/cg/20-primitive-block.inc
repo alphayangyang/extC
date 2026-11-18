@@ -518,7 +518,7 @@ typedef struct {
      * always reads 0 (all higher levels `zoneMark[k]`, k>1, are readable inside their own block
      * body, so only level 1 has this problem). */
     bool        zoneFrameMarked;
-    /* Which block levels really emitted `extc_pool_zoneEnter()` (index = block level,
+    /* Which block levels really emitted `extc_place_enter()` (index = block level,
      * 1 = the function body). The pop has to consult this table instead of `zoneHere`
      * alone: a block's zone is emitted on demand, and a `zoneLeaveTo(__extc_zm<lvl>)`
      * for a level that never pushed would pop the *enclosing* zone, leaving pools created

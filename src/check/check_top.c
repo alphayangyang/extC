@@ -10935,8 +10935,8 @@ static bool exprMakesPool(Expr *e, bool descendBlocks) {
         /* The builtin creates no pool itself, but its **arguments** may (`println(f"...")` runs a
          * value f-string, which calls `string::from` / `+`, and those need a zone). An earlier
          * version returned false here without looking at the arguments, so a frame holding such a
-         * `println` was not marked makePool and emitted no `extc_pool_zoneEnter()`, while the call
-         * site still passed the fallback `extc_zoneTop` for the zone parameter -- giving the runtime
+         * `println` was not marked makePool and emitted no `extc_place_enter()`, while the call
+         * site still passed the fallback `extc_placeTop` for the zone parameter -- giving the runtime
          * error `the view has no storage`. */
         if (!builtinPrint) {
         /* The question here is "**may this call reach `extc_pool_new`**" (the zone decision, and
