@@ -21,6 +21,16 @@
  *            and the longest step is one page of re-insertions plus one
  *            directory doubling.  -DEH_PAGE / -DEH_SLOTS / -DEH_SPLIT_AT
  *            are the shape knobs (default 4096 / 255 / 75% load).
+ *   lh     : linear hashing with no directory: bucket pages are created in
+ *            index order inside the reservation, so the address of bucket b
+ *            is base + b * LH_PAGE and the split pointer alone says which
+ *            bucket splits next.  A bucket that fills before its turn spills
+ *            to a chain of overflow pages, allocated backwards from the top
+ *            of the reservation.  -DLH_LOAD is the target load (default 75).
+ *   ch     : chained linear hashing, also no directory: bucket heads are an
+ *            int32 column, and elements live in k / v / next columns that
+ *            only ever grow by appending, so migration relinks pointers
+ *            instead of moving bytes.  -DCH_LOAD is the target load.
  *
  * Build: cc -O2 -std=c11 -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE -o tableproto tableproto.c
  * Run:   taskset -c 6 ./tableproto <mode> <n>
@@ -338,6 +348,223 @@ static void eh_init(EH *m, int64_t reserve)
     m->dir = (int32_t *)anew((size_t)16 * sizeof(int32_t));
     for (int i = 0; i < 16; i++) m->dir[i] = (int32_t)eh_newpage(m, 4);
 }
+/* ---------------- linear hashing: bucket pages, no directory ------------ */
+#ifndef LH_PAGE
+#define LH_PAGE 4096              /* one bucket page */
+#endif
+#ifndef LH_SLOTS
+#define LH_SLOTS 255              /* 255 * 16 B + 8 B header = 4088 B, one page */
+#endif
+#ifndef LH_LOAD
+#define LH_LOAD 75                /* split one bucket when the table passes this */
+#endif
+typedef struct { int64_t k, v; } LB;
+typedef struct { int32_t n; int32_t next; LB b[LH_SLOTS]; } LPage;
+_Static_assert(sizeof(LPage) <= LH_PAGE, "an LH bucket must fit in one page");
+typedef struct {
+    LPage *base;
+    int64_t hi;          /* buckets 0 .. hi-1 exist, page of b is base + b * LH_PAGE */
+    int64_t spillTop;    /* spill pages come down from the top of the reserve */
+    int32_t spillFree;   /* free list of spill pages */
+    int L;               /* arithmetic mask is (1 << L) - 1 */
+    int64_t s;           /* split pointer: buckets 0 .. s-1 are already split */
+    int64_t n, splits, live_spill;
+    double worst;
+} LH;
+
+static inline LPage *lh_page(LH *m, int64_t i) { return (LPage *)((char *)m->base + i * LH_PAGE); }
+static inline int64_t lh_slot(uint64_t h) { return (int64_t)(((h >> 32) * (uint64_t)LH_SLOTS) >> 32); }
+static inline int64_t lh_bucket(LH *m, uint64_t h)
+{
+    int64_t b = (int64_t)(h & (((uint64_t)1 << m->L) - 1));
+    if (b < m->s) b = (int64_t)(h & (((uint64_t)1 << (m->L + 1)) - 1));
+    return b;
+}
+static int32_t lh_take_spill(LH *m)
+{
+    int32_t i;
+    if (m->spillFree >= 0) { i = m->spillFree; m->spillFree = lh_page(m, i)->next; }
+    else i = (int32_t)(--m->spillTop);
+    LPage *p = lh_page(m, i);
+    memset(p, 0, LH_PAGE);
+    p->next = -1;
+    m->live_spill++;
+    return i;
+}
+static void lh_give_spill(LH *m, int32_t i)
+{
+    LPage *p = lh_page(m, i);
+    p->next = m->spillFree;
+    m->spillFree = i;
+    m->live_spill--;
+}
+/* Put one entry into one bucket: probe the page, then its spill chain, taking
+   a spill page only when the whole chain is full. count == 0 is the split. */
+static void lh_into(LH *m, int64_t b, int64_t k, int64_t v, int count)
+{
+    uint64_t h = hk(k);
+    int64_t s = lh_slot(h);
+    LPage *p = lh_page(m, b);
+    for (;;) {
+        for (int64_t i = 0; i < LH_SLOTS; i++) {
+            LB *e = &p->b[s];
+            if (e->k == k) { e->v = v; return; }
+            if (e->k == 0 && p->n < LH_SLOTS) {
+                e->k = k; e->v = v; p->n++;
+                if (count) m->n++;
+                return;
+            }
+            if (++s == LH_SLOTS) s = 0;
+        }
+        if (p->next < 0) p->next = lh_take_spill(m);
+        p = lh_page(m, p->next);
+        s = lh_slot(h);
+    }
+}
+/* Split bucket s into s and s + (1 << L). Only this one bucket moves; the new
+   bucket is the next page in index order, so no page id is stored anywhere. */
+static void lh_split(LH *m)
+{
+    double t0 = now_ms();
+    int64_t b = m->s, nb = m->hi;
+    LPage *pb = lh_page(m, b);
+    LPage *pn = lh_page(m, nb);
+    memset(pn, 0, LH_PAGE); pn->next = -1;
+    static LB tmp[LH_SLOTS * 8];
+    int nt = 0;
+    for (int64_t i = 0; i < LH_SLOTS; i++) if (pb->b[i].k != 0) tmp[nt++] = pb->b[i];
+    for (int32_t sp = pb->next; sp >= 0; ) {
+        LPage *q = lh_page(m, sp);
+        for (int64_t i = 0; i < LH_SLOTS; i++) if (q->b[i].k != 0) tmp[nt++] = q->b[i];
+        int32_t nx = q->next;
+        lh_give_spill(m, sp);
+        sp = nx;
+    }
+    memset(pb, 0, LH_PAGE); pb->next = -1;
+    m->hi++; m->s++;
+    uint64_t mask = (uint64_t)1 << m->L;
+    for (int i = 0; i < nt; i++) {
+        uint64_t h = hk(tmp[i].k);
+        lh_into(m, (h & mask) ? nb : b, tmp[i].k, tmp[i].v, 0);
+    }
+    if (m->s == ((int64_t)1 << m->L)) { m->L++; m->s = 0; }
+    m->splits++;
+    double dt = now_ms() - t0; if (dt > m->worst) m->worst = dt;
+}
+static void lh_put(LH *m, int64_t k, int64_t v)
+{
+    lh_into(m, lh_bucket(m, hk(k)), k, v, 1);
+    while (m->n * 100 > m->hi * (int64_t)LH_SLOTS * LH_LOAD) lh_split(m);
+}
+static int lh_find(LH *m, int64_t k, int64_t *v)
+{
+    uint64_t h = hk(k);
+    int64_t s = lh_slot(h);
+    LPage *p = lh_page(m, lh_bucket(m, h));
+    for (;;) {
+        for (int64_t i = 0; i < LH_SLOTS; i++) {
+            LB *e = &p->b[s];
+            if (e->k == 0) return 0;
+            if (e->k == k) { *v = e->v; return 1; }
+            if (++s == LH_SLOTS) s = 0;
+        }
+        if (p->next < 0) return 0;
+        p = lh_page(m, p->next);
+        s = lh_slot(h);
+    }
+}
+static void lh_init(LH *m, int64_t reserve)
+{
+    memset(m, 0, sizeof *m);
+    m->base = (LPage *)mmap(NULL, (size_t)reserve, PROT_READ | PROT_WRITE,
+                            MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    if (m->base == MAP_FAILED) { fprintf(stderr, "mmap failed"); exit(1); }
+    m->L = 4; m->s = 0; m->hi = 16;
+    m->spillTop = reserve / LH_PAGE;
+    m->spillFree = -1;
+    for (int64_t i = 0; i < 16; i++) { LPage *p = lh_page(m, i); memset(p, 0, LH_PAGE); p->next = -1; }
+}
+
+/* ---------------- chained linear hashing: no page split, no directory --- */
+#ifndef CH_LOAD
+#define CH_LOAD 75                /* migrate one bucket when n/hi passes this */
+#endif
+#ifndef CH_NODES
+#define CH_NODES (32 << 20)       /* reserved node slots */
+#endif
+#ifndef CH_BUCKETS
+#define CH_BUCKETS (64 << 20)     /* reserved bucket heads */
+#endif
+typedef struct {
+    int64_t *k, *v;               /* node columns, append-only */
+    int32_t *next;                /* node -> next node in the same run */
+    int32_t *heads;               /* bucket -> first node, -1 for empty */
+    int64_t used, nfree, n;
+    int64_t hi; int L; int64_t s;
+    int64_t migrates; double worst;
+} CH;
+static void *ch_map(size_t bytes)
+{
+    void *p = mmap(NULL, bytes, PROT_READ | PROT_WRITE,
+                   MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    if (p == MAP_FAILED) { fprintf(stderr, "mmap failed"); exit(1); }
+    return p;
+}
+static inline int64_t ch_bucket(CH *m, uint64_t h)
+{
+    int64_t b = (int64_t)(h & (((uint64_t)1 << m->L) - 1));
+    if (b < m->s) b = (int64_t)(h & (((uint64_t)1 << (m->L + 1)) - 1));
+    return b;
+}
+static void ch_migrate(CH *m)
+{
+    double t0 = now_ms();
+    int64_t b = m->s, nb = m->hi;
+    int32_t i = m->heads[b];
+    m->heads[b] = -1;
+    m->heads[nb] = -1;
+    m->hi++; m->s++;
+    uint64_t mask = (uint64_t)1 << m->L;
+    while (i >= 0) {
+        int32_t nx = m->next[i];
+        int64_t dst = (hk(m->k[i]) & mask) ? nb : b;
+        m->next[i] = m->heads[dst];
+        m->heads[dst] = i;
+        i = nx;
+    }
+    if (m->s == ((int64_t)1 << m->L)) { m->L++; m->s = 0; }
+    m->migrates++;
+    double dt = now_ms() - t0; if (dt > m->worst) m->worst = dt;
+}
+static void ch_put(CH *m, int64_t k, int64_t v)
+{
+    int64_t b = ch_bucket(m, hk(k));
+    int32_t i;
+    if (m->nfree > 0) { i = (int32_t)m->nfree; m->nfree = m->next[i]; }
+    else i = (int32_t)m->used++;
+    m->k[i] = k; m->v[i] = v;
+    m->next[i] = m->heads[b];
+    m->heads[b] = i;
+    m->n++;
+    while (m->n * 100 > m->hi * CH_LOAD) ch_migrate(m);
+}
+static int ch_find(CH *m, int64_t k, int64_t *v)
+{
+    for (int32_t i = m->heads[ch_bucket(m, hk(k))]; i >= 0; i = m->next[i])
+        if (m->k[i] == k) { *v = m->v[i]; return 1; }
+    return 0;
+}
+static void ch_init(CH *m)
+{
+    memset(m, 0, sizeof *m);
+    m->k = (int64_t *)ch_map((size_t)CH_NODES * 8);
+    m->v = (int64_t *)ch_map((size_t)CH_NODES * 8);
+    m->next = (int32_t *)ch_map((size_t)CH_NODES * 4);
+    m->heads = (int32_t *)ch_map((size_t)CH_BUCKETS * 4);
+    m->L = 4; m->s = 0; m->hi = 16;
+    for (int64_t i = 0; i < 16; i++) m->heads[i] = -1;
+}
+
 int main(int argc, char **argv)
 {
     const char *mode = argc > 1 ? argv[1] : "cur";
@@ -365,6 +592,22 @@ int main(int argc, char **argv)
         for (int64_t i = 0; i < q; i++) { int64_t v; if (eh_find(&m, keys[i], &v)) { sum += v; hits++; } }
         t1 = now_ms(); printf("  ins=%.1f ms get=%.1f ms splits=%lld pages=%lld span=%.1f\n", tmid - t0, t1 - tmid, (long long)m.splits, (long long)m.npages, m.spanms);
         peak = vmhwm_kb(); worst = m.worst; cap_end = m.npages * EH_SLOTS;
+    } else if (strcmp(mode, "ch") == 0) {
+        CH m; ch_init(&m);
+        t0 = now_ms();
+        for (int64_t i = 0; i < n; i++) ch_put(&m, keys[i], keys[i] * 3 + 1);
+        double tmid = now_ms();
+        for (int64_t i = 0; i < q; i++) { int64_t v; if (ch_find(&m, keys[i], &v)) { sum += v; hits++; } }
+        t1 = now_ms(); printf("  ins=%.1f ms get=%.1f ms migrates=%lld buckets=%lld nodes=%lld\n", tmid - t0, t1 - tmid, (long long)m.migrates, (long long)m.hi, (long long)m.used);
+        peak = vmhwm_kb(); worst = m.worst; cap_end = m.hi;
+    } else if (strcmp(mode, "lh") == 0) {
+        LH m; lh_init(&m, (int64_t)8 << 30);
+        t0 = now_ms();
+        for (int64_t i = 0; i < n; i++) lh_put(&m, keys[i], keys[i] * 3 + 1);
+        double tmid = now_ms();
+        for (int64_t i = 0; i < q; i++) { int64_t v; if (lh_find(&m, keys[i], &v)) { sum += v; hits++; } }
+        t1 = now_ms(); printf("  ins=%.1f ms get=%.1f ms splits=%lld buckets=%lld spill=%lld\n", tmid - t0, t1 - tmid, (long long)m.splits, (long long)m.hi, (long long)m.live_spill);
+        peak = vmhwm_kb(); worst = m.worst; cap_end = m.hi * LH_SLOTS;
     } else {
         Tab t; memset(&t, 0, sizeof t);
         t.pow2 = (strcmp(mode, "flat2") == 0 || strcmp(mode, "flat2pre") == 0);
