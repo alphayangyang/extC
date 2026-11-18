@@ -1,31 +1,31 @@
 use std::io
-use std::sys::pool as syspool
+use std::sys::coroutine as co
 
 // A **handle** coroutine (`coroutine<T>` annotation) keeps its frame in the task's own arena, and a
 // handle can move into a longer-lived variable, so in general the task has to end with its last
 // owner. When nothing outside the declaring block can reach the handle, the block itself ends the
 // task at exit (`noteOwnedCoroHandles` in the checker, `cgCoroOwnedEndAt` in codegen), so abandoning
-// one releases its zone and the pools born in it instead of leaking them. A handle that *escapes*
-// still has no owner the compiler can name: that shape is what whole-pool collection is for.
+// one releases its arena instead of leaking it. The judgement is the runtime's live-task count:
+// after 50 abandoned handles it must be back to 0.
 fn mk(n: i64) -> coroutine<i64> {
-    var b: varArray<i64> = varArray<i64>::withCap(8)
-    b.push(7)
+    var b: mut ref [8]i64 = new [8]i64
+    (*b)[0] = 7
     for i in 0..n {
-        let got: i64 = b.get(0) ?? 0
+        let got: i64 = (*b)[0]
         yield got
     }
     return
 }
 
 fn main() -> i32 {
-    let before: i64 = syspool::extc_pool_live()
+    let before: i64 = co::extc_task_live()
     for i in 0..50 {
         var h: coroutine<i64> = mk(4)
         if h.next() {
             let v: i64 = h.value()
         }
     }
-    let after: i64 = syspool::extc_pool_live()
+    let after: i64 = co::extc_task_live()
     io::println(f"before={before} after={after}")
     return 0
 }

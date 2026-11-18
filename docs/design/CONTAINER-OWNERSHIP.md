@@ -1,14 +1,15 @@
 # 容器的所有权与拷贝语义（R4c 的规则）
 
 > 状态：规则已定并落地 —— `vector` 与 `string` 的存储已经在缓冲区基质上（`buf<T>` 预留 /
-> 密排槽），`linMap` / `linSet` 的存储换成 `block<T>`（`docs/design/BUF-INVARIANT.md` §17），
-> `hashMap` / `hashSet` 的存储换成四列 `block` + 一条 `slots<V>` 值列（§18）；`map` / `set` / `place` 的
-> **存储**仍在池板块上，迁完它们才能删池。判据在 `bench/containers/`（四格 V + 三格 S）、
-> `tests/stl/`、`tests/gc-p0/`（G15 / G21 / G22）。
+> 密排槽），`linMap` / `linSet` 与 `map` / `set` 的存储换成 `block<T>` 平坦列
+> （`docs/design/BUF-INVARIANT.md` §17），`hashMap` / `hashSet` 的存储换成三列 `block`
+> （键 / 值 / 控制字节，§18 与 `docs/design/HASHMAP.md`）；`place` 的 **存储**仍在池板块上，
+> 迁完它才能删池。判据在 `bench/containers/`（四格 V + 三格 S + H1–H6）、`tests/stl/`、
+> `tests/gc-p0/`（G15 / G21 / G22）。
 
 ## 1. 要解决的问题
 
-池板块把容器的值语义做成**别名 + 世代号**：容器里的 `vals` 是 `mut slice<T>`，指向池按块发出的一段；
+池板块（`place` 那一族）把值语义做成**别名 + 世代号**：容器里的 `vals` 是 `mut slice<T>`，指向池按块发出的一段；
 `var b = a` 是 O(1)，两块共享同一段存储，靠 `pid` / `pidGen` 判「这份容器值还指着那块存储吗」
 （`pStale()` 比世代、`pPoison()` 把陈旧容器收空、`pins` 冻结）。共享拷贝不要钱，价目记在内存上：
 **池只还世代号，不把板块还回 RSS**，所以峰值按「构造过的总量」算。

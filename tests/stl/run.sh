@@ -145,7 +145,7 @@ rm -rf "$TMPC2"
 
 TMPC3=$(mktemp -d)
 echo "== buf<T>：增长峰值是"一份"不是"历代之和"（同一形状 vs arena 底）=="
-# 判据：8e6 个 i64（活跃 64 MB）—— `buf` 扩容当场还旧板，`varArray` 的旧块只能等帧退出。
+# 判据：8e6 个 i64（活跃 64 MB）—— `buf` 的预留扩容当场还旧块，`varArray`（纯 arena 底）要等帧退出。
 if "$EXTC" -w --no-line-map -o "$TMPC3/b.c" tests/stl/buf_rss.extc >/dev/null 2>&1 \
    && "$EXTC" -w --no-line-map -o "$TMPC3/a.c" tests/stl/buf_rss_arena.extc >/dev/null 2>&1 \
    && gcc -fwrapv -std=c11 -O2 -o "$TMPC3/b" "$TMPC3/b.c" >/dev/null 2>&1 \
@@ -201,8 +201,8 @@ echo "== 用户自定义池底容器（写在入口文件里，不是库模块�
 run_case custom  tests/stl/custom_pool.extc  "n=10 cap=13 v9=81 live=1 bytes=104"
 run_case custom-grow tests/stl/custom_pool_grow.extc "n=2000000 cap=2362204 bytes=18897632 first=0 last=1999999 live_after=0"
 
-echo "== varArray：唯一能装引用的容器（arena 底 ⇒ 元素地址永不移动/复用）=="
-# 视图是"快照"而不是悬垂：扩容不释放旧块 ⇒ 读到旧值；带出调用安全（三条事实一次钉住）
+echo "== varArray：能装引用的容器（元素是引用值；增长搬家搬的是引用，指向的对象不动）=="
+# 视图不能跨增长使用：扩容当场还旧块 ⇒ 同块内跨增长读/写是编译错误（跨帧则借不出去）
 rejects varArray_stale_view tests/stl/varArray_stale_view.extc "changes the storage that"
 rejects varArray_stale_write tests/stl/varArray_stale_write.extc "changes the storage that"
 # 写的一面：扩容后通过旧 mut 视图写 ⇒ 静默丢（新块看不到），ASan 证明不是内存不安全
@@ -232,7 +232,8 @@ run_case clone   tests/stl/clone.extc   "vec=3/4 vecOk=1,2,3 str=2/3 map=2/3 hm=
 run_case string  tests/stl/string.extc  "len=5 cap=16 len2=44 cap2=54 shrink=44 text=hello, world! and more bytes to force growth t=abc(3) clear=0/44"
 
 echo "== hashSetI64：无值 map（哈希 / 探测 / 墓碑只有一份实现 —— 建在 hashMapI64<u8> 上）=="
-run_case hashset tests/stl/hashSet.extc     "new=2 len=2 again=0 len=2 has2=1 rm=1 gone=0 len=1 hits=200000 cap=16 cleared=0"
+# cap 是装载算术 ceil(want/0.85) 的结果（withCap(8) ⇒ 10），不是 2 的幂 —— 见 hashMap.extc 的 bucketOf。
+run_case hashset tests/stl/hashSet.extc     "new=2 len=2 again=0 len=2 has2=1 rm=1 gone=0 len=1 hits=200000 cap=10 cleared=0"
 
 echo "== set<T>：**有序**集合（建在 map<T, u8> 上，B+ 树）—— 按序遍历 · put 新元素为真 · lowerBound 排名 =="
 run_case setOrdered tests/stl/setOrdered.extc "order=1,2,3,4,5 len=5 dup=0 has3=1 lb3=2 lb6=5 rm=1 after=1,2,4,5 lb4=2"

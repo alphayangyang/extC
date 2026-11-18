@@ -1,29 +1,65 @@
-// 池底化（POOLS.md §8）：值住在池里 ⇒ 稠密面是连续区间；rebuild 只重排桶、值一个都不搬；
-// remove 是 swap-remove ⇒ 被搬走的元素仍按原键取到（靠 bucketOfDense 反查）
+// 没有稠密面：按桶位迭代（capOf/liveAt/keyAt/valAt），值住在键值两列里
+// expect: cap=8 len=3 sumK=6 sumV=60|afterGrow=20800 n=64|gone=-1 v64=640 len=63|compact=true n=63 live=63
 use std::io
-// expect: order=1,2,3 dense=3 sum=60 afterRebuild=20800 first3=1,2,3 moved=640 gone=-1 len=63 dense=63
 use std::data::hashMap
+
+fn sumVals(m: ref hashMapI64<i32>) -> i64 {
+    var s: i64 = 0
+    var i: i64 = 0
+    while i < m.capOf() {
+        if m.liveAt(i) { s = s + i64(m.valAt(i)) }
+        i = i + 1
+    }
+    return s
+}
+
+fn sumKeys(m: ref hashMapI64<i32>) -> i64 {
+    var s: i64 = 0
+    var i: i64 = 0
+    while i < m.capOf() {
+        if m.liveAt(i) { s = s + m.keyAt(i) }
+        i = i + 1
+    }
+    return s
+}
+
+fn liveCnt(m: ref hashMapI64<i32>) -> i64 {
+    var c: i64 = 0
+    var i: i64 = 0
+    while i < m.capOf() {
+        if m.liveAt(i) { c = c + 1 }
+        i = i + 1
+    }
+    return c
+}
 
 fn main() -> i32 {
     var m = hashMapI64<i32>::withCap(4)
     m.put(1, i32(10))
     m.put(2, i32(20))
     m.put(3, i32(30))
-    io::cout << "order=" << m.keyAtDense(0) << "," << m.keyAtDense(1) << "," << m.keyAtDense(2)
-    io::cout << " dense=" << m.denseLen()
-    var sum: i64 = 0
-    var d: i64 = 0
-    while d < m.denseLen() { sum = sum + i64(m.valAtDense(d))  d = d + 1 }
-    io::cout << " sum=" << sum
+    io::cout << "cap=" << m.capOf() << " len=" << m.len()
+    io::cout << " sumK=" << sumKeys(ref m) << " sumV=" << sumVals(ref m) << "\n"
+
     var i: i64 = 4
     while i <= 64 { m.put(i, i32(i * 10))  i = i + 1 }
-    var sum2: i64 = 0
-    d = 0
-    while d < m.denseLen() { sum2 = sum2 + i64(m.valAtDense(d))  d = d + 1 }
-    io::cout << " afterRebuild=" << sum2 << " first3=" << m.keyAtDense(0) << "," << m.keyAtDense(1) << "," << m.keyAtDense(2)
+    io::cout << "afterGrow=" << sumVals(ref m) << " n=" << liveCnt(ref m) << "\n"
+    if liveCnt(ref m) != m.len() { return 1 }
+
     m.remove(1)
-    var moved: i32 = m.get(64) ?? i32(-1)
-    var gone: i32 = m.get(1) ?? i32(-1)
-    io::cout << " moved=" << i64(moved) << " gone=" << i64(gone) << " len=" << m.len() << " dense=" << m.denseLen() << "\n"
+    let v64 = m.get(64) ?? i32(-1)
+    let gone = m.get(1) ?? i32(-1)
+    io::cout << "gone=" << i64(gone) << " v64=" << i64(v64) << " len=" << m.len() << "\n"
+
+    /* 缩容：所有 63 只键仍按原值取到，桶位数 == len（没有空洞残留） */
+    m.compact()
+    var ok: bool = true
+    i = 2
+    while i <= 64 {
+        let g = m.get(i) ?? i32(-1)
+        if i64(g) != i * 10 { ok = false }
+        i = i + 1
+    }
+    io::cout << "compact=" << ok << " n=" << m.len() << " live=" << liveCnt(ref m) << "\n"
     return 0
 }

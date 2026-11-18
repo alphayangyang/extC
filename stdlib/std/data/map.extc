@@ -23,11 +23,11 @@
  * numeric types). Equality is derived -- `a == b` iff `!(a < b) && !(b < a)` -- so a key type
  * supplies one operator and the ordered map works for any type that has it.
  *
- * STAGE 2b (this file today): insert (splits up to a new root), lookup, rank queries and the
- * ordered walk are complete, and `remove` rebalances -- a node under `HALF` entries borrows from a
- * sibling that can spare one, otherwise it merges, and every node a merge retires goes back on a
- * free list for the next split to reuse. Stage 3 moves the stores and the node records into pools,
- * which adds `release` / `shrink` and turns the free list into pool slots. *
+ * Insert (splits up to a new root), lookup, rank queries and the ordered walk are complete, and
+ * `remove` rebalances -- a node under `HALF` entries borrows from a sibling that can spare one,
+ * otherwise it merges, and every node a merge retires goes back on a free list for the next split
+ * to reuse. The stores and the node records live in one set of owned flat blocks (`release` /
+ * `shrink` hand them back), so the free list holds ids, not storage. *
  * @code
  * use std::io
  * use std::data::map
@@ -42,64 +42,49 @@
  * }
  * @endcode
  */
-use std::sys::pool as syspool    /* 运行期池：容器诞生时登记，release 时整批还 */
 use std::data::dense::{block}    /* 容器的平坦列：拥有的类型化块（见 `std::data::dense`） */
 
 let ORDER: i64 = 16        /* max keys per node (the array sizes in `newNode` are these numbers) */
 let HALF:  i64 = 8         /* min keys per non-root node once stage 2b rebalances */
+let SCRATCH: i64 = 32      /* 下降路径与子槽选择的草稿长度：树高上限之上的常数，够用不增长 */
 
-struct bnode<K, V> {
-    @private n:    i32                 /* keys in this node */
-    @private cnt:  i32                 /* keys in this subtree (leaves: n; internal: sum of children) */
-    @private leaf: bool
-    @private keys: mut slice<K>        /* ORDER entries, ascending */
-    vals: mut slice<V>        /* leaves only */
-    @private kids: mut slice<i32>      /* internal only, ORDER + 1 entries */
-    next: i32                 /* leaf chain, -1 at the end */
-}
-
-@sharesStorage        /* 按值拷贝时**两份共用同一块板块** ⇒ 编译器在这里报警告，要独立副本用 `clone()` */
-@place                 /* 这个类型**拥有一个地方**：存储住在那个地方的板块上，寿命随它所在的域 */
+@noCopy
 struct map<K, V> {
-    @private nodes:  mut slice<bnode<K, V>>   /* per-node scalars + VIEWS into the three stores below */
-    /* The three stores are flat and owned by the map: node `id` owns the 17 key slots at
-     * `id * 17`, the 17 value slots at the same offset, and the 18 child slots at `id * 18`.
-     * Nodes therefore never allocate -- a node is carved out of storage that already exists.
-     * That is not only faster (one allocation per doubling instead of one per node): an
-     * allocation inside `put`'s split loop would land in the ARENA OF THAT LOOP BODY and be freed
-     * the moment the iteration ends, so a freshly split node would dangle. Storage that is
-     * allocated once, at the top level of `withCap` / `growStores`, has the map's own lifetime. */
-    @private keys:   mut slice<K>
-    vals:   mut slice<V>
-    @private kids:   mut slice<i32>
+    /* 七块**拥有的**平坦存储，容量固定、整块归还（`dense::block<T>`）：键列、值列、子列，
+     * 加上节点的四个标量列（键数 / 子树键数 / 是否叶子 / 后继）。节点 `id` 的 17 个键槽是
+     * `keys[id * 17 ..]`、18 个子槽是 `kids[id * 18 ..]`；偏移只跟 id 有关、与容量无关，所以
+     * 存储增长时没有任何节点视图需要重挂，`put` 的分裂循环里也没有任何分配。
+     * 块内存是复用的脏内存 ⇒ 写一律走 `elemPut`（不给旧字节跑钩子），读只读 `[0, used)`。 */
+    @private keys: block<K>
+    vals: block<V>
+    @private kids: block<i32>
+    @private kn_:  block<i32>          /* 每个节点的键数 */
+    @private kc:   block<i32>          /* 每个节点子树的键数 */
+    @private kl:   block<u8>           /* 每个节点是不是叶子（0/1） */
+    @private kx:   block<i32>          /* 叶链 / 空闲链的后继，-1 结尾 */
     @private nnodes: i64
     @private ncap:   i64               /* nodes the stores have room for */
     @private root:   i32
-    @private freeHead: i32             /* chain of recycled nodes (through `next`), -1 when empty */
-    @private pid:    i64               /* runtime pool of this container (`release` hands it back) */
-    @private pidGen: u64               /* its generation: a stale copy must not release somebody else's */
+    @private freeHead: i32             /* chain of recycled nodes (through `kx`), -1 when empty */
     @private n:      i64               /* live entries */
-    path:   mut slice<i32>    /* scratch: the descent path of `put` / `remove` */
-    @private side:   mut slice<i32>    /* scratch: which child slot was taken at each level */
+    @private path:   block<i32>        /* scratch: the descent path of `put` / `remove` */
+    @private side:   block<i32>        /* scratch: which child slot was taken at each level */
     depth:  i64
 
     /* ---------------------------------------------------------------- construction */
     fn withCap(want: i64) -> map<K, V> {
         var c: i64 = 4
         while c < want { c = c * 2 }
-        let rp  = syspool::extc_pool_new(-1)
-        let rpg = syspool::extc_pool_generation(rp)
         var m: map<K, V> = {
-            /* 四处长期存储都在**这张表自己的池板块**上（不是 arena 切片）：增长/压实时旧的
-             * 那几块当场还回去。之前用 `new` 时，每一代旧存储都留给 arena —— 1e6 条目下
-             * 峰值 179,820 KB 对 90,604 KB，那 49% 就是它们。 */
-            nodes: poolSliceRaw<bnode<K, V>>(rp, c),
-            keys:  poolSliceRaw<K>(rp, c * 17),
-            vals:  poolSliceRaw<V>(rp, c * 17),
-            kids:  poolSliceRaw<i32>(rp, c * 18),
-            nnodes: 0, ncap: c, root: i32(0), freeHead: i32(-1),
-            pid: rp, pidGen: rpg, n: 0,
-            path: poolSlice<i32>(rp, 16), side: poolSlice<i32>(rp, 16), depth: 0,
+            keys: block<K>::withCap(c * 17),
+            vals: block<V>::withCap(c * 17),
+            kids: block<i32>::withCap(c * 18),
+            kn_: block<i32>::withCap(c),
+            kc:  block<i32>::withCap(c),
+            kl:  block<u8>::withCap(c),
+            kx:  block<i32>::withCap(c),
+            nnodes: 0, ncap: c, root: i32(0), freeHead: i32(-1), n: 0,
+            path: block<i32>::withCap(SCRATCH), side: block<i32>::withCap(SCRATCH), depth: 0,
         }
         m.root = m.newNode(true)
         return m
@@ -113,7 +98,11 @@ struct map<K, V> {
     /* 这张表**当下**在它自己池里占的字节（四处存储 + 两块草稿）。
      * 判据：`growStores` 把旧块当场还了 ⇒ 这个数只随当前 `ncap` 走，与长过多少次无关；
      * 旧块若还留着，它会**大一整代**（见 tests/map/run.sh 的精确字节账）。 */
-    fn bytesOf(self: ref map<K, V>) -> i64 { return syspool::extc_pool_bytes(self.pid) }
+    /* 这张表当下握着的字节：七块平坦存储 + 两块草稿，按块的 size class 报（不是请求字节）。 */
+    /* 判据：`growStores` / `shrink` 把旧块当场还了 ⇒ 这个数只随当前 `ncap` 走。 */
+    fn bytesOf(self: ref map<K, V>) -> i64 {
+        return self.keys.bytesOf() + self.vals.bytesOf() + self.kids.bytesOf() + self.kn_.bytesOf() + self.kc.bytesOf() + self.kl.bytesOf() + self.kx.bytesOf() + self.path.bytesOf() + self.side.bytesOf()
+    }
     fn height(self: ref map<K, V>) -> i64 {
         var h: i64 = 1
         var id: i32 = self.root
@@ -130,92 +119,85 @@ struct map<K, V> {
      * 强制内联之后它们从 profile 里消失，GCC 也能跨过它们优化。
      * 注意：不是所有小函数都值得 —— `hashMap` 那 6 个小访问器加了只值 ~1%（噪声），别加。 */
 @inline
-    @private fn bn(self: ref map<K, V>, id: i32) -> i64 { return i64(self.nodes[i64(id)].n) }
+    @private fn bn(self: ref map<K, V>, id: i32) -> i64 { return i64(self.kn_[i64(id)]) }
 @inline
-    @private fn cntOf(self: ref map<K, V>, id: i32) -> i64 { return i64(self.nodes[i64(id)].cnt) }
+    @private fn cntOf(self: ref map<K, V>, id: i32) -> i64 { return i64(self.kc[i64(id)]) }
 @inline
-    @private fn leafOf(self: ref map<K, V>, id: i32) -> bool { return self.nodes[i64(id)].leaf }
+    @private fn leafOf(self: ref map<K, V>, id: i32) -> bool { return self.kl[i64(id)] != u8(0) }
 @inline
-    @private fn kn(self: ref map<K, V>, id: i32, i: i64) -> K { return self.nodes[i64(id)].keys[i] }
+    @private fn kn(self: ref map<K, V>, id: i32, i: i64) -> K { return self.keys[i64(id) * 17 + i] }
 @inline
-    @private fn vn(self: ref map<K, V>, id: i32, i: i64) -> V { return self.nodes[i64(id)].vals[i] }
+    @private fn vn(self: ref map<K, V>, id: i32, i: i64) -> V { return self.vals[i64(id) * 17 + i] }
 @inline
-    @private fn kd(self: ref map<K, V>, id: i32, i: i64) -> i32 { return self.nodes[i64(id)].kids[i] }
+    @private fn kd(self: ref map<K, V>, id: i32, i: i64) -> i32 { return self.kids[i64(id) * 18 + i] }
 @inline
-    @private fn nx(self: ref map<K, V>, id: i32) -> i32 { return self.nodes[i64(id)].next }
+    @private fn nx(self: ref map<K, V>, id: i32) -> i32 { return self.kx[i64(id)] }
 
 @inline
-    @private fn setN(self: mut ref map<K, V>, id: i32, v: i64) { self.nodes[i64(id)].n = i32(v) }
+    @private fn setN(self: mut ref map<K, V>, id: i32, v: i64) { self.kn_[i64(id)] = i32(v) }
 @inline
-    @private fn setCnt(self: mut ref map<K, V>, id: i32, v: i64) { self.nodes[i64(id)].cnt = i32(v) }
+    @private fn setCnt(self: mut ref map<K, V>, id: i32, v: i64) { self.kc[i64(id)] = i32(v) }
 @inline
-    @private fn setKey(self: mut ref map<K, V>, id: i32, i: i64, k: K) { self.nodes[i64(id)].keys[i] = k }
+    @private fn setLeaf(self: mut ref map<K, V>, id: i32, v: bool) {
+        if v { self.kl[i64(id)] = u8(1) } else { self.kl[i64(id)] = u8(0) }
+    }
 @inline
-    @private fn setVal(self: mut ref map<K, V>, id: i32, i: i64, v: V) { self.nodes[i64(id)].vals[i] = v }
+    @private fn setKey(self: mut ref map<K, V>, id: i32, i: i64, k: K) { self.keys[i64(id) * 17 + i] = k }
 @inline
-    @private fn setKid(self: mut ref map<K, V>, id: i32, i: i64, c: i32) { self.nodes[i64(id)].kids[i] = c }
+    @private fn setVal(self: mut ref map<K, V>, id: i32, i: i64, v: V) { self.vals[i64(id) * 17 + i] = v }
 @inline
-    @private fn setNext(self: mut ref map<K, V>, id: i32, c: i32) { self.nodes[i64(id)].next = c }
+    @private fn setKid(self: mut ref map<K, V>, id: i32, i: i64, c: i32) { self.kids[i64(id) * 18 + i] = c }
+@inline
+    @private fn setNext(self: mut ref map<K, V>, id: i32, c: i32) { self.kx[i64(id)] = c }
 
-    /* Double the stores and re-hang every node's views on the new arrays. The copies are element
-     * by element on purpose: a view is a pointer into the old store, so it cannot be moved by
-     * copying the store's bytes alone. */
+    /* Grow the seven flat stores to 1.5x. Every element is MOVED into the new block
+     * (`block::growTo`) and the old block goes back at once, so a growth step holds one
+     * generation of storage rather than two. Node `i` addresses the same offsets after the move:
+     * they depend on the id, never on capacity, which is why no node has a view to re-hang.
+     *
+     * 1.5x rather than 2x: the last generation of 1e6 entries holds ~157,000 nodes instead of
+     * 262,144, and the step stays O(used) either way. */
     fn growStores(self: mut ref map<K, V>) {
-        /* 1.5 倍，而且**一个字节的数据都不用搬**：节点 `i` 的三个存储槽位是 `keys[i*17 ..]` /
-         * `vals[i*17 ..]` / `kids[i*18 ..]` —— 偏移只跟 id 有关，与容量无关。所以增长就是在
-         * 原块上加长（`poolResize` 保住内容），再把每个节点的视图重新指向新基址。
-         *
-         * 这里一次换四块：逐元素拷不但 O(n)，还要在最长的一跳里让新旧两代同时在手
-         * （1e6 条目下峰值内存会多出几十 MB）。
-         * 1.5 倍的另一个好处：末代容量从 2 的幂（262,144 节点，只用 140,623）降到 ~157,000。 */
         var want: i64 = self.ncap + self.ncap / 2
         if want < 4 { want = 4 }
-        self.keys  = poolResizeRaw<K>(self.pid, self.keys, want * 17)
-        self.vals  = poolResizeRaw<V>(self.pid, self.vals, want * 17)
-        self.kids  = poolResizeRaw<i32>(self.pid, self.kids, want * 18)
-        self.nodes = poolResizeRaw<bnode<K, V>>(self.pid, self.nodes, want)
-        /* 基址可能变了（realloc 搬家），所以视图必须重新算一遍 —— 这是 O(节点数) 次指针写，
-         * 不是 O(节点数 × 17) 次拷贝。 */
-        var i: i64 = 0
-        while i < self.nnodes {
-            let kb = i * 17
-            let cb = i * 18
-            var nd: bnode<K, V> = self.nodes[i]
-            nd.keys = self.keys[kb..kb + 17]
-            nd.vals = self.vals[kb..kb + 17]
-            nd.kids = self.kids[cb..cb + 18]
-            self.nodes[i] = nd
-            i = i + 1
-        }
+        /* 先报「用到的元素数」：块的搬移与钩子只走 `[0, used)`，尾巴是块上一个使用者留下的
+         * 脏内存。 */
+        self.keys.setUsed(self.nnodes * 17)
+        self.vals.setUsed(self.nnodes * 17)
+        self.kids.setUsed(self.nnodes * 18)
+        self.kn_.setUsed(self.nnodes)
+        self.kc.setUsed(self.nnodes)
+        self.kl.setUsed(self.nnodes)
+        self.kx.setUsed(self.nnodes)
+        self.keys.growTo(want * 17)
+        self.vals.growTo(want * 17)
+        self.kids.growTo(want * 18)
+        self.kn_.growTo(want)
+        self.kc.growTo(want)
+        self.kl.growTo(want)
+        self.kx.growTo(want)
         self.ncap = want
     }
 
     /* Carve a fresh node out of the stores. No allocation happens here, which is what keeps a
      * node created inside `put`'s split loop alive (see the note on the stores above).
-     * Stage 3 hands the slot back on delete instead of leaking it. */
+     * A recycled node only has its scalars reset. */
     fn newNode(self: mut ref map<K, V>, leaf: bool) -> i32 {
-        /* A recycled node already has its views into the stores; only the scalars are reset. */
         if self.freeHead >= i32(0) {
             let id = self.freeHead
-            self.freeHead = self.nodes[i64(id)].next
-            self.nodes[i64(id)].n = i32(0)
-            self.nodes[i64(id)].cnt = i32(0)
-            self.nodes[i64(id)].leaf = leaf
-            self.nodes[i64(id)].next = i32(-1)
+            self.freeHead = self.nx(id)
+            self.setN(id, 0)
+            self.setCnt(id, 0)
+            self.setLeaf(id, leaf)
+            self.setNext(id, i32(-1))
             return id
         }
         if self.nnodes >= self.ncap { self.growStores() }
         let id = i32(self.nnodes)
-        let kb = self.nnodes * 17
-        let cb = self.nnodes * 18
-        var nd: bnode<K, V> = {
-            n: i32(0), cnt: i32(0), leaf: leaf,
-            keys: self.keys[kb..kb + 17],
-            vals: self.vals[kb..kb + 17],
-            kids: self.kids[cb..cb + 18],
-            next: i32(-1),
-        }
-        self.nodes[self.nnodes] = nd
+        self.setN(id, 0)
+        self.setCnt(id, 0)
+        self.setLeaf(id, leaf)
+        self.setNext(id, i32(-1))
         self.nnodes = self.nnodes + 1
         return id
     }
@@ -366,7 +348,6 @@ struct map<K, V> {
 
     /* ---------------------------------------------------------------- insert */
     fn put(self: mut ref map<K, V>, k: K, v: V) -> bool {
-        if self.pStale() { self.pPoison() }
         /* Descend to the leaf, recording the path: a split has to be pushed back up it. */
         var id: i32 = self.root
         self.depth = 0
@@ -480,7 +461,7 @@ struct map<K, V> {
     /* Hand a node back for reuse. The store slot is never returned (the stores only grow), so a
      * churn of insert/delete cycles reuses node ids instead of walking the store forward. */
     fn freeNode(self: mut ref map<K, V>, id: i32) {
-        self.nodes[i64(id)].next = self.freeHead
+        self.setNext(id, self.freeHead)
         self.freeHead = id
     }
 
@@ -727,46 +708,35 @@ struct map<K, V> {
         return true
     }
 
-    /* Hand the container's runtime pool back (the map and its pool are born together, exactly as
-     * `vector` / `string` / `hashMap` do). The check is on the birth generation, so a stale copy of
-     * a released map cannot drop somebody else's pool. */
-    /* **守卫**：这一份有序表值还指着它的池吗？陈旧 ⇒ 四处存储收空，下一次访问带位置地 trap。 */
-    fn pStale(self: ref map<K, V>) -> bool {
-        if self.pid < 0 { return false }
-        return syspool::extc_pool_generation(self.pid) != self.pidGen
-    }
-    fn pPoison(self: mut ref map<K, V>) {
-        self.nodes = poolSlice<bnode<K, V>>(-1, 0)
-        self.keys  = poolSlice<K>(-1, 0)
-        self.vals  = poolSlice<V>(-1, 0)
-        self.kids  = poolSlice<i32>(-1, 0)
-        self.nnodes = 0
-        self.ncap   = 0
-        self.n      = 0
-        self.pid    = -1
-    }
-
+    /* 把七块平坦存储与两块草稿整块交还（`block::release` 幂等，所以字段的自动 drop 不会重复
+     * 归还）。旧元素若含引用域，`setUsed` 报出的 `[0, used)` 就是撤引用边与跑钩子的范围。 */
     fn release(self: mut ref map<K, V>) {
-        if self.pid < 0 { return }
-        /* One staleness question, one place to ask it (`pStale`): the comparison lives in
-         * exactly one place, and two copies of a load-bearing check would drift. */
-        if self.pStale() {
-            self.pid = -1
-            return
-        }
-        syspool::extc_pool_reset(self.pid)
-        syspool::extc_pool_drop(self.pid)
-        self.pid = -1
+        self.keys.setUsed(self.nnodes * 17)
+        self.vals.setUsed(self.nnodes * 17)
+        self.kids.setUsed(self.nnodes * 18)
+        self.kn_.setUsed(self.nnodes)
+        self.kc.setUsed(self.nnodes)
+        self.kl.setUsed(self.nnodes)
+        self.kx.setUsed(self.nnodes)
+        self.keys.release()
+        self.vals.release()
+        self.kids.release()
+        self.kn_.release()
+        self.kc.release()
+        self.kl.release()
+        self.kx.release()
+        self.path.release()
+        self.side.release()
+        self.nnodes = 0
+        self.ncap = 0
+        self.n = 0
+        self.root = i32(-1)
+        self.freeHead = i32(-1)
     }
 
-    /* Lower the water mark: repack the LIVE nodes into ids 0..k-1, drop the free list and reallocate
-     * the stores at exactly that size. Order, capacity and every entry stay where they were.
-     *
-     * 存储在自己的板块上，所以这一下**真的是 RSS**：旧四块当场还给池（arena 那条"只能整块还"
-     * 的限制在这里不适用）。 Note the deviation from the plan's wording: the tree does NOT keep values behind pool
-     * handles. The stores already give what those handles were for (relocatable, contiguous,
-     * index-addressed storage), and a handle in every leaf would add an indirection per read for no
-     * gain -- the surface exposes entries, never element identities. */
+    /* Lower the water mark: repack the LIVE nodes into ids 0..k-1, drop the free list and shrink
+     * the seven stores to exactly that size. Order, capacity and every entry stay where they were.
+     * 新旧两代只在 move 的那一行同时在手（一块一块 `adopt`），所以这一下真的是 RSS。 */
     fn shrink(self: mut ref map<K, V>) {
         var order:   mut slice<i32> = new i32[self.nnodes]   /* live nodes in DFS order = new ids */
         var old2new: mut slice<i32> = new i32[self.nnodes]
@@ -794,11 +764,14 @@ struct map<K, V> {
             head = head + 1
         }
         /* `order` / `old2new` 是这次调用的临时草稿：随方法那个块一起回收，正是 arena 的活。
-         * 四处长期存储则从池拿新块、旧的还回去。 */
-        var nk: mut slice<K>   = poolSliceRaw<K>(self.pid, count * 17)
-        var nv: mut slice<V>   = poolSliceRaw<V>(self.pid, count * 17)
-        var nc: mut slice<i32> = poolSliceRaw<i32>(self.pid, count * 18)
-        var nn: mut slice<bnode<K, V>> = poolSliceRaw<bnode<K, V>>(self.pid, count)
+         * 七块长期存储换成按 `count` 精确大小的新块，旧块在 `adopt` 里当场交还。 */
+        var nk:  block<K>     = block<K>::withCap(count * 17)
+        var nv:  block<V>     = block<V>::withCap(count * 17)
+        var nc:  block<i32>   = block<i32>::withCap(count * 18)
+        var nbn: block<i32>   = block<i32>::withCap(count)
+        var nbc: block<i32>   = block<i32>::withCap(count)
+        var nbl: block<u8>    = block<u8>::withCap(count)
+        var nbx: block<i32>   = block<i32>::withCap(count)
         i = 0
         while i < count {
             let src = i64(order[i])
@@ -806,14 +779,10 @@ struct map<K, V> {
             let cb  = i * 18
             let skb = src * 17
             let scb = src * 18
-            /* ⚠️ 只拷**用到的前缀**：`keys`/`vals` 是 `bn` 个，`kids` 是 `bn + 1` 个。
-             * 无条件拷满 17/17/18 会把**从没被写过**的槽也拷过去：清零时读到 0 无害，
-             * 换成不清零的列之后读到的就是垃圾，而 `old2new[kid]` 会拿它去索引 ⇒ 越界 trap
-             * （`tests/map/shrink.extc`：`index 3756 out of range (length 2810)`）。 */
+            /* ⚠️ 只拷**用到的前缀**：键/值是 `bn` 个、子是 `bn + 1` 个。骨架上没写过的槽
+             * 是脏内存，无条件拷满会让 `old2new[kid]` 拿垃圾去索引 ⇒ 越界 trap。 */
             let sn: i64 = self.bn(i32(src))
             var j: i64 = 0
-            /* `vals` 同理**只有叶子**有：内部节点那 `sn` 个 val 槽从没写过，拷它既是白干、
-             * 也是一处读未初始化。 */
             if self.leafOf(i32(src)) {
                 while j < sn {
                     nk[kb + j] = self.keys[skb + j]
@@ -826,10 +795,6 @@ struct map<K, V> {
                     j = j + 1
                 }
             }
-            /* ⚠️ `kids` **只有内部节点**才有：叶子的 18 个 kid 槽从来没写过。
-             * 无条件拷满 18（或 `sn+1`）会读到垃圾：清零时读到 0 无害（0 恰好是个
-             * 合法节点号，于是"看着没事"），换成不清零的列之后 `old2new[kid]` 拿它
-             * 索引 ⇒ 越界 trap（`tests/map/shrink.extc`：`index 3756/8785 out of range`）。 */
             if !self.leafOf(i32(src)) {
                 j = 0
                 while j < sn + 1 {
@@ -839,32 +804,45 @@ struct map<K, V> {
                     j = j + 1
                 }
             }
-            var nd: bnode<K, V> = self.nodes[src]
-            nd.keys = nk[kb..kb + 17]
-            nd.vals = nv[kb..kb + 17]
-            nd.kids = nc[cb..cb + 18]
-            nn[i] = nd
+            nbn[i] = self.kn_[src]
+            nbc[i] = self.kc[src]
+            nbl[i] = self.kl[src]
+            nbx[i] = self.kx[src]
             i = i + 1
         }
         /* The DFS visits leaves left to right, so the chain is rebuilt in the same pass. */
         var prev: i32 = i32(-1)
         i = 0
         while i < count {
-            if self.leafOf(order[i]) {
-                if prev >= i32(0) { nn[i64(prev)].next = i32(i) }
+            if nbl[i] != u8(0) {
+                if prev >= i32(0) { nbx[i64(prev)] = i32(i) }
                 prev = i32(i)
             }
             i = i + 1
         }
-        if prev >= i32(0) { nn[i64(prev)].next = i32(-1) }
-        poolGive<bnode<K, V>>(self.pid, self.nodes)
-        poolGive<K>(self.pid, self.keys)
-        poolGive<V>(self.pid, self.vals)
-        poolGive<i32>(self.pid, self.kids)
-        self.keys   = nk
-        self.vals   = nv
-        self.kids   = nc
-        self.nodes  = nn
+        if prev >= i32(0) { nbx[i64(prev)] = i32(-1) }
+        nk.setUsed(count * 17)
+        nv.setUsed(count * 17)
+        nc.setUsed(count * 18)
+        nbn.setUsed(count)
+        nbc.setUsed(count)
+        nbl.setUsed(count)
+        nbx.setUsed(count)
+        /* 旧块的 used 先报出来，`adopt` 交还它时才知道该给哪些元素跑钩子/撤边。 */
+        self.keys.setUsed(self.nnodes * 17)
+        self.vals.setUsed(self.nnodes * 17)
+        self.kids.setUsed(self.nnodes * 18)
+        self.kn_.setUsed(self.nnodes)
+        self.kc.setUsed(self.nnodes)
+        self.kl.setUsed(self.nnodes)
+        self.kx.setUsed(self.nnodes)
+        self.keys.adopt(ref nk)
+        self.vals.adopt(ref nv)
+        self.kids.adopt(ref nc)
+        self.kn_.adopt(ref nbn)
+        self.kc.adopt(ref nbc)
+        self.kl.adopt(ref nbl)
+        self.kx.adopt(ref nbx)
         self.nnodes = count
         self.ncap   = count
         self.freeHead = i32(-1)

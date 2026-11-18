@@ -94,26 +94,27 @@ check_err() {
 }
 check_err tests/map/errors/index_assign.extc 'defines `[]` but not `[]=`'
 
-echo "== 增长时旧存储**不许**留在 arena（四块在自己板块上、增长是原块加长）=="
-# **判据换过一次（2026-09-26「零初始化收窄」那一刀）**：原来只比 RSS 不等式（增量 ≤ 预留）。
-# 那条在"列还清零"时成立，但它成立的原因之一**是预留那版被清零撑大**（90,564 KB）——
-# 收窄清零之后预留掉到 49,284 KB，不等式翻转 ⇒ 判据红，而红的原因不是"代码变差"、是"基线变好"。
-# ⇒ 换成**精确字节账**（主判据）：两条路径的「每节点字节」必须相同。旧存储若留了一代，
-#   `bytes` 会多出 ~cap/1.5 × 每节点 ⇒ 这个商立刻变大。`bytes` 来自容器自己的池记账
-#   （`map.bytesOf()` = `extc_pool_bytes(pid)`），与 RSS 无关 ⇒ 不受清不清零影响。
-# 次要判据：增量那版末代容量（1.5 倍增长 ⇒ ~177k 节点）比预留（2 的幂 ⇒ 262,144）小 ⇒ bytes 更低。
-# RSS 仍然打出来当**参考**（收窄清零之后它明显低于 bytes，那正是"预留的页没被提交"）。
+echo "== 增长不留历代副本：增量那版的 bytes 不高于预留那版，且 arena 里多出的存活字节 == bytes =="
+# **判据（2026-11-30）**：map 的七块平坦列是 `dense::block<T>`（拥有的块），增长是把元素搬进
+# 新块、旧块当场还掉 ⇒ 任何时刻 arena 里只有**一代**存储。判据因此不再比「每节点字节相等」
+# （块的 size class 会把容量取整到 2 MiB 量子，两个不同 cap 的商本来就不等），而是直接量
+# **arena 的存活字节**：它必须逐字节等于容器自己报的 bytes。旧存储若留了一代，这个差立刻
+# 多出几十 MB；`release` 之后它必须回到 0（见 tests/map/release.extc）。
+# 次要判据：增量那版的末代容量（1.5 倍增长 ⇒ ~177k 节点）比预留（2 的幂 ⇒ 262,144）小，
+# 所以 bytes 只低不高。RSS 仍打出来当参考。
 if build_one map-inc grow_rss && build_one map-res grow_rss_reserved; then
     oi=$(./build/map-inc 0); orv=$(./build/map-res 0)
     bi=$(echo "$oi"  | sed -n 's/.*bytes=\([0-9]*\).*/\1/p')
     ci=$(echo "$oi"  | sed -n 's/.*cap=\([0-9]*\).*/\1/p')
+    li=$(echo "$oi"  | sed -n 's/.*live=\([0-9]*\).*/\1/p')
     br=$(echo "$orv" | sed -n 's/.*bytes=\([0-9]*\).*/\1/p')
     cr=$(echo "$orv" | sed -n 's/.*cap=\([0-9]*\).*/\1/p')
+    lr=$(echo "$orv" | sed -n 's/.*live=\([0-9]*\).*/\1/p')
     gi=$(peak map-inc 0); gr=$(peak map-res 0)
-    if [ -n "$bi" ] && [ -n "$br" ] && [ "$((bi / ci))" = "$((br / cr))" ] && [ "$bi" -le "$br" ]; then
-        echo "  ok   grow bytes ->  增量 cap=$ci bytes=$bi（每节点 $((bi / ci)) B）vs 预留 cap=$cr bytes=$br（每节点 $((br / cr)) B）⇒ 旧存储没留下 ✓ · 峰值 RSS ${gi} / ${gr} KB（参考）"
+    if [ -n "$bi" ] && [ -n "$br" ] && [ -n "$li" ] && [ -n "$lr" ] && [ "$bi" -le "$br" ] && [ "$li" = "$bi" ] && [ "$lr" = "$br" ]; then
+        echo "  ok   grow bytes ->  增量 cap=$ci bytes=$bi live=$li · 预留 cap=$cr bytes=$br live=$lr ⇒ arena 里只有一代 ✓ · 峰值 RSS ${gi} / ${gr} KB（参考）"
     else
-        echo "  FAIL grow bytes ->  增量 cap=$ci bytes=$bi（每节点 $((bi / (ci ? ci : 1))) B）vs 预留 cap=$cr bytes=$br（每节点 $((br / (cr ? cr : 1))) B）⇒ 旧存储留了一代（每节点字节会变大）✗"; fail=1
+        echo "  FAIL grow bytes ->  增量 cap=$ci bytes=$bi live=$li vs 预留 cap=$cr bytes=$br live=$lr ⇒ 要么 bytes 更大、要么 arena 里存着历代副本 ✗"; fail=1
     fi
 else
     echo "  FAIL grow bytes ->  编不过"; fail=1

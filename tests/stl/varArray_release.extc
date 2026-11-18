@@ -1,16 +1,16 @@
-/* 判据：`varArray` 的存储是板块，`release()` 当场还给分配器（不是等作用域退出）。 */
+/* 判据：`varArray` 的存储是地址预留（bufrt 竞技场），`release()` 当场还回去（不是等作用域退出）。 */
 // expect: grown>0=true after<1024=true sum=0
 use std::io
-use std::data::place
+use std::data::buf
 
 fn main() -> i32 {
-    let base: i64 = place::liveBytes()
+    let base: i64 = buf::bufLive()
     var a: varArray<i64> = varArray<i64>::withCap(4)
     var i: i64 = 0
     while i < 100000 { a.push(i); i = i + 1 }
-    let grown: i64 = place::liveBytes() - base
+    let grown: i64 = buf::bufLive() - base
     a.release()
-    let after: i64 = place::liveBytes() - base
+    let after: i64 = buf::bufLive() - base
     var sum: i64 = 0
     for v in a.view() { sum = sum + v }
     println("grown>0=", grown > 0, " after<1024=", after < 1024, " sum=", sum)

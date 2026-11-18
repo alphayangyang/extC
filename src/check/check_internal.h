@@ -367,6 +367,12 @@ typedef struct {
     const char *view;    /* binding name of the view */
 } LiveView;
 
+/* A local that a `return` moved, with the line the mark recorded; see `Checker.moveLog`. */
+typedef struct {
+    Sym  *sym;
+    int   line;
+} MoveMark;
+
 /** Per-block list of tracked views; see `liveViewsStmtPre`. */
 typedef struct {
     LiveView *items;   /* arena-allocated, grows by doubling; NULL while empty */
@@ -385,6 +391,12 @@ typedef struct Checker {
      * the diagnostic that tells the reader where the value went. */
     bool        moveOkHere;
     const char *moveIntoName;
+    /* A `return` of a local is a move **on that path only**: recording it permanently would make
+     * the rest of the function a use-after-move (`if e { return out }  out.push(x)` is legal). The
+     * mark is remembered on `moveLog` and undone when the block that holds the `return` ends --
+     * anything after the `return` in that block is dead, so no real use is ever lost. */
+    bool        moveIsReturn;
+    Vec         moveLog;       /* MoveMark: symbols a `return` moved, with the recorded line */
 
     Vec      coroDeferred;
     Vec      coroBinds;        /* `var x = yield e` bindings (CoroBind), consumed by coroFrameLay */

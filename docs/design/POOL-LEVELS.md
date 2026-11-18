@@ -175,9 +175,9 @@ its last owner, so it cannot decide where the task ends.
 
 ```text
 {
-    var box: varArray<coroutine<i64>> = varArray<coroutine<i64>>::withCap(2)
-    var h: coroutine<i64> = mk(4)
-    box.push(h)
+    var box: mut ref [2]coroutine<i64> = new [2]coroutine<i64>
+    (*box)[0] = mk(4)
+    (*box)[1] = mk(5)
 }
 // nothing can drive those handles any more; this is the assertion the program makes
 let freed: i64 = syspool::collect()

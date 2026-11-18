@@ -109,7 +109,7 @@ struct pool<T> {
 
 ## 3. The two things a library cannot do, and what each needs
 
-1. **Return an old block early** (why `varArray` peaks at 2×). The honest options are:
+1. **Return an old block early** (why a container that reallocates its buffer peaks at 2×). The honest options are:
    - *segmented chunks*: never grow a block, append a chunk; peak = live + one chunk; no release
      needed at all. Pure library, works today except for one thing: chunks come from `new`, so they
      die with the **frame**, not with the container. With `zone::alloc` they die with the zone, which
@@ -117,7 +117,7 @@ struct pool<T> {
    - *release one block*: `zone::release<T>(z, s) -> bool`, needed only if a container insists on one
      contiguous buffer. Then a live view of that block would dangle, so this is the **only** place a
      freeze bit is needed: `zone::release` traps while a view of that block is alive.
-2. **Grow in place** (the reason `vector` is 62 MB vs `varArray` 126 MB for 8M i64). With zones this
+2. **Grow in place** (the reason one contiguous buffer gives way to segmented chunks once the array grows large). With zones this
    is a library question: a container chooses (a) one contiguous buffer allocated with
    `zone::alloc` and re-allocated on growth (peak live × 1.5, one copy), (b) segmented chunks (peak
    live + chunk, no copy), or (c) a zone-backed pool of blocks (peak live × growth factor, no copy of

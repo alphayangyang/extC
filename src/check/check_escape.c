@@ -3463,6 +3463,14 @@ static bool rejectNoCopy(Checker *c, Expr *e, Type *t) {
         if (src && src->movedLine == 0) {
             src->movedLine = e->line;
             src->movedInto = c->moveIntoName;
+            /* Handing a local to the caller moves it only where that `return` runs, so the mark is
+             * scoped to the block that holds the `return`; see `checkBlockBody`. */
+            if (c->moveIsReturn) {
+                if (!c->moveLog.arena) vecInit(&c->moveLog, c->arena, sizeof(MoveMark));
+                MoveMark *mk = (MoveMark *)vecPush(&c->moveLog);
+                mk->sym = src;
+                mk->line = e->line;
+            }
             return false;
         }
     }

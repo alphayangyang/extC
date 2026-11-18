@@ -1,5 +1,5 @@
-// 形状 H4：插入 2e6 条之后做两遍全表遍历（值列一遍、桶列一遍）。
-// 考的是遍历成本：extC 的值列是稠密的（`valAtDense`），C++ 是沿桶链走。
+// 形状 H4：插入 2e6 条之后做两遍全表遍历（值一遍、键一遍，都走桶位）。
+// 考的是遍历成本：extC 顺着一张桶数组走（装载 <= 0.85 ⇒ 空桶占比小），C++ 是沿桶链走。
 use std::io
 use std::data::hashMap
 
@@ -30,14 +30,14 @@ fn main() -> i32 {
         i = i + 1
     }
     var vsum: i64 = 0
-    let dn: i64 = m.denseLen()
+    let dn: i64 = m.len()
+    let cap: i64 = m.capOf()
     var d: i64 = 0
-    while d < dn {
-        vsum = vsum + m.valAtDense(d)
+    while d < cap {
+        if m.liveAt(d) { vsum = vsum + m.valAt(d) }
         d = d + 1
     }
     var ksum: i64 = 0
-    let cap: i64 = m.capOf()
     var b: i64 = 0
     while b < cap {
         if m.liveAt(b) { ksum = ksum + m.keyAt(b) }

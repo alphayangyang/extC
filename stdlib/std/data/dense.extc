@@ -111,6 +111,9 @@ struct block<T> {
     /** @brief 只读视图 `[from, to)`（不拷贝；块换存储之后失效）。 */
     fn view(self: ref block<T>, from: i64, to: i64) -> slice<T> { return self.vals[from..to] }
 
+    /** @brief 可写视图 `[from, to)`（元素地址在块里连续；块换存储之后失效）。 */
+    fn viewMut(self: mut ref block<T>, from: i64, to: i64) -> mut slice<T> { return self.vals[from..to] }
+
     /** @brief 把第 `i` 个元素**搬出去**，槽里留零（容器自己记账）。 */
     fn take(self: mut ref block<T>, i: i64) -> T { return elemTake<T>(self.vals, i) }
 

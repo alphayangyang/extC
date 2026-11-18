@@ -51,7 +51,7 @@ run_case slice_place
 run_case lend_custom tests/ops/lend_custom.extc "t=6 s=6"
 run_case lend_view
 run_case lend_mutview
-check_err tests/ops/view_promote_neg.extc "carries a reference into a deeper scope"
+check_err tests/ops/view_promote_neg.extc "whose storage moves when it grows"
 run_case conv_float
 run_case conv_int_float
 run_case concrete

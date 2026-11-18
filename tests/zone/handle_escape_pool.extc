@@ -1,15 +1,15 @@
 use std::io
 use std::sys::pool as syspool
 
-// A handle that **escapes** into a container: the compiler cannot name its last owner, so ending
-// the task is the program's call. `syspool::collect()` is that call -- it releases task-owned
-// places no handle reaches any more (docs/design/POOL-LEVELS.md). Without it `after` is 1.
-
+// A handle that **escapes** into storage the compiler cannot name a last owner for: ending the task
+// is the program's call. `syspool::collect()` is that call -- it releases task-owned places no
+// handle reaches any more (docs/design/POOL-LEVELS.md). The judgement is the number of places it
+// frees: one per abandoned task, 50 here.
 fn mk(n: i64) -> coroutine<i64> {
-    var b: varArray<i64> = varArray<i64>::withCap(8)
-    b.push(7)
+    var b: mut ref [8]i64 = new [8]i64
+    (*b)[0] = 7
     for i in 0..n {
-        let got: i64 = b.get(0) ?? 0
+        let got: i64 = (*b)[0]
         yield got
     }
     return
@@ -18,12 +18,12 @@ fn mk(n: i64) -> coroutine<i64> {
 fn main() -> i32 {
     let before: i64 = syspool::extc_pool_live()
     {
-        var box: varArray<coroutine<i64>> = varArray<coroutine<i64>>::withCap(2)
+        var box: mut ref [4]coroutine<i64> = new [4]coroutine<i64>
         for k in 0..50 {
             var h: coroutine<i64> = mk(4)
-            box.push(h)
+            (*box)[0] = h
         }
-        var hh: coroutine<i64> = box.get(0)!
+        var hh: coroutine<i64> = (*box)[0]
         if hh.next() {
             let v: i64 = hh.value()
         }

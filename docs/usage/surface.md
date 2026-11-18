@@ -5,13 +5,17 @@
 
 生成方式：`tools/manual_surface.py`；`check.sh` 保证本页与源码一致。
 
-公开面共 925 个成员，其中内部 186 个：
+公开面共 912 个成员，其中内部 191 个：
 
 ## prelude
 
+- `-.varClassBytes`（方法）
+- `-.varSlotBytes`（方法）
 - `pcg32.inc`（字段）
+- `varArray.bytes`（字段）
 - `varArray.cap`（字段）
-- `varArray.pid`（字段）
+- `varArray.dropOne`（方法）
+- `varArray.mem`（字段）
 - `varArray.vals`（字段）
 
 ## std::coro::scheduler
@@ -66,22 +70,16 @@
 
 ## std::data::hashMap
 
-- `hashMap.bucketOfDense`（字段）
+- `-.bucketOf`（方法）
+- `-.ctrlOf`（方法）
 - `hashMap.cap`（字段）
-- `hashMap.dead`（字段）
-- `hashMap.deadOf`（方法）
 - `hashMap.keys`（字段）
 - `hashMap.n`（字段）
-- `hashMapI64.deadOf`（方法）
-- `hashMapI64.tagCensus`（方法）
+- `hashMap.tag`（字段）
+- `hashMap.vals`（字段）
 
 ## std::data::map
 
-- `bnode.cnt`（字段）
-- `bnode.keys`（字段）
-- `bnode.kids`（字段）
-- `bnode.leaf`（字段）
-- `bnode.n`（字段）
 - `linMap.cap`（字段）
 - `linMap.keys`（字段）
 - `linMap.n`（字段）
@@ -89,22 +87,25 @@
 - `map.bn`（方法）
 - `map.cntOf`（方法）
 - `map.freeHead`（字段）
+- `map.kc`（字段）
 - `map.kd`（方法）
 - `map.keys`（字段）
 - `map.kids`（字段）
+- `map.kl`（字段）
 - `map.kn`（方法）
+- `map.kn_`（字段）
+- `map.kx`（字段）
 - `map.leafOf`（方法）
 - `map.n`（字段）
 - `map.ncap`（字段）
 - `map.nnodes`（字段）
-- `map.nodes`（字段）
 - `map.nx`（方法）
-- `map.pid`（字段）
-- `map.pidGen`（字段）
+- `map.path`（字段）
 - `map.root`（字段）
 - `map.setCnt`（方法）
 - `map.setKey`（方法）
 - `map.setKid`（方法）
+- `map.setLeaf`（方法）
 - `map.setN`（方法）
 - `map.setNext`（方法）
 - `map.setVal`（方法）
@@ -175,11 +176,15 @@
 - `-.pNth`（方法）
 - `-.pSetNext`（方法）
 - `-.pUtf8`（方法）
+- `builder.afterKey`（字段）
 - `builder.buf`（字段）
+- `builder.commaMask`（字段）
+- `builder.depth`（字段）
 - `builder.n`（字段）
 - `builder.pStr`（方法）
 - `builder.puts`（方法）
 - `builder.sep`（方法）
+- `parser.depth`（字段）
 - `parser.fail`（方法）
 - `parser.lit`（方法）
 - `parser.newNum`（方法）

@@ -1,15 +1,14 @@
-// 增量长到 1e6 条目（多次 growStores）· 存储在自己的池板块上、增长是原块加长
-// 与 grow_rss_reserved.extc 同条目数；四块旧存储当场还回去 ⇒ 不留历代副本，也不拷数据
+// 增量长到 1e6 条目（多次 growStores）· 存储是七块拥有的平坦列，增长是搬家并把旧块当场还掉
+// 判据（tests/map/run.sh）：bytes 不高于预留那版；arena 里多出的存活字节 == bytes（没有历代副本）
 use std::io
+use std::data::buf
 use std::data::map
 
 fn main() -> i32 {
+    let base: i64 = buf::bufLive()
     var m = map<i64, i32>::withCap(16)
     var i: i64 = 0
-    while i < 1000000 {
-        m.put(i, i32(i))
-        i = i + 1
-    }
-    io::cout << "n=" << m.len() << " nodes=" << m.nodeCount() << " cap=" << m.capOf() << " bytes=" << m.bytesOf() << "\n"
+    while i < 1000000 { m.put(i, i32(i))  i = i + 1 }
+    io::cout << "n=" << m.len() << " nodes=" << m.nodeCount() << " cap=" << m.capOf() << " bytes=" << m.bytesOf() << " live=" << (buf::bufLive() - base) << "\n"
     return 0
 }

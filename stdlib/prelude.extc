@@ -153,69 +153,128 @@ struct pcg32 {
 // NOTE: `nextFloat` and `shuffle` are **methods** on the generator (`r.nextFloat()`), not free
 // functions taking it -- the generator is the receiver, and the shape reads that way.
 
+/* 缓冲区基质的 C 入口。声明住在预序里，因为 `varArray<T>` 要用预留；实现来自
+ * `src/back/bufrt.c`，发射由调用点决定：只有真的调用它们的程序才带上那块 C 代码。
+ * `Ret=0` 是必须的修辞：交出来的地址不指向调用方的任何帧（见 `std::sys::bufrt`）。 */
+extern!("extc-buf") fn extc_buf_reserve(bytes: u64) -> ?ref u8 effects Addr=0 Cont=0 Ret=0
+extern!("extc-buf") fn extc_buf_slotReserve(bytes: u64) -> ?ref u8 effects Addr=0 Cont=0 Ret=0
+extern!("extc-buf") fn extc_buf_release(at: ref u8, bytes: u64) -> i32 effects Addr=0 Cont=0
+extern!("extc-buf") fn extc_buf_span(at: ref u8) -> i64 effects Addr=0 Cont=0
+extern!("extc-buf") fn extc_buf_releaseRefs(at: ref u8, esz: i64, from: i64, to: i64) -> i32 effects Addr=0 Cont=0
 // ---------------------------------------------------------------------------
 // varArray<T> -- a growable array (the basic part of what `std::vector` does -- OK)
 //
-// @code
-// use std::io
+// The storage is a **block of its own**: an address reservation taken from the buffer
+// substrate (`extc_buf_*`, the same arena `buf<T>` and the containers use). It is not a plate
+// borrowed from a place, so the type has exactly one owner: a by-value position moves it and
+// nothing copies it implicitly.
 //
-// fn main() -> i32 {
-//     var v: varArray<i32> = varArray<i32>::withCap(4)
-//     v.push(7)                        // 满了会自己长（翻倍）
-//     let first: i32 = v.get(0) ?? i32(-1)
-//     io::cout << "size=" << v.size() << " v[0]=" << first << "\n"
-//     return 0
-// }
-// @endcode
-//
-// Three design decisions, stitched into extC's memory model:
-//   - the storage is a **plate** owned by the container's place (`@place`): growth hands the old
-//     plate back to the allocator right there, so a container that grew a hundred times keeps one
-//     buffer, not a hundred -- OK
-//   - `release()` returns the plate early; without it the plate lives until the enclosing place
-//     exits (`clear()` only sets `len` to zero, the buffer stays for reuse) -- OK
+//   - growth moves the elements into a fresh reservation and hands the old one back right there,
+//     so a container that grew a hundred times keeps one block, not a hundred -- OK
+//   - `release()` hands the storage back and empties the container; `clear()` only sets `len` to
+//     zero (the storage stays for reuse) -- OK
+//   - `[len, cap)` is capacity **without elements**: the storage is recycled and therefore dirty,
+//     so only slots below `len` ever get their hook run -- OK
 //   - reads give `?T` (may be absent); an out-of-range index traps with a source position -- OK
 //
 // NOTE: growth moves the buffer, so a view (`view()`, `asMutSlice()`) taken before a `push` must
-//   not be used afterwards: in one block that is a compile error (the checker tracks live views),
-//   across frames the borrow simply cannot escape the container's place.
-// NOTE: `set(i, v)` traps only when `i` is past cap; an `i` in [len, cap) writes into the
-//   unused slot (the same as C++'s `operator[]`) => read safely with `get(i)` -- OK.
+//   not be used afterwards: in one block that is a compile error (the checker tracks live views).
+// NOTE: `set(i, v)` writes the unused slot when `i` is in [len, cap) (the same as C++'s
+//   `operator[]`); read safely with `get(i)` -- OK.
 // ---------------------------------------------------------------------------
 
-extern!("extc-runtime") fn extc_pool_new(parent: i64) -> i64
-extern!("extc-runtime") fn extc_pool_reset(pid: i64) -> void
+/* 载荷不超过这么多字节时走密排槽，超过就走 2 MiB 量子的预留（与 `buf<T>` 同一条界线）。 */
+@inline
+@private
+fn varSlotBytes() -> i64 { return 65536 }
 
-@place
+/* 尺寸类：16 B 起、每次翻倍，到 64 KiB。返回值 >= want。 */
+@private
+fn varClassBytes(want: i64) -> i64 {
+    var c: i64 = 16
+    while c < want { c = c * 2 }
+    return c
+}
+
+@noCopy              /* one owner: a by-value position moves it */
 struct varArray<T> {
-    @private pid: i64
-    @private vals: mut slice<T>
-    len: i64
+    @private mem: mut slice<u8>     /* 同一片存储的字节视图（归还时交出 `mem.data`） */
+    @private vals: mut slice<T>     /* 类型化视图，`len == cap` */
     @private cap: i64
+    @private bytes: u64             /* 实际预留字节（账本口径） */
+    len: i64
 
-    fn withCap(cap: i64) -> varArray<T> {
-        var cc: i64 = cap
+    fn withCap(want: i64) -> varArray<T> {
+        let esz: i64 = extc_sizeOf<T>()
+        var cc: i64 = want
         if cc < 1 { cc = 1 }
-        let pid = extc_pool_new(-1)
-        var v: varArray<T> = { pid: pid, vals: poolSliceRaw<T>(pid, cc), len: 0, cap: cc }
+        let need: i64 = cc * esz
+        var raw: ?ref u8 = null
+        if need <= varSlotBytes() {
+            raw = extc_buf_slotReserve(u64(varClassBytes(need)))
+        } else {
+            raw = extc_buf_reserve(u64(need))
+        }
+        let p: ref u8 = raw!
+        var span: i64 = need
+        let got: i64 = extc_buf_span(p)
+        if got > span { span = got }
+        var mem: mut slice<u8> = extc_viewOfT<u8>(p, span)
+        var vals: mut slice<T> = extc_viewOfT<T>(p, cc)
+        var v: varArray<T> = { mem: mem, vals: vals, cap: cc, bytes: u64(span), len: 0 }
         return v
     }
 
     fn size(self: ref varArray<T>) -> i64 { return self.len }
+
+    // The storage currently owned (>= len). It is a byte class, not an element count: the arena
+    // rounds a reservation up, so `capacity()` can exceed what `withCap` asked for.
+    fn capacity(self: ref varArray<T>) -> i64 { return self.cap }
     fn isEmpty(self: ref varArray<T>) -> bool { return self.len == 0 }
 
-    // Doubles on growth; the old plate goes back to the allocator right here, so the peak is
-    // one buffer plus the one being filled, not the whole growth history.
+    // Doubles on growth. The new reservation is built here, element by element, and the old
+    // one goes back to the substrate right away: a container that grew a hundred times owns
+    // one block, not a hundred. The two views are built from the reservation itself, which is
+    // why they carry no frame: the store of `nmem` / `nvals` into `self` takes storage that no
+    // frame owns. Its owner is still this frame -- it dies with the binding -- and the effect
+    // scan has no way to know that, so `grow` keeps a non-empty other mask and call sites see
+    // `push` as conservative about arguments that carry references. That costs precision only:
+    // the strictest reading of such a call site is applied, never a looser one.
     fn grow(self: mut ref varArray<T>) {
         var ncap: i64 = self.cap * 2
         if ncap < 4 { ncap = 4 }
-        self.vals = poolResizeRaw<T>(self.pid, self.vals, ncap)
+        let esz: i64 = extc_sizeOf<T>()
+        let need: i64 = ncap * esz
+        var raw: ?ref u8 = null
+        if need <= varSlotBytes() {
+            raw = extc_buf_slotReserve(u64(varClassBytes(need)))
+        } else {
+            raw = extc_buf_reserve(u64(need))
+        }
+        let p: ref u8 = raw!
+        var span: i64 = need
+        let got: i64 = extc_buf_span(p)
+        if got > span { span = got }
+        var nmem: mut slice<u8> = extc_viewOfT<u8>(p, span)
+        var nvals: mut slice<T> = extc_viewOfT<T>(p, ncap)
+        var i: i64 = 0
+        while i < self.len {
+            let _ok: bool = elemPut<T>(nvals, i, elemTake<T>(self.vals, i))
+            i = i + 1
+        }
+        let _r: i32 = extc_buf_releaseRefs(self.mem.data, esz, 0, self.cap)
+        elemDrop<T>(self.vals, 0, self.cap)
+        let rc: i32 = extc_buf_release(self.mem.data, self.bytes)
+        if rc != 0 { trap("varArray: cannot give the storage back") }
+        self.mem = nmem
+        self.vals = nvals
         self.cap = ncap
+        self.bytes = u64(span)
     }
 
     fn push(self: mut ref varArray<T>, v: T) {
         if self.len == self.cap { self.grow() }
-        self.vals[self.len] = v
+        let _ok: bool = elemPut<T>(self.vals, self.len, v)
         self.len = self.len + 1
     }
 
@@ -223,7 +282,10 @@ struct varArray<T> {
     fn pop(self: mut ref varArray<T>) -> ?T {
         if self.len == 0 { return none }
         self.len = self.len - 1
-        return some(self.vals[self.len])
+        let out: T = elemTake<T>(self.vals, self.len)
+        let esz: i64 = extc_sizeOf<T>()
+        let _r: i32 = extc_buf_releaseRefs(self.mem.data, esz, self.len, self.len + 1)
+        return some(out)
     }
 
     fn get(self: ref varArray<T>, i: i64) -> ?T {
@@ -231,35 +293,57 @@ struct varArray<T> {
         return some(self.vals[i])
     }
 
+    // In range `[0, cap)`: writes the slot (an unused one in `[len, cap)` stays an unused slot).
+    // Out of range traps here: `elemPut` deliberately does no check (a container that already
+    // checked its own index must not pay for a second one), so the view's own ranged construction
+    // is what reports the position -- same message as `v[i] = x` on a slice -- OK.
     fn set(self: mut ref varArray<T>, i: i64, v: T) {
-        self.vals[i] = v
+        if i < 0 || i >= self.cap {
+            let _oob: slice<T> = self.vals[i .. i + 1]
+            return
+        }
+        if i < self.len { self.dropOne(i) }
+        let _ok: bool = elemPut<T>(self.vals, i, v)
     }
 
-    // Resets the length only; the plate stays for reuse (`release()` is the one that hands it back).
-    fn clear(self: mut ref varArray<T>) { self.len = 0 }
+    // 丢掉一个活元素：先撤销它的引用边登记，再跑 `@drop` 钩子。
+    @private
+    fn dropOne(self: mut ref varArray<T>, i: i64) {
+        let esz: i64 = extc_sizeOf<T>()
+        let _r: i32 = extc_buf_releaseRefs(self.mem.data, esz, i, i + 1)
+        elemDrop<T>(self.vals, i, i + 1)
+    }
 
-    // Hands the plate back now instead of at the end of the enclosing place: the container is
-    // empty afterwards (any index traps with a position, rather than writing into a returned plate).
-    fn release(self: mut ref varArray<T>) {
-        if self.pid < 0 { return }
-        self.vals = poolResize<T>(self.pid, self.vals, 0)
-        self.cap = 0
+    // Resets the length only; the storage stays for reuse (`release()` hands it back).
+    fn clear(self: mut ref varArray<T>) {
+        if self.len > 0 {
+            let esz: i64 = extc_sizeOf<T>()
+            let _r: i32 = extc_buf_releaseRefs(self.mem.data, esz, 0, self.len)
+            elemDrop<T>(self.vals, 0, self.len)
+        }
         self.len = 0
-        extc_pool_reset(self.pid)
-        self.pid = -1
     }
 
-    // NOTE: this is what contiguity buys -- the storage is lent out as a view. Sorting,
-    // searching, println, and C functions behind `extern!` all take `slice<T>`; without these
-    // two methods the container would be unusable -- OK. A lent-out view must not be used
-    // after growth, nor escape a scope the storage cannot outlive -- the compiler rejects that.
+    // Hands the storage back now instead of at the end of the value's life: the container is empty
+    // afterwards (any index traps with a position, rather than writing into a returned block).
+    @drop
+    fn release(self: mut ref varArray<T>) {
+        if self.bytes == u64(0) { return }
+        self.clear()
+        let rc: i32 = extc_buf_release(self.mem.data, self.bytes)
+        if rc != 0 { trap("varArray: cannot give the storage back") }
+        self.bytes = u64(0)
+        self.cap = 0
+    }
+
+    // NOTE: this is what contiguity buys -- the storage is lent out as a view. Sorting, searching,
+    // println, and C functions behind `extern!` all take `slice<T>`; without these two methods the
+    // container would be unusable -- OK.
     fn view(self: ref varArray<T>) -> slice<T> { return self.vals[0..self.len] }
 
-    // Compare by content (as `slice` does: whether elements can be compared is checked only
-    // at instantiation -- OK). This must exist because the signature of `view()` mentions
-    // `slice<T>`: instantiating `varArray<X>` also instantiates `slice<X>`, and `slice<X>::==`
-    // requires `X: ==` -- WRONG. So `varArray<varArray<i32>>` was unwritable (found 2026-09-22).
-    fn ==(self: ref varArray<T>, other: varArray<T>) -> bool {
+    // Compare by content (as `slice` does: whether elements can be compared is checked only at
+    // instantiation -- OK).
+    fn ==(self: ref varArray<T>, other: ref varArray<T>) -> bool {
         if self.len != other.len {
             return false
         }
@@ -278,7 +362,6 @@ struct varArray<T> {
         return self.vals[0..self.len]
     }
 }
-
 struct slice<T> {
     data: ref T
     len: i64

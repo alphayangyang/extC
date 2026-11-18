@@ -1,14 +1,13 @@
-// 同一形状，但一开始就预留到 1e6 条目 ⇒ 一次 growStores 都不发生（对照组的"下界"）
+// 同一形状，但一开始就预留到够用的容量 ⇒ 一次 growStores 都不发生（对照组的"下界"）
 use std::io
+use std::data::buf
 use std::data::map
 
 fn main() -> i32 {
+    let base: i64 = buf::bufLive()
     var m = map<i64, i32>::withCap(200000)
     var i: i64 = 0
-    while i < 1000000 {
-        m.put(i, i32(i))
-        i = i + 1
-    }
-    io::cout << "n=" << m.len() << " nodes=" << m.nodeCount() << " cap=" << m.capOf() << " bytes=" << m.bytesOf() << "\n"
+    while i < 1000000 { m.put(i, i32(i))  i = i + 1 }
+    io::cout << "n=" << m.len() << " nodes=" << m.nodeCount() << " cap=" << m.capOf() << " bytes=" << m.bytesOf() << " live=" << (buf::bufLive() - base) << "\n"
     return 0
 }

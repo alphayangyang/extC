@@ -1,23 +1,27 @@
-// release：容器与它的运行期池一起诞生、一起还（与 vector / string / hashMap 同一套）
-// 判据：建 map 之后 live=1 · release 之后 live=0 · 再建一个 live=1（池记录被复用）· 出块之后 live=0
-// expect: live=0 made=1 closed=0 again=1 out=0
+// release：map 的七块存储与两块草稿整块交还（与 buf 的预留同一本账）
+// 判据：建 map 之后 arena 里多出的存活字节 == m.bytesOf()（没有隐藏副本）· release 之后回落到 0 · 出块之后仍是 0
+// expect: exact=1 made=1 closed=1 out=1
 use std::io
-use std::sys::pool as syspool
+use std::data::buf
 use std::data::map
 
 fn main() -> i32 {
-    io::cout << "live=" << syspool::extc_pool_live()
+    let base: i64 = buf::bufLive()
+    var exact: i32 = 0
+    var made: i32 = 0
+    var closed: i32 = 0
     {
         var m: map<i64, i32> = map<i64, i32>::withCap(16)
-        m.put(1, i32(10))
-        io::cout << " made=" << syspool::extc_pool_live()
+        var i: i64 = 0
+        while i < 100 { m.put(i, i32(i))  i = i + 1 }
+        let held: i64 = buf::bufLive() - base
+        if held == m.bytesOf() { exact = 1 }
+        if held > 0 { made = 1 }
         m.release()
-        io::cout << " closed=" << syspool::extc_pool_live()
-        var q: map<i64, i32> = map<i64, i32>::withCap(16)
-        q.put(2, i32(20))
-        io::cout << " again=" << syspool::extc_pool_live()
-        q.release()
+        if buf::bufLive() == base { closed = 1 }
     }
-    io::cout << " out=" << syspool::extc_pool_live() << "\n"
+    var out: i32 = 0
+    if buf::bufLive() == base { out = 1 }
+    io::cout << "exact=" << exact << " made=" << made << " closed=" << closed << " out=" << out << "\n"
     return 0
 }

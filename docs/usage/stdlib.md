@@ -103,9 +103,9 @@ fn main() -> i32 {
 
 ## 2. `stl::*`：容器
 
-容器的**存储字段**（`map.vals`/`map.depth`、`hashMap.vals`、`pool.vals`、`string` 的缓冲句柄）是公开的，因为
-子系统代码（协程调度器的任务行、`hashSet` 的存活位、`stringio` 的窗口）要按位置读写；它们**不是 API**：
-宽度、布局、语义都可能随实现变化，用户代码按容器的方法写。
+容器的**存储字段**大多标了 `@private`（`map` 的七块平坦列、`hashMap` 的三列块、`string` 的缓冲句柄）；
+需要按位置读写的子系统走容器自己暴露的方法（`map.keyAt` / `hashMap.liveAt` / `string.view` 一类）。
+这些字段**不是 API**：宽度、布局、语义都可能随实现变化，用户代码按容器的方法写。
 
 导入名就是 `stl::<文件名>`：`use std::data::vector`、`use std::data::hashMap`、`use std::text::string`……
 
@@ -115,12 +115,11 @@ fn main() -> i32 {
   §11–§15）—— 小载荷走 16 B…64 KiB 的密排槽，大载荷走 2 MiB 量子的地址预留，值自己被 `@drop` 时
   把整片还回去。`vector<T>` / `buf<T>` 是 `@noCopy`：`var b = a` 是**转移**，要独立副本写 `clone()`。
   `string` 是 `@value`：拷贝即深拷贝（`clone()` 与按值传递都建新值），所以两份永远不共享。
-- **`hashMap` / `hashSet`**：存储同样在缓冲区基质上（[BUF-INVARIANT](../design/BUF-INVARIANT.md) §18）——
-  四列桶存储是 `block<T>`、值列是 `dense::slots<V>`，都是一个值自己的存储，`@noCopy`：`var b = a` 是
-  **转移**，要独立副本写 `clone()`。元素所有权接上（元素进容器是移动、`clear`/`shrink`/`release`/`remove`
-  逐元素跑钩子），所以 `hashMap<string, i32>` 这类拥有元素的容器可用。
-- **`map` / `set` 系列**（存储尚未迁移）：带 `@sharesStorage` + `@place`，**按值拷贝两份会共用同一块板块**，
-  要独立副本必须显式 `clone()`；元素所有权同样已经接上。
+- **`hashMap` / `hashSet`**：三列平坦存储（键列、值列、控制字节列，都是 `block<T>`），是一个值自己的
+  存储，`@noCopy`：`var b = a` 是**转移**，要独立副本写 `clone()`。元素所有权接上（元素进容器是移动，
+  `clear`/`compact`/`release`/`remove` 逐元素跑钩子），所以 `hashMap<string, i32>` 这类拥有元素的容器可用。
+- **`map` / `set` 系列**：B+ 树的七块平坦列（键、值、子、节点标量）全部是 `block<T>`，同样 `@noCopy`、
+  元素所有权已接；`release()` 整批归还，`shrink()` 缩高水位。
 
 这些容器的存储是它们**自己的**，不是帧里的一段：换缓冲时旧片当场归还，所以"反复建、反复丢"是
 稳态内存。三种存储（帧、缓冲区基质、对象表）各自适合什么、以及选错的代价，见[内存模型](../design/MEMORY-MODEL.md)。
@@ -129,14 +128,14 @@ fn main() -> i32 {
 
 | | `varArray<T>`（prelude） | `vector<T>`（`std::data::vector`） |
 |---|---|
-| 存储来源 | arena 切片 | **自己的一片地址预留**（`buf<T>`，[BUF-INVARIANT](../design/BUF-INVARIANT.md)） |
-| 所有权 | 拷贝able | `@noCopy`：`var b = a` 是转移，同时只有一个名字 |
+| 存储来源 | **自己的一段地址预留**（缓冲区基质的竞技场） | **自己的一片地址预留**（`buf<T>`，[BUF-INVARIANT](../design/BUF-INVARIANT.md)） |
+| 所有权 | `@noCopy`：`var b = a` 是转移，同时只有一个名字 | `@noCopy`：`var b = a` 是转移，同时只有一个名字 |
 | 寻址 | 下标 | 下标（`len` / `capacity` / `maxCapacity` / `get` / `set`） |
-| 容量怎么涨 | 翻倍（下限 4） | **1.5 倍、原地长**（撞到预留上限才搬一次家，`relocations()` 数次数） |
+| 容量怎么涨 | 翻倍（下限 4；换一段更大的预留，原来那段当场还） | **1.5 倍、原地长**（撞到预留上限才搬一次家，`relocations()` 数次数） |
 | 能不能装引用 | 能（ 点名） | 能：写元素时经运行期的**外部边表**登记（键 = 槽地址），结构动作按区间撤销 |
 | 取内容 | `view()` / `asMutSlice()` 借出视图 | `view()` 借出 `[0, len)` 的只读视图；要独立拷贝用 `snapshot()` |
 | 深拷贝 | 没有 `clone`；`==` 按内容比较 | `clone()` |
-| 收尾 | 无 | `shrink()`（尾部页还给系统）/ `release()`（整片预留还回竞技场，`@drop` 也走这里） |
+| 收尾 | `release()`（整段预留还回竞技场，`@drop` 也走这里） | `shrink()`（尾部页还给系统）/ `release()`（整片预留还回竞技场，`@drop` 也走这里） |
 | 迭代顺序 | 插入序 | 插入序（dense 连续） |
 
 `vector` 的方法：`withCap` · `new` · `len` · `capacity` · `maxCapacity` · `relocations` ·
@@ -354,7 +353,7 @@ let freed: i64 = syspool::collect()
 
 ### 自己写一个板块底的容器
 
-`vector`、`string`、`hashMap` / `hashSet` 与 `linMap` / `linSet` 已经挪到缓冲区基质上（[BUF-INVARIANT](../design/BUF-INVARIANT.md) §10、§15、§17、§18），`map` / `set` / `place` 的存储还在池板块上。想写一个新的可增长容器，优先持有 `buf<T>`：它给的是「预留内 0 拷贝增长 + 撞上限搬一次家 + 结构动作按区间撤边」。下面这条 `@place` 路径仍然可用，但它要自己管世代、冻结与归还。四件事 —— 拥有、要、长、守卫与归还：
+`vector`、`string`、`hashMap` / `hashSet`、`map` / `set` 与 `linMap` / `linSet` 的存储都在缓冲区基质上（各自的类型化块，见 [BUF-INVARIANT](../design/BUF-INVARIANT.md) §10、§15、§17、§18 与 [HASHMAP](../design/HASHMAP.md)）；`place` 的存储还在池板块上。想写一个新的可增长容器，优先持有 `buf<T>`：它给的是「预留内 0 拷贝增长 + 撞上限搬一次家 + 结构动作按区间撤边」。下面这条 `@place` 路径仍然可用，但它要自己管世代、冻结与归还。四件事 —— 拥有、要、长、守卫与归还：
 
 <!-- fragment -->
 ```extc
@@ -529,50 +528,40 @@ fn main() -> i32 {
 
 ### `hashMap` / `hashSet`：哈希
 
-**键固定是 `i64`**：extC 没有 trait，编译器不能在类型参数上叫 `hash()`，所以哈希容器的键是具体的
-`i64`，值才是泛型参数 `V`。键里可以打包两个 `i32`、一个槽句柄、
-一个字符串表偏移。
+`hashMap<K, V>` 的键是**任何有 `hash()` 与 `==` 的类型**（`i64`、`string`、自己写了 `fn hash` 的 struct 都行）；
+`K = i64` 时有薄包装 `hashMapI64<V>`，模块级 `hashI64(k)` 就是它的哈希。
 
-模块级还有一个 `hashI64(k)`：`i64` 的哈希函数，`hashMapI64` 的键就用它。
-
-`hashMapI64<V>` 建在泛型 `hashMap<i64Key, V>` 上；实现是
-**线性探测 + 墓碑**，`cap` 是 2 的幂，探测下标是 `hash & (cap-1)`。
+形态（设计见 [HASHMAP](../design/HASHMAP.md)）：**三列同长的平坦存储** —— `keys: block<K>`、
+`vals: block<V>`、`tag: block<u8>`。一个桶 `1 + sizeof(K) + sizeof(V)` 字节；没有值列、没有反向列、
+没有槽元数据、没有句柄、没有世代。`tag[i] == 0` 是空桶，非零是该键哈希的 7 位片段（h2）加一 ——
+探测先比 `tag`，只有对上才碰键列。容量**不是 2 的幂**：桶号是「乘取高位」
+`((h >> 32) * cap) >> 32`，装载率 `17/20`；删除走 Knuth 回移（**没有墓碑**，也没有清墓碑的重建）；
+增长是**全量重哈希**（与 C++ `unordered_map`、Rust `std::HashMap` 同一档，摊还 O(1)；要避开就在
+`withCap` 一次给够）。
 
 | 方法 | 签名 |
 |---|---|
-| `withCap` | `fn withCap(want: i64) -> hashMapI64<V>` |
-| `len` / `capOf` / `deadOf` | `fn len(...) -> i64` 等 |
+| `withCap` | `fn withCap(want: i64) -> hashMap<K, V>` |
+| `len` / `capOf` / `bytesOf` | 活元素数、桶数、三列字节 |
 | `contains` / `get` / `[]` | `fn get(...) -> ?V` |
-| `put` / `[]=` | `fn put(self: mut ref hashMapI64<V>, k: i64, v: V) -> bool`；**true = 键本来就在** |
-| `remove` / `clear` / `release` | 删、清、四列与值列整批还回去 |
-| 按桶扫 | `keyAt(i)` / `valAt(i)` / `liveAt(i)`（表位置；**不是插入序**） |
-| 按 dense 扫 | `denseLen()` / `keyAtDense(d)` / `valAtDense(d)` |
-| 按槽读写 | `slotOf(k) -> ?slotHandle`（一次探测）/ `at(h) -> ?V` / `setAt(h, v)` / `entry(k, dflt) -> slotHandle`；句柄类型来自 `std::data::dense` |
+| `put` / `[]=` | `fn put(k, v) -> bool`；**true = 键本来就在**（值被移动进桶）|
+| `remove` / `take` | `fn remove(k) -> bool` / `fn take(k) -> ?V`（搬出去，不是拷）|
+| `clear` / `compact` / `release` | 清（容量留着）、按活元素重排到刚好够的容量、整批还回去 |
+| 按桶位扫 | `keyAt(i)` / `valAt(i)` / `liveAt(i)`，`i` 走 `[0, capOf())`（**不是插入序**；桶位随重哈希变）|
 | `clone` | 深拷贝 |
-| `rebuild(ncap)` | 换一张 `ncap` 容量（2 的幂）的表，旧列当场还（换表那一瞬间有两代在手） |
 
-重建有**两条触发线**：装载（`n + dead` 到 70% 容量）与墓碑密度（`dead` 到 25% 容量）。
-
-**槽（handle）用来携带"身份"，不是循环内的快速通道**。`slotOf` / `at` / `setAt` / `entry` 让
-一次探测换出多次按槽访问，省掉重复的哈希；但每次按槽读都要回读槽数组并校验换代号与纪，所以
-**热循环里直接用 `get` / `put`（或 `valAtDense`）更快**：`get` 探测一次后就拿 `slot[b]` 去读
-dense 值列，同一条记录一次探测加一次索引，比"拿 handle 再 `at`/`setAt`"少两三次随机 load。
-handle 的用处是让身份离开循环（存进数组、跨语句复用、跨扩容），它不是指针：值列扩容搬家不会
-让它悬垂，键被 `remove`（swap-remove，搬最后一个元素）或 `clear` 换了代之后 `at` 还 `none`，而不是
-读到别人的值 —— 这件事由槽的世代与纪元检查兜住。
+**没有** `slotHandle` / `entry` / 按句柄读写 / 稠密值列：不承诺元素地址，要跨结构修改持有引用用 `std::weak`。
 
 <!-- fragment -->
 ```extc
 use std::io
 use std::data::hashMap
 fn bump(m: mut ref hashMapI64<i64>, k: i64) -> i64 {
-    let h: slotHandle = m.entry(k, i64(0)) // 身份要跨语句：一次探测换出槽
-    let v: i64 = m.at(h) ?? i64(0)
-    m.setAt(h, v + i64(1))                 // 按槽写回，不再探测
+    let v: i64 = m.get(k) ?? i64(0)
+    let _had: bool = m.put(k, v + i64(1))
     return v + i64(1)
 }
 ```
-
 
 `hashSetI64` 是"没有值的 map"（值是一格 `u8`），面与 `hashMap` 对齐，
 **唯一差别**：`put` 返回 true 表示**新元素**。`withCap` · `len` ·

@@ -1,9 +1,19 @@
-/* std/map.extc -- an **open-addressing hash map** from `i64` keys to any `V`.
+/* std/data/hashMap.extc -- 开放寻址哈希表：键值内联在三列里，控制字节做探测的预筛。
  *
- * Why this exists (and why it is not a slot map): a handle costs **three dependent random
- * loads** (handle array -> metadata -> value) while a hash lookup costs **one** after the
- * probe. Random access is the common case, so key -> value wants a hash table and stable
- * identity wants `std::pool`; neither replaces the other.
+ * 形态（设计见 HASHMAP 设计稿）：
+ *   - 三列同长：`keys`（键）、`vals`（值）、`tag`（控制字节）。一个桶 1 + sizeof(K) + sizeof(V) 字节；
+ *     没有值列、没有反向列、没有槽元数据、没有句柄、没有世代。
+ *   - `tag` 是控制字节：0 是空桶，1..128 是该键哈希的第 7 位片段（h2）加一。探测时先比 tag，
+ *     只有 tag 对上才碰键列 —— 键可能是 string，比较比一个字节贵得多。
+ *   - 容量不是 2 的幂：桶号是「乘取高位」`((h >> 32) * cap) >> 32`，任何 cap 都均匀，
+ *     所以装载率可以做到 0.85 而不被 2 的幂浪费（按 2 的幂取低位做桶号时装载只有 0.35-0.5）。
+ *   - 线性探测；删除走 Knuth 的回移（不留墓碑）。没有墓碑就没有「墓碑密度」这条触发线，
+ *     也没有清理墓碑的重建。
+ *   - 增长是**全量重哈希**：新三列、把活元素逐个搬过去、旧列当场还掉。这是 hashbrown
+ *     （Rust 的 std::HashMap）与 C++ unordered_map 的同一档做法：单步 O(n)，摊还 O(1)。
+ *     要避免它就在构造时给足容量（`withCap`），此后增长到装载线才再触发重哈希。
+ *   - 迭代是按桶位：`keyAt(i)` / `valAt(i)` / `liveAt(i)`，i 走 [0, capOf())。桶位会随重哈希变，
+ *     但值不会（值就是桶里的字节）；要一份独立的表用 `clone()`。
  *
  * @code
  * use std::io
@@ -17,52 +27,27 @@
  *     return 0
  * }
  * @endcode
- *
- * ⚠️ The key is `i64` and the **value** is the generic parameter. extC has no traits, so a
- * generic `K` could not be hashed here: there is no way to call `k.hash()` on a type
- * parameter, and a hash "witness" struct would hit the same wall (`H::hash` on a type
- * parameter does not resolve either). Concrete keys are the honest answer today; an
- * `i64` key packs two `i32`s, a `pool` handle, or an offset in a string table, which
- * covers what a graph or an interpreter needs. A byte-view keyed map is the next family.
- *
- * Layout, and why:
- *   - **linear probing** (one cache line per probe, no pointers at all);
- *   - `cap` is a power of two, so the probe index is `hash & (cap-1)` -- no division;
- *   - the hash mixes with shifts, xors and one multiply, and every step of it is overflow-free:
- *     the multiply is done in `u64`, where overflow is defined (mod 2^64) in C, so the mixing
- *     does not lean on `-fwrapv` and cannot be broken by a stricter optimisation level;
- *   - a slot is empty / live / tombstone in a separate byte array. Tombstones keep probes
- *     correct after a removal; they are cleared by a rebuild, which also happens when too
- *     many of them pile up;
- *   - the arrays are arena memory like everything else: rehashing leaves the old arrays
- *     behind (bounded, O(log n) rebuilds over a map's life) and a pool will reclaim them
- *     in phase 1+.
  */
 
-use std::data::dense::{block, slots, slotHandle}
+use std::data::dense::{block}
 
+/* 空桶标记。非零的 tag 就是 h2 + 1，所以 0 只能留给「没有元素」。 */
 let EMPTY: u8 = 0
-let LIVE:  u8 = 1
-let TOMB:  u8 = 2
+
+/* 装载率的分子分母：0.85 = 17/20。增长线是「插入后会超过它」。 */
+let LOAD_NUM: i64 = 17
+let LOAD_DEN: i64 = 20
 
 /* Mix a key into a spread-out non-negative i64.
  *
  * ⚠️ 混合体走**无符号**（`u64`）—— 这不是风格，是正确性：有符号 `*` 溢出在 C 里是 UB。
  * extC 的算术溢出靠 `-fwrapv` 兜成绕回（MANUAL §8），可那是**编译器驱动**给的旗子；
- * 生成的 C 一旦被别人用别的旗子编（本仓库就有好几处测试脚本直接 `cc -O1` 编生成的 C，
- * 不带 `-fwrapv`），GCC 在 `-O2` 下按"乘法不会溢出"优化 ⇒ 桶分布退化成一条长簇：
- * 实测 1e6 次 `put` 从 0.08 s 变成**挂死不返回**（99.7% CPU 空转，RSS 一路涨到十几 GB）。
- * 哈希函数绝不能
- * 依赖"编译器替我定义 UB"。无符号 `*` 溢出在 C 里是**有定义**的（模 2^64），与旗子无关；
- * 两次转换都在可证明无损的范围内 ⇒ 生成 C 里不带任何检查。
+ * 生成的 C 一旦被别人用别的旗子编，GCC 在 `-O2` 下按「乘法不会溢出」优化 ⇒ 桶分布退化成一条长簇：
+ * 实测 1e6 次 `put` 从 0.08 s 变成**挂死不返回**。哈希函数绝不能
+ * 依赖「编译器替我定义 UB」。无符号 `*` 溢出在 C 里是**有定义**的（模 2^64），与旗子无关。
  *
- * 为什么要乘法：只做右移-xor 时，**小于 2^21 的键是不动的**（`x ^ (x>>21) ^ (x>>42)` 对
- * x < 2^21 恒等于 x）⇒ 连续的小整数键映射到**连续的桶**。实测（bench/app/session.extc）：
- *     hashI64(0..8) = 0,1,2,3,4,5,6,7,8（相邻键的桶差恒为 1），
- *     65536 个连续键于是在表里连成**一整条 65536 长的簇**；
- *     而一旦有删除（墓碑不终止探测），一次 miss 查询平均要走 16371 步、最长 65536 步
- *     ⇒ 端到端 10.5 ns/op → 5104 ns/op（**486 倍**）。
- * 连续整数键不是刁钻输入 —— 自增的连接 id / 会话号 / 数组下标都是这样。
+ * 为什么要乘法：只做右移-xor 时，**小于 2^21 的键是不动的** ⇒ 连续的小整数键映射到连续的桶，
+ * 65536 个连续键连成一整条簇，端到端从 10.5 ns/op 变成 5104 ns/op（486 倍）。
  * 乘一个奇数（与 2^64 互质 ⇒ 是置换）把低位的信息搬上去，右移再把它混回低位。 */
 fn hashI64(k: i64) -> i64 {
     var x = k & 9223372036854775807          /* drop the sign bit: the i64 -> u64 conversion must not be lossy */
@@ -77,47 +62,48 @@ fn hashI64(k: i64) -> i64 {
 /* The `hash` of an `i64` key: the step that makes `hashMap<i64, V>` work directly.
  *
  * The attachment point is an `impl` block, which is needed because methods may only be declared
- * inside a `struct` body and `i64` is a compiler builtin with no body to write one in. Methods
- * added by an `impl` block are indistinguishable from methods written in the body (same one
- * method set, same per-instance checks), so `hashMap<i64, V>` needs no wrapper at all.
- *
- * `==` is not attached: equality on a builtin is native to the language (the compiler emits it
- * directly). Only named methods need an impl. */
+ * inside a `struct` body and `i64` is a compiler builtin with no body to write one in. */
 impl i64 {
     fn hash(self: ref i64) -> i64 { return hashI64(*self) }
 }
 
+/* 桶号：乘取高位。`h` 是非负的（`hashI64` 清过符号位）所以 `h < 2^63`、`h >> 31 < 2^32`；
+ * 乘 `cap` 之后右移 32 位落到 [0, cap) —— 均匀性来自高 32 位，乘只负责按 `cap` 缩放。
+ * 细节：右移 31 位而不是 32 位。`h < 2^63` 时 `h >> 32` 只有 31 位，用它做被乘数只能覆盖
+ * 一半的桶（实测 200k 条键只落进前半张表 ⇒ 有效装载翻倍、探测长度 4 万步、插入 20 µs/条）。 */
+@inline
+@private
+fn bucketOf(h: i64, cap: i64) -> i64 { return ((h >> 31) * cap) >> 32 }
+
+/* 控制字节：哈希的第 20..26 位 + 1（7 位，与桶号用的第 31 位以上不重叠）。0 留给空桶。 */
+@inline
+@private
+fn ctrlOf(h: i64) -> u8 { return u8((h >> 20) & 127) + u8(1) }
+
+/* 三列同长的一张表：键、值、控制字节。`var b = a` 是转移（@noCopy）；要独立副本用 `clone()`。 */
 @noCopy
 struct hashMap<K, V> {
-    /* 四列桶存储与值列都跟着这张表的值走：没有池 id、没有纪元。`var b = a` 是转移，
-     * 要独立副本用 `clone()`；字节账直接问这四块加值列。 */
-    @private keys: block<K>          /* the bucket's key (live buckets only) */
-    tag:  block<u8>         /* EMPTY / LIVE / TOMB */
-    slot: block<i32>        /* bucket -> dense index inside `vals` (-1 when not live) */
-    /* The reverse of `slot`, one entry per dense index. The value column's `remove` is a
-     * swap-remove: the last live value moves into the hole, so the map has to fix the moved
-     * element's bucket, and this column is what says which bucket that is. */
-    @private bucketOfDense: block<i32>
-    vals: slots<V>               /* the values themselves: dense, reusable, handle-addressed */
-    @private n:    i64                   /* live entries */
-    @private dead: i64                   /* tombstones */
-    @private cap:  i64                   /* always a power of two */
+    @private keys: block<K>          /* 活桶的键 */
+    @private vals: block<V>          /* 活桶的值，与键同下标 */
+    @private tag:  block<u8>         /* 0 = 空桶；否则是 h2 + 1 */
+    @private n:    i64               /* 活元素个数 */
+    @private cap:  i64               /* 桶数（不是 2 的幂） */
 
-    /* A map with room for `want` entries before the first rebuild. */
+    /* 一张能装下 `want` 个元素、装到 85% 之前不重哈希的表。 */
     fn withCap(want: i64) -> hashMap<K, V> {
-        var c: i64 = 8
-        while c < want * 2 { c = c * 2 }
+        var w: i64 = want
+        if w < 1 { w = 1 }
+        /* cap = ceil(want / 0.85)：最后一个是 want 时装载恰好 0.85，再插一个才重哈希。 */
+        var c: i64 = (w * LOAD_DEN + (LOAD_NUM - 1)) / LOAD_NUM
+        if c < 8 { c = 8 }
         var m: hashMap<K, V> = {
             keys: block<K>::withCap(c),
-            tag:  block<u8>::withCap(c),          /* tag 必须清零：EMPTY == 0 是探测的终止符 */
-            slot: block<i32>::withCap(c),
-            bucketOfDense: block<i32>::withCap(c),
-            vals: slots<V>::withCap(c),      /* 值列与桶列同寿：一起长、一起还 */
+            vals: block<V>::withCap(c),
+            tag:  block<u8>::withCap(c),
             n:    0,
-            dead: 0,
             cap:  c,
         }
-        /* 块内存是复用的脏内存，而 tag 的 `0` 有含义（EMPTY）⇒ 这一列必须显式清零。 */
+        /* 块内存是复用的脏内存，而 tag 的 0 有含义（空桶）⇒ 这一列必须显式清零。 */
         var i: i64 = 0
         while i < c {
             m.tag[i] = u8(0)
@@ -127,42 +113,31 @@ struct hashMap<K, V> {
     }
 
     fn len(self: ref hashMap<K, V>) -> i64 { return self.n }
+
+    /* 桶数。迭代 `keyAt/valAt/liveAt` 的上界就是它。 */
     fn capOf(self: ref hashMap<K, V>) -> i64 { return self.cap }
-    /* 墓碑与活跃数的读数（只读）：探测链变长的诊断用它。 */
-    @private fn deadOf(self: ref hashMap<K, V>) -> i64 { return self.dead }
-    /* 诊断读数：桶的三种状态各有多少（EMPTY 是探测链的终止符，它的数量决定 miss 的代价）。 */
-    fn tagCensus(self: ref hashMap<K, V>, which: i64) -> i64 {
-        var c: i64 = 0
-        var i: i64 = 0
-        while i < self.cap {
-            if i64(self.tag[i]) == which { c = c + 1 }
-            i = i + 1
-        }
-        return c
-    }
 
-    /* 这张表**当下**在它自己池里占的字节（四列 + 值池）。
-     * 判据：`rebuild` 把旧列当场还了 ⇒ 这个数只随当前 `cap` 走，与重建过多少次无关；
-     * 若旧列还留着，它会大一整代（见 tests/hashmap/run.sh）。 */
+    /* 三列实际握着多少字节（账本口径，不是请求字节）。 */
     fn bytesOf(self: ref hashMap<K, V>) -> i64 {
-        return self.keys.bytesOf() + self.tag.bytesOf() + self.slot.bytesOf() + self.bucketOfDense.bytesOf() + self.vals.bytesOf()
+        return self.keys.bytesOf() + self.vals.bytesOf() + self.tag.bytesOf()
     }
 
-    /* Find the bucket holding `k`: live bucket index, or -1 when absent.
+    /* 找到 `k` 的桶：命中返回桶号，没有返回 -1。
      *
-     * The two indexings below are unchecked: `i` is always masked by `cap - 1` before it is used, and
-     * the loop runs at most `cap` steps, so both stay inside the three columns by construction. This
-     * is the probe loop of every lookup, so the per-step bounds checks are what the decoration buys
-     * (the signature that goes with it is the same one `sha256` and `string::eq` use). */
+     * 探测每一步只读 `tag`（一列 1 字节的稠密数组，一次探测跨过的桶挤在同一两行 cache 里），
+     * 只有控制字节对上才去读键列。下标由 `bucketOf` 与 `cap` 夹住，循环最多走 cap 步。 */
     @unchecked
     fn find(self: ref hashMap<K, V>, k: K) -> i64 {
-        var i = k.hash() & (self.cap - 1)
+        let h: i64 = k.hash()
+        let t: u8 = ctrlOf(h)
+        var i: i64 = bucketOf(h, self.cap)
         var steps: i64 = 0
         while steps < self.cap {
-            let t = self.tag[i]
-            if t == EMPTY { return -1 }
-            if t == LIVE && self.keys[i] == k { return i }
-            i = (i + 1) & (self.cap - 1)
+            let c: u8 = self.tag[i]
+            if c == EMPTY { return -1 }
+            if c == t && self.keys[i] == k { return i }
+            i = i + 1
+            if i == self.cap { i = 0 }
             steps = steps + 1
         }
         return -1
@@ -170,234 +145,211 @@ struct hashMap<K, V> {
 
     fn contains(self: ref hashMap<K, V>, k: K) -> bool { return self.find(k) >= 0 }
 
-    /* `hm[k]` -- the read side of the subscript syntax (`[]` and `[]=` are independent names, so
-     * a type may offer reading without writing). Same answer as `get`: `none` when absent. */
+    /* `hm[k]` -- the read side. Same answer as `get`: `none` when absent. */
     fn [](self: ref hashMap<K, V>, k: K) -> ?V { return self.get(k) }
 
     /* The value for `k`, or `none`. */
     fn get(self: ref hashMap<K, V>, k: K) -> ?V {
-        let b = self.find(k)
+        let b: i64 = self.find(k)
         if b < 0 { return none }
-        /* Read the dense prefix, not a handle: `slot[b]` already resolved the storage, so
-         * going through `handleAtDense` + `vals.get` would re-derive the same dense index
-         * and re-check a generation that this call cannot have missed. */
-        return some(self.vals.atDense(i64(self.slot[b])))
-    }
-
-    /* `k` 的值槽：一次探测拿 slotHandle，之后 `at`/`setAt` 不再探测。读-改-写一个已有键因此只要
-     * 一次探测（`get` + `put` 要两次），这是"取出来改一下写回去"该有的形状。
-     * slotHandle 是槽存储的**值**，不是指针：值列扩容/搬家不会让它悬垂，过期了 `at` 会还 `none`。 */
-    fn slotOf(self: ref hashMap<K, V>, k: K) -> ?slotHandle {
-        let b = self.find(k)
-        if b < 0 { return none }
-        return some(self.vals.handleAtDense(i64(self.slot[b])))
-    }
-
-    /* slotHandle 指向的值；过期（被 remove 搬走、或 clear 换了代）时 `none`。 */
-    fn at(self: ref hashMap<K, V>, h: slotHandle) -> ?V { return self.vals.get(h) }
-
-    /* 用 slotHandle 就地写回：一次槽访问，不探测。 */
-    fn setAt(self: mut ref hashMap<K, V>, h: slotHandle, v: V) -> bool { return self.vals.set(h, v) }
-
-    /* `k` 的 handle，缺失时插入 `dflt`。命中只探测一次；新键多一次（`put` 内部再探），
-     * 所以"每记录一次哈希探测"的循环就写这一句。 */
-    fn entry(self: mut ref hashMap<K, V>, k: K, dflt: V) -> slotHandle {
-        let had = self.find(k)
-        if had >= 0 { return self.vals.handleAtDense(i64(self.slot[had])) }
-        self.put(k, dflt)
-        let b = self.find(k)
-        return self.vals.handleAtDense(i64(self.slot[b]))
+        return some(self.vals[b])
     }
 
     /* Insert or overwrite. Returns true when the key was already there. */
-    /* `hm[k] = v` -- the write side (`[]` and `[]=` are independent names). Same semantics as
-     * `put`: insert when absent, overwrite when present. */
     fn []=(self: mut ref hashMap<K, V>, k: K, v: V) -> bool { return self.put(k, v) }
 
+    /* 插入或覆盖。覆盖要先跑旧键旧值的钩子（它们可能是 string），再写新值。
+     *
+     * 增长在**插入之前**判：`(n + 1) / cap` 会超过 0.85 就先把表翻倍、再重新定位空桶。
+     * 翻倍之后装载掉到 0.42 左右，所以下一次重哈希要再插 0.85 倍的量 —— 几何增长，摊还 O(1)。 */
     fn put(self: mut ref hashMap<K, V>, k: K, v: V) -> bool {
-        let had = self.find(k)
-        if had >= 0 {
-            /* The overwrite path is the hot one for a read-modify-write loop, so it writes
-             * the dense prefix directly: `slot[had]` is the storage index already, and this
-             * probe is the liveness check (the bucket is LIVE). */
-            self.vals.setAtDense(i64(self.slot[had]), v)
-            return true
+        let h: i64 = k.hash()
+        let t: u8 = ctrlOf(h)
+        var i: i64 = bucketOf(h, self.cap)
+        var steps: i64 = 0
+        while steps < self.cap {
+            let c: u8 = self.tag[i]
+            if c == EMPTY { break }
+            if c == t && self.keys[i] == k {
+                self.keys.dropAt(i)
+                self.vals.dropAt(i)
+                self.keys[i] = k
+                self.vals[i] = v
+                return true
+            }
+            i = i + 1
+            if i == self.cap { i = 0 }
+            steps = steps + 1
         }
-        /* Rebuild *before* inserting, while there is still a free bucket to land in.
-         *
-         * **两条触发线**，缺一条就会退化（实测 2026-09-26，bench/app/session.extc）：
-         *   ① 满度：`n + dead` 到容量的 70% —— 原来的那条，管"放不下"。
-         *   ② 墓碑密度：`dead` 到容量的 25% —— 新加的，管"探测链被墓碑拖长"。
-         * 只有①时，一个活跃集小而删除频繁的负载（会话表就是这样）会把 dead 堆到 40% 的
-         * 容量：此时 `find` 每一步都要跨过墓碑，实测 **25 ns/op → 584 ns/op（23 倍）**，
-         * 而 `n` 一直很小、容量一直够 —— 第①条永远不触发。
-         * ②的上界取 25%：探测链的期望长度随 1/(1-墓碑比例) 走，25% 时约 1.33 倍，
-         * 再高就开始看得见（40% 时 1.67 倍，而实测的差距远不止这个比例 —— 它还会
-         * 把 probe 跨过的桶都拉进 cache）。 */
-        if (self.n + self.dead + 1) * 10 >= self.cap * 7 { self.rebuild(self.cap * 2) }
-        var i = k.hash() & (self.cap - 1)
-        while self.tag[i] == LIVE {
-            i = (i + 1) & (self.cap - 1)
+        if (self.n + 1) * LOAD_DEN > self.cap * LOAD_NUM {
+            self.grow(self.cap * 2)
+            i = self.slotFor(h)
         }
-        if self.tag[i] == TOMB { self.dead = self.dead - 1 }
-        let h = self.vals.insert(v)
-        let d = self.vals.len() - 1
-        self.tag[i]  = LIVE
         self.keys[i] = k
-        self.slot[i] = i32(d)
-        self.bucketOfDense[d] = i32(i)
+        self.vals[i] = v
+        self.tag[i] = t
         self.n = self.n + 1
         return false
     }
 
-    /* Remove `k`. Returns true when it was there.
-     *
-     * **Deletion shifts the cluster back instead of leaving a tombstone** (Knuth, TAOCP vol. 3,
-     * 6.4 algorithm R). A tombstone would keep the probe sequence of someone else's key alive,
-     * so it has to stay occupied forever -- and every miss that walks over one pays for it.
-     * Measured on a 1M-key table after 500k removals: 26 ns/lookup with tombstones against
-     * 15 ns for the same table untouched, and an identity hash (the natural choice for
-     * monotonic integer keys) takes 116 s because the tombstones turn one long contiguous
-     * cluster into one long failed walk. Shifting back keeps the table tombstone-free, so a
-     * probe only ever stops at an EMPTY bucket and the hash function is free to be cheap.
-     *
-     * The element that moves into the hole keeps its own key, tag, dense index and reverse
-     * index; only its bucket number changes. The walk continues with the vacated bucket as
-     * the new hole, so a whole run of entries that hash behind it follows in one pass. */
-    fn remove(self: mut ref hashMap<K, V>, k: K) -> bool {
-        let b = self.find(k)
-        if b < 0 { return false }
-        let d      = i64(self.slot[b])
-        let last   = self.vals.len() - 1
-        let bMoved = i64(self.bucketOfDense[last])
-        let gone   = self.vals.remove(self.vals.handleAtDense(d))
-        /* The pool filled the hole with the last live value; point that element's bucket at its
-         * new dense index, or a later lookup would read somebody else's value. */
-        if d != last {
-            self.slot[bMoved] = i32(d)
-            self.bucketOfDense[d] = i32(bMoved)
+    /* 从 `h` 的起点往后找第一个空桶（调用前必须保证至少有一个空桶）。 */
+    @private
+    @unchecked
+    fn slotFor(self: ref hashMap<K, V>, h: i64) -> i64 {
+        var i: i64 = bucketOf(h, self.cap)
+        var steps: i64 = 0
+        while steps < self.cap {
+            if self.tag[i] == EMPTY { return i }
+            i = i + 1
+            if i == self.cap { i = 0 }
+            steps = steps + 1
         }
-        /* Take the removed key out of its bucket: for a key that owns storage a plain
-         * `tag[b] = EMPTY` would leave those bytes behind and nothing would ever drop them. */
-        let _gone: K = self.keys.take(b)
-        self.n = self.n - 1
+        return -1
+    }
+
+    /* 移除 `k`。返回「本来就在」。 */
+    fn remove(self: mut ref hashMap<K, V>, k: K) -> bool {
+        let b: i64 = self.find(k)
+        if b < 0 { return false }
+        self.removeAt(b)
+        return true
+    }
+
+    /* 移除 `k` 并把它的值交出来（键和值各自跑钩子，值给你之前先拷一份）。 */
+    fn take(self: mut ref hashMap<K, V>, k: K) -> ?V {
+        let b: i64 = self.find(k)
+        if b < 0 { return none }
+        let out: V = self.vals[b]
+        self.removeAt(b)
+        return some(out)
+    }
+
+    /* 清掉第 `b` 个桶，然后按 Knuth 的回移（TAOCP vol. 3, 6.4 algorithm R）把簇补上。
+     *
+     * 回移而不是留墓碑：墓碑会永远占着桶、让别人的探测链变长（实测 26 ns 对 15 ns，
+     * 单调整数键上更糟），而墓碑密度还得再来一条触发线去清理它。回移让探测只会在空桶停下。 */
+    @private
+    @unchecked
+    fn removeAt(self: mut ref hashMap<K, V>, b: i64) {
+        self.keys.dropAt(b)
+        self.vals.dropAt(b)
         self.tag[b] = EMPTY
-        let mask = self.cap - 1
-        var hole = b
-        var j    = (b + 1) & mask
-        while self.tag[j] == LIVE {
-            let home = self.keys[j].hash() & mask
-            /* The entry at `j` may fill the hole only when its own probe sequence reaches
-             * `j` without first crossing the hole -- otherwise moving it would hide it from
-             * its own lookup. Distances are taken modulo the capacity. */
-            if ((j - home) & mask) >= ((j - hole) & mask) {
-                /* A move, not a copy: the element walks to the hole and its old slot is zeroed, so an
-                 * owning key still has exactly one owner. */
+        self.n = self.n - 1
+        var hole: i64 = b
+        var j: i64 = b + 1
+        if j == self.cap { j = 0 }
+        var steps: i64 = 0
+        while steps < self.cap {
+            let c: u8 = self.tag[j]
+            if c == EMPTY { break }
+            let home: i64 = bucketOf(self.keys[j].hash(), self.cap)
+            /* 距离都按环上的步数算：只有「从自己的 home 走到 j 会先经过 hole」的元素才能补位。 */
+            var dj: i64 = j - home
+            if dj < 0 { dj = dj + self.cap }
+            var dh: i64 = j - hole
+            if dh < 0 { dh = dh + self.cap }
+            if dj >= dh {
+                /* 搬，不是拷：旧槽被 `take` 清零 ⇒ 拥有存储的键仍然只有一个主人。 */
                 self.keys[hole] = self.keys.take(j)
-                self.tag[hole]  = LIVE
-                self.slot[hole] = self.slot[j]
-                self.bucketOfDense[i64(self.slot[hole])] = i32(hole)
+                self.vals[hole] = self.vals.take(j)
+                self.tag[hole] = c
                 self.tag[j] = EMPTY
                 hole = j
             }
-            j = (j + 1) & mask
+            j = j + 1
+            if j == self.cap { j = 0 }
+            steps = steps + 1
         }
-        return gone
     }
 
-    /* Rehash into a table of `ncap` buckets (a power of two), dropping the tombstones. The values
-     * are not touched: they stay exactly where the value column put them, which is what keeps an
-     * element's dense index (and every live handle) valid across a rebuild. */
-    fn rebuild(self: mut ref hashMap<K, V>, ncap: i64) {
-        /* 新表拿四块新存储，旧的填完当场还 —— 于是重建只在**换的那一瞬间**有两代同时在手，
-         * 稳态永远只有一代。容量仍然翻倍：这是**哈希**的要求（探测用 `hash & (cap-1)`，
-         * 必须是 2 的幂），与"旧块还不了才翻倍"那条无关。 */
-        var nk: block<K>   = block<K>::withCap(ncap)
-        var nt: block<u8>  = block<u8>::withCap(ncap)
-        var ns: block<i32> = block<i32>::withCap(ncap)
-        var nb: block<i32> = block<i32>::withCap(ncap)
-        /* 新 tag 必须全 EMPTY（`EMPTY == 0` 是探测的终止符）：块内存不清零，这里显式清零。 */
+    /* 重哈希到 `ncap` 个桶：新三列、活元素逐个搬过去、旧三列当场还掉。
+     *
+     * 这是全量重哈希（单步 O(n)）。值不搬第二次 —— 它就是 `vals` 里那个桶的字节，
+     * 只跟着键一起走。搬完旧列里已经没有活元素（`take` 清零），所以旧列归还时不会跑钩子、
+     * 也不会把搬走的存储再释放一次。 */
+    fn grow(self: mut ref hashMap<K, V>, ncap: i64) {
+        var nk: block<K>  = block<K>::withCap(ncap)
+        var nv: block<V>  = block<V>::withCap(ncap)
+        var nt: block<u8> = block<u8>::withCap(ncap)
         var z: i64 = 0
         while z < ncap {
             nt[z] = u8(0)
             z = z + 1
         }
-        /* `bucketOfDense` 是**稠密下标**索引的，位置与容量无关；它长到 ncap 是因为稠密侧会随
-         * 表一起长过旧容量（早先留着旧长度的那版在第一次长表后写越界过）。重排会把每个活
-         * 元素的桶号重写一遍，所以新列里没有需要保留的前缀。 */
         var i: i64 = 0
         while i < self.cap {
-            if self.tag[i] == LIVE {
-                var j = self.keys[i].hash() & (ncap - 1)
-                while nt[j] == LIVE { j = (j + 1) & (ncap - 1) }
-                nt[j] = LIVE
+            if self.tag[i] != EMPTY {
+                let h: i64 = self.keys[i].hash()
+                var j: i64 = bucketOf(h, ncap)
+                while nt[j] != EMPTY {
+                    j = j + 1
+                    if j == ncap { j = 0 }
+                }
+                nt[j] = ctrlOf(h)
                 nk[j] = self.keys.take(i)
-                ns[j] = self.slot[i]
-                nb[i64(self.slot[i])] = i32(j)
+                nv[j] = self.vals.take(i)
             }
             i = i + 1
         }
-        /* 整列换上：`adopt` 内部先还旧块（活键已被 `take` 搬走、死桶是零 ⇒ 不会再跑钩子），
-         * 再把新块的字段整体接管过来。 */
         self.keys.adopt(ref nk)
+        self.vals.adopt(ref nv)
         self.tag.adopt(ref nt)
-        self.slot.adopt(ref ns)
-        self.bucketOfDense.adopt(ref nb)
-        self.cap  = ncap
-        self.dead = 0
+        self.cap = ncap
+    }
+
+    /* 缩到刚好装得下的容量（`n` 掉下来之后把桶还回去）。没有活元素时缩到 8。
+     * 与增长是同一条路径（一次全量重哈希），所以它的停顿上界也一样是 O(n)。 */
+    fn compact(self: mut ref hashMap<K, V>) {
+        var want: i64 = self.n
+        if want < 1 { want = 1 }
+        var c: i64 = (want * LOAD_DEN + (LOAD_NUM - 1)) / LOAD_NUM
+        if c < 8 { c = 8 }
+        if c < self.cap { self.grow(c) }
     }
 
     /* Drop every entry, keeping the capacity. */
     fn clear(self: mut ref hashMap<K, V>) {
         var i: i64 = 0
         while i < self.cap {
-            /* An owning key is stored in its bucket, so emptying the table has to run the key's
-             * hook too; for a key type with no storage this compiles to nothing. */
-            if self.tag[i] == LIVE { self.keys.dropAt(i) }
+            if self.tag[i] != EMPTY {
+                self.keys.dropAt(i)
+                self.vals.dropAt(i)
+            }
             self.tag[i] = EMPTY
             i = i + 1
         }
-        self.vals.clear()
-        self.n    = 0
-        self.dead = 0
+        self.n = 0
     }
 
-    /* 四列与值列都还回去：`release` 幂等，字段的自动 `@drop` 再发一次是空操作。 */
+    /* 三列都还回去：`release` 幂等，字段的自动 `@drop` 再发一次是空操作。 */
     fn release(self: mut ref hashMap<K, V>) {
         var i: i64 = 0
         while i < self.cap {
-            if self.tag[i] == LIVE { self.keys.dropAt(i) }
+            if self.tag[i] != EMPTY {
+                self.keys.dropAt(i)
+                self.vals.dropAt(i)
+            }
             i = i + 1
         }
-        self.vals.release()
         self.keys.release()
+        self.vals.release()
         self.tag.release()
-        self.slot.release()
-        self.bucketOfDense.release()
-        self.n    = 0
-        self.dead = 0
-        self.cap  = 0
+        self.n   = 0
+        self.cap = 0
     }
 
-    /* Scan by bucket position (the face the first version had). */
+    /* 按桶位扫描：`i` 走 [0, capOf())。 */
     fn keyAt(self: ref hashMap<K, V>, i: i64) -> K { return self.keys[i] }
-    fn valAt(self: ref hashMap<K, V>, i: i64) -> V { return self.vals.atDense(i64(self.slot[i])) }
-    fn liveAt(self: ref hashMap<K, V>, i: i64) -> bool { return self.tag[i] == LIVE }
+    fn valAt(self: ref hashMap<K, V>, i: i64) -> V { return self.vals[i] }
+    fn liveAt(self: ref hashMap<K, V>, i: i64) -> bool { return self.tag[i] != EMPTY }
 
-    /* Scan the dense side: every live value once, in the pool's own order -- no probing and no
-     * holes. This is the face a hot loop wants. */
-    fn denseLen(self: ref hashMap<K, V>) -> i64 { return self.vals.len() }
-    fn keyAtDense(self: ref hashMap<K, V>, d: i64) -> K { return self.keys[i64(self.bucketOfDense[d])] }
-    fn valAtDense(self: ref hashMap<K, V>, d: i64) -> V { return self.vals.atDense(d) }
-
-    /* **深拷贝：要一份独立的表就用它。** `var b = a` 是结构体逐成员拷贝（共用板块）⇒
-     * 改 b 会改到 a、a.release() 会让 b 悬垂。这里显式拷一份（O(n) + 一块新板块）。 */
+    /* **深拷贝：要一份独立的表就用它。** `var b = a` 是转移（`@noCopy`）⇒ 要副本得显式拷。 */
     fn clone(self: ref hashMap<K, V>) -> hashMap<K, V> {
-        var out = hashMap<K, V>::withCap(self.n + 1)
-        var d: i64 = 0
-        while d < self.denseLen() {
-            out.put(self.keyAtDense(d), self.valAtDense(d))
-            d = d + 1
+        var out: hashMap<K, V> = hashMap<K, V>::withCap(self.n + 1)
+        var i: i64 = 0
+        while i < self.cap {
+            if self.tag[i] != EMPTY { out.put(self.keys[i], self.vals[i]) }
+            i = i + 1
         }
         return out
     }
@@ -408,20 +360,13 @@ struct hashMap<K, V> {
  *
  * `hashMap<K, V>` asks its key for `hash()` and `==`, so an `i64` key has to get those two
  * methods from somewhere. Methods live inside a `struct` and `i64` is built in, so there is
- * nowhere to write them -- hence the wrapper. `i64Key` carries the original `hashI64` mix and
- * `==`; `hashMapI64<V>` is a thin adapter that keeps the `i64`-keyed face this container had
- * before the key became a type parameter.
- *
- * Why not a second table for `i64` keys: hashing, linear probing, tombstones and the rebuild
- * threshold are the parts that are easy to get wrong, and two copies of them drift -- one gets
- * a fix, the other silently keeps the bug. One table, one place to fix. The wrapper costs
- * nothing: an `i64Key` is one `i64`.
+ * nowhere to write them -- hence the wrapper. `hashMapI64<V>` is a thin adapter that keeps the
+ * `i64`-keyed face this container had before the key became a type parameter.
  * --------------------------------------------------------------------------- */
 
 struct i64Key {
     v: i64
 
-    /* The mix the table used before it took a key type parameter. */
     fn hash(self: ref i64Key) -> i64 { return hashI64(self.v) }
 
     fn ==(self: ref i64Key, other: i64Key) -> bool { return self.v == other.v }
@@ -444,63 +389,36 @@ struct hashMapI64<V> {
         var h: hashMapI64<V> = { m: self.m.clone() }
         return h
     }
-    @private fn deadOf(self: ref hashMapI64<V>) -> i64 { return self.m.deadOf() }
-    @private fn tagCensus(self: ref hashMapI64<V>, which: i64) -> i64 { return self.m.tagCensus(which) }
 
     fn [](self: ref hashMapI64<V>, k: i64) -> ?V { return self.get(k) }
-
-    fn contains(self: ref hashMapI64<V>, k: i64) -> bool {
-        return self.m.contains(i64Key { v: k })
-    }
-
+    fn contains(self: ref hashMapI64<V>, k: i64) -> bool { return self.m.contains(i64Key { v: k }) }
     fn get(self: ref hashMapI64<V>, k: i64) -> ?V { return self.m.get(i64Key { v: k }) }
-
     fn []=(self: mut ref hashMapI64<V>, k: i64, v: V) -> bool { return self.put(k, v) }
-
-    fn put(self: mut ref hashMapI64<V>, k: i64, v: V) -> bool {
-        return self.m.put(i64Key { v: k }, v)
-    }
-
+    fn put(self: mut ref hashMapI64<V>, k: i64, v: V) -> bool { return self.m.put(i64Key { v: k }, v) }
     fn remove(self: mut ref hashMapI64<V>, k: i64) -> bool { return self.m.remove(i64Key { v: k }) }
-
-    /* slotHandle 走的是值列里的稳定槽位，不是指针：值列扩容搬家时不会悬垂。 */
-    fn slotOf(self: ref hashMapI64<V>, k: i64) -> ?slotHandle { return self.m.slotOf(i64Key { v: k }) }
-    fn at(self: ref hashMapI64<V>, h: slotHandle) -> ?V { return self.m.at(h) }
-    fn setAt(self: mut ref hashMapI64<V>, h: slotHandle, v: V) -> bool { return self.m.setAt(h, v) }
-    fn entry(self: mut ref hashMapI64<V>, k: i64, dflt: V) -> slotHandle {
-        return self.m.entry(i64Key { v: k }, dflt)
-    }
-
+    fn take(self: mut ref hashMapI64<V>, k: i64) -> ?V { return self.m.take(i64Key { v: k }) }
     fn clear(self: mut ref hashMapI64<V>) { self.m.clear() }
-
-    /* 四列与值列都还回去 */
+    fn compact(self: mut ref hashMapI64<V>) { self.m.compact() }
     fn release(self: mut ref hashMapI64<V>) { self.m.release() }
-
-    /* The dense face (`hashMap`'s own face): every live value once, in insertion order, no
-     * probing and no holes -- the reason the values live in a pool at all. */
-    fn denseLen(self: ref hashMapI64<V>) -> i64 { return self.m.denseLen() }
-    fn keyAtDense(self: ref hashMapI64<V>, d: i64) -> i64 { return self.m.keyAtDense(d).v }
-    fn valAtDense(self: ref hashMapI64<V>, d: i64) -> V { return self.m.valAtDense(d) }
 
     fn keyAt(self: ref hashMapI64<V>, i: i64) -> i64 { return self.m.keyAt(i).v }
     fn valAt(self: ref hashMapI64<V>, i: i64) -> V { return self.m.valAt(i) }
     fn liveAt(self: ref hashMapI64<V>, i: i64) -> bool { return self.m.liveAt(i) }
 }
 
-/* stl/hashSet.extc -- `hashSetI64`: a value-less map, built on top of `stl/map`.
+/* `hashSetI64`: a value-less map, built on top of the table above.
  *
- * WHY NOT ITS OWN TABLE: hashing, linear probing, tombstones and the rebuild threshold are the
- * parts of a hash container that are easy to get wrong, and a second copy of them means `map`
- * and `set` drift apart -- one of them gets a fix, the other silently keeps the bug. So a set
- * IS a map whose value is a placeholder byte: one implementation, one place to fix.
+ * WHY NOT ITS OWN TABLE: hashing, probing, the shift-back delete and the growth threshold are the
+ * parts of a hash container that are easy to get wrong, and a second copy of them means map and
+ * set drift apart -- one of them gets a fix, the other silently keeps the bug. So a set IS a map
+ * whose value is a placeholder byte: one implementation, one place to fix.
  *
  * The cost is stated honestly: one `u8` per element. Paying a byte to delete a whole class of
  * divergence is the trade this file makes.
  *
- * The face mirrors `map` exactly (`withCap` / `len` / `contains` / `put` / `remove` / `clear`
- * plus the table-position scan `keyAt` / `liveAt` / `capOf`), with ONE difference: `put` returns
- * true when the element is NEW, while `map::put` returns true when it was already there. */
-
+ * The face mirrors the map (`withCap` / `len` / `contains` / `put` / `remove` / `clear` plus the
+ * table-position scan `keyAt` / `liveAt` / `capOf`), with ONE difference: `put` returns true when
+ * the element is NEW, while the map's `put` returns true when it was already there. */
 @noCopy
 struct hashSetI64 {
     m: hashMapI64<u8>
@@ -511,7 +429,6 @@ struct hashSetI64 {
     }
 
     fn len(self: ref hashSetI64) -> i64 { return self.m.len() }
-    /* **深拷贝**（同 set：逐成员拷贝会共用底层表的板块）。 */
     fn clone(self: ref hashSetI64) -> hashSetI64 {
         var s: hashSetI64 = { m: self.m.clone() }
         return s
@@ -525,15 +442,11 @@ struct hashSetI64 {
         return true
     }
 
-    /* Remove one element. True when it was there. */
     fn remove(self: mut ref hashSetI64, k: i64) -> bool { return self.m.remove(k) }
-
     fn clear(self: mut ref hashSetI64) { self.m.clear() }
-
-    /* 四列与值列都还回去 */
+    fn compact(self: mut ref hashSetI64) { self.m.compact() }
     fn release(self: mut ref hashSetI64) { self.m.release() }
 
-    /* Scan by table position (the dense face arrives with the pool-backed map). */
     fn keyAt(self: ref hashSetI64, i: i64) -> i64 { return self.m.keyAt(i) }
     fn liveAt(self: ref hashSetI64, i: i64) -> bool { return self.m.liveAt(i) }
     fn capOf(self: ref hashSetI64) -> i64 { return self.m.capOf() }

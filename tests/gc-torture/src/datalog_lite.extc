@@ -316,36 +316,38 @@ fn setsSummary(g: ref graph, qs: ref vector<i64>) -> i64 {
     while qi < qs.len() {
         var src: i64 = qs.get(qi) ?? 0
         bfs(g, src, ref seen, ref frontier, ref nextLev)
-        var n: i64 = seen.denseLen()
-        var i: i64 = 0
-        while i < n {
-            uni.put(seen.keyAtDense(i), 1)
-            i = i + 1
+        /* 按桶位遍历（tag != 0 才是活元素）：没有稠密值列了，桶序就是迭代序。 */
+        var sb: i64 = 0
+        let scap: i64 = seen.capOf()
+        while sb < scap {
+            if seen.liveAt(sb) {
+                let k0: i64 = seen.keyAt(sb)
+                uni.put(k0, 1)
+                if first == 1 { inter.put(k0, 1) }
+            }
+            sb = sb + 1
         }
         if first == 1 {
             first = 0
-            inter.clear()
-            var j: i64 = 0
-            while j < n {
-                inter.put(seen.keyAtDense(j), 1)
-                j = j + 1
-            }
         } else {
-            /* 从尾往头删：remove 是 swap-remove，从后删不会跳过未访问的元素 */
-            var j2: i64 = inter.denseLen() - 1
-            while j2 >= 0 {
-                var k3: i64 = inter.keyAtDense(j2)
-                var has: i64 = seen.get(k3) ?? -1
-                if has < 0 { inter.remove(k3) }
-                j2 = j2 - 1
+            /* 遍历 uni（这一轮不动它）删 inter：删的是别的表，桶序不受影响 */
+            var ub: i64 = 0
+            let ucap: i64 = uni.capOf()
+            while ub < ucap {
+                if uni.liveAt(ub) {
+                    let k3: i64 = uni.keyAt(ub)
+                    if inter.contains(k3) && !seen.contains(k3) { inter.remove(k3) }
+                }
+                ub = ub + 1
             }
         }
         qi = qi + 1
     }
     var usum: i64 = 0
     var i2: i64 = 0
-    while i2 < uni.denseLen() {
-        usum = (usum + (uni.keyAtDense(i2))) % MOD
+    let ucap2: i64 = uni.capOf()
+    while i2 < ucap2 {
+        if uni.liveAt(i2) { usum = (usum + (uni.keyAt(i2))) % MOD }
         i2 = i2 + 1
     }
     io::cout << "sets union=" << uni.len() << " inter=" << inter.len() << "\n"
@@ -370,30 +372,36 @@ fn coverage(g: ref graph, qs: ref vector<i64>) -> i64 {
     var qi: i64 = 0
     while qi < qs.len() {
         bfs(g, qs.get(qi) ?? 0, ref seen, ref frontier, ref nextLev)
-        var n: i64 = seen.denseLen()
         var i: i64 = 0
-        while i < n {
-            var k: i64 = seen.keyAtDense(i)
-            var c: i64 = cov.get(k) ?? 0
-            cov.put(k, c + 1)
+        let scap2: i64 = seen.capOf()
+        while i < scap2 {
+            if seen.liveAt(i) {
+                var k: i64 = seen.keyAt(i)
+                var c: i64 = cov.get(k) ?? 0
+                cov.put(k, c + 1)
+            }
             i = i + 1
         }
         qi = qi + 1
     }
-    var maxc: i64 = 0
+    var maxc: i64 = -1
     var maxat: i64 = 0
     var full: i64 = 0
     var sum: i64 = 0
     var i2: i64 = 0
-    while i2 < cov.denseLen() {
-        var k2: i64 = cov.keyAtDense(i2)
-        var c2: i64 = cov.valAtDense(i2)
-        if c2 > maxc {
-            maxc = c2
-            maxat = k2
+    let ccap: i64 = cov.capOf()
+    while i2 < ccap {
+        if cov.liveAt(i2) {
+            var k2: i64 = cov.keyAt(i2)
+            var c2: i64 = cov.valAt(i2)
+            /* 并列时取**最小的键**：桶序换了也不会让这一行漂（它是 stdout 判据的一部分）。 */
+            if c2 > maxc || (c2 == maxc && k2 < maxat) {
+                maxc = c2
+                maxat = k2
+            }
+            if c2 == qs.len() { full = full + 1 }
+            sum = (sum + c2 * (k2 % 97 + 1)) % MOD
         }
-        if c2 == qs.len() { full = full + 1 }
-        sum = (sum + c2 * (k2 % 97 + 1)) % MOD
         i2 = i2 + 1
     }
     io::cout << "cov nodes=" << cov.len() << " max=" << maxc << " at=" << maxat << " full=" << full << "\n"

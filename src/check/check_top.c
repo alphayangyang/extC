@@ -1529,20 +1529,28 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
             Expr *a = *(Expr **)vecAt(args, j);
             const char *owner = NULL;
             if (!ckViewOfMovableStorage(c, a, &owner)) continue;
-            /* A view of a container this function created is promotable: the fresh
-             * allocation moves out to the destination's place, so passing it along is
-             * the caller's normal escape, not a dangling view (`tests/ops/view_promote`).
-             * Growth inside this function is already caught by the block-local rule. */
+            /* A view of storage that outlives the destination is safe, and a fresh
+             * allocation can be promoted out to that place. A container local to this
+             * frame is neither: its reservation goes back when the frame ends, and a later
+             * growth hands the old bytes back as well, so storing the view outlives its
+             * storage (`tests/ops/view_promote_neg`). */
             {
+                Expr *ownerE = (a->kind == EX_METHOD) ? a->u.method.recv : a;
                 const char *vname = NULL;
-                if (ckHoldsMovingViewOf(c, a, &vname) && vname) {
+                /* A view lifted off a field or an element has no name to reason about, and a
+                 * parameter is the caller storage: both keep the rule as it stands. */
+                if (ownerE && ckHoldsMovingViewOf(c, a, &vname) && vname) {
                     bool isParam = false;
                     if (c->curFunc)
                         for (size_t k = 0; k < c->curFunc->params.len; k++) {
                             Param *pp = *(Param **)vecAt(&c->curFunc->params, k);
                             if (pp->name && strcmp(pp->name, vname) == 0) { isParam = true; break; }
                         }
-                    if (!isParam) continue;
+                    if (!isParam) {
+                        if (!placeRoot(c, ownerE)) continue; /* not a place this pass tracks */
+                        int d = slotDepth(c, ownerE);
+                        if (d == 0 || d <= h) continue; /* the container outlives the destination */
+                    }
                 }
             }
             ckError(c, a->line,
@@ -1606,7 +1614,13 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
                 if (zl != 0 && zl < d) d = zl;
             }
             if (d == 0 || d <= h) { lvlSiteMark(lvlSite, j, LVL_CAND_ACCEPT); continue; }
-            lvlSiteMark(lvlSite, j, LVL_CAND_REJECT);
+            /* No verdict is recorded for the witness on this path. The witness models the
+             * attributable store rule -- the one the summary names a parameter for -- and
+             * compares the compiler against it. This branch runs exactly when no parameter
+             * can be named, and then the answer is the worst case rather than that rule, so
+             * a rejection here is not an application of the rule and there is nothing for
+             * the witness to disagree with. The accept above stays: "provably lives long
+             * enough" is a verdict of the rule, and the witness rejecting it is a real gap. */
             ckError(c, line,
                     "Nothing was stored here that could be checked at this call, so the"
                     " compiler has to assume the worst: this value may end up in the place"
@@ -1764,7 +1778,16 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
             if (mentionsParam(src->type)) continue;
             Expr *splace = (src->kind == EX_REF) ? src->u.ref.operand : src;
             int dj = targetDepth(c, splace);
-            if (dj == 0 && placeRoot(c, splace)) dj = slotDepth(c, splace);
+            /* Only a value that can carry a reference can put one into the destination; for a
+             * number the question does not arise and the answer is 0. `slotDepth` is a stand-in
+             * for the level of a reference whose own depth is not filled in yet (see below), and
+             * reading it for a value that holds no reference would record a depth for nothing:
+             * `self.path[self.depth] = id` (an i32) raised the destination to the slot depth of
+             * `id`, and one store of a value read back out of the same container then kept
+             * raising that container own depth until the instance check rejected a legal map. */
+            if (dj == 0 && placeRoot(c, splace) &&
+                (typeContainsRef(c->tt, tsub(c, src->type)) || mentionsParam(src->type)))
+                dj = slotDepth(c, splace);
             /* not skipped: for a reference-typed argument the level is not filled in yet */
             for (size_t i = 0; i < params->len && i < args->len; i++) {
                 if (i == j) continue;
@@ -2982,19 +3005,21 @@ static bool valueOutOfFrameNoScope(Expr *e) {
     case EX_DEREF: return valueOutOfFrameNoScope(e->u.deref.operand);
     default: break;
     }
-    if (exprIsCallKind(e)) {
+    if (exprIsCallKind(e) || e->kind == EX_GENCALL) {
         FuncDef *fd = planCallee(e);
         /* The summary pass runs after the bodies, and a plain call is not always pinned to its
          * declaration at that point: fall back to the name written at the call site, which is all
          * the primitive needs (it is dispatched by name). */
         const char *cn = (fd && fd->name) ? fd->name
+                       : (e->kind == EX_GENCALL) ? e->u.gencall.name
                        : (e->kind == EX_CALL && e->u.call.callee
                           && e->u.call.callee->kind == EX_IDENT)
                              ? e->u.call.callee->u.ident.name : NULL;
         if (fd && fd->extRetFresh) return true;      /* the declaration promises it */
-        if (plainFnNameIs(cn, "extc_viewOf")) {
+        if (plainFnNameIs(cn, "extc_viewOf") || plainFnNameIs(cn, "extc_viewOfT")) {
             Vec *as = (e->kind == EX_CALL) ? &e->u.call.args :
-                      (e->kind == EX_METHOD) ? &e->u.method.args : &e->u.assoc.args;
+                      (e->kind == EX_METHOD) ? &e->u.method.args :
+                      (e->kind == EX_GENCALL) ? &e->u.gencall.args : &e->u.assoc.args;
             return as->len >= 1 && valueOutOfFrameNoScope(*(Expr **)vecAt(as, 0));
         }
     }
@@ -3122,7 +3147,9 @@ static void classifyStoredValue(Checker *c, FuncDef *f, Expr *e, int i, bool int
     { const char *vr = placeRootName(e);          /* `l.head = n`: the source is a fresh local */
       if (vr && vecHasName(fresh, vr)) return; }
     if (c && e->type && !typeContainsRef(c->tt, e->type)) return;   /* scalar, trivially safe */
-    if (i >= 0) anSetOtherMask(f, anOtherMask(f) | (((uint64_t)1 << i)));        /* not sure, so stay conservative */
+    if (i >= 0) {
+        anSetOtherMask(f, anOtherMask(f) | (((uint64_t)1 << i)));       /* not sure, so stay conservative */
+    }
 }
 
 static void collectEffectsExpr(Checker *c, FuncDef *f, Expr *e);
@@ -3286,7 +3313,11 @@ static bool isRetainsNothingBuiltin(const char *name) {
                                         * neither, so a call to it must not be read as "this callee
                                         * may store the reference" -- that turned weak::of into a
                                         * pin of its argument and kept every probed object alive. */
-                                       "weakAddr", "weakTag", "weakGen", "weakUpgrade"};
+                                       "weakAddr", "weakTag", "weakGen", "weakUpgrade",
+                                       /* The slot write: it stores the value the caller passed into
+                                        * storage the caller also passed, which makes that value a
+                                        * stored reference, not an unanalysable call. */
+                                       "elemPut"};
     if (!name) return false;
     const char *last = strrchr(name, '$');
     last = last ? last + 1 : name;
@@ -3476,6 +3507,24 @@ static void collectEffectsExpr(Checker *c, FuncDef *f, Expr *e) {
             collectEffectsExpr(c, f, (*(FieldInit **)vecAt(&e->u.lambda.inits, k))->value);
         return;
     case EX_GENCALL:
+        /* `elemPut<T>(view, i, v)` stores `v` into a slot of a container without going through
+         * an assignment statement, so the store walker has to see it. Skipping it made
+         * `varArray<T>::push` read as "stores nothing": the call site then never required the
+         * pushed value to outlive the container, and `xs.push(dyn Tag(b))` with `b` in the loop
+         * body was accepted. Only a destination that is a `mut ref` parameter needs a bit; a
+         * container local to this frame dies with it, so a store there cannot dangle on a
+         * caller (`tests/dyn/dyn_payload_inline_stale` is the negative shape). */
+        if (e->u.gencall.name && strcmp(e->u.gencall.name, "elemPut") == 0 &&
+            e->u.gencall.args.len == 3) {
+            Expr *dst = *(Expr **)vecAt(&e->u.gencall.args, 0);
+            Expr *val = *(Expr **)vecAt(&e->u.gencall.args, 2);
+            int di = paramIndexByName(f, placeRootName(dst));
+            if (di >= 0) {
+                Param *dp = *(Param **)vecAt(&f->params, di);
+                if (dp->type && dp->type->kind == TY_REF && dp->type->mut)
+                    classifyStoredValue(c, f, val, di, false, NULL);
+            }
+        }
         for (size_t k = 0; k < e->u.gencall.args.len; k++)
             collectEffectsExpr(c, f, *(Expr **)vecAt(&e->u.gencall.args, k));
         return;

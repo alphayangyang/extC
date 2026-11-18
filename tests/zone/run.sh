@@ -65,15 +65,15 @@ done
 
 echo "== 包装句柄被放弃时，块退出结束它看得见的任务 =="
 # 句柄被丢弃（只 next() 一次、或 for 循环 break）时，块退出会结束编译器叫得出名字的那些任务
-# （`cgCoroOwnedEndAt`）。判据：50 个被放弃的句柄任务，池计数回去到 0。
+# （`cgCoroOwnedEndAt`）。判据：50 个被放弃的句柄任务，运行期的活任务数回到 0。
 ha=$(mktemp -d)
 if "$EXTC" -w --no-line-map -o "$ha/h.c" tests/zone/handle_abandon.extc >/dev/null 2>&1 \
    && cc -O2 -std=c11 -fwrapv -o "$ha/h" "$ha/h.c" 2>"$ha/e"; then
     out=$("$ha/h" 2>&1)
     if [ "$out" = "before=0 after=0" ]; then
-        echo "  ok   handle_abandon     ->  50 个被放弃的句柄任务：池计数 0→0（块退出结束自己能看见的任务）"
+        echo "  ok   handle_abandon     ->  50 个被放弃的句柄任务：活任务数 0→0（块退出结束自己能看见的任务）"
     else
-        echo "  FAIL handle_abandon     ->  输出=$out（期望 before=0 after=0：不逃逸的句柄必须不泄露）"
+        echo "  FAIL handle_abandon     ->  输出=$out（期望 before=0 after=0：不逃逸的句柄必须结束任务）"
         fail=1
     fi
 else

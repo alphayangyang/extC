@@ -972,11 +972,11 @@ fn main() -> i32 {
 
 | | `varArray<T>`（prelude 里） | `pool<T>`（`std::data::pool` 里） |
 |---|---|---|
-| 存储 | 一块连续 buffer，满了按 2 倍扩容 | 值放 dense 数组，另有 slot→dense 的映射 |
+| 存储 | 一段地址预留；满了换一段更大的（2 倍），原来那段当场还回竞技场 | 值放 dense 数组，另有 slot→dense 的映射 |
 | 取 / 写 | `v.get(i) -> ?T`、`v.set(i, v)`（按值拷） | `p.get(h) -> ?T`、`p.set(h, v) -> bool`（按值拷） |
 | 可寻址性 | `v[i]` **不行**（`cannot index a value of type 'varArray<i32>'`）；要借出视图：`v.view()` / `v.asMutSlice()` → `slice<T>`，视图元素可索引、可写 | 没有按索引访问；`p.snapshot()` 借出活元素前缀的视图 |
 | 装引用 / 视图 | 可以：`varArray<slice<u8>>`、`varArray<ref i32>` 都编过（存的时候按寿命检查） | 可以：`pool<slice<u8>>` 编过 |
-| 回收 | 存储是**板块**：扩容当场把旧板还给分配器，`release()` 也能提前还；`clear()` 只把 `len` 归零、板留着复用 | **逐对象回收**：`remove(h)` 把最后一个值搬进空洞、该槽位"代 +1"；之后旧句柄 `get` 得 `none`（不会读到新值） |
+| 回收 | 存储是**地址预留**：扩容当场把上一段还给竞技场，`release()` 也能提前还；`clear()` 只把 `len` 归零、存储留着复用 | **逐对象回收**：`remove(h)` 把最后一个值搬进空洞、该槽位"代 +1"；之后旧句柄 `get` 得 `none`（不会读到新值） |
 | 句柄 | 下标（会因扩容/搬移失效） | `{ slot, gen, ep }`，陈旧句柄可判定 |
 
 扩容的规矩要记住：`push` 换掉存储之后，**之前借出的视图就作废了** —— 旧板已经还给分配器，

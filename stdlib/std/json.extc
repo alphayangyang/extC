@@ -160,7 +160,7 @@ struct parser {
     pos: i64
     used: i64
     errAt: i64
-    depth: i32
+    @private depth: i32
 
     @private
     fn skipWs(self: mut ref parser, text: slice<u8>) -> void {
@@ -892,13 +892,13 @@ let WTAGSZ: i64 = 32
 struct builder {
     @private buf: mut slice<u8>
     @private n: i64
-    depth: i32
+    @private depth: i32
     failed: bool
     /* 刚写完一个成员名：紧跟的那个值**不再要**分隔符（否则会写出 `"k":,1`）。 */
-    afterKey: bool
+    @private afterKey: bool
     /* 每层"已经写过一项了吗"：一位一层（32 层足够；超了就是 failed，不越界写）。
      * 用位图而不是 `[32]bool`：数组字段要常量初始化，位图是标量，零值天然可用。 */
-    commaMask: u64
+    @private commaMask: u64
 
     /* 工厂（与 `mem::plate::open` 同一形状）：含引用的结构体没有零值，
      * 所以"声明 + 构造"必须一次完成。缓冲永远合法 ⇒ 调用点写 `!` 是如实的。 */

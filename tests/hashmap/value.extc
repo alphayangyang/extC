@@ -1,0 +1,24 @@
+// 值语义：读是拷贝（get/[]），改要 get→put，取走要 take，删是 remove
+// expect: get=5 putThen=6 none=-1|take=42 afterTake=-1 len=1|rm=true len=0 contains=false|over=2 len=1
+use std::io
+use std::data::hashMap
+
+fn main() -> i32 {
+    var m = hashMapI64<i64>::withCap(4)
+    m.put(1, 5)
+    io::cout << "get=" << (m.get(1) ?? -1)
+    m[1] = 6
+    io::cout << " putThen=" << (m.get(1) ?? -1)
+    io::cout << " none=" << (m.get(2) ?? -1) << "\n"
+
+    m.put(2, 42)
+    let t = m.take(2) ?? -1
+    io::cout << "take=" << t << " afterTake=" << (m.get(2) ?? -1) << " len=" << m.len() << "\n"
+
+    io::cout << "rm=" << m.remove(1) << " len=" << m.len() << " contains=" << m.contains(1) << "\n"
+
+    m.put(3, 1)
+    m.put(3, 2)
+    io::cout << "over=" << (m.get(3) ?? -1) << " len=" << m.len() << "\n"
+    return 0
+}

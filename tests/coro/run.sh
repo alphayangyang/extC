@@ -604,10 +604,10 @@ fi
 ab=$tmp/abandon_loop
 out=$("$EXTC" --run tests/coro/abandon_loop.extc 2>&1); rc=$?
 if [ "$rc" = 0 ] && [ "$out" = "before=0 after=0" ]; then
-    echo "  ok   abandon_loop        ->  50 个被 break 放弃的任务：池计数 before=0 after=0"
+    echo "  ok   abandon_loop        ->  50 个被 break 放弃的任务：活任务数 before=0 after=0"
     pass=$((pass+1))
 else
-    echo "  FAIL abandon_loop        ->  rc=$rc 输出=$(echo "$out" | head -2 | tr '\n' ' ')（任务没随块结束，池在累积）"
+    echo "  FAIL abandon_loop        ->  rc=$rc 输出=$(echo "$out" | head -2 | tr '\n' ' ')（任务没随块结束，任务 arena 在累积）"
     fail=$((fail+1))
 fi
 

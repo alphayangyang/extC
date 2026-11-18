@@ -19,7 +19,7 @@
 | [`POOL-LEVELS.md`](design/POOL-LEVELS.md) | 池层级的规则与边界：存储/读回/拒绝各一条 |
 | [`ALLOCATORS.md`](design/ALLOCATORS.md) | 分配器分层：arena、板块、对象表各管什么 |
 | [`BUF-INVARIANT.md`](design/BUF-INVARIANT.md) | 可增长数组：一个不变量（一片预留）、四个动作、视图何时失效 |
-| [`HASHMAP.md`](design/HASHMAP.md) | 哈希表：一块桶数组 + 标签列、值内联、借用守卫；不承诺元素地址（设计稿 v1，未实现） |
+| [`HASHMAP.md`](design/HASHMAP.md) | 哈希表：三列平坦存储（键 / 值 / 控制字节）、值内联、不承诺元素地址；J2 查询未过（§9） |
 | [`DESTRUCTORS.md`](design/DESTRUCTORS.md) | 析构：`@drop` 的全部时机与顺序 |
 | [`RECLAMATION.md`](design/RECLAMATION.md) | 四层回收：按分配点选策略、运行期何时整体删掉 |
 | [`WEAK-REFS.md`](design/WEAK-REFS.md) | 弱引用：24 字节句柄（地址 + 槽版本 + slab 序号）、持有期是强引用、目标死亡零工作（已实现） |

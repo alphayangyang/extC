@@ -3608,10 +3608,11 @@ bool ckHoldsMovingView(Checker *c, Expr *e, const char **owner) {
 /**
  * @brief The variable a moving view is borrowed from, when the receiver is a plain name.
  *
- * The call-site rule only rejects arguments the caller cannot promote: a view of a
- * **local** container is promotable (the fresh allocation moves out to the destination's
- * place), while a view of a parameter or of a borrowed place is not -- that storage lives
- * somewhere the caller cannot move. `varName` is set to NULL when no such name exists.
+ * The call-site rule needs the container behind the view: a view whose container already
+ * lives as long as the destination is safe, and a fresh allocation can be promoted out to
+ * that place. A container local to the frame is neither -- its reservation goes back when
+ * the frame ends -- so the rule rejects the store. `varName` is set to NULL when the view
+ * is not borrowed from a plain name.
  *
  * @param c        The checker.
  * @param e        The argument expression.
@@ -3842,6 +3843,7 @@ static void checkBlockBody(Checker *c, Stmt *block) {
     if (boundary) c->placeBoundaryDepth++;
 
     pushScope(c);
+    const size_t moveMark = c->moveLog.len;
     /* Views bound in this block, so that growing the container underneath a live one is rejected
      * here instead of turning into a stale read at run time. See `growMethodName`. */
     LiveViews live;
@@ -3871,6 +3873,17 @@ static void checkBlockBody(Checker *c, Stmt *block) {
     }
     noteOwnedCoroHandles(c, block);
     popScope(c);
+    /* Undo the move marks this block's `return` statements recorded: a `return` moves its local
+     * only on the path that reaches it, and every statement after it in this block is dead. A mark
+     * that a later statement overwrote (the name was rebound and moved again) is left alone. */
+    while (c->moveLog.len > moveMark) {
+        MoveMark *mk = (MoveMark *)vecAt(&c->moveLog, c->moveLog.len - 1);
+        if (mk->sym && mk->sym->movedLine == mk->line) {
+            mk->sym->movedLine = 0;
+            mk->sym->movedInto = NULL;
+        }
+        c->moveLog.len--;
+    }
 
     if (boundary) c->placeBoundaryDepth--;
 }
@@ -5486,11 +5499,14 @@ void checkStmt(Checker *c, Stmt *s) {
              * half-owned. */
             bool savedMoveOk = c->moveOkHere;
             const char *savedMoveInto = c->moveIntoName;
+            const bool savedMoveIsReturn = c->moveIsReturn;
             c->moveOkHere = true;
             c->moveIntoName = "the caller";
+            c->moveIsReturn = true;
             Type *vt = checkInto(c, want, s->u.ret.value);   /* a reference is wanted: do not dereference */
             c->moveOkHere = savedMoveOk;
             c->moveIntoName = savedMoveInto;
+            c->moveIsReturn = savedMoveIsReturn;
             warnSharedReturn(c, s->u.ret.value, vt);
             markCallHomeIfEscaping(c, s->u.ret.value, 0);    /* it is handed out: use the home arena */
             checkAssignable(c, want, vt, s->u.ret.value, "return value");

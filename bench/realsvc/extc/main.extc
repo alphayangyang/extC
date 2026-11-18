@@ -285,19 +285,22 @@ fn modeSessions(buf: slice<u8>, readNs: i64) -> i32 {
         }
     }
     let cutoff: i64 = newest - 300
-    /* Evict, then fold. `remove` is a swap-remove inside the value pool, so the keys are
-     * collected during the scan and dropped after it; folding goes in ascending uid
-     * order, which is what the C++ arm's `std::sort` gives it. */
-    let dense: i64 = sessions.denseLen()
-    var keep: mut slice<i64> = new i64[dense]
+    /* Evict, then fold. The scan walks buckets (a live bucket is one that still holds a
+     * session), collects the surviving uids, and folds them in ascending uid order --
+     * which is what the C++ arm's `std::sort` gives it. */
+    let cnt: i64 = sessions.len()
+    var keep: mut slice<i64> = new i64[cnt]
     var nkeep: i64 = 0
     var d: i64 = 0
-    while d < dense {
-        let uid: i64 = sessions.keyAtDense(d)
-        let s: session = sessions.valAtDense(d)
-        if s.last >= cutoff {
-            keep[nkeep] = uid
-            nkeep = nkeep + 1
+    let scap: i64 = sessions.capOf()
+    while d < scap {
+        if sessions.liveAt(d) {
+            let uid: i64 = sessions.keyAt(d)
+            let s: session = sessions.valAt(d)
+            if s.last >= cutoff {
+                keep[nkeep] = uid
+                nkeep = nkeep + 1
+            }
         }
         d = d + 1
     }

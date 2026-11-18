@@ -34,5 +34,5 @@ q 42838 reach=47608 sum=440047925 maxdep=15
 tot edges=200000 nodes=50000 queries=32 reach=1475850 sum=100097248
 sets union=47608 inter=2
 setsum=189425099
-cov nodes=47608 max=32 at=37983 full=2
+cov nodes=47608 max=32 at=26010 full=2
 covsum=72283237
