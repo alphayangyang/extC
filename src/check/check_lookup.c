@@ -640,6 +640,69 @@ bool typeHoldsNoCopy(TypeTable *tt, Type *t) {
     return typeHoldsNoCopyAt(tt, t, 0);
 }
 
+static bool typeOwnsStorageAt(TypeTable *tt, Type *t, int depth);
+
+/**
+ * @brief Tell whether a type keeps every reference it carries inside storage the value itself owns.
+ *
+ * The coroutine rule is about **ownership**, not about references: a local that lives across a
+ * `yield` is fine when nothing it points at belongs to a frame that will be gone. A container such
+ * as `buf<T>` or `vector<T>` satisfies that by construction -- its views point into the extent the
+ * value owns (`@buffer` is exactly that promise) and the extent is released by the value's own drop,
+ * not by a frame. A bare reference, a view handle and a `dyn` handle all borrow storage from
+ * somewhere else, so they answer no; an aggregate answers yes only when every field does.
+ *
+ * The walk mirrors `typeHoldsNoCopy`: arrays, variant payloads and struct fields, with generic
+ * instances substituted first. Past the depth limit it answers **no**, because this predicate
+ * grants a capability and an unknown nesting must not.
+ *
+ * @param tt  Type table; substitutes the arguments of generic instances.
+ * @param t   Type to check; NULL points at nothing.
+ * @return    True when the type owns all the storage it points at.
+ */
+bool typeOwnsStorage(TypeTable *tt, Type *t) {
+    return typeOwnsStorageAt(tt, t, 0);
+}
+
+/**
+ * @brief Walk one type for `typeOwnsStorage`, answering no past the depth limit.
+ *
+ * @param tt     Type table.
+ * @param t      Type to check; NULL points at nothing.
+ * @param depth  Current recursion depth.
+ * @return       True when the type owns every piece of storage it points at.
+ */
+static bool typeOwnsStorageAt(TypeTable *tt, Type *t, int depth) {
+    if (depth > ZERO_VALUE_DEPTH_LIMIT) return false;   /* conservative: do not grant the capability */
+    if (!t) return true;
+    if (t->kind == TY_REF) return false;                /* points at someone else's storage */
+    if (ttIsViewType(t)) return false;                  /* a view is a handle, not storage */
+    if (t->kind == TY_DYN) return false;                /* a dyn handle borrows the place that built it */
+    if (t->kind == TY_PARAM) return false;              /* an unsubstituted parameter may be anything */
+    if (t->kind == TY_ARRAY) return typeOwnsStorageAt(tt, t->inner, depth + 1);
+    if (t->kind == TY_ENUM && t->edef) {
+        for (size_t v = 0; v < t->edef->variants.len; v++) {
+            Variant *va = *(Variant **)vecAt(&t->edef->variants, v);
+            for (size_t i = 0; i < va->types.len; i++)
+                if (!typeOwnsStorageAt(tt, payloadType(tt, t, va, i), depth + 1)) return false;
+        }
+        return true;
+    }
+    StructDef *sd = structOf(t);
+    if (!sd) return true;                               /* a scalar points at nothing */
+    if (sd->buffer) return true;                        /* @buffer: the views point into the owned extent */
+    Vec *sp = NULL, *sa = NULL;
+    if (t->kind == TY_GENERIC && t->targs.len == sd->typeParams.len) {
+        sp = &sd->typeParams;
+        sa = &t->targs;
+    }
+    for (size_t i = 0; i < sd->fields.len; i++) {
+        Type *ft = (*(FieldDef **)vecAt(&sd->fields, i))->type;
+        if (!typeOwnsStorageAt(tt, ttSubstitute(tt, ft, sp, sa), depth + 1)) return false;
+    }
+    return true;
+}
+
 /**
  * @brief Tell whether a type is a function type or contains one internally.
  *

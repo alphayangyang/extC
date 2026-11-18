@@ -45,8 +45,8 @@
  *    `calleeMakesPool` is a closure that is still settling while bodies are being checked,
  *    so a transitive case reads as "no" and falls back to `LVL_UNKNOWN` (more rejections,
  *    never fewer);
- *  - the pool primitives (`poolSlice`, `poolResize`, ...) are views into the pool's own
- *    plate, so they are `LVL_UNKNOWN` rather than "fresh".
+ *  - the batch copy (`copyInto`) writes into storage its caller already owns, so it is
+ *    `LVL_UNKNOWN` rather than `fresh`.
  *
  * The walk mirrors `src/check/check_dataflow.c`: the structured statement tree *is* the
  * fixed point (sequence, both arms of an `if` joined, loops iterated), every transfer only
@@ -492,12 +492,9 @@ static int lvlEval(Lvl *a, Expr *e, bool *movable, int hops) {
     }
     case EX_GENCALL: {
         const char *nm = e->u.gencall.name;
-        /* The pool primitives hand out a slice of the pool's own plate: a borrow, not an
-         * allocation. Everything else (`alloc<T>(n)`) is a fresh arena block. */
-        if (nm && (strcmp(nm, "poolSlice") == 0 || strcmp(nm, "poolSliceRaw") == 0 ||
-                   strcmp(nm, "poolResize") == 0 || strcmp(nm, "poolResizeRaw") == 0 ||
-                   strcmp(nm, "poolGive") == 0 || strcmp(nm, "copyInto") == 0))
-            return LVL_UNKNOWN;
+        /* The batch copy handles storage the caller already owns: nothing about its result is a
+         * fresh arena block. Everything else (`alloc<T>(n)`) is fresh. */
+        if (nm && strcmp(nm, "copyInto") == 0) return LVL_UNKNOWN;
         int lv = anLexicalLevel(e);
         if (lv <= 0) lv = a->place;
         *movable = true;

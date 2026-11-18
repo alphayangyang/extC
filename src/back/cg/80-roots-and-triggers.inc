@@ -1179,13 +1179,13 @@ static const char *exNew(CG *g, Expr *e) {
 }
 
 /**
- * @brief Generate `EX_GENCALL`: `alloc<T>(n)` and the pool primitive calls.
+ * @brief Generate `EX_GENCALL`: `alloc<T>(n)` and the batch copy `copyInto`.
  *
  * `alloc<T>(n)` asks the arena level the checker chose for room for n Ts and returns a pointer.
  * Zeroing is not this path's job: `extc_arena_alloc` zeroes every allocation, and the language's
  * promise rests on it -- bytes read after a lifetime ended are always initialized bytes.
- * `poolSlice` / `poolResize` / `poolGive` / `copyInto` and their `Raw` variants have the same
- * shape; only the memory belongs to the pool's own plate.
+ * `copyInto<T>(dst, src, n)` is checked by the checker and lowered here to one checked
+ * `memmove`; its storage is the caller's, so no place owns it and its type is the count.
  *
  * The `EX_GENCALL` arm of `genExprInner` lands here.
  *
@@ -1202,11 +1202,6 @@ static const char *exGencall(CG *g, Expr *e) {
      * initialized byte. It does so for the cheapest sufficient set of bytes: a block obtained from
      * `calloc` is zero throughout, so only a reused block (one the spare handed back) needs the
      * `memset`. */
-    /* `poolSlice<T>(rid, n)` / `poolGive<T>(rid, s)`: the same shape, but the memory belongs to
-     * the pool's own plate rather than to an arena. `poolGive` is how `grow` hands the replaced
-     * buffer back, so a doubling container stops leaving every old generation behind.
-     * `poolSliceRaw` / `poolResizeRaw` are the same two calls with the zeroing left out, for a
-     * column whose every slot is written before it is read. */
     const char *gcName = e->u.gencall.name;
     /* `extc_sizeOf<T>()` / `extc_viewOfT<T>(p, n)`: the buffer's two doors. Neither emits a
      * runtime: the first is `sizeof`, the second is a struct literal. */
@@ -1346,59 +1341,22 @@ static const char *exGencall(CG *g, Expr *e) {
         return "(void)0";
     }
 
-    if (isPoolPrimitiveName(gcName)) {
-        const char *rid = genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, 0));
-        if (strcmp(gcName, "poolGive") == 0) {
-            return arenaPrintf(g->arena,
-                "extc_pool_give((int64_t)(%s), (void *)(%s).data)",
-                rid, genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, 1)));
-        }
-        const char *tn = cType(g, subst(g, *(Type **)vecAt(&e->u.gencall.targs, 0)));
-        Type *st = subst(g, e->type);      /* the `mut slice<T>` the checker produced */
-        /* The count appears twice below (bytes and `.len`), so an impure one was
-         * computed into a temporary by the checker. */
-        size_t nIdx = (strcmp(gcName, "poolResize") == 0
-                       || strcmp(gcName, "poolResizeRaw") == 0) ? 2 : 1;
-        const char *n;
-        if (planNeedTemp(e)) {
-            const char *tmp = arenaPrintf(g->arena, "__extc_pn%d", g->tmpSeq++);
-            pfLine(g, "int64_t %s = (int64_t)(%s);", tmp,
-                   genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, nIdx)));
-            n = tmp;
-        } else {
-            n = genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, nIdx));
-        }
-        if (strcmp(gcName, "copyInto") == 0) {
-            /* `copyInto<T>(dst, src, n)`: one checked `memmove`. The view type comes
-             * from the DESTINATION argument, not from `e->type` -- this call's type is
-             * `i64` (the count it returns), so the slice has to be read off the argument
-             * the checker already typed. `@unchecked` names the `..._copyU` variant,
-             * which checks neither the count nor the storage. */
-            Expr *dArg = *(Expr **)vecAt(&e->u.gencall.args, 0);
-            Type *vt = subst(g, dArg->type);
-            return arenaPrintf(g->arena,
-                "%s((%s)(%s), (%s)(%s), (int64_t)(%s), \"%s\", %d)",
-                viewCopier(g, vt, g->uncheckedBody), cType(g, vt),
-                genExpr(g, dArg),
-                cType(g, vt),
-                genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, 1)),
-                genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, 2)),
-                g->path, e->line);
-        }
-        if (strcmp(gcName, "poolResize") == 0 || strcmp(gcName, "poolResizeRaw") == 0) {
-            return arenaPrintf(g->arena,
-                "(%s){ .data = (%s *)extc_pool_%s((int64_t)(%s), (void *)(%s).data,"
-                " (int64_t)(%s) * (int64_t)sizeof(%s)), .len = (int64_t)(%s) }",
-                cType(g, st), tn,
-                strcmp(gcName, "poolResizeRaw") == 0 ? "resize_raw" : "resize",
-                rid, genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, 1)), n, tn, n);
-        }
+    if (isCopyIntoName(gcName)) {
+        /* `copyInto<T>(dst, src, n)`: one checked `memmove`. The view type comes from the
+         * DESTINATION argument, not from `e->type` -- this call's type is `i64` (the count it
+         * returns), so the slice has to be read off the argument the checker already typed.
+         * `@unchecked` names the `..._copyU` variant, which checks neither the count nor the
+         * storage. */
+        Expr *dArg = *(Expr **)vecAt(&e->u.gencall.args, 0);
+        Type *vt = subst(g, dArg->type);
         return arenaPrintf(g->arena,
-            "(%s){ .data = (%s *)extc_pool_%s((int64_t)(%s),"
-            " (int64_t)(%s) * (int64_t)sizeof(%s)), .len = (int64_t)(%s) }",
-            cType(g, st), tn,
-            strcmp(gcName, "poolSliceRaw") == 0 ? "take_raw" : "take",
-            rid, n, tn, n);
+            "%s((%s)(%s), (%s)(%s), (int64_t)(%s), \"%s\", %d)",
+            viewCopier(g, vt, g->uncheckedBody), cType(g, vt),
+            genExpr(g, dArg),
+            cType(g, vt),
+            genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, 1)),
+            genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, 2)),
+            g->path, e->line);
     }
     const char *tn = cType(g, subst(g, *(Type **)vecAt(&e->u.gencall.targs, 0)));
     const char *n = genExpr(g, *(Expr **)vecAt(&e->u.gencall.args, 0));
@@ -1407,8 +1365,7 @@ static const char *exGencall(CG *g, Expr *e) {
     const char *ar = arenaRefAt(g, planArenaLevel(e));
     /* The `T *` returned by `alloc<T>(n)` is a reference type and is caught by reference slots =>
      * with reclamation on it must be a slab slot too, for exactly the reason given at `exNew` (a
-     * region is claimed by the arena's address). The pool/plate cases want the pool's own plate
-     * and are not this path's concern. */
+     * region is claimed by the arena's address). */
     if (g->rc.reclaim) {
         int lvl = planArenaLevel(e);
         Type *et = subst(g, *(Type **)vecAt(&e->u.gencall.targs, 0));

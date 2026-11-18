@@ -1064,13 +1064,6 @@ static const char *exCall(CG *g, Expr *e) {
         name = exportName(ce);
     else
         name = (ce && planInstName(ce)) ? planInstName(ce) : cSymName(g, name);
-    /* The runtime layer: the library's `extc_pool_new(parent)` becomes
-     * `extc_pool_new_at(parent, __extc_home_zone)` inside a function that receives a home zone
-     * => the pool is created at **the place the caller chose**. Not one word of the library
-     * changes. */
-    bool poolNewAt = (planCallee(e) && planCallee(e)->body == NULL
-                      && poolCtorNeedsZone(name));
-    if (poolNewAt && g->funcHasZoneParam) name = "extc_pool_new_at";
     if (strcmp(name, "extc_cout_f64") == 0) g->needCoutF64 = true;
     /* The buffer substrate rides on the **call**, not on the declaration: the prelude declares its
      * five entries (the bundled `varArray<T>` needs a reservation), so a declaration-based trigger
@@ -1096,17 +1089,9 @@ static const char *exCall(CG *g, Expr *e) {
         if (!av && cf && i < cf->params.len) noteArgMove(g, a, pt);
         bufPuts(&b, av ? av : genExpr(g, a));
     }
-    /* Asking the owner **once** is enough: it hands out both home and zone. Asking twice (home
-     * first, then zone) would emit both into every function that needs both. The `poolNewAt` path
-     * is the **exception**: the name is already rewritten to `extc_pool_new_at`, so only its
-     * second argument is appended; and it must not be written as `planMakesPool(planCallee(e))` --
-     * `extc_pool_new` is an extern, the work list does not walk functions without a body => its
-     * `makesPool` is false and it can only be recognized by name. */
+    /* Asking the owner **once** is enough: it hands out both home and zone. Asking twice would
+     * emit both into every function that needs both. */
     cgImplicitArgs(g, &b, planCallee(e), e, e->u.call.args.len, false);
-    if (poolNewAt && g->funcHasZoneParam) {
-        bufPuts(&b, ", ");
-        bufPuts(&b, zoneArgRef(g, e));
-    }
     owPassCells(g, &b, e, e->u.call.args.len, cgHasImplicitArgs(planCallee(e)));
     bufPutc(&b, ')');
     return bufCstr(&b);

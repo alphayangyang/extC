@@ -228,45 +228,21 @@ bool stmtMakesPool(Stmt *s, bool descendBlocks);
  */
 bool calleeCreatesPool(FuncDef *f);
 
-/* ---- Pool names (one list, one spelling) ---------------------------------------------- */
+/* ---- The one batch-copy primitive ---------------------------------------------------- */
 
 /**
- * @brief Is this a pool constructor name (`extc_pool_new` / `extc_pool_new_at` /
- * `extc_pool_new_table`)?
+ * @brief Is this the batch copy `copyInto`?
+ *
+ * The checker validates its argument count and code generation lowers it by hand; the name is
+ * written only here, so the two sides cannot drift apart. The batch copy is the last spelling of
+ * the primitive family that code generation lowers by hand: it serves views of any storage (buf
+ * reservations, block columns, plain slices).
  *
  * @param n  Declaration name.
- * @return   `true` when it is.
+ * @return   `true` when it is `copyInto`.
  */
-static inline bool isPoolCtorName(const char *n) {
-    return n && (strcmp(n, "extc_pool_new") == 0 || strcmp(n, "extc_pool_new_at") == 0 ||
-                 strcmp(n, "extc_pool_new_table") == 0);
-}
-
-/**
- * @brief Does this pool constructor take an explicit zone (`extc_pool_new` /
- * `extc_pool_new_table` do)?
- *
- * @param n  Declaration name.
- * @return   `true` when it does.
- */
-static inline bool poolCtorNeedsZone(const char *n) {
-    return n && (strcmp(n, "extc_pool_new") == 0 || strcmp(n, "extc_pool_new_table") == 0);
-}
-
-/**
- * @brief Is this one of the six pool primitives (`poolSlice` / `poolSliceRaw` / `poolResize` /
- * `poolResizeRaw` / `poolGive` / `copyInto`)?
- *
- * The checker validates their argument counts, and codegen lowers them to C by hand. The names
- * are written only here, so the two sides' lists cannot drift apart.
- *
- * @param n  Declaration name.
- * @return   `true` when it is.
- */
-static inline bool isPoolPrimitiveName(const char *n) {
-    return n && (strcmp(n, "poolSlice") == 0 || strcmp(n, "poolSliceRaw") == 0 ||
-                 strcmp(n, "poolResize") == 0 || strcmp(n, "poolResizeRaw") == 0 ||
-                 strcmp(n, "poolGive") == 0 || strcmp(n, "copyInto") == 0);
+static inline bool isCopyIntoName(const char *n) {
+    return n && strcmp(n, "copyInto") == 0;
 }
 
 /**

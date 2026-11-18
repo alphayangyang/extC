@@ -4479,8 +4479,7 @@ void checkStmt(Checker *c, Stmt *s) {
                     allocInit = true;
                 } else if (s->u.var.init->kind == EX_GENCALL) {
                     const char *gn = s->u.var.init->u.gencall.name;
-                    allocInit = strcmp(gn, "alloc") == 0 || strcmp(gn, "poolSlice") == 0
-                             || strcmp(gn, "poolSliceRaw") == 0;
+                    allocInit = strcmp(gn, "alloc") == 0;
                 }
             }
             if (!s->u.var.mut && allocInit) {

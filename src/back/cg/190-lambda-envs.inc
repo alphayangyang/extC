@@ -577,9 +577,10 @@ static void initCGState(CG *g, Module *m, TypeTable *tt, Arena *arena) {
  * @brief Scan the module's declarations and decide which optional runtime blocks have to be emitted.
  *
  * The trigger is a declaration rather than a call: an `extern!` or `@builtin` primitive appearing in
- * the module means the program uses the corresponding runtime. Pools have one more source: the
- * `makesPool` the checker computed, because the `extc_pool_*` declarations live in the library module
- * and the entry module's function table cannot see them. This scan must run before the preamble,
+ * the module means the program uses the corresponding runtime. The place stack has one more source:
+ * the `makesPool` flag the checker computed, because a `dyn` value and a task place are decided in the
+ * entry module while their runtime text is emitted once per program. This scan must run before the
+ * preamble,
  * because `_GNU_SOURCE` is honored only before the first include.
  *
  * @param g  The code generation context; sets `needRawTerm`, `needPool`, `needCout`, `needMemFind`,
@@ -755,13 +756,14 @@ static void scanUnitNeeds(CG *g, Module *m) {
             g->needAnyJson = true;
         }
     }
-    /* Pools have one more source: **`makesPool`, which the checker has already computed**. Looking only
-     * at "this module declares an extern of `extc_pool_*`" is not enough -- those declarations live in
-     * the **library module** while `m` is the entry module, so at main's prologue `needPool` would still
-     * be false => the frame's zone (`__extc_zm1`) is not emitted => raising to level 1 cannot be
-     * expressed (`zoneArgRef` silently falls back to the dynamic fallback). `makesPool` is a transitive
-     * least fixed point: any function (methods included) being true means the program uses pools --
-     * which is exactly the question this cell has to answer. */
+    /* The place stack has one more source: **`makesPool`, which the checker has already computed**.
+     * Looking only at "this module declares an extern of `extc_task_*`" is not enough -- those
+     * declarations live in the **library module** while `m` is the entry module, so at main's
+     * prologue `needPool` would still be false => the frame's zone (`__extc_zm1`) is not
+     * emitted => raising to level 1 cannot be expressed (`zoneArgRef` silently falls back to the
+     * dynamic fallback). `makesPool` is a transitive least fixed point: any function (methods
+     * included) being true means the program stores a `dyn` value or starts a task somewhere -- which
+     * is exactly the question this cell has to answer. */
     for (size_t i = 0; i < m->funcs.len; i++) {
         FuncDef *f = *(FuncDef **)vecAt(&m->funcs, i);
         /* Only a function that is actually emitted can put a pool in the program: the prelude

@@ -1026,43 +1026,29 @@ static Type *checkWeakPrim(Checker *c, Expr *e, Type *elem) {
 }
 
 /**
- * @brief Check the pool primitives `poolSlice` / `poolResize` / `poolGive`, plus the `...Raw` variants
- *        of the first two.
+ * @brief Check the batch copy `copyInto<T>(dst, src, n)` and type it `i64`.
  *
- * These are the typed entry points into a **pool's own plate**. A `...Raw` spelling omits exactly one
- * thing: it does not zero the bytes handed out. For columns where every slot is written before it is
- * read (`map`'s four storages, the `vector`/`string` buffers, `hashMap`'s `keys`/`slot`/`bucketOfDense`),
- * zeroing is pure waste: the written bytes are overwritten at once, and zeroing may even commit pages
- * that are never used. Zeroing has to stay for `hashMap`'s `tag` (an empty bucket is zero) and for the
- * pool's own `ent` (`pFree` reads `low == 0` as free). Regression checking pins this down with two
- * sentinels: the poisoning block must not change program output, and memcheck must not report more
- * uninitialized reads than the recorded baseline.
+ * One checked `memmove`: the destination and the source are views of the same element type, the
+ * destination is `mut`, and the count is an integer. There is no other way in the language to move
+ * a batch (a loop pays the bounds check per element, and a container pays its own guard per
+ * element), and no library function can express it: `extern!` may not return `slice<T>` and
+ * extC has no pointer casts, so the generator writes the element type out.
  *
- * Why not an `extern!` in the library: `extern!` may not return `slice<T>` (it would become two C
- * parameters), and extC has no pointer casts, so a library cannot turn a block of bytes into a typed
- * view; the generator can, so the generator does it -- the same reasoning that makes `alloc` a
- * primitive rather than a library function. `poolResize` is the one `grow` uses, because of the peak:
- * take + copy + give holds the old and new blocks at the same time, while an in-place resize stays
- * flush with them.
- *
- * The arena tier is **deliberately** not recorded here: this memory does not belong to an arena, the
- * pool owns it and it goes back only when the block is returned (`poolGive`) or the pool is freed, so
- * the escape rules have nothing to say; "a reference may not outlive its place" is guaranteed for pool
- * memory by the container's own discipline (only handles can leave).
+ * The arena tier is `deliberately` not recorded here: the batch copy does not allocate, it writes
+ * into storage that already exists, so the escape rules have nothing to say about it.
  *
  * @param c     Checker.
  * @param e     Generic call node; its name and arguments are used.
  * @param elem  Element type written at the call site.
- * @return      `mut slice<T>` for `poolSlice` / `poolResize`, `bool` for `poolGive`; the error type
- *              when the name or the arguments are wrong.
+ * @return      `i64` (the count); the error type when the arguments are wrong.
  */
-static Type *checkPoolPrim(Checker *c, Expr *e, Type *elem) {
+static Type *checkCopyInto(Checker *c, Expr *e, Type *elem) {
     TypeTable *tt = c->tt;
     const char *nm = e->u.gencall.name;
-    /* `copyInto<T>(dst: mut slice<T>, src: slice<T>, n) -> i64`: one checked `memmove`. It shares this
-     * entry point with the pool primitives because the generator likewise has to write out the element
-     * type; there is no other way in the language to move a batch (a loop pays the bounds check per
-     * element, and the container pays its own guard per element). */
+    /* `copyInto<T>(dst: mut slice<T>, src: slice<T>, n) -> i64`: one checked `memmove`, the only way in
+     * the language to move a batch (a loop pays the bounds check per element, and the container pays its
+     * own guard per element). The generator writes the element type out, which is why the name needs a
+     * branch of its own in the backend. */
     if (strcmp(nm, "copyInto") == 0) {
         if (e->u.gencall.args.len != 3) {
             ckError(c, e->line, NULL, "`copyInto` takes 3 arguments (the destination, the source,"
@@ -1100,67 +1086,8 @@ static Type *checkPoolPrim(Checker *c, Expr *e, Type *elem) {
         if (elem->kind == TY_PARAM || ttHasParam(elem)) recordNewSizeCheck(c, elem, e->line);
         return c->tI64;
     }
-    bool isTake    = strcmp(nm, "poolSlice") == 0 || strcmp(nm, "poolSliceRaw") == 0;
-    bool isResize  = strcmp(nm, "poolResize") == 0 || strcmp(nm, "poolResizeRaw") == 0;
-    size_t want    = isResize ? 3 : 2;
-    if (e->u.gencall.args.len != want) {
-        ckError(c, e->line, NULL, "`%s` takes %d arguments (the pool, %s)", nm, (int)want,
-                isTake   ? "and how many elements"
-              : isResize ? "the block, and how many elements it should hold"
-                         : "and the block to give back");
-        return ttError(tt);
-    }
-    Expr *ridE = *(Expr **)vecAt(&e->u.gencall.args, 0);
-    Type *ridT = checkValue(c, ridE);
-    if (!ttIsError(ridT) && !ttIsInteger(ridT)) {
-        ckError(c, ridE->line, NULL, "the pool is named by its integer id, found `%s`",
-                typeStr(c, ridT));
-        return ttError(tt);
-    }
-    Expr *argE = *(Expr **)vecAt(&e->u.gencall.args, 1);
-    Type *argT = checkValue(c, argE);
-    if (isTake) {
-        if (!ttIsError(argT) && !ttIsInteger(argT)) {
-            ckError(c, argE->line, NULL, "the element count must be an integer, found `%s`",
-                    typeStr(c, argT));
-            return ttError(tt);
-        }
-    } else if (isResize) {
-        if (!ttIsError(argT)) {
-            Type *se = viewElemOf(argT);
-            if (!se || !ttEquals(se, elem)) {
-                ckError(c, argE->line, NULL, "`%s` resizes an existing block: `%s`, not `%s`",
-                        nm, typeStr(c, ttViewMut(tt, sliceOf(c, elem), true)), typeStr(c, argT));
-                return ttError(tt);
-            }
-        }
-    }
-    if (isTake || isResize) {
-        Expr *nE = isResize ? *(Expr **)vecAt(&e->u.gencall.args, 2) : argE;
-        Type *nT = isResize ? checkValue(c, nE) : argT;
-        if (!ttIsError(nT) && !ttIsInteger(nT)) {
-            ckError(c, nE->line, NULL, "the element count must be an integer, found `%s`",
-                    typeStr(c, nT));
-            return ttError(tt);
-        }
-        /* `T` has no size while a template is checked, exactly as in `new T[n]`, so the size
-         * check is deferred to instantiation and recorded there. */
-        if (elem->kind == TY_PARAM || ttHasParam(elem)) recordNewSizeCheck(c, elem, e->line);
-        /* The count appears twice in the emitted C (once for the bytes, once for `.len`), so
-         * an impure count is computed into a temporary first -- the same rule as `new T[n]`. */
-        if (!repeatablePure(nE)) planSetNeedTemp(e, true);
-        return ttViewMut(tt, sliceOf(c, elem), true);
-    }
-    if (!ttIsError(argT)) {
-        Type *se = viewElemOf(argT);
-        if (!se || !ttEquals(se, elem)) {
-            ckError(c, argE->line, NULL,
-                    "`poolGive` needs the block itself: `%s`, not `%s`",
-                    typeStr(c, ttViewMut(tt, sliceOf(c, elem), true)), typeStr(c, argT));
-            return ttError(tt);
-        }
-    }
-    return c->tBool;
+    /* The caller routes only `copyInto` here; the fall-through keeps the checker total. */
+    return c->tI64;
 }
 
 /**
@@ -3788,16 +3715,16 @@ static Type *checkExprInner(Checker *c, Expr *e) {
              * `mut slice<T>`. That is the only spelling: `allocSlice<T>(n)` is not a primitive,
              * and using it reports the migration below. */
             bool isAlloc  = strcmp(e->u.gencall.name, "alloc") == 0;
-            /* The pool primitives share this path for the same reason `alloc` does: the
+            /* The batch copy takes this path for the same reason `alloc` does: the
              * library needs memory the compiler has to name the type of. */
-            bool isPoolPrim = isPoolPrimitiveName(e->u.gencall.name);
+            bool isCopyInto = isCopyIntoName(e->u.gencall.name);
             /* The buffer primitives are on this path for the same reason: the generator has
              * to write the element type out in C, which the library cannot do. */
             bool isBufPrim = isBufPrimitiveName(e->u.gencall.name);
             /* The weak primitives share this path for the same reason: the generator has to write the
              * target type out in C, and weakUpgrade comes back as a ?ref T. */
             bool isWeakPrim = isWeakPrimitiveName(e->u.gencall.name);
-            if (!isAlloc && !isPoolPrim && !isBufPrim && !isWeakPrim) {
+            if (!isAlloc && !isCopyInto && !isBufPrim && !isWeakPrim) {
                 FuncDef *tf = findFunc(c, e->u.gencall.name);
                 if (tf && tf->typeParams.len == e->u.gencall.targs.len && tf->typeParams.len > 0) {
                     Vec targs;
@@ -3917,7 +3844,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             *(Type **)vecAt(&e->u.gencall.targs, 0) = elem;
             if (isBufPrim) return checkBufPrim(c, e, elem);
             if (isWeakPrim) return checkWeakPrim(c, e, elem);
-            if (isPoolPrim) return checkPoolPrim(c, e, elem);
+            if (isCopyInto) return checkCopyInto(c, e, elem);
             if (e->u.gencall.args.len != 1) {
                 ckError(c, e->line, NULL, "`%s` takes one argument (how many elements)",
                         e->u.gencall.name);

@@ -1208,7 +1208,7 @@ struct FuncDef {
     bool        isUnchecked;
     /* `@builtin`: this declaration is implemented by the **compiler** (it has no body); the
      * library provides only discoverability and documentation.
-     * The reason is the same as for `alloc<T>` / `poolSlice<T>`: the code it generates (the
+     * The reason is the same as for `alloc<T>` / `copyInto<T>`: the code it generates (the
      * parallel worker's trampoline) must have the function named by the compiler, which the
      * library cannot provide. So far only `std::parallel::run`. */
     bool        isBuiltin;
@@ -1481,12 +1481,10 @@ static inline bool funcTakesHomeArena(const FuncDef *f) { return f && planUsesHo
  * signature and the argument at a call site).
  *
  * **Known divergence, not yet fixed**: the checker promotes on the richer `calleeMakesPool`,
- * which is also true for `@poolObject` methods, extern constructor names and `isAssoc` on an
- * owner whose body builds a pool anywhere (`anMakesPoolAny`); this accessor reads the raw
- * flag, which those three do not set. So a site can be promoted to the zone level and still
- * have no argument emitted. Closing it means teaching both sides the same question, which
- * needs the pool-constructor name list to be shared instead of spelled twice: do the two
- * together. */
+ * which is also true for `@poolObject` methods and `isAssoc` on an owner whose body builds a
+ * place anywhere (`anMakesPoolAny`); this accessor reads the raw flag, which those do not set.
+ * So a site can be promoted to the zone level and still have no argument emitted. Closing it
+ * means teaching both sides the same question: do the two together. */
 static inline bool funcTakesHomeZone(const FuncDef *f) { return f && planMakesPool(f); }
 
 /* An `impl Type { fn ... }` block: methods attached to a type that is declared elsewhere

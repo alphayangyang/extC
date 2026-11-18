@@ -547,7 +547,7 @@ emitPreamble 内（:12610-12637）：只在 g->needReclaim 为真时发一行；
 
 历史（BUG-C，已修）：第一版发的是 extc_rc_storeStructCons(..., (void *)0, 0)，hostKnown=0 对每个被引用对象执行 rv->noSweep = 1，而 noSweep 没有清除点 ⇒ 该 region 永久退出清扫、inc-only 计数永不配对：默认档 TIER 2 在循环 copyInto 下线性泄漏（doc-audit 实测 50k 轮 maxRSS 2640 KB、200k 轮 5520 KB、800k 轮 17616 KB；对照不 copy 的平台化 2640→2832 KB）。
 
-分析侧（src/check/check_top.c:7805-7828，acScanExpr 的 case EX_GENCALL）：copyInto / poolResize / poolResizeRaw 的类型实参首位若 mentionsParam 或 typeHoldsCountedRef，则把本次 unit 的 (iv) 判为假（ivBad、ivWhy 给出原因），程序不被拒绝，unit 退回清扫档（TIER 2）；poolResize<i64> 仍过。理由写在注释里：判据 (iv) 的前提“每个引用的掉落都经过计数槽”看不见一次 memmove 的字节复制。(iv) 原文见 check_top.c:6166-6210。
+分析侧（`src/check/check_top.c` 的 `acScanExpr`，`case EX_GENCALL`）：`copyInto` 的类型实参首位若 mentionsParam 或 typeHoldsCountedRef，则把本次 unit 的 (iv) 判为假（ivBad、ivWhy 给出原因），程序不被拒绝，unit 退回清扫档（TIER 2）；`copyInto<i64>` 仍过。（v39：`poolResize` / `poolResizeRaw` 两个名字随池原语族删除，判据只剩 `isCopyIntoName`。）理由写在注释里：判据 (iv) 的前提“每个引用的掉落都经过计数槽”看不见一次 memmove 的字节复制。(iv) 原文见 check_top.c:6166-6210。
 
 验收（build-cf/extc）：lead 形状 /tmp/cf-bulk2.extc 默认档现在 TIER 2（修复前 TIER 1）、输出 d0.v=7（修复前 555）；EXTC_RC_NOCOUNT=0 强制计数档 TIER 3、输出 d0.v=7；EXTC_RC_SWEEPFREE=1 强制事件档 TIER 1 也输出 d0.v=7。tests/gc-p0/src/uaf_bulk_copy.extc 默认档 TIER 2、计数档 TIER 3，两档打印同一值 7；ASAN 无报告。
 
@@ -588,7 +588,7 @@ emitPreamble 内（:12610-12637）：只在 g->needReclaim 为真时发一行；
 剩余存疑/未验证（补 §11）：
 
 1. extc_task_collect 仍无调用者（src/back/coroutine.c 内只有定义与前置声明）⇒ P0-6 目前只是为将来的整池 collect 接线，登记不改变任何现有运行期行为。
-2. (iv) 对 poolResize/poolResizeRaw 的退回是否必要未单独证明（v38：这两个原语已随池退场删除，现存 `copyInto` 仍在走 (iv)）：pools.c 的 resize 是 realloc 搬移（同一对象集合，按对象计数不变），不像 copyInto 那样在目的地制造第二个指针；这里的处理方向是保守（只影响档位，不拒绝程序），是否可从 (iv) 收紧另行验证。
+2. (iv) 对 poolResize/poolResizeRaw 的退回是否必要未单独证明（v39：这两个名字连同名表一起删除，现存 `copyInto` 仍在走 (iv)）：pools.c 的 resize 是 realloc 搬移（同一对象集合，按对象计数不变），不像 copyInto 那样在目的地制造第二个指针；这里的处理方向是保守（只影响档位，不拒绝程序），是否可从 (iv) 收紧另行验证。
 3. 引用元素 copyInto 的逐元素 storeStructCons 在强制事件档（EXTC_RC_SWEEPFREE=1，TIER 1）下已验证输出正确且 ASAN 干净，但没有在“事件档 + 大量 churn”的压力形状下测过暂停/内存界。
 4. TIER 标记未进入任何 golden 判据（tools/golden.sh 只把逐字节差异当观察项、判据是合法 C），所以它的稳定性靠本节矩阵而非门禁。
 

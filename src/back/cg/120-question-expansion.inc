@@ -267,11 +267,11 @@ static void lineMark(CG *g, Stmt *s) {
  * "the zone index of the place the caller chose".
  *
  *   - When this function itself receives the parameter (`funcHasZoneParam`) it is passed straight
- *     down: along `vector<i32>::new` -> `withCap` -> `pool<V>::withParent` -> `extc_pool_new_at`
- *     the place the user chose outermost reaches the runtime;
+ *     down: a caller that picked a place for the `dyn` payload this call stores reaches the
+ *     runtime with its own choice;
  *   - otherwise (`main` in the entry file, an ordinary function) it passes the current place's
- *     zone, that is, the most recently pushed `__extc_zm<lvl>` -- exactly "the pool is created in
- *     the block that creates it".
+ *     zone, that is, the most recently pushed `__extc_zm<lvl>` -- exactly "the value lands in the
+ *     place of the block that stores it".
  *
  * The site records its own level (the checker's `zoneLevel`): `ZONE_HOME` = the home zone this
  * function received (passed down), k>=1 = `__extc_zm<k>` of the place at level k.
@@ -588,12 +588,7 @@ static bool zoneUseExpr(ZoneUse *u, Expr *e) {
          * has to be a call that **creates** a pool, which is the same question `stmtMakesPool`
          * asks -- an unresolved callee stays conservative here. */
         FuncDef *f = planCallee(e);
-        const char *nm = (f && f->name) ? f->name : NULL;
-        /* `extc_pool_new` / `extc_pool_new_table` read the place they run in from the runtime
-         * (`extc_placeTop`), so they need whichever block the call sits in to have pushed its
-         * zone. The `_at` variant carries its own place and does not. */
-        if (poolCtorNeedsZone(nm)) u->hit = true;
-        else if (f && calleeCreatesPool(f) && (planZoneLevel(e) == u->lvl || planZoneLevel(e) == 0))
+        if (f && calleeCreatesPool(f) && (planZoneLevel(e) == u->lvl || planZoneLevel(e) == 0))
             u->hit = true;
     }
     AstVisit v = { zoneUseChild, NULL, u };
@@ -622,8 +617,8 @@ static bool blockMakesPoolAtLevel(Stmt *b, int lvl) {
     if (!b || b->kind != ST_BLOCK) return false;
     for (size_t i = 0; i < b->u.block.stmts.len; i++) {
         Stmt *st = *(Stmt **)vecAt(&b->u.block.stmts, i);
-        /* The conservative "may reach extc_pool_new" answer first: only a statement that can
-         * create a pool at all is worth scanning for where it would be created. */
+        /* The conservative "may reach a place" answer first: only a statement that can build a
+         * `dyn` value at all is worth scanning for which place it builds it in. */
         if (!stmtMakesPool(st, false)) continue;
         ZoneUse u = { lvl, false };
         bool hit = false;
@@ -807,8 +802,7 @@ static void cgTaskRootPopsForReturn(CG *g) {
  *
  * Emission and popping are paired through `zoneMark`, and `zoneHere` only says "this function is
  * a place": a block's zone is pushed on demand, so popping a level that pushed none pops the
- * **outer** one -- the pool created by the outer level then has no zone, `extc_pool_new` returns
- * -1 and the record is never reclaimed. The table is written when the block is entered and read
+ * **outer** one -- the value then lands in a place that outlives the block that pushed it. The table is written when the block is entered and read
  * here, so both sides see one fact.
  *
  * The region goes first and the arena afterwards: a pool's memory is its own malloc block and the
@@ -847,8 +841,7 @@ static void cgReleaseLevel(CG *g, int lvl) {
  *
  * Emission and popping are paired through `zoneMark`, and `zoneHere` only says "this function is a
  * place": a block's zone is pushed on demand, so popping a level that pushed none pops the
- * **outer** one (the pool created by the outer level then has no zone => `extc_pool_new` returns
- * -1 => the record is never reclaimed). The table is written when the block is entered and read
+ * **outer** one (the value then lands in a place that outlives the block that pushed it). The table is written when the block is entered and read
  * here, so both sides see one fact and cannot drift apart.
  *
  * @param g    The generator state.

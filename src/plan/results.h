@@ -179,7 +179,7 @@ typedef struct {
      * (ANALYSIS_FIELDS) is what keeps the two audiences from quietly merging. */
     struct {
         const char *lamSig;    /* a lambda's written signature, for diagnostics */
-        bool        makesPoolAny; /* some site of it builds a pool */
+        bool        makesPoolAny; /* some site of it builds a place */
         /* depth and origin facts. `refDepth` exists on an `Expr` **and** on the checker's
          * `Sym`: one question, one slot, one accessor for both. */
         int  refDepth;

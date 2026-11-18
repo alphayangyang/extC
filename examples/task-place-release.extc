@@ -1,27 +1,28 @@
 /* 定案 99 的判据：**任务的地方随任务结束整只回收，且不依赖存活顺序**。
  *
- * 旧实现把任务的 zone 挂在块 zone 栈上，`extc_task_end` 用 LIFO 弹栈 ⇒ 两个方向都错：
- *   · 先结束的任务弹掉仍存活任务的 zone ⇒ 生成物 heap-use-after-free（审计 P0-20）；
- *   · 调用者 zone 更低时一个都不弹 ⇒ 每任务泄漏 ≈4.2 KB（P1-14，实测 20000 个 85.9 MB）。
- * 现在任务的地方是一个**根槽**（不在块栈上），结束时精确释放自己那一个。
- * 判据：两个任务各持一个 `vector`，较老的先跑完；活着的那个照常工作，收尾时 `live=0`。
+ * 任务的地方是一个**根槽**（不在块栈上），结束时精确释放自己那一个：
+ *   · 先结束的任务不动仍存活任务的 place（否则生成物 heap-use-after-free，审计 P0-20）；
+ *   · 调用者 zone 更低时也照常还回去（每任务泄漏 ≈4.2 KB，P1-14，实测 20000 个 85.9 MB）。
+ * 判据：两个任务各持一个 dyn 载荷 —— 载荷住在**该任务自己的** place 里；较老的先跑完，
+ * 活着的那个挂起恢复后照常读自己的载荷，收尾时 live=0。
  * expect: a=3 b=4 live=0 */
 use std::io
 use std::sys::coroutine as co
-use std::data::vector
+
+trait Tag { fn tag(self: ref Self) -> i64 }
+struct box { v: i64 }
+impl Tag for box { fn tag(self: ref box) -> i64 { return self.v } }
 
 fn a() -> coroutine<i64> {
-    var v: vector<i32> = vector<i32>::withCap(4)
-    v.push(i32(1))
-    yield i64(v.len())
-    yield i64(v.len() + 1)
+    let d: dyn Tag = dyn Tag(box { v: 1 })
+    yield d.tag()
+    yield d.tag() + 1
 }
 
 fn b() -> coroutine<i64> {
-    var v: vector<i32> = vector<i32>::withCap(4)
-    v.push(i32(2))
-    yield i64(v.len())
-    yield i64(v.len() + 2)
+    let d: dyn Tag = dyn Tag(box { v: 1 })
+    yield d.tag()
+    yield d.tag() + 2
 }
 
 fn main() -> i32 {

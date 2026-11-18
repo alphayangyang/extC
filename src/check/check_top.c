@@ -498,40 +498,32 @@ typedef struct {
      * find a function-local name, so asking `exprOutOfFrame` again would answer "no" for a view of
      * a `global` declaration. */
     bool        outOfFrame;
+    /* Declared type of the local; NULL when the declaration carries none. The deferred decision
+     * needs it because whether a value may outlive a suspension is a property of the **type**
+     * (does it own the storage its views point into), not of the initializer expression. */
+    Type       *type;
 } CoroDeferred;
 
 static bool hasNewInStmt(void *ctx, Stmt *s);
-/** How the "does this contain an allocation" walk treats a generic allocation call.
- *
- * `alloc<T>(n)` and `new T[n]` both reserve fresh storage, but `poolSlice`-style calls only borrow
- * a slice of a plate that already exists: repeating one per round reuses the same memory, so a
- * question about retained storage must not count it as an allocation. */
-typedef struct {
-    bool skipPoolSlices;    /* after `poolSlice` / `poolResize`: borrows, does not allocate */
-} NewScan;
-
-static bool exprIsPoolBlock(Expr *e);
-
 /**
  * @brief Tell whether an expression contains `new` or `alloc<T>(n)`.
  *
  * The walk goes through `astWalkExprChildren` / `astWalkStmtChildren`, so AST kinds are listed only
  * there.
  *
- * @param ctx  `NewScan` options, or NULL for "count every `EX_GENCALL` as an allocation".
+ * @param ctx  Unused; the walk carries no options.
  * @param e    Expression.
  * @return     Callback convention: false to stop the walk when found, true otherwise.
  */
 static bool hasNewInExpr(void *ctx, Expr *e) {
-    const NewScan *sc = ctx;
+    (void)ctx;
     if (e->kind == EX_NEW) return false;                            /* found */
     /* The buffer primitives are not allocations: `extc_sizeOf` is `sizeof`, `extc_viewOfT` builds
      * a view of storage that already exists, and `elemTake` / `elemDrop` move or drop an element
      * inside a view the container already owns. A container method that only takes elements out
      * (`hashMap::remove`) therefore needs no frame arena of its own -- counting these would give
      * it one plus a destroy chain per call, for nothing. */
-    if (e->kind == EX_GENCALL && !isBufPrimitiveName(e->u.gencall.name) &&
-        !(sc && sc->skipPoolSlices && exprIsPoolBlock(e))) return false; /* found */
+    if (e->kind == EX_GENCALL && !isBufPrimitiveName(e->u.gencall.name)) return false; /* found */
     AstVisit v = { hasNewInExpr, hasNewInStmt, ctx };
     return astWalkExprChildren(e, &v);
 }
@@ -562,18 +554,16 @@ static bool exprHasNew(Expr *e) {
 /**
  * @brief Tell whether an expression **allocates fresh storage**.
  *
- * Same walk as `exprHasNew`, with one difference: a `poolSlice`-family call is a borrow of a plate
- * that already exists, not an allocation, so repeating it each round does not pile anything up. The
- * "buffer written into a binding from an enclosing block" warning asks this narrower question --
- * counting borrows there would flag the ordinary "reset the pool, take the slice again" loop.
+ * The same walk as `exprHasNew`. The "buffer written into a binding from an enclosing block" warning
+ * asks this narrower question: the storage a call allocates is what piles up, and a call that only
+ * borrows (a view over storage the caller already owns) does not.
  *
  * @param e  Expression; NULL returns false.
- * @return   True when some node allocates (`new` or `alloc<T>(n)` that is not a plate borrow).
+ * @return   True when some node allocates (`new` or `alloc<T>(n)`).
  */
 bool exprContainsNew(Expr *e) {
     if (!e) return false;
-    const NewScan sc = { true };
-    return !hasNewInExpr((void *)&sc, e);
+    return !hasNewInExpr(NULL, e);
 }
 
 /**
@@ -1939,21 +1929,11 @@ void markCallHomeIfEscaping(Checker *c, Expr *v, int at) {
  */
 bool calleeMakesPool(FuncDef *f) {
     if (!f) return false;
-    /* **Declaration wins**: `@poolObject` marks a struct as owning a pool. It is more reliable than
- * inference: looking for a `pid` field is magic, and looking at whether methods create pools has to
- * wait for the closure. */
+    /* **Declaration wins**: `@poolObject` marks a struct as owning a pool. It is more reliable
+     * than inference: looking for a `pid` field is magic, and looking at whether methods create
+     * pools has to wait for the closure. */
     if (f->owner && f->owner->poolObject) return true;
     if (planMakesPool(f)) return true;
-    /* The runtime call **itself** is a pool site: `extc_pool_new` (extern, no body ⇒ the closure
- * cannot mark it, so it is recognized by name, the same name codegen uses when rewriting
- * `extc_pool_new` to `_at`).
- *
- * Without this case: when a user writes a pool-backed container **in their own file**, the
- * `extc_pool_new` in the constructor cannot be promoted ⇒ the pool goes into the constructor's own
- * frame ⇒ reclaimed on return ⇒ segfault. The library's containers lack this flaw only because
- * library functions are "transparent about place"; a user's file is not the library, so that hidden
- * difference shows. */
-    if (f->body == NULL && isPoolCtorName(f->name)) return true;
     return anIsAssoc(f) && f->owner && anMakesPoolAny(f->owner);
 }
 
@@ -2110,29 +2090,11 @@ static bool vecHasName(Vec *v, const char *n) {
         if (strcmp(*(const char **)vecAt(v, i), n) == 0) return true;
     return false;
 }
-/**
- * @brief Tell whether an expression is a block carved out of a pool plate.
- *
- * `poolSlice` / `poolSliceRaw` take a new block, `poolResize` / `poolResizeRaw` adjust an existing
- * one; the memory belongs to the pool the container owns, and no reference of the caller is
- * published. The SSO `string`'s `grow` depends on this exemption, or the whole `push`/`append` chain
- * would carry `otherMask`.
- *
- * @param e  Expression; may be NULL.
- * @return   True when it is a pool plate block.
- */
-static bool exprIsPoolBlock(Expr *e) {
-    if (!e || e->kind != EX_GENCALL || !e->u.gencall.name) return false;
-    const char *n = e->u.gencall.name;
-    return strcmp(n, "poolSlice")     == 0 || strcmp(n, "poolSliceRaw") == 0 ||
-           strcmp(n, "poolResize")    == 0 || strcmp(n, "poolResizeRaw") == 0;
-}
 
 /**
  * @brief Tell whether an initial value is freshly allocated in this frame.
  *
- * `new` counts, a pool plate block counts (see `exprIsPoolBlock`), and a struct literal whose every
- * field is itself fresh or scalar counts too.
+ * `new` counts, and a struct literal whose every field is itself fresh or scalar counts too.
  *
  * @param e  Initializer expression; may be NULL.
  * @return   True when it is a fresh allocation, or a literal built only from such values.
@@ -2140,7 +2102,6 @@ static bool exprIsPoolBlock(Expr *e) {
 static bool exprIsFresh(Expr *e) {
     if (!e) return false;
     if (e->kind == EX_NEW) return true;
-    if (exprIsPoolBlock(e)) return true;
     if (e->kind == EX_STRUCTLIT) {
         for (size_t i = 0; i < e->u.lit.inits.len; i++)
             if (!exprIsFresh((*(FieldInit **)vecAt(&e->u.lit.inits, i))->value)) return false;
@@ -3128,7 +3089,6 @@ static void classifyStoredValue(Checker *c, FuncDef *f, Expr *e, int i, bool int
         }
     }
     if (e->kind == EX_NEW) return;                /* freshly allocated, so it is trivially safe */
-    if (exprIsPoolBlock(e)) return;               /* a pool plate block: fresh, and the container owns it */
     /* Storage no frame owns: a substrate reservation (signed `Ret=0`), a `plate` view, a
      * `global`. Storing it cannot dangle on any argument, so it is as safe as a fresh
      * allocation for the purpose of this summary. Without this, the SSO `string`'s
@@ -8072,19 +8032,15 @@ static bool acScanExpr(void *ctx, Expr *e) {
         break;
     case EX_GENCALL: {
         /* (iv) cannot see a **bulk byte move**. `copyInto<T>` is one `memmove` that duplicates
-         * every reference leaf of the element into the destination, and `poolResize<T>` /
-         * `poolResizeRaw<T>` move the block's bytes (a grow keeps the live prefix) without an
-         * `inc` per reference. The premise of the event tier -- "every drop of a reference goes
-         * through a counted slot" -- therefore does not hold for such a unit: a later overwrite of
-         * the source slot decrements the only count and frees an object the copied block still
-         * points at (shape G13, `tests/gc-p0/src/uaf_bulk_copy.extc`). Mark the local part of (iv)
-         * false, which keeps the unit on the sweep tier (the conservative direction); the program
-         * is not rejected, and a pure-data instantiation (`poolResize<i64>`) passes unchanged. */
+         * every reference leaf of the element into the destination. The premise of the event tier
+         * -- every drop of a reference goes through a counted slot -- therefore does not hold for
+         * such a unit: a later overwrite of the source slot decrements the only count and frees
+         * an object the copied block still points at (shape G13,
+         * `tests/gc-p0/src/uaf_bulk_copy.extc`). Mark the local part of (iv) false, which keeps
+         * the unit on the sweep tier (the conservative direction); the program is not rejected,
+         * and a pure-data instantiation (`copyInto<i64>`) passes unchanged. */
         const char *nm = e->u.gencall.name;
-        if (!ac->ivBad && nm &&
-            (strcmp(nm, "copyInto") == 0 || strcmp(nm, "poolResize") == 0 ||
-             strcmp(nm, "poolResizeRaw") == 0) &&
-            e->u.gencall.targs.len > 0) {
+        if (!ac->ivBad && isCopyIntoName(nm) && e->u.gencall.targs.len > 0) {
             Type *et = tsub(sc->c, *(Type **)vecAt(&e->u.gencall.targs, 0));
             if (et && (mentionsParam(et) || typeHoldsCountedRef(sc->c->tt, et))) {
                 ac->ivBad = true;
@@ -10408,25 +10364,26 @@ static void coroCheckDeferred(Checker *c, Module *m) {
     }
     for (size_t i = 0; i < c->coroDeferred.len; i++) {
         CoroDeferred *d = *(CoroDeferred **)vecAt(&c->coroDeferred, i);
-        /* Two shapes a reference may legally outlive a suspension in:
-         *   - a pooled container: the pool has a place of its own (the older exception);
+        /* Three shapes a reference may legally outlive a suspension in:
+         *   - a value whose **type owns the storage it points at**: a `buf<T>` or `vector<T>` keeps
+         *     its views inside the extent it owns, and the value itself lives in the frame, so a
+         *     resume finds it intact. `typeOwnsStorage` answers from the declared type alone (the
+         *     pool-era version of this exception asked whether the initializer built a pooled
+         *     container; containers own their storage themselves now);
          *   - a `new` written **in this coroutine's own body**: its storage is the frame's block arena
-         *     (`arenaRefAt` puts every block level in the frame), which lives as long as the task does.
+         *     (`arenaRefAt` puts every block level in the frame), which lives as long as the task does;
+         *   - storage that **provably outlives every frame**: a global, an `effects Ret=0` result and a
+         *     **string literal** (static storage) -- `exprOutOfFrame` answers that question.
          * Everything else -- a parameter, a `ref` into the caller, a view handed in -- still gets the
          * error below, because that storage really is gone when the step returns. */
-        /* A third shape joins the two above: storage that **provably outlives every frame**.
-         * A global, a `effects Ret=0` result, and a **string literal** (static storage) are all
-         * outside the frame by construction -- `exprOutOfFrame` is the predicate that already
-         * answers that question, so the rule generalizes instead of growing a case list.
-         * (Measured cost of not having it: a literal slice bound with `let` could not cross a
-         * `yield`, so the workaround was to inline the literal at every call site.) */
-        if (d->init && (exprMakesPool(d->init, true) || d->init->kind == EX_NEW ||
-                        d->outOfFrame || exprOutOfFrame(c, d->init))) continue;
+        if (d->init && (exprMakesPool(d->init, true) || (d->type && typeOwnsStorage(c->tt, d->type)) ||
+                        d->init->kind == EX_NEW || d->outOfFrame ||
+                        exprOutOfFrame(c, d->init))) continue;
         ckError(c, d->line,
                 "A local that lives across a `yield` may not point at someone else's storage: the C"
                 " stack of this call is gone when the coroutine yields. Two fixes: allocate it"
-                " yourself in this body (`new` lands in the frame's own arena, a pooled container in"
-                " the pool's place), or keep the offset and take the view again after the resume"
+                " yourself in this body (`new` lands in the frame's own arena), or keep the offset and"
+                " take the view again after the resume"
                 "",
                 "`%s` lives across a `yield` and carries a reference", d->cname);
     }
@@ -10698,6 +10655,7 @@ static void coroFrameLay(Checker *c, FuncDef *f) {
             CoroDeferred *dl = arenaAllocZero(c->arena, sizeof *dl);
             dl->cname = d->cname; dl->init = d->init; dl->line = line;
             dl->outOfFrame = d->st ? planVarInitOutOfFrame(d->st) : false;
+            dl->type = d->type;
             *(CoroDeferred **)vecPush(&c->coroDeferred) = dl;
         }
         if (0 && typeContainsRef(c->tt, d->type)) {
@@ -10839,21 +10797,28 @@ void setPoolCalleeResolver(FuncDef *(*fn)(Expr *e)) { poolCalleeResolve = fn; }
  * @brief Can this call reach `extc_pool_new`?
  *
  * It is not the question `calleeMakesPool` asks: that one asks whether the result may live in a
- * pool (escape and promotion) and relaxes for `@poolObject` types, while the block-level zone hook
- * only needs "may this call create a pool". An unresolved callee counts as yes.
+ * place (escape and promotion) and relaxes for `@poolObject` types, while the block-level zone hook
+ * only needs "may this call create a place". An unresolved callee returns false: what stays
+ * unresolved is an `extern!` helper, a builtin primitive, or an associated function on a type
+ * parameter, and none of them can build a place (the sites are `dyn` values, which the AST answers
+ * by itself, and task tables, which are scanned separately).
  *
- * @param f  Callee; NULL (unresolved) returns true.
+ * @param f  Callee; NULL (unresolved) returns false.
  * @return   true when the call may create a pool.
  */
 bool calleeCreatesPool(FuncDef *f) {
-    if (!f) return true;                       /* unresolved => conservative */
+    /* An unresolved callee is not a place site: the sites are `dyn` values and task places, and
+     * both are visible in the AST (`EX_DYN` answers true by itself, the task table is a scan of its
+     * own). What stays unresolved here is an `extern!` C helper, a builtin primitive, or an
+     * associated function on a type parameter -- none of them can build a place, and treating them
+     * as if they could spread the place runtime over every program that touches the library. */
+    if (!f) return false;
     if (planMakesPool(f)) return true;
-    if (f->body == NULL && isPoolCtorName(f->name)) return true;
     return anIsAssoc(f) && f->owner && anMakesPoolAny(f->owner);
 }
 
 
-static bool exprMakesPool(Expr *e, bool descendBlocks);
+static bool exprMakesPool(Expr *e, bool descendBlocks);   /* defined with the place questions at the end */
 
 /**
  * @brief Does any expression in this statement possibly create a pool?
@@ -10993,10 +10958,9 @@ static bool exprMakesPool(Expr *e, bool descendBlocks) {
         return false;
     }
     case EX_NEW:
-        /* `new T[n]` in a `@buffer` context is a call of that type's constructor, which builds the
-         * pool the buffer's storage lives on: the block that writes it needs a zone of its own, or
-         * the storage is registered on the caller's zone and the value outlives it. */
-        if (planNewAsBuffer(e) && planCallee(e)) return true;
+        /* Reserving storage is not a pool site: the view over a `buf` extent is registered with the
+         * substrate that owns the extent, and the columns of a `block` are plain slabs. Only the count
+         * can reach a pool site. */
         return exprMakesPool(e->u.new_.count, descendBlocks);
     case EX_STRUCTLIT:
         for (size_t i = 0; i < e->u.lit.inits.len; i++)

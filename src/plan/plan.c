@@ -642,10 +642,10 @@ bool anMakesPoolAny(const StructDef *sd) {
     return r && resultsBit(r, AN_MAKES_POOL_ANY) ? r->an.makesPoolAny : false;
 }
 /**
- * @brief Record whether any method of this struct creates a pool.
+ * @brief Record whether any method of this struct creates a place.
  *
  * @param sd  The struct definition; NULL ignores this write.
- * @param v   true when a method creates a pool.
+ * @param v   true when a method creates a place.
  */
 void anSetMakesPoolAny(StructDef *sd, bool v) {
     if (!sd) return;
