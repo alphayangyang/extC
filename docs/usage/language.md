@@ -3,7 +3,7 @@
 本页写给要写 extC 程序的人：**现在能写什么、行为是什么**。
 语言以外的内容见
 [`stdlib.md`](stdlib.md)（标准库）与 [`modules-cabi.md`](modules-cabi.md)（模块与 C 互操作），
-还没做的在 [`../TODO.md`](../plans/TODO.md)。
+同一个意思的更短写法单独成册：[语法糖手册](SUGAR.md)，还没做的在 [`../TODO.md`](../plans/TODO.md)。
 
 编译器：`./build/extc [options] <file.extc>`；`--run` 编译并运行，`--build` 只编译，
 `--dump-tokens` 只看词法，`--ccflag` / `-l` / `-L` / `--pkg-config` 透传 C 编译链接。
@@ -1341,8 +1341,9 @@ fn main() -> i32 {
 
 ### 11.5 输出与 `<<`
 
-`io::cout <<` 现在只对 `i32` / `i64` / `f64` / `bool` / `slice<u8>`（以及 `mut slice<u8>`）
-有 `<<`。枚举、结构体、其他类型要用 `<<` 输出就得自己写
+`io::cout <<` 对 `i64` / `i32` / `i8` / `i16` / `u8` / `u16` / `u32` / `u64` / `f32` / `f64` / `bool` /
+`slice<u8>`（以及 `mut slice<u8>`）都有 `<<`：位宽比 `i64` 窄的整数与 `f32` 无损加宽过去，`u64` 走
+自己的十进制路径（加宽到 `i64` 会把上界变成负数）。枚举、结构体、其他类型要用 `<<` 输出就得自己写
 （`impl io::ostream { fn <<(self: ref io::ostream, other: T) -> io::ostream { … } }`），
 否则报 `` `io::ostream` does not define `<<` for `shape` ``。格式化串见第 2.2 节。
 

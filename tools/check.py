@@ -1315,6 +1315,13 @@ def build_items() -> list:
         sh('python3 tools/check_doc_examples.py --gate'),
         ok_msg=ok_out, bad_msg="文档示例编不过或没标注", bad_dump=dump_head(8)))
 
+    # ---- 语法糖手册：手册与用例双向点名 ----
+    items.append(cmd(
+        "check-sugar-manual", "docs",
+        "语法糖手册与用例双向点名（表里写了糖必须有用例在跑；tests/sugar/ 的用例必须在表里）",
+        sh('python3 tools/check_sugar_manual.py --gate'),
+        ok_msg=ok_first(r"^ok: \d+ 条糖"), bad_msg="语法糖手册与 tests/sugar/ 失去同步", bad_dump=dump_head(8)))
+
     # ---- stdlib/INDEX ----
     items.append(cmd(
         "gen-index", "docs",
