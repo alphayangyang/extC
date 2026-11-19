@@ -1,0 +1,49 @@
+// 形状 ST1：有序 set<i64> 插入 1e6 条，1e6 次成员查询，然后按 at(i) 走一遍有序序列。
+use std::io
+use std::data::map
+
+let SEED0: u64 = 0x2545F4914F6CDD1D
+let N: i64 = 1000000
+let SPACE: u64 = 1000000007
+
+struct rng {
+    s: u64
+}
+
+fn next(r: mut ref rng) -> u64 {
+    var x: u64 = r.s
+    x = x ^ (x << u64(13))
+    x = x ^ (x >> u64(7))
+    x = x ^ (x << u64(17))
+    r.s = x
+    return x
+}
+
+fn main() -> i32 {
+    var s: set<i64> = set<i64>::withCap(N)
+    var r: rng = { s: SEED0 }
+    var added: i64 = 0
+    var i: i64 = 0
+    while i < N {
+        let k: i64 = i64(next(ref r) % SPACE)
+        if s.put(k) { added = added + 1 }
+        i = i + 1
+    }
+    var r2: rng = { s: SEED0 }
+    var hits: i64 = 0
+    i = 0
+    while i < N {
+        let k: i64 = i64(next(ref r2) % SPACE)
+        if s.contains(k) { hits = hits + 1 }
+        i = i + 1
+    }
+    var n: i64 = s.len()
+    var sum: i64 = 0
+    i = 0
+    while i < n {
+        sum = sum + s.at(i) % i64(1000)
+        i = i + 1
+    }
+    println("n=", n, " added=", added, " hits=", hits, " walk=", sum)
+    return 0
+}

@@ -1,0 +1,48 @@
+// 形状 LM2：linMap 在 1024 个键上做 20 万次写入/删除/读取（swap-remove 与覆盖写）。
+use std::io
+use std::data::map
+
+let SEED0: u64 = 0x2545F4914F6CDD1D
+let N: i64 = 1024
+let OPS: i64 = 1000000
+let SPACE: u64 = 2048
+
+struct rng {
+    s: u64
+}
+
+fn next(r: mut ref rng) -> u64 {
+    var x: u64 = r.s
+    x = x ^ (x << u64(13))
+    x = x ^ (x >> u64(7))
+    x = x ^ (x << u64(17))
+    r.s = x
+    return x
+}
+
+fn main() -> i32 {
+    var m: linMap<i64, i64> = linMap<i64, i64>::withCap(N)
+    var r: rng = { s: SEED0 }
+    var rem: i64 = 0
+    var hits: i64 = 0
+    var sum: i64 = 0
+    var i: i64 = 0
+    while i < OPS {
+        let k: i64 = i64(next(ref r) % SPACE)
+        let op: i64 = i % i64(3)
+        if op == i64(0) {
+            let ok: bool = m.put(k, k * i64(3) + i64(1))
+        }
+        if op == i64(1) {
+            if m.remove(k) { rem = rem + 1 }
+        }
+        if op == i64(2) {
+            let v: i64 = m.get(k) ?? i64(0)
+            if v != i64(0) { hits = hits + 1 }
+            sum = sum + v
+        }
+        i = i + 1
+    }
+    println("n=", m.len(), " rem=", rem, " hits=", hits, " sum=", sum)
+    return 0
+}

@@ -1,0 +1,43 @@
+// 形状 HS1：hashSetI64 一次给够容量（withCap(N)）插入 4e6 条键，再按同一序列做 4e6 次查询。
+// 考的是集合的插入与命中查询，容量预先给够，量到的是探测与写入，不是增长。
+use std::io
+use std::data::hashMap
+
+let SEED0: u64 = 0x2545F4914F6CDD1D
+let N: i64 = 4000000
+let SPACE: u64 = 1000000007
+
+struct rng {
+    s: u64
+}
+
+fn next(r: mut ref rng) -> u64 {
+    var x: u64 = r.s
+    x = x ^ (x << u64(13))
+    x = x ^ (x >> u64(7))
+    x = x ^ (x << u64(17))
+    r.s = x
+    return x
+}
+
+fn main() -> i32 {
+    var s: hashSetI64 = hashSetI64::withCap(N)
+    var r: rng = { s: SEED0 }
+    var added: i64 = 0
+    var i: i64 = 0
+    while i < N {
+        let k: i64 = i64(next(ref r) % SPACE)
+        if s.put(k) { added = added + 1 }
+        i = i + 1
+    }
+    var r2: rng = { s: SEED0 }
+    var hits: i64 = 0
+    i = 0
+    while i < N {
+        let k: i64 = i64(next(ref r2) % SPACE)
+        if s.contains(k) { hits = hits + 1 }
+        i = i + 1
+    }
+    println("n=", s.len(), " added=", added, " hits=", hits)
+    return 0
+}

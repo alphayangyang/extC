@@ -3,7 +3,7 @@ use std::data::vector
 fn main() -> i32 {
     var sum: i64 = 0
     var r: i64 = 0
-    while r < 2000000 {
+    while r < 20000000 {
         var a = vector<i32>::withCap(4)
         sum = sum + a.len()
         r = r + 1

@@ -3,7 +3,7 @@ use std::data::vector
 fn main() -> i32 {
     var a = vector<i64>::withCap(4)
     var i: i64 = 0
-    while i < 1000000 { a.push(i)  i = i + 1 }
+    while i < 10000000 { a.push(i)  i = i + 1 }
     io::cout << "sum=" << a.get(999999)! << "\n"
     return 0
 }

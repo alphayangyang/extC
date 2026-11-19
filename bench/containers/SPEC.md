@@ -1,4 +1,4 @@
-# bench/containers —— 容器存储基质的 A/B（池板块 vs `buf<T>` 预留 vs C++）
+# bench/containers —— 容器存储基质的 A/B（池板块 vs `buf<T>` 预留 vs C++ vs Rust）
 
 > **自动生成**：`bash bench/containers/run.sh --reps 9` 写 `RESULTS.tsv`，`RESULTS.md` 由这张表
 > 抄数；改判据先改 `run.sh` 顶部的注释与这里的方法节。
@@ -7,13 +7,14 @@
 
 R4c 要把 `vector` / `string` / `hashMap` 从**池板块**搬到 `buf<T>`（一片自己预留的地址空间，
 预留内增长零拷贝），然后删掉池与运行期池。删之前必须先量：**换基质换掉了什么、加回了什么**。
-所以三臂编译**同一份 `.extc` 源**：
+所以四臂编译**同一份 `.extc` 源**：
 
 | 臂 | 编译器 | 标准库 | 存储 |
 |---|---|---|---|
 | `old` | `git worktree` 检出 `f910d14d` 自建 | 该树的 `stdlib`（`EXTC_STD`） | 池板块（`poolSliceRaw` / `poolResizeRaw`） |
 | `new` | 当前树的 `./build/extc` | 当前树的 `stdlib` | `buf<T>` 的 2 MiB 量子预留 |
 | `cpp` | `g++ -O2 -std=c++17` | libstdc++ | `std::vector` |
+| `rs` | `rustc -O` | Rust std | `Vec` / `String` / `HashMap` / `HashSet` / `BTreeMap` / `BTreeSet` |
 
 ## 形状
 
@@ -32,17 +33,25 @@ R4c 要把 `vector` / `string` / `hashMap` 从**池板块**搬到 `buf<T>`（一
 | H4 | 2e6 条之后两遍全表遍历 | 遍历：稠密值列连续、桶列稀疏 |
 | H5 | 4e6 条之后 8e6 次不命中查询 | 未命中路径：探测到 EMPTY |
 | H6 | 只做 4e6 次插入（C++ 侧是 `h_flat p1`） | 把 H1 拆成插入侧与查询侧 |
+| HS1 | 4e6 条 i64 键进 `hashSetI64`，`withCap(N)` 之后插入并全量查询 | 集合稳态：探测、命中 |
+| HS2 | 1e6 个键上 8e6 次插入/删除/查询 | 集合的墓碑与 swap-remove |
+| LM1 | 1024 条 i64 键的 `linMap`，100 万次线性查找 | 线性查找：`find` 逐项 `==` 扫描，规模就是定义 |
+| LM2 | 1024 键上 100 万次写入/删除/读取 | `linMap` 的覆盖写与 swap-remove |
+| LS1 | 1024 个成员的 `linSet`，100 万次成员查询 | 线性集合的成员检查 |
+| M1 | 有序 `map` 插入 1e6 条 i64 键，再全量查询 | B+ 树稳态：下降、节点内二分、叶内插入 |
+| M2 | 有序 `map` 在 30 万键上 2e6 次写入/删除/读取 | 分裂、借用、合并路径 |
+| ST1 | 有序 `set` 插入 1e6 条、全量查询、再 `at(i)` 走一遍有序序 | 有序遍历：`at(i)` 是 B+ 树的 rank 下降 |
 
 V4 是刻意选的**反向形状**：它是旧基质最便宜、新基质最贵的一格，用来量出「预留 + 归还」的
 固定成本。
 
 ## 方法
 
-- **等价工作**：三臂打印同一行 `n=<n> sum=<sum>`，逐字相同才算数（不同直接报失败）。
-- **计时**：`taskset -c 6` 固定核；每臂每轮跑一次，**交错**（同一轮里 old → new → cpp），取 `REPS`
+- **等价工作**：四臂打印同一行 `n=<n> sum=<sum>`，逐字相同才算数（不同直接报失败）。
+- **计时**：`taskset -c 6` 固定核；每臂每轮跑一次，**交错**（同一轮里 old → new → cpp → rs），取 `REPS`
   轮的最小值；单位毫秒（bash `time` 的 `%3R`，10 µs 分辨率）。前端只吐 C，编译时间不进窗口。
 - **RSS**：`/usr/bin/time -f %M` 的 `ru_maxrss`，每臂单独一次运行（输出确定，一次即可）。
-- **源码同一份**：`.extc` 文件对两臂完全相同，只有编译器与 `EXTC_STD` 不同；`cpp` 臂是逐行对应的
+- **源码同一份**：`.extc` 文件对各臂完全相同，只有编译器与 `EXTC_STD` 不同；`cpp` 臂是逐行对应的
   C++ 写法（同样的循环、同样的校验和公式）。
 
 ## 复现
@@ -59,7 +68,7 @@ bash bench/containers/run.sh --reps 9 --old /tmp/ct/wt-old
 
 三条判据，任一不满足就不许删池（池的廉价复用必须由机制补回来，不能靠「新基质通常更快」硬切换）：
 
-1. **等价工作**：三臂 `n`/`sum` 逐字相同。
+1. **等价工作**：四臂 `n`/`sum` 逐字相同。
 2. **墙钟**：`new ≤ old × 1.10`（每个形状）。超了说明这一格由池提供的机制缺失，先补机制再迁移。
 3. **RSS**：`new ≤ old + ε`，ε 按形状取 8 MiB；并记录偏差百分比，写进下面的表。
 
@@ -94,7 +103,7 @@ V4 是小对象周转最贵的一格：预留 + 归还的固定成本全落在�
 `std::unordered_map`，`flat` 用 `h_flat.cpp`（同一类算法：2 的幂容量、线性探测、墓碑、0.5 装载率，
 键与值内联在桶里，没有 extC 为「跨扩容稳定句柄」保留的稠密值列与反查列）。
 
-`run.sh --shapes h1,...,h6` 出 old/new/cpp 三臂（H6 没有 C++ 标准库对应形状）；
+`run.sh --shapes h1,...,h6` 出 old/new/cpp/rs 四臂（H6 的 C++ 对照是 `h_flat` 的插入侧）；
 `run-flat.sh` 出 extC/cpp/flat 三方（H6 对应 `h_flat p1`）。两张表与归因写在 `RESULTS-hash.md`。
 
 结论（`RESULTS-hash.tsv` 与 `RESULTS-hash-flat.tsv`，`--reps 7`，min-of-7）：
@@ -105,3 +114,20 @@ V4 是小对象周转最贵的一格：预留 + 归还的固定成本全落在�
   不是内存流量（末级缺失 1.00× / 1.02×）；`run-cg.sh` 可复现。
 - 换基质（池 → `block`+`slots`）在这一组形状上速度中性（0.70×…1.06×），RSS 结构性变高
   （+19%…+81%；H2 重建瞬间两代同存 +44%）；它买到的是所有权与可删池，不是性能。
+
+
+## 四方对照（收口重跑，2026-12）
+
+池退场之后（v38–v40）重跑一次：每个形状四臂编译**同一份** `.extc` 源，
+old = 池底最后一个提交 `f910d14d`（vector 迁移前），new = 当前树。
+
+| 臂 | 编译器 | 标准库 | 存储 |
+|---|---|---|---|
+| `old` | 旧树自建（`git worktree` `f910d14d`） | 该树的 `stdlib` | 池板块 |
+| `new` | 当前树 `./build/extc` | 当前树 `stdlib` | `buf<T>` 地址预留 / `block<T>` 平坦块 |
+| `cpp` | `g++ -O2 -std=c++17` | libstdc++ | 对应标准容器 |
+| `rs` | `rustc -O` | Rust std | 对应标准容器 |
+
+判据不变：各臂输出逐字相同、min-of-N、峰值 RSS 一并记录；`new` 比 `old` 慢超过 10% 的形状要写清是哪一条机制缺了。
+表在 `RESULTS-4WAY.tsv`（`--reps 5 --tsv RESULTS-4WAY.tsv`），解读在 `RESULTS-4WAY.md`。
+varArray 的五臂对照（old / varArray / `stl::vector` / C++ / Rust）在 `bench/vararray`。

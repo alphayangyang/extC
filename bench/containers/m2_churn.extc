@@ -1,0 +1,49 @@
+// 形状 M2：有序 map 在 30 万个键上做 2e6 次写入/删除/读取（分裂、借用、合并路径）。
+use std::io
+use std::data::map
+
+let SEED0: u64 = 0x2545F4914F6CDD1D
+let OPS: i64 = 2000000
+let SPACE: u64 = 300000
+
+struct rng {
+    s: u64
+}
+
+fn next(r: mut ref rng) -> u64 {
+    var x: u64 = r.s
+    x = x ^ (x << u64(13))
+    x = x ^ (x >> u64(7))
+    x = x ^ (x << u64(17))
+    r.s = x
+    return x
+}
+
+fn main() -> i32 {
+    var m: map<i64, i64> = map<i64, i64>::withCap(i64(16))
+    var r: rng = { s: SEED0 }
+    var added: i64 = 0
+    var rem: i64 = 0
+    var hits: i64 = 0
+    var sum: i64 = 0
+    var i: i64 = 0
+    while i < OPS {
+        let k: i64 = i64(next(ref r) % SPACE)
+        let op: i64 = i % i64(3)
+        if op == i64(0) {
+            let had: bool = m.put(k, k * i64(3) + i64(1))
+            if !had { added = added + 1 }
+        }
+        if op == i64(1) {
+            if m.remove(k) { rem = rem + 1 }
+        }
+        if op == i64(2) {
+            let v: i64 = m.get(k) ?? i64(0)
+            if v != i64(0) { hits = hits + 1 }
+            sum = sum + v
+        }
+        i = i + 1
+    }
+    println("n=", m.len(), " added=", added, " rem=", rem, " hits=", hits, " sum=", sum)
+    return 0
+}
