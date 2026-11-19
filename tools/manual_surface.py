@@ -53,16 +53,23 @@ def line_of(src, idx):
 
 
 def has_private_before(src, idx):
-    """`@private` 贴在声明同一行，或独占上一行。"""
+    """`@private` 贴在声明同一行，或写在紧邻的注解块里（`@inline` / `@unchecked` 等可与之同行）。"""
     line_start = src.rfind('\n', 0, idx) + 1
     same = src[line_start:idx]
     if re.fullmatch(r'[ \t]*@private[ \t]+', same) or re.fullmatch(r'[ \t]*@private[ \t]*', same):
         return True
     if same.strip():
         return False
-    prev_end = line_start - 1
-    prev_start = src.rfind('\n', 0, prev_end) + 1
-    return src[prev_start:prev_end].strip() == '@private'
+    end = line_start
+    while end > 0:
+        start = src.rfind('\n', 0, end - 1) + 1
+        line = src[start:end].strip()
+        if not line.startswith('@'):
+            return False
+        if line == '@private':
+            return True
+        end = start
+    return False
 
 
 def body_of(src, open_brace):

@@ -1,19 +1,19 @@
 # emitted-C identity baseline (refactor invariant)
-# extc md5: fc6f9c6d29db3900a56936046217e28c
+# extc md5: 8f34f2b5c1f49cac60533ad590c322b2
 # columns: config, source, status, md5, bytes
-# why: v39: pool primitive family and pool-constructor name table removed; the place runtime is not pulled into container-only programs
+# why: hashMap 控制字节列改成 block<u64> 按机器字打包（J2 解法）：tag 列布局变化，所有导入 hashMap/hashSet 的程序生成 C 随之改变
 default	bench/app/log.extc	ok	22c4144fdc68b8cceaaab995ed3e54cc	93904
 reclaim	bench/app/log.extc	ok	219caf51463052f15cda60b1c03be4b1	408774
 default	bench/app/route.extc	ok	2b004238a851221c510f84b781229608	147613
 reclaim	bench/app/route.extc	ok	c0161bff147d02c772490b7185707012	461994
-default	bench/app/session.extc	ok	f32cfe79a45b2d972eecbcb63cc3cc7c	110836
-reclaim	bench/app/session.extc	ok	7a7064fa99b4c31666b2e8aace612023	425217
+default	bench/app/session.extc	ok	13c70e502e5d32ba8e6743f4a8731756	125744
+reclaim	bench/app/session.extc	ok	e6b954aac6989fb6759014df2a660814	440125
 default	bench/app/stamped/extc/log_us.extc	ok	efbce087d587154906e7a9d906771c88	121692
 reclaim	bench/app/stamped/extc/log_us.extc	ok	963848003528896967cf6c01b4f89f0a	436562
 default	bench/app/stamped/extc/route_us.extc	ok	800475386a9636f6be3082cff2b7e646	179878
 reclaim	bench/app/stamped/extc/route_us.extc	ok	d286902ea9eeb8e8f4e6421a79fba283	494259
-default	bench/app/stamped/extc/session_us.extc	ok	a1779abdba65ce42dec49e20730dd8f6	142439
-reclaim	bench/app/stamped/extc/session_us.extc	ok	5f0e163d8ac75342e1e10fc7caf24202	456820
+default	bench/app/stamped/extc/session_us.extc	ok	129c3b5993ef532c4cfdbded4115dfe8	157347
+reclaim	bench/app/stamped/extc/session_us.extc	ok	41de5c3b425a8ffa492f6d6a86f094ba	471728
 default	bench/gc/v2/src/chase.extc	ok	57f611e98b62a79bc5605c6440b32af7	347811
 reclaim	bench/gc/v2/src/chase.extc	ok	57f611e98b62a79bc5605c6440b32af7	347811
 default	bench/gc/v2/src/cycleratio.extc	ok	36ded2d43fcb5b71913e8ec1993ae2f9	348255
@@ -116,8 +116,8 @@ default	tests/gc-p0/src/uaf_bulk_copy_default.extc	ok	45c16aec6164d5c93b459a5e1f
 reclaim	tests/gc-p0/src/uaf_bulk_copy_default.extc	ok	45c16aec6164d5c93b459a5e1f1c46bb	338104
 default	tests/gc-p0/src/uaf_param_overwrite.extc	ok	02d4920fe6e372fd4fb826ea84341009	335976
 reclaim	tests/gc-p0/src/uaf_param_overwrite.extc	ok	02d4920fe6e372fd4fb826ea84341009	335976
-default	tests/gc-torture/src/datalog_lite.extc	ok	e71497ba8f7aeaf5dc12eeb9771c5f9d	221923
-reclaim	tests/gc-torture/src/datalog_lite.extc	ok	930dc2590df71881fb044bdddd8d738d	537691
+default	tests/gc-torture/src/datalog_lite.extc	ok	fa494d0d32ff222ef11a76f201878e1c	238146
+reclaim	tests/gc-torture/src/datalog_lite.extc	ok	93e9020c9cc4a77452913c839f8bda61	553914
 default	tests/gc-torture/src/t01_sparse_pin.extc	ok	a8c4ac0e0a6f26a44d43c0122b1df990	360825
 reclaim	tests/gc-torture/src/t01_sparse_pin.extc	ok	a8c4ac0e0a6f26a44d43c0122b1df990	360825
 default	tests/gc-torture/src/t02_fanout.extc	ok	6d1f7d867a643b9b4509b51e1b6e55d0	343305
@@ -286,8 +286,8 @@ default	tests/stl/buf_rss_arena.extc	ok	b804b19389455193d267820000d192ad	21538
 reclaim	tests/stl/buf_rss_arena.extc	ok	5ae123e0aca122bf980707b7fe4e4797	335375
 default	tests/stl/buf_struct.extc	ok	a7f438d29c9f247357a0b693fefea9df	71462
 reclaim	tests/stl/buf_struct.extc	ok	9bbef065ccc2281249401f237632a56d	385730
-default	tests/stl/clone.extc	ok	de0365820adcb98d78a5ac4402cfedad	286341
-reclaim	tests/stl/clone.extc	ok	9c9a3ee58fad463cf106d588a6ad2204	602294
+default	tests/stl/clone.extc	ok	e330291fb19659ee695ae89171f8d354	318195
+reclaim	tests/stl/clone.extc	ok	0b38aee87fd43304b393cec047526c37	634289
 default	tests/stl/clone_ok.extc	ok	9384f03ec03a0ca32d5cc43193724b1e	64133
 reclaim	tests/stl/clone_ok.extc	ok	350db7a751b3542a1a19afe34cdbadbf	378401
 default	tests/stl/clone_warn.extc	ok	545869e377e4fb0367c92360e5da4e00	3594
@@ -298,8 +298,8 @@ default	tests/stl/from.extc	ok	b62d7978fe1b9feefc9caf2519b33650	112001
 reclaim	tests/stl/from.extc	ok	6d569ef4094e68bf04acdf199f52b2b3	427831
 default	tests/stl/fromI64.extc	ok	5aebb162af86ffebf589966c8424919a	104266
 reclaim	tests/stl/fromI64.extc	ok	b59170faa005bfcebc17f1303ca215e1	420504
-default	tests/stl/hashSet.extc	ok	3a4313084c39f5fd67208679d415a6fe	100272
-reclaim	tests/stl/hashSet.extc	ok	2a33bf451578ca5e1e063add2345acb7	414512
+default	tests/stl/hashSet.extc	ok	fdcde395dfd3ba1d2d9d0b3b181793b8	123063
+reclaim	tests/stl/hashSet.extc	ok	a5288bb3ce994cad0dc5257e0b42a8df	437444
 default	tests/stl/memFind.extc	ok	7d864b59c95d2eba69adb304d0d088aa	30760
 reclaim	tests/stl/memFind.extc	ok	7d864b59c95d2eba69adb304d0d088aa	30760
 default	tests/stl/nd.extc	ok	08ec28915f9d1d0a27bbfc5a25ddfc08	73475
@@ -330,8 +330,8 @@ default	tests/stl/stringEdit.extc	ok	b9c8c783ad9075315d4d8c348feb22e3	115479
 reclaim	tests/stl/stringEdit.extc	ok	de70ee810fbf00ec54625587c95e3c9b	430933
 default	tests/stl/stringFind.extc	ok	aea1be36e248639d47c8e5725d5b3e6d	100922
 reclaim	tests/stl/stringFind.extc	ok	0ba5715db73b0ec350a0bacd6b0b9144	423264
-default	tests/stl/stringOps.extc	ok	f5b575fca47b9a5efc0799fd81cc036b	147614
-reclaim	tests/stl/stringOps.extc	ok	e3b13565326c18d19b63c5b51f16ce37	464858
+default	tests/stl/stringOps.extc	ok	39656ce1d2d6aefc87266b0623a57ea4	162478
+reclaim	tests/stl/stringOps.extc	ok	81b0b945de7100df517b465dc3f638a4	479722
 default	tests/stl/string_borrow.extc	ok	db32f0206c6a5b3055d60110b6445ee3	88206
 reclaim	tests/stl/string_borrow.extc	ok	9c6776f7ec43088af4b70d872d6247ca	403528
 default	tests/stl/string_build.extc	ok	7ddf6daa1cc83ddcbc2f3362e27df617	100679

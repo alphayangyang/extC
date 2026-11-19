@@ -75,7 +75,7 @@ std::data::buf	-	bufLive	fn	public
 std::data::buf	borrowGuard	b	field	internal
 std::data::buf	borrowGuard	len	method	public
 std::data::buf	borrowGuard	p	field	internal
-std::data::buf	borrowGuard	release	method	public
+std::data::buf	borrowGuard	release	method	internal
 std::data::buf	borrowGuard	view	method	public
 std::data::buf	buf	borrow	method	public
 std::data::buf	buf	cap	field	internal
@@ -125,8 +125,12 @@ std::data::dense	block	view	method	public
 std::data::dense	block	viewMut	method	public
 std::data::dense	block	withCap	method	public
 std::data::hashMap	-	bucketOf	fn	internal
+std::data::hashMap	-	byteAt	fn	internal
+std::data::hashMap	-	byteSet	fn	internal
 std::data::hashMap	-	ctrlOf	fn	internal
+std::data::hashMap	-	ctz64	fn	internal
 std::data::hashMap	-	hashI64	fn	public
+std::data::hashMap	-	zeroBytes	fn	internal
 std::data::hashMap	hashMap	bytesOf	method	public
 std::data::hashMap	hashMap	cap	field	internal
 std::data::hashMap	hashMap	capOf	method	public
@@ -135,6 +139,7 @@ std::data::hashMap	hashMap	clone	method	public
 std::data::hashMap	hashMap	compact	method	public
 std::data::hashMap	hashMap	contains	method	public
 std::data::hashMap	hashMap	find	method	public
+std::data::hashMap	hashMap	findH	method	public
 std::data::hashMap	hashMap	get	method	public
 std::data::hashMap	hashMap	grow	method	public
 std::data::hashMap	hashMap	keyAt	method	public
@@ -142,11 +147,13 @@ std::data::hashMap	hashMap	keys	field	internal
 std::data::hashMap	hashMap	len	method	public
 std::data::hashMap	hashMap	liveAt	method	public
 std::data::hashMap	hashMap	n	field	internal
+std::data::hashMap	hashMap	probeRange	method	internal
 std::data::hashMap	hashMap	put	method	public
 std::data::hashMap	hashMap	release	method	public
 std::data::hashMap	hashMap	remove	method	public
-std::data::hashMap	hashMap	removeAt	method	public
-std::data::hashMap	hashMap	slotFor	method	public
+std::data::hashMap	hashMap	removeAt	method	internal
+std::data::hashMap	hashMap	slotFor	method	internal
+std::data::hashMap	hashMap	slotRange	method	internal
 std::data::hashMap	hashMap	tag	field	internal
 std::data::hashMap	hashMap	take	method	public
 std::data::hashMap	hashMap	valAt	method	public
@@ -387,7 +394,7 @@ std::hash::digest	sha1State	buf	field	internal
 std::hash::digest	sha1State	final	method	public
 std::hash::digest	sha1State	h	field	public
 std::hash::digest	sha1State	init	method	public
-std::hash::digest	sha1State	pBlockAt	method	public
+std::hash::digest	sha1State	pBlockAt	method	internal
 std::hash::digest	sha1State	total	field	public
 std::hash::digest	sha1State	update	method	public
 std::hash::digest	sha1State	used	field	public
@@ -397,7 +404,7 @@ std::hash::digest	sha256State	buf	field	internal
 std::hash::digest	sha256State	final	method	public
 std::hash::digest	sha256State	h	field	public
 std::hash::digest	sha256State	init	method	public
-std::hash::digest	sha256State	pBlockAt	method	public
+std::hash::digest	sha256State	pBlockAt	method	internal
 std::hash::digest	sha256State	total	field	public
 std::hash::digest	sha256State	update	method	public
 std::hash::digest	sha256State	used	field	public
@@ -819,7 +826,7 @@ std::text::string	string	trimStart	method	public
 std::text::string	string	view	method	public
 std::text::string	stringGuard	len	method	public
 std::text::string	stringGuard	p	field	internal
-std::text::string	stringGuard	release	method	public
+std::text::string	stringGuard	release	method	internal
 std::text::string	stringGuard	s	field	internal
 std::text::string	stringGuard	view	method	public
 std::weak	weak	addr	field	internal

@@ -1,9 +1,10 @@
 /* std/data/hashMap.extc -- 开放寻址哈希表：键值内联在三列里，控制字节做探测的预筛。
  *
  * 形态（设计见 HASHMAP 设计稿）：
- *   - 三列同长：`keys`（键）、`vals`（值）、`tag`（控制字节）。一个桶 1 + sizeof(K) + sizeof(V) 字节；
+ *   - 三列：`keys`（键）、`vals`（值）、`tag`（控制字节）。一个桶 1 + sizeof(K) + sizeof(V) 字节；
  *     没有值列、没有反向列、没有槽元数据、没有句柄、没有世代。
- *   - `tag` 是控制字节：0 是空桶，1..128 是该键哈希的第 7 位片段（h2）加一。探测时先比 tag，
+ *   - `tag` 把 8 个桶的控制字节打包进一个 64 位字：空桶是 0，占用桶的最高位恒为 1、低 7 位是哈希分量。
+ *     探测一次读一个字、用一次掩码拿位置（`(~x) & 0x80..80` 给空桶，零字节检测给 tag 候选），
  *     只有 tag 对上才碰键列 —— 键可能是 string，比较比一个字节贵得多。
  *   - 容量不是 2 的幂：桶号是「乘取高位」`((h >> 32) * cap) >> 32`，任何 cap 都均匀，
  *     所以装载率可以做到 0.85 而不被 2 的幂浪费（按 2 的幂取低位做桶号时装载只有 0.35-0.5）。
@@ -31,7 +32,7 @@
 
 use std::data::dense::{block}
 
-/* 空桶标记。非零的 tag 就是 h2 + 1，所以 0 只能留给「没有元素」。 */
+/* 空桶标记。占用的 tag 最高位恒为 1（0x80..0xFF），所以 0 只能留给「没有元素」。 */
 let EMPTY: u8 = 0
 
 /* 装载率的分子分母：0.85 = 17/20。增长线是「插入后会超过它」。 */
@@ -75,17 +76,73 @@ impl i64 {
 @private
 fn bucketOf(h: i64, cap: i64) -> i64 { return ((h >> 31) * cap) >> 32 }
 
-/* 控制字节：哈希的第 20..26 位 + 1（7 位，与桶号用的第 31 位以上不重叠）。0 留给空桶。 */
+/* 控制字节：最高位恒为 1（表示占用），低 7 位是哈希分量。空桶是 0，所以空桶检测是一次掩码。 */
 @inline
 @private
-fn ctrlOf(h: i64) -> u8 { return u8((h >> 20) & 127) + u8(1) }
+fn ctrlOf(h: i64) -> u8 { return u8(128) + u8((h >> 20) & 127) }
+
+/* 从打包字里取第 j 个字节（j 走 0..7）。 */
+@inline
+@private
+fn byteAt(w: u64, j: i64) -> u8 { return u8((w >> u64(j * 8)) & u64(255)) }
+
+/* 把第 j 个字节换成 t，其余字节不动。 */
+@inline
+@private
+fn byteSet(w: u64, j: i64, t: u8) -> u64 {
+    let sh: u64 = u64(j * 8)
+    let ones: u64 = u64(0) - u64(1)
+    let keep: u64 = ones - (u64(255) << sh)
+    return (w & keep) | (u64(t) << sh)
+}
+
+/* 零字节检测：x 的每个字节若为 0，结果里对应字节的最高位被置上（其余位无意义）。 */
+@inline
+@private
+fn zeroBytes(x: u64) -> u64 {
+    let ones: u64 = u64(0) - u64(1)
+    let low: u64 = ones / u64(255)
+    return (x - low) & (x ^ ones) & (low * u64(128))
+}
+
+/* 最低置位的位置；x 必须非零。 */
+@inline
+@private
+fn ctz64(x: u64) -> i64 {
+    var v: u64 = x
+    var n: i64 = 0
+    if (v & u64(4294967295)) == u64(0) {
+        n = n + 32
+        v = v >> u64(32)
+    }
+    if (v & u64(65535)) == u64(0) {
+        n = n + 16
+        v = v >> u64(16)
+    }
+    if (v & u64(255)) == u64(0) {
+        n = n + 8
+        v = v >> u64(8)
+    }
+    if (v & u64(15)) == u64(0) {
+        n = n + 4
+        v = v >> u64(4)
+    }
+    if (v & u64(3)) == u64(0) {
+        n = n + 2
+        v = v >> u64(2)
+    }
+    if (v & u64(1)) == u64(0) {
+        n = n + 1
+    }
+    return n
+}
 
 /* 三列同长的一张表：键、值、控制字节。`var b = a` 是转移（@noCopy）；要独立副本用 `clone()`。 */
 @noCopy
 struct hashMap<K, V> {
     @private keys: block<K>          /* 活桶的键 */
     @private vals: block<V>          /* 活桶的值，与键同下标 */
-    @private tag:  block<u8>         /* 0 = 空桶；否则是 h2 + 1 */
+    @private tag:  block<u64>        /* 每字节一个桶的 tag：0 = 空桶，否则是 h2 + 1 */
     @private n:    i64               /* 活元素个数 */
     @private cap:  i64               /* 桶数（不是 2 的幂） */
 
@@ -99,14 +156,15 @@ struct hashMap<K, V> {
         var m: hashMap<K, V> = {
             keys: block<K>::withCap(c),
             vals: block<V>::withCap(c),
-            tag:  block<u8>::withCap(c),
+            tag:  block<u64>::withCap((c + 7) / 8),
             n:    0,
             cap:  c,
         }
         /* 块内存是复用的脏内存，而 tag 的 0 有含义（空桶）⇒ 这一列必须显式清零。 */
+        let nw: i64 = (c + 7) / 8
         var i: i64 = 0
-        while i < c {
-            m.tag[i] = u8(0)
+        while i < nw {
+            m.tag[i] = u64(0)
             i = i + 1
         }
         return m
@@ -126,22 +184,59 @@ struct hashMap<K, V> {
      *
      * 探测每一步只读 `tag`（一列 1 字节的稠密数组，一次探测跨过的桶挤在同一两行 cache 里），
      * 只有控制字节对上才去读键列。下标由 `bucketOf` 与 `cap` 夹住，循环最多走 cap 步。 */
+    /* 在 [lo, hi) 这段环形区间里探测：命中返回桶号，撞到空桶返回 -1，走完没撞到空桶返回 -2。
+     * 控制字节按机器字打包 8 个桶，最高位恒为 1（占用），空桶是 0：
+     *   - 空桶位置只要一次 `(~x) & 0x80..80`，再 `ctz >> 3` 就是桶号（不需要除法）；
+     *   - tag 候选用一次零字节检测；未命中的整字两个掩码都是 0，一次循环只有几条指令。
+     * 区间头尾用位移掩码裁掉不属于 [lo, hi) 的字节，不切回逐桶路径 —— 逐桶路径每个字节都要
+     * `i / 8`（有符号除法）跟一次数组索引，比整字扫描贵得多。 */
+    @inline
+    @private
     @unchecked
-    fn find(self: ref hashMap<K, V>, k: K) -> i64 {
-        let h: i64 = k.hash()
-        let t: u8 = ctrlOf(h)
-        var i: i64 = bucketOf(h, self.cap)
-        var steps: i64 = 0
-        while steps < self.cap {
-            let c: u8 = self.tag[i]
-            if c == EMPTY { return -1 }
-            if c == t && self.keys[i] == k { return i }
-            i = i + 1
-            if i == self.cap { i = 0 }
-            steps = steps + 1
+    fn probeRange(self: ref hashMap<K, V>, k: K, bc: u64, lo: i64, hi: i64) -> i64 {
+        let ones: u64 = u64(0) - u64(1)
+        let high: u64 = (ones / u64(255)) * u64(128)
+        var i: i64 = lo
+        while i < hi {
+            let off: i64 = i & 7
+            let base: i64 = i - off
+            let x: u64 = self.tag[base >> 3]
+            var m: u64 = ones
+            if off != 0 { m = ones << u64(off * 8) }
+            if base + 8 > hi { m = m & (ones >> u64((8 - (hi - base)) * 8)) }
+            let emp: u64 = ((x ^ ones) & high) & m
+            let cand: u64 = zeroBytes(x ^ bc) & m
+            var ep: i64 = -1
+            if emp != u64(0) { ep = ctz64(emp) >> 3 }
+            var cp: i64 = -1
+            if cand != u64(0) { cp = ctz64(cand) >> 3 }
+            if ep >= 0 && (cp < 0 || ep < cp) { return -1 }
+            if cp >= 0 && (ep < 0 || cp < ep) {
+                let b: i64 = base + cp
+                if self.keys[b] == k { return b }
+                i = b + 1
+            } else {
+                i = base + 8
+            }
         }
-        return -1
+        return -2
     }
+@unchecked
+    @inline
+    fn findH(self: ref hashMap<K, V>, k: K, h: i64) -> i64 {
+        if self.cap == 0 { return -1 }
+        let t: u8 = ctrlOf(h)
+        let bc: u64 = u64(t) * ((u64(0) - u64(1)) / u64(255))
+        let start: i64 = bucketOf(h, self.cap)
+        var r: i64 = self.probeRange(k, bc, start, self.cap)
+        if r == -2 { r = self.probeRange(k, bc, 0, start) }
+        if r == -2 { return -1 }
+        return r
+    }
+
+    /* 找到 k 的桶：命中返回桶号，没有返回 -1。 */
+    @inline
+    fn find(self: ref hashMap<K, V>, k: K) -> i64 { return self.findH(k, k.hash()) }
 
     fn contains(self: ref hashMap<K, V>, k: K) -> bool { return self.find(k) >= 0 }
 
@@ -164,47 +259,55 @@ struct hashMap<K, V> {
      * 翻倍之后装载掉到 0.42 左右，所以下一次重哈希要再插 0.85 倍的量 —— 几何增长，摊还 O(1)。 */
     fn put(self: mut ref hashMap<K, V>, k: K, v: V) -> bool {
         let h: i64 = k.hash()
-        let t: u8 = ctrlOf(h)
-        var i: i64 = bucketOf(h, self.cap)
-        var steps: i64 = 0
-        while steps < self.cap {
-            let c: u8 = self.tag[i]
-            if c == EMPTY { break }
-            if c == t && self.keys[i] == k {
-                self.keys.dropAt(i)
-                self.vals.dropAt(i)
-                self.keys[i] = k
-                self.vals[i] = v
-                return true
-            }
-            i = i + 1
-            if i == self.cap { i = 0 }
-            steps = steps + 1
+        let b: i64 = self.findH(k, h)
+        if b >= 0 {
+            self.keys.dropAt(b)
+            self.vals.dropAt(b)
+            self.keys[b] = k
+            self.vals[b] = v
+            return true
         }
         if (self.n + 1) * LOAD_DEN > self.cap * LOAD_NUM {
             self.grow(self.cap * 2)
-            i = self.slotFor(h)
         }
+        let i: i64 = self.slotFor(h)
         self.keys[i] = k
         self.vals[i] = v
-        self.tag[i] = t
+        self.tag[i / 8] = byteSet(self.tag[i / 8], i - (i / 8) * 8, ctrlOf(h))
         self.n = self.n + 1
         return false
     }
 
-    /* 从 `h` 的起点往后找第一个空桶（调用前必须保证至少有一个空桶）。 */
+    /* [lo, hi) 里第一个空桶；没有返回 -1。整字一次 `(~x) & 0x80..80`，头尾用位移掩码裁字节。 */
+    @inline
     @private
     @unchecked
-    fn slotFor(self: ref hashMap<K, V>, h: i64) -> i64 {
-        var i: i64 = bucketOf(h, self.cap)
-        var steps: i64 = 0
-        while steps < self.cap {
-            if self.tag[i] == EMPTY { return i }
-            i = i + 1
-            if i == self.cap { i = 0 }
-            steps = steps + 1
+    fn slotRange(self: ref hashMap<K, V>, lo: i64, hi: i64) -> i64 {
+        let ones: u64 = u64(0) - u64(1)
+        let high: u64 = (ones / u64(255)) * u64(128)
+        var i: i64 = lo
+        while i < hi {
+            let off: i64 = i & 7
+            let base: i64 = i - off
+            let x: u64 = self.tag[base >> 3]
+            var m: u64 = ones
+            if off != 0 { m = ones << u64(off * 8) }
+            if base + 8 > hi { m = m & (ones >> u64((8 - (hi - base)) * 8)) }
+            let emp: u64 = ((x ^ ones) & high) & m
+            if emp != u64(0) { return base + (ctz64(emp) >> 3) }
+            i = base + 8
         }
         return -1
+    }
+    /* 从 h 的起点往后找第一个空桶（调用前必须保证至少有一个空桶）。 */
+    @private
+    @unchecked
+    @inline
+    fn slotFor(self: ref hashMap<K, V>, h: i64) -> i64 {
+        let start: i64 = bucketOf(h, self.cap)
+        var i: i64 = self.slotRange(start, self.cap)
+        if i < 0 { i = self.slotRange(0, start) }
+        return i
     }
 
     /* 移除 `k`。返回「本来就在」。 */
@@ -233,27 +336,25 @@ struct hashMap<K, V> {
     fn removeAt(self: mut ref hashMap<K, V>, b: i64) {
         self.keys.dropAt(b)
         self.vals.dropAt(b)
-        self.tag[b] = EMPTY
+        self.tag[b / 8] = byteSet(self.tag[b / 8], b - (b / 8) * 8, u8(0))
         self.n = self.n - 1
         var hole: i64 = b
         var j: i64 = b + 1
         if j == self.cap { j = 0 }
         var steps: i64 = 0
         while steps < self.cap {
-            let c: u8 = self.tag[j]
+            let c: u8 = byteAt(self.tag[j / 8], j - (j / 8) * 8)
             if c == EMPTY { break }
             let home: i64 = bucketOf(self.keys[j].hash(), self.cap)
-            /* 距离都按环上的步数算：只有「从自己的 home 走到 j 会先经过 hole」的元素才能补位。 */
             var dj: i64 = j - home
             if dj < 0 { dj = dj + self.cap }
             var dh: i64 = j - hole
             if dh < 0 { dh = dh + self.cap }
             if dj >= dh {
-                /* 搬，不是拷：旧槽被 `take` 清零 ⇒ 拥有存储的键仍然只有一个主人。 */
                 self.keys[hole] = self.keys.take(j)
                 self.vals[hole] = self.vals.take(j)
-                self.tag[hole] = c
-                self.tag[j] = EMPTY
+                self.tag[hole / 8] = byteSet(self.tag[hole / 8], hole - (hole / 8) * 8, c)
+                self.tag[j / 8] = byteSet(self.tag[j / 8], j - (j / 8) * 8, u8(0))
                 hole = j
             }
             j = j + 1
@@ -268,24 +369,26 @@ struct hashMap<K, V> {
      * 只跟着键一起走。搬完旧列里已经没有活元素（`take` 清零），所以旧列归还时不会跑钩子、
      * 也不会把搬走的存储再释放一次。 */
     fn grow(self: mut ref hashMap<K, V>, ncap: i64) {
-        var nk: block<K>  = block<K>::withCap(ncap)
-        var nv: block<V>  = block<V>::withCap(ncap)
-        var nt: block<u8> = block<u8>::withCap(ncap)
+        var nk: block<K>   = block<K>::withCap(ncap)
+        var nv: block<V>   = block<V>::withCap(ncap)
+        let nw: i64 = (ncap + 7) / 8
+        var nt: block<u64> = block<u64>::withCap(nw)
         var z: i64 = 0
-        while z < ncap {
-            nt[z] = u8(0)
+        while z < nw {
+            nt[z] = u64(0)
             z = z + 1
         }
         var i: i64 = 0
         while i < self.cap {
-            if self.tag[i] != EMPTY {
+            let c: u8 = byteAt(self.tag[i / 8], i - (i / 8) * 8)
+            if c != EMPTY {
                 let h: i64 = self.keys[i].hash()
                 var j: i64 = bucketOf(h, ncap)
-                while nt[j] != EMPTY {
+                while byteAt(nt[j / 8], j - (j / 8) * 8) != EMPTY {
                     j = j + 1
                     if j == ncap { j = 0 }
                 }
-                nt[j] = ctrlOf(h)
+                nt[j / 8] = byteSet(nt[j / 8], j - (j / 8) * 8, c)
                 nk[j] = self.keys.take(i)
                 nv[j] = self.vals.take(i)
             }
@@ -311,21 +414,26 @@ struct hashMap<K, V> {
     fn clear(self: mut ref hashMap<K, V>) {
         var i: i64 = 0
         while i < self.cap {
-            if self.tag[i] != EMPTY {
+            if byteAt(self.tag[i / 8], i - (i / 8) * 8) != EMPTY {
                 self.keys.dropAt(i)
                 self.vals.dropAt(i)
             }
-            self.tag[i] = EMPTY
             i = i + 1
+        }
+        let nw: i64 = (self.cap + 7) / 8
+        var zw: i64 = 0
+        while zw < nw {
+            self.tag[zw] = u64(0)
+            zw = zw + 1
         }
         self.n = 0
     }
 
-    /* 三列都还回去：`release` 幂等，字段的自动 `@drop` 再发一次是空操作。 */
+    /* 三列都还回去：release 幂等，字段的自动 @drop 再发一次是空操作。 */
     fn release(self: mut ref hashMap<K, V>) {
         var i: i64 = 0
         while i < self.cap {
-            if self.tag[i] != EMPTY {
+            if byteAt(self.tag[i / 8], i - (i / 8) * 8) != EMPTY {
                 self.keys.dropAt(i)
                 self.vals.dropAt(i)
             }
@@ -341,18 +449,19 @@ struct hashMap<K, V> {
     /* 按桶位扫描：`i` 走 [0, capOf())。 */
     fn keyAt(self: ref hashMap<K, V>, i: i64) -> K { return self.keys[i] }
     fn valAt(self: ref hashMap<K, V>, i: i64) -> V { return self.vals[i] }
-    fn liveAt(self: ref hashMap<K, V>, i: i64) -> bool { return self.tag[i] != EMPTY }
+    fn liveAt(self: ref hashMap<K, V>, i: i64) -> bool { return byteAt(self.tag[i / 8], i - (i / 8) * 8) != EMPTY }
 
     /* **深拷贝：要一份独立的表就用它。** `var b = a` 是转移（`@noCopy`）⇒ 要副本得显式拷。 */
     fn clone(self: ref hashMap<K, V>) -> hashMap<K, V> {
         var out: hashMap<K, V> = hashMap<K, V>::withCap(self.n + 1)
         var i: i64 = 0
         while i < self.cap {
-            if self.tag[i] != EMPTY { out.put(self.keys[i], self.vals[i]) }
+            if byteAt(self.tag[i / 8], i - (i / 8) * 8) != EMPTY { out.put(self.keys[i], self.vals[i]) }
             i = i + 1
         }
         return out
     }
+
 }
 
 /* ---------------------------------------------------------------------------

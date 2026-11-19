@@ -5,7 +5,7 @@
 
 生成方式：`tools/manual_surface.py`；`check.sh` 保证本页与源码一致。
 
-公开面共 827 个成员，其中内部 158 个：
+公开面共 834 个成员，其中内部 170 个：
 
 ## prelude
 
@@ -27,6 +27,7 @@
 - `-.bufClassBytes`（方法）
 - `borrowGuard.b`（字段）
 - `borrowGuard.p`（字段）
+- `borrowGuard.release`（方法）
 - `buf.cap`（字段）
 - `buf.dropRefs`（方法）
 - `buf.max`（字段）
@@ -53,10 +54,18 @@
 ## std::data::hashMap
 
 - `-.bucketOf`（方法）
+- `-.byteAt`（方法）
+- `-.byteSet`（方法）
 - `-.ctrlOf`（方法）
+- `-.ctz64`（方法）
+- `-.zeroBytes`（方法）
 - `hashMap.cap`（字段）
 - `hashMap.keys`（字段）
 - `hashMap.n`（字段）
+- `hashMap.probeRange`（方法）
+- `hashMap.removeAt`（方法）
+- `hashMap.slotFor`（方法）
+- `hashMap.slotRange`（方法）
 - `hashMap.tag`（字段）
 - `hashMap.vals`（字段）
 
@@ -114,7 +123,9 @@
 - `-.sha256Hex`（方法）
 - `-.sha256Sum`（方法）
 - `sha1State.buf`（字段）
+- `sha1State.pBlockAt`（方法）
 - `sha256State.buf`（字段）
+- `sha256State.pBlockAt`（方法）
 
 ## std::io
 
@@ -204,6 +215,7 @@
 - `string.sSet`（方法）
 - `string.small`（字段）
 - `stringGuard.p`（字段）
+- `stringGuard.release`（方法）
 - `stringGuard.s`（字段）
 
 ## std::weak
