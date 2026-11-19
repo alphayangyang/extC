@@ -1,0 +1,60 @@
+/* `?` 在 match / if let / while let 的臂体里
+ *
+ * 臂体是「顺序执行一次」的块，跟函数体一样：把里面的 `e?` 提前成 `var __extc_tqN = e?`
+ * 不改变求值次数，也不改变求值顺序。以前检查器只给函数体顶层（和 if 条件）跑提升，
+ * 臂体是直接逐语句检查的，于是臂体里的 `?` 落到 checkExpr 被判成「这个位置可能被跳过」——
+ * 报错说的是真的：位置本身不会被跳过，只是提升没跑到。
+ *
+ * 这里把四条路径都钉住：match 的普通臂 / 通配臂、if let 的 then 与 else、while let 的体
+ * （while let 是 while true + match 的糖，所以它的体就是臂体）。每条路径都同时验成功与失败：
+ * 失败必须原样往上抛，不能变成「臂里跳过一句、继续往下跑」。
+ */
+// expect: ok=4|fail=-9|loop=6|wild=5
+use std::io
+
+fn pick(n: i64) -> ?i64 { if n < 0 { return none } return some(n) }
+fn twice(x: i64) -> ?i64 { return pick(x * i64(2)) }
+
+fn arm_body(n: i64) -> ?i64 {          /* 普通臂体：嵌套两层 `?`，都是顺序执行一次 */
+    match pick(n) {
+        some(v) => { let w = twice(v)?; return some(w + i64(2)) }
+        none => { return some(i64(-1)) }
+    }
+}
+
+fn wildcard_body(n: i64) -> ?i64 {     /* 通配臂体 */
+    match pick(n) {
+        _ => { let v = twice(n)?; return some(v + i64(1)) }
+    }
+}
+
+fn iflet_both(n: i64) -> ?i64 {        /* then 与 else 两个臂体都有 `?` */
+    if let some(v) = pick(n) {
+        let w = twice(v)?
+        return some(w)
+    } else {
+        let w = twice(n)?
+        return some(w - i64(1))
+    }
+}
+
+fn wlet_body(n: i64) -> ?i64 {         /* while let 的体（脱糖成 while true + match） */
+    var k: i64 = n
+    var acc: i64 = 0
+    while let some(v) = pick(k) {
+        acc = acc + twice(v)?
+        k = k - i64(1)
+    }
+    return some(acc)
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    /* `??` 的主体在整条语句前求值，所以同一条 `<<` 链里不能再有别的调用（见 §9.6）：
+     * 四个值先各自落到局部变量，再一次性打印。 */
+    let ok: i64 = arm_body(i64(1)) ?? i64(-9)
+    let fail: i64 = iflet_both(i64(-2)) ?? i64(-9)
+    let loop_: i64 = wlet_body(i64(2)) ?? i64(-9)
+    let wild: i64 = wildcard_body(i64(2)) ?? i64(-9)
+    io::cout << "ok=" << ok << " fail=" << fail << " loop=" << loop_ << " wild=" << wild << "\n"
+    return 0
+}

@@ -1,0 +1,71 @@
+/* `?` 在 match / if let 的 scrutinee 里
+ *
+ * scrutinee 在任何一个臂开跑之前恰好求值一次，所以把它里面的 `e?` 提前到 match 之前
+ * 同样不改变次数与顺序。`if let` 脱糖成 match，一并覆盖。
+ *
+ * 注意 `match f()? { ... }` 里的 scrutinee 类型是 payload：`?` 已经把外层 option 剥掉了，
+ * 所以典型写法是 payload 本身为枚举 —— `fn col(n) -> ?color` 之后
+ * `match col(n)? { red => ... }`。剥出来不是枚举时（`fn p(n) -> ?i64` 之后
+ * `match p(n)? { some(v) => ... }`）照旧是类型错误：外层 option 已经被 `?` 剥掉，
+ * 不能再 match 它的变体。（option 不能嵌套：`?i64` 的 payload 是 `i64`。）
+ *
+ * 反例（仍拒绝、报同一个「this position may be skipped」）：while 条件、`&&`/`||` 右侧、
+ * `??` 的右侧、fn 值（lambda）的体 —— 那些位置会被零次或多次求值。见
+ * tests/errors/try_while_cond.extc、tests/errors/try_short_circuit.extc。
+ */
+// expect: match=300|iflet=7|inloop=3|wlet=3
+use std::io
+
+type color = | red | green | blue
+
+fn col(n: i64) -> ?color {
+    if n <= i64(0) { return some(color.red) }
+    if n < i64(4) { return some(color.green) }
+    return some(color.blue)
+}
+
+fn by_match(n: i64) -> ?i64 {          /* match 的 scrutinee */
+    match col(n)? {
+        red => return some(i64(100))
+        green => return some(i64(200))
+        blue => return some(i64(300))
+    }
+}
+
+fn by_iflet(n: i64) -> ?i64 {          /* if let 的 scrutinee */
+    if let red = col(n)? { return some(i64(7)) }
+    return some(i64(8))
+}
+
+fn in_loop(n: i64) -> ?i64 {           /* 循环体里的 match：每轮各求值一次 */
+    var k: i64 = n
+    var seen: i64 = 0
+    while k > i64(0) {
+        match col(k)? {
+            red => { k = k - i64(1) }
+            green => { seen = seen + i64(1); k = k - i64(1) }
+            blue => { seen = seen + i64(10); k = k - i64(1) }
+        }
+    }
+    return some(seen)
+}
+
+fn by_whilelet(n: i64) -> ?i64 {      /* while let 的 scrutinee：每轮求值一次（match 在循环体里） */
+    var k: i64 = n
+    var cnt: i64 = 0
+    while let green = col(k)? {
+        cnt = cnt + i64(1)
+        k = k - i64(1)
+    }
+    return some(cnt)
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    /* `??` 在整条语句前求值，链里不能夹别的调用 —— 先落局部变量 */
+    let m: i64 = by_match(i64(5)) ?? i64(-1)
+    let i: i64 = by_iflet(i64(0)) ?? i64(-1)
+    let l: i64 = in_loop(i64(3)) ?? i64(-1)
+    let w: i64 = by_whilelet(i64(3)) ?? i64(-1)
+    io::cout << "match=" << m << " iflet=" << i << " inloop=" << l << " wlet=" << w << "\n"
+    return 0
+}

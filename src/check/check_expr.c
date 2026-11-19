@@ -3238,12 +3238,12 @@ static Type *checkExprInner(Checker *c, Expr *e) {
         }
 
         case EX_TRY:
-            /* `?` forwards an error at statement level: it expands into "evaluate once,
-             * test, return". C has no statement expressions, so it is legal in exactly three
-             * positions:
-             *     let x = e?   /   x = e?   /   return e?
-             * Anywhere else, say `f(e? + 1)`, it is reported clearly instead of producing C
-             * that does not compile. */
+            /* `?` expands into "evaluate once, test, return". A nested use such as
+             * `f(g()? + 1)` is fine: the statement pass hoists it into `var __extc_tqN = e?`
+             * in front of the statement (see checkHoistStatementTrys), which keeps the number
+             * and the order of evaluations unchanged. The node only reaches this walker where
+             * that hoist would change them -- a short-circuit right side, a `??` fallback, a
+             * loop condition, a lambda body -- so those are the positions reported here. */
             ckError(c, e->line,
                     "`?` expands into statements (evaluate once, test, return), so it needs a "
                     "position that is evaluated exactly once and unconditionally.",

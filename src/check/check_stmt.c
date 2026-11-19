@@ -2956,6 +2956,27 @@ void checkHoistStatementTrys(Checker *c, Vec *stmts, size_t *pi) {
     for (size_t k = first; k < *pi; k++) checkStmt(c, *(Stmt **)vecAt(stmts, k));
 }
 
+/**
+ * @brief Check a `match` arm's body, hoisting nested `e?`s first.
+ *
+ * An arm body is a block, but it is checked statement by statement right here rather than through
+ * `checkBlockBody`, because the arm's scope and its payload bindings are set up around the loop.
+ * So the hoisting pass has to be run explicitly: without it a `?` inside the arm reaches
+ * `checkExpr` unhoisted and is rejected as "this position may be skipped", even though an arm body
+ * is evaluated exactly once (the reason the rejection exists is that a *skipped* position would
+ * change when and how often the expression runs -- that does not happen here).
+ *
+ * @param c    Checker.
+ * @param arm  Match arm whose body statements are checked.
+ */
+static void checkMatchArmBody(Checker *c, MatchArm *arm) {
+    Vec *stmts = &arm->body->u.block.stmts;
+    for (size_t k = 0; k < stmts->len; k++) {
+        checkHoistStatementTrys(c, stmts, &k);
+        checkStmt(c, *(Stmt **)vecAt(stmts, k));
+    }
+}
+
 /* ---------------------------------------------------------- `?` in value position
  *
  * `e?` expands to "evaluate once, test for none, `return` on failure"; C has no statement
@@ -3129,6 +3150,12 @@ static size_t tryHoistStmt(Checker *c, Stmt *s, Vec *pre, Vec *guards) {
         break;
     case ST_IF:
         tryHoistExpr(&h, &s->u.ifs.cond);
+        break;
+    case ST_MATCH:
+        /* A scrutinee is evaluated exactly once, before any arm runs: hoisting it in front of the
+         * `match` keeps the evaluation count and the order. `if let` / `while let` desugar into a
+         * `match`, so this covers their scrutinees too. */
+        tryHoistExpr(&h, &s->u.match.scrutinee);
         break;
     default:
         break;
@@ -5640,8 +5667,7 @@ void checkStmt(Checker *c, Stmt *s) {
                  * usual. */
                 if (arm->wildcard) {
                     pushScope(c);
-                    for (size_t k = 0; k < arm->body->u.block.stmts.len; k++)
-                        checkStmt(c, *(Stmt **)vecAt(&arm->body->u.block.stmts, k));
+                    checkMatchArmBody(c, arm);
                     popScope(c);
                     continue;
                 }
@@ -5676,8 +5702,7 @@ void checkStmt(Checker *c, Stmt *s) {
                      * generated C does not compile. */
                     *(const char **)vecAt(&arm->binds, k) = bs->cname;
                 }
-                for (size_t k = 0; k < arm->body->u.block.stmts.len; k++)
-                    checkStmt(c, *(Stmt **)vecAt(&arm->body->u.block.stmts, k));
+                checkMatchArmBody(c, arm);
                 popScope(c);
             }
             return;

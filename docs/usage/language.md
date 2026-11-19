@@ -1136,7 +1136,24 @@ if parse(n)? > i64(0) { … }                 // if 条件里
 return success(parse(n)? * i64(10))         // 返回值的表达式里
 ```
 
-**可能被跳过**的位置仍然拒绝（提前会改变求值次数/时机），报
+臂体与 scrutinee 也属于**恰好求值一次**的位置，同样提前：臂体在被选中之后顺序跑一次；
+scrutinee 在任何一个臂开跑之前求值一次（`if let` / `while let` 脱糖成 `match`，其中
+`while let` 的 match 在循环体里，所以它的 scrutinee 每轮求值一次）。把它们里面的 `e?`
+提前成语句不改变求值次数，也不改变顺序：
+
+<!-- fragment -->
+```extc
+match pick(n) {
+    some(v) => { let w = twice(v)?; … }        // 臂体里
+    none => { return failure(err.bad) }
+}
+if let some(v) = pick(n) { use(twice(v)?) }    // if let 的体里（then 与 else 都是）
+match colorOf(n)? { red => … green => … }      // scrutinee 里：`?` 剥掉外层 option，
+                                               // 剥出来的 payload 本身得是枚举才能 match
+while let green = colorOf(k)? { … }            // while let 的 scrutinee 里
+```
+
+所以**可能被跳过**的只剩下面这些位置（提前会改变求值次数/时机），报
 `` `?` cannot appear here: this position may be skipped (the right side of `&&` / `||` / `??`, a loop condition, a lambda body). Bind it first: `let v = e?` ``：
 `&&` / `||` 的右侧、`??` 的右侧、`while` 条件、lambda 体。
 外层函数必须返回同族类型，且**错误类型必须一样**（`?` 原样转发、不转换）：
@@ -1383,6 +1400,10 @@ fn main() -> i32 {
   `continue` 回到条件、`break` 跳出循环。
 - `PAT` 只能是**一个**变体，按位置绑定载荷（`some(v)`、`pair(a, b)`）；载荷位写 `_` 表示丢弃
   （`some(_)`、`pair(a, _)`）。`_` 本身不能当 `if let` / `while let` 的模式。
+
+- 臂体与 scrutinee 里可以写 `?`（第 9.5 节）：臂体在被选中后顺序执行一次、`if let`
+  的 scrutinee 在进入分支前求值一次、`while let` 的 scrutinee 每轮求值一次 —— 都是「恰好
+  求值一次」的位置，`?` 提前成语句不改变次数与顺序。
 
 两者都是 parser 期脱糖，没有新语义：
 
