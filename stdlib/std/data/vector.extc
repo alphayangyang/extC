@@ -74,6 +74,16 @@ struct vector<T> {
         return true
     }
 
+    /** @brief 下标读 `v[i]`：越界 trap（要 `none` 用 `get`）。 */
+    @inline
+    fn [](self: ref vector<T>, i: i64) -> T { return self.b.view()[i] }
+
+    /** @brief 下标写 `v[i] = x`：越界 trap（由视图写入检查报出），旧元素照常跑 `@drop`。 */
+    fn []=(self: mut ref vector<T>, i: i64, v: T) -> bool {
+        self.b.viewMut()[i] = v
+        return true
+    }
+
     /** @brief 只读视图 `[0, len)`（不拷贝）。改容量的调用之后失效；要独立拷贝用 `snapshot`。 */
     fn view(self: ref vector<T>) -> slice<T> { return self.b.view() }
 

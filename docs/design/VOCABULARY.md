@@ -72,7 +72,7 @@
 | R4 | `mut` 有两层位置：外层（传参）与元素层（嵌套视图） | §2.3 |
 | R5 | 视图失效分两套：容器搬家静态报错；`borrow()` 守卫是运行期 pin，搬家 trap | 静态：``v` changes the storage that `s` views`；运行期：`this buffer is frozen by a live borrow`（`stdlib/std/data/buf.extc`） |
 | R6 | 视图不能活过存储：借用深度 ≤ 0 | 局部数组视图进字段返回被拒：「borrowed from depth 1, but this can only hold up to depth 0」 |
-| R7 | 容器没有数组语法：`v[i]`、`v.len`、`s[1..3]` 都报错 | 「cannot index a value of type vector::vector<i64>」、`struct vector::vector has no field len`、「cannot slice a value of type string::string」（note：`Only a fixed array or a view can be sliced`） |
+| R7 | 容器的数组语法只有一半：`v[a..b]` 与 `v[i]`/`v[i] = x` 都能写（分别降成 `view()`/`viewMut()` 与 `fn []`/`fn []=`）；`v.len` 仍是方法，不是字段 | `v[a..b]` 的降糖在 `src/check/check_expr.c` 的 `EX_SLICE`；`fn []`/`fn []=` 见 `stdlib/std/data/vector.extc`；`struct vector::vector has no field len` 仍是原话；没有 `fn []` 的类型（定长数组以外的标量）仍报「cannot slice a value of type `i32`」 |
 
 ## 4. 冲突点（13 条）
 

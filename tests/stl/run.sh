@@ -65,6 +65,11 @@ rm -rf "$BX"
 echo "== vector<T>：1.5 倍扩容 / dense 连续 / shrink 降水位 / clear 留容量 =="
 run_case vector  tests/stl/vector.extc  "cap0=4 n=9 cap=16 sum=36 shrink=9 pop=8 n=8 clear=0/9 tail=-9"
 
+echo "== vector<T> / buf<T> / string：下标 v[i] 与切片 v[a..b]（借出的视图可写时给 mut slice）=="
+run_case idx      tests/stl/vector_index.extc      "v1=9 w1=90 w2=5 sum=23 s=2/5 bsum=24 sub=el"
+traps    idx_oob  tests/stl/vector_index_oob.extc  "out of range"
+rejects  idx_view tests/stl/vector_index_move.extc "changes the storage that"
+
 echo "== copyInto<T>：一次带检查的整块搬移（memmove，区间可重叠）+ string::append 批量走它 =="
 run_case copyInto tests/stl/copyInto.extc "n=5 b=12345 m=4 a=3456 slen=6 ssum=396"
 

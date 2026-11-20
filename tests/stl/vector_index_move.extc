@@ -1,0 +1,12 @@
+// v[a..b] 借出的视图在容器搬家之后不能再活：编译器拒，消息点名容器。
+use std::io
+use std::data::vector
+
+fn main() -> i32 {
+    var v = vector<i64>::new()
+    v.push(i64(1))
+    let s: slice<i64> = v[..]
+    v.push(i64(2))
+    io::cout << s[0] << "\n"
+    return 0
+}

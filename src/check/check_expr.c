@@ -1955,6 +1955,26 @@ static const char *feeldLendName(Type *base, bool wantMut) {
 }
 
 /**
+ * @brief Whether a view-lending method takes no argument besides `self`.
+ *
+ * Only such a method can stand in for `v[lo..hi]`: a lend method that already takes bounds of
+ * its own (`block<T>.view(from, to)`) would get them from the slice expression and end up with
+ * the wrong arity.
+ *
+ * @param f  The method found by `feeldLendName`.
+ * @return   True when the parameter list is just `self`.
+ */
+static bool feeldLendBare(FuncDef *f) {
+    if (!f || !f->ret) return false;
+    size_t n = f->params.len;
+    if (f->owner && n > 0) {
+        Param *p0 = *(Param **)vecAt(&f->params, 0);
+        if (p0 && p0->name && strcmp(p0->name, "self") == 0) n--;
+    }
+    return n == 0;
+}
+
+/**
  * @brief Lend a "container" argument in place as a read-only view: `varArray<T>` is written `v.asSlice()`,
  *        a fixed-size array is written `a[..]`.
  *
@@ -3059,6 +3079,34 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             Type *elem = NULL;
             if (ob && ob->kind == TY_ARRAY) elem = ob->inner;
             else                              elem = viewElemOf(ob);
+            /* A container that can lend a view can be sliced as well: v[lo..hi] is
+             * v.view()[lo..hi], and v.viewMut()[lo..hi] when the container itself is a
+             * writable place. The lend node is built and checked exactly like the written
+             * call, so the borrow checker and the view-lifetime analysis see the same
+             * thing; only zero-argument lend methods qualify, because block<T>.view(from,
+             * to) already takes bounds of its own. */
+            bool sliceMut = isWritablePlace(c, e->u.slice.obj);
+            if (!elem) {
+                const char *lend = feeldLendName(ttBase(ot), sliceMut);
+                FuncDef *lf = lend ? findMethod(ttBase(ot), lend) : NULL;
+                if (!feeldLendBare(lf)) {
+                    lend = feeldLendName(ttBase(ot), false);
+                    lf = lend ? findMethod(ttBase(ot), lend) : NULL;
+                }
+                if (feeldLendBare(lf)) {
+                    Expr *call = exprMethodNew(c->arena, e->u.slice.obj, lend, e->line);
+                    Type *ct = checkExpr(c, call);
+                    Type *cb = ttIsError(ct) ? NULL : ttBase(ct);
+                    Type *ce = cb ? viewElemOf(cb) : NULL;
+                    if (ce) {
+                        e->u.slice.obj = call;
+                        ot = ct;
+                        ob = cb;
+                        elem = ce;
+                        sliceMut = sliceMut && ct->mut;
+                    }
+                }
+            }
             if (!elem) {
                 ckError(c, e->line, "Only a fixed array or a view can be sliced.",
                         "cannot slice a value of type `%s`", typeStr(c, ot));
@@ -3128,8 +3176,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
              *   `let a` / a string literal / a read-only view  ->  `slice<T>`
              * That is how one view type expresses both permissions, without the two slice
              * types Rust needs. */
-            return ttViewMut(tt, sliceOf(c, elem),
-                             isWritablePlace(c, e->u.slice.obj));
+            return ttViewMut(tt, sliceOf(c, elem), sliceMut);
         }
 
         case EX_ARRAYLIT: {

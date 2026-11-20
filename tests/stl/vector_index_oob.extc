@@ -1,0 +1,10 @@
+// v[i] 越界是运行期 trap（要 none 用 get）。判据：进程失败且消息里有 “out of range”。
+use std::io
+use std::data::vector
+
+fn main() -> i32 {
+    var v = vector<i64>::new()
+    v.push(i64(1))
+    io::cout << v[3] << "\n"
+    return 0
+}

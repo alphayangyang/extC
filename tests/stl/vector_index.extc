@@ -1,0 +1,36 @@
+// vector / buf / string 的下标与切片：v[i] 读、v[i] = x 写、v[a..b] 借出一个视图。
+// 判据：v[1]=9 → 写 90 → 经可写切片写 5 → 和 23；s=2/5；buf 经切片写成 20 → 和 24；string 切出 "el"。
+use std::io
+use std::data::vector
+use std::data::buf
+
+fn sum(xs: slice<i64>) -> i64 {
+    var t: i64 = 0
+    for x in xs { t = t + x }
+    return t
+}
+
+fn main() -> i32 {
+    var v = vector<i64>::new()
+    v.push(i64(7))
+    v.push(i64(9))
+    v.push(i64(11))
+    io::cout << "v1=" << v[1]
+    v[1] = i64(90)
+    io::cout << " w1=" << v[1]
+    var m: mut slice<i64> = v[1..3]
+    m[0] = i64(5)
+    io::cout << " w2=" << v[1] << " sum=" << sum(v[..])
+    let s: slice<i64> = v[1..]
+    io::cout << " s=" << s.len << "/" << s[0]
+    var b = buf<i64>::withCap(8)
+    b.push(i64(1))
+    b.push(i64(2))
+    b.push(i64(3))
+    var bm: mut slice<i64> = b[1..3]
+    bm[0] = i64(20)
+    io::cout << " bsum=" << sum(b[..])
+    var str = "hello"
+    io::cout << " sub=" << str[1..3] << "\n"
+    return 0
+}
