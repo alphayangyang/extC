@@ -671,7 +671,16 @@ static void stMatch(CG *g, Stmt *s) {
  * below are then already concrete. */
 Type *et = ttBase(subst(g, s->u.match.scrutinee->type));
 bool payload = et && et->kind == TY_ENUM && et->edef && enumHasPayload(et->edef);
-const char *subj = genExpr(g, s->u.match.scrutinee);
+/* A match on a constant unit variant (`match color.red`) compares the same
+ * constant against itself in the arm that matches. The comparison is correct,
+ * but tautological; emit `1` for that one arm so C compilers do not warn
+ * about it (-Wtautological-compare) while the shape stays an if/else chain. */
+Expr *scrut = s->u.match.scrutinee;
+const char *scrutVar = (!payload && scrut->kind == EX_ENUMVAL &&
+                        scrut->u.enumval.args.len == 0)
+                           ? scrut->u.enumval.variant
+                           : NULL;
+const char *subj = genExpr(g, scrut);
 if (payload) {
     const char *tmp = arenaPrintf(g->arena, "__extc_m%d", g->tmpSeq++);
     cgLine(g, "%s %s = %s;", cType(g, et), tmp, subj);
@@ -699,8 +708,12 @@ for (size_t i = 0; i < s->u.match.arms.len; i++) {
         g->indent--;
         continue;
     }
-    cgLine(g, "%s (%s%s == %s_%s) {", i == 0 ? "if" : "} else if",
-           subj, payload ? ".tag" : "", et ? et->name : "?", arm->variant);
+    if (scrutVar && strcmp(arm->variant, scrutVar) == 0) {
+        cgLine(g, "%s (1) {", i == 0 ? "if" : "} else if");
+    } else {
+        cgLine(g, "%s (%s%s == %s_%s) {", i == 0 ? "if" : "} else if",
+               subj, payload ? ".tag" : "", et ? et->name : "?", arm->variant);
+    }
     g->indent++;
     /* Bind the payload: `circle(r) => ...` becomes
      * `double r = tmp.u.circle._0;`. */
