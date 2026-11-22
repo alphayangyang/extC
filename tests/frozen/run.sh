@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # tests/frozen/run.sh —— **`@frozen`（作者签字"布局就是 C 的布局"）的常设验收**
-# 设计与理由：docs/topics/C-ABI.md §9.8。
+# 设计与理由：../extc-docs/archive/topics/C-ABI.md §9.8。
 #
 # 判据（四正四反 + 两条**有牙**）：
 #   ① 正例：真调 libc 的**按值返回**（imaxdiv）· 字段形状凑齐（i8/f64/bool/指针/数组/嵌套 frozen）·

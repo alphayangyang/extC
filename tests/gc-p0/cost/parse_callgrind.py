@@ -4,7 +4,7 @@
 Events with --cache-sim=yes: Ir Dr Dw I1mr D1mr D1mw ILmr DLmr DLmw.
 Everything here is *deterministic instruction / cache-simulation* data: no timing.
 Wall-clock and GC-time columns are passed in via --wall-ms / --gc-ms and are
-labelled as "reported" values, never measured here (see docs/analysis/ALLOC-COST.md §1).
+labelled as "reported" values, never measured here (see ../extc-docs/devlog/analysis/ALLOC-COST.md §1).
 
 Usage:
   parse_callgrind.py PROFILE [--off PROFILE] [--allocs N] [--steps N]

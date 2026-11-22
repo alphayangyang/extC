@@ -7,7 +7,7 @@
  *   - pages: only touched pages are resident; with MADV_HUGEPAGE a 2 MiB fault brings the whole quantum
  *
  * Usage: cc -O2 -std=gnu11 -o arena_cost tools/probe/arena_cost.c && taskset -c 6 ./arena_cost
- * Numbers in docs/analysis/GC-ROOFLINE.md 6.22.7 come from one run of this probe (core 6).
+ * Numbers in ../extc-docs/devlog/analysis/GC-ROOFLINE.md 6.22.7 come from one run of this probe (core 6).
  */
 #define _GNU_SOURCE
 #define _POSIX_C_SOURCE 200809L

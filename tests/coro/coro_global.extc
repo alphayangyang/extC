@@ -1,4 +1,4 @@
-/* 判据：`global` —— 函数里的持久存储（docs/topics/GLOBAL.md）。
+/* 判据：`global` —— 函数里的持久存储（../extc-docs/archive/topics/GLOBAL.md）。
  *
  * 三条一起验：
  *   ① **视图跨 `yield` 合法**：`global var buf: [8]u8` 的切片挂在协程体里跨过挂起点；

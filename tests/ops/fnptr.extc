@@ -1,5 +1,5 @@
 // expect: v=42 via=42 ret=42 field=21 twice=84 nested=42 pid=yes
-// `fn(A) -> R`：裸函数指针（docs/topics/C-ABI.md 第 9 节第 1 步）的常设验收。
+// `fn(A) -> R`：裸函数指针（../extc-docs/archive/topics/C-ABI.md 第 9 节第 1 步）的常设验收。
 //
 // 四种出现位置各一次（值 / 参数 / 返回值 / 结构体字段），加两个更难得对的地方：
 //   · **嵌套**：`fn(fn(i64) -> i64, i64) -> i64`，外层 typedef 必须在内层之后发射；

@@ -9,7 +9,7 @@ at the source; if a wider type ever appears this gate is the thing that must go 
 What it buys: the slot unit decides internal fragmentation, hence peak RSS on
 allocation-heavy shapes. It does not establish a bound by itself -- the exhaustive
 index check is tests/reclaim-perf/slotindex.c (gate-reclaim-perf), and the numbers
-are recorded in docs/CHANGELOG.md.
+are recorded in 文档项目 devlog/changelog/.
 
 Also pins the forced-inline attribute on the slot-size function: with it, every
 allocation site with a constant size folds the step and its zeroing becomes inline

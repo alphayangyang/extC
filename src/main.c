@@ -494,8 +494,10 @@ static void usage(const char *argv0) {
     /* These further diagnostic switches are printed **separately** from the big table
      * above: one independent fprintf keeps them out of that table's layout. */
     fprintf(stderr,
-        "  EXTC_RC_NOCOUNT=0    re-enable holder counting (it is **off by default**): the default\n"
-        "                       rests on region sweeps alone -- **CHANGES THE OUTPUT**.\n"
+        "  EXTC_RC_NOCOUNT=0    force holder counting on: the budget regime is chosen per unit by\n"
+        "                       the compile-time RcPlan (no-count / count / event), so counting is\n"
+        "                       off by default; \x60=0\x60 bypasses the plan and counts holders\n"
+        "                       everywhere -- **CHANGES THE OUTPUT**.\n"
         "  EXTC_RC_DBG_LEVEL=1  diagnostic only: print, for every reference store site, whether the\n"
         "                       value and its host object sit in the same arena level.\n"
         "  EXTC_RC_LOCALSTORE=0 kill switch: turn OFF the local/parameter slot store entry\n"

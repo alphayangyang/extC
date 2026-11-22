@@ -6,14 +6,23 @@
     tools/check_manual.py --write-baseline
 
 公开面的权威清单是 `tools/manual-surface.txt`（由源码生成）。手册正文是唯一真源
-（`docs/manual/*.md`），HTML 是生成物。基线按**模块**记未覆盖计数：只许变少，不许变多 ——
+（仓库 `docs/*.md` 除去生成的 `surface.md`，加上文档项目 `guide/` 与 `reference/`；
+文档项目缺位时本门禁按跳过协议退出），HTML 是生成物。基线按**模块**记未覆盖计数：只许变少，不许变多 ——
 这样新加一个公开成员而不写手册会被闸门挡住，而补齐既有欠账不会被阻塞。
 """
 import re, sys, glob, os, subprocess
 
+import docroot
+
 BASE = 'tools/manual-baseline.txt'
-man = '\n'.join(open(f, encoding='utf-8').read() for f in sorted(glob.glob('docs/usage/*.md'))
-                if os.path.basename(f) != 'surface.md')
+man_files = [f for f in sorted(glob.glob('docs/*.md')) if os.path.basename(f) != 'surface.md']
+if docroot.missing():
+    docroot.skip('手册正文已随文档独立成项目（guide/ + reference/），无文档项目可查')
+for _sub in ('guide', 'reference'):
+    _dir = docroot.project() / _sub
+    if _dir.is_dir():
+        man_files += [os.fspath(p) for p in sorted(_dir.glob('*.md'))]
+man = '\n'.join(open(f, encoding='utf-8').read() for f in man_files)
 
 def flags():
     exe = os.environ.get('EXTC', 'build/extc')

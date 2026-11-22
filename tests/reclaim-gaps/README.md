@@ -1,12 +1,12 @@
 # `tests/reclaim-gaps/` —— **现在还有哪些情况回收不掉**（实测矩阵）
 
-对象：分支 `main` 的当前树（每修掉一条缺口就复跑本矩阵刷新，逐轮记录见 `docs/changelog/`）。
+对象：分支 `main` 的当前树（每修掉一条缺口就复跑本矩阵刷新，逐轮记录见 `../extc-docs/devlog/changelog/`）。
 方法：为每一维组合造小形状（≤60 行），**逐条实测**：开关开（`EXTC_RECLAIM=1`）vs 关
 （`EXTC_RECLAIM=0`），量峰值（`/usr/bin/time -v` 的 Maximum resident set size）、退出码、
 stdout、以及 `tools/rc-pause-probe.py` 观察到的**清扫次数**。
 
 **没有推理填空**：下面每一行要么有实测数字，要么明确写「未实测」。
-本目录最初只新增文件；之后每修掉一条缺口，`src/` 与 `docs/` 会跟着改（逐轮见 `docs/changelog/`），`out/` 由 `gate.py` / `run-gaps.sh` 重跑刷新。
+本目录最初只新增文件；之后每修掉一条缺口，`src/` 与 `docs/` 会跟着改（逐轮见 `../extc-docs/devlog/changelog/`），`out/` 由 `gate.py` / `run-gaps.sh` 重跑刷新。
 
 ```sh
 tests/reclaim-gaps/run-gaps.sh                 # 全矩阵 + 规模判据（永远 exit 0，打印结果）
@@ -309,7 +309,7 @@ argv（`ring*` 这一族用**轮数**当规模，不是结点数；每轮垃圾 
   ⇒ 鸡生蛋：两边的标记都能从种子走到整整一环，`freedSlots = 0` ⇒ 自学习把 `scale` 翻倍、
   阈值涨到 `EXTC_RC_SCALE_MAX`（17 GB）⇒ 该区域**彻底不扫**。
 
-这就是 `docs/design/RECLAMATION.md:128-130` 早就写下的那条（"把一条链或一个环强行切开，跨片登记位就会
+这就是 `../extc-docs/design/RECLAMATION.md:128-130` 早就写下的那条（"把一条链或一个环强行切开，跨片登记位就会
 成为环垃圾的种子……界随轮数增长"）：**区域标记精确 ⟺ 划分不切开任何 SCC**。
 
 | 消融（生成物副本）| 250 轮 | 1000 轮 | 规模律 | 健全？ |

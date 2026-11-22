@@ -1,6 +1,6 @@
 # `tests/reclaim-elide/` —— 「计数按编译期收窄」的**红判据语料**
 
-配套机制文档：[`docs/design/RECLAMATION.md`](../../docs/design/RECLAMATION.md) 第五节最后一条。
+配套机制文档：[`../extc-docs/design/RECLAMATION.md`](../../../extc-docs/design/RECLAMATION.md) 第五节最后一条。
 度量口径：[`prototype/reclaim/README.md`](../../prototype/reclaim/README.md)「写密集形状：计数这块的代价」。
 
 ## 这个目录的语义
@@ -59,7 +59,7 @@
 > 都语义敏感：正确计数 `v=0`，误省 ⇒ `v=1`。
 
 
-判据来源：`docs/design/RECLAMATION.md` 第五节最后一条（**已按实测收紧**，见那一节的现文）。原先那句
+判据来源：`../extc-docs/design/RECLAMATION.md` 第五节最后一条（**已按实测收紧**，见那一节的现文）。原先那句
 "能省的情形：区域反正要被清扫 / 全新分配 / **还有别的持有者**"按字面读**不健全** ——
 第三类被实测推翻：持有边自己可能先死，省掉那条 `inc` 会读到坏值
 （`keep_other_holder_dies.extc`：省了 ⇒ `v=2`，基线 `v=7`）。正确的判据是**对象级**的

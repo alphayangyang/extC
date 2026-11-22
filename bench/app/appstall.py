@@ -209,7 +209,7 @@ def config_report(path):
       f"  {'核对通过' if md5(EXTC) == EXTC_MD5_EXPECTED else '核对失败'}")
     w("[extC] 编译开关（与 bench/app/run.sh 逐字同一套）：")
     w(f"        extc bench/app/<shape>.extc -o <gen.c> ; cc -O2 -std=c11 -fwrapv <gen.c> -o <bin>")
-    w("        （run.sh 用的就是这两条；`-fwrapv` 是 extC 的既定编译契约，docs/MANUAL.md §8）")
+    w("        （run.sh 用的就是这两条；`-fwrapv` 是 extC 的既定编译契约，../extc-docs/archive/MANUAL.md §8）")
     w("        EXTC_RECLAIM 是**代码生成开关**（编译期 getenv），只在对照臂的 extc 调用上设：")
     w("          extc_def   env -u EXTC_RECLAIM      （出厂默认）")
     w("          extc_norec EXTC_RECLAIM=0           （非默认档）")

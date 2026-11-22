@@ -27,7 +27,7 @@ python3 tools/gate_difffuzz.py	gate-difffuzz	80	timeout 600
 ./tests/arena/run.sh	arena	85	timeout 600
 ./tests/warnings/run.sh	warnings	88	timeout 600
 ./tests/generics/run.sh	generics	93	timeout 600
-python3 tools/gen_flags.py --check	gen-flags	98	原命令（单一真源 docs/usage/flags.md）
+python3 tools/gen_flags.py --check	gen-flags	98	原命令（单一真源 docs/flags.md）
 python3 tools/gen_flags.py	gen-flags	98	失败提示里让用户跑的修复命令（不是独立项）
 python3 tools/check_manual.py --gate	check-manual	101	棘轮：公开面欠账只许不增长
 python3 tools/manual_surface.py --check	manual-surface	104	原命令

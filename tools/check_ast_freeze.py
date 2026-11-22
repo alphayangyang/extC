@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """R1 · the AST is frozen once the parser has built it.
 
-Why this rule exists (docs/topics/AST-DECOUPLING.md): a node the analysis phase can still
+Why this rule exists (文档项目 archive/topics/AST-DECOUPLING.md): a node the analysis phase can still
 write is not a syntax tree but a shared mutable record -- and a node shared by several
 instances of a generic body made "the last writer wins" a silent miscompile. Every real
 compiler surveyed states the same rule (rustc: "the AST and HIR are immutable once

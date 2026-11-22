@@ -113,7 +113,7 @@ COLD_DENSE_DEFAULT = ("pd_pointer_dense",)   # Lead m04242：按 shape 归类，
 # <=5us/占比 判据结构性不可判，只能记 N/A 并列出可判定界；大分配走 (b)、通道走 (c)。
 MIXED_DEFAULT = ("pd_bigobj", "pd_bigobj60", "pd")
 # Lead m04591（(b) 的最终口径，取代 m04448 的待定态）：
-#  - chunk 锁 8192（内存优先的最终决定，docs/analysis/P1-RQ3-CHUNK.md:3/:19-22）；
+#  - chunk 锁 8192（内存优先的最终决定，../extc-docs/devlog/analysis/P1-RQ3-CHUNK.md:3/:19-22）；
 #  - c_seg(shape) = [segsteps] p99.9_us / chunk，来自 tests/gc-p0/bseg-cal.tsv（每个 build 标定一次）；
 #    不用 [top] 的 278-424us 粗段（那是 pops=1 冷对象整段，含冷 pop 成本，不是纯扫描成本）。
 #  - (b) 判据 = p99.9 <= min(1.5*c_seg*chunk+1us, 64us 桶界兜底) 且 over1ms=0；

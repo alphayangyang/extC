@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""比较 docs/conciseness/ 里成对练习的 extC 与 Python 写法。
+"""比较 文档项目 devlog/conciseness/ 里成对练习的 extC 与 Python 写法。
 
 用法：
     python3 tools/conciseness.py            # 表格 + 合计

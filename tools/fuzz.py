@@ -8,7 +8,7 @@
 
 **不要放在 /tmp**：那里常常是 tmpfs（内存盘），几轮战役就能把它写满，而写满之后连 bash
 都起不来（它的暂存也在 /tmp）—— 2026-09-28 就这样卡住过一次，见
-docs/topics/HARDENING.md 第四节。
+文档项目 archive/topics/HARDENING.md 第四节。
 """
 import argparse, os, random, re, shutil, subprocess, sys, hashlib
 from concurrent.futures import ThreadPoolExecutor

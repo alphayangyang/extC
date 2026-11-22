@@ -2,7 +2,7 @@
 /* ⭐ 回归用例（2026-09-24）：**跨模块的全局常量 + struct 的递归打印 + reader** 同时出现时，
  *    编译器**段错误** ✗ —— 根因：`std::io` 里的 `io::STDIN_FD` 是**别的模块的全局常量**，
  *    绑定的符号 `cname == NULL`，而数据流分析拿它去 `strcmp` ⇒ 空指针崩溃。
- *    修法：`cnameEq()` 把"没有 C 名的绑定"当成**不匹配任何事实**（见 src/dataflow.c）✓
+ *    修法：`cnameEq()` 把"没有 C 名的绑定"当成**不匹配任何事实**（见 src/check/check_dataflow.c）✓
  *
  * 这个形状本身很普通（打印一个 struct + 从 stdin 读一行），所以它必须是常设用例 ✓ */
 use std::io

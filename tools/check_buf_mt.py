@@ -12,7 +12,7 @@
 
 判据只有结构 + 红自测：这三条都是性能/正确性的编译期选择，行为判据看不见回潮（把 mag0 删掉
 仍然正确，只是慢 4 倍；把 MT 恒写 1 也仍然正确，只是每容器多两个原子）。数字记在
-docs/design/BUF-INVARIANT.md 与 bench/containers/RESULTS.tsv，这里只判结构。
+文档项目 design/BUF-INVARIANT.md 与 bench/containers/RESULTS.tsv，这里只判结构。
 
 用法：
     python3 tools/check_buf_mt.py             判据（需要 build/extc）

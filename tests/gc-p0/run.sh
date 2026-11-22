@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # tests/gc-p0/run.sh —— 阶段 0 门禁 G1/G4/G8/G9 的一键重跑（基线 + patch 后用同一条命令对比）
 #
-# 判据（docs/analysis/GC-ROOFLINE.md §7；G1 于 2026-11-09 按噪声地板实测修订，见 Lead 结论）：
+# 判据（../extc-docs/devlog/analysis/GC-ROOFLINE.md §7；G1 于 2026-11-09 按噪声地板实测修订，见 Lead 结论）：
 #   G8  强制事件档（T1）跑 chain2：VmHWM ≤ 1.1× 同形状 T2，且 ASAN 两侧 rc=0 无报告
 #   G9  有活任务时调 syspool::collect()：任务仍可驱动、任务数不变
 #       after 期望 stdout 全文：live0=1 freed=0 live1=1 / got=20 steps=5 / tag=777，exit 0
@@ -401,7 +401,7 @@ echo "== G22：长串周转的内存上界（判据 maxRSS(k=16) <= 1.5 × maxRS
 # Lead R4c：这是一条 **XFAIL 棘轮**（迁移前必须红、迁移后必须绿），形状见
 # tests/gc-p0/src/leak_string_grow.extc 头：连续构造 k 条 1 MiB 长串、每条用完即弃，活集恒为一条。
 # 判据：maxRSS(k=16) / maxRSS(k=4) ≤ 1.5（活集不随 k 变，峰值就不该随 k 变）。
-# 规则与迁移顺序见 docs/design/CONTAINER-OWNERSHIP.md；池底实现实测 3.2x（线性、斜率 ≈ 一个串）。
+# 规则与迁移顺序见 ../extc-docs/design/CONTAINER-OWNERSHIP.md；池底实现实测 3.2x（线性、斜率 ≈ 一个串）。
 if [ "$WHAT" = all ] || [ "$WHAT" = g22 ]; then
     if build g22 tests/gc-p0/src/leak_string_grow.extc; then
         defines g22

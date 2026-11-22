@@ -657,7 +657,7 @@ def build_items() -> list:
     # 不在检查器里另抄一份（避免"清单与真相各有一份"）。
     items.append(cmd(
         "gate-doc-refs", "gate",
-        "元判据·文档引用：`tools/inject.py` 里的每条注入都必须出现在它声明的活文档里（默认 docs/design/RECLAMATION.md）",
+        "元判据·文档引用：`tools/inject.py` 里的每条注入都必须出现在它声明的活文档里（默认文档项目 design/RECLAMATION.md；缺项目则跳过）",
         ["python3", "tools/check_doc_refs.py"], timeout=120,
         ok_msg=ok_first(r"^ok "),
         bad_msg="tools/check_doc_refs.py（有注入没写进文档）",
@@ -676,23 +676,23 @@ def build_items() -> list:
         bad_dump=dump_fail(8)))
 
     # ---- 元判据·跳过清单与代码同步 ----
-    # 运行期里每处"直接返回"都是一刀；`docs/design/RECLAMATION.md` 的跳过表写明它们的前提与失效方向。
+    # 运行期里每处"直接返回"都是一刀；文档项目 design/RECLAMATION.md 的跳过表写明它们的前提与失效方向。
     # 义务表已有门禁（gate-invariant-table），这条是跳过表的对应物：标记 ↔ 表行双向对齐，
     # 并且"未标记的单行早退"是个只许往下拧的棘轮（当前 0）。
     items.append(cmd(
         "gate-skip-table", "gate",
-        "元判据·跳过清单：每处 `if (…) return` 都带 `/* skip:<id> */`，且与 docs 的跳过表双向对齐",
+        "元判据·跳过清单：每处 `if (…) return` 都带 `/* skip:<id> */`，且与文档项目的跳过表双向对齐",
         ["python3", "tools/check_skip_table.py"], timeout=120,
         ok_msg=ok_first(r"^ok "),
         bad_msg="tools/check_skip_table.py（跳过清单与代码不同步）",
         bad_dump=dump_fail(8)))
 
     # ---- 元判据·不变量清单不许漏项 ----
-    # 清单（`docs/design/RECLAMATION.md` 那张表）的价值全在完整：新写一条义务忘了进表，表就退化成
+    # 清单（文档项目 design/RECLAMATION.md 那张表）的价值全在完整：新写一条义务忘了进表，表就退化成
     # 抽查记录。清单本身没法自动生成（"在哪强制""怎么证明"要人写），但完整性可以机械检查。
     items.append(cmd(
         "gate-invariant-table", "gate",
-        "元判据·不变量清单：运行期里出现的每个「义务 N」都必须在 docs/design/RECLAMATION.md 的表里",
+        "元判据·不变量清单：运行期里出现的每个「义务 N」都必须在文档项目 design/RECLAMATION.md 的表里",
         ["python3", "tools/check_invariant_table.py"], timeout=120,
         ok_msg=ok_first(r"^ok "),
         bad_msg="tools/check_invariant_table.py（不变量清单漏项）",
@@ -1247,22 +1247,22 @@ def build_items() -> list:
     # ---- 驱动开关页 ----
     items.append(cmd(
         "gen-flags", "docs",
-        "驱动开关页与 `extc --help` 一致（单一真源 docs/usage/flags.md）；不一致 ⇒ 跑 tools/gen_flags.py",
+        "驱动开关页与 `extc --help` 一致（单一真源 docs/flags.md）；不一致 ⇒ 跑 tools/gen_flags.py",
         sh('python3 tools/gen_flags.py --check'),
-        ok_msg=ok_out, bad_msg="docs/usage/flags.md 已过期",
+        ok_msg=ok_out, bad_msg="docs/flags.md 已过期",
         bad_dump=lambda _out: ["  跑 python3 tools/gen_flags.py"]))
 
     # ---- 文档覆盖 ----
     items.append(cmd(
         "check-manual", "docs",
-        "文档覆盖：驱动开关逐项 + 公开面棘轮（欠账只许不增长，新增欠账即红）",
+        "文档覆盖：驱动开关逐项 + 公开面棘轮（手册正文 = 仓库 docs/ 加文档项目 guide/、reference/）",
         sh('python3 tools/check_manual.py --gate'),
         ok_msg=ok_out, bad_msg="文档覆盖出现新增欠账", bad_dump=dump_head(6)))
 
     # ---- 公开面清单 ----
     items.append(cmd(
         "manual-surface", "docs",
-        "公开面清单与源码一致（tools/manual-surface.txt + docs/usage/surface.md）",
+        "公开面清单与源码一致（tools/manual-surface.txt + docs/surface.md）",
         sh('python3 tools/manual_surface.py --check'),
         ok_msg=ok_out, bad_msg="公开面清单已过期",
         bad_dump=lambda _out: ["  跑 python3 tools/manual_surface.py"]))
@@ -1276,16 +1276,40 @@ def build_items() -> list:
     # ---- 活文档不写历史 ----
     items.append(cmd(
         "check-no-history", "docs",
-        "活文档不写历史（棘轮：决策编号与时代用词只许减；历史只进 CHANGELOG）",
+        "活文档不写历史（棘轮：决策编号与时代用词只许减；历史只进文档项目 devlog/changelog/）",
         sh('python3 tools/check_no_history.py --gate'),
         ok_msg=ok_out, bad_msg="活文档出现新的历史词", bad_dump=dump_head(8)))
 
-    # ---- 开发历史按月分页 ----
+    # ---- 文档项目：开发历史按月分页（项目缺位时脚本自报跳过，不计数） ----
     items.append(cmd(
-        "check-changelog", "docs",
-        "开发历史按月分页：条目落在当月页，索引里的月份表与月份页一致",
+        "doc-project-changelog", "docs",
+        "文档项目·开发历史按月分页：条目落在当月页，索引里的月份表与月份页一致（缺项目则跳过）",
         sh('python3 tools/check_changelog.py --gate'),
         ok_msg=ok_first(r"^ok "), bad_msg="历史分页或索引不一致", bad_dump=dump_head(8)))
+
+    # ---- 文档项目（兄弟仓库 ~/extc-docs）：活文档的现状 ----
+    # 文档独立成项目后这些内容不在本仓库；项目缺位时子脚本按跳过协议退出（明说没验、不计数）。
+    items.append(cmd(
+        "doc-project-anchors", "docs",
+        "文档项目·活文档的锚点只引符号不引行号，且每个符号在本仓库源码里可解析（缺项目则跳过）",
+        sh('python3 tools/doc_anchors.py --project'),
+        ok_msg=ok_first(r"^ok: symbol-only"), bad_msg="文档项目活文档里还有数字锚点，或符号解不出来",
+        bad_dump=dump_head(10)))
+    items.append(cmd(
+        "doc-project-history", "docs",
+        "文档项目·活文档不写历史（历史只进 devlog/changelog/；缺项目则跳过）",
+        sh('python3 tools/check_no_history.py --project --gate'),
+        ok_msg=ok_out, bad_msg="文档项目活文档出现历史词", bad_dump=dump_head(8)))
+    items.append(cmd(
+        "doc-project-examples", "docs",
+        "文档项目·活文档里的示例是判据（完整程序必须编过；片段与负例要标注；缺项目则跳过）",
+        sh('python3 tools/check_doc_examples.py --project --gate'), timeout=600,
+        ok_msg=ok_out, bad_msg="文档项目的示例编不过或没标注", bad_dump=dump_head(8)))
+    items.append(cmd(
+        "doc-project-facts", "docs",
+        "文档项目·reference/guide 里写的 API 名真的存在（缺项目则跳过）",
+        sh('python3 tools/check_doc_facts.py --project'),
+        ok_msg=ok_out, bad_msg="文档项目里有源码里找不到的 API 名", bad_dump=dump_head(8)))
 
     # ---- 头文件 Doxygen 覆盖 ----
     items.append(cmd(
@@ -1371,7 +1395,7 @@ def build_items() -> list:
 
     items.append(cmd(
         "check-plan-seam", "seam",
-        "计划接缝 X1：codegen 只能经 src/plan.h 读分析产物/编译计划，直读即红",
+        "计划接缝 X1：codegen 只能经 src/plan/plan.h 读分析产物/编译计划，直读即红",
         sh('python3 tools/check_plan_seam.py'),
         ok_msg=tail1, bad_msg="tools/check_plan_seam.py", bad_dump=dump_all))
     items.append(cmd(
@@ -1812,7 +1836,7 @@ def build_items() -> list:
     # ---- 期 0 · 哈希表 ----
     items.append(cmd(
         "hashmap", "tests",
-        "哈希表（key→value 随机的正解：三列平坦存储 + 线性探测 + Knuth 回移 · 见 docs/design/HASHMAP.md）",
+        "哈希表（key→value 随机的正解：三列平坦存储 + 线性探测 + Knuth 回移 · 见文档项目 design/HASHMAP.md）",
         ["./tests/hashmap/run.sh"], timeout=600,
         ok_msg=ok_count_ok(" 项（新键/覆盖/碰撞/墓碑 churn 平/canary/ASan）"),
         bad_msg="tests/hashmap/run.sh", bad_dump=dump_fail(8)))
@@ -1828,7 +1852,7 @@ def build_items() -> list:
     # ---- STL ----
     items.append(cmd(
         "stl", "tests",
-        "STL 库（一个库装所有动态容器；存储是地址预留与平坦块 —— 见 docs/design/BUF-INVARIANT.md）",
+        "STL 库（一个库装所有动态容器；存储是地址预留与平坦块 —— 见文档项目 design/BUF-INVARIANT.md）",
         ["./tests/stl/run.sh"], timeout=600,
         ok_msg=ok_count_ok(" 项（vector：翻倍/dense 连续/shrink/clear · ASan）"),
         bad_msg="tests/stl/run.sh", bad_dump=dump_fail(8)))

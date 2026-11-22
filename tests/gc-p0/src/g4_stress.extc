@@ -4,7 +4,7 @@
  * 峰值驻留应 ≤ 声明 M_max + 8 MiB，且稳态各轮峰值不随轮次单调上涨（相邻两轮差 ≤2%）。
  * 三档对照（由 tests/gc-p0/stress.py 驱动）：
  *   A 默认（隐式 3·L） / B EXTC_RC_M_MAX=33554432（32 MiB） / C EXTC_RC_M_MAX=1099511627776（等效关墙）
- * 判据与口径见 docs/analysis/MEASUREMENTS-GC-P0.md §8.1；量具是 /proc/<pid>/status 的 VmHWM/VmRSS
+ * 判据与口径见 ../extc-docs/devlog/analysis/MEASUREMENTS-GC-P0.md §8.1；量具是 /proc/<pid>/status 的 VmHWM/VmRSS
  * （2 ms 采样）+ 运行时 EXTC_RC_PAUSE=1 的 [work]/[mmax] 行。
  *
  * 形状细节：

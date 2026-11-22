@@ -443,8 +443,8 @@ B 节里**还在发 rc** 的前几名（按 max）：`cyclic_pressure` **491.5**
 
 | 形状 | 判的是什么 | 出处（落盘，可核 ✓） | 状态 |
 |---|---|---|---|
-| `carray_slot` | `D1`（元素槽 vs 真栈槽）让它**真 idle**，但 **N vs 4N = 2.12× ⇒ 破界** | `docs/CHANGELOG.md:98`；`tests/reclaim-perf/CHAIN-BLOCKERS.md`（链 `D`，绊线体检**不可走**） | **不可走** ✗（实测 ✓） |
-| `cyclic_pressure` / `shard_bands` | 链头 **C**；`C1`/`C1u`、`C2`/`C2u` **兑现 0**，真正的链是 **C→D** | `docs/CHANGELOG.md:101–112`（`C2u` 表 + “忠实版 `C2` 是 `C2u` 的真子集 ⇒ 不可能兑现更多”）；`tests/reclaim-perf/NARROW-PROBE-DEH.md`；`CHAIN-BLOCKERS.md` | **不可走** ✗（**实测兑现 0** ✓✓） |
+| `carray_slot` | `D1`（元素槽 vs 真栈槽）让它**真 idle**，但 **N vs 4N = 2.12× ⇒ 破界** | `../extc-docs/devlog/changelog/README.md:98`；`tests/reclaim-perf/CHAIN-BLOCKERS.md`（链 `D`，绊线体检**不可走**） | **不可走** ✗（实测 ✓） |
+| `cyclic_pressure` / `shard_bands` | 链头 **C**；`C1`/`C1u`、`C2`/`C2u` **兑现 0**，真正的链是 **C→D** | `../extc-docs/devlog/changelog/README.md:101–112`（`C2u` 表 + “忠实版 `C2` 是 `C2u` 的真子集 ⇒ 不可能兑现更多”）；`tests/reclaim-perf/NARROW-PROBE-DEH.md`；`CHAIN-BLOCKERS.md` | **不可走** ✗（**实测兑现 0** ✓✓） |
 | `live_churn` / `cross_region` / `scale_growth` | 链头 **D**；`D2`（槽 def-use）按“本迭代窗口”实现**会破这三条钉住的对照** | `CHAIN-BLOCKERS.md`（链 `D` ⇒ 不可走）；`tests/reclaim-perf/IDLE-BLOCKERS.md`（这三条**本身就是绊线** ✗） | **不可走** ✗（绊线身份是实测 ✓；`D2` 那一支**只是影响面评估、未实现** ✗，见 `NARROW-PROBE-DEH.md:98` 自述“以下是判断，不是实测”） |
 | `slot_elem_unknown` / `digraph` / `owed_home` / `struct_copy_slot` | 链含 **D**，或 **F 的站点在循环里** | `CHAIN-BLOCKERS.md` 的逐形状完整链（`B→D` / `D→C→E→B` / `E→D` / `F→A→D`） | **不可走** ✗（实测链 ✓） |
 | `base_call_unknown` | 基表达式带调用 ⇒ **仍然是 B**；且 max **91 µs < 100 µs** 门槛 | `CHAIN-BLOCKERS.md`（链 `B`，stuck）；本文件 B.4 表 | **不在靶上** ✓ |

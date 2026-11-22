@@ -62,7 +62,7 @@ bash bench/httpd/run.sh
 若再做，要一次只动一个变量：① 只把"解析挪出协程"（`planRequest`，见下）单独量；② "等可写"改用
 `EPOLL_CTL_MOD` 单独量。
 
-### 协程那条规则的原文（`docs/topics/CONCURRENCY.md` §4.4）
+### 协程那条规则的原文（`../extc-docs/archive/topics/CONCURRENCY.md` §4.4）
 
 > | 被取**视图**、且视图跨挂起点的局部 | **不自动搬**（用户没写 `new` 就不进 arena，无隐式分配）⇒
 > **编译期拒绝**，消息给两条改法：自己 `new` 到任务层 / 存偏移、恢复后重取 |

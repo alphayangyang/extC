@@ -91,7 +91,7 @@ C++ 对照没编过  : 0（编过的 119 个全部跑通）
 ### §1 `E_DEPTH_A0_STORE`（14；10 例是决定性那条）
 
 **最小复现（决定性实验）**：[`min/main_dfield_after.extc`](min/main_dfield_after.extc)
-—— 与 `docs/usage/language.md` §8.1 的 `build` 双向链同构，只放进 `main`：
+—— 与 `../extc-docs/reference/language.md` §8.1 的 `build` 双向链同构，只放进 `main`：
 
 ```extc
 var head: ?mut ref node = null

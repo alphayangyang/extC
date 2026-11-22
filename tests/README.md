@@ -43,4 +43,4 @@ CI（[`.github/workflows/ci.yml`](../.github/workflows/ci.yml)）只跑 `ci` 一
 2. 改实现，直到它变绿。
 3. 再补一条反例，防止规则被放宽。
 4. 注册进 `tools/check.py`，跑 `./check.sh nobench`。
-5. 结果写进 [`docs/changelog/`](../docs/changelog/) 当月页 —— 判据也是交付物，不能只有代码。
+5. 结果写进 [`../extc-docs/devlog/changelog/`](../../extc-docs/devlog/changelog) 当月页 —— 判据也是交付物，不能只有代码。

@@ -6,7 +6,7 @@
  * 期望（修好之后）：零告警、输出 `p=7`。
  * 现状（未修）：可能报 "parameter p is never used" 一类的警告。
  *
- * 更严重的邻居（见 docs/topics/AST-WALKERS.md §6）：`markNamesInExpr`（逃逸标记）、
+ * 更严重的邻居（见 ../extc-docs/archive/topics/AST-WALKERS.md §6）：`markNamesInExpr`（逃逸标记）、
  * `collectEffectsExpr`（effects 汇总）、loader 的 `rwExpr`（限定名重写）——同一个漏法，
  * 后果更重；本文件只钉住最容易观察的那一个。 */
 use std::io

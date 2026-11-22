@@ -182,7 +182,7 @@ if [ "${WRITE_RESULTS:-1}" = 1 ]; then
     printf '| 会话表 | `stl::hashMapI64<session>` | `std::unordered_map` | `map[int64]Session` |\n'
     printf '| 路由表 | `stl::map<i64,i32>`（B+ 树） | `std::map`（红黑树） | `map` + 排序切片 + 二分 |\n'
     printf '| 日志缓冲 | `stl::string`（地址预留底） | `std::string` | `[]byte` |\n\n'
-    printf '`-fwrapv` 不是「多加的旗子」：extC 把有符号溢出定义成绕回（`docs/MANUAL.md` §8），\n'
+    printf '`-fwrapv` 不是「多加的旗子」：extC 把有符号溢出定义成绕回（`../extc-docs/archive/MANUAL.md` §8），\n'
     printf '编译器驱动自己也是这么编的（`src/main.c`）⇒ 这是生成的 C 的既定编译契约。\n\n'
     printf '## 场景 A：会话 / 连接表\n\n'
     printf '60%% 查 / 20%% 建更 / 20%% 删，活跃集固定；键是自增连接 id（`i %% active`），相位 `i %% 977`\n'
@@ -216,7 +216,7 @@ if [ "${WRITE_RESULTS:-1}" = 1 ]; then
 **A 会话表 —— 三格仍全输 C++，但缺口在缩小。** 1M 活跃集约 **24 ns/op**，是 C++ 的 **3.8–4.4×**（C++ 在 5.5–6.3 ns/op 之间跑动，同机约 ±15%），
 比 Go 快 1.6×；几何平均 extC/C++ 约 0.41–0.43×。
 2026-09 的同一格是 30.52 ns/op / 5.32×，那时 `hashMap` 还是四列 SoA 的池版；本轮的三列平坦存储 +
-按机器字打包的控制字节把它压到 4× 上下（见 `docs/design/HASHMAP.md`）。
+按机器字打包的控制字节把它压到 4× 上下（见 `../extc-docs/design/HASHMAP.md`）。
 
 **历史对照（2026-09-26 消融，池版四列 SoA，只作机制证据）**：
 

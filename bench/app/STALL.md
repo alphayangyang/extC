@@ -84,7 +84,7 @@
 [extC] md5=57f6b8ccd7c16100d12e5b51b26849e8  （绿点要求 57f6b8ccd7c16100d12e5b51b26849e8）  核对通过
 [extC] 编译开关（与 bench/app/run.sh 逐字同一套）：
         extc bench/app/<shape>.extc -o <gen.c> ; cc -O2 -std=c11 -fwrapv <gen.c> -o <bin>
-        （run.sh 用的就是这两条；`-fwrapv` 是 extC 的既定编译契约，docs/MANUAL.md §8）
+        （run.sh 用的就是这两条；`-fwrapv` 是 extC 的既定编译契约，../extc-docs/archive/MANUAL.md §8）
         EXTC_RECLAIM 是**代码生成开关**（编译期 getenv），只在对照臂的 extc 调用上设：
           extc_def   env -u EXTC_RECLAIM      （出厂默认）
           extc_norec EXTC_RECLAIM=0           （非默认档）
@@ -609,7 +609,7 @@ route 的程序在相位之间有一段**建索引/复位**的代码，它落在
    不具统计意义。
 5. 结果只对 **Linux/x86-64 + 本机 + 当前 extC 绿点 `57f6b8cc`** 成立；换编译器版本、
    换 `stl` 容器版本都可能变（log 的 3.6× 就是活例子）。
-6. 本报告**没有改** `src/`、`tests/`、`tools/`、`docs/CHANGELOG.md`、`bench/gc/**`、`RESULTS.md`；
+6. 本报告**没有改** `src/`、`tests/`、`tools/`、`../extc-docs/devlog/changelog/README.md`、`bench/gc/**`、`RESULTS.md`；
    新增的文件只有 `bench/app/` 下的 `STALL.md`、`make_stamped_app.py`、`appstall.py`、
    `appstall_analyze.py` 与 `bench/app/stamped/**`。**不承诺"没有任何新风险"。**
 

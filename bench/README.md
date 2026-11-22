@@ -73,4 +73,4 @@
 - 源码里写清"哪一臂是公平臂、哪一臂故意不对称"。不对称要写进报告，不能只写比值。
 - 生成的输入与产物全部进 `.gitignore`，只把生成器入库。
 - 计时必须绑核（`taskset -c N`）并报 **min 或 median**，别报单次；跨语言比较时同一台机、同一轮交错跑。
-- 跑出来的原始数字（`.tsv` / `.log`）留在 `out/` 且不入库；结论进 `RESULTS.md` 并同时写进 [`docs/changelog/`](../docs/changelog/)。
+- 跑出来的原始数字（`.tsv` / `.log`）留在 `out/` 且不入库；结论进 `RESULTS.md` 并同时写进 [`../extc-docs/devlog/changelog/`](../../extc-docs/devlog/changelog)。

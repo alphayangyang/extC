@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tests/argv/run.sh —— **`main(args)` 的常设验收**（规范：docs/topics/IO.md §7）
+# tests/argv/run.sh —— **`main(args)` 的常设验收**（规范：../extc-docs/archive/topics/IO.md §7）
 #
 # 判据三条：
 #   ① 正例：`./prog alpha beta` ⇒ `args.len = 3`（**含程序名**，与 C 一致）、

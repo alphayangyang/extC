@@ -1,4 +1,4 @@
-/* 形状 ①：`docs/design/RECLAMATION.md`「要解决的问题」那一节里的 motivating shape ——
+/* 形状 ①：`../extc-docs/design/RECLAMATION.md`「要解决的问题」那一节里的 motivating shape ——
  * **条件保存在循环里**。
  *
  * `var saved: ?ref node = null` + 循环里 `if keep { saved = p }`：

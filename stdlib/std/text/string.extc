@@ -383,7 +383,7 @@ struct string {
      * vectorised and the absence of a per-byte check. So the search is handed to libc's `memmem`
      * (two-way inside glibc, with a `memchr` first-byte scan), through `std::mem` -- the
      * same door `read`/`write` go through, integers only, on the byte-search runtime
-     * (`src/memfind.c`, emitted on demand).
+     * (`src/back/memfind.c`, emitted on demand).
      *
      * THE CONTRACT IS UNCHANGED, and `tests/stl/stringFind.extc` still checks it exhaustively:
      * first (leftmost) match, `none` when absent, `some(0)` for the empty pattern, `none` when

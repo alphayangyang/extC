@@ -4,7 +4,7 @@
 # 为什么需要它：/tmp 在 WSL 里通常是 tmpfs（内存盘），几轮战役（每轮几百到几千次迭代，
 # 每次都要落一份 case.extc / case.c / ASan 可执行文件）就能把它写满；写满之后连 bash
 # 都起不来 —— 它的暂存也在 /tmp，于是"想删东西却需要 shell"卡死。2026-09-28 撞过一次，
-# 记录见 docs/topics/HARDENING.md 第四节。
+# 记录见 ../extc-docs/archive/topics/HARDENING.md 第四节。
 #
 # 用法：
 #     tools/clean-tmp.sh            # 只删下面列出的产物

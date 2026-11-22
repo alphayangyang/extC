@@ -1,7 +1,7 @@
 /* std/sys/net.extc —— 事件与 socket 的**特权层**
  *
  * 与 `std::sys::coroutine` 同一形状：这一层只把生成器提供的运行期原语声明成
- * extC 能调的东西，实现是 `src/coroutine.c` 的事件块，**按需发射**。
+ * extC 能调的东西，实现是 `src/back/coroutine.c` 的事件块，**按需发射**。
  *
  * 跨边界只有**标量**（和一个指针）：`epoll_event` 的缓冲区留在运行期里，extC 侧永远看不到结构体 ——
  * 这样调度器不必知道任何平台结构体的布局。缓冲区的写法与 `std::sys::io` 一致：传 `slice` 的 `.data`。

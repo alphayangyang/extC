@@ -11,7 +11,7 @@
 #     tools/fuzz-campaign.sh 400 mutate gen 101 202   # 指定模式与种子
 #
 # 产物一律落 ~/extc-fuzz（**不要放 /tmp**：那里常常是 tmpfs，写满之后连 bash 都起不来，
-# 见 docs/topics/HARDENING.md 第四节）；日志落 ~/extc-work/。
+# 见 ../extc-docs/archive/topics/HARDENING.md 第四节）；日志落 ~/extc-work/。
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/.." && pwd)

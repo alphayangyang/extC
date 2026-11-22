@@ -73,7 +73,7 @@ $(OBJDIR)/prelude_data.o: $(BUILDDIR)/prelude_data.c
 test: $(BIN)
 	./tests/run.sh
 
-# 重取 `docs/STATUS.md` 里那几个数字。**数字只由命令产生，不手抄** —— 本仓库以前每一份过期的
+# 重取 `docs/README.md` 里那几个数字。**数字只由命令产生，不手抄** —— 本仓库以前每一份过期的
 # 状态，都是在别的文档里手抄的一份副本。rc 不过管道（`cmd | tail -1; echo $?` 拿到的是 `tail` 的），
 # 所以先把输出落盘再取末行。
 status: $(BIN)

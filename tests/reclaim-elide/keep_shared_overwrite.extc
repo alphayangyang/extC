@@ -1,6 +1,6 @@
 /* 形状 K2（**不该省** · 反面②）：覆盖一个**已持有旧值**的槽 —— 旧值不是全新对象。
  *
- * 判据来源：`docs/design/RECLAMATION.md` 第五节最后一条（引文见 `elide_swept_region.extc`）。
+ * 判据来源：`../extc-docs/design/RECLAMATION.md` 第五节最后一条（引文见 `elide_swept_region.extc`）。
  * 情形② 省的是"新对象一侧"（计数从零起，没有归零路径）。**覆盖**还带另一次操作：
  * 读旧值 + 把旧值的计数减一（`extc_rc_storeRef` 的 dec 那一半）。旧值 `a` 是先分配、
  * 已经躺在槽里的对象，不是"全新" ⇒ 那次 dec 可能正是它最后一个持有者的消失，

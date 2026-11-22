@@ -135,7 +135,7 @@ PROBE sweeps=7 max_pause_us=91.3 max_mark_us=2.7  max_sweep_us=90.6 total_pause_
 
 ### 2.4 比值对账（`task-50/51`）：**`occ` 口径作废 ✗，改用全槽口径 ⇒ 两个形状同量级** ✓
 
-**lead 的机制假设已被实测支持 ✓**：`docs/design/RECLAMATION.md` 的不变量表写明 **bump 槽不置占用位**，
+**lead 的机制假设已被实测支持 ✓**：`../extc-docs/design/RECLAMATION.md` 的不变量表写明 **bump 槽不置占用位**，
 而人类形状的写恰好落在**刚 bump 分配、正在被写**的那批对象上 ⇒ 扫 `occ` 位图**系统性漏掉它们** ✗。
 实测证据：`occ` 口径的分子在三档下**恰好等于周期数**（23/47/94 ⇒ 每周期约 1 个槽）✗ —— 这就是"只碰到个别非 bump 槽"。
 

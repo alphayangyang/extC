@@ -2,21 +2,25 @@
 """禁止历史词的棘轮：活文档与源码注释里不许出现「历史」。
 
 规则见 `docs/README.md` 维护规则 1 与 `docs/COMMENT-STYLE.md`：
-**文档与注释只写"现在是什么"；历史只进 `docs/CHANGELOG.md`。**
+**文档与注释只写"现在是什么"；历史只进文档项目的 `devlog/changelog/`。**
 
     tools/check_no_history.py            报告（列出存量与新条目）
     tools/check_no_history.py --gate     出现基线之外的新条目就失败（check.sh 调用）
+    tools/check_no_history.py --project  文档项目的活文档（缺项目 ⇒ 按跳过协议退出 0）
     tools/check_no_history.py --write-baseline
 
 棘轮：`tools/no-history-baseline.txt` 记录**存量**（键 = 文件|规则|整行文字，行号变动不 churn）。
 基线**只许变短，不许变长** —— 清掉一条就从基线里删掉那行。
 
-范围：活文档（根 `README.md` 与 `docs/**/*.md`，**不含** `archive/`、`manual/`、`changelog/`、`analysis/`、`CHANGELOG.md`）—— `analysis/` 是证据与分析报告，叙述“怎么测出来”是它的职责· 源码与脚本
+范围：活文档（根 `README.md` 与 `docs/**/*.md`，**不含** `archive/`、`manual/`、`changelog/`、`analysis/`）—— `analysis/` 是证据与分析报告，叙述“怎么测出来”是它的职责；另有 `--project`
+扫文档项目（`$EXTC_DOCS`，缺省 `~/extc-docs`）的活文档 guide/reference/design/plans。源码与脚本
 （`src/**/*.{c,h}` · `stdlib/**/*.extc` · `tools/**/*.py`）。`tests/` 不在范围内。
 """
 import re
 import sys
 import pathlib
+
+import docroot
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 BASE = ROOT / "tools" / "no-history-baseline.txt"
@@ -69,7 +73,7 @@ def doc_ref_findings():
 
     注释引用文档有两个问题：文档会改名（链接变死），以及"引文档"本身不利于维护
     —— 该说的是那个事实，不是去哪本书里翻。`tools/` 不在此列：闸门确实要读写
-    `docs/usage/*.md`，那是它的职责。
+    `docs/*.md` 与文档项目里的活文档，那是它的职责。
     """
     out = []
     for pattern in ("src/**/*.c", "src/**/*.h", "stdlib/**/*.extc"):
@@ -94,6 +98,19 @@ def findings():
     return out
 
 
+def project_findings():
+    """文档项目活文档里的历史词：与仓库同一套规则，没有基线（活文档应当干净）。"""
+    out = []
+    for p in docroot.project_live_docs():
+        rel = p.relative_to(docroot.project()).as_posix()
+        text = strip_code(p.read_text(encoding="utf-8", errors="replace"))
+        for line in text.split("\n"):
+            for rule, pat in RULES:
+                if re.search(pat, line):
+                    out.append((rel, rule, line.strip()))
+    return out
+
+
 def load_baseline():
     if not BASE.exists():
         return {}
@@ -107,6 +124,23 @@ def load_baseline():
 
 
 def main():
+    if "--project" in sys.argv:
+        if docroot.missing():
+            docroot.skip()
+        docs = docroot.project_live_docs()
+        if not docs:
+            docroot.skip("文档项目 " + docroot.display() + " 里没有活文档（guide/reference/design/plans 都缺）")
+        fs = project_findings()
+        if fs:
+            print(f"文档项目活文档出现历史词 {len(fs)} 条（历史只进 devlog/changelog/）：")
+            for f, r, line in fs[:20]:
+                print("  BAD   " + f" | {r} | {line}"[:170])
+            if len(fs) > 20:
+                print(f"  … 另有 {len(fs) - 20} 条")
+            sys.exit(1)
+        print(f"ok  文档项目 {len(docs)} 页活文档无历史词")
+        return 0
+
     fs = findings()
     base = load_baseline()
     cur = {}
@@ -128,7 +162,7 @@ def main():
     if "--gate" in sys.argv:
         bad = False
         if new:
-            print(f"新增历史词 {len(new)} 条（活文档与注释里不许写历史；历史只进 docs/CHANGELOG.md）：")
+            print(f"新增历史词 {len(new)} 条（活文档与注释里不许写历史；历史只进文档项目 devlog/changelog/）：")
             for k in new[:15]:
                 print("  NEW   " + k.replace("\t", " | ")[:150])
             if len(new) > 15:

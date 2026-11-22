@@ -3,8 +3,8 @@
 #
 # 产出：每个形状一份 callgrind profile（开启回收）与一份 off 对照（EXTC_RECLAIM=0，
 # 分配器退回纯 bump arena），再用 parse_callgrind.py 打印 Ir / 缓存 miss / 每分配分解。
-# 这里**不测时间**：墙钟与 GC 时间引自 docs/analysis/MEASUREMENTS-V2-AFTER.md $11.1
-# （已标注为"报告值"），见 docs/analysis/ALLOC-COST.md $1。
+# 这里**不测时间**：墙钟与 GC 时间引自 ../extc-docs/devlog/analysis/MEASUREMENTS-V2-AFTER.md $11.1
+# （已标注为"报告值"），见 ../extc-docs/devlog/analysis/ALLOC-COST.md $1。
 #
 # 用法：
 #   tests/gc-p0/cost/run.sh                      # 四形状全跑
@@ -25,7 +25,7 @@ V=${V:-valgrind}
 SHAPES=${SHAPES:-promote sizeratio chase cycleratio}
 NO_OFF=${NO_OFF:-0}
 
-# bench 档参数（与 docs/analysis/MEASUREMENTS-V2-AFTER.md $11.1 一致）与分配次数
+# bench 档参数（与 ../extc-docs/devlog/analysis/MEASUREMENTS-V2-AFTER.md $11.1 一致）与分配次数
 declare -A ARGS=(
   [promote]="500000 20261013"
   [sizeratio]="2000000 20261013"

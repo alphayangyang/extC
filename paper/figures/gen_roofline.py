@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Regenerate figures/roofline.pdf and data/roofline-pareto.tsv from the calibrated constants.
 
-Constants are the calibration of docs/analysis/CALIBRATION.md (Table 6 in the paper).
+Constants are the calibration of ../extc-docs/devlog/analysis/CALIBRATION.md (Table 6 in the paper).
 Run from the paper/ directory:  python3 figures/gen_roofline.py
 """
 import os

@@ -97,7 +97,7 @@
 ### 2.2 Java 移植的出处（**如实说明**）
 
 `P1–P5` 的 Java 移植**不在 git 里**（`git log --all --name-only -- '*SpectrumP*'` 为空；
-`8776536` 的提交信息声称"新增 SpectrumP1/P3/P5.java"，但该提交**只改了 `docs/CHANGELOG.md`**）。
+`8776536` 的提交信息声称"新增 SpectrumP1/P3/P5.java"，但该提交**只改了 `../extc-docs/devlog/changelog/README.md`**）。
 本轮把 `/tmp/java/SpectrumP{1..5}.java`（时间戳 13:17–13:23）**原样复制**到
 `bench/gc/stamped/src/`（sha256 见 §8）并以此为准；**未改动任何一个字节**。
 `digraph.java` 在 `bench/gc/src/`，直接用。
@@ -346,7 +346,7 @@ P6/java >0.1ms=[64,64,64,64,64]   >1ms=[3,2,5,4,8]
 7. **`EXTC_RECLAIM=0` 对照只覆盖 extC**；Go/Java 没有对应的"关 GC"对照
    （那需要 `GOGC=off` / `-XX:+UseEpsilonGC` 这类旗标，属**非默认档**，本轮明确不跑）。
 8. **P2 extC 的 p50 2.3× 差（默认 vs 不回收）只报了数，未定位到具体机制**（写屏障？mark 位维护？slab 元数据？）。
-9. 仅 Linux/x86-64、单机、当前这个 24 核 15 GiB 环境；**不改任何 `src/`、`tests/`、`tools/`、`docs/CHANGELOG.md`**。
+9. 仅 Linux/x86-64、单机、当前这个 24 核 15 GiB 环境；**不改任何 `src/`、`tests/`、`tools/`、`../extc-docs/devlog/changelog/README.md`**。
 
 **风险（即使上面都过了也可能出问题）**：
 * **Java 的数是"冷启动一次跑完"**（出厂默认 = 不预热）。换 WarmRunner 口径结论会变（JIT 长尾会消失），
@@ -373,7 +373,7 @@ python3 bench/gc/userstall_gcside.py              # §5 的事后对照（GC 账
 
 **只写了 `bench/gc/**`**：新增 `bench/gc/USER-STALL.md`、`bench/gc/userstall.py`、
 `bench/gc/userstall_gcside.py`、`bench/gc/stamped/**`（含从 `/tmp/java` 原样复制的
-`stamped/src/SpectrumP{1..5}.java`）。**`src/`、`tests/`、`tools/`、`docs/CHANGELOG.md` 一字未改** ✓。
+`stamped/src/SpectrumP{1..5}.java`）。**`src/`、`tests/`、`tools/`、`../extc-docs/devlog/changelog/README.md` 一字未改** ✓。
 
 ### 原始日志（**路径**；异常值都在里面，未剔除）
 

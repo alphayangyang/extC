@@ -262,7 +262,7 @@
     " *\n",
     " * Why copy instead of marking the other one always_inline: that path would inline it at **every** call site,\n",
     " * and shapes like cross_region lose two tenths when bloated elsewhere (register pressure); see the\n",
-    " * corresponding docs/changelog entry. The marking step is the hottest call site in the runtime, so it alone gets a copy.\n",
+    " * corresponding devlog/changelog entry. The marking step is the hottest call site in the runtime, so it alone gets a copy.\n",
     " *\n",
     " * The two bodies must stay word-for-word identical: tools/check_ownslab_body.py compares them after normalizing the function name,\n",
     " * so changing one and forgetting the other turns the battery red. */\n",

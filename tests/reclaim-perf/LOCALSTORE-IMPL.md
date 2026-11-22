@@ -59,7 +59,7 @@
    `tests/reclaim-perf/gate.sh`）。已把该调用补上新参数（读同一个环境开关），`smoke` 回到 **16/0**。
 2. **新开关没进 `--help`** ⇒ `tools/check_switches.py` 红（这是登记棘轮，做得对）。
    已在 `src/main.c` 的开关段记上 `EXTC_RC_LOCALSTORE=1`，该检查恢复绿（51 开关：21 进 `--help`、30 挂 UNDOCUMENTED）。
-3. **加了 `--help` 之后 `docs/usage/flags.md` 过期**（单一真源页）⇒ `nobench` 红在这一格。
+3. **加了 `--help` 之后 `docs/flags.md` 过期**（单一真源页）⇒ `nobench` 红在这一格。
    按该判据自己的提示跑了 `python3 tools/gen_flags.py` 重新生成（+4 行），`nobench` 回到 **100/0**（默认与开档都验过）。
 
 ## 6. 牙（注入发）—— **已实测会红**
@@ -84,14 +84,14 @@
 ## 8. 下一步（不在本件做）
 1. **翻默认**：按你的规矩单开一次提交（本件交付的是"开关默认关、判据全绿"）。
 2. 把牙写进 `tools/inject.py` 注集（需 `tools/` 范围）。
-3. `docs/RECLAIM.md` 义务表已加一行（本地槽入口的等价性与它的牙）。
+3. `../extc-docs/design/RECLAMATION.md` 义务表已加一行（本地槽入口的等价性与它的牙）。
 
 ---
 
 # 翻默认（2026-10，Lead 批准）—— 判据重跑的实测
 
 * **默认改为开**（`g->rcLocalStore = 1`；`EXTC_RC_LOCALSTORE=0` 是 kill switch），
-  `--help` 与 `docs/usage/flags.md` 已改成"默认开 / `=0` 回到翻默认前的产物"。
+  `--help` 与 `docs/flags.md` 已改成"默认开 / `=0` 回到翻默认前的产物"。
 * **kill switch 逐字节回到旧产物**：`EXTC_RC_LOCALSTORE=0` 的 P4 产物与 pin `e4c3a869…` 档
   `cmp` 相同 ✓；默认档产物**不同**且 P4 里有 3 个 `storeRefLocal` 调用点 ✓。
 * **墙钟（安静机，3 组×10 次 ns 计时，P4 units=2000）**：新默认 **20 ms/次**（三组都是 20），

@@ -4,7 +4,7 @@
 
 ## 1 这个卡具为谁而设
 
-R4a 把 `buf<T>` 的存储从「池块」换成**预留地址 + 原地增长**（见 `docs/design/BUF-INVARIANT.md`）。
+R4a 把 `buf<T>` 的存储从「池块」换成**预留地址 + 原地增长**（见 `../extc-docs/design/BUF-INVARIANT.md`）。
 新的不变量给了两个承诺，这个卡具就量这两个承诺：
 
 1. **增长不拷贝元素**（预留之内）——元素地址是 `base + i*sizeof(T)`，搬家次数 `relocations()` 只随

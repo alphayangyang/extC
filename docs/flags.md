@@ -82,8 +82,10 @@ debug switches -- diagnostics only, **except the marked below**:
                        overwrite each other. Default `build`, the path every caller gets
 
   -h, --help       show this help
-  EXTC_RC_NOCOUNT=0    re-enable holder counting (it is **off by default**): the default
-                       rests on region sweeps alone -- **CHANGES THE OUTPUT**.
+  EXTC_RC_NOCOUNT=0    force holder counting on: the budget regime is chosen per unit by
+                       the compile-time RcPlan (no-count / count / event), so counting is
+                       off by default; `=0` bypasses the plan and counts holders
+                       everywhere -- **CHANGES THE OUTPUT**.
   EXTC_RC_DBG_LEVEL=1  diagnostic only: print, for every reference store site, whether the
                        value and its host object sit in the same arena level.
   EXTC_RC_LOCALSTORE=0 kill switch: turn OFF the local/parameter slot store entry

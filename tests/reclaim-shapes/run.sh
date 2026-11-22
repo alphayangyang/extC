@@ -4,7 +4,7 @@
 # 语义：**只记录现状**。红的条目在表里标出来，脚本照旧 `exit 0`
 # （与 tests/arena-soundness/ 同一口径：这是证据，不是回归判据）。
 #
-# 覆盖（判据来源：docs/design/RECLAMATION.md「要解决的问题」+ prototype/reclaim/README.md「压力版」）：
+# 覆盖（判据来源：../extc-docs/design/RECLAMATION.md「要解决的问题」+ prototype/reclaim/README.md「压力版」）：
 #   ① cond-save-in-loop        条件保存在循环里          → 编译 + 语义（绿）
 #   ② reject-deep-store        跨帧存储（直接）          → 必须报错（绿）
 #   ② reject-deep-store-call   跨帧存储（经被调者）      → 必须报错（绿）

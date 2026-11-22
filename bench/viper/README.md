@@ -1,7 +1,7 @@
 # bench/viper — Viper 1.0.6-dev.194 端口与对比卡具
 
 把 gcbench v2 的四个形状移植到 Viper，用与 extC 相同的交错计时卡具做同纪律横比。
-结论与分析见 `docs/analysis/VIPER-CROSSLANG.md`；本文件只写怎么跑。
+结论与分析见 `../extc-docs/devlog/analysis/VIPER-CROSSLANG.md`；本文件只写怎么跑。
 
 ## 文件
 

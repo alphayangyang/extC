@@ -1,7 +1,7 @@
 // markcost.c - 用真实回收运行期测「每 pop 的标记成本」与「每 KB 容量的清扫成本」随活集 footprint 的变化。
 // 需要先切出 rt.inc：python3 tools/probe/rc-markcost.py slice <generated.c> -o <dir>/rt.inc
 // 编译：cc -O2 -std=c11 -fwrapv -D_POSIX_C_SOURCE=200809L -I<dir> -o /tmp/markcost tools/probe/markcost.c
-// 读法见 docs/analysis/CALIBRATION.md 第 11 节。用法：taskset -c 6 /tmp/markcost 16 3 6
+// 读法见 ../extc-docs/devlog/analysis/CALIBRATION.md 第 11 节。用法：taskset -c 6 /tmp/markcost 16 3 6
 // 目的：把 c_t / tau_t 的 cache-miss 项测出来，与微基准的延迟梯对照。
 #define _GNU_SOURCE
 #include <stddef.h>

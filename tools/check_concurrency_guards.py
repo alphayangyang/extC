@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """并发前身判据：在特性落地**之前**，把四条 soundness 规则里今天就能检查的那一半钉住。
 
-规则见 `docs/topics/CONCURRENCY.md` §12。这个脚本检查的是**前身不变式** ——
+规则见 `文档项目 archive/topics/CONCURRENCY.md` §12。这个脚本检查的是**前身不变式** ——
 特性（`spawn` / `yield` / 跨任务传值）还没写，但它要依赖的东西今天已经存在，
 一旦被改坏，特性落地时就会以"不可复现的交错"形式暴露 ✗ 所以先在这里钉死。
 
@@ -290,7 +290,7 @@ def main() -> int:
               f"J2 见到的 arena 层级 {sorted(stats['levels'])}")
         print(f"  J1 有理由的兜底 `{FALLBACK}`：{stats_fallback[0]} 次（预算 {FALLBACK_BUDGET}）")
     if bad:
-        print(f"  {len(bad)} 条违规 —— 见上（规则见 docs/topics/CONCURRENCY.md §12）")
+        print(f"  {len(bad)} 条违规 —— 见上（规则见 文档项目 archive/topics/CONCURRENCY.md §12）")
         return 1
     print("  J1 zone 实参只转发或钉死 ✓ · J2 地方边界自洽 ✓ · J3 dyn 元数据只经 places.c ✓")
     return 0

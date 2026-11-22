@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# `@value`：拥有存储的值类型，从 place 拷贝要调用 `clone`；临时量仍是移动（docs/design/TYPE-MODEL.md §七）。
+# `@value`：拥有存储的值类型，从 place 拷贝要调用 `clone`；临时量仍是移动（../extc-docs/design/TYPE-MODEL.md §七）。
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
 EXTC="${EXTC:-$(cd "$here/../.." && pwd)/build/extc}"

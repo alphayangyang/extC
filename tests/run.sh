@@ -12,7 +12,7 @@ fi
 set -u
 cd "$(dirname "$0")/.."
 
-EXTC=${EXTC:-./build/extc}   # `EXTC=build-dbg/extc` 可跑断言版（见 src/dbg.h）
+EXTC=${EXTC:-./build/extc}   # `EXTC=build-dbg/extc` 可跑断言版（见 src/base/dbg.h）
 pass=0
 fail=0
 

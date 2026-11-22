@@ -343,7 +343,7 @@ else
     echo "  FAIL coro_pool          ->  $(head -2 "$tmp/cpec" | tr '\n' ' ')"; fail=$((fail+1))
 fi
 
-# 任务表（src/coroutine.c）：extC 侧看得见，登记与释放都对。退出码 10 = before0 · mid1 · after0
+# 任务表（src/back/coroutine.c）：extC 侧看得见，登记与释放都对。退出码 10 = before0 · mid1 · after0
 ct=$tmp/coro_tasks
 if "$EXTC" -w --no-line-map -o "$ct.c" tests/coro/coro_tasks.extc >/dev/null 2>&1 \
    && gcc -std=c11 -fwrapv -Wall -Werror -o "$ct" "$ct.c" 2>"$tmp/cte"; then

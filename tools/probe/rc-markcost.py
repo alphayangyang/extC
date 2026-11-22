@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """tools/probe/rc-markcost.py — 从生成的 C 里切出回收运行期，或给它注入 markStep/sweepStep 计时。
 
-两个用途（对应 docs/analysis/CALIBRATION.md 第 11 节的复现命令）：
+两个用途（对应 文档项目 devlog/analysis/CALIBRATION.md 第 11 节的复现命令）：
 
   1) slice：把生成 C 里的运行期那一段切出来成 rt.inc，供 markcost.c 直接 #include；
   2) inject：把 markStep / sweepStep 包一层计时（时钟取 extc_rc_pauseNow），

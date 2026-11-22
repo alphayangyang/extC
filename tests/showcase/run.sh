@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 展示代码套件：`examples/showcase-*.extc` —— 文档 docs/EXTC-SHOWCASE.md 里的六段。
+# 展示代码套件：`examples/showcase-*.extc` —— 文档 ../extc-docs/archive/EXTC-SHOWCASE.md 里的六段。
 #
 # 为什么单独一套：`examples/` 里的文件此前**没有任何套件在跑**（只有已弃置的 golden 工具编译过），
 # 于是"展示代码"最容易悄悄腐烂。这里让它们每次 check.sh 都**编译并运行**，输出逐字比对。

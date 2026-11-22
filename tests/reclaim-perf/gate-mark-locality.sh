@@ -9,11 +9,11 @@
 # 所以判据不能是指令数，必须是 cache-sim 的**读失手**：拆掉批量时 P5 的 D1mr 涨到 1 686 250
 # （现行 621 572，2.71×）、DLmr 也一度从 146 276 涨到 585 250，而指令数只 +2.3%。
 #
-# 128 KiB slab 栅格（v12，见 docs/analysis/P1-SLAB-QUANTUM.md）之后，DLmr **失去了分辨力**：
+# 128 KiB slab 栅格（v12，见 ../extc-docs/devlog/analysis/P1-SLAB-QUANTUM.md）之后，DLmr **失去了分辨力**：
 # 现行的紧凑布局让 P5 的指针追逐几乎全部命中末级，两臂都是 1 306（比值 1.00×，远在线上）⇒
 # 这一条只剩观测价值；有牙的是 D1mr。
 #
-# v13（块整块发给槽 + 512 KiB 块，见 docs/analysis/P1-ZEROINIT-FILL.md）之后两臂的 D1mr 一起
+# v13（块整块发给槽 + 512 KiB 块，见 ../extc-docs/devlog/analysis/P1-ZEROINIT-FILL.md）之后两臂的 D1mr 一起
 # 下降，比值从 2.71× 收到 1.57×：现行 601 792 / 拆批量 942 858。抬 N 到 2 000 000 是
 # 3 466 320 / 6 756 104（1.95×，仍不到 2）；把 EXTC_RC_MARK_BATCH_POP 压到 1 也不额外红（942 858）
 # ⇒ 红自测的要求从「≥2×」改成「D1mr 超线 且 ≥1.40× 现行」。绝对线那边**一字未动**：拆批量

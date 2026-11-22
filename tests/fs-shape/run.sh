@@ -59,8 +59,8 @@ else
     echo "  FAIL O_*  ->  平台常量漏到用户层代码里了 ✗"; fail=1
 fi
 
-echo "== 三个名字的规范（\`docs/usage/stdlib.md\` 的判据）=="
-DOC=docs/usage/stdlib.md
+echo "== 三个名字的规范（\`../extc-docs/reference/stdlib.md\` 的判据）=="
+DOC=../extc-docs/reference/stdlib.md
 if grep -q 'openRead' $DOC && grep -q 'openAppend' $DOC && grep -q 'ifstream' $DOC && grep -q 'ofstream' $DOC; then
     echo "  ok   规范  ->  $DOC 写着三个打开名字 + 两个类型（ifstream/ofstream）✓"
 else

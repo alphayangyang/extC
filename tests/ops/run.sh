@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tests/ops/run.sh —— **运算符重载的常设验收**（docs/DECISIONS.md 定案 82）
+# tests/ops/run.sh —— **运算符重载的常设验收**（../extc-docs/archive/DECISIONS.md 定案 82）
 #
 # 判据：
 #   ① 具体类型：方法名**就是**运算符 ⇒ `<` `>` `<=` `>=` `+` `-` `*` `/` `%` 都能用 ✓

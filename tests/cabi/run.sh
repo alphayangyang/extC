@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tests/cabi/run.sh —— **C-ABI 线**的常设验收（docs/topics/C-ABI.md §9）。
+# tests/cabi/run.sh —— **C-ABI 线**的常设验收（../extc-docs/archive/topics/C-ABI.md §9）。
 #
 # 第 ① 块：`@export` —— extC 函数变成 C 符号（`extern!` 的另一面）。
 #   判据：① C 侧**真的**用这些符号：一份产物既当普通 C 文件**链接**进手写宿主（host.c），

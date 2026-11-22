@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tests/hashmap/run.sh —— **开放寻址哈希表的常设验收**（docs/design/HASHMAP.md）
+# tests/hashmap/run.sh —— **开放寻址哈希表的常设验收**（../extc-docs/design/HASHMAP.md）
 #
 # 判据：
 #   ① 正例：新键/覆盖/查/删/表位置遍历 ✓

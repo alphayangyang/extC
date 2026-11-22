@@ -6,8 +6,10 @@
 
     tools/check_doc_examples.py            报告
     tools/check_doc_examples.py --gate     有失败就 exit 1（check.sh 调用）
+    tools/check_doc_examples.py --project  文档项目的活文档（缺项目 ⇒ 按跳过协议退出 0）
 
-判据（对根 `README.md` 与 `docs/**/*.md`，不含 `archive/`、`manual/` 与 `changelog/`）：
+判据（对根 `README.md` 与 `docs/**/*.md`，不含 `archive/`、`manual/` 与 `changelog/`；
+`--project` 则对文档项目的 README/STYLE 与 guide/reference/design/plans）：
 
 * 围栏 ```` ```extc ```` 且**含 `fn main`** ⇒ 是一段完整程序：必须 `extc --check-c` 通过；
   能跑的还会 `--run` 一次（用 `--run` 的退出码当判据时，页面里要写明期望输出）。
@@ -21,6 +23,8 @@ import re
 import subprocess
 import sys
 import pathlib
+
+import docroot
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 EXTC = ROOT / "build" / "extc"
@@ -37,6 +41,11 @@ def pages():
         if SKIP_PARTS & set(p.parts) or p.name in SKIP_NAMES:
             continue
         yield p
+
+
+def project_pages():
+    """文档项目的活文档（`devlog/` 与 `archive/` 是记录，不是现状）。"""
+    yield from docroot.project_live_docs()
 
 
 def extc_blocks(text):
@@ -65,10 +74,17 @@ def extc_blocks(text):
 
 
 def main():
+    if "--project" in sys.argv:
+        docroot.require_or_skip()
+        doc_root = docroot.project()
+        page_iter = project_pages()
+    else:
+        doc_root = ROOT
+        page_iter = pages()
     bad, checked, fragments, negative = [], 0, 0, 0
     TMP.mkdir(parents=True, exist_ok=True)
-    for p in pages():
-        rel = p.relative_to(ROOT).as_posix()
+    for p in page_iter:
+        rel = p.relative_to(doc_root).as_posix()
         text = p.read_text(encoding="utf-8")
         for n, body, tag in extc_blocks(text):
             if tag == "fragment":

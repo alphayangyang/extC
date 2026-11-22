@@ -8,7 +8,7 @@
  *
  * 为什么是 `any` 而不是 `dyn Shape`：`dyn` 的值是**某个位置里槽位的句柄**，槽随那个位置
  * 结束而回收；把它插进循环体外声明的容器，句柄活不过循环体（读的时候是陈旧句柄）。`dyn` 适合
- * "同一个作用域里临时拿着多态"的形状。这条分工在 docs/usage/language.md 里也有。
+ * "同一个作用域里临时拿着多态"的形状。这条分工在 ../extc-docs/reference/language.md 里也有。
  *   Arena 提权           报表文本在 `line()` 里构造后返回 ⇒ 存储建在**调用者的位置**里
  *   模块                 use std::io（cin/cout）· use std::text::string
  *   cin / cout           从标准输入读地块清单，向标准输出打印报表

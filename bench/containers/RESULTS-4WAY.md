@@ -2,7 +2,7 @@
 
 > 表在 `RESULTS-4WAY.tsv`（`bash bench/containers/run.sh --reps 5 --tsv RESULTS-4WAY.tsv`）。
 > 形状定义与判据见 `SPEC.md`；历史三臂账（v38 之前）仍在 `RESULTS.tsv`/`RESULTS.md`，两份不混。
-> hashMap / hashSet 的这条表是**控制字节按机器字打包之后**的数字（J2 解法，见 `docs/design/HASHMAP.md` §9）；
+> hashMap / hashSet 的这条表是**控制字节按机器字打包之后**的数字（J2 解法，见 `../extc-docs/design/HASHMAP.md` §9）；
 > 同轮 `flat` 参考由 `bash bench/containers/run-flat.sh --reps 7` 产出，在 `RESULTS-hash-flat.tsv`。
 
 ## 0 一句话
@@ -88,7 +88,7 @@ H1/H2/H4/H6 是 0.49×–0.81×，RSS 大幅下降（H1 201,728→81,788、H2 23
 22.7 个桶，J1（峰值 ≤85 MB）与 J2（查询 ≤1.3× flat）因此互斥。2026-12 把控制字节列改成按机器字打包（`block<u64>`，
 一字节一桶，用零字节检测一次判 8 个桶），装载率留在 0.85，h5 降到 0.389 s、h1 峰值不变。同轮 `flat` 参考：
 h5 0.363 / 0.318 = 1.14×、h1 0.315 / 0.250 = 1.26×，两条判据同时满足。代价是 h2 +6%、h4 +16%（相对上一轮），
-绝对量 +21 ms / +8 ms，细节与两次否证见 `docs/design/HASHMAP.md` §9。
+绝对量 +21 ms / +8 ms，细节与两次否证见 `../extc-docs/design/HASHMAP.md` §9。
 
 H3（1e6 键上 8e6 次增删查）RSS 35,732→48,468 kB（+36%）：Knuth 回移无墓碑省下了 tombstone 的槽，但装载率从池版的
 0.5 提到 17/20，加上控制字节列，每元素固定开销变大；绝对增量 12.7 MB，时间反而 0.50×。

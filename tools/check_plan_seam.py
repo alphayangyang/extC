@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-"""计划接缝的棘轮：codegen 只能经 src/plan.h 读"分析产物/编译计划"（X 批次：X1/X2）。
+"""计划接缝的棘轮：codegen 只能经 src/plan/plan.h 读"分析产物/编译计划"（X 批次：X1/X2）。
 
 两条检查：
-  1. **读点**：`src/codegen.c` 里不得直接读计划字段（必须写成 `planXxx(...)`）；
-  2. **归属**：那些字段**不得再出现在 AST 上** —— X2 已把存储搬到 `src/plan.c` 的侧表，
+  1. **读点**：`src/back/codegen.c` 里不得直接读计划字段（必须写成 `planXxx(...)`）；
+  2. **归属**：那些字段**不得再出现在 AST 上** —— X2 已把存储搬到 `src/plan/plan.c` 的侧表，
      `Expr`/`Stmt`/`FuncDef` 上再出现同名字段就是把耦合加回来。
 
-第三条检查（T4 起）：**分析侧的字段清单**（`planAnalysisFields`，由 `src/plan.c` 导出）
+第三条检查（T4 起）：**分析侧的字段清单**（`planAnalysisFields`，由 `src/plan/plan.c` 导出）
 与冻结在 `tools/plan-analysis-fields.txt` 的清单一致。分析侧字段是"只有检查器读写"的
 工作状态；一旦 codegen 开始读它，它就必须搬出分析侧、配上 `planXxx` 访问器 —— 那份清单的
 变化因此必须**看得见**，而不是悄悄发生。
 
 只判**读**：写点本来就不该在 codegen 里（codegen 回写分析状态属于 X3，见
-docs/topics/AST-ANNOTATIONS.md 第 3 节）。
+文档项目 archive/topics/AST-ANNOTATIONS.md 第 3 节）。
 """
 import re
 import source_split
@@ -32,7 +32,7 @@ PLAN_C = pathlib.Path(cscan.src_file(ROOT, "plan.c"))
 
 
 def analysis_fields():
-    """The analysis-side field names, read out of `src/plan.c` (the single source)."""
+    """The analysis-side field names, read out of `src/plan/plan.c` (the single source)."""
     src = PLAN_C.read_text(encoding="utf-8")
     m = re.search(r"planAnalysisFields\[\]\s*=\s*\{(.*?)\};", src, re.S)
     if not m:
@@ -43,7 +43,7 @@ def analysis_fields():
 def check_analysis_list():
     got = analysis_fields()
     if got is None:
-        return ["在 src/plan.c 里找不到 planAnalysisFields —— 分析侧的清单没了"]
+        return ["在 src/plan/plan.c 里找不到 planAnalysisFields —— 分析侧的清单没了"]
     if ANALYSIS_LIST.exists():
         want = [l.strip() for l in ANALYSIS_LIST.read_text(encoding="utf-8").splitlines()
                 if l.strip() and not l.startswith("#")]
@@ -142,9 +142,9 @@ def main() -> int:
     r = check_reads()
     m = check_moved()
     if r:
-        print(f"[plan-seam] codegen 直读计划字段 {len(r)} 处 —— 请改用 src/plan.h 的访问器：")
+        print(f"[plan-seam] codegen 直读计划字段 {len(r)} 处 —— 请改用 src/plan/plan.h 的访问器：")
         for i, field, txt in r[:20]:
-            print(f"  src/codegen.c:{i}  ->{field}   {txt}")
+            print(f"  src/back/codegen.c:{i}  ->{field}   {txt}")
         return 1
     counts, wb = check_write_backs()
     total = sum(counts.values())
@@ -157,7 +157,7 @@ def main() -> int:
     if total != base:
         print(f"[plan-seam] note：codegen 回写 {total} 处（基线 {base}）—— 减少了，请同步收紧基线")
     if m:
-        print(f"[plan-seam] AST 上又出现了已搬走的计划字段 {len(m)} 处 —— 存储属于 src/plan.c：")
+        print(f"[plan-seam] AST 上又出现了已搬走的计划字段 {len(m)} 处 —— 存储属于 src/plan/plan.c：")
         for f, i, field, txt in m[:20]:
             print(f"  src/{f}:{i}  {field}   {txt}")
         return 1

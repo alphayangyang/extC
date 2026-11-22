@@ -45,7 +45,7 @@ RSS 差 3.7 MB 不是「buf 省内存」，而是 `std::vector` 的容量只增�
 | 再长回 8e6 | **4 ms** | 64 MiB 重写 = 16 GB/s，即 ≈0.5 ns/元素 |
 
 **结论：在这条分配路径上「丢页→再写回」几乎不贵**（大页重新缺页），所以 S3 的 buf 总时间
-28 ms ≈ 一次填充 + 一次重写。不要把 4 ms 外推到 4 KiB 页的路径：`docs/analysis/RESERVE-GROWTH.md`
+28 ms ≈ 一次填充 + 一次重写。不要把 4 ms 外推到 4 KiB 页的路径：`../extc-docs/devlog/analysis/RESERVE-GROWTH.md`
 里 130–300 ns/KB 的重触代价是另一条路径（`madvise` 后按 4 KiB 页重新缺页）的实测。
 
 对照臂 `std::vector` 侧没有「还容量」这个动作，`shrink_to_fit()` 走的是重新分配（`moves=12`），
@@ -65,7 +65,7 @@ vector 侧 84 ms 是 100 万次 `malloc`/`free` 往返；RSS 4,308 KB 是 glibc 
 　同一段代码在这一轮又被砍掉一半（76 → 39 ms）：回收量子缓存（`EXTC_BUF_MAG_KEEP`）让 512 B 的
 缓冲区归还时直接进免费链、不再逐层合并，`span` 快路与「锁只在有 `par` 时发射」各再省一点。三个
 台阶在 20 万小容器那条形状上的毫秒数与机理记在
-[`../../docs/design/BUF-INVARIANT.md`](../../docs/design/BUF-INVARIANT.md) §11。
+[`../extc-docs/design/BUF-INVARIANT.md`](../../../extc-docs/design/BUF-INVARIANT.md) §11。
 改 `src/back/bufrt.c` 的分配器必须让 S2 留在 0.1 s 量级。
 
 ## 5 S5：只证明布局是连续的
@@ -91,7 +91,7 @@ vector 侧 84 ms 是 100 万次 `malloc`/`free` 往返；RSS 4,308 KB 是 glibc 
 **因此**：(a) 这个卡具画不出「不标 `@inline` 的 buf」那种更慢的世界，因为库里的标注是契约的一部分；
 (b) 后续如果有人给 `buf` 加成员，热路径上的新成员也要标 `@inline`，否则 S1/S3/S4 会静默回退；
 (c) 真正的根因在发射器：对「一次都不分配」的函数不必发射 arena 前置，这条记在
-`docs/design/BUF-INVARIANT.md` 的「未做」里。
+`../extc-docs/design/BUF-INVARIANT.md` 的「未做」里。
 
 ## 7 复现与口径
 

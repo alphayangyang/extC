@@ -1,6 +1,6 @@
 # `tests/pool-soundness/` —— 池档健全性的反例库
 
-配套文档：[`docs/topics/POOL-SOUNDNESS.md`](../../docs/topics/POOL-SOUNDNESS.md)（定理、三条不变量、判定）。
+配套文档：[`../extc-docs/archive/topics/POOL-SOUNDNESS.md`](../../../extc-docs/archive/topics/POOL-SOUNDNESS.md)（定理、三条不变量、判定）。
 
 **oracle（沿用 `tests/arena-soundness/` 的规矩）**：`build/extc` **接受** + `gcc -fsanitize=address`
 编过 + 运行时报 `heap-use-after-free` ⇒ 这一条是**洞还开着**。修好之后，这一条应当变成

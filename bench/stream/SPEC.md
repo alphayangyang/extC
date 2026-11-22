@@ -65,6 +65,6 @@ argv[3] = 重复次数（`REPS`，默认 4）：三块数组在重复循环外�
 - 这是**内存侧**的课：`b(y) = y*y + 1.0` 的计算量刻意很小，让瓶颈落在 DRAM 上；
 - f64 逐元素、无 fast-math ⇒ 不重结合、不向量化浮点归约（保持逐位一致）；
 - `par` 版本仍是"每元素写 out、再串行归约"，不是流式并行归约（浮点并行归约不能与串行逐位相同，
-  见 `docs/design/PARALLEL.md` 的归约一节）；
+  见 `../extc-docs/design/PARALLEL.md` 的归约一节）；
 - `ctuned` 的 `restrict`/对齐是**手写 C 的假设**，extC 今天不声明这些（不检查下标是另一码事）；
 - 不测 NUMA/多 socket（单 socket WSL2）。

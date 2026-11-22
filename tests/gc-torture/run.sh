@@ -202,7 +202,7 @@ fi
 
 echo
 if [ "$xf" -gt 0 ]; then
-  echo "已归档的开放 RED（xfail，不算通过也不算失败）：$xf 条 —— 见 docs/analysis/CORPUS-TORTURE.md"
+  echo "已归档的开放 RED（xfail，不算通过也不算失败）：$xf 条 —— 见 ../extc-docs/devlog/analysis/CORPUS-TORTURE.md"
 fi
 echo "通过 $pass，xfail $xf，失败 $fail"
 if [ $fail -ne 0 ]; then

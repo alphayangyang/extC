@@ -7,5 +7,5 @@
 #   `span` 在界外算出后 `memmove` 的长度下溢成天文数字，一次拷贝毁掉后面整个文件
 #   （`main` 里 `slice_u8_isEmpty(&(b)) ? "true" : "false"` 变成 `slice_u8_e" : "false"`）。
 #   修法：定义结束改成**按括号深度配对**，加上"扫描与删除都不许越过文本末尾"。
-#   机制、走过的弯路与证据见 docs/topics/HARDENING.md 第二节。
+#   机制、走过的弯路与证据见 ../extc-docs/archive/topics/HARDENING.md 第二节。
 #   ⇒ 本文件现在**不应**再列出任何语料：任何一份生成物不是合法 C 都应当让闸门变红。

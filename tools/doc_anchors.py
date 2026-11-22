@@ -24,43 +24,37 @@ re-verified against this tree) are rewritten automatically.
   python3 tools/doc_anchors.py --selftest    prove the checker has teeth
   python3 tools/doc_anchors.py --census      freshness census over the living docs
   python3 tools/doc_anchors.py --map reclaim.c:3637    what symbol owns this line today
+  python3 tools/doc_anchors.py --project     文档项目的活文档：同样 0 个数字锚点 + 符号可解析
+                                             （缺文档项目 ⇒ 按跳过协议退出 0）
 """
 import argparse
+import docroot
 import source_split
 import os
 import re
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# 文档文件所在根：仓库文档 = ROOT；文档项目（--project）= 项目根。
+DOC_ROOT = ROOT
 DQ = chr(34)
 AP = chr(39)
 BQ = chr(96)
 NL = chr(10)
 BS = chr(92)
 
-# Three classes, because the docs are in three different states (see the module docstring): strict = cite symbols only; ratchet = numeric anchors may not grow and symbols must resolve; frozen = pinned to an old tree, numbers stay.
+# Three classes, because docs are in three different states (see the module docstring):
+# strict = cite symbols only; ratchet = numeric anchors may not grow and symbols must resolve;
+# frozen = pinned to an old tree, numbers stay.
+# 文档已独立成项目：仓库里只剩随代码一起变的三页，全部按 STRICT 检查；RATCHET/FROZEN 清空。
+# 其余活文档在文档项目里，用 --project 按同一套 STRICT 规则扫（见 cmd_check_project）。
 STRICT = [
-    "docs/design/RECLAMATION.md",
-    "docs/usage/reclamation.md",
-    "docs/usage/modules-cabi.md",
+    "docs/README.md",
+    "docs/SUGAR.md",
+    "docs/COMMENT-STYLE.md",
 ]
-RATCHET = [
-    "docs/analysis/MEMORY-MODEL-CURRENT.md",
-    "docs/analysis/GC-ROOFLINE.md",
-    "docs/analysis/ARENA-CONTAINERS.md",
-    "docs/analysis/CORPUS-TORTURE.md",
-    "docs/analysis/CONVERGED-MODEL-PROTO.md",
-    "docs/design/EFFECTS.md",
-    "docs/design/POOL-LEVELS.md",
-]
-FROZEN = [
-    "docs/analysis/CALIBRATION.md",
-    "docs/analysis/ALLOC-COST.md",
-    "docs/analysis/WMARK-REACH.md",
-    "docs/analysis/UNLINK-DEFERRAL.md",
-    "docs/analysis/WIN-MINGW.md",
-    "docs/analysis/T2-CAPACITY-AND-T1-WIDENING.md",
-]
+RATCHET = []
+FROZEN = []
 LIVING = STRICT + RATCHET + FROZEN
 
 # A cite starts at a word boundary: never swallow the tail of the surrounding C name.
@@ -358,9 +352,22 @@ def all_c_files():
     return sorted(out)
 
 
+def doc_path(rel):
+    """一份文档文件的实际路径：仓库文档相对 DOC_ROOT；文档项目的路径按绝对路径收下。"""
+    if os.path.isabs(rel):
+        return rel
+    return os.path.join(DOC_ROOT, rel)
+
+
 def resolve(path, doc_rel=None):
     """Docs sit next to their evidence, so a doc-relative path wins over the repo root."""
-    p = path.lstrip("./")
+    p = path
+    while p.startswith("./"):
+        p = p[2:]
+    # 文档项目里的跨仓库引用写成 ../extC_Compiler/src/...：解析时退回源码根。
+    for pre in ("../extC_Compiler/", "extC_Compiler/"):
+        if p.startswith(pre):
+            p = p[len(pre):]
     cands = []
     if doc_rel:
         cands.append(os.path.normpath(os.path.join(os.path.dirname(doc_rel), p)))
@@ -539,7 +546,7 @@ BASELINE = os.path.join(ROOT, "tools", "anchor-baseline.tsv")
 
 def counts(rel):
     """(numeric anchors, symbolic anchors) left in one doc, fences excluded."""
-    full = os.path.join(ROOT, rel)
+    full = doc_path(rel)
     if not os.path.exists(full):
         return None
     with open(full, encoding="utf-8") as f:
@@ -610,7 +617,7 @@ def cmd_convert():
     total = 0
     unresolved = []
     for rel in STRICT:
-        full = os.path.join(ROOT, rel)
+        full = doc_path(rel)
         if not os.path.exists(full):
             continue
         with open(full, encoding="utf-8") as f:
@@ -634,7 +641,7 @@ def cmd_convert():
 def cmd_check():
     bad = 0
     for rel in STRICT + RATCHET:
-        full = os.path.join(ROOT, rel)
+        full = doc_path(rel)
         if not os.path.exists(full):
             continue
         with open(full, encoding="utf-8") as f:
@@ -678,10 +685,10 @@ def cmd_selftest():
             print("ok   " + msg)
 
     # 1. a numeric cite converts to the symbol that owns that line today
-    out, rep = convert_text("x reclaim.c:3637 y", "docs/design/RECLAMATION.md")
+    out, rep = convert_text("x reclaim.c:3637 y", "design/RECLAMATION.md")
     want(rep["ok"] == 1 and "reclaim.c:" in out, "numeric cite converts")
     want(":3637" not in out, "the converted cite carries no line number")
-    idx = index_of(resolve("reclaim.c", "docs/design/RECLAMATION.md"))
+    idx = index_of(resolve("reclaim.c", "design/RECLAMATION.md"))
     want(idx.token_at(3637) in idx.tokens, "the mapped symbol resolves in its own file")
 
     # 2. an already-symbolic anchor is not re-matched as a numeric one
@@ -693,30 +700,86 @@ def cmd_selftest():
     n = sum(len(NUM_ANCHOR.findall(line)) for line, f in scan_lines(fenced) if not f)
     want(n == 0, "fenced cites are not counted")
 
-    # 4. the ratchet fails when a doc gains a numeric anchor and passes at baseline
-    real = load_baseline()
+    # 4. the ratchet fails when a doc gains a numeric anchor and passes at baseline.
+    #    文档独立成项目后仓库里没有 RATCHET 文档：没有棘轮可测就明说跳过（不是失败）。
     global BASELINE
-    keep = BASELINE
-    try:
-        BASELINE = os.path.join(ROOT, ".selftest-anchor-baseline.tsv")
-        lowered = dict(real)
-        for rel in list(lowered)[:1]:
-            lowered[rel] = (0, lowered[rel][1])
-        save_baseline(lowered)
-        want(cmd_ratchet(False, False) != 0, "ratchet fails when a doc exceeds its baseline")
-        want(cmd_ratchet(True, False) != 0, "rewrite refuses to raise a baseline")
-        save_baseline(real)
-        want(cmd_ratchet(False, False) == 0, "ratchet passes at the recorded baseline")
-    finally:
-        BASELINE = keep
-        if os.path.exists(os.path.join(ROOT, ".selftest-anchor-baseline.tsv")):
-            os.remove(os.path.join(ROOT, ".selftest-anchor-baseline.tsv"))
+    if not RATCHET:
+        print("skip ratchet selftest: this tree has no RATCHET doc (docs moved to the project)")
+    else:
+        real = load_baseline()
+        keep = BASELINE
+        try:
+            BASELINE = os.path.join(ROOT, ".selftest-anchor-baseline.tsv")
+            lowered = dict(real)
+            for rel in list(lowered)[:1]:
+                lowered[rel] = (0, lowered[rel][1])
+            save_baseline(lowered)
+            want(cmd_ratchet(False, False) != 0, "ratchet fails when a doc exceeds its baseline")
+            want(cmd_ratchet(True, False) != 0, "rewrite refuses to raise a baseline")
+            save_baseline(real)
+            want(cmd_ratchet(False, False) == 0, "ratchet passes at the recorded baseline")
+        finally:
+            BASELINE = keep
+            if os.path.exists(os.path.join(ROOT, ".selftest-anchor-baseline.tsv")):
+                os.remove(os.path.join(ROOT, ".selftest-anchor-baseline.tsv"))
 
     if bad:
         print("FAIL: %d selftest assertion(s)" % bad)
         return 1
     print("ok: doc_anchors selftest")
     return 0
+def cmd_check_project():
+    """--project：文档项目里的活文档按 STRICT 规则查（0 个数字锚点 + 每个符号可解析）。
+
+    文档项目缺位时按跳过协议退出 0：文档独立维护，编译器仓库的闸门不该因它缺席而红。
+    """
+    if docroot.missing():
+        docroot.skip()
+    docs = docroot.project_live_docs()
+    if not docs:
+        docroot.skip("文档项目 " + docroot.display() + " 里没有活文档（guide/reference/design/plans 都缺）")
+    global ROOT, DOC_ROOT, SRC_FILES, CFILES, INDEX
+    saved = (ROOT, DOC_ROOT, source_split.ROOT, SRC_FILES, CFILES, INDEX)
+    bad = 0
+    try:
+        ROOT = os.fspath(docroot.src_root())
+        DOC_ROOT = os.fspath(docroot.project())
+        source_split.ROOT = ROOT
+        INDEX = {}
+        SRC_FILES = src_files()
+        CFILES = all_c_files()
+        for path in docs:
+            rel = os.path.relpath(os.fspath(path), DOC_ROOT)
+            with open(os.fspath(path), encoding="utf-8") as f:
+                text = f.read()
+            for line, fenced in scan_lines(text):
+                if fenced:
+                    continue
+                for m in NUM_ANCHOR.finditer(line):
+                    print("numeric anchor in a symbol-only doc: %s  %s" % (rel, m.group(0)))
+                    bad += 1
+            for m in SYM_ANCHOR.finditer(text):
+                fpath, toks = m.group(1), m.group(2)
+                frel = resolve(fpath, rel)
+                if frel is None:
+                    print("anchor names a missing file: %s  %s" % (rel, m.group(0)))
+                    bad += 1
+                    continue
+                idx = index_of(frel)
+                for tok in toks.split(".."):
+                    if tok not in idx.tokens:
+                        print("anchor does not resolve: %s  %s  (no %s in %s)" % (rel, m.group(0), tok, frel))
+                        bad += 1
+    finally:
+        ROOT, DOC_ROOT, source_split.ROOT, SRC_FILES, CFILES, INDEX = saved
+    if bad:
+        print("FAIL: %d bad anchor(s) in the docs project (%s)" % (bad, docroot.display()))
+        return 1
+    print("ok: symbol-only docs cite symbols, every symbol resolves (%d live page(s) in %s)"
+          % (len(docs), docroot.display()))
+    return 0
+
+
 def main():
     global SRC_FILES, CFILES
     ap = argparse.ArgumentParser()
@@ -724,6 +787,7 @@ def main():
     ap.add_argument("--convert", action="store_true")
     ap.add_argument("--census", action="store_true")
     ap.add_argument("--ratchet", action="store_true")
+    ap.add_argument("--project", action="store_true", help="文档项目的活文档（缺项目 ⇒ 跳过）")
     ap.add_argument("--selftest", action="store_true")
     ap.add_argument("--write", action="store_true", help="with --ratchet: refresh tools/anchor-baseline.tsv")
     ap.add_argument("--allow-raise", action="store_true", help="with --ratchet --write: allow the baseline to go up")
@@ -737,6 +801,8 @@ def main():
         return cmd_census()
     if args.convert:
         return cmd_convert()
+    if args.project:
+        return cmd_check_project()
     if args.selftest:
         return cmd_selftest()
     if args.ratchet:

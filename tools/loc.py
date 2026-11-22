@@ -6,7 +6,7 @@
 把"块注释还开着"当成"末行还没结算"的判据）。
 
     git ls-files | python3 tools/loc.py            # 每个文件一行 + TOTAL
-    python3 tools/loc.py src/check_top.c           # 也可以直接给文件
+    python3 tools/loc.py src/check/check_top.c           # 也可以直接给文件
 
 输出格式与 extC 版**逐字一致**：`<路径> <字节> <字符> <行> <代码> <注释> <空行>`。
 

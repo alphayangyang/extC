@@ -4,12 +4,14 @@
 ## 为什么需要这个门禁
 
 `tools/inject.py` 里的每条注入都证明着某条判据**有牙**（哪条判据、打在哪、红在什么上）。
-这些知识写在 `docs/design/RECLAMATION.md` 的两张表（义务表 / 跳过表）的"判据"列里。一张表的价值取决于
+这些知识写在文档项目的 `design/RECLAMATION.md` 的两张表（义务表 / 跳过表）的"判据"列里。一张表的价值取决于
 **引用是否完整**：新写一条注入却不进表，读表的人就会以为那条路径"没有牙"（或者反过来，
 以为某条旧注入还在）。义务表、跳过表各自有同步门禁，这条是它们共同的**证据来源**门禁：
 
-> 注入集里的每个名字，都必须在**它自己声明的活文档**里出现（默认 `docs/design/RECLAMATION.md`；
-> 不属于回收的判据——例如 `@module` 分发器——在自己的功能文档里写明）。
+> 注入集里的每个名字，都必须在**它自己声明的活文档**里出现（默认文档项目的
+> `design/RECLAMATION.md`；不属于回收的判据——例如 `@module` 分发器——在自己的功能文档里写明）。
+> 文档路径由 `tools/docroot.py` 解析：`$EXTC_DOCS`（缺省 `~/extc-docs`）；`EXTC_DOCS=/nonexistent` 时
+> 按跳过协议退出 0（文档独立维护）。
 
 只查这一个方向（注入 → 文档）：文档里出现的**散文**标识符没法可靠区分"注入名/判据名/函数名"，
 硬查反向会造出一堆误报。名字与文档都从 `python3 tools/inject.py --list-docs` 读，不在检查器里再抄一份。
@@ -20,8 +22,10 @@ import re
 import subprocess
 import sys
 
+import docroot
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DOC = "docs/design/RECLAMATION.md"
+DOC = "design/RECLAMATION.md"
 
 
 def injection_docs() -> dict:
@@ -62,6 +66,8 @@ def main() -> int:
     args = ap.parse_args()
     if args.selftest:
         return selftest()
+    if not args.doc:
+        docroot.require_or_skip()
     by_doc = {}
     if args.doc:
         by_doc[args.doc] = sorted(injection_docs())
@@ -75,9 +81,14 @@ def main() -> int:
     total = 0
     for doc_rel, names in by_doc.items():
         total += len(names)
-        path = f"{ROOT}/{doc_rel}"
+        if args.doc:
+            path = args.doc
+            shown = doc_rel
+        else:
+            path = os.fspath(docroot.doc(doc_rel))
+            shown = docroot.label(doc_rel)
         if not os.path.exists(path):
-            print(f"FAIL 注入声明的文档 `{doc_rel}` 不存在（{', '.join(names)} 的牙没人知道）")
+            print(f"FAIL 注入声明的文档 `{shown}` 不存在（{', '.join(names)} 的牙没人知道）")
             bad += 1
             continue
         with open(path, encoding="utf-8") as f:
@@ -85,10 +96,10 @@ def main() -> int:
         missing = [n for n in names if n not in doc]
         if missing:
             for n in missing:
-                print(f"FAIL 注入 `{n}` 没有出现在 `{doc_rel}` 里（它的牙就没人知道）")
+                print(f"FAIL 注入 `{n}` 没有出现在 `{shown}` 里（它的牙就没人知道）")
             bad += 1
             continue
-        print(f"ok  {len(names)} 条注入写进了 `{doc_rel}`：{', '.join(names)}")
+        print(f"ok  {len(names)} 条注入写进了 `{shown}`：{', '.join(names)}")
     if bad:
         return 1
     print(f"ok  注入集的 {total} 条都写进了各自声明的活文档")

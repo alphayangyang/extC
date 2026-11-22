@@ -1,5 +1,5 @@
 // memhier.c - 本机内存层级探针：延迟梯（64 B line 随机置换环、依赖链）、TLB 梯（4 KiB 与 2 MiB 页）、顺序带宽。
-// 读法见 docs/analysis/CALIBRATION.md 第 11 节。
+// 读法见 ../extc-docs/devlog/analysis/CALIBRATION.md 第 11 节。
 // 用法：cc -O2 -o /tmp/memhier tools/probe/memhier.c && taskset -c 6 /tmp/memhier 6
 #define _GNU_SOURCE
 #include <stdio.h>

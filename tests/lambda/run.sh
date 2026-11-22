@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# lambda 字面量（docs/topics/LAMBDA.md，作者 v2 决策）：语法、捕获、调用、以及必须被拒的形状。
+# lambda 字面量（../extc-docs/archive/topics/LAMBDA.md，作者 v2 决策）：语法、捕获、调用、以及必须被拒的形状。
 #
 # 语义要点都钉在这里：
 #   · 读外层变量 = **按值捕获** ⇒ 闭包看到的是建立它时的值（改外层不影响已建立的闭包）；

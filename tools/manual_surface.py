@@ -208,12 +208,12 @@ def internals_page():
 
 
 page = internals_page()
-PAGE = 'docs/usage/surface.md'
+PAGE = 'docs/surface.md'
 if '--check' in sys.argv:
     cur = open('tools/manual-surface.txt', encoding='utf-8').read() if os.path.exists('tools/manual-surface.txt') else ''
     curp = open(PAGE, encoding='utf-8').read() if os.path.exists(PAGE) else ''
     if cur != text or curp != page:
-        print('公开面清单或 docs/usage/surface.md 与源码不一致 -- 跑 tools/manual_surface.py')
+        print('公开面清单或 docs/surface.md 与源码不一致 -- 跑 tools/manual_surface.py')
         sys.exit(1)
     print('ok  清单与源码一致（%d 个成员：公开 %d · 内部 %d）' % (
         len(rows), sum(1 for r in rows if r[4] == 'public'), sum(1 for r in rows if r[4] == 'internal')))

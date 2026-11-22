@@ -93,8 +93,8 @@ V2 的 +6.1% 与 S3 的 +6.0 MiB 是同一笔语义差：池版本的克隆与�
 
 V4 是小对象周转最贵的一格：预留 + 归还的固定成本全落在这里。要靠三个机制才与池版本打平 ——
 2 MiB 量子的回收缓存、`span` 的单线程快路、`EXTC_BUF_MT` 按需发射，再加归还路径的「一把锁、
-一次查类」。机理与台阶记在 `docs/design/BUF-INVARIANT.md` §11 与 §15.2，结构由 `gate-buf-mt` 守着。
-规则与迁移顺序见 `docs/design/CONTAINER-OWNERSHIP.md`。
+一次查类」。机理与台阶记在 `../extc-docs/design/BUF-INVARIANT.md` §11 与 §15.2，结构由 `gate-buf-mt` 守着。
+规则与迁移顺序见 `../extc-docs/design/CONTAINER-OWNERSHIP.md`。
 
 ## hashMap（H1–H6）：为什么要第四个臂
 

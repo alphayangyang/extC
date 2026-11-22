@@ -1,6 +1,6 @@
 // 回归：`1 << 32` 曾能编过、直到运行到那行才 trap（左操作数 `1` 是 i32，位宽 32）。
 // 现在字面量移位量在编译期就按左操作数位宽核对 —— 必须编译失败。
-// 写 `i64(1) << 32` 才是 64 位结果（见 docs/usage/language.md §11.4）。
+// 写 `i64(1) << 32` 才是 64 位结果（见 ../extc-docs/reference/language.md §11.4）。
 // expect: shift count 32 does not fit in
 fn main() -> i32 {
     let a: i32 = 1 << 32

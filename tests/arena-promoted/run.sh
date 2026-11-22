@@ -4,7 +4,7 @@
 #
 # 这里只跑已经转正的 `.extc`；每个形状都必须被接受并在 ASan 下运行干净。
 #
-# 来源：`docs/topics/ARENA-SOUNDNESS.md` §9 档 1（B2：`alloc<T>` 与 `new` 对称）
+# 来源：`../extc-docs/archive/topics/ARENA-SOUNDNESS.md` §9 档 1（B2：`alloc<T>` 与 `new` 对称）
 #   · `alloc_return_local` / `allocSlice_escape_return` —— 以前被误拒
 #     （`alloc` 的层号无条件按块层算，而不看"有家 ⇒ 进家"）
 #   · `A_field_root_lowered` / `C1/C2/C3_if_join_*` / `G_stale_origin` —— 以前放行成 UB，

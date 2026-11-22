@@ -1,7 +1,7 @@
 /* std/sys/time.extc —— 时间的**特权层**。
  *
  * 与 `std::sys::io`、`std::sys::net` 同一形状：这一层只把生成器提供的运行期原语声明成
- * extC 能调的东西，实现是 `src/time.c`，**按需发射**（`CG.needTime`，由这里的
+ * extC 能调的东西，实现是 `src/base/extctime.c`，**按需发射**（`CG.needTime`，由这里的
  * `extern!("extc-time")` 触发）—— 不问时间的程序一行都不带。
  *
  * 为什么时钟在运行期而不是这里：`clock_gettime` 要一个 `struct timespec`，而本项目的边界规矩是

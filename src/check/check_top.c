@@ -10695,7 +10695,7 @@ static void coroFrameLay(Checker *c, FuncDef *f) {
             fd->name = "zone"; fd->type = i64t; fd->line = f->line;
             *(FieldDef **)vecPush(&fsd->fields) = fd;
             /* The task id: the table owns the place, and the step reads the zone beside it rather
-             * than re-deriving it (rule 1). See src/coroutine.c. */
+             * than re-deriving it (rule 1). See src/back/coroutine.c. */
             fd = arenaAllocZero(c->arena, sizeof *fd);
             fd->name = "task"; fd->type = i64t; fd->line = f->line;
             *(FieldDef **)vecPush(&fsd->fields) = fd;

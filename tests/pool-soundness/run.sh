@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tests/pool-soundness/run.sh —— 池档健全性反例（见 docs/topics/POOL-SOUNDNESS.md）
+# tests/pool-soundness/run.sh —— 池档健全性反例（见 ../extc-docs/archive/topics/POOL-SOUNDNESS.md）
 # oracle：**接受 + ASan UAF** = 洞还开着；修好后应变成 **编译错误或 trap**。
 set -u
 # LeakSanitizer 对这套内存模型没有意义（arena 到进程结束才释放），它在最小发行版里还会偶尔

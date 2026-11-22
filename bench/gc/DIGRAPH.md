@@ -1086,7 +1086,7 @@ Rust 172/205 ns 每次；总数 = 摘掉的组数 54859/219025）就把 98.6% �
 
 > §6–§8 的数字全是 2026-10-13 / 10-14 的**旧编译器快照**（`69a5b119…`）。
 > 此后回收运行期换成了增量标记 + 分步清扫 + 512 KiB slab 栅格 + O(1) closing 队列 + 按请求字节准入
-> （见 `docs/analysis/P1-SEG-TAIL.md`、`P1-CLOSING-QUEUE.md`、`P1-SLAB-QUANTUM.md`、`P1-ADMISSION.md`），
+> （见 `../extc-docs/devlog/analysis/P1-SEG-TAIL.md`、`P1-CLOSING-QUEUE.md`、`P1-SLAB-QUANTUM.md`、`P1-ADMISSION.md`），
 > 时间、内存、停顿三条线都变了。本节用当前编译器、同一卡具、同一判据重跑，作为现行读数；
 > 旧节保留不删，只能当历史对照读（§6.2 与 §7.4 各加了一行指向本节）。
 
@@ -1242,7 +1242,7 @@ PIN=6 REPS=5 bash bench/gc/run-digraph.sh pause    # 停顿分布（extC PAUSE_D
    代价是并发标记的 CPU 与更长的总时间；extC 的标记在 mutator 线程上做、没有后台并发标记（设计如此），
    换来的是总时间更短、且每次停顿是"有预算的长步"而不是"几乎为零的 STW"。
    ⇒ 同类比较应找**非并发**基线：两家 careful 的"断开那一趟"是 10.2–11.7 / 44.9–51.9 ms，extC 是 4.8 / 46.5 ms，同量级。
-   要把 STW 压到 Go 那种量级才需要上并发标记（那是另一条工程线，不是本形状的欠账；权衡见 `docs/analysis/GC-ROOFLINE.md`）。
+   要把 STW 压到 Go 那种量级才需要上并发标记（那是另一条工程线，不是本形状的欠账；权衡见 `../extc-docs/devlog/analysis/GC-ROOFLINE.md`）。
 4. **max 是宿主抢占尖峰**：同一档 5 轮里 n 完全相同（工作单元数确定），max 逐轮变（89.9 / 141.7 / 322.1 …），
    与 `bench/gc/v2/PAUSE.md` 的读法第 4 条同款 ⇒ 只读 p50/p90/p99，不要把 max 当契约值。
 5. **计数档总停顿略高、占比反而低**（5.28 / 47.65 ms vs 4.80 / 46.45 ms；占墙钟 4.4% / 4.1%）：它墙钟长 3.31× / 2.59×，

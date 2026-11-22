@@ -229,7 +229,7 @@ while i < n {
   协程/`ext`/并行（`parTls`）形状的代价。
 * `bench/stress/stress.extc` 未进 probe（只出现在普查里）。
 * 12 个原型里 **5 个已接进 `gate-event-bounded`**（事件档内存界）；纯税族与悬崖在默认档下
-  仍无红判据（见 §5.2 与 `docs/plans/TODO.md` 的缺陷条目）。
+  仍无红判据（见 §5.2 与 `../extc-docs/plans/TODO.md` 的缺陷条目）。
 * 不承诺"没有任何新风险"。
 
 ---
@@ -445,7 +445,7 @@ extc_arena_release(&__extc_a[2]);          /* 这一轮结束 —— 没有 dec(
 
 **改动**：区域加只增的 `allocBytes` 与 `visitedBytes`；分配时记账；清扫末尾把 `visitedBytes`
 推到当前值；`releaseDead` 在预算不够时直接返回（`skip:release-budget`，已进
-[`RECLAMATION.md`](../../docs/design/RECLAMATION.md) 的跳过表）。
+[`RECLAMATION.md`](../../../extc-docs/design/RECLAMATION.md) 的跳过表）。
 
 **默认档实测（修前 → 修后）**：
 

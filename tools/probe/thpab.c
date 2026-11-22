@@ -1,6 +1,6 @@
 // thpab.c - 同一数据 footprint、同一访问序列，4 KiB 页 vs 2 MiB 页（MADV_HUGEPAGE）的 A/B。
 // 用途：把 TLB 走表项从 cache/DRAM 项里分离出来（两臂的 line 数与访问顺序完全相同）。
-// 读法见 docs/analysis/CALIBRATION.md 第 11 节。用法：cc -O2 -o /tmp/thpab tools/probe/thpab.c && taskset -c 6 /tmp/thpab 6
+// 读法见 ../extc-docs/devlog/analysis/CALIBRATION.md 第 11 节。用法：cc -O2 -o /tmp/thpab tools/probe/thpab.c && taskset -c 6 /tmp/thpab 6
 // 用途：把 TLB 项从 cache/DRAM 项里分离出来。
 #define _GNU_SOURCE
 #include <stdio.h>

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """R3 · the include graph must follow the pipeline, not the other way round.
 
-Why this rule exists (docs/topics/AST-DECOUPLING.md): `src/codegen.c` currently includes
-`src/check_internal.h`, the checker's private header. Removing that one line produces 14
+Why this rule exists (文档项目 archive/topics/AST-DECOUPLING.md): `src/back/codegen.c` currently includes
+`src/check/check_internal.h`, the checker's private header. Removing that one line produces 14
 compile errors (`isProtoType`, `isOverloadableOp`, `findOperator`, `findMethod`, ...), so
 what code generation actually depends on is a handful of **type-layer predicates that live
 in the wrong header** -- and, through it, the checker's whole private state is reachable
@@ -105,7 +105,7 @@ def main():
                 continue
             violations["%s -> %s" % (rel, inc)] = (
                 "包了另一个阶段的私有头（去掉它会有编译错误 ⇒ 说明真正依赖的是里面的谓词，"
-                "见 docs/topics/AST-DECOUPLING.md P3）")
+                "见 文档项目 archive/topics/AST-DECOUPLING.md P3）")
         # ---- layer order (added with P3.0's preparation) --------------------------------
         # The rule above only looks at **private** headers, so an upward include of a
         # *published* header is invisible to it. That is exactly how `ast.c` (layer 1) came
@@ -139,7 +139,7 @@ def main():
 
         # The reverse edge that the plan wants removed: the parser reaching into the plan.
         if name == "parser.c" and re.search(r'#\s*include\s+"plan\.h"', text):
-            violations["src/parser.c -> plan.h"] = (
+            violations["src/front/parser.c -> plan.h"] = (
                 "parser 反向依赖计划层（`for` 的步进今天记在 plan 上）⇒ P2 把 forStep 归 parser")
     ratchet = cscan.Ratchet(BASELINE)
     if a.update_baseline:

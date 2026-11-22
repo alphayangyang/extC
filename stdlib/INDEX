@@ -4,7 +4,7 @@
 # module to import); tools/manual-surface.txt is derived from all five.
 # On a `method` row the module column is the **provider**: the module whose `impl`
 # block declares the method (it may differ from the module that owns the type --
-# such a block carries `@ext`, see docs/usage/modules-cabi.md).
+# such a block carries `@ext`, see ../extc-docs/reference/modules-cabi.md).
 abs	f64	prelude	public	method
 abs	i32	prelude	public	method
 abs	i64	prelude	public	method

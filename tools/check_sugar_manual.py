@@ -23,7 +23,7 @@ import re
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-MANUAL = ROOT / 'docs' / 'usage' / 'SUGAR.md'
+MANUAL = ROOT / 'docs' / 'SUGAR.md'
 CASES = ROOT / 'tests' / 'sugar'
 
 COLUMNS = ('写法', '展开成什么', '求值次数与边界', '用例')
@@ -172,7 +172,7 @@ def main(argv):
     if a.selftest:
         return selftest()
     if not MANUAL.exists():
-        print('没有手册：docs/usage/SUGAR.md')
+        print('没有手册：docs/SUGAR.md')
         return 1
     cases = collect_cases()
     findings, rows, seen = analyze(MANUAL.read_text(encoding='utf-8', errors='replace'), cases)

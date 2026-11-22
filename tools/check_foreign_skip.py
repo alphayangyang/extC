@@ -40,7 +40,7 @@ P1 重构把 `extc_rc_alloc` 的 slab 选取条件写成「`#if` 一种条件带
 ## 自检 / 红演示
 
 `--selftest` 用合成文本证明 FS1/FS2/FS3 规则**能红**；真实树上的注入演示见
-`docs/CHANGELOG.md` 对应条目（删掉一处 `foreign = 1` ⇒ FS2 红；把 `foreign` 从 rsDec 行拿掉 ⇒ FS1 红；
+`文档项目 devlog/changelog/` 对应条目（删掉一处 `foreign = 1` ⇒ FS2 红；把 `foreign` 从 rsDec 行拿掉 ⇒ FS1 红；
 让守卫计数非 0 ⇒ G1 红）。`--text <文件>` 可以用**别的文本**跑静态规则（红演示就是这么做的）。
 """
 import argparse

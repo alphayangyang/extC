@@ -13,7 +13,7 @@
 #
 # 用法：
 #   python3 tools/inject.py --list            # 名字 + 期望判据 + 为什么
-#   python3 tools/inject.py --list-docs       # 名字 + 写明它牙的文档（默认 docs/design/RECLAMATION.md）
+#   python3 tools/inject.py --list-docs       # 名字 + 写明它牙的文档（默认文档项目的 design/RECLAMATION.md）
 #   python3 tools/inject.py thr-stale                 # 跑一条
 #   python3 tools/inject.py thr-stale --gate gate-reclaim-tax   # 换判据
 #   python3 tools/inject.py thr-stale --no-verify-green         # 跳过"还原后必须绿"
@@ -32,7 +32,9 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 SRC = "src/back/reclaim.c"
 # 每条注入的牙写在哪份活文档里：默认回收文档的义务表/跳过表；不属于回收的判据（例如
 # `@module` 分发器）在各自的功能文档里写明。check_doc_refs.py 按这份声明逐条核对。
-DOC_DEFAULT = "docs/design/RECLAMATION.md"
+# 文档已独立成项目：这里的路径是**文档项目内**的逻辑 id（"<子目录>/<文件名>.md"），
+# 由 tools/docroot.py 解析到 $EXTC_DOCS（缺省 ~/extc-docs）。
+DOC_DEFAULT = "design/RECLAMATION.md"
 CODEGEN = "src/back/codegen.c"
 PLAN = "src/plan/plan.c"
 
@@ -338,7 +340,7 @@ INJECTIONS = {
         "why": "分发器不再认 -m：命令行永远落到根入口（没有根入口就打用法）⇒ ./a -m demo 静默跑错东西，"
                "而普通测试全绿。catalog 名字与描述、-m 的语义都在这一个分支里。",
         "gate": "gate-module-tramp",
-        "doc": "docs/usage/modules-cabi.md",
+        "doc": "reference/modules-cabi.md",
         "patches": [(CODEGEN,
                      '    cgLine(g, "    if (argc > 1 && strcmp(argv[1], \\"-m\\") == 0) {");\n',
                      '    cgLine(g, "    if (0) {");\n')],

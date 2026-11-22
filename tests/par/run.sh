@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# `par`：数据并行的唯一动词（见 docs/design/PARALLEL.md）。
+# `par`：数据并行的唯一动词（见 ../extc-docs/design/PARALLEL.md）。
 #
 # 判据：
 #   ① 等价：`par` 的结果与顺序 for 逐位相同（stdout 逐字节）；

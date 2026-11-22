@@ -11,7 +11,7 @@
 // （`tools/gate_callsite.py` + `tools/callsite-corpus/`：那里用"两种类型不可互换"的探针，
 // 它会当场判红）。本文件留在这里是因为它是这条流水线的**最小跑通例子**。
 //
-// 计划侧应当按（调用点，实例）记账，见 docs/topics/AST-ANNOTATIONS.md 第 6.3 节。
+// 计划侧应当按（调用点，实例）记账，见 ../extc-docs/archive/topics/AST-ANNOTATIONS.md 第 6.3 节。
 use std::io
 
 fn pick<T>(x: T) -> T { return x }

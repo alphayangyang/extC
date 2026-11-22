@@ -278,7 +278,7 @@ def function_return_type(code: str, fname: str):
 def collect(files, structs, type_names):
     """Walk `files` and return (uses, unknown, coverage, codegen_direct).
 
-    `src/plan.c` is skipped: it is the storage layer of the plan fields, so the members it
+    `src/plan/plan.c` is skipped: it is the storage layer of the plan fields, so the members it
     touches (`PlanSlot.tmpl`, and the accessor that reads it) are the field itself rather
     than a use of some struct's field.  Everything else is in scope.
     """

@@ -4,7 +4,7 @@
 ## 为什么需要这个门禁
 
 运行期里有很多"为了省事/省时直接返回"的地方（`if (…) return …;`）。每一处都依赖一个前提，
-前提破了可能往"多留"（保守）或"少算"（不安全）倒。`docs/design/RECLAMATION.md` 的「快路径与跳过」
+前提破了可能往"多留"（保守）或"少算"（不安全）倒。文档项目的 `design/RECLAMATION.md` 的「快路径与跳过」
 表把这些前提、方向、判据列了出来 —— 但**表是散文**，没有东西拦得住"新加一处跳过却不进表"。
 义务表有 `gate-invariant-table`，这里就是跳过表的对应物。
 
@@ -12,7 +12,7 @@
 
 1. **代码里每处跳过都带标记**：`if (…) return …;` 这一行的同一行必须有 `/* skip:<id> */`。
    未标记的数必须为 **0** —— 这是个只许往下拧的棘轮：新增一处未标记的跳过就会红。
-2. **标记 → 表**：代码里出现的每个 `skip:<id>` 都必须在 `docs/design/RECLAMATION.md` 里出现。
+2. **标记 → 表**：代码里出现的每个 `skip:<id>` 都必须在文档项目的 `design/RECLAMATION.md` 里出现。
 3. **表 → 标记**：表里提到的每个 `skip:<id>` 都必须在代码里存在（删掉跳过却留着表行 = 红）。
 
 **跨档取并集**：运行期是按档位发射的（默认 / 计数 / 时间 / 事件 / 本地存储 / 帧根链），
@@ -23,13 +23,16 @@
 标记可以落在 `if` 那一行，也可以落在紧跟的 `return` 那一行。
 """
 import argparse
+import os
 import re
 import sys
 import tempfile
 
 import check_note_part  # 同目录：复用"把运行期文本发射出来"的那段
+import docroot
 
-DOC = "docs/design/RECLAMATION.md"
+# 文档项目内的逻辑路径（由 tools/docroot.py 解析；`$EXTC_DOCS`，缺省 `~/extc-docs`）。
+DOC = "design/RECLAMATION.md"
 RE_TAG = re.compile(r"skip:([a-z0-9][a-z0-9-]*)")
 RE_EARLY = re.compile(r"^\s*if \(.*\)\s*return")
 RE_OPEN = re.compile(r"^\s*if \(.*\)\s*\{?\s*$")
@@ -107,7 +110,12 @@ def main() -> int:
     if args.selftest:
         return selftest()
     root = check_note_part.ROOT
-    with open(args.doc or f"{root}/{DOC}", encoding="utf-8") as f:
+    if args.doc:
+        path, label = args.doc, args.doc
+    else:
+        docroot.require_or_skip()
+        path, label = os.fspath(docroot.doc(DOC)), docroot.label(DOC)
+    with open(path, encoding="utf-8") as f:
         doc_text = f.read()
     untagged = []          # [(档位, 行号, 行文本)]
     code_tags = set()
@@ -128,13 +136,13 @@ def main() -> int:
         for label, ln, text in untagged[:8]:
             print(f"FAIL 未标记的跳过（{label}）：运行期第 {ln} 行 —— {text}")
         print(f"未标记的早退 {len(untagged)} 处 > 上限 {MAX_UNTAGGED}："
-              f"请给每处补 `/* skip:<id> */` 并把它写进 `{DOC}` 的跳过表")
+              f"请给每处补 `/* skip:<id> */` 并把它写进 `{label}` 的跳过表")
         bad = 1
     for tag in only_code:
-        print(f"FAIL `skip:{tag}` 在运行期里有，`{DOC}` 的跳过表里没有")
+        print(f"FAIL `skip:{tag}` 在运行期里有，`{label}` 的跳过表里没有")
         bad = 1
     for tag in only_doc:
-        print(f"FAIL `skip:{tag}` 在 `{DOC}` 的跳过表里，运行期里已经没有了（陈旧表行）")
+        print(f"FAIL `skip:{tag}` 在 `{label}` 的跳过表里，运行期里已经没有了（陈旧表行）")
         bad = 1
     if bad:
         return 1

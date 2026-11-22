@@ -200,7 +200,7 @@ def main() -> int:
     # exactly what this refactor exists to prevent, so the gate refuses to let the count grow.
     if hand_written > RATCHET:
         print(f"  {hand_written} hand-written walkers, budget is {RATCHET} -- migrate one instead of"
-              f" adding another (docs/topics/AST-WALKERS.md)")
+              f" adding another (文档项目 archive/topics/AST-WALKERS.md)")
         bad += 1
     else:
         print(f"  hand-written walkers: {hand_written} (ratchet {RATCHET})")

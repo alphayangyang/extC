@@ -144,7 +144,7 @@ C 局部量**，逐字扫是安全方向（`owns` 守卫会滤掉非 rc 值）�
   `storeRefUnknown` 不做、而 `rscnt` 对跨区边已经做了的那件事（`reclaim.c:97-101` 的注释）。
 - **容器消失时撤销**（"登记点铺全"那一半）：容器是帧内局部（视图变量 / 池 handle）时，
   在它的**作用域出口**批量 `unpin`；容器是 C 返回的存储（`extern!`）时按**语义边界**处理
-  （只能在文档里写成决定，见 `docs/design/RECLAMATION.md` 末节的边界条）。
+  （只能在文档里写成决定，见 `../extc-docs/design/RECLAMATION.md` 末节的边界条）。
 - `dump`：`cgValueRefStore`（`codegen.c:5013-5034`）与 `storeStructCons`（`reclaim.c:503-518`）
   的"保守只加不减 + `noSweep`"也走同一条 `pin/unpin`，不再有第二套出口。
 
@@ -286,7 +286,7 @@ C 局部量**，逐字扫是安全方向（`owns` 守卫会滤掉非 rc 值）�
    * 实现上要能把 `holdUpd +1` 与跨区登记 `rs` **分开省**（`rsbit` 是清扫的种子）。
 
    三类充分来源与可行性（详见 `tests/reclaim-elide/README.md` 与
-   [`docs/design/RECLAMATION.md`](../../docs/design/RECLAMATION.md) 第五节末条）：
+   [`../extc-docs/design/RECLAMATION.md`](../../../extc-docs/design/RECLAMATION.md) 第五节末条）：
    ① 该对象的全部入边**统一决定**（全省则死期由区域/清扫兜底）—— 要有"对象级入边封闭"事实；
    ② 本函数 `new` 出来、别名集合封闭、各入边槽**此后再不被写** —— **最小的一类**，
       只需要新增**一格事实**："这个绑定/字段此后再不被写"（check 侧算、plan 侧暴露）；

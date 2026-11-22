@@ -1,7 +1,7 @@
 /* tools/loc.extc —— **用 extC 自己数这个仓库**（吃自己的狗粮）
  *
  *     git ls-files | ./build/extc --run tools/loc.extc        # 从 stdin 读路径表
- *     ./build/extc --run tools/loc.extc src/check_top.c ...   # 或直接给文件
+ *     ./build/extc --run tools/loc.extc src/check/check_top.c ...   # 或直接给文件
  *
  * 每个文件一行：`<路径> <字节> <字符> <行> <代码> <注释> <空行>`，最后一行 `TOTAL ...`
  *

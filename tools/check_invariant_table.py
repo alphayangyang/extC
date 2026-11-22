@@ -3,25 +3,28 @@
 
 ## 为什么需要这个门禁
 
-`docs/design/RECLAMATION.md` 的「不变量与它们的牙」表，是把运行期里每一条**义务**（代码注释里编号的
+文档项目的 `design/RECLAMATION.md` 的「不变量与它们的牙」表，是把运行期里每一条**义务**（代码注释里编号的
 那几条）对上"坏掉的方向 / 在哪强制 / 哪条判据证明它有牙"。这份表的价值全在**完整**上：
 新写一条义务却忘了进表，表就从"地图"退化成"抽查记录"，而读者（和以后改这块代码的人）
 会以为没进表的东西不存在。
 
 清单本身没法自动生成（"在哪强制""怎么证明"要人写），但**完整性**可以机械检查：
-发射出来的运行期文本里出现的每个 `义务 N`，都必须在 `docs/design/RECLAMATION.md` 里出现。
+发射出来的运行期文本里出现的每个 `义务 N`，都必须在文档项目的 `design/RECLAMATION.md` 里出现。
 这条门禁就是干这个 —— 它不检查表写得好不好，只检查**没有漏项**。
 
 用法：`python3 tools/check_invariant_table.py`（`--selftest` 用合成文本证明它**能红**）。
 """
 import argparse
+import os
 import re
 import sys
 import tempfile
 
 import check_note_part  # 同目录：复用"把运行期文本发射出来"的那段
+import docroot
 
-DOC = "docs/design/RECLAMATION.md"
+# 文档项目内的逻辑路径（由 tools/docroot.py 解析；`$EXTC_DOCS`，缺省 `~/extc-docs`）。
+DOC = "design/RECLAMATION.md"
 RE_OBLIGATION = re.compile(r"义务\s*(\d+(?:\s*/\s*\d+)*)")
 
 
@@ -68,16 +71,21 @@ def main() -> int:
         code_text = check_note_part.emit_runtime(tmp)
     if not code_text:
         return 1
-    with open(args.doc or f"{root}/{DOC}", encoding="utf-8") as f:
+    if args.doc:
+        path, label = args.doc, args.doc
+    else:
+        docroot.require_or_skip()
+        path, label = os.fspath(docroot.doc(DOC)), docroot.label(DOC)
+    with open(path, encoding="utf-8") as f:
         doc_text = f.read()
     code_obs = obligations(code_text)
     gone = missing(code_text, doc_text)
     if gone:
         for n in sorted(gone):
-            print(f"FAIL 义务 {n}：运行期里有，`{DOC}` 的不变量表里没有")
+            print(f"FAIL 义务 {n}：运行期里有，`{label}` 的不变量表里没有")
         print(f"清单漏了 {len(gone)} 条义务")
         return 1
-    print(f"ok  不变量清单完整：运行期里的义务 {sorted(code_obs)} 都在 `{DOC}` 里")
+    print(f"ok  不变量清单完整：运行期里的义务 {sorted(code_obs)} 都在 `{label}` 里")
     return 0
 
 

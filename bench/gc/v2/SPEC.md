@@ -208,7 +208,7 @@ python3 bench/gc/v2/pause_report.py bench/gc/v2/pause                     # -> P
 python3 bench/gc/v2/report.py bench/gc/v2/matrix.tsv bench/gc/v2/REPORT.md bench/gc/v2/matrix.png bench/gc/v2/pause_v2.tsv
 ```
 
-臂清单（11 个）：`extc:default` / `extc:off`（编译期 `EXTC_RECLAIM=0`，**产物不同**，不是「纯 GC 税」对照，见 `docs/plans/TODO.md`）·
+臂清单（11 个）：`extc:default` / `extc:off`（编译期 `EXTC_RECLAIM=0`，**产物不同**，不是「纯 GC 税」对照，见 `../extc-docs/plans/TODO.md`）·
 `go:default` / `go:off` · `java:default` · `rust:default` / `rust:careful` · `node:split` / `node:bigint` · `cpp:default` / `cpp:careful`。
 提交在库里的成绩单是 `REPORT.md` + `matrix.tsv` + `matrix.png` + `PAUSE.md` + `pause_v2.tsv` + `pause.png` + `pause/<arm>/`（原始停顿事件）。
 
