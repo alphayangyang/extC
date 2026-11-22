@@ -60,8 +60,12 @@ else
 fi
 
 echo "== 三个名字的规范（\`../extc-docs/reference/stdlib.md\` 的判据）=="
-DOC=../extc-docs/reference/stdlib.md
-if grep -q 'openRead' $DOC && grep -q 'openAppend' $DOC && grep -q 'ifstream' $DOC && grep -q 'ofstream' $DOC; then
+# 文档项目是兄弟仓库（默认 ../extc-docs，CI/干净克隆可用 EXTC_DOCS 指过去）；
+# 它不在时按跳过协议明说「没验」，不冒充通过，也不让编译器仓库单独 clone 时变红。
+DOC="${EXTC_DOCS:-../extc-docs}/reference/stdlib.md"
+if [ ! -f "$DOC" ]; then
+    echo "  --   跳过：没有文档项目（$DOC）"
+elif grep -q 'openRead' "$DOC" && grep -q 'openAppend' "$DOC" && grep -q 'ifstream' "$DOC" && grep -q 'ofstream' "$DOC"; then
     echo "  ok   规范  ->  $DOC 写着三个打开名字 + 两个类型（ifstream/ofstream）✓"
 else
     echo "  FAIL 规范  ->  $DOC 没写（规范不落文档就没人遵守 ✗）"; fail=1

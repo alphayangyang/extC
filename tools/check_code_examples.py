@@ -7,8 +7,9 @@
 覆盖 `src/**/*.h`、`src/**/*.c`、`stdlib/**/*.extc` 注释里的 `@code … @endcode` 块。
 
 判据：
-* **extC 例子**（含 `fn main`）：用 `./build/extc --check-c` 编一遍，再用 `timeout 10 ./build/extc --run`
-  真跑一遍，要求退出码 0。
+* **extC 例子**（含 `fn main`）：用 `./build/extc --check-c` 编一遍，再用 `timeout 60 ./build/extc --run`
+  真跑一遍，要求退出码 0。60 秒是「卡死」的界，不是性能判据：CI 的慢机上
+  `--run` 要现场编译，10 秒会把编译时间当成挂起（见 2026-11-23 的 CI 运行）。
 * **extC 片段**（没有 `fn main`）：**包一层 `fn main() -> i32 { … return 0 }` 再编**。
   包着也编不过就判失败 —— 片段无法独立检查，要么写成完整程序，要么标 `!skip` 写明原因。
 * **C 例子**：`cc -fsyntax-only`。
@@ -89,7 +90,7 @@ def check(rel, line, lang, body, tmp):
             return (f"{rel}:{line}: extC 片段包一层 `fn main` 也编不过 ⇒ 无法独立检查。"
                     f"要么写成完整程序，要么标 `!skip` 写明原因\n      " + "\n      ".join(tail))
         return None
-    r = subprocess.run(["timeout", "10", str(EXTC), "--run", str(src)],
+    r = subprocess.run(["timeout", "60", str(EXTC), "--run", str(src)],
                        capture_output=True, text=True, cwd=str(tmp))
     if r.returncode != 0:
         tail = (r.stderr or r.stdout).strip().split("\n")[-3:]
