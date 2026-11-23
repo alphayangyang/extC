@@ -4,6 +4,7 @@
  * 一旦别名写的是**别处**，`q.p = null` 就救不了 `h.p` ⇒ 覆盖深度会漏掉危险 ✗
  * ⇒ 取过地址 ⇒ 保守（弱更新）✓ 用户想通，就把别名去掉（见 examples/field-strong-update.extc）✓
  */
+use std::data::vector
 struct holder { p: ?ref i32 }
 
 fn build() -> holder {
@@ -16,5 +17,5 @@ fn build() -> holder {
 
 fn main() {
     var h: holder = build()
-    println(h.p == null, varArray<i32>::withCap(1).get(0) ?? -1)
+    println(h.p == null, vector<i32>::withCap(1).get(0) ?? -1)
 }

@@ -1,7 +1,8 @@
 // 只有 `view` 的类型不会被偷偷借成可写视图：诊断仍指向"参数要 mut slice"。
 // expect: expects
+use std::data::vector
 struct ro<T> {
-    items: varArray<T>
+    items: vector<T>
     fn view(self: ref ro<T>) -> slice<T> { return self.items.view() }
 }
 
@@ -10,7 +11,7 @@ fn fillAll(v: mut slice<i64>) {
 }
 
 fn main() -> i32 {
-    var r: ro<i64> = ro { items: varArray<i64>::withCap(2) }
+    var r: ro<i64> = ro { items: vector<i64>::withCap(2) }
     fillAll(r)
     return 0
 }

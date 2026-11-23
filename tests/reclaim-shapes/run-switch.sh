@@ -677,12 +677,12 @@ fi
 # `substEnter` 进一层实例上下文；早期 `substLeave` 把它**清空**而不是还原，于是
 # `emitInstanceBodies` 的 `substEnter(实例)` 被嵌套探测抹掉，同一具方法体余下的部分以
 # `T` 未替换的形态发出：`static inline int *slice_T_index(slice_T v, …)`、
-# `static void varArray_grow(varArray_T * self, …)` ⇒ gcc `unknown type name 'slice_T'`。
+# `static void vector$vector_grow(vector$vector_T * self, …)` ⇒ gcc `unknown type name 'slice_T'`。
 # `examples/list-return.extc`（正例语料）就是这么红的。
 # 判据（生成物 + 语义两条）：
-#   · 开关开：生成 C **编得过**，且不含未替换的模板名（`slice_T` / `varArray_T` 词边界）；
+#   · 开关开：生成 C **编得过**，且不含未替换的模板名（`slice_T` / `vector$vector_T` 词边界）；
 #   · 开关开与关输出逐字一致。
-echo "-- ①h 泛型实例方法体：替换上下文还原（B：不许 \`slice_T\` / \`varArray_T\`）--"
+echo "-- ①h 泛型实例方法体：替换上下文还原（B：不许 \`slice_T\` / \`vector\$vector_T\`）--"
 GID_WANT="n=8 head=7"
 
 gid_build() { # <on|off> <源文件> <tag> → GID_C=ok/fail
@@ -710,14 +710,14 @@ if [ "$gid_on_c" = ok ] && [ "$gid_off_c" = ok ]; then
     # 所以先断言文件在，再 grep。
     if [ ! -f "$TMP/gid-gid_on.c" ]; then
         bad "generic-instance-desc：生成物 $TMP/gid-gid_on.c 不存在 —— 判据路径与 gid_build 命名不一致"
-    elif grep -qE '\bslice_T\b|\bvarArray_T\b' "$TMP/gid-gid_on.c"; then
-        bad "generic-instance-desc：生成 C 里有未替换的模板名（$(grep -oE '\b(slice_T|varArray_T)\b' "$TMP/gid-gid_on.c" | sort -u | tr '\n' ' ')）—— 替换上下文被嵌套探测抹掉"
+    elif grep -qE '\bslice_T\b|\bvector[$]vector_T\b' "$TMP/gid-gid_on.c"; then
+        bad "generic-instance-desc：生成 C 里有未替换的模板名（$(grep -oE '\b(slice_T|vector[$]vector_T)\b' "$TMP/gid-gid_on.c" | sort -u | tr '\n' ' ')）—— 替换上下文被嵌套探测抹掉"
     else
         gid_run gid_on;  gid_on_rc=$GID_RC;  gid_on_out=$GID_OUT
         gid_run gid_off; gid_off_rc=$GID_RC; gid_off_out=$GID_OUT
         if [ "$gid_on_rc" = 0 ] && [ "$gid_off_rc" = 0 ] \
            && [ "$gid_on_out" = "$GID_WANT" ] && [ "$gid_off_out" = "$GID_WANT" ]; then
-            ok "generic-instance-desc：泛型实例方法体编得过、跑得对（生成物无 slice_T/varArray_T；开关开=关）"
+            ok "generic-instance-desc：泛型实例方法体编得过、跑得对（生成物无 slice_T/vector\$vector_T；开关开=关）"
         else
             bad "generic-instance-desc：语义不一致（on[rc=$gid_on_rc out=$(printf '%s' "$gid_on_out" | tr '\n' '|')] off[rc=$gid_off_rc out=$(printf '%s' "$gid_off_out" | tr '\n' '|')]）"
         fi

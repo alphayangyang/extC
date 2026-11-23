@@ -1,8 +1,8 @@
 // expect: 求和 = 150
-/* **连续性的兑现**：`view()` / `asMutSlice()` —— 把 varArray 的存储当 `slice<T>` 借出去 ✓
+/* **连续性的兑现**：`view()` / `asMutSlice()` —— 把 vector 的存储当 `slice<T>` 借出去 ✓
  *
  * 为什么必须有它俩：`sort` / 查找 / `println` / 传给 `extern!` 的 C 函数，
- * 全都只认 `slice<T>` ⇒ 没有这两个，varArray 的"连续"就**兑现不了** ✓
+ * 全都只认 `slice<T>` ⇒ 没有这两个，vector 的"连续"就**兑现不了** ✓
  *
  * ⚠️ 两条规矩（**都被实测核对过**，2026-09-26）：
  *   ① 扩容会让借出去的视图指向旧 buffer ⇒ **借了就别再 push**。
@@ -10,11 +10,12 @@
  *      它只是**停在扩容前的那一份快照**上（写进去的东西看不见、看到的是旧值）——
  *      所以是**静默的错值**，不是内存不安全 ✓。这条是**用户的责任**（与 `string.subView` 同类）。
  *   ② ~~视图带出作用域会是编译错误~~（**这条原先写错了**）：`return v.view()` **编得过**，
- *      而且**是对的** —— `varArray` 的缓冲是 `new` 出来的，逃逸分析的 home 机制把它放在
+ *      而且**是对的** —— `vector` 的缓冲是 `new` 出来的，逃逸分析的 home 机制把它放在
  *      **调用者**选的地方 ⇒ 它本来就比这次调用活得久，视图带出去安全 ✓。
- *      实测：`fn leak() -> slice<i32> { var a = varArray<i32>::withCap(4) ; a.push(7) ; return a.view() }`
+ *      实测：`fn leak() -> slice<i32> { var a = vector<i32>::withCap(4) ; a.push(7) ; return a.view() }`
  *      未扩容、扩容两种写法都编得过（扩容后旧块仍在 arena 里 ⇒ 也不悬垂）。
  */
+use std::data::vector
 fn sum(v: slice<i32>) -> i32 {
     var s: i32 = 0
     var i: i64 = 0
@@ -23,12 +24,12 @@ fn sum(v: slice<i32>) -> i32 {
 }
 
 fn main() {
-    var v: varArray<i32> = varArray<i32>::withCap(2)
+    var v: vector<i32> = vector<i32>::withCap(2)
     var i: i32 = 1
     while i <= 5 { v.push(i * 10)  i = i + 1 }        // 这里扩容了（2→4→8）✓
     println("求和 = ", sum(v.view()))               // 借给只认 slice 的函数 ✓
     println("前 3 个 = ", sum(v.view()[0..3]))       // 切片也认（视图套视图）✓
-    var w: mut slice<i32> = v.asMutSlice()            // 可写视图：只给前 len 个 ✓
+    var w: mut slice<i32> = v.viewMut()            // 可写视图：只给前 len 个 ✓
     w[0] = 999
     println("改完 get(0) = ", v.get(0) ?? -1)
 }

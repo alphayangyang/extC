@@ -116,6 +116,18 @@ struct vector<T> {
         return self.b.pop()
     }
 
+    /** @brief 在 `i` 处插入 `v`；`i` 可以等于 `len()`（等价于追加）。越界返 `false`。 */
+    fn insert(self: mut ref vector<T>, i: i64, v: T) -> bool { return self.b.insertAt(i, v) }
+
+    /** @brief 删掉 `i` 处的元素并返回它；越界返 `none`。 */
+    fn removeAt(self: mut ref vector<T>, i: i64) -> option<T> { return self.b.removeAt(i) }
+
+    /** @brief 只留前 `k` 个元素（`k` 钳到 `[0, len()]`）；容量保留，只丢尾部元素。 */
+    fn truncate(self: mut ref vector<T>, k: i64) { self.b.truncate(k) }
+
+    /** @brief 保证还能再放 `more` 个元素（长度不变）；预留内原地长，撞上限才搬家。 */
+    fn reserve(self: mut ref vector<T>, more: i64) { self.b.reserve(more) }
+
     /** @brief 缩到刚好装下 `len()` 个元素（下限 4），尾部页还给操作系统。 */
     fn shrink(self: mut ref vector<T>) {
         var ncap: i64 = self.b.len()

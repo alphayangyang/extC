@@ -413,7 +413,7 @@ $ EXTC_DBG_DFA=1 ./build/extc recon/probes/q2_dualpointee.extc -o /dev/null | gr
   由 A/B/B2/C1 真值表支持，但**没有**用插桩/断点直接观测 `promoteFieldsAt` 是否被调用。
   列为**推断**；修之前建议在 `promoteFieldsAt` 入口加一次性 `EXTC_DBG_FS` 打印确认。
 - **未查清②**：`m_home_cont_after` 的 `[home] build sites=4 L0 L1 L0 L0` 里，除循环的 `p`（L1）
-  外还有三个 L0 站点（`varArray` 的 buffer / `grow` 的 `new` / 链头）——它们分别由哪条事实落到
+  外还有三个 L0 站点（`vector` 的 buffer / `grow` 的 `new` / 链头）——它们分别由哪条事实落到
   HOME 未逐条追。只确认了 UAF 的那一个（line 7, minAt=1）。
 - **未查清③**：`E_ARG_DEPTH` 的 4 例里 `m_main_pfield_direct`（flow=direct）**被接受且 clean**，
   而 `m_main_pfield_ret`（换 `mk`）被拒——与 §1 同根，但没有单独验证「若步骤 3 改了 `argDepth`，

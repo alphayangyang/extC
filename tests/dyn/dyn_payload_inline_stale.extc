@@ -2,13 +2,14 @@
    块退出即归还，读到的是陈旧句柄。现在由**检查器**挡住（不再是运行期 trap）：
    `dyn` 的值是某个 place 里槽位的句柄，所以它和引用一样算"携带存储"；交出去的容器活得更久，
    要么先在循环外声明变量再赋（提升，见 dyn_payload_inline_block），要么这个容器用 `any`。 */
+use std::data::vector
 use std::io
 trait Tag { fn tag(self: ref Self) -> i64 }
 struct box { v: i64 }
 impl Tag for box { fn tag(self: ref box) -> i64 { return self.v } }
 
 fn main() -> i32 {
-    var xs: varArray<dyn Tag> = varArray<dyn Tag>::withCap(4)
+    var xs: vector<dyn Tag> = vector<dyn Tag>::withCap(4)
     var i: i64 = 1
     while i <= 3 {
         var b: box = box { v: i }

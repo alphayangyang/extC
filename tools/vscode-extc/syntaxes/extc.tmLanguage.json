@@ -89,7 +89,7 @@
         },
         {
           "name": "support.type.extc",
-          "match": "\\b(slice|buf|varArray|vector|hashMap|map|option|result|coroutine|ndarray|ndview|cstr)\\b"
+          "match": "\\b(slice|buf|vector|vector|hashMap|map|option|result|coroutine|ndarray|ndview|cstr)\\b"
         }
       ]
     },

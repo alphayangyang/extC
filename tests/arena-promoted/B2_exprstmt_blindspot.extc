@@ -1,4 +1,5 @@
 // p14: value escapes through a CALL in an expression statement (E analysis: ST_EXPR => false)
+use std::data::vector
 struct node { value: i64  next: ?ref node }
 struct list { head: ?ref node  n: i64 }
 
@@ -14,7 +15,7 @@ fn sink(dst: mut ref list, src: list) { *dst = src }
 fn churn() {
     var i: i64 = 0
     while i < 40 {
-        var w: varArray<i64> = varArray<i64>::withCap(200)
+        var w: vector<i64> = vector<i64>::withCap(200)
         w.push(i * 11)
         i = i + 1
     }

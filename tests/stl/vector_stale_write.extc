@@ -1,11 +1,12 @@
 /* 判据：可写视图同样不能跨增长使用 —— 旧板已经被还掉，写进去就是 use after free。 */
+use std::data::vector
 use std::io
 
 fn main() -> i32 {
-    var a: varArray<i32> = varArray<i32>::withCap(2)
+    var a: vector<i32> = vector<i32>::withCap(2)
     a.push(i32(11))
     a.push(i32(22))
-    var m: mut slice<i32> = a.asMutSlice()
+    var m: mut slice<i32> = a.viewMut()
     m[0] = i32(77)
     a.push(i32(33))
     m[1] = i32(88)

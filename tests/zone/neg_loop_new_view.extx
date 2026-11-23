@@ -1,13 +1,14 @@
 // A view of a buffer allocated inside the loop must not be stored where it outlives the loop.
+use std::data::vector
 use std::io
 
 fn main() -> i32 {
-    var hold: varArray<slice<i64>> = varArray<slice<i64>>::withCap(4)
+    var hold: vector<slice<i64>> = vector<slice<i64>>::withCap(4)
     for i in 0..3 {
         var b: mut slice<i64> = new i64[4]
         // expect: carries a reference into a deeper scope
         hold.push(b[..])
     }
-    print(hold.size())
+    print(hold.len())
     return 0
 }

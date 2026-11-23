@@ -3,7 +3,7 @@
  *
  *   trait / any         三种地块共用 `any`：按名字派发 `area()`，编译期只查"名字存在"，
  *                       加第四种地块不用改这里（封闭世界跳转表，几条候选就是几个分支）
- *   varArray<any>       异构容器：`any` 是**拥有**的胖值（装箱即拷贝、视图深挖），
+ *   vector<any>       异构容器：`any` 是**拥有**的胖值（装箱即拷贝、视图深挖），
  *                       所以"异构数组的元素"用它才对；存储是地址预留，增长搬家、不拷元素
  *
  * 为什么是 `any` 而不是 `dyn Shape`：`dyn` 的值是**某个位置里槽位的句柄**，槽随那个位置
@@ -17,6 +17,7 @@
  *   1 = 矩形 a×b   2 = 圆 3a²   3 = 直角三角形 a×b/2
  * 用法：printf "5\n1 3 4\n2 2 0\n3 6 7\n1 5 5\n2 1 0\n" | ./tour-plots
  * ========================================================================== */
+use std::data::vector
 use std::io
 use std::text::string
 
@@ -67,8 +68,8 @@ fn main() -> i32 {
 
     if n <= 0 { io::cout << "no plots\n"  return 0 }
 
-    var kinds: varArray<i64> = varArray<i64>::withCap(n + 1)
-    var plots: varArray<any> = varArray<any>::withCap(n + 1)
+    var kinds: vector<i64> = vector<i64>::withCap(n + 1)
+    var plots: vector<any> = vector<any>::withCap(n + 1)
 
     /* 读入：每块地形一个整数标签 + 两个参数 —— 装箱成 `any` 存进数组 */
     var i: i64 = 0
@@ -99,7 +100,7 @@ fn main() -> i32 {
     var best: i64 = 0
     var bestAt: i64 = 0
     i = 0
-    while i < plots.size() {
+    while i < plots.len() {
         let v: any = plots.get(i)!
         let area: i64 = v.area()      /* ← 按名字派发（封闭世界），结果落回 i64 */
         io::cout << line(i, kinds.get(i)!, area).snapshot() << "\n"
@@ -108,14 +109,14 @@ fn main() -> i32 {
         i = i + 1
     }
     io::cout << "--------------\n"
-    io::cout << "plots=" << plots.size() << " total=" << total
+    io::cout << "plots=" << plots.len() << " total=" << total
     io::cout << " max=" << best << " (at #" << bestAt << ")\n"
 
     /* 第二遍：把小块的留下 —— 搬进一个新数组，比较面积。 */
-    var kept: varArray<any> = varArray<any>::withCap(plots.size() + 1)
+    var kept: vector<any> = vector<any>::withCap(plots.len() + 1)
     var removed: i64 = 0
     i = 0
-    while i < plots.size() {
+    while i < plots.len() {
         let v: any = plots.get(i)!
         let area: i64 = v.area()
         if area < minArea() {
@@ -125,6 +126,6 @@ fn main() -> i32 {
         }
         i = i + 1
     }
-    io::cout << "removed=" << removed << " live=" << kept.size() << "\n"
+    io::cout << "removed=" << removed << " live=" << kept.len() << "\n"
     return 0
 }

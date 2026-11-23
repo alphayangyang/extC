@@ -1065,9 +1065,10 @@ static const char *exCall(CG *g, Expr *e) {
     else
         name = (ce && planInstName(ce)) ? planInstName(ce) : cSymName(g, name);
     if (strcmp(name, "extc_cout_f64") == 0) g->needCoutF64 = true;
-    /* The buffer substrate rides on the **call**, not on the declaration: the prelude declares its
-     * five entries (the bundled `varArray<T>` needs a reservation), so a declaration-based trigger
-     * would put the whole block into every program. Only a call site can say the storage is used. */
+    /* The buffer substrate rides on the **call**, not on the declaration: `std::sys::bufrt` declares
+     * its five entries and every container module imports it, so a declaration-based trigger would
+     * put the whole block into every program that merely imports `string`. Only a call site can say
+     * the storage is used. */
     if (ce && ce->isExtern && ce->externLib && strcmp(ce->externLib, "extc-buf") == 0)
         g->needBuf = true;
     Buf b;

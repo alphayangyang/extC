@@ -3542,7 +3542,7 @@ static Stmt *parseIf(Parser *p) {
  * The body the user wrote is wrapped in its own block, so declarations inside it cannot shadow
  * the loop variable that the step still uses.
  * `c[..]` makes the container form cover fixed-size arrays and views alike: an array has no
- * `.len` of its own, a view over an array does. Anything else (a call, `varArray`, a struct) is
+ * `.len` of its own, a view over an array does. Anything else (a call, `vector`, a struct) is
  * rejected, and a name must be bound first, because the desugared loop uses `c` on every
  * iteration. The bounds are `lo..hi`, half-open, exactly like a slice range.
  */

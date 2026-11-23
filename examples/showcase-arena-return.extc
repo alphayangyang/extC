@@ -1,12 +1,13 @@
 /* ① 零标注：谁活多久，编译器自己算 */
+use std::data::vector
 use std::io
 
 struct point { x: i64  y: i64 }
 
 /* 没有 free、没有生命周期标注、没有所有权标记。
  * 返回值的缓冲区落在**调用者**选的地方（home 机制）⇒ 返回值合法且安全。 */
-fn build(n: i64) -> varArray<point> {
-    var out: varArray<point> = varArray<point>::withCap(4)
+fn build(n: i64) -> vector<point> {
+    var out: vector<point> = vector<point>::withCap(4)
     var i: i64 = 0
     while i < n {
         out.push(point { x: i, y: i * i })
@@ -19,11 +20,11 @@ fn main() -> i32 {
     let ps = build(5)
     var sum: i64 = 0
     var i: i64 = 0
-    while i < ps.size() {
+    while i < ps.len() {
         let p = ps.get(i) ?? point { x: 0, y: 0 }
         sum = sum + p.y
         i = i + 1
     }
-    io::cout << "n=" << ps.size() << " sum(y)=" << sum << "\n"
+    io::cout << "n=" << ps.len() << " sum(y)=" << sum << "\n"
     return 0
 }

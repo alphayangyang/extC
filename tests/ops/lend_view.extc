@@ -1,6 +1,7 @@
 // 只读视图参数接受同元素的容器实参：`va`/`a` 在调用位置自动借成 `va.view()` / `a[..]`
 // （造的是真的方法调用 / 切片节点，借用检查照常生效）。可写视图不在其中：写权限要写出来。
 // expect: t1=6 t2=100 s=6 k=6 b=x=hi
+use std::data::vector
 use std::io
 use std::data::seq
 use std::text::string
@@ -12,17 +13,17 @@ fn total(v: slice<i64>) -> i64 {
 }
 
 fn main() -> i32 {
-    var va: varArray<i64> = varArray<i64>::withCap(4)
+    var va: vector<i64> = vector<i64>::withCap(4)
     va.push(1)
     va.push(2)
     va.push(3)
     var a: [4]i64 = [10, 20, 30, 40]
     let s = seq::sum(va) ?? 0
-    var bytes: varArray<u8> = varArray<u8>::withCap(4)
+    var bytes: vector<u8> = vector<u8>::withCap(4)
     bytes.push(u8(104))
     bytes.push(u8(105))
     var b: string = string::from("x=")
-    b.append(bytes)          // 方法实参位置同样自动借出（slice<u8> ← varArray<u8>）
+    b.append(bytes)          // 方法实参位置同样自动借出（slice<u8> ← vector<u8>）
     io::cout << f"t1={total(va)} t2={total(a)} s={s} k={total(va.view())} b={b}\n"
     return 0
 }

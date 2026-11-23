@@ -10,7 +10,7 @@
                   ff（字段的字段 bx.mid.next）/ aelem（数组元素 arr[0]）/
                   glob（全局）/ pfield（经 mut ref 参数 (*out).next）
   流动 flow     : direct（new 后直接存）/ temp（经中间变量）/ ret（经函数返回）/
-                  param（经 mut ref 参数）/ cont（存进 varArray）
+                  param（经 mut ref 参数）/ cont（存进 vector）
   位置 loc      : main（无 home）/ home（返回引用的函数）/ nohome（不逃逸的函数）
   赋值次序 order: before（目标引用在语句之前已被赋过值）/ after（只在语句之后赋）
   收窄 narrow   : ifnull（if x != null）/ old（var o = x 后再收窄）
@@ -159,6 +159,8 @@ def build_case(fam, loc, body, head_e, head_c, helpers, expect, top=None):
     """body: Prog（函数体），helpers: 需要的外部函数 kind 列表，top: 顶层声明。"""
     out = Prog()
     out.l(None, "#include <iostream>")
+    if "vec" in helpers:
+        out.l("use std::data::vector")
     out.l("use std::io")
     out.l(FAMILIES[fam]["ext"], FAMILIES[fam]["cpp"])
     if top is not None:
@@ -427,7 +429,7 @@ def skel_cont(fam, flow, order, n=4):
     helpers = ["vec"]
     if flow == "ret":
         helpers.insert(0, "mk")
-    p.l("var v: varArray<mut ref node> = varArray<mut ref node>::withCap(8)",
+    p.l("var v: vector<mut ref node> = vector<mut ref node>::withCap(8)",
         "std::vector<node *> v;")
     p.l("var i: i64 = 0", "long long i = 0;")
     p.l("while i < %d {" % n, "while (i < %d) {" % n)
@@ -440,7 +442,7 @@ def skel_cont(fam, flow, order, n=4):
     p.l("var head: ?mut ref node = null", "node *head = nullptr;")
     p.l("var cur: ?mut ref node = null", "node *cur = nullptr;")
     p.l("var k: i64 = 0", "long long k = 0;")
-    p.l("while k < v.size() {", "while (k < (long long)v.size()) {")
+    p.l("while k < v.len() {", "while (k < (long long)v.size()) {")
     p.l("    var q: mut ref node = v.get(k)!", "    node *q = v[k];")
     p.l("    if head == null {", "    if (head == nullptr) {")
     p.l("        head = q", "        head = q;")

@@ -1,0 +1,39 @@
+// vector<T> 结构操作 · 元素所有权：insert/removeAt/truncate 搬的是元素本身，不是字节
+// 判据：① insert 进来的元素由容器接管，槽不复用旧值 · ② removeAt 取出的元素归调用方，
+//       它自己的预留被调用方还掉 · ③ truncate 逐元素跑 @drop · ④ 最后 bufLive() == 0。
+use std::io
+use std::data::buf
+use std::data::vector
+
+fn main() -> i32 {
+    var b = buf<vector<i64>>::withCap(8)
+    var i: i64 = 0
+    while i < 3 {
+        var v = vector<i64>::new()
+        v.push(i * 10)
+        b.insertAt(i, v)                              // 0 10 20
+        i = i + 1
+    }
+    let n3: i64 = b.len()
+    let live3: i64 = buf::bufLive()
+
+    var got: i64 = 0
+    {
+        var m = b.removeAt(1)!                        // 取走 10
+        m.push(1)
+        got = m.len()
+    }                                                 // m 在这里归还自己的预留
+    let live_rm: i64 = buf::bufLive()
+    let n2: i64 = b.len()
+
+    b.truncate(1)                                     // 丢掉尾部那一个（跑 @drop）
+    let live_tr: i64 = buf::bufLive()
+    let n1: i64 = b.len()
+
+    b.release()
+    io::cout << "n=" << n3 << "," << n2 << "," << n1 << " got=" << got
+    io::cout << " live3=" << live3 << " rm=" << live_rm << " tr=" << live_tr
+    io::cout << " end=" << buf::bufLive() << "\n"
+    return 0
+}
+// expect: n=3,2,1 got=2 live3=1120 rm=1088 tr=1056 end=0

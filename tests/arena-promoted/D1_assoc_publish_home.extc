@@ -1,5 +1,6 @@
 // p17: an ASSOCIATED function call in var-init -- `check_stmt.c:216` fix-up and
 //      `markCallHomeIfEscaping` both only look at EX_CALL / EX_METHOD, not EX_ASSOC
+use std::data::vector
 struct node { value: i64  next: ?ref node }
 struct box {
     r: ?ref node
@@ -18,7 +19,7 @@ fn publish(dst: mut ref sinker, src: box) { dst.slot = src }
 fn churn() {
     var i: i64 = 0
     while i < 30 {
-        var w: varArray<i64> = varArray<i64>::withCap(200)
+        var w: vector<i64> = vector<i64>::withCap(200)
         w.push(i * 7)
         i = i + 1
     }

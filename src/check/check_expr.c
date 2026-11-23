@@ -1284,7 +1284,7 @@ static TraitDef *dynTraitOf(Checker *c, const char *traitName, Type *payT, int l
      * so the user cannot write `impl` for it. There is exactly one shape where the compiler can
      * write the block itself -- a trait whose whole interface is one `call` method, and a closure
      * whose synthesised `call` has the same signature. That is the heterogeneous-container case:
-     * `var fns: varArray<dyn IntFn> = ...` holding two different lambdas.
+     * `var fns: vector<dyn IntFn> = ...` holding two different lambdas.
      *
      * The capture set has to be **plain values**: a by-value capture of a scalar is a copy, so the
      * dyn value stays valid wherever it goes. A capture that is a reference or a view would make
@@ -1975,7 +1975,7 @@ static bool feeldLendBare(FuncDef *f) {
 }
 
 /**
- * @brief Lend a "container" argument in place as a read-only view: `varArray<T>` is written `v.asSlice()`,
+ * @brief Lend a "container" argument in place as a read-only view: `vector<T>` is written `v.asSlice()`,
  *        a fixed-size array is written `a[..]`.
  *
  * A read-only view parameter (`slice<T>`, not `mut`) accepts a container argument of the same element,
@@ -3673,7 +3673,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             if (w->kind == TY_PARAM || ttHasParam(w)) {
                 /* `T` has no size while a template is being checked, so the size check is
                  * deferred to instantiation and recorded. That is what makes `new T[cap]`
-                 * inside `varArray<T>` writable at all. If the size is still unknown at
+                 * inside `vector<T>` writable at all. If the size is still unknown at
                  * instantiation -- a nested generic that never received its argument, say --
                  * the error is reported there. */
                 recordNewSizeCheck(c, w, e->line);
@@ -3830,8 +3830,8 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                             "`allocSlice<T>(n)` was removed; write `new T[n]`");
                     return ttError(tt);
                 }
-                /* `varArray<i64>(200)`: the constructor of a **generic** type. The type
-                 * arguments are written out just as `varArray<i64>::withCap(200)` writes
+                /* `vector<i64>(200)`: the constructor of a **generic** type. The type
+                 * arguments are written out just as `vector<i64>::withCap(200)` writes
                  * them -- nothing is inferred -- and the node becomes the associated call
                  * for the rest of the pipeline. */
                 if (!lookup(c, e->u.gencall.name)) {

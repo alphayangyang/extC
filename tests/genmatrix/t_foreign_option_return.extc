@@ -20,15 +20,16 @@
  *
  * 顺带：这条修好之后，stdlib 里那个「就地构造 `some(self.vals[i])`」的写法
  * （一直被注释当成"形状选择"，其实是绕开本缺陷的产物）**不再是必须的** ✓ */
+use std::data::vector
 struct wrap<T> {
-    xs: varArray<T>
+    xs: vector<T>
     fn getOr(self: ref wrap<T>, i: i64) -> ?T { return self.xs.get(i) }
 }
 
 fn main() -> i32 {
-    var w: wrap<i64> = { xs: varArray<i64>::withCap(2) }
+    var w: wrap<i64> = { xs: vector<i64>::withCap(2) }
     w.xs.push(5)
-    var s: wrap<slice<u8>> = { xs: varArray<slice<u8>>::withCap(2) }
+    var s: wrap<slice<u8>> = { xs: vector<slice<u8>>::withCap(2) }
     s.xs.push("hi")
     println("got = ", w.getOr(0) ?? -1, " · text = ", s.getOr(0) ?? "?")
     return 0

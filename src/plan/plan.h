@@ -391,18 +391,19 @@ void        anSetMakesPoolAny(StructDef *sd, bool v);
 
 /* ---- the effect closure's state ----------------------------------------------------
  *
- * `effState` is the closure's working state (`EFF_NONE` = not computed, `EFF_DONE` = finished,
- * `EFF_IN_PROGRESS` = being computed); `effComplete` / `effUnknown` are the results ("is this
+ * `effState` is the closure's working state (`EFF_NONE` = raw summary not collected, `EFF_RAW` =
+ * collected and waiting for the closure, `EFF_DONE` = closed, `EFF_MARK_BASE` and up = a temporary
+ * mark of the reachable set); `effComplete` / `effUnknown` are the results ("is this
  * summary trustworthy"). Code generation reads none of the three; they belong to the analysis
  * side. */
 
 /**
  * @brief Get the effect closure's computation state.
  *
- * The value is `EFF_NONE` (not computed yet), `EFF_DONE` (computed; see `anEffComplete` for
- * whether it is trustworthy), or `EFF_IN_PROGRESS` (being computed -- meeting it again during
- * recursion is a cycle, and the summary is treated as incomplete). Only the effect closure itself
- * reads and writes this value.
+ * The value is `EFF_NONE` (raw summary not collected), `EFF_RAW` (collected, closure pending),
+ * `EFF_DONE` (closed; see `anEffComplete` for whether it is trustworthy), or `EFF_MARK_BASE` and up
+ * (a temporary mark of the reachable set). Only the effect closure itself reads and writes this
+ * value.
  *
  * @param f  The function definition.
  * @return   The state value; `EFF_NONE` when there is no record.
@@ -413,7 +414,7 @@ int  anEffState(const FuncDef *f);
  * @brief Record the effect closure's computation state.
  *
  * @param f  The function definition; NULL ignores this write.
- * @param v  The state value: `EFF_NONE`, `EFF_DONE`, or `EFF_IN_PROGRESS`.
+ * @param v  The state value: `EFF_NONE`, `EFF_RAW`, `EFF_DONE`, or `EFF_MARK_BASE` and up.
  */
 void anSetEffState(FuncDef *f, int v);
 

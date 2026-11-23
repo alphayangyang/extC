@@ -3,9 +3,9 @@
 
 ## 为什么需要这个门禁
 
-缓冲区容器（vector<T> / varArray<T>）的元素住在**容器自己的板**上，不在 C 描述符的字段里：描述符
+缓冲区容器（vector<T> / vector<T>）的元素住在**容器自己的板**上，不在 C 描述符的字段里：描述符
 字段是三块视图 + 几个整数。rcScanType 早先对「泛型实参带引用」一律返回 RC_CONSERVATIVE，
-于是 varArray<mut ref node> 这种局部量让整个函数 rc.rootsUnreliable ⇒ 一个触发都不发、欠收也没人
+于是 vector<mut ref node> 这种局部量让整个函数 rc.rootsUnreliable ⇒ 一个触发都不发、欠收也没人
 还（buf_ref_slot 峰值比随轮数增长、sweeps 0/0）。
 
 现在的规则：先扫字段；字段里一个引用叶子都没有（s == RC_NO_REFS）而泛型实参带引用，说明引用

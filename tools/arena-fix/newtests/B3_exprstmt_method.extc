@@ -1,4 +1,5 @@
 // p14c: method flavour of the same root cause (receiver arena + E blind spot on ST_EXPR)
+use std::data::vector
 struct node { value: i64  next: ?ref node }
 struct list {
     head: ?ref node
@@ -19,7 +20,7 @@ struct sinker {
 fn churn() {
     var i: i64 = 0
     while i < 40 {
-        var w: varArray<i64> = varArray<i64>::withCap(200)
+        var w: vector<i64> = vector<i64>::withCap(200)
         w.push(i * 13)
         i = i + 1
     }

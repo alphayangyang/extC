@@ -1,13 +1,14 @@
 // expect: 2*3+(4-1) = 9 | 1+2*3 = 7 | bad = true
 // 一个小表达式求值器：enum 带载荷、match、ref、`?` 传播、`??` 兜底 ——
 // 没有继承、没有异常、没有装箱；每个 match 都是跳转表，每个 `?` 都是两条分支。
+use std::data::vector
 use std::io
 use std::text::string
 
 type tok = | num(i64) | plus | minus | star | lparen | rparen
 
-fn lex(s: slice<u8>) -> ?varArray<tok> {
-    var out: varArray<tok> = varArray<tok>::withCap(16)
+fn lex(s: slice<u8>) -> ?vector<tok> {
+    var out: vector<tok> = vector<tok>::withCap(16)
     var i: i64 = 0
     while i < s.len {
         let c: u8 = s[i]
@@ -22,9 +23,9 @@ fn lex(s: slice<u8>) -> ?varArray<tok> {
         else if c == 42 { out.push(tok.star)   i = i + 1 }
         else if c == 40 { out.push(tok.lparen) i = i + 1 }
         else if c == 41 { out.push(tok.rparen) i = i + 1 }
-        else { return option<varArray<tok>>::none }
+        else { return option<vector<tok>>::none }
     }
-    return option<varArray<tok>>::some(out)
+    return option<vector<tok>>::some(out)
 }
 
 fn atom(ts: slice<tok>, at: mut ref i64) -> ?i64 {

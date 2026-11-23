@@ -7,6 +7,6 @@ fn main() -> i32 {
     var s: string = string::from("  hi  ")
     io::cout << "s=" << s.trim() << " n=" << s.trim().len()
     let parts = string::from("x;y").split(";")
-    io::cout << " parts=" << parts.len << " first=" << parts.get(0)! << "\n"
+    io::cout << " parts=" << parts.len() << " first=" << parts.get(0)! << "\n"
     return 0
 }

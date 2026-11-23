@@ -1,17 +1,18 @@
 /* join / trim / trimStart / trimEnd：把 `split` 的段拼回去、把协议行两端的空白去掉。
  * 判据：一行机判输出（见 tests/stl/run.sh 里的 run_case）。 */
+use std::data::vector
 use std::io
 use std::text::string as str
 
 fn main(args: slice<slice<u8>>) -> i32 {
     if args.len > 2 { return 1 }
     let parts = str::split(" a , b , c ", ",")
-    /* join 要 slice<slice<u8>>：varArray 先 view()（容器自己的视图） */
+    /* join 要 slice<slice<u8>>：vector 先 view()（容器自己的视图） */
     let j = str::join(parts.view(), "|")
     let t1 = str::trim("   hi \t")
     let t2 = str::trimStart("  x ")
     let t3 = str::trimEnd(" y  ")
     let empty = str::join(parts.view()[0..0], ".")
-    io::cout << f"n={parts.len} j=[{j.snapshot()}] t1=[{t1}] t2=[{t2}] t3=[{t3}] e={empty.len()}\n"
+    io::cout << f"n={parts.len()} j=[{j.snapshot()}] t1=[{t1}] t2=[{t2}] t3=[{t3}] e={empty.len()}\n"
     return 0
 }

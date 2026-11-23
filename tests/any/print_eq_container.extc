@@ -1,14 +1,15 @@
 // 打印、相等、容器：`any` 自己知道怎么打印自己（描述符），两个 any 按描述符比较，能进容器。
+use std::data::vector
 use std::io
 
 fn main() -> i32 {
     var a: any = i64(1)
     var b: any = i64(1)
     var c: any = i64(2)
-    var arr: varArray<any> = varArray<any>::withCap(4)
+    var arr: vector<any> = vector<any>::withCap(4)
     arr.push(a)
     arr.push(c)
-    println("eq=", a == b, " ne=", a == c, " n=", arr.size())
+    println("eq=", a == b, " ne=", a == c, " n=", arr.len())
     println("v=", a, "/", c)
     return 0
 }

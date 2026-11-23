@@ -1,9 +1,12 @@
-// 比两个**容器** ⇒ 元素必须能比（`fn ==`）✗
-// （PLAN #42(c) 之后：**不写 `fn ==` 也能把 struct 放进容器** ✓
-//   但真去 `a == b` 时仍然要元素可比较 —— 这条没放松 ✓）
+// 比两个**容器**的内容 ⇒ 元素必须能比（`fn ==` / `fn !=`）✗
+// （容器自己 `@noCopy`，所以内容比较走视图：`a.view() == b.view()`）
+// expect: needs `span` to define
+use std::data::vector
 struct span { start: i32  len: i32 }
 fn main() {
-    var a: varArray<span> = varArray<span>::withCap(1)
-    var b: varArray<span> = varArray<span>::withCap(1)
-    println("比一下 = ", a == b)
+    var a: vector<span> = vector<span>::withCap(1)
+    var b: vector<span> = vector<span>::withCap(1)
+    a.push({ start: 1, len: 2 })
+    b.push({ start: 1, len: 2 })
+    println("比一下 = ", a.view() == b.view())
 }

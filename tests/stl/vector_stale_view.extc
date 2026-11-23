@@ -1,13 +1,14 @@
-/* 判据：`varArray` 的存储是板块 ⇒ 扩容当场还旧板。视图在增长**之后**还被读，同块内就是编译
+/* 判据：`vector` 的存储是板块 ⇒ 扩容当场还旧板。视图在增长**之后**还被读，同块内就是编译
  * 错误（跨帧则借不出去）。这条原先断言的是 arena 时代的"快照"语义 —— 那块旧板已经不在了。 */
+use std::data::vector
 use std::io
 
 fn main() -> i32 {
-    var a: varArray<i32> = varArray<i32>::withCap(2)
+    var a: vector<i32> = vector<i32>::withCap(2)
     a.push(i32(11))
     a.push(i32(22))
     var v: slice<i32> = a.view()
     a.push(i32(33))
-    println("snap=", i64(v[0]), " alen=", a.size())
+    println("snap=", i64(v[0]), " alen=", a.len())
     return 0
 }

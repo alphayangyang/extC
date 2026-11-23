@@ -130,4 +130,3 @@ old = 池底最后一个提交 `f910d14d`（vector 迁移前），new = 当前�
 
 判据不变：各臂输出逐字相同、min-of-N、峰值 RSS 一并记录；`new` 比 `old` 慢超过 10% 的形状要写清是哪一条机制缺了。
 表在 `RESULTS-4WAY.tsv`（`--reps 5 --tsv RESULTS-4WAY.tsv`），解读在 `RESULTS-4WAY.md`。
-varArray 的五臂对照（old / varArray / `stl::vector` / C++ / Rust）在 `bench/vararray`。

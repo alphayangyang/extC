@@ -3,7 +3,7 @@
 #
 # 程序形状（三条线**一模一样**）：N 个 struct（各带一个方法 get）+ N 个函数 g0..gN-1
 #   + main 全调一遍 + **5 个泛型容器实例**（i32/i64/u64/u8/bool/f64 各 push 一次）
-#   · extC：`varArray<T>`（prelude 里用 extC 写的泛型 + 单态化）
+#   · extC：`vector<T>`（stdlib 里用 extC 写的泛型 + 单态化）
 #   · Rust：`Vec<T>`（std 泛型 + 单态化）
 #   · C   ：能手写对照（没有泛型/方法 ⇒ 只作"手写 C"参照）
 #
@@ -17,10 +17,11 @@ EXTC=${EXTC:-./build/extc}; CC=${CC:-cc}; RUSTC=${RUSTC:-rustc}
 OUT=build/compile-bench; mkdir -p "$OUT"; RUNS=${RUNS:-3}
 
 gen_extc() { local n=$1 f=$2 i; {
+  echo "use std::data::vector"
   for ((i=0;i<n;i++)); do echo "struct s$i { a: i32  b: i64  fn get(self: ref s$i) -> i32 { return self.a } }"; done
   for ((i=0;i<n;i++)); do echo "fn g$i(x: i32) -> i32 {
     var t: s$i = { a: x, b: 1 }
-    var v: varArray<i32> = varArray<i32>::withCap(2)
+    var v: vector<i32> = vector<i32>::withCap(2)
     v.push(x)
     return t.get() + (v.get(0) ?? 0)
 }"; done
@@ -28,13 +29,13 @@ gen_extc() { local n=$1 f=$2 i; {
   echo "    var acc: i32 = 0"
   for ((i=0;i<n;i++)); do echo "    acc = acc + g$i($i)"; done
   echo "    println(\"acc = \", acc)"
-  echo "    var vi: varArray<i64> = varArray<i64>::withCap(1)"
-  echo "    var vu: varArray<u64> = varArray<u64>::withCap(1)"
-  echo "    var vb: varArray<bool> = varArray<bool>::withCap(1)"
-  echo "    var vf: varArray<f64> = varArray<f64>::withCap(1)"
-  echo "    var vq: varArray<u8> = varArray<u8>::withCap(1)"
+  echo "    var vi: vector<i64> = vector<i64>::withCap(1)"
+  echo "    var vu: vector<u64> = vector<u64>::withCap(1)"
+  echo "    var vb: vector<bool> = vector<bool>::withCap(1)"
+  echo "    var vf: vector<f64> = vector<f64>::withCap(1)"
+  echo "    var vq: vector<u8> = vector<u8>::withCap(1)"
   echo "    vi.push(1)  vu.push(2)  vb.push(true)  vf.push(0.5)  vq.push(3)"
-  echo "    println(\"insts = \", vi.size(), vu.size(), vb.size(), vf.size(), vq.size())"
+  echo "    println(\"insts = \", vi.len(), vu.len(), vb.len(), vf.len(), vq.len())"
   echo "}"; } > "$f"; }
 
 gen_rust() { local n=$1 f=$2 i; {

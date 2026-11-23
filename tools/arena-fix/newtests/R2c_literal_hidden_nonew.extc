@@ -1,4 +1,5 @@
 // p05: callee's only allocation is reached through a call hidden inside a STRUCT LITERAL
+use std::data::vector
 struct node { value: i64  next: ?ref node }
 struct box { r: ?ref node }
 
@@ -16,7 +17,7 @@ fn makeBox() -> box {                    // allocates only via mknode(), and onl
 fn churn() {
     var i: i64 = 0
     while i < 40 {
-        var w: varArray<i64> = varArray<i64>::withCap(200)
+        var w: vector<i64> = vector<i64>::withCap(200)
         w.push(i * 7)
         i = i + 1
     }

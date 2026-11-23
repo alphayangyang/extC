@@ -1,11 +1,12 @@
-/* 判据：`varArray` 的存储是地址预留（bufrt 竞技场），`release()` 当场还回去（不是等作用域退出）。 */
+/* 判据：`vector` 的存储是地址预留（bufrt 竞技场），`release()` 当场还回去（不是等作用域退出）。 */
 // expect: grown>0=true after<1024=true sum=0
+use std::data::vector
 use std::io
 use std::data::buf
 
 fn main() -> i32 {
     let base: i64 = buf::bufLive()
-    var a: varArray<i64> = varArray<i64>::withCap(4)
+    var a: vector<i64> = vector<i64>::withCap(4)
     var i: i64 = 0
     while i < 100000 { a.push(i); i = i + 1 }
     let grown: i64 = buf::bufLive() - base

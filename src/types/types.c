@@ -235,7 +235,20 @@ static Type *refLike(TypeTable *tt, Type *src, Type *inner) {
  * @return      That type; `NULL` when it was never registered. A struct's / enum's type node is
  *              built on first use and cached on its declaration.
  */
-Type *ttFromName(TypeTable *tt, const char *name) {
+/**
+ * @brief Look a bare name up, optionally ignoring the entry file's own declarations.
+ *
+ * The built-ins come first, then every declaration that belongs to the prelude (`reserved`)
+ * or to a module (`modName` set), and last the entry file's own declarations. A name is
+ * visible in one file only because a `use` line brought it there, and a flat name table
+ * cannot express that -- `skipEntryFile` is how the caller asks for the module's view.
+ *
+ * @param tt            The type table.
+ * @param name          The bare name, as written.
+ * @param skipEntryFile Leave the entry file's declarations out of the search.
+ * @return              The interned type, or NULL when nothing matches.
+ */
+static Type *ttFromNameFiltered(TypeTable *tt, const char *name, bool skipEntryFile) {
     if (strcmp(name, "void") == 0) return tt->tVoid;
     if (strcmp(name, "any") == 0) return tt->tAny;
 
@@ -245,6 +258,7 @@ Type *ttFromName(TypeTable *tt, const char *name) {
     }
     for (size_t i = 0; i < tt->structs.len; i++) {
         StructDef *sd = *(StructDef **)vecAt(&tt->structs, i);
+        if (skipEntryFile && sd->modName == NULL && !sd->reserved) continue;
         if (strcmp(sd->name, name) == 0) {
             if (!sd->type) {
                 sd->type = mkType(tt->arena, TY_STRUCT, sd->name);
@@ -255,6 +269,7 @@ Type *ttFromName(TypeTable *tt, const char *name) {
     }
     for (size_t i = 0; i < tt->enums.len; i++) {
         TypeDef *td = *(TypeDef **)vecAt(&tt->enums, i);
+        if (skipEntryFile && td->modName == NULL && !td->reserved) continue;
         if (strcmp(td->name, name) == 0) {
             if (!td->type) {
                 td->type = mkType(tt->arena, TY_ENUM, td->name);
@@ -264,6 +279,29 @@ Type *ttFromName(TypeTable *tt, const char *name) {
         }
     }
     return NULL;
+}
+
+/**
+ * @brief `ttFromName`, in the scope the checker is currently in.
+ *
+ * Inside a module body the entry file's declarations are not in scope, so they are skipped;
+ * everywhere else this is exactly `ttFromName`. Keeping the distinction here, in the one
+ * function the *resolver* uses, leaves the many direct `ttFromName` callers (which ask for
+ * built-ins and prelude types by name) untouched.
+ */
+static Type *ttFromNameScoped(TypeTable *tt, const char *name) {
+    return ttFromNameFiltered(tt, name,
+                              tt->curModName != NULL && tt->curModName[0] != '\0');
+}
+
+/**
+ * @brief Look up a registered type by name, seeing every declaration including the entry file's.
+ *
+ * The scope-free entry point: callers that ask for a built-in or a prelude type by name keep
+ * this behaviour, while the resolver (`ttResolve`) goes through `ttFromNameScoped`.
+ */
+Type *ttFromName(TypeTable *tt, const char *name) {
+    return ttFromNameFiltered(tt, name, false);
 }
 
 /**
@@ -303,8 +341,11 @@ Type *ttResolve(TypeTable *tt, Ctx *ctx, Type *t, int line, Vec *params) {
             /* A name mangled for a module is reachable through the alias table
              * (`pair` -> `liba$pair`), and only after the plain lookup failed, so the
              * precedence of this file, the built-ins, and the prelude is unchanged. */
+            /* Inside a module body the entry file's declarations are not in scope: without
+             * the scope test a program declaring `struct buf` would capture the `buf` that
+             * `std::data::vector` imported, and the library's own body would not resolve. */
             const char *nm0 = t->name;
-            if (!ttFromName(tt, nm0)) {
+            if (!ttFromNameScoped(tt, nm0)) {
                 /* A bare name may match several aliases: count them instead of "picking the first". */
                 const char *hit = NULL;
                 int nHit = 0;
@@ -322,7 +363,7 @@ Type *ttResolve(TypeTable *tt, Ctx *ctx, Type *t, int line, Vec *params) {
                 }
                 if (nHit == 1) nm0 = hit;
             }
-            Type *base = ttFromName(tt, nm0);
+            Type *base = ttFromNameScoped(tt, nm0);
             if (!base) {
                 ctxError(ctx, line, 1,
                          "built-in types: i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 bool str void",

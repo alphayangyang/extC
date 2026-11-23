@@ -1,17 +1,18 @@
 // expect: size = 10 cap = 16
 // （上面这行是给 tests/run.sh 的输出断言：扩容 2→4→8→16 都发生了）
+use std::data::vector
 fn main() {
-    var v: varArray<i32> = varArray<i32>::withCap(2)
-    println("初始 size = ", v.size(), " 空？ ", v.isEmpty())
+    var v: vector<i32> = vector<i32>::withCap(2)
+    println("初始 size = ", v.len(), " 空？ ", v.isEmpty())
     var i: i32 = 0
     while i < 10 { v.push(i * i)  i = i + 1 }          // 触发多次扩容 ✓
-    println("size = ", v.size(), " cap = ", v.cap)
+    println("size = ", v.len(), " cap = ", v.capacity())
     println("get(3) = ", v.get(3) ?? -1, " get(99) = ", v.get(99) ?? -1)
     var top: ?i32 = v.pop()
-    println("pop = ", top ?? -1, " 之后 size = ", v.size())
+    println("pop = ", top ?? -1, " 之后 size = ", v.len())
     v.set(0, 100)
     println("set 之后 get(0) = ", v.get(0) ?? -1)
     v.clear()
-    println("clear 之后 size = ", v.size(), " 空？ ", v.isEmpty())
+    println("clear 之后 size = ", v.len(), " 空？ ", v.isEmpty())
     println("空 pop = ", v.pop() ?? -1)
 }

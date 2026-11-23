@@ -18,9 +18,9 @@ out=$("$EXTC" -w --run tests/dyn/dyn_shape_area.extc 2>&1)
 [ "$out" = "rect=12 circle=12 total=24" ] && ok dyn_shape_area "混存 rect/circle 求总面积（$out）" \
                                           || bad dyn_shape_area "期望 rect=12 circle=12 total=24，实得：$out"
 
-# 阶段 3：dyn 进泛型容器 varArray<T>；以及"容器清空后 dyn 值仍有效"（保守语义，见夹具注释）
-out=$("$EXTC" -w --run tests/dyn/dyn_in_varArray.extc 2>&1)
-[ "$out" = "va=13" ] && ok dyn_in_varArray "dyn 进 varArray<T>（$out）" || bad dyn_in_varArray "期望 va=13，实得：$out"
+# 阶段 3：dyn 进泛型容器 vector<T>；以及"容器清空后 dyn 值仍有效"（保守语义，见夹具注释）
+out=$("$EXTC" -w --run tests/dyn/dyn_in_vector.extc 2>&1)
+[ "$out" = "va=13" ] && ok dyn_in_vector "dyn 进 vector<T>（$out）" || bad dyn_in_vector "期望 va=13，实得：$out"
 out=$("$EXTC" -w --run tests/dyn/dyn_container_clear.extc 2>&1)
 [ "$out" = "afterClear=9" ] && ok dyn_container_clear "容器清空后 dyn 值仍有效（保守：载荷在 dyn 池，回收随 place）" \
                             || bad dyn_container_clear "期望 afterClear=9，实得：$out"

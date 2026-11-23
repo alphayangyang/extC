@@ -1,13 +1,14 @@
 // Same rule for a fixed-size array declared inside the loop.
+use std::data::vector
 use std::io
 
 fn main() -> i32 {
-    var hold: varArray<slice<i64>> = varArray<slice<i64>>::withCap(4)
+    var hold: vector<slice<i64>> = vector<slice<i64>>::withCap(4)
     for i in 0..3 {
         var a: [4]i64 = [1, 2, 3, 4]
         // expect: carries a reference into a deeper scope
         hold.push(a[..])
     }
-    print(hold.size())
+    print(hold.len())
     return 0
 }

@@ -207,6 +207,49 @@ struct buf<T> {
         return some(elemTake<T>(self.vals, self.n))
     }
 
+    /** @brief 在 `i` 处插入 `v`；`i` 可以等于 `len`（等价于追加）。越界返 `false`。
+     *
+     * 插入点之后的元素整体后移一格。搬动前先把 `[i, len)` 的引用域登记撤掉：
+     * 这些地址原来的元素换了位置，旧登记描述的是一个不再存在的布局。 */
+    fn insertAt(self: mut ref buf<T>, i: i64, v: T) -> bool {
+        if i < 0 || i > self.n { return false }
+        if self.n == self.cap { self.reserve(1) }
+        self.dropRefs(i, self.n)
+        var j: i64 = self.n
+        while j > i {
+            let _moved: bool = elemPut<T>(self.vals, j, elemTake<T>(self.vals, j - 1))
+            j = j - 1
+        }
+        let _placed: bool = elemPut<T>(self.vals, i, v)
+        self.n = self.n + 1
+        return true
+    }
+
+    /** @brief 删掉 `i` 处的元素并返回它；越界返 `none`。后面的元素整体前移一格。 */
+    fn removeAt(self: mut ref buf<T>, i: i64) -> ?T {
+        if i < 0 || i >= self.n { return none }
+        let out: T = elemTake<T>(self.vals, i)
+        self.dropRefs(i, self.n)
+        var j: i64 = i
+        while j + 1 < self.n {
+            let _moved: bool = elemPut<T>(self.vals, j, elemTake<T>(self.vals, j + 1))
+            j = j + 1
+        }
+        self.n = self.n - 1
+        return some(out)
+    }
+
+    /** @brief 只留前 `k` 个元素（`k` 钳到 `[0, len]`）；容量与页保留，只丢尾部元素。 */
+    fn truncate(self: mut ref buf<T>, k: i64) {
+        var kk: i64 = k
+        if kk < 0 { kk = 0 }
+        if kk > self.n { kk = self.n }
+        if kk == self.n { return }
+        self.dropRefs(kk, self.n)
+        elemDrop<T>(self.vals, kk, self.n)
+        self.n = kk
+    }
+
     /** @brief 保证还能再放 `more` 个元素（长度不变）。预留内原地长，撞上限才搬家。 */
     fn reserve(self: mut ref buf<T>, more: i64) {
         let want: i64 = self.n + more

@@ -34,7 +34,7 @@ KEYWORDS = """fn let var if else while for in match return break continue struct
 use pub module trap yield drop par new dyn any ref mut const true false global self as""".split()
 
 BUILTIN_TYPES = """i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 bool str void
-slice buf varArray vector hashMap map option result coroutine""".split()
+slice buf vector vector hashMap map option result coroutine""".split()
 
 
 def find_extc():

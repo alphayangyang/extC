@@ -6,11 +6,12 @@
  * 原探针：tests/escape-fuzz/cases/m_home_cont_before.extc
  * 规矩：本文件被拒、或被接受但 ASan 脏 ⇒ 闸门红；修好之后**不许**把本文件改宽松。
  */
+use std::data::vector
 use std::io
 struct node { value: i64  next: ?mut ref node }
 
 fn build() -> ?mut ref node {
-    var v: varArray<mut ref node> = varArray<mut ref node>::withCap(8)
+    var v: vector<mut ref node> = vector<mut ref node>::withCap(8)
     var i: i64 = 0
     while i < 4 {
         var p: mut ref node = new node
@@ -22,7 +23,7 @@ fn build() -> ?mut ref node {
     var head: ?mut ref node = null
     var cur: ?mut ref node = null
     var k: i64 = 0
-    while k < v.size() {
+    while k < v.len() {
         var q: mut ref node = v.get(k)!
         if head == null {
             head = q

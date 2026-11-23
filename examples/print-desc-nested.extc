@@ -1,4 +1,4 @@
-// expect: varArray = len 2 cap 4 first 7
+// expect: vector = len 2 cap 4 first 7
 /* 描述表打印的**覆盖用例**（2026-09-22）：把每种"换线前后必须逐字节一致"的形状
  * 都过一遍 —— struct / 泛型 struct 实例 / 嵌套数组 / 枚举 / option /
  * ?ref / 浮点 / 字节视图 ✓
@@ -6,18 +6,19 @@
  * 跟 `print-desc-check.extc` 的分工：那个是**跟 C 侧手搭描述表对拍**用的，
  * 这个是**全形状回归**（`// expect:` 钉住泛型那行，其余靠 golden 快照 ✓）
  *
- * 容器那行打印的是它的公开读数，不是整个值：`varArray` 的存储视图里边是元素的原始字节，
+ * 容器那行打印的是它的公开读数，不是整个值：`vector` 的存储视图里边是元素的原始字节，
  * 描述表打印器会把它当文本逐字节吐出来（含控制字符），那不是可当金标准钉住的东西。 */
+use std::data::vector
 type color = | red | green | blue
 
 struct pair { a: i32  b: i64 }
 struct holder { p: ?ref pair  f: f64  tag: color  name: slice<u8> }
 
 fn main() {
-    var v: varArray<i32> = varArray<i32>::withCap(4)
+    var v: vector<i32> = vector<i32>::withCap(4)
     v.push(7)
     v.push(8)
-    println("varArray = len ", v.len, " cap ", v.capacity(), " first ", v.get(0) ?? -1)
+    println("vector = len ", v.len(), " cap ", v.capacity(), " first ", v.get(0) ?? -1)
 
     var ps: [2]pair = [{ a: 1, b: 2 }, { a: 3, b: 4 }]
     println("数组 = ", ps)

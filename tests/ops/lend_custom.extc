@@ -1,12 +1,13 @@
 // 自动借出不是内建给某几个容器的：任何类型只要给出 `view` / `asMutSlice`
 // （返回元素能对上的视图），就能出现在只读/可写视图参数上。
 // expect: t=6 s=6
+use std::data::vector
 use std::io
 
 struct bag<T> {
-    items: varArray<T>
+    items: vector<T>
     fn view(self: ref bag<T>) -> slice<T> { return self.items.view() }
-    fn asMutSlice(self: mut ref bag<T>) -> mut slice<T> { return self.items.asMutSlice() }
+    fn asMutSlice(self: mut ref bag<T>) -> mut slice<T> { return self.items.viewMut() }
 }
 
 fn total(v: slice<i64>) -> i64 {
@@ -20,7 +21,7 @@ fn fillAll(v: mut slice<i64>) {
 }
 
 fn main() -> i32 {
-    var b: bag<i64> = bag { items: varArray<i64>::withCap(4) }
+    var b: bag<i64> = bag { items: vector<i64>::withCap(4) }
     b.items.push(0)
     b.items.push(0)
     b.items.push(0)

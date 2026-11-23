@@ -711,9 +711,9 @@ void anSetEffUnknown(FuncDef *f, bool v) {
 /**
  * @brief Get the computation state of the effect closure.
  *
- * The value is `EFF_NONE` (not computed yet), `EFF_DONE` (computed; trustworthiness is
- * `anEffComplete`) or `EFF_IN_PROGRESS` (being computed -- meeting it again on recursion means a
- * cycle, and the summary is treated as incomplete). Only the effect closure itself reads and writes
+ * The value is `EFF_NONE` (the raw summary was not collected), `EFF_RAW` (collected, the closure is
+ * pending), `EFF_DONE` (closed; trustworthiness is `anEffComplete`), or `EFF_MARK_BASE` and up (a
+ * temporary mark of the closure's reachable set). Only the effect closure itself reads and writes
  * this value.
  *
  * @param f  The function definition.
@@ -727,7 +727,7 @@ int anEffState(const FuncDef *f) {
  * @brief Record the computation state of the effect closure.
  *
  * @param f  The function definition; NULL ignores this write.
- * @param v  The state value: `EFF_NONE`, `EFF_DONE` or `EFF_IN_PROGRESS`.
+ * @param v  The state value: `EFF_NONE`, `EFF_RAW`, `EFF_DONE` or `EFF_MARK_BASE` and up.
  */
 void anSetEffState(FuncDef *f, int v) {
     if (!f) return;

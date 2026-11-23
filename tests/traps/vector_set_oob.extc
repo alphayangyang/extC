@@ -1,0 +1,9 @@
+// `v[i] = x` 超出 len ⇒ 下标检查 **trap（带源码位置）** ✓
+use std::data::vector
+fn main() {
+    var v: vector<i32> = vector<i32>::withCap(2)
+    v.push(1)
+    println(v.get(0) ?? -1)      // 用到 get ⇒ option<i32> 会被实例化 ✓
+    v[5] = 9
+    println(v.len())
+}

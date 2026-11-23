@@ -30,6 +30,12 @@ typedef struct {
      * export the same name produce two entries, which is what lets the resolver count
      * the matches and refuse the ambiguity instead of picking one. */
     Vec    aliases;     /* Alias* */
+    /* The module whose declaration is being checked right now, or NULL when the checker
+     * is not inside a module (the entry file, the prelude, and every pass outside the
+     * checker). A module body sees its own declarations and what it imported, never a
+     * declaration of the entry file; this field is the scope that `ttResolve` applies
+     * to a bare type name to keep the two apart. */
+    const char *curModName;
     Vec    instances;   /* Type* - generic instances; interned */
     /* Instances of generic *enums* (`option<i64>`), kept in a table of their own:
      * their owner is `edef` (a TypeDef) and `sdef` is NULL, so mixing them into

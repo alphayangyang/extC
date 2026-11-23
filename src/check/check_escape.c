@@ -2397,7 +2397,7 @@ static void recordRefCheck(Checker *c, Expr *val, Expr *target, int at,
 #define ESCAPE_OUTLIVE_NOTE \
     "A reference may not outlive what it points to. Borrow from a parameter " \
     "(depth 0) or copy the data instead. " \
-    "If this value is a container (varArray and friends), the storage inside it " \
+    "If this value is a container (vector and friends), the storage inside it " \
     "was allocated in this frame's arena: build the container in the caller's " \
     "scope and fill it through a `mut ref` argument, or build it here with `new` " \
     "(that allocates in this function's home arena, so it may escape)."

@@ -23,6 +23,7 @@
  * 4 是"任意大都能保证"的最小常数 —— 而把 R 精确打到 4 的唯一方式是
  * 容量按 ×2 走（下面 ③ 的收敛过程就是这个意思）✓
  */
+use std::data::vector
 fn feasible(r: f64, limit: i32) -> bool {
     var best: mut slice<i32> = new i32[limit + 1]
     var next: mut slice<i32> = new i32[limit + 1]
@@ -86,7 +87,7 @@ fn infR(limit: i32) -> f64 {
     return hi
 }
 
-/* 真的模拟一遍 varArray：初值 4、每次 ×r，问"到长度 n 为止累计开了多少元素" */
+/* 真的模拟一遍 vector：初值 4、每次 ×r，问"到长度 n 为止累计开了多少元素" */
 fn sim(n: i32, r: f64) -> f64 {
     var cap: f64 = 4.0
     var total: f64 = 4.0                          // 第一块也算进累计

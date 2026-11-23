@@ -1,14 +1,15 @@
 // expect: 拿到的 = [7, 8]
 /* 「把容器里那块存储**当视图借出去**（返回 / 持有 `slice<T>`）」—— 安全形状 ✓
  *
- * `varArray` 拥有自己那块存储（地址预留，不跟随作用域 arena），所以安全有两半：
+ * `vector` 拥有自己那块存储（地址预留，不跟随作用域 arena），所以安全有两半：
  *   · 要把它**交出去**就交容器本身（`return v` 是移动：存储跟着值走，不搬元素）；
  *   · 要借视图就在**持有容器的地方**借，视图活到容器增长/释放为止 —— 这里 `s` 只在
  *     `keep` 不再变之后读，`churn()` 动的是别的容器 ⇒ 读到的仍是 keep 的字节 ✓
  *
  * 反过来「返回一个局部容器的视图」被**编译期**拒绝：那块存储会随容器一起被释放 ✓ */
-fn build() -> varArray<i32> {
-    var v: varArray<i32> = varArray<i32>::withCap(0)   // 会扩容 ✓
+use std::data::vector
+fn build() -> vector<i32> {
+    var v: vector<i32> = vector<i32>::withCap(0)   // 会扩容 ✓
     v.push(7)
     v.push(8)
     return v
@@ -17,14 +18,14 @@ fn build() -> varArray<i32> {
 fn churn() {
     var k: i32 = 0
     while k < 8 {
-        var w: varArray<i32> = varArray<i32>::withCap(500)
+        var w: vector<i32> = vector<i32>::withCap(500)
         w.push(k)
         k = k + 1
     }
 }
 
 fn main() {
-    var keep: varArray<i32> = build()
+    var keep: vector<i32> = build()
     var s: slice<i32> = keep.view()
     churn()
     println("拿到的 = ", s)

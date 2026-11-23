@@ -1,12 +1,13 @@
-// 回归：`varArray<T>` 与只读视图参数元素类型不一致时，不会自动借出 —— 同元素的容器会自动
+// 回归：`vector<T>` 与只读视图参数元素类型不一致时，不会自动借出 —— 同元素的容器会自动
 // 借成 `va.view()`（见 tests/ops/lend_view.extc），这里报错并指出该写什么。
 // expect: lend a read-only view explicitly
+use std::data::vector
 use std::io
 fn total(v: slice<i64>) -> i64 {
     return 0
 }
 fn main() -> i32 {
-    var va: varArray<i32> = varArray<i32>::withCap(2)
+    var va: vector<i32> = vector<i32>::withCap(2)
     io::cout << f"t={total(va)}\n"
     return 0
 }

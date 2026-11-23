@@ -104,7 +104,7 @@ bool mentionsParam(Type *t) {
  */
 bool isProtoType(Type *t, const char *name, size_t nargs) {
     if (!t || t->targs.len != nargs) return false;
-    /* Generic structs (`slice<T>`, `varArray<T>`) carry `sdef`; `option` / `result` are enums
+    /* Generic structs (`slice<T>`, `vector<T>`) carry `sdef`; `option` / `result` are enums
      * whose instances are `TY_ENUM` carrying concrete arguments and an `edef`. */
     if (t->kind == TY_GENERIC && t->sdef) return strcmp(t->sdef->name, name) == 0;
     if (t->kind == TY_ENUM && t->edef)    return strcmp(t->edef->name, name) == 0;

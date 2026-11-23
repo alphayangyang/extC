@@ -16,17 +16,18 @@
  * 所以这是"静默错值"而不是"悬垂崩溃"：`keys[0]` 从 "k" 变成 "a"。
  *
  * `ARENA-FORMAL.md:678` 写的是"needsHome 的**传递闭包**" ⇒ 实现比文档少一层 ⇒ 反例成立。 */
+use std::data::vector
 use std::io
 use std::text::string
 
-struct store { keys: varArray<string> }
+struct store { keys: vector<string> }
 
 fn newString(s: slice<u8>) -> string {
     var t: string = string::withCap(s.len + 1)
     t.append(s)
     return t
 }
-fn mk() -> store { return store { keys: varArray<string>::withCap(8) } }
+fn mk() -> store { return store { keys: vector<string>::withCap(8) } }
 fn put(st: mut ref store, k: slice<u8>) { st.keys.push(newString(k)) }
 fn wrap(st: mut ref store, k: slice<u8>) { put(st, k) }      /* ← 多这一层就坏 */
 

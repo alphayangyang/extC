@@ -65,7 +65,7 @@ and the compiler answers `bad.extc:3:1: error: index 7 is not inside `[4]i32` (l
 | Area | What is there |
 |---|---|
 | Language | Generics · `trait` and `dyn` · enums with payloads · `option`/`result`/`?`/`??` · `match` (with a `_` arm) · `if let`/`while let` · multi-name declarations and parallel assignment · slices and references · operator overloading · `f"…"` (with format specifiers) · `any` dispatch by method name · attributes ([language reference](../extc-docs/reference/language.md)) |
-| Memory | Lexical-block arenas · `array<T,N>` · `varArray<T>` · `buf<T>` · domains; the compiler emits the reclamation runtime only for units that actually need it ([language reference](../extc-docs/reference/language.md)) |
+| Memory | Lexical-block arenas · `array<T,N>` · `vector<T>` · `buf<T>` · domains; the compiler emits the reclamation runtime only for units that actually need it ([language reference](../extc-docs/reference/language.md)) |
 | Concurrency and I/O | Coroutines and a scheduler · threads · an epoll event loop · terminal raw mode ([standard library](../extc-docs/reference/stdlib.md)) |
 | Systems and C | `extern!` for C primitives · `@export` to be called from C · dynamic loading · link switches and `--pkg-config` ([modules and C interop](../extc-docs/reference/modules-cabi.md)) |
 | Standard library | Console and files · time · terminal · JSON · Base64 · sha1/sha256/hmac · sockets · HTTP · WebSocket · processes · threads · heap slabs · dynamic loading · event loop · containers ([standard library](../extc-docs/reference/stdlib.md)) |

@@ -215,8 +215,9 @@ typedef struct {
         int  owSites;          /* sites the write-once pass recorded */
         bool owLocal;          /* the write-once local pass applies to this function */
         /* The effect closure's state. `effState` is **work state**: it is
-         * written and read only while the closure runs (`EFF_IN_PROGRESS` marks a cycle on the
-         * way down), and nothing outside `computeEffectsTransitive` reads it. It lives here
+         * written and read only while the closure runs (`EFF_RAW` says the raw summary is
+         * collected and the closure is pending, `EFF_MARK_BASE` and up mark the reachable set),
+         * and nothing outside `computeEffectsTransitive` reads it. It lives here
          * rather than in a local table because the closure is a memoised recursion over a
          * shared call graph -- the variant a per-call table would need is a `FuncDef*` hash,
          * which is what this slot already is. `effComplete`/`effUnknown` are real results:

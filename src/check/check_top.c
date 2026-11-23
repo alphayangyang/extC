@@ -100,6 +100,10 @@ void resolveSignature(Checker *c, FuncDef *f) {
      * resolved under that file's context (`FuncDef.ctx`), not the entry file's. */
     Ctx *savedCtx = c->ctx;
     if (f->ctx) c->ctx = f->ctx;
+    /* The names in a signature are resolved in the scope of the file that wrote it:
+     * inside a module a bare name never means a declaration of the entry file. */
+    const char *savedModName = c->tt->curModName;
+    c->tt->curModName = f->modName;
 
     for (size_t i = 0; i < f->params.len; i++) {
         Param *p = *(Param **)vecAt(&f->params, i);
@@ -108,6 +112,7 @@ void resolveSignature(Checker *c, FuncDef *f) {
     if (f->ret) f->ret = ttResolve(c->tt, c->ctx, f->ret, f->line, params);
     if (f->ret && ttIs(f->ret, "void")) f->ret = NULL;
     c->ctx = savedCtx;
+    c->tt->curModName = savedModName;
 }
 
 /**
@@ -1208,14 +1213,34 @@ static bool stmtStoresThroughDeref(Checker *c, Stmt *s, FuncDef *f) {
 /**
  * @brief Close and cache a function's effect summary.
  *
- * Three disciplines: lazy + memoized (`effState`); a cycle guard (`EFF_IN_PROGRESS` counts as a
- * cycle and is marked incomplete); an unresolved call (`effUnknown`) is also marked incomplete. Only
- * when this function returns true may a caller relax a check based on the summary.
+ * The summary is the union of the raw summaries of every function reachable through the call graph.
+ * A cycle is therefore not a reason to give up: masks only ever grow, so iterating that union over
+ * the reachable set reaches the exact closure. A recursive helper that stores nothing keeps a
+ * complete, empty summary and stays usable as a callee (before this, "on a cycle" meant
+ * "incomplete", and every caller of a recursive function had to be checked as if it stored its
+ * arguments).
+ *
+ * One thing still makes a summary untrustworthy: an unresolved call (`effUnknown`), which is
+ * stable and so is cached as incomplete.
+ *
+ * A body whose raw summary has not been collected yet can still be queried -- that is a function
+ * being checked asking about a call inside its own body, e.g. a recursive helper -- so it is closed
+ * from whatever it already holds and from the summaries of its recorded callees. That answer is
+ * **provisional**: it is returned to the query but never cached, and every node's previous state is
+ * restored so the next query closes the graph again on the collected summaries. Once
+ * `collectEffects` has run, the body reads `EFF_RAW` and the closure it gets is cached.
+ *
+ * Two consequences follow. Masks are merged only upward, so the closure never overwrites a bit it
+ * did not read -- a provisional answer is a lower bound, and the second closure starts from the
+ * first one's work. And a completed closure over a graph with a cycle is exact, so a recursive
+ * function that stores nothing keeps a complete, empty summary.
+ *
+ * Only when this function returns true may a caller relax a check based on the summary.
  *
  * @param c  Checker.
  * @param f  Function whose summary is closed and cached; NULL is not allowed.
- * @return   True when the summary is complete; false on a cycle, an unresolved call or an incomplete
- *           callee, in which case the callee must be assumed to be able to store anything.
+ * @return   True when the summary is complete; false when the callee must be assumed to be able to
+ *           store anything.
  */
 bool computeEffectsTransitive(Checker *c, FuncDef *f) {
     if (!f) return false;
@@ -1226,31 +1251,102 @@ bool computeEffectsTransitive(Checker *c, FuncDef *f) {
      */
     if (f->isExtern) return true;
     if (anEffState(f) == EFF_DONE) { if (c->fxOn) c->fxEffCached++; return anEffComplete(f); }
-    if (anEffState(f) == EFF_IN_PROGRESS) { anSetEffComplete(f, false); return false; }   /* a cycle => incomplete */
-    anSetEffState(f, EFF_IN_PROGRESS);
+    /* Gather the reachable set. A node is marked EFF_MARK_BASE + index while it is in the set,
+     * which answers "already gathered? which index?" in one read and absorbs a cycle instead of
+     * ending the walk. */
+    Vec nodes; vecInit(&nodes, c->arena, sizeof(FuncDef *));
+    Vec stack; vecInit(&stack, c->arena, sizeof(FuncDef *));
+    Vec verdicts; vecInit(&verdicts, c->arena, sizeof(unsigned char));  /* bit 0: complete */
+    Vec prevStates; vecInit(&prevStates, c->arena, sizeof(int));        /* state to restore */
+    bool provisional = false;          /* a gathered body has not been collected yet */
+    *(int *)vecPush(&prevStates) = anEffState(f);
+    anSetEffState(f, EFF_MARK_BASE);
     if (c->fxOn) c->fxEffCalls++;      /* one body entered (a memo hit returned above) */
-    bool complete = !anEffUnknown(f);
-    for (size_t i = 0; i < f->callees.len; i++) {
-        FuncDef *g = *(FuncDef **)vecAt(&f->callees, i);
-        if (c->fxOn) c->fxEffEdges++;  /* one callee edge merged */
-        if (g == f) { complete = false; continue; }                   /* self-call: conservative */
-        if (computeEffectsTransitive(c, g)) {                         /* merge the callee summary */
-            anSetAddrMask(f, anAddrMask(f) | anAddrMask(g));
-            anSetContMask(f, anContMask(f) | anContMask(g));
-            anSetHomeAddrMask(f, anHomeAddrMask(f) | anHomeAddrMask(g));
-            anSetHomeContMask(f, anHomeContMask(f) | anHomeContMask(g));
-            anSetOtherMask(f, anOtherMask(f) | anOtherMask(g));
-            anSetAddrFromLocal(f, anAddrFromLocal(f) || anAddrFromLocal(g));
-        } else {
-            complete = false;
+    *(FuncDef **)vecPush(&stack) = f;
+    while (stack.len) {
+        FuncDef *n = *(FuncDef **)vecAt(&stack, stack.len - 1);
+        stack.len--;
+        *(FuncDef **)vecPush(&nodes) = n;
+        /* The base verdict from the edges that leave the set: an unresolved call can never be
+         * closed, and a boundary callee already closed as incomplete poisons this one. */
+        unsigned char v = anEffUnknown(n) ? 0u : 1u;
+        for (size_t i = 0; i < n->callees.len; i++) {
+            FuncDef *g = *(FuncDef **)vecAt(&n->callees, i);
+            if (c->fxOn) c->fxEffEdges++;
+            int st = anEffState(g);
+            if (st == EFF_DONE) {
+                if (!anEffComplete(g)) v = (unsigned char)(v & ~1u);
+            } else if (st < EFF_MARK_BASE) {
+                /* An `EFF_NONE` body has not had its raw summary collected: the masks it holds
+                 * are at best a partial record and its `callees` list may still be short, so the
+                 * closure computed now is provisional and must not be cached. It is still
+                 * gathered, because the call site asking right now needs the best answer
+                 * available -- this is the self-recursive body querying itself, and every entry
+                 * of the set is closed again from complete information once collection runs. */
+                if (st == EFF_NONE) provisional = true;
+                *(int *)vecPush(&prevStates) = st;
+                anSetEffState(g, (int)(EFF_MARK_BASE + nodes.len));   /* nodes.len is its index */
+                *(FuncDef **)vecPush(&stack) = g;
+            }
+            /* EFF_MARK_BASE and up means it is already reachable (a cycle at least once): the
+             * fixpoint folds it in. */
+        }
+        *(unsigned char *)vecPush(&verdicts) = v;
+    }
+
+    /* Iterate until neither the masks nor the verdicts move. Both are unions over the reachable
+     * set -- masks by OR, "complete" by AND, "waiting" by OR -- so the loop reaches the exact
+     * closure and a cycle only costs another round. */
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        for (size_t i = 0; i < nodes.len; i++) {
+            FuncDef *n = *(FuncDef **)vecAt(&nodes, i);
+            for (size_t k = 0; k < n->callees.len; k++) {
+                FuncDef *g = *(FuncDef **)vecAt(&n->callees, k);
+                int st = anEffState(g);
+                if (st < EFF_MARK_BASE) continue;        /* a boundary callee, folded in above */
+                uint64_t addr  = anAddrMask(n) | anAddrMask(g);
+                uint64_t cont  = anContMask(n) | anContMask(g);
+                uint64_t haddr = anHomeAddrMask(n) | anHomeAddrMask(g);
+                uint64_t hcont = anHomeContMask(n) | anHomeContMask(g);
+                uint64_t other = anOtherMask(n) | anOtherMask(g);
+                bool afl = anAddrFromLocal(n) || anAddrFromLocal(g);
+                if (addr != anAddrMask(n) || cont != anContMask(n) || haddr != anHomeAddrMask(n)
+                    || hcont != anHomeContMask(n) || other != anOtherMask(n)
+                    || afl != anAddrFromLocal(n)) {
+                    anSetAddrMask(n, addr);   anSetContMask(n, cont);
+                    anSetHomeAddrMask(n, haddr); anSetHomeContMask(n, hcont);
+                    anSetOtherMask(n, other); anSetAddrFromLocal(n, afl);
+                    changed = true;
+                }
+                unsigned char *vn = (unsigned char *)vecAt(&verdicts, i);
+                unsigned char *vg = (unsigned char *)vecAt(&verdicts, (size_t)(st - EFF_MARK_BASE));
+                unsigned char merged = (unsigned char)(*vn & *vg & 1u);
+                if (merged != *vn) { *vn = merged; changed = true; }
+            }
         }
     }
-    anSetEffComplete(f, complete);
-    anSetEffState(f, EFF_DONE);
-    if (getenv("EXTC_DUMP_EFFECTS"))
-        fprintf(stderr, "[effects-closed] %-20s complete=%d toParam[Addr=0x%llx Cont=0x%llx] toHome[Addr=0x%llx Cont=0x%llx] other=0x%llx\n",
-                FN(f), (int)anEffComplete(f), (unsigned long long)anAddrMask(f), (unsigned long long)anContMask(f),
-                (unsigned long long)anHomeAddrMask(f), (unsigned long long)anHomeContMask(f), (unsigned long long)anOtherMask(f));
+
+    bool complete = false;
+    for (size_t i = 0; i < nodes.len; i++) {
+        FuncDef *n = *(FuncDef **)vecAt(&nodes, i);
+        unsigned char v = *(unsigned char *)vecAt(&verdicts, i);
+        bool done = (v & 1u) != 0;
+        if (provisional) {
+            /* Nothing is cached: the next query runs this closure again on the collected
+             * summaries. The masks that were merged here are kept -- they are a lower bound. */
+            anSetEffState(n, *(int *)vecAt(&prevStates, i));
+        } else {
+            anSetEffComplete(n, done);
+            anSetEffState(n, EFF_DONE);
+        }
+        if (i == 0) complete = done;
+        if (getenv("EXTC_DUMP_EFFECTS"))
+            fprintf(stderr, "[effects-closed] %-20s complete=%d toParam[Addr=0x%llx Cont=0x%llx] toHome[Addr=0x%llx Cont=0x%llx] other=0x%llx\n",
+                    FN(n), (int)done, (unsigned long long)anAddrMask(n), (unsigned long long)anContMask(n),
+                    (unsigned long long)anHomeAddrMask(n), (unsigned long long)anHomeContMask(n), (unsigned long long)anOtherMask(n));
+    }
     return complete;
 }
 
@@ -3058,10 +3154,10 @@ static void classifyStoredValue(Checker *c, FuncDef *f, Expr *e, int i, bool int
         int j = paramIndexOfExpr(c, f, e);
         if (j >= 0) {
             /* A scalar carries no reference and so imposes no lifetime constraint;
-             * saying otherwise would make `varArray<i32>::push` a false positive. A type
+             * saying otherwise would make `vector<i32>::push` a false positive. A type
              * that mentions a type parameter, however, counts as carrying a reference:
              * the summary is computed on the template, where `T` is still opaque. Without
-             * that, the `Cont(v)` slot of `varArray<T>::push` would record no parameter at
+             * that, the `Cont(v)` slot of `vector<T>::push` would record no parameter at
              * all, the call site would check nothing, and a real dangling pointer would be
              * accepted. The cost is zero, because the call site looks at the concrete
              * argument types: in `push(ref v, 5)` the `5` is i32, so that step is
@@ -3464,7 +3560,7 @@ static void collectEffectsExpr(Checker *c, FuncDef *f, Expr *e) {
     case EX_GENCALL:
         /* `elemPut<T>(view, i, v)` stores `v` into a slot of a container without going through
          * an assignment statement, so the store walker has to see it. Skipping it made
-         * `varArray<T>::push` read as "stores nothing": the call site then never required the
+         * `vector<T>::push` read as "stores nothing": the call site then never required the
          * pushed value to outlive the container, and `xs.push(dyn Tag(b))` with `b` in the loop
          * body was accepted. Only a destination that is a `mut ref` parameter needs a bit; a
          * container local to this frame dies with it, so a store there cannot dangle on a
@@ -3553,6 +3649,12 @@ static void collectEffects(Checker *c, FuncDef *f) {
                 (unsigned long long)anOtherMask(f),
                 (unsigned long long)anHomeAddrMask(f), (unsigned long long)anHomeContMask(f),
                 (int)anAddrFromLocal(f), (unsigned)anFreshCount(f), f->callees.len);
+    /* The raw summary is now collected; the closure over the call graph is computed on demand by
+     * `computeEffectsTransitive`, which treats `EFF_RAW` as "collect done, close pending". Marks
+     * the closure leaves behind mean "a callee was still uncollected", so a later query closes
+     * again, now from complete information. Masks are only ever merged upward, so nothing is lost. */
+    anSetEffState(f, EFF_RAW);
+    anSetEffComplete(f, false);
 }
 
 /**
@@ -5277,6 +5379,7 @@ static void checkGlobals(Checker *c) {
     Module *m = c->m;
     for (size_t i = 0; i < m->globals.len; i++) {
         GlobalDef *g = *(GlobalDef **)vecAt(&m->globals, i);
+        c->tt->curModName = g->modName;
 
         /* A global may not share a name with another global or with a function. */
         for (size_t j = 0; j < c->globals.len; j++)
@@ -5347,13 +5450,14 @@ static void checkGlobals(Checker *c) {
         s->modName = g->modName;          /* the module that declared it, for qualified names */
         *(Sym **)vecPush(&c->globals) = s;
     }
+    c->tt->curModName = NULL;
 }
 
 /* Create, or find, the concrete instance of a generic function.
  *
  * Why:
  *   An instance has to be born at the call site: a type instance such as
- *   `varArray<i32>` is decided by the type, while the type arguments of a free function
+ *   `vector<i32>` is decided by the type, while the type arguments of a free function
  *   are known only where it is called.
  *
  * Params:
@@ -5412,7 +5516,7 @@ static int typeDepth(Type *t) {
 /**
  * @brief Create or find a concrete instance of a free generic function.
  *
- * A type instance (`varArray<i32>`) is decided by the type, while a free function's type arguments are
+ * A type instance (`vector<i32>`) is decided by the type, while a free function's type arguments are
  * read off the call site, so an instance can only be created there. The same `targs` list always maps
  * to the same instance.
  *
@@ -9088,6 +9192,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     ctPhase("ckB0", tB0); tB1 = ctNow();
     for (size_t i = 0; i < m->types.len; i++) {
         TypeDef *td = *(TypeDef **)vecAt(&m->types, i);
+        tt->curModName = td->modName;
         for (size_t j = 0; j < td->variants.len; j++) {
             Variant *v = *(Variant **)vecAt(&td->variants, j);
             for (size_t k = 0; k < v->types.len; k++)
@@ -9098,6 +9203,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     ctPhase("ckB1", tB1); tB2 = ctNow();
     for (size_t i = 0; i < m->structs.len; i++) {
         StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
+        tt->curModName = sd->modName;
         for (size_t j = 0; j < sd->fields.len; j++) {
             FieldDef *fd = *(FieldDef **)vecAt(&sd->fields, j);
             fd->type = ttResolve(tt, ctx, fd->type, fd->line, &sd->typeParams);
@@ -9108,6 +9214,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     ctPhase("ckB2", tB2); tB3 = ctNow();
     for (size_t i = 0; i < m->funcs.len; i++)
         resolveSignature(&c, *(FuncDef **)vecAt(&m->funcs, i));
+    tt->curModName = NULL;
 
     /* `@export`: the function is called **from C**, so C has to be able to write its signature down.
      * The predicate is the one `extern!` obeys (`ttCrossesC`), asked in the other direction -- one
@@ -9148,6 +9255,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
 
 
     checkGlobals(&c);
+    tt->curModName = NULL;
     checkDeclarations(&c);
 
     ctPhase("ckB4", tB4); tB5 = ctNow();
@@ -9168,8 +9276,11 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     ctPhase("ckB6", tB6); tB7 = ctNow();
     for (size_t i = 0; i < m->structs.len; i++) {
         StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
-        for (size_t j = 0; j < sd->methods.len; j++)
-            checkFunc(&c, *(FuncDef **)vecAt(&sd->methods, j));
+        for (size_t j = 0; j < sd->methods.len; j++) {
+            FuncDef *mth = *(FuncDef **)vecAt(&sd->methods, j);
+            tt->curModName = mth->modName;
+            checkFunc(&c, mth);
+        }
     }
     ctPhase("ckB7", tB7); tB8 = ctNow();
     for (size_t i = 0; i < m->funcs.len; i++) {
@@ -9178,8 +9289,11 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         if (i + 4 < m->funcs.len) __builtin_prefetch(*(FuncDef **)vecAt(&m->funcs, i + 4), 0, 0);
         FuncDef *fx = *(FuncDef **)vecAt(&m->funcs, i);
         if (planTemplate(fx)) continue;      /* covered by the per-instance recheck */
+        tt->curModName = fx->modName;
         checkFunc(&c, fx);
     }
+
+    tt->curModName = NULL;
 
     /* Call-graph fixpoint: it runs **after every function body is checked** (`callees` is only
      * filled by then) and before the batches below rewrite call sites -- none of them adds a new
@@ -9496,7 +9610,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
      *
      * On the template `T` is opaque, so the `carrier` test needs `mentionsParam`:
      * "anything mentioning `T` counts as carrying a reference". That charges the `Cont`
-     * bit to instances such as `varArray<i32>` that carry no reference at all -- a loss
+     * bit to instances such as `vector<i32>` that carry no reference at all -- a loss
      * of precision, not a wrong answer.
      *
      * Here the summary is recomputed inside each instance's substitution context
@@ -9574,7 +9688,9 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
         for (size_t i = 0; i < all.len; i++) {
             FuncDef *f = *(FuncDef **)vecAt(&all, i);
             if (!f || !f->body || f->isExtern) continue;
-            anSetEffState(f, EFF_NONE);
+            /* Drop the cached closure only; the raw summary is still valid, so the next query
+             * closes the call graph again instead of starting from "nothing collected". */
+            anSetEffState(f, EFF_RAW);
             anSetEffComplete(f, false);
         }
     }
@@ -9957,7 +10073,7 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
          * from before the solver ran, and placement may have moved a site from the home arena
          * back down to a block level.
          *
-         * Measured: the `return v` of `varArray<T>::withCap` froze `depth=1` in the template
+         * Measured: the `return v` of `vector<T>::withCap` froze `depth=1` in the template
          * round, while the `new T[cap]` inside it had correctly been placed in the home arena
          * (depth 0), so the instantiation re-check reported "depth 1, but this can only hold
          * up to 0" although the truth is 0.
@@ -10255,7 +10371,7 @@ static bool allocInStmt(void *ctx, Stmt *s);
  * This is the same question as the `needsHome` transitive closure, but it must be answered lazily:
  * the closure only runs after every function has been checked, while a caller checking its own body
  * already needs to know whether a call in front of it can put new storage into a container
- * (`varArray::push` does not allocate itself, its `grow` does). Results are cached in
+ * (`vector::push` does not allocate itself, its `grow` does). Results are cached in
  * `FuncDef.allocState`; a function currently being computed counts as allocating -- that is the
  * conservative direction and also how cycles are broken.
  *

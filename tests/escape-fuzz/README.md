@@ -46,7 +46,7 @@ python3 tests/escape-fuzz/gen.py         # 重新生成 cases/（改了维度才
 |---|---|---|
 | 结构 family | list（单链表/自引用结构体）、dlist（双向）、tree（parent↔child）、ring（环）、selfref（自引用字段成环） | 5 |
 | 目的地 dest | lfield（本地引用变量的字段 `a.next`）、dfield（经解引用 `(*cur).next`）、ff（字段的字段 `bx.mid.next`）、aelem（数组元素 `arr[0]`）、glob（全局）、pfield（经 `mut ref` 参数 `(*out).next`） | 6 |
-| 流动 flow | direct（`new` 后直接存）、temp（经中间变量）、ret（经函数返回 `mk()`）、param（经 `mut ref` 参数）、cont（存进 `varArray`） | 5 |
+| 流动 flow | direct（`new` 后直接存）、temp（经中间变量）、ret（经函数返回 `mk()`）、param（经 `mut ref` 参数）、cont（存进 `vector`） | 5 |
 | 位置 loc | main（无 home）、home（返回引用的函数）、nohome（不逃逸的函数） | 3 |
 | 赋值次序 order | before（目标引用在语句之前已赋过值）/ after（只在语句之后赋） | 2 |
 | 收窄 narrow | ifnull（`if x != null`）/ old（`var o = x` 后再收窄） | 2 |
@@ -198,7 +198,7 @@ fn build() -> ?mut ref node {
 
 | 形状 | 所在函数有 home？ | ASan |
 |---|---|---|
-| `home_cont_after` / `home_cont_before`（存进 varArray 再取出接链） | **有** | heap-use-after-free |
+| `home_cont_after` / `home_cont_before`（存进 vector 再取出接链） | **有** | heap-use-after-free |
 | `home_pfield_direct`（`link3(ref *a, p)` 接链后 `return head`） | **有** | heap-use-after-free |
 | `home_ff_direct` / `home_ff_temp`（`return bx.mid.next`，节点来自 `new`） | **没有** | heap-use-after-free |
 

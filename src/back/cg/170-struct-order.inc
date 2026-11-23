@@ -337,7 +337,7 @@ static const char *genSlice(CG *g, Expr *e) {
 /* Close the set of generated instances transitively.
  *
  * An instance mentioned only in a method signature never reached `units` unless
- * the program used it directly, so `varArray<i64>::get()` returning `option<i64>`
+ * the program used it directly, so `vector<i64>::get()` returning `option<i64>`
  * produced C that named an unknown type. The user had written nothing wrong; the
  * compiler had simply not finished its own accounting.
  *
@@ -358,7 +358,7 @@ static const char *genSlice(CG *g, Expr *e) {
  */
 static void addInstanceUnit(Arena *arena, Vec *units, Type *t) {
     if (!t) return;
-    bool isStructInst = (t->kind == TY_GENERIC && t->sdef);          /* varArray<i32> */
+    bool isStructInst = (t->kind == TY_GENERIC && t->sdef);          /* vector<i32> */
     bool isEnumInst   = (t->kind == TY_ENUM && t->edef && t->edef->typeParams.len > 0);
     if (!isStructInst && !isEnumInst) return;
     /* Deduplication must be by C name and cannot go through unitFind, which

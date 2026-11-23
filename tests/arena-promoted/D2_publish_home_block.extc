@@ -1,5 +1,6 @@
 // p16: hidden literal call in a function that DOES have a home; the home is the caller's BLOCK
 //      arena, but the value is modeled as depth 0 and gets published to the caller's outer object
+use std::data::vector
 struct node { value: i64  next: ?ref node }
 struct box { r: ?ref node }
 struct sinker { slot: box }
@@ -15,7 +16,7 @@ fn publish(dst: mut ref sinker, src: box) { dst.slot = src }
 fn churn() {
     var i: i64 = 0
     while i < 30 {
-        var w: varArray<i64> = varArray<i64>::withCap(200)
+        var w: vector<i64> = vector<i64>::withCap(200)
         w.push(i * 7)
         i = i + 1
     }

@@ -1,6 +1,7 @@
 // 闭包作为 `dyn` 载荷：环境由编译器合成，用户写不出 `impl`，所以这里由编译器自己补。
 // 前提是环境里没有引用/视图（那些捕获会被单独拒掉），载荷自己拥有一切可读的东西。
 // 期望输出：6 7 85 12 30
+use std::data::vector
 use std::io
 
 trait IntFn { fn call(self: ref Self, a: i64) -> i64 }
@@ -15,13 +16,13 @@ fn main() -> i32 {
     var d: dyn IntFn = dyn IntFn(fn(x: i64) -> i64 { return x + bias })
 
     var k: i64 = 2
-    var fns: varArray<dyn IntFn> = varArray<dyn IntFn>::withCap(4)
+    var fns: vector<dyn IntFn> = vector<dyn IntFn>::withCap(4)
     fns.push(dyn IntFn(fn(x: i64) -> i64 { return x + k }))
     fns.push(dyn IntFn(fn(x: i64) -> i64 { return x * 10 }))
     fns.push(dyn IntFn(fn(x: i64) -> i64 { return x - 1 }))
     var sum: i64 = 0
     var i: i64 = 0
-    while i < i64(fns.size()) {
+    while i < i64(fns.len()) {
         sum = sum + (fns.get(i)!).call(7)
         i = i + 1
     }

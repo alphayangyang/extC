@@ -9,6 +9,7 @@
  * gate-expect: run
  * gate-expect-out: head = 7
  */
+use std::data::vector
 use std::io
 struct node { value: i64  next: ?ref node }
 struct list {
@@ -33,7 +34,7 @@ struct sinker {
 fn churn() {
     var i: i64 = 0
     while i < 40 {
-        var w: varArray<i64> = varArray<i64>::withCap(200)
+        var w: vector<i64> = vector<i64>::withCap(200)
         w.push(i * 13)
         i = i + 1
     }

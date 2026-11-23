@@ -34,7 +34,7 @@ typedef struct {
  *   nargs - required number of type arguments
  *
  * Returns:
- *   true for a generic struct (`slice<T>`, `varArray<T>`) or a generic enum
+ *   true for a generic struct (`slice<T>`, `vector<T>`) or a generic enum
  *   (`option<T>`, `result<T,E>`) with that name and arity.
  */
 /**
@@ -1530,6 +1530,24 @@ static void genBlockTailDrops(CG *g, Stmt *block, size_t limit) {
     }
 }
 
+/**
+ * @brief Does this statement end the block on every path that reaches it?
+ *
+ * Only a return qualifies: a break/continue leaves through the loop's own release point,
+ * which already emitted this block's exit, while a block whose last statement is an if
+ * may fall through. The answer is used to skip the block-tail drop hooks. Emitting them
+ * after a return is not merely unreachable code: the hook may belong to a method that
+ * nothing else in the program calls, so the emitter never defines it, and the generated C
+ * then calls it without a declaration -- a compile error, and one that appears only when
+ * the dead call happens to be the sole use.
+ *
+ * @param st  The statement, or NULL for an empty block.
+ * @return    True when the statement cannot fall through to the block's tail.
+ */
+static bool stmtEndsBlock(Stmt *st) {
+    return st != NULL && st->kind == ST_RETURN;
+}
+
 static bool genReturnDropsPending(CG *g) {
     for (size_t i = g->dropBlocks.len; i-- > 0;) {
         Stmt *block = *(Stmt **)vecAt(&g->dropBlocks, i);
@@ -1625,8 +1643,12 @@ static void genBlockBody(CG *g, Stmt *block) {
             *(size_t *)vecAt(&g->dropPos, g->dropPos.len - 1) = i + 1;
         genStmt(g, st);
     }
-    /* `@drop` runs while the block's own storage is still alive. */
-    genBlockTailDrops(g, block, block->u.block.stmts.len);
+    /* The block-tail drop hooks run while the block's own storage is still alive -- unless the
+     * block ends in a return: that path already ran its hooks (cgReturn -> genReturnDrops) and
+     * left the block, so a hook emitted here could never execute (see stmtEndsBlock). */
+    if (block->u.block.stmts.len == 0 ||
+        !stmtEndsBlock(*(Stmt **)vecAt(&block->u.block.stmts, block->u.block.stmts.len - 1)))
+        genBlockTailDrops(g, block, block->u.block.stmts.len);
     if (probe) {
         g->out = savedOut;
         bodyTouches = arenaLevelInText(&scratch, g->blkLevel);

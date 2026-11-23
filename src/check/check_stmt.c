@@ -164,8 +164,8 @@ static bool forRetargetToIterator(Checker *c, Stmt *block) {
             return true;
         }
     }
-    /* Container (`varArray<T>`, `vector<T>` and the like): it has neither a `.len` field nor `[..]`, so
-     * it goes through its own `asSlice()`. Then `for p in parts` and `for p in parts.asSlice()` are one
+    /* Container (`vector<T>`, `buf<T>` and the like): it has neither a `.len` field nor `[..]`, so it
+     * goes through its own `view()`. Then `for p in parts` and `for p in parts.view()` are one
      * path. */
     {
         Type *sbv = ttBase(tsub(c, st));
@@ -3200,9 +3200,8 @@ static size_t forDesugarBindIndex(Stmt *block) {
  *
  * Only receivers whose storage can be handed back are tracked (see `liveViewsStmtPost`): a type
  * with a `@drop` hook, which is how a library container says that growth hands the old block
- * back to the allocator, so reading through an old view is a use after free. An arena-backed
- * container such as `varArray` keeps the old block alive until its place ends: growth there
- * pins down, so it must not be rejected.
+ * back to the allocator, so reading through an old view is a use after free. A type that keeps
+ * the old storage alive instead leaves its views valid, so it must not be rejected here.
  *
  * @param n  Method name; NULL is not a growth call.
  * @return   `true` when calling it may invalidate views of the receiver.

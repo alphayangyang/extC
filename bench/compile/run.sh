@@ -8,7 +8,7 @@
 #
 # 压力程序怎么造（脚本自己生成，不依赖外部工具）：
 #   N 个 struct（每个带一个方法）+ N 个函数 + main 全调一遍 ⇒ 压**声明/查找/检查**这条线 ✓
-#   再叠五个泛型实例（varArray<i32/i64/u64/u8/bool/f64>）⇒ 压**实例集合 + 效果摘要闭包** ✓
+#   再叠五个泛型实例（vector<i32/i64/u64/u8/bool/f64>）⇒ 压**实例集合 + 效果摘要闭包** ✓
 #
 # ⚠️ 故意**不**把 slice 放进容器：往容器里存**视图**现在会被拒绝（容器可能活得更久
 #    ⇒ 视图会悬垂）—— 那是**正确**的保守，不是 bug ⇒ 压测程序避开它 ✓
@@ -25,13 +25,14 @@ gen_extc() {   # $1 = N，$2 = 输出文件
     local n=$1 f=$2 i
     {
         echo "/* 自动生成的压力程序：$n 个 struct + $n 个函数 + 五个泛型实例 */"
+        echo "use std::data::vector"
         for ((i = 0; i < n; i++)); do
             echo "struct s$i { a: i32  b: i64  fn get(self: ref s$i) -> i32 { return self.a } }"
         done
         for ((i = 0; i < n; i++)); do
             echo "fn g$i(x: i32) -> i32 {"
             echo "    var t: s$i = { a: x, b: 1 }"
-            echo "    var v: varArray<i32> = varArray<i32>::withCap(2)"
+            echo "    var v: vector<i32> = vector<i32>::withCap(2)"
             echo "    v.push(x)"
             echo "    return t.get() + (v.get(0) ?? 0)"
             echo "}"
@@ -40,13 +41,13 @@ gen_extc() {   # $1 = N，$2 = 输出文件
         echo "    var acc: i32 = 0"
         for ((i = 0; i < n; i++)); do echo "    acc = acc + g$i($i)"; done
         echo "    println(\"acc = \", acc)"
-        echo "    var vi: varArray<i64> = varArray<i64>::withCap(1)"
-        echo "    var vu: varArray<u64> = varArray<u64>::withCap(1)"
-        echo "    var vb: varArray<bool> = varArray<bool>::withCap(1)"
-        echo "    var vf: varArray<f64> = varArray<f64>::withCap(1)"
-        echo "    var vq: varArray<u8> = varArray<u8>::withCap(1)"
+        echo "    var vi: vector<i64> = vector<i64>::withCap(1)"
+        echo "    var vu: vector<u64> = vector<u64>::withCap(1)"
+        echo "    var vb: vector<bool> = vector<bool>::withCap(1)"
+        echo "    var vf: vector<f64> = vector<f64>::withCap(1)"
+        echo "    var vq: vector<u8> = vector<u8>::withCap(1)"
         echo "    vi.push(1)  vu.push(2)  vb.push(true)  vf.push(0.5)  vq.push(3)"
-        echo "    println(\"insts = \", vi.size(), vu.size(), vb.size(), vf.size(), vq.size())"
+        echo "    println(\"insts = \", vi.len(), vu.len(), vb.len(), vf.len(), vq.len())"
         echo "}"
     } > "$f"
 }

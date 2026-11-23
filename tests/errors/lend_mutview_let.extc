@@ -1,5 +1,6 @@
-// `let` 的容器不能作为可写视图借出去（数组：借出来的是只读视图；varArray：请求可写引用）。
+// `let` 的容器不能作为可写视图借出去（数组：借出来的是只读视图；vector：请求可写引用）。
 // expect: cannot assign to `vb`, which is a `let`
+use std::data::vector
 use std::io
 
 fn fill(dst: mut slice<i64>) {
@@ -7,7 +8,7 @@ fn fill(dst: mut slice<i64>) {
 }
 
 fn main() -> i32 {
-    let vb: varArray<i64> = varArray<i64>::withCap(2)
+    let vb: vector<i64> = vector<i64>::withCap(2)
     fill(vb)
     io::cout << "ok\n"
     return 0

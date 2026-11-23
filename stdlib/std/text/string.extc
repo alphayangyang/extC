@@ -36,6 +36,7 @@
  * }
  * @endcode
  */
+use std::data::vector
 use std::io
 use std::sys::heap as sysheap
 use std::sys::bufrt as bufrt
@@ -364,7 +365,7 @@ struct string {
 
     fn trimEnd(self: ref string) -> slice<u8> { return self.subView(0, self.n).trimEnd() }
 
-    fn split(self: ref string, sep: slice<u8>) -> varArray<slice<u8>> {
+    fn split(self: ref string, sep: slice<u8>) -> vector<slice<u8>> {
         return split(self.subView(0, self.n), sep)
     }
 
@@ -1021,8 +1022,8 @@ fn fromI64(n: i64) -> string {
  *
  * 比较走 `string::bytesEq`：字节比较是它的专长（长度对上后循环跳过边界检查）；
  * `slice<T>::==` 现在按实例发射，写 `==` 也不会牵连别的 `T`，这里留在 bytesEq 只是为了少一层调用。 */
-fn split(s: slice<u8>, sep: slice<u8>) -> varArray<slice<u8>> {
-    var out: varArray<slice<u8>> = varArray<slice<u8>>::withCap(4)
+fn split(s: slice<u8>, sep: slice<u8>) -> vector<slice<u8>> {
+    var out: vector<slice<u8>> = vector<slice<u8>>::withCap(4)
     if sep.len == 0 { return out }
     var start: i64 = 0
     var i: i64 = 0
@@ -1626,7 +1627,7 @@ impl slice<u8> {
 
     fn trimEnd(self: ref slice<u8>) -> slice<u8> { return trimEnd(self[..]) }
 
-    fn split(self: ref slice<u8>, sep: slice<u8>) -> varArray<slice<u8>> {
+    fn split(self: ref slice<u8>, sep: slice<u8>) -> vector<slice<u8>> {
         return split(self[..], sep)
     }
 

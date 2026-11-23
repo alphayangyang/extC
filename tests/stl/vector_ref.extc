@@ -1,21 +1,22 @@
-// varArray 能装引用：元素是**引用值**，增长时搬家搬的是引用本身（指向的对象不动）⇒
+// vector 能装引用：元素是**引用值**，增长时搬家搬的是引用本身（指向的对象不动）⇒
 // "引用在它的地方活着期间一直有效"是真的；环（两个节点互指）也只是普通数据结构。
 // 其余容器（vector/buf）的元素是值、增长要搬家，装引用会被逃逸检查拦下。
 // expect: a_data=2 b_data=1 n=1
+use std::data::vector
 use std::io
 
 struct node {
     data: i32
-    refs: varArray<ref node>
+    refs: vector<ref node>
 }
 
 fn main() -> i32 {
-    var a: node = { data: i32(1), refs: varArray<ref node>::withCap(4) }
-    var b: node = { data: i32(2), refs: varArray<ref node>::withCap(4) }
+    var a: node = { data: i32(1), refs: vector<ref node>::withCap(4) }
+    var b: node = { data: i32(2), refs: vector<ref node>::withCap(4) }
     a.refs.push(ref b)
     b.refs.push(ref a)
     io::cout << "a_data=" << i64((*(a.refs.get(0)!)).data)
     io::cout << " b_data=" << i64((*(b.refs.get(0)!)).data)
-    io::cout << " n=" << a.refs.size() << "\n"
+    io::cout << " n=" << a.refs.len() << "\n"
     return 0
 }

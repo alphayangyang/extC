@@ -729,9 +729,9 @@ static void scanUnitNeeds(CG *g, Module *m) {
             if (plateIsMemCopyName(f->name)) g->needPlateCopy = true;
             else                             g->needPlateView = true;
         }
-        /* The buffer substrate is the one block whose trigger is **not** a declaration: the prelude
-         * declares `extc_buf_*` (the bundled `varArray<T>` needs a reservation) in every program,
-         * so a declaration-based trigger would charge the block to programs that never use it.
+        /* The buffer substrate is the one block whose trigger is **not** a declaration: `std::sys::bufrt`
+         * declares its five `extc_buf_*` entries, and every container module imports it, so a
+         * declaration-based trigger would charge the block to programs that merely import `string`.
          * `exCall` sets the flag at the call site instead -- see the note there. */
         if (f->externLib && strcmp(f->externLib, "extc-time") == 0)  g->needTime = true;
         /* The five file-level shims: they share the `extc-runtime` library tag with net => they can only be
@@ -766,16 +766,16 @@ static void scanUnitNeeds(CG *g, Module *m) {
      * is exactly the question this cell has to answer. */
     for (size_t i = 0; i < m->funcs.len; i++) {
         FuncDef *f = *(FuncDef **)vecAt(&m->funcs, i);
-        /* Only a function that is actually emitted can put a pool in the program: the prelude
-         * declares `varArray`, whose methods make pools, in every program; counting those would
+        /* Only a function that is actually emitted can put a pool in the program: every library
+         * module in the program brings its methods along, and counting the ones nobody calls would
          * charge the pool runtime to programs that never touch it. */
         /* The same holds for the one `@builtin` primitive: it is declared in the privileged layer
          * (`std::sys::heap`) and the compiler supplies the body. It is not `extern!`, so the
          * `externLib`-based scan above cannot see it. */
         if (f && f->isBuiltin && plateIsViewOfName(f->name)) g->needPlateView = true;
     }
-    /* `makesPool` over the functions the program actually reaches is the honest signal: the
-     * prelude declares `varArray`, whose methods make pools, in every program, so their mere
+    /* `makesPool` over the functions the program actually reaches is the honest signal: a
+     * pool-making method in the parsed program says nothing about the compiled one, so its mere
      * presence must not pull the runtime in. */
     for (size_t i = 0; i < m->funcs.len; i++) {
         FuncDef *f = *(FuncDef **)vecAt(&m->funcs, i);

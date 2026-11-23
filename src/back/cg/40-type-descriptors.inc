@@ -106,7 +106,7 @@ static void deadDefAdd(CG *g, const char *name, size_t before) {
  * @param g      The generator.
  * @param cname  The struct's C name, also the prefix of its descriptor and field table.
  * @param disp   The name to display; a generic instance uses the template name
- *               (`varArray { ... }`).
+ *               (`vector { ... }`).
  * @param sd     The struct definition; field types are substituted before their descriptors are
  *               taken when the field table is written.
  * @param eqFn   The C name of the equality adapter; `NULL` when the type has none.

@@ -9,8 +9,9 @@
  *   · 所以 `return v` 合法，而且运行时**没有悬垂**（下面用 churn() 真踩过内存 + ASan 验过）✓
  * 修之前：这个形状**编过但静默错数据**（打印 [1002, 0]），ASan 报 heap-use-after-free ✗
  */
-fn mk() -> varArray<i32> {
-    var v: varArray<i32> = varArray<i32>::withCap(0)   // cap 0 ⇒ 第一次 push 就扩容
+use std::data::vector
+fn mk() -> vector<i32> {
+    var v: vector<i32> = vector<i32>::withCap(0)   // cap 0 ⇒ 第一次 push 就扩容
     v.push(42)
     v.push(43)
     return v
@@ -20,14 +21,14 @@ fn mk() -> varArray<i32> {
 fn churn() {
     var i: i32 = 0
     while i < 4 {
-        var w: varArray<i32> = varArray<i32>::withCap(500)
+        var w: vector<i32> = vector<i32>::withCap(500)
         w.push(i + 1000)
         i = i + 1
     }
 }
 
 fn main() {
-    var v: varArray<i32> = mk()
+    var v: vector<i32> = mk()
     churn()
-    println("拿到的 = ", v.view(), "  size = ", v.size())
+    println("拿到的 = ", v.view(), "  size = ", v.len())
 }

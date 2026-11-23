@@ -1,13 +1,14 @@
 /* `dyn` payload 的池在**写下这个值的地方**诞生：把 `dyn T(x)` 直接写在循环体/内层块里再交给
    容器，池随块退出被归还，句柄就陈旧了。正确写法是先赋给外层声明的变量（赋值会提升池的
    层级），再把变量交出去。这里两条路都要有：正例走正确写法，反例钉住"直接写在块里会 trap"。 */
+use std::data::vector
 use std::io
 trait Tag { fn tag(self: ref Self) -> i64 }
 struct box { v: i64 }
 impl Tag for box { fn tag(self: ref box) -> i64 { return self.v } }
 
 fn main() -> i32 {
-    var xs: varArray<dyn Tag> = varArray<dyn Tag>::withCap(4)
+    var xs: vector<dyn Tag> = vector<dyn Tag>::withCap(4)
     var slot: dyn Tag = dyn Tag(box { v: 0 })
     var i: i64 = 1
     while i <= 3 {
@@ -18,7 +19,7 @@ fn main() -> i32 {
     }
     var sum: i64 = 0
     var j: i64 = 0
-    while j < i64(xs.size()) {
+    while j < i64(xs.len()) {
         sum = sum + (xs.get(j)!).tag()
         j = j + 1
     }

@@ -31,7 +31,6 @@
 | [`dyn/`](dyn/) | `dyn Trait` 动态派发成本 |
 | [`stl/`](stl/) | extC 容器对 C++ STL（同算法、同参数、输出必须逐位相同） |
 | [`string_vs_cpp/`](string_vs_cpp/) | `string`（SSO）对 `std::string`：追加、查找、切分 |
-| [`vararray/`](vararray/) | `varArray` 对 `vector`，校验和必须一致 |
 | [`coro/`](coro/) | 协程挂起 / 恢复的纳秒成本 |
 | [`runtime/`](runtime/) | 语言核心运行期与产物质量（行数、二进制大小、编译时间） |
 | [`compile/`](compile/) | 编译时长压力：语料越大，编译时间怎么长 |

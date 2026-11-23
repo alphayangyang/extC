@@ -30,7 +30,7 @@ make -j"$(nproc)"                          # 只需要 cc，产出 build/extc
 | 面 | 现在有什么 |
 |---|---|
 | 语言 | 泛型 · `trait` 与 `dyn` · 带载荷枚举 · `option`/`result`/`?`/`??` · `match` · `if let`/`while let` · 切片与引用 · 运算符重载 · `f"…"` · 注解 |
-| 内存 | 按词法块的 arena · `array<T,N>` · `varArray<T>` · `buf<T>` · 域；只给真需要回收的单元发回收运行期 |
+| 内存 | 按词法块的 arena · `array<T,N>` · `vector<T>` · `buf<T>` · 域；只给真需要回收的单元发回收运行期 |
 | 并发与 I/O | 协程与调度器 · 线程 · epoll 事件循环 · 终端 raw 模式 |
 | 系统与 C | `extern!` 声明 C 原语 · `@export` 反向给 C 调 · 动态加载 · 链接开关与 `--pkg-config` |
 | 标准库 | 控制台与文件 · 时间 · 终端 · JSON · Base64 · sha1/sha256/hmac · 套接字 · HTTP · WebSocket · 进程 · 线程 · 堆板 · 动态加载 · 事件循环 · 容器 |

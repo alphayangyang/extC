@@ -65,7 +65,7 @@ fn main() -> i32 {
 | 方面 | 有什么 |
 |---|---|
 | 语言 | 泛型 · `trait` 与 `dyn` · 带载荷的枚举 · `option`/`result`/`?`/`??` · `match`（含 `_` 分支） · `if let`/`while let` · 多名字声明与并行赋值 · 切片与引用 · 运算符重载 · `f"…"`（带格式说明符） · `any` 按方法名派发 · 属性（[语言参考](../extc-docs/reference/language.md)） |
-| 内存 | 词法块 arena · `array<T,N>` · `varArray<T>` · `buf<T>` · domain；只给真正需要的编译单元发射回收运行期（[语言参考](../extc-docs/reference/language.md)） |
+| 内存 | 词法块 arena · `array<T,N>` · `vector<T>` · `buf<T>` · domain；只给真正需要的编译单元发射回收运行期（[语言参考](../extc-docs/reference/language.md)） |
 | 并发与 I/O | 协程与调度器 · 线程 · epoll 事件循环 · 终端 raw 模式（[标准库](../extc-docs/reference/stdlib.md)） |
 | 系统与 C | `extern!` 对接 C 原语 · `@export` 被 C 调用 · 动态加载 · 链接开关与 `--pkg-config`（[模块与 C 互操作](../extc-docs/reference/modules-cabi.md)） |
 | 标准库 | 控制台与文件 · 时间 · 终端 · JSON · Base64 · sha1/sha256/hmac · socket · HTTP · WebSocket · 进程 · 线程 · 堆 slab · 动态加载 · 事件循环 · 容器（[标准库](../extc-docs/reference/stdlib.md)） |

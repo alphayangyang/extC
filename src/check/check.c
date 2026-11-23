@@ -420,6 +420,22 @@ static bool lambdaBecomesFnPtr(Checker *c, Type *want, Expr *node) {
 }
 
 /**
+ * @brief Tell whether a value of this type can lend a read-only view of itself.
+ *
+ * Containers (`vector<T>`, `buf<T>`, `string`) answer with a `view()` method. The test is by
+ * method, not by type name, for the same reason `for x in c` is: a library type's recorded name is
+ * module-qualified, so matching the source spelling would miss it.
+ *
+ * @param t  The type to inspect.
+ * @return   `true` when `t` is a container that can lend a view.
+ */
+static bool typeLendsView(Type *t) {
+    if (!t || t->kind == TY_ARRAY || t->kind == TY_REF) return false;
+    Type *b = ttBase(t);
+    return b != NULL && findMethod(b, "view") != NULL;
+}
+
+/**
  * @brief Check whether a value of type `got` may be assigned where `want` is expected.
  *
  * Only lossless conversions are implicit: widening, non-null reference to nullable reference,
@@ -630,15 +646,15 @@ bool checkAssignable(Checker *c, Type *want, Type *got, Expr *node, const char *
         return false;
     }
 
-    /* Container to view is a **borrow**, not a conversion: `varArray<T>` has its own `asSlice()`
+    /* Container to view is a **borrow**, not a conversion: `vector<T>` has its own `view()`
      * and a fixed-length array is sliced with `[..]`. It is not done implicitly because the
-     * borrowed view carries a lifetime (the value returned by `asSlice()` can be borrow-checked),
+     * borrowed view carries a lifetime (the value returned by `view()` can be borrow-checked),
      * and conjuring a view for the user would bypass that check. At least point out what to
      * write. */
     if (want && got && !ttIsError(want) && !ttIsError(got) && ttIsViewType(ttBase(want))) {
-        if (!want->mut && isProtoType(got, "varArray", 1)) {
+        if (!want->mut && typeLendsView(got)) {
             ckError(c, node ? node->line : 0,
-                    "lend a read-only view explicitly: `v.asSlice()`",
+                    "lend a read-only view explicitly: `v.view()`",
                     "%s expects `%s`, found `%s`", what, typeStr(c, want), typeStr(c, got));
             return false;
         }

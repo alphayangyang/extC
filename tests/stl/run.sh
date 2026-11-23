@@ -51,7 +51,7 @@ rejects() { # rejects <名字> <文件> <期望的诊断子串>
 }
 
 echo "== buf<T>：拥有存储（增长还旧板 / 离开作用域还全部）=="
-run_case varArray_release tests/stl/varArray_release.extc "grown>0=true after<1024=true sum=0"
+run_case vector_release tests/stl/vector_release.extc "grown>0=true after<1024=true sum=0"
 run_case buf     tests/stl/buf.extc           "len=1 cap=16 sum=45 c9=9 v0=100 leak=0 growsum=4999950000 gleak=0"
 run_case buf_new tests/stl/buf_new.extc       "len=0 cap=64 sum=780 owned=true"
 BX=$(mktemp -d)
@@ -64,6 +64,11 @@ rm -rf "$BX"
 
 echo "== vector<T>：1.5 倍扩容 / dense 连续 / shrink 降水位 / clear 留容量 =="
 run_case vector  tests/stl/vector.extc  "cap0=4 n=9 cap=16 sum=36 shrink=9 pop=8 n=8 clear=0/9 tail=-9"
+
+echo "== vector<T>：insert / removeAt / truncate / reserve（越界给 false/none · 结构体元素按值搬）=="
+run_case vops    tests/stl/vector_ops.extc     "ins=true,true,true,false,false n=8 v0=-1 v3=9 last=5 rm=-1,2,-99 n=6 tr=4:3 rsv=128 mv=1 pt=true:2:20=[0:0,9:90,1:10] eq=true,false"
+# 元素所有权：insert 搬的是元素本身（槽不清空旧值）· removeAt 取出的元素归调用方 · truncate 逐元素 @drop。
+run_case vownops tests/stl/vector_own_ops.extc "n=3,2,1 got=2 live3=1120 rm=1088 tr=1056 end=0"
 
 echo "== vector<T> / buf<T> / string：下标 v[i] 与切片 v[a..b]（借出的视图可写时给 mut slice）=="
 run_case idx      tests/stl/vector_index.extc      "v1=9 w1=90 w2=5 sum=23 s=2/5 bsum=24 sub=el"
@@ -150,7 +155,7 @@ rm -rf "$TMPC2"
 
 TMPC3=$(mktemp -d)
 echo "== buf<T>：增长峰值是"一份"不是"历代之和"（同一形状 vs arena 底）=="
-# 判据：8e6 个 i64（活跃 64 MB）—— `buf` 的预留扩容当场还旧块，`varArray`（纯 arena 底）要等帧退出。
+# 判据：8e6 个 i64（活跃 64 MB）—— `buf` 的预留扩容当场还旧块，纯 arena 底（`new T[n]`）要等帧退出。
 if "$EXTC" -w --no-line-map -o "$TMPC3/b.c" tests/stl/buf_rss.extc >/dev/null 2>&1 \
    && "$EXTC" -w --no-line-map -o "$TMPC3/a.c" tests/stl/buf_rss_arena.extc >/dev/null 2>&1 \
    && gcc -fwrapv -std=c11 -O2 -o "$TMPC3/b" "$TMPC3/b.c" >/dev/null 2>&1 \
@@ -202,13 +207,13 @@ else
 fi
 rm -rf "$TMPC4"
 
-echo "== varArray：能装引用的容器（元素是引用值；增长搬家搬的是引用，指向的对象不动）=="
+echo "== vector：能装引用的容器（元素是引用值；增长搬家搬的是引用，指向的对象不动）=="
 # 视图不能跨增长使用：扩容当场还旧块 ⇒ 同块内跨增长读/写是编译错误（跨帧则借不出去）
-rejects varArray_stale_view tests/stl/varArray_stale_view.extc "changes the storage that"
-rejects varArray_stale_write tests/stl/varArray_stale_write.extc "changes the storage that"
+rejects vector_stale_view tests/stl/vector_stale_view.extc "changes the storage that"
+rejects vector_stale_write tests/stl/vector_stale_write.extc "changes the storage that"
 # 写的一面：扩容后通过旧 mut 视图写 ⇒ 静默丢（新块看不到），ASan 证明不是内存不安全
 
-run_case varref  tests/stl/vararray_ref.extc  "a_data=2 b_data=1 n=1"
+run_case varref  tests/stl/vector_ref.extc  "a_data=2 b_data=1 n=1"
 
 echo "== string：连续字节串（append 触发 1.5 倍扩容 · view 连续可直印 · shrink 降水位）=="
 echo "== 深拷贝：\`var b = a\` 不是深拷贝（共用板块）⇒ 要独立副本必须显式 a.clone() =="
@@ -308,8 +313,8 @@ asan_ok() {   # 文件 可执行名
       && gcc -fwrapv -std=c11 -g -fsanitize=address -o "$TMP/$2" "$TMP/$2.c" >/dev/null 2>&1 \
       && ! "$TMP/$2" 2>&1 | grep -q Sanitizer
 }
-if asan_ok tests/stl/buf_adv.extc ba && asan_ok tests/stl/buf_struct.extc bs && asan_ok tests/stl/buf_fuzz.extc bfz && asan_ok tests/stl/varArray_release.extc var && asan_ok tests/stl/vector.extc v && asan_ok tests/stl/setOrdered.extc so && asan_ok tests/stl/setStructKey.extc ssk && asan_ok tests/stl/stringOps.extc sop && asan_ok tests/stl/stringEdit.extc sedit && asan_ok tests/stl/stringFind.extc sfi; then
-    echo "  ok   ASan  ->  varArray_release · vector · setOrdered · setStructKey · stringOps · stringFind 干净"
+if asan_ok tests/stl/buf_adv.extc ba && asan_ok tests/stl/buf_struct.extc bs && asan_ok tests/stl/buf_fuzz.extc bfz && asan_ok tests/stl/vector_release.extc var && asan_ok tests/stl/vector.extc v && asan_ok tests/stl/setOrdered.extc so && asan_ok tests/stl/setStructKey.extc ssk && asan_ok tests/stl/stringOps.extc sop && asan_ok tests/stl/stringEdit.extc sedit && asan_ok tests/stl/stringFind.extc sfi; then
+    echo "  ok   ASan  ->  vector_release · vector · setOrdered · setStructKey · stringOps · stringFind 干净"
 else
     echo "  FAIL ASan  ->  报了内存问题"; fail=1
 fi

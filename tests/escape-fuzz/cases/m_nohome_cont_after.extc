@@ -1,7 +1,8 @@
+use std::data::vector
 use std::io
 struct node { value: i64  next: ?mut ref node }
 fn burn() -> i64 {
-    var v: varArray<mut ref node> = varArray<mut ref node>::withCap(8)
+    var v: vector<mut ref node> = vector<mut ref node>::withCap(8)
     var i: i64 = 0
     while i < 4 {
         var p: mut ref node = new node
@@ -13,7 +14,7 @@ fn burn() -> i64 {
     var head: ?mut ref node = null
     var cur: ?mut ref node = null
     var k: i64 = 0
-    while k < v.size() {
+    while k < v.len() {
         var q: mut ref node = v.get(k)!
         if head == null {
             head = q

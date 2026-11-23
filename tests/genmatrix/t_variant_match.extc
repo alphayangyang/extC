@@ -4,8 +4,9 @@
  * 原因：`ST_MATCH` 取 `scrutinee->type` 时**没走 `subst`**（构造那一侧 `EX_ENUMVAL` 早就走了 ✓）
  * ⇒ 现在 `et->name` 是实例名（`option_i64`）✓
  * 对照格：`t_variant_match_concrete.extc`（具体类型上一直是好的）*/
+use std::data::vector
 struct w2<V> {
-    xs: varArray<V>
+    xs: vector<V>
     fn has(self: ref w2<V>, i: i64) -> bool {
         match self.xs.get(i) {
             none    => { return false }
@@ -15,7 +16,7 @@ struct w2<V> {
 }
 
 fn main() -> i32 {
-    var x: w2<i64> = { xs: varArray<i64>::withCap(1) }
+    var x: w2<i64> = { xs: vector<i64>::withCap(1) }
     x.xs.push(1)
     println("has(0) = ", x.has(0), " · has(5) = ", x.has(5))
     return 0

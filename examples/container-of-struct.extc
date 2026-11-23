@@ -8,22 +8,23 @@
  * （真去比两个容器时才需要它 —— 见 tests/errors/eq_needs_element_eq.extc ✓）
 
  * 这份也是 **extC 里的"动态二维表"正解**：引用换索引（span = 两个整数 ✓）
- * 而不是 `varArray<varArray<T>>`（那要借用规则挪到调用点，见 PLAN #42 ②）✓
+ * 而不是 `vector<vector<T>>`（那要借用规则挪到调用点，见 PLAN #42 ②）✓
  */
+use std::data::vector
 struct span {
     start: i32
     len: i32
 }
 
 fn main() {
-    var spans: varArray<span> = varArray<span>::withCap(2)
-    var flat: varArray<i32> = varArray<i32>::withCap(8)
+    var spans: vector<span> = vector<span>::withCap(2)
+    var flat: vector<i32> = vector<i32>::withCap(8)
     flat.push(7)  flat.push(9)  flat.push(1)
     spans.push(span { start: 0, len: 2 })
     spans.push(span { start: 2, len: 1 })
 
     var i: i64 = 0
-    while i < spans.size() {
+    while i < spans.len() {
         match spans.get(i) {
             none => println("空")
             some(s) => {

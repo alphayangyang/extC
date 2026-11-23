@@ -1,6 +1,7 @@
-/* 可写视图参数（`mut slice<T>`）也自动借出：`fill(va)` 就是 `fill(va.asMutSlice())`，
+/* 可写视图参数（`mut slice<T>`）也自动借出：`fill(va)` 就是 `fill(va.viewMut())`，
  * `fill(a)` 就是 `fill(a[..])`。要求容器本身是可写的地方（`var`），借用检查照常把关。 */
 // expect: s1=6 s2=6
+use std::data::vector
 use std::io
 use std::data::seq
 
@@ -9,7 +10,7 @@ fn fill(dst: mut slice<i64>) {
 }
 
 fn main() -> i32 {
-    var va: varArray<i64> = varArray<i64>::withCap(4)
+    var va: vector<i64> = vector<i64>::withCap(4)
     va.push(0)
     va.push(0)
     va.push(0)

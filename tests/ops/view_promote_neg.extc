@@ -1,14 +1,15 @@
-// 反例：`varArray` 的存储属于它自己，而它随本帧结束被释放；把它的视图交给会保存的函数，
+// 反例：`vector` 的存储属于它自己，而它随本帧结束被释放；把它的视图交给会保存的函数，
 // 等于把一个活不过本帧的视图放进更长寿的地方 —— 编译器拒绝，并指出要么在更外层建容器，
 // 要么用 `buf<T>`（P1 的拥有型缓冲）。
 // expect error: whose storage moves when it grows
+use std::data::vector
 use std::io
 struct box { v: slice<i64> }
 
 fn put(dst: mut ref box, v: slice<i64>) { dst.v = v }
 
 fn inner(bref: mut ref box) {
-    var va: varArray<i64> = varArray<i64>::withCap(2)
+    var va: vector<i64> = vector<i64>::withCap(2)
     va.push(9)
     put(bref, va)
 }

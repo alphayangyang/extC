@@ -22,13 +22,17 @@
 typedef struct Type Type;
 typedef struct TypeDef TypeDef;
 typedef struct StructDef StructDef;
-/* State of the effect summary: computed lazily and memoized; `EFF_IN_PROGRESS` is how a
- * cycle is detected. */
+/* State of the effect summary: computed lazily and memoized. The raw summary of a body is
+ * collected first (EFF_RAW); the closure over the call graph is computed on demand, and its
+ * temporary marks live in the same word (EFF_MARK_BASE and up), so a cycle is absorbed instead
+ * of being reported as an incomplete summary. */
 typedef enum {
-    EFF_NONE = 0,        /* not computed yet (`arenaAllocZero` produces this value) */
-    EFF_DONE,            /* computed; `effComplete` says whether it can be trusted */
-    EFF_IN_PROGRESS      /* being computed -- hitting it again means a cycle, and the
-                          * summary is treated as incomplete */
+    EFF_NONE = 0,        /* not computed yet (arenaAllocZero produces this value) */
+    EFF_DONE,            /* closed and cached; effComplete says whether it can be trusted */
+    EFF_RAW,             /* the raw summary was collected; the closure is not computed yet */
+    /* Values from here on are temporary marks of one closure's reachable set: the state holds
+     * EFF_MARK_BASE + index, which answers "already gathered? which index?" in one read. */
+    EFF_MARK_BASE = 8
 } EffState;
 
 typedef struct FuncDef FuncDef;
@@ -399,7 +403,7 @@ struct Expr {
                   * the final pass: that pass runs after every function body has been
                   * checked, by which time the scopes are long gone, so `lookup` cannot
                   * find a local binding any more. The symptom was a false rejection in
-                  * the `varArray_i32` case: `return v` reported `kind=4 dca=0 svd=0`, the
+                  * the `vector_i32` case: `return v` reported `kind=4 dca=0 svd=0`, the
                   * recomputation was skipped, and a depth frozen before the solver ran
                   * was used instead.
                   * The same name can denote a different binding in a different scope, so
@@ -1335,9 +1339,10 @@ struct FuncDef {
      * arise. Widening to an array is the escape hatch if a real program ever needs more. */
 #define EFF_MAX_PARAMS 64
     /* State of the transitive closure of the effect summary:
-     *   `EFF_NONE` = not computed, `EFF_DONE` = computed (`effComplete` says whether it can
-     *   be trusted), `EFF_IN_PROGRESS` = being computed, which breaks cycles.
-     * `effUnknown` records whether any call could not be resolved; such a summary is
+     *   EFF_NONE = the raw summary was not collected, EFF_RAW = collected and waiting for the
+     *   closure, EFF_DONE = closed (effComplete says whether it can be trusted), and
+     *   EFF_MARK_BASE and up = temporary marks of the closure's reachable set.
+     * effUnknown records whether any call could not be resolved; such a summary is
      * never complete, so it is treated conservatively. */
 
     /* FuncDef*: the call graph the effect closure walks. **Deliberately not in the plan side

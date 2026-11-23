@@ -5,18 +5,11 @@
 
 生成方式：`tools/manual_surface.py`；`check.sh` 保证本页与源码一致。
 
-公开面共 834 个成员，其中内部 170 个：
+公开面共 820 个成员，其中内部 163 个：
 
 ## prelude
 
-- `-.varClassBytes`（方法）
-- `-.varSlotBytes`（方法）
 - `pcg32.inc`（字段）
-- `varArray.bytes`（字段）
-- `varArray.cap`（字段）
-- `varArray.dropOne`（方法）
-- `varArray.mem`（字段）
-- `varArray.vals`（字段）
 
 ## std::coro::scheduler
 

@@ -777,7 +777,7 @@ static Type *subst(CG *g, Type *t) {
  * that cleared the three fields would let a nested entry which merely probes a type (emitting an
  * `ExtcRcType` descriptor, collecting root-table leaves, ... all of them run inside a generic
  * method body) wipe the enclosing instance's context, after which the rest of that one method body
- * is emitted with `T` unsubstituted (`slice_T`, `varArray_T`) -- C that does not compile.
+ * is emitted with `T` unsubstituted (`slice_T`, `vector_T`) -- C that does not compile.
  */
 typedef struct {
     Vec        *params;

@@ -88,7 +88,7 @@ SPECS=(
   # ══ G16：TLS / parallel worker 房间（新写的正向程序）═════════════════════
   "par_tls_cycle_n40000|par_tls_cycle|40000|asan"
   "par_tls_cycle_n160000|par_tls_cycle|160000|asan"
-  # ══ G17：缓冲区容器里装的引用（varArray<mut ref T>）══════════════════════════════
+  # ══ G17：缓冲区容器里装的引用（vector<mut ref T>）═══════════════════════════════
   "buf_ref_slot_n40000|buf_ref_slot|40000|asan"
   "buf_ref_slot_n160000|buf_ref_slot|160000|asan"
   # ══ G18：dyn 载荷 carrying ref ═══════════════════════════════════════════
