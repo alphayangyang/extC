@@ -1,26 +1,27 @@
-# CI: build the compiler and run the `ci` acceptance tier (`./check.sh ci`).
+# CI: build the compiler and run the "ci" acceptance tier (./check.sh ci).
 #
-# Only `cc` and `python3` are needed for this job -- that is exactly what
-# `./check.sh ci` was made to require.  The full mode adds benchmarks and needs
-# `g++` + `rustc`; the six-language matrix in bench/bigmatrix also needs `go` + `java`.
-# Keep it that way: a contributor with a C compiler and Python must be able to run
-# the whole acceptance suite.
+# What this job judges: **does it build, and are the results correct**.  Nothing here
+# judges speed.  No benchmark runs, no callgrind item runs, and no BLAS/ggml acceleration
+# ratio is checked -- those numbers move with the compiler, the valgrind version and the
+# machine, so they belong on a machine kept for that purpose (local ./check.sh nobench
+# or the full tier), not on a shared runner.  See the CI tuple in tools/check.py: the "ci"
+# tier is an explicit allowlist of correctness items, and tools/check.py refuses to run
+# a benchmark/callgrind/perf item in it.
 #
-# Why `ci` and not `quick` (= `nobench` = non-benchmark everything): the gates that
-# tools/check.py marks `callgrind=True` judge *absolute* callgrind numbers (total Ir,
-# cache-sim misses) against lines calibrated on the author's machine, and those numbers
-# move with the compiler and valgrind versions.  Evidence from this runner (gcc 13.3.0,
-# valgrind 3.22.0): gate-mark-locality measured D1mr 805785 against a line of 700000,
-# while the same gate on the author's box (gcc 15.2.0, valgrind 3.26.0) reads D1mr
-# 617826 and a DLmr two orders of magnitude larger.  So this job skips those items by
-# tier; local `nobench`/`quick` still runs them -- that is where the lines were
-# calibrated, and judging them anywhere else is judging a different machine.
+# The matrix covers the two supported C-library baselines, nothing else:
+#   ubuntu-22.04 = oldest supported (glibc 2.35, gcc 11, Python 3.10)
+#   ubuntu-24.04 = current (glibc 2.39, gcc 13, Python 3.12)
+# Different cc versions are the point: the promise is "C the type checker passed is C
+# every supported cc compiles", and gcc 11 vs 13 is where that can break.  A Debian
+# bookworm container was dropped: it lacks /usr/bin/time, a TTY and the sanitizer runtime,
+# so a large part of the tree fails for environmental reasons, while its glibc 2.36 sits
+# between the two baselines and adds little.
 #
-# valgrind is NOT part of the cc+python3 contract: items that need it print
-# `  --   跳过：…` instead of failing (tools/check.py lists those as "跳过", never as a
-# pass).  This job installs it anyway -- the `map` / `pool` functional suites use callgrind
-# and memcheck -- and it turns a skip into a failure: "installed but not effective" is a
-# broken state.
+# The job needs a C compiler, python3 and valgrind.  valgrind is not part of the
+# cc+python3 contract -- items that need it print a skip line -- so this job installs
+# it for the map / pool functional suites and then turns a skip into a failure:
+# "installed but not effective" is a broken state.  Python 3.10 has no tomllib; the
+# extpkg suite needs it, so tomli is installed there.
 name: ci
 
 on:
@@ -28,39 +29,26 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+# A newer push to the same ref makes the older run pointless; results are per-commit.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   acceptance:
-    # Three distributions, because "it builds on ubuntu-latest" says nothing about whether
-    # the `cc` a user actually has will take the generated C. 22.04 ships gcc 11 and
-    # glibc 2.35, 24.04 ships gcc 13, bookworm ships gcc 12 -- different C libraries and
-    # different optimisation behaviour, which is exactly where a generator that promises
-    # "the emitted C always compiles" can break.
-    #
-    # `fail-fast: false` is deliberate: one old-distro failure must not hide the fact that
-    # the modern ones are green, and the annotations are per-job.
+    # fail-fast: false is deliberate: an old-distro failure must not hide that the modern
+    # baseline is green, and annotations are per-job.
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - name: ubuntu-22.04
-            os: ubuntu-22.04
-          - name: ubuntu-24.04
-            os: ubuntu-24.04
-          - name: debian-12 (container)
-            os: ubuntu-24.04
-            container: debian:bookworm
-    name: acceptance (${{ matrix.name }})
+        os: [ubuntu-22.04, ubuntu-24.04]
+    name: acceptance (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    container: ${{ matrix.container }}
+    timeout-minutes: 60
     steps:
-      # 容器镜像里没有 git，而 actions/checkout 自己就要用 git —— 所以 bootstrap 必须在
-      # checkout **之前**。
-      - name: bootstrap (the container image has no sudo and is minimal)
-        if: matrix.container != ''
-        run: |
-          apt-get update -qq
-          apt-get install -y -qq build-essential python3 valgrind git ca-certificates
-
       - uses: actions/checkout@v4
 
       - name: build the compiler
@@ -70,21 +58,25 @@ jobs:
         run: |
           make clean
           make -j"$(nproc)" 2>&1 | tee /tmp/build.log
-          ! grep -q warning /tmp/build.log
+          ! grep -q "warning:" /tmp/build.log
 
-      - name: valgrind (map/pool 功能套件要用 callgrind/memcheck；缺了它们会自跳过 ⇒ 这里装上，让它们真跑)
-        if: matrix.container == ''
+      - name: test tooling (valgrind for map/pool; tomli for extpkg on Python 3.10)
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq valgrind
           valgrind --version
+          if ! python3 -c "import tomllib" 2>/dev/null; then
+            sudo apt-get install -y -qq python3-tomli || python3 -m pip install --user tomli
+          fi
+          python3 -c "import tomllib" 2>/dev/null || python3 -c "import tomli" \
+            || { echo "::error::Python 3.10 needs tomli for the extpkg suite"; exit 1; }
 
       - name: "extc --version（版本来自仓库根的 VERSION，一处定义）"
         run: ./build/extc --version
 
       - name: "make install 到一个临时前缀，并用装好的编译器编译一个小程序"
         # 装完能跑才算装对：标准库的位置由二进制自己的路径推出，装错目录就等于装了个
-        # 编不了 `use std::io` 的编译器 —— 这一步专门钉这个不变量。
+        # 编不了 use std::io 的编译器 —— 这一步专门钉这个不变量。
         run: |
           make install PREFIX="$RUNNER_TEMP/prefix"
           "$RUNNER_TEMP/prefix/bin/extc" --version
@@ -98,12 +90,12 @@ jobs:
 
       - name: ci acceptance suite (./check.sh ci)
         # 失败要**能从 API 读到**：跑 CI 的机器上没有 gh，看不了 Actions 日志；
-        # 而 `::error::` 会变成 GitHub 注解，注解对公开仓库**无需认证**即可读
+        # 而 ::error:: 会变成 GitHub 注解，注解对公开仓库**无需认证**即可读
         # （/commits/<sha>/check-runs → annotations_url）。注解一步最多 10 条，所以失败项清单
-        # 只从耗时表读（tools/ci_annotate.py）—— 别 `grep -a FAIL`：闸门会为已知欠账打 FAIL，
+        # 只从耗时表读（tools/ci_annotate.py）—— 别 grep -a FAIL：闸门会为已知欠账打 FAIL，
         # 那样抓到的多半是噪声，真正的失败项被挤出 10 条之外。
-        # 每个失败项的现场由 tools/check.py 的 `dump_fail` 摘出来（判据自己的 FAIL 行 + 尾部若干行，
-        # 因为闸门常把真正的失败打在前面、后面接一堆逐形状的 ok）。
+        # 每个失败项的现场由 tools/check.py 的 dump_fail 摘出来（判据自己的 FAIL 行 + 尾部若干行，
+        # 因为闸门常把真正的失败打在前、后面接一堆逐形状的 ok）。
         run: |
           set +e
           ./check.sh ci > /tmp/ci.log 2>&1

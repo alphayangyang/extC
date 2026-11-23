@@ -84,7 +84,7 @@ make -j"$(nproc)"                            # needs only cc
 ```sh
 ./tests/run.sh          # 377 cases: behaviour only
 ./check.sh quick        # + static gates and subsystem suites
-./check.sh ci           # same, minus callgrind criteria
+./check.sh ci           # CI tier: slim correctness subset (no performance criteria)
 ./check.sh docs         # documentation gates (also the doc-project-* gates when the docs project is checked out)
 ./check.sh              # full acceptance (ASan/UBSan corpus + benchmarks)
 ```

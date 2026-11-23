@@ -10,7 +10,7 @@
 用法（`./check.sh` 现在只是 exec 到本文件的 shim；README 与 CI 用的就是下面这几条）：
     ./check.sh                 全部（含基准；几十分钟）
     ./check.sh quick           测试 + 攻击库，跳过基准
-    ./check.sh ci              CI 档：nobench 再减去 callgrind 判据（那几条的结论绑工具链）
+    ./check.sh ci              CI 档：精简正确性集（只判跑通/结果正确，不判性能与指令数）
     ./check.sh docs            只跑文档/工具项（秒级）
     ./check.sh -j 8 nobench    并行跑（默认 min(4, nproc)；`-j1` = 逐项串行）
     ./check.sh --only <名或组>  可多次；名字或组都行
@@ -28,9 +28,10 @@
 
 跳过协议（`skip` 与 `ok` 是两回事）：某项的子脚本**自己**发现环境缺件（如本机没有 valgrind）时，
 打印一行 `  --   跳过：<原因>` 并退出 0 ⇒ 该项记 `skip`、**不计数**，但汇总里单列「跳过 N」——
-绝不让"没验"混进"通过"。CI 跑 `ci` 档（不选 callgrind 项：它们的绝对线是在作者机上标定的，
-换编译器/valgrind 版本就会漂，见 Item.callgrind）；但 CI 仍装 valgrind 让只靠它取指令数/内存错误
-的功能项真跑，并有一条相反方向的判据：装了 valgrind 却仍跳过 ⇒ CI 失败。
+绝不让"没验"混进"通过"。CI 跑 `ci` 档：显式列出的**精简正确性子集**（见 CI 集）——不选基准、
+不选任何以时间为判据的项（callgrind 项 + 标了 Item.perf 的 BLAS/ggml/llm 收益线），也不选
+作者机专属或分钟级的深水项；那些仍在本机 nobench/全量里跑。CI 仍装 valgrind，让只靠它取
+内存错误的功能项真跑，并有一条相反方向的判据：装了 valgrind 却仍跳过 ⇒ CI 失败。
 """
 
 from __future__ import annotations
@@ -264,6 +265,9 @@ class Item:
     # 线是在作者机上标定的。换一套工具链（如 CI 的 gcc 13 / valgrind 3.22）数字就会漂，
     # 于是 CI 档（`ci`）不选这些项；本机 nobench/quick 仍全跑。
     callgrind: bool = False
+    # 判据里含**性能结论**（时间 / 吞吐 / 加速比）。机器型号、负载、编译器版本都会改结论
+    # ⇒ 不进 CI 档（CI 只判"跑通且结果正确"）；本机 nobench / 全量仍跑。
+    perf: bool = False
     abort_on_fail: bool = False
     counts: bool = True
 
@@ -295,6 +299,7 @@ def _resolve_msg(spec, out: str) -> str:
 def cmd(name: str, group: str, desc: str, argv: list, *,
         timeout: Optional[float] = None, env: Optional[dict] = None,
         needs_build: bool = True, bench: bool = False, callgrind: bool = False,
+        perf: bool = False,
         ok_msg=None, bad_msg: Optional[str] = None,
         bad_dump: Optional[Callable[[str], list]] = None,
         extra_ok: Optional[Callable[[str], list]] = None,
@@ -318,7 +323,7 @@ def cmd(name: str, group: str, desc: str, argv: list, *,
             msg = f"{msg}（rc={p.rc}，{len(lines(p.out))} 行输出）"
         return Outcome(False, msg, dump)
     return Item(name, group, desc, fn, needs_build=needs_build, bench=bench,
-                callgrind=callgrind, abort_on_fail=abort_on_fail)
+                callgrind=callgrind, perf=perf, abort_on_fail=abort_on_fail)
 
 
 def ok_const(s: str):
@@ -1093,7 +1098,7 @@ def build_items() -> list:
     items.append(cmd(
         "gate-blas", "gate",
         "闸门·third_party/blas：LP64 与 ILP64 两条 ABI 分支都逐元素对上裸循环（有真库时还要快 2× 以上）",
-        ["./third_party/blas/tests/run.sh"], timeout=600,
+        ["./third_party/blas/tests/run.sh"], timeout=600, perf=True,
         ok_msg=ok_first(r"^  ok   blas"),
         bad_msg="third_party/blas/tests/run.sh（BLAS 绑定认错 ABI/算错数/封装把性能吃掉了）",
         bad_dump=dump_fail(12)))
@@ -1107,7 +1112,7 @@ def build_items() -> list:
     items.append(cmd(
         "gate-ggml", "gate",
         "闸门·third_party/ggml：q4_0/q8_0 块布局与 dequantize 逐位一致、q4_0 GEMV 比 f32 快 2× 以上（无 ggml 时跳过）",
-        ["./third_party/ggml/tests/run.sh"], timeout=600,
+        ["./third_party/ggml/tests/run.sh"], timeout=600, perf=True,
         ok_msg=ok_first(r"^  ok   ggml"),
         bad_msg="third_party/ggml/tests/run.sh（量化块布局读错/vec_dot 算错/q4 的带宽优势没兑现）",
         bad_dump=dump_fail(12)))
@@ -1120,7 +1125,7 @@ def build_items() -> list:
     items.append(cmd(
         "gate-llm-decode", "gate",
         "闸门·bench/llm-decode：extC 端到端跑 stories15M 的贪心 20 token 与 llama.cpp 逐 id 一致，且不慢于下限（无 ggml/模型时跳过）",
-        ["./bench/llm-decode/tests/run.sh"], timeout=600,
+        ["./bench/llm-decode/tests/run.sh"], timeout=600, perf=True,
         ok_msg=ok_first(r"^  ok   llm-decode"),
         bad_msg="bench/llm-decode/tests/run.sh（GGUF 解析/前向/量化 GEMV 哪一环算错了，或吞吐退化成标量）",
         bad_dump=dump_fail(12)))
@@ -2141,7 +2146,7 @@ def write_times(path: str, results: dict) -> None:
 # 分档（名字要与实际相符）：
 #   smoke   —— 快速高信号集，改完代码第一件事跑这个（见 SMOKE，≈10s）
 #   nobench —— 非基准全量；`quick` 是它的历史别名（会自己说明一句）
-#   ci      —— nobench 再减去 callgrind 项（CI 跑这档：那些判据的绝对线绑工具链，见 Item.callgrind）
+#   ci      —— 精简正确性子集（CI 跑这档：不判性能/指令数，见 CI 集）
 #   all     —— 含基准（`full` 同义）
 #   docs    —— 只要文档/工具项（秒级）
 MODE_TOKENS = {"all", "full", "smoke", "nobench", "quick", "ci", "docs"}
@@ -2169,6 +2174,39 @@ SMOKE = (
 )
 
 
+# ci 集：**CI 只跑这里列出的项**（显式清单，跟 SMOKE 一样：改名/删项要一起改这里）。
+# 选的标准是"只判跑通与结果正确"：
+#   · 不判性能 —— 不含基准，也不含 Item.callgrind / Item.perf；
+#   · 不绑作者机 —— 不选只在作者工具链上成立、或依赖 TTY / 第三方 .so / 进程表 / GDB 的项；
+#   · 不重复 —— tests/run.sh 已经覆盖的套件（asan / zone / arena / warnings / annot /
+#     diag / logstat / 回收运行期）不再单独列；
+#   · 不选分钟级深水项（lvl-witness、gate-reclaim-ledger、tests-assert、gate-perturb-run
+#     等留给本机 nobench / 全量）。
+# 词条可以是项名，也可以是组名（如 docs 展开成该组全部项）。
+CI = (
+    "build", "check-source-split", "tests", "docs",
+    # ---- 结构门禁（纯静态 + 红自测：不跑目标程序，秒级）----
+    "gate-callsite", "gate-rt-defaults", "gate-rc-plan", "gate-slot-unit",
+    "gate-module-tramp", "gate-buf-mt", "gate-shade-cache", "gate-mark-batch",
+    "gate-mark-both", "gate-ownslab-body", "gate-reuse-chain", "gate-alloc-hot",
+    "gate-retreat", "gate-slab-cap", "gate-note-part", "gate-dyn-place",
+    "gate-container-refs", "gate-coro-frame-roots", "gate-home-delegation",
+    "gate-par-tls-owner", "gate-foreign-skip", "gate-hole-c", "gate-rc-desc-dedup",
+    "gate-skip-table", "gate-invariant-table", "gate-inject-anchors",
+    "gate-wiring", "gate-doc-refs", "check-tree",
+    # ---- 语义门禁（判据与机器无关：输出 / 内存界 / 生成物结构，不判时间）----
+    "gate-scale", "gate-escape", "gate-difffuzz", "gate-reclaim-elide",
+    "gate-rc-idle-corpus", "gate-perturb-orphans", "gate-release", "gate-shard",
+    # ---- 关键行为套件（语言 / 库 / ABI / 工具，自带期望输出）----
+    "copy", "drop", "nocopy", "weak", "hashmap", "map", "json", "cabi", "cgen",
+    "constgen", "generics", "extern", "ctor", "defaults", "iflet", "sugar",
+    "fuse", "par", "modules", "any", "impl", "genmatrix", "showcase", "dense",
+    "b64", "linmap", "extpkg-chain", "extpkg-honest", "extpkg-keeper",
+    "extpkg-system", "extbind", "cbindgen", "fs-shape", "argv", "voidret",
+    "contract", "fs",
+)
+
+
 def select(items: list, mode: Optional[str], only: list) -> list:
     if mode in (None, "all", "full"):
         sel = list(items)
@@ -2178,13 +2216,38 @@ def select(items: list, mode: Optional[str], only: list) -> list:
                   "要快请用 `./check.sh smoke`（≈10s）。", flush=True)
         sel = [it for it in items if not it.bench]
     elif mode == "ci":
-        # CI 档 = nobench − callgrind 项。理由见 Item.callgrind：那几条判据的结论是
-        # "callgrind 数 ≤ 线"，而线是作者机上的绝对量；CI 的 gcc/valgrind 与作者机不同 ⇒ 会误红。
-        # 明说跳过了哪些项，免得"少跑了几条"变成看不出的事。
-        cg = [it.name for it in items if it.callgrind and not it.bench]
-        sel = [it for it in items if not it.bench and not it.callgrind]
-        print(f"注：`ci` 档 = nobench 减去 {len(cg)} 条 callgrind 判据"
-              f"（结论绑编译器/valgrind 版本，换机器数字就漂）：" + " ".join(cg), flush=True)
+        # CI 档 = 显式精简正确性子集（CI 集）。只判"跑通且结果正确"：
+        #   · 不含基准，也不含 callgrind / perf 项（它们的结论绑机器与工具链）；
+        #   · 不含只有作者机工具链才成立、依赖 TTY / 第三方 .so / 进程表 / GDB 的项；
+        #   · 不含分钟级深水项（它们留给本机 nobench / 全量）。
+        # 词条可以是项名，也可以是组名：组名展开成该组全部项。
+        known = {it.name: it for it in items}
+        groups = {it.group for it in items}
+        missing = []
+        picked = []
+        seen = set()
+        for tok in CI:
+            if tok in groups and tok not in known:
+                for it in items:
+                    if it.group == tok and it.name not in seen:
+                        picked.append(it)
+                        seen.add(it.name)
+            elif tok in known and tok not in seen:
+                picked.append(known[tok])
+                seen.add(tok)
+            else:
+                missing.append(tok)
+        if missing:
+            raise SystemExit("ci 集里有不存在的项/组（改名或删项要同步 CI）："
+                             + " ".join(missing))
+        bad = [it.name for it in picked if it.bench or it.callgrind or it.perf]
+        if bad:
+            raise SystemExit("ci 集里混进了基准/性能项（CI 不判性能）：" + " ".join(bad))
+        sel = picked
+        dropped = sum(1 for it in items if it.name not in seen and not it.bench)
+        print(f"注：ci 档 = 精简正确性集 {len(sel)} 项；"
+              f"不选 {dropped} 条非基准项（性能/深水/环境专属；本机 nobench 全跑）",
+              flush=True)
     elif mode == "smoke":
         known = {it.name: it for it in items}
         missing = [n for n in SMOKE if n not in known]
@@ -2652,7 +2715,7 @@ def main(argv=None) -> int:
         prog="./check.sh", add_help=True,
         description="extC 自检编排层：检查项是数据，runner 负责选/跑/计时/统计。")
     ap.add_argument("mode", nargs="?", default=None,
-                    help="all（默认，含基准）/ nobench（非基准全量，别名 quick）/ ci（nobench − callgrind 判据，CI 用这档）"
+                    help="all（默认，含基准）/ nobench（非基准全量，别名 quick）/ ci（精简正确性集，CI 用这档）"
                          " / smoke（快速高信号集，≈10s）/ docs（文档·工具，秒级）")
     ap.add_argument("--only", action="append", default=[], metavar="名或组",
                     help="只跑这些项（名字或组；可多次）")

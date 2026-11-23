@@ -164,7 +164,7 @@ fn main() -> i32 {
 make -j"$(nproc)"     # 只需要 cc；产物 build/extc
 ./tests/run.sh        # 回归：正例必须跑对，编译错误例必须被拦，运行期错误例必须真的带源位置陷阱
 ./check.sh quick      # 上面这些 + 闸门 + 分项子系统用例（需要 cc 与 python3）
-./check.sh ci         # 同上，去掉 callgrind 判据（CI 用这个：指令数与 miss 数绑定本机工具链）
+./check.sh ci         # CI 档：精简正确性子集（不判性能与指令数）
 ./check.sh            # 全量验收：再加上整套 ASan/UBSan 语料与基准（需要 g++、rustc）
 ```
 

@@ -43,7 +43,14 @@ import subprocess
 import sys
 import tarfile
 import tempfile
-import tomllib
+try:  # Python 3.11+
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10（例如 ubuntu-22.04 的 python3）需要 tomli
+    try:
+        import tomli as tomllib
+    except ModuleNotFoundError:
+        sys.exit("extpkg: 需要 tomllib（Python 3.11+）或 tomli"
+                 "（CI 上 apt install python3-tomli；本地可 pip install tomli）")
 import urllib.request
 from pathlib import Path
 

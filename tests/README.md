@@ -5,7 +5,7 @@
 ```sh
 ./check.sh smoke     # 改完代码第一件事：高信号集，约 10 秒
 ./check.sh docs      # 只跑文档与工具闸门，秒级
-./check.sh ci        # CI 档：非基准全量，去掉绑本机工具链的 callgrind 判据
+./check.sh ci        # CI 档：精简正确性子集（只判跑通/结果正确，不判性能与指令数）
 ./check.sh nobench   # 非基准全量，约 220 秒
 ./check.sh           # 全部，含基准（要 g++ / rustc / go / java / node）
 ./check.sh --list    # 看项名、分组、最近耗时

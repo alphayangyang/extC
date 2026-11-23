@@ -26,7 +26,8 @@ is the promise this project is built around, and it holds in every alpha.
 Within that, an alpha release promises:
 
 - it builds from a clean checkout with `make` on the supported platforms below;
-- `./tests/run.sh` is green, and `./check.sh ci` is green in CI;
+- `./tests/run.sh` is green, and the `ci` workflow is green on both supported baselines
+  (that workflow is the slim correctness subset: it judges "builds and answers correctly", not speed);
 - the generated C compiles with a supported `cc` and links only against libc for a minimal program;
 - every gate in `check.sh` is honest: a red gate is a real failure, not a warning.
 
@@ -40,7 +41,7 @@ multi-threaded reclamation work that is not done.
 
 | Platform | Status |
 |---|---|
-| Linux x86_64, glibc ≥ 2.35 | supported; CI runs ubuntu-22.04, ubuntu-24.04 and debian-12 |
+| Linux x86_64, glibc ≥ 2.35 | supported; CI runs ubuntu-22.04 (glibc 2.35, gcc 11) and ubuntu-24.04 (glibc 2.39, gcc 13) |
 | WSL2 (x86_64 Linux) | supported |
 | aarch64 Linux | builds, but untested: no CI, and the coroutine runtime assumes epoll with the x86_64 calling convention |
 | macOS, Windows | not supported (no epoll, and the driver installs POSIX paths) |
@@ -53,7 +54,7 @@ compilation is not supported — build on the target.
 | For | Needs |
 |---|---|
 | building | `cc` (gcc 11+ or clang 14+), `make` |
-| the test suite and gates | `python3` 3.8+ (standard library only) |
+| the test suite and gates | `python3` 3.8+ (standard library; on 3.10 and older the `extpkg` suite also needs `tomli` — CI installs `python3-tomli`) |
 | full acceptance | additionally `g++`, `rustc` |
 | comparison benchmarks | `go`, `java`, `gfortran` (optional; each report says what it used) |
 
@@ -72,7 +73,10 @@ make install PREFIX="$HOME/.local"     # installs extc, the runtime headers and 
 
 1. Bump [`VERSION`](VERSION) in one commit; `make` rebuilds `build/extc` without warnings.
 2. `make -j"$(nproc)" && ./tests/run.sh` — expect `通过 377，失败 0`.
-3. `./check.sh ci` — all gates green, including the documentation gates for this repository.
+3. `./check.sh nobench` — all gates green, including the documentation gates for this repository.
+   (CI runs only the slim `ci` tier; a release must also judge the gates whose lines are
+   calibrated on a lab machine, which is what `nobench` adds. Neither tier judges benchmarks:
+   those need a quiet machine, so `full` is a separate, non-CI run.)
 4. With the documentation project checked out next to it: `./check.sh docs` — the five
    `doc-project-*` items run against `~/extc-docs` and must be green; also run that project's own
    `check.sh`. A missing documentation project is a skip, not a pass, so check it out for a release.

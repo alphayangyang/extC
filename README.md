@@ -164,7 +164,7 @@ Run these and the numbers are fresh (`make status` prints pass/fail counts and u
 make -j"$(nproc)"     # needs only cc; produces build/extc
 ./tests/run.sh        # regressions: positive cases must run right, compile-error cases must be caught, run-time error cases must really trap with a source position
 ./check.sh quick      # the above + gates + per-subsystem suites (needs cc and python3)
-./check.sh ci         # as above, minus the callgrind criteria (CI uses this: instruction and miss counts bind to the local toolchain)
+./check.sh ci         # CI tier: the slim correctness subset (no performance or instruction-count criteria)
 ./check.sh            # full acceptance: also the whole corpus under ASan/UBSan plus benchmarks (needs g++, rustc)
 ```
 
