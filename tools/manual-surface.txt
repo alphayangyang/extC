@@ -768,7 +768,6 @@ std::text::string	string	capacity	method	public
 std::text::string	string	clear	method	public
 std::text::string	string	clone	method	public
 std::text::string	string	concat	method	public
-std::text::string	string	concatBytes	method	public
 std::text::string	string	contains	method	public
 std::text::string	string	count	method	public
 std::text::string	string	create	method	public

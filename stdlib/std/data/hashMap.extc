@@ -193,7 +193,7 @@ struct hashMap<K, V> {
     @inline
     @private
     @unchecked
-    fn probeRange(self: ref hashMap<K, V>, k: K, bc: u64, lo: i64, hi: i64) -> i64 {
+    fn probeRange(self: ref hashMap<K, V>, k: ref K, bc: u64, lo: i64, hi: i64) -> i64 {
         let ones: u64 = u64(0) - u64(1)
         let high: u64 = (ones / u64(255)) * u64(128)
         var i: i64 = lo
@@ -213,7 +213,7 @@ struct hashMap<K, V> {
             if ep >= 0 && (cp < 0 || ep < cp) { return -1 }
             if cp >= 0 && (ep < 0 || cp < ep) {
                 let b: i64 = base + cp
-                if self.keys[b] == k { return b }
+                if self.keys[b] == *k { return b }
                 i = b + 1
             } else {
                 i = base + 8
@@ -223,7 +223,7 @@ struct hashMap<K, V> {
     }
 @unchecked
     @inline
-    fn findH(self: ref hashMap<K, V>, k: K, h: i64) -> i64 {
+    fn findH(self: ref hashMap<K, V>, k: ref K, h: i64) -> i64 {
         if self.cap == 0 { return -1 }
         let t: u8 = ctrlOf(h)
         let bc: u64 = u64(t) * ((u64(0) - u64(1)) / u64(255))
@@ -236,16 +236,16 @@ struct hashMap<K, V> {
 
     /* 找到 k 的桶：命中返回桶号，没有返回 -1。 */
     @inline
-    fn find(self: ref hashMap<K, V>, k: K) -> i64 { return self.findH(k, k.hash()) }
+    fn find(self: ref hashMap<K, V>, k: ref K) -> i64 { return self.findH(k, k.hash()) }
 
-    fn contains(self: ref hashMap<K, V>, k: K) -> bool { return self.find(k) >= 0 }
+    fn contains(self: ref hashMap<K, V>, k: K) -> bool { return self.find(ref k) >= 0 }
 
     /* `hm[k]` -- the read side. Same answer as `get`: `none` when absent. */
     fn [](self: ref hashMap<K, V>, k: K) -> ?V { return self.get(k) }
 
     /* The value for `k`, or `none`. */
     fn get(self: ref hashMap<K, V>, k: K) -> ?V {
-        let b: i64 = self.find(k)
+        let b: i64 = self.find(ref k)
         if b < 0 { return none }
         return some(self.vals[b])
     }
@@ -259,7 +259,7 @@ struct hashMap<K, V> {
      * 翻倍之后装载掉到 0.42 左右，所以下一次重哈希要再插 0.85 倍的量 —— 几何增长，摊还 O(1)。 */
     fn put(self: mut ref hashMap<K, V>, k: K, v: V) -> bool {
         let h: i64 = k.hash()
-        let b: i64 = self.findH(k, h)
+        let b: i64 = self.findH(ref k, h)
         if b >= 0 {
             self.keys.dropAt(b)
             self.vals.dropAt(b)
@@ -312,7 +312,7 @@ struct hashMap<K, V> {
 
     /* 移除 `k`。返回「本来就在」。 */
     fn remove(self: mut ref hashMap<K, V>, k: K) -> bool {
-        let b: i64 = self.find(k)
+        let b: i64 = self.find(ref k)
         if b < 0 { return false }
         self.removeAt(b)
         return true
@@ -320,7 +320,7 @@ struct hashMap<K, V> {
 
     /* 移除 `k` 并把它的值交出来（键和值各自跑钩子，值给你之前先拷一份）。 */
     fn take(self: mut ref hashMap<K, V>, k: K) -> ?V {
-        let b: i64 = self.find(k)
+        let b: i64 = self.find(ref k)
         if b < 0 { return none }
         let out: V = self.vals[b]
         self.removeAt(b)

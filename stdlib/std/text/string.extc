@@ -187,13 +187,13 @@ struct string {
      *
      * Both sides go through `subView(0, n)`: a read-only view of this value, consumed by the
      * comparison before anything can change. */
-    fn ==(self: ref string, other: string) -> bool {
+    fn ==(self: ref string, other: ref string) -> bool {
         return string::bytesEq(self.subView(0, self.n), other.subView(0, other.n))
     }
 
     fn ==(self: ref string, other: slice<u8>) -> bool { return string::bytesEq(self.subView(0, self.n), other) }
 
-    fn <(self: ref string, other: string) -> bool {
+    fn <(self: ref string, other: ref string) -> bool {
         return string::bytesLt(self.subView(0, self.n), other.subView(0, other.n))
     }
 
@@ -248,21 +248,15 @@ struct string {
      *
      * THREE SPELLINGS, one meaning each:
      *   - `s.append(t)` grows the receiver in place (the usual way to build a string);
-     *   - `s.concat(t)` / `s.concatBytes(t)` return a NEW string, leaving the receiver alone;
+     *   - `s.concat(t)` returns a NEW string, leaving the receiver alone (take any byte view,
+     *     so a `string` argument is borrowed, never copied);
      *   - `s + t` is the operator spelling of the same thing (see the two `fn +` overloads
      *     below). It allocates through the same zone the concat methods use, so the operator
      *     call site needs no arena argument beyond the zone the operator path already passes.
      *
      * The result starts as a **zero value** (inline, no pool) and reaches for the pool only if the
      * concatenation does not fit in the 16 inline bytes -- a short join allocates nothing at all. */
-    fn concat(self: ref string, other: string) -> string {
-        var out: string
-        out.append(self.subView(0, self.n))
-        out.append(other.subView(0, other.n))
-        return out
-    }
-
-    fn concatBytes(self: ref string, other: slice<u8>) -> string {
+    fn concat(self: ref string, other: slice<u8>) -> string {
         var out: string
         out.append(self.subView(0, self.n))
         out.append(other)
@@ -270,11 +264,12 @@ struct string {
     }
 
     /* `s + t`：拼接的运算符写法。返回**新值**、不写接收者（`+=` 不在可重载集合里）；
-     * 右操作数按类型分三份重载 —— `slice<u8>`（字面量与视图）、`string`、单字节。分配落在
+     * 右操作数按类型重载 —— `slice<u8>`（字面量与视图）、`ref string`（**借**，不拷接收者）、
+     * 数字与布尔。分配落在
      * 调用点给的 arena 上（运算符调用点现在与方法调用点走同一套 home/zone 记账）。 */
-    fn +(self: ref string, other: slice<u8>) -> string { return self.concatBytes(other) }
+    fn +(self: ref string, other: slice<u8>) -> string { return self.concat(other) }
 
-    fn +(self: ref string, other: string) -> string { return self.concat(other) }
+    fn +(self: ref string, other: ref string) -> string { return self.concat(other.view()) }
 
     /* 数字与布尔值的运算符重载：`"a=" + n` 直接得到字符串（值形式的 f-string 就靠这一组
      * 脱糖）。走的是"复制接收者 + 追加"的朴素路径，与 `appendI64` 一样不为数字多写一层
@@ -514,7 +509,7 @@ struct string {
      * 所以 `s = s + x` 每轮都会留下上一份存储；用 `+=` 就是摊还 O(|x|)、零垃圾。语义与默认脱
      * 糖（`s = s + x`）相同，只是不经过临时量。右操作数按类型各一份，与 `+` 的重载集对齐。 */
     fn +=(self: mut ref string, other: slice<u8>) { self.append(other) }
-    fn +=(self: mut ref string, other: string) { self.append(other.view()) }
+    fn +=(self: mut ref string, other: ref string) { self.append(other.view()) }
     fn +=(self: mut ref string, other: i64) { self.appendI64(other) }
     fn +=(self: mut ref string, other: f64) { self.appendF64(other, 6) }
     fn append(self: mut ref string, s: slice<u8>) {

@@ -1,4 +1,4 @@
-// string 的拼接（append 就地 / concat·concatBytes 出新串）· 比较（== / <）· 子串查找 ·
+// string 的拼接（append 就地 / concat 出新串，右操作数按视图借）· 比较（== / <）· 子串查找 ·
 // 取字节 · 零拷贝视图 · 以及"能当 hashMap 的键"（hash + == 齐了）
 // expect: c=hello world|a=hello world|eq=true|lt=false|find=6|miss=-1|sw=true|ew=true|at=101|sub=world|cb=hello world!!!|hn=2|hv=20
 use std::io
@@ -17,7 +17,7 @@ fn main() -> i32 {
     io::cout << "|find=" << (c.find("world") ?? -1) << "|miss=" << (c.find("zzz") ?? -1)
     io::cout << "|sw=" << c.startsWith("hello") << "|ew=" << c.endsWith("world")
     io::cout << "|at=" << i64(c.at(1) ?? u8(63)) << "|sub=" << c.sub(6, 11)
-    let cb = a.concatBytes("!!!")     /* 右操作数也可以是裸 slice<u8> */
+    let cb = a.concat("!!!")           /* 右操作数也可以是裸 slice<u8> */
     io::cout << "|cb=" << cb.snapshot()
 
     var m: hashMap<string, i32> = hashMap<string, i32>::withCap(8)

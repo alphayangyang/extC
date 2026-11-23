@@ -3523,7 +3523,8 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 Expr  *a = *slot;
                 if (pt->kind == TY_REF && at->kind != TY_REF && !ttIsError(at)) {
                     ckError(c, a->line,
-                            "`.` means \"operate on this value\", so free functions need `ref` spelled out. ",
+                            "`.` means \"operate on this value\", so free functions need `ref` spelled out. "
+                            "`ref T` is a read-only borrow of a place: a variable (also `let`), a field, or a fixed-size array element",
                             "argument expects `%s`; write `ref ...` here to pass a reference",
                             typeStr(c, pt));
                     continue;
@@ -4755,7 +4756,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 if (p->type->kind == TY_REF && at->kind != TY_REF && !ttIsError(at)) {
                     ckError(c, a->line,
                             "`.` means \"operate on this value\", so free functions need `ref` spelled out. "
-                            "`ref` is a mutable reference, so the target must be a `var`",
+                            "`ref T` is a read-only borrow of a place: a variable (also `let`), a field, or a fixed-size array element",
                             "argument expects `%s`; write `ref ...` here to pass a reference",
                             typeStr(c, p->type));
                     continue;
@@ -5444,7 +5445,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 if (pt->kind == TY_REF && at->kind != TY_REF && !ttIsError(at)) {
                     ckError(c, a->line,
                             "`.` means \"operate on this value\", so free functions need `ref` spelled out. "
-                            "`ref` is a mutable reference, so the target must be a `var`",
+                            "`ref T` is a read-only borrow of a place: a variable (also `let`), a field, or a fixed-size array element",
                             "argument expects `%s`; write `ref ...` here to pass a reference",
                             typeStr(c, pt));
                     continue;
