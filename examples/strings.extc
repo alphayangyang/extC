@@ -13,8 +13,8 @@ fn main() -> i32 {
     println(s == "hello worle")      // false
     println(s != "nope")             // true
 
-    println(s.find("world"))         // 6     —— 词法分析器的核心
-    println(s.find("xyz"))           // -1
+    println(s.find("world") ?? -1)    // 6     —— 词法分析器的核心
+    println(s.find("xyz") ?? -1)      // -1
     println(s.startsWith("hello"))   // true
     println(s.startsWith("world"))   // false
 

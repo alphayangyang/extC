@@ -114,7 +114,7 @@ struct string {
      * 语义：**要了容量就真要一片存储**（`c` 下限 16 ⇒ `capacity()` 立刻 >= 16），
      * 因为"预分配 n 字节"这句承诺不能靠内联的 16 字节兑现。SSO 省下的是**零值**与短串的
      * 默认构造，不是显式的 `withCap`。 */
-    fn create(c: i64) -> string {
+    fn withCapacity(c: i64) -> string {
         var s: string
         var cc: i64 = c
         if cc < 16 { cc = 16 }
@@ -657,7 +657,7 @@ struct string {
             }
             return count
         }
-        var out: string = string::create(self.n)
+        var out: string = string::withCapacity(self.n)
         start = 0
         while true {
             match self.findFrom(start, needle) {
@@ -855,7 +855,7 @@ struct string {
      * 内联态（`cap == 0`）没有可缩的：它本来就只占 16 字节，而且"下限 16"这条承诺
      * 与内联缓冲等大 —— 有存储的缩到 16 之后仍然有存储，不往回退（退回内联会让 `capacity()`
      * 从 16 掉到 0，那是另一个语义）。 */
-    fn shrink(self: mut ref string) {
+    fn shrinkToFit(self: mut ref string) {
         if self.cap == 0 { return }
         var want: i64 = self.n
         if want < 16 { want = 16 }
@@ -921,7 +921,7 @@ struct string {
  * `new()` / `empty()` 与零值完全等价（内联、零分配、`capacity() == 0`）——
  * 它们存在只是为了让手册里那句 `new()` 真的能用（此前只有类型上的 `new(c)`，
  * 从模块外写 `new()` 根本不存在）。 */
-fn withCap(c: i64) -> string { return string::create(c) }
+fn withCap(c: i64) -> string { return string::withCapacity(c) }
 fn new() -> string { var s: string  return s }
 fn empty() -> string { var s: string  return s }
 
@@ -1287,15 +1287,15 @@ impl io::istream {
         var r: io::reader = io::inSync()
         match r.eof() {
             success(atEnd) => {
-                if atEnd { io::IN_BAD = true }
+                if atEnd { io::inFailed = true }
                 else {
                     match v.readLineFrom(ref r) {
                         success(n) => { }
-                        failure(e) => { io::IN_BAD = true }
+                        failure(e) => { io::inFailed = true }
                     }
                 }
             }
-            failure(e) => { io::IN_BAD = true }
+            failure(e) => { io::inFailed = true }
         }
         r.save()
         return { fd: self.fd }
@@ -1306,7 +1306,7 @@ impl io::istream {
  *
  * This shell looks like the one above because it has to: what differs is only where the reader
  * comes from (`inSync`/`inSave` for the console, `self.r` for a file) and which "we hit the end"
- * flag to raise (`io::IN_BAD` vs `self.failed`). Both of those are module-private state, and
+ * flag to raise (`io::inFailed` vs `self.failed`). Both of those are module-private state, and
  * without traits there is nothing to abstract them with -- the part that is worth sharing (the
  * line rule: strip '\n', handle CRLF, grow the string) has exactly one home:
  * `string::readLineFrom`. `std::fs` already writes its three built-in `>>` overloads out twice
@@ -1425,7 +1425,7 @@ fn padF64(x: f64, width: i64, prec: i64, fill: u8, align: i64) -> string {
  *
  * 用 `impl` 块里的 `readLineFrom` / `readAllFrom` 能做到，但每个调用点都要
  * `io::inSync()` + `r.save()` 两行样板：控制台读取的状态住在 `std::io` 的模块级缓冲里
- * （`IN_POS` 等），不 save 回去，下一次 `inSync()` 就会重读同一段。这两个函数把"同步取还"
+ * （`inPos` 等），不 save 回去，下一次 `inSync()` 就会重读同一段。这两个函数把"同步取还"
  * 收进来，调用点只剩一句。
  *
  * 返回 `none` 只表示 **EOF 且什么都没读到**（空行是 `some("")`，与 EOF 区分开）；读取错误也
@@ -1544,7 +1544,7 @@ impl io::stdinStream {
  * }
  * @endcode
  *
- * 用在哪：WebSocket 握手的 `Sec-WebSocket-Accept = base64(SHA1(key + GUID))`、HTTP Basic、
+ * 用在哪：WebSocket 握手的 `Sec-WebSocket-Accept = base64(SHA1(key + wsGuid))`、HTTP Basic、
  * 以后 QQ 富媒体的分片上传。**不做流式**：这些负载都是几十字节，缓冲直接给够最省事。
  *
  * 分工：标准表给 `encode`/`decode`，URL 安全表（`-` `_`）给 `encodeUrl`/`decodeUrl` ——
@@ -1553,7 +1553,7 @@ impl io::stdinStream {
  * 要它就在调用方 `trimEnd('=')`）。
  */
 
-let PAD: u8 = 61            /* '=' */
+const PAD: u8 = 61            /* '=' */
 
 /* 6 bit → 输出字符 */
 @private

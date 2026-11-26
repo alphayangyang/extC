@@ -13,7 +13,7 @@
 //     环由区域清扫收回（EXTC_RECLAIM=0 档关掉清扫 ⇒ 地板）。
 use std::io
 
-let MASK: i64 = 4611686018427387903
+const MASK: i64 = 4611686018427387903
 
 struct edge {
     to: mut ref node

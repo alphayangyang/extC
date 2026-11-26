@@ -263,7 +263,7 @@ struct screen {
     fn isOpen(self: ref screen) -> bool { return self.on }
 
     /* 这块屏幕的尺寸；每次现问终端，窗口大小可能变了。 */
-    fn size(self: ref screen) -> dims { return termSize(self.fd) }
+    fn dims(self: ref screen) -> dims { return termSize(self.fd) }
 
     /* 清屏（光标停在左上角）。 */
     fn clear(self: ref screen) {

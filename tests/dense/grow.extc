@@ -6,10 +6,10 @@ fn main() -> i32 {
     var b: block<i64> = block<i64>::withCap(4)
     var i: i64 = 0
     while i < 4 { b[i] = i * i  i = i + 1 }
-    b.setUsed(4)
+    b.setLen(4)
     b.growTo(64)
     while i < 50 { b[i] = i * i  i = i + 1 }
-    b.setUsed(50)
+    b.setLen(50)
     var order: bool = true
     var j: i64 = 0
     while j < 50 {
@@ -17,6 +17,6 @@ fn main() -> i32 {
         j = j + 1
     }
     let zero: bool = b[60] == 0
-    println("used=", b.used(), " cap=", b.capacity(), " order=", order, " zero=", zero)
+    println("used=", b.len(), " cap=", b.capacity(), " order=", order, " zero=", zero)
     return 0
 }

@@ -73,17 +73,17 @@ type ioError = | readFailed(i32) | lineTooLong(i64) | writeFailed(i32) | notATer
 /* Block size: **64KB**, the buffer `readerOf` and `writerOf` allocate. A buffered read or
  * write moves at most this many bytes per syscall, which keeps the syscall count low in
  * protocol code that reads a few lines at a time. */
-let BLK: i64 = 65536
+const BLK: i64 = 65536
 
 /* The largest `i64`, used by the overflow check in `nextInt`.
  * NOTE: it is written out by hand because there is **no built-in** for it;
  * `9223372036854775807` = 2^63 - 1. */
-let I64_MAX: i64 = 9223372036854775807
+const I64_MAX: i64 = 9223372036854775807
 
 /* The fds for standard input and output. `std::sys::io` declares them too; they
  * are exported again here so that **`use std::io` alone is enough** for a user. */
-let STDIN_FD: i32  = 0
-let STDOUT_FD: i32 = 1
+const STDIN_FD: i32  = 0
+const STDOUT_FD: i32 = 1
 
 /* Flush the `println` side. This is **required** when mixing it with the direct
  * fd writes below, or the output comes out in the wrong order -- the most
@@ -320,7 +320,7 @@ struct reader {
     /* Remember this reader's state as the console's save point: the next `readLine` from stdin
      * continues where this reader stopped. A reader over a **file** uses the file module's own
      * save point, so this one is about the shared stdin stream. */
-    fn save(self: ref reader) { IN_LEN = self.len  IN_POS = self.pos }
+    fn save(self: ref reader) { inLen = self.len  inPos = self.pos }
 
     /* Refill: one `read(2)` fills a whole block. Returns the bytes read, **0 =
      * EOF**.
@@ -598,7 +598,7 @@ struct ostream { fd: i32
         pairsReady()
         let st = fmtI64Fast(v)
         let n = 24 - st
-        extc_cout_put(FMTSTATE.text[st..24].data, n)
+        extc_cout_put(fmt.text[st..24].data, n)
         return { fd: self.fd }
     }
     @inline
@@ -624,7 +624,7 @@ struct ostream { fd: i32
         pairsReady()
         let st = fmtU64Fast(v)
         let n = 24 - st
-        extc_cout_put(FMTSTATE.text[st..24].data, n)
+        extc_cout_put(fmt.text[st..24].data, n)
         return { fd: self.fd }
     }
     @inline
@@ -669,16 +669,16 @@ struct ostream { fd: i32
         let st = fmtI64Fast(v)
         let n = 24 - st
         if fill == u8(48) && align == RIGHT && width > n {
-            if FMTSTATE.text[st] == u8(45) {
-                extc_cout_put(FMTSTATE.text[st..st + 1].data, 1)
+            if fmt.text[st] == u8(45) {
+                extc_cout_put(fmt.text[st..st + 1].data, 1)
                 fillBytes(width - n, fill)
-                extc_cout_put(FMTSTATE.text[st + 1..24].data, n - 1)
+                extc_cout_put(fmt.text[st + 1..24].data, n - 1)
             } else {
                 fillBytes(width - n, fill)
-                extc_cout_put(FMTSTATE.text[st..24].data, n)
+                extc_cout_put(fmt.text[st..24].data, n)
             }
         } else {
-            padText(FMTSTATE.text[st..24], width, fill, align)
+            padText(fmt.text[st..24], width, fill, align)
         }
         return { fd: self.fd }
     }
@@ -690,9 +690,9 @@ struct ostream { fd: i32
         let n = 24 - st
         if fill == u8(48) && align == RIGHT && width > n {
             fillBytes(width - n, fill)
-            extc_cout_put(FMTSTATE.text[st..24].data, n)
+            extc_cout_put(fmt.text[st..24].data, n)
         } else {
-            padText(FMTSTATE.text[st..24], width, fill, align)
+            padText(fmt.text[st..24], width, fill, align)
         }
         return { fd: self.fd }
     }
@@ -723,21 +723,18 @@ let endl: slice<u8> = "\n"
  * NOTE: the buffer is a **fixed-size global array**, not `new u8[BLK]`. A global is
  * initialized at compile time, and a `mut slice<u8>` contains a reference, so no global
  * of that type can exist at all ("nothing to borrow from"). An array has no reference in
- * it, and `IN_BUF[..]` produces the view when the reader is built.
+ * it, and `inBuf[..]` produces the view when the reader is built.
  *
- * NOTE: the length is written out as `65536` rather than as `BLK`, because a fixed
- * array's length must be an **integer literal** (a compile-time constant declaration
- * would be needed to name it, and there is no `const` yet). `BLK` is 65536.
  */
-var IN_BUF: [65536]u8
-var IN_LEN: i64 = 0
-var IN_POS: i64 = 0
-var IN_BAD: bool = false
+var inBuf: [BLK]u8
+var inLen: i64 = 0
+var inPos: i64 = 0
+var inFailed: bool = false
 
 /* The reader over the console buffer, carrying the state in and back out. Saving it
  * after every operation is what lets a local `reader` be enough -- the parsing itself is
  * `reader`'s, not a second copy of it. */
-fn inSync() -> reader { return { fd: 0, chunk: IN_BUF[..], len: IN_LEN, pos: IN_POS } }
+fn inSync() -> reader { return { fd: 0, chunk: inBuf[..], len: inLen, pos: inPos } }
 struct istream { fd: i32
     /* 热路径：**每个数只调一次 `nextInt`** ✓（先 `skipSpace` 再 `eof` 会变成三次调用 ✗）
      * `0` 与"啥也没读到"在 `nextInt` 的返回里**同形**（EOF 用 `success(0)` 说 ✓）⇒
@@ -745,9 +742,9 @@ struct istream { fd: i32
     @inline
     fn >>(self: ref istream, v: mut ref i64) -> istream {
         var g: bool = false
-        match nextI64State(i32(0), IN_BUF[..], ref IN_LEN, ref IN_POS, ref g) {   /* 0 = stdin ✓ */
-            success(n) => { if g { *v = n } else { IN_BAD = true } }
-            failure(e) => { IN_BAD = true }
+        match nextI64State(i32(0), inBuf[..], ref inLen, ref inPos, ref g) {   /* 0 = stdin ✓ */
+            success(n) => { if g { *v = n } else { inFailed = true } }
+            failure(e) => { inFailed = true }
         }
         return { fd: self.fd }
     }
@@ -758,15 +755,15 @@ struct istream { fd: i32
         var r: reader = inSync()
         match r.eof() {
             success(atEnd) => {
-                if atEnd { IN_BAD = true }
+                if atEnd { inFailed = true }
                 else {
                     match r.nextLine(v) {
                         success(n) => { }
-                        failure(e) => { IN_BAD = true }
+                        failure(e) => { inFailed = true }
                     }
                 }
             }
-            failure(e) => { IN_BAD = true }
+            failure(e) => { inFailed = true }
         }
         r.save()
         return { fd: self.fd }
@@ -777,31 +774,31 @@ struct istream { fd: i32
         var r: reader = inSync()
         match r.eof() {
             success(atEnd) => {
-                if atEnd { IN_BAD = true }
+                if atEnd { inFailed = true }
                 else {
                     match r.nextByte() {
                         success(b) => { *v = u8(b) }
-                        failure(e) => { IN_BAD = true }
+                        failure(e) => { inFailed = true }
                     }
                 }
             }
-            failure(e) => { IN_BAD = true }
+            failure(e) => { inFailed = true }
         }
         r.save()
         return { fd: self.fd }
     }
 
-    fn bad(self: ref istream) -> bool { return IN_BAD }
-    fn clear(self: ref istream) { IN_BAD = false }
+    fn bad(self: ref istream) -> bool { return inFailed }
+    fn clear(self: ref istream) { inFailed = false }
 }
 
 /* 失败标志的**自由函数**形式：`inBad()` / `inClear()` 与 `cin.bad()` / `cin.clear()`
  * 是同一个标志（两种写法都在，调用点爱用哪个用哪个 ✓）*/
 /* 每读一行都会问一次 ⇒ 内联（不标就是每行一次函数调用 ✗）*/
 @inline
-fn inBad() -> bool { return IN_BAD }
+fn inBad() -> bool { return inFailed }
 @inline
-fn inClear() { IN_BAD = false }
+fn inClear() { inFailed = false }
 
 let cin: istream = istream { fd: 0 }
 
@@ -827,7 +824,7 @@ struct errStream {
     fn <<(self: ref errStream, v: i64) -> errStream {
         pairsReady()
         let st = fmtI64Fast(v)
-        errWrite(FMTSTATE.text[st..24])
+        errWrite(fmt.text[st..24])
         return { }
     }
     fn <<(self: ref errStream, v: bool) -> errStream {
@@ -844,7 +841,7 @@ struct errStream {
     fn <<(self: ref errStream, v: u64) -> errStream {
         pairsReady()
         let st = fmtU64Fast(v)
-        errWrite(FMTSTATE.text[st..24])
+        errWrite(fmt.text[st..24])
         return { }
     }
 }
@@ -876,17 +873,17 @@ fn eprintln(s: slice<u8>) {
  *
  * 只依赖两个内建（`extc_cout_put` / `extc_cout_flush`），和 fd、缓冲、流对象都不相干
  * ⇒ 拆出来以后 `io.extc` 只剩流本体，`std::io` 用门面把这里的名字再导出。
- * `FMTSTATE.text` 是"刚格式化好的那个数"的暂存处（只有这一份：格式化与取用必须看同一块缓冲）。
+ * `fmt.text` 是"刚格式化好的那个数"的暂存处（只有这一份：格式化与取用必须看同一块缓冲）。
  */
 /* ================================================================ 格式化（一处实现）
  *
  * `i64` → 十进制，写进 `out`，返回长度 ✓ 三个流共用这一份（内建 `print` 写死 stdout，
  * 文件流/stderr 流用它不了它 ✗ 所以格式化必须在库里，而且只能一份 ✓）
  *
- * **两位一查表**（`DIGITS` 是 "00" "01" … "99" 拼起来的常量 ✓ 每次除 100 出两位 ✓）：
+ * **两位一查表**（`digitPairs` 是 "00" "01" … "99" 拼起来的常量 ✓ 每次除 100 出两位 ✓）：
  * 这是 `strconv.AppendInt` 那一招 —— 除法次数减半，而除法正是这条路上最贵的一步 ✓
  */
-let DIGITS: slice<u8> = "00010203040506070809101112131415161718192021222324252627282930313233343536373839404142434445464748495051525354555657585960616263646566676869707172737475767778798081828384858687888990919293949596979899"
+let digitPairs: slice<u8> = "00010203040506070809101112131415161718192021222324252627282930313233343536373839404142434445464748495051525354555657585960616263646566676869707172737475767778798081828384858687888990919293949596979899"
 
 /* ── 热路径版：**全程只碰定长数组** ──────────────────────────────────────────
  *
@@ -896,12 +893,12 @@ let DIGITS: slice<u8> = "0001020304050607080910111213141516171819202122232425262
  * 224 ms（同为 1000 MB/s 量级但比 C 慢一档 ✗）。定长数组的下标是**内联的小检查** ✓
  * ⇒ 热路径写进一个**全局定长数组**（单线程，够用 ✓ 可重入性写在下面 ⚠️）。
  *
- * ⚠️ 因此 `FMTSTATE.text` 是"刚刚格式化好的那个数"的暂存处 ⇒ **别在格式化与取用之间再格式化** ✓
+ * ⚠️ 因此 `fmt.text` 是"刚刚格式化好的那个数"的暂存处 ⇒ **别在格式化与取用之间再格式化** ✓
  *    （`<<` 里是连续的"格式化 + 立刻取出"，所以安全 ✓）
  */
 struct fmtState {
     text: [24]u8            /* 刚刚格式化好的那个数：`<<` 里"格式化 + 立刻取出"是连续的 */
-    pairs: [200]u8          /* 0..99 的两字符十进制 ASCII，首次用到时从 `DIGITS` 铺开 */
+    pairs: [200]u8          /* 0..99 的两字符十进制 ASCII，首次用到时从 `digitPairs` 铺开 */
     pairsReady: bool
 }
 
@@ -909,21 +906,21 @@ struct fmtState {
 
 `text` 只活到"被取走"为止；`pairs` 是查表用的常量。整个程序一份 —— 但 `par` 的工作体
 不允许调用任何函数（编译期拒绝），所以工作线程碰不到它。 */
-var FMTSTATE: fmtState
+var fmt: fmtState
 
 @inline
 fn pairsReady() {
-    if FMTSTATE.pairsReady { return }
+    if fmt.pairsReady { return }
     var d: i64 = 0
     var i: i64 = 0
     while i < 200 {
-        FMTSTATE.pairs[i] = DIGITS[i]
+        fmt.pairs[i] = digitPairs[i]
         i = i + 1
     }
-    FMTSTATE.pairsReady = true
+    fmt.pairsReady = true
 }
 
-/* 把 `v` 写进 `FMTSTATE.text` 的**尾部往前**，返回**起点**（长度 = 24 - 起点 ✓）
+/* 把 `v` 写进 `fmt.text` 的**尾部往前**，返回**起点**（长度 = 24 - 起点 ✓）
  *
  * ⚠️ 必须**从后往前**填：两位一组的表给的是"高位在前"的一对，若按低位在前追加、
  * 最后整体反转，**对内的顺序也会被翻** ⇒ `40` 会印成 `04` ✗（这个 bug 真发生过）。
@@ -941,22 +938,22 @@ fn fmtI64Fast(v: i64) -> i64 {
         if m < 0 { m = 0 - m }    /* m ∈ (-100, 100) ⇒ 这一步永远安全 */
         v = v / 100                    /* 向零截断 ⇒ 循环收敛，符号不影响 */
         end = end - 2
-        FMTSTATE.text[end]     = FMTSTATE.pairs[m * 2]
-        FMTSTATE.text[end + 1] = FMTSTATE.pairs[m * 2 + 1]
+        fmt.text[end]     = fmt.pairs[m * 2]
+        fmt.text[end + 1] = fmt.pairs[m * 2 + 1]
     }
     var r: i64 = v
     if r < 0 { r = 0 - r }        /* |v| < 100 ⇒ 安全；`2^63` 那种大小从不出现 */
     if r >= 10 {
         end = end - 2
-        FMTSTATE.text[end]     = FMTSTATE.pairs[r * 2]
-        FMTSTATE.text[end + 1] = FMTSTATE.pairs[r * 2 + 1]
+        fmt.text[end]     = fmt.pairs[r * 2]
+        fmt.text[end + 1] = fmt.pairs[r * 2 + 1]
     } else {
         end = end - 1
-        FMTSTATE.text[end] = u8(48 + r)
+        fmt.text[end] = u8(48 + r)
     }
     if neg {
         end = end - 1
-        FMTSTATE.text[end] = u8(45)
+        fmt.text[end] = u8(45)
     }
     return end
 }
@@ -967,9 +964,9 @@ fn fmtI64Fast(v: i64) -> i64 {
  * `f"{s:>8}"` / `f"{n:04}"` / `f"{x:.2f}"` 将来展开到下面这些原语。**宽度按字节算**，不按显示列
  * （中文按字节计数）—— 列宽需要显示宽度表，v2 不做，如实记账。
  * 零填充（`{:04}`）等价于 `padInt(v, w, u8(48), RIGHT)`，但**符号在前**：`-5` 宽 4 ⇒ `-005`。 */
-let LEFT: i64 = 0
-let RIGHT: i64 = 1
-let CENTER: i64 = 2
+const LEFT: i64 = 0
+const RIGHT: i64 = 1
+const CENTER: i64 = 2
 
 @inline
 fn fillBytes(n: i64, fill: u8) -> void {
@@ -1043,7 +1040,7 @@ fn fmtF(v: f64, prec: i64, out: mut slice<u8>) -> i64 {
 
 /* 无符号版：`u64` 的上界 `18446744073709551615` 有 20 位，24 字节缓冲够用。
  * 与 `fmtI64Fast` 同形（尾部往前填、两位一组），只是**没有符号**、余数不为负，
- * 所以不需要"从负数一侧取位"那一招。与 `FMTSTATE.text` 同一个约定：格式化完立刻取用。 */
+ * 所以不需要"从负数一侧取位"那一招。与 `fmt.text` 同一个约定：格式化完立刻取用。 */
 @inline
 fn fmtU64Fast(v: u64) -> i64 {
     var end: i64 = 24
@@ -1051,17 +1048,17 @@ fn fmtU64Fast(v: u64) -> i64 {
         let m: u64 = v % u64(100)
         v = v / u64(100)
         end = end - 2
-        FMTSTATE.text[end]     = FMTSTATE.pairs[i64(m) * 2]
-        FMTSTATE.text[end + 1] = FMTSTATE.pairs[i64(m) * 2 + 1]
+        fmt.text[end]     = fmt.pairs[i64(m) * 2]
+        fmt.text[end + 1] = fmt.pairs[i64(m) * 2 + 1]
     }
     let r: i64 = i64(v)
     if r >= 10 {
         end = end - 2
-        FMTSTATE.text[end]     = FMTSTATE.pairs[r * 2]
-        FMTSTATE.text[end + 1] = FMTSTATE.pairs[r * 2 + 1]
+        fmt.text[end]     = fmt.pairs[r * 2]
+        fmt.text[end + 1] = fmt.pairs[r * 2 + 1]
     } else {
         end = end - 1
-        FMTSTATE.text[end] = u8(48 + r)
+        fmt.text[end] = u8(48 + r)
     }
     return end
 }
@@ -1076,13 +1073,13 @@ fn fmtU64Fast(v: u64) -> i64 {
     while u >= 100 {
         let r = u % 100
         u = u / 100
-        tmp[n]     = DIGITS[r * 2]
-        tmp[n + 1] = DIGITS[r * 2 + 1]
+        tmp[n]     = digitPairs[r * 2]
+        tmp[n + 1] = digitPairs[r * 2 + 1]
         n = n + 2
     }
     if u >= 10 {
-        tmp[n]     = DIGITS[u * 2]
-        tmp[n + 1] = DIGITS[u * 2 + 1]
+        tmp[n]     = digitPairs[u * 2]
+        tmp[n + 1] = digitPairs[u * 2 + 1]
         n = n + 2
     } else if u > 0 {
         tmp[n] = u8(48 + u)
@@ -1217,7 +1214,7 @@ fn rawTerminal(fd: i32) -> result<terminal, ioError> {
  *
  * 「对某个对象做一件事」：读走 stdin.nextInt()!，写走 stdout.println(f"...")。
  * 三个对象都是零字段的值类型，全局初始化写 { }，拷贝没有成本；真正的状态（控制台读缓冲
- * IN_BUF / IN_LEN / IN_POS、错误标志 IN_BAD）仍然住在模块全局 —— 与 cin / cout 是同一份，
+ * inBuf / inLen / inPos、错误标志 inFailed）仍然住在模块全局 —— 与 cin / cout 是同一份，
  * 所以两套写法可以混用，互相看得见。
  *
  * 与 std::tui 的分工：这里是行式的控制台（整块读进内存再切），逐键、光标、颜色在 std::tui。
@@ -1265,7 +1262,7 @@ struct stdinStream {
         if first < 0 { return failure(ioError.atEof) }
         if first != 45 && (first < 48 || first > 57) { return failure(ioError.notANumber) }
         var got: bool = false
-        match nextI64State(i32(0), IN_BUF[..], ref IN_LEN, ref IN_POS, ref got) {
+        match nextI64State(i32(0), inBuf[..], ref inLen, ref inPos, ref got) {
             failure(e) => { return failure(e) }
             success(n) => { if got { return success(n) } }
         }
@@ -1343,11 +1340,11 @@ struct stdinStream {
     }
 
     /* 已经缓冲、还没取走的字节数。 */
-    fn avail(self: ref stdinStream) -> i64 { return IN_LEN - IN_POS }
-    fn buffered(self: ref stdinStream) -> bool { return IN_POS < IN_LEN }
+    fn avail(self: ref stdinStream) -> i64 { return inLen - inPos }
+    fn buffered(self: ref stdinStream) -> bool { return inPos < inLen }
     /* 粘性失败标志：cin >> x 失败时置位，clear() 清掉（与 istream 是同一个标志）。 */
-    fn bad(self: ref stdinStream) -> bool { return IN_BAD }
-    fn clear(self: ref stdinStream) { IN_BAD = false }
+    fn bad(self: ref stdinStream) -> bool { return inFailed }
+    fn clear(self: ref stdinStream) { inFailed = false }
 }
 
 /* 控制台输出。走运行期缓冲（与 println / cout 同一个出口）⇒ 混用没有顺序问题，

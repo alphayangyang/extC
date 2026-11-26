@@ -54,4 +54,4 @@ fn main() -> i32 {
     return 0
 }
 
-let BOARD: i64 = 225
+const BOARD: i64 = 225

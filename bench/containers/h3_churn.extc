@@ -3,9 +3,9 @@
 use std::io
 use std::data::hashMap
 
-let SEED0: u64 = 0x2545F4914F6CDD1D
-let OPS: i64 = 8000000
-let SPACE: u64 = 1000000
+const SEED0: u64 = 0x2545F4914F6CDD1D
+const OPS: i64 = 8000000
+const SPACE: u64 = 1000000
 
 struct rng {
     s: u64

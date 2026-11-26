@@ -14,9 +14,8 @@
 use std::io
 use std::text::string
 
-use std::loop
+use std::time
 use std::sys::io as sysio
-use std::sys::file as sysfile
 
 /* ================ 应用侧逐单位时间戳（USER-STALL / bench/app） ================
  * 只写**戳文件**（路径来自 argv 最后一项）；stdout 一个字节都不动。
@@ -36,27 +35,27 @@ var USPB: [512]u8
 var USPL: i64 = 0
 
 fn usByte(b: u8) {
-    if USBL < US_CAP { USB[USBL] = b  USBL = USBL + 1 } else { USOVF = USOVF + 1 }
+    if USBL < US_CAP { USB[USBL] = b  USBL = USBL + i64(1) } else { USOVF = USOVF + i64(1) }
 }
 
 fn usSet64(off: i64, v: u64) {
     var k: i64 = 0
-    while k < 8 { USB[off + k] = u8(v & u64(255))  v = v >> u64(8)  k = k + 1 }
+    while k < i64(8) { USB[off + k] = u8(v & u64(255))  v = v >> u64(8)  k = k + i64(1) }
 }
 
 fn us() {
-    let t = loop::now()
+    let t = time::now()
     if !USSTART {
         USSTART = true
         UST0 = t
         USPREV = t
-        USN = 1
+        USN = i64(1)
         return
     }
     var d: i64 = t - USPREV
-    if d < 0 { USNEG = USNEG + 1  d = 0 }
+    if d < i64(0) { USNEG = USNEG + i64(1)  d = i64(0) }
     USPREV = t
-    USN = USN + 1
+    USN = USN + i64(1)
     var v: u64 = u64(d)
     while v >= u64(128) {
         usByte(u8((v & u64(127)) | u64(128)))
@@ -67,7 +66,7 @@ fn us() {
 
 fn usSetPath(p: slice<u8>) {
     var k: i64 = 0
-    while k < p.len && k < 511 { USPB[k] = p[k]  k = k + 1 }
+    while k < p.len && k < i64(511) { USPB[k] = p[k]  k = k + i64(1) }
     USPL = k
     USPB[k] = u8(0)
 }
@@ -75,25 +74,25 @@ fn usSetPath(p: slice<u8>) {
 fn usDump() {
     USB[0] = u8(85)  USB[1] = u8(83)  USB[2] = u8(65)  USB[3] = u8(80)
     USB[4] = u8(80)  USB[5] = u8(83)  USB[6] = u8(84)  USB[7] = u8(49)
-    usSet64(8, u64(USN))
-    usSet64(16, u64(UST0))
-    usSet64(24, u64(USNEG))
-    usSet64(32, u64(USOVF))
-    if USPL == 0 { return }
-    let fd = sysfile::open(USPB[..USPL].data, sysio::O_WRONLY | sysio::O_CREAT | sysio::O_TRUNC, i32(420))
+    usSet64(i64(8), u64(USN))
+    usSet64(i64(16), u64(UST0))
+    usSet64(i64(24), u64(USNEG))
+    usSet64(i64(32), u64(USOVF))
+    if USPL == i64(0) { return }
+    let fd = sysio::open(USPB[..USPL].data, sysio::O_WRONLY | sysio::O_CREAT | sysio::O_TRUNC, i32(420))
     if fd < i32(0) { io::cerr << "USAPP: open stamp file failed\n"  return }
     var done: i64 = 0
     while done < USBL {
         let n = sysio::write(fd, USB[done..].data, USBL - done)
-        if n <= 0 { break }
+        if n <= i64(0) { break }
         done = done + n
     }
     sysio::close(fd)
 }
 
-let CAP:  i64 = 16384
-let KEEP: i64 = 8192
-let REC:  i64 = 24
+const CAP:  i64 = 16384
+const KEEP: i64 = 8192
+const REC:  i64 = 24
 
 fn toInt(s: slice<u8>, dflt: i64) -> i64 {
     if s.len == 0 { return dflt }

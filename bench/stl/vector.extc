@@ -2,7 +2,7 @@
 use std::io
 use std::data::vector
 
-let N: i64 = 10000000
+const N: i64 = 10000000
 
 fn main() -> i32 {
     var v: vector<i32> = vector<i32>::withCap(N)

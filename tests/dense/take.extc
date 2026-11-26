@@ -7,11 +7,11 @@ fn main() -> i32 {
     var b: block<i64> = block<i64>::withCap(4)
     b[0] = 7
     b[1] = 9
-    b.setUsed(2)
+    b.setLen(2)
     let taken: i64 = b.take(0)
     let sum: i64 = b[1]
-    b.setUsed(1)
+    b.setLen(1)
     b.dropAt(0)
-    println("taken=", taken, " used=", b.used(), " sum=", sum)
+    println("taken=", taken, " used=", b.len(), " sum=", sum)
     return 0
 }

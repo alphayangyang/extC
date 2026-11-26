@@ -266,9 +266,9 @@ SHAPES = {
     "session": dict(
         units="ops",
         cap=10_000_114,                      # 40 + 2_000_002*5 + 64（默认 ops=2000000）
-        extc_use="use stl::hashMap\n",
-        extc_path_anchor="    if args.len > i64(2) { active = toInt(args[2], active) }\n",
-        extc_path_ins="    if args.len > i64(3) { usSetPath(args[3]) }\n",
+        extc_use="use std::data::hashMap\n",
+        extc_path_anchor="    if args.len > 2 { active = toInt(args[2], active) }\n",
+        extc_path_ins="    if args.len > 3 { usSetPath(args[3]) }\n",
         extc_loops=["    while i < ops {\n"],
         extc_loops_ins="        us()\n",
         extc_tail="    io::cout << \"a.len=\" << live.len()",
@@ -286,14 +286,14 @@ SHAPES = {
     "route": dict(
         units="ops + ops + ops/4 + ops/2",
         cap=27_500_104,                      # 40 + 5_500_000*5 + 64（默认 ops=2000000）
-        extc_use="use stl::map\n",
-        extc_path_anchor="    if args.len > i64(1) { ops = toInt(args[1], ops) }\n",
-        extc_path_ins="    if args.len > i64(2) { usSetPath(args[2]) }\n",
+        extc_use="use std::data::map\n",
+        extc_path_anchor="    if args.len > 1 { ops = toInt(args[1], ops) }\n",
+        extc_path_ins="    if args.len > 2 { usSetPath(args[2]) }\n",
         extc_loops=[
             "    while i < ops {\n        u = u * u64(6364136223846793005) + u64(1442695040888963407)\n        let key = i64(u & u64(4294967040))\n",
             "    while i < ops {\n        u = u * u64(6364136223846793005) + u64(1442695040888963407)\n        let q = i64(u & u64(4294967295))\n",
-            "    while i < ops / i64(4) {\n",
-            "    while i < ops / i64(2) {\n",
+            "    while i < ops / 4 {\n",
+            "    while i < ops / 2 {\n",
         ],
         extc_loops_ins="        us()\n",
         extc_tail="    io::cout << \"b.ins=\"",
@@ -321,9 +321,9 @@ SHAPES = {
     "log": dict(
         units="ops",
         cap=10_000_114,
-        extc_use="use stl::string\n",
-        extc_path_anchor="    if args.len > i64(1) { ops = toInt(args[1], ops) }\n",
-        extc_path_ins="    if args.len > i64(2) { usSetPath(args[2]) }\n",
+        extc_use="use std::text::string\n",
+        extc_path_anchor="    if args.len > 1 { ops = toInt(args[1], ops) }\n",
+        extc_path_ins="    if args.len > 2 { usSetPath(args[2]) }\n",
         extc_loops=["    while i < ops {\n"],
         extc_loops_ins="        us()\n",
         extc_tail="    io::cout << \"c.appended=\"",

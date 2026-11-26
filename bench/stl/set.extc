@@ -2,7 +2,7 @@
 use std::io
 use std::data::hashMap
 
-let N: i64 = 1000000
+const N: i64 = 1000000
 
 fn main() -> i32 {
     var s: hashSetI64 = hashSetI64::withCap(N)

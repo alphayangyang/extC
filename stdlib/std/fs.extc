@@ -285,7 +285,7 @@ fn openAppend(path: slice<u8>) -> result<ofstream, io::ioError> {
  * 到处都要写的东西上又太重 ✗
  *
  * 形状与 `std::io` 的控制台流**同一招**（这也是为什么它不需要任何新规则）：
- *   - 缓冲与位置放在**模块全局**（`OUT.buf` 是**定长数组** —— 数组没有引用，所以能当
+ *   - 缓冲与位置放在**模块全局**（`outState.buf` 是**定长数组** —— 数组没有引用，所以能当
  *     全局 ✓；`mut slice<u8>` 就不行 ✗）
  *   - 句柄 `outStream` 是**薄的**（状态全在那些全局里）⇒ `<<` 按值返回句柄、
  *     链式成立、拷贝无害 ✓
@@ -311,7 +311,7 @@ struct outBuf {
 一次 `fout << …` 只写这块缓冲，`closeOut()` 才落到 fd 上；`failed` 一旦置上就不再试写，
 让"写到一半出错"变成一次可检查的状态而不是静默丢字节。整个程序一份、非线程局部 ——
 但 `par` 的工作体不允许调用任何函数（编译期拒绝），所以工作线程碰不到它。 */
-var OUT: outBuf
+var outState: outBuf
 
 struct outStream {
     @inline
@@ -327,7 +327,7 @@ struct outStream {
         /* 热路径版：只碰定长数组（视图下标是函数调用 ✗ 见 `io::fmtI64Fast` 的注释）*/
         io::pairsReady()
         let st = io::fmtI64Fast(v)
-        outPut(io::FMTSTATE.text[st..24])
+        outPut(io::fmt.text[st..24])
         return { }
     }
     @inline
@@ -335,7 +335,7 @@ struct outStream {
         if v { outPut("true") } else { outPut("false") }
         return { }
     }
-    fn failed(self: ref outStream) -> bool { return OUT.failed }
+    fn failed(self: ref outStream) -> bool { return outState.failed }
 
     /* ---- 对象口：与 openOut / flushOut / closeOut 是同一件事，写法按调用点选 ---- */
     fn open(self: ref outStream, path: slice<u8>) -> result<unit, io::ioError> { return openOut(path) }
@@ -349,55 +349,55 @@ let fout: outStream = outStream { }
 
 /* 打开（或重开）程序级输出流。旧的那个**必须先 close**（不然那个 fd 就漏了 ✓）*/
 fn openOut(path: slice<u8>) -> result<unit, io::ioError> {
-    if OUT.active { return failure(io::ioError.writeFailed(OUT.fd)) }   /* 已经开着 */
+    if outState.active { return failure(io::ioError.writeFailed(outState.fd)) }   /* 已经开着 */
     let fd = sysfile::openAt(path.data, i64(path.len), sysio::O_WRONLY | sysio::O_CREAT | sysio::O_TRUNC, i32(420))
     if fd < i32(0) { return failure(io::ioError.writeFailed(fd)) }
-    OUT.fd = fd
-    OUT.active = true
-    OUT.len = 0
-    OUT.failed = false
+    outState.fd = fd
+    outState.active = true
+    outState.len = 0
+    outState.failed = false
     return success(unit {})
 }
 
 /* 把缓冲里已有的字节写出去 ✓ */
 fn flushOut() -> result<unit, io::ioError> {
-    if OUT.len == 0 { return success(unit {}) }
-    let n = sysio::write(OUT.fd, OUT.buf[..].data, OUT.len)
-    if n < 0 { OUT.failed = true  return failure(io::ioError.writeFailed(OUT.fd)) }
-    OUT.len = 0
+    if outState.len == 0 { return success(unit {}) }
+    let n = sysio::write(outState.fd, outState.buf[..].data, outState.len)
+    if n < 0 { outState.failed = true  return failure(io::ioError.writeFailed(outState.fd)) }
+    outState.len = 0
     return success(unit {})
 }
 
 fn closeOut() -> result<unit, io::ioError> {
-    if !OUT.active { return success(unit {}) }        /* 没开过：关是幂等的 ✓ */
+    if !outState.active { return success(unit {}) }        /* 没开过：关是幂等的 ✓ */
     let r = flushOut()
-    let c = sysio::close(OUT.fd)
-    OUT.active = false
-    if OUT.len != 0 { return r }
+    let c = sysio::close(outState.fd)
+    outState.active = false
+    if outState.len != 0 { return r }
     if c < i32(0) { return failure(io::ioError.closed(i32(0) - i32(1))) }
     return success(unit {})
 }
 
 /* 写一段字节：满了先冲，缓冲**不增长**（与 `io::writer` 同一个取舍 ✓）*/
 fn outPut(s: slice<u8>) {
-    if OUT.fd < i32(0) { OUT.failed = true  return }
+    if outState.fd < i32(0) { outState.failed = true  return }
     var done: i64 = 0
     while done < s.len {
-        if OUT.len >= 65536 {
+        if outState.len >= 65536 {
             match flushOut() {
                 success(u) => { }
-                failure(e) => { OUT.failed = true  return }
+                failure(e) => { outState.failed = true  return }
             }
         }
-        var room: i64 = 65536 - OUT.len
+        var room: i64 = 65536 - outState.len
         var left: i64 = s.len - done
         if left < room { room = left }
         var k: i64 = 0
         while k < room {
-            OUT.buf[OUT.len + k] = s[done + k]
+            outState.buf[outState.len + k] = s[done + k]
             k = k + 1
         }
-        OUT.len = OUT.len + room
+        outState.len = outState.len + room
         done = done + room
     }
 }
@@ -424,20 +424,20 @@ struct inBuf {
     failed: bool
 }
 
-/** @brief 标准输入缓冲 + 它的 fd + 读位置（整个程序一份）。见 `OUT` 的说明。 */
-var IN: inBuf
+/** @brief 标准输入缓冲 + 它的 fd + 读位置（整个程序一份）。见 `outState` 的说明。 */
+var inState: inBuf
 
-fn inSync() -> io::reader { return { fd: IN.fd, chunk: IN.buf[..], len: IN.len, pos: IN.pos } }
-@private/*save point*/ fn inSave(r: ref io::reader) { IN.len = r.len  IN.pos = r.pos }
+fn inSync() -> io::reader { return { fd: inState.fd, chunk: inState.buf[..], len: inState.len, pos: inState.pos } }
+@private/*save point*/ fn inSave(r: ref io::reader) { inState.len = r.len  inState.pos = r.pos }
 
 struct inStream {
     @inline
     fn >>(self: ref inStream, out: mut ref i64) -> inStream {
         /* 同 `io::istream`：每个数只调一次 `nextInt`，只有结果为 0 时才回头问 `eof` ✓ */
         var g: bool = false
-        match io::nextI64State(IN.fd, IN.buf[..], ref IN.len, ref IN.pos, ref g) {
-            success(n) => { if g { *out = n } else { IN.failed = true } }
-            failure(e) => { IN.failed = true }
+        match io::nextI64State(inState.fd, inState.buf[..], ref inState.len, ref inState.pos, ref g) {
+            success(n) => { if g { *out = n } else { inState.failed = true } }
+            failure(e) => { inState.failed = true }
         }
         return { }
     }
@@ -446,15 +446,15 @@ struct inStream {
         var r: io::reader = inSync()
         match r.eof() {
             success(atEnd) => {
-                if atEnd { IN.failed = true }
+                if atEnd { inState.failed = true }
                 else {
                     match r.nextLine(out) {
                         success(n) => { }
-                        failure(e) => { IN.failed = true }
+                        failure(e) => { inState.failed = true }
                     }
                 }
             }
-            failure(e) => { IN.failed = true }
+            failure(e) => { inState.failed = true }
         }
         inSave(ref r)
         return { }
@@ -464,22 +464,22 @@ struct inStream {
         var r: io::reader = inSync()
         match r.eof() {
             success(atEnd) => {
-                if atEnd { IN.failed = true }
+                if atEnd { inState.failed = true }
                 else {
                     match r.nextByte() {
                         success(v) => { *out = u8(v) }
-                        failure(e) => { IN.failed = true }
+                        failure(e) => { inState.failed = true }
                     }
                 }
             }
-            failure(e) => { IN.failed = true }
+            failure(e) => { inState.failed = true }
         }
         inSave(ref r)
         return { }
     }
 
-    fn bad(self: ref inStream) -> bool { return IN.failed }
-    fn clear(self: ref inStream) { IN.failed = false }
+    fn bad(self: ref inStream) -> bool { return inState.failed }
+    fn clear(self: ref inStream) { inState.failed = false }
 
     /* ---- 对象口：与 openIn / closeIn 是同一件事 ---- */
     fn open(self: ref inStream, path: slice<u8>) -> result<unit, io::ioError> { return openIn(path) }
@@ -489,24 +489,24 @@ struct inStream {
 let fin: inStream = inStream { }
 
 fn openIn(path: slice<u8>) -> result<unit, io::ioError> {
-    if IN.active { return failure(io::ioError.readFailed(IN.fd)) }     /* 已经开着 */
+    if inState.active { return failure(io::ioError.readFailed(inState.fd)) }     /* 已经开着 */
     let fd = sysfile::openAt(path.data, i64(path.len), sysio::O_RDONLY, i32(0))
     if fd < i32(0) { return failure(io::ioError.readFailed(fd)) }
-    IN.fd = fd
-    IN.active = true
-    IN.len = 0
-    IN.pos = 0
-    IN.failed = false
+    inState.fd = fd
+    inState.active = true
+    inState.len = 0
+    inState.pos = 0
+    inState.failed = false
     return success(unit {})
 }
 
 fn closeIn() -> result<unit, io::ioError> {
-    if !IN.active { return success(unit {}) }                          /* 幂等 ✓ */
-    let c = sysio::close(IN.fd)
-    IN.active = false                                                  /* 关过就是关过：不然下一次 open 会被"已经开着"挡住 ✗ */
-    IN.fd = i32(0) - i32(1)
-    IN.len = 0
-    IN.pos = 0
+    if !inState.active { return success(unit {}) }                          /* 幂等 ✓ */
+    let c = sysio::close(inState.fd)
+    inState.active = false                                                  /* 关过就是关过：不然下一次 open 会被"已经开着"挡住 ✗ */
+    inState.fd = i32(0) - i32(1)
+    inState.len = 0
+    inState.pos = 0
     if c < i32(0) { return failure(io::ioError.closed(i32(0) - i32(1))) }
     return success(unit {})
 }

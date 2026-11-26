@@ -13,6 +13,6 @@ fn main() -> i32 {
         hm.put(i, i32(i))
         i = i + 1
     }
-    io::cout << "n=" << hm.len() << " cap=" << hm.capOf() << " bytes=" << hm.bytesOf() << "\n"
+    io::cout << "n=" << hm.len() << " cap=" << hm.capacity() << " bytes=" << hm.bytesOf() << "\n"
     return 0
 }

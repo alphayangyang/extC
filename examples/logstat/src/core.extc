@@ -10,10 +10,10 @@ use std::fs
 use std::sys::net
 use std::coro::scheduler as sched
 
-let CHUNK: i64 = 262144        // how much of the file is in flight at once
-let MAXPATHS: i64 = 4096       // distinct paths we keep before calling it "other"
-let PATHMAX: i64 = 96          // longest path we keep, in bytes
-let NBUCKET: i64 = 32          // latency buckets; the last one is "32 ms or more"
+const CHUNK: i64 = 262144        // how much of the file is in flight at once
+const MAXPATHS: i64 = 4096       // distinct paths we keep before calling it "other"
+const PATHMAX: i64 = 96          // longest path we keep, in bytes
+const NBUCKET: i64 = 32          // latency buckets; the last one is "32 ms or more"
 
 struct stats {
     records: i64,

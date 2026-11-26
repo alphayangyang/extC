@@ -10,7 +10,7 @@ fn main() -> i32 {
     while i < 200 {
         var b: block<i64> = block<i64>::withCap(64)
         b[0] = i
-        b.setUsed(1)
+        b.setLen(1)
         b.release()
         i = i + 1
     }
@@ -24,7 +24,7 @@ fn main() -> i32 {
         s[k] = t
         k = k + 1
     }
-    s.setUsed(40)
+    s.setLen(40)
     let held: i64 = buf::bufLive()
     s.release()
     let after: i64 = buf::bufLive()

@@ -188,11 +188,10 @@ struct slice<T> {
         return true
     }
 
-    // Find a sub-slice. Returns -1 when there is no match (to be changed to `option<i64>`).
-    // The lexer's core is this function.
-    fn find(self: ref slice<T>, needle: slice<T>) -> i64 {
+    // Find a sub-slice. `none` when there is no match; the lexer's core is this function.
+    fn find(self: ref slice<T>, needle: slice<T>) -> ?i64 {
         if needle.len > self.len {
-            return -1
+            return none
         }
         var i: i64 = 0
         while i + needle.len <= self.len {
@@ -206,11 +205,11 @@ struct slice<T> {
                 j = j + 1
             }
             if same {
-                return i
+                return some(i)
             }
             i = i + 1
         }
-        return -1
+        return none
     }
 
     fn startsWith(self: ref slice<T>, prefix: slice<T>) -> bool {

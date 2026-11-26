@@ -1292,6 +1292,12 @@ def build_items() -> list:
         "活文档不写历史（棘轮：决策编号与时代用词只许减；历史只进文档项目 devlog/changelog/）",
         sh('python3 tools/check_no_history.py --gate'),
         ok_msg=ok_out, bad_msg="活文档出现新的历史词", bad_dump=dump_head(8)))
+    # ---- 一个概念一个拼写：名字的大小写与禁用同义词（stdlib/examples/bench） ----
+    items.append(cmd(
+        "check-naming", "docs",
+        "命名与写法：类型/函数/const/全局的大小写，禁用同义方法名（例外清单过期也报红）",
+        sh('python3 tools/check_naming.py --check'),
+        ok_msg=ok_out, bad_msg="命名出现新的拼写分叉，或有例外已过期", bad_dump=dump_head(10)))
 
     # ---- 文档项目：开发历史按月分页（项目缺位时脚本自报跳过，不计数） ----
     items.append(cmd(

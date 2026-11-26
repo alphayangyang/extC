@@ -14,9 +14,9 @@
 use std::io
 use std::text::string
 
-let CAP:  i64 = 16384
-let KEEP: i64 = 8192
-let REC:  i64 = 24
+const CAP:  i64 = 16384
+const KEEP: i64 = 8192
+const REC:  i64 = 24
 
 fn toInt(s: slice<u8>, dflt: i64) -> i64 {
     if s.len == 0 { return dflt }

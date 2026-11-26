@@ -1623,6 +1623,11 @@ static void genBlockBody(CG *g, Stmt *block) {
             zoneHere = true;
         }
     }
+    /* Dead-binding records made inside the scratch window below are recorded in *scratch*
+     * coordinates. The splice point is only known after the body is emitted, so remember where
+     * this block's records start and shift them once the text lands in the output buffer: without
+     * that shift a binding could be removed from the wrong place in the unit. */
+    size_t defBase = g->deadDefs.len;
     if (probe) {   /* The body is emitted into a temporary buffer first and moved back to the output after the
      * scan: all three enter/exit lines sit outside the body. `g->out` points at the **local**
      * `scratch` only inside this window and is restored to `savedOut` before the function returns,
@@ -1658,6 +1663,18 @@ static void genBlockBody(CG *g, Stmt *block) {
         if (bodyTouches) cgArenaRelease(g, g->blkLevel);   /* clear */
         if (zoneHere) cgLine(g, "int64_t __extc_zm%d = extc_place_enter();", g->blkLevel);
         bufPutn(g->out, scratch.data, scratch.len);        /* the body itself */
+        /* The body moved from the scratch buffer to its place in the output: every record this
+         * block made still carries an offset into the scratch buffer, so move them all by the
+         * distance the text travelled. */
+        size_t spliceAt = g->out->len - scratch.len;
+        for (size_t i = defBase; i < g->deadDefs.len; i++) {
+            DeadDef *dd = *(DeadDef **)vecAt(&g->deadDefs, i);
+            dd->off += spliceAt;
+            if (dd->scoped) {
+                dd->scopeA += spliceAt;
+                dd->scopeB += spliceAt;
+            }
+        }
         /* A coroutine frame declared in this block is a C local: the driver only ends its task
          * when the step reports "done", so a `break` out of the loop (or a driver left early)
          * would leave the task's arena and place -- and every pool the coroutine created --

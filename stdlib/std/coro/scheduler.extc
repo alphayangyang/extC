@@ -38,11 +38,11 @@ struct row {
 
 /* 调度器状态：**只有标量** —— 这不是风格，是语言规则：含引用的结构体没有零值，
  * `var s: sched::loop` 就写不出来了 ✗（实测）。队列因此住在 `tasks<T>` 里（调用者自己的容器 ✓）。 */
-let WAIT_UNTIL: i64 = -3
+const WAIT_UNTIL: i64 = -3
 
 /* 等 `s.pendingFd` **可写**（TLS 的 `SSL_write`/`SSL_read` 都会返回 WANT_WRITE）。
  * 与 `WAIT_UNTIL` 同一套路：请求通道只有一个 i64，所以 fd 走暂存槽。 */
-let WAIT_FD_W: i64 = -4
+const WAIT_FD_W: i64 = -4
 
 /* 协程**最后一次** `yield` 的值必须是**负数**：驱动把 `>= 0` 读成"等这个 fd 可读"，
  * 拿正数收尾会被当成新的等待请求（实测：任务"跑完了"却永远不停，`live` 不降）。

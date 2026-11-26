@@ -36,7 +36,7 @@ struct plugin_api {
     badPtr:   fn(mut ref plate_api) -> ?ref u8 effects Addr=0 Cont=0
 }
 
-let ALLOC_SIZE: u64 = 16
+const ALLOC_SIZE: u64 = 16
 var logged: i64 = 0
 
 /* 门一：从板里要一块（板满返回 `null`）。 */

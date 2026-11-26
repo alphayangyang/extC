@@ -17,7 +17,7 @@ fn main() -> i32 {
     var k: i64 = 0
     while k < dv.len { sum = sum + i64(dv[k])  k = k + 1 }
     io::cout << " sum=" << sum
-    v.shrink()
+    v.shrinkToFit()
     io::cout << " shrink=" << v.capacity()
     let top = v.pop() ?? i32(-1)
     io::cout << " pop=" << i64(top) << " n=" << v.len()

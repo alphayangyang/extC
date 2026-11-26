@@ -40,13 +40,13 @@
  * @endcode
  */
 
-let OBJ: u8 = 1
-let ARR: u8 = 2
-let STR: u8 = 3
-let NUM: u8 = 4
-let BOOL: u8 = 5
-let NUL: u8 = 6
-let MAXDEPTH: i32 = 64
+const OBJ: u8 = 1
+const ARR: u8 = 2
+const STR: u8 = 3
+const NUM: u8 = 4
+const BOOL: u8 = 5
+const NUL: u8 = 6
+const MAXDEPTH: i32 = 64
 
 /* 节点。载荷是**位置式**的（语言如此），所以每个变体后面标了字段顺序。
  * `next` 是同层链（key 链 / 元素链）：节点按深度优先写入池子，嵌套容器的子节点夹在成员之间，
@@ -886,7 +886,7 @@ fn boolOf(nodes: slice<node>, idx: i64) -> bool {
  *     if !w.ok() { ... 缓冲不够（`w.len()` 是已写字节数）... }
  */
 
-let WTAGSZ: i64 = 32
+const WTAGSZ: i64 = 32
 
 @noCopy
 struct builder {

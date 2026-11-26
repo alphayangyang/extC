@@ -214,7 +214,7 @@ fn minBlocksF64(a: slice<f64>, parts: mut slice<f64>) -> ?f64 {
  * 由"大的一半入栈、小的一半继续"保证深度 ≤ log2 n + 1）。
  */
 
-let SMALL: i64 = 12          /* 这个规模以下走插入排序 */
+const SMALL: i64 = 12          /* 这个规模以下走插入排序 */
 
 /* 把整条 `a` 排成非降序。 */
 fn sort<T>(a: mut slice<T>) {

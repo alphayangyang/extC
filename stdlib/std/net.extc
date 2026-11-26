@@ -142,7 +142,7 @@ struct request {
     fn header(self: ref request, name: slice<u8>) -> option<slice<u8>> {
         return headerOf(self.headers, name)
     }
-    fn length(self: ref request) -> i64 { return contentLength(self.headers) }
+    fn bodyLength(self: ref request) -> i64 { return contentLength(self.headers) }
     fn isGet(self: ref request) -> bool { return eqCI(self.method, "GET") }
     fn isPost(self: ref request) -> bool { return eqCI(self.method, "POST") }
 }
@@ -295,7 +295,7 @@ struct response {
     fn header(self: ref response, name: slice<u8>) -> option<slice<u8>> {
         return headerOf(self.headers, name)
     }
-    fn length(self: ref response) -> i64 { return contentLength(self.headers) }
+    fn bodyLength(self: ref response) -> i64 { return contentLength(self.headers) }
     fn isOk(self: ref response) -> bool {
         return self.status >= 200 && self.status < 300
     }
@@ -640,19 +640,19 @@ extern!("extc-runtime") fn extc_http_parse_date(s: ref u8, len: i64) -> i64
 
 use std::text::string
 
-let OP_CONT: i64 = 0
-let OP_TEXT: i64 = 1
-let OP_BIN: i64 = 2
-let OP_CLOSE: i64 = 8
-let OP_PING: i64 = 9
-let OP_PONG: i64 = 10
+const OP_CONT: i64 = 0
+const OP_TEXT: i64 = 1
+const OP_BIN: i64 = 2
+const OP_CLOSE: i64 = 8
+const OP_PING: i64 = 9
+const OP_PONG: i64 = 10
 
 /* RFC 6455 §1.3 的魔术串（拼在客户端 key 后面做 SHA-1） */
-let GUID: slice<u8> = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+let wsGuid: slice<u8> = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
-/* 握手应答：`base64(SHA1(key + GUID))`。`key` 是客户端发来的 `Sec-WebSocket-Key`。 */
+/* 握手应答：`base64(SHA1(key + wsGuid))`。`key` 是客户端发来的 `Sec-WebSocket-Key`。 */
 fn acceptFor(key: slice<u8>, out: mut slice<u8>) -> i64 {
-    if key.len + GUID.len > 256 { return -1 }
+    if key.len + wsGuid.len > 256 { return -1 }
     var cat: [256]u8
     var i: i64 = 0
     while i < key.len {
@@ -660,12 +660,12 @@ fn acceptFor(key: slice<u8>, out: mut slice<u8>) -> i64 {
         i = i + 1
     }
     var j: i64 = 0
-    while j < GUID.len {
-        cat[key.len + j] = GUID[j]
+    while j < wsGuid.len {
+        cat[key.len + j] = wsGuid[j]
         j = j + 1
     }
     var digest: [20]u8
-    if !digest::sha1.sum(cat[0..key.len + GUID.len], digest[..]) { return -1 }
+    if !digest::sha1.sum(cat[0..key.len + wsGuid.len], digest[..]) { return -1 }
     return string::encode(digest[..], out)
 }
 

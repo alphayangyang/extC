@@ -3,9 +3,9 @@
 use std::io
 use std::data::hashMap
 
-let SEED0: u64 = 0x2545F4914F6CDD1D
-let N: i64 = 2000000
-let SPACE: u64 = 1000000007
+const SEED0: u64 = 0x2545F4914F6CDD1D
+const N: i64 = 2000000
+const SPACE: u64 = 1000000007
 
 struct rng {
     s: u64
@@ -31,7 +31,7 @@ fn main() -> i32 {
     }
     var vsum: i64 = 0
     let dn: i64 = m.len()
-    let cap: i64 = m.capOf()
+    let cap: i64 = m.capacity()
     var d: i64 = 0
     while d < cap {
         if m.liveAt(d) { vsum = vsum + m.valAt(d) }

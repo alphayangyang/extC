@@ -31,10 +31,10 @@ use std::sys::io as sysio
 use std::sys::net
 use std::coro::scheduler as sched
 
-let SITES: i64 = 16
-let STATUSES: i64 = 9
-let UIDS: i64 = 200000
-let FNV_PRIME: u64 = 1099511628211
+const SITES: i64 = 16
+const STATUSES: i64 = 9
+const UIDS: i64 = 200000
+const FNV_PRIME: u64 = 1099511628211
 
 /* The FNV-1a basis does not fit an i64 literal (literals are range checked), so a
  * checksum starts from `u64(0) - u64(3750763034362895579)` = 0xcbf29ce484222325.
@@ -292,7 +292,7 @@ fn modeSessions(buf: slice<u8>, readNs: i64) -> i32 {
     var keep: mut slice<i64> = new i64[cnt]
     var nkeep: i64 = 0
     var d: i64 = 0
-    let scap: i64 = sessions.capOf()
+    let scap: i64 = sessions.capacity()
     while d < scap {
         if sessions.liveAt(d) {
             let uid: i64 = sessions.keyAt(d)

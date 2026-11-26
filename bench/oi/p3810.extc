@@ -10,7 +10,7 @@
  * extC 侧要留意的（**都是设计决定，不是 bug**）：
  *   · 数组长度是**编译期常数**，大数组只能当**全局**（栈上放 80MB 会炸）
  *   · 没有 `+=` / `++` / 三元 / `for`，一律写全（`i = i + 1`、if-else）
- *   · 值语义：`P[i]` 是一个 20 字节的值，赋值就是整份拷贝 ✓
+ *   · 值语义：`pool[i]` 是一个 20 字节的值，赋值就是整份拷贝 ✓
  *   · `i32(...)` 是**显式转换**（能证明装得下 ⇒ 零运行时检查）
  */
 
@@ -22,18 +22,18 @@ struct pt {
     ans: i32
 }
 
-var P: [4000000]pt
-var TMP: [4000000]pt
-var BIT: [1000001]i32
+var pool: [4000000]pt
+var tmpPool: [4000000]pt
+var bit: [1000001]i32
 
-let N: i64 = 4000000
-let V: i64 = 1000000
+const N: i64 = 4000000
+const V: i64 = 1000000
 
 /* ---------------- 权值树状数组（1-indexed：调用点一律 c+1）---------------- */
 fn bitAdd(i: i64, v: i32) {
     var x: i64 = i
     while x <= V {
-        BIT[x] = BIT[x] + v
+        bit[x] = bit[x] + v
         x = x + (x & (-x))
     }
 }
@@ -42,7 +42,7 @@ fn bitSum(i: i64) -> i32 {
     var s: i32 = 0
     var x: i64 = i
     while x > 0 {
-        s = s + BIT[x]
+        s = s + bit[x]
         x = x - (x & (-x))
     }
     return s
@@ -59,16 +59,16 @@ fn cdq(l: i64, r: i64) {
     var i: i64 = l
     var j: i64 = mid + 1
     while j <= r {
-        while i <= mid && P[i].b <= P[j].b {
-            bitAdd(P[i].c + 1, P[i].cnt)
+        while i <= mid && pool[i].b <= pool[j].b {
+            bitAdd(pool[i].c + 1, pool[i].cnt)
             i = i + 1
         }
-        P[j].ans = P[j].ans + bitSum(P[j].c + 1)
+        pool[j].ans = pool[j].ans + bitSum(pool[j].c + 1)
         j = j + 1
     }
     var t: i64 = l
     while t < i {                    // 撤销
-        bitAdd(P[t].c + 1, 0 - P[t].cnt)
+        bitAdd(pool[t].c + 1, 0 - pool[t].cnt)
         t = t + 1
     }
 
@@ -77,19 +77,19 @@ fn cdq(l: i64, r: i64) {
     j = mid + 1
     var k: i64 = l
     while i <= mid && j <= r {
-        if P[i].b <= P[j].b {
-            TMP[k] = P[i]
+        if pool[i].b <= pool[j].b {
+            tmpPool[k] = pool[i]
             i = i + 1
         } else {
-            TMP[k] = P[j]
+            tmpPool[k] = pool[j]
             j = j + 1
         }
         k = k + 1
     }
-    while i <= mid { TMP[k] = P[i]  i = i + 1  k = k + 1 }
-    while j <= r   { TMP[k] = P[j]  j = j + 1  k = k + 1 }
+    while i <= mid { tmpPool[k] = pool[i]  i = i + 1  k = k + 1 }
+    while j <= r   { tmpPool[k] = pool[j]  j = j + 1  k = k + 1 }
     var q: i64 = l
-    while q <= r { P[q] = TMP[q]  q = q + 1 }
+    while q <= r { pool[q] = tmpPool[q]  q = q + 1 }
 }
 
 /* ---------------- 归并排序（按 a,b,c）---------------- */
@@ -130,11 +130,11 @@ fn main() -> i32 {
 
     var i: i64 = 0
     while i < N {
-        P[i].a = i32(r.nextBounded(u64(V)))
-        P[i].b = i32(r.nextBounded(u64(V)))
-        P[i].c = i32(r.nextBounded(u64(V)))
-        P[i].cnt = 1
-        P[i].ans = 0
+        pool[i].a = i32(r.nextBounded(u64(V)))
+        pool[i].b = i32(r.nextBounded(u64(V)))
+        pool[i].c = i32(r.nextBounded(u64(V)))
+        pool[i].cnt = 1
+        pool[i].ans = 0
         i = i + 1
     }
 
@@ -142,23 +142,23 @@ fn main() -> i32 {
     var inSum: u64 = 0
     i = 0
     while i < N {
-        inSum = inSum * 1000003 + u64(P[i].a) * 3 + u64(P[i].b) * 5 + u64(P[i].c) * 7
+        inSum = inSum * 1000003 + u64(pool[i].a) * 3 + u64(pool[i].b) * 5 + u64(pool[i].c) * 7
         i = i + 1
     }
 
     // ② 排序
-    mergeSort(ref P, ref TMP, 0, N)
+    mergeSort(ref pool, ref tmpPool, 0, N)
 
     // ③ 相邻去重
     var m: i64 = 0
     i = 0
     while i < N {
-        if m > 0 && P[m - 1].a == P[i].a && P[m - 1].b == P[i].b && P[m - 1].c == P[i].c {
-            P[m - 1].cnt = P[m - 1].cnt + 1
+        if m > 0 && pool[m - 1].a == pool[i].a && pool[m - 1].b == pool[i].b && pool[m - 1].c == pool[i].c {
+            pool[m - 1].cnt = pool[m - 1].cnt + 1
         } else {
-            P[m] = P[i]
-            P[m].cnt = 1
-            P[m].ans = 0
+            pool[m] = pool[i]
+            pool[m].cnt = 1
+            pool[m].ans = 0
             m = m + 1
         }
         i = i + 1
@@ -172,8 +172,8 @@ fn main() -> i32 {
     var maxAns: u64 = 0
     i = 0
     while i < m {
-        let ans: i32 = P[i].ans + P[i].cnt - 1      // 含自己 ⇒ 减 1
-        sum = sum + u64(P[i].cnt) * u64(ans)
+        let ans: i32 = pool[i].ans + pool[i].cnt - 1      // 含自己 ⇒ 减 1
+        sum = sum + u64(pool[i].cnt) * u64(ans)
         if u64(ans) > maxAns { maxAns = u64(ans) }
         i = i + 1
     }

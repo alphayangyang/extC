@@ -1,5 +1,5 @@
 // expect: 求和 = 150
-/* **连续性的兑现**：`view()` / `asMutSlice()` —— 把 vector 的存储当 `slice<T>` 借出去 ✓
+/* **连续性的兑现**：`view()` / `viewMut()` —— 把 vector 的存储当 `slice<T>` 借出去 ✓
  *
  * 为什么必须有它俩：`sort` / 查找 / `println` / 传给 `extern!` 的 C 函数，
  * 全都只认 `slice<T>` ⇒ 没有这两个，vector 的"连续"就**兑现不了** ✓

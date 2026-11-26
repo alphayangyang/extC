@@ -2,10 +2,10 @@
 use std::io
 use std::data::map
 
-let SEED0: u64 = 0x2545F4914F6CDD1D
-let N: i64 = 1024
-let OPS: i64 = 1000000
-let SPACE: u64 = 2048
+const SEED0: u64 = 0x2545F4914F6CDD1D
+const N: i64 = 1024
+const OPS: i64 = 1000000
+const SPACE: u64 = 2048
 
 struct rng {
     s: u64

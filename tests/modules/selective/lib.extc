@@ -1,5 +1,5 @@
 /* 被 `use lib::{...}` **按名字**导入的模块：有公开的、没列进来的、还有 @private 的 ✓ */
-let GREETING: slice<u8> = "按名字导入 ✓"
+let greeting: slice<u8> = "按名字导入 ✓"
 
 struct pair { a: i64  b: i64 }
 

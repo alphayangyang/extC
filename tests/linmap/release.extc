@@ -6,14 +6,14 @@ use std::data::buf
 
 fn main() -> i32 {
     var m = linMap<i64, i32>::withCap(8)
-    io::cout << "cap0=" << m.capOf()
+    io::cout << "cap0=" << m.capacity()
     var i: i64 = 0
     while i < 100 {
         m.put(i, i32(i))
         i = i + 1
     }
-    io::cout << " key83=" << i64(m.get(83) ?? i32(-1)) << " cap=" << m.capOf()
+    io::cout << " key83=" << i64(m.get(83) ?? i32(-1)) << " cap=" << m.capacity()
     m.release()
-    io::cout << " after=" << m.capOf() << " live=" << buf::bufLive() << "\n"
+    io::cout << " after=" << m.capacity() << " live=" << buf::bufLive() << "\n"
     return 0
 }

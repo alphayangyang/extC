@@ -15,7 +15,7 @@ fn main() -> i32 {
     let gone = !m.contains(1)
     var k: i64 = 0
     while k < 40 { m.put(k, "v")  k = k + 1 }       /* 三次扩容 */
-    println("覆盖/缺失/删除/扩容 全对：len=", m.len(), " cap=", m.capOf(),
+    println("覆盖/缺失/删除/扩容 全对：len=", m.len(), " cap=", m.capacity(),
             " get(39)=", m.get(39) ?? "?", " contains(1)=", m.contains(1),
             " （overwrite=", overwrite, " missing=", missing, " gone=", gone, "）")
     return 0

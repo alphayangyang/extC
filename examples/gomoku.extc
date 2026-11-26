@@ -13,10 +13,10 @@
 
 use std::io
 
-let N: i64 = 15
-let EMPTY: i32 = 0
-let BLACK: i32 = 1
-let WHITE: i32 = 2
+const N: i64 = 15
+const EMPTY: i32 = 0
+const BLACK: i32 = 1
+const WHITE: i32 = 2
 
 /* 一个能复现的伪随机数发生器：就是 LCG，够"随机落子"用。
  * 乘法会溢出 —— 契约是 `-fwrapv`，所以这是**确定的绕回**，不是 UB。 */

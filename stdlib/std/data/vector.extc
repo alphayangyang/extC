@@ -185,7 +185,7 @@ struct vector<T> {
     fn reserve(self: mut ref vector<T>, more: i64) { self.b.reserve(more) }
 
     /** @brief 缩到刚好装下 `len()` 个元素（下限 4），尾部页还给操作系统。 */
-    fn shrink(self: mut ref vector<T>) {
+    fn shrinkToFit(self: mut ref vector<T>) {
         var ncap: i64 = self.b.len()
         if ncap < 4 { ncap = 4 }
         if ncap >= self.b.capacity() { return }

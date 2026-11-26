@@ -33,13 +33,13 @@ extern!("libc") fn ioctl(fd: i32, req: u64, arg: ref u8) -> i32
     effects Addr=0 Cont=0
 
 /* `ioctl` requests and the one flag this family sets. */
-let TIOCGWINSZ: u64 = 21523
-let FIONBIO: u64 = 21537
-let WINSIZE_BYTES: i64 = 8
+const TIOCGWINSZ: u64 = 21523
+const FIONBIO: u64 = 21537
+const WINSIZE_BYTES: i64 = 8
 
 /* `tcsetattr` actions: apply now, drain output first, or drain input first. A terminal
  * should change **now**, so `TCSANOW` is the one the library uses. */
-let TCSANOW: i32 = 0
+const TCSANOW: i32 = 0
 
 
 /* ⭐ Provided by the **runtime** (the generated C), not by libc: a trap path is the only
@@ -58,4 +58,4 @@ extern!("extc-runtime") fn extc_raw_leave() -> i32
 /* How many bytes a `struct termios` needs. Linux/glibc is 60; this is deliberately
  * generous because the number is a *platform* detail and a short buffer would be
  * memory corruption rather than a diagnostic. */
-let TERMIOS_BYTES: i64 = 128
+const TERMIOS_BYTES: i64 = 128

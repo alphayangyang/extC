@@ -18,8 +18,8 @@ extern!("c") fn getrusage(who: i32, r: ref rusageMin) -> i32 effects Addr=0 Cont
     pad2: i64  pad3: i64  pad4: i64  pad5: i64
 }
 
-let CLOCK_MONOTONIC: i32 = 1
-let RUSAGE_SELF: i32 = 0
+const CLOCK_MONOTONIC: i32 = 1
+const RUSAGE_SELF: i32 = 0
 
 fn cs(s: slice<u8>) -> ref u8 { return s.data }
 

@@ -5,13 +5,13 @@ use std::data::dense::{block}
 fn main() -> i32 {
     var b: block<i64> = block<i64>::withCap(8)
     let c0: i64 = b.capacity()
-    let u0: i64 = b.used()
+    let u0: i64 = b.len()
     b[0] = 10
     b[1] = 20
     b[2] = 30
-    b.setUsed(3)
+    b.setLen(3)
     let a: i64 = b[0]
     let c: i64 = b[2]
-    println("cap=", c0, " used=", b.used(), " a=", a, " c=", c, " first=", u0 == 0)
+    println("cap=", c0, " used=", b.len(), " a=", a, " c=", c, " first=", u0 == 0)
     return 0
 }

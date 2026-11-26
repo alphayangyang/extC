@@ -1,10 +1,10 @@
 // P2 分块追加的长命容器（无环）：每 256 个元素一块，块间单链；末尾遍历求和。与 .go 同输出。
 use std::io
 
-use std::loop
+use std::time
 var USN: i64 = 0
 var US: [1000002]i64
-fn us() { if USN < 1000002 { US[USN] = loop::now()  USN = USN + 1 } }
+fn us() { if USN < 1000002 { US[USN] = time::now()  USN = USN + 1 } }
 fn usDump() {
     io::cerr << "USMETA n=" << USN << "\n"
     var usk: i64 = 0

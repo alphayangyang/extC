@@ -2,13 +2,13 @@
 //
 // `std::io` 的公开面验收：流本体、格式化、诊断、终端合并成一个模块之后，
 // 选择性导入的写法（`use std::io::{…}`，值名要列出来）必须照常可用。
-use std::io::{FMTSTATE, cerr, eprintln, fmtI64Fast, println}
+use std::io::{fmt, cerr, eprintln, fmtI64Fast, println}
 
 fn main() -> i32 {
     print("p=hi\n")
     let st: i64 = fmtI64Fast(i64(7))
     print("c=")
-    print(FMTSTATE.text[st..24])
+    print(fmt.text[st..24])
     print("\n")
     cerr << "e=diag\n"
     eprintln("e2")

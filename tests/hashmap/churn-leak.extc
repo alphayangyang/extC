@@ -32,6 +32,6 @@ fn main(args: slice<slice<u8>>) -> i32 {
         /* 故意不 remove：canary（必须涨 ✗）*/
         i = i + 1
     }
-    println("结束：", n, " 轮，len = ", m.len(), "，cap = ", m.capOf(), "，校验和 = ", sum)
+    println("结束：", n, " 轮，len = ", m.len(), "，cap = ", m.capacity(), "，校验和 = ", sum)
     return 0
 }

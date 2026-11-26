@@ -24,7 +24,7 @@ use std::dl
 }
 
 /* 板：定长数组（全局 = 深度 0 ⇒ 借给 C 合法），bump 用**偏移**记（`used`），不存指针。 */
-let PLATE_LEN: i64 = 256
+const PLATE_LEN: i64 = 256
 var plate: [256]u8
 var used: i64 = 0
 var logged: i64 = 0

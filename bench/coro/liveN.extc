@@ -23,7 +23,7 @@ fn worker(id: i64) -> coroutine<i64> {
 }
 
 /* 一把：spawn n 个任务、各驱动一次，句柄写进 out（调用者持有 ⇒ 跨过这一把仍然活着）。 */
-fn run_batch(n: i64, out: mut slice<coroutine<i64>>) -> i64 {
+fn runBatch(n: i64, out: mut slice<coroutine<i64>>) -> i64 {
     var k: i64 = 0
     while k < n {
         out[k] = worker(k)
@@ -45,12 +45,12 @@ fn main() -> i32 {
 
     var r0: i64 = bench_rss_kb()
     var t0: i64 = bench_now_ns()
-    var s1: i64 = run_batch(n, b1)
+    var s1: i64 = runBatch(n, b1)
     var cold: i64 = bench_now_ns() - t0
     var r1: i64 = bench_rss_kb()
 
     t0 = bench_now_ns()
-    var s2: i64 = run_batch(n, b2)
+    var s2: i64 = runBatch(n, b2)
     var warm: i64 = bench_now_ns() - t0
     var r2: i64 = bench_rss_kb()
 

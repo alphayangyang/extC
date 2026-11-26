@@ -42,11 +42,11 @@ use std::sys::bufrt as bufrt
 
 /* 预留策略的常数。写成字面量而不是 `i64(2097152)`：带检查的转换会让静态初始化器不是常量
  * （与 `std/mem.extc` 的 PAGE/CHUNK 同一条理由）。 */
-let BUF_FLOOR_BYTES: i64 = 2097152      /* 小缓冲区也至少留 2 MiB 地址空间（大页的量子） */
-let BUF_MAX_BYTES: i64 = 1073741824     /* 一次预留不超过 1 GiB 字节 */
-let BUF_HEADROOM: i64 = 16              /* 搬家时按 16 倍长留，够装下「终值远大于当前」的情形 */
-let BUF_MOVE_BYTES: i64 = 2097152       /* 搬家每拷这么多字节就丢掉源的一段页（峰值 = 一份 + 一块） */
-let BUF_SLOT_BYTES: i64 = 65536         /* 载荷不超过这么多字节时走密排槽，超过就走 2 MiB 量子的预留 */
+const BUF_FLOOR_BYTES: i64 = 2097152      /* 小缓冲区也至少留 2 MiB 地址空间（大页的量子） */
+const BUF_MAX_BYTES: i64 = 1073741824     /* 一次预留不超过 1 GiB 字节 */
+const BUF_HEADROOM: i64 = 16              /* 搬家时按 16 倍长留，够装下「终值远大于当前」的情形 */
+const BUF_MOVE_BYTES: i64 = 2097152       /* 搬家每拷这么多字节就丢掉源的一段页（峰值 = 一份 + 一块） */
+const BUF_SLOT_BYTES: i64 = 65536         /* 载荷不超过这么多字节时走密排槽，超过就走 2 MiB 量子的预留 */
 
 /* 尺寸类：16 B 起、每次翻倍，13 类到 64 KiB。返回值 >= want（want >= 1）。 */
 @private

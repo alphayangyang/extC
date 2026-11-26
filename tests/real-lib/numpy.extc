@@ -16,7 +16,7 @@ use std::io
 use std::dl
 use npytable                       /* run.sh 生成：表镜像（只含用到的格子，编号来自真头文件） */
 
-let PY_LIB: slice<u8> = "libpython3.14.so.1.0"
+let pyLib: slice<u8> = "libpython3.14.so.1.0"
 
 extern!("c") fn Py_Initialize() -> void
 extern!("c") fn PyImport_ImportModule(name: ?ref u8) -> ?ref void
@@ -32,7 +32,7 @@ extern!("c") fn PyUnicode_AsUTF8(o: ref void) -> ?ref u8
 fn cs(s: slice<u8>) -> ref u8 { return s.data }
 
 fn main() -> i32 {
-    var h: ref void = dl::open(PY_LIB)!
+    var h: ref void = dl::open(pyLib)!
     Py_Initialize()
 
     /* ② 表：按 numpy 自己的配方（`_import_array()`）取 `_ARRAY_API` */

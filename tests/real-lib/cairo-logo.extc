@@ -19,9 +19,9 @@ use std::dl
 use std::mem
 use cairoapi::*     /* 生成物：19 个函数 + 3 组枚举常量 */
 
-let W: i32 = 512
-let H: i32 = 512
-let PI: f64 = 3.14159265358979
+const W: i32 = 512
+const H: i32 = 512
+const PI: f64 = 3.14159265358979
 
 /* ① 布局镜像：`cairo_text_extents_t` 就是六个 double。 */
 @frozen struct textExtents {

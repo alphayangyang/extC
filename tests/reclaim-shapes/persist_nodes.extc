@@ -32,9 +32,9 @@ struct pnode {
     sum: i32
 }
 
-let N: i64 = 50000
-let Q: i64 = 1000
-let V: i64 = 50000
+const N: i64 = 50000
+const Q: i64 = 1000
+const V: i64 = 50000
 
 var A: [50001]i32
 var NP: i32 = 1                     /* 1 = 哨兵算 0 号节点（跟索引式版本对齐 ✓）*/

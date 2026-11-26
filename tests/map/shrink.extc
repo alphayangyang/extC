@@ -19,7 +19,7 @@ fn main() -> i32 {
         i = i + 1
     }
     var before: i64 = m.nodeCount()
-    m.shrink()
+    m.shrinkToFit()
     var after: i64 = m.nodeCount()
 
     var bad: i64 = 0

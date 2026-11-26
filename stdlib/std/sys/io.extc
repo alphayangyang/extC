@@ -58,13 +58,13 @@ extern!("extc-runtime") fn extc_cout_f64(v: f64) -> void
 /* `open` flags -- the POSIX numbers (on Linux O_CREAT=64, O_TRUNC=512).
  * NOTE: this is what the privileged layer is for -- keep platform-specific constants
  * down here, so the `std::fs` above only ever writes names like `io::O_CREAT`. */
-let O_RDONLY: i32 = 0
-let O_WRONLY: i32 = 1
-let O_RDWR: i32   = 2
-let O_CREAT: i32  = 64
-let O_TRUNC: i32  = 512
-let O_APPEND: i32 = 1024
+const O_RDONLY: i32 = 0
+const O_WRONLY: i32 = 1
+const O_RDWR: i32   = 2
+const O_CREAT: i32  = 64
+const O_TRUNC: i32  = 512
+const O_APPEND: i32 = 1024
 
-let STDIN: i32  = 0
-let STDOUT: i32 = 1
-let STDERR: i32 = 2
+const STDIN: i32  = 0
+const STDOUT: i32 = 1
+const STDERR: i32 = 2

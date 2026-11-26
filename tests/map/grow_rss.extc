@@ -9,6 +9,6 @@ fn main() -> i32 {
     var m = map<i64, i32>::withCap(16)
     var i: i64 = 0
     while i < 1000000 { m.put(i, i32(i))  i = i + 1 }
-    io::cout << "n=" << m.len() << " nodes=" << m.nodeCount() << " cap=" << m.capOf() << " bytes=" << m.bytesOf() << " live=" << (buf::bufLive() - base) << "\n"
+    io::cout << "n=" << m.len() << " nodes=" << m.nodeCount() << " cap=" << m.capacity() << " bytes=" << m.bytesOf() << " live=" << (buf::bufLive() - base) << "\n"
     return 0
 }

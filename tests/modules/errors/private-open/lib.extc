@@ -3,4 +3,4 @@
 fn secret() -> i64 { return 42 }
 
 @private
-let HIDDEN: i64 = 7
+const HIDDEN: i64 = 7

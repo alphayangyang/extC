@@ -4,9 +4,9 @@ use std::io
 use std::dl
 use npytable                     /* run.sh 生成：表的镜像（编号读自装着的 __multiarray_api.h） */
 
-let PY_LIB: slice<u8> = "libpython3.14.so.1.0"
-let CLOCK_MONOTONIC: i32 = 1
-let RUSAGE_SELF: i32 = 0
+let pyLib: slice<u8> = "libpython3.14.so.1.0"
+const CLOCK_MONOTONIC: i32 = 1
+const RUSAGE_SELF: i32 = 0
 
 extern!("c") fn Py_Initialize() -> void
 extern!("c") fn PyImport_ImportModule(name: ?ref u8) -> ?ref void
@@ -81,7 +81,7 @@ fn main(args: slice<slice<u8>>) -> i32 {
     var n: i64 = argOr(args, 1, 256)
     var reps: i64 = argOr(args, 2, 20)
 
-    var h: ref void = dl::open(PY_LIB)!
+    var h: ref void = dl::open(pyLib)!
     Py_Initialize()
 
     var mm: ?ref void = PyImport_ImportModule(cs("numpy._core._multiarray_umath"))

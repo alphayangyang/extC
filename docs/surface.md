@@ -5,7 +5,7 @@
 
 生成方式：`tools/manual_surface.py`；`check.sh` 保证本页与源码一致。
 
-公开面共 944 个成员，其中内部 174 个：
+公开面共 944 个成员，其中内部 177 个：
 
 ## prelude
 
@@ -53,6 +53,8 @@
 - `-.ctz64`（方法）
 - `-.zeroBytes`（方法）
 - `hashMap.cap`（字段）
+- `hashMap.findSlot`（方法）
+- `hashMap.findSlotH`（方法）
 - `hashMap.keys`（字段）
 - `hashMap.n`（字段）
 - `hashMap.probeRange`（方法）
@@ -65,6 +67,7 @@
 ## std::data::map
 
 - `linMap.cap`（字段）
+- `linMap.findSlot`（方法）
 - `linMap.keys`（字段）
 - `linMap.n`（字段）
 - `linMap.vals`（字段）

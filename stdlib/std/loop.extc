@@ -25,7 +25,7 @@ use std::sys::time
  * 的兜底（"立刻重推"）⇒ 整批耗时涨到几百毫秒。1024 项 = 16 KB/循环，
  * 覆盖现实负载；真修法是把这张表搬进 `tasks<T>`（像 `runq`/`freeq` 那样）让它会长 ——
  * 那需要容器（引用）⇒ `loop` 会失去零值，不是这一轮的事。 */
-let CAPACITY: i64 = 1024
+const CAPACITY: i64 = 1024
 
 @noCopy
 struct timers {

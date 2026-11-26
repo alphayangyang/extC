@@ -13,7 +13,7 @@
  *   - 增长是**全量重哈希**：新三列、把活元素逐个搬过去、旧列当场还掉。这是 hashbrown
  *     （Rust 的 std::HashMap）与 C++ unordered_map 的同一档做法：单步 O(n)，摊还 O(1)。
  *     要避免它就在构造时给足容量（`withCap`），此后增长到装载线才再触发重哈希。
- *   - 迭代是按桶位：`keyAt(i)` / `valAt(i)` / `liveAt(i)`，i 走 [0, capOf())。桶位会随重哈希变，
+ *   - 迭代是按桶位：`keyAt(i)` / `valAt(i)` / `liveAt(i)`，i 走 [0, capacity())。桶位会随重哈希变，
  *     但值不会（值就是桶里的字节）；要一份独立的表用 `clone()`。
  *
  * @code
@@ -33,11 +33,11 @@
 use std::data::dense::{block}
 
 /* 空桶标记。占用的 tag 最高位恒为 1（0x80..0xFF），所以 0 只能留给「没有元素」。 */
-let EMPTY: u8 = 0
+const EMPTY: u8 = 0
 
 /* 装载率的分子分母：0.85 = 17/20。增长线是「插入后会超过它」。 */
-let LOAD_NUM: i64 = 17
-let LOAD_DEN: i64 = 20
+const LOAD_NUM: i64 = 17
+const LOAD_DEN: i64 = 20
 
 /* Mix a key into a spread-out non-negative i64.
  *
@@ -173,7 +173,7 @@ struct hashMap<K, V> {
     fn len(self: ref hashMap<K, V>) -> i64 { return self.n }
 
     /* 桶数。迭代 `keyAt/valAt/liveAt` 的上界就是它。 */
-    fn capOf(self: ref hashMap<K, V>) -> i64 { return self.cap }
+    fn capacity(self: ref hashMap<K, V>) -> i64 { return self.cap }
 
     /* 三列实际握着多少字节（账本口径，不是请求字节）。 */
     fn bytesOf(self: ref hashMap<K, V>) -> i64 {
@@ -221,9 +221,10 @@ struct hashMap<K, V> {
         }
         return -2
     }
-@unchecked
+@private
+    @unchecked
     @inline
-    fn findH(self: ref hashMap<K, V>, k: ref K, h: i64) -> i64 {
+    fn findSlotH(self: ref hashMap<K, V>, k: ref K, h: i64) -> i64 {
         if self.cap == 0 { return -1 }
         let t: u8 = ctrlOf(h)
         let bc: u64 = u64(t) * ((u64(0) - u64(1)) / u64(255))
@@ -234,18 +235,19 @@ struct hashMap<K, V> {
         return r
     }
 
-    /* 找到 k 的桶：命中返回桶号，没有返回 -1。 */
+    /* 找到 k 的桶：命中返回桶号，没有返回 -1。槽位号是容器内部记账，不是值。 */
+    @private
     @inline
-    fn find(self: ref hashMap<K, V>, k: ref K) -> i64 { return self.findH(k, k.hash()) }
+    fn findSlot(self: ref hashMap<K, V>, k: ref K) -> i64 { return self.findSlotH(k, k.hash()) }
 
-    fn contains(self: ref hashMap<K, V>, k: K) -> bool { return self.find(ref k) >= 0 }
+    fn contains(self: ref hashMap<K, V>, k: K) -> bool { return self.findSlot(ref k) >= 0 }
 
     /* `hm[k]` -- the read side. Same answer as `get`: `none` when absent. */
     fn [](self: ref hashMap<K, V>, k: K) -> ?V { return self.get(k) }
 
     /* The value for `k`, or `none`. */
     fn get(self: ref hashMap<K, V>, k: K) -> ?V {
-        let b: i64 = self.find(ref k)
+        let b: i64 = self.findSlot(ref k)
         if b < 0 { return none }
         return some(self.vals[b])
     }
@@ -259,7 +261,7 @@ struct hashMap<K, V> {
      * 翻倍之后装载掉到 0.42 左右，所以下一次重哈希要再插 0.85 倍的量 —— 几何增长，摊还 O(1)。 */
     fn put(self: mut ref hashMap<K, V>, k: K, v: V) -> bool {
         let h: i64 = k.hash()
-        let b: i64 = self.findH(ref k, h)
+        let b: i64 = self.findSlotH(ref k, h)
         if b >= 0 {
             self.keys.dropAt(b)
             self.vals.dropAt(b)
@@ -312,7 +314,7 @@ struct hashMap<K, V> {
 
     /* 移除 `k`。返回「本来就在」。 */
     fn remove(self: mut ref hashMap<K, V>, k: K) -> bool {
-        let b: i64 = self.find(ref k)
+        let b: i64 = self.findSlot(ref k)
         if b < 0 { return false }
         self.removeAt(b)
         return true
@@ -320,7 +322,7 @@ struct hashMap<K, V> {
 
     /* 移除 `k` 并把它的值交出来（键和值各自跑钩子，值给你之前先拷一份）。 */
     fn take(self: mut ref hashMap<K, V>, k: K) -> ?V {
-        let b: i64 = self.find(ref k)
+        let b: i64 = self.findSlot(ref k)
         if b < 0 { return none }
         let out: V = self.vals[b]
         self.removeAt(b)
@@ -456,7 +458,7 @@ struct hashMap<K, V> {
         return { m: self, i: -1 }
     }
 
-    /* 按桶位扫描：`i` 走 [0, capOf())。 */
+    /* 按桶位扫描：`i` 走 [0, capacity())。 */
     fn keyAt(self: ref hashMap<K, V>, i: i64) -> K { return self.keys[i] }
     fn valAt(self: ref hashMap<K, V>, i: i64) -> V { return self.vals[i] }
     fn liveAt(self: ref hashMap<K, V>, i: i64) -> bool { return byteAt(self.tag[i / 8], i - (i / 8) * 8) != EMPTY }
@@ -486,8 +488,8 @@ struct hashMapKeyIter<K, V> {
     }
     fn next(self: mut ref hashMapKeyIter<K, V>) -> bool {
         self.i += 1
-        while self.i < self.m.capOf() && !self.m.liveAt(self.i) { self.i += 1 }
-        return self.i < self.m.capOf()
+        while self.i < self.m.capacity() && !self.m.liveAt(self.i) { self.i += 1 }
+        return self.i < self.m.capacity()
     }
     fn value(self: ref hashMapKeyIter<K, V>) -> K { return self.m.keyAt(self.i) }
 }
@@ -501,8 +503,8 @@ struct hashMapValueIter<K, V> {
     }
     fn next(self: mut ref hashMapValueIter<K, V>) -> bool {
         self.i += 1
-        while self.i < self.m.capOf() && !self.m.liveAt(self.i) { self.i += 1 }
-        return self.i < self.m.capOf()
+        while self.i < self.m.capacity() && !self.m.liveAt(self.i) { self.i += 1 }
+        return self.i < self.m.capacity()
     }
     fn value(self: ref hashMapValueIter<K, V>) -> V { return self.m.valAt(self.i) }
 }
@@ -535,7 +537,7 @@ struct hashMapI64<V> {
     }
 
     fn len(self: ref hashMapI64<V>) -> i64 { return self.m.len() }
-    fn capOf(self: ref hashMapI64<V>) -> i64 { return self.m.capOf() }
+    fn capacity(self: ref hashMapI64<V>) -> i64 { return self.m.capacity() }
     fn bytesOf(self: ref hashMapI64<V>) -> i64 { return self.m.bytesOf() }
     fn clone(self: ref hashMapI64<V>) -> hashMapI64<V> {
         var h: hashMapI64<V> = { m: self.m.clone() }
@@ -575,8 +577,8 @@ struct hashMapI64KeyIter<V> {
     }
     fn next(self: mut ref hashMapI64KeyIter<V>) -> bool {
         self.i += 1
-        while self.i < self.m.capOf() && !self.m.liveAt(self.i) { self.i += 1 }
-        return self.i < self.m.capOf()
+        while self.i < self.m.capacity() && !self.m.liveAt(self.i) { self.i += 1 }
+        return self.i < self.m.capacity()
     }
     fn value(self: ref hashMapI64KeyIter<V>) -> i64 { return self.m.keyAt(self.i) }
 }
@@ -590,8 +592,8 @@ struct hashMapI64ValueIter<V> {
     }
     fn next(self: mut ref hashMapI64ValueIter<V>) -> bool {
         self.i += 1
-        while self.i < self.m.capOf() && !self.m.liveAt(self.i) { self.i += 1 }
-        return self.i < self.m.capOf()
+        while self.i < self.m.capacity() && !self.m.liveAt(self.i) { self.i += 1 }
+        return self.i < self.m.capacity()
     }
     fn value(self: ref hashMapI64ValueIter<V>) -> V { return self.m.valAt(self.i) }
 }
@@ -607,7 +609,7 @@ struct hashMapI64ValueIter<V> {
  * divergence is the trade this file makes.
  *
  * The face mirrors the map (`withCap` / `len` / `contains` / `put` / `remove` / `clear` plus the
- * table-position scan `keyAt` / `liveAt` / `capOf`), with ONE difference: `put` returns true when
+ * table-position scan `keyAt` / `liveAt` / `capacity`), with ONE difference: `put` returns true when
  * the element is NEW, while the map's `put` returns true when it was already there. */
 @noCopy
 struct hashSetI64 {
@@ -639,5 +641,5 @@ struct hashSetI64 {
 
     fn keyAt(self: ref hashSetI64, i: i64) -> i64 { return self.m.keyAt(i) }
     fn liveAt(self: ref hashSetI64, i: i64) -> bool { return self.m.liveAt(i) }
-    fn capOf(self: ref hashSetI64) -> i64 { return self.m.capOf() }
+    fn capacity(self: ref hashSetI64) -> i64 { return self.m.capacity() }
 }

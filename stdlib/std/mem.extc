@@ -4,7 +4,7 @@
  * 它们**不绕过任何保证**（不构造视图、不碰地址空间、不碰 fd），只是 libc 级的快实现。
  * 按 `sys` 的判据（**能不能绕过检查器的一条保证**）它们属于公开面 —— 答案是"不能"。
  *
- *     let at: i64 = mem::find(hay, needle)     // 最左匹配的偏移；没有 = -1
+ *     let at: ?i64 = mem::find(hay, needle)    // 最左匹配的偏移；没有 = none
  *     if mem::eq(a, b) { }                     // 整块比较
  *     if mem::contains(hay, needle) { }
  *
@@ -21,8 +21,10 @@ extern!("extc-mem") fn extc_memFind(hay: ref u8, hayLen: i64, needle: ref u8, ne
 extern!("extc-mem") fn extc_memEq(a: ref u8, b: ref u8, n: i64) -> i64
     effects Addr=0 Cont=0
 
-fn find(hay: slice<u8>, needle: slice<u8>) -> i64 {
-    return extc_memFind(hay.data, hay.len, needle.data, needle.len)
+fn find(hay: slice<u8>, needle: slice<u8>) -> ?i64 {
+    let at: i64 = extc_memFind(hay.data, hay.len, needle.data, needle.len)
+    if at < 0 { return none }
+    return some(at)
 }
 
 fn contains(hay: slice<u8>, needle: slice<u8>) -> bool {
@@ -67,10 +69,10 @@ use std::sys::heap as sysheap
  * `extc_narrowU(...)` 调用 ⇒ 静态初始化器不是常量（实测：gcc 报 "initializer element is not
  * constant"）。字面量直接适配目标类型，没有这一层。（`isConstInit` 现在也把"要带检查的转换"
  * 排除在常量之外 —— 于是这种写法会在编译期得到一句人话。） */
-let PAGE: u64 = 4096               /* 字面量直接适配目标类型 */
+const PAGE: u64 = 4096               /* 字面量直接适配目标类型 */
 /* commit 的粒度：一次 1 MiB。 */
-let CHUNK: u64 = 1048576            /* 1 MiB，写成一个字面量：`1024 * 1024` 是 i32 算术 ✗ */
-let DEFAULT_RESERVE: u64 = 4294967296   /* 4 GiB */
+const CHUNK: u64 = 1048576            /* 1 MiB，写成一个字面量：`1024 * 1024` 是 i32 算术 ✗ */
+const DEFAULT_RESERVE: u64 = 4294967296   /* 4 GiB */
 
 /* 内部齿轮：`@private` 对编译器（`manual_surface.py` 认这个标注；历史上还有一层按 `p`
  * 当容器内部助手，不算公开面 —— 公开面清单是 check.sh 的一道闸门）。 */

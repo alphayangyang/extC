@@ -123,7 +123,7 @@ fn wordIs(w: slice<u8>, lit: slice<u8>) -> bool {
 
 fn imax(a: i64, b: i64) -> i64 { if a > b { return a } return b }
 
-let MOD: i64 = 1000000007
+const MOD: i64 = 1000000007
 
 /* ---------- 图：边数组 → CSR（compressed sparse row） ---------- */
 
@@ -318,7 +318,7 @@ fn setsSummary(g: ref graph, qs: ref vector<i64>) -> i64 {
         bfs(g, src, ref seen, ref frontier, ref nextLev)
         /* 按桶位遍历（tag != 0 才是活元素）：没有稠密值列了，桶序就是迭代序。 */
         var sb: i64 = 0
-        let scap: i64 = seen.capOf()
+        let scap: i64 = seen.capacity()
         while sb < scap {
             if seen.liveAt(sb) {
                 let k0: i64 = seen.keyAt(sb)
@@ -332,7 +332,7 @@ fn setsSummary(g: ref graph, qs: ref vector<i64>) -> i64 {
         } else {
             /* 遍历 uni（这一轮不动它）删 inter：删的是别的表，桶序不受影响 */
             var ub: i64 = 0
-            let ucap: i64 = uni.capOf()
+            let ucap: i64 = uni.capacity()
             while ub < ucap {
                 if uni.liveAt(ub) {
                     let k3: i64 = uni.keyAt(ub)
@@ -345,7 +345,7 @@ fn setsSummary(g: ref graph, qs: ref vector<i64>) -> i64 {
     }
     var usum: i64 = 0
     var i2: i64 = 0
-    let ucap2: i64 = uni.capOf()
+    let ucap2: i64 = uni.capacity()
     while i2 < ucap2 {
         if uni.liveAt(i2) { usum = (usum + (uni.keyAt(i2))) % MOD }
         i2 = i2 + 1
@@ -373,7 +373,7 @@ fn coverage(g: ref graph, qs: ref vector<i64>) -> i64 {
     while qi < qs.len() {
         bfs(g, qs.get(qi) ?? 0, ref seen, ref frontier, ref nextLev)
         var i: i64 = 0
-        let scap2: i64 = seen.capOf()
+        let scap2: i64 = seen.capacity()
         while i < scap2 {
             if seen.liveAt(i) {
                 var k: i64 = seen.keyAt(i)
@@ -389,7 +389,7 @@ fn coverage(g: ref graph, qs: ref vector<i64>) -> i64 {
     var full: i64 = 0
     var sum: i64 = 0
     var i2: i64 = 0
-    let ccap: i64 = cov.capOf()
+    let ccap: i64 = cov.capacity()
     while i2 < ccap {
         if cov.liveAt(i2) {
             var k2: i64 = cov.keyAt(i2)

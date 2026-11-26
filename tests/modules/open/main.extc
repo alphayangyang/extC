@@ -2,14 +2,14 @@
 /* `use lib::*` —— 把模块的**公开名字带进作用域**（不限定名可用）✓
  *
  * 判据（三条都必须在）：
- *   ① 全局（`GREETING`）· 函数（`twice`）· 类型/字面量（`pair`）都能**不限定**用 ✓
+ *   ① 全局（`greeting`）· 函数（`twice`）· 类型/字面量（`pair`）都能**不限定**用 ✓
  *   ② 限定名**照旧**能用（两条路并存，定案 70 的写法没被削弱）✓
  *   ③ `@private` 的名字仍然够不着 —— 见 `tests/modules/errors/private-open/` ✓ */
 use lib::*
 use lib as lib
 
 fn main() -> i32 {
-    println(GREETING)                 /* 全局：不限定 ✓ */
+    println(greeting)                 /* 全局：不限定 ✓ */
     var p: pair = { a: 2, b: 3 }      /* 类型也可以不限定 ✓ */
     println(p.a, ",", p.b)
     println("和 = ", p.a + p.b)

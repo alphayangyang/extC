@@ -24,9 +24,9 @@ extern!("libc") fn dlclose(h: ?ref void) -> i32
 extern!("libc") fn dlerror() -> ?ref u8
     effects Addr=0 Cont=0
 
-let RTLD_LAZY: i32 = 1
-let RTLD_NOW: i32 = 2
-let RTLD_GLOBAL: i32 = 256
+const RTLD_LAZY: i32 = 1
+const RTLD_NOW: i32 = 2
+const RTLD_GLOBAL: i32 = 256
 
 /* `slice<u8>` 不保证 NUL 结尾，而 C 的名字参数要一个 0 结尾的缓冲区 —— 这不是"缺一个转换"，
  * 而是两边的表示本来就不同：切片的长度在值里，C 的长度在终止符里。
@@ -94,7 +94,7 @@ fn close(h: ?ref void) -> i32 { return dlclose(h) }
 
  * 上限是防线：C 那边忘了终止符的话，谁也不想读到越界。`dlerror` / `cairo_version_string` 这类
  * 都是几十字节以内，1024 足够。 */
-let CSTR_MAX: i64 = 1024
+const CSTR_MAX: i64 = 1024
 
 fn cstrLen(p: ref u8) -> i64 {
     var i: i64 = 0

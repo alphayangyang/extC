@@ -5,7 +5,7 @@ use std::tui
 
 fn main() -> i32 {
     var s = tui::screen::open(io::STDIN_FD)!
-    let d = s.size()
+    let d = s.dims()
     io::cout << "size " << d.cols << "x" << d.rows << "\n"
     s.clear()
     s.draw(i64(2), i64(1), "AB")

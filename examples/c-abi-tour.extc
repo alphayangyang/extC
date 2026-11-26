@@ -9,7 +9,7 @@ use std::io
 use std::dl
 use std::mem
 
-let CLOCK_MONOTONIC: i32 = 1
+const CLOCK_MONOTONIC: i32 = 1
 
 /* 名字**不必**和 C 那边一样：过界靠**布局**（`@frozen`）与**符号名**，不是类型名。
  * `div_t` 是 `{int,int}` ⇒ 8 字节，一个 INTEGER eightbyte ⇒ 按值返回时 ABI 分类由 gcc 两边各做一次 ✓

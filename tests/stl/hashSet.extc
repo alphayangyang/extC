@@ -28,7 +28,7 @@ fn main() -> i32 {
         if s.remove(7) { hits = hits + 1 }
         i = i + 1
     }
-    io::cout << " hits=" << hits << " cap=" << s.capOf()
+    io::cout << " hits=" << hits << " cap=" << s.capacity()
     s.clear()
     io::cout << " cleared=" << s.len() << "\n"
     return 0

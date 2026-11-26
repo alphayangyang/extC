@@ -21,13 +21,13 @@ struct node {
     value: i64
     next: ?ref node
 }
-struct slot_t {
+struct slotT {
     v: ?ref node
 }
 
 /* ⭐ 形状①：`new` 在**被循环调用的函数**里（最容易踩的形状）——
  * 格子由**调用点的帧**持有（跟 `__extc_home` 一个套路）⇒ 跨调用复用得上 ✓ */
-fn stash(dest: mut ref slot_t, v: i64) {
+fn stash(dest: mut ref slotT, v: i64) {
     @overwrite var n = new node
     n.value = v
     dest.v = n
@@ -35,7 +35,7 @@ fn stash(dest: mut ref slot_t, v: i64) {
 
 /* 形状②：`new` 就在循环所在的那个函数里 ✓ */
 fn inLoop() -> i64 {
-    var slot: slot_t = { v: null }
+    var slot: slotT = { v: null }
     var i: i64 = 0
     while i < 10000 {
         @overwrite var n = new node
@@ -63,7 +63,7 @@ fn bufLoop() -> i64 {
 
 fn main() {
     /* ①：`new` 在 callee 里，循环在 caller ⇒ 格子由调用点持有 ✓ */
-    var slot: slot_t = { v: null }
+    var slot: slotT = { v: null }
     var i: i64 = 0
     while i < 10000 {
         stash(ref slot, i)

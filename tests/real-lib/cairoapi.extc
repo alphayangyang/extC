@@ -15,20 +15,20 @@ use std::dl
 use std::io
 
 /* 头文件里那些枚举：extC 里就是 `i32` 常量（值由 clang 求出来，一个不猜）。 */
-let CAIRO_FORMAT_INVALID: i32 = -1
-let CAIRO_FORMAT_ARGB32: i32 = 0
-let CAIRO_FORMAT_RGB24: i32 = 1
-let CAIRO_FORMAT_A8: i32 = 2
-let CAIRO_FORMAT_A1: i32 = 3
-let CAIRO_FORMAT_RGB16_565: i32 = 4
-let CAIRO_FORMAT_RGB30: i32 = 5
-let CAIRO_FORMAT_RGB96F: i32 = 6
-let CAIRO_FORMAT_RGBA128F: i32 = 7
-let CAIRO_FONT_SLANT_NORMAL: i32 = 0
-let CAIRO_FONT_SLANT_ITALIC: i32 = 1
-let CAIRO_FONT_SLANT_OBLIQUE: i32 = 2
-let CAIRO_FONT_WEIGHT_NORMAL: i32 = 0
-let CAIRO_FONT_WEIGHT_BOLD: i32 = 1
+const CAIRO_FORMAT_INVALID: i32 = -1
+const CAIRO_FORMAT_ARGB32: i32 = 0
+const CAIRO_FORMAT_RGB24: i32 = 1
+const CAIRO_FORMAT_A8: i32 = 2
+const CAIRO_FORMAT_A1: i32 = 3
+const CAIRO_FORMAT_RGB16_565: i32 = 4
+const CAIRO_FORMAT_RGB30: i32 = 5
+const CAIRO_FORMAT_RGB96F: i32 = 6
+const CAIRO_FORMAT_RGBA128F: i32 = 7
+const CAIRO_FONT_SLANT_NORMAL: i32 = 0
+const CAIRO_FONT_SLANT_ITALIC: i32 = 1
+const CAIRO_FONT_SLANT_OBLIQUE: i32 = 2
+const CAIRO_FONT_WEIGHT_NORMAL: i32 = 0
+const CAIRO_FONT_WEIGHT_BOLD: i32 = 1
 
 struct api {
     /* 库句柄：表里全是这个库里的代码指针，所以**别 dlclose** 它（要用 `dl::close(a.handle)` 自己担）。 */

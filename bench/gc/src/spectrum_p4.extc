@@ -19,11 +19,11 @@ struct sym {
     next: ?mut ref sym
 }
 
-struct unit_node {
+struct unitNode {
     id: i64
     kind: i64
     payload: i64
-    sib: ?mut ref unit_node
+    sib: ?mut ref unitNode
 }
 
 struct table {
@@ -110,11 +110,11 @@ fn main(args: slice<slice<u8>>) -> i32 {
     var u: i64 = 0
     while u < units {
         // ---- 本单元：一批短命 AST 结点（链表），单元末尾整片丢 ----
-        var ast: ?mut ref unit_node = null
+        var ast: ?mut ref unitNode = null
         var m: i64 = 640 + nxt() % 256
         var j: i64 = 0
         while j < m {
-            var p: mut ref unit_node = new unit_node
+            var p: mut ref unitNode = new unitNode
             p.id = nmake
             nmake = nmake + 1
             p.kind = nxt() % 7
@@ -125,7 +125,7 @@ fn main(args: slice<slice<u8>>) -> i32 {
         }
         asts = asts + m
         // 顺链做一次“走 AST”的读取（防 DCE，也是真实前端会做的事）
-        var cur: ?mut ref unit_node = ast
+        var cur: ?mut ref unitNode = ast
         while cur != null {
             sum = (sum + cur.id * 3 + cur.payload + cur.kind) & 4611686018427387903
             cur = cur.sib

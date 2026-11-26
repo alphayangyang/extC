@@ -14,9 +14,9 @@ fn cycle() -> i64 {
     var u: string = string::withCap(32)
     u.append("second")
     b[1] = u
-    b.setUsed(2)
+    b.setLen(2)
     let ok: bool = b[0].view() == "dirty-slot-payload" && b[1].view() == "second"
-    let n: i64 = b.used()
+    let n: i64 = b.len()
     b.release()
     if !ok { return -1 }
     return n

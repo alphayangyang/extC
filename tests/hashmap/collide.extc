@@ -11,7 +11,7 @@ use std::data::hashMap
 /* 这一只键此刻所在的桶（-1 = 不在表里）。 */
 fn bucketOf(m: ref hashMapI64<i32>, k: i64) -> i64 {
     var i: i64 = 0
-    while i < m.capOf() {
+    while i < m.capacity() {
         if m.liveAt(i) && m.keyAt(i) == k { return i }
         i = i + 1
     }
@@ -27,7 +27,7 @@ fn initialSlot(k: i64) -> i64 {
 
 fn main() -> i32 {
     var m = hashMapI64<i32>::withCap(4)
-    println("cap = ", m.capOf())
+    println("cap = ", m.capacity())
 
     var probe: [512]i64
     var slot: [512]i64

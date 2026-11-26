@@ -1,0 +1,8 @@
+# check_naming.py 的例外清单（欠账，不是长期免票）。
+#
+# 每行四个 TAB 分隔字段：路径<TAB>类别<TAB>名字<TAB>理由
+#   路径 = 相对仓库根，如 stdlib/std/io.extc
+#   类别 = type | trait | fn | member | const | global | variant
+# 过期条目（不再命中违规）会让门禁变红 —— 修好了就把这一行删掉。
+#
+# 现在没有例外：stdlib/ examples/ bench/ 全部合规。

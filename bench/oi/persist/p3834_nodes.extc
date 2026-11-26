@@ -26,17 +26,17 @@ struct pnode {
     sum: i32
 }
 
-let N: i64 = 1000000
-let Q: i64 = 1000000
-let V: i64 = 1000000
+const N: i64 = 1000000
+const Q: i64 = 1000000
+const V: i64 = 1000000
 
-var A: [1000001]i32
-var NP: i32 = 1                     /* 1 = 哨兵算 0 号节点（跟索引式版本对齐 ✓）*/
+var arr: [1000001]i32
+var nodeCount: i32 = 1                     /* 1 = 哨兵算 0 号节点（跟索引式版本对齐 ✓）*/
 
 /* ---------------- 可持久化线段树 ---------------- */
 fn update(z: ref pnode, prev: ref pnode, lo: i32, hi: i32, pos: i32) -> mut ref pnode {
     var n: mut ref pnode = new pnode
-    NP = NP + 1
+    nodeCount = nodeCount + 1
     n.l = prev.l
     n.r = prev.r
     n.sum = prev.sum + 1
@@ -76,20 +76,20 @@ fn main() -> i32 {
 
     var i: i64 = 1
     while i <= N {
-        A[i] = i32(rng.nextBounded(u64(V))) + 1
+        arr[i] = i32(rng.nextBounded(u64(V))) + 1
         i = i + 1
     }
 
     var inSum: u64 = 0
     i = 1
     while i <= N {
-        inSum = inSum * 1000003 + u64(A[i])
+        inSum = inSum * 1000003 + u64(arr[i])
         i = i + 1
     }
 
     i = 1
     while i <= N {
-        (*root)[i] = update(ref *z, (*root)[i - 1]!, 1, i32(V), A[i])
+        (*root)[i] = update(ref *z, (*root)[i - 1]!, 1, i32(V), arr[i])
         i = i + 1
     }
 
@@ -107,7 +107,7 @@ fn main() -> i32 {
     println("in    = ", inSum)
     println("n     = ", N)
     println("q     = ", Q)
-    println("nodes = ", NP)
+    println("nodes = ", nodeCount)
     println("ans   = ", ansSum)
     return 0
 }

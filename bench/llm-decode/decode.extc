@@ -18,20 +18,20 @@ extern!("m") fn cosf(x: f32) -> f32 effects Addr=0 Cont=0
 extern!("m") fn sinf(x: f32) -> f32 effects Addr=0 Cont=0
 extern!("m") fn logf(x: f32) -> f32 effects Addr=0 Cont=0
 
-let NEMBD: i64 = 288
-let NHEAD: i64 = 6
-let HDIM: i64 = 48
-let NFF: i64 = 768
-let NLAYER: i64 = 6
-let NVOCAB: i64 = 32000
-let NCTX: i64 = 128
-let MAXFILE: i64 = 64 * 1024 * 1024
+const NEMBD: i64 = 288
+const NHEAD: i64 = 6
+const HDIM: i64 = 48
+const NFF: i64 = 768
+const NLAYER: i64 = 6
+const NVOCAB: i64 = 32000
+const NCTX: i64 = 128
+let maxFile: i64 = 64 * 1024 * 1024
 
-var GP: i64 = 0
+var gp: i64 = 0
 
 fn rdU32(buf: slice<u8>) -> u32 {
-    var v: u32 = u32(buf[GP]) | (u32(buf[GP + 1]) << 8) | (u32(buf[GP + 2]) << 16) | (u32(buf[GP + 3]) << 24)
-    GP = GP + 4
+    var v: u32 = u32(buf[gp]) | (u32(buf[gp + 1]) << 8) | (u32(buf[gp + 2]) << 16) | (u32(buf[gp + 3]) << 24)
+    gp = gp + 4
     return v
 }
 
@@ -42,23 +42,23 @@ fn rdU64(buf: slice<u8>) -> u64 {
 }
 
 /* 读字符串：返回 (偏移, 长度)，偏移指向 buf 里的字节。 */
-var GS: i64 = 0
-var GL: i64 = 0
+var gs: i64 = 0
+var gl: i64 = 0
 fn rdStr(buf: slice<u8>) -> void {
     var n: i64 = i64(rdU64(buf))
-    GS = GP
-    GL = n
-    GP = GP + n
+    gs = gp
+    gl = n
+    gp = gp + n
 }
 
 fn skipVal(buf: slice<u8>, t: i32) -> void {
-    if t == 0 || t == 1 || t == 7 { GP = GP + 1  return }
-    if t == 2 || t == 3 { GP = GP + 2  return }
-    if t == 4 || t == 5 || t == 6 { GP = GP + 4  return }
-    if t == 10 || t == 11 || t == 12 { GP = GP + 8  return }
+    if t == 0 || t == 1 || t == 7 { gp = gp + 1  return }
+    if t == 2 || t == 3 { gp = gp + 2  return }
+    if t == 4 || t == 5 || t == 6 { gp = gp + 4  return }
+    if t == 10 || t == 11 || t == 12 { gp = gp + 8  return }
     if t == 8 {
         var n: i64 = i64(rdU64(buf))
-        GP = GP + n
+        gp = gp + n
         return
     }
     if t == 9 {
@@ -195,7 +195,7 @@ fn main(args: slice<slice<u8>>) -> i32 {
     if args.len > 3 { gdir = args[3] }
 
     var t0: i64 = loop::now()
-    var data: mut slice<u8> = new u8[MAXFILE]
+    var data: mut slice<u8> = new u8[maxFile]
     var f = fs::openRead(args[1])!
     var nraw: i64 = f.readAll(data[..])!
     f.close()!
@@ -203,7 +203,7 @@ fn main(args: slice<slice<u8>>) -> i32 {
 
     /* ---- GGUF 头 ---- */
     var pos: i64 = 0
-    GP = 0
+    gp = 0
     var magic: u32 = rdU32(data)
     if magic != u32(0x46554747) { io::cout << "FAIL not a gguf\n"  return 1 }
     var ver: u32 = rdU32(data)
@@ -215,8 +215,8 @@ fn main(args: slice<slice<u8>>) -> i32 {
     var k: i64 = 0
     while k < nkv {
         rdStr(data)
-        var koff: i64 = GS
-        var klen: i64 = GL
+        var koff: i64 = gs
+        var klen: i64 = gl
         var ty: i32 = i32(rdU32(data))
         if ty == 9 {
             skipVal(data, ty)
@@ -226,8 +226,8 @@ fn main(args: slice<slice<u8>>) -> i32 {
             var v: u32 = rdU32(data)
             if nameIs(data, koff, klen, "general.alignment") { align = i64(v) }
         } else if ty == 6 {
-            var o: i64 = GP
-            GP = GP + 4
+            var o: i64 = gp
+            gp = gp + 4
             if nameIs(data, koff, klen, "llama.attention.layer_norm_rms_epsilon") { eps = f32At(data, o) }
             if nameIs(data, koff, klen, "llama.rope.freq_base") { theta = f32At(data, o) }
         } else {
@@ -246,8 +246,8 @@ fn main(args: slice<slice<u8>>) -> i32 {
     i = 0
     while i < nten {
         rdStr(data)
-        var noff: i64 = GS
-        var nlen: i64 = GL
+        var noff: i64 = gs
+        var nlen: i64 = gl
         var nd: i32 = i32(rdU32(data))
         var d0: i64 = 0
         var d1: i64 = 0
@@ -271,7 +271,7 @@ fn main(args: slice<slice<u8>>) -> i32 {
         i = i + 1
     }
     /* 数据区起点 = 信息区末尾按 align 对齐 */
-    var hdrEnd: i64 = GP
+    var hdrEnd: i64 = gp
     var data0: i64 = ((hdrEnd + align - 1) / align) * align
     i = 0
     while i < 64 {

@@ -44,9 +44,9 @@
  */
 use std::data::dense::{block}    /* 容器的平坦列：拥有的类型化块（见 `std::data::dense`） */
 
-let ORDER: i64 = 16        /* max keys per node (the array sizes in `newNode` are these numbers) */
-let HALF:  i64 = 8         /* min keys per non-root node once stage 2b rebalances */
-let SCRATCH: i64 = 32      /* 下降路径与子槽选择的草稿长度：树高上限之上的常数，够用不增长 */
+const ORDER: i64 = 16        /* max keys per node (the array sizes in `newNode` are these numbers) */
+const HALF:  i64 = 8         /* min keys per non-root node once stage 2b rebalances */
+const SCRATCH: i64 = 32      /* 下降路径与子槽选择的草稿长度：树高上限之上的常数，够用不增长 */
 
 @noCopy
 struct map<K, V> {
@@ -94,7 +94,7 @@ struct map<K, V> {
 
     fn len(self: ref map<K, V>) -> i64 { return self.n }
     fn nodeCount(self: ref map<K, V>) -> i64 { return self.nnodes }
-    fn capOf(self: ref map<K, V>) -> i64 { return self.ncap }
+    fn capacity(self: ref map<K, V>) -> i64 { return self.ncap }
     /* 这张表**当下**在它自己池里占的字节（四处存储 + 两块草稿）。
      * 判据：`growStores` 把旧块当场还了 ⇒ 这个数只随当前 `ncap` 走，与长过多少次无关；
      * 旧块若还留着，它会**大一整代**（见 tests/map/run.sh 的精确字节账）。 */
@@ -162,13 +162,13 @@ struct map<K, V> {
         if want < 4 { want = 4 }
         /* 先报「用到的元素数」：块的搬移与钩子只走 `[0, used)`，尾巴是块上一个使用者留下的
          * 脏内存。 */
-        self.keys.setUsed(self.nnodes * 17)
-        self.vals.setUsed(self.nnodes * 17)
-        self.kids.setUsed(self.nnodes * 18)
-        self.kn_.setUsed(self.nnodes)
-        self.kc.setUsed(self.nnodes)
-        self.kl.setUsed(self.nnodes)
-        self.kx.setUsed(self.nnodes)
+        self.keys.setLen(self.nnodes * 17)
+        self.vals.setLen(self.nnodes * 17)
+        self.kids.setLen(self.nnodes * 18)
+        self.kn_.setLen(self.nnodes)
+        self.kc.setLen(self.nnodes)
+        self.kl.setLen(self.nnodes)
+        self.kx.setLen(self.nnodes)
         self.keys.growTo(want * 17)
         self.vals.growTo(want * 17)
         self.kids.growTo(want * 18)
@@ -709,15 +709,15 @@ struct map<K, V> {
     }
 
     /* 把七块平坦存储与两块草稿整块交还（`block::release` 幂等，所以字段的自动 drop 不会重复
-     * 归还）。旧元素若含引用域，`setUsed` 报出的 `[0, used)` 就是撤引用边与跑钩子的范围。 */
+     * 归还）。旧元素若含引用域，`setLen` 报出的 `[0, used)` 就是撤引用边与跑钩子的范围。 */
     fn release(self: mut ref map<K, V>) {
-        self.keys.setUsed(self.nnodes * 17)
-        self.vals.setUsed(self.nnodes * 17)
-        self.kids.setUsed(self.nnodes * 18)
-        self.kn_.setUsed(self.nnodes)
-        self.kc.setUsed(self.nnodes)
-        self.kl.setUsed(self.nnodes)
-        self.kx.setUsed(self.nnodes)
+        self.keys.setLen(self.nnodes * 17)
+        self.vals.setLen(self.nnodes * 17)
+        self.kids.setLen(self.nnodes * 18)
+        self.kn_.setLen(self.nnodes)
+        self.kc.setLen(self.nnodes)
+        self.kl.setLen(self.nnodes)
+        self.kx.setLen(self.nnodes)
         self.keys.release()
         self.vals.release()
         self.kids.release()
@@ -737,7 +737,7 @@ struct map<K, V> {
     /* Lower the water mark: repack the LIVE nodes into ids 0..k-1, drop the free list and shrink
      * the seven stores to exactly that size. Order, capacity and every entry stay where they were.
      * 新旧两代只在 move 的那一行同时在手（一块一块 `adopt`），所以这一下真的是 RSS。 */
-    fn shrink(self: mut ref map<K, V>) {
+    fn shrinkToFit(self: mut ref map<K, V>) {
         var order:   mut slice<i32> = new i32[self.nnodes]   /* live nodes in DFS order = new ids */
         var old2new: mut slice<i32> = new i32[self.nnodes]
         var i: i64 = 0
@@ -821,21 +821,21 @@ struct map<K, V> {
             i = i + 1
         }
         if prev >= i32(0) { nbx[i64(prev)] = i32(-1) }
-        nk.setUsed(count * 17)
-        nv.setUsed(count * 17)
-        nc.setUsed(count * 18)
-        nbn.setUsed(count)
-        nbc.setUsed(count)
-        nbl.setUsed(count)
-        nbx.setUsed(count)
+        nk.setLen(count * 17)
+        nv.setLen(count * 17)
+        nc.setLen(count * 18)
+        nbn.setLen(count)
+        nbc.setLen(count)
+        nbl.setLen(count)
+        nbx.setLen(count)
         /* 旧块的 used 先报出来，`adopt` 交还它时才知道该给哪些元素跑钩子/撤边。 */
-        self.keys.setUsed(self.nnodes * 17)
-        self.vals.setUsed(self.nnodes * 17)
-        self.kids.setUsed(self.nnodes * 18)
-        self.kn_.setUsed(self.nnodes)
-        self.kc.setUsed(self.nnodes)
-        self.kl.setUsed(self.nnodes)
-        self.kx.setUsed(self.nnodes)
+        self.keys.setLen(self.nnodes * 17)
+        self.vals.setLen(self.nnodes * 17)
+        self.kids.setLen(self.nnodes * 18)
+        self.kn_.setLen(self.nnodes)
+        self.kc.setLen(self.nnodes)
+        self.kl.setLen(self.nnodes)
+        self.kx.setLen(self.nnodes)
         self.keys.adopt(ref nk)
         self.vals.adopt(ref nv)
         self.kids.adopt(ref nc)
@@ -898,7 +898,7 @@ struct set<T> {
     fn remove(self: mut ref set<T>, k: T) -> bool { return self.m.remove(k) }
 
     fn clear(self: mut ref set<T>) { self.m.clear() }
-    fn shrink(self: mut ref set<T>) { self.m.shrink() }
+    fn shrinkToFit(self: mut ref set<T>) { self.m.shrinkToFit() }
     fn release(self: mut ref set<T>) { self.m.release() }
 
     /* Rank of the first element not less than `k` (the count of elements smaller than `k`). */
@@ -950,18 +950,20 @@ struct linMap<K, V> {
         while c < want { c = c * 2 }
         var kb: block<K> = block<K>::withCap(c)
         var vb: block<V> = block<V>::withCap(c)
-        kb.setUsed(0)
-        vb.setUsed(0)
+        kb.setLen(0)
+        vb.setLen(0)
         var lm: linMap<K, V> = { keys: kb, vals: vb, n: 0, cap: c }
         return lm
     }
 
     fn len(self: ref linMap<K, V>) -> i64 { return self.n }
-    fn capOf(self: ref linMap<K, V>) -> i64 { return self.cap }
+    fn capacity(self: ref linMap<K, V>) -> i64 { return self.cap }
 
     /* Where the key sits, or -1. Linear, and that is the whole point of this container:
-     * `==` on a type parameter is the only thing a key has to provide. */
-    fn find(self: ref linMap<K, V>, k: K) -> i64 {
+     * `==` on a type parameter is the only thing a key has to provide.
+     * The slot number is the container's bookkeeping, not a value. */
+    @private
+    fn findSlot(self: ref linMap<K, V>, k: K) -> i64 {
         var i: i64 = 0
         while i < self.n {
             if self.keys[i] == k { return i }
@@ -970,7 +972,7 @@ struct linMap<K, V> {
         return 0 - 1
     }
 
-    fn contains(self: ref linMap<K, V>, k: K) -> bool { return self.find(k) >= 0 }
+    fn contains(self: ref linMap<K, V>, k: K) -> bool { return self.findSlot(k) >= 0 }
 
     /* `lm[k] = v` -- the write side; same semantics as `put` (insert or overwrite). */
     fn []=(self: mut ref linMap<K, V>, k: K, v: V) -> bool { return self.put(k, v) }
@@ -985,7 +987,7 @@ struct linMap<K, V> {
      * reserved, so a `false` here is unreachable today and the signature keeps the door open for
      * a grow that can fail. */
     fn put(self: mut ref linMap<K, V>, k: K, v: V) -> bool {
-        let at = self.find(k)
+        let at = self.findSlot(k)
         if at >= 0 {
             self.vals.dropAt(at)          /* 被覆盖的值：先跑钩子，再写新值 */
             self.vals[at] = v
@@ -996,8 +998,8 @@ struct linMap<K, V> {
         self.keys[self.n] = k
         self.vals[self.n] = v
         self.n = self.n + 1
-        self.keys.setUsed(self.n)
-        self.vals.setUsed(self.n)
+        self.keys.setLen(self.n)
+        self.vals.setLen(self.n)
         return true
     }
 
@@ -1005,7 +1007,7 @@ struct linMap<K, V> {
     fn [](self: ref linMap<K, V>, k: K) -> ?V { return self.get(k) }
 
     fn get(self: ref linMap<K, V>, k: K) -> ?V {
-        let at = self.find(k)
+        let at = self.findSlot(k)
         if at < 0 { return none }
         return some(self.vals[at])
     }
@@ -1014,7 +1016,7 @@ struct linMap<K, V> {
      * runs its hooks, and the last pair is **moved** (not copied) so an owning key has exactly
      * one owner. */
     fn remove(self: mut ref linMap<K, V>, k: K) -> bool {
-        let at = self.find(k)
+        let at = self.findSlot(k)
         if at < 0 { return false }
         let last = self.n - 1
         if at != last {
@@ -1029,8 +1031,8 @@ struct linMap<K, V> {
             self.vals.dropAt(at)
         }
         self.n = last
-        self.keys.setUsed(last)
-        self.vals.setUsed(last)
+        self.keys.setLen(last)
+        self.vals.setLen(last)
         return true
     }
 
@@ -1058,8 +1060,8 @@ struct linMap<K, V> {
             i = i + 1
         }
         self.n = 0
-        self.keys.setUsed(0)
-        self.vals.setUsed(0)
+        self.keys.setLen(0)
+        self.vals.setLen(0)
     }
 
     /* 增到 1.5 倍：**换块**（`block::growTo` 把活前缀搬进新块，旧块当场还）。这张表的下标

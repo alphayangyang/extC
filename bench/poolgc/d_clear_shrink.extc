@@ -9,7 +9,7 @@ fn main() -> i32 {
         i = i + 1
     }
     v.clear()
-    v.shrink()
+    v.shrinkToFit()
     var acc: i64 = 0
     var k: i64 = 0
     while k < 120000000 {

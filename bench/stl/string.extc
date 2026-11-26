@@ -2,7 +2,7 @@
 use std::io
 use std::text::string
 
-let N: i64 = 10000000
+const N: i64 = 10000000
 
 fn main() -> i32 {
     var s: string = string::withCap(N)

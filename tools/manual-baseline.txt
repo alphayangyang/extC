@@ -1,7 +1,6 @@
 # tools/check_manual.py 的基线：各模块**尚未被手册覆盖**的公开成员计数。
 # 只许变少：补齐一批就把数字改小；新加公开成员而不写手册会被闸门挡住。
 std::coro::scheduler	4
-std::data::hashMap	1
 std::data::map	14
 std::fs	3
 std::io	5

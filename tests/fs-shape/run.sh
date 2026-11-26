@@ -52,8 +52,8 @@ check_err read-as-output  "no method \`put\`"           # 读型当写型用
 echo "== 平台常量不外露（\`O_*\` 只在特权层）=="
 # std::fs（将来的那层）与用户层都不该出现 O_，只有 std::sys::io 能定义它们 ✓
 # ⚠️ 只看**代码行**：注释里当然会提到 `O_WRONLY` —— 那正是在解释"为什么不让用户看见" ✓
-codeHasO() { grep -v '^[[:space:]]*[*#/]' "$1" | grep -q 'io::O_\|^let O_' ; }
-if grep -q '^let O_' stdlib/std/sys/io.extc && ! codeHasO tests/fs-shape/fsproto.extc; then
+codeHasO() { grep -v '^[[:space:]]*[*#/]' "$1" | grep -q 'io::O_\|^\(let\|const\) O_' ; }
+if grep -q '^\(let\|const\) O_' stdlib/std/sys/io.extc && ! codeHasO tests/fs-shape/fsproto.extc; then
     echo "  ok   O_*   ->  只在 std::sys::io 定义；用户层代码里一个 O_ 都没有 ✓"
 else
     echo "  FAIL O_*  ->  平台常量漏到用户层代码里了 ✗"; fail=1

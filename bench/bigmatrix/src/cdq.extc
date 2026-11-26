@@ -1,7 +1,7 @@
 // Shape 2: cdq -- extC (3D dominance: sort, dedup, CDQ + weight BIT).
 use std::io
 
-let V: i64 = 1000000
+const V: i64 = 1000000
 
 struct pt {
     a: i32

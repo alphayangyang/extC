@@ -38,10 +38,10 @@ extern!("libc") fn munmap(p: ref void, len: u64) -> i32 effects Addr=0 Cont=0
 extern!("extc-heap") fn extc_memCopy(dst: ref u8, src: ref u8, n: i64) -> i64
     effects Addr=0 Cont=0
 
-let PROT_NONE: i32 = 0
-let PROT_READ: i32 = 1
-let PROT_WRITE: i32 = 2
-let PROT_RW: i32 = 3
-let MAP_PRIVATE: i32 = 2
-let MAP_ANONYMOUS: i32 = 32
-let MAP_NORESERVE: i32 = 16384
+const PROT_NONE: i32 = 0
+const PROT_READ: i32 = 1
+const PROT_WRITE: i32 = 2
+const PROT_RW: i32 = 3
+const MAP_PRIVATE: i32 = 2
+const MAP_ANONYMOUS: i32 = 32
+const MAP_NORESERVE: i32 = 16384

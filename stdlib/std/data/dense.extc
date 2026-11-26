@@ -20,9 +20,9 @@ use std::sys::bufrt as bufrt
 use std::sys::heap as sysheap
 
 /* 载荷不超过这么多字节时走密排槽，超过就走 2 MiB 量子的预留（与 `buf<T>` 同一条界线）。 */
-let DENSE_SLOT_BYTES: i64 = 65536
+const DENSE_SLOT_BYTES: i64 = 65536
 /* 稠密槽的最小容量：一张新表至少这么多槽，省掉「插入第二个元素就长一次」。 */
-let DENSE_MIN_CAP: i64 = 8
+const DENSE_MIN_CAP: i64 = 8
 
 /* 尺寸类：16 B 起、每次翻倍，到 64 KiB。返回值 >= want。 */
     @private
@@ -74,11 +74,11 @@ struct block<T> {
 
     /** @brief 现在装着几个元素。 */
     @inline
-    fn used(self: ref block<T>) -> i64 { return self.cnt }
+    fn len(self: ref block<T>) -> i64 { return self.cnt }
 
     /** @brief 记账：把 `u` 个槽认作元素（越界是容器自己的错，当场响亮失败）。 */
     @inline
-    fn setUsed(self: mut ref block<T>, u: i64) {
+    fn setLen(self: mut ref block<T>, u: i64) {
         if u < 0 || u > self.cap { trap("dense block: used count out of range") }
         self.cnt = u
     }

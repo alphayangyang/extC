@@ -61,7 +61,7 @@ fn triple(s: ref string) -> i64 {
  * 100 万次「默认构造 + push 3 字节 + 读回长度」。
  * 两边都该**一次分配都没有**（extC 内联 16 字节 / libstdc++ SSO 15 字节）。
  * C++：`std::string s; s.push_back(...) x3; acc += s.size() + (unsigned char)s[2];` */
-fn scene_short_many(salt: i64) -> i64 {
+fn sceneShortMany(salt: i64) -> i64 {
     var acc: i64 = 0
     var i: i64 = 0
     while i < 1000000 {
@@ -80,7 +80,7 @@ fn scene_short_many(salt: i64) -> i64 {
  * extC：第 17 个字节建池（32 字节块）；libstdc++：第 16 个字节 malloc（30 字节块）。
  * 每轮结束归还：这边 `release()`，那边离开作用域（析构函数）。
  * 不 release 的话池会挂在函数那个"地方"上，100 万轮 = 100 万个池（实测 155 MB，见 RESULTS.md）。 */
-fn scene_short_cross(salt: i64) -> i64 {
+fn sceneShortCross(salt: i64) -> i64 {
     var acc: i64 = 0
     var i: i64 = 0
     while i < 1000000 {
@@ -100,7 +100,7 @@ fn scene_short_cross(salt: i64) -> i64 {
 /* ================================================================ 3. long_build_byte
  * 一条长串逐字节 push 到 400 万字节（不预分配 ⇒ 量的是增长曲线）。
  * extC：0 → 内联 16 → 池 32 → 1.5 倍；libstdc++：SSO 15 → 30 → 2 倍。 */
-fn scene_long_build_byte() -> i64 {
+fn sceneLongBuildByte() -> i64 {
     var s: string
     var i: i64 = 0
     while i < 4000000 {
@@ -113,7 +113,7 @@ fn scene_long_build_byte() -> i64 {
 /* ================================================================ 4. long_build_chunk
  * 一条长串用 4 KB 块 append 到 64 MB（16384 块）。
  * extC：`s.append(buf)`（一次 copyInto）；C++：`s.append(buf, 4096)`。 */
-fn scene_long_build_chunk() -> i64 {
+fn sceneLongBuildChunk() -> i64 {
     let CH: i64 = 4096
     let TOT: i64 = 67108864
     var buf: [4096]u8
@@ -134,7 +134,7 @@ fn scene_long_build_chunk() -> i64 {
 /* ================================================================ 5. reserve_growth
  * 空串先 reserve 到 64 MB，再逐字节写满（对照 `reserve` + `push_back`）。
  * extC 的 `string::withCap(n)` 与 C++ 的 `reserve(n)` 是同一件事：一次要满，之后不再长。 */
-fn scene_reserve_growth() -> i64 {
+fn sceneReserveGrowth() -> i64 {
     let TOT: i64 = 67108864
     var s: string = string::withCap(TOT)
     var i: i64 = 0
@@ -149,7 +149,7 @@ fn scene_reserve_growth() -> i64 {
  * 一条 1 MB 串上随机位置读 1000 万次。
  * extC：`s.at(i) -> ?u8`（**有界检查**，越界是 none）；C++：`s[i]`（无检查）。
  * 这一条是明账：extC 每读一次多一次边界比较 + 一次 option 解包。 */
-fn scene_read_at() -> i64 {
+fn sceneReadAt() -> i64 {
     let N: i64 = 1048576
     var s: string = string::withCap(N)
     var i: i64 = 0
@@ -174,7 +174,7 @@ fn scene_read_at() -> i64 {
  * 模式从串自己的字节公式生成：偶数下标的模式把首字节 +1（大概率找不到 ⇒ 扫满全程），
  * 奇数下标是原样（一定能找到 ⇒ 平均扫一半）。两边同一个公式、同一个结果。
  * extC 是 Two-Way；C++ 是 `std::string::find`（libstdc++ 里对短模式走 memchr 加速）。 */
-fn scene_find() -> i64 {
+fn sceneFind() -> i64 {
     let N: i64 = 1048576
     var s: string = string::withCap(N)
     var i: i64 = 0
@@ -210,7 +210,7 @@ fn scene_find() -> i64 {
  * `push_back` + `erase(0,1)`。这么做有两个理由：① 32 字节的池态串本来就不该每轮重新构造；
  * ② 内容每轮都变，编译器没法把比较提到循环外（那样这一格就没量到东西了）。
  * extC 的 `==`/`<` 是自己的逐字节循环；C++ 的是 memcmp。 */
-fn scene_compare() -> i64 {
+fn sceneCompare() -> i64 {
     var a: string = string::withCap(64)
     var b: string = string::withCap(64)
     var i: i64 = 0
@@ -240,7 +240,7 @@ fn scene_compare() -> i64 {
  * C++ 侧同一个半开区间是 `s.substr(1000, 1000)`（起点, 长度）—— 这一点两边要对上。
  * extC 的 `sub` 是 `new u8[1000]` + copyInto：分配落在**调用者这一轮的 arena** 里，
  * 循环体每轮释放 ⇒ 与 C++ 每轮 malloc/free 同形。 */
-fn scene_substr_copy() -> i64 {
+fn sceneSubstrCopy() -> i64 {
     let N: i64 = 1048576
     var s: string = string::withCap(N)
     var i: i64 = 0
@@ -261,7 +261,7 @@ fn scene_substr_copy() -> i64 {
 /* ================================================================ 10. clone_many
  * 100 万次 clone 一条 32 字节串（深拷贝：模式串住在池里，所以 clone 会拿一块新板块）。
  * 每轮 `release()` 归还（C++ 那边是离开作用域时析构）。 */
-fn scene_clone_many() -> i64 {
+fn sceneCloneMany() -> i64 {
     var base: string = string::withCap(64)
     var i: i64 = 0
     while i < 32 {
@@ -283,7 +283,7 @@ fn scene_clone_many() -> i64 {
  * 1 万轮「写满到 64 KB → clear → shrink」。
  * extC：`shrink()` 把池块缩到 16（池态，cap=16）；C++：`shrink_to_fit()` 把空串缩回 SSO。
  * 每轮的写入都是 16 个 4 KB 的 append（不是逐字节：那样 6.5 亿次 push 会盖掉 shrink 本身）。 */
-fn scene_clear_shrink_cycle() -> i64 {
+fn sceneClearShrinkCycle() -> i64 {
     let CH: i64 = 4096
     let TOT: i64 = 65536
     var buf: [4096]u8
@@ -304,7 +304,7 @@ fn scene_clear_shrink_cycle() -> i64 {
         }
         acc = acc + s.len() + i64(s.at(0) ?? u8(0)) + i64(s.at(65535) ?? u8(0))
         s.clear()
-        s.shrink()
+        s.shrinkToFit()
         round = round + 1
     }
     return acc + s.len()
@@ -315,7 +315,7 @@ fn scene_clear_shrink_cycle() -> i64 {
  * 两边都该是**零池 / 零堆**：extC 的内联 16 字节与 SSO 都装得下 8 字节。
  * 这一格主要看 **RSS**：extC 的 `string` 值是 72 字节（16 内联 + n + cap + option<slice> + pid + gen），
  * libstdc++ 的 `std::string` 是 32 字节（16 内联 + size + 指针借用位）。 */
-fn scene_many_live_short() -> i64 {
+fn sceneManyLiveShort() -> i64 {
     let N: i64 = 1000000
     var arr: mut slice<string> = new string[N]
     var i: i64 = 0
@@ -341,18 +341,18 @@ fn run(name: slice<u8>, salt: i64) -> bool {
     /* 地板：什么都不做，只打印一个 cs。`run.sh` 用它量"进程启动 + 运行时"这个常数项
      * （每一格都含它，所以它必须在同一套测量口径下量出来，不能靠估）。不进结果表。 */
     if name == "noop"              { io::cout << "noop cs=0" << "\n"  return true }
-    if name == "short_many"        { io::cout << "short_many cs="        << scene_short_many(salt)    << "\n"  return true }
-    if name == "short_cross"       { io::cout << "short_cross cs="       << scene_short_cross(salt)   << "\n"  return true }
-    if name == "long_build_byte"   { io::cout << "long_build_byte cs="   << scene_long_build_byte()   << "\n"  return true }
-    if name == "long_build_chunk"  { io::cout << "long_build_chunk cs="  << scene_long_build_chunk()  << "\n"  return true }
-    if name == "reserve_growth"    { io::cout << "reserve_growth cs="    << scene_reserve_growth()    << "\n"  return true }
-    if name == "read_at"           { io::cout << "read_at cs="           << scene_read_at()           << "\n"  return true }
-    if name == "find"              { io::cout << "find cs="              << scene_find()              << "\n"  return true }
-    if name == "compare"           { io::cout << "compare cs="           << scene_compare()           << "\n"  return true }
-    if name == "substr_copy"       { io::cout << "substr_copy cs="       << scene_substr_copy()       << "\n"  return true }
-    if name == "clone_many"        { io::cout << "clone_many cs="        << scene_clone_many()        << "\n"  return true }
-    if name == "clear_shrink_cycle"{ io::cout << "clear_shrink_cycle cs=" << scene_clear_shrink_cycle() << "\n" return true }
-    if name == "many_live_short"   { io::cout << "many_live_short cs="   << scene_many_live_short()   << "\n"  return true }
+    if name == "short_many"        { io::cout << "short_many cs="        << sceneShortMany(salt)    << "\n"  return true }
+    if name == "short_cross"       { io::cout << "short_cross cs="       << sceneShortCross(salt)   << "\n"  return true }
+    if name == "long_build_byte"   { io::cout << "long_build_byte cs="   << sceneLongBuildByte()   << "\n"  return true }
+    if name == "long_build_chunk"  { io::cout << "long_build_chunk cs="  << sceneLongBuildChunk()  << "\n"  return true }
+    if name == "reserve_growth"    { io::cout << "reserve_growth cs="    << sceneReserveGrowth()    << "\n"  return true }
+    if name == "read_at"           { io::cout << "read_at cs="           << sceneReadAt()           << "\n"  return true }
+    if name == "find"              { io::cout << "find cs="              << sceneFind()              << "\n"  return true }
+    if name == "compare"           { io::cout << "compare cs="           << sceneCompare()           << "\n"  return true }
+    if name == "substr_copy"       { io::cout << "substr_copy cs="       << sceneSubstrCopy()       << "\n"  return true }
+    if name == "clone_many"        { io::cout << "clone_many cs="        << sceneCloneMany()        << "\n"  return true }
+    if name == "clear_shrink_cycle"{ io::cout << "clear_shrink_cycle cs=" << sceneClearShrinkCycle() << "\n" return true }
+    if name == "many_live_short"   { io::cout << "many_live_short cs="   << sceneManyLiveShort()   << "\n"  return true }
     return false
 }
 

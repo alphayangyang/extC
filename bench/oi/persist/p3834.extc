@@ -21,18 +21,18 @@ struct pnode {
     sum: i32
 }
 
-let N: i64 = 1000000
-let Q: i64 = 1000000
-let V: i64 = 1000000
+const N: i64 = 1000000
+const Q: i64 = 1000000
+const V: i64 = 1000000
 
-var A: [1000001]i32
-var ROOT: [1000001]i32
-var NP: i32 = 1                     /* 0 号是空节点（`new` 全清零 ⇒ 天然是空节点）*/
+var arr: [1000001]i32
+var root: [1000001]i32
+var nodeCount: i32 = 1                     /* 0 号是空节点（`new` 全清零 ⇒ 天然是空节点）*/
 
 /* ---------------- 可持久化线段树 ---------------- */
 fn update(pool: mut ref [21000002]pnode, prev: i32, lo: i32, hi: i32, pos: i32) -> i32 {
-    let rt: i32 = NP
-    NP = NP + 1
+    let rt: i32 = nodeCount
+    nodeCount = nodeCount + 1
     (*pool)[rt].l = (*pool)[prev].l
     (*pool)[rt].r = (*pool)[prev].r
     (*pool)[rt].sum = (*pool)[prev].sum + 1
@@ -62,14 +62,14 @@ fn main() -> i32 {
 
     var i: i64 = 1
     while i <= N {
-        A[i] = i32(rng.nextBounded(u64(V))) + 1
+        arr[i] = i32(rng.nextBounded(u64(V))) + 1
         i = i + 1
     }
 
     var inSum: u64 = 0
     i = 1
     while i <= N {
-        inSum = inSum * 1000003 + u64(A[i])
+        inSum = inSum * 1000003 + u64(arr[i])
         i = i + 1
     }
 
@@ -78,7 +78,7 @@ fn main() -> i32 {
 
     i = 1
     while i <= N {
-        ROOT[i] = update(ref *pool, ROOT[i - 1], 1, i32(V), A[i])
+        root[i] = update(ref *pool, root[i - 1], 1, i32(V), arr[i])
         i = i + 1
     }
 
@@ -88,7 +88,7 @@ fn main() -> i32 {
         let l: i64 = 1 + i64(rng.nextBounded(u64(N)))
         let r: i64 = l + i64(rng.nextBounded(u64(N - l + 1)))
         let k: i64 = 1 + i64(rng.nextBounded(u64(r - l + 1)))
-        let ans: i32 = query(ref *pool, ROOT[l - 1], ROOT[r], 1, i32(V), i32(k))
+        let ans: i32 = query(ref *pool, root[l - 1], root[r], 1, i32(V), i32(k))
         ansSum = ansSum * 1000009 + u64(ans)
         j = j + 1
     }
@@ -96,7 +96,7 @@ fn main() -> i32 {
     println("in    = ", inSum)
     println("n     = ", N)
     println("q     = ", Q)
-    println("nodes = ", NP)
+    println("nodes = ", nodeCount)
     println("ans   = ", ansSum)
     return 0
 }

@@ -1,10 +1,10 @@
 // P5 滑动窗口环形缓冲（引用）+ 长命索引（偶发插入）：写密集、活集稳定。与 .go 同输出。
 use std::io
 
-use std::loop
+use std::time
 var USN: i64 = 0
 var US: [1000002]i64
-fn us() { if USN < 1000002 { US[USN] = loop::now()  USN = USN + 1 } }
+fn us() { if USN < 1000002 { US[USN] = time::now()  USN = USN + 1 } }
 fn usDump() {
     io::cerr << "USMETA n=" << USN << "\n"
     var usk: i64 = 0

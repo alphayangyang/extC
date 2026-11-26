@@ -16,7 +16,7 @@ fn main() -> i32 {
             m.remove(d)
             d = d + 1
         }
-        m.shrink()
+        m.shrinkToFit()
         acc = acc + m.len()
         round = round + 1
     }

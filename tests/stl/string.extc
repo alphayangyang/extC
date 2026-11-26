@@ -9,7 +9,7 @@ fn main() -> i32 {
     io::cout << "len=" << s.len() << " cap=" << s.capacity()
     s.append(", world! and more bytes to force growth")
     io::cout << " len2=" << s.len() << " cap2=" << s.capacity()
-    s.shrink()
+    s.shrinkToFit()
     io::cout << " shrink=" << s.capacity()
     io::cout << " text="
     io::cout << s.snapshot()
