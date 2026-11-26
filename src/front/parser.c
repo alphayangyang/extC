@@ -397,6 +397,78 @@ static const ConstInt *constFind(Parser *p, const char *name) {
     }
     return NULL;
 }
+
+/**
+ * @brief Report whether this `use` lists this name (`use mod::{a, b}`).
+ *
+ * A wildcard import answers false here: it is a separate question (does the module export the
+ * name), and the imported-`const` table answers it later.
+ *
+ * @param u     The import.
+ * @param name  The bare name being looked for.
+ * @return      true when the name list contains it.
+ */
+static bool useListsName(UseDecl *u, const char *name) {
+    for (size_t i = 0; i < vecLen(&u->names); i++)
+        if (strcmp(*(const char **)vecAt(&u->names, i), name) == 0) return true;
+    return false;
+}
+
+/**
+ * @brief Decide whether an array length written as a plain name could come from an import.
+ *
+ * The parser cannot see another file, so it records what the name **means** and lets the type
+ * table settle the value: one import that could supply it gives the key `path::name`, several
+ * give a name-only marker (the type table then reports the ambiguity, or finds the one module
+ * that really declares it).
+ *
+ * @param p           Parser; `p->mod` is the module being parsed.
+ * @param name        The length as written.
+ * @param outMarker   Receives `-2` (one exact key) or `-3` (name only).
+ * @return            The key to record, or `NULL` when no import can be the source.
+ */
+static const char *importedLenKey(Parser *p, const char *name, int *outMarker) {
+    if (!p->mod) return NULL;
+    const char *onlyPath = NULL;
+    size_t matches = 0;
+    for (size_t i = 0; i < p->mod->uses.len; i++) {
+        UseDecl *u = *(UseDecl **)vecAt(&p->mod->uses, i);
+        if (!u->wildcard && !useListsName(u, name)) continue;
+        if (matches == 0) onlyPath = u->path;
+        matches++;
+    }
+    if (matches == 0) return NULL;
+    if (matches == 1) {
+        *outMarker = -2;
+        return arenaPrintf(p->arena, "%s::%s", onlyPath, name);
+    }
+    *outMarker = -3;
+    return name;
+}
+
+/**
+ * @brief Build the lookup key of a length written with its module: `[board::N]`.
+ *
+ * Qualified names use a module's **short** name (`vector`, not `std::data::vector`), while the
+ * imported-`const` table is keyed by the full `use` path; this maps one to the other, and
+ * falls back to the written path when no import matches (the type table then reports that no
+ * such `const` was registered, which covers "the module was not imported").
+ *
+ * @param p     Parser.
+ * @param path  The module part, as written (`board`, or `a::b`).
+ * @param name  The `const`'s name.
+ * @return      The key, in the parser's arena.
+ */
+static const char *qualifiedLenKey(Parser *p, const char *path, const char *name) {
+    if (p->mod && !strstr(path, "::")) {
+        for (size_t i = 0; i < p->mod->uses.len; i++) {
+            UseDecl *u = *(UseDecl **)vecAt(&p->mod->uses, i);
+            if (strcmp(u->shortName, path) == 0)
+                return arenaPrintf(p->arena, "%s::%s", u->path, name);
+        }
+    }
+    return arenaPrintf(p->arena, "%s::%s", path, name);
+}
 static Expr *parseStructLit(Parser *p, const char *name);
 static int   looksLikeAssoc(Parser *p);
 static Expr *parseAssoc(Parser *p, const char *name, int line, size_t startPos,
@@ -2474,7 +2546,36 @@ static Type *parseTypeInner(Parser *p) {
                          "a fixed array may have at most 8 dimensions");
                 return NULL;
             }
-            if (atKind(p, TK_IDENT)) {
+            if (atKind(p, TK_IDENT) && strcmp(pk(p, 1)->text, "::") == 0) {
+                /* `[board::N]`: a `const` of another module, written with its module. The parser
+                 * still cannot read the value; it records the key the loader will have
+                 * registered, and `ttResolve` turns it into the number. */
+                const char *parts[8];
+                size_t nparts = 0;
+                parts[nparts++] = take(p)->text;
+                while (at(p, "::")) {
+                    take(p);
+                    /* After `::` this is a value position (the `const`'s name), not a type
+                     * name, so the camelCase rule for type names does not apply. */
+                    Token *seg = expectIdent(p, "a name after `::` (e.g. `[board::N]`)");
+                    if (!seg) return NULL;
+                    if (nparts >= 8) {
+                        ctxError(p->ctx, seg->line, seg->col, NULL,
+                                 "a module path may have at most 8 segments");
+                        return NULL;
+                    }
+                    parts[nparts++] = seg->text;
+                }
+                Buf path;
+                bufInit(&path, p->arena);
+                for (size_t k = 0; k + 1 < nparts; k++) {
+                    if (k) bufPuts(&path, "::");
+                    bufPuts(&path, parts[k]);
+                }
+                dims[ndim] = -2;
+                symDims[ndim] = qualifiedLenKey(p, bufCstr(&path), parts[nparts - 1]);
+                ndim++;
+            } else if (atKind(p, TK_IDENT)) {
                 Token *cp = cur(p);
                 bool isConstParam = false;
                 for (size_t ci = 0; ci < p->constParams.len; ci++)
@@ -2508,14 +2609,25 @@ static Type *parseTypeInner(Parser *p) {
                              shown(cp));
                     return NULL;
                 } else {
-                    ctxError(p->ctx, cp->line, cp->col,
-                             "A fixed array's length is a number known before the program runs: an"
-                             " integer literal, a `const` parameter of this signature, or a"
-                             " module-level `const` with an integer literal initializer written"
-                             " above the type.",
-                             "array length must be an integer literal or a `const`, found `%s`",
-                             shown(cp));
-                    return NULL;
+                    /* Not a `const` of this file: an import may supply it. Nothing about
+                     * the name is decided here -- the type table knows what was imported
+                     * and what value each imported `const` has. */
+                    int marker = 0;
+                    const char *key = importedLenKey(p, cp->text, &marker);
+                    if (key) {
+                        take(p);
+                        dims[ndim] = marker;
+                        symDims[ndim] = key;
+                    } else {
+                        ctxError(p->ctx, cp->line, cp->col,
+                                 "A fixed array's length is a number known before the program runs: an"
+                                 " integer literal, a `const` parameter of this signature, or a"
+                                 " module-level `const` with an integer literal initializer written"
+                                 " above the type.",
+                                 "array length must be an integer literal or a `const`, found `%s`",
+                                 shown(cp));
+                        return NULL;
+                    }
                 }
                 ndim++;
             } else if (atKind(p, TK_INT)) {
@@ -2547,8 +2659,10 @@ static Type *parseTypeInner(Parser *p) {
         if (!elem) return NULL;
         for (size_t k = ndim; k > 0; k--) {
             size_t d = k - 1;
-            elem = symDims[d] ? typeArraySym(p->arena, symDims[d], elem)
-                              : typeArray(p->arena, dims[d], elem);
+            if (dims[d] == -2) elem = typeArrayImported(p->arena, symDims[d], elem);
+            else if (dims[d] == -3) elem = typeArrayImportedName(p->arena, symDims[d], elem);
+            else if (symDims[d]) elem = typeArraySym(p->arena, symDims[d], elem);
+            else elem = typeArray(p->arena, dims[d], elem);
         }
         return elem;
     }

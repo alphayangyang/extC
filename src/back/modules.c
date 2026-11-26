@@ -2073,6 +2073,67 @@ static void addOpensFor(Loader *L, Module *out, const char *importer, UseDecl *u
 }
 
 /**
+ * @brief Read the integer value of a `const` declaration, when it has one.
+ *
+ * The parser applies the same rule when it records a local `const`: an integer type (or none)
+ * and an integer literal initializer, optionally negated. An imported `const` has to keep
+ * exactly that promise, or a fixed array's length would differ depending on which module it
+ * came from.
+ *
+ * @param g    The declaration.
+ * @param out  Receives the value.
+ * @return     `true` when the declaration is a public `const` with an integer literal.
+ */
+static bool constIntValue(const GlobalDef *g, long long *out) {
+    if (!g->isConst || g->isPrivate || !g->init) return false;
+    if (g->ann) {
+        if (g->ann->kind != TY_UNRESOLVED || !g->ann->name) return false;
+        static const char *N[] = { "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", NULL };
+        bool ok = false;
+        for (size_t i = 0; N[i]; i++) if (strcmp(N[i], g->ann->name) == 0) ok = true;
+        if (!ok) return false;
+    }
+    Expr *v = g->init;
+    long long sign = 1;
+    if (v->kind == EX_UN && v->u.un.op && strcmp(v->u.un.op, "-") == 0) {
+        sign = -1;
+        v = v->u.un.operand;
+    }
+    if (!v || v->kind != EX_INT) return false;
+    *out = sign * (long long)v->u.ival;
+    return true;
+}
+
+/**
+ * @brief Register the `const`s one import can supply, under the path the importer wrote.
+ *
+ * A fixed array's length may be an imported `const`; the parser records the key and the type
+ * table looks the value up. This is the half only the loader can do: it knows which file the
+ * `use` resolved to and what that file declares. Every public integer-literal `const` of the
+ * target module is registered, so a qualified length (`[board::N]`) works whether or not the
+ * import listed the name; visibility rules decide which names may be used unqualified.
+ *
+ * @param tt  Type table.
+ * @param a   Arena that owns the key strings.
+ * @param u   The import; its `unit` is the resolved module.
+ */
+static void registerUseConsts(TypeTable *tt, Arena *a, const UseDecl *u) {
+    if (!tt || !u || !u->unit) return;
+    ModUnit *dep = (ModUnit *)u->unit;
+    for (size_t i = 0; i < dep->ren.len; i++) {
+        Ren *r = (Ren *)vecAt(&dep->ren, i);
+        for (size_t j = 0; j < dep->mod.globals.len; j++) {
+            GlobalDef *g = *(GlobalDef **)vecAt(&dep->mod.globals, j);
+            long long v = 0;
+            if (strcmp(g->name, r->to) != 0) continue;
+            if (!constIntValue(g, &v)) break;
+            ttConstRegister(tt, arenaPrintf(a, "%s::%s", u->path, r->from), v);
+            break;
+        }
+    }
+}
+
+/**
  * @brief Load every module the root file imports and merge them into `out`.
  *
  * `rootCtx` is stored by pointer, never copied: a copy would swallow the diagnostics
@@ -2091,7 +2152,7 @@ static void addOpensFor(Loader *L, Module *out, const char *importer, UseDecl *u
  *                    and compilation must stop.
  */
 bool loadModules(Arena *a, Module *out, Module *rootm, Ctx *rootCtx,
-                 const char *rootPath, Vec *searchDirs, Vec *outCtxs) {
+                 const char *rootPath, Vec *searchDirs, Vec *outCtxs, TypeTable *tt) {
     Loader L;
     memset(&L, 0, sizeof L);
     double t_pre = ldNow();
@@ -2270,6 +2331,17 @@ bool loadModules(Arena *a, Module *out, Module *rootm, Ctx *rootCtx,
     }
     for (size_t j = 0; j < rootm->uses.len; j++)
         addOpensFor(&L, out, NULL, *(UseDecl **)vecAt(&rootm->uses, j));
+
+    /* Imported `const` values, for fixed array lengths. Every import in every file is
+     * registered under the path **that file wrote**: the parser recorded the same key on the
+     * array node, so the type table can look the number up without knowing any scope. */
+    for (size_t i = 0; i < L.units.len; i++) {
+        ModUnit *u = *(ModUnit **)vecAt(&L.units, i);
+        for (size_t j = 0; j < u->mod.uses.len; j++)
+            registerUseConsts(tt, a, *(UseDecl **)vecAt(&u->mod.uses, j));
+    }
+    for (size_t j = 0; j < rootm->uses.len; j++)
+        registerUseConsts(tt, a, *(UseDecl **)vecAt(&rootm->uses, j));
 
     /* The root file's declarations are merged last, and through the **same path** every other
      * unit takes. Its names are never renamed (`modName == NULL` makes `mangleUnitDecls` return

@@ -1105,7 +1105,7 @@ int main(int argc, char **argv) {
         /* The loader (and the AST rewrites it drives) sits between parse and check; it
          * is timed separately here. */
         double t_ld = nowSec();
-        modsOk = loadModules(&arena, &m, &rootm, &ctx, path, &searchDirs, &moduleCtxs);
+        modsOk = loadModules(&arena, &m, &rootm, &ctx, path, &searchDirs, &moduleCtxs, tt);
         phase("load", t_ld);
     }
 

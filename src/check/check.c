@@ -310,7 +310,13 @@ bool literalFits(Expr *e, Type *want) {
         int bits = ttIntBits(w);
         if (bits > 0) {
             long long v = e->u.ival;
-            if (bits == 64) return ttIntSigned(w) || v >= 0;
+            unsigned long long uv = (unsigned long long)v;
+            /* The upper half of the unsigned range only fits an unsigned 64-bit target: it is
+             * exactly the literal `0xFFFFFFFFFFFFFFFF` and its neighbours. */
+            if (bits == 64) {
+                if (uv > 9223372036854775807ULL) return !ttIntSigned(w);
+                return ttIntSigned(w) || v >= 0;
+            }
             if (ttIntSigned(w)) {
                 long long lo = -(1LL << (bits - 1));
                 long long hi = (1LL << (bits - 1)) - 1;
@@ -640,9 +646,16 @@ bool checkAssignable(Checker *c, Type *want, Type *got, Expr *node, const char *
      * gets its own message. (A float literal assigned to an integer variable is a lossy conversion
      * and falls through to the generic message below.) */
     if (node && node->kind == EX_INT && ttIsInteger(want)) {
-        ckError(c, node->line, NULL,
-                "%s: literal `%lld` does not fit in `%s`",
-                what, node->u.ival, typeStr(c, want));
+        /* Echo the literal the user wrote: above `i64`'s maximum the same bits read
+         * signed would print a negative number, which is not what the source says. */
+        if ((unsigned long long)node->u.ival > 9223372036854775807ULL)
+            ckError(c, node->line, NULL,
+                    "%s: literal `%llu` does not fit in `%s`",
+                    what, (unsigned long long)node->u.ival, typeStr(c, want));
+        else
+            ckError(c, node->line, NULL,
+                    "%s: literal `%lld` does not fit in `%s`",
+                    what, node->u.ival, typeStr(c, want));
         return false;
     }
 

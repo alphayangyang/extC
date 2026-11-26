@@ -33,6 +33,13 @@ typedef struct {
     const char *text;      /* arena-owned NUL-terminated copy; a string token keeps
                             * the contents without the surrounding quotes */
     size_t      len;
+    /* The value as an integer. A literal is **non-negative**: a leading `-` is a
+     * separate unary token the parser consumes, so every value here fits `[0, 2^64-1]`.
+     * That full range is what `uval` holds; `ival` is the same bits read as signed, and
+     * is what every consumer that has no unsigned context keeps using (the parser, the
+     * array-length reader, the constant table). A reader that must tell the two halves
+     * apart asks `uval > LLONG_MAX`, and only that reader needs to care. */
+    unsigned long long uval;
     long long   ival;
     double      fval;
     int         line, col;

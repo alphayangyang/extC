@@ -125,6 +125,17 @@ if [ -x tests/gomoku/run.sh ]; then
     fi
 fi
 
+echo "== features：u64 字面量、数组 .len、位操作、导入 const 当长度 =="
+if [ -x tests/features/run.sh ]; then
+    if out=$(tests/features/run.sh 2>&1); then
+        printf '%s\n' "$out" | grep -E "^  ok |^  -- |^features: "
+        pass=$((pass + 1))
+    else
+        echo "$out"
+        bad "features 用例"
+    fi
+fi
+
 echo "== 警告：该响的响、正例语料上**零误报**、\`-w\` 能关 =="
 if [ -x tests/warnings/run.sh ]; then
     if out=$(tests/warnings/run.sh 2>&1); then

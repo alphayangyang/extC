@@ -112,7 +112,14 @@ static const char *genExprInner(CG *g, Expr *e) {
             bufPuts(&b, "}");
             return bufCstr(&b);
         }
-        case EX_INT:   return arenaPrintf(g->arena, "%lld", e->u.ival);
+        case EX_INT:
+            /* A literal above `i64`'s maximum is a `u64` by its own type (see the checker);
+             * printing it as `%lld` would write a negative number that no longer has the
+             * value. `%llu` is the same decimal the user wrote, and the C compiler gives an
+             * unsuffixed literal that large the type `unsigned long long` by itself. */
+            if ((unsigned long long)e->u.ival > 9223372036854775807ULL)
+                return arenaPrintf(g->arena, "%lluULL", (unsigned long long)e->u.ival);
+            return arenaPrintf(g->arena, "%lld", e->u.ival);
         case EX_FLOAT:
             /* An `f32` literal is written as the float it is: `%g` prints a `double`, and assigning that
              * to a `float` is an implicit narrowing that clang reports as

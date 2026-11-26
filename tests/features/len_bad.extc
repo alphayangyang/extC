@@ -1,0 +1,5 @@
+fn main() -> i32 {
+    var a: [4]i64
+    a.len = 2
+    return 0
+}

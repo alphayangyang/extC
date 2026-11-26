@@ -2199,7 +2199,10 @@ static Type *checkPadCall(Checker *c, Expr *e) {
     if (!vt || vt->kind == TY_ERROR) return ttError(c->tt);
     const char *padName = NULL;
     PlanPadKind kind = PLAN_PAD_NONE;
-    if (ttIsInteger(vt)) { padName = "padInt"; kind = PLAN_PAD_INT; }
+    /* @B@u64@B@ is an integer, but @B@padInt@B@ formats through @B@i64@B@: the upper half would print
+     * negative. It has its own padder. */
+    if (ttIs(vt, "u64")) { padName = "padUInt"; kind = PLAN_PAD_UINT; }
+    else if (ttIsInteger(vt)) { padName = "padInt"; kind = PLAN_PAD_INT; }
     else if (ttIsFloat(vt)) { padName = "padF"; kind = PLAN_PAD_FLOAT; }
     else if (ttIsViewType(vt) && vt->targs.len == 1 &&
              ttIs(*(Type **)vecAt(&vt->targs, 0), "u8")) {
@@ -2217,7 +2220,9 @@ static Type *checkPadCall(Checker *c, Expr *e) {
     const long long code = (*(Expr **)vecAt(&e->u.method.args, 5))->u.ival;
     const long long prec = (*(Expr **)vecAt(&e->u.method.args, 4))->u.ival;
     if (code >= 0) {
-        const long long want = kind == PLAN_PAD_INT ? 0 : kind == PLAN_PAD_FLOAT ? 1 : 2;
+        /* The type code only has to agree: @B@d@B@ for any integer (signed or not), @B@f@B@ for a
+         * float, @B@s@B@ for text. */
+        const long long want = kind == PLAN_PAD_FLOAT ? 1 : kind == PLAN_PAD_TEXT ? 2 : 0;
         if (code != want) {
             const char wc = code == 0 ? 'd' : code == 1 ? 'f' : 's';
             ckError(c, e->line,
@@ -2225,7 +2230,7 @@ static Type *checkPadCall(Checker *c, Expr *e) {
                     " value is.",
                     "`%c` says the value is %s, but it is %s", (int)wc,
                     code == 0 ? "an integer" : code == 1 ? "a float" : "text",
-                    kind == PLAN_PAD_INT ? "an integer" : kind == PLAN_PAD_FLOAT ? "a float" : "text");
+                    kind == PLAN_PAD_FLOAT ? "a float" : kind == PLAN_PAD_TEXT ? "text" : "an integer");
             return ttError(c->tt);
         }
     }
@@ -2271,7 +2276,8 @@ static Type *checkFstrPadCall(Checker *c, Expr *e) {
     if (!vt || vt->kind == TY_ERROR) return ttError(c->tt);
     const char *name = NULL;
     PlanPadKind kind = PLAN_PAD_NONE;
-    if (ttIsInteger(vt)) { name = "padI64"; kind = PLAN_PAD_INT; }
+    if (ttIs(vt, "u64")) { name = "padU64"; kind = PLAN_PAD_UINT; }
+    else if (ttIsInteger(vt)) { name = "padI64"; kind = PLAN_PAD_INT; }
     else if (ttIsFloat(vt)) { name = "padF64"; kind = PLAN_PAD_FLOAT; }
     else if (ttIsViewType(vt) && vt->targs.len == 1 &&
              ttIs(*(Type **)vecAt(&vt->targs, 0), "u8")) {
@@ -2298,7 +2304,9 @@ static Type *checkFstrPadCall(Checker *c, Expr *e) {
     const long long code = (*(Expr **)vecAt(&e->u.call.args, 5))->u.ival;
     const long long prec = (*(Expr **)vecAt(&e->u.call.args, 4))->u.ival;
     if (code >= 0) {
-        const long long want = kind == PLAN_PAD_INT ? 0 : kind == PLAN_PAD_FLOAT ? 1 : 2;
+        /* The type code only has to agree: @B@d@B@ for any integer (signed or not), @B@f@B@ for a
+         * float, @B@s@B@ for text. */
+        const long long want = kind == PLAN_PAD_FLOAT ? 1 : kind == PLAN_PAD_TEXT ? 2 : 0;
         if (code != want) {
             const char wc = code == 0 ? 'd' : code == 1 ? 'f' : 's';
             ckError(c, e->line,
@@ -2306,7 +2314,7 @@ static Type *checkFstrPadCall(Checker *c, Expr *e) {
                     " value is.",
                     "`%c` says the value is %s, but it is %s", (int)wc,
                     code == 0 ? "an integer" : code == 1 ? "a float" : "text",
-                    kind == PLAN_PAD_INT ? "an integer" : kind == PLAN_PAD_FLOAT ? "a float" : "text");
+                    kind == PLAN_PAD_FLOAT ? "a float" : kind == PLAN_PAD_TEXT ? "text" : "an integer");
             return ttError(c->tt);
         }
     }
@@ -2482,6 +2490,12 @@ static Type *checkExprInner(Checker *c, Expr *e) {
              * `i64`, so an unannotated `let n = 5000000000` inside a generic body is still 64-bit. Only
              * lossless widening is implicit, never implicit truncation; a context that wants a different
              * integer type gives the literal its type through `literalFits` / `adoptContextType`. */
+            /* A literal above `i64`'s maximum (`0xFFFFFFFFFFFFFFFF`) has no signed home: the
+             * smallest integer type that holds it is `u64`, which is also the only type it can
+             * reach without an explicit conversion. The value occupies the same eight bytes and
+             * is read as unsigned; a leading `-` is a separate unary token, never part of the
+             * literal, so a negative `ival` here means exactly the unsigned upper half. */
+            if ((unsigned long long)e->u.ival > 9223372036854775807ULL) return ttFromName(tt, "u64");
             if (e->u.ival < -2147483648LL || e->u.ival > 2147483647LL) return c->tI64;
             return c->tI32;
         case EX_FLOAT: return c->tF64;
@@ -2956,6 +2970,25 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             Type *rawT = checkExpr(c, e->u.field.obj);
             if (rejectNullableDeref(c, rawT, e->u.field.obj, "field access")) return ttError(tt);
             Type *bt = ttBase(rawT);
+            /* `a.len` on a fixed array is the length of its **full view**: the value the type
+             * already carries, spelled through the node codegen and the borrow checker already
+             * understand (`a[..]` then the view's own `len`). Rewriting once here means no second
+             * rule for "how long is an array" and no new AST node; slicing a whole `[N]T` needs
+             * no bounds, so the view is exact. */
+            if (bt && bt->kind == TY_ARRAY && strcmp(e->u.field.name, "len") == 0) {
+                if (bt->asize < 0) {
+                    ckError(c, e->line,
+                            "A fixed array whose length is a `const` parameter has a length only"
+                            " once the function is instantiated: the array's C type does not exist"
+                            " before that, so `.len` cannot be folded here. Pass the number in, or"
+                            " use the parameter itself where you need it.",
+                            "`.len` of `%s`, whose length is the `const` parameter `%s`, is"
+                            " not known here", typeStr(c, bt), bt->param ? bt->param : "?");
+                    return ttError(tt);
+                }
+                e->u.field.obj = exprSliceNew(c->arena, e->u.field.obj, NULL, NULL, e->line);
+                return checkExpr(c, e);
+            }
             StructDef *sd = structOf(bt);
             if (!sd) {
                 ckError(c, e->line, NULL, "`%s` is not a struct, so it has no field `%s`",

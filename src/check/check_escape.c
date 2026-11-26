@@ -3001,6 +3001,25 @@ bool requireMutable(Checker *c, Expr *e, int line, const char *what) {
      * prevent -- so the halves are read-only even through a `mut slice<T>`. `mut` governs the
      * *elements*, not the coordinates. Callers build the view they want instead. */
     if (e && e->kind == EX_FIELD) {
+        /* `.len` of a fixed array is rewritten by the checker into a view of the whole array
+         * (`a.len` is `a[..].len`), so the generic view diagnostic below would talk about a
+         * view the user never wrote. The length of a fixed array is part of its type. */
+        Expr *vo = e->u.field.obj;
+        if (strcmp(e->u.field.name, "len") == 0 && vo && vo->kind == EX_SLICE && vo->u.slice.obj &&
+            vo->u.slice.obj->type && vo->u.slice.obj->type->kind == TY_ARRAY) {
+            /* `a.len` on a fixed array was rewritten into `a[..].len`, i.e. a view over the
+             * whole array: whole-collection view, but the user never wrote a view. */
+            long long lo = -1, hi = -1;
+            if (asIntLit(vo->u.slice.lo, &lo) && asIntLit(vo->u.slice.hi, &hi) && lo == 0 &&
+                hi == vo->u.slice.obj->type->asize) {
+                ckError(c, line,
+                        "A fixed array's length is part of its type (`[4]i64`): the compiler"
+                        " knows it and nothing can change it. Declare the size you need, or use a"
+                        " container (`vector`) when the count varies at run time.",
+                        "cannot assign `len` of a fixed array: its length is part of the type");
+                return true;
+            }
+        }
         Type *bt = e->u.field.obj->type;
         while (bt && bt->kind == TY_REF) bt = bt->inner;
         if (bt && ttIsViewType(bt)) {

@@ -215,9 +215,9 @@ static const char *genDynValue(CG *g, Expr *e) {
  *           does not match.
  */
 static const char *genPadCall(CG *g, Expr *e) {
-    static const char *const padNames[] = {"", "padText", "padInt", "padF"};
+    static const char *const padNames[] = {"", "padText", "padInt", "padF", "padUInt"};
     PlanPadKind kind = planPadKind(e);
-    if (kind <= PLAN_PAD_NONE || kind > PLAN_PAD_FLOAT) return "0";
+    if (kind <= PLAN_PAD_NONE || kind > PLAN_PAD_UINT) return "0";
     Type *recvT = subst(g, e->u.method.recv->type);
     FuncDef *f = findMethod(ttBase(recvT), padNames[kind]);
     if (!f || f->params.len < 2) return "0";
@@ -245,6 +245,7 @@ static const char *genPadCall(CG *g, Expr *e) {
         }
         const char *at = genExpr(g, ae);
         if (slot == 0 && kind == PLAN_PAD_INT) bufPrintf(&b, ", (int64_t)(%s)", at);
+        else if (slot == 0 && kind == PLAN_PAD_UINT) bufPrintf(&b, ", (uint64_t)(%s)", at);
         else if (slot == 0 && kind == PLAN_PAD_FLOAT) bufPrintf(&b, ", (double)(%s)", at);
         else bufPrintf(&b, ", %s", at);
     }

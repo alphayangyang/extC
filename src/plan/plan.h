@@ -1162,7 +1162,11 @@ typedef enum {
     PLAN_PAD_NONE = 0,
     PLAN_PAD_TEXT,
     PLAN_PAD_INT,
-    PLAN_PAD_FLOAT
+    PLAN_PAD_FLOAT,
+    /* @B@u64@B@ has no @B@i64@B@ value in its upper half, so it cannot share @B@padInt@B@
+     * (which formats signed digits). It gets its own primitive and its own
+     * kind, and the code generation follows this number. */
+    PLAN_PAD_UINT
 } PlanPadKind;
 
 /**

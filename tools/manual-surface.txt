@@ -466,6 +466,7 @@ std::io	ostream	fd	field	public
 std::io	ostream	padF	method	public
 std::io	ostream	padInt	method	public
 std::io	ostream	padText	method	public
+std::io	ostream	padUInt	method	public
 std::io	reader	avail	method	public
 std::io	reader	buffered	method	public
 std::io	reader	chunk	field	public
@@ -825,6 +826,7 @@ std::text::string	-	encodedLen	fn	public
 std::text::string	-	from	fn	public
 std::text::string	-	fromF64	fn	public
 std::text::string	-	fromI64	fn	public
+std::text::string	-	fromU64	fn	public
 std::text::string	-	join	fn	public
 std::text::string	-	new	fn	public
 std::text::string	-	pDec	fn	internal
@@ -834,6 +836,7 @@ std::text::string	-	pEnc6	fn	internal
 std::text::string	-	padF64	fn	public
 std::text::string	-	padI64	fn	public
 std::text::string	-	padText	fn	public
+std::text::string	-	padU64	fn	public
 std::text::string	-	readAll	fn	public
 std::text::string	-	readLine	fn	public
 std::text::string	-	readToken	fn	public
@@ -848,6 +851,7 @@ std::text::string	string	alloc	method	internal
 std::text::string	string	append	method	public
 std::text::string	string	appendByte	method	public
 std::text::string	string	appendI64	method	public
+std::text::string	string	appendU64	method	public
 std::text::string	string	at	method	public
 std::text::string	string	big	field	internal
 std::text::string	string	borrow	method	public

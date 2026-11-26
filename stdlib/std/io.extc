@@ -682,6 +682,20 @@ struct ostream { fd: i32
         }
         return { fd: self.fd }
     }
+    /* 无符号整数：同一条零填充口径，只是没有符号位要先打出去。 */
+    @inline
+    fn padUInt(self: ref ostream, v: u64, width: i64, fill: u8, align: i64) -> ostream {
+        pairsReady()
+        let st = fmtU64Fast(v)
+        let n = 24 - st
+        if fill == u8(48) && align == RIGHT && width > n {
+            fillBytes(width - n, fill)
+            extc_cout_put(FMTSTATE.text[st..24].data, n)
+        } else {
+            padText(FMTSTATE.text[st..24], width, fill, align)
+        }
+        return { fd: self.fd }
+    }
     /* 浮点：`{:.2f}` / `{:8.2f}`（`prec` 必须 >= 0）*/
     @inline
     fn padF(self: ref ostream, v: f64, width: i64, prec: i64, fill: u8, align: i64) -> ostream {

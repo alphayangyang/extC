@@ -1,0 +1,6 @@
+use board::*
+
+fn main() -> i32 {
+    var g: [NEG]i64
+    return 0
+}

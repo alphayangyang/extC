@@ -1,0 +1,13 @@
+use std::io
+
+fn main() -> i32 {
+    let all: u64 = 0xFFFFFFFFFFFFFFFF
+    let big: u64 = 18446744073709551615
+    let half: u64 = 9223372036854775808
+    io::println(f"all={all}")
+    io::println(f"same={big} half={half} back={i64(half)}")
+    io::println(f"pad=[{all:04}]")
+    io::println(f"plain={42} {all}")
+    io::cout << f"stream={all:06}" << "\n"
+    return 0
+}

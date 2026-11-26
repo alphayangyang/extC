@@ -83,6 +83,48 @@ Type *typeArraySym(Arena *a, const char *lenParam, Type *elem) {
 }
 
 /**
+ * @brief Build a fixed-array type whose length is a `const` imported from another module.
+ *
+ * `asize = -2` marks a key that has to be looked up in the type table's imported-`const`
+ * table before the type can be interned; a symbolic `const` parameter keeps `-1`, so the two
+ * never collide.
+ *
+ * @param a    Arena that owns the node.
+ * @param key  Full import path plus the name, e.g. `board::N`.
+ * @param elem Element type.
+ * @return     A TY_ARRAY type with an imported length.
+ */
+Type *typeArrayImported(Arena *a, const char *key, Type *elem) {
+    Type *t = (Type *)arenaAllocZero(a, sizeof(Type));
+    t->kind = TY_ARRAY;
+    t->asize = -2;
+    t->param = key;
+    t->inner = elem;
+    return t;
+}
+
+/**
+ * @brief Build a fixed-array type whose length is named without a module.
+ *
+ * `asize = -3` means "some imported module declares a `const` with this name"; the type
+ * table searches the imported-`const` table by suffix and reports the ambiguity when two
+ * modules match.
+ *
+ * @param a     Arena that owns the node.
+ * @param name  The name as written, e.g. `N`.
+ * @param elem  Element type.
+ * @return      A TY_ARRAY type with an imported length.
+ */
+Type *typeArrayImportedName(Arena *a, const char *name, Type *elem) {
+    Type *t = (Type *)arenaAllocZero(a, sizeof(Type));
+    t->kind = TY_ARRAY;
+    t->asize = -3;
+    t->param = name;
+    t->inner = elem;
+    return t;
+}
+
+/**
  * @brief Build a function type `fn(params...) -> ret` (TY_FN) from the pieces the parser
  * hands over.
  *

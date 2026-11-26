@@ -19,6 +19,13 @@
 #include "ast.h"
 #include "base.h"
 
+/* One imported `const` usable as a fixed array's length: the lookup key is
+ * `<full import path>::<name>`, e.g. `board::N` for `use board::{N}`. */
+typedef struct {
+    const char *key;
+    long long   value;
+} ConstVal;
+
 typedef struct {
     Arena *arena;       /* arena that owns this table and every type in it */
     Vec    builtins;    /* Type* - the built-in types; interned */
@@ -30,6 +37,12 @@ typedef struct {
      * export the same name produce two entries, which is what lets the resolver count
      * the matches and refuse the ambiguity instead of picking one. */
     Vec    aliases;     /* Alias* */
+    /* Values of `const`s imported from other modules, keyed `<use path>::<name>`.
+     * A fixed array's length has to be known while its type is resolved, and an imported
+     * `const` lives in another file: the parser records the key it saw (`[board::N]`, or
+     * `[N]` when an import brought `N` into scope) on the array node, and `ttResolve` looks
+     * the value up here. The loader fills this table after parsing, before the checker runs. */
+    Vec    consts;      /* ConstVal* */
     /* The module whose declaration is being checked right now, or NULL when the checker
      * is not inside a module (the entry file, the prelude, and every pass outside the
      * checker). A module body sees its own declarations and what it imported, never a
@@ -298,6 +311,43 @@ Type *ttArray(TypeTable *tt, int64_t n, Type *elem);
  * @return          The interned symbolic array type.
  */
 Type *ttArraySym(TypeTable *tt, const char *lenParam, Type *elem);
+
+/**
+ * @brief Record one imported `const`'s value, for a fixed array's length.
+ *
+ * The layer split is the reason this table exists: the parser sees a `use` but not the
+ * imported file, and the loader sees the file but not the type. The loader registers the
+ * value under the key the parser will write on the array node, and `ttResolve` joins the
+ * two. Re-registering the same key and value is expected (several files may import the
+ * same module) and has no effect.
+ *
+ * @param tt     Type table.
+ * @param key    `<full import path>::<name>`, e.g. `board::N`.
+ * @param value  The `const`'s integer value, as written in its initializer.
+ */
+void ttConstRegister(TypeTable *tt, const char *key, long long value);
+
+/**
+ * @brief Look up one imported `const` by its exact key.
+ *
+ * @param tt   Type table.
+ * @param key  `<full import path>::<name>`.
+ * @return     A pointer to the value, or `NULL` when no such `const` was registered.
+ */
+const long long *ttConstFind(TypeTable *tt, const char *key);
+
+/**
+ * @brief Look up an imported `const` by name alone, when the module was not written.
+ *
+ * Used for a length written as a plain name while several `use mod::*` imports could each
+ * supply it: every registered key ending in `::<name>` is a match.
+ *
+ * @param tt     Type table.
+ * @param name   The bare name, e.g. `N`.
+ * @param value  Receives the value of the first match.
+ * @return       How many imported `const`s carry this name: 0, 1, or more (ambiguous).
+ */
+size_t ttConstFindByName(TypeTable *tt, const char *name, long long *value);
 
 /**
  * @brief Tell whether a type mentions a type parameter at any depth.

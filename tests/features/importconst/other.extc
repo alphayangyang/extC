@@ -1,0 +1,4 @@
+module other
+
+const K: i64 = 6
+const N: i64 = 7

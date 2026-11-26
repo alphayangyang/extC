@@ -281,6 +281,14 @@ struct string {
     fn +(self: ref string, other: u32) -> string { return self.pNumeric(i64(other)) }
     fn +(self: ref string, other: u16) -> string { return self.pNumeric(i64(other)) }
     fn +(self: ref string, other: u8) -> string { return self.pNumeric(i64(other)) }
+    /* `u64` gets its own path: its upper half has no `i64` value, so widening to `i64`
+     * would print the wrong number. `appendU64` prints the unsigned decimal. */
+    fn +(self: ref string, other: u64) -> string {
+        var out: string
+        out.append(self.subView(0, self.n))
+        out.appendU64(other)
+        return out
+    }
 
     fn +(self: ref string, other: bool) -> string {
         var out: string
@@ -511,6 +519,7 @@ struct string {
     fn +=(self: mut ref string, other: slice<u8>) { self.append(other) }
     fn +=(self: mut ref string, other: ref string) { self.append(other.view()) }
     fn +=(self: mut ref string, other: i64) { self.appendI64(other) }
+    fn +=(self: mut ref string, other: u64) { self.appendU64(other) }
     fn +=(self: mut ref string, other: f64) { self.appendF64(other, 6) }
     fn append(self: mut ref string, s: slice<u8>) {
         if self.pStale() { self.pPoison() }
@@ -814,6 +823,33 @@ struct string {
         self.append(out[0..at])
     }
 
+    /* 十进制无符号整数的追加：`s.appendU64(n)`。`i64` 的重载够不到 `u64` 的上半
+     * 段（> 2^63-1），所以这里按无符号除法取位；`+` 与 `+=` 的 `u64` 重载共用这一条。 */
+    fn appendU64(self: mut ref string, v: u64) {
+        var buf: [20]u8
+        var x: u64 = v
+        var k: i64 = 0
+        if x == u64(0) {
+            buf[k] = u8(48)
+            k = k + 1
+        } else {
+            while x > u64(0) {
+                buf[k] = u8(48 + i64(x % u64(10)))
+                x = x / u64(10)
+                k = k + 1
+            }
+        }
+        var out: [20]u8
+        var j: i64 = k - 1
+        var at: i64 = 0
+        while j >= 0 {
+            out[at] = buf[j]
+            at = at + 1
+            j = j - 1
+        }
+        self.append(out[0..at])
+    }
+
     /* 换一片刚好装下的（下限 16）；连续性与字节不变。
      *
      * 内联态（`cap == 0`）没有可缩的：它本来就只占 16 字节，而且"下限 16"这条承诺
@@ -1008,6 +1044,14 @@ fn fromI64(n: i64) -> string {
   var r: string = withCap(24 - i)
   var k: i64 = i
   while k < 24 { r.push(tmp[k])  k = k + 1 }
+  return r
+}
+
+/* 从 `u64` 造一个 `string`：`fromU64(n)`。与 `fromI64` 成对，覆盖无符号的上半段
+ * （> 2^63-1）—— 那里的值没有 `i64` 表示，不能借道有符号版本。 */
+fn fromU64(n: u64) -> string {
+  var r: string = withCap(20)
+  r.appendU64(n)
   return r
 }
 
@@ -1362,6 +1406,12 @@ fn padI64(v: i64, width: i64, fill: u8, align: i64) -> string {
         }
         return out
     }
+    return padText(t.snapshot(), width, fill, align)
+}
+
+/* 无符号整数：`{x:>4}` 走这个。没有符号位，零填充就是纯前导 0，直接借 `padText`。 */
+fn padU64(v: u64, width: i64, fill: u8, align: i64) -> string {
+    let t: string = fromU64(v)
     return padText(t.snapshot(), width, fill, align)
 }
 

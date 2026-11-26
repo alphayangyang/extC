@@ -1,0 +1,17 @@
+use std::io
+use board::*
+use other
+
+struct grid {
+    cells: [WIDE][WIDE]i64
+}
+
+fn main() -> i32 {
+    var g: grid
+    g.cells[3][3] = 7
+    var flat: [N]i64
+    var wide: [WIDE]i64
+    var qual: [other::K]i64
+    io::println(f"n={flat.len} wide={wide.len} qual={qual.len} cell={g.cells[3][3]}")
+    return 0
+}

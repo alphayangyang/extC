@@ -182,6 +182,7 @@ static Token *lxPushAt(Lexer *lx, Vec *out, TokenKind kind,
     t->text = arenaStrndup(lx->ctx->arena, text, n);
     t->len  = n;
     t->ival = 0;
+    t->uval = 0;
     t->fval = 0.0;
     t->line = line;
     t->col  = col;
@@ -217,7 +218,10 @@ static bool isDigitInRadix(char c, int radix) {
  * keeps `1_` and `0x_1` from becoming silent typos.
  *
  * Every number produced here is non-negative: a leading `-` is a separate token consumed
- * by the parser's parseUnary. A `.` is part of the number only when a digit follows it
+ * by the parser's parseUnary. The range is therefore `[0, 2^64-1]`, not the signed 64-bit
+ * range -- `0xFFFFFFFFFFFFFFFF` is a legal literal whose type is `u64` (see the EX_INT case
+ * in checkExpr), and `uval` keeps it exactly. A `.` is part of the number only when a
+ * digit follows it
  * (`1..2` is a range, `1.foo` reads a field of 1). The value is accumulated rather than
  * read with strtoll, because the text is not NUL-terminated and may contain separators.
  *
@@ -261,20 +265,22 @@ static void lexNumber(Lexer *lx, Vec *out) {
             return;
         }
 
-        long long v = 0;
+        unsigned long long v = 0;
         for (size_t i = digStart; i < lx->pos; i++) {
             char h = lx->src[i];
             if (h == '_') continue;
-            long long d = isDigit(h) ? (h - '0') : ((h | 0x20) - 'a' + 10);
-            if (v > (LLONG_MAX - d) / radix) {
+            unsigned long long d = isDigit(h) ? (unsigned long long)(h - '0')
+                                              : (unsigned long long)((h | 0x20) - 'a' + 10);
+            if (v > (ULLONG_MAX - d) / (unsigned long long)radix) {
                 ctxError(lx->ctx, line, col, NULL,
-                         "integer literal exceeds the supported signed 64-bit range");
+                         "integer literal exceeds the supported 64-bit range");
                 return;
             }
-            v = v * radix + d;
+            v = v * (unsigned long long)radix + d;
         }
         Token *t = lxPushAt(lx, out, TK_INT, lx->src + start, lx->pos - start, line, col);
-        t->ival = v;
+        t->uval = v;
+        t->ival = (long long)v;
         return;
     }
 
@@ -310,19 +316,20 @@ static void lexNumber(Lexer *lx, Vec *out) {
         buf[n] = 0;
         t->fval = strtod(buf, NULL);
     } else {
-        long long v = 0;
+        unsigned long long v = 0;
         bool over = false;
         for (size_t i = start; i < lx->pos; i++) {
             char c = lx->src[i];
             if (c == '_') continue;
-            long long d = c - '0';
-            if (v > (LLONG_MAX - d) / 10) { over = true; break; }
-            v = v * 10 + d;
+            unsigned long long d = (unsigned long long)(c - '0');
+            if (v > (ULLONG_MAX - d) / 10ULL) { over = true; break; }
+            v = v * 10ULL + d;
         }
         if (over)
             ctxError(lx->ctx, line, col, NULL,
-                     "integer literal exceeds the supported signed 64-bit range");
-        t->ival = v;
+                     "integer literal exceeds the supported 64-bit range");
+        t->uval = v;
+        t->ival = (long long)v;
     }
 }
 

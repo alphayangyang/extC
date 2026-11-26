@@ -1,0 +1,3 @@
+module a
+
+const N: i64 = 3

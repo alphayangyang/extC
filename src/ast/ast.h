@@ -160,6 +160,32 @@ Type *typeArray(Arena *a, int64_t n, Type *elem);
  * @return          A TY_ARRAY type with a symbolic length.
  */
 Type *typeArraySym(Arena *a, const char *lenParam, Type *elem);
+/**
+ * @brief Build a fixed-array type whose length is a `const` imported from another module.
+ *
+ * The value lives in another file, which the parser has not loaded: the node records the
+ * lookup key `<full import path>::<name>` and `asize = -2`, and `ttResolve` turns the key into
+ * the number once the loader has registered every imported `const`.
+ *
+ * @param a    Arena that owns the node.
+ * @param key  Full import path plus the name, e.g. `board::N`.
+ * @param elem Element type.
+ * @return     A TY_ARRAY type with an imported length.
+ */
+Type *typeArrayImported(Arena *a, const char *key, Type *elem);
+/**
+ * @brief Build a fixed-array type whose length is a `const` that only a plain name names.
+ *
+ * Used when several `use mod::*` imports could each supply the name: the node records the
+ * name alone (`asize = -3`) and the type table finds the one imported `const` that matches,
+ * reporting an ambiguity when more than one does.
+ *
+ * @param a     Arena that owns the node.
+ * @param name  The name as written, e.g. `N`.
+ * @param elem  Element type.
+ * @return      A TY_ARRAY type with an imported length.
+ */
+Type *typeArrayImportedName(Arena *a, const char *name, Type *elem);
 
 /**
  * @brief Build a function type `fn(params...) -> ret` (TY_FN) from the pieces the parser

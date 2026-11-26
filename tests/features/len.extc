@@ -1,0 +1,19 @@
+use std::io
+
+struct frame {
+    xs: [3]i32
+}
+
+fn main() -> i32 {
+    var a: [4]i64
+    var b: [2][3]i64
+    var f: frame
+    var sum: i64 = 0
+    for i in 0..a.len {
+        a[i] = i64(i)
+        sum = sum + a[i]
+    }
+    f.xs[1] = 9
+    io::println(f"len={a.len} inner={b[0].len} outer={b.len} field={f.xs.len} sum={sum}")
+    return 0
+}

@@ -10,6 +10,7 @@
 #define EXTC_MODULES_H
 
 #include "ast.h"
+#include "types.h"
 
 /**
  * @brief Load every module the root file imports and merge them into `out`.
@@ -22,6 +23,9 @@
  * @param searchDirs  Directories from `-I`, or `NULL`.
  * @param outCtxs     Receives the Ctx of every loaded module so the caller can render their
  *                    diagnostics afterwards, or `NULL` when the caller does not need them.
+ * @param tt          Type table; imported `const` values are registered into it so a fixed
+ *                    array may take its length from another module. May be `NULL` (no
+ *                    registration) for a caller that only wants the merge.
  * @return            `false` when any error was reported; the diagnostics are already
  *                    printed and compilation must stop.
  *
@@ -30,6 +34,6 @@
  * reach the caller.
  */
 bool loadModules(Arena *a, Module *out, Module *rootm, Ctx *rootCtx,
-                 const char *rootPath, Vec *searchDirs, Vec *outCtxs);
+                 const char *rootPath, Vec *searchDirs, Vec *outCtxs, TypeTable *tt);
 
 #endif

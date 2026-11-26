@@ -1,0 +1,7 @@
+module board
+
+const N: i64 = 5
+const WIDE: i64 = 4
+const NEG: i64 = -2
+const F: f64 = 1.5
+@private const HIDDEN: i64 = 9

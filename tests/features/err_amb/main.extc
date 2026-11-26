@@ -1,0 +1,7 @@
+use a::*
+use b::*
+
+fn main() -> i32 {
+    var g: [N]i64
+    return 0
+}

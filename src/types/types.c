@@ -69,6 +69,7 @@ TypeTable *ttNew(Arena *a, Module *m) {
     vecInit(&tt->structs, a, sizeof(void *));
     vecInit(&tt->enums, a, sizeof(void *));
     vecInit(&tt->aliases, a, sizeof(Alias));
+    vecInit(&tt->consts, a, sizeof(ConstVal));
     vecInit(&tt->instances, a, sizeof(void *));
     vecInit(&tt->enumInstances, a, sizeof(void *));
     vecInit(&tt->viewShadows, a, sizeof(void *));
@@ -186,6 +187,69 @@ Type *ttArraySym(TypeTable *tt, const char *lenParam, Type *elem) {
     t->name = ttMangle(tt, t);
     *(Type **)vecPush(&tt->instances) = t;
     return t;
+}
+
+/**
+ * @brief Record one imported `const`'s value for a fixed array's length.
+ *
+ * The parser only knows the `use` path, and the loader only knows the other file: this table
+ * is where the two meet. The key is the one the parser writes on the array node, so looking
+ * it up later needs no scope of its own.
+ *
+ * @param tt     Type table.
+ * @param key    `<full import path>::<name>`.
+ * @param value  The `const`'s integer value.
+ */
+void ttConstRegister(TypeTable *tt, const char *key, long long value) {
+    for (size_t i = 0; i < tt->consts.len; i++) {
+        ConstVal *c = (ConstVal *)vecAt(&tt->consts, i);
+        if (strcmp(c->key, key) == 0) return;   /* several importers, one value */
+    }
+    ConstVal *c = (ConstVal *)vecPush(&tt->consts);
+    c->key   = key;
+    c->value = value;
+}
+
+/**
+ * @brief Look up one imported `const` by its exact key.
+ *
+ * @param tt   Type table.
+ * @param key  `<full import path>::<name>`.
+ * @return     A pointer into the table, or `NULL` when nothing was registered under the key.
+ */
+const long long *ttConstFind(TypeTable *tt, const char *key) {
+    for (size_t i = 0; i < tt->consts.len; i++) {
+        ConstVal *c = (ConstVal *)vecAt(&tt->consts, i);
+        if (strcmp(c->key, key) == 0) return &c->value;
+    }
+    return NULL;
+}
+
+/**
+ * @brief Look up an imported `const` by name alone, counting the matches.
+ *
+ * A length written as a plain name is unambiguous only when exactly one imported module
+ * supplies it; the count is what lets the caller report the ambiguity instead of picking the
+ * first match.
+ *
+ * @param tt     Type table.
+ * @param name   The bare name.
+ * @param value  Receives the value of the first match, when there is one.
+ * @return       Number of matches: 0, 1, or more.
+ */
+size_t ttConstFindByName(TypeTable *tt, const char *name, long long *value) {
+    size_t n = strlen(name);
+    size_t matches = 0;
+    for (size_t i = 0; i < tt->consts.len; i++) {
+        ConstVal *c = (ConstVal *)vecAt(&tt->consts, i);
+        size_t k = strlen(c->key);
+        if (k < n + 2) continue;
+        if (strcmp(c->key + (k - n), name) != 0) continue;
+        if (c->key[k - n - 1] != ':' || c->key[k - n - 2] != ':') continue;
+        if (matches == 0) *value = c->value;
+        matches++;
+    }
+    return matches;
 }
 
 /**
@@ -456,6 +520,55 @@ Type *ttResolve(TypeTable *tt, Ctx *ctx, Type *t, int line, Vec *params) {
                          "(its size is part of the type).",
                          "cannot make a fixed array of the type parameter `%s`", e->param);
                 return tt->tError;
+            }
+            /* An imported `const`: the parser wrote down which one it meant, and the loader
+             * registered every imported `const`'s value before the checker ran. This is the
+             * only place the two halves meet, which is why an unresolved key is an error here
+             * rather than a type with a symbolic length. */
+            if (t->asize == -2 && t->param) {
+                const long long *v = ttConstFind(tt, t->param);
+                if (!v) {
+                    ctxError(ctx, line, 1,
+                             "A fixed array's length is a number known before the program runs."
+                             " An imported `const` can supply it only when the module declares it"
+                             " with an integer type and an integer literal initializer, and the"
+                             " importing file lists it (`use mod::{N}` or `use mod::*`).",
+                             "array length: `%s` is not a `const` with an integer literal"
+                             " initializer in the module it is imported from", t->param);
+                    return tt->tError;
+                }
+                if (*v <= 0) {
+                    ctxError(ctx, line, 1, NULL,
+                             "array length must be positive, got %lld", (long long)*v);
+                    return tt->tError;
+                }
+                return ttArray(tt, *v, e);
+            }
+            if (t->asize == -3 && t->param) {
+                long long v = 0;
+                size_t matches = ttConstFindByName(tt, t->param, &v);
+                if (matches == 0) {
+                    ctxError(ctx, line, 1,
+                             "A fixed array's length is a number known before the program runs."
+                             " A plain name is in scope as a length only when an import lists it"
+                             " or opens the whole module (`use mod::{N}` / `use mod::*`).",
+                             "array length: no imported module declares a `const` named `%s`",
+                             t->param);
+                    return tt->tError;
+                }
+                if (matches > 1) {
+                    ctxError(ctx, line, 1,
+                             "Write the module the `const` comes from: `[mod::name]`.",
+                             "array length: `%s` is declared by more than one imported module",
+                             t->param);
+                    return tt->tError;
+                }
+                if (v <= 0) {
+                    ctxError(ctx, line, 1, NULL,
+                             "array length must be positive, got %lld", (long long)v);
+                    return tt->tError;
+                }
+                return ttArray(tt, v, e);
             }
             if (t->asize < 0 && t->param) return ttArraySym(tt, t->param, e);
             return ttArray(tt, t->asize, e);

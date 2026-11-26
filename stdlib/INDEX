@@ -12,6 +12,8 @@ appendF64	string	std::text::string	public	method
 clamp	f64	prelude	public	method
 clamp	i32	prelude	public	method
 clamp	i64	prelude	public	method
+clz	u64	prelude	public	method
+ctz	u64	prelude	public	method
 hash	i64	std::data::hashMap	public	method
 max	f64	prelude	public	method
 max	i32	prelude	public	method
@@ -21,6 +23,7 @@ min	f64	prelude	public	method
 min	i32	prelude	public	method
 min	i64	prelude	public	method
 min	u64	prelude	public	method
+popcount	u64	prelude	public	method
 readAll	io::stdinStream	std::text::string	public	method
 readAllFrom	string	std::text::string	public	method
 readLine	io::stdinStream	std::text::string	public	method
