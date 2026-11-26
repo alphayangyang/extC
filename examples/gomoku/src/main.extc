@@ -1,0 +1,84 @@
+// examples/gomoku -- 15x15 五子棋：人机、AI 自对弈、bench、TUI。
+//
+//   gomoku                    人（黑）对 AI（白），搜索深度 6
+//   gomoku --selfplay         AI 对 AI，确定性（固定深度、无时钟）
+//   gomoku --bench            固定中局上重复搜索，报告 nps（默认深度 6、跑 3 轮）
+//   gomoku --tui              全屏界面（需要真终端）
+//   --depth N                 覆盖搜索深度
+use board
+use textui
+use tuiapp
+use std::io
+
+fn argIs(a: slice<u8>, s: slice<u8>) -> bool {
+    if a.len != s.len { return false }
+    var i: i64 = 0
+    while i < a.len {
+        if a[i] != s[i] { return false }
+        i = i + 1
+    }
+    return true
+}
+
+fn usage() -> i32 {
+    io::cout << "gomoku -- 15x15 gomoku with an alpha-beta AI\n\n"
+    io::cout << "  gomoku                 human (black) vs AI (white)\n"
+    io::cout << "  gomoku --selfplay      AI vs AI, deterministic\n"
+    io::cout << "  gomoku --bench         repeat the midgame search (--depth N, --runs R)\n"
+    io::cout << "  gomoku --tui           full-screen UI (needs a terminal)\n"
+    io::cout << "  --depth N              search depth for any mode\n"
+    io::cout << "  --help                 this text\n"
+    return 0
+}
+
+fn main(args: slice<slice<u8>>) -> i32 {
+    var mode: i64 = 0
+    var depth: i64 = 0
+    var depthSet: bool = false
+    var runs: i64 = 3
+    var i: i64 = 1
+    while i < args.len {
+        let a = args[i]
+        if argIs(a, "--help") || argIs(a, "-h") {
+            return usage()
+        } else if argIs(a, "--selfplay") {
+            mode = 1
+        } else if argIs(a, "--bench") {
+            mode = 2
+        } else if argIs(a, "--tui") {
+            mode = 3
+        } else if argIs(a, "--depth") {
+            if i + 1 >= args.len { io::eprintln("--depth needs a number"); return 2 }
+            match args[i + 1].toI64() {
+                none => { io::eprintln("--depth needs a number"); return 2 }
+                some(n) => {
+                    if n < 1 || n > 9 { io::eprintln("--depth must be 1..9"); return 2 }
+                    depth = n
+                    depthSet = true
+                    i = i + 1
+                }
+            }
+        } else if argIs(a, "--runs") {
+            if i + 1 >= args.len { io::eprintln("--runs needs a number"); return 2 }
+            match args[i + 1].toI64() {
+                none => { io::eprintln("--runs needs a number"); return 2 }
+                some(n) => {
+                    if n < 1 { io::eprintln("--runs must be at least 1"); return 2 }
+                    runs = n
+                    i = i + 1
+                }
+            }
+        } else {
+            io::cout << "unknown option: " << a << "\n"
+            return 2
+        }
+        i = i + 1
+    }
+    if !depthSet {
+        if mode == 1 { depth = 4 } else if mode == 2 { depth = 6 } else { depth = 6 }
+    }
+    if mode == 1 { return textui::selfPlay(depth, board::CELLS) }
+    if mode == 2 { return textui::bench(depth, runs) }
+    if mode == 3 { return tuiapp::run(depth) }
+    return textui::humanGame(depth)
+}

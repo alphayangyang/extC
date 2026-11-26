@@ -1,0 +1,154 @@
+// search -- Negamax + alpha-beta + 候选点排序 + 迭代加深。
+//
+// 宽度：根 16、浅层 10、深层 8（候选点已按"进攻 + 防守"排序，越靠前越值得算）。
+// 时间：budgetMs=0 表示只看深度、不看钟（可复现；测试与自对弈都用这一档）。
+use board::{N, EMPTY, BLACK, WHITE, board}
+use eval
+use std::sys::time as extctime
+
+const MATE: i64 = 100000000
+const PICKMAX: i64 = 24
+
+// 每个节点保留的前 PICKMAX 个候选（插入排序，按排序分降序）。
+struct pick {
+    idx: [24]i64
+    sc: [24]i64
+    n: i64
+}
+
+struct searcher {
+    nodes: i64
+    deadline: i64      // 0 = 无时限
+    timedOut: bool
+    rootX: i64
+    rootY: i64
+    rootScore: i64
+}
+
+struct result {
+    x: i64
+    y: i64
+    score: i64
+    nodes: i64
+    depth: i64
+}
+
+// 每个节点的候选点：扫空点、算棋形分、插入排序取前 24。
+fn pickMoves(b: ref board, side: i64, out: mut ref pick) {
+    out.n = 0
+    if b.moves == 0 {
+        out.idx[0] = (N / 2) * N + N / 2
+        out.sc[0] = 10000000
+        out.n = 1
+        return
+    }
+    let opp = board::other(side)
+    for y in 0..N {
+        for x in 0..N {
+            if b.cell[y][x] != EMPTY { continue }
+            if b.near[y][x] <= 0 { continue }
+            let sc = b.cellScore(x, y, side) + b.cellScore(x, y, opp) * 9 / 10
+            if out.n < PICKMAX || sc > out.sc[PICKMAX - 1] {
+                var k: i64 = out.n
+                if k >= PICKMAX { k = PICKMAX - 1 }
+                while k > 0 && out.sc[k - 1] < sc {
+                    out.sc[k] = out.sc[k - 1]
+                    out.idx[k] = out.idx[k - 1]
+                    k = k - 1
+                }
+                out.idx[k] = y * N + x
+                out.sc[k] = sc
+                if out.n < PICKMAX { out.n = out.n + 1 }
+            }
+        }
+    }
+}
+
+fn negamax(s: mut ref searcher, b: mut ref board, side: i64, depth: i64, alpha0: i64, beta: i64, ply: i64) -> i64 {
+    s.nodes = s.nodes + 1
+    if s.deadline > 0 && s.nodes % 2048 == 0 {
+        if extctime::extc_time_mono_ns() >= s.deadline {
+            s.timedOut = true
+            return 0
+        }
+    }
+    if depth <= 0 { return eval::eval(b, side) }
+    var pk: pick
+    pickMoves(b, side, ref pk)
+    var width: i64 = 8
+    if ply == 0 {
+        width = 16
+    } else if depth >= 3 {
+        width = 10
+    }
+    var best: i64 = 0 - MATE
+    var a: i64 = alpha0
+    var i: i64 = 0
+    while i < pk.n && i < width {
+        let idx = pk.idx[i]
+        let x = idx % N
+        let y = idx / N
+        b.place(x, y, side)
+        var sc: i64 = 0
+        if b.lastWon(side) {
+            sc = MATE - (ply + 1)
+        } else if b.isFull() {
+            sc = 0
+        } else {
+            let r = negamax(s, b, board::other(side), depth - 1, 0 - beta, 0 - a, ply + 1)
+            sc = 0 - r
+        }
+        b.undo()
+        if s.timedOut { return 0 }
+        if sc > best {
+            best = sc
+            if ply == 0 {
+                s.rootX = x
+                s.rootY = y
+                s.rootScore = sc
+            }
+        }
+        if sc > a { a = sc }
+        if a >= beta { break }
+        i = i + 1
+    }
+    return best
+}
+
+// 迭代加深：每一层完整算完才采用它给出的着法；超时的这一层整个丢弃。
+fn searchMove(b: mut ref board, side: i64, maxDepth: i64, budgetMs: i64) -> result {
+    var s: searcher
+    if budgetMs > 0 { s.deadline = extctime::extc_time_mono_ns() + budgetMs * 1000000 }
+    var res: result
+    res.x = -1
+    res.y = -1
+    res.score = 0 - MATE
+    var d: i64 = 2
+    while d <= maxDepth {
+        s.rootX = -1
+        s.rootY = -1
+        s.rootScore = 0 - MATE
+        s.timedOut = false
+        let sc = negamax(ref s, b, side, d, 0 - MATE, MATE, 0)
+        if s.timedOut { break }
+        res.x = s.rootX
+        res.y = s.rootY
+        res.score = s.rootScore
+        res.depth = d
+        d = d + 1
+    }
+    res.nodes = s.nodes
+    if res.x < 0 {
+        var found: bool = false
+        for y in 0..N {
+            for x in 0..N {
+                if !found && b.cell[y][x] == EMPTY {
+                    res.x = x
+                    res.y = y
+                    found = true
+                }
+            }
+        }
+    }
+    return res
+}

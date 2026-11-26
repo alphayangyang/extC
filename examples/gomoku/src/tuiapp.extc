@@ -1,0 +1,178 @@
+// tuiapp -- std::tui 全屏前端：方向键/hjkl 移动、Enter 落子、u 悔棋、n 新局、q 退出。
+use board::{N, CELLS, EMPTY, BLACK, WHITE, board}
+use search
+use std::io
+use std::tui
+
+const X0: i64 = 3
+const Y0: i64 = 2
+
+fn drawBoard(s: mut ref tui::screen, b: ref board, cx: i64, cy: i64, side: i64, depth: i64, done: bool, winner: i64, note: slice<u8>, thinking: bool) {
+    s.clear()
+    s.goto(0, 0)
+    s.bold()
+    s.put("gomoku")
+    s.resetStyle()
+    var x: i64 = 0
+    while x < N {
+        s.draw(X0 + 2 * x, 1, board::colName(x))
+        x = x + 1
+    }
+    var y: i64 = 0
+    while y < N {
+        s.goto(0, Y0 + y)
+        if y + 1 < 10 { s.put(" ") }
+        io::cout << (y + 1)
+        x = 0
+        while x < N {
+            s.goto(X0 + 2 * x, Y0 + y)
+            if x == cx && y == cy { s.bg(tui::color.brightBlue) }
+            let c = b.cell[y][x]
+            if c == BLACK {
+                if x == b.lastX && y == b.lastY { s.fg(tui::color.brightYellow) } else { s.fg(tui::color.brightWhite) }
+                s.put(" X")
+            } else if c == WHITE {
+                if x == b.lastX && y == b.lastY { s.fg(tui::color.brightYellow) } else { s.fg(tui::color.brightCyan) }
+                s.put(" O")
+            } else if x == b.lastX && y == b.lastY {
+                s.put(" .")
+            } else {
+                s.put(" .")
+            }
+            s.resetStyle()
+            x = x + 1
+        }
+        y = y + 1
+    }
+    s.goto(0, Y0 + N + 1)
+    s.put("last: ")
+    if b.moves == 0 {
+        s.put("-")
+    } else {
+        if b.cell[b.lastY][b.lastX] == BLACK { s.put("black ") } else { s.put("white ") }
+        s.put(board::colName(b.lastX))
+        io::cout << (b.lastY + 1)
+    }
+    s.put("   depth=")
+    io::cout << depth
+    s.goto(0, Y0 + N + 2)
+    if done {
+        s.fg(tui::color.brightYellow)
+        if winner == BLACK {
+            s.put("black wins")
+        } else if winner == WHITE {
+            s.put("white wins")
+        } else {
+            s.put("draw")
+        }
+        s.resetStyle()
+        s.put("   n: new game  q: quit")
+    } else if thinking {
+        s.fg(tui::color.yellow)
+        s.put("AI thinking...")
+        s.resetStyle()
+    } else if note.len > 0 {
+        s.put(note)
+    } else if side == BLACK {
+        s.put("your move")
+    } else {
+        s.put("ai move")
+    }
+    s.goto(0, Y0 + N + 3)
+    s.fg(tui::color.brightBlack)
+    s.put("arrows/hjkl move  Enter place  u undo  n new  q quit")
+    s.resetStyle()
+}
+
+fn run(depth: i64) -> i32 {
+    var s = tui::screen::open(io::STDIN_FD)!
+    var b: board::board = board::newBoard()
+    var cx: i64 = N / 2
+    var cy: i64 = N / 2
+    var side: i64 = BLACK
+    var winner: i64 = EMPTY
+    var done: bool = false
+    var note: slice<u8> = ""
+    drawBoard(ref s, ref b, cx, cy, side, depth, done, winner, note, false)
+    s.flush()
+    while true {
+        let k = s.nextKey()
+        match k {
+            up => { if cy > 0 { cy = cy - 1 }  note = "" }
+            down => { if cy < N - 1 { cy = cy + 1 }  note = "" }
+            left => { if cx > 0 { cx = cx - 1 }  note = "" }
+            right => { if cx < N - 1 { cx = cx + 1 }  note = "" }
+            enter => {
+                if !done {
+                    if b.cell[cy][cx] != EMPTY {
+                        note = "that point is taken"
+                    } else {
+                        note = ""
+                        b.place(cx, cy, BLACK)
+                        if b.lastWon(BLACK) {
+                            winner = BLACK
+                            done = true
+                        } else if b.isFull() {
+                            done = true
+                        } else {
+                            side = WHITE
+                            drawBoard(ref s, ref b, cx, cy, side, depth, done, winner, note, true)
+                            s.flush()
+                            let r = search::searchMove(ref b, WHITE, depth, 0)
+                            if r.x >= 0 { b.place(r.x, r.y, WHITE) }
+                            if b.lastWon(WHITE) {
+                                winner = WHITE
+                                done = true
+                            } else if b.isFull() {
+                                done = true
+                            }
+                            side = BLACK
+                        }
+                    }
+                }
+            }
+            rune(c) => {
+                if c == u8(113) {
+                    break
+                } else if c == u8(117) {
+                    if b.moves >= 2 {
+                        b.undo()
+                        b.undo()
+                    } else if b.moves == 1 {
+                        b.undo()
+                    }
+                    side = BLACK
+                    winner = EMPTY
+                    done = false
+                    note = ""
+                } else if c == u8(110) {
+                    b = board::newBoard()
+                    cx = N / 2
+                    cy = N / 2
+                    side = BLACK
+                    winner = EMPTY
+                    done = false
+                    note = ""
+                } else if c == u8(104) {
+                    if cx > 0 { cx = cx - 1 }
+                    note = ""
+                } else if c == u8(108) {
+                    if cx < N - 1 { cx = cx + 1 }
+                    note = ""
+                } else if c == u8(107) {
+                    if cy > 0 { cy = cy - 1 }
+                    note = ""
+                } else if c == u8(106) {
+                    if cy < N - 1 { cy = cy + 1 }
+                    note = ""
+                }
+            }
+            none => { break }
+            _ => { }
+        }
+        drawBoard(ref s, ref b, cx, cy, side, depth, done, winner, note, false)
+        s.flush()
+    }
+    s.close()
+    return 0
+}

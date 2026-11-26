@@ -1,0 +1,245 @@
+// board -- 15x15 棋盘与棋形：落子/撤销、胜负、候选点与局部棋形分。
+//
+// 热路径用两个定长二维数组（棋盘 + 邻域计数），不分配、不建表：
+// 候选点 = 邻域计数 > 0 的空点（Chebyshev <= 2，五子棋的常识形状）。
+const N: i64 = 15
+const CELLS: i64 = 225
+const EMPTY: i64 = 0
+const BLACK: i64 = 1
+const WHITE: i64 = 2
+
+fn inside(x: i64, y: i64) -> bool {
+    return x >= 0 && x < N && y >= 0 && y < N
+}
+
+fn other(p: i64) -> i64 {
+    if p == BLACK { return WHITE }
+    return BLACK
+}
+
+// 棋形分：连子数 + 两端开闭。只用于候选点排序，不用于局面评估。
+fn patternScore(cnt: i64, open: i64) -> i64 {
+    if cnt >= 5 { return 10000000 }
+    if cnt == 4 {
+        if open == 2 { return 200000 }
+        if open == 1 { return 20000 }
+        return 0
+    }
+    if cnt == 3 {
+        if open == 2 { return 15000 }
+        if open == 1 { return 800 }
+        return 0
+    }
+    if cnt == 2 {
+        if open == 2 { return 600 }
+        if open == 1 { return 60 }
+        return 0
+    }
+    if open == 2 { return 10 }
+    if open == 1 { return 2 }
+    return 0
+}
+
+struct board {
+    cell: [N][N]i64      // 0 空 / 1 黑 / 2 白
+    near: [N][N]i64      // 该点 Chebyshev <= 2 邻域里的子数
+    hist: [CELLS]i64     // 落子历史（packed = y * N + x）
+    moves: i64
+    lastX: i64
+    lastY: i64
+
+    fn place(self: mut ref board, x: i64, y: i64, p: i64) -> bool {
+        if !inside(x, y) { return false }
+        if self.cell[y][x] != EMPTY { return false }
+        self.cell[y][x] = p
+        for dy in -2..3 {
+            for dx in -2..3 {
+                if dx != 0 || dy != 0 {
+                    let nx = x + dx
+                    let ny = y + dy
+                    if inside(nx, ny) { self.near[ny][nx] = self.near[ny][nx] + 1 }
+                }
+            }
+        }
+        self.hist[self.moves] = y * N + x
+        self.moves = self.moves + 1
+        self.lastX = x
+        self.lastY = y
+        return true
+    }
+
+    fn undo(self: mut ref board) {
+        if self.moves <= 0 { return }
+        let x = self.lastX
+        let y = self.lastY
+        self.cell[y][x] = EMPTY
+        for dy in -2..3 {
+            for dx in -2..3 {
+                if dx != 0 || dy != 0 {
+                    let nx = x + dx
+                    let ny = y + dy
+                    if inside(nx, ny) { self.near[ny][nx] = self.near[ny][nx] - 1 }
+                }
+            }
+        }
+        self.moves = self.moves - 1
+        if self.moves > 0 {
+            let h = self.hist[self.moves - 1]
+            self.lastX = h % N
+            self.lastY = h / N
+        } else {
+            self.lastX = 0
+            self.lastY = 0
+        }
+    }
+
+    // 从 (x,y) 沿 (dx,dy) 数连子（含 (x,y) 本身）。
+    fn runLen(self: ref board, x: i64, y: i64, dx: i64, dy: i64, p: i64) -> i64 {
+        var n: i64 = 1
+        var cx: i64 = x + dx
+        var cy: i64 = y + dy
+        while inside(cx, cy) && self.cell[cy][cx] == p {
+            n = n + 1
+            cx = cx + dx
+            cy = cy + dy
+        }
+        cx = x - dx
+        cy = y - dy
+        while inside(cx, cy) && self.cell[cy][cx] == p {
+            n = n + 1
+            cx = cx - dx
+            cy = cy - dy
+        }
+        return n
+    }
+
+    fn wonAt(self: ref board, x: i64, y: i64, p: i64) -> bool {
+        if self.runLen(x, y, 1, 0, p) >= 5 { return true }
+        if self.runLen(x, y, 0, 1, p) >= 5 { return true }
+        if self.runLen(x, y, 1, 1, p) >= 5 { return true }
+        if self.runLen(x, y, 1, -1, p) >= 5 { return true }
+        return false
+    }
+
+    fn lastWon(self: ref board, p: i64) -> bool {
+        if self.moves <= 0 { return false }
+        return self.wonAt(self.lastX, self.lastY, p)
+    }
+
+    // 假设 p 落在 (x,y)（(x,y) 必须为空），沿一个方向数连子并看两端。
+    fn dirScore(self: ref board, x: i64, y: i64, dx: i64, dy: i64, p: i64) -> i64 {
+        var back: i64 = 0
+        var cx: i64 = x - dx
+        var cy: i64 = y - dy
+        while inside(cx, cy) && self.cell[cy][cx] == p {
+            back = back + 1
+            cx = cx - dx
+            cy = cy - dy
+        }
+        var fwd: i64 = 0
+        cx = x + dx
+        cy = y + dy
+        while inside(cx, cy) && self.cell[cy][cx] == p {
+            fwd = fwd + 1
+            cx = cx + dx
+            cy = cy + dy
+        }
+        let cnt = 1 + back + fwd
+        var open: i64 = 0
+        let bx = x - (back + 1) * dx
+        let by = y - (back + 1) * dy
+        if inside(bx, by) && self.cell[by][bx] == EMPTY { open = open + 1 }
+        let fx = x + (fwd + 1) * dx
+        let fy = y + (fwd + 1) * dy
+        if inside(fx, fy) && self.cell[fy][fx] == EMPTY { open = open + 1 }
+        return patternScore(cnt, open)
+    }
+
+    // 一个空点对 p 的价值：四方向棋形分之和。
+    fn cellScore(self: ref board, x: i64, y: i64, p: i64) -> i64 {
+        var s: i64 = 0
+        s = s + self.dirScore(x, y, 1, 0, p)
+        s = s + self.dirScore(x, y, 0, 1, p)
+        s = s + self.dirScore(x, y, 1, 1, p)
+        s = s + self.dirScore(x, y, 1, -1, p)
+        return s
+    }
+
+    // 生成候选点并按 "进攻 + 防守" 分排序（插入排序）。
+    fn genCandidates(self: ref board, c: mut ref cand, side: i64) {
+        c.n = 0
+        if self.moves == 0 {
+            c.idx[0] = (N / 2) * N + N / 2
+            c.sc[0] = 10000000
+            c.n = 1
+            return
+        }
+        let opp = other(side)
+        for y in 0..N {
+            for x in 0..N {
+                if self.cell[y][x] != EMPTY { continue }
+                if self.near[y][x] <= 0 { continue }
+                let s = self.cellScore(x, y, side) + self.cellScore(x, y, opp) * 9 / 10
+                var k: i64 = c.n
+                while k > 0 && c.sc[k - 1] < s {
+                    c.sc[k] = c.sc[k - 1]
+                    c.idx[k] = c.idx[k - 1]
+                    k = k - 1
+                }
+                c.idx[k] = y * N + x
+                c.sc[k] = s
+                c.n = c.n + 1
+            }
+        }
+    }
+
+    fn hasMoves(self: ref board) -> bool {
+        return self.moves < CELLS
+    }
+
+    fn isFull(self: ref board) -> bool {
+        return self.moves >= CELLS
+    }
+}
+
+// 候选点表：idx 是 packed 坐标，sc 是排序分。
+struct cand {
+    idx: [CELLS]i64
+    sc: [CELLS]i64
+    n: i64
+}
+
+fn newBoard() -> board {
+    var b: board
+    return b
+}
+
+const LETTERS: slice<u8> = "ABCDEFGHIJKLMNO"
+
+fn colName(x: i64) -> slice<u8> {
+    return LETTERS[x..x + 1]
+}
+
+// "H8" / "h8" / "8h" / " h 8 " -> packed。行号 1..15，列 A..O。
+fn parseMove(s: slice<u8>) -> ?i64 {
+    var x: i64 = -1
+    var num: i64 = 0
+    var sawDigit: bool = false
+    for i in 0..s.len {
+        let b = s[i]
+        if b >= 48 && b <= 57 {
+            num = num * 10 + i64(b) - 48
+            sawDigit = true
+        } else if b >= 65 && b <= 79 {
+            if x < 0 { x = i64(b) - 65 }
+        } else if b >= 97 && b <= 111 {
+            if x < 0 { x = i64(b) - 97 }
+        } else if b == 32 || b == 9 {
+        } else {
+            return none
+        }
+    }
+    if x < 0 || !sawDigit { return none }
+    if num < 1 || num > N { return none }
+    return some((num - 1) * N + x)
+}

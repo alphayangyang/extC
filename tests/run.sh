@@ -114,6 +114,17 @@ if [ -x tests/logstat/run.sh ]; then
     fi
 fi
 
+echo "== 示例程序：gomoku（多模块五子棋 AI：文本 / 自对弈 / bench / TUI）=="
+if [ -x tests/gomoku/run.sh ]; then
+    if out=$(tests/gomoku/run.sh 2>&1); then
+        printf '%s\n' "$out" | grep -E "^  ok |^  -- |gomoku: 通过"
+        pass=$((pass + 1))
+    else
+        echo "$out"
+        bad "gomoku 示例"
+    fi
+fi
+
 echo "== 警告：该响的响、正例语料上**零误报**、\`-w\` 能关 =="
 if [ -x tests/warnings/run.sh ]; then
     if out=$(tests/warnings/run.sh 2>&1); then

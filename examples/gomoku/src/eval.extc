@@ -1,0 +1,51 @@
+// eval -- 局面评估：把每条方向上的每个 5 格窗口按棋形打分，黑分减白分。
+//
+// 窗口口径：窗口里没有对方子时，按自己的子数给分；4 子窗口再看窗口两端是否空
+// （活四远贵于冲四）。这是"数棋形"的简化版：不做 LUT、不建线表，一次评估扫
+// 572 个窗口（4 方向 × 边界内起点），与搜索共用同一份棋盘数组。
+use board::{N, EMPTY, BLACK, WHITE, board}
+
+// 一个 5 格窗口对 p 的分；窗口里有对方子则 0。
+fn windowScore(b: ref board, x: i64, y: i64, dx: i64, dy: i64, p: i64) -> i64 {
+    var mine: i64 = 0
+    var theirs: i64 = 0
+    for k in 0..5 {
+        let c = b.cell[y + dy * k][x + dx * k]
+        if c == p { mine = mine + 1 } else if c != EMPTY { theirs = theirs + 1 }
+    }
+    if theirs > 0 { return 0 }
+    if mine >= 5 { return 5000000 }
+    var v: i64 = 0
+    if mine == 4 { v = 60000 } else if mine == 3 { v = 1200 } else if mine == 2 { v = 60 } else { v = 1 }
+    if mine >= 3 {
+        var open: i64 = 0
+        if board::inside(x - dx, y - dy) && b.cell[y - dy][x - dx] == EMPTY { open = open + 1 }
+        if board::inside(x + dx * 5, y + dy * 5) && b.cell[y + dy * 5][x + dx * 5] == EMPTY { open = open + 1 }
+        if open == 2 { v = v * 10 } else if open == 1 { v = v * 3 }
+    }
+    return v
+}
+
+// 一条方向上的窗口和。
+fn dirSum(b: ref board, dx: i64, dy: i64) -> i64 {
+    var s: i64 = 0
+    for y in 0..N {
+        for x in 0..N {
+            if board::inside(x + dx * 4, y + dy * 4) {
+                s = s + windowScore(b, x, y, dx, dy, BLACK) - windowScore(b, x, y, dx, dy, WHITE)
+            }
+        }
+    }
+    return s
+}
+
+// 从 side 的视角看局面：正数对自己有利。
+fn eval(b: ref board, side: i64) -> i64 {
+    var s: i64 = 0
+    s = s + dirSum(b, 1, 0)
+    s = s + dirSum(b, 0, 1)
+    s = s + dirSum(b, 1, 1)
+    s = s + dirSum(b, 1, -1)
+    if side == BLACK { return s }
+    return 0 - s
+}

@@ -1,0 +1,167 @@
+// textui -- 文本前端：人机对局、自对弈、bench。棋盘用 ASCII 画，落子记谱 H8。
+use board::{N, CELLS, EMPTY, BLACK, WHITE, board}
+use search
+use std::io
+use std::text::string
+use std::sys::time as extctime
+
+fn printBoard(b: ref board, lastX: i64, lastY: i64) {
+    io::cout << "   "
+    for x in 0..N { io::cout << board::colName(x) << " " }
+    io::cout << "\n"
+    for y in 0..N {
+        if y + 1 < 10 { io::cout << " " << (y + 1) << " " } else { io::cout << (y + 1) << " " }
+        for x in 0..N {
+            let c = b.cell[y][x]
+            var t: slice<u8> = ". "
+            if c == BLACK { t = "X " } else if c == WHITE { t = "O " }
+            if x == lastX && y == lastY {
+                if c == BLACK { t = "x " } else if c == WHITE { t = "o " }
+            }
+            io::cout << t
+        }
+        io::cout << "\n"
+    }
+}
+
+fn printLast(mover: i64, x: i64, y: i64) {
+    if mover == BLACK { io::cout << "black: " } else { io::cout << "white: " }
+    io::cout << board::colName(x) << (y + 1) << "\n"
+}
+
+fn resultLine(side: i64) {
+    if side == BLACK { io::println("result: black wins") } else { io::println("result: white wins") }
+}
+
+// 人（黑）对 AI（白）。q 退出、u 悔棋（退两手）、n 新开一局。
+fn humanGame(depth: i64) -> i32 {
+    var b: board::board = board::newBoard()
+    var side: i64 = BLACK
+    while true {
+        printBoard(ref b, b.lastX, b.lastY)
+        if side == BLACK {
+            io::cout << "your move (H8, u=undo, n=new, q=quit): "
+            io::flushCout()
+            let line = string::readLine()
+            match line {
+                none => { io::println(""); return 0 }
+                some(s) => {
+                    let t = s.view().trim()
+                    if t.len == 1 {
+                        let c = t[0]
+                        if c == u8(113) { return 0 }
+                        if c == u8(110) {
+                            b = board::newBoard()
+                            side = BLACK
+                            continue
+                        }
+                        if c == u8(117) {
+                            if b.moves >= 2 {
+                                b.undo()
+                                b.undo()
+                            } else if b.moves == 1 {
+                                b.undo()
+                            }
+                            side = BLACK
+                            continue
+                        }
+                    }
+                    let mv = board::parseMove(t)
+                    match mv {
+                        none => { io::println("cannot parse that move; try H8") }
+                        some(v) => {
+                            let x = v % N
+                            let y = v / N
+                            if !b.place(x, y, BLACK) {
+                                io::println("that point is taken; try another")
+                            } else {
+                                if b.lastWon(BLACK) {
+                                    printBoard(ref b, b.lastX, b.lastY)
+                                    resultLine(BLACK)
+                                    return 0
+                                }
+                                if b.isFull() {
+                                    printBoard(ref b, b.lastX, b.lastY)
+                                    io::println("result: draw")
+                                    return 0
+                                }
+                                side = WHITE
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            io::println("ai thinking...")
+            let r = search::searchMove(ref b, WHITE, depth, 0)
+            if r.x < 0 { return 0 }
+            b.place(r.x, r.y, WHITE)
+            printLast(WHITE, r.x, r.y)
+            if b.lastWon(WHITE) {
+                printBoard(ref b, b.lastX, b.lastY)
+                resultLine(WHITE)
+                return 0
+            }
+            if b.isFull() {
+                printBoard(ref b, b.lastX, b.lastY)
+                io::println("result: draw")
+                return 0
+            }
+            side = BLACK
+        }
+    }
+}
+
+// AI 对 AI：确定性（固定深度、无时钟），同一份代码两次跑出逐字相同的对局。
+fn selfPlay(depth: i64, maxMoves: i64) -> i32 {
+    var b: board::board = board::newBoard()
+    var side: i64 = BLACK
+    var n: i64 = 0
+    while n < maxMoves && !b.isFull() {
+        let r = search::searchMove(ref b, side, depth, 0)
+        if r.x < 0 { break }
+        b.place(r.x, r.y, side)
+        n = n + 1
+        io::cout << n << " "
+        printLast(side, r.x, r.y)
+        if b.lastWon(side) {
+            printBoard(ref b, b.lastX, b.lastY)
+            resultLine(side)
+            io::println(f"selfplay depth={depth} moves={n}")
+            return 0
+        }
+        if side == BLACK { side = WHITE } else { side = BLACK }
+    }
+    printBoard(ref b, b.lastX, b.lastY)
+    io::println("result: draw")
+    io::println(f"selfplay depth={depth} moves={n}")
+    return 0
+}
+
+// 固定中局上重复搜索，报告节点数与每秒节点数（排除首次调用的冷页影响，取第二次起）。
+fn bench(depth: i64, runs: i64) -> i32 {
+    var b: board::board = board::newBoard()
+    b.place(7, 7, BLACK)
+    b.place(7, 8, WHITE)
+    b.place(8, 8, BLACK)
+    b.place(6, 6, WHITE)
+    b.place(6, 8, BLACK)
+    b.place(8, 6, WHITE)
+    var nodes: i64 = 0
+    var ns: i64 = 0
+    var r: search::result
+    var i: i64 = 0
+    while i < runs {
+        let t0 = extctime::extc_time_mono_ns()
+        r = search::searchMove(ref b, BLACK, depth, 0)
+        let dt = extctime::extc_time_mono_ns() - t0
+        nodes = nodes + r.nodes
+        ns = ns + dt
+        io::println(f"run {i + 1}: nodes={r.nodes} ms={dt / 1000000}")
+        i = i + 1
+    }
+    var nps: i64 = 0
+    if ns > 0 { nps = nodes * 1000000000 / ns }
+    io::println(f"bench depth={depth} runs={runs} move={board::colName(r.x)}{r.y + 1} nodes={nodes} ms={ns / 1000000} nps={nps}")
+    return 0
+}
