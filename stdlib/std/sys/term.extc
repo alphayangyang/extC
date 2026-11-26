@@ -1,8 +1,8 @@
 /* std/sys/term.extc -- the privileged layer for the terminal (one file per family).
  *
- * The whole TUI story is two primitives: **read one byte** (that is plain `read(2)`,
- * already in `std::sys::io`) and **turn raw mode on and off**. No ncurses, no escape
- * sequences -- a program that wants a screen writes ANSI itself.
+ * This layer is the **privileged** part of the terminal: raw mode on/off, the screen
+ * size, and the non-blocking switch that tells a lone `ESC` from an arrow key. The
+ * object layer on top (`std::tui`) is plain extC that writes ANSI; no ncurses.
  *
  * ⚠️ `struct termios` never crosses this boundary and the compiler never learns its
  * layout: the buffer is opaque bytes and `cfmakeraw` does the bit twiddling on the C
@@ -17,6 +17,25 @@ extern!("libc") fn tcsetattr(fd: i32, action: i32, buf: ref u8) -> i32
  * the `void` return rule in `extern!` (that rule was added for this function). */
 extern!("libc") fn cfmakeraw(buf: ref u8) -> void
     effects Addr=0 Cont=0
+
+/* `ioctl` for the two requests the terminal family needs:
+ *   - `TIOCGWINSZ`: the screen size. `struct winsize` is four u16 and **never crosses
+ *     this boundary** either -- the caller hands 8 opaque bytes (row, col, xpixel, ypixel).
+ *   - `FIONBIO`: switch the descriptor to non-blocking and back. In a terminal, an arrow
+ *     key starts with the same byte as `ESC`; the bytes of one key arrive together, a lone
+ *     `ESC` has no follow-up byte, so `std::tui` reads what has arrived and stops.
+ *
+ * ⚠️ Not `fcntl`: glibc declares `fcntl` variadic, and the generated C may include
+ * `<fcntl.h>` for the network/file runtime -- a fixed-arity prototype here would be a
+ * conflicting type in exactly the programs that use both. `ioctl` is declared by glibc in
+ * `<sys/ioctl.h>`, which the runtime never includes. */
+extern!("libc") fn ioctl(fd: i32, req: u64, arg: ref u8) -> i32
+    effects Addr=0 Cont=0
+
+/* `ioctl` requests and the one flag this family sets. */
+let TIOCGWINSZ: u64 = 21523
+let FIONBIO: u64 = 21537
+let WINSIZE_BYTES: i64 = 8
 
 /* `tcsetattr` actions: apply now, drain output first, or drain input first. A terminal
  * should change **now**, so `TCSANOW` is the one the library uses. */

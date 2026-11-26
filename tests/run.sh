@@ -45,6 +45,19 @@ if [ -x tests/zone/run.sh ]; then
     fi
 fi
 
+echo "== tui：屏幕与按键解码（真 PTY；没有 pty 就跳过）=="
+# 判据是行为：方向键/单独 ESC 的解码、备用屏与颜色序列的顺序、退出后 termios 复原。
+# 没有 pty（奇怪的最小容器）时 run.sh 打印跳过并 exit 0 —— 不算失败，也不算通过。
+if [ -x tests/tui/run.sh ]; then
+    if out=$(tests/tui/run.sh 2>&1); then
+        printf '%s\n' "$out" | grep -E "^  ok |^  -- |^tui: 通过"
+        pass=$((pass + 1))
+    else
+        echo "$out"
+        bad "tui 用例"
+    fi
+fi
+
 echo "== arena：按块细化（150MB 上限下不许涨）=="
 if [ -x tests/arena/run.sh ]; then
     if out=$(tests/arena/run.sh 2>&1); then

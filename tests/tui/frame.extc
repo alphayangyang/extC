@@ -1,0 +1,17 @@
+/* tests/tui/frame.extc —— 一块屏幕：尺寸、清屏、着色、定位、退出。
+ * 程序**不显式 close**：@drop 必须把终端还回去（测试脚本比对 termios）。 */
+use std::io
+use std::tui
+
+fn main() -> i32 {
+    var s = tui::screen::open(io::STDIN_FD)!
+    let d = s.size()
+    io::cout << "size " << d.cols << "x" << d.rows << "\n"
+    s.clear()
+    s.draw(i64(2), i64(1), "AB")
+    s.fg(tui::color.cyan)
+    s.put("C")
+    s.resetStyle()
+    s.flush()
+    return 0
+}

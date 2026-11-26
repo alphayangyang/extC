@@ -1,0 +1,9 @@
+/* tests/tui/non_tty.extc —— 不是终端时 termSize 给 80x24，而不是报错。 */
+use std::io
+use std::tui
+
+fn main() -> i32 {
+    let d = tui::termSize(io::STDOUT_FD)
+    io::cout << "size " << d.cols << "x" << d.rows << "\n"
+    return 0
+}

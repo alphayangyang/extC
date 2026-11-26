@@ -5,7 +5,7 @@
 
 生成方式：`tools/manual_surface.py`；`check.sh` 保证本页与源码一致。
 
-公开面共 848 个成员，其中内部 163 个：
+公开面共 879 个成员，其中内部 172 个：
 
 ## prelude
 
@@ -210,6 +210,18 @@
 - `stringGuard.p`（字段）
 - `stringGuard.release`（方法）
 - `stringGuard.s`（字段）
+
+## std::tui
+
+- `-.csiLetter`（方法）
+- `-.csiTilde`（方法）
+- `-.readByte`（方法）
+- `-.readEscape`（方法）
+- `-.setNonblock`（方法）
+- `screen.enterAlt`（方法）
+- `screen.fd`（字段）
+- `screen.on`（字段）
+- `screen.t`（字段）
 
 ## std::weak
 

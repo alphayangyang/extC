@@ -1,0 +1,43 @@
+/* tests/tui/keys.extc —— raw 模式下把字节解码成按键（PTY 里喂 7 个键）。
+ *
+ * 每个键打印一行，测试脚本逐个喂、逐个等：这样「后面那个字节被当成 ESC 序列的一部分」
+ * 这类错误一定会暴露，而不是被缓冲掩盖。 */
+use std::io
+use std::tui
+
+fn show(k: tui::key) {
+    match k {
+        rune(c) => { io::cout << "k rune " << i64(c) << "\n" }
+        ctrl(c) => { io::cout << "k ctrl " << i64(c) << "\n" }
+        up => { io::cout << "k up\n" }
+        down => { io::cout << "k down\n" }
+        left => { io::cout << "k left\n" }
+        right => { io::cout << "k right\n" }
+        home => { io::cout << "k home\n" }
+        end => { io::cout << "k end\n" }
+        pageUp => { io::cout << "k pageup\n" }
+        pageDown => { io::cout << "k pagedown\n" }
+        insert => { io::cout << "k insert\n" }
+        delete => { io::cout << "k delete\n" }
+        enter => { io::cout << "k enter\n" }
+        tab => { io::cout << "k tab\n" }
+        backspace => { io::cout << "k backspace\n" }
+        esc => { io::cout << "k esc\n" }
+        none => { io::cout << "k none\n" }
+    }
+    io::flushCout()
+}
+
+fn main() -> i32 {
+    var t = io::rawTerminal(io::STDIN_FD)!
+    var i: i64 = 0
+    while i < i64(7) {
+        show(tui::readKey(io::STDIN_FD))
+        i = i + i64(1)
+    }
+    match t.close() {
+        success(u) => { }
+        failure(e) => { }
+    }
+    return 0
+}

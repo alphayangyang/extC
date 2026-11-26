@@ -1,0 +1,14 @@
+/* tests/tui/close.extc —— 显式 close 之后再跑一次 @drop：退出序列只能出现一次。
+ * （钩子是普通方法，可以按名字直接调；第二次能看到 on 已经是 false。） */
+use std::io
+use std::tui
+
+fn main() -> i32 {
+    var s = tui::screen::open(io::STDIN_FD)!
+    s.draw(i64(0), i64(0), "x")
+    s.flush()
+    s.close()
+    io::cout << "after close\n"
+    io::flushCout()
+    return 0
+}

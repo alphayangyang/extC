@@ -1,0 +1,325 @@
+/* std/tui.extc —— 终端对象层：`std::tui`。
+ *
+ * 这一层只做三件事，全部建在已有原语上：
+ *   - `screen::open(fd)` 切 raw、进备用屏、藏光标、清屏；`@drop` 时按相反顺序退出、恢复终端；
+ *   - `clear` / `goto` / `draw` / `fg` / `bg` / `bold` 往屏幕写 ANSI（没有 ncurses）；
+ *   - `readKey` 把 raw 模式下的字节解码成 `key`（方向键、Home/End/PageUp/PageDown、
+ *     Insert/Delete、Ctrl 组合、可打印字节、单独的 ESC）。
+ *
+ * 底层原语仍是两个：raw 终端（`std::io`）与 `read(2)`（`std::sys::io`）。屏幕尺寸走
+ * `TIOCGWINSZ`、非阻塞切换走 `FIONBIO`，两者都在 `std::sys::term` 里声明，平台结构的
+ * 布局留在 C 侧（extC 只看见字节）。
+ *
+ * 输出统一走 `io::writeBytes`（与 `io::cout` 同一个缓冲），一帧结束调 `flush()`；不直接
+ * 调裸 write，所以不会出现「提示先于内容」的顺序问题。
+ *
+ * @code
+ * use std::io
+ * use std::tui
+ *
+ * fn main() -> i32 {
+ *     let d = tui::termSize(io::STDOUT_FD)
+ *     io::cout << "screen " << d.cols << "x" << d.rows << "\n"
+ *     io::cout << tui::fgColor(tui::color.cyan) << "cyan"
+ *     io::cout << tui::fgColor(tui::color.defaultColor) << "\n"
+ *     return 0
+ * }
+ * @endcode
+ *
+ * 屏幕本身要一个真终端，形状是：
+ *
+ *     var s = tui::screen::open(io::STDIN_FD)!
+ *     s.clear()
+ *     s.fg(tui::color.cyan)
+ *     s.draw(2, 1, "hello")
+ *     s.resetStyle()
+ *     s.flush()
+ *
+ * （这段在管道里跑会 trap —— 打开屏幕要求 stdin 是终端；`std::tui` 的手册页有完整例子。）
+ *
+ * （`!` 在打开失败时 trap：stdin 不是终端正是这种情况唯一合理的回答。手工管理生命周期
+ * 时显式调 `s.close()`；不调也没关系，`@drop` 会补上。）
+ */
+use std::io
+use std::sys::term as term
+use std::sys::time as extctime
+
+/* ================================================================ 屏幕尺寸 */
+
+/* 一块屏幕的字符尺寸：`cols` 列、`rows` 行。 */
+struct dims {
+    cols: i64
+    rows: i64
+}
+
+/* 终端尺寸；拿不到（不是终端、或 ioctl 失败）就给 80x24。
+ *
+ * `struct winsize` 是四个 u16：行、列、横向像素、纵向像素。这里只读前两个，字节序按
+ * Linux/x86_64 的小端（项目只支持 Linux，见 README 的支持面）。 */
+fn termSize(fd: i32) -> dims {
+    var b: [8]u8
+    if term::ioctl(fd, term::TIOCGWINSZ, b[0..8].data) < i32(0) {
+        return { cols: i64(80), rows: i64(24) }
+    }
+    let rows: i64 = i64(b[1]) * i64(256) + i64(b[0])
+    let cols: i64 = i64(b[3]) * i64(256) + i64(b[2])
+    if cols <= i64(0) || rows <= i64(0) {
+        return { cols: i64(80), rows: i64(24) }
+    }
+    return { cols: cols, rows: rows }
+}
+
+/* ================================================================ 颜色 */
+
+/* 16 色：8 个基本色 + 8 个高亮色；`defaultColor` 只把颜色那一项还给终端
+ * （`resetStyle()` 才是颜色、加粗全部归零）。 */
+type color = | defaultColor
+             | black | red | green | yellow | blue | magenta | cyan | white
+             | brightBlack | brightRed | brightGreen | brightYellow
+             | brightBlue | brightMagenta | brightCyan | brightWhite
+
+/* 前景色对应的 ANSI 序列（`ESC[3Nm`，高亮 `ESC[9Nm`）。 */
+fn fgColor(c: color) -> slice<u8> {
+    match c {
+        defaultColor => { return "\x1b[39m" }
+        black => { return "\x1b[30m" }
+        red => { return "\x1b[31m" }
+        green => { return "\x1b[32m" }
+        yellow => { return "\x1b[33m" }
+        blue => { return "\x1b[34m" }
+        magenta => { return "\x1b[35m" }
+        cyan => { return "\x1b[36m" }
+        white => { return "\x1b[37m" }
+        brightBlack => { return "\x1b[90m" }
+        brightRed => { return "\x1b[91m" }
+        brightGreen => { return "\x1b[92m" }
+        brightYellow => { return "\x1b[93m" }
+        brightBlue => { return "\x1b[94m" }
+        brightMagenta => { return "\x1b[95m" }
+        brightCyan => { return "\x1b[96m" }
+        brightWhite => { return "\x1b[97m" }
+    }
+}
+
+/* 背景色对应的 ANSI 序列（`ESC[4Nm`，高亮 `ESC[10Nm`）。 */
+fn bgColor(c: color) -> slice<u8> {
+    match c {
+        defaultColor => { return "\x1b[49m" }
+        black => { return "\x1b[40m" }
+        red => { return "\x1b[41m" }
+        green => { return "\x1b[42m" }
+        yellow => { return "\x1b[43m" }
+        blue => { return "\x1b[44m" }
+        magenta => { return "\x1b[45m" }
+        cyan => { return "\x1b[46m" }
+        white => { return "\x1b[47m" }
+        brightBlack => { return "\x1b[100m" }
+        brightRed => { return "\x1b[101m" }
+        brightGreen => { return "\x1b[102m" }
+        brightYellow => { return "\x1b[103m" }
+        brightBlue => { return "\x1b[104m" }
+        brightMagenta => { return "\x1b[105m" }
+        brightCyan => { return "\x1b[106m" }
+        brightWhite => { return "\x1b[107m" }
+    }
+}
+
+/* ================================================================ 按键 */
+
+/* 一个解码过的按键。`rune` 是原始字节（ASCII，或 UTF-8 的一个字节 —— 多字节字符按字节
+ * 到来，需要自己拼），`ctrl` 是 `Ctrl+A`..`Ctrl+Z`（1..26）。`none` 表示读到 EOF 或错误。 */
+type key = | rune(u8) | ctrl(u8)
+           | up | down | left | right
+           | home | end | pageUp | pageDown | insert | delete
+           | enter | tab | backspace | esc | none
+
+/* 从 `fd` 读一个字节（EOF/EAGAIN 返回 -1）。 */
+@private
+fn readByte(fd: i32) -> i64 {
+    var buf: [1]u8
+    let n = io::readSome(fd, buf[0..1])
+    if n <= i64(0) { return i64(-1) }
+    return i64(buf[0])
+}
+
+/* 打开/关闭非阻塞。返回前一定设回阻塞：调用方拿到的 fd 与进来时同一种模式
+ * （除非它自己本来就是非阻塞的 —— 这一层不查旧模式）。 */
+@private
+fn setNonblock(fd: i32, on: bool) {
+    var nb: [4]u8
+    if on { nb[0] = u8(1) }
+    let r = term::ioctl(fd, term::FIONBIO, nb[0..4].data)
+    if r < i32(0) { return }
+}
+
+/* 读一个按键。**阻塞**：没有输入就等。
+ *
+ * ESC 歧义：单独按 ESC 与方向键的第一个字节相同，所以读到 ESC 后把 fd 临时切成非阻塞，
+ * 把已经到达的字节读完再判定（终端一次把 `ESC [ A` 三个字节一起送来；单独按 ESC 时没有
+ * 后续字节）。最多等 3ms 再判「没有后续」，这一个等待只发生在 ESC 路径上。 */
+fn readKey(fd: i32) -> key {
+    let b = readByte(fd)
+    if b < i64(0) { return key.none }
+    if b == i64(27) { return readEscape(fd) }
+    if b == i64(13) { return key.enter }
+    if b == i64(9) { return key.tab }
+    if b == i64(127) || b == i64(8) { return key.backspace }
+    if b >= i64(1) && b <= i64(26) { return key.ctrl(u8(b)) }
+    return key.rune(u8(b))
+}
+
+/* ESC 之后：非阻塞地收后续字节，再按 CSI（`ESC [`）/ SS3（`ESC O`）解码。 */
+@private
+fn readEscape(fd: i32) -> key {
+    setNonblock(fd, true)
+    var b: [8]i64
+    var n: i64 = 0
+    var waits: i64 = 0
+    while n < i64(8) {
+        let x = readByte(fd)
+        if x < i64(0) {
+            if waits < i64(3) {
+                waits = waits + i64(1)
+                extctime::extc_time_sleep_ns(i64(1000000))
+            } else {
+                break
+            }
+        } else {
+            b[n] = x
+            n = n + i64(1)
+            if n >= i64(2) {
+                if b[0] == i64(79) { break }
+                if b[n - 1] >= i64(64) && b[n - 1] <= i64(126) { break }
+            }
+        }
+    }
+    setNonblock(fd, false)
+    if n == i64(0) { return key.esc }
+    if b[0] == i64(79) {
+        if n < i64(2) { return key.esc }
+        return csiLetter(b[1])
+    }
+    if b[0] != i64(91) { return key.esc }
+    if n < i64(2) { return key.esc }
+    if b[n - 1] == i64(126) { return csiTilde(b, n) }
+    return csiLetter(b[n - 1])
+}
+
+/* CSI 的最后一个字节（`ESC [ A`）或 SS3 的第二个字节（`ESC O A`）。 */
+@private
+fn csiLetter(c: i64) -> key {
+    if c == i64(65) { return key.up }
+    if c == i64(66) { return key.down }
+    if c == i64(67) { return key.right }
+    if c == i64(68) { return key.left }
+    if c == i64(72) { return key.home }
+    if c == i64(70) { return key.end }
+    if c == i64(90) { return key.tab }
+    return key.esc
+}
+
+/* `ESC[ N ~` 形式的功能键（数字是参数）。 */
+@private
+fn csiTilde(b: [8]i64, n: i64) -> key {
+    var num: i64 = 0
+    var i: i64 = 1
+    while i < n - i64(1) {
+        let c = b[i]
+        if c < i64(48) || c > i64(57) { return key.esc }
+        num = num * i64(10) + c - i64(48)
+        i = i + i64(1)
+    }
+    if num == i64(1) || num == i64(7) { return key.home }
+    if num == i64(2) { return key.insert }
+    if num == i64(3) { return key.delete }
+    if num == i64(4) || num == i64(8) { return key.end }
+    if num == i64(5) { return key.pageUp }
+    if num == i64(6) { return key.pageDown }
+    return key.esc
+}
+
+/* ================================================================ 屏幕 */
+
+/* 一块屏幕：raw 模式 + 备用屏 + 光标。`@noCopy`：两块屏幕抢同一个终端没有意义，而拷贝
+ * 一份会让「谁负责恢复」变成两个作者。 */
+@noCopy
+struct screen {
+    @private t: terminal
+    @private fd: i32
+    @private on: bool
+
+    /* 接管 `fd`：切 raw、进备用屏、藏光标、清屏。失败时终端保持原样。 */
+    fn open(fd: i32) -> result<screen, ioError> {
+        var t = io::rawTerminal(fd)?
+        var s: screen = { t: t, fd: fd, on: true }
+        s.enterAlt()
+        s.hideCursor()
+        s.clear()
+        s.flush()
+        return success(s)
+    }
+
+    /* 屏幕现在是否还开着（给自己管理生命周期的调用方）。 */
+    fn isOpen(self: ref screen) -> bool { return self.on }
+
+    /* 这块屏幕的尺寸；每次现问终端，窗口大小可能变了。 */
+    fn size(self: ref screen) -> dims { return termSize(self.fd) }
+
+    /* 清屏（光标停在左上角）。 */
+    fn clear(self: ref screen) {
+        self.goto(i64(0), i64(0))
+        io::writeBytes("\x1b[2J")
+    }
+
+    /* 把光标移到 `x` 列、`y` 行（**从 0 开始**；ANSI 从 1 开始，差在这里换算）。 */
+    fn goto(self: ref screen, x: i64, y: i64) {
+        io::cout << "\x1b[" << (y + i64(1)) << ";" << (x + i64(1)) << "H"
+    }
+
+    /* 在光标处写一段字节。 */
+    fn put(self: ref screen, s: slice<u8>) { io::writeBytes(s) }
+
+    /* 在 `(x, y)` 写一段字节：`goto` + `put`，一帧里最常用的两个动作合成一个。 */
+    fn draw(self: ref screen, x: i64, y: i64, s: slice<u8>) {
+        self.goto(x, y)
+        io::writeBytes(s)
+    }
+
+    /* 后面的输出用这个前景色。 */
+    fn fg(self: ref screen, c: color) { io::writeBytes(fgColor(c)) }
+
+    /* 后面的输出用这个背景色。 */
+    fn bg(self: ref screen, c: color) { io::writeBytes(bgColor(c)) }
+
+    /* 加粗（很多终端把它当高亮）。 */
+    fn bold(self: ref screen) { io::writeBytes("\x1b[1m") }
+
+    /* 回到默认样式：颜色、加粗全归零。 */
+    fn resetStyle(self: ref screen) { io::writeBytes("\x1b[0m") }
+
+    /* 藏/现光标。 */
+    fn hideCursor(self: ref screen) { io::writeBytes("\x1b[?25l") }
+    fn showCursor(self: ref screen) { io::writeBytes("\x1b[?25h") }
+
+    /* 把这一帧的字节送出去。**每帧结束必调**：不调就要等下一帧才看见这一帧。 */
+    fn flush(self: ref screen) { io::flushCout() }
+
+    /* 读一个按键（与下面的自由函数 `readKey` 是同一份实现）。 */
+    fn nextKey(self: ref screen) -> key { return readKey(self.fd) }
+
+    @private
+    fn enterAlt(self: ref screen) { io::writeBytes("\x1b[?1049h") }
+
+    /* 退出：恢复光标、退出备用屏、把终端设置还回去。**幂等**（`@drop` 会再调一次）。 */
+    @drop
+    fn close(self: mut ref screen) {
+        if !self.on { return }
+        self.on = false
+        io::writeBytes("\x1b[?25h\x1b[?1049l")
+        io::flushCout()
+        match self.t.close() {
+            success(u) => { }
+            failure(e) => { }
+        }
+    }
+}
