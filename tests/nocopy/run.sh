@@ -67,8 +67,17 @@ if out=$("$EXTC" --run tests/nocopy/read_chain.extc 2>&1); then
 else
     echo "  FAIL read_chain  ->  编不过（方法链必须通过）"; echo "$out" | sed "s/^/        /" | head -6; fail=1
 fi
+echo "== 正例（运算符的参数写 ref ⇒ @noCopy 类型也能比较/相加，参数写值 ⇒ 反例）=="
+if out=$("$EXTC" --run tests/nocopy/ops.extc 2>&1); then
+    if echo "$out" | grep -qF "eq=false lt=true same=true" && echo "$out" | grep -qF "sum=7"; then
+        echo "  ok   ops  ->  $(echo "$out" | tr '\n' '|')"
+    else echo "  FAIL ops  ->  输出不对（$(echo "$out" | tr '\n' '|')）"; fail=1; fi
+else
+    echo "  FAIL ops  ->  编不过（参数借操作数必须通过）"; echo "$out" | sed "s/^/        /" | head -6; fail=1
+fi
+
 echo "== 反例（其余复制点 + 移动后使用，逐个隔离）=="
-for f in arg_twice assign_copy use_after_move use_after_move_field bind_field_copy bind_elem_copy arg_elem_copy arg_field_copy ret_view_elem_copy; do
+for f in arg_twice assign_copy use_after_move use_after_move_field bind_field_copy bind_elem_copy arg_elem_copy arg_field_copy ret_view_elem_copy op_byval_copy; do
     if out=$("$EXTC" "tests/nocopy/errors/$f.extc" -o /dev/null 2>&1); then
         echo "  FAIL $f  ->  **编过了**（拷贝必须挡住 ✗）"; fail=1; continue
     fi

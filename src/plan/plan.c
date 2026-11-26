@@ -90,6 +90,7 @@
 #define PLAN_LAM_FNPTR           85   /* `EX_LAMBDA`: this literal is used as a bare `fn(...)` pointer, not as an environment value */
 #define PLAN_LAM_SCOPE           86   /* a lambda environment struct: the body it is written in */
 #define PLAN_CORO_OWNED          96   /* a `var` holding a handle coroutine nothing else can reach */
+#define PLAN_PAR_OWNER           99   /* a synthesized par worker: the body whose loop made it */
 #define PLAN_ANY_BOX             87   /* an expression whose value is boxed into an `any` */
 #define PLAN_ANY_TO              88   /* an `any` value unboxed into a concrete type: which one */
 #define PLAN_DYN_CALL            89   /* a method call on an `any`: dispatch by name at run time */
@@ -1114,6 +1115,8 @@ PLF_GET(planParTlsArena, bool, parTlsArena, PLAN_PAR_TLS_ARENA, false)
 PLF_SET(planSetParTlsArena, bool, parTlsArena, PLAN_PAR_TLS_ARENA)
 PLF_GET(planParFullOut, bool, parFullOut, PLAN_PAR_FULL_OUT, false)
 PLF_SET(planSetParFullOut, bool, parFullOut, PLAN_PAR_FULL_OUT)
+PLF_GET(planParOwner, FuncDef *, parOwner, PLAN_PAR_OWNER, NULL)
+PLF_SET(planSetParOwner, FuncDef *, parOwner, PLAN_PAR_OWNER)
 
 /* ---- operator / comparison facts -----------------------------------------------------
  *
@@ -1660,6 +1663,7 @@ bool planUsed(const FuncDef *f) {
  */
 void planSetUsed(FuncDef *f, bool v) {
     if (!f) return;
+
     NodeResults *r = resultsAs(f, true, RKIND_FUNC, __LINE__);
     if (r) {
         r->used = v;

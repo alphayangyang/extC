@@ -367,6 +367,20 @@ static void setOpCallArgs(Checker *c, Expr *e, FuncDef *m) {
         if (rp && rp->type && ckValueCopyNeedsClone(c, rp->type, e->u.bin.right))
             planSetArgClone(e->u.bin.right, true);
     }
+    /* Both operands were allowed through the value-position copy rule unchecked (`opOperandL/R`),
+     * because an operator is a method call and its parameter may borrow. A parameter that takes the
+     * value, on the other hand, would give the callee a second name for one state, so the copy rule
+     * applies here -- the first point where the parameter types are known. No move is recorded:
+     * codegen passes the callee a copy, it does not hand over the place. */
+    for (size_t i = 0; i < 2 && i < m->params.len; i++) {
+        Param *p = *(Param **)vecAt(&m->params, i);
+        Expr *arg = (i == 0) ? e->u.bin.left : e->u.bin.right;
+        if (!p || !p->type || p->type->kind == TY_REF) continue;
+        bool savedMove = c->moveOkHere;
+        c->moveOkHere = false;
+        (void)ckRejectNoCopyCopy(c, arg, arg->type);
+        c->moveOkHere = savedMove;
+    }
     if (!c->eSites.arena) return;
     /* Only a `mut ref` operand can be written to, so only then is there an escape point to record:
      * `==` / `<` pass both operands as `ref` and record nothing. */
@@ -2653,8 +2667,17 @@ static Type *checkExprInner(Checker *c, Expr *e) {
              * value-position rule "a reference is not a value, write `*p`" must not fire on this operand.
              * Other operators behave as before. */
             bool shiftRecv = op0[0] == '<' || op0[0] == '>';
+            /* An operator is a method call, so an operand may be a `@noCopy` place: whether that
+             * copy the receiver or borrow it is decided by the parameter type, which is known only
+             * after the operator resolves. The allowance is scoped to the two checks below, and
+             * `setOpCallArgs` re-applies the copy rule to a by-value parameter. */
+            Expr *savedOpL = c->opOperandL, *savedOpR = c->opOperandR;
+            c->opOperandL = e->u.bin.left;
+            c->opOperandR = e->u.bin.right;
             Type *lt = shiftRecv ? checkExpr(c, e->u.bin.left) : checkValue(c, e->u.bin.left);
             Type *rt = checkValue(c, e->u.bin.right);
+            c->opOperandL = savedOpL;
+            c->opOperandR = savedOpR;
             const char *op = e->u.bin.op;
 
             /* `any` next to an operand of a concrete type means "this must hold that type": the

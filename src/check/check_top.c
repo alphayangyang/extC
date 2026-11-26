@@ -276,6 +276,9 @@ static void checkDeclarations(Checker *c) {
     for (size_t i = 0; i < m->structs.len; i++) {
         if (i + 8 < m->structs.len) __builtin_prefetch(*(StructDef **)vecAt(&m->structs, i + 8), 0, 0);
         StructDef *sd = *(StructDef **)vecAt(&m->structs, i);
+        /* A synthetic holder is not a declaration: it carries an enum's method set and shares the
+         * enum's name on purpose (the name is what every method's C symbol is built from). */
+        if (planBuiltinHolder(sd) && sd->type && sd->type->kind == TY_ENUM) continue;
         for (size_t j = 0; j < m->types.len; j++) {
             if (j + 8 < m->types.len) __builtin_prefetch(*(TypeDef **)vecAt(&m->types, j + 8), 0, 0);
             TypeDef *td = *(TypeDef **)vecAt(&m->types, j);
@@ -294,6 +297,9 @@ static void checkDeclarations(Checker *c) {
         ImplDef *im = *(ImplDef **)vecAt(&m->impls, i);
         if (!planImplTrait(im) || !planImplTarget(im)) continue;
         StructDef *sd = structOf(planImplTarget(im));
+        /* An enum's method set lives in its synthetic holder (there is no declaration body to
+         * carry it), so the conformance check has to read it from there. */
+        if (!sd && ttBase(planImplTarget(im))) sd = ttBase(planImplTarget(im))->mholder;
         if (!sd) continue;
         Vec selfParams, selfArgs;
         vecInit(&selfParams, c->arena, sizeof(const char *));
@@ -5445,6 +5451,7 @@ static void checkGlobals(Checker *c) {
         s->name  = g->name;
         s->type  = g->ann;
         s->mut   = g->mut;
+        s->declConst = g->isConst;
         s->depth = 0;                     /* a global is depth 0 */
         s->line  = g->line;
         s->modName = g->modName;          /* the module that declared it, for qualified names */
@@ -5726,6 +5733,22 @@ static bool instUseOnExpr(void *raw, Expr *e) {
  */
 static bool instUseOnExpr(void *raw, Expr *e);
 
+/**
+ * @brief Whether a method body is emitted for one type instance.
+ *
+ * The checker and code generation must answer this the same way, or a body is emitted whose
+ * generic call sites were never resolved (the C then names a function that is never defined).
+ * Code generation emits a generic method's body for an instance when that instance used it, and
+ * also when a dyn table names the method -- a virtual call has no static receiver, so every
+ * instance's body has to exist.
+ *
+ * @param md        Method template (owner is the generic struct).
+ * @param instName  Instance name, e.g. vector$slice_u8.
+ * @return true when the body is emitted for that instance.
+ */
+static bool instBodyEmitted(FuncDef *md, const char *instName) {
+    return planInstUsed(md, instName) || planDynTable(md);
+}
 /**
  * @brief Record the methods of the **same struct** reached from an instance method body as used by
  *        this instance.
@@ -9057,12 +9080,47 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
                 t->mholder = sd;
                 *(StructDef **)vecPush(&m->structs) = sd;
             }
+        } else if (t->kind == TY_ENUM) {
+            /* An enum owns methods the same way a builtin scalar does: through a synthetic holder
+             * that hangs off the type. The two have the same reason -- neither has a declaration
+             * body the methods could be written into -- and every pass already reaches a holder
+             * (signature resolution walks `StructDef.methods`, `findMethod` asks `mholder`
+             * first, and codegen emits no C struct for a holder but does emit its methods). */
+            sd = t->mholder;
+            if (!sd) {
+                if (im->typeParams.len > 0) {
+                    /* Unlike a struct, an enum has no declaration body a generic method set could
+                     * live in: the holder is always per type. So a generic `impl` block has no
+                     * home yet -- reject it by name instead of letting the signature pass discover
+                     * an unresolved `T` two errors later. */
+                    ctxError(ctx, im->line, 1,
+                             "An enum owns methods per type: write the instance's type arguments,"
+                             " e.g. `impl maybe<i64>`.",
+                             "`impl` on a generic enum declaration is not supported yet");
+                    continue;
+                }
+                sd = (StructDef *)arenaAllocZero(arena, sizeof(StructDef));
+                /* A method's C symbol carries its owner's name (`stone_isBlack`), so the holder
+                 * takes the type's own name -- the mangled one, which is what `cType` prints for
+                 * the receiver. And the declaring module comes along, because the `@ext` rule
+                 * below asks whether the block lives where the type does. */
+                sd->name = (t->name && t->name[0]) ? t->name : "$enum";
+                sd->modName = t->edef ? t->edef->modName : NULL;
+                sd->line = im->line;
+                planSetBuiltinHolder(sd, true);   /* no C struct: the enum's own type is the layout */
+                sd->type = t;
+                vecInit(&sd->typeParams, arena, sizeof(void *));
+                vecInit(&sd->fields, arena, sizeof(void *));
+                vecInit(&sd->methods, arena, sizeof(void *));
+                t->mholder = sd;
+                *(StructDef **)vecPush(&m->structs) = sd;
+            }
         } else {
             sd = structOf(t);
             if (!sd) {
                 ctxError(ctx, im->line, 1,
-                         "A type that can own methods is a `struct` or a builtin scalar. An enum is "
-                         "read with `match`, and a view or a reference is not a declaration.",
+                         "A type that can own methods is a `struct`, an `enum`, or a builtin"
+                         " scalar. A view and a reference are not declarations.",
                          "`impl` on `%s`, which cannot own methods", im->typeName);
                 continue;
             }
@@ -9325,22 +9383,83 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
     ctPhase("ckB8", tB8);   /* after the last of the eight: the rest of checkModule */
     /* **To a fixpoint**, not in a single pass.
      *
-     * Resolving one call site can *create* the callee's instance (`funcInstance` interns on
-     * demand), and that new instance has deferred call sites of its own that also need resolving.
-     * One pass therefore left the inner ones dangling: `fn f<T>` / `fn g<T> { f(x) }` /
-     * `fn m<T> { g(x) }` **declared in that order** generated a call to `f_T` that was never
-     * emitted, so the C did not compile -- while the same program with the declarations reversed
-     * compiled, which is what made this look like a declaration-order oddity instead of a missing
-     * round. `resolveDeferredCall` is idempotent (interning the same argument
-     * combination gives the same instance), so repeating the pass is free; the loop stops as soon
-     * as a round creates no new instance. The bound mirrors the other fixpoints here and is high
-     * enough that a real program never reaches it (each round strictly grows one of the two
-     * tables). */
-    size_t instsSeen = 0, tinstsSeen = 0;
+     * One round is, in order: register the per-instance @drop hooks, close the per-instance
+     * method-use set, then resolve the deferred call sites of the bodies that will be emitted.
+     * The order matters both ways. The closure has to see the drop hooks (the hook body is a
+     * root, and the private helper it calls is reached from no other site). Resolution marks new
+     * things used and can create new instances whose bodies need another closure round, so the
+     * three steps repeat until none of the three tables grows.
+     *
+     * The resolution is **gated on the same predicate code generation uses to decide whether a
+     * method body is emitted for that instance** (instBodyEmitted: planInstUsed, or a dyn table
+     * naming it). Without that gate one method calling a generic function made *every* instance
+     * of its struct create that function's instance -- vector<T>::sort calling seq::sort gave
+     * every program holding a vector<X> a seq$sort_X, and the replayed operator check then
+     * demanded X: < for a call the program never makes.
+     *
+     * The loop is also the reason the inner resolve pass runs to a fixpoint: resolving one call
+     * site can *create* the callee's instance (funcInstance interns on demand), and that new
+     * instance has deferred call sites of its own. One pass left the inner ones dangling: fn f<T>
+     * / fn g<T> { f(x) } / fn m<T> { g(x) } **declared in that order** generated a call to f_T
+     * that was never emitted, so the C did not compile -- while the same program with the
+     * declarations reversed compiled, which is what made this look like a declaration-order
+     * oddity instead of a missing round. resolveDeferredCall is idempotent (interning the same
+     * argument combination gives the same instance), so repeating the pass is free. The bound is
+     * high enough that a real program never reaches it (each round strictly grows a table).
+     */
     for (int round = 0; round < 64; round++) {
-        if (round > 0 && c.funcInsts.len == instsSeen && tt->instances.len == tinstsSeen) break;
-        instsSeen  = c.funcInsts.len;
-        tinstsSeen = tt->instances.len;
+        size_t usesSeen = planInstUseCount();
+        size_t instsSeen = c.funcInsts.len, tinstsSeen = tt->instances.len;
+
+        /* Every instance of a type with a @drop hook needs that hook's body: the instance body
+         * calls it by the **instance** name, so the template alone leaves the C with an undeclared
+         * function. A var that declares such a value registers the instance through its own
+         * statement, but a value that only ever appears as a temporary, such as
+         * take(buf<i64>::withCap(4)), has no such site, so the registration is done here for
+         * every instance. */
+        for (size_t i = 0; i < tt->instances.len; i++) {
+            Type *inst = *(Type **)vecAt(&tt->instances, i);
+            if (!inst || !inst->sdef || !inst->sdef->dropHook) continue;
+            if (provisionalInstance(&inst->targs)) continue;
+            planSetInstUsed(inst->sdef->dropHook, inst->name);
+        }
+
+        /* Per-instance method-use closure: a method body is emitted for one type instance only
+         * when that instance really used it. A body that is emitted calls other methods of the
+         * **same** generic struct -- vector<T>::push calls grow -- and those calls were resolved
+         * on the template, so they carry no instance. Close the set here: for every used
+         * (method, instance) pair, mark the callees of its body that belong to the same struct,
+         * until it stops growing. Monotone, so it terminates. */
+        for (;;) {
+            size_t before = planInstUseCount();
+            for (size_t j = 0; j < tt->instances.len; j++) {
+                Type *inst = *(Type **)vecAt(&tt->instances, j);
+                if (!inst || inst->kind != TY_GENERIC || !inst->sdef) continue;
+                if (provisionalInstance(&inst->targs)) continue;
+                for (size_t k = 0; k < inst->sdef->methods.len; k++) {
+                    FuncDef *md = *(FuncDef **)vecAt(&inst->sdef->methods, k);
+                    if (!md || !md->body || !planUsed(md)) continue;
+                    if (!planInstUsed(md, inst->name)) continue;
+                    instUseClosure(&c, md->body, &inst->sdef->typeParams, &inst->targs);
+                }
+            }
+            /* The instance body of a free generic function: it mentions associated calls such as
+             * ndview<T>::rowMajor(...), and the receiver type is substituted with the instance's
+             * type arguments the same way. */
+            for (size_t j = 0; j < c.funcInsts.len; j++) {
+                FuncDef *fi = *(FuncDef **)vecAt(&c.funcInsts, j);
+                FuncDef *tmpl = fi ? planTemplate(fi) : NULL;
+                if (!fi || !tmpl || !planUsed(tmpl) || !fi->body) continue;
+                if (provisionalInstance(&fi->targs)) continue;
+                instUseClosure(&c, fi->body, &tmpl->typeParams, &fi->targs);
+            }
+            if (planInstUseCount() == before) break;   /* fixpoint: the count only grows, so it stops */
+        }
+
+        /* The deferred call sites themselves. Three steps per site: substitute the type
+         * arguments, intern (or create) that concrete instance, and point the call expression's
+         * func at it; instances are interned (funcInstance), so one argument combination has
+         * exactly one instance. */
         for (size_t i = 0; i < c.callChecks.len; i++) {
             CallCheck *cc = *(CallCheck **)vecAt(&c.callChecks, i);
             if (!cc->node || !cc->tmpl) continue;
@@ -9351,69 +9470,24 @@ bool checkModule(Ctx *ctx, Arena *arena, TypeTable *tt, Module *m) {
                 resolveDeferredCall(&c, cc, fi, NULL, &planTemplate(fi)->typeParams, &fi->targs);
             }
             /* (2) The enclosing body is a type instance (a generic call inside a method);
-             * `owner` is the struct or enum definition. */
+             * owner is the struct or enum definition. */
             StructDef *owner = cc->func ? cc->func->owner : NULL;
             if (!owner) continue;
             for (size_t j = 0; j < tt->instances.len; j++) {
                 Type *inst = *(Type **)vecAt(&tt->instances, j);
                 if (inst->sdef != owner) continue;
-                /* The enclosing body is a **type** instance: the same method body is shared
-                 * by every instance of that struct, so the answer is keyed on the type
-                 * instance (`planEnterInst` on the code generation side). */
+                /* The enclosing body is a **type** instance: the same method body is shared by
+                 * every instance of that struct, so the answer is keyed on the type instance
+                 * (planEnterInst on the code generation side). Only the instances that really
+                 * emit this method body need it; see the gate comment above. */
+                if (cc->func && !instBodyEmitted(cc->func, inst->name)) continue;
                 resolveDeferredCall(&c, cc, NULL, inst, &owner->typeParams, &inst->targs);
             }
         }
-    }
 
-    /* Every instance of a type with a `@drop` hook needs that hook's body: the instance body calls
-     * it by the **instance** name, so the template alone leaves the C with an undeclared function.
-     * A `var` that declares such a value registers the instance through its own statement, but a
-     * value that only ever appears as a temporary, such as `take(buf<i64>::withCap(4))`, has no such
-     * site, so the registration is done here for every instance.
-     *
-     * This has to run **before** the closure below. The hook body is a root of that
-     * closure, and the methods it calls -- a `@drop` that revokes reference edges goes
-     * through a private helper -- are reached from no other site. Registered after the
-     * closure, the helper is left out of the emitted C while the hook body still names
-     * it: an implicit declaration at the call site, seen as
-     * `implicit declaration of function ...; did you mean ...` when the C is compiled. */
-    for (size_t i = 0; i < tt->instances.len; i++) {
-        Type *inst = *(Type **)vecAt(&tt->instances, i);
-        if (!inst || !inst->sdef || !inst->sdef->dropHook) continue;
-        if (provisionalInstance(&inst->targs)) continue;
-        planSetInstUsed(inst->sdef->dropHook, inst->name);
-    }
-
-    /* Per-instance method-use closure: a method body is emitted for one type instance only
-     * when that instance really used it (see the gates in the replay loops above). A body that
-     * is emitted calls other methods of the **same** generic struct -- `vector<T>::push` calls
-     * `grow` -- and those calls were resolved on the template, so they carry no instance. Close
-     * the set here: for every used (method, instance) pair, mark the callees of its body that
-     * belong to the same struct, until it stops growing. Monotone, so it terminates. */
-    for (;;) {
-        size_t before = planInstUseCount();
-        for (size_t j = 0; j < tt->instances.len; j++) {
-            Type *inst = *(Type **)vecAt(&tt->instances, j);
-            if (!inst || inst->kind != TY_GENERIC || !inst->sdef) continue;
-            if (provisionalInstance(&inst->targs)) continue;
-            for (size_t k = 0; k < inst->sdef->methods.len; k++) {
-                FuncDef *md = *(FuncDef **)vecAt(&inst->sdef->methods, k);
-                if (!md || !md->body || !planUsed(md)) continue;
-                if (!planInstUsed(md, inst->name)) continue;
-                instUseClosure(&c, md->body, &inst->sdef->typeParams, &inst->targs);
-            }
-        }
-        /* The instance body of a free generic function: it mentions associated calls such as
-         * `ndview<T>::rowMajor(...)`, and the receiver type is substituted with the instance's type
-         * arguments the same way. */
-        for (size_t j = 0; j < c.funcInsts.len; j++) {
-            FuncDef *fi = *(FuncDef **)vecAt(&c.funcInsts, j);
-            FuncDef *tmpl = fi ? planTemplate(fi) : NULL;
-            if (!fi || !tmpl || !planUsed(tmpl) || !fi->body) continue;
-            if (provisionalInstance(&fi->targs)) continue;
-            instUseClosure(&c, fi->body, &tmpl->typeParams, &fi->targs);
-        }
-        if (planInstUseCount() == before) break;   /* fixpoint: the count only grows, so it stops */
+        if (planInstUseCount() == usesSeen && c.funcInsts.len == instsSeen &&
+            tt->instances.len == tinstsSeen)
+            break;   /* fixpoint: nothing grew, so nothing is left to do */
     }
 
     /* Deferred operator checks: re-check each recorded use for every concrete instance.

@@ -16,6 +16,17 @@
 
 #include "lexer.h"
 
+/* One module-level `const` whose value is known while types are still being parsed
+ * (`const N: i64 = 15`). Kept as a plain name -> number pair: a fixed array's length has to
+ * be decided in `parseType`, which runs before the checker could fold any expression, so the
+ * only initializers recorded here are integer **literals**. Everything else about the
+ * declaration (type, evaluation order, code generation) is an ordinary global. */
+typedef struct {
+    const char *name;
+    long long   value;
+    bool        usable;   /* integer-typed and written as an (optionally negated) int literal */
+} ConstInt;
+
 typedef struct {
     Ctx   *ctx;
     Arena *arena;
@@ -52,6 +63,10 @@ typedef struct {
     /* The `const` parameters of the function whose signature is being parsed, so an array
      * length can name one (`fn dot<const N: i64>(a: [N]f64)`). Empty outside a signature. */
     Vec    constParams;
+    /* Module-level `const` declarations seen so far in this file (`ConstInt`). A length may
+     * name one: `const N: i64 = 15` then `[N][N]i32`. Declarations are read in order, so a
+     * `const` has to appear before the type that uses it. */
+    Vec    constInts;
     /* The module being parsed. When the desugaring expands into a library call (a value
      * f-string goes through `stl::string`, multiple subscripts through `std::nd`), the
      * module it needs is registered **here** as a hidden `use`: the sugar carries its own
@@ -293,7 +308,7 @@ static Type    *parseFnType(Parser *p);
 static Stmt    *parseBlock(Parser *p);
 static Stmt    *parseStmt(Parser *p);
 static Stmt    *parseVarDecl(Parser *p);
-static GlobalDef *parseGlobalDecl(Parser *p);
+static GlobalDef *parseGlobalDecl(Parser *p, bool isConst);
 static Stmt    *parseIf(Parser *p);
 static Stmt    *parseWhile(Parser *p);
 static Stmt    *parseFor(Parser *p);
@@ -343,6 +358,44 @@ static bool isScalarTypeName(const char *n) {
     static const char *N[] = { "i8","i16","i32","i64","u8","u16","u32","u64","f32","f64", NULL };
     for (size_t i = 0; N[i]; i++) if (strcmp(N[i], n) == 0) return true;
     return false;
+}
+
+/**
+ * @brief Whether a `const` declaration's annotation names an integer type.
+ *
+ * The array-length promise is only usable when both halves are integers: `const N: i64 = 15`
+ * can size `[N]i32`, while `const PI: f64 = 3.14` cannot (`[PI]i32` has no meaning). An
+ * omitted annotation counts as integer-compatible here; the checker still types the value, and
+ * the length check below rejects a non-positive number either way.
+ *
+ * @param ann  The annotation as written, or `NULL` when it was omitted.
+ * @return     `true` when the declaration may supply a fixed array's length.
+ */
+static bool constIsIntAnn(const Type *ann) {
+    if (!ann) return true;
+    if (ann->kind != TY_UNRESOLVED || !ann->name) return false;
+    static const char *N[] = { "i8","i16","i32","i64","u8","u16","u32","u64", NULL };
+    for (size_t i = 0; N[i]; i++) if (strcmp(N[i], ann->name) == 0) return true;
+    return false;
+}
+
+/**
+ * @brief Look up a module-level `const` already seen while parsing this file.
+ *
+ * Only declarations **above** the type being parsed are visible: the parser runs once, top to
+ * bottom, and the length has to be a number by the time the type node is built.
+ *
+ * @param p     Parser.
+ * @param name  Identifier used as an array length.
+ * @return      The entry, or `NULL` when no `const` of that name has been parsed yet. Check
+ *              `usable` before using `value`.
+ */
+static const ConstInt *constFind(Parser *p, const char *name) {
+    for (size_t i = 0; i < vecLen(&p->constInts); i++) {
+        ConstInt *ci = (ConstInt *)vecAt(&p->constInts, i);
+        if (strcmp(ci->name, name) == 0) return ci;
+    }
+    return NULL;
 }
 static Expr *parseStructLit(Parser *p, const char *name);
 static int   looksLikeAssoc(Parser *p);
@@ -731,6 +784,7 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
     p.mod   = out;
     vecInit(&p.pending, arena, sizeof(Stmt *));
     vecInit(&p.constParams, arena, sizeof(void *));
+    vecInit(&p.constInts, arena, sizeof(ConstInt));
     vecInit(&p.pendingGlobals, arena, sizeof(GlobalDef *));
     skipJunk(&p);
 
@@ -1151,10 +1205,14 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
             if (!td) return false;
             td->isPrivate = isPrivate;
             *(TypeDef **)vecPush(&out->types) = td;
-        } else if (at(&p, "global") || at(&p, "let") || at(&p, "var")) {
+        } else if (at(&p, "global") || at(&p, "let") || at(&p, "var") || at(&p, "const")) {
         /* `global var` at the top level is redundant but legal: top level is already global
          * (the same thing stated twice is allowed for self-documentation). */
             (void)accept(&p, "global");
+            /* `const` is `let` plus one promise the parser can use: the value is known before
+             * any code runs, so a fixed array may be sized by it (`[N][N]i32`). The promise is
+             * only kept for an integer-literal initializer -- see parseGlobalDecl. */
+            bool declConst = at(&p, "const");
             if (exported) {
                 ctxError(ctx, cur(&p)->line, cur(&p)->col,
                          "A global is a C object, and this language has no `@export` for objects yet"
@@ -1183,7 +1241,7 @@ bool parseModule(Ctx *ctx, Arena *arena, Vec *toks, Module *out) {
                          "`@unchecked` applies to a function, not to a global");
                 return false;
             }
-            GlobalDef *g = parseGlobalDecl(&p);
+            GlobalDef *g = parseGlobalDecl(&p, declConst);
             if (!g) return false;
             g->isPrivate = isPrivate;
             *(GlobalDef **)vecPush(&out->globals) = g;
@@ -2418,18 +2476,47 @@ static Type *parseTypeInner(Parser *p) {
             }
             if (atKind(p, TK_IDENT)) {
                 Token *cp = cur(p);
-                bool isConst = false;
+                bool isConstParam = false;
                 for (size_t ci = 0; ci < p->constParams.len; ci++)
-                    if (strcmp(*(const char **)vecAt(&p->constParams, ci), cp->text) == 0) isConst = true;
-                if (!isConst) {
+                    if (strcmp(*(const char **)vecAt(&p->constParams, ci), cp->text) == 0) isConstParam = true;
+                const ConstInt *ci = isConstParam ? NULL : constFind(p, cp->text);
+                if (isConstParam) {
+                    /* A `const` parameter of the enclosing signature: the length arrives with the
+                     * call, so the node keeps the name (`typeArraySym`). */
+                    take(p);
+                    dims[ndim] = -1;
+                    symDims[ndim] = cp->text;
+                } else if (ci && ci->usable) {
+                    /* A module-level `const` with an integer literal: the parser already knows the
+                     * number, so the type is the same as if it had been written literally. */
+                    take(p);
+                    if (ci->value <= 0) {
+                        ctxError(p->ctx, cp->line, cp->col, NULL,
+                                 "array length must be positive, got %lld", (long long)ci->value);
+                        return NULL;
+                    }
+                    dims[ndim] = ci->value;
+                    symDims[ndim] = NULL;
+                } else if (ci) {
+                    /* The name is a module-level `const`, but not a number the parser can read:
+                     * the promise is half kept, so say which half. */
                     ctxError(p->ctx, cp->line, cp->col,
-                             "Only a `const` parameter may be used as an array length.",
-                             "array length must be an integer literal, found `%s`", shown(cp));
+                             "A fixed array's length is a number known before the program runs."
+                             " A `const` can supply it only when its type is an integer type and"
+                             " its value is written as an integer literal.",
+                             "array length: `%s` is a `const`, but not an integer literal",
+                             shown(cp));
+                    return NULL;
+                } else {
+                    ctxError(p->ctx, cp->line, cp->col,
+                             "A fixed array's length is a number known before the program runs: an"
+                             " integer literal, a `const` parameter of this signature, or a"
+                             " module-level `const` with an integer literal initializer written"
+                             " above the type.",
+                             "array length must be an integer literal or a `const`, found `%s`",
+                             shown(cp));
                     return NULL;
                 }
-                take(p);
-                dims[ndim] = -1;
-                symDims[ndim] = cp->text;
                 ndim++;
             } else if (atKind(p, TK_INT)) {
                 Token *n = take(p);
@@ -2444,9 +2531,12 @@ static Type *parseTypeInner(Parser *p) {
             } else {
                 Token *bad = cur(p);
                 ctxError(p->ctx, bad->line, bad->col,
-                         "For now a fixed array's length must be an integer literal. "
-                         "(Compile-time constants come with `const`.)",
-                         "array length must be an integer literal, found `%s`", shown(bad));
+                         "A fixed array's length is a number known before the program runs: an"
+                         " integer literal, a `const` parameter of this signature, or a"
+                         " module-level `const` with an integer literal initializer written above"
+                         " the type.",
+                         "array length must be an integer literal or a `const`, found `%s`",
+                         shown(bad));
                 return NULL;
             }
             if (accept(p, ",")) continue;
@@ -2880,6 +2970,18 @@ static Stmt *parseMatch(Parser *p) {
 static Stmt *parseStmt(Parser *p) {
     Token *t = cur(p);
 
+    /* `const` is a module-level declaration: the value has to be known before any code runs,
+     * while a local is created when its statement runs. Saying so beats "unknown name `N`". */
+    if (at(p, "const") && pk(p, 1) &&
+        (pk(p, 1)->kind == TK_IDENT || pk(p, 1)->kind == TK_TYPE) && pk(p, 2) &&
+        (strcmp(pk(p, 2)->text, ":") == 0 || strcmp(pk(p, 2)->text, "=") == 0)) {
+        ctxError(p->ctx, t->line, t->col,
+                 "A `const` is fixed before the program starts, so it lives at the top level."
+                 " Inside a function, `let` is the immutable binding.",
+                 "`const` is a module-level declaration");
+        return NULL;
+    }
+
 
     /* An annotation `@xxx` can only introduce a local declaration, and the only one that
      * exists is `@overwrite`. Function annotations such as `@main` are not implemented yet,
@@ -3298,21 +3400,31 @@ static bool declCheckShape(Parser *p, Token *kw, Vec *names, Vec *anns, Vec *ini
 }
 
 /**
- * @brief Parse a top-level `let` / `var`, i.e. a global variable or constant.
+ * @brief Parse a top-level `let` / `var` / `const`, i.e. a global variable or constant.
  *
  * The syntax matches a local declaration, including several names in one declaration: the type
  * may be omitted (an annotation written at the end applies to all names), and an omitted
  * initializer means zero initialization. The initializer must be a literal, because a C global
  * initializer can only be a constant expression.
  *
+ * `const` adds one promise the **parser** can use: the value is fixed before any code runs, so
+ * a fixed array may be sized by it (`const N: i64 = 15` then `[N][N]i32`). That promise holds
+ * only when the initializer is an integer literal -- the parser records exactly those names in
+ * `p->constInts`, in declaration order (a length may only name a `const` written above it).
+ * Everything else about the declaration is an ordinary immutable global, so `const PI: f64 =
+ * 3.14` works as a value and simply cannot size an array.
+ *
  * One user declaration may produce several `GlobalDef`s: this returns the first and queues the
  * rest in `p->pendingGlobals`, which the module-parsing loop picks up (`GlobalDef` is not a
  * `Stmt`, hence a separate queue).
  *
- * @param p  Parser.
- * @return   The first GlobalDef; `NULL` on error (the diagnostic has been reported).
+ * @param p        Parser.
+ * @param isConst  The keyword was `const`: an initializer is required (a "constant" whose value
+ *                 is not written anywhere is just an immutable global, and `let` already says
+ *                 that).
+ * @return         The first GlobalDef; `NULL` on error (the diagnostic has been reported).
  */
-static GlobalDef *parseGlobalDecl(Parser *p) {
+static GlobalDef *parseGlobalDecl(Parser *p, bool isConst) {
     Token *kw = take(p);
     Vec names, anns, inits;
     if (!declParseNames(p, &names, &anns)) return NULL;
@@ -3328,6 +3440,13 @@ static GlobalDef *parseGlobalDecl(Parser *p) {
             skipNl(p);
         }
     }
+    if (isConst && vecLen(&inits) == 0) {
+        ctxError(p->ctx, kw->line, kw->col,
+                 "`const` promises the value is known before anything runs, so the value has to"
+                 " be written here. An immutable global with zero initialization is a `let`.",
+                 "`const` needs an initializer");
+        return NULL;
+    }
     if (!declCheckShape(p, kw, &names, &anns, &inits)) return NULL;
 
     GlobalDef *first = NULL;
@@ -3337,7 +3456,32 @@ static GlobalDef *parseGlobalDecl(Parser *p) {
         g->ann  = *(Type **)vecAt(&anns, i);
         g->init = vecLen(&inits) ? *(Expr **)vecAt(&inits, i) : NULL;
         g->mut  = (strcmp(kw->text, "var") == 0);
+        g->isConst = isConst;
         g->line = kw->line;
+        /* Record the value for `[N]` -- only when both halves of the promise are visible: the
+         * type says integer, and the initializer is an integer literal (not `1 + 2`, which the
+         * checker would fold later, long after the type was parsed). Every `const` with an
+         * initializer is recorded, usable or not, so the length diagnostic can say which half
+         * is missing instead of "no such name". */
+        if (isConst && g->init) {
+            ConstInt ci;
+            ci.name   = g->name;
+            ci.value  = 0;
+            ci.usable = false;
+            if (constIsIntAnn(g->ann)) {
+                Expr *v = g->init;
+                long long sign = 1;
+                if (v->kind == EX_UN && v->u.un.op && strcmp(v->u.un.op, "-") == 0) {
+                    sign = -1;
+                    v = v->u.un.operand;
+                }
+                if (v && v->kind == EX_INT) {
+                    ci.value  = sign * v->u.ival;
+                    ci.usable = true;
+                }
+            }
+            *(ConstInt *)vecPush(&p->constInts) = ci;
+        }
         if (i == 0) first = g;
         else *(GlobalDef **)vecPush(&p->pendingGlobals) = g;
     }

@@ -1,0 +1,68 @@
+/* 正例：**枚举可以挂方法**（方法进类型唯一的方法集，派发仍静态）。
+ *
+ * 判据：
+ *   ① 无载荷枚举：固有方法 + 运算符 *self == stone.black 都命中合成 holder ✓
+ *   ② 有载荷枚举：方法体里 match 载荷 ✓
+ *   ③ 泛型枚举的**实例**：impl maybe<i64> 只挂在该实例上 ✓
+ * 方法名由类型名拼（stone_isBlack），所以合成 holder 的名字必须与枚举名一致。
+ */
+// expect: black true white|white|12 0|41 -1
+use std::io
+
+type stone = | empty | black | white
+type shape = | circle(f64) | dot
+type maybe<T> = | nope | yes(T)
+
+impl stone {
+    fn isBlack(self: ref stone) -> bool { return *self == stone.black }
+
+    fn flip(self: ref stone) -> stone {
+        match *self {
+            empty => { return stone.black }
+            black => { return stone.white }
+            white => { return stone.empty }
+        }
+    }
+
+    fn label(self: ref stone) -> slice<u8> {
+        match *self {
+            empty => { return "empty" }
+            black => { return "black" }
+            white => { return "white" }
+        }
+    }
+}
+
+impl shape {
+    fn area(self: ref shape) -> f64 {
+        match *self {
+            circle(r) => { return 3.0 * r * r }
+            dot => { return 0.0 }
+        }
+    }
+}
+
+impl maybe<i64> {
+    fn orElse(self: ref maybe<i64>, d: i64) -> i64 {
+        match *self {
+            nope => { return d }
+            yes(v) => { return v }
+        }
+    }
+}
+
+fn main() -> i32 {
+    var s: stone = stone.black
+    io::cout << s.label() << " " << s.isBlack() << " " << s.flip().label() << "\n"
+    s = s.flip()
+    io::cout << s.label() << "\n"
+
+    let c = shape.circle(2.0)
+    let d = shape.dot
+    io::cout << c.area() << " " << d.area() << "\n"
+
+    let m = maybe<i64>::yes(i64(41))
+    let n = maybe<i64>::nope
+    io::cout << m.orElse(i64(-1)) << " " << n.orElse(i64(-1)) << "\n"
+    return 0
+}

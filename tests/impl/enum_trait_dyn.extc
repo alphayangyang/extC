@@ -1,0 +1,24 @@
+/* 正例：枚举既是 `impl … for` 的实现者，也能进 `dyn` 虚表。
+ *
+ * 枚举没有自己的 C struct（无载荷是 typedef enum），方法集挂在合成 holder 里；
+ * 方法 C 符号仍按类型名拼，所以虚表槽、thunk、初始化式三处都要能看到同一个签名。
+ */
+// expect: 7 8|7 8
+use std::io
+
+type stone = | empty | black | white
+
+struct box { v: i64 }
+
+trait Tag { fn tag(self: ref Self) -> i64 }
+
+impl Tag for stone { fn tag(self: ref stone) -> i64 { return i64(7) } }
+impl Tag for box   { fn tag(self: ref box)   -> i64 { return self.v + 1 } }
+
+fn main() -> i32 {
+    let s = stone.black
+    let b = box { v: 7 }
+    io::cout << s.tag() << " " << b.tag() << "\n"
+    io::cout << dyn Tag(s).tag() << " " << dyn Tag(b).tag() << "\n"
+    return 0
+}

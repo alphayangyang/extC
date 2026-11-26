@@ -1,0 +1,22 @@
+/* 正例：运算符的参数**借**操作数 ⇒ `@noCopy` 的类型也能比较/运算。
+   判据：能编能跑，且三个运算符都是**用户的方法**（不是内建语义）。
+   运算符是一次方法调用：参数写 `ref T` 就借，写 `T` 才复制（复制由反例钉住）。 */
+@noCopy
+struct thing {
+    n: i64
+}
+
+impl thing {
+    fn ==(self: ref thing, other: ref thing) -> bool { return self.n == other.n }
+    fn <(self: ref thing, other: ref thing) -> bool { return self.n < other.n }
+    fn +(self: ref thing, other: ref thing) -> thing { return thing { n: self.n + other.n } }
+}
+
+fn main() -> i32 {
+    var a = thing { n: 3 }
+    var b = thing { n: 4 }
+    println("eq=", a == b, " lt=", a < b, " same=", a == a)
+    var c = a + b
+    println("sum=", c.n)
+    return 0
+}

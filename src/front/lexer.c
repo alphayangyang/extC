@@ -577,6 +577,41 @@ bool lexIsPunct(const char *value) {
 }
 
 /**
+ * @brief Report the byte under the cursor as an unexpected character.
+ *
+ * Printing it with `%c` would copy one byte of a multi-byte UTF-8 character, so the compiler's
+ * own message would stop being valid UTF-8 -- a terminal prints a replacement box, and a tool
+ * reading the diagnostics fails to decode them. A whole UTF-8 sequence is copied instead; an
+ * unprintable or malformed byte is reported in hex, which needs no encoding.
+ *
+ * @param lx    Cursor, sitting on the offending byte.
+ * @param line  Line number of that byte.
+ * @param col   Column number of that byte.
+ */
+static void lexUnexpectedChar(Lexer *lx, int line, int col) {
+    unsigned char b = (unsigned char)lxPeek(lx, 0);
+    if (b >= 0x20 && b < 0x7f) {
+        ctxError(lx->ctx, line, col, NULL, "unexpected character `%c`", (int)b);
+        return;
+    }
+    int n = 0;
+    unsigned cp = 0;
+    if ((b & 0xe0) == 0xc0) { n = 2; cp = b & 0x1fu; }
+    else if ((b & 0xf0) == 0xe0) { n = 3; cp = b & 0x0fu; }
+    else if ((b & 0xf8) == 0xf0) { n = 4; cp = b & 0x07u; }
+    bool ok = n > 0;
+    for (int i = 1; ok && i < n; i++) {
+        unsigned char c = (unsigned char)lxPeek(lx, (size_t)i);
+        if ((c & 0xc0) != 0x80) { ok = false; break; }
+        cp = (cp << 6) | (c & 0x3fu);
+    }
+    if (ok)
+        ctxError(lx->ctx, line, col, NULL, "unexpected character `%.*s` (U+%04X)", n, lx->src + lx->pos, cp);
+    else
+        ctxError(lx->ctx, line, col, NULL, "unexpected byte 0x%02X", (unsigned)b);
+}
+
+/**
  * @brief Lex one punctuation mark into `out`, taking the first match in the table.
  *
  * The table is tried in order, so a longer symbol must come before the shorter symbol it
@@ -600,7 +635,7 @@ static bool lexPunct(Lexer *lx, Vec *out, int line, int col) {
             return true;
         }
     }
-    ctxError(lx->ctx, line, col, NULL, "unexpected character `%c`", lxPeek(lx, 0));
+    lexUnexpectedChar(lx, line, col);
     return false;
 }
 

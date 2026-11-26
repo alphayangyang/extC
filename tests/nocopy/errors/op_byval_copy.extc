@@ -1,0 +1,17 @@
+/* 反例：运算符的第二个参数**按值**收 ⇒ 操作数被复制，`@noCopy` 必须挡住。
+   报错口径与其它复制点相同（说清它是 @noCopy，并教改成 ref）。 */
+@noCopy
+struct thing {
+    n: i64
+}
+
+impl thing {
+    fn ==(self: ref thing, other: thing) -> bool { return self.n == other.n }
+}
+
+fn main() -> i32 {
+    var a = thing { n: 3 }
+    var b = thing { n: 4 }
+    println("不该编过 = ", a == b)
+    return 0
+}

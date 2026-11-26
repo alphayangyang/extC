@@ -3035,8 +3035,15 @@ bool requireMutable(Checker *c, Expr *e, int line, const char *what) {
     }
     if (!root || root->mut) return false;
     if (e->kind == EX_IDENT) {
-        ckError(c, line, "use `var` to allow reassignment (`let` is an immutable binding)",
-                "cannot assign to `%s`, which is a `let`", root->name);
+        if (root->declConst) {
+            ckError(c, line,
+                    "`const` is fixed before the program starts, so it has no writer. Use "
+                    "`var` for a value you intend to change.",
+                    "cannot assign to `%s`, which is a `const`", root->name);
+        } else {
+            ckError(c, line, "use `var` to allow reassignment (`let` is an immutable binding)",
+                    "cannot assign to `%s`, which is a `let`", root->name);
+        }
     } else {
         ckError(c, line,
                 "`let` means the value is read-only: no reassignment, no field or element writes. "
@@ -3445,6 +3452,10 @@ static void reportNoCopyCopy(Checker *c, Expr *e, StructDef *sd) {
  */
 static bool rejectNoCopy(Checker *c, Expr *e, Type *t) {
     if (!e || e->kind == EX_REF || !t) return false;
+    /* An operand of an operator is not a copy: the operator is a method call, and its parameter
+     * decides between borrow and copy. `setOpCallArgs` applies the copy rule to a by-value
+     * parameter once the operator has been resolved, which is after this point. */
+    if (c->opOperandL == e || c->opOperandR == e) return false;
     StructDef *sd = structOf(ttBase(t));
     if (!sd || !sd->noCopy || !isPlace(e)) return false;
     /* A `var`/`let` binding of a plain name **moves** the value instead of copying it: the

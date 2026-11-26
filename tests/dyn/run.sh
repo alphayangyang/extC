@@ -68,6 +68,16 @@ out=$("$EXTC" -w --run tests/dyn/dyn_ref_receiver.extc 2>&1)
 [ "$out" = "ref=7 mutref=8" ] && ok dyn_ref_receiver "ref/mut ref dyn 接收者（$out）" \
                               || bad dyn_ref_receiver "期望 ref=7 mutref=8，实得：$out"
 
+# 方法**参数**带 ref：vtable 槽与 thunk 的签名必须保留引用。旧的退化（按值写进 vtable）
+# 普通 -o 仍 exit 0，只有 --check-c 能抓到，所以两条判据都查。
+out=$("$EXTC" -w --run tests/dyn/dyn_ref_param.extc 2>&1)
+[ "$out" = "42" ] && ok dyn_ref_param "dyn 方法带 ref 实参（$out）" || bad dyn_ref_param "期望 42，实得：$out"
+if "$EXTC" -w --check-c -o /dev/null tests/dyn/dyn_ref_param.extc >/dev/null 2>&1; then
+    ok dyn_ref_param_checkc "vtable 槽保留 ref：生成的 C 能编过"
+else
+    bad dyn_ref_param_checkc "生成的 C 编不过（vtable/thunk 签名退化？）"
+fi
+
 # 无 `self` 的 trait 方法经 dyn 派发：必须是**干净报错**，不是段错误（曾经 exit 139）
 out=$("$EXTC" -w -o /dev/null tests/errors/dyn_assoc_dispatch.extc 2>&1); rc=$?
 case "$out" in

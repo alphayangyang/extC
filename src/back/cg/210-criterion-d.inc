@@ -554,6 +554,17 @@ static void collectEmitted(CG *g, Module *m) {
         /* Free functions are pruned the same way; `main` is always kept, and
          * `@export` is a root too because nothing on the extC side names it. */
         if (!planUsed(f) && !cgIsMain(f) && !f->isModuleEntry && !f->isExport && !inTraitTable(m, f)) continue;
+        /* A synthesized `par` worker is referenced from one place only: the call site inserted into
+         * the body that holds the loop. So it is emitted exactly when that body is. The owner is
+         * pruned by the rule just above; asking the same question again here keeps a `par` loop
+         * inside a function nobody calls (an unused stdlib helper) from leaving a static function
+         * behind that nothing names -- `-Werror=unused-function` on every program that loads the
+         * module. */
+        if (planIsParWorker(f)) {
+            FuncDef *po = planParOwner(f);
+            if (po && !planUsed(po) && !cgIsMain(po) && !po->isModuleEntry && !po->isExport &&
+                !inTraitTable(m, po)) continue;
+        }
         /* The coroutine protocols (`next`/`value`) are emitted inline at their call sites and have no
          * body of their own -- emitting one here hit genBlockBody with a null body. */
         if (planCoroProto(f)) continue;
@@ -656,7 +667,11 @@ static void emitVtTables(CG *g, Buf *out, Module *m, Arena *arena) {
                       want->name);
             for (size_t pi = 1; pi < want->params.len; pi++)
                 bufPrintf(&g->vtDecls, ", %s",
-                          cType(g, ttBase((*(Param **)vecAt(&want->params, pi))->type)));
+                          /* The slot type is the written parameter type: a `ref T` parameter
+                           * is a pointer in the uniform signature too. Stripping the reference
+                           * here made the table declare a value type while every call site and
+                           * the thunk passed a pointer, so the generated C did not compile. */
+                          cType(g, (*(Param **)vecAt(&want->params, pi))->type));
             bufPuts(&g->vtDecls, ");");
         }
         bufPuts(&g->vtDecls, " };\n");
@@ -712,7 +727,8 @@ static void emitVtTables(CG *g, Buf *out, Module *m, Arena *arena) {
                           tr->name, vtKey, want->name);
                 for (size_t pi = 1; pi < want->params.len; pi++) {
                     Param *pp = *(Param **)vecAt(&want->params, pi);
-                    bufPrintf(&g->vtDefs, ", %s %s", cType(g, ttBase(pp->type)), pp->name);
+                    /* Same rule as the declaration above: keep the reference. */
+                    bufPrintf(&g->vtDefs, ", %s %s", cType(g, pp->type), pp->name);
                 }
                 bufPrintf(&g->vtDefs, ") { %s%s((%s *)self", want->ret ? "return " : "",
                           cFuncName(g, have), cType(g, vb));

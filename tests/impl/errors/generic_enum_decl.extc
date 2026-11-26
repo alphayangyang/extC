@@ -1,0 +1,6 @@
+// 反例：枚举没有声明体的方法集 —— 泛型 impl 块要先写实例的类型实参（impl maybe<i64>）。
+// struct 允许 impl<T> pair<T>（方法挂声明体），枚举不：holder 是按类型的。
+// expect: `impl` on a generic enum declaration is not supported yet
+type maybe<T> = | nope | yes(T)
+impl<T> maybe<T> { fn isSome(self: ref maybe<T>) -> bool { return true } }
+fn main() -> i32 { return 0 }

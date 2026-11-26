@@ -1176,6 +1176,15 @@ static void parLower(Checker *c, Stmt *block) {
     planSetIsParWorker(wf, true);
     planSetParTlsArena(wf, true);
     planSetUsed(wf, true);
+    /* Code generation emits the worker only when the body that holds its call site is emitted: a
+     * `par` loop in a function nobody calls would otherwise leave a static function behind that
+     * nothing names. A nested loop inherits the outermost owner, because a worker's body is
+     * emitted only together with the owner that reaches it. */
+    {
+        FuncDef *owner = c->curFunc;
+        if (owner && planIsParWorker(owner) && planParOwner(owner)) owner = planParOwner(owner);
+        planSetParOwner(wf, owner);
+    }
     call->type = c->tI32;
 
     /* The block is left holding one discarded call; `checkStmt`'s `ST_EXPR` branch sees the plan

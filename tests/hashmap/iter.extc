@@ -1,0 +1,36 @@
+// tests/hashmap/iter.extc —— 遍历器：iterKeys / iterValues，for 与手写 while 都走 iter/next/value
+// expect: gen=2 sumk=4 vs=40 i64k=33|while=4 live=2
+use std::io
+use std::data::hashMap
+
+fn main() -> i32 {
+    // 泛型表：键是 i64Key（键类型要有 hash 与 ==）
+    var m: hashMap<i64Key, i64> = hashMap<i64Key, i64>::withCap(i64(16))
+    m.put(i64Key { v: 1 }, i64(10))
+    m.put(i64Key { v: 2 }, i64(20))
+    m.put(i64Key { v: 3 }, i64(30))
+    m.remove(i64Key { v: 2 })
+
+    var ks: i64 = 0
+    var sumk: i64 = 0
+    for k in m.iterKeys() { ks += 1; sumk += k.v }
+    var vs: i64 = 0
+    for v in m.iterValues() { vs += v }
+    io::cout << "gen=" << ks << " sumk=" << sumk << " vs=" << vs
+
+    // i64 快路：键按 i64 给出，不用 .v
+    var h: hashMapI64<i64> = hashMapI64<i64>::withCap(i64(8))
+    let _a = h.put(i64(1), i64(10))
+    let _b = h.put(i64(2), i64(20))
+    var sum: i64 = 0
+    for k in h.iterKeys() { sum += k }
+    for v in h.iterValues() { sum += v }
+    io::cout << " i64k=" << sum << "\n"
+
+    // 手写 while：同一个游标，显式 next() + value()
+    var it = m.iterKeys()
+    var w: i64 = 0
+    while it.next() { w += it.value().v }
+    io::cout << "while=" << w << " live=" << m.len() << "\n"
+    return 0
+}

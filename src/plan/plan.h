@@ -802,6 +802,26 @@ bool     planParFullOut(const FuncDef *f);
  */
 void planSetParFullOut(FuncDef *f, bool v);
 
+/**
+ * @brief Get the function whose body holds the `par` loop that synthesized this worker.
+ *
+ * A worker's only call site is inserted into the body of the function that wrote the loop, so its
+ * trampoline and prototype may only be written when that body is written: an unused stdlib function
+ * that merely contains `par` must not leave a static function nothing names behind.
+ *
+ * @param f  The function definition (a synthesized `par` worker).
+ * @return   The function whose body owns the loop; NULL when there is no record.
+ */
+FuncDef *planParOwner(const FuncDef *f);
+
+/**
+ * @brief Record the function whose body holds the `par` loop that synthesized this worker.
+ *
+ * @param f     The synthesized worker; NULL ignores this write.
+ * @param owner The function whose body owns the loop.
+ */
+void     planSetParOwner(FuncDef *f, FuncDef *owner);
+
 /* ---- per-function analysis facts ---------------------------------------------------
  *
  * These facts are stored in node slots. `funcInstance` shallow-copies with `*in = *tmpl`, and slots

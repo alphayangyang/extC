@@ -38,6 +38,13 @@ check_pos impl_privacy_ok tests/impl/privacy_ok.extc
 # 所以共用方法集（可写视图也能调只读方法），运算符同理。
 check_pos impl_view_methods tests/impl/view_methods.extc
 
+# 枚举也挂方法：无载荷枚举的固有方法 + 运算符、有载荷枚举的 match 载荷、泛型枚举的实例；
+# 以及 trait impl for 枚举（静态分发 + dyn 虚表都要通）。方法与 struct 同一条路径，
+# 只是方法集落在编译器合成的 holder 上（枚举自己没有 C struct）。
+echo "== 正例：枚举挂方法（固有 / 运算符 / 载荷 / 泛型实例 / trait+dyn）=="
+check_pos impl_enum_methods   tests/impl/enum_methods.extc
+check_pos impl_enum_trait_dyn tests/impl/enum_trait_dyn.extc
+
 
 # stdin 驱动的正例：`cin >> string`（链式、去换行、替换语义）
 echo "== 正例：跨模块挂的运算符 \`cin >> string\`（stdin 两行）=="
@@ -128,7 +135,8 @@ check_err tests/impl/errors/dup_body_and_impl.extc 'the first declaration is at 
 check_err tests/impl/errors/unknown_type.extc      'unknown type `nope`'
 # impl 方法只有 import 了那个模块才存在 ⇒ 报错必须说"该 import 谁"
 check_err tests/impl/errors/method_needs_import.extc 'declared by module `std::data::hashMap` -- add `use std::data::hashMap`'
-check_err tests/impl/errors/on_enum.extc           'cannot own methods'
+# 泛型枚举的**声明层**没有方法集：impl 块要写实例的类型实参（impl maybe<i64>）
+check_err tests/impl/errors/generic_enum_decl.extc '`impl` on a generic enum declaration is not supported yet'
 check_err tests/impl/errors/with_field.extc        'expected `fn` in the `impl` block'
 check_err tests/impl/errors/generic_target.extc    'unknown type `T`'
 check_err tests/impl/errors/annotation.extc        'no annotation applies to an `impl` block'

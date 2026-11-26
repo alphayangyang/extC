@@ -1,0 +1,22 @@
+/* dyn 方法带 ref 参数：vtable 槽与 thunk 的签名必须保留引用（回归）。
+ * 曾经的 bug：vtable 把 `ref board` 写成 `board`（值），生成的 C 编不过，
+ * 而普通 `-o` 仍 exit 0。判据：--check-c 通过 + 运行结果 42。 */
+struct board { n: i64 }
+
+trait Pick {
+    fn choose(self: mut ref Self, g: ref board) -> i64
+}
+
+struct human { label: i64 }
+
+impl Pick for human {
+    fn choose(self: mut ref human, g: ref board) -> i64 { return g.n + self.label }
+}
+
+fn main() -> i32 {
+    var b: board = { n: i64(7) }
+    var h: human = { label: i64(35) }
+    var d: dyn Pick = dyn Pick(h)
+    println(f"{d.choose(ref b)}")
+    return 0
+}

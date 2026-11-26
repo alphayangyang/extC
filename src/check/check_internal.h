@@ -111,6 +111,7 @@ typedef struct Sym {
     const char *cname;   /* name used in generated C; a shadowed `a` becomes `a__2` */
     Type       *type;    /* declared type, or the inferred one for an unannotated `let` */
     bool        mut;     /* true for `var`; false for `let` and for payload bindings */
+    bool        declConst; /* a module-level `const` (immutable *and* promised at parse time) */
     /* Line that moved this binding's value out, or 0 while the name still holds one. Only
      * `@noCopy` values move (a copyable one is copied instead). Using a moved name is an error:
      * the value lives in the destination and the source name owns nothing. */
@@ -397,6 +398,14 @@ typedef struct Checker {
      * anything after the `return` in that block is dead, so no real use is ever lost. */
     bool        moveIsReturn;
     Vec         moveLog;       /* MoveMark: symbols a `return` moved, with the recorded line */
+
+    /* The two operands of the `EX_BIN` node being checked, both NULL outside one. An operator
+     * desugars to a method call, so whether its parameter borrows or copies is a property of the
+     * declaration -- not of the operand's spelling. The operands therefore pass through the
+     * value-position copy rule unmolested here (`rejectNoCopy`), and `setOpCallArgs` re-applies
+     * that rule once the parameter types are known. */
+    Expr       *opOperandL;
+    Expr       *opOperandR;
 
     Vec      coroDeferred;
     Vec      coroBinds;        /* `var x = yield e` bindings (CoroBind), consumed by coroFrameLay */

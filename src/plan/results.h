@@ -126,6 +126,11 @@ typedef struct {
     bool        isParWorker;   /* used as a `parallel::run` worker */
     bool        parTlsArena;   /* a worker that may use the thread-local arena */
     bool        parFullOut;    /* the worker gets the whole output view, not a [lo,hi) slice */
+    /* A synthesized `par` worker records the function whose body holds the loop that made it.
+     * The trampoline is legal only next to the call site in that body, so generation asks this
+     * before writing either one out: an unemitted owner would leave a static function behind
+     * that nothing names (`-Werror=unused-function`). */
+    FuncDef    *parOwner;
     bool        deref;         /* value position, but the type is `ref T`: emit `*(…)` */
     int         coroKind;      /* the index codegen's prepass gave this coroutine */
     bool        dynTable;      /* its body is named by a `dyn` vtable thunk, from outside */

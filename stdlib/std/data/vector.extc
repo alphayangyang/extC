@@ -25,6 +25,7 @@
  * @endcode
  */
 use std::data::buf
+use std::data::seq
 
 @noCopy
 struct vector<T> {
@@ -103,6 +104,61 @@ struct vector<T> {
         var i: i64 = 0
         while i < self.b.len() { out.push(self.b.view()[i])  i = i + 1 }
         return out
+    }
+
+    /** @brief 内容相等：比的是元素，不是身份。两边都借，所以 @noCopy 的数组也能直接写 a == b。 */
+    fn ==(self: ref vector<T>, other: ref vector<T>) -> bool {
+        if self.len() != other.len() { return false }
+        var i: i64 = 0
+        while i < self.len() {
+            if self[i] != other[i] { return false }
+            i = i + 1
+        }
+        return true
+    }
+
+    /** @brief 有没有元素等于 v（用 == 比较）。 */
+    fn contains(self: ref vector<T>, v: T) -> bool {
+        var i: i64 = 0
+        while i < self.len() {
+            if self.b.view()[i] == v { return true }
+            i = i + 1
+        }
+        return false
+    }
+
+    /** @brief 第一个等于 v 的下标；没有就是 none。 */
+    fn indexOf(self: ref vector<T>, v: T) -> ?i64 {
+        var i: i64 = 0
+        while i < self.len() {
+            if self.b.view()[i] == v { return some(i) }
+            i = i + 1
+        }
+        return none
+    }
+
+    /** @brief 按 < 升序原地排序（seq::sort，最坏 O(n log n)）。 */
+    fn sort(self: mut ref vector<T>) { seq::sort(self.viewMut()) }
+
+    /** @brief 原地反转元素顺序。 */
+    fn reverse(self: mut ref vector<T>) {
+        var s: mut slice<T> = self.b.viewMut()
+        var i: i64 = 0
+        var j: i64 = s.len - 1
+        while i < j {
+            let t: T = s[i]
+            s[i] = s[j]
+            s[j] = t
+            i = i + 1
+            j = j - 1
+        }
+    }
+
+    /** @brief 把每个元素都设成 v（长度不变）。 */
+    fn fill(self: mut ref vector<T>, v: T) {
+        var s: mut slice<T> = self.b.viewMut()
+        var i: i64 = 0
+        while i < s.len { s[i] = v  i = i + 1 }
     }
 
     /** @brief 追加一个元素；容量不够时在预留内原地长，撞到预留上限才搬一次家。 */

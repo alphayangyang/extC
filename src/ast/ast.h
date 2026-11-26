@@ -1373,6 +1373,10 @@ typedef struct {
     Type       *ann;         /* the type annotation; optional, inferred from the initialiser */
     Expr       *init;        /* the initialiser; NULL means zero-initialised */
     bool        mut;         /* true for `var`, false for `let` */
+    bool        isConst;     /* declared `const`: immutable, and -- when the initializer is an
+                              * integer literal of an integer type -- usable as a fixed array's
+                              * length. The parser has already used that promise; this flag only
+                              * improves diagnostics. */
     bool        reserved;
     /* Which file does this declaration come from, and which module?
      *   ctx       - the Ctx of that file; a diagnostic has to go through it so that it

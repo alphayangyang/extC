@@ -44,6 +44,8 @@ run_case dense
 run_case index
 echo "== 值语义：读是拷贝、改要 get→put、取走要 take、删是 remove =="
 run_case value
+echo "== 遍历器：iter/next/value 迭代协议（for 与手写 while 同一个游标）=="
+run_case iter
 echo "== 碰撞：线性探测 + 回移（无墓碑）+ 探测链 =="
 run_case collide
 

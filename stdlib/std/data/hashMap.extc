@@ -446,6 +446,16 @@ struct hashMap<K, V> {
         self.cap = 0
     }
 
+    /* 遍历的入口：`for k in m.iterKeys()` / `for v in m.iterValues()`。方法不叫 `keys`
+     * （那是字段名），也不给表本身加 `iter`：`for k in m` 会先把 @noCopy 的表移进隐藏绑定。
+     * 迭代器持有对表的只读引用，所以表要活过循环；**遍历期间别改表**（put/remove/增长会搬槽）。 */
+    fn iterKeys(self: ref hashMap<K, V>) -> hashMapKeyIter<K, V> {
+        return { m: self, i: -1 }
+    }
+    fn iterValues(self: ref hashMap<K, V>) -> hashMapValueIter<K, V> {
+        return { m: self, i: -1 }
+    }
+
     /* 按桶位扫描：`i` 走 [0, capOf())。 */
     fn keyAt(self: ref hashMap<K, V>, i: i64) -> K { return self.keys[i] }
     fn valAt(self: ref hashMap<K, V>, i: i64) -> V { return self.vals[i] }
@@ -462,6 +472,39 @@ struct hashMap<K, V> {
         return out
     }
 
+}
+
+/* 遍历器：迭代协议就是 `iter` / `next` / `value` 三个方法（手册 11.3），所以
+ * `for k in m.iterKeys()` 直接可用；手写 while 也一样。游标停在**活槽**上，跳过空槽。
+ * 名字不叫 `keys` / `values`：那是表的存储字段名，字段与方法不能同名。 */
+struct hashMapKeyIter<K, V> {
+    m: ref hashMap<K, V>,
+    i: i64
+
+    fn iter(self: ref hashMapKeyIter<K, V>) -> hashMapKeyIter<K, V> {
+        return { m: self.m, i: -1 }
+    }
+    fn next(self: mut ref hashMapKeyIter<K, V>) -> bool {
+        self.i += 1
+        while self.i < self.m.capOf() && !self.m.liveAt(self.i) { self.i += 1 }
+        return self.i < self.m.capOf()
+    }
+    fn value(self: ref hashMapKeyIter<K, V>) -> K { return self.m.keyAt(self.i) }
+}
+
+struct hashMapValueIter<K, V> {
+    m: ref hashMap<K, V>,
+    i: i64
+
+    fn iter(self: ref hashMapValueIter<K, V>) -> hashMapValueIter<K, V> {
+        return { m: self.m, i: -1 }
+    }
+    fn next(self: mut ref hashMapValueIter<K, V>) -> bool {
+        self.i += 1
+        while self.i < self.m.capOf() && !self.m.liveAt(self.i) { self.i += 1 }
+        return self.i < self.m.capOf()
+    }
+    fn value(self: ref hashMapValueIter<K, V>) -> V { return self.m.valAt(self.i) }
 }
 
 /* ---------------------------------------------------------------------------
@@ -513,6 +556,44 @@ struct hashMapI64<V> {
     fn keyAt(self: ref hashMapI64<V>, i: i64) -> i64 { return self.m.keyAt(i).v }
     fn valAt(self: ref hashMapI64<V>, i: i64) -> V { return self.m.valAt(i) }
     fn liveAt(self: ref hashMapI64<V>, i: i64) -> bool { return self.m.liveAt(i) }
+
+    fn iterKeys(self: ref hashMapI64<V>) -> hashMapI64KeyIter<V> {
+        return { m: self, i: -1 }
+    }
+    fn iterValues(self: ref hashMapI64<V>) -> hashMapI64ValueIter<V> {
+        return { m: self, i: -1 }
+    }
+}
+
+/* `hashMapI64` 的遍历器：键按 `i64` 给出（泛型表的遍历器给的是 `i64Key`，多一层 `.v`）。 */
+struct hashMapI64KeyIter<V> {
+    m: ref hashMapI64<V>,
+    i: i64
+
+    fn iter(self: ref hashMapI64KeyIter<V>) -> hashMapI64KeyIter<V> {
+        return { m: self.m, i: -1 }
+    }
+    fn next(self: mut ref hashMapI64KeyIter<V>) -> bool {
+        self.i += 1
+        while self.i < self.m.capOf() && !self.m.liveAt(self.i) { self.i += 1 }
+        return self.i < self.m.capOf()
+    }
+    fn value(self: ref hashMapI64KeyIter<V>) -> i64 { return self.m.keyAt(self.i) }
+}
+
+struct hashMapI64ValueIter<V> {
+    m: ref hashMapI64<V>,
+    i: i64
+
+    fn iter(self: ref hashMapI64ValueIter<V>) -> hashMapI64ValueIter<V> {
+        return { m: self.m, i: -1 }
+    }
+    fn next(self: mut ref hashMapI64ValueIter<V>) -> bool {
+        self.i += 1
+        while self.i < self.m.capOf() && !self.m.liveAt(self.i) { self.i += 1 }
+        return self.i < self.m.capOf()
+    }
+    fn value(self: ref hashMapI64ValueIter<V>) -> V { return self.m.valAt(self.i) }
 }
 
 /* `hashSetI64`: a value-less map, built on top of the table above.

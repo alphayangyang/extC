@@ -1,0 +1,4 @@
+// 判据：`const` 必须写出值 —— 不写值的不可变全局是 `let`
+const N: i64
+
+fn main() { println(N) }
