@@ -79,8 +79,8 @@ test: $(BIN)
 status: $(BIN)
 	@./tests/run.sh > $(BUILDDIR)/status-tests.log 2>&1; rc=$$?; \
 	  printf 'tests/run.sh    : %s   (rc=%d)\n' "$$(tail -1 $(BUILDDIR)/status-tests.log)" "$$rc"
-	@./check.sh quick > $(BUILDDIR)/status-check.log 2>&1; rc=$$?; \
-	  printf 'check.sh quick  : %s   (rc=%d)\n' "$$(tail -1 $(BUILDDIR)/status-check.log)" "$$rc"
+	@./check.sh precommit > $(BUILDDIR)/status-check.log 2>&1; rc=$$?; \
+	  printf 'check.sh precommit: %s   (rc=%d)\n' "$$(tail -1 $(BUILDDIR)/status-check.log)" "$$rc"
 	@printf 'git 未 push     : %s 个 commit\n' "$$(git rev-list --count @{u}..HEAD 2>/dev/null || echo '无上游')"
 
 # `make install PREFIX=~/.local` puts the binary in <prefix>/bin and the standard library

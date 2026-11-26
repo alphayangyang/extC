@@ -77,6 +77,8 @@ make install PREFIX="$HOME/.local"     # installs extc, the runtime headers and 
    (CI runs only the slim `ci` tier; a release must also judge the gates whose lines are
    calibrated on a lab machine, which is what `nobench` adds. Neither tier judges benchmarks:
    those need a quiet machine, so `full` is a separate, non-CI run.)
+   If this release touched codegen, first run `./check.sh ratchet` and confirm every diff in the
+   frozen artifacts is the intended one (then re-freeze deliberately, and record it below).
 4. With the documentation project checked out next to it: `./check.sh docs` — the five
    `doc-project-*` items run against `~/extc-docs` and must be green; also run that project's own
    `check.sh`. A missing documentation project is a skip, not a pass, so check it out for a release.

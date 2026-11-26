@@ -1,12 +1,14 @@
 # tests —— 判据
 
-74 个套件、1,800 多个 `.extc` 文件。**不要一个一个跑**：统一入口是仓库根上的 `./check.sh`，它调 `tools/check.py`，把每个套件按档位编排。
+90 多个套件、1,800 多个 `.extc` 文件。**不要一个一个跑**：统一入口是仓库根上的 `./check.sh`，它调 `tools/check.py`，把每个套件按档位编排。
 
 ```sh
 ./check.sh smoke     # 改完代码第一件事：高信号集，约 10 秒
 ./check.sh docs      # 只跑文档与工具闸门，秒级
+./check.sh precommit # 提交前档：非基准，去掉分钟级深水项，约 3 分钟
 ./check.sh ci        # CI 档：精简正确性子集（只判跑通/结果正确，不判性能与指令数）
-./check.sh nobench   # 非基准全量，约 220 秒
+./check.sh nobench   # push 前档：非基准全量，约 6 分钟
+./check.sh ratchet   # 棘轮项（生成物/发射身份/idle 指纹），只在改 codegen 后跑
 ./check.sh           # 全部，含基准（要 g++ / rustc / go / java / node）
 ./check.sh --list    # 看项名、分组、最近耗时
 ```

@@ -163,12 +163,19 @@ Run these and the numbers are fresh (`make status` prints pass/fail counts and u
 ```sh
 make -j"$(nproc)"     # needs only cc; produces build/extc
 ./tests/run.sh        # regressions: positive cases must run right, compile-error cases must be caught, run-time error cases must really trap with a source position
-./check.sh quick      # the above + gates + per-subsystem suites (needs cc and python3)
+./check.sh precommit  # the above + gates + per-subsystem suites, minus the minute-scale deep dives (≈3 min)
 ./check.sh ci         # CI tier: the slim correctness subset (no performance or instruction-count criteria)
+./check.sh nobench    # before pushing: everything precommit has, plus the deep dives (≈6 min)
+./check.sh ratchet    # only after touching codegen: frozen artifact / emission-identity / idle fingerprints
 ./check.sh            # full acceptance: also the whole corpus under ASan/UBSan plus benchmarks (needs g++, rustc)
 ```
 
-The gates in `quick` are invariants checked one by one, not samples: size (any input must produce a verdict — no crash, no hang) · escape soundness · differential (extC and equivalent C must reach the same verdict) · instance wiring · attack library (the accept set compared line by line against a baseline). Above those sit meta-gates: manual coverage · the driver-flags page matching `extc --help` · type-branch exhaustiveness · include guards · concurrency guards, plus the gates that read the separate documentation project when it is checked out. Ratchet material (public-surface coverage, Doxygen debt) may only shrink.
+The gates in `precommit` / `nobench` are invariants checked one by one, not samples: size (any input must produce a verdict — no crash, no hang) · escape soundness · differential (extC and equivalent C must reach the same verdict) · instance wiring · attack library (the accept set compared line by line against a baseline). Above those sit meta-gates: manual coverage · the driver-flags page matching `extc --help` · type-branch exhaustiveness · include guards · concurrency guards, plus the gates that read the separate documentation project when it is checked out. Ratchet material (public-surface coverage, Doxygen debt) may only shrink.
+
+`ratchet` is a separate tier because its criteria are **frozen snapshots**, not pass/fail: it
+answers "is the blast radius of this codegen change the batch I expected?". Run it when you touch
+`src/back/` or the plan flags in `src/check/` `src/plan/`, then re-freeze deliberately — never
+blindly.
 
 ## Documentation
 

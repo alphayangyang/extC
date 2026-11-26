@@ -9,7 +9,9 @@
 
 用法（`./check.sh` 现在只是 exec 到本文件的 shim；README 与 CI 用的就是下面这几条）：
     ./check.sh                 全部（含基准；几十分钟）
-    ./check.sh quick           测试 + 攻击库，跳过基准
+    ./check.sh precommit       提交前档：nobench 去掉分钟级深水项（≈3min）
+    ./check.sh nobench         非基准全量（≈6min；push 前跑；`quick` 是同义历史别名）
+    ./check.sh ratchet         棘轮项：生成物哈希 / 发射身份 / idle 指纹（只在改 codegen 后跑）
     ./check.sh ci              CI 档：精简正确性集（只判跑通/结果正确，不判性能与指令数）
     ./check.sh docs            只跑文档/工具项（秒级）
     ./check.sh -j 8 nobench    并行跑（默认 min(4, nproc)；`-j1` = 逐项串行）
@@ -61,7 +63,7 @@ def sh(cmd: str) -> list:
 
 
 # 编排层自身：--changed 不拿它们判断"该跑哪档"（改 runner 不是改了被检查对象；
-# 若只有它们变了，建议仍是 quick —— runner 自己值得跑一遍）。
+# 若只有它们变了，建议仍是 precommit —— runner 自己值得跑一遍）。
 SELF_FILES = {"check.sh", "tools/check.py", "tools/check-coverage.tsv"}
 
 
@@ -268,6 +270,11 @@ class Item:
     # 判据里含**性能结论**（时间 / 吞吐 / 加速比）。机器型号、负载、编译器版本都会改结论
     # ⇒ 不进 CI 档（CI 只判"跑通且结果正确"）；本机 nobench / 全量仍跑。
     perf: bool = False
+    # 棘轮项（生成物哈希 / 发射身份 / 回收 idle 指纹）：判据是**冻结快照**，回答的是
+    # "这次改动的波及面是不是预期的那一批"，不是"对不对"。nobench 不选它（每次都跑既慢，
+    # 又只会在预期 churn 上红）；改到 codegen 或检查器 plan 标志时用 `./check.sh ratchet`
+    # 显式跑一遍，确认变化面后再重冻。
+    ratchet: bool = False
     abort_on_fail: bool = False
     counts: bool = True
 
@@ -299,7 +306,7 @@ def _resolve_msg(spec, out: str) -> str:
 def cmd(name: str, group: str, desc: str, argv: list, *,
         timeout: Optional[float] = None, env: Optional[dict] = None,
         needs_build: bool = True, bench: bool = False, callgrind: bool = False,
-        perf: bool = False,
+        perf: bool = False, ratchet: bool = False,
         ok_msg=None, bad_msg: Optional[str] = None,
         bad_dump: Optional[Callable[[str], list]] = None,
         extra_ok: Optional[Callable[[str], list]] = None,
@@ -323,7 +330,8 @@ def cmd(name: str, group: str, desc: str, argv: list, *,
             msg = f"{msg}（rc={p.rc}，{len(lines(p.out))} 行输出）"
         return Outcome(False, msg, dump)
     return Item(name, group, desc, fn, needs_build=needs_build, bench=bench,
-                callgrind=callgrind, perf=perf, abort_on_fail=abort_on_fail)
+                callgrind=callgrind, perf=perf, ratchet=ratchet,
+                abort_on_fail=abort_on_fail)
 
 
 def ok_const(s: str):
@@ -1976,7 +1984,7 @@ def build_items() -> list:
     items.append(cmd(
         "golden", "bench",
         "生成物快照（观察项：与冻结哈希的差异不作为判据；判据只有「必须是合法 C」）",
-        ["./tools/golden.sh"], timeout=900, bench=True,
+        ["./tools/golden.sh"], timeout=900, bench=True, ratchet=True,
         ok_msg=lambda out: first_matching(out, r"^  ok").strip(),
         bad_msg="tools/golden.sh（生成物里有非法 C）", bad_dump=dump_fail(8),
         extra_ok=lambda out: [ln for ln in out.split("\n") if ln.startswith("  · ")]))
@@ -2098,6 +2106,27 @@ def build_items() -> list:
         "基准·主席树四语言横评（P3834；N=Q=V=200000 小规模 + 暴力对拍）",
         fn_bench_oi_persist, bench=True))
 
+    # ---- 棘轮：判据是冻结快照，回答"波及面是否是预期的那批"（不进 nobench）----
+    # 什么时候跑：改到 codegen（src/back/）、检查器 plan 标志（src/check/ src/plan/）之后，
+    # 用 `./check.sh ratchet` 看变化面；确认每一处变化都能解释，再按顺序重冻。
+    items.append(cmd(
+        "emitted-identity", "ratchet",
+        "棘轮·发射身份：core 语料的生成物与冻结清单逐条一致（改 codegen 才跑）",
+        ["python3", "tools/emitted_identity.py", "--check", "--set", "core"],
+        timeout=1200, ratchet=True,
+        ok_msg=ok_first(r"^ok\b|^  ok\b"),
+        bad_msg="tools/emitted_identity.py --check（发射身份与冻结清单不一致 ⇒ 先解释变化面再重冻）",
+        bad_dump=dump_fail(10)))
+
+    items.append(cmd(
+        "idle-fingerprint", "ratchet",
+        "棘轮·回收 idle 指纹：每个源文件的默认档/关档生成物与冻结快照一致（改 codegen 才跑）",
+        ["python3", "tests/reclaim-idle/fingerprint.py", "check"],
+        timeout=1800, ratchet=True,
+        ok_msg=ok_first(r"^PASS\b|^ok\b"),
+        bad_msg="tests/reclaim-idle/fingerprint.py check（idle 指纹与冻结快照不一致 ⇒ 先解释变化面再重冻）",
+        bad_dump=dump_fail(10)))
+
     return items
 
 
@@ -2145,11 +2174,22 @@ def write_times(path: str, results: dict) -> None:
 # --------------------------------------------------------------------------
 # 分档（名字要与实际相符）：
 #   smoke   —— 快速高信号集，改完代码第一件事跑这个（见 SMOKE，≈10s）
-#   nobench —— 非基准全量；`quick` 是它的历史别名（会自己说明一句）
+#   precommit —— 提交前档：nobench 去掉分钟级深水项（见 PRECOMMIT_DROP，≈2–3min）
+#   nobench —— 非基准全量；`quick` 是它的历史别名（会自己说明一句）。push 前跑这档
+#   ratchet —— 棘轮项（生成物哈希 / 发射身份 / idle 指纹）；只在改 codegen 或检查器 plan
+#              标志后跑，用来确认"变化面是不是预期的那一批"，然后再重冻
 #   ci      —— 精简正确性子集（CI 跑这档：不判性能/指令数，见 CI 集）
 #   all     —— 含基准（`full` 同义）
 #   docs    —— 只要文档/工具项（秒级）
-MODE_TOKENS = {"all", "full", "smoke", "nobench", "quick", "ci", "docs"}
+MODE_TOKENS = {"all", "full", "smoke", "precommit", "nobench", "quick",
+               "ratchet", "ci", "docs"}
+
+# precommit 去掉的深水项：分钟级、或判据绑本机负载。它们仍留在 nobench（push 前跑）与 all。
+# 为什么这几项：lvl-witness ≈5min、gate-reclaim-ledger ≈2.5min、tests-assert ≈2.5min
+# （整套 tests 的断言档重跑）、gate-perturb-run ≈1min（扰动回归，频率可以低一档）。
+PRECOMMIT_DROP = (
+    "lvl-witness", "tests-assert", "gate-reclaim-ledger", "gate-perturb-run",
+)
 
 # smoke 集：**编译 + 改动面最相关的高信号判据**，按"改名要一起改这里"维护。
 # 选的标准是"能在 10 秒内给出'这次改动有没有把地基弄坏'的信号"，
@@ -2214,7 +2254,18 @@ def select(items: list, mode: Optional[str], only: list) -> list:
         if mode == "quick":
             print("注：`quick` 就是 `nobench`（非基准**全量**）—— 名字不实，"
                   "要快请用 `./check.sh smoke`（≈10s）。", flush=True)
-        sel = [it for it in items if not it.bench]
+        sel = [it for it in items if not it.bench and not it.ratchet]
+        if any(it.ratchet for it in items):
+            n = sum(1 for it in items if it.ratchet)
+            print(f"注：棘轮 {n} 项不在本档（判据是冻结快照，只在改 codegen 后跑 "
+                  f"`./check.sh ratchet`）", flush=True)
+    elif mode == "precommit":
+        sel = [it for it in items
+               if not it.bench and not it.ratchet and it.name not in PRECOMMIT_DROP]
+        print(f"注：precommit = nobench 去掉 {len(PRECOMMIT_DROP)} 个分钟级深水项与棘轮项；"
+              f"push 前跑一次 `./check.sh nobench`", flush=True)
+    elif mode == "ratchet":
+        sel = [it for it in items if it.ratchet]
     elif mode == "ci":
         # CI 档 = 显式精简正确性子集（CI 集）。只判"跑通且结果正确"：
         #   · 不含基准，也不含 callgrind / perf 项（它们的结论绑机器与工具链）；
@@ -2258,7 +2309,7 @@ def select(items: list, mode: Optional[str], only: list) -> list:
     elif mode == "docs":
         sel = [it for it in items if it.group == "docs"]
     else:
-        raise SystemExit(f"未知模式：{mode}（可用：all / nobench / ci / smoke / docs）")
+        raise SystemExit(f"未知模式：{mode}（可用：all / precommit / nobench / ratchet / ci / smoke / docs）")
 
     if only:
         known_names = {it.name for it in items}
@@ -2605,10 +2656,11 @@ def do_list(items: list, tpath: str, mode: Optional[str] = None,
     被老 `--list` 骗到的地方），并用 `--all` 看全部；不给档位时列全部、但标出基准列。
     """
     tf = read_times_full(tpath)
-    print(f"{'名称':<26}{'组':<9}{'基准':<7}{'cg':<4}{'最近耗时':<10}说明")
+    print(f"{'名称':<26}{'组':<9}{'基准':<7}{'棘轮':<5}{'cg':<4}{'最近耗时':<10}说明")
     for it in items:
         last = f"{tf[it.name][0]:.2f}s" if it.name in tf else "-"
         print(f"{it.name:<26}{it.group:<9}{'bench' if it.bench else '-':<7}"
+              f"{'rat' if it.ratchet else '-':<5}"
               f"{'cg' if it.callgrind else '-':<4}{last:<10}{it.desc}")
     n_bench = sum(1 for it in items if it.bench)
     shown = f"共 {len(items)} 项：非基准 {len(items) - n_bench} · 基准 {n_bench}"
@@ -2616,6 +2668,8 @@ def do_list(items: list, tpath: str, mode: Optional[str] = None,
         shown += f"（档位 {mode} ⇒ 基准项已隐藏"
         if mode == "ci":
             shown += "、callgrind 项按档位隐藏"
+        if mode in ("nobench", "quick", "precommit"):
+            shown += "、棘轮项按档位隐藏（`ratchet` 档单跑）"
         shown += "；--all 或去掉档位看全部）"
     elif total is not None and total != len(items):
         shown += f"（全部 {total} 项）"
@@ -2663,7 +2717,8 @@ def recommend(paths: list):
     if bench:
         return "all", "有 bench/ 改动 ⇒ 该跑含基准的完整档", docs, bench, code, self_
     if code:
-        return "nobench", "有源码/测试/工具改动 ⇒ nobench（非基准全量）", docs, bench, code, self_
+        return ("precommit", "有源码/测试/工具改动 ⇒ precommit（提交前档）；push 前补一次 nobench",
+                docs, bench, code, self_)
     if docs:
         return "docs", "只有文档改动 ⇒ docs（秒级）", docs, bench, code, self_
     if self_:
@@ -2706,7 +2761,8 @@ def resolve_mode(all_items: list, mode: Optional[str], only_in: list) -> tuple:
             near = difflib.get_close_matches(mode, sorted({it.name for it in all_items}
                                                           | {it.group for it in all_items}), n=5)
             hint = ("；相近的有：" + " ".join(near)) if near else ""
-            raise SystemExit(f"选不出来：位置参数 {mode!r} 既不是模式(all/nobench/ci/smoke/docs)也不是名字/组{hint}")
+            raise SystemExit(f"选不出来：位置参数 {mode!r} 既不是模式"
+                                 f"(all/precommit/nobench/ratchet/ci/smoke/docs) 也不是名字/组{hint}")
     return mode, only
 
 
@@ -2715,8 +2771,9 @@ def main(argv=None) -> int:
         prog="./check.sh", add_help=True,
         description="extC 自检编排层：检查项是数据，runner 负责选/跑/计时/统计。")
     ap.add_argument("mode", nargs="?", default=None,
-                    help="all（默认，含基准）/ nobench（非基准全量，别名 quick）/ ci（精简正确性集，CI 用这档）"
-                         " / smoke（快速高信号集，≈10s）/ docs（文档·工具，秒级）")
+                    help="all（默认，含基准）/ precommit（提交前档，≈2–3min）"
+                         " / nobench（非基准全量，别名 quick；push 前跑）/ ratchet（棘轮：生成物/发射身份/idle 指纹）"
+                         " / ci（精简正确性集，CI 用这档）/ smoke（快速高信号集，≈10s）/ docs（文档·工具，秒级）")
     ap.add_argument("--only", action="append", default=[], metavar="名或组",
                     help="只跑这些项（名字或组；可多次）")
     ap.add_argument("-j", "--jobs", type=int, default=None, metavar="N",

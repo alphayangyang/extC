@@ -27,14 +27,14 @@ mechanisms, plans and history belongs in the documentation project.
 make -j"$(nproc)"                            # needs only cc
 ./build/extc --run examples/hello-world.extc  # generate C, compile, run
 ./tests/run.sh                               # regressions only (fast)
-./check.sh quick                             # regressions + gates + subsystem suites
+./check.sh precommit                         # regressions + gates + subsystem suites (≈3 min, commit-time)
 ```
 
 | Task | Needs |
 |---|---|
 | `make` | `cc` (gcc 11+ or clang 14+), `make` |
 | `./tests/run.sh` | `python3` (3.8+) |
-| `./check.sh quick` / `ci` | `cc`, `python3` |
+| `./check.sh precommit` / `nobench` / `ci` | `cc`, `python3` |
 | `./check.sh` (full) | also `g++`, `rustc` (the corpus runs under ASan/UBSan) |
 | `bench/bigmatrix/` | also `go`, `java`; `bench/fortran/` needs `gfortran` |
 
@@ -57,7 +57,10 @@ make -j"$(nproc)"                            # needs only cc
 2. Run the regression directories you touched, then `./tests/run.sh` — the whole suite must stay
    green (positive cases run right, compile-error cases are caught, run-time cases trap with a
    source position).
-3. `./check.sh quick` — gates, meta-gates and the subsystem suites.
+3. `./check.sh precommit` — gates, meta-gates and the subsystem suites, minus the
+   minute-scale deep dives. Before pushing, run `./check.sh nobench` (adds them back).
+   If you touched codegen (`src/back/`) or the plan flags in `src/check/` `src/plan/`,
+   also run `./check.sh ratchet` and explain every diff before re-freezing.
 4. Update the documentation where it lives: a code-coupled fact goes into this repo's `docs/`;
    a usage/mechanism/plan change goes into `../extc-docs/` (follow
    [`../extc-docs/STYLE.md`](../extc-docs/STYLE.md) — status block, no line-number anchors, no
@@ -83,7 +86,9 @@ make -j"$(nproc)"                            # needs only cc
 
 ```sh
 ./tests/run.sh          # 377 cases: behaviour only
-./check.sh quick        # + static gates and subsystem suites
+./check.sh precommit    # + static gates and subsystem suites (commit-time)
+./check.sh nobench      # + the minute-scale deep dives (before pushing)
+./check.sh ratchet      # frozen artifact / emission-identity / idle fingerprints (codegen changes)
 ./check.sh ci           # CI tier: slim correctness subset (no performance criteria)
 ./check.sh docs         # documentation gates (also the doc-project-* gates when the docs project is checked out)
 ./check.sh              # full acceptance (ASan/UBSan corpus + benchmarks)

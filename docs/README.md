@@ -17,7 +17,9 @@ make -j"$(nproc)"                          # 只需要 cc，产出 build/extc
 ./build/extc --version
 ./build/extc --run examples/hello-world.extc
 ./tests/run.sh                             # 全量回归（正例跑对 / 反例被拦 / 运行期错误真的 trap）
-./check.sh quick                           # 回归 + 闸门 + 各子系统套件（要 cc 和 python3）
+./check.sh precommit                       # 回归 + 闸门 + 各子系统套件（要 cc 和 python3）
+./check.sh nobench                         # push 前：precommit 全部 + 分钟级深水项
+./check.sh ratchet                         # 只在改 codegen 后：生成物/发射身份/idle 指纹
 ./check.sh docs                            # 只跑文档闸门（含文档项目）
 ./check.sh                                 # 全量验收（含 ASan/UBSan 与基准）
 ```

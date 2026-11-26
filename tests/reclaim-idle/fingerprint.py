@@ -225,13 +225,32 @@ def fmt_counts(counts):
 
 def cmd_freeze(args):
     tree, extc, stdlib, head = resolve(args)
+    out = os.path.abspath(args.out)
     sources = find_sources(tree, args.only)
     rows = scan(tree, extc, stdlib, sources, keep=args.keep)
+    if args.merge:
+        # 增量重冻：只替换本次扫到的行，其余行原样保留。
+        # 用途：改到 codegen 后只想重冻受影响的子集（`--only tests/reclaim`），
+        # 不必把 1600 个文件全部重跑一遍（全量 ≈10min）。
+        if not os.path.exists(out):
+            print(f"--merge 需要已有基线，但 {out} 不存在；先跑一次不带 --merge 的 freeze",
+                  file=sys.stderr)
+            return 1
+        _, _, old = parse_tsv(out)
+        old_rows = dict(old)
+        kept = {k: v for k, v in old_rows.items() if k not in rows}
+        changed = [k for k in rows if k in old_rows and old_rows[k] != rows[k]]
+        added = [k for k in rows if k not in old_rows]
+        merged = dict(kept)
+        merged.update(rows)
+        rows = merged
+        print(f"merge: 本扫描 {len(sources)} · 变化 {len(changed)} · 新增 {len(added)}"
+              f" · 沿用旧行 {len(kept)}（这些行仍由旧编译器生成——check 会把差异逐行列出来）")
     text = render(binding(tree, extc, stdlib, head), rows)
-    out = os.path.abspath(args.out)
     with open(out, "w", encoding="utf-8") as f:
         f.write(text)
     print(f"wrote {out}: {len(rows)} sources ({fmt_counts(tally(rows))})")
+    return 0
 
 
 def cmd_check(args):
@@ -301,6 +320,8 @@ def main():
     fz = sub.add_parser("freeze", help="写基线 TSV")
     add_common(fz)
     fz.add_argument("--out", default=BASELINE, help=f"基线路径（默认 {BASELINE}）")
+    fz.add_argument("--merge", action="store_true",
+                    help="增量：只替换本次扫到的行，其余行沿用已有基线（配合 --only 用）")
     fz.set_defaults(fn=cmd_freeze)
 
     ck = sub.add_parser("check", help="重跑并与基线逐行比对；有差异 exit 1")
