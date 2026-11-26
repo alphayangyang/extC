@@ -21,6 +21,9 @@ fn main() -> i32 {
                 writeFailed(code) => { println("意外：writeFailed(", code, ")"); return 1 }
                 lineTooLong(n)    => { println("意外：lineTooLong(", n, ")"); return 1 }
                 destFull(n)       => { println("意外：destFull(", n, ")"); return 1 }
+                atEof             => { println("意外：atEof") }
+                notANumber       => { println("意外：notANumber") }
+                outOfRange(n)     => { println("意外：outOfRange(", n, ")") }
             }
         }
     }

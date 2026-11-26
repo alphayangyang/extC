@@ -317,7 +317,7 @@ else
     echo "  FAIL writeBytes  ->  少了 flush() ⇒ 与 println 混用会乱序 ✗"; fail=1
 fi
 
-echo "== 下标检查前移的资格：循环体里有调用（`<<` 是方法调用）⇒ 必须逐元素检查 =="
+echo "== 下标检查前移的资格：循环体里有调用（\`<<\` 是方法调用）⇒ 必须逐元素检查 =="
 # 反例形状：`io::cout << f"…"` 在检查器里是**方法调用**，不是纯运算符。若代码生成把它当
 # 纯表达式、把视图下标的边界检查前移到循环入口，trap 会提前到第一轮 —— 打印顺序就变了，
 # 报文里的下标也会变成整个区间上的极值（3）而不是第一个越界元素（2）。
@@ -359,6 +359,30 @@ if out=$(printf 'a\n\nb\r\nlast' | "$EXTC" --run tests/io/readlines.extc 2>&1) &
     echo "  ok   readlines    ->  4 行（含空行 / CRLF）后 EOF 结束"
 else
     echo "  FAIL readlines    ->  $(echo "$out" | tr '\n' '|')"; fail=1
+fi
+
+echo "== 控制台对象（stdin / stdout / stderr：对象方法形态，与 cin / cout 混用不丢顺序）=="
+# 判据①：读走对象方法（nextI32 / nextI64 / readToken / readLine / nextLine / eof / nextByte /
+#        readAll），写走对象方法（println / print / newline）—— 输出逐字节对上 ✓
+# 判据②：诊断只走 stderr，且与链式 cout 同一个出口（顺序「chain / end」在最后 ✓）
+coutobj_want=$(printf 'stdout:42\nprint\nsum=12\nline1=[first line]\ntoken1=abc\nrest1=[ def]\neof-before-last=false\nlast=[last]\neof=true\neof-error=yes\nbyte-at-eof=-1\nread-all-empty=true\nchain\nend')
+if printf '5 7\nfirst line\nabc def\nlast\n' | "$EXTC" --run tests/io/console_objects.extc >build/console-obj-out.txt 2>build/console-obj-err.txt; then
+    if [ "$(cat build/console-obj-out.txt)" = "$coutobj_want" ] \
+       && [ "$(cat build/console-obj-err.txt)" = "stderr:7" ]; then
+        echo "  ok   console-objects ->  14 行输出逐字对上 · 诊断只在 stderr ✓"
+    else
+        echo "  FAIL console-objects ->  out=[$(tr '\n' '|' < build/console-obj-out.txt)] err=[$(tr '\n' '|' < build/console-obj-err.txt)]"; fail=1
+    fi
+else
+    echo "  FAIL console-objects ->  编不过 / 跑不起来"; fail=1
+fi
+# 判据③：nextI32 的两条坏路分得开 —— 超 i32 范围是 outOfRange（不截断成某个数），
+#        下一个字节不是数字是 notANumber（不是把「垃圾」伪装成 EOF ✗）
+if out=$(printf '5000000000 x\n' | "$EXTC" --run tests/io/console_range.extc 2>&1) \
+   && [ "$out" = "$(printf 'out-of-range=5000000000\nnot-a-number=yes')" ]; then
+    echo "  ok   console-range   ->  outOfRange / notANumber 各走各的 ✓"
+else
+    echo "  FAIL console-range   ->  $(printf '%s' "$out" | tr '\n' '|')"; fail=1
 fi
 
 echo "== 分层（std::sys::io = 特权层 · io 族，std::io = 普通库）=="

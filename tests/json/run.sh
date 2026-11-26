@@ -43,6 +43,27 @@ else
     bad zero-copy "$(echo "$out" | tail -2 | tr '\n' '|')"
 fi
 
+echo "== 对象层（json::doc / json::value：读字段不用再传四片参数）=="
+if out=$(run object); then
+    ok=1
+    echo "$out" | grep -qF "age=42 num=42 is-num=true"        || ok=0
+    echo "$out" | grep -qF "xs-count=3 x0=7 x2=9"             || ok=0
+    echo "$out" | grep -qF "missing=1"                        || ok=0
+    echo "$out" | grep -qF "root-count=4 key0=user"           || ok=0
+    echo "$out" | grep -qF "t=true n-null=true"               || ok=0
+    echo "$out" | grep -qF "nth1-count=3 nth1-at1=8"          || ok=0
+    echo "$out" | grep -qF "free=42"                          || ok=0
+    echo "$out" | grep -qF "bad-ok=false bad-at=5"            || ok=0
+    echo "$out" | grep -qF 'raw=[hi\nthere]'                  || ok=0
+    if [ "$ok" = 1 ]; then
+        ok objects "doc.get(nested.path) / value.str(scratch) / 容器按位置 / none 与 parse 错误都分开"
+    else
+        bad objects "$(echo "$out" | tr '\n' '|' | cut -c1-200)"
+    fi
+else
+    bad objects "编不过 / 跑不起来：$(echo "$out" | head -3 | tr '\n' '|')"
+fi
+
 echo "== 攻击自己：超大 / 超深 / 病态输入（fuzz）=="
 if out=$(run fuzz) && echo "$out" | grep -q 'fuzz ok'; then
     ok fuzz "$(echo "$out" | grep -E 'deep:|wide:|mutate:' | tr '\n' ' ' | sed 's/  */ /g' | cut -c1-150)"

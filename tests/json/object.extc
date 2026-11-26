@@ -1,0 +1,55 @@
+/* JSON 的**对象层**：json::doc + json::value —— 把 (text, nodes, idx) 三片参数绑成两个视图值。
+ *
+ * 判据：① 读字段不再传四个参数：d.get("user.name")!.str(scratch[..]) ✓
+ *      ② 有转义 ⇒ 解码进 scratch（str），无转义 ⇒ 零拷贝（raw 是原文视图 ✓）
+ *      ③ 容器按位置走：count / at（数组）/ nth（对象第 i 个值）/ keyAt（第 i 个键）
+ *      ④ 缺字段、类型不符 ⇒ none（不是 0、不是空串）✓
+ *      ⑤ 坏 JSON ⇒ doc.ok() 为假 + errAt() 给位置；自由函数照旧可用（同一份池子）✓
+ */
+use std::io
+use std::json
+
+fn main() -> i32 {
+    var pool: [64]json::node
+    let text: slice<u8> = "{\"user\":{\"name\":\"hi\\nthere\",\"age\":42},\"xs\":[7,8,9],\"t\":true,\"n\":null}"
+    let st: json::parsed = json::parse(text, pool[..])
+    let d: json::doc = json::doc::of(text, pool[..], st)
+    if !d.ok() { io::cout << "parse failed at " << d.errAt() << "\n"  return 1 }
+
+    var scratch: [64]u8
+    let name = d.get("user.name")!
+    io::cout << "name=[" << name.str(scratch[..]) << "]\n"
+    io::cout << "raw=[" << name.raw() << "]\n"
+    io::cout << "is-string=" << name.isString() << " count=" << name.count() << "\n"
+
+    let age = d.get("user.age")!
+    io::cout << "age=" << age.int() << " num=" << age.num() << " is-num=" << age.isNumber() << "\n"
+
+    let xs = d.get("xs")!
+    io::cout << "xs-count=" << xs.count() << " x0=" << xs.at(0)!.int() << " x2=" << xs.at(2)!.int() << "\n"
+
+    var missing: i64 = 0
+    match d.get("nope") {
+        none => { missing = 1 }
+        some(v) => { missing = 0 }
+    }
+    io::cout << "missing=" << missing << "\n"
+
+    let root = d.root()
+    io::cout << "root-count=" << root.count() << " key0=" << root.keyAt(0) << "\n"
+    io::cout << "t=" << d.get("t")!.truth() << " n-null=" << d.get("n")!.isNull() << "\n"
+
+    /* 走 nth：第 1 个成员是 xs 那个数组，它的第 1 个元素是 8 */
+    let second = root.nth(1)!
+    io::cout << "nth1-count=" << second.count() << " nth1-at1=" << second.at(1)!.int() << "\n"
+
+    /* 自由函数照旧：同一份池子、同一份原文 ✓ */
+    io::cout << "free=" << json::intOf(text, pool[..], json::find(text, pool[..], json::rootOf(st), "user.age")) << "\n"
+
+    /* 坏 JSON：ok=false、errAt 是出错位置；doc 其余方法给安全值 */
+    var pool2: [8]json::node
+    let bad: slice<u8> = "{\"a\":}"
+    let d2: json::doc = json::doc::of(bad, pool2[..], json::parse(bad, pool2[..]))
+    io::cout << "bad-ok=" << d2.ok() << " bad-at=" << d2.errAt() << "\n"
+    return 0
+}

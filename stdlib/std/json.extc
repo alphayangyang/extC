@@ -1185,3 +1185,99 @@ fn json(v: ref any, out: mut slice<u8>) -> i64 {
 fn typeName(v: ref any, out: mut slice<u8>) -> i64 {
     return extc_any_type_name(v, out.data, out.len)
 }
+/* ================================================================ 对象层：doc / value
+ *
+ * 自由函数把 (text, nodes, idx) 三个参数在调用点一遍遍传：读一个字段要写四个参数，
+ * 嵌套一层就再写一遍。这一层把它们绑成两个**视图值** —— 拷贝没有成本，也不分配：
+ *
+ *     var pool: [256]json::node
+ *     let d: json::doc = json::doc::parse(body, pool[..])
+ *     if !d.ok() { io::cout << f"坏 JSON，位置 {d.errAt()}"  return 1 }
+ *     let v: json::value = d.get("user.name")!      （点号路径；缺字段/越界 ⇒ none）
+ *     io::cout << f"name={v.str(scratch[..])} count={v.count()}"
+ *
+ * 自由函数全部保留：要极致控制（自己走链、自己 match 节点）时它们是唯一的路；
+ * 这两层只是给「按字段读」这种占到九成的写法一个短拼写。
+ */
+struct value {
+    text: slice<u8>
+    nodes: slice<node>
+    idx: i64
+
+    fn ok(self: ref value) -> bool { return self.idx >= 0 && self.idx < self.nodes.len }
+    fn kind(self: ref value) -> u8 { return kindOf(self.nodes, self.idx) }
+    fn isObject(self: ref value) -> bool { return self.kind() == OBJ }
+    fn isArray(self: ref value) -> bool { return self.kind() == ARR }
+    fn isString(self: ref value) -> bool { return self.kind() == STR }
+    fn isNumber(self: ref value) -> bool { return self.kind() == NUM }
+    fn isBool(self: ref value) -> bool { return self.kind() == BOOL }
+    fn isNull(self: ref value) -> bool { return self.kind() == NUL }
+
+    /* 元素/成员个数；不是容器 ⇒ -1。 */
+    fn count(self: ref value) -> i64 { return countOf(self.nodes, self.idx) }
+
+    /* 对象按名字取成员；不是对象或没有这个键 ⇒ none。 */
+    fn member(self: ref value, key: slice<u8>) -> ?value {
+        let i: i64 = member(self.text, self.nodes, self.idx, key)
+        if i < 0 { return none }
+        return some(value { text: self.text, nodes: self.nodes, idx: i })
+    }
+
+    /* 数组按位置取元素；不是数组或越界 ⇒ none。 */
+    fn at(self: ref value, i: i64) -> ?value {
+        let k: i64 = elem(self.nodes, self.idx, i)
+        if k < 0 { return none }
+        return some(value { text: self.text, nodes: self.nodes, idx: k })
+    }
+
+    /* 对象按位置取第 i 个成员的值；不是对象或越界 ⇒ none。 */
+    fn nth(self: ref value, i: i64) -> ?value {
+        let k: i64 = valueAt(self.nodes, self.idx, i)
+        if k < 0 { return none }
+        return some(value { text: self.text, nodes: self.nodes, idx: k })
+    }
+
+    /* 对象第 i 个成员名（原样：转义没解）。 */
+    fn keyAt(self: ref value, i: i64) -> slice<u8> { return keyAt(self.text, self.nodes, self.idx, i) }
+
+    /* 点号路径（a.b.0.c）一路取下去；缺字段/越界 ⇒ none。 */
+    fn find(self: ref value, path: slice<u8>) -> ?value {
+        let i: i64 = find(self.text, self.nodes, self.idx, path)
+        if i < 0 { return none }
+        return some(value { text: self.text, nodes: self.nodes, idx: i })
+    }
+
+    /* 字符串/数字的原文视图（零拷贝；字符串里的转义**没解**）。 */
+    fn raw(self: ref value) -> slice<u8> { return rawOf(self.text, self.nodes, self.idx) }
+
+    /* 字符串的真值：无转义 ⇒ 零拷贝；有转义 ⇒ 解码进 scratch（不够大 ⇒ 空视图）。 */
+    fn str(self: ref value, scratch: mut slice<u8>) -> slice<u8> {
+        return strOf(self.text, self.nodes, self.idx, scratch)
+    }
+
+    fn int(self: ref value) -> i64 { return intOf(self.text, self.nodes, self.idx) }
+    fn num(self: ref value) -> f64 { return numOf(self.nodes, self.idx) }
+    fn truth(self: ref value) -> bool { return boolOf(self.nodes, self.idx) }
+}
+
+/* 一份解析结果 + 它的两片缓冲：ok()/errAt() 来自 parsed，其余方法直接读根。 */
+struct doc {
+    @private st: parsed
+    text: slice<u8>
+    nodes: slice<node>
+
+    /* 把「解析结果 + 两片缓冲」绑成一个值。
+     * 不在这里代跑解析：解析要写节点池（mut 视图），而本函数返回的值要**留着**这两片视图 ——
+     * 两件事分开，借用检查才说得清（先 parse 再 of，各自只看自己那一半）。 */
+    fn of(text: slice<u8>, nodes: slice<node>, st: parsed) -> doc {
+        return doc { st: st, text: text, nodes: nodes }
+    }
+
+    fn ok(self: ref doc) -> bool { return isOk(self.st) }
+    fn errAt(self: ref doc) -> i64 { return errAt(self.st) }
+    fn root(self: ref doc) -> value { return value { text: self.text, nodes: self.nodes, idx: rootOf(self.st) } }
+    fn get(self: ref doc, path: slice<u8>) -> ?value { return self.root().find(path) }
+    fn member(self: ref doc, key: slice<u8>) -> ?value { return self.root().member(key) }
+    fn at(self: ref doc, i: i64) -> ?value { return self.root().at(i) }
+    fn count(self: ref doc) -> i64 { return self.root().count() }
+}

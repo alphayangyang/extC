@@ -52,6 +52,9 @@ fn run() -> result<unit, io::ioError> {
                 writeFailed(code) => { println("意外：writeFailed(", code, ")"); return failure(e) }
                 lineTooLong(k)    => { println("意外：lineTooLong(", k, ")"); return failure(e) }
                 destFull(k)       => { println("意外：destFull(", k, ")"); return failure(e) }
+                atEof             => { println("意外：atEof") }
+                notANumber       => { println("意外：notANumber") }
+                outOfRange(n)     => { println("意外：outOfRange(", n, ")") }
             }
         }
     }
@@ -70,6 +73,9 @@ fn main() -> i32 {
                 lineTooLong(n)    => { println("  lineTooLong(", n, ")") }
                 closed(code)      => { println("  closed(", code, ")") }
                 destFull(n)       => { println("  destFull(", n, ")") }
+                atEof             => { println("意外：atEof") }
+                notANumber       => { println("意外：notANumber") }
+                outOfRange(n)     => { println("意外：outOfRange(", n, ")") }
             }
             return 1
         }

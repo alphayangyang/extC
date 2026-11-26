@@ -1,0 +1,29 @@
+/* 控制台对象：nextI32 的范围检查与坏数据都不走 success。
+ *
+ * 判据：输入 5000000000（超出 i32 范围）⇒ failure(outOfRange)，不截断成某个数；
+ * 接着读到 x（不是数字的开头）⇒ failure(notANumber)，不是伪装成 EOF。 */
+use std::io::{stdin, stdout}
+
+fn main() {
+    let r = stdin.nextI32()
+    match r {
+        success(v) => { stdout.println(f"不该成功：{v}") }
+        failure(e) => {
+            match e {
+                outOfRange(n) => { stdout.println(f"out-of-range={n}") }
+                _ => { stdout.println("other-error") }
+            }
+        }
+    }
+
+    let r2 = stdin.nextI32()
+    match r2 {
+        success(v) => { stdout.println(f"不该成功：{v}") }
+        failure(e) => {
+            match e {
+                notANumber => { stdout.println("not-a-number=yes") }
+                _ => { stdout.println("other-error") }
+            }
+        }
+    }
+}

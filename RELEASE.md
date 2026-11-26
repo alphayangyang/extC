@@ -72,7 +72,7 @@ make install PREFIX="$HOME/.local"     # installs extc, the runtime headers and 
 ## Release checklist
 
 1. Bump [`VERSION`](VERSION) in one commit; `make` rebuilds `build/extc` without warnings.
-2. `make -j"$(nproc)" && ./tests/run.sh` — expect `通过 377，失败 0`.
+2. `make -j"$(nproc)" && ./tests/run.sh` — expect `通过 378，失败 0`.
 3. `./check.sh nobench` — all gates green, including the documentation gates for this repository.
    (CI runs only the slim `ci` tier; a release must also judge the gates whose lines are
    calibrated on a lab machine, which is what `nobench` adds. Neither tier judges benchmarks:

@@ -51,6 +51,9 @@ fn main() -> i32 {
                 writeFailed(fd) => println("io: 写失败 (fd = ", fd, ")")
                 closed(fd)      => println("io: 句柄已关闭 (fd = ", fd, ")")
                 destFull(n)     => println("io: 缓冲太小（读到 ", n, " 字节）")
+                atEof             => { println("意外：atEof") }
+                notANumber       => { println("意外：notANumber") }
+                outOfRange(n)     => { println("意外：outOfRange(", n, ")") }
             }
             return 1
         }

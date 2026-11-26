@@ -15,6 +15,9 @@ notATerminal(fd)  => println("错报成 notATerminal ✗")
             writeFailed(fd) => println("不该是写失败 ✗")
             closed(fd)      => println("不该是已关闭 ✗")
             destFull(k)     => println("不该是缓冲太小 ✗")
+            atEof             => { println("意外：atEof") }
+            notANumber       => { println("意外：notANumber") }
+            outOfRange(n)     => { println("意外：outOfRange(", n, ")") }
         }
     }
     return success(unit {})

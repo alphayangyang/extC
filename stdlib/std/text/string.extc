@@ -1428,6 +1428,51 @@ fn readAll() -> ?string {
     return some(s)
 }
 
+/* ---------------------------------------------------------------- 读一个「词」 */
+
+/* 读一段非空白字节，跳过前导空白；什么都没读到（EOF 先到）返回 none。
+ * 词尾的那个空白**不消费**：把它退回去（pos - 1），下一次读取仍然看得见 —— 这是
+ * 「按词切」与「按行切」能混用的前提（nextInt 之后紧接 nextLine 读到的正是数字之后那一行）。 */
+fn readToken() -> ?string {
+    var r: io::reader = io::inSync()
+    match r.skipSpace() {
+        failure(e) => { r.save()  return none }
+        success(k) => { }
+    }
+    var s: string = withCap(16)
+    var any: bool = false
+    while true {
+        let got = r.nextByte()
+        match got {
+            failure(e) => { r.save()  return none }
+            success(b) => {
+                if b < 0 { break }
+                if b == 32 || b == 9 || b == 10 || b == 13 || b == 11 || b == 12 {
+                    r.pos = r.pos - 1
+                    break
+                }
+                s.push(u8(b))
+                any = true
+            }
+        }
+    }
+    r.save()
+    if !any { return none }
+    return some(s)
+}
+
+/* ---------------------------------------------------------------- 控制台对象上的同名方法
+ *
+ * 与自由函数 readLine() / readAll() / readToken() 是同一份实现，只是换了「对对象说话」的形状：
+ *   var line = stdin.readLine()!
+ * 参数是零字段的流对象（std::io 的 stdin），不需要也不改变任何状态。 */
+@ext
+impl io::stdinStream {
+    fn readLine(self: ref io::stdinStream) -> ?string { return readLine() }
+    fn readAll(self: ref io::stdinStream) -> ?string { return readAll() }
+    fn readToken(self: ref io::stdinStream) -> ?string { return readToken() }
+}
+
 /* std/b64.extc —— Base64（RFC 4648 §4 标准表 / §5 URL 安全表）。
  *
  * 手写而不是 vendor：它没有 ABI 面、没有"库"可言，而且我们要的是**零分配**的

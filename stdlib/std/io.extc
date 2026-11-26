@@ -66,6 +66,9 @@ use std::sys::io as sysio
 type ioError = | readFailed(i32) | lineTooLong(i64) | writeFailed(i32) | notATerminal(i32)
                | closed(i32)        /* 用了一个已经关掉的句柄 —— 那是程序 bug，但**看得见** ✓ */
                | destFull(i64)      /* `readAll`：目标缓冲满了，而文件还有数据 ⇒ 不静默截断 ✗ */
+               | atEof              /* 控制台对象：没有输入可读了（行读取仍用 0，与此区分）*/
+               | notANumber         /* 控制台对象：下一个字节不是数字的开头（也不是空白）*/
+               | outOfRange(i64)    /* 读进比目标类型宽的整数 ⇒ 报出来，不截断 */
 
 /* Block size: **64KB**, the buffer `readerOf` and `writerOf` allocate. A buffered read or
  * write moves at most this many bytes per syscall, which keeps the syscall count low in
@@ -778,8 +781,8 @@ struct istream { fd: i32
     fn clear(self: ref istream) { IN_BAD = false }
 }
 
-/* 失败标志的**自由函数**形式：限定名的全局上调方法还不支持 ⇒
- * `io::cin.bad()` 今天不行，这两个能 ✓ 它们是同一个标志 ✓ */
+/* 失败标志的**自由函数**形式：`inBad()` / `inClear()` 与 `cin.bad()` / `cin.clear()`
+ * 是同一个标志（两种写法都在，调用点爱用哪个用哪个 ✓）*/
 /* 每读一行都会问一次 ⇒ 内联（不标就是每行一次函数调用 ✗）*/
 @inline
 fn inBad() -> bool { return IN_BAD }
@@ -1195,3 +1198,168 @@ fn rawTerminal(fd: i32) -> result<terminal, ioError> {
     let u = t.raw()?
     return success(t)
 }
+
+/* ================================================================ 控制台对象：stdin / stdout / stderr
+ *
+ * 「对某个对象做一件事」：读走 stdin.nextInt()!，写走 stdout.println(f"...")。
+ * 三个对象都是零字段的值类型，全局初始化写 { }，拷贝没有成本；真正的状态（控制台读缓冲
+ * IN_BUF / IN_LEN / IN_POS、错误标志 IN_BAD）仍然住在模块全局 —— 与 cin / cout 是同一份，
+ * 所以两套写法可以混用，互相看得见。
+ *
+ * 与 std::tui 的分工：这里是行式的控制台（整块读进内存再切），逐键、光标、颜色在 std::tui。
+ * cin / cout / cerr 与自由函数 print / println 全部保留：一行里连续塞好几个值时链式写法更短。
+ */
+
+/* 跳过空白、把第一个非空白字节交出来（随后退回，供 nextInt 判断「这是不是数字的开头」）；
+ * -1 = 没有下一个字节了。只动 pos / len 与缓冲，所以 stdin 的每个方法都能这样先看一眼。 */
+@private
+fn peekNumberStart(r: mut ref reader) -> result<i64, ioError> {
+    while true {
+        if r.pos >= r.len {
+            match r.fill() {
+                failure(e) => { return failure(e) }
+                success(n) => { if n == 0 { return success(-1) } }
+            }
+        }
+        let b = i64(r.chunk[r.pos])
+        if isSpaceByte(b) { r.pos = r.pos + 1  continue }
+        return success(b)
+    }
+}
+
+/* 控制台输入。EOF 在对象层是一个错误（ioError.atEof）：沿用 reader 的 success(0) 会让
+ * stdin.nextInt()! 把「没有输入」变成一个合法的 0，而这种错看不见（0 也是个正常数字）。
+ * 行读取仍是 success(0)：0 表示第一字节就是 EOF，与空行（0 长度但不是 EOF）在调用点
+ * 由下一次调用的结果区分，这是行式 API 的通行口径。 */
+struct stdinStream {
+    /* 读一个字节；-1 表示 EOF。 */
+    fn nextByte(self: ref stdinStream) -> result<i64, ioError> {
+        var r: reader = inSync()
+        let out = r.nextByte()
+        r.save()
+        return out
+    }
+
+    /* 读一个整数（跳过前导空白）。
+     * 读之前先看第一个非空白字节：输入结束了是 ioError.atEof，不是数字的开头（也不是负号）
+     * 是 ioError.notANumber —— 调用点对这两件事的处理完全不同（一个收工，一个报坏数据）。
+     * 这一步不能省：数字扫描器为了找数字会一路跳过垃圾字节，没有前置检查就分不清两种情形。 */
+    fn nextInt(self: ref stdinStream) -> result<i64, ioError> {
+        var r: reader = inSync()
+        let first = peekNumberStart(ref r)?
+        r.save()
+        if first < 0 { return failure(ioError.atEof) }
+        if first != 45 && (first < 48 || first > 57) { return failure(ioError.notANumber) }
+        var got: bool = false
+        match nextI64State(i32(0), IN_BUF[..], ref IN_LEN, ref IN_POS, ref got) {
+            failure(e) => { return failure(e) }
+            success(n) => { if got { return success(n) } }
+        }
+        return failure(ioError.notANumber)
+    }
+
+    /* 与 nextInt 同一件事：读一个 i64。两个名字都在，因为「整数」在调用点是 i64 还是 i32
+     * 常常决定了写哪一个（与 cout 同时接受 i32 与 i64 同一个理由）。 */
+    fn nextI64(self: ref stdinStream) -> result<i64, ioError> { return self.nextInt() }
+
+    /* 读一个 i32；超出 i32 范围报 ioError.outOfRange（不静默截断，也不让 ! 变成错的值）。 */
+    fn nextI32(self: ref stdinStream) -> result<i32, ioError> {
+        let v = self.nextInt()?
+        if v < -2147483648 || v > 2147483647 { return failure(ioError.outOfRange(v)) }
+        return success(i32(v))
+    }
+
+    /* 读一行，行尾的换行（含 CRLF 里的 CR）不算内容；0 表示第一字节就是 EOF。 */
+    fn nextLine(self: ref stdinStream, out: mut slice<u8>) -> result<i64, ioError> {
+        var r: reader = inSync()
+        let n = r.nextLine(out)
+        r.save()
+        return n
+    }
+
+    /* 同一行，原样：行尾的 CR 也留在 out 里（协议要求逐字节不变时用它）。 */
+    fn nextLineRaw(self: ref stdinStream, out: mut slice<u8>) -> result<i64, ioError> {
+        var r: reader = inSync()
+        let n = r.nextLineRaw(out)
+        r.save()
+        return n
+    }
+
+    /* 读一个词（一段非空白字节）；0 = 还没读到词就 EOF。 */
+    fn nextToken(self: ref stdinStream, out: mut slice<u8>) -> result<i64, ioError> {
+        var r: reader = inSync()
+        let n = r.nextToken(out)
+        r.save()
+        return n
+    }
+
+    fn skipSpace(self: ref stdinStream) -> result<i64, ioError> {
+        var r: reader = inSync()
+        let n = r.skipSpace()
+        r.save()
+        return n
+    }
+
+    /* 输入是否已经结束（先排空缓冲，答案总是精确的）。 */
+    fn eof(self: ref stdinStream) -> result<bool, ioError> {
+        var r: reader = inSync()
+        let e = r.eof()
+        r.save()
+        return e
+    }
+
+    /* 读一段字节：先交出已经缓冲的，空了再发一次 read(2)；0 表示 EOF。 */
+    fn readSome(self: ref stdinStream, out: mut slice<u8>) -> result<i64, ioError> {
+        var r: reader = inSync()
+        if r.avail() == 0 {
+            let got = r.fill()
+            match got {
+                failure(e) => { r.save()  return failure(e) }
+                success(n) => { if n == 0 { r.save()  return success(0) } }
+            }
+        }
+        var n: i64 = 0
+        while n < out.len && r.pos < r.len {
+            out[n] = r.chunk[r.pos]
+            r.pos = r.pos + 1
+            n = n + 1
+        }
+        r.save()
+        return success(n)
+    }
+
+    /* 已经缓冲、还没取走的字节数。 */
+    fn avail(self: ref stdinStream) -> i64 { return IN_LEN - IN_POS }
+    fn buffered(self: ref stdinStream) -> bool { return IN_POS < IN_LEN }
+    /* 粘性失败标志：cin >> x 失败时置位，clear() 清掉（与 istream 是同一个标志）。 */
+    fn bad(self: ref stdinStream) -> bool { return IN_BAD }
+    fn clear(self: ref stdinStream) { IN_BAD = false }
+}
+
+/* 控制台输出。走运行期缓冲（与 println / cout 同一个出口）⇒ 混用没有顺序问题，
+ * 退出前由 main 冲刷。 */
+struct stdoutStream {
+    fn print(self: ref stdoutStream, s: slice<u8>) {
+        if s.len > 0 { sysio::extc_cout_put(s.data, s.len) }
+    }
+    fn println(self: ref stdoutStream, s: slice<u8>) {
+        self.print(s)
+        sysio::extc_cout_put(endl.data, 1)
+    }
+    fn newline(self: ref stdoutStream) { sysio::extc_cout_put(endl.data, 1) }
+    fn flush(self: ref stdoutStream) { flushCout() }
+}
+
+/* 诊断通道：与 stdout 分开（prog > out.txt 要拿到正常输出）。每次写之前先放 stdout 缓冲，
+ * 这是 errWrite 的规矩，这里跟着走。 */
+struct stderrStream {
+    fn print(self: ref stderrStream, s: slice<u8>) { errWrite(s) }
+    fn println(self: ref stderrStream, s: slice<u8>) { errWrite(s)  errWrite(endl) }
+    fn newline(self: ref stderrStream) { errWrite(endl) }
+}
+
+/* 名字写 stdin / stdout / stderr：C 侧发射成 io$stdin 这类带模块前缀的静态对象，
+ * 不会碰到 C 的 stdin / stdout 宏，也不会与用户的同名变量抢（方法调用按类型解析）。 */
+let stdin: stdinStream = stdinStream { }
+let stdout: stdoutStream = stdoutStream { }
+let stderr: stderrStream = stderrStream { }

@@ -18,6 +18,7 @@ fn writeFile(n: i64) {
         o << i << " " << i * i << endl
         i = i + 1
     }
+    o.close()!
 }
 
 fn main(args: slice<slice<u8>>) -> i32 {

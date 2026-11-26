@@ -21,8 +21,11 @@ min	f64	prelude	public	method
 min	i32	prelude	public	method
 min	i64	prelude	public	method
 min	u64	prelude	public	method
+readAll	io::stdinStream	std::text::string	public	method
 readAllFrom	string	std::text::string	public	method
+readLine	io::stdinStream	std::text::string	public	method
 readLineFrom	string	std::text::string	public	method
+readToken	io::stdinStream	std::text::string	public	method
 toF64	i64	prelude	public	method
 toI32	i64	prelude	public	method
 toI64	i32	prelude	public	method

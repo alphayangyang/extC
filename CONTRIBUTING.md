@@ -85,7 +85,7 @@ make -j"$(nproc)"                            # needs only cc
 ## Gates
 
 ```sh
-./tests/run.sh          # 377 cases: behaviour only
+./tests/run.sh          # 378 cases: behaviour only
 ./check.sh precommit    # + static gates and subsystem suites (commit-time)
 ./check.sh nobench      # + the minute-scale deep dives (before pushing)
 ./check.sh ratchet      # frozen artifact / emission-identity / idle fingerprints (codegen changes)

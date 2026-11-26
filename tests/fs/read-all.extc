@@ -23,6 +23,9 @@ fn main() -> i32 {
         failure(e) => {
             match e {
                 destFull(k)       => { println("destFull 带位置 = ", k) }
+                atEof             => { println("意外：atEof") }
+                notANumber       => { println("意外：notANumber") }
+                outOfRange(n)     => { println("意外：outOfRange(", n, ")") }
                 closed(code)      => { println("意外：closed(", code, ")"); return 1 }
                 readFailed(code)  => { println("意外：readFailed(", code, ")"); return 1 }
                 notATerminal(code)  => { println("意外：notATerminal(", code, ")"); return 1 }

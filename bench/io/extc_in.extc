@@ -27,6 +27,7 @@ fn sumFile() -> i64 {
         if f.bad() { break }
         total = total + a + b
     }
+    f.close()!
     return total
 }
 

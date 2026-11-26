@@ -1,0 +1,53 @@
+/* 控制台对象：stdin / stdout / stderr。
+ *
+ * 判据：读走对象方法（nextI32 / readToken / readLine / nextLine / eof / nextByte / readAll），
+ * 写走对象方法（stdout.println / print / newline），输出逐字节对得上；与 cin / cout 混用不丢顺序。
+ * 输入（tests/io/run.sh 喂）：5 7\nfirst line\nabc def\nlast\n */
+use std::io::{stdin, stdout, stderr, cout, endl}
+use std::text::string
+
+fn main() {
+    stdout.println(f"stdout:{42}")
+    stdout.print("print")
+    stdout.newline()
+    stderr.println(f"stderr:{7}")
+    stdout.flush()
+
+    /* nextInt 跳过前导空白，并且吃掉数字后面的那个换行 ⇒ 两个整数读完就停在下一行首。 */
+    let a = stdin.nextI32()!
+    let b = stdin.nextI64()!
+    stdout.println(f"sum={a + b}")
+
+    var buf: [64]u8
+    let n0 = stdin.nextLine(buf[..])!
+    stdout.println(f"line1=[{buf[0..n0]}]")
+
+    /* readToken 跳空白、取一个词、词尾空白退回；readLine 不跳空白、连行尾空白一起读。 */
+    let t1 = stdin.readToken()!
+    stdout.println(f"token1={t1}")
+
+    let n1 = stdin.nextLine(buf[..])!
+    stdout.println(f"rest1=[{buf[0..n1]}]")
+
+    stdout.println(f"eof-before-last={stdin.eof()!}")
+
+    let last = stdin.readLine()!
+    stdout.println(f"last=[{last}]")
+
+    stdout.println(f"eof={stdin.eof()!}")
+
+    let r = stdin.nextI32()
+    match r {
+        success(v) => { stdout.println(f"不该成功：{v}") }
+        failure(e) => { stdout.println("eof-error=yes") }
+    }
+
+    /* EOF 处：nextByte 是 -1，readAll 得到一个空串，eof 仍是 true。 */
+    stdout.println(f"byte-at-eof={stdin.nextByte()!}")
+    let rest = stdin.readAll()!
+    stdout.println(f"read-all-empty={rest.isEmpty()}")
+
+    /* 与链式写法混用：同一个出口、同一个缓冲 ⇒ 顺序不变。 */
+    cout << "chain" << endl
+    cout << "end" << endl
+}

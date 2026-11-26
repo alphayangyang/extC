@@ -336,6 +336,11 @@ struct outStream {
         return { }
     }
     fn failed(self: ref outStream) -> bool { return OUT.failed }
+
+    /* ---- 对象口：与 openOut / flushOut / closeOut 是同一件事，写法按调用点选 ---- */
+    fn open(self: ref outStream, path: slice<u8>) -> result<unit, io::ioError> { return openOut(path) }
+    fn flush(self: ref outStream) -> result<unit, io::ioError> { return flushOut() }
+    fn close(self: ref outStream) -> result<unit, io::ioError> { return closeOut() }
 }
 
 /* 空结构体当句柄：常量初始化 ✓（`outStream { }` 每个字段都是常量 ✓）*/
@@ -475,6 +480,10 @@ struct inStream {
 
     fn bad(self: ref inStream) -> bool { return IN.failed }
     fn clear(self: ref inStream) { IN.failed = false }
+
+    /* ---- 对象口：与 openIn / closeIn 是同一件事 ---- */
+    fn open(self: ref inStream, path: slice<u8>) -> result<unit, io::ioError> { return openIn(path) }
+    fn close(self: ref inStream) -> result<unit, io::ioError> { return closeIn() }
 }
 
 let fin: inStream = inStream { }
@@ -494,6 +503,7 @@ fn openIn(path: slice<u8>) -> result<unit, io::ioError> {
 fn closeIn() -> result<unit, io::ioError> {
     if !IN.active { return success(unit {}) }                          /* 幂等 ✓ */
     let c = sysio::close(IN.fd)
+    IN.active = false                                                  /* 关过就是关过：不然下一次 open 会被"已经开着"挡住 ✗ */
     IN.fd = i32(0) - i32(1)
     IN.len = 0
     IN.pos = 0

@@ -1,0 +1,39 @@
+// expect: n = 7|line = hello objects|bad = false|idempotent ok|reopen = 7
+/* 程序级流的**对象口**：fs::fout.open/flush/close 与 fs::fin.open/close，
+ * 与 openOut/flushOut/closeOut/openIn/closeIn 是同一份状态（互相关得掉、关是幂等的 ✓）
+ *
+ * 判据：① 写进文件的字节读回来逐字对得上 ✓
+ *      ② fs::fin.bad() 在成功读完时是 false（错误通道没被顺手置上 ✓）
+ *      ③ 对象口关掉之后再用自由函数关一遍 ⇒ 仍然是 success（幂等 ✓）
+ *      ④ 关过之后能重开（closeIn 若忘了清 active，重开会「已经开着」✗）✓ */
+use std::io
+use std::fs
+use std::io::{endl}
+
+fn main() -> i32 {
+    fs::fout.open("build/fs-objects.txt")?
+    fs::fout << "7 hello objects" << endl
+    fs::fout.flush()?
+    fs::fout.close()?
+
+    fs::fin.open("build/fs-objects.txt")?
+    var n: i64 = 0
+    var line: mut slice<u8> = new u8[64]
+    fs::fin >> n >> line
+    println("n = ", n)
+    println("line = ", line[0..13])      /* "hello objects" */
+    println("bad = ", fs::fin.bad())
+    fs::fin.close()?
+
+    fs::closeOut()?
+    fs::closeIn()?
+    println("idempotent ok")
+
+    /* 关过之后还能重开：closeIn 忘了清 active 时，下一次 open 会被「已经开着」挡住 ✗ */
+    fs::fin.open("build/fs-objects.txt")?
+    var n2: i64 = 0
+    fs::fin >> n2
+    println("reopen = ", n2)
+    fs::fin.close()?
+    return 0
+}

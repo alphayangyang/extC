@@ -70,6 +70,9 @@ fn main() -> i32 {
                 lineTooLong(n)    => { println("  lineTooLong(", n, ")") }
                 closed(code)      => { println("  closed(", code, ")") }
                 destFull(n)       => { println("  destFull(", n, ")") }
+                atEof             => { println("意外：atEof") }
+                notANumber       => { println("意外：notANumber") }
+                outOfRange(n)     => { println("意外：outOfRange(", n, ")") }
             }
             return 1
         }

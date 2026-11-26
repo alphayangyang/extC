@@ -55,6 +55,23 @@ else
     echo "  FAIL global-io  ->  跑不起来"; echo "$out" | sed 's/^/        /' | head -6; fail=1
 fi
 
+echo "== 程序级流的对象口（fs::fout.open/flush/close · fs::fin.open/close：与自由函数同一份状态）=="
+if out=$("$EXTC" --run tests/fs/objects.extc 2>&1); then
+    ok=1
+    echo "$out" | grep -qF "n = 7"                  || ok=0
+    echo "$out" | grep -qF "line = hello objects"   || ok=0
+    echo "$out" | grep -qF "bad = false"            || ok=0
+    echo "$out" | grep -qF "idempotent ok"          || ok=0
+    echo "$out" | grep -qF "reopen = 7"             || ok=0
+    if [ "$ok" = 1 ]; then
+        echo "  ok   objects     ->  $(echo "$out" | tr '\n' '|')"
+    else
+        echo "  FAIL objects     ->  输出对不上（$(echo "$out" | tr '\n' '|')）"; fail=1
+    fi
+else
+    echo "  FAIL objects     ->  跑不起来"; echo "$out" | head -4 | sed 's/^/        /'; fail=1
+fi
+
 echo "== 判据有牙（canary）：不 close 的同一段程序**必须**失败 =="
 out=$("$EXTC" --run tests/fs/leak-canary.extc 2>&1); rc=$?
 if [ "$rc" != 0 ] && echo "$out" | grep -qF "fd 漂了"; then
