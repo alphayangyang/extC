@@ -1,5 +1,5 @@
 # reclaim-idle fingerprint v1
-# build/extc md5=3f639b86ee4fd87dfdd81c95933447f9 HEAD=df13f529
+# build/extc md5=c3b45a23f4c90d5987f7dc1c532b5c32 HEAD=ad7846a6
 # extc=/home/alphayang/extC_Compiler/build/extc tree=/home/alphayang/extC_Compiler stdlib=/home/alphayang/extC_Compiler/stdlib
 # 档位：默认 vs EXTC_RECLAIM=0；生成参数 -w --no-line-map -I <stdlib>
 # 语料：roots=examples/tests/bench，跳过 __pycache__/archive/build/in/in-small/out/stamped（taxmap.py census 口径）
@@ -931,6 +931,9 @@ tests/extern/libc.extc	OK	28f224c5c25ac287e7f93330a96089a9	28f224c5c25ac287e7f93
 tests/extern/main.extc	OK	77c95e797074cc97d494c897cfcd8038	77c95e797074cc97d494c897cfcd8038	YES	-
 tests/extpkg-system/app.extc	FAIL	-	-	-	-
 tests/features/bits.extc	OK	a91dc76928f4b5e25a01a64a1d5c5139	a91dc76928f4b5e25a01a64a1d5c5139	YES	-
+tests/features/borrow/err_mut_let/main.extc	FAIL	-	-	-	-
+tests/features/borrow/err_temp/main.extc	FAIL	-	-	-	-
+tests/features/borrow/main.extc	OK	66844c63492393b5b292c1386eadfe57	66844c63492393b5b292c1386eadfe57	YES	-
 tests/features/err_amb/a.extc	FAIL	-	-	-	-
 tests/features/err_amb/b.extc	FAIL	-	-	-	-
 tests/features/err_amb/main.extc	FAIL	-	-	-	-

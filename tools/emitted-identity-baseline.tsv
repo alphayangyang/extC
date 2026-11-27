@@ -1,7 +1,7 @@
 # emitted-C identity baseline (refactor invariant)
-# extc md5: 3f639b86ee4fd87dfdd81c95933447f9
+# extc md5: c3b45a23f4c90d5987f7dc1c532b5c32
 # columns: config, source, status, md5, bytes
-# why: P0：返回视图的悬垂检查与视图整体赋值改为编译错；tests/stl/vector_snapshot 重写为符合现行视图契约的语料
+# why: C1/C2：ref 形参自动借出、借用诊断改写（失败编译指纹随文案变）
 default	bench/app/log.extc	ok	1350b02e7de16091d4a18c55d007435a	95453
 reclaim	bench/app/log.extc	ok	40e0d11ae35ec71191635713a21a71b0	410325
 default	bench/app/route.extc	ok	06ae9200c2a01ebf6d4375a1e2efa385	147399
@@ -116,8 +116,8 @@ default	tests/gc-p0/src/uaf_bulk_copy_default.extc	ok	b91d465ab2c22b8d0ba46bb23d
 reclaim	tests/gc-p0/src/uaf_bulk_copy_default.extc	ok	b91d465ab2c22b8d0ba46bb23d5047c7	338674
 default	tests/gc-p0/src/uaf_param_overwrite.extc	ok	32d9cbcaa2093b04b43d432d97d46ace	336546
 reclaim	tests/gc-p0/src/uaf_param_overwrite.extc	ok	32d9cbcaa2093b04b43d432d97d46ace	336546
-default	tests/gc-torture/src/datalog_lite.extc	fail 1	8f6d0c51bad7d7c7112ba0211c7cef34	0
-reclaim	tests/gc-torture/src/datalog_lite.extc	fail 1	8f6d0c51bad7d7c7112ba0211c7cef34	0
+default	tests/gc-torture/src/datalog_lite.extc	fail 1	268d636f9c91809a0d60138bc7eded6e	0
+reclaim	tests/gc-torture/src/datalog_lite.extc	fail 1	268d636f9c91809a0d60138bc7eded6e	0
 default	tests/gc-torture/src/t01_sparse_pin.extc	ok	593455b9567c9aab2219316f7c313c7e	361395
 reclaim	tests/gc-torture/src/t01_sparse_pin.extc	ok	593455b9567c9aab2219316f7c313c7e	361395
 default	tests/gc-torture/src/t02_fanout.extc	ok	7686a46cdf1e57b631e71dd9f519ec44	343875
@@ -156,8 +156,8 @@ default	tests/reclaim-gaps/shapes/dyn_payload.extc	ok	8d9be2165a015871c6509ac005
 reclaim	tests/reclaim-gaps/shapes/dyn_payload.extc	ok	8d9be2165a015871c6509ac005814cac	354676
 default	tests/reclaim-gaps/shapes/ext_frame_cycle.extc	ok	d0429ec121ea1ae8031d257ed5b68109	345262
 reclaim	tests/reclaim-gaps/shapes/ext_frame_cycle.extc	ok	d0429ec121ea1ae8031d257ed5b68109	345262
-default	tests/reclaim-gaps/shapes/global_slot.extc	fail 1	4189e8b62c222ec9856c22fdade6da07	0
-reclaim	tests/reclaim-gaps/shapes/global_slot.extc	fail 1	4189e8b62c222ec9856c22fdade6da07	0
+default	tests/reclaim-gaps/shapes/global_slot.extc	fail 1	e7ec0361b0732ef712f260473f230fd2	0
+reclaim	tests/reclaim-gaps/shapes/global_slot.extc	fail 1	e7ec0361b0732ef712f260473f230fd2	0
 default	tests/reclaim-gaps/shapes/home_cycle.extc	ok	84f1765ccb4f5fd7182a7cc77a353463	344152
 reclaim	tests/reclaim-gaps/shapes/home_cycle.extc	ok	84f1765ccb4f5fd7182a7cc77a353463	344152
 default	tests/reclaim-gaps/shapes/match_payload.extc	ok	529e3851dd7f480d3edfafa52fda851f	343205
@@ -242,10 +242,10 @@ default	tests/reclaim-shapes/persist_nodes.extc	ok	d0ebb20b7c934f70cfd4effa4ab1a
 reclaim	tests/reclaim-shapes/persist_nodes.extc	ok	d0ebb20b7c934f70cfd4effa4ab1adcf	24097
 default	tests/reclaim-shapes/promote_place.extc	ok	d1a809a159dc46018f66dbf42d898aab	337265
 reclaim	tests/reclaim-shapes/promote_place.extc	ok	d1a809a159dc46018f66dbf42d898aab	337265
-default	tests/reclaim-shapes/reject_deep_store.extc	fail 1	3634f301c745d2f934affcd4fc64665f	0
-reclaim	tests/reclaim-shapes/reject_deep_store.extc	fail 1	3634f301c745d2f934affcd4fc64665f	0
-default	tests/reclaim-shapes/reject_deep_store_call.extc	fail 1	eb92f181e6e6d5c21f91da3565226a4b	0
-reclaim	tests/reclaim-shapes/reject_deep_store_call.extc	fail 1	eb92f181e6e6d5c21f91da3565226a4b	0
+default	tests/reclaim-shapes/reject_deep_store.extc	fail 1	9f10c5569e91765de8d69878a574e7b5	0
+reclaim	tests/reclaim-shapes/reject_deep_store.extc	fail 1	9f10c5569e91765de8d69878a574e7b5	0
+default	tests/reclaim-shapes/reject_deep_store_call.extc	fail 1	b484b18aec1ede14796880e99067ff99	0
+reclaim	tests/reclaim-shapes/reject_deep_store_call.extc	fail 1	b484b18aec1ede14796880e99067ff99	0
 default	tests/reclaim-shapes/scale_growth.extc	ok	c8d2311913eca2279972e8f963c8680c	342233
 reclaim	tests/reclaim-shapes/scale_growth.extc	ok	c8d2311913eca2279972e8f963c8680c	342233
 default	tests/reclaim-shapes/shard_bands.extc	ok	831f3b785f3fb58da5f6b9c675db2aea	355899
