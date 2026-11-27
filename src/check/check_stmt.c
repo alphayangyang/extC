@@ -4808,6 +4808,11 @@ void checkStmt(Checker *c, Stmt *s) {
                     }
                 }
             }
+            /* A view-typed binding remembers where it was borrowed from: returning the binding
+             * hands the view out exactly like returning the initializer does, and the depth model
+             * answers 0 for both (the container's bytes came from the heap). */
+            if (sym && s->type && s->u.var.init && ttIsViewType(tsub(c, s->type)))
+                sym->viewSrc = s->u.var.init;
             /* A struct literal records a depth for every field it writes. An omitted field is
              * zero-initialized and can only hold an empty reference at depth 0: no entry is created for
              * it and a read falls back to the conservative answer -- the cost is a possible wrong
@@ -4836,6 +4841,18 @@ void checkStmt(Checker *c, Stmt *s) {
              * exception -- the pointer's target is written, and the base chain really does contain a
              * place. */
             Expr *tgt0 = s->u.assign.target;
+            /* A whole-view target (`dst[..] = src[..]`, `a[1..3] = b`) has no storage of its own
+             * to write: the view is a two-word handle, and assigning it would change nothing in the
+             * bytes it points at. There is no silent no-op left for it -- the copy has a spelling
+             * (`copyInto`), and a whole fixed-size array has the plain assignment. */
+            if (tgt0 && tgt0->kind == EX_SLICE) {
+                ckError(c, s->line,
+                        "write `dst = src` to copy a whole fixed-size array, or "
+                        "`copyInto(dst, src, n)` to copy elements through a view",
+                        "cannot assign to a view as a whole: a view is a borrowed window, so "
+                        "assigning it would copy nothing");
+                return;
+            }
             /* A binding marked "storage is outside this frame" is not trusted once it is written
              * again: otherwise `if c { v = mem[..] } else { v = buf[..] }` would inherit the trust of one
              * branch and let the in-frame view of the other branch flow into C. A reassigned binding
@@ -5571,7 +5588,11 @@ void checkStmt(Checker *c, Stmt *s) {
              * is supposed to outlive this frame. */
             noteReturnPublish(c, s->u.ret.value, s->line);
             noteReturnBorrow(c, s->u.ret.value);
-            checkEscape(c, s->u.ret.value, 0, s->line, "this return value");
+            /* The depth model cannot see that a container's heap storage belongs to this frame, so
+             * a view of it would be answered depth 0 and accepted; this check resolves the view to
+             * its container and refuses the local one. */
+            if (!ckReturnViewOfFrame(c, s->u.ret.value, s->line))
+                checkEscape(c, s->u.ret.value, 0, s->line, "this return value");
             return;
         }
 

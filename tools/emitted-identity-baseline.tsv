@@ -1,7 +1,7 @@
 # emitted-C identity baseline (refactor invariant)
-# extc md5: 3876f9bce2a4f165dc2d474abd90d2c5
+# extc md5: 3f639b86ee4fd87dfdd81c95933447f9
 # columns: config, source, status, md5, bytes
-# why: L1 命名统一与命名闸门
+# why: P0：返回视图的悬垂检查与视图整体赋值改为编译错；tests/stl/vector_snapshot 重写为符合现行视图契约的语料
 default	bench/app/log.extc	ok	1350b02e7de16091d4a18c55d007435a	95453
 reclaim	bench/app/log.extc	ok	40e0d11ae35ec71191635713a21a71b0	410325
 default	bench/app/route.extc	ok	06ae9200c2a01ebf6d4375a1e2efa385	147399
@@ -382,8 +382,8 @@ default	tests/stl/vector_rss_arena.extc	ok	9b9200c2772e58e66af8f4fc7a900a74	3373
 reclaim	tests/stl/vector_rss_arena.extc	ok	9b9200c2772e58e66af8f4fc7a900a74	337330
 default	tests/stl/vector_rss_plate.extc	ok	e4875952ae4e6e809ea243c07d88e08c	78579
 reclaim	tests/stl/vector_rss_plate.extc	ok	dff258023531891927b4f6f30b5668c1	392849
-default	tests/stl/vector_snapshot.extc	fail 1	2a1286b20db29cbccd96f20cbdf54de2	0
-reclaim	tests/stl/vector_snapshot.extc	fail 1	2a1286b20db29cbccd96f20cbdf54de2	0
+default	tests/stl/vector_snapshot.extc	ok	a40bc55a259306132519345281d187e8	86385
+reclaim	tests/stl/vector_snapshot.extc	ok	67e67fe5c0ac119d4c7ec2563f956c31	401374
 default	tests/stl/vector_stale_view.extc	fail 1	f0bf38081b4a2ad0ece183139ced1588	0
 reclaim	tests/stl/vector_stale_view.extc	fail 1	f0bf38081b4a2ad0ece183139ced1588	0
 default	tests/stl/vector_stale_write.extc	fail 1	30a64117c56aa919f77cb445589c6aed	0

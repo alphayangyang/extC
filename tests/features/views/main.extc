@@ -1,0 +1,47 @@
+use std::data::vector
+use std::io
+use std::text::string
+
+struct holder {
+    s: slice<i64>
+}
+
+fn borrowParam(v: ref vector<i64>) -> slice<i64> {
+    return v.view()
+}
+
+fn copyLocal() -> slice<i64> {
+    var v: vector<i64> = vector<i64>::new()
+    v.push(i64(7))
+    return v.snapshot()
+}
+
+fn holdParam(v: ref vector<i64>) -> holder {
+    return holder { s: v.view() }
+}
+
+fn build() -> vector<i64> {
+    var v: vector<i64> = vector<i64>::new()
+    v.push(i64(7))
+    return v
+}
+
+fn literal() -> slice<u8> {
+    let s = "hello"
+    return s
+}
+
+fn main() -> i32 {
+    var v: vector<i64> = vector<i64>::new()
+    v.push(i64(7))
+    io::println(f"param={borrowParam(ref v)[0]}")
+    io::println(f"copy={copyLocal()[0]}")
+    io::println(f"hold={holdParam(ref v).s[0]}")
+    io::println(f"ret={build()[0]}")
+    io::println(f"lit={literal().len}")
+    var a: [4]i8 = [1, 2, 3, 4]
+    var b: [4]i8
+    b = a
+    io::println(f"assign={b[0]} {b[3]}")
+    return 0
+}

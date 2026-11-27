@@ -1,0 +1,9 @@
+use std::io
+
+fn main() -> i32 {
+    var a: [4]i8 = [1, 2, 3, 4]
+    var b: [4]i8
+    b[..] = a[..]
+    io::println(f"{b[0]} {b[3]}")
+    return 0
+}

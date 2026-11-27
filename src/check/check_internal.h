@@ -181,6 +181,12 @@ typedef struct Sym {
     Expr       *initSrc;
     int         initSrcDepth;
     int         initMinReq;
+/* The initializer of a **view**-typed binding (`var s = v.view()`). `initSrc` above is recorded
+ * for reference-typed bindings only, and a view is not a `TY_REF` (`slice<T>` is a generic
+ * aggregate), so handing the binding back needs its own slot: `return s` must dangle-log like
+ * `return v.view()`, and the depth model cannot see that a container's heap storage belongs to the
+ * returning frame. Read by `ckReturnViewOfFrame`. */
+    Expr       *viewSrc;
     int         depth;      /* lexical depth: a parameter is 0, a local in the function
                              * body is 1, and every nested block adds 1. The escape
                              * checks compare this number. */
@@ -1230,6 +1236,16 @@ bool ckHoldsMovingViewOf(Checker *c, Expr *e, const char **varName);
  * @return   true when a view of this type can outlive the storage it points at.
  */
 bool ckStorageCanMove(Checker *c, Type *t);
+
+/**
+ * @brief Does the value about to be returned hand out a view of storage this frame owns?
+ *
+ * @param c     Checker.
+ * @param e     Returned value.
+ * @param line  Source line of the return.
+ * @return      true when a diagnostic was reported.
+ */
+bool ckReturnViewOfFrame(Checker *c, Expr *e, int line);
 
 /**
  * @brief Whether an argument hands over a view whose container can move its storage.

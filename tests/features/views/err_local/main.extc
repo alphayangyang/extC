@@ -1,0 +1,13 @@
+use std::data::vector
+use std::io
+
+fn lend() -> slice<i64> {
+    var v: vector<i64> = vector<i64>::new()
+    v.push(i64(7))
+    return v.view()
+}
+
+fn main() -> i32 {
+    io::println(f"{lend()[0]}")
+    return 0
+}

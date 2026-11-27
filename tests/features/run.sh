@@ -7,6 +7,9 @@
 #   ③ `bits`：u64 的 popcount / ctz / clz（含 0 与最高位）
 #   ④ `importconst`：另一个模块的 `const` 可以当定长数组长度（名单 / 通配 / 限定名三条路）；
 #      同名歧义、负值、浮点、@private 四种错法各自报对
+#   ⑤ views：返回本帧容器的视图被静态拒绝（直接返回 / 先绑再返回 / string 容器三种），
+#      借参数、snapshot()、返回容器本身、字符串字面量、整数组赋值五种正确形状必须通过；
+#      视图整体赋值（dst[..] = src[..]）从静默无操作改为编译错
 set -u
 cd "$(dirname "$0")/../.."
 EXTC=${EXTC:-./build/extc}
@@ -59,6 +62,16 @@ check_reject amb err_amb 'declared by more than one imported module' '两个模�
 check_reject neg err_neg 'array length must be positive, got -2' '负值 const 不能当长度'
 check_reject float err_float 'not a `const` with an integer literal initializer' 'f64 const 不能当长度'
 check_reject priv err_private 'not a `const` with an integer literal initializer' '@private const 不跨模块导出'
+
+out=$("$EXTC" -w --no-line-map --run tests/features/views/main.extc 2>"$tmp/e" | tr '\n' ' ')
+want="param=7 copy=7 hold=7 ret=7 lit=5 assign=1 4 "
+if [ "$out" = "$want" ]; then ok views "借参数 / snapshot / 返回容器 / 字面量 / 整数组赋值 → $out"
+else bad views "期望 [$want] 实得 [$out] $(head -2 "$tmp/e")"; fi
+
+check_reject view_local views/err_local 'whose storage this frame releases when it ends' '返回局部容器的视图被拒并提 snapshot'
+check_reject view_binding views/err_binding 'whose storage this frame releases when it ends' '先绑定再返回同一个悬垂视图也被拒'
+check_reject view_string views/err_string 'view of .string::string.' 'string 容器的视图同样被拒'
+check_reject view_assign views/err_assign 'cannot assign to a view as a whole' '视图整体赋值被拒并提 copyInto'
 
 printf 'features: 通过 %d 个，失败 %d 个\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

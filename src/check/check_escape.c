@@ -1132,6 +1132,125 @@ static bool isGlobalSym(Checker *c, Sym *s) {
     return false;
 }
 
+/* -------------------------------------------------------- returned views of frame storage */
+
+/**
+ * @brief Follow a value that borrows back to the binding its storage sits in.
+ *
+ * The walk is the one `borrowSourceParam` makes, with a different answer: the binding instead
+ * of the parameter index. The caller asks "does this storage belong to the frame that is handing
+ * the value out", and a parameter and a local answer that question differently, so the index is
+ * not enough. Only shapes that keep the storage question alive are crossed: a view, a range slice,
+ * an element, a field projection, a `?` or `!`, or a call that reports which argument its result
+ * borrows from. A call that copies (`snapshot`) or any other shape ends the walk: the bytes are
+ * then somebody else's business.
+ *
+ * @param c  Checker, providing the plan table.
+ * @param e  Expression whose storage is wanted.
+ * @return   The binding the storage hangs on, or NULL when the shape cannot be traced.
+ */
+static Sym *borrowRootSym(Checker *c, Expr *e) {
+    (void)c;
+    for (int hops = 0; e && hops < 16; hops++) {
+        switch (e->kind) {
+        case EX_SLICE: e = e->u.slice.obj; continue;
+        case EX_INDEX: e = e->u.index.obj; continue;
+        case EX_FIELD: e = e->u.field.obj; continue;
+        case EX_SIGN:  e = e->u.sign.operand; continue;
+        case EX_TRY:   e = e->u.try_.operand; continue;
+        case EX_CALL: case EX_METHOD: case EX_ASSOC: {
+            FuncDef *callee = borrowCallee(planCallee(e));
+            Expr *inner = callee ? callArgForParam(e, planRetBorrowArg(callee)) : NULL;
+            /* The explicit view spellings are the fallback: they always borrow, whether or not the
+             * body's record is available yet. */
+            if (!inner && e->kind == EX_METHOD && e->u.method.recv && e->u.method.name &&
+                (strcmp(e->u.method.name, "view") == 0 ||
+                 strcmp(e->u.method.name, "viewMut") == 0 ||
+                 strcmp(e->u.method.name, "asSlice") == 0 ||
+                 strcmp(e->u.method.name, "asMutSlice") == 0))
+                inner = e->u.method.recv;
+            if (!inner) return NULL;
+            e = inner;
+            continue;
+        }
+        case EX_IDENT: return identBindOf(e);
+        default: return NULL;
+        }
+    }
+    return NULL;
+}
+
+/**
+ * @brief Does the value about to be returned hand out a view of storage this frame owns?
+ *
+ * The depth model answers this for stack storage: `a[..]` on a local array reports depth 1 and
+ * is rejected. A container that owns its bytes reports depth 0 instead, because its payload was
+ * taken from the heap, so the references inside it look as if somebody outside the frame owns
+ * them. The frame, however, runs the container's drop hook when it ends and hands that storage
+ * back, so a view returned from `var v: vector<i64>` dangles in the caller -- the hole this
+ * check closes. The returned view is resolved to the binding its bytes live in; a local container
+ * that can hand its storage back is refused, a parameter or a global is not.
+ *
+ * A view that cannot be traced to a named container is left to the depth checks: a string literal
+ * or a `new` block is not a container whose storage moves, and the depth answers are right for
+ * those.
+ *
+ * @param c     Checker.
+ * @param e     Returned value; an aggregate is walked into its parts.
+ * @param line  Source line of the return.
+ * @return      true when a diagnostic was reported.
+ */
+bool ckReturnViewOfFrame(Checker *c, Expr *e, int line) {
+    if (!e) return false;
+    /* An aggregate is handed back part by part, and a view inside it outlives the frame just the
+     * same, so every part that can carry one is visited. */
+    switch (e->kind) {
+    case EX_STRUCTLIT:
+        for (size_t i = 0; i < e->u.lit.inits.len; i++)
+            if (ckReturnViewOfFrame(c, (*(FieldInit **)vecAt(&e->u.lit.inits, i))->value, line))
+                return true;
+        return false;
+    case EX_ARRAYLIT:
+        for (size_t i = 0; i < e->u.arraylit.elems.len; i++)
+            if (ckReturnViewOfFrame(c, *(Expr **)vecAt(&e->u.arraylit.elems, i), line)) return true;
+        return false;
+    case EX_ENUMVAL:
+        for (size_t i = 0; i < e->u.enumval.args.len; i++)
+            if (ckReturnViewOfFrame(c, *(Expr **)vecAt(&e->u.enumval.args, i), line)) return true;
+        return false;
+    case EX_COALESCE:
+        return ckReturnViewOfFrame(c, e->u.coalesce.main, line) ||
+               ckReturnViewOfFrame(c, e->u.coalesce.fallback, line);
+    case EX_TRY:  return ckReturnViewOfFrame(c, e->u.try_.operand, line);
+    case EX_SIGN: return ckReturnViewOfFrame(c, e->u.sign.operand, line);
+    case EX_DYN:  return ckReturnViewOfFrame(c, e->u.dynv.payload, line);
+    default: break;
+    }
+    Type *t = e->type ? ttBase(tsub(c, e->type)) : NULL;
+    if (!t || !ttIsViewType(t)) return false;
+    Sym *root = borrowRootSym(c, e);
+    /* A binding that is itself a view handle: resolve it to the container it was made from.
+     * `var s = v.view()` then `return s` is the same dangling view as `return v.view()`. */
+    for (int hops = 0; root && hops < 8; hops++) {
+        Type *rt = root->type ? tsub(c, root->type) : NULL;
+        Expr *from = root->initSrc ? root->initSrc : root->viewSrc;
+        if (!rt || !ttIsViewType(rt) || !from) break;
+        Sym *src = borrowRootSym(c, from);
+        if (!src || src == root) break;
+        root = src;
+    }
+    if (!root || !root->type) return false;
+    Type *rt = tsub(c, root->type);
+    if (ttIsViewType(rt)) return false;               /* untraced view: the depth checks rule on it */
+    if (isGlobalSym(c, root) || root->depth < 1) return false;  /* static storage, or the caller's */
+    if (!ckStorageCanMove(c, root->type)) return false;         /* stack storage: depth already says so */
+    ckError(c, line,
+            "take a copy (`snapshot()`) before returning the view, or return the container itself",
+            "this return value is a view of `%s`, whose storage this frame releases when it ends",
+            typeStr(c, rt));
+    return true;
+}
+
 /**
  * @brief Tell whether a place denotes storage somebody else owns.
  *

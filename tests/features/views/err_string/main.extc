@@ -1,0 +1,12 @@
+use std::io
+use std::text::string
+
+fn lend() -> slice<u8> {
+    var s: string = string::from("hello world")
+    return s.view()
+}
+
+fn main() -> i32 {
+    io::println(f"{lend().len}")
+    return 0
+}
