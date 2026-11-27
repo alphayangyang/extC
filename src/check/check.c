@@ -558,6 +558,21 @@ bool checkAssignable(Checker *c, Type *want, Type *got, Expr *node, const char *
         return false;
     }
 
+    /* `mut ref T` needs a writable place: the type says "write access", so a `let` (or a
+     * read-only borrow of one) can be read through a `ref T` but never written through a
+     * `mut ref T`. Reported here because the generic mismatch note below ("extC only widens
+     * implicitly") names no fix, and this is the one a caller actually hits -- every `mut ref`
+     * parameter now takes the argument without a `ref` written at the call site. */
+    if (want->kind == TY_REF && want->mut && got->kind == TY_REF && !got->mut &&
+        ttEquals(want->inner, got->inner)) {
+        ckError(c, node ? node->line : 0,
+                "a `mut ref T` is write access, so the place it points at has to be writable:"
+                " declare it with `var` -- a `let` can only be read through a `ref T`",
+                "%s expects `%s`, found `%s`",
+                what, typeStr(c, want), typeStr(c, got));
+        return false;
+    }
+
     if (ttEquals(want, got)) return true;
 
     /* ---- `any`: the one dynamic value ----

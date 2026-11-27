@@ -40,7 +40,7 @@ tmp=$(mktemp -d)
 # 检查期拒绝：句柄的 place 比容器短命 ⇒ 报错并给位置（不再是"编过了、运行时才 trap"）
 if "$EXTC" -w --no-line-map -o "$tmp/s.c" tests/dyn/dyn_payload_inline_stale.extc >"$tmp/cc" 2>&1; then
     bad dyn_payload_inline_stale "应当被拒绝，却编过了"
-elif grep -q 'carries a reference into a deeper scope' "$tmp/cc" \
+elif grep -q 'carries a reference into a local of this function' "$tmp/cc" \
     && grep -q 'dyn_payload_inline_stale.extc:1[0-9]:' "$tmp/cc"; then
     ok dyn_payload_inline_stale "循环体里造成 dyn 交给外层容器 ⇒ 检查期报错（带位置）"
 else

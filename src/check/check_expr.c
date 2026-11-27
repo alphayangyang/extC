@@ -1891,6 +1891,65 @@ static Vec fnTypeParams(Checker *c, Type *ft) {
 static bool lendViewArg (Checker *c, Type *want, Expr **pslot);
 
 /**
+ * @brief Supply the `ref` of a `ref T` / `mut ref T` argument: `f(x)` means `f(ref x)`.
+ *
+ * A `ref` parameter says "lend me the place, do not copy it". Requiring the caller to spell `ref` out
+ * made one intent -- "pass this without copying" -- take three different spellings (a view parameter,
+ * a method receiver and a reference parameter), so the borrow is supplied here instead: the argument
+ * node is replaced by a real `ref` node and checked again, which is exactly the path a spelled-out
+ * `ref x` takes (address recorded, narrowing dropped, writability decided by the place).
+ *
+ * Only a place can be borrowed. An expression that is not one (`f(3)`, `f(a + b)`) is left alone, so
+ * the ordinary diagnostics still say what is wrong with it. A spelled-out `ref x` is left alone too,
+ * and stays accepted: this step only fills in what the caller did not write.
+ *
+ * @param c          Checker.
+ * @param pslot      Argument slot.
+ * @param knownOnly  True on the path that runs before the arguments are checked: then only an
+ *                   argument whose type is already known (a name) is borrowed.
+ * @return           True when the argument was replaced by a `ref` node.
+ */
+static bool refArg (Checker *c, Expr **pslot, bool knownOnly) {
+    if (!c || !pslot || !*pslot) return false;
+    Expr *a = *pslot;
+    if (a->kind == EX_REF) return false;
+    /* The argument's type is not filled in yet on the pre-check path (the call sites that run before
+     * inference); a name's declared type is the only one readable there. An argument that already is a
+     * reference is left alone in both cases: `ref` would be applied twice. */
+    Type *at = a->type;
+    if (!at && a->kind == EX_IDENT && a->u.ident.name) {
+        Sym *sy = lookup(c, a->u.ident.name);
+        if (sy) at = sy->type;
+    }
+    if (at && (ttIsError(at) || at->kind == TY_REF)) return false;
+    if (!at && knownOnly) return false;
+    if (!isLvalue(c, a)) return false;
+    Expr *rf = exprNew(c->arena, EX_REF, a->line);
+    rf->u.ref.operand = a;
+    *pslot = rf;
+    return true;
+}
+
+/**
+ * @brief Supply the borrow an argument position implies, before the argument is checked.
+ *
+ * Two parameter shapes lend instead of copying: a view parameter (`slice<T>`) and a reference
+ * parameter (`ref T` / `mut ref T`). The nodes are built here, ahead of type inference and of the
+ * ordinary check, because inference reads the node types: a generic `fn id<T>(x: ref T)` has to see
+ * the reference the call site means, not the bare place.
+ *
+ * @param c     Checker.
+ * @param want  Declared parameter type.
+ * @param slot  Argument slot; replaced in place on a hit.
+ * @return      True when the slot was replaced.
+ */
+static bool lendArg (Checker *c, Type *want, Expr **slot) {
+    if (!c || !want || !slot || !*slot) return false;
+    if (want->kind == TY_REF) return refArg(c, slot, true);
+    return lendViewArg(c, want, slot);
+}
+
+/**
  * @brief Check one argument and, when the parameter wants a view and a container was passed, lend it in
  *        place.
  *
@@ -1912,6 +1971,13 @@ static Type *checkBorrowArg(Checker *c, Expr **slot, Type *want) {
     adoptContextType(a, want);
     Type *at = checkInto(c, want, a);
     if (!want || !at || ttIsError(at)) return at ? at : ttError(c->tt);
+    /* A `ref T` / `mut ref T` parameter borrows a place: the `ref` a caller writes is optional: it is
+     * supplied here when absent. `at` is the value type the ordinary check found; a reference argument (spelled
+     * `ref x`, or a `ref`-typed expression) arrives with `TY_REF` and is taken as it stands. */
+    if (want->kind == TY_REF && at->kind != TY_REF) {
+        if (!refArg(c, slot, false)) return at;
+        return checkInto(c, want, *slot);
+    }
     Type *wb = ttBase(want);
     if (!wb || !ttIsViewType(wb)) return at;
     if (ttEquals(want, at) || ttCanWiden(at, want)) return at;
@@ -2114,13 +2180,14 @@ static Type *checkCallThroughFn(Checker *c, Expr *e, Type *ft) {
         Type *at = checkArgBorrow(c, slot, p->type);
         Expr  *a = *slot;
 
-        /* The same spelling rule as an ordinary call: passing a reference to a `ref T` parameter is
-         * written `ref ...` at the site, so a reader sees a reference and not a copy. */
+        /* The argument is borrowed at the call site (`lendArg` wraps a place in `ref`), so this branch
+         * can only see a value that has no place to borrow: a literal, a temporary, or a
+         * call result. Say that instead of asking for a `ref` the caller may already have given. */
         if (p->type->kind == TY_REF && at->kind != TY_REF && !ttIsError(at)) {
             ckError(c, a->line,
-                    "`.` means \"operate on this value\", so free functions need `ref` spelled out. "
-                    "`ref` is a mutable reference, so the target must be a `var`",
-                    "argument expects `%s`; write `ref ...` here to pass a reference",
+                    "store the value in a variable first, then pass that variable",
+                    "argument expects `%s`; a reference has to point at an existing"
+                    " place, and this argument is a temporary value",
                     typeStr(c, p->type));
             continue;
         }
@@ -3578,13 +3645,13 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 Type *at = checkArgBorrow(c, slot, pt);
                 Expr  *a = *slot;
                 if (pt->kind == TY_REF && at->kind != TY_REF && !ttIsError(at)) {
-                    ckError(c, a->line,
-                            "`.` means \"operate on this value\", so free functions need `ref` spelled out. "
-                            "`ref T` is a read-only borrow of a place: a variable (also `let`), a field, or a fixed-size array element",
-                            "argument expects `%s`; write `ref ...` here to pass a reference",
-                            typeStr(c, pt));
-                    continue;
-                }
+            ckError(c, a->line,
+                    "store the value in a variable first, then pass that variable",
+                    "argument expects `%s`; a reference has to point at an existing"
+                    " place, and this argument is a temporary value",
+                    typeStr(c, pt));
+            continue;
+        }
                 /* `coroutine<T>` is a uniform handle, a plain 24-byte value, so any place
                  * that takes a value takes it. */
                 checkAssignable(c, pt, at, a, "argument");
@@ -4632,7 +4699,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                  * actually be checked. */
                 for (size_t i = 0; i < f->params.len; i++) {
                     Param *p = *(Param **)vecAt(&f->params, i);
-                    lendViewArg(c, p->type, (Expr **)vecAt(&e->u.call.args, i));
+                    lendArg(c, p->type, (Expr **)vecAt(&e->u.call.args, i));
                 }
                 Vec targs;
                 vecInit(&targs, c->arena, sizeof(void *));
@@ -4790,7 +4857,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
             for (size_t i = 0; i < f->params.len; i++) {
                 Param *p = *(Param **)vecAt(&f->params, i);
                 Expr **slot = (Expr **)vecAt(&e->u.call.args, i);
-                lendViewArg(c, p->type, slot);
+                lendArg(c, p->type, slot);
             }
             /* The arena for this call comes from the shallowest `mut ref` argument. */
             anSetHomeDepth(e, callHomeDepth(c, &e->u.call.args, &f->params, e));
@@ -4806,17 +4873,16 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 Type *at = checkArgBorrow(c, slot, p->type);
                 Expr  *a  = *slot;
 
-                /* When the parameter is a `ref T`, the call site has to spell `ref` out, so
-                 * that a reader sees at a glance that a reference is passed and not a copy. An
-                 * argument that already is a reference can be passed as it stands. */
+                /* A `ref T` / `mut ref T` parameter is borrowed from the call site; what reaches this
+                 * branch is an argument with no place behind it (a literal or a temporary). */
                 if (p->type->kind == TY_REF && at->kind != TY_REF && !ttIsError(at)) {
-                    ckError(c, a->line,
-                            "`.` means \"operate on this value\", so free functions need `ref` spelled out. "
-                            "`ref T` is a read-only borrow of a place: a variable (also `let`), a field, or a fixed-size array element",
-                            "argument expects `%s`; write `ref ...` here to pass a reference",
-                            typeStr(c, p->type));
-                    continue;
-                }
+            ckError(c, a->line,
+                    "store the value in a variable first, then pass that variable",
+                    "argument expects `%s`; a reference has to point at an existing"
+                    " place, and this argument is a temporary value",
+                    typeStr(c, p->type));
+            continue;
+        }
                 /* `coroutine<T>` is a uniform handle, a plain 24-byte value, so any place
                  * that takes a value takes it. */
                 checkAssignable(c, p->type, at, a, "argument");
@@ -5435,7 +5501,7 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                     Type  *want = ttSubstitute(tt, p->type, sp, sa);
                     /* Container arguments are lent as read-only views before inference (the `va` in
                      * `s.append(va)`). */
-                    if (lendViewArg(c, want, (Expr **)vecAt(&e->u.method.args, i)))
+                    if (lendArg(c, want, (Expr **)vecAt(&e->u.method.args, i)))
                         arg = *(Expr **)vecAt(&e->u.method.args, i);
                     Type  *got  = checkExprInner(c, arg);
                     (void)unifyTParams(tt, &f->typeParams, &mt, want, got);
@@ -5495,17 +5561,17 @@ static Type *checkExprInner(Checker *c, Expr *e) {
                 /* A view parameter (`append(s: slice<u8>)`) accepts a container argument of the same element, and
                  * also accepts "expression results" such as a value f-string. */
                 Expr **slot = (Expr **)vecAt(&e->u.method.args, i);
-                lendViewArg(c, pt, slot);
+                lendArg(c, pt, slot);
                 Type *at = checkArgBorrow(c, slot, pt);
                 a = *slot;
                 if (pt->kind == TY_REF && at->kind != TY_REF && !ttIsError(at)) {
-                    ckError(c, a->line,
-                            "`.` means \"operate on this value\", so free functions need `ref` spelled out. "
-                            "`ref T` is a read-only borrow of a place: a variable (also `let`), a field, or a fixed-size array element",
-                            "argument expects `%s`; write `ref ...` here to pass a reference",
-                            typeStr(c, pt));
-                    continue;
-                }
+            ckError(c, a->line,
+                    "store the value in a variable first, then pass that variable",
+                    "argument expects `%s`; a reference has to point at an existing"
+                    " place, and this argument is a temporary value",
+                    typeStr(c, pt));
+            continue;
+        }
                 /* `coroutine<T>` is a uniform handle, a plain 24-byte value, so any place
                  * that takes a value takes it. */
                 checkAssignable(c, pt, at, a, "argument");

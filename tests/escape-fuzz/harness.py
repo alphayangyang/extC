@@ -68,7 +68,7 @@ CLASSES = [
      "同一个调用点直接写成 `head = mk(1)`（不落中间绑定）就编得过 ⇒ 记账口径问题，"
      "程序不悬垂。"),
     ("E_ARG_DEPTH",
-     r"points into a deeper scope .*than the arena this call may store it in",
+     r"carries a reference into a local of this function|points at a local of this function",
      "真误拒（保守）",
      "实参指向比这次调用能存储的 arena 更深。与 E_DEPTH_AN 同根：调用结果的深度被算成块深度，"
      "于是「刚 new 出来的实参」被当成「指向块内局部」。若记账不改，拒是安全的一侧；"

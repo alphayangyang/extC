@@ -2514,12 +2514,11 @@ static void recordRefCheck(Checker *c, Expr *val, Expr *target, int at,
  * decision is reconsidered after the DFA (`recheckPendingRefStores`); the two paths must agree
  * word for word. */
 #define ESCAPE_OUTLIVE_NOTE \
-    "A reference may not outlive what it points to. Borrow from a parameter " \
-    "(depth 0) or copy the data instead. " \
-    "If this value is a container (vector and friends), the storage inside it " \
-    "was allocated in this frame's arena: build the container in the caller's " \
-    "scope and fill it through a `mut ref` argument, or build it here with `new` " \
-    "(that allocates in this function's home arena, so it may escape)."
+    "A reference may not outlive what it points to. What is written here may live " \
+    "past this function, while the value points at storage that dies when the block " \
+    "ends. Borrow from a parameter or a global, copy the data (`snapshot()` / `clone()`), " \
+    "or build it with `new` -- a `new` outlives this function, so it is " \
+    "allowed to escape."
 
 /**
  * @brief Implementation of `checkEscape`: with `defer` set, a rejection is recorded in
@@ -2595,9 +2594,7 @@ static bool checkEscapeImpl(Checker *c, Expr *val, int at, int line, const char 
         return true;
     }
     ckError(c, line, ESCAPE_OUTLIVE_NOTE,
-            "%s would hold a reference to a local variable that dies first "
-            "(borrowed from depth %d, but this can only hold up to depth %d)",
-            what, d, at);
+            "%s would hold a reference to a local variable that dies first", what);
     return true;
 }
 
@@ -2683,9 +2680,7 @@ void recheckPendingRefStores(Checker *c, bool dfaSettled) {
             if (d <= at) continue;              /* a false rejection caused by word order: undo it */
         }
         ckError(c, p->line, ESCAPE_OUTLIVE_NOTE,
-                "%s would hold a reference to a local variable that dies first "
-                "(borrowed from depth %d, but this can only hold up to depth %d)",
-                p->what, d, at);
+                "%s would hold a reference to a local variable that dies first", p->what);
     }
     /* This function's records are consumed; the table is per module, so other functions
      * clear their own entries on their own pass. */

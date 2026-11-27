@@ -5,7 +5,7 @@
 //     var v: mut slice<u8> = pl.alloc(n)!      // 板内视图**存进局部**
 //     c.func(v.data)                           // 交给一个**没签字**的 C 函数（最坏情况）
 //
-// —— 一个字都不用写。进来之前这是被拒的（"may be kept by C forever, but it points into this
+// —— 一个字都不用写。进来之前这是被拒的（"may be kept by C after the call returns, but it points into this
 // frame (depth 1)"），因为视图绑定的深度取的是"槽"，而槽在帧里。
 use std::io
 use std::dl

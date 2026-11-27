@@ -1,0 +1,9 @@
+use std::io
+
+fn f(n: ref i64) -> i64 { return *n }
+fn five() -> i64 { return 5 }
+
+fn main() -> i32 {
+    io::cout << f(five()) << f"\n"
+    return 0
+}

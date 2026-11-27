@@ -42,13 +42,13 @@ check_err() {
     echo "$out" | grep -qF -- "$want" || { echo "  FAIL $(basename "$f")  ->  消息里没有「$want」"; fail=1; return; }
     echo "  ok   $(basename "$f")  ->  $(echo "$out" | grep -m1 'error:' | cut -c1-86)"
 }
-check_err tests/extern/errors/no_effects.extc  'may be kept by C forever'
+check_err tests/extern/errors/no_effects.extc  'may be kept by C after the call returns'
 check_err tests/extern/errors/slice_param.extc 'cannot cross the C boundary'
 check_err tests/extern/errors/owned.extc       'not implemented yet'
 # 第 2 步（指针放宽）的三条边界：不签字的声明照旧挡住帧内指针（指针放宽之后这条**更重要**，
 # 因为 `ref T` 还能让 C 从我们内存里读出一个指针留着 ⇒ Cont 那一半）· `void *` 看不进去 ·
 # **按值**传结构体仍然不开（那是另一格：布局不一致是静默错）
-check_err tests/extern/errors/ptr_unsigned.extc   'may be kept by C forever'
+check_err tests/extern/errors/ptr_unsigned.extc   'may be kept by C after the call returns'
 check_err tests/extern/errors/void_deref.extc     'void` has no size'
 check_err tests/extern/errors/struct_by_value.extc 'cannot cross the C boundary'
 

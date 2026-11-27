@@ -117,8 +117,8 @@ else
 fi
 
 # ── ② 跨帧存储被拒 ────────────────────────────────────────────────────────────
-reject reject_deep_store      "dies first (borrowed from depth 2, but this can only hold up to depth 1)"
-reject reject_deep_store_call "points into a deeper scope (depth 2) than the arena this call may store it in (depth 1)"
+reject reject_deep_store      "would hold a reference to a local variable that dies first"
+reject reject_deep_store_call "points at a local of this function, but the callee may keep it after it returns"
 
 # ── ③ 有环形状 ────────────────────────────────────────────────────────────────
 build_run cyclic_shape

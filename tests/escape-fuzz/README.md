@@ -78,7 +78,7 @@ C++ 对照没编过  : 0（编过的 119 个全部跑通）
 | `E_DEPTH_A0_STORE` | `this reference would hold ... (borrowed from depth 1, but this can only hold up to depth 0)` | 14 | [main_dfield_after.extc](min/main_dfield_after.extc) | **真误拒** | 见 §1 |
 | `E_DEPTH_CALLRES` | `... (borrowed from depth 2, but this can only hold up to depth 1)` | 16 | [callres_ret_store.extc](min/callres_ret_store.extc) | **真误拒** | 见 §2 |
 | `E_DEPTH_A0_RET` | `this return value would hold ... (borrowed from depth 1, but this can only hold up to depth 0)` | 6 | [home_ff_return.extc](min/home_ff_return.extc) | **真误拒**（且伴随漏收） | 见 §3 |
-| `E_ARG_DEPTH` | `argument 2 of \`link\` points into a deeper scope (depth 2) than the arena this call may store it in (depth 1)` | 4 | [param_ret_arg.extc](min/param_ret_arg.extc) | **真误拒**（保守） | 与 §2 同根 |
+| `E_ARG_DEPTH` | `argument 2 of \`link\` points at a local of this function, but the callee may keep it after it returns` | 4 | [param_ret_arg.extc](min/param_ret_arg.extc) | **真误拒**（保守） | 与 §2 同根 |
 | `E_DEPTH_AN` | `... (borrowed from depth 2, but this can only hold up to depth 1)`，值**不是**调用结果 | 1 | [deep_store.extc](min/deep_store.extc) | **该拒** | 真会悬垂 |
 | `E_GLOBAL` | `cannot zero-initialize the global \`g\`: it contains a reference` | 3 | [global_ref.extc](min/global_ref.extc) | **该拒**（语言规则） | 见 §4 |
 | `E_ACCEPT_UAF` | 收下了，但 ASan `heap-use-after-free` | 5 | [home_pfield_uaf.extc](min/home_pfield_uaf.extc) | **漏收，必须修**（方向相反） | 见 §5 |

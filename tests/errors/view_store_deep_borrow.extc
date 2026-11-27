@@ -1,6 +1,6 @@
 // 借用：把本帧"借来的"视图存进外层 `mut ref` 字段必须被拒绝 —— 数据出不了这一帧。
 // 栈上定长数组是最直白的借用：`a[..]` 指向本帧的存储，没法被搬到外层。
-// expect: carries a reference into a deeper scope
+// expect: carries a reference to a local of this function
 use std::io
 struct box { v: slice<i64> }
 

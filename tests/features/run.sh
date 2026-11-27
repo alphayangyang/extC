@@ -10,6 +10,9 @@
 #   ⑤ views：返回本帧容器的视图被静态拒绝（直接返回 / 先绑再返回 / string 容器三种），
 #      借参数、snapshot()、返回容器本身、字符串字面量、整数组赋值五种正确形状必须通过；
 #      视图整体赋值（dst[..] = src[..]）从静默无操作改为编译错
+#   ⑥ borrow：`ref T` / `mut ref T` 形参在调用点自动取借（var/let/元素/泛型/容器/const），
+#      显式 `ref ...` 仍然可用；let 不能传 mut ref、临时值不能当借用实参；
+#      借用诊断里不再出现 depth / arena 这类编译器内部词汇
 set -u
 cd "$(dirname "$0")/../.."
 EXTC=${EXTC:-./build/extc}
@@ -73,5 +76,26 @@ check_reject view_binding views/err_binding 'whose storage this frame releases w
 check_reject view_string views/err_string 'view of .string::string.' 'string 容器的视图同样被拒'
 check_reject view_assign views/err_assign 'cannot assign to a view as a whole' '视图整体赋值被拒并提 copyInto'
 
+out=$("$EXTC" -w --no-line-map --run tests/features/borrow/main.extc 2>"$tmp/e" | tr '\n' ' ')
+want="x=5 y=6 w=15 explicit=6 elem=3 elemw=12 gen=6 vec=1 constn=9 "
+if [ "$out" = "$want" ]; then ok borrow "调用点自动取借（var/let/元素/泛型/容器/const）+ 显式 ref 仍通 → $out"
+else bad borrow "期望 [$want] 实得 [$out] $(head -2 "$tmp/e")"; fi
+
+check_reject borrow_mut_let borrow/err_mut_let 'a `mut ref T` is write access' 'let 传 mut ref 报错：写明要用 var'
+check_reject borrow_temp borrow/err_temp 'a reference has to point at an existing place' '临时值不能当借用实参，提示先存进变量'
+
+check_nodepth() {
+    name=$1; path=$2
+    if "$EXTC" -w --no-line-map -o "$tmp/$name.c" "$path" 2>"$tmp/e"; then
+        bad "$name" "应当被拒，却编过了"
+    elif grep -qi 'depth\|arena' "$tmp/e"; then
+        bad "$name" "诊断里还有 depth/arena 字样：$(grep -m1 -i 'depth\|arena' "$tmp/e")"
+    else
+        ok "$name" "拒绝信息是行为描述，不含 depth/arena"
+    fi
+}
+check_nodepth nodepth_ret tests/reclaim-shapes/reject_deep_store.extc
+check_nodepth nodepth_arg tests/reclaim-shapes/reject_deep_store_call.extc
+check_nodepth nodepth_eff tests/zone/neg_loop_new_view.extx
 printf 'features: 通过 %d 个，失败 %d 个\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

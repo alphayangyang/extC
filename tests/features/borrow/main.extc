@@ -1,0 +1,30 @@
+// borrowing at the call site: a `ref T` / `mut ref T` parameter takes a place
+// without the `ref` the caller used to write. Explicit `ref ...` keeps working.
+use std::io
+use std::data::vector
+
+const N: i64 = 9
+
+fn f(n: ref i64) -> i64 { return *n }
+fn w(n: mut ref i64) { *n = *n + 10 }
+fn id<T>(x: ref T) -> T { return *x }
+fn lenOf(v: ref vector<i64>) -> i64 { return v.len() }
+
+fn main() -> i32 {
+    var x: i64 = 5
+    let y: i64 = 6
+    println(f"x={f(x)} y={f(y)}")
+    w(x)
+    println(f"w={x}")
+    println(f"explicit={f(ref y)}")
+    var a: [4]i64 = [1, 2, 3, 4]
+    println(f"elem={f(a[2])}")
+    w(a[1])
+    println(f"elemw={a[1]}")
+    println(f"gen={id(y)}")
+    var v: vector<i64> = vector<i64>::new()
+    v.push(7)
+    println(f"vec={lenOf(v)}")
+    println(f"constn={f(N)}")
+    return 0
+}

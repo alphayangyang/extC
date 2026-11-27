@@ -1,0 +1,10 @@
+use std::io
+
+fn w(n: mut ref i64) { *n = *n + 10 }
+
+fn main() -> i32 {
+    let y: i64 = 5
+    w(y)
+    io::cout << f"s={y}\n"
+    return 0
+}

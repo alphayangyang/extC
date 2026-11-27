@@ -1490,8 +1490,8 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
                     " pointer, it may store it somewhere that outlives this frame. Sign it --"
                     " `effects Addr=0 Cont=0` on the `extern!`, or on the table slot that holds the"
                     " function pointer -- or pass something that lives longer.",
-                    "argument %zu of `%s` may be kept by C forever, but it points into this"
-                    " frame (depth %d)", j + 1, fname, d);
+                    "argument %zu of `%s` may be kept by C after the call returns, but it"
+                    " points at storage that dies with this function", j + 1, fname);
         }
         return;
     }
@@ -1601,10 +1601,11 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
         if (d == 0 || d <= h) { lvlSiteMark(lvlSite, i, LVL_CAND_ACCEPT); continue; } /* lives long enough */
         lvlSiteMark(lvlSite, i, LVL_CAND_REJECT);
         ckError(c, line,
-                "The callee may store this reference into the arena it was given, so the"
-                " argument must live at least that long. Move it to a shallower scope.",
-                "argument %zu of `%s` points into a deeper scope (depth %d) than the arena"
-                " this call may store it in (depth %d)", i + 1, fname, d, h);
+                "The callee may keep this reference after it returns, so the argument has to"
+                " outlive the call: pass a parameter, a global, or a fresh `new` (its storage"
+                " outlives this function and may escape).",
+                "argument %zu of `%s` points at a local of this function, but the callee may"
+                " keep it after it returns", i + 1, fname);
     }
 
     /* A view of a container that can move its storage must not be handed to a function that
@@ -1718,9 +1719,9 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
                     " compiler has to assume the worst: this value may end up in the place"
                     " the callee stores into. Make it live at least that long (or give the"
                     " callee a decidable body).",
-                    "argument %zu of `%s` carries a reference into a deeper scope (depth %d)"
-                    " than the place the callee may store it (depth %d); the callee's"
-                    " effects could not be fully analyzed", j + 1, fname, d, h);
+                    "argument %zu of `%s` carries a reference into a local of this function,"
+                    " the callee may keep it, and the callee's effects could not be fully analyzed",
+                    j + 1, fname);
         }
     } else if (contMaybe && callee) {
         /* All four bit classes must be checked here: the summary may record a by-value
@@ -1774,10 +1775,9 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
                             "The callee stores this view into a container it was given, and the"
                             " container the view points into is one whose storage moves when it"
                             " grows. Keep the view local, or take a copy (`snapshot()`).",
-                            "argument %zu of `%s` carries a reference into a deeper scope"
-                            " (depth %d) than the place the callee may store it (depth %d);"
-                            " promoting `%s` cannot keep the view alive across a growth",
-                            j + 1, fname, d, h, mowner);
+                            "argument %zu of `%s` carries a view of `%s`, whose storage moves"
+                            " when it grows, so the callee cannot keep it after it returns",
+                            j + 1, fname, mowner);
                     lvlSiteMark(lvlSite, j, LVL_CAND_REJECT);
                     continue;
                 }
@@ -1824,8 +1824,8 @@ void checkCallRefArgs(Checker *c, FuncDef *callee, Vec *args, Vec *params, int h
             ckError(c, line,
                     "The callee stores what this value points at into a container it was"
                     " given, so that data must live at least as long as that container.",
-                    "argument %zu of `%s` carries a reference into a deeper scope (depth %d)"
-                    " than the place the callee may store it (depth %d)", j + 1, fname, d, h);
+                    "argument %zu of `%s` carries a reference to a local of this function, but"
+                    " the callee may keep it in a container it was given", j + 1, fname);
         }
     }
 
@@ -7475,7 +7475,7 @@ static bool idleFieldStable(AcInfo *ac, const char *fname) {
 /** @brief L1 "linked into the structure": is the object `vname` points to **linked into `origin`'s
  *  structure** by some field write.
  *
- * The transitivity rule from the formal specification §3: for `h.f := v`, if `h` is a projection of
+ * The transitivity rule from the formal specification `3: for `h.f := v`, if `h` is a projection of
  * `origin` and field `f` is stable ⇒ the object `v` is reachable from `origin` ⇒ it becomes a
  * projection of `origin`. Without it the fixed point is smaller than `A*` (`rg_grow_tail`'s
  * `tail = p` is this rule). */

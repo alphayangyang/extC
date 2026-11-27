@@ -21,8 +21,8 @@
 | 形状 | 编译 | 运行 | 峰值内存 | 备注 |
 |---|---|---|---|---|
 | `cond-save-in-loop` | ok | ok | 1.42 MB | **绿** 语义对（keep 最后一轮 ⇒ saved=7）|
-| `reject_deep_store` | rej | — | — | **绿** 编译期挡住：`dies first (borrowed from depth 2, ... up to depth 1)` |
-| `reject_deep_store_call` | rej | — | — | **绿** 编译期挡住：`points into a deeper scope (depth 2) > arena (depth 1)` |
+| `reject_deep_store` | rej | — | — | **绿** 编译期挡住：`would hold a reference to a local variable that dies first` |
+| `reject_deep_store_call` | rej | — | — | **绿** 编译期挡住：`points at a local of this function, but the callee may keep it after it returns` |
 | `cyclic-shape` | ok | ok | 1.42 MB | **绿** 有环：next/prev 与 child/parent 互指；fwd=back、tree、cache 全对 |
 | `promote-place` | ok | ok | 1.42 MB | **绿** 生成物：`kept→__extc_a[1]`（循环外），`doomed→__extc_a[2]`（循环体，每轮 release）|
 | `scale-growth N→4N` | ok | ok | ≈4.6 MB → ≈13.8 MB | **红** 峰值随轮数增长（≈3× @ ×4 轮）；开关**关**时回收未生效 ⇒ 界与轮数有关 |
@@ -118,8 +118,8 @@ FAIL 行打出首对/复测的原始 KB 与 `SHARDS=1` 的 4N 峰值（只看比
 | 文件 | 覆盖 | 判据 |
 |---|---|---|
 | `cond_save.extc` | ① 条件保存在循环里（motivating shape）| 编译 + 语义（`saved=7`）|
-| `reject_deep_store.extc` | ② 跨帧存储，直接形式 | 必须报 `dies first (borrowed from depth 2 ... depth 1)` |
-| `reject_deep_store_call.extc` | ② 跨帧存储，经被调者发布（定案 67）| 必须报 `points into a deeper scope (depth 2) ... (depth 1)` |
+| `reject_deep_store.extc` | ② 跨帧存储，直接形式 | 必须报 `would hold a reference to a local variable that dies first` |
+| `reject_deep_store_call.extc` | ② 跨帧存储，经被调者发布（定案 67）| 必须报 `points at a local of this function ... keep it after it returns` |
 | `cyclic_shape.extc` | ③ 双向链表 + 父指针树 + 缓存 + 索引 | 编译 + 运行 + 语义（两个方向的和相等、父指针指回根、缓存/索引命中）|
 | `promote_place.extc` | ④ 提权发生的位置 | 生成物结构：逃逸的那份在循环体区域**之外** |
 | `scale_growth.extc` | ⑤ 同一形状轮数 ×4 | 峰值 RSS 是否随轮数增长（阈值 1.5×）|
@@ -301,7 +301,7 @@ if w.bkSize[b] > 8 { retireChain(ref w, b) } // 链头挂到 w.retire，桶清�
 | `(*head).prev = p`（`head` 是本地 `?mut ref`，`p` 是循环体局部）| **拒** | 解引用**不产生存储**：目的地的槽深度按保守读法取 0（`slotDepth(EX_DEREF) = targetDepth(head)`），而本地的被指物寿命未知 ⇒ 循环体局部（深度 2）存不进去 |
 | `a.next = p`（`a` 是本帧的 `var a = new node`）| 过 | 目的地是本帧已知的存储 |
 | `link(a, p)`（`fn link(n: mut ref node, p: mut ref node)`）| 过 | 判定推迟到调用点，目的地是形参 |
-| 同一个循环体局部 `p` 连续传给**两个**「会存进外层」的 helper | 第二处**拒** | 报 `argument 3 ... points into a deeper scope (depth 2) ... (depth 1)` |
+| 同一个循环体局部 `p` 连续传给**两个**「会存进外层」的 helper | 第二处**拒** | 报 `argument 3 ... points at a local of this function ... keep it after it returns` |
 | `ref w.bkHead[b]`（数组元素取引用）| 拒 | 只有变量与字段能取引用 ⇒ 传 `ref w`，在 helper 里下标 |
 
 最终写法：**每个新对象只经由一个 helper 的一次调用完成逃逸**（`p`→`pushFront`、

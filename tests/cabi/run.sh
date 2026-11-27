@@ -84,8 +84,8 @@ else
 fi
 
 echo "== ② 反例（签名是承诺：没签字 · 拷出槽 · 写错地方，都得挡住）=="
-check_err tests/cabi/errors/slot_unsigned.extc   'argument 1 of `copy` may be kept by C forever'
-check_err tests/cabi/errors/slot_copied_out.extc 'may be kept by C forever'
+check_err tests/cabi/errors/slot_unsigned.extc   'argument 1 of `copy` may be kept by C after the call returns'
+check_err tests/cabi/errors/slot_copied_out.extc 'may be kept by C after the call returns'
 check_err tests/cabi/errors/slot_on_nonfn.extc   'which is not a function pointer'
 check_err tests/cabi/errors/slot_thread.extc     '`Thread=` on a field is not used yet'
 
@@ -184,9 +184,9 @@ else
     echo "  FAIL effects-order  ->  跑不起来"; echo "$out" | sed 's/^/        /' | head -5; fail=1
 fi
 
-check_err tests/cabi/errors/outframe_frame.extc      'may be kept by C forever'
-check_err tests/cabi/errors/outframe_new.extc        'may be kept by C forever'
-check_err tests/cabi/errors/outframe_reassigned.extc 'may be kept by C forever'
+check_err tests/cabi/errors/outframe_frame.extc      'may be kept by C after the call returns'
+check_err tests/cabi/errors/outframe_new.extc        'may be kept by C after the call returns'
+check_err tests/cabi/errors/outframe_reassigned.extc 'may be kept by C after the call returns'
 
 echo '== ⑧ 分析精度：match payload 的 provenance + 目的地深度（C-ABI.md §9.19）=='
 if out=$("$EXTC" --run tests/cabi/checked_path.extc 2>&1); then
